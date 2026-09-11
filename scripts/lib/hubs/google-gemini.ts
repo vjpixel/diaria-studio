@@ -62,7 +62,7 @@ import {
   type HubContent,
   type HubSourceEdition,
 } from "../shared/hub-page.ts";
-import { HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
+import { hubFooterNavUtm } from "../shared/utm-registry.ts";
 import sourcesRaw from "./google-gemini-sources.generated.json" with { type: "json" };
 import type { HubSourceEntry } from "../../generate-hub-sources.ts";
 
@@ -387,7 +387,7 @@ export function getGoogleGeminiHub(): HubContent {
     sourceEditions: toSourceEditions(SOURCES),
     publishedDate: PUBLISHED_DATE,
     updatedDate: UPDATED_DATE,
-    footerNavUtm: HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM,
+    footerNavUtm: hubFooterNavUtm("google-gemini"),
     methodologyNote: defaultMethodologyNote(SOURCES),
   };
 }

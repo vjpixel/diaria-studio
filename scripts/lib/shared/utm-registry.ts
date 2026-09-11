@@ -586,64 +586,30 @@ export const LIVROS_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
-/** Rodapé de navegação cruzada do hub temático Anthropic/Claude (#4558 Parte
- * A, `scripts/lib/hubs/anthropic-claude.ts`) — mesmo padrão de
+/** Rodapé de navegação cruzada de um hub temático (#4558 Parte A,
+ * `scripts/lib/hubs/{slug}.ts`) — mesmo padrão de
  * `CURSOS_FOOTER_NAV_UTM`/`ARQUIVO_FOOTER_NAV_UTM`/`LIVROS_FOOTER_NAV_UTM`
  * (só source+medium, sem campaign de verdade — link de nav, não funil de
  * conversão). `source` é prefixado `hub-` (não `arquivo`) porque o hub é uma
  * sub-rota de `arquivo.diar.ia.br` mas mede uma superfície distinta da
  * listagem de edições — misturar o source com `ARQUIVO_FOOTER_NAV_UTM`
- * esconderia qual das duas páginas gerou o clique. Um hub novo (mais temas
+ * esconderia qual das duas páginas gerou o clique.
+ *
+ * Antes do #8005 esta era 1 constante `HUB_{SLUG}_FOOTER_NAV_UTM` por hub
+ * publicado (7 no total: anthropic-claude, openai-chatgpt, google-gemini,
+ * meta-ai, brasil-regulacao, mercado-trabalho, medicina-saude — histórico
+ * completo em `git log` deste arquivo). Todas eram idênticas em forma, só
+ * `source` variando por uma regra mecânica (`hub-{slug}`); a factory
+ * substitui as 15 sem mudar nenhum valor emitido. Um hub novo (mais temas
  * virão, decisão do editor 260804: hubs de empresa e temáticos coexistem)
- * ganha sua própria constante seguindo este mesmo padrão. */
-export const HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM = {
-  source: "hub-anthropic-claude",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão de `HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM` acima, pro 2º hub
- * temático publicado (#4558, `scripts/lib/hubs/openai-chatgpt.ts`). */
-export const HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM = {
-  source: "hub-openai-chatgpt",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pro 3º hub temático publicado (`scripts/lib/hubs/google-gemini.ts`). */
-export const HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM = {
-  source: "hub-google-gemini",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pro 4º hub temático publicado (`scripts/lib/hubs/meta-ai.ts`, #4558 develop 260810). */
-export const HUB_META_AI_FOOTER_NAV_UTM = {
-  source: "hub-meta-ai",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pro 5º hub temático publicado — 1º hub TEMÁTICO
- * transversal (os 4 anteriores são hubs de EMPRESA): regulação/política
- * pública de IA no Brasil (`scripts/lib/hubs/brasil-regulacao.ts`, #4558
- * sessão develop 260811). */
-export const HUB_BRASIL_REGULACAO_FOOTER_NAV_UTM = {
-  source: "hub-brasil-regulacao",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pro 6º hub temático publicado — 2º hub TEMÁTICO
- * transversal (regulação foi o 1º): impacto da IA no mercado de trabalho
- * (`scripts/lib/hubs/mercado-trabalho.ts`, #4558). */
-export const HUB_MERCADO_TRABALHO_FOOTER_NAV_UTM = {
-  source: "hub-mercado-trabalho",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pro 7º hub temático publicado — 1º hub por SETOR DE
- * APLICAÇÃO (os 6 anteriores são de ator ou eixo regulatório): medicina e
- * saúde (`scripts/lib/hubs/medicina-saude.ts`, #5741). */
-export const HUB_MEDICINA_SAUDE_FOOTER_NAV_UTM = {
-  source: "hub-medicina-saude",
-  medium: "footer-nav",
-} as const;
+ * chama esta função com o próprio slug — não precisa mais de constante
+ * dedicada. */
+export function hubFooterNavUtm(slug: string) {
+  return {
+    source: `hub-${slug}`,
+    medium: "footer-nav",
+  } as const;
+}
 
 /** Box rotativo de divulgação dos hubs temáticos na newsletter (#5263,
  * `scripts/lib/shared/hub-divulgacao-box.ts`) — 1 hub por edição, escolhido
@@ -668,71 +634,26 @@ export const HUB_INDEX_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
-/** Rodapé de navegação cruzada da página de entidade "Perplexity" (#5125,
- * `scripts/lib/entities/perplexity.ts`) — mesmo padrão de
- * `HUB_*_FOOTER_NAV_UTM` acima (só source+medium, link de nav, não funil de
+/** Rodapé de navegação cruzada de uma página de entidade (#5125,
+ * `scripts/lib/entities/{slug}.ts`) — mesmo padrão de `HUB_*_FOOTER_NAV_UTM`/
+ * `hubFooterNavUtm` acima (só source+medium, link de nav, não funil de
  * conversão), prefixo `entity-` (não `hub-`) porque é um formato distinto
  * (índice cronológico de menções, publicado em `especial.diar.ia.br`, não
- * `arquivo.diar.ia.br/temas/*`). Uma página de entidade nova ganha a própria
- * constante seguindo este padrão. */
-export const ENTITY_PERPLEXITY_FOOTER_NAV_UTM = {
-  source: "entity-perplexity",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão de `ENTITY_PERPLEXITY_FOOTER_NAV_UTM` acima, pra página de
- * entidade "xAI" (#5125 item 4, `scripts/lib/entities/xai.ts`) — 2ª entidade
- * publicada nesta rodada de escala reduzida (ver docstring do módulo). */
-export const ENTITY_XAI_FOOTER_NAV_UTM = {
-  source: "entity-xai",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pra página de entidade "Amazon" (#5125 item 4,
- * `scripts/lib/entities/amazon.ts`) — 3ª entidade publicada nesta rodada. */
-export const ENTITY_AMAZON_FOOTER_NAV_UTM = {
-  source: "entity-amazon",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pra página de entidade "Samsung" (#5125 item 4,
- * `scripts/lib/entities/samsung.ts`) — 4ª entidade publicada nesta rodada. */
-export const ENTITY_SAMSUNG_FOOTER_NAV_UTM = {
-  source: "entity-samsung",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pra página de entidade "Apple" (#5125, condição do
- * editor 14/08/2026 — regeneração automática, `scripts/lib/entities/apple.ts`).
- * 5ª entidade publicada (1ª desta unidade, fora da rodada de escala reduzida
- * original de 3 — ver docstring do módulo). */
-export const ENTITY_APPLE_FOOTER_NAV_UTM = {
-  source: "entity-apple",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pra página de entidade "DeepSeek" (#5125 item 4,
- * `scripts/lib/entities/deepseek.ts`) — 6ª entidade publicada. */
-export const ENTITY_DEEPSEEK_FOOTER_NAV_UTM = {
-  source: "entity-deepseek",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pra página de entidade "Oracle" (#5125 item 4,
- * `scripts/lib/entities/oracle.ts`) — 7ª entidade publicada, sessão
- * `/diaria-continuo` de 16/08/2026. */
-export const ENTITY_ORACLE_FOOTER_NAV_UTM = {
-  source: "entity-oracle",
-  medium: "footer-nav",
-} as const;
-
-/** Mesmo padrão acima, pra página de entidade "Alibaba" (#5125 item 4,
- * `scripts/lib/entities/alibaba.ts`) — 8ª entidade publicada, mesma sessão
- * de `ENTITY_ORACLE_FOOTER_NAV_UTM` acima. */
-export const ENTITY_ALIBABA_FOOTER_NAV_UTM = {
-  source: "entity-alibaba",
-  medium: "footer-nav",
-} as const;
+ * `arquivo.diar.ia.br/temas/*`).
+ *
+ * Antes do #8005 esta era 1 constante `ENTITY_{SLUG}_FOOTER_NAV_UTM` por
+ * entidade publicada (8 no total: perplexity, xai, amazon, samsung, apple,
+ * deepseek, oracle, alibaba — histórico completo em `git log` deste
+ * arquivo). Mesmo racional de `hubFooterNavUtm` — todas idênticas em forma,
+ * só `source` variando por uma regra mecânica (`entity-{slug}`). Uma página
+ * de entidade nova chama esta função com o próprio slug — não precisa mais
+ * de constante dedicada. */
+export function entityFooterNavUtm(slug: string) {
+  return {
+    source: `entity-${slug}`,
+    medium: "footer-nav",
+  } as const;
+}
 
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
@@ -1512,8 +1433,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "hub-anthropic-claude-footer-nav",
     label: "Hub Anthropic/Claude — link de rodapé pra diar.ia.br",
-    source: HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM.source,
-    medium: HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM.medium,
+    source: hubFooterNavUtm("anthropic-claude").source,
+    medium: hubFooterNavUtm("anthropic-claude").medium,
     // sem utm_campaign de verdade (link de nav, só source+medium) — mesmo
     // padrão-placeholder de arquivo-footer-nav/livros-footer-nav acima.
     campaignPattern: "hub-anthropic-claude-footer-nav",
@@ -1527,8 +1448,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "hub-openai-chatgpt-footer-nav",
     label: "Hub OpenAI/ChatGPT — link de rodapé pra diar.ia.br",
-    source: HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM.source,
-    medium: HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM.medium,
+    source: hubFooterNavUtm("openai-chatgpt").source,
+    medium: hubFooterNavUtm("openai-chatgpt").medium,
     campaignPattern: "hub-openai-chatgpt-footer-nav",
     originFile: "scripts/lib/hubs/openai-chatgpt.ts",
     description:
@@ -1539,8 +1460,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "hub-google-gemini-footer-nav",
     label: "Hub Google/Gemini — link de rodapé pra diar.ia.br",
-    source: HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM.source,
-    medium: HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM.medium,
+    source: hubFooterNavUtm("google-gemini").source,
+    medium: hubFooterNavUtm("google-gemini").medium,
     campaignPattern: "hub-google-gemini-footer-nav",
     originFile: "scripts/lib/hubs/google-gemini.ts",
     description:
@@ -1551,8 +1472,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "hub-meta-ai-footer-nav",
     label: "Hub Meta/Meta AI — link de rodapé pra diar.ia.br",
-    source: HUB_META_AI_FOOTER_NAV_UTM.source,
-    medium: HUB_META_AI_FOOTER_NAV_UTM.medium,
+    source: hubFooterNavUtm("meta-ai").source,
+    medium: hubFooterNavUtm("meta-ai").medium,
     campaignPattern: "hub-meta-ai-footer-nav",
     originFile: "scripts/lib/hubs/meta-ai.ts",
     description:
@@ -1563,8 +1484,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "hub-brasil-regulacao-footer-nav",
     label: "Hub Regulação de IA no Brasil — link de rodapé pra diar.ia.br",
-    source: HUB_BRASIL_REGULACAO_FOOTER_NAV_UTM.source,
-    medium: HUB_BRASIL_REGULACAO_FOOTER_NAV_UTM.medium,
+    source: hubFooterNavUtm("brasil-regulacao").source,
+    medium: hubFooterNavUtm("brasil-regulacao").medium,
     campaignPattern: "hub-brasil-regulacao-footer-nav",
     originFile: "scripts/lib/hubs/brasil-regulacao.ts",
     description:
@@ -1575,8 +1496,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "hub-mercado-trabalho-footer-nav",
     label: "Hub Mercado de trabalho e IA — link de rodapé pra diar.ia.br",
-    source: HUB_MERCADO_TRABALHO_FOOTER_NAV_UTM.source,
-    medium: HUB_MERCADO_TRABALHO_FOOTER_NAV_UTM.medium,
+    source: hubFooterNavUtm("mercado-trabalho").source,
+    medium: hubFooterNavUtm("mercado-trabalho").medium,
     campaignPattern: "hub-mercado-trabalho-footer-nav",
     originFile: "scripts/lib/hubs/mercado-trabalho.ts",
     description:
@@ -1587,8 +1508,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "hub-medicina-saude-footer-nav",
     label: "Hub Medicina e saúde — link de rodapé pra diar.ia.br",
-    source: HUB_MEDICINA_SAUDE_FOOTER_NAV_UTM.source,
-    medium: HUB_MEDICINA_SAUDE_FOOTER_NAV_UTM.medium,
+    source: hubFooterNavUtm("medicina-saude").source,
+    medium: hubFooterNavUtm("medicina-saude").medium,
     campaignPattern: "hub-medicina-saude-footer-nav",
     originFile: "scripts/lib/hubs/medicina-saude.ts",
     description:
@@ -1632,8 +1553,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "entity-perplexity-footer-nav",
     label: "Página de entidade Perplexity — link de rodapé pra diar.ia.br",
-    source: ENTITY_PERPLEXITY_FOOTER_NAV_UTM.source,
-    medium: ENTITY_PERPLEXITY_FOOTER_NAV_UTM.medium,
+    source: entityFooterNavUtm("perplexity").source,
+    medium: entityFooterNavUtm("perplexity").medium,
     campaignPattern: "entity-perplexity-footer-nav",
     originFile: "scripts/lib/entities/perplexity.ts",
     description:
@@ -1646,8 +1567,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "entity-xai-footer-nav",
     label: "Página de entidade xAI — link de rodapé pra diar.ia.br",
-    source: ENTITY_XAI_FOOTER_NAV_UTM.source,
-    medium: ENTITY_XAI_FOOTER_NAV_UTM.medium,
+    source: entityFooterNavUtm("xai").source,
+    medium: entityFooterNavUtm("xai").medium,
     campaignPattern: "entity-xai-footer-nav",
     originFile: "scripts/lib/entities/xai.ts",
     description:
@@ -1659,8 +1580,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "entity-amazon-footer-nav",
     label: "Página de entidade Amazon — link de rodapé pra diar.ia.br",
-    source: ENTITY_AMAZON_FOOTER_NAV_UTM.source,
-    medium: ENTITY_AMAZON_FOOTER_NAV_UTM.medium,
+    source: entityFooterNavUtm("amazon").source,
+    medium: entityFooterNavUtm("amazon").medium,
     campaignPattern: "entity-amazon-footer-nav",
     originFile: "scripts/lib/entities/amazon.ts",
     description:
@@ -1672,8 +1593,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "entity-samsung-footer-nav",
     label: "Página de entidade Samsung — link de rodapé pra diar.ia.br",
-    source: ENTITY_SAMSUNG_FOOTER_NAV_UTM.source,
-    medium: ENTITY_SAMSUNG_FOOTER_NAV_UTM.medium,
+    source: entityFooterNavUtm("samsung").source,
+    medium: entityFooterNavUtm("samsung").medium,
     campaignPattern: "entity-samsung-footer-nav",
     originFile: "scripts/lib/entities/samsung.ts",
     description:
@@ -1685,8 +1606,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "entity-apple-footer-nav",
     label: "Página de entidade Apple — link de rodapé pra diar.ia.br",
-    source: ENTITY_APPLE_FOOTER_NAV_UTM.source,
-    medium: ENTITY_APPLE_FOOTER_NAV_UTM.medium,
+    source: entityFooterNavUtm("apple").source,
+    medium: entityFooterNavUtm("apple").medium,
     campaignPattern: "entity-apple-footer-nav",
     originFile: "scripts/lib/entities/apple.ts",
     description:
@@ -1699,8 +1620,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "entity-deepseek-footer-nav",
     label: "Página de entidade DeepSeek — link de rodapé pra diar.ia.br",
-    source: ENTITY_DEEPSEEK_FOOTER_NAV_UTM.source,
-    medium: ENTITY_DEEPSEEK_FOOTER_NAV_UTM.medium,
+    source: entityFooterNavUtm("deepseek").source,
+    medium: entityFooterNavUtm("deepseek").medium,
     campaignPattern: "entity-deepseek-footer-nav",
     originFile: "scripts/lib/entities/deepseek.ts",
     description:
@@ -1712,8 +1633,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "entity-oracle-footer-nav",
     label: "Página de entidade Oracle — link de rodapé pra diar.ia.br",
-    source: ENTITY_ORACLE_FOOTER_NAV_UTM.source,
-    medium: ENTITY_ORACLE_FOOTER_NAV_UTM.medium,
+    source: entityFooterNavUtm("oracle").source,
+    medium: entityFooterNavUtm("oracle").medium,
     campaignPattern: "entity-oracle-footer-nav",
     originFile: "scripts/lib/entities/oracle.ts",
     description:
@@ -1725,8 +1646,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "entity-alibaba-footer-nav",
     label: "Página de entidade Alibaba — link de rodapé pra diar.ia.br",
-    source: ENTITY_ALIBABA_FOOTER_NAV_UTM.source,
-    medium: ENTITY_ALIBABA_FOOTER_NAV_UTM.medium,
+    source: entityFooterNavUtm("alibaba").source,
+    medium: entityFooterNavUtm("alibaba").medium,
     campaignPattern: "entity-alibaba-footer-nav",
     originFile: "scripts/lib/entities/alibaba.ts",
     description:

@@ -19,7 +19,9 @@ import {
   type EntityMention,
 } from "../scripts/lib/shared/entity-page.ts";
 import { getPerplexityEntity } from "../scripts/lib/entities/perplexity.ts";
-import { ENTITY_PERPLEXITY_FOOTER_NAV_UTM } from "../scripts/lib/shared/utm-registry.ts";
+import { entityFooterNavUtm } from "../scripts/lib/shared/utm-registry.ts";
+
+const ENTITY_PERPLEXITY_FOOTER_NAV_UTM = entityFooterNavUtm("perplexity");
 
 /** Menção sintética válida — cada teste sobrescreve só o campo sob teste. */
 function mention(overrides: Partial<EntityMention> = {}): EntityMention {
@@ -290,8 +292,8 @@ describe("getPerplexityEntity (#5125 item 3 — PoC real)", () => {
     }
   });
 
-  it("usa ENTITY_PERPLEXITY_FOOTER_NAV_UTM (source catalogado, não literal solto)", () => {
-    assert.equal(entity.footerNavUtm, ENTITY_PERPLEXITY_FOOTER_NAV_UTM);
+  it("usa entityFooterNavUtm('perplexity') (source catalogado, não literal solto)", () => {
+    assert.deepEqual(entity.footerNavUtm, ENTITY_PERPLEXITY_FOOTER_NAV_UTM);
   });
 
   it("o link diar.ia.br do rodapé emite exatamente source/medium de ENTITY_PERPLEXITY_FOOTER_NAV_UTM", () => {

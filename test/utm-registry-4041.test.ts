@@ -535,10 +535,75 @@ describe("#5205 — ENTITY_PERPLEXITY_FOOTER_NAV_UTM estava fora de UTM_EMITTERS
     assert.ok(ids.includes("entity-perplexity-footer-nav"), 'UTM_EMITTERS deve conter "entity-perplexity-footer-nav"');
   });
 
-  it("a entry emite exatamente source/medium de ENTITY_PERPLEXITY_FOOTER_NAV_UTM (sem literal solto)", () => {
+  it("a entry emite exatamente source/medium de entityFooterNavUtm('perplexity') (sem literal solto)", () => {
     const entry = shared.findUtmEmitter("entity-perplexity-footer-nav");
     assert.ok(entry, "entry entity-perplexity-footer-nav deveria existir");
-    assert.equal(entry!.source, shared.ENTITY_PERPLEXITY_FOOTER_NAV_UTM.source);
-    assert.equal(entry!.medium, shared.ENTITY_PERPLEXITY_FOOTER_NAV_UTM.medium);
+    const expected = shared.entityFooterNavUtm("perplexity");
+    assert.equal(entry!.source, expected.source);
+    assert.equal(entry!.medium, expected.medium);
+  });
+});
+
+describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constantes HUB_*/ENTITY_*_FOOTER_NAV_UTM", () => {
+  it("hubFooterNavUtm(slug) emite {source: 'hub-{slug}', medium: 'footer-nav'} — mesmos valores das 7 constantes removidas", () => {
+    const slugs = [
+      "anthropic-claude",
+      "openai-chatgpt",
+      "google-gemini",
+      "meta-ai",
+      "brasil-regulacao",
+      "mercado-trabalho",
+      "medicina-saude",
+    ];
+    for (const slug of slugs) {
+      assert.deepEqual(shared.hubFooterNavUtm(slug), {
+        source: `hub-${slug}`,
+        medium: "footer-nav",
+      });
+    }
+  });
+
+  it("entityFooterNavUtm(slug) emite {source: 'entity-{slug}', medium: 'footer-nav'} — mesmos valores das 8 constantes removidas", () => {
+    const slugs = ["perplexity", "xai", "amazon", "samsung", "apple", "deepseek", "oracle", "alibaba"];
+    for (const slug of slugs) {
+      assert.deepEqual(shared.entityFooterNavUtm(slug), {
+        source: `entity-${slug}`,
+        medium: "footer-nav",
+      });
+    }
+  });
+
+  it("hubFooterNavUtm nunca colide com entityFooterNavUtm pro mesmo slug (prefixo distinto)", () => {
+    assert.notEqual(shared.hubFooterNavUtm("perplexity").source, shared.entityFooterNavUtm("perplexity").source);
+  });
+
+  it("UTM_EMITTERS ainda registra as 7 entries hub-*-footer-nav com os valores emitidos pela factory", () => {
+    const hubSlugs = [
+      "anthropic-claude",
+      "openai-chatgpt",
+      "google-gemini",
+      "meta-ai",
+      "brasil-regulacao",
+      "mercado-trabalho",
+      "medicina-saude",
+    ];
+    for (const slug of hubSlugs) {
+      const entry = shared.findUtmEmitter(`hub-${slug}-footer-nav`);
+      assert.ok(entry, `entry hub-${slug}-footer-nav deveria existir`);
+      const expected = shared.hubFooterNavUtm(slug);
+      assert.equal(entry!.source, expected.source);
+      assert.equal(entry!.medium, expected.medium);
+    }
+  });
+
+  it("UTM_EMITTERS ainda registra as 8 entries entity-*-footer-nav com os valores emitidos pela factory", () => {
+    const entitySlugs = ["perplexity", "xai", "amazon", "samsung", "apple", "deepseek", "oracle", "alibaba"];
+    for (const slug of entitySlugs) {
+      const entry = shared.findUtmEmitter(`entity-${slug}-footer-nav`);
+      assert.ok(entry, `entry entity-${slug}-footer-nav deveria existir`);
+      const expected = shared.entityFooterNavUtm(slug);
+      assert.equal(entry!.source, expected.source);
+      assert.equal(entry!.medium, expected.medium);
+    }
   });
 });
