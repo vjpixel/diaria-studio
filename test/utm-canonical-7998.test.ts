@@ -143,6 +143,47 @@ describe("canonicalizeUtmSource — desconhecido (rede de segurança, #7998)", (
   });
 });
 
+describe("canonicalizeUtmSource — prototype pollution (#7998, achado do fleet review)", () => {
+  it("nunca resolve 'constructor' como canal via herança de Object.prototype", () => {
+    const r = canonicalizeUtmSource("constructor");
+    assert.equal(r.classe, "desconhecido");
+    assert.equal(r.canal, null);
+  });
+
+  it("nunca resolve '__proto__' como canal via herança de Object.prototype", () => {
+    const r = canonicalizeUtmSource("__proto__");
+    assert.equal(r.classe, "desconhecido");
+    assert.equal(r.canal, null);
+  });
+
+  it("nunca resolve 'toString' (lowercased 'tostring') como canal", () => {
+    const r = canonicalizeUtmSource("toString");
+    assert.equal(r.classe, "desconhecido");
+    assert.equal(r.canal, null);
+  });
+
+  it("nunca resolve 'hasOwnProperty' (lowercased) como canal", () => {
+    const r = canonicalizeUtmSource("hasOwnProperty");
+    assert.equal(r.classe, "desconhecido");
+    assert.equal(r.canal, null);
+  });
+
+  it("resolve as 6 variantes de linkedin, incluindo l.linkedin.com e www.linkedin.com", () => {
+    const variantes = ["linkedin", "linkedin.com", "linkedin.android", "linkedin-pessoal", "l.linkedin.com", "www.linkedin.com"];
+    for (const v of variantes) {
+      const r = canonicalizeUtmSource(v);
+      assert.equal(r.classe, "canal", `esperava canal para ${v}`);
+      assert.equal(r.canal, "linkedin", `esperava linkedin para ${v}`);
+    }
+  });
+
+  it("reconhece microsoft-ads como canal", () => {
+    const r = canonicalizeUtmSource("microsoft-ads");
+    assert.equal(r.classe, "canal");
+    assert.equal(r.canal, "microsoft-ads");
+  });
+});
+
 describe("summarizeUtmCanonical (#7998)", () => {
   it("agrupa uma lista mista nos buckets corretos", () => {
     const raw = ["meta-ads", "linkedin", "linkedin.com", "direct", null, "", "google.com", "android.googlequicksearchbox", "algo-nunca-visto"];

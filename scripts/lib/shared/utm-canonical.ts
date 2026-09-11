@@ -60,7 +60,7 @@ export interface UtmCanonicalResult {
 
 /**
  * Alias exato (após lowercase+trim) → canal canônico. Fecha os grupos hoje
- * partidos em várias chaves (achado da #7998): 4 variantes de LinkedIn, 3 de
+ * partidos em várias chaves (achado da #7998): 6 variantes de LinkedIn, 3 de
  * Instagram, 2 de Clarice colapsam num único canal cada.
  *
  * Nomes de canal usam o MESMO vocabulário que o resto do projeto já emite
@@ -139,9 +139,8 @@ export function canonicalizeUtmSource(rawInput: string | null | undefined): UtmC
     return { raw, classe: "direct", canal: null, host: null };
   }
 
-  const canal = CANONICAL_CHANNEL_ALIASES[normalized];
-  if (canal) {
-    return { raw, classe: "canal", canal, host: null };
+  if (Object.prototype.hasOwnProperty.call(CANONICAL_CHANNEL_ALIASES, normalized)) {
+    return { raw, classe: "canal", canal: CANONICAL_CHANNEL_ALIASES[normalized], host: null };
   }
 
   if (AMBIGUOUS_HOSTS.has(normalized)) {
