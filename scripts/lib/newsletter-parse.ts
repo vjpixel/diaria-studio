@@ -683,7 +683,12 @@ function captureUntilCoverageBoundary(text: string, startIdx: number): string {
   const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
   const calloutMatch = findIntroCalloutMatch(introRegion);
   if (calloutMatch) {
-    const calloutAbsStart = startIdx + calloutMatch.matchStart;
+    // #7401-followup: matchStart já é absoluto (introRegion começa na posição
+    // 0 de `text`) — somar startIdx de novo dobra o offset e faz a checagem
+    // abaixo falhar sempre, deixando o callout vazar pra dentro da coverage
+    // (achado ao vivo, edição 260911: "Agradeço ao novo apoiador" duplicado —
+    // uma vez como parágrafo solto, outra como box de callout).
+    const calloutAbsStart = calloutMatch.matchStart;
     if (calloutAbsStart > startIdx && calloutAbsStart < startIdx + endIdx) {
       endIdx = calloutAbsStart - startIdx;
     }

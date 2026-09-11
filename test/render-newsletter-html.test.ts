@@ -1929,6 +1929,47 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     assert.ok(calloutIdx >= panelIdx, "agradecimento deve estar dentro do painel de callout (fundo #EBE5D0)");
   });
 
+  it("#7401-followup: coverage line NÃO engole o callout colado quando há preâmbulo TÍTULO/SUBTÍTULO antes de 'Olá!' (startIdx != 0)", () => {
+    // Bug real, edição 260911: as 3 fixtures #7666 acima colocam "Olá!" na
+    // posição 0 do texto (startIdx=0 em captureUntilCoverageBoundary), o que
+    // mascarava um bug de double-offset — `calloutAbsStart` somava `startIdx`
+    // a um `matchStart` que JÁ é absoluto (introRegion começa em 0 de `text`).
+    // Com startIdx=0 a soma é inócua; em produção, 02-reviewed.md sempre tem
+    // TÍTULO/SUBTÍTULO antes de "Olá!" (startIdx > 0), e a checagem de
+    // boundary falhava sempre — o callout vazava pra dentro da coverage e
+    // duplicava no HTML (agradecimento ao Benízio, 2x: parágrafo solto +
+    // painel de callout).
+    const callout = "**Agradeço ao novo apoiador: **Benízio**. Seu apoio ajuda a manter essa curadoria diária de pé!**";
+    const md = [
+      "TÍTULO",
+      "",
+      "Manchete de teste",
+      "",
+      "SUBTÍTULO",
+      "",
+      "Subtítulo de teste",
+      "",
+      "---",
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor desta newsletter.",
+      "",
+      "Se este trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+      "",
+      callout,
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const line = extractCoverageLine(md);
+    assert.ok(line, "coverage line deve ser extraída");
+    assert.doesNotMatch(line!, /Agradeço ao novo apoiador/, "callout não pode vazar pra dentro da coverage");
+    const calloutText = extractIntroCallout(md);
+    assert.equal(
+      calloutText,
+      "Agradeço ao novo apoiador: **Benízio**. Seu apoio ajuda a manter essa curadoria diária de pé!",
+    );
+  });
+
   it("#3691: bloco de boas-vindas SEM a frase-CTA de apoio ainda é capturado (fallback)", () => {
     // Bug real, edição 260720: o editor removeu a frase-CTA "considere
     // apoiar o projeto" do bloco de boas-vindas (pra não competir com o box
