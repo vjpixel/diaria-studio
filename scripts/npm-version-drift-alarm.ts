@@ -68,7 +68,6 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "npm-version-drift-alarm", "state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[npm-version-drift-alarm]";
 const PACKAGE_NAME = "@anthropic-ai/claude-code";
 

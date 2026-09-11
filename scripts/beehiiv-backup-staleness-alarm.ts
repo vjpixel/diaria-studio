@@ -51,7 +51,6 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data/beehiiv-backup");
 const DEFAULT_STATE_PATH = resolve(ROOT, "data/beehiiv-backup/staleness-alarm-state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const MAX_AGE_DAYS = 7;
 const LOG_PREFIX = "[beehiiv-backup-staleness-alarm]";
 

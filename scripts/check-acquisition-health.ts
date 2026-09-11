@@ -78,7 +78,6 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data/beehiiv-backup");
 const DEFAULT_STATE_PATH = resolve(ROOT, "data/acquisition-health/state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[check-acquisition-health]";
 
 export function loadState(statePath: string): AcquisitionHealthState {

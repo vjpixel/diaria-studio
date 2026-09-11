@@ -69,7 +69,6 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "openrouter-billing-leak", "state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[openrouter-billing-leak]";
 const ACTIVITY_URL = "https://openrouter.ai/api/v1/activity";
 const ACTIVITY_TIMEOUT_MS = 30_000;

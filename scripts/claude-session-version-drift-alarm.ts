@@ -63,7 +63,6 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "claude-session-version-drift-alarm", "state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[claude-session-version-drift-alarm]";
 
 /** Threshold default (#6927) — a medição real do #6875 que causava o loop

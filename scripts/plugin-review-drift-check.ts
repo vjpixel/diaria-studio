@@ -74,7 +74,6 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "plugin-review-drift-check", "state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[plugin-review-drift-check]";
 
 /** Path do diretório de agentes do plugin — per-máquina, fora do repo. Não

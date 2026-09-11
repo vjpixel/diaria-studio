@@ -117,7 +117,6 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
 const ENTITIES_DATA_DIR = resolve(ROOT, "data/entities");
 const STATE_PATH = join(ENTITIES_DATA_DIR, "staleness-state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[regenerate-entity-pages]";
 const DEFAULT_THRESHOLD_DAYS = 3;
 

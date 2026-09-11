@@ -59,7 +59,6 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "kv-image-smoke", "state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[check-kv-image-binding]";
 
 export interface KvImageSmokeState {
@@ -179,8 +178,12 @@ async function main(): Promise<void> {
     // o editor ter recebido nada (#7960: migrado de sendGmailMessage direto
     // pro portão notifyEditor — severidade "acao", issue sem e-mail sob
     // `email_policy: "urgent_only"`).
+    // Fingerprint pelo STATUS (não uma string fixa) — um 2º status diferente
+    // (`cannot-verify` depois de `binding-morto`, por exemplo) precisa abrir/
+    // atualizar um achado distinto, não reusar em silêncio a mesma issue já
+    // aberta pro status anterior (achado do self-review do #7965).
     const result_ = await notifyEditor(
-      { check: "check-kv-image-binding", fingerprint: "kv-image-smoke", severity: "acao", subject, body },
+      { check: "check-kv-image-binding", fingerprint: result.status, severity: "acao", subject, body },
       { cwd: ROOT, emailTo: toOverride },
     );
     if (result_.issue?.action === "failed") {
