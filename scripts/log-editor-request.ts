@@ -50,6 +50,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * participa da detecção de recorrência (`collect-edition-signals.ts`) —
  * agrupar `other` com `other` não diz nada sobre o que mudar. Se `other`
  * aparecer muito, é sinal de que a taxonomia precisa de categoria nova.
+ *
+ * `process` (#7964) é distinto de `other`: marca uma entrada derivada que
+ * é evidência de RE-EXECUÇÃO mecânica (ex: HTML final re-renderizado pelo
+ * loop "ajustar"), não um pedido de conteúdo do editor. Mesma exclusão de
+ * `other` na detecção de recorrência — nunca participa do agrupamento.
  */
 export type RequestType =
   | "title-choice"
@@ -70,6 +75,7 @@ export type RequestType =
   | "eia-choice"
   | "social-rewrite"
   | "factual-correction"
+  | "process"
   | "other";
 
 export type RequestTarget =
@@ -132,6 +138,7 @@ export const VALID_REQUEST_TYPES: ReadonlyArray<RequestType> = [
   "eia-choice",
   "social-rewrite",
   "factual-correction",
+  "process",
   "other",
 ];
 
