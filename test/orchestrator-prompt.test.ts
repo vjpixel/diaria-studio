@@ -335,7 +335,13 @@ describe("orchestrator-prompt (#634)", () => {
       // passo ("publiquei a página e regenerei a home") faz quem executa
       // tratar a ausência como bug e desfazer o filtro do #7686 — a
       // anticipação de ~9h volta em silêncio. Teto 745→747.
-      "orchestrator-stage-6.md": 747,
+      // #7983 (11/09): +2 linhas líquidas — fusão dos Stages 5 e 6 numa
+      // invocação só (decisão do editor). Prosa nova avisa que o caminho
+      // normal de chegada aqui é a continuação direta do Stage 5 na mesma
+      // sessão, e reforça que o assert do sentinel roda mesmo assim — sem
+      // isso, quem lê o playbook pode achar que "acabei de rodar o Stage 5"
+      // dispensa a checagem. Teto 747→753 com headroom mínimo.
+      "orchestrator-stage-6.md": 753,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];

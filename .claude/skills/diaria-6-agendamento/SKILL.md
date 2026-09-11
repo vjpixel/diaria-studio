@@ -1,11 +1,15 @@
 ---
 name: diaria-6-agendamento
-description: Roda a Etapa 6 (agendamento — gate humano + Schedule Beehiiv + auto-reporter). Uso — `/diaria-6-agendamento [AAMMDD]`.
+description: Roda a Etapa 6 (agendamento — gate humano + Schedule Beehiiv + auto-reporter). Desde #7983 o caminho normal é `/diaria-5-publicacao` encadear pra cá sozinho na mesma sessão — use este comando pra RETOMAR quando isso não aconteceu. Uso — `/diaria-6-agendamento [AAMMDD]`.
 ---
 
 # /diaria-6-agendamento
 
 Dispara a Etapa 6: apresenta resumo de agendamento ao editor, aguarda confirmacao, executa o Schedule do Beehiiv e roda o auto-reporter.
+
+## Porta de retomada (#7983, 11/09/2026)
+
+Desde a fusão 5+6, o caminho normal é `/diaria-5-publicacao` continuar direto pra este stage, na mesma sessão, sem o editor precisar digitar um segundo comando. Esta skill continua existindo pra RETOMAR quando isso não aconteceu — a sessão morreu entre o dispatch e o gate, o editor saiu e voltou horas depois, ou é um retry do agendamento em si. Nesses casos ela funciona exatamente como antes: lê o sentinel do Stage 5 do disco e segue normal a partir daqui.
 
 ## Argumentos
 

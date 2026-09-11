@@ -1,11 +1,25 @@
 ---
 name: diaria-5-publicacao
-description: Roda a Etapa 5 (publicacao auto — draft Beehiiv/Kit + LinkedIn/Facebook/Instagram/Threads/X agendados + Brevo diária/Kit diária). Sem gate. Uso — `/diaria-5-publicacao [all|newsletter|social] AAMMDD`.
+description: Roda as Etapas 5 E 6 numa invocação só (#7983) — publicação auto (draft Beehiiv/Kit + LinkedIn/Facebook/Instagram/Threads/X agendados + Brevo diária/Kit diária) seguida do gate humano de agendamento + Schedule + auto-reporter. Uso — `/diaria-5-publicacao [all|newsletter|social] AAMMDD`.
 ---
 
 # /diaria-5-publicacao
 
-Dispara a Etapa 5 unificada (publicação paralela: newsletter + todos os canais sociais + canais de reativação/parceiro em paralelo, sem gate interativo) e em seguida o auto-reporter.
+Dispara a Etapa 5 unificada (publicação paralela: newsletter + todos os canais sociais + canais de reativação/parceiro em paralelo, sem gate interativo) e, **na mesma sessão**, a Etapa 6 (gate humano de agendamento → Schedule → auto-reporter → relatório).
+
+## Fusão 5+6 (#7983, decisão do editor 11/09/2026)
+
+Este comando leva a edição do dispatch até o fim do pipeline. Ao terminar o Stage 5, **continue lendo `.claude/agents/orchestrator-stage-6.md` nesta mesma sessão** — não imprima "rode `/diaria-6-agendamento`" como próximo passo do editor.
+
+**Por que dá pra fundir:** com `publishing.newsletter.backend === "kit"` (desde #7388) nenhum dos dois stages toca o Chrome — o Schedule virou um PATCH de `send_at` com GET de verificação —, e tudo que o Stage 6 lê do Stage 5 é arquivo. A separação era resíduo do #1198 ("Schedule é sempre manual na Beehiiv"), já revogado pelo #6098.
+
+**O que continua separado, de propósito:** os números dos stages, os dois sentinels (`.step-5-done.json`/`.step-6-done.json`), os invariants por stage, `find-current-edition --stage 5|6`, a statusline e o Studio. A fusão é de **invocação**, nunca de estado.
+
+**O gate NÃO sai.** O gate de agendamento (§6c do playbook do Stage 6) é um dos dois gates de projeto do CLAUDE.md — critério 1, irreversível pra terceiros. Único ponto de parada desta skill.
+
+**Exceção nomeada ao princípio #5578.** Esta é a única transição `/diaria-N-*` que encadeia sozinha. O princípio segue valendo em todas as outras — inclusive na fronteira pós-gate 4 (#6171), que é quem garante que esta skill sempre começa em sessão nova.
+
+**Retomada:** se a sessão morrer entre o dispatch e o gate, ou o editor sair e voltar horas depois, `/diaria-6-agendamento {AAMMDD}` retoma direto no gate (o sentinel do Stage 5 já está no disco).
 
 ## Canais (#6610)
 
@@ -125,9 +139,9 @@ Após todos retornarem, **loop de review-test-email** roda em cima do draft da n
 
 **Gate único** (legacy `pre_gate = false`) ou **auto-approve** (quando `pre_gate = true` e aprovação ocorreu no Stage 4).
 
-### Etapa 5c — Resumo e encaminhamento ao Stage 6
+### Etapa 5c — Resumo e continuação para o Stage 6 (#7983, MESMA sessão)
 
-Stage 5 encerra com o dispatch completo (newsletter draft + todos os canais sociais agendados + Brevo/Kit diária como rascunho). Auto-reporter e relatorio por email foram movidos para o **Stage 6 (Agendamento)** — rodam apos o editor confirmar o Schedule da newsletter.
+Stage 5 encerra o dispatch (newsletter draft + todos os canais sociais agendados + Brevo/Kit diária como rascunho) e, na mesma sessão, segue direto para o **Stage 6 (Agendamento)** — leia `.claude/agents/orchestrator-stage-6.md` e execute-o em seguida. Auto-reporter e relatório por email rodam dentro do Stage 6, após o editor confirmar o Schedule da newsletter no gate de §6c.
 
 ## Output
 
@@ -136,12 +150,12 @@ Stage 5 encerra com o dispatch completo (newsletter draft + todos os canais soci
 - `_internal/brevo-diaria-published.json` — canal Brevo diária
 - `_internal/kit-diaria-published.json` — canal Kit diária
 - `_internal/.step-5-done.json` — sentinel de conclusao do Stage 5
-
-Auto-reporter + relatorio por email → Stage 6 (`/diaria-6-agendamento`).
+- `_internal/.step-6-done.json` — sentinel de conclusao do Stage 6 (rodado na mesma sessão, #7983)
+- `_internal/issues-draft.json`, `_internal/edition-report.html` — auto-reporter + relatório (Stage 6)
 
 ## Notas
 
-- **Newsletter fica como rascunho.** Test email enviado, loop review concluido. O Schedule (Beehiiv ou Kit) e feito no Stage 6 (`/diaria-6-agendamento`). LinkedIn, Facebook, Instagram, Threads e X saem agendados automaticamente (`--schedule`/`dueAt`); Brevo diária e Kit diária saem como rascunho (agendamento também é Stage 6).
+- **Newsletter fica como rascunho até o gate do Stage 6.** Test email enviado, loop review concluído no Stage 5. O Schedule (Beehiiv ou Kit) é feito no gate humano de §6c, **na mesma sessão** (#7983). LinkedIn, Facebook, Instagram, Threads e X saem agendados automaticamente (`--schedule`/`dueAt`) ainda no Stage 5; Brevo diária e Kit diária saem como rascunho (agendamento também acontece no gate do Stage 6).
 - **Resume-aware**: re-rodar pula o que ja existe.
-- **Proximo passo → /diaria-6-agendamento {AAMMDD}** — agendamento newsletter + Brevo/Kit diária + auto-reporter.
+- **Continua sozinho para o Stage 6** (#7983) — não imprima `/diaria-6-agendamento` como próximo passo do editor. Essa skill continua existindo só como porta de **retomada** (sessão morreu entre dispatch e gate, ou o editor voltou horas depois).
 - Para rodar como parte do pipeline completo, use `/diaria-edicao`.
