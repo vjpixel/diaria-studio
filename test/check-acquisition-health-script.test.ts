@@ -98,7 +98,7 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
     }
 
     assert.ok(logs.some((l) => l.includes("sparkloop-novo")));
-    assert.ok(logs.some((l) => l.includes("--dry-run: enviaria e-mail")));
+    assert.ok(logs.some((l) => l.includes("--dry-run: registraria alarme")));
 
     // --dry-run não avança o state — segue exatamente como foi seedado.
     const state = loadState(statePath);

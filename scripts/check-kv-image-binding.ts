@@ -47,8 +47,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import { logEvent } from "./lib/run-log.ts";
 import {
   runKvImageSmokeCheck,
@@ -171,16 +170,23 @@ async function main(): Promise<void> {
   );
 
   if (alarmNow) {
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     const { subject, body } = buildAlarmEmail(result);
     // Mesmo racional de home-meta-check.ts/hub-drift-check.ts: SEM try/catch
-    // em volta do envio — se `sendGmailMessage` falhar (credencial ausente,
-    // Gmail fora do ar), `main()` deve lançar e o `saveState` abaixo NUNCA
-    // roda. Assim a próxima execução ainda vê `lastStatus !== "binding-morto"`
-    // e tenta alarmar de novo, em vez de marcar a queda como "já avisado"
-    // com o editor nunca tendo recebido nada.
-    await sendGmailMessage(to, subject, body);
-    console.log(`${LOG_PREFIX} alarme enviado para ${to}`);
+    // em volta do envio — se a issue/e-mail falhar (credencial ausente, `gh`
+    // fora do ar), `main()` deve lançar e o `saveState` abaixo NUNCA roda.
+    // Assim a próxima execução ainda vê `lastStatus !== "binding-morto"` e
+    // tenta alarmar de novo, em vez de marcar a queda como "já avisado" sem
+    // o editor ter recebido nada (#7960: migrado de sendGmailMessage direto
+    // pro portão notifyEditor — severidade "acao", issue sem e-mail sob
+    // `email_policy: "urgent_only"`).
+    const result_ = await notifyEditor(
+      { check: "check-kv-image-binding", fingerprint: "kv-image-smoke", severity: "acao", subject, body },
+      { cwd: ROOT, emailTo: toOverride },
+    );
+    if (result_.issue?.action === "failed") {
+      throw new Error(`ensureAlarmIssue falhou: ${result_.issue.error}`);
+    }
+    console.log(`${LOG_PREFIX} alarme registrado (issue #${result_.issue?.issueNumber ?? "?"}).`);
   }
 
   saveState({ lastStatus: result.status, lastCheckedAt: new Date().toISOString() });

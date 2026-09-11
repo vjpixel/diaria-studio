@@ -36,8 +36,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import { latestSnapshotDate, isSubscribersSnapshotUsable } from "./lib/beehiiv-backup-snapshots.ts";
 import { snapshotDateToEpochSeconds } from "./lib/acquisition-health.ts";
 import {
@@ -100,15 +99,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   const { subject, body } = buildBeehiivBackupStalenessAlarmEmail(evaluation, MAX_AGE_DAYS);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
   if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+    console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
     return;
   }
-  await sendGmailMessage(to, subject, body);
+  // #7960: migrado de sendGmailMessage direto pro portão notifyEditor —
+  // severidade "acao" (staleness, sem envio/dinheiro em risco), issue sem
+  // e-mail sob `email_policy: "urgent_only"`.
+  const result = await notifyEditor(
+    { check: "beehiiv-backup-staleness-alarm", fingerprint: evaluation.verdict, severity: "acao", subject, body },
+    { cwd: ROOT, emailTo: toOverride },
+  );
+  if (result.issue?.action === "failed") {
+    throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+  }
   saveState(markBeehiivBackupStalenessAlarmed(evaluation), statePath);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (verdict=${evaluation.verdict}).`);
+  console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, verdict=${evaluation.verdict}).`);
 }
 
 if (isMainModule(import.meta.url)) {

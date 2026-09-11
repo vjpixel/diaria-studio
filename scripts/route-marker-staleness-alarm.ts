@@ -30,8 +30,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import {
   findRouteMarkerStaleness,
@@ -210,13 +209,20 @@ async function main(): Promise<void> {
     issuesByNumber,
     coverageInfo?.severe ? coverageInfo.message : null,
   );
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
   if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+    console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     return;
   }
-  await sendGmailMessage(to, subject, body);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (${findings.length} achado(s)).`);
+  // #7960: migrado de sendGmailMessage direto pro portão notifyEditor —
+  // severidade "acao", issue sem e-mail sob `email_policy: "urgent_only"`.
+  const result = await notifyEditor(
+    { check: "route-marker-staleness-alarm", fingerprint: "digest", severity: "acao", subject, body },
+    { cwd: ROOT, emailTo: toOverride },
+  );
+  if (result.issue?.action === "failed") {
+    throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+  }
+  console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, ${findings.length} achado(s)).`);
 }
 
 if (isMainModule(import.meta.url)) {

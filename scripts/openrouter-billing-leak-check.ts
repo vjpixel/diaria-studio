@@ -53,8 +53,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import {
   evaluateBillingLeak,
   shouldAlarmBillingLeak,
@@ -356,18 +355,26 @@ async function main(): Promise<void> {
   const newKeys = newBillingLeakKeys(evaluation, state);
   if (shouldAlarmBillingLeak(state, evaluation)) {
     const { subject, body } = buildBillingLeakAlarmEmail(evaluation, new Date(), newKeys);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria pra ${to}:\n--- ${subject} ---\n${body}`);
+      console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- ${subject} ---\n${body}`);
     } else {
-      // Sem try/catch — se o envio falhar, o cursor abaixo não avança e a
-      // próxima execução tenta de novo, em vez de marcar como "já avisado"
-      // sem o editor ter recebido nada (molde dos demais alarmes).
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (${newKeys.length} achado(s) novo(s)).`);
+      // Sem try/catch — se a issue/e-mail falhar, o cursor abaixo não
+      // avança e a próxima execução tenta de novo, em vez de marcar como
+      // "já avisado" sem o editor ter recebido nada (#7960: migrado pro
+      // portão notifyEditor — severidade "urgente" (vazamento de billing,
+      // dinheiro em risco): e-mail só na criação da issue, sob
+      // `email_policy: "urgent_only"`).
+      const result = await notifyEditor(
+        { check: "openrouter-billing-leak-check", fingerprint: newKeys.join(","), severity: "urgente", subject, body },
+        { cwd: ROOT, emailTo: toOverride },
+      );
+      if (result.issue?.action === "failed") {
+        throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+      }
+      console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, ${newKeys.length} achado(s) novo(s)).`);
     }
   } else if (evaluation.leaks.length > 0) {
-    console.log(`${LOG_PREFIX} vazamento(s) já alarmado(s) antes (nenhuma chave nova) — sem e-mail novo.`);
+    console.log(`${LOG_PREFIX} vazamento(s) já alarmado(s) antes (nenhuma chave nova) — sem novo alarme.`);
   }
 
   if (!isDryRun) saveState(advanceBillingLeakAlarmState(evaluation, new Date(), state));

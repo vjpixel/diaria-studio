@@ -95,8 +95,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import { renderEntityPage } from "./lib/shared/entity-page.ts";
 import { ENTITY_LOADERS } from "./build-entity-page.ts";
 import { loadPosts } from "./generate-hub-sources.ts";
@@ -281,16 +280,23 @@ async function main(): Promise<void> {
   let nextAlarmState = state.alarm;
   if (shouldAlarmEntityStaleness(state.alarm, overdue)) {
     const { subject, body } = buildEntityStalenessAlarmEmail(overdue, thresholdDays, now);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     // Sem try/catch de propósito (mesmo racional de hub-staleness-check.ts):
-    // se o envio falhar, o cursor não avança, e a próxima execução tenta
-    // alarmar de novo em vez de marcar como "já avisado" sem o editor ter
-    // recebido nada.
-    await sendGmailMessage(to, subject, body);
-    console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (${overdue.length} vencida(s)).`);
-    nextAlarmState = advanceEntityStalenessState(computeEntityStalenessFingerprint(overdue), now);
+    // se a issue/e-mail falhar, o cursor não avança, e a próxima execução
+    // tenta alarmar de novo em vez de marcar como "já avisado" sem o editor
+    // ter recebido nada (#7960: migrado pro portão notifyEditor —
+    // severidade "acao", issue sem e-mail sob `email_policy: "urgent_only"`).
+    const fingerprint = computeEntityStalenessFingerprint(overdue);
+    const result = await notifyEditor(
+      { check: "regenerate-entity-pages", fingerprint, severity: "acao", subject, body },
+      { cwd: ROOT, emailTo: toOverride },
+    );
+    if (result.issue?.action === "failed") {
+      throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+    }
+    console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, ${overdue.length} vencida(s)).`);
+    nextAlarmState = advanceEntityStalenessState(fingerprint, now);
   } else if (overdue.length > 0) {
-    console.log(`${LOG_PREFIX} ${overdue.length} vencida(s), mas o mesmo conjunto já foi alarmado antes — sem novo e-mail.`);
+    console.log(`${LOG_PREFIX} ${overdue.length} vencida(s), mas o mesmo conjunto já foi alarmado antes — sem novo alarme.`);
   } else {
     console.log(`${LOG_PREFIX} nenhuma entrada vencida — sem alarme.`);
     nextAlarmState = advanceEntityStalenessState(null, now);

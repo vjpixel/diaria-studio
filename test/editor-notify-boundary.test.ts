@@ -44,23 +44,24 @@ const NEVER_DEBT = new Set(["scripts/lib/gmail-send.ts", "scripts/lib/push-notif
 /** Dívida conhecida — ver docstring acima. Ordenada, 1 por linha, pra diff
  * pequeno a cada remoção. */
 const ALLOWLIST: string[] = [
+  // #7960: ads-daily-digest.ts (severidade "info" — precisa da integração
+  // com registerReport do Studio, item 4 da #7957, ainda não feita),
+  // ads-kill-switch-alarm.ts e ads-test-watch.ts (severidade "urgente", mas
+  // injetam `sendEmail`/`GmailSendResult` via DI própria com cobertura de
+  // teste extensa em cima desse shape exato — migrar exige trocar a forma
+  // do dep e reescrever os testes correspondentes, deixado pra uma unidade
+  // dedicada) ficam de fora por ora.
   "scripts/ads-daily-digest.ts",
   "scripts/ads-kill-switch-alarm.ts",
   "scripts/ads-spend-ingest-alarm.ts",
   "scripts/ads-test-watch.ts",
   "scripts/apoios-diff-alarm.ts",
-  "scripts/beehiiv-backup-staleness-alarm.ts",
-  "scripts/check-acquisition-health.ts",
-  "scripts/check-brevo-diaria-guardrail.ts",
-  "scripts/check-kv-image-binding.ts",
   "scripts/check-metrics-health.ts",
   "scripts/clarice-envio-alarm.ts",
   "scripts/clarice-envio-guard-alarm.ts",
   "scripts/clarice-guardrail-alarm.ts",
   "scripts/clarice-opens-catchup-alarm.ts",
   "scripts/clarice-postmaster-alarm.ts",
-  "scripts/claude-session-version-drift-alarm.ts",
-  "scripts/codex-credential-alarm.ts",
   "scripts/dmarc-drain.ts",
   "scripts/edicao-diaria-staleness-alarm.ts",
   "scripts/geo-citation-staleness-alarm.ts",
@@ -69,18 +70,18 @@ const ALLOWLIST: string[] = [
   "scripts/hub-staleness-check.ts",
   "scripts/kit-doi-orphan-guard.ts",
   "scripts/kit-subscriber-limit-alarm.ts",
+  // #7960: severidade "silencio" (decisão do editor, #7957) — mas este
+  // arquivo hoje bundla e-mail COM criação de issue via
+  // applyAlarmReconciliation/latch de retry; "silencio" exige remover a
+  // issue também, não só o e-mail — refactor maior que o de
+  // codex-credential-alarm.ts (que era só e-mail), deixado pra unidade
+  // dedicada.
   "scripts/kit-subscriber-state-transition-alarm.ts",
   "scripts/linkedin-weekly-staleness-alarm.ts",
   "scripts/meta-capi-staleness-alarm.ts",
-  "scripts/npm-version-drift-alarm.ts",
   "scripts/onboarding-continuity-alarm.ts",
   "scripts/onedrive-sync-alarm.ts",
-  "scripts/on-hold-vencimento-alarm.ts",
-  "scripts/openrouter-billing-leak-check.ts",
-  "scripts/plugin-review-drift-check.ts",
-  "scripts/regenerate-entity-pages.ts",
   "scripts/robots-txt-drift-check.ts",
-  "scripts/route-marker-staleness-alarm.ts",
   "scripts/studio-liveness-alarm.ts",
   "scripts/studio-ui/studio-reports.ts",
   "scripts/subscribe-redirect-drift-check.ts",

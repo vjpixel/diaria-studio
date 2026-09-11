@@ -76,8 +76,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { brevoGet } from "./lib/brevo-client.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import {
   evaluateBrevoDiariaRolloutGuardrail,
   describeBreaches,
@@ -235,9 +234,17 @@ async function alarmSuspendedCampaigns(
     "",
     `(alarme automático — checagem rodou em ${new Date().toISOString()})`,
   ].join("\n");
-  const to = resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  await sendGmailMessage(to, subject, body);
-  log(`campanha(s) suspensa(s) ${fresh.join(", ")} — e-mail de alarme enviado pra ${to}.`);
+  // #7960: migrado de sendGmailMessage direto pro portão notifyEditor —
+  // severidade "urgente" (Brevo suspensa, envio em risco): e-mail só na
+  // criação da issue, sob `email_policy: "urgent_only"`.
+  const result = await notifyEditor(
+    { check: "check-brevo-diaria-guardrail-suspended", fingerprint: fresh.join(","), severity: "urgente", subject, body },
+    { cwd: ROOT },
+  );
+  if (result.issue?.action === "failed") {
+    throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+  }
+  log(`campanha(s) suspensa(s) ${fresh.join(", ")} — alarme registrado (issue #${result.issue?.issueNumber ?? "?"}).`);
 }
 
 async function fetchCampaignStats(apiKey: string, id: number): Promise<CampaignGuardrailInput | null> {
@@ -439,14 +446,26 @@ async function main(): Promise<void> {
       `(alarme automático — avaliação rodou em ${new Date().toISOString()})`,
     ].join("\n");
     try {
-      const to = resolveEditorEmail(PLATFORM_CONFIG_PATH);
-      await sendGmailMessage(to, subject, body);
-      log(`rollout PAUSADO — e-mail de alarme enviado pra ${to}.`);
+      // #7960: migrado de sendGmailMessage direto pro portão notifyEditor —
+      // severidade "urgente" (rollout pausado, envio em risco): e-mail só na
+      // criação da issue, sob `email_policy: "urgent_only"`.
+      const result = await notifyEditor(
+        {
+          check: "check-brevo-diaria-guardrail-rollout-paused",
+          fingerprint: stateAfter.paused_at ?? "pausado",
+          severity: "urgente",
+          subject,
+          body,
+        },
+        { cwd: ROOT },
+      );
+      if (result.issue?.action === "failed") throw new Error(result.issue.error);
+      log(`rollout PAUSADO — alarme registrado (issue #${result.issue?.issueNumber ?? "?"}).`);
     } catch (e) {
-      // #738-adjacent: falha no ENVIO do alarme nunca deve mascarar que o
-      // estado já foi persistido pausado (o dado mais importante já está
-      // salvo) — best-effort, loga e segue.
-      log(`AVISO: rollout PAUSADO, mas falha ao enviar e-mail de alarme: ${(e as Error).message}`);
+      // #738-adjacent: falha no alarme nunca deve mascarar que o estado já
+      // foi persistido pausado (o dado mais importante já está salvo) —
+      // best-effort, loga e segue.
+      log(`AVISO: rollout PAUSADO, mas falha ao registrar alarme: ${(e as Error).message}`);
     }
   } else if (stateAfter.rollout_paused) {
     log(`rollout permanece pausado desde ${stateAfter.paused_at} — sem novo alarme (idempotente).`);

@@ -47,8 +47,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import {
   evaluateSessionDrift,
   isSessionDriftPending,
@@ -56,6 +55,7 @@ import {
   advanceClaudeSessionDriftAlarmState,
   emptyClaudeSessionDriftAlarmState,
   buildClaudeSessionDriftAlarmEmail,
+  claudeSessionDriftFindingKey,
   type ClaudeSessionProcess,
   type SessionDriftEvaluation,
   type ClaudeSessionDriftAlarmState,
@@ -191,19 +191,32 @@ async function main(): Promise<void> {
 
   if (shouldAlarmClaudeSessionDrift(state, evaluations)) {
     const { subject, body } = buildClaudeSessionDriftAlarmEmail(evaluations, thresholdHours, new Date());
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+      console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
-      // Sem try/catch — mesmo racional de node-modules-loop-alarm.ts: se o
-      // envio falhar, o cursor abaixo não avança, então a próxima execução
-      // tenta alarmar de novo em vez de marcar como "já avisado" sem o
-      // editor ter recebido nada.
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (${pending.length} sessão(ões) pendente(s)).`);
+      // Sem try/catch — mesmo racional de node-modules-loop-alarm.ts: se a
+      // issue/e-mail falhar, o cursor abaixo não avança, então a próxima
+      // execução tenta alarmar de novo em vez de marcar como "já avisado"
+      // sem o editor ter recebido nada (#7960: migrado pro portão
+      // notifyEditor — severidade "acao", issue sem e-mail sob
+      // `email_policy: "urgent_only"`).
+      const result = await notifyEditor(
+        {
+          check: "claude-session-version-drift-alarm",
+          fingerprint: claudeSessionDriftFindingKey(evaluations),
+          severity: "acao",
+          subject,
+          body,
+        },
+        { cwd: ROOT, emailTo: toOverride },
+      );
+      if (result.issue?.action === "failed") {
+        throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+      }
+      console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, ${pending.length} sessão(ões) pendente(s)).`);
     }
   } else {
-    console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem sessão pendente, ou o mesmo conjunto já foi alarmado antes).`);
+    console.log(`${LOG_PREFIX} nenhum alarme necessário (sem sessão pendente, ou o mesmo conjunto já foi alarmado antes).`);
   }
 
   if (isDryRun) {
