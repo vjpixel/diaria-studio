@@ -386,7 +386,12 @@ export function checkpointPathFor(outPath: string): string {
   return outPath.replace(/\.json$/i, "") + ".checkpoint.jsonl";
 }
 
-/** Pure: chave de identidade de uma query no checkpoint. */
+/**
+ * Pure: chave de identidade de uma query no checkpoint. Separador NUL
+ * (`\0`) -- nunca aparece em source name/query legitimos -- evita colisao
+ * entre pares (source, query) distintos que, concatenados com um
+ * separador comum (espaco, ex.), poderiam produzir a mesma string.
+ */
 export function checkpointKey(source: string, queryUsed: string): string {
   return `${source} ${queryUsed}`;
 }
