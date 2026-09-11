@@ -15,13 +15,15 @@
  *   npx tsx scripts/route-marker-staleness-alarm.ts --dry-run      # avalia + imprime, NÃO envia e-mail
  *   npx tsx scripts/route-marker-staleness-alarm.ts --to email@x   # override do destinatário
  *
- * Sem estado/idempotência persistente — mesmo racional de
+ * Sem estado/idempotência LOCAL — mesmo racional de
  * `on-hold-vencimento-alarm.ts`: um achado pendente continua pendente até
- * o editor agir, e suprimir o reenvio reintroduziria "só sai da geladeira
- * se alguém lembrar do 1º e-mail".
+ * o editor agir. **#7960:** a dedup passou a viver no GitHub via
+ * `notifyEditor`/`ensureAlarmIssue` — o fingerprint é derivado do CONJUNTO
+ * de achados (issue+categoria), então o mesmo conjunto reusa a issue
+ * aberta e um conjunto novo abre/atualiza.
  *
  * Env: `gh` autenticado + `data/.credentials.json` com `gmail.send` (só
- * necessário pra ENVIAR).
+ * necessário pra ENVIAR, sob `email_policy: "legacy"`).
  *
  * @see scripts/lib/route-marker-staleness.ts (lógica pura)
  * @see scripts/on-hold-vencimento-alarm.ts (mesmo padrão de CLI/e-mail)
@@ -30,8 +32,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import {
   findRouteMarkerStaleness,
@@ -44,7 +45,6 @@ import {
 } from "./lib/route-marker-staleness.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[route-marker-staleness-alarm]";
 
 interface GhIssueListEntry {
@@ -210,13 +210,29 @@ async function main(): Promise<void> {
     issuesByNumber,
     coverageInfo?.severe ? coverageInfo.message : null,
   );
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
   if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+    console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     return;
   }
-  await sendGmailMessage(to, subject, body);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (${findings.length} achado(s)).`);
+  // #7960: migrado de sendGmailMessage direto pro portão notifyEditor —
+  // severidade "acao", issue sem e-mail sob `email_policy: "urgent_only"`.
+  // Fingerprint DERIVADO do conjunto de achados (não uma string fixa) —
+  // este alarme documentava resend-toda-semana como intencional (sem
+  // idempotência local); um fingerprint estático faria `ensureAlarmIssue`
+  // reusar a MESMA issue pra sempre sem nunca atualizar o corpo quando o
+  // conjunto de marcadores stale mudar (achado do self-review do #7965).
+  // Cobertura degradada com 0 achados (mustReport via coverageInfo.severe)
+  // ainda precisa de um fingerprint não-vazio — cai no literal abaixo.
+  const fingerprint =
+    findings.length > 0 ? findings.map((f) => `${f.number}:${f.category}`).sort().join(",") : "cobertura-degradada";
+  const result = await notifyEditor(
+    { check: "route-marker-staleness-alarm", fingerprint, severity: "acao", subject, body },
+    { cwd: ROOT, emailTo: toOverride },
+  );
+  if (result.issue?.action === "failed") {
+    throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+  }
+  console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, ${findings.length} achado(s)).`);
 }
 
 if (isMainModule(import.meta.url)) {

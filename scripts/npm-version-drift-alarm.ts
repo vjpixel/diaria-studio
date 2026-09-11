@@ -53,8 +53,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import {
   evaluateNpmVersionDrift,
   advanceNpmVersionDriftState,
@@ -62,13 +61,13 @@ import {
   markNpmVersionDriftAlarmed,
   emptyNpmVersionDriftAlarmState,
   buildNpmVersionDriftAlarmEmail,
+  npmVersionDriftFindingKey,
   type NpmVersionCheck,
   type NpmVersionDriftAlarmState,
 } from "./lib/npm-version-drift-alarm.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "npm-version-drift-alarm", "state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[npm-version-drift-alarm]";
 const PACKAGE_NAME = "@anthropic-ai/claude-code";
 
@@ -172,22 +171,28 @@ async function main(): Promise<void> {
 
   if (willAlarm) {
     const { subject, body } = buildNpmVersionDriftAlarmEmail(evaluation, thresholdDays, now);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+      console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
-      // Sem try/catch — mesmo racional dos alarmes irmãos: se o envio
-      // falhar, `sendGmailMessage` lança, `main()` propaga e `saveState`
-      // abaixo nunca roda — o cursor `lastAlarmedFingerprint` fica intacto
-      // pra próxima tentativa em vez de marcar "já avisado" sem o editor
-      // ter de fato recebido o e-mail. Só depois de um `await` bem-sucedido
-      // é que marcamos como alarmado.
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+      // Sem try/catch — mesmo racional dos alarmes irmãos: se a issue/e-mail
+      // falhar, propagamos e `saveState` abaixo nunca roda — o cursor
+      // `lastAlarmedFingerprint` fica intacto pra próxima tentativa em vez
+      // de marcar "já avisado" sem o editor ter recebido nada. Só depois de
+      // sucesso marcamos como alarmado (#7960: migrado pro portão
+      // notifyEditor — severidade "acao", issue sem e-mail sob
+      // `email_policy: "urgent_only"`).
+      const notifyResult = await notifyEditor(
+        { check: "npm-version-drift-alarm", fingerprint: npmVersionDriftFindingKey(evaluation), severity: "acao", subject, body },
+        { cwd: ROOT, emailTo: toOverride },
+      );
+      if (notifyResult.issue?.action === "failed") {
+        throw new Error(`ensureAlarmIssue falhou: ${notifyResult.issue.error}`);
+      }
+      console.log(`${LOG_PREFIX} alarme registrado (issue #${notifyResult.issue?.issueNumber ?? "?"}).`);
       finalState = markNpmVersionDriftAlarmed(nextState, evaluation);
     }
   } else {
-    console.log(`${LOG_PREFIX} nenhum e-mail necessário (em sincronia, defasagem ainda fresca, ou par já alarmado antes).`);
+    console.log(`${LOG_PREFIX} nenhum alarme necessário (em sincronia, defasagem ainda fresca, ou par já alarmado antes).`);
   }
 
   if (isDryRun) {

@@ -10,9 +10,14 @@
  * label on-hold** — só avisa; decidir se a issue volta pra fila é sempre
  * ação do editor.
  *
- * Sem estado/idempotência persistente — o alarme re-envia o digest completo
- * toda vez que a task roda e há achados pendentes (ver docstring do módulo
- * puro pro porquê disso ser o comportamento CORRETO aqui, não um bug).
+ * Sem estado/idempotência LOCAL — o alarme reavalia o digest completo toda
+ * vez que a task roda (ver docstring do módulo puro pro porquê disso ser o
+ * comportamento CORRETO aqui, não um bug). **#7960:** a dedup passou a
+ * viver no GitHub via `notifyEditor`/`ensureAlarmIssue` — o fingerprint é
+ * derivado do CONJUNTO de achados (não um digest genérico), então o mesmo
+ * conjunto reusa a issue aberta (sem e-mail repetido) e um conjunto novo
+ * abre/atualiza. Sob `email_policy: "urgent_only"`, isso é intencional: só
+ * a criação/mudança do achado emite sinal, não toda execução.
  *
  * Uso:
  *   npx tsx scripts/on-hold-vencimento-alarm.ts               # avalia + alarma se necessário
@@ -28,8 +33,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import {
   evaluateOnHoldIssues,
@@ -39,7 +43,6 @@ import {
 } from "./lib/on-hold-vencimento-alarm.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[on-hold-vencimento-alarm]";
 
 interface GhIssueListEntry {
@@ -89,13 +92,30 @@ async function main(): Promise<void> {
   }
 
   const { subject, body } = buildOnHoldVencimentoAlarmEmail(findings);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
   if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+    console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     return;
   }
-  await sendGmailMessage(to, subject, body);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (${findings.length} achado(s)).`);
+  // #7960: migrado de sendGmailMessage direto pro portão notifyEditor —
+  // severidade "acao" (drift/vencimento, sem envio/dinheiro em risco),
+  // issue sem e-mail sob `email_policy: "urgent_only"`. Fingerprint
+  // DERIVADO do conjunto de achados (não uma string fixa) — este alarme
+  // documentava resend-toda-semana como comportamento intencional (sem
+  // idempotência local); um fingerprint estático faria `ensureAlarmIssue`
+  // reusar a MESMA issue pra sempre sem nunca atualizar o corpo quando o
+  // conjunto de on-hold vencidas mudar (achado do self-review do #7965).
+  const fingerprint = findings
+    .map((f) => `${f.number}:${f.reason}:${f.vencimento ?? ""}`)
+    .sort()
+    .join(",");
+  const result = await notifyEditor(
+    { check: "on-hold-vencimento-alarm", fingerprint, severity: "acao", subject, body },
+    { cwd: ROOT, emailTo: toOverride },
+  );
+  if (result.issue?.action === "failed") {
+    throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+  }
+  console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, ${findings.length} achado(s)).`);
 }
 
 if (isMainModule(import.meta.url)) {

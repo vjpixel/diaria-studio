@@ -50,11 +50,13 @@
  *   npx tsx scripts/codex-credential-alarm.ts --dry-run    # avalia + imprime, não alarma
  *   npx tsx scripts/codex-credential-alarm.ts --json       # saída programática
  *   npx tsx scripts/codex-credential-alarm.ts --auth-json /caminho/auth.json
- *   npx tsx scripts/codex-credential-alarm.ts --to editor@exemplo   # override do destinatário
  *
- * Exit codes: 0 sempre que a avaliação rodou e, se havia alarme, ele saiu. 1 em
- * uso inválido de CLI, em arquivo ilegível, e também quando o ENVIO falha — nem
- * falha de leitura nem falha de entrega pode virar "está tudo bem" em silêncio.
+ * #7960: severidade "silencio" (decisão do editor, #7957) — nunca envia
+ * e-mail nem abre issue, só registra em `data/run-log.jsonl` via
+ * `notifyEditor`. `--to` foi removido (nada mais é destinatário de nada).
+ *
+ * Exit codes: 0 sempre que a avaliação rodou e, se havia alarme, ele foi
+ * registrado. 1 em uso inválido de CLI ou em arquivo ilegível.
  */
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -215,46 +217,40 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  // O envio reusa a mesma infraestrutura dos demais alarmes do projeto.
-  // Import dinâmico para que --dry-run e --json não exijam credencial de
-  // e-mail: medir nunca deve depender de poder enviar.
-  const { sendGmailMessage } = await import("./lib/gmail-send.ts");
-  const { resolveEditorEmail } = await import("./lib/inbox-stats.ts");
-  const to = getArg(argv, "to") || resolveEditorEmail(join(REPO_ROOT, "platform.config.json"));
+  // #7960: migrado de sendGmailMessage direto pro portão notifyEditor —
+  // severidade "silencio" (decisão explícita do editor, #7957: contas Codex
+  // esgotadas não geram e-mail nem issue, só log/relatório no Studio).
+  // `notifyEditor` nunca lança pra "silencio" (só grava em run-log.jsonl),
+  // então não há mais um caminho de "falha no envio" a propagar aqui.
+  const { notifyEditor } = await import("./lib/editor-notify.ts");
   const assunto = verdict.poolVazio
     ? "[diar.ia.br] pool de contas Codex VAZIO — nada mais está sendo vigiado"
     : verdict.allExhausted
       ? "[diar.ia.br] TODAS as contas Codex esgotadas — delegação parada"
       : `[diar.ia.br] resta ${verdict.vivas} conta Codex viva de ${verdict.verdicts.length}`;
 
-  try {
-    await sendGmailMessage(to, assunto, render(verdict, nowIso));
-  } catch (err) {
-    const motivo = err instanceof Error ? (err.stack ?? err.message) : String(err);
-    if (asJson) emitJson(false, motivo);
-    else process.stderr.write(`\n[codex-credential-alarm] FALHA ao enviar para ${to}: ${motivo}\n`);
-    // Estado NÃO é persistido: a próxima execução tenta de novo, em vez de
-    // tratar um envio que estourou como "já avisado".
-    return 1;
-  }
+  await notifyEditor(
+    { check: "codex-credential-alarm", fingerprint, severity: "silencio", subject: assunto, body: render(verdict, nowIso) },
+    { rootDir: REPO_ROOT },
+  );
 
-  // Daqui em diante o editor JÁ foi avisado. Uma falha ao gravar o estado
-  // custa um alarme duplicado na próxima rodada — nunca um alarme perdido —,
-  // então ela não pode derrubar o exit code e fazer parecer que o aviso não
-  // saiu. Este é o único ponto do script onde falhar em silêncio seria pior
-  // do que a falha em si.
+  // Daqui em diante o achado JÁ foi registrado (run-log). Uma falha ao
+  // gravar o estado custa um registro duplicado na próxima rodada — nunca
+  // um registro perdido —, então ela não pode derrubar o exit code e fazer
+  // parecer que o registro não saiu. Este é o único ponto do script onde
+  // falhar em silêncio seria pior do que a falha em si.
   try {
     writeState(STATE_PATH, { last_fingerprint: fingerprint, last_alarmed_at: nowIso });
   } catch (err) {
     const motivo = err instanceof Error ? (err.stack ?? err.message) : String(err);
     process.stderr.write(
-      `[codex-credential-alarm] alarme ENVIADO, mas o estado não foi gravado (${motivo}). ` +
-        `A próxima execução vai repetir o alarme.\n`,
+      `[codex-credential-alarm] achado REGISTRADO, mas o estado não foi gravado (${motivo}). ` +
+        `A próxima execução vai repetir o registro.\n`,
     );
   }
 
   if (asJson) emitJson(true, null);
-  else process.stdout.write(`\n[codex-credential-alarm] alarme enviado para ${to}.\n`);
+  else process.stdout.write(`\n[codex-credential-alarm] achado registrado (severidade "silencio" — run-log.jsonl).\n`);
 
   return 0;
 }

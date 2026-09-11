@@ -62,8 +62,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import { listSnapshotDates, readSnapshotSubscribers, isSubscribersSnapshotUsable } from "./lib/beehiiv-backup-snapshots.ts";
 import {
   computeChannelStats,
@@ -79,7 +78,6 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data/beehiiv-backup");
 const DEFAULT_STATE_PATH = resolve(ROOT, "data/acquisition-health/state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[check-acquisition-health]";
 
 export function loadState(statePath: string): AcquisitionHealthState {
@@ -203,15 +201,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   if (shouldSend) {
     const { subject, body } = buildAcquisitionHealthEmail(findings, currentDate, suppressedFindings);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+      console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+      // #7960: migrado de sendGmailMessage direto pro portão notifyEditor —
+      // severidade "acao" (health check, sem envio/dinheiro em risco), issue
+      // sem e-mail sob `email_policy: "urgent_only"`.
+      const result = await notifyEditor(
+        { check: "check-acquisition-health", fingerprint: fingerprint as string, severity: "acao", subject, body },
+        { cwd: ROOT, emailTo: toOverride },
+      );
+      if (result.issue?.action === "failed") {
+        throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+      }
+      console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}).`);
     }
   } else if (findings.length > 0) {
-    console.log(`${LOG_PREFIX} findings inalterados desde o último alarme (mesmo fingerprint) — sem novo e-mail.`);
+    console.log(`${LOG_PREFIX} findings inalterados desde o último alarme (mesmo fingerprint) — sem novo alarme.`);
   } else {
     console.log(`${LOG_PREFIX} nenhum achado nesta rodada.`);
   }

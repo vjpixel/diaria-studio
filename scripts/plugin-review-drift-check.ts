@@ -59,8 +59,7 @@ import { homedir } from "node:os";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import {
   PLUGIN_REVIEW_AGENTS,
   evaluateAllAgentsDrift,
@@ -69,12 +68,12 @@ import {
   advancePluginReviewDriftState,
   buildPluginReviewDriftAlarmEmail,
   emptyPluginReviewDriftState,
+  computePluginReviewDriftFingerprint,
   type PluginReviewDriftState,
 } from "./lib/plugin-review-drift-check.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "plugin-review-drift-check", "state.json");
-const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[plugin-review-drift-check]";
 
 /** Path do diretório de agentes do plugin — per-máquina, fora do repo. Não
@@ -151,19 +150,32 @@ async function main(): Promise<void> {
 
   if (shouldAlarmPluginReviewDrift(state, results)) {
     const { subject, body } = buildPluginReviewDriftAlarmEmail(results);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+      console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
       // Mesmo racional de worker-drift-check.ts/hub-drift-check.ts: sem
-      // try/catch — se o envio falhar, o cursor abaixo não avança (o save
-      // fica condicionado a isDryRun logo adiante), então a próxima
-      // execução tenta alarmar de novo.
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+      // try/catch — se a issue/e-mail falhar, o cursor abaixo não avança (o
+      // save fica condicionado a isDryRun logo adiante), então a próxima
+      // execução tenta alarmar de novo (#7960: migrado pro portão
+      // notifyEditor — severidade "acao", issue sem e-mail sob
+      // `email_policy: "urgent_only"`).
+      const result = await notifyEditor(
+        {
+          check: "plugin-review-drift-check",
+          fingerprint: computePluginReviewDriftFingerprint(results),
+          severity: "acao",
+          subject,
+          body,
+        },
+        { cwd: ROOT, emailTo: toOverride },
+      );
+      if (result.issue?.action === "failed") {
+        throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+      }
+      console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}).`);
     }
   } else {
-    console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem drift pendente, ou o mesmo drift já foi alarmado antes).`);
+    console.log(`${LOG_PREFIX} nenhum alarme necessário (sem drift pendente, ou o mesmo drift já foi alarmado antes).`);
   }
 
   if (isDryRun) {
