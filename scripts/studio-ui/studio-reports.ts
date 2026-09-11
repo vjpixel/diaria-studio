@@ -88,7 +88,13 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 // `sessionId` distingue (`envio-{AAMMDD}...` vs `envio-{AAMMDD}-guard...`).
 // #5236: "cac" — relatório de custo por leitor por canal (`scripts/cac-report.ts`),
 // `sessionId` = data do snapshot Beehiiv usado (`YYYY-MM-DD`).
-export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac";
+// #7978: "calibration" — relatório de evidência de 1 PR de calibração de
+// score/seleção/prompt (portão de promoção, Camada 5 da #7972).
+// `sessionId` = número da PR (ex: "8010"). `scripts/log-calibration-pr.ts`
+// é o único chamador — nunca disparado automaticamente por overnight/develop
+// (a REGRA DE OURO exige que uma calibração real sempre seja aberta e
+// registrada por um fluxo que passa pelo gate de sign-off, nunca autônomo).
+export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac" | "calibration";
 
 const VALID_KINDS: ReportKind[] = [
   "edicao",
@@ -98,6 +104,7 @@ const VALID_KINDS: ReportKind[] = [
   "clarice-novos",
   "clarice-envio",
   "cac",
+  "calibration",
 ];
 
 export function isReportKind(value: string): value is ReportKind {

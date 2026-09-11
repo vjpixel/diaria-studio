@@ -1,0 +1,49 @@
+name: Editorial sign-off required (#7978)
+
+# Portão de promoção/sign-off — Camada 5 da #7972 (Sistema de
+# autocalibração editorial). Reporta sucesso/falha em TODO PR, mas passa
+# direto (sucesso) pra qualquer PR que não toque a superfície de
+# calibração (scripts/lib/calibration-file-allowlist.ts) — a maioria
+# esmagadora dos PRs deste repo nunca vê este check bloquear nada.
+#
+# ⚠️ NASCE PENDENTE de virar required check (#7978, decisão explícita do
+# /goal que implementou isto — nunca alterar proteção de branch
+# autonomamente). Rodar e reportar aqui é só metade do mecanismo: pra
+# realmente bloquear merge de PR de calibração sem sign-off, o editor
+# precisa tornar este check OBRIGATÓRIO manualmente:
+#   Settings → Branches → master → Require status checks to pass →
+#   adicionar "Check sign-off" (o nome do job abaixo).
+# Até esse passo manual, este workflow é só um sinal visível na PR
+# (vermelho/verde), não um bloqueio mecânico de merge.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+concurrency:
+  group: editorial-signoff-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-signoff:
+    name: Check sign-off
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run check-editorial-signoff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npx tsx scripts/check-editorial-signoff.ts
