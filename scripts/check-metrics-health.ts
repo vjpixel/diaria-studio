@@ -33,7 +33,7 @@
  *     cálculo cross-plataforma de `leitor-v1` (#7515/#7516, 10/09/2026)
  *     vêm do store `diaria-subscribers.db` (#6464) — leitura do store JÁ
  *     INGERIDO (por `diaria-subscribers-ingest-kit.ts`/`-beehiiv.ts`/
- *     `brevo-subscribers-ingest.ts`, rodados fora deste alarme), NUNCA
+ *     `-brevo.ts`, rodados fora deste alarme), NUNCA
  *     chamada de API Kit/Brevo/Beehiiv ao vivo daqui — mesmo guard de
  *     publicação, só que via ingestão prévia em vez de snapshot semanal.
  *     Sem histórico diário (o store guarda estado atual, não snapshots por
@@ -79,8 +79,9 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
-import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getKitActiveSummary } from "./lib/diaria-subscribers-db.ts";
-import { summarizeStoreLeitoresCanonicalDedup, type StoreLeitorSummary } from "./lib/leitor-store.ts";
+import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getKitActiveSummary, getSubscriptionAsOf } from "./lib/diaria-subscribers-db.ts";
+import { summarizeStoreLeitoresCanonicalDedup, LEITOR_DIARIA_PLATFORMS, type StoreLeitorSummary } from "./lib/leitor-store.ts";
+import { CROSS_PLATFORM_FLOOR_NOTE } from "./lib/diaria-subscribers-identity-resolve.ts";
 import { buildAcquisitionDepsFromStore, brtDayKey } from "./lib/metrics/acquisition-store-deps.ts";
 import { hasCaptureOnDay, type CapturaLogEntry } from "./lib/metrics/captura-log.ts";
 import {
@@ -212,20 +213,90 @@ function countActive(subs: readonly { status: string }[]): number {
  *  `leitor-store.ts` ("número é PISO, nunca exato" por causa de identidade
  *  não-casada entre plataformas). Quando `subscription_data_coverage_low`
  *  (#7198), o motivo ganha um aviso explícito — o valor não deve ser lido
- *  como fato sem essa ressalva. @pure */
+ *  como fato sem essa ressalva.
+ *
+ *  `motivo` base usa `CROSS_PLATFORM_FLOOR_NOTE` importada, NUNCA
+ *  `summary.note` (achado do fleet review pré-merge, type-design-analyzer)
+ *  — o `Pick` original aceitava `note: string` como campo solto do
+ *  `summary`, então nada impedia um caller (teste incluso) de passar uma
+ *  nota vazia/errada e violar em silêncio o invariante "motivo nunca vazio
+ *  quando qualidade !== 'exato'" (`registry.ts`). Importar a constante
+ *  direto (mesmo padrão já usado em `ativacao-coorte.ts`) torna esse erro
+ *  impossível de expressar, não só improvável na prática.
+ *
+ *  `asOf` é parâmetro SEPARADO de `summary` — NUNCA `summary.generated_at`
+ *  (achado do fleet review pré-merge, comment-analyzer, confiança alta):
+ *  `generated_at` é o instante em que a QUERY rodou (`new Date().toISOString()`
+ *  dentro de `summarizeStoreLeitores`), não quando o DADO foi coletado —
+ *  `MetricResult.frescor` é documentado em `registry.ts` como "de quando o
+ *  insumo foi coletado". Usar `generated_at` faria `frescor` ser sempre
+ *  "agora", neutralizando pra sempre o alarme de frescor desta métrica
+ *  (`idadeDias` nunca envelhece). `asOf` vem de `getSubscriptionAsOf`
+ *  (MAX(updated_at) real do store, #7916/#7515) — `null` quando não há
+ *  nenhuma linha de `subscription` pras plataformas cobertas, e nesse caso
+ *  `frescor: null` propaga o "sem insumo" honestamente. */
 export function buildCrossPlatformLeitorResult(
-  summary: Pick<StoreLeitorSummary, "leitores_v1" | "generated_at" | "subscription_data_coverage_low" | "note">,
+  summary: Pick<StoreLeitorSummary, "leitores_v1" | "subscription_data_coverage_low">,
+  asOf: string | null,
   janela: Janela,
 ): MetricResult {
   return {
     valor: summary.leitores_v1,
     janela,
-    frescor: summary.generated_at,
+    frescor: asOf,
     qualidade: "piso",
     motivo: summary.subscription_data_coverage_low
-      ? `${summary.note} — ATENÇÃO: cobertura de "subscription" baixa no store (#7198), número pode não refletir a base real`
-      : summary.note,
+      ? `${CROSS_PLATFORM_FLOOR_NOTE} — ATENÇÃO: cobertura de "subscription" baixa no store (#7198), número pode não refletir a base real`
+      : CROSS_PLATFORM_FLOOR_NOTE,
   };
+}
+
+export interface CrossPlatformDeps {
+  liveKitActive: number | null;
+  crossPlatformLeitor: StoreLeitorSummary | null;
+  /** `getSubscriptionAsOf` sobre `LEITOR_DIARIA_PLATFORMS` — ver docstring
+   *  de `buildCrossPlatformLeitorResult` pro porquê de ser um campo
+   *  separado de `crossPlatformLeitor.generated_at`. */
+  crossPlatformAsOf: string | null;
+}
+
+/** Abre o store (#6464) e lê `kitActive` + `leitor-v1` cross-plataforma —
+ *  SEMPRE fail-soft: qualquer erro, seja na ABERTURA ou na LEITURA
+ *  (`getKitActiveSummary`/`summarizeStoreLeitoresCanonicalDedup`), degrada
+ *  pra `{liveKitActive: null, crossPlatformLeitor: null}` em vez de
+ *  propagar — nunca derruba o alarme inteiro por causa desta parte
+ *  (#7515/#7516, achado do fleet review pré-merge, silent-failure-hunter:
+ *  antes desta extração só a abertura estava protegida, e uma exceção na
+ *  LEITURA — código novo, mais arriscado — subia até o `main().catch` do
+ *  topo do arquivo, contradizendo a promessa "UM alarme, N sinais... nunca
+ *  falha total por 1 sinal" do docstring do módulo).
+ *
+ *  `open`/`readDeps` injetáveis — é o que torna esta função testável sem
+ *  SQLite real (#633): um teste pode injetar um `open` ou `readDeps` que
+ *  lança, e confirmar (a) o resultado degrada pra `{null, null}` e (b)
+ *  `close()` do objeto retornado por `open` foi chamado mesmo assim. */
+export function resolveCrossPlatformDeps(
+  dbPath: string,
+  open: (path: string) => { close(): void } = openDiariaSubscribersDb,
+  readDeps: (db: ReturnType<typeof openDiariaSubscribersDb>) => CrossPlatformDeps = (db) => ({
+    liveKitActive: getKitActiveSummary(db).count,
+    crossPlatformLeitor: summarizeStoreLeitoresCanonicalDedup(db),
+    crossPlatformAsOf: getSubscriptionAsOf(db, LEITOR_DIARIA_PLATFORMS),
+  }),
+): CrossPlatformDeps {
+  let db: { close(): void } | null = null;
+  try {
+    db = open(dbPath);
+    return readDeps(db as ReturnType<typeof openDiariaSubscribersDb>);
+  } catch (err) {
+    console.error(
+      `${LOG_PREFIX} store do #6464 indisponível/falhou (${dbPath}) pra base-ativa/leitor-v1 cross-plataforma: ` +
+        `${(err as Error).message} — caindo pro caminho só-Beehiiv (kitActive=null, leitor-v1 sem Kit/Brevo).`,
+    );
+    return { liveKitActive: null, crossPlatformLeitor: null, crossPlatformAsOf: null };
+  } finally {
+    db?.close();
+  }
 }
 
 interface MetaAtingidaState {
@@ -448,18 +519,7 @@ async function main(): Promise<void> {
   // execução, então não estreita a cobertura, só a alarga).
   const diasComSnapshot = dias.filter((d) => nearestSnapshotOnOrBefore(snapshotDates, d) !== null);
 
-  let subscribersDb: ReturnType<typeof openDiariaSubscribersDb> | null = null;
-  try {
-    subscribersDb = openDiariaSubscribersDb(dbPath);
-  } catch (err) {
-    console.error(
-      `${LOG_PREFIX} store do #6464 indisponível (${dbPath}) pra base-ativa/leitor-v1 cross-plataforma: ` +
-        `${(err as Error).message} — caindo pro caminho só-Beehiiv (kitActive=null, leitor-v1 sem Kit/Brevo).`,
-    );
-  }
-  const liveKitActive = subscribersDb ? getKitActiveSummary(subscribersDb).count : null;
-  const crossPlatformLeitor = subscribersDb ? summarizeStoreLeitoresCanonicalDedup(subscribersDb) : null;
-  if (subscribersDb) subscribersDb.close();
+  const { liveKitActive, crossPlatformLeitor, crossPlatformAsOf } = resolveCrossPlatformDeps(dbPath);
 
   if (snapshotDates.length > 0) {
     const baseAtivaDef = getMetric("base-ativa") as MetricDef<BaseAtivaDeps> | undefined;
@@ -497,7 +557,7 @@ async function main(): Promise<void> {
           // #7516: cross-plataforma (Kit+Brevo+Beehiiv). Valor do store —
           // mesmo pra todo dia desta rodada, ver limitação documentada
           // acima (store não guarda histórico diário).
-          resultado = buildCrossPlatformLeitorResult(crossPlatformLeitor, janela);
+          resultado = buildCrossPlatformLeitorResult(crossPlatformLeitor, crossPlatformAsOf, janela);
         } else {
           const snapshotDate = nearestSnapshotOnOrBefore(snapshotDates, dia);
           resultado = snapshotDate
@@ -529,7 +589,7 @@ async function main(): Promise<void> {
     if (leitorV1Def) {
       const medicoes: MedicaoDia[] = dias.map((dia) => ({
         chave: dia,
-        resultado: buildCrossPlatformLeitorResult(crossPlatformLeitor, {
+        resultado: buildCrossPlatformLeitorResult(crossPlatformLeitor, crossPlatformAsOf, {
           de: dia,
           ate: dia,
           granularidade: "dia",

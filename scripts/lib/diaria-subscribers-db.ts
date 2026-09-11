@@ -1172,6 +1172,28 @@ export function getKitActiveSummary(db: DatabaseSync): KitActiveSummary {
   return { count: row.n, asOf: row.asOf ?? null };
 }
 
+/**
+ * `MAX(updated_at)` de `subscription` entre as `platforms` dadas — sinal de
+ * frescor honesto pra qualquer leitura CROSS-PLATAFORMA sobre o store
+ * (#7515/#7516, achado do fleet review pré-merge de #7967: sem isto,
+ * `buildCrossPlatformLeitorResult` usava `generated_at` — o instante em que
+ * a QUERY rodou, não em que o DADO foi coletado — como `frescor`, o que
+ * neutraliza pra sempre o alarme de frescor dessa métrica: `idadeDias`
+ * nunca envelhece porque `frescor` é sempre "agora"). Mesmo padrão de
+ * `getKitActiveSummary.asOf` (#7916), generalizado pra N plataformas — não
+ * filtra por `status`, ao contrário de `getKitActiveSummary` (aqui o
+ * interesse é "quando a ÚLTIMA linha de QUALQUER status foi tocada", não só
+ * as ativas). `null` quando nenhuma linha existe pras plataformas dadas.
+ */
+export function getSubscriptionAsOf(db: DatabaseSync, platforms: readonly Platform[]): string | null {
+  if (platforms.length === 0) return null;
+  const placeholders = platforms.map(() => "?").join(", ");
+  const row = db
+    .prepare(`SELECT MAX(updated_at) AS asOf FROM subscription WHERE platform IN (${placeholders})`)
+    .get(...platforms) as { asOf: string | null };
+  return row.asOf ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Leitura — helpers pra fatias 6 (painel Studio, #6590) e 7 (leitor-v1
 // cross-plataforma, #6591). Vivem aqui (não em cada consumidor) pela mesma
