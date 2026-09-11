@@ -130,8 +130,13 @@ describe("buildPowerReport (#7976)", () => {
     try {
       writeEdition(dir, "260811", [{ url: "https://x.com/a", primary_source: true, keep: true }]);
       const report = buildPowerReport(dir);
+      // `CandidateFeature` (#7990) já exclui "negative_impact" em COMPILAÇÃO
+      // — `f.feature: string` widening explícito preserva este teste como
+      // guard RUNTIME (defesa em profundidade, caso o tipo e o runtime
+      // desalinhem de novo no futuro) sem comparação que o tsc rejeitaria
+      // por união sem overlap (TS2367).
       assert.equal(
-        report.features.some((f) => f.feature === "negative_impact"),
+        report.features.some((f) => (f.feature as string) === "negative_impact"),
         false,
       );
     } finally {

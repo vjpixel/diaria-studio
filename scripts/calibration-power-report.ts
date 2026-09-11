@@ -56,6 +56,53 @@ import { NON_CALIBRATABLE_FEATURES, type ScoringFeatureRow } from "./lib/scoring
 const ROOT = resolve(import.meta.dirname, "..");
 
 /**
+ * Universo bruto de nomes de feature booleana — INCLUI as não-calibráveis
+ * de propósito (a lista completa existe pra `CANDIDATE_FEATURES` filtrar
+ * em runtime). Nunca importado fora deste módulo. `satisfies readonly
+ * (keyof ScoringFeatureRow)[]` (achado de review do #7990, type-design,
+ * P2) — sem isso, nada garantia em COMPILAÇÃO que cada string aqui é
+ * mesmo um campo real de `ScoringFeatureRow`; um typo ou um campo
+ * renomeado em `scoring-features.ts` passaria batido, reabrindo (1 nível
+ * acima) exatamente a classe de bug que este arquivo inteiro existe pra
+ * fechar.
+ */
+const ALL_BOOLEAN_FEATURE_NAMES = [
+  "primary_source",
+  "hands_on",
+  "academy",
+  "howto_br",
+  "howto_br_source",
+  "has_official_link",
+  "negative_impact",
+] as const satisfies readonly (keyof ScoringFeatureRow)[];
+
+/**
+ * `CandidateFeature` via `Exclude<...>` sobre o universo bruto, NÃO via
+ * `(typeof CANDIDATE_FEATURES)[number]` — achado de review do #7976/#7990
+ * (P3, follow-up de type-safety): `Array.prototype.filter` não estreita o
+ * tipo de uma tupla `as const` sem um type-guard explícito no predicado,
+ * então uma versão anterior sem esse guard deixava o TIPO `CandidateFeature`
+ * ainda admitir `"negative_impact"` como valor válido — só o
+ * `NON_CALIBRATABLE_FEATURES.has()` em RUNTIME impedia a entrada,
+ * minando o guard de COMPILAÇÃO que este módulo foi desenhado pra dar
+ * (`calibrate-scoring-weights.ts`, #7990, é o 1º consumidor que monta
+ * pesos candidato em código TS — o custo de um typo aqui agora é
+ * silencioso até rodar). `Exclude<>` sobre a união literal estreita de
+ * verdade, e o predicado tipado abaixo faz `CANDIDATE_FEATURES` (runtime) e
+ * `CandidateFeature` (tipo) nunca desalinharem — os dois derivam do MESMO
+ * `ALL_BOOLEAN_FEATURE_NAMES`. **`"bucket"` no `Exclude<>` é DEFENSIVO, não
+ * um no-op inofensivo por acaso** — `ALL_BOOLEAN_FEATURE_NAMES` não contém
+ * `"bucket"` hoje (não é campo booleano), mas `NON_CALIBRATABLE_FEATURES`
+ * (`scoring-features.ts`, a fonte de verdade RUNTIME desta exclusão) inclui
+ * `"bucket"` porque é tipada sobre `keyof ScoringFeatureRow` inteiro, não só
+ * os campos booleanos — mantido aqui pra as duas listas citarem os MESMOS 2
+ * nomes, mesmo que só 1 seja alcançável neste universo mais estreito;
+ * `test/candidate-feature-type-sync.test.ts` trava que as duas nunca
+ * divergem no que É alcançável.
+ */
+export type CandidateFeature = Exclude<(typeof ALL_BOOLEAN_FEATURE_NAMES)[number], "negative_impact" | "bucket">;
+
+/**
  * Features booleanas candidatas a calibração — exclui explicitamente tudo em
  * NON_CALIBRATABLE_FEATURES. Exportado (junto com `CandidateFeature`) pra ser
  * a ÚNICA fonte de verdade de "quais nomes de feature um peso candidato pode
@@ -64,17 +111,15 @@ const ROOT = resolve(import.meta.dirname, "..");
  * de review do #7977: chave com typo/nome obsoleto degradava
  * silenciosamente pra peso 0, sem nenhum sinal).
  */
-export const CANDIDATE_FEATURES = (
-  ["primary_source", "hands_on", "academy", "howto_br", "howto_br_source", "has_official_link", "negative_impact"] as const
-).filter((f) => !NON_CALIBRATABLE_FEATURES.has(f));
-
-export type CandidateFeature = (typeof CANDIDATE_FEATURES)[number];
+export const CANDIDATE_FEATURES = ALL_BOOLEAN_FEATURE_NAMES.filter(
+  (f): f is CandidateFeature => !NON_CALIBRATABLE_FEATURES.has(f),
+);
 
 const EVENT_COUNT_MIN = 30;
 const EVALUABLE_EDITIONS_MIN = 40;
 const PERMUTATIONS = 500;
 
-interface EditionRows {
+export interface EditionRows {
   edition: string;
   rows: ScoringFeatureRow[];
   kept: boolean[]; // paralelo a rows — kept[i] corresponde a rows[i]
@@ -93,7 +138,14 @@ function keptUrlsFromApproved(json: any): Set<string> {
   return urls;
 }
 
-function loadEditionRows(editionsRoot: string): { editions: EditionRows[]; skipped: Array<{ edition: string; reason: string }> } {
+/**
+ * Exportado (#7990) pra `calibrate-scoring-weights.ts` reusar a MESMA
+ * extração linha-a-linha (rows + kept paralelo) que este relatório usa pra
+ * medir evidência — sem duplicar o parsing de `scoring-features.json`/
+ * `01-approved.json` num 2º lugar. `buildPowerReport` continua a função
+ * pública de mais alto nível pra quem só quer o RELATÓRIO agregado.
+ */
+export function loadEditionRows(editionsRoot: string): { editions: EditionRows[]; skipped: Array<{ edition: string; reason: string }> } {
   const editionDirs = enumerateEditionDirs(editionsRoot);
   const out: EditionRows[] = [];
   const skipped: Array<{ edition: string; reason: string }> = [];
