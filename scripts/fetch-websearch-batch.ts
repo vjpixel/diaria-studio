@@ -32,7 +32,7 @@
  */
 
 import "dotenv/config";
-import { readFileSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { braveSearch, freshnessForWindow, type BraveWebResult, type BraveSearchResponse } from "./lib/brave-search.ts";
@@ -380,6 +380,15 @@ async function sleep(ms: number): Promise<void> {
 // meio preserva tudo que já rodou. Na próxima invocação (mesmo `--out`),
 // cada query cujo checkpoint já tem outcome "ok"/"empty" é reaproveitada
 // sem tocar a Brave; só "fail"/ausente é (re)executada.
+//
+// #7970: o checkpoint é APAGADO ao fim de um `main()` bem-sucedido (depois
+// do `renameSync` do `--out`) — ele só existe enquanto a tentativa está
+// INCOMPLETA, que é exatamente quando serve. Sem isto, uma reexecução
+// DELIBERADA da mesma edição já terminada (`/diaria-1-pesquisa {mesma
+// AAMMDD}` — uso documentado, tipicamente pra pegar notícias mais frescas)
+// via `planQueriesWithCheckpoint` reaproveitaria TODAS as queries (`toRun`
+// vazio), gerando zero chamadas Brave e regravando o `--out` com os MESMOS
+// resultados antigos, em silêncio.
 
 /** Pure: deriva o path do checkpoint incremental a partir do `--out` final. */
 export function checkpointPathFor(outPath: string): string {
@@ -451,8 +460,8 @@ export function planQueriesWithCheckpoint(
   return { toRun, reused };
 }
 
-async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const args = parseArgs(argv);
 
   const apiKey = process.env.BRAVE_API_KEY;
   if (!apiKey) {
@@ -583,6 +592,19 @@ async function main(): Promise<void> {
   writeFileSync(tmpPath, JSON.stringify(results, null, 2), "utf8");
   const { renameSync } = await import("node:fs");
   renameSync(tmpPath, outAbs);
+
+  // #7970: apagar o checkpoint SÓ depois do `--out` final estar gravado com
+  // sucesso — o checkpoint existe pra sobreviver a uma tentativa
+  // INTERROMPIDA (kill no meio), não pra sobreviver ao PRÓPRIO sucesso. Ver
+  // o bloco de comentário no topo da seção "Checkpoint por query" acima pro
+  // cenário de falha completo. Fail-soft: falha ao apagar (permissão, já
+  // removido por outra tentativa concorrente) não deve derrubar um run que
+  // já terminou com sucesso — só loga.
+  try {
+    if (existsSync(checkpointPath)) unlinkSync(checkpointPath);
+  } catch (e) {
+    console.error(`[fetch-websearch-batch] WARN: falha ao apagar checkpoint ${checkpointPath}: ${(e as Error).message}`);
+  }
 
   console.error(
     `[fetch-websearch-batch] done in ${(totalMs / 1000).toFixed(1)}s: ${ok} ok, ${empty} empty, ${fail} fail, ${totalArticles} articles total (${reused.length} via checkpoint) → ${args.out}`,
