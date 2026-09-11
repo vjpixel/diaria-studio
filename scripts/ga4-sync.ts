@@ -42,7 +42,8 @@
  * pro doc de setup, nunca uma stack trace genérica. Exit codes:
  *   0 = sucesso
  *   1 = erro de API/IO (rede, resposta inesperada)
- *   2 = config ausente (property ID ou credencial OAuth)
+ *   2 = config ausente (property ID ou credencial OAuth) OU flag CLI
+ *       inválida (`--days`/`--end` malformados — ver `resolveEndDate`)
  *
  * Uso:
  *   npx tsx scripts/ga4-sync.ts                  # janela padrão (7 dias), endDate "yesterday"
@@ -121,9 +122,29 @@ export const DEFAULT_END_DATE = "yesterday";
 export function resolveEndDate(rawEnd: string | undefined): string {
   if (rawEnd === undefined) return DEFAULT_END_DATE;
   if (rawEnd === "yesterday" || rawEnd === "today") return rawEnd;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(rawEnd)) return rawEnd;
+  if (isValidCalendarDate(rawEnd)) return rawEnd;
   throw new Error(
     `--end inválido: "${rawEnd}". Use "yesterday" (default), "today", ou uma data absoluta "YYYY-MM-DD".`,
+  );
+}
+
+/**
+ * Valida "YYYY-MM-DD" como data de calendário REAL, não só o formato — a
+ * regex sozinha (`/^\d{4}-\d{2}-\d{2}$/`) aceita "2026-13-40", que o `Date`
+ * do JS normaliza em silêncio (rola pro mês/dia seguinte) em vez de rejeitar
+ * (achado P3 do fleet review da #8000). `Date.UTC` + reconferência dos 3
+ * componentes contra o que foi digitado pega esse overflow.
+ */
+function isValidCalendarDate(raw: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!match) return false;
+  const [, yearStr, monthStr, dayStr] = match;
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
   );
 }
 
@@ -224,6 +245,16 @@ async function fetchSnapshot(
  * pra série confiável que outros consumidores leem) quando o snapshot NÃO é
  * parcial (#8000) — um `--end today`/data absoluta nunca deve envenenar
  * `latest.json` com um dia ainda incompleto/sujeito a reprocessamento.
+ *
+ * "É parcial" é DERIVADO de `end_date`, nunca só do campo `partial` do
+ * objeto recebido (achado do fleet review da #8000): o único produtor de
+ * hoje (`fetchSnapshot`) mantém os dois sincronizados, mas nada além dessa
+ * convenção impede um chamador futuro de montar um `Ga4Snapshot` com
+ * `end_date: "today"` e esquecer `partial: true` — o que reintroduziria em
+ * silêncio o bug que esta issue existe pra prevenir. `snapshot.partial ===
+ * true` continua valendo como sinal adicional (ex: um chamador que queira
+ * forçar não-overwrite mesmo com `end_date` default), mas `end_date !==
+ * DEFAULT_END_DATE` sozinho já basta pra recusar o overwrite.
  */
 export function saveSnapshot(
   snapshot: Ga4Snapshot,
@@ -234,7 +265,8 @@ export function saveSnapshot(
   const datedPath = resolve(cacheDir, `${dateStr}.json`);
   const json = JSON.stringify(snapshot, null, 2);
   writeFileSync(datedPath, json, "utf8");
-  if (snapshot.partial) {
+  const isPartial = snapshot.partial === true || snapshot.end_date !== DEFAULT_END_DATE;
+  if (isPartial) {
     return { datedPath, latestPath: null };
   }
   const latestPath = resolve(cacheDir, "latest.json");

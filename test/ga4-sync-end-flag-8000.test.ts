@@ -53,6 +53,11 @@ describe("#8000 — resolveEndDate", () => {
   it("rejeita data mal formatada (não bate a regex YYYY-MM-DD)", () => {
     assert.throws(() => resolveEndDate("10-09-2026"), /--end inválido/);
   });
+
+  it("rejeita mês/dia fora do calendário real (formato bate, data não existe)", () => {
+    assert.throws(() => resolveEndDate("2026-13-40"), /--end inválido/);
+    assert.throws(() => resolveEndDate("2026-02-30"), /--end inválido/);
+  });
 });
 
 describe("#8000 — buildSyncRequests com endDate", () => {
@@ -119,6 +124,29 @@ describe("#8000 — saveSnapshot: partial nunca sobrescreve latest.json", () => 
       });
       saveSnapshot(partial, dir);
 
+      const after = readFileSync(latestPath, "utf8");
+      assert.equal(after, before, "latest.json deve permanecer o snapshot confiável anterior");
+    });
+  });
+
+  it("end_date != DEFAULT sem 'partial' setado ainda recusa sobrescrever latest.json (guard derivado, robusto a chamador que esqueça o campo)", () => {
+    withTmpDir((dir) => {
+      const good = makeSnapshot({ fetched_at: "2026-09-10T12:00:00.000Z" });
+      saveSnapshot(good, dir);
+      const latestPath = join(dir, "latest.json");
+      const before = readFileSync(latestPath, "utf8");
+
+      // Chamador hipotético que monta o snapshot com end_date "today" mas
+      // esquece de setar partial: true — o guard precisa recusar mesmo assim.
+      const noPartialFlag = makeSnapshot({
+        fetched_at: "2026-09-11T16:55:00.000Z",
+        end_date: "today",
+      });
+      assert.equal(noPartialFlag.partial, undefined);
+      const { datedPath, latestPath: returnedLatestPath } = saveSnapshot(noPartialFlag, dir);
+
+      assert.ok(existsSync(datedPath));
+      assert.equal(returnedLatestPath, null);
       const after = readFileSync(latestPath, "utf8");
       assert.equal(after, before, "latest.json deve permanecer o snapshot confiável anterior");
     });
