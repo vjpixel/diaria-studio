@@ -10,6 +10,11 @@ import {
   processResult,
   buildSourceQuery,
   shouldRecordBraveResponse,
+  checkpointPathFor,
+  parseCheckpointLines,
+  planQueriesWithCheckpoint,
+  type RunRecord,
+  type PlannedQuery,
 } from "../scripts/fetch-websearch-batch.ts";
 
 describe("processResult", () => {
@@ -184,5 +189,114 @@ describe("buildSourceQuery", () => {
     const q = buildSourceQuery({ name: "X", site_query: "x.com" });
     assert.match(q, /inteligência artificial/i);
     assert.match(q, /artificial intelligence/i);
+  });
+});
+
+// #7944: checkpoint por query — evita re-gastar crédito Brave a cada
+// restart do Stage 1. Ver "Checkpoint por query (#7944)" em
+// scripts/fetch-websearch-batch.ts pro racional completo.
+describe("checkpointPathFor", () => {
+  it("deriva o path do checkpoint a partir do --out final", () => {
+    assert.equal(
+      checkpointPathFor("/repo/data/editions/260904/_internal/websearch-results.json"),
+      "/repo/data/editions/260904/_internal/websearch-results.checkpoint.jsonl",
+    );
+  });
+
+  it("é case-insensitive pra extensão .json", () => {
+    assert.equal(checkpointPathFor("/x/out.JSON"), "/x/out.checkpoint.jsonl");
+  });
+});
+
+describe("parseCheckpointLines", () => {
+  function rec(source: string, query_used: string, outcome: RunRecord["outcome"]): RunRecord {
+    return { source, query_used, outcome, duration_ms: 1, method: "websearch_brave", articles: [] };
+  }
+
+  it("retorna [] para arquivo vazio", () => {
+    assert.deepEqual(parseCheckpointLines(""), []);
+  });
+
+  it("parseia linhas JSONL válidas", () => {
+    const raw = `${JSON.stringify(rec("OpenAI", "site:openai.com AI", "ok"))}\n${JSON.stringify(rec("Anthropic", "site:anthropic.com AI", "empty"))}\n`;
+    const parsed = parseCheckpointLines(raw);
+    assert.equal(parsed.length, 2);
+    assert.equal(parsed[0].source, "OpenAI");
+    assert.equal(parsed[1].outcome, "empty");
+  });
+
+  it("tolera linha final corrompida/truncada (kill no meio do append) sem abortar o parse", () => {
+    const good = JSON.stringify(rec("OpenAI", "site:openai.com AI", "ok"));
+    const raw = `${good}\n{"source": "Anthropic", "query_us`; // linha 2 truncada
+    const parsed = parseCheckpointLines(raw);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].source, "OpenAI");
+  });
+
+  it("última ocorrência da mesma chave (source+query_used) vence", () => {
+    const raw = `${JSON.stringify(rec("OpenAI", "q1", "fail"))}\n${JSON.stringify(rec("OpenAI", "q1", "ok"))}\n`;
+    const parsed = parseCheckpointLines(raw);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].outcome, "ok");
+  });
+
+  it("ignora entradas sem source/query_used string", () => {
+    const raw = `${JSON.stringify({ outcome: "ok" })}\n${JSON.stringify(rec("OpenAI", "q1", "ok"))}\n`;
+    const parsed = parseCheckpointLines(raw);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].source, "OpenAI");
+  });
+});
+
+describe("planQueriesWithCheckpoint", () => {
+  function rec(source: string, query_used: string, outcome: RunRecord["outcome"]): RunRecord {
+    return { source, query_used, outcome, duration_ms: 1, method: "websearch_brave", articles: [] };
+  }
+  function planned(name: string, query: string): PlannedQuery {
+    return { name, query, discovered: false };
+  }
+
+  it("resume COMPLETO: todas as queries já com checkpoint ok/empty — nada a rodar (issue #7944 cenário (a))", () => {
+    const plan = [planned("OpenAI", "q-openai"), planned("Anthropic", "q-anthropic")];
+    const checkpoint = [rec("OpenAI", "q-openai", "ok"), rec("Anthropic", "q-anthropic", "empty")];
+    const { toRun, reused } = planQueriesWithCheckpoint(plan, checkpoint);
+    assert.deepEqual(toRun, []);
+    assert.equal(reused.length, 2);
+  });
+
+  it("resume PARCIAL: só dispara as que faltam no checkpoint (issue #7944 cenário (b))", () => {
+    const plan = [planned("OpenAI", "q-openai"), planned("Anthropic", "q-anthropic"), planned("Google", "q-google")];
+    const checkpoint = [rec("OpenAI", "q-openai", "ok")]; // Anthropic e Google nunca rodaram
+    const { toRun, reused } = planQueriesWithCheckpoint(plan, checkpoint);
+    assert.equal(reused.length, 1);
+    assert.equal(reused[0].source, "OpenAI");
+    assert.deepEqual(
+      toRun.map((p) => p.name),
+      ["Anthropic", "Google"],
+    );
+  });
+
+  it("query com outcome 'fail' no checkpoint é retentada, não reaproveitada", () => {
+    const plan = [planned("OpenAI", "q-openai")];
+    const checkpoint = [rec("OpenAI", "q-openai", "fail")];
+    const { toRun, reused } = planQueriesWithCheckpoint(plan, checkpoint);
+    assert.deepEqual(reused, []);
+    assert.equal(toRun.length, 1);
+  });
+
+  it("sem checkpoint algum: todas as queries vão para toRun (1ª tentativa)", () => {
+    const plan = [planned("OpenAI", "q-openai"), planned("Anthropic", "q-anthropic")];
+    const { toRun, reused } = planQueriesWithCheckpoint(plan, []);
+    assert.equal(toRun.length, 2);
+    assert.deepEqual(reused, []);
+  });
+
+  it("checkpointKey distingue por query, não só por nome — drift de query (ex: inbox-topics mudou) não reusa indevidamente", () => {
+    const plan = [planned("discovery: tema novo", "tema novo query 2026")];
+    // checkpoint tem uma query ANTIGA pro mesmo "nome" truncado — não deve casar
+    const checkpoint = [rec("discovery: tema novo", "tema velho query 2025", "ok")];
+    const { toRun, reused } = planQueriesWithCheckpoint(plan, checkpoint);
+    assert.equal(toRun.length, 1);
+    assert.deepEqual(reused, []);
   });
 });
