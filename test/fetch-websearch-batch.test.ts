@@ -2,10 +2,17 @@
  * test/fetch-websearch-batch.test.ts (#1555)
  *
  * Tests for the pure helpers in fetch-websearch-batch.ts.
- * The full main() with rate-limited dispatch is not tested in unit (integration concern).
+ * The full main() with rate-limited dispatch is not tested in unit (integration concern),
+ * EXCEPT for the checkpoint-lifecycle regression tests at the bottom (#7970) — those exercise
+ * `main()` end-to-end with a mocked `fetch` (no real Brave calls, no network), because the bug
+ * they cover lives in main()'s own wiring (when the checkpoint file gets deleted), not in any
+ * pure helper.
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   processResult,
   buildSourceQuery,
@@ -13,6 +20,7 @@ import {
   checkpointPathFor,
   parseCheckpointLines,
   planQueriesWithCheckpoint,
+  main,
   type RunRecord,
   type PlannedQuery,
 } from "../scripts/fetch-websearch-batch.ts";
@@ -298,5 +306,110 @@ describe("planQueriesWithCheckpoint", () => {
     const { toRun, reused } = planQueriesWithCheckpoint(plan, checkpoint);
     assert.equal(toRun.length, 1);
     assert.deepEqual(reused, []);
+  });
+});
+
+describe("main() — ciclo de vida do checkpoint (#7970 — regressão)", () => {
+  // Sem --sources/--discovery, `main()` ainda planeja 3 queries how-to
+  // (#2278) + 1 query de impacto-negativo (#3916/#3918) — determinístico
+  // pra um --edition fixo. Usar esse fato pra não precisar de fixtures de
+  // sources/discovery: 4 queries totais, sempre as mesmas pra este edition.
+  const EDITION = "990101";
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.BRAVE_API_KEY;
+  const tmpDirs: string[] = [];
+
+  after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.BRAVE_API_KEY;
+    else process.env.BRAVE_API_KEY = originalApiKey;
+    for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  function fakeBraveResponse(): Response {
+    return {
+      status: 200,
+      headers: { get: () => null },
+      json: async () => ({ web: { results: [] } }),
+      text: async () => "",
+    } as unknown as Response;
+  }
+
+  function installCountingFetch(): { calls: () => number } {
+    let count = 0;
+    globalThis.fetch = (async (..._args: Parameters<typeof fetch>) => {
+      count++;
+      return fakeBraveResponse();
+    }) as typeof fetch;
+    return { calls: () => count };
+  }
+
+  function newTmpOut(): string {
+    const dir = mkdtempSync(join(tmpdir(), "fetch-websearch-batch-test-"));
+    tmpDirs.push(dir);
+    return join(dir, "websearch-results.json");
+  }
+
+  it("reexecução da MESMA edição após sucesso total volta a rodar as queries (checkpoint não sobrevive ao próprio sucesso)", async () => {
+    process.env.BRAVE_API_KEY = "fake-test-key";
+    const outPath = newTmpOut();
+    const checkpointPath = checkpointPathFor(outPath);
+    const argv = ["--cutoff-iso", "2020-01-01", "--window-days", "3", "--out", outPath, "--edition", EDITION];
+
+    const fetch1 = installCountingFetch();
+    await main(argv);
+    assert.ok(existsSync(outPath), "1ª tentativa: --out deve existir");
+    assert.equal(fetch1.calls(), 4, "1ª tentativa: 4 queries planejadas, 4 chamadas Brave");
+    assert.ok(!existsSync(checkpointPath), "checkpoint deve ser apagado após main() bem-sucedido (#7970)");
+
+    // Reexecução DELIBERADA da mesma edição (mesmo --out) — uso documentado
+    // (`/diaria-1-pesquisa {mesma AAMMDD}`), tipicamente pra pegar notícias
+    // mais frescas. Antes do fix, o checkpoint sobrevivia e isto rodava
+    // zero queries.
+    const fetch2 = installCountingFetch();
+    await main(argv);
+    assert.equal(fetch2.calls(), 4, "reexecução após sucesso total deve rodar as 4 queries de novo, não reusar o checkpoint da tentativa anterior");
+    assert.ok(!existsSync(checkpointPath), "checkpoint apagado de novo após a 2ª tentativa bem-sucedida");
+  });
+
+  it("resume após interrupção continua funcionando — não regride o #7944", async () => {
+    process.env.BRAVE_API_KEY = "fake-test-key";
+    const outPath = newTmpOut();
+    const checkpointPath = checkpointPathFor(outPath);
+    const argv = ["--cutoff-iso", "2020-01-01", "--window-days", "3", "--out", outPath, "--edition", EDITION];
+
+    // Simula uma tentativa INTERROMPIDA: o checkpoint já tem as 4 queries
+    // resolvidas (outcome "ok"), mas o `--out` final nunca foi escrito
+    // (kill antes do renameSync) — reproduz literalmente o cenário do
+    // #7944, não só a checagem pure de `planQueriesWithCheckpoint`.
+    const { getHowToDiscoveryQueries } = await import("../scripts/lib/use-melhor-curation.ts");
+    const { getNegativeImpactDiscoveryQueries } = await import("../scripts/lib/negative-impact-curation.ts");
+    const editionNum = parseInt(EDITION, 10);
+    const topics = [
+      ...getHowToDiscoveryQueries(editionNum).map((q) => q),
+      ...getNegativeImpactDiscoveryQueries(editionNum).map((q) => q),
+    ];
+    const fakeRecords: RunRecord[] = topics.map((q) => ({
+      source: `discovery: ${q.slice(0, 40)}`,
+      outcome: "ok",
+      duration_ms: 1,
+      query_used: q,
+      method: "websearch_brave",
+      articles: [],
+    }));
+    writeFileSync(checkpointPath, fakeRecords.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    assert.ok(!existsSync(outPath), "pré-condição: --out final nunca foi escrito (simulação de interrupção)");
+
+    const fetch1 = installCountingFetch();
+    await main(argv);
+
+    assert.equal(fetch1.calls(), 0, "resume completo: todas as 4 queries já tinham checkpoint 'ok' — zero chamadas Brave");
+    assert.ok(existsSync(outPath), "--out final deve ser escrito reaproveitando o checkpoint");
+    const written = JSON.parse(readFileSync(outPath, "utf8")) as RunRecord[];
+    assert.equal(written.length, 4);
+    // E, como este `main()` terminou com sucesso, o checkpoint agora some —
+    // resume funcionando NÃO significa que o checkpoint deva sobreviver
+    // indefinidamente (#7970 continua valendo mesmo no caminho de resume).
+    assert.ok(!existsSync(checkpointPath));
   });
 });

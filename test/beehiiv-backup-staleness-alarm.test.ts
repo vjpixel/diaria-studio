@@ -17,6 +17,9 @@ import {
   buildBeehiivBackupStalenessAlarmEmail,
   isAlarmVerdict,
 } from "../scripts/lib/beehiiv-backup-staleness-alarm.ts";
+import { notifyEditor } from "../scripts/lib/editor-notify.ts";
+import { alarmFindingMarker } from "../scripts/lib/alarm-issues.ts";
+import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 
 const DAY = 86400;
 const NOW = 1_755_000_000; // época fixa arbitrária pros testes
@@ -105,5 +108,116 @@ describe("buildBeehiivBackupStalenessAlarmEmail", () => {
     const evaluation = evaluateBeehiivBackupStalenessAlarm(NOW, null, null, false, 7, NOW - DAY);
     const { body } = buildBeehiivBackupStalenessAlarmEmail(evaluation, 7);
     assert.match(body, /Nenhum snapshot/);
+  });
+});
+
+describe("notifyEditor + fingerprint (#7969 — regressão)", () => {
+  const CHECK = "beehiiv-backup-staleness-alarm";
+
+  /** `gh` mockado com um "banco" mutável de issues já criadas — reproduz o
+   * comportamento real de `findExistingAlarmIssue`/`ensureAlarmIssue`:
+   * `issue create` grava uma issue nova com o marcador do fingerprint;
+   * `issue list --search` devolve as issues cujo corpo contém o marcador
+   * exato buscado. Isso deixa o teste indiferente a COMO o fingerprint é
+   * calculado — só ao resultado observável (created vs. reused). */
+  function makeStatefulGhRun(): {
+    run: (args: string[], cwd: string) => GhSpawnResult;
+    issues: { number: number; url: string; body: string; state: "OPEN" | "CLOSED" }[];
+  } {
+    const issues: { number: number; url: string; body: string; state: "OPEN" | "CLOSED" }[] = [];
+    let nextNumber = 100;
+    const run = (args: string[]): GhSpawnResult => {
+      if (args[0] === "issue" && args[1] === "list") {
+        // Mesmo filtro client-side de `findExistingAlarmIssue`: o body tem
+        // que conter o marcador exato — a busca --search em si é
+        // best-effort no `gh` real, então o mock devolve TODAS as issues e
+        // deixa `alarm-issues.ts` filtrar, igual em produção.
+        return { status: 0, stdout: JSON.stringify(issues), stderr: "" };
+      }
+      if (args[0] === "issue" && args[1] === "create") {
+        const bodyIdx = args.indexOf("--body");
+        const body = bodyIdx >= 0 ? args[bodyIdx + 1] : "";
+        const number = nextNumber++;
+        const url = `https://github.com/vjpixel/diaria-studio/issues/${number}`;
+        issues.push({ number, url, body, state: "OPEN" });
+        return { status: 0, stdout: `${url}\n`, stderr: "" };
+      }
+      if (args[0] === "issue" && args[1] === "view") {
+        return { status: 0, stdout: JSON.stringify({ state: "OPEN" }), stderr: "" };
+      }
+      throw new Error(`unexpected gh call in test: ${args.join(" ")}`);
+    };
+    return { run, issues };
+  }
+
+  it("2 incidentes com snapshots DIFERENTES (issue do 1º ainda aberta) → o 2º cria issue nova, nunca reusa (#7969)", async () => {
+    const { run } = makeStatefulGhRun();
+
+    // Semana 1: snapshot D0 stale.
+    const week1 = evaluateBeehiivBackupStalenessAlarm(NOW, "2026-08-16", NOW - 15 * DAY, true, 7);
+    const result1 = await notifyEditor(
+      {
+        check: CHECK,
+        fingerprint: computeBeehiivBackupStalenessFingerprint(week1),
+        severity: "acao",
+        subject: "s1",
+        body: "b1",
+      },
+      { cwd: "/tmp", ghRun: run, emailPolicy: "urgent_only" },
+    );
+    assert.equal(result1.issue?.action, "created");
+
+    // Semana 3: incidente NOVO e genuíno, snapshot D2 diferente — o editor
+    // ainda não fechou a issue da semana 1.
+    const week3 = evaluateBeehiivBackupStalenessAlarm(NOW + 14 * DAY, "2026-08-30", NOW + 14 * DAY - 15 * DAY, true, 7);
+    assert.equal(week3.verdict, week1.verdict, "pré-condição do cenário: mesmo veredito, snapshot diferente");
+    const result2 = await notifyEditor(
+      {
+        check: CHECK,
+        fingerprint: computeBeehiivBackupStalenessFingerprint(week3),
+        severity: "acao",
+        subject: "s2",
+        body: "b2",
+      },
+      { cwd: "/tmp", ghRun: run, emailPolicy: "urgent_only" },
+    );
+
+    // Bug do #7969: usar `evaluation.verdict` (sem a data) como fingerprint
+    // faria isto sair "reused", apontando ainda pra issue da semana 1 —
+    // sem comentário nem e-mail sob `email_policy: "urgent_only"`.
+    assert.equal(result2.issue?.action, "created");
+    assert.notEqual(result1.issue?.issueNumber, result2.issue?.issueNumber);
+  });
+
+  it("reproduz literalmente o bug ANTES do fix: fingerprint = evaluation.verdict faz o 2º incidente casar com a issue do 1º (reused)", async () => {
+    const { run } = makeStatefulGhRun();
+
+    const week1 = evaluateBeehiivBackupStalenessAlarm(NOW, "2026-08-16", NOW - 15 * DAY, true, 7);
+    const result1 = await notifyEditor(
+      { check: CHECK, fingerprint: week1.verdict, severity: "acao", subject: "s1", body: "b1" },
+      { cwd: "/tmp", ghRun: run, emailPolicy: "urgent_only" },
+    );
+    assert.equal(result1.issue?.action, "created");
+
+    const week3 = evaluateBeehiivBackupStalenessAlarm(NOW + 14 * DAY, "2026-08-30", NOW + 14 * DAY - 15 * DAY, true, 7);
+    const result2 = await notifyEditor(
+      { check: CHECK, fingerprint: week3.verdict, severity: "acao", subject: "s2", body: "b2" },
+      { cwd: "/tmp", ghRun: run, emailPolicy: "urgent_only" },
+    );
+
+    // Documenta o bug (não o comportamento desejado): com o fingerprint
+    // grosso, os dois incidentes casam no MESMO marcador de issue.
+    assert.equal(result2.issue?.action, "reused");
+    assert.equal(result1.issue?.issueNumber, result2.issue?.issueNumber);
+  });
+
+  it("alarmFindingMarker embute a data do snapshot quando o fingerprint é o composto, não só o veredito", () => {
+    const week1 = evaluateBeehiivBackupStalenessAlarm(NOW, "2026-08-16", NOW - 15 * DAY, true, 7);
+    const week3 = evaluateBeehiivBackupStalenessAlarm(NOW + 14 * DAY, "2026-08-30", NOW + 14 * DAY - 15 * DAY, true, 7);
+    const marker1 = alarmFindingMarker(CHECK, computeBeehiivBackupStalenessFingerprint(week1));
+    const marker3 = alarmFindingMarker(CHECK, computeBeehiivBackupStalenessFingerprint(week3));
+    assert.notEqual(marker1, marker3);
+    assert.match(marker1, /2026-08-16/);
+    assert.match(marker3, /2026-08-30/);
   });
 });

@@ -45,6 +45,7 @@ import {
   markBeehiivBackupStalenessAlarmed,
   emptyBeehiivBackupStalenessAlarmState,
   buildBeehiivBackupStalenessAlarmEmail,
+  computeBeehiivBackupStalenessFingerprint,
   type BeehiivBackupStalenessAlarmState,
 } from "./lib/beehiiv-backup-staleness-alarm.ts";
 
@@ -105,9 +106,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
   // #7960: migrado de sendGmailMessage direto pro portão notifyEditor —
   // severidade "acao" (staleness, sem envio/dinheiro em risco), issue sem
-  // e-mail sob `email_policy: "urgent_only"`.
+  // e-mail sob `email_policy: "urgent_only"`. Fingerprint pelo par
+  // (veredito, snapshot mais recente) — não só o veredito (#7969): sem a
+  // data, um 2º incidente com snapshot DIFERENTE casa com uma issue ainda
+  // aberta do 1º incidente e sai como `action: "reused"` (sem e-mail, sem
+  // comentário, sob `email_policy: "urgent_only"`).
   const result = await notifyEditor(
-    { check: "beehiiv-backup-staleness-alarm", fingerprint: evaluation.verdict, severity: "acao", subject, body },
+    {
+      check: "beehiiv-backup-staleness-alarm",
+      fingerprint: computeBeehiivBackupStalenessFingerprint(evaluation),
+      severity: "acao",
+      subject,
+      body,
+    },
     { cwd: ROOT, emailTo: toOverride },
   );
   if (result.issue?.action === "failed") {
