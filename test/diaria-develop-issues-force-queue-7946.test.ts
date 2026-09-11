@@ -60,6 +60,10 @@ describe("diaria-develop — --issues força fila de resolução, qualquer que s
     );
   });
 
+  it("o override imprime banner no terminal, não só comentário na issue (#7946 review P2)", () => {
+    assert.match(content, /e imprime um banner no terminal.*bloqueio de PRIORIZAÇÃO \(não técnico\) ignorado/s);
+  });
+
   it("a exceção não desarma bloqueio de categoria A-E coexistindo", () => {
     assert.match(
       content,
