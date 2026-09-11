@@ -418,8 +418,8 @@ export function readEditorRequestsForEditions(
  * Detecta `request_type` recorrente: ≥3 edições DISTINTAS nas últimas 7 (não
  * ocorrências totais — 3 pedidos do mesmo tipo na MESMA edição contam como 1
  * edição). Só `resolution` `accepted`/`partial` conta — `declined` é pedido
- * que o editor aceitou não fazer, não é padrão a corrigir. `other` nunca
- * dispara (não participa da taxonomia de agrupamento, #4966).
+ * que o editor aceitou não fazer, não é padrão a corrigir. `other`/`process`
+ * (#7964) nunca disparam (não participam da taxonomia de agrupamento, #4966).
  *
  * Título do signal é ESTÁVEL entre chamadas com contagens diferentes (nunca
  * inclui `edition_count`/`3×` no título) — o dedup do auto-reporter
@@ -434,7 +434,7 @@ export function signalsFromRecurringEditorRequests(
   const byType = new Map<string, Map<string, EditorRequestEntry[]>>();
   for (const [edition, entries] of Object.entries(entriesByEdition)) {
     for (const e of entries) {
-      if (e.request_type === "other") continue;
+      if (e.request_type === "other" || e.request_type === "process") continue;
       if (e.resolution !== "accepted" && e.resolution !== "partial") continue;
       let byEdition = byType.get(e.request_type);
       if (!byEdition) {
