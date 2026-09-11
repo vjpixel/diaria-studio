@@ -505,4 +505,69 @@ describe("derive-editor-requests.ts (#5731)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("snapshot-stage2 chamado ANTES de 01-approved.json existir não trava o baseline vazio pra sempre", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-immutable-empty-"));
+    try {
+      const editionDir = join(dir, "260811");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+
+      // Chamada precoce (edição interrompida bem no início do Stage 2):
+      // nenhum dos 3 arquivos existe ainda — snapshot fica vazio (só o
+      // diretório é criado).
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      // Stage 2 termina de verdade, arquivos agora existem, playbook chama
+      // snapshot-stage2 de novo (é a chamada real, de fim de §2d) — não
+      // pode ficar preso no estado vazio da chamada precoce.
+      writeFileSync(join(internalDir, "01-approved.json"), approvedJson("https://example.com/v1", "V1"), "utf8");
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      const snapPath = join(
+        internalDir,
+        "editor-request-snapshots",
+        "stage2-post-gate",
+        "_internal",
+        "01-approved.json",
+      );
+      assert.ok(existsSync(snapPath), "a 2ª chamada real precisa gravar o snapshot — não pode ficar vazia pra sempre");
+
+      // A partir daqui o mecanismo funciona normalmente.
+      writeFileSync(join(internalDir, "01-approved.json"), approvedJson("https://example.com/v2", "V2"), "utf8");
+      const r4 = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r4.status, 0, r4.stderr);
+      assert.equal(readEntries(editionDir).filter((e) => e.request_type === "destaque-swap").length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("snapshot-stage4 também é imutável por edição (#7964, mesmo padrão do stage2-post-gate)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-immutable-stage4-"));
+    try {
+      const editionDir = join(dir, "260811");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(internalDir, "newsletter-final.html"), "<html><body>V1</body></html>", "utf8");
+
+      assert.equal(runCli(["snapshot-stage4", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      // Re-render disparado por "ajustar" — HTML muda antes do gate aprovar.
+      writeFileSync(join(internalDir, "newsletter-final.html"), "<html><body>V2 (ajustado)</body></html>", "utf8");
+
+      // 2ª chamada espúria a snapshot-stage4 (mesma classe de risco do
+      // stage2-post-gate) não pode re-basear sobre o HTML já ajustado.
+      const r2 = runCli(["snapshot-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r2.status, 0, r2.stderr);
+      assert.match(r2.stdout, /já existe.*ignorando/);
+
+      const r4 = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r4.status, 0, r4.stderr);
+      const entries = readEntries(editionDir).filter((e) => (e.context as Record<string, unknown>)?.subtype === "html-final-changed");
+      assert.equal(entries.length, 1, "a mudança de HTML não pode desaparecer por causa do re-snapshot espúrio");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

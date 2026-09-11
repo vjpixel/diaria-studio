@@ -643,31 +643,46 @@ function diffAndClassify(
 }
 
 /**
+ * Um snapshot conta como "já capturado" (#7964) se o diretório existe E
+ * pelo menos um dos arquivos esperados foi de fato copiado pra dentro dele.
+ * Só checar `existsSync(snapshotDir)` não bastaria: `createSnapshots` sempre
+ * cria o diretório (`mkdirSync .. recursive`) mesmo quando NENHUM arquivo-
+ * fonte existia ainda no momento da chamada (edição interrompida bem no
+ * início do Stage 2) — travar nesse estado vazio pra sempre deixaria a
+ * edição inteira sem baseline nenhum na 1ª chamada real subsequente.
+ */
+function hasSnapshot(editionDir: string, label: string, files: readonly string[]): boolean {
+  const snapshotDir = resolve(editionDir, SNAPSHOT_DIR, label);
+  if (!existsSync(snapshotDir)) return false;
+  return files.some((file) => existsSync(resolve(snapshotDir, file)));
+}
+
+/**
  * Função principal - cria snapshots pós-Stage 2
  *
  * IMUTÁVEL por edição desde o #7964: se o snapshot `stage2-post-gate` já
- * existe, este comando é um NO-OP — nunca sobrescreve. Causa raiz do #7964:
- * o playbook chama `snapshot-stage2` uma única vez, logo após o gate
- * unificado do Stage 2 (`orchestrator-stage-2.md` §2d) — esse é o baseline
- * correto contra o qual `deriveStage4`/`deriveStage6` diffam pra capturar
- * TUDO que o editor pedir depois (bucket-move, destaque-swap/cut, reescrita
- * de título/lead — inclusive durante o Stage 4, via "ajustar" ou painel do
- * Studio). Uma 2ª invocação de `snapshot-stage2` para a MESMA edição — seja
- * por retomada de sessão, seja por um agente re-executando o checklist de
- * §2d fora de ordem — re-basearia esse snapshot para DEPOIS das mudanças
- * que o editor já fez, apagando a evidência que `deriveStage4` deveria
- * capturar (o próprio bug relatado: pedidos feitos no gate do Stage 4
- * nunca apareciam em `editor-requests.jsonl`). `deriveStage4`/`deriveStage6`
- * continuam livres para REFRESCAR o checkpoint via `createSnapshots(...)`
- * direto (não passam por esta função) — esse refresh é intencional e
- * documentado (ver docstring de `deriveStage4`): acontece DEPOIS de já ter
- * diffado e registrado as mudanças, nunca antes.
+ * foi capturado (ver `hasSnapshot`), este comando é um NO-OP — nunca
+ * sobrescreve. Causa raiz do #7964: o playbook chama `snapshot-stage2` uma
+ * única vez, logo após o gate unificado do Stage 2
+ * (`orchestrator-stage-2.md` §2d) — esse é o baseline correto contra o
+ * qual `deriveStage4`/`deriveStage6` diffam pra capturar TUDO que o editor
+ * pedir depois (bucket-move, destaque-swap/cut, reescrita de título/lead —
+ * inclusive durante o Stage 4, via "ajustar" ou painel do Studio). Uma 2ª
+ * invocação de `snapshot-stage2` para a MESMA edição — seja por retomada
+ * de sessão, seja por um agente re-executando o checklist de §2d fora de
+ * ordem — re-basearia esse snapshot para DEPOIS das mudanças que o editor
+ * já fez, apagando a evidência que `deriveStage4` deveria capturar (o
+ * próprio bug relatado: pedidos feitos no gate do Stage 4 nunca apareciam
+ * em `editor-requests.jsonl`). `deriveStage4`/`deriveStage6` continuam
+ * livres para REFRESCAR o checkpoint via `createSnapshots(...)` direto
+ * (não passam por esta função) — esse refresh é intencional e documentado
+ * (ver docstring de `deriveStage4`): acontece DEPOIS de já ter diffado e
+ * registrado as mudanças, nunca antes.
  */
 function snapshotStage2(editionDir: string): void {
-  const snapshotDir = resolve(editionDir, SNAPSHOT_DIR, "stage2-post-gate");
-  if (existsSync(snapshotDir)) {
+  if (hasSnapshot(editionDir, "stage2-post-gate", STAGE2_SNAPSHOT_FILES)) {
     console.log(
-      `[derive-editor-requests] Snapshot stage2-post-gate já existe em ${snapshotDir} — ignorando (imutável por edição, #7964).`,
+      `[derive-editor-requests] Snapshot stage2-post-gate já existe — ignorando (imutável por edição, #7964).`,
     );
     return;
   }
@@ -676,8 +691,21 @@ function snapshotStage2(editionDir: string): void {
 
 /**
  * Função principal - cria snapshots pós-Stage 4 pre-render
+ *
+ * Mesma imutabilidade do `snapshotStage2` acima e pelo mesmo motivo
+ * (#7964) — o playbook chama `snapshot-stage4` uma única vez, dentro de
+ * §4b, ANTES do loop "ajustar" existir (`orchestrator-stage-4.md` §4b vs.
+ * §4d.1): uma 2ª chamada re-basearia o checkpoint que `classifyHtmlDiff`
+ * usa pra detectar re-render disparado por "ajustar" (#5782), com o mesmo
+ * efeito de apagar evidência que motivou o fix acima.
  */
 function snapshotStage4(editionDir: string): void {
+  if (hasSnapshot(editionDir, "stage4-pre-render", STAGE4_SNAPSHOT_FILES)) {
+    console.log(
+      `[derive-editor-requests] Snapshot stage4-pre-render já existe — ignorando (imutável por edição, #7964).`,
+    );
+    return;
+  }
   createSnapshots(editionDir, STAGE4_SNAPSHOT_FILES, "stage4-pre-render");
 }
 
