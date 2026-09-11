@@ -161,6 +161,45 @@ describe("extractScoringFeatures (#7975)", () => {
     assert.ok(row.launch_heuristics_sha === null || typeof row.launch_heuristics_sha === "string");
   });
 
+  it("origin: discovered_source AUSENTE (undefined, o caso real de fonte cadastrada) vira cadastrada, não unknown (achado de review #7975)", async () => {
+    // discovered_source só é gravado `true` pelo discovery-searcher — fontes
+    // cadastradas (source-researcher, a maioria do pool) chegam SEM o campo,
+    // nunca com `false` explícito. Confirmado contra edição real 260911.
+    const json = categorized({
+      radar: [{ url: "https://example.com/cadastrada", title: "Fonte cadastrada" }],
+    });
+    const [row] = await extractScoringFeatures(json, editionDate);
+    assert.equal(row.origin, "cadastrada");
+  });
+
+  it("origin: discovered_source explicitamente false também vira cadastrada (defensivo, caso o pipeline passe a gravar false)", async () => {
+    const json = categorized({
+      radar: [{ url: "https://example.com/x", title: "X", discovered_source: false }],
+    });
+    const [row] = await extractScoringFeatures(json, editionDate);
+    assert.equal(row.origin, "cadastrada");
+  });
+
+  it("origin: discovered_source true vira discovery", async () => {
+    const json = categorized({
+      radar: [{ url: "https://example.com/y", title: "Y", discovered_source: true }],
+    });
+    const [row] = await extractScoringFeatures(json, editionDate);
+    assert.equal(row.origin, "discovery");
+  });
+
+  it("origin: flag editor_submitted/newsletter_extracted vence discovered_source", async () => {
+    const json = categorized({
+      radar: [
+        { url: "https://example.com/z1", title: "Z1", flag: "editor_submitted", discovered_source: true },
+        { url: "https://example.com/z2", title: "Z2", flag: "newsletter_extracted" },
+      ],
+    });
+    const rows = await extractScoringFeatures(json, editionDate);
+    assert.equal(rows[0].origin, "editor_submitted");
+    assert.equal(rows[1].origin, "newsletter_extracted");
+  });
+
   it("URL duplicada entre buckets: só a 1ª ocorrência vira linha (mesmo padrão de indexPool)", async () => {
     const json = categorized({
       lancamento: [{ url: "https://example.com/dup", title: "Dup" }],

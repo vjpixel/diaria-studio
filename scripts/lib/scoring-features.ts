@@ -35,9 +35,6 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-/** Nunca calibráveis — ver docstring do módulo. */
-export const NON_CALIBRATABLE_FEATURES: ReadonlySet<string> = new Set(["negative_impact", "bucket"]);
-
 export type ArticleOrigin = "cadastrada" | "discovery" | "editor_submitted" | "newsletter_extracted" | "unknown";
 
 export interface ScoringFeatureRow {
@@ -85,6 +82,18 @@ export interface ScoringFeatureRow {
   launch_heuristics_sha: string | null;
 }
 
+/**
+ * Nunca calibráveis — ver docstring do módulo. Tipado como
+ * `keyof ScoringFeatureRow` (não `Set<string>` solto) de propósito: renomear
+ * ou remover um destes campos em `ScoringFeatureRow` agora vira erro de
+ * COMPILAÇÃO aqui, não um gap silencioso que só apareceria quando a Fase 2
+ * (#7976) já estivesse consumindo o campo errado — achado de review do #7975.
+ */
+export const NON_CALIBRATABLE_FEATURES: ReadonlySet<keyof ScoringFeatureRow> = new Set<keyof ScoringFeatureRow>([
+  "negative_impact",
+  "bucket",
+]);
+
 interface RawArticle {
   url?: unknown;
   title?: unknown;
@@ -124,12 +133,23 @@ function extractDomain(url: string): string | null {
   }
 }
 
+/**
+ * `discovered_source` só é gravado `true` por `discovery-searcher`
+ * (`scripts/fetch-websearch-batch.ts:176`) — em nenhum lugar do pipeline
+ * ele é gravado `false` explicitamente; fontes cadastradas (source-
+ * researcher, a maioria do pool) chegam com o campo simplesmente AUSENTE
+ * (`undefined`), não `false`. Achado ao vivo contra edição real 260911
+ * (#7975, revisão de PR): a versão anterior desta função tratava só
+ * `=== false` como "cadastrada", então praticamente todo o pool virava
+ * `"unknown"` — sem sinal nenhum, já que o schema real nunca usa `false`.
+ * `!== true` (cobre `false` E `undefined`) é o teste correto.
+ */
 function extractOrigin(a: RawArticle): ArticleOrigin {
   const flag = typeof a.flag === "string" ? a.flag : "";
   if (flag === "editor_submitted") return "editor_submitted";
   if (flag === "newsletter_extracted") return "newsletter_extracted";
   if (a.discovered_source === true) return "discovery";
-  if (a.discovered_source === false) return "cadastrada";
+  if (a.discovered_source === false || a.discovered_source === undefined) return "cadastrada";
   return "unknown";
 }
 
@@ -194,7 +214,14 @@ export function launchHeuristicsSha(): string | null {
       timeout: 5000,
     }).trim();
     launchHeuristicsShaCache = out || null;
-  } catch {
+  } catch (err) {
+    // Fail-soft intencional (git ausente é caso normal em alguns ambientes)
+    // — mas 1 warn por PROCESSO (cacheado, nunca por artigo) evita que um
+    // timeout/erro de permissão real fique indistinguível de "sem git" por
+    // meses (achado de review do #7975: o campo existe pra detectar drift
+    // de definição de feature, então perder o sinal em silêncio mina o
+    // próprio propósito dele).
+    console.warn(`[scoring-features] launchHeuristicsSha: git indisponível (${err instanceof Error ? err.message : String(err)}) — launch_heuristics_sha será null.`);
     launchHeuristicsShaCache = null;
   }
   return launchHeuristicsShaCache;
@@ -218,6 +245,13 @@ export async function extractScoringFeatures(
 
   for (const bucket of FEATURE_STORE_BUCKETS) {
     const arr = categorizedJson[bucket];
+    // Chave ausente (bucket vazio naquela edição) é normal, silencioso.
+    // Chave PRESENTE mas não-array é sinal de schema drift do categorizer —
+    // sem este warn, todo o bucket vira silenciosamente 0 linhas pra sempre
+    // (achado de review do #7975).
+    if (arr !== undefined && !Array.isArray(arr)) {
+      console.warn(`[scoring-features] bucket "${bucket}" presente mas não é array (typeof ${typeof arr}) — pulando, possível schema drift do categorizer.`);
+    }
     if (!Array.isArray(arr)) continue;
     for (const raw of arr) {
       const a = raw as RawArticle;
