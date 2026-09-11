@@ -29,6 +29,8 @@ export interface ClaudeCliCallOptions {
   /** Env BRUTO (não-filtrado) do chamador — `claudeCliEnv()` roda por cima, sempre. Default `process.env`. */
   env?: NodeJS.ProcessEnv;
   maxTurns?: number;
+  /** Nome do modelo pro `--model` do CLI (ex: "sonnet"). Sem isto, o CLI usa o default do ambiente — achado de review do #7981 (comment-analyzer, P2): a docstring de `holistic-critique.ts` afirmava "Sonnet, effort baixo" sem NENHUM flag garantindo isso; quem quiser a garantia agora passa este campo explicitamente (mesmo espírito do `model: sonnet` explícito exigido pro dispatch de subagentes ad-hoc, CLAUDE.md). */
+  model?: string;
   execFn?: typeof execFileSync;
   resolveClaudeBinFn?: typeof resolveClaudeBin;
 }
@@ -49,14 +51,14 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
   const filteredEnv = claudeCliEnv(rawEnv);
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
 
-  return execFn(
-    resolveClaudeBinFn(),
-    ["--print", "--permission-mode", "acceptEdits", "--max-turns", String(maxTurns), "--output-format", "text", "--no-session-persistence", prompt],
-    {
-      cwd: opts.cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: filteredEnv,
-    },
-  );
+  const args = ["--print", "--permission-mode", "acceptEdits", "--max-turns", String(maxTurns), "--output-format", "text", "--no-session-persistence"];
+  if (opts.model) args.push("--model", opts.model);
+  args.push(prompt);
+
+  return execFn(resolveClaudeBinFn(), args, {
+    cwd: opts.cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: filteredEnv,
+  });
 }

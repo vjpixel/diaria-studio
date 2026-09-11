@@ -97,6 +97,32 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     ]);
   });
 
+  it("com opts.model, inclui --model <valor> antes do prompt (achado de review do #7981: docstring afirmava Sonnet sem garantia em runtime)", () => {
+    const capturedCalls: unknown[][] = [];
+    const execFn = ((bin: string, args: string[], opts: unknown) => {
+      capturedCalls.push([bin, args, opts]);
+      return "ok";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", model: "sonnet" });
+
+    const [, args] = capturedCalls[0] as [string, string[], unknown];
+    assert.deepEqual(args.slice(-3), ["--model", "sonnet", "prompt"]);
+  });
+
+  it("sem opts.model, --model nunca aparece nos args", () => {
+    const capturedCalls: unknown[][] = [];
+    const execFn = ((bin: string, args: string[], opts: unknown) => {
+      capturedCalls.push([bin, args, opts]);
+      return "ok";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
+
+    const [, args] = capturedCalls[0] as [string, string[], unknown];
+    assert.equal(args.includes("--model"), false);
+  });
+
   it("retorna o stdout do execFn", () => {
     const execFn = (() => "texto de resposta") as unknown as typeof import("node:child_process").execFileSync;
     const result = callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });

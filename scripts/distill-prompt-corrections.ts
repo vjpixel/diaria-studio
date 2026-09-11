@@ -53,10 +53,11 @@
  * script — mesma separação de #7990/REGRA DE OURO.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
+import { readEditorRequestsForEditions } from "./collect-edition-signals.ts";
 import { isCaptureVerifiedRequestType } from "./lib/capture-verified-request-types.ts";
 import { runDistillationBacktest, TITLE_MAX_CHARS, type DistillationBacktestReport } from "./lib/distillation-backtest.ts";
 import { evaluateDistillationCadence, type DistillationCadenceState, type DistillationCadenceDecision } from "./lib/distillation-cadence-guard.ts";
@@ -73,6 +74,8 @@ export const MIN_DISTINCT_STORIES = 2;
 /** Aproximação grosseira chars→tokens (~4 chars/token, convenção comum pra estimativa, nunca contagem exata — a medição real vem do uso reportado pelo `claude --print`). */
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 const CRITIQUE_OUTPUT_TOKENS_ESTIMATE = 150;
+/** Placeholder devolvido no branch `cadence_blocked` — o backtest real nunca roda quando a cadência já bloqueou (ver achado de review do #7981, P2). */
+const EMPTY_BACKTEST_REPORT: DistillationBacktestReport = { editions_analyzed: 0, checks: [] };
 
 export type DistillationLane = "mechanical-guard" | "editorial-signoff" | "evidence-only";
 
@@ -106,28 +109,18 @@ export interface DistillationResult {
 
 interface RawEvent extends EditorRequestEntry {}
 
+/**
+ * Reusa `readEditorRequestsForEditions` (`collect-edition-signals.ts`,
+ * #4966) em vez de reimplementar a leitura de `editor-requests.jsonl` —
+ * achado de review do #7981 (code-reviewer, P2): a versão anterior deste
+ * arquivo duplicava linha-a-linha a mesma lógica de leitura/tolerância a
+ * linha malformada, contrariando o mesmo princípio de "nunca reimplementar"
+ * que este módulo já aplica à filtragem de ambiente (`claudeCliEnv`).
+ */
 function readAllEditorRequests(editionDirsByAammdd: ReadonlyMap<string, string>): RawEvent[] {
-  const events: RawEvent[] = [];
-  for (const [, dir] of editionDirsByAammdd) {
-    const path = join(dir, "_internal", "editor-requests.jsonl");
-    if (!existsSync(path)) continue;
-    let content: string;
-    try {
-      content = readFileSync(path, "utf8");
-    } catch {
-      continue;
-    }
-    for (const line of content.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (entry && typeof entry === "object") events.push(entry as RawEvent);
-      } catch {
-        // linha malformada — ignorada, mesma tolerância de readEditorRequestsForEditions
-      }
-    }
-  }
-  return events;
+  const editions = [...editionDirsByAammdd].map(([edition, dir]) => ({ edition, dir }));
+  const byEdition = readEditorRequestsForEditions(editions);
+  return Object.values(byEdition).flat() as RawEvent[];
 }
 
 function extractUrl(context: Record<string, unknown> | undefined): string | null {
@@ -170,11 +163,18 @@ export interface RunDistillationOptions {
 export function runDistillPromptCorrections(editionsRoot: string, opts: RunDistillationOptions): DistillationResult {
   const cadence = evaluateDistillationCadence(opts.cadenceState, opts.nowIso);
   const rootDir = opts.rootDir ?? ROOT;
-  const backtest = runDistillationBacktest(editionsRoot, rootDir);
 
+  // Achado de review do #7981 (code-reviewer, P2): o backtest varre o
+  // corpus INTEIRO (checkCarouselTextOverflow + checkBannedLexicon +
+  // runStage2LintReport por edição) — trabalho não-trivial de I/O+CPU que
+  // era pago mesmo quando a cadência já decidiu bloquear (o resultado
+  // nunca é lido no branch cadence_blocked). Cadência é checada e retorna
+  // ANTES de rodar o backtest agora.
   if (!cadence.canTrigger) {
-    return { status: "cadence_blocked", cadence, backtest, candidates: [], cost_estimate: null };
+    return { status: "cadence_blocked", cadence, backtest: EMPTY_BACKTEST_REPORT, candidates: [], cost_estimate: null };
   }
+
+  const backtest = runDistillationBacktest(editionsRoot, rootDir);
 
   const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
   const allEvents = readAllEditorRequests(editionDirsByAammdd);
@@ -189,8 +189,6 @@ export function runDistillPromptCorrections(editionsRoot: string, opts: RunDisti
     list.push(e);
     byType.set(e.request_type, list);
   }
-
-  const avgTitleOverflow = byType.has("title-length") ? averageTitleOverflow(editionDirsByAammdd) : null;
 
   const candidates: RequestTypeCandidate[] = [];
   let anyCritiqueNeeded = false;
@@ -256,21 +254,59 @@ export function runDistillPromptCorrections(editionsRoot: string, opts: RunDisti
       continue;
     }
 
-    if (requestType === "title-length" && avgTitleOverflow !== null) {
+    if (requestType === "title-length") {
+      // Achado de review do #7981 (code-reviewer, P2): escopado às EDIÇÕES
+      // que de fato geraram o evento capturado (editionsSet), não o corpus
+      // inteiro — senão a média usada pra propor o novo teto fica
+      // desconectada do conjunto de evidência que passou a barra.
+      const scopedDirs = new Map([...editionDirsByAammdd].filter(([edition]) => editionsSet.has(edition)));
+      const avgTitleOverflow = averageTitleOverflow(scopedDirs);
+
+      if (avgTitleOverflow === null) {
+        // Achado de review do #7981 (code-reviewer, P3): mensagem anterior
+        // caía no branch genérico ("síntese mecânica não suportada"), que é
+        // FALSO pra title-length — a síntese EXISTE, só falta o dado
+        // numérico (scoring-features.json ausente/sem highlight nas
+        // edições qualificantes). Mensagem específica agora.
+        candidates.push({
+          requestType,
+          lane: "editorial-signoff",
+          editions_count: editionsSet.size,
+          distinct_stories: distinctStories,
+          events_missing_url: eventsMissingUrl,
+          sample_events: sampleEvents,
+          proposal: null,
+          critique: null,
+          accepted: false,
+          rejection_reasons: ["evidência de edições/histórias suficiente, mas sem scoring-features.json/title_char_count disponível nas edições qualificantes — não dá pra derivar o overflow médio pra propor um novo teto."],
+        });
+        continue;
+      }
+
       anyCritiqueNeeded = true;
       const proposedTarget = Math.max(20, TITLE_MAX_CHARS - Math.round(avgTitleOverflow));
       const proposal =
         `Pista de sign-off editorial (muda instrução de geração real): título de destaque medido excede ` +
-        `${TITLE_MAX_CHARS} chars em ${avgTitleOverflow.toFixed(1)} chars em média (highlights, todo o corpus disponível). ` +
+        `${TITLE_MAX_CHARS} chars em ${avgTitleOverflow.toFixed(1)} chars em média (highlights, ${editionsSet.size} edições qualificantes). ` +
         `Candidato: apertar o teto ORIENTATIVO no prompt de .claude/agents/writer-destaque.md de "${TITLE_MAX_CHARS} caracteres" ` +
         `pra "${proposedTarget} caracteres" (mesmo padrão de medição-decide-o-teto do #6136 pro carrossel) — o limite ` +
         `MECÂNICO real (${TITLE_MAX_CHARS}) não muda, só o alvo que o prompt pede pro LLM mirar, dando margem real.`;
       const critique = opts.dryRun !== false ? null : runCritiqueForProposal(proposal, opts, rootDir);
       const accepted = opts.dryRun === false ? critique?.consistent === true && critique.majorityPasses === true : false;
       const rejectionReasonsForCritique: string[] = [];
-      if (opts.dryRun !== false) rejectionReasonsForCritique.push("dry-run: crítica holística não rodou (precisa --live) — candidato NÃO aceito automaticamente, só a evidência+proposta ficam prontas.");
-      else if (!critique?.consistent) rejectionReasonsForCritique.push("crítica holística divergiu entre as 3 rodadas — bloqueio automático, precisa revisão humana.");
-      else if (critique.majorityPasses !== true) rejectionReasonsForCritique.push("crítica holística rejeitou o candidato (3/3 concordantes em REJEITA).");
+      if (opts.dryRun !== false) {
+        rejectionReasonsForCritique.push("dry-run: crítica holística não rodou (precisa --live) — candidato NÃO aceito automaticamente, só a evidência+proposta ficam prontas.");
+      } else if (critique === null) {
+        // Achado de review do #7981 (silent-failure-hunter, P2): antes
+        // caía no mesmo texto de "divergiu entre as 3 rodadas" mesmo
+        // quando a crítica NUNCA RODOU (social-critic.md ausente) — dois
+        // motivos de falha bem diferentes escondidos sob a mesma frase.
+        rejectionReasonsForCritique.push("crítica holística NÃO RODOU (social-critic.md ausente ou socialCriticBody não fornecido) — não confundir com divergência real.");
+      } else if (!critique.consistent) {
+        rejectionReasonsForCritique.push("crítica holística divergiu entre as 3 rodadas — bloqueio automático, precisa revisão humana.");
+      } else if (critique.majorityPasses !== true) {
+        rejectionReasonsForCritique.push("crítica holística rejeitou o candidato (3/3 concordantes em REJEITA).");
+      }
 
       candidates.push({
         requestType,
@@ -312,11 +348,36 @@ export function runDistillPromptCorrections(editionsRoot: string, opts: RunDisti
   return { status, cadence, backtest, candidates, cost_estimate: costEstimate };
 }
 
+/** `model: "sonnet"` explícito — mesma exigência do resto do repo pra subagente ad-hoc (CLAUDE.md) e o que a docstring de `holistic-critique.ts` sempre afirmou, mas só passou a ser GARANTIDO em runtime pelo `--model` flag depois do achado de review do #7981 (comment-analyzer, P2). */
 function runCritiqueForProposal(proposal: string, opts: RunDistillationOptions, rootDir: string): HolisticCritiqueResult | null {
   if (!opts.socialCriticBody) return null;
   const prompt = buildCritiquePrompt(opts.socialCriticBody, proposal);
   const callFn = opts.callClaudeCliFn ?? callClaudeCli;
-  return runHolisticCritique(prompt, { cwd: rootDir }, 3, callFn);
+  return runHolisticCritique(prompt, { cwd: rootDir, model: "sonnet" }, 3, callFn);
+}
+
+/**
+ * Grava `nowIso` de volta em `cadenceStatePath` sempre que a cadência NÃO
+ * bloqueou este disparo (`resultStatus !== "cadence_blocked"`) — o disparo
+ * aconteceu de fato, mesmo que o resultado tenha sido "sem padrão
+ * suficiente" (mesma semântica documentada em
+ * `DistillationCadenceState.triggeredAt`). Extraído como função própria
+ * (achado de review do #7981, P1, 3 agentes independentes: a versão
+ * anterior só LIA o arquivo de cadência e nunca gravava de volta, então o
+ * teto semanal nunca tinha efeito real) — testável sem precisar rodar o
+ * script inteiro como subprocesso.
+ */
+export function persistCadenceTriggerIfRan(
+  cadenceStatePath: string,
+  cadenceState: DistillationCadenceState,
+  nowIso: string,
+  resultStatus: DistillationResult["status"],
+  rootDir: string,
+): void {
+  if (resultStatus === "cadence_blocked") return;
+  const updatedState: DistillationCadenceState = { triggeredAt: [...cadenceState.triggeredAt, nowIso] };
+  mkdirSync(resolve(rootDir, "data"), { recursive: true });
+  writeFileSync(cadenceStatePath, JSON.stringify(updatedState, null, 2) + "\n", "utf8");
 }
 
 function formatReport(result: DistillationResult): string {
@@ -371,6 +432,8 @@ if (isMainModule(import.meta.url)) {
     socialCriticBody,
     rootDir: ROOT,
   });
+
+  persistCadenceTriggerIfRan(cadenceStatePath, cadenceState, nowIso, result.status, ROOT);
 
   console.log(json ? JSON.stringify(result, null, 2) : formatReport(result));
 }

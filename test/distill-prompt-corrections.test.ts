@@ -3,10 +3,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runDistillPromptCorrections, MIN_DISTINCT_EDITIONS, MIN_DISTINCT_STORIES } from "../scripts/distill-prompt-corrections.ts";
+import { runDistillPromptCorrections, persistCadenceTriggerIfRan, MIN_DISTINCT_EDITIONS, MIN_DISTINCT_STORIES } from "../scripts/distill-prompt-corrections.ts";
 import type { RequestType, RequestTarget, Resolution } from "../scripts/log-editor-request.ts";
 
 interface EventSpec {
@@ -202,6 +202,62 @@ describe("runDistillPromptCorrections (#7981)", () => {
       assert.match(c.rejection_reasons.join(" "), /síntese mecânica/);
     } finally {
       rmSync(editionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("cadence bloqueada: backtest NÃO roda (achado de review, P2 — antes rodava sempre, mesmo bloqueado)", () => {
+    const editionsRoot = mkdtempSync(join(tmpdir(), "distill-orch-"));
+    try {
+      // corpus com dado real de overflow — se o backtest rodasse, editions_analyzed > 0.
+      writeEditorRequests(editionsRoot, "260901", [{ request_type: "tone", target: "d1", description: "x", resolution: "accepted" }]);
+      const result = runDistillPromptCorrections(editionsRoot, {
+        cadenceState: { triggeredAt: ["2026-09-10T12:00:00.000Z"] },
+        nowIso: "2026-09-11T12:00:00.000Z",
+        rootDir: editionsRoot,
+      });
+      assert.equal(result.status, "cadence_blocked");
+      assert.deepEqual(result.backtest, { editions_analyzed: 0, checks: [] });
+    } finally {
+      rmSync(editionsRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("persistCadenceTriggerIfRan (#7981) — achado de review P1 (3 agentes independentes): sem isto, o teto semanal nunca tinha efeito real", () => {
+  it("grava nowIso em triggeredAt quando o disparo NÃO foi bloqueado", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "distill-persist-"));
+    try {
+      const cadencePath = join(rootDir, "data", "distillation-cadence.json");
+      persistCadenceTriggerIfRan(cadencePath, { triggeredAt: ["2026-09-01T00:00:00.000Z"] }, "2026-09-11T12:00:00.000Z", "no_qualifying_pattern", rootDir);
+      assert.equal(existsSync(cadencePath), true);
+      const written = JSON.parse(readFileSync(cadencePath, "utf8"));
+      assert.deepEqual(written.triggeredAt, ["2026-09-01T00:00:00.000Z", "2026-09-11T12:00:00.000Z"]);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("NÃO grava nada quando resultStatus === cadence_blocked (o disparo nem rodou)", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "distill-persist-"));
+    try {
+      const cadencePath = join(rootDir, "data", "distillation-cadence.json");
+      persistCadenceTriggerIfRan(cadencePath, { triggeredAt: [] }, "2026-09-11T12:00:00.000Z", "cadence_blocked", rootDir);
+      assert.equal(existsSync(cadencePath), false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("2 disparos consecutivos: o 2º vê o histórico do 1º e evaluateDistillationCadence bloquearia (integração real do teto semanal)", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "distill-persist-"));
+    try {
+      const cadencePath = join(rootDir, "data", "distillation-cadence.json");
+      persistCadenceTriggerIfRan(cadencePath, { triggeredAt: [] }, "2026-09-11T10:00:00.000Z", "no_qualifying_pattern", rootDir);
+      const stateAfterFirst = JSON.parse(readFileSync(cadencePath, "utf8"));
+      assert.equal(stateAfterFirst.triggeredAt.length, 1);
+      // 2º disparo no mesmo dia leria este estado e evaluateDistillationCadence bloquearia — testado isoladamente em distillation-cadence-guard.test.ts; aqui confirmamos que o estado persistido é o que alimentaria essa checagem.
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
     }
   });
 });
