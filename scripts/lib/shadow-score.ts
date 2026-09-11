@@ -20,19 +20,25 @@
  * **`shadow_score_alt` NÃO reproduz `score` real, mesmo com pesos idênticos
  * aos do rubrico — achado medido ao vivo, não hipótese.** `weights` aqui só
  * cobre as features booleanas de `CANDIDATE_FEATURES`
- * (`calibration-power-report.ts`): `primary_source`/`hands_on`/`academy`/
- * `howto_br`/`howto_br_source`. O rubrico real do scorer também aplica
- * `impact_routine`(+10)/`impact_routine_br`(+5, julgamento do LLM sobre se
- * o bônus se aplica, não uma feature booleana pré-computada),
- * `coverage`(+5/fonte extra, sem teto) e o bônus tiered de
- * `audience_affinity` — nenhum desses é modelado aqui, porque não são
- * features booleanas simples com presença/ausência determinística (são
- * julgamento do LLM, ou numéricos/tiered). Medido contra o corpus real
- * (105 edições, pesos candidato idênticos ao rubrico real): 724/1170
- * linhas comparáveis batem exatamente; as outras 446 diferem pela soma
- * dos bônus não-modelados que se aplicaram àquele artigo especificamente
- * (diferenças observadas: -5 a -70, sempre negativas — shadow SUBESTIMA
- * porque não conta bônus que o real conta, nunca o contrário). Isso é
+ * (`calibration-power-report.ts`, 6 features após excluir
+ * `NON_CALIBRATABLE_FEATURES`): `primary_source`/`hands_on`/`academy`/
+ * `howto_br`/`howto_br_source`/`has_official_link` (esta última sem peso
+ * no candidato baseline, então não afeta o cálculo hoje). O rubrico real
+ * do scorer também aplica `impact_routine`(+10)/`impact_routine_br`(+5,
+ * julgamento do LLM sobre se o bônus se aplica, não uma feature booleana
+ * pré-computada), `coverage`(+5/fonte extra, sem teto) e o bônus TIERED de
+ * `audience_affinity` (+10/+5/+0/**-5**, este último uma PENALIDADE) —
+ * nenhum desses é modelado aqui, porque não são features booleanas
+ * simples com presença/ausência determinística (são julgamento do LLM, ou
+ * numéricos/tiered). Medido contra o corpus real (105 edições, pesos
+ * candidato idênticos ao rubrico real): 724/1170 linhas comparáveis batem
+ * exatamente; as outras 446 diferem pela soma dos bônus/penalidades
+ * não-modelados que se aplicaram àquele artigo especificamente
+ * (diferenças observadas: -70 a +5 — a maioria negativa, shadow tende a
+ * SUBESTIMAR por não contar bônus que o real conta, mas 53/446 são
+ * POSITIVAS: quando a penalidade não-modelada de `audience_affinity`
+ * (-5, affinity < 0.1) supera os bônus não-modelados aplicáveis àquele
+ * artigo, shadow > real. Nenhuma direção fixa é garantida). Isso é
  * esperado e não invalida o mecanismo: o que o shadow-mode mede é
  * concordância de RANKING dentro do subconjunto calibrável, não
  * reprodução do valor absoluto do score real — ver
@@ -41,14 +47,23 @@
 
 import { createHash } from "node:crypto";
 import type { ScoringFeatureRow } from "./scoring-features.ts";
+import type { CandidateFeature } from "../calibration-power-report.ts";
 
 /**
- * Pesos candidatos — chave é o nome da feature booleana (mesmo domínio de
- * `CANDIDATE_FEATURES` em `calibration-power-report.ts`), valor é o ponto
- * a somar quando a feature é `true`. Sem entrada pra uma feature = peso 0
- * (mesmo efeito que omitir do rubrico real).
+ * Pesos candidatos — chave é o nome de uma feature booleana calibrável
+ * (`CandidateFeature`, de `CANDIDATE_FEATURES` em
+ * `calibration-power-report.ts` — a ÚNICA fonte de verdade de nomes
+ * válidos), valor é o ponto a somar quando a feature é `true`. Sem entrada
+ * pra uma feature = peso 0 (mesmo efeito que omitir do rubrico real).
+ * `Partial` porque um candidato raramente pesa TODAS as features — só as
+ * que está testando. Tipado contra `CandidateFeature` (não `string` solto)
+ * de propósito: um typo ou nome obsoleto vira erro de COMPILAÇÃO ao montar
+ * um `CandidateWeightsFile` em TS, em vez de silenciosamente contribuir
+ * peso 0 pra sempre sem nenhum sinal (achado de review do #7977) — arquivo
+ * JSON hand-authored ainda pode ter uma chave inválida, por isso
+ * `compute-shadow-scores.ts` também valida em runtime ao carregar.
  */
-export type CandidateWeights = Readonly<Record<string, number>>;
+export type CandidateWeights = Readonly<Partial<Record<CandidateFeature, number>>>;
 
 export interface CandidateWeightsFile {
   /** Identificador legível do candidato (não é o hash — ver `weightsHash`). */

@@ -65,6 +65,22 @@ describe("loadCandidateWeights / listCandidateWeightHashes (#7977)", () => {
   it("listCandidateWeightHashes inclui o candidato baseline real", () => {
     assert.ok(listCandidateWeightHashes().includes("340ec6d9d3e9b0f1"));
   });
+
+  it("candidato com chave desconhecida (typo/feature obsoleta) é rejeitado, nunca silenciosamente contribui peso 0 (achado de review do #7977)", () => {
+    // loadCandidateWeights lê de CANDIDATE_WEIGHTS_DIR (fixo, relativo ao
+    // repo) — este teste escreve um arquivo TEMPORÁRIO nesse diretório
+    // real e garante remoção no finally, mesmo padrão de "o candidato real
+    // committed" acima que já lê de lá.
+    const badWeights = { hands_onn: 8 } as any; // typo proposital: "hands_onn"
+    const hash = weightsHash(badWeights);
+    const path = join(CANDIDATE_WEIGHTS_DIR, `${hash}.json`);
+    writeFileSync(path, JSON.stringify({ label: "typo-teste", created_at: new Date(0).toISOString(), rationale: "teste temporário — removido no finally", weights: badWeights }), "utf8");
+    try {
+      assert.throws(() => loadCandidateWeights(hash), /chave\(s\) desconhecida\(s\).*hands_onn/);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
 });
 
 describe("runComputeShadowScores (#7977)", () => {
@@ -140,6 +156,74 @@ describe("runComputeShadowScores (#7977)", () => {
       const before = readFileSync(featuresPath, "utf8");
       runComputeShadowScores(dir, { edition: "260905", weightsHash: "340ec6d9d3e9b0f1", force: false });
       assert.equal(readFileSync(featuresPath, "utf8"), before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--force sobre arquivo pré-existente registra overwritten_previous_hash (achado de review do #7977)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shadow-scores-overwrite-hash-"));
+    try {
+      writeFeaturesFile(dir, "260906", [featureRow("https://x.com/a")]);
+      const outPath = join(dir, "260906", "_internal", "scoring-shadow.json");
+      writeFileSync(outPath, JSON.stringify({ candidate_weights_hash: "algumcandidatoanterior" }), "utf8");
+
+      const results = runComputeShadowScores(dir, { edition: "260906", weightsHash: "340ec6d9d3e9b0f1", force: true });
+      assert.equal(results[0].status, "written");
+      assert.equal(results[0].overwritten_previous_hash, "algumcandidatoanterior");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("primeira escrita (sem arquivo pré-existente) NÃO carrega overwritten_previous_hash", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shadow-scores-fresh-write-"));
+    try {
+      writeFeaturesFile(dir, "260907", [featureRow("https://x.com/a")]);
+      const results = runComputeShadowScores(dir, { edition: "260907", weightsHash: "340ec6d9d3e9b0f1", force: false });
+      assert.equal(results[0].overwritten_previous_hash, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("scoring-features.json malformado (JSON inválido) vira status error com o motivo, não trava", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shadow-scores-malformed-"));
+    try {
+      const featDir = join(dir, "260908", "_internal");
+      mkdirSync(featDir, { recursive: true });
+      writeFileSync(join(featDir, "scoring-features.json"), "{ inválido", "utf8");
+      const results = runComputeShadowScores(dir, { edition: "260908", weightsHash: "340ec6d9d3e9b0f1", force: false });
+      assert.equal(results[0].status, "error");
+      assert.match(results[0].error ?? "", /JSON malformado/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--edition com AAMMDD que não existe: resultado error nomeado, NUNCA 0 processadas em silêncio (achado de review do #7977)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shadow-scores-typo-edition-"));
+    try {
+      writeFeaturesFile(dir, "260909", [featureRow("https://x.com/a")]); // edição real existe, mas não a pedida
+      const results = runComputeShadowScores(dir, { edition: "269999", weightsHash: "340ec6d9d3e9b0f1", force: false });
+      assert.equal(results.length, 1);
+      assert.equal(results[0].status, "error");
+      assert.equal(results[0].edition, "269999");
+      assert.match(results[0].error ?? "", /não encontrada/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rows não-array em scoring-features.json (schema drift) vira 0 linhas com warning, não crash", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shadow-scores-nonarray-rows-"));
+    try {
+      const featDir = join(dir, "260910", "_internal");
+      mkdirSync(featDir, { recursive: true });
+      writeFileSync(join(featDir, "scoring-features.json"), JSON.stringify({ edition: "260910", rows: { not: "an array" } }), "utf8");
+      const results = runComputeShadowScores(dir, { edition: "260910", weightsHash: "340ec6d9d3e9b0f1", force: false });
+      assert.equal(results[0].status, "written");
+      assert.equal(results[0].rows, 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
