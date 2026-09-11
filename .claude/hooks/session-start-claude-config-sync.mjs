@@ -135,9 +135,18 @@ function runBootstrap(scriptName) {
     }
     const [cmd, args] =
       scriptName === "bootstrap.ps1"
-        ? ["powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath]]
+        // -WindowStyle Hidden reforça windowsHide abaixo (#7952) — cinto e
+        // suspensório: windowsHide evita que ESTE processo aloque console
+        // (CREATE_NO_WINDOW), -WindowStyle Hidden evita que o PRÓPRIO
+        // powershell.exe abra uma janela visível se algo (ex: um erro do
+        // interpretador) contornar o CREATE_NO_WINDOW.
+        ? ["powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", scriptPath]]
         : ["bash", [scriptPath]];
-    execFile(cmd, args, { timeout: 120000 }, (err, stdout, stderr) => {
+    // windowsHide (#7952): sem isso, no Windows, este execFile (e o git
+    // clone dentro do bootstrap.sh/ps1) aloca um console PRÓPRIO — visível
+    // como janela do Windows Terminal que abre e fecha rápido a cada sessão
+    // nova. Nunca custa nada em outros SOs (a opção é ignorada lá).
+    execFile(cmd, args, { timeout: 120000, windowsHide: true }, (err, stdout, stderr) => {
       resolve({ ok: !err, out: String(stdout || "").slice(0, 2000), err: String(stderr || err?.message || "").slice(0, 500) });
     });
   });
@@ -145,7 +154,9 @@ function runBootstrap(scriptName) {
 
 function cloneRepo() {
   return new Promise((resolve) => {
-    execFile("git", ["clone", REPO_URL, REPO_DIR], { timeout: 60000 }, (err, stdout, stderr) => {
+    // windowsHide (#7952): mesma razão do execFile em runBootstrap acima —
+    // sem isso, este `git clone` aloca console próprio no Windows.
+    execFile("git", ["clone", REPO_URL, REPO_DIR], { timeout: 60000, windowsHide: true }, (err, stdout, stderr) => {
       resolve({ ok: !err, err: String(stderr || err?.message || "").slice(0, 500) });
     });
   });
@@ -197,9 +208,20 @@ async function run() {
 // script se re-lança destacado e sai na hora — a sessão NUNCA espera rede.
 if (!process.env.CLAUDE_CONFIG_AUTOSYNC_CHILD) {
   try {
+    // windowsHide (#7952): sem ela, `detached: true` no Windows faz o
+    // filho ganhar um CONSOLE PRÓPRIO (doc do Node: "the child will have
+    // its own console window") — visível como uma janela do Windows
+    // Terminal que abre e fecha rápido no início de TODA sessão nova.
+    // `windowsHide: true` passa CREATE_NO_WINDOW pro processo filho, que
+    // segue destacado/sobrevive à saída deste hook (é isso que o
+    // auto-destacamento precisa) mas sem console — por isso os `execFile`
+    // dentro de `runBootstrap`/`cloneRepo` também precisam de
+    // `windowsHide` (senão um executável de console filho alocaria OUTRO
+    // console, mesmo mecanismo do flash `gh`→`tzutil` já medido).
     spawn(process.execPath, [fileURLToPath(import.meta.url)], {
       detached: true,
       stdio: "ignore",
+      windowsHide: true,
       env: { ...process.env, CLAUDE_CONFIG_AUTOSYNC_CHILD: "1" },
     }).unref();
   } catch {
