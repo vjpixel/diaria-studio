@@ -32,7 +32,7 @@
  */
 
 import "dotenv/config";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { braveSearch, freshnessForWindow, type BraveWebResult, type BraveSearchResponse } from "./lib/brave-search.ts";
@@ -363,6 +363,89 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// ---------------------------------------------------------------------------
+// Checkpoint por query (#7944)
+// ---------------------------------------------------------------------------
+//
+// Stage 1 pode reiniciar várias vezes (crash, sessão interrompida, worktree
+// colidindo — ver issue #7944, edição 260904: 6 restarts em ~1h30, cada um
+// re-cobrando as ~53 queries Brave do zero). O `--out` final só é escrito
+// atomicamente ao FIM de `main()` (ver renameSync abaixo) — um kill no meio
+// perde 100% do progresso da tentativa, mesmo que dezenas de queries já
+// tenham sido pagas à Brave.
+//
+// O checkpoint é um arquivo JSONL derivado do `--out` (mesmo diretório,
+// escopado à MESMA edição — reruns de edições diferentes nunca colidem).
+// Cada query bem-sucedida é apendada assim que completa, então um kill no
+// meio preserva tudo que já rodou. Na próxima invocação (mesmo `--out`),
+// cada query cujo checkpoint já tem outcome "ok"/"empty" é reaproveitada
+// sem tocar a Brave; só "fail"/ausente é (re)executada.
+
+/** Pure: deriva o path do checkpoint incremental a partir do `--out` final. */
+export function checkpointPathFor(outPath: string): string {
+  return outPath.replace(/\.json$/i, "") + ".checkpoint.jsonl";
+}
+
+/** Pure: chave de identidade de uma query no checkpoint. */
+export function checkpointKey(source: string, queryUsed: string): string {
+  return `${source} ${queryUsed}`;
+}
+
+/**
+ * Pure: parseia um arquivo de checkpoint JSONL, tolerante a linha
+ * corrompida/truncada (processo pode ter sido morto no meio de um append).
+ * Quando a mesma chave aparece mais de uma vez, a ÚLTIMA ocorrência vence
+ * (permite reprocessar uma query sem duplicar/sem precisar limpar o arquivo).
+ */
+export function parseCheckpointLines(raw: string): RunRecord[] {
+  const byKey = new Map<string, RunRecord>();
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let rec: RunRecord;
+    try {
+      rec = JSON.parse(trimmed);
+    } catch {
+      continue; // linha corrompida/truncada — ignorar, não abortar o parse inteiro
+    }
+    if (!rec || typeof rec.source !== "string" || typeof rec.query_used !== "string") continue;
+    byKey.set(checkpointKey(rec.source, rec.query_used), rec);
+  }
+  return [...byKey.values()];
+}
+
+/** Uma query planejada (source ou discovery topic) antes de rodar. */
+export interface PlannedQuery {
+  name: string; // source name, ou "discovery: <query truncada>"
+  query: string;
+  discovered: boolean;
+}
+
+/**
+ * Pure: dado o checkpoint carregado e a lista de queries que este batch
+ * precisa cobrir, separa as que já têm resultado reaproveitável (outcome
+ * "ok"/"empty" no checkpoint — sucesso, mesmo sem artigos encontrados) das
+ * que precisam ser (re)executadas contra a Brave (ausentes do checkpoint
+ * OU outcome "fail" na tentativa anterior).
+ */
+export function planQueriesWithCheckpoint(
+  planned: PlannedQuery[],
+  checkpoint: RunRecord[],
+): { toRun: PlannedQuery[]; reused: RunRecord[] } {
+  const byKey = new Map(checkpoint.map((r) => [checkpointKey(r.source, r.query_used), r] as const));
+  const toRun: PlannedQuery[] = [];
+  const reused: RunRecord[] = [];
+  for (const p of planned) {
+    const hit = byKey.get(checkpointKey(p.name, p.query));
+    if (hit && hit.outcome !== "fail") {
+      reused.push(hit);
+    } else {
+      toRun.push(p);
+    }
+  }
+  return { toRun, reused };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
@@ -429,32 +512,60 @@ async function main(): Promise<void> {
     `[fetch-websearch-batch] ${sources.length} fontes + ${discoveryTopics.length} discovery queries = ${totalQueries} total`,
   );
 
-  // Rate-limited serial dispatch (Brave free tier: 1 req/sec)
-  const results: RunRecord[] = [];
+  // #7944: checkpoint por query — pula o que uma tentativa anterior desta
+  // MESMA edição já resolveu com sucesso, mesmo que o `--out` final nunca
+  // tenha sido escrito (restart no meio do batch).
+  const outAbs = resolve(ROOT, args.out);
+  const checkpointPath = checkpointPathFor(outAbs);
+  const checkpointRaw = existsSync(checkpointPath) ? readFileSync(checkpointPath, "utf8") : "";
+  const checkpointRecords = parseCheckpointLines(checkpointRaw);
+
+  const plannedSourceQueries: PlannedQuery[] = sources.map((src) => ({
+    name: src.name,
+    query: buildSourceQuery(src),
+    discovered: false,
+  }));
+  const plannedDiscoveryQueries: PlannedQuery[] = discoveryTopics.map((topic) => ({
+    name: `discovery: ${topic.query.slice(0, 40)}`,
+    query: topic.query,
+    discovered: true,
+  }));
+  const planned = [...plannedSourceQueries, ...plannedDiscoveryQueries];
+
+  const { toRun, reused } = planQueriesWithCheckpoint(planned, checkpointRecords);
+  if (reused.length > 0) {
+    console.error(
+      `[fetch-websearch-batch] checkpoint (resume): ${reused.length}/${planned.length} queries já resolvidas numa tentativa anterior — 0 chamadas Brave pra elas. ${toRun.length} a (re)executar.`,
+    );
+  }
+
+  // Rate-limited serial dispatch (Brave free tier: 1 req/sec) — só pras
+  // queries que faltam ou falharam antes.
   const startBatch = Date.now();
+  const freshByKey = new Map<string, RunRecord>();
   let queryIdx = 0;
 
-  for (const src of sources) {
+  for (const p of toRun) {
     if (queryIdx > 0) await sleep(BRAVE_RATE_LIMIT_MS);
     queryIdx++;
-    const query = buildSourceQuery(src);
-    const result = await runQuery(query, src.name, args, apiKey, false);
-    results.push(result);
+    const result = await runQuery(p.query, p.name, args, apiKey, p.discovered);
+    freshByKey.set(checkpointKey(p.name, p.query), result);
+    // Append imediato — sobrevive a um kill do processo logo em seguida.
+    appendFileSync(checkpointPath, JSON.stringify(result) + "\n", "utf8");
     console.error(
-      `[fetch-websearch-batch] ${queryIdx}/${totalQueries} ${src.name}: ${result.outcome} (${result.articles.length} articles, ${result.duration_ms}ms)`,
+      `[fetch-websearch-batch] ${queryIdx}/${toRun.length} (+${reused.length} via checkpoint) ${p.name}: ${result.outcome} (${result.articles.length} articles, ${result.duration_ms}ms)`,
     );
   }
 
-  for (const topic of discoveryTopics) {
-    if (queryIdx > 0) await sleep(BRAVE_RATE_LIMIT_MS);
-    queryIdx++;
-    const sourceName = `discovery: ${topic.query.slice(0, 40)}`;
-    const result = await runQuery(topic.query, sourceName, args, apiKey, true);
-    results.push(result);
-    console.error(
-      `[fetch-websearch-batch] ${queryIdx}/${totalQueries} ${sourceName}: ${result.outcome} (${result.articles.length} articles, ${result.duration_ms}ms)`,
-    );
-  }
+  // Reconstrói a ordem original (sources primeiro, depois discovery) a
+  // partir do que rodou agora + do que veio do checkpoint.
+  const reusedByKey = new Map(reused.map((r) => [checkpointKey(r.source, r.query_used), r] as const));
+  const results: RunRecord[] = planned.map((p) => {
+    const key = checkpointKey(p.name, p.query);
+    const rec = freshByKey.get(key) ?? reusedByKey.get(key);
+    if (!rec) throw new Error(`[fetch-websearch-batch] invariante quebrado: query "${p.name}" sem resultado fresco nem reaproveitado`);
+    return rec;
+  });
 
   const totalMs = Date.now() - startBatch;
   const totalArticles = results.reduce((s, r) => s + r.articles.length, 0);
@@ -463,14 +574,13 @@ async function main(): Promise<void> {
   const fail = results.filter((r) => r.outcome === "fail").length;
 
   // Atomic write
-  const outAbs = resolve(ROOT, args.out);
   const tmpPath = outAbs + ".tmp";
   writeFileSync(tmpPath, JSON.stringify(results, null, 2), "utf8");
   const { renameSync } = await import("node:fs");
   renameSync(tmpPath, outAbs);
 
   console.error(
-    `[fetch-websearch-batch] done in ${(totalMs / 1000).toFixed(1)}s: ${ok} ok, ${empty} empty, ${fail} fail, ${totalArticles} articles total → ${args.out}`,
+    `[fetch-websearch-batch] done in ${(totalMs / 1000).toFixed(1)}s: ${ok} ok, ${empty} empty, ${fail} fail, ${totalArticles} articles total (${reused.length} via checkpoint) → ${args.out}`,
   );
 }
 
