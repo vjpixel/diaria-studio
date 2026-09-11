@@ -16,6 +16,7 @@ import {
   getCohortEventCounts,
   getStoreCounts,
   getKitActiveSummary,
+  getSubscriptionAsOf,
   SUBSCRIPTION_COVERAGE_WARN_FRACTION,
   computeSubscriptionCoverage,
   getSubscriptionsForSubscriber,
@@ -1096,6 +1097,45 @@ describe("getKitActiveSummary — contribuição real do Kit pra base-ativa (#79
     summary = getKitActiveSummary(db);
     assert.equal(summary.count, 1, "reingestão idempotente — não duplica a contagem");
     assert.equal(summary.asOf, "2026-09-10T09:00:00.000Z", "frescor reflete a rodada mais recente");
+    db.close();
+  });
+});
+
+describe("getSubscriptionAsOf — frescor honesto pra leitura cross-plataforma (#7515/#7516)", () => {
+  it("MAX(updated_at) entre as plataformas dadas, ignorando plataforma fora da lista", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const kitId = ensureSubscriber(db, "kit", "kit-1", "kit@example.com");
+    upsertSubscription(db, kitId, "kit", { status: "active", enteredAt: "2026-09-01", exitedAt: null, source: "organico" }, "2026-09-05T00:00:00.000Z");
+    const brevoId = ensureSubscriber(db, "brevo_diaria", "brevo-1", "brevo@example.com");
+    upsertSubscription(db, brevoId, "brevo_diaria", { status: "active", enteredAt: "2026-09-01", exitedAt: null, source: "organico" }, "2026-09-09T18:30:00.000Z");
+    // beehiiv fora da lista pedida — não deveria influenciar o MAX.
+    const beehiivId = ensureSubscriber(db, "beehiiv", "bh-1", "beehiiv@example.com");
+    upsertSubscription(db, beehiivId, "beehiiv", { status: "active", enteredAt: "2026-09-01", exitedAt: null, source: "organico" }, "2026-09-11T00:00:00.000Z");
+
+    assert.equal(getSubscriptionAsOf(db, ["kit", "brevo_diaria"]), "2026-09-09T18:30:00.000Z");
+    db.close();
+  });
+
+  it("inclui QUALQUER status (diferente de getKitActiveSummary, que filtra status='active') — interesse é " +
+    "'quando a última linha foi tocada', não 'quando o último ativo foi tocado'", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "kit", "kit-1", "kit@example.com");
+    upsertSubscription(db, id, "kit", { status: "cancelled", enteredAt: "2026-09-01", exitedAt: "2026-09-10", source: "organico" }, "2026-09-10T09:00:00.000Z");
+    assert.equal(getSubscriptionAsOf(db, ["kit"]), "2026-09-10T09:00:00.000Z");
+    db.close();
+  });
+
+  it("nenhuma linha pras plataformas dadas -> null, nunca uma data inventada", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    assert.equal(getSubscriptionAsOf(db, ["kit", "brevo_diaria", "beehiiv"]), null);
+    db.close();
+  });
+
+  it("platforms=[] -> null sem tocar o DB (guard de query vazia)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "kit", "kit-1", "kit@example.com");
+    upsertSubscription(db, id, "kit", { status: "active", enteredAt: "2026-09-01", exitedAt: null, source: "organico" }, "2026-09-05T00:00:00.000Z");
+    assert.equal(getSubscriptionAsOf(db, []), null);
     db.close();
   });
 });

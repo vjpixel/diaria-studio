@@ -26,13 +26,19 @@
  *     falha), ela NUNCA conta pro denominador de `registry-mudo` (achado do
  *     review desta fatia, #7378 — contá-la desarmaria esse sinal pra
  *     sempre; ver `avaliadasComInsumoReal` em `main()`).
- *   - `base-ativa`/`leitor-v1` — via snapshots locais de
+ *   - `base-ativa`/`leitor-v1` — Beehiiv via snapshots locais de
  *     `data/beehiiv-backup/` (`scripts/lib/beehiiv-backup-snapshots.ts`,
  *     leitura pura de arquivo, NUNCA API Beehiiv ao vivo — guard de
- *     publicação do overnight/develop). `kitActive` entra como `null`
- *     (nenhuma chamada Kit ao vivo nesta task — decisão desta fatia, não
- *     limitação do contrato: `BaseAtivaDeps.kitActive` já aceita `null` por
- *     desenho).
+ *     publicação do overnight/develop). `kitActive` (base-ativa) e o
+ *     cálculo cross-plataforma de `leitor-v1` (#7515/#7516, 10/09/2026)
+ *     vêm do store `diaria-subscribers.db` (#6464) — leitura do store JÁ
+ *     INGERIDO (por `diaria-subscribers-ingest-kit.ts`/`-beehiiv.ts`/
+ *     `-brevo.ts`, rodados fora deste alarme), NUNCA
+ *     chamada de API Kit/Brevo/Beehiiv ao vivo daqui — mesmo guard de
+ *     publicação, só que via ingestão prévia em vez de snapshot semanal.
+ *     Sem histórico diário (o store guarda estado atual, não snapshots por
+ *     dia) — o mesmo valor do store se aplica a todo dia da janela; ver
+ *     comentário no bloco de `main()` que monta essas duas séries.
  *
  * **`doi-orfaos` fica de fora desta v1, por decisão explícita, não
  * esquecimento**: o valor dela depende só do INSTANTE em que roda (idade dos
@@ -73,7 +79,9 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
-import { DEFAULT_DB_PATH, openDiariaSubscribersDb } from "./lib/diaria-subscribers-db.ts";
+import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getKitActiveSummary, getSubscriptionAsOf } from "./lib/diaria-subscribers-db.ts";
+import { summarizeStoreLeitoresCanonicalDedup, LEITOR_DIARIA_PLATFORMS, type StoreLeitorSummary } from "./lib/leitor-store.ts";
+import { CROSS_PLATFORM_FLOOR_NOTE } from "./lib/diaria-subscribers-identity-resolve.ts";
 import { buildAcquisitionDepsFromStore, brtDayKey } from "./lib/metrics/acquisition-store-deps.ts";
 import { hasCaptureOnDay, type CapturaLogEntry } from "./lib/metrics/captura-log.ts";
 import {
@@ -82,6 +90,7 @@ import {
   enumerarDiasInclusive,
   type Janela,
   type MetricDef,
+  type MetricResult,
   type BaseAtivaDeps,
   type LeitorV1Deps,
 } from "./lib/metrics/registry.ts";
@@ -195,6 +204,99 @@ export function nearestSnapshotOnOrBefore(dates: readonly string[], dia: string)
 
 function countActive(subs: readonly { status: string }[]): number {
   return subs.filter((s) => s.status === "active").length;
+}
+
+/** Converte um `StoreLeitorSummary` (cross-plataforma, #7515/#7516) num
+ *  `MetricResult` de `leitor-v1` pra uma janela de 1 dia. Pura — extraída
+ *  do loop de `main()` pra ser testável sem abrir o store real (#633).
+ *  `qualidade: "piso"` sempre — nunca "exato", mesma semântica de
+ *  `leitor-store.ts` ("número é PISO, nunca exato" por causa de identidade
+ *  não-casada entre plataformas). Quando `subscription_data_coverage_low`
+ *  (#7198), o motivo ganha um aviso explícito — o valor não deve ser lido
+ *  como fato sem essa ressalva.
+ *
+ *  `motivo` base usa `CROSS_PLATFORM_FLOOR_NOTE` importada, NUNCA
+ *  `summary.note` (achado do fleet review pré-merge, type-design-analyzer)
+ *  — o `Pick` original aceitava `note: string` como campo solto do
+ *  `summary`, então nada impedia um caller (teste incluso) de passar uma
+ *  nota vazia/errada e violar em silêncio o invariante "motivo nunca vazio
+ *  quando qualidade !== 'exato'" (`registry.ts`). Importar a constante
+ *  direto (mesmo padrão já usado em `ativacao-coorte.ts`) torna esse erro
+ *  impossível de expressar, não só improvável na prática.
+ *
+ *  `asOf` é parâmetro SEPARADO de `summary` — NUNCA `summary.generated_at`
+ *  (achado do fleet review pré-merge, comment-analyzer, confiança alta):
+ *  `generated_at` é o instante em que a QUERY rodou (`new Date().toISOString()`
+ *  dentro de `summarizeStoreLeitores`), não quando o DADO foi coletado —
+ *  `MetricResult.frescor` é documentado em `registry.ts` como "de quando o
+ *  insumo foi coletado". Usar `generated_at` faria `frescor` ser sempre
+ *  "agora", neutralizando pra sempre o alarme de frescor desta métrica
+ *  (`idadeDias` nunca envelhece). `asOf` vem de `getSubscriptionAsOf`
+ *  (MAX(updated_at) real do store, #7916/#7515) — `null` quando não há
+ *  nenhuma linha de `subscription` pras plataformas cobertas, e nesse caso
+ *  `frescor: null` propaga o "sem insumo" honestamente. */
+export function buildCrossPlatformLeitorResult(
+  summary: Pick<StoreLeitorSummary, "leitores_v1" | "subscription_data_coverage_low">,
+  asOf: string | null,
+  janela: Janela,
+): MetricResult {
+  return {
+    valor: summary.leitores_v1,
+    janela,
+    frescor: asOf,
+    qualidade: "piso",
+    motivo: summary.subscription_data_coverage_low
+      ? `${CROSS_PLATFORM_FLOOR_NOTE} — ATENÇÃO: cobertura de "subscription" baixa no store (#7198), número pode não refletir a base real`
+      : CROSS_PLATFORM_FLOOR_NOTE,
+  };
+}
+
+export interface CrossPlatformDeps {
+  liveKitActive: number | null;
+  crossPlatformLeitor: StoreLeitorSummary | null;
+  /** `getSubscriptionAsOf` sobre `LEITOR_DIARIA_PLATFORMS` — ver docstring
+   *  de `buildCrossPlatformLeitorResult` pro porquê de ser um campo
+   *  separado de `crossPlatformLeitor.generated_at`. */
+  crossPlatformAsOf: string | null;
+}
+
+/** Abre o store (#6464) e lê `kitActive` + `leitor-v1` cross-plataforma —
+ *  SEMPRE fail-soft: qualquer erro, seja na ABERTURA ou na LEITURA
+ *  (`getKitActiveSummary`/`summarizeStoreLeitoresCanonicalDedup`), degrada
+ *  pra `{liveKitActive: null, crossPlatformLeitor: null}` em vez de
+ *  propagar — nunca derruba o alarme inteiro por causa desta parte
+ *  (#7515/#7516, achado do fleet review pré-merge, silent-failure-hunter:
+ *  antes desta extração só a abertura estava protegida, e uma exceção na
+ *  LEITURA — código novo, mais arriscado — subia até o `main().catch` do
+ *  topo do arquivo, contradizendo a promessa "UM alarme, N sinais... nunca
+ *  falha total por 1 sinal" do docstring do módulo).
+ *
+ *  `open`/`readDeps` injetáveis — é o que torna esta função testável sem
+ *  SQLite real (#633): um teste pode injetar um `open` ou `readDeps` que
+ *  lança, e confirmar (a) o resultado degrada pra `{null, null}` e (b)
+ *  `close()` do objeto retornado por `open` foi chamado mesmo assim. */
+export function resolveCrossPlatformDeps(
+  dbPath: string,
+  open: (path: string) => { close(): void } = openDiariaSubscribersDb,
+  readDeps: (db: ReturnType<typeof openDiariaSubscribersDb>) => CrossPlatformDeps = (db) => ({
+    liveKitActive: getKitActiveSummary(db).count,
+    crossPlatformLeitor: summarizeStoreLeitoresCanonicalDedup(db),
+    crossPlatformAsOf: getSubscriptionAsOf(db, LEITOR_DIARIA_PLATFORMS),
+  }),
+): CrossPlatformDeps {
+  let db: { close(): void } | null = null;
+  try {
+    db = open(dbPath);
+    return readDeps(db as ReturnType<typeof openDiariaSubscribersDb>);
+  } catch (err) {
+    console.error(
+      `${LOG_PREFIX} store do #6464 indisponível/falhou (${dbPath}) pra base-ativa/leitor-v1 cross-plataforma: ` +
+        `${(err as Error).message} — caindo pro caminho só-Beehiiv (kitActive=null, leitor-v1 sem Kit/Brevo).`,
+    );
+    return { liveKitActive: null, crossPlatformLeitor: null, crossPlatformAsOf: null };
+  } finally {
+    db?.close();
+  }
 }
 
 interface MetaAtingidaState {
@@ -369,14 +471,56 @@ async function main(): Promise<void> {
     }
   }
 
-  // ── base-ativa / leitor-v1 — via snapshots locais de data/beehiiv-backup/ ──
+  // ── base-ativa / leitor-v1 — snapshot Beehiiv + store cross-plataforma (#6464) ──
+  //
+  // #7515/#7516 (10/09/2026): antes desta fatia, `kitActive` entrava sempre
+  // `null` (decisão de escopo da fatia 8/#7180, não limitação do contrato —
+  // ver `BaseAtivaDeps.kitActive`) e `leitor-v1` era calculado só sobre o
+  // snapshot Beehiiv (`leitorV1Def`, ainda válido/intocado — usado por
+  // `metrics-cli.ts`/`docs/definicao-leitor.md`). Com a base migrando pro
+  // Kit (rampa #6504), o snapshot Beehiiv esvaziou (0 `active` no snapshot
+  // de 2026-09-06) e as duas métricas passaram a reportar quedas falsas —
+  // não é a base encolhendo, é ela mudando de plataforma. Decisão do editor
+  // (comentário nas issues, 10/09/2026): usar dado CENTRALIZADO (Kit, Brevo
+  // e Beehiiv) em vez de só Beehiiv.
+  //
+  // `kitActive` (base-ativa) passa a ser a leitura do store unificado
+  // (#6464, `diaria-subscribers-db.ts`) — mesma semântica já documentada no
+  // contrato (`kitActive: number | null — Contagem viva do Kit`), só que
+  // agora de fato lida em vez de sempre `null`.
+  //
+  // `leitor-v1` cross-plataforma passa a usar `summarizeStoreLeitoresCanonicalDedup`
+  // (`leitor-store.ts`, #6591/#7204) em vez de `leitorV1Def` — soma
+  // Kit+Brevo+Beehiiv sobre o store unificado, deduplicado por edição
+  // canônica. `leitorV1Def`/`leitor.ts` (Beehiiv-only) continuam existindo
+  // e INTOCADOS — só este alarme muda de fonte; a definição pública
+  // (`docs/definicao-leitor.md`) e outros consumidores (`metrics-cli.ts`)
+  // não são afetados por este PR.
+  //
+  // **Limitação aceita, documentada — não é regressão silenciosa:** o store
+  // não guarda snapshot HISTÓRICO por dia (é leitura do estado atual), então
+  // tanto `kitActive` quanto o cross-plataforma usam o MESMO valor vivo pra
+  // todo dia da janela — mesma limitação que `kitActive` já tinha por
+  // desenho antes desta fatia (nunca teve histórico, só leitura do store ingerido). Isso
+  // significa que `evaluateQueda` não detecta uma queda real que aconteça
+  // SÓ na parte Kit/cross-plataforma dessas 2 métricas dentro da janela —
+  // detecta queda na parte Beehiiv (que segue com série real por snapshot)
+  // e no salto entre janelas de execução (o valor vivo muda a cada rodada).
+  // Reconstruir uma série histórica de verdade pro store exigiria um
+  // mecanismo de snapshot novo, fora do escopo desta fatia.
   const snapshotDates = listSnapshotDates(backupRoot);
-  // Cobertura de série pras 2 métricas de snapshot — NUNCA captura-log.jsonl
-  // (achado do review desta fatia, #7378: aquele log é específico da
-  // ingestão Kit, sem relação com o snapshot semanal da Beehiiv). Um dia
-  // "tem insumo disponível" pra queda quando algum snapshot já existia em
-  // ou antes dele.
+  // Cobertura de série pras 2 métricas — NUNCA captura-log.jsonl (achado do
+  // review desta fatia, #7378: aquele log é específico da ingestão Kit, sem
+  // relação com o snapshot semanal da Beehiiv). Um dia "tem insumo
+  // disponível" pra queda quando algum snapshot já existia em ou antes
+  // dele — continua sendo o sinal de cobertura pras duas métricas mesmo
+  // após #7515/#7516 (a parte Beehiiv de cada uma segue gated por
+  // snapshot; a parte viva/cross-plataforma está disponível em toda
+  // execução, então não estreita a cobertura, só a alarga).
   const diasComSnapshot = dias.filter((d) => nearestSnapshotOnOrBefore(snapshotDates, d) !== null);
+
+  const { liveKitActive, crossPlatformLeitor, crossPlatformAsOf } = resolveCrossPlatformDeps(dbPath);
+
   if (snapshotDates.length > 0) {
     const baseAtivaDef = getMetric("base-ativa") as MetricDef<BaseAtivaDeps> | undefined;
     const leitorV1Def = getMetric("leitor-v1") as MetricDef<LeitorV1Deps> | undefined;
@@ -396,7 +540,7 @@ async function main(): Promise<void> {
         const snapshotDate = nearestSnapshotOnOrBefore(snapshotDates, dia);
         const janela: Janela = { de: dia, ate: dia, granularidade: "dia", fuso: "BRT" };
         const beehiiv = snapshotDate ? { date: snapshotDate, active: countActive(readCached(snapshotDate)) } : null;
-        const resultado = await baseAtivaDef.computar({ janela, deps: { beehiiv, kitActive: null, hoje: dia } });
+        const resultado = await baseAtivaDef.computar({ janela, deps: { beehiiv, kitActive: liveKitActive, hoje: dia } });
         medicoes.push({ chave: dia, resultado });
       }
       seriesById.set("base-ativa", medicoes);
@@ -407,28 +551,58 @@ async function main(): Promise<void> {
     if (leitorV1Def) {
       const medicoes: MedicaoDia[] = [];
       for (const dia of dias) {
-        const snapshotDate = nearestSnapshotOnOrBefore(snapshotDates, dia);
         const janela: Janela = { de: dia, ate: dia, granularidade: "dia", fuso: "BRT" };
-        const resultado = snapshotDate
-          ? await leitorV1Def.computar({
-              janela,
-              deps: { subscribers: readCached(snapshotDate), snapshotDate },
-            })
-          : {
-              valor: null,
-              janela,
-              frescor: null,
-              qualidade: "indeterminado" as const,
-              motivo: `nenhum snapshot Beehiiv em ou antes de ${dia}`,
-            };
+        let resultado: MetricResult;
+        if (crossPlatformLeitor) {
+          // #7516: cross-plataforma (Kit+Brevo+Beehiiv). Valor do store —
+          // mesmo pra todo dia desta rodada, ver limitação documentada
+          // acima (store não guarda histórico diário).
+          resultado = buildCrossPlatformLeitorResult(crossPlatformLeitor, crossPlatformAsOf, janela);
+        } else {
+          const snapshotDate = nearestSnapshotOnOrBefore(snapshotDates, dia);
+          resultado = snapshotDate
+            ? await leitorV1Def.computar({
+                janela,
+                deps: { subscribers: readCached(snapshotDate), snapshotDate },
+              })
+            : {
+                valor: null,
+                janela,
+                frescor: null,
+                qualidade: "indeterminado" as const,
+                motivo: `nenhum snapshot Beehiiv em ou antes de ${dia} e store cross-plataforma indisponível`,
+              };
+        }
         medicoes.push({ chave: dia, resultado });
       }
       seriesById.set("leitor-v1", medicoes);
       avaliadasIds.add("leitor-v1");
       avaliadasComInsumoReal.add("leitor-v1");
     }
+  } else if (crossPlatformLeitor) {
+    // Sem snapshot Beehiiv nenhum, mas o store cross-plataforma respondeu —
+    // base-ativa fica sem a metade Beehiiv (kitActive sozinho já é melhor
+    // que nada, mas o contrato de baseAtivaDef exige passar por ele pra
+    // computar `exato`/`piso` certo); leitor-v1 evita cair em
+    // "indeterminado" só por falta de Beehiiv.
+    const leitorV1Def = getMetric("leitor-v1");
+    if (leitorV1Def) {
+      const medicoes: MedicaoDia[] = dias.map((dia) => ({
+        chave: dia,
+        resultado: buildCrossPlatformLeitorResult(crossPlatformLeitor, crossPlatformAsOf, {
+          de: dia,
+          ate: dia,
+          granularidade: "dia",
+          fuso: "BRT",
+        }),
+      }));
+      seriesById.set("leitor-v1", medicoes);
+      avaliadasIds.add("leitor-v1");
+      avaliadasComInsumoReal.add("leitor-v1");
+    }
+    skipMotivos.push(`base-ativa: nenhum snapshot Beehiiv em ${backupRoot} — não avaliada (leitor-v1 seguiu via store cross-plataforma)`);
   } else {
-    skipMotivos.push(`base-ativa/leitor-v1: nenhum snapshot em ${backupRoot} — não avaliados`);
+    skipMotivos.push(`base-ativa/leitor-v1: nenhum snapshot em ${backupRoot} nem store cross-plataforma disponível — não avaliados`);
   }
 
   // ── Sinal 5: registry-mudo ────────────────────────────────────────────
