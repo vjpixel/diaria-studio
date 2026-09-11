@@ -356,14 +356,19 @@ function main(): void {
         // do backend OPOSTO ao ativo é sempre um erro de contabilidade
         // (ver docstring de checkBackendOutputsForWrite), nunca um
         // falso-positivo conhecido como o check-invariants abaixo pode ser.
-        const backendResult = checkBackendOutputsForWrite(step, outputs);
-        if (!backendResult.passed) {
-          console.error(
-            `[error] sentinel step ${step} NÃO escrito — outputs cita artefato do backend ERRADO ` +
-              `para publishing.newsletter.backend="${backendResult.backend}": ${backendResult.wrongOutputs.join(", ")}. ` +
-              `Esse backend nunca escreve esse arquivo — corrija --outputs pro artefato do backend ativo (#7963).`,
-          );
-          process.exit(1);
+        // Guard só chama loadNewsletterBackend() (leitura de disco) pros
+        // Stages 5/6, que são os únicos que o guard cobre — evita I/O
+        // supérfluo em todo write dos Stages 1-4.
+        if (step === 5 || step === 6) {
+          const backendResult = checkBackendOutputsForWrite(step, outputs);
+          if (!backendResult.passed) {
+            console.error(
+              `[error] sentinel step ${step} NÃO escrito — outputs cita artefato do backend ERRADO ` +
+                `para publishing.newsletter.backend="${backendResult.backend}": ${backendResult.wrongOutputs.join(", ")}. ` +
+                `Esse backend nunca escreve esse arquivo — corrija --outputs pro artefato do backend ativo (#7963).`,
+            );
+            process.exit(1);
+          }
         }
         const invariantResult = checkStageInvariantsForWrite(editionDir, step);
         if (!invariantResult.passed) {
