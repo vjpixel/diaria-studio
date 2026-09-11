@@ -2,6 +2,8 @@
 /**
  * scripts/analyze-destaque-overrides.ts (#7976, Camada 2 da #7972)
  *
+ * @one-off-validity: permanente motivo="infraestrutura recorrente da calibração de score — consumida por calibrate-scoring-weights.ts (Fase 2, #7976) e re-rodada a cada nova rodada de calibração, não uma análise ad-hoc de uma vez"
+ *
  * Junta `scoring-features.json` (features determinísticas por candidato,
  * #7975) com o diff `01-categorized.json` × `01-approved.json` de cada
  * edição, rotulando cada candidato do pool inteiro (não só destaques) num
