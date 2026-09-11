@@ -28,7 +28,16 @@
  * passam de ~15 linhas). Falso positivo teórico (um `windowsHide: true` de
  * OUTRA chamada caindo dentro da janela) é aceitável pro custo/benefício de
  * um guard estático simples — nenhum hook real hoje tem duas chamadas
- * spawn/execFile close o bastante pra colidir.
+ * spawn/execFile close o bastante pra colidir. **2º modo de falso-negativo,
+ * medido ao vivo (achado do fleet review pré-merge, comment-analyzer):** a
+ * janela também casa `windowsHide: true` citado em PROSA de comentário (ex:
+ * os próprios comentários explicativos que este PR adiciona citam a opção
+ * pelo nome) — o guard geral não distingue código de comentário, é texto
+ * puro. Mitigado neste arquivo especificamente pelo 2º guard abaixo, que
+ * varre só PRA FRENTE a partir da chamada (comentários explicativos ficam
+ * ANTES da chamada no estilo deste repo, então saem da janela forward) —
+ * mas o guard geral, aplicado aos outros 17 hooks, segue exposto a esse
+ * modo. Aceito pelo mesmo custo/benefício acima.
  *
  * **2º guard, mais estrito, só pro arquivo que este PR toca (achado do fleet
  * review pré-merge, silent-failure-hunter):** `detached: true` sozinho NÃO
