@@ -2067,6 +2067,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // confundia os dois (unit marcada `failed` toda vez que existia drift
     // real, reabrindo #7553 repetidamente). Mesmo padrao de
     // Diaria-Clarice-Novos (#5743).
+    //
+    // #6695: o comentario "DECLARADA, NAO ARMADA" acima pode estar
+    // desatualizado -- os campos reais de systemd (ExecMainStatus,
+    // InvocationID, InactiveEnterTimestamp) citados na propria #7553
+    // sugerem que a unit ESTA rodando em producao no `300`. Nao afirmando
+    // aqui por nao ter como confirmar desta maquina (Windows, sem
+    // systemctl) -- mas por isso `task-registry-prose-drift-check.ts` usa
+    // `isExitCodeArmedForUnit` (#6695) antes de emitir o exit 3: se a unit
+    // real ainda nao declara `SuccessExitStatus=3` (porque so foi
+    // regenerada aqui, sem o `setup-systemd-timers.ts` + copia manual +
+    // `daemon-reload` no `300`), o script cai pra exit 0 em vez de
+    // reabrir #7553 com um ExecMainStatus diferente.
     successExitCodes: [3],
     issue: "#6105, #7137, #7553",
   },

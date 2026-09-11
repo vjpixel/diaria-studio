@@ -36,9 +36,19 @@ import { parseSystemctlListTimersOutput } from "./lib/task-never-armed-alarm.ts"
 import {
   evaluateProseDrift,
   resolveProseDriftExitCode,
+  PROSE_DRIFT_FOUND_EXIT_CODE,
   type RealArmedState,
 } from "./lib/task-registry-prose-drift.ts";
 import { listScheduledTaskNames } from "./lib/scheduled-tasks.ts";
+import { isExitCodeArmedForUnit } from "./lib/systemd-unit-exit-guard.ts";
+
+/** Nome exato da task no registro — reusado por `isExitCodeArmedForUnit`
+ *  (#6695) pra achar a unit systemd real armada em disco. Mesma convenção
+ *  de duplicar a string em vez de importar de `scheduled-tasks.ts` que
+ *  `clarice-guardrail-alarm.ts` já usa (`TASK_NAME`) — evita import
+ *  circular, e o teste de consistência (`test/task-registry-prose-drift.test.ts`)
+ *  garante que a string aqui bate com a entrada real do registro. */
+const TASK_NAME = "Diaria-Task-Registry-Prose-Drift-Alarm";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PROSE_PATH = join(ROOT, "docs", "scheduled-tasks-registry.md");
@@ -92,4 +102,18 @@ if (hasFlag(process.argv, "--json")) {
   }
 }
 
-process.exit(resolveProseDriftExitCode(evaluation));
+// #6695: só emite PROSE_DRIFT_FOUND_EXIT_CODE (3) se a unit systemd ARMADA
+// neste host já declarar SuccessExitStatus=3 — senão o systemd marcaria a
+// unit `failed` de verdade mesmo com o novo exit code (reabrindo #7553 de
+// novo, só que com ExecMainStatus=3 em vez de 1). Ver docstring de
+// `resolveProseDriftExitCode` em lib/task-registry-prose-drift.ts.
+const armed = isExitCodeArmedForUnit(TASK_NAME, PROSE_DRIFT_FOUND_EXIT_CODE);
+if (evaluation.findings.length > 0 && !armed) {
+  console.log(
+    `${LOG_PREFIX} AVISO: unit systemd ainda não declara SuccessExitStatus=${PROSE_DRIFT_FOUND_EXIT_CODE} — ` +
+      `saindo com exit 0 em vez de ${PROSE_DRIFT_FOUND_EXIT_CODE} pra não marcar a unit como failed. ` +
+      `Rodar 'npx tsx scripts/setup-systemd-timers.ts --task ${TASK_NAME}' + copiar pra ` +
+      `~/.config/systemd/user/ + 'systemctl --user daemon-reload' no 300 pra habilitar o exit ${PROSE_DRIFT_FOUND_EXIT_CODE} (#6695).`,
+  );
+}
+process.exit(resolveProseDriftExitCode(evaluation, armed));

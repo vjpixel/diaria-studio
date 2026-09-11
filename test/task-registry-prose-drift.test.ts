@@ -7,6 +7,7 @@ import {
   resolveProseDriftExitCode,
   PROSE_DRIFT_FOUND_EXIT_CODE,
 } from "../scripts/lib/task-registry-prose-drift.ts";
+import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 
 const TASKS = ["Diaria-Foo", "Diaria-Bar", "Diaria-Baz"];
 
@@ -129,20 +130,40 @@ describe("task-registry-prose-drift (#6105 item 2)", () => {
     });
 
 describe("resolveProseDriftExitCode (#7553)", () => {
-  it("sem findings -> exit 0", () => {
-    assert.equal(resolveProseDriftExitCode({ findings: [] }), 0);
+  it("sem findings -> exit 0, independente de armed", () => {
+    assert.equal(resolveProseDriftExitCode({ findings: [] }, true), 0);
+    assert.equal(resolveProseDriftExitCode({ findings: [] }, false), 0);
   });
 
-  it("com findings -> exit 3, NUNCA 1 (regressão #7553: 1 confundia o Systemd-Failed-Units-Alarm genérico)", () => {
+  it("com findings + armed=true -> exit 3, NUNCA 1 (regressão #7553: 1 confundia o Systemd-Failed-Units-Alarm genérico)", () => {
     const evaluation = evaluateProseDrift(
       "`Diaria-Foo`: **ARMADA**.",
       ["Diaria-Foo"],
       new Map([["Diaria-Foo", "not-armed" as const]]),
     );
     assert.equal(evaluation.findings.length, 1);
-    const exitCode = resolveProseDriftExitCode(evaluation);
+    const exitCode = resolveProseDriftExitCode(evaluation, true);
     assert.equal(exitCode, PROSE_DRIFT_FOUND_EXIT_CODE);
     assert.equal(exitCode, 3);
     assert.notEqual(exitCode, 1);
+  });
+
+  it("com findings + armed=false -> exit 0, NUNCA 3 (#6695: unit real ainda sem SuccessExitStatus=3 " +
+    "declarado — emitir 3 mesmo assim marcaria a unit failed de novo, só que com ExecMainStatus=3)", () => {
+    const evaluation = evaluateProseDrift(
+      "`Diaria-Foo`: **ARMADA**.",
+      ["Diaria-Foo"],
+      new Map([["Diaria-Foo", "not-armed" as const]]),
+    );
+    assert.equal(evaluation.findings.length, 1);
+    assert.equal(resolveProseDriftExitCode(evaluation, false), 0);
+  });
+});
+
+describe("Diaria-Task-Registry-Prose-Drift-Alarm — consistência successExitCodes × PROSE_DRIFT_FOUND_EXIT_CODE (#7553)", () => {
+  it("o registro declara successExitCodes = [PROSE_DRIFT_FOUND_EXIT_CODE], não um valor solto", () => {
+    const def = getScheduledTaskByName("Diaria-Task-Registry-Prose-Drift-Alarm");
+    assert.ok(def, "task deveria existir no registro");
+    assert.deepEqual(def?.successExitCodes, [PROSE_DRIFT_FOUND_EXIT_CODE]);
   });
 });

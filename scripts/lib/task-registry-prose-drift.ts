@@ -175,16 +175,33 @@ export function evaluateProseDrift(
  *  script" precisa de um código distinto de 1, senão o
  *  `Diaria-Systemd-Failed-Units-Alarm` (#5942) genérico lê a unit como
  *  `failed` pra sempre que existir drift — indistinguível de o próprio
- *  script ter quebrado. Achado ao vivo: #7553 reabriu 2x no mesmo dia
- *  (#5978) porque cada drift novo reacionava o alarme genérico, não o
- *  drift-check em si. */
+ *  script ter quebrado. Achado ao vivo: #7553 reabriu no mesmo dia
+ *  (#5978) porque o drift encontrado reacionava o alarme genérico, não o
+ *  drift-check em si (fingerprint `diaria-task-registry-prose-drift-alarm.service`
+ *  — o alarme genérico sobre a UNIT, não sobre o achado específico de
+ *  drift; um `closed`→`reopened` confirmado no histórico da issue). */
 export const PROSE_DRIFT_FOUND_EXIT_CODE = 3;
 
 /** Resolve o exit code do CLI a partir da avaliação — pura, testável sem
  *  spawnar processo (`task-registry-prose-drift-check.ts` só chama isto e
- *  faz `process.exit`). 0 = sem drift; `PROSE_DRIFT_FOUND_EXIT_CODE` = há
- *  drift, mas isso não é uma falha do script — quem registra
- *  `successExitCodes: [3]` no `scheduled-tasks.ts` sabe disso. */
-export function resolveProseDriftExitCode(evaluation: Pick<ProseDriftEvaluation, "findings">): number {
-  return evaluation.findings.length > 0 ? PROSE_DRIFT_FOUND_EXIT_CODE : 0;
+ *  faz `process.exit`). Tipo de retorno literal (`0 | 3`, não `number`
+ *  genérico) — torna o invariante de 2 valores visível na assinatura, não
+ *  só em prosa (achado do fleet review pré-merge, type-design-analyzer).
+ *
+ *  `armed` (#6695, achado do fleet review — silent-failure-hunter +
+ *  comment-analyzer, convergentes): declarar `successExitCodes: [3]` no
+ *  registro NÃO propaga sozinho pra uma unit systemd JÁ ARMADA em
+ *  produção — precisa de `setup-systemd-timers.ts` + cópia manual pro
+ *  `300` + `daemon-reload` (mesmo gap que motivou `isExitCodeArmedForUnit`,
+ *  usado por `clarice-guardrail-alarm.ts`). Sem confirmar que a unit REAL
+ *  já declara `SuccessExitStatus=3`, emitir exit 3 faria o systemd marcar a
+ *  unit `failed` do mesmo jeito (só que com `ExecMainStatus=3` em vez de
+ *  `1`) — reabrindo #7553 de novo. `armed=false` → sempre exit 0 (seguro
+ *  em QUALQUER unit, com ou sem a declaração); `armed=true` → exit 3. */
+export function resolveProseDriftExitCode(
+  evaluation: Pick<ProseDriftEvaluation, "findings">,
+  armed: boolean,
+): 0 | typeof PROSE_DRIFT_FOUND_EXIT_CODE {
+  if (evaluation.findings.length === 0) return 0;
+  return armed ? PROSE_DRIFT_FOUND_EXIT_CODE : 0;
 }
