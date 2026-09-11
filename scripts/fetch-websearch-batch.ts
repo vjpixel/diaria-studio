@@ -393,7 +393,7 @@ export function checkpointPathFor(outPath: string): string {
  * separador comum (espaco, ex.), poderiam produzir a mesma string.
  */
 export function checkpointKey(source: string, queryUsed: string): string {
-  return `${source} ${queryUsed}`;
+  return `${source}\0${queryUsed}`;
 }
 
 /**
