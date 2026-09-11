@@ -448,30 +448,6 @@ export function shouldAlarmKitStateTransition(
   return transitions.some((t) => !state.alertedSubscriberIds.includes(t.id));
 }
 
-/**
- * Pura — quais eventos podem entrar no latch: só os que de fato viraram
- * issue. `failedFingerprints` são as findings cujo `ensureAlarmIssue`
- * falhou (`action: "failed"` — `gh` sem auth, rate limit, 5xx transitório).
- *
- * Sem este filtro o alarme reproduz, no seu próprio mecanismo, a falha que
- * ele existe pra impedir: `applyAlarmReconciliation` é fail-soft POR
- * FINDING e deixa a entrada de estado intocada pra tentar de novo na
- * execução seguinte — mas quem decide se a finding é sequer regerada é este
- * latch. Latchar um id cuja issue falhou remove a transição de `novas` pra
- * sempre, o retry nunca acontece, e o registro durável daquele assinante
- * some em silêncio (achado do review da PR #7828, P1).
- */
-export function selectLatchableEvents(
-  transitions: readonly KitStateTransition[],
-  disappearances: readonly KitDisappearance[],
-  failedFingerprints: ReadonlySet<string>,
-): { transitions: KitStateTransition[]; disappearances: KitDisappearance[] } {
-  return {
-    transitions: transitions.filter((t) => !failedFingerprints.has(kitStateTransitionFindingKey(t.id))),
-    disappearances: disappearances.filter((d) => !failedFingerprints.has(kitDisappearanceFindingKey(d.id))),
-  };
-}
-
 /** Pura — avança o latch: marca os ids alertados e limpa os que voltaram
  *  a `active` (re-arma pra uma próxima transição). */
 export function advanceKitStateTransitionAlarmState(
