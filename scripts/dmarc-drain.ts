@@ -320,7 +320,16 @@ export function alarmFindingsFor(summaries: DmarcDomainSummary[]): AlarmFinding[
     // sempre < qualquer piso, e alarmaria "0 mensagem de 0 não alinharam".
     if (unalignedCount <= 0) continue;
     const floor = alignedPctAlarmFloorFor(s.domain);
-    if (s.alignedPct >= floor) continue;
+    // Compara contra a RAZÃO crua, não s.alignedPct (achado do fleet review
+    // pré-merge, silent-failure-hunter, #6690): alignedPct já vem arredondado
+    // a 1 casa decimal (pct() em dmarc-report.ts). Num domínio de piso 100
+    // (default, sem ruído medido), volume alto faz 1 mensagem não-alinhada
+    // arredondar pra "100.0%" (ex: 1/2000 → 99.95 → exibe 100.0) — comparar
+    // contra o valor JÁ arredondado apagaria a mesma queda que o piso
+    // por-domínio existe pra não apagar. `s.alignedPct` segue usado só no
+    // corpo da mensagem (legibilidade), nunca na decisão de alarmar.
+    const rawAlignedPct = s.totalMessages > 0 ? (s.alignedMessages / s.totalMessages) * 100 : 0;
+    if (rawAlignedPct >= floor) continue;
     const topIps = s.failedAlignmentSources
       .slice(0, 5)
       .map((f) => `${f.sourceIp} (${f.count})`)

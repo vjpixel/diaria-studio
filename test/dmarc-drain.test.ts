@@ -179,6 +179,26 @@ test("alarmFindingsFor (#6690, achado do fleet review): domínio SEM histórico 
   assert.match(findings[0].body, /Piso do alarme: 100% \(#6690\)/);
 });
 
+test("alarmFindingsFor (#6690, achado do fleet review, 2ª rodada): arredondamento de alignedPct não pode " +
+  "apagar 1 falha real num domínio de piso 100 — compara contra a razão CRUA, não o valor já arredondado", () => {
+  const summary: DmarcDomainSummary = {
+    domain: "diar.ia.br", // sem entrada no mapa por-domínio -> piso 100
+    reportCount: 3,
+    windowBegin: 1787529600,
+    windowEnd: 1788998399,
+    totalMessages: 2000,
+    spfRawPassMessages: 1999,
+    dkimRawPassMessages: 1999,
+    alignedMessages: 1999, // 1 mensagem não-alinhada — mas 1999/2000*100=99.95, que pct() arredonda pra 100.0
+    spfRawPassPct: 99.95,
+    dkimRawPassPct: 99.95,
+    alignedPct: 100, // valor JÁ arredondado que pct() devolveria — NÃO deve ser o que a decisão usa
+    failedAlignmentSources: [{ sourceIp: "203.0.113.77", count: 1, reportedBy: ["google.com"] }],
+  };
+  const findings = alarmFindingsFor([summary]);
+  assert.equal(findings.length, 1, "1 mensagem não-alinhada num domínio de piso 100 tem que alarmar, mesmo com alignedPct exibindo 100.0 arredondado");
+});
+
 test("alarmFindingsFor (#6690, achado do fleet review): domínio SEM tráfego (totalMessages=0) NÃO dispara " +
   "— guard load-bearing contra o sentinela alignedPct=0 de pct()", () => {
   const summary: DmarcDomainSummary = {
