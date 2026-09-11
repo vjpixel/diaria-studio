@@ -70,6 +70,10 @@ describe("evaluateCadence (#7979)", () => {
     assert.equal(d.canOpenNewCandidate, true);
   });
 
+  it("nowIso malformado lança, nunca degrada silenciosamente pra 'tudo liberado' (achado de review do #7979)", () => {
+    assert.throws(() => evaluateCadence({ candidateOpenedAt: [daysAgo(1)], digestSentAt: [], liveCalibratableParamCount: 5 }, "não-é-uma-data"), /não é uma data ISO válida/);
+  });
+
   it("constantes exportadas batem com o texto do design (#7972 §4)", () => {
     assert.equal(MAX_NEW_CANDIDATES_PER_WEEK, 1);
     assert.equal(MAX_SIGNOFF_DIGESTS_PER_WEEK, 1);

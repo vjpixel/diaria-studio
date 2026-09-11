@@ -52,7 +52,7 @@ export interface TrackBTriggerResult {
   cadence: ReturnType<typeof evaluateCadence>;
   /** Feature escolhida pra disparar AGORA — só preenchido se elegível + cadência livre. `null` caso contrário (fila vazia, ou tudo bloqueado por cadência). */
   chosenFeature: string | null;
-  /** Sempre `true` hoje — ver PENDÊNCIA no cabeçalho do arquivo (#7990 não existe ainda). */
+  /** `true` sse `chosenFeature !== null` — achado de review do #7979: uma constante estática aqui esconderia "fila vazia/cadência bloqueando" atrás de "sempre bloqueado por #7990", confundindo um futuro consumidor do `--json`. Ver PENDÊNCIA no cabeçalho do arquivo (#7990 não existe ainda). */
   blockedOnWeightComputation: boolean;
 }
 
@@ -84,7 +84,7 @@ export function decideTrackBTrigger(editionsRoot: string, rootDir: string, nowIs
 
   const chosenFeature = cadence.canOpenNewCandidate && cadence.canSendSignoffDigest && !cadence.atParamBudgetCap && ranked.length > 0 ? ranked[0].feature : null;
 
-  return { eligible: ranked, alreadyCovered: [...alreadyCovered], cadence, chosenFeature, blockedOnWeightComputation: true };
+  return { eligible: ranked, alreadyCovered: [...alreadyCovered], cadence, chosenFeature, blockedOnWeightComputation: chosenFeature !== null };
 }
 
 if (isMainModule(import.meta.url)) {

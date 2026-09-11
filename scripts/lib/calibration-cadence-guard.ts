@@ -51,9 +51,19 @@ function countInLastWeek(timestamps: readonly string[], nowMs: number): number {
   }).length;
 }
 
-/** Avalia os 3 guardrails contra o estado atual e o instante `nowIso`. Puro, determinístico — mesmo estado + mesmo `nowIso` sempre produz a mesma decisão. */
+/**
+ * Avalia os 3 guardrails contra o estado atual e o instante `nowIso`.
+ * Puro, determinístico — mesmo estado + mesmo `nowIso` sempre produz a
+ * mesma decisão. Lança se `nowIso` não parsear — achado de review do
+ * #7979: sem essa checagem, `nowMs` virava `NaN`, toda comparação
+ * `nowMs - ts < WEEK_MS` dava `false`, e o guard ficava PERMISSIVO (nada
+ * conta como "na última semana") em vez de recusar a entrada malformada.
+ */
 export function evaluateCadence(state: CadenceState, nowIso: string): CadenceDecision {
   const nowMs = new Date(nowIso).getTime();
+  if (Number.isNaN(nowMs)) {
+    throw new Error(`evaluateCadence: nowIso "${nowIso}" não é uma data ISO válida.`);
+  }
   const reasons: string[] = [];
 
   const candidatesThisWeek = countInLastWeek(state.candidateOpenedAt, nowMs);

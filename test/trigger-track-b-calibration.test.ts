@@ -134,6 +134,20 @@ describe("decideTrackBTrigger (#7979, fim-a-fim contra fixtures em disco)", () =
     }
   });
 
+  it("blockedOnWeightComputation reflete chosenFeature (achado de review do #7979) — false quando nada foi escolhido", () => {
+    const editionsRoot = mkdtempSync(join(tmpdir(), "trigger-editions-blocked-flag-"));
+    const rootDir = mkdtempSync(join(tmpdir(), "trigger-root-blocked-flag-"));
+    try {
+      // Sem edições -> fila vazia -> chosenFeature null -> blockedOnWeightComputation deveria ser false, não uma constante true.
+      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z");
+      assert.equal(result.chosenFeature, null);
+      assert.equal(result.blockedOnWeightComputation, false);
+    } finally {
+      rmSync(editionsRoot, { recursive: true, force: true });
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("nenhuma edição no corpus: fila vazia, nada escolhido, sem lançar", () => {
     const editionsRoot = mkdtempSync(join(tmpdir(), "trigger-editions-empty-"));
     const rootDir = mkdtempSync(join(tmpdir(), "trigger-root-empty-"));
