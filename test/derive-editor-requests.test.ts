@@ -170,6 +170,106 @@ describe("derive-editor-requests.ts (#5731)", () => {
     }
   });
 
+  it("diff na seção É IA? de 02-reviewed.md dispara eia-choice (#7974 Fix 1)", () => {
+    // Bug original: extractSections normalizava "É IA?" pra uma chave com
+    // acento/pontuação (ex: "é-ia?"), mas a comparação testava contra a
+    // string literal "eia" — nunca batia, então nenhuma edição na seção
+    // "É IA?" jamais era classificada como eia-choice.
+    const dir = mkdtempSync(join(tmpdir(), "derive-eia-"));
+    try {
+      const editionDir = join(dir, "260811");
+      mkdirSync(editionDir, { recursive: true });
+      const build = (creditLine: string) =>
+        [
+          "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+          "**[Título fixo](https://example.com/mesmo-link)**",
+          "Por que isso importa: motivo estável.",
+          "",
+          "**É IA?**",
+          `Legenda da imagem, ${creditLine}.`,
+          "",
+        ].join("\n");
+
+      writeFileSync(join(editionDir, "02-reviewed.md"), build("crédito original"), "utf8");
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      // Só o crédito da imagem muda — o destaque acima fica idêntico.
+      writeFileSync(join(editionDir, "02-reviewed.md"), build("crédito corrigido pelo editor"), "utf8");
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const entries = readEntries(editionDir);
+      const eiaEntries = entries.filter((e) => e.request_type === "eia-choice");
+      assert.equal(eiaEntries.length, 1, JSON.stringify(entries));
+      assert.equal(eiaEntries[0].target, "eia");
+      assert.equal(eiaEntries[0].source, "derived");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // --- classifySocialDiff / 03-social.md (#7974 Fix 2) ---
+
+  it("{edition_url} resolvido no Stage 5 NÃO conta como social-rewrite (#7974 Fix 2)", () => {
+    // resolve-edition-url.ts reescreve 03-social.md inteiro no Stage 5,
+    // substituindo o placeholder {edition_url} pela URL real — isso
+    // acontece DEPOIS do snapshot stage2-post-gate e ANTES do diff do
+    // Stage 6, então SEM a normalização toda edição publicada virava
+    // social-rewrite em massa mesmo sem edição humana nenhuma (#7964).
+    const dir = mkdtempSync(join(tmpdir(), "derive-social-url-"));
+    try {
+      const editionDir = join(dir, "260811");
+      mkdirSync(editionDir, { recursive: true });
+      const build = (cta: string) => ["## d1", "Texto do post.", "", `Mais em ${cta}`, ""].join("\n");
+
+      writeFileSync(join(editionDir, "03-social.md"), build("{edition_url}"), "utf8");
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      // Só o placeholder foi resolvido pela URL real (resolve-edition-url.ts) — nenhuma edição humana.
+      writeFileSync(
+        editionDir + "/03-social.md",
+        build("https://diar.ia.br/p/minha-edicao?utm_source=whatsapp&utm_medium=share"),
+        "utf8",
+      );
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /0 pedidos derivados/, r.stdout);
+      assert.deepEqual(
+        readEntries(editionDir).filter((e) => e.request_type === "social-rewrite"),
+        [],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reescrita de verdade em 03-social.md continua virando social-rewrite (edition_url normalizado não mascara mudança real)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-social-real-"));
+    try {
+      const editionDir = join(dir, "260811");
+      mkdirSync(editionDir, { recursive: true });
+      const build = (texto: string) =>
+        ["## d1", texto, "", "Mais em https://diar.ia.br/p/minha-edicao?utm_source=whatsapp", ""].join("\n");
+
+      writeFileSync(join(editionDir, "03-social.md"), build("Texto original do post."), "utf8");
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      // Editor reescreve o texto — o CTA (edition_url) fica idêntico.
+      writeFileSync(join(editionDir, "03-social.md"), build("Texto reescrito pelo editor."), "utf8");
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const rewrites = readEntries(editionDir).filter((e) => e.request_type === "social-rewrite");
+      assert.equal(rewrites.length, 1);
+      assert.equal(rewrites[0].target, "d1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("derive-stage4 refresca o checkpoint — derive-stage6 só vê mudanças NOVAS pós-Stage 4, sem duplicar", () => {
     const dir = mkdtempSync(join(tmpdir(), "derive-checkpoint-"));
     try {
@@ -419,6 +519,56 @@ describe("derive-editor-requests.ts (#5731)", () => {
   it("pool inalterado não gera entrada nenhuma", () => {
     const same = approvedWithPool({ lancamento: [ITEM_A], radar: [ITEM_B] });
     assert.deepEqual(deriveFromApproved(same, same), []);
+  });
+
+  it("troca de fonte da MESMA história (cluster_sources) vira link-swap, não pool-cut+pool-add (#7974 Fix 3)", () => {
+    // Artigo em inglês, canônico, com a versão em PT preservada como cluster_sources
+    // (mesmo shape que scripts/lib/cluster-sources.ts grava no dedup).
+    const before = JSON.stringify({
+      highlights: [{ article: { url: "https://example.com/d1", title: "D1" } }],
+      lancamento: [
+        {
+          url: "https://example.com/en/story",
+          title: "English coverage",
+          cluster_sources: [{ url: "https://example.com/pt/materia", title: "Cobertura em PT" }],
+        },
+      ],
+      radar: [],
+      use_melhor: [],
+      video: [],
+    });
+    // Editor troca o link canônico pela versão em PT do MESMO cluster.
+    const after = JSON.stringify({
+      highlights: [{ article: { url: "https://example.com/d1", title: "D1" } }],
+      lancamento: [{ url: "https://example.com/pt/materia", title: "Cobertura em PT" }],
+      radar: [],
+      use_melhor: [],
+      video: [],
+    });
+
+    const entries = deriveFromApproved(before, after);
+    const swaps = entries.filter((e) => e.request_type === "link-swap");
+    assert.equal(swaps.length, 1, JSON.stringify(entries));
+    assert.equal(swaps[0].target, "lancamentos");
+    assert.deepEqual(swaps[0].context, {
+      old_url: "https://example.com/en/story",
+      new_url: "https://example.com/pt/materia",
+      from_bucket: "lancamento",
+      to_bucket: "lancamento",
+    });
+    // Não pode sobrar pool-cut/pool-add pro mesmo evento — seria contar 2× e
+    // nenhum dos dois bateria 3× na recorrência (cut e add são tipos distintos).
+    assert.equal(entries.filter((e) => e.request_type === "pool-cut").length, 0);
+    assert.equal(entries.filter((e) => e.request_type === "pool-add").length, 0);
+  });
+
+  it("corte de verdade (sem cluster em comum) continua virando pool-cut, não link-swap", () => {
+    const before = approvedWithPool({ radar: [ITEM_A, ITEM_B] });
+    const after = approvedWithPool({ radar: [ITEM_B] });
+
+    const entries = deriveFromApproved(before, after);
+    assert.equal(entries.filter((e) => e.request_type === "link-swap").length, 0, JSON.stringify(entries));
+    assert.equal(entries.filter((e) => e.request_type === "pool-cut").length, 1);
   });
 
   // --- Snapshot imutável por edição (#7964) ---

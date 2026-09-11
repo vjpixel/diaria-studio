@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { appendEditorRequest, type EditorRequestEntry, type RequestType, type RequestTarget, type Resolution, type RequestSource } from "./log-editor-request.ts";
+import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -60,6 +61,31 @@ interface DiffClassifier {
     context?: Record<string, unknown>;
   }>;
 }
+
+/**
+ * Normaliza um cabeçalho de seção pra uma chave estável: remove acentos,
+ * emoji e pontuação, espaços viram hífen. Extraída como função nomeada
+ * (#7974) porque o bug original ("eia-choice" nunca disparava) era
+ * exatamente comparar o resultado desta normalização contra uma string
+ * escrita à mão em outro lugar do arquivo ("eia") que nunca bateu com o
+ * valor real produzido ("é-ia?" sem stripping de acento/pontuação, na
+ * versão anterior). Compilar a chave de comparação com a MESMA função
+ * elimina a classe de bug — não só o caso "É IA?".
+ */
+const SECTION_EMOJI_RE = /[🚀💼🎓🔬📹🎁🙋]/g;
+const COMBINING_DIACRITICS_RE = new RegExp("[\\u0300-\\u036f]", "g");
+function normalizeSectionKey(raw: string): string {
+  return raw
+    .normalize("NFD")
+    .replace(COMBINING_DIACRITICS_RE, "") // remove diacríticos (ex: É → E) antes do resto
+    .toLowerCase()
+    .replace(SECTION_EMOJI_RE, "")
+    .replace(/[^a-z0-9\s-]/g, "") // remove pontuação (?, |, etc.), preserva espaço/hífen
+    .replace(/\s+/g, "-")
+    .trim();
+}
+/** Chave normalizada de "É IA?" — computada, nunca hardcoded separadamente (#7974). */
+const EIA_SECTION_KEY = normalizeSectionKey("É IA?");
 
 /**
  * Classifica diferenças no 02-reviewed.md (newsletter)
@@ -99,7 +125,7 @@ function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
           const numMatch = rawSection.match(/DESTAQUE (\d+)/);
           currentSection = numMatch ? `destaque-${numMatch[1]}` : rawSection.toLowerCase().replace(/\s+/g, "-");
         } else {
-          currentSection = rawSection.toLowerCase().replace(/\s+/g, "-").replace(/\|/g, "").replace(/[🚀💼🎓🔬📹🎁🙋]/g, "").trim();
+          currentSection = normalizeSectionKey(rawSection);
         }
         currentContent = [line];
       } else {
@@ -131,7 +157,7 @@ function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
         target = `d${num}` as RequestTarget;
       }
       requestType = "lead-rewrite"; // default para mudanças em destaque
-    } else if (section === "eia") {
+    } else if (section === EIA_SECTION_KEY) {
       target = "eia";
       requestType = "eia-choice";
     } else if (section === "use-melhor") {
@@ -217,15 +243,40 @@ function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
 }
 
 /**
+ * Normaliza toda URL própria do site (BEEHIIV_BASE_URL, ex: diar.ia.br)
+ * pra um placeholder estável, ANTES de comparar seções de `03-social.md`.
+ *
+ * Causa do falso-positivo #7974 Fix 2: `resolve-edition-url.ts` reescreve
+ * `{edition_url}` (literal no snapshot pós-Stage-2) pela URL real da edição
+ * no Stage 5, em toda seção que usa o placeholder (`# Curto`, `## d1/d2/d3`,
+ * `## post_pixel`) — isso acontece DEPOIS do snapshot `stage2-post-gate` e
+ * ANTES do diff do Stage 6 (`deriveStage6`), então toda edição publicada
+ * virava `social-rewrite` em massa mesmo sem nenhuma edição humana (medido:
+ * 5 de 10 edições reais, #7964). Normalizar de volta pro placeholder elimina
+ * o ruído sem perder detecção de troca de link de TERCEIROS (domínio
+ * diferente do site, preservado intacto).
+ */
+const SELF_URL_RE = new RegExp(
+  `${BEEHIIV_BASE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/[^\\s)]*`,
+  "g",
+);
+function normalizeSelfUrls(content: string): string {
+  return content.replace(SELF_URL_RE, "{edition_url}");
+}
+
+/**
  * Classifica diferenças no 03-social.md (social)
  */
-function classifySocialDiff(oldContent: string, newContent: string): Array<{
+function classifySocialDiff(oldContentRaw: string, newContentRaw: string): Array<{
   request_type: RequestType;
   target: RequestTarget;
   description: string;
   resolution: Resolution;
   context?: Record<string, unknown>;
 }> {
+  const oldContent = normalizeSelfUrls(oldContentRaw);
+  const newContent = normalizeSelfUrls(newContentRaw);
+
   const results: Array<{
     request_type: RequestType;
     target: RequestTarget;
@@ -296,9 +347,25 @@ const POOL_BUCKET_TARGETS: ReadonlyArray<readonly [string, RequestTarget]> = [
 ];
 
 interface PoolItem {
+  url: string;
   bucket: string;
   target: RequestTarget;
   title: string;
+  /**
+   * URLs alternativas da MESMA história (canônica + `cluster_sources[]`,
+   * `scripts/lib/cluster-sources.ts` #3920) — usado só pra detectar
+   * `link-swap` (#7974 Fix 3), nunca pra decidir bucket/target/title.
+   */
+  clusterUrls: Set<string>;
+}
+
+/** URLs da mesma história (canônica + `cluster_sources[].url`), normalizadas via Set (sem duplicar a própria URL). */
+function clusterUrlsOf(url: string, item: any): Set<string> {
+  const urls = new Set<string>([url]);
+  for (const cs of item?.cluster_sources ?? []) {
+    if (typeof cs?.url === "string" && cs.url !== "") urls.add(cs.url);
+  }
+  return urls;
 }
 
 /** Indexa os itens do pool por URL. Item duplicado entre buckets: 1º bucket vence. */
@@ -308,10 +375,27 @@ function indexPool(json: any): Map<string, PoolItem> {
     for (const item of json?.[key] ?? []) {
       const url = item?.url;
       if (typeof url !== "string" || url === "" || byUrl.has(url)) continue;
-      byUrl.set(url, { bucket: key, target, title: item?.title ?? url });
+      byUrl.set(url, { url, bucket: key, target, title: item?.title ?? url, clusterUrls: clusterUrlsOf(url, item) });
     }
   }
   return byUrl;
+}
+
+/**
+ * Índice auxiliar: toda URL de cluster (canônica + `cluster_sources`) aponta
+ * pro `PoolItem` dono — permite achar o item novo que corresponde a um item
+ * antigo mesmo quando a URL EXATA mudou (troca de fonte primária/idioma da
+ * mesma história), sem depender de um "cluster_id" que não existe no schema
+ * (#7974 Fix 3).
+ */
+function indexPoolByClusterUrl(pool: Map<string, PoolItem>): Map<string, PoolItem> {
+  const byClusterUrl = new Map<string, PoolItem>();
+  for (const item of pool.values()) {
+    for (const u of item.clusterUrls) {
+      if (!byClusterUrl.has(u)) byClusterUrl.set(u, item);
+    }
+  }
+  return byClusterUrl;
 }
 
 /** URLs que estão em `highlights` — pertencem ao caminho destaque-*, não ao pool. */
@@ -339,13 +423,21 @@ function bucketLabel(bucket: string): string {
 /**
  * Diffa os buckets do pool entre dois estados do `01-approved.json`.
  *
- * Três casos, todos derivados de uma passada só sobre o índice URL→bucket:
+ * Quatro casos, todos derivados de uma passada só sobre o índice URL→bucket:
  * - **`bucket-move`** — URL presente nos dois lados, em buckets diferentes.
  *   É o pedido que o editor identificou como o mais comum ("mover conteúdo
  *   entre Use Melhor, Lançamentos e Radar"). `target` = bucket de DESTINO.
- * - **`pool-cut`** — URL sai do pool e não vira destaque (item cortado).
+ * - **`link-swap`** (#7974 Fix 3) — a URL exata sumiu, mas o item novo que
+ *   entrou compartilha `cluster_sources` com ele (mesma história, fonte/
+ *   idioma diferente — ex: editor troca a versão em inglês pela cobertura
+ *   em PT da mesma notícia). Sem isso, virava `pool-cut`+`pool-add`
+ *   desconexos: 2 eventos que não contam como "trocar link" nenhuma vez na
+ *   detecção de recorrência (cada um precisa de 3 ocorrências do MESMO
+ *   tipo, e cut≠add). `target` = bucket de destino do item novo.
+ * - **`pool-cut`** — URL sai do pool sem virar destaque nem ser swap de
+ *   cluster (item cortado de verdade).
  * - **`pool-add`** — URL entra no pool sem ter estado nele antes (tipicamente
- *   promovido de `runners_up`).
+ *   promovido de `runners_up`) e sem ser o destino de um swap já contado.
  *
  * URLs que cruzam a fronteira pool↔destaques são ignoradas aqui de propósito:
  * promoção/demoção de destaque já é reportada por `destaque-swap`/
@@ -371,6 +463,9 @@ function classifyPoolDiff(oldJson: any, newJson: any): Array<{
   const newPool = indexPool(newJson);
   const oldHighlights = highlightUrls(oldJson);
   const newHighlights = highlightUrls(newJson);
+  const newByClusterUrl = indexPoolByClusterUrl(newPool);
+  /** URLs do pool NOVO já explicadas por um link-swap — não podem também virar pool-add. */
+  const swapConsumedNewUrls = new Set<string>();
 
   for (const [url, oldItem] of oldPool) {
     const newItem = newPool.get(url);
@@ -390,6 +485,36 @@ function classifyPoolDiff(oldJson: any, newJson: any): Array<{
 
     // Saiu do pool. Se virou destaque, quem reporta é o caminho destaque-*.
     if (newHighlights.has(url)) continue;
+
+    // Link-swap (#7974 Fix 3): alguma URL alternativa do MESMO cluster
+    // (a própria antiga, ou uma das listadas em cluster_sources) resolve
+    // pra um item que é GENUINAMENTE novo no pool (não existia por URL
+    // exata antes) — troca de fonte da mesma história, não corte.
+    let swapTarget: PoolItem | undefined;
+    for (const clusterUrl of oldItem.clusterUrls) {
+      const candidate = newByClusterUrl.get(clusterUrl);
+      if (candidate && !oldPool.has(candidate.url)) {
+        swapTarget = candidate;
+        break;
+      }
+    }
+    if (swapTarget) {
+      swapConsumedNewUrls.add(swapTarget.url);
+      results.push({
+        request_type: "link-swap",
+        target: swapTarget.target,
+        description: `Link trocado dentro da mesma história (${bucketLabel(oldItem.bucket)} → ${bucketLabel(swapTarget.bucket)}): ${oldItem.title} → ${swapTarget.title}`,
+        resolution: "accepted",
+        context: {
+          old_url: url,
+          new_url: swapTarget.url,
+          from_bucket: oldItem.bucket,
+          to_bucket: swapTarget.bucket,
+        },
+      });
+      continue;
+    }
+
     results.push({
       request_type: "pool-cut",
       target: oldItem.target,
@@ -403,6 +528,8 @@ function classifyPoolDiff(oldJson: any, newJson: any): Array<{
     if (oldPool.has(url)) continue;
     // Entrou no pool vindo dos destaques: é demoção, reportada por destaque-cut.
     if (oldHighlights.has(url)) continue;
+    // Já reportado como o lado "novo" de um link-swap acima.
+    if (swapConsumedNewUrls.has(url)) continue;
     results.push({
       request_type: "pool-add",
       target: newItem.target,
