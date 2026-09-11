@@ -25,7 +25,9 @@ Antes de pontuar, releia:
 2. Para cada artigo, atribuir nota 0-100 considerando:
    - **Relevância para a audiência** — julgamento editorial informado por `context/audience-profile.md`: perfil do público (profissionais de tecnologia, produto, startups e IA no Brasil), CTR por categoria (categorias acima da média geral = bônus, abaixo = penalidade — usar os números ATUAIS do profile, não valores fixos), sinal BR vs INT (seção "Engajamento por origem" do profile — ler a direção de lá, não assumir prêmio por origem) e CTR por domínio (fontes com CTR histórico alto indicam confiança da audiência). O artigo muda como nosso público trabalha, decide ou investe? **"Outro" não é acionável (#4845):** é a 2ª categoria de maior CTR do profile, mas é o fallback do categorizador (`link-ctr-categorize.ts`) para artigos sem categoria clara — não dá para buscar deliberadamente um artigo "Outro". Não trate "Outro" como alvo de bônus; ele só aparece organicamente quando nenhuma outra categoria se aplica.
    - **Atualidade** (mais recente > mais antigo dentro da janela)
+   <!-- CALIBRATED:impact_routine:start -->
    - **Impacto prático na rotina (#357)** — o artigo descreve algo que já afeta (ou afetará em <6 meses) como as pessoas trabalham, estudam, são contratadas ou tomam decisões do dia a dia? +10 pontos se sim; +5 extra se com ângulo ou dado brasileiro. Não substitui os critérios anteriores — é bônus aditivo para evitar que artigos de alto impacto sejam preteridos por falta de sinal histórico de CTR.
+   <!-- CALIBRATED:impact_routine:end -->
    - **Afinidade de audiência para `use_melhor` (#2063)** — se o artigo está no bucket `use_melhor` E tem o campo `audience_affinity` preenchido, aplicar bônus/penalidade proporcional ao campo `affinity` (0..1):
      - `affinity >= 0.7` → **+10 pontos** (ferramenta/categoria que o público realmente usa e clica)
      - `affinity 0.4–0.69` → **+5 pontos** (algum sinal de afinidade)

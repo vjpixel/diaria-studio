@@ -42,14 +42,29 @@ export interface CalibrationEvidenceInput {
 
 const MAX_CASES = 5;
 
-/** Renderiza o corpo markdown de 3 partes. Lança se `cases` estiver vazio (nenhuma evidência = não deveria existir PR) ou tiver mais de 5 (ver docstring do módulo). */
-export function renderCalibrationEvidenceReport(input: CalibrationEvidenceInput): string {
+/**
+ * Valida o invariante de contagem de `cases` (1 a 5) SEM renderizar nada —
+ * achado de review do #7978 (P2, alta confiança): a versão anterior só
+ * validava dentro de `renderCalibrationEvidenceReport`, então um
+ * `CalibrationEvidenceInput` inválido podia ser construído, logado,
+ * serializado ou passado adiante por qualquer código ANTES de chegar no
+ * único ponto que checava — o objeto existia num estado inválido por um
+ * tempo, mesmo que hoje só haja 1 call site (`generate-calibration-
+ * evidence-report.ts`) que valida imediatamente. Chamar isto assim que o
+ * input é montado fecha essa janela pra qualquer call site futuro.
+ */
+export function assertValidCalibrationEvidenceInput(input: CalibrationEvidenceInput): void {
   if (input.cases.length === 0) {
     throw new Error("CalibrationEvidenceInput.cases não pode ser vazio — um PR de calibração sem nenhum caso nomeado não tem evidência pra revisar.");
   }
   if (input.cases.length > MAX_CASES) {
     throw new Error(`CalibrationEvidenceInput.cases tem ${input.cases.length} casos — máximo permitido é ${MAX_CASES} (#7978 ponto 2). Selecione os ${MAX_CASES} mais representativos, não trunque em silêncio.`);
   }
+}
+
+/** Renderiza o corpo markdown de 3 partes. Lança se `cases` estiver vazio (nenhuma evidência = não deveria existir PR) ou tiver mais de 5 (ver docstring do módulo e `assertValidCalibrationEvidenceInput`). */
+export function renderCalibrationEvidenceReport(input: CalibrationEvidenceInput): string {
+  assertValidCalibrationEvidenceInput(input);
 
   const lines: string[] = [];
 

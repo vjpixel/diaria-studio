@@ -89,15 +89,21 @@ export async function getPrLabelsWithRetry(
 }
 
 export interface CalibrationTouchCheck {
-  touchesCalibration: boolean;
+  /** Sempre `touchedPaths.length > 0` — sem campo booleano redundante de propósito (achado de review do #7978): um 2º campo derivado do mesmo dado é uma chance a mais de drift entre os dois, justo no arquivo que decide se uma mudança de score passa sem sign-off. Chamador confere `.touchedPaths.length`. */
   touchedPaths: string[];
 }
 
-/** Determina se o diff toca a allowlist de calibração — puro dado um provedor de linhas/conteúdo injetável (testável sem git real). */
+/**
+ * Determina se o diff toca a allowlist de calibração — puro dado
+ * provedores de linhas/conteúdo NOVO e ANTIGO injetáveis (testável sem
+ * git real). `getOldContent` é opcional (default: nenhum, equivalente a
+ * não checar remoção de marcador) — `main()` sempre passa os dois.
+ */
 export function evaluateCalibrationTouch(
   changedFiles: string[],
   getTouchedLines: (path: string) => Set<number>,
   getNewContent: (path: string) => string | null,
+  getOldContent: (path: string) => string | null = () => null,
 ): CalibrationTouchCheck {
   const allowlistPaths = new Set(CALIBRATION_ALLOWLIST.map((e) => e.path));
   const touchedPaths: string[] = [];
@@ -105,9 +111,10 @@ export function evaluateCalibrationTouch(
     if (!allowlistPaths.has(path)) continue;
     const touchedLines = getTouchedLines(path);
     const newContent = getNewContent(path);
-    if (isCalibrationTouchingFile(path, touchedLines, newContent)) touchedPaths.push(path);
+    const oldContent = getOldContent(path);
+    if (isCalibrationTouchingFile(path, touchedLines, newContent, oldContent)) touchedPaths.push(path);
   }
-  return { touchesCalibration: touchedPaths.length > 0, touchedPaths };
+  return { touchedPaths };
 }
 
 async function main(): Promise<void> {
@@ -133,9 +140,10 @@ async function main(): Promise<void> {
     changedFiles,
     (path) => gitDiffTouchedLines(ROOT, baseSha, headSha, path),
     (path) => gitShowFileAtSha(ROOT, headSha, path),
+    (path) => gitShowFileAtSha(ROOT, baseSha, path),
   );
 
-  if (!check.touchesCalibration) {
+  if (check.touchedPaths.length === 0) {
     console.log("[#7978] Nenhum arquivo/bloco calibrável tocado — passa sem consultar sign-off.");
     process.exit(0);
     return;

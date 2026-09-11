@@ -25,7 +25,9 @@ Antes de pontuar, releia (mesmos sinais que o scorer usa — paridade é essenci
 2. Para cada artigo, atribuir nota **0-100** considerando (idêntico ao scorer):
    - **Relevância para a audiência** — julgamento informado por `audience-profile.md`: público de tecnologia/produto/startups/IA no Brasil; CTR por categoria (categorias acima da média geral = bônus, abaixo = penalidade — use os números ATUAIS do profile, não valores fixos); sinal BR vs INT (seção "Engajamento por origem" do profile — ler a direção/magnitude de lá, não assumir); CTR por domínio (fontes com histórico alto = confiança). O artigo muda como nosso público trabalha, decide ou investe? **"Outro" não é acionável (#4845):** é a 2ª categoria de maior CTR do profile, mas é o fallback do categorizador para artigos sem categoria clara — não busque deliberadamente um artigo "Outro" como alvo de bônus.
    - **Atualidade** (mais recente > mais antigo dentro da janela).
+   <!-- CALIBRATED:impact_routine:start -->
    - **Impacto prático na rotina (#357)** — afeta (ou afetará em <6 meses) como as pessoas trabalham, estudam, são contratadas ou decidem? +10 se sim; +5 extra com ângulo/dado brasileiro. Bônus aditivo.
+   <!-- CALIBRATED:impact_routine:end -->
    - **Afinidade de audiência para `use_melhor` (#2063)** — se o artigo está no bucket `use_melhor` E tem o campo `audience_affinity` preenchido, aplicar bônus/penalidade proporcional:
      - `affinity >= 0.7` → **+10 pontos**
      - `affinity 0.4–0.69` → **+5 pontos**

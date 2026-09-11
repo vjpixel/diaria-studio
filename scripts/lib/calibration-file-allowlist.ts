@@ -110,21 +110,43 @@ export function extractCalibratedBlocks(content: string): CalibratedBlock[] {
  * decide se essa mudança conta como calibração de verdade.
  *
  * Para `ts-file`/`rubric.json`: sempre `true` se o path está na allowlist
- * e tem pelo menos 1 linha tocada. Para `marked-blocks`: só `true` se
- * alguma linha tocada cai DENTRO de algum bloco CALIBRATED (`content` é o
- * conteúdo do arquivo NOVO, usado pra localizar os blocos).
+ * e tem pelo menos 1 linha tocada. Para `marked-blocks`: `true` se alguma
+ * linha tocada cai DENTRO de algum bloco CALIBRATED do arquivo NOVO, OU se
+ * algum bloco que existia no arquivo ANTIGO (`oldContent`) sumiu no novo —
+ * achado de review do #7978 (alta confiança): sem essa 2ª checagem, um
+ * PR que APAGA os marcadores `CALIBRATED:*` e muda o valor de bônus na
+ * MESMA diff escapava do gate por completo — `extractCalibratedBlocks`
+ * no conteúdo novo simplesmente não encontrava bloco nenhum pra comparar
+ * contra as linhas tocadas, então `touchesCalibration` dava `false` pro
+ * exato cenário que o gate existe pra impedir.
  */
-export function isCalibrationTouchingFile(path: string, touchedLines: ReadonlySet<number>, newContent: string | null): boolean {
+export function isCalibrationTouchingFile(path: string, touchedLines: ReadonlySet<number>, newContent: string | null, oldContent: string | null = null): boolean {
   const entry = CALIBRATION_ALLOWLIST.find((e) => e.path === path);
   if (!entry) return false;
-  if (touchedLines.size === 0) return false;
-
-  if (entry.kind === "ts-file") return true;
 
   // marked-blocks: arquivo deletado (newContent null) conta como calibração
   // — perder o rubrico inteiro é claramente uma mudança real, nunca passa
-  // batido por "não achei bloco nenhum pra comparar".
+  // batido por "não achei bloco nenhum pra comparar". CHECADO ANTES do
+  // early-return de `touchedLines.size === 0` de propósito (achado de
+  // review do #7978, alta confiança): uma deleção PURA de arquivo produz
+  // um hunk `+c,0` no diff, que `parseTouchedLinesFromUnifiedZeroDiff`
+  // deliberadamente NÃO marca nenhuma linha nova (não há linha nova a
+  // marcar) — então `touchedLines` chega aqui VAZIO justo no caso que esta
+  // branch existe pra cobrir. A ordem anterior deixava esse branch morto:
+  // o early-return de linhas vazias sempre disparava primeiro.
   if (newContent === null) return true;
+
+  if (entry.kind === "marked-blocks" && oldContent !== null) {
+    const oldFeatures = new Set(extractCalibratedBlocks(oldContent).map((b) => b.feature));
+    const newFeatures = new Set(extractCalibratedBlocks(newContent).map((b) => b.feature));
+    for (const f of oldFeatures) {
+      if (!newFeatures.has(f)) return true; // marcador que existia sumiu — bloco removido, não passa em silêncio
+    }
+  }
+
+  if (touchedLines.size === 0) return false;
+
+  if (entry.kind === "ts-file") return true;
 
   const blocks = extractCalibratedBlocks(newContent);
   for (const line of touchedLines) {

@@ -60,20 +60,65 @@ export function buildRevertPlan(sha: string, reason: string): RevertPlan {
   };
 }
 
-/** Executa o plano contra o checkout real — SEMPRE do checkout PRINCIPAL, nunca de um worktree (guard #5716, achado ao vivo desta rodada). Não faz merge — só cria a branch, o commit de revert e a PR; merge segue o fluxo normal (#5251). */
+/** Nome da branch atual, ou `null` se não for possível determinar (HEAD destacado, erro de git). Capturado ANTES de qualquer mudança, pra tentar restaurar o checkout se algo falhar no meio. */
+function currentBranch(cwd: string): string | null {
+  const r = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf8" });
+  if (r.status !== 0) return null;
+  const branch = r.stdout.trim();
+  return branch && branch !== "HEAD" ? branch : null;
+}
+
+/**
+ * Executa o plano contra o checkout real — SEMPRE do checkout PRINCIPAL,
+ * nunca de um worktree (guard #5716, achado ao vivo desta rodada). Não
+ * faz merge — só cria a branch, o commit de revert e a PR; merge segue o
+ * fluxo normal (#5251).
+ *
+ * Limpeza em caso de falha (achado de review do #7978, alta confiança —
+ * este checkout pode ser COMPARTILHADO com outra sessão, incidentes
+ * históricos `checkout-compartilhado-multi-sessao.md`): uma falha no meio
+ * da sequência antes desta correção deixava o checkout numa branch nova,
+ * às vezes com conflito de revert não resolvido, sem sinalizar que
+ * intervenção manual era necessária. Agora: falha em `git revert`
+ * dispara `git revert --abort` antes de retornar; QUALQUER falha depois
+ * de `checkout -b` tenta voltar pra branch original (capturada antes de
+ * começar) — best-effort, reportado mas nunca escondido se a própria
+ * restauração falhar.
+ */
 export function executeRevertPlan(plan: RevertPlan, cwd: string): { ok: boolean; error?: string } {
+  const originalBranch = currentBranch(cwd);
+
+  const restoreOriginalBranch = (): string => {
+    if (!originalBranch) return " (branch original não pôde ser determinada — checar `git status` manualmente antes de continuar)";
+    const back = spawnSync("git", ["checkout", originalBranch], { cwd, encoding: "utf8" });
+    return back.status === 0
+      ? ` (checkout restaurado pra ${originalBranch})`
+      : ` (FALHA ao restaurar checkout pra ${originalBranch}: ${back.stderr} — intervenção manual necessária)`;
+  };
+
   const checkout = spawnSync("git", ["checkout", "-b", plan.branchName], { cwd, encoding: "utf8" });
   if (checkout.status !== 0) return { ok: false, error: `checkout -b falhou: ${checkout.stderr}` };
 
   const revert = spawnSync(plan.revertCommand[0], [...plan.revertCommand.slice(1)], { cwd, encoding: "utf8" });
-  if (revert.status !== 0) return { ok: false, error: `git revert falhou (provável conflito — resolver manualmente): ${revert.stderr}` };
+  if (revert.status !== 0) {
+    spawnSync("git", ["revert", "--abort"], { cwd, encoding: "utf8" }); // best-effort — se já não houver revert em progresso, isso é no-op inofensivo
+    const restored = restoreOriginalBranch();
+    return { ok: false, error: `git revert falhou (provável conflito, revert abortado automaticamente): ${revert.stderr}${restored}` };
+  }
 
   const push = spawnSync("git", ["push", "-u", "origin", plan.branchName], { cwd, encoding: "utf8" });
-  if (push.status !== 0) return { ok: false, error: `git push falhou: ${push.stderr}` };
+  if (push.status !== 0) {
+    const restored = restoreOriginalBranch();
+    return { ok: false, error: `git push falhou: ${push.stderr}${restored}. A branch local ${plan.branchName} com o commit de revert AINDA EXISTE — apagar com 'git branch -D ${plan.branchName}' antes de tentar de novo pro mesmo SHA.` };
+  }
 
   const pr = spawnSync("gh", ["pr", "create", "--title", plan.prTitle, "--body", plan.prBody], { cwd, encoding: "utf8" });
-  if (pr.status !== 0) return { ok: false, error: `gh pr create falhou: ${pr.stderr}` };
+  if (pr.status !== 0) {
+    const restored = restoreOriginalBranch();
+    return { ok: false, error: `gh pr create falhou: ${pr.stderr}${restored}. A branch ${plan.branchName} já foi pusheada — abrir a PR manualmente ou rodar 'gh pr create' de novo.` };
+  }
 
+  restoreOriginalBranch();
   return { ok: true };
 }
 

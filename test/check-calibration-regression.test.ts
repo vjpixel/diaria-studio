@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { evaluateCalibrationRegression, loadCtrRows } from "../scripts/check-calibration-regression.ts";
+import { evaluateCalibrationRegression, loadCtrRows, runFullTestSuite } from "../scripts/check-calibration-regression.ts";
 
 describe("evaluateCalibrationRegression (#7978)", () => {
   it("testes falharam: resultado sinaliza regressão mesmo sem dado de CTR", () => {
@@ -38,10 +38,35 @@ describe("evaluateCalibrationRegression (#7978)", () => {
     assert.equal(result.reader_regression, true);
   });
 
-  it("nenhuma linha de CTR: reader_signal null, reader_regression false (nunca fabricado)", () => {
+  it("nenhuma linha de CTR: reader_signal null, reader_regression NULL — 'não avaliado', nunca confundido com 'avaliado e sem regressão' (achado de review do #7978)", () => {
     const result = evaluateCalibrationRegression([], "2026-09-05", { ran: true, passed: true, summary: "ok" });
     assert.equal(result.reader_signal, null);
-    assert.equal(result.reader_regression, false);
+    assert.equal(result.reader_regression, null);
+  });
+});
+
+describe("runFullTestSuite (#7978, spawnFn injetável)", () => {
+  it("spawn falha completamente (r.error, ex: npx ausente): ran=false, passed=null, summary nomeia INFRA", () => {
+    const mockSpawn = (() => ({ status: null, stdout: "", stderr: "", error: new Error("ENOENT: npx não encontrado") })) as any;
+    const result = runFullTestSuite("/qualquer", mockSpawn);
+    assert.equal(result.ran, false);
+    assert.equal(result.passed, null);
+    assert.match(result.summary, /INFRA/);
+  });
+
+  it("suíte roda e passa (exit 0): ran=true, passed=true", () => {
+    const mockSpawn = (() => ({ status: 0, stdout: "", stderr: "" })) as any;
+    const result = runFullTestSuite("/qualquer", mockSpawn);
+    assert.equal(result.ran, true);
+    assert.equal(result.passed, true);
+  });
+
+  it("suíte roda e falha (exit != 0): ran=true, passed=false, summary cita o exit code", () => {
+    const mockSpawn = (() => ({ status: 1, stdout: "", stderr: "" })) as any;
+    const result = runFullTestSuite("/qualquer", mockSpawn);
+    assert.equal(result.ran, true);
+    assert.equal(result.passed, false);
+    assert.match(result.summary, /exit 1/);
   });
 });
 

@@ -90,7 +90,7 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 // `sessionId` = data do snapshot Beehiiv usado (`YYYY-MM-DD`).
 // #7978: "calibration" — relatório de evidência de 1 PR de calibração de
 // score/seleção/prompt (portão de promoção, Camada 5 da #7972).
-// `sessionId` = número da PR (ex: "8010"). `scripts/log-calibration-pr.ts`
+// `sessionId` = número da PR (ex: "8010"). `scripts/generate-calibration-evidence-report.ts`
 // é o único chamador — nunca disparado automaticamente por overnight/develop
 // (a REGRA DE OURO exige que uma calibração real sempre seja aberta e
 // registrada por um fluxo que passa pelo gate de sign-off, nunca autônomo).

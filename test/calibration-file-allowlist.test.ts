@@ -95,4 +95,31 @@ describe("isCalibrationTouchingFile (#7978)", () => {
     const mdEntry = CALIBRATION_ALLOWLIST.find((e) => e.kind === "marked-blocks")!;
     assert.equal(isCalibrationTouchingFile(mdEntry.path, new Set([1]), null), true);
   });
+
+  it("arquivo marked-blocks deletado com touchedLines VAZIO (o caso real que uma deleção pura de diff produz — achado de review do #7978): ainda conta como calibração", () => {
+    const mdEntry = CALIBRATION_ALLOWLIST.find((e) => e.kind === "marked-blocks")!;
+    assert.equal(isCalibrationTouchingFile(mdEntry.path, new Set(), null), true);
+  });
+
+  it("achado de review do #7978 (alta confiança): marcador CALIBRATED removido na mesma diff que muda o conteúdo — conta como calibração via oldContent, mesmo sem sobrar bloco no newContent", () => {
+    const mdEntry = CALIBRATION_ALLOWLIST.find((e) => e.kind === "marked-blocks")!;
+    const oldContent = ["l1", "<!-- CALIBRATED:hands_on:start -->", "peso antigo", "<!-- CALIBRATED:hands_on:end -->", "l5"].join("\n");
+    const newContent = ["l1", "peso NOVO reescrito sem marcador nenhum", "l5"].join("\n");
+    // A linha tocada (2) não cai em nenhum bloco do newContent (não há bloco
+    // nenhum) — sem a checagem de oldContent, isso daria false negativo.
+    assert.equal(isCalibrationTouchingFile(mdEntry.path, new Set([2]), newContent, oldContent), true);
+  });
+
+  it("marcador presente nos dois lados (bloco preservado): não dispara a checagem de remoção — comportamento normal de linha-dentro-do-bloco continua decidindo", () => {
+    const mdEntry = CALIBRATION_ALLOWLIST.find((e) => e.kind === "marked-blocks")!;
+    const content = ["l1", "<!-- CALIBRATED:hands_on:start -->", "l3", "<!-- CALIBRATED:hands_on:end -->", "l5"].join("\n");
+    // mesmo conteúdo antes/depois, linha tocada fora do bloco -> false
+    assert.equal(isCalibrationTouchingFile(mdEntry.path, new Set([1]), content, content), false);
+  });
+
+  it("oldContent omitido (default): comportamento igual ao anterior, sem checar remoção de marcador (back-compat pra chamadores que só têm o conteúdo novo)", () => {
+    const mdEntry = CALIBRATION_ALLOWLIST.find((e) => e.kind === "marked-blocks")!;
+    const newContent = "sem marcador nenhum";
+    assert.equal(isCalibrationTouchingFile(mdEntry.path, new Set([1]), newContent), false);
+  });
 });

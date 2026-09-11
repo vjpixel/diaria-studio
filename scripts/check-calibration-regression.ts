@@ -42,7 +42,16 @@ const ROOT = resolve(import.meta.dirname, "..");
 export interface RegressionCheckResult {
   tests: { ran: boolean; passed: boolean | null; summary: string };
   reader_signal: ReaderSignalDelta | null;
-  reader_regression: boolean;
+  /**
+   * `null` = "não avaliado" (sem dado de CTR suficiente), nunca confundido
+   * com `false` ("avaliado, sem regressão") — achado de review do #7978
+   * (alta confiança): a versão anterior forçava `false` quando
+   * `reader_signal` era `null`, e o texto impresso em `main()` dizia
+   * literalmente "não detectada" nesse caso, indistinguível de um sinal
+   * real que passou. Ausência de dado nunca é evidência de ausência de
+   * regressão.
+   */
+  reader_regression: boolean | null;
 }
 
 export function loadCtrRows(csvPath: string): CtrRow[] {
@@ -56,8 +65,9 @@ export function loadCtrRows(csvPath: string): CtrRow[] {
   }));
 }
 
-export function runFullTestSuite(cwd: string): { ran: boolean; passed: boolean | null; summary: string } {
-  const r = spawnSync("npx", ["tsx", "scripts/run-tests.ts"], { cwd, encoding: "utf8" });
+/** `spawnFn` injetável (mesmo padrão de check-pr-bugfix.ts) — achado de review do #7978: sem isso, o branch de falha de spawn (`r.error`, ex: `npx`/`tsx` ausente) não tinha como ser testado sem rodar a suíte real inteira. */
+export function runFullTestSuite(cwd: string, spawnFn: typeof spawnSync = spawnSync): { ran: boolean; passed: boolean | null; summary: string } {
+  const r = spawnFn("npx", ["tsx", "scripts/run-tests.ts"], { cwd, encoding: "utf8" });
   if (r.error) {
     return { ran: false, passed: null, summary: `INFRA: não foi possível rodar a suíte de testes: ${r.error.message}` };
   }
@@ -69,7 +79,7 @@ export function evaluateCalibrationRegression(ctrRows: CtrRow[], appliedAtIso: s
   return {
     tests: testsResult,
     reader_signal: readerSignal,
-    reader_regression: readerSignal !== null ? isReaderRegression(readerSignal) : false,
+    reader_regression: readerSignal !== null ? isReaderRegression(readerSignal) : null,
   };
 }
 
@@ -98,9 +108,10 @@ if (isMainModule(import.meta.url)) {
   } else {
     console.log("  CTR: sem dado suficiente em data/link-ctr-table.csv pra calcular o sinal");
   }
-  console.log(`  regressão de leitor: ${result.reader_regression ? "SIM (≥1pp de queda) — revisar manualmente antes de considerar revert-calibration.ts" : "não detectada"}`);
+  const regressionLabel = result.reader_regression === null ? "NÃO AVALIADA (sem dado de CTR suficiente — ausência de dado não é evidência de ausência de regressão)" : result.reader_regression ? "SIM (≥1pp de queda) — revisar manualmente antes de considerar revert-calibration.ts" : "não detectada";
+  console.log(`  regressão de leitor: ${regressionLabel}`);
   console.log("  Ver docstring deste script — o gatilho de auto-revert por '3 edições sem reconhecimento' é pendência nomeada, não implementada.");
 
-  const failed = result.tests.passed === false || result.reader_regression;
+  const failed = result.tests.passed === false || result.reader_regression === true;
   process.exit(failed ? 1 : 0);
 }

@@ -56,9 +56,17 @@ describe("executeRevertPlan (#7978, git real em repo sintético)", () => {
       // CONFLITO real) aconteceu limpo antes de chegar lá.
       assert.equal(result.ok, false);
       assert.match(result.error ?? "", /push falhou/);
+      // A branch local ainda existe (só o push falhou) — o revert em si
+      // aconteceu limpo NELA, mesmo que o checkout tenha voltado pra
+      // branch original depois (achado de review do #7978: restaurar o
+      // checkout compartilhado é agora o comportamento esperado).
+      assert.match(result.error ?? "", new RegExp(plan.branchName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
-      const content = execFileSync("git", ["show", "HEAD:f.txt"], { cwd: dir, encoding: "utf8" });
-      assert.equal(content, "original\n", "o revert deveria ter restaurado o conteúdo original");
+      const content = execFileSync("git", ["show", `${plan.branchName}:f.txt`], { cwd: dir, encoding: "utf8" });
+      assert.equal(content, "original\n", "o revert deveria ter restaurado o conteúdo original NA BRANCH DE REVERT");
+
+      const currentBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+      assert.notEqual(currentBranch, plan.branchName, "o checkout deveria ter voltado pra branch original após a falha (achado de review do #7978 — checkout compartilhado)");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
