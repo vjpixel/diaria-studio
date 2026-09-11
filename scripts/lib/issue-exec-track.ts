@@ -290,6 +290,11 @@ export const ENGAVETADAS_LABELS: ReadonlySet<string> = new Set(OUT_OF_ROUND_LABE
  * completo do valor `epica` como 6º track. */
 const EPIC_LABEL = "epic-guarda-chuva";
 
+/** #7945 — `bug` ignora o veto da whitelist AAARRR (ver `isBlockedByAarrrWhitelist`
+ * no passo 2b): a whitelist prioriza ONDE investir esforço de crescimento
+ * novo, não decide se uma regressão do que já existe é consertada. */
+const BUG_LABEL = "bug";
+
 /**
  * Já resolvida sem código a escrever — motivo diferente de `OUT_OF_ROUND_LABELS`
  * acima (#5532): não é o editor tirando a issue de circulação, é a issue já
@@ -657,6 +662,9 @@ export function formatWaitUntilLabel(date: Date, now: Date = new Date()): string
  *                         por funil, decisão do editor 10/09/2026). Vence
  *                         sobre develop/overnight: nenhuma sessão resolve
  *                         etapa não liberada. Issue sem `aarrr:*` passa reto.
+ *                         Exceção (#7945): issue com label `bug` NUNCA cai
+ *                         aqui — a whitelist prioriza esforço de crescimento
+ *                         novo, não decide se uma regressão é consertada.
  *   3. `bloqueada`      — bloqueio externo (nenhuma sessão destrava sozinha).
  *                         Exceção (#5694): `external-blocker` acompanhada de
  *                         `credencial-escopo` NÃO conta aqui — vira `develop`
@@ -729,7 +737,7 @@ export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResul
   // editor engavetando uma épica é mais forte que "é uma épica").
   if (has(EPIC_LABEL)) return { track: "epica", matched: `label:${EPIC_LABEL}` };
 
-  if (isBlockedByAarrrWhitelist(labels, input.aarrrWhitelist ?? loadAarrrWhitelist())) {
+  if (!has(BUG_LABEL) && isBlockedByAarrrWhitelist(labels, input.aarrrWhitelist ?? loadAarrrWhitelist())) {
     return { track: "bloqueada", matched: "label:aarrr-fora-da-whitelist" };
   }
 
@@ -988,7 +996,7 @@ export const EXEC_TRACK_MATCH_REASON: Record<ExecTrackMatch, { short: string; lo
   },
   "label:aarrr-fora-da-whitelist": {
     short: "etapa do funil não liberada",
-    long: "Labels `aarrr:*`: nenhuma das etapas do funil desta issue está em `aarrr-whitelist.json`. Destrava o editor adicionando a etapa à whitelist (ou removendo a label `aarrr:*`).",
+    long: "Labels `aarrr:*`: nenhuma das etapas do funil desta issue está em `aarrr-whitelist.json`. Destrava o editor adicionando a etapa à whitelist (ou removendo a label `aarrr:*`). Não se aplica a issues com label `bug` (#7945) — essas nunca caem aqui.",
   },
   "marker:aguardando-ate": {
     // `{date}` é interpolado pelo caller (`reasonCell` em triagem.js) com

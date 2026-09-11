@@ -10,7 +10,12 @@
  *     manutenção seguem como antes);
  *   - issue COM label `aarrr:*` → só é trabalhada se ao menos uma das suas
  *     etapas estiver na whitelist; senão `classifyExecTrack` a devolve como
- *     `bloqueada` (`matched: "label:aarrr-fora-da-whitelist"`).
+ *     `bloqueada` (`matched: "label:aarrr-fora-da-whitelist"`);
+ *   - EXCEÇÃO (#7945): issue com label `bug` nunca é vetada por esta
+ *     whitelist, tenha ou não etapa liberada — a whitelist prioriza esforço
+ *     de crescimento NOVO, não decide se uma regressão do que já existe é
+ *     consertada. A exceção mora em `classifyExecTrackWithRule`, não aqui:
+ *     `isBlockedByAarrrWhitelist` continua puro, sem saber de tipo de issue.
  *
  * O filtro mora no classificador (`issue-exec-track.ts`) porque ele já é a
  * fonte única consumida pelo overnight, develop, continuo, desbloqueia,
