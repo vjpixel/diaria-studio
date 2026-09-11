@@ -68,6 +68,7 @@ import { computeShadowScore, weightsHash, type CandidateWeights, type CandidateW
 import { computeDomainConcentration } from "./lib/source-concentration.ts";
 import { registrableDomain } from "./lib/registrable-domain.ts";
 import { DEFAULT_MAX_PER_DOMAIN } from "./validate-domain-diversity.ts";
+import { computeAuc } from "./shadow-validation-report.ts";
 import type { CalibrationCase } from "./lib/calibration-evidence-report.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -81,8 +82,19 @@ export const DEFAULT_POINTS_PER_LOG_ODDS = 10;
 const L2_LAMBDA = 0.01;
 const MAX_EVIDENCE_CASES = 5;
 
+/**
+ * `feature` é `CandidateFeature` — subconjunto de `keyof ScoringFeatureRow`
+ * garantido em COMPILAÇÃO (`ALL_BOOLEAN_FEATURE_NAMES satisfies readonly
+ * (keyof ScoringFeatureRow)[]` em `calibration-power-report.ts`) — acesso
+ * direto `row[feature]`, sem cast. Achado de review do #7990 (type-design,
+ * P2): a versão anterior passava por `Record<string, unknown>`, jogando
+ * fora essa garantia — se `CandidateFeature` algum dia admitisse um nome
+ * que não é chave real de `ScoringFeatureRow`, o cast faria isso avaliar
+ * pra `undefined === true` (`false`) silenciosamente em vez de o
+ * compilador recusar.
+ */
 function featureValue(row: EditionRows["rows"][number], feature: CandidateFeature): boolean {
-  return (row as unknown as Record<string, unknown>)[feature] === true;
+  return row[feature] === true;
 }
 
 interface RubricBonus {
@@ -102,6 +114,14 @@ interface RubricFile {
  * entrada própria.
  */
 function existingRubricPoints(rubric: RubricFile, feature: CandidateFeature): number | null {
+  // Achado de review do #7990 (silent-failure-hunter, P3): `rubric.bonuses`
+  // vem de `JSON.parse` sem validação de forma em runtime — um rubric.json
+  // truncado/com `bonuses` renomeado lançaria um TypeError nativo sem
+  // contexto (`Cannot read properties of undefined`) bem antes de qualquer
+  // `?.` proteger algo. Guard explícito, com o path do arquivo no erro.
+  if (rubric.bonuses === null || typeof rubric.bonuses !== "object") {
+    throw new Error(`existingRubricPoints: rubric.bonuses não é um objeto (${typeof rubric.bonuses}) — rubric.json malformado?`);
+  }
   if (feature === "howto_br_source") {
     return rubric.bonuses.howto_br?.points_source_extra ?? null;
   }
@@ -115,23 +135,18 @@ function median(values: number[]): number | null {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
-/** AUC (Mann-Whitney) — mesma definição de `shadow-validation-report.ts`, duplicada aqui só pela assinatura (`number[]` sem `null`, já filtrado pelo chamador) pra não importar um módulo `scripts/*.ts` de outro `scripts/*.ts` fora de `lib/` (convenção do projeto). */
-function auc(values: ReadonlyArray<number>, labels: ReadonlyArray<boolean>): number | null {
-  const pos: number[] = [];
-  const neg: number[] = [];
-  for (let i = 0; i < values.length; i++) (labels[i] ? pos : neg).push(values[i]);
-  if (pos.length === 0 || neg.length === 0) return null;
-  let wins = 0;
-  for (const p of pos) for (const n of neg) wins += p > n ? 1 : p === n ? 0.5 : 0;
-  return wins / (pos.length * neg.length);
-}
-
 export interface FeatureGuardrails {
   hhi: number;
   hhi_top_domain: string | null;
+  /** `true` quando o suporte da feature (linhas onde ela é `true`) não tem NENHUM domínio parseável — HHI cai pra 0 por construção de `computeDomainConcentration` (0 domínios = HHI mínimo), o que pareceria "diversidade perfeita" quando na verdade é "não avaliável". Achado de review do #7990 (silent-failure-hunter, P1): sem este campo, um candidato com suporte 100% corrompido (URLs malformadas) passaria o gate de HHI como se fosse o candidato mais seguro possível — fail-CLOSED aqui: `hhi_unassessable=true` também marca `hhi_rejected=true`. */
+  hhi_unassessable: boolean;
   hhi_rejected: boolean;
   baseline_overflow_rate: number;
   simulated_overflow_rate: number;
+  /** Nº de edições onde a simulação pôde rodar (tinham `score_base` suficiente) — de um total de até `editions.length`. */
+  domain_cap_evaluable_editions: number;
+  /** `true` quando NENHUMA edição pôde ser simulada (`domain_cap_evaluable_editions === 0`) — sem isto, `baseline_overflow_rate`/`simulated_overflow_rate` caem pra 0/0 e `domain_cap_rejected` (0 > 0 é falso) vira um "aprovado" que na verdade nunca avaliou nada. Mesmo achado de review (P1) do campo acima, mesma correção: fail-CLOSED, `domain_cap_unassessable=true` também marca `domain_cap_rejected=true`. */
+  domain_cap_unassessable: boolean;
   domain_cap_rejected: boolean;
 }
 
@@ -210,7 +225,7 @@ function domainOverflows(rows: EditionRows["rows"]): boolean {
 }
 
 /** Guardrails 2 (cap de domínio) e 3 (HHI) pra 1 feature, sobre TODAS as edições disponíveis (treino + holdout — os guardrails protegem contra risco do candidato, não medem poder preditivo out-of-sample). */
-function evaluateGuardrails(editions: EditionRows[], feature: CandidateFeature, proposedPoints: number): FeatureGuardrails {
+export function evaluateGuardrails(editions: EditionRows[], feature: CandidateFeature, proposedPoints: number): FeatureGuardrails {
   // HHI sobre o suporte da feature (domínios de toda linha onde feature=true).
   const supportDomains: Array<string | null> = [];
   for (const ed of editions) {
@@ -219,7 +234,12 @@ function evaluateGuardrails(editions: EditionRows[], feature: CandidateFeature, 
     }
   }
   const hhiResult = computeDomainConcentration(supportDomains);
-  const hhiRejected = hhiResult.hhi > HHI_REJECTION_THRESHOLD;
+  // Fail-closed (achado de review do #7990, P1): 0 domínios válidos no
+  // suporte não é "diversidade perfeita" (o que HHI=0 sugeriria à primeira
+  // vista) — é "não avaliável", e não-avaliável nunca deve ler como
+  // aprovado. Ver docstring de `hhi_unassessable` em `FeatureGuardrails`.
+  const hhiUnassessable = hhiResult.domain_count === 0;
+  const hhiRejected = hhiUnassessable || hhiResult.hhi > HHI_REJECTION_THRESHOLD;
 
   // Cap de domínio: baseline real vs. simulado com o peso proposto.
   const weights: CandidateWeights = { [feature]: proposedPoints } as CandidateWeights;
@@ -237,21 +257,34 @@ function evaluateGuardrails(editions: EditionRows[], feature: CandidateFeature, 
   }
   const baselineOverflowRate = evaluable > 0 ? baselineOverflows / evaluable : 0;
   const simulatedOverflowRate = evaluable > 0 ? simulatedOverflows / evaluable : 0;
-  const domainCapRejected = simulatedOverflowRate > baselineOverflowRate;
+  // Fail-closed (mesmo achado, P1): `evaluable === 0` fazia as duas taxas
+  // caírem pra 0/0, e `0 > 0` é `false` — o guardrail "aprovava" um
+  // candidato que na verdade NUNCA foi comparado contra baseline nenhum.
+  const domainCapUnassessable = evaluable === 0;
+  const domainCapRejected = domainCapUnassessable || simulatedOverflowRate > baselineOverflowRate;
 
   return {
     hhi: hhiResult.hhi,
     hhi_top_domain: hhiResult.top_domain,
+    hhi_unassessable: hhiUnassessable,
     hhi_rejected: hhiRejected,
     baseline_overflow_rate: baselineOverflowRate,
     simulated_overflow_rate: simulatedOverflowRate,
+    domain_cap_evaluable_editions: evaluable,
+    domain_cap_unassessable: domainCapUnassessable,
     domain_cap_rejected: domainCapRejected,
   };
 }
 
 /**
- * `true` só se `aammdd` for um calendário REAL (mês 01-12, dia 01-31 pro mês
- * em questão) — mais estrita que `editionDateFromAammdd` (`scoring-
+ * `true` só se `aammdd` tiver mês 01-12 e dia 01-31 — NÃO valida dias por
+ * mês (ex: `260230` "30 de fevereiro" passa como plausível; achado de
+ * review do #7990, comment-analyzer, P3: uma versão anterior deste
+ * docstring dizia "dia 01-31 pro mês em questão", implicando validação
+ * ciente do mês, que o código nunca fez). Suficiente pro propósito real —
+ * excluir artefatos com dia claramente fora de qualquer calendário (ex:
+ * "99") — sem o custo de uma tabela de dias-por-mês que este caso de uso
+ * não precisa. Mais estrita que `editionDateFromAammdd` (`scoring-
  * features.ts`), que usa `Date.UTC` e deixa dia/mês fora de faixa "rolarem"
  * silenciosamente pro mês seguinte em vez de sinalizar inválido (ex:
  * `Date.UTC(2026, 11, 99, ...)` normaliza sozinho pra uma data de 2027,
@@ -268,7 +301,7 @@ function evaluateGuardrails(editions: EditionRows[], feature: CandidateFeature, 
  * regressão nem do relatório de poder (decisão de escopo maior, fora de
  * #7990; sinalizada à parte pra limpeza dedicada).
  */
-function isPlausibleEditionDate(aammdd: string): boolean {
+export function isPlausibleEditionDate(aammdd: string): boolean {
   const m = /^(\d{2})(\d{2})(\d{2})$/.exec(aammdd);
   if (!m) return false;
   const [, , mm, dd] = m;
@@ -279,32 +312,51 @@ function isPlausibleEditionDate(aammdd: string): boolean {
   return true;
 }
 
-/** Até `MAX_EVIDENCE_CASES` casos nomeados (edição+URL+ação) onde a feature calibrada apareceu — mais recentes primeiro, determinístico. */
-function evidenceCasesForFeature(events: LabeledEvent[], feature: CandidateFeature): CalibrationCase[] {
+function describeEvent(e: LabeledEvent): string {
+  return e.track_a === "llm_finalist_and_approved"
+    ? "LLM escolheu como destaque, editor manteve"
+    : e.track_a === "editor_promoted_outside_llm_finalists"
+      ? "editor promoveu a destaque fora dos finalistas do LLM"
+      : e.track_a === "llm_finalist_rejected_by_editor"
+        ? "LLM escolheu como destaque, editor não manteve"
+        : e.track_b === "bucket_kept"
+          ? "manteve o mesmo bucket do pool"
+          : e.track_b === "bucket_moved"
+            ? `bucket movido: ${e.bucket_move?.from} → ${e.bucket_move?.to}`
+            : e.track_b === "pool_cut"
+              ? "cortado do pool"
+              : e.track_b === "pool_add"
+                ? "adicionado ao pool aprovado"
+                : "evento sem rótulo Track A/B";
+}
+
+/**
+ * Até `MAX_EVIDENCE_CASES` casos nomeados (edição+URL+ação) onde QUALQUER
+ * uma das `features` aceitas apareceu — mais recentes primeiro,
+ * determinístico. Cobre TODAS as features aceitas (achado de review do
+ * #7990, code-reviewer/comment-analyzer, P2/P3: uma versão anterior só
+ * coletava evidência de `accepted[0]`, omitindo em silêncio qualquer
+ * feature aceita além da 1ª — arquitetamente possível mesmo que o corpus
+ * real hoje só produza 1 feature elegível por rodada). Quando >1 feature
+ * está representada nos 5 casos, o nome da feature entra no texto da ação
+ * pra desambiguar. `renderCalibrationEvidenceReport` (calibration-
+ * evidence-report.ts) exige `cases.length` entre 1 e 5 — teto GLOBAL, não
+ * por feature — por isso o corte é sobre o conjunto combinado, não 5 por
+ * feature.
+ */
+function evidenceCasesForFeatures(events: LabeledEvent[], features: readonly CandidateFeature[]): CalibrationCase[] {
+  const multiFeature = features.length > 1;
   const matching = events
-    .filter((e): e is LabeledEvent & { features: NonNullable<LabeledEvent["features"]> } => e.features !== null && featureValue(e.features, feature))
+    .filter((e): e is LabeledEvent & { features: NonNullable<LabeledEvent["features"]> } => e.features !== null)
     .filter((e) => isPlausibleEditionDate(e.edition))
-    .sort((a, b) => b.edition.localeCompare(a.edition));
+    .flatMap((e) => features.filter((f) => featureValue(e.features, f)).map((f) => ({ event: e, feature: f })))
+    .sort((a, b) => (b.event.edition !== a.event.edition ? b.event.edition.localeCompare(a.event.edition) : a.feature.localeCompare(b.feature)));
+
   const cases: CalibrationCase[] = [];
-  for (const e of matching) {
+  for (const { event, feature } of matching) {
     if (cases.length >= MAX_EVIDENCE_CASES) break;
-    const action =
-      e.track_a === "llm_finalist_and_approved"
-        ? "LLM escolheu como destaque, editor manteve"
-        : e.track_a === "editor_promoted_outside_llm_finalists"
-          ? "editor promoveu a destaque fora dos finalistas do LLM"
-          : e.track_a === "llm_finalist_rejected_by_editor"
-            ? "LLM escolheu como destaque, editor não manteve"
-            : e.track_b === "bucket_kept"
-              ? "manteve o mesmo bucket do pool"
-              : e.track_b === "bucket_moved"
-                ? `bucket movido: ${e.bucket_move?.from} → ${e.bucket_move?.to}`
-                : e.track_b === "pool_cut"
-                  ? "cortado do pool"
-                  : e.track_b === "pool_add"
-                    ? "adicionado ao pool aprovado"
-                    : "evento sem rótulo Track A/B";
-    cases.push({ edition: e.edition, url: e.url, action });
+    const action = multiFeature ? `${describeEvent(event)} (feature: ${feature})` : describeEvent(event);
+    cases.push({ edition: event.edition, url: event.url, action });
   }
   return cases;
 }
@@ -367,6 +419,15 @@ export function calibrateScoringWeights(editionsRoot: string, rootDir: string, h
   const X: number[][] = [];
   const y: number[] = [];
   for (const ed of trainSet) {
+    // Achado de review do #7990 (silent-failure-hunter, P3): `ed.kept[i]`
+    // fora de faixa (desalinho rows/kept) avalia `undefined ? 1 : 0` → `0`
+    // silenciosamente, rotulando "não mantido" em vez de sinalizar o
+    // desalinho — hoje protegido por construção em `loadEditionRows`, mas
+    // este arquivo consome `EditionRows` como um contrato público (o
+    // teste também constrói instâncias à mão), então vale checar aqui.
+    if (ed.rows.length !== ed.kept.length) {
+      throw new Error(`calibrateScoringWeights: edição ${ed.edition} tem ${ed.rows.length} rows mas ${ed.kept.length} entradas em kept — devem ser paralelos.`);
+    }
     for (let i = 0; i < ed.rows.length; i++) {
       X.push(eligibleFeatures.map((f) => (featureValue(ed.rows[i], f) ? 1 : 0)));
       y.push(ed.kept[i] ? 1 : 0);
@@ -393,14 +454,18 @@ export function calibrateScoringWeights(editionsRoot: string, rootDir: string, h
     const guardrails = evaluateGuardrails(editions, feature, proposedPoints);
     const rejectionReasons: string[] = [];
     if (proposedPoints === 0) rejectionReasons.push("coeficiente ajustado produz 0 pontos propostos — sem efeito prático pra calibrar.");
-    if (guardrails.hhi_rejected) {
+    if (guardrails.hhi_unassessable) {
+      rejectionReasons.push("gate de concentração de fonte: NÃO AVALIÁVEL — nenhum domínio parseável no suporte da feature (fail-closed, nunca lido como aprovado).");
+    } else if (guardrails.hhi_rejected) {
       rejectionReasons.push(
         `gate de concentração de fonte: HHI do suporte (${guardrails.hhi.toFixed(0)}) excede o limiar de ${HHI_REJECTION_THRESHOLD} (top domínio: ${guardrails.hhi_top_domain ?? "n/d"}).`,
       );
     }
-    if (guardrails.domain_cap_rejected) {
+    if (guardrails.domain_cap_unassessable) {
+      rejectionReasons.push("cap de 2 URLs/domínio (#5735): NÃO AVALIÁVEL — nenhuma edição tinha score_base suficiente pra simular (fail-closed, nunca lido como aprovado).");
+    } else if (guardrails.domain_cap_rejected) {
       rejectionReasons.push(
-        `cap de 2 URLs/domínio (#5735): taxa simulada de estouro (${(guardrails.simulated_overflow_rate * 100).toFixed(1)}%) excede a taxa real observada (${(guardrails.baseline_overflow_rate * 100).toFixed(1)}%).`,
+        `cap de 2 URLs/domínio (#5735): taxa simulada de estouro (${(guardrails.simulated_overflow_rate * 100).toFixed(1)}%) excede a taxa real observada (${(guardrails.baseline_overflow_rate * 100).toFixed(1)}%) sobre ${guardrails.domain_cap_evaluable_editions} edições avaliáveis.`,
       );
     }
     return {
@@ -439,7 +504,15 @@ export function calibrateScoringWeights(editionsRoot: string, rootDir: string, h
   const weights: CandidateWeights = Object.fromEntries(accepted.map((c) => [c.feature, c.proposed_points])) as CandidateWeights;
   const hash = weightsHash(weights);
 
-  // AUC de holdout — real (score) vs. shadow (candidato) — mesma definição de shadow-validation-report.ts, reimplementada localmente (ver `auc()` acima) pra este script não depender de scoring-shadow.json pré-computado.
+  // AUC de holdout — real (score) vs. shadow (candidato). Reusa `computeAuc`
+  // de `shadow-validation-report.ts` diretamente (achado de review do #7990,
+  // comment-analyzer, P2: a versão anterior duplicava a mesma função
+  // localmente citando uma "convenção do projeto" contra import scripts→
+  // scripts fora de lib/ que este MESMO arquivo já contraria 2 linhas acima,
+  // importando `buildPowerReport`/`analyzeAllEditions`) — nunca calcula sobre
+  // `scoring-shadow.json` pré-computado, só sobre `computeShadowScore` em
+  // memória, então o import não reintroduz a dependência de arquivo que o
+  // módulo evita de propósito.
   const realValues: number[] = [];
   const realLabels: boolean[] = [];
   const shadowValues: number[] = [];
@@ -460,7 +533,7 @@ export function calibrateScoringWeights(editionsRoot: string, rootDir: string, h
   }
 
   const events = analyzeAllEditions(editionsRoot).events;
-  const evidenceCases = evidenceCasesForFeature(events, accepted[0].feature);
+  const evidenceCases = evidenceCasesForFeatures(events, accepted.map((c) => c.feature));
 
   return {
     ...base,
@@ -475,8 +548,8 @@ export function calibrateScoringWeights(editionsRoot: string, rootDir: string, h
     weights,
     weights_hash: hash,
     weights_file: null, // preenchido por writeCandidateWeightsFile() se --write
-    holdout_auc_real: auc(realValues, realLabels),
-    holdout_auc_shadow: auc(shadowValues, shadowLabels),
+    holdout_auc_real: computeAuc(realValues, realLabels),
+    holdout_auc_shadow: computeAuc(shadowValues, shadowLabels),
     evidence_cases: evidenceCases,
   };
 }
@@ -527,7 +600,9 @@ function formatReport(result: CalibrateResult): string {
   lines.push("");
   for (const c of result.candidates) {
     lines.push(`  ${c.feature}: coef=${c.coefficient.toFixed(4)} odds_ratio=${c.odds_ratio.toFixed(3)} proposto=${c.proposed_points}pt (rubrico atual: ${c.existing_rubric_points ?? "nenhum"})`);
-    lines.push(`    HHI(suporte)=${c.guardrails.hhi.toFixed(0)} (top=${c.guardrails.hhi_top_domain ?? "n/d"})  cap-overflow real=${(c.guardrails.baseline_overflow_rate * 100).toFixed(1)}% simulado=${(c.guardrails.simulated_overflow_rate * 100).toFixed(1)}%`);
+    lines.push(
+      `    HHI(suporte)=${c.guardrails.hhi_unassessable ? "N/A (não avaliável)" : c.guardrails.hhi.toFixed(0)} (top=${c.guardrails.hhi_top_domain ?? "n/d"})  cap-overflow real=${(c.guardrails.baseline_overflow_rate * 100).toFixed(1)}% simulado=${(c.guardrails.simulated_overflow_rate * 100).toFixed(1)}% (${c.guardrails.domain_cap_evaluable_editions} edições avaliáveis${c.guardrails.domain_cap_unassessable ? " — NÃO AVALIÁVEL" : ""})`,
+    );
     lines.push(`    ${c.accepted ? "✅ ACEITO" : "❌ REJEITADO: " + c.rejection_reasons.join(" | ")}`);
   }
   lines.push("");

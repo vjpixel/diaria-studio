@@ -58,7 +58,13 @@ const ROOT = resolve(import.meta.dirname, "..");
 /**
  * Universo bruto de nomes de feature booleana — INCLUI as não-calibráveis
  * de propósito (a lista completa existe pra `CANDIDATE_FEATURES` filtrar
- * em runtime). Nunca importado fora deste módulo.
+ * em runtime). Nunca importado fora deste módulo. `satisfies readonly
+ * (keyof ScoringFeatureRow)[]` (achado de review do #7990, type-design,
+ * P2) — sem isso, nada garantia em COMPILAÇÃO que cada string aqui é
+ * mesmo um campo real de `ScoringFeatureRow`; um typo ou um campo
+ * renomeado em `scoring-features.ts` passaria batido, reabrindo (1 nível
+ * acima) exatamente a classe de bug que este arquivo inteiro existe pra
+ * fechar.
  */
 const ALL_BOOLEAN_FEATURE_NAMES = [
   "primary_source",
@@ -68,7 +74,33 @@ const ALL_BOOLEAN_FEATURE_NAMES = [
   "howto_br_source",
   "has_official_link",
   "negative_impact",
-] as const;
+] as const satisfies readonly (keyof ScoringFeatureRow)[];
+
+/**
+ * `CandidateFeature` via `Exclude<...>` sobre o universo bruto, NÃO via
+ * `(typeof CANDIDATE_FEATURES)[number]` — achado de review do #7976/#7990
+ * (P3, follow-up de type-safety): `Array.prototype.filter` não estreita o
+ * tipo de uma tupla `as const` sem um type-guard explícito no predicado,
+ * então uma versão anterior sem esse guard deixava o TIPO `CandidateFeature`
+ * ainda admitir `"negative_impact"` como valor válido — só o
+ * `NON_CALIBRATABLE_FEATURES.has()` em RUNTIME impedia a entrada,
+ * minando o guard de COMPILAÇÃO que este módulo foi desenhado pra dar
+ * (`calibrate-scoring-weights.ts`, #7990, é o 1º consumidor que monta
+ * pesos candidato em código TS — o custo de um typo aqui agora é
+ * silencioso até rodar). `Exclude<>` sobre a união literal estreita de
+ * verdade, e o predicado tipado abaixo faz `CANDIDATE_FEATURES` (runtime) e
+ * `CandidateFeature` (tipo) nunca desalinharem — os dois derivam do MESMO
+ * `ALL_BOOLEAN_FEATURE_NAMES`. **`"bucket"` no `Exclude<>` é DEFENSIVO, não
+ * um no-op inofensivo por acaso** — `ALL_BOOLEAN_FEATURE_NAMES` não contém
+ * `"bucket"` hoje (não é campo booleano), mas `NON_CALIBRATABLE_FEATURES`
+ * (`scoring-features.ts`, a fonte de verdade RUNTIME desta exclusão) inclui
+ * `"bucket"` porque é tipada sobre `keyof ScoringFeatureRow` inteiro, não só
+ * os campos booleanos — mantido aqui pra as duas listas citarem os MESMOS 2
+ * nomes, mesmo que só 1 seja alcançável neste universo mais estreito;
+ * `test/candidate-feature-type-sync.test.ts` trava que as duas nunca
+ * divergem no que É alcançável.
+ */
+export type CandidateFeature = Exclude<(typeof ALL_BOOLEAN_FEATURE_NAMES)[number], "negative_impact" | "bucket">;
 
 /**
  * Features booleanas candidatas a calibração — exclui explicitamente tudo em
@@ -79,24 +111,6 @@ const ALL_BOOLEAN_FEATURE_NAMES = [
  * de review do #7977: chave com typo/nome obsoleto degradava
  * silenciosamente pra peso 0, sem nenhum sinal).
  */
-/**
- * `CandidateFeature` via `Exclude<...>` sobre o universo bruto, NÃO via
- * `(typeof CANDIDATE_FEATURES)[number]` — achado de review do #7976/#7990
- * (P3, follow-up de type-safety): `Array.prototype.filter` não estreita o
- * tipo de uma tupla `as const` sem um type-guard explícito no predicado,
- * então uma versão anterior sem esse guard deixava o TIPO `CandidateFeature`
- * ainda admitir `"negative_impact"` como valor válido — só o
- * `NON_CALIBRATABLE_FEATURES.has()` em RUNTIME impedia a entrada,
- * undermining o guard de COMPILAÇÃO que `scoring-features.ts` foi desenhado
- * pra dar (`calibrate-scoring-weights.ts`, #7990, é o 1º consumidor que
- * monta pesos candidato em código TS — o custo de um typo aqui agora é
- * silencioso até rodar). `Exclude<>` sobre a união literal estreita de
- * verdade, e o predicado tipado abaixo faz `CANDIDATE_FEATURES` (runtime) e
- * `CandidateFeature` (tipo) nunca desalinharem — os dois derivam do MESMO
- * `ALL_BOOLEAN_FEATURE_NAMES`.
- */
-export type CandidateFeature = Exclude<(typeof ALL_BOOLEAN_FEATURE_NAMES)[number], "negative_impact" | "bucket">;
-
 export const CANDIDATE_FEATURES = ALL_BOOLEAN_FEATURE_NAMES.filter(
   (f): f is CandidateFeature => !NON_CALIBRATABLE_FEATURES.has(f),
 );

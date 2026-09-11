@@ -55,8 +55,8 @@ export interface LogisticRegressionOptions {
 
 export interface LogisticRegressionResult {
   intercept: number;
-  /** Paralelo às colunas de `X` (mesma ordem que o chamador passou). */
-  coefficients: number[];
+  /** Paralelo às colunas de `X` (mesma ordem que o chamador passou). `readonly` — resultado de fit é um snapshot, não deve ser mutado por quem consome (achado de review do #7990, type-design). */
+  coefficients: readonly number[];
   iterations: number;
   /** `true` se parou por convergência (norma do gradiente < tolerance), `false` se esgotou `maxIterations`. */
   converged: boolean;
@@ -93,8 +93,27 @@ export function fitL2LogisticRegression(
       throw new Error(`fitL2LogisticRegression: linha ${i} tem ${X[i].length} colunas, esperado ${numFeatures} (mesmo de X[0]).`);
     }
   }
+  // Achado de review do #7990 (silent-failure-hunter, P3): rótulo fora de
+  // {0,1} produz um fit numericamente "válido" mas semanticamente sem
+  // sentido, sem nenhum erro — mesma disciplina fail-hard das checagens de
+  // forma acima.
+  for (let i = 0; i < y.length; i++) {
+    if (y[i] !== 0 && y[i] !== 1) {
+      throw new Error(`fitL2LogisticRegression: y[${i}] = ${y[i]} — rótulo precisa ser 0 ou 1 (binário).`);
+    }
+  }
 
   const { l2 = DEFAULT_L2, learningRate = DEFAULT_LEARNING_RATE, maxIterations = DEFAULT_MAX_ITERATIONS, tolerance = DEFAULT_TOLERANCE } = opts;
+  // Achado de review do #7990 (silent-failure-hunter, P3): `maxIterations<=0`
+  // ou `learningRate<=0` produzia um resultado "sem efeito" (coeficientes em
+  // 0, `converged:false`) indistinguível de "não convergiu depois de
+  // trabalho real" — nunca sinalizava "nunca rodou de verdade".
+  if (!Number.isInteger(maxIterations) || maxIterations < 1) {
+    throw new Error(`fitL2LogisticRegression: maxIterations precisa ser um inteiro >= 1, recebido ${maxIterations}.`);
+  }
+  if (!(learningRate > 0)) {
+    throw new Error(`fitL2LogisticRegression: learningRate precisa ser > 0, recebido ${learningRate}.`);
+  }
 
   let intercept = 0;
   const coefficients = new Array(numFeatures).fill(0);
@@ -132,6 +151,19 @@ export function fitL2LogisticRegression(
       iterations++; // conta esta iteração antes de sair, pro número refletir quantas rodaram de fato
       break;
     }
+  }
+
+  // Achado de review do #7990 (silent-failure-hunter, P2): divergência
+  // (NaN/Infinity) fica indistinguível de "não convergiu em tempo" sem esta
+  // checagem — `Math.sqrt(NaN) < tolerance` é `false`, o loop esgota
+  // `maxIterations` e devolveria um resultado com coeficientes NaN que
+  // nenhum consumidor downstream (ex: `Math.round(NaN * x) === 0` é falso)
+  // detecta como inválido. Lança em vez de devolver lixo silencioso — mesma
+  // disciplina fail-hard das checagens de forma acima.
+  if (!Number.isFinite(intercept) || !coefficients.every(Number.isFinite)) {
+    throw new Error(
+      `fitL2LogisticRegression: fit divergiu (intercepto=${intercept}, coeficientes=[${coefficients.join(", ")}]) — resultado não-finito após ${iterations} iterações. Tente learningRate menor ou l2 maior.`,
+    );
   }
 
   return { intercept, coefficients, iterations, converged };
