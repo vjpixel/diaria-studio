@@ -136,7 +136,10 @@ if (
   try {
     const resolved = resolveSoundCommand(process.argv[2]);
     if (resolved) {
-      spawnSync(resolved.command, resolved.args, { stdio: "ignore", timeout: 10_000 });
+      // windowsHide (#7959): no Windows `resolved.command` é `powershell` —
+      // sem isso, este `spawnSync` aloca console próprio a cada evento
+      // Stop/Notification (roda mais vezes que o SessionStart do #7952).
+      spawnSync(resolved.command, resolved.args, { stdio: "ignore", timeout: 10_000, windowsHide: true });
     }
   } catch {
     // Swallow everything: o contrato deste hook é nunca sair não-zero e

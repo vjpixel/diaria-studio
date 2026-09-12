@@ -487,10 +487,13 @@ export function buildDenyMessage(findings) {
  * fallback) — `null` se nenhum dos dois resolver (fail-open no chamador). */
 function resolveBaseRef(cwd) {
   for (const ref of ["origin/master", "master"]) {
+    // windowsHide (#7959): sem isso, este `spawnSync("git", ...)` aloca
+    // console próprio no Windows a cada `gh pr create` interceptado.
     const result = spawnSync("git", ["rev-parse", "--verify", ref], {
       cwd,
       encoding: "utf8",
       timeout: 15_000,
+      windowsHide: true,
     });
     if (!result.error && result.status === 0) return ref;
   }
@@ -498,7 +501,14 @@ function resolveBaseRef(cwd) {
 }
 
 function runGit(args, cwd) {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 * 1024 });
+  // windowsHide (#7959): mesma razão do spawnSync acima.
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    timeout: 30_000,
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+  });
   if (result.error || result.status !== 0) return null;
   return result.stdout ?? "";
 }
