@@ -113,7 +113,7 @@ abre o ano novo. Convite para responder ao e-mail.]
 
 | Bloco | Teto | Nota |
 |---|---|---|
-| Cada tema | 2.000 chars | Maior que o mensal (1.500) — o tema cobre um ano, não um mês |
+| Cada tema | 1.500 chars | Mesmo teto do D1 da mensal (decisão do editor, 12/09/2026). Era 2.000 na 1ª edição, e 3 dos 6 temas passaram de 1.500 — enxugados sem perder o arco. Conta título + parágrafos + fio condutor, sem URL. |
 | O que mudou | 1.800 chars | |
 | Previsões | 2.000 chars | incluindo o parágrafo de ressalva |
 | Aniversário | 1.500 chars | |

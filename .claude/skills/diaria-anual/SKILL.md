@@ -199,7 +199,7 @@ Justificativa do N (analyst-anual): {resumo de 1 linha}
 
 Lint (lint-annual-draft.ts):
   Render: {N} <img> para {N} temas — OK
-  Tema 1: {chars} / 2.000 {✓|⚠}
+  Tema 1: {chars} / 1.500 {✓|⚠}
   ...
   O que mudou: {chars} / 1.800 {✓|⚠}
   Previsões: {chars} / 2.000 {✓|⚠}

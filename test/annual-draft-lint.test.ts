@@ -14,7 +14,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { lintAnnualDraft, MIN_THEMES, MAX_THEMES } from "../scripts/lint-annual-draft.ts";
+import { lintAnnualDraft, LIMITS, MIN_THEMES, MAX_THEMES } from "../scripts/lint-annual-draft.ts";
 import { parseAnnualDraft, themeCharCount } from "../scripts/lib/anual/annual-parse.ts";
 import { renderAnnualEmail } from "../scripts/lib/anual/annual-render.ts";
 
@@ -206,6 +206,18 @@ describe("contagem de caracteres", () => {
     const r = lintAnnualDraft(gordo, "aniversario");
     assert.equal(r.ok, true);
     assert.ok(r.warnings.some((w) => w.includes("TEMA 1") && w.includes("teto")));
+  });
+
+  it("teto do tema é 1.500, o mesmo do D1 da mensal — 1.600 já acusa", () => {
+    // Com o teto antigo (2.000), um tema de ~1.600 passava calado: foi o caso
+    // de 3 dos 6 temas da 1ª edição (1.793 / 1.545 / 1.511).
+    assert.equal(LIMITS.theme, 1500);
+    const medio = draft().replace(
+      "Segundo parágrafo do tema 1, com a linha do tempo do ano.",
+      "x".repeat(1600),
+    );
+    const r = lintAnnualDraft(medio, "aniversario");
+    assert.ok(r.warnings.some((w) => w.includes("TEMA 1") && w.includes("teto")), r.warnings.join("; "));
   });
 
   it("O QUE MUDOU e PREVISÕES também descontam a URL do relink (#7587 item 3)", () => {
