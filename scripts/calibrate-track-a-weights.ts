@@ -66,7 +66,7 @@ import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { buildTrackAPowerReport, buildTrackAPopulation, type TrackAEditionRows } from "./calibration-power-report-track-a.ts";
-import { TRACK_A_CANDIDATE_FEATURES, trackAFeatureValue, type TrackACandidateFeature } from "./lib/track-a-features.ts";
+import { trackAFeatureValue, type TrackACandidateFeature } from "./lib/track-a-features.ts";
 import { COVERAGE_BONUS_PER_SOURCE } from "./lib/coverage-bonus.ts";
 import { analyzeAllEditions, type LabeledEvent } from "./analyze-destaque-overrides.ts";
 import { fitL2LogisticRegression } from "./lib/logistic-regression.ts";

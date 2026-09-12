@@ -64,6 +64,30 @@ function writeStrongConsistentCorpus(editionsRoot: string, n: number): void {
   }
 }
 
+/**
+ * Mesmo corpus de `writeStrongConsistentCorpus`, mas a correlação
+ * feature↔aprovação é INVERTIDA a partir de `reverseFromEdition` (índice,
+ * não incluso o piso) — usado pra forçar o gate de AUC de holdout a
+ * rejeitar: o coeficiente é aprendido no TREINO (correlação normal) mas o
+ * shadow score aplicado ao HOLDOUT (correlação invertida) prediz pior que
+ * aleatório fora da amostra. `primary_source` (o indicador da feature)
+ * nunca muda — só o rótulo `approved` se inverte no holdout, preservando
+ * a rotação de domínio (HHI) e o piso de eventos/edições/janelas
+ * (`passes_evidence_bar_track_a` é calculado sobre a população INTEIRA,
+ * treino+holdout, e continua passando: janelas do treino votam positivo,
+ * a do holdout vota negativo, 2 de 3 já satisfaz `MIN_CONSISTENT_WINDOWS`).
+ */
+function writeCorpusWithReversedHoldout(editionsRoot: string, n: number, reverseFromEdition: number): void {
+  for (let e = 0; e < n; e++) {
+    const ed = String(260700 + e);
+    const reversed = e >= reverseFromEdition;
+    writeTrackAEdition(editionsRoot, ed, e, [
+      { slug: "a", primary_source: true, approved: !reversed },
+      { slug: "b", primary_source: false, approved: reversed },
+    ]);
+  }
+}
+
 describe("calibrateTrackAWeights (#7980)", () => {
   it("corpus vazio/pequeno: status no_eligible_features, nunca fabrica um candidato", () => {
     const dir = mkdtempSync(join(tmpdir(), "calibrate-a-empty-"));
@@ -109,6 +133,47 @@ describe("calibrateTrackAWeights (#7980)", () => {
       const c = result.candidates.find((x) => x.feature === "primary_source")!;
       assert.equal(c.accepted, false);
       assert.ok(c.rejection_reasons.some((r) => r.includes("concentração de fonte")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("holdout com correlação invertida (feature aprendida no treino não prediz fora da amostra): gate de AUC rejeita", () => {
+    const dir = mkdtempSync(join(tmpdir(), "calibrate-a-auc-"));
+    try {
+      // 60 edições: primeiras 40 (treino) com correlação normal, últimas 20
+      // (holdout, mesmo N do #7980 pros demais testes) com correlação
+      // INVERTIDA — o coeficiente positivo aprendido no treino produz um
+      // shadow score que, no holdout, prediz o OPOSTO de `approved`.
+      writeCorpusWithReversedHoldout(dir, 60, 40);
+      const result = calibrateTrackAWeights(dir, dir, 20);
+      assert.equal(result.status, "all_candidates_rejected", JSON.stringify(result.candidates, null, 2));
+      const c = result.candidates.find((x) => x.feature === "primary_source")!;
+      assert.equal(c.accepted, false);
+      assert.equal(c.guardrails.auc_rejected, true);
+      assert.ok(c.guardrails.holdout_auc !== null && c.guardrails.holdout_auc <= 0.5, `holdout_auc esperado <= 0.5, recebido ${c.guardrails.holdout_auc}`);
+      assert.ok(c.rejection_reasons.some((r) => r.includes("poder preditivo")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--holdout >= total de edições do corpus: status insufficient_training_data, 0 edições sobram pro treino", () => {
+    const dir = mkdtempSync(join(tmpdir(), "calibrate-a-insufficient-"));
+    try {
+      // 40 edições é o piso mínimo pra passar a barra de evidência
+      // (evaluable_editions >= 40) — holdout igual ao total força
+      // trainSet.length === 0 sem deixar de ser elegível.
+      writeStrongConsistentCorpus(dir, 40);
+      const result = calibrateTrackAWeights(dir, dir, 40);
+      assert.equal(result.status, "insufficient_training_data", JSON.stringify(result, null, 2));
+      assert.equal(result.train_editions, 0);
+      assert.equal(result.holdout_editions, 40);
+      assert.equal(result.weights, null);
+      assert.equal(result.weights_hash, null);
+      assert.equal(result.weights_file, null);
+      assert.deepEqual(result.candidates, []);
+      assert.ok(result.eligible_features.includes("primary_source"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
