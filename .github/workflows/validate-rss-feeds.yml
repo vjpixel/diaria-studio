@@ -1,0 +1,32 @@
+name: Validate RSS Feeds
+
+# #7988: extraído do workflow `CI` (onde rodava como step do job `test` com
+# `continue-on-error: true`) pra alarme periódico dedicado — mesmo padrão de
+# `weekly-bug-heatmap.yml`. Feeds RSS externos reais (~30, `seed/sources.csv`)
+# são instáveis por natureza (HTTP 429, formato mudou, feed vazio) e essa
+# instabilidade não tem relação com nenhum diff de código — não deveria opinar
+# sobre PR/merge algum, só sinalizar quando uma fonte quebra de verdade.
+# Cadência diária (não semanal, ao contrário do heatmap) porque a saúde de
+# feed é operacional pro Stage 1 da pipeline diária, que roda toda noite.
+
+on:
+  schedule:
+    # Toda noite às 08:00 UTC = 05:00 BRT (antes do Stage 1 da edição diária)
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Validate RSS feeds
+        run: npm run validate-feeds
