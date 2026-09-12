@@ -319,9 +319,16 @@ async function refreshCohortOrigem() {
       return;
     }
 
+    const gapParts = [];
     if (data.subscribersWithoutEnteredAt > 0) {
+      gapParts.push(`${data.subscribersWithoutEnteredAt} sem data de cadastro conhecida`);
+    }
+    if (data.subscribersWithInvalidEnteredAt > 0) {
+      gapParts.push(`${data.subscribersWithInvalidEnteredAt} com data de cadastro corrompida`);
+    }
+    if (gapParts.length > 0) {
       el.cohortOrigemGap.hidden = false;
-      el.cohortOrigemGap.textContent = `⚠ ${data.subscribersWithoutEnteredAt} subscriber(s) sem data de cadastro conhecida — não entram nesta tabela.`;
+      el.cohortOrigemGap.textContent = `⚠ ${gapParts.join(" + ")} — não entram nesta tabela.`;
     } else {
       el.cohortOrigemGap.hidden = true;
     }

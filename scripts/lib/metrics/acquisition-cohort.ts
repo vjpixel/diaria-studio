@@ -116,21 +116,34 @@ export interface CohortRow {
 /** ISO 8601 → dia BRT (`YYYY-MM-DD`), via `unixSecondsToBrtDate` — nunca
  *  `toISOString().slice(0,10)`, que vazaria pro dia UTC errado num cadastro
  *  de madrugada BRT (mesmo cuidado de `resolveCohortDayBrt` em
- *  `ativacao-coorte.ts`, que opera sobre epoch seconds em vez de ISO). @pure */
-export function isoToBrtDay(iso: string): string {
-  const epochSeconds = Math.floor(new Date(iso).getTime() / 1000);
-  return unixSecondsToBrtDate(epochSeconds);
+ *  `ativacao-coorte.ts`, que opera sobre epoch seconds em vez de ISO).
+ *
+ *  `iso` malformado (linha legada de ingestão, string vazia/truncada) faz
+ *  `new Date(iso)` virar `Invalid Date` — devolve `null` em vez de deixar
+ *  `unixSecondsToBrtDate` lançar `RangeError: Invalid time value` (ela chama
+ *  `.toISOString()` internamente). O chamador (`buildAcquisitionCohortTable`)
+ *  trata `null` como lacuna a reportar, nunca como exceção a propagar. @pure */
+export function isoToBrtDay(iso: string): string | null {
+  const ms = new Date(iso).getTime();
+  if (Number.isNaN(ms)) return null;
+  return unixSecondsToBrtDate(Math.floor(ms / 1000));
 }
 
 /**
  * Agrupa `subscribers` por (dia de cadastro BRT, classe de aquisição,
  * `utm_source`) e conta confirmado/não-confirmado no Kit onde observável.
  * Ordenado por dia ascendente, depois `total` descendente dentro do dia —
- * resposta pronta pra render sem o caller reordenar. @pure
+ * resposta pronta pra render sem o caller reordenar.
+ *
+ * `enteredAt` malformado (`isoToBrtDay` devolve `null`) EXCLUI o subscriber
+ * de `rows` — nunca lança — e é contado em `.subscribersWithInvalidEnteredAt`
+ * (propriedade anexada ao array de retorno, mesmo espírito de
+ * `subscribersWithoutEnteredAt` em `studio-subscribers.ts` pra `entered_at`
+ * NULO: lacuna reportada, não fabricada nem silenciada). @pure
  */
 export function buildAcquisitionCohortTable(
   subscribers: readonly CohortSubscriberInput[],
-): CohortRow[] {
+): CohortRow[] & { subscribersWithInvalidEnteredAt: number } {
   interface Bucket {
     day: string;
     utmSource: string | null;
@@ -145,9 +158,14 @@ export function buildAcquisitionCohortTable(
   }
 
   const buckets = new Map<string, Bucket>();
+  let subscribersWithInvalidEnteredAt = 0;
 
   for (const sub of subscribers) {
     const day = isoToBrtDay(sub.enteredAt);
+    if (day == null) {
+      subscribersWithInvalidEnteredAt++;
+      continue;
+    }
     const epochSeconds = Math.floor(new Date(sub.enteredAt).getTime() / 1000);
     const classInput: AcquisitionClassInput = {
       utm_source: sub.utmSource,
@@ -181,11 +199,13 @@ export function buildAcquisitionCohortTable(
     }
   }
 
-  return [...buckets.values()]
+  const rows = [...buckets.values()]
     .sort((a, b) => (a.day === b.day ? b.total - a.total : a.day < b.day ? -1 : 1))
     .map(({ hasKitSignal, ...rest }) => ({
       ...rest,
       confirmedKit: hasKitSignal ? rest.confirmedKit : null,
       unconfirmedKit: hasKitSignal ? rest.unconfirmedKit : null,
-    }));
+    })) as CohortRow[] & { subscribersWithInvalidEnteredAt: number };
+  rows.subscribersWithInvalidEnteredAt = subscribersWithInvalidEnteredAt;
+  return rows;
 }

@@ -1319,8 +1319,8 @@ function handleApiSubscribersCohort(rootDir: string, res: ServerResponse): void 
 /** `GET /api/subscribers/cohort-origem?from=YYYY-MM-DD&to=YYYY-MM-DD` —
  * coorte de aquisição por dia de cadastro (BRT) × classe de aquisição ×
  * `utm_source`, 1 linha por subscriber resolvido (#7916, fatia 2/N). `from`/
- * `to` opcionais, inclusive, dia BRT. Sempre 200, fail-soft (mesmo padrão
- * de `handleApiSubscribersCohort` acima). */
+ * `to` opcionais, inclusive, dia BRT. Fail-soft para os casos conhecidos
+ * (sem `data/`, store vazio); erro inesperado ainda vira 500. */
 function handleApiSubscribersCohortOrigem(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
   try {
     const params = new URL(req.url ?? "/", "http://localhost").searchParams;

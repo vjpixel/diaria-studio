@@ -24,6 +24,12 @@ describe("isoToBrtDay", () => {
   it("meio-dia UTC cai no mesmo dia BRT", () => {
     assert.equal(isoToBrtDay("2026-09-01T15:00:00.000Z"), "2026-09-01");
   });
+
+  it("ISO malformado devolve null em vez de lançar (achado silent-failure-hunter, pré-merge #7916)", () => {
+    assert.equal(isoToBrtDay("not-a-date"), null);
+    assert.equal(isoToBrtDay(""), null);
+    assert.equal(isoToBrtDay("2026-13-99T99:99:99Z"), null);
+  });
 });
 
 describe("buildAcquisitionCohortTable — agrupamento básico", () => {
@@ -112,6 +118,40 @@ describe("buildAcquisitionCohortTable — agrupamento básico", () => {
     assert.equal(rows.length, 2);
     assert.ok(rows.some((r) => r.utmSource === null && r.total === 1));
     assert.ok(rows.some((r) => r.utmSource === "x" && r.total === 1));
+  });
+
+  it("entered_at malformado não derruba a função — exclui o subscriber de rows e conta na lacuna (achado silent-failure-hunter, pré-merge #7916)", () => {
+    const subs: CohortSubscriberInput[] = [
+      {
+        enteredAt: "not-a-date",
+        utmSource: "newsletter-organica",
+        utmMedium: null,
+        utmChannel: null,
+        referringSite: null,
+        kitStatus: null,
+      },
+      {
+        enteredAt: "2026-09-01T15:00:00.000Z",
+        utmSource: "newsletter-organica",
+        utmMedium: null,
+        utmChannel: null,
+        referringSite: null,
+        kitStatus: null,
+      },
+    ];
+    // Não lança — antes disso, `isoToBrtDay` chamava `unixSecondsToBrtDate`
+    // com `NaN`, que lançava `RangeError: Invalid time value` via
+    // `.toISOString()` interno, derrubando o loop inteiro na 1ª linha ruim.
+    assert.doesNotThrow(() => buildAcquisitionCohortTable(subs));
+    const rows = buildAcquisitionCohortTable(subs);
+    // Só o subscriber com data válida aparece em rows — o malformado é
+    // excluído, nunca produz um bucket com `day: null`/inválido.
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].total, 1);
+    assert.equal(rows[0].day, "2026-09-01");
+    // Lacuna reportada explicitamente, mesma disciplina de
+    // `subscribersWithoutEnteredAt` — nunca descartada em silêncio.
+    assert.equal(rows.subscribersWithInvalidEnteredAt, 1);
   });
 });
 

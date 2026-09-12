@@ -339,6 +339,13 @@ export interface AcquisitionCohortData {
    *  Reportado explicitamente em vez de descartado em silêncio (mesma
    *  disciplina da nota de piso abaixo). */
   subscribersWithoutEnteredAt: number;
+  /** Subscribers com `entered_at` presente mas MALFORMADO (não parseia como
+   *  data válida) — excluídos de `rows` pelo mesmo motivo de
+   *  `subscribersWithoutEnteredAt` acima (não há dia de cadastro pra
+   *  agrupar), mas é uma lacuna DIFERENTE (dado corrompido, não ausente) —
+   *  ver `isoToBrtDay`/`buildAcquisitionCohortTable` em
+   *  `acquisition-cohort.ts`. */
+  subscribersWithInvalidEnteredAt: number;
   note: string;
   confirmationNote: string;
 }
@@ -347,9 +354,11 @@ export interface AcquisitionCohortData {
  * `GET /api/subscribers/cohort-origem` — tabela de coorte (dia de cadastro
  * BRT × classe de aquisição × `utm_source`), 1 linha por SUBSCRIBER
  * resolvido (não por `subscription` — ver docstring de
- * `acquisition-cohort.ts`). Fail-soft: `data/` ausente ou store sem
- * ingestão devolve `rows: []`, nunca lança (mesmo padrão de
- * `buildSubscribersCohortData`).
+ * `acquisition-cohort.ts`). Fail-soft para os casos conhecidos: `data/`
+ * ausente ou store sem ingestão devolve `rows: []` (mesmo padrão de
+ * `buildSubscribersCohortData`); erro inesperado na leitura ainda
+ * propaga pro `try/catch` de `handleApiSubscribersCohortOrigem`, que
+ * vira 500.
  */
 export function buildAcquisitionCohortData(
   rootDir: string,
@@ -368,6 +377,7 @@ export function buildAcquisitionCohortData(
       to,
       rows: [],
       subscribersWithoutEnteredAt: 0,
+      subscribersWithInvalidEnteredAt: 0,
       note: CROSS_PLATFORM_FLOOR_NOTE,
       confirmationNote: CONFIRMATION_NOTE,
     };
@@ -413,7 +423,14 @@ export function buildAcquisitionCohortData(
       });
     }
 
-    let rows = buildAcquisitionCohortTable(inputs);
+    const rawRows = buildAcquisitionCohortTable(inputs);
+    const subscribersWithInvalidEnteredAt = rawRows.subscribersWithInvalidEnteredAt;
+    // Espalha num array plain ANTES de filtrar/devolver — `rawRows` carrega
+    // `subscribersWithInvalidEnteredAt` como propriedade própria anexada
+    // (ver `buildAcquisitionCohortTable`), o que faria `assert.deepEqual`
+    // contra um `[]` comum falhar mesmo com 0 elementos (a propriedade extra
+    // conta pra igualdade profunda). `[...rawRows]` já basta pra descartá-la.
+    let rows: CohortRow[] = [...rawRows];
     if (from) rows = rows.filter((r) => r.day >= from);
     if (to) rows = rows.filter((r) => r.day <= to);
 
@@ -424,6 +441,7 @@ export function buildAcquisitionCohortData(
       to,
       rows,
       subscribersWithoutEnteredAt,
+      subscribersWithInvalidEnteredAt,
       note: CROSS_PLATFORM_FLOOR_NOTE,
       confirmationNote: CONFIRMATION_NOTE,
     };
