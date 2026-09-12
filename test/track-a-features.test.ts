@@ -8,7 +8,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { TRACK_A_CANDIDATE_FEATURES, isTrackACandidateFeature, trackAFeatureValue } from "../scripts/lib/track-a-features.ts";
+import { TRACK_A_CANDIDATE_FEATURES, isTrackACandidateFeature, trackAFeatureValue, trackAReportFeatureLabel, TRACK_A_REPORT_FEATURE_PREFIX } from "../scripts/lib/track-a-features.ts";
 import type { ScoringFeatureRow } from "../scripts/lib/scoring-features.ts";
 
 function row(overrides: Partial<ScoringFeatureRow> = {}): ScoringFeatureRow {
@@ -67,5 +67,14 @@ describe("trackAFeatureValue (#7980)", () => {
     assert.equal(trackAFeatureValue(row({ cluster_sources_count: 0 }), "coverage_bonus_present"), false);
     assert.equal(trackAFeatureValue(row({ cluster_sources_count: 1 }), "coverage_bonus_present"), true);
     assert.equal(trackAFeatureValue(row({ cluster_sources_count: 5 }), "coverage_bonus_present"), true);
+  });
+});
+
+describe("trackAReportFeatureLabel (#7980)", () => {
+  it("prefixa o nome da feature com track-a: — convenção obrigatória pro título de relatório de calibração de Track A (achado de review do #7980, P1: evita colisão com nomes de feature compartilhados de Track B)", () => {
+    for (const f of TRACK_A_CANDIDATE_FEATURES) {
+      assert.equal(trackAReportFeatureLabel(f), `${TRACK_A_REPORT_FEATURE_PREFIX}${f}`);
+    }
+    assert.equal(trackAReportFeatureLabel("primary_source"), "track-a:primary_source");
   });
 });
