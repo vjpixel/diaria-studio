@@ -364,8 +364,8 @@ def main() -> int:
             "- #7807: a tentativa revelou que o trabalho ja estava coberto por #7808. "
             "A PR #7827 foi fechada com explicacao e a issue permanece aberta. Claim liberada.\n"
         )
-        claimed_none = mod.all_continuo_claimed_issues(sessions8)  # reusa dir do teste 8 (so #100)
-        check12 = mod.check_claimed_issues(report_text_12, claimed_none, sessions8.is_dir())
+        claimed_from_test8 = mod.all_continuo_claimed_issues(sessions8)  # {100} -- reusa dir do teste 8; NAO vazio (review PR #8014, achado 4)
+        check12 = mod.check_claimed_issues(report_text_12, claimed_from_test8, sessions8.is_dir())
         assert_true(
             "12. claim liberado no mesmo tick, ausente do registro -> indeterminate (nao fabricacao)",
             check12["status"] == "indeterminate",
@@ -377,7 +377,7 @@ def main() -> int:
         # real do #7537 nao pode regredir).
         # ------------------------------------------------------------------
         report_text_12b = "## Tick 12:00\n### Trabalhado\nreivindicada #300, ainda em andamento.\n"
-        check12b = mod.check_claimed_issues(report_text_12b, claimed_none, sessions8.is_dir())
+        check12b = mod.check_claimed_issues(report_text_12b, claimed_from_test8, sessions8.is_dir())
         assert_true(
             "12b. claim SEM liberacao e ausente do registro -> continua fabrication_suspected",
             check12b["status"] == "fabrication_suspected",
@@ -393,10 +393,29 @@ def main() -> int:
             "- #7807: Claim liberada.\n"
             "- reivindicada #300, ainda em andamento.\n"
         )
-        check12c = mod.check_claimed_issues(report_text_12c, claimed_none, sessions8.is_dir())
+        check12c = mod.check_claimed_issues(report_text_12c, claimed_from_test8, sessions8.is_dir())
         assert_true(
             "12c. mistura liberada+retida ausentes -> fabrication_suspected domina",
             check12c["status"] == "fabrication_suspected",
+        )
+
+        # ------------------------------------------------------------------
+        # 12d. Review da PR #8014, achado 1 — "_RELEASE_SIGNAL" nao pode
+        # casar como SUBSTRING dentro de "deliberou"/"deliberado". Uma
+        # linha que usa esse verbo (bem comum em PT-BR) MAS nao libera
+        # claim nenhum precisa continuar fabrication_suspected quando a
+        # issue citada esta ausente do registro — sem o \b na regex, o
+        # "deliberou" mascararia a fabricacao real como indeterminate,
+        # exatamente na direcao errada pro proposito deste detector.
+        # ------------------------------------------------------------------
+        report_text_12d = (
+            "## Tick 20:00\n### Trabalhado\n"
+            "- o coordenador deliberou reivindicar #400 e seguiu em frente.\n"
+        )
+        check12d = mod.check_claimed_issues(report_text_12d, claimed_from_test8, sessions8.is_dir())
+        assert_true(
+            "12d. 'deliberou' (verbo comum) NAO e falso sinal de liberacao -> continua fabrication_suspected",
+            check12d["status"] == "fabrication_suspected",
         )
 
         if FAILED:

@@ -164,7 +164,18 @@ _CLAIM_KEYWORDS = re.compile(r"reivindic|claim", re.IGNORECASE)
 # apaga a entrada de `claimed_issues`/`claimed_issues_at` por design
 # (#6453), então ausência no registro é o resultado ESPERADO de uma
 # liberação real, não evidência de fabricação.
-_RELEASE_SIGNAL = re.compile(r"liberad|liberou", re.IGNORECASE)
+#
+# `\b` (word boundary) na frente de cada alternativa é obrigatório — sem
+# ele, "liberad"/"liberou" casam como SUBSTRING dentro de "deliberou"/
+# "deliberado" (review da PR #8014, achado 1: confirmado ao vivo, os dois
+# davam match sem o \b). Isso mordia na direção ERRADA pro propósito deste
+# detector: uma linha legítima como "o coordenador deliberou não
+# reivindicar #123" seria lida como liberação e mascararia uma fabricação
+# real como `indeterminate`. `\b` antes de "liberad"/"liberou" não casa
+# dentro de "deliberad_"/"deliberou" (sem fronteira de palavra entre "de"
+# e "liberad_"/"liberou"), mas continua casando "Claim liberada"/"liberou
+# a claim" normalmente (fronteira real antes de "liberad_"/"liberou").
+_RELEASE_SIGNAL = re.compile(r"\bliberad|\bliberou", re.IGNORECASE)
 
 
 def _run_gh_open_issue_count() -> int | None:
