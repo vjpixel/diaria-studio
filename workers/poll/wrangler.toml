@@ -125,13 +125,14 @@ KIT_REFERRING_SITE_FIELD = "referring_site"
 # criado na conta de produção (id 1358403, key "origem_paga", 06/09/2026).
 KIT_ORIGEM_PAGA_FIELD = "origem_paga"
 
-# #8003: BEEHIIV_ORIGEM_REFERRER_FIELD / BEEHIIV_ORIGEM_CLICKID_FIELD /
-# KIT_ORIGEM_REFERRER_FIELD / KIT_ORIGEM_CLICKID_FIELD existem no código
-# (subscribe.ts) mas ficam SEM valor aqui até o editor criar os custom
-# fields correspondentes (dashboard Beehiiv/Kit, manual — tentativa via Kit
-# MCP falhou por estar gated pelo plano pago, e via REST direto com a key
-# do `.env` respondeu 401 "invalid") — mesmo padrão já documentado aqui pros
-# KIT_UTM_*_FIELD antes do switchover. Ausentes, o cadastro segue normal, só
+# #8003: campos Kit criados via REST direto (12/09/2026 — o 401 anterior era
+# formato de header errado, não plano gated; `X-Kit-Api-Key` funcionou de
+# primeira) — id 1364225 "origem_referrer", id 1364226 "origem_click_id".
+# BEEHIIV_ORIGEM_REFERRER_FIELD/BEEHIIV_ORIGEM_CLICKID_FIELD (código em
+# subscribe.ts) seguem SEM var — backend ativo é Kit (SUBSCRIBE_BACKEND
+# abaixo), nenhum campo Beehiiv está configurado neste worker hoje.
+KIT_ORIGEM_REFERRER_FIELD = "origem_referrer"
+KIT_ORIGEM_CLICKID_FIELD = "origem_click_id"
 # sem essa atribuição gravada.
 
 # #6340/#7723 — designer form "Cadastro DOI (confirmacao)", criado no painel
