@@ -116,6 +116,15 @@ KIT_REFERRING_SITE_FIELD = "referring_site"
 # chegou ao gate de cursos via querystring, sem tocar no triplo fixo acima.
 KIT_ORIGEM_PAGA_FIELD = "origem_paga"
 
+# #8003: BEEHIIV_ORIGEM_REFERRER_FIELD / BEEHIIV_ORIGEM_CLICKID_FIELD /
+# KIT_ORIGEM_REFERRER_FIELD / KIT_ORIGEM_CLICKID_FIELD existem no código
+# (subscribe.ts) mas ficam SEM valor aqui até o editor criar os custom
+# fields correspondentes (dashboard Beehiiv/Kit, manual — tentativa via Kit
+# MCP falhou por estar gated pelo plano pago, e via REST direto com a key
+# do `.env` respondeu 401 "invalid") — mesmo padrão já documentado aqui pro
+# KIT_ORIGEM_PAGA_FIELD antes do switchover. Ausentes, o cadastro segue
+# normal, só sem essa atribuição gravada.
+
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
 # worker, poll já verificado ao vivo, cursos é o 2º). env.SUBSCRIBE_BACKEND
 # === "kit" em workers/cursos/src/subscribe.ts — cadastro pelo gate de cursos

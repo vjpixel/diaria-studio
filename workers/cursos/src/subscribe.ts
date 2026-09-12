@@ -49,6 +49,32 @@ export interface ParsedSubscribe {
    * quando casa `isAllowedClientUtmSource` (ver `resolveOrigemPaga`
    * abaixo). Vazio (não `undefined`) quando ausente do body. */
   utmSource: string;
+  /** #8003: `document.referrer` cru do cliente — sinal SEPARADO do
+   * `utmSource`/`origem_paga` acima, nunca varia por lógica de negócio.
+   * Vazio quando ausente do body. */
+  referrer: string;
+  /** #8003: click ID de ads prefixado pelo provedor (`gclid:...`/`fbclid:...`/
+   * `msclkid:...`) — vazio quando ausente do body. */
+  clickId: string;
+}
+
+/** #8003: teto de tamanho de `referrer`/`click_id` crus do cliente — mesmo
+ * racional/valor de `SUBSCRIBE_CLIENT_ORIGIN_MAX` do worker `poll` (defesa
+ * em profundidade: o cliente já corta em 300 chars, ver
+ * `clientOriginSignalPayloadFieldsJs`/inline JS de `gate-page.ts`, mas nunca
+ * confiar só nisso). */
+export const SUBSCRIBE_CLIENT_ORIGIN_MAX = 300;
+
+/** #8003: sinal de origem do cliente — SEPARADO do triplo UTM/`origem_paga`
+ * acima, nunca varia por lógica de negócio. Espelha `SubscribeOrigin` do
+ * worker `poll` (`workers/poll/src/subscribe.ts`) — não importado direto
+ * (mesmo motivo do resto deste arquivo: bundle separado, sem import
+ * cross-worker), mas o SHAPE precisa ser o mesmo tipo NOMEADO nas 3
+ * assinaturas abaixo, não um literal estrutural anônimo repetido 3x
+ * (achado do type-design-analyzer, fleet review pré-merge da PR #8028). */
+export interface SubscribeOrigin {
+  referrer: string;
+  clickId: string;
 }
 
 function asStr(v: unknown): string {
@@ -72,9 +98,11 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
         optin: truthyFlag(o.optin),
         honeypot: asStr(o.website),
         utmSource: asStr(o.utm_source),
+        referrer: asStr(o.referrer),
+        clickId: asStr(o.click_id),
       };
     } catch {
-      return { name: "", email: "", optin: false, honeypot: "", utmSource: "" };
+      return { name: "", email: "", optin: false, honeypot: "", utmSource: "", referrer: "", clickId: "" };
     }
   }
   const params = new URLSearchParams(raw);
@@ -84,6 +112,8 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
     optin: truthyFlag(params.get("optin")),
     honeypot: params.get("website") ?? "",
     utmSource: params.get("utm_source") ?? "",
+    referrer: params.get("referrer") ?? "",
+    clickId: params.get("click_id") ?? "",
   };
 }
 
@@ -141,6 +171,7 @@ async function subscribeToBeehiiv(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   origemPaga: string = "",
+  origin: SubscribeOrigin = { referrer: "", clickId: "" },
 ): Promise<SubscribeResult> {
   const apiKey = env.BEEHIIV_API_KEY;
   const pubId = env.BEEHIIV_PUBLICATION_ID;
@@ -169,6 +200,17 @@ async function subscribeToBeehiiv(
   // sobrescreve o triplo fixo (CURSOS_UTM_SOURCE/MEDIUM/CAMPAIGN) acima.
   if (env.BEEHIIV_ORIGEM_PAGA_FIELD && origemPaga) {
     const field = { name: env.BEEHIIV_ORIGEM_PAGA_FIELD, value: origemPaga };
+    body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
+  }
+  // #8003: mesmo guard duplo (env configurado E valor presente) — referrer/
+  // click_id são campos PRÓPRIOS, puramente informativos, nunca sobrescrevem
+  // o triplo fixo/origem_paga acima.
+  if (env.BEEHIIV_ORIGEM_REFERRER_FIELD && origin.referrer) {
+    const field = { name: env.BEEHIIV_ORIGEM_REFERRER_FIELD, value: origin.referrer };
+    body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
+  }
+  if (env.BEEHIIV_ORIGEM_CLICKID_FIELD && origin.clickId) {
+    const field = { name: env.BEEHIIV_ORIGEM_CLICKID_FIELD, value: origin.clickId };
     body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
   }
 
@@ -226,6 +268,7 @@ async function subscribeToKit(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   origemPaga: string = "",
+  origin: SubscribeOrigin = { referrer: "", clickId: "" },
 ): Promise<SubscribeResult> {
   const apiKey = env.KIT_API_KEY;
   if (!apiKey) return { ok: false, status: 503, reason: "not_configured" };
@@ -240,6 +283,10 @@ async function subscribeToKit(
   // #7535 (Camada 1): canal pago do cliente, campo PRÓPRIO — nunca
   // sobrescreve o triplo fixo acima.
   if (env.KIT_ORIGEM_PAGA_FIELD && origemPaga) fields[env.KIT_ORIGEM_PAGA_FIELD] = origemPaga;
+  // #8003: mesmo guard duplo — campos PRÓPRIOS, nunca sobrescrevem o triplo
+  // fixo/origem_paga acima.
+  if (env.KIT_ORIGEM_REFERRER_FIELD && origin.referrer) fields[env.KIT_ORIGEM_REFERRER_FIELD] = origin.referrer;
+  if (env.KIT_ORIGEM_CLICKID_FIELD && origin.clickId) fields[env.KIT_ORIGEM_CLICKID_FIELD] = origin.clickId;
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
@@ -337,10 +384,11 @@ export async function subscribeViaConfiguredBackend(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   origemPaga: string = "",
+  origin: SubscribeOrigin = { referrer: "", clickId: "" },
 ): Promise<SubscribeResult> {
   return resolveBackend(env) === "kit"
-    ? subscribeToKit(env, input, fetchImpl, origemPaga)
-    : subscribeToBeehiiv(env, input, fetchImpl, origemPaga);
+    ? subscribeToKit(env, input, fetchImpl, origemPaga, origin)
+    : subscribeToBeehiiv(env, input, fetchImpl, origemPaga, origin);
 }
 
 export interface SubscribeDeps {
@@ -387,11 +435,19 @@ export async function handleGateSubscribe(
   // allowlist do worker `poll` — nunca sobrescreve o triplo UTM fixo
   // (CURSOS_UTM_SOURCE/MEDIUM/CAMPAIGN acima), só alimenta origem_paga.
   const origemPaga = isAllowedClientUtmSource(parsed.utmSource) ? parsed.utmSource.trim() : "";
+  // #8003: sinal de origem cru do cliente — nunca varia por lógica de
+  // negócio, mesmo corte de defesa em profundidade que `validateSubscribeInput`
+  // já aplica pra outros campos (o cliente já corta em SUBSCRIBE_CLIENT_ORIGIN_MAX,
+  // mas nunca confiar só nisso).
+  const origin = {
+    referrer: (parsed.referrer || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
+    clickId: (parsed.clickId || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
+  };
 
   // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
   // de `subscribeViaConfiguredBackend` acima.
   const backend = resolveBackend(env);
-  const result = await subscribeViaConfiguredBackend(env, { name: v.name, email: v.email }, fetchImpl, origemPaga);
+  const result = await subscribeViaConfiguredBackend(env, { name: v.name, email: v.email }, fetchImpl, origemPaga, origin);
   if (!result.ok) {
     // #4305: os dois ramos abaixo eram a MESMA classe de falha muda que este
     // PR corrigiu no `COOKIE_HMAC_SECRET` — 503/502 e ninguém avisado. O

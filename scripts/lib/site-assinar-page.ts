@@ -215,7 +215,22 @@ ${renderAnalyticsHead()}
         source: "apex",
         utm_source: val("#utm_source"),
         utm_medium: val("#utm_medium"),
-        utm_campaign: val("#utm_campaign")
+        utm_campaign: val("#utm_campaign"),
+        // #8003: sinal SEPARADO do triplo UTM acima — referrer bruto + click
+        // ID de ads (gclid/fbclid/msclkid), lido direto no momento do submit
+        // (não precisa de hidden input: diferente do triplo UTM, que o
+        // fallback nativo sem-JS também precisa carregar, este par só é
+        // consumido pelo caminho fetch/JS). Nunca sobrescreve source/medium/
+        // campaign/utm_* acima — puramente informativo (ver docstring de
+        // clientOriginSignalPayloadFieldsJs em scripts/lib/shared/client-utm-payload.ts).
+        referrer: (document.referrer || "").slice(0, 300),
+        click_id: (function () {
+          var p = new URLSearchParams(window.location.search);
+          if (p.get("gclid")) return "gclid:" + p.get("gclid");
+          if (p.get("fbclid")) return "fbclid:" + p.get("fbclid");
+          if (p.get("msclkid")) return "msclkid:" + p.get("msclkid");
+          return "";
+        })()
       };
       if (typeof window.fetch !== "function") {
         // Sem fetch: deixa o form nativo submeter normalmente (progressive
