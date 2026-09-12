@@ -114,7 +114,7 @@ function shell(title: string, description: string, canonical: string, bodyHtml: 
 function renderSignupForm(idSuffix: string, path: string): string {
   return `<form class="signup" id="anual-signup-${idSuffix}" method="POST" action="${escHtml(subscribeEndpointComUtm(path))}">
     <input type="hidden" name="source" value="apex">
-    <div class="hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
+    <div class="hp" style="position:absolute;left:-9999px;" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
     <input type="email" name="email" placeholder="seu@email.com" required autocomplete="email">
     <label class="optin"><input type="checkbox" name="optin" value="on" required> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex.</label>
     <button class="button" type="submit">Cadastrar e ler completo</button>

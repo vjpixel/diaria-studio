@@ -155,6 +155,19 @@ describe("#7715 — link/action de saída da retrospectiva anual/aniversário ca
     assert.equal(params.get("utm_campaign"), "retrospectiva-anual-2026");
   });
 
+  it("REGRESSÃO #8040: honeypot fica escondido mesmo injetado cru em teaserHtml (sem o <style> de shell())", () => {
+    // renderTeaserWithSignup injeta o bloco de conversão direto no HTML vindo
+    // do KV (teaserHtml) — esse documento nunca passa por shell(), então a
+    // regra `.hp { position:absolute; left:-9999px; }` do <style> ali definido
+    // não existe nesse contexto. O honeypot precisa se esconder sozinho via
+    // style inline, senão "Deixe em branco" aparece visível pro leitor.
+    const teaser = "<html><body><p>começo da retrospectiva</p></body></html>";
+    const html = renderTeaserWithSignup(teaser, "https://retrospectiva.diar.ia.br/2026", ANUAL_PATH);
+    const m = /<div class="hp"([^>]*)>/.exec(html);
+    assert.ok(m, "honeypot não encontrado no bloco de conversão");
+    assert.match(m![1], /style="[^"]*position:\s*absolute[^"]*left:\s*-9999px/, "honeypot sem style inline que o esconda");
+  });
+
   it("o fetch() do submit progressivo usa o MESMO endpoint com UTM (não o SUBSCRIBE_ENDPOINT cru)", () => {
     // A URL vai serializada via JSON.stringify dentro do <script> — "&" não
     // precisa de escape em JSON, então o par aparece literal no HTML.
