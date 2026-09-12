@@ -439,6 +439,7 @@ describe("normalizeContactsSummary (#2875 item 1 — validação única no bound
     assert.deepEqual(s?.priority_points_histogram, { "40": 3 });
     assert.deepEqual(s?.priority_points_histogram_verified, { "40": 1 });
     assert.equal(Object.prototype.hasOwnProperty.call(s, "priority_points_histogram_brevo"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(s, "priority_points_histogram_never_sent_month"), false, "#8030: mesma omissão de schema evolution");
   });
 
   it("cohort_stats com linha corrompida (não-objeto) → linha descartada, resto do payload sobrevive", () => {
@@ -486,6 +487,7 @@ describe("normalizeContactsSummary (#2875 item 1 — validação única no bound
       priority_points_histogram_verified: { "40": undefined },
       priority_points_histogram_eligible: { "40": Infinity },
       priority_points_histogram_brevo: { "40": -Infinity },
+      priority_points_histogram_never_sent_month: { "40": null }, // #8030
     });
     assert.ok(s);
     assert.deepEqual(s?.eligibility.by_reason, { paywall: 0, spam: 0, bounced: 2, weird: 0 });
@@ -494,6 +496,7 @@ describe("normalizeContactsSummary (#2875 item 1 — validação única no bound
     assert.deepEqual(s?.priority_points_histogram_verified, { "40": 0 });
     assert.deepEqual(s?.priority_points_histogram_eligible, { "40": 0 });
     assert.deepEqual(s?.priority_points_histogram_brevo, { "40": 0 });
+    assert.deepEqual(s?.priority_points_histogram_never_sent_month, { "40": 0 }, "#8030: mesma sanitização das demais colunas do histograma");
     // Todo valor sobrevivente é finito — nunca lança em `.toLocaleString()`.
     for (const v of Object.values(s?.mv ?? {})) assert.equal(Number.isFinite(v), true);
     for (const v of Object.values(s?.eligibility.by_reason ?? {})) assert.equal(Number.isFinite(v), true);
