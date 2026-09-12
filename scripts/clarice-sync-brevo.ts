@@ -72,6 +72,7 @@ import {
   DEFAULT_DB_PATH,
 } from "./lib/clarice-db.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { ISO_LIKE_DATE_RE } from "./lib/iso-like-date.ts";
 import {
   makeRealCampaignExportClient,
   getOrFetchCampaignCache,
@@ -301,11 +302,12 @@ interface DeliveredStats {
  * 3 de setembro. O guard do #6887 só rejeitava `NaN` (data ilegível); uma
  * string ambígua MAS parseável (dia ≤12, então "faz sentido" nos dois
  * formatos) passava direto e corrompia `last_sent_at` em silêncio. Este
- * regex exige o formato ISO-like ANTES de sequer chamar `Date.parse` —
- * qualquer outro formato (incluindo o ambíguo DD-MM) é tratado como
- * inválido/descartado, nunca "adivinhado".
+ * regex (`ISO_LIKE_DATE_RE`, `lib/iso-like-date.ts` — fonte única, reusada
+ * também pelo reparo em `repair-clarice-last-sent-at-format.ts`) exige o
+ * formato ISO-like ANTES de sequer chamar `Date.parse` — qualquer outro
+ * formato (incluindo o ambíguo DD-MM) é tratado como inválido/descartado,
+ * nunca "adivinhado".
  */
-const ISO_LIKE_DATE_RE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}:\d{2})?/;
 
 /** #6814: agrega entregas por contato a partir dos exports de campanha. */
 export function collectDeliveredStats(caches: CampaignCache[]): Map<string, DeliveredStats> {

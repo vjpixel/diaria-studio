@@ -28,22 +28,35 @@
  */
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
-
-/** Regex do formato ISO-like esperado — mesmo padrão de `ISO_LIKE_DATE_RE`
- *  em `clarice-sync-brevo.ts` (não importado direto pra manter este script
- *  sem dependência do módulo de sync — só duplicando um literal simples). */
-const ISO_LIKE_RE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}:\d{2})?/;
+import { ISO_LIKE_DATE_RE } from "./lib/iso-like-date.ts";
 
 /** `DD-MM-AAAA HH:MM:SS` → ISO UTC (`AAAA-MM-DDTHH:MM:SS.000Z`), ou `null`
- *  se `raw` não bate exatamente com esse formato. Pura — testável isolada. */
+ *  se `raw` não bate exatamente com esse formato OU se o dia/mês resultante
+ *  não é uma data de calendário real (ex: 30 de fevereiro) — round-trip via
+ *  `Date.UTC` em vez de só checar `1<=dia<=31`/`1<=mês<=12` isoladamente,
+ *  que aceitaria uma combinação impossível (#8043 review). Pura — testável
+ *  isolada. */
 export function repairAmbiguousDmyDate(raw: string): string | null {
   const m = raw.match(/^(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2}):(\d{2})$/);
   if (!m) return null;
   const [, dd, mm, yyyy, hh, min, ss] = m;
   const day = Number(dd);
   const month = Number(mm);
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  return `${yyyy}-${mm}-${dd}T${hh}:${min}:${ss}.000Z`;
+  const year = Number(yyyy);
+  const hour = Number(hh);
+  const minute = Number(min);
+  const second = Number(ss);
+  const ms = Date.UTC(year, month - 1, day, hour, minute, second);
+  const roundTrip = new Date(ms);
+  const calendarValid =
+    roundTrip.getUTCFullYear() === year &&
+    roundTrip.getUTCMonth() === month - 1 &&
+    roundTrip.getUTCDate() === day &&
+    roundTrip.getUTCHours() === hour &&
+    roundTrip.getUTCMinutes() === minute &&
+    roundTrip.getUTCSeconds() === second;
+  if (!calendarValid) return null;
+  return roundTrip.toISOString();
 }
 
 export interface RepairFinding {
@@ -52,17 +65,33 @@ export interface RepairFinding {
   after: string;
 }
 
-/** Pura: varre as linhas dadas e devolve os reparos aplicáveis (não toca o DB). */
+export interface RepairScanResult {
+  /** Reparos aplicáveis — `DD-MM-AAAA HH:MM:SS` válido, convertido pra ISO. */
+  repairs: RepairFinding[];
+  /** #8043 review: linhas fora do padrão ISO-like MAS que também não batem
+   *  com o formato ambíguo DD-MM esperado (separador diferente, dia/mês não
+   *  zero-padded, timestamp truncado, data de calendário impossível, etc.)
+   *  — sinalizadas separadamente pra nunca ficarem invisíveis: `found` no
+   *  stdout do script cobria só `repairs.length`, então um operador via
+   *  "found: 4" sem saber que existiam MAIS linhas corrompidas que o script
+   *  não sabe corrigir. */
+  unrepairable: Array<{ email: string; value: string }>;
+}
+
+/** Pura: varre as linhas dadas e separa reparos aplicáveis de linhas
+ *  corrompidas que este script não sabe corrigir (não toca o DB). */
 export function findLastSentAtRepairs(
   rows: Array<{ email: string; last_sent_at: string | null }>,
-): RepairFinding[] {
-  const out: RepairFinding[] = [];
+): RepairScanResult {
+  const repairs: RepairFinding[] = [];
+  const unrepairable: Array<{ email: string; value: string }> = [];
   for (const r of rows) {
-    if (!r.last_sent_at || ISO_LIKE_RE.test(r.last_sent_at)) continue;
+    if (!r.last_sent_at || ISO_LIKE_DATE_RE.test(r.last_sent_at)) continue;
     const fixed = repairAmbiguousDmyDate(r.last_sent_at);
-    if (fixed) out.push({ email: r.email, before: r.last_sent_at, after: fixed });
+    if (fixed) repairs.push({ email: r.email, before: r.last_sent_at, after: fixed });
+    else unrepairable.push({ email: r.email, value: r.last_sent_at });
   }
-  return out;
+  return { repairs, unrepairable };
 }
 
 async function main(argv: string[] = process.argv.slice(2)) {
@@ -74,16 +103,21 @@ async function main(argv: string[] = process.argv.slice(2)) {
       "SELECT email, last_sent_at FROM clarice_users WHERE last_sent_at IS NOT NULL",
     ).all() as Array<{ email: string; last_sent_at: string | null }>;
 
-    const findings = findLastSentAtRepairs(rows);
-    console.log(JSON.stringify({ found: findings.length, apply, findings }, null, 2));
+    const { repairs, unrepairable } = findLastSentAtRepairs(rows);
+    console.log(JSON.stringify({ found: repairs.length, unrepairableCount: unrepairable.length, apply, repairs, unrepairable }, null, 2));
 
-    if (apply && findings.length > 0) {
+    if (unrepairable.length > 0) {
+      console.error(
+        `[repair-clarice-last-sent-at-format] ⚠️  ${unrepairable.length} linha(s) fora do padrão ISO que este script NÃO sabe corrigir (formato diferente do ambíguo DD-MM esperado) — ver campo "unrepairable" no JSON acima, inspecionar manualmente.`,
+      );
+    }
+    if (apply && repairs.length > 0) {
       const upd = db.prepare("UPDATE clarice_users SET last_sent_at = ? WHERE email = ?");
-      for (const f of findings) upd.run(f.after, f.email);
-      console.error(`[repair-clarice-last-sent-at-format] ${findings.length} linha(s) corrigida(s).`);
-    } else if (!apply && findings.length > 0) {
+      for (const f of repairs) upd.run(f.after, f.email);
+      console.error(`[repair-clarice-last-sent-at-format] ${repairs.length} linha(s) corrigida(s).`);
+    } else if (!apply && repairs.length > 0) {
       console.error("[repair-clarice-last-sent-at-format] --dry-run: nada escrito. Rode com --apply pra corrigir.");
-    } else {
+    } else if (unrepairable.length === 0) {
       console.error("[repair-clarice-last-sent-at-format] nenhuma linha fora do formato ISO encontrada.");
     }
   } finally {
