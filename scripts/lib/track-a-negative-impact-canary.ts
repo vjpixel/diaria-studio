@@ -103,7 +103,9 @@ export interface CanaryTrendOptions {
 export interface CanaryTrendResult {
   baseline_avg_rank: number | null;
   recent_points: EditionCanaryPoint[];
-  /** `true` sse as últimas `sustainedRounds` rodadas AVALIÁVEIS (avg_rank_among_finalists !== null) degradaram, TODAS, além do limiar em relação à baseline — ou sumiram do top-N (rank == N+1) em todas elas. */
+  /** `false` quando o histórico ainda não tem pontos avaliáveis suficientes pra separar baseline de janela recente (`baseline_avg_rank` fica `null` nesse caso) — achado de review do #7980 (P1, alta confiança): sem este campo EXPLÍCITO, "histórico insuficiente" e "avaliado, sem degradação" eram indistinguíveis por quem só olhasse `pause_recommended` (ambos `false`), e `trigger-track-a-calibration.ts` lia silenciosamente o 1º caso como "canário limpo" — exatamente o cenário que o canário OBRIGATÓRIO (#7972 mitigação I-1) existe pra nunca deixar passar batido. Consumidor correto: só considerar o canário "limpo" quando `assessable && !pause_recommended`. */
+  assessable: boolean;
+  /** `true` sse as últimas `sustainedRounds` rodadas AVALIÁVEIS (avg_rank_among_finalists !== null) degradaram, TODAS, além do limiar em relação à baseline — ou sumiram do top-N (rank == N+1) em todas elas. Sempre `false` quando `assessable` é `false` (não há como degradar um histórico que não existe) — `assessable` é o campo que efetivamente bloqueia, não este. */
   pause_recommended: boolean;
   reasons: string[];
 }
@@ -131,8 +133,9 @@ export function analyzeCanaryTrend(points: readonly EditionCanaryPoint[], opts: 
     return {
       baseline_avg_rank: null,
       recent_points: evaluable.slice(-sustainedRounds),
+      assessable: false,
       pause_recommended: false,
-      reasons: [`histórico insuficiente (${evaluable.length} edição(ões) avaliável(is), precisa de mais que ${sustainedRounds} pra ter baseline + janela recente separadas) — canário não pode se pronunciar ainda, nunca lido como "sem degradação".`],
+      reasons: [`histórico insuficiente (${evaluable.length} edição(ões) avaliável(is), precisa de mais que ${sustainedRounds} pra ter baseline + janela recente separadas) — canário não pode se pronunciar ainda, nunca lido como "sem degradação" (ver campo assessable=false).`],
     };
   }
 
@@ -150,5 +153,5 @@ export function analyzeCanaryTrend(points: readonly EditionCanaryPoint[], opts: 
     );
   }
 
-  return { baseline_avg_rank: baseline, recent_points: recent, pause_recommended: allDegraded, reasons };
+  return { baseline_avg_rank: baseline, recent_points: recent, assessable: true, pause_recommended: allDegraded, reasons };
 }

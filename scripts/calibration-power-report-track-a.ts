@@ -55,6 +55,20 @@ export const TRACK_A_EVALUABLE_EDITIONS_MIN = 40;
 const VALIDATION_WINDOWS = 3;
 /** Quantas das `VALIDATION_WINDOWS` precisam ter o MESMO sinal (e não-zero) pra Track A considerar "consistente" — 2 de 3, não as 3 (uma janela pequena pode legitimamente ficar sem dado suficiente pra ter sinal definido). */
 const MIN_CONSISTENT_WINDOWS = 2;
+/**
+ * Mínimo de eventos de CADA lado (feature presente/ausente) DENTRO de uma
+ * janela pra o sinal dela contar no gate de consistência — achado de
+ * review do #7980 (P2, média confiança): sem este piso, uma janela com
+ * só 1 evento de cada lado "vota" com o MESMO peso de uma janela com
+ * centenas, e 2 janelas finas concordando por acaso bastava pra passar
+ * `passes_window_bar` — justo o tipo de ruído que o gate de janelas
+ * existe pra filtrar (o módulo inteiro se propõe a ser MAIS rigoroso que
+ * Track B). Valor pequeno o bastante pra não esvaziar o gate quando o
+ * corpus total mal passa o piso de 40 edições/3 janelas (~13-14 edições
+ * por janela) — não o mesmo `TRACK_A_EVENT_COUNT_MIN` (30), que é o piso
+ * do corpus INTEIRO, não de 1/3 dele.
+ */
+const MIN_WINDOW_EVENTS_PER_SIDE = 8;
 const PERMUTATIONS = 500;
 
 /** 1 linha sintética por evento rotulado Track A (LLM escolheu, editor aprovou ou rejeitou) — paralela ao conceito de `EditionRows` de Track B, mas restrita a esta população. */
@@ -226,7 +240,14 @@ function analyzeTrackAFeature(editions: TrackAEditionRows[], feature: TrackACand
   // Gate de janelas (#7980, específico do Track A — Track B não tem isto
   // como gate duro, só reporta 1 corte early/late).
   const windows = splitIntoWindows(editions);
-  const windowDiffs = windows.map((w) => computeCounts(w, feature).diff);
+  // `diff` vira `null` (excluído do voto de sinal) quando qualquer um dos
+  // 2 lados da janela tem menos que MIN_WINDOW_EVENTS_PER_SIDE eventos —
+  // não só quando um lado está genuinamente vazio (mitigação P2, #7980).
+  const windowDiffs = windows.map((w) => {
+    const c = computeCounts(w, feature);
+    if (c.nTrue < MIN_WINDOW_EVENTS_PER_SIDE || c.nFalse < MIN_WINDOW_EVENTS_PER_SIDE) return null;
+    return c.diff;
+  });
   const nonZeroSigned = windowDiffs.filter((d): d is number => d !== null && d !== 0).map((d) => Math.sign(d));
   let consistentWindows = 0;
   if (nonZeroSigned.length > 0) {
@@ -261,8 +282,16 @@ export interface TrackAPowerReportResult {
   features: TrackAFeatureReport[];
 }
 
-export function buildTrackAPowerReport(editionsRoot: string, seed = 42): TrackAPowerReportResult {
-  const population = buildTrackAPopulation(editionsRoot);
+/**
+ * `precomputedPopulation` (opcional, achado de review do #7980, P3 —
+ * eficiência): quem já tem a população em mãos (ex: `calibrate-track-a-
+ * weights.ts`, que precisa dela de novo pra montar o design matrix)
+ * evita re-ler/re-parsear `01-categorized.json`/`01-approved.json`/
+ * `scoring-features.json` de TODA edição uma 2ª vez. Sem o parâmetro, o
+ * comportamento é idêntico ao de antes (constrói a população do zero).
+ */
+export function buildTrackAPowerReport(editionsRoot: string, seed = 42, precomputedPopulation?: TrackAPopulationResult): TrackAPowerReportResult {
+  const population = precomputedPopulation ?? buildTrackAPopulation(editionsRoot);
   const features = TRACK_A_CANDIDATE_FEATURES.map((f, i) => analyzeTrackAFeature(population.editions, f, seed + i, population.promoted_outside_by_feature[f]));
   return {
     editions_analyzed: population.editions.length,

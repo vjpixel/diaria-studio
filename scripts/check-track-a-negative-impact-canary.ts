@@ -20,13 +20,15 @@
  * Uso:
  *   npx tsx scripts/check-track-a-negative-impact-canary.ts [--editions-dir DIR] [--json]
  *
- * Exit code 1 SÓ quando `pause_recommended === true` (degradação
- * sustentada de verdade detectada). Histórico insuficiente pra avaliar
- * (`analyzeCanaryTrend` com poucos pontos avaliáveis) sai com exit 0 —
- * NÃO é degradação, mas também não deve ler como "canário verde": o
- * texto impresso deixa claro que o veredito é "não avaliável ainda", e
- * `trigger-track-a-calibration.ts` (o único chamador automatizado deste
- * script) trata esse caso separadamente, nunca como sinal positivo.
+ * Exit code 1 quando `pause_recommended === true` (degradação sustentada
+ * de verdade detectada) OU `assessable === false` (histórico ainda
+ * insuficiente) — fail-closed (achado de review do #7980, P1, alta
+ * confiança: uma versão anterior deste script só falhava em
+ * `pause_recommended`, e histórico insuficiente saía com exit 0,
+ * indistinguível de "avaliado, sem degradação" pra quem só olhasse o
+ * exit code — exatamente o cenário que um canário OBRIGATÓRIO não pode
+ * deixar passar batido). `trigger-track-a-calibration.ts` usa o mesmo
+ * campo `assessable` pra gate, não só o exit code deste CLI.
  */
 import { resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -58,9 +60,13 @@ if (isMainModule(import.meta.url)) {
     }
     console.log("");
     console.log(`baseline: ${trend.baseline_avg_rank === null ? "n/d" : trend.baseline_avg_rank.toFixed(2)}`);
-    console.log(`pausar novas promoções de Track A: ${trend.pause_recommended ? "SIM" : "não"}`);
+    console.log(`avaliável: ${trend.assessable ? "sim" : "NÃO (histórico insuficiente)"}`);
+    console.log(`pausar novas promoções de Track A: ${trend.pause_recommended ? "SIM" : trend.assessable ? "não" : "N/A (ainda não avaliável — tratar como bloqueio, não como aprovação)"}`);
     for (const r of trend.reasons) console.log(`  - ${r}`);
   }
 
-  process.exit(trend.pause_recommended ? 1 : 0);
+  // Fail-closed (achado de review do #7980, P1): "ainda não avaliável" bloqueia
+  // igual a "degradação detectada" — nunca lido como canário verde. Mesmo
+  // campo (`assessable`) que `trigger-track-a-calibration.ts` usa pra gate.
+  process.exit(trend.pause_recommended || !trend.assessable ? 1 : 0);
 }

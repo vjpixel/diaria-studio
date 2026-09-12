@@ -65,9 +65,13 @@ function writeStrongCorpus(editionsRoot: string, n: number, opts: { negativeImpa
 }
 
 describe("featureFromCalibrationReportTitle (#7980)", () => {
-  it("mesmo formato de título que Track B — reusa o parsing, não duplica", () => {
-    assert.equal(featureFromCalibrationReportTitle("Calibração coverage_bonus_present — PR #9000"), "coverage_bonus_present");
+  it("título com o prefixo track-a: extrai a feature (prefixo removido)", () => {
+    assert.equal(featureFromCalibrationReportTitle("Calibração track-a:coverage_bonus_present — PR #9000"), "coverage_bonus_present");
     assert.equal(featureFromCalibrationReportTitle(""), null);
+  });
+
+  it("achado de review do #7980 (P1): título SEM o prefixo (formato de Track B) retorna null — nunca conta como Track A já coberto, mesmo mesmo nome de feature", () => {
+    assert.equal(featureFromCalibrationReportTitle("Calibração primary_source — PR #8010"), null);
   });
 });
 
@@ -118,16 +122,37 @@ describe("decideTrackATrigger (#7980, fim-a-fim)", () => {
     }
   });
 
-  it("feature já coberta por PR de calibração anterior (registry): excluída da fila de elegíveis", () => {
+  it("feature já coberta por PR de calibração anterior de TRACK A (título com prefixo track-a:): excluída da fila de elegíveis", () => {
     const editionsRoot = mkdtempSync(join(tmpdir(), "trigger-a-editions-covered-"));
     const rootDir = mkdtempSync(join(tmpdir(), "trigger-a-root-covered-"));
     try {
       writeStrongCorpus(editionsRoot, 60, { negativeImpactRank: "good" });
-      registerReport(rootDir, { kind: "calibration", sessionId: "9000", title: "Calibração primary_source — PR #9000", htmlPath: "data/reports/calibration/primary_source-9000.md" }, undefined, false);
+      registerReport(rootDir, { kind: "calibration", sessionId: "9000", title: "Calibração track-a:primary_source — PR #9000", htmlPath: "data/reports/calibration/primary_source-9000.md" }, undefined, false);
 
       const result = decideTrackATrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z");
       assert.ok(!result.eligible.some((c) => c.feature === "primary_source"));
       assert.ok(result.alreadyCovered.includes("primary_source"));
+    } finally {
+      rmSync(editionsRoot, { recursive: true, force: true });
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("achado de review do #7980 (P1, alta confiança): PR de calibração de TRACK B pro MESMO nome de feature (sem prefixo) NÃO bloqueia Track A", () => {
+    const editionsRoot = mkdtempSync(join(tmpdir(), "trigger-a-editions-crosstrack-"));
+    const rootDir = mkdtempSync(join(tmpdir(), "trigger-a-root-crosstrack-"));
+    try {
+      writeStrongCorpus(editionsRoot, 60, { negativeImpactRank: "good" });
+      // Formato de título de Track B (trigger-track-b-calibration.ts) — sem o
+      // prefixo "track-a:". Antes do fix isso colidia e bloqueava Track A
+      // pra sempre; com o fix, `featureFromCalibrationReportTitle` recusa
+      // títulos sem o prefixo, então isto nunca entra em `alreadyCovered`.
+      registerReport(rootDir, { kind: "calibration", sessionId: "8010", title: "Calibração primary_source — PR #8010", htmlPath: "data/reports/calibration/primary_source-8010.md" }, undefined, false);
+
+      const result = decideTrackATrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z");
+      assert.ok(!result.alreadyCovered.includes("primary_source"), "relatório de Track B (sem prefixo) não deveria contar como Track A coberto");
+      assert.ok(result.eligible.some((c) => c.feature === "primary_source"), "primary_source deveria continuar elegível pro Track A");
+      assert.equal(result.chosenFeature, "primary_source");
     } finally {
       rmSync(editionsRoot, { recursive: true, force: true });
       rmSync(rootDir, { recursive: true, force: true });

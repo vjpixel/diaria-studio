@@ -117,6 +117,54 @@ describe("buildTrackAPowerReport (#7980)", () => {
     }
   });
 
+  it("achado de review do #7980 (P2, média confiança): janela FINA (poucos eventos de 1 lado) concordando por acaso NÃO conta pro gate de consistência", () => {
+    const dir = mkdtempSync(join(tmpdir(), "power-report-a-thin-window-"));
+    try {
+      // Janela 1 (eds 0-19): efeito forte, sinal POSITIVO, bem povoada (20/20).
+      for (let e = 0; e < 20; e++) {
+        const ed = String(260800 + e);
+        writeTrackAEdition(dir, ed, [
+          { url: `https://x.com/${ed}-a`, primary_source: true, approved: true },
+          { url: `https://x.com/${ed}-b`, primary_source: false, approved: false },
+        ]);
+      }
+      // Janela 2 (eds 20-39): 20 edições com item "a" (primary_source=true),
+      // mas só 3 delas TAMBÉM têm um item "b" (primary_source=false) — as
+      // outras 17 não têm nenhum candidato com a feature ausente. Essas 3
+      // "concordam" com o sinal positivo da janela 1 por puro acaso, sobre
+      // uma amostra de n=3 do lado false.
+      for (let e = 20; e < 40; e++) {
+        const ed = String(260800 + e);
+        const items = [{ url: `https://x.com/${ed}-a`, primary_source: true, approved: true }];
+        if (e < 23) items.push({ url: `https://x.com/${ed}-b`, primary_source: false, approved: false });
+        writeTrackAEdition(dir, ed, items);
+      }
+      // Janela 3 (eds 40-59): efeito forte, sinal INVERTIDO, bem povoada (20/20).
+      for (let e = 40; e < 60; e++) {
+        const ed = String(260800 + e);
+        writeTrackAEdition(dir, ed, [
+          { url: `https://x.com/${ed}-a`, primary_source: true, approved: false },
+          { url: `https://x.com/${ed}-b`, primary_source: false, approved: true },
+        ]);
+      }
+      const report = buildTrackAPowerReport(dir);
+      const f = report.features.find((x) => x.feature === "primary_source")!;
+      assert.equal(f.n_true, 60);
+      assert.equal(f.n_false, 43, "20(janela1) + 3(janela2, finos) + 20(janela3)");
+      assert.equal(f.passes_event_bar, true, "conta agregada ainda passa o piso de evento/edição");
+      // Sem o piso MIN_WINDOW_EVENTS_PER_SIDE, a janela 2 (n=3 do lado false)
+      // "concordaria" com a janela 1 e passaria passes_window_bar
+      // incorretamente (2 de 3 concordando por amostra fina) — com o piso,
+      // a janela 2 é excluída (nFalse=3 < mínimo), sobram só janela1(+) e
+      // janela3(-), que discordam — nunca 2 concordam de verdade.
+      assert.equal(f.window_diffs[1], null, "janela 2 deveria ser excluída por amostra fina (nFalse=3)");
+      assert.equal(f.passes_window_bar, false);
+      assert.equal(f.passes_evidence_bar_track_a, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("n abaixo do piso (poucas edições): não passa nem o gate de evento/edição", () => {
     const dir = mkdtempSync(join(tmpdir(), "power-report-a-thin-"));
     try {

@@ -83,10 +83,11 @@ describe("analyzeCanaryTrend (#7980)", () => {
     const trend = analyzeCanaryTrend(points, { sustainedRounds: 3 });
     assert.equal(trend.pause_recommended, false);
     assert.equal(trend.baseline_avg_rank, null);
+    assert.equal(trend.assessable, false, "achado de review do #7980 (P1) — histórico insuficiente precisa ser DISTINGUÍVEL de 'avaliado, sem degradação' por um campo explícito, não só inferido de baseline_avg_rank===null");
     assert.ok(trend.reasons.length > 0);
   });
 
-  it("rank médio estável (sem degradação): não recomenda pausa", () => {
+  it("rank médio estável (sem degradação): não recomenda pausa, e assessable=true (histórico suficiente pra ter se pronunciado)", () => {
     const points: EditionCanaryPoint[] = Array.from({ length: 10 }, (_, i) => ({
       edition: `26090${i}`,
       avg_rank_among_finalists: 3, // constante
@@ -96,6 +97,7 @@ describe("analyzeCanaryTrend (#7980)", () => {
     }));
     const trend = analyzeCanaryTrend(points, { sustainedRounds: 3 });
     assert.equal(trend.pause_recommended, false);
+    assert.equal(trend.assessable, true);
     assert.equal(trend.baseline_avg_rank, 3);
   });
 

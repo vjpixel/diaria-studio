@@ -80,3 +80,28 @@ export function trackAFeatureValue(row: ScoringFeatureRow, feature: TrackACandid
   if (feature === "coverage_bonus_present") return row.cluster_sources_count > 0;
   return row[feature] === true;
 }
+
+/**
+ * Prefixo que distingue o nome de feature de um relatório de calibração do
+ * TRACK A do mesmo nome vindo do Track B (#7980, achado de review — P1,
+ * alta confiança). `generate-calibration-evidence-report.ts` grava o
+ * título como `"Calibração {feature} — PR #{n}"` pros DOIS tracks, sem
+ * nenhum campo de track no registro (`data/reports/index.jsonl`) — e
+ * `TRACK_A_CANDIDATE_FEATURES` compartilha 5 de 6 nomes com
+ * `CANDIDATE_FEATURES` de Track B (`primary_source`/`hands_on`/`academy`/
+ * `howto_br`/`howto_br_source`). Sem um prefixo, uma PR de Track B
+ * mergeada pra `primary_source` bloquearia `primary_source` do Track A
+ * PARA SEMPRE em `trigger-track-a-calibration.ts` (e vice-versa) — os dois
+ * tracks têm barra de evidência, diretório de pesos e escopo de feature
+ * genuinamente distintos, então "já coberto" nunca deveria vazar entre
+ * eles. Quem monta o `CalibrationEvidenceInput.feature` de um candidato
+ * REAL de Track A (ainda não wireado neste repo — ver docstring de
+ * `trigger-track-a-calibration.ts`) DEVE usar `trackAReportFeatureLabel`,
+ * nunca o nome puro da feature.
+ */
+export const TRACK_A_REPORT_FEATURE_PREFIX = "track-a:";
+
+/** `"track-a:{feature}"` — nome a passar em `CalibrationEvidenceInput.feature` (nunca o nome puro) sempre que uma sessão futura gerar o relatório de evidência de uma calibração REAL de Track A. Ver docstring de `TRACK_A_REPORT_FEATURE_PREFIX`. */
+export function trackAReportFeatureLabel(feature: TrackACandidateFeature): string {
+  return `${TRACK_A_REPORT_FEATURE_PREFIX}${feature}`;
+}

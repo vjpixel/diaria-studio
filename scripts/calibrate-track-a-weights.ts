@@ -239,7 +239,12 @@ function evidenceCasesForTrackAFeatures(events: LabeledEvent[], features: readon
 }
 
 export function calibrateTrackAWeights(editionsRoot: string, rootDir: string, holdout = DEFAULT_HOLDOUT_TRACK_A): CalibrateTrackAResult {
-  const powerReport = buildTrackAPowerReport(editionsRoot);
+  // População construída 1 VEZ e reusada no power report — achado de review
+  // do #7980 (P3, eficiência): antes disto, `buildTrackAPowerReport` e
+  // `buildTrackAPopulation` liam/parseavam TODA edição do disco 2 vezes
+  // independentes na mesma chamada desta função.
+  const population = buildTrackAPopulation(editionsRoot);
+  const powerReport = buildTrackAPowerReport(editionsRoot, undefined, population);
   const eligibleFeatures = powerReport.features.filter((f) => f.passes_evidence_bar_track_a).map((f) => f.feature);
 
   const base = { editions_analyzed: powerReport.editions_analyzed };
@@ -263,7 +268,7 @@ export function calibrateTrackAWeights(editionsRoot: string, rootDir: string, ho
     };
   }
 
-  const { editions } = buildTrackAPopulation(editionsRoot);
+  const { editions } = population;
   const holdoutSet = editions.slice(-holdout);
   const holdoutEditionSet = new Set(holdoutSet.map((e) => e.edition));
   const trainSet = editions.filter((e) => !holdoutEditionSet.has(e.edition));

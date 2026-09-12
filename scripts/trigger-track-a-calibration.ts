@@ -11,11 +11,31 @@
  * Pipeline: `calibration-power-report-track-a.ts` (quais features passam
  * a barra do Track A) → `check-track-a-negative-impact-canary.ts`
  * (canário obrigatório, #7972 mitigação I-1 — QUALQUER recomendação de
- * pausa BLOQUEIA a rodada inteira, mesmo que alguma feature esteja
- * elegível) → filtra features já cobertas por PR de calibração aberta/
- * mergeada (`data/reports/index.jsonl`, kind "calibration" — MESMO
- * registro que Track B usa; a distinção de track vem do PREFIXO do nome
- * de feature no título, nunca de um campo separado) →
+ * pausa, OU histórico ainda insuficiente pra avaliar, BLOQUEIA a rodada
+ * inteira, mesmo que alguma feature esteja elegível) → filtra features
+ * já cobertas por PR de calibração aberta/mergeada (`data/reports/
+ * index.jsonl`, kind "calibration" — MESMO registro que Track B usa,
+ * sem campo de track próprio). **`TRACK_A_REPORT_FEATURE_PREFIX`
+ * ("track-a:") é o que evita a colisão entre os dois tracks** — achado
+ * de review do #7980 (P1, alta confiança): Track A e Track B
+ * compartilham 5 de 6 nomes de feature (`primary_source`/`hands_on`/
+ * `academy`/`howto_br`/`howto_br_source`); sem um jeito de distinguir de
+ * qual track um relatório "Calibração {feature} — PR #N" veio, uma PR de
+ * Track B mergeada pra `primary_source` bloquearia `primary_source` do
+ * Track A PARA SEMPRE (e vice-versa), silenciosamente, contradizendo a
+ * separação de escopo/diretório/barra de evidência que o resto deste
+ * módulo garante. `featureFromCalibrationReportTitle` (abaixo) só conta
+ * um relatório como cobrindo Track A se o nome de feature no título
+ * carregar o prefixo — nunca um nome puro (esse é ambíguo, pode ser de
+ * Track B). **Pendência de fiação, documentada explicitamente**: nenhum
+ * script deste repo hoje CHAMA `generate-calibration-evidence-report.ts`
+ * pra Track A (nem pra Track B — mesma pendência que `trigger-track-b-
+ * calibration.ts` já documenta, abrir a PR de verdade é ação de fora
+ * destes scripts) — quando essa fiação existir, o `feature` passado ao
+ * `CalibrationEvidenceInput` PARA O TRACK A precisa ser
+ * `trackAReportFeatureLabel(candidato)` (`scripts/lib/track-a-features.ts`),
+ * nunca o nome puro, senão o título gerado não carrega o prefixo e o
+ * relatório nunca é reconhecido como "já coberto" por este trigger. →
  * `calibration-cadence-guard.ts::rankQueuedCandidates`/`evaluateCadence`
  * (mesmos 3 tetos de Track B — `MAX_LIVE_CALIBRATABLE_PARAMS` é um teto
  * ÚNICO, pensado pro custo de revisão do editor total, independente de
@@ -39,7 +59,7 @@
 import { resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { buildTrackAPowerReport } from "./calibration-power-report-track-a.ts";
-import { TRACK_A_CANDIDATE_FEATURES } from "./lib/track-a-features.ts";
+import { TRACK_A_CANDIDATE_FEATURES, TRACK_A_REPORT_FEATURE_PREFIX } from "./lib/track-a-features.ts";
 import { computeCanarySeries } from "./check-track-a-negative-impact-canary.ts";
 import { analyzeCanaryTrend, type CanaryTrendResult } from "./lib/track-a-negative-impact-canary.ts";
 import { evaluateCadence, rankQueuedCandidates, type CadenceState, type QueuedCandidate, type RankedCandidate } from "./lib/calibration-cadence-guard.ts";
@@ -48,10 +68,22 @@ import { listReports } from "./studio-ui/studio-reports.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
-/** Mesmo parsing de título que Track B (`trigger-track-b-calibration.ts::featureFromCalibrationReportTitle`) — reusa o formato "Calibração {feature} — PR #{n}" que `generate-calibration-evidence-report.ts` grava pros DOIS tracks (o mecanismo de relatório não distingue track por campo, só pelo nome da feature em si). */
+/**
+ * Mesmo formato de título de `trigger-track-b-calibration.ts::featureFromCalibrationReportTitle`
+ * ("Calibração {feature} — PR #{n}") — MAS, diferente de Track B, só
+ * retorna a feature quando o nome carrega `TRACK_A_REPORT_FEATURE_PREFIX`
+ * ("track-a:") — nunca um nome puro, que é ambíguo entre os 2 tracks (ver
+ * docstring do módulo e de `TRACK_A_REPORT_FEATURE_PREFIX` em
+ * `track-a-features.ts`, achado de review do #7980, P1). Um relatório de
+ * Track B pra `primary_source` (sem prefixo) retorna `null` aqui — nunca
+ * conta como "Track A já coberto".
+ */
 export function featureFromCalibrationReportTitle(title: string): string | null {
   const m = /^Calibração\s+(\S+)\s+—\s+PR/.exec(title);
-  return m ? m[1] : null;
+  if (!m) return null;
+  const raw = m[1];
+  if (!raw.startsWith(TRACK_A_REPORT_FEATURE_PREFIX)) return null;
+  return raw.slice(TRACK_A_REPORT_FEATURE_PREFIX.length);
 }
 
 export interface TrackATriggerResult {
@@ -96,8 +128,15 @@ export function decideTrackATrigger(editionsRoot: string, rootDir: string, nowIs
 
   // Canário BLOQUEIA a rodada inteira, mesmo com cadência livre e feature
   // elegível — é o gate de segurança do Track A (#7972 mitigação I-1),
-  // checado ANTES de considerar qualquer candidato.
-  const chosenFeature = !canary.pause_recommended && cadence.canOpenNewCandidate && cadence.canSendSignoffDigest && !cadence.atParamBudgetCap && ranked.length > 0 ? ranked[0].feature : null;
+  // checado ANTES de considerar qualquer candidato. `canary.assessable`
+  // (não só `!canary.pause_recommended`) faz parte do gate — achado de
+  // review do #7980 (P1, alta confiança): histórico ainda insuficiente
+  // pra ter baseline (`assessable: false`) também produz
+  // `pause_recommended: false`, e sem checar `assessable` aqui a 1ª
+  // rodada de um corpus jovem leria o canário como "limpo" por ausência
+  // de dado, nunca o que um canário OBRIGATÓRIO deveria fazer.
+  const canaryClear = canary.assessable && !canary.pause_recommended;
+  const chosenFeature = canaryClear && cadence.canOpenNewCandidate && cadence.canSendSignoffDigest && !cadence.atParamBudgetCap && ranked.length > 0 ? ranked[0].feature : null;
 
   const calibration = chosenFeature ? calibrateTrackAWeights(editionsRoot, rootDir) : null;
 
@@ -117,7 +156,7 @@ if (isMainModule(import.meta.url)) {
   } else {
     console.log(`[trigger-track-a-calibration] ${result.eligible.length} candidato(s) elegível(is), ${result.alreadyCovered.length} já coberto(s) por PR anterior.`);
     for (const c of result.eligible) console.log(`  ${c.feature}: value=${c.value.toFixed(3)} (effectSize=${c.effectSize.toFixed(3)}, confidence=${c.confidence.toFixed(3)})`);
-    console.log(`  canário negative_impact: pausar=${result.canary.pause_recommended ? "SIM" : "não"}${result.canary.reasons.length > 0 ? " — " + result.canary.reasons.join("; ") : ""}`);
+    console.log(`  canário negative_impact: avaliável=${result.canary.assessable ? "sim" : "não"}  pausar=${result.canary.pause_recommended ? "SIM" : "não"}${result.canary.reasons.length > 0 ? " — " + result.canary.reasons.join("; ") : ""}`);
     if (result.cadence.reasons.length > 0) {
       console.log("  Cadência bloqueando:");
       for (const r of result.cadence.reasons) console.log(`    - ${r}`);
