@@ -518,8 +518,23 @@ describe("§2c — cadastro na Beehiiv é fail-soft: apelido persiste, tela repo
 
     const originalFetch = globalThis.fetch;
     let fetchCalled = false;
+    // #7988: sincronização por EVENTO em vez de wall-clock. Um `setTimeout`
+    // fixo (ex: 20ms) assume que todo código síncrono/microtask entre o
+    // `void worker.fetch(...)` e a chamada ao fetch mockado sempre termina
+    // dentro dessa janela — falso num runner mais lento/carregado (achado
+    // ao vivo: passou numa run do CI, falhou na run anterior do mesmo
+    // commit). `fetchStarted` resolve no exato instante em que o mock de
+    // fetch É CHAMADO — como JS é single-threaded, nesse ponto TODO o
+    // código síncrono anterior no handler (incluindo o `env.POLL.put` do
+    // apelido, que o fix ordenou pra rodar antes da chamada à Beehiiv) já
+    // rodou. Determinístico independente de quão rápido/lento o runner é.
+    let resolveFetchStarted: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      resolveFetchStarted = resolve;
+    });
     globalThis.fetch = (async () => {
       fetchCalled = true;
+      resolveFetchStarted();
       // Nunca resolve, nunca rejeita — simula rede/servidor travado
       // (indistinguível de um deadlock real de fora da função).
       return new Promise<Response>(() => {});
@@ -527,11 +542,10 @@ describe("§2c — cadastro na Beehiiv é fail-soft: apelido persiste, tela repo
 
     try {
       // Não aguardamos a resolução completa do request (ela nunca viria —
-      // é esse o ponto do teste). Disparamos e damos ao event loop só o
-      // suficiente pra progredir até onde o apelido JÁ deveria estar
-      // gravado (o put roda ANTES da chamada Beehiiv travada).
+      // é esse o ponto do teste). Disparamos e aguardamos o evento
+      // determinístico "fetch foi chamado" em vez de um timeout fixo.
       void worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await fetchStarted;
 
       assert.ok(fetchCalled, "a chamada à Beehiiv deveria ter sido iniciada (não pulada) — senão o teste não prova nada sobre o hang");
       const score = JSON.parse((await kv.get(`clarice:score:${email}`))!);

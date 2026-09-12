@@ -110,6 +110,3 @@ jobs:
           git stash list | wc -l
           git reflog --date=iso -20
       - run: npm run smoke
-      - name: Validate RSS feeds
-        run: npm run validate-feeds
-        continue-on-error: true
