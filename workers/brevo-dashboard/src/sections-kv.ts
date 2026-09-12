@@ -966,8 +966,8 @@ export const COHORTS_COLUMNS: Array<{ label: string; tooltip: string }> = [
   { label: "Elegíveis", tooltip: "Contatos elegíveis para envio (send_eligible=1)" },
   { label: "Recebeu ≥1", tooltip: "Contatos que já receberam ao menos 1 envio (sends_count>0)" },
   {
-    label: "Falta 1º envio",
-    tooltip: "Elegíveis que nunca receberam nenhum envio (send_eligible=1 e sends_count=0) — a fila real de 1º envio, mesma definição que a rampa usa pra montar as waves.",
+    label: "Falta 1º envio no mês",
+    tooltip: "Elegíveis que não receberam nenhum envio NESTE mês (send_eligible=1 e último envio fora do mês civil corrente) — cobre quem nunca recebeu nada e quem recebeu em mês anterior mas ainda não neste (#8024).",
   },
   { label: "Abertura", tooltip: "% de quem recebeu que abriu ao menos 1 envio" },
   { label: "Clique", tooltip: "% de quem recebeu que clicou ao menos 1 envio" },
@@ -1005,9 +1005,10 @@ export function renderCohortsTabPanel(
     brevo: number;
     eligible: number;
     received: number;
-    // #4406: "Falta 1º envio" — elegível e nunca recebeu (isFirstSend). `null`
-    // = campo ausente no KV (payload pré-#4406) — distinto de `0`, que
-    // significaria "ninguém falta" (ver normalizeCohortStatsRow, brevo-api.ts).
+    // #8024 (antes #4406): "Falta 1º envio no mês" — elegível sem nenhum envio
+    // NESTE mês civil BRT. `null` = campo ausente no KV (payload pré-#4406) —
+    // distinto de `0`, que significaria "ninguém falta" (ver
+    // normalizeCohortStatsRow, brevo-api.ts).
     eligibleNeverSent: number | null;
     // contagens brutas (pro Total agregar taxas corretamente, #2880 E)
     opened: number;
@@ -1203,7 +1204,7 @@ ${renderTotalRow(neverSentTotal, sumEligibleNeverSent(neverSentRows))}</tbody>
   // o parágrafo original tinha 6-10 linhas e citava issues internas (#2864,
   // #2809, #3091, #2908), jargão que não ajuda o editor a ler o dado.
   const cohortsTakeaway = `Comparativo de envio e engajamento por cohort, ordenado pela fila real de 1º envio (mais morno → mais frio).`;
-  const cohortsMethodology = `Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. <strong>Falta 1º envio</strong> = elegíveis que nunca receberam nenhum envio (<code>send_eligible=1</code> e <code>sends_count=0</code>) — a fila real de 1º envio, mesma definição que a rampa usa pra montar as waves; não reflete campanha já AGENDADA mas ainda não disparada (sync Brevo roda 1×/dia, até 24h de defasagem — quem de fato impede reenvio é o cruzamento com campanhas <code>queued</code>/<code>sent</code> na Brevo, não este número). <strong>Jurídico</strong> é uma linha própria (cohort virtual): um contato do setor jurídico entra AQUI em vez da safra de cadastro — nunca nas duas, mesmo invariante de partição das demais linhas. Exclui e-mails internos (mesmo filtro do Score de re-envio). Células que desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna ganham <strong>▲</strong> (desvio favorável — abertura/clique acima da média, ou unsub/bounce abaixo dela) ou <span class="alert-label">▼ vermelho</span> (desvio desfavorável — o mesmo "ruim" do resto do dashboard). A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas, e não recebe essa marcação. Cohorts que nunca receberam envio ficam recolhidos abaixo, numa lista separada — com a própria linha Total (#4257).`;
+  const cohortsMethodology = `Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. <strong>Falta 1º envio no mês</strong> = elegíveis sem nenhum envio NESTE mês (<code>send_eligible=1</code> e último envio fora do mês civil corrente) — cobre quem nunca recebeu nada e quem recebeu em mês anterior mas ainda não neste; não reflete campanha já AGENDADA mas ainda não disparada (sync Brevo roda 1×/dia, até 24h de defasagem — quem de fato impede reenvio é o cruzamento com campanhas <code>queued</code>/<code>sent</code> na Brevo, não este número). <strong>Jurídico</strong> é uma linha própria (cohort virtual): um contato do setor jurídico entra AQUI em vez da safra de cadastro — nunca nas duas, mesmo invariante de partição das demais linhas. Exclui e-mails internos (mesmo filtro do Score de re-envio). Células que desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna ganham <strong>▲</strong> (desvio favorável — abertura/clique acima da média, ou unsub/bounce abaixo dela) ou <span class="alert-label">▼ vermelho</span> (desvio desfavorável — o mesmo "ruim" do resto do dashboard). A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas, e não recebe essa marcação. Cohorts que nunca receberam envio ficam recolhidos abaixo, numa lista separada — com a própria linha Total (#4257).`;
 
   return `
 <section class="phase2-section" id="cohorts-tab">

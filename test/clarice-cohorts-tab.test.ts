@@ -232,7 +232,7 @@ test("renderCohortsTabPanel: header tem 'Falta 1º envio', e NÃO tem as colunas
     "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, eligible_never_sent: 40, opened: 40 }),
   };
   const html = renderCohortsTabPanel(stats);
-  assert.match(html, /<th[^>]*>Falta 1º envio<\/th>/, "coluna Falta 1º envio presente");
+  assert.match(html, /<th[^>]*>Falta 1º envio no mês<\/th>/, "coluna Falta 1º envio no mês presente");
   assert.doesNotMatch(html, /<th[^>]*>Recebeu neste ciclo<\/th>/, "coluna antiga removida");
   assert.doesNotMatch(html, /<th[^>]*>Falta enviar<\/th>/, "coluna antiga removida");
   assert.doesNotMatch(html, /<th[^>]*>Envios \(Σ\)<\/th>/, "Envios (Σ) removida");
