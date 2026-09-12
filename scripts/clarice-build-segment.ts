@@ -592,7 +592,11 @@ export interface SentOrQueuedHistoryEntry {
   // continua sendo um subtipo válido de string, então nenhum call site do
   // modo --group precisa mudar.
   group: string;
-  /** Quantidade de emails NOVOS adicionados por esta entrada (não cumulativo). */
+  /** Quantidade de emails NOVOS adicionados por esta entrada (não cumulativo).
+   *  #8038: NEGATIVO quando `group === "unblock-orphans"` — nesse caso é
+   *  quantos emails foram REMOVIDOS (desbloqueados), não adicionados; ver
+   *  `unblockOrphanedSentOrQueuedEmails`. Qualquer soma futura de `count`
+   *  precisa considerar o sinal. */
   count: number;
   /** ISO timestamp da invocação que gravou esta entrada. */
   at: string;
@@ -684,6 +688,83 @@ export function appendSentOrQueuedEmails(
     history: [...history, { group, count: normalizedNew.length, at: new Date().toISOString() }],
   };
   writeFileSync(file, JSON.stringify(merged, null, 2), "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// #8038 — desbloqueio de seleções órfãs em sent-or-queued.json
+//
+// `sent-or-queued.json` acumula emails SELECIONADOS por qualquer `--group`
+// bem-sucedido, "independente de já ter sido importado no Brevo" (ver
+// docstring do #3227/#4765 acima). Achado ao vivo (ciclo 2608-09, #8038):
+// isso vira exclusão PERMANENTE se a seleção original nunca virou uma onda
+// de fato agendada/enviada (build abandonado, superseded pela fila unificada
+// `daily` do #7406, ou o read-modify-write sem lock do #4765 perdendo o
+// rastro) — o contato some de toda seleção futura sem nunca ter recebido.
+//
+// `findOrphanedSentOrQueuedEmails` é a detecção pura: um email rastreado em
+// `sent-or-queued.json` que não aparece em NENHUM CSV de onda atualmente no
+// diretório do ciclo (`daily.csv`/`novos.csv`/`engajados.csv`/`ramp-
+// warm.csv`/`d{N}-*.csv` — todo artefato de seleção vivo) é candidato a
+// órfão: se estivesse numa onda real (passada ou futura), apareceria em
+// algum desses arquivos, porque são eles que alimentam o import pro Brevo.
+// ---------------------------------------------------------------------------
+
+/**
+ * Pura: emails em `sentOrQueued` que não aparecem em `currentlyReferenced`
+ * (união de todos os CSVs de onda vivos do ciclo). Candidatos a órfão —
+ * seleção antiga cujo artefato original foi sobrescrito/nunca importado.
+ * Comparação normalizada trim+lowercase, mesmo padrão de
+ * `excludeSentOrQueued`.
+ */
+export function findOrphanedSentOrQueuedEmails(
+  sentOrQueued: ReadonlySet<string>,
+  currentlyReferenced: ReadonlySet<string>,
+): string[] {
+  const out: string[] = [];
+  for (const email of sentOrQueued) {
+    if (!currentlyReferenced.has(email.trim().toLowerCase())) out.push(email);
+  }
+  return out.sort();
+}
+
+/**
+ * Remove `orphanEmails` de `sent-or-queued.json` (o inverso de
+ * `appendSentOrQueuedEmails`) — devolve a contagem REALMENTE removida
+ * (`orphanEmails` que não estavam no arquivo não contam). Registra uma
+ * entrada de `history` com `group: "unblock-orphans"` pra manter rastreável
+ * quando/por que o desbloqueio aconteceu. Não-atômico (mesmo padrão —
+ * e mesmo risco de lost-update do #4765 — de `appendSentOrQueuedEmails`);
+ * chamar fora de uma janela em que outro build do mesmo ciclo possa estar
+ * rodando concorrentemente.
+ */
+export function unblockOrphanedSentOrQueuedEmails(
+  segmentsDir: string,
+  cycle: string,
+  orphanEmails: string[],
+): number {
+  const file = sentOrQueuedFilePath(segmentsDir);
+  if (!existsSync(file)) return 0;
+  let existingEmails: string[] = [];
+  let history: SentOrQueuedHistoryEntry[] = [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<SentOrQueuedFile>;
+    if (Array.isArray(parsed.emails)) existingEmails = parsed.emails.map((e) => String(e));
+    if (Array.isArray(parsed.history)) history = parsed.history;
+  } catch {
+    return 0; // JSON corrompido — nada seguro a fazer aqui, sai sem escrever.
+  }
+  const toRemove = new Set(orphanEmails.map((e) => e.trim().toLowerCase()));
+  const kept = existingEmails.filter((e) => !toRemove.has(e.trim().toLowerCase()));
+  const removedCount = existingEmails.length - kept.length;
+  if (removedCount === 0) return 0;
+
+  const merged: SentOrQueuedFile = {
+    cycle,
+    emails: kept.sort(),
+    history: [...history, { group: "unblock-orphans", count: -removedCount, at: new Date().toISOString() }],
+  };
+  writeFileSync(file, JSON.stringify(merged, null, 2), "utf8");
+  return removedCount;
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {

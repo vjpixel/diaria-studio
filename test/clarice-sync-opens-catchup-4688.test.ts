@@ -124,6 +124,55 @@ test("collectDeliveredStats: deliveredAt malformado como ÚNICO candidato → la
   assert.deepEqual(stats.get("a@x.com"), { count: 1, lastSentAt: null });
 });
 
+// #8033 — achado ao vivo (ciclo 2608-09): `deliveredAt` ambíguo mas
+// PARSEÁVEL (DD-MM-AAAA, lido por `Date.parse` como MM-DD-AAAA americano —
+// dia≤12 "faz sentido" nos dois formatos, então não vira NaN) não era pego
+// pelo guard do #6887 (que só rejeita NaN). "03-09-2026 06:11:16" (3 de
+// setembro) virava 9 de MARÇO no `last_sent_at` gravado.
+test("collectDeliveredStats: deliveredAt no formato ambíguo DD-MM-AAAA é REJEITADO, não interpretado como MM-DD (#8033)", () => {
+  const stats = collectDeliveredStats([
+    {
+      campaignId: 1,
+      campaignName: "A",
+      exportedAt: "2026-09-04T00:00:00.000Z",
+      // "03-09-2026" seria 9 de março se lido como MM-DD (Date.parse padrão) —
+      // formato fora do esperado ISO-like, deve ser descartado como se fosse NaN.
+      recipients: { "a@x.com": { delivered: true, deliveredAt: "03-09-2026 06:11:16", opened: false, bounced: false, unsubscribed: false } },
+    },
+  ]);
+  assert.deepEqual(stats.get("a@x.com"), { count: 1, lastSentAt: null }, "formato ambíguo descartado, nunca interpretado como março");
+});
+
+test("collectDeliveredStats: deliveredAt ISO-like válido continua aceito normalmente após o guard de formato (#8033)", () => {
+  const stats = collectDeliveredStats([
+    {
+      campaignId: 1,
+      campaignName: "A",
+      exportedAt: "2026-09-04T00:00:00.000Z",
+      recipients: { "a@x.com": { delivered: true, deliveredAt: "2026-09-03 06:11:16", opened: false, bounced: false, unsubscribed: false } },
+    },
+  ]);
+  assert.equal(stats.get("a@x.com")?.lastSentAt, "2026-09-03 06:11:16", "formato AAAA-MM-DD HH:MM:SS (esperado da Brevo) continua passando");
+});
+
+test("collectDeliveredStats: deliveredAt ambíguo NÃO corrompe quando um candidato válido vem antes (mesmo padrão do #6887)", () => {
+  const stats = collectDeliveredStats([
+    {
+      campaignId: 1,
+      campaignName: "A",
+      exportedAt: "2026-09-01T00:00:00.000Z",
+      recipients: { "a@x.com": { delivered: true, deliveredAt: "2026-08-20 09:00:00", opened: false, bounced: false, unsubscribed: false } },
+    },
+    {
+      campaignId: 2,
+      campaignName: "B",
+      exportedAt: "2026-09-04T00:00:00.000Z",
+      recipients: { "a@x.com": { delivered: true, deliveredAt: "03-09-2026 06:11:16", opened: false, bounced: false, unsubscribed: false } },
+    },
+  ]);
+  assert.equal(stats.get("a@x.com")?.lastSentAt, "2026-08-20 09:00:00", "candidato ambíguo posterior é descartado, não substitui o válido anterior");
+});
+
 test("collectOpenedEmails: sem caches ou sem nenhum opened → conjunto vazio", () => {
   assert.equal(collectOpenedEmails([]).size, 0);
   assert.equal(

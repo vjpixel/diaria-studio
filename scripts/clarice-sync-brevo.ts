@@ -291,6 +291,22 @@ interface DeliveredStats {
   lastSentAt: string | null;
 }
 
+/**
+ * #8033: `Delivered_Date`/`sentDate` do export de campanha da Brevo devem vir
+ * no formato `AAAA-MM-DD[ HH:MM:SS]` (confirmado em `test/clarice-engagement-
+ * cohorts-v2.test.ts`) — mas achado ao vivo (ciclo 2608-09, 4 contatos)
+ * mostrou a Brevo devolvendo, nalgumas linhas, `DD-MM-AAAA HH:MM:SS`
+ * (dia-mês-ano). `Date.parse`/`new Date(...)` do JS trata qualquer string
+ * ambígua como MM-DD-AAAA (americano) — `"03-09-2026"` virava 9 de MARÇO, não
+ * 3 de setembro. O guard do #6887 só rejeitava `NaN` (data ilegível); uma
+ * string ambígua MAS parseável (dia ≤12, então "faz sentido" nos dois
+ * formatos) passava direto e corrompia `last_sent_at` em silêncio. Este
+ * regex exige o formato ISO-like ANTES de sequer chamar `Date.parse` —
+ * qualquer outro formato (incluindo o ambíguo DD-MM) é tratado como
+ * inválido/descartado, nunca "adivinhado".
+ */
+const ISO_LIKE_DATE_RE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}:\d{2})?/;
+
 /** #6814: agrega entregas por contato a partir dos exports de campanha. */
 export function collectDeliveredStats(caches: CampaignCache[]): Map<string, DeliveredStats> {
   const out = new Map<string, DeliveredStats>();
@@ -310,7 +326,15 @@ export function collectDeliveredStats(caches: CampaignCache[]): Map<string, Deli
       // `Date.parse` explicitamente ANTES de aceitar qualquer candidato —
       // nunca aceitar NaN, seja como candidato novo ou como base de
       // comparação.
-      const candidate = flags.deliveredAt ?? cache.sentDate ?? null;
+      //
+      // #8033: `Date.parse` sozinho não bastava — aceitava strings AMBÍGUAS
+      // mas mal-formatadas (DD-MM-AAAA lido como MM-DD-AAAA americano).
+      // `ISO_LIKE_DATE_RE` exige o formato esperado ANTES de chamar
+      // `Date.parse`; qualquer outro formato (incluindo o ambíguo) é
+      // descartado como se fosse `NaN` — mesma categoria de "não confiável"
+      // do guard do #6887, não uma exceção nova.
+      const rawCandidate = flags.deliveredAt ?? cache.sentDate ?? null;
+      const candidate = rawCandidate && ISO_LIKE_DATE_RE.test(rawCandidate) ? rawCandidate : null;
       const candidateTime = candidate ? Date.parse(candidate) : NaN;
       if (!Number.isNaN(candidateTime)) {
         const currentTime = current.lastSentAt ? Date.parse(current.lastSentAt) : NaN;
