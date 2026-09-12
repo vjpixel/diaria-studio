@@ -245,6 +245,13 @@ describe("capa de série (texto da retrospectiva + título ligado a '1 ano')", (
     writeFileSync(join(d, "_internal", "social-cover.json"), JSON.stringify(cover));
     assert.equal(slideSourceText(d, "d1", social.t1), "Em setembro de 2025, **x**.\n\nP2.\n\nP3.");
     assert.throws(() => slideSourceText(d, "d1", "Outro texto."), /slide_prefix/);
+    // Abertura em parágrafo próprio (decisão do editor, 12/09/2026): o carrossel
+    // fica com os 3 parágrafos de conteúdo.
+    const separado = "Retrospectiva de 1 ano da diar.ia.br, tema 1 de 6: o trabalho.\n\nEm setembro de 2025, **x**.\n\nP2.\n\nP3.";
+    const c2 = JSON.parse(buildDayCoverJson(lote, "Retrospectiva de aniversário", { t1: separado }));
+    assert.equal(c2.d1.slide_prefix, "Retrospectiva de 1 ano da diar.ia.br, tema 1 de 6: o trabalho.");
+    writeFileSync(join(d, "_internal", "social-cover.json"), JSON.stringify(c2));
+    assert.equal(slideSourceText(d, "d1", separado), "Em setembro de 2025, **x**.\n\nP2.\n\nP3.");
     // Sem social-cover.json (diária): texto intacto.
     assert.equal(slideSourceText(mkdtempSync(join(tmpdir(), "diaria-")), "d1", social.t1), social.t1);
   });
