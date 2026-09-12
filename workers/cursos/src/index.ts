@@ -124,10 +124,11 @@ export interface Env {
   BEEHIIV_ORIGEM_PAGA_FIELD?: string;
   /** #8003: nome do custom field Beehiiv onde gravar `document.referrer` cru
    * do cliente — sinal SEPARADO do triplo UTM/`origem_paga` acima. NENHUM
-   * criado ainda em produção (tentativa via Kit MCP gated por plano pago;
-   * via REST direto com a key do `.env` respondeu 401 "invalid" — criação
-   * fica pendente pro editor). Mesmo degrade gracioso ausente dos demais
-   * campos acima. */
+   * criado ainda em produção (tentativa via Kit MCP gated por plano pago —
+   * este campo em si é da Beehiiv, mas o mesmo padrão de criação manual se
+   * aplica — e via REST direto com a key do `.env` respondeu 401 "invalid" —
+   * criação fica pendente pro editor). Mesmo degrade gracioso ausente dos
+   * demais campos acima. */
   BEEHIIV_ORIGEM_REFERRER_FIELD?: string;
   /** #8003: nome do custom field Beehiiv onde gravar o click ID de ads
    * (`gclid:...`/`fbclid:...`/`msclkid:...`) — mesmo racional/degrade

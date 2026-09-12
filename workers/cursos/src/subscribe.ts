@@ -65,6 +65,18 @@ export interface ParsedSubscribe {
  * confiar só nisso). */
 export const SUBSCRIBE_CLIENT_ORIGIN_MAX = 300;
 
+/** #8003: sinal de origem do cliente — SEPARADO do triplo UTM/`origem_paga`
+ * acima, nunca varia por lógica de negócio. Espelha `SubscribeOrigin` do
+ * worker `poll` (`workers/poll/src/subscribe.ts`) — não importado direto
+ * (mesmo motivo do resto deste arquivo: bundle separado, sem import
+ * cross-worker), mas o SHAPE precisa ser o mesmo tipo NOMEADO nas 3
+ * assinaturas abaixo, não um literal estrutural anônimo repetido 3x
+ * (achado do type-design-analyzer, fleet review pré-merge da PR #8028). */
+export interface SubscribeOrigin {
+  referrer: string;
+  clickId: string;
+}
+
 function asStr(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
@@ -159,7 +171,7 @@ async function subscribeToBeehiiv(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   origemPaga: string = "",
-  origin: { referrer: string; clickId: string } = { referrer: "", clickId: "" },
+  origin: SubscribeOrigin = { referrer: "", clickId: "" },
 ): Promise<SubscribeResult> {
   const apiKey = env.BEEHIIV_API_KEY;
   const pubId = env.BEEHIIV_PUBLICATION_ID;
@@ -256,7 +268,7 @@ async function subscribeToKit(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   origemPaga: string = "",
-  origin: { referrer: string; clickId: string } = { referrer: "", clickId: "" },
+  origin: SubscribeOrigin = { referrer: "", clickId: "" },
 ): Promise<SubscribeResult> {
   const apiKey = env.KIT_API_KEY;
   if (!apiKey) return { ok: false, status: 503, reason: "not_configured" };
@@ -372,7 +384,7 @@ export async function subscribeViaConfiguredBackend(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   origemPaga: string = "",
-  origin: { referrer: string; clickId: string } = { referrer: "", clickId: "" },
+  origin: SubscribeOrigin = { referrer: "", clickId: "" },
 ): Promise<SubscribeResult> {
   return resolveBackend(env) === "kit"
     ? subscribeToKit(env, input, fetchImpl, origemPaga, origin)
