@@ -104,6 +104,12 @@ export interface StoreSummary {
   // linha 0) foram REMOVIDOS — ambas as tabelas saíram do dashboard,
   // consolidadas na tabela Cohorts (`cohort_stats`, agora com coluna Brevo).
   priority_points_histogram_brevo: Record<string, number>;
+  // #8030: coluna "Falta 1º envio no mês" do histograma — mesma métrica de
+  // `cohort_stats[x].eligible_never_sent` (#8024), só que por valor exato de
+  // priority_points em vez de por cohort: `send_eligible=1` E `last_sent_at`
+  // fora do mês civil BRT corrente (`civilMonthWindow`). Mesmo padrão
+  // esparso/opcional das demais colunas condicionais do histograma.
+  priority_points_histogram_never_sent_month: Record<string, number>;
   // #2864 (pedido do editor 260702): comparativo de envio/engajamento por
   // cohort — insumo pra estratégia da rampa. Universo = store inteiro MENOS
   // internos (mesmo filtro do bloco priority_points, #2809 — engajamento de
@@ -161,6 +167,13 @@ const MV_VERIFIED_CASE = "SUM(CASE WHEN mv_bucket='verified' THEN 1 ELSE 0 END)"
 const BREVO_SYNCED_CASE = "SUM(CASE WHEN brevo_list_ids IS NOT NULL THEN 1 ELSE 0 END)";
 
 const SEND_ELIGIBLE_CASE = "SUM(CASE WHEN send_eligible=1 THEN 1 ELSE 0 END)";
+// #8030: mesmo predicado de `eligible_never_sent` em `computeCohortStats`
+// (#8024) — elegível E `last_sent_at` fora da janela do mês civil BRT
+// corrente. 2 placeholders posicionais (start, end da janela) — sempre
+// aparecem no SELECT, então vêm ANTES dos placeholders de `NOT_INTERNAL_SQL`
+// (WHERE) na ordem dos params bindados.
+const NEVER_SENT_MONTH_CASE =
+  "SUM(CASE WHEN send_eligible=1 AND (last_sent_at IS NULL OR last_sent_at < ? OR last_sent_at >= ?) THEN 1 ELSE 0 END)";
 
 /**
  * #2865/#2880: N pares total+condicionais num ÚNICO scan (review #2815) —
@@ -218,13 +231,16 @@ export function computeStoreSummary(db: DatabaseSync, now: Date = new Date()): S
   // #2865: o histograma de priority_points ganha a coluna Brevo — variante
   // tripla (total+verified+brevo), mesmo scan único, 1 agregado condicional a
   // mais. #2880: os pares by_cohort/by_cohort_first_send foram removidos (as
-  // tabelas "Por safra" e "1º envio" saíram do dashboard).
+  // tabelas "Por safra" e "1º envio" saíram do dashboard). #8030: 5ª coluna
+  // condicional (never_sent_month) no MESMO scan — 2 params a mais, sempre
+  // ANTES de INTERNAL_PARAMS (SELECT precede WHERE no texto da query).
+  const monthWindow = civilMonthWindow(now);
   const ppHistPair = groupCountsMulti(
     db,
-    `SELECT priority_points AS k, COUNT(*) n, ${MV_VERIFIED_CASE} verified, ${BREVO_SYNCED_CASE} brevo, ${SEND_ELIGIBLE_CASE} eligible FROM clarice_users
+    `SELECT priority_points AS k, COUNT(*) n, ${MV_VERIFIED_CASE} verified, ${BREVO_SYNCED_CASE} brevo, ${SEND_ELIGIBLE_CASE} eligible, ${NEVER_SENT_MONTH_CASE} never_sent_month FROM clarice_users
       WHERE ${NOT_INTERNAL_SQL} GROUP BY priority_points`,
-    ["verified", "brevo", "eligible"] as const,
-    INTERNAL_PARAMS,
+    ["verified", "brevo", "eligible", "never_sent_month"] as const,
+    [monthWindow.start.toISOString(), monthWindow.end.toISOString(), ...INTERNAL_PARAMS],
   );
   return {
     total: count(db, "SELECT COUNT(*) n FROM clarice_users"),
@@ -311,6 +327,7 @@ export function computeStoreSummary(db: DatabaseSync, now: Date = new Date()): S
     // #2865: coluna Brevo do histograma de priority_points — mesmo universo
     // (sem internos, #2809) do histograma total/verified acima.
     priority_points_histogram_brevo: ppHistPair.brevo,
+    priority_points_histogram_never_sent_month: ppHistPair.never_sent_month,
     cohort_stats: computeCohortStats(db, now),
     mv: groupCounts(
       db,

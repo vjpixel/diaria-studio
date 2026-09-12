@@ -473,6 +473,11 @@ export interface ContactsSummary {
   // #2865: coluna "Brevo" (brevo_list_ids IS NOT NULL) do histograma — par
   // opcional, degrade gracioso (KV antigo sem o campo → sem a coluna).
   priority_points_histogram_brevo?: Record<string, number>;
+  // #8030: coluna "Falta 1º envio no mês" do histograma — mesma métrica de
+  // `cohort_stats[x].eligible_never_sent` (#8024), por valor exato de
+  // priority_points. Par opcional, mesmo degrade gracioso das demais colunas
+  // condicionais (KV antigo sem o campo → sem a coluna).
+  priority_points_histogram_never_sent_month?: Record<string, number>;
   // #2864: comparativo de envio/engajamento por cohort. Opcional — KV antigo
   // sem o campo faz a aba renderizar o stub "dados ainda não gerados". Chave
   // "juridico" (#4406, COHORT_JURIDICO): contato jurídico entra aqui em vez

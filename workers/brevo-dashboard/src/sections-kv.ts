@@ -822,6 +822,11 @@ export function renderContactsSummarySection(
     // #2865: coluna "Brevo" (brevo_list_ids IS NOT NULL) — mesmo gate opcional.
     const bHist = s.priority_points_histogram_brevo;
     const withBrevo = bHist !== undefined;
+    // #8030: coluna "Falta 1º envio no mês" — mesma métrica de
+    // `cohort_stats[x].eligible_never_sent` (#8024), por valor exato de
+    // priority_points. Mesmo gate opcional das demais.
+    const nsHist = s.priority_points_histogram_never_sent_month;
+    const withNeverSentMonth = nsHist !== undefined;
     // #3415: valores exatos ≥40 juntam numa única linha "40+" — a cauda de
     // scores altos tinha 1 linha por valor exato (41, 42, 43...), a maioria
     // com 1-2 contatos cada, inflando a tabela sem ajudar a leitura (a fila de
@@ -834,14 +839,14 @@ export function renderContactsSummarySection(
       keys.reduce((a, k) => a + (m?.[k] ?? 0), 0);
     const highKeys = highEntries.map(([k]) => k);
     const highRow = highEntries.length
-      ? `<tr><td>40+</td><td style="text-align:right">${n(highEntries.reduce((a, [, v]) => a + v, 0))}</td>${withEligible ? `<td style="text-align:right">${n(sumOverKeys(eHist, highKeys))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumOverKeys(vHist, highKeys))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumOverKeys(bHist, highKeys))}</td>` : ""}</tr>`
+      ? `<tr><td>40+</td><td style="text-align:right">${n(highEntries.reduce((a, [, v]) => a + v, 0))}</td>${withEligible ? `<td style="text-align:right">${n(sumOverKeys(eHist, highKeys))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumOverKeys(vHist, highKeys))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumOverKeys(bHist, highKeys))}</td>` : ""}${withNeverSentMonth ? `<td style="text-align:right">${n(sumOverKeys(nsHist, highKeys))}</td>` : ""}</tr>`
       : "";
     // #2880: as sub-linhas "1º envio — cohort" (que ficavam sob a linha 0)
     // foram removidas — o eixo cohort agora vive só na tabela Cohorts, logo
     // abaixo. O histograma fica PURO (distribuição por valor de pontuação).
-    // Ordem das colunas: contatos | elegíveis | verified | Brevo.
+    // Ordem das colunas: contatos | elegíveis | verified | Brevo | Falta 1º envio no mês (#8030).
     const restRows = restEntries.map(([k, v]) =>
-      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withEligible ? `<td style="text-align:right">${n(eHist?.[k] ?? 0)}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(bHist?.[k] ?? 0)}</td>` : ""}</tr>`,
+      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withEligible ? `<td style="text-align:right">${n(eHist?.[k] ?? 0)}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(bHist?.[k] ?? 0)}</td>` : ""}${withNeverSentMonth ? `<td style="text-align:right">${n(nsHist?.[k] ?? 0)}</td>` : ""}</tr>`,
     ).join("\n");
     // #4256: totais explícitos de "Score positivo"/"Score negativo" — derivados
     // do PRÓPRIO histograma (não de `priority_points` faixas), pra sempre
@@ -855,7 +860,7 @@ export function renderContactsSummarySection(
     const positiveTotal = sumOverKeys(hist, positiveKeys);
     const negativeTotal = sumOverKeys(hist, negativeKeys);
     const subtotalRow = (label: string, keys: string[], total: number): string =>
-      `<tr class="subtotal-row"><td>${escHtml(label)}</td><td style="text-align:right">${n(total)}</td>${withEligible ? `<td style="text-align:right">${n(sumOverKeys(eHist, keys))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumOverKeys(vHist, keys))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumOverKeys(bHist, keys))}</td>` : ""}</tr>`;
+      `<tr class="subtotal-row"><td>${escHtml(label)}</td><td style="text-align:right">${n(total)}</td>${withEligible ? `<td style="text-align:right">${n(sumOverKeys(eHist, keys))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumOverKeys(vHist, keys))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumOverKeys(bHist, keys))}</td>` : ""}${withNeverSentMonth ? `<td style="text-align:right">${n(sumOverKeys(nsHist, keys))}</td>` : ""}</tr>`;
     const subtotalRows = [
       subtotalRow("Score positivo", positiveKeys, positiveTotal),
       subtotalRow("Score negativo", negativeKeys, negativeTotal),
@@ -866,9 +871,9 @@ export function renderContactsSummarySection(
     const sumMap = (m: Record<string, number> | undefined): number =>
       Object.values(m ?? {}).reduce((a, b) => a + b, 0);
     const totContatos = sorted.reduce((a, [, v]) => a + v, 0);
-    const totalRow = `<tr class="total-row"><td>Total</td><td style="text-align:right">${n(totContatos)}</td>${withEligible ? `<td style="text-align:right">${n(sumMap(eHist))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumMap(vHist))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumMap(bHist))}</td>` : ""}</tr>`;
+    const totalRow = `<tr class="total-row"><td>Total</td><td style="text-align:right">${n(totContatos)}</td>${withEligible ? `<td style="text-align:right">${n(sumMap(eHist))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumMap(vHist))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumMap(bHist))}</td>` : ""}${withNeverSentMonth ? `<td style="text-align:right">${n(sumMap(nsHist))}</td>` : ""}</tr>`;
     return `<div class="table-wrap"><table>
-      <thead><tr><th scope="col" title="Score = priority_points (engajamento): +40 optin, +20 por abertura, −10 por não-abertura. Fila de re-envio: maior Score primeiro.">Score (valor exato)</th><th scope="col" style="text-align:right">contatos</th>${withEligible ? '<th scope="col" style="text-align:right">elegíveis</th>' : ""}${withVerified ? '<th scope="col" style="text-align:right">verified</th>' : ""}${withBrevo ? '<th scope="col" style="text-align:right">Brevo</th>' : ""}</tr></thead>
+      <thead><tr><th scope="col" title="Score = priority_points (engajamento): +40 optin, +20 por abertura, −10 por não-abertura. Fila de re-envio: maior Score primeiro.">Score (valor exato)</th><th scope="col" style="text-align:right">contatos</th>${withEligible ? '<th scope="col" style="text-align:right">elegíveis</th>' : ""}${withVerified ? '<th scope="col" style="text-align:right">verified</th>' : ""}${withBrevo ? '<th scope="col" style="text-align:right">Brevo</th>' : ""}${withNeverSentMonth ? '<th scope="col" style="text-align:right" title="Elegíveis sem nenhum envio neste mês civil BRT (#8030) — mesma métrica da coluna Falta 1º envio no mês da tabela Cohorts.">Falta 1º envio no mês</th>' : ""}</tr></thead>
       <tbody>${rows}
 ${subtotalRows}
 ${totalRow}</tbody></table></div>`;

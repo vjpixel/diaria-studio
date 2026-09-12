@@ -157,6 +157,45 @@ test("renderContactsSummarySection: '40+' soma também elegíveis/verified/Brevo
   assert.match(row!, /<td[^>]*>4<\/td>/, "Brevo somado (3+1=4)");
 });
 
+// #8030 — coluna "Falta 1º envio no mês" do histograma (mesma métrica de
+// cohort_stats[x].eligible_never_sent da tabela Cohorts, #8024).
+
+test("renderContactsSummarySection: coluna 'Falta 1º envio no mês' aparece só quando priority_points_histogram_never_sent_month presente (#8030)", () => {
+  const withoutNs = renderContactsSummarySection(sample);
+  assert.doesNotMatch(withoutNs, /Falta 1º envio no mês/, "sem o campo, sem a coluna");
+
+  const withNs: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 400 },
+    priority_points_histogram_never_sent_month: { "0": 120 },
+  };
+  const html = renderContactsSummarySection(withNs);
+  assert.match(html, /Falta 1º envio no mês/, "com o campo, coluna presente");
+});
+
+test("renderContactsSummarySection: '40+' soma também 'Falta 1º envio no mês' dos valores agrupados (#8030)", () => {
+  const withHighNs: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 400, "40": 10, "80": 5 },
+    priority_points_histogram_never_sent_month: { "0": 300, "40": 9, "80": 4 },
+  };
+  const html = renderContactsSummarySection(withHighNs);
+  const row = html.match(/<tr><td>40\+<\/td>([\s\S]*?)<\/tr>/)?.[1];
+  assert.ok(row, "linha 40+ capturável");
+  assert.match(row!, /<td[^>]*>13<\/td>/, "falta-no-mês somado (9+4=13)");
+});
+
+test("renderContactsSummarySection: linha Total soma 'Falta 1º envio no mês' sobre todas as faixas (#8030)", () => {
+  const html = renderContactsSummarySection({
+    ...sample,
+    priority_points_histogram: { "0": 400, "15": 40, "40": 3, "80": 2 },
+    priority_points_histogram_never_sent_month: { "0": 100, "15": 10, "40": 3, "80": 2 },
+  });
+  const totalRowMatch = html.match(/<tr class="total-row"><td>Total<\/td>([\s\S]*?)<\/tr>/);
+  assert.ok(totalRowMatch, "linha Total capturável");
+  assert.match(totalRowMatch![1], />115</, "total falta-no-mês = 100+10+3+2 = 115");
+});
+
 test("renderContactsSummarySection: sem valores ≥40 → sem linha '40+' (#3415)", () => {
   const html = renderContactsSummarySection({
     ...sample,
