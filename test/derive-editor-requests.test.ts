@@ -165,6 +165,34 @@ describe("derive-editor-requests.ts (#5731)", () => {
       assert.equal(entries[0].request_type, "title-choice");
       assert.equal(entries[0].target, "d1");
       assert.equal(entries[0].source, "derived");
+      // #7981 follow-up: context.url precisa vir populado — sem isso,
+      // distill-prompt-corrections.ts nunca consegue medir "≥2 histórias
+      // distintas" pra este tipo de pedido, mesmo com edições suficientes.
+      assert.equal((entries[0].context as Record<string, unknown>).url, "https://example.com/mesmo-link");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("context.url é null (nunca fabricado) quando nenhuma linha de URL existe na seção alterada (#7981 follow-up)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-title-nourl-"));
+    try {
+      const editionDir = join(dir, "260811");
+      mkdirSync(editionDir, { recursive: true });
+      const build = (why: string) =>
+        ["**DESTAQUE 1 | 🚀 LANÇAMENTO**", "**[Título fixo](https://example.com/x)**", `Por que isso importa: ${why}`, "https://example.com/x", ""].join("\n");
+      // Remove a linha de URL pra forçar o caso sem URL detectável (título e URL idênticos, só o "why" muda).
+      const buildNoUrlLine = (why: string) => ["**DESTAQUE 1 | 🚀 LANÇAMENTO**", `Por que isso importa: ${why}`, ""].join("\n");
+
+      writeFileSync(join(editionDir, "02-reviewed.md"), buildNoUrlLine("motivo original"), "utf8");
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+      writeFileSync(join(editionDir, "02-reviewed.md"), buildNoUrlLine("motivo reescrito pelo editor, bem mais longo que o original de propósito"), "utf8");
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      const entries = readEntries(editionDir);
+      assert.equal(entries.length, 1);
+      assert.equal((entries[0].context as Record<string, unknown>).url, null);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -265,6 +293,52 @@ describe("derive-editor-requests.ts (#5731)", () => {
       const rewrites = readEntries(editionDir).filter((e) => e.request_type === "social-rewrite");
       assert.equal(rewrites.length, 1);
       assert.equal(rewrites[0].target, "d1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("social-rewrite popula context.url a partir de 01-approved.json (destaqueUrls) — #7981 follow-up: 03-social.md não embute URL no texto", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-social-url-lookup-"));
+    try {
+      const editionDir = join(dir, "260811");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(internalDir, "01-approved.json"), approvedJson("https://example.com/artigo-d1", "Artigo D1"), "utf8");
+      const build = (texto: string) => ["## d1", texto, ""].join("\n");
+      writeFileSync(join(editionDir, "03-social.md"), build("Texto original do post."), "utf8");
+
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+      writeFileSync(join(editionDir, "03-social.md"), build("Texto reescrito pelo editor, bem diferente do original."), "utf8");
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const rewrites = readEntries(editionDir).filter((e) => e.request_type === "social-rewrite" && e.target === "d1");
+      assert.equal(rewrites.length, 1);
+      assert.equal((rewrites[0].context as Record<string, unknown>).url, "https://example.com/artigo-d1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("social-rewrite sem 01-approved.json (ou sem highlight pro target): context.url é null, nunca lança (fail-soft)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-social-nourl-"));
+    try {
+      const editionDir = join(dir, "260811");
+      mkdirSync(editionDir, { recursive: true });
+      const build = (texto: string) => ["## d1", texto, ""].join("\n");
+      writeFileSync(join(editionDir, "03-social.md"), build("Texto original."), "utf8");
+
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+      writeFileSync(join(editionDir, "03-social.md"), build("Texto reescrito, sem 01-approved.json presente na edição."), "utf8");
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const rewrites = readEntries(editionDir).filter((e) => e.request_type === "social-rewrite");
+      assert.equal(rewrites.length, 1);
+      assert.equal((rewrites[0].context as Record<string, unknown>).url, null);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
