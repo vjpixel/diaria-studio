@@ -22,6 +22,8 @@ import {
   excludeSentOrQueued,
   appendSentOrQueuedEmails,
   sentOrQueuedFilePath,
+  findOrphanedSentOrQueuedEmails,
+  unblockOrphanedSentOrQueuedEmails,
   checkRoundSizeCap,
   checkRecencyMonotonic,
   checkCorruptedNames,
@@ -541,6 +543,54 @@ test("appendSentOrQueuedEmails: cross-group — email selecionado por 'engajados
   const { manifestEntry, csv } = buildSegmentArtifact(universe, "ramp-warm", 0);
   assert.equal(manifestEntry.count, 1);
   assert.deepEqual(emailsOf(csv), ["fresh@x.com"]); // "shared@x.com" já contava como usado por 'engajados'
+});
+
+// #8038 — findOrphanedSentOrQueuedEmails / unblockOrphanedSentOrQueuedEmails
+// (seleções presas em sent-or-queued.json cuja onda original nunca virou
+// artefato vivo — nem foi importada no Brevo)
+
+test("findOrphanedSentOrQueuedEmails: quem não aparece em NENHUM CSV vivo é órfão; quem aparece não é", () => {
+  const sentOrQueued = new Set(["a@x.com", "b@x.com", "c@x.com"]);
+  const currentlyReferenced = new Set(["b@x.com"]); // só b está em alguma onda viva
+  assert.deepEqual(findOrphanedSentOrQueuedEmails(sentOrQueued, currentlyReferenced), ["a@x.com", "c@x.com"]);
+});
+
+test("findOrphanedSentOrQueuedEmails: comparação normalizada (trim+lowercase), mesmo padrão de excludeSentOrQueued", () => {
+  const sentOrQueued = new Set(["A@X.com "]);
+  const currentlyReferenced = new Set(["a@x.com"]); // mesma pessoa, já normalizada do lado da onda
+  assert.deepEqual(findOrphanedSentOrQueuedEmails(sentOrQueued, currentlyReferenced), []);
+});
+
+test("findOrphanedSentOrQueuedEmails: nenhum sentOrQueued ou tudo referenciado -> lista vazia", () => {
+  assert.deepEqual(findOrphanedSentOrQueuedEmails(new Set(), new Set()), []);
+  assert.deepEqual(findOrphanedSentOrQueuedEmails(new Set(["a@x.com"]), new Set(["a@x.com"])), []);
+});
+
+test("unblockOrphanedSentOrQueuedEmails: remove só os emails órfãos, preserva o resto, registra history negativo", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-unblock-"));
+  appendSentOrQueuedEmails(dir, "2608-09", "engajados", ["orfao1@x.com", "vivo@x.com", "orfao2@x.com"]);
+
+  const removed = unblockOrphanedSentOrQueuedEmails(dir, "2608-09", ["orfao1@x.com", "orfao2@x.com"]);
+  assert.equal(removed, 2);
+
+  const parsed = JSON.parse(readFileSync(sentOrQueuedFilePath(dir), "utf8")) as SentOrQueuedFile;
+  assert.deepEqual(parsed.emails, ["vivo@x.com"]);
+  assert.equal(parsed.history.length, 2);
+  assert.deepEqual(parsed.history[1], { group: "unblock-orphans", count: -2, at: parsed.history[1].at });
+});
+
+test("unblockOrphanedSentOrQueuedEmails: arquivo ausente -> 0 removido, não lança", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-unblock-missing-"));
+  assert.equal(unblockOrphanedSentOrQueuedEmails(dir, "2608-09", ["a@x.com"]), 0);
+});
+
+test("unblockOrphanedSentOrQueuedEmails: nenhum dos orphanEmails está no arquivo -> 0 removido, arquivo intocado", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-unblock-noop-"));
+  appendSentOrQueuedEmails(dir, "2608-09", "engajados", ["vivo@x.com"]);
+  const before = readFileSync(sentOrQueuedFilePath(dir), "utf8");
+
+  assert.equal(unblockOrphanedSentOrQueuedEmails(dir, "2608-09", ["nao-existe@x.com"]), 0);
+  assert.equal(readFileSync(sentOrQueuedFilePath(dir), "utf8"), before, "0 removidos -> não reescreve o arquivo");
 });
 
 test("REGRESSÃO (#3227): rodar 'ramp-warm' 3x no mesmo ciclo (incidente 260710, cycle 2606-07) produz ZERO sobreposição entre as 3 seleções", () => {
