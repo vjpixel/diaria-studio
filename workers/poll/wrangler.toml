@@ -133,7 +133,6 @@ KIT_ORIGEM_PAGA_FIELD = "origem_paga"
 # abaixo), nenhum campo Beehiiv está configurado neste worker hoje.
 KIT_ORIGEM_REFERRER_FIELD = "origem_referrer"
 KIT_ORIGEM_CLICKID_FIELD = "origem_click_id"
-# sem essa atribuição gravada.
 
 # #6340/#7723 — designer form "Cadastro DOI (confirmacao)", criado no painel
 # do Kit em 09/09/2026 e verificado ao vivo: `resolveKitCreateState` cria
