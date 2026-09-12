@@ -179,9 +179,7 @@ describe("derive-editor-requests.ts (#5731)", () => {
     try {
       const editionDir = join(dir, "260811");
       mkdirSync(editionDir, { recursive: true });
-      const build = (why: string) =>
-        ["**DESTAQUE 1 | 🚀 LANÇAMENTO**", "**[Título fixo](https://example.com/x)**", `Por que isso importa: ${why}`, "https://example.com/x", ""].join("\n");
-      // Remove a linha de URL pra forçar o caso sem URL detectável (título e URL idênticos, só o "why" muda).
+      // Sem linha de URL pra forçar o caso sem URL detectável (título e URL idênticos, só o "why" muda).
       const buildNoUrlLine = (why: string) => ["**DESTAQUE 1 | 🚀 LANÇAMENTO**", `Por que isso importa: ${why}`, ""].join("\n");
 
       writeFileSync(join(editionDir, "02-reviewed.md"), buildNoUrlLine("motivo original"), "utf8");
