@@ -23,6 +23,14 @@
  * `CAROUSEL` + polling de status obrigatório, ver `fireThreadsCarousel`
  * em `dispatch.ts`) e trouxe `formatThreadsWeekly` de volta aqui.
  *
+ * **#8056 (260912) trouxe `formatTwitterWeekly` de volta** — MAS diferente
+ * de Facebook/Threads (dispatch direto via HTTP em `publish-weekly-social.ts`),
+ * o X é sempre agent-mediado neste projeto (mesmo padrão do diário,
+ * `prep-twitter-posts.ts` → Buffer MCP, nenhum script chama a API do X/Buffer
+ * direto). `formatTwitterWeekly` só formata texto — quem prepara o payload
+ * completo (texto + até `TWITTER_WEEKLY_MAX_ITEMS` imagens) pro dispatch via
+ * Buffer MCP é `scripts/prep-weekly-twitter.ts`.
+ *
  * Pura (texto in, texto out) — nenhuma I/O ou chamada de rede.
  * `publish-weekly-social.ts` consome estas funções antes de despachar.
  *
@@ -47,7 +55,18 @@ import {
   INSTAGRAM_WEEKLY_ARCHIVE_UTM,
   FACEBOOK_WEEKLY_ARCHIVE_UTM,
   THREADS_WEEKLY_ARCHIVE_UTM,
+  TWITTER_WEEKLY_ARCHIVE_UTM,
 } from "./shared/utm-registry.ts";
+// #8056: reusa o MESMO mecanismo de contagem ponderada do X que o diário já
+// usa (`prep-twitter-posts.ts`) — a URL conta só `TWITTER_URL_WEIGHT` (23,
+// peso do t.co) na hora de aplicar o limite de 280, não o comprimento
+// literal. Sem isso, a URL de arquivo com UTM (~90 chars) comeria quase
+// metade de um orçamento flat inventado à parte — achado ao vivo #8056
+// (sessão 260912): a 1ª versão desta função usava um limite conservador de
+// 240 chars contando a URL pelo tamanho literal, e um teste de pior caso
+// (4 títulos de 53 chars) já truncava o 4º item — orçamento real
+// desnecessariamente apertado.
+import { computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, TWITTER_URL_WEIGHT } from "../prep-twitter-posts.ts";
 
 /** Limite de caracteres de caption no Instagram (mesmo valor de publish-instagram.ts). */
 export const INSTAGRAM_WEEKLY_CHAR_LIMIT = 2200;
@@ -85,9 +104,20 @@ export function buildThreadsWeeklyArchiveUrl(): string {
   return url.toString();
 }
 
+/** #8056: mesmo padrão de `buildInstagramWeeklyArchiveUrl`, mas com o
+ * triplo UTM PRÓPRIO do X/Twitter (`TWITTER_WEEKLY_ARCHIVE_UTM`). */
+export function buildTwitterWeeklyArchiveUrl(): string {
+  const url = new URL("https://diar.ia.br");
+  url.searchParams.set("utm_source", TWITTER_WEEKLY_ARCHIVE_UTM.source);
+  url.searchParams.set("utm_medium", TWITTER_WEEKLY_ARCHIVE_UTM.medium);
+  url.searchParams.set("utm_campaign", TWITTER_WEEKLY_ARCHIVE_UTM.campaign);
+  return url.toString();
+}
+
 const ARCHIVE_URL = buildInstagramWeeklyArchiveUrl();
 const FACEBOOK_ARCHIVE_URL = buildFacebookWeeklyArchiveUrl();
 const THREADS_ARCHIVE_URL = buildThreadsWeeklyArchiveUrl();
+const TWITTER_ARCHIVE_URL = buildTwitterWeeklyArchiveUrl();
 
 /** Modo do carrossel semanal (#5330) — cada um tem intro própria na caption. */
 export type WeeklyInstagramMode = "clicked" | "highlights";
@@ -233,6 +263,72 @@ export function formatThreadsWeekly(
     items.map((it, i) => `${i + 1}. ${it.title}`).join("\n") +
     `\n\nArquivo completo: ${THREADS_ARCHIVE_URL}`;
   return truncateAtLimit(body, THREADS_WEEKLY_CHAR_LIMIT);
+}
+
+/**
+ * #8056: máximo de itens (= imagens) no post semanal do X/Twitter — o X não
+ * tem carrossel-swipe (diferente do Instagram); o equivalente nativo é um
+ * tweet com até 4 imagens anexadas, exibidas em grade (achado ao vivo,
+ * sessão 260912, ver conversa que originou a issue). O carrossel semanal
+ * pode ter até `WEEKLY_EXPECTED_ITEMS` (5, ver publish-weekly-social.ts) +
+ * capa + CTA — sempre mais que o limite do X, então SEMPRE sobra corte.
+ *
+ * Critério aplicado (registrado no comentário #8056 da issue, decisão
+ * ad-hoc até confirmação do editor): corta capa e CTA, mantém só os itens
+ * de NOTÍCIA — os `TWITTER_WEEKLY_MAX_ITEMS` melhor ranqueados, descarta o
+ * resto. Racional: capa/CTA são moldura/branding, não conteúdo; num tweet,
+ * o que compete por atenção é a notícia em si. O caller (`publish-weekly-
+ * social.ts`/`prep-weekly-twitter.ts`) é responsável por truncar a LISTA DE
+ * IMAGENS pro mesmo tamanho (`items.slice(0, TWITTER_WEEKLY_MAX_ITEMS)`
+ * ANTES de passar pra esta função) — `formatTwitterWeekly` só formata o
+ * texto dos itens que recebe, nunca decide sozinha quais cortar.
+ */
+export const TWITTER_WEEKLY_MAX_ITEMS = 4;
+
+/** Limite de caracteres de tweet — mesmo `TWITTER_CHAR_LIMIT` (280) do
+ * diário, reexportado aqui por conveniência de import. */
+export const TWITTER_WEEKLY_CHAR_LIMIT = TWITTER_CHAR_LIMIT;
+
+/**
+ * X/Twitter (#8056): versão COMPACTA do carrossel semanal — só título
+ * numerado por item (sem linha de contexto, mesma economia do Threads), MAS
+ * limitada a `TWITTER_WEEKLY_MAX_ITEMS` itens (o caller já deve ter cortado
+ * `items` antes de chamar esta função — ver docstring de
+ * `TWITTER_WEEKLY_MAX_ITEMS`). Link clicável no corpo (X renderiza URL como
+ * link, igual Facebook/Threads) — CTA direta, sem indireção "link na bio".
+ * Truncado no limite ponderado de tweet do X (280, ver `TWITTER_WEEKLY_CHAR_LIMIT`)
+ * preservando palavras inteiras, mesmo mecanismo de `formatThreadsWeekly`.
+ */
+export function formatTwitterWeekly(
+  items: InstagramWeeklyItem[],
+  mode: WeeklyInstagramMode = "clicked",
+  introOverride?: string,
+): string {
+  if (items.length === 0) return "";
+  // #8056: reserva o orçamento da URL pelo PESO ponderado do X
+  // (TWITTER_URL_WEEKLY = 23, não o tamanho literal — ver import acima) e só
+  // trunca a lista de itens, nunca a URL. Truncar o corpo INTEIRO de uma vez
+  // (como os outros 3 canais fazem) cortaria a URL fora quando os títulos
+  // são longos — achado ao vivo #8056 na 1ª versão desta função, que também
+  // contava a URL pelo tamanho literal (~90 chars) em vez do peso real (23),
+  // desperdiçando ~67 chars de orçamento que na prática o X nunca cobra.
+  const urlSuffix = `\n\n${TWITTER_ARCHIVE_URL}`;
+  const itemsBody = `${introOverride ?? INTRO_LINES[mode]}\n` + items.map((it, i) => `${i + 1}. ${it.title}`).join("\n");
+  // Orçamento pros itens = limite total - peso da URL - os 2 chars literais
+  // de "\n\n" que separam itemsBody da URL (esses SÃO contados por inteiro,
+  // só a URL em si ganha o peso reduzido).
+  const budgetForItems = TWITTER_WEEKLY_CHAR_LIMIT - TWITTER_URL_WEIGHT - 2;
+  const truncatedItemsBody = truncateAtLimit(itemsBody, budgetForItems);
+  const result = truncatedItemsBody + urlSuffix;
+  // Rede de segurança: confirma que o resultado final bate com a MESMA
+  // contagem ponderada que o X de fato usa (deveria ser garantido pela
+  // aritmética acima, mas nunca confiar em cálculo duplicado sem prova).
+  if (computeTwitterWeightedLength(result) > TWITTER_WEEKLY_CHAR_LIMIT) {
+    throw new Error(
+      `formatTwitterWeekly: resultado com ${computeTwitterWeightedLength(result)} chars ponderados excede ${TWITTER_WEEKLY_CHAR_LIMIT} — bug na aritmética de orçamento, nunca deveria acontecer.`,
+    );
+  }
+  return result;
 }
 
 function truncateAtLimit(text: string, maxLen: number): string {

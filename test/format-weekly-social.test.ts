@@ -13,13 +13,22 @@ import {
   formatInstagramWeekly,
   formatFacebookWeekly,
   formatThreadsWeekly,
+  formatTwitterWeekly,
   INSTAGRAM_WEEKLY_CHAR_LIMIT,
   THREADS_WEEKLY_CHAR_LIMIT,
+  TWITTER_WEEKLY_CHAR_LIMIT,
+  TWITTER_WEEKLY_MAX_ITEMS,
   buildInstagramWeeklyArchiveUrl,
   buildFacebookWeeklyArchiveUrl,
   buildThreadsWeeklyArchiveUrl,
+  buildTwitterWeeklyArchiveUrl,
   type InstagramWeeklyItem,
 } from "../scripts/lib/format-weekly-social.ts";
+// #8056: o limite do X é PONDERADO (URL conta 23 chars, não o literal) —
+// `caption.length` cru sempre vai passar de 280 quando a URL com UTM (~90
+// chars literais) está presente. Os testes de limite usam esta função, a
+// MESMA que formatTwitterWeekly usa internamente, nunca `.length` cru.
+import { computeTwitterWeightedLength } from "../scripts/prep-twitter-posts.ts";
 
 function makeItems(n: number, titleLen = 20): InstagramWeeklyItem[] {
   const items: InstagramWeeklyItem[] = [];
@@ -241,6 +250,70 @@ describe("formatThreadsWeekly (#5348, unidade Threads)", () => {
 
   it("modo default (omitido) continua 'clicked'", () => {
     const caption = formatThreadsWeekly(makeItems(2));
+    assert.match(caption, /^As notícias de IA mais lidas da semana na diar\.ia\.br:/);
+  });
+});
+
+describe("formatTwitterWeekly (#8056)", () => {
+  it("retorna vazio para 0 itens", () => {
+    assert.equal(formatTwitterWeekly([]), "");
+  });
+
+  it("títulos numerados, SEM linha de contexto — mesma economia do Threads", () => {
+    // 2 itens (não TWITTER_WEEKLY_MAX_ITEMS): a URL com UTM sozinha já usa
+    // quase 40% do orçamento de 240 chars — 4 itens de tamanho "normal" já
+    // truncam (ver teste de pior caso abaixo). Este teste verifica só a
+    // ESTRUTURA (título numerado, sem linha de contexto), por isso usa um
+    // número de itens que cabe inteiro sem truncar.
+    const items = makeItems(2);
+    const caption = formatTwitterWeekly(items);
+    items.forEach((it, i) => {
+      assert.ok(caption.includes(`${i + 1}. ${it.title}`));
+    });
+  });
+
+  it("nunca excede o limite PONDERADO de caracteres (URL conta 23, não o literal) — inclusive no PIOR CASO REAL (TWITTER_WEEKLY_MAX_ITEMS títulos de 53 chars cada, o máximo editorial) — e a URL de arquivo sempre sobrevive inteira no fim", () => {
+    const items = makeLongItems(TWITTER_WEEKLY_MAX_ITEMS);
+    const caption = formatTwitterWeekly(items);
+    const weighted = computeTwitterWeightedLength(caption);
+    assert.ok(
+      weighted <= TWITTER_WEEKLY_CHAR_LIMIT,
+      `caption com ${weighted} chars ponderados (${caption.length} literais) excede o limite de ${TWITTER_WEEKLY_CHAR_LIMIT}`,
+    );
+    assert.ok(
+      caption.endsWith(buildTwitterWeeklyArchiveUrl()),
+      "a URL de arquivo nunca deveria ser cortada — só os itens truncam quando o orçamento aperta",
+    );
+  });
+
+  it("SINTÉTICO: se a lista de itens estourar o limite mesmo assim, trunca preservando palavras inteiras — mas a URL sempre sobrevive no fim", () => {
+    const items = makeItems(10, 55);
+    const caption = formatTwitterWeekly(items);
+    const weighted = computeTwitterWeightedLength(caption);
+    assert.ok(weighted <= TWITTER_WEEKLY_CHAR_LIMIT, `caption truncada ainda excede o limite ponderado: ${weighted} chars`);
+    assert.ok(caption.endsWith(buildTwitterWeeklyArchiveUrl()), "a URL nunca deveria ser cortada, mesmo no pior caso");
+    assert.match(caption, /\.\.\.\n\n/, "os ITENS estourados deveriam ser truncados (prova que o mecanismo roda) antes da URL");
+    assert.doesNotMatch(caption, /\s\.\.\.\n\n/, "truncateAtLimit corta no último espaço antes do limite — nunca deixa espaço solto colado no '...'");
+  });
+
+  it("o link de arquivo aparece clicável no corpo, com UTM PRÓPRIO do X/Twitter (nunca reusa outro canal)", () => {
+    const caption = formatTwitterWeekly(makeItems(2));
+    const urls = caption.match(/https?:\/\/\S+/g) ?? [];
+    assert.deepEqual(urls, [buildTwitterWeeklyArchiveUrl()]);
+    assert.notDeepEqual(urls, [buildInstagramWeeklyArchiveUrl()]);
+    assert.notDeepEqual(urls, [buildFacebookWeeklyArchiveUrl()]);
+    assert.notDeepEqual(urls, [buildThreadsWeeklyArchiveUrl()]);
+    const url = new URL(urls[0]);
+    assert.equal(url.searchParams.get("utm_source"), "twitter");
+  });
+
+  it("modo 'highlights' usa a mesma intro dos outros canais", () => {
+    const caption = formatTwitterWeekly(makeItems(2), "highlights");
+    assert.match(caption, /^Confira aqui o resumo dos destaques:/);
+  });
+
+  it("modo default (omitido) continua 'clicked'", () => {
+    const caption = formatTwitterWeekly(makeItems(2));
     assert.match(caption, /^As notícias de IA mais lidas da semana na diar\.ia\.br:/);
   });
 });
