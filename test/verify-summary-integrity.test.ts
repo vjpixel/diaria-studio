@@ -2,6 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import {
   hasSummary,
@@ -10,7 +11,11 @@ import {
 } from "../scripts/verify-summary-integrity.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const TMP_DIR = resolve(ROOT, ".tmp-test-verify-summary-integrity");
+// #8044: fora da raiz do repo — um TMP_DIR sob ROOT aparece/some em
+// `git status --porcelain` durante a janela em que outros arquivos de teste
+// (ex: task-runner.test.ts, guard #7736) tiram snapshot do estado do git,
+// causando falha intermitente por corrida entre batches paralelos do CI.
+const TMP_DIR = resolve(tmpdir(), ".tmp-test-verify-summary-integrity");
 
 describe("hasSummary", () => {
   it("true só para string não-vazia (trim)", () => {
