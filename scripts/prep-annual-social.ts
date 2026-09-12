@@ -87,7 +87,10 @@ export function prepAnnualSocial(
     writeFileSync(join(dayDir, "03-social.md"), buildDaySocialMd(day, texts));
     writeFileSync(join(dayDir, "_internal", "01-approved-capped.json"), buildDayApprovedStub(titles));
     if (pageUrl) writeFileSync(join(dayDir, "_internal", "05-edition-url.txt"), `${pageUrl}\n`);
-    writeFileSync(join(dayDir, "_internal", "social-slots.json"), JSON.stringify(day.slots, null, 2));
+    writeFileSync(
+      join(dayDir, "_internal", "social-slots.json"),
+      JSON.stringify({ edition: day.date, slots: day.slots }, null, 2),
+    );
     day.keys.forEach((k, i) => {
       const src = imageOf(k);
       if (!existsSync(src)) throw new Error(`imagem ausente para ${k}: ${src}`);

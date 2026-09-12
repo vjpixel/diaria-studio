@@ -3,7 +3,9 @@
  *
  * Os publicadores da diária aceitam 2–3 destaques por edição e datam o post
  * pelo AAMMDD do diretório. O plano tem que respeitar isso para QUALQUER N de
- * temas (3–7) + previsões, e cair só em fim de semana (dia sem diária).
+ * temas (3–7) + previsões, agrupando os posts em lotes de 2–3, e ainda assim
+ * publicar um post por dia, no mesmo horário (slots por post, lidos via
+ * DIARIA_SOCIAL_SLOTS_FILE — decisão do editor, 12/09/2026).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -161,21 +163,57 @@ describe("prepAnnualSocial — o diretório do dia satisfaz os scripts da diári
 });
 
 describe("readSlotOverride (DIARIA_SOCIAL_SLOTS_FILE)", () => {
-  const f = join(mkdtempSync(join(tmpdir(), "slots-")), "s.json");
-  writeFileSync(f, JSON.stringify({ d1: "2026-09-13T09:00", d2: "13/09 9h" }));
+  const dir = mkdtempSync(join(tmpdir(), "slots-"));
+  const f = join(dir, "s.json");
+  writeFileSync(f, JSON.stringify({ edition: "260913", slots: { d1: "2026-09-13T09:00", d2: "13/09 9h", d3: "2026-09-15T25:00" } }));
+  const env = { DIARIA_SOCIAL_SLOTS_FILE: f, DIARIA_QUIET_SCHEDULE_LOG: "1" };
 
   it("sem a variável, nada muda (a diária segue a grade de sempre)", () => {
-    assert.equal(readSlotOverride("d1", {}), null);
+    assert.equal(readSlotOverride("d1", "260913", {}), null);
   });
 
   it("destaque listado vira data e hora explícitas; não listado cai na grade", () => {
-    assert.deepEqual(readSlotOverride("d1", { DIARIA_SOCIAL_SLOTS_FILE: f }), { year: 2026, month: 9, day: 13, time: "09:00" });
-    assert.equal(readSlotOverride("d3", { DIARIA_SOCIAL_SLOTS_FILE: f }), null);
+    assert.deepEqual(readSlotOverride("d1", "260913", env), { year: 2026, month: 9, day: 13, time: "09:00" });
+    const f2 = join(dir, "s2.json");
+    writeFileSync(f2, JSON.stringify({ edition: "260913", slots: { d1: "2026-09-13T09:00" } }));
+    assert.equal(readSlotOverride("d2", "260913", { ...env, DIARIA_SOCIAL_SLOTS_FILE: f2 }), null);
   });
 
-  it("valor malformado ou arquivo ilegível lança, em vez de agendar no horário errado em silêncio", () => {
-    assert.throws(() => readSlotOverride("d2", { DIARIA_SOCIAL_SLOTS_FILE: f }), /AAAA-MM-DDTHH:MM/);
-    assert.throws(() => readSlotOverride("d1", { DIARIA_SOCIAL_SLOTS_FILE: join(tmpdir(), "nao-existe.json") }), /ilegível/);
+  it("variável esquecida no shell não mexe em OUTRA edição (a diária seguinte, o artigo especial)", () => {
+    assert.equal(readSlotOverride("d1", "260914", env), null);
+    const config = { publishing: { social: { timezone: "America/Sao_Paulo", fallback_schedule: { d1_time: "10:00", d2_time: "12:30", d3_time: "17:30" } } } };
+    const prev = process.env.DIARIA_SOCIAL_SLOTS_FILE;
+    process.env.DIARIA_SOCIAL_SLOTS_FILE = f;
+    try {
+      const at = computeScheduledAt({ config, editionDate: "260914", destaque: "d1", platform: "facebook", now: Date.parse("2026-09-01T00:00:00Z") });
+      assert.equal(at, "2026-09-14T10:00:00-03:00");
+    } finally {
+      if (prev === undefined) delete process.env.DIARIA_SOCIAL_SLOTS_FILE;
+      else process.env.DIARIA_SOCIAL_SLOTS_FILE = prev;
+    }
+  });
+
+  it("valor malformado (inclusive hora 25:00), arquivo sem edition ou ilegível lança", () => {
+    assert.throws(() => readSlotOverride("d2", "260913", env), /AAAA-MM-DDTHH:MM/);
+    assert.throws(() => readSlotOverride("d3", "260913", env), /AAAA-MM-DDTHH:MM/);
+    const velho = join(dir, "velho.json");
+    writeFileSync(velho, JSON.stringify({ d1: "2026-09-13T09:00" }));
+    assert.throws(() => readSlotOverride("d1", "260913", { ...env, DIARIA_SOCIAL_SLOTS_FILE: velho }), /edition/);
+    assert.throws(() => readSlotOverride("d1", "260913", { ...env, DIARIA_SOCIAL_SLOTS_FILE: join(tmpdir(), "nao-existe.json") }), /ilegível/);
+  });
+
+  it("slot já no passado ainda passa pelo past-slot guard", () => {
+    const prev = process.env.DIARIA_SOCIAL_SLOTS_FILE;
+    process.env.DIARIA_SOCIAL_SLOTS_FILE = f;
+    try {
+      const config = { publishing: { social: { timezone: "America/Sao_Paulo", fallback_schedule: { d1_time: "10:00" } } } };
+      const now = Date.parse("2026-09-13T13:00:00Z"); // 10:00 BRT, depois do slot das 09:00
+      const at = computeScheduledAt({ config, editionDate: "260913", destaque: "d1", platform: "linkedin", now });
+      assert.ok(Date.parse(at) >= now + 10 * 60 * 1000, at);
+    } finally {
+      if (prev === undefined) delete process.env.DIARIA_SOCIAL_SLOTS_FILE;
+      else process.env.DIARIA_SOCIAL_SLOTS_FILE = prev;
+    }
   });
 });
 

@@ -278,8 +278,8 @@ Os publicadores só aceitam diretório com 2–3 destaques, então o script agru
 Para cada lote do plano:
 
 ```bash
-npx tsx scripts/gen-social-card-4x5.ts --edition-dir data/annual/$SLUG/social/$DIA
-npx tsx scripts/gen-carousel-cards.ts --edition-dir data/annual/$SLUG/social/$DIA --force
+npx tsx scripts/gen-social-card-4x5.ts --edition-dir data/annual/$SLUG/social/$LOTE
+npx tsx scripts/gen-carousel-cards.ts --edition-dir data/annual/$SLUG/social/$LOTE --force
 ```
 
 A capa 4:5 leva o título do tema e a categoria `RETROSPECTIVA DE ANIVERSÁRIO`; o carrossel sai com capa, os 3 parágrafos e o fecho.
@@ -290,21 +290,20 @@ Publicar um artefato de revisão (via `artifact-design`) com, por dia: horário 
 
 ### 6e. Agendamento
 
-Para cada lote do plano, na ordem — **sempre com `DIARIA_SOCIAL_SLOTS_FILE`**, senão os posts caem na grade da diária (data do lote, 10:00 / 12:30 / 17:30):
+Para cada lote do plano, na ordem — **cada publicador com `DIARIA_SOCIAL_SLOTS_FILE` na própria linha** (prefixo de comando, nunca `export`: fica escopado ao processo e não sobra no shell). Sem ela, os posts caem na grade da diária (data do lote, 10:00 / 12:30 / 17:30). O arquivo (`{"edition": "AAMMDD", "slots": {...}}`) só vale para a edição que nomeia, então mesmo esquecido não mexe em outra edição:
 
 ```bash
 D=data/annual/$SLUG/social/$LOTE
-export DIARIA_SOCIAL_SLOTS_FILE=$D/_internal/social-slots.json
+S=$D/_internal/social-slots.json
 npx tsx scripts/upload-images-public.ts --edition-dir $D/ --mode social
-npx tsx scripts/publish-linkedin.ts  --edition-dir $D --schedule
-npx tsx scripts/publish-facebook.ts  --edition-dir $D --schedule
-npx tsx scripts/publish-instagram.ts --edition-dir $D --schedule
-npx tsx scripts/publish-threads.ts   --edition-dir $D --schedule
-npx tsx scripts/prep-twitter-posts.ts --edition-dir $D
-unset DIARIA_SOCIAL_SLOTS_FILE
+DIARIA_SOCIAL_SLOTS_FILE=$S npx tsx scripts/publish-linkedin.ts  --edition-dir $D --schedule
+DIARIA_SOCIAL_SLOTS_FILE=$S npx tsx scripts/publish-facebook.ts  --edition-dir $D --schedule
+DIARIA_SOCIAL_SLOTS_FILE=$S npx tsx scripts/publish-instagram.ts --edition-dir $D --schedule
+DIARIA_SOCIAL_SLOTS_FILE=$S npx tsx scripts/publish-threads.ts   --edition-dir $D --schedule
+DIARIA_SOCIAL_SLOTS_FILE=$S npx tsx scripts/prep-twitter-posts.ts --edition-dir $D
 ```
 
-Conferir no `06-social-published.json` de cada lote que o `scheduled_at` de cada post bate com o `plan.json` (dia certo, 09:00) antes de relatar.
+Cada publicador imprime `[compute-schedule] slot explícito para …` por post; ausência dessa linha significa que o post caiu na grade da diária. Conferir no `06-social-published.json` de cada lote que o `scheduled_at` de cada post bate com o slot do `plan.json` (dia e hora) antes de relatar.
 
 X: para cada post que `prep-twitter-posts.ts` devolver, `mcp__claude_ai_Buffer__create_post` com `mode: "customScheduled"` e o `dueAt` dele (mesmo fluxo da `/diaria-5-publicacao`). O `06-social-published.json` de cada dia é o registro de idempotência: re-rodar pula o que já foi agendado.
 
