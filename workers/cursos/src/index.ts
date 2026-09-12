@@ -122,6 +122,26 @@ export interface Env {
    * `origem_paga`. Mesmo degrade gracioso ausente de `BEEHIIV_NAME_FIELD`
    * acima — nenhum criado em produção ainda. */
   BEEHIIV_ORIGEM_PAGA_FIELD?: string;
+  /** #8003: nome do custom field Beehiiv onde gravar `document.referrer` cru
+   * do cliente — sinal SEPARADO do triplo UTM/`origem_paga` acima. NENHUM
+   * criado ainda em produção (tentativa via Kit MCP gated por plano pago;
+   * via REST direto com a key do `.env` respondeu 401 "invalid" — criação
+   * fica pendente pro editor). Mesmo degrade gracioso ausente dos demais
+   * campos acima. */
+  BEEHIIV_ORIGEM_REFERRER_FIELD?: string;
+  /** #8003: nome do custom field Beehiiv onde gravar o click ID de ads
+   * (`gclid:...`/`fbclid:...`/`msclkid:...`) — mesmo racional/degrade
+   * gracioso de `BEEHIIV_ORIGEM_REFERRER_FIELD` acima. */
+  BEEHIIV_ORIGEM_CLICKID_FIELD?: string;
+  /** #8003: nome do custom field Kit onde gravar `document.referrer` cru do
+   * cliente — sinal SEPARADO do triplo UTM/`origem_paga` acima. NENHUM
+   * criado ainda em produção. Mesmo degrade gracioso ausente dos demais
+   * `KIT_*_FIELD` acima. */
+  KIT_ORIGEM_REFERRER_FIELD?: string;
+  /** #8003: nome do custom field Kit onde gravar o click ID de ads
+   * (`gclid:...`/`fbclid:...`/`msclkid:...`) — mesmo racional/degrade
+   * gracioso de `KIT_ORIGEM_REFERRER_FIELD` acima. */
+  KIT_ORIGEM_CLICKID_FIELD?: string;
   ALLOWED_ORIGINS?: string;
   _requestOrigin?: string | null;
   /** #5504: Meta Conversions API — mesmo secret/mecanismo de

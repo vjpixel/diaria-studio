@@ -116,10 +116,21 @@ ${renderAnalyticsHead()}
     }
 
     if (!optinInput.checked) { btn.disabled = false; setMsg('Marque a caixinha de opt-in para continuar.', 'error'); return; }
+    // #8003: referrer/click_id como sinal SEPARADO do utm_source acima —
+    // nunca sobrescreve origem_paga/o triplo UTM fixo do gate (ver docstring
+    // de clientOriginSignalPayloadFieldsJs, scripts/lib/shared/client-utm-payload.ts).
+    var referrer = (document.referrer || '').slice(0, 300);
+    var clickId = (function () {
+      var p = new URLSearchParams(window.location.search);
+      if (p.get('gclid')) return 'gclid:' + p.get('gclid');
+      if (p.get('fbclid')) return 'fbclid:' + p.get('fbclid');
+      if (p.get('msclkid')) return 'msclkid:' + p.get('msclkid');
+      return '';
+    })();
     fetch('/gate/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email, name: name, optin: optinInput.checked, website: website, utm_source: utmSource }),
+      body: JSON.stringify({ email: email, name: name, optin: optinInput.checked, website: website, utm_source: utmSource, referrer: referrer, click_id: clickId }),
     }).then(function (res) { return res.json().then(function (data) { return { status: res.status, data: data }; }); })
       .then(function (r) {
         btn.disabled = false;

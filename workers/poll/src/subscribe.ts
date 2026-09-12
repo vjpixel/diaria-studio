@@ -357,6 +357,24 @@ export const SUBSCRIBE_RATE_WINDOW_SEC = 3600; // 1h
  * mas o corte de tamanho é defesa em profundidade, barato de aplicar). */
 export const SUBSCRIBE_CLIENT_UTM_MAX = 100;
 
+/** #8003: teto de tamanho de `referrer`/`click_id` crus do cliente — mesmo
+ * racional de `SUBSCRIBE_CLIENT_UTM_MAX` acima (defesa em profundidade: o
+ * cliente já corta em 300 chars, ver `clientOriginSignalPayloadFieldsJs`,
+ * mas nunca confiar só nisso). Aplicado no parse, antes de qualquer gravação
+ * em custom field. */
+export const SUBSCRIBE_CLIENT_ORIGIN_MAX = 300;
+
+/** #8003: sinal de origem do cliente — SEPARADO do triplo UTM/`origemPaga`
+ * acima, nunca varia por `source` (é sinal cru do cliente pra QUALQUER
+ * `source`). Puramente informativo: nunca consumido por lógica de negócio,
+ * só repassado pro ESP configurado quando o custom field correspondente
+ * existir (ver `BEEHIIV_ORIGEM_REFERRER_FIELD`/`KIT_ORIGEM_REFERRER_FIELD`
+ * e `BEEHIIV_ORIGEM_CLICKID_FIELD`/`KIT_ORIGEM_CLICKID_FIELD`, index.ts). */
+export interface SubscribeOrigin {
+  referrer: string;
+  clickId: string;
+}
+
 export interface ParsedSubscribe {
   name: string;
   email: string;
@@ -373,6 +391,13 @@ export interface ParsedSubscribe {
   utmSource: string;
   utmMedium: string;
   utmCampaign: string;
+  /** #8003: `document.referrer` cru do cliente — vazio (não `undefined`)
+   * quando ausente do body. Nunca usado por lógica de negócio (ver
+   * `SubscribeOrigin`). */
+  referrer: string;
+  /** #8003: click ID de ads prefixado pelo provedor (`gclid:...`/`fbclid:...`/
+   * `msclkid:...`) — vazio quando ausente do body. */
+  clickId: string;
 }
 
 function asStr(v: unknown): string {
@@ -405,9 +430,11 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
         utmSource: asStr(o.utm_source),
         utmMedium: asStr(o.utm_medium),
         utmCampaign: asStr(o.utm_campaign),
+        referrer: asStr(o.referrer),
+        clickId: asStr(o.click_id),
       };
     } catch {
-      return { name: "", email: "", optin: false, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "" };
+      return { name: "", email: "", optin: false, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "", referrer: "", clickId: "" };
     }
   }
   const params = new URLSearchParams(raw);
@@ -420,11 +447,24 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
     utmSource: params.get("utm_source") ?? "",
     utmMedium: params.get("utm_medium") ?? "",
     utmCampaign: params.get("utm_campaign") ?? "",
+    referrer: params.get("referrer") ?? "",
+    clickId: params.get("click_id") ?? "",
   };
 }
 
 export type SubscribeValidation =
-  | { ok: true; name: string; email: string; source: string; utmSource: string; utmMedium: string; utmCampaign: string }
+  | {
+      ok: true;
+      name: string;
+      email: string;
+      source: string;
+      utmSource: string;
+      utmMedium: string;
+      utmCampaign: string;
+      /** #8003: já cortados em SUBSCRIBE_CLIENT_ORIGIN_MAX. */
+      referrer: string;
+      clickId: string;
+    }
   | { ok: false; status: number; error: string };
 
 /**
@@ -455,7 +495,12 @@ export function validateSubscribeInput(p: ParsedSubscribe): SubscribeValidation 
   const utmSource = (p.utmSource || "").trim().slice(0, SUBSCRIBE_CLIENT_UTM_MAX);
   const utmMedium = (p.utmMedium || "").trim().slice(0, SUBSCRIBE_CLIENT_UTM_MAX);
   const utmCampaign = (p.utmCampaign || "").trim().slice(0, SUBSCRIBE_CLIENT_UTM_MAX);
-  return { ok: true, name, email, source: p.source, utmSource, utmMedium, utmCampaign };
+  // #8003: mesmo corte de defesa em profundidade, aplicado ao sinal de
+  // origem (o cliente já corta em SUBSCRIBE_CLIENT_ORIGIN_MAX, mas nunca
+  // confiar só nisso).
+  const referrer = (p.referrer || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX);
+  const clickId = (p.clickId || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX);
+  return { ok: true, name, email, source: p.source, utmSource, utmMedium, utmCampaign, referrer, clickId };
 }
 
 export interface RateLimitResult {
@@ -532,6 +577,7 @@ async function subscribeToBeehiiv(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   utm: SubscribeUtm = SUBSCRIBE_UTM_BY_SOURCE.jogar,
+  origin: SubscribeOrigin = { referrer: "", clickId: "" },
 ): Promise<SubscribeResult> {
   const apiKey = env.BEEHIIV_API_KEY;
   const pubId = env.BEEHIIV_PUBLICATION_ID;
@@ -561,6 +607,17 @@ async function subscribeToBeehiiv(
   // (env configurado E valor presente) antes de gravar.
   if (env.BEEHIIV_ORIGEM_PAGA_FIELD && utm.origemPaga) {
     const field = { name: env.BEEHIIV_ORIGEM_PAGA_FIELD, value: utm.origemPaga };
+    body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
+  }
+  // #8003: mesmo guard duplo (env configurado E valor presente) — referrer/
+  // click_id nunca fazem parte do triplo UTM/origem_paga acima, são campos
+  // PRÓPRIOS, puramente informativos.
+  if (env.BEEHIIV_ORIGEM_REFERRER_FIELD && origin.referrer) {
+    const field = { name: env.BEEHIIV_ORIGEM_REFERRER_FIELD, value: origin.referrer };
+    body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
+  }
+  if (env.BEEHIIV_ORIGEM_CLICKID_FIELD && origin.clickId) {
+    const field = { name: env.BEEHIIV_ORIGEM_CLICKID_FIELD, value: origin.clickId };
     body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
   }
 
@@ -685,6 +742,7 @@ async function subscribeToKit(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   utm: SubscribeUtm = SUBSCRIBE_UTM_BY_SOURCE.jogar,
+  origin: SubscribeOrigin = { referrer: "", clickId: "" },
 ): Promise<SubscribeResult> {
   const apiKey = env.KIT_API_KEY;
   if (!apiKey) return { ok: false, status: 503, reason: "not_configured" };
@@ -700,6 +758,10 @@ async function subscribeToKit(
   // nunca sobrescreve o triplo fixo por posição acima. Guard duplo (env
   // configurado E valor presente) — mesmo padrão dos `KIT_*_FIELD` acima.
   if (env.KIT_ORIGEM_PAGA_FIELD && utm.origemPaga) fields[env.KIT_ORIGEM_PAGA_FIELD] = utm.origemPaga;
+  // #8003: mesmo guard duplo — campos PRÓPRIOS, nunca sobrescrevem o triplo
+  // fixo/origem_paga acima.
+  if (env.KIT_ORIGEM_REFERRER_FIELD && origin.referrer) fields[env.KIT_ORIGEM_REFERRER_FIELD] = origin.referrer;
+  if (env.KIT_ORIGEM_CLICKID_FIELD && origin.clickId) fields[env.KIT_ORIGEM_CLICKID_FIELD] = origin.clickId;
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
@@ -873,10 +935,11 @@ export async function subscribeViaConfiguredBackend(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   utm: SubscribeUtm = SUBSCRIBE_UTM_BY_SOURCE.jogar,
+  origin: SubscribeOrigin = { referrer: "", clickId: "" },
 ): Promise<SubscribeResult> {
   return resolveBackend(env) === "kit"
-    ? subscribeToKit(env, input, fetchImpl, utm)
-    : subscribeToBeehiiv(env, input, fetchImpl, utm);
+    ? subscribeToKit(env, input, fetchImpl, utm, origin)
+    : subscribeToBeehiiv(env, input, fetchImpl, utm, origin);
 }
 
 export interface SubscribeDeps {
@@ -927,10 +990,13 @@ export async function handleJogarSubscribe(
   // efeito (ver docstring de `resolveSubscribeUtm`) — passá-los sempre é
   // inofensivo pros demais `source`, que os ignoram.
   const utm = resolveSubscribeUtm(v.source, { source: v.utmSource, medium: v.utmMedium, campaign: v.utmCampaign });
+  // #8003: sinal de origem cru do cliente — nunca varia por `source`, ver
+  // docstring de `SubscribeOrigin`.
+  const origin: SubscribeOrigin = { referrer: v.referrer, clickId: v.clickId };
   // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
   // de `subscribeViaConfiguredBackend` acima sobre por que um 6º handler
   // desguardado deixou de ser possível.
-  const result = await subscribeViaConfiguredBackend(env, { name: v.name, email: v.email }, fetchImpl, utm);
+  const result = await subscribeViaConfiguredBackend(env, { name: v.name, email: v.email }, fetchImpl, utm, origin);
   if (result.ok) {
     // #5504/hotfix pós-merge: CompleteRegistration pra Meta Conversions API
     // — fire-and-forget best-effort, DEPOIS que o cadastro na Beehiiv já foi

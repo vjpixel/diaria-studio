@@ -115,6 +115,21 @@ export interface Env {
    * subscribe.ts). Mesmo degrade gracioso de `BEEHIIV_NAME_FIELD` acima —
    * ausente, cadastro segue normal sem essa atribuição gravada. */
   BEEHIIV_ORIGEM_PAGA_FIELD?: string;
+  /** #8003: nome do custom field da Beehiiv onde gravar `document.referrer`
+   * cru do cliente (ver `SubscribeOrigin`, subscribe.ts) — sinal SEPARADO do
+   * triplo UTM/`origem_paga`, nunca varia por `source`. **NENHUM foi criado
+   * ainda na conta de produção** — tentativa de criar via MCP falhou (gated
+   * por plano pago do Kit — este campo em si é da Beehiiv, mas o mesmo
+   * padrão de criação manual se aplica) e via REST direto com a key do
+   * `.env` respondeu 401 "invalid"; criação fica pendente pro editor.
+   * Ausente → cadastro segue normal, só sem essa atribuição gravada (mesmo
+   * degrade gracioso de `BEEHIIV_NAME_FIELD` acima). */
+  BEEHIIV_ORIGEM_REFERRER_FIELD?: string;
+  /** #8003: nome do custom field da Beehiiv onde gravar o click ID de ads
+   * (`gclid:...`/`fbclid:...`/`msclkid:...`) — mesmo racional/degrade
+   * gracioso de `BEEHIIV_ORIGEM_REFERRER_FIELD` acima. Ainda não criado em
+   * produção. */
+  BEEHIIV_ORIGEM_CLICKID_FIELD?: string;
   /** #6048 (migração Beehiiv → Kit, #461/#463): seletor de backend do
    * cadastro inline — `"beehiiv"` (default, ausente/desconhecido = beehiiv)
    * ou `"kit"` (parse tolerante a espaço/capitalização, ver `resolveBackend`
@@ -171,6 +186,20 @@ export interface Env {
    * criado em produção (`origem_paga`, id 1358403, 06/09/2026, ver issue).
    * Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD` acima. */
   KIT_ORIGEM_PAGA_FIELD?: string;
+  /** #8003: nome do custom field Kit onde gravar `document.referrer` cru do
+   * cliente (ver `SubscribeOrigin`, subscribe.ts) — sinal SEPARADO do triplo
+   * UTM/`origem_paga` acima, nunca varia por `source`. **NENHUM foi criado
+   * ainda na conta de produção** — tentativa de criar via Kit MCP falhou
+   * (gated por plano pago do Kit) e via REST direto com a key do `.env`
+   * respondeu 401 "invalid"; criação fica pendente pro editor. Ausente →
+   * cadastro segue normal, só sem essa atribuição gravada (mesmo degrade
+   * gracioso dos demais `KIT_*_FIELD` acima). */
+  KIT_ORIGEM_REFERRER_FIELD?: string;
+  /** #8003: nome do custom field Kit onde gravar o click ID de ads
+   * (`gclid:...`/`fbclid:...`/`msclkid:...`) — mesmo racional/degrade
+   * gracioso de `KIT_ORIGEM_REFERRER_FIELD` acima. Ainda não criado em
+   * produção. */
+  KIT_ORIGEM_CLICKID_FIELD?: string;
   /** #6340 — ID do form do Kit usado pro double opt-in (`vincularKitDoiForm`,
    * `subscribe.ts`): vincular o subscriber recém-criado a este form dispara
    * o e-mail de confirmação "Important: confirm your subscription" quando o

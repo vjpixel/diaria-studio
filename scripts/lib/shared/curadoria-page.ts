@@ -34,7 +34,7 @@ import { escHtml } from "../html-escape.ts"; // reusa o escaper canônico (tamb�
 import { DIARIA_EIA_URL, DIARIA_ARQUIVO_URL, DIARIA_ESPECIAL_URL } from "../canonical-urls.ts"; // #3904/#5121/#5126 — fonte única dos domínios de marca de "É IA?"/Arquivo/Especial
 import { applyBrandWordmark } from "./brand-wordmark.ts"; // #4797 — wordmark da marca na linha de crédito do rodapé (compartilhada por hub/livros/cursos/arquivo)
 import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "../site-home-page.ts"; // #6981: mesmo timeout do form da home (#6979) — reusa a constante em vez de escolher outro número
-import { clientUtmPayloadFieldsJs } from "./client-utm-payload.ts"; // #7535 (Camada 1): utm_source/medium/campaign do querystring no payload — cobre arquivo E hub (os 2 consumidores deste módulo)
+import { clientUtmPayloadFieldsJs, clientOriginSignalPayloadFieldsJs } from "./client-utm-payload.ts"; // #7535 (Camada 1): utm_source/medium/campaign do querystring no payload — cobre arquivo E hub (os 2 consumidores deste módulo); #8003: referrer/click_id como sinal separado
 import { pushSignupConversionEventJs } from "./seo-meta.ts"; // #7358: evento de conversão no sucesso do cadastro — todo consumidor deste script (arquivo, hub, entity; livros/cursos têm cópia local própria, ver build-livros-page.ts/gate-page.ts) já carrega o container GTM via renderAnalyticsHead
 
 const TEAL = COLORS.brand;
@@ -238,6 +238,7 @@ export function renderCuradoriaCtaSubscribeScript(): string {
           website: val('input[name="website"]') || "",
           source: form.getAttribute("data-source") || "",
           ${clientUtmPayloadFieldsJs()}
+          ${clientOriginSignalPayloadFieldsJs()}
         };
         if (typeof window.fetch !== "function") {
           setStatus("Seu navegador não suporta o cadastro direto — visite diar.ia.br pra assinar.", false);

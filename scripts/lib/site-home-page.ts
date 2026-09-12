@@ -768,6 +768,17 @@ export function signupFormScript(): string {
           utm_source: val('input[name="utm_source"]'),
           utm_medium: val('input[name="utm_medium"]'),
           utm_campaign: val('input[name="utm_campaign"]'),
+          // #8003: sinal SEPARADO do triplo UTM acima — nunca sobrescreve
+          // source/medium/campaign/utm_* (ver docstring de
+          // clientOriginSignalPayloadFieldsJs, scripts/lib/shared/client-utm-payload.ts).
+          referrer: (document.referrer || "").slice(0, 300),
+          click_id: (function () {
+            var p = new URLSearchParams(window.location.search);
+            if (p.get("gclid")) return "gclid:" + p.get("gclid");
+            if (p.get("fbclid")) return "fbclid:" + p.get("fbclid");
+            if (p.get("msclkid")) return "msclkid:" + p.get("msclkid");
+            return "";
+          })(),
         };
         if (typeof window.fetch !== "function") {
           // Sem fetch: deixa o form nativo submeter normalmente
