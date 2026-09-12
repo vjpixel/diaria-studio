@@ -349,6 +349,56 @@ def main() -> int:
         assert_true("11. main() --json emite status=indeterminate",
                     parsed.get("status") == "indeterminate")
 
+        # ------------------------------------------------------------------
+        # 12. #7996 — issue citada como reivindicada E liberada na MESMA
+        # linha ("Claim liberada") mas ausente do session-registry ->
+        # indeterminate (cannot-verify), NUNCA fabrication_suspected.
+        # unclaimIssue apaga claimed_issues/claimed_issues_at por design
+        # (#6453) — ausencia de uma claim liberada e o comportamento
+        # esperado, nao evidencia de fabricacao. Reproduz o relatorio real
+        # do tick 09/09/2026 20:00 (#7827 fechada, #7808/#5910 mergeados —
+        # confirmados via `gh`, nao fabricados).
+        # ------------------------------------------------------------------
+        report_text_12 = (
+            "## Tick 20:00\n### Trabalhado\n"
+            "- #7807: a tentativa revelou que o trabalho ja estava coberto por #7808. "
+            "A PR #7827 foi fechada com explicacao e a issue permanece aberta. Claim liberada.\n"
+        )
+        claimed_none = mod.all_continuo_claimed_issues(sessions8)  # reusa dir do teste 8 (so #100)
+        check12 = mod.check_claimed_issues(report_text_12, claimed_none, sessions8.is_dir())
+        assert_true(
+            "12. claim liberado no mesmo tick, ausente do registro -> indeterminate (nao fabricacao)",
+            check12["status"] == "indeterminate",
+        )
+
+        # ------------------------------------------------------------------
+        # 12b. Issue citada como reivindicada SEM sinal de liberacao e
+        # ausente do registro -> continua fabrication_suspected (o caso
+        # real do #7537 nao pode regredir).
+        # ------------------------------------------------------------------
+        report_text_12b = "## Tick 12:00\n### Trabalhado\nreivindicada #300, ainda em andamento.\n"
+        check12b = mod.check_claimed_issues(report_text_12b, claimed_none, sessions8.is_dir())
+        assert_true(
+            "12b. claim SEM liberacao e ausente do registro -> continua fabrication_suspected",
+            check12b["status"] == "fabrication_suspected",
+        )
+
+        # ------------------------------------------------------------------
+        # 12c. Mistura: uma issue liberada (ausente, esperado) e outra
+        # SEM liberacao (ausente, suspeita) no mesmo relatorio -> o caso
+        # SEM liberacao domina o veredito (fabrication_suspected).
+        # ------------------------------------------------------------------
+        report_text_12c = (
+            "## Tick 20:00\n### Trabalhado\n"
+            "- #7807: Claim liberada.\n"
+            "- reivindicada #300, ainda em andamento.\n"
+        )
+        check12c = mod.check_claimed_issues(report_text_12c, claimed_none, sessions8.is_dir())
+        assert_true(
+            "12c. mistura liberada+retida ausentes -> fabrication_suspected domina",
+            check12c["status"] == "fabrication_suspected",
+        )
+
         if FAILED:
             print(f"\n{FAILED} assercao(es) falharam")
             return 1

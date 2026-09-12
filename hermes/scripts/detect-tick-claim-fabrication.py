@@ -81,6 +81,30 @@ FAIL-SOFT/graduada — uma checagem indeterminada não derruba as outras:
       contínuo = suspeita de fabricação (o mecanismo de claim real nunca
       rodou para aquele número).
 
+      **Exceção — claim liberado no mesmo tick (achado #7996, 12/09/2026):**
+      `unclaimIssue` (`scripts/lib/session-registry.ts`) REMOVE a issue de
+      `claimed_issues` (e sua entrada de `claimed_issues_at`) no momento da
+      liberação — por design (#6453), pra uma re-reivindicação futura não
+      herdar timestamp da claim anterior. Consequência não antecipada: um
+      tick que reivindica uma issue, investiga, decide que não há trabalho
+      (ou que já foi feito em outra PR) e libera a claim ANTES do relatório
+      ser escrito produz `claimed_issues: []` no snapshot final — a mesma
+      assinatura de uma claim que nunca aconteceu. Reproduzido ao vivo: tick
+      de 09/09/2026 20:00 (session-registry correlacionado pelo detector,
+      8e5413d2, era de OUTRO tick — mesma classe de "sessão errada" do
+      #7641, ver checagem (a)) citou "#7807 ... Claim liberada" e "#5734 ...
+      Claim liberada"; ambos os PRs/issues mencionados no relatório
+      (#7827 fechada, #7808/#5910 mergeados) se confirmaram reais e
+      corretos via `gh`, mas as 5 issues (#5734/#5910/#7807/#7808/#7827)
+      saíram como `fabrication_suspected` porque nenhuma aparecia em
+      `claimed_issues` de sessão viva. Por isso, uma linha de claim que
+      também sinaliza liberação no MESMO tick ("liberad_") não conta como
+      fabricação por ausência — ausência é o comportamento ESPERADO de
+      `unclaimIssue`, não evidência. Vira `indeterminate` (cannot-verify),
+      igual à checagem (a). Só falta de sinal de liberação + ausência do
+      registro continua `fabrication_suspected` — é o caso real do #7537
+      (nenhuma liberação foi mencionada, e a claim nunca rodou).
+
 Uso:
     python3 detect-tick-claim-fabrication.py [--repo PATH]
         [--report-path PATH] [--sessions-dir PATH]
@@ -133,6 +157,14 @@ _ISSUE_REF = re.compile(r"#(\d+)\b")
 # a busca de #NNNN a linhas plausivelmente sobre reivindicação (evita casar
 # qualquer menção solta de "#123" em qualquer contexto).
 _CLAIM_KEYWORDS = re.compile(r"reivindic|claim", re.IGNORECASE)
+
+# Sinaliza que a MESMA linha também documenta a liberação do claim
+# ("Claim liberada", "liberou a claim") — ver docstring do módulo, seção
+# (c), "Exceção — claim liberado no mesmo tick" (#7996). `unclaimIssue`
+# apaga a entrada de `claimed_issues`/`claimed_issues_at` por design
+# (#6453), então ausência no registro é o resultado ESPERADO de uma
+# liberação real, não evidência de fabricação.
+_RELEASE_SIGNAL = re.compile(r"liberad|liberou", re.IGNORECASE)
 
 
 def _run_gh_open_issue_count() -> int | None:
@@ -241,16 +273,27 @@ def extract_alleged_count(report_text: str) -> int | None:
     return None
 
 
-def extract_claimed_issue_refs(report_text: str) -> set[int]:
+def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
     """Extrai números de issue (#NNNN) citados em linhas que mencionam
     "reivindicad"/"claim" — restringe a busca a contexto plausível de claim
     declarado, em vez de casar QUALQUER #NNNN solto no relatório (uma
-    referência em '### Trabalhado' sem palavra de claim não entra aqui)."""
-    refs: set[int] = set()
+    referência em '### Trabalhado' sem palavra de claim não entra aqui).
+
+    Devolve `{issue: released}` — `released=True` quando a MESMA linha
+    também sinaliza liberação do claim (`_RELEASE_SIGNAL`, ex: "Claim
+    liberada"). Ver `check_claimed_issues` e a seção (c) do docstring do
+    módulo para o porquê disso importar (#7996): `unclaimIssue` apaga a
+    entrada do session-registry ao liberar, então ausência de um claim
+    liberado não é evidência de fabricação. Se o mesmo número aparecer em
+    mais de uma linha, `released` vira `True` assim que QUALQUER uma delas
+    sinalizar liberação (OR, nunca perde o sinal)."""
+    refs: dict[int, bool] = {}
     for line in report_text.splitlines():
         if _CLAIM_KEYWORDS.search(line):
+            released = bool(_RELEASE_SIGNAL.search(line))
             for m in _ISSUE_REF.finditer(line):
-                refs.add(int(m.group(1)))
+                n = int(m.group(1))
+                refs[n] = refs.get(n, False) or released
     return refs
 
 
@@ -460,20 +503,43 @@ def check_claimed_issues(
                 "data/sessions/ nao existe para correlacionar."
             ),
         }
-    missing = sorted(alleged_claims - claimed_in_registry)
+    missing = sorted(n for n in alleged_claims if n not in claimed_in_registry)
     if not missing:
         return {
             "check": "claimed_issues",
             "status": "ok",
             "details": f"todas as issues citadas como reivindicadas ({sorted(alleged_claims)}) aparecem no session-registry.",
         }
+    # #7996: `unclaimIssue` apaga `claimed_issues`/`claimed_issues_at` da
+    # issue liberada por design (#6453) — ausencia no registro de uma issue
+    # cuja MESMA linha do relatorio ja documenta a liberacao ("Claim
+    # liberada") e o resultado ESPERADO, nao evidencia de fabricacao. Ver
+    # docstring do modulo, secao (c), "Excecao — claim liberado no mesmo
+    # tick". So a ausencia de uma issue SEM sinal de liberacao continua
+    # fabrication_suspected — e o caso real do #7537.
+    missing_released = sorted(n for n in missing if alleged_claims[n])
+    missing_held = sorted(n for n in missing if not alleged_claims[n])
+    if missing_held:
+        return {
+            "check": "claimed_issues",
+            "status": "fabrication_suspected",
+            "details": (
+                f"issue(s) {missing_held} citada(s) como reivindicada(s) no relatorio mas "
+                "ausente(s) de todo registro `data/sessions/continuo-*.json` — o "
+                "mecanismo de claim real nunca rodou para esse(s) numero(s)."
+                + (f" issue(s) {missing_released} tambem ausentes mas com liberacao "
+                   "documentada na mesma linha — tratadas a parte, ver indeterminate."
+                   if missing_released else "")
+            ),
+        }
     return {
         "check": "claimed_issues",
-        "status": "fabrication_suspected",
+        "status": "indeterminate",
         "details": (
-            f"issue(s) {missing} citada(s) como reivindicada(s) no relatorio mas "
-            "ausente(s) de todo registro `data/sessions/continuo-*.json` — o "
-            "mecanismo de claim real nunca rodou para esse(s) numero(s)."
+            f"issue(s) {missing_released} citada(s) como reivindicada(s) E liberada(s) no "
+            "mesmo tick ('Claim liberada' na mesma linha) — `unclaimIssue` apaga a entrada "
+            "do session-registry ao liberar (#6453), entao ausencia e esperada. "
+            "Nao e possivel confirmar nem descartar fabricacao so por isso; cannot-verify."
         ),
     }
 
