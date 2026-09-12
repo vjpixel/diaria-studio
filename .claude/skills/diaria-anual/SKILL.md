@@ -1,6 +1,6 @@
 ---
 name: diaria-anual
-description: Gera a retrospectiva ANUAL da diar.ia.br a partir das edições diárias de 12-13 meses — N temas variáveis (3-7), "o que mudou" e previsões derivadas só do período. Sai 2x por ano — no aniversário (agosto, cobre ago-jul, com bloco de aniversário) e em janeiro (cobre o ano civil). Uso — `/diaria-anual [--tipo aniversario|janeiro] [--desde YYMM] [--ate YYMM] [--no-gate]`. Etapas 0-5 espelhando a mensal, gate único na Etapa 4, mais a Etapa 6 — um post por tema e um das previsões em LinkedIn, Facebook, Instagram, Threads e X, agendados em fins de semana (gate próprio). Canal — base própria (Kit), envio EXTRA (a diária do dia sai normal). Sem Use Melhor, sem Radar, sem "É IA?" (#7569).
+description: Gera a retrospectiva ANUAL da diar.ia.br a partir das edições diárias de 12-13 meses — N temas variáveis (3-7), "o que mudou" e previsões derivadas só do período. Sai 2x por ano — no aniversário (agosto, cobre ago-jul, com bloco de aniversário) e em janeiro (cobre o ano civil). Uso — `/diaria-anual [--tipo aniversario|janeiro] [--desde YYMM] [--ate YYMM] [--no-gate]`. Etapas 0-5 espelhando a mensal, gate único na Etapa 4, mais a Etapa 6 — um post por tema e um das previsões em LinkedIn, Facebook, Instagram, Threads e X, um por dia, sempre no mesmo horário (gate próprio). Canal — base própria (Kit), envio EXTRA (a diária do dia sai normal). Sem Use Melhor, sem Radar, sem "É IA?" (#7569).
 ---
 
 # /diaria-anual
@@ -268,12 +268,14 @@ cp data/annual/$SLUG/social/_img-previsoes/04-d1-2x1.jpg data/annual/$SLUG/socia
 ### 6c. Dias de publicação + imagens de feed
 
 ```bash
-npx tsx scripts/prep-annual-social.ts --slug $SLUG [--start AAMMDD]
+npx tsx scripts/prep-annual-social.ts --slug $SLUG [--start AAMMDD] [--time HH:MM]
 ```
 
-Reparte os N+1 posts em **sábados e domingos** a partir de `--start` (default: amanhã), 2 ou 3 posts por dia (6 temas + previsões → 3/2/2), previsões no último dia. Fim de semana porque a diária não sai: os horários dos publicadores (`d1/d2/d3_time` em `platform.config.json`) ficam livres. Grava `social/plan.json` e um diretório por dia com `02-reviewed.md`, `03-social.md` (`## d1..d3`) e as imagens 2:1 — a do tema sai pelo índice da URL em `public-images.json`, que continua certo mesmo se o editor reordenou os temas.
+**Um post por dia, em dias seguidos, sempre no mesmo horário** (decisão do editor, 12/09/2026): a partir de `--start` (default: amanhã, Brasília), às `--time` (default 09:00 — antes da grade da diária, 10:00 / 12:30 / 17:30), na ordem dos temas, previsões no último dia. A série fecha em N+1 dias; começar no dia do envio da edição aproveita o e-mail ainda fresco.
 
-Para cada dia do plano:
+Os publicadores só aceitam diretório com 2–3 destaques, então o script agrupa os posts em **lotes** de 2–3 (6 temas + previsões → 3/2/2) — o lote é só a unidade de arquivo. A data e a hora de cada post ficam em `_internal/social-slots.json` do lote, e os publicadores as leem quando rodam com `DIARIA_SOCIAL_SLOTS_FILE` apontando para ele (`compute-social-schedule.ts`; sem a variável, a diária segue a grade de sempre). Grava também `social/plan.json` e, por lote, `02-reviewed.md`, `03-social.md` (`## d1..d3`) e as imagens 2:1 — a do tema sai pelo índice da URL em `public-images.json`, que continua certo mesmo se o editor reordenou os temas.
+
+Para cada lote do plano:
 
 ```bash
 npx tsx scripts/gen-social-card-4x5.ts --edition-dir data/annual/$SLUG/social/$DIA
@@ -288,17 +290,21 @@ Publicar um artefato de revisão (via `artifact-design`) com, por dia: horário 
 
 ### 6e. Agendamento
 
-Para cada dia do plano, na ordem:
+Para cada lote do plano, na ordem — **sempre com `DIARIA_SOCIAL_SLOTS_FILE`**, senão os posts caem na grade da diária (data do lote, 10:00 / 12:30 / 17:30):
 
 ```bash
-D=data/annual/$SLUG/social/$DIA
+D=data/annual/$SLUG/social/$LOTE
+export DIARIA_SOCIAL_SLOTS_FILE=$D/_internal/social-slots.json
 npx tsx scripts/upload-images-public.ts --edition-dir $D/ --mode social
 npx tsx scripts/publish-linkedin.ts  --edition-dir $D --schedule
 npx tsx scripts/publish-facebook.ts  --edition-dir $D --schedule
 npx tsx scripts/publish-instagram.ts --edition-dir $D --schedule
 npx tsx scripts/publish-threads.ts   --edition-dir $D --schedule
 npx tsx scripts/prep-twitter-posts.ts --edition-dir $D
+unset DIARIA_SOCIAL_SLOTS_FILE
 ```
+
+Conferir no `06-social-published.json` de cada lote que o `scheduled_at` de cada post bate com o `plan.json` (dia certo, 09:00) antes de relatar.
 
 X: para cada post que `prep-twitter-posts.ts` devolver, `mcp__claude_ai_Buffer__create_post` com `mode: "customScheduled"` e o `dueAt` dele (mesmo fluxo da `/diaria-5-publicacao`). O `06-social-published.json` de cada dia é o registro de idempotência: re-rodar pula o que já foi agendado.
 

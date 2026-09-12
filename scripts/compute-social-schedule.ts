@@ -158,6 +158,40 @@ export function timezoneOffsetIso(date: Date, timezone: string): string {
  *
  * `now`, `minFutureMs` e `pastSlotShiftMs` são injetáveis para testes (DI).
  */
+/**
+ * Horário explícito por destaque, para publicações fora da grade da diária
+ * (Etapa 6 da `/diaria-anual`: um post por dia, sempre no mesmo horário).
+ *
+ * `DIARIA_SOCIAL_SLOTS_FILE` aponta para um JSON `{ "d1": "2026-09-13T09:00",
+ * "d2": "2026-09-14T09:00", … }` (data e hora locais no fuso de
+ * `publishing.social.timezone`). Quando a variável está definida, o destaque
+ * listado usa essa data e hora em vez de `d{N}_time` + data da edição +
+ * `day_offset`; o past-slot guard continua valendo. Um ponto só, lido pelo
+ * helper que TODOS os publicadores já usam — nenhum CLI precisa de flag nova.
+ *
+ * Sem a variável, nada muda. Com a variável e arquivo ilegível/malformado ou
+ * valor fora do formato, LANÇA: agendar no horário da diária em silêncio
+ * seria pior do que não agendar.
+ */
+export function readSlotOverride(
+  destaque: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { year: number; month: number; day: number; time: string } | null {
+  const file = env.DIARIA_SOCIAL_SLOTS_FILE;
+  if (!file) return null;
+  let slots: Record<string, unknown>;
+  try {
+    slots = JSON.parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new Error(`DIARIA_SOCIAL_SLOTS_FILE ilegível (${file}): ${(e as Error).message}`);
+  }
+  const v = slots[destaque];
+  if (v === undefined) return null;
+  const m = typeof v === "string" ? /^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})$/.exec(v) : null;
+  if (!m) throw new Error(`slot inválido para ${destaque} em ${file}: '${String(v)}' (esperado AAAA-MM-DDTHH:MM)`);
+  return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]), time: m[4] };
+}
+
 export function computeScheduledAt(input: ComputeScheduleInput): string {
   // platform mantido na assinatura por compat (#345 — schedule unificado)
   const {
@@ -185,19 +219,20 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
   if (!tz) throw new Error("config.publishing.social.timezone ausente.");
 
   const timeKey = `${destaque}_time` as keyof ScheduleConfig;
-  const time = sched[timeKey] as string | undefined;
+  const slot = readSlotOverride(destaque);
+  const time = slot?.time ?? (sched[timeKey] as string | undefined);
   if (!time || !/^\d{1,2}:\d{2}$/.test(time)) {
     throw new Error(
       `time inválido para ${platform}.${timeKey}: '${time}' (esperado HH:MM).`,
     );
   }
 
-  const dayOffset = dayOffsetOverride ?? sched.day_offset ?? 0;
+  const dayOffset = slot ? 0 : (dayOffsetOverride ?? sched.day_offset ?? 0);
   if (!Number.isInteger(dayOffset)) {
     throw new Error(`day_offset não é inteiro: ${dayOffset}`);
   }
 
-  const { year, month, day } = parseEditionDate(editionDate);
+  const { year, month, day } = slot ?? parseEditionDate(editionDate);
   // new Date(year, month-1, day) usa local TZ do runner — usamos só pra
   // aplicar offset de dias corretamente. O dateStr final é montado a partir
   // dos componentes (sem dependência da TZ local). #270.

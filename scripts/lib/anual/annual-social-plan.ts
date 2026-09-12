@@ -26,9 +26,15 @@ export interface AnnualSocialTexts {
 }
 
 export interface AnnualSocialDay {
-  /** AAMMDD — vira o nome do diretório e a data que os publicadores usam. */
+  /** AAMMDD — nome do diretório (data do 1º post do lote). */
   date: string;
   keys: AnnualSocialKey[];
+  /**
+   * Data e hora de cada post do lote (`d1..d3` → `AAAA-MM-DDTHH:MM`, fuso da
+   * config social). Vai para `_internal/social-slots.json`, lido pelos
+   * publicadores via `DIARIA_SOCIAL_SLOTS_FILE` (`compute-social-schedule.ts`).
+   */
+  slots: Record<string, string>;
 }
 
 /** Quebra um markdown em `{ "## chave": corpo }` (corpo sem as bordas em branco). */
@@ -81,33 +87,40 @@ export function parseAAMMDD(s: string): Date {
   return d;
 }
 
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 /**
- * Reparte os posts em dias de fim de semana (sábado e domingo), a partir de
- * `start` (inclusive). Fim de semana porque a diária não sai e os slots de
- * horário dos publicadores (`d1/d2/d3_time`) ficam livres — num dia útil os
- * posts da anual disputariam o mesmo horário com os da diária.
+ * Um post por dia, todos no mesmo horário, a partir de `start` (inclusive) —
+ * decisão do editor (12/09/2026): a série sai em dias seguidos, na ordem dos
+ * temas, com as previsões no último dia, sempre às `time` (default 09:00,
+ * antes da grade da diária: 10:00 / 12:30 / 17:30).
  *
- * Cada dia leva 2 ou 3 posts, nunca 1 nem 4: é o intervalo que os
- * publicadores e o gerador de carrossel aceitam (`readDestaqueCount`). Os
- * dias saem equilibrados, com os posts a mais nos primeiros (7 → 3/2/2).
- * Menos de 2 posts não cabe em dia nenhum.
+ * Os publicadores da diária só aceitam diretório com 2 ou 3 destaques
+ * (`readDestaqueCount`), então os posts são agrupados em LOTES de 2–3
+ * (equilibrados, os maiores primeiro: 7 → 3/2/2). O lote é só a unidade de
+ * arquivo; a data de cada post vem de `slots`, um dia por post.
  */
-export function planAnnualSocialDays(keys: AnnualSocialKey[], start: Date, weekendsOnly = true): AnnualSocialDay[] {
-  if (keys.length < 2) throw new Error(`${keys.length} post(s) — cada dia precisa de 2 ou 3`);
-  const nDias = Math.ceil(keys.length / 3);
-  const base = Math.floor(keys.length / nDias);
-  const extra = keys.length % nDias;
-  const dias: AnnualSocialDay[] = [];
+export function planAnnualSocialDays(keys: AnnualSocialKey[], start: Date, time = "09:00"): AnnualSocialDay[] {
+  if (keys.length < 2) throw new Error(`${keys.length} post(s) — cada lote precisa de 2 ou 3`);
+  if (!HHMM.test(time)) throw new Error(`horário inválido "${time}" — use HH:MM`);
+  const nLotes = Math.ceil(keys.length / 3);
+  const base = Math.floor(keys.length / nLotes);
+  const extra = keys.length % nLotes;
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const lotes: AnnualSocialDay[] = [];
   const d = new Date(start.getTime());
   let i = 0;
-  for (let n = 0; n < nDias; n++) {
-    while (weekendsOnly && d.getUTCDay() !== 0 && d.getUTCDay() !== 6) d.setUTCDate(d.getUTCDate() + 1);
+  for (let n = 0; n < nLotes; n++) {
     const size = base + (n < extra ? 1 : 0);
-    dias.push({ date: toAAMMDD(d), keys: keys.slice(i, i + size) });
+    const lote: AnnualSocialDay = { date: toAAMMDD(d), keys: keys.slice(i, i + size), slots: {} };
+    for (let j = 0; j < size; j++) {
+      lote.slots[`d${j + 1}`] = `${iso(d)}T${time}`;
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    lotes.push(lote);
     i += size;
-    d.setUTCDate(d.getUTCDate() + 1);
   }
-  return dias;
+  return lotes;
 }
 
 /**
