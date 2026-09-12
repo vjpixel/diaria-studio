@@ -8,10 +8,10 @@
  * dashboard (denominador dinâmico por mês, nunca 40k hardcoded).
  *
  * ⚠️ Conceito DIFERENTE do antigo "ciclo de conteúdo/envio" do #2909/#2923
- * (`deriveCycleStart`, removido no #4406 — o sumário `contacts:summary` não
- * carrega mais noção de ciclo; a tabela Cohorts hoje usa "Falta 1º envio",
- * lifetime, sem janela temporal). Não confundir os dois conceitos se este
- * arquivo for revisitado no futuro.
+ * (`deriveCycleStart`, removido no #4406) e do MÊS CIVIL BRT que a tabela
+ * Cohorts usa desde o #8024 (`civil-month-window.ts`, dia 1 00:00 — não dia
+ * 4 15:45 como aqui). Três fronteiras de tempo distintas neste projeto — não
+ * confundir se este arquivo for revisitado no futuro.
  *
  * Pura (sem I/O, sem `Env`) — só matemática de data/fuso, testável isolada.
  * Reusa `zonedTimeToUtc`/`datePartsInTz` de `scripts/lib/next-edition-date.ts`
