@@ -66,11 +66,34 @@
  * `powershell.exe`, `cmd`, `cmd.exe`, `tzutil`, `gh`) em algum lugar do
  * arquivo — não só como primeiro argumento da chamada, porque
  * `notify-sound.mjs` resolve o binário numa função separada e passa por
- * variável no call site (ver docstring de `fileMentionsConsoleBinary`). Os
- * hooks que despacham processo via função INJETADA (`execFn = execFileSync`)
- * ficam de fora sem allowlist explícita: não têm chamada LITERAL que bata o
- * regex de `findWindowsHideMissingCalls`, então o guard generalizado não
- * encontra nada pra flagar neles.
+ * variável no call site (ver docstring de `fileMentionsConsoleBinary`).
+ *
+ * **#8017 — `findWindowsHideMissingCalls` passou a enxergar a função
+ * INJETADA também.** Até esta issue, hooks que despacham processo via
+ * parâmetro com default `execFn = execFileSync` (chamado depois como
+ * `execFn(...)`, não pelo nome literal do child_process — padrão usado pra
+ * permitir mock em teste) ficavam fora do alcance dos 2 guards acima: nenhum
+ * casava `execFn(` contra o regex `execFileSync|execFile|spawnSync|spawn`.
+ * Confirmado por leitura direta em 7 hooks — `block-gh-pr-merge-subagent.mjs`,
+ * `block-askuserquestion-overnight-autonomous.mjs`,
+ * `consume-merge-grant-on-merge.mjs`, `notify-continuo-askuserquestion.mjs`,
+ * `pr-create-review.mjs`, `subagent-review-registry-start.mjs` (e
+ * `subagent-review-registry-stop.mjs`, que só REPASSA `execFileSync` pra
+ * `resolveRepoRoot` do arquivo irmão, sem chamada própria) — todos citam
+ * `"git"`/`"gh"` como string literal em algum lugar do arquivo (então já
+ * passavam pelo portão `fileMentionsConsoleBinary`), mas a chamada real via
+ * `execFn(...)` nunca era vista. `findWindowsHideMissingCalls` agora também
+ * descobre esses aliases (`\bnome\s*=\s*(?:execFileSync|execFile|spawnSync|
+ * spawn)\b`) e checa `windowsHide` na janela ao redor de cada `nome(...)` —
+ * com uma diferença: pra chamadas via alias a janela é BIDIRECIONAL (pra trás
+ * e pra frente, `WINDOW_CHARS` cada lado), porque é comum um `opts` já
+ * montado numa variável declarada 1-2 linhas ANTES da chamada
+ * (`const opts = { ..., windowsHide: true }; execFn(..., opts)` —
+ * `isCallerInLinkedWorktree` em `block-gh-pr-merge-subagent.mjs`) — uma
+ * checagem só-pra-frente nunca veria isso. Chamadas pelo nome LITERAL
+ * continuam só-pra-frente, sem mudança de comportamento (evita reabrir o 2º
+ * modo de falso-negativo documentado acima — comentário explicativo ANTES da
+ * chamada citando "windowsHide" por nome).
  */
 
 import { describe, it } from "node:test";
@@ -106,9 +129,63 @@ export function findDetachedWithoutWindowsHide(content: string): number[] {
   return offenders;
 }
 
+/** Remove comentários `//...` e `/* ... *\/` antes da descoberta de alias
+ * (achado ao vivo #8017: sem isto, prosa de comentário do tipo "`execFn` é
+ * injetável (default = execFileSync real)" — presente em
+ * `pr-create-review.mjs` — inventa um alias falso chamado `default`, que
+ * depois casa toda ocorrência da palavra "default(" no arquivo como suposta
+ * chamada, produzindo dezenas de falsos positivos). Heurística simples (não
+ * distingue `//` dentro de uma string literal de um comentário real) —
+ * aceitável pro mesmo custo/benefício documentado no resto deste arquivo:
+ * nenhum hook real tem `//`/`/* *\/` dentro de uma string que colidiria com
+ * o padrão `nome = execFileSync` que estamos procurando. Pura. */
+function stripComments(content: string): string {
+  return content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
+/** Escapa metacaracteres de regex num identificador descoberto antes de
+ * interpolá-lo num `new RegExp` (achado do fleet review pré-merge da #8021,
+ * `pr-test-analyzer`, P3) — `$` é um caractere legal em identificador JS
+ * (`execFn$`) e tem significado especial em regex; sem escapar, um alias com
+ * `$` produziria um regex diferente do pretendido em vez de casar o nome
+ * literal. Nenhum hook real hoje usa `$` em nome de alias, mas o guard não
+ * deveria depender disso silenciosamente. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Descobre nomes de parâmetro/variável usados como alias injetável de
+ * `execFileSync`/`execFile`/`spawnSync`/`spawn` (#8017) — o padrão
+ * `nome = execFileSync` como default de parâmetro (`function f(execFn =
+ * execFileSync)`) ou atribuição de variável.
+ *
+ * `(?!\s*\()` no fim (achado do fleet review pré-merge da #8021,
+ * `pr-test-analyzer`, P2): sem isso, `const out = execFileSync(...)` — uma
+ * atribuição do RESULTADO da chamada, padrão real presente em
+ * `block-worktree-alien-commit.mjs` — também casava e descobria `out` como
+ * se fosse um alias injetável, quando na verdade `execFileSync` ali já é a
+ * chamada literal (já coberta pelo 1º ramo de `findWindowsHideMissingCalls`)
+ * e `out` não é uma função chamável em lugar nenhum. O lookahead negativo
+ * distingue "atribuição da REFERÊNCIA da função" (nunca seguida de `(`, é o
+ * padrão real de alias) de "atribuição do RESULTADO de uma chamada" (sempre
+ * seguida de `(`). Pura. */
+function discoverInjectedExecAliases(content: string): string[] {
+  const code = stripComments(content);
+  const aliasRe = /\b([A-Za-z_$][\w$]*)\s*=\s*(?:execFileSync|execFile|spawnSync|spawn)\b(?!\s*\()/g;
+  const names = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = aliasRe.exec(code)) !== null) {
+    names.add(match[1]);
+  }
+  return [...names];
+}
+
 /** 2º guard, mais estrito (ver docstring do módulo) — varre TODA chamada
  * `execFile`/`execFileSync`/`spawn`/`spawnSync`, com ou sem `detached`, e
- * confirma `windowsHide: true` na janela ao redor. Pura. */
+ * confirma `windowsHide: true` na janela ao redor. Desde #8017, também varre
+ * chamadas via ALIAS injetado (`execFn = execFileSync` → `execFn(...)`) —
+ * ver docstring do módulo pro porquê da janela bidirecional só nesse ramo.
+ * Pura. */
 export function findWindowsHideMissingCalls(content: string): number[] {
   const offenders: number[] = [];
   const callRe = /\b(?:execFileSync|execFile|spawnSync|spawn)\s*\(/g;
@@ -119,6 +196,20 @@ export function findWindowsHideMissingCalls(content: string): number[] {
     const window = content.slice(start, end);
     if (!/windowsHide\s*:\s*true/.test(window)) {
       offenders.push(match.index);
+    }
+  }
+  for (const name of discoverInjectedExecAliases(content)) {
+    const aliasCallRe = new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`, "g");
+    let aliasMatch: RegExpExecArray | null;
+    while ((aliasMatch = aliasCallRe.exec(content)) !== null) {
+      // Bidirecional (ver docstring do módulo #8017) — diferente do ramo
+      // literal acima, que é só-pra-frente.
+      const start = Math.max(0, aliasMatch.index - WINDOW_CHARS);
+      const end = Math.min(content.length, aliasMatch.index + WINDOW_CHARS);
+      const window = content.slice(start, end);
+      if (!/windowsHide\s*:\s*true/.test(window)) {
+        offenders.push(aliasMatch.index);
+      }
     }
   }
   return offenders;
@@ -136,14 +227,13 @@ export function findWindowsHideMissingCalls(content: string): number[] {
  * estarem fora do escopo dele (#7952 mirava só `session-start-claude-config-sync.mjs`).
  * O 2º guard acima (`findWindowsHideMissingCalls`) já existia com a lógica
  * certa, mas só era aplicado a 1 arquivo — este guard generaliza a MESMA
- * lógica pra qualquer hook `.mjs` do diretório, sem reabrir falso-positivo
- * nos outros hooks que despacham processo via função INJETADA (ex:
- * `execFn = execFileSync` em `block-gh-pr-merge-subagent.mjs` e afins): esses
- * chamam via a variável (`execFn(...)`), não via o nome literal da função, e
- * por isso não têm nenhuma ocorrência que bata o regex de chamada usado por
- * `findWindowsHideMissingCalls` — o guard roda sobre eles sem achar nenhuma
- * chamada pra flagar (confirmado por varredura ao vivo do diretório: só 4
- * dos 18 hooks têm chamada LITERAL `execFile(Sync)?`/`spawn(Sync)?`).
+ * lógica pra qualquer hook `.mjs` do diretório. **Até o #8017**, hooks que
+ * despacham processo via função INJETADA (ex: `execFn = execFileSync` em
+ * `block-gh-pr-merge-subagent.mjs` e afins) escapavam deste guard generalizado
+ * pela mesma razão descrita na docstring do módulo — desde o #8017,
+ * `findWindowsHideMissingCalls` também descobre e varre essas chamadas via
+ * alias, então este guard generalizado agora as alcança sem precisar de
+ * lógica própria aqui.
  *
  * **Por que existe um portão (`fileMentionsConsoleBinary`) em vez de aplicar
  * `findWindowsHideMissingCalls` cru a todo arquivo:** o pedido da issue #7959
@@ -247,6 +337,99 @@ describe("findWindowsHideMissingCalls (#7952, achado do fleet review) — lógic
     const content = `spawn("node", [], { detached: true, windowsHide: true });`;
     assert.deepEqual(findWindowsHideMissingCalls(content), []);
   });
+
+  it("#8017: chamada via alias injetado (execFn = execFileSync) sem windowsHide -> 1 ofensor", () => {
+    const content = [
+      `function resolveMainRepoRoot(execFn = execFileSync) {`,
+      `  return execFn("git", ["rev-parse", "--git-common-dir"], { encoding: "utf8" }).trim();`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content).length, 1);
+  });
+
+  it("#8017: chamada via alias injetado COM windowsHide -> nenhum ofensor", () => {
+    const content = [
+      `function resolveMainRepoRoot(execFn = execFileSync) {`,
+      `  return execFn("git", ["rev-parse", "--git-common-dir"], { encoding: "utf8", windowsHide: true }).trim();`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("#8017: nome de parâmetro sem default de exec (ex: `execFn` genérico não vinculado) -> não vira alias, nenhum ofensor espúrio", () => {
+    const content = `function f(execFn) { return execFn("whatever"); }`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("#8021 fleet review (P2, alta confiança): atribuição do RESULTADO de uma chamada literal (`const out = execFileSync(...)`) não vira alias espúrio — padrão real de block-worktree-alien-commit.mjs", () => {
+    // Sem o lookahead negativo `(?!\s*\()`, `out` seria descoberto como
+    // alias (mesmo regex de "nome = execFileSync" casaria), e qualquer
+    // ocorrência de `out(` no resto do arquivo — inclusive coincidência de
+    // nome com outra função qualquer — viraria falso positivo/negativo.
+    const content = [
+      `const out = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", windowsHide: true });`,
+      `function out(x) { return x; }`, // nome coincidente, NUNCA deveria ser tratado como alias de exec
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("#8021 fleet review (P2): mesmo padrão SEM windowsHide na chamada literal -> 1 ofensor (a chamada literal em si), nunca um 2º ofensor fabricado pelo alias espúrio `out`", () => {
+    const content = [
+      `const out = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });`,
+      `function out(x) { return x; }`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content).length, 1);
+  });
+
+  it("#8021 fleet review (P3, média confiança): alias com caractere de regex especial ($) é tratado como nome literal, não como metacaractere", () => {
+    // `$` é caractere legal em identificador JS. Sem escapar antes de
+    // interpolar em `new RegExp`, o guard construiria um regex diferente do
+    // pretendido (e no caso de `$` especificamente, ainda funcionaria por
+    // coincidência na maioria das posições — o teste prova que o valor
+    // correto continua sendo produzido, não que faltava sem o fix).
+    const content = [
+      `function f(exec$Fn = execFileSync) {`,
+      `  return exec$Fn("git", ["status"], { encoding: "utf8" });`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content).length, 1);
+  });
+});
+
+describe("stripComments (#8017/#8021 fleet review P3) — regressão dedicada do achado ao vivo", () => {
+  it("prosa de comentário 'default = execFileSync' não inventa um alias chamado 'default'", () => {
+    // Reconstitui o achado ao vivo em pr-create-review.mjs: um comentário
+    // JSDoc citando a opção por nome ("execFn é injetável (default =
+    // execFileSync real)") não pode virar um alias descoberto — senão toda
+    // ocorrência de "default(" no resto do arquivo vira falso positivo.
+    // Teste SINTÉTICO mínimo, independente da redação atual do comentário
+    // real em pr-create-review.mjs (que pode mudar) — cobre o MECANISMO, não
+    // o texto específico.
+    const content = [
+      `/** \`execFn\` é injetável (default = execFileSync real) pra teste. */`,
+      `function resolveMainRepoRoot(execFn = execFileSync) {`,
+      `  return execFn("git", ["rev-parse", "--git-common-dir"], { encoding: "utf8", windowsHide: true });`,
+      `}`,
+      `// nada relacionado a exec, mas contém a palavra "default(" — não deve ser flagado`,
+      `function useDefault() { return default(); }`,
+    ].join("\n");
+    // Só o alias real (`execFn`) deve ser descoberto — 0 ofensores, porque a
+    // chamada real já tem windowsHide. Se "default" fosse descoberto como
+    // alias espúrio, `default()`/`useDefault` acima geraria ofensor(es)
+    // fantasma mesmo sem relação nenhuma com child_process.
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("mesmo comentário, mas a chamada real SEM windowsHide -> exatamente 1 ofensor (o real, não um fabricado por 'default')", () => {
+    const content = [
+      `/** \`execFn\` é injetável (default = execFileSync real) pra teste. */`,
+      `function resolveMainRepoRoot(execFn = execFileSync) {`,
+      `  return execFn("git", ["rev-parse", "--git-common-dir"], { encoding: "utf8" });`,
+      `}`,
+      `function useDefault() { return default(); }`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content).length, 1);
+  });
 });
 
 describe("Regressão #7952 — .claude/hooks/*.mjs reais deste repo", () => {
@@ -348,20 +531,41 @@ describe("fileMentionsConsoleBinary / findConsoleBinaryCallsMissingWindowsHide (
     assert.deepEqual(findConsoleBinaryCallsMissingWindowsHide(content).length, 2);
   });
 
-  it("arquivo que só despacha via função INJETADA (execFn = execFileSync) -> nenhum ofensor mesmo citando 'git' em comentário", () => {
+  it("#8017: arquivo que despacha via função INJETADA (execFn = execFileSync) SEM windowsHide -> 1 ofensor", () => {
     // Reconstitui o padrão de block-gh-pr-merge-subagent.mjs e afins: a
-    // chamada real é `execFn(...)`, não `execFileSync(...)` literal — o
-    // regex de chamada de findWindowsHideMissingCalls não acha nada pra
-    // flagar, então o guard generalizado precisa concordar (0 ofensores),
-    // mesmo que o arquivo mencione "git" em prosa/doc.
+    // chamada real é `execFn(...)`, não `execFileSync(...)` literal. Antes do
+    // #8017 isto dava 0 ofensores (o regex de chamada de
+    // findWindowsHideMissingCalls só casava o nome literal) — desde o #8017,
+    // o alias descoberto (`execFn`) também é varrido.
     const content = [
-      `// roda o binário "git" via a função injetada, nunca chamada literal`,
       `export function resolveMainRepoRoot(execFn = execFileSync) {`,
-      `  return execFn(["rev-parse", "--show-toplevel"], cwd);`,
+      `  return execFn("git", ["rev-parse", "--show-toplevel"], { cwd });`,
       `}`,
     ].join("\n");
-    assert.equal(fileMentionsConsoleBinary(content), true); // "git" aparece em comentário
-    assert.deepEqual(findConsoleBinaryCallsMissingWindowsHide(content), []); // mas nenhuma chamada literal pra flagar
+    assert.equal(fileMentionsConsoleBinary(content), true);
+    assert.deepEqual(findConsoleBinaryCallsMissingWindowsHide(content).length, 1);
+  });
+
+  it("#8017: mesmo padrão, COM windowsHide na chamada via alias -> nenhum ofensor", () => {
+    const content = [
+      `export function resolveMainRepoRoot(execFn = execFileSync) {`,
+      `  return execFn("git", ["rev-parse", "--show-toplevel"], { cwd, windowsHide: true });`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findConsoleBinaryCallsMissingWindowsHide(content), []);
+  });
+
+  it("#8017: windowsHide numa variável 'opts' declarada ANTES da chamada via alias -> nenhum ofensor (janela bidirecional)", () => {
+    // Reconstitui isCallerInLinkedWorktree em block-gh-pr-merge-subagent.mjs:
+    // `opts` é montado numa variável 1 linha antes da chamada via alias — só
+    // uma janela bidirecional enxerga o `windowsHide` daqui.
+    const content = [
+      `export function isCallerInLinkedWorktree(cwd, execFn = execFileSync) {`,
+      `  const opts = { encoding: "utf8", timeout: 10000, cwd, windowsHide: true };`,
+      `  const gitDir = execFn("git", ["rev-parse", "--git-dir"], opts).trim();`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findConsoleBinaryCallsMissingWindowsHide(content), []);
   });
 });
 

@@ -109,9 +109,15 @@ export function localMachineTag() {
  */
 export function resolveMainRepoRoot(execFn = execFileSync) {
   try {
+    // windowsHide (#8017, mesma classe do #7952/#7959): `execFn` (default
+    // `execFileSync`) despacha `git` sem `windowsHide` alocava console
+    // visível no Windows — invisível ao guard estático de
+    // `test/claude-hooks-windowshide.test.ts` por rodar via função injetada,
+    // não pelo nome literal do child_process.
     const gitDir = execFn("git", ["rev-parse", "--git-common-dir"], {
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true,
     }).trim();
     return dirname(resolvePath(gitDir));
   } catch {
