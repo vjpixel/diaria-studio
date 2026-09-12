@@ -26,7 +26,13 @@
  * Uso:
  *   npx tsx scripts/prep-weekly-twitter.ts --saturday 260912 --mode highlights|clicked|both
  *     [--editions-root data/editions] [--time 11:00] [--day-offset N]
- *     [--no-skip-existing]
+ *     [--no-skip-existing] [--force-incomplete-week] [--force-incomplete-click-data]
+ *
+ * `--force-incomplete-week`/`--force-incomplete-click-data`: mesmos gates de
+ * `publish-weekly-social.ts` (seleção com menos itens que `WEEKLY_MIN_ITEMS`,
+ * ou dado de clique não-enriquecido no modo "clicked") — sem a flag, o modo
+ * é pulado (`skipped`, com o motivo) em vez de publicar sobre dado
+ * incompleto em silêncio.
  *
  * `--saturday` é OBRIGATÓRIO e explícito (mesmo invariante de CLAUDE.md,
  * nunca inferido de `today()`). `--time`/`--day-offset` espelham
@@ -34,12 +40,12 @@
  * canais da MESMA rodada, senão o X sai dessincronizado (mesmo bug histórico
  * que motivou o #4103 no diário).
  *
- * Output (stdout, JSON): { posts: [{ destaque, text, dueAt, imageUrls, altTexts }], skipped: [...] }
+ * Output (stdout, JSON): { posts: [{ destaque, text, dueAt, images: [{url, altText}] }], skipped: [...] }
  * `posts` é a lista que o caller deve efetivamente postar via Buffer MCP —
  * um `create_post` por entry, com:
  *   - `text`: post.text
  *   - `mode`: "customScheduled", `dueAt`: post.dueAt
- *   - `assets`: post.imageUrls.map((url, i) => ({ image: { url, metadata: { altText: post.altTexts[i] } } }))
+ *   - `assets`: post.images.map(({url, altText}) => ({ image: { url, metadata: { altText } } }))
  * Depois de cada `create_post`, o caller deve gravar o resultado via:
  *   npx tsx scripts/append-twitter-published.ts --published-path {out_path}
  *     --destaque {destaque} --status scheduled --scheduled-at {dueAt}
@@ -50,7 +56,7 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
-import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -63,10 +69,12 @@ import {
   selectInstagramHighlights,
   clickCountsForUrl,
   uniqueOpensOf,
+  identifyInstagramPostsNeedingClicks,
   type InstagramRankedCandidate,
+  type BeehiivCachePost,
 } from "./lib/weekly-instagram-select.ts";
 import { loadBeehiivCache as loadUnifiedBeehiivCache, loadKitCache, mergeEditionsByDate } from "./lib/shared/edition-cache-reader.ts";
-import { resolveWeeklyImageUrls, computeWeeklyScheduledAt, DEFAULT_WEEKLY_TIME, DEFAULT_MODE_DAY_OFFSET, WEEKLY_EXPECTED_ITEMS } from "./publish-weekly-social.ts";
+import { resolveWeeklyImageUrls, computeWeeklyScheduledAt, DEFAULT_WEEKLY_TIME, DEFAULT_MODE_DAY_OFFSET, WEEKLY_EXPECTED_ITEMS, WEEKLY_MIN_ITEMS } from "./publish-weekly-social.ts";
 import { formatTwitterWeekly, TWITTER_WEEKLY_MAX_ITEMS, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
 import { readSocialPublished } from "./lib/social-published-store.ts";
 import { parseEditionDate } from "./compute-social-schedule.ts";
@@ -77,8 +85,14 @@ export interface TwitterWeeklyPost {
   destaque: string;
   text: string;
   dueAt: string;
-  imageUrls: string[];
-  altTexts: string[];
+  /**
+   * #8057 review (type-design-analyzer, alta confiança): antes eram 2 arrays
+   * PARALELOS (`imageUrls`/`altTexts`), cujo pareamento por índice era só
+   * convenção documentada/testada, não estrutural — exatamente o padrão que
+   * silenciosamente atribui alt text errado se os 2 arrays um dia
+   * divergirem. 1 array de objetos torna o pareamento estrutural.
+   */
+  images: Array<{ url: string; altText: string }>;
 }
 
 /**
@@ -114,8 +128,7 @@ export async function buildTwitterWeeklyPost(
       destaque: destaqueKey,
       text,
       dueAt,
-      imageUrls: resolved.urls,
-      altTexts: capped.map((it) => it.title),
+      images: resolved.urls.map((url, i) => ({ url, altText: capped[i].title })),
     },
   };
 }
@@ -126,7 +139,27 @@ function loadUnifiedPostsForRanking(beehiivPostsDir: string, kitBroadcastsDir: s
   return mergeEditionsByDate(beehiiv, kit);
 }
 
-async function runOneMode(
+/**
+ * Beehiiv-only, de propósito (mesmo racional de `loadBeehiivCache` em
+ * `publish-weekly-social.ts`) — o manifest de enriquecimento via MCP
+ * (`identifyInstagramPostsNeedingClicks`) só existe do lado Beehiiv (Kit é
+ * REST comum, sem enriquecimento assíncrono a esperar).
+ */
+function loadBeehiivCacheOnly(beehiivPostsDir: string): BeehiivCachePost[] {
+  if (!existsSync(beehiivPostsDir)) return [];
+  const out: BeehiivCachePost[] = [];
+  for (const f of readdirSync(beehiivPostsDir)) {
+    if (f === "index.json" || !f.endsWith(".json")) continue;
+    try {
+      out.push(JSON.parse(readFileSync(resolve(beehiivPostsDir, f), "utf8")));
+    } catch (e: any) {
+      console.warn(`[prep-weekly-twitter] SKIP cache corrompido: ${f} — ${e.message}`);
+    }
+  }
+  return out;
+}
+
+export async function runOneMode(
   mode: WeeklyInstagramMode,
   saturday: string,
   editionsRoot: string,
@@ -134,6 +167,8 @@ async function runOneMode(
   time: string,
   dayOffsetOverride: number | undefined,
   skipExisting: boolean,
+  forceIncompleteWeek: boolean,
+  forceIncompleteClickData: boolean,
 ): Promise<{ posts: TwitterWeeklyPost[]; skipped: Array<{ destaque: string; reason: string }> }> {
   const { year, month, day } = parseEditionDate(saturday);
   const saturdayDate = new Date(year, month - 1, day);
@@ -145,7 +180,8 @@ async function runOneMode(
   const rawCandidates = existingCandidates.flatMap((c) => {
     try {
       return extractInstagramCandidates(readFileSync(resolve(c.dir, "02-reviewed.md"), "utf8"), c.date);
-    } catch {
+    } catch (e: any) {
+      console.warn(`[prep-weekly-twitter] SKIP ${c.dir} — falha ao ler/parsear 02-reviewed.md: ${e.message}`);
       return [];
     }
   });
@@ -165,6 +201,32 @@ async function runOneMode(
     const kitBroadcastsDir = resolve(dataRoot, "kit-cache/broadcasts");
     const unified = loadUnifiedPostsForRanking(beehiivPostsDir, kitBroadcastsDir);
     const windowPostsUnified = matchPostsToWindow(unified, contentWindow);
+
+    // #4511 fleet review ALTO (achado do review da #8057, mesma classe do
+    // #4511 original em publish-weekly-social.ts): dado de clique
+    // NÃO-enriquecido é indistinguível de "genuinamente zero cliques" — sem
+    // este guard, a seleção do X compete sobre um ranking que pode estar
+    // incompleto em silêncio. Beehiiv-only de propósito (ver docstring de
+    // `loadBeehiivCacheOnly`).
+    const windowPosts = matchPostsToWindow(loadBeehiivCacheOnly(beehiivPostsDir), contentWindow);
+    const editionsMissingClickData = existingCandidates.filter((c) => !windowPostsUnified.has(c.date)).map((c) => c.date);
+    const manifest = identifyInstagramPostsNeedingClicks(windowPosts);
+    if ((editionsMissingClickData.length > 0 || manifest.length > 0) && !forceIncompleteClickData) {
+      return {
+        posts: [],
+        skipped: [
+          {
+            destaque: destaqueKey,
+            reason:
+              `incomplete_click_data: ${editionsMissingClickData.length} edição(ões) sem post confirmado ` +
+              `no cache Beehiiv/Kit, ${manifest.length} post(s) sem clicks enriquecidos por link — rode ` +
+              `--manifest-only em publish-weekly-social.ts (mesmo cache), dispatche beehiiv-clicks-enricher, ` +
+              `e re-rode, ou passe --force-incomplete-click-data pra prosseguir mesmo assim.`,
+          },
+        ],
+      };
+    }
+
     const ranked = rawCandidates.map((c) => {
       const post = windowPostsUnified.get(c.editionDate);
       const clicks = clickCountsForUrl(c.url, post?.stats?.clicks);
@@ -176,13 +238,35 @@ async function runOneMode(
   if (items.length === 0) {
     return { posts: [], skipped: [{ destaque: destaqueKey, reason: "empty_selection" }] };
   }
+  // #4101 self-review finding 6 (achado do review da #8057): mesma
+  // semântica de "seleção materialmente incompleta" que
+  // publish-weekly-social.ts já aplica aos outros 3 canais — sem este
+  // guard, uma semana curta (feriado, poucas edições) abortaria
+  // Instagram/Facebook/Threads mas publicaria no X em silêncio.
+  if (items.length < WEEKLY_MIN_ITEMS && !forceIncompleteWeek) {
+    return {
+      posts: [],
+      skipped: [
+        {
+          destaque: destaqueKey,
+          reason: `incomplete_week: selecionados ${items.length} de ${WEEKLY_EXPECTED_ITEMS} itens esperados (mínimo aceito sem confirmação: ${WEEKLY_MIN_ITEMS}) — passe --force-incomplete-week pra prosseguir mesmo assim.`,
+        },
+      ],
+    };
+  }
 
   if (skipExisting) {
     const publishedPath = resolve(dataRoot, "weekly", saturday, "06-weekly-published.json");
     if (existsSync(publishedPath)) {
       const published = readSocialPublished(publishedPath);
+      // #633 (achado do review da #8057): "draft" tinha que contar como já
+      // existente, igual ao skip-existing dos outros 3 canais em
+      // publish-weekly-social.ts (`status === "draft" || "scheduled"`) —
+      // sem isso, um post que só chegou a rascunho no Buffer (nunca
+      // avançou pra scheduled/published) não era reconhecido, e um re-run
+      // bem-intencionado duplicaria.
       const existing = published.posts.find(
-        (p) => p.platform === "twitter" && p.destaque === destaqueKey && (p.status === "scheduled" || p.status === "published"),
+        (p) => p.platform === "twitter" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled" || p.status === "published"),
       );
       if (existing) {
         return { posts: [], skipped: [{ destaque: destaqueKey, reason: `already_${existing.status}` }] };
@@ -195,6 +279,7 @@ async function runOneMode(
 
   const result = await buildTwitterWeeklyPost(items, editionsRoot, mode, destaqueKey, dueAt);
   if (!result.ok) {
+    console.error(`ERRO ${destaqueKey}: ${result.reason}`);
     return { posts: [], skipped: [{ destaque: destaqueKey, reason: result.reason }] };
   }
   return { posts: [result.post], skipped: [] };
@@ -226,12 +311,24 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const time = values["time"] ?? DEFAULT_WEEKLY_TIME;
   const dayOffsetOverride = values["day-offset"] != null ? Number(values["day-offset"]) : undefined;
   const skipExisting = !flags.has("no-skip-existing");
+  const forceIncompleteWeek = flags.has("force-incomplete-week");
+  const forceIncompleteClickData = flags.has("force-incomplete-click-data");
 
   const modes: WeeklyInstagramMode[] = modeArg === "both" ? ["highlights", "clicked"] : [modeArg as WeeklyInstagramMode];
   const allPosts: TwitterWeeklyPost[] = [];
   const allSkipped: Array<{ destaque: string; reason: string }> = [];
   for (const mode of modes) {
-    const { posts, skipped } = await runOneMode(mode, saturday, editionsRoot, dataRoot, time, dayOffsetOverride, skipExisting);
+    const { posts, skipped } = await runOneMode(
+      mode,
+      saturday,
+      editionsRoot,
+      dataRoot,
+      time,
+      dayOffsetOverride,
+      skipExisting,
+      forceIncompleteWeek,
+      forceIncompleteClickData,
+    );
     allPosts.push(...posts);
     allSkipped.push(...skipped);
   }

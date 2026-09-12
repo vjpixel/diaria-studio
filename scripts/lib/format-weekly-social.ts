@@ -277,11 +277,13 @@ export function formatThreadsWeekly(
  * ad-hoc até confirmação do editor): corta capa e CTA, mantém só os itens
  * de NOTÍCIA — os `TWITTER_WEEKLY_MAX_ITEMS` melhor ranqueados, descarta o
  * resto. Racional: capa/CTA são moldura/branding, não conteúdo; num tweet,
- * o que compete por atenção é a notícia em si. O caller (`publish-weekly-
- * social.ts`/`prep-weekly-twitter.ts`) é responsável por truncar a LISTA DE
- * IMAGENS pro mesmo tamanho (`items.slice(0, TWITTER_WEEKLY_MAX_ITEMS)`
- * ANTES de passar pra esta função) — `formatTwitterWeekly` só formata o
- * texto dos itens que recebe, nunca decide sozinha quais cortar.
+ * o que compete por atenção é a notícia em si. O caller (`prep-weekly-
+ * twitter.ts`, único consumidor real desta função — `publish-weekly-
+ * social.ts` nunca importa nada deste bloco, é só o Instagram/Facebook/
+ * Threads) é responsável por truncar a LISTA DE ITENS/IMAGENS pro mesmo
+ * tamanho (`items.slice(0, TWITTER_WEEKLY_MAX_ITEMS)` ANTES de passar pra
+ * esta função) — `formatTwitterWeekly` só formata o texto dos itens que
+ * recebe, nunca decide sozinha quais cortar.
  */
 export const TWITTER_WEEKLY_MAX_ITEMS = 4;
 
@@ -306,7 +308,7 @@ export function formatTwitterWeekly(
 ): string {
   if (items.length === 0) return "";
   // #8056: reserva o orçamento da URL pelo PESO ponderado do X
-  // (TWITTER_URL_WEEKLY = 23, não o tamanho literal — ver import acima) e só
+  // (TWITTER_URL_WEIGHT = 23, não o tamanho literal — ver import acima) e só
   // trunca a lista de itens, nunca a URL. Truncar o corpo INTEIRO de uma vez
   // (como os outros 3 canais fazem) cortaria a URL fora quando os títulos
   // são longos — achado ao vivo #8056 na 1ª versão desta função, que também

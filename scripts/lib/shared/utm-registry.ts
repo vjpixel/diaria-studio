@@ -1425,9 +1425,10 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: TWITTER_WEEKLY_ARCHIVE_UTM.campaign,
     originFile: "scripts/lib/format-weekly-social.ts",
     description:
-      "MESMO link \"Arquivo completo em {url}\" do post semanal, agora também no " +
-      "X/Twitter (#8056) — source PRÓPRIO (nunca reusa outro canal), mesmo " +
-      "racional de atribuição do Facebook/Threads.",
+      "MESMO link de arquivo do post semanal, agora também no X/Twitter (#8056) — " +
+      "aqui a URL sai NUA no fim do tweet (sem o prefixo \"Arquivo completo em\" " +
+      "dos outros 3 canais, orçamento de caracteres bem mais apertado) — source " +
+      "PRÓPRIO (nunca reusa outro canal), mesmo racional de atribuição do Facebook/Threads.",
     status: "ativo",
   },
   {
