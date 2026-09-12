@@ -256,6 +256,20 @@ describe("capa de série (texto da retrospectiva + título ligado a '1 ano')", (
     assert.equal(slideSourceText(mkdtempSync(join(tmpdir(), "diaria-")), "d1", social.t1), social.t1);
   });
 
+  it("# Slides define o carrossel quando a legenda é uma lista (previsões uma por linha)", () => {
+    const md = "# Social\n\n## previsoes\nAbertura.\n\n1) A.\n2) B.\n3) C.\n\nRessalva.\n\n# Curto\n\n## previsoes\nC\n\n# Slides\n\n## previsoes\n1) A. 2) B.\n\n3) C.\n\nRessalva.\n";
+    const t = parseAnnualSocialMd(md);
+    assert.equal(t.slides.previsoes, "1) A. 2) B.\n\n3) C.\n\nRessalva.");
+    const lote = { date: "260918", keys: ["previsoes"] as AnnualSocialKey[], slots: { d1: "2026-09-19T09:00" } };
+    const cover = JSON.parse(buildDayCoverJson(lote, "Retrospectiva de aniversário", t.social, t.slides));
+    assert.deepEqual(cover.d1, { kicker: "Retrospectiva de aniversário", slide_text: t.slides.previsoes });
+    const d = mkdtempSync(join(tmpdir(), "slides-"));
+    mkdirSync(join(d, "_internal"));
+    writeFileSync(join(d, "_internal", "social-cover.json"), JSON.stringify(cover));
+    assert.equal(slideSourceText(d, "d1", t.social.previsoes), t.slides.previsoes);
+    assert.throws(() => parseAnnualSocialMd(md + "\n## t9\nX\n"), /t9/);
+  });
+
   it("a capa desenha a linha da série só quando pedida (a da diária não muda)", () => {
     assert.match(buildOverlaySvg("Título", "", undefined, undefined, "Retrospectiva de aniversário"), /RETROSPECTIVA DE ANIVERSÁRIO/);
     assert.equal(buildOverlaySvg("Título", "16 SET 2026"), buildOverlaySvg("Título", "16 SET 2026", undefined, undefined, ""));

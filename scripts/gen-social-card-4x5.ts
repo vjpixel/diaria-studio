@@ -310,10 +310,13 @@ export function editionDateLabel(editionDir: string): string {
 export function readCoverOverride(
   editionDir: string,
   destaque: string,
-): { kicker: string; slidePrefix?: string } | null {
+): { kicker: string; slidePrefix?: string; slideText?: string } | null {
   const path = resolve(editionDir, "_internal", "social-cover.json");
   if (!existsSync(path)) return null;
-  const all = JSON.parse(readFileSync(path, "utf8")) as Record<string, { kicker?: unknown; slide_prefix?: unknown }>;
+  const all = JSON.parse(readFileSync(path, "utf8")) as Record<
+    string,
+    { kicker?: unknown; slide_prefix?: unknown; slide_text?: unknown }
+  >;
   const c = all[destaque];
   if (!c) return null;
   if (typeof c.kicker !== "string" || !c.kicker.trim()) {
@@ -322,7 +325,14 @@ export function readCoverOverride(
   if (c.slide_prefix !== undefined && typeof c.slide_prefix !== "string") {
     throw new Error(`social-cover.json: slide_prefix inválido para ${destaque} em ${path}`);
   }
-  return { kicker: c.kicker, ...(c.slide_prefix ? { slidePrefix: c.slide_prefix } : {}) };
+  if (c.slide_text !== undefined && typeof c.slide_text !== "string") {
+    throw new Error(`social-cover.json: slide_text inválido para ${destaque} em ${path}`);
+  }
+  return {
+    kicker: c.kicker,
+    ...(c.slide_prefix ? { slidePrefix: c.slide_prefix } : {}),
+    ...(c.slide_text ? { slideText: c.slide_text } : {}),
+  };
 }
 
 export type CardRatio = "4x5" | "9x16";

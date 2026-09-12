@@ -30,6 +30,13 @@ export interface AnnualSocialTexts {
    * ano, …") — decisão do editor, 12/09/2026.
    */
   capas: Record<string, string>;
+  /**
+   * `# Slides` (opcional) — texto dos 3 slides do carrossel quando ele não
+   * pode ser derivado da legenda. Caso real: as previsões, que na legenda são
+   * uma lista (uma por linha, num bloco só) e no carrossel precisam ser
+   * repartidas em 3 slides (editor, 12/09/2026).
+   */
+  slides: Record<string, string>;
 }
 
 export interface AnnualSocialDay {
@@ -60,7 +67,7 @@ function sections(md: string): Record<string, string> {
  * X e Threads ficariam sem post daquele tema, em silêncio.
  */
 export function parseAnnualSocialMd(md: string): AnnualSocialTexts {
-  const parts = md.split(/^# (Social|Curto|Pixel|Capas)\s*$/m);
+  const parts = md.split(/^# (Social|Curto|Pixel|Capas|Slides)\s*$/m);
   const byName: Record<string, string> = {};
   for (let i = 1; i < parts.length; i += 2) byName[parts[i]] = parts[i + 1] ?? "";
   const social = sections(byName.Social ?? "");
@@ -72,7 +79,10 @@ export function parseAnnualSocialMd(md: string): AnnualSocialTexts {
   const capas = sections(byName.Capas ?? "");
   const capaSobrando = Object.keys(capas).filter((k) => !social[k]);
   if (capaSobrando.length) throw new Error(`capa sem post correspondente em \`# Social\`: ${capaSobrando.join(", ")}`);
-  return { social, curto, capas, ...(pixel ? { pixel } : {}) };
+  const slides = sections(byName.Slides ?? "");
+  const slideSobrando = Object.keys(slides).filter((k) => !social[k]);
+  if (slideSobrando.length) throw new Error(`slides sem post correspondente em \`# Social\`: ${slideSobrando.join(", ")}`);
+  return { social, curto, capas, slides, ...(pixel ? { pixel } : {}) };
 }
 
 /**
@@ -82,9 +92,19 @@ export function parseAnnualSocialMd(md: string): AnnualSocialTexts {
  * gerador de carrossel tira do 1º slide de texto: na legenda ela marca o post
  * como parte da série; no slide, repetiria a capa (decisões do editor, 12/09/2026).
  */
-export function buildDayCoverJson(day: AnnualSocialDay, serie: string, social: Record<string, string> = {}): string {
-  const out: Record<string, { kicker: string; slide_prefix?: string }> = {};
+export function buildDayCoverJson(
+  day: AnnualSocialDay,
+  serie: string,
+  social: Record<string, string> = {},
+  slides: Record<string, string> = {},
+): string {
+  const out: Record<string, { kicker: string; slide_prefix?: string; slide_text?: string }> = {};
   day.keys.forEach((k, i) => {
+    if (slides[k]) {
+      // Texto de slide explícito (`# Slides`) vence: o carrossel não deriva da legenda.
+      out[`d${i + 1}`] = { kicker: serie, slide_text: slides[k] };
+      return;
+    }
     // Até o ":" a frase contém "diar.ia.br", cheia de pontos; o fim da abertura
     // é o 1º ponto DEPOIS do ":" ("…, tema 1 de 6: o trabalho.").
     const abertura = /^Retrospectiva [^:\n]*:[^.\n]*\.\s/.exec((social[k] ?? "").trimStart())?.[0].trimEnd();

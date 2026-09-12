@@ -91,7 +91,7 @@ export function prepAnnualSocial(
     writeFileSync(join(dayDir, "02-reviewed.md"), buildDayReviewedMd(titles, category));
     writeFileSync(join(dayDir, "03-social.md"), buildDaySocialMd(day, texts));
     writeFileSync(join(dayDir, "_internal", "01-approved-capped.json"), buildDayApprovedStub(titles));
-    writeFileSync(join(dayDir, "_internal", "social-cover.json"), buildDayCoverJson(day, serie, texts.social));
+    writeFileSync(join(dayDir, "_internal", "social-cover.json"), buildDayCoverJson(day, serie, texts.social, texts.slides));
     if (pageUrl) writeFileSync(join(dayDir, "_internal", "05-edition-url.txt"), `${pageUrl}\n`);
     writeFileSync(
       join(dayDir, "_internal", "social-slots.json"),

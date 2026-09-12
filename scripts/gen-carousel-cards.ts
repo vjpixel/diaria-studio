@@ -182,7 +182,11 @@ export async function genCarouselCards(
  */
 export function slideSourceText(editionDir: string, destaque: string, text: string | null): string | null {
   if (!text) return text;
-  const prefix = readCoverOverride(editionDir, destaque)?.slidePrefix;
+  const cover = readCoverOverride(editionDir, destaque);
+  // `slide_text` explícito (seção `# Slides` do 03-social.md da anual) vence:
+  // o carrossel usa esse texto e ignora a legenda.
+  if (cover?.slideText) return cover.slideText;
+  const prefix = cover?.slidePrefix;
   if (!prefix) return text;
   const t = text.trimStart();
   if (!t.startsWith(prefix)) {
