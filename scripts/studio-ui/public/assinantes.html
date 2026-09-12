@@ -95,6 +95,36 @@
       </div>
       <p class="hint" id="attribute-coverage-empty" hidden>Nenhum atributo gravado no store ainda.</p>
     </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Coorte de aquisição por origem</h2>
+        <button id="refresh-cohort-origem-btn" type="button">Atualizar</button>
+      </div>
+      <p class="hint">
+        Cadastros (1 linha por subscriber resolvido, nunca por
+        <code>subscription</code>) agrupados por dia de cadastro (BRT) ×
+        classe de aquisição × <code>utm_source</code> (#7916, fatia 2/N).
+        Confirmado/pendente (double opt-in) só é observável hoje no Kit —
+        Beehiiv e Brevo não distinguem essa fase nos dados ingeridos.
+      </p>
+      <p class="hint" id="cohort-origem-confirmation-note"></p>
+      <form id="cohort-origem-filter-form" class="assinantes-search-form">
+        <input type="date" id="cohort-origem-from" aria-label="De (dia BRT)" />
+        <input type="date" id="cohort-origem-to" aria-label="Até (dia BRT)" />
+        <button type="submit">Filtrar</button>
+      </form>
+      <p class="hint" id="cohort-origem-gap" hidden></p>
+      <div class="table-scroll">
+        <table class="triage-table" id="cohort-origem-table">
+          <thead>
+            <tr><th>Dia (BRT)</th><th>Origem</th><th>Classe</th><th>Cadastros</th><th>Confirmados (Kit)</th><th>Pendentes (Kit)</th></tr>
+          </thead>
+          <tbody id="cohort-origem-tbody"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="cohort-origem-empty" hidden>Nenhum cadastro com data conhecida no período.</p>
+    </section>
   </main>
 
   <script>window.STUDIO_PAGE = "assinantes";</script>

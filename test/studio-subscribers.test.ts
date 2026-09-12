@@ -21,6 +21,7 @@ import { CROSS_PLATFORM_FLOOR_NOTE } from "../scripts/lib/diaria-subscribers-ide
 import {
   searchSubscribersByEmail,
   buildSubscribersCohortData,
+  buildAcquisitionCohortData,
 } from "../scripts/studio-ui/studio-subscribers.ts";
 
 const NOW = "2026-09-01T12:00:00.000Z";
@@ -292,6 +293,192 @@ describe("buildSubscribersCohortData", () => {
       const cohort = buildSubscribersCohortData(root);
       assert.equal(cohort.note, CROSS_PLATFORM_FLOOR_NOTE);
       assert.equal(cohort.unmatched!.note, CROSS_PLATFORM_FLOOR_NOTE);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildAcquisitionCohortData (#7916, fatia 2/N)
+// ---------------------------------------------------------------------------
+
+describe("buildAcquisitionCohortData", () => {
+  it("sem data/: rows vazio, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-cohort-origem-nodata-"));
+    try {
+      const data = buildAcquisitionCohortData(root);
+      assert.equal(data.db.available, false);
+      assert.deepEqual(data.rows, []);
+      assert.equal(data.subscribersWithoutEnteredAt, 0);
+      assert.ok(data.confirmationNote.length > 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("dedup por subscriber: pessoa em beehiiv + kit conta 1x, com a data de cadastro mais antiga", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+
+      const s1 = ensureSubscriber(db, "beehiiv", "bh-1", "migrou@x.com", NOW);
+      db.prepare(
+        "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'kit', NULL, ?, ?)",
+      ).run(s1, "migrou@x.com", NOW);
+      // Beehiiv: cadastro mais antigo. Kit: migrou depois, utm_source próprio
+      // (precedência do Kit vence na atribuição resolvida).
+      upsertSubscription(
+        db,
+        s1,
+        "beehiiv",
+        { status: "active", enteredAt: "2026-09-01T15:00:00.000Z", exitedAt: null, source: null, utmSource: "beehiiv-organico" },
+        NOW,
+      );
+      upsertSubscription(
+        db,
+        s1,
+        "kit",
+        { status: "active", enteredAt: "2026-09-03T15:00:00.000Z", exitedAt: null, source: null, utmSource: "kit-organico" },
+        NOW,
+      );
+
+      db.close();
+
+      const data = buildAcquisitionCohortData(root);
+      assert.equal(data.db.available, true);
+      assert.equal(data.subscribersWithoutEnteredAt, 0);
+      // 1 subscriber só — não 2 (dedup) — agrupado no dia do cadastro MAIS
+      // ANTIGO (Beehiiv, 01/09), não no dia da migração pro Kit.
+      const totalCadastros = data.rows.reduce((sum, r) => sum + r.total, 0);
+      assert.equal(totalCadastros, 1);
+      const row = data.rows.find((r) => r.total === 1)!;
+      assert.equal(row.day, "2026-09-01");
+      // Atribuição resolvida: Kit tem precedência sobre Beehiiv quando ambos
+      // têm utm_source (resolveSubscriberAttribution) — utmSource do grupo
+      // é o do Kit, não o do Beehiiv.
+      assert.equal(row.utmSource, "kit-organico");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("confirmedKit/unconfirmedKit refletem o status nativo do Kit; grupo só-Beehiiv fica null", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+
+      const kitAtivo = ensureSubscriber(db, "kit", "kit-1", "confirmado@x.com", NOW);
+      upsertSubscription(
+        db,
+        kitAtivo,
+        "kit",
+        { status: "active", enteredAt: "2026-09-05T15:00:00.000Z", exitedAt: null, source: null, utmSource: "kit-organico" },
+        NOW,
+      );
+
+      const kitPendente = ensureSubscriber(db, "kit", "kit-2", "pendente@x.com", NOW);
+      upsertSubscription(
+        db,
+        kitPendente,
+        "kit",
+        { status: "inactive", enteredAt: "2026-09-05T16:00:00.000Z", exitedAt: null, source: null, utmSource: "kit-organico" },
+        NOW,
+      );
+
+      const soBeehiiv = ensureSubscriber(db, "beehiiv", "bh-9", "so-beehiiv@x.com", NOW);
+      upsertSubscription(
+        db,
+        soBeehiiv,
+        "beehiiv",
+        { status: "active", enteredAt: "2026-09-05T17:00:00.000Z", exitedAt: null, source: null, utmSource: "beehiiv-organico" },
+        NOW,
+      );
+
+      db.close();
+
+      const data = buildAcquisitionCohortData(root);
+      const kitGroup = data.rows.find((r) => r.utmSource === "kit-organico")!;
+      assert.equal(kitGroup.total, 2);
+      assert.equal(kitGroup.confirmedKit, 1);
+      assert.equal(kitGroup.unconfirmedKit, 1);
+
+      const beehiivGroup = data.rows.find((r) => r.utmSource === "beehiiv-organico")!;
+      assert.equal(beehiivGroup.total, 1);
+      // Sem subscription Kit nesta pessoa — a distinção não é observável.
+      assert.equal(beehiivGroup.confirmedKit, null);
+      assert.equal(beehiivGroup.unconfirmedKit, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("subscribers sem NENHUM entered_at gravado são contados à parte, não descartados em silêncio", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+      // ensureSubscriber sozinho cria só identity_alias — sem
+      // upsertSubscription, esta pessoa não tem entered_at em nenhuma
+      // plataforma.
+      ensureSubscriber(db, "beehiiv", "bh-sem-sub", "sem-subscription@x.com", NOW);
+      db.close();
+
+      const data = buildAcquisitionCohortData(root);
+      assert.equal(data.subscribersWithoutEnteredAt, 1);
+      assert.deepEqual(data.rows, []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filtro from/to (dia BRT, inclusive) restringe as linhas retornadas", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+
+      const a = ensureSubscriber(db, "kit", "kit-a", "a@x.com", NOW);
+      upsertSubscription(db, a, "kit", { status: "active", enteredAt: "2026-09-01T15:00:00.000Z", exitedAt: null, source: null, utmSource: "x" }, NOW);
+      const b = ensureSubscriber(db, "kit", "kit-b", "b@x.com", NOW);
+      upsertSubscription(db, b, "kit", { status: "active", enteredAt: "2026-09-05T15:00:00.000Z", exitedAt: null, source: null, utmSource: "x" }, NOW);
+      const c = ensureSubscriber(db, "kit", "kit-c", "c@x.com", NOW);
+      upsertSubscription(db, c, "kit", { status: "active", enteredAt: "2026-09-10T15:00:00.000Z", exitedAt: null, source: null, utmSource: "x" }, NOW);
+
+      db.close();
+
+      const data = buildAcquisitionCohortData(root, { from: "2026-09-02", to: "2026-09-09" });
+      const totalCadastros = data.rows.reduce((sum, r) => sum + r.total, 0);
+      assert.equal(totalCadastros, 1); // só o dia 05
+      assert.equal(data.from, "2026-09-02");
+      assert.equal(data.to, "2026-09-09");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filtro from/to é inclusive NA FRONTEIRA — dia igual a from ou to entra (achado do pr-test-analyzer)", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+
+      const a = ensureSubscriber(db, "kit", "kit-a", "a@x.com", NOW);
+      upsertSubscription(db, a, "kit", { status: "active", enteredAt: "2026-09-02T15:00:00.000Z", exitedAt: null, source: null, utmSource: "x" }, NOW);
+      const b = ensureSubscriber(db, "kit", "kit-b", "b@x.com", NOW);
+      upsertSubscription(db, b, "kit", { status: "active", enteredAt: "2026-09-09T15:00:00.000Z", exitedAt: null, source: null, utmSource: "x" }, NOW);
+
+      db.close();
+
+      // from = dia do subscriber A, to = dia do subscriber B — os dois
+      // devem entrar (inclusive nas duas pontas, não só no meio do range).
+      const data = buildAcquisitionCohortData(root, { from: "2026-09-02", to: "2026-09-09" });
+      const totalCadastros = data.rows.reduce((sum, r) => sum + r.total, 0);
+      assert.equal(totalCadastros, 2);
+      assert.ok(data.rows.some((r) => r.day === "2026-09-02"));
+      assert.ok(data.rows.some((r) => r.day === "2026-09-09"));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

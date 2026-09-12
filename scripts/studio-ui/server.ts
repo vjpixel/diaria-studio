@@ -365,7 +365,7 @@ import { buildAdsData, buildAdsCampaignEconomics } from "./studio-ads.ts";
 // #6590: busca por e-mail -> timeline unificada + coorte por migração,
 // sobre o store diaria-subscribers-db.ts (épico #6464). Read-only por
 // construção — ver studio-subscribers.ts.
-import { searchSubscribersByEmail, buildSubscribersCohortData } from "./studio-subscribers.ts";
+import { searchSubscribersByEmail, buildSubscribersCohortData, buildAcquisitionCohortData } from "./studio-subscribers.ts";
 // #7178: painel de métricas de negócio — baseline, queda, metas e
 // decomposição em 4 zonas, sobre o registry do épico #7172 (F3-F5). Ver
 // studio-metrics.ts.
@@ -1316,6 +1316,22 @@ function handleApiSubscribersCohort(rootDir: string, res: ServerResponse): void 
   }
 }
 
+/** `GET /api/subscribers/cohort-origem?from=YYYY-MM-DD&to=YYYY-MM-DD` —
+ * coorte de aquisição por dia de cadastro (BRT) × classe de aquisição ×
+ * `utm_source`, 1 linha por subscriber resolvido (#7916, fatia 2/N). `from`/
+ * `to` opcionais, inclusive, dia BRT. Fail-soft para os casos conhecidos
+ * (sem `data/`, store vazio); erro inesperado ainda vira 500. */
+function handleApiSubscribersCohortOrigem(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  try {
+    const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+    const from = params.get("from")?.trim() || undefined;
+    const to = params.get("to")?.trim() || undefined;
+    sendJson(res, 200, buildAcquisitionCohortData(rootDir, { from, to }));
+  } catch (e) {
+    sendJson(res, 500, { error: (e as Error).message });
+  }
+}
+
 /** `POST /api/painel/eia/refresh` — botão "Atualizar É IA?" (#3861): regenera
  * SÓ `data/poll-eia-summary.json` local a partir dos endpoints públicos do
  * worker poll (`refreshPollEiaSummaryLocal`) — NUNCA dispara o push paralelo
@@ -1589,6 +1605,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       if (urlPath === "/api/subscribers/cohort") {
         handleApiSubscribersCohort(rootDir, res);
+        return;
+      }
+      // #7916 fatia 2/N: coorte de aquisição por origem/campanha.
+      if (urlPath === "/api/subscribers/cohort-origem") {
+        handleApiSubscribersCohortOrigem(rootDir, req, res);
         return;
       }
       // #3924: seção "Caixas" — GET (PUT de save já tratado acima, antes do
