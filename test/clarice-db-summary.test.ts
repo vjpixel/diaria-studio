@@ -299,6 +299,53 @@ test("computeStoreSummary: KV/payload sem contatos na Brevo → chave AUSENTE (s
   db.close();
 });
 
+// #8030 — priority_points_histogram_never_sent_month: mesma métrica de
+// cohort_stats[x].eligible_never_sent (#8024), por valor exato de
+// priority_points em vez de por cohort.
+
+test("computeStoreSummary: priority_points_histogram_never_sent_month agrega por faixa de score (#8030)", () => {
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // a: 0 pts, elegível, nunca enviado (last_sent_at NULL) → conta
+  ins("INSERT INTO clarice_users (email, tier) VALUES ('a@x.com',1)");
+  // b: 0 pts (sends_count=3, opens_count=1 → 20×1 − 10×2 = 0, mesma faixa de
+  // a), elegível, último envio no mês ANTERIOR → ainda falta, conta
+  ins(
+    "INSERT INTO clarice_users (email, tier, sends_count, opens_count, last_sent_at) VALUES ('b@x.com',1,3,1,'2026-05-20T12:00:00Z')",
+  );
+  // c: 0 pts (mesma fórmula de b), elegível, JÁ recebeu NESTE mês → não conta
+  ins(
+    "INSERT INTO clarice_users (email, tier, sends_count, opens_count, last_sent_at) VALUES ('c@x.com',1,3,1,'2026-06-10T12:00:00Z')",
+  );
+  // d: 0 pts, inelegível (unsub), nunca enviado → não conta (send_eligible=0)
+  ins("INSERT INTO clarice_users (email, tier, unsubscribed) VALUES ('d@x.com',1,1)");
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db, JUNE_2026_NOW);
+  assert.equal(s.priority_points_histogram_never_sent_month["0"], 2, "a e b faltam este mês — c já recebeu, d é inelegível");
+  assert.ok(
+    s.priority_points_histogram_never_sent_month["0"] <= s.priority_points_histogram_eligible["0"],
+    "invariante: falta-no-mês é subconjunto de elegíveis, na mesma faixa",
+  );
+
+  db.close();
+});
+
+test("computeStoreSummary: priority_points_histogram_never_sent_month — chave AUSENTE quando ninguém falta naquela faixa (semântica esparsa)", () => {
+  const db = openClariceDb(":memory:");
+  // 60 pts, já recebeu neste mês → não falta; a faixa "60" não deve aparecer.
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, opens_count, sends_count, last_sent_at) VALUES ('a@x.com',2,3,3,'2026-06-10T12:00:00Z')",
+  ).run();
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db, JUNE_2026_NOW);
+  assert.equal(s.priority_points_histogram_never_sent_month["60"], undefined, "ninguém falta na faixa 60 → chave ausente");
+
+  db.close();
+});
+
 test("computeStoreSummary: histograma agrega total/verified/brevo/eligible juntos NUM SÓ SCAN (#2875 — groupCountsMulti generalizado a N colunas)", () => {
   // Prova a generalização de groupCountsWithVerifiedAndBrevo (2 colunas fixas
   // nv/nb + o extra nl tackado depois) pra groupCountsMulti (N colunas

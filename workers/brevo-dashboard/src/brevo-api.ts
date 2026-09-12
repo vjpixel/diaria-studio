@@ -1046,7 +1046,7 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
   // `n.toLocaleString()` sem guard (`fmtCount`, sections-kv.ts, perdeu o
   // `?? 0` no #2907 na premissa de que o boundary já garantia números
   // definidos) → TypeError → 502 no dashboard inteiro. Aplicado a
-  // `by_reason`, `mv` e os 4 `priority_points_histogram*` abaixo.
+  // `by_reason`, `mv` e os 5 `priority_points_histogram*` abaixo (#8030).
   const sanitizeNumRecord = (v: Record<string, unknown>): Record<string, number> => {
     const out: Record<string, number> = {};
     for (const [k, val] of Object.entries(v)) out[k] = numOr0(val);
@@ -1088,6 +1088,7 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
     "priority_points_histogram_verified",
     "priority_points_histogram_eligible",
     "priority_points_histogram_brevo",
+    "priority_points_histogram_never_sent_month", // #8030
   ] as const;
   const histFields: Partial<Record<(typeof histKeys)[number], Record<string, number>>> = {};
   for (const key of histKeys) {
