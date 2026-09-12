@@ -143,13 +143,35 @@ function stripComments(content: string): string {
   return content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 }
 
+/** Escapa metacaracteres de regex num identificador descoberto antes de
+ * interpolá-lo num `new RegExp` (achado do fleet review pré-merge da #8021,
+ * `pr-test-analyzer`, P3) — `$` é um caractere legal em identificador JS
+ * (`execFn$`) e tem significado especial em regex; sem escapar, um alias com
+ * `$` produziria um regex diferente do pretendido em vez de casar o nome
+ * literal. Nenhum hook real hoje usa `$` em nome de alias, mas o guard não
+ * deveria depender disso silenciosamente. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Descobre nomes de parâmetro/variável usados como alias injetável de
  * `execFileSync`/`execFile`/`spawnSync`/`spawn` (#8017) — o padrão
  * `nome = execFileSync` como default de parâmetro (`function f(execFn =
- * execFileSync)`) ou atribuição de variável. Pura. */
+ * execFileSync)`) ou atribuição de variável.
+ *
+ * `(?!\s*\()` no fim (achado do fleet review pré-merge da #8021,
+ * `pr-test-analyzer`, P2): sem isso, `const out = execFileSync(...)` — uma
+ * atribuição do RESULTADO da chamada, padrão real presente em
+ * `block-worktree-alien-commit.mjs` — também casava e descobria `out` como
+ * se fosse um alias injetável, quando na verdade `execFileSync` ali já é a
+ * chamada literal (já coberta pelo 1º ramo de `findWindowsHideMissingCalls`)
+ * e `out` não é uma função chamável em lugar nenhum. O lookahead negativo
+ * distingue "atribuição da REFERÊNCIA da função" (nunca seguida de `(`, é o
+ * padrão real de alias) de "atribuição do RESULTADO de uma chamada" (sempre
+ * seguida de `(`). Pura. */
 function discoverInjectedExecAliases(content: string): string[] {
   const code = stripComments(content);
-  const aliasRe = /\b([A-Za-z_$][\w$]*)\s*=\s*(?:execFileSync|execFile|spawnSync|spawn)\b/g;
+  const aliasRe = /\b([A-Za-z_$][\w$]*)\s*=\s*(?:execFileSync|execFile|spawnSync|spawn)\b(?!\s*\()/g;
   const names = new Set<string>();
   let match: RegExpExecArray | null;
   while ((match = aliasRe.exec(code)) !== null) {
@@ -177,7 +199,7 @@ export function findWindowsHideMissingCalls(content: string): number[] {
     }
   }
   for (const name of discoverInjectedExecAliases(content)) {
-    const aliasCallRe = new RegExp(`\\b${name}\\s*\\(`, "g");
+    const aliasCallRe = new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`, "g");
     let aliasMatch: RegExpExecArray | null;
     while ((aliasMatch = aliasCallRe.exec(content)) !== null) {
       // Bidirecional (ver docstring do módulo #8017) — diferente do ramo
@@ -337,6 +359,76 @@ describe("findWindowsHideMissingCalls (#7952, achado do fleet review) — lógic
   it("#8017: nome de parâmetro sem default de exec (ex: `execFn` genérico não vinculado) -> não vira alias, nenhum ofensor espúrio", () => {
     const content = `function f(execFn) { return execFn("whatever"); }`;
     assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("#8021 fleet review (P2, alta confiança): atribuição do RESULTADO de uma chamada literal (`const out = execFileSync(...)`) não vira alias espúrio — padrão real de block-worktree-alien-commit.mjs", () => {
+    // Sem o lookahead negativo `(?!\s*\()`, `out` seria descoberto como
+    // alias (mesmo regex de "nome = execFileSync" casaria), e qualquer
+    // ocorrência de `out(` no resto do arquivo — inclusive coincidência de
+    // nome com outra função qualquer — viraria falso positivo/negativo.
+    const content = [
+      `const out = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", windowsHide: true });`,
+      `function out(x) { return x; }`, // nome coincidente, NUNCA deveria ser tratado como alias de exec
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("#8021 fleet review (P2): mesmo padrão SEM windowsHide na chamada literal -> 1 ofensor (a chamada literal em si), nunca um 2º ofensor fabricado pelo alias espúrio `out`", () => {
+    const content = [
+      `const out = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });`,
+      `function out(x) { return x; }`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content).length, 1);
+  });
+
+  it("#8021 fleet review (P3, média confiança): alias com caractere de regex especial ($) é tratado como nome literal, não como metacaractere", () => {
+    // `$` é caractere legal em identificador JS. Sem escapar antes de
+    // interpolar em `new RegExp`, o guard construiria um regex diferente do
+    // pretendido (e no caso de `$` especificamente, ainda funcionaria por
+    // coincidência na maioria das posições — o teste prova que o valor
+    // correto continua sendo produzido, não que faltava sem o fix).
+    const content = [
+      `function f(exec$Fn = execFileSync) {`,
+      `  return exec$Fn("git", ["status"], { encoding: "utf8" });`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content).length, 1);
+  });
+});
+
+describe("stripComments (#8017/#8021 fleet review P3) — regressão dedicada do achado ao vivo", () => {
+  it("prosa de comentário 'default = execFileSync' não inventa um alias chamado 'default'", () => {
+    // Reconstitui o achado ao vivo em pr-create-review.mjs: um comentário
+    // JSDoc citando a opção por nome ("execFn é injetável (default =
+    // execFileSync real)") não pode virar um alias descoberto — senão toda
+    // ocorrência de "default(" no resto do arquivo vira falso positivo.
+    // Teste SINTÉTICO mínimo, independente da redação atual do comentário
+    // real em pr-create-review.mjs (que pode mudar) — cobre o MECANISMO, não
+    // o texto específico.
+    const content = [
+      `/** \`execFn\` é injetável (default = execFileSync real) pra teste. */`,
+      `function resolveMainRepoRoot(execFn = execFileSync) {`,
+      `  return execFn("git", ["rev-parse", "--git-common-dir"], { encoding: "utf8", windowsHide: true });`,
+      `}`,
+      `// nada relacionado a exec, mas contém a palavra "default(" — não deve ser flagado`,
+      `function useDefault() { return default(); }`,
+    ].join("\n");
+    // Só o alias real (`execFn`) deve ser descoberto — 0 ofensores, porque a
+    // chamada real já tem windowsHide. Se "default" fosse descoberto como
+    // alias espúrio, `default()`/`useDefault` acima geraria ofensor(es)
+    // fantasma mesmo sem relação nenhuma com child_process.
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("mesmo comentário, mas a chamada real SEM windowsHide -> exatamente 1 ofensor (o real, não um fabricado por 'default')", () => {
+    const content = [
+      `/** \`execFn\` é injetável (default = execFileSync real) pra teste. */`,
+      `function resolveMainRepoRoot(execFn = execFileSync) {`,
+      `  return execFn("git", ["rev-parse", "--git-common-dir"], { encoding: "utf8" });`,
+      `}`,
+      `function useDefault() { return default(); }`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content).length, 1);
   });
 });
 
