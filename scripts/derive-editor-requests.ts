@@ -25,7 +25,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, copyFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
@@ -217,12 +217,23 @@ function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
       target = "radar"; // movido para radar
     }
 
+    // #7981 follow-up (achado ao vivo: distill-prompt-corrections.ts nunca
+    // conseguia medir "≥2 histórias distintas" porque context.url nunca
+    // era populado aqui) — a URL do artigo já é extraída acima (linhas
+    // 199-200) pra detectar link-swap; reusada aqui pra TODO tipo de
+    // pedido desta seção, não só link-swap. `null` (nunca string vazia)
+    // quando nenhuma URL foi encontrada em nenhum dos dois lados — o
+    // consumidor (distill-prompt-corrections.ts) já trata `context.url`
+    // ausente/`null` como "não contável" pra diversidade de histórias,
+    // nunca como uma história fabricada.
+    const articleUrl = (newUrlLine ?? oldUrlLine)?.trim() ?? null;
+
     results.push({
       request_type: requestType,
       target,
       description: `Mudança detectada em ${section}: ${oldText.slice(0, 100)}... → ${newText.slice(0, 100)}...`,
       resolution: "accepted",
-      context: { section, old_length: oldLen, new_length: newLen },
+      context: { section, old_length: oldLen, new_length: newLen, url: articleUrl },
     });
   }
 
@@ -266,8 +277,23 @@ function normalizeSelfUrls(content: string): string {
 
 /**
  * Classifica diferenças no 03-social.md (social)
+ *
+ * `destaqueUrls` (#7981 follow-up, opcional) — mapa `"d1"/"d2"/"d3"` → URL
+ * do artigo daquele destaque, derivado de `_internal/01-approved.json`
+ * (`buildDestaqueUrlMap` abaixo) — populado em `context.url` das entradas
+ * de destaque, mesmo motivo do fix em `classifyNewsletterDiff` (achado ao
+ * vivo: `distill-prompt-corrections.ts`/#7981 nunca conseguia medir "≥2
+ * histórias distintas" sem isso). Diferente de `classifyNewsletterDiff`
+ * (que já tem a URL na própria linha do markdown), o texto social não
+ * embute URL — o mapa precisa vir de FORA. Sem o parâmetro (chamador
+ * antigo/teste que não o passa), `context.url` fica `null` — nunca
+ * fabricado, nunca quebra o comportamento anterior.
  */
-function classifySocialDiff(oldContentRaw: string, newContentRaw: string): Array<{
+function classifySocialDiff(
+  oldContentRaw: string,
+  newContentRaw: string,
+  destaqueUrls?: ReadonlyMap<string, string>,
+): Array<{
   request_type: RequestType;
   target: RequestTarget;
   description: string;
@@ -331,7 +357,7 @@ function classifySocialDiff(oldContentRaw: string, newContentRaw: string): Array
       target,
       description: `Mudança em social ${section}: reescrita/ajuste de texto`,
       resolution: "accepted",
-      context: { section, old_length: oldText.length, new_length: newText.length },
+      context: { section, old_length: oldText.length, new_length: newText.length, url: destaqueUrls?.get(target) ?? null },
     });
   }
 
@@ -836,11 +862,38 @@ function snapshotStage4(editionDir: string): void {
   createSnapshots(editionDir, STAGE4_SNAPSHOT_FILES, "stage4-pre-render");
 }
 
+/**
+ * `"d1"/"d2"/"d3"` → URL do artigo daquele destaque, lido do
+ * `_internal/01-approved.json` ATUAL da edição (#7981 follow-up) — usado
+ * só pra popular `context.url` das entradas de `classifySocialDiff`
+ * (`03-social.md` não embute URL no texto). Fail-soft: JSON ausente/
+ * malformado/sem `highlights` devolve mapa vazio, nunca lança — o pior
+ * caso é `context.url: null` nas entradas de social, igual ao
+ * comportamento de antes deste fix.
+ */
+function buildDestaqueUrlMap(editionDir: string): Map<string, string> {
+  const map = new Map<string, string>();
+  try {
+    const approvedPath = join(editionDir, "_internal", "01-approved.json");
+    if (!existsSync(approvedPath)) return map;
+    const json = JSON.parse(readFileSync(approvedPath, "utf8"));
+    const highlights = Array.isArray(json?.highlights) ? json.highlights : [];
+    highlights.forEach((h: any, i: number) => {
+      const url = h?.article?.url ?? h?.url;
+      if (typeof url === "string" && url !== "") map.set(`d${i + 1}`, url);
+    });
+  } catch {
+    // fail-soft — ver docstring
+  }
+  return map;
+}
+
 /** Classificadores compartilhados por deriveStage4/deriveStage6 (mesmos arquivos-fonte). */
-function buildStage2FilesClassifierMap(): Map<string, (oldC: string, newC: string) => any[]> {
+function buildStage2FilesClassifierMap(editionDir: string): Map<string, (oldC: string, newC: string) => any[]> {
+  const destaqueUrls = buildDestaqueUrlMap(editionDir);
   return new Map<string, (oldC: string, newC: string) => any[]>([
     ["02-reviewed.md", classifyNewsletterDiff],
-    ["03-social.md", classifySocialDiff],
+    ["03-social.md", (oldC, newC) => classifySocialDiff(oldC, newC, destaqueUrls)],
     ["_internal/01-approved.json", classifyApprovedDiff],
   ]);
 }
@@ -873,7 +926,7 @@ function buildStage4FilesClassifierMap(): Map<string, (oldC: string, newC: strin
  * do "stage2-post-gate" acima.
  */
 function deriveStage4(editionDir: string, edition: string): number {
-  const stage2ClassifierMap = buildStage2FilesClassifierMap();
+  const stage2ClassifierMap = buildStage2FilesClassifierMap(editionDir);
   const derived = diffAndClassify(editionDir, "stage2-post-gate", STAGE2_SNAPSHOT_FILES, stage2ClassifierMap, 4);
 
   const stage4ClassifierMap = buildStage4FilesClassifierMap();
@@ -904,7 +957,7 @@ function deriveStage4(editionDir: string, edition: string): number {
  * intervalo inteiro Stage 2 → Stage 6 numa passada só.
  */
 function deriveStage6(editionDir: string, edition: string): number {
-  const classifierMap = buildStage2FilesClassifierMap();
+  const classifierMap = buildStage2FilesClassifierMap(editionDir);
   const derived = diffAndClassify(editionDir, "stage2-post-gate", STAGE2_SNAPSHOT_FILES, classifierMap, 6);
 
   let count = 0;
