@@ -158,6 +158,52 @@ export function timezoneOffsetIso(date: Date, timezone: string): string {
  *
  * `now`, `minFutureMs` e `pastSlotShiftMs` são injetáveis para testes (DI).
  */
+/**
+ * Horário explícito por destaque, para publicações fora da grade da diária
+ * (Etapa 6 da `/diaria-anual`: um post por dia, sempre no mesmo horário).
+ *
+ * `DIARIA_SOCIAL_SLOTS_FILE` aponta para um JSON
+ * `{ "edition": "260913", "slots": { "d1": "2026-09-13T09:00", … } }` (data e
+ * hora locais no fuso de `publishing.social.timezone`). Vale **só para a
+ * edição nomeada em `edition`**: a variável esquecida no shell não mexe no
+ * agendamento de outra edição (a diária do dia seguinte, o artigo especial,
+ * que chama este helper com as próprias datas). Para essa edição, o destaque
+ * listado usa a data e a hora do arquivo em vez de `d{N}_time` + data da
+ * edição + `day_offset`; o past-slot guard continua valendo, e cada uso sai
+ * no stderr. Um ponto só, lido pelo helper que TODOS os publicadores já usam
+ * — nenhum CLI precisa de flag nova.
+ *
+ * Sem a variável, nada muda. Arquivo ilegível/malformado ou valor fora do
+ * formato LANÇA: agendar no horário da diária em silêncio seria pior do que
+ * não agendar.
+ */
+export function readSlotOverride(
+  destaque: string,
+  editionDate: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { year: number; month: number; day: number; time: string } | null {
+  const file = env.DIARIA_SOCIAL_SLOTS_FILE;
+  if (!file) return null;
+  let parsed: { edition?: unknown; slots?: Record<string, unknown> };
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new Error(`DIARIA_SOCIAL_SLOTS_FILE ilegível (${file}): ${(e as Error).message}`);
+  }
+  if (typeof parsed.edition !== "string" || typeof parsed.slots !== "object" || parsed.slots === null) {
+    throw new Error(`DIARIA_SOCIAL_SLOTS_FILE sem "edition"/"slots" (${file})`);
+  }
+  if (parsed.edition !== editionDate) return null;
+  const v = parsed.slots[destaque];
+  if (v === undefined) return null;
+  const m = typeof v === "string" ? /^(\d{4})-(\d{2})-(\d{2})T((?:[01]\d|2[0-3]):[0-5]\d)$/.exec(v) : null;
+  if (!m) throw new Error(`slot inválido para ${destaque} em ${file}: '${String(v)}' (esperado AAAA-MM-DDTHH:MM)`);
+  if (env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
+    console.error(`[compute-schedule] slot explícito para ${editionDate}/${destaque}: ${v} (${file})`);
+  }
+  return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]), time: m[4] };
+}
+
 export function computeScheduledAt(input: ComputeScheduleInput): string {
   // platform mantido na assinatura por compat (#345 — schedule unificado)
   const {
@@ -185,19 +231,20 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
   if (!tz) throw new Error("config.publishing.social.timezone ausente.");
 
   const timeKey = `${destaque}_time` as keyof ScheduleConfig;
-  const time = sched[timeKey] as string | undefined;
+  const slot = readSlotOverride(destaque, editionDate);
+  const time = slot?.time ?? (sched[timeKey] as string | undefined);
   if (!time || !/^\d{1,2}:\d{2}$/.test(time)) {
     throw new Error(
       `time inválido para ${platform}.${timeKey}: '${time}' (esperado HH:MM).`,
     );
   }
 
-  const dayOffset = dayOffsetOverride ?? sched.day_offset ?? 0;
+  const dayOffset = slot ? 0 : (dayOffsetOverride ?? sched.day_offset ?? 0);
   if (!Number.isInteger(dayOffset)) {
     throw new Error(`day_offset não é inteiro: ${dayOffset}`);
   }
 
-  const { year, month, day } = parseEditionDate(editionDate);
+  const { year, month, day } = slot ?? parseEditionDate(editionDate);
   // new Date(year, month-1, day) usa local TZ do runner — usamos só pra
   // aplicar offset de dias corretamente. O dateStr final é montado a partir
   // dos componentes (sem dependência da TZ local). #270.

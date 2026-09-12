@@ -23,12 +23,32 @@ export interface AnnualSocialTexts {
   curto: Record<string, string>;
   /** `# Pixel` → `## post_pixel` — post pessoal no LinkedIn do editor (manual). */
   pixel?: string;
+  /**
+   * `# Capas` (opcional) — título da capa por post. Sem ele a capa usa o
+   * título do tema no draft. Existe porque o título do tema é escrito para a
+   * edição, e na capa solta no feed o post precisa se ligar à série ("Em um
+   * ano, …") — decisão do editor, 12/09/2026.
+   */
+  capas: Record<string, string>;
+  /**
+   * `# Slides` (opcional) — texto dos 3 slides do carrossel quando ele não
+   * pode ser derivado da legenda. Caso real: as previsões, que na legenda são
+   * uma lista (uma por linha, num bloco só) e no carrossel precisam ser
+   * repartidas em 3 slides (editor, 12/09/2026).
+   */
+  slides: Record<string, string>;
 }
 
 export interface AnnualSocialDay {
-  /** AAMMDD — vira o nome do diretório e a data que os publicadores usam. */
+  /** AAMMDD — nome do diretório (data do 1º post do lote). */
   date: string;
   keys: AnnualSocialKey[];
+  /**
+   * Data e hora de cada post do lote (`d1..d3` → `AAAA-MM-DDTHH:MM`, fuso da
+   * config social). Vai para `_internal/social-slots.json`, lido pelos
+   * publicadores via `DIARIA_SOCIAL_SLOTS_FILE` (`compute-social-schedule.ts`).
+   */
+  slots: Record<string, string>;
 }
 
 /** Quebra um markdown em `{ "## chave": corpo }` (corpo sem as bordas em branco). */
@@ -47,7 +67,7 @@ function sections(md: string): Record<string, string> {
  * X e Threads ficariam sem post daquele tema, em silêncio.
  */
 export function parseAnnualSocialMd(md: string): AnnualSocialTexts {
-  const parts = md.split(/^# (Social|Curto|Pixel)\s*$/m);
+  const parts = md.split(/^# (Social|Curto|Pixel|Capas|Slides)\s*$/m);
   const byName: Record<string, string> = {};
   for (let i = 1; i < parts.length; i += 2) byName[parts[i]] = parts[i + 1] ?? "";
   const social = sections(byName.Social ?? "");
@@ -56,7 +76,41 @@ export function parseAnnualSocialMd(md: string): AnnualSocialTexts {
   const semCurto = Object.keys(social).filter((k) => !curto[k]);
   if (semCurto.length) throw new Error(`sem texto em \`# Curto\` para: ${semCurto.join(", ")}`);
   const pixel = sections(byName.Pixel ?? "").post_pixel;
-  return { social, curto, ...(pixel ? { pixel } : {}) };
+  const capas = sections(byName.Capas ?? "");
+  const capaSobrando = Object.keys(capas).filter((k) => !social[k]);
+  if (capaSobrando.length) throw new Error(`capa sem post correspondente em \`# Social\`: ${capaSobrando.join(", ")}`);
+  const slides = sections(byName.Slides ?? "");
+  const slideSobrando = Object.keys(slides).filter((k) => !social[k]);
+  if (slideSobrando.length) throw new Error(`slides sem post correspondente em \`# Social\`: ${slideSobrando.join(", ")}`);
+  return { social, curto, capas, slides, ...(pixel ? { pixel } : {}) };
+}
+
+/**
+ * `_internal/social-cover.json` do lote: a linha da série que cada capa leva
+ * acima do título — só o nome da série, sem "tema i de N" e sem data — e a
+ * frase de abertura "Retrospectiva de …" do post (`slide_prefix`), que o
+ * gerador de carrossel tira do 1º slide de texto: na legenda ela marca o post
+ * como parte da série; no slide, repetiria a capa (decisões do editor, 12/09/2026).
+ */
+export function buildDayCoverJson(
+  day: AnnualSocialDay,
+  serie: string,
+  social: Record<string, string> = {},
+  slides: Record<string, string> = {},
+): string {
+  const out: Record<string, { kicker: string; slide_prefix?: string; slide_text?: string }> = {};
+  day.keys.forEach((k, i) => {
+    if (slides[k]) {
+      // Texto de slide explícito (`# Slides`) vence: o carrossel não deriva da legenda.
+      out[`d${i + 1}`] = { kicker: serie, slide_text: slides[k] };
+      return;
+    }
+    // Até o ":" a frase contém "diar.ia.br", cheia de pontos; o fim da abertura
+    // é o 1º ponto DEPOIS do ":" ("…, tema 1 de 6: o trabalho.").
+    const abertura = /^Retrospectiva [^:\n]*:[^.\n]*\.\s/.exec((social[k] ?? "").trimStart())?.[0].trimEnd();
+    out[`d${i + 1}`] = { kicker: serie, ...(abertura ? { slide_prefix: abertura } : {}) };
+  });
+  return JSON.stringify(out, null, 2);
 }
 
 /** Ordem de publicação: temas em ordem numérica, previsões por último. */
@@ -81,33 +135,40 @@ export function parseAAMMDD(s: string): Date {
   return d;
 }
 
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 /**
- * Reparte os posts em dias de fim de semana (sábado e domingo), a partir de
- * `start` (inclusive). Fim de semana porque a diária não sai e os slots de
- * horário dos publicadores (`d1/d2/d3_time`) ficam livres — num dia útil os
- * posts da anual disputariam o mesmo horário com os da diária.
+ * Um post por dia, todos no mesmo horário, a partir de `start` (inclusive) —
+ * decisão do editor (12/09/2026): a série sai em dias seguidos, na ordem dos
+ * temas, com as previsões no último dia, sempre às `time` (default 09:00,
+ * antes da grade da diária: 10:00 / 12:30 / 17:30).
  *
- * Cada dia leva 2 ou 3 posts, nunca 1 nem 4: é o intervalo que os
- * publicadores e o gerador de carrossel aceitam (`readDestaqueCount`). Os
- * dias saem equilibrados, com os posts a mais nos primeiros (7 → 3/2/2).
- * Menos de 2 posts não cabe em dia nenhum.
+ * Os publicadores da diária só aceitam diretório com 2 ou 3 destaques
+ * (`readDestaqueCount`), então os posts são agrupados em LOTES de 2–3
+ * (equilibrados, os maiores primeiro: 7 → 3/2/2). O lote é só a unidade de
+ * arquivo; a data de cada post vem de `slots`, um dia por post.
  */
-export function planAnnualSocialDays(keys: AnnualSocialKey[], start: Date, weekendsOnly = true): AnnualSocialDay[] {
-  if (keys.length < 2) throw new Error(`${keys.length} post(s) — cada dia precisa de 2 ou 3`);
-  const nDias = Math.ceil(keys.length / 3);
-  const base = Math.floor(keys.length / nDias);
-  const extra = keys.length % nDias;
-  const dias: AnnualSocialDay[] = [];
+export function planAnnualSocialDays(keys: AnnualSocialKey[], start: Date, time = "09:00"): AnnualSocialDay[] {
+  if (keys.length < 2) throw new Error(`${keys.length} post(s) — cada lote precisa de 2 ou 3`);
+  if (!HHMM.test(time)) throw new Error(`horário inválido "${time}" — use HH:MM`);
+  const nLotes = Math.ceil(keys.length / 3);
+  const base = Math.floor(keys.length / nLotes);
+  const extra = keys.length % nLotes;
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const lotes: AnnualSocialDay[] = [];
   const d = new Date(start.getTime());
   let i = 0;
-  for (let n = 0; n < nDias; n++) {
-    while (weekendsOnly && d.getUTCDay() !== 0 && d.getUTCDay() !== 6) d.setUTCDate(d.getUTCDate() + 1);
+  for (let n = 0; n < nLotes; n++) {
     const size = base + (n < extra ? 1 : 0);
-    dias.push({ date: toAAMMDD(d), keys: keys.slice(i, i + size) });
+    const lote: AnnualSocialDay = { date: toAAMMDD(d), keys: keys.slice(i, i + size), slots: {} };
+    for (let j = 0; j < size; j++) {
+      lote.slots[`d${j + 1}`] = `${iso(d)}T${time}`;
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    lotes.push(lote);
     i += size;
-    d.setUTCDate(d.getUTCDate() + 1);
   }
-  return dias;
+  return lotes;
 }
 
 /**

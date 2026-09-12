@@ -43,6 +43,7 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 import { extractSection, extractDestaqueBlock } from "./lib/extract-section.ts";
+import { readCoverOverride } from "./gen-social-card-4x5.ts";
 import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
@@ -104,7 +105,7 @@ export async function genCarouselCards(
   // mesmo comportamento do invariante irmão `carousel-text-overflow` no Stage 4.
   const transbordam: { destaque: string; slides: ReturnType<typeof findOverflowingCarouselSlides> }[] = [];
   for (const d of destaques) {
-    const dText = section ? extractDestaqueBlock(section, d) : null;
+    const dText = slideSourceText(editionDir, d, section ? extractDestaqueBlock(section, d) : null);
     if (!dText) continue; // reportado como `skipped` no loop principal abaixo
     const slides = findOverflowingCarouselSlides(dText.trim());
     if (slides.length > 0) transbordam.push({ destaque: d, slides });
@@ -130,7 +131,7 @@ export async function genCarouselCards(
   }
 
   for (const d of destaques) {
-    const dText = section ? extractDestaqueBlock(section, d) : null;
+    const dText = slideSourceText(editionDir, d, section ? extractDestaqueBlock(section, d) : null);
     if (!dText) {
       skipped.push({ destaque: d, reason: `bloco '## ${d}' não encontrado em '# Social' de 03-social.md` });
       continue;
@@ -169,6 +170,29 @@ export async function genCarouselCards(
   if (Object.keys(hashes).length > 0) writeCarouselSourceHashes(editionDir, hashes);
 
   return { generated, skipped, refreshed };
+}
+
+/**
+ * Texto que vai para os slides de parágrafo. Na capa de série (Etapa 6 da
+ * anual), `_internal/social-cover.json` pode trazer `slide_prefix` — a frase
+ * de abertura que marca o post como parte da série na LEGENDA, mas que no
+ * slide repetiria o que a capa já diz (decisão do editor, 12/09/2026). Ela é
+ * tirada só do slide; a legenda continua com ela. Sem o arquivo (diária),
+ * devolve o texto intacto.
+ */
+export function slideSourceText(editionDir: string, destaque: string, text: string | null): string | null {
+  if (!text) return text;
+  const cover = readCoverOverride(editionDir, destaque);
+  // `slide_text` explícito (seção `# Slides` do 03-social.md da anual) vence:
+  // o carrossel usa esse texto e ignora a legenda.
+  if (cover?.slideText) return cover.slideText;
+  const prefix = cover?.slidePrefix;
+  if (!prefix) return text;
+  const t = text.trimStart();
+  if (!t.startsWith(prefix)) {
+    throw new Error(`slide_prefix de ${destaque} não abre o texto do post — 03-social.md mudou depois do prep-annual-social?`);
+  }
+  return t.slice(prefix.length).trimStart();
 }
 
 async function main(): Promise<void> {
