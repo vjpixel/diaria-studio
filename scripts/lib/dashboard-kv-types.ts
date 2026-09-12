@@ -116,11 +116,15 @@ export interface CohortStatsRow {
   eligible: number;
   /** sends_count>0 — "já recebeu ao menos 1 envio". */
   received: number;
-  /** #4406: send_eligible=1 AND sends_count=0 ("Falta 1º envio") — elegível
-   * que nunca recebeu nenhum envio, a fila real de 1º envio (mesma definição
-   * de `isFirstSend`, scripts/lib/clarice-segment.ts). Opcional (`?`): KV
-   * pré-#4406 não tem o campo — render trata AUSENTE como "—" (dado
-   * desconhecido), nunca como 0 (que leria como "não falta ninguém"). */
+  /** #8024 (antes #4406): send_eligible=1 AND `last_sent_at` fora do mês civil
+   * BRT corrente ("Falta 1º envio no mês") — elegível que não recebeu NENHUM
+   * envio neste mês (cobre tanto "nunca recebeu nada" quanto "recebeu, mas
+   * não neste mês"; ver `scripts/lib/civil-month-window.ts`). Antes do #8024
+   * era lifetime (`sends_count=0`, sem janela de tempo) — ver `isFirstSend`,
+   * scripts/lib/clarice-segment.ts, ainda usado noutros predicados de fila.
+   * Opcional (`?`): KV pré-#4406 não tem o campo — render trata AUSENTE como
+   * "—" (dado desconhecido), nunca como 0 (que leria como "não falta
+   * ninguém"). */
   eligible_never_sent?: number;
   /** sends_count>0 AND opens_count>0 — abriu ≥1, dentre quem recebeu. */
   opened: number;

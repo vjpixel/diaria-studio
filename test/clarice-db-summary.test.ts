@@ -441,31 +441,41 @@ test("computeStoreSummary: cohort_stats NÃO tem mais priority_points_sum (#2884
 });
 
 // ---------------------------------------------------------------------------
-// #4406 — cohort_stats[x].eligible_never_sent ("Falta 1º envio", substitui
-// cycle_start/received_this_cycle do #2909/#2923) + linha virtual "juridico"
+// #8024 (antes #4406) — cohort_stats[x].eligible_never_sent ("Falta 1º envio
+// no mês", substitui cycle_start/received_this_cycle do #2909/#2923; e desde
+// #8024 passou de lifetime pra "não recebeu NESTE mês civil BRT") + linha
+// virtual "juridico"
 // ---------------------------------------------------------------------------
 
-test("computeStoreSummary: eligible_never_sent conta send_eligible=1 AND sends_count<=0 por cohort (#4406)", () => {
+// `now` fixo (meio do mês, meio-dia UTC — bem dentro da janela BRT do mesmo
+// dia) pra fronteira de mês determinística nos testes abaixo.
+const JUNE_2026_NOW = new Date("2026-06-15T12:00:00Z");
+
+test("computeStoreSummary: eligible_never_sent conta send_eligible=1 sem envio NESTE mês, por cohort (#8024)", () => {
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
 
   // assinantes-ativos (tier 1):
-  //   a: elegível, nunca enviado (sends_count NULL) → conta
+  //   a: elegível, nunca enviado (last_sent_at NULL) → conta
   ins("INSERT INTO clarice_users (email, tier) VALUES ('a@x.com',1)");
-  //   b: elegível, nunca enviado (sends_count=0 explícito) → conta
-  ins("INSERT INTO clarice_users (email, tier, sends_count) VALUES ('b@x.com',1,0)");
-  //   c: elegível, JÁ recebeu (sends_count>0) → não conta
-  ins("INSERT INTO clarice_users (email, tier, sends_count) VALUES ('c@x.com',1,2)");
+  //   b: elegível, último envio no mês ANTERIOR → ainda falta este mês, conta
+  ins(
+    "INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('b@x.com',1,3,'2026-05-20T12:00:00Z')",
+  );
+  //   c: elegível, JÁ recebeu NESTE mês (last_sent_at dentro da janela) → não conta
+  ins(
+    "INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('c@x.com',1,2,'2026-06-10T12:00:00Z')",
+  );
   //   d: inelegível (unsub), nunca enviado → não conta (send_eligible=0)
   ins("INSERT INTO clarice_users (email, tier, unsubscribed) VALUES ('d@x.com',1,1)");
   recomputeDerived(db);
 
-  const s = computeStoreSummary(db);
+  const s = computeStoreSummary(db, JUNE_2026_NOW);
   const row = s.cohort_stats[COHORT_ASSINANTES_ATIVOS];
   assert.equal(row.contacts, 4, "a,b,c,d");
   assert.equal(row.eligible, 3, "a,b,c — d é inelegível (unsub)");
-  assert.equal(row.eligible_never_sent, 2, "só a e b — c já recebeu, d é inelegível");
-  assert.ok(row.eligible_never_sent <= row.eligible, "invariante: nunca-enviados é subconjunto de elegíveis");
+  assert.equal(row.eligible_never_sent, 2, "a e b faltam este mês — c já recebeu em junho, d é inelegível");
+  assert.ok(row.eligible_never_sent <= row.eligible, "invariante: falta-no-mês é subconjunto de elegíveis");
 
   db.close();
 });
@@ -474,18 +484,36 @@ test("computeStoreSummary: eligible_never_sent NÃO subtrai — quem recebeu e d
   // A coluna antiga ("Falta enviar" = eligible − received_this_cycle) podia
   // subestimar quem falta quando alguém recebia e saía depois — o subtraendo
   // não filtrava elegibilidade. eligible_never_sent não tem esse problema por
-  // construção: é computado DIRETO por isFirstSend, sem subtração nenhuma.
+  // construção: é computado DIRETO (send_eligible AND fora da janela do mês),
+  // sem subtração nenhuma.
   const db = openClariceDb(":memory:");
-  // recebeu 1 envio e depois descadastrou → sends_count>0, isFirstSend=false.
+  // recebeu 1 envio neste mês e depois descadastrou → send_eligible=0 cobre.
   db.prepare(
-    "INSERT INTO clarice_users (email, tier, sends_count, unsubscribed) VALUES ('a@x.com',1,1,1)",
+    "INSERT INTO clarice_users (email, tier, sends_count, last_sent_at, unsubscribed) VALUES ('a@x.com',1,1,'2026-06-10T12:00:00Z',1)",
   ).run();
   recomputeDerived(db);
 
-  const s = computeStoreSummary(db);
+  const s = computeStoreSummary(db, JUNE_2026_NOW);
   const row = s.cohort_stats[COHORT_ASSINANTES_ATIVOS];
   assert.equal(row.eligible, 0, "descadastrado é inelegível");
-  assert.equal(row.eligible_never_sent, 0, "já recebeu — nunca deveria contar como 'falta 1º envio'");
+  assert.equal(row.eligible_never_sent, 0, "inelegível nunca conta como 'falta 1º envio', mesmo já tendo recebido");
+
+  db.close();
+});
+
+test("computeStoreSummary: eligible_never_sent zera para quem recebeu no mês corrente, mesmo com histórico de envio anterior (#8024)", () => {
+  const db = openClariceDb(":memory:");
+  // último envio dentro do mês corrente (logo após a virada em BRT, não em
+  // UTC — 00:00 BRT = 03:00 UTC) → não falta, apesar de ter havido meses
+  // anteriores sem envio (o campo é sobre o mês ATUAL, não histórico).
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('a@x.com',1,5,'2026-06-01T03:00:01Z')",
+  ).run();
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db, JUNE_2026_NOW);
+  const row = s.cohort_stats[COHORT_ASSINANTES_ATIVOS];
+  assert.equal(row.eligible_never_sent, 0, "recebeu logo no início do mês corrente — não falta");
 
   db.close();
 });

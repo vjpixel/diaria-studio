@@ -37,8 +37,9 @@ import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 // — antes era uma cópia manualmente sincronizada com a interface homônima em
 // workers/brevo-dashboard/src/types.ts.
 import { isJuridicoEmail } from "./lib/clarice-sector.ts";
-import { isFirstSend, isSendEligible } from "./lib/clarice-segment.ts";
+import { isSendEligible } from "./lib/clarice-segment.ts";
 import { COHORT_JURIDICO, COHORT_ASSINANTES_ATIVOS } from "./lib/cohorts.ts";
+import { civilMonthWindow, isInCivilMonthWindow } from "./lib/civil-month-window.ts";
 import type { CohortStatsRow } from "./lib/dashboard-kv-types.ts";
 export type { CohortStatsRow };
 
@@ -205,8 +206,11 @@ const INTERNAL_PARAMS = INTERNAL_EMAILS.map((e) => e.toLowerCase());
 /**
  * Agrega o store em números (sem PII). Via SQL — não carrega 427k linhas em JS
  * (exceto `computeCohortStats`, que precisa de um scan JS — ver docstring lá).
+ *
+ * `now` (opcional, default `new Date()`) — só usado por `computeCohortStats`
+ * pra fixar a fronteira de mês civil BRT em teste (#8024).
  */
-export function computeStoreSummary(db: DatabaseSync): StoreSummary {
+export function computeStoreSummary(db: DatabaseSync, now: Date = new Date()): StoreSummary {
   // Pares total+verified em SCAN ÚNICO por universo (review #2815 — antes eram
   // 2 queries full-scan por par, diferindo só pelo AND mv_bucket='verified').
   // #2857 fase B: GROUP BY cohort (não mais tier) — mesmo predicado firstSend,
@@ -307,7 +311,7 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     // #2865: coluna Brevo do histograma de priority_points — mesmo universo
     // (sem internos, #2809) do histograma total/verified acima.
     priority_points_histogram_brevo: ppHistPair.brevo,
-    cohort_stats: computeCohortStats(db),
+    cohort_stats: computeCohortStats(db, now),
     mv: groupCounts(
       db,
       "SELECT COALESCE(mv_bucket,'none') AS k, COUNT(*) n FROM clarice_users GROUP BY COALESCE(mv_bucket,'none')",
@@ -355,12 +359,12 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
 
 /**
  * #2864: agrega por cohort as métricas comparativas da aba "Cohorts": contatos,
- * elegíveis, quem já recebeu ≥1 envio, quem é elegível e NUNCA recebeu (fila
- * real de 1º envio — `isFirstSend`, mesmo predicado que a rampa usa pra montar
- * as waves, #4406), quem abriu/clicou/saiu dentre os que receberam, e quem
- * está na Brevo. Exclui INTERNAL_EMAILS (#2809) — engajamento de ofício não é
- * sinal de comportamento de audiência e distorceria a comparação entre
- * cohorts.
+ * elegíveis, quem já recebeu ≥1 envio, quem é elegível e não recebeu NENHUM
+ * envio NESTE MÊS CIVIL BRT (`eligible_never_sent` — #8024, ver
+ * `civil-month-window.ts`; antes era lifetime, #4406), quem abriu/clicou/saiu
+ * dentre os que receberam, e quem está na Brevo. Exclui INTERNAL_EMAILS
+ * (#2809) — engajamento de ofício não é sinal de comportamento de audiência e
+ * distorceria a comparação entre cohorts.
  *
  * Scan em JS (não SQL `GROUP BY cohort`) desde o #4406: a chave de agregação
  * não é mais só a coluna `cohort` — um contato jurídico (`isJuridicoEmail`,
@@ -372,11 +376,17 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
  * `GROUP BY cohort` que existia antes virou este scan em JS, único jeito de
  * aplicar `isJuridicoEmail` na chave de agregação sem duplicar a lógica de
  * classificação em SQL cru.
+ *
+ * `now` (opcional, default `new Date()`) — testabilidade da fronteira de mês,
+ * mesmo padrão de `billingCycleWindow`/`civilMonthWindow`.
  */
-function computeCohortStats(db: DatabaseSync): Record<string, WrittenCohortStatsRow> {
+function computeCohortStats(
+  db: DatabaseSync,
+  now: Date = new Date(),
+): Record<string, WrittenCohortStatsRow> {
   const rows = db.prepare(`
     SELECT email, cohort, send_eligible, sends_count, opens_count, clicks_count,
-           unsubscribed, hard_bounced, brevo_list_ids
+           unsubscribed, hard_bounced, brevo_list_ids, last_sent_at
     FROM clarice_users
     WHERE ${NOT_INTERNAL_SQL}
   `).all(...INTERNAL_PARAMS) as Array<{
@@ -389,8 +399,10 @@ function computeCohortStats(db: DatabaseSync): Record<string, WrittenCohortStats
     unsubscribed: number;
     hard_bounced: number;
     brevo_list_ids: string | null;
+    last_sent_at: string | null;
   }>;
 
+  const monthWindow = civilMonthWindow(now);
   const out: Record<string, WrittenCohortStatsRow> = {};
   const blank = (): WrittenCohortStatsRow => ({
     contacts: 0, eligible: 0, received: 0, eligible_never_sent: 0,
@@ -406,7 +418,13 @@ function computeCohortStats(db: DatabaseSync): Record<string, WrittenCohortStats
     row.contacts++;
     if (isSendEligible(r)) row.eligible++;
     if (recebeu) row.received++;
-    if (isFirstSend({ send_eligible: r.send_eligible, sends_count: r.sends_count ?? 0 })) {
+    // #8024: "falta 1º envio NO MÊS" = elegível E `last_sent_at` (envio mais
+    // recente, lifetime) não cai dentro do mês civil corrente — cobre tanto
+    // quem nunca recebeu nada (last_sent_at NULL) quanto quem recebeu em
+    // meses anteriores mas ainda não neste. `isFirstSend` (elegível E
+    // sends_count=0) deixou de ser o predicado aqui — ele media "nunca na
+    // vida", não "neste mês" (ver #4406 para a semântica antiga).
+    if (isSendEligible(r) && !isInCivilMonthWindow(r.last_sent_at, monthWindow)) {
       row.eligible_never_sent++;
     }
     if (recebeu && (r.opens_count ?? 0) > 0) row.opened++;
