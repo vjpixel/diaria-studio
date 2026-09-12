@@ -223,10 +223,13 @@ export function findConflictingClaimSessionId(repoRoot, checkoutRoot, callerSess
  * ou detached HEAD. */
 export function getHeadBranch(checkoutRoot) {
   try {
+    // windowsHide (#7959): sem isso, este `execFileSync("git", ...)` aloca
+    // console próprio no Windows a cada `git commit` interceptado.
     const out = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd: checkoutRoot,
       encoding: "utf8",
       timeout: 1000,
+      windowsHide: true,
     }).trim();
     return out === "" ? null : out;
   } catch {
@@ -283,10 +286,12 @@ if (
       // `.git` DIRETO sob o path) esperam.
       let checkoutRoot = probeCwd;
       try {
+        // windowsHide (#7959): mesma razão de getHeadBranch acima.
         const toplevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
           cwd: probeCwd,
           encoding: "utf8",
           timeout: 1000,
+          windowsHide: true,
         }).trim();
         if (toplevel) checkoutRoot = toplevel;
       } catch {
@@ -303,10 +308,12 @@ if (
       // quando `commonDir` já é absoluto (reproduzido ao vivo neste worktree).
       let repoRoot = checkoutRoot;
       try {
+        // windowsHide (#7959): mesma razão de getHeadBranch acima.
         const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
           cwd: checkoutRoot,
           encoding: "utf8",
           timeout: 1000,
+          windowsHide: true,
         }).trim();
         if (commonDir) repoRoot = resolvePath(commonDir, "..");
       } catch {

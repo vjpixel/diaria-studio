@@ -48,13 +48,29 @@
  * é exatamente por isso que a #7952 pediu `windowsHide` nelas também. O
  * guard geral acima nunca as veria (não têm `detached: true` pra ancorar a
  * busca). `findWindowsHideMissingCalls` cobre TODA chamada
- * `execFile`/`execFileSync`/`spawn`/`spawnSync`, com ou sem `detached` —
- * mas só é aplicado a `session-start-claude-config-sync.mjs`, não a todo
- * hook do diretório: os outros hooks têm `execFileSync("git", ...)` sem
- * `windowsHide` pré-existentes, fora do escopo desta issue (#7952 mira
- * especificamente o hook de SessionStart, o de maior frequência — 1x por
- * sessão nova) — aplicar o guard estrito a todo o diretório seria escopo
- * novo, não a regressão deste PR.
+ * `execFile`/`execFileSync`/`spawn`/`spawnSync`, com ou sem `detached` — na
+ * época do #7952 só era aplicado a `session-start-claude-config-sync.mjs`,
+ * porque os outros hooks tinham `execFileSync("git", ...)`/`spawnSync(...)`
+ * sem `windowsHide` pré-existentes, fora do escopo daquela issue (#7952
+ * mirava especificamente o hook de SessionStart, o de maior frequência — 1x
+ * por sessão nova).
+ *
+ * **Generalizado pelo #7959** (achado no mesmo fleet review pré-merge que
+ * motivou o 2º guard acima): `notify-sound.mjs`, `block-pr-create-pii-runtime-artifacts.mjs`
+ * e `block-worktree-alien-commit.mjs` tinham exatamente o mesmo padrão —
+ * `spawnSync`/`execFileSync` de um binário de console (`powershell`/`git`)
+ * sem `windowsHide`. **3º guard** (`findConsoleBinaryCallsMissingWindowsHide`
+ * + `fileMentionsConsoleBinary`, definidos mais abaixo): aplica a mesma
+ * lógica de `findWindowsHideMissingCalls` a QUALQUER hook do diretório que
+ * cite um binário de console conhecido (`git`, `powershell`,
+ * `powershell.exe`, `cmd`, `cmd.exe`, `tzutil`, `gh`) em algum lugar do
+ * arquivo — não só como primeiro argumento da chamada, porque
+ * `notify-sound.mjs` resolve o binário numa função separada e passa por
+ * variável no call site (ver docstring de `fileMentionsConsoleBinary`). Os
+ * hooks que despacham processo via função INJETADA (`execFn = execFileSync`)
+ * ficam de fora sem allowlist explícita: não têm chamada LITERAL que bata o
+ * regex de `findWindowsHideMissingCalls`, então o guard generalizado não
+ * encontra nada pra flagar neles.
  */
 
 import { describe, it } from "node:test";
@@ -106,6 +122,68 @@ export function findWindowsHideMissingCalls(content: string): number[] {
     }
   }
   return offenders;
+}
+
+/**
+ * 3º guard, GENERALIZADO a todo o diretório de hooks (#7959).
+ *
+ * Achado no fleet review pré-merge da PR #7953 (silent-failure-hunter +
+ * pr-test-analyzer): o mesmo padrão do #7952 (processo de console sem
+ * `windowsHide: true`) existia em mais 3 hooks pré-existentes —
+ * `notify-sound.mjs` (roda em todo evento Stop/Notification, mais frequente
+ * que o SessionStart que motivou o #7952), `block-pr-create-pii-runtime-artifacts.mjs`
+ * e `block-worktree-alien-commit.mjs` — mas não bloquearam aquele PR por
+ * estarem fora do escopo dele (#7952 mirava só `session-start-claude-config-sync.mjs`).
+ * O 2º guard acima (`findWindowsHideMissingCalls`) já existia com a lógica
+ * certa, mas só era aplicado a 1 arquivo — este guard generaliza a MESMA
+ * lógica pra qualquer hook `.mjs` do diretório, sem reabrir falso-positivo
+ * nos outros hooks que despacham processo via função INJETADA (ex:
+ * `execFn = execFileSync` em `block-gh-pr-merge-subagent.mjs` e afins): esses
+ * chamam via a variável (`execFn(...)`), não via o nome literal da função, e
+ * por isso não têm nenhuma ocorrência que bata o regex de chamada usado por
+ * `findWindowsHideMissingCalls` — o guard roda sobre eles sem achar nenhuma
+ * chamada pra flagar (confirmado por varredura ao vivo do diretório: só 4
+ * dos 18 hooks têm chamada LITERAL `execFile(Sync)?`/`spawn(Sync)?`).
+ *
+ * **Por que existe um portão (`fileMentionsConsoleBinary`) em vez de aplicar
+ * `findWindowsHideMissingCalls` cru a todo arquivo:** o pedido da issue #7959
+ * é generalizar por BINÁRIO DE CONSOLE conhecido (`git`, `powershell`,
+ * `powershell.exe`, `cmd`, `cmd.exe`, `tzutil`, `gh`), não "toda chamada de
+ * processo de qualquer hook, sempre" — um hook hipotético que só spawna um
+ * binário não-console (ex: outro processo Node) não precisaria do guard.
+ * O portão verifica se o ARQUIVO (não a chamada específica) menciona um
+ * desses binários como STRING LITERAL em qualquer lugar — não só como
+ * primeiro argumento do call site. Isso é necessário porque
+ * `notify-sound.mjs` resolve o binário numa função separada
+ * (`resolveSoundCommand`, que retorna `{ command: "powershell", ... }`) e
+ * passa por uma VARIÁVEL (`resolved.command`) no ponto de chamada — o
+ * literal "powershell" fica páginas antes do `spawnSync`, nunca colado nele.
+ * Ancorar a checagem só no argumento literal da chamada perderia
+ * exatamente o caso mais urgente dos 3 (maior volume de execuções, citado
+ * na própria issue). Uma vez que o arquivo menciona o binário em algum
+ * lugar, exigimos `windowsHide: true` em TODA chamada de processo do
+ * arquivo — não só na que carrega o literal.
+ */
+const CONSOLE_BINARY_NAMES = ["git", "powershell.exe", "powershell", "cmd.exe", "cmd", "tzutil", "gh"];
+const CONSOLE_BINARY_LITERAL_RE = new RegExp(
+  `["'\`](?:${CONSOLE_BINARY_NAMES.map((n) => n.replace(/\./g, "\\.")).join("|")})["'\`]`,
+  "i",
+);
+
+/** `true` quando `content` cita, em qualquer lugar do arquivo, um dos
+ * binários de console conhecidos (`CONSOLE_BINARY_NAMES`) como string
+ * literal. Ver docstring de `findConsoleBinaryCallsMissingWindowsHide`
+ * acima pro porquê disso ser no nível do ARQUIVO, não da chamada. */
+export function fileMentionsConsoleBinary(content: string): boolean {
+  return CONSOLE_BINARY_LITERAL_RE.test(content);
+}
+
+/** Guard generalizado #7959 — `[]` sem escanear nada se o arquivo não citar
+ * nenhum binário de console conhecido; senão reusa `findWindowsHideMissingCalls`
+ * (mesma lógica do 2º guard, aplicada aqui a qualquer arquivo). */
+export function findConsoleBinaryCallsMissingWindowsHide(content: string): number[] {
+  if (!fileMentionsConsoleBinary(content)) return [];
+  return findWindowsHideMissingCalls(content);
 }
 
 function listHookFiles(): string[] {
@@ -215,4 +293,96 @@ describe("Regressão #7952 (guard estrito) — session-start-claude-config-sync.
         "aloca janela no Windows (#7952).",
     );
   });
+});
+
+describe("fileMentionsConsoleBinary / findConsoleBinaryCallsMissingWindowsHide (#7959) — lógica pura", () => {
+  it("arquivo sem nenhum binário de console conhecido -> false, guard não escaneia nada", () => {
+    const content = `execFile("node", ["script.js"], { timeout: 1000 }, cb);`;
+    assert.equal(fileMentionsConsoleBinary(content), false);
+    assert.deepEqual(findConsoleBinaryCallsMissingWindowsHide(content), []);
+  });
+
+  it("literal 'git' em qualquer lugar do arquivo -> true", () => {
+    assert.equal(fileMentionsConsoleBinary(`const bin = "git";`), true);
+  });
+
+  it("literal 'powershell' (sem .exe) -> true", () => {
+    assert.equal(fileMentionsConsoleBinary(`command: "powershell"`), true);
+  });
+
+  it("literais 'cmd.exe'/'tzutil'/'gh' -> true cada um", () => {
+    assert.equal(fileMentionsConsoleBinary(`spawn("cmd.exe", []);`), true);
+    assert.equal(fileMentionsConsoleBinary(`execFileSync("tzutil", ["/g"]);`), true);
+    assert.equal(fileMentionsConsoleBinary(`execFileSync("gh", ["pr", "view"]);`), true);
+  });
+
+  it("binário resolvido por VARIÁVEL (padrão notify-sound.mjs) — literal longe da chamada ainda é achado", () => {
+    // Reconstitui o padrão real do #7959: o literal do binário aparece numa
+    // função separada, não colado no spawnSync que de fato precisa de
+    // windowsHide.
+    const content = [
+      `function resolveSoundCommand() { return { command: "powershell", args: [] }; }`,
+      "x".repeat(300), // separação — não é o "janela ao redor da chamada" que importa aqui
+      `const resolved = resolveSoundCommand();`,
+      `spawnSync(resolved.command, resolved.args, { stdio: "ignore", timeout: 10_000 });`,
+    ].join("\n");
+    assert.equal(fileMentionsConsoleBinary(content), true);
+    assert.deepEqual(findConsoleBinaryCallsMissingWindowsHide(content).length, 1);
+  });
+
+  it("mesmo padrão, COM windowsHide na chamada -> nenhum ofensor (regressão discrimina: sabotar a flag deve falhar)", () => {
+    const content = [
+      `function resolveSoundCommand() { return { command: "powershell", args: [] }; }`,
+      `const resolved = resolveSoundCommand();`,
+      `spawnSync(resolved.command, resolved.args, { stdio: "ignore", timeout: 10_000, windowsHide: true });`,
+    ].join("\n");
+    assert.deepEqual(findConsoleBinaryCallsMissingWindowsHide(content), []);
+  });
+
+  it("2 chamadas 'git' no mesmo arquivo, ambas sem windowsHide -> 2 ofensores", () => {
+    const content = [
+      `spawnSync("git", ["rev-parse", "--verify", ref], { timeout: 15000 });`,
+      "x".repeat(2000),
+      `spawnSync("git", args, { timeout: 30000 });`,
+    ].join("\n");
+    assert.deepEqual(findConsoleBinaryCallsMissingWindowsHide(content).length, 2);
+  });
+
+  it("arquivo que só despacha via função INJETADA (execFn = execFileSync) -> nenhum ofensor mesmo citando 'git' em comentário", () => {
+    // Reconstitui o padrão de block-gh-pr-merge-subagent.mjs e afins: a
+    // chamada real é `execFn(...)`, não `execFileSync(...)` literal — o
+    // regex de chamada de findWindowsHideMissingCalls não acha nada pra
+    // flagar, então o guard generalizado precisa concordar (0 ofensores),
+    // mesmo que o arquivo mencione "git" em prosa/doc.
+    const content = [
+      `// roda o binário "git" via a função injetada, nunca chamada literal`,
+      `export function resolveMainRepoRoot(execFn = execFileSync) {`,
+      `  return execFn(["rev-parse", "--show-toplevel"], cwd);`,
+      `}`,
+    ].join("\n");
+    assert.equal(fileMentionsConsoleBinary(content), true); // "git" aparece em comentário
+    assert.deepEqual(findConsoleBinaryCallsMissingWindowsHide(content), []); // mas nenhuma chamada literal pra flagar
+  });
+});
+
+describe("Regressão #7959 — .claude/hooks/*.mjs reais deste repo (guard generalizado)", () => {
+  const files = listHookFiles();
+
+  it("existe pelo menos 1 hook .mjs pra varrer (sanity — senão o guard não prova nada)", () => {
+    assert.ok(files.length > 0, `nenhum .mjs encontrado em ${HOOKS_DIR}`);
+  });
+
+  for (const file of files) {
+    it(`${file}: se cita binário de console conhecido (git/powershell/cmd/tzutil/gh), toda chamada de processo declara windowsHide:true`, () => {
+      const content = readFileSync(join(HOOKS_DIR, file), "utf8");
+      const offenders = findConsoleBinaryCallsMissingWindowsHide(content);
+      assert.deepEqual(
+        offenders,
+        [],
+        `${file}: ${offenders.length} chamada(s) de processo sem windowsHide:true (offsets: ` +
+          `${offenders.join(", ")}) — arquivo cita binário de console conhecido; no Windows isso pode ` +
+          "alocar janela mesmo sem detached:true (#7959).",
+      );
+    });
+  }
 });
