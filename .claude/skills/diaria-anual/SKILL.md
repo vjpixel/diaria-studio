@@ -1,6 +1,6 @@
 ---
 name: diaria-anual
-description: Gera a retrospectiva ANUAL da diar.ia.br a partir das edições diárias de 12-13 meses — N temas variáveis (3-7), "o que mudou" e previsões derivadas só do período. Sai 2x por ano — no aniversário (agosto, cobre ago-jul, com bloco de aniversário) e em janeiro (cobre o ano civil). Uso — `/diaria-anual [--tipo aniversario|janeiro] [--desde YYMM] [--ate YYMM] [--no-gate]`. Etapas 0-5 espelhando a mensal, gate único na Etapa 4. Canal — base própria (Kit), envio EXTRA (a diária do dia sai normal). Sem Use Melhor, sem Radar, sem "É IA?" (#7569).
+description: Gera a retrospectiva ANUAL da diar.ia.br a partir das edições diárias de 12-13 meses — N temas variáveis (3-7), "o que mudou" e previsões derivadas só do período. Sai 2x por ano — no aniversário (agosto, cobre ago-jul, com bloco de aniversário) e em janeiro (cobre o ano civil). Uso — `/diaria-anual [--tipo aniversario|janeiro] [--desde YYMM] [--ate YYMM] [--no-gate]`. Etapas 0-5 espelhando a mensal, gate único na Etapa 4, mais a Etapa 6 — um post por tema e um das previsões em LinkedIn, Facebook, Instagram, Threads e X, agendados em fins de semana (gate próprio). Canal — base própria (Kit), envio EXTRA (a diária do dia sai normal). Sem Use Melhor, sem Radar, sem "É IA?" (#7569).
 ---
 
 # /diaria-anual
@@ -32,13 +32,14 @@ Cada etapa grava `_internal/.step-N-done.json` (mesmo formato da diária/mensal,
 npx tsx scripts/pipeline-sentinel.ts assert --edition $SLUG --step N --dir "data/annual/$SLUG" --outputs "arquivo1,arquivo2"
 ```
 
-- Etapa 5: `--outputs "_internal/05-published.json"` → pipeline concluído.
+- Etapa 6: `--outputs "social/06-scheduled.json"` → pipeline concluído.
+- Etapa 5: `--outputs "_internal/05-published.json"` → pular pra 6.
 - Etapa 4: `--outputs "_internal/04-fact-check.json"` → pular pra 5.
 - Etapa 3: `--outputs "04-d1-2x1.jpg"` → pular pra 4.
 - Etapa 2: `--outputs "draft.md"` → pular pra 3.
 - Etapa 1: `--outputs "prioritized.md"` → pular pra 2.
 
-Ao fim de cada etapa (1, 2, 3 e 5 sem pausar; só a 4 pausa no gate):
+Ao fim de cada etapa (1, 2, 3 e 5 sem pausar; a 4 e a 6 pausam no gate):
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write --edition $SLUG --step N --dir "data/annual/$SLUG" --outputs "..."
@@ -232,10 +233,81 @@ O lint roda de novo aqui — o draft pode ter mudado depois do gate.
 
 **O disparo real é ação humana.** Esta skill não agenda nem envia: o editor abre o rascunho no Kit e dispara. É envio **extra** — a edição diária do dia sai normalmente.
 
-Banner final com `broadcast_id`, `public_url` e o lembrete de que o envio ainda não aconteceu.
+Banner com `broadcast_id`, `public_url` e o lembrete de que o envio ainda não aconteceu. Segue para a Etapa 6 na mesma sessão.
+
+---
+
+## Etapa 6 — Mídias sociais
+
+Cada tema vira um post, e as previsões viram mais um (N+1 posts), em todos os canais sociais da diária: **LinkedIn (página), Facebook, Instagram, Threads e X**, mais um post pessoal opcional no LinkedIn do editor. Mesmo desenho da publicação social da `/diaria-5-publicacao` (#6610), reaproveitando os mesmos publicadores **sem modificá-los**: `prep-annual-social.ts` monta, para cada dia de publicação, um diretório com a forma de uma edição diária (`social/{AAMMDD}/`), e os scripts da diária rodam sobre ele.
+
+**Todo post se apresenta como parte da retrospectiva de aniversário** (decisão do editor, 12/09/2026) — o leitor que cai num post solto no feed precisa saber que ele é um capítulo de algo maior.
+
+### 6a. Textos
+
+Disparar um `Agent` (`general-purpose`, `model: sonnet`) que lê `draft.md` e escreve `data/annual/$SLUG/social/03-social.md` seguindo as regras de `.claude/agents/social-writer.md` (§3a) e `.claude/agents/social-curto.md`, com as adaptações da anual:
+
+- **`# Social`** — uma seção por post: `## t1` … `## tN` (N = temas do draft, na ordem do draft) e `## previsoes`. Exatamente 3 parágrafos, cada um até ~260 caracteres (1 slide de carrossel por parágrafo), 1 trecho em `**negrito**` por parágrafo, bloco de até 5 hashtags no fim, sem URL e sem CTA de canal (os publicadores injetam a linha de cada rede).
+- **Abertura fixa no 1º parágrafo:** `Retrospectiva de 1 ano da diar.ia.br, tema {i} de {N}: {tema em poucas palavras}.` (previsões: `…, parte final: as previsões.`). Em rodada de janeiro, `Retrospectiva de {ano} da diar.ia.br`.
+- **Números só os que estão no `draft.md`** (#1711) — os posts resumem a edição, não trazem apuração nova.
+- **`# Curto`** — mesmas chaves, ≤280 caracteres ponderados (URL = 23), abrindo com `Retrospectiva de 1 ano da diar.ia.br ({i}/{N}):` e fechando com `Mais em {URL pública da retrospectiva}` + 1–2 hashtags. **Aqui a URL vai escrita por extenso**, não o placeholder `{edition_url}`: esses diretórios não são edição diária, e o `resolve-edition-url.ts` apontaria para outra coisa.
+- **`# Pixel`** → `## post_pixel` (opcional) — post pessoal do editor, regras do §3b de `social-writer.md` (primeira pessoa, link `linkedin.com/company/diar.ia.br` no meio do texto, sem pergunta no fim). Publicação manual.
+
+Conferir tamanhos antes de seguir — parágrafo acima do teto quebra a geração do carrossel.
+
+### 6b. Imagem das previsões
+
+A Etapa 3 gera uma imagem por tema, nenhuma para as previsões. Gerar uma (mesmas regras de prompt: Van Gogh impasto, 2:1, sem resolução em pixels, sem Noite Estrelada):
+
+```bash
+npx tsx scripts/image-generate.ts --editorial data/annual/$SLUG/social/_internal/02-previsoes-prompt.md \
+  --out-dir data/annual/$SLUG/social/_img-previsoes/ --destaque d1 --ratio 2x1
+cp data/annual/$SLUG/social/_img-previsoes/04-d1-2x1.jpg data/annual/$SLUG/social/previsoes-2x1.jpg
+```
+
+### 6c. Dias de publicação + imagens de feed
+
+```bash
+npx tsx scripts/prep-annual-social.ts --slug $SLUG [--start AAMMDD]
+```
+
+Reparte os N+1 posts em **sábados e domingos** a partir de `--start` (default: amanhã), 2 ou 3 posts por dia (6 temas + previsões → 3/2/2), previsões no último dia. Fim de semana porque a diária não sai: os horários dos publicadores (`d1/d2/d3_time` em `platform.config.json`) ficam livres. Grava `social/plan.json` e um diretório por dia com `02-reviewed.md`, `03-social.md` (`## d1..d3`) e as imagens 2:1 — a do tema sai pelo índice da URL em `public-images.json`, que continua certo mesmo se o editor reordenou os temas.
+
+Para cada dia do plano:
+
+```bash
+npx tsx scripts/gen-social-card-4x5.ts --edition-dir data/annual/$SLUG/social/$DIA
+npx tsx scripts/gen-carousel-cards.ts --edition-dir data/annual/$SLUG/social/$DIA --force
+```
+
+A capa 4:5 leva o título do tema e a categoria `RETROSPECTIVA DE ANIVERSÁRIO`; o carrossel sai com capa, os 3 parágrafos e o fecho.
+
+### 6d. Gate humano
+
+Publicar um artefato de revisão (via `artifact-design`) com, por dia: horário de cada post, a capa e os slides, o texto de feed e o curto. Perguntar `sim / editar / retry`. `editar` → o editor mexe em `social/03-social.md` e re-roda 6c. Com `--no-gate`, segue direto.
+
+### 6e. Agendamento
+
+Para cada dia do plano, na ordem:
+
+```bash
+D=data/annual/$SLUG/social/$DIA
+npx tsx scripts/upload-images-public.ts --edition-dir $D/ --mode social
+npx tsx scripts/publish-linkedin.ts  --edition-dir $D --schedule
+npx tsx scripts/publish-facebook.ts  --edition-dir $D --schedule
+npx tsx scripts/publish-instagram.ts --edition-dir $D --schedule
+npx tsx scripts/publish-threads.ts   --edition-dir $D --schedule
+npx tsx scripts/prep-twitter-posts.ts --edition-dir $D
+```
+
+X: para cada post que `prep-twitter-posts.ts` devolver, `mcp__claude_ai_Buffer__create_post` com `mode: "customScheduled"` e o `dueAt` dele (mesmo fluxo da `/diaria-5-publicacao`). O `06-social-published.json` de cada dia é o registro de idempotência: re-rodar pula o que já foi agendado.
+
+Validar o estado de cada canal com `scripts/lib/publish-state.ts` antes de relatar (#573) e gravar o resumo em `social/06-scheduled.json` (dia, post, canal, `scheduled_at`, status). O `post_pixel`, se houver, fica para o editor publicar à mão no perfil pessoal, no mesmo dia do 1º post.
+
+Banner final: tabela dia × post × canal com horário e status, mais o que falhou e o comando de retry.
 
 ---
 
 ## Fronteira de contexto
 
-Esta skill não encadeia para nenhuma outra (#5578). Ao terminar a Etapa 5, escrever o sentinel, apresentar o resumo e parar.
+Esta skill não encadeia para nenhuma outra (#5578). Ao terminar a Etapa 6, escrever o sentinel, apresentar o resumo e parar.
