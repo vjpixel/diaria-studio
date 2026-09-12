@@ -2,9 +2,10 @@
  * test/calibrate-scoring-weights.test.ts (#7990)
  *
  * Cobre scripts/calibrate-scoring-weights.ts — regressão de verdade que
- * aprende pesos candidato a partir do corpus histórico, com os 3
- * guardrails obrigatórios (#7972 §4). Mesmo padrão de efeito plantado
- * forte/fraco de test/calibration-power-report.test.ts.
+ * aprende pesos candidato a partir do corpus histórico, com os 4
+ * guardrails obrigatórios (#7972 §4; 4º — AUC de holdout — adicionado pela
+ * #8006). Mesmo padrão de efeito plantado forte/fraco de
+ * test/calibration-power-report.test.ts.
  */
 
 import { describe, it } from "node:test";
@@ -307,7 +308,7 @@ describe("evaluateGuardrails (#7990) — cap de domínio (#5735) e HHI, isolados
     // então este teste usa 3 candidatos empatados e confere que ELE PRÓPRIO
     // não estoura com realKeptCount=1 (é o próximo teste, com
     // realKeptCount=3, que prova o estouro de verdade).
-    const guardrails = evaluateGuardrails(editions, FEATURE, 100);
+    const guardrails = evaluateGuardrails(editions, FEATURE, 100, editions);
     assert.equal(guardrails.domain_cap_unassessable, false);
     assert.ok(guardrails.domain_cap_evaluable_editions > 0);
   });
@@ -330,7 +331,7 @@ describe("evaluateGuardrails (#7990) — cap de domínio (#5735) e HHI, isolados
     // peso MUITO positivo (100): shadow_score dos 3 itens mono.example vira
     // 110, superando os 3 diversos (60/55/51) — top-3 simulado = os 3 itens
     // mono.example → 1 domínio com 3 URLs > cap de 2 → estoura.
-    const guardrails = evaluateGuardrails(editions, FEATURE, 100);
+    const guardrails = evaluateGuardrails(editions, FEATURE, 100, editions);
     assert.equal(guardrails.domain_cap_unassessable, false);
     assert.equal(guardrails.baseline_overflow_rate, 0, "baseline real nunca estoura (3 domínios distintos)");
     assert.ok(guardrails.simulated_overflow_rate > 0, "simulado deveria estourar em toda edição");
@@ -347,7 +348,7 @@ describe("evaluateGuardrails (#7990) — cap de domínio (#5735) e HHI, isolados
       ];
       editions.push({ edition: ed, rows, kept: [true, false] });
     }
-    const guardrails = evaluateGuardrails(editions, FEATURE, 5);
+    const guardrails = evaluateGuardrails(editions, FEATURE, 5, editions);
     assert.equal(guardrails.domain_cap_evaluable_editions, 0);
     assert.equal(guardrails.domain_cap_unassessable, true);
     assert.equal(guardrails.domain_cap_rejected, true, "não-avaliável precisa rejeitar, nunca aprovar por padrão");
@@ -362,9 +363,70 @@ describe("evaluateGuardrails (#7990) — cap de domínio (#5735) e HHI, isolados
         kept: [true, false],
       },
     ];
-    const guardrails = evaluateGuardrails(editions, FEATURE, 5);
+    const guardrails = evaluateGuardrails(editions, FEATURE, 5, editions);
     assert.equal(guardrails.hhi_unassessable, true);
     assert.equal(guardrails.hhi_rejected, true, "não-avaliável precisa rejeitar, nunca aprovar por padrão (HHI=0 pareceria 'diversidade perfeita')");
+  });
+
+  it("AUC (#8006) REJEITA quando a feature não prediz keep no holdout, mesmo com HHI/cap de domínio limpos — achado ao vivo que motivou o gate (PR #8002, has_official_link, AUC 0.44/0.481)", () => {
+    // Construção determinística de AUC == 0.5 exato: metade das edições tem
+    // o item feature=true MANTIDO (par favorece kept), a outra metade tem o
+    // item feature=false MANTIDO (par desfavorece kept) — os multisets de
+    // score kept/não-kept ficam IDÊNTICOS ({150×20, 50×20} cada), o que dá
+    // AUC = 0.5 por simetria (nenhuma dependência de RNG/seed).
+    const editions: EditionRows[] = [];
+    for (let e = 0; e < 40; e++) {
+      const ed = String(260700 + e);
+      const rowTrue = mkRow({ url: `https://true-${e}.example/${ed}-a`, [FEATURE]: true, score_base: 50 });
+      const rowFalse = mkRow({ url: `https://false-${e}.example/${ed}-b`, [FEATURE]: false, score_base: 50 });
+      const trueKept = e % 2 === 0; // metade das edições mantém a linha feature=true, metade mantém a feature=false
+      editions.push({ edition: ed, rows: [rowTrue, rowFalse], kept: [trueKept, !trueKept] });
+    }
+    // peso positivo forte (100) — sem o gate 4, isto pareceria um candidato
+    // ótimo (score alto sempre que feature=true), mas o holdout mostra que
+    // "kept" não segue a feature: às vezes é o item COM ela, às vezes o SEM.
+    const guardrails = evaluateGuardrails(editions, FEATURE, 100, editions);
+    assert.equal(guardrails.auc_unassessable, false);
+    assert.equal(guardrails.holdout_auc, 0.5, "multisets de score kept/não-kept idênticos por construção → AUC exatamente 0.5");
+    assert.equal(guardrails.auc_rejected, true, "AUC == 0.5 (limiar) precisa rejeitar — 'não supera' é <=, não <");
+    assert.equal(guardrails.hhi_rejected, false, "domínios diversos — HHI não deveria ser o motivo da rejeição");
+    assert.equal(guardrails.domain_cap_rejected, false, "cap de domínio não deveria ser o motivo da rejeição");
+  });
+
+  it("AUC (#8006) NÃO AVALIÁVEL (fail-closed) quando o holdout não tem nenhum item mantido — rejeitado, nunca lido como aprovado", () => {
+    const editions: EditionRows[] = [];
+    for (let e = 0; e < 40; e++) {
+      const ed = String(260700 + e);
+      editions.push({
+        edition: ed,
+        rows: [mkRow({ url: `https://a-${e}.example/${ed}`, [FEATURE]: true }), mkRow({ url: `https://b-${e}.example/${ed}`, [FEATURE]: false })],
+        kept: [false, false], // nenhum item mantido em NENHUMA edição do holdout — grupo "kept" fica vazio
+      });
+    }
+    const guardrails = evaluateGuardrails(editions, FEATURE, 5, editions);
+    assert.equal(guardrails.holdout_auc, null);
+    assert.equal(guardrails.auc_unassessable, true);
+    assert.equal(guardrails.auc_rejected, true, "não-avaliável precisa rejeitar, nunca aprovar por padrão");
+  });
+
+  it("AUC (#8006) ACEITA quando a feature de fato separa kept/não-kept no holdout (AUC > 0.5)", () => {
+    const editions: EditionRows[] = [];
+    for (let e = 0; e < 40; e++) {
+      const ed = String(260700 + e);
+      // feature=true SEMPRE mantida, feature=false NUNCA — separação perfeita, AUC=1.
+      editions.push({
+        edition: ed,
+        rows: [
+          mkRow({ url: `https://a-${e}.example/${ed}`, [FEATURE]: true, score_base: 50 }),
+          mkRow({ url: `https://b-${e}.example/${ed}`, [FEATURE]: false, score_base: 50 }),
+        ],
+        kept: [true, false],
+      });
+    }
+    const guardrails = evaluateGuardrails(editions, FEATURE, 10, editions);
+    assert.equal(guardrails.holdout_auc, 1);
+    assert.equal(guardrails.auc_unassessable, false);
+    assert.equal(guardrails.auc_rejected, false);
   });
 });
 

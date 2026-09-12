@@ -21,7 +21,8 @@
  * de calibração já segue: script decide/mede, sessão que roda o script cuida
  * de git/PR (REGRA DE OURO, #7972).
  *
- * ## Guardrails obrigatórios (#7972 §4, herdados pela issue #7990)
+ * ## Guardrails obrigatórios (#7972 §4, herdados pela issue #7990; 4º
+ * adicionado pela #8006)
  *
  * 1. **Holdout nunca usado em treino** — as `DEFAULT_HOLDOUT` (25, mesmo
  *    valor de `shadow-validation-report.ts`) edições cronologicamente mais
@@ -38,6 +39,16 @@
  *    "suporte" do candidato); rejeitado se HHI > `HHI_REJECTION_THRESHOLD`
  *    (2500 — o mesmo limiar convencional de "altamente concentrado" citado
  *    na docstring de `source-concentration.ts`).
+ * 4. **Poder preditivo mínimo no holdout (#8006)** — AUC (Mann-Whitney,
+ *    `shadow-validation-report.ts::computeAuc`) do `shadow_score_alt` desta
+ *    feature SOZINHA, calculado só sobre as edições de HOLDOUT (nunca
+ *    treino+holdout como os gates 2/3, que protegem contra risco, não
+ *    medem poder preditivo out-of-sample). Rejeitado se AUC ≤
+ *    `AUC_REJECTION_THRESHOLD` (0.5 — "não prediz melhor que aleatório").
+ *    Achado ao vivo que motivou: `has_official_link` (PR #8002) passava os
+ *    3 gates originais com AUC de holdout 0.44/0.481 (real/shadow, ambos
+ *    ≤0.5) — os gates de risco não tinham como capturar "candidato
+ *    tecnicamente seguro, mas sem sinal preditivo real".
  *
  * ## De log-odds pra pontos do rubrico
  *
@@ -76,6 +87,8 @@ const ROOT = resolve(import.meta.dirname, "..");
 export const DEFAULT_HOLDOUT = 25;
 /** >2500 é convencionalmente "altamente concentrado" (escala FTC/DOJ) — mesmo limiar citado em `source-concentration.ts`. */
 export const HHI_REJECTION_THRESHOLD = 2500;
+/** AUC ≤ 0.5 = "não prediz melhor que jogar moeda" (`shadow-validation-report.ts`) — limiar mínimo de poder preditivo out-of-sample pro gate 4 (#8006). */
+export const AUC_REJECTION_THRESHOLD = 0.5;
 /** Fallback de conversão log-odds→pontos quando nenhuma feature elegível tem âncora em rubric.json — ver docstring do módulo. */
 export const DEFAULT_POINTS_PER_LOG_ODDS = 10;
 /** Ver `scripts/lib/logistic-regression.ts` (`DEFAULT_L2`) pro racional medido de por que 0.01 e não 1.0. */
@@ -148,6 +161,11 @@ export interface FeatureGuardrails {
   /** `true` quando NENHUMA edição pôde ser simulada (`domain_cap_evaluable_editions === 0`) — sem isto, `baseline_overflow_rate`/`simulated_overflow_rate` caem pra 0/0 e `domain_cap_rejected` (0 > 0 é falso) vira um "aprovado" que na verdade nunca avaliou nada. Mesmo achado de review (P1) do campo acima, mesma correção: fail-CLOSED, `domain_cap_unassessable=true` também marca `domain_cap_rejected=true`. */
   domain_cap_unassessable: boolean;
   domain_cap_rejected: boolean;
+  /** AUC (Mann-Whitney) do `shadow_score_alt` desta feature sozinha, calculado só sobre o HOLDOUT (#8006). `null` quando `computeAuc` não pôde calcular (um dos dois grupos kept/não-kept vazio no holdout, ou nenhuma linha com `score_base` suficiente pra gerar shadow score). */
+  holdout_auc: number | null;
+  /** `true` quando `holdout_auc` é `null` — mesmo padrão fail-closed dos outros 2 gates: "não avaliável" nunca lê como "aprovado". */
+  auc_unassessable: boolean;
+  auc_rejected: boolean;
 }
 
 export interface CalibratedFeatureCandidate {
@@ -224,8 +242,21 @@ function domainOverflows(rows: EditionRows["rows"]): boolean {
   return false;
 }
 
-/** Guardrails 2 (cap de domínio) e 3 (HHI) pra 1 feature, sobre TODAS as edições disponíveis (treino + holdout — os guardrails protegem contra risco do candidato, não medem poder preditivo out-of-sample). */
-export function evaluateGuardrails(editions: EditionRows[], feature: CandidateFeature, proposedPoints: number): FeatureGuardrails {
+/**
+ * Guardrails 2 (cap de domínio), 3 (HHI) e 4 (AUC, #8006) pra 1 feature.
+ * `editions` — TODAS as edições disponíveis (treino + holdout): usado pelos
+ * gates 2/3, que protegem contra RISCO do candidato, não medem poder
+ * preditivo out-of-sample. `holdoutEditions` — só o holdout (nunca visto no
+ * fit): usado exclusivamente pelo gate 4 (AUC), que precisa ser
+ * out-of-sample pra significar algo — calcular AUC sobre dado de treino
+ * mediria memorização, não generalização.
+ */
+export function evaluateGuardrails(
+  editions: EditionRows[],
+  feature: CandidateFeature,
+  proposedPoints: number,
+  holdoutEditions: EditionRows[],
+): FeatureGuardrails {
   // HHI sobre o suporte da feature (domínios de toda linha onde feature=true).
   const supportDomains: Array<string | null> = [];
   for (const ed of editions) {
@@ -263,6 +294,24 @@ export function evaluateGuardrails(editions: EditionRows[], feature: CandidateFe
   const domainCapUnassessable = evaluable === 0;
   const domainCapRejected = domainCapUnassessable || simulatedOverflowRate > baselineOverflowRate;
 
+  // Gate 4 (#8006): AUC out-of-sample da feature SOZINHA (peso proposto,
+  // isolado) sobre o holdout — nunca sobre `editions` (treino+holdout), que
+  // mediria memorização em vez de generalização.
+  const aucValues: number[] = [];
+  const aucLabels: boolean[] = [];
+  for (const ed of holdoutEditions) {
+    for (let i = 0; i < ed.rows.length; i++) {
+      const shadow = computeShadowScore(ed.rows[i], weights);
+      if (shadow !== null) {
+        aucValues.push(shadow);
+        aucLabels.push(ed.kept[i]);
+      }
+    }
+  }
+  const holdoutAuc = computeAuc(aucValues, aucLabels);
+  const aucUnassessable = holdoutAuc === null;
+  const aucRejected = aucUnassessable || holdoutAuc <= AUC_REJECTION_THRESHOLD;
+
   return {
     hhi: hhiResult.hhi,
     hhi_top_domain: hhiResult.top_domain,
@@ -273,6 +322,9 @@ export function evaluateGuardrails(editions: EditionRows[], feature: CandidateFe
     domain_cap_evaluable_editions: evaluable,
     domain_cap_unassessable: domainCapUnassessable,
     domain_cap_rejected: domainCapRejected,
+    holdout_auc: holdoutAuc,
+    auc_unassessable: aucUnassessable,
+    auc_rejected: aucRejected,
   };
 }
 
@@ -451,7 +503,7 @@ export function calibrateScoringWeights(editionsRoot: string, rootDir: string, h
   const candidates: CalibratedFeatureCandidate[] = eligibleFeatures.map((feature, j) => {
     const coefficient = fit.coefficients[j];
     const proposedPoints = Math.round(coefficient * pointsPerLogOdds);
-    const guardrails = evaluateGuardrails(editions, feature, proposedPoints);
+    const guardrails = evaluateGuardrails(editions, feature, proposedPoints, holdoutSet);
     const rejectionReasons: string[] = [];
     if (proposedPoints === 0) rejectionReasons.push("coeficiente ajustado produz 0 pontos propostos — sem efeito prático pra calibrar.");
     if (guardrails.hhi_unassessable) {
@@ -466,6 +518,13 @@ export function calibrateScoringWeights(editionsRoot: string, rootDir: string, h
     } else if (guardrails.domain_cap_rejected) {
       rejectionReasons.push(
         `cap de 2 URLs/domínio (#5735): taxa simulada de estouro (${(guardrails.simulated_overflow_rate * 100).toFixed(1)}%) excede a taxa real observada (${(guardrails.baseline_overflow_rate * 100).toFixed(1)}%) sobre ${guardrails.domain_cap_evaluable_editions} edições avaliáveis.`,
+      );
+    }
+    if (guardrails.auc_unassessable) {
+      rejectionReasons.push("poder preditivo (#8006): NÃO AVALIÁVEL — AUC de holdout indefinida (grupo kept ou não-kept vazio, ou sem score_base suficiente no holdout) (fail-closed, nunca lido como aprovado).");
+    } else if (guardrails.auc_rejected) {
+      rejectionReasons.push(
+        `poder preditivo (#8006): AUC de holdout (${guardrails.holdout_auc!.toFixed(3)}) não supera ${AUC_REJECTION_THRESHOLD} — não prediz melhor que aleatório fora da amostra.`,
       );
     }
     return {
@@ -602,6 +661,9 @@ function formatReport(result: CalibrateResult): string {
     lines.push(`  ${c.feature}: coef=${c.coefficient.toFixed(4)} odds_ratio=${c.odds_ratio.toFixed(3)} proposto=${c.proposed_points}pt (rubrico atual: ${c.existing_rubric_points ?? "nenhum"})`);
     lines.push(
       `    HHI(suporte)=${c.guardrails.hhi_unassessable ? "N/A (não avaliável)" : c.guardrails.hhi.toFixed(0)} (top=${c.guardrails.hhi_top_domain ?? "n/d"})  cap-overflow real=${(c.guardrails.baseline_overflow_rate * 100).toFixed(1)}% simulado=${(c.guardrails.simulated_overflow_rate * 100).toFixed(1)}% (${c.guardrails.domain_cap_evaluable_editions} edições avaliáveis${c.guardrails.domain_cap_unassessable ? " — NÃO AVALIÁVEL" : ""})`,
+    );
+    lines.push(
+      `    AUC(holdout, só desta feature)=${c.guardrails.auc_unassessable ? "N/A (não avaliável)" : c.guardrails.holdout_auc!.toFixed(3)}`,
     );
     lines.push(`    ${c.accepted ? "✅ ACEITO" : "❌ REJEITADO: " + c.rejection_reasons.join(" | ")}`);
   }
