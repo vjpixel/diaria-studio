@@ -105,9 +105,12 @@ export function registryDir(repoRoot) {
  * se o git não estiver disponível). Nunca lança. */
 export function resolveRepoRoot(execFn = execFileSync) {
   try {
+    // windowsHide (#8017, mesma classe do #7952/#7959): via função injetada,
+    // invisível ao guard estático que só casa o nome literal do child_process.
     const top = execFn("git", ["rev-parse", "--show-toplevel"], {
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true,
     }).trim();
     if (top) return top;
   } catch {
@@ -120,10 +123,12 @@ export function resolveRepoRoot(execFn = execFileSync) {
  * não é um repo, etc). Nunca lança. */
 export function resolveHeadSha(repoRoot, execFn = execFileSync) {
   try {
+    // windowsHide (#8017): mesma razão de resolveRepoRoot acima.
     return execFn("git", ["rev-parse", "HEAD"], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true,
     }).trim();
   } catch {
     return null;

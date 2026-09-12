@@ -93,9 +93,12 @@ const COORDINATOR_KINDS = new Set(["overnight", "develop", "continuo"]);
  */
 export function resolveMainRepoRoot(execFn = execFileSync) {
   try {
+    // windowsHide (#8017, mesma classe do #7952/#7959): via função injetada,
+    // invisível ao guard estático que só casa o nome literal do child_process.
     const gitDir = execFn("git", ["rev-parse", "--git-common-dir"], {
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true,
     }).trim();
     return dirname(resolvePath(gitDir));
   } catch {

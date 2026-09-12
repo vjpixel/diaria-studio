@@ -147,9 +147,12 @@ function localMachineTag() {
  */
 function resolveMainRepoRoot(execFn = execFileSync) {
   try {
+    // windowsHide (#8017, mesma classe do #7952/#7959): via função injetada,
+    // invisível ao guard estático que só casa o nome literal do child_process.
     const gitDir = execFn("git", ["rev-parse", "--git-common-dir"], {
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true,
     }).trim();
     return dirname(resolvePath(gitDir));
   } catch {
@@ -345,9 +348,11 @@ export const OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD = 1000;
  */
 function getDiffLineCount(num, execFn) {
   try {
+    // windowsHide (#8017): mesma razão de resolveMainRepoRoot acima.
     const raw = execFn("gh", ["pr", "view", num, "--json", "additions,deletions"], {
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true,
     });
     const parsed = JSON.parse(raw);
     const total = Number(parsed.additions) + Number(parsed.deletions);
@@ -465,10 +470,11 @@ export function resolveEffort(
     // fail-safe: sem número de PR nem dá pra chamar `gh` — estado indeterminado,
     // mantém max independente de qual seja o DEFAULT_EFFORT vigente.
     if (!num) return { effort: "max", warning: null, reason: "pr_sem_numero" };
+    // windowsHide (#8017): mesma razão de resolveMainRepoRoot acima.
     const branch = execFn(
       "gh",
       ["pr", "view", num, "--json", "headRefName", "--jq", ".headRefName"],
-      { encoding: "utf8", timeout: 10_000 },
+      { encoding: "utf8", timeout: 10_000, windowsHide: true },
     ).trim();
     // #6393: branch overnight/* deixou de ser `low` incondicional — resolve
     // por tamanho de diff, com o limiar PRÓPRIO (maior) do caminho overnight.
@@ -869,14 +875,21 @@ export function ensureCloseKeywords(prUrl, { execFn = execFileSync } = {}) {
   try {
     const num = extractPrNumberFromUrl(prUrl);
     if (!num) return { applied: false, reason: "no-pr-number" };
+    // windowsHide (#8017) nas 2 chamadas abaixo — mesma razão de
+    // resolveMainRepoRoot acima.
     const body = execFn("gh", ["pr", "view", String(num), "--json", "body", "-q", ".body"], {
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true,
     });
     const addendum = computeCloseKeywordAddendum(body);
     if (!addendum) return { applied: false, reason: "not-needed" };
     const newBody = `${body.replace(/\s+$/, "")}\n\n${addendum}\n`;
-    execFn("gh", ["pr", "edit", String(num), "--body", newBody], { encoding: "utf8", timeout: 10_000 });
+    execFn("gh", ["pr", "edit", String(num), "--body", newBody], {
+      encoding: "utf8",
+      timeout: 10_000,
+      windowsHide: true,
+    });
     return { applied: true, addendum };
   } catch {
     return { applied: false, reason: "error" };

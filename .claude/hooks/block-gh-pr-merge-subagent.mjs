@@ -456,9 +456,12 @@ export function resolveGrantWasConsumed(consumedGrant, targetPr) {
  */
 export function resolveMainRepoRoot(execFn = execFileSync) {
   try {
+    // windowsHide (#8017, mesma classe do #7952/#7959): via função injetada,
+    // invisível ao guard estático que só casa o nome literal do child_process.
     const gitDir = execFn("git", ["rev-parse", "--git-common-dir"], {
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true,
     }).trim();
     return dirname(resolvePath(gitDir));
   } catch {
@@ -513,7 +516,8 @@ export function resolveMainRepoRoot(execFn = execFileSync) {
 export function isCallerInLinkedWorktree(cwd, execFn = execFileSync) {
   if (typeof cwd !== "string" || cwd.trim() === "") return null;
   try {
-    const opts = { encoding: "utf8", timeout: 10_000, cwd };
+    // windowsHide (#8017): mesma razão de resolveMainRepoRoot acima.
+    const opts = { encoding: "utf8", timeout: 10_000, cwd, windowsHide: true };
     const gitDir = resolvePath(cwd, execFn("git", ["rev-parse", "--git-dir"], opts).trim());
     const commonDir = resolvePath(cwd, execFn("git", ["rev-parse", "--git-common-dir"], opts).trim());
     // Lowercase também — fleet review #7849 item 2: no Windows, `git

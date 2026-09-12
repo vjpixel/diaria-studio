@@ -77,7 +77,11 @@ export function normalizeEventType(raw) {
  */
 export function commandExists(bin, execFn = execFileSync) {
   try {
-    execFn("which", [bin], { stdio: "ignore", timeout: 5_000 });
+    // windowsHide (#8017, achado do próprio guard generalizado ao ganhar
+    // suporte a alias injetado): mesma classe do #7952/#7959 — este arquivo já
+    // cita "powershell" (CONSOLE_BINARY_NAMES), então o guard exige
+    // windowsHide em TODA chamada de processo do arquivo, incluindo esta.
+    execFn("which", [bin], { stdio: "ignore", timeout: 5_000, windowsHide: true });
     return true;
   } catch {
     return false;
