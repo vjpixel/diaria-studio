@@ -1444,3 +1444,37 @@ export function getAllSubscriberPlatforms(
   }
   return map;
 }
+
+/**
+ * Todas as linhas de `subscription` do store, agrupadas por `subscriber_id`
+ * — 1 scan (#7916, fatia 2/N). Insumo pra qualquer leitura que precise
+ * combinar as `subscription` de um mesmo assinante entre plataformas (ex:
+ * `resolveSubscriberAttribution` pra escolher a atribuição, ou a data de
+ * cadastro mais antiga entre plataformas) sem 1 query por assinante — mesmo
+ * padrão de `getAllSubscriberPlatforms` acima, que já faz o scan
+ * equivalente em `identity_alias`. Mapa vazio quando `subscription` não tem
+ * nenhuma linha ainda (nenhuma ingestão rodou) — não é erro.
+ */
+export function getAllSubscriptionsBySubscriber(
+  db: DatabaseSync,
+): Map<number, SubscriptionRecord[]> {
+  const rows = db
+    .prepare(
+      `SELECT subscriber_id, platform, status, entered_at, exited_at, source,
+              utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro,
+              utm_source, utm_term, utm_content, atribuicao_fonte, reativado,
+              origem_serie, updated_at
+       FROM subscription`,
+    )
+    .all() as unknown as Array<SubscriptionRecord & { subscriber_id: number }>;
+  const map = new Map<number, SubscriptionRecord[]>();
+  for (const { subscriber_id, ...rest } of rows) {
+    let list = map.get(subscriber_id);
+    if (!list) {
+      list = [];
+      map.set(subscriber_id, list);
+    }
+    list.push(rest);
+  }
+  return map;
+}

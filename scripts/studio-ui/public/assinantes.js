@@ -23,6 +23,15 @@ const el = {
   unmatchedSummary: document.getElementById("unmatched-summary"),
   attributeCoverageTbody: document.getElementById("attribute-coverage-tbody"),
   attributeCoverageEmpty: document.getElementById("attribute-coverage-empty"),
+
+  refreshCohortOrigemBtn: document.getElementById("refresh-cohort-origem-btn"),
+  cohortOrigemFilterForm: document.getElementById("cohort-origem-filter-form"),
+  cohortOrigemFrom: document.getElementById("cohort-origem-from"),
+  cohortOrigemTo: document.getElementById("cohort-origem-to"),
+  cohortOrigemConfirmationNote: document.getElementById("cohort-origem-confirmation-note"),
+  cohortOrigemGap: document.getElementById("cohort-origem-gap"),
+  cohortOrigemTbody: document.getElementById("cohort-origem-tbody"),
+  cohortOrigemEmpty: document.getElementById("cohort-origem-empty"),
 };
 
 function escapeHtml(s) {
@@ -271,4 +280,65 @@ async function refreshCohort() {
 
 el.refreshCohortBtn.addEventListener("click", refreshCohort);
 
+// ---------------------------------------------------------------------------
+// Coorte de aquisição por origem (#7916, fatia 2/N)
+// ---------------------------------------------------------------------------
+
+function renderCohortOrigem(rows) {
+  if (rows.length === 0) {
+    el.cohortOrigemEmpty.hidden = false;
+    el.cohortOrigemTbody.innerHTML = "";
+    return;
+  }
+  el.cohortOrigemEmpty.hidden = true;
+  el.cohortOrigemTbody.innerHTML = rows
+    .map((r) => {
+      const confirmed = r.confirmedKit == null ? "—" : String(r.confirmedKit);
+      const unconfirmed = r.unconfirmedKit == null ? "—" : String(r.unconfirmedKit);
+      return `<tr><td class="mono">${escapeHtml(r.day)}</td><td>${escapeHtml(r.utmSource ?? "(nenhum)")}</td><td>${escapeHtml(r.acquisitionClass)}</td><td class="mono">${r.total}</td><td class="mono">${confirmed}</td><td class="mono">${unconfirmed}</td></tr>`;
+    })
+    .join("");
+}
+
+async function refreshCohortOrigem() {
+  const params = new URLSearchParams();
+  if (el.cohortOrigemFrom.value) params.set("from", el.cohortOrigemFrom.value);
+  if (el.cohortOrigemTo.value) params.set("to", el.cohortOrigemTo.value);
+  const qs = params.toString();
+  try {
+    const res = await fetch(`/api/subscribers/cohort-origem${qs ? `?${qs}` : ""}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    el.cohortOrigemConfirmationNote.textContent = data.confirmationNote;
+
+    if (!data.db.available) {
+      el.cohortOrigemGap.hidden = false;
+      el.cohortOrigemGap.textContent = "Sem dados — store indisponível nesta sessão.";
+      renderCohortOrigem([]);
+      return;
+    }
+
+    if (data.subscribersWithoutEnteredAt > 0) {
+      el.cohortOrigemGap.hidden = false;
+      el.cohortOrigemGap.textContent = `⚠ ${data.subscribersWithoutEnteredAt} subscriber(s) sem data de cadastro conhecida — não entram nesta tabela.`;
+    } else {
+      el.cohortOrigemGap.hidden = true;
+    }
+
+    renderCohortOrigem(data.rows);
+  } catch (e) {
+    el.cohortOrigemTbody.innerHTML = "";
+    el.cohortOrigemGap.hidden = false;
+    el.cohortOrigemGap.textContent = `Falha ao carregar coorte de origem: ${e.message}`;
+  }
+}
+
+el.refreshCohortOrigemBtn.addEventListener("click", refreshCohortOrigem);
+el.cohortOrigemFilterForm.addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  refreshCohortOrigem();
+});
+
 refreshCohort();
+refreshCohortOrigem();

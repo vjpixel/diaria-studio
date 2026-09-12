@@ -48,6 +48,8 @@ import {
   getAttributesForSubscriber,
   getAllSubscriberPlatforms,
   getAllAttributeKeyCoverage,
+  getAllSubscriptionsBySubscriber,
+  resolveSubscriberAttribution,
   type Platform,
   type TimelineEvent,
   type SubscriberAlias,
@@ -65,6 +67,12 @@ import {
   CROSS_PLATFORM_FLOOR_NOTE,
   type UnmatchedReport,
 } from "../lib/diaria-subscribers-identity-resolve.ts";
+import {
+  buildAcquisitionCohortTable,
+  type CohortSubscriberInput,
+  type CohortRow,
+  type KitSubscriptionStatus,
+} from "../lib/metrics/acquisition-cohort.ts";
 
 // ---------------------------------------------------------------------------
 // Camada de DB compartilhada pelas 2 rotas
@@ -297,6 +305,127 @@ export function buildSubscribersCohortData(
       unmatched: buildUnmatchedReport(db, generatedAt),
       attributeCoverage: getAllAttributeKeyCoverage(db),
       note: CROSS_PLATFORM_FLOOR_NOTE,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Coorte de aquisição por origem (#7916, fatia 2/N)
+// ---------------------------------------------------------------------------
+
+const CONFIRMATION_NOTE =
+  "confirmedKit/unconfirmedKit só existem onde a plataforma expõe confirmação de double opt-in — " +
+  "hoje só o Kit (status ativo/inativo nativo da API). Beehiiv e Brevo não distinguem \"aguardando " +
+  "confirmação\" de \"saiu\" nos dados ingeridos hoje: null nesses campos significa \"não observável\", " +
+  "nunca \"zero confirmados\".";
+
+export interface AcquisitionCohortOptions extends BuildSubscribersOptions {
+  /** `YYYY-MM-DD` (dia BRT), inclusive. Sem filtro quando omitido. */
+  from?: string;
+  /** `YYYY-MM-DD` (dia BRT), inclusive. Sem filtro quando omitido. */
+  to?: string;
+}
+
+export interface AcquisitionCohortData {
+  generatedAt: string;
+  db: SubscribersDbLayer;
+  from: string | null;
+  to: string | null;
+  rows: CohortRow[];
+  /** Subscribers resolvidos que têm 0 `subscription` com `entered_at`
+   *  gravado — não entram em `rows` (não há dia de cadastro pra agrupar).
+   *  Reportado explicitamente em vez de descartado em silêncio (mesma
+   *  disciplina da nota de piso abaixo). */
+  subscribersWithoutEnteredAt: number;
+  note: string;
+  confirmationNote: string;
+}
+
+/**
+ * `GET /api/subscribers/cohort-origem` — tabela de coorte (dia de cadastro
+ * BRT × classe de aquisição × `utm_source`), 1 linha por SUBSCRIBER
+ * resolvido (não por `subscription` — ver docstring de
+ * `acquisition-cohort.ts`). Fail-soft: `data/` ausente ou store sem
+ * ingestão devolve `rows: []`, nunca lança (mesmo padrão de
+ * `buildSubscribersCohortData`).
+ */
+export function buildAcquisitionCohortData(
+  rootDir: string,
+  opts: AcquisitionCohortOptions = {},
+): AcquisitionCohortData {
+  const generatedAt = new Date().toISOString();
+  const { db, layer } = openLayer(rootDir, opts);
+  const from = opts.from ?? null;
+  const to = opts.to ?? null;
+
+  if (!db) {
+    return {
+      generatedAt,
+      db: layer,
+      from,
+      to,
+      rows: [],
+      subscribersWithoutEnteredAt: 0,
+      note: CROSS_PLATFORM_FLOOR_NOTE,
+      confirmationNote: CONFIRMATION_NOTE,
+    };
+  }
+
+  try {
+    // Universo COMPLETO de subscribers resolvidos vem de `identity_alias`
+    // (`getAllSubscriberPlatforms`), não de `subscription` — uma pessoa
+    // ingerida só via `ensureSubscriber` (nenhum `upsertSubscription`
+    // rodou pra ela ainda) tem `subscriber`/`identity_alias` mas ZERO
+    // linha em `subscription`, e por isso nunca apareceria no mapa de
+    // `getAllSubscriptionsBySubscriber` — contá-la exigiria iterar o
+    // universo certo, não só quem já tem alguma `subscription`.
+    const allSubscriberIds = getAllSubscriberPlatforms(db).keys();
+    const bySubscriber = getAllSubscriptionsBySubscriber(db);
+    const inputs: CohortSubscriberInput[] = [];
+    let subscribersWithoutEnteredAt = 0;
+
+    for (const subscriberId of allSubscriberIds) {
+      const subscriptions = bySubscriber.get(subscriberId) ?? [];
+      const enteredDates = subscriptions
+        .map((s) => s.entered_at)
+        .filter((v): v is string => v != null);
+      if (enteredDates.length === 0) {
+        subscribersWithoutEnteredAt++;
+        continue;
+      }
+      const earliestEnteredAt = enteredDates.reduce((min, cur) => (cur < min ? cur : min));
+      const attribution = resolveSubscriberAttribution(subscriptions);
+      // `SubscriptionRecord.status` é `string | null` genérico (a coluna
+      // vale pra qualquer plataforma) — o cast pro union documentado do Kit
+      // é seguro mesmo sem narrowing em runtime, ver docstring de
+      // `KitSubscriptionStatus` em acquisition-cohort.ts.
+      const kitStatus = (subscriptions.find((s) => s.platform === "kit")?.status ?? null) as KitSubscriptionStatus | null;
+
+      inputs.push({
+        enteredAt: earliestEnteredAt,
+        utmSource: attribution.utmSource,
+        utmMedium: attribution.utmMedium,
+        utmChannel: attribution.utmChannel,
+        referringSite: attribution.referringSite,
+        kitStatus,
+      });
+    }
+
+    let rows = buildAcquisitionCohortTable(inputs);
+    if (from) rows = rows.filter((r) => r.day >= from);
+    if (to) rows = rows.filter((r) => r.day <= to);
+
+    return {
+      generatedAt,
+      db: layer,
+      from,
+      to,
+      rows,
+      subscribersWithoutEnteredAt,
+      note: CROSS_PLATFORM_FLOOR_NOTE,
+      confirmationNote: CONFIRMATION_NOTE,
     };
   } finally {
     db.close();
