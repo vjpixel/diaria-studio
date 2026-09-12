@@ -251,6 +251,12 @@ export function buildOverlaySvg(
    * títulos de comprimento bem diferente ficam juntos no mesmo carrossel).
    */
   fontSizeOverride?: number,
+  /**
+   * Linha curta acima da régua teal (ex.: "RETROSPECTIVA DE 1 ANO · TEMA 1 DE 6"),
+   * para posts que são capítulo de uma série. Vazio = card da diária, sem
+   * mudança nenhuma.
+   */
+  kicker = "",
 ): string {
   const { w: CW, h: CH } = dims;
   const available = CW - PAD * 2;
@@ -277,6 +283,7 @@ export function buildOverlaySvg(
     </linearGradient>
   </defs>
   <rect x="0" y="0" width="${CW}" height="${CH}" fill="url(#scrim)"/>
+  ${kicker ? `<text x="${PAD}" y="${startY - size - 72}" font-family="${FONT_SANS}" font-size="26" font-weight="600" letter-spacing="3" fill="#FFFFFF" fill-opacity="0.92">${esc(kicker.toUpperCase())}</text>` : ""}
   <rect x="${PAD}" y="${startY - size - 46}" width="64" height="6" rx="3" fill="${COLORS.brand}"/>
   ${titleLines}
   <text x="${PAD}" y="${CH - 62}" font-family="${FONTS.serif}" font-size="34" fill="#FFFFFF">diar<tspan fill="${COLORS.brand}">.</tspan>ia<tspan fill="${COLORS.brand}">.</tspan><tspan fill="${COLORS.brand}">br</tspan></text>
@@ -293,6 +300,23 @@ export function editionDateLabel(editionDir: string): string {
   const mi = Number(mm) - 1;
   if (mi < 0 || mi > 11) return "";
   return `${dd} ${meses[mi]} 20${yy}`;
+}
+
+/**
+ * `_internal/social-cover.json` → `{ d1: { kicker }, … }`. Ausente = `null`
+ * (card da diária). Presente e malformado lança: sair com a capa sem a linha
+ * da série, em silêncio, seria pior.
+ */
+export function readCoverOverride(editionDir: string, destaque: string): { kicker: string } | null {
+  const path = resolve(editionDir, "_internal", "social-cover.json");
+  if (!existsSync(path)) return null;
+  const all = JSON.parse(readFileSync(path, "utf8")) as Record<string, { kicker?: unknown }>;
+  const c = all[destaque];
+  if (!c) return null;
+  if (typeof c.kicker !== "string" || !c.kicker.trim()) {
+    throw new Error(`social-cover.json inválido para ${destaque} em ${path}`);
+  }
+  return { kicker: c.kicker };
 }
 
 export type CardRatio = "4x5" | "9x16";
@@ -347,13 +371,18 @@ export async function generateCard(
   const src = [nativePath, masterPath, widePath].find((p) => existsSync(p));
   if (!src) return null;
   const dims = RATIOS[ratio];
-  const dateLabel = editionDateLabel(editionDir);
+  // Capa de série (Etapa 6 da anual): `_internal/social-cover.json` dá, por
+  // destaque, a linha da série acima do título, e a capa sai SEM data
+  // (decisão do editor, 12/09/2026 — e o diretório é um lote de posts de dias
+  // diferentes, a data dele mentiria). A diária não tem esse arquivo e segue igual.
+  const cover = readCoverOverride(editionDir, destaque);
+  const dateLabel = cover ? "" : editionDateLabel(editionDir);
   if (layout === "overlay") {
     // Imagem ocupa o card INTEIRO; o texto vem por cima, sobre o gradiente.
     const full = await sharp(src).resize(dims.w, dims.h, { fit: "cover", position: "top" }).toBuffer();
     const outOverlay = opts.outPath ?? resolve(editionDir, `04-${destaque}-${ratio}.jpg`);
     await sharp(full)
-      .composite([{ input: Buffer.from(buildOverlaySvg(title, dateLabel, dims, opts.fontSizeOverride)), top: 0, left: 0 }])
+      .composite([{ input: Buffer.from(buildOverlaySvg(title, dateLabel, dims, opts.fontSizeOverride, cover?.kicker ?? "")), top: 0, left: 0 }])
       .jpeg({ quality: 88 })
       .toFile(outOverlay);
     return outOverlay;

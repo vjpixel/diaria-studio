@@ -23,6 +23,13 @@ export interface AnnualSocialTexts {
   curto: Record<string, string>;
   /** `# Pixel` → `## post_pixel` — post pessoal no LinkedIn do editor (manual). */
   pixel?: string;
+  /**
+   * `# Capas` (opcional) — título da capa por post. Sem ele a capa usa o
+   * título do tema no draft. Existe porque o título do tema é escrito para a
+   * edição, e na capa solta no feed o post precisa se ligar à série ("Em um
+   * ano, …") — decisão do editor, 12/09/2026.
+   */
+  capas: Record<string, string>;
 }
 
 export interface AnnualSocialDay {
@@ -53,7 +60,7 @@ function sections(md: string): Record<string, string> {
  * X e Threads ficariam sem post daquele tema, em silêncio.
  */
 export function parseAnnualSocialMd(md: string): AnnualSocialTexts {
-  const parts = md.split(/^# (Social|Curto|Pixel)\s*$/m);
+  const parts = md.split(/^# (Social|Curto|Pixel|Capas)\s*$/m);
   const byName: Record<string, string> = {};
   for (let i = 1; i < parts.length; i += 2) byName[parts[i]] = parts[i + 1] ?? "";
   const social = sections(byName.Social ?? "");
@@ -62,7 +69,24 @@ export function parseAnnualSocialMd(md: string): AnnualSocialTexts {
   const semCurto = Object.keys(social).filter((k) => !curto[k]);
   if (semCurto.length) throw new Error(`sem texto em \`# Curto\` para: ${semCurto.join(", ")}`);
   const pixel = sections(byName.Pixel ?? "").post_pixel;
-  return { social, curto, ...(pixel ? { pixel } : {}) };
+  const capas = sections(byName.Capas ?? "");
+  const capaSobrando = Object.keys(capas).filter((k) => !social[k]);
+  if (capaSobrando.length) throw new Error(`capa sem post correspondente em \`# Social\`: ${capaSobrando.join(", ")}`);
+  return { social, curto, capas, ...(pixel ? { pixel } : {}) };
+}
+
+/**
+ * `_internal/social-cover.json` do lote: por destaque, a linha da série que a
+ * capa leva acima do título. A capa de série sai sem data (decisão do editor,
+ * 12/09/2026). `total` = número de temas (as previsões não contam).
+ */
+export function buildDayCoverJson(day: AnnualSocialDay, total: number, serie = "Retrospectiva de 1 ano"): string {
+  const out: Record<string, { kicker: string }> = {};
+  day.keys.forEach((k, i) => {
+    const parte = k === "previsoes" ? "previsões" : `tema ${k.slice(1)} de ${total}`;
+    out[`d${i + 1}`] = { kicker: `${serie} · ${parte}` };
+  });
+  return JSON.stringify(out, null, 2);
 }
 
 /** Ordem de publicação: temas em ordem numérica, previsões por último. */

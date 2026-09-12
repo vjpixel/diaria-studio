@@ -17,6 +17,7 @@ import {
   parseAnnualSocialMd,
   planAnnualSocialDays,
   socialCardCategory,
+  buildDayCoverJson,
   themeImageFile,
   type AnnualSocialKey,
 } from "../scripts/lib/anual/annual-social-plan.ts";
@@ -25,6 +26,7 @@ import { prepAnnualSocial } from "../scripts/prep-annual-social.ts";
 import { readDestaqueCount } from "../scripts/lib/invariant-checks/stage-3.ts";
 import { resolveOutrosCountFromEditionDir } from "../scripts/lib/outros-count.ts";
 import { computeScheduledAt, readSlotOverride } from "../scripts/compute-social-schedule.ts";
+import { buildOverlaySvg, readCoverOverride } from "../scripts/gen-social-card-4x5.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -214,6 +216,37 @@ describe("readSlotOverride (DIARIA_SOCIAL_SLOTS_FILE)", () => {
       if (prev === undefined) delete process.env.DIARIA_SOCIAL_SLOTS_FILE;
       else process.env.DIARIA_SOCIAL_SLOTS_FILE = prev;
     }
+  });
+});
+
+describe("capa de série (texto da retrospectiva + título ligado a '1 ano')", () => {
+  it("# Capas sobrepõe o título da capa; capa de post inexistente falha", () => {
+    const md = "# Social\n\n## t1\nS1\n\n# Curto\n\n## t1\nC1\n\n# Capas\n\n## t1\nEm um ano, o trabalho mudou\n";
+    assert.equal(parseAnnualSocialMd(md).capas.t1, "Em um ano, o trabalho mudou");
+    assert.throws(() => parseAnnualSocialMd(md + "\n## t9\nX\n"), /t9/);
+  });
+
+  it("social-cover.json leva a linha da série de cada post, sem data", () => {
+    const lote = { date: "260916", keys: ["t4", "previsoes"] as AnnualSocialKey[], slots: { d1: "2026-09-16T09:00", d2: "2026-09-17T09:00" } };
+    assert.deepEqual(JSON.parse(buildDayCoverJson(lote, 6)), {
+      d1: { kicker: "Retrospectiva de 1 ano · tema 4 de 6" },
+      d2: { kicker: "Retrospectiva de 1 ano · previsões" },
+    });
+  });
+
+  it("a capa desenha a linha da série só quando pedida (a da diária não muda)", () => {
+    assert.match(buildOverlaySvg("Título", "16 SET 2026", undefined, undefined, "Retrospectiva de 1 ano · tema 4 de 6"), /RETROSPECTIVA DE 1 ANO · TEMA 4 DE 6/);
+    assert.equal(buildOverlaySvg("Título", "16 SET 2026"), buildOverlaySvg("Título", "16 SET 2026", undefined, undefined, ""));
+    assert.doesNotMatch(buildOverlaySvg("Título", "16 SET 2026"), /RETROSPECTIVA/);
+  });
+
+  it("readCoverOverride: ausente → null (diária); malformado lança", () => {
+    const d = mkdtempSync(join(tmpdir(), "cover-"));
+    assert.equal(readCoverOverride(d, "d1"), null);
+    mkdirSync(join(d, "_internal"));
+    writeFileSync(join(d, "_internal", "social-cover.json"), JSON.stringify({ d1: { kicker: "K" }, d2: { kicker: 1 } }));
+    assert.deepEqual(readCoverOverride(d, "d1"), { kicker: "K" });
+    assert.throws(() => readCoverOverride(d, "d2"), /inválido/);
   });
 });
 
