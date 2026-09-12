@@ -19,6 +19,7 @@
 
 import { COLORS, FONTS, LAYOUT } from "../shared/design-tokens.ts";
 import { buildDiariaStyleBlock } from "../shared/newsletter-styles.ts";
+import { applyBrandWordmark } from "../shared/brand-wordmark.ts"; // wordmark do DS, mesmo da diária e da mensal
 import type { AnnualDraft, AnnualTheme } from "./annual-parse.ts";
 
 export interface AnnualRenderOptions {
@@ -63,7 +64,7 @@ function escapeHtml(s: string): string {
  */
 export function inlineMarkdown(text: string, brand: string): string {
   const escaped = escapeHtml(text);
-  return escaped
+  const html = escaped
     .replace(
       /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
       (_m, label: string, url: string) =>
@@ -72,6 +73,10 @@ export function inlineMarkdown(text: string, brand: string): string {
         `<a href="${url.replace(/"/g, "&quot;")}" style="color:${brand};text-decoration:underline;">${label}</a>`,
     )
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  // Por último, sobre texto já escapado (ordem canônica do helper): a marca
+  // no meio da prosa sai no padrão do DS — negrito, pontos em teal. O regex
+  // do helper não toca URL (`https://diar.ia.br/p/…` fica intacto no href).
+  return applyBrandWordmark(html);
 }
 
 function paragraph(text: string, brand: string, extraStyle = ""): string {
@@ -203,7 +208,7 @@ ${buildDiariaStyleBlock(COLORS.paperEmail, brand, LAYOUT.sidePad)}
 ${body.join("\n")}
 <tr><td class="pad" style="padding:40px ${LAYOUT.sidePad}px 48px;">
 <div style="border-top:2px solid ${COLORS.ruleStrong};padding-top:16px;">
-<p style="margin:0;font-family:${FONTS.sans};font-size:13px;line-height:1.6;color:${COLORS.ink};">diar.ia.br — 5 minutos diários para entender a IA.</p>
+<p style="margin:0;font-family:${FONTS.sans};font-size:13px;line-height:1.6;color:${COLORS.ink};">${applyBrandWordmark("diar.ia.br")} — 5 minutos diários para entender a IA.</p>
 </div>
 </td></tr>
 </table>
