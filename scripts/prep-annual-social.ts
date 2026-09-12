@@ -46,7 +46,8 @@ import {
   themeImageFile,
 } from "./lib/anual/annual-social-plan.ts";
 
-const PREVISOES_TITLE = "Previsões para o próximo ano";
+// As previsões são para os próximos MESES, não para o próximo ano (editor, 12/09/2026).
+const PREVISOES_TITLE = "Previsões para os próximos meses";
 
 export function prepAnnualSocial(
   dir: string,
