@@ -186,3 +186,22 @@ describe("kicker — só \"Retrospectiva\", nunca a janela nem o slug (#7587 ite
     assert.ok(!r.html.includes("Retrospectiva ·"), "sem separador nem sufixo depois do kicker");
   });
 });
+
+describe("marca no padrão do DS — wordmark em negrito com pontos teal", () => {
+  it("diar.ia.br na prosa vira o wordmark", () => {
+    const out = inlineMarkdown("Faz um ano que a diar.ia.br chega no seu e-mail.", BRAND);
+    assert.ok(out.includes("<strong>diar<span"), out);
+    assert.ok(!/(^|[^/.\w])diar\.ia\.br(?![/\w])/.test(out.replace(/<[^>]+>/g, "¦")), "sobrou marca em texto cru");
+  });
+
+  it("URL de edição da diar.ia.br no link continua intacta", () => {
+    const out = inlineMarkdown("[o estudo](https://diar.ia.br/p/estudo?utm_source=diaria)", BRAND);
+    assert.ok(out.includes('href="https://diar.ia.br/p/estudo?utm_source=diaria"'), out);
+  });
+
+  it("título de bloco e rodapé do e-mail também saem no padrão", () => {
+    const r = render(draftMd({}));
+    assert.ok(!r.html.includes(">diar.ia.br —"), "rodapé ainda com a marca em texto cru");
+    assert.ok(r.html.includes("<strong>diar<span"), "nenhum wordmark no e-mail");
+  });
+});
