@@ -52,6 +52,7 @@ import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { NON_CALIBRATABLE_FEATURES, type ScoringFeatureRow } from "./lib/scoring-features.ts";
+import { mulberry32, shuffleInPlace } from "./lib/permutation-test.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -176,26 +177,6 @@ export function loadEditionRows(editionsRoot: string): { editions: EditionRows[]
     }
   }
   return { editions: out, skipped };
-}
-
-/** Pseudo-random determinístico (mulberry32) — permite reproduzir o relatório exato com a mesma seed, sem depender de Math.random() global. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** Fisher-Yates in-place, usando o gerador determinístico fornecido. */
-function shuffleInPlace<T>(arr: T[], rand: () => number): void {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
 }
 
 interface FeatureReport {
