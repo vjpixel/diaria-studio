@@ -60,7 +60,7 @@
   "test/clarice-build-segment-waterfall.test.ts::TS2578": 1,
   "test/clarice-build-segment.test.ts::TS2578": 1,
   "test/clarice-check-semaphore-4347.test.ts::TS2322": 3,
-  "test/clarice-db-summary.test.ts::TS2345": 13,
+  "test/clarice-db-summary.test.ts::TS2345": 14,
   "test/clarice-derived-stale-guard-4205.test.ts::TS2339": 2,
   "test/clarice-derived-stale-guard-4205.test.ts::TS2578": 1,
   "test/clarice-engagement-cohorts-v2.test.ts::TS2578": 4,
