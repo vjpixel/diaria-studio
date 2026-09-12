@@ -110,3 +110,31 @@ carregam os sufixos antigos.
 **Buscas por "helios" ou "predator" em issues/PRs anteriores a 08-10/09/2026
 se referem a esta mesma máquina — sempre a mesma, nunca "o servidor de
 antes" ou "uma máquina diferente do `300` atual".**
+
+## princ-8050-linkedin-carousel-260912
+
+Achado ao vivo, sessão 260912: uma tentativa de publicar o carrossel
+semanal de destaques ("os principais destaques de IA da semana") também
+no LinkedIn, reusando o Worker `diaria-linkedin-cron` com `channel:
+"linkedin"` + `image_urls[]` (o mesmo mecanismo que já funciona pra
+Instagram/Threads via `publish-weekly-social.ts`), ficou presa em retry e
+nunca apareceu no LinkedIn — confirmado ao vivo via Claude in Chrome (o
+post mais recente da página continuava sendo do dia anterior) e via
+`GET /list` do Worker (`retry_count` subindo sem disparar).
+
+Causa raiz: `fireLinkedIn` (`workers/linkedin-cron/src/dispatch.ts`) só
+encaminha `image_url` (singular) ao webhook Make.com — nunca leu
+`image_urls`. O suporte a carrossel do #4153 foi implementado só pro
+Instagram (`fireInstagramCarousel`) e Threads (`fireThreadsCarousel`); o
+nome do Worker (`diaria-linkedin-cron`) engana aqui, porque ele lida com
+3 canais mas o carrossel nunca existiu pro LinkedIn propriamente dito.
+
+Fix (#8050, PR #8051): `fireQueueEntry` ganhou um guard fail-fast que
+rejeita `channel: "linkedin"` + `image_urls` com mais de 1 item direto
+pra DLQ, sem tentar nenhum fetch — poupa os 5 retries e nomeia a causa
+real em vez de deixar o operador investigar um "Make webhook" que nunca
+foi de fato chamado com o payload esperado. Carrossel real no LinkedIn
+(via API direta contornando o Make, ou módulo multi-imagem no scenario
+Make) ficou fora de escopo — decisão de produto/custo de engenharia não
+tomada, documentada como trabalho futuro na issue #8052
+(`diaria-retrospectiva-semanal`).

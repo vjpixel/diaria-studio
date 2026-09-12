@@ -1110,6 +1110,23 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
   }
 
   // channel === "linkedin" (ou ausente — default de backward-compat)
+
+  // #8050: `fireLinkedIn` só encaminha `image_url` singular ao Make.com —
+  // nunca leu `image_urls` (o suporte a carrossel do #4153 foi implementado
+  // só pro Instagram/Threads, via `fireInstagramCarousel`/`fireThreadsCarousel`).
+  // Antes deste guard, uma entry LinkedIn com `image_urls` (>1 imagem) caía
+  // em silêncio pro `image_url` ausente/undefined, ficava reprocessando até
+  // a DLQ sem nenhum sinal claro do motivo real (achado ao vivo, sessão
+  // 260912: um carrossel semanal enfileirado manualmente pro LinkedIn ficou
+  // preso em retry). Fail-fast aqui poupa os retries e nomeia a causa.
+  if (resolveImageUrls(entry).length > 1) {
+    return {
+      status: "dlq",
+      reason:
+        "channel=linkedin não suporta carrossel (image_urls) — fireLinkedIn só encaminha image_url singular ao Make.com. Ver issue #8050.",
+    };
+  }
+
   const webhookTarget: WebhookTarget = entry.webhook_target ?? "diaria";
   const action: QueueAction = entry.action ?? "post";
 

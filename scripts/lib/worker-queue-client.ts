@@ -21,11 +21,20 @@ import { parseWorkerQueueResponse } from "./schemas/linkedin-payload.ts";
 export interface WorkerQueuePayload {
   text: string;
   image_url?: string | null;
-  // #4146 — carrossel Instagram (pré-requisito #4153, já implementado no
-  // Worker): lista de N URLs (1-10, validada no Worker) usada no lugar de
-  // `image_url` quando o post tem mais de 1 imagem (ex: post semanal com 1
-  // card 4:5 por dia). Opcional — omitido/`undefined` preserva o caminho de
-  // imagem única (`image_url`) para LinkedIn/Threads/Instagram diário.
+  // #4146 — carrossel (pré-requisito #4153, já implementado no Worker):
+  // lista de N URLs (1-10, validada no Worker) usada no lugar de `image_url`
+  // quando o post tem mais de 1 imagem (ex: post semanal com 1 card 4:5 por
+  // dia). Opcional — omitido/`undefined` preserva o caminho de imagem única
+  // (`image_url`) para LinkedIn/Threads/Instagram diário.
+  //
+  // #8050: carrossel só é implementado pro `channel: "instagram"` e
+  // `"threads"` (`fireInstagramCarousel`/`fireThreadsCarousel` em
+  // dispatch.ts). `channel: "linkedin"` NÃO lê este campo — `fireLinkedIn`
+  // só encaminha `image_url` singular ao Make.com. Uma entry LinkedIn com
+  // >1 imagem aqui é rejeitada fail-fast pelo Worker (dlq imediato) em vez
+  // de retentar até a DLQ em silêncio — mas o caminho certo continua sendo
+  // não enfileirar carrossel pra este canal (achado ao vivo, sessão 260912,
+  // issue #8050).
   image_urls?: string[] | null;
   scheduled_at: string;
   destaque: string;
