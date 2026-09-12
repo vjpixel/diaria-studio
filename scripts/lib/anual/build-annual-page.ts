@@ -107,8 +107,7 @@ export function buildAnnualHtml(draftMd: string, opts: AnnualRenderOptions): Ann
   // (`applyBrandWordmark`), que normaliza "Diar.ia" para a marca certa no
   // corpo — sem olhar o markdown, a grafia legada sumiria do HTML e o guard
   // deixaria de acusá-la na fonte, que é onde ela precisa ser corrigida.
-  assertNoLegacyBrand(checkLegacyBrand([draftMd, page.html].join("
-")), `retrospectiva anual "${opts.windowLabel}"`);
+  assertNoLegacyBrand(checkLegacyBrand(`${draftMd}\n${page.html}`), `retrospectiva anual "${opts.windowLabel}"`);
   return page;
 }
 
