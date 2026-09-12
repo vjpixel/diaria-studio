@@ -304,7 +304,7 @@ describe("arquivos do dia", () => {
   it("03-social.md do dia renumera as chaves para d1..d3 nos dois blocos", () => {
     const md = buildDaySocialMd(
       { date: "260920", keys: ["t6", "previsoes"], slots: {} },
-      { social: { t6: "S6", previsoes: "SP" }, curto: { t6: "C6", previsoes: "CP" } },
+      { social: { t6: "S6", previsoes: "SP" }, curto: { t6: "C6", previsoes: "CP" }, capas: {}, slides: {} },
     );
     assert.match(md, /# Social\n\n## d1\nS6\n\n## d2\nSP/);
     assert.match(md, /# Curto\n\n## d1\nC6\n\n## d2\nCP/);
