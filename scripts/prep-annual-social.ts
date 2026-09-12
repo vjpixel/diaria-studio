@@ -74,7 +74,7 @@ export function prepAnnualSocial(
     texts.capas[k] ??
     (k === "previsoes" ? PREVISOES_TITLE : (draft.themes.find((t) => `t${t.index}` === k)?.title ?? k));
   const tipo = tipoFromSlug(slug);
-  const serie = tipo === "aniversario" ? "Retrospectiva de 1 ano" : `Retrospectiva de ${slug.slice(0, 4)}`;
+  const serie = tipo === "aniversario" ? "Retrospectiva de aniversário" : `Retrospectiva ${slug.slice(0, 4)}`;
   const imageOf = (k: string) => {
     if (k === "previsoes") return join(socialDir, "previsoes-2x1.jpg");
     const file = themeImageFile(publicImages, Number(k.slice(1)));
@@ -90,7 +90,7 @@ export function prepAnnualSocial(
     writeFileSync(join(dayDir, "02-reviewed.md"), buildDayReviewedMd(titles, category));
     writeFileSync(join(dayDir, "03-social.md"), buildDaySocialMd(day, texts));
     writeFileSync(join(dayDir, "_internal", "01-approved-capped.json"), buildDayApprovedStub(titles));
-    writeFileSync(join(dayDir, "_internal", "social-cover.json"), buildDayCoverJson(day, draft.themes.length, serie));
+    writeFileSync(join(dayDir, "_internal", "social-cover.json"), buildDayCoverJson(day, serie, texts.social));
     if (pageUrl) writeFileSync(join(dayDir, "_internal", "05-edition-url.txt"), `${pageUrl}\n`);
     writeFileSync(
       join(dayDir, "_internal", "social-slots.json"),

@@ -252,7 +252,7 @@ export function buildOverlaySvg(
    */
   fontSizeOverride?: number,
   /**
-   * Linha curta acima da régua teal (ex.: "RETROSPECTIVA DE 1 ANO · TEMA 1 DE 6"),
+   * Linha curta acima da régua teal (ex.: "RETROSPECTIVA DE ANIVERSÁRIO"),
    * para posts que são capítulo de uma série. Vazio = card da diária, sem
    * mudança nenhuma.
    */
@@ -307,16 +307,22 @@ export function editionDateLabel(editionDir: string): string {
  * (card da diária). Presente e malformado lança: sair com a capa sem a linha
  * da série, em silêncio, seria pior.
  */
-export function readCoverOverride(editionDir: string, destaque: string): { kicker: string } | null {
+export function readCoverOverride(
+  editionDir: string,
+  destaque: string,
+): { kicker: string; slidePrefix?: string } | null {
   const path = resolve(editionDir, "_internal", "social-cover.json");
   if (!existsSync(path)) return null;
-  const all = JSON.parse(readFileSync(path, "utf8")) as Record<string, { kicker?: unknown }>;
+  const all = JSON.parse(readFileSync(path, "utf8")) as Record<string, { kicker?: unknown; slide_prefix?: unknown }>;
   const c = all[destaque];
   if (!c) return null;
   if (typeof c.kicker !== "string" || !c.kicker.trim()) {
     throw new Error(`social-cover.json inválido para ${destaque} em ${path}`);
   }
-  return { kicker: c.kicker };
+  if (c.slide_prefix !== undefined && typeof c.slide_prefix !== "string") {
+    throw new Error(`social-cover.json: slide_prefix inválido para ${destaque} em ${path}`);
+  }
+  return { kicker: c.kicker, ...(c.slide_prefix ? { slidePrefix: c.slide_prefix } : {}) };
 }
 
 export type CardRatio = "4x5" | "9x16";

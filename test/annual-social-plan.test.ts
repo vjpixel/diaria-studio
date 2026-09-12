@@ -27,6 +27,7 @@ import { readDestaqueCount } from "../scripts/lib/invariant-checks/stage-3.ts";
 import { resolveOutrosCountFromEditionDir } from "../scripts/lib/outros-count.ts";
 import { computeScheduledAt, readSlotOverride } from "../scripts/compute-social-schedule.ts";
 import { buildOverlaySvg, readCoverOverride } from "../scripts/gen-social-card-4x5.ts";
+import { slideSourceText } from "../scripts/gen-carousel-cards.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -226,16 +227,30 @@ describe("capa de série (texto da retrospectiva + título ligado a '1 ano')", (
     assert.throws(() => parseAnnualSocialMd(md + "\n## t9\nX\n"), /t9/);
   });
 
-  it("social-cover.json leva a linha da série de cada post, sem data", () => {
+  it("social-cover.json leva só o nome da série em cada capa (sem 'tema i de N', sem data)", () => {
     const lote = { date: "260916", keys: ["t4", "previsoes"] as AnnualSocialKey[], slots: { d1: "2026-09-16T09:00", d2: "2026-09-17T09:00" } };
-    assert.deepEqual(JSON.parse(buildDayCoverJson(lote, 6)), {
-      d1: { kicker: "Retrospectiva de 1 ano · tema 4 de 6" },
-      d2: { kicker: "Retrospectiva de 1 ano · previsões" },
+    assert.deepEqual(JSON.parse(buildDayCoverJson(lote, "Retrospectiva de aniversário")), {
+      d1: { kicker: "Retrospectiva de aniversário" },
+      d2: { kicker: "Retrospectiva de aniversário" },
     });
   });
 
+  it("a abertura 'Retrospectiva …' sai do 1º slide de texto, mas fica na legenda", () => {
+    const lote = { date: "260913", keys: ["t1"] as AnnualSocialKey[], slots: { d1: "2026-09-13T09:00" } };
+    const social = { t1: "Retrospectiva de 1 ano da diar.ia.br, tema 1 de 6: o trabalho. Em setembro de 2025, **x**.\n\nP2.\n\nP3." };
+    const cover = JSON.parse(buildDayCoverJson(lote, "Retrospectiva de aniversário", social));
+    assert.equal(cover.d1.slide_prefix, "Retrospectiva de 1 ano da diar.ia.br, tema 1 de 6: o trabalho.");
+    const d = mkdtempSync(join(tmpdir(), "slide-"));
+    mkdirSync(join(d, "_internal"));
+    writeFileSync(join(d, "_internal", "social-cover.json"), JSON.stringify(cover));
+    assert.equal(slideSourceText(d, "d1", social.t1), "Em setembro de 2025, **x**.\n\nP2.\n\nP3.");
+    assert.throws(() => slideSourceText(d, "d1", "Outro texto."), /slide_prefix/);
+    // Sem social-cover.json (diária): texto intacto.
+    assert.equal(slideSourceText(mkdtempSync(join(tmpdir(), "diaria-")), "d1", social.t1), social.t1);
+  });
+
   it("a capa desenha a linha da série só quando pedida (a da diária não muda)", () => {
-    assert.match(buildOverlaySvg("Título", "16 SET 2026", undefined, undefined, "Retrospectiva de 1 ano · tema 4 de 6"), /RETROSPECTIVA DE 1 ANO · TEMA 4 DE 6/);
+    assert.match(buildOverlaySvg("Título", "", undefined, undefined, "Retrospectiva de aniversário"), /RETROSPECTIVA DE ANIVERSÁRIO/);
     assert.equal(buildOverlaySvg("Título", "16 SET 2026"), buildOverlaySvg("Título", "16 SET 2026", undefined, undefined, ""));
     assert.doesNotMatch(buildOverlaySvg("Título", "16 SET 2026"), /RETROSPECTIVA/);
   });

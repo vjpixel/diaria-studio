@@ -76,15 +76,19 @@ export function parseAnnualSocialMd(md: string): AnnualSocialTexts {
 }
 
 /**
- * `_internal/social-cover.json` do lote: por destaque, a linha da série que a
- * capa leva acima do título. A capa de série sai sem data (decisão do editor,
- * 12/09/2026). `total` = número de temas (as previsões não contam).
+ * `_internal/social-cover.json` do lote: a linha da série que cada capa leva
+ * acima do título — só o nome da série, sem "tema i de N" e sem data — e a
+ * frase de abertura "Retrospectiva de …" do post (`slide_prefix`), que o
+ * gerador de carrossel tira do 1º slide de texto: na legenda ela marca o post
+ * como parte da série; no slide, repetiria a capa (decisões do editor, 12/09/2026).
  */
-export function buildDayCoverJson(day: AnnualSocialDay, total: number, serie = "Retrospectiva de 1 ano"): string {
-  const out: Record<string, { kicker: string }> = {};
+export function buildDayCoverJson(day: AnnualSocialDay, serie: string, social: Record<string, string> = {}): string {
+  const out: Record<string, { kicker: string; slide_prefix?: string }> = {};
   day.keys.forEach((k, i) => {
-    const parte = k === "previsoes" ? "previsões" : `tema ${k.slice(1)} de ${total}`;
-    out[`d${i + 1}`] = { kicker: `${serie} · ${parte}` };
+    // Até o ":" a frase contém "diar.ia.br", cheia de pontos; o fim da abertura
+    // é o 1º ponto DEPOIS do ":" ("…, tema 1 de 6: o trabalho.").
+    const abertura = /^Retrospectiva [^:\n]*:[^.\n]*\.\s/.exec((social[k] ?? "").trimStart())?.[0].trimEnd();
+    out[`d${i + 1}`] = { kicker: serie, ...(abertura ? { slide_prefix: abertura } : {}) };
   });
   return JSON.stringify(out, null, 2);
 }
