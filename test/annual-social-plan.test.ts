@@ -14,10 +14,17 @@ import {
   parseAAMMDD,
   parseAnnualSocialMd,
   planAnnualSocialDays,
+  socialCardCategory,
   themeImageFile,
   type AnnualSocialKey,
 } from "../scripts/lib/anual/annual-social-plan.ts";
 import { parseDestaques } from "../scripts/extract-destaques.ts";
+import { prepAnnualSocial } from "../scripts/prep-annual-social.ts";
+import { readDestaqueCount } from "../scripts/lib/invariant-checks/stage-3.ts";
+import { resolveOutrosCountFromEditionDir } from "../scripts/lib/outros-count.ts";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const keysFor = (n: number): AnnualSocialKey[] => [
   ...Array.from({ length: n }, (_, i) => `t${i + 1}` as AnnualSocialKey),
@@ -74,6 +81,55 @@ describe("parseAnnualSocialMd", () => {
 
   it("seção desconhecida falha", () => {
     assert.throws(() => orderAnnualSocialKeys(["t1", "extra"]), /extra/);
+  });
+});
+
+describe("prepAnnualSocial — o diretório do dia satisfaz os scripts da diária", () => {
+  // Fixture mínima de uma anual real: draft com 3 temas, imagens públicas e
+  // 03-social.md com 3 temas + previsões → 2 dias de 2 posts. Dia de 2 posts
+  // é o caso que quebrava: sem 01-approved-capped.json, readDestaqueCount
+  // assume 3 e o upload exige a imagem do d3; e publish-linkedin aborta sem
+  // outros_count.
+  const root = mkdtempSync(join(tmpdir(), "anual-social-"));
+  const dir = join(root, "2026-aniversario");
+  mkdirSync(join(dir, "_internal"), { recursive: true });
+  mkdirSync(join(dir, "social"), { recursive: true });
+  const tema = (n: number) => `**TEMA ${n} | NOME ${n}**\n\nTítulo do tema ${n}\n\nParágrafo ${n}.\n\nO fio condutor:\nFio ${n}.\n`;
+  writeFileSync(join(dir, "draft.md"), `**INTRO**\n\nAbertura.\n\n${tema(1)}\n${tema(2)}\n${tema(3)}\n**PREVISÕES**\n\nP.\n`);
+  const pub: Record<string, string> = {};
+  for (const n of [1, 2, 3]) {
+    pub[`https://x/img-annual-2026-aniversario-04-d${n}-2x1-h${n}.jpg`] = `04-d${n}-2x1.jpg`;
+    writeFileSync(join(dir, `04-d${n}-2x1.jpg`), "jpg");
+  }
+  writeFileSync(join(dir, "_internal", "public-images.json"), JSON.stringify(pub));
+  writeFileSync(join(dir, "social", "previsoes-2x1.jpg"), "jpg");
+  const k = ["t1", "t2", "t3", "previsoes"];
+  writeFileSync(
+    join(dir, "social", "03-social.md"),
+    `# Social\n\n${k.map((x) => `## ${x}\nTexto ${x}.\n`).join("\n")}\n# Curto\n\n${k.map((x) => `## ${x}\nCurto ${x}.\n`).join("\n")}`,
+  );
+
+  const { days } = prepAnnualSocial(dir, parseAAMMDD("260912"));
+
+  it("2 dias de 2 posts, cada um com a contagem certa de destaques", () => {
+    assert.deepEqual(days.map((d) => d.keys.length), [2, 2]);
+    for (const d of days) assert.equal(readDestaqueCount(d.dir), 2);
+  });
+
+  it("publish-linkedin consegue resolver outros_count (não aborta)", () => {
+    for (const d of days) assert.equal(resolveOutrosCountFromEditionDir(d.dir), 0);
+  });
+
+  it("capa com a categoria de aniversário e a URL da retrospectiva registrada", () => {
+    const d = days[0].dir;
+    assert.match(readFileSync(join(d, "02-reviewed.md"), "utf8"), /RETROSPECTIVA DE ANIVERSÁRIO/);
+    assert.equal(readFileSync(join(d, "_internal", "05-edition-url.txt"), "utf8").trim(), "https://retrospectiva.diar.ia.br/aniversario2026");
+    assert.ok(existsSync(join(d, "04-d2-2x1.jpg")));
+    assert.ok(!existsSync(join(d, "04-d3-2x1.jpg")));
+  });
+
+  it("rodada de janeiro não usa o enquadramento de aniversário", () => {
+    assert.equal(socialCardCategory("janeiro", "2026"), "RETROSPECTIVA 2026");
   });
 });
 

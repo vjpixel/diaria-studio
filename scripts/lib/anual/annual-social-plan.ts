@@ -132,6 +132,29 @@ export function buildDayReviewedMd(titles: string[], category = "RETROSPECTIVA D
   return titles.map((t, i) => `**DESTAQUE ${i + 1} | ${category}**\n\n${t}\n`).join("\n---\n\n");
 }
 
+/**
+ * Categoria da capa: só a rodada de agosto é "de aniversário" — a de janeiro
+ * cobre o ano civil e não leva esse enquadramento.
+ */
+export function socialCardCategory(tipo: "aniversario" | "janeiro", ano: string): string {
+  return tipo === "aniversario" ? "RETROSPECTIVA DE ANIVERSÁRIO" : `RETROSPECTIVA ${ano}`;
+}
+
+/**
+ * `_internal/01-approved-capped.json` mínimo do dia. Os scripts da diária o
+ * leem para duas coisas, e sem ele quebram: `readDestaqueCount` assume 3
+ * destaques (num dia de 2 posts, `upload-images-public.ts` aborta por falta
+ * da imagem do d3) e `publish-linkedin.ts` aborta sem `outros_count`. Aqui
+ * `highlights` tem um item por post e os demais baldes ficam vazios.
+ */
+export function buildDayApprovedStub(titles: string[]): string {
+  return JSON.stringify(
+    { highlights: titles.map((title) => ({ title })), lancamento: [], radar: [], use_melhor: [], video: [] },
+    null,
+    2,
+  );
+}
+
 /** `03-social.md` do dia, com as chaves renumeradas para `d1..d3`. */
 export function buildDaySocialMd(day: AnnualSocialDay, texts: AnnualSocialTexts): string {
   const block = (src: Record<string, string>) => day.keys.map((k, i) => `## d${i + 1}\n${src[k]}\n`).join("\n");

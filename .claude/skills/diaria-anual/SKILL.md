@@ -257,7 +257,7 @@ Conferir tamanhos antes de seguir — parágrafo acima do teto quebra a geraçã
 
 ### 6b. Imagem das previsões
 
-A Etapa 3 gera uma imagem por tema, nenhuma para as previsões. Gerar uma (mesmas regras de prompt: Van Gogh impasto, 2:1, sem resolução em pixels, sem Noite Estrelada):
+A Etapa 3 gera uma imagem por tema, nenhuma para as previsões. Escrever o prompt em `data/annual/$SLUG/social/_internal/02-previsoes-prompt.md`, no mesmo formato dos `_internal/02-d{N}-prompt.md` do `writer-anual` (uma cena concreta que traduza as previsões, Van Gogh impasto, 2:1, sem resolução em pixels, sem Noite Estrelada), e gerar:
 
 ```bash
 npx tsx scripts/image-generate.ts --editorial data/annual/$SLUG/social/_internal/02-previsoes-prompt.md \
