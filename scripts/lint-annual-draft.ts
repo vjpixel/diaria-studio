@@ -33,7 +33,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Tetos por bloco — advisory. Ver `context/templates/newsletter-anual.md`. */
 export const LIMITS = {
-  theme: 2000,
+  // 1.500 = o teto do D1 da mensal (decisão do editor, 12/09/2026): o tema
+  // anual cobre mais tempo, mas não precisa de mais texto pra ser lido.
+  theme: 1500,
   whatChanged: 1800,
   predictions: 2000,
   anniversary: 1500,
