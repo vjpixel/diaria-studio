@@ -6,11 +6,11 @@
  * papel de `scripts/lib/mensal/build-article-page.ts` (#7580) para o artigo
  * mensal, adaptado a duas diferenças estruturais:
  *
- *   1. o render vem de `renderAnnualEmail` (`annual-render.ts`), escrito do
- *      zero pra anual (#7569) — não do e-mail de e-mail-marketing como o
- *      mensal, então NÃO há merge tag de descadastro nem `utm_medium=email`
- *      pra corrigir: `renderAnnualEmail` já produz HTML limpo, sem
- *      dependência de provedor. As três correções pós-render de
+ *   1. o render vem de `renderAnnualWebPage` (`annual-web-render.ts`, #8039
+ *      — página no DS do site; até ali era o próprio HTML do e-mail), e não
+ *      do e-mail de e-mail-marketing como no mensal, então NÃO há merge tag
+ *      de descadastro nem `utm_medium=email` pra corrigir: o render web já
+ *      produz HTML limpo, sem dependência de provedor. As três correções pós-render de
  *      `build-article-page.ts` (`stripEmailOnlyFooter`,
  *      `stripReplyByEmailSentence`, `retagWebUtmMedium`) não têm equivalente
  *      aqui — inspecionado e confirmado ausente do template (#7569).
@@ -30,7 +30,8 @@
  * `**TEMA 1 ...**` no markdown? Sem ele não há onde cortar.
  */
 import { parseAnnualDraft } from "./annual-parse.ts";
-import { renderAnnualEmail, type AnnualRenderOptions } from "./annual-render.ts";
+import type { AnnualRenderOptions } from "./annual-render.ts";
+import { renderAnnualWebPage } from "./annual-web-render.ts";
 import { assertNoLegacyBrand, checkLegacyBrand } from "../shared/legacy-brand-guard.ts";
 
 /**
@@ -94,9 +95,15 @@ export interface AnnualPage {
  * (janela/tipo/imagens) — este módulo não decide nada sobre eles, só
  * encadeia parse → render.
  */
-export function buildAnnualHtml(draftMd: string, opts: AnnualRenderOptions): AnnualPage {
+export function buildAnnualHtml(
+  draftMd: string,
+  opts: AnnualRenderOptions,
+  variant: "full" | "teaser" = "full",
+): AnnualPage {
   const draft = parseAnnualDraft(draftMd);
-  const page = renderAnnualEmail(draft, opts);
+  // Página no DS do site (#8039), não o HTML do e-mail — o e-mail do Kit
+  // segue saindo de `renderAnnualEmail`, fora deste módulo.
+  const page = renderAnnualWebPage(draft, { ...opts, variant });
   // Guard de marca legada (#7719) — mesmo raciocínio do irmão mensal
   // (`buildArticleHtml`, `scripts/lib/mensal/build-article-page.ts`): o
   // conteúdo vem de `data/annual/{slug}/draft.md`, fora do repo, sem
@@ -121,5 +128,5 @@ export function buildAnnualHtml(draftMd: string, opts: AnnualRenderOptions): Ann
  * texto do convite não exige reconstruir e republicar todas as edições.
  */
 export function buildAnnualTeaserHtml(draftMd: string, slug: string, opts: AnnualRenderOptions): AnnualPage {
-  return buildAnnualHtml(cutDraftAfterFirstTheme(draftMd, slug), opts);
+  return buildAnnualHtml(cutDraftAfterFirstTheme(draftMd, slug), opts, "teaser");
 }
