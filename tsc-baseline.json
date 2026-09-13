@@ -111,7 +111,7 @@
   "test/fetch-retry.test.ts::TS2531": 1,
   "test/filter-date-window.test.ts::TS2345": 34,
   "test/finalize-stage1.test.ts::TS18048": 5,
-  "test/format-weekly-social.test.ts::TS2345": 2,
+  "test/format-weekly-social.test.ts::TS2345": 3,
   "test/gate-badge.test.ts::TS7016": 1,
   "test/gemini-image.test.ts::TS7016": 1,
   "test/gen-social-card-4x5.test.ts::TS2345": 1,

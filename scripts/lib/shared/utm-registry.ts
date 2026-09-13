@@ -713,6 +713,18 @@ export const THREADS_WEEKLY_ARCHIVE_UTM = {
   campaign: "weekly-archive",
 } as const;
 
+/** MESMO link "Arquivo completo em {url}", mas no post semanal do X/TWITTER
+ * (`formatTwitterWeekly`, #8056) — sibling de `INSTAGRAM_WEEKLY_ARCHIVE_UTM`/
+ * `FACEBOOK_WEEKLY_ARCHIVE_UTM`/`THREADS_WEEKLY_ARCHIVE_UTM` com `source`
+ * PRÓPRIO. Mesmo racional de atribuição — o X linka clicável no corpo do
+ * tweet (diferente do Instagram), então reusar outro `source` misturaria a
+ * atribuição de cliques entre canais. */
+export const TWITTER_WEEKLY_ARCHIVE_UTM = {
+  source: "twitter",
+  medium: "organic_social",
+  campaign: "weekly-archive",
+} as const;
+
 /** Cadastro no gate inline do worker `cursos` (`workers/cursos/src/subscribe.ts`,
  * #4052) — fold-in do drift pré-existente apontado pelo #4295: o worker já
  * emitia este triplo com literais locais, ausente do registry/`/utms`. Move
@@ -1403,6 +1415,20 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Threads (#5348, unidade dedicada de carrossel de imagem) — source PRÓPRIO " +
       "(nunca reusa o do Instagram/Facebook), mesmo racional de atribuição do " +
       "triplo do Facebook.",
+    status: "ativo",
+  },
+  {
+    id: "twitter-weekly-archive",
+    label: "X/Twitter — link de arquivo no post semanal",
+    source: TWITTER_WEEKLY_ARCHIVE_UTM.source,
+    medium: TWITTER_WEEKLY_ARCHIVE_UTM.medium,
+    campaignPattern: TWITTER_WEEKLY_ARCHIVE_UTM.campaign,
+    originFile: "scripts/lib/format-weekly-social.ts",
+    description:
+      "MESMO link de arquivo do post semanal, agora também no X/Twitter (#8056) — " +
+      "aqui a URL sai NUA no fim do tweet (sem o prefixo \"Arquivo completo em\" " +
+      "dos outros 3 canais, orçamento de caracteres bem mais apertado) — source " +
+      "PRÓPRIO (nunca reusa outro canal), mesmo racional de atribuição do Facebook/Threads.",
     status: "ativo",
   },
   {
