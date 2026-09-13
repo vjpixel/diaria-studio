@@ -90,50 +90,62 @@ describe("matchAiFetchBot", () => {
 });
 
 describe("aiFetchBotCounterKey / aiFetchReferrerCounterKey", () => {
-  test("chave por (bot, dia) — sem path/query", () => {
-    assert.equal(aiFetchBotCounterKey("Googlebot", "2026-08-11"), "counter:ai-fetch:bot:Googlebot:2026-08-11");
+  test("chave por (surface, bot, dia) — sem path/query", () => {
+    assert.equal(
+      aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo"),
+      "counter:ai-fetch:arquivo:bot:Googlebot:2026-08-11",
+    );
   });
 
   test("chave por (host referrer, dia) — namespace distinto da chave por bot", () => {
-    const key = aiFetchReferrerCounterKey("claude.ai", "2026-08-11");
-    assert.equal(key, "counter:ai-fetch:referrer:claude.ai:2026-08-11");
-    assert.notEqual(key, aiFetchBotCounterKey("Googlebot", "2026-08-11"));
+    const key = aiFetchReferrerCounterKey("claude.ai", "2026-08-11", "arquivo");
+    assert.equal(key, "counter:ai-fetch:arquivo:referrer:claude.ai:2026-08-11");
+    assert.notEqual(key, aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo"));
   });
 
   test("bots/dias distintos produzem chaves distintas (sem colisão)", () => {
-    const a = aiFetchBotCounterKey("Googlebot", "2026-08-11");
-    const b = aiFetchBotCounterKey("Googlebot", "2026-08-12");
-    const c = aiFetchBotCounterKey("bingbot", "2026-08-11");
+    const a = aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo");
+    const b = aiFetchBotCounterKey("Googlebot", "2026-08-12", "arquivo");
+    const c = aiFetchBotCounterKey("bingbot", "2026-08-11", "arquivo");
     assert.notEqual(a, b);
     assert.notEqual(a, c);
     assert.notEqual(b, c);
+  });
+
+  test("#8062: superfícies distintas (arquivo vs site) nunca colidem no mesmo (bot, dia)", () => {
+    const arquivoKey = aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo");
+    const siteKey = aiFetchBotCounterKey("Googlebot", "2026-08-11", "site");
+    assert.notEqual(arquivoKey, siteKey);
+    const arquivoRef = aiFetchReferrerCounterKey("claude.ai", "2026-08-11", "arquivo");
+    const siteRef = aiFetchReferrerCounterKey("claude.ai", "2026-08-11", "site");
+    assert.notEqual(arquivoRef, siteRef);
   });
 });
 
 describe("incrementAiFetchCounter", () => {
   test("chave ausente → cria com valor '1'", async () => {
     const kv = makeMapKV();
-    const key = aiFetchBotCounterKey("Googlebot", "2026-08-11");
+    const key = aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo");
     await incrementAiFetchCounter(kv, key);
     assert.equal(await kv.get(key), "1");
   });
 
   test("chave existente → soma 1 ao valor atual", async () => {
-    const key = aiFetchBotCounterKey("bingbot", "2026-08-11");
+    const key = aiFetchBotCounterKey("bingbot", "2026-08-11", "arquivo");
     const kv = makeMapKV({ [key]: "7" });
     await incrementAiFetchCounter(kv, key);
     assert.equal(await kv.get(key), "8");
   });
 
   test("valor corrompido (não-numérico) no KV → trata como 0, não lança", async () => {
-    const key = aiFetchBotCounterKey("OAI-SearchBot", "2026-08-11");
+    const key = aiFetchBotCounterKey("OAI-SearchBot", "2026-08-11", "arquivo");
     const kv = makeMapKV({ [key]: "lixo" });
     await incrementAiFetchCounter(kv, key);
     assert.equal(await kv.get(key), "1");
   });
 
   test("kv undefined (binding ausente) → NO-OP silencioso, não lança", async () => {
-    await assert.doesNotReject(incrementAiFetchCounter(undefined, aiFetchBotCounterKey("Googlebot", "2026-08-11")));
+    await assert.doesNotReject(incrementAiFetchCounter(undefined, aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo")));
   });
 
   test("KV.get lançando exceção → fail-soft, nunca propaga", async () => {
@@ -144,7 +156,7 @@ describe("incrementAiFetchCounter", () => {
       put: async () => {},
       delete: async () => {},
     } as unknown as KVNamespace;
-    await assert.doesNotReject(incrementAiFetchCounter(explodingKv, aiFetchBotCounterKey("Googlebot", "2026-08-11")));
+    await assert.doesNotReject(incrementAiFetchCounter(explodingKv, aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo")));
   });
 
   test("KV.put lançando exceção → fail-soft, nunca propaga", async () => {
@@ -155,13 +167,13 @@ describe("incrementAiFetchCounter", () => {
       },
       delete: async () => {},
     } as unknown as KVNamespace;
-    await assert.doesNotReject(incrementAiFetchCounter(explodingKv, aiFetchBotCounterKey("Googlebot", "2026-08-11")));
+    await assert.doesNotReject(incrementAiFetchCounter(explodingKv, aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo")));
   });
 
   test("contadores de bots distintos não se cruzam", async () => {
     const kv = makeMapKV();
-    const keyGoogle = aiFetchBotCounterKey("Googlebot", "2026-08-11");
-    const keyBing = aiFetchBotCounterKey("bingbot", "2026-08-11");
+    const keyGoogle = aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo");
+    const keyBing = aiFetchBotCounterKey("bingbot", "2026-08-11", "arquivo");
     await incrementAiFetchCounter(kv, keyGoogle);
     await incrementAiFetchCounter(kv, keyGoogle);
     await incrementAiFetchCounter(kv, keyBing);

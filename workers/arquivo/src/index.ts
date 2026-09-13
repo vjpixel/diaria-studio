@@ -630,7 +630,7 @@ export default {
         // pode ser cancelada quando o execution context termina — mesmo
         // padrão (await direto) de `incrementKvCounter` em
         // `workers/cursos/src/index.ts`.
-        await incrementAiFetchCounter(env.CURSOS_SUBSCRIBERS, aiFetchReferrerCounterKey(aiHost, day));
+        await incrementAiFetchCounter(env.CURSOS_SUBSCRIBERS, aiFetchReferrerCounterKey(aiHost, day, "arquivo"));
       }
     } catch {
       // logging nunca derruba a página — ver mesma disciplina do
@@ -646,7 +646,7 @@ export default {
       const bot = matchAiFetchBot(request.headers.get("User-Agent"));
       if (bot) {
         const day = new Date().toISOString().slice(0, 10);
-        await incrementAiFetchCounter(env.CURSOS_SUBSCRIBERS, aiFetchBotCounterKey(bot, day));
+        await incrementAiFetchCounter(env.CURSOS_SUBSCRIBERS, aiFetchBotCounterKey(bot, day, "arquivo"));
       }
     } catch {
       // mesma disciplina fail-soft do bloco de Referer acima.

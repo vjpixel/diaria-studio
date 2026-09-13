@@ -49,6 +49,17 @@
  * aborta a rodada), a nota distingue "tem link conhecido, é lag de crawl" de
  * "sem link conhecido, pode ser órfã de verdade".
  *
+ * **#8063: `fetchKnownInternalLinks` só buscava a home do APEX — falso
+ * positivo de órfã pra URL só linkada pelo arquivo.** A home do apex
+ * (`https://diar.ia.br/`) linka só os ~7 posts mais recentes; ela sozinha
+ * não basta pra saber se uma edição mais antiga tem link interno conhecido.
+ * `arquivo.diar.ia.br` linka as ~265 edições publicadas (histórico
+ * completo, via `render-archive.ts`) e está indexado — no relatório de
+ * 06/09/2026, 56 URLs saíram marcadas "órfã" apesar de linkadas de lá.
+ * `resolveKnownLinksIndexPages` agora retorna as DUAS páginas-índice (home
+ * do apex + home do arquivo) e `fetchKnownInternalLinks` une os links das
+ * duas — fail-soft por página (uma falhar não derruba a outra).
+ *
  * **3 defeitos corrigidos no #5118:**
  * 1. `--limit` cortava as URLs MAIS ANTIGAS (sitemap é newest-first — ver
  *    `applyLimit`) sem deixar marca no output; a cota real (2.000/dia) tinha
@@ -412,20 +423,60 @@ export function extractInternalLinks(html: string, origin: string): Set<string> 
 }
 
 /**
- * Busca a home do host de `sitemapUrl` e extrai os links internos, pra
- * distinguir "órfã de verdade" de "só o Google ainda não sabe" (#5618).
- * Fail-soft: qualquer falha de rede/parse retorna `null` (não aborta a
- * rodada, só degrada de volta pro rótulo genérico sem cross-check).
+ * Páginas-índice a consultar em busca de links internos conhecidos (#8063).
+ * A home do APEX (`origin + "/"`) sozinha só linka os ~7 posts mais recentes
+ * — não basta pra distinguir órfã de verdade de "só a home não lista mais
+ * esse post antigo". `arquivo.diar.ia.br` linka as ~265 edições publicadas
+ * (todo o histórico, via `render-archive.ts`) e está indexado — por isso
+ * entra sempre na lista, mesmo quando `sitemapUrl` já É o de
+ * `arquivo.diar.ia.br` (nesse caso a própria home dele já cobre o caso,
+ * dedup evita fetch duplicado). Retorna URLs únicas, ordem estável.
  */
-export async function fetchKnownInternalLinks(sitemapUrl: string): Promise<Set<string> | null> {
+export function resolveKnownLinksIndexPages(sitemapUrl: string): string[] {
+  const origin = new URL(sitemapUrl).origin;
+  const pages = [`${origin}/`];
+  const arquivoHome = "https://arquivo.diar.ia.br/";
+  if (!pages.includes(arquivoHome)) pages.push(arquivoHome);
+  return pages;
+}
+
+/**
+ * Busca uma página-índice e extrai os links pra `targetOrigin` que ela
+ * contém. `targetOrigin` é o origin do SITEMAP sendo verificado (não o da
+ * página buscada) — `arquivo.diar.ia.br` linka posts com
+ * `href="https://diar.ia.br/p/..."` absoluto, então filtrar por
+ * `targetOrigin` já captura isso mesmo vindo de host diferente. Fail-soft:
+ * qualquer falha de rede/parse retorna `null` (não aborta a rodada).
+ */
+async function fetchInternalLinksFromPage(pageUrl: string, targetOrigin: string): Promise<Set<string> | null> {
   try {
-    const origin = new URL(sitemapUrl).origin;
-    const res = await fetch(origin + "/", { headers: { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)" } });
+    const res = await fetch(pageUrl, { headers: { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)" } });
     if (!res.ok) return null;
-    return extractInternalLinks(await res.text(), origin);
+    return extractInternalLinks(await res.text(), targetOrigin);
   } catch {
     return null;
   }
+}
+
+/**
+ * Busca os links internos conhecidos a partir de uma lista de páginas-índice
+ * (home do apex + home do `arquivo.diar.ia.br`, ver `resolveKnownLinksIndexPages`),
+ * unindo os conjuntos — pra distinguir "órfã de verdade" de "só o Google
+ * ainda não sabe" (#5618) sem o falso-positivo do #8063 (URL linkada só
+ * pelo arquivo, não pela home do apex, saindo rotulada como órfã). Fail-soft
+ * por página: uma falha de rede numa página não derruba as outras. Só
+ * retorna `null` (degrada pro rótulo genérico sem cross-check) se TODAS as
+ * páginas falharem.
+ */
+export async function fetchKnownInternalLinks(sitemapUrl: string): Promise<Set<string> | null> {
+  const origin = new URL(sitemapUrl).origin;
+  const pages = resolveKnownLinksIndexPages(sitemapUrl);
+  const results = await Promise.all(pages.map((p) => fetchInternalLinksFromPage(p, origin)));
+  const successful = results.filter((r): r is Set<string> => r !== null);
+  if (successful.length === 0) return null;
+  const union = new Set<string>();
+  for (const set of successful) for (const link of set) union.add(link);
+  return union;
 }
 
 /**

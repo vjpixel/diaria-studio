@@ -60,8 +60,16 @@ import {
   aiFetchBotCounterKey,
   aiFetchReferrerCounterKey,
   type AiFetchBot,
+  type AiFetchSurface,
 } from "./lib/shared/ai-fetch-counters.ts";
 import { AI_REFERRER_HOSTS, type AiReferrerHost } from "./lib/shared/ai-referrer-log.ts";
+
+/** As superfícies (Workers) que incrementam este contador hoje — `arquivo`
+ * desde o #4902, `site` desde o #8062. `byBot`/`byReferrerHost` somam as
+ * duas (combinado, mesmo shape de antes do #8062 — nenhum consumidor
+ * existente do JSONL precisa mudar); `bySurface` guarda o detalhe por
+ * Worker pra quem quiser distinguir de onde o hit veio. */
+const AI_FETCH_SURFACES: readonly AiFetchSurface[] = ["arquivo", "site"];
 
 loadProjectEnv();
 
@@ -112,18 +120,25 @@ export interface AiFetchDailyRecord {
    * contadores no KV não carregam timestamp próprio, só o valor cumulativo
    * do dia). */
   ts: string;
+  /** Somado através de TODAS as superfícies (`AI_FETCH_SURFACES`) — mesmo
+   * shape de antes do #8062, quando só `arquivo` existia. */
   byBot: Record<AiFetchBot, number>;
   byReferrerHost: Record<AiReferrerHost, number>;
   totalBotHits: number;
   totalReferrerHits: number;
+  /** Detalhe por superfície (#8062) — permite distinguir hits do `arquivo`
+   * dos do `site` sem quebrar quem só lê `byBot`/`byReferrerHost`. */
+  bySurface: Record<AiFetchSurface, { totalBotHits: number; totalReferrerHits: number }>;
 }
 
 /**
- * Lê os 8 contadores de bot + 4 de Referer pra 1 `date`, via
- * `getTextFromWorkerKV` (fetch injetável — nunca rede real em teste). Nunca
- * lança por causa de UMA chave ausente (`getTextFromWorkerKV` já devolve
- * `null` em 404, `parseCounterValue` já trata isso como 0) — só propaga
- * falha de credencial/rede real (mesma política de
+ * Lê os 8 contadores de bot + 4 de Referer pra 1 `date`, por CADA superfície
+ * (`AI_FETCH_SURFACES` — #8062), via `getTextFromWorkerKV` (fetch injetável
+ * — nunca rede real em teste). `byBot`/`byReferrerHost` somam as
+ * superfícies; `bySurface` guarda o detalhe. Nunca lança por causa de UMA
+ * chave ausente (`getTextFromWorkerKV` já devolve `null` em 404,
+ * `parseCounterValue` já trata isso como 0) — só propaga falha de
+ * credencial/rede real (mesma política de
  * `cursos-error-alarm.ts::fetchCurrentCounters`, que deixa o CALLER decidir).
  */
 export async function fetchAiFetchCountersForDate(
@@ -133,27 +148,56 @@ export async function fetchAiFetchCountersForDate(
   fetchImpl: typeof fetch = fetch,
   now: () => Date = () => new Date(),
 ): Promise<AiFetchDailyRecord> {
-  const botEntries = await Promise.all(
-    AI_FETCH_BOTS.map(async (bot) => {
-      const raw = await getTextFromWorkerKV(aiFetchBotCounterKey(bot, date), { kvNamespaceId: namespaceId, ...cfg }, fetchImpl);
-      return [bot, parseCounterValue(raw)] as const;
+  const perSurface = await Promise.all(
+    AI_FETCH_SURFACES.map(async (surface) => {
+      const botEntries = await Promise.all(
+        AI_FETCH_BOTS.map(async (bot) => {
+          const raw = await getTextFromWorkerKV(
+            aiFetchBotCounterKey(bot, date, surface),
+            { kvNamespaceId: namespaceId, ...cfg },
+            fetchImpl,
+          );
+          return [bot, parseCounterValue(raw)] as const;
+        }),
+      );
+      const referrerEntries = await Promise.all(
+        AI_REFERRER_HOSTS.map(async (host) => {
+          const raw = await getTextFromWorkerKV(
+            aiFetchReferrerCounterKey(host, date, surface),
+            { kvNamespaceId: namespaceId, ...cfg },
+            fetchImpl,
+          );
+          return [host, parseCounterValue(raw)] as const;
+        }),
+      );
+      return { surface, botEntries, referrerEntries };
     }),
   );
-  const referrerEntries = await Promise.all(
-    AI_REFERRER_HOSTS.map(async (host) => {
-      const raw = await getTextFromWorkerKV(aiFetchReferrerCounterKey(host, date), { kvNamespaceId: namespaceId, ...cfg }, fetchImpl);
-      return [host, parseCounterValue(raw)] as const;
-    }),
-  );
-  const byBot = Object.fromEntries(botEntries) as Record<AiFetchBot, number>;
-  const byReferrerHost = Object.fromEntries(referrerEntries) as Record<AiReferrerHost, number>;
+
+  const byBot = Object.fromEntries(AI_FETCH_BOTS.map((bot) => [bot, 0])) as Record<AiFetchBot, number>;
+  const byReferrerHost = Object.fromEntries(AI_REFERRER_HOSTS.map((host) => [host, 0])) as Record<AiReferrerHost, number>;
+  const bySurface = {} as Record<AiFetchSurface, { totalBotHits: number; totalReferrerHits: number }>;
+  for (const { surface, botEntries, referrerEntries } of perSurface) {
+    let surfaceBotHits = 0;
+    for (const [bot, n] of botEntries) {
+      byBot[bot] += n;
+      surfaceBotHits += n;
+    }
+    let surfaceReferrerHits = 0;
+    for (const [host, n] of referrerEntries) {
+      byReferrerHost[host] += n;
+      surfaceReferrerHits += n;
+    }
+    bySurface[surface] = { totalBotHits: surfaceBotHits, totalReferrerHits: surfaceReferrerHits };
+  }
   return {
     date,
     ts: now().toISOString(),
     byBot,
     byReferrerHost,
-    totalBotHits: botEntries.reduce((sum, [, n]) => sum + n, 0),
-    totalReferrerHits: referrerEntries.reduce((sum, [, n]) => sum + n, 0),
+    totalBotHits: Object.values(byBot).reduce((sum, n) => sum + n, 0),
+    totalReferrerHits: Object.values(byReferrerHost).reduce((sum, n) => sum + n, 0),
+    bySurface,
   };
 }
 
@@ -217,6 +261,11 @@ async function main(): Promise<number> {
       }
       for (const [host, n] of Object.entries(record.byReferrerHost)) {
         if (n > 0) console.log(`  - referrer ${host}: ${n}`);
+      }
+      for (const [surface, totals] of Object.entries(record.bySurface)) {
+        if (totals.totalBotHits > 0 || totals.totalReferrerHits > 0) {
+          console.log(`  - superfície ${surface}: ${totals.totalBotHits} bot(s), ${totals.totalReferrerHits} referrer(s)`);
+        }
       }
     } catch (e) {
       console.error(`[ai-fetch-report] erro ao ler contadores de ${date}: ${(e as Error).message}`);

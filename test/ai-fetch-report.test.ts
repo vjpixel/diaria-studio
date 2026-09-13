@@ -76,9 +76,9 @@ describe("fetchAiFetchCountersForDate", () => {
 
   test("lê o valor real de cada chave via fetchImpl injetado (sem rede real)", async () => {
     const values: Record<string, string> = {
-      [aiFetchBotCounterKey("Googlebot", "2026-08-11")]: "5",
-      [aiFetchBotCounterKey("bingbot", "2026-08-11")]: "2",
-      [aiFetchReferrerCounterKey("claude.ai", "2026-08-11")]: "3",
+      [aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo")]: "5",
+      [aiFetchBotCounterKey("bingbot", "2026-08-11", "arquivo")]: "2",
+      [aiFetchReferrerCounterKey("claude.ai", "2026-08-11", "arquivo")]: "3",
     };
     const fetchImpl = async (url: string | URL) => {
       const u = String(url);
@@ -102,6 +102,32 @@ describe("fetchAiFetchCountersForDate", () => {
     assert.equal(record.totalBotHits, 7);
     assert.equal(record.totalReferrerHits, 3);
     assert.equal(record.ts, "2026-08-11T12:00:00.000Z");
+    assert.equal(record.bySurface.arquivo.totalBotHits, 7);
+    assert.equal(record.bySurface.arquivo.totalReferrerHits, 3);
+    assert.equal(record.bySurface.site.totalBotHits, 0);
+    assert.equal(record.bySurface.site.totalReferrerHits, 0);
+  });
+
+  test("#8062: contadores de arquivo e site somam em byBot/byReferrerHost mas ficam distintos em bySurface", async () => {
+    const values: Record<string, string> = {
+      [aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo")]: "5",
+      [aiFetchBotCounterKey("Googlebot", "2026-08-11", "site")]: "9",
+      [aiFetchReferrerCounterKey("claude.ai", "2026-08-11", "site")]: "4",
+    };
+    const fetchImpl = async (url: string | URL) => {
+      const u = String(url);
+      for (const [key, val] of Object.entries(values)) {
+        if (u.endsWith(`/values/${encodeURIComponent(key)}`)) return new Response(val, { status: 200 });
+      }
+      return new Response(null, { status: 404 });
+    };
+    const record = await fetchAiFetchCountersForDate("2026-08-11", "ns-id", { accountId: "acc", token: "tok" }, fetchImpl as typeof fetch);
+    assert.equal(record.byBot["Googlebot"], 14);
+    assert.equal(record.byReferrerHost["claude.ai"], 4);
+    assert.equal(record.bySurface.arquivo.totalBotHits, 5);
+    assert.equal(record.bySurface.site.totalBotHits, 9);
+    assert.equal(record.bySurface.arquivo.totalReferrerHits, 0);
+    assert.equal(record.bySurface.site.totalReferrerHits, 4);
   });
 
   test("erro de rede real (credencial/DNS/etc) propaga — caller decide a política", async () => {
@@ -137,6 +163,7 @@ describe("appendAiFetchLog", () => {
       ts: "2026-08-11T12:00:00.000Z",
       byBot: Object.fromEntries(AI_FETCH_BOTS.map((b) => [b, 0])) as AiFetchDailyRecord["byBot"],
       byReferrerHost: Object.fromEntries(AI_REFERRER_HOSTS.map((h) => [h, 0])) as AiFetchDailyRecord["byReferrerHost"],
+      bySurface: { arquivo: { totalBotHits: 0, totalReferrerHits: 0 }, site: { totalBotHits: 0, totalReferrerHits: 0 } },
       totalBotHits: 0,
       totalReferrerHits: 0,
     };
@@ -157,6 +184,7 @@ describe("appendAiFetchLog", () => {
       ts: `${date}T00:00:00.000Z`,
       byBot: Object.fromEntries(AI_FETCH_BOTS.map((b) => [b, 0])) as AiFetchDailyRecord["byBot"],
       byReferrerHost: Object.fromEntries(AI_REFERRER_HOSTS.map((h) => [h, 0])) as AiFetchDailyRecord["byReferrerHost"],
+      bySurface: { arquivo: { totalBotHits: 0, totalReferrerHits: 0 }, site: { totalBotHits: 0, totalReferrerHits: 0 } },
       totalBotHits: 0,
       totalReferrerHits: 0,
     });

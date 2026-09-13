@@ -506,4 +506,41 @@ describe("resolveStrictOutcome (#4754)", () => {
     assert.equal(out.code, 1);
     assert.match(out.message, /network/);
   });
+
+  /**
+   * #8061 — 100% de errorKind:"quota" NUNCA cai no branch benigno de 429
+   * acima, mesmo sendo HTTP 429: é falha PERMANENTE (cota/crédito
+   * esgotado), diferente do rate-limit transitório que resolve sozinho.
+   * Achado ao vivo que motivou: o provider OpenAI ficou 2 semanas nesse
+   * estado (`insufficient_quota`) sem que a task alarmasse nada, porque a
+   * checagem antiga tratava TODO 429 igual.
+   */
+  it("100% errorKind:'quota' SEMPRE reprova, mesmo sendo httpStatus 429", () => {
+    const out = resolveStrictOutcome(
+      [
+        rec({ error: "HTTP 429: insufficient_quota", errorKind: "quota", httpStatus: 429, provider: "openai" }),
+        rec({ error: "HTTP 429: insufficient_quota", errorKind: "quota", httpStatus: 429, provider: "openai" }),
+      ],
+      true,
+    );
+    assert.equal(out.code, 1);
+    assert.equal(out.level, "error");
+    assert.match(out.message, /COTA\/CRÉDITO ESGOTADO/);
+    assert.match(out.message, /permanente/i);
+    assert.match(out.message, /openai \(2\)/);
+    assert.doesNotMatch(out.message, /rate limit/i);
+  });
+
+  it("quota misturado com rate-limit comum (errorKind 'http') também reprova e nomeia as 2 causas", () => {
+    const out = resolveStrictOutcome(
+      [
+        rec({ error: "HTTP 429: insufficient_quota", errorKind: "quota", httpStatus: 429, provider: "openai" }),
+        rec({ error: "HTTP 429", errorKind: "http", httpStatus: 429, provider: "google" }),
+      ],
+      true,
+    );
+    assert.equal(out.code, 1);
+    assert.match(out.message, /cota\/crédito esgotado/i);
+    assert.match(out.message, /HTTP 429/);
+  });
 });

@@ -138,7 +138,10 @@ export function resolveStrictOutcome(
   // sequência com um único retry de 1,5s; num free tier com RPM baixo (o
   // Gemini é o caso concreto hoje) isso pode estourar o limite TODA semana sem
   // nada estar quebrado. Exit != 0 recorrente em cenário benigno treina o
-  // editor a ignorar o alarme — o oposto do que a #4558 quer.
+  // editor a ignorar o alarme — o oposto do que a #4558 quer. `errorKind:
+  // "quota"` (#8061) NUNCA cai aqui — é classificado ANTES desta checagem,
+  // então um 429 de cota/crédito esgotado sempre segue pro branch de erro
+  // real abaixo, mesmo sendo 100% do total.
   if (comErro.every((r) => r.errorKind === "http" && r.httpStatus === 429)) {
     return {
       code: 0,
@@ -150,12 +153,43 @@ export function resolveStrictOutcome(
     };
   }
 
+  // #8061: 429 de COTA/CRÉDITO ESGOTADO é falha PERMANENTE (só volta com
+  // ação do editor — recarregar crédito, trocar de plano), diferente do
+  // rate-limit transitório acima. Mensagem própria, mais acionável que o
+  // "Causas: quota (N)" genérico do branch de baixo — achado ao vivo: o
+  // provider OpenAI ficou 2 SEMANAS nesse estado (`insufficient_quota`)
+  // sem que a task alarmasse nada, porque a checagem de cima (`errorKind
+  // "http" && httpStatus 429`) tratava 100% de 429 igual, sem olhar a
+  // causa. Aqui SEMPRE reprova sob --strict (exit 1) — a task
+  // `Diaria-Geo-Citation-Monitor` vira systemd unit `failed`, capturada
+  // pelo sweep genérico de `scripts/systemd-failed-units-alarm.ts`
+  // (e-mail + issue via `scripts/lib/alarm-issues.ts`), sem precisar de
+  // lógica de e-mail bespoke aqui.
+  if (comErro.every((r) => r.errorKind === "quota")) {
+    const porProvider = new Map<string, number>();
+    for (const r of comErro) porProvider.set(r.provider, (porProvider.get(r.provider) ?? 0) + 1);
+    const resumoProviders = [...porProvider.entries()].map(([p, n]) => `${p} (${n})`).join(", ");
+    return {
+      code: 1,
+      level: "error",
+      message:
+        `[geo-citation-monitor] ERRO: as ${total} consultas falharam por COTA/CRÉDITO ESGOTADO (permanente, ` +
+        `não é rate-limit transitório) — ${resumoProviders}. Recarregue crédito ou revise o plano do provider; ` +
+        "não vai normalizar sozinho.",
+    };
+  }
+
   // Nomeia as causas em vez de um genérico "verifique as keys": o dado já está
   // em cada registro (`errorKind`/`httpStatus`), e descartá-lo faz 401 (ação
   // necessária) e falha de DNS (esperar) lerem igual.
   const causas = new Map<string, number>();
   for (const r of comErro) {
-    const chave = r.errorKind === "http" ? `HTTP ${r.httpStatus ?? "?"}` : (r.errorKind ?? "desconhecido");
+    const chave =
+      r.errorKind === "http"
+        ? `HTTP ${r.httpStatus ?? "?"}`
+        : r.errorKind === "quota"
+          ? "cota/crédito esgotado"
+          : (r.errorKind ?? "desconhecido");
     causas.set(chave, (causas.get(chave) ?? 0) + 1);
   }
   const resumo = [...causas.entries()]

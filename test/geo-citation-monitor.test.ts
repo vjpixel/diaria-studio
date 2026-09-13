@@ -22,6 +22,7 @@ import {
   GEO_TARGET_DOMAIN,
   appendGeoCitationLog,
   buildUsageRecordFields,
+  classifyHttp429ErrorKind,
   detectCitation,
   detectProviderDrop,
   detectProviderTotalFailure,
@@ -668,6 +669,122 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     assert.equal(isOpenAiReasoningModel("o4-mini"), true);
     assert.equal(isOpenAiReasoningModel("gpt-4.1-mini"), false);
     assert.equal(isOpenAiReasoningModel("gpt-5-chat-latest"), false);
+  });
+});
+
+/**
+ * classifyHttp429ErrorKind (#8061) — payloads sintéticos fiéis ao formato
+ * real documentado das 2 APIs (OpenAI `error.code`, Google `error.status` +
+ * `quotaId`), cobrindo os 2 casos que a issue pede: rate-limit comum
+ * (segue "http", exit 0 sob --strict) vs. quota/crédito esgotado (vira
+ * "quota", exit 1 sob --strict — ver test/geo-citation-monitor-cli.test.ts
+ * pro lado de `resolveStrictOutcome`).
+ */
+describe("classifyHttp429ErrorKind (#8061 — rate-limit vs. quota esgotada)", () => {
+  it("OpenAI: error.code 'insufficient_quota' → 'quota'", () => {
+    const body = JSON.stringify({
+      error: {
+        message: "You have no credits remaining. Your organization has been suspended for billing.",
+        type: "insufficient_quota",
+        param: null,
+        code: "insufficient_quota",
+      },
+    });
+    assert.equal(classifyHttp429ErrorKind(body), "quota");
+  });
+
+  it("OpenAI: mensagem citando 'no credits' sem o code oficial → ainda 'quota' (fallback textual)", () => {
+    const body = JSON.stringify({ error: { message: "You have no credits remaining", type: "insufficient_quota" } });
+    assert.equal(classifyHttp429ErrorKind(body), "quota");
+  });
+
+  it("OpenAI: rate_limit_exceeded comum (RPM/TPM) → 'http', NUNCA 'quota'", () => {
+    const body = JSON.stringify({
+      error: {
+        message: "Rate limit reached for gpt-5-mini in organization org-abc123 on requests per min (RPM).",
+        type: "requests",
+        param: null,
+        code: "rate_limit_exceeded",
+      },
+    });
+    assert.equal(classifyHttp429ErrorKind(body), "http");
+  });
+
+  it("Google/Gemini: RESOURCE_EXHAUSTED com quotaId de quota DIÁRIA ('PerDay') → 'quota'", () => {
+    const body = JSON.stringify({
+      error: {
+        code: 429,
+        message: "You exceeded your current quota, please check your plan and billing details.",
+        status: "RESOURCE_EXHAUSTED",
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+            violations: [{ quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests", quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }],
+          },
+        ],
+      },
+    });
+    assert.equal(classifyHttp429ErrorKind(body), "quota");
+  });
+
+  it("Google/Gemini: RESOURCE_EXHAUSTED de rate-limit por MINUTO (sem 'PerDay') → 'http', NUNCA 'quota'", () => {
+    const body = JSON.stringify({
+      error: {
+        code: 429,
+        message: "You exceeded your current quota, please check your plan and billing details.",
+        status: "RESOURCE_EXHAUSTED",
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+            violations: [{ quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests", quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" }],
+          },
+        ],
+      },
+    });
+    assert.equal(classifyHttp429ErrorKind(body), "http");
+  });
+
+  it("corpo não-JSON (truncado/malformado) nunca lança — cai em 'http'", () => {
+    assert.equal(classifyHttp429ErrorKind("<html>502 Bad Gateway</html>"), "http");
+    assert.equal(classifyHttp429ErrorKind(""), "http");
+  });
+
+  it("via queryProvider: 429 de insufficient_quota vira errorKind 'quota' no record de erro (caso real #8061)", async () => {
+    const openai = GEO_PROVIDERS.find((p) => p.id === "openai")!;
+    const fakeFetch = async () =>
+      new Response(
+        JSON.stringify({
+          error: { message: "You have no credits remaining", type: "insufficient_quota", code: "insufficient_quota" },
+        }),
+        { status: 429 },
+      );
+    const result = await queryProvider(openai, "pergunta", "fake-key", "gpt-5-mini", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "quota");
+      assert.equal(result.httpStatus, 429);
+    }
+  });
+
+  it("via queryProvider: 429 de rate-limit comum continua errorKind 'http' (regressão do comportamento pré-#8061)", async () => {
+    const google = GEO_PROVIDERS.find((p) => p.id === "google")!;
+    const fakeFetch = async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 429,
+            message: "Resource has been exhausted (e.g. check quota).",
+            status: "RESOURCE_EXHAUSTED",
+          },
+        }),
+        { status: 429 },
+      );
+    const result = await queryProvider(google, "pergunta", "fake-key", "gemini-2.5-flash", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "http");
+      assert.equal(result.httpStatus, 429);
+    }
   });
 });
 

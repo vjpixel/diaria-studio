@@ -885,8 +885,12 @@ export interface GeoCitationRecord {
    * defensiva, nunca deveria lançar); `"provider"` (#5305) = HTTP 2xx com
    * `stop_reason` indicando falha do provider (`max_tokens` estourado ou
    * `refusal`) — sem isso, esses dois casos viravam "não citado" silencioso,
-   * indistinguível do caso legítimo (texto vazio + `end_turn`). */
-  errorKind?: "http" | "network" | "parse" | "extract" | "provider";
+   * indistinguível do caso legítimo (texto vazio + `end_turn`); `"quota"`
+   * (#8061) = HTTP 429 cujo corpo indica cota/crédito ESGOTADO (falha
+   * PERMANENTE — só volta com ação do editor), não rate-limit transitório
+   * (que resolveria sozinho e continua `"http"`+`httpStatus:429`). Ver
+   * `classifyHttp429ErrorKind` pro critério de classificação por provider. */
+  errorKind?: "http" | "network" | "parse" | "extract" | "provider" | "quota";
   /** Painel de origem da pergunta (#4900 item a) — `"geral"` (`GEO_QUESTIONS`)
    * ou `"hubs"` (`GEO_HUB_QUESTIONS`). **Opcional de propósito**: registros
    * escritos antes desta mudança não têm o campo — leitores tratam ausência
@@ -930,7 +934,66 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 type QueryProviderResult =
   | { ok: true; text: string; usage?: GeoProviderUsage }
-  | { ok: false; error: string; errorKind: "http" | "network" | "parse" | "extract" | "provider"; httpStatus?: number };
+  | { ok: false; error: string; errorKind: "http" | "network" | "parse" | "extract" | "provider" | "quota"; httpStatus?: number };
+
+/**
+ * Distingue 429 de RATE-LIMIT transitório (resolve sozinho, o retry de
+ * `runGeoCitationMonitor` costuma bastar) de 429 de COTA/CRÉDITO ESGOTADO
+ * (falha PERMANENTE — só volta com ação do editor, ex: recarregar crédito)
+ * — #8061. Achado ao vivo: o provider OpenAI ficou 2 SEMANAS emitindo
+ * `HTTP 429: You have no credits remaining` e a exceção do #4754 ("100% de
+ * 429 é rate-limit de free tier, não é quebra") tratou isso como saudável.
+ *
+ * Critério por provider (baseado no formato real de erro documentado de
+ * cada API, não numa regex genérica sobre "quota"):
+ *   - **OpenAI**: corpo JSON com `error.code === "insufficient_quota"`, OU
+ *     a mensagem citando "no credits" (o texto exato visto ao vivo, "You
+ *     have no credits remaining") — os dois sinais de cota oficialmente
+ *     documentados pela OpenAI para 429 de billing, distintos do 429 de
+ *     `rate_limit_exceeded`.
+ *   - **Google/Gemini**: corpo JSON com `error.status === "RESOURCE_EXHAUSTED"`
+ *     E indício de quota DIÁRIA no `quotaId`/mensagem da violação
+ *     (`PerDay`, case-insensitive) — a Gemini usa o MESMO status
+ *     `RESOURCE_EXHAUSTED` tanto pra rate-limit por MINUTO (transitório)
+ *     quanto pra quota DIÁRIA (obriga esperar até a virada do dia UTC);
+ *     sem o indício de `PerDay`, um `RESOURCE_EXHAUSTED` genérico cai como
+ *     rate-limit (mesmo comportamento de antes do #8061 — nunca reprova o
+ *     que já era só aviso).
+ *   - Qualquer outro provider (Anthropic não expõe uma distinção
+ *     equivalente no corpo do 429 hoje) cai em `"http"` — fail-direction
+ *     benigna preservada.
+ *
+ * Pure, nunca lança — `bodyText` pode vir truncado (`queryProvider` já
+ * corta em 300 chars antes de logar, mas a classificação roda sobre o
+ * corpo INTEIRO, ANTES do corte) ou não ser JSON válido; nesses casos cai
+ * no fallback textual (regex sobre o texto cru) antes de desistir e
+ * devolver `"http"`.
+ */
+export function classifyHttp429ErrorKind(bodyText: string): "http" | "quota" {
+  let parsed: { error?: { code?: unknown; status?: unknown; message?: unknown } } | undefined;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    parsed = undefined;
+  }
+  const code = typeof parsed?.error?.code === "string" ? parsed.error.code : undefined;
+  const status = typeof parsed?.error?.status === "string" ? parsed.error.status : undefined;
+  const message = typeof parsed?.error?.message === "string" ? parsed.error.message : bodyText;
+
+  // OpenAI: insufficient_quota (código oficial) ou a mensagem de "sem
+  // crédito" vista ao vivo — cobre o payload real mesmo que a mensagem
+  // exata mude de fraseado (checa a substring estável "no credits").
+  if (code === "insufficient_quota" || /no credits/i.test(message)) {
+    return "quota";
+  }
+  // Gemini: RESOURCE_EXHAUSTED é ambíguo sozinho (serve rate-limit por
+  // minuto E quota diária) — só conta como "quota" com o indício de "por
+  // dia" no corpo (quotaId costuma citar "PerDay" nas violações da API).
+  if (status === "RESOURCE_EXHAUSTED" && /perday/i.test(bodyText.replace(/[\s_-]+/g, ""))) {
+    return "quota";
+  }
+  return "http";
+}
 
 /** Consulta 1 provider com 1 pergunta e devolve o texto extraído (ou erro).
  * Nunca lança — falha de rede/HTTP/parse/extração/provider vira `{ok:false,
@@ -966,7 +1029,12 @@ export async function queryProvider(
   }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 300)}`, errorKind: "http", httpStatus: res.status };
+    // #8061: 429 tem 2 causas bem distintas (rate-limit transitório vs.
+    // cota/crédito esgotado permanente) — classifica ANTES de truncar o
+    // corpo pro log, pra não perder o `error.code`/`quotaId` que a
+    // classificação depende de ver inteiro.
+    const kind: "http" | "quota" = res.status === 429 ? classifyHttp429ErrorKind(body) : "http";
+    return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 300)}`, errorKind: kind, httpStatus: res.status };
   }
   let json: unknown;
   try {
