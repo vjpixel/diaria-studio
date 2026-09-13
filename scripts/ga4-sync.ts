@@ -32,8 +32,10 @@
  * Salva snapshot em `data/ga4-cache/{YYYY-MM-DD}.json` (timestamp da
  * execução) + `data/ga4-cache/latest.json` (ponteiro pro snapshot mais
  * recente, mesmo padrão de `data/beehiiv-cache/`) — **exceto quando o
- * snapshot é parcial** (`--end` != "yesterday", #8000): nesse caso só o
- * arquivo datado grava, `latest.json` fica intocado.
+ * snapshot é parcial** (`--end` != "yesterday", #8000): nesse caso o
+ * arquivo datado grava sob um nome DIFERENTE, `{YYYY-MM-DD}.partial-{end}.json`
+ * (#8015 — nunca colide com o datado completo do mesmo dia), e `latest.json`
+ * fica intocado.
  *
  * FAIL-SOFT explícito (a credencial/propriedade ainda não existe nesta
  * sessão — configuração é ação de painel do editor, ver
@@ -59,7 +61,9 @@
  * hoje?"). Quando `--end` resolve pra algo != "yesterday", o snapshot salvo
  * carrega `partial: true` e `data/ga4-cache/latest.json` (o ponteiro pra
  * série confiável que outros consumidores leem) NUNCA é sobrescrito com um
- * snapshot parcial — só o arquivo datado (`{YYYY-MM-DD}.json`) grava.
+ * snapshot parcial — o arquivo datado grava sob um nome próprio
+ * (`{YYYY-MM-DD}.partial-{end}.json`, #8015), nunca `{YYYY-MM-DD}.json`,
+ * pra nunca colidir com o snapshot completo do mesmo dia.
  *
  * Env:
  *   GA4_PROPERTY_ID   obrigatório — Property ID NUMÉRICO (ex: 123456789),
@@ -255,6 +259,20 @@ async function fetchSnapshot(
  * true` continua valendo como sinal adicional (ex: um chamador que queira
  * forçar não-overwrite mesmo com `end_date` default), mas `end_date !==
  * DEFAULT_END_DATE` sozinho já basta pra recusar o overwrite.
+ *
+ * **Nome do arquivo DATADO também é derivado de "é parcial" (#8015).** O
+ * `#8000` protegeu `latest.json` de um snapshot parcial, mas o datado
+ * continuava nomeado só por `fetched_at.slice(0,10)` — um `--end today`
+ * ad-hoc rodado no MESMO dia do sync agendado (default `yesterday`)
+ * sobrescrevia `data/ga4-cache/{YYYY-MM-DD}.json` completo com a janela
+ * parcial (e vice-versa), o mesmo envenenamento que o `#8000` evitou, só
+ * que pelo outro arquivo. Snapshot parcial grava em
+ * `{date}.partial-{end_date}.json` (`end_date` sempre "today" ou uma data
+ * absoluta `YYYY-MM-DD` — nunca contém caractere inseguro pra nome de
+ * arquivo, `resolveEndDate` já validou o formato antes de chegar aqui) —
+ * nunca no mesmo nome do datado completo, os dois convivem. Consumidores
+ * (`scripts/lib/metrics/registry.ts`) devem tratar `*.partial-*.json` como
+ * NÃO-autoritativo e excluí-lo do glob normal de `data/ga4-cache/*.json`.
  */
 export function saveSnapshot(
   snapshot: Ga4Snapshot,
@@ -262,10 +280,12 @@ export function saveSnapshot(
 ): { datedPath: string; latestPath: string | null } {
   mkdirSync(cacheDir, { recursive: true });
   const dateStr = snapshot.fetched_at.slice(0, 10);
-  const datedPath = resolve(cacheDir, `${dateStr}.json`);
+  const isPartial = snapshot.partial === true || snapshot.end_date !== DEFAULT_END_DATE;
+  const datedPath = isPartial
+    ? resolve(cacheDir, `${dateStr}.partial-${snapshot.end_date}.json`)
+    : resolve(cacheDir, `${dateStr}.json`);
   const json = JSON.stringify(snapshot, null, 2);
   writeFileSync(datedPath, json, "utf8");
-  const isPartial = snapshot.partial === true || snapshot.end_date !== DEFAULT_END_DATE;
   if (isPartial) {
     return { datedPath, latestPath: null };
   }
