@@ -64,7 +64,9 @@ export const PRIMARY_AMAZON_TAG = "vjpixel-20";
 /** Path (sem protocolo/host) da vitrine — mesmo valor de `DIARIA_AMAZON_LOJA_URL`
  * em `scripts/lib/canonical-urls.ts` (não importado daqui pra evitar ciclo —
  * `canonical-urls.ts` não depende deste arquivo; o valor é replicado como
- * string literal, travado por `test/amazon-affiliate.test.ts` contra drift). */
+ * string literal). `test/amazon-affiliate.test.ts` compara este valor
+ * diretamente contra `new URL(DIARIA_AMAZON_LOJA_URL).pathname` — drift
+ * real entre os dois arquivos quebra o teste, não só a suposição. */
 export const AMAZON_STOREFRONT_PATH = "/shop/vjpixel";
 
 export const AMAZON_TAG_BY_AUDIENCE: Record<AmazonAudience, string> = {
@@ -72,12 +74,52 @@ export const AMAZON_TAG_BY_AUDIENCE: Record<AmazonAudience, string> = {
   clarice: CLARICE_AMAZON_TAG,
 };
 
-const AMAZON_PRODUCT_HOSTS = new Set([
-  "amazon.com.br",
-  "www.amazon.com.br",
-  "amazon.com",
-  "www.amazon.com",
-]);
+/**
+ * Sufixos de país da Amazon reconhecidos como link de PRODUTO (#8059 achado
+ * do review, PR #8076 — 2ª rodada). Escopo INTENCIONALMENTE LIMITADO aos
+ * marketplaces reais da Amazon (não é uma PSL genérica) — cobre `.com.br`
+ * (audiência atual, único domínio usado hoje no seed/snippets) e `.com`
+ * (referenciado em `AMAZON_STOREFRONT_PATH`/testes), mais os demais
+ * marketplaces internacionais estáveis da Amazon, pra não deixar passar em
+ * silêncio um link `amazon.de`/`amazon.co.uk`/`amazon.ca` etc. que algum dia
+ * apareça num box/seed. **Limitação conhecida, não escondida**: um domínio
+ * de país da Amazon que não exista nesta lista (a Amazon adiciona
+ * marketplaces raramente, mas adiciona) passa INTOCADO por todo predicado
+ * deste módulo — nem reescrito, nem reportado como issue — até alguém
+ * adicionar o sufixo aqui. Se isso acontecer, o guard
+ * `assertNoAmazonAffiliateTagIssues` não pega (o link nem é reconhecido como
+ * Amazon), e o link segue com a tag que tinha originalmente — sinal de que
+ * está acontecendo: um link amazon.{tld} aparecendo no relatório
+ * `findMismatchedUrls`/lint de domínio sem nunca aparecer nos issues deste
+ * módulo.
+ */
+const AMAZON_RETAIL_TLDS = [
+  "com.br",
+  "com",
+  "co.uk",
+  "de",
+  "ca",
+  "fr",
+  "it",
+  "es",
+  "co.jp",
+  "in",
+  "com.mx",
+  "com.au",
+  "nl",
+  "se",
+  "pl",
+  "eg",
+  "sa",
+  "ae",
+  "sg",
+  "com.tr",
+  "cn",
+] as const;
+
+const AMAZON_PRODUCT_HOST_RE = new RegExp(
+  `^(www\\.)?amazon\\.(${AMAZON_RETAIL_TLDS.map((t) => t.replace(/\./g, "\\.")).join("|")})$`,
+);
 
 const AMAZON_SHORTENER_HOSTS = new Set([
   "amzn.to",
@@ -96,11 +138,12 @@ function safeParseUrl(url: string): URL | null {
   }
 }
 
-/** True se `url` é um link de PRODUTO Amazon (host reconhecido, protocolo http/https). @pure */
+/** True se `url` é um link de PRODUTO Amazon (host de marketplace reconhecido —
+ * ver `AMAZON_RETAIL_TLDS` — protocolo http/https). @pure */
 export function isAmazonProductUrl(url: string): boolean {
   const u = safeParseUrl(url);
   if (!u || !/^https?:$/.test(u.protocol)) return false;
-  return AMAZON_PRODUCT_HOSTS.has(u.hostname.toLowerCase());
+  return AMAZON_PRODUCT_HOST_RE.test(u.hostname.toLowerCase());
 }
 
 /** True se `url` é um encurtador Amazon (amzn.to/link.amazon/amzlinks.in) — tag
@@ -214,4 +257,33 @@ export function findAmazonAffiliateTagIssues(
     }
   }
   return issues;
+}
+
+/**
+ * Guard hard (#8059 achado do review, PR #8076): `rewriteAmazonAffiliateTagsInText`
+ * cobre o caso comum (regex sobre URL "nua" em texto/HTML), mas nada garante
+ * que TODO link Amazon do HTML caiu nesse regex — encoding diferente, host
+ * não coberto por `AMAZON_RETAIL_TLDS`, ou um encurtador que passou batido
+ * no conteúdo fonte. Antes deste guard, só `clarice-schedule-group.ts`
+ * verificava o resultado da reescrita com `findAmazonAffiliateTagIssues`
+ * antes de qualquer disparo — os outros 4 pontos que reusam o mesmo
+ * `cloudflare-preview.html` (`clarice-schedule-sends.ts`,
+ * `clarice-schedule-ramp.ts`, `clarice-reapply-scheduled-html.ts`,
+ * `clarice-cta-ab-setup.ts`) só chamavam a reescrita, sem confirmar que ela
+ * de fato converteu tudo — um link que escapasse da reescrita seguiria pro
+ * disparo/agendamento Clarice com a tag errada ou ausente, em silêncio.
+ *
+ * Chamar logo após `rewriteAmazonAffiliateTagsInText(html, audience)`, antes
+ * de qualquer create/test/schedule/sendNow/PUT. Lança `Error` (nunca
+ * retorna) se sobrar qualquer issue — mensagem já lista URL + tipo de
+ * problema, pronta pra aparecer no log/stderr do script chamador.
+ */
+export function assertNoAmazonAffiliateTagIssues(text: string, audience: AmazonAudience): void {
+  const issues = findAmazonAffiliateTagIssues(text, audience);
+  if (issues.length > 0) {
+    throw new Error(
+      `#8059: ${issues.length} link(s) Amazon com tag de afiliado inválida pra audiência "${audience}" ` +
+        `após reescrita — ${issues.map((i) => `${i.issue}:${i.url}`).join(", ")}`,
+    );
+  }
 }

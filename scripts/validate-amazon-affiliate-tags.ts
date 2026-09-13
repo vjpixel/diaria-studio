@@ -16,13 +16,21 @@
  *   npx tsx scripts/validate-amazon-affiliate-tags.ts <file> --audience clarice
  *
  * Integração:
- *   - Stage 4 da diária/mensal: `--audience diaria` contra `02-reviewed.md`
- *     (e o HTML pré-renderizado, quando disponível) — ver
+ *   - Stage 4 da diária: `--audience diaria` contra `02-reviewed.md` — ver
  *     `.claude/agents/orchestrator-stage-4.md` §4c.2.
- *   - Envio Clarice (`clarice-schedule-group.ts`, `--send-test`/`--send-now`):
- *     `--audience clarice` contra o `cloudflare-preview.html` JÁ reescrito
- *     por `rewriteAmazonAffiliateTagsInText(html, "clarice")` — confirma que
- *     a reescrita de fato converteu todo link de produto antes do disparo.
+ *   - Etapa 4 do mensal: `--audience diaria` contra `draft.md` — ver
+ *     `.claude/skills/diaria-mensal/SKILL.md` §4c-3 (o `cloudflare-preview.html`
+ *     gerado por essa etapa é o MESMO HTML reusado pelos envios Clarice
+ *     abaixo, então o guard aqui pega o link problemático ANTES de o HTML
+ *     nascer, não só do lado do envio).
+ *   - Envio Clarice: não roda este CLI — `assertNoAmazonAffiliateTagIssues`
+ *     (mesma lógica de lint desta função, `scripts/lib/amazon-affiliate.ts`)
+ *     é chamada diretamente logo após `rewriteAmazonAffiliateTagsInText`, nos
+ *     5 scripts que reusam `cloudflare-preview.html` como conteúdo Clarice
+ *     (`clarice-schedule-group.ts`, `-sends.ts`, `-ramp.ts`,
+ *     `clarice-reapply-scheduled-html.ts`, `clarice-cta-ab-setup.ts`) —
+ *     confirma que a reescrita converteu todo link de produto antes de
+ *     qualquer create/schedule/sendNow/PUT.
  *
  * Exit codes:
  *   0  Nenhum link Amazon problemático

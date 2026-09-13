@@ -200,11 +200,14 @@ por slot).
   envio Clarice (mesmo `cloudflare-preview.html` mensal reusado nos dois
   canais) — a tag correta pra Clarice (`claricenews-20`) é aplicada por
   REESCRITA no render, não editando o snippet: ver
-  `rewriteAmazonAffiliateTagsInText`/`findAmazonAffiliateTagIssues`
-  (`scripts/lib/amazon-affiliate.ts`), chamado nos scripts `clarice-schedule-*`/
-  `clarice-reapply-scheduled-html.ts`/`clarice-cta-ab-setup.ts` antes de
-  qualquer disparo. Autorar/editar o box sempre com `diaria-20` — o pipeline
-  cuida do resto.
+  `rewriteAmazonAffiliateTagsInText` (reescreve) +
+  `assertNoAmazonAffiliateTagIssues` (guard — aborta se sobrar link com tag
+  errada/ausente após a reescrita) em `scripts/lib/amazon-affiliate.ts`,
+  chamados em sequência nos 5 scripts que reusam `cloudflare-preview.html`
+  como conteúdo Clarice (`clarice-schedule-group.ts`, `-sends.ts`, `-ramp.ts`,
+  `clarice-reapply-scheduled-html.ts`, `clarice-cta-ab-setup.ts`), antes de
+  qualquer create/schedule/sendNow/PUT. Autorar/editar o box sempre com
+  `diaria-20` — o pipeline cuida do resto.
 - **Nem todo arquivo é "vivo" em runtime.** `intro-campeoes-sorteio.md` é
   puramente um template de referência (o gerador é a fonte de verdade
   executável) — declara `runtime: false` no header (#4500) pra sumir do

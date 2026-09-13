@@ -7,13 +7,16 @@ import {
   DIARIA_AMAZON_TAG,
   CLARICE_AMAZON_TAG,
   PRIMARY_AMAZON_TAG,
+  AMAZON_STOREFRONT_PATH,
   isAmazonProductUrl,
   isAmazonShortenerUrl,
   isAmazonStorefrontUrl,
   rewriteAmazonAffiliateTag,
   rewriteAmazonAffiliateTagsInText,
   findAmazonAffiliateTagIssues,
+  assertNoAmazonAffiliateTagIssues,
 } from "../scripts/lib/amazon-affiliate.ts";
+import { DIARIA_AMAZON_LOJA_URL } from "../scripts/lib/canonical-urls.ts";
 
 describe("isAmazonProductUrl / isAmazonShortenerUrl / isAmazonStorefrontUrl", () => {
   it("reconhece amazon.com.br e amazon.com como produto", () => {
@@ -43,6 +46,16 @@ describe("isAmazonProductUrl / isAmazonShortenerUrl / isAmazonStorefrontUrl", ()
 
   it("NÃO confunde /shop/vjpixel-outra-coisa (prefixo de string, não segmento de path) com a vitrine", () => {
     assert.equal(isAmazonStorefrontUrl("https://www.amazon.com.br/shop/vjpixel-outra-coisa"), false);
+  });
+
+  it("AMAZON_STOREFRONT_PATH bate com o pathname de DIARIA_AMAZON_LOJA_URL — trava contra drift entre os 2 arquivos (achado do review, PR #8076)", () => {
+    assert.equal(AMAZON_STOREFRONT_PATH, new URL(DIARIA_AMAZON_LOJA_URL).pathname);
+  });
+
+  it("reconhece marketplaces internacionais da Amazon (#8059 achado do review — não só .com/.com.br)", () => {
+    for (const host of ["amazon.de", "amazon.co.uk", "amazon.ca", "www.amazon.fr", "amazon.co.jp", "amazon.com.mx"]) {
+      assert.equal(isAmazonProductUrl(`https://${host}/dp/B0DGZ46G88`), true, host);
+    }
   });
 });
 
@@ -146,5 +159,38 @@ describe("findAmazonAffiliateTagIssues", () => {
   it("dedup por URL exata", () => {
     const text = "https://amzn.to/4qDeYvz e de novo https://amzn.to/4qDeYvz";
     assert.equal(findAmazonAffiliateTagIssues(text, "diaria").length, 1);
+  });
+});
+
+describe("assertNoAmazonAffiliateTagIssues (#8059 achado do review, PR #8076 — guard extraído pra helper único, chamado nos 5 scripts de envio Clarice)", () => {
+  it("não lança quando todo link já tem a tag esperada", () => {
+    const text = `https://www.amazon.com.br/dp/B0DGZ46G88?tag=${CLARICE_AMAZON_TAG}`;
+    assert.doesNotThrow(() => assertNoAmazonAffiliateTagIssues(text, "clarice"));
+  });
+
+  it("não lança em texto sem nenhum link Amazon", () => {
+    assert.doesNotThrow(() => assertNoAmazonAffiliateTagIssues("nada aqui", "clarice"));
+  });
+
+  it("lança quando sobra link com a tag ERRADA após a reescrita esperada", () => {
+    const text = `https://www.amazon.com.br/dp/B0DGZ46G88?tag=${DIARIA_AMAZON_TAG}`;
+    assert.throws(() => assertNoAmazonAffiliateTagIssues(text, "clarice"), /wrong_tag/);
+  });
+
+  it("lança quando sobra encurtador (tag não verificável)", () => {
+    assert.throws(() => assertNoAmazonAffiliateTagIssues("https://amzn.to/4qDeYvz", "clarice"), /shortener_untaggable/);
+  });
+
+  it("mensagem de erro lista a URL problemática (útil no stderr do script chamador)", () => {
+    const url = "https://www.amazon.com.br/dp/B0DGZ46G88";
+    assert.throws(() => assertNoAmazonAffiliateTagIssues(url, "clarice"), new RegExp(url.replace(/[.]/g, "\\.")));
+  });
+
+  it("integração real: rewriteAmazonAffiliateTagsInText(html, 'clarice') seguido do guard nunca lança (fluxo dos 5 scripts de envio Clarice)", () => {
+    const html =
+      `<a href="https://www.amazon.com.br/dp/B0DGZ46G88?tag=${DIARIA_AMAZON_TAG}">livro</a> ` +
+      `<a href="https://www.amazon.com.br/shop/vjpixel">loja</a>`;
+    const rewritten = rewriteAmazonAffiliateTagsInText(html, "clarice");
+    assert.doesNotThrow(() => assertNoAmazonAffiliateTagIssues(rewritten, "clarice"));
   });
 });

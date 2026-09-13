@@ -492,7 +492,7 @@ LIVROS_PROMO_PRESENT=$(node -e "try{const j=JSON.parse(require('fs').readFileSyn
 npx tsx scripts/lint-monthly-draft.ts --cycle $CYCLE
 ```
 
-Exit 1 = **guardrail crítico (#2794) disparou** (labels de seção não reconhecidos ou sonda de imagem < 3 `<img>`) — NÃO prosseguir pro gate; voltar pra Etapa 2 e corrigar o draft (reforçar `**negrito**` nos labels), re-rodar 2b→2c→2d→4a→4b→4c. Exit 0 = ok (warnings de char-limit, se houver, são advisory — incluir no resumo do gate).
+Exit 1 = **guardrail crítico (#2794) disparou** (labels de seção não reconhecidos ou sonda de imagem < 3 `<img>`) — NÃO prosseguir pro gate; voltar pra Etapa 2 e corrigar o draft (reforçar `**negrito**` nos labels), re-rodar 2b→2c→2d→4a→4b→4c→4c-3. Exit 0 = ok (warnings de char-limit, se houver, são advisory — incluir no resumo do gate).
 
 ### 4c-2. Lint de densidade de referência (#5926)
 
@@ -501,6 +501,14 @@ npx tsx scripts/lint-density.ts --file data/monthly/$CYCLE/draft.md
 ```
 
 Mesmo chamado da 2b-2. Resultado sumarizado no resumo do gate (4e): N frases > 30 palavras, N nomes próprios no corpo, N siglas, N stats — cada um com seu teto escalado. Advisory por padrão; `--strict` bloqueia (exit 1). Ver `context/artigo-especial.md` pro guia de redução.
+
+### 4c-3. Guard de tag de afiliado Amazon (#8059)
+
+```bash
+npx tsx scripts/validate-amazon-affiliate-tags.ts data/monthly/$CYCLE/draft.md --audience diaria
+```
+
+**GATE-BLOCKING** quando exit 1 — mesmo guard do Stage 4 da diária (`.claude/agents/orchestrator-stage-4.md` §4c.2), aplicado aqui porque `_internal/cloudflare-preview.html` gerado por ESTA etapa (4b) é o MESMO HTML que os scripts `clarice-schedule-*`/`clarice-reapply-scheduled-html.ts`/`clarice-cta-ab-setup.ts` reusam como conteúdo de envio Clarice (reescrevendo a tag pra `claricenews-20` no caminho deles) — link Amazon sem `tag=`, com a tag da OUTRA audiência, ou atrás de encurtador (`amzn.to`/`link.amazon`/`amzlinks.in`) precisa ser pego AQUI, antes do HTML nascer, não só no lado do envio Clarice. Exit 1 → NÃO montar o gate ainda; corrigir o link na fonte (seed/snippet) e re-rodar 4b→4c→4c-2→4c-3 antes de seguir.
 
 ### 4d. Fact-check dos claims
 
@@ -534,6 +542,9 @@ Lint (scripts/lint-monthly-draft.ts):
   D2: {chars} / 1.200 {✓|⚠}
   D3: {chars} / 1.200 {✓|⚠}
 
+Guard de tag Amazon (scripts/validate-amazon-affiliate-tags.ts --audience diaria, #8059):
+  {N} issue(s) — {✓ se 0, senão listar url + tipo}
+
 Lint de densidade (scripts/lint-density.ts #5926):
   Palavras: {N} ({mult}× base)
   Frases > 30 palavras: {N} / {teto} {✓|⚠} (maior: {N} pal.)
@@ -559,8 +570,8 @@ Fact-check (_internal/04-fact-check.json):
 Aprovar? sim / editar / retry
 ```
 
-- `editar` → editor edita `draft.md` local/Drive; re-rodar 4a→4b→4c→4d após confirmação (4b já encerra o servidor de preview anterior e sobe um novo — sem teardown manual aqui).
-- `retry` → re-rodar 4b→4c→4d (mesmo draft, novo preview/lint/fact-check — útil se só o preview falhou em 4b; mesmo stop-old→serve-new de 4b).
+- `editar` → editor edita `draft.md` local/Drive; re-rodar 4a→4b→4c→4c-3→4d após confirmação (4b já encerra o servidor de preview anterior e sobe um novo — sem teardown manual aqui).
+- `retry` → re-rodar 4b→4c→4c-3→4d (mesmo draft, novo preview/lint/fact-check — útil se só o preview falhou em 4b; mesmo stop-old→serve-new de 4b).
 
 Após aprovação (`sim`), encerrar o servidor de preview local (#3546 — Etapa 5 não precisa dele, publica direto no Brevo) E a aba do Chrome (#3700 — mesma causa raiz do diário: `--stop-pid` só mata o processo, nunca a aba que `navigate` abriu, e ela fica órfã apontando pro loopback morto até o Chrome a reabrir num "Continuar de onde parei"), e gravar o checkpoint (#2795):
 
