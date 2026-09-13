@@ -31,6 +31,26 @@ export interface ThreadsCreds {
   apiVersion: string;
 }
 
+/**
+ * #8052 — credenciais da API DIRETA do LinkedIn (Images API + Posts API),
+ * usadas só pelo caminho carrossel (`fireLinkedInCarousel`). O post
+ * single-image continua indo pelo webhook Make (`fireLinkedIn`) — estas
+ * credenciais NÃO substituem `MAKE_WEBHOOK_URL`, só habilitam o caminho
+ * novo quando a entry carrega `image_urls` com mais de 1 item (ver #8050,
+ * que documentou o gap, e #8052, que decide resolvê-lo via API direta em
+ * vez de módulo multi-imagem no Make).
+ */
+export interface LinkedInCreds {
+  accessToken: string;
+  /** URN do autor do post — página da empresa (`urn:li:organization:{id}`)
+   * ou perfil pessoal (`urn:li:person:{id}`). Mesmo URN serve de `owner` no
+   * upload de imagem (Images API) e de `author` no post (Posts API). */
+  authorUrn: string;
+  /** Header `LinkedIn-Version` (formato YYYYMM) exigido por toda chamada às
+   * APIs REST versionadas do LinkedIn (Images API + Posts API). */
+  apiVersion: string;
+}
+
 /** Credenciais/URLs resolvidas pelo caller (fire.ts via env; durable-object.ts via DO payload). */
 export interface FireConfig {
   webhookUrl: string;
@@ -41,6 +61,8 @@ export interface FireConfig {
   apiKey?: string;
   instagram?: InstagramCreds;
   threads?: ThreadsCreds;
+  /** #8052 — credenciais da API direta do LinkedIn, só pro caminho carrossel. */
+  linkedin?: LinkedInCreds;
 }
 
 export type FireOutcome =
@@ -80,6 +102,23 @@ export function resolveThreadsCreds(env: Env): ThreadsCreds | undefined {
     userId: env.THREADS_USER_ID,
     accessToken: env.THREADS_ACCESS_TOKEN,
     apiVersion: env.THREADS_API_VERSION || "v1.0",
+  };
+}
+
+/**
+ * Resolve o `Env` do Worker pras credenciais da API direta do LinkedIn
+ * (#8052), com default de apiVersion. Retorna `undefined` se qualquer
+ * credencial obrigatória estiver ausente — mesmo padrão de
+ * resolveInstagramCreds/resolveThreadsCreds acima. Ausência não afeta o
+ * caminho single-image (webhook Make, `fireLinkedIn`) — só desabilita o
+ * carrossel, que cai em `dlq` com motivo claro (ver `fireQueueEntry`).
+ */
+export function resolveLinkedInCreds(env: Env): LinkedInCreds | undefined {
+  if (!env.LINKEDIN_ACCESS_TOKEN || !env.LINKEDIN_AUTHOR_URN) return undefined;
+  return {
+    accessToken: env.LINKEDIN_ACCESS_TOKEN,
+    authorUrn: env.LINKEDIN_AUTHOR_URN,
+    apiVersion: env.LINKEDIN_API_VERSION || "202401",
   };
 }
 
@@ -135,6 +174,184 @@ function resolveImageUrls(entry: QueueEntry): string[] {
   if (entry.image_urls && entry.image_urls.length > 0) return entry.image_urls;
   if (entry.image_url) return [entry.image_url];
   return [];
+}
+
+/**
+ * Dispara um carrossel no LinkedIn via API DIRETA (Images API + Posts API,
+ * `api.linkedin.com/rest/*`) — #8052, resolve o gap identificado no #8050
+ * (`fireLinkedIn` só encaminha `image_url` singular ao Make.com, nunca leu
+ * `image_urls`). Decisão do editor: API direta, sem depender de um módulo
+ * multi-imagem no scenario Make (opção 2 do #8050, descartada).
+ *
+ * Fluxo de 2 fases da API REST do LinkedIn:
+ *   1. Por imagem (N vezes, na ordem da lista):
+ *      a. `POST /rest/images?action=initializeUpload` com `owner=authorUrn`
+ *         → devolve `{ value: { uploadUrl, image } }` (`image` é o URN da
+ *         imagem, usado no post; `uploadUrl` é uma URL pré-assinada,
+ *         válida por tempo limitado).
+ *      b. Buscar os BYTES da imagem hospedada (`imageUrl`, já pública —
+ *         mesmo asset servido pro Instagram/Facebook/Threads) e fazer PUT
+ *         pra `uploadUrl` — diferente da Graph API do Instagram/Facebook
+ *         (que aceita `image_url` direto), a Images API do LinkedIn exige
+ *         upload de bytes, não uma URL de origem.
+ *   2. `POST /rest/posts` com `author=authorUrn`, `commentary=caption` e
+ *      `content.multiImage.images[]` (1 entry por URN de imagem, na MESMA
+ *      ordem em que foram enviadas) — publica direto (`lifecycleState:
+ *      "PUBLISHED"`), sem rascunho intermediário.
+ *
+ * Falha parcial: mesma política do carrossel Instagram (`fireInstagramCarousel`)
+ * — qualquer passo que falhar aborta o post inteiro, outcome SEMPRE "dlq",
+ * nunca "failed"/retriable. Publicar um carrossel incompleto (ou reprocessar
+ * do zero a cada ciclo de retry, recriando uploads já feitos) é pior que não
+ * publicar.
+ *
+ * Headers exigidos em toda chamada REST do LinkedIn: `Authorization: Bearer
+ * {token}`, `LinkedIn-Version: {apiVersion}` (formato YYYYMM) e
+ * `X-Restli-Protocol-Version: 2.0.0`.
+ */
+async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds: LinkedInCreds): Promise<FireOutcome> {
+  // Defesa em profundidade — mesmo padrão de fireInstagramCarousel: o enqueue
+  // (handleEnqueue) já barra >CAROUSEL_MAX_ITEMS, isto cobre entries
+  // legacy/inseridas fora do caminho normal.
+  if (imageUrls.length > CAROUSEL_MAX_ITEMS) {
+    return {
+      status: "dlq",
+      reason: `LinkedIn carrossel: ${imageUrls.length} imagens excede o máximo de ${CAROUSEL_MAX_ITEMS} itens`,
+    };
+  }
+
+  const restHeaders = {
+    Authorization: `Bearer ${creds.accessToken}`,
+    "Content-Type": "application/json",
+    "LinkedIn-Version": creds.apiVersion,
+    "X-Restli-Protocol-Version": "2.0.0",
+  };
+
+  const imageUrns: string[] = [];
+
+  // Fase 1: por imagem — initializeUpload, buscar bytes, PUT pra uploadUrl.
+  for (let i = 0; i < imageUrls.length; i++) {
+    const imageUrl = imageUrls[i];
+
+    let uploadUrl: string;
+    let imageUrn: string;
+    try {
+      const initRes = await fetch("https://api.linkedin.com/rest/images?action=initializeUpload", {
+        method: "POST",
+        headers: restHeaders,
+        body: JSON.stringify({ initializeUploadRequest: { owner: creds.authorUrn } }),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      const text = await initRes.text();
+      let data: { value?: { uploadUrl?: string; image?: string }; message?: string };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return {
+          status: "dlq",
+          reason: `LinkedIn carrossel: initializeUpload ${i + 1}/${imageUrls.length} resposta não-JSON: HTTP ${initRes.status}: ${text.slice(0, 200)} (URNs já obtidos: ${imageUrns.length})`,
+        };
+      }
+      if (!initRes.ok || !data.value?.uploadUrl || !data.value?.image) {
+        return {
+          status: "dlq",
+          reason: `LinkedIn carrossel: initializeUpload ${i + 1}/${imageUrls.length} falhou: HTTP ${initRes.status}: ${data.message ?? text.slice(0, 200)} (URNs já obtidos: ${imageUrns.length})`,
+        };
+      }
+      uploadUrl = data.value.uploadUrl;
+      imageUrn = data.value.image;
+    } catch (e) {
+      const err = e as Error;
+      const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+      return {
+        status: "dlq",
+        reason: `LinkedIn carrossel: initializeUpload ${i + 1}/${imageUrls.length} fetch ${timeout ? "timeout" : "failed"}: ${err.message} (URNs já obtidos: ${imageUrns.length})`,
+      };
+    }
+
+    let imageBytes: ArrayBuffer;
+    try {
+      const imgRes = await fetch(imageUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+      if (!imgRes.ok) {
+        return {
+          status: "dlq",
+          reason: `LinkedIn carrossel: fetch da imagem ${i + 1}/${imageUrls.length} (${imageUrl}) falhou: HTTP ${imgRes.status} (URNs já obtidos: ${imageUrns.length})`,
+        };
+      }
+      imageBytes = await imgRes.arrayBuffer();
+    } catch (e) {
+      const err = e as Error;
+      const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+      return {
+        status: "dlq",
+        reason: `LinkedIn carrossel: fetch da imagem ${i + 1}/${imageUrls.length} (${imageUrl}) ${timeout ? "timeout" : "failed"}: ${err.message} (URNs já obtidos: ${imageUrns.length})`,
+      };
+    }
+
+    try {
+      const putRes = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${creds.accessToken}` },
+        body: imageBytes,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      if (!putRes.ok) {
+        const body = await putRes.text();
+        return {
+          status: "dlq",
+          reason: `LinkedIn carrossel: upload da imagem ${i + 1}/${imageUrls.length} falhou: HTTP ${putRes.status}: ${body.slice(0, 200)} (URNs já obtidos: ${imageUrns.length})`,
+        };
+      }
+    } catch (e) {
+      const err = e as Error;
+      const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+      return {
+        status: "dlq",
+        reason: `LinkedIn carrossel: upload da imagem ${i + 1}/${imageUrls.length} fetch ${timeout ? "timeout" : "failed"}: ${err.message} (URNs já obtidos: ${imageUrns.length})`,
+      };
+    }
+
+    imageUrns.push(imageUrn);
+  }
+
+  // Fase 2: criar o post com content.multiImage.images (ordem preservada).
+  try {
+    const postRes = await fetch("https://api.linkedin.com/rest/posts", {
+      method: "POST",
+      headers: restHeaders,
+      body: JSON.stringify({
+        author: creds.authorUrn,
+        commentary: caption,
+        visibility: "PUBLIC",
+        distribution: {
+          feedDistribution: "MAIN_FEED",
+          targetEntities: [],
+          thirdPartyDistributionChannels: [],
+        },
+        content: {
+          multiImage: {
+            images: imageUrns.map((id) => ({ id })),
+          },
+        },
+        lifecycleState: "PUBLISHED",
+        isReshareDisabledByAuthor: false,
+      }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (postRes.status === 201 || postRes.ok) return { status: "fired" };
+    const body = await postRes.text();
+    return {
+      status: "dlq",
+      reason: `LinkedIn carrossel: POST /rest/posts falhou: HTTP ${postRes.status}: ${body.slice(0, 200)} (images=${imageUrns.join(",")})`,
+    };
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return {
+      status: "dlq",
+      reason: `LinkedIn carrossel: POST /rest/posts fetch ${timeout ? "timeout" : "failed"}: ${err.message} (images=${imageUrns.join(",")})`,
+    };
+  }
 }
 
 /**
@@ -1111,20 +1328,22 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
 
   // channel === "linkedin" (ou ausente — default de backward-compat)
 
-  // #8050: `fireLinkedIn` só encaminha `image_url` singular ao Make.com —
-  // nunca leu `image_urls` (o suporte a carrossel do #4153 foi implementado
-  // só pro Instagram/Threads, via `fireInstagramCarousel`/`fireThreadsCarousel`).
-  // Antes deste guard, uma entry LinkedIn com `image_urls` (>1 imagem) caía
-  // em silêncio pro `image_url` ausente/undefined, ficava reprocessando até
-  // a DLQ sem nenhum sinal claro do motivo real (achado ao vivo, sessão
-  // 260912: um carrossel semanal enfileirado manualmente pro LinkedIn ficou
-  // preso em retry). Fail-fast aqui poupa os retries e nomeia a causa.
-  if (resolveImageUrls(entry).length > 1) {
-    return {
-      status: "dlq",
-      reason:
-        "channel=linkedin não suporta carrossel (image_urls) — fireLinkedIn só encaminha image_url singular ao Make.com. Ver issue #8050.",
-    };
+  // #8052 (reverte o guard fail-fast do #8050): `image_urls` com mais de 1
+  // item agora publica via API DIRETA do LinkedIn (`fireLinkedInCarousel`),
+  // em vez do webhook Make (que só encaminha `image_url` singular e nunca
+  // leu `image_urls`) — mesmo padrão de ramificação de `fireInstagram`/
+  // `fireThreads` (Instagram/Threads: > 1 imagem = carrossel, Graph/Threads
+  // API direta, sem Make).
+  const linkedInImages = resolveImageUrls(entry);
+  if (linkedInImages.length > 1) {
+    if (!config.linkedin) {
+      return {
+        status: "dlq",
+        reason:
+          "channel=linkedin com carrossel (image_urls) mas credenciais da API direta do LinkedIn (LINKEDIN_ACCESS_TOKEN/LINKEDIN_AUTHOR_URN) não configuradas — ver #8052",
+      };
+    }
+    return fireLinkedInCarousel(linkedInImages, entry.text, config.linkedin);
   }
 
   const webhookTarget: WebhookTarget = entry.webhook_target ?? "diaria";
