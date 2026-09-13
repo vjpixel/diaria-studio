@@ -63,7 +63,7 @@ import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoGet } from "./lib/brevo-client.ts";
-import { pool } from "./lib/pool.ts";
+import { pool, poolAbortOnError } from "./lib/pool.ts";
 import { parseBrevoContact, type BrevoColumns } from "./lib/brevo-stats.ts";
 import {
   openClariceDb,
@@ -767,6 +767,19 @@ export async function main(
   // FINITO (`retryOnSqliteBusy`, delays default 1s/3s/6s) — nunca infinito,
   // decisão documentada no PR: um lock genuinamente preso não deve travar o
   // processo pra sempre, e o systemd timer já reroda no dia seguinte.
+  //
+  // #8091: esse retry finito pode levar até ~10s pra desistir — durante
+  // contenção SUSTENTADA de lock (o cenário que motivou o #6035), mais de uma
+  // lane do pool() abaixo pode estar no meio desse retry ao mesmo tempo. O
+  // pool() abaixo é `poolAbortOnError` (não o `pool()` simples) por isso: ao
+  // primeiro flush() que esgota os retries e lança, as demais lanes param de
+  // puxar itens novos em vez de continuar martelando Brevo/SQLite num run já
+  // fadado a abortar. (Investigado e descartado: o `pool()` simples NÃO
+  // produz "unhandled rejection" aqui — `Promise.all` se inscreve em todas as
+  // lanes de forma síncrona antes de qualquer uma rejeitar, então nenhuma
+  // rejeição fica sem handler; ver docstring de `poolAbortOnError` em
+  // `lib/pool.ts`. O ganho real do abort é evitar trabalho desperdiçado
+  // contra uma API/DB já em contenção, não evitar crash.)
   const flush = async (): Promise<void> => {
     if (buffer.length === 0) return;
     const batch = buffer;
@@ -804,7 +817,7 @@ export async function main(
   };
 
   try {
-    await pool(pending, concurrency, async (c) => {
+    await poolAbortOnError(pending, concurrency, async (c) => {
       const { body } = await brevoGet(apiKey, `/contacts/${c.id}`);
       // 404 (sumiu entre listar e buscar) → body {} → parse vira tudo-zero; marca
       // como done mesmo assim pra não re-tentar em loop.
