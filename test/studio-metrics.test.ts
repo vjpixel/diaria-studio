@@ -95,6 +95,19 @@ function seedKitSubscription(
   }
 }
 
+/** Grava `data/metrics/kit-active-history.jsonl` com 1 linha por `{dia, count}`
+ *  passado — mesmo formato que `diaria-subscribers-ingest-kit.ts` grava em
+ *  produção (#7916, fatia 3/N). `asOf`/`capturedAt` são derivados de `dia`
+ *  (meio-dia UTC, sem risco de vazar de fuso nos testes). */
+function writeKitActiveHistory(root: string, rows: { dia: string; count: number }[]): void {
+  const dir = join(root, "data", "metrics");
+  mkdirSync(dir, { recursive: true });
+  const lines = rows.map((r) =>
+    JSON.stringify({ dia: r.dia, captured_at: `${r.dia}T12:00:00.000Z`, count: r.count, asOf: `${r.dia}T12:00:00.000Z` }),
+  );
+  writeFileSync(join(dir, "kit-active-history.jsonl"), lines.join("\n") + "\n", "utf8");
+}
+
 describe("buildMetricsData — sessão cloud (data/ ausente) nunca lança", () => {
   it("hasDataDir=false, todas as camadas com error/motivo, sem exceção", async () => {
     clearMetricsCache();
@@ -322,7 +335,7 @@ describe("buildMetricsData — kitActive real, não mais null fixo (#7916, fatia
     }
   });
 
-  it("baseAtivaAnterior (dia anterior) NÃO reusa a contagem ATUAL do Kit — sem série histórica, kit fica null explícito nessa comparação", async () => {
+  it("baseAtivaAnterior (dia anterior) NÃO reusa a contagem ATUAL do Kit — sem arquivo de história, kit fica null explícito nessa comparação", async () => {
     clearMetricsCache();
     const root = makeRoot();
     try {
@@ -339,8 +352,57 @@ describe("buildMetricsData — kitActive real, não mais null fixo (#7916, fatia
       assert.equal(
         kitSeriesAnterior!.valor,
         null,
-        "sem série histórica do Kit por dia, reusar a contagem de HOJE como se fosse 'ontem' inflaria a comparação em silêncio",
+        "sem kit-active-history.jsonl gravado ainda, reusar a contagem de HOJE como se fosse 'ontem' inflaria a comparação em silêncio",
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("REGRESSÃO (#7916, fatia 3/N): baseAtivaAnterior lê a contagem REAL do dia anterior a partir de kit-active-history.jsonl quando ela existe", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      const hoje = "2026-09-08";
+      const ontem = "2026-09-07";
+      writeBeehiivSnapshot(root, ontem, [beehiivSubscriberLine()]);
+      writeBeehiivSnapshot(root, hoje, [beehiivSubscriberLine(), beehiivSubscriberLine({ email: "b@example.com" })]);
+      // Contagem ATUAL do Kit (hoje) é 3 — bem diferente da história de ontem (1),
+      // exatamente pra provar que a leitura não está reusando a de hoje por engano.
+      seedKitSubscription(root, "kit1@example.com", `${hoje}T10:00:00.000Z`, "google.com");
+      seedKitSubscription(root, "kit2@example.com", `${hoje}T10:00:00.000Z`, "google.com");
+      seedKitSubscription(root, "kit3@example.com", `${hoje}T10:00:00.000Z`, "google.com");
+      writeKitActiveHistory(root, [
+        { dia: ontem, count: 1 },
+        { dia: hoje, count: 3 },
+      ]);
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date(`${hoje}T18:00:00Z`) });
+
+      assert.equal(data.queda.kitActiveLayer.count, 3, "contagem ATUAL do Kit (leitura viva do store) continua correta");
+      const kitSeriesAnterior = data.queda.baseAtivaAnterior?.series?.find((s) => s.chave === "kit");
+      assert.ok(kitSeriesAnterior, "decomposição do dia anterior também traz a série 'kit'");
+      assert.equal(kitSeriesAnterior!.valor, 1, "kit-active-history.jsonl tem 1 pro dia anterior — usada em vez de null/da contagem de hoje");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("dia anterior sem entry na história (arquivo existe mas não cobre esse dia) continua null explícito", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      const hoje = "2026-09-08";
+      const ontem = "2026-09-07";
+      writeBeehiivSnapshot(root, ontem, [beehiivSubscriberLine()]);
+      writeBeehiivSnapshot(root, hoje, [beehiivSubscriberLine(), beehiivSubscriberLine({ email: "b@example.com" })]);
+      seedKitSubscription(root, "kit1@example.com", `${hoje}T10:00:00.000Z`, "google.com");
+      // História só cobre HOJE, não ONTEM (ex: 1ª execução com --write rodou hoje).
+      writeKitActiveHistory(root, [{ dia: hoje, count: 1 }]);
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date(`${hoje}T18:00:00Z`) });
+
+      const kitSeriesAnterior = data.queda.baseAtivaAnterior?.series?.find((s) => s.chave === "kit");
+      assert.ok(kitSeriesAnterior);
+      assert.equal(kitSeriesAnterior!.valor, null, "dia anterior à 1ª execução com --write não tem história — null explícito, nunca 0");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
