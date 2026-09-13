@@ -162,3 +162,88 @@ describe("#8000 — saveSnapshot: partial nunca sobrescreve latest.json", () => 
     });
   });
 });
+
+describe("#8015 — snapshot parcial nunca colide com o datado completo do mesmo dia", () => {
+  function withTmpDir(fn: (dir: string) => void): void {
+    const dir = mkdtempSync(join(tmpdir(), "ga4-sync-8015-"));
+    try {
+      fn(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("cenário exato da issue: sync default (yesterday) seguido de --end today no MESMO dia — os dois arquivos coexistem, nenhum sobrescreve o outro", () => {
+    withTmpDir((dir) => {
+      // Sync agendado, default --end yesterday, roda 'hoje' (2026-09-11).
+      const full = makeSnapshot({
+        fetched_at: "2026-09-11T06:00:00.000Z",
+        end_date: DEFAULT_END_DATE,
+        overview: [{ tag: "full" }],
+      });
+      const { datedPath: fullDatedPath, latestPath: fullLatestPath } = saveSnapshot(full, dir);
+
+      // Rodada ad-hoc --end today, MESMO dia de execução.
+      const partial = makeSnapshot({
+        fetched_at: "2026-09-11T16:55:00.000Z",
+        end_date: "today",
+        partial: true,
+        overview: [{ tag: "partial" }],
+      });
+      const { datedPath: partialDatedPath, latestPath: partialLatestPath } = saveSnapshot(partial, dir);
+
+      // Nomes de arquivo diferentes — nunca colidem.
+      assert.notEqual(fullDatedPath, partialDatedPath);
+      assert.ok(existsSync(fullDatedPath));
+      assert.ok(existsSync(partialDatedPath));
+
+      // O datado completo continua com o conteúdo do sync default —
+      // não foi sobrescrito pelo --end today.
+      const fullSaved = JSON.parse(readFileSync(fullDatedPath, "utf8"));
+      assert.deepEqual(fullSaved.overview, [{ tag: "full" }]);
+
+      // O parcial grava sob nome próprio, com sufixo previsível.
+      assert.equal(partialDatedPath, join(dir, "2026-09-11.partial-today.json"));
+
+      // latest.json aponta pro sync completo; nunca pro parcial.
+      assert.ok(fullLatestPath && existsSync(fullLatestPath));
+      assert.equal(partialLatestPath, null);
+      const latestSaved = JSON.parse(readFileSync(join(dir, "latest.json"), "utf8"));
+      assert.deepEqual(latestSaved.overview, [{ tag: "full" }]);
+    });
+  });
+
+  it("ordem inversa: --end today ad-hoc primeiro, sync default depois no MESMO dia — o completo grava normalmente sem ser bloqueado pelo parcial", () => {
+    withTmpDir((dir) => {
+      const partial = makeSnapshot({
+        fetched_at: "2026-09-11T09:00:00.000Z",
+        end_date: "today",
+        partial: true,
+      });
+      saveSnapshot(partial, dir);
+
+      const full = makeSnapshot({
+        fetched_at: "2026-09-11T18:00:00.000Z",
+        end_date: DEFAULT_END_DATE,
+      });
+      const { datedPath, latestPath } = saveSnapshot(full, dir);
+
+      assert.equal(datedPath, join(dir, "2026-09-11.json"));
+      assert.ok(latestPath && existsSync(latestPath));
+      // O parcial gravado antes continua intacto, arquivo próprio.
+      assert.ok(existsSync(join(dir, "2026-09-11.partial-today.json")));
+    });
+  });
+
+  it("nome do parcial inclui a data literal quando --end é uma data absoluta (não só 'today')", () => {
+    withTmpDir((dir) => {
+      const partial = makeSnapshot({
+        fetched_at: "2026-09-11T09:00:00.000Z",
+        end_date: "2026-09-10",
+        partial: true,
+      });
+      const { datedPath } = saveSnapshot(partial, dir);
+      assert.equal(datedPath, join(dir, "2026-09-11.partial-2026-09-10.json"));
+    });
+  });
+});

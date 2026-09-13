@@ -812,7 +812,10 @@ export interface Ga4SessionInput {
 export interface Ga4TrafficMetricDeps extends MetricDeps {
   /** Linhas do relatório fino (`channel`, `ga4-sync.ts`) do(s) dia(s)
    *  pedidos — o CHAMADOR resolve a fonte (`data/ga4-cache/*.json`). SEM
-   *  I/O aqui, mesmo padrão de `AcquisitionMetricDeps.registros`. */
+   *  I/O aqui, mesmo padrão de `AcquisitionMetricDeps.registros`. **O
+   *  glob deve excluir `*.partial-*.json`** (#8015 — nome reservado pro
+   *  snapshot de um `--end` != "yesterday" do `ga4-sync.ts`; nunca é a
+   *  janela completa do dia e não é autoritativo pra série histórica). */
   sessoes(janela: Janela): Ga4SessionInput[] | Promise<Ga4SessionInput[]>;
   /** `data/metrics/captura-log.jsonl` (F2) — mesmo uso de
    *  `AcquisitionMetricDeps.capturaLog`: decide INDETERMINADO por dia sem
@@ -861,7 +864,7 @@ const sessoesDiaDef: MetricDef<Ga4TrafficMetricDeps> = {
     "NUNCA sessionDefaultChannelGroup, que é só coluna de conferência.",
   unidade: "contagem",
   direcao: "maior-melhor",
-  fonte: "data/ga4-cache/*.json (relatório 'channel') + data/metrics/captura-log.jsonl (F2)",
+  fonte: "data/ga4-cache/*.json, exceto *.partial-*.json (#8015) (relatório 'channel') + data/metrics/captura-log.jsonl (F2)",
   decomposicoes: ["classe"],
   async computar(args) {
     validarDecomposicao(sessoesDiaDef, args.decomposicao);
