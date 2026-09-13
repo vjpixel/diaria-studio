@@ -275,10 +275,18 @@ imagem no topo do editor, acima do título). `render-linkedin-weekly.ts`
 (Passo 7 da skill) copia mecanicamente `04-d1-2x1.jpg` — a imagem 2:1 da
 edição de origem da manchete #1 — pra `data/weekly/{cycle}/04-d1-2x1.jpg`;
 não existe API pra subir essa imagem, então o upload continua **manual**,
-igual ao resto do artigo:
+igual ao resto do artigo.
 
-1. Clicar no ícone de imagem de capa do editor (topo, acima do título).
-2. Selecionar `data/weekly/{cycle}/04-d1-2x1.jpg` do disco.
+**Desde #8031 (12/09/2026), "manual" aqui significa literalmente feito
+pelo EDITOR, não pela sessão via Claude in Chrome** — o campo usa o
+seletor de arquivo NATIVO do sistema operacional (sem `<input
+type=file>` estático no DOM pra automatizar), então nenhum `javascript_tool`
+consegue selecionar o arquivo. A skill (Passo 9 do `SKILL.md`) entrega o
+caminho do arquivo ao editor em vez de tentar clicar:
+
+1. O editor clica no ícone de imagem de capa do editor (topo, acima do
+   título).
+2. O editor seleciona `data/weekly/{cycle}/04-d1-2x1.jpg` do disco.
 3. Se `ln-{cycle}.json` (Passo 7 da skill) trouxe `coverImagePath: null`
    (edição de origem arquivada ou sem a imagem — fail-soft, não bloqueia o
    resto do artigo), publicar sem capa é aceitável — não há imagem
@@ -399,12 +407,15 @@ Melhor foi pega e corrigida (reinserção manual via paste de 1 `<p><a>`
 isolado, cursor posicionado com `Home`/`End`/`Enter`, nunca clique direto
 sobre texto de link).
 
-**Desde o #5988, a automação acima é EXECUTADA pelo Passo 8 de
-`.claude/skills/diaria-linkedin-semanal/SKILL.md`** (só a sessão
+**Desde o #5988, a automação acima (paste do corpo) é EXECUTADA pelo Passo
+8 de `.claude/skills/diaria-linkedin-semanal/SKILL.md`** (só a sessão
 top-level, que tem `mcp__claude-in-chrome__*` — subagentes comuns não
 têm) — deixou de ser só referência pra quem fosse implementar isso no
-futuro. O Passo 8 roda uma auditoria pós-paste obrigatória antes de
-escrever o post de feed ou agendar — `auditLinkedinPaste()` em
+futuro. **Desde #8031 (12/09/2026), o Passo 8 vai só até a auditoria
+pós-paste** — upload de capa (§3 acima) e agendamento (§4 abaixo) saem do
+escopo automatizado e viram o Passo 9, manual, feito pelo editor. O Passo
+8 roda a auditoria pós-paste obrigatória antes de entregar ao editor —
+`auditLinkedinPaste()` em
 `scripts/lib/linkedin-paste-audit.ts` (módulo puro: recebe as âncoras +
 `textContent.length` já lidos do DOM e devolve `{ ok, issues }`) confere
 contagem de âncoras, UTM preservada por âncora e tamanho do texto colado
@@ -424,9 +435,15 @@ abaixo) e que motivou diretamente a auditoria mecânica do #5988.
 **Corrigido em 260803.** `.claude/skills/diaria-linkedin-semanal/SKILL.md`
 afirmava que "o LinkedIn não tem API de agendamento de newsletter" e
 concluía daí que não havia gate de agendamento. A premissa da API segue
-verdadeira, mas a conclusão operacional estava errada: **a UI agenda**. O
-diálogo que abre no **Next** traz um ícone de relógio ao lado do botão
-Publish, e o artigo agendado aparece em
+verdadeira, mas a conclusão operacional estava errada: **a UI agenda**.
+**Desde #8031, quem clica é sempre o EDITOR (Passo 9 do `SKILL.md`)** —
+antes disso o clique podia ser feito pela sessão via Claude in Chrome
+dentro do mesmo fluxo que subia a capa; como a capa não é automatizável, o
+editor já está com a mão no diálogo de qualquer forma, então o clique de
+agendar foi junto pro mesmo passo manual. O texto abaixo (consequências
+práticas de agendar vs. publicar na hora) continua valendo — só muda QUEM
+executa o clique. O diálogo que abre no **Next** traz um ícone de relógio
+ao lado do botão Publish, e o artigo agendado aparece em
 `linkedin.com/article/manage/scheduled/`.
 
 **Consequências práticas, aprendidas no susto:**
