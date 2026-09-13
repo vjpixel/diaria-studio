@@ -588,6 +588,52 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
     assert.equal(entry.exit, 0);
   });
 
+  it("com --write: grava 1 linha em kit-active-history.jsonl com a contagem Kit ativa do dia (#7916, fatia 3/N)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    const capturaLogPath = resolve(tmp, "data/metrics/captura-log.jsonl");
+    const kitActiveHistoryPath = resolve(tmp, "data/metrics/kit-active-history.jsonl");
+
+    await main(
+      ["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--kit-active-history", kitActiveHistoryPath, "--write"],
+      {
+        listAllBroadcasts: async () => [],
+        fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+        getBroadcastStats: async () => makeStats(0),
+        sleep: async () => {},
+        listAllRosterSubscribers: async () => [makeKitSub(), makeKitSub({ id: 2, email_address: "inactive@example.com", state: "inactive" })],
+      },
+    );
+
+    const lines = readFileSync(kitActiveHistoryPath, "utf8").trim().split("\n");
+    assert.equal(lines.length, 1, "1 snapshot por execução --write");
+    const entry = JSON.parse(lines[0]);
+    assert.equal(entry.count, 1, "só o subscriber 'active' conta — 'inactive' (DOI pendente) fica de fora");
+    assert.ok(entry.dia, "dia BRT presente");
+    assert.ok(entry.asOf, "asOf presente quando count > 0");
+  });
+
+  it("sem --write: dry-run NÃO grava kit-active-history.jsonl", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    const capturaLogPath = resolve(tmp, "data/metrics/captura-log.jsonl");
+    const kitActiveHistoryPath = resolve(tmp, "data/metrics/kit-active-history.jsonl");
+
+    await main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--kit-active-history", kitActiveHistoryPath], {
+      listAllBroadcasts: async () => [],
+      fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+      getBroadcastStats: async () => makeStats(0),
+      sleep: async () => {},
+      listAllRosterSubscribers: async () => [makeKitSub()],
+    });
+
+    assert.equal(existsSyncSafe(kitActiveHistoryPath), false, "dry-run nunca escreve kit-active-history.jsonl");
+  });
+
   it("re-execução com --write no mesmo processo APPEND uma 2ª linha em captura-log.jsonl (idempotente nos dados, não no log)", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-"));
     mkdirSync(resolve(tmp, "data"), { recursive: true });

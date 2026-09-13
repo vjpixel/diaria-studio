@@ -45,9 +45,17 @@
  * o Passo 1 inteiro (nem lista) — útil pra isolar teste do Passo 2
  * (broadcast) sem pagar a chamada de roster a cada invocação manual.
  *
+ * ## Snapshot diário do Kit ativo (#7916, fatia 3/N)
+ *
+ * Toda execução com `--write` também acrescenta 1 linha em
+ * `data/metrics/kit-active-history.jsonl` (`getKitActiveSummary(db)` logo
+ * após `ingestKitRoster` gravar) — piggyback sem chamada de rede nova. Ver
+ * `scripts/lib/metrics/kit-active-history.ts` pro formato/leitura.
+ *
  * Uso:
  *   npx tsx scripts/diaria-subscribers-ingest-kit.ts [--db <p>] [--manifest <p>]
  *     [--limit N] [--broadcast <id>] [--write] [--skip-roster] [--captura-log <p>]
+ *     [--kit-active-history <p>]
  *
  * Requer `KIT_API_KEY` no env (`resolveKitConfig`, lança se ausente — mesmo
  * fail-fast do resto da camada Kit). Stdout: JSON summary. Stderr: progresso.
@@ -68,7 +76,7 @@ import {
   type KitBroadcastClick,
 } from "./lib/kit-client.ts";
 import { fetchAudience, fetchUrlClicks, todasOuNenhuma, type BroadcastAudience, type DrainResult } from "./kit-provider-split.ts";
-import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getStoreCounts } from "./lib/diaria-subscribers-db.ts";
+import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getStoreCounts, getKitActiveSummary } from "./lib/diaria-subscribers-db.ts";
 import { runCanonicalEdicaoBackfillFailSoft } from "./lib/diaria-subscribers-edicao-canonica.ts";
 import {
   ingestBroadcastAudience,
@@ -78,6 +86,7 @@ import {
 } from "./lib/kit-subscribers-ingest.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { buildCapturaLogEntry, serializeCapturaLogEntry } from "./lib/metrics/captura-log.ts";
+import { buildKitActiveHistoryEntry, serializeKitActiveHistoryEntry } from "./lib/metrics/kit-active-history.ts";
 import {
   buildInitialManifest,
   mergeManifestEntries,
@@ -95,6 +104,13 @@ export const DEFAULT_MANIFEST_PATH = resolve(dirname(DEFAULT_DB_PATH), "kit-inge
  *  `data/diaria-subscribers/` (não dentro dela), porque não é parte do
  *  schema do #6464 — ver `scripts/lib/metrics/captura-log.ts`. */
 export const DEFAULT_CAPTURA_LOG_PATH = resolve(dirname(DEFAULT_DB_PATH), "..", "metrics", "captura-log.jsonl");
+
+/** `data/metrics/kit-active-history.jsonl` (#7916, fatia 3/N) — série
+ *  histórica diária da contribuição do Kit pra `base-ativa` (1 snapshot por
+ *  execução `--write`, `getKitActiveSummary` logo após `ingestKitRoster`
+ *  gravar). Mesmo diretório de `DEFAULT_CAPTURA_LOG_PATH`, arquivo irmão —
+ *  ver `scripts/lib/metrics/kit-active-history.ts`. */
+export const DEFAULT_KIT_ACTIVE_HISTORY_PATH = resolve(dirname(DEFAULT_DB_PATH), "..", "metrics", "kit-active-history.jsonl");
 
 /** Pacing entre broadcasts — mesma ordem de grandeza medida no #6047
  *  (endpoints singulares do Kit toleram só dezenas de chamadas sequenciais
@@ -426,6 +442,7 @@ export async function main(
   // scripts/lib/scheduled-tasks.ts) sempre passa `--write`.
   // -------------------------------------------------------------------------
   const capturaLogPath = getArg(argv, "captura-log") || DEFAULT_CAPTURA_LOG_PATH;
+  const kitActiveHistoryPath = getArg(argv, "kit-active-history") || DEFAULT_KIT_ACTIVE_HISTORY_PATH;
   const shouldWriteRoster = hasFlag(argv, "write");
   const skipRoster = hasFlag(argv, "skip-roster"); // #6586-only regression fixtures não têm listAllRosterSubscribers
   let rosterSummary: { total: number; written: boolean; novosGravados: number; eventosEstado: number } | null = null;
@@ -472,6 +489,23 @@ export async function main(
       console.error(
         `  …roster gravado: ${result.subscriptionsWritten} subscription(s), ${result.subscribeEvents.newEvents} novo(s) cadastro(s), ${eventosEstado} evento(s) de estado.`,
       );
+
+      // #7916 (fatia 3/N): snapshot diário do Kit ativo, piggyback nesta
+      // mesma execução — sem chamada de rede nova (mesmo `db` já atualizado
+      // acima por `ingestKitRoster`). Fecha a lacuna documentada na
+      // docstring de `studio-metrics.ts`: `baseAtivaAnterior` deixa de
+      // depender só do dia atual pra decidir "ontem" assim que houver
+      // história suficiente acumulada (ver `kit-active-history.ts`).
+      const kitActiveHistoryDir = dirname(kitActiveHistoryPath);
+      mkdirSync(kitActiveHistoryDir, { recursive: true });
+      const kitActiveSummary = getKitActiveSummary(db);
+      const historyEntry = buildKitActiveHistoryEntry({
+        capturedAt,
+        count: kitActiveSummary.count,
+        asOf: kitActiveSummary.asOf,
+      });
+      appendFileSync(kitActiveHistoryPath, serializeKitActiveHistoryEntry(historyEntry));
+      console.error(`  …kit-active-history: ${historyEntry.count} ativo(s) em ${historyEntry.dia}.`);
     } else {
       rosterSummary = { total: roster.length, written: false, novosGravados: 0, eventosEstado: 0 };
     }

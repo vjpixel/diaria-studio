@@ -34,13 +34,17 @@
  * direta da API do Kit) e expõe o frescor (`MAX(updated_at)` das linhas
  * contadas — proxy de "quando a última ingestão rodou", ver docstring de
  * `KitActiveSummary`) e o motivo quando indisponível — nunca um número cego.
- * Ainda uma simplificação declarada: `baseAtivaAnterior` (comparação com o
- * dia anterior, zona "Queda") continua com `kitActive: null` de propósito —
- * o store não guarda série histórica do Kit por dia, só o estado ATUAL, e
- * reusar a contagem de HOJE como se fosse "ontem" inflaria/desinflaria a
- * variação calculada de forma silenciosa. Follow-up natural (F8/#7180 ou uma
- * fatia futura desta issue) é uma série diária dedicada, não bloqueante pro
- * v1.
+ * **`baseAtivaAnterior` deixou de depender só do dia atual (#7916, fatia
+ * 3/N).** Antes desta fatia `baseAtivaAnterior` (comparação com o dia
+ * anterior, zona "Queda") sempre saía com `kitActive: null` — o store só
+ * guardava o estado ATUAL do Kit, e reusar a contagem de HOJE como se fosse
+ * "ontem" inflaria/desinflaria a variação calculada em silêncio. Agora
+ * `loadKitActiveCountForDay` lê `data/metrics/kit-active-history.jsonl`
+ * (série gravada por `diaria-subscribers-ingest-kit.ts` a cada execução
+ * `--write`, ver `scripts/lib/metrics/kit-active-history.ts`) — continua
+ * `null` explícito quando não há história gravada pro dia pedido (arquivo
+ * ainda não existe, ou o dia é anterior à 1ª execução com `--write` desta
+ * fatia), nunca um `0` fabricado.
  *
  * **`registros()` do Kit lê o store `diaria-subscribers` (#6464) — `utm_source`
  * corrigido no #7916 (fatia 1/N).** Antes desta fatia o SELECT de
@@ -76,6 +80,7 @@ import {
 import { evaluateMeta, type Meta, type MetaStatus, type MedicaoDia } from "../lib/metrics/metas.ts";
 import { loadMetas, validateMetas } from "../lib/metrics/metas-store.ts";
 import type { CapturaLogEntry } from "../lib/metrics/captura-log.ts";
+import { parseKitActiveHistoryLines, findKitActiveCountForDay } from "../lib/metrics/kit-active-history.ts";
 import { openDiariaSubscribersDbSafe, getStoreCounts, getKitActiveSummary } from "../lib/diaria-subscribers-db.ts";
 import {
   latestSnapshotDate,
@@ -229,6 +234,34 @@ function addDaysToYmd(ymd: string, delta: number): string {
  *  `rootDir` (testável sem depender do módulo default global). */
 function defaultCapturaLogPath(rootDir: string): string {
   return resolve(rootDir, "data", "metrics", "captura-log.jsonl");
+}
+
+// ─── camada: kit-active-history.jsonl (#7916, fatia 3/N) ───────────────
+
+/** Mesmo caminho default de `DEFAULT_KIT_ACTIVE_HISTORY_PATH`
+ *  (`diaria-subscribers-ingest-kit.ts`) — recalculado aqui pela mesma razão
+ *  de `defaultCapturaLogPath` acima (testável sem depender do módulo
+ *  default global). */
+function defaultKitActiveHistoryPath(rootDir: string): string {
+  return resolve(rootDir, "data", "metrics", "kit-active-history.jsonl");
+}
+
+/**
+ * Contagem do Kit ativo pra `dia` (BRT) a partir da série histórica —
+ * `null` (nunca lança) quando o arquivo está ausente, ilegível, ou não tem
+ * nenhuma entry pra `dia` (fail-soft, mesmo padrão de `loadCapturaLog`).
+ * Reusado tanto pro dia de referência (baseline) quanto pro dia anterior
+ * (zona "Queda") — mesma fonte, dias diferentes.
+ */
+function loadKitActiveCountForDay(rootDir: string, dia: string): number | null {
+  const path = defaultKitActiveHistoryPath(rootDir);
+  if (!existsSync(path)) return null;
+  try {
+    const entries = parseKitActiveHistoryLines(readFileSync(path, "utf8"));
+    return findKitActiveCountForDay(entries, dia);
+  } catch {
+    return null; // fail-soft — arquivo corrompido/ilegível não derruba o snapshot
+  }
 }
 
 function loadCapturaLog(path: string): MetricsCapturaLogLayer {
@@ -551,11 +584,15 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
       prevSubs,
       { ...beehiivLayer, date: beehiivLayer.previousDate },
       hojeFromNow,
-      // Sem série histórica do Kit por dia no store hoje — reusar a
-      // contagem ATUAL como se fosse "ontem" inflaria/desinflaria a
-      // variação calculada em silêncio. `null` explícito, mesma disciplina
-      // do resto do módulo.
-      null,
+      // #7916 (fatia 3/N): lê a série histórica gravada por
+      // `diaria-subscribers-ingest-kit.ts` (`kit-active-history.jsonl`) pro
+      // dia de `beehiivLayer.previousDate` — antes desta fatia, reusar a
+      // contagem ATUAL do Kit como se fosse "ontem" teria inflado/
+      // desinflado a variação calculada em silêncio (docstring de F1). Sem
+      // história gravada pra esse dia (arquivo ainda não existe, ou dia
+      // anterior à 1ª execução com --write), continua `null` explícito —
+      // nunca um `0` fabricado.
+      loadKitActiveCountForDay(rootDir, beehiivLayer.previousDate),
       "plataforma",
     );
   }
