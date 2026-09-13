@@ -710,6 +710,12 @@ Se `auto_approve`:
 npx tsx scripts/apply-gate-edits.ts --auto --json {EDITION_DIR}/_internal/01-categorized.json --out {EDITION_DIR}/_internal/01-approved.json
 ```
 
+**Derivar pedidos editoriais do gate do Stage 1 (#7964).** Em SEQUÊNCIA, sempre (auto ou editor — a função internamente é no-op quando `auto_approved: true`, ver docstring de `deriveStage1`):
+```bash
+npx tsx scripts/derive-editor-requests.ts derive-stage1 --edition {AAMMDD}
+```
+Sem snapshot dedicado — `01-categorized.json` (pré-gate) já é o baseline imutável, `01-approved.json` é o pós-gate. Captura `bucket-move`/`link-swap`/`pool-cut`/`pool-add` (mover item entre Lançamentos/Radar/Use Melhor/Vídeos) e `destaque-swap`/`destaque-cut`/`destaque-promote` (trocar/cortar/promover destaque), gravados com `stage: 1`, `source: "derived"` — só quando o gate teve edição humana real (`_internal/.step-1-gate.json.auto_approved === false`); sob `--no-gates` é sempre 0 pedidos, por design. Exit code handling: `0` = derivação concluída (contagem no stdout); `!=0` = logar warn, não bloquear.
+
 **Escreve sentinel `_internal/.step-1-done.json` (#6827) — após o gate aplicado.** Esta é a única saída que o Stage 1 deixa pra trás que o runner (`scripts/lib/edition-stage-runner.ts`) usa pra decidir retomar/skipir o Stage 2+ — e o caminho headless (`claude --print`, runner agendado) é onde o erro aconteceu: a sessão completou todo o trabalho com outputs válidos e saiu sem chamar `pipeline-sentinel.ts write`, então `.step-1-done.json` nunca existiu e a próxima etapa re-executou o Stage 1 ou seguiu sem checkpoint. Chamada explícita, não implícita — vem em SEQUÊNCIA depois do `apply-gate-edits.ts` acima (manual ou `--auto`):
 
 ```bash
