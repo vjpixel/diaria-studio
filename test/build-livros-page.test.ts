@@ -411,18 +411,19 @@ describe("seed real seed/books/livros-ia.json (#1744)", () => {
     assert.equal(books.length, 29);
     assert.equal(validateBooks(books).ok, true);
   });
-  it("todo link é afiliado (amzn.to OU amazon.com.br?tag=vjpixel-20)", () => {
-    // 23 da planilha master usam amzn.to (links curtos); os 6 canônicos
-    // adicionados depois usam amazon.com.br/dp/{ASIN}?tag=vjpixel-20 (formato
-    // afiliado aprovado quando a geração de amzn.to via SiteStripe ficou
-    // bloqueada). Ambos rendem comissão.
-    const AMZN_SHORT = /^https:\/\/amzn\.to\//;
-    const AMZN_BR_TAGGED = /^https:\/\/www\.amazon\.com\.br\/.*[?&]tag=vjpixel-20(\b|&|$)/;
+  it("todo link é longo, de produto (amazon.com.br/dp/{ASIN}) e com tag=diaria-20 (#8059)", () => {
+    // #8059: encurtador (amzn.to/link.amazon) embute o ID de afiliado no
+    // próprio link curto e não aceita override de tag= por query string —
+    // por isso a página de livros.diar.ia.br (audiência diar.ia.br) só usa
+    // link LONGO de produto, sempre com tag=diaria-20 (nunca vjpixel-20, o
+    // ID principal reservado à vitrine /shop/vjpixel, nem claricenews-20,
+    // da audiência Clarice).
+    const AMZN_BR_TAGGED = /^https:\/\/www\.amazon\.com\.br\/dp\/[A-Z0-9]{10}\?tag=diaria-20$/;
     for (const b of books) {
       assert.ok(isSafeUrl(b.link), `${b.id}: link inseguro ${b.link}`);
       assert.ok(
-        AMZN_SHORT.test(b.link) || AMZN_BR_TAGGED.test(b.link),
-        `${b.id}: link não é afiliado (nem amzn.to nem amazon.com.br?tag=vjpixel-20): ${b.link}`,
+        AMZN_BR_TAGGED.test(b.link),
+        `${b.id}: link não é amazon.com.br/dp/{ASIN}?tag=diaria-20: ${b.link}`,
       );
     }
   });

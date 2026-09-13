@@ -8,8 +8,11 @@
  *
  * Design editorial diar.ia.br (#1936/#1935: DS canônico — Georgia serif, accent
  * teal #00A0A0, papel #FBFAF6, molduras bege #EBE5D0, texto ink),
- * cards text-focused (sem capa): título com link de afiliado amzn.to, nota da
- * Amazon, badges (idioma/nível/tema), selo de destaque e "para quem é".
+ * cards text-focused (sem capa): título com link de afiliado LONGO
+ * (`amazon.com.br/dp/{ASIN}?tag=diaria-20`, #8059 — nunca `amzn.to`/
+ * `link.amazon`, que embutem o ID no próprio encurtador e não aceitam
+ * override de `tag=` por query string), nota da Amazon, badges
+ * (idioma/nível/tema), selo de destaque e "para quem é".
  *
  * ## SEO/GEO — página de demanda MEDIDA, não especulativa (#5129)
  *

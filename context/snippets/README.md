@@ -191,6 +191,20 @@ por slot).
   box cuja distinção "título vs. corpo comum" dependia do marcador (não de
   sponsored/CTA-only) — sem ele, os parágrafos renderizam uniformemente,
   sem o título serif 26px destacado (ver comentário do próprio arquivo).
+- **Link de afiliado Amazon dentro de um box: sempre link LONGO de produto,
+  sempre com `tag=diaria-20` no arquivo-fonte (#8059).** Nunca `amzn.to`/
+  `link.amazon` (o encurtador embute o ID de afiliado e não aceita override
+  de `tag=` por query string — a tag do encurtador vale pra sempre,
+  independente de quem renderiza o box). Um box como o de livro de
+  monge-iogue-faquir/livros pode sair TANTO na diária/mensal quanto num
+  envio Clarice (mesmo `cloudflare-preview.html` mensal reusado nos dois
+  canais) — a tag correta pra Clarice (`claricenews-20`) é aplicada por
+  REESCRITA no render, não editando o snippet: ver
+  `rewriteAmazonAffiliateTagsInText`/`findAmazonAffiliateTagIssues`
+  (`scripts/lib/amazon-affiliate.ts`), chamado nos scripts `clarice-schedule-*`/
+  `clarice-reapply-scheduled-html.ts`/`clarice-cta-ab-setup.ts` antes de
+  qualquer disparo. Autorar/editar o box sempre com `diaria-20` — o pipeline
+  cuida do resto.
 - **Nem todo arquivo é "vivo" em runtime.** `intro-campeoes-sorteio.md` é
   puramente um template de referência (o gerador é a fonte de verdade
   executável) — declara `runtime: false` no header (#4500) pra sumir do
