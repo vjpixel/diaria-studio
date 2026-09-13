@@ -1,9 +1,10 @@
 /**
- * test/weekly-linkedin-select.test.ts (#4456)
+ * test/weekly-linkedin-select.test.ts (#4456, #8029)
  *
- * Seleção por clique da newsletter semanal do LinkedIn — cobre os 3 pontos
- * exigidos pelo dispatch da issue:
- *   1. Matéria mais clicada (não a manchete) vence quando aplicável.
+ * Seleção por clique da newsletter semanal do LinkedIn — cobre:
+ *   1. Manchete só sai do pool de DESTAQUES (`kind === "destaque"`) — #8029
+ *      reverte parcialmente o #4456: item de seção (RADAR/LANÇAMENTOS/
+ *      VÍDEOS/USE MELHOR) nunca compete por manchete, mesmo com taxa maior.
  *   2. Exclusão de links comerciais/próprios funciona (nunca entram no
  *      ranking, mesmo com clique alto).
  *   3. Desempate por critério editorial quando a diferença está dentro do
@@ -29,6 +30,14 @@ import {
   type WeeklyRankedCandidate,
 } from "../scripts/lib/weekly-linkedin-select.ts";
 
+/**
+ * Default `kind: "destaque"` (#8029): a maioria dos testes deste arquivo
+ * cobre mecânica de ranking/desempate/pendingGroup genérica, ortogonal ao
+ * `kind` do candidato — e, desde #8029, só `kind === "destaque"` compete por
+ * manchete. Testes que precisam especificamente de um candidato de SEÇÃO
+ * (RADAR/LANÇAMENTOS/USE MELHOR) sobrescrevem `kind`/`category`/`section`
+ * explicitamente.
+ */
 function raw(overrides: Partial<WeeklyRawCandidate> = {}): WeeklyRawCandidate {
   return {
     editionDate: "260728",
@@ -36,9 +45,9 @@ function raw(overrides: Partial<WeeklyRawCandidate> = {}): WeeklyRawCandidate {
     title: "Título do artigo",
     body: "Corpo do artigo.",
     why: "",
-    kind: "section",
-    category: "RADAR",
-    section: "radar",
+    kind: "destaque",
+    category: "DESTAQUE 1",
+    section: "destaque",
     ...overrides,
   };
 }
@@ -80,13 +89,13 @@ describe("toRankedCandidate", () => {
   });
 });
 
-describe("selectHeadlines — matéria mais clicada vence, não a manchete (achado real de julho/2026 do #4456)", () => {
-  it("RADAR mais clicado bate o DESTAQUE 1 quando a diferença NÃO está dentro do ruído", () => {
-    // Reproduz a edição de 22/07 do comentário do #4456: a manchete do dia
-    // (Gemini trio) teve ZERO clique enquanto um item de RADAR teve 6/548.
+describe("selectHeadlines — manchete só sai do pool de DESTAQUES (#8029, reverte parcialmente o #4456)", () => {
+  it("RADAR mais clicado NÃO bate o DESTAQUE, mesmo com clique muito maior (reverte o achado de julho/2026 do #4456)", () => {
+    // Antes do #8029, um item de RADAR com clique alto batia o destaque do
+    // dia (achado da edição de 22/07 citado no #4456). Decisão do editor
+    // (12/09/2026): item de seção nunca compete por manchete — só carrega 1
+    // linha de descrição, sem resumo autoral.
     const d1 = ranked({
-      kind: "destaque",
-      section: "destaque",
       category: "🚀 LANÇAMENTO",
       title: "IA no Brasil: mercado de trabalho",
       url: "https://exemplo.com/gemini-trio",
@@ -104,23 +113,35 @@ describe("selectHeadlines — matéria mais clicada vence, não a manchete (acha
     });
     const result = selectHeadlines([d1, radarWinner], 1);
     assert.equal(result.selected.length, 1);
-    assert.equal(result.selected[0].url, radarWinner.url);
-    assert.equal(result.selected[0].section, "radar");
+    assert.equal(result.selected[0].url, d1.url);
+    assert.ok(!result.selected.some((c) => c.url === radarWinner.url));
+    assert.ok(!result.headlineEligible.some((c) => c.url === radarWinner.url));
   });
 
-  it("2 destaques + 1 item de seção — os 2 de maior taxa vencem, ignorando a ORDEM de publicação", () => {
-    const d1 = ranked({ kind: "destaque", title: "D1", url: "https://exemplo.com/d1", clicks: 1, opens: 200 }); // 0.5%
-    const d2 = ranked({ kind: "destaque", title: "D2", url: "https://exemplo.com/d2", clicks: 8, opens: 200 }); // 4%
-    const radar = ranked({ kind: "section", title: "Radar", url: "https://exemplo.com/radar", clicks: 6, opens: 200 }); // 3%
+  it("2 destaques + 1 item de seção — só os destaques competem, o item de seção nunca entra mesmo com taxa maior", () => {
+    const d1 = ranked({ title: "D1", url: "https://exemplo.com/d1", clicks: 1, opens: 200 }); // 0.5%
+    const d2 = ranked({ title: "D2", url: "https://exemplo.com/d2", clicks: 8, opens: 200 }); // 4%
+    const radar = ranked({ kind: "section", section: "radar", title: "Radar", url: "https://exemplo.com/radar", clicks: 6, opens: 200 }); // 3% — maior que d1, mas nunca compete
     const result = selectHeadlines([d1, d2, radar], 2);
-    assert.deepEqual(result.selected.map((c) => c.url), [d2.url, radar.url]);
+    assert.deepEqual(result.selected.map((c) => c.url), [d2.url, d1.url]);
+  });
+
+  it("LANÇAMENTOS/VÍDEOS também nunca competem por manchete, mesmo isoladamente elegíveis (não excluídos, não use_melhor)", () => {
+    const lancamento = ranked({ kind: "section", section: "lancamentos", category: "🚀 LANÇAMENTO", title: "Lançamento X", url: "https://exemplo.com/lancamento", clicks: 20, opens: 100 });
+    const video = ranked({ kind: "section", section: "videos", category: "VÍDEOS", title: "Vídeo Y", url: "https://exemplo.com/video", clicks: 20, opens: 100 });
+    const result = selectHeadlines([lancamento, video], 2);
+    assert.equal(result.selected.length, 0);
+    assert.ok(!result.headlineEligible.some((c) => c.url === lancamento.url || c.url === video.url));
+    // shortfall warning cita a nova categoria de itens pulados (#8029), não só comercial/use_melhor.
+    const shortfallWarning = result.warnings.find((w) => /^Só \d+\/\d+ candidatos elegíveis/.test(w));
+    assert.ok(shortfallWarning, result.warnings.join(" | "));
+    assert.match(shortfallWarning!, /2.*n[ãa]o competem mais por manchete.*#8029/);
   });
 });
 
-describe("selectHeadlines — Use Melhor nunca vira manchete (#4492)", () => {
-  it("candidato use_melhor com a MAIOR taxa da semana NÃO é selecionado como manchete, mesmo batendo destaque/radar", () => {
-    const d1 = ranked({ kind: "destaque", section: "destaque", title: "D1", url: "https://exemplo.com/d1", clicks: 1, opens: 200 }); // 0.5%
-    const radar = ranked({ kind: "section", section: "radar", title: "Radar", url: "https://exemplo.com/radar", clicks: 3, opens: 200 }); // 1.5%
+describe("selectHeadlines — Use Melhor nunca vira manchete (#4492, subsumido por #8029)", () => {
+  it("candidato use_melhor com a MAIOR taxa da semana NÃO é selecionado como manchete, mesmo batendo o destaque disponível", () => {
+    const d1 = ranked({ title: "D1", url: "https://exemplo.com/d1", clicks: 1, opens: 200 }); // 0.5%
     const useMelhorWinner = ranked({
       kind: "section",
       section: "use_melhor",
@@ -130,16 +151,13 @@ describe("selectHeadlines — Use Melhor nunca vira manchete (#4492)", () => {
       clicks: 50,
       opens: 200,
     }); // 25% — maior taxa da semana, de longe
-    const result = selectHeadlines([d1, radar, useMelhorWinner], 2);
-    assert.deepEqual(
-      result.selected.map((c) => c.url),
-      [radar.url, d1.url],
-    );
+    const result = selectHeadlines([d1, useMelhorWinner], 2);
+    assert.deepEqual(result.selected.map((c) => c.url), [d1.url]);
     assert.ok(!result.selected.some((c) => c.url === useMelhorWinner.url));
   });
 
   it("candidato use_melhor excluído do pool de manchete continua elegível pro bloco Use Melhor dedicado", () => {
-    const radar = ranked({ kind: "section", section: "radar", title: "Radar", url: "https://exemplo.com/radar", clicks: 3, opens: 200 });
+    const d1 = ranked({ title: "D1", url: "https://exemplo.com/d1", clicks: 1, opens: 200 });
     const useMelhorWinner = ranked({
       kind: "section",
       section: "use_melhor",
@@ -148,9 +166,9 @@ describe("selectHeadlines — Use Melhor nunca vira manchete (#4492)", () => {
       clicks: 50,
       opens: 200,
     });
-    const headlineResult = selectHeadlines([radar, useMelhorWinner], 1);
+    const headlineResult = selectHeadlines([d1, useMelhorWinner], 1);
     const headlineUrls = new Set(headlineResult.selected.map((c) => normalizeUrl(c.url)));
-    const useMelhorPick = selectUseMelhor([radar, useMelhorWinner], headlineUrls);
+    const useMelhorPick = selectUseMelhor([d1, useMelhorWinner], headlineUrls);
     assert.equal(useMelhorPick?.url, useMelhorWinner.url);
   });
 
@@ -163,7 +181,7 @@ describe("selectHeadlines — Use Melhor nunca vira manchete (#4492)", () => {
 
   it("shortfall de manchetes conta separadamente use_melhor reservado vs. exclusão comercial (achado #4507)", () => {
     const useMelhorOnly = ranked({ kind: "section", section: "use_melhor", url: "https://exemplo.com/tutorial", clicks: 10, opens: 100 });
-    const commercial = ranked({ kind: "section", url: "https://apoia.se/diaria", clicks: 10, opens: 100 });
+    const commercial = ranked({ url: "https://apoia.se/diaria", clicks: 10, opens: 100 });
     const result = selectHeadlines([useMelhorOnly, commercial], 2);
     assert.equal(result.selected.length, 0);
     const shortfallWarning = result.warnings.find((w) => /^Só \d+\/\d+ candidatos elegíveis/.test(w));
@@ -177,14 +195,12 @@ describe("selectHeadlines — exclusão comercial/própria", () => {
   it("link comercial com clique altíssimo NUNCA aparece selecionado, mesmo sendo o mais clicado bruto", () => {
     // prepara.com.br (Divulgação, 6 cliques, o MAIS clicado de julho) do comentário do #4456.
     const divulgacao = ranked({
-      kind: "section",
       title: "Prepara IA — curso parceiro",
       url: "https://apoia.se/diaria",
       clicks: 100,
       opens: 200,
     });
     const materia = ranked({
-      kind: "section",
       title: "Matéria real",
       url: "https://exemplo.com/materia-real",
       clicks: 3,
@@ -356,15 +372,15 @@ describe("computeHeadlineCap — semana curta (feriado) reduz o número de manch
 
 describe("selectUseMelhor", () => {
   it("escolhe o candidato use_melhor de maior taxa, excluindo URLs já usadas como manchete", () => {
-    const um1 = ranked({ section: "use_melhor", title: "Tutorial A", url: "https://exemplo.com/tutorial-a", clicks: 8, opens: 200 });
-    const um2 = ranked({ section: "use_melhor", title: "Tutorial B", url: "https://exemplo.com/tutorial-b", clicks: 3, opens: 200 });
+    const um1 = ranked({ kind: "section", section: "use_melhor", title: "Tutorial A", url: "https://exemplo.com/tutorial-a", clicks: 8, opens: 200 });
+    const um2 = ranked({ kind: "section", section: "use_melhor", title: "Tutorial B", url: "https://exemplo.com/tutorial-b", clicks: 3, opens: 200 });
     const excludeSet = new Set([normalizeUrl(um1.url)]);
     const winner = selectUseMelhor([um1, um2], excludeSet);
     assert.equal(winner?.url, um2.url);
   });
 
   it("retorna undefined quando não há candidato use_melhor elegível", () => {
-    const radar = ranked({ section: "radar", url: "https://exemplo.com/radar", clicks: 5, opens: 100 });
+    const radar = ranked({ kind: "section", section: "radar", url: "https://exemplo.com/radar", clicks: 5, opens: 100 });
     assert.equal(selectUseMelhor([radar], new Set()), undefined);
   });
 });

@@ -1,6 +1,6 @@
 ---
 name: diaria-linkedin-semanal
-description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 matérias da semana selecionadas por clique verificado + bloco Use Melhor (comentário do editor opcional, #5970) + "Edições da semana" (link + destaques das 5 edições). Produzida domingo, publicada segunda ~09:30 BRT (artigo colado à mão — LinkedIn não tem API de publicação de newsletter). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
+description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 destaques (D1/D2/D3) da semana selecionados por clique verificado (#8029, itens de seção não competem mais por manchete) + bloco Use Melhor sem CTA (#8025) + "Edições da semana" (link + destaques das 5 edições) + abertura/fecho padrão (#8025). Produzida domingo; corpo colado à mão via Claude in Chrome, capa e agendamento ficam com o editor na UI do LinkedIn (#8031, seletor de arquivo nativo não é automatizável). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
 disable-model-invocation: true
 ---
 
@@ -25,10 +25,17 @@ inteira antes — não só o body.
   Instagram desde #4483, sábado, com ranking por clique restrito a
   D1/D2/D3). As duas skills seguem **separadas** (ver "Sobreposição"
   abaixo) — não fundir, não renomear esta.
-- **Seleção: por clique verificado, não por manchete.** A regra antiga
-  "só DESTAQUE 1" foi substituída em 260802 — matéria secundária, item de
-  Radar ou entrada de Use Melhor são candidatos legítimos quando o clique
-  justificar. Ver `scripts/lib/weekly-linkedin-select.ts`.
+- **Seleção: por clique verificado, não por posição — mas só entre DESTAQUES
+  (#8029, reverte parcialmente a mudança de 260802).** A regra antiga "só
+  DESTAQUE 1" foi substituída em 260802 pra abrir a seleção pra qualquer
+  `kind` (destaque, RADAR, LANÇAMENTOS, VÍDEOS, USE MELHOR) — na prática item
+  de seção só carrega 1 linha de descrição (sem resumo autoral), produzindo
+  manchete fraca quando vencia por clique. Decisão do editor (12/09/2026):
+  **manchete só sai do pool de DESTAQUES (D1/D2/D3) da edição de origem** —
+  CTOR continua decidindo QUAL dos destaques da semana vira manchete e em
+  que ordem, não mais "qual candidato de qualquer seção". Ver
+  `scripts/lib/weekly-linkedin-select.ts` (`selectHeadlines` filtra
+  `kind === "destaque"`).
 - **Seleção: CTOR puro decide fora do ruído; dentro do ruído, o editor
   decide no gate (#5109, decisão do editor).** Até 260812, um empate dentro
   do ruído de 1 clique (`withinClickNoise`) era resolvido automaticamente
@@ -273,10 +280,17 @@ Edições da semana: {N} edições (link + destaques cada)
 Aprovar seleção? sim / trocar {N} por outro candidato / abortar
 ```
 
-Se aprovado, pedir ao editor (nunca gerar sozinho) os 2 textos que seguem
-obrigatórios:
-1. **Abertura** (1 parágrafo curto identidade+promessa+cadência).
-2. **Fecho** (1 parágrafo curto antes do CTA final).
+**Abertura e fecho têm TEXTO PADRÃO fixo, sem pergunta (#8025, decisão do
+editor 12/09/2026).** Antes deste ponto a skill pedia ao editor 1 parágrafo
+de abertura e 1 de fecho a cada rodada — o mesmo texto saiu, idêntico, em 4
+edições consecutivas (`26w34`-`26w37`), então a pergunta virou dívida, não
+gate (mesmo critério do #4498/CLAUDE.md "Perguntar é exceção"). O Passo 7
+(`render-linkedin-weekly.ts`) já resolve o default sozinho quando
+`--opening`/`--closing` são omitidos — **não pergunte por esses 2 textos
+aqui**, só siga pro Passo 4. Se o editor quiser variar uma edição
+específica, ele pode oferecer o texto espontaneamente nesta conversa (aí
+passe via `--opening`/`--opening-file`/`--closing`/`--closing-file` no Passo
+7, sujeitos ao mesmo tratamento de humanizador/Clarice do Passo 5).
 
 **Comentário do Use Melhor deixou de ser pergunta bloqueante (#5970).** A
 skill nunca inventa esse texto (é voz pessoal do editor), mas também não
@@ -301,10 +315,16 @@ origem (dias atrás) pode ter virado paywall/indisponível desde então —
 resumir um stub é pior que não resumir.
 
 **#5538 — manchete `kind === "section"` com fonte inacessível troca
-automaticamente de candidato, nunca publica o stub de 1 linha.** O corpo
-levantado de um item de seção (RADAR/LANÇAMENTOS/VÍDEOS que virou manchete
-por clique) é só 1 linha — publicável como stub quando a fonte segue
-acessível (não é o caso ideal, mas é aceitável), fraco demais quando a
+automaticamente de candidato, nunca publica o stub de 1 linha.** Mantido por
+robustez defensiva, mas **desde #8029 este ramo é efetivamente inatingível
+pra seleções novas** — `kind === "section"` nunca mais vira manchete (ver
+"Decisões do editor já tomadas" acima), então `headlineCandidatesRanked`
+sempre chega aqui só com `kind === "destaque"`. O código não foi removido
+porque não há custo em mantê-lo (defensivo contra `ln-selection.json`
+antigo/editado manualmente), mas não espere vê-lo disparar em uso normal. O
+corpo levantado de um item de seção (RADAR/LANÇAMENTOS/VÍDEOS que virou
+manchete por clique) é só 1 linha — publicável como stub quando a fonte
+segue acessível (não é o caso ideal, mas é aceitável), fraco demais quando a
 fonte caiu e não dá pra escrever resumo próprio. Quando isso acontece, o
 script troca sozinho pelo PRÓXIMO candidato elegível do ranking
 (`headlineCandidatesRanked`, já exclui comercial/própria/use_melhor/já-
@@ -371,8 +391,14 @@ levantado nunca passa por humanizador/Clarice, texto autoral sempre
 passa."** Não é mais "manchete nunca passa" — é por `textOrigin`
 individual de cada manchete (ver Passo 4).
 
-Para os 3 textos sempre-novos (abertura, fecho, comentário Use Melhor) **e**
-para cada manchete com `textOrigin === "autoral"` (`body`/`why`):
+**Abertura/fecho no caso DEFAULT (#8025) não passam por aqui** — o texto
+padrão já é finalizado (derivado de texto real já humanizado/corrigido em
+edições anteriores), então reprocessá-lo a cada rodada não muda nada e só
+gasta chamada. Só rode humanizador+Clarice pra abertura/fecho quando o
+editor tiver oferecido texto NOVO espontaneamente nesta conversa (override
+explícito via `--opening`/`--closing` no Passo 7) — nesse caso, e para o
+comentário do Use Melhor (sempre novo quando existe) **e** para cada
+manchete com `textOrigin === "autoral"` (`body`/`why`):
 
 ```
 Skill("humanizador", "Humanize este texto em português, mantendo o
@@ -425,9 +451,20 @@ populado: aplique a correção diretamente no `body`/`why` da manchete
 
 ```bash
 npx tsx scripts/render-linkedin-weekly.ts --cycle {cycle} \
-  --opening "{abertura humanizada}" \
-  --closing "{fecho humanizado}" \
   --use-melhor-comment "{comentário humanizado, ou omitir a flag inteira se o editor não deu comentário}"
+```
+
+**`--opening`/`--closing` são OPCIONAIS desde #8025** — omitidos, o script
+resolve o texto padrão (`DEFAULT_OPENING`/`DEFAULT_CLOSING`) e imprime um
+banner (`--opening/--closing não informado — assumindo o texto padrão
+(#8025)...`). Só passe essas flags quando o editor tiver oferecido texto
+novo espontaneamente nesta conversa (já humanizado/corrigido no Passo 5):
+
+```bash
+npx tsx scripts/render-linkedin-weekly.ts --cycle {cycle} \
+  --opening "{abertura humanizada, só se houver override}" \
+  --closing "{fecho humanizado, só se houver override}" \
+  --use-melhor-comment "..."
 ```
 
 (`--opening-file`/`--closing-file`/`--use-melhor-comment-file` aceitam
@@ -452,10 +489,53 @@ nela). **Obrigatória por decisão registrada (não perguntada — os ciclos
 virar mecânico):** roda sempre, sem flag. Fail-soft — se a edição de
 origem foi arquivada ou nunca gerou a imagem, a cópia é pulada com warning
 em `ln-{cycle}.json`, sem travar o resto do render. `coverImagePath` no
-JSON é `null` quando isso acontece; confira antes do Passo 8 se veio
-populado.
+JSON é `null` quando isso acontece; confira antes do Passo 7b se veio
+populado — é a mesma imagem que o editor sobe manualmente no Passo 9.
 
-## Passo 8 — Executar o paste assistido via Claude in Chrome + agendar (#5988)
+## Passo 7b — Publicar a prévia visual do artefato (#8027, obrigatório antes do Passo 8)
+
+**Diferente de simplesmente colar `ln-{cycle}.html` cru num Artifact, esta
+prévia precisa mostrar o conteúdo EXATO que será colado, RENDERIZADO como
+o artigo vai aparecer** (capa, abertura, as manchetes com corpo/why, bloco
+Use Melhor, lista "Edições da semana", fecho) — nunca o HTML bruto sem
+estilo. Este passo substitui o antigo "8a. Publicar o artefato de
+referência" (que só publicava o fragmento cru como registro auditável) —
+a auditoria pós-paste real acontece programaticamente no Passo 8c
+(`auditLinkedinPaste`), não via Artifact; esta prévia serve pra REVISÃO
+visual do conteúdo pelo editor, ANTES de qualquer interação com o browser.
+Só o TOP-LEVEL do Claude Code tem acesso à ferramenta `Artifact` — este
+passo, como o Passo 8, pressupõe que quem executa é a sessão top-level.
+
+Publique via `Artifact`:
+
+1. **Conteúdo:** monte um HTML que envolva `ln-{cycle}.html` (o payload
+   colável do Passo 7) numa página visual — tipografia legível (Georgia ou
+   equivalente, mesma família da newsletter), a imagem de capa
+   (`coverImagePath`, se não for `null`) no topo, e o corpo tal como sai do
+   render (headlines numeradas, "da edição de DD/MM" sob cada uma, bloco
+   Use Melhor, "Edições da semana", abertura e fecho). Não invente texto
+   novo — é uma RENDERIZAÇÃO do que já existe em `ln-{cycle}.html`, nunca
+   uma reescrita.
+2. **Nota do mecanismo, sempre visível no topo da página:** um aviso claro
+   dizendo que a publicação é **colagem manual assistida via Claude in
+   Chrome, sem API** — o LinkedIn não tem endpoint de publicação de
+   newsletter, e o Passo 9 (capa + agendamento) é sempre ação humana do
+   editor na UI. Texto sugerido: "Prévia — mecanismo de publicação: colagem
+   manual assistida (Claude in Chrome cola este conteúdo no editor de
+   artigo do LinkedIn; o EDITOR sobe a capa e agenda manualmente na UI —
+   ver Passo 9). Não existe API de publicação de newsletter do LinkedIn."
+3. **Título do Artifact:** algo como "LinkedIn Semanal {cycle}" —
+   `favicon` de sua escolha (ex: 📰).
+4. **Warnings visíveis:** relate no corpo da prévia (ou logo abaixo, na
+   mensagem ao editor) qualquer warning pendente de `ln-{cycle}.json`
+   (capa ausente, comentário do Use Melhor ausente, trocas #5538) — regra
+   do #5321, default aplicado precisa aparecer visível.
+
+Publicada a prévia, apresente o link ao editor ANTES de prosseguir pro
+Passo 8 — é o ponto em que ele revisa o conteúdo final antes de qualquer
+interação com o browser começar.
+
+## Passo 8 — Executar o paste assistido via Claude in Chrome (#5988, escopo reduzido pelo #8031)
 
 **Diferente dos passos anteriores desta skill (leitura/escrita de
 arquivo), este passo controla o browser de verdade.** Só o TOP-LEVEL do
@@ -464,42 +544,41 @@ subagentes comuns (`Agent(subagent_type=...)`) não têm. Este playbook
 pressupõe que quem está executando o Passo 8 é a sessão top-level (o caso
 normal de `/diaria-linkedin-semanal` invocada diretamente).
 
+**#8031 (12/09/2026, decisão do editor): a skill PARA depois da auditoria
+pós-paste — upload de capa e agendamento saem do escopo automatizado desta
+skill e viram ação manual do editor (Passo 9).** Motivo: o campo de cover
+image do LinkedIn Article Editor usa o seletor de arquivo NATIVO do SO
+(sem `<input type=file>` estático no DOM), que não é automatizável via
+Claude in Chrome. Toda vez que a skill tentava agendar sozinha, o artigo
+saía sem capa — e corrigir depois é retrabalho genuíno: o LinkedIn não
+permite editar um artigo já agendado sem antes desagendá-lo. A skill
+continua preparando TUDO (artigo colado, auditado, texto do post de feed
+pronto) — só não sobe a capa nem clica em agendar.
+
 O mecanismo técnico completo (`ClipboardEvent`, parágrafo sentinela, as
 armadilhas de paste já documentadas ali — inclusive o achado do bug de
 split de âncora "diar.ia.br", PR #5987 —, o gotcha de "Cuidado ao
-inspecionar" e a mecânica de agendamento) está documentado em
-`context/publishers/linkedin.md` §"Newsletter LinkedIn" — **referenciado
-abaixo, não duplicado**. Antes da 1ª execução, leia aquela seção inteira.
+inspecionar") está documentado em `context/publishers/linkedin.md`
+§"Newsletter LinkedIn" — **referenciado abaixo, não duplicado**. Antes da
+1ª execução, leia aquela seção inteira (a mecânica de agendamento
+documentada lá agora é executada pelo EDITOR, não pela skill — ver Passo 9).
 
-### 8a. Publicar o artefato de referência
-
-Publique `ln-{cycle}.html` como Artifact (padrão do repo) — serve de
-registro auditável do que deveria ter sido colado, útil se a auditoria do
-Passo 8e acusar divergência. Se `coverImagePath` (Passo 7) veio populado,
-inclua a imagem de capa junto. **Relate também qualquer warning de "USE
-MELHOR: comentário do editor ausente" (#5970)** — default aplicado
-precisa aparecer visível no resumo, regra do #5321.
-
-### 8b. Abrir o editor e confirmar o destino
+### 8a. Abrir o editor e confirmar o destino
 
 1. Ir em `linkedin.com/newsletters/{urn}/` (a página DA newsletter, não
    o feed pessoal) → clicar **Write article** DALI (caminho preferido —
    não depende do default do seletor de destino, ver
    `context/publishers/linkedin.md` §1).
 2. Confirmar que o cabeçalho do editor mostra o nome da newsletter, não
-   "Individual article". **Esta é a verificação que importa**, e vale
-   reler antes de agendar, não só ao abrir (§1 — uma aba que recarregou
-   sozinha já voltou como "Individual article").
+   "Individual article". **Esta é a verificação que importa** (§1 — uma
+   aba que recarregou sozinha já voltou como "Individual article").
 
-### 8c. Upload de capa
+**Upload de capa NÃO acontece aqui (#8031)** — fica pro Passo 9, feito
+pelo editor. Se `coverImagePath` (Passo 7) veio populado, apenas confira
+que o arquivo existe em `data/weekly/{cycle}/04-d1-2x1.jpg` — é esse
+arquivo que o editor vai subir manualmente.
 
-Se `coverImagePath` veio populado (Passo 7), fazer upload de
-`04-d1-2x1.jpg` no campo nativo de cover image do editor (ícone no topo,
-acima do título — `context/publishers/linkedin.md` §3). Se veio `null`,
-seguir sem capa (fail-soft já decidido no Passo 7) e avisar o editor no
-resumo final.
-
-### 8d. Colar o corpo via `ClipboardEvent`
+### 8b. Colar o corpo via `ClipboardEvent`
 
 Com o foco no `<div contenteditable>` do corpo, executar via
 `javascript_tool` o snippet documentado em
@@ -512,7 +591,7 @@ aguardar alguns segundos) antes de inspecionar o resultado — ler cedo
 demais mostra estado transitório e engana (mesma seção, "Cuidado ao
 inspecionar").
 
-### 8e. Auditoria pós-paste (obrigatória antes de escrever o post de feed ou agendar)
+### 8c. Auditoria pós-paste (obrigatória antes de entregar ao editor)
 
 Via `javascript_tool`, extrair do DOM do editor:
 
@@ -525,11 +604,11 @@ de `scripts/lib/linkedin-paste-audit.ts` (`sourceHtml` = conteúdo de
 `ln-{cycle}.html`, SEM o parágrafo sentinela — módulo puro, sem I/O,
 import direto).
 
-- **`result.ok === true`:** prosseguir pro Passo 8f.
+- **`result.ok === true`:** prosseguir pro Passo 8d.
 - **`result.ok === false`:** PARAR — não escrever o texto do post de feed
-  nem agendar. Apresentar `result.issues` ao editor. Se algum issue citar
-  o padrão conhecido de split de âncora "diar.ia.br" (PR #5987, mesmo
-  achado documentado em `context/publishers/linkedin.md` §"Newsletter
+  nem entregar ao editor. Apresentar `result.issues` ao editor. Se algum
+  issue citar o padrão conhecido de split de âncora "diar.ia.br" (PR #5987,
+  mesmo achado documentado em `context/publishers/linkedin.md` §"Newsletter
   LinkedIn"), aplicar a correção de lá: selecionar a âncora completa via
   teclado (nunca clicar direto sobre o link colado — risco de deslocar a
   seleção e apagar outro parágrafo em silêncio, mesmo achado) e
@@ -542,35 +621,52 @@ import direto).
   acima), então insistir sem teto arrisca degradar o artigo em vez de
   corrigi-lo. Se a causa não for esse padrão conhecido, envolver o editor
   já na 1ª falha (critério 2/4 do rubrico "Perguntar é exceção" — a resposta
-  muda materialmente se o artigo pode ser agendado como está).
+  muda materialmente se o artigo pode ser deixado pro editor como está).
 
-### 8f. Título + texto do post de feed
+### 8d. Título + texto do post de feed (preparado, não submetido)
 
-O diálogo de agendamento (Passo 8g) traz um campo "Tell your network what
-this edition of your newsletter is about…" que vira o **post de feed**
-que acompanha o artigo — peça editorial separada do corpo, sem âncora em
-texto (link é a URL escrita por extenso, ver
+O diálogo de agendamento (agora ação do editor, Passo 9) traz um campo
+"Tell your network what this edition of your newsletter is about…" que
+vira o **post de feed** que acompanha o artigo — peça editorial separada
+do corpo, sem âncora em texto (link é a URL escrita por extenso, ver
 `context/publishers/linkedin.md` §4). Diferente do comentário do Use
 Melhor (voz pessoal obrigatória do editor, #5970), este campo é resumo
 factual — componha 1-2 frases a partir das manchetes já aprovadas no
 Passo 3, tom consistente com os posts normais da página no LinkedIn.
+**A skill prepara este texto e o entrega ao editor no Passo 9 — não
+preenche o campo nem agenda.**
 
-### 8g. Agendar (nunca publicar na hora)
+## Passo 9 — Entregar ao editor: capa + agendamento manuais (#8031)
 
-No diálogo que abre no **Next**, usar o ícone de relógio ao lado do botão
-Publish — **nunca** Publish direto. A data certa não basta: a HORA importa
-mais, porque o post de feed nasce com o alcance definido pelo engajamento
-da primeira hora — publicar de madrugada queima esse alcance de forma
-permanente. Horário comercial da manhã, mesma lógica do envio canônico das
-06:00 BRT da diária.
+**A skill PARA aqui.** O artigo está colado no editor do LinkedIn
+(rascunho, não perdido — `linkedin.com/article/manage/drafts/`), auditado
+(Passo 8c) e com o texto do post de feed pronto (Passo 8d). Apresente ao
+editor, nesta ordem:
 
-### 8h. Verificar
+1. **A prévia publicada no Passo 7b** (link do Artifact) — pra ele conferir
+   o conteúdo antes de subir a capa.
+2. **O caminho do arquivo de capa** (`data/weekly/{cycle}/04-d1-2x1.jpg`),
+   se `coverImagePath` veio populado — ou aviso explícito de que não há
+   capa disponível (fail-soft do Passo 7), sem inventar substituto.
+3. **O texto do post de feed** (Passo 8d), pronto pra colar.
+4. **As instruções da ação manual**, resumidas:
+   - Na aba já aberta com o rascunho colado, subir a imagem de capa no
+     campo nativo (ícone no topo do editor, acima do título —
+     `context/publishers/linkedin.md` §3).
+   - Clicar **Next**, colar o texto do post de feed no campo indicado.
+   - Usar o ícone de relógio (nunca **Publish** direto) e agendar — data
+     certa não basta, a HORA importa mais, porque o post de feed nasce com
+     o alcance definido pelo engajamento da 1ª hora (publicar de madrugada
+     queima esse alcance de forma permanente); horário comercial da manhã,
+     mesma lógica do envio canônico das 06:00 BRT da diária.
+   - Confirmar em `linkedin.com/article/manage/scheduled/` que o artigo
+     aparece agendado.
 
-Depois de agendar, o artigo **sai da lista de rascunhos** e
-`/article/edit/{id}/` passa a redirecionar pra `/article/new/` — isso é
-esperado, não é perda. Confirmar em
-`linkedin.com/article/manage/scheduled/` que o artigo aparece agendado
-antes de considerar o Passo 8 concluído.
+A skill não verifica o resultado desta ação — é ação humana, fora do
+mecanismo de auditoria automatizado (mesma razão pela qual `/diaria-6-
+agendamento` não se aplica aqui, ver seção seguinte). Se o editor quiser
+confirmação de que o rascunho colado está intacto antes de subir a capa,
+reaproveite a auditoria do Passo 8c (já rodada) em vez de reabrir o DOM.
 
 ## Reuso do agendamento — decisão: NÃO reusar `/diaria-6-agendamento`
 
@@ -593,11 +689,20 @@ LinkedIn é ação humana no editor, sem endpoint oficial que dê pra verificar
 depois. Do Stage 6 esta skill reusa só o padrão conceitual (gate humano
 antes de considerar a unidade "pronta").
 
+**#8031 (12/09/2026) reforça essa mesma conclusão por um motivo adicional:**
+até então "ação humana no editor" descrevia só o clique final de agendar
+(Claude in Chrome operava o resto, inclusive a capa). O upload de capa
+expôs um limite técnico real — seletor de arquivo nativo do SO, sem
+`<input type=file>` estático no DOM, não automatizável via Claude in
+Chrome — e corrigir depois é retrabalho (artigo já agendado não é editável
+sem desagendar). A decisão do editor foi mover os DOIS pro Passo 9 manual
+(capa E o clique de agendar, não só o 2º) — ver Passo 8/9 acima.
+
 ## Sobreposição com `/diaria-instagram-semanal` — mantenha separadas
 
 | | `/diaria-instagram-semanal` | `/diaria-linkedin-semanal` |
 |---|---|---|
-| Seleção | itens mais clicados (D1/D2/D3; RADAR/USE MELHOR ainda não competem — limitação técnica de asset, não decisão de escopo, ver #4513) | 3 matérias por taxa de clique (D1/D2/D3/RADAR/USE MELHOR) |
+| Seleção | itens mais clicados (D1/D2/D3; RADAR/USE MELHOR ainda não competem — limitação técnica de asset, não decisão de escopo, ver #4513) | 3 destaques (D1/D2/D3) por taxa de clique — RADAR/LANÇAMENTOS/VÍDEOS/USE MELHOR nunca competem por manchete (#8029) |
 | Cadência | produz sexta, publica sábado | produz domingo, publica segunda |
 | Canal | post social (só Instagram, desde #4483) | newsletter nativa do LinkedIn (perfil pessoal) |
 | Formato | 5 itens curtos, carrossel de imagens | 3 blocos longos + Use Melhor + lista |
@@ -630,10 +735,10 @@ daqui.
   troca #5538):** `sourceAccessibility.accessible === false` no Passo 4 —
   `kind === "destaque"` fica com o corpo LEVANTADO original (nunca resume
   um stub/paywall), `textOrigin: "literal"`, isenta de humanizador/Clarice/
-  fact-check (Passos 5-6). `kind === "section"` troca automaticamente pelo
-  próximo candidato elegível do ranking (ver Passo 4) — só cai no mesmo
-  tratamento do destaque (stub literal) se o pool de reposição se esgotar
-  inteiro sem achar um candidato usável.
+  fact-check (Passos 5-6). O ramo `kind === "section"` troca
+  automaticamente pelo próximo candidato elegível (ver Passo 4) continua
+  no código por robustez defensiva, mas desde #8029 é efetivamente
+  inatingível em seleções novas — manchete nunca é `kind === "section"`.
 - **Nenhuma manchete elegível pra resumo autoral (todas as fontes
   ficaram inacessíveis, ou semana reduzida):** Passo 6 (fact-check) é
   pulado inteiro — sem claim novo pra verificar.

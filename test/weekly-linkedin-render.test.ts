@@ -6,7 +6,7 @@
  *   - título literal + numeração (única transformação permitida).
  *   - sem link por destaque (nenhum <a href> dentro do bloco da manchete).
  *   - UTMs corretas (source=linkedin, medium=newsletter, campaign=ln-{cycle},
- *     content=lista|cta-usemelhor|cta-fim — item-01/02/03 NÃO existem mais).
+ *     content=lista|cta-fim — item-01/02/03 e cta-usemelhor NÃO existem mais, #8025).
  *   - bloco USE MELHOR renderiza sempre que há candidato (com ou sem
  *     comentário do editor, #5970 — comentário virou opcional de verdade,
  *     não condição de existência do bloco).
@@ -145,7 +145,7 @@ describe("renderLinkedinWeeklyHtml — bloco USE MELHOR renderiza com OU sem com
     assert.ok(!result.warnings.some((w) => /comentário do editor ausente/i.test(w)));
   });
 
-  it("COM comentário do editor — bloco renderiza com título/descrição/comentário + CTA de assinatura, sem warning de ausência", () => {
+  it("COM comentário do editor — bloco renderiza com título/descrição/comentário, sem CTA de assinatura e sem warning de ausência (#8025)", () => {
     const input: WeeklyLinkedinRenderInput = {
       ...BASE_INPUT,
       useMelhor: {
@@ -160,11 +160,10 @@ describe("renderLinkedinWeeklyHtml — bloco USE MELHOR renderiza com OU sem com
     assert.match(result.html, /Use melhor/);
     assert.match(result.html, /Effort level no Claude Code/);
     assert.match(result.html, /Testei essa semana e cortei uns 30% do tempo de setup\./);
-    assert.match(result.html, /Quero receber a edição diária/);
     assert.ok(!result.warnings.some((w) => /comentário do editor ausente/i.test(w)));
   });
 
-  it("o CTA do Use Melhor é uma CHAMADA (frase + âncora), não um link solto (decisão do editor 260803)", () => {
+  it("#8025: o bloco Use Melhor NUNCA leva CTA de assinatura (reverte a decisão do #4456/#4489 de 260803)", () => {
     const input: WeeklyLinkedinRenderInput = {
       ...BASE_INPUT,
       useMelhor: {
@@ -175,20 +174,16 @@ describe("renderLinkedinWeeklyHtml — bloco USE MELHOR renderiza com OU sem com
       },
     };
     const html = renderLinkedinWeeklyHtml(input).html;
-    // A frase de contexto precede a âncora clicável — sem ela o leitor não sabe
-    // o que ganha assinando, que é o ponto do bloco ser o 1º convite da edição.
-    const lead = html.indexOf("Links para tutoriais e dicas saem em toda edição diária");
-    const anchor = html.indexOf("Quero receber a edição diária");
-    assert.ok(lead >= 0, "chamada de contexto deve existir antes da âncora");
-    assert.ok(anchor > lead, "âncora clicável deve vir DEPOIS da frase de chamada");
-    // A seção Use Melhor da diária leva de 1 a 3 itens, então a chamada fala no
-    // PLURAL: "um desses" subvenderia o que o assinante recebe (decisão 260803).
-    assert.ok(!/[Uu]m desses/.test(html), "chamada não pode voltar ao singular");
-    // Aprendizado do CTA-01 (docs/experiments/cta-ab-mensal-2606-07.md): a âncora
-    // do 1º CTA não empilha imperativo + "grátis" + seta.
-    const useMelhorAnchor = [...html.matchAll(/<a[^>]*utm_content=cta-usemelhor[^>]*>([^<]+)<\/a>/g)].map((m) => m[1]);
-    assert.equal(useMelhorAnchor.length, 1);
-    assert.ok(!/grátis|gratis/i.test(useMelhorAnchor[0]), `âncora do Use Melhor não deve carregar "grátis": ${useMelhorAnchor[0]}`);
+    assert.ok(!html.includes("Quero receber a edição diária"), "âncora do antigo CTA do Use Melhor não pode mais existir");
+    assert.ok(!html.includes("Links para tutoriais e dicas saem em toda edição diária"), "frase de contexto do antigo CTA não pode mais existir");
+    assert.ok(!/utm_content=cta-usemelhor/.test(html), "utm_content=cta-usemelhor não existe mais");
+    // o bloco continua saindo — link + descrição + comentário, só sem o CTA.
+    const useMelhorIdx = html.indexOf("<h3>🛠️ Use melhor</h3>");
+    const hrAfter = html.indexOf("<hr/>", useMelhorIdx);
+    const bloco = html.slice(useMelhorIdx, hrAfter);
+    assert.match(bloco, /Effort level no Claude Code/);
+    assert.match(bloco, /Tutorial de 5 minutos\./);
+    assert.match(bloco, /Testei essa semana e cortei uns 30% do tempo de setup\./);
   });
 });
 
@@ -441,7 +436,7 @@ describe("UTM — contrato do #4456 (item-01/02/03 SAÍRAM)", () => {
     assert.equal(LINKEDIN_WEEKLY_UTM_MEDIUM, "newsletter");
   });
 
-  it("CTAs do meio e do fim + lista usam utm_content correto no HTML final", () => {
+  it("CTAs da abertura e do fim + lista usam utm_content correto no HTML final (#8025: cta-usemelhor não existe mais)", () => {
     const input: WeeklyLinkedinRenderInput = {
       ...BASE_INPUT,
       useMelhor: {
@@ -453,14 +448,15 @@ describe("UTM — contrato do #4456 (item-01/02/03 SAÍRAM)", () => {
     };
     const result = renderLinkedinWeeklyHtml(input);
     assert.match(result.html, /utm_content=cta-abertura/);
-    assert.match(result.html, /utm_content=cta-usemelhor/);
+    assert.ok(!/utm_content=cta-usemelhor/.test(result.html), "utm_content=cta-usemelhor não deve mais existir (#8025)");
     assert.match(result.html, /utm_content=cta-fim/);
     assert.match(result.html, /utm_content=lista/);
     assert.ok(!/item-0[123]/.test(result.html), "item-01/02/03 não deve mais existir (#4456)");
-    // Os 3 CTAs de assinatura precisam de utm_content DISTINTO — sem isso não dá
-    // pra saber qual posição converte (decisão do editor 260803).
+    // Os 2 CTAs de assinatura restantes (abertura, fim) precisam de
+    // utm_content DISTINTO — sem isso não dá pra saber qual posição
+    // converte (decisão do editor 260803).
     const ctaContents = [...result.html.matchAll(/utm_content=(cta-[a-z]+)/g)].map((m) => m[1]);
-    assert.equal(new Set(ctaContents).size, 3, `CTAs devem ter utm_content distintos: ${ctaContents.join(", ")}`);
+    assert.equal(new Set(ctaContents).size, 2, `CTAs devem ter utm_content distintos: ${ctaContents.join(", ")}`);
   });
 });
 

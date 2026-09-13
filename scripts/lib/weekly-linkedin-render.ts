@@ -16,17 +16,28 @@
  *     regra anterior "sem comentário, sai a edição"): presente vira um
  *     parágrafo extra, ausente/vazio só omite ESSE parágrafo, nunca o bloco
  *     inteiro (link + descrição continuam saindo como curadoria normal).
+ *     **Desde #8025 (12/09/2026) o bloco não leva mais CTA de assinatura**
+ *     (reverte a decisão do #4456/#4489 de 260803) — só título/link/
+ *     descrição/comentário, sem convite pra assinar embutido.
  *   - Texto de link NUNCA termina em domínio nu (auto-linkagem do LinkedIn
  *     parte o link em dois e a parte clicável fica sem UTM) — usa sempre
  *     rótulo de ação.
  *   - UTM: `utm_source=linkedin&utm_medium=newsletter&utm_campaign=ln-{cycle}
- *     &utm_content=mencao-abertura|cta-abertura|lista|cta-usemelhor|cta-fim`
- *     (item-01/02/03 SAÍRAM; `cta-abertura` e `mencao-abertura` ENTRARAM em
- *     260803). São 3 CTAs de assinatura, um por terço da peça, cada um com
- *     `utm_content` próprio: sem isso não dá pra saber qual posição converte e a
- *     decisão de manter/cortar vira palpite. `mencao-abertura` é o 4º ponto, e
- *     não é CTA: é o clique no nome da marca em prosa (ver `linkifyWordmark`),
- *     separado de propósito pra não inflar o CTA com curiosidade.
+ *     &utm_content=mencao-abertura|cta-abertura|lista|cta-fim` (item-01/02/03
+ *     SAÍRAM; `cta-abertura` e `mencao-abertura` ENTRARAM em 260803;
+ *     `cta-usemelhor` SAIU em #8025). São 2 CTAs de assinatura (abertura e
+ *     fim), cada um com `utm_content` próprio: sem isso não dá pra saber
+ *     qual posição converte e a decisão de manter/cortar vira palpite.
+ *     `mencao-abertura` é o 3º ponto, e não é CTA: é o clique no nome da
+ *     marca em prosa (ver `linkifyWordmark`), separado de propósito pra não
+ *     inflar o CTA com curiosidade.
+ *   - Abertura e fecho têm TEXTO PADRÃO fixo desde #8025 (12/09/2026,
+ *     decisão do editor) — mesmo parágrafo usado em 4 edições consecutivas
+ *     (26w34-26w37) sem variação. `--opening`/`--closing` (CLI) continuam
+ *     aceitos pra override explícito quando o editor quiser variar uma
+ *     edição específica; omitidos, o CLI resolve o default (ver
+ *     `render-linkedin-weekly.ts`) — este módulo (`renderLinkedinWeeklyHtml`)
+ *     não conhece o default, só recebe o texto já resolvido.
  */
 
 export const LINKEDIN_WEEKLY_UTM_SOURCE = "linkedin";
@@ -37,7 +48,7 @@ export function linkedinWeeklyCampaign(cycle: string): string {
   return `ln-${cycle}`;
 }
 
-export type LinkedinWeeklyUtmContent = "mencao-abertura" | "cta-abertura" | "lista" | "cta-usemelhor" | "cta-fim";
+export type LinkedinWeeklyUtmContent = "mencao-abertura" | "cta-abertura" | "lista" | "cta-fim";
 
 /** Pure: monta uma URL com o triplo UTM completo (+ `utm_content`) do contrato do #4456. */
 export function buildLinkedinWeeklyUrl(baseUrl: string, cycle: string, content: LinkedinWeeklyUtmContent): string {
@@ -66,44 +77,32 @@ export const DESTAQUE_SEPARATOR = " · ";
 
 /**
  * Âncora do CTA que fecha a ABERTURA (decisão do editor 260803, #4456). Quem
- * abandona o artigo depois da 1ª manchete nunca alcança o CTA do Use Melhor
- * (que só entra depois da 2ª) nem o do fim, então existe um ponto de entrada
- * acima da dobra.
+ * abandona o artigo depois da 1ª manchete nunca alcança o CTA do fim, então
+ * existe um ponto de entrada acima da dobra (o bloco Use Melhor, que ficava
+ * no meio, tinha CTA próprio até o #8025 — removido, decisão do editor).
  *
- * Deliberadamente a MAIS sóbria das três: verbo no infinitivo, sem "grátis",
- * sem seta. É a forma do braço A do CTA-01 (`docs/experiments/cta-ab-mensal-2606-07.md`),
- * o único que sobreviveu ao teste sem degradar entrega. A densidade promocional
- * acima da dobra foi o gatilho identificado lá, então os CTAs com mais peso
- * ficam no meio (`cta-usemelhor`) e no fim (`cta-fim`) da peça.
+ * Deliberadamente a MAIS sóbria dos dois CTAs restantes: verbo no
+ * infinitivo, sem "grátis", sem seta. É a forma do braço A do CTA-01
+ * (`docs/experiments/cta-ab-mensal-2606-07.md`), o único que sobreviveu ao
+ * teste sem degradar entrega. A densidade promocional acima da dobra foi o
+ * gatilho identificado lá, então o CTA com mais peso fica só no fim
+ * (`cta-fim`) da peça.
  *
  * NÃO reintroduza "grátis"/seta/imperativo aqui — há teste travando isso.
  */
 const CTA_ABERTURA_LABEL = "Assinar a edição diária";
 
 /**
- * Chamada do CTA do bloco Use Melhor (decisão do editor 260803, #4456): frase
- * de contexto + âncora, em vez de link solto. Este é o PRIMEIRO convite de
- * assinatura da edição (o bloco cai depois do 2º headline — ver docstring de
- * `renderLinkedinWeeklyHtml`), e um link sem frase não diz ao leitor o que ele
- * ganha assinando. A frase promete exatamente o que o bloco acima acabou de
- * entregar, então o convite é verificável pelo próprio conteúdo da peça.
- *
- * PLURAL de propósito ("tutoriais e dicas", nunca "um desses"): a seção Use
- * Melhor da edição diária leva de `STAGE_2_MIN_USE_MELHOR` a
- * `STAGE_2_MAX_USE_MELHOR` itens (`scripts/lib/apply-stage2-caps.ts`, hoje 2 a 4),
- * então o singular subvende o que o assinante recebe. Sem menção a tempo de
- * leitura (decisão do editor 260803): o que converte aqui é a cadência diária,
- * não a duração de cada item.
+ * #8025 (12/09/2026, decisão do editor): o bloco Use Melhor deixou de levar
+ * CTA de assinatura — reverte a decisão do #4456/#4489 (260803) de que era
+ * o PRIMEIRO convite de assinatura da edição ("frase de contexto + âncora,
+ * em vez de link solto", motivada por cair antes do CTA do fim). O bloco
+ * segue existindo (link + descrição, curadoria normal) — só o parágrafo de
+ * chamada+âncora de assinatura ("Links para tutoriais e dicas saem em toda
+ * edição diária." / "Quero receber a edição diária →", `utm_content=cta-
+ * usemelhor`) foi removido de `renderLinkedinWeeklyHtml`. Não reintroduza
+ * essas constantes sem nova decisão do editor.
  */
-const CTA_USEMELHOR_LEAD = "Links para tutoriais e dicas saem em toda edição diária.";
-
-/**
- * Âncora do CTA do meio. 1ª pessoa e sem "grátis"/imperativo empilhados, pelo
- * mesmo aprendizado do CTA-01 citado em `CTA_ABERTURA_LABEL`. O "de graça"
- * continua existindo na peça, mas no fecho em prosa, longe da âncora clicável.
- * Também travado por teste.
- */
-const CTA_USEMELHOR_LABEL = "Quero receber a edição diária →";
 
 /** Âncora do CTA final. Única das três que carrega "grátis" + seta: está no fim
  * da peça, longe da dobra, onde a densidade promocional não custa entrega. */
@@ -375,8 +374,9 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     const hasComment = !!um.editorComment?.trim();
     // #5970: comentário ausente deixou de derrubar o bloco inteiro — vira só
     // um warning (banner de default aplicado, regra do #5321) e o bloco sai
-    // com curadoria normal (título + link + descrição + CTA), sem o
-    // parágrafo de comentário autoral que a skill nunca inventa.
+    // com curadoria normal (título + link + descrição), sem o parágrafo de
+    // comentário autoral que a skill nunca inventa. #8025 removeu também o
+    // CTA de assinatura que o bloco levava até aqui (decisão do editor).
     if (!hasComment) {
       warnings.push(
         "USE MELHOR: comentário do editor ausente — bloco publicado só com curadoria " +
@@ -391,9 +391,6 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     parts.push(`<p><a href="${escapeHtml(um.url)}">${escapeHtml(um.title)}</a></p>`);
     if (um.description.trim()) parts.push(`<p>${escapeHtml(um.description.trim())}</p>`);
     if (hasComment) parts.push(`<p><em>${escapeHtml(um.editorComment.trim())}</em></p>`);
-    const ctaUseMelhorUrl = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, input.cycle, "cta-usemelhor");
-    parts.push(`<p>${escapeHtml(CTA_USEMELHOR_LEAD)}</p>`);
-    parts.push(`<p><a href="${escapeHtml(ctaUseMelhorUrl)}">${escapeHtml(CTA_USEMELHOR_LABEL)}</a></p>`);
     parts.push("<hr/>");
     useMelhorRendered = true;
   }

@@ -19,6 +19,15 @@
  *      manual do editor no gate (ver `selectHeadlines`/`applyPendingPicks`
  *      abaixo).
  *
+ * **#8029 (12/09/2026, decisão do editor) reverte PARCIALMENTE o comentário
+ * 260802 do #4456**: o pool de candidatos a MANCHETE voltou a ser só
+ * `kind === "destaque"` (D1/D2/D3 da edição de origem) — item de seção
+ * (RADAR/LANÇAMENTOS/VÍDEOS) não compete mais por manchete, mesmo com taxa
+ * de clique maior, porque só carrega 1 linha de descrição (sem resumo
+ * autoral) e produzia manchete fraca. As 3 correções acima (taxa, exclusão
+ * comercial, desempate por ruído) continuam valendo — mudou só o FILTRO de
+ * `kind` em `selectHeadlines`, não o mecanismo de ranking.
+ *
  * #4511 fleet review IMPORTANTE: o núcleo de ranking/desempate
  * (`withinClickNoise`, `hasBrazilAngle`, `hasProfessionalImplication`,
  * `editorialTiebreakScore`, `byRateDescThenTitle`) vive em
@@ -131,11 +140,13 @@ export interface WeeklySelectionResult {
   pendingSlots: number;
   /**
    * TODOS os candidatos elegíveis PRA MANCHETE (não-excluídos,
-   * não-use_melhor — #4492), ranqueados — auditoria. Nome distinto do pool
-   * COMPLETO (todas as seções, incluindo use_melhor) usado por
-   * `selectUseMelhor` em `select-linkedin-weekly.ts` — os dois eram chamados
-   * `ranked` até o #4507, risco real de troca acidental (compilaria limpo,
-   * `selectUseMelhor` sempre retornaria `undefined` em silêncio).
+   * `kind === "destaque"` — #8029, que também cobre a exclusão de
+   * `use_melhor` do #4492, já que use_melhor é sempre `kind === "section"`),
+   * ranqueados — auditoria. Nome distinto do pool COMPLETO (todas as seções,
+   * incluindo use_melhor) usado por `selectUseMelhor` em
+   * `select-linkedin-weekly.ts` — os dois eram chamados `ranked` até o
+   * #4507, risco real de troca acidental (compilaria limpo, `selectUseMelhor`
+   * sempre retornaria `undefined` em silêncio).
    */
   headlineEligible: WeeklyRankedCandidate[];
   /** Candidatos excluídos (comercial/afiliado/própria) — auditoria. */
@@ -171,11 +182,23 @@ export interface WeeklySelectionResult {
  * manchete, mesmo quando têm a maior taxa de clique da semana — ficam
  * reservados exclusivamente pro bloco Use Melhor dedicado (`selectUseMelhor`,
  * que roda DEPOIS escolhendo só entre os `use_melhor` restantes).
+ *
+ * **#8029 (reverte parcialmente o #4456, decisão do editor 12/09/2026):
+ * manchete só sai do pool de DESTAQUES (`kind === "destaque"`).** O
+ * comentário 260802 do #4456 tinha aberto a seleção pra qualquer `kind`
+ * (destaque, RADAR, LANÇAMENTOS, VÍDEOS) — na prática, item de seção
+ * (`kind === "section"`) só carrega 1 linha de descrição (sem resumo
+ * autoral, ver Passo 4 da skill), o que produz manchete fraca quando vence
+ * por clique. CTOR continua decidindo QUAL dos destaques da semana vira
+ * manchete e em que ordem; o pool de candidatos é que voltou a ser só
+ * `kind === "destaque"` — `section !== "use_melhor"` deixou de ser o único
+ * filtro de seção porque `kind === "destaque"` já exclui TODAS as seções
+ * (inclusive use_melhor) de uma vez.
  */
 export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadlines: number): WeeklySelectionResult {
   const deduped = dedupeCandidatesByUrl(candidatesIn);
   const excluded = deduped.filter((c) => c.excluded);
-  const eligible = deduped.filter((c) => !c.excluded && c.section !== "use_melhor").sort(byRateDescThenTitle);
+  const eligible = deduped.filter((c) => !c.excluded && c.kind === "destaque").sort(byRateDescThenTitle);
 
   const selected: WeeklyRankedCandidate[] = [];
   const warnings: string[] = [];
@@ -232,9 +255,17 @@ export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadli
   if (pendingGroup === null && selected.length < maxHeadlines) {
     const useMelhorSkipped = deduped.filter((c) => !c.excluded && c.section === "use_melhor").length;
     const commercialSkipped = excluded.length;
+    // #8029: itens de seção que não são use_melhor (RADAR/LANÇAMENTOS/VÍDEOS)
+    // também nunca competem por manchete — contados à parte pra não sumir do
+    // shortfall como se não existissem candidatos nenhum pra essas seções.
+    const nonHeadlineSectionSkipped = deduped.filter((c) => !c.excluded && c.kind === "section" && c.section !== "use_melhor").length;
     warnings.push(
       `Só ${selected.length}/${maxHeadlines} candidatos elegíveis encontrados ` +
-        `(${commercialSkipped} excluído(s) por comercial/própria, ${useMelhorSkipped} reservado(s) pro bloco Use Melhor).`,
+        `(${commercialSkipped} excluído(s) por comercial/própria, ${useMelhorSkipped} reservado(s) pro bloco Use Melhor` +
+        (nonHeadlineSectionSkipped > 0
+          ? `, ${nonHeadlineSectionSkipped} de seção (RADAR/LANÇAMENTOS/VÍDEOS) não competem mais por manchete, #8029`
+          : "") +
+        `).`,
     );
   }
 

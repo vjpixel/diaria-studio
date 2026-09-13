@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { main as renderMain, resolveCoverImageSourcePath, COVER_IMAGE_FILENAME } from "../scripts/render-linkedin-weekly.ts";
+import { main as renderMain, resolveCoverImageSourcePath, COVER_IMAGE_FILENAME, DEFAULT_OPENING, DEFAULT_CLOSING } from "../scripts/render-linkedin-weekly.ts";
 
 const originalArgv = process.argv;
 after(() => {
@@ -120,6 +120,56 @@ describe("render-linkedin-weekly.ts — imagem de capa (#5536)", () => {
 
       const meta = JSON.parse(readFileSync(join(root, "data/weekly/26w36/ln-26w36.json"), "utf8"));
       assert.equal(meta.coverImagePath, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("render-linkedin-weekly.ts — abertura/fecho padrão sem pergunta (#8025)", () => {
+  it("--opening/--closing omitidos caem no texto padrão, com banner no stdout", () => {
+    const root = mkTmpRoot();
+    try {
+      writeSelection(root, "26w40", "260810");
+      process.argv = ["node", "render-linkedin-weekly.ts", "--cycle", "26w40"];
+      renderMain(root);
+
+      const html = readFileSync(join(root, "data/weekly/26w40/ln-26w40.html"), "utf8");
+      // O opening real sofre linkificação do wordmark (linkifyWordmark) — checa
+      // um trecho que sobrevive intacto em vez do texto completo.
+      assert.match(html, /5 minutos por dia pra se manter atualizado e usar melhor as IAs\./);
+      assert.match(html, /Isso aqui é a semana inteira espremida em três matérias\./);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--opening/--closing explícitos continuam sobrescrevendo o default", () => {
+    const root = mkTmpRoot();
+    try {
+      writeSelection(root, "26w41", "260810");
+      process.argv = ["node", "render-linkedin-weekly.ts", "--cycle", "26w41", "--opening", "Abertura customizada.", "--closing", "Fecho customizado."];
+      renderMain(root);
+
+      const html = readFileSync(join(root, "data/weekly/26w41/ln-26w41.html"), "utf8");
+      assert.match(html, /Abertura customizada\./);
+      assert.match(html, /Fecho customizado\./);
+      assert.ok(!html.includes(DEFAULT_OPENING.slice(0, 30)), "não deveria conter o default quando override foi passado");
+      assert.ok(!html.includes(DEFAULT_CLOSING), "não deveria conter o default quando override foi passado");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("DEFAULT_OPENING/DEFAULT_CLOSING não geram warning de 'ausente/vazio' (são sempre não-vazios)", () => {
+    const root = mkTmpRoot();
+    try {
+      writeSelection(root, "26w42", "260810");
+      process.argv = ["node", "render-linkedin-weekly.ts", "--cycle", "26w42"];
+      renderMain(root);
+
+      const meta = JSON.parse(readFileSync(join(root, "data/weekly/26w42/ln-26w42.json"), "utf8"));
+      assert.ok(!(meta.warnings as string[]).some((w) => /ausente\/vazi[ao]/i.test(w)), JSON.stringify(meta.warnings));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -91,12 +91,15 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
   before(() => {
     root = mkTmpRoot();
 
-    // Edição 260727: post presente e enriquecido no cache Beehiiv — 3
-    // candidatos com clique real (destaque, radar, use melhor). Tem os 3
-    // destaques (D1-D3) pra exercitar o caminho real de extração
+    // Edição 260727: post presente e enriquecido no cache Beehiiv — 5
+    // candidatos com clique real (3 destaques, 1 radar, 1 use melhor). Tem
+    // os 3 destaques (D1-D3) pra exercitar o caminho real de extração
     // multi-destaque de `readEdition` (achado do pr-test-analyzer na
     // revisão do #4501 — antes só era exercitado por fixture hand-built em
-    // weekly-linkedin-render.test.ts, nunca pelo parser de verdade).
+    // weekly-linkedin-render.test.ts, nunca pelo parser de verdade). O item
+    // de RADAR tem taxa (3%) MAIOR que o 2º destaque (2%) de propósito —
+    // prova que, desde #8029, ele nunca compete por manchete mesmo
+    // vencendo por clique.
     writeEdition(
       root,
       "260727",
@@ -180,10 +183,12 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
       status: "confirmed",
       publish_date: epochFor("260727"),
       stats: {
-        email: { clicks: 17, unique_opens: 200 },
+        email: { clicks: 24, unique_opens: 200 },
         clicks: [
-          { url: "https://exemplo.com/materia-a", base_url: "https://exemplo.com/materia-a", email: { unique_verified_clicks: 10 }, web: { total_unique_clicked: 0 } },
-          { url: "https://exemplo.com/materia-a-radar", base_url: "https://exemplo.com/materia-a-radar", email: { unique_verified_clicks: 4 } },
+          { url: "https://exemplo.com/materia-a", base_url: "https://exemplo.com/materia-a", email: { unique_verified_clicks: 10 }, web: { total_unique_clicked: 0 } }, // 5%
+          { url: "https://exemplo.com/materia-a2", base_url: "https://exemplo.com/materia-a2", email: { unique_verified_clicks: 4 } }, // 2%
+          { url: "https://exemplo.com/materia-a3", base_url: "https://exemplo.com/materia-a3", email: { unique_verified_clicks: 1 } }, // 0.5%
+          { url: "https://exemplo.com/materia-a-radar", base_url: "https://exemplo.com/materia-a-radar", email: { unique_verified_clicks: 6 } }, // 3% — maior que A2, mas nunca compete (#8029)
           { url: "https://exemplo.com/tutorial-x", base_url: "https://exemplo.com/tutorial-x", email: { unique_verified_clicks: 3 } },
         ],
       },
@@ -217,10 +222,20 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
   it("finding 1: candidatos da edição 260728 (gap) NÃO vencem a manchete por default ratePct=0 — perdem de forma auditável, não silenciosamente", () => {
     const headlineDates = (selectionJson.headlines as Array<{ editionDate: string }>).map((h) => h.editionDate);
     assert.ok(!headlineDates.includes("260728"), `manchetes não deveriam incluir a edição gap: ${JSON.stringify(headlineDates)}`);
+    // headlineCap=2 (2 edições na janela) — os 2 destaques de maior taxa
+    // vencem (D1 5%, D2 2%). O item de RADAR (3%, maior que D2) NUNCA
+    // compete por manchete desde #8029 — ver teste dedicado abaixo.
     assert.deepEqual(
       (selectionJson.headlines as Array<{ title: string }>).map((h) => h.title),
-      ["Matéria A: empregos e automação", "Matéria A Radar: cobertura complementar"],
+      ["Matéria A: empregos e automação", "Matéria A2: regulação de IA"],
     );
+  });
+
+  it("#8029: item de RADAR com taxa maior que um destaque selecionado NÃO aparece em headlines nem em headlineEligible", () => {
+    const headlineUrls = (selectionJson.headlines as Array<{ url: string }>).map((h) => h.url);
+    assert.ok(!headlineUrls.includes("https://exemplo.com/materia-a-radar"));
+    const eligibleUrls = (selectionJson.headlineCandidatesRanked as Array<{ url: string }>).map((c) => c.url);
+    assert.ok(!eligibleUrls.includes("https://exemplo.com/materia-a-radar"), JSON.stringify(eligibleUrls));
   });
 
   it("'Edições da semana' lista TODAS as edições da janela (inclusive as que já viraram manchete acima), com link + destaques (#4456, decisão 260802)", () => {
@@ -281,7 +296,10 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     // #5109: linha de proveniência "da edição de DD/MM" sobrevive ao
     // roundtrip real select→render (editionDate vem de ln-selection.json).
     assert.match(html, /<em>da edição de 27\/07<\/em>/);
-    assert.match(html, /<h2>2\. Matéria A Radar: cobertura complementar<\/h2>/);
+    assert.match(html, /<h2>2\. Matéria A2: regulação de IA<\/h2>/);
+    // #8029: o item de RADAR (taxa maior que a manchete 2) nunca aparece no
+    // HTML final — nem como manchete, nem em nenhum outro bloco.
+    assert.ok(!html.includes("Matéria A Radar"));
     assert.match(html, /Use melhor/);
     assert.match(html, /Tutorial X: como usar melhor o Claude Code/);
     assert.match(html, /Testei essa semana e cortou tempo de setup\./);
@@ -367,8 +385,11 @@ describe("#5109: --picks resolve o pendingGroup fim-a-fim", () => {
 
   function writeFixture(r: string): void {
     // 1 única edição na janela → headlineCap = 1 (computeHeadlineCap(1)).
-    // Destaque e item de RADAR com taxa IDÊNTICA (2,5%) — empate dentro do
-    // ruído disputando a única vaga: banda de 2 > 1 vaga restante → pendingGroup.
+    // 2 DESTAQUES com taxa IDÊNTICA (2,5%) — empate dentro do ruído
+    // disputando a única vaga: banda de 2 > 1 vaga restante → pendingGroup.
+    // #8029: usa 2 destaques (não destaque + RADAR) porque item de seção
+    // nunca compete por manchete — a mecânica de empate/pendingGroup
+    // continua válida entre destaques.
     writeEdition(
       r,
       "260901",
@@ -385,10 +406,15 @@ describe("#5109: --picks resolve o pendingGroup fim-a-fim", () => {
         "",
         "---",
         "",
-        "**📡 RADAR**",
+        "**DESTAQUE 2 | 📡 COMPLEMENTAR**",
         "",
-        "**[Matéria do radar](https://exemplo.com/materia-radar)**",
-        "Notícia complementar.",
+        "**[Matéria complementar](https://exemplo.com/materia-complementar)**",
+        "",
+        "Corpo da matéria complementar.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação complementar.",
         "",
       ].join("\n"),
     );
@@ -400,7 +426,7 @@ describe("#5109: --picks resolve o pendingGroup fim-a-fim", () => {
         email: { clicks: 10, unique_opens: 200 },
         clicks: [
           { url: "https://exemplo.com/materia-mercado", base_url: "https://exemplo.com/materia-mercado", email: { unique_verified_clicks: 5 } },
-          { url: "https://exemplo.com/materia-radar", base_url: "https://exemplo.com/materia-radar", email: { unique_verified_clicks: 5 } },
+          { url: "https://exemplo.com/materia-complementar", base_url: "https://exemplo.com/materia-complementar", email: { unique_verified_clicks: 5 } },
         ],
       },
     });
@@ -433,13 +459,13 @@ describe("#5109: --picks resolve o pendingGroup fim-a-fim", () => {
       "--publish-monday",
       "260907",
       "--picks",
-      "https://exemplo.com/materia-radar",
+      "https://exemplo.com/materia-complementar",
     ];
     selectMain(root);
     const selectionPath = join(root, "data/weekly/26w36/_internal/ln-selection.json");
     const selectionJson = JSON.parse(readFileSync(selectionPath, "utf8"));
     assert.equal(selectionJson.headlines.length, 1);
-    assert.equal(selectionJson.headlines[0].title, "Matéria do radar");
+    assert.equal(selectionJson.headlines[0].title, "Matéria complementar");
     assert.equal(selectionJson.pendingGroup, null);
     assert.equal(selectionJson.pendingSlots, 0);
   });
@@ -455,7 +481,7 @@ describe("#5109: --picks resolve o pendingGroup fim-a-fim", () => {
         "--publish-monday",
         "260907",
         "--picks",
-        "https://exemplo.com/materia-radar,https://exemplo.com/materia-mercado",
+        "https://exemplo.com/materia-complementar,https://exemplo.com/materia-mercado",
       ];
       assert.throws(() => selectMain(root), /__mocked_exit__/);
       assert.equal(exitCode, 2);
