@@ -538,6 +538,11 @@ export interface ApoiadorCohortData {
   from: string | null;
   to: string | null;
   rows: ApoiadorCohortRow[];
+  /** Subscribers resolvidos que têm 0 `subscription` com `entered_at`
+   *  gravado — não entram em `rows` (não há dia de cadastro pra agrupar).
+   *  Mesmo campo de `AcquisitionCohortData` (fatia 2/N) — reportado
+   *  explicitamente em vez de descartado em silêncio. */
+  subscribersWithoutEnteredAt: number;
   subscribersWithInvalidEnteredAt: number;
   /** Motivo pelo qual `rows` veio vazio/parcial por causa dos dados de
    *  APOIO (não do store de assinantes — esse caso já é coberto por
@@ -577,6 +582,7 @@ export function buildApoiadorCohortData(
       from,
       to,
       rows: [],
+      subscribersWithoutEnteredAt: 0,
       subscribersWithInvalidEnteredAt: 0,
       apoiadorDataError: null,
       note: CROSS_PLATFORM_FLOOR_NOTE,
@@ -593,13 +599,27 @@ export function buildApoiadorCohortData(
     });
     const apoiadorIndex = buildApoiadorEmailIndex(apoiadores);
 
+    // Universo COMPLETO de subscribers resolvidos vem de `identity_alias`
+    // (`getAllSubscriberPlatforms`), não de `subscription` — mesmo cuidado
+    // de `buildAcquisitionCohortData`: uma pessoa ingerida só via
+    // `ensureSubscriber` (nenhum `upsertSubscription` rodou ainda) tem
+    // `subscriber`/`identity_alias` mas ZERO linha em `subscription`, e por
+    // isso nunca apareceria no mapa de `getAllSubscriptionsBySubscriber` —
+    // contá-la exigiria iterar o universo certo, não só quem já tem
+    // alguma `subscription`.
+    const allSubscriberIds = getAllSubscriberPlatforms(db).keys();
     const allAliases = getAllAliasesBySubscriber(db);
     const bySubscriber = getAllSubscriptionsBySubscriber(db);
     const inputs: CohortApoiadorInput[] = [];
+    let subscribersWithoutEnteredAt = 0;
 
-    for (const [subscriberId, subscriptions] of bySubscriber) {
+    for (const subscriberId of allSubscriberIds) {
+      const subscriptions = bySubscriber.get(subscriberId) ?? [];
       const enteredDates = subscriptions.map((s) => s.entered_at).filter((v): v is string => v != null);
-      if (enteredDates.length === 0) continue;
+      if (enteredDates.length === 0) {
+        subscribersWithoutEnteredAt++;
+        continue;
+      }
       const earliestEnteredAt = enteredDates.reduce((min, cur) => (cur < min ? cur : min));
       const attribution = resolveSubscriberAttribution(subscriptions);
       const subscriberEmails = (allAliases.get(subscriberId) ?? [])
@@ -632,6 +652,7 @@ export function buildApoiadorCohortData(
       from,
       to,
       rows,
+      subscribersWithoutEnteredAt,
       subscribersWithInvalidEnteredAt,
       apoiadorDataError,
       note: CROSS_PLATFORM_FLOOR_NOTE,

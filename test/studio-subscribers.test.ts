@@ -505,6 +505,27 @@ describe("buildApoiadorCohortData", () => {
     }
   });
 
+  it("subscriber sem NENHUM entered_at (só identity_alias, sem subscription): contado em subscribersWithoutEnteredAt, nunca descartado em silêncio", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+      // ensureSubscriber sozinho: sem upsertSubscription, não teria
+      // aparecido em getAllSubscriptionsBySubscriber() — universo tem que
+      // vir de getAllSubscriberPlatforms() (mesma disciplina de
+      // buildAcquisitionCohortData), senão esta pessoa some sem ser
+      // contada em lugar nenhum.
+      ensureSubscriber(db, "beehiiv", "bh-sem-sub", "sem-subscription@x.com", NOW);
+      db.close();
+
+      const data = buildApoiadorCohortData(root);
+      assert.equal(data.subscribersWithoutEnteredAt, 1);
+      assert.deepEqual(data.rows, []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("dados de apoio indisponíveis (env ausente, sem injeção): apoiadorDataError explícito, mas a coorte de CADASTROS ainda aparece (apoiadores=0, nunca omitida)", () => {
     const root = makeRoot();
     try {
