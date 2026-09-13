@@ -965,4 +965,41 @@ describe("derive-editor-requests.ts (#5731)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("derive-stage1: destaque-swap usa o rank ORIGINAL do item removido como target, não a posição final do promovido (achado de review #7964)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-reorder-"));
+    try {
+      const editionDir = join(dir, "260912");
+      const categorized = categorizedJsonStage1();
+      // D1 (A1) é trocado por RX, mas o array final REORDENA os sobreviventes
+      // — RX pousa na ÚLTIMA posição (index 2 / "d3"), não na primeira. Se o
+      // target seguisse a posição final do item promovido, a entrada diria
+      // "target: d3" com descrição "Destaque D1 trocado" — contraditório.
+      const approved = {
+        highlights: [
+          { article: { url: "https://a.com/2", title: "A2" } },
+          { article: { url: "https://a.com/3", title: "A3" } },
+          { article: { url: "https://r.com/x", title: "RX" } },
+        ],
+        radar: [],
+        lancamento: [],
+        use_melhor: [{ url: "https://b.com/1", title: "B1" }], // inalterado — sem bucket-move neste teste
+        video: [],
+      };
+      writeStage1Fixtures(editionDir, categorized, approved, { auto_approved: false });
+
+      const r = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const entries = readEntries(editionDir);
+      assert.equal(entries.length, 1, JSON.stringify(entries));
+      assert.equal(entries[0].request_type, "destaque-swap");
+      assert.equal(entries[0].target, "d1", "target deve ser d1 (rank original de A1), não d3 (posição final de RX)");
+      assert.match(entries[0].description as string, /Destaque D1 trocado/);
+      assert.equal((entries[0].context as Record<string, unknown>).new_url, "https://r.com/x");
+      assert.equal((entries[0].context as Record<string, unknown>).position, 3, "posição real do promovido no aprovado fica em context, não no target");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
