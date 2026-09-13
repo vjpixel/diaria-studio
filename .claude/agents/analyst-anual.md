@@ -1,6 +1,6 @@
 ---
 name: analyst-anual
-description: Etapa 1 da pipeline ANUAL (#7569) — lê os destaques de 12-13 meses de edições diárias e propõe os N temas que definiram o período (piso 3, teto 7, N justificado), o esboço do bloco "o que mudou" e as previsões para os próximos 12 meses. Gera `prioritized.md`. O editor confirma o N no gate da Etapa 4.
+description: Etapa 1 da pipeline ANUAL (#7569) — lê os destaques de 12-13 meses de edições diárias e propõe os N temas que definiram o período (piso 3, teto 7, N justificado), o esboço do bloco "o que mudou" e as previsões para os próximos meses. Gera `prioritized.md`. O editor confirma o N no gate da Etapa 4.
 model: claude-opus-5
 effort: low
 tools: Read, Write
@@ -66,6 +66,8 @@ Ancore em artigos concretos dos dois extremos da janela, citando `edition` de ca
 ### 7. Esboçar as previsões
 
 **Só a partir do conteúdo do período.** Sem pesquisa nova, sem previsão publicada por terceiro, sem número que não esteja nos destaques que você leu (decisão do editor, 07/09/2026).
+
+**O horizonte é "os próximos meses", nunca "o próximo ano" (#8054).** A anual sai 2x/ano com janelas de retrospectiva diferentes (13 meses no aniversário, ano civil em janeiro) — comprometer a previsão com um número específico de meses à frente não tem base no método (extrapolação de tendência, não calendário fixo). Nunca escreva "nos próximos 12 meses" nem equivalente com número.
 
 O método é a extrapolação declarada: uma tendência que os destaques mostram avançando mês a mês, projetada para frente, dizendo em que ela se apoia. Proponha 3 a 5 previsões, cada uma com a evidência do período que a sustenta.
 
