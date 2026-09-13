@@ -7,7 +7,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import {
@@ -22,7 +22,9 @@ import {
   searchSubscribersByEmail,
   buildSubscribersCohortData,
   buildAcquisitionCohortData,
+  buildApoiadorCohortData,
 } from "../scripts/studio-ui/studio-subscribers.ts";
+import { createContact } from "../scripts/lib/apoio-contacts-store.ts";
 
 const NOW = "2026-09-01T12:00:00.000Z";
 
@@ -479,6 +481,186 @@ describe("buildAcquisitionCohortData", () => {
       assert.equal(totalCadastros, 2);
       assert.ok(data.rows.some((r) => r.day === "2026-09-02"));
       assert.ok(data.rows.some((r) => r.day === "2026-09-09"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildApoiadorCohortData (#7916, fatia 5/N)
+// ---------------------------------------------------------------------------
+
+describe("buildApoiadorCohortData", () => {
+  it("sem data/: rows vazio, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-cohort-apoiadores-nodata-"));
+    try {
+      const data = buildApoiadorCohortData(root);
+      assert.equal(data.db.available, false);
+      assert.deepEqual(data.rows, []);
+      assert.equal(data.apoiadorDataError, null);
+      assert.ok(data.linkNote.length > 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("subscriber sem NENHUM entered_at (só identity_alias, sem subscription): contado em subscribersWithoutEnteredAt, nunca descartado em silêncio", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+      // ensureSubscriber sozinho: sem upsertSubscription, não teria
+      // aparecido em getAllSubscriptionsBySubscriber() — universo tem que
+      // vir de getAllSubscriberPlatforms() (mesma disciplina de
+      // buildAcquisitionCohortData), senão esta pessoa some sem ser
+      // contada em lugar nenhum.
+      ensureSubscriber(db, "beehiiv", "bh-sem-sub", "sem-subscription@x.com", NOW);
+      db.close();
+
+      const data = buildApoiadorCohortData(root);
+      assert.equal(data.subscribersWithoutEnteredAt, 1);
+      assert.deepEqual(data.rows, []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("dados de apoio indisponíveis (env ausente, sem injeção): apoiadorDataError explícito, mas a coorte de CADASTROS ainda aparece (apoiadores=0, nunca omitida)", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+      const a = ensureSubscriber(db, "kit", "kit-a", "a@x.com", NOW);
+      upsertSubscription(
+        db,
+        a,
+        "kit",
+        { status: "active", enteredAt: "2026-09-01T15:00:00.000Z", exitedAt: null, source: null, utmSource: "x" },
+        NOW,
+      );
+      db.close();
+
+      // Sem `apoioEnv`/`apoioContacts` injetados — `readApoiaSeEnv()` real
+      // lança se as env vars não estiverem no ambiente de teste (o que é o
+      // caso comum de CI) — o `try/catch` de `loadLinkableApoiadores` vira
+      // `apoiadorDataError` em vez de propagar.
+      const savedEnv = {
+        APOIA_SE_API_KEY: process.env.APOIA_SE_API_KEY,
+        APOIA_SE_API_SECRET: process.env.APOIA_SE_API_SECRET,
+        APOIA_SE_CAMPAIGN: process.env.APOIA_SE_CAMPAIGN,
+      };
+      delete process.env.APOIA_SE_API_KEY;
+      delete process.env.APOIA_SE_API_SECRET;
+      delete process.env.APOIA_SE_CAMPAIGN;
+      try {
+        const data = buildApoiadorCohortData(root);
+        assert.ok(data.apoiadorDataError);
+        assert.equal(data.rows.length, 1);
+        assert.equal(data.rows[0].totalSubscribers, 1);
+        // Nunca fabrica apoiadores>0 quando o dado de apoio é indisponível.
+        assert.equal(data.rows[0].apoiadores, 0);
+        assert.equal(data.rows[0].confirmedMonthlyRevenue, 0);
+      } finally {
+        for (const [k, v] of Object.entries(savedEnv)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("vincula por e-mail, computa dias até 1º apoio e soma receita mensal confirmada (via injeção — sem I/O real de apoia.se)", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+
+      // apoiador@x.com assina D+0, apoia D+7.
+      const apoiador = ensureSubscriber(db, "kit", "kit-apoiador", "apoiador@x.com", NOW);
+      upsertSubscription(
+        db,
+        apoiador,
+        "kit",
+        { status: "active", enteredAt: "2026-09-01T15:00:00.000Z", exitedAt: null, source: null, utmSource: "organico" },
+        NOW,
+      );
+      // naoapoiador@x.com — mesma coorte, sem vínculo de apoio.
+      const naoApoiador = ensureSubscriber(db, "kit", "kit-nao-apoiador", "naoapoiador@x.com", NOW);
+      upsertSubscription(
+        db,
+        naoApoiador,
+        "kit",
+        { status: "active", enteredAt: "2026-09-01T16:00:00.000Z", exitedAt: null, source: null, utmSource: "organico" },
+        NOW,
+      );
+      db.close();
+
+      const contact = createContact(
+        { name: "Apoiador", emails: ["apoiador@x.com"] },
+        { now: new Date("2026-09-08T15:00:00.000Z") }, // +7 dias após o cadastro
+      );
+
+      const data = buildApoiadorCohortData(root, {
+        apoioContacts: [contact],
+        apoioEnv: { campaign: "diaria" },
+        apoioCacheDir: mkdtempSync(join(tmpdir(), "studio-apoiador-cache-")),
+        now: new Date("2026-09-08T15:00:00.000Z"),
+      });
+
+      assert.equal(data.apoiadorDataError, null);
+      const row = data.rows.find((r) => r.utmSource === "organico")!;
+      assert.equal(row.totalSubscribers, 2);
+      assert.equal(row.apoiadores, 1);
+      assert.equal(row.avgDaysToFirstSupport, 7);
+      // Sem cache do mês corrente (cacheDir vazio) — nenhum valor mensal é
+      // observável, nunca fabrica revenue > 0.
+      assert.equal(row.confirmedMonthlyRevenue, 0);
+      assert.equal(row.apoiadoresSemValorMensalConhecido, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("apoiador pagando este mês (cache local, sem chamada de rede): confirmedMonthlyRevenue soma o valor real, nunca 0 fabricado", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+      const apoiador = ensureSubscriber(db, "kit", "kit-b", "pagante@x.com", NOW);
+      upsertSubscription(
+        db,
+        apoiador,
+        "kit",
+        { status: "active", enteredAt: "2026-09-01T15:00:00.000Z", exitedAt: null, source: null, utmSource: "organico" },
+        NOW,
+      );
+      db.close();
+
+      const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoiador-cache-pago-"));
+      writeFileSync(
+        resolve(cacheDir, "2026-09.json"),
+        JSON.stringify({ "pagante@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 25 } }),
+      );
+
+      const contact = createContact(
+        { name: "Pagante", emails: ["pagante@x.com"] },
+        { now: new Date("2026-09-03T15:00:00.000Z") },
+      );
+
+      const data = buildApoiadorCohortData(root, {
+        apoioContacts: [contact],
+        apoioEnv: { campaign: "diaria" },
+        apoioCacheDir: cacheDir,
+        now: new Date("2026-09-10T12:00:00.000Z"),
+      });
+
+      const row = data.rows.find((r) => r.utmSource === "organico")!;
+      assert.equal(row.apoiadores, 1);
+      assert.equal(row.confirmedMonthlyRevenue, 25);
+      assert.equal(row.apoiadoresSemValorMensalConhecido, 0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
