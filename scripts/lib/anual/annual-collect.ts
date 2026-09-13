@@ -135,12 +135,58 @@ export function dedupKey(post: UnifiedCachedPost): string | null {
 }
 
 /**
+ * Sufixos de assunto que marcam uma cópia SEGMENTADA da mesma edição, não uma
+ * edição nova (#8035). Mesma edição diária, disparada por audiência distinta
+ * — hoje só o piloto Patronos (`schedule-kit-diaria.ts` aplica `"- patronos"`
+ * no assunto de um broadcast que já existe pro público geral). Lista curta e
+ * explícita de propósito: um regex vago aqui devoraria edições reais cujo
+ * título termine com um hífen legítimo.
+ */
+const SEGMENT_COPY_SUFFIXES = [/-\s*patronos\s*$/i, /-\s*apoiadores\s*$/i];
+
+/**
+ * Padrões de e-mail institucional que aparecem no MESMO cache confirmado das
+ * edições (Kit/Beehiiv), mas não são a newsletter (#8035): pedido de apoio,
+ * agradecimento de sorteio, aviso administrativo. Allowlist/denylist
+ * explícita — não uma heurística de "não parece notícia", que soltaria falso
+ * positivo em título de edição real. Casos concretos da issue: "Quero pedir
+ * sua ajuda, leva só 1 minuto", "Nos ajude a manter a Diar.ia gratuita",
+ * "Agradecimento: sorteio de livro".
+ */
+const INSTITUTIONAL_EMAIL_TITLE_PATTERNS = [
+  /pedir sua ajuda/i,
+  /nos ajude a manter/i,
+  /^agradecimento:/i,
+];
+
+/**
+ * `true` quando o título do post é uma edição real da newsletter — `false`
+ * pra probe/teste do Kit (`[teste-464]`, `[probe-rodape]`, `[teste]` — título
+ * começando com `[`), cópia segmentada da mesma edição (`SEGMENT_COPY_SUFFIXES`)
+ * ou e-mail institucional (`INSTITUTIONAL_EMAIL_TITLE_PATTERNS`). Post sem
+ * título nenhum passa — não tem texto pra casar contra nenhum destes
+ * padrões, e o custo de um falso negativo aqui (uma edição de verdade sem
+ * título ficando de fora) é maior que o de deixar passar um post estranho
+ * sem título, que os outros filtros (dedup, parser) já não conseguem
+ * distinguir de qualquer forma.
+ */
+export function isRealEditionTitle(title: string | undefined | null): boolean {
+  const t = (title ?? "").trim();
+  if (!t) return true;
+  if (t.startsWith("[")) return false;
+  if (SEGMENT_COPY_SUFFIXES.some((re) => re.test(t))) return false;
+  if (INSTITUTIONAL_EMAIL_TITLE_PATTERNS.some((re) => re.test(t))) return false;
+  return true;
+}
+
+/**
  * Filtra o cache unificado pela janela: só edições publicadas
  * (`status === "confirmed"`, o vocabulário normalizado do reader) cujo mês
  * editorial está na lista, **sem duplicata entre os dois caches** (ver
- * `dedupKey`). Devolve um mapa YYMM → posts, com **todo mês da janela
- * presente**, inclusive os vazios — um mês sem edição é um fato a reportar no
- * gate, não uma chave ausente que some do relatório.
+ * `dedupKey`) e **sem probe/teste/cópia segmentada/e-mail institucional**
+ * (ver `isRealEditionTitle`, #8035). Devolve um mapa YYMM → posts, com
+ * **todo mês da janela presente**, inclusive os vazios — um mês sem edição é
+ * um fato a reportar no gate, não uma chave ausente que some do relatório.
  *
  * Em caso de duplicata, o primeiro post vence. A lista chega ordenada por
  * `mergeEditionsByDate`, que desempata por origem — então a escolha é
@@ -157,6 +203,7 @@ export function groupPostsByMonth(
 
   for (const post of posts) {
     if (post.status !== "confirmed") continue;
+    if (!isRealEditionTitle(post.title ?? post.subject)) continue;
     const edition = postEdition(post);
     if (!edition) continue;
     const month = editionMonth(edition);

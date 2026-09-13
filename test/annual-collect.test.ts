@@ -20,6 +20,7 @@ import {
   dedupDestaquesByUrl,
   unscoredCount,
   unixToEdition,
+  isRealEditionTitle,
   type AnnualDestaque,
 } from "../scripts/lib/anual/annual-collect.ts";
 
@@ -253,5 +254,56 @@ describe("dedup de destaques por URL (#7587 item 5)", () => {
     const comDedup = topKPerMonth(dedupDestaquesByUrl([...copias, ...outros]), 3);
     assert.equal(comDedup.filter((x) => x.url === url).length, 1);
     assert.equal(comDedup.length, 3, "com dedup, os outros 2 itens únicos entram no corte");
+  });
+});
+
+describe("isRealEditionTitle — exclusão de não-edições (#8035, 266→253)", () => {
+  it("probe/teste do Kit (título começando com '[') é excluído", () => {
+    assert.equal(isRealEditionTitle("[teste-464] bare style fragment probe"), false);
+    assert.equal(isRealEditionTitle("[probe-rodape] centralizar footer do Kit"), false);
+    assert.equal(isRealEditionTitle("[probe-6047] ajuste de layout"), false);
+    assert.equal(isRealEditionTitle("[teste] Nvidia diz que a AGI chegou"), false);
+  });
+
+  it("cópia segmentada da mesma edição ('- patronos'/'- apoiadores') é excluída", () => {
+    assert.equal(isRealEditionTitle("Empresas recontratam quem demitiu por IA - patronos"), false);
+    assert.equal(isRealEditionTitle("Empresas recontratam quem demitiu por IA - Patronos"), false);
+    assert.equal(isRealEditionTitle("Retrospectiva de agosto - apoiadores"), false);
+  });
+
+  it("e-mail institucional (pedido de ajuda/agradecimento) é excluído", () => {
+    assert.equal(isRealEditionTitle("Quero pedir sua ajuda, leva só 1 minuto =)"), false);
+    assert.equal(isRealEditionTitle("Nos ajude a manter a Diar.ia gratuita"), false);
+    assert.equal(isRealEditionTitle("Agradecimento: sorteio de livro"), false);
+  });
+
+  it("título de edição normal é contado", () => {
+    assert.equal(isRealEditionTitle("OpenAI lança Sora 2"), true);
+    assert.equal(isRealEditionTitle("Empresas recontratam quem demitiu por IA"), true);
+    // hífen legítimo no fim de um título real não deve casar com o sufixo de segmento
+    assert.equal(isRealEditionTitle("O futuro do trabalho -"), true);
+  });
+
+  it("título ausente/vazio não é excluído (sem texto pra casar contra os padrões)", () => {
+    assert.equal(isRealEditionTitle(undefined), true);
+    assert.equal(isRealEditionTitle(null), true);
+    assert.equal(isRealEditionTitle(""), true);
+    assert.equal(isRealEditionTitle("   "), true);
+  });
+
+  it("groupPostsByMonth aplica o filtro — probes/segmentos/institucionais não contam como edição", () => {
+    const months = ["2608"];
+    const dia = unix("2026-08-25T00:00:00Z");
+    const posts = [
+      post({ slug: "real", title: "OpenAI lança Sora 2", publish_date: dia }),
+      post({ slug: "probe1", title: "[teste-464] bare style fragment probe", publish_date: dia }),
+      post({ slug: "probe2", title: "[probe-rodape] centralizar footer do Kit", publish_date: unix("2026-08-24T00:00:00Z") }),
+      post({ slug: "segmentada", title: "OpenAI lança Sora 2 - patronos", publish_date: unix("2026-08-24T00:00:00Z") }),
+      post({ slug: "ajuda", title: "Quero pedir sua ajuda, leva só 1 minuto =)", publish_date: unix("2026-08-24T00:00:00Z") }),
+      post({ slug: "agradecimento", title: "Agradecimento: sorteio de livro", publish_date: unix("2026-08-24T00:00:00Z") }),
+    ];
+    const g = groupPostsByMonth(posts, months);
+    assert.equal(g.get("2608")!.length, 1, "só a edição real entra na contagem do mês");
+    assert.equal(g.get("2608")![0].slug, "real");
   });
 });
