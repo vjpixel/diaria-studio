@@ -114,6 +114,14 @@ html_handling = "drop-trailing-slash"
 binding = "POLL"
 id = "72784da4ae39444481eb422ebac357c6"
 
+# #8062: reusa o namespace CURSOS_SUBSCRIBERS já existente (mesmo id de
+# workers/arquivo/wrangler.toml / workers/cursos/wrangler.toml), prefixo
+# próprio ("counter:ai-fetch:site:") — não cria namespace dedicado. Ver
+# scripts/lib/shared/ai-fetch-counters.ts pro racional completo.
+[[kv_namespaces]]
+binding = "CURSOS_SUBSCRIBERS"
+id = "a3415c3bf4b840d6975dbac290b99153"
+
 # #5920: Workers Logs ligado (observability.enabled = true) + head_sampling_rate = 1
 # em todos os Workers com `main` público — mesmo padrão de
 # workers/livros/wrangler.toml. Sem isto, console.log/console.error do

@@ -54,12 +54,28 @@ import { imageKeyFromPath, serveKvImage, type KvImageStore } from "../../../scri
 // render puro em scripts/lib/shared/, sem import cross-worker (ver
 // docstring do módulo).
 import { handleConfirmadoPage } from "../../../scripts/lib/shared/confirmado-page.ts";
+// #8062: mesma instrumentação de bot de IA / Referer de assistente que
+// workers/arquivo/src/index.ts já tem — este Worker (apex diar.ia.br) era o
+// único dos 4 sem NENHUM contador, apesar de ser a superfície com mais URLs
+// indexadas (263 no GSC) e mais provável de ser citada por um assistente.
+import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts";
+import {
+  matchAiFetchBot,
+  aiFetchBotCounterKey,
+  aiFetchReferrerCounterKey,
+  incrementAiFetchCounter,
+} from "../../../scripts/lib/shared/ai-fetch-counters.ts";
 
 export interface Env {
   ASSETS: Fetcher;
   /** #7657: KV `POLL` — o MESMO namespace que `workers/poll` lê. Só leitura
    *  aqui; quem escreve continua sendo a pipeline (upload-images-public.ts). */
   POLL: KvImageStore;
+  /** #8062: KV `CURSOS_SUBSCRIBERS` — o MESMO namespace que
+   *  `workers/arquivo`/`workers/cursos` usam, prefixo próprio
+   *  (`counter:ai-fetch:site:`). `incrementAiFetchCounter` trata KV ausente
+   *  como no-op — binding opcional em runtime mesmo sendo declarado real. */
+  CURSOS_SUBSCRIBERS?: KVNamespace;
 }
 
 /** Casa `/p/{slug}` (com ou sem barra final — `html_handling` já resolve a
@@ -72,6 +88,31 @@ export function matchArchiveSlug(pathname: string): string | null {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // #8062: mesmo par de blocos fail-soft de workers/arquivo/src/index.ts —
+    // log de Referer de assistente + contador de fetch por bot nomeado.
+    // ANTES de qualquer outra lógica (asset lookup, /img, /confirmado): a
+    // request casa ou não casa independente do que o resto do handler faz
+    // com ela, e um try/catch isolado nunca deve atrasar a resposta real.
+    try {
+      const aiHost = matchAiReferrerHost(request.headers.get("Referer"));
+      if (aiHost) {
+        logAiReferrerHit("site", aiHost, new URL(request.url).pathname);
+        const day = new Date().toISOString().slice(0, 10);
+        await incrementAiFetchCounter(env.CURSOS_SUBSCRIBERS, aiFetchReferrerCounterKey(aiHost, day, "site"));
+      }
+    } catch {
+      // logging nunca derruba a página — mesma disciplina do catch em
+      // workers/arquivo/src/index.ts.
+    }
+    try {
+      const bot = matchAiFetchBot(request.headers.get("User-Agent"));
+      if (bot) {
+        const day = new Date().toISOString().slice(0, 10);
+        await incrementAiFetchCounter(env.CURSOS_SUBSCRIBERS, aiFetchBotCounterKey(bot, day, "site"));
+      }
+    } catch {
+      // mesma disciplina fail-soft do bloco de Referer acima.
+    }
     // #7657: `/img/{key}` é resolvido ANTES do asset lookup — não existe
     // arquivo nenhum em `public/img/`, então deixar cair no `env.ASSETS`
     // primeiro só gastaria um 404 pra chegar aqui de qualquer jeito. Só GET

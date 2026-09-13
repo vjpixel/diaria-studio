@@ -85,10 +85,28 @@ export function matchAiFetchBot(userAgent: string | null | undefined): AiFetchBo
   return null;
 }
 
-/** Chave KV do contador de FETCH por bot nomeado — 1 chave por `(bot, dia)`.
- * `day` é `YYYY-MM-DD` (mesmo formato de `GeoCitationRecord.date`). */
-export function aiFetchBotCounterKey(bot: AiFetchBot, day: string): string {
-  return `counter:ai-fetch:bot:${bot}:${day}`;
+/**
+ * Superfície (Worker) que incrementou o contador (#8062). Só os Workers que
+ * de fato chamam `incrementAiFetchCounter` entram aqui — `livros`/`cursos`
+ * chamam só `logAiReferrerHit` (console.log, sem persistência em KV), não
+ * este contador. Union fechada, não `string` livre — mesmo racional do
+ * #4616 (`AiReferrerWorker`): um typo aqui corromperia a atribuição por
+ * superfície em silêncio, sem erro de compilação. Tipo local (não importado
+ * de `ai-referrer-log.ts`) pelo mesmo motivo de decoupling já documentado
+ * logo abaixo em `aiFetchReferrerCounterKey`.
+ */
+export type AiFetchSurface = "arquivo" | "site";
+
+/** Chave KV do contador de FETCH por bot nomeado — 1 chave por
+ * `(surface, bot, dia)`. `day` é `YYYY-MM-DD` (mesmo formato de
+ * `GeoCitationRecord.date`). `surface` obrigatório desde o #8062 — antes só
+ * `arquivo` incrementava este contador (chave sem segmento de superfície);
+ * a chave mudou de forma pra caber o Worker `site` sem colidir com os
+ * hits do `arquivo` no mesmo dia (contadores são cumulativos por dia — sem
+ * separar por superfície, o total viraria "arquivo + site" indistinguível,
+ * o oposto do que a issue pede). */
+export function aiFetchBotCounterKey(bot: AiFetchBot, day: string, surface: AiFetchSurface): string {
+  return `counter:ai-fetch:${surface}:bot:${bot}:${day}`;
 }
 
 /** Chave KV do contador de hit de REFERER de assistente (#4902 item 2) —
@@ -97,9 +115,11 @@ export function aiFetchBotCounterKey(bot: AiFetchBot, day: string): string {
  * (`chatgpt.com`, `perplexity.ai`, `claude.ai`, `gemini.google.com`); tipado
  * como `string` aqui (em vez de importar `AiReferrerHost`) pra este módulo
  * não depender de `ai-referrer-log.ts` — os 2 módulos ficam desacoplados,
- * o call site (`workers/arquivo/src/index.ts`) já importa ambos. */
-export function aiFetchReferrerCounterKey(host: string, day: string): string {
-  return `counter:ai-fetch:referrer:${host}:${day}`;
+ * os call sites (`workers/arquivo/src/index.ts`, `workers/site/src/index.ts`)
+ * já importam ambos. `surface` obrigatório desde o #8062 — ver
+ * `aiFetchBotCounterKey` pro racional completo da mudança de forma da chave. */
+export function aiFetchReferrerCounterKey(host: string, day: string, surface: AiFetchSurface): string {
+  return `counter:ai-fetch:${surface}:referrer:${host}:${day}`;
 }
 
 /**

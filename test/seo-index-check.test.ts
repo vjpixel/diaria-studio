@@ -27,6 +27,8 @@ import {
   normalizeUrlForCompare,
   extractInternalLinks,
   describeReferrerNote,
+  resolveKnownLinksIndexPages,
+  fetchKnownInternalLinks,
   type IndexStatus,
 } from "../scripts/seo-index-check.ts";
 
@@ -429,6 +431,80 @@ describe("normalizeUrlForCompare + extractInternalLinks (#5618)", () => {
     const html = `<a href="/temas/x?utm_source=y#topo">x</a>`;
     const links = extractInternalLinks(html, "https://arquivo.diar.ia.br");
     assert.ok(links.has("https://arquivo.diar.ia.br/temas/x"));
+  });
+});
+
+describe("resolveKnownLinksIndexPages (#8063 — falso positivo de órfã)", () => {
+  it("inclui a home do apex e a do arquivo.diar.ia.br, mesmo quando o sitemap é do apex", () => {
+    const pages = resolveKnownLinksIndexPages("https://diar.ia.br/sitemap.xml");
+    assert.deepEqual(pages, ["https://diar.ia.br/", "https://arquivo.diar.ia.br/"]);
+  });
+
+  it("não duplica quando o sitemap já é o de arquivo.diar.ia.br", () => {
+    const pages = resolveKnownLinksIndexPages("https://arquivo.diar.ia.br/sitemap.xml");
+    assert.deepEqual(pages, ["https://arquivo.diar.ia.br/"]);
+  });
+});
+
+describe("fetchKnownInternalLinks (#8063 — caso concreto: URL linkada só pelo arquivo)", () => {
+  it("uma URL presente só na home do arquivo (não na do apex) não sai como órfã", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://diar.ia.br/") {
+        // Home do apex: só lista os posts recentes — não inclui o antigo.
+        return new Response(`<a href="https://diar.ia.br/p/post-recente">recente</a>`, { status: 200 });
+      }
+      if (url === "https://arquivo.diar.ia.br/") {
+        // Arquivo: lista o histórico inteiro, inclui o post antigo (caso
+        // concreto da issue: brasil-70-da-geracao-z-usa-chatgpt-todo-mes).
+        return new Response(
+          `<a href="https://diar.ia.br/p/brasil-70-da-geracao-z-usa-chatgpt-todo-mes">antigo</a>`,
+          { status: 200 },
+        );
+      }
+      throw new Error(`fetch inesperado: ${url}`);
+    }) as typeof fetch;
+    try {
+      const known = await fetchKnownInternalLinks("https://diar.ia.br/sitemap.xml");
+      assert.ok(known);
+      assert.ok(known!.has("https://diar.ia.br/p/brasil-70-da-geracao-z-usa-chatgpt-todo-mes"));
+      assert.ok(known!.has("https://diar.ia.br/p/post-recente"));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("fail-soft por página: falha numa página não derruba a união das outras", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://diar.ia.br/") throw new Error("timeout");
+      if (url === "https://arquivo.diar.ia.br/") {
+        return new Response(`<a href="https://diar.ia.br/p/x">x</a>`, { status: 200 });
+      }
+      throw new Error(`fetch inesperado: ${url}`);
+    }) as typeof fetch;
+    try {
+      const known = await fetchKnownInternalLinks("https://diar.ia.br/sitemap.xml");
+      assert.ok(known);
+      assert.ok(known!.has("https://diar.ia.br/p/x"));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("retorna null só quando TODAS as páginas falham", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("offline");
+    }) as typeof fetch;
+    try {
+      const known = await fetchKnownInternalLinks("https://diar.ia.br/sitemap.xml");
+      assert.equal(known, null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

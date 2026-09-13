@@ -50,13 +50,16 @@ export function matchAiReferrerHost(referer: string | null | undefined): AiRefer
   return null;
 }
 
-/** Os 3 Workers que chamam `logAiReferrerHit` hoje (achado #4616: `worker`
+/** Os 4 Workers que chamam `logAiReferrerHit` hoje (achado #4616: `worker`
  * era `string` livre, populado por 3 call sites cada um hardcodando um
  * literal — `"cursos"`/`"livros"`/`"arquivo"` — sem checagem de tipo; um
  * typo (`"curso"`, `"Livros"`) compilava limpo e corrompia o log de
- * atribuição em silêncio). Union tipada — igual `AiReferrerHost` acima —
- * fecha essa classe de erro em compile-time. */
-export const AI_REFERRER_WORKERS = ["cursos", "livros", "arquivo"] as const;
+ * atribuição em silêncio). `"site"` (o apex `diar.ia.br`) entrou no #8062 —
+ * era o único Worker público sem NENHUM log de Referer de assistente, apesar
+ * de ser a superfície com mais URLs indexadas (263 no GSC) e mais provável
+ * de ser citada. Union tipada — igual `AiReferrerHost` acima — fecha essa
+ * classe de erro em compile-time. */
+export const AI_REFERRER_WORKERS = ["cursos", "livros", "arquivo", "site"] as const;
 export type AiReferrerWorker = (typeof AI_REFERRER_WORKERS)[number];
 
 export interface AiReferrerHit {

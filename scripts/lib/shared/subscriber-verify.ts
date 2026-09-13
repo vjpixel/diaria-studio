@@ -170,14 +170,15 @@ export interface KitByEmailDeps {
  * `"verification_failed"` — mesma semântica do #4321 (distinto de "não é
  * assinante").
  *
- * **Achado do review (PR #6082): ainda NÃO tem nenhum caller em produção.**
- * `workers/poll/src/web-gate.ts` (`checkWebSubscriber`) segue chamando só
- * `verifySubscriberViaBeehiivByEmail` — diferente de `subscribeToKit`
- * (`workers/poll/src/subscribe.ts`), que já tem um branch real
- * (`env.SUBSCRIBE_BACKEND === "kit"`), esta função existe mas não está
- * wireada em lugar nenhum ainda. Fica pra quando `web-gate.ts` ganhar o
- * mesmo seletor de backend — trabalho futuro do #6048, não coberto aqui.
- */
+ * **Tem caller em produção (achado do review da PR #6082 — "ainda não tem
+ * nenhum caller" — está DESATUALIZADO, ver #8047).** `workers/poll/src/web-gate.ts`
+ * (`checkWebSubscriberDetailed`, #6048) chama esta função em paralelo com
+ * `verifySubscriberViaBeehiivByEmail`/`verifySubscriberViaKv` — quem
+ * cadastrou só pelo Kit (funis migrados em #6127/#6131) também vota.
+ * `workers/retrospectiva/src/index.ts` (linha ~280, #7581, 07/09/2026) é um
+ * 2º caller: gate de cadastro pra acessar a retrospectiva anual, chamando
+ * direto (sem união de fontes — fail-closed quando `KIT_API_KEY` está
+ * ausente, ver `decideCadastroGate`). */
 export async function verifySubscriberViaKitByEmail(
   apiKey: string,
   email: string,

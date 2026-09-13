@@ -107,12 +107,12 @@ describe("logAiReferrerHit", () => {
   });
 });
 
-describe("AiReferrerWorker (#4616 achado 5: union tipada, não string livre)", () => {
-  it("AI_REFERRER_WORKERS tem exatamente os 3 Workers que chamam logAiReferrerHit hoje", () => {
-    assert.deepEqual([...AI_REFERRER_WORKERS].sort(), ["arquivo", "cursos", "livros"]);
+describe("AiReferrerWorker (#4616 achado 5: união tipada, não string livre)", () => {
+  it("AI_REFERRER_WORKERS tem exatamente os 4 Workers que chamam logAiReferrerHit hoje (#8062 acrescentou 'site')", () => {
+    assert.deepEqual([...AI_REFERRER_WORKERS].sort(), ["arquivo", "cursos", "livros", "site"]);
   });
 
-  it("os 3 call sites reais (cursos/livros/arquivo) continuam aceitos", () => {
+  it("os 4 call sites reais (cursos/livros/arquivo/site) continuam aceitos", () => {
     const lines: string[] = [];
     for (const worker of AI_REFERRER_WORKERS) {
       assert.doesNotThrow(() => logAiReferrerHit(worker, "claude.ai", "/", (l) => lines.push(l)));
