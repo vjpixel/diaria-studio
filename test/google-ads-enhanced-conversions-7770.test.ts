@@ -278,6 +278,39 @@ describe("#7770 — payload de upload", () => {
     assert.equal("gbraid" in payload.conversions[0], false);
   });
 
+  it("buildUploadClickConversionsPayload inclui gbraid quando presente, sem gclid nem wbraid (#8023)", () => {
+    const conversions: ValidatedConversion[] = [
+      {
+        email: "leitor@example.com",
+        hashedEmail: hashEmailForEnhancedConversions("leitor@example.com"),
+        conversionDateTime: "2026-09-05 14:30:00-03:00",
+        pastCutoff: false,
+        gbraid: "gbraid-token-abc",
+      },
+    ];
+    const payload = buildUploadClickConversionsPayload(conversions, {
+      conversionActionResourceName: "customers/2369219639/conversionActions/7758161410",
+    });
+    assert.equal(payload.conversions[0].gbraid, "gbraid-token-abc");
+    assert.equal("gclid" in payload.conversions[0], false);
+    assert.equal("wbraid" in payload.conversions[0], false);
+  });
+
+  it("buildUploadClickConversionsPayload SEMPRE inclui userIdentifiers, com ou sem click-id (#8023 review)", () => {
+    const semClickId: ValidatedConversion = {
+      email: "leitor@example.com",
+      hashedEmail: hashEmailForEnhancedConversions("leitor@example.com"),
+      conversionDateTime: "2026-09-05 14:30:00-03:00",
+      pastCutoff: false,
+    };
+    const comClickId: ValidatedConversion = { ...semClickId, gclid: "g1" };
+    const payload = buildUploadClickConversionsPayload([semClickId, comClickId], {
+      conversionActionResourceName: "customers/2369219639/conversionActions/7758161410",
+    });
+    assert.deepEqual(payload.conversions[0].userIdentifiers, [{ hashedEmail: semClickId.hashedEmail }]);
+    assert.deepEqual(payload.conversions[1].userIdentifiers, [{ hashedEmail: comClickId.hashedEmail }]);
+  });
+
   it("validateSignupRecords repassa gclid/wbraid/gbraid do input pro ValidatedConversion (#8023)", () => {
     const records: SignupRecordInput[] = [
       { email: "leitor@example.com", signupTimestamp: BEFORE_CUTOFF, gclid: "gclid-1" },
@@ -327,6 +360,17 @@ describe("#7770 — parseSignupJson", () => {
     assert.equal(records[0].gclid, "g1");
     assert.equal(records[1].wbraid, "w1");
     assert.equal(records[2].gclid, undefined);
+  });
+
+  it("trata gclid/wbraid/gbraid null explícito como ausente, nunca como a string \"null\" (achado do review, #8023)", () => {
+    const records = parseSignupJson(
+      JSON.stringify([
+        { email: "a@example.com", signupTimestamp: BEFORE_CUTOFF, gclid: null, wbraid: null, gbraid: null },
+      ]),
+    );
+    assert.equal(records[0].gclid, undefined);
+    assert.equal(records[0].wbraid, undefined);
+    assert.equal(records[0].gbraid, undefined);
   });
 });
 
@@ -449,6 +493,12 @@ describe("#7770 — CLI upload-google-ads-enhanced-conversions", () => {
     assert.equal(records.length, 2);
     assert.equal(records[0].gclid, "Cj0KCQjw-abc");
     assert.equal(records[1].gclid, undefined);
+  });
+
+  it("loadSignupRecords aceita cabeçalho GCLID totalmente maiúsculo (#8023 review)", () => {
+    const csv = "email,signup_timestamp,GCLID\nleitor@example.com,2026-09-05T14:30:00-03:00,Cj0KCQjw-xyz\n";
+    const records = loadSignupRecords("input.csv", csv);
+    assert.equal(records[0].gclid, "Cj0KCQjw-xyz");
   });
 
   it("loadSignupRecords lança em extensão não reconhecida", () => {

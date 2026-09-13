@@ -330,13 +330,18 @@ export interface ClickConversionPayload {
   conversionAction: string;
   conversionDateTime: string;
   /**
-   * Omitido quando o registro não carrega e-mail (nunca acontece hoje — ver
-   * nota em `SignupRecordInput` — mas o tipo permanece opcional pra não
-   * forçar a chave a existir em todo payload, mesmo comportamento observável
-   * de antes do #8023: `"userIdentifiers" in payload` só é `true` quando há
-   * pelo menos um identificador de usuário).
+   * OBRIGATÓRIO (achado do review, #8023) — `email`/`hashedEmail` são
+   * obrigatórios em `SignupRecordInput`/`ValidatedConversion` (ver ali), e
+   * este módulo nunca constrói um `ValidatedConversion` sem hash de e-mail.
+   * Manter opcional aqui enfraqueceria o tipo pra cobrir um estado que o
+   * único builder (`buildUploadClickConversionsPayload`) nunca produz: a
+   * API do Google Ads exige pelo menos 1 identificador de usuário por
+   * conversão, e antes do #8023 esse invariante era estruturalmente
+   * garantido pelo tipo — continua sendo. Só `gclid`/`wbraid`/`gbraid`
+   * (abaixo) são de fato opcionais, exatamente o parâmetro ADICIONAL que a
+   * issue #8023 pediu.
    */
-  userIdentifiers?: Array<{ hashedEmail: string }>;
+  userIdentifiers: Array<{ hashedEmail: string }>;
   /** Click id (#8023) — presente só quando o registro de entrada trouxe um.
    *  Nunca os três ao mesmo tempo na prática (gclid XOR wbraid/gbraid), mas
    *  o tipo não impõe isso — a API do Google Ads que valida. */
@@ -390,9 +395,10 @@ export function resolveConversionActionResourceName(
  * (21 gclid + 2 wbraid, ver #8023) — este builder deixa de forçar a
  * reescrever esse lote do zero, só adiciona o sinal que faltava.
  *
- * `userIdentifiers` só aparece na entrada quando há hash de e-mail (sempre
- * o caso hoje, `email` é obrigatório em `SignupRecordInput` — ver ali) — a
- * chave nunca aparece vazia/undefined explícita no objeto.
+ * `userIdentifiers` é sempre incluído (obrigatório em `ClickConversionPayload`
+ * — `email`/`hashedEmail` são obrigatórios em `ValidatedConversion`, ver
+ * ali); `gclid`/`wbraid`/`gbraid` são adicionados condicionalmente, só
+ * quando o registro validado os carrega.
  *
  * @pure
  */
@@ -405,8 +411,8 @@ export function buildUploadClickConversionsPayload(
       const entry: ClickConversionPayload = {
         conversionAction: opts.conversionActionResourceName,
         conversionDateTime: c.conversionDateTime,
+        userIdentifiers: [{ hashedEmail: c.hashedEmail }],
       };
-      if (c.hashedEmail) entry.userIdentifiers = [{ hashedEmail: c.hashedEmail }];
       if (c.gclid) entry.gclid = c.gclid;
       if (c.wbraid) entry.wbraid = c.wbraid;
       if (c.gbraid) entry.gbraid = c.gbraid;
@@ -441,9 +447,9 @@ export function parseSignupCsv(content: string, parseCsvFn: (content: string) =>
     // #8023 — click id opcional, colunas adicionais que o CSV de recuperação
     // do #7770 já carrega (21 gclid + 2 wbraid); ausentes em qualquer linha
     // que não tenha click id, sem quebrar o parser de e-mail-só existente.
-    gclid: (row.gclid ?? row.Gclid ?? "").trim() || undefined,
-    wbraid: (row.wbraid ?? row.Wbraid ?? "").trim() || undefined,
-    gbraid: (row.gbraid ?? row.Gbraid ?? "").trim() || undefined,
+    gclid: (row.gclid ?? row.Gclid ?? row.GCLID ?? "").trim() || undefined,
+    wbraid: (row.wbraid ?? row.Wbraid ?? row.WBRAID ?? "").trim() || undefined,
+    gbraid: (row.gbraid ?? row.Gbraid ?? row.GBRAID ?? "").trim() || undefined,
   }));
   return { records, parseErrors };
 }
@@ -464,9 +470,12 @@ export function parseSignupJson(content: string): SignupRecordInput[] {
     const email = String(r.email ?? "").trim();
     const signupTimestamp = String(r.signupTimestamp ?? r.signup_timestamp ?? "").trim();
     // #8023 — click id opcional, mesma lógica do parser de CSV acima.
-    const gclid = r.gclid !== undefined ? String(r.gclid).trim() || undefined : undefined;
-    const wbraid = r.wbraid !== undefined ? String(r.wbraid).trim() || undefined : undefined;
-    const gbraid = r.gbraid !== undefined ? String(r.gbraid).trim() || undefined : undefined;
+    // `null`/`undefined` tratados como ausente (achado do review: um
+    // `"gclid": null` explícito no JSON viraria a STRING "null" sem este
+    // guard, em vez de ausente).
+    const gclid = r.gclid == null ? undefined : String(r.gclid).trim() || undefined;
+    const wbraid = r.wbraid == null ? undefined : String(r.wbraid).trim() || undefined;
+    const gbraid = r.gbraid == null ? undefined : String(r.gbraid).trim() || undefined;
     return { email, signupTimestamp, gclid, wbraid, gbraid };
   });
 }
