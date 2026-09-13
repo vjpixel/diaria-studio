@@ -110,7 +110,7 @@ Antes do #5220, `clarice-envio-guard.ts` chamava `clarice-plan-wave` e `clarice-
 
 ## Relatório por rodada
 
-Toda invocação (sucesso, pausada, ciclo não pronto, fila insuficiente, sem volume, abortada por qualquer guard) grava relatório em `data/clarice-subscribers/envio-reports/{id}.md` e registra na superfície `/relatorios` do Studio (`data/reports/index.jsonl`, `kind: "clarice-envio"`) — com notificação por e-mail completa já no default (`registerReport`, decisão do editor #4708). Uma rodada agendada que aborta em silêncio ficaria indistinguível de uma que não rodou; por isso o registro acontece em TODOS os caminhos, não só no sucesso.
+Toda invocação (sucesso, pausada, ciclo não pronto, fila insuficiente, sem volume, abortada por qualquer guard) grava relatório em `data/clarice-subscribers/envio-reports/{id}.md` e registra na superfície `/relatorios` do Studio (`data/reports/index.jsonl`, `kind: "clarice-envio"`) — sem notificação por e-mail desde o #7960/item 4 da #7957 (`registerReport`; o editor lê no Studio, não mais por e-mail — reverte a decisão anterior do #4708). Uma rodada agendada que aborta em silêncio ficaria indistinguível de uma que não rodou; por isso o registro acontece em TODOS os caminhos, não só no sucesso.
 
 ## Setup (ação local one-time do editor)
 

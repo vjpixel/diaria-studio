@@ -209,14 +209,18 @@ export function autoStampPublishedJson(
  * Idempotente (só gera se ausente) e best-effort (falha vira warning, nunca
  * quebra o refresh-dedup). Retorna true quando gerou.
  *
- * **#4478: `notify` propaga pro `writeEditionReport` (default `true`,
- * preserva o comportamento existente — a chamada de produção em `main()`,
- * abaixo, não passa nada).** Testes que exercitam este caminho podem passar
- * `notify: false` como defesa em profundidade (ver
+ * **#4478: `notify` propaga pro `writeEditionReport`.** Testes que exercitam
+ * este caminho podem passar `notify: false` como defesa em profundidade (ver
  * `defaultHasCredentials` em `scripts/studio-ui/studio-reports.ts` pro fix
  * sistêmico equivalente).
+ *
+ * **#7960 (item 4 da #7957): default virou `false`** — a chamada de
+ * produção em `main()`, abaixo, não passa `notify`, então esse relatório
+ * (publish manual / Stage 4 interrompido) para de emitir e-mail; continua
+ * gerado e visível em `/relatorios` (tabela de severidade do #7957: relatório
+ * de edição é "Studio /relatorios, sem e-mail").
  */
-export function ensureEditionReport(editionsRoot: string, post: Post, notify = true): boolean {
+export function ensureEditionReport(editionsRoot: string, post: Post, notify = false): boolean {
   const edition = publishedAtToEditionDir(post.published_at);
   if (!edition) return false;
   const dirPath = resolve(editionsRoot, edition);
