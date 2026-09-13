@@ -1,12 +1,25 @@
 #!/usr/bin/env tsx
 /**
- * render-linkedin-weekly.ts (#4456, imagem de capa #5536)
+ * render-linkedin-weekly.ts (#4456, imagem de capa #5536, defaults #8025)
  *
  * Monta o artefato final da newsletter semanal do LinkedIn a partir de
  * `data/weekly/{cycle}/_internal/ln-selection.json` (gerado por
  * `select-linkedin-weekly.ts`) + texto novo já humanizado/corrigido pela
  * skill (abertura, fecho, comentário do USE MELHOR — nunca gerado por este
  * script, ver `.claude/skills/diaria-linkedin-semanal/SKILL.md`).
+ *
+ * **#8025 (12/09/2026, decisão do editor) — abertura/fecho têm TEXTO PADRÃO,
+ * `--opening`/`--closing` viraram opcionais.** Antes disso o Passo 3b da
+ * skill pedia ao editor 1 parágrafo de cada a toda rodada — na prática o
+ * MESMO texto saiu em 4 edições consecutivas (26w34-26w37, confirmado
+ * idêntico em `data/weekly/26w3{4,5,6,7}/ln-*.html`), então a pergunta
+ * virou dívida, não gate (mesmo critério do #4498/CLAUDE.md "Perguntar é
+ * exceção"). `DEFAULT_OPENING`/`DEFAULT_CLOSING` abaixo são esse texto —
+ * `resolveTextArg` cai neles quando a flag (e o arquivo `-file`
+ * correspondente) vêm vazios, imprimindo o banner de default aplicado
+ * (regra do #5321) — nunca travando a espera de resposta. Passar
+ * `--opening`/`--opening-file` (idem closing) explicitamente ainda
+ * sobrescreve o default pra uma edição específica que o editor queira variar.
  *
  * **#5536 — imagem de capa.** O LinkedIn Article Editor tem campo nativo de
  * cover image; até o #5536 nenhum passo da skill produzia essa imagem (saiu
@@ -37,8 +50,10 @@
  *
  * Uso:
  *   npx tsx scripts/render-linkedin-weekly.ts --cycle 26w31 \
- *     --opening "..." --closing "..." [--use-melhor-comment "..."]
- *   (aceita também --opening-file/--closing-file/--use-melhor-comment-file
+ *     [--opening "..." --closing "..."] [--use-melhor-comment "..."]
+ *   (`--opening`/`--closing` são OPCIONAIS desde #8025 — omitidos, caem no
+ *   texto padrão `DEFAULT_OPENING`/`DEFAULT_CLOSING` com banner explícito;
+ *   aceitam também --opening-file/--closing-file/--use-melhor-comment-file
  *   pra texto longo, mesmo padrão de --*-file usado noutros scripts)
  */
 
@@ -66,10 +81,40 @@ export function resolveCoverImageSourcePath(editionsRootDir: string, headlineOne
   return existsSync(imgPath) ? imgPath : null;
 }
 
-function resolveTextArg(argv: string[], key: string): string {
+/**
+ * #8025 — texto padrão de abertura, derivado do histórico real: mesmo
+ * parágrafo usado (idêntico, confirmado byte-a-byte) em 4 edições
+ * consecutivas — 26w34, 26w35, 26w36, 26w37 (`data/weekly/26w3{4,5,6,7}/
+ * ln-*.html`). O trecho "diar.ia.br, newsletter de IA" preserva o padrão
+ * exigido por `linkifyWordmark` (âncora estendida por 3 palavras após o
+ * wordmark — ver `weekly-linkedin-render.ts`) — não editar esse trecho sem
+ * reconferir `WORDMARK_TRAILING_WORDS`.
+ */
+export const DEFAULT_OPENING =
+  "Desde o ano passado escrevo a diar.ia.br, newsletter de IA que sai por e-mail de segunda a sexta: " +
+  "5 minutos por dia pra se manter atualizado e usar melhor as IAs. Aqui no LinkedIn, trago toda segunda " +
+  "os três destaques que mais renderam clique na semana. As cinco edições completas ficam com os títulos " +
+  "no fim do post. Assine grátis.";
+
+/** #8025 — texto padrão de fecho, mesma origem/evidência do `DEFAULT_OPENING` acima. */
+export const DEFAULT_CLOSING =
+  "Isso aqui é a semana inteira espremida em três matérias. Na edição diária cabe mais: ela chega às 6 " +
+  "da manhã, todo dia útil, com três resumos como esses, dicas de uso e indicação de outros artigos. " +
+  "5 minutos por dia pra se manter atualizado e usar melhor as IAs. Assine grátis.";
+
+/**
+ * Resolve `--{key}`/`--{key}-file`; quando os dois vêm vazios (flag omitida
+ * ou arquivo ilegível/vazio), cai no `fallback` (se houver) e imprime o
+ * banner de default aplicado (#5321) — nunca trava esperando resposta.
+ * `fallback` omitido preserva o comportamento anterior (retorna `""`),
+ * usado pelo comentário do Use Melhor, que continua genuinamente opcional.
+ */
+function resolveTextArg(argv: string[], key: string, fallback?: string): string {
   const fileArg = getArg(argv, `${key}-file`);
-  if (fileArg) return readFileSync(fileArg, "utf8");
-  return getArg(argv, key);
+  const value = fileArg ? readFileSync(fileArg, "utf8") : getArg(argv, key);
+  if (value.trim() || fallback === undefined) return value;
+  console.log(`--${key} não informado — assumindo o texto padrão (#8025). Passe --${key}/--${key}-file explicitamente para variar esta edição.`);
+  return fallback;
 }
 
 interface SelectionJson {
@@ -101,8 +146,9 @@ export function main(rootDirOverride?: string) {
   }
   const selection = JSON.parse(readFileSync(selectionPath, "utf8")) as SelectionJson;
 
-  const opening = resolveTextArg(argv, "opening");
-  const closing = resolveTextArg(argv, "closing");
+  const opening = resolveTextArg(argv, "opening", DEFAULT_OPENING);
+  const closing = resolveTextArg(argv, "closing", DEFAULT_CLOSING);
+  // Comentário do Use Melhor segue genuinamente opcional (#5970) — sem fallback.
   const useMelhorComment = resolveTextArg(argv, "use-melhor-comment");
 
   const input: WeeklyLinkedinRenderInput = {

@@ -15,8 +15,9 @@ outro produto, ver "Sobreposição" no `SKILL.md` da skill.
 
 ## Estrutura do artigo
 
-Ordem de montagem (fixa, decisão do editor #4489 — o CTA que fecha o Use
-Melhor precisa alcançar quem abandona antes do 3º headline):
+Ordem de montagem (fixa, decisão do editor #4489 — o bloco Use Melhor
+precisa alcançar quem abandona antes do 3º headline, ainda que não leve
+mais CTA próprio desde #8025):
 
 ```
 [Abertura — prosa nova, 1 parágrafo curto: identidade + promessa + cadência]
@@ -43,15 +44,12 @@ Por que isso importa: [se houver]
 
 ---
 
-🛠️ Use melhor  (OPCIONAL — só com comentário do editor, ver abaixo)
+🛠️ Use melhor  (renderiza sempre que há candidato elegível — #5970)
 
 [Título do item — literal] ([URL])
 [Descrição curta, se houver]
 
-[Comentário do editor — 1-3 frases honestas]
-
-Links para tutoriais e dicas saem em toda edição diária.
-[CTA de assinatura #2 — "Quero receber a edição diária →"]
+[Comentário do editor — 1-3 frases honestas, se houver — OPCIONAL, #5970]
 
 ---
 
@@ -73,7 +71,7 @@ Edições da semana
 
 [Fecho — prosa nova, 1 parágrafo curto antes do CTA final]
 
-[CTA de assinatura #3 — "Assine grátis, é rapidinho →"]
+[CTA de assinatura #2 — "Assine grátis, é rapidinho →"]
 ```
 
 **1 a 3 headlines**, nunca mais — semana reduzida (feriado, `editionsFound
@@ -83,9 +81,12 @@ depois do último disponível, se houver só 1 ou 0).
 
 ## O que preenche cada bloco
 
-- **Headlines**: selecionados por **taxa de clique verificado** entre TODOS
-  os destaques/itens de seção da semana (não só D1/D2/D3 — RADAR e USE
-  MELHOR competem também). Fonte: `scripts/lib/weekly-linkedin-select.ts`.
+- **Headlines**: selecionados por **taxa de clique verificado**, mas só
+  entre DESTAQUES (D1/D2/D3) da edição de origem (#8029, reverte
+  parcialmente a mudança de 260802 do #4456) — RADAR/LANÇAMENTOS/VÍDEOS/USE
+  MELHOR nunca competem por manchete, mesmo com taxa maior: item de seção só
+  carrega 1 linha de descrição, sem resumo autoral. Fonte:
+  `scripts/lib/weekly-linkedin-select.ts`.
   - **Título**: sempre literal, cópia exata do bloco de origem — só a
     numeração ("1.", "2.", "3.") é adicionada. Nunca reescrever, nunca
     linkar (decisão #4456 — "Sem link por destaque": o texto já é o
@@ -101,15 +102,19 @@ depois do último disponível, se houver só 1 ou 0).
   - **"Por que isso importa"**: 1 frase, só quando fizer sentido — omitir o
     parágrafo inteiro se não houver.
 - **Use Melhor** (opcional, mas OBRIGATÓRIO renderizar quando há candidato
-  elegível **com** comentário do editor — sem comentário honesto, o bloco
-  inteiro sai, nunca gerado automaticamente): título/URL/descrição literais
-  do item + comentário do editor (1-3 frases) + CTA.
+  elegível — comentário do editor é OPCIONAL desde #5970, ver abaixo):
+  título/URL/descrição literais do item + comentário do editor (1-3
+  frases, se houver). **Sem CTA de assinatura desde #8025** (decisão do
+  editor, reverte o #4456/#4489 de 260803) — o bloco é só curadoria.
 - **Edições da semana**: lista PLANA (nunca `<ul>` aninhada — ver armadilha
   de paste #1 abaixo), uma linha por edição da janela com D1 parseável, link
   para a edição + seus até-3 destaques separados por " · " em texto.
-- **Abertura/Fecho**: prosa nova de cada ciclo, escrita pelo editor no gate
-  (a skill nunca gera esses textos sozinha) — depois passa por
-  `Skill("humanizador")` + `mcp__clarice__correct_text`.
+- **Abertura/Fecho**: TEXTO PADRÃO fixo desde #8025 (decisão do editor,
+  12/09/2026) — mesmo parágrafo usado em 4 edições consecutivas
+  (`DEFAULT_OPENING`/`DEFAULT_CLOSING` em `render-linkedin-weekly.ts`), já
+  humanizado/corrigido uma vez. `--opening`/`--closing` continuam aceitos
+  pra o editor variar uma edição específica; quando passados, ainda passam
+  por `Skill("humanizador")` + `mcp__clarice__correct_text` antes do render.
 
 ## Regras de UTM
 
@@ -120,16 +125,16 @@ Toda URL de CTA/link carrega o triplo completo + `utm_content` (contrato do
 utm_source=linkedin
 utm_medium=newsletter
 utm_campaign=ln-{cycle}          # {cycle} = {YY}w{WW} da semana de CONTEÚDO
-utm_content=mencao-abertura | cta-abertura | lista | cta-usemelhor | cta-fim
+utm_content=mencao-abertura | cta-abertura | lista | cta-fim
 ```
 
 - `mencao-abertura`: a primeira menção em prosa a `diar.ia.br` DENTRO da
   abertura vira link com este UTM automaticamente (`linkifyWordmark`) — só
   a abertura, não o fecho nem o corpo das manchetes (essas menções, se
   houver, viram auto-link do LinkedIn sem UTM).
-- `cta-abertura`, `cta-usemelhor`, `cta-fim`: os 3 convites de assinatura,
-  um por terço da peça — existem separados de propósito, pra saber qual
-  posição converte.
+- `cta-abertura`, `cta-fim`: os 2 convites de assinatura restantes (o bloco
+  Use Melhor perdeu o seu em #8025) — existem separados de propósito, pra
+  saber qual posição converte.
 - `lista`: cada link de "Edições da semana" aponta pra URL derivada do D1
   daquela edição (`deriveEditionUrl`), com este `utm_content`.
 
@@ -144,8 +149,8 @@ guard determinístico: se o RÓTULO de um link termina exatamente no domínio
 nu (ex: "assine em diar.ia.br"), o auto-linkificador do LinkedIn **parte o
 link em dois** e a parte clicável perde o `href`/UTM original. Por isso
 todo rótulo gerado por este template é um rótulo de AÇÃO, nunca o domínio
-cru — "Assinar a edição diária", "Quero receber a edição diária →", "Assine
-grátis, é rapidinho →". A extensão automática do wordmark em prosa
+cru — "Assinar a edição diária", "Assine grátis, é rapidinho →". A extensão
+automática do wordmark em prosa
 (`linkifyWordmark`) segue a mesma regra: estende a âncora por até 3
 palavras além do domínio para não terminar nu; se não conseguir, não linka
 (emite warning em vez de publicar um link que parece rastreado e não é).

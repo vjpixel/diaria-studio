@@ -780,12 +780,13 @@ export const CONVITE_AMIGO_UTM = {
 
 /** Newsletter semanal do LinkedIn (#4456) — `utm_campaign` traz o ciclo `{YY}w{WW}`
  * (ex: `ln-26w31`), `utm_content` varia por posição (`mencao-abertura`/`cta-abertura`/
- * `lista`/`cta-usemelhor`/`cta-fim` — `item-01`/`02`/`03` SAÍRAM quando o link por
+ * `lista`/`cta-fim` — `item-01`/`02`/`03` SAÍRAM quando o link por
  * destaque foi removido, comentário 260802 3º do #4456; `cta-abertura` e
  * `mencao-abertura` ENTRARAM em 260803, o 1º com o 3º CTA de assinatura, o 2º ao
  * descobrir ao vivo que o LinkedIn auto-linka o wordmark em prosa pra home CRUA
  * e come a UTM — pré-linkar com âncora estendida além do domínio recupera esse
- * clique, ver `linkifyWordmark`).
+ * clique, ver `linkifyWordmark`; `cta-usemelhor` SAIU em #8025, decisão do editor
+ * de remover o CTA de assinatura do bloco Use Melhor).
  * Fonte dos valores: `scripts/lib/weekly-linkedin-render.ts`. */
 export const LINKEDIN_WEEKLY_UTM = {
   source: "linkedin",
@@ -1439,12 +1440,13 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: LINKEDIN_WEEKLY_UTM.campaignPattern,
     originFile: "scripts/lib/weekly-linkedin-render.ts",
     description:
-      "Lista de Edições da semana + os 3 CTAs de assinatura (abertura/meio/fim) da " +
+      "Lista de Edições da semana + os 2 CTAs de assinatura (abertura/fim) da " +
       "newsletter semanal do LinkedIn (`/diaria-linkedin-semanal`, #4456) — artigo " +
       "colável manualmente, sem API de publicação. `utm_content` = " +
-      "mencao-abertura/cta-abertura/lista/cta-usemelhor/cta-fim, um por posição, para " +
-      "dar pra medir qual terço da peça converte. `mencao-abertura` não é CTA: é o " +
-      "clique no nome da marca em prosa, separado pra não inflar o CTA da abertura.",
+      "mencao-abertura/cta-abertura/lista/cta-fim, um por posição, para " +
+      "dar pra medir qual posição converte. `mencao-abertura` não é CTA: é o " +
+      "clique no nome da marca em prosa, separado pra não inflar o CTA da abertura. " +
+      "O bloco Use Melhor não leva mais CTA de assinatura desde #8025 (decisão do editor).",
     status: "ativo",
   },
   {
