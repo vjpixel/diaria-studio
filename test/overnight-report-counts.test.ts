@@ -451,28 +451,33 @@ describe("registerReport: e-mail único por rodada (#5521)", () => {
     try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
+  // #7960 (item 4 da #7957): `registerReport` default de `notify` virou
+  // `false` — todos os testes abaixo exercitam o mecanismo de dedup/retry em
+  // si (não a política de default), então passam `true` explícito, mesmo
+  // padrão adotado em `test/studio-reports.test.ts`.
+
   it("REGRESSÃO: re-registro da MESMA rodada não manda e-mail de novo", async () => {
     // A rodada 260816e mandou 4 e-mails, todos se apresentando como definitivos;
     // a 260816 mandou o mesmo assunto 2x em 80s. Como o registro é upsert e a
     // URL deriva do id, o link do 1º e-mail já aponta pra versão atual.
-    const first = registerReport(tmpRoot, input("overnight 260817 — 1 unidades, 1 issues"), deps);
+    const first = registerReport(tmpRoot, input("overnight 260817 — 1 unidades, 1 issues"), deps, true);
     assert.equal(first.ok, true);
     assert.deepEqual(await first.emailDispatch, { sent: true });
 
-    const second = registerReport(tmpRoot, input("overnight 260817 — 4 unidades, 6 issues"), deps);
+    const second = registerReport(tmpRoot, input("overnight 260817 — 4 unidades, 6 issues"), deps, true);
     assert.equal(second.ok, true, "o registro em si tem que ser atualizado");
     assert.deepEqual(await second.emailDispatch, { sent: false, skipped: "already-notified" });
   });
 
   it("REGRESSÃO: registro com notify:false NÃO consome a notificação (Stage 6)", async () => {
     // O Stage 6 registra o MESMO `edicao-{AAMMDD}` 2×: 6b-6 com notify:false
-    // (HTML descartável, só pra fechar o invariante do stage) e 6b-8 com o
-    // default true — é a 2ª que manda o relatório diário pro editor. Dedup por
-    // "já existe entrada" engolia justamente esse e-mail.
+    // (HTML descartável, só pra fechar o invariante do stage) e 6b-8 com
+    // `notify:true` explícito — é a 2ª que manda o relatório diário pro
+    // editor. Dedup por "já existe entrada" engolia justamente esse e-mail.
     const primeira = registerReport(tmpRoot, input("descartável — 1 unidades"), deps, false);
     assert.deepEqual(await primeira.emailDispatch, { sent: false, skipped: "notify-disabled" });
 
-    const segunda = registerReport(tmpRoot, input("final — 1 unidades"), deps);
+    const segunda = registerReport(tmpRoot, input("final — 1 unidades"), deps, true);
     assert.deepEqual(
       await segunda.emailDispatch,
       { sent: true },
@@ -490,10 +495,10 @@ describe("registerReport: e-mail único por rodada (#5521)", () => {
       sendMail: async () => ({ ok: true }),
     } as unknown as Parameters<typeof registerReport>[2];
 
-    const falhou = registerReport(tmpRoot, input("tentativa 1 — 1 unidades"), semCredencial);
+    const falhou = registerReport(tmpRoot, input("tentativa 1 — 1 unidades"), semCredencial, true);
     assert.deepEqual(await falhou.emailDispatch, { sent: false, skipped: "no-credentials" });
 
-    const retry = registerReport(tmpRoot, input("tentativa 2 — 1 unidades"), deps);
+    const retry = registerReport(tmpRoot, input("tentativa 2 — 1 unidades"), deps, true);
     assert.deepEqual(
       await retry.emailDispatch,
       { sent: true },
@@ -502,11 +507,12 @@ describe("registerReport: e-mail único por rodada (#5521)", () => {
   });
 
   it("rodada DIFERENTE continua mandando e-mail", async () => {
-    await registerReport(tmpRoot, input("a — 1 unidades"), deps).emailDispatch;
+    await registerReport(tmpRoot, input("a — 1 unidades"), deps, true).emailDispatch;
     const outra = registerReport(
       tmpRoot,
       { ...input("b — 1 unidades"), sessionId: "260818" },
       deps,
+      true,
     );
     assert.deepEqual(await outra.emailDispatch, { sent: true });
   });

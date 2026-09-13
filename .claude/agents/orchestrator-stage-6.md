@@ -651,12 +651,13 @@ Se ha sinais, disparar agent `auto-reporter` via `Agent` com `edition_dir` e `re
 `blockReasonForMarkingStageDone` (stage 6), que exige `_internal/edition-report.html`
 presente antes de aceitar `--status done` (ver 6b-7). Como o Stage 6 ainda esta `running`
 neste ponto, a linha do stage 6 na propria tabela do report sai sem duracao medida — este
-arquivo e descartavel, **nao e o que vai pro rascunho de e-mail** (isso so acontece em
-6b-8, depois do timer fechar). **`--no-email` (#4478) e obrigatorio aqui** — sem essa
-flag, `registerReport` (chamado de dentro de `writeReportFile`) dispara o e-mail de
-notificacao (#4475) tambem nesta chamada "descartavel", duplicando o aviso que 6b-8 ja
-manda no fim do pipeline (2 e-mails por edicao, todo dia). A flag so suprime o disparo de
-e-mail — o registro em `index.jsonl` acontece normalmente:
+arquivo e descartavel, nao e o rascunho final. **`--no-email` (#4478) continua aceita
+aqui por historico, mas virou no-op desde o #7960 (item 4 da #7957)** — `registerReport`
+(chamado de dentro de `writeReportFile`) nunca mais dispara e-mail de notificacao por
+default (relatorio de edicao e "Studio /relatorios, sem e-mail" na tabela de severidade
+do editor); antes disso a flag suprimia o disparo so nesta chamada "descartavel" pra nao
+duplicar o aviso que 6b-8 mandava no fim do pipeline. O registro em `index.jsonl`
+continua acontecendo normalmente, com ou sem a flag:
 
 ```bash
 npx tsx scripts/send-edition-report.ts \
@@ -717,10 +718,11 @@ via `mcp__claude_ai_Gmail__create_draft` aqui** (o invariante #1579 antigo — e
 REGENERADO nesta etapa agora só alimenta o registro no Studio, não o antigo draft narrativo
 de e-mail — ver a nota #4478 logo abaixo sobre o novo aviso leve de notificação, #4475).
 
-**Sem `--no-email` aqui, de proposito (#4478).** Esta e a chamada final do pipeline — o
-comando SEM a flag dispara o e-mail de notificacao (#4475) normalmente, avisando o editor
-que o relatorio da edicao esta pronto. So a chamada "descartavel" de 6b-6 suprime (ver
-nota la).
+**Sem `--no-email` aqui — irrelevante desde o #7960 (item 4 da #7957).** Ate o #7960 esta
+era a chamada final do pipeline e a UNICA que devia notificar o editor por e-mail (#4475);
+desde entao `registerReport` nunca mais dispara esse e-mail por default (relatorio de
+edicao virou "Studio /relatorios, sem e-mail" na tabela de severidade do editor) — a
+ausencia da flag aqui deixou de ter efeito distinto de tê-la.
 
 **Falha nao bloqueia** — logar warn e seguir (o registro no Studio já é fail-soft por
 construção; esta nota cobre falha do próprio `send-edition-report.ts`, ex: edition-dir

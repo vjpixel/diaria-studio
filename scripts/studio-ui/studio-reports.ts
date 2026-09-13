@@ -506,15 +506,40 @@ export async function dispatchReportEmail(
  * `dispatchReportEmail`, então `deps.hasCredentials` nunca roda pra essa
  * invocação) e resolve `emailDispatch` direto com
  * `{sent: false, skipped: "notify-disabled"}` — o upsert em `index.jsonl`
- * acontece igual, só o e-mail é que não sai. Default `true` preserva o
- * comportamento anterior (#4475) pra todo caller que não passar nada —
- * inclusive a chamada final de 6b-8, que deve continuar notificando.
+ * acontece igual, só o e-mail é que não sai.
+ *
+ * **#7960 (item 4 da #7957): default virou `false`.** Antes do #7957,
+ * `true` preservava o comportamento anterior (#4475: todo registro dispara
+ * e-mail) pra todo caller que não passasse nada. A tabela de severidade do
+ * editor (#7957, 10/09/2026) classifica TODO relatório registrado aqui —
+ * edição, overnight/develop, Clarice novos/envio/guard, CAC, calibração —
+ * como "Studio /relatorios, sem e-mail": o editor lê no `/relatorios`, o
+ * e-mail deixou de ser o canal. Nenhum caller de produção passa `notify`
+ * explicitamente (todos dependiam deste default) — a mudança silencia
+ * TODOS eles de uma vez, que é exatamente o objetivo. O parâmetro continua
+ * existindo (e a lógica de dedup/retry abaixo continua exercitável via
+ * `notify: true` explícito) caso uma severidade `"urgente"` real precise
+ * deste canal no futuro — mas hoje nenhum caller o faz.
+ *
+ * **Assimetria conhecida (achado do fleet review da PR #8077, baixa
+ * prioridade, não endereçada):** `editor-notify.ts` (#7957) faz esse MESMO
+ * tipo de rollout via config (`platform.config.json` ->
+ * `notifications.email_policy`, `"legacy"`/`"urgent_only"`) — reversível
+ * com 1 linha de config, sem tocar código. Aqui o default virou `false`
+ * como LITERAL no código — reverter exige mudar este arquivo (e
+ * `writeReportFile`/`writeEditionReport`/`ensureEditionReport`/
+ * `register-report.ts`, que repassam o mesmo default adiante), não um
+ * flip de config. Aceito deliberadamente: o canal de relatório não tem
+ * rollout gradual planejado (diferente de `editor-notify.ts`, que
+ * convivia com remetentes ainda não migrados durante a transição) — se
+ * isso mudar, migrar pra uma chave própria em `notifications` é a
+ * correção natural.
  */
 export function registerReport(
   rootDir: string,
   input: ReportRegistryInput,
   emailDeps: ReportEmailDeps = defaultEmailDeps,
-  notify = true,
+  notify = false,
 ): RegisterReportResult {
   const id = reportId(input.kind, input.sessionId);
   const createdAt = input.createdAt ?? new Date().toISOString();
