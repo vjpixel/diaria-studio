@@ -13,6 +13,8 @@ import assert from "node:assert/strict";
 
 import {
   GEO_PROVIDER_TIMEOUT_MS,
+  OPENAI_GEO_TIMEOUT_MS,
+  isOpenAiReasoningModel,
   GEO_PROVIDERS,
   GEO_QUESTIONS,
   GEO_HUB_QUESTIONS,
@@ -308,6 +310,11 @@ describe("buildUsageRecordFields (#4904)", () => {
     assert.equal(fieldsOpenai.inputTokens, 1_000_000);
     assert.equal(fieldsOpenai.outputTokens, 1_000_000);
     assert.ok(Math.abs(fieldsOpenai.estimatedCostUsd! - 10.0) < 1e-9); // 2 + 8
+
+    // #8064 — gpt-5-mini: $0.25/1M input, $2.00/1M output (verificado
+    // 12/09/2026). Sem isso na tabela, o teto --max-monthly-usd ficaria cego.
+    const fieldsGpt5Mini = buildUsageRecordFields("openai", { inputTokens: 1_000_000, outputTokens: 1_000_000 }, "gpt-5-mini", "2026-09-12T12:00:00.000Z");
+    assert.ok(Math.abs(fieldsGpt5Mini.estimatedCostUsd! - 2.25) < 1e-9); // 0.25 + 2
 
     // gemini-2.5-flash: $0.30/1M input, $2.50/1M output (verificado
     // 11/ago/2026, ai.google.dev/gemini-api/docs/pricing).
@@ -619,13 +626,27 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     assert.equal(anthropicDef.timeoutMs, 270_000);
     assert.ok(anthropicDef.timeoutMs >= 240_000, "deve ficar acima dos 240s que a medição do #5950 ainda viu estourar");
     assert.ok(anthropicDef.timeoutMs > GEO_PROVIDER_TIMEOUT_MS);
-    // OpenAI/Google copiam o default global EXPLICITAMENTE (timeoutMs é
-    // campo obrigatório, achado do type-design review desta PR — nenhum
-    // provider novo pode herdar um timeout em silêncio) — não têm o mesmo
-    // padrão de latência (web_search multi-busca) que motivou o override.
-    for (const id of ["openai", "google"] as const) {
-      assert.equal(GEO_PROVIDERS.find((p) => p.id === id)!.timeoutMs, GEO_PROVIDER_TIMEOUT_MS);
-    }
+    // Google copia o default global EXPLICITAMENTE (timeoutMs é campo
+    // obrigatório, achado do type-design review desta PR — nenhum provider
+    // novo pode herdar um timeout em silêncio).
+    assert.equal(GEO_PROVIDERS.find((p) => p.id === "google")!.timeoutMs, GEO_PROVIDER_TIMEOUT_MS);
+  });
+
+  it("#8064: OpenAI usa gpt-5-mini, com timeout próprio acima do default", () => {
+    const openaiDef = GEO_PROVIDERS.find((p) => p.id === "openai")!;
+    assert.equal(openaiDef.defaultModel, "gpt-5-mini");
+    assert.equal(openaiDef.timeoutMs, OPENAI_GEO_TIMEOUT_MS);
+    assert.ok(openaiDef.timeoutMs > GEO_PROVIDER_TIMEOUT_MS);
+  });
+
+  it("#8064: request do gpt-5-mini manda reasoning.effort low; gpt-4.1 não manda reasoning (rejeitaria)", () => {
+    const openaiDef = GEO_PROVIDERS.find((p) => p.id === "openai")!;
+    const bodyOf = (model: string) => JSON.parse(String(openaiDef.buildRequest("q", "k", model).init.body));
+    assert.deepEqual(bodyOf("gpt-5-mini").reasoning, { effort: "low" });
+    assert.deepEqual(bodyOf("gpt-5-mini").tools, [{ type: "web_search" }]);
+    assert.equal(bodyOf("gpt-4.1").reasoning, undefined);
+    assert.equal(isOpenAiReasoningModel("o4-mini"), true);
+    assert.equal(isOpenAiReasoningModel("gpt-4.1-mini"), false);
   });
 });
 

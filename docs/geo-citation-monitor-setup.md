@@ -98,6 +98,18 @@ Custo por execução **medido ao vivo em 11/ago/2026**, os 3 providers — ver
 descoberta de latência variável da Anthropic que mudou o desenho do
 provider (timeout e `max_uses` próprios).
 
+## Modelo da OpenAI: gpt-5-mini desde 12/09/2026 (#8064)
+
+O provider OpenAI trocou de `gpt-4.1` para `gpt-5-mini` (decisão do editor).
+No `gpt-4.1` o conteúdo devolvido pelo `web_search` é cobrado como input a
+US$ 2/1M — era ~80% do custo da rodada. Estimativa com `gpt-5-mini`: ~US$ 0,40
+por semana (tokens + taxa fixa de busca), contra ~US$ 1,12. É também da mesma
+família dos modelos do ChatGPT de consumo. Mandamos `reasoning.effort: "low"`
+e o provider tem timeout próprio (`OPENAI_GEO_TIMEOUT_MS`, 90s) — a latência
+de raciocínio + busca ainda não foi medida ao vivo. Série do provider
+`openai` não é homogênea antes/depois desta data (o `model` fica gravado em
+cada registro). As tabelas abaixo são da época do `gpt-4.1`.
+
 ## Captura de usage e teto de custo (#4904)
 
 **Os 3 providers rodam de verdade SÓ na máquina cujo `.env` tem as 3 keys
