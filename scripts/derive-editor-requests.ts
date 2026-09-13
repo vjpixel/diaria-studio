@@ -1049,9 +1049,19 @@ function classifyStage1DestaqueDiff(categorizedJson: any, approvedJson: any): Ar
   for (let i = 0; i < pairCount; i++) {
     const dropped = droppedFromTop3[i];
     const added = promoted[i];
+    // `target` usa o rank ORIGINAL do item removido (dropped.rank), não a
+    // posição onde o item promovido acabou pousando em `01-approved.json`
+    // (added.position) — achado de review (#7964): se o gate reordenar os
+    // destaques sobreviventes (ex: dropar D1 e os demais "subirem" uma
+    // posição), `added.position` podia divergir do "D{N}" citado na própria
+    // `description`, produzindo uma entrada que se contradiz (target d3 com
+    // texto "Destaque D1 trocado..."). `dropped.rank` é sempre o slot que a
+    // troca de fato afeta, então target e description ficam consistentes
+    // por construção — `added.position` continua registrado em `context`
+    // pra quem precisar da posição real no aprovado.
     results.push({
       request_type: "destaque-swap",
-      target: `d${added.position}` as RequestTarget,
+      target: `d${dropped.rank}` as RequestTarget,
       description: `Destaque D${dropped.rank} trocado no gate do Stage 1: ${dropped.title} → ${added.title}`,
       resolution: "accepted",
       context: { old_url: dropped.url, new_url: added.url, position: added.position },
@@ -1101,6 +1111,19 @@ function classifyStage1DestaqueDiff(categorizedJson: any, approvedJson: any): Ar
  * também sob `auto_approved: true`. Arquivo de proveniência ausente ou
  * malformado (edição anterior ao #4842, ou erro de leitura) também pula —
  * fail-soft, nunca deriva às cegas sem o sinal determinístico.
+ *
+ * **Limitação aceita (achado de review #7964):** `auto_approved: false`
+ * garante que houve um gate humano, mas não garante que TODA mudança
+ * observada foi uma decisão consciente do editor — o mesmo fill-loop de
+ * `resolveDestaques`/#4943 que produz `itens_movidos` "por acidente" sob
+ * `--auto` também roda no caminho interativo quando a seção Destaques do MD
+ * revisado tem menos de 2 URLs (editor não tocou nela, ou apagou tudo sem
+ * querer): o preenchimento por rank do scorer é indistinguível de escolha
+ * editorial pra este código, do mesmo jeito que já é indistinguível pra
+ * `computeGateProvenance`. Não há sinal determinístico adicional pra
+ * separar os dois casos sem mudar o schema de `.step-1-gate.json` — aceito
+ * como o mesmo risco residual que #4943 já documenta pro `itens_movidos`,
+ * não uma regressão nova introduzida aqui.
  */
 function deriveStage1(editionDir: string, edition: string): number {
   const gatePath = join(editionDir, "_internal", ".step-1-gate.json");
