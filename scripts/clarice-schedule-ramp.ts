@@ -129,6 +129,7 @@ import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455 / #3643 bug
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { SEND_HOUR_UTC } from "./lib/clarice-wave-plan.ts"; // #7047
 import { assertScheduleLeadTime } from "./lib/schedule-guard.ts"; // #7047
+import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts"; // #8059
 import { extractPlanCredits } from "../workers/brevo-dashboard/src/brevo-api.ts";
 import {
   selectMatureDayCampaigns,
@@ -1535,7 +1536,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
     const htmlPath = resolve(resolveMonthlyDir(cycle), "_internal", "cloudflare-preview.html");
     if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
-    const html = readFileSync(htmlPath, "utf8");
+    // #8059: reescreve tag de afiliado Amazon `diaria-20` → `claricenews-20`
+    // antes de qualquer POST — mesma técnica de `clarice-schedule-group.ts`.
+    // Guard logo em seguida (achado do review do PR #8076): aborta se sobrar
+    // link Amazon com tag errada/ausente após a reescrita.
+    const html = rewriteAmazonAffiliateTagsInText(readFileSync(htmlPath, "utf8"), "clarice");
+    assertNoAmazonAffiliateTagIssues(html, "clarice");
 
     if (doCreate) {
       assertHtmlHasUnsubscribeLink(html); // guard legal ANTES de qualquer POST

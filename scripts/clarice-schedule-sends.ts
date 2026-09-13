@@ -72,6 +72,7 @@ import { CELLS } from "./clarice-split-cells.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { SEND_HOUR_UTC } from "./lib/clarice-wave-plan.ts"; // #7047
 import { assertScheduleLeadTime } from "./lib/schedule-guard.ts"; // #7047
+import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts"; // #8059
 
 loadProjectEnv();
 
@@ -500,7 +501,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // HTML render para todas as campanhas
   const htmlPath = resolve(resolveMonthlyDir(cycle), "_internal", "cloudflare-preview.html");
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
-  const html = readFileSync(htmlPath, "utf8");
+  // #8059: reescreve tag de afiliado Amazon `diaria-20` (audiência de casa
+  // do render) → `claricenews-20` (audiência deste envio) — mesma técnica de
+  // `clarice-schedule-group.ts`. Guard logo em seguida: aborta se sobrar
+  // link Amazon com tag errada/ausente após a reescrita (achado do review
+  // do PR #8076 — os 4 call sites fora de `clarice-schedule-group.ts` só
+  // reescreviam, sem confirmar o resultado).
+  const html = rewriteAmazonAffiliateTagsInText(readFileSync(htmlPath, "utf8"), "clarice");
+  assertNoAmazonAffiliateTagIssues(html, "clarice");
 
   const campaignsPath = resolve(cellsDir, "campaigns-summary.json");
   let campaigns: CampaignEntry[] = [];

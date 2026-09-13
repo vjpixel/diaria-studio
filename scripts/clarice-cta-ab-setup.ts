@@ -44,6 +44,7 @@ import { assertHtmlHasUnsubscribeLink, assertExperimentArmsInstrumented, pollUnt
 import { EDITOR_COPY_EMAIL } from "./lib/editor-copy.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { MENSAL_UTM_SOURCE } from "./lib/shared/utm-registry.ts"; // #4041: registry único
+import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts"; // #8059
 
 loadProjectEnv();
 
@@ -321,7 +322,16 @@ async function processEnvio(cfg: EnvioCfg, apply: boolean, outDir: string): Prom
   console.error(`  campanha "${camp.name}" | ${camp.scheduledAt} | lista com ${total} contatos`);
 
   // 2. Variantes de HTML (sempre — dry-run escreve pra inspeção)
-  const canonical = readFileSync(resolve(resolveMonthlyDir(CYCLE), "_internal", "cloudflare-preview.html"), "utf8");
+  // #8059: reescreve tag de afiliado Amazon `diaria-20` → `claricenews-20`
+  // antes de derivar as variantes A/B — mesma técnica de
+  // `clarice-schedule-group.ts`. Guard logo em seguida (achado do review do
+  // PR #8076): aborta se sobrar link Amazon com tag errada/ausente — as
+  // variantes A/B herdam de `canonical`, então basta verificar 1x aqui.
+  const canonical = rewriteAmazonAffiliateTagsInText(
+    readFileSync(resolve(resolveMonthlyDir(CYCLE), "_internal", "cloudflare-preview.html"), "utf8"),
+    "clarice",
+  );
+  assertNoAmazonAffiliateTagIssues(canonical, "clarice");
   const htmlA = buildVariantHtml(canonical, "a");
   const htmlB = buildVariantHtml(canonical, "b");
   // #4431: guard preventivo — valida unsub + estrutura em AMBOS os braços

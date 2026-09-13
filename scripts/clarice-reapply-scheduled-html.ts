@@ -98,6 +98,7 @@ import { parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { isMainModule, getArg } from "./lib/cli-args.ts";
 import { renderHaltBanner } from "./lib/gate-banner.ts";
+import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
 
 loadProjectEnv();
 
@@ -697,7 +698,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const htmlPath = resolve(resolveMonthlyDir(cycle), "_internal", "cloudflare-preview.html");
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
-  const html = readFileSync(htmlPath, "utf8");
+  // #8059: mesma reescrita de `clarice-schedule-group.ts` — o HTML sempre
+  // carrega links Amazon com a tag `diaria-20` (audiência de casa do render
+  // mensal); este script reaplica conteúdo em campanhas CLARICE, então
+  // reescreve pra `claricenews-20` antes do PUT. Guard logo em seguida
+  // (achado do review do PR #8076): aborta se sobrar link Amazon com tag
+  // errada/ausente após a reescrita.
+  const html = rewriteAmazonAffiliateTagsInText(readFileSync(htmlPath, "utf8"), "clarice");
+  assertNoAmazonAffiliateTagIssues(html, "clarice");
 
   let toUpdate: BrevoCampaignListItem[];
   let skipped: BrevoCampaignListItem[];

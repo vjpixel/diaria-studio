@@ -197,6 +197,7 @@ import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { tagHourCellUtm } from "./lib/shared/utm-registry.ts";
 import { checkKeyAgainstHourTest } from "./lib/clarice-group-cells.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
+import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
 
 loadProjectEnv();
 
@@ -1001,6 +1002,24 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const htmlPath = resolve(resolveMonthlyDir(contentCycle), "_internal", "cloudflare-preview.html");
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
   let html = readFileSync(htmlPath, "utf8");
+  // #8059: o HTML renderizado sempre carrega links Amazon com a tag da
+  // audiência diar.ia.br (`diaria-20`, audiência "de casa" do render mensal)
+  // — este envio é pra assinantes CLARICE, então reescreve pra
+  // `claricenews-20` antes de qualquer disparo/preview. Mesma técnica de
+  // pós-processamento de string de `tagHourCellUtm` logo abaixo, sobre o
+  // MESMO HTML reusado por todo caller deste script.
+  html = rewriteAmazonAffiliateTagsInText(html, "clarice");
+  // #8059 item 4 — guard: depois da reescrita, nenhum link Amazon pode
+  // sobrar sem tag, com a tag ERRADA, ou atrás de um encurtador (cuja tag
+  // embutida não dá pra verificar). Falha aqui é sinal de conteúdo com
+  // link Amazon fora do padrão esperado (encurtador coado no draft/snippet,
+  // ou host não coberto por `rewriteAmazonAffiliateTagsInText`) — aborta
+  // logo cedo, antes de qualquer ramo (`--create`/`--update-html` usam
+  // `html` diretamente; `--send-test`/`--schedule`/`--send-now` operam por
+  // `campaignId` sobre o HTML já persistido na Brevo por um `--create`/
+  // `--update-html` anterior — o guard aqui garante que aquele HTML nunca
+  // chegou a ser gravado com tag errada em primeiro lugar).
+  assertNoAmazonAffiliateTagIssues(html, "clarice");
   // #5154 item 1: `key` de célula do teste de HORÁRIO (#5140) termina em
   // `-H{HH}` (ex: "d6-qui06-H06", ver `hourCellLabel`/`groupCellListNameFor`
   // em clarice-wave-plan.ts/clarice-import-waves.ts). Sem este sufixo no

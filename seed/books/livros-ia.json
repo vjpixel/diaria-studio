@@ -1,12 +1,12 @@
 {
   "_meta": {
     "issue": "#1744",
-    "status": "23 livros — fonte: página Beehiiv do editor (diaria.beehiiv.com/livros-sobre-ia), com links de afiliado amzn.to",
-    "instrucoes": "Fonte de verdade: a curadoria do editor na página Beehiiv. REGRAS: (1) todo livro deve estar na amazon.com.br e usar o link de afiliado curto (amzn.to/...) gerado pelo SiteStripe — nunca link de editora/Amazon sem afiliado; (2) quando há versão PT-BR e EN, listar só a PT; (3) critério: subjetivo (prêmios do livro/autor) + objetivo (nota na Amazon). Nota e idioma/nível/temas vêm da curadoria. Sem capa (página é text-focused). Rode `npx tsx scripts/build-livros-page.ts --out workers/livros/public/index.html` pra regenerar.",
+    "status": "29 livros — fonte: página Beehiiv do editor (diaria.beehiiv.com/livros-sobre-ia), com links longos de afiliado (tag=diaria-20, #8059)",
+    "instrucoes": "Fonte de verdade: a curadoria do editor na página Beehiiv. REGRAS: (1) todo livro deve estar na amazon.com.br e usar o link LONGO de produto (amazon.com.br/dp/{ASIN}?tag=diaria-20) — nunca encurtador amzn.to/link.amazon (#8059: o encurtador embute o ID de afiliado e não aceita override por query string, então não dá pra reescrever a tag por canal na renderização) nem link de editora/Amazon sem afiliado; (2) o ID de afiliado é sempre diaria-20 (audiência diar.ia.br) — nunca vjpixel-20 (ID principal, reservado à vitrine /shop/vjpixel) nem claricenews-20 (audiência Clarice, não usado nesta página); (3) quando há versão PT-BR e EN, listar só a PT; (4) critério: subjetivo (prêmios do livro/autor) + objetivo (nota na Amazon). Nota e idioma/nível/temas vêm da curadoria. Sem capa (página é text-focused). Rode `npx tsx scripts/build-livros-page.ts --out workers/livros/public/index.html` pra regenerar.",
     "schema": {
       "id": "slug-kebab-case (estável)",
       "title": "string",
-      "link": "string (amzn.to/... — link de afiliado)",
+      "link": "string (amazon.com.br/dp/{ASIN}?tag=diaria-20 — link LONGO de afiliado, #8059)",
       "language": "pt-br | en",
       "level": "iniciante | intermediario | avancado",
       "themes": "array de rótulos livres (ex: História, Engenharia, Filosofia) — vazio permitido",
@@ -20,7 +20,7 @@
     {
       "id": "2041-kai-fu-lee",
       "title": "2041: Como a inteligência artificial vai mudar sua vida nas próximas décadas",
-      "link": "https://www.amazon.com.br/dp/6559870537?tag=vjpixel-20",
+      "link": "https://www.amazon.com.br/dp/6559870537?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -34,7 +34,7 @@
     {
       "id": "a-era-da-ia-nosso-futuro",
       "title": "A era da IA: e Nosso Futuro Como Humanos",
-      "link": "https://amzn.to/4qDeYvz",
+      "link": "https://www.amazon.com.br/dp/8550818380?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -47,7 +47,7 @@
     {
       "id": "a-era-da-inteligencia-artificial",
       "title": "A era da inteligência artificial",
-      "link": "https://amzn.to/4jnzJsR",
+      "link": "https://www.amazon.com.br/dp/B08W7WHXCF?tag=diaria-20",
       "language": "pt-br",
       "level": "avancado",
       "themes": [
@@ -60,7 +60,7 @@
     {
       "id": "historia-ia-quem-tem-pressa",
       "title": "A História da Inteligência Artificial Para Quem Tem Pressa",
-      "link": "https://amzn.to/4qAwHDU",
+      "link": "https://www.amazon.com.br/dp/658849095X?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -73,7 +73,7 @@
     {
       "id": "a-proxima-onda-suleyman",
       "title": "A próxima onda: Inteligência artificial, poder e o maior dilema do século XXI",
-      "link": "https://www.amazon.com.br/dp/6555878347?tag=vjpixel-20",
+      "link": "https://www.amazon.com.br/dp/6555878347?tag=diaria-20",
       "language": "pt-br",
       "level": "intermediario",
       "themes": [
@@ -87,7 +87,7 @@
     {
       "id": "ai-engineering-foundation-models",
       "title": "AI Engineering: Building Applications with Foundation Models",
-      "link": "https://amzn.to/4azs0ph",
+      "link": "https://www.amazon.com.br/dp/1098166302?tag=diaria-20",
       "language": "en",
       "level": "avancado",
       "themes": [
@@ -100,7 +100,7 @@
     {
       "id": "applied-ai-business-leaders",
       "title": "Applied Artificial Intelligence: A Handbook For Business Leaders",
-      "link": "https://amzn.to/3N0bLYx",
+      "link": "https://www.amazon.com.br/dp/B0CV599T4C?tag=diaria-20",
       "language": "en",
       "level": "intermediario",
       "themes": [
@@ -113,7 +113,7 @@
     {
       "id": "atlas-of-ai-crawford",
       "title": "Atlas of AI: Power, Politics, and the Planetary Costs of Artificial Intelligence",
-      "link": "https://www.amazon.com.br/dp/0300209576?tag=vjpixel-20",
+      "link": "https://www.amazon.com.br/dp/0300209576?tag=diaria-20",
       "language": "en",
       "level": "avancado",
       "themes": [
@@ -127,7 +127,7 @@
     {
       "id": "cointeligencia-mollick",
       "title": "Cointeligência: A vida e o trabalho com IA",
-      "link": "https://www.amazon.com.br/dp/8551013157?tag=vjpixel-20",
+      "link": "https://www.amazon.com.br/dp/8551013157?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -141,7 +141,7 @@
     {
       "id": "deep-learning-goodfellow",
       "title": "Deep Learning",
-      "link": "https://www.amazon.com.br/dp/9732345527?tag=vjpixel-20",
+      "link": "https://www.amazon.com.br/dp/9732345527?tag=diaria-20",
       "language": "en",
       "level": "avancado",
       "themes": [
@@ -155,7 +155,7 @@
     {
       "id": "desmistificando-ia",
       "title": "Desmistificando a inteligência artificial",
-      "link": "https://amzn.to/49BlOvP",
+      "link": "https://www.amazon.com.br/dp/6559281582?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -168,7 +168,7 @@
     {
       "id": "futuro-presente",
       "title": "Futuro Presente: O mundo movido à tecnologia",
-      "link": "https://amzn.to/49BhJI1",
+      "link": "https://www.amazon.com.br/dp/8504021319?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -181,7 +181,7 @@
     {
       "id": "hands-on-llms",
       "title": "Hands-On Large Language Models",
-      "link": "https://amzn.to/4aAhePA",
+      "link": "https://www.amazon.com.br/dp/B0DGZ46G88?tag=diaria-20",
       "language": "en",
       "level": "avancado",
       "themes": [
@@ -194,7 +194,7 @@
     {
       "id": "inteligencia-artificial-sociedade",
       "title": "Inteligência artificial",
-      "link": "https://amzn.to/4pprH4b",
+      "link": "https://www.amazon.com.br/dp/6580634324?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -207,7 +207,7 @@
     {
       "id": "ia-do-zero-a-superpoderes",
       "title": "Inteligência Artificial - do Zero a Superpoderes",
-      "link": "https://amzn.to/3LhmEVa",
+      "link": "https://www.amazon.com.br/dp/B0DB9VVG22?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -220,7 +220,7 @@
     {
       "id": "ia-abordagem-moderna",
       "title": "Inteligência Artificial - Uma Abordagem Moderna",
-      "link": "https://amzn.to/44MKMpl",
+      "link": "https://www.amazon.com.br/dp/8595158878?tag=diaria-20",
       "language": "pt-br",
       "level": "avancado",
       "themes": [
@@ -233,7 +233,7 @@
     {
       "id": "ia-aplicacoes-e-desafios",
       "title": "Inteligência artificial – aplicações e desafios",
-      "link": "https://amzn.to/45uBfU3",
+      "link": "https://www.amazon.com.br/dp/B0BB89X85T?tag=diaria-20",
       "language": "pt-br",
       "level": "intermediario",
       "themes": [
@@ -246,7 +246,7 @@
     {
       "id": "ia-a-nosso-favor",
       "title": "Inteligência artificial a nosso favor",
-      "link": "https://amzn.to/49eqfLO",
+      "link": "https://www.amazon.com.br/dp/6559213080?tag=diaria-20",
       "language": "pt-br",
       "level": "intermediario",
       "themes": [
@@ -259,7 +259,7 @@
     {
       "id": "ia-marketing-e-vendas",
       "title": "Inteligência Artificial em Marketing e Vendas",
-      "link": "https://amzn.to/4sLXIWX",
+      "link": "https://www.amazon.com.br/dp/B09W4J84F8?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -272,7 +272,7 @@
     {
       "id": "introducao-ia-nao-tecnica",
       "title": "Introdução à Inteligência Artificial: Uma Abordagem não Técnica",
-      "link": "https://amzn.to/3Lc1g3S",
+      "link": "https://www.amazon.com.br/dp/8575228196?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -285,7 +285,7 @@
     {
       "id": "llm-engineers-handbook",
       "title": "LLM Engineer's Handbook",
-      "link": "https://amzn.to/4q4xYn2",
+      "link": "https://www.amazon.com.br/dp/B0D1WR77BZ?tag=diaria-20",
       "language": "en",
       "level": "avancado",
       "themes": [
@@ -298,7 +298,7 @@
     {
       "id": "maos-a-obra-geron",
       "title": "Mãos à Obra: Aprendizado de Máquina com Scikit-Learn, Keras & TensorFlow",
-      "link": "https://www.amazon.com.br/dp/8550826456?tag=vjpixel-20",
+      "link": "https://www.amazon.com.br/dp/8550826456?tag=diaria-20",
       "language": "pt-br",
       "level": "avancado",
       "themes": [
@@ -312,7 +312,7 @@
     {
       "id": "nexus-redes-de-informacao",
       "title": "Nexus: Uma breve história das redes de informação",
-      "link": "https://amzn.to/3MUUBM1",
+      "link": "https://www.amazon.com.br/dp/B0D75X4TMX?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
@@ -325,7 +325,7 @@
     {
       "id": "projetando-sistemas-ml",
       "title": "Projetando Sistemas de Machine Learning",
-      "link": "https://amzn.to/3NihQ2q",
+      "link": "https://www.amazon.com.br/dp/8550819670?tag=diaria-20",
       "language": "pt-br",
       "level": "avancado",
       "themes": [
@@ -338,7 +338,7 @@
     {
       "id": "revolucao-quantica",
       "title": "Revolução quântica: Muito além da inteligência artificial",
-      "link": "https://amzn.to/3NrAoNN",
+      "link": "https://www.amazon.com.br/dp/8501922102?tag=diaria-20",
       "language": "pt-br",
       "level": "intermediario",
       "themes": [
@@ -351,7 +351,7 @@
     {
       "id": "superinteligencia",
       "title": "Superinteligência: Caminhos, perigos, estratégias",
-      "link": "https://amzn.to/4q40C7L",
+      "link": "https://www.amazon.com.br/dp/B07C82TMMD?tag=diaria-20",
       "language": "pt-br",
       "level": "intermediario",
       "themes": [
@@ -364,7 +364,7 @@
     {
       "id": "supremacy",
       "title": "Supremacy: AI, ChatGPT, and the Race That Will Change the World",
-      "link": "https://amzn.to/4shu8Ix",
+      "link": "https://www.amazon.com.br/dp/B0CLJTMF84?tag=diaria-20",
       "language": "en",
       "level": "iniciante",
       "themes": [
@@ -377,7 +377,7 @@
     {
       "id": "the-ai-driven-leader",
       "title": "The AI-Driven Leader",
-      "link": "https://amzn.to/4pW3hA6",
+      "link": "https://www.amazon.com.br/dp/B0DB8QL3ZK?tag=diaria-20",
       "language": "en",
       "level": "iniciante",
       "themes": [
@@ -390,7 +390,7 @@
     {
       "id": "vida-3-0",
       "title": "Vida 3.0: O ser humano na era da inteligência artificial",
-      "link": "https://amzn.to/3LhfZu8",
+      "link": "https://www.amazon.com.br/dp/6558100266?tag=diaria-20",
       "language": "pt-br",
       "level": "iniciante",
       "themes": [
