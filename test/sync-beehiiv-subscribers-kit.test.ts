@@ -23,7 +23,11 @@ import {
   readSyncState,
   writeSyncState,
   fetchActiveBeehiivEmails,
+  fetchActiveBeehiivSubscriptions,
+  resolveBeehiivAttribution,
+  buildBeehiivSyncKitFields,
 } from "../scripts/sync-beehiiv-subscribers-kit.ts";
+import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_BEEHIIV_SYNC_SIGNUP_MARKER } from "../scripts/lib/shared/kit-signup-origin.ts";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -236,5 +240,133 @@ describe("fetchActiveBeehiivEmails", () => {
       }),
       /subscriptions truncado: 0\/5/,
     );
+  });
+});
+
+// ── #8060 — propagação de origem/UTM da Beehiiv pro Kit ────────────────────
+
+describe("resolveBeehiivAttribution (#8060)", () => {
+  it("caso concreto da issue: acquisition_source vira utm_source quando o topo vem vazio, referring_site preservado", () => {
+    const result = resolveBeehiivAttribution({
+      email: "sub_64e83a74@example.com",
+      status: "active",
+      acquisition_source: "website: chatgpt.com / (none)",
+      referring_site: "https://diaria.beehiiv.com/subscribe?ref=ogfK7Y6S8n",
+    });
+    assert.deepEqual(result, {
+      email: "sub_64e83a74@example.com",
+      utm_source: "website: chatgpt.com / (none)",
+      utm_medium: undefined,
+      utm_campaign: undefined,
+      utm_channel: undefined,
+      utm_term: undefined,
+      utm_content: undefined,
+      referring_site: "https://diaria.beehiiv.com/subscribe?ref=ogfK7Y6S8n",
+    });
+  });
+
+  it("utm_source de topo tem precedência sobre acquisition_source", () => {
+    const result = resolveBeehiivAttribution({
+      email: "a@b.com",
+      status: "active",
+      utm_source: "newsletter",
+      acquisition_source: "website: chatgpt.com / (none)",
+    });
+    assert.equal(result.utm_source, "newsletter");
+  });
+
+  it("acquisition_channel vira utm_channel só quando utm_channel de topo vem vazio", () => {
+    const result = resolveBeehiivAttribution({
+      email: "a@b.com",
+      status: "active",
+      acquisition_channel: "boost",
+    });
+    assert.equal(result.utm_channel, "boost");
+  });
+
+  it("subscriber sem nenhum campo de atribuição: todos os campos ficam undefined, sem fabricar string vazia", () => {
+    const result = resolveBeehiivAttribution({ email: "a@b.com", status: "active" });
+    assert.equal(result.utm_source, undefined);
+    assert.equal(result.utm_medium, undefined);
+    assert.equal(result.utm_campaign, undefined);
+    assert.equal(result.utm_channel, undefined);
+    assert.equal(result.utm_term, undefined);
+    assert.equal(result.utm_content, undefined);
+    assert.equal(result.referring_site, undefined);
+  });
+});
+
+describe("buildBeehiivSyncKitFields com atribuição (#8060)", () => {
+  it("sem argumento: comportamento anterior preservado — só o marcador origem_cadastro", () => {
+    assert.deepEqual(buildBeehiivSyncKitFields(), {
+      [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_BEEHIIV_SYNC_SIGNUP_MARKER,
+    });
+  });
+
+  it("com atribuição real (caso da issue): grava origem_cadastro + utm_source + referring_site + atribuicao_fonte", () => {
+    const attribution = resolveBeehiivAttribution({
+      email: "sub_64e83a74@example.com",
+      status: "active",
+      acquisition_source: "website: chatgpt.com / (none)",
+      referring_site: "https://diaria.beehiiv.com/subscribe?ref=ogfK7Y6S8n",
+    });
+    assert.deepEqual(buildBeehiivSyncKitFields(attribution), {
+      [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_BEEHIIV_SYNC_SIGNUP_MARKER,
+      utm_source: "website: chatgpt.com / (none)",
+      referring_site: "https://diaria.beehiiv.com/subscribe?ref=ogfK7Y6S8n",
+      atribuicao_fonte: "beehiiv-import",
+    });
+  });
+
+  it("atribuição sem nenhum campo preenchido: cai pro mesmo resultado de sem argumento (nunca fabrica campo vazio)", () => {
+    const attribution = resolveBeehiivAttribution({ email: "a@b.com", status: "active" });
+    assert.deepEqual(buildBeehiivSyncKitFields(attribution), {
+      [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_BEEHIIV_SYNC_SIGNUP_MARKER,
+    });
+  });
+});
+
+describe("fetchActiveBeehiivSubscriptions (#8060)", () => {
+  const apiKey = "bh_test_key";
+  const publicationId = "pub_123";
+
+  it("devolve o subscription CRU inteiro (não só email) — campos de atribuição chegam de graça na mesma resposta paginada", async () => {
+    const result = await fetchActiveBeehiivSubscriptions(apiKey, publicationId, {
+      fetchImpl: (async () =>
+        jsonResponse(200, {
+          data: [
+            {
+              email: "sub_64e83a74@example.com",
+              status: "active",
+              acquisition_source: "website: chatgpt.com / (none)",
+              referring_site: "https://diaria.beehiiv.com/subscribe?ref=ogfK7Y6S8n",
+            },
+          ],
+          total_results: 1,
+          limit: 100,
+          page: 1,
+        })) as typeof fetch,
+    });
+    assert.deepEqual(result, [
+      {
+        email: "sub_64e83a74@example.com",
+        status: "active",
+        acquisition_source: "website: chatgpt.com / (none)",
+        referring_site: "https://diaria.beehiiv.com/subscribe?ref=ogfK7Y6S8n",
+      },
+    ]);
+  });
+
+  it("fetchActiveBeehiivEmails continua devolvendo só a lista de e-mails, mesmo com atribuição na resposta", async () => {
+    const result = await fetchActiveBeehiivEmails(apiKey, publicationId, {
+      fetchImpl: (async () =>
+        jsonResponse(200, {
+          data: [{ email: "a@b.com", status: "active", acquisition_source: "website: chatgpt.com / (none)" }],
+          total_results: 1,
+          limit: 100,
+          page: 1,
+        })) as typeof fetch,
+    });
+    assert.deepEqual(result, ["a@b.com"]);
   });
 });

@@ -61,6 +61,7 @@ import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasMorePages } from "./backup-beehiiv.ts";
 import { listAllKitSubscribers, createOrUpdateSubscriber } from "./lib/kit-subscribers.ts";
 import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_BEEHIIV_SYNC_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B
+import { buildAttributionFields, type BeehiivSubscriberRecord } from "./lib/kit-attribution.ts"; // #8060
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -85,9 +86,29 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-interface BeehiivSubscriptionRaw {
+/**
+ * #8060: além de `email`/`status`, o `GET /subscriptions` da Beehiiv traz os
+ * mesmos 7 campos de atribuição já tipados em `BeehiivSubscriberRecord`
+ * (`scripts/lib/kit-attribution.ts`) mais `acquisition_source`/
+ * `acquisition_channel` — o rastreamento de aquisição PRÓPRIO da Beehiiv,
+ * usado como ÚLTIMO fallback quando os UTM de topo vêm vazios (mesma regra
+ * de precedência de `ingestBeehiivRoster` em `beehiiv-subscribers-ingest.ts`).
+ * Todos opcionais/`string` (não `unknown`) porque este é o shape CRU vindo
+ * direto da API — cada consumidor decide o que fazer com ausência, não este
+ * tipo.
+ */
+export interface BeehiivSubscriptionRaw {
   email: string;
   status: string;
+  utm_source?: string;
+  utm_medium?: string;
+  utm_campaign?: string;
+  utm_channel?: string;
+  utm_term?: string;
+  utm_content?: string;
+  referring_site?: string;
+  acquisition_source?: string;
+  acquisition_channel?: string;
 }
 
 interface BeehiivPage {
@@ -107,9 +128,57 @@ export interface FetchBeehiivDeps {
  * (#6425 Parte B, ver comentário no call site em `main()`). Extraída pra
  * ser testável sem mock de rede — `main()` não expõe `fetchImpl` pro lado
  * Kit (mesma limitação aceita de sempre, ver docstring do teste).
+ *
+ * `attribution` (#8060) é OPCIONAL e aditivo — omitido (assinatura sem
+ * argumento, comportamento anterior ao #8060 preservado por compat) ou sem
+ * nenhum campo de UTM/`referring_site` preenchido na origem, o resultado é
+ * idêntico a antes: só o marcador `origem_cadastro`. Quando presente, reusa
+ * `buildAttributionFields` (`scripts/lib/kit-attribution.ts`) — o MESMO
+ * mapeamento já usado pelo backfill (#6318/#6425) e por
+ * `promoteKitSubscription` — em vez de inventar nomes de campo novos (pedido
+ * explícito do corpo da #8060). `atribuicao_fonte: "beehiiv-import"`
+ * gravado por `buildAttributionFields` é bônus, não acidente: sincroniza
+ * `origem_cadastro` (marcador PRÓPRIO deste script, "veio do sync em lote")
+ * com `atribuicao_fonte` (marcador do backfill, "já tem atribuição
+ * recuperada da Beehiiv") — os dois nomes de campo nunca colidem, e um
+ * assinante criado por este sync já nasce com `atribuicao_fonte` setado,
+ * então `backfill-kit-attribution.ts` (`jaBackfillado`) o pula corretamente
+ * na próxima rodada em vez de reprocessar um dado que este sync já gravou.
+ * Campo ausente/vazio na origem nunca vira `""` fabricado — omitido, mesma
+ * disciplina de `buildAttributionFields`.
  */
-export function buildBeehiivSyncKitFields(): Record<string, string> {
-  return { [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_BEEHIIV_SYNC_SIGNUP_MARKER };
+export function buildBeehiivSyncKitFields(attribution?: BeehiivSubscriberRecord): Record<string, string> {
+  const base: Record<string, string> = { [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_BEEHIIV_SYNC_SIGNUP_MARKER };
+  if (!attribution) return base;
+  const attributionFields = buildAttributionFields(attribution);
+  return attributionFields ? { ...base, ...attributionFields } : base;
+}
+
+/**
+ * Pura (#8060) — resolve o `BeehiivSubscriberRecord` (7 campos de atribuição
+ * de `kit-attribution.ts`) a partir do subscription CRU da Beehiiv, com a
+ * MESMA precedência já aplicada por `ingestBeehiivRoster`
+ * (`beehiiv-subscribers-ingest.ts`): `utm_source` de topo tem prioridade,
+ * `acquisition_source` é o ÚLTIMO fallback só pra `utm_source` (a Beehiiv
+ * não tem `utm_channel` nativo — só `acquisition_channel`, mesmo fallback
+ * pra `utm_channel`). Caso concreto da issue (#8060): assinante com
+ * `acquisition_source: "website: chatgpt.com / (none)"` e `utm_source`
+ * vazio de topo — sem este fallback, `origem_cadastro: beehiiv-sync` seria
+ * gravado sem NENHUM UTM, reproduzindo o bug relatado.
+ */
+export function resolveBeehiivAttribution(sub: BeehiivSubscriptionRaw): BeehiivSubscriberRecord {
+  const utmSource = (sub.utm_source?.trim() || sub.acquisition_source?.trim()) || undefined;
+  const utmChannel = (sub.utm_channel?.trim() || sub.acquisition_channel?.trim()) || undefined;
+  return {
+    email: sub.email,
+    utm_source: utmSource,
+    utm_medium: sub.utm_medium,
+    utm_campaign: sub.utm_campaign,
+    utm_channel: utmChannel,
+    utm_term: sub.utm_term,
+    utm_content: sub.utm_content,
+    referring_site: sub.referring_site,
+  };
 }
 
 /**
@@ -119,14 +188,18 @@ export function buildBeehiivSyncKitFields(): Record<string, string> {
  * `hasMorePages`, reusado daqui). `fetchImpl` injetável pra teste (achado
  * do review, #6092 — antes esta função só usava o `fetch` global, sem
  * seam nenhum pra teste sem rede real).
+ *
+ * Devolve o subscription CRU inteiro (não só `email`) desde o #8060 — os
+ * campos de atribuição (`utm_*`, `referring_site`, `acquisition_*`) já vêm
+ * de graça na mesma resposta paginada, sem 2ª chamada por assinante.
  */
-export async function fetchActiveBeehiivEmails(
+export async function fetchActiveBeehiivSubscriptions(
   apiKey: string,
   publicationId: string,
   deps: FetchBeehiivDeps = {},
-): Promise<string[]> {
+): Promise<BeehiivSubscriptionRaw[]> {
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const emails: string[] = [];
+  const subscriptions: BeehiivSubscriptionRaw[] = [];
   let page = 1;
   let more = true;
   let totalResults: number | null = null;
@@ -141,10 +214,10 @@ export async function fetchActiveBeehiivEmails(
     }
     const body = (await res.json()) as BeehiivPage;
     const got = body.data ?? [];
-    emails.push(...got.map((s) => s.email));
+    subscriptions.push(...got);
     if (body.total_results != null) totalResults = body.total_results;
     more = hasMorePages({
-      collected: emails.length,
+      collected: subscriptions.length,
       gotLength: got.length,
       totalResults: body.total_results,
       effectiveLimit: body.limit,
@@ -152,10 +225,26 @@ export async function fetchActiveBeehiivEmails(
     });
     page++;
   }
-  if (totalResults != null && totalResults > 0 && emails.length < totalResults) {
-    throw new Error(`subscriptions truncado: ${emails.length}/${totalResults} (loop encerrou antes de drenar total_results)`);
+  if (totalResults != null && totalResults > 0 && subscriptions.length < totalResults) {
+    throw new Error(`subscriptions truncado: ${subscriptions.length}/${totalResults} (loop encerrou antes de drenar total_results)`);
   }
-  return emails;
+  return subscriptions;
+}
+
+/**
+ * Compat (#8060): call sites que só precisam da lista de e-mails (o
+ * `main()` deste script agora usa `fetchActiveBeehiivSubscriptions`
+ * diretamente pra também ter a atribuição) — mantido exportado porque
+ * `test/sync-beehiiv-subscribers-kit.test.ts` cobre esta função
+ * isoladamente.
+ */
+export async function fetchActiveBeehiivEmails(
+  apiKey: string,
+  publicationId: string,
+  deps: FetchBeehiivDeps = {},
+): Promise<string[]> {
+  const subscriptions = await fetchActiveBeehiivSubscriptions(apiKey, publicationId, deps);
+  return subscriptions.map((s) => s.email);
 }
 
 export interface SyncState {
@@ -266,7 +355,13 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const kitConfig = { apiKey: kitApiKey };
 
   log("buscando assinantes ativos da Beehiiv...");
-  const beehiivActiveEmails = await fetchActiveBeehiivEmails(beehiivCfg.apiKey, beehiivCfg.publicationId);
+  // #8060: subscription CRU (não só e-mail) — carrega os campos de
+  // atribuição na mesma resposta paginada, sem 2ª chamada por assinante.
+  const beehiivActiveSubscriptions = await fetchActiveBeehiivSubscriptions(beehiivCfg.apiKey, beehiivCfg.publicationId);
+  const beehiivActiveEmails = beehiivActiveSubscriptions.map((s) => s.email);
+  const beehiivAttributionByEmail = new Map(
+    beehiivActiveSubscriptions.map((s) => [normalizeEmailForComparison(s.email), resolveBeehiivAttribution(s)]),
+  );
   log(`${beehiivActiveEmails.length} assinante(s) ativo(s) na Beehiiv.`);
 
   log("buscando assinantes do Kit...");
@@ -304,17 +399,16 @@ export async function main(rootDirOverride?: string): Promise<void> {
   let failed = 0;
   for (const email of missing) {
     try {
-      // #6425 Parte B: sem `fields`, todo cadastro copiado por este sync
-      // entrava indistinguível de "api: direct/(none)". Não há UTM
-      // POR ASSINANTE disponível neste call site (`fetchActiveBeehiivEmails`
-      // só devolve e-mail+status) — a recuperação do UTM real de quem
-      // entrou por este caminho é trabalho do backfill (#6318,
-      // `backfill-kit-attribution.ts`), não deste marcador. O que dá pra
-      // gravar aqui, e não gravava, é o `origem_cadastro` — distingue
-      // "copiado em lote da Beehiiv" de "entrou pelo funil" (`kit-nativo`)
-      // e de "promovido por score" (`brevo-diaria-score`).
+      // #6425 Parte B + #8060: `origem_cadastro` distingue "copiado em lote
+      // da Beehiiv" de "entrou pelo funil" (`kit-nativo`) e de "promovido
+      // por score" (`brevo-diaria-score`); desde o #8060, o UTM/
+      // `referring_site` reais do cadastro na Beehiiv (já vieram na mesma
+      // resposta paginada, ver `beehiivAttributionByEmail` acima) também são
+      // propagados — antes deste fix, todo cadastro copiado por este sync
+      // perdia a origem real e ficava indistinguível de "api: direct/(none)".
+      const attribution = beehiivAttributionByEmail.get(normalizeEmailForComparison(email));
       await createOrUpdateSubscriber(
-        { email_address: email, state: "active", fields: buildBeehiivSyncKitFields() },
+        { email_address: email, state: "active", fields: buildBeehiivSyncKitFields(attribution) },
         kitConfig,
       );
       synced++;
