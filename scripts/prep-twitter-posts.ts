@@ -42,6 +42,21 @@
  * pra `skipped_image` (visível no resumo da edição) — X sem imagem é pior
  * que X nenhum, então isso nunca vira um `skipped` de verdade.
  *
+ * **Multi-imagem (#8056, 260912):** o X não tem carrossel-swipe (diferente
+ * do Instagram) — o equivalente nativo é um tweet com várias imagens
+ * anexadas, exibidas em grade. Cada post agora também ganha `images`
+ * (`resolveTwitterImages`, `TWITTER_IMAGE_LIMIT` = 4): quando o carrossel de
+ * 5 slides do destaque está completo em `06-public-images.json` (capa + 3
+ * parágrafos + CTA, `gen-carousel-cards.ts` no Stage 3), usa os 3 slides de
+ * PARÁGRAFO — descarta capa e CTA (moldura/branding, não conteúdo) — MESMO
+ * critério ad-hoc que o editor já aplicou ao carrossel semanal (registrado
+ * na issue #8056, pendente de confirmação formal; reverter é trocar o slice
+ * em `resolveTwitterImages`). Sem carrossel completo (edição antiga, upload
+ * parcial), cai pro fallback de sempre — 1 imagem só, via
+ * `resolveTwitterImage`. `imageUrl`/`altText` (singular) continuam
+ * preenchidos com a 1ª entry de `images` — mantidos só por compatibilidade
+ * de quem já lia esses 2 campos; o dispatch novo deve preferir `images`.
+ *
  * **dueAt (#4103):** cada post ganha um `dueAt` calculado por
  * `computeScheduledAt` de `compute-social-schedule.ts` — o MESMO helper usado
  * por `publish-facebook.ts`/`publish-linkedin.ts`/`publish-instagram.ts`/
@@ -59,10 +74,16 @@
  *     [--skip-existing]     # pula destaques já em 06-social-published.json (default: true)
  *     [--no-skip-existing]  # força re-inclusão
  *
- * Output (stdout, JSON): { enabled, published_path, posts: [{destaque, text, dueAt, imageUrl, altText}], skipped: [...], skipped_image: [...] }
+ * Output (stdout, JSON): { enabled, published_path, posts: [{destaque, text, dueAt, imageUrl, altText, images}], skipped: [...], skipped_image: [...] }
  * `posts` é a lista que o orchestrator deve efetivamente postar via Buffer MCP
- * (`mode: "customScheduled"`, `dueAt` = `post.dueAt`; quando `imageUrl` não é
- * `null`, passar `assets: [{ image: { url: imageUrl, metadata: { altText } } }]`).
+ * (`mode: "customScheduled"`, `dueAt` = `post.dueAt`; quando `images` não é
+ * vazio, passar `assets: post.images.map(({url, altText}) => ({ image: { url, metadata: { altText } } }))`
+ * — **1 ou várias entries, nunca só a 1ª**. Nota #8056 (achado ao vivo
+ * 260912): o schema desta ferramenta MCP não tipa `assets` como array em
+ * todo conector Buffer — quando `create_post` rejeitar o array (`expected
+ * array, received string`), usar `execute_mutation` (GraphQL) com a mesma
+ * mutation `createPost` (ver `orchestrator-stage-5.md` §5c-3b e a memória
+ * `buffer-mcp-create-post-array-via-execute-mutation`).
  */
 
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
@@ -75,6 +96,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { TWITTER_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
+import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #8056 — multi-imagem
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -148,6 +170,8 @@ export interface PrepResult {
     dueAt: string;
     imageUrl: string | null;
     altText: string | null;
+    /** #8056: até `TWITTER_IMAGE_LIMIT` imagens — preferir isto a `imageUrl`/`altText` no dispatch. */
+    images: Array<{ url: string; altText: string }>;
   }>;
   skipped: Array<{ destaque: string; reason: string }>;
   /** #4264: destaques com post normal mas sem imagem resolvida — motivo aqui, nunca em `skipped`. */
@@ -203,6 +227,54 @@ export function resolveTwitterImage(
 
   const altText = `Imagem do destaque ${destaque.toUpperCase()} da edição diar.ia.br de ${editionDate}`;
   return { imageUrl, altText, reason: null };
+}
+
+/**
+ * #8056: máximo de imagens anexadas a um tweet — limite do produto X (grade
+ * de até 4 imagens), não uma escolha nossa.
+ */
+export const TWITTER_IMAGE_LIMIT = 4;
+
+/**
+ * Resolve até `TWITTER_IMAGE_LIMIT` imagens pro tweet de um destaque (#8056).
+ * Prefere o carrossel de 5 slides (capa + 3 parágrafos + CTA) já gerado pro
+ * Instagram/Facebook/Threads — via `resolveCarouselImageUrls`, tudo-ou-nada,
+ * `null` se QUALQUER slide faltar — descartando capa (índice 0) e CTA
+ * (último): só os 3 slides de PARÁGRAFO viram imagem no X (critério ad-hoc
+ * já aplicado pelo editor ao carrossel semanal, ver docstring do arquivo).
+ * Sem carrossel completo, cai pro fallback de sempre: 1 imagem só
+ * (`resolveTwitterImage`, hero 4x5/2x1). Nunca lança — JSON corrompido cai
+ * no mesmo fallback de 1 imagem que `resolveTwitterImage` já trata.
+ */
+export function resolveTwitterImages(
+  editionDir: string,
+  destaque: string,
+  editionDate: string,
+): { images: Array<{ url: string; altText: string }>; reason: string | null } {
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  if (existsSync(publicImagesPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(publicImagesPath, "utf8")) as {
+        images?: Record<string, { url?: string }>;
+      };
+      const carousel = resolveCarouselImageUrls(parsed.images, destaque);
+      if (carousel) {
+        const paragraphSlides = carousel.slice(1, -1); // descarta capa (0) e CTA (último)
+        return {
+          images: paragraphSlides.map((url, i) => ({
+            url,
+            altText: `Slide ${i + 1} do destaque ${destaque.toUpperCase()} da edição diar.ia.br de ${editionDate}`,
+          })),
+          reason: null,
+        };
+      }
+    } catch {
+      // JSON corrompido — cai pro fallback de 1 imagem abaixo, mesmo comportamento de resolveTwitterImage.
+    }
+  }
+  const single = resolveTwitterImage(editionDir, destaque, editionDate);
+  if (!single.imageUrl) return { images: [], reason: single.reason };
+  return { images: [{ url: single.imageUrl, altText: single.altText! }], reason: null };
 }
 
 /**
@@ -319,12 +391,16 @@ export function prepTwitterPosts(
       now: opts.now,
     });
 
-    const { imageUrl, altText, reason: imageReason } = resolveTwitterImage(editionDir, d, editionDate);
+    const { images, reason: imageReason } = resolveTwitterImages(editionDir, d, editionDate);
     if (imageReason) {
       skippedImage.push({ destaque: d, reason: imageReason });
     }
+    // imageUrl/altText (singular) mantidos por compatibilidade — sempre a
+    // 1ª entry de `images` (ou null quando `images` está vazio).
+    const imageUrl = images[0]?.url ?? null;
+    const altText = images[0]?.altText ?? null;
 
-    posts.push({ destaque: d, text, dueAt, imageUrl, altText });
+    posts.push({ destaque: d, text, dueAt, imageUrl, altText, images });
   }
 
   return { enabled: true, published_path: publishedPath, posts, skipped, skipped_image: skippedImage };
