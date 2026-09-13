@@ -29,8 +29,10 @@
  *     --title "diar.ia.br overnight 260720 — 5 unidades, 7 issues, 2 puladas" \
  *     --html-path data/overnight/260720/report.md
  *
- * `--no-email` registra sem notificar — use em reexecução/auditoria/teste, que
- * senão manda e-mail real pro editor a cada invocação (#5521).
+ * `--no-email` continua aceita por compat de CLI, mas virou NO-OP desde o
+ * #7960 (item 4 da #7957) — `registerReport` já nunca notifica por e-mail
+ * por default (antes, omitir a flag mandava e-mail real a cada invocação,
+ * #5521).
  *
  * Imprime em stdout a URL do Studio (`http://127.0.0.1:{porta}/relatorios/{id}`)
  * — porta default 4174 (mesma de `scripts/studio-ui/server.ts`), overridável
@@ -141,10 +143,14 @@ async function main(): Promise<void> {
   const id = values["id"];
   const title = values["title"];
   const htmlPath = values["html-path"];
-  // #5521: sem isto, QUALQUER reexecução (auditoria, retry, teste) manda
-  // e-mail pro editor — foi assim que uma auditoria de 73 relatórios
-  // históricos disparou ~50 e-mails de uma vez em 17/08/2026.
-  const noEmail = process.argv.includes("--no-email");
+  // #7960 (item 4 da #7957): `--no-email` continua ACEITA (compat de CLI —
+  // `.claude/skills/diaria-overnight/SKILL.md` e `.../diaria-develop/SKILL.md`
+  // ainda a documentam) mas virou NO-OP — `registerReport` já nunca notifica
+  // por e-mail por default (relatório de overnight/develop é "Studio
+  // /relatorios, sem e-mail" na tabela de severidade do editor). Antes do
+  // #7960, OMITIR a flag mandava e-mail (#5521: foi assim que uma auditoria
+  // de 73 relatórios históricos disparou ~50 e-mails de uma vez em
+  // 17/08/2026) — não há mais essa distinção de comportamento.
 
   if (!kind || !isReportKind(kind) || !id || !title || !htmlPath) {
     console.error(
@@ -155,11 +161,13 @@ async function main(): Promise<void> {
 
   assertTitleMatchesReport(kind, title, htmlPath);
 
+  // #7960: `notify: false` fixo — ver nota acima sobre `--no-email` ter
+  // virado no-op.
   const result = registerReport(
     ROOT,
     { kind, sessionId: id, title, htmlPath },
     undefined,
-    !noEmail,
+    false,
   );
   if (!result.ok || !result.entry) {
     // Fail-soft (#3714): registro é observabilidade extra, nunca crítico —
