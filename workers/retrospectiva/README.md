@@ -63,3 +63,31 @@ Nunca deploye este Worker com rota comentada esperando que isso "adie" alguma co
 | `RATE_LIMIT` | contadores do rate-limit por IP do gate de cadastro. |
 
 Os ids vivem no `wrangler.toml` e são lidos pelos publishers via `scripts/lib/shared/retrospectiva-kv-namespaces.ts` — uma fonte só, a mesma que o `wrangler deploy` consome.
+
+## Secret `KIT_API_KEY` — sync manual, sempre que a key rotacionar (#8046)
+
+O gate de cadastro (`GET /{slug}?email=...`) verifica `active` no Kit via
+`env.KIT_API_KEY` (`src/index.ts`, `verifySubscriberViaKitByEmail` em
+`scripts/lib/shared/subscriber-verify.ts`). Esse secret é gravado no Worker
+via `wrangler secret put` (histórico em §Cutover acima) e **não** é
+provisionado pelo `deploy-retrospectiva.yml` — o workflow só publica código
+(`wrangler deploy`), nunca secrets. Diferente da maioria das credenciais do
+projeto, que passam por `npm run sync-env` (Doppler → `.env`), não existe
+sincronização automática entre a key ativa em `.env`/Doppler e a key
+DEPLOYADA neste Worker — se `KIT_API_KEY` rotacionar (Doppler, ou edição
+manual do `.env`) sem alguém repetir o `wrangler secret put`, o gate passa a
+recusar assinantes `active` de verdade (retro do #8046, causa raiz
+confirmada: a lógica de verificação estava correta, só a key deployada
+estava desatualizada).
+
+Rodar sempre que `KIT_API_KEY` mudar:
+
+```bash
+npx tsx scripts/sync-retrospectiva-worker-secret.ts --push
+```
+
+(dry-run por default sem `--push` — mostra o plano, não grava nada; `--verify`
+só confere se o NOME do secret está registrado no Worker, sem gravar — a API
+Cloudflare nunca expõe o VALOR de um secret já gravado, então essa checagem
+não substitui um teste real do gate). Miolo puro (requisição HTTP injetável,
+sem shell-out a `wrangler`) em `scripts/lib/retrospectiva-worker-secret-sync.ts`.
