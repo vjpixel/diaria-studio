@@ -1149,10 +1149,11 @@ describe("main(): dispatch mockado", () => {
           requestCount++;
           return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:instagram:${requestCount}`, scheduled_at: "x", destaque: "weekly" }) };
         })
-        // #5348 (unidade Threads): Threads passou a compartilhar o MESMO
-        // Worker queue do Instagram — cada modo agora bate /queue 2x
-        // (instagram + threads), não mais 1x. 2 modos × 2 canais = 4.
-        .times(4);
+        // #5348 (unidade Threads) + #8052 (LinkedIn wired): Threads e
+        // LinkedIn passaram a compartilhar o MESMO Worker queue do Instagram
+        // — cada modo agora bate /queue 3x (instagram + threads + linkedin),
+        // não mais 1x nem 2x. 2 modos × 3 canais = 6.
+        .times(6);
 
       await main(
         ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
@@ -1163,12 +1164,14 @@ describe("main(): dispatch mockado", () => {
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
-      assert.equal(requestCount, 4, "os 2 modos × 2 canais (instagram+threads) deveriam disparar 4 chamadas de rede distintas — nenhum skip-existing indevido entre eles");
+      assert.equal(requestCount, 6, "os 2 modos × 3 canais (instagram+threads+linkedin) deveriam disparar 6 chamadas de rede distintas — nenhum skip-existing indevido entre eles");
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       const destaques = out.posts.filter((p: any) => p.platform === "instagram").map((p: any) => p.destaque);
       assert.deepEqual(destaques.sort(), ["weekly-clicked", "weekly-highlights"]);
       const threadsDestaques = out.posts.filter((p: any) => p.platform === "threads").map((p: any) => p.destaque);
       assert.deepEqual(threadsDestaques.sort(), ["weekly-clicked", "weekly-highlights"]);
+      const linkedInDestaques = out.posts.filter((p: any) => p.platform === "linkedin").map((p: any) => p.destaque);
+      assert.deepEqual(linkedInDestaques.sort(), ["weekly-clicked", "weekly-highlights"]);
     });
 
     it("#5348 self-review (pr-test-analyzer): skip-existing é POR CANAL — Threads já 'scheduled' de uma tentativa anterior NÃO é re-tentado, mas Instagram (ainda sem entry) dispara normalmente na mesma rodada", async () => {
@@ -1206,7 +1209,10 @@ describe("main(): dispatch mockado", () => {
           const body = JSON.parse(opts.body as string);
           queueCalls.push(body.channel);
           return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
-        });
+        })
+        // #8052: Instagram + LinkedIn batem /queue (Threads é pulado por
+        // skip-existing — entry pré-existente).
+        .times(2);
       // Facebook não configurado neste teste (env limpo pelo afterEach da
       // suite) — cai em status:"failed" sem travar o resto, irrelevante
       // pro que este teste verifica (skip-existing do Threads).
@@ -1216,7 +1222,9 @@ describe("main(): dispatch mockado", () => {
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
-      assert.deepEqual(queueCalls, ["instagram"], "só Instagram deveria ter batido /queue — Threads foi pulado por skip-existing (já 'scheduled')");
+      // #8052: LinkedIn agora também bate /queue (nenhuma entry pré-existente
+      // pra ele) — só Threads é pulado por skip-existing (já 'scheduled').
+      assert.deepEqual(queueCalls, ["instagram", "linkedin"], "Instagram e LinkedIn deveriam ter batido /queue — Threads foi pulado por skip-existing (já 'scheduled')");
 
       const out = JSON.parse(readFileSync(resolve(publishedDir, "06-weekly-published.json"), "utf8"));
       const threadsEntries = out.posts.filter((p: any) => p.platform === "threads" && p.destaque === "weekly-highlights");
@@ -1814,6 +1822,130 @@ describe("main(): dispatch mockado", () => {
     });
   });
 
+  describe("#8052: LinkedIn — wiring real do dispatch (mecanismo já existia desde #8083)", () => {
+    it("sucesso — LinkedIn recebe o MESMO carrossel do Instagram/Facebook/Threads, reusando LITERALMENTE fbCaption (nenhum formatLinkedInWeekly)", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      const capturedByChannel: Record<string, any> = {};
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          capturedByChannel[body.channel] = body;
+          return {
+            statusCode: 200,
+            data: JSON.stringify({ queued: true, key: `queue:${body.channel}:1`, scheduled_at: "2027-12-26T11:00:00-03:00", destaque: body.destaque }),
+          };
+        })
+        .times(3); // instagram + threads + linkedin
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      assert.ok(capturedByChannel.linkedin, "LinkedIn deveria ter batido /queue");
+      // #8052: reusa LITERALMENTE o mesmo texto do Facebook (fbCaption) —
+      // mesma decisão do editor (briefing 260913b), sem formatter dedicado.
+      // Facebook não passa pelo Worker queue (Graph API direta), então
+      // comparamos contra o texto ESPERADO de `formatFacebookWeekly`, não
+      // contra uma entry "facebook" no /queue (que nunca existe).
+      assert.match(capturedByChannel.linkedin.text, /^As notícias de IA mais lidas da semana na diar\.ia\.br:/);
+      assert.match(capturedByChannel.linkedin.text, /1\. Único/);
+      // fbCaption inclui link CLICÁVEL no corpo (diferente da convenção do
+      // publisher diário do LinkedIn, que nunca coloca URL no corpo) —
+      // divergência aceita explicitamente pelo editor.
+      assert.match(capturedByChannel.linkedin.text, /diar\.ia\.br\/\?utm_source=facebook/);
+      // MESMO carrossel de imagens que Instagram/Threads recebem.
+      assert.deepEqual(capturedByChannel.linkedin.image_urls, capturedByChannel.instagram.image_urls);
+      assert.equal(capturedByChannel.linkedin.image_url, null);
+      assert.equal(capturedByChannel.linkedin.destaque, "weekly-clicked");
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const liEntry = out.posts.find((p: any) => p.platform === "linkedin");
+      assert.equal(liEntry.status, "scheduled");
+      const igEntry = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(liEntry.scheduled_at, igEntry.scheduled_at, "MESMO agendamento do Instagram (#8052)");
+    });
+
+    it("Worker não configurado (sem DIARIA_LINKEDIN_CRON_URL/TOKEN) — LinkedIn marca failed sem travar Instagram", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      delete process.env.DIARIA_LINKEDIN_CRON_URL;
+      delete process.env.DIARIA_LINKEDIN_CRON_TOKEN;
+      // Sem interceptor pro /queue — se o script tentasse chamar mesmo assim
+      // (Instagram/Threads/LinkedIn), disableNetConnect() derrubaria o teste.
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const liEntry = out.posts.find((p: any) => p.platform === "linkedin");
+      assert.equal(liEntry.status, "failed");
+      assert.equal(liEntry.reason, "worker_not_configured");
+      const igEntry = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(igEntry.status, "failed", "sem Worker configurado, TODOS os canais que passam por /queue falham — mas cada um com sua própria entry, nenhum trava o outro");
+    });
+
+    it("skip-existing: LinkedIn já 'scheduled' de uma tentativa anterior NÃO é re-tentado", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      writeFileSync(
+        resolve(publishedDir, "06-weekly-published.json"),
+        JSON.stringify({
+          posts: [
+            {
+              platform: "linkedin",
+              destaque: "weekly-clicked",
+              url: null,
+              status: "scheduled",
+              scheduled_at: "2027-12-26T11:00:00-03:00",
+              worker_queue_key: "queue:linkedin:pre-existing",
+            },
+          ],
+        }),
+      );
+
+      const queueCalls: string[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          queueCalls.push(body.channel);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        })
+        // Instagram + Threads batem /queue (LinkedIn é pulado por skip-existing).
+        .times(2);
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      assert.ok(!queueCalls.includes("linkedin"), "LinkedIn não deveria ter batido /queue de novo — já 'scheduled'");
+      assert.ok(queueCalls.includes("instagram"), "Instagram (sem entry pré-existente) deveria disparar normalmente");
+
+      const out = JSON.parse(readFileSync(resolve(publishedDir, "06-weekly-published.json"), "utf8"));
+      const liEntries = out.posts.filter((p: any) => p.platform === "linkedin" && p.destaque === "weekly-clicked");
+      assert.equal(liEntries.length, 1, "a entry LinkedIn pré-existente não deveria ser duplicada nem re-tentada");
+      assert.equal(liEntries[0].worker_queue_key, "queue:linkedin:pre-existing");
+    });
+  });
+
   describe("#5349: --mode both — roda os 2 modos numa única invocação", () => {
     it("--day-offset é incompatível com --mode both — aborta antes de rodar qualquer modo", async () => {
       const saturday = new Date(2027, 11, 25);
@@ -1882,13 +2014,14 @@ describe("main(): dispatch mockado", () => {
         .intercept({ path: "/queue", method: "POST" })
         .reply((opts) => {
           const body = JSON.parse(opts.body as string);
-          // #5348 (unidade Threads): Threads passou a compartilhar o MESMO
-          // Worker queue do Instagram — cada modo agora bate /queue 2x
-          // (instagram + threads), não mais 1x.
+          // #5348 (unidade Threads) + #8052 (LinkedIn wired): Threads e
+          // LinkedIn passaram a compartilhar o MESMO Worker queue do
+          // Instagram — cada modo agora bate /queue 3x (instagram + threads
+          // + linkedin), não mais 1x nem 2x.
           scheduledAts.push(`${body.channel}:${body.destaque}@${body.scheduled_at}`);
           return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:${body.destaque}`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
         })
-        .times(4);
+        .times(6);
 
       let captured = "";
       const originalLog = console.log;
@@ -1906,13 +2039,15 @@ describe("main(): dispatch mockado", () => {
       assert.match(captured, /--mode both — rodando "highlights" e "clicked" em sequência/);
       assert.equal(
         scheduledAts.length,
-        4,
-        "os 2 modos deveriam ter chamado o Worker queue 2x cada (instagram + threads, #5348)",
+        6,
+        "os 2 modos deveriam ter chamado o Worker queue 3x cada (instagram + threads + linkedin, #5348/#8052)",
       );
       assert.ok(scheduledAts.some((s) => s.startsWith("instagram:weekly-highlights@2027-12-25")));
       assert.ok(scheduledAts.some((s) => s.startsWith("instagram:weekly-clicked@2027-12-26")));
       assert.ok(scheduledAts.some((s) => s.startsWith("threads:weekly-highlights@2027-12-25")));
       assert.ok(scheduledAts.some((s) => s.startsWith("threads:weekly-clicked@2027-12-26")));
+      assert.ok(scheduledAts.some((s) => s.startsWith("linkedin:weekly-highlights@2027-12-25")));
+      assert.ok(scheduledAts.some((s) => s.startsWith("linkedin:weekly-clicked@2027-12-26")));
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       const highlights = out.posts.find((p: any) => p.destaque === "weekly-highlights");

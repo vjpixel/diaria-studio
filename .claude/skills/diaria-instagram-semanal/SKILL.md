@@ -1,6 +1,6 @@
 ---
 name: diaria-instagram-semanal
-description: DOIS carrosséis semanais (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330; expandido pra Facebook E Threads pelo #5348) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Publica em Instagram, Facebook E Threads automaticamente, mesmo agendamento, sem flag/canal separado (#5348) — ver seção "#5348 — expansão pra Facebook e Threads" abaixo pro detalhe de cada canal (Threads exige polling obrigatório de status, diferente dos outros 2). Nunca vira edição no Beehiiv, nunca dispara e-mail (o recap semanal do LinkedIn é `/diaria-linkedin-semanal`, #4456, produto/cadência diferentes). `--mode both` (#5349) roda os 2 modos numa única invocação — e é o default quando `--mode` é omitido (#5903, uso semanal normal; `clicked` isolado é só back-compat do script chamado direto). Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--mode clicked|highlights|both] [--schedule] [--no-gates]`.
+description: DOIS carrosséis semanais (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330; expandido pra Facebook E Threads pelo #5348; LinkedIn wired pelo #8052) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Publica em Instagram, Facebook, Threads E LinkedIn automaticamente, mesmo agendamento, sem flag/canal separado (#5348/#8052) — ver seção "#5348 — expansão pra Facebook e Threads" abaixo pro detalhe de cada canal (Threads exige polling obrigatório de status; LinkedIn reusa o MESMO texto do Facebook, sem formatter próprio, ver #8052). Nunca vira edição no Beehiiv, nunca dispara e-mail (o recap semanal NEWSLETTER-NATIVO do LinkedIn é `/diaria-linkedin-semanal`, #4456, produto/cadência diferentes — este carrossel é um post social adicional). `--mode both` (#5349) roda os 2 modos numa única invocação — e é o default quando `--mode` é omitido (#5903, uso semanal normal; `clicked` isolado é só back-compat do script chamado direto). Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--mode clicked|highlights|both] [--schedule] [--no-gates]`.
 disable-model-invocation: true
 ---
 
@@ -84,18 +84,24 @@ mexer no arquivo, o histórico do #4101 não reflete mais o comportamento
 atual:
 
 - **Canal: era só Instagram (#4483), Facebook E Threads voltaram pelo
-  #5348 — LinkedIn e X seguem de fora.** Motivo do #4483 pra tirar
-  LinkedIn: a newsletter semanal do LinkedIn (`/diaria-linkedin-semanal`,
-  #4456) passou a cobrir o recap de segunda — manter o post de sábado no
-  LinkedIn duplicaria o recap com 2 dias de distância, e a newsletter
-  ganha em alcance (notificação + e-mail, fora do ranqueamento de feed).
-  **Essa lógica NÃO se aplica a Facebook/Threads** — não existe recap
-  semanal nativo em nenhum dos 2 — nem o editor os resgatou por esse
-  motivo: foi uma decisão nova e própria (260815, #5348), "alcance/
-  audiência adicional". Facebook saiu completo numa 1ª rodada (PR #5360);
-  Threads exigiu uma unidade dedicada pra implementar carrossel de imagem
-  com polling obrigatório de status no publisher, que não existia. Ver
-  seção "#5348: expansão pra Facebook e Threads" abaixo pro detalhe
+  #5348, LinkedIn wired pelo #8052 — só X segue de fora.** Motivo do #4483
+  pra tirar LinkedIn originalmente: a newsletter semanal do LinkedIn
+  (`/diaria-linkedin-semanal`, #4456) passou a cobrir o recap de segunda —
+  manter o post de sábado no LinkedIn duplicaria o recap com 2 dias de
+  distância, e a newsletter ganha em alcance (notificação + e-mail, fora do
+  ranqueamento de feed). **Essa lógica NÃO se aplica a Facebook/Threads/
+  LinkedIn-carrossel** — não existe recap semanal nativo equivalente pra
+  nenhum dos 3 — nem o editor os resgatou por esse motivo: foi uma decisão
+  nova e própria (260815, #5348, "alcance/audiência adicional"; LinkedIn
+  destravado pelo #8052 depois que #8050/#8083 resolveram o carrossel via
+  API direta). Facebook saiu completo numa 1ª rodada (PR #5360); Threads
+  exigiu uma unidade dedicada pra implementar carrossel de imagem com
+  polling obrigatório de status no publisher, que não existia; LinkedIn
+  ficou bloqueado até o Worker suportar `image_urls` nesse canal (#8050) —
+  destravado com API direta (#8083) e finalmente WIRED em `publish-weekly-
+  social.ts` pelo #8052, reusando o MESMO texto do Facebook (nenhum
+  `formatLinkedInWeekly` foi criado — decisão do editor, briefing 260913b).
+  Ver seção "#5348: expansão pra Facebook e Threads" abaixo pro detalhe
   completo (X nunca foi mencionado de novo).
 - **Seleção: por taxa de clique verificado, de qualquer posição elegível
   (D1, D2, D3 ou RADAR)** — era "os 5 D1, sem ranking por clique, sem
@@ -213,14 +219,18 @@ atual:
   envio) também fica de fora — sem `recipients` não dá pra distinguir edição
   de teste, então a data cai no warning de "sem dados de clique" e volta ao
   re-rodar o sync.
-- Credenciais Instagram/Threads (mesmas dos publishers diários):
+- Credenciais Instagram/Threads/LinkedIn (mesmas dos publishers diários):
   `DIARIA_LINKEDIN_CRON_URL` + `DIARIA_LINKEDIN_CRON_TOKEN` (Worker queue —
   mesmo endpoint usado pelo Instagram/Threads/LinkedIn diários,
-  `channel: "instagram"`/`channel: "threads"`). Credenciais Threads
-  propriamente ditas (`THREADS_ACCESS_TOKEN`/`THREADS_USER_ID`) vivem no
-  ambiente do Worker (`workers/linkedin-cron`), não neste script — se
-  ausentes no Worker, o dispatch do Threads marca `status:"dlq"` (via
-  `fireQueueEntry`) sem afetar Instagram/Facebook.
+  `channel: "instagram"`/`channel: "threads"`/`channel: "linkedin"`).
+  Credenciais Threads propriamente ditas (`THREADS_ACCESS_TOKEN`/
+  `THREADS_USER_ID`) vivem no ambiente do Worker (`workers/linkedin-cron`),
+  não neste script — se ausentes no Worker, o dispatch do Threads marca
+  `status:"dlq"` (via `fireQueueEntry`) sem afetar Instagram/Facebook/
+  LinkedIn. Credenciais da API direta do LinkedIn (`LINKEDIN_ACCESS_TOKEN`/
+  `LINKEDIN_AUTHOR_URN`, #8052/#8083) também vivem no ambiente do Worker —
+  ausentes lá, o dispatch do LinkedIn marca `status:"dlq"` sem afetar os
+  demais canais.
 - Credenciais Facebook (#5348, mesmas do publisher diário `publish-facebook.ts`):
   `FACEBOOK_PAGE_ID` + `FACEBOOK_PAGE_ACCESS_TOKEN` (opcional `FACEBOOK_API_VERSION`,
   default `v25.0`). Ausentes → o dispatch do Facebook marca `status:"failed"`
@@ -317,9 +327,14 @@ Sem `--schedule`, o script nunca faz chamada de rede — só imprime:
   limite de 2200 chars da caption INTEIRA (`truncateAtLimit`,
   `format-weekly-social.ts`), que corta preservando palavras inteiras se o
   total estourar; Facebook não tem esse cap; Threads tem um cap MUITO mais
-  apertado (500 chars, imposto pela própria API).
+  apertado (500 chars, imposto pela própria API). **LinkedIn (#8052) reusa
+  literalmente a caption do Facebook** — sem entrada própria no preview,
+  sem `formatLinkedInWeekly` (decisão explícita do editor, briefing
+  260913b) — inclusive o link clicável no corpo, diferente da convenção do
+  publisher DIÁRIO do LinkedIn (`LINKEDIN_CTA_LINE = null`, link vai como
+  comentário separado) — divergência aceita, não um bug.
 - O horário de agendamento planejado (sábado pra `highlights`, domingo pra
-  `clicked`) — MESMO horário pros 3 canais.
+  `clicked`) — MESMO horário pros 4 canais.
 
 Se **nenhum candidato** (nenhum DESTAQUE 1/2/3 com URL em nenhuma edição da
 semana) foi encontrado, o script já encerra aqui — nenhum publisher é
@@ -356,8 +371,8 @@ Publique via `Artifact`, imediatamente após o Passo 2 e ANTES do Passo 3:
 3. **Título do Artifact:** algo como "Instagram Semanal {AAMMDD-do-sabado}"
    — `favicon` à escolha (ex: 📅).
 4. **Nota do mecanismo, visível no topo:** que este carrossel publica
-   automaticamente em Instagram, Facebook e Threads (#5348) via
-   `publish-weekly-social.ts --schedule` — sem gate por canal — e que o
+   automaticamente em Instagram, Facebook, Threads e LinkedIn (#5348/#8052)
+   via `publish-weekly-social.ts --schedule` — sem gate por canal — e que o
    gate humano do Passo 3 é o ponto de confirmação, não este preview em si.
 
 Publicada a prévia, apresente o link ao editor ANTES do Passo 3 — é o ponto
@@ -375,9 +390,9 @@ silenciosamente.
 
 Script cuida de tudo, inclusive persistência de estado
 (`data/weekly/{AAMMDD}/06-weekly-published.json`, idempotente via
-skip-existing — chave `destaque: "weekly-{mode}"` por `platform` (3 canais
-desde o #5348: `instagram`/`facebook`/`threads`), os dois modos nunca
-colidem no mesmo arquivo, e os canais nunca colidem entre si):
+skip-existing — chave `destaque: "weekly-{mode}"` por `platform` (4 canais
+desde o #8052: `instagram`/`facebook`/`threads`/`linkedin`), os dois modos
+nunca colidem no mesmo arquivo, e os canais nunca colidem entre si):
 
 ```bash
 npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode {clicked|highlights} --schedule
@@ -416,10 +431,11 @@ exigiu uma unidade dedicada (mesma issue #5348) porque o publisher de
 Threads deste repo era TEXT-only e precisou de carrossel de imagem +
 polling de status construídos do zero — ver subseção própria abaixo.
 Implementado dentro de `runOneMode` em `scripts/publish-weekly-social.ts`:
-os 3 canais compartilham seleção, resolução de imagem (`carouselImageUrls`)
-e horário; cada um tem seu próprio dispatch, skip-existing e bookkeeping de
-falha — **um canal falhando NUNCA desfaz nem impede os outros**. Diferenças
-por canal:
+os canais (Instagram/Facebook/Threads, e desde o #8052 também LinkedIn)
+compartilham seleção, resolução de imagem (`carouselImageUrls`) e horário;
+cada um tem seu próprio dispatch, skip-existing e bookkeeping de falha —
+**um canal falhando NUNCA desfaz nem impede os outros**. Diferenças por
+canal:
 
 - **Publisher**: Instagram e Threads passam pelo MESMO Worker queue
   (`postToWorkerQueue`, `channel: "instagram"`/`channel: "threads"`, agenda
@@ -467,6 +483,29 @@ por canal:
   (`diaria-linkedin-cron`), não via este arquivo. Nenhum dos 2 cenários
   trava Instagram nem os outros canais.
 
+### #8052: LinkedIn wired (mecanismo já existia desde #8083)
+
+Decisão do editor (briefing 260913b): destravar o LinkedIn no post
+semanal reusando o MESMO caminho de dispatch de Instagram/Threads — Worker
+queue (`channel: "linkedin"`), que já publica via API DIRETA do LinkedIn
+(Images API + Posts API) quando `image_urls.length > 1`
+(`fireLinkedInCarousel`, `workers/linkedin-cron/src/dispatch.ts`, #8083 —
+reverte o guard fail-fast que #8050 tinha introduzido). **Caption: NENHUM
+`formatLinkedInWeekly` foi criado** — `publish-weekly-social.ts` passa
+literalmente `fbCaption` (a mesma variável já computada pro Facebook) pro
+LinkedIn. Isso significa aceitar uma divergência conhecida: o publisher
+DIÁRIO do LinkedIn (`publish-linkedin.ts`) nunca coloca URL no corpo do
+post (`LINKEDIN_CTA_LINE = null` em `scripts/lib/social-cta-lines.ts` — o
+link vai como comentário separado, convenção pra não penalizar alcance no
+algoritmo do LinkedIn), mas `fbCaption` inclui um link clicável direto no
+corpo — decisão explícita do editor de aceitar essa divergência em vez de
+inventar um formato próprio só pra omitir a URL. Credenciais
+(`LINKEDIN_ACCESS_TOKEN`/`LINKEDIN_AUTHOR_URN`) vivem no ambiente do Worker
+(mesmo padrão do Threads) — ausentes lá, `fireQueueEntry` marca
+`status:"dlq"` sem afetar os outros 3 canais, e sem reconciliação de volta
+pra `06-weekly-published.json` (mesma limitação documentada acima pro
+Threads).
+
 ### Threads: carrossel de imagem com polling obrigatório de status
 
 O publisher de Threads deste repo (`fireThreads`,
@@ -511,8 +550,8 @@ nome `diaria-instagram-semanal` continua refletindo o produto PRINCIPAL
 Facebook/Threads são réplicas automáticas do mesmo material). Renomear
 tocaria múltiplas referências cruzadas (`diaria-linkedin-semanal/SKILL.md`,
 `weekly-social-click-rank.ts`, `format-weekly-social.ts`) sem ganho
-funcional — decisão de escopo do #5348, mantida mesmo com os 3 canais
-completos.
+funcional — decisão de escopo do #5348, mantida mesmo com os 4 canais
+completos (#8052).
 
 ## Casos de borda
 
