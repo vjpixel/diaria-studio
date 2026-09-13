@@ -605,7 +605,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     const res = await worker.fetch(req, { CURSOS_SUBSCRIBERS: kv });
     assert.equal(res.status, 200);
     const day = new Date().toISOString().slice(0, 10);
-    assert.equal(kv._map.get(`counter:ai-fetch:bot:OAI-SearchBot:${day}`), "1");
+    assert.equal(kv._map.get(`counter:ai-fetch:arquivo:bot:OAI-SearchBot:${day}`), "1");
   });
 
   it("User-Agent de bot de TREINO (GPTBot) → NÃO incrementa o contador ai-fetch (só recuperação, não treino)", async () => {
@@ -631,7 +631,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     const req = new Request("https://arquivo.diar.ia.br/", { headers: { Referer: "https://claude.ai/chat/abc" } });
     await worker.fetch(req, { CURSOS_SUBSCRIBERS: kv });
     const day = new Date().toISOString().slice(0, 10);
-    assert.equal(kv._map.get(`counter:ai-fetch:referrer:claude.ai:${day}`), "1");
+    assert.equal(kv._map.get(`counter:ai-fetch:arquivo:referrer:claude.ai:${day}`), "1");
   });
 
   it("sem binding CURSOS_SUBSCRIBERS (env vazio) → não lança, página responde normalmente (fail-soft)", async () => {
