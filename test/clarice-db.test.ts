@@ -13,6 +13,8 @@ import {
   findContactByEmail,
   lookupCsvBackfill,
   SOFT_BOUNCE_LIMIT,
+  DEFAULT_BUSY_TIMEOUT_MS,
+  resolveBusyTimeoutMs,
   type CsvBackfillIndex,
 } from "../scripts/lib/clarice-db.ts";
 
@@ -21,11 +23,59 @@ import {
 // exato NUNCA vira "não está na base" sem antes tentar normalização Gmail.
 // ---------------------------------------------------------------------------
 
-describe("openClariceDb — busy_timeout (#3021)", () => {
-  it("define PRAGMA busy_timeout = 5000 na conexão, evitando SQLITE_BUSY imediato em colisão de leitura/escrita", () => {
+describe("openClariceDb — busy_timeout (#3021, subido pra 30000 no #6035)", () => {
+  it("define PRAGMA busy_timeout = DEFAULT_BUSY_TIMEOUT_MS (30000) na conexão, evitando SQLITE_BUSY imediato em colisão de leitura/escrita", () => {
     const db = openClariceDb(":memory:");
     const row = db.prepare("PRAGMA busy_timeout").get() as { timeout: number };
-    assert.equal(row.timeout, 5000);
+    assert.equal(row.timeout, DEFAULT_BUSY_TIMEOUT_MS);
+    assert.equal(DEFAULT_BUSY_TIMEOUT_MS, 30000);
+  });
+});
+
+describe("resolveBusyTimeoutMs (#6035) — CLARICE_DB_BUSY_TIMEOUT_MS configurável, default seguro", () => {
+  it("sem env var, usa o default", () => {
+    assert.equal(resolveBusyTimeoutMs({}), DEFAULT_BUSY_TIMEOUT_MS);
+  });
+
+  it("env var numérica válida sobrescreve o default", () => {
+    assert.equal(
+      resolveBusyTimeoutMs({ CLARICE_DB_BUSY_TIMEOUT_MS: "60000" }),
+      60000,
+    );
+  });
+
+  it("env var vazia/ausente cai no default (não é 0)", () => {
+    assert.equal(
+      resolveBusyTimeoutMs({ CLARICE_DB_BUSY_TIMEOUT_MS: "" }),
+      DEFAULT_BUSY_TIMEOUT_MS,
+    );
+  });
+
+  it("env var não-numérica (typo) cai no default em vez de propagar NaN pro PRAGMA", () => {
+    assert.equal(
+      resolveBusyTimeoutMs({ CLARICE_DB_BUSY_TIMEOUT_MS: "abc" }),
+      DEFAULT_BUSY_TIMEOUT_MS,
+    );
+  });
+
+  it("env var negativa cai no default (PRAGMA busy_timeout negativo não faz sentido)", () => {
+    assert.equal(
+      resolveBusyTimeoutMs({ CLARICE_DB_BUSY_TIMEOUT_MS: "-100" }),
+      DEFAULT_BUSY_TIMEOUT_MS,
+    );
+  });
+
+  it("openClariceDb honra CLARICE_DB_BUSY_TIMEOUT_MS via process.env", () => {
+    const prev = process.env.CLARICE_DB_BUSY_TIMEOUT_MS;
+    process.env.CLARICE_DB_BUSY_TIMEOUT_MS = "45000";
+    try {
+      const db = openClariceDb(":memory:");
+      const row = db.prepare("PRAGMA busy_timeout").get() as { timeout: number };
+      assert.equal(row.timeout, 45000);
+    } finally {
+      if (prev === undefined) delete process.env.CLARICE_DB_BUSY_TIMEOUT_MS;
+      else process.env.CLARICE_DB_BUSY_TIMEOUT_MS = prev;
+    }
   });
 });
 

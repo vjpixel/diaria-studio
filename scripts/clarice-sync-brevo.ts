@@ -72,6 +72,7 @@ import {
   DEFAULT_DB_PATH,
 } from "./lib/clarice-db.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { retryOnSqliteBusy } from "./lib/sqlite-busy-retry.ts";
 import { ISO_LIKE_DATE_RE } from "./lib/iso-like-date.ts";
 import {
   makeRealCampaignExportClient,
@@ -756,20 +757,45 @@ export async function main(
     [];
   let processed = 0;
 
-  const flush = (): void => {
+  // #6035: BEGIN/COMMIT roda com retry-com-backoff quando falha por
+  // contenção SQLite ("database is locked"/SQLITE_BUSY) — o busy_timeout do
+  // driver (`resolveBusyTimeoutMs`) já cobre colisões curtas, mas uma
+  // transação concorrente que segura o lock além disso (achado ao vivo:
+  // `diaria-clarice-sync.service` colidindo com `diaria-clarice-novos.timer`
+  // 2min antes da falha) esgotava o busy_timeout e caía direto no catch
+  // externo, abortando o run inteiro por uma colisão passageira. Retry
+  // FINITO (`retryOnSqliteBusy`, delays default 1s/3s/6s) — nunca infinito,
+  // decisão documentada no PR: um lock genuinamente preso não deve travar o
+  // processo pra sempre, e o systemd timer já reroda no dia seguinte.
+  const flush = async (): Promise<void> => {
     if (buffer.length === 0) return;
     const batch = buffer;
     buffer = [];
-    db.exec("BEGIN");
-    try {
-      for (const b of batch) upsertBrevo(b.cols);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      // batch NÃO entra em done → re-run re-busca (idempotente). Não re-bufferiza
-      // pra não arriscar loop no mesmo erro persistente.
-      throw e;
-    }
+    await retryOnSqliteBusy(
+      () => {
+        db.exec("BEGIN");
+        try {
+          for (const b of batch) upsertBrevo(b.cols);
+          db.exec("COMMIT");
+        } catch (e) {
+          try {
+            db.exec("ROLLBACK");
+          } catch {
+            // BEGIN pode ter sido o que falhou (lock na abertura da transação) —
+            // nesse caso não há transação ativa pra desfazer; ignorar.
+          }
+          // batch NÃO entra em done → re-run re-busca (idempotente). Não re-bufferiza
+          // pra não arriscar loop no mesmo erro persistente.
+          throw e;
+        }
+      },
+      {
+        onRetry: ({ error, attemptIndex, delayMs }) =>
+          console.error(
+            `⚠️  flush colidiu com lock (${error.message}) — retry ${attemptIndex + 1} em ${delayMs}ms`,
+          ),
+      },
+    );
     // done/checkpoint só APÓS o COMMIT durável (senão um COMMIT que falha deixaria
     // ids "feitos" sem linha no DB).
     for (const b of batch) done.add(b.id);
@@ -784,17 +810,17 @@ export async function main(
       // como done mesmo assim pra não re-tentar em loop.
       buffer.push({ id: c.id, cols: parseBrevoContact(body) });
       processed++;
-      if (buffer.length >= BATCH) flush();
+      if (buffer.length >= BATCH) await flush();
       if (processed % BATCH === 0)
         console.error(`  …${processed}/${pending.length}`);
     });
-    flush();
+    await flush();
   } catch (e) {
     // persiste o que já veio antes de abortar; um flush que TAMBÉM falhe não pode
     // escapar daqui (senão db.close()/exitCode 2 + return não rodam → uncaught
     // exception derruba com exit 1 e stack, mascarando o exit code do erro real).
     try {
-      flush();
+      await flush();
     } catch (flushErr) {
       console.error(`⚠️  flush final falhou: ${(flushErr as Error).message}`);
     }
