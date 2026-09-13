@@ -150,6 +150,38 @@ análise do Basic Access. Duas armadilhas custaram tempo aqui:
 5. **A marca verificada expira em 7 dias se não for publicada** — depois de
    verificar, clicar em "Publicar branding".
 
+## Enhanced Conversions for Leads — escopo `datamanager` (#8023)
+
+Decisão do editor (#8023, ação de recuperação #7770): reautorizar o OAuth
+com um 2º escopo, `https://www.googleapis.com/auth/datamanager`, além do
+`adwords` de sempre — pré-requisito de conta pro Google habilitar Enhanced
+Conversions for Leads e pra uso futuro da Data Manager API propriamente
+dita. `scripts/google-ads-associate-token.ts` já pede os dois escopos
+(espaço-separados na URL de consentimento) desde este commit.
+
+**Ação manual do editor, ainda pendente** — rodar de novo o `--auth` pra
+emitir um refresh token que cubra os dois escopos (o anterior, só-`adwords`,
+não é suficiente):
+
+```bash
+doppler run -- npx tsx scripts/google-ads-associate-token.ts --auth
+```
+
+Isso sobrescreve `GOOGLE_ADS_REFRESH_TOKEN` no Doppler (mesmo mecanismo de
+sempre — o valor nunca é impresso). Depois de rodar, confirmar no painel do
+Google Ads (`ads.google.com/aw/conversions`) que a "Ação afetada" —
+`Cadastro newsletter (recuperação #7770)` — sai do estado "Requer atenção".
+
+**Nota técnica honesta**: o upload de hash de e-mail já implementado em
+`scripts/lib/google-ads-enhanced-conversions.ts` usa
+`ConversionUploadService.uploadClickConversions` da Google Ads API REST
+padrão (escopo `adwords`) — o mesmo caminho que já sobe `gclid`/`wbraid`. O
+escopo `datamanager` não é lido por essa chamada; ele é o que o Google exige
+como sinal de consentimento pra habilitar Enhanced Conversions for Leads na
+CONTA (ver o aviso "Requer atenção" da issue #8023), e fica disponível caso
+um caminho futuro precise chamar a Data Manager API dedicada. Não é
+retrabalho — os dois escopos convivem numa única credencial OAuth.
+
 ## Pré-requisito escondido: associar o token ao projeto
 
 Antes de a verificação valer para o Basic Access, o developer token precisa estar

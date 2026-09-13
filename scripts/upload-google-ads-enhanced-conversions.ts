@@ -8,17 +8,19 @@
  * de 05-06/09/2026 (rótulo de conversão removido, ver #7523), e qualquer
  * outro lote futuro do mesmo tipo.
  *
- * ## O QUE ESTE SCRIPT NÃO FAZ (pendente, fora de escopo daqui — ver #7770)
+ * ## O QUE ESTE SCRIPT NÃO FAZ (pendente, fora de escopo daqui — ver #7770, #8023)
  *
  *   1. Não habilita Enhanced Conversions for Leads na conta nem aceita os
- *      termos de dados do cliente — ação do editor no painel do Google Ads.
- *      Sem isso, `--send` vai falhar na chamada de rede.
+ *      termos de dados do cliente — ação do editor no painel do Google Ads
+ *      (inclui a reautorização OAuth com escopo `datamanager`, #8023). Sem
+ *      isso, `--send` vai falhar na chamada de rede.
  *   2. Não cria a ação de conversão de destino. `7418673798 Assinatura
- *      Confirmada` é `WEBPAGE_CODELESS` e NÃO aceita upload — é preciso
- *      criar uma ação `UPLOAD_CLICKS` (categoria `SIGNUP`) e passar o id
- *      dela em `--conversion-action-id`. Não há default: a issue não
- *      decidiu esse id ainda.
- *   3. Não gera a lista real de e-mails/timestamps de 05-06/09. Ver
+ *      Confirmada` é `WEBPAGE_CODELESS` e NÃO aceita upload — mas a ação
+ *      `UPLOAD_CLICKS` dedicada JÁ EXISTE: `Cadastro newsletter (recuperação
+ *      #7770)` (`7758161410`, categoria `SIGNUP`), criada para o upload
+ *      original por click-id (21 gclid + 2 wbraid, conforme #8023). Esse id
+ *      vai em `--conversion-action-id` — sem default, passar explícito.
+ *   3. Não gera a lista real de e-mails/timestamps/click-ids. Ver
  *      "Como derivar o input do Kit" abaixo.
  *
  * ## Formato do input (`--input`, CSV ou JSON — decidido pela extensão)
@@ -31,6 +33,14 @@
  * JSON (array de objetos):
  *
  *   [{ "email": "seu@email.com", "signupTimestamp": "2026-09-05T14:30:00-03:00" }]
+ *
+ * `gclid`/`wbraid`/`gbraid` são colunas/campos OPCIONAIS (#8023) — quando
+ * presentes, sobem JUNTO com o hash do e-mail na mesma conversão (Enhanced
+ * Conversions for Leads como parâmetro adicional ao click-id, não como
+ * substituto):
+ *
+ *   email,signup_timestamp,gclid
+ *   seu@email.com,2026-09-05T14:30:00-03:00,Cj0KCQjw...
  *
  * `signupTimestamp`/`signup_timestamp` PRECISA ser ISO 8601 com offset
  * explícito (não aceita "Z" implícito por omissão nem hora sem fuso) — o
@@ -169,8 +179,9 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   if (!conversionActionId) {
     console.error(
       "[upload-google-ads-enhanced-conversions] ✖ --conversion-action-id é obrigatório — a ação " +
-        "'Assinatura Confirmada' atual é WEBPAGE_CODELESS e não aceita upload; a issue #7770 ainda não " +
-        "decidiu o id da ação UPLOAD_CLICKS dedicada.",
+        "'Assinatura Confirmada' (7418673798) é WEBPAGE_CODELESS e não aceita upload; use a ação " +
+        "UPLOAD_CLICKS dedicada 'Cadastro newsletter (recuperação #7770)' (7758161410, conforme #8023) " +
+        "ou o id da que estiver em uso.",
     );
     return 1;
   }

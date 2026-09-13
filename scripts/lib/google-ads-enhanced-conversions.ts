@@ -14,24 +14,42 @@
  * `google-ads-ingest.ts`). A renovação de access token é REUSADA de lá
  * (`refreshGoogleAdsAccessToken`) — não duplicada aqui.
  *
- * ## ESTE MÓDULO NÃO RESOLVE A ISSUE INTEIRA (#7770)
+ * ## ESTE MÓDULO NÃO RESOLVE A ISSUE INTEIRA (#7770, #8023)
  *
- * Três pré-requisitos ficam de fora, de propósito — nenhum é implementável
- * a partir daqui:
+ * Pré-requisitos que ficam de fora, de propósito — nenhum é implementável a
+ * partir daqui:
  *
  *   1. **Ação do editor no painel do Google Ads**: aceitar os termos de
  *      dados do cliente e habilitar Enhanced Conversions for Leads na
  *      conta. Sem isso a API recusa o upload (a chamada de rede vai falhar
  *      até essa ação acontecer).
- *   2. **Criar a ação de conversão de destino** (`UPLOAD_CLICKS`, categoria
- *      `SIGNUP`) — `7418673798 Assinatura Confirmada` é `WEBPAGE_CODELESS`
- *      e não aceita upload. O id/resource name da ação nova vai em
- *      `--conversion-action-id` (obrigatório, sem default — a issue não
- *      decidiu esse id ainda).
- *   3. **A lista real de e-mails/timestamps de 05-06/09** não é gerada por
+ *   2. **A ação de conversão de destino já existe** — `Cadastro newsletter
+ *      (recuperação #7770)` (`7758161410`, `UPLOAD_CLICKS`) já recebeu o
+ *      upload original por click-id (21 gclid + 2 wbraid, ver #8023). O id
+ *      vai em `--conversion-action-id`, sem default.
+ *   3. **A lista real de e-mails/timestamps/click-ids** não é gerada por
  *      este script — ver a docstring do CLI
  *      (`scripts/upload-google-ads-enhanced-conversions.ts`) pra como
  *      derivá-la do Kit.
+ *   4. **Reautorização OAuth com escopo `datamanager`** (#8023, decisão do
+ *      editor) — ação manual do editor via
+ *      `doppler run -- npx tsx scripts/google-ads-associate-token.ts --auth`.
+ *      Este módulo já sobe o hash de e-mail via `uploadClickConversions`
+ *      (Google Ads API padrão, escopo `adwords` — não exige `datamanager`
+ *      hoje), mas o escopo é pré-requisito de conta pro Google habilitar
+ *      Enhanced Conversions for Leads e pra uso futuro da Data Manager API
+ *      propriamente dita.
+ *
+ * ## #8023 — hash de e-mail como PARÂMETRO ADICIONAL, não substituto do click-id
+ *
+ * Antes do #8023, `SignupRecordInput`/`ValidatedConversion` só carregavam
+ * e-mail — o upload original de #7770 (21 gclid + 2 wbraid) foi feito por
+ * fora deste módulo, direto na UI/Data Manager do Google Ads, sem hash de
+ * e-mail. `gclid`/`wbraid`/`gbraid` agora são campos opcionais nos dois
+ * tipos e em `ClickConversionPayload` — quando presentes, sobem JUNTO com
+ * `userIdentifiers.hashedEmail` na MESMA entrada de `conversions[]`, sem
+ * quebrar o caso já coberto (só e-mail, sem click-id) nem duplicar o evento
+ * original.
  *
  * ## Por que o corte de 2026-09-06T12:27:00-03:00 é OBRIGATÓRIO, não best-effort
  *
@@ -138,6 +156,20 @@ export interface SignupRecordInput {
   /** Timestamp ISO 8601 COM offset explícito do cadastro real (ex:
    *  "2026-09-05T14:30:00-03:00"). */
   signupTimestamp: string;
+  /**
+   * Click id opcional (#8023) — quando presente, sobe JUNTO com o hash do
+   * e-mail no mesmo evento de conversão, em vez de o e-mail ser o único
+   * identificador. Mantém o fluxo que já usa só click-id funcionando: um
+   * registro pode ter `gclid`/`wbraid`/`gbraid` e nenhum `userIdentifiers`
+   * extra se o e-mail vier vazio — mas `email` continua obrigatório neste
+   * módulo (ver `validateSignupRecords`), então "só click-id" aqui quer
+   * dizer "o e-mail é o hash ADICIONAL ao lado do click-id", não "sem
+   * e-mail". Um lote genuinamente sem e-mail nenhum é o caminho antigo
+   * (import manual pela UI do Google Ads), fora do escopo deste módulo.
+   */
+  gclid?: string;
+  wbraid?: string;
+  gbraid?: string;
 }
 
 export interface ValidatedConversion {
@@ -148,6 +180,10 @@ export interface ValidatedConversion {
    *  passado explicitamente — sinal pro CLI destacar mesmo tendo sido
    *  aceito. */
   pastCutoff: boolean;
+  /** Click id opcional (#8023) — repassado de `SignupRecordInput`, ver ali. */
+  gclid?: string;
+  wbraid?: string;
+  gbraid?: string;
 }
 
 export interface SkippedRecord {
@@ -201,7 +237,15 @@ export function validateSignupRecords(
 
   const skippedTestEmails: SkippedRecord[] = [];
   const skippedMalformed: SkippedRecord[] = [];
-  const candidates: Array<{ row: number; email: string; conversionDateTime: string; ms: number }> = [];
+  const candidates: Array<{
+    row: number;
+    email: string;
+    conversionDateTime: string;
+    ms: number;
+    gclid?: string;
+    wbraid?: string;
+    gbraid?: string;
+  }> = [];
 
   records.forEach((record, idx) => {
     const row = idx + 1;
@@ -227,7 +271,15 @@ export function validateSignupRecords(
       return;
     }
 
-    candidates.push({ row, email, conversionDateTime: formatted, ms });
+    candidates.push({
+      row,
+      email,
+      conversionDateTime: formatted,
+      ms,
+      gclid: record.gclid?.trim() || undefined,
+      wbraid: record.wbraid?.trim() || undefined,
+      gbraid: record.gbraid?.trim() || undefined,
+    });
   });
 
   const violatingRows: SkippedRecord[] = candidates
@@ -256,6 +308,9 @@ export function validateSignupRecords(
     hashedEmail: hashEmailForEnhancedConversions(c.email),
     conversionDateTime: c.conversionDateTime,
     pastCutoff: c.ms > cutoffMs,
+    gclid: c.gclid,
+    wbraid: c.wbraid,
+    gbraid: c.gbraid,
   }));
 
   return {
@@ -274,7 +329,25 @@ export function validateSignupRecords(
 export interface ClickConversionPayload {
   conversionAction: string;
   conversionDateTime: string;
+  /**
+   * OBRIGATÓRIO (achado do review, #8023) — `email`/`hashedEmail` são
+   * obrigatórios em `SignupRecordInput`/`ValidatedConversion` (ver ali), e
+   * este módulo nunca constrói um `ValidatedConversion` sem hash de e-mail.
+   * Manter opcional aqui enfraqueceria o tipo pra cobrir um estado que o
+   * único builder (`buildUploadClickConversionsPayload`) nunca produz: a
+   * API do Google Ads exige pelo menos 1 identificador de usuário por
+   * conversão, e antes do #8023 esse invariante era estruturalmente
+   * garantido pelo tipo — continua sendo. Só `gclid`/`wbraid`/`gbraid`
+   * (abaixo) são de fato opcionais, exatamente o parâmetro ADICIONAL que a
+   * issue #8023 pediu.
+   */
   userIdentifiers: Array<{ hashedEmail: string }>;
+  /** Click id (#8023) — presente só quando o registro de entrada trouxe um.
+   *  Nunca os três ao mesmo tempo na prática (gclid XOR wbraid/gbraid), mas
+   *  o tipo não impõe isso — a API do Google Ads que valida. */
+  gclid?: string;
+  wbraid?: string;
+  gbraid?: string;
 }
 
 export interface UploadClickConversionsPayload {
@@ -308,9 +381,24 @@ export function resolveConversionActionResourceName(
 
 /**
  * Monta o corpo de `POST /v{N}/customers/{id}:uploadClickConversions`.
- * Nunca inclui `gclid`/`gbraid`/`wbraid` — é justamente a ausência desses
- * campos, substituídos por `userIdentifiers`, que caracteriza Enhanced
- * Conversions for Leads em vez de Offline Conversion Import clássico.
+ *
+ * Até #8023, este builder SEMPRE incluía `userIdentifiers` e NUNCA
+ * `gclid`/`gbraid`/`wbraid` — a ausência desses campos era o que
+ * caracterizava Enhanced Conversions for Leads em vez de Offline Conversion
+ * Import clássico. #8023 (decisão do editor) muda isso: o hash de e-mail
+ * passa a ser um PARÂMETRO ADICIONAL no mesmo evento, não um substituto —
+ * quando o registro validado carrega `gclid`/`wbraid`/`gbraid` (#8023,
+ * `SignupRecordInput`), o click id vai JUNTO com `userIdentifiers` na mesma
+ * entrada de `conversions[]`, em vez dos dois caminhos serem mutuamente
+ * exclusivos. Isso é exatamente o que a ação de recuperação #7770 pedia: o
+ * evento `Cadastro newsletter (recuperação #7770)` já sobe por click-id
+ * (21 gclid + 2 wbraid, ver #8023) — este builder deixa de forçar a
+ * reescrever esse lote do zero, só adiciona o sinal que faltava.
+ *
+ * `userIdentifiers` é sempre incluído (obrigatório em `ClickConversionPayload`
+ * — `email`/`hashedEmail` são obrigatórios em `ValidatedConversion`, ver
+ * ali); `gclid`/`wbraid`/`gbraid` são adicionados condicionalmente, só
+ * quando o registro validado os carrega.
  *
  * @pure
  */
@@ -319,11 +407,17 @@ export function buildUploadClickConversionsPayload(
   opts: { conversionActionResourceName: string },
 ): UploadClickConversionsPayload {
   return {
-    conversions: conversions.map((c) => ({
-      conversionAction: opts.conversionActionResourceName,
-      conversionDateTime: c.conversionDateTime,
-      userIdentifiers: [{ hashedEmail: c.hashedEmail }],
-    })),
+    conversions: conversions.map((c) => {
+      const entry: ClickConversionPayload = {
+        conversionAction: opts.conversionActionResourceName,
+        conversionDateTime: c.conversionDateTime,
+        userIdentifiers: [{ hashedEmail: c.hashedEmail }],
+      };
+      if (c.gclid) entry.gclid = c.gclid;
+      if (c.wbraid) entry.wbraid = c.wbraid;
+      if (c.gbraid) entry.gbraid = c.gbraid;
+      return entry;
+    }),
     partialFailure: true,
     validateOnly: false,
   };
@@ -350,6 +444,12 @@ export function parseSignupCsv(content: string, parseCsvFn: (content: string) =>
   const records: SignupRecordInput[] = (result.data as Array<Record<string, string>>).map((row) => ({
     email: (row.email ?? row.Email ?? "").trim(),
     signupTimestamp: (row.signup_timestamp ?? row.signupTimestamp ?? row.timestamp ?? "").trim(),
+    // #8023 — click id opcional, colunas adicionais que o CSV de recuperação
+    // do #7770 já carrega (21 gclid + 2 wbraid); ausentes em qualquer linha
+    // que não tenha click id, sem quebrar o parser de e-mail-só existente.
+    gclid: (row.gclid ?? row.Gclid ?? row.GCLID ?? "").trim() || undefined,
+    wbraid: (row.wbraid ?? row.Wbraid ?? row.WBRAID ?? "").trim() || undefined,
+    gbraid: (row.gbraid ?? row.Gbraid ?? row.GBRAID ?? "").trim() || undefined,
   }));
   return { records, parseErrors };
 }
@@ -369,7 +469,14 @@ export function parseSignupJson(content: string): SignupRecordInput[] {
     const r = row as Record<string, unknown>;
     const email = String(r.email ?? "").trim();
     const signupTimestamp = String(r.signupTimestamp ?? r.signup_timestamp ?? "").trim();
-    return { email, signupTimestamp };
+    // #8023 — click id opcional, mesma lógica do parser de CSV acima.
+    // `null`/`undefined` tratados como ausente (achado do review: um
+    // `"gclid": null` explícito no JSON viraria a STRING "null" sem este
+    // guard, em vez de ausente).
+    const gclid = r.gclid == null ? undefined : String(r.gclid).trim() || undefined;
+    const wbraid = r.wbraid == null ? undefined : String(r.wbraid).trim() || undefined;
+    const gbraid = r.gbraid == null ? undefined : String(r.gbraid).trim() || undefined;
+    return { email, signupTimestamp, gclid, wbraid, gbraid };
   });
 }
 
