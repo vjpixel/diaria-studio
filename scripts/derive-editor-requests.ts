@@ -28,7 +28,7 @@
  * Escrita no mesmo editor-requests.jsonl com source: "derived".
  */
 
-import { existsSync, mkdirSync, readFileSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -1124,8 +1124,40 @@ function classifyStage1DestaqueDiff(categorizedJson: any, approvedJson: any): Ar
  * separar os dois casos sem mudar o schema de `.step-1-gate.json` — aceito
  * como o mesmo risco residual que #4943 já documenta pro `itens_movidos`,
  * não uma regressão nova introduzida aqui.
+ *
+ * **Idempotência (achado de fleet review #8081):** diferente de
+ * `deriveStage4`/`deriveStage6` — que diffam contra um snapshot e por isso
+ * uma 2ª chamada naturalmente vê "sem mudança" (o snapshot já reflete o
+ * estado anterior) —, este comando não usa snapshot: diffa direto
+ * `01-categorized.json` × `01-approved.json`, dois arquivos que continuam
+ * IDÊNTICOS numa 2ª chamada. Sem um marcador de "já derivado", cada
+ * reexecução (ex: `/diaria-1-pesquisa {mesmo AAMMDD}` retomando um Stage 1
+ * interrompido DEPOIS deste passo já ter rodado uma vez) duplicaria as
+ * mesmas entradas em `editor-requests.jsonl` via `appendEditorRequest`
+ * (`log-editor-request.ts`, append-only, sem chave de dedup). Guard via
+ * marcador `_internal/.step-1-editor-requests-derived.json` — mesmo
+ * padrão de imutabilidade de `hasSnapshot`/`snapshotStage2`/`snapshotStage4`
+ * acima, só que sem diretório de snapshot (não há conteúdo pra preservar,
+ * só o FATO de já ter derivado).
  */
+const STAGE1_DERIVED_MARKER = "_internal/.step-1-editor-requests-derived.json";
+
+function hasStage1DerivedMarker(editionDir: string): boolean {
+  return existsSync(resolve(editionDir, STAGE1_DERIVED_MARKER));
+}
+
+function writeStage1DerivedMarker(editionDir: string, count: number): void {
+  const markerPath = resolve(editionDir, STAGE1_DERIVED_MARKER);
+  mkdirSync(dirname(markerPath), { recursive: true });
+  writeFileSync(markerPath, JSON.stringify({ derived_at: new Date().toISOString(), entries_derived: count }, null, 2), "utf8");
+}
+
 function deriveStage1(editionDir: string, edition: string): number {
+  if (hasStage1DerivedMarker(editionDir)) {
+    console.log(`[derive-editor-requests] Stage 1 gate: já derivado anteriormente pra esta edição (marcador existe) — no-op, idempotente (#8081).`);
+    return 0;
+  }
+
   const gatePath = join(editionDir, "_internal", ".step-1-gate.json");
   if (!existsSync(gatePath)) {
     console.log(`[derive-editor-requests] Stage 1 gate: .step-1-gate.json ausente — pulando (edição anterior ao #4842, ou apply-gate-edits.ts não rodou).`);
@@ -1171,6 +1203,7 @@ function deriveStage1(editionDir: string, edition: string): number {
     count++;
   }
 
+  writeStage1DerivedMarker(editionDir, count);
   console.log(`[derive-editor-requests] Stage 1 gate: ${count} pedidos derivados`);
   return count;
 }
