@@ -520,6 +520,20 @@ export async function dispatchReportEmail(
  * existindo (e a lógica de dedup/retry abaixo continua exercitável via
  * `notify: true` explícito) caso uma severidade `"urgente"` real precise
  * deste canal no futuro — mas hoje nenhum caller o faz.
+ *
+ * **Assimetria conhecida (achado do fleet review da PR #8077, baixa
+ * prioridade, não endereçada):** `editor-notify.ts` (#7957) faz esse MESMO
+ * tipo de rollout via config (`platform.config.json` ->
+ * `notifications.email_policy`, `"legacy"`/`"urgent_only"`) — reversível
+ * com 1 linha de config, sem tocar código. Aqui o default virou `false`
+ * como LITERAL no código — reverter exige mudar este arquivo (e
+ * `writeReportFile`/`writeEditionReport`/`ensureEditionReport`/
+ * `register-report.ts`, que repassam o mesmo default adiante), não um
+ * flip de config. Aceito deliberadamente: o canal de relatório não tem
+ * rollout gradual planejado (diferente de `editor-notify.ts`, que
+ * convivia com remetentes ainda não migrados durante a transição) — se
+ * isso mudar, migrar pra uma chave própria em `notifications` é a
+ * correção natural.
  */
 export function registerReport(
   rootDir: string,
