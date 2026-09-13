@@ -494,15 +494,17 @@ function anthropicCheckProviderError(json: unknown): string | undefined {
 
 /**
  * Modelos de raciocínio da OpenAI (família GPT-5, série o) — aceitam o
- * parâmetro `reasoning`; os não-raciocínio (ex: gpt-4.1) rejeitam, então só
- * mandamos quando o model casa (#8064).
+ * parâmetro `reasoning`; os não-raciocínio (ex: gpt-4.1, variantes `-chat`
+ * da GPT-5) rejeitam, então só mandamos quando o model casa (#8064).
  */
 export function isOpenAiReasoningModel(model: string): boolean {
-  return /^(gpt-5|o\d)/.test(model);
+  return /^(gpt-5|o\d)/.test(model) && !model.includes("-chat");
 }
 
 function openaiRequest(question: string, apiKey: string, model: string) {
-  // #8064: effort "low" (não "minimal" — web_search não roda com minimal).
+  // #8064: effort "low" (não "minimal" — a doc oficial do web_search diz
+  // "Web search does not support gpt-5 with minimal reasoning", conferido
+  // em 12/09/2026).
   // O raciocínio é cobrado como token de saída; low é o bastante pra
   // decidir buscar e resumir, e mantém custo/latência perto do gpt-4.1.
   const reasoning = isOpenAiReasoningModel(model) ? { reasoning: { effort: "low" } } : {};
@@ -693,7 +695,8 @@ function googleExtractUsage(json: unknown): GeoProviderUsage | undefined {
 
 // ---------------------------------------------------------------------------
 
-/** Timeout DEFAULT por chamada de provider (usado por OpenAI/Google) —
+/** Timeout DEFAULT por chamada de provider (usado pelo Google; OpenAI tem
+ * `OPENAI_GEO_TIMEOUT_MS` próprio desde #8064) —
  * mesma referência de 25s já usada pro fetch in-page do Beehiiv
  * (`DEFAULT_FETCH_TIMEOUT_MS`, `scripts/lib/beehiiv-insert-text.ts`,
  * documentado em `context/publishers/beehiiv-playbook.md` §Fase 3). Sem

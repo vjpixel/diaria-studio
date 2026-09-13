@@ -192,6 +192,26 @@ describe("GEO_PROVIDERS — extractText por provider (fixtures)", () => {
     assert.match(openai.extractText(fixture), /diar\.ia\.br/);
   });
 
+  it("#8064: resposta de modelo de raciocínio (reasoning + web_search_call antes da message) extrai texto e não vira erro de provider", () => {
+    const fixture = {
+      status: "completed",
+      output: [
+        { type: "reasoning", id: "rs_1", summary: [] },
+        { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "newsletter IA" } },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Recomendo a diar.ia.br", annotations: [] }],
+        },
+      ],
+      usage: { input_tokens: 9000, output_tokens: 700, output_tokens_details: { reasoning_tokens: 400 } },
+    };
+    assert.match(openai.extractText(fixture), /diar\.ia\.br/);
+    assert.equal(openai.checkProviderError!(fixture), undefined);
+    // reasoning_tokens já vêm dentro de output_tokens — nunca somar de novo.
+    assert.deepEqual(openai.extractUsage!(fixture), { inputTokens: 9000, outputTokens: 700 });
+  });
+
   it("openai: forma inesperada não lança", () => {
     assert.doesNotThrow(() => openai.extractText({}));
     assert.equal(openai.extractText({}), "");
@@ -647,6 +667,7 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     assert.equal(bodyOf("gpt-4.1").reasoning, undefined);
     assert.equal(isOpenAiReasoningModel("o4-mini"), true);
     assert.equal(isOpenAiReasoningModel("gpt-4.1-mini"), false);
+    assert.equal(isOpenAiReasoningModel("gpt-5-chat-latest"), false);
   });
 });
 
