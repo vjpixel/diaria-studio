@@ -492,7 +492,22 @@ function anthropicCheckProviderError(json: unknown): string | undefined {
 // do módulo) — extractText é defensivo o bastante pra tolerar variação.
 // ---------------------------------------------------------------------------
 
+/**
+ * Modelos de raciocínio da OpenAI (família GPT-5, série o) — aceitam o
+ * parâmetro `reasoning`; os não-raciocínio (ex: gpt-4.1, variantes `-chat`
+ * da GPT-5) rejeitam, então só mandamos quando o model casa (#8064).
+ */
+export function isOpenAiReasoningModel(model: string): boolean {
+  return /^(gpt-5|o\d)/.test(model) && !model.includes("-chat");
+}
+
 function openaiRequest(question: string, apiKey: string, model: string) {
+  // #8064: effort "low" (não "minimal" — a doc oficial do web_search diz
+  // "Web search does not support gpt-5 with minimal reasoning", conferido
+  // em 12/09/2026).
+  // O raciocínio é cobrado como token de saída; low é o bastante pra
+  // decidir buscar e resumir, e mantém custo/latência perto do gpt-4.1.
+  const reasoning = isOpenAiReasoningModel(model) ? { reasoning: { effort: "low" } } : {};
   return {
     url: "https://api.openai.com/v1/responses",
     init: {
@@ -505,6 +520,7 @@ function openaiRequest(question: string, apiKey: string, model: string) {
         model,
         input: question,
         tools: [{ type: "web_search" }],
+        ...reasoning,
       }),
     } satisfies RequestInit,
   };
@@ -679,7 +695,8 @@ function googleExtractUsage(json: unknown): GeoProviderUsage | undefined {
 
 // ---------------------------------------------------------------------------
 
-/** Timeout DEFAULT por chamada de provider (usado por OpenAI/Google) —
+/** Timeout DEFAULT por chamada de provider (usado pelo Google; OpenAI tem
+ * `OPENAI_GEO_TIMEOUT_MS` próprio desde #8064) —
  * mesma referência de 25s já usada pro fetch in-page do Beehiiv
  * (`DEFAULT_FETCH_TIMEOUT_MS`, `scripts/lib/beehiiv-insert-text.ts`,
  * documentado em `context/publishers/beehiiv-playbook.md` §Fase 3). Sem
@@ -692,6 +709,9 @@ function googleExtractUsage(json: unknown): GeoProviderUsage | undefined {
  * array (timeoutMs agora é campo obrigatório, #4904), então a ordem
  * importa: TDZ de `const` quebraria se ficasse depois. */
 export const GEO_PROVIDER_TIMEOUT_MS = 25_000;
+
+/** #8064: timeout do provider OpenAI com gpt-5-mini (raciocínio + busca). */
+export const OPENAI_GEO_TIMEOUT_MS = 90_000;
 
 export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
   {
@@ -728,7 +748,10 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     id: "openai",
     label: "ChatGPT (OpenAI)",
     envKey: "OPENAI_API_KEY",
-    defaultModel: "gpt-4.1",
+    // #8064 (decisão do editor, 12/09/2026): gpt-5-mini em vez de gpt-4.1 —
+    // ~1/3 do custo semanal (o gpt-4.1 paga o conteúdo da busca a US$ 2/1M
+    // de input) e mesma família dos modelos que o ChatGPT de consumo usa.
+    defaultModel: "gpt-5-mini",
     buildRequest: openaiRequest,
     extractText: openaiExtractText,
     extractUsage: openaiExtractUsage,
@@ -736,10 +759,11 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     // ou content_filter) ou bloco type:"refusal" podem deixar output[] sem
     // texto extraível.
     checkProviderError: openaiCheckProviderError,
-    // Sem tool com latência multi-hop tipo o web_search da Anthropic — o
-    // default global serve. Explícito de propósito, ver docstring de
-    // GeoProviderDef.timeoutMs.
-    timeoutMs: GEO_PROVIDER_TIMEOUT_MS,
+    // #8064: timeout próprio desde a troca pra gpt-5-mini — modelo de
+    // raciocínio + web_search soma latência que o gpt-4.1 não tinha, e o
+    // default de 25s não foi medido contra isso. Timeout ainda é cobrado
+    // (mesmo achado da Anthropic), então errar pra cima é o lado barato.
+    timeoutMs: OPENAI_GEO_TIMEOUT_MS,
   },
   {
     id: "google",
@@ -788,12 +812,19 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
  *   piso mesmo assim (mesma disciplina — nunca assumir tier/cota de quem
  *   vai rodar o script).
  *
- * Só estes 2 models (os `defaultModel` de `GEO_PROVIDERS`) — um override
+ * - `gpt-5-mini` (#8064, verificado ao vivo em 12/09/2026, mesma página):
+ *   $0.25 input / $2.00 output. Modelo de raciocínio — os tokens de
+ *   raciocínio vêm dentro de `usage.output_tokens` e são cobrados como
+ *   saída, então o cálculo abaixo já os inclui. `gpt-4.1` fica na tabela
+ *   pra override via env e pra leitura do histórico.
+ *
+ * Só os models listados — um override
  * via `{ENVKEY}_MODEL` (ver `main()`) pra um model fora desta tabela cai em
  * `undefined`, nunca um preço inventado por aproximação de nome.
  */
 const GEO_NON_ANTHROPIC_TOKEN_PRICING: Readonly<Record<string, { inputPer1M: number; outputPer1M: number }>> = {
   "gpt-4.1": { inputPer1M: 2.0, outputPer1M: 8.0 },
+  "gpt-5-mini": { inputPer1M: 0.25, outputPer1M: 2.0 },
   "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5 },
 };
 
