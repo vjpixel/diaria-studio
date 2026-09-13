@@ -63,6 +63,7 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { brevoGet } from "./lib/brevo-client.ts"; // #2651: direto da lib (era via re-export do build-waves)
+import { poolAbortOnError as pool } from "./lib/pool.ts"; // #8091: era cópia local, extraída pra lib/pool.ts
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { CLARICE_BASE } from "./lib/clarice-paths.ts";
@@ -258,30 +259,6 @@ export function normalizeContact(raw: {
 export interface ContactRef {
   id: number;
   blacklisted: boolean;
-}
-
-/**
- * Pool de concorrência limitada com ABORT no primeiro erro (#2426 review): ao
- * primeiro throw, marca `aborted` e os demais workers param após o await em
- * curso — sem isso, um rate-limit sustentado num worker deixava os outros 5
- * martelando a Brevo (mais 429) e mutando `done` após o catch já ter salvo o
- * snapshot. A rejeição do Promise.all propaga o erro original.
- */
-async function pool<T>(items: T[], n: number, worker: (item: T) => Promise<void>): Promise<void> {
-  let i = 0;
-  let aborted = false;
-  const run = async (): Promise<void> => {
-    while (i < items.length && !aborted) {
-      const item = items[i++];
-      try {
-        await worker(item);
-      } catch (e) {
-        aborted = true;
-        throw e;
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, run));
 }
 
 /** União dos list IDs de todas as campanhas enviadas (status=sent). */

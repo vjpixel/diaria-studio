@@ -262,7 +262,7 @@ const ALLOWLIST: readonly DangerousMatch[] = [
   // getIntArg no #5431 (guard #4573 pegou a ocorrência nova introduzida pela
   // paralelização do catch-up de opens) — "se sumiu, ótimo, remova a
   // entrada" (comentário original desta allowlist).
-  { file: "scripts/clarice-engagement-cohorts.ts", line: 562 }, // #4451 cutover formalize: docstring novo (+10 linhas) deslocou 552→562
+  { file: "scripts/clarice-engagement-cohorts.ts", line: 539 }, // #8091: pool() abort-on-error local removido (extraído pra lib/pool.ts) deslocou 562→539
   // #4451 follow-up (fleet review #4479 achado 4): a entrada da linha 648
   // (--refetch-window-days) foi MIGRADA pra getIntArg neste PR — "se sumiu,
   // ótimo, remova a entrada" (comentário original desta allowlist). Só
