@@ -20,9 +20,13 @@ Cada tema é uma narrativa que atravessa vários meses, não a notícia de um m�
 
 **INTRO**
 
-[3-4 frases situando o período: o que ele foi, no conjunto. Diz a janela real
-("os doze meses entre agosto de 2025 e agosto de 2026"), nunca "os últimos 12
-meses" genérico — a 1ª rodada cobre 13. Não enumera os temas; abre cena.]
+[Abre com "Nesta edição de aniversário," (ou, na rodada de janeiro, o
+equivalente "Nesta edição de retrospectiva,"/"Neste balanço do ano,") — nunca
+com uma frase de bastidor de produção como "Relendo tudo de uma vez para esta
+edição" (#8054). 3-4 frases situando o período: o que ele foi, no conjunto.
+Diz a janela real ("os doze meses entre agosto de 2025 e agosto de 2026"),
+nunca "os últimos 12 meses" genérico — a 1ª rodada cobre 13. Não enumera os
+temas; abre cena.]
 
 ---
 
@@ -88,7 +92,10 @@ são a extrapolação de tendências que apareceram aqui, e podem errar.
 
 [O parágrafo acima é obrigatório e abre a seção. Ele é o que marca o bloco como
 opinativo — o fact-check da Etapa 4 não verifica esta seção, justamente porque
-ela não tem fonte externa a verificar.]
+ela não tem fonte externa a verificar. O horizonte das previsões é sempre "os
+próximos meses" — nunca "o próximo ano" nem um número de meses comprometido
+(#8054): a janela de retrospectiva já varia entre a rodada de aniversário e a
+de janeiro, e o método é extrapolar uma tendência, não prometer um calendário.]
 
 **[Previsão 1 — uma frase afirmativa]**
 
@@ -105,8 +112,10 @@ A evidência cita edições concretas.]
 
 **PARA ENCERRAR**
 
-[2-3 frases fechando. Na rodada de aniversário, agradece o ano; na de janeiro,
-abre o ano novo. Convite para responder ao e-mail.]
+[2-3 frases fechando, em tom exclamativo (#8054). Na rodada de aniversário,
+agradece o ano; na de janeiro, abre o ano novo. Nunca inclui um convite
+genérico para "responder a este e-mail" — não é o fluxo de e-mail regular da
+mensal, é a base própria da anual.]
 ```
 
 ## Limites de tamanho
