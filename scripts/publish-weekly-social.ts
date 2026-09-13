@@ -65,6 +65,21 @@
  * `--saturday` é OBRIGATÓRIO e explícito (mesmo invariante de CLAUDE.md pras
  * skills `/diaria-*`: nunca inferir data de `today()`).
  *
+ * **LinkedIn (#8052, wiring real — mecanismo já existia desde #8083):** o
+ * carrossel semanal despacha também pro LinkedIn, mesmo `channel: "linkedin"`
+ * + `image_urls` do Worker `diaria-linkedin-cron` (que publica via API
+ * direta do LinkedIn quando `image_urls.length > 1` — `fireLinkedInCarousel`,
+ * ver dispatch.ts). **Decisão do editor (briefing 260913b): reusa o MESMO
+ * texto/seleção dos outros 3 canais — NUNCA um formatter dedicado.** Reusa
+ * literalmente `fbCaption` (já computado pro Facebook), não uma 4ª chamada
+ * de formatação. Limitação conhecida e aceita: o publisher DIÁRIO do
+ * LinkedIn (`publish-linkedin.ts`) segue a convenção de nunca colocar URL no
+ * corpo do post (`LINKEDIN_CTA_LINE = null` em `social-cta-lines.ts`, link
+ * vai como comentário separado) — `fbCaption` inclui um link clicável no
+ * corpo, então o post semanal do LinkedIn diverge dessa convenção. Decisão
+ * explícita do editor foi aceitar essa divergência em vez de criar
+ * `formatLinkedInWeekly` só pra omitir a URL.
+ *
  * `--force-font-size N` (override manual, ad-hoc — #7571): substitui
  * `computeCarouselTitleFontSize` (o menor tamanho que caiba os 5 títulos
  * DESTA rodada) por um valor fixo. Cada modo/rodada calcula seu próprio
@@ -899,6 +914,9 @@ async function runOneMode(
     console.log(`── instagram (${mode}) ──\n${caption}\n`);
     console.log(`── facebook (${mode}) ──\n${fbCaption}\n`);
     console.log(`── threads (${mode}) ──\n${threadsCaption}\n`);
+    // #8052: LinkedIn reusa fbCaption (mesmo texto, sem formatter dedicado) —
+    // ver nota no cabeçalho do arquivo.
+    console.log(`── linkedin (${mode}) ──\n${fbCaption}\n`);
     return true;
   }
 
@@ -907,12 +925,13 @@ async function runOneMode(
 
   const tagAndAppend = (entry: PostEntry): void => appendSocialPosts(publishedPath, [entry]);
 
-  // #5348: skip-existing agora é POR CANAL (3 canais desde a unidade
-  // Threads) — um já publicado (re-run parcial após uma falha anterior) não
+  // #5348/#8052: skip-existing agora é POR CANAL (4 canais desde a unidade
+  // LinkedIn) — um já publicado (re-run parcial após uma falha anterior) não
   // deveria impedir os outros de tentar.
   let skipInstagram = false;
   let skipFacebook = false;
   let skipThreads = false;
+  let skipLinkedIn = false;
   if (skipExisting) {
     const published = readSocialPublished(publishedPath);
     const existingIg = published.posts.find(
@@ -923,6 +942,9 @@ async function runOneMode(
     );
     const existingThreads = published.posts.find(
       (p) => p.platform === "threads" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
+    );
+    const existingLinkedIn = published.posts.find(
+      (p) => p.platform === "linkedin" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
     );
     if (existingIg) {
       console.log(`SKIP instagram/${destaqueKey} — already ${existingIg.status}`);
@@ -936,7 +958,11 @@ async function runOneMode(
       console.log(`SKIP threads/${destaqueKey} — already ${existingThreads.status}`);
       skipThreads = true;
     }
-    if (skipInstagram && skipFacebook && skipThreads) return true;
+    if (existingLinkedIn) {
+      console.log(`SKIP linkedin/${destaqueKey} — already ${existingLinkedIn.status}`);
+      skipLinkedIn = true;
+    }
+    if (skipInstagram && skipFacebook && skipThreads && skipLinkedIn) return true;
   }
 
   // #4101 self-review finding 10: valida scheduled_at ANTES de qualquer
@@ -971,6 +997,16 @@ async function runOneMode(
     if (!skipThreads) {
       tagAndAppend({
         platform: "threads",
+        destaque: destaqueKey,
+        url: null,
+        status: "failed",
+        scheduled_at: scheduledAt,
+        reason: `scheduled_time_invalid: ${e.message}`,
+      });
+    }
+    if (!skipLinkedIn) {
+      tagAndAppend({
+        platform: "linkedin",
         destaque: destaqueKey,
         url: null,
         status: "failed",
@@ -1055,17 +1091,18 @@ async function runOneMode(
     console.error(
       resolvedImages.onDemandError
         ? `ERRO ${destaqueKey}: geração SOB DEMANDA do card 4:5 (item RADAR/USE MELHOR da edição ${resolvedImages.missingEditionDate}) falhou: ` +
-            `${resolvedImages.onDemandError} — carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads), não publica parcial.`
+            `${resolvedImages.onDemandError} — carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads + LinkedIn), não publica parcial.`
         : resolvedImages.corruptError
           ? `ERRO ${destaqueKey}: 06-public-images.json da edição ${resolvedImages.missingEditionDate} ESTÁ CORROMPIDO ` +
               `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}): ${resolvedImages.corruptError} — re-rodar upload-images-public.ts ` +
-              `NÃO resolve isso; investigue escrita concorrente/corrupção de disco antes. Carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads), não publica parcial.`
+              `NÃO resolve isso; investigue escrita concorrente/corrupção de disco antes. Carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads + LinkedIn), não publica parcial.`
           : `ERRO ${destaqueKey}: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
-              `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads), não publica parcial.`,
+              `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads + LinkedIn), não publica parcial.`,
     );
     if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    if (!skipLinkedIn) tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     return true;
   }
 
@@ -1088,12 +1125,13 @@ async function runOneMode(
   } catch (e: any) {
     console.error(
       `ERRO ${destaqueKey}: geração do card sem foto (capa/CTA) falhou: ${e.message} — ` +
-        `carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads), não publica parcial.`,
+        `carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads + LinkedIn), não publica parcial.`,
     );
     const reason = `flat_card_generation_failed:${e.message}`;
     if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    if (!skipLinkedIn) tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     return true;
   }
   const carouselImageUrls = [coverUrl, ...resolvedImages.urls, ctaUrl];
@@ -1245,6 +1283,67 @@ async function runOneMode(
         try {
           tagAndAppend({
             platform: "threads",
+            destaque: destaqueKey,
+            url: null,
+            status: "scheduled",
+            scheduled_at: scheduledAt,
+            worker_queue_key: response.key,
+          });
+        } catch (e: any) {
+          console.error(
+            `\nSCHEDULED mas falhou ao persistir localmente (worker_queue_key=${response.key}): ${e.message} — ` +
+              `NÃO re-rode, isso duplicaria o post.`,
+          );
+          throw e;
+        }
+      }
+    }
+  }
+
+  // ── LinkedIn (#8052, wiring real — mecanismo `fireLinkedInCarousel` já
+  // existia desde o #8083) ──
+  //
+  // Mesmo caminho de Instagram/Threads — Worker queue (`channel: "linkedin"`),
+  // que publica via API DIRETA do LinkedIn (Images API + Posts API) quando
+  // `image_urls.length > 1` (`fireLinkedInCarousel` em
+  // `workers/linkedin-cron/src/dispatch.ts`). **Decisão do editor: reusa
+  // `fbCaption` (MESMO texto do Facebook) — nunca um formatter próprio.**
+  // Ver nota no cabeçalho do arquivo sobre a divergência aceita da convenção
+  // de "sem URL no corpo" que o publisher DIÁRIO do LinkedIn segue. Mesmo
+  // racional de bookkeeping do Instagram/Threads: sucesso vs falha de
+  // persistência local são passos separados, e uma falha de
+  // `appendSocialPosts` DEPOIS de um enqueue bem-sucedido é FATAL (propaga)
+  // — nunca mascarada como "failed" (o post já está na fila do Worker).
+  if (!skipLinkedIn) {
+    const workerUrl =
+      process.env.DIARIA_LINKEDIN_CRON_URL ??
+      platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
+      platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
+      "";
+    const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+    if (!workerUrl || !workerToken) {
+      console.error(`ERRO linkedin/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
+      tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
+    } else {
+      let response: { key: string } | null = null;
+      try {
+        response = await postToWorkerQueue(workerUrl, workerToken, {
+          text: fbCaption,
+          image_url: null,
+          image_urls: carouselImageUrls,
+          scheduled_at: scheduledAt,
+          destaque: destaqueKey,
+          channel: "linkedin",
+        });
+      } catch (e: any) {
+        console.error(`FAILED linkedin/${destaqueKey}: ${e.message}`);
+        tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
+      }
+      if (response) {
+        console.log(`OK linkedin/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
+        try {
+          tagAndAppend({
+            platform: "linkedin",
             destaque: destaqueKey,
             url: null,
             status: "scheduled",
