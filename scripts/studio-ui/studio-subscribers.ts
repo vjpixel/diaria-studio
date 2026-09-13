@@ -49,6 +49,7 @@ import {
   getAllSubscriberPlatforms,
   getAllAttributeKeyCoverage,
   getAllSubscriptionsBySubscriber,
+  getAllAliasesBySubscriber,
   resolveSubscriberAttribution,
   type Platform,
   type TimelineEvent,
@@ -73,6 +74,17 @@ import {
   type CohortRow,
   type KitSubscriptionStatus,
 } from "../lib/metrics/acquisition-cohort.ts";
+import {
+  buildApoiadorCohortTable,
+  buildApoiadorEmailIndex,
+  linkSubscriberToApoiador,
+  type CohortApoiadorInput,
+  type ApoiadorCohortRow,
+  type LinkableApoiador,
+} from "../lib/metrics/apoiador-link.ts";
+import { loadContacts, type ApoioContact } from "../lib/apoio-contacts-store.ts";
+import { readApoiaSeEnv, defaultCacheDir, competenceMonth, readMonthCache } from "../lib/apoia-se.ts";
+import { deriveContactStatus, readPastMonthSnapshots } from "./studio-apoios.ts";
 
 // ---------------------------------------------------------------------------
 // Camada de DB compartilhada pelas 2 rotas
@@ -444,6 +456,186 @@ export function buildAcquisitionCohortData(
       subscribersWithInvalidEnteredAt,
       note: CROSS_PLATFORM_FLOOR_NOTE,
       confirmationNote: CONFIRMATION_NOTE,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Coorte de aquisição × apoio — ligação assinante↔apoiador (#7916, fatia 5/N)
+// ---------------------------------------------------------------------------
+
+const LINK_NOTE =
+  "Vínculo assinante↔apoiador é por E-MAIL (a apoia.se não tem ID cruzável nem endpoint de listagem) — " +
+  "quem apoiou com um e-mail diferente do usado pra assinar a newsletter não aparece vinculado " +
+  "(subestimativa conhecida). firstConfirmedAt é uma APROXIMAÇÃO (data em que o CRM local registrou o " +
+  "apoio confirmado via drain do Gmail, tipicamente minutos/horas depois do pagamento real — a apoia.se " +
+  "não expõe a data exata do 1º pagamento). confirmedMonthlyRevenue é o valor pago ESTE MÊS pelos " +
+  "apoiadores vinculados desta coorte (não uma soma histórica/lifetime) — ver scripts/lib/metrics/apoiador-link.ts.";
+
+/**
+ * Resolve os apoiadores "vinculáveis" (e-mails + proxy de 1º apoio + valor
+ * mensal atual) a partir do CRM local (`contacts.jsonl`) + cache local da
+ * apoia.se (`readMonthCache`/`readPastMonthSnapshots`, SEM CHAMADA DE REDE —
+ * ver docstring de `apoia-se.ts`: o painel só lê o cache, quem consulta ao
+ * vivo é o botão "Atualizar status"). Fail-soft: env ausente
+ * (`APOIA_SE_CAMPAIGN`/etc não configuradas nesta sessão) ou
+ * `contacts.jsonl` corrompido devolvem `apoiadores: []` + `error` explícito
+ * — nunca lança pro caller. Injetáveis (`contacts`/`env`/`cacheDir`/`now`),
+ * mesmo padrão de `BuildApoiosDataOptions` em `studio-apoios.ts` — evita I/O
+ * real e `.env` real em teste.
+ */
+function loadLinkableApoiadores(
+  rootDir: string,
+  opts: {
+    contacts?: ApoioContact[];
+    env?: { campaign: string };
+    cacheDir?: string;
+    now?: Date;
+  } = {},
+): { apoiadores: LinkableApoiador[]; error: string | null } {
+  try {
+    const env = opts.env ?? readApoiaSeEnv();
+    const contacts = opts.contacts ?? loadContacts(rootDir);
+    const cacheDir = opts.cacheDir ?? defaultCacheDir(env.campaign);
+    const currentMonth = competenceMonth(opts.now);
+    const currentStatuses = readMonthCache(cacheDir, currentMonth);
+    const pastSnapshots = readPastMonthSnapshots(cacheDir, currentMonth);
+
+    const apoiadores: LinkableApoiador[] = [];
+    for (const contact of contacts) {
+      if (contact.emails.length === 0) continue;
+      const status = deriveContactStatus(contact.emails, currentStatuses, pastSnapshots);
+      const currentMonthlyValue = status.label === "apoiando" ? (status.monthlyValue ?? null) : null;
+      apoiadores.push({
+        emails: contact.emails,
+        firstConfirmedAt: contact.createdAt,
+        currentMonthlyValue,
+      });
+    }
+    return { apoiadores, error: null };
+  } catch (e) {
+    return { apoiadores: [], error: (e as Error).message };
+  }
+}
+
+export interface ApoiadorCohortOptions extends BuildSubscribersOptions {
+  /** `YYYY-MM-DD` (dia BRT), inclusive. Sem filtro quando omitido. */
+  from?: string;
+  /** `YYYY-MM-DD` (dia BRT), inclusive. Sem filtro quando omitido. */
+  to?: string;
+  /** Injetáveis pra teste — evitam `contacts.jsonl`/`.env`/cache real. */
+  apoioContacts?: ApoioContact[];
+  apoioEnv?: { campaign: string };
+  apoioCacheDir?: string;
+  now?: Date;
+}
+
+export interface ApoiadorCohortData {
+  generatedAt: string;
+  db: SubscribersDbLayer;
+  from: string | null;
+  to: string | null;
+  rows: ApoiadorCohortRow[];
+  subscribersWithInvalidEnteredAt: number;
+  /** Motivo pelo qual `rows` veio vazio/parcial por causa dos dados de
+   *  APOIO (não do store de assinantes — esse caso já é coberto por
+   *  `db.available`/`db.error`) — `null` quando contatos + cache da
+   *  apoia.se carregaram normalmente. Quando não-nulo, `rows` ainda reflete
+   *  a coorte de CADASTROS normalmente, só sem nenhum vínculo de apoio
+   *  (todo `apoiadores`/`confirmedMonthlyRevenue` sai `0`, nunca fabricado
+   *  como se fosse medição — a ausência do dado é este campo, não um `0`
+   *  silencioso). */
+  apoiadorDataError: string | null;
+  note: string;
+  linkNote: string;
+}
+
+/**
+ * `GET /api/subscribers/cohort-apoiadores` — mesma grade de coorte de
+ * `buildAcquisitionCohortData` (dia de cadastro BRT × classe de aquisição ×
+ * `utm_source`), com o vínculo assinante↔apoiador por e-mail agregado por
+ * bucket: quantos cadastros desta coorte viraram apoiadores, tempo médio
+ * até o 1º apoio, e receita mensal confirmada atribuível à coorte (#7916,
+ * fatia 5/N — completa "receita confirmada por coorte, tempo até primeiro
+ * apoio" do critério de aceite original).
+ */
+export function buildApoiadorCohortData(
+  rootDir: string,
+  opts: ApoiadorCohortOptions = {},
+): ApoiadorCohortData {
+  const generatedAt = new Date().toISOString();
+  const { db, layer } = openLayer(rootDir, opts);
+  const from = opts.from ?? null;
+  const to = opts.to ?? null;
+
+  if (!db) {
+    return {
+      generatedAt,
+      db: layer,
+      from,
+      to,
+      rows: [],
+      subscribersWithInvalidEnteredAt: 0,
+      apoiadorDataError: null,
+      note: CROSS_PLATFORM_FLOOR_NOTE,
+      linkNote: LINK_NOTE,
+    };
+  }
+
+  try {
+    const { apoiadores, error: apoiadorDataError } = loadLinkableApoiadores(rootDir, {
+      contacts: opts.apoioContacts,
+      env: opts.apoioEnv,
+      cacheDir: opts.apoioCacheDir,
+      now: opts.now,
+    });
+    const apoiadorIndex = buildApoiadorEmailIndex(apoiadores);
+
+    const allAliases = getAllAliasesBySubscriber(db);
+    const bySubscriber = getAllSubscriptionsBySubscriber(db);
+    const inputs: CohortApoiadorInput[] = [];
+
+    for (const [subscriberId, subscriptions] of bySubscriber) {
+      const enteredDates = subscriptions.map((s) => s.entered_at).filter((v): v is string => v != null);
+      if (enteredDates.length === 0) continue;
+      const earliestEnteredAt = enteredDates.reduce((min, cur) => (cur < min ? cur : min));
+      const attribution = resolveSubscriberAttribution(subscriptions);
+      const subscriberEmails = (allAliases.get(subscriberId) ?? [])
+        .map((a) => a.email)
+        .filter((e): e is string => e != null);
+      const apoiador = linkSubscriberToApoiador(subscriberEmails, apoiadorIndex);
+
+      inputs.push({
+        enteredAt: earliestEnteredAt,
+        utmSource: attribution.utmSource,
+        utmMedium: attribution.utmMedium,
+        utmChannel: attribution.utmChannel,
+        referringSite: attribution.referringSite,
+        apoiador,
+      });
+    }
+
+    const rawRows = buildApoiadorCohortTable(inputs);
+    const subscribersWithInvalidEnteredAt = rawRows.subscribersWithInvalidEnteredAt;
+    // Mesmo cuidado de `buildAcquisitionCohortData`: espalha ANTES de
+    // filtrar — `rawRows` carrega a propriedade extra anexada, que
+    // contaminaria `assert.deepEqual` contra um `[]` comum.
+    let rows: ApoiadorCohortRow[] = [...rawRows];
+    if (from) rows = rows.filter((r) => r.day >= from);
+    if (to) rows = rows.filter((r) => r.day <= to);
+
+    return {
+      generatedAt,
+      db: layer,
+      from,
+      to,
+      rows,
+      subscribersWithInvalidEnteredAt,
+      apoiadorDataError,
+      note: CROSS_PLATFORM_FLOOR_NOTE,
+      linkNote: LINK_NOTE,
     };
   } finally {
     db.close();

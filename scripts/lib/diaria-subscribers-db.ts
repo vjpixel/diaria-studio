@@ -1534,3 +1534,32 @@ export function getAllSubscriptionsBySubscriber(
   }
   return map;
 }
+
+/**
+ * Todas as linhas de `identity_alias` do store, agrupadas por
+ * `subscriber_id` — 1 scan (#7916, fatia 5/N), mesmo padrão de
+ * `getAllSubscriptionsBySubscriber` acima (que faz o scan equivalente em
+ * `subscription`). Insumo pra qualquer leitura que precise dos e-mails de
+ * TODOS os subscribers de uma vez sem 1 query por pessoa (ex: casar
+ * assinante↔apoiador por e-mail sobre a base inteira) — `getAliasesForSubscriber`
+ * já resolve isso pra 1 subscriber por vez (ficha de identidade no painel),
+ * mas custaria N queries pra um relatório que cobre toda a base. Mapa vazio
+ * quando `identity_alias` não tem nenhuma linha ainda — não é erro.
+ */
+export function getAllAliasesBySubscriber(
+  db: DatabaseSync,
+): Map<number, SubscriberAlias[]> {
+  const rows = db
+    .prepare("SELECT subscriber_id, platform, external_id, email FROM identity_alias")
+    .all() as unknown as Array<SubscriberAlias & { subscriber_id: number }>;
+  const map = new Map<number, SubscriberAlias[]>();
+  for (const { subscriber_id, ...rest } of rows) {
+    let list = map.get(subscriber_id);
+    if (!list) {
+      list = [];
+      map.set(subscriber_id, list);
+    }
+    list.push(rest);
+  }
+  return map;
+}

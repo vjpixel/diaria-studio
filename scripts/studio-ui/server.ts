@@ -365,7 +365,7 @@ import { buildAdsData, buildAdsCampaignEconomics } from "./studio-ads.ts";
 // #6590: busca por e-mail -> timeline unificada + coorte por migração,
 // sobre o store diaria-subscribers-db.ts (épico #6464). Read-only por
 // construção — ver studio-subscribers.ts.
-import { searchSubscribersByEmail, buildSubscribersCohortData, buildAcquisitionCohortData } from "./studio-subscribers.ts";
+import { searchSubscribersByEmail, buildSubscribersCohortData, buildAcquisitionCohortData, buildApoiadorCohortData } from "./studio-subscribers.ts";
 // #7178: painel de métricas de negócio — baseline, queda, metas e
 // decomposição em 4 zonas, sobre o registry do épico #7172 (F3-F5). Ver
 // studio-metrics.ts.
@@ -1332,6 +1332,23 @@ function handleApiSubscribersCohortOrigem(rootDir: string, req: IncomingMessage,
   }
 }
 
+/** `GET /api/subscribers/cohort-apoiadores?from=YYYY-MM-DD&to=YYYY-MM-DD` —
+ * mesma coorte de aquisição, com o vínculo assinante↔apoiador por e-mail
+ * agregado por bucket (#7916, fatia 5/N). Fail-soft: `data/` ausente, sem
+ * ingestão, ou dados de apoio indisponíveis nesta sessão (env ausente,
+ * contacts.jsonl corrompido) — `apoiadorDataError` documenta o motivo,
+ * nunca vira exceção. Erro inesperado ainda vira 500. */
+function handleApiSubscribersCohortApoiadores(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  try {
+    const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+    const from = params.get("from")?.trim() || undefined;
+    const to = params.get("to")?.trim() || undefined;
+    sendJson(res, 200, buildApoiadorCohortData(rootDir, { from, to }));
+  } catch (e) {
+    sendJson(res, 500, { error: (e as Error).message });
+  }
+}
+
 /** `POST /api/painel/eia/refresh` — botão "Atualizar É IA?" (#3861): regenera
  * SÓ `data/poll-eia-summary.json` local a partir dos endpoints públicos do
  * worker poll (`refreshPollEiaSummaryLocal`) — NUNCA dispara o push paralelo
@@ -1610,6 +1627,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #7916 fatia 2/N: coorte de aquisição por origem/campanha.
       if (urlPath === "/api/subscribers/cohort-origem") {
         handleApiSubscribersCohortOrigem(rootDir, req, res);
+        return;
+      }
+      // #7916 fatia 5/N: mesma coorte, com vínculo assinante↔apoiador por e-mail.
+      if (urlPath === "/api/subscribers/cohort-apoiadores") {
+        handleApiSubscribersCohortApoiadores(rootDir, req, res);
         return;
       }
       // #3924: seção "Caixas" — GET (PUT de save já tratado acima, antes do
