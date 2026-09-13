@@ -81,7 +81,12 @@ import { evaluateMeta, type Meta, type MetaStatus, type MedicaoDia } from "../li
 import { loadMetas, validateMetas } from "../lib/metrics/metas-store.ts";
 import type { CapturaLogEntry } from "../lib/metrics/captura-log.ts";
 import { parseKitActiveHistoryLines, findKitActiveCountForDay } from "../lib/metrics/kit-active-history.ts";
-import { openDiariaSubscribersDbSafe, getStoreCounts, getKitActiveSummary } from "../lib/diaria-subscribers-db.ts";
+import {
+  openDiariaSubscribersDbSafe,
+  getStoreCounts,
+  getKitActiveSummary,
+  getCrossPlatformActiveSummary,
+} from "../lib/diaria-subscribers-db.ts";
 import {
   latestSnapshotDate,
   listSnapshotDates,
@@ -200,6 +205,12 @@ export interface MetricsSnapshot {
     baseAtivaAnterior: MetricResult | null;
     /** Frescor/motivo da contribuição Kit isolada — ver `MetricsKitActiveLayer`. */
     kitActiveLayer: MetricsKitActiveLayer;
+    /** Frescor/motivo da contagem DEDUPLICADA cross-plataforma isolada
+     *  (#7916, fatia 4/N) — mesmo shape de `MetricsKitActiveLayer`, mas
+     *  `count` aqui já é `COUNT(DISTINCT subscriber_id)` ativo em qualquer
+     *  plataforma coberta, não só Kit. `baseAtiva.valor` usa este `count`
+     *  quando `available === true` (ver `computeBaseAtiva`). */
+    crossPlatformActiveLayer: MetricsKitActiveLayer;
   };
   metas: MetricsMetasLayer;
   placar: MetricsPlacar;
@@ -342,6 +353,42 @@ function loadKitActiveLayer(db: DatabaseSync | null): MetricsKitActiveLayer {
       motivo:
         summary.count === 0
           ? "nenhuma subscription Kit com status='active' encontrada no store ainda"
+          : null,
+    };
+  } catch (e) {
+    return { available: false, count: null, asOf: null, motivo: (e as Error).message };
+  }
+}
+
+/**
+ * Monta a camada de contribuição DEDUPLICADA cross-plataforma pra
+ * `base-ativa` (#7916, fatia 4/N) — mesmo `db` já aberto acima, nenhuma
+ * abertura extra do store. Sempre preferida sobre `loadKitActiveLayer` pelo
+ * `computeBaseAtiva` abaixo quando `available === true`: `getCrossPlatformActiveSummary`
+ * já conta 1 vez qualquer assinante ativo em 2+ plataformas (ver docstring
+ * de `CrossPlatformActiveSummary` em `diaria-subscribers-db.ts`), ao
+ * contrário da soma ingênua `beehiiv.active + kitActive` que dobra esse
+ * caso. Mesmo padrão fail-soft de `loadKitActiveLayer` — `db === null` ou
+ * qualquer erro de leitura degrada pra `available: false`, nunca lança.
+ */
+function loadCrossPlatformActiveLayer(db: DatabaseSync | null): MetricsKitActiveLayer {
+  if (!db) {
+    return {
+      available: false,
+      count: null,
+      asOf: null,
+      motivo: "store diaria-subscribers ausente ou ilegível — contagem deduplicada cross-plataforma indisponível",
+    };
+  }
+  try {
+    const summary = getCrossPlatformActiveSummary(db);
+    return {
+      available: true,
+      count: summary.count,
+      asOf: summary.asOf,
+      motivo:
+        summary.count === 0
+          ? "nenhuma subscription com status='active' encontrada no store ainda (nenhuma plataforma)"
           : null,
     };
   } catch (e) {
@@ -554,13 +601,29 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
   //    NÃO recebe esta contagem — ver docstring do módulo, "sem série
   //    histórica do Kit ainda".
   const kitActiveLayer = loadKitActiveLayer(db);
+  // ── Contagem DEDUPLICADA cross-plataforma pra base-ativa (#7916, fatia
+  //    4/N) — MESMO db acima, nenhuma abertura extra. Mesma limitação de
+  //    `kitActiveLayer` acima pra `baseAtivaAnterior`: sem série histórica
+  //    DEDUPLICADA gravada ainda, `baseAtivaAnterior` continua sem receber
+  //    esta contagem (ver `computeBaseAtiva`).
+  const crossPlatformActiveLayer = loadCrossPlatformActiveLayer(db);
 
   // ── Baseline (zona 1) ──────────────────────────────────────────────
   const baseline: MetricBaselineItem[] = [];
   for (const id of BASELINE_METRIC_IDS) {
     const def = getMetric(id);
     if (!def) continue;
-    const result = await computeBaseline(def, janelaHoje, acqDeps, beehiivSubs, beehiivLayer, hojeFromNow, kitActiveLayer.count);
+    const result = await computeBaseline(
+      def,
+      janelaHoje,
+      acqDeps,
+      beehiivSubs,
+      beehiivLayer,
+      hojeFromNow,
+      kitActiveLayer.count,
+      crossPlatformActiveLayer.count,
+      crossPlatformActiveLayer.asOf,
+    );
     baseline.push({ metric: summarizeMetric(def), result });
   }
 
@@ -574,6 +637,8 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
     hojeFromNow,
     kitActiveLayer.count,
     "plataforma",
+    crossPlatformActiveLayer.count,
+    crossPlatformActiveLayer.asOf,
   );
   let baseAtivaAnterior: MetricResult | null = null;
   if (beehiivLayer.previousDate) {
@@ -630,7 +695,7 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
     beehiivSnapshot: beehiivLayer,
     diaReferencia,
     baseline,
-    queda: { baseAtiva, baseAtivaAnterior, kitActiveLayer },
+    queda: { baseAtiva, baseAtivaAnterior, kitActiveLayer, crossPlatformActiveLayer },
     metas: metasLayer,
     placar,
     decomposicaoCadastros,
@@ -660,6 +725,8 @@ async function computeBaseline(
   beehiivLayer: MetricsBeehiivSnapshotLayer,
   hoje: string,
   kitActive: number | null,
+  crossPlatformActive: number | null = null,
+  crossPlatformAsOf: string | null = null,
 ): Promise<MetricResult> {
   switch (def.id) {
     case "cadastros-dia":
@@ -683,7 +750,7 @@ async function computeBaseline(
           "(#7178) — ver docstring de studio-metrics.ts",
       };
     case "base-ativa":
-      return computeBaseAtiva(def, janela, beehiivSubs, beehiivLayer, hoje, kitActive);
+      return computeBaseAtiva(def, janela, beehiivSubs, beehiivLayer, hoje, kitActive, undefined, crossPlatformActive, crossPlatformAsOf);
     case "leitor-v1":
       return computeLeitorV1(def, janela, beehiivSubs, beehiivLayer);
     default:
@@ -705,6 +772,8 @@ function computeBaseAtiva(
   hoje: string,
   kitActive: number | null,
   decomposicao?: string,
+  crossPlatformActive: number | null = null,
+  crossPlatformAsOf: string | null = null,
 ): Promise<MetricResult> {
   const deps: BaseAtivaDeps = {
     beehiiv: beehiivLayer.date ? { date: beehiivLayer.date, active: countActive(beehiivSubs) } : null,
@@ -714,6 +783,17 @@ function computeBaseAtiva(
     // um `0` fingindo "Kit sem assinante ativo".
     kitActive,
     hoje,
+    // Contagem DEDUPLICADA cross-plataforma (#7916, fatia 4/N) — vem de
+    // `loadCrossPlatformActiveLayer` no chamador; `null` só quando o store
+    // está ausente/ilegível (`baseAtivaAnterior` também passa `null` de
+    // propósito — sem série histórica DEDUPLICADA gravada ainda, mesma
+    // limitação que `kitActive` teve até a fatia 3/N; reusar a contagem de
+    // HOJE como "ontem" inflaria/desinflaria a variação em silêncio).
+    // `baseAtivaDef.computar` prefere este campo sobre `beehiiv`/`kitActive`
+    // quando presente — nunca pior que a soma ingênua, sempre melhor ou
+    // igual.
+    crossPlatformActive,
+    crossPlatformAsOf,
   };
   return def.computar({ janela, decomposicao, deps });
 }

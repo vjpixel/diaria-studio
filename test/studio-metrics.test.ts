@@ -409,6 +409,77 @@ describe("buildMetricsData — kitActive real, não mais null fixo (#7916, fatia
   });
 });
 
+describe("buildMetricsData — crossPlatformActive dedup pra base-ativa (#7916, fatia 4/N)", () => {
+  it("assinante ativo em beehiiv+kit (identidade resolvida — mesmo subscriber_id) NÃO dobra base-ativa", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      const dia = "2026-09-13";
+      // Snapshot Beehiiv com 1 ativo — é o que alimenta `beehiiv.active` no
+      // caminho legado; a soma ingênua seria beehiiv(1) + kit(1) = 2.
+      writeBeehiivSnapshot(root, dia, [beehiivSubscriberLine()]);
+
+      const dbDir = join(root, "data", "diaria-subscribers");
+      mkdirSync(dbDir, { recursive: true });
+      const db = openDiariaSubscribersDb(join(dbDir, "diaria-subscribers.db"));
+      try {
+        // Simula o resultado de diaria-subscribers-identity-resolve.ts
+        // (#6589): 1 pessoa, 2 subscription (beehiiv + kit), MESMO
+        // subscriber_id — é isso que faz COUNT(DISTINCT subscriber_id)
+        // contar 1, não 2.
+        const migrado = ensureSubscriber(db, "beehiiv", "bh-migrado", "migrado@example.com");
+        upsertSubscription(
+          db,
+          migrado,
+          "beehiiv",
+          { status: "active", enteredAt: `${dia}T09:00:00.000Z`, exitedAt: null, source: "organico" },
+          `${dia}T09:00:00.000Z`,
+        );
+        upsertSubscription(
+          db,
+          migrado,
+          "kit",
+          { status: "active", enteredAt: `${dia}T10:00:00.000Z`, exitedAt: null, source: "organico" },
+          `${dia}T12:00:00.000Z`,
+        );
+      } finally {
+        db.close();
+      }
+
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date(`${dia}T18:00:00Z`) });
+
+      assert.equal(data.queda.crossPlatformActiveLayer.available, true);
+      assert.equal(data.queda.crossPlatformActiveLayer.count, 1, "deduplicado — o migrado conta 1 vez, não 2");
+      assert.equal(data.queda.kitActiveLayer.count, 1, "camada Kit isolada continua contando a linha Kit normalmente");
+      assert.equal(
+        data.queda.baseAtiva.valor,
+        1,
+        "base-ativa usa a contagem deduplicada (1), NUNCA a soma ingênua beehiiv(1)+kit(1)=2 que dobraria o migrado",
+      );
+      assert.equal(data.queda.baseAtiva.qualidade, "piso", "caminho deduplicado é SEMPRE piso, mesmo com snapshot de hoje");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("sem store diaria-subscribers: crossPlatformActiveLayer.available=false, base-ativa cai no fallback legado (soma ingênua)", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      const dia = "2026-09-13";
+      writeBeehiivSnapshot(root, dia, [beehiivSubscriberLine()]);
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date(`${dia}T18:00:00Z`) });
+
+      assert.equal(data.queda.crossPlatformActiveLayer.available, false);
+      assert.equal(data.queda.crossPlatformActiveLayer.count, null);
+      assert.equal(data.queda.baseAtiva.valor, 1, "sem store, cai na soma ingênua beehiiv(1)+kit(null->0)=1");
+      assert.equal(data.queda.baseAtiva.qualidade, "exato", "caminho legado preserva 'exato' quando o snapshot é de hoje");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("buildMetricsData — cache + forceRefresh", () => {
   it("retorna cached=true dentro do TTL sem forceRefresh", async () => {
     clearMetricsCache();

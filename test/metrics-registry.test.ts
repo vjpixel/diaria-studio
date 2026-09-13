@@ -469,6 +469,73 @@ describe("base-ativa (#7176)", () => {
       { chave: "kit", valor: 30 },
     ]);
   });
+
+  describe("crossPlatformActive (#7916, fatia 4/N) — dedup preferido sobre a soma ingênua", () => {
+    it("presente: usa crossPlatformActive, NUNCA a soma ingênua beehiiv+kit — mesmo quando divergem", async () => {
+      const deps: BaseAtivaDeps = {
+        beehiiv: { date: "2026-09-02", active: 500 },
+        kitActive: 30,
+        hoje: "2026-09-02",
+        // soma ingênua seria 530 — 480 simula 50 assinantes ativos em 2
+        // plataformas ao mesmo tempo (dedup real), nunca dado corrompido.
+        crossPlatformActive: 480,
+        crossPlatformAsOf: "2026-09-02T10:00:00.000Z",
+      };
+      const r = await def.computar({ janela: janelaDia("2026-09-02"), deps });
+      assert.equal(r.valor, 480, "valor é o deduplicado, não 530 (soma ingênua)");
+      assert.equal(r.qualidade, "piso", "cross-plataforma é SEMPRE piso, mesmo com snapshot de hoje — identidade pode não estar toda resolvida");
+      assert.equal(r.frescor, "2026-09-02T10:00:00.000Z");
+      assert.match(r.motivo ?? "", /dedup|deduplicad/i);
+    });
+
+    it("presente sem beehiiv/kit: ainda computa (nunca indeterminado só por faltar as 2 fontes legadas)", async () => {
+      const deps: BaseAtivaDeps = {
+        beehiiv: null,
+        kitActive: null,
+        hoje: "2026-09-02",
+        crossPlatformActive: 200,
+        crossPlatformAsOf: "2026-09-02T10:00:00.000Z",
+      };
+      const r = await def.computar({ janela: janelaDia("2026-09-02"), deps });
+      assert.equal(r.valor, 200);
+      assert.equal(r.qualidade, "piso");
+    });
+
+    it("decomposicao 'plataforma' junto com crossPlatformActive: total é o deduplicado, série continua beehiiv/kit crus", async () => {
+      const deps: BaseAtivaDeps = {
+        beehiiv: { date: "2026-09-02", active: 500 },
+        kitActive: 30,
+        hoje: "2026-09-02",
+        crossPlatformActive: 480,
+        crossPlatformAsOf: "2026-09-02T10:00:00.000Z",
+      };
+      const r = await def.computar({ janela: janelaDia("2026-09-02"), decomposicao: "plataforma", deps });
+      assert.equal(r.valor, 480);
+      assert.deepEqual(r.series, [
+        { chave: "beehiiv", valor: 500 },
+        { chave: "kit", valor: 30 },
+      ]);
+    });
+
+    it("ausente (undefined): cai no comportamento legado de sempre — regressão da soma ingênua preservada", async () => {
+      const deps: BaseAtivaDeps = { beehiiv: { date: "2026-09-02", active: 500 }, kitActive: 30, hoje: "2026-09-02" };
+      const r = await def.computar({ janela: janelaDia("2026-09-02"), deps });
+      assert.equal(r.valor, 530);
+      assert.equal(r.qualidade, "exato");
+    });
+
+    it("null explícito: mesmo tratamento de ausente — fallback pra soma ingênua", async () => {
+      const deps: BaseAtivaDeps = {
+        beehiiv: { date: "2026-09-02", active: 500 },
+        kitActive: 30,
+        hoje: "2026-09-02",
+        crossPlatformActive: null,
+      };
+      const r = await def.computar({ janela: janelaDia("2026-09-02"), deps });
+      assert.equal(r.valor, 530);
+      assert.equal(r.qualidade, "exato");
+    });
+  });
 });
 
 describe("leitor-v1 — só Beehiiv (#7176)", () => {

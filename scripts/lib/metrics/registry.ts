@@ -600,6 +600,25 @@ export interface BaseAtivaDeps extends MetricDeps {
   kitActive: number | null;
   /** `AAAA-MM-DD` BRT — "hoje" injetado pelo chamador (testável). */
   hoje: string;
+  /** Contagem DEDUPLICADA cross-plataforma (#7916, fatia 4/N —
+   *  `getCrossPlatformActiveSummary`, `diaria-subscribers-db.ts`):
+   *  `COUNT(DISTINCT subscriber_id)` ativo em qualquer plataforma coberta
+   *  pelo store `diaria-subscribers` (#6464), já deduplicado por
+   *  `diaria-subscribers-identity-resolve.ts` (#6589) quando a identidade
+   *  cross-plataforma foi resolvida. `undefined`/`null` (opcional, pra não
+   *  quebrar chamador que ainda não abriu o store) faz `computar` cair no
+   *  caminho legado (`beehiiv.active + kitActive`, soma ingênua que DOBRA a
+   *  contagem de qualquer assinante ativo em 2+ plataformas — ex: alguém
+   *  migrado de Beehiiv pro Kit ainda aparecendo "active" nas duas fontes
+   *  durante a janela de transição, #7922). Quando presente, SEMPRE
+   *  preferido sobre a soma ingênua — é estritamente mais correto, nunca
+   *  pior, mesmo quando igual (nenhum assinante multi-plataforma na base). */
+  crossPlatformActive?: number | null;
+  /** `MAX(updated_at)` das linhas que compõem `crossPlatformActive` — ver
+   *  docstring de `CrossPlatformActiveSummary.asOf`. Só relevante quando
+   *  `crossPlatformActive != null`; `undefined`/`null` faz o `frescor` do
+   *  resultado cair pro `beehiiv.date`/`hoje` de sempre. */
+  crossPlatformAsOf?: string | null;
 }
 
 const baseAtivaDef: MetricDef<BaseAtivaDeps> = {
@@ -608,20 +627,23 @@ const baseAtivaDef: MetricDef<BaseAtivaDeps> = {
   produto: "diaria",
   etapa: "saude",
   definicao:
-    "Beehiiv: COUNT(status='active') no snapshot mais recente (frescor = data do snapshot). " +
-    "Kit: COUNT(state='active') via leitura viva — enum diferente, predicado NÃO compartilhado com Beehiiv. " +
-    "decomposicao 'plataforma' devolve as duas separadas.",
+    "Preferencial (#7916, fatia 4/N), quando deps.crossPlatformActive está presente: COUNT(DISTINCT subscriber_id) " +
+    "ativo em qualquer plataforma coberta pelo store diaria-subscribers (#6464), já deduplicado por identidade " +
+    "cross-plataforma — 1 assinante ativo em 2+ plataformas conta 1, nunca 2. Fallback (sem o dado do store): " +
+    "Beehiiv COUNT(status='active') no snapshot mais recente (frescor = data do snapshot) SOMADO a Kit " +
+    "COUNT(state='active') via leitura viva — enums diferentes, predicado NÃO compartilhado — soma que PODE " +
+    "dobrar assinante multi-plataforma, por isso é só fallback. decomposicao 'plataforma' sempre devolve as " +
+    "contagens Beehiiv/Kit separadas (não deduplicadas entre si), mesmo quando o total usado é o deduplicado.",
   unidade: "contagem",
   direcao: "maior-melhor",
-  fonte: "data/beehiiv-backup/{YYYY-MM-DD}/subscribers.jsonl + leitura viva do Kit",
+  fonte: "data/diaria-subscribers/diaria-subscribers.db (preferencial) ou data/beehiiv-backup/{YYYY-MM-DD}/subscribers.jsonl + leitura viva do Kit (fallback)",
   decomposicoes: ["plataforma"],
   async computar(args) {
     validarDecomposicao(baseAtivaDef, args.decomposicao);
-    const { beehiiv, kitActive, hoje } = args.deps;
-    if (beehiiv === null && kitActive === null) {
-      return indeterminado(args.janela, "nenhum snapshot Beehiiv nem leitura Kit disponível");
+    const { beehiiv, kitActive, hoje, crossPlatformActive, crossPlatformAsOf } = args.deps;
+    if (beehiiv === null && kitActive === null && crossPlatformActive == null) {
+      return indeterminado(args.janela, "nenhum snapshot Beehiiv, leitura Kit nem store diaria-subscribers disponível");
     }
-    const total = (beehiiv?.active ?? 0) + (kitActive ?? 0);
     const series: MetricSeriesPoint[] | undefined =
       args.decomposicao === "plataforma"
         ? [
@@ -629,6 +651,30 @@ const baseAtivaDef: MetricDef<BaseAtivaDeps> = {
             { chave: "kit", valor: kitActive },
           ]
         : undefined;
+    // Caminho DEDUPLICADO (#7916, fatia 4/N) — sempre preferido quando
+    // disponível, independente do que beehiiv/kitActive dizem: é
+    // estritamente mais correto que a soma ingênua abaixo (nunca pior,
+    // mesmo quando o resultado numérico coincide). PISO, nunca exato — ver
+    // docstring de `CrossPlatformActiveSummary` (`diaria-subscribers-db.ts`):
+    // identidade cross-plataforma ainda não resolvida conta 2x, do mesmo
+    // jeito que a soma ingênua contaria.
+    if (crossPlatformActive != null) {
+      const result = piso(
+        crossPlatformActive,
+        args.janela,
+        crossPlatformAsOf ?? beehiiv?.date ?? hoje,
+        "contagem deduplicada cross-plataforma (#7916): COUNT(DISTINCT subscriber_id) ativo via identity resolution " +
+          "do store diaria-subscribers (#6464/#6589) — PISO, não exato, porque identidade ainda não resolvida entre " +
+          "plataformas conta como 2 subscribers distintos (mesma ressalva de leitor-v1 cross-plataforma). A soma " +
+          "ingênua beehiiv+kit não é usada aqui por poder dobrar assinante ativo em 2+ plataformas.",
+      );
+      if (series) result.series = series;
+      return result;
+    }
+    // Fallback legado — soma ingênua, sem dedup de identidade (comportamento
+    // de antes da fatia 4/N, mantido pra chamador que ainda não abriu o
+    // store diaria-subscribers).
+    const total = (beehiiv?.active ?? 0) + (kitActive ?? 0);
     if (beehiiv && beehiiv.date !== hoje) {
       const result = piso(
         total,

@@ -16,6 +16,7 @@ import {
   getCohortEventCounts,
   getStoreCounts,
   getKitActiveSummary,
+  getCrossPlatformActiveSummary,
   getSubscriptionAsOf,
   SUBSCRIPTION_COVERAGE_WARN_FRACTION,
   computeSubscriptionCoverage,
@@ -1097,6 +1098,89 @@ describe("getKitActiveSummary — contribuição real do Kit pra base-ativa (#79
     summary = getKitActiveSummary(db);
     assert.equal(summary.count, 1, "reingestão idempotente — não duplica a contagem");
     assert.equal(summary.asOf, "2026-09-10T09:00:00.000Z", "frescor reflete a rodada mais recente");
+    db.close();
+  });
+});
+
+describe("getCrossPlatformActiveSummary — dedup cross-plataforma pra base-ativa (#7916, fatia 4/N)", () => {
+  it("assinante ativo em 2 plataformas (identidade JÁ resolvida — mesmo subscriber_id) conta 1, nunca 2", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-10T12:00:00.000Z";
+    // Simula o resultado de diaria-subscribers-identity-resolve.ts (#6589):
+    // depois da fusão, AMBAS as subscription apontam pro MESMO subscriber_id
+    // — é isso que faz COUNT(DISTINCT subscriber_id) já sair deduplicado,
+    // sem esta função precisar reimplementar resolução de identidade.
+    const migrado = ensureSubscriber(db, "beehiiv", "bh-1", "migrado@example.com");
+    upsertSubscription(db, migrado, "beehiiv", { status: "active", enteredAt: "2026-08-01", exitedAt: null, source: "organico" }, now);
+    upsertSubscription(db, migrado, "kit", { status: "active", enteredAt: "2026-09-01", exitedAt: null, source: "organico" }, now);
+    // Assinante só-Kit, sem contraparte Beehiiv — conta normalmente.
+    const soKit = ensureSubscriber(db, "kit", "kit-2", "so-kit@example.com");
+    upsertSubscription(db, soKit, "kit", { status: "active", enteredAt: "2026-09-02", exitedAt: null, source: "organico" }, now);
+
+    const summary = getCrossPlatformActiveSummary(db);
+    assert.equal(
+      summary.count,
+      2,
+      "o migrado conta 1 vez (não 2, apesar de 2 linhas de subscription) + o só-Kit = 2 — NUNCA a soma ingênua " +
+        "beehiiv.active(1) + kitActive(2) = 3 que dobraria o migrado",
+    );
+    assert.equal(summary.asOf, now);
+    db.close();
+  });
+
+  it("identidade NÃO resolvida (2 subscriber_id distintos pra mesma pessoa) conta 2 — PISO, não exato", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-10T12:00:00.000Z";
+    const bh = ensureSubscriber(db, "beehiiv", "bh-1", "nao-resolvido@example.com");
+    upsertSubscription(db, bh, "beehiiv", { status: "active", enteredAt: "2026-08-01", exitedAt: null, source: "organico" }, now);
+    const kit = ensureSubscriber(db, "kit", "kit-1", "nao-resolvido@example.com");
+    upsertSubscription(db, kit, "kit", { status: "active", enteredAt: "2026-09-01", exitedAt: null, source: "organico" }, now);
+
+    const summary = getCrossPlatformActiveSummary(db);
+    assert.equal(
+      summary.count,
+      2,
+      "sem a fusão de identidade ter rodado, os 2 subscriber_id distintos contam 2x — mesma ressalva PISO de " +
+        "CROSS_PLATFORM_FLOOR_NOTE, não um bug desta função",
+    );
+    db.close();
+  });
+
+  it("ignora inactive/cancelled — mesmo predicado status='active' de resolveCrossPlatformStatus (leitor-store.ts)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-10T12:00:00.000Z";
+    const cancelado = ensureSubscriber(db, "kit", "kit-1", "cancelado@example.com");
+    upsertSubscription(db, cancelado, "kit", { status: "cancelled", enteredAt: "2026-08-01", exitedAt: now, source: "organico" }, now);
+    const ativo = ensureSubscriber(db, "beehiiv", "bh-1", "ativo@example.com");
+    upsertSubscription(db, ativo, "beehiiv", { status: "active", enteredAt: "2026-08-01", exitedAt: null, source: "organico" }, now);
+
+    assert.equal(getCrossPlatformActiveSummary(db).count, 1);
+    db.close();
+  });
+
+  it("respeita a restrição de `platforms` — plataforma fora da lista não conta", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-10T12:00:00.000Z";
+    const brevo = ensureSubscriber(db, "brevo_diaria", "brevo-1", "brevo@example.com");
+    upsertSubscription(db, brevo, "brevo_diaria", { status: "active", enteredAt: "2026-08-01", exitedAt: null, source: "organico" }, now);
+    const kit = ensureSubscriber(db, "kit", "kit-1", "kit@example.com");
+    upsertSubscription(db, kit, "kit", { status: "active", enteredAt: "2026-08-01", exitedAt: null, source: "organico" }, now);
+
+    assert.equal(getCrossPlatformActiveSummary(db, ["kit"]).count, 1, "só kit pedido — brevo_diaria fica de fora");
+    db.close();
+  });
+
+  it("store sem nenhuma subscription ativa: count=0, asOf=null (nunca um número cego)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const summary = getCrossPlatformActiveSummary(db);
+    assert.equal(summary.count, 0);
+    assert.equal(summary.asOf, null);
+    db.close();
+  });
+
+  it("platforms vazio devolve {count:0, asOf:null} sem lançar (guard defensivo)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    assert.deepEqual(getCrossPlatformActiveSummary(db, []), { count: 0, asOf: null });
     db.close();
   });
 });
