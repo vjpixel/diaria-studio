@@ -506,15 +506,26 @@ export async function dispatchReportEmail(
  * `dispatchReportEmail`, então `deps.hasCredentials` nunca roda pra essa
  * invocação) e resolve `emailDispatch` direto com
  * `{sent: false, skipped: "notify-disabled"}` — o upsert em `index.jsonl`
- * acontece igual, só o e-mail é que não sai. Default `true` preserva o
- * comportamento anterior (#4475) pra todo caller que não passar nada —
- * inclusive a chamada final de 6b-8, que deve continuar notificando.
+ * acontece igual, só o e-mail é que não sai.
+ *
+ * **#7960 (item 4 da #7957): default virou `false`.** Antes do #7957,
+ * `true` preservava o comportamento anterior (#4475: todo registro dispara
+ * e-mail) pra todo caller que não passasse nada. A tabela de severidade do
+ * editor (#7957, 10/09/2026) classifica TODO relatório registrado aqui —
+ * edição, overnight/develop, Clarice novos/envio/guard, CAC, calibração —
+ * como "Studio /relatorios, sem e-mail": o editor lê no `/relatorios`, o
+ * e-mail deixou de ser o canal. Nenhum caller de produção passa `notify`
+ * explicitamente (todos dependiam deste default) — a mudança silencia
+ * TODOS eles de uma vez, que é exatamente o objetivo. O parâmetro continua
+ * existindo (e a lógica de dedup/retry abaixo continua exercitável via
+ * `notify: true` explícito) caso uma severidade `"urgente"` real precise
+ * deste canal no futuro — mas hoje nenhum caller o faz.
  */
 export function registerReport(
   rootDir: string,
   input: ReportRegistryInput,
   emailDeps: ReportEmailDeps = defaultEmailDeps,
-  notify = true,
+  notify = false,
 ): RegisterReportResult {
   const id = reportId(input.kind, input.sessionId);
   const createdAt = input.createdAt ?? new Date().toISOString();
