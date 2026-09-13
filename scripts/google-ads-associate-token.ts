@@ -34,7 +34,19 @@ import {
   normalizeCustomerId,
 } from "./lib/google-ads-associate.ts";
 
-const SCOPE = "https://www.googleapis.com/auth/adwords";
+/**
+ * #8023 — dois escopos, espaço-separados (formato exigido pelo OAuth 2.0 do
+ * Google pra múltiplos escopos numa mesma URL de consentimento):
+ *   - `adwords`: o de sempre — REST da Google Ads API (`googleAds:search`,
+ *     `uploadClickConversions`), usado desde #5262.
+ *   - `datamanager`: adicionado por decisão do editor (#8023, ação de
+ *     recuperação #7770) pra habilitar Enhanced Conversions for Leads via
+ *     Data Manager API na conta. Reautorização única — rodar `--auth` de
+ *     novo gera um refresh token que cobre AMBOS os escopos (o anterior,
+ *     só-`adwords`, não é suficiente pro consentimento de dados de cliente
+ *     que a Data Manager API exige).
+ */
+const SCOPE = "https://www.googleapis.com/auth/adwords https://www.googleapis.com/auth/datamanager";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const LOOPBACK_PORT = 8787;

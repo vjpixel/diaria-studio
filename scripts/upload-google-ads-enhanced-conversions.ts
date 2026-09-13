@@ -32,6 +32,14 @@
  *
  *   [{ "email": "seu@email.com", "signupTimestamp": "2026-09-05T14:30:00-03:00" }]
  *
+ * `gclid`/`wbraid`/`gbraid` são colunas/campos OPCIONAIS (#8023) — quando
+ * presentes, sobem JUNTO com o hash do e-mail na mesma conversão (Enhanced
+ * Conversions for Leads como parâmetro adicional ao click-id, não como
+ * substituto):
+ *
+ *   email,signup_timestamp,gclid
+ *   seu@email.com,2026-09-05T14:30:00-03:00,Cj0KCQjw...
+ *
  * `signupTimestamp`/`signup_timestamp` PRECISA ser ISO 8601 com offset
  * explícito (não aceita "Z" implícito por omissão nem hora sem fuso) — o
  * valor vai direto pro `conversion_date_time` da API, preservando a hora
