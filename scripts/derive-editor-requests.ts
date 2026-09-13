@@ -15,7 +15,11 @@
  * 2. Pós-Stage 4 pre-render — snapshot de _internal/newsletter-final.html,
  *    _internal/social-preview.html
  *
- * Dois pontos de diff:
+ * Três pontos de diff:
+ * - Stage 1 gate (#7964): diff de `01-categorized.json` (pré-gate, já é o
+ *   baseline imutável — nenhum snapshot dedicado necessário) ×
+ *   `01-approved.json` pós-gate. Só roda quando `.step-1-gate.json` marca
+ *   `auto_approved: false` (gate humano real aconteceu) — ver `deriveStage1`.
  * - Stage 4 gate: diff dos snapshots Stage 2 vs estado atual (02-reviewed.md,
  *   03-social.md) + diff dos snapshots Stage 4 pre-render vs estado atual
  * - Stage 6 gate: diff adicional se houver mudanças pós-Stage 4
@@ -24,13 +28,14 @@
  * Escrita no mesmo editor-requests.jsonl com source: "derived".
  */
 
-import { existsSync, mkdirSync, readFileSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { appendEditorRequest, type EditorRequestEntry, type RequestType, type RequestTarget, type Resolution, type RequestSource } from "./log-editor-request.ts";
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
+import { canonicalizeUrl } from "./apply-gate-edits.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -971,6 +976,239 @@ function deriveStage6(editionDir: string, edition: string): number {
 }
 
 /**
+ * Diffa a seleção de destaques entre `01-categorized.json` (proposta do
+ * `scorer-select`, sempre 6 candidatos, ANTES de qualquer gate) e
+ * `01-approved.json` (2-3 finais, pós-gate do Stage 1) — #7964.
+ *
+ * Comparação NUNCA posicional (diferente de `classifyApprovedDiff`, que
+ * compara dois `01-approved.json` de tamanho igual em pontos distintos do
+ * tempo): os arrays aqui têm tamanhos estruturalmente diferentes (6 vs 2-3)
+ * por DESIGN, mesmo sem nenhuma ação do editor — `apply-gate-edits.ts`
+ * sempre corta os 6 candidatos do scorer para os top-3 por rank quando a
+ * seção Destaques do MD não foi tocada (`resolveDestaques`, `--auto` ou
+ * aprovação sem edição). Um diff ingênuo de tamanho ou posição classificaria
+ * esse corte mecânico como 3-4 `destaque-cut` em TODA edição, inclusive nas
+ * auto-aprovadas — exatamente o ruído que motivou esta função a não reusar
+ * `classifyApprovedDiff` aqui.
+ *
+ * Em vez disso, replica o mesmo cálculo que `computeGateProvenance`
+ * (`apply-gate-edits.ts`, #4842) já usa pra decidir `itens_movidos`: só um
+ * item aprovado que NÃO está no top-3 "natural" (top 3 do `highlights[]`
+ * original, por rank) conta como pedido do editor. Itens do top-3 natural
+ * que não sobrevivem ao aprovado, pareados 1-a-1 com itens promovidos de
+ * fora do top-3, viram `destaque-swap`; sobra de um lado sem par vira
+ * `destaque-cut` (menos destaques no final — caso de 2 destaques, #3369) ou
+ * `destaque-promote` (mais um item promovido do que caiu do top-3 — não
+ * deveria estourar o teto de 3, mas o pareamento não assume isso).
+ */
+function classifyStage1DestaqueDiff(categorizedJson: any, approvedJson: any): Array<{
+  request_type: RequestType;
+  target: RequestTarget;
+  description: string;
+  resolution: Resolution;
+  context?: Record<string, unknown>;
+}> {
+  type RawHighlight = { rank?: number; url?: string; title?: string; article?: { url?: string; title?: string } | null };
+  const originalHighlights: RawHighlight[] = Array.isArray(categorizedJson?.highlights) ? categorizedJson.highlights : [];
+  const approvedHighlights: RawHighlight[] = Array.isArray(approvedJson?.highlights) ? approvedJson.highlights : [];
+
+  const urlOf = (h: RawHighlight): string | null => {
+    const url = h?.url ?? h?.article?.url;
+    return typeof url === "string" && url !== "" ? url : null;
+  };
+  const titleOf = (h: RawHighlight): string => h?.article?.title ?? h?.title ?? "";
+
+  const top3 = [...originalHighlights].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).slice(0, 3);
+  const canonTop3 = new Map<string, { url: string; title: string; rank: number }>();
+  top3.forEach((h, i) => {
+    const url = urlOf(h);
+    if (url) canonTop3.set(canonicalizeUrl(url), { url, title: titleOf(h), rank: i + 1 });
+  });
+
+  const approvedEntries = approvedHighlights
+    .map((h, i) => ({ url: urlOf(h), title: titleOf(h), position: i + 1 }))
+    .filter((e): e is { url: string; title: string; position: number } => e.url !== null);
+  const canonApprovedSet = new Set(approvedEntries.map((e) => canonicalizeUrl(e.url)));
+
+  const droppedFromTop3: Array<{ url: string; title: string; rank: number }> = [];
+  for (const entry of canonTop3.values()) {
+    if (!canonApprovedSet.has(canonicalizeUrl(entry.url))) droppedFromTop3.push(entry);
+  }
+
+  const promoted = approvedEntries.filter((e) => !canonTop3.has(canonicalizeUrl(e.url)));
+
+  const results: Array<{
+    request_type: RequestType;
+    target: RequestTarget;
+    description: string;
+    resolution: Resolution;
+    context?: Record<string, unknown>;
+  }> = [];
+
+  const pairCount = Math.min(droppedFromTop3.length, promoted.length);
+  for (let i = 0; i < pairCount; i++) {
+    const dropped = droppedFromTop3[i];
+    const added = promoted[i];
+    // `target` usa o rank ORIGINAL do item removido (dropped.rank), não a
+    // posição onde o item promovido acabou pousando em `01-approved.json`
+    // (added.position) — achado de review (#7964): se o gate reordenar os
+    // destaques sobreviventes (ex: dropar D1 e os demais "subirem" uma
+    // posição), `added.position` podia divergir do "D{N}" citado na própria
+    // `description`, produzindo uma entrada que se contradiz (target d3 com
+    // texto "Destaque D1 trocado..."). `dropped.rank` é sempre o slot que a
+    // troca de fato afeta, então target e description ficam consistentes
+    // por construção — `added.position` continua registrado em `context`
+    // pra quem precisar da posição real no aprovado.
+    results.push({
+      request_type: "destaque-swap",
+      target: `d${dropped.rank}` as RequestTarget,
+      description: `Destaque D${dropped.rank} trocado no gate do Stage 1: ${dropped.title} → ${added.title}`,
+      resolution: "accepted",
+      context: { old_url: dropped.url, new_url: added.url, position: added.position },
+    });
+  }
+  for (let i = pairCount; i < droppedFromTop3.length; i++) {
+    const dropped = droppedFromTop3[i];
+    results.push({
+      request_type: "destaque-cut",
+      target: `d${dropped.rank}` as RequestTarget,
+      description: `Destaque D${dropped.rank} removido no gate do Stage 1: ${dropped.title}`,
+      resolution: "accepted",
+      context: { old_url: dropped.url, position: dropped.rank },
+    });
+  }
+  for (let i = pairCount; i < promoted.length; i++) {
+    const added = promoted[i];
+    results.push({
+      request_type: "destaque-promote",
+      target: `d${added.position}` as RequestTarget,
+      description: `Item promovido a destaque D${added.position} no gate do Stage 1: ${added.title}`,
+      resolution: "accepted",
+      context: { new_url: added.url, position: added.position },
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Função principal - deriva requests no fechamento do gate do Stage 1 (#7964)
+ *
+ * Diferente de `deriveStage4`/`deriveStage6`, não precisa de nenhum snapshot
+ * dedicado: `_internal/01-categorized.json` já É o baseline pré-gate
+ * imutável — `apply-gate-edits.ts` grava só `_internal/01-approved.json`
+ * como saída, nunca reescreve `01-categorized.json` — e os dois arquivos
+ * coexistem pra sempre a partir do fim do Stage 1.
+ *
+ * **Gate no `auto_approved` de `_internal/.step-1-gate.json` (#4842),
+ * não em "o conteúdo mudou"**: sob `--no-gates`/auto-aprovação (17 das
+ * últimas 20 edições medidas na correção de premissa do #7964 — comentário
+ * do editor de 10/09/2026), a seção Destaques do MD simulado é sempre
+ * vazia e `resolveDestaques` PREENCHE por rank do scorer — nenhum editor
+ * decidiu nada. Pior: o próprio preenchimento pode pular um rank do top-3
+ * por dedup-intra-edition remover a cópia antes do gate (#4943), produzindo
+ * uma "troca" mecânica que pareceria `destaque-swap` se este código rodasse
+ * também sob `auto_approved: true`. Arquivo de proveniência ausente ou
+ * malformado (edição anterior ao #4842, ou erro de leitura) também pula —
+ * fail-soft, nunca deriva às cegas sem o sinal determinístico.
+ *
+ * **Limitação aceita (achado de review #7964):** `auto_approved: false`
+ * garante que houve um gate humano, mas não garante que TODA mudança
+ * observada foi uma decisão consciente do editor — o mesmo fill-loop de
+ * `resolveDestaques`/#4943 que produz `itens_movidos` "por acidente" sob
+ * `--auto` também roda no caminho interativo quando a seção Destaques do MD
+ * revisado tem menos de 2 URLs (editor não tocou nela, ou apagou tudo sem
+ * querer): o preenchimento por rank do scorer é indistinguível de escolha
+ * editorial pra este código, do mesmo jeito que já é indistinguível pra
+ * `computeGateProvenance`. Não há sinal determinístico adicional pra
+ * separar os dois casos sem mudar o schema de `.step-1-gate.json` — aceito
+ * como o mesmo risco residual que #4943 já documenta pro `itens_movidos`,
+ * não uma regressão nova introduzida aqui.
+ *
+ * **Idempotência (achado de fleet review #8081):** diferente de
+ * `deriveStage4`/`deriveStage6` — que diffam contra um snapshot e por isso
+ * uma 2ª chamada naturalmente vê "sem mudança" (o snapshot já reflete o
+ * estado anterior) —, este comando não usa snapshot: diffa direto
+ * `01-categorized.json` × `01-approved.json`, dois arquivos que continuam
+ * IDÊNTICOS numa 2ª chamada. Sem um marcador de "já derivado", cada
+ * reexecução (ex: `/diaria-1-pesquisa {mesmo AAMMDD}` retomando um Stage 1
+ * interrompido DEPOIS deste passo já ter rodado uma vez) duplicaria as
+ * mesmas entradas em `editor-requests.jsonl` via `appendEditorRequest`
+ * (`log-editor-request.ts`, append-only, sem chave de dedup). Guard via
+ * marcador `_internal/.step-1-editor-requests-derived.json` — mesmo
+ * padrão de imutabilidade de `hasSnapshot`/`snapshotStage2`/`snapshotStage4`
+ * acima, só que sem diretório de snapshot (não há conteúdo pra preservar,
+ * só o FATO de já ter derivado).
+ */
+const STAGE1_DERIVED_MARKER = "_internal/.step-1-editor-requests-derived.json";
+
+function hasStage1DerivedMarker(editionDir: string): boolean {
+  return existsSync(resolve(editionDir, STAGE1_DERIVED_MARKER));
+}
+
+function writeStage1DerivedMarker(editionDir: string, count: number): void {
+  const markerPath = resolve(editionDir, STAGE1_DERIVED_MARKER);
+  mkdirSync(dirname(markerPath), { recursive: true });
+  writeFileSync(markerPath, JSON.stringify({ derived_at: new Date().toISOString(), entries_derived: count }, null, 2), "utf8");
+}
+
+function deriveStage1(editionDir: string, edition: string): number {
+  if (hasStage1DerivedMarker(editionDir)) {
+    console.log(`[derive-editor-requests] Stage 1 gate: já derivado anteriormente pra esta edição (marcador existe) — no-op, idempotente (#8081).`);
+    return 0;
+  }
+
+  const gatePath = join(editionDir, "_internal", ".step-1-gate.json");
+  if (!existsSync(gatePath)) {
+    console.log(`[derive-editor-requests] Stage 1 gate: .step-1-gate.json ausente — pulando (edição anterior ao #4842, ou apply-gate-edits.ts não rodou).`);
+    return 0;
+  }
+
+  let gate: { auto_approved?: boolean };
+  try {
+    gate = JSON.parse(readFileSync(gatePath, "utf8"));
+  } catch (err) {
+    console.log(`[derive-editor-requests] Stage 1 gate: .step-1-gate.json malformado — pulando (${err instanceof Error ? err.message : String(err)}).`);
+    return 0;
+  }
+
+  if (gate.auto_approved !== false) {
+    console.log(`[derive-editor-requests] Stage 1 gate: auto_approved=${gate.auto_approved ?? "ausente"} — sem gate humano real, nada a derivar (#4842/#4943).`);
+    return 0;
+  }
+
+  const catPath = join(editionDir, "_internal", "01-categorized.json");
+  const apprPath = join(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(catPath) || !existsSync(apprPath)) {
+    console.log(`[derive-editor-requests] Stage 1 gate: 01-categorized.json ou 01-approved.json ausente — pulando.`);
+    return 0;
+  }
+
+  let categorizedJson: any;
+  let approvedJson: any;
+  try {
+    categorizedJson = JSON.parse(readFileSync(catPath, "utf8"));
+    approvedJson = JSON.parse(readFileSync(apprPath, "utf8"));
+  } catch (err) {
+    console.log(`[derive-editor-requests] Stage 1 gate: JSON malformado — pulando (${err instanceof Error ? err.message : String(err)}).`);
+    return 0;
+  }
+
+  const poolEntries = classifyPoolDiff(categorizedJson, approvedJson);
+  const destaqueEntries = classifyStage1DestaqueDiff(categorizedJson, approvedJson);
+
+  let count = 0;
+  for (const entry of [...poolEntries, ...destaqueEntries]) {
+    appendEditorRequest(editionDir, { ...entry, stage: 1, edition, source: "derived" });
+    count++;
+  }
+
+  writeStage1DerivedMarker(editionDir, count);
+  console.log(`[derive-editor-requests] Stage 1 gate: ${count} pedidos derivados`);
+  return count;
+}
+
+/**
  * CLI
  */
 function main(): void {
@@ -979,7 +1217,7 @@ function main(): void {
   const command = parsed.positional[0];
 
   if (!command) {
-    console.error("Uso: derive-editor-requests.ts <snapshot-stage2|snapshot-stage4|derive-stage4|derive-stage6> --edition AAMMDD");
+    console.error("Uso: derive-editor-requests.ts <derive-stage1|snapshot-stage2|snapshot-stage4|derive-stage4|derive-stage6> --edition AAMMDD");
     process.exit(2);
   }
 
@@ -1000,6 +1238,9 @@ function main(): void {
   }
 
   switch (command) {
+    case "derive-stage1":
+      deriveStage1(editionDir, edition);
+      break;
     case "snapshot-stage2":
       snapshotStage2(editionDir);
       break;
