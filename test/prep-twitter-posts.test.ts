@@ -24,8 +24,10 @@ import {
   prepTwitterPosts,
   computeTwitterWeightedLength,
   resolveTwitterImage,
+  resolveTwitterImages,
   TWITTER_CHAR_LIMIT,
   TWITTER_URL_WEIGHT,
+  TWITTER_IMAGE_LIMIT,
 } from "../scripts/prep-twitter-posts.ts";
 import { computeScheduledAt } from "../scripts/compute-social-schedule.ts";
 
@@ -460,6 +462,62 @@ describe("resolveTwitterImage (#4264)", () => {
   });
 });
 
+describe("resolveTwitterImages (#8056, multi-imagem)", () => {
+  it("com carrossel completo (capa+3 parágrafos+CTA): usa só os 3 slides de parágrafo, descarta capa e CTA", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-imgs-carousel-"));
+    try {
+      writePublicImages(dir, {
+        d1_4x5: { url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg" }, // capa
+        d1_carousel_p1: { url: "https://poll.diaria.workers.dev/img/d1-p1.jpg" },
+        d1_carousel_p2: { url: "https://poll.diaria.workers.dev/img/d1-p2.jpg" },
+        d1_carousel_p3: { url: "https://poll.diaria.workers.dev/img/d1-p3.jpg" },
+        d1_carousel_cta: { url: "https://poll.diaria.workers.dev/img/d1-cta.jpg" },
+      });
+      const result = resolveTwitterImages(dir, "d1", "260729");
+      assert.equal(result.reason, null);
+      assert.equal(result.images.length, 3);
+      assert.deepEqual(
+        result.images.map((i) => i.url),
+        [
+          "https://poll.diaria.workers.dev/img/d1-p1.jpg",
+          "https://poll.diaria.workers.dev/img/d1-p2.jpg",
+          "https://poll.diaria.workers.dev/img/d1-p3.jpg",
+        ],
+      );
+      assert.ok(result.images.length <= TWITTER_IMAGE_LIMIT);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("carrossel incompleto (falta 1 slide): cai pro fallback de 1 imagem (hero/4x5), nunca publica parcial", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-imgs-partial-"));
+    try {
+      writePublicImages(dir, {
+        d1_4x5: { url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg" },
+        d1_carousel_p1: { url: "https://poll.diaria.workers.dev/img/d1-p1.jpg" },
+        // p2/p3/cta ausentes — carrossel incompleto
+      });
+      const result = resolveTwitterImages(dir, "d1", "260729");
+      assert.equal(result.reason, null);
+      assert.deepEqual(result.images, [{ url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg", altText: result.images[0].altText }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem 06-public-images.json: images vazio + reason do fallback", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-imgs-missing-"));
+    try {
+      const result = resolveTwitterImages(dir, "d1", "260729");
+      assert.deepEqual(result.images, []);
+      assert.match(result.reason ?? "", /06-public-images\.json ausente/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("prepTwitterPosts — imageUrl/skipped_image (#4264)", () => {
   it("com 06-public-images.json presente: d1 usa o card 4x5, d2 cai pro hero 2:1 (4x5 ausente pra d2, #7399)", () => {
     const dir = makeEditionDir("diaria-twitter-prep-img-", MD_CURTO);
@@ -477,6 +535,36 @@ describe("prepTwitterPosts — imageUrl/skipped_image (#4264)", () => {
       assert.equal(d1?.imageUrl, "https://poll.diaria.workers.dev/img/d1-4x5.jpg");
       assert.equal(d2?.imageUrl, "https://poll.diaria.workers.dev/img/d2-2x1.jpg");
       assert.equal(result.skipped_image.length, 0);
+      // #8056: sem carrossel completo, images cai pro fallback de 1 imagem (mesma URL de imageUrl).
+      assert.deepEqual(d1?.images, [{ url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg", altText: d1?.altText }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#8056: com carrossel completo, posts[].images traz os 3 slides de parágrafo (não a capa/CTA)", () => {
+    const dir = makeEditionDir("diaria-twitter-prep-carousel-", MD_CURTO);
+    try {
+      writePublicImages(dir, {
+        d1_4x5: { url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg" },
+        d1_carousel_p1: { url: "https://poll.diaria.workers.dev/img/d1-p1.jpg" },
+        d1_carousel_p2: { url: "https://poll.diaria.workers.dev/img/d1-p2.jpg" },
+        d1_carousel_p3: { url: "https://poll.diaria.workers.dev/img/d1-p3.jpg" },
+        d1_carousel_cta: { url: "https://poll.diaria.workers.dev/img/d1-cta.jpg" },
+      });
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      const d1 = result.posts.find((p) => p.destaque === "d1");
+      assert.equal(d1?.images.length, 3);
+      assert.deepEqual(
+        d1?.images.map((i) => i.url),
+        [
+          "https://poll.diaria.workers.dev/img/d1-p1.jpg",
+          "https://poll.diaria.workers.dev/img/d1-p2.jpg",
+          "https://poll.diaria.workers.dev/img/d1-p3.jpg",
+        ],
+      );
+      // imageUrl (singular, compat) continua apontando pra 1ª entry de images.
+      assert.equal(d1?.imageUrl, "https://poll.diaria.workers.dev/img/d1-p1.jpg");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -488,6 +576,7 @@ describe("prepTwitterPosts — imageUrl/skipped_image (#4264)", () => {
       const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
       assert.equal(result.posts.length, 3);
       assert.ok(result.posts.every((p) => p.imageUrl === null));
+      assert.ok(result.posts.every((p) => p.images.length === 0));
       assert.equal(result.skipped.length, 0);
       assert.equal(result.skipped_image.length, 3);
     } finally {
