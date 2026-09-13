@@ -164,6 +164,33 @@ CREATE INDEX IF NOT EXISTS idx_users_eligible    ON clarice_users(send_eligible)
 CREATE INDEX IF NOT EXISTS idx_users_points       ON clarice_users(priority_points);
 `;
 
+// #6035: default subido de 5000 pra 30000ms. O valor de 5s (#3021) partia do
+// pressuposto de que a única colisão seria um reader curto contra a janela de
+// escrita da task diária — na prática, `diaria-clarice-sync.timer` (11:30 UTC)
+// e `diaria-clarice-novos.timer` (12:00 UTC) rodam próximos o bastante pra
+// colidir em ESCRITA×ESCRITA (não só leitura×escrita), e uma transação de
+// sync incremental real já foi vista segurando o lock além dos 5s originais
+// (achado ao vivo #6035, 13/09/2026: `diaria-clarice-sync.service` saiu com
+// "database is locked" 32min após o início, 19800/25698 contatos processados,
+// timing batendo com o disparo do `diaria-clarice-novos.timer` 2min antes da
+// falha). 30s dá folga generosa pra uma transação de escrita concorrente
+// terminar sem travar indefinidamente um processo interativo — configurável
+// via `CLARICE_DB_BUSY_TIMEOUT_MS` pra permitir ajuste sem novo deploy (ex:
+// alargar mais se a colisão persistir, ou encurtar em ambiente de teste que
+// precise falhar rápido).
+export const DEFAULT_BUSY_TIMEOUT_MS = 30000;
+
+/** Resolve o busy_timeout efetivo: env var > default. Inválido/ausente → default. */
+export function resolveBusyTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.CLARICE_DB_BUSY_TIMEOUT_MS;
+  if (!raw) return DEFAULT_BUSY_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_BUSY_TIMEOUT_MS;
+  return parsed;
+}
+
 /** Abre (ou cria) o DB e garante o schema. */
 export function openClariceDb(dbPath: string = DEFAULT_DB_PATH): DatabaseSync {
   // #4823: falha cedo e clara se o Node não suportar node:sqlite (builtin só
@@ -175,11 +202,11 @@ export function openClariceDb(dbPath: string = DEFAULT_DB_PATH): DatabaseSync {
   ) as { DatabaseSync: typeof DatabaseSync };
   const db = new DatabaseSyncCtor(dbPath);
   db.exec("PRAGMA journal_mode = WAL;");
-  // #3021: sem busy_timeout, um reader que colide com a janela de escrita da
-  // task diária (Diaria-Clarice-Sync, 08:30) recebe SQLITE_BUSY imediatamente
-  // em vez de esperar e tentar de novo. 5s cobre folgadamente uma transação
-  // de sync incremental típica sem travar scripts de leitura por muito tempo.
-  db.exec("PRAGMA busy_timeout = 5000;");
+  // #3021/#6035: sem busy_timeout, um reader/writer que colide com a janela de
+  // escrita de outra task (Diaria-Clarice-Sync, Diaria-Clarice-Novos, etc.)
+  // recebe SQLITE_BUSY imediatamente em vez de esperar e tentar de novo. Ver
+  // o comentário de `DEFAULT_BUSY_TIMEOUT_MS` acima para o histórico do valor.
+  db.exec(`PRAGMA busy_timeout = ${resolveBusyTimeoutMs()};`);
   db.exec(SCHEMA);
   migrateSchema(db);
   return db;
