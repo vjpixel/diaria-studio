@@ -1,6 +1,6 @@
 import type { QueueEntry } from "./index";
 import { CLAIM_TTL_MS } from "./index";
-import { fireQueueEntry, type InstagramCreds, type ThreadsCreds } from "./dispatch";
+import { fireQueueEntry, type InstagramCreds, type ThreadsCreds, type LinkedInCreds } from "./dispatch";
 
 // ── LinkedInScheduler — Durable Object (#1168) ────────────────────────────
 
@@ -19,6 +19,9 @@ export interface DoStoredPayload {
   instagram?: InstagramCreds;
   // #3944 Parte B — mesmo racional acima, pra credenciais Threads.
   threads?: ThreadsCreds;
+  // #8052 — mesmo racional acima, pra credenciais da API direta do LinkedIn
+  // (só usadas pelo caminho carrossel, image_urls > 1).
+  linkedin?: LinkedInCreds;
 }
 
 /**
@@ -230,7 +233,7 @@ export class LinkedInScheduler {
       return;
     }
 
-    const { key, entry, webhookUrl, pixelWebhookUrl, webhookApiKey, instagram, threads } = payload;
+    const { key, entry, webhookUrl, pixelWebhookUrl, webhookApiKey, instagram, threads, linkedin } = payload;
     const channel = entry.channel ?? "linkedin";
 
     // (#3817/#3944 Parte B) fireQueueEntry() é o ponto único de dispatch,
@@ -245,7 +248,14 @@ export class LinkedInScheduler {
     // deixando a KV entry intocada: o próximo ciclo do cron (fireDueItems)
     // processa essa mesma entry, aplica o MESMO guard puro, e aí sim escreve
     // em dlq: via KV.
-    const outcome = await fireQueueEntry(entry, { webhookUrl, pixelWebhookUrl, apiKey: webhookApiKey, instagram, threads });
+    const outcome = await fireQueueEntry(entry, {
+      webhookUrl,
+      pixelWebhookUrl,
+      apiKey: webhookApiKey,
+      instagram,
+      threads,
+      linkedin,
+    });
 
     if (outcome.status === "dlq") {
       await this.state.storage.delete("claiming");

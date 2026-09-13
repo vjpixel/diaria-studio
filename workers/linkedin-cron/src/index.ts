@@ -71,9 +71,17 @@
  *   INSTAGRAM_ACCESS_TOKEN         → (#3817) token de página com escopo instagram_content_publish
  *   THREADS_ACCESS_TOKEN           → (#3944 Parte B) token de longa duração do app Threads da Meta
  *   THREADS_USER_ID                → (#3944 Parte B) Threads user ID da conta @diar.ia.br
+ *   LINKEDIN_ACCESS_TOKEN          → (#8052) token com escopo w_organization_social (ou w_member_social)
+ *                                    pra API DIRETA do LinkedIn (Images API + Posts API) — usado SÓ
+ *                                    pelo caminho carrossel (image_urls > 1). O post single-image
+ *                                    continua indo pelo webhook Make (MAKE_WEBHOOK_URL acima).
+ *   LINKEDIN_AUTHOR_URN            → (#8052) URN da página/perfil que publica o carrossel
+ *                                    (urn:li:organization:{id} ou urn:li:person:{id})
  * Vars (via [vars] no wrangler.toml, não-secretas):
  *   INSTAGRAM_API_VERSION          → (#3817) default "v25.0" se ausente (aplicado em dispatch.ts)
  *   THREADS_API_VERSION            → (#3944 Parte B) default "v1.0" se ausente (aplicado em dispatch.ts)
+ *   LINKEDIN_API_VERSION           → (#8052) header LinkedIn-Version (YYYYMM), default "202401" se
+ *                                    ausente (aplicado em dispatch.ts)
  */
 
 export interface Env {
@@ -104,6 +112,15 @@ export interface Env {
   THREADS_ACCESS_TOKEN?: string;
   THREADS_USER_ID?: string;
   THREADS_API_VERSION?: string; // default "v1.0" aplicado em dispatch.ts
+  // #8052 — credenciais da API DIRETA do LinkedIn (Images API + Posts API),
+  // usadas SÓ pelo caminho carrossel (image_urls > 1). Opcionais pra
+  // backward-compat: se ausentes quando uma entry linkedin com carrossel for
+  // disparada, vai pra DLQ com motivo claro (mesmo padrão do Instagram/
+  // Threads, ver dispatch.ts::resolveLinkedInCreds). O post single-image
+  // continua indo pelo webhook Make (MAKE_WEBHOOK_URL), intocado.
+  LINKEDIN_ACCESS_TOKEN?: string;
+  LINKEDIN_AUTHOR_URN?: string;
+  LINKEDIN_API_VERSION?: string; // default "202401" aplicado em dispatch.ts
 }
 
 export type WebhookTarget = "diaria" | "pixel";
@@ -270,7 +287,7 @@ export function isLegacyKey(key: string): boolean {
 export * from "./durable-object";
 import { LinkedInScheduler, type DoStoredPayload } from "./durable-object";
 export * from "./dispatch";
-import { resolveInstagramCreds, resolveThreadsCreds } from "./dispatch";
+import { resolveInstagramCreds, resolveThreadsCreds, resolveLinkedInCreds } from "./dispatch";
 
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) {
@@ -485,6 +502,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     // que o disparo precisar tem que estar aqui.
     const igCreds = resolveInstagramCreds(env);
     const threadsCreds = resolveThreadsCreds(env);
+    const linkedinCreds = resolveLinkedInCreds(env); // #8052
     const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
       scheduledAtMs: scheduledMs,
       key,
@@ -494,6 +512,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       ...(env.MAKE_WEBHOOK_API_KEY !== undefined && { webhookApiKey: env.MAKE_WEBHOOK_API_KEY }),
       ...(igCreds !== undefined && { instagram: igCreds }),
       ...(threadsCreds !== undefined && { threads: threadsCreds }),
+      ...(linkedinCreds !== undefined && { linkedin: linkedinCreds }),
     };
     const armRes = await doStub.fetch("https://do/arm", {
       method: "POST",
@@ -832,6 +851,7 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
       // rotacionou o secret.
       const igCreds = resolveInstagramCreds(env);
       const threadsCreds = resolveThreadsCreds(env);
+      const linkedinCreds = resolveLinkedInCreds(env); // #8052
       const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
         scheduledAtMs: scheduledMs,
         key: k.name,
@@ -841,6 +861,7 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
         ...(env.MAKE_WEBHOOK_API_KEY !== undefined && { webhookApiKey: env.MAKE_WEBHOOK_API_KEY }),
         ...(igCreds !== undefined && { instagram: igCreds }),
         ...(threadsCreds !== undefined && { threads: threadsCreds }),
+        ...(linkedinCreds !== undefined && { linkedin: linkedinCreds }),
       };
       const armRes = await doStub.fetch("https://do/arm", {
         method: "POST",

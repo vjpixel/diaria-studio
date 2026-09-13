@@ -27,14 +27,16 @@ export interface WorkerQueuePayload {
   // dia). Opcional — omitido/`undefined` preserva o caminho de imagem única
   // (`image_url`) para LinkedIn/Threads/Instagram diário.
   //
-  // #8050: carrossel só é implementado pro `channel: "instagram"` e
-  // `"threads"` (`fireInstagramCarousel`/`fireThreadsCarousel` em
-  // dispatch.ts). `channel: "linkedin"` NÃO lê este campo — `fireLinkedIn`
-  // só encaminha `image_url` singular ao Make.com. Uma entry LinkedIn com
-  // >1 imagem aqui é rejeitada fail-fast pelo Worker (dlq imediato) em vez
-  // de retentar até a DLQ em silêncio — mas o caminho certo continua sendo
-  // não enfileirar carrossel pra este canal (achado ao vivo, sessão 260912,
-  // issue #8050).
+  // #8050 identificou que carrossel era implementado só pro `channel:
+  // "instagram"` e `"threads"` (`fireInstagramCarousel`/`fireThreadsCarousel`
+  // em dispatch.ts) — `channel: "linkedin"` caía em silêncio pro
+  // `image_url` ausente (`fireLinkedIn` só encaminhava `image_url` singular
+  // ao Make.com). O #8052 fecha o gap: `channel: "linkedin"` com
+  // `image_urls` de mais de 1 item agora publica via `fireLinkedInCarousel`
+  // — API DIRETA do LinkedIn (Images API + Posts API), sem passar pelo
+  // webhook Make (que continua sendo o caminho do post single-image de
+  // sempre). Os 3 canais que aceitam `channel` (linkedin/instagram/threads)
+  // suportam carrossel hoje.
   image_urls?: string[] | null;
   scheduled_at: string;
   destaque: string;
