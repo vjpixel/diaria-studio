@@ -326,6 +326,44 @@ semana) foi encontrado, o script já encerra aqui — nenhum publisher é
 chamado, nada é agendado, e a skill deve reportar isso ao editor sem tentar
 prosseguir.
 
+## Passo 2b — Publicar a prévia visual do artefato (#8022, obrigatório antes do Passo 3)
+
+Pedido do editor (12/09/2026, sessão de agendamento do recap semanal
+260912) — mesmo padrão já resolvido pro Passo 7b de
+`/diaria-linkedin-semanal` (#8027): revisar caption + seleção só em texto
+de terminal é mais difícil de avaliar num skim rápido do que um preview
+visual formatado. Este passo NUNCA é opcional — roda sempre, mesmo com
+`--no-gates` (o gate que ele antecede pode ser pulado; a publicação da
+prévia, não). Só o TOP-LEVEL do Claude Code tem acesso à ferramenta
+`Artifact` — este passo pressupõe que quem executa é a sessão top-level (o
+caso normal de `/diaria-instagram-semanal` invocada diretamente).
+
+Publique via `Artifact`, imediatamente após o Passo 2 e ANTES do Passo 3:
+
+1. **Conteúdo:** para cada modo efetivamente rodado nesta invocação — os
+   DOIS lado a lado em colunas/seções separadas quando `--mode` foi omitido
+   (`both`, default, #5903), ou só o modo único quando `--mode
+   clicked`/`--mode highlights` foi passado explícito — a caption dos 3
+   canais (Instagram, Facebook, Threads) já formatada pelo Passo 2,
+   apresentada de forma legível (tipografia real, quebras de linha
+   preservadas, itens numerados) — nunca HTML cru despejado, e nunca texto
+   novo/reescrito: é uma RENDERIZAÇÃO do que o Passo 2 já produziu.
+2. **Junto de cada modo:** os itens selecionados (taxa de clique + título +
+   edição de origem no modo `clicked`; os 5 D1 em ordem cronológica no modo
+   `highlights`), os warnings pendentes que o Passo 2 relatou (empates,
+   edição sem dado de clique, linguagem comercial suspeita), e o horário de
+   agendamento planejado (sábado para `highlights`, domingo para `clicked`).
+3. **Título do Artifact:** algo como "Instagram Semanal {AAMMDD-do-sabado}"
+   — `favicon` à escolha (ex: 📅).
+4. **Nota do mecanismo, visível no topo:** que este carrossel publica
+   automaticamente em Instagram, Facebook e Threads (#5348) via
+   `publish-weekly-social.ts --schedule` — sem gate por canal — e que o
+   gate humano do Passo 3 é o ponto de confirmação, não este preview em si.
+
+Publicada a prévia, apresente o link ao editor ANTES do Passo 3 — é o ponto
+em que ele revisa caption + seleção em skim visual, em vez de aprovar
+direto a partir do texto impresso no terminal pelo Passo 2.
+
 ## Passo 3 — Gate humano (pulado com `--no-gates`)
 
 Mostre o preview completo (itens selecionados + taxa de clique + warnings +
