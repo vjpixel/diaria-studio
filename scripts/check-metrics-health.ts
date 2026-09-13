@@ -489,6 +489,17 @@ async function main(): Promise<void> {
   // contrato (`kitActive: number | null — Contagem viva do Kit`), só que
   // agora de fato lida em vez de sempre `null`.
   //
+  // **#7916, fatia 4/N (13/09/2026): `base-ativa` passa a preferir a
+  // contagem DEDUPLICADA cross-plataforma** (`crossPlatformLeitor.total_active`,
+  // já computado por `resolveCrossPlatformDeps`/`summarizeStoreLeitoresCanonicalDedup`
+  // pra alimentar `leitor-v1` logo abaixo — reusado aqui sem 2ª query) em vez
+  // da soma ingênua `beehiiv.active + kitActive`, que dobra a contagem de
+  // qualquer assinante ativo em 2+ plataformas (ex: alguém migrado de
+  // Beehiiv pro Kit ainda "active" nas duas fontes durante a rampa #6504).
+  // Ver `BaseAtivaDeps.crossPlatformActive`/`baseAtivaDef.computar`
+  // (`registry.ts`) pro contrato completo — a soma ingênua vira fallback
+  // só pra chamador que não tenha o dado do store.
+  //
   // `leitor-v1` cross-plataforma passa a usar `summarizeStoreLeitoresCanonicalDedup`
   // (`leitor-store.ts`, #6591/#7204) em vez de `leitorV1Def` — soma
   // Kit+Brevo+Beehiiv sobre o store unificado, deduplicado por edição
@@ -540,7 +551,24 @@ async function main(): Promise<void> {
         const snapshotDate = nearestSnapshotOnOrBefore(snapshotDates, dia);
         const janela: Janela = { de: dia, ate: dia, granularidade: "dia", fuso: "BRT" };
         const beehiiv = snapshotDate ? { date: snapshotDate, active: countActive(readCached(snapshotDate)) } : null;
-        const resultado = await baseAtivaDef.computar({ janela, deps: { beehiiv, kitActive: liveKitActive, hoje: dia } });
+        // `crossPlatformActive`/`crossPlatformAsOf` (#7916, fatia 4/N):
+        // `crossPlatformLeitor.total_active` já É a contagem deduplicada
+        // cross-plataforma que `baseAtivaDef.computar` agora prefere sobre
+        // a soma ingênua — mesmo dado que `buildCrossPlatformLeitorResult`
+        // usa pra `leitor-v1` logo abaixo, reusado aqui sem 2ª query. `null`
+        // quando o store não respondeu (`resolveCrossPlatformDeps` já
+        // degradou pra `{crossPlatformLeitor: null}`) — `computar` cai no
+        // fallback ingênuo de sempre nesse caso.
+        const resultado = await baseAtivaDef.computar({
+          janela,
+          deps: {
+            beehiiv,
+            kitActive: liveKitActive,
+            hoje: dia,
+            crossPlatformActive: crossPlatformLeitor?.total_active ?? null,
+            crossPlatformAsOf,
+          },
+        });
         medicoes.push({ chave: dia, resultado });
       }
       seriesById.set("base-ativa", medicoes);
@@ -581,10 +609,31 @@ async function main(): Promise<void> {
     }
   } else if (crossPlatformLeitor) {
     // Sem snapshot Beehiiv nenhum, mas o store cross-plataforma respondeu —
-    // base-ativa fica sem a metade Beehiiv (kitActive sozinho já é melhor
-    // que nada, mas o contrato de baseAtivaDef exige passar por ele pra
-    // computar `exato`/`piso` certo); leitor-v1 evita cair em
-    // "indeterminado" só por falta de Beehiiv.
+    // base-ativa (#7916, fatia 4/N: deixou de precisar da metade Beehiiv
+    // pra sair `piso` — `crossPlatformActive` sozinho já basta pro contrato
+    // de `baseAtivaDef` computar sem cair em `indeterminado`) e leitor-v1
+    // evitam cair em "indeterminado" só por falta de Beehiiv.
+    const baseAtivaDef = getMetric("base-ativa") as MetricDef<BaseAtivaDeps> | undefined;
+    if (baseAtivaDef) {
+      const medicoes: MedicaoDia[] = [];
+      for (const dia of dias) {
+        const janela: Janela = { de: dia, ate: dia, granularidade: "dia", fuso: "BRT" };
+        const resultado = await baseAtivaDef.computar({
+          janela,
+          deps: {
+            beehiiv: null,
+            kitActive: liveKitActive,
+            hoje: dia,
+            crossPlatformActive: crossPlatformLeitor.total_active,
+            crossPlatformAsOf,
+          },
+        });
+        medicoes.push({ chave: dia, resultado });
+      }
+      seriesById.set("base-ativa", medicoes);
+      avaliadasIds.add("base-ativa");
+      avaliadasComInsumoReal.add("base-ativa");
+    }
     const leitorV1Def = getMetric("leitor-v1");
     if (leitorV1Def) {
       const medicoes: MedicaoDia[] = dias.map((dia) => ({
@@ -600,7 +649,6 @@ async function main(): Promise<void> {
       avaliadasIds.add("leitor-v1");
       avaliadasComInsumoReal.add("leitor-v1");
     }
-    skipMotivos.push(`base-ativa: nenhum snapshot Beehiiv em ${backupRoot} — não avaliada (leitor-v1 seguiu via store cross-plataforma)`);
   } else {
     skipMotivos.push(`base-ativa/leitor-v1: nenhum snapshot em ${backupRoot} nem store cross-plataforma disponível — não avaliados`);
   }

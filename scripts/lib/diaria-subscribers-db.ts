@@ -1172,6 +1172,62 @@ export function getKitActiveSummary(db: DatabaseSync): KitActiveSummary {
   return { count: row.n, asOf: row.asOf ?? null };
 }
 
+export interface CrossPlatformActiveSummary {
+  /** `COUNT(DISTINCT subscriber_id)` de `subscription` com `status='active'`
+   *  nas `platforms` dadas. Deduplicado POR CONSTRUÇÃO, não por pós-
+   *  processamento: `diaria-subscribers-identity-resolve.ts` (#6589) já
+   *  reaponta `subscription.subscriber_id` pro `subscriber` canônico
+   *  quando resolve 2 aliases (ex: Beehiiv + Kit) como a mesma pessoa —
+   *  ver `mergeSubscribers` ali, que faz `UPDATE subscription SET
+   *  subscriber_id = ? WHERE subscriber_id = ? AND platform = ?` pro
+   *  perdedor da fusão. Por isso um `COUNT(DISTINCT subscriber_id)` simples
+   *  já conta 1 pessoa migrada de Beehiiv pra Kit (ou presente ativa nas
+   *  duas simultaneamente) como 1, nunca 2 — ao contrário da soma ingênua
+   *  `beehiiv.active + kitActive` que `base-ativa` usava antes desta fatia
+   *  (#7916, fatia 4/N), que dobra a contagem de qualquer assinante ativo
+   *  em 2+ plataformas cobertas. */
+  count: number;
+  /** `MAX(updated_at)` das linhas contadas — mesmo padrão de
+   *  `KitActiveSummary.asOf`/`getSubscriptionAsOf`. `null` quando `count === 0`. */
+  asOf: string | null;
+}
+
+/**
+ * Contagem de assinantes ATIVOS deduplicada CROSS-PLATAFORMA (#7916, fatia
+ * 4/N — "deduplicação de base ativa consolidada cross-plataforma").
+ *
+ * **PISO, nunca exato** — mesma ressalva de `CROSS_PLATFORM_FLOOR_NOTE`
+ * (`diaria-subscribers-identity-resolve.ts`, #6589): a fusão de identidade
+ * roda como um passo SEPARADO, depois da ingestão — um assinante cuja
+ * identidade cross-plataforma ainda não foi resolvida (ex: e-mail
+ * diferente em cada plataforma, ou a rodada de resolução ainda não rodou
+ * desde a última ingestão) aparece como 2 `subscriber` distintos e conta
+ * 2x aqui, do mesmo jeito que contaria na soma ingênua. O que esta função
+ * ganha sobre a soma ingênua não é perfeição — é que ela conta 1 vez toda
+ * identidade que a resolução JÁ casou, em vez de garantidamente contar 2x
+ * mesmo as já casadas.
+ *
+ * `platforms` default = `PLATFORMS` inteiro (todas as plataformas da
+ * diária) — o chamador pode restringir (ex: só Beehiiv+Kit, excluindo
+ * Brevo) se quiser replicar o escopo exato do `base-ativa` de antes desta
+ * fatia.
+ */
+export function getCrossPlatformActiveSummary(
+  db: DatabaseSync,
+  platforms: readonly Platform[] = PLATFORMS,
+): CrossPlatformActiveSummary {
+  if (platforms.length === 0) return { count: 0, asOf: null };
+  const placeholders = platforms.map(() => "?").join(", ");
+  const row = db
+    .prepare(
+      `SELECT COUNT(DISTINCT subscriber_id) AS n, MAX(updated_at) AS asOf
+       FROM subscription
+       WHERE status = 'active' AND platform IN (${placeholders})`,
+    )
+    .get(...platforms) as { n: number; asOf: string | null };
+  return { count: row.n, asOf: row.asOf ?? null };
+}
+
 /**
  * `MAX(updated_at)` de `subscription` entre as `platforms` dadas — sinal de
  * frescor honesto pra qualquer leitura CROSS-PLATAFORMA sobre o store
