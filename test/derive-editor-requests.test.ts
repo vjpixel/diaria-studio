@@ -792,4 +792,341 @@ describe("derive-editor-requests.ts (#5731)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // --- derive-stage1 (#7964) ---
+
+  /** `01-categorized.json` com 6 highlights (rank 1-6) + pool com 1 item em `use_melhor`. */
+  function categorizedJsonStage1(): Record<string, unknown> {
+    return {
+      highlights: [1, 2, 3, 4, 5, 6].map((rank) => ({
+        rank,
+        article: { url: `https://a.com/${rank}`, title: `A${rank}` },
+      })),
+      radar: [{ url: "https://r.com/x", title: "RX" }],
+      lancamento: [],
+      use_melhor: [{ url: "https://b.com/1", title: "B1" }],
+      video: [],
+    };
+  }
+
+  function writeStage1Fixtures(
+    editionDir: string,
+    categorized: Record<string, unknown>,
+    approved: Record<string, unknown>,
+    gate: Record<string, unknown> | null,
+  ): void {
+    const internalDir = join(editionDir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "01-categorized.json"), JSON.stringify(categorized), "utf8");
+    writeFileSync(join(internalDir, "01-approved.json"), JSON.stringify(approved), "utf8");
+    if (gate) writeFileSync(join(internalDir, ".step-1-gate.json"), JSON.stringify(gate), "utf8");
+  }
+
+  it("derive-stage1: bucket-move + destaque-swap no gate humano geram ≥2 entradas derivadas (#7964)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-"));
+    try {
+      const editionDir = join(dir, "260912");
+      const categorized = categorizedJsonStage1();
+      const approved = {
+        // D1/D2 mantidos (top-3 natural), D3 (A3, rank 3) trocado pelo item
+        // promovido do Radar (RX) — destaque-swap.
+        highlights: [
+          { article: { url: "https://a.com/1", title: "A1" } },
+          { article: { url: "https://a.com/2", title: "A2" } },
+          { article: { url: "https://r.com/x", title: "RX" } },
+        ],
+        radar: [], // RX saiu do pool (promovido a destaque)
+        lancamento: [{ url: "https://b.com/1", title: "B1" }], // moveu de use_melhor -> lancamento
+        use_melhor: [],
+        video: [],
+      };
+      writeStage1Fixtures(editionDir, categorized, approved, { auto_approved: false });
+
+      const r = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const entries = readEntries(editionDir);
+      assert.ok(entries.length >= 2, `esperado >=2 entradas, veio ${entries.length}: ${JSON.stringify(entries)}`);
+      for (const e of entries) {
+        assert.equal(e.stage, 1);
+        assert.equal(e.source, "derived");
+      }
+
+      const bucketMove = entries.find((e) => e.request_type === "bucket-move");
+      assert.ok(bucketMove, "bucket-move esperado (use_melhor -> lancamento)");
+      assert.equal((bucketMove!.context as Record<string, unknown>).from_bucket, "use_melhor");
+      assert.equal((bucketMove!.context as Record<string, unknown>).to_bucket, "lancamento");
+
+      const swap = entries.find((e) => e.request_type === "destaque-swap");
+      assert.ok(swap, "destaque-swap esperado (A3 -> RX)");
+      assert.equal(swap!.target, "d3");
+      assert.equal((swap!.context as Record<string, unknown>).new_url, "https://r.com/x");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derive-stage1: auto_approved=true nunca deriva, mesmo com o mesmo diff de bucket-move/destaque (#4842/#4943)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-auto-"));
+    try {
+      const editionDir = join(dir, "260912");
+      const categorized = categorizedJsonStage1();
+      // Mesmo diff do teste acima — só muda auto_approved.
+      const approved = {
+        highlights: [
+          { article: { url: "https://a.com/1", title: "A1" } },
+          { article: { url: "https://a.com/2", title: "A2" } },
+          { article: { url: "https://r.com/x", title: "RX" } },
+        ],
+        radar: [],
+        lancamento: [{ url: "https://b.com/1", title: "B1" }],
+        use_melhor: [],
+        video: [],
+      };
+      writeStage1Fixtures(editionDir, categorized, approved, { auto_approved: true });
+
+      const r = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(readEntries(editionDir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derive-stage1: mecânica top-6→top-3 sob auto-aprovação nunca vira destaque-cut/swap (sem editor)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-mech-"));
+    try {
+      const editionDir = join(dir, "260912");
+      const categorized = categorizedJsonStage1();
+      // 01-approved.json = exatamente o top-3 natural (rank 1-3), sem
+      // nenhuma ação do editor — só o corte mecânico de 6 -> 3.
+      const approved = {
+        highlights: [
+          { article: { url: "https://a.com/1", title: "A1" } },
+          { article: { url: "https://a.com/2", title: "A2" } },
+          { article: { url: "https://a.com/3", title: "A3" } },
+        ],
+        radar: [{ url: "https://r.com/x", title: "RX" }],
+        lancamento: [],
+        use_melhor: [{ url: "https://b.com/1", title: "B1" }],
+        video: [],
+      };
+      // auto_approved: false (gate humano ocorreu, mas o editor não tocou em nada).
+      writeStage1Fixtures(editionDir, categorized, approved, { auto_approved: false });
+
+      const r = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(readEntries(editionDir), [], "top-3 natural sem edição não pode gerar pedido nenhum");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derive-stage1: .step-1-gate.json ausente é fail-soft (edição anterior ao #4842)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-nogate-"));
+    try {
+      const editionDir = join(dir, "260912");
+      writeStage1Fixtures(editionDir, categorizedJsonStage1(), { highlights: [] }, null);
+
+      const r = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(readEntries(editionDir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derive-stage1: 2 destaques no aprovado (editor demoveu D3, #3369) vira destaque-cut, não swap", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-cut-"));
+    try {
+      const editionDir = join(dir, "260912");
+      const categorized = categorizedJsonStage1();
+      const approved = {
+        highlights: [
+          { article: { url: "https://a.com/1", title: "A1" } },
+          { article: { url: "https://a.com/2", title: "A2" } },
+          // D3 (A3) removido sem substituto — edição fica com 2 destaques.
+        ],
+        radar: [{ url: "https://r.com/x", title: "RX" }], // inalterado — só o pool importa neste teste
+        lancamento: [],
+        use_melhor: [{ url: "https://b.com/1", title: "B1" }], // inalterado
+        video: [],
+      };
+      writeStage1Fixtures(editionDir, categorized, approved, { auto_approved: false });
+
+      const r = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const entries = readEntries(editionDir);
+      assert.equal(entries.length, 1, JSON.stringify(entries));
+      assert.equal(entries[0].request_type, "destaque-cut");
+      assert.equal(entries[0].target, "d3");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derive-stage1: destaque-swap usa o rank ORIGINAL do item removido como target, não a posição final do promovido (achado de review #7964)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-reorder-"));
+    try {
+      const editionDir = join(dir, "260912");
+      const categorized = categorizedJsonStage1();
+      // D1 (A1) é trocado por RX, mas o array final REORDENA os sobreviventes
+      // — RX pousa na ÚLTIMA posição (index 2 / "d3"), não na primeira. Se o
+      // target seguisse a posição final do item promovido, a entrada diria
+      // "target: d3" com descrição "Destaque D1 trocado" — contraditório.
+      const approved = {
+        highlights: [
+          { article: { url: "https://a.com/2", title: "A2" } },
+          { article: { url: "https://a.com/3", title: "A3" } },
+          { article: { url: "https://r.com/x", title: "RX" } },
+        ],
+        radar: [],
+        lancamento: [],
+        use_melhor: [{ url: "https://b.com/1", title: "B1" }], // inalterado — sem bucket-move neste teste
+        video: [],
+      };
+      writeStage1Fixtures(editionDir, categorized, approved, { auto_approved: false });
+
+      const r = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const entries = readEntries(editionDir);
+      assert.equal(entries.length, 1, JSON.stringify(entries));
+      assert.equal(entries[0].request_type, "destaque-swap");
+      assert.equal(entries[0].target, "d1", "target deve ser d1 (rank original de A1), não d3 (posição final de RX)");
+      assert.match(entries[0].description as string, /Destaque D1 trocado/);
+      assert.equal((entries[0].context as Record<string, unknown>).new_url, "https://r.com/x");
+      assert.equal((entries[0].context as Record<string, unknown>).position, 3, "posição real do promovido no aprovado fica em context, não no target");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derive-stage1: 2ª chamada com os mesmos arquivos é idempotente — não duplica entradas (fleet review #8081)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-idempotent-"));
+    try {
+      const editionDir = join(dir, "260912");
+      const categorized = categorizedJsonStage1();
+      const approved = {
+        highlights: [
+          { article: { url: "https://a.com/1", title: "A1" } },
+          { article: { url: "https://a.com/2", title: "A2" } },
+          { article: { url: "https://r.com/x", title: "RX" } },
+        ],
+        radar: [],
+        lancamento: [{ url: "https://b.com/1", title: "B1" }],
+        use_melhor: [],
+        video: [],
+      };
+      writeStage1Fixtures(editionDir, categorized, approved, { auto_approved: false });
+
+      const r1 = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r1.status, 0, r1.stderr);
+      const afterFirst = readEntries(editionDir);
+      assert.ok(afterFirst.length >= 2, JSON.stringify(afterFirst));
+
+      // Mesma edição, mesmos arquivos inalterados (simula retomada de Stage 1
+      // interrompido DEPOIS do 1º derive-stage1 já ter rodado, #6827/#8081).
+      const r2 = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r2.status, 0, r2.stderr);
+      assert.match(r2.stdout, /já derivado anteriormente.*no-op/);
+
+      const afterSecond = readEntries(editionDir);
+      assert.deepEqual(afterSecond, afterFirst, "2ª chamada não pode duplicar nenhuma entrada");
+
+      const markerPath = join(editionDir, "_internal", ".step-1-editor-requests-derived.json");
+      assert.ok(existsSync(markerPath), "marcador de idempotência deveria existir em disco");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derive-stage1: destaque-promote quando há mais itens promovidos do que dropados do top-3", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-promote-"));
+    try {
+      const editionDir = join(dir, "260912");
+      // top-3 original: A1, A2, A3 — nenhum deles sai do aprovado (mantidos
+      // em highlights). O editor troca a composição do pool E adiciona um
+      // 4º... não: máximo é 3 destaques, então simula com só 2 no top-3
+      // natural (categorized com highlights de tamanho 2) e o aprovado tem
+      // 3, sobrando 1 promovido sem par de drop.
+      const categorized = {
+        highlights: [
+          { rank: 1, article: { url: "https://a.com/1", title: "A1" } },
+          { rank: 2, article: { url: "https://a.com/2", title: "A2" } },
+        ],
+        radar: [
+          { url: "https://r.com/x", title: "RX" },
+          { url: "https://r.com/y", title: "RY" },
+        ],
+        lancamento: [],
+        use_melhor: [],
+        video: [],
+      };
+      const approved = {
+        // A1 e A2 mantidos (top-3 natural = só eles, já que categorized só
+        // tinha 2 highlights) + RX promovido do Radar — sem nenhum drop.
+        highlights: [
+          { article: { url: "https://a.com/1", title: "A1" } },
+          { article: { url: "https://a.com/2", title: "A2" } },
+          { article: { url: "https://r.com/x", title: "RX" } },
+        ],
+        radar: [{ url: "https://r.com/y", title: "RY" }], // RX saiu (promovido), RY fica
+        lancamento: [],
+        use_melhor: [],
+        video: [],
+      };
+      writeStage1Fixtures(editionDir, categorized, approved, { auto_approved: false });
+
+      const r = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const entries = readEntries(editionDir);
+      assert.equal(entries.length, 1, JSON.stringify(entries));
+      assert.equal(entries[0].request_type, "destaque-promote");
+      assert.equal(entries[0].target, "d3");
+      assert.equal((entries[0].context as Record<string, unknown>).new_url, "https://r.com/x");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derive-stage1: JSON malformado em .step-1-gate.json é fail-soft (não trava, não deriva)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-badgate-"));
+    try {
+      const editionDir = join(dir, "260912");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(internalDir, "01-categorized.json"), JSON.stringify(categorizedJsonStage1()), "utf8");
+      writeFileSync(join(internalDir, "01-approved.json"), JSON.stringify({ highlights: [] }), "utf8");
+      writeFileSync(join(internalDir, ".step-1-gate.json"), "{ isto não é json válido", "utf8");
+
+      const r = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /malformado/);
+      assert.deepEqual(readEntries(editionDir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derive-stage1: JSON malformado em 01-categorized.json/01-approved.json é fail-soft (não trava, não deriva)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-badjson-"));
+    try {
+      const editionDir = join(dir, "260912");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(internalDir, "01-categorized.json"), "{ não é json", "utf8");
+      writeFileSync(join(internalDir, "01-approved.json"), JSON.stringify({ highlights: [] }), "utf8");
+      writeFileSync(join(internalDir, ".step-1-gate.json"), JSON.stringify({ auto_approved: false }), "utf8");
+
+      const r = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /malformado/);
+      assert.deepEqual(readEntries(editionDir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
