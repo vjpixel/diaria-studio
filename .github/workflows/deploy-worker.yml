@@ -38,6 +38,17 @@ on:
         description: "Nome do diretório em workers/{worker} a deployar"
         required: true
         type: string
+      ref:
+        # #8103: ref a deployar. Vazio = o default do `actions/checkout`
+        # (o commit que DISPAROU o caller) — certo pra caller acionado por
+        # push, que já carrega a mudança. ERRADO pra caller que produz a
+        # mudança no próprio run (regen-home.yml: regenera → PR → merge →
+        # deploy): o commit disparador é o de ANTES do merge, e o deploy
+        # republicava a home velha. Esse caller passa `master`.
+        description: "Ref pro checkout (vazio = commit que disparou o caller)"
+        required: false
+        type: string
+        default: ""
     secrets:
       CLOUDFLARE_WORKERS_TOKEN:
         required: true
@@ -51,6 +62,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-node@v4
         with:
