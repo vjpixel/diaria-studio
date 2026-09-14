@@ -79,6 +79,27 @@ test("matchesWaterfallTier: score positive/zero", () => {
   assert.equal(matchesWaterfallTier(pos, { score: "zero" }), false);
 });
 
+test("matchesWaterfallTier: score número exato (#8113)", () => {
+  const neg20 = mkRow({ email: "n@gmail.com", priority_points: -20 });
+  const zero = mkRow({ email: "z@gmail.com", priority_points: 0 });
+  const pos = mkRow({ email: "p@gmail.com", priority_points: 5 });
+  assert.equal(matchesWaterfallTier(neg20, { score: -20 }), true);
+  assert.equal(matchesWaterfallTier(zero, { score: -20 }), false);
+  assert.equal(matchesWaterfallTier(pos, { score: -20 }), false);
+  // score: 0 (número) tem o MESMO efeito de score: "zero" — não é tratado
+  // como "eixo omitido" (o guard `spec.score !== 0` em matchesWaterfallTier
+  // existe só pra clareza de leitura, nunca degrada pra permissivo).
+  assert.equal(matchesWaterfallTier(zero, { score: 0 }), true);
+  assert.equal(matchesWaterfallTier(neg20, { score: 0 }), false);
+});
+
+test("validateWaterfallTiers: aceita score numérico inteiro, rejeita não-inteiro (#8113)", () => {
+  const specs = validateWaterfallTiers([{ name: "t1", score: -20 }]);
+  assert.equal(specs[0].score, -20);
+  assert.throws(() => validateWaterfallTiers([{ name: "t1", score: -20.5 }]));
+  assert.throws(() => validateWaterfallTiers([{ name: "t1", score: "negativo" }]));
+});
+
 test("matchesWaterfallTier: eixos combinados (AND)", () => {
   const r = mkRow({ email: "adv@escritorio.adv.br", cohort: "leads-2026-08", priority_points: 0 });
   assert.equal(matchesWaterfallTier(r, { juridico: true, cohort: "leads-2026-08", score: "zero" }), true);
@@ -138,6 +159,18 @@ test("buildWaterfallSelection: waterfall respeita a ORDEM dos tiers e o budget C
     { name: "juridico", available: 2, taken: 2 },
     { name: "outros", available: 2, taken: 1 },
   ]);
+});
+
+test("buildWaterfallSelection: send_eligible=0 NUNCA entra, mesmo casando o predicado do tier (#8113)", () => {
+  const rows = [
+    mkRow({ email: "elig@gmail.com", priority_points: 0, send_eligible: 1 }),
+    mkRow({ email: "unsub@gmail.com", priority_points: 0, send_eligible: 0 }),
+    mkRow({ email: "bounced@gmail.com", priority_points: 0, send_eligible: 0 }),
+  ];
+  const tiers: WaterfallTierSpec[] = [{ name: "zero", score: "zero" }];
+  const result = buildWaterfallSelection(rows, tiers, 0);
+  assert.deepEqual(result.selected.map((r) => r.email), ["elig@gmail.com"]);
+  assert.deepEqual(result.tierStats, [{ name: "zero", available: 1, taken: 1 }]);
 });
 
 test("buildWaterfallSelection: budget<=0 = sem teto, cada tier entra inteiro", () => {

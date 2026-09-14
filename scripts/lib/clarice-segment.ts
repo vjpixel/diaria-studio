@@ -1080,8 +1080,10 @@ export function resolveCohortArg(input: string): string {
 // budget — puro, sem I/O, mesmo padrão do resto do arquivo.
 // ---------------------------------------------------------------------------
 
-/** Filtro de score dentro de um tier: "positive" = priority_points>0; "zero" = ===0. Omitido = qualquer valor. */
-export type WaterfallScoreFilter = "positive" | "zero";
+/** Filtro de score dentro de um tier: "positive" = priority_points>0; "zero" = ===0;
+ * número = priority_points === esse valor exato (#8113 — composições fora de
+ * "positivo"/"zero", ex: score=-20). Omitido = qualquer valor. */
+export type WaterfallScoreFilter = "positive" | "zero" | number;
 
 /** Ordem dentro de um tier. Default (omitido): priority_points DESC. Email ASC sempre desempata. */
 export type WaterfallOrderBy = "priority_points_desc" | "created_desc";
@@ -1109,6 +1111,7 @@ export function matchesWaterfallTier(
   if (spec.cohort !== undefined && (r.cohort ?? null) !== spec.cohort) return false;
   if (spec.score === "positive" && !((r.priority_points ?? 0) > 0)) return false;
   if (spec.score === "zero" && (r.priority_points ?? 0) !== 0) return false;
+  if (typeof spec.score === "number" && (r.priority_points ?? 0) !== spec.score) return false;
   return true;
 }
 
@@ -1174,8 +1177,19 @@ export function buildWaterfallSelection<T extends StoreRow>(
   const seen = new Set<string>();
   const tierStats: WaterfallTierStat[] = [];
 
+  // #8113 review: os predicados dos NAMED_GROUPS (isEngajados/isReativacao/
+  // isRampWarm) já embutem `send_eligible=1` — nenhum tier declarativo tinha
+  // esse eixo, então um plano `--tiers` sem `cohort` que restrinja incidentalmente
+  // pra só elegíveis incluiria unsubscribed/hard-bounced/internos na seleção
+  // (achado ao vivo montando o envio score=0+score=-20 do #8113: o tier
+  // "score-zero" sozinho tinha 34.733 "available" ali — a população
+  // send_eligible=1 real pra priority_points=0 é ~10× menor). Filtro
+  // incondicional aqui, não por spec — elegibilidade nunca é uma composição
+  // OPCIONAL de tier, é pré-requisito de qualquer envio.
+  const eligibleRows = rows.filter(isSendEligible);
+
   for (const spec of tiers) {
-    const matched = rows.filter((r) => matchesWaterfallTier(r, spec));
+    const matched = eligibleRows.filter((r) => matchesWaterfallTier(r, spec));
     const ordered = orderWaterfallTier(matched, spec.orderBy);
     const take = Number.isFinite(remaining) ? Math.max(0, Math.min(ordered.length, remaining)) : ordered.length;
     let taken = 0;
@@ -1225,8 +1239,13 @@ export function validateWaterfallTiers(tiers: unknown): WaterfallTierSpec[] {
     if (t.cohort !== undefined && typeof t.cohort !== "string") {
       throw new Error(`tier '${t.name}': 'cohort' deve ser string.`);
     }
-    if (t.score !== undefined && t.score !== "positive" && t.score !== "zero") {
-      throw new Error(`tier '${t.name}': 'score' deve ser "positive" ou "zero".`);
+    if (
+      t.score !== undefined &&
+      t.score !== "positive" &&
+      t.score !== "zero" &&
+      !(typeof t.score === "number" && Number.isInteger(t.score))
+    ) {
+      throw new Error(`tier '${t.name}': 'score' deve ser "positive", "zero" ou um número inteiro (priority_points exato, #8113).`);
     }
     if (t.orderBy !== undefined && t.orderBy !== "priority_points_desc" && t.orderBy !== "created_desc") {
       throw new Error(`tier '${t.name}': 'orderBy' deve ser "priority_points_desc" ou "created_desc".`);
