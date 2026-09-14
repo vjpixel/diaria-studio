@@ -21,13 +21,15 @@ const SLUGS = [
 ] as const;
 
 describe("regressão #7517 — hub google-gemini reconstruído", () => {
-  test("página do slug restaurado existe e o índice cita os 2 slugs", () => {
-    const html = resolve(repoRoot, `workers/site/public/p/${SLUGS[0]}/index.html`);
-    assert.equal(existsSync(html), true, `página ausente: ${html}`);
-
-    const index = readFileSync(resolve(repoRoot, "workers/site/public/index.html"), "utf-8");
+  // #8103: este teste checava também que a HOME (`workers/site/public/index.html`)
+  // citava os 2 slugs. A home é JANELA ROLANTE (destaque + ~6 anteriores, #7686)
+  // — o slug sai dela sozinho quando a regeneração diária o empurra pra fora
+  // (aconteceu no #8102, 14/09, deixando master vermelho). O que o #7517
+  // perdia eram as PÁGINAS e o sitemap, não a vitrine da home.
+  test("páginas dos 2 slugs restaurados existem", () => {
     for (const slug of SLUGS) {
-      assert.ok(index.includes(slug), `index.html não cita o slug restaurado ${slug}`);
+      const html = resolve(repoRoot, `workers/site/public/p/${slug}/index.html`);
+      assert.equal(existsSync(html), true, `página ausente: ${html}`);
     }
   });
 
