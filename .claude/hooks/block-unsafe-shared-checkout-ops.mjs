@@ -251,7 +251,19 @@ export const TASKKILL_BLOCK_REASON =
 // ALHEIA (não atribuível à sessão chamadora) que o comando destrutivo
 // atingiria?" — independente de haver coordenadora registrada.
 //
-// Fail-direction (mesma assimetria de `evaluateEndGuard`, nunca invertida):
+// Reusa os mesmos PRIMITIVOS de overlap que `evaluateEndGuard` usa
+// (`normalizeBeaconPath`/`beaconPathsOverlap`/`extractPorcelainPath`), mas
+// com a POLÍTICA invertida de propósito — os dois servem propósitos
+// diferentes: `evaluateEndGuard` erra pro lado de deixar a sessão terminar
+// (fail-OPEN) quando a atribuição de sujeira é incerta ("vazio/ausente →
+// sempre avisa, nunca recusa" — ver docstring de `evaluateEndGuard`, "session
+// sem beacon de paths"); estes guards erram pro lado de BLOQUEAR o comando
+// destrutivo (fail-CLOSED) no mesmo caso. Faz sentido — terminar uma sessão
+// com sujeira não-atribuída é reversível (a sessão pode ser retomada depois);
+// deixar um `rm`/`reset --hard` rodar sobre sujeira não-atribuída não é
+// (working tree não tem reflog).
+//
+// Fail-direction destes DOIS guards (nunca invertida entre si):
 //
 //   - `session_id` ausente/vazio, sem registro em `data/sessions/`, ou
 //     registro sem `touched_paths`/`dirty_paths` → `ownPaths = []` → TODA
@@ -297,11 +309,29 @@ export function beaconPathsOverlap(a, b) {
 
 /**
  * Extrai o caminho de uma linha de `git status --porcelain` (formato
- * `XY caminho`, ou `XY orig -> novo` pra renames — usa o lado NOVO).
- * Duplicado de `session-registry.ts` (`extractPorcelainPath`).
+ * `XY caminho`, ou `XY orig -> novo` pra renames/cópias — usa o lado NOVO).
+ * Duplicado de `session-registry.ts` (`extractPorcelainPath`), com um fix
+ * que a cópia original AINDA NÃO TEM (#8107, self-review — achado do
+ * `silent-failure-hunter`): o split por `" -> "` só é aplicado quando o
+ * STATUS (2 primeiros chars da linha) é de fato rename/copy (`R`/`C` em
+ * qualquer posição). Sem essa checagem, um arquivo `??`/`M` cujo NOME real
+ * contenha a substring literal `" -> "` (ex: `plan -> v2.md`, nome plausível
+ * de rascunho) seria cortado incorretamente pro que vem depois da seta —
+ * `readGitPorcelainPaths` devolveria `"v2.md"` (arquivo que não existe) em
+ * vez do caminho real, e um `rm "plan -> v2.md"` que deveria bater contra
+ * essa sujeira alheia nunca casaria (`beaconPathsOverlap` compara o path
+ * ERRADO) — silenciosamente permitindo o comando destrutivo que o guard
+ * existe pra bloquear. Callers de `session-registry.ts` (`evaluateEndGuard`)
+ * têm o mesmo bug, mas lá o pior caso é só um WARNING em vez de bloqueio —
+ * aqui a consequência é bloqueio destrutivo passando sem aviso, por isso o
+ * fix entrou aqui primeiro (issue de acompanhamento pro lado
+ * `session-registry.ts`, mesmo bug, consequência mais branda).
  */
 export function extractPorcelainPath(line) {
+  const status = line.slice(0, 2);
   const body = line.slice(3); // remove "XY " (2 chars de status + 1 espaço)
+  const isRenameOrCopy = status.includes("R") || status.includes("C");
+  if (!isRenameOrCopy) return body;
   const arrowIdx = body.indexOf(" -> ");
   return arrowIdx === -1 ? body : body.slice(arrowIdx + 4);
 }
@@ -314,6 +344,13 @@ export function extractPorcelainPath(line) {
  * Bash). Devolve os caminhos JÁ normalizados (formato `git status`, relativo
  * a `repoRoot`), ou `null` se o comando falhar/estourar o timeout —
  * fail-OPEN, nunca travar Bash legítimo por soluço de I/O.
+ *
+ * `maxBuffer` explícito e generoso (20 MiB, contra o default de 1 MiB do
+ * `execFileSync`) — achado do `silent-failure-hunter` (#8107 self-review):
+ * sem isso, o guard tende a falhar-abrir justo quando há MAIS sujeira pra
+ * proteger (checkout com muitos arquivos dirty/untracked produz saída maior,
+ * mais perto de estourar o buffer padrão) — o pior momento possível pra um
+ * guard de segurança degradar em silêncio.
  */
 export function readGitPorcelainPaths(repoRoot, timeoutMs = 4000) {
   try {
@@ -321,6 +358,7 @@ export function readGitPorcelainPaths(repoRoot, timeoutMs = 4000) {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: timeoutMs,
+      maxBuffer: 20 * 1024 * 1024,
     });
     return res
       .split("\n")
@@ -328,7 +366,21 @@ export function readGitPorcelainPaths(repoRoot, timeoutMs = 4000) {
       .filter((line) => line.length > 0)
       .map((line) => normalizeBeaconPath(extractPorcelainPath(line)))
       .filter((p) => p !== "");
-  } catch {
+  } catch (err) {
+    // Fail-OPEN, mas não em silêncio total (achado do `silent-failure-hunter`
+    // #8107 self-review) — sem isto, o guard podia ficar desarmado por N
+    // chamadas (git ausente do PATH, buffer estourado, timeout persistente)
+    // sem NENHUM sinal operacional, até o próximo incidente. Best-effort,
+    // nunca lança, nunca vai pro stdout (que carrega o contrato JSON do
+    // hook) — só stderr, puramente diagnóstico.
+    try {
+      process.stderr.write(
+        `block-unsafe-shared-checkout-ops: git status --porcelain falhou em ${repoRoot} — guard de rm/git ` +
+          `destrutivo fail-open pra esta chamada (${err?.code ?? err?.message ?? "erro desconhecido"}).\n`,
+      );
+    } catch {
+      // stderr indisponível: sem sorte, mas nunca lança por causa disso.
+    }
     return null;
   }
 }
@@ -663,8 +715,9 @@ export const GIT_DESTRUCTIVE_COMMANDS = ["checkout", "restore", "clean", "reset"
  * literalmente `git checkout HEAD -- <arquivo>` como o remédio documentado
  * pro estado absorvente `preexisting_unmerged_state` (índice com caminhos
  * UU/AA de uma stash pop conflitante de rodada anterior). Bloquear esse
- * comando quando uma coordenadora está ativa deixaria o fluxo de edição sem
- * caminho de recuperação. `HEAD` como ref explícito (não `origin/master`,
+ * comando incondicionalmente (#8107 — o guard agora roda SEMPRE, não só com
+ * coordenadora ativa) deixaria o fluxo de edição sem caminho de recuperação.
+ * `HEAD` como ref explícito (não `origin/master`,
  * não qualquer outro ref — o caso do incidente que originou o #7730) é
  * exempto: descarta o lado LOCAL de um path específico em favor do último
  * commit já mergeado, blast radius bem mais estreito que
@@ -888,8 +941,19 @@ if (
         }
       }
       // Sem bloqueio: não emitir nada — cai no fluxo normal de permissão.
-    } catch {
+    } catch (err) {
       // Fail-open, sempre: um hook quebrado não pode travar Bash legítimo.
+      // Diagnóstico best-effort em stderr (achado do `silent-failure-hunter`
+      // #8107 self-review) — antes disto, uma exceção não-antecipada aqui
+      // desarmava os 3 guards em silêncio total, indistinguível de "nada pra
+      // bloquear". Nunca vai pro stdout (contrato JSON do hook), nunca lança.
+      try {
+        process.stderr.write(
+          `block-unsafe-shared-checkout-ops: exceção não-tratada, hook fail-open pra esta chamada (${err?.message ?? "erro desconhecido"}).\n`,
+        );
+      } catch {
+        // stderr indisponível: sem sorte, mas nunca lança por causa disso.
+      }
     }
   });
 }

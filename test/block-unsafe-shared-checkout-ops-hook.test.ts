@@ -1,8 +1,9 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import {
   isTaskkillByImageCommand,
   TASKKILL_BLOCK_REASON,
@@ -194,6 +195,21 @@ describe("normalizeBeaconPath / beaconPathsOverlap / extractPorcelainPath (#8107
 
   it("extractPorcelainPath: rename 'XY orig -> novo' usa o lado NOVO", () => {
     assert.equal(extractPorcelainPath("R  velho.md -> novo.md"), "novo.md");
+  });
+
+  it("extractPorcelainPath: rename com 'C' (copy) na posição Y também usa o lado NOVO", () => {
+    assert.equal(extractPorcelainPath(" C velho.md -> novo.md"), "novo.md");
+  });
+
+  it("extractPorcelainPath: NÃO trata como rename um arquivo untracked/modificado cujo NOME contém ' -> ' (achado silent-failure-hunter #8107)", () => {
+    // Regressão: sem checar o status (RC), um nome de arquivo real contendo
+    // a substring literal " -> " (plausível — rascunho tipo "plano -> v2.md")
+    // era cortado incorretamente pro que vem depois da seta, devolvendo um
+    // path que não existe. Isso fazia `computeForeignDirtyPaths` carregar o
+    // caminho ERRADO adiante, e um `rm`/`git restore` no arquivo REAL nunca
+    // batia contra ele — o comando destrutivo passava sem bloqueio.
+    assert.equal(extractPorcelainPath("?? plano -> v2.md"), "plano -> v2.md");
+    assert.equal(extractPorcelainPath(" M plano -> v2.md"), "plano -> v2.md");
   });
 });
 
@@ -415,6 +431,46 @@ describe("shouldBlockSharedCheckoutRm (#6971, modelo próprio/alheio do #8107)",
         foreignDirtyPaths: ["outro-arquivo.md"],
       }),
       false,
+    );
+  });
+
+  it("múltiplos targetPaths — só UM sobrepõe sujeira alheia → bloqueia (achado pr-test-analyzer #8109)", () => {
+    const otherInsidePath =
+      process.platform === "win32" ? "C:\\repo\\arquivo-limpo.md" : "/repo/arquivo-limpo.md";
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: [otherInsidePath, insidePath],
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: [".pr6950-review.md"],
+      }),
+      true,
+    );
+  });
+
+  it("múltiplos targetPaths — NENHUM sobrepõe sujeira alheia → permite", () => {
+    const otherInsidePath =
+      process.platform === "win32" ? "C:\\repo\\arquivo-limpo.md" : "/repo/arquivo-limpo.md";
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: [otherInsidePath, insidePath],
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: ["outro-arquivo-que-ninguem-visa.md"],
+      }),
+      false,
+    );
+  });
+
+  it("targetPath resolve pro próprio checkoutRoot ('.') → atinge QUALQUER sujeira alheia (branch antes não coberto)", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: ["."],
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: ["qualquer/arquivo.md"],
+      }),
+      true,
     );
   });
 });
@@ -781,6 +837,30 @@ describe("shouldBlockSharedCheckoutGitDestructive (#7730, modelo próprio/alheio
       false,
     );
   });
+
+  it("checkout -- com múltiplos paths — só UM sobrepõe sujeira alheia → bloqueia (achado pr-test-analyzer #8109)", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: false, paths: ["arquivo-limpo.md", "wrangler.toml"] },
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: ["wrangler.toml"],
+      }),
+      true,
+    );
+  });
+
+  it("checkout -- com múltiplos paths — NENHUM sobrepõe sujeira alheia → permite", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: false, paths: ["arquivo-limpo.md", "wrangler.toml"] },
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: ["outro-arquivo.md"],
+      }),
+      false,
+    );
+  });
 });
 
 describe("GIT_DESTRUCTIVE_BLOCK_REASON (#7730/#8107)", () => {
@@ -788,5 +868,113 @@ describe("GIT_DESTRUCTIVE_BLOCK_REASON (#7730/#8107)", () => {
     assert.match(GIT_DESTRUCTIVE_BLOCK_REASON, /#7730/);
     assert.match(GIT_DESTRUCTIVE_BLOCK_REASON, /#8107/);
     assert.match(GIT_DESTRUCTIVE_BLOCK_REASON, /git show/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8107 (achado pr-test-analyzer) — smoke test de PONTA A PONTA via CLI: o
+// hook real, invocado como subprocesso com o payload JSON que o harness
+// manda por stdin, num checkout git de verdade. Cobre a fiação (`isRm ||
+// gitTarget`, cálculo ÚNICO de `foreignDirtyPaths` compartilhado entre os
+// dois guards, leitura de `payload.session_id`) que os testes unitários das
+// funções puras acima NUNCA exercitam — era exatamente essa fiação que
+// mudou de forma nesta PR (2 blocos independentes → 1 bloco compartilhado).
+// ---------------------------------------------------------------------------
+
+describe("CLI end-to-end (#8107) — hook real, subprocesso, checkout git de verdade", () => {
+  const roots: string[] = [];
+  after(() => {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  });
+
+  function makeTempCheckout(): { root: string; hookPath: string } {
+    const root = join(tmpdir(), `cli-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    mkdirSync(join(root, ".claude", "hooks"), { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "t@t.com"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: root });
+    // Copia o hook REAL pro checkout temporário — checkoutRoot é derivado de
+    // `import.meta.url` do próprio arquivo (dirname/../..), então só copiando
+    // ele pra dentro de `<root>/.claude/hooks/` o hook "acha" que `root` é o
+    // checkout principal.
+    const hookSource = readFileSync(
+      join(process.cwd(), ".claude", "hooks", "block-unsafe-shared-checkout-ops.mjs"),
+      "utf8",
+    );
+    const hookPath = join(root, ".claude", "hooks", "block-unsafe-shared-checkout-ops.mjs");
+    writeFileSync(hookPath, hookSource, "utf8");
+    // `data/` é gitignored no repo real (`data/sessions/*.json` nunca é
+    // tracked) — reproduz isso aqui, senão o PRÓPRIO arquivo de registro de
+    // sessão apareceria como "??" e seria contado como sujeira alheia
+    // (ninguém declara `data/sessions/...` no seu `touched_paths`).
+    writeFileSync(join(root, ".gitignore"), "data/\n", "utf8");
+    // Commita o estado inicial (hook copiado + .gitignore) — sem isto,
+    // `git status --porcelain` veria o hook copiado como sujeira "??" e o
+    // cenário "árvore limpa" nunca existiria de fato neste checkout de teste.
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: root });
+    return { root, hookPath };
+  }
+
+  function runHook(hookPath: string, payload: Record<string, unknown>): Record<string, unknown> | null {
+    const res = execFileSync("node", [hookPath], {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (res.trim() === "") return null;
+    return JSON.parse(res);
+  }
+
+  it("bloqueia via CLI: sujeira ALHEIA real no checkout, sem session_id (cenário do incidente #8107)", () => {
+    const { root, hookPath } = makeTempCheckout();
+    writeFileSync(join(root, "foreign.md"), "conteúdo de outra sessão\n", "utf8");
+    const result = runHook(hookPath, {
+      tool_name: "Bash",
+      tool_input: { command: "git reset --hard" },
+      // session_id ausente de propósito — reproduz o payload do incidente.
+    });
+    assert.notEqual(result, null);
+    const out = result as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } };
+    assert.equal(out.hookSpecificOutput?.permissionDecision, "deny");
+    assert.match(out.hookSpecificOutput?.permissionDecisionReason ?? "", /#8107/);
+  });
+
+  it("permite via CLI: árvore de trabalho limpa (nenhuma sujeira, alheia ou própria)", () => {
+    const { root, hookPath } = makeTempCheckout();
+    void root;
+    const result = runHook(hookPath, {
+      tool_name: "Bash",
+      tool_input: { command: "git reset --hard" },
+    });
+    assert.equal(result, null); // sem bloqueio: hook não escreve nada no stdout
+  });
+
+  it("permite via CLI: sujeira existe mas é da PRÓPRIA sessão (touched_paths do beacon cobre o arquivo)", () => {
+    const { root, hookPath } = makeTempCheckout();
+    writeFileSync(join(root, "meu-arquivo.md"), "meu trabalho\n", "utf8");
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    writeFileSync(
+      join(root, "data", "sessions", "interactive-tag-minha-sessao.json"),
+      JSON.stringify({ kind: "interactive", sessionId: "minha-sessao", touched_paths: ["meu-arquivo.md"] }),
+      "utf8",
+    );
+    const result = runHook(hookPath, {
+      tool_name: "Bash",
+      tool_input: { command: "git reset --hard" },
+      session_id: "minha-sessao",
+    });
+    assert.equal(result, null);
+  });
+
+  it("permite via CLI: comando não-destrutivo (git status) nunca dispara os guards", () => {
+    const { root, hookPath } = makeTempCheckout();
+    writeFileSync(join(root, "foreign.md"), "sujeira alheia\n", "utf8");
+    const result = runHook(hookPath, {
+      tool_name: "Bash",
+      tool_input: { command: "git status" },
+    });
+    assert.equal(result, null);
   });
 });

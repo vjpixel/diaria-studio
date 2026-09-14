@@ -576,21 +576,26 @@ de existir untracked no checkout nem protege contra um `rm` nele) — é
 defesa em profundidade complementar às duas regras práticas acima, não um
 substituto pra elas.
 
-**Guard mecânico de `rm`/git destrutivo, SEMPRE ativo desde o #8107:**
-`.claude/hooks/block-unsafe-shared-checkout-ops.mjs` (`PreToolUse` sobre
-`Bash`) nega `rm` e comandos git destrutivos (`checkout --`/`restore`/
-`clean -f`/`reset --hard`/`stash`) em caminho dentro do checkout PRINCIPAL
-(nunca no worktree do próprio subagente) sempre que o alvo atinge sujeira
-NÃO-commitada de OUTRA sessão — comparando `git status --porcelain` contra
-`touched_paths`/`dirty_paths` do registro (`data/sessions/*-{session_id}.json`,
-qualquer `kind`) da sessão CHAMADORA. Até o #8107, o guard só bloqueava
-quando existia uma rodada overnight/develop/continuo ATIVA registrada e a
-chamada não era da coordenadora — o modelo antigo nunca protegia uma sessão
-interativa comum, nem uma rodada JÁ ENCERRADA (exatamente o cenário do
-incidente de origem do #8107: `git reset --hard` destruiu 8 arquivos de
-outra sessão depois que a única coordenadora ativa já tinha encerrado seu
-registro). Cobertura ainda parcial, documentada: sessão sem beacon de paths
-(session_id ausente, ou arquivo criado só por Bash puro, nunca via
+**Guard mecânico de `rm` (#6971) e git destrutivo (#7730), SEMPRE ativo
+desde o #8107:** `.claude/hooks/block-unsafe-shared-checkout-ops.mjs`
+(`PreToolUse` sobre `Bash`) nega `rm` e comandos git destrutivos
+(`checkout --`/`restore`/`clean -f`/`reset --hard`/`stash`) em caminho
+dentro do checkout PRINCIPAL (nunca no worktree do próprio subagente)
+sempre que o alvo atinge sujeira NÃO-commitada de OUTRA sessão —
+comparando `git status --porcelain` contra `touched_paths`/`dirty_paths`
+do registro (`data/sessions/*-{session_id}.json`, qualquer `kind`) da
+sessão CHAMADORA. Até o #8107, o guard só bloqueava quando existia uma
+rodada overnight/develop/continuo ATIVA registrada e a chamada não era da
+coordenadora (esse modelo já tinha um fail-closed próprio pra `session_id`
+ausente, #7055) — o modelo antigo nunca protegia uma sessão interativa
+comum, nem uma rodada JÁ ENCERRADA (exatamente o cenário do incidente de
+origem do #8107: `git reset --hard` destruiu 8 arquivos de outra sessão
+depois que a única coordenadora ativa já tinha encerrado seu registro).
+Ver o docblock do hook (seção "Shared") para o histórico completo — Guard
+2/#6971, Guard 3/#7730, fail-closed de `session_id`/#7055, generalização
+sempre-ativa/#8107. Cobertura ainda parcial, documentada: sessão sem
+beacon de paths (session_id ausente, ou arquivo criado só por Bash puro,
+nunca via
 Edit/Write) trata TODA sujeira do checkout como alheia — fail-closed, mais
 bloqueio, nunca menos. Ver o docblock da seção "Shared" no início do hook
 para a análise completa.
