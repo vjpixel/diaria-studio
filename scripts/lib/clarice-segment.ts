@@ -1080,8 +1080,10 @@ export function resolveCohortArg(input: string): string {
 // budget — puro, sem I/O, mesmo padrão do resto do arquivo.
 // ---------------------------------------------------------------------------
 
-/** Filtro de score dentro de um tier: "positive" = priority_points>0; "zero" = ===0. Omitido = qualquer valor. */
-export type WaterfallScoreFilter = "positive" | "zero";
+/** Filtro de score dentro de um tier: "positive" = priority_points>0; "zero" = ===0;
+ * número = priority_points === esse valor exato (#8113 — composições fora de
+ * "positivo"/"zero", ex: score=-20). Omitido = qualquer valor. */
+export type WaterfallScoreFilter = "positive" | "zero" | number;
 
 /** Ordem dentro de um tier. Default (omitido): priority_points DESC. Email ASC sempre desempata. */
 export type WaterfallOrderBy = "priority_points_desc" | "created_desc";
@@ -1109,6 +1111,7 @@ export function matchesWaterfallTier(
   if (spec.cohort !== undefined && (r.cohort ?? null) !== spec.cohort) return false;
   if (spec.score === "positive" && !((r.priority_points ?? 0) > 0)) return false;
   if (spec.score === "zero" && (r.priority_points ?? 0) !== 0) return false;
+  if (typeof spec.score === "number" && (r.priority_points ?? 0) !== spec.score) return false;
   return true;
 }
 
@@ -1225,8 +1228,13 @@ export function validateWaterfallTiers(tiers: unknown): WaterfallTierSpec[] {
     if (t.cohort !== undefined && typeof t.cohort !== "string") {
       throw new Error(`tier '${t.name}': 'cohort' deve ser string.`);
     }
-    if (t.score !== undefined && t.score !== "positive" && t.score !== "zero") {
-      throw new Error(`tier '${t.name}': 'score' deve ser "positive" ou "zero".`);
+    if (
+      t.score !== undefined &&
+      t.score !== "positive" &&
+      t.score !== "zero" &&
+      !(typeof t.score === "number" && Number.isInteger(t.score))
+    ) {
+      throw new Error(`tier '${t.name}': 'score' deve ser "positive", "zero" ou um número inteiro (priority_points exato, #8113).`);
     }
     if (t.orderBy !== undefined && t.orderBy !== "priority_points_desc" && t.orderBy !== "created_desc") {
       throw new Error(`tier '${t.name}': 'orderBy' deve ser "priority_points_desc" ou "created_desc".`);

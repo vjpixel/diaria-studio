@@ -85,7 +85,8 @@
  *   --tiers ARQUIVO.json  composição declarativa: `{ "tiers": [ {...}, ... ] }`,
  *                cada tier um `WaterfallTierSpec` (clarice-segment.ts):
  *                  name (obrigatório, único), juridico? (bool), cohort? (string,
- *                  igualdade exata), score? ("positive" | "zero" — filtra por
+ *                  igualdade exata), score? ("positive" | "zero" | número inteiro
+ *                  exato de priority_points, #8113 — filtra por
  *                  priority_points), orderBy? ("priority_points_desc" [default]
  *                  | "created_desc"). Eixo omitido = qualquer valor casa.
  *                Cada tier consome o que sobrar do `--budget` COMPARTILHADO, na
