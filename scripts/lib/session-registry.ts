@@ -2103,8 +2103,12 @@ export interface EndGuardResult {
  * interseção que não casa (fail-direction segura — vira "sujeira alheia" e
  * o `end` avisa em vez de recusar, nunca o contrário).
  */
-function extractPorcelainPath(line: string): string {
+export function extractPorcelainPath(line: string): string {
+  const status = line.slice(0, 2);
   const body = line.slice(3); // remove "XY " (2 chars de status + 1 espaço)
+  // " -> " só separa orig/novo em rename (R) ou copy (C) — um arquivo comum
+  // (M, ??, etc.) cujo nome real contenha esse literal não deve ser cortado.
+  if (!status.includes("R") && !status.includes("C")) return body;
   const arrowIdx = body.indexOf(" -> ");
   return arrowIdx === -1 ? body : body.slice(arrowIdx + 4);
 }
