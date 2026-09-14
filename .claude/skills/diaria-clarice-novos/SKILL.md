@@ -69,7 +69,7 @@ Passo 5 — `clarice-novos-resolve-cycle.ts [--subject]` → `{CICLO_MENSAL}`/`{
 
 Passo 6 — `clarice-novos-html-state.ts --cycle {CICLO_MENSAL}` (nunca `--content-cycle` aqui, #4365) → `--send-test` condicional (D12) → `--send-now` → checa exit code (0/1/3, ver acima) → `--finalize --list-id --campaign-id --sent-count` (os IDs vêm do resumo JSON do próprio `--send-now`).
 
-Passo 7 — Relatório sempre gravado (`data/clarice-subscribers/novos-reports/{id}.md`) e registrado via `registerReport({kind: "clarice-novos", ...})` (superfície `/relatorios` do Studio, #3714 — notificação por e-mail já é o default) — **inclusive nos caminhos de abort/pausado/vazio**, não só no sucesso. Uma rodada agendada que aborta em silêncio seria indistinguível de uma que não rodou.
+Passo 7 — Relatório sempre gravado (`data/clarice-subscribers/novos-reports/{id}.md`) e registrado via `registerReport({kind: "clarice-novos", ...})` (superfície `/relatorios` do Studio, #3714 — sem notificação por e-mail desde o #7960/item 4 da #7957: o editor lê no Studio, não mais por e-mail) — **inclusive nos caminhos de abort/pausado/vazio**, não só no sucesso. Uma rodada agendada que aborta em silêncio seria indistinguível de uma que não rodou.
 
 ---
 

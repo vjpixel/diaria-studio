@@ -452,6 +452,7 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
         htmlPath: "data/overnight/260720/report.md",
       },
       deps,
+      true, // #7960: notify explícito — default virou false, este teste exercita o mecanismo de envio em si
     );
 
     const dispatch = await result.emailDispatch;
@@ -479,6 +480,7 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
       r,
       { kind: "develop", sessionId: "260802", title: "Develop 260802", htmlPath: "x.md" },
       deps,
+      true, // #7960: notify explícito — default virou false
     );
 
     // O registro em si (append no index.jsonl) já aconteceu ANTES do envio
@@ -504,6 +506,7 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
       r,
       { kind: "edicao", sessionId: "260802", title: "Edição 260802", htmlPath: "x.html" },
       deps,
+      true, // #7960: notify explícito — este teste exercita a ausência de credencial, não o default
     );
 
     assert.equal(result.ok, true); // registro não depende de credencial de e-mail
@@ -516,12 +519,17 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
 
   it("emailDeps default (sem override): rootDir de teste sem data/.credentials.json -> pula silenciosamente, mesmo padrão de sessão cloud", async () => {
     const r = makeRoot();
-    const result = registerReport(r, {
-      kind: "edicao",
-      sessionId: "260802",
-      title: "Edição 260802",
-      htmlPath: "x.html",
-    });
+    const result = registerReport(
+      r,
+      {
+        kind: "edicao",
+        sessionId: "260802",
+        title: "Edição 260802",
+        htmlPath: "x.html",
+      },
+      undefined,
+      true, // #7960: notify explícito — este teste exercita defaultHasCredentials, não o default de notify
+    );
 
     assert.equal(result.ok, true);
     const dispatch = await result.emailDispatch;
@@ -578,7 +586,7 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     assert.equal(hasCredCalls.length, 0); // dispatchReportEmail nem chegou a rodar
   });
 
-  it("#4478: notify=true (default explícito) -> comportamento idêntico a omitir o parâmetro, chama sendMail normalmente", async () => {
+  it("#4478/#7960: notify=true explícito -> chama sendMail normalmente (mecanismo continua disponível pra quem pedir)", async () => {
     const r = makeRoot();
     const { deps, calls } = mockDeps();
 
@@ -594,7 +602,14 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     assert.equal(calls.length, 1);
   });
 
-  it("#4478: sem passar notify (comportamento pré-existente #4475 preservado) -> continua chamando sendMail", async () => {
+  it("#7960 (item 4 da #7957): sem passar notify -> NÃO manda mais e-mail (default virou false)", async () => {
+    // Antes do #7957/#7960, omitir `notify` preservava o comportamento
+    // pré-existente (#4475: default `true`, dispara e-mail sempre). A
+    // tabela de severidade do editor (#7957, 10/09/2026) classifica TODO
+    // relatório registrado aqui como "Studio /relatorios, sem e-mail" — o
+    // default virou `false` pra que nenhum caller de produção (que nunca
+    // passava `notify` explicitamente) precise de mudança pra parar de
+    // notificar.
     const r = makeRoot();
     const { deps, calls } = mockDeps();
 
@@ -602,12 +617,14 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
       r,
       { kind: "overnight", sessionId: "260802", title: "diar.ia.br overnight 260802", htmlPath: "x.md" },
       deps,
-      // notify omitido -> default true
+      // notify omitido -> default agora é false
     );
 
+    assert.equal(result.ok, true); // o registro em si continua acontecendo
     const dispatch = await result.emailDispatch;
-    assert.equal(dispatch.sent, true);
-    assert.equal(calls.length, 1);
+    assert.equal(dispatch.sent, false);
+    assert.equal(dispatch.skipped, "notify-disabled");
+    assert.equal(calls.length, 0); // sendMail nunca chamado
   });
 });
 

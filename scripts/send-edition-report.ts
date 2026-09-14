@@ -13,10 +13,11 @@
  * o orchestrator repassar o HTML via Gmail MCP `create_draft` — esse call
  * site foi removido de `.claude/agents/orchestrator-stage-6.md` (6b-8).
  *
- * #4478: `registerReport` dispara um e-mail de notificação (#4475) a cada
- * registro — mas o Stage 6 chama este script 2× pro mesmo id
- * (`edicao-{AAMMDD}`, 6b-6 "descartável" + 6b-8 final). `--no-email` suprime
- * o disparo sem afetar o registro em si (usado só pela chamada 6b-6).
+ * #4478/#7960: `registerReport` (via `writeReportFile`) não dispara mais
+ * e-mail de notificação por default (item 4 da #7957: relatório de edição é
+ * "Studio /relatorios, sem e-mail") — `--no-email` continua aceita por
+ * compat de CLI mas virou no-op, já nunca havia diferença de comportamento
+ * a preservar entre passar ou não.
  *
  * Uso:
  *   npx tsx scripts/send-edition-report.ts --edition 260525 --edition-dir data/editions/260525/ [--no-email]
@@ -592,21 +593,26 @@ function toRepoRelativePosix(absPath: string): string {
  * (isso é `orchestrator-stage-6.md` 6b-8), então aqui só cabia adicionar o
  * registro; a remoção do `create_draft` é no agent prompt.
  *
- * **#4478: `notify` propaga pro `registerReport` — default `true` preserva
- * o comportamento de #4475 (todo registro dispara e-mail).** O Stage 6
- * chama este script 2× pro MESMO id (`edicao-{AAMMDD}`): 6b-6 gera o HTML só
- * pra satisfazer o invariante de conclusão do stage ("descartável" no doc do
+ * **#4478: `notify` propaga pro `registerReport`.** O Stage 6 chama este
+ * script 2× pro MESMO id (`edicao-{AAMMDD}`): 6b-6 gera o HTML só pra
+ * satisfazer o invariante de conclusão do stage ("descartável" no doc do
  * orchestrator, não é o que o editor lê) e 6b-8 regenera de novo como
  * ÚLTIMO passo do pipeline. `orchestrator-stage-6.md` 6b-6 passa `notify:
- * false` (via `--no-email` no CLI) pra não duplicar o e-mail; 6b-8 não passa
- * nada (default `true`) — é essa chamada que deve notificar o editor.
+ * false` (via `--no-email` no CLI) — redundante desde o #7960 abaixo, mas
+ * inofensivo.
+ *
+ * **#7960 (item 4 da #7957): default virou `false`.** Antes, default `true`
+ * preservava o comportamento de #4475 (todo registro dispara e-mail) — a
+ * tabela de severidade do editor (#7957) reclassificou o relatório de
+ * edição como "Studio /relatorios, sem e-mail". Nem 6b-6 nem 6b-8 passam
+ * `notify` explicitamente hoje, então nenhum dos dois notifica mais.
  */
 export function writeReportFile(
   editionDir: string,
   outPath: string,
   html: string,
   edition?: string,
-  notify = true,
+  notify = false,
 ): { md5: string; absOut: string; registered: boolean } {
   const absOut = resolve(ROOT, outPath);
   mkdirSync(dirname(absOut), { recursive: true });
@@ -644,19 +650,22 @@ export function writeReportFile(
  * Retorna o md5 do HTML escrito. Lança se o editionDir não existir.
  *
  * **#4478 achado 1 (defesa em profundidade): `notify` propaga pro
- * `writeReportFile`/`registerReport`, default `true`** — preserva o
- * comportamento existente pra todo caller que não passar nada (inclusive
- * `refresh-dedup.ts::ensureEditionReport`, que roda em produção e deve
- * continuar notificando o editor). Testes que exercitam este caminho com um
- * `rootDir`/`editionDir` fake podem passar `notify: false` explicitamente
- * pra nunca depender só do fix sistêmico de `defaultHasCredentials`
- * (`scripts/studio-ui/studio-reports.ts`).
+ * `writeReportFile`/`registerReport`.** Testes que exercitam este caminho
+ * com um `rootDir`/`editionDir` fake podem passar `notify: false`
+ * explicitamente pra nunca depender só do fix sistêmico de
+ * `defaultHasCredentials` (`scripts/studio-ui/studio-reports.ts`).
+ *
+ * **#7960 (item 4 da #7957): default virou `false`** — mesma mudança de
+ * `writeReportFile` acima. `refresh-dedup.ts::ensureEditionReport` (único
+ * caller de produção) não passa `notify`, então também para de notificar;
+ * o relatório de edição publicada manualmente continua gerado e visível em
+ * `/relatorios`, só o e-mail que some (tabela de severidade do #7957).
  */
 export function writeEditionReport(
   edition: string,
   editionDir: string,
   outPath: string,
-  notify = true,
+  notify = false,
 ): { md5: string; outPath: string; registered: boolean } {
   if (!existsSync(editionDir)) {
     throw new Error(`edition dir não encontrado: ${editionDir}`);
@@ -682,15 +691,16 @@ export function writeEditionReport(
 }
 
 async function main(): Promise<void> {
-  const { values, flags } = parseArgs(process.argv.slice(2));
+  const { values } = parseArgs(process.argv.slice(2));
   const edition = values["edition"];
   const editionDirRaw = values["edition-dir"];
   const outPath = values["out"]; // #1579: opcional, default = stdout
-  // #4478: suprime o e-mail de notificação (#4475) sem afetar o registro no
-  // Studio — usado pela chamada "descartável" 6b-6 do Stage 6 (o HTML gerado
-  // ali existe só pra satisfazer o invariante de conclusão do stage, não é o
-  // que vai pro editor; a chamada final 6b-8 continua sem esta flag).
-  const noEmail = flags.has("no-email");
+  // #4478/#7960: `--no-email` continua ACEITA (compat de CLI — chamadores
+  // existentes, ex: orchestrator-stage-6.md 6b-6, ainda a passam) mas virou
+  // NO-OP desde o #7960 (item 4 da #7957): `writeReportFile` já nunca
+  // notifica por e-mail por default (tabela de severidade do editor
+  // classifica o relatório de edição como "Studio /relatorios, sem e-mail")
+  // — não há mais distinção de comportamento entre passar ou não a flag.
 
   if (!edition || !editionDirRaw) {
     console.error(
@@ -740,7 +750,10 @@ async function main(): Promise<void> {
   // imprimir no resumo final em vez do antigo draft de Gmail.
   let registered = false;
   if (outPath) {
-    const result = writeReportFile(editionDir, outPath, html, edition, !noEmail);
+    // #7960: `notify` fixo em `false` — ver nota acima sobre `--no-email`
+    // ter virado no-op (o default de `writeReportFile` já é `false`; passar
+    // explícito aqui documenta a intenção em vez de depender do default).
+    const result = writeReportFile(editionDir, outPath, html, edition, false);
     registered = result.registered;
     process.stderr.write(`[send-edition-report] wrote ${result.absOut} (md5: ${result.md5.slice(0, 8)})\n`);
   } else {
