@@ -6,7 +6,12 @@
  * de `seed/sources.csv` termina em `sitemap.xml`.
  *
  * Uso:
- *   npx tsx scripts/fetch-sitemap.ts --url https://research.perplexity.ai/sitemap.xml --source "Perplexity Research" [--days 4]
+ *   npx tsx scripts/fetch-sitemap.ts --url <sitemap_url> --source "<nome>" [--days 4]
+ *
+ * #8110: nenhuma fonte em seed/sources.csv usa este caminho hoje (Perplexity
+ * Research, o único exemplo real, teve a RSS limpa — o sitemap.xml nunca foi
+ * um feed válido e /rss.xml e /feed no mesmo domínio devolvem 403). O
+ * mecanismo continua ativo pra próxima fonte que expuser sitemap.xml sem RSS.
  *
  * Output: JSON com shape compatível com `source-researcher`/`fetch-rss`:
  *   { source, method: "sitemap", sitemap_url, articles: [{url, title, published_at, summary}], error? }

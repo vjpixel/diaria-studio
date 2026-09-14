@@ -154,7 +154,6 @@
 ### Perplexity Research
 - URL: https://research.perplexity.ai/
 - Site query: `site:research.perplexity.ai`
-- RSS: https://research.perplexity.ai/sitemap.xml
 
 ### Anthropic Institute
 - URL: https://www.anthropic.com/institute
@@ -247,7 +246,6 @@
 ### Blog do Google Brasil (IA)
 - URL: https://blog.google/intl/pt-br/novidades/tecnologia/
 - Site query: `site:blog.google/intl/pt-br/novidades/tecnologia`
-- RSS: https://blog.google/intl/pt-br/feed/
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 - Use Melhor: sim
 - Low cadence: sim

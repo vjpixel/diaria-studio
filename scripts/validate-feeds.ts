@@ -9,6 +9,14 @@
  *
  * Requer acesso à internet. Timeout de 20s por feed. Faz em série pra não
  * sobrecarregar publishers pequenos.
+ *
+ * #7988/#8110: feeds RSS externos reais são instáveis por natureza (HTTP 429,
+ * feed momentaneamente vazio, bloqueio de bot em alguns) — isso não é
+ * regressão de código e não deveria derrubar o job (workflow agendado
+ * `validate-rss-feeds.yml` mandava e-mail de falha toda noite por conta
+ * disso). Só falha (exit 1) quando a maioria dos feeds quebra — sinal de
+ * problema sistêmico (fetch-rss.ts quebrado, sem rede) em vez de flakiness
+ * pontual de alguns publishers.
  */
 
 import { readFileSync } from "node:fs";
@@ -16,6 +24,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { fetchRss } from "./fetch-rss.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCES_CSV = resolve(ROOT, "seed/sources.csv");
@@ -25,6 +34,15 @@ interface SourceRow {
   Tipo: string;
   URL: string;
   RSS?: string;
+}
+
+/**
+ * Falha só quando a MAIORIA dos feeds quebra — sinal de problema sistêmico
+ * (fetch-rss.ts quebrado, sem rede), não flakiness pontual de alguns
+ * publishers externos (#7988/#8110). Extraída pura pra ser testável sem rede.
+ */
+export function shouldFail(failCount: number, totalCount: number): boolean {
+  return failCount > totalCount / 2;
 }
 
 async function main() {
@@ -61,12 +79,15 @@ async function main() {
   console.log(`OK: ${ok.length} / ${withRss.length}`);
   console.log(`FAIL: ${fail.length} / ${withRss.length}`);
 
-  if (fail.length > 0) {
+  if (shouldFail(fail.length, withRss.length)) {
+    console.log("\nMaioria dos feeds falhou — sinal de problema sistêmico (não flakiness pontual).");
     process.exit(1);
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (isMainModule(import.meta.url)) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
