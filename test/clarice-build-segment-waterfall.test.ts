@@ -161,6 +161,18 @@ test("buildWaterfallSelection: waterfall respeita a ORDEM dos tiers e o budget C
   ]);
 });
 
+test("buildWaterfallSelection: send_eligible=0 NUNCA entra, mesmo casando o predicado do tier (#8113)", () => {
+  const rows = [
+    mkRow({ email: "elig@gmail.com", priority_points: 0, send_eligible: 1 }),
+    mkRow({ email: "unsub@gmail.com", priority_points: 0, send_eligible: 0 }),
+    mkRow({ email: "bounced@gmail.com", priority_points: 0, send_eligible: 0 }),
+  ];
+  const tiers: WaterfallTierSpec[] = [{ name: "zero", score: "zero" }];
+  const result = buildWaterfallSelection(rows, tiers, 0);
+  assert.deepEqual(result.selected.map((r) => r.email), ["elig@gmail.com"]);
+  assert.deepEqual(result.tierStats, [{ name: "zero", available: 1, taken: 1 }]);
+});
+
 test("buildWaterfallSelection: budget<=0 = sem teto, cada tier entra inteiro", () => {
   const rows = [mkRow({ email: "a@gmail.com" }), mkRow({ email: "b@gmail.com" })];
   const tiers: WaterfallTierSpec[] = [{ name: "t1", juridico: false }];

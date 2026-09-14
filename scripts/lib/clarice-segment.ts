@@ -1177,8 +1177,19 @@ export function buildWaterfallSelection<T extends StoreRow>(
   const seen = new Set<string>();
   const tierStats: WaterfallTierStat[] = [];
 
+  // #8113 review: os predicados dos NAMED_GROUPS (isEngajados/isReativacao/
+  // isRampWarm) já embutem `send_eligible=1` — nenhum tier declarativo tinha
+  // esse eixo, então um plano `--tiers` sem `cohort` que restrinja incidentalmente
+  // pra só elegíveis incluiria unsubscribed/hard-bounced/internos na seleção
+  // (achado ao vivo montando o envio score=0+score=-20 do #8113: o tier
+  // "score-zero" sozinho tinha 34.733 "available" ali — a população
+  // send_eligible=1 real pra priority_points=0 é ~10× menor). Filtro
+  // incondicional aqui, não por spec — elegibilidade nunca é uma composição
+  // OPCIONAL de tier, é pré-requisito de qualquer envio.
+  const eligibleRows = rows.filter(isSendEligible);
+
   for (const spec of tiers) {
-    const matched = rows.filter((r) => matchesWaterfallTier(r, spec));
+    const matched = eligibleRows.filter((r) => matchesWaterfallTier(r, spec));
     const ordered = orderWaterfallTier(matched, spec.orderBy);
     const take = Number.isFinite(remaining) ? Math.max(0, Math.min(ordered.length, remaining)) : ordered.length;
     let taken = 0;
