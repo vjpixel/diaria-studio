@@ -64,6 +64,7 @@ export {
   readBoxDivulgacao2Image,
   readBoxDivulgacao3Image,
   readBoxDivulgacaoCategoriaForSlot, // #3981
+  readBoxDivulgacaoCategoriaForFile, // #8119
   readBoxDivulgacaoAltForSlot, // #4086
   readBoxDivulgacaoNoTituloForSlot, // #5882
 
