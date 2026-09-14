@@ -323,16 +323,24 @@ async function fetchSubscriptionsSinceKit(config: KitConfig, gteSec: number): Pr
  * janela de tolerância mantém o candidato pendente pra próxima rodada; fora
  * dela desiste terminalmente (`skipped_sem_dados`). Em NENHUM caso um erro
  * ou shape desconhecido vira "elegível" por acidente — o e-mail 3 nunca
- * sai adivinhando. Reverificar os nomes de campo reais ao vivo antes de
- * confiar neste dado pra qualquer decisão além desse fail-safe.
+ * sai adivinhando.
+ *
+ * #8100: shape CONFIRMADO contra a doc pública (developers.kit.com/
+ * api-reference/subscribers/list-stats-for-a-subscriber) — `{ subscriber:
+ * { stats: { opened, clicked, ... } } }`. Os 4 nomes chutados antes
+ * (`total_unique_opens`/`total_opens`/`unique_opens`/`opens`) eram lidos no
+ * nível ERRADO (direto em `subscriber`, não em `subscriber.stats`), então
+ * NUNCA batiam — `opens` saía sempre `undefined`, o e-mail 3 nunca via uma
+ * abertura de verdade e nunca disparou pra ninguém desde a migração pro Kit
+ * (medido em 14/09/2026: 930 entradas, 0 `email3_state: sent`).
  */
-async function fetchSubscriberStatsKit(id: number, config: KitConfig): Promise<OpenStats | null> {
+export async function fetchSubscriberStatsKit(id: number, config: KitConfig): Promise<OpenStats | null> {
   try {
     const data = await kitFetch<Record<string, unknown> | undefined>(`/subscribers/${id}/stats`, { config });
     if (!data) return null;
-    const body = (data as { subscriber?: Record<string, unknown> }).subscriber ?? data;
-    const opens =
-      body["total_unique_opens"] ?? body["total_opens"] ?? body["unique_opens"] ?? body["opens"] ?? null;
+    const subscriber = (data as { subscriber?: Record<string, unknown> }).subscriber ?? data;
+    const stats = (subscriber as { stats?: Record<string, unknown> }).stats ?? subscriber;
+    const opens = stats["opened"] ?? null;
     if (typeof opens !== "number") return null;
     return { total_unique_opened: opens, total_clicked: null };
   } catch {
