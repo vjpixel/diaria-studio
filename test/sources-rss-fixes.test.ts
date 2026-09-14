@@ -77,6 +77,12 @@ describe("sources RSS fixes (#1266)", () => {
     "Anthropic",          // sem feed oficial conhecido
     // "Agent Pulse" removida em #1637-39: roundup newsletter no aggregator-blocklist
     // (agentpulse.beehiiv.com), conteúdo sempre filtrado → desativada de sources.csv.
+    // #8110: sitemap.xml não é RSS (nunca foi, confirmado 403 em qualquer
+    // /rss.xml ou /feed alternativo) — RSS limpa, WebSearch site: continua ativa.
+    "Perplexity Research",
+    // #8110: feed passou a servir HTML (página do blog) em vez de XML —
+    // Google descontinuou/mudou o formato do feed pt-br.
+    "Blog do Google Brasil (IA)",
   ];
 
   for (const name of SOURCES_WITHOUT_RSS) {

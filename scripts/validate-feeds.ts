@@ -9,6 +9,14 @@
  *
  * Requer acesso à internet. Timeout de 20s por feed. Faz em série pra não
  * sobrecarregar publishers pequenos.
+ *
+ * #7988/#8110: feeds RSS externos reais são instáveis por natureza (HTTP 429,
+ * feed momentaneamente vazio, bloqueio de bot em alguns) — isso não é
+ * regressão de código e não deveria derrubar o job (workflow agendado
+ * `validate-rss-feeds.yml` mandava e-mail de falha toda noite por conta
+ * disso). Só falha (exit 1) quando a maioria dos feeds quebra — sinal de
+ * problema sistêmico (fetch-rss.ts quebrado, sem rede) em vez de flakiness
+ * pontual de alguns publishers.
  */
 
 import { readFileSync } from "node:fs";
@@ -61,7 +69,10 @@ async function main() {
   console.log(`OK: ${ok.length} / ${withRss.length}`);
   console.log(`FAIL: ${fail.length} / ${withRss.length}`);
 
-  if (fail.length > 0) {
+  // Falha só quando a MAIORIA dos feeds quebra — sinal de problema sistêmico,
+  // não de flakiness pontual de alguns publishers (#7988/#8110).
+  if (fail.length > withRss.length / 2) {
+    console.log("\nMaioria dos feeds falhou — sinal de problema sistêmico (não flakiness pontual).");
     process.exit(1);
   }
 }
