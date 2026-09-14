@@ -506,3 +506,37 @@ Frase normal. **Trecho em negrito no slide do carrossel.** Mais texto.
     assert.ok(!html.includes("**"), "preview não deve mostrar asterisco literal — o texto REAL publicado também não tem (stripMarkdownEmphasis, #6862)");
   });
 });
+
+describe("hierarquia tipográfica do preview: título/label >= corpo (achado ao vivo 260915)", () => {
+  // #8122: .post-header (label "D1"/"D2") e .channel-label (label "LINKEDIN")
+  // renderizavam com font-size MENOR que .post-body p (o texto real do post)
+  // — hierarquia invertida (título menor que corpo). Regressão: extrai os 3
+  // valores do CSS embutido no HTML gerado e afirma post-header/channel-label
+  // >= post-body.
+  function extractFontSizePx(html: string, selector: string): number {
+    const re = new RegExp(`${selector.replace(/\./g, "\\.")}\\s*\\{[^}]*font-size:\\s*(\\d+)px`);
+    const m = html.match(re);
+    if (!m) throw new Error(`selector ${selector} não encontrado no CSS embutido`);
+    return Number(m[1]);
+  }
+
+  it("post-header (label do destaque) >= post-body (texto do post)", () => {
+    const html = buildSocialHtml(parsePlatforms(MD), {});
+    const headerSize = extractFontSizePx(html, ".post-header");
+    const bodySize = extractFontSizePx(html, ".post-body p");
+    assert.ok(
+      headerSize >= bodySize,
+      `.post-header (${headerSize}px) deve ser >= .post-body p (${bodySize}px)`,
+    );
+  });
+
+  it("channel-label (label da rede) >= post-body (texto do post)", () => {
+    const html = buildSocialHtml(parsePlatforms(MD), {});
+    const labelSize = extractFontSizePx(html, ".channel-label");
+    const bodySize = extractFontSizePx(html, ".post-body p");
+    assert.ok(
+      labelSize >= bodySize,
+      `.channel-label (${labelSize}px) deve ser >= .post-body p (${bodySize}px)`,
+    );
+  });
+});

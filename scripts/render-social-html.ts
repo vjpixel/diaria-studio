@@ -463,7 +463,7 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
   .post-image { padding: 0; }
   .post-image img { width: 100%; height: auto; display: block; }
   .post-header {
-    font-size: 13px;
+    font-size: 16px;
     font-weight: 700;
     color: #666;
     text-transform: uppercase;
@@ -502,7 +502,7 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
   }
   .channel-label {
     padding: 10px 16px 0;
-    font-size: 12px;
+    font-size: 16px;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
