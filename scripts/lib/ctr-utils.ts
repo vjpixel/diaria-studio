@@ -45,6 +45,13 @@ export const NON_EDITORIAL_HOST_FAMILIES = [
   "en.wikipedia.org",
   "wikidata.org",
   "link.amazon", // literal — domínio de afiliado sem TLD no CTR table real (#4839)
+  "amazon.com.br", // #8059 migrou os links de afiliado de "link.amazon" (shortener) pra
+  // link longo amazon.com.br/dp/{ASIN}?tag=diaria-20 — mesma natureza de rodapé/
+  // afiliado do "link.amazon" que já era excluído acima, só o domínio mudou. Cobre
+  // também a vitrine amazon.com.br/shop/vjpixel do rodapé "Equipamentos". Domínio
+  // exato (não "amazon.com" genérico) — preserva a garantia do #4839 de que
+  // conteúdo editorial legítimo citando Amazon (aws.amazon.com, aboutamazon.com)
+  // nunca é capturado por engano.
   "diar.ia.br", // + subdomínios: livros.diar.ia.br, cursos.diar.ia.br, ...
   "apoia.se",
 ] as const;
