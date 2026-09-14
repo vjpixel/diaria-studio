@@ -78,6 +78,11 @@ describe("isNonEditorialHost", () => {
     assert.equal(isNonEditorialHost("link.amazon"), true);
   });
 
+  it("exclui amazon.com.br (afiliado — #8059 migrou o link de link.amazon pro domínio longo)", () => {
+    assert.equal(isNonEditorialHost("amazon.com.br"), true);
+    assert.equal(isNonEditorialHost("www.amazon.com.br"), true);
+  });
+
   it("exclui diar.ia.br e subdomínios de casa (livros., cursos.)", () => {
     assert.equal(isNonEditorialHost("diar.ia.br"), true);
     assert.equal(isNonEditorialHost("livros.diar.ia.br"), true);
