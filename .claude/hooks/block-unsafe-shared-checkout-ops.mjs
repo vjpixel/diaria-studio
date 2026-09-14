@@ -359,6 +359,9 @@ export function readGitPorcelainPaths(repoRoot, timeoutMs = 4000) {
       encoding: "utf8",
       timeout: timeoutMs,
       maxBuffer: 20 * 1024 * 1024,
+      // windowsHide: true (#7952) — este hook roda em toda sessão, inclusive
+      // Windows; sem isso, `git` pode alocar uma janela de console própria.
+      windowsHide: true,
     });
     return res
       .split("\n")
