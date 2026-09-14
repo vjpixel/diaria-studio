@@ -1873,6 +1873,53 @@ function readBoxSelectionFileForSlot(editionDir: string, slot: 1 | 2 | 3): strin
 }
 
 /**
+ * #8119: decide, pra um slot 1/2/3, se `categoria:`/`alt:`/`titulo:` vem do
+ * arquivo EFETIVAMENTE usado (`_internal/box-selection.json`) ou do default
+ * estático (`platform.config.json`) — 3 funções irmãs, mesma decisão,
+ * parametrizadas por qual leitura (`ForFile`/`ForSlot`) aplicar. Extraídas
+ * da lógica que antes vivia inline em `extractContent` especificamente pra
+ * serem testáveis com fixtures isoladas (`editionDir`/`rootDir` fake) — sem
+ * isso, testar esta decisão exigiria escrever arquivos de verdade em
+ * `data/snippets/` (gitignored, ausente em CI) na raiz real do repo, já que
+ * `extractContent` não aceita override de `rootDir` (self-review finding do
+ * #8120: os testes anteriores cobriam só `readBoxDivulgacaoCategoriaForFile`
+ * isolada, nunca a fiação real de `extractContent` — um revert acidental do
+ * wiring inline passaria despercebido).
+ */
+function resolveBoxDivulgacaoCategoriaForSlot(
+  slot: 1 | 2 | 3,
+  editionDir: string,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): string | null {
+  const selectedFile = readBoxSelectionFileForSlot(editionDir, slot);
+  return selectedFile
+    ? readBoxDivulgacaoCategoriaForFile(selectedFile, rootDir)
+    : readBoxDivulgacaoCategoriaForSlot(slot, rootDir);
+}
+
+function resolveBoxDivulgacaoAltForSlot(
+  slot: 1 | 2 | 3,
+  editionDir: string,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): string | null {
+  const selectedFile = readBoxSelectionFileForSlot(editionDir, slot);
+  return selectedFile
+    ? readBoxDivulgacaoAltForFile(selectedFile, rootDir)
+    : readBoxDivulgacaoAltForSlot(slot, rootDir);
+}
+
+function resolveBoxDivulgacaoNoTituloForSlot(
+  slot: 1 | 2 | 3,
+  editionDir: string,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): boolean {
+  const selectedFile = readBoxSelectionFileForSlot(editionDir, slot);
+  return selectedFile
+    ? readBoxDivulgacaoNoTituloForFile(selectedFile, rootDir)
+    : readBoxDivulgacaoNoTituloForSlot(slot, rootDir);
+}
+
+/**
  * `alt:` configurado no header do snippet atribuído ao SLOT — texto alternativo
  * da imagem do box (`box_slot{N}_image`).
  *
@@ -2148,17 +2195,6 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   // #2978: box de divulgação slot 1 (gap D1/D2) e slot 2 (gap D2/D3) — cada
   // slot é fixo por posição, aceitando qualquer formato (bold-line 📚/📣/🎉
   // OU carrinho 🛒).
-  // #8119: slots 1/2/3 preferem o arquivo EFETIVAMENTE usado nesta edição
-  // (`_internal/box-selection.json`, seleção automática do #4626) sobre o
-  // default estático de `platform.config.json` — mesmo fix que #5457 já
-  // tinha aplicado só ao invariant check de Stage 4 (aviso), nunca ao render
-  // real do e-mail. Sem `box-selection.json` (edição pré-#4626, ou falha de
-  // escrita fail-soft do stitch) cai pro comportamento de sempre (ForSlot).
-  // Slot 0 nunca entra na rotação automática — sempre ForSlot.
-  const selectedFile1 = readBoxSelectionFileForSlot(editionDir, 1);
-  const selectedFile2 = readBoxSelectionFileForSlot(editionDir, 2);
-  const selectedFile3 = readBoxSelectionFileForSlot(editionDir, 3);
-
   const boxDivulgacao1 = extractBoxDivulgacao1(reviewedText);
   // #2136: passa o texto do box pra discriminar livros vs CLARICE. Imagem só
   // vai pro box de livros; box 📣 CLARICE recebe null (sem hero). Só o slot 1
@@ -2168,11 +2204,13 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   const boxDivulgacao1Bold = isBoxDivulgacao1Bold(reviewedText);
   // #3981: só busca categoria quando o slot de fato tem box no reviewed.md —
   // sem isso, um slot vazio (nunca preenchido, ou suprimido por --no-sponsor)
-  // ganharia um rótulo órfão sem box embaixo.
+  // ganharia um rótulo órfão sem box embaixo. #8119: preferindo o arquivo
+  // EFETIVAMENTE usado nesta edição (`_internal/box-selection.json`, seleção
+  // automática do #4626) sobre o default estático de `platform.config.json`
+  // — mesmo fix que #5457 já tinha aplicado só ao invariant check de Stage 4
+  // (aviso), nunca ao render real do e-mail.
   const boxDivulgacao1Categoria = boxDivulgacao1
-    ? (selectedFile1
-        ? readBoxDivulgacaoCategoriaForFile(selectedFile1)
-        : readBoxDivulgacaoCategoriaForSlot(1))
+    ? resolveBoxDivulgacaoCategoriaForSlot(1, editionDir)
     : null;
   const boxDivulgacao2 = extractBoxDivulgacao2(reviewedText);
   // #2978-slot2-parity: mesmo tratamento do slot 1 — a imagem livros_promo só
@@ -2180,9 +2218,7 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   const boxDivulgacao2Image = readBoxDivulgacao2Image(editionDir, boxDivulgacao2);
   const boxDivulgacao2Bold = isBoxDivulgacao2Bold(reviewedText);
   const boxDivulgacao2Categoria = boxDivulgacao2
-    ? (selectedFile2
-        ? readBoxDivulgacaoCategoriaForFile(selectedFile2)
-        : readBoxDivulgacaoCategoriaForSlot(2))
+    ? resolveBoxDivulgacaoCategoriaForSlot(2, editionDir)
     : null;
   // #3476: box de divulgação slot 3 — região pós-último-destaque (D3 em
   // edições de 3, D2 em edições de 2), antes de USE MELHOR/É IA?.
@@ -2190,9 +2226,7 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   const boxDivulgacao3Image = readBoxDivulgacao3Image(editionDir, boxDivulgacao3);
   const boxDivulgacao3Bold = isBoxDivulgacao3Bold(reviewedText);
   const boxDivulgacao3Categoria = boxDivulgacao3
-    ? (selectedFile3
-        ? readBoxDivulgacaoCategoriaForFile(selectedFile3)
-        : readBoxDivulgacaoCategoriaForSlot(3))
+    ? resolveBoxDivulgacaoCategoriaForSlot(3, editionDir)
     : null;
   const boxDivulgacaoImageExplicit = {
     0: readBoxSlotImage(editionDir, 0) !== null,
@@ -2202,9 +2236,9 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   };
   const boxDivulgacaoImageAlt = {
     0: readBoxDivulgacaoAltForSlot(0),
-    1: selectedFile1 ? readBoxDivulgacaoAltForFile(selectedFile1) : readBoxDivulgacaoAltForSlot(1),
-    2: selectedFile2 ? readBoxDivulgacaoAltForFile(selectedFile2) : readBoxDivulgacaoAltForSlot(2),
-    3: selectedFile3 ? readBoxDivulgacaoAltForFile(selectedFile3) : readBoxDivulgacaoAltForSlot(3),
+    1: resolveBoxDivulgacaoAltForSlot(1, editionDir),
+    2: resolveBoxDivulgacaoAltForSlot(2, editionDir),
+    3: resolveBoxDivulgacaoAltForSlot(3, editionDir),
   };
   // #5882: mesmo padrão de boxDivulgacaoImageAlt — lido do disco pra TODO
   // slot, independente de o slot ter box no reviewed.md (mesmo tratamento de
@@ -2213,9 +2247,9 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   // boxDivulgacao1Categoria).
   const boxDivulgacaoNoTitulo = {
     0: readBoxDivulgacaoNoTituloForSlot(0),
-    1: selectedFile1 ? readBoxDivulgacaoNoTituloForFile(selectedFile1) : readBoxDivulgacaoNoTituloForSlot(1),
-    2: selectedFile2 ? readBoxDivulgacaoNoTituloForFile(selectedFile2) : readBoxDivulgacaoNoTituloForSlot(2),
-    3: selectedFile3 ? readBoxDivulgacaoNoTituloForFile(selectedFile3) : readBoxDivulgacaoNoTituloForSlot(3),
+    1: resolveBoxDivulgacaoNoTituloForSlot(1, editionDir),
+    2: resolveBoxDivulgacaoNoTituloForSlot(2, editionDir),
+    3: resolveBoxDivulgacaoNoTituloForSlot(3, editionDir),
   };
   const boxDivulgacaoImagePortrait = {
     0: boxDivulgacaoImageExplicit[0] && isBoxSlotImagePortrait(editionDir, 0),
