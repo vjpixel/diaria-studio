@@ -171,4 +171,11 @@ jobs:
     uses: ./.github/workflows/deploy-worker.yml
     with:
       worker: site
+      # #8103: sem isto o checkout do deploy pega `github.sha` — o master de
+      # ANTES do merge do PR da home, que este run acabou de fazer. O deploy
+      # "passava" e republicava a home velha; a edição do dia só aparecia no
+      # próximo push humano em workers/site/**. `master` (e não o SHA do
+      # merge) pra nunca reverter um push em workers/site/ que tenha entrado
+      # entre o merge e este job.
+      ref: master
     secrets: inherit

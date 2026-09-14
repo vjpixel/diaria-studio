@@ -134,6 +134,34 @@ describe("#7686 guard — o workflow que regenera a home existe e roda no horár
       "sem o job de deploy o merge entra em master e produção segue servindo a home antiga (push com GITHUB_TOKEN não dispara deploy-site.yml)",
     );
   });
+
+  // #8103: o job de deploy EXISTIA e terminava `success`, mas o checkout do
+  // reutilizável pegava `github.sha` — o master de ANTES do merge da home que
+  // o próprio run acabou de fazer. Republicava a home velha todo dia (14/09:
+  // origem servindo 38.393 bytes contra 38.457 do index regenerado). O guard
+  // acima só checava que o deploy existe; este trava DE ONDE ele deploya.
+  it("o deploy do regen-home.yml faz checkout de master, não do commit que disparou o run (#8103)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const regen = readFileSync(".github/workflows/regen-home.yml", "utf8");
+    const deployJob = regen.slice(regen.search(/^ {2}deploy:\s*$/m));
+    assert.match(
+      deployJob,
+      /uses:\s*\.\/\.github\/workflows\/deploy-worker\.yml[\s\S]*?\n\s+ref:\s*master\s*$/m,
+      "sem `ref: master` o deploy republica o master de antes do merge — a home do dia só entra no próximo push humano em workers/site/**",
+    );
+
+    const reusable = readFileSync(".github/workflows/deploy-worker.yml", "utf8");
+    assert.match(
+      reusable,
+      /- uses: actions\/checkout@v4\s*\n\s+with:\s*\n\s+ref:\s*\$\{\{\s*inputs\.ref\s*\}\}/,
+      "deploy-worker.yml precisa repassar `inputs.ref` pro checkout, senão o `ref:` do caller é ignorado em silêncio",
+    );
+    assert.match(
+      reusable,
+      /ref:\s*\n(?:\s+#.*\n)*\s+description:[^\n]*\n\s+required:\s*false\s*\n\s+type:\s*string\s*\n\s+default:\s*""/,
+      "o input `ref` tem que ser opcional com default vazio — os callers disparados por push (deploy-site.yml etc.) dependem do checkout default",
+    );
+  });
 });
 
 describe("#7686 guard — bloco `run: |` do regen-home.yml não pode ter linha em coluna 0", () => {
