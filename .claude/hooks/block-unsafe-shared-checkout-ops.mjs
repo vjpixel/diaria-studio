@@ -7,9 +7,9 @@
 // para a issue de origem e o raciocínio completo.
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, isAbsolute, join, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hostname } from "node:os";
 
 // ---------------------------------------------------------------------------
 // Utilitários compartilhados (parsing de comando) — duplicados de
@@ -221,9 +221,271 @@ export const TASKKILL_BLOCK_REASON =
   "context/overnight-dispatch-rules.md item 12.";
 
 // ---------------------------------------------------------------------------
+// Shared: sujeira PRÓPRIA vs ALHEIA no checkout compartilhado (#8107)
+//
+// Guard 2 (`rm`, #6971) e Guard 3 (git destrutivo, #7730) bloqueavam,
+// originalmente, só quando existia ≥1 rodada coordenadora
+// (overnight/develop/continuo) ATIVA registrada em `data/sessions/*.json` —
+// "cobertura HONESTA" documentada explicitamente no docblock anterior desta
+// seção ("só protege enquanto uma rodada coordenadora está registrada").
+//
+// Incidente de origem da mudança (#8107, 13-14/09/2026): uma sessão rodou
+// `git reset --hard origin/fix/8100-...` no checkout PRINCIPAL compartilhado
+// depois que a coordenadora `/diaria-develop` mais recente já tinha encerrado
+// seu registro (`session-registry.ts end`) — `coordinators.size === 0` no
+// instante da chamada, então o guard antigo saía por `return false` por
+// desenho, não por bug. O comando destruiu 8 arquivos NÃO-commitados de uma
+// sessão concorrente, sem stash/commit/cópia em lugar nenhum — perda
+// permanente (diferente do #7730, onde o dano real apurado foi zero por
+// sorte). Decisão do editor (comentário da issue): estender a proteção pra
+// valer SEMPRE, não só durante rodadas automatizadas.
+//
+// Modelo novo — os dois guards reusam o MESMO discriminador que
+// `session-registry.ts` (`evaluateEndGuard`) já usa com sucesso pra separar
+// sujeira própria de alheia: interseção entre `git status --porcelain` e os
+// `touched_paths`/`dirty_paths` do registro da sessão CHAMADORA
+// (`data/sessions/*-{session_id}.json`, QUALQUER `kind` — não só
+// coordenadora; `session-beacon.mjs` já popula esses campos automaticamente
+// pra toda sessão, incluindo `interactive`, a cada `Edit`/`Write`/
+// `NotebookEdit`). Pergunta que os dois guards fazem agora: "existe sujeira
+// ALHEIA (não atribuível à sessão chamadora) que o comando destrutivo
+// atingiria?" — independente de haver coordenadora registrada.
+//
+// Reusa os mesmos PRIMITIVOS de overlap que `evaluateEndGuard` usa
+// (`normalizeBeaconPath`/`beaconPathsOverlap`/`extractPorcelainPath`), mas
+// com a POLÍTICA invertida de propósito — os dois servem propósitos
+// diferentes: `evaluateEndGuard` erra pro lado de deixar a sessão terminar
+// (fail-OPEN) quando a atribuição de sujeira é incerta ("vazio/ausente →
+// sempre avisa, nunca recusa" — ver docstring de `evaluateEndGuard`, "session
+// sem beacon de paths"); estes guards erram pro lado de BLOQUEAR o comando
+// destrutivo (fail-CLOSED) no mesmo caso. Faz sentido — terminar uma sessão
+// com sujeira não-atribuída é reversível (a sessão pode ser retomada depois);
+// deixar um `rm`/`reset --hard` rodar sobre sujeira não-atribuída não é
+// (working tree não tem reflog).
+//
+// Fail-direction destes DOIS guards (nunca invertida entre si):
+//
+//   - `session_id` ausente/vazio, sem registro em `data/sessions/`, ou
+//     registro sem `touched_paths`/`dirty_paths` → `ownPaths = []` → TODA
+//     sujeira do checkout conta como alheia → **bloqueia** (fail-CLOSED —
+//     mais conservador, protege por padrão quando não sabemos o que é
+//     nosso). Cobre o caso do incidente de origem: um subagente ad-hoc, ou
+//     qualquer chamada sem beacon de paths, nunca ganha um passe livre só
+//     por não ter se declarado.
+//   - `git status --porcelain` falha ou estoura o timeout (`readGitPorcelainPaths`,
+//     4s) → **fail-OPEN** (`foreignDirtyPaths === null`, os dois guards
+//     devolvem `false`) — mesmo princípio de todo o resto do arquivo: um
+//     soluço de I/O do OneDrive/rede nunca pode travar Bash legítimo.
+//   - Árvore limpa, ou toda sujeira é da própria sessão chamadora →
+//     `foreignDirtyPaths.length === 0` → nunca bloqueia (o comando só
+//     arrisca o próprio trabalho do chamador, decisão dele).
+//
+// Limitação aceita, documentada em vez de escondida: `touched_paths`/
+// `dirty_paths` só rastreiam caminhos tocados via `Edit`/`Write`/
+// `NotebookEdit` (ver `session-beacon.mjs`) — um arquivo criado por Bash puro
+// (`echo x > f.md`) nunca entra no beacon da própria sessão, então um `rm`
+// subsequente nele (mesmo sendo genuinamente próprio) é tratado como sujeira
+// alheia e bloqueado. Mesma classe de cobertura parcial, honesta, que o
+// docblock anterior já aplicava a outra dimensão do problema.
+
+/** Duplicado de `session-registry.ts` (`normalizeBeaconPath`). */
+export function normalizeBeaconPath(path) {
+  return path
+    .replaceAll("\\", "/")
+    .replace(/^\.\//, "")
+    .replace(/\/+$/, "");
+}
+
+/**
+ * `true` quando dois caminhos se sobrepõem — iguais, ou um é prefixo de
+ * DIRETÓRIO do outro. Duplicado de `session-registry.ts` (`beaconPathsOverlap`).
+ */
+export function beaconPathsOverlap(a, b) {
+  const x = normalizeBeaconPath(a);
+  const y = normalizeBeaconPath(b);
+  if (x === "" || y === "") return false;
+  return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+/**
+ * Extrai o caminho de uma linha de `git status --porcelain` (formato
+ * `XY caminho`, ou `XY orig -> novo` pra renames/cópias — usa o lado NOVO).
+ * Duplicado de `session-registry.ts` (`extractPorcelainPath`), com um fix
+ * que a cópia original AINDA NÃO TEM (#8107, self-review — achado do
+ * `silent-failure-hunter`): o split por `" -> "` só é aplicado quando o
+ * STATUS (2 primeiros chars da linha) é de fato rename/copy (`R`/`C` em
+ * qualquer posição). Sem essa checagem, um arquivo `??`/`M` cujo NOME real
+ * contenha a substring literal `" -> "` (ex: `plan -> v2.md`, nome plausível
+ * de rascunho) seria cortado incorretamente pro que vem depois da seta —
+ * `readGitPorcelainPaths` devolveria `"v2.md"` (arquivo que não existe) em
+ * vez do caminho real, e um `rm "plan -> v2.md"` que deveria bater contra
+ * essa sujeira alheia nunca casaria (`beaconPathsOverlap` compara o path
+ * ERRADO) — silenciosamente permitindo o comando destrutivo que o guard
+ * existe pra bloquear. Callers de `session-registry.ts` (`evaluateEndGuard`)
+ * têm o mesmo bug, mas lá o pior caso é só um WARNING em vez de bloqueio —
+ * aqui a consequência é bloqueio destrutivo passando sem aviso, por isso o
+ * fix entrou aqui primeiro (issue de acompanhamento pro lado
+ * `session-registry.ts`, mesmo bug, consequência mais branda).
+ */
+export function extractPorcelainPath(line) {
+  const status = line.slice(0, 2);
+  const body = line.slice(3); // remove "XY " (2 chars de status + 1 espaço)
+  const isRenameOrCopy = status.includes("R") || status.includes("C");
+  if (!isRenameOrCopy) return body;
+  const arrowIdx = body.indexOf(" -> ");
+  return arrowIdx === -1 ? body : body.slice(arrowIdx + 4);
+}
+
+/**
+ * `git status --porcelain` em `repoRoot`, com timeout CURTO (#8107 — este
+ * hook roda em TODO `Bash` de TODA sessão; o subprocesso síncrono só é pago
+ * quando um comando potencialmente destrutivo já foi detectado por
+ * `isRmCommand`/`detectDestructiveGitTarget`, nunca em toda invocação de
+ * Bash). Devolve os caminhos JÁ normalizados (formato `git status`, relativo
+ * a `repoRoot`), ou `null` se o comando falhar/estourar o timeout —
+ * fail-OPEN, nunca travar Bash legítimo por soluço de I/O.
+ *
+ * `maxBuffer` explícito e generoso (20 MiB, contra o default de 1 MiB do
+ * `execFileSync`) — achado do `silent-failure-hunter` (#8107 self-review):
+ * sem isso, o guard tende a falhar-abrir justo quando há MAIS sujeira pra
+ * proteger (checkout com muitos arquivos dirty/untracked produz saída maior,
+ * mais perto de estourar o buffer padrão) — o pior momento possível pra um
+ * guard de segurança degradar em silêncio.
+ */
+export function readGitPorcelainPaths(repoRoot, timeoutMs = 4000) {
+  try {
+    const res = execFileSync("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer: 20 * 1024 * 1024,
+      // windowsHide: true (#7952) — este hook roda em toda sessão, inclusive
+      // Windows; sem isso, `git` pode alocar uma janela de console própria.
+      windowsHide: true,
+    });
+    return res
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0)
+      .map((line) => normalizeBeaconPath(extractPorcelainPath(line)))
+      .filter((p) => p !== "");
+  } catch (err) {
+    // Fail-OPEN, mas não em silêncio total (achado do `silent-failure-hunter`
+    // #8107 self-review) — sem isto, o guard podia ficar desarmado por N
+    // chamadas (git ausente do PATH, buffer estourado, timeout persistente)
+    // sem NENHUM sinal operacional, até o próximo incidente. Best-effort,
+    // nunca lança, nunca vai pro stdout (que carrega o contrato JSON do
+    // hook) — só stderr, puramente diagnóstico.
+    try {
+      process.stderr.write(
+        `block-unsafe-shared-checkout-ops: git status --porcelain falhou em ${repoRoot} — guard de rm/git ` +
+          `destrutivo fail-open pra esta chamada (${err?.code ?? err?.message ?? "erro desconhecido"}).\n`,
+      );
+    } catch {
+      // stderr indisponível: sem sorte, mas nunca lança por causa disso.
+    }
+    return null;
+  }
+}
+
+/**
+ * Localiza o arquivo de registro (`data/sessions/*.json`) que casa
+ * `sessionId`, QUALQUER `kind` (#8107 — diferente do modelo anterior, que só
+ * olhava kinds coordenadores). Casa pelo SUFIXO `-{sessionId}.json`, mesma
+ * técnica de `findExistingSessionFileAnyKind` em `session-registry.ts` — a
+ * ambiguidade posicional documentada lá (tag/sessionId podem conter `-`) é
+ * irrelevante aqui porque não precisamos separar os dois, só casar o sufixo
+ * inteiro. Exclui backups `-safeBackup-` e dotfiles (`.merge-lock.json`).
+ */
+function findOwnSessionFile(repoRoot, sessionId) {
+  const dir = sessionsDir(repoRoot);
+  const suffix = `-${sessionId}.json`;
+  let entries;
+  try {
+    if (!existsSync(dir)) return null;
+    entries = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  const names = entries
+    .filter((n) => n.endsWith(suffix) && !n.startsWith(".") && !n.includes("-safeBackup-"))
+    .sort();
+  return names.length > 0 ? join(dir, names[0]) : null;
+}
+
+/**
+ * `touched_paths` ∪ `dirty_paths` do registro da PRÓPRIA sessão chamadora
+ * (#8107). `session_id` ausente/vazio, sem registro correspondente em
+ * `data/sessions/`, ou registro sem esses campos → `[]` — fail-CLOSED: sem
+ * essa lista, o guard não tem como saber o que é seu, então trata tudo como
+ * alheio (ver docblock da seção acima). Nunca lança — JSON malformado (uma
+ * escrita concorrente truncada, corrupção do OneDrive) cai no mesmo `[]`.
+ */
+export function readOwnSessionPaths(repoRoot, sessionId) {
+  if (typeof sessionId !== "string" || sessionId === "") return [];
+  const filePath = findOwnSessionFile(repoRoot, sessionId);
+  if (!filePath) return [];
+  try {
+    const record = JSON.parse(readFileSync(filePath, "utf8"));
+    if (!record || typeof record !== "object") return [];
+    const touched = Array.isArray(record.touched_paths) ? record.touched_paths : [];
+    const dirty = Array.isArray(record.dirty_paths) ? record.dirty_paths : [];
+    return [...new Set([...touched, ...dirty].map(normalizeBeaconPath))].filter((p) => p !== "");
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Sujeira do `git status --porcelain` que NÃO é atribuível à sessão
+ * chamadora — o alvo real que os dois guards protegem (#8107). `null`
+ * propaga o fail-open de `readGitPorcelainPaths` (git status indisponível).
+ */
+export function computeForeignDirtyPaths(porcelainPaths, ownPaths) {
+  if (porcelainPaths === null) return null;
+  const normalizedOwn = [...new Set((ownPaths ?? []).map(normalizeBeaconPath))].filter((p) => p !== "");
+  return porcelainPaths.filter((p) => !normalizedOwn.some((op) => beaconPathsOverlap(op, p)));
+}
+
+/**
+ * Resolve `targetPath` pra um caminho RELATIVO a `checkoutRoot` (mesmo
+ * formato de `git status --porcelain`), pra comparar contra
+ * `foreignDirtyPaths`. `null` quando o alvo resolve pra FORA do checkout
+ * (nunca é problema destes guards — outro guard, ou nenhum, cobre isso).
+ * `"."` quando o alvo É o próprio diretório-base resolvido (cobre tudo
+ * abaixo dele — usado tanto por um `rm .`/`git checkout -- .` quanto pelo
+ * `cwd` efetivo depois de um `cd` pra dentro do checkout).
+ */
+function relativeToCheckout(targetPath, checkoutRoot, effectiveCwd) {
+  try {
+    if (typeof targetPath !== "string" || targetPath === "") return null;
+    const baseCwd = effectiveCwd ?? checkoutRoot;
+    const resolved = isAbsolute(targetPath) ? resolvePath(targetPath) : resolvePath(baseCwd, targetPath);
+    const rootResolved = resolvePath(checkoutRoot);
+    if (resolved === rootResolved) return ".";
+    if (!resolved.startsWith(rootResolved + sep)) return null;
+    return resolved.slice(rootResolved.length + 1).split(sep).join("/");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `true` quando o caminho-alvo (já relativizado por `relativeToCheckout`)
+ * atinge alguma sujeira alheia — `"."` (alvo é o diretório inteiro) atinge
+ * QUALQUER sujeira alheia existente; um caminho específico só atinge sujeira
+ * que sobrepõe ele (`beaconPathsOverlap`).
+ */
+function targetHitsForeignDirt(relTarget, foreignDirtyPaths) {
+  if (relTarget === null) return false;
+  if (relTarget === ".") return foreignDirtyPaths.length > 0;
+  return foreignDirtyPaths.some((fd) => beaconPathsOverlap(relTarget, fd));
+}
+
+// ---------------------------------------------------------------------------
 // Guard 2 — `rm` em caminho dentro do checkout PRINCIPAL compartilhado,
-// enquanto uma rodada coordenadora (overnight/develop/continuo) ativa não é
-// a chamadora (#6971)
+// atingindo sujeira ALHEIA (#6971, generalizado pelo #8107 — ver seção
+// "Shared" acima)
 //
 // Incidente de origem: frota de review da PR #6969 (01/09/2026) — um agente
 // despachado com instrução EXPLÍCITA de somente-leitura ("No file edits, no
@@ -233,73 +495,18 @@ export const TASKKILL_BLOCK_REASON =
 // (cópia solta em /tmp). A #6971 concluiu, na mesma linha do #6864/#6941,
 // que "instrução em prosa não é guard" e pediu restringir MECANICAMENTE.
 //
-// ESCOPO HONESTO DESTE GUARD (documentado explicitamente porque é mais
-// estreito que o pedido literal da issue — ver PR body do lote
-// `guards-de-subagente` para a análise completa):
+// Restringir as FERRAMENTAS do agente de review na origem (a direção
+// preferida pela #6971) segue não sendo implementável a partir deste repo —
+// `pr-review-toolkit:code-reviewer` e os demais da frota são definidos pelo
+// PLUGIN do marketplace, com `Tools: "All tools"` fixo; não há parâmetro na
+// ferramenta `Agent` pra sobrescrever isso num `subagent_type` já registrado.
+// O que este guard cobre é a mitigação mecânica que INDEPENDE de identificar
+// "isto é um subagente de review" — protege qualquer chamada, de qualquer
+// sessão/subagente, que atingiria sujeira alheia no checkout compartilhado.
 //
-//   Direção (1) da issue ("restringir as ferramentas do agente de review, não
-//   instruí-lo") NÃO é implementável a partir deste hook nem deste repo: o
-//   agente `pr-review-toolkit:code-reviewer` (e os demais da frota —
-//   `silent-failure-hunter`, `pr-test-analyzer`, `comment-analyzer`,
-//   `type-design-analyzer`) é definido pelo PLUGIN do marketplace
-//   (`pr-review-toolkit@claude-plugins-official`), fora deste repo — seu
-//   `Tools:` declarado é "All tools" e não há parâmetro na ferramenta `Agent`
-//   pra sobrescrever o toolset de um `subagent_type` já registrado no
-//   dispatch. O tratamento que o #6941 aplicou ao lane GLM (`--tools`
-//   explícito) só é possível ali porque aquele lane spawna o binário `claude`
-//   diretamente via `dispatch-glm-lane-unit.sh` — um caminho de execução que
-//   este repo controla; a frota de review roda pela ferramenta `Agent`
-//   embutida, sem esse controle.
-//
-//   Direção (2) ("hook `PreToolUse` sobre `Bash` que recuse `rm` ... quando a
-//   sessão é subagente de review") também não é implementável NA FORMA
-//   LITERAL: o payload que este hook recebe (`session_id`, `tool_name`,
-//   `tool_input`) não carrega nenhum campo que identifique "esta chamada
-//   pertence a um subagente de REVIEW especificamente" — confirmado por
-//   varredura dos hooks irmãos (nenhum consome `agent_type`/`subagent_type`
-//   no payload de `Bash`; esse campo só aparece em prosa de playbook, nunca
-//   no schema do hook). Subagentes despachados via `Agent` têm `session_id`
-//   PRÓPRIO (fato já usado por `block-gh-pr-merge-subagent.mjs`), mas nada
-//   marca QUAL subagente é "de review" vs. qualquer outro subagente ad-hoc.
-//
-//   O que ESTE guard cobre de fato: reusa o mesmo discriminador já
-//   estabelecido em `block-branch-checkout-main.mjs` (#6509) — bloqueia `rm`
-//   em caminho dentro do checkout PRINCIPAL (não um worktree vinculado)
-//   quando existe ≥1 rodada coordenadora (overnight/develop/continuo) ATIVA
-//   registrada em `data/sessions/*.json` e o `session_id` da chamada atual
-//   não é o dela. Isso protege o subconjunto real do risco em que a frota de
-//   review roda DENTRO de uma rodada `/diaria-overnight`/`/diaria-develop`/
-//   `/diaria-continuo` já registrada (Fase 1.5, ou hook `pr-create-review.mjs`
-//   disparado por um subagente implementador dessas rodadas) — mas NÃO cobre
-//   uma frota de review dispatchada por uma sessão interativa comum sem
-//   nenhuma rodada coordenadora registrada (o cenário mais provável do
-//   incidente de origem da #6971, já que não há evidência de rodada ativa
-//   nesse relato). Esse gap fica documentado aqui e no PR — entregar esta
-//   cobertura parcial, honesta, é preferível a fingir que o hook resolve a
-//   classe inteira quando não resolve (mesmo critério aplicado pela ressalva
-//   da #6956 no mesmo lote).
-//
-//   Mitigação parcial para o gap acima: direção (3) da issue ("parar de usar
-//   o checkout como área de rascunho entre sessões") — ver nota em
-//   `context/overnight-dispatch-rules.md` adicionada no mesmo PR. Não impede
-//   o `rm`, mas remove parte do alvo (rascunhos de PR/review passam a viver
-//   fora da árvore por convenção) — foi exatamente o que salvou o incidente
-//   original (cópia em `/tmp`).
-//
-//   #7055 (fail-closed, 02/09/2026): dentro do escopo que o guard JÁ cobre
-//   (rodada coordenadora ativa registrada), havia um 2º gap — `session_id`
-//   ausente/vazio na chamada saía por uma porta antecipada em
-//   `shouldBlockSharedCheckoutRm` e LIBERAVA o `rm` mesmo com coordenadora
-//   ativa e path dentro do checkout. Reincidência medida do MESMO incidente
-//   1h após este guard estar mergeado — mesmos 3 arquivos apagados por um
-//   agente de review dispatchado por uma sessão `/diaria-develop` já
-//   registrada. `session_id` ausente agora é tratado como "não é a
-//   coordenadora" (bloqueia), não mais como um passe livre — ver
-//   `shouldBlockSharedCheckoutRm` abaixo.
-
-export const RM_MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
-export const RM_SOFT_STALE_MS = 90 * 60 * 1000;
-export const RM_COORDINATOR_KINDS = new Set(["overnight", "develop", "continuo"]);
+// #7055 (fail-closed, 02/09/2026, preservado pelo #8107): `session_id`
+// ausente/vazio na chamada nunca ganha passe livre — sem ele, `readOwnSessionPaths`
+// devolve `[]`, então toda sujeira do checkout conta como alheia.
 
 /**
  * `true` se `command` contém um `rm` real (segmento de comando, não citado
@@ -417,133 +624,57 @@ export function sessionsDir(repoRoot) {
   return join(repoRoot, "data", "sessions");
 }
 
-/** Duplicado de `machineTag()` dos hooks irmãos. */
-export function machineTag() {
-  try {
-    return (hostname() || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_");
-  } catch {
-    return "unknown";
-  }
-}
-
-/**
- * Varredura de `data/sessions/*.json` — devolve o `Set` de `sessionId` de
- * sessões COORDENADORAS ativas (kind overnight/develop/continuo, mesma
- * máquina, heartbeat dentro de `RM_SOFT_STALE_MS`/`RM_MAX_SESSION_AGE_MS`).
- * Duplicado de `readActiveCoordinatorSessionIds` em
- * `block-branch-checkout-main.mjs` — fail-open em toda falha, mesma razão
- * documentada lá (custo de falso negativo aqui é bem menor que travar um
- * `rm` legítimo por soluço de I/O do OneDrive).
- */
-export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now()) {
-  const ids = new Set();
-  const dir = sessionsDir(repoRoot);
-  let entries;
-  try {
-    if (!existsSync(dir)) return ids;
-    entries = readdirSync(dir);
-  } catch {
-    return ids;
-  }
-  const myTag = machineTag();
-  for (const name of entries) {
-    if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
-    try {
-      const record = JSON.parse(readFileSync(join(dir, name), "utf8"));
-      if (!record || typeof record !== "object") continue;
-      if (!RM_COORDINATOR_KINDS.has(record.kind)) continue;
-      if (typeof record.sessionId !== "string" || record.sessionId === "") continue;
-      if (typeof record.machineTag !== "string" || record.machineTag !== myTag) continue;
-      const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
-      const heartbeatMs = Date.parse(heartbeatIso ?? "");
-      if (!Number.isFinite(heartbeatMs)) continue;
-      const ageMs = now - heartbeatMs;
-      if (ageMs < 0 || ageMs > RM_MAX_SESSION_AGE_MS) continue;
-      if (ageMs > RM_SOFT_STALE_MS) continue;
-      ids.add(record.sessionId);
-    } catch {
-      // Entrada corrompida — ignora só ela, segue as demais. Fail-open.
-    }
-  }
-  return ids;
-}
-
 /**
  * Função pura — decide se um `rm` visando `targetPaths` deve ser bloqueado,
- * dado `checkoutRoot`, se ele É um worktree vinculado, o conjunto de
- * coordenadoras ativas já lido, e o `session_id` da chamada ATUAL.
+ * dado `checkoutRoot`, se ele É um worktree vinculado, e a sujeira ALHEIA
+ * já calculada (`foreignDirtyPaths`, ver `computeForeignDirtyPaths` na seção
+ * "Shared" acima — #8107, substitui o modelo por coordenadora ativa).
  *
  * Bloqueia quando: (a) `checkoutRoot` é o checkout PRINCIPAL (não um
  * worktree — subagentes implementadores rodam em worktree próprio, nunca
- * bloqueado aqui); (b) existe ≥1 coordenadora ativa registrada; (c) ≥1
- * targetPath resolve para DENTRO do checkout; (d) o `session_id` da chamada
- * NÃO é o de nenhuma coordenadora — o que inclui `session_id`
- * ausente/vazio.
- *
- * **#7055 (fail-closed, corrige fail-open do #6971/#6982):** antes desta
- * mudança, `session_id` ausente/vazio saía por uma porta antecipada e
- * LIBERAVA o `rm` incondicionalmente — mesmo com coordenadora ativa e path
- * dentro do checkout. Um subagente dispatchado sem esse campo no payload (ou
- * herdando um valor vazio) caía nessa porta e o guard nunca chegava a
- * avaliar path/coordenadora. Reincidência medida do MESMO incidente que o
- * guard foi escrito pra impedir, 1h depois de mergeado (#7055): mesmos 3
- * arquivos apagados por um agente de review dispatchado por uma sessão
- * `/diaria-develop` já registrada. A ausência do discriminador agora é
- * tratada como "não é a coordenadora" — mesmo destino de um `session_id`
- * genuinamente diferente — em vez de um passe livre.
+ * bloqueado aqui); (b) `foreignDirtyPaths` não é `null` (git status
+ * disponível — `null` propaga fail-open) nem vazio (há sujeira alheia real);
+ * (c) ≥1 `targetPath` resolve pra um caminho DENTRO do checkout que atinge
+ * essa sujeira alheia (`targetHitsForeignDirt`).
  *
  * **#7757 — `targetPaths` aceita entradas mistas.** Cada entrada é uma
- * `string` (comportamento anterior: resolvida contra `checkoutRoot`) OU um
- * objeto `{ path, cwd }` (novo: resolvida contra o `cwd` EFETIVO daquela
- * invocação — ver `extractRmTargetsWithCwd`, que corrige o falso-positivo
- * "path relativo resolvido contra o project root em vez do `cwd` real após
- * um `cd`"). Mantém os testes existentes (que passam `string[]`) verdes sem
- * mudança.
+ * `string` (resolvida contra `checkoutRoot`) OU um objeto `{ path, cwd }`
+ * (resolvida contra o `cwd` EFETIVO daquela invocação — ver
+ * `extractRmTargetsWithCwd`, que corrige o falso-positivo "path relativo
+ * resolvido contra o project root em vez do `cwd` real após um `cd`").
  */
-export function shouldBlockSharedCheckoutRm({
-  targetPaths,
-  checkoutRoot,
-  isWorktree,
-  activeCoordinatorSessionIds,
-  callerSessionId,
-}) {
+export function shouldBlockSharedCheckoutRm({ targetPaths, checkoutRoot, isWorktree, foreignDirtyPaths }) {
   if (isWorktree) return false; // worktree de subagente: rm no próprio worktree é normal
-  const coordinators = activeCoordinatorSessionIds ?? new Set();
-  if (coordinators.size === 0) return false; // sem rodada ativa: fora do escopo deste guard
+  if (foreignDirtyPaths === null) return false; // git status indisponível: fail-open
+  if (foreignDirtyPaths.length === 0) return false; // nada alheio pra proteger
   const paths = targetPaths ?? [];
-  const targetsInsideCheckout = paths.some((p) =>
-    typeof p === "string" ? isPathInsideCheckout(p, checkoutRoot) : isPathInsideCheckout(p.path, checkoutRoot, p.cwd),
-  );
-  if (!targetsInsideCheckout) return false;
-  const isCoordinatorCall =
-    typeof callerSessionId === "string" && callerSessionId !== "" && coordinators.has(callerSessionId);
-  if (isCoordinatorCall) return false; // a própria coordenadora
-  // session_id ausente/vazio OU diferente de toda coordenadora, com rodada
-  // ativa e path dentro do checkout: bloquear (#7055 — antes era fail-open
-  // no caso ausente/vazio).
-  return true;
+  return paths.some((p) => {
+    const targetPath = typeof p === "string" ? p : p.path;
+    const cwd = typeof p === "string" ? undefined : p.cwd;
+    return targetHitsForeignDirt(relativeToCheckout(targetPath, checkoutRoot, cwd), foreignDirtyPaths);
+  });
 }
 
 export const RM_BLOCK_REASON =
-  "rm em caminho dentro do checkout PRINCIPAL compartilhado bloqueado pelo guard mecânico do " +
-  "overnight/develop/continuo (#6971): há uma rodada ativa registrada nesta máquina " +
-  "(data/sessions/*.json) e esta chamada não pertence à sessão coordenadora registrada — só um " +
-  "subagente (implementador, review, ou qualquer outro dispatch ad-hoc) faria essa chamada nesse " +
-  "estado. O checkout é compartilhado por várias sessões concorrentes; arquivo untracked apagado ali " +
-  "não tem desfazer (não há `git checkout --` que salve). Se você é subagente implementador: seu " +
-  "trabalho roda no PRÓPRIO worktree (isolation: \"worktree\"), rode o rm ali, não no checkout " +
-  "principal. Se você é um agente de REVIEW: você não tem razão legítima pra apagar nada — se o " +
-  "arquivo era um rascunho seu, deixe-o (a coordenadora decide o que fazer) ou escreva rascunhos fora " +
-  "da árvore (/tmp, scratchpad) da próxima vez. Se você é a coordenadora vendo isto por engano, rode " +
-  "`npx tsx scripts/lib/session-registry.ts register --kind {overnight|develop|continuo}` para renovar " +
-  "seu próprio registro e tente de novo. Cobertura HONESTA deste guard: só protege enquanto uma rodada " +
-  "coordenadora está registrada — uma frota de review dispatchada por sessão interativa comum, sem " +
-  "rodada registrada, não é coberta por este hook (ver docblock do arquivo). Evite `rm` em caminho do " +
-  "checkout compartilhado por padrão, coberto ou não.";
+  "rm em caminho dentro do checkout PRINCIPAL compartilhado bloqueado pelo guard mecânico (#6971, " +
+  "generalizado pelo #8107): o alvo atinge sujeira NÃO-commitada de OUTRA sessão (git status --porcelain " +
+  "que não bate com touched_paths/dirty_paths do SEU registro em data/sessions/*.json). O checkout é " +
+  "compartilhado por várias sessões concorrentes; arquivo untracked apagado ali não tem desfazer (não há " +
+  "`git checkout --` que salve). Se você é subagente implementador: seu trabalho roda no PRÓPRIO worktree " +
+  "(isolation: \"worktree\"), rode o rm ali, não no checkout principal. Se você é um agente de REVIEW: " +
+  "você não tem razão legítima pra apagar nada — se o arquivo era um rascunho seu, deixe-o, ou escreva " +
+  "rascunhos fora da árvore (/tmp, scratchpad) da próxima vez. Se o alvo é seu (touched_paths/dirty_paths " +
+  "do seu próprio registro cobre esse arquivo), o guard já teria deixado passar — se você acha que este " +
+  "bloqueio é falso-positivo, confira se sua sessão está registrada (`npx tsx " +
+  "scripts/lib/session-registry.ts register --kind {overnight|develop|continuo|interactive}`) e se o " +
+  "arquivo foi tocado via Edit/Write (rm em arquivo criado só por Bash puro nunca entra no seu beacon — " +
+  "limitação conhecida, ver docblock da seção 'Shared' no início deste hook). Evite `rm` em caminho do " +
+  "checkout compartilhado por padrão, mesmo quando o guard deixa passar.";
 
 // ---------------------------------------------------------------------------
 // Guard 3 — comandos git DESTRUTIVOS de working tree no checkout PRINCIPAL
-// compartilhado, mesmo discriminador do Guard 2 (#7730)
+// compartilhado, atingindo sujeira ALHEIA — mesmo discriminador do Guard 2
+// (#7730, generalizado pelo #8107)
 //
 // Incidente de origem (09/09/2026): um agente `pr-review-toolkit:code-reviewer`
 // despachado pra revisar a PR #7721, no checkout PRINCIPAL compartilhado, rodou
@@ -557,16 +688,21 @@ export const RM_BLOCK_REASON =
 // <path>`, `git restore`, `git clean -f`/`-fd`/`-fdx`, `git reset --hard`,
 // `git stash`.
 //
+// 2ª ocorrência (#8107, 13-14/09/2026): `git reset --hard origin/...` rodado
+// no checkout compartilhado depois que a única coordenadora registrada já
+// tinha encerrado seu tick — destruiu 8 arquivos não-commitados de outra
+// sessão. O modelo por "coordenadora ativa" nunca cobria esse caso por
+// desenho; ver seção "Shared" no início deste arquivo pro modelo novo.
+//
 // Deliberadamente FORA do escopo: `git checkout <branch>` (troca de branch
 // sem `--`/path — território de `block-branch-checkout-main.mjs`) e
 // `git checkout`/`git switch` sem argumento que descarte arquivo.
 //
 // Mesmas condições do Guard 2: bloqueia só quando (a) não é worktree
-// vinculado, (b) existe ≥1 coordenadora ativa registrada, (c) o alvo do
-// comando (path específico pra checkout/restore; o working tree INTEIRO pra
-// clean/reset --hard/stash, que não recebem path) está dentro do checkout, e
-// (d) `session_id` da chamada não é o de nenhuma coordenadora (ausente/vazio
-// inclusos — mesmo fail-closed do #7055).
+// vinculado, (b) `foreignDirtyPaths` não é `null` (git status disponível) e
+// não é vazio (há sujeira alheia real na árvore), e (c) o alvo do comando
+// (path específico pra checkout/restore; o working tree INTEIRO pra
+// clean/reset --hard/stash, que não recebem path) atinge essa sujeira.
 
 export const GIT_DESTRUCTIVE_COMMANDS = ["checkout", "restore", "clean", "reset", "stash"];
 
@@ -582,8 +718,9 @@ export const GIT_DESTRUCTIVE_COMMANDS = ["checkout", "restore", "clean", "reset"
  * literalmente `git checkout HEAD -- <arquivo>` como o remédio documentado
  * pro estado absorvente `preexisting_unmerged_state` (índice com caminhos
  * UU/AA de uma stash pop conflitante de rodada anterior). Bloquear esse
- * comando quando uma coordenadora está ativa deixaria o fluxo de edição sem
- * caminho de recuperação. `HEAD` como ref explícito (não `origin/master`,
+ * comando incondicionalmente (#8107 — o guard agora roda SEMPRE, não só com
+ * coordenadora ativa) deixaria o fluxo de edição sem caminho de recuperação.
+ * `HEAD` como ref explícito (não `origin/master`,
  * não qualquer outro ref — o caso do incidente que originou o #7730) é
  * exempto: descarta o lado LOCAL de um path específico em favor do último
  * commit já mergeado, blast radius bem mais estreito que
@@ -683,43 +820,36 @@ export function detectDestructiveGitTarget(command) {
 
 /**
  * Função pura — mesma decisão de `shouldBlockSharedCheckoutRm`, generalizada
- * pro alvo de um comando git destrutivo (`detectDestructiveGitTarget`).
- * `wholeTree: true` conta como "dentro do checkout" incondicionalmente
- * quando não é worktree (o comando roda no cwd corrente, que — na ausência
- * de payload de `cwd`, mesma premissa dos guards irmãos — é o checkoutRoot).
+ * pro alvo de um comando git destrutivo (`detectDestructiveGitTarget`), com
+ * a sujeira ALHEIA já calculada (`foreignDirtyPaths`, #8107 — substitui o
+ * modelo por coordenadora ativa). `wholeTree: true` (clean/reset --hard/
+ * stash) atinge QUALQUER sujeira alheia existente, incondicionalmente — o
+ * comando roda no cwd corrente, que (na ausência de payload de `cwd`, mesma
+ * premissa dos guards irmãos) é o checkoutRoot inteiro.
  */
-export function shouldBlockSharedCheckoutGitDestructive({
-  target,
-  checkoutRoot,
-  isWorktree,
-  activeCoordinatorSessionIds,
-  callerSessionId,
-}) {
+export function shouldBlockSharedCheckoutGitDestructive({ target, checkoutRoot, isWorktree, foreignDirtyPaths }) {
   if (!target) return false;
   if (isWorktree) return false;
-  const coordinators = activeCoordinatorSessionIds ?? new Set();
-  if (coordinators.size === 0) return false;
-  const targetsInsideCheckout = target.wholeTree || target.paths.some((p) => isPathInsideCheckout(p, checkoutRoot));
-  if (!targetsInsideCheckout) return false;
-  const isCoordinatorCall =
-    typeof callerSessionId === "string" && callerSessionId !== "" && coordinators.has(callerSessionId);
-  if (isCoordinatorCall) return false;
-  return true;
+  if (foreignDirtyPaths === null) return false; // git status indisponível: fail-open
+  if (foreignDirtyPaths.length === 0) return false; // nada alheio pra proteger
+  if (target.wholeTree) return true; // já sabemos que há sujeira alheia em algum lugar da árvore
+  return target.paths.some((p) => targetHitsForeignDirt(relativeToCheckout(p, checkoutRoot), foreignDirtyPaths));
 }
 
 export const GIT_DESTRUCTIVE_BLOCK_REASON =
   "Comando git DESTRUTIVO de working tree (`git checkout <ref> -- <path>`, `git restore`, `git clean -f`, " +
-  "`git reset --hard`, ou `git stash`) bloqueado pelo guard mecânico do overnight/develop/continuo (#7730, " +
-  "mesma classe do #6971 acima) — há uma rodada ativa registrada nesta máquina e esta chamada não pertence " +
-  "à sessão coordenadora registrada. O checkout é compartilhado por várias sessões concorrentes; working " +
-  "tree não tem reflog — o que este comando descartaria não tem desfazer. Se você é subagente " +
-  "implementador ou de review: não rode comandos git destrutivos no checkout PRINCIPAL compartilhado — " +
-  "seu trabalho roda no PRÓPRIO worktree (isolation: \"worktree\"); se precisa só COMPARAR conteúdo entre " +
-  "branches, use `git show <ref>:<path>` ou `git diff <ref> -- <path>` (nunca escrevem no working tree). " +
-  "Se você é a coordenadora vendo isto por engano, renove seu registro (`npx tsx " +
-  "scripts/lib/session-registry.ts register --kind {overnight|develop|continuo}`) e tente de novo. " +
-  "Cobertura HONESTA: só protege enquanto uma rodada coordenadora está registrada (mesma ressalva do Guard " +
-  "2/#6971).";
+  "`git reset --hard`, ou `git stash`) bloqueado pelo guard mecânico (#7730, generalizado pelo #8107) — o " +
+  "alvo atinge sujeira NÃO-commitada de OUTRA sessão (git status --porcelain que não bate com " +
+  "touched_paths/dirty_paths do SEU registro em data/sessions/*.json). O checkout é compartilhado por " +
+  "várias sessões concorrentes; working tree não tem reflog — o que este comando descartaria não tem " +
+  "desfazer. Se você é subagente implementador ou de review: não rode comandos git destrutivos no " +
+  "checkout PRINCIPAL compartilhado — seu trabalho roda no PRÓPRIO worktree (isolation: \"worktree\"); se " +
+  "precisa só COMPARAR conteúdo entre branches, use `git show <ref>:<path>` ou `git diff <ref> -- <path>` " +
+  "(nunca escrevem no working tree). Se o alvo é seu (touched_paths/dirty_paths do seu próprio registro " +
+  "cobre esse arquivo), o guard já teria deixado passar — confira se sua sessão está registrada e se o " +
+  "arquivo foi tocado via Edit/Write (ver docblock da seção 'Shared' no início deste hook pra limitações " +
+  "conhecidas). Evite comandos git destrutivos no checkout compartilhado por padrão, mesmo quando o guard " +
+  "deixa passar.";
 
 // ---------------------------------------------------------------------------
 // Entry point CLI
@@ -754,72 +884,79 @@ if (
         return;
       }
 
-      // Guard 2: rm no checkout principal compartilhado, sem ser a coordenadora.
-      if (isRmCommand(command)) {
+      // Guards 2/3 (#8107): rm ou git destrutivo no checkout principal
+      // compartilhado, atingindo sujeira ALHEIA. `git status --porcelain`
+      // (custo real, síncrono) só roda quando um dos dois padrões já casou —
+      // nunca em toda invocação de Bash.
+      const isRm = isRmCommand(command);
+      const gitTarget = detectDestructiveGitTarget(command);
+      if (isRm || gitTarget) {
         const hookDir = dirname(fileURLToPath(import.meta.url));
         const checkoutRoot = join(hookDir, "..", "..");
         const worktree = isLinkedWorktree(checkoutRoot);
-        // #7757: cwd-aware — resolve cada path relativo contra o cwd EFETIVO
-        // (rastreando `cd` no próprio comando), não incondicionalmente
-        // contra checkoutRoot.
-        const targetPaths = extractRmTargetsWithCwd(command, checkoutRoot);
-        const coordinators = worktree ? new Set() : readActiveCoordinatorSessionIds(checkoutRoot);
-        if (
-          shouldBlockSharedCheckoutRm({
-            targetPaths,
-            checkoutRoot,
-            isWorktree: worktree,
-            activeCoordinatorSessionIds: coordinators,
-            callerSessionId: payload.session_id,
-          })
-        ) {
-          process.stdout.write(
-            JSON.stringify({
-              hookSpecificOutput: {
-                hookEventName: "PreToolUse",
-                permissionDecision: "deny",
-                permissionDecisionReason: RM_BLOCK_REASON,
-              },
-            }),
-          );
-          return;
-        }
-      }
+        if (!worktree) {
+          const ownPaths = readOwnSessionPaths(checkoutRoot, payload.session_id);
+          const porcelainPaths = readGitPorcelainPaths(checkoutRoot);
+          const foreignDirtyPaths = computeForeignDirtyPaths(porcelainPaths, ownPaths);
 
-      // Guard 3: git destrutivo (checkout --/restore/clean/reset --hard/stash) no
-      // checkout principal compartilhado, sem ser a coordenadora (#7730).
-      {
-        const target = detectDestructiveGitTarget(command);
-        if (target) {
-          const hookDir = dirname(fileURLToPath(import.meta.url));
-          const checkoutRoot = join(hookDir, "..", "..");
-          const worktree = isLinkedWorktree(checkoutRoot);
-          const coordinators = worktree ? new Set() : readActiveCoordinatorSessionIds(checkoutRoot);
-          if (
-            shouldBlockSharedCheckoutGitDestructive({
-              target,
-              checkoutRoot,
-              isWorktree: worktree,
-              activeCoordinatorSessionIds: coordinators,
-              callerSessionId: payload.session_id,
-            })
-          ) {
-            process.stdout.write(
-              JSON.stringify({
-                hookSpecificOutput: {
-                  hookEventName: "PreToolUse",
-                  permissionDecision: "deny",
-                  permissionDecisionReason: GIT_DESTRUCTIVE_BLOCK_REASON,
-                },
-              }),
-            );
-            return;
+          if (isRm) {
+            // #7757: cwd-aware — resolve cada path relativo contra o cwd
+            // EFETIVO (rastreando `cd` no próprio comando), não
+            // incondicionalmente contra checkoutRoot.
+            const targetPaths = extractRmTargetsWithCwd(command, checkoutRoot);
+            if (
+              shouldBlockSharedCheckoutRm({ targetPaths, checkoutRoot, isWorktree: worktree, foreignDirtyPaths })
+            ) {
+              process.stdout.write(
+                JSON.stringify({
+                  hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: "deny",
+                    permissionDecisionReason: RM_BLOCK_REASON,
+                  },
+                }),
+              );
+              return;
+            }
+          }
+
+          if (gitTarget) {
+            if (
+              shouldBlockSharedCheckoutGitDestructive({
+                target: gitTarget,
+                checkoutRoot,
+                isWorktree: worktree,
+                foreignDirtyPaths,
+              })
+            ) {
+              process.stdout.write(
+                JSON.stringify({
+                  hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: "deny",
+                    permissionDecisionReason: GIT_DESTRUCTIVE_BLOCK_REASON,
+                  },
+                }),
+              );
+              return;
+            }
           }
         }
       }
       // Sem bloqueio: não emitir nada — cai no fluxo normal de permissão.
-    } catch {
+    } catch (err) {
       // Fail-open, sempre: um hook quebrado não pode travar Bash legítimo.
+      // Diagnóstico best-effort em stderr (achado do `silent-failure-hunter`
+      // #8107 self-review) — antes disto, uma exceção não-antecipada aqui
+      // desarmava os 3 guards em silêncio total, indistinguível de "nada pra
+      // bloquear". Nunca vai pro stdout (contrato JSON do hook), nunca lança.
+      try {
+        process.stderr.write(
+          `block-unsafe-shared-checkout-ops: exceção não-tratada, hook fail-open pra esta chamada (${err?.message ?? "erro desconhecido"}).\n`,
+        );
+      } catch {
+        // stderr indisponível: sem sorte, mas nunca lança por causa disso.
+      }
     }
   });
 }

@@ -1,8 +1,9 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import {
   isTaskkillByImageCommand,
   TASKKILL_BLOCK_REASON,
@@ -11,8 +12,12 @@ import {
   isPathInsideCheckout,
   isLinkedWorktree,
   sessionsDir,
-  machineTag,
-  readActiveCoordinatorSessionIds,
+  normalizeBeaconPath,
+  beaconPathsOverlap,
+  extractPorcelainPath,
+  readOwnSessionPaths,
+  readGitPorcelainPaths,
+  computeForeignDirtyPaths,
   shouldBlockSharedCheckoutRm,
   RM_BLOCK_REASON,
   stripQuotedSpans,
@@ -162,13 +167,59 @@ describe("isLinkedWorktree (#6971)", () => {
   });
 });
 
-describe("readActiveCoordinatorSessionIds (#6971) — fail-open sempre", () => {
+// ---------------------------------------------------------------------------
+// #8107 — modelo "sujeira PRÓPRIA vs ALHEIA", substitui o modelo anterior
+// ("bloqueia só quando existe coordenadora overnight/develop/continuo
+// ATIVA") pros Guards 2 e 3. Ver docblock da seção "Shared" do hook.
+// ---------------------------------------------------------------------------
+
+describe("normalizeBeaconPath / beaconPathsOverlap / extractPorcelainPath (#8107)", () => {
+  it("normalizeBeaconPath: normaliza separador, remove './' e barra final", () => {
+    assert.equal(normalizeBeaconPath("a\\b\\c"), "a/b/c");
+    assert.equal(normalizeBeaconPath("./a/b"), "a/b");
+    assert.equal(normalizeBeaconPath("a/b/"), "a/b");
+  });
+
+  it("beaconPathsOverlap: iguais, ou um é prefixo de DIRETÓRIO do outro", () => {
+    assert.equal(beaconPathsOverlap("a/b", "a/b"), true);
+    assert.equal(beaconPathsOverlap("a", "a/b/c"), true);
+    assert.equal(beaconPathsOverlap("a/b/c", "a"), true);
+    assert.equal(beaconPathsOverlap("a/b", "a/bc"), false); // não é prefixo de DIRETÓRIO
+    assert.equal(beaconPathsOverlap("", "a"), false);
+  });
+
+  it("extractPorcelainPath: extrai o caminho de uma linha 'XY caminho'", () => {
+    assert.equal(extractPorcelainPath(" M scripts/lib/foo.ts"), "scripts/lib/foo.ts");
+    assert.equal(extractPorcelainPath("?? novo-arquivo.md"), "novo-arquivo.md");
+  });
+
+  it("extractPorcelainPath: rename 'XY orig -> novo' usa o lado NOVO", () => {
+    assert.equal(extractPorcelainPath("R  velho.md -> novo.md"), "novo.md");
+  });
+
+  it("extractPorcelainPath: rename com 'C' (copy) na posição Y também usa o lado NOVO", () => {
+    assert.equal(extractPorcelainPath(" C velho.md -> novo.md"), "novo.md");
+  });
+
+  it("extractPorcelainPath: NÃO trata como rename um arquivo untracked/modificado cujo NOME contém ' -> ' (achado silent-failure-hunter #8107)", () => {
+    // Regressão: sem checar o status (RC), um nome de arquivo real contendo
+    // a substring literal " -> " (plausível — rascunho tipo "plano -> v2.md")
+    // era cortado incorretamente pro que vem depois da seta, devolvendo um
+    // path que não existe. Isso fazia `computeForeignDirtyPaths` carregar o
+    // caminho ERRADO adiante, e um `rm`/`git restore` no arquivo REAL nunca
+    // batia contra ele — o comando destrutivo passava sem bloqueio.
+    assert.equal(extractPorcelainPath("?? plano -> v2.md"), "plano -> v2.md");
+    assert.equal(extractPorcelainPath(" M plano -> v2.md"), "plano -> v2.md");
+  });
+});
+
+describe("readOwnSessionPaths (#8107) — fail-CLOSED sempre que a atribuição é incerta", () => {
   const roots: string[] = [];
   after(() => {
     for (const r of roots) rmSync(r, { recursive: true, force: true });
   });
   function freshRoot(): string {
-    const root = join(tmpdir(), `rm-hook-sessions-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const root = join(tmpdir(), `own-paths-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     roots.push(root);
     return root;
   }
@@ -178,78 +229,158 @@ describe("readActiveCoordinatorSessionIds (#6971) — fail-open sempre", () => {
     writeFileSync(join(dir, filename), JSON.stringify(record), "utf8");
   }
 
-  const NOW = Date.parse("2026-09-01T12:00:00.000Z");
-  const ONE_HOUR_MS = 60 * 60 * 1000;
-
-  it("diretório ausente → Set vazio", () => {
-    assert.deepEqual(readActiveCoordinatorSessionIds(freshRoot(), NOW), new Set());
-  });
-
-  it("sessão overnight fresca, mesma máquina → incluída", () => {
+  it("session_id ausente/vazio → [] (fail-closed)", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-300-sess1.json", {
-      kind: "overnight",
-      sessionId: "sess1",
-      startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
-      lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
-      machineTag: machineTag(),
-    });
-    assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess1"]));
+    assert.deepEqual(readOwnSessionPaths(root, undefined), []);
+    assert.deepEqual(readOwnSessionPaths(root, ""), []);
   });
 
-  it("JSON malformado em uma entrada não derruba a leitura das demais", () => {
+  it("diretório de sessões ausente → [] (fail-closed)", () => {
+    assert.deepEqual(readOwnSessionPaths(freshRoot(), "sess1"), []);
+  });
+
+  it("sessão registrada SEM touched_paths/dirty_paths → [] (fail-closed — registro antigo)", () => {
+    const root = freshRoot();
+    writeSession(root, "interactive-tag-sess1.json", { kind: "interactive", sessionId: "sess1" });
+    assert.deepEqual(readOwnSessionPaths(root, "sess1"), []);
+  });
+
+  it("sessão registrada COM touched_paths/dirty_paths → devolve a união normalizada", () => {
+    const root = freshRoot();
+    writeSession(root, "interactive-tag-sess1.json", {
+      kind: "interactive",
+      sessionId: "sess1",
+      touched_paths: ["a\\b.md", "c/d.md"],
+      dirty_paths: ["c/d.md", "e/f.md"],
+    });
+    assert.deepEqual(readOwnSessionPaths(root, "sess1").sort(), ["a/b.md", "c/d.md", "e/f.md"]);
+  });
+
+  it("casa QUALQUER kind pelo sufixo '-{sessionId}.json' (#8107 — antes só coordenadora)", () => {
+    const root = freshRoot();
+    writeSession(root, "develop-300-devsess.json", {
+      touched_paths: ["scripts/lib/foo.ts"],
+    });
+    assert.deepEqual(readOwnSessionPaths(root, "devsess"), ["scripts/lib/foo.ts"]);
+  });
+
+  it("JSON malformado → [] (fail-closed, nunca lança)", () => {
     const root = freshRoot();
     mkdirSync(sessionsDir(root), { recursive: true });
-    writeFileSync(join(sessionsDir(root), "overnight-300-broken.json"), "{not valid json", "utf8");
-    writeSession(root, "overnight-300-sess2.json", {
-      kind: "overnight",
-      sessionId: "sess2",
-      startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
-      machineTag: machineTag(),
+    writeFileSync(join(sessionsDir(root), "interactive-tag-broken.json"), "{not valid json", "utf8");
+    assert.deepEqual(readOwnSessionPaths(root, "broken"), []);
+  });
+
+  it("ignora backups '-safeBackup-' ao casar o sufixo", () => {
+    const root = freshRoot();
+    writeSession(root, "interactive-tag-sess1-safeBackup-0001.json", {
+      touched_paths: ["nao-deveria-contar.md"],
     });
-    assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess2"]));
+    assert.deepEqual(readOwnSessionPaths(root, "sess1"), []);
   });
 });
 
-describe("shouldBlockSharedCheckoutRm (#6971)", () => {
+describe("readGitPorcelainPaths (#8107) — fail-OPEN (null) quando git falha", () => {
+  it("repo real, limpo → array vazio (não null)", () => {
+    // Usa o próprio checkout de teste (cwd do test runner) — só garante que
+    // a chamada tem sucesso e devolve um array (não valida o CONTEÚDO, que
+    // varia com o estado real do checkout).
+    const result = readGitPorcelainPaths(process.cwd());
+    assert.equal(Array.isArray(result), true);
+  });
+
+  it("diretório que não é um repo git → null (fail-open)", () => {
+    const dir = join(tmpdir(), `not-a-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      assert.equal(readGitPorcelainPaths(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("cwd inexistente → null (fail-open, nunca lança)", () => {
+    // execFileSync recusa um cwd que não existe (ENOENT) — mesma classe de
+    // falha de I/O que um timeout real produziria; cobre o fail-open sem
+    // depender de forçar um timeout genuíno (frágil entre plataformas, já
+    // que `git status` costuma responder bem abaixo de qualquer timeout
+    // pequeno o suficiente pra não flakear o teste).
+    const missingDir = join(tmpdir(), `missing-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    assert.equal(readGitPorcelainPaths(missingDir), null);
+  });
+});
+
+describe("computeForeignDirtyPaths (#8107)", () => {
+  it("null (git status falhou) propaga null", () => {
+    assert.equal(computeForeignDirtyPaths(null, ["a.md"]), null);
+  });
+
+  it("sujeira que sobrepõe ownPaths não conta como alheia", () => {
+    assert.deepEqual(computeForeignDirtyPaths(["a.md", "b/c.md"], ["a.md"]), ["b/c.md"]);
+  });
+
+  it("ownPaths cobre DIRETÓRIO inteiro — sujeira dentro dele não é alheia", () => {
+    assert.deepEqual(computeForeignDirtyPaths(["a/b.md", "a/c.md", "d.md"], ["a"]), ["d.md"]);
+  });
+
+  it("sem ownPaths (undefined/[]) — toda sujeira é alheia", () => {
+    assert.deepEqual(computeForeignDirtyPaths(["a.md", "b.md"], []), ["a.md", "b.md"]);
+    assert.deepEqual(computeForeignDirtyPaths(["a.md"], undefined), ["a.md"]);
+  });
+
+  it("árvore limpa → []", () => {
+    assert.deepEqual(computeForeignDirtyPaths([], ["a.md"]), []);
+  });
+});
+
+describe("shouldBlockSharedCheckoutRm (#6971, modelo próprio/alheio do #8107)", () => {
   const root = process.platform === "win32" ? "C:\\repo" : "/repo";
   const insidePath = process.platform === "win32" ? "C:\\repo\\.pr6950-review.md" : "/repo/.pr6950-review.md";
   const outsidePath = process.platform === "win32" ? "C:\\tmp\\x.md" : "/tmp/x.md";
 
-  it("bloqueia: rodada ativa, chamada não é a coordenadora, path dentro do checkout principal", () => {
+  it("(a) cenário do incidente #8107: SEM coordenadora nenhuma registrada, sujeira alheia real → bloqueia", () => {
+    // O cenário exato do incidente: nenhuma rodada coordenadora ativa (já
+    // encerrou o registro), mas o arquivo-alvo é sujeira genuína de OUTRA
+    // sessão. O modelo antigo (coordenadora ativa) deixaria passar; o novo
+    // bloqueia porque o alvo intersecta `foreignDirtyPaths`.
     assert.equal(
       shouldBlockSharedCheckoutRm({
         targetPaths: [insidePath],
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "review-subagent-2",
+        foreignDirtyPaths: [".pr6950-review.md"],
       }),
       true,
     );
   });
 
-  it("permite: chamada É a própria coordenadora registrada", () => {
+  it("(b) sessão sem beacon de paths tentando destrutivo com sujeira alheia → bloqueia (fail-safe)", () => {
+    // ownPaths vazio (sessão sem beacon) já vira `foreignDirtyPaths` contendo
+    // TUDO que está sujo — simulado aqui passando o `computeForeignDirtyPaths`
+    // real com ownPaths=[] pra deixar o encadeamento explícito.
+    const foreignDirtyPaths = computeForeignDirtyPaths([".pr6950-review.md"], []);
     assert.equal(
-      shouldBlockSharedCheckoutRm({
-        targetPaths: [insidePath],
-        checkoutRoot: root,
-        isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "coord-1",
-      }),
+      shouldBlockSharedCheckoutRm({ targetPaths: [insidePath], checkoutRoot: root, isWorktree: false, foreignDirtyPaths }),
+      true,
+    );
+  });
+
+  it("(c) sujeira é só a PRÓPRIA sessão (touched_paths bate) → permite", () => {
+    const foreignDirtyPaths = computeForeignDirtyPaths([".pr6950-review.md"], [".pr6950-review.md"]);
+    assert.deepEqual(foreignDirtyPaths, []);
+    assert.equal(
+      shouldBlockSharedCheckoutRm({ targetPaths: [insidePath], checkoutRoot: root, isWorktree: false, foreignDirtyPaths }),
       false,
     );
   });
 
-  it("permite: nenhuma coordenadora ativa (sessão interativa comum) — cobertura HONESTA parcial do #6971", () => {
+  it("(d) git status --porcelain falha → fail-open, permite", () => {
     assert.equal(
       shouldBlockSharedCheckoutRm({
         targetPaths: [insidePath],
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(),
-        callerSessionId: "qualquer-sessao",
+        foreignDirtyPaths: null,
       }),
       false,
     );
@@ -261,96 +392,94 @@ describe("shouldBlockSharedCheckoutRm (#6971)", () => {
         targetPaths: [insidePath],
         checkoutRoot: root,
         isWorktree: true,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "subagent-2",
+        foreignDirtyPaths: [".pr6950-review.md"],
       }),
       false,
     );
   });
 
-  it("permite: rm FORA do repo (deve PASSAR) mesmo com rodada ativa e session_id diferente", () => {
+  it("permite: rm FORA do repo (deve PASSAR) mesmo com sujeira alheia real na árvore", () => {
     assert.equal(
       shouldBlockSharedCheckoutRm({
         targetPaths: [outsidePath],
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "subagent-2",
+        foreignDirtyPaths: [".pr6950-review.md"],
       }),
       false,
     );
   });
 
-  it("#7055 FAIL-CLOSED: session_id da chamada ausente (undefined) → bloqueia (era fail-open)", () => {
-    // Regressão do #7055: reincidência do MESMO incidente do #6971/#6982 1h
-    // após o guard estar mergeado — um subagente de review apagou os mesmos
-    // 3 arquivos, e a reprodução ao vivo mostrou `session_id` ausente/vazio
-    // saindo pela porta antecipada e liberando o `rm` incondicionalmente.
+  it("permite: árvore inteiramente limpa (foreignDirtyPaths vazio)", () => {
     assert.equal(
       shouldBlockSharedCheckoutRm({
         targetPaths: [insidePath],
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: undefined,
-      }),
-      true,
-    );
-  });
-
-  it("#7055 FAIL-CLOSED: session_id da chamada vazio ('') → bloqueia (era fail-open)", () => {
-    assert.equal(
-      shouldBlockSharedCheckoutRm({
-        targetPaths: [insidePath],
-        checkoutRoot: root,
-        isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "",
-      }),
-      true,
-    );
-  });
-
-  it("#7055 reprodução exata do payload do incidente: rm em .pr6950-review.md com session_id ausente, rodada develop ativa", () => {
-    // Mesmo payload/cenário citado na issue #7055 (reprodução ao vivo do
-    // hook): `rm -f .../.pr6950-review.md`, coordenadora `develop` ativa,
-    // chamada sem `session_id`.
-    assert.equal(
-      shouldBlockSharedCheckoutRm({
-        targetPaths: [insidePath],
-        checkoutRoot: root,
-        isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["develop-300-3132ef2c"]),
-        callerSessionId: undefined,
-      }),
-      true,
-    );
-  });
-
-  it("session_id ausente mas SEM coordenadora ativa continua permitindo (cobertura HONESTA — não é o bug do #7055)", () => {
-    // O fail-open que o #7055 fecha é especificamente "coordenadora ativa +
-    // session_id ausente". Sem NENHUMA coordenadora registrada, este guard
-    // segue fora de escopo (mesmo caso já coberto acima, "nenhuma
-    // coordenadora ativa") — session_id ausente não deveria criar um bloqueio
-    // que nem uma sessão interativa comum, sem rodada nenhuma, sofreria.
-    assert.equal(
-      shouldBlockSharedCheckoutRm({
-        targetPaths: [insidePath],
-        checkoutRoot: root,
-        isWorktree: false,
-        activeCoordinatorSessionIds: new Set(),
-        callerSessionId: undefined,
+        foreignDirtyPaths: [],
       }),
       false,
+    );
+  });
+
+  it("permite: sujeira alheia existe, mas em OUTRO arquivo que o rm não visa", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: [insidePath],
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: ["outro-arquivo.md"],
+      }),
+      false,
+    );
+  });
+
+  it("múltiplos targetPaths — só UM sobrepõe sujeira alheia → bloqueia (achado pr-test-analyzer #8109)", () => {
+    const otherInsidePath =
+      process.platform === "win32" ? "C:\\repo\\arquivo-limpo.md" : "/repo/arquivo-limpo.md";
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: [otherInsidePath, insidePath],
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: [".pr6950-review.md"],
+      }),
+      true,
+    );
+  });
+
+  it("múltiplos targetPaths — NENHUM sobrepõe sujeira alheia → permite", () => {
+    const otherInsidePath =
+      process.platform === "win32" ? "C:\\repo\\arquivo-limpo.md" : "/repo/arquivo-limpo.md";
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: [otherInsidePath, insidePath],
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: ["outro-arquivo-que-ninguem-visa.md"],
+      }),
+      false,
+    );
+  });
+
+  it("targetPath resolve pro próprio checkoutRoot ('.') → atinge QUALQUER sujeira alheia (branch antes não coberto)", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: ["."],
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: ["qualquer/arquivo.md"],
+      }),
+      true,
     );
   });
 });
 
-describe("RM_BLOCK_REASON (#6971)", () => {
-  it("cita a issue de origem, o checkout principal, e documenta a cobertura parcial", () => {
+describe("RM_BLOCK_REASON (#6971/#8107)", () => {
+  it("cita as duas issues de origem e o checkout principal", () => {
     assert.match(RM_BLOCK_REASON, /#6971/);
+    assert.match(RM_BLOCK_REASON, /#8107/);
     assert.match(RM_BLOCK_REASON, /checkout principal/);
-    assert.match(RM_BLOCK_REASON, /HONESTA/i);
   });
 });
 
@@ -445,32 +574,30 @@ describe("extractRmTargetsWithCwd / isPathInsideCheckout com cwd (#7757 Modo 1)"
   });
 });
 
-describe("shouldBlockSharedCheckoutRm aceita entradas {path, cwd} (#7757)", () => {
+describe("shouldBlockSharedCheckoutRm aceita entradas {path, cwd} (#7757, modelo #8107)", () => {
   const checkoutRoot = process.platform === "win32" ? "C:\\repo" : "/repo";
   const outsideDir = process.platform === "win32" ? "C:\\Users\\x\\memory" : "/home/x/memory";
 
-  it("bloco (a) reproduzido: cwd fora do checkout → NÃO bloqueia", () => {
+  it("bloco (a) reproduzido: cwd fora do checkout → NÃO bloqueia, mesmo com sujeira alheia real", () => {
     assert.equal(
       shouldBlockSharedCheckoutRm({
         targetPaths: [{ path: "project_x.md", cwd: outsideDir }],
         checkoutRoot,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "outra-sessao",
+        foreignDirtyPaths: ["project_x.md"],
       }),
       false,
     );
   });
 
-  it("bloco (b) reproduzido: cwd dentro do checkout → bloqueia", () => {
+  it("bloco (b) reproduzido: cwd dentro do checkout, alvo é sujeira alheia → bloqueia", () => {
     const insideSubdir = process.platform === "win32" ? "C:\\repo\\sub" : "/repo/sub";
     assert.equal(
       shouldBlockSharedCheckoutRm({
         targetPaths: [{ path: "leftover.md", cwd: insideSubdir }],
         checkoutRoot,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "outra-sessao",
+        foreignDirtyPaths: ["sub/leftover.md"],
       }),
       true,
     );
@@ -595,58 +722,69 @@ describe("detectDestructiveGitTarget (#7730)", () => {
   });
 });
 
-describe("shouldBlockSharedCheckoutGitDestructive (#7730)", () => {
+describe("shouldBlockSharedCheckoutGitDestructive (#7730, modelo próprio/alheio do #8107)", () => {
   const root = process.platform === "win32" ? "C:\\repo" : "/repo";
 
-  it("bloqueia: rodada ativa, chamada não é a coordenadora, wholeTree (clean/reset/stash)", () => {
+  it("(a) cenário do incidente #8107: SEM coordenadora nenhuma, wholeTree (reset --hard) + sujeira alheia real → bloqueia", () => {
+    // Reprodução do incidente de origem: `git reset --hard origin/...` no
+    // checkout compartilhado depois que a coordenadora já encerrou o
+    // registro. wholeTree atinge QUALQUER sujeira alheia existente.
     assert.equal(
       shouldBlockSharedCheckoutGitDestructive({
         target: { wholeTree: true, paths: [] },
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "review-subagent-2",
+        foreignDirtyPaths: ["scripts/lib/weekly-linkedin-render.ts", "context/audience-profile.md"],
       }),
       true,
     );
   });
 
-  it("bloqueia: checkout -- com path dentro do checkout", () => {
-    const insidePath = process.platform === "win32" ? "wrangler.toml" : "wrangler.toml";
+  it("bloqueia: checkout -- com path que sobrepõe sujeira alheia", () => {
     assert.equal(
       shouldBlockSharedCheckoutGitDestructive({
-        target: { wholeTree: false, paths: [insidePath] },
+        target: { wholeTree: false, paths: ["wrangler.toml"] },
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "review-subagent-2",
+        foreignDirtyPaths: ["wrangler.toml"],
       }),
       true,
     );
   });
 
-  it("permite: path FORA do checkout", () => {
+  it("permite: checkout -- com path que NÃO sobrepõe nenhuma sujeira alheia", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: false, paths: ["wrangler.toml"] },
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: ["outro-arquivo.md"],
+      }),
+      false,
+    );
+  });
+
+  it("permite: path FORA do checkout, mesmo com sujeira alheia real na árvore", () => {
     const outsidePath = process.platform === "win32" ? "C:\\tmp\\x.md" : "/tmp/x.md";
     assert.equal(
       shouldBlockSharedCheckoutGitDestructive({
         target: { wholeTree: false, paths: [outsidePath] },
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "review-subagent-2",
+        foreignDirtyPaths: ["a.md"],
       }),
       false,
     );
   });
 
-  it("permite: é a própria coordenadora", () => {
+  it("(b) sujeira alheia é da própria sessão (foreignDirtyPaths já veio vazio pós-filtro) → permite", () => {
+    const foreignDirtyPaths = computeForeignDirtyPaths(["wrangler.toml"], ["wrangler.toml"]);
     assert.equal(
       shouldBlockSharedCheckoutGitDestructive({
-        target: { wholeTree: true, paths: [] },
+        target: { wholeTree: false, paths: ["wrangler.toml"] },
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "coord-1",
+        foreignDirtyPaths,
       }),
       false,
     );
@@ -658,21 +796,19 @@ describe("shouldBlockSharedCheckoutGitDestructive (#7730)", () => {
         target: { wholeTree: true, paths: [] },
         checkoutRoot: root,
         isWorktree: true,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "subagent-2",
+        foreignDirtyPaths: ["a.md"],
       }),
       false,
     );
   });
 
-  it("permite: sem coordenadora ativa (sessão interativa comum)", () => {
+  it("permite: árvore inteiramente limpa (foreignDirtyPaths vazio) — não é o bug, é o caso comum", () => {
     assert.equal(
       shouldBlockSharedCheckoutGitDestructive({
         target: { wholeTree: true, paths: [] },
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(),
-        callerSessionId: "qualquer-sessao",
+        foreignDirtyPaths: [],
       }),
       false,
     );
@@ -684,30 +820,161 @@ describe("shouldBlockSharedCheckoutGitDestructive (#7730)", () => {
         target: null,
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: "subagent-2",
+        foreignDirtyPaths: ["a.md"],
       }),
       false,
     );
   });
 
-  it("session_id ausente com coordenadora ativa → bloqueia (mesmo fail-closed do #7055)", () => {
+  it("(d) git status --porcelain falhou (foreignDirtyPaths null) → fail-open, permite mesmo wholeTree", () => {
     assert.equal(
       shouldBlockSharedCheckoutGitDestructive({
         target: { wholeTree: true, paths: [] },
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["coord-1"]),
-        callerSessionId: undefined,
+        foreignDirtyPaths: null,
+      }),
+      false,
+    );
+  });
+
+  it("checkout -- com múltiplos paths — só UM sobrepõe sujeira alheia → bloqueia (achado pr-test-analyzer #8109)", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: false, paths: ["arquivo-limpo.md", "wrangler.toml"] },
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: ["wrangler.toml"],
       }),
       true,
     );
   });
+
+  it("checkout -- com múltiplos paths — NENHUM sobrepõe sujeira alheia → permite", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: false, paths: ["arquivo-limpo.md", "wrangler.toml"] },
+        checkoutRoot: root,
+        isWorktree: false,
+        foreignDirtyPaths: ["outro-arquivo.md"],
+      }),
+      false,
+    );
+  });
 });
 
-describe("GIT_DESTRUCTIVE_BLOCK_REASON (#7730)", () => {
-  it("cita a issue de origem e a alternativa não-destrutiva (git show/diff)", () => {
+describe("GIT_DESTRUCTIVE_BLOCK_REASON (#7730/#8107)", () => {
+  it("cita as duas issues de origem e a alternativa não-destrutiva (git show/diff)", () => {
     assert.match(GIT_DESTRUCTIVE_BLOCK_REASON, /#7730/);
+    assert.match(GIT_DESTRUCTIVE_BLOCK_REASON, /#8107/);
     assert.match(GIT_DESTRUCTIVE_BLOCK_REASON, /git show/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8107 (achado pr-test-analyzer) — smoke test de PONTA A PONTA via CLI: o
+// hook real, invocado como subprocesso com o payload JSON que o harness
+// manda por stdin, num checkout git de verdade. Cobre a fiação (`isRm ||
+// gitTarget`, cálculo ÚNICO de `foreignDirtyPaths` compartilhado entre os
+// dois guards, leitura de `payload.session_id`) que os testes unitários das
+// funções puras acima NUNCA exercitam — era exatamente essa fiação que
+// mudou de forma nesta PR (2 blocos independentes → 1 bloco compartilhado).
+// ---------------------------------------------------------------------------
+
+describe("CLI end-to-end (#8107) — hook real, subprocesso, checkout git de verdade", () => {
+  const roots: string[] = [];
+  after(() => {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  });
+
+  function makeTempCheckout(): { root: string; hookPath: string } {
+    const root = join(tmpdir(), `cli-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    mkdirSync(join(root, ".claude", "hooks"), { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "t@t.com"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: root });
+    // Copia o hook REAL pro checkout temporário — checkoutRoot é derivado de
+    // `import.meta.url` do próprio arquivo (dirname/../..), então só copiando
+    // ele pra dentro de `<root>/.claude/hooks/` o hook "acha" que `root` é o
+    // checkout principal.
+    const hookSource = readFileSync(
+      join(process.cwd(), ".claude", "hooks", "block-unsafe-shared-checkout-ops.mjs"),
+      "utf8",
+    );
+    const hookPath = join(root, ".claude", "hooks", "block-unsafe-shared-checkout-ops.mjs");
+    writeFileSync(hookPath, hookSource, "utf8");
+    // `data/` é gitignored no repo real (`data/sessions/*.json` nunca é
+    // tracked) — reproduz isso aqui, senão o PRÓPRIO arquivo de registro de
+    // sessão apareceria como "??" e seria contado como sujeira alheia
+    // (ninguém declara `data/sessions/...` no seu `touched_paths`).
+    writeFileSync(join(root, ".gitignore"), "data/\n", "utf8");
+    // Commita o estado inicial (hook copiado + .gitignore) — sem isto,
+    // `git status --porcelain` veria o hook copiado como sujeira "??" e o
+    // cenário "árvore limpa" nunca existiria de fato neste checkout de teste.
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: root });
+    return { root, hookPath };
+  }
+
+  function runHook(hookPath: string, payload: Record<string, unknown>): Record<string, unknown> | null {
+    const res = execFileSync("node", [hookPath], {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (res.trim() === "") return null;
+    return JSON.parse(res);
+  }
+
+  it("bloqueia via CLI: sujeira ALHEIA real no checkout, sem session_id (cenário do incidente #8107)", () => {
+    const { root, hookPath } = makeTempCheckout();
+    writeFileSync(join(root, "foreign.md"), "conteúdo de outra sessão\n", "utf8");
+    const result = runHook(hookPath, {
+      tool_name: "Bash",
+      tool_input: { command: "git reset --hard" },
+      // session_id ausente de propósito — reproduz o payload do incidente.
+    });
+    assert.notEqual(result, null);
+    const out = result as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } };
+    assert.equal(out.hookSpecificOutput?.permissionDecision, "deny");
+    assert.match(out.hookSpecificOutput?.permissionDecisionReason ?? "", /#8107/);
+  });
+
+  it("permite via CLI: árvore de trabalho limpa (nenhuma sujeira, alheia ou própria)", () => {
+    const { root, hookPath } = makeTempCheckout();
+    void root;
+    const result = runHook(hookPath, {
+      tool_name: "Bash",
+      tool_input: { command: "git reset --hard" },
+    });
+    assert.equal(result, null); // sem bloqueio: hook não escreve nada no stdout
+  });
+
+  it("permite via CLI: sujeira existe mas é da PRÓPRIA sessão (touched_paths do beacon cobre o arquivo)", () => {
+    const { root, hookPath } = makeTempCheckout();
+    writeFileSync(join(root, "meu-arquivo.md"), "meu trabalho\n", "utf8");
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    writeFileSync(
+      join(root, "data", "sessions", "interactive-tag-minha-sessao.json"),
+      JSON.stringify({ kind: "interactive", sessionId: "minha-sessao", touched_paths: ["meu-arquivo.md"] }),
+      "utf8",
+    );
+    const result = runHook(hookPath, {
+      tool_name: "Bash",
+      tool_input: { command: "git reset --hard" },
+      session_id: "minha-sessao",
+    });
+    assert.equal(result, null);
+  });
+
+  it("permite via CLI: comando não-destrutivo (git status) nunca dispara os guards", () => {
+    const { root, hookPath } = makeTempCheckout();
+    writeFileSync(join(root, "foreign.md"), "sujeira alheia\n", "utf8");
+    const result = runHook(hookPath, {
+      tool_name: "Bash",
+      tool_input: { command: "git status" },
+    });
+    assert.equal(result, null);
   });
 });
