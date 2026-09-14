@@ -1434,3 +1434,45 @@ describe("#7663 — Diaria-Kv-Image-Binding-Smoke registrada, diária, DECLARADA
     assert.ok(!others.some((s) => s.script === "scripts/check-kv-image-binding.ts"));
   });
 });
+
+describe("#8117 — Diaria-Clarice-Unblock-Suspended registrada, diária às 08:45", () => {
+  it("está presente no registro, com o step apontando pro script correto + --check-suspended --apply", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Unblock-Suspended");
+    assert.ok(t, "Diaria-Clarice-Unblock-Suspended ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/clarice-unblock-orphaned-selections.ts"],
+    );
+    assert.deepEqual(t!.steps[0].args, ["--check-suspended", "--apply"]);
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 8, minute: 45 });
+    assert.equal(t!.issue, "#8117, #8113, #8038");
+  });
+
+  it("horário de 08:45 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Clarice-Unblock-Suspended" && t.schedule.hour === 8 && t.schedule.minute === 45,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("roda ANTES de Diaria-Clarice-Opens-Catchup-Alarm (09:00) e Diaria-Clarice-Novos (09:00) — libera contatos antes do 1º envio do dia", () => {
+    const unblock = getScheduledTaskByName("Diaria-Clarice-Unblock-Suspended")!;
+    const novos = getScheduledTaskByName("Diaria-Clarice-Novos")!;
+    assert.equal(unblock.schedule.kind, "daily");
+    assert.equal(novos.schedule.kind, "daily");
+    if (unblock.schedule.kind === "daily" && novos.schedule.kind === "daily") {
+      const unblockMinutes = unblock.schedule.hour * 60 + unblock.schedule.minute;
+      const novosMinutes = novos.schedule.hour * 60 + novos.schedule.minute;
+      assert.ok(unblockMinutes < novosMinutes, "Unblock-Suspended deve rodar antes de Clarice-Novos");
+    }
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script com os mesmos args (task nova, não reaproveitamento)", () => {
+    const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Clarice-Unblock-Suspended").flatMap((t) => t.steps);
+    assert.ok(!others.some((s) => s.script === "scripts/clarice-unblock-orphaned-selections.ts"));
+  });
+});

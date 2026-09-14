@@ -932,8 +932,13 @@ interface BrevoDraftCampaignsResponse {
   campaigns?: BrevoDraftCampaignRaw[];
 }
 
-/** Status aceitos por `GET /v3/emailCampaigns?status=`. */
-export type BrevoCampaignStatus = "draft" | "queued" | "sent";
+/** Status aceitos por `GET /v3/emailCampaigns?status=`. `suspended` (#8117)
+ *  adicionado pro consumidor de `clarice-unblock-orphaned-selections.ts
+ *  --check-suspended` — campanha suspensa (por cancelamento manual do
+ *  editor via UI, ou presa no meio de suspend→update→reschedule, ver #4975)
+ *  nunca entra em `queued`/`sent`, então sem este valor não dava pra
+ *  consultá-la via este helper. */
+export type BrevoCampaignStatus = "draft" | "queued" | "sent" | "suspended";
 
 /**
  * `GET /v3/emailCampaigns?status={status}`, paginado (`limit=50`) — devolve

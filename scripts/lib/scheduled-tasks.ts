@@ -346,6 +346,28 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4740, #4722 item 4",
   },
   {
+    name: "Diaria-Clarice-Unblock-Suspended",
+    description: "desbloqueia contatos presos em sent-or-queued.json por campanha suspensa na Brevo (#8117)",
+    // #8117: achado ao vivo (#8113, 260914) — o editor suspendeu 3 campanhas
+    // (d3-qui03-A/B/C, 11 dias antes) sem deixar rastro local, e os 85
+    // contatos delas ficaram "já reivindicados" pro ciclo inteiro, mesmo a
+    // campanha nunca tendo disparado (sent:0 na Brevo). `--check-suspended`
+    // fecha esse gap (ver docstring de clarice-unblock-orphaned-selections.ts)
+    // cruzando group-campaigns.json contra status ao vivo — a detecção por
+    // CSV pré-existente (#8038) não pega este caso porque o CSV da onda
+    // continua intacto no disco. `--cycle` omitido de propósito —
+    // computeExpectedEnvioCycle(hoje) resolve sozinho, sem argumento
+    // dinâmico no registry (só aceita `args: string[]` estáticos).
+    steps: [{ key: "unblock", script: "scripts/clarice-unblock-orphaned-selections.ts", args: ["--check-suspended", "--apply"] }],
+    logPath: "clarice-subscribers/.unblock-suspended.log",
+    // Livre entre Diaria-Clarice-Sync (08:30) e Diaria-Clarice-Opens-Catchup-Alarm/
+    // Diaria-Clarice-Novos (09:00) — roda cedo o bastante pra liberar
+    // contatos antes do 1º `novos`/`daily` do dia (ver grep de `hour: 8,`/
+    // `hour: 9,` neste arquivo antes de mexer no horário).
+    schedule: { kind: "daily", hour: 8, minute: 45 },
+    issue: "#8117, #8113, #8038",
+  },
+  {
     name: "Diaria-Clarice-Sync",
     description: "sync incremental diario do store Clarice",
     steps: [
