@@ -34,6 +34,7 @@ import {
   singularizeSectionName,
   pickErroIntencionalReveal,
   readBoxDivulgacaoCategoriaForSlot,
+  readBoxDivulgacaoCategoriaForFile, // #8119
   readBoxDivulgacaoAltForSlot,
   readBoxDivulgacaoNoTituloForSlot, // #5882
   assignDivulgacaoGaps,
@@ -3957,6 +3958,65 @@ describe("readBoxDivulgacaoCategoriaForSlot (#3981, pure)", () => {
     );
     try {
       assert.equal(readBoxDivulgacaoCategoriaForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readBoxDivulgacaoCategoriaForFile (#8119, pure)", () => {
+  // #8119: mesmo motivo/padrão de readBoxDivulgacaoAltForFile (#5457) —
+  // achado ao vivo na edição 260915: o render real do e-mail
+  // (extractContent) só consultava readBoxDivulgacaoCategoriaForSlot
+  // (config estático), nunca o arquivo EFETIVAMENTE usado no slot via
+  // _internal/box-selection.json (seleção automática do #4626). O kicker
+  // "Divulgação" nunca virava "Recomendação de Leitura" mesmo com
+  // categoria: correto no snippet do dia, porque o snippet do dia não era
+  // o do config estático.
+  it("por nome de arquivo direto: devolve o valor do header, igual ao ForSlot equivalente", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-file-"));
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "data", "snippets", "efetivo.md"),
+      "<!--\ncategoria: Recomendação de Leitura\n-->\n\nConteúdo.",
+    );
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForFile("efetivo.md", root), "Recomendação de Leitura");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("nunca consulta platform.config.json — lê o arquivo direto, mesmo sem boxes_divulgacao configurado", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-file-noconfig-"));
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "data", "snippets", "efetivo.md"),
+      "<!--\ncategoria: Recomendação de Leitura\n-->\n\nConteúdo.",
+    );
+    // platform.config.json deliberadamente ausente — a variante ForFile não deveria precisar dele.
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForFile("efetivo.md", root), "Recomendação de Leitura");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo sem categoria: null", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-file-sem-"));
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "sem-categoria.md"), "# Sem categoria\n\ntexto");
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForFile("sem-categoria.md", root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo não existe: null, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-file-missing-"));
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForFile("nao-existe.md", root), null);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
