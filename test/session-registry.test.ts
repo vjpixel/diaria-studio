@@ -283,6 +283,10 @@ describe("extractPorcelainPath — #8107", () => {
   it("linha de copy (status C) continua usando o lado NOVO do caminho", () => {
     assert.equal(extractPorcelainPath("C  old.txt -> copy.txt"), "copy.txt");
   });
+
+  it("rename cujo nome ORIGINAL também contém \" -> \" usa o ÚLTIMO segmento (lado novo)", () => {
+    assert.equal(extractPorcelainPath("R  a -> b.txt -> c.txt"), "c.txt");
+  });
 });
 
 describe("evaluateEndGuard — #6922", { skip: !gitSupportsPathFormat() }, () => {

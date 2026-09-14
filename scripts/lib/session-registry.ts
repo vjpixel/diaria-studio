@@ -2104,12 +2104,15 @@ export interface EndGuardResult {
  * o `end` avisa em vez de recusar, nunca o contrário).
  */
 export function extractPorcelainPath(line: string): string {
-  const status = line.slice(0, 2);
+  const indexStatus = line[0]; // rename/copy só é sinalizado na coluna X (índice)
   const body = line.slice(3); // remove "XY " (2 chars de status + 1 espaço)
   // " -> " só separa orig/novo em rename (R) ou copy (C) — um arquivo comum
   // (M, ??, etc.) cujo nome real contenha esse literal não deve ser cortado.
-  if (!status.includes("R") && !status.includes("C")) return body;
-  const arrowIdx = body.indexOf(" -> ");
+  if (indexStatus !== "R" && indexStatus !== "C") return body;
+  // lastIndexOf, não indexOf: cobre o caso raro em que o nome ORIGINAL do
+  // rename/copy também contém o literal " -> " (ex: `git mv "a -> b.txt" c.txt`
+  // vira `R  a -> b.txt -> c.txt`) — o lado novo é sempre o último segmento.
+  const arrowIdx = body.lastIndexOf(" -> ");
   return arrowIdx === -1 ? body : body.slice(arrowIdx + 4);
 }
 
