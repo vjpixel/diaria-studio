@@ -2103,9 +2103,16 @@ export interface EndGuardResult {
  * interseção que não casa (fail-direction segura — vira "sujeira alheia" e
  * o `end` avisa em vez de recusar, nunca o contrário).
  */
-function extractPorcelainPath(line: string): string {
+export function extractPorcelainPath(line: string): string {
+  const indexStatus = line[0]; // rename/copy só é sinalizado na coluna X (índice)
   const body = line.slice(3); // remove "XY " (2 chars de status + 1 espaço)
-  const arrowIdx = body.indexOf(" -> ");
+  // " -> " só separa orig/novo em rename (R) ou copy (C) — um arquivo comum
+  // (M, ??, etc.) cujo nome real contenha esse literal não deve ser cortado.
+  if (indexStatus !== "R" && indexStatus !== "C") return body;
+  // lastIndexOf, não indexOf: cobre o caso raro em que o nome ORIGINAL do
+  // rename/copy também contém o literal " -> " (ex: `git mv "a -> b.txt" c.txt`
+  // vira `R  a -> b.txt -> c.txt`) — o lado novo é sempre o último segmento.
+  const arrowIdx = body.lastIndexOf(" -> ");
   return arrowIdx === -1 ? body : body.slice(arrowIdx + 4);
 }
 

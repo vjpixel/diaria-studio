@@ -50,6 +50,7 @@ import {
   resolveRepoRoot,
   checkRepoTreeClean,
   evaluateEndGuard,
+  extractPorcelainPath,
   GC_CONSERVATIVE_MAX_AGE_MS,
   GC_ORPHAN_LIVENESS_MARGIN,
   MAX_SESSION_AGE_MS,
@@ -258,6 +259,36 @@ describe("checkRepoTreeClean — #6922", { skip: !gitSupportsPathFormat() }, () 
   });
 });
 
+// Regressão (#8107/#8109, achada primeiro na cópia irmã em
+// block-unsafe-shared-checkout-ops.mjs): extractPorcelainPath só deve
+// separar orig/novo em " -> " quando a linha é de rename/copy (status R/C).
+// Um arquivo comum (status "??"/M/etc.) cujo nome real contenha o literal
+// " -> " não pode ser truncado — o resultado truncado não bate com ownPaths
+// e a sujeira própria vira "alheia" em silêncio. (">" é caractere reservado
+// no Windows, então o caso não-rename é testado direto no parser, sem
+// depender de criar o arquivo de verdade no disco.)
+describe("extractPorcelainPath — #8107", () => {
+  it("linha não-rename (status ??) cujo corpo contém \" -> \" não é cortada", () => {
+    assert.equal(extractPorcelainPath("?? plano -> v2.md"), "plano -> v2.md");
+  });
+
+  it("linha modificada (status M) cujo corpo contém \" -> \" não é cortada", () => {
+    assert.equal(extractPorcelainPath("M  a -> b.txt"), "a -> b.txt");
+  });
+
+  it("linha de rename (status R) continua usando o lado NOVO do caminho", () => {
+    assert.equal(extractPorcelainPath("R  old.txt -> new.txt"), "new.txt");
+  });
+
+  it("linha de copy (status C) continua usando o lado NOVO do caminho", () => {
+    assert.equal(extractPorcelainPath("C  old.txt -> copy.txt"), "copy.txt");
+  });
+
+  it("rename cujo nome ORIGINAL também contém \" -> \" usa o ÚLTIMO segmento (lado novo)", () => {
+    assert.equal(extractPorcelainPath("R  a -> b.txt -> c.txt"), "c.txt");
+  });
+});
+
 describe("evaluateEndGuard — #6922", { skip: !gitSupportsPathFormat() }, () => {
   it("árvore limpa: ok: true, sem mensagem", () => {
     const root = freshRoot();
@@ -316,6 +347,18 @@ describe("evaluateEndGuard — #6922", { skip: !gitSupportsPathFormat() }, () =>
     assert.equal(result.ok, false);
     assert.match(result.message ?? "", /meu-arquivo\.txt/);
     assert.doesNotMatch(result.message ?? "", /arquivo-de-outra-sessao\.txt/);
+  });
+
+  it("rename de verdade (status R) continua usando o lado NOVO do caminho", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    writeFileSync(join(root, "old.txt"), "conteúdo\n");
+    spawnSync("git", ["add", "old.txt"], { cwd: root });
+    spawnSync("git", ["commit", "-q", "-m", "add old.txt"], { cwd: root });
+    spawnSync("git", ["mv", "old.txt", "new.txt"], { cwd: root });
+    const result = evaluateEndGuard(root, false, ["new.txt"]);
+    assert.equal(result.ok, false);
+    assert.match(result.message ?? "", /new\.txt/);
   });
 });
 
