@@ -95,7 +95,7 @@ import {
   parseOnboardingSnippet,
   buildRunPlan,
   classifyNewSubscribers,
-  reguaAnchorSec,
+  selectCandidatesNeedingRefresh,
   shouldResetCursorForBackendSwitch,
   buildBackendSwitchNote,
   BOOTSTRAP_GAP_COUNT_UNKNOWN,
@@ -376,7 +376,7 @@ export async function fetchSubscriberStatsKit(id: number, config: KitConfig): Pr
  * Devolve `resolvedKitId` quando a resolução veio pelo e-mail, para o caller
  * gravar em `kit_subscriber_id` e não repetir a busca toda rodada.
  */
-async function fetchSubscriptionByIdKit(
+export async function fetchSubscriptionByIdKit(
   config: KitConfig,
   subscriptionId: string,
   emailFallback?: string,
@@ -963,24 +963,11 @@ async function main(): Promise<void> {
   const email3Days = cfg.email3_days ?? 10;
   const graceDays = cfg.email3_grace_days ?? 10;
 
-  const candidates = Object.values(store.entries).filter((e) => {
-    // #7723: os vencimentos D+3/D+10 passaram a contar da CONFIRMAÇÃO
-    // (`reguaAnchorSec` = `email1_sent_at`), não de `created_at`. Este filtro
-    // decide QUANDO buscar os dados que a decisão consome, então precisa usar
-    // a MESMA âncora — senão o filtro e a decisão discordam: entrada com
-    // `created_at: null` mas já confirmada andaria na régua sem nunca ter
-    // status refrescado nem stats buscadas (o e-mail 3 veria `stats_ausentes`
-    // até estourar a tolerância e virar `skipped_sem_dados`, sem jamais ser
-    // avaliada de verdade). Achado do review da PR #7741.
-    const anchor = reguaAnchorSec(e);
-    const needsStatusRefresh =
-      (e.email1_sent_at == null && e.status_detectado !== "active") ||
-      (e.email2_sent_at == null && anchor != null && nowSec >= anchor + email2Days * 86_400) ||
-      (e.email3_state === "pending" &&
-        anchor != null &&
-        nowSec >= anchor + email3Days * 86_400);
-    return needsStatusRefresh;
-  });
+  // #7922 residual: filtro extraído para `selectCandidatesNeedingRefresh`
+  // (onboarding-state.ts) — mesmo critério, agora reusável pelo executor de
+  // transporte Kit sem duplicar a lógica. Comportamento preservado 1:1 (ver
+  // docstring da função extraída para o racional original do #7741).
+  const candidates = selectCandidatesNeedingRefresh(Object.values(store.entries), nowSec, email2Days, email3Days);
   const statsById: Record<string, OpenStats | null> = {};
   /** #7670: entradas cujo refresh falhou E que estão vencidas no e-mail 3 —
    *  pra essas o fallback "usa o estado do store" NÃO resolve nada, porque a

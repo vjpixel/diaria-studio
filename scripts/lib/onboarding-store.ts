@@ -34,6 +34,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { OnboardingKitLot } from "./onboarding-kit-transport.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const DEFAULT_STORE_PATH = resolve(ROOT, "data/onboarding/store.json");
@@ -181,6 +182,19 @@ export interface OnboardingStore {
    * `cannot-verify`, nunca `ok`.
    */
   last_zero_detection_run_at?: string | null;
+
+  /**
+   * #7922 (fatia 1/N): estado dos LOTES de transporte Kit (broadcasts
+   * segmentados por tag) — reusa este mesmo store por decisão explícita da
+   * issue ("integrar com a base de #7916, sem criar outra fonte de
+   * verdade"), em vez de um arquivo próprio. Chave = `lot_id`
+   * (`onboarding-kit-transport.ts` → `buildLotId`). Ausente/`undefined` =
+   * store criado antes deste campo existir, ou o transporte Kit nunca rodou
+   * — tratado como "nenhum lote" (`{}`), nunca como erro.
+   */
+  kit_transport?: {
+    lots: Record<string, OnboardingKitLot>;
+  };
 }
 
 export function emptyStore(): OnboardingStore {
@@ -192,6 +206,7 @@ export function emptyStore(): OnboardingStore {
     last_detection_backend: null,
     consecutive_zero_detections: 0,
     last_zero_detection_run_at: null,
+    kit_transport: { lots: {} },
   };
 }
 
@@ -217,6 +232,10 @@ export function readStore(path: string = DEFAULT_STORE_PATH): { store: Onboardin
         // não sabe quando rodou, e fingir frescor aqui seria exatamente o
         // `ok` mentiroso que o campo existe pra impedir.
         last_zero_detection_run_at: raw.last_zero_detection_run_at ?? null,
+        // #7922: store anterior ao transporte Kit não tem este bloco —
+        // normaliza pra "nenhum lote" em vez de deixar `undefined` vazar
+        // para callers que assumem `.lots` sempre presente.
+        kit_transport: { lots: raw.kit_transport?.lots ?? {} },
       },
       corrupted: false,
     };
