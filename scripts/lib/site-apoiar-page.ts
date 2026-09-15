@@ -67,8 +67,9 @@ function renderWordmark(): string {
 
 /**
  * Path do CTA de apoio — rota própria do Worker (`workers/site/src/index.ts`,
- * `matchApoiarClickPath`), não a URL direta do apoia.se. Exportado pra o
- * teste do router e este módulo nunca divergirem no valor literal.
+ * checada inline via `reqUrl.pathname === APOIAR_CLICK_PATH`, mesmo padrão
+ * de `/confirmado`), não a URL direta do apoia.se. Exportado pra o teste do
+ * router e este módulo nunca divergirem no valor literal.
  */
 export const APOIAR_CLICK_PATH = "/apoiar/ir";
 
