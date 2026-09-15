@@ -26,6 +26,7 @@ import {
   computeCarouselTitleFontSize,
   editionDateLabel,
   RATIOS,
+  OVERLAY_WIDTH_FIT_RATIO,
 } from "../scripts/gen-social-card-4x5.ts";
 import { DAILY_CAROUSEL_BODY_SIZE } from "../scripts/lib/daily-carousel-card.ts";
 
@@ -270,7 +271,10 @@ describe("buildCardSvg / buildOverlaySvg — SVG bem-formado (#4114)", () => {
       // Mesma heurística de largura por caractere usada na fórmula (available
       // / (longest*ratio)) — reaplicada aqui na direção inversa como upper
       // bound: nenhuma linha renderizada pode exceder o espaço disponível.
-      assert.ok(line.length * size * 0.58 <= available + 1, `linha "${line}" (${line.length} chars @ ${size}px) estoura os ${available}px disponíveis`);
+      assert.ok(
+        line.length * size * OVERLAY_WIDTH_FIT_RATIO <= available + 1,
+        `linha "${line}" (${line.length} chars @ ${size}px) estoura os ${available}px disponíveis`,
+      );
     }
   });
 

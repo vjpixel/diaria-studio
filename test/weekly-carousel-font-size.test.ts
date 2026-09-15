@@ -8,11 +8,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { computeCarouselTitleFontSize } from "../scripts/lib/weekly-carousel-font-size.ts";
+import { DAILY_CAROUSEL_BODY_SIZE } from "../scripts/lib/daily-carousel-card.ts";
 
 describe("computeCarouselTitleFontSize", () => {
   it("título único: retorna o mesmo tamanho que buildOverlaySvg computaria sozinho", () => {
     const size = computeCarouselTitleFontSize(["Título curto"]);
-    assert.ok(size >= 44 && size <= 88);
+    assert.ok(size >= DAILY_CAROUSEL_BODY_SIZE && size <= 88);
   });
 
   it("pega o MENOR tamanho entre vários títulos — o mais restritivo governa", () => {
@@ -31,10 +32,10 @@ describe("computeCarouselTitleFontSize", () => {
     assert.equal(a, b, "ordem dos títulos não deveria mudar o resultado (é um min(), comutativo)");
   });
 
-  it("nunca abaixo do clamp mínimo (44) mesmo com título extremamente longo", () => {
+  it("nunca abaixo do piso (DAILY_CAROUSEL_BODY_SIZE, 62px — #8123) mesmo com título extremamente longo", () => {
     const veryLong = "Palavra ".repeat(60).trim(); // bem além de qualquer título editorial real
     const size = computeCarouselTitleFontSize([veryLong]);
-    assert.ok(size >= 44, `esperava >=44, veio ${size}`);
+    assert.equal(size, DAILY_CAROUSEL_BODY_SIZE, `esperava exatamente o piso ${DAILY_CAROUSEL_BODY_SIZE}, veio ${size}`);
   });
 
   it("nunca acima do clamp máximo (88) mesmo com título de 1 palavra curta", () => {

@@ -236,8 +236,8 @@ export function buildCardSvg(
  * `buildOverlaySvg` usam pra wrap/tamanho — mantidas em sync aqui de
  * propósito, mesma lição do #5330 (não duplicar em cópia separada).
  */
-const OVERLAY_CHARS_PER_LINE_DIVISOR = 29;
-const OVERLAY_WIDTH_FIT_RATIO = 0.58;
+export const OVERLAY_CHARS_PER_LINE_DIVISOR = 29;
+export const OVERLAY_WIDTH_FIT_RATIO = 0.58;
 
 /**
  * Pure: fórmula de tamanho de fonte do overlay de notícia — wrap via
@@ -255,8 +255,20 @@ const OVERLAY_WIDTH_FIT_RATIO = 0.58;
  * palavras, wrap em 1 linha) caía nesse piso, violando a regra editorial "a
  * fonte do título deve ser sempre igual ou maior que a fonte do texto".
  * Título ≤52 chars (regra editorial de destaque) sempre cabe em 1-2 linhas
- * dentro do `widthBased`/`heightBased` de `buildCardSvg` a 62px+, então o
- * piso não arrisca overflow na faixa de texto.
+ * a 62px+ — `buildOverlaySvg` (não `buildCardSvg`, que é layout "band"
+ * separado, não usado pela capa diária) ancora o bloco de título na BASE do
+ * card (`baseY = CH - 150`) e cresce PRA CIMA conforme o número de linhas,
+ * sem um clamp de altura — a imagem inteira dá espaço de sobra. O risco real
+ * de overflow do piso é de LARGURA, não altura: coberto pelo teste de
+ * regressão de wrap em bold (`test/gen-social-card-4x5.test.ts`).
+ *
+ * O bold + piso/wrap recalibrados valem pra TODO chamador de
+ * `buildOverlaySvg` — carrossel semanal e capa da anual incluídos, não só a
+ * capa diária que motivou o achado — de propósito: o problema de contraste
+ * (branco sobre foto+gradiente) é do LAYOUT overlay em si, não específico da
+ * diária. Sem cobertura visual automatizada pro card semanal/anual pós-fix;
+ * se algum dia regredir lá, é aqui que ajustar — não bifurcar o peso por
+ * chamador.
  */
 export function overlayFittingFontSize(title: string, availableWidth: number): number {
   const lines = wrapTitle(title, Math.floor(availableWidth / OVERLAY_CHARS_PER_LINE_DIVISOR));
