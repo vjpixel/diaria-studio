@@ -89,23 +89,27 @@ Estou testando a Alexa+ há alguns dias e a diferença é grande.
   });
 });
 
-describe("renderBoxDivulgacao — título serif restaurado por sinal estrutural (#3475 follow-up)", () => {
+describe("renderBoxDivulgacao — título serif restaurado por sinal estrutural (#3475 follow-up, #8119)", () => {
   // Box "recomendação de leitura": (1) linha de título sem link, (2) parágrafo
   // liderado por link do livro, (3) comentário. O título serif 26px foi
-  // RESTAURADO via sinal estrutural (1ª linha sem link + 2º parágrafo liderado
-  // por link), NÃO pelo marcador emoji 📖 (removido em #3475).
+  // RESTAURADO via sinal estrutural (1ª linha sem link + 2º parágrafo no
+  // formato `[**Título**](url), de {Autor}.`), NÃO pelo marcador emoji 📖
+  // (removido em #3475). #8119: o rótulo renderizado é sempre o texto FIXO
+  // "Recomendação de Leitura" — nunca o texto literal da 1ª linha do snippet
+  // (aqui grafado "de leitura" minúsculo de propósito, pra provar que o
+  // texto de entrada não vaza pro título).
   const RECOMENDACAO = `Recomendação de leitura
 
 [**2041: Como a IA Vai Mudar Sua Vida**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.
 
 Estou terminando agora e gosto da estrutura: cada capítulo abre com um conto.`;
 
-  it("1ª linha vira título serif 26px, SEM depender de emoji no fonte", () => {
+  it("1ª linha vira título serif 26px fixo, SEM depender de emoji no fonte NEM do texto literal do snippet", () => {
     const html = renderBoxDivulgacao(RECOMENDACAO);
     assert.match(
       html,
-      /<p style="[^"]*font-family:Georgia[^"]*font-size:26px[^"]*">Recomendação de leitura<\/p>/,
-      "título serif 26px ausente na 1ª linha",
+      /<p style="[^"]*font-family:Georgia[^"]*font-size:26px[^"]*">Recomendação de Leitura<\/p>/,
+      "título serif 26px fixo ('Recomendação de Leitura') ausente",
     );
     // não é o formato carrinho (1 link não-CTA-only → sem pill)
     assert.ok(!html.includes("border-radius:999px"), "não deve virar botão pill");
@@ -134,6 +138,63 @@ Estou terminando agora e gosto da estrutura: cada capítulo abre com um conto.`;
     const nota = "Olá! Eu sou o Pixel, editor dessa newsletter.\n\nConsidere [apoiar](https://apoia.se/diaria) se puder — todo dia trago as notícias mais importantes.";
     const html = renderBoxDivulgacao(nota);
     assert.doesNotMatch(html, /font-size:26px/, "nota pessoal não deve ganhar título serif");
+  });
+
+  // #8119 causa raiz: `data/snippets/recomendacao-leitura-mensal.md` nunca
+  // teve a linha "Recomendação de Leitura" — o snippet abre DIRETO com o
+  // parágrafo do livro. Antes deste fix, `firstLineIsSectionTitle` exigia a
+  // linha e devolvia false pra esse caso, empurrando o box pro tratamento
+  // uniforme (#3460): o parágrafo do livro virava o elemento mais destacado
+  // do box por ausência de qualquer título de verdade — o bug de "título
+  // variável" relatado na issue. A partir de `detectBookRecommendation`, o
+  // MESMO parágrafo (agora em `paras[0]`) é reconhecido pela forma
+  // (`[**Título**](url), de {Autor}.`) e o título fixo é SINTETIZADO.
+  const RECOMENDACAO_SEM_LINHA = `[**2041: Como a IA Vai Mudar Sua Vida**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.
+
+Estou terminando agora e gosto da estrutura: cada capítulo abre com um conto.`;
+
+  it("#8119: snippet SEM a linha 'Recomendação de Leitura' mas com parágrafo de livro → título fixo sintetizado, NUNCA o parágrafo do livro como heading", () => {
+    const html = renderBoxDivulgacao(RECOMENDACAO_SEM_LINHA);
+    // título fixo aparece, sintetizado — mesmo sem estar em lugar nenhum do snippet-fonte.
+    assert.match(
+      html,
+      /<p style="[^"]*font-family:Georgia[^"]*font-size:26px[^"]*">Recomendação de Leitura<\/p>/,
+      "título serif 26px fixo deveria ser sintetizado mesmo sem a linha no snippet",
+    );
+    // o parágrafo do livro NUNCA vira heading — sai como corpo normal (16px, não Georgia/26px).
+    assert.doesNotMatch(
+      html,
+      /font-family:Georgia[^"]*font-size:26px[^"]*">[^<]*2041/,
+      "o título do livro não pode ser renderizado como heading",
+    );
+    assert.match(
+      html,
+      /<p style="margin:0 0 0;font-family:'Geist'[^"]*font-size:16px[^"]*"><a href="https:\/\/link\.amazon\/B05FlAaJ7"/,
+      "parágrafo do livro renderiza como corpo normal (16px), com espaçamento igual ao caso 'com linha'",
+    );
+    // conteúdo preservado.
+    assert.ok(html.includes("link.amazon/B05FlAaJ7"), "link do livro preservado");
+    assert.ok(html.includes("cada capítulo abre com um conto"), "comentário preservado");
+  });
+
+  it("#8119: com OU sem a linha de título, o parágrafo do livro recebe o MESMO espaçamento (bug de espaçamento reportado nos comentários da issue)", () => {
+    const comLinha = `Recomendação de Leitura\n\n${RECOMENDACAO_SEM_LINHA}`;
+    const htmlSemLinha = renderBoxDivulgacao(RECOMENDACAO_SEM_LINHA);
+    const htmlComLinha = renderBoxDivulgacao(comLinha);
+    // extrai a margem do <p> que renderiza o parágrafo do livro (contém o link) em cada HTML.
+    const extractBookParagraphMargin = (html: string): string | null => {
+      const m = html.match(/<p style="margin:([^;]+);[^"]*"><a href="https:\/\/link\.amazon/);
+      return m ? m[1] : null;
+    };
+    const marginSemLinha = extractBookParagraphMargin(htmlSemLinha);
+    const marginComLinha = extractBookParagraphMargin(htmlComLinha);
+    assert.ok(marginSemLinha, "margem do parágrafo do livro (sem linha de título) não encontrada");
+    assert.ok(marginComLinha, "margem do parágrafo do livro (com linha de título) não encontrada");
+    assert.equal(
+      marginSemLinha,
+      marginComLinha,
+      "o parágrafo do livro deve ter a MESMA margem/espaçamento, com ou sem a linha de título explícita no snippet",
+    );
   });
 });
 
@@ -278,14 +339,16 @@ describe("renderBoxDivulgacao — plainFirstParagraph propaga em TODOS os ramos 
   // tem texto além do link no mesmo parágrafo —, sem imagem) — cai no ramo
   // DEFAULT de renderBoxDivulgacao (chamada ~1033), que por sua vez cai no
   // early-return sem imagem de renderMidCallout (chamada ~1043). Os DOIS
-  // pontos hardcoded `false` antes desta issue. Estrutura link-led no 2º
-  // parágrafo (mesmo sinal de `firstLineIsSectionTitle` do describe acima)
-  // pra garantir que, SEM `plainFirstParagraph`, o título REALMENTE aparece
-  // (a exceção #3460 "nota pessoal" só se aplica a box sem NENHUM parágrafo
-  // liderado por link — não serviria pra provar a propagação).
+  // pontos hardcoded `false` antes desta issue. 2º parágrafo no formato
+  // `[**Título**](url), de {Autor}.` (mesmo sinal de `detectBookRecommendation`
+  // do describe acima, #8119 — a detecção deixou de ser "qualquer parágrafo
+  // liderado por link" e passou a exigir esse sufixo) pra garantir que, SEM
+  // `plainFirstParagraph`, o título REALMENTE aparece (a exceção #3460 "nota
+  // pessoal" só se aplica a box sem NENHUM parágrafo nesse formato — não
+  // serviria pra provar a propagação).
   const boxSemCtaOnly = `Conhece alguém que ia curtir esta newsletter?
 
-[**Confira o motivo**](https://example.com/x), publicado essa semana.
+[**Confira o motivo**](https://example.com/x), de um assinante.
 
 Vale a leitura completa.`;
 

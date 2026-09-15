@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 94 invariants.
+**Total**: 95 invariants.
 
 ## Static (estrutura do repo)
 
@@ -73,6 +73,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
+| `approved-item-removed` | item removido de 01-approved.json no Stage 4 (comparado ao snapshot pós-Stage 1) em vez de só desreferenciado — corrompe o sinal de analyze-bucket-overrides.ts (#8121, warning-only) | #8121 |
 | `box-divulgacao-alt-missing` | slot de box de divulgação com imagem mas sem alt: descritivo no snippet (#4086, warning-only) | #4086 |
 | `box-divulgacao-runtime-excluded` | slot de boxes_divulgacao aponta pra snippet runtime:false — injetaria conteúdo de doc/referência verbatim (#4504) | #4504 |
 | `capture-failed-submission-count` | captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878) | #2878 |

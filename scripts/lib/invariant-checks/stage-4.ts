@@ -46,6 +46,7 @@ import {
   pickErroIntencionalReveal, // #6734 — MESMA função que o renderer/check-stage2-invariants usam
 } from "../newsletter-parse.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
+import { detectRemovedApprovedItems } from "../lint-checks/approved-item-removal.ts"; // #8121
 import {
   checkTitlePublisherSuffix,
   checkTitleTrailingPeriod,
@@ -1371,6 +1372,58 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
 }
 
 /**
+ * #8121: warn-only guard — item REMOVIDO de `01-approved.json` durante o
+ * Stage 4 (comparado ao snapshot pós-Stage 1/2, `stage2-post-gate`,
+ * mantido por `derive-editor-requests.ts snapshot-stage2` — #5731), em vez
+ * de apenas desreferenciado em `02-reviewed.md`. Ver o docblock de
+ * `detectRemovedApprovedItems` (`../lint-checks/approved-item-removal.ts`)
+ * pro racional completo — em resumo: remover apaga o registro de que o
+ * categorizador processou o item naquele dia e corrompe o sinal que
+ * `analyze-bucket-overrides.ts` usa pra aprender onde o categorizador erra.
+ *
+ * Warning, não error: o item já foi removido no momento em que este check
+ * roda — não há ação automática segura (recriar o item por aproximação
+ * arrisca reintroduzir dado errado; reverter a edição do editor sem
+ * perguntar viola #7401). O guard serve pra o editor VER o que aconteceu
+ * antes de aprovar o gate, não pra bloquear a publicação por isso.
+ *
+ * Ausência do snapshot (edição sem gate humano no Stage 1/2, `--no-gates`
+ * nunca chamou `snapshot-stage2`, ou edição anterior ao #5731) é
+ * fail-soft: sem baseline pra comparar, não há o que checar — não é
+ * indício de remoção, é ausência de dado.
+ */
+function checkApprovedItemRemoval(editionDir: string): InvariantViolation[] {
+  const baselinePath = resolve(
+    editionDir,
+    "_internal",
+    "editor-request-snapshots",
+    "stage2-post-gate",
+    "_internal",
+    "01-approved.json",
+  );
+  const currentPath = resolve(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(baselinePath) || !existsSync(currentPath)) return [];
+  let baselineJson: unknown;
+  let currentJson: unknown;
+  try {
+    baselineJson = JSON.parse(readFileSync(baselinePath, "utf8"));
+    currentJson = JSON.parse(readFileSync(currentPath, "utf8"));
+  } catch {
+    return [];
+  }
+  return detectRemovedApprovedItems(baselineJson, currentJson).map((item) => ({
+    rule: "approved-item-removed",
+    message:
+      `Item removido de 01-approved.json durante o Stage 4 (estava em "${item.bucket}" no snapshot pós-Stage 1): ` +
+      `${item.title} (${item.url}). Nunca remover — desreferencie do 02-reviewed.md e mantenha o item em ` +
+      `01-approved.json (#8121).`,
+    source_issue: "#8121",
+    severity: "warning" as const,
+    file: currentPath,
+  }));
+}
+
+/**
  * #4086 item 2: warn-only guard — quando um slot de box de divulgação
  * (0/1/2/3 — slot 0 desde #4274) tem imagem (explícita via
  * `box_slot{N}_image`, ou `livros_promo` quando o
@@ -2611,6 +2664,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkKitFixtureAudit,
   },
+  {
+    id: "approved-item-removed",
+    description: "item removido de 01-approved.json no Stage 4 (comparado ao snapshot pós-Stage 1) em vez de só desreferenciado — corrompe o sinal de analyze-bucket-overrides.ts (#8121, warning-only)",
+    source_issue: "#8121",
+    stage: 4,
+    run: checkApprovedItemRemoval,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -2649,4 +2709,5 @@ export {
   checkRenderWarnings,
   checkKitFixtureAudit,
   checkUseMelhorTempoTitleHeuristicShare,
+  checkApprovedItemRemoval,
 };

@@ -67,6 +67,11 @@ export const DEFAULT_WINDOW = 20;
 export interface BucketArticleLike {
   url?: string;
   title?: string;
+  // #8121 item 3: marcador gravado no item quando ele foi recategorizado
+  // entre buckets NO STAGE 4 (editor reorganizando `02-reviewed.md`), não no
+  // gate do Stage 1 — `diffBucketOverrides` exclui esses itens do cálculo,
+  // porque não são "correção do categorizador" no sentido que #5995 mede.
+  stage4_recategorized_note?: string;
   [key: string]: unknown;
 }
 
@@ -117,10 +122,35 @@ function indexByUrl(buckets: CategorizedBucketsInput | ApprovedBucketsInput): Ma
 }
 
 /**
+ * #8121 item 3: URLs (canonicalizadas) marcadas com `stage4_recategorized_note`
+ * em QUALQUER bucket de `approved` — o editor recategorizou o item durante o
+ * Stage 4 (revisão de `02-reviewed.md`), não durante o gate do Stage 1. Um
+ * movimento marcado assim NUNCA deveria contar como "correção do
+ * categorizador" na taxa medida por `diffBucketOverrides`/`--rules` (#5995):
+ * é uma decisão editorial pós-hoc, sem relação com a qualidade da
+ * categorização automática original.
+ */
+function findStage4RecategorizedUrls(approved: ApprovedBucketsInput): Set<string> {
+  const urls = new Set<string>();
+  for (const bucket of TRACKED_BUCKETS) {
+    const articles = approved[bucket];
+    if (!Array.isArray(articles)) continue;
+    for (const article of articles) {
+      if (!article || typeof article.url !== "string" || !article.url) continue;
+      if (article.stage4_recategorized_note) urls.add(canonicalize(article.url));
+    }
+  }
+  return urls;
+}
+
+/**
  * Diffa um par categorizado × aprovado de UMA edição e retorna os movimentos
  * de bucket detectados (join por URL canonicalizada; artigos que só aparecem
  * de um lado — dropados, promovidos a destaque, adicionados manualmente pelo
- * editor — são ignorados, não contam como "movimento").
+ * editor — são ignorados, não contam como "movimento"). #8121 item 3: itens
+ * marcados `stage4_recategorized_note` no lado aprovado também são
+ * ignorados — o movimento aconteceu no Stage 4, não é sinal de correção do
+ * gate do Stage 1.
  */
 export function diffBucketOverrides(
   categorized: CategorizedBucketsInput,
@@ -128,12 +158,14 @@ export function diffBucketOverrides(
 ): BucketMove[] {
   const catIndex = indexByUrl(categorized);
   const apprIndex = indexByUrl(approved);
+  const stage4RecategorizedUrls = findStage4RecategorizedUrls(approved);
   const moves: BucketMove[] = [];
 
   for (const [url, catEntry] of catIndex) {
     const apprEntry = apprIndex.get(url);
     if (!apprEntry) continue; // saiu dos 3 buckets (drop, promoção a destaque, etc.) — fora de escopo
     if (catEntry.bucket === apprEntry.bucket) continue; // sem movimento
+    if (stage4RecategorizedUrls.has(url)) continue; // #8121 item 3: recategorização do Stage 4, não do gate Stage 1
     moves.push({
       url,
       title: apprEntry.title || catEntry.title,
