@@ -62,6 +62,29 @@
  *   nunca é tratado como "não existe, pode recriar" — o broadcast_id
  *   persistido continua lá, e a próxima chamada de `decideLotReconciliation`
  *   volta a ver "reuse", nunca "create".
+ *
+ *   **Risco residual CONHECIDO, não fechado (gap #1 do #7922, achado em
+ *   auditoria pós-merge da fatia 1/N — ver `recreate_after_timeout` abaixo
+ *   e `test/onboarding-kit-transport-run-lock-7922.test.ts`):**
+ *   `recreate_after_timeout` só sabe que "o registro LOCAL não tem
+ *   `broadcast_id`" — nunca "o Kit também não tem o broadcast". Se o
+ *   `POST /broadcasts` anterior teve SUCESSO no servidor do Kit mas o
+ *   PROCESSO local morreu (crash, timeout de rede, container reciclado)
+ *   antes de `broadcast_id` ser persistido, não existe hoje nenhuma forma de
+ *   descobrir isso: `kit-broadcasts.ts`/`kit-client.ts` não expõem busca de
+ *   broadcast por nome/tag (`listBroadcasts` só filtra por `status`/paginação;
+ *   `getBroadcast` devolve `subscriber_filter` como campo OPCIONAL cujo eco
+ *   pelo `GET /broadcasts/{id}` nunca foi confirmado ao vivo — ver a
+ *   docstring de `KitBroadcastDetail.subscriber_filter`). Sem essa
+ *   capacidade, `claimLot` (`scripts/onboarding-kit-transport-run.ts`) NUNCA
+ *   tenta reconciliar por nome/tag antes de recriar — só troca a identidade
+ *   do lote (`rebuildLotPlanForRecreate`, seq incrementado) pra pelo menos
+ *   nunca reusar a MESMA tag de um possível broadcast órfão, e preserva o
+ *   registro velho no store (nunca sobrescrito) como evidência de auditoria.
+ *   Isso reduz a chance de colisão de tag mas **não elimina o risco de
+ *   e-mail duplicado** nesse cenário específico (resposta perdida
+ *   pós-sucesso) — fechar de verdade exigiria uma capacidade de busca por
+ *   nome/tag que a API do Kit, tal como hoje coberta neste repo, não tem.
  */
 
 import { buildTagFilter, type CreateBroadcastInput, type KitSubscriberFilter } from "./kit-broadcasts.ts";
@@ -108,7 +131,10 @@ export interface OnboardingKitLot {
 /** `yyyy-mm-dd` (dia BRT do run) + kind + sequência dentro do dia — 1 lote
  *  por etapa por dia é o caso normal (todos os vencidos da rodada entram
  *  juntos); `seq` existe só para o raro caso de precisar mais de 1 lote no
- *  mesmo dia/etapa (ex: reconciliação abriu um novo após stale). */
+ *  mesmo dia/etapa (ex: reconciliação abriu um novo após stale — o único
+ *  produtor de `seq > 1` é `rebuildLotPlanForRecreate`/`nextLotSeq` abaixo,
+ *  chamado por `claimLot` em `onboarding-kit-transport-run.ts` quando
+ *  `decideLotReconciliation` decide `recreate_after_timeout`). */
 export function buildLotId(kind: OnboardingKitLotKind, dateIso: string, seq: number): string {
   return `${kind}-${dateIso}-${String(seq).padStart(2, "0")}`;
 }
@@ -191,6 +217,10 @@ export function selectEligibleKitRecipients(candidates: OnboardingKitCandidate[]
 export interface OnboardingKitLotPlan {
   lot_id: string;
   kind: OnboardingKitLotKind;
+  /** `yyyy-mm-dd` (dia BRT do run) que gerou `lot_id` — mantido explícito
+   *  (não só embutido na string `lot_id`) pra `rebuildLotPlanForRecreate`
+   *  nunca precisar reconstruir a data por parsing de string. */
+  dateIso: string;
   tag_name: string;
   recipient_subscription_ids: string[];
   recipient_emails: string[];
@@ -209,9 +239,87 @@ export function planLot(opts: {
   return {
     lot_id,
     kind: opts.kind,
+    dateIso: opts.dateIso,
     tag_name: buildLotTagName(lot_id),
     recipient_subscription_ids: opts.eligible.map((c) => c.subscription_id),
     recipient_emails: opts.eligible.map((c) => c.email),
+  };
+}
+
+/**
+ * Lote com o MAIOR `seq` já persistido para `kind`+`dateIso` — o estado
+ * "atual" dessa chave pra fins de reconciliação (#7922, gap #4 do audit
+ * pós-merge). Existe porque, depois de uma `recreate_after_timeout`, o lote
+ * antigo (seq=1, digamos) fica pra trás como registro histórico — quem
+ * decide se a PRÓXIMA chamada reusa/bloqueia/recria precisa olhar pro lote
+ * MAIS NOVO da chave (seq=2, 3, ...), nunca sempre pro seq=1 fixo. Sem isto,
+ * `claimLot` recriaria um lote novo A CADA execução indefinidamente — a
+ * reconciliação nunca "veria" que o lote recriado já teve seu broadcast
+ * confirmado, porque continuaria checando o slot velho, sempre stale.
+ * Nenhum lote pra essa chave → `null`.
+ */
+export function findLatestLotForKindDate(
+  existingLots: Record<string, OnboardingKitLot>,
+  kind: OnboardingKitLotKind,
+  dateIso: string,
+): OnboardingKitLot | null {
+  const prefix = `${kind}-${dateIso}-`;
+  let latest: OnboardingKitLot | null = null;
+  let latestSeq = -1;
+  for (const lotEntry of Object.values(existingLots)) {
+    if (lotEntry.kind !== kind) continue;
+    if (!lotEntry.lot_id.startsWith(prefix)) continue;
+    const seq = Number.parseInt(lotEntry.lot_id.slice(prefix.length), 10);
+    if (!Number.isFinite(seq)) continue;
+    if (seq > latestSeq) {
+      latestSeq = seq;
+      latest = lotEntry;
+    }
+  }
+  return latest;
+}
+
+/**
+ * Próximo `seq` livre para `kind`+`dateIso`, dado o mapa de lotes JÁ
+ * PERSISTIDOS (`OnboardingStore["kit_transport"]["lots"]`) — 1 + o `seq` do
+ * lote mais novo (`findLatestLotForKindDate`; nunca só o lote que originou a
+ * decisão de recriar — cobre o caso de 2+ recriações em sequência no mesmo
+ * dia/etapa). Nenhum lote existente para a chave → `1` (o caso normal, `seq`
+ * nunca usado por nenhum lote real até hoje).
+ */
+export function nextLotSeq(
+  kind: OnboardingKitLotKind,
+  dateIso: string,
+  existingLots: Record<string, OnboardingKitLot>,
+): number {
+  const latest = findLatestLotForKindDate(existingLots, kind, dateIso);
+  if (latest == null) return 1;
+  const prefix = `${kind}-${dateIso}-`;
+  const seq = Number.parseInt(latest.lot_id.slice(prefix.length), 10);
+  return Number.isFinite(seq) ? seq + 1 : 1;
+}
+
+/**
+ * Reconstrói o plano de um lote para o caso `recreate_after_timeout` de
+ * `decideLotReconciliation` — NUNCA reusa `lot_id`/`tag_name` do lote velho
+ * (#7922, gaps #1 e #4 do audit pós-merge da fatia 1/N): a docstring do
+ * módulo, seção "Idempotência/reconciliação", explica o porquê — reusar a
+ * MESMA tag arrisca colidir com um broadcast que o Kit já tenha criado de
+ * verdade para uma tentativa anterior cujo `broadcast_id` nunca chegou a ser
+ * persistido localmente (resposta perdida pós-sucesso). `recipient_*`
+ * continuam os do plano ORIGINAL (mesmos elegíveis — recriar não muda quem
+ * recebe, só a identidade lot_id/tag do lote).
+ */
+export function rebuildLotPlanForRecreate(
+  originalPlan: OnboardingKitLotPlan,
+  existingLots: Record<string, OnboardingKitLot>,
+): OnboardingKitLotPlan {
+  const seq = nextLotSeq(originalPlan.kind, originalPlan.dateIso, existingLots);
+  const lot_id = buildLotId(originalPlan.kind, originalPlan.dateIso, seq);
+  return {
+    ...originalPlan,
+    lot_id,
+    tag_name: buildLotTagName(lot_id),
   };
 }
 
@@ -304,10 +412,24 @@ export type LotReconciliationDecision =
   | { action: "reuse"; lot: OnboardingKitLot }
   /** Nenhum lote local para esta chave — seguro criar do zero. */
   | { action: "create" }
-  /** Lote local sem broadcast confirmado, mas VELHO o bastante (> `LOT_STALE_AFTER_MS`)
-   *  para presumir que a rodada que o criou morreu antes de terminar — seguro
-   *  recriar (o executor deve, antes, tentar reconciliar contra o Kit via
-   *  `reconcileLotWithKit`; só cai aqui se isso também não achar nada). */
+  /**
+   * Lote local sem broadcast confirmado, mas VELHO o bastante (> `LOT_STALE_AFTER_MS`)
+   * para presumir que a rodada que o criou morreu antes de terminar.
+   *
+   * **Correção (#7922, gap #1 do audit pós-merge da fatia 1/N): este
+   * comentário antes afirmava que "o executor deve, antes, tentar
+   * reconciliar contra o Kit via `reconcileLotWithKit`; só cai aqui se isso
+   * também não achar nada" — isso OVERCLAIMA o que de fato acontece.**
+   * `reconcileLotWithKit` só tem o que fazer quando `broadcast_id != null`
+   * (ver a docstring dela); neste ramo o `staleLot` NUNCA tem `broadcast_id`
+   * (se tivesse, o `if` acima já teria devolvido `reuse`) — não há nada pra
+   * `reconcileLotWithKit` consultar, e o executor (`claimLot`,
+   * `scripts/onboarding-kit-transport-run.ts`) de fato não chama essa
+   * função antes de decidir recriar. Ou seja: "seguro recriar" aqui é uma
+   * INFERÊNCIA LOCAL sobre idade do registro, nunca uma confirmação de que
+   * o Kit também não tem o broadcast — ver o risco residual documentado na
+   * docstring do módulo, seção "Idempotência/reconciliação".
+   */
   | { action: "recreate_after_timeout"; staleLot: OnboardingKitLot }
   /** Lote local sem broadcast confirmado e DENTRO da janela de stale — outra
    *  rodada pode estar no meio do processamento agora. Nunca criar em cima. */
