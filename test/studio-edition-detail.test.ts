@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildEditionDetail, GATE_FACING_FILES } from "../scripts/studio-ui/studio-edition-detail.ts";
 import { saveDoc, makeInitialDoc, applyUpdate } from "../scripts/update-stage-status.ts";
+import { writeSentinel } from "../scripts/lib/pipeline-state.ts";
 
 function setupRoot(): { root: string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "studio-edition-detail-"));
@@ -94,6 +95,33 @@ describe("buildEditionDetail (#3555)", () => {
 
       const detail = buildEditionDetail(root, "260716");
       assert.deepEqual(detail.gatesPending, [6]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#8127: row 'running' cujo sentinel do stage já foi escrito exibe 'done', mesmo com stages posteriores já done — reprodução do zumbi visto no Studio (edição 260915, stage 4 preso em running com stage 5/6 já done)", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      const editionDir = join(root, "data", "editions", "260716");
+      mkdirSync(editionDir, { recursive: true });
+      let doc = makeInitialDoc("260716");
+      doc = applyUpdate(doc, { stage: 1, status: "done" });
+      doc = applyUpdate(doc, { stage: 2, status: "done" });
+      doc = applyUpdate(doc, { stage: 3, status: "done" });
+      doc = applyUpdate(doc, { stage: 4, status: "running" }); // nunca fechado — sentinel abaixo prova que terminou
+      doc = applyUpdate(doc, { stage: 5, status: "done" });
+      doc = applyUpdate(doc, { stage: 6, status: "done" });
+      saveDoc(editionDir, doc);
+      writeSentinel(editionDir, 4, ["_internal/newsletter-final.html"]);
+
+      const detail = buildEditionDetail(root, "260716");
+      assert.equal(
+        detail.stageStatus!.rows.find((r) => r.stage === 4)?.status,
+        "done",
+        "stage 4 tinha sentinel escrito — a row NÃO deveria ficar presa em 'running' na timeline do Studio",
+      );
+      assert.equal(detail.currentStage, "done");
     } finally {
       cleanup();
     }

@@ -15,6 +15,7 @@ import { existsSync, statSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { resolveEditionDir, findEditionsInProgress } from "../lib/find-current-edition.ts";
 import { loadDoc, type StageStatusDoc } from "../update-stage-status.ts";
+import { reconcileZombieRunningRows } from "../overnight-statusline.ts";
 import { currentStageFromDoc, stageLabelFor, type CurrentStage } from "./studio-state.ts";
 
 /**
@@ -116,7 +117,11 @@ export function buildEditionDetail(rootDir: string, aammdd: string): StudioEditi
     const jsonPath = resolve(editionDirAbs, "_internal", "stage-status.json");
     const mdPath = resolve(editionDirAbs, "stage-status.md");
     if (existsSync(jsonPath) || existsSync(mdPath)) {
-      stageStatus = loadDoc(editionDirAbs, aammdd);
+      // #8127: reconcilia rows presas em "running" cujo sentinel do stage já
+      // foi escrito (#2800) — mesmo guard read-only que `overnight-statusline.ts`
+      // já aplica pro rodapé do terminal; faltava aqui, então a página de
+      // detalhe da edição no Studio exibia uma row zumbi indefinidamente.
+      stageStatus = reconcileZombieRunningRows(loadDoc(editionDirAbs, aammdd), editionDirAbs);
       currentStage = currentStageFromDoc(stageStatus);
       stageLabel = stageLabelFor(currentStage);
     }

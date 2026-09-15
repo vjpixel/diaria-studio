@@ -24,6 +24,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { enumerateEditionDirs, findEditionsInProgress } from "../lib/find-current-edition.ts";
 import { loadDoc, STAGE_LABELS, type StageStatusDoc } from "../update-stage-status.ts";
+import { reconcileZombieRunningRows } from "../overnight-statusline.ts";
 import { normalizeIssues } from "../lib/plan-issues-normalize.ts"; // #4881: plan.issues também pode ser dict (develop)
 
 export type CurrentStage = number | "done" | "unknown";
@@ -156,7 +157,9 @@ export function listEditionSummaries(
     let currentStage: CurrentStage = "unknown";
     let stageLabel = "Desconhecido";
     if (hasStageStatus) {
-      const doc = loadDoc(editionDirAbs, aammdd);
+      // #8127: mesmo guard read-only de `overnight-statusline.ts` — rows
+      // "running" cujo sentinel do stage já foi escrito exibem "done".
+      const doc = reconcileZombieRunningRows(loadDoc(editionDirAbs, aammdd), editionDirAbs);
       currentStage = currentStageFromDoc(doc, editionDirAbs);
       stageLabel = stageLabelFor(currentStage);
     } else if (isEditionPublishedOrScheduled(editionDirAbs)) {

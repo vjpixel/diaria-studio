@@ -20,6 +20,7 @@ import {
   type StudioEditionSummary,
 } from "../scripts/studio-ui/studio-state.ts";
 import { saveDoc, makeInitialDoc, applyUpdate } from "../scripts/update-stage-status.ts";
+import { writeSentinel } from "../scripts/lib/pipeline-state.ts";
 
 function setupRoot(): { root: string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "studio-state-"));
@@ -279,6 +280,31 @@ describe("listEditionSummaries (#3555)", () => {
       doc = applyUpdate(doc, { stage: 5, status: "done" });
       doc = applyUpdate(doc, { stage: 6, status: "done" });
       saveDoc(editionDir, doc);
+
+      const summaries = listEditionSummaries(root);
+      assert.equal(summaries[0].currentStage, "done");
+      assert.equal(summaries[0].stageLabel, "Concluída");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#8127: row 'running' com sentinel do stage já escrito vira 'done' via reconcileZombieRunningRows — sem depender do atalho de 05-published.json (#3802), isola o guard read-only compartilhado com overnight-statusline.ts", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      const aammdd = "260716";
+      makeEditionFiles(root, aammdd, []);
+      const editionDir = join(root, "data", "editions", aammdd);
+
+      let doc = makeInitialDoc(aammdd);
+      doc = applyUpdate(doc, { stage: 1, status: "done" });
+      doc = applyUpdate(doc, { stage: 2, status: "done" });
+      doc = applyUpdate(doc, { stage: 3, status: "done" });
+      doc = applyUpdate(doc, { stage: 4, status: "running" }); // nunca fechado, mas sentinel abaixo prova conclusão
+      doc = applyUpdate(doc, { stage: 5, status: "done" });
+      doc = applyUpdate(doc, { stage: 6, status: "done" });
+      saveDoc(editionDir, doc);
+      writeSentinel(editionDir, 4, ["_internal/newsletter-final.html"]);
 
       const summaries = listEditionSummaries(root);
       assert.equal(summaries[0].currentStage, "done");
