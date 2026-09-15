@@ -28,6 +28,7 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { computeCarouselTitleFontSize } from "./lib/weekly-carousel-font-size.ts";
+import { DAILY_CAROUSEL_BODY_SIZE } from "./lib/daily-carousel-card.ts";
 export { computeCarouselTitleFontSize };
 
 const W = 1080;
@@ -224,18 +225,55 @@ export function buildCardSvg(
  * a área do texto sem apagar a imagem inteira.
  */
 /**
+ * Constantes de largura média de glifo pro título do overlay — CALIBRADAS
+ * PRO PESO 700 (bold, achado ao vivo 260914: ver comentário de
+ * `font-weight="700"` em `buildOverlaySvg`). Bold renderiza ~12% mais largo
+ * que regular no Georgia; usar o divisor/multiplicador de regular (26 /
+ * 0.52) aqui subestimava a largura real e deixava título de 1 linha vazar
+ * pra fora do card (edição 260915, D3: "Freelancers que usam IA ganham
+ * mais" wrapado em 1 linha por caber nos 26px/char de regular, mas
+ * estourando em bold). Únicas 2 constantes que `overlayFittingFontSize` e
+ * `buildOverlaySvg` usam pra wrap/tamanho — mantidas em sync aqui de
+ * propósito, mesma lição do #5330 (não duplicar em cópia separada).
+ */
+export const OVERLAY_CHARS_PER_LINE_DIVISOR = 29;
+export const OVERLAY_WIDTH_FIT_RATIO = 0.58;
+
+/**
  * Pure: fórmula de tamanho de fonte do overlay de notícia — wrap via
- * `wrapTitle` (divisor 26), tamanho `available/(longest*0.52)` clamped
- * 44-88. Exportada (#5330 fleet review — achado de 2 agentes independentes:
- * `weekly-carousel-font-size.ts` duplicava esses 4 números mágicos numa
- * cópia separada, risco de drift silencioso se o clamp/divisor mudar aqui e
- * não lá) — único lugar que define a fórmula; `buildOverlaySvg` e
- * `computeCarouselTitleFontSize` chamam esta função em vez de reimplementar.
+ * `wrapTitle` (divisor `OVERLAY_CHARS_PER_LINE_DIVISOR`), tamanho
+ * `available/(longest*OVERLAY_WIDTH_FIT_RATIO)` clamped
+ * DAILY_CAROUSEL_BODY_SIZE-88. Exportada (#5330 fleet review — achado de 2
+ * agentes independentes: `weekly-carousel-font-size.ts` duplicava esses 4
+ * números mágicos numa cópia separada, risco de drift silencioso se o
+ * clamp/divisor mudar aqui e não lá) — único lugar que define a fórmula;
+ * `buildOverlaySvg` e `computeCarouselTitleFontSize` chamam esta função em
+ * vez de reimplementar.
+ *
+ * Piso alinhado a `DAILY_CAROUSEL_BODY_SIZE` (62px, achado ao vivo 260914):
+ * era 44 — abaixo do corpo fixo do carrossel diário — e título curto (poucas
+ * palavras, wrap em 1 linha) caía nesse piso, violando a regra editorial "a
+ * fonte do título deve ser sempre igual ou maior que a fonte do texto".
+ * Título ≤52 chars (regra editorial de destaque) sempre cabe em 1-2 linhas
+ * a 62px+ — `buildOverlaySvg` (não `buildCardSvg`, que é layout "band"
+ * separado, não usado pela capa diária) ancora o bloco de título na BASE do
+ * card (`baseY = CH - 150`) e cresce PRA CIMA conforme o número de linhas,
+ * sem um clamp de altura — a imagem inteira dá espaço de sobra. O risco real
+ * de overflow do piso é de LARGURA, não altura: coberto pelo teste de
+ * regressão de wrap em bold (`test/gen-social-card-4x5.test.ts`).
+ *
+ * O bold + piso/wrap recalibrados valem pra TODO chamador de
+ * `buildOverlaySvg` — carrossel semanal e capa da anual incluídos, não só a
+ * capa diária que motivou o achado — de propósito: o problema de contraste
+ * (branco sobre foto+gradiente) é do LAYOUT overlay em si, não específico da
+ * diária. Sem cobertura visual automatizada pro card semanal/anual pós-fix;
+ * se algum dia regredir lá, é aqui que ajustar — não bifurcar o peso por
+ * chamador.
  */
 export function overlayFittingFontSize(title: string, availableWidth: number): number {
-  const lines = wrapTitle(title, Math.floor(availableWidth / 26));
+  const lines = wrapTitle(title, Math.floor(availableWidth / OVERLAY_CHARS_PER_LINE_DIVISOR));
   const longest = Math.max(...lines.map((l) => l.length));
-  return Math.max(44, Math.min(88, Math.floor(availableWidth / (longest * 0.52))));
+  return Math.max(DAILY_CAROUSEL_BODY_SIZE, Math.min(88, Math.floor(availableWidth / (longest * OVERLAY_WIDTH_FIT_RATIO))));
 }
 
 export function buildOverlaySvg(
@@ -260,7 +298,7 @@ export function buildOverlaySvg(
 ): string {
   const { w: CW, h: CH } = dims;
   const available = CW - PAD * 2;
-  const lines = wrapTitle(title, Math.floor(available / 26));
+  const lines = wrapTitle(title, Math.floor(available / OVERLAY_CHARS_PER_LINE_DIVISOR));
   const size = fontSizeOverride ?? overlayFittingFontSize(title, available);
   const lineGap = Math.round(size * 1.18);
   // Ancorado na BASE: o bloco cresce pra cima conforme o número de linhas, então
@@ -269,7 +307,15 @@ export function buildOverlaySvg(
   const startY = baseY - (lines.length - 1) * lineGap;
   const titleLines = lines
     .map(
-      (line, i) => `<text x="${PAD}" y="${startY + i * lineGap}" font-family="${FONTS.serif}" font-size="${size}" font-weight="400" fill="#FFFFFF">${esc(line)}</text>`,
+      // font-weight 700 (achado ao vivo 260914): regular tinha o MESMO peso do
+      // corpo do carrossel, mas texto branco sobre gradiente/foto tem contraste
+      // bem mais fraco que tinta escura sobre papel liso — medição direta (SVG
+      // isolado, sem foto) confirmou font-size proporcionalmente maior (78 vs
+      // 62px, ~26%), mas a composição real corrói ~23% do tamanho percebido
+      // (bandas de glifo medidas em pixel: 56-58px compostas vs 71-75px
+      // isoladas). Negrito resolve o CONTRASTE/presença visual que o
+      // font-size sozinho não cobre — e é o padrão pra título de capa.
+      (line, i) => `<text x="${PAD}" y="${startY + i * lineGap}" font-family="${FONTS.serif}" font-size="${size}" font-weight="700" fill="#FFFFFF">${esc(line)}</text>`,
     )
     .join("\n  ");
 

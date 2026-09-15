@@ -260,6 +260,16 @@ describe("parseIssues — files + execTrack (#3562, entrega 2; #5462)", () => {
     // (skew de deploy) renderizava o placeholder cru. `execTrackReason` é o
     // servidor entregando o texto JÁ resolvido — este teste garante que o
     // {date} nunca sobrevive até o payload.
+    //
+    // Data calculada relativa a hoje (nunca hardcoded) — `parseIssues` não
+    // aceita injeção de `now` (usa `new Date()` real via
+    // `classifyExecTrackWithRule`), então uma data fixa vira bomba-relógio:
+    // um valor "futuro" no dia em que foi escrito deixa de ser futuro assim
+    // que o calendário o alcança (achado ao vivo 260915 — a data hardcoded
+    // "2026-09-15" expirou exatamente no dia em que este teste rodou em CI).
+    const future = new Date();
+    future.setDate(future.getDate() + 30);
+    const futureIso = future.toISOString().slice(0, 10);
     const raw: GhIssueRaw[] = [
       {
         number: 8,
@@ -267,7 +277,7 @@ describe("parseIssues — files + execTrack (#3562, entrega 2; #5462)", () => {
         url: "u",
         state: "OPEN",
         labels: [],
-        body: "<!-- aguardando-ate: 2026-09-15 -->",
+        body: `<!-- aguardando-ate: ${futureIso} -->`,
       },
     ];
     const [issue] = parseIssues(raw);
