@@ -65,6 +65,11 @@ import {
   aiFetchReferrerCounterKey,
   incrementAiFetchCounter,
 } from "../../../scripts/lib/shared/ai-fetch-counters.ts";
+// #7915: instrumentação (view + click) da página /apoiar — ver docstring de
+// apoiar-counters.ts. Nenhum dos dois contadores é pagamento confirmado; a
+// confirmação continua vindo do apoia.se/Stripe fora deste repo.
+import { apoiarViewCounterKey, apoiarClickCounterKey, incrementApoiarCounter } from "../../../scripts/lib/shared/apoiar-counters.ts";
+import { DIARIA_APOIASE_URL } from "../../../scripts/lib/canonical-urls.ts";
 
 export interface Env {
   ASSETS: Fetcher;
@@ -136,6 +141,41 @@ export default {
     // workers/poll/src/index.ts (que agora só redireciona pra cá).
     if (request.method === "GET" && reqUrl.pathname === "/confirmado") {
       return handleConfirmadoPage();
+    }
+
+    // #7915: /apoiar/ir — sem arquivo em public/ (é uma ROTA, não uma
+    // página), resolvido ANTES do asset lookup pelo mesmo motivo do
+    // /confirmado acima. Incrementa o contador de CLIQUE (nunca pagamento
+    // confirmado — isso continua vindo do apoia.se/Stripe) e redireciona
+    // (302) pro apoia.se, preservando query string (UTM) igual ao fallback
+    // do #6429 logo abaixo. Fail-soft: falha no KV nunca impede o redirect.
+    if (request.method === "GET" && reqUrl.pathname === "/apoiar/ir") {
+      try {
+        const day = new Date().toISOString().slice(0, 10);
+        await incrementApoiarCounter(env.CURSOS_SUBSCRIBERS, apoiarClickCounterKey(day));
+      } catch {
+        // mesma disciplina fail-soft dos blocos de contador acima.
+      }
+      const target = new URL(DIARIA_APOIASE_URL);
+      target.search = reqUrl.search;
+      return Response.redirect(target.toString(), 302);
+    }
+
+    // #7915: VISUALIZAÇÃO da própria página /apoiar — conta e deixa cair no
+    // asset lookup normal (não retorna aqui; quem serve o HTML é o
+    // env.ASSETS de sempre). Só a forma canônica sem barra: html_handling =
+    // "drop-trailing-slash" (wrangler.toml) resolve a variante "/apoiar/" no
+    // PRÓPRIO env.ASSETS.fetch logo abaixo (não antes deste bloco — este
+    // Worker roda primeiro, run_worker_first=true), então essa requisição
+    // nunca bate aqui com barra — contar só "/apoiar" não sub-conta a visita
+    // (comment-analyzer, #8137: comentário anterior sugeria a ordem errada).
+    if (request.method === "GET" && reqUrl.pathname === "/apoiar") {
+      try {
+        const day = new Date().toISOString().slice(0, 10);
+        await incrementApoiarCounter(env.CURSOS_SUBSCRIBERS, apoiarViewCounterKey(day));
+      } catch {
+        // mesma disciplina fail-soft dos blocos de contador acima.
+      }
     }
 
     const response = await env.ASSETS.fetch(request);
