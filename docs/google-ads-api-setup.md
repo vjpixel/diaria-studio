@@ -101,6 +101,53 @@ indisponibilidade externa parem de sair com a mesma cara. Travado por
 `test/google-ads-ingest-5237.test.ts` com os corpos de erro reais desta
 verificação como fixture.
 
+## Deprecação de developer token → Google Cloud project (#8108, 14/09/2026)
+
+E-mail oficial do Google Ads Team (14/09/2026): a API está migrando de
+autenticação por developer token explícito para autenticação via Google
+Cloud project. Nosso developer token já foi **migrado automaticamente** pelo
+Google para o projeto Cloud `486421567894` (o mesmo `velvety-tube-505505-d1`
+/ `diaria-google-ads` da tabela de identificadores acima — não é um projeto
+novo). Enviar o developer token no header é **opcional** hoje; releases
+previstas para o 1º semestre de 2027 deixam de aceitá-lo, e a Legacy API
+Center page some no mesmo prazo.
+
+**Achado do scoping: os dois caminhos de acesso deste repo dependem de
+developer token EXPLÍCITO hoje, nenhum é opcional na prática:**
+
+1. **REST direto** (`scripts/lib/google-ads-ingest.ts` `fetchGoogleAdsSpendRows`,
+   `scripts/google-ads-associate-token.ts`) — os dois montam a chamada HTTP
+   à mão e enviam o header `developer-token: ${GOOGLE_ADS_DEVELOPER_TOKEN}`
+   em toda requisição a `googleAds:search` (ver `search()` dentro de
+   `fetchGoogleAdsSpendRows`, e a linha equivalente em
+   `google-ads-associate-token.ts`). Sem migração, esse header para de
+   funcionar quando o Google desligar o suporte a developer token no 1º
+   semestre de 2027 — os dois scripts já são fail-soft (ver seções acima),
+   então a falha vira `spend.csv` desatualizado em silêncio, não um crash.
+2. **MCP oficial** (`.mcp.json` → `google-ads`) — a entrada declara
+   `GOOGLE_ADS_DEVELOPER_TOKEN` no `env` do processo `pipx`, e o servidor
+   (`google-ads-mcp`, `ads_mcp/utils.py::_create_credentials()`, lido no
+   #6450) usa esse valor junto com ADC (`GOOGLE_APPLICATION_CREDENTIALS`)
+   pra montar a credencial de cada chamada — não é vestigial, é lido de
+   verdade.
+
+**Migração real ainda não é necessária** — "opcional" hoje significa que o
+código atual (com o header) continua funcionando sem mudança nenhuma; o
+prazo de obrigatoriedade é 1º semestre de 2027, sem urgência imediata. A
+migração de fato — parar de enviar `developer-token` e autenticar só via a
+identidade do projeto Cloud (a client library nova do Google já publicada
+faz isso) — é trabalho de infra futuro, não implementado aqui de propósito
+(fora do escopo desta issue de scoping). Quando for feita, os 3 pontos de
+código acima (`google-ads-ingest.ts`, `google-ads-associate-token.ts`,
+`.mcp.json`) são os que precisam mudar; nenhum outro arquivo deste repo
+monta chamada Google Ads.
+
+**Ação de plataforma pendente (fora do repo, não é código):** confirmar no
+IAM do projeto Cloud `486421567894` que os membros certos têm papel
+Owner/Editor — o e-mail do Google avisa que, após o descomissionamento do
+API Center, comunicações administrativas só chegam a quem tiver esse papel
+no projeto.
+
 ## Estado (14/08/2026)
 
 - [x] MCC criada e conta de anunciante sob ela

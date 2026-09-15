@@ -1042,6 +1042,73 @@ describe("derive-editor-requests.ts (#5731)", () => {
     }
   });
 
+  it("derive-stage1: re-gate ('rejeitar e re-rodar') com conteúdo NOVO não é engolido pelo marcador da 1ª passada (#8106)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-stage1-regate-"));
+    try {
+      const editionDir = join(dir, "260912");
+      const categorized = categorizedJsonStage1();
+
+      // 1ª passada do gate: editor promove RX (radar) sobre A3.
+      const approvedFirstGate = {
+        highlights: [
+          { article: { url: "https://a.com/1", title: "A1" } },
+          { article: { url: "https://a.com/2", title: "A2" } },
+          { article: { url: "https://r.com/x", title: "RX" } },
+        ],
+        radar: [],
+        lancamento: [],
+        use_melhor: [{ url: "https://b.com/1", title: "B1" }],
+        video: [],
+      };
+      writeStage1Fixtures(editionDir, categorized, approvedFirstGate, { auto_approved: false });
+
+      const r1 = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r1.status, 0, r1.stderr);
+      const afterFirstGate = readEntries(editionDir);
+      assert.ok(afterFirstGate.length >= 1, JSON.stringify(afterFirstGate));
+
+      // Editor rejeita e re-roda: 01-categorized.json/01-approved.json são
+      // regenerados (conteúdo diferente do 1º gate) e um NOVO 2º gate
+      // acontece — a decisão que vale é esta, a 1ª foi descartada. O
+      // marcador da 1ª passada continua em disco nesse ponto.
+      const approvedSecondGate = {
+        highlights: [
+          { article: { url: "https://a.com/1", title: "A1" } },
+          { article: { url: "https://a.com/3", title: "A3" } },
+          { article: { url: "https://a.com/4", title: "A4" } },
+        ],
+        radar: [{ url: "https://r.com/x", title: "RX" }],
+        lancamento: [],
+        use_melhor: [{ url: "https://b.com/1", title: "B1" }],
+        video: [],
+      };
+      writeStage1Fixtures(editionDir, categorized, approvedSecondGate, { auto_approved: false });
+
+      const r2 = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r2.status, 0, r2.stderr);
+      assert.doesNotMatch(
+        r2.stdout,
+        /já derivado anteriormente.*no-op/,
+        "conteúdo do 2º gate é diferente do 1º — não pode ser tratado como no-op",
+      );
+
+      const afterSecondGate = readEntries(editionDir);
+      assert.ok(
+        afterSecondGate.length > afterFirstGate.length,
+        `2º gate deveria acrescentar pedidos novos derivados do seu próprio diff (antes=${afterFirstGate.length}, depois=${afterSecondGate.length})`,
+      );
+
+      // 3ª chamada com o MESMO conteúdo do 2º gate (retomada normal,
+      // #6827/#8081) continua idempotente — não duplica de novo.
+      const r3 = runCli(["derive-stage1", "--edition", "260912", "--editions-dir", dir]);
+      assert.equal(r3.status, 0, r3.stderr);
+      assert.match(r3.stdout, /já derivado anteriormente.*no-op/);
+      assert.deepEqual(readEntries(editionDir), afterSecondGate, "3ª chamada com conteúdo inalterado não pode duplicar");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("derive-stage1: destaque-promote quando há mais itens promovidos do que dropados do top-3", () => {
     const dir = mkdtempSync(join(tmpdir(), "derive-stage1-promote-"));
     try {
