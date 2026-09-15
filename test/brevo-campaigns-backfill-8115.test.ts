@@ -30,6 +30,7 @@ import {
   readCampaignsBackfillCursor,
   readCampaignsArchiveIndex,
   runCampaignsBackfillBatch,
+  BrevoRateLimitError,
   CAMPAIGNS_ARCHIVE_INDEX_KV_KEY,
   CAMPAIGNS_BACKFILL_CURSOR_KV_KEY,
   CAMPAIGNS_FETCH_LIMIT,
@@ -322,5 +323,50 @@ describe("#8115 — runCampaignsBackfillBatch", () => {
 
     assert.equal(result.statsFetched, 0);
     assert.ok(!putCalls.some((p) => p.key === "stats:201"));
+  });
+
+  test("rate-limit REAL esgotado no meio do batch: para o loop e NÃO pula campanhas nunca examinadas (achado de self-review)", async () => {
+    // 3 campanhas imutáveis na página; a 2ª esgota o retry de rate-limit
+    // (BrevoRateLimitError(0) — retryAfterSecs=0 evita qualquer sleep real
+    // no teste, ver computeRetryDelayMs). Sem o guard de `break`, o loop
+    // tentaria (e provavelmente falharia de novo) a 3ª campanha também,
+    // e o offset avançaria por cima das 3 mesmo que só a 1ª tenha sido
+    // gravada com sucesso — perdendo a 3ª PARA SEMPRE (o cursor só anda
+    // pra frente).
+    const c1 = makeCampaign(301, 10 * DAY);
+    const c2 = makeCampaign(302, 11 * DAY);
+    const c3 = makeCampaign(303, 12 * DAY);
+    const calls: string[] = [];
+    const fetchFn = async (path: string) => {
+      calls.push(path);
+      if (path.includes("offset=")) return { campaigns: [c1, c2, c3], count: 303 };
+      if (path.includes("emailCampaigns/302")) throw new BrevoRateLimitError(0);
+      if (path.includes("statistics=globalStats")) return { statistics: { globalStats: fakeGs } };
+      return { campaigns: [], count: 303 };
+    };
+    const { kv, putCalls } = makeKvMock({
+      [CAMPAIGNS_BACKFILL_CURSOR_KV_KEY]: {
+        offset: CAMPAIGNS_FETCH_LIMIT,
+        totalCount: 303,
+        done: false,
+        updatedAt: new Date(NOW).toISOString(),
+      },
+    });
+    const env = { BREVO_API_KEY: "x", STATS_CACHE: kv } as any;
+
+    const result = await runCampaignsBackfillBatch(env, { batchSize: 20, _fetchFn: fetchFn as any, nowMs: NOW });
+
+    // c1 gravado; c2 tentou e esgotou o retry (break); c3 NUNCA examinada.
+    assert.equal(result.statsFetched, 1);
+    assert.ok(putCalls.some((p) => p.key === "stats:301"));
+    assert.ok(!putCalls.some((p) => p.key === "stats:303"));
+    // Offset avança só até a campanha que causou o break (2 processadas:
+    // c1 + c2) — NUNCA até 3, que pularia c3 permanentemente.
+    assert.equal(result.scanned, 2);
+    assert.equal(result.cursor.offset, CAMPAIGNS_FETCH_LIMIT + 2);
+    assert.equal(result.cursor.done, false); // ainda falta c3 — não é o fim do total
+    // c3 nem entrou no índice de arquivo ainda (nunca foi examinada).
+    const archive = await readCampaignsArchiveIndex({ STATS_CACHE: kv as any });
+    assert.deepEqual(archive.map((a) => a.id).sort(), [301, 302]);
   });
 });

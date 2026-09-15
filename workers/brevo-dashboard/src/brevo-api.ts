@@ -2854,7 +2854,10 @@ async function writeCampaignsBackfillCursor(
 }
 
 export interface CampaignsBackfillBatchResult {
-  /** Campanhas lidas na página desta chamada. */
+  /** Campanhas de fato INSPECIONADAS nesta chamada — pode ser menor que a
+   * página lida da API se o loop `break`ou cedo por rate-limit real (ver
+   * `runCampaignsBackfillBatch`); nesse caso as campanhas restantes da
+   * página serão examinadas numa invocação futura, nunca puladas. */
   scanned: number;
   /** Novas entradas gravadas em `stats:{id}` (custo pago pela 1ª vez). */
   statsFetched: number;
@@ -2924,8 +2927,18 @@ export async function runCampaignsBackfillBatch(
   let statsFetched = 0;
   let alreadyCached = 0;
   let skippedMutable = 0;
+  // #8115 (achado de self-review): conta só as campanhas de fato
+  // INSPECIONADAS neste loop — distinto de `page.campaigns.length`, que é
+  // quanto a API devolveu na página. Divergem quando o loop `break`a cedo
+  // (rate-limit real esgotado no meio do batch, ver o `catch` abaixo): as
+  // campanhas restantes da página NUNCA foram examinadas, então o offset
+  // não pode avançar por cima delas — senão a próxima invocação pularia
+  // campanhas que jamais tiveram nome/data registrados no índice de
+  // arquivo, um buraco permanente (o cursor só anda pra frente).
+  let processedCount = 0;
 
   for (const c of page.campaigns) {
+    processedCount++;
     if (!isImmutableCampaign(c.sentDate, nowMs)) {
       // Mutável: nem entra no índice de arquivo (a janela ao vivo já cobre
       // seu período; entrará quando o backfill re-passar por ela, >7d
@@ -2955,8 +2968,25 @@ export async function runCampaignsBackfillBatch(
         await env.STATS_CACHE.put(kvKey, JSON.stringify({ gs })).catch(() => {});
         statsFetched++;
       }
-    } catch {
-      // 429 esgotou o retry, ou erro de rede — o índice de arquivo já
+    } catch (e) {
+      if (e instanceof BrevoRateLimitError) {
+        // #8115 (achado de self-review): a cota REAL se esgotou no meio do
+        // batch (`withRateLimitRetry` já tentou 3x e desistiu) — mesmo que
+        // `assertCampaignQuotaHeadroom` tivesse dado sinal verde no início
+        // desta chamada (ex: outra sessão/cron consumiu a cota em paralelo
+        // entre o assert e agora). Continuar o loop bateria 429 de novo em
+        // CADA campanha restante do batch (até `batchSize`, cada uma com
+        // seu próprio backoff de até 3 tentativas) — puro desperdício de
+        // tempo e pressão adicional sobre uma janela que já está no teto.
+        // Para o loop AQUI: o índice de arquivo já registrou nome+data desta
+        // campanha acima; ela fica sem `stats:{id}` até a próxima invocação.
+        // `processedCount` inclui ESTA campanha (ela foi examinada, só a
+        // busca de stats falhou) mas NÃO as seguintes na página — o offset
+        // avança só até aqui (ver `nextOffset` abaixo), pra que a próxima
+        // chamada retome exatamente das campanhas nunca examinadas.
+        break;
+      }
+      // Erro de rede pontual (não rate-limit) — o índice de arquivo já
       // registrou nome+data desta campanha acima; só os números ficam
       // pendentes. Ela permanece SEM `stats:{id}`, então a PRÓXIMA chamada
       // (depois que o offset avançar) não a re-visita automaticamente —
@@ -2971,7 +3001,13 @@ export async function runCampaignsBackfillBatch(
     await writeCampaignsArchiveIndex(env, [...archive, ...newArchiveEntries]);
   }
 
-  const nextOffset = cursor.offset + page.campaigns.length;
+  // #8115: avança só pelas campanhas de fato INSPECIONADAS (`processedCount`)
+  // — nunca por `page.campaigns.length` bruto, que sobre-avançaria por cima
+  // de campanhas nunca examinadas quando o loop `break`ou cedo por
+  // rate-limit real (ver o `catch` acima). Nos casos comuns (sem break),
+  // `processedCount === page.campaigns.length` — comportamento idêntico ao
+  // de antes desta correção.
+  const nextOffset = cursor.offset + processedCount;
   const totalCount = cursor.totalCount ?? page.count;
   const done = page.campaigns.length === 0 || (totalCount != null && nextOffset >= totalCount);
   const nextCursor: CampaignsBackfillCursor = {
@@ -2982,7 +3018,7 @@ export async function runCampaignsBackfillBatch(
   };
   await writeCampaignsBackfillCursor(env, nextCursor);
 
-  return { scanned: page.campaigns.length, statsFetched, alreadyCached, skippedMutable, requestsUsed, cursor: nextCursor };
+  return { scanned: processedCount, statsFetched, alreadyCached, skippedMutable, requestsUsed, cursor: nextCursor };
 }
 
 /**
