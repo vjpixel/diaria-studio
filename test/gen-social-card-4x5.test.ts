@@ -27,6 +27,7 @@ import {
   editionDateLabel,
   RATIOS,
 } from "../scripts/gen-social-card-4x5.ts";
+import { DAILY_CAROUSEL_BODY_SIZE } from "../scripts/lib/daily-carousel-card.ts";
 
 describe("wrapTitle (#4114)", () => {
   it("quebra só entre palavras — nunca no meio de uma", () => {
@@ -196,11 +197,11 @@ describe("overlayFittingFontSize (#5330 fleet review — extraída de buildOverl
     assert.equal(direct, Number(m?.[1]));
   });
 
-  it("clamp 44-88, igual ao comportamento histórico de buildOverlaySvg", () => {
+  it("clamp DAILY_CAROUSEL_BODY_SIZE-88 (piso 62px, achado ao vivo 260914 — abaixo disso o título da capa ficava menor que o corpo fixo do carrossel)", () => {
     const available = 1080 - 72 * 2;
     assert.ok(overlayFittingFontSize("IA", available) <= 88);
     const longo = "Palavra ".repeat(60).trim();
-    assert.ok(overlayFittingFontSize(longo, available) >= 44);
+    assert.equal(overlayFittingFontSize(longo, available), DAILY_CAROUSEL_BODY_SIZE);
   });
 });
 
@@ -253,6 +254,23 @@ describe("buildCardSvg / buildOverlaySvg — SVG bem-formado (#4114)", () => {
     assert.match(svg, /linearGradient/);
     for (const y of [...svg.matchAll(/<text[^>]*y="([\d.]+)"/g)].map((m) => Number(m[1]))) {
       assert.ok(y > 0 && y < H, `linha de texto fora do card: y=${y}`);
+    }
+  });
+
+  it("título wrapado em 1 linha não estoura a largura disponível em bold (achado ao vivo 260915, edição 260915 D3)", () => {
+    // "Freelancers que usam IA ganham mais" (36 chars) cabia em 1 linha pelo
+    // divisor de regular (26px/char) e vazava pra fora do card renderizado em
+    // bold (700) — o glifo bold é ~12% mais largo que a estimativa assumida.
+    const available = 1080 - 72 * 2;
+    const svg = buildOverlaySvg("Freelancers que usam IA ganham mais", "", { w: 1080, h: 1350 });
+    const sizeMatch = svg.match(/font-size="(\d+)" font-weight="700"/);
+    const size = Number(sizeMatch?.[1]);
+    const lines = [...svg.matchAll(/<text[^>]*font-weight="700"[^>]*>([^<]+)<\/text>/g)].map((m) => m[1]);
+    for (const line of lines) {
+      // Mesma heurística de largura por caractere usada na fórmula (available
+      // / (longest*ratio)) — reaplicada aqui na direção inversa como upper
+      // bound: nenhuma linha renderizada pode exceder o espaço disponível.
+      assert.ok(line.length * size * 0.58 <= available + 1, `linha "${line}" (${line.length} chars @ ${size}px) estoura os ${available}px disponíveis`);
     }
   });
 
