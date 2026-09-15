@@ -81,10 +81,18 @@ interface ApoiarTier {
 
 /**
  * Os 4 níveis — valores de `REWARD_TIER_*_MIN` em
- * `scripts/studio-ui/studio-apoios.ts` (#3844), benefícios de Apoiador/
- * Mantenedor transcritos ao vivo da campanha real na issue #7658 (comentário
- * "Decisão de arquitetura do editor" / tabela de gates). Amigo/Patrono não
- * têm benefício textual documentado em código — ver docstring do módulo pro
+ * `scripts/studio-ui/studio-apoios.ts` (#3844). Benefícios de Apoiador
+ * (Artigo Especial completo + bastidores) e Mantenedor transcritos ao vivo
+ * da campanha real no CORPO da issue #7658, seção "O gate do mensal está
+ * errado hoje — R$10+ quando a promessa é R$25+" (não um comentário — achado
+ * do comment-analyzer, #8137: citação anterior apontava pra um cabeçalho que
+ * na verdade vive na #7916, issue não-relacionada). "Acesso a todo o
+ * histórico já publicado" é inferência do MECANISMO do gate (um único
+ * cookie de sessão R$10+ desbloqueia todos os artigos gated, não compra por
+ * artigo — `workers/artigos/src/index.ts`), não uma frase transcrita
+ * literalmente da campanha; mantido porque é factualmente correto, mas
+ * distinto do resto do parágrafo, que É transcrição. Amigo/Patrono não têm
+ * benefício textual documentado em código — ver docstring do módulo pro
  * porquê da descrição genérica (não é promessa nova, é leitura cumulativa).
  */
 const TIERS: ApoiarTier[] = [

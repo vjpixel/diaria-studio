@@ -164,8 +164,11 @@ export default {
     // #7915: VISUALIZAÇÃO da própria página /apoiar — conta e deixa cair no
     // asset lookup normal (não retorna aqui; quem serve o HTML é o
     // env.ASSETS de sempre). Só a forma canônica sem barra: html_handling =
-    // "drop-trailing-slash" (wrangler.toml) já redireciona /apoiar/ pra cá
-    // antes de qualquer coisa, então contar só "/apoiar" não sub-conta.
+    // "drop-trailing-slash" (wrangler.toml) resolve a variante "/apoiar/" no
+    // PRÓPRIO env.ASSETS.fetch logo abaixo (não antes deste bloco — este
+    // Worker roda primeiro, run_worker_first=true), então essa requisição
+    // nunca bate aqui com barra — contar só "/apoiar" não sub-conta a visita
+    // (comment-analyzer, #8137: comentário anterior sugeria a ordem errada).
     if (request.method === "GET" && reqUrl.pathname === "/apoiar") {
       try {
         const day = new Date().toISOString().slice(0, 10);
