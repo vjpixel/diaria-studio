@@ -1719,6 +1719,80 @@ describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem s
     }
   });
 
+  // REGRESSÃO (#7430): `runWorker` não pode resolver a Promise antes dos
+  // stdio (`stdout`/`stderr`) do filho terminarem de drenar pro pai — era
+  // exatamente essa janela (resolver em `'exit'`/na chegada da mensagem IPC,
+  // que dispara ANTES do stream terminar de encanar) que a hipótese
+  // remanescente da issue aponta como causa de "pass N, fail 0, exit 1":
+  // com 3 níveis de aninhamento (`test/run-tests.test.ts` — ELE MESMO um dos
+  // arquivos de um batch real — fazendo `fork()` genuíno pros seus próprios
+  // testes de integração), um worker de nível 1 podia reportar resultado via
+  // IPC e a Promise resolver ANTES de todo o stdout/stderr do filho (nível
+  // 2) já ter sido encanado — perdendo dados/derrubando escrita tardia.
+  //
+  // Este teste usa um script REAL (fork() genuíno, não mock) que manda a
+  // mensagem IPC IMEDIATAMENTE e só escreve no stdout + sai DEPOIS de um
+  // delay — reproduzindo deterministicamente a ordem de eventos que causava
+  // o vazamento (mensagem chega antes do stream terminar). Se `runWorker`
+  // resolvesse cedo demais (código pré-#7430, baseado em `'message'`/`'exit'`),
+  // este teste capturaria a saída do `runTestBatchesParallel` SEM o marcador
+  // tardio já escrito. Depois do fix (resolve em `'close'`, que só dispara
+  // depois que o stdio do filho fecha), o marcador SEMPRE está presente no
+  // stdout capturado no momento em que a Promise resolve.
+  it("REGRESSÃO (#7430): resultado só é aceito depois que stdout do worker termina de drenar (nunca antes, mesmo com IPC chegando cedo)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "run-tests-parallel-it-drain-"));
+    try {
+      // Script forkado real: manda o resultado via IPC de imediato, mas só
+      // escreve no stdout e sai 150ms depois — simula o stdout do filho
+      // ainda "em trânsito" quando a mensagem IPC já chegou.
+      const delayedScript = join(dir, "delayed-drain-worker.mjs");
+      writeFileSync(
+        delayedScript,
+        [
+          "process.send({ exitCode: 0, completedFiles: 1, totalPass: 1, totalFail: 0, failedBatches: [] });",
+          "setTimeout(() => {",
+          '  process.stdout.write("TRAILING_MARKER_AFTER_MESSAGE\\n");',
+          "  process.exit(0);",
+          "}, 150);",
+        ].join("\n"),
+      );
+      const okTest = `import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("ok", () => { assert.equal(1, 1); });\n`;
+      const fileA = join(dir, "a.test.ts");
+      const fileB = join(dir, "b.test.ts");
+      writeFileSync(fileA, okTest);
+      writeFileSync(fileB, okTest);
+
+      const originalWrite = process.stdout.write.bind(process.stdout);
+      const captured: string[] = [];
+      process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+        captured.push(String(chunk));
+        return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+      }) as typeof process.stdout.write;
+
+      let exit: number;
+      try {
+        exit = await runTestBatchesParallel({
+          files: [fileA, fileB],
+          batchSize: 1,
+          workerCount: 2,
+          scriptPath: delayedScript,
+          batchTimeoutMs: TRIVIAL_FIXTURE_BATCH_TIMEOUT_MS,
+          bisectBudgetMs: 0,
+        });
+      } finally {
+        process.stdout.write = originalWrite;
+      }
+
+      assert.equal(exit, 0, "os 2 workers reportaram sucesso — o resultado real nunca deveria virar falha");
+      assert.ok(
+        captured.some((c) => c.includes("TRAILING_MARKER_AFTER_MESSAGE")),
+        `o marcador escrito DEPOIS da mensagem IPC precisa ter sido drenado ANTES da Promise de runTestBatchesParallel resolver — capturado: ${JSON.stringify(captured)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // Teste direto de `cleanChildEnv` (achado do review, P3: só era exercitada
   // indiretamente pelos 2 testes de integração real acima — uma regressão
   // aqui apareceria como "exit code errado" sem nomear a causa real).
