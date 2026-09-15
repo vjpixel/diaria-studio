@@ -31,6 +31,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { appendEditorRequest, type EditorRequestEntry, type RequestType, type RequestTarget, type Resolution, type RequestSource } from "./log-editor-request.ts";
@@ -1139,25 +1140,54 @@ function classifyStage1DestaqueDiff(categorizedJson: any, approvedJson: any): Ar
  * padrão de imutabilidade de `hasSnapshot`/`snapshotStage2`/`snapshotStage4`
  * acima, só que sem diretório de snapshot (não há conteúdo pra preservar,
  * só o FATO de já ter derivado).
+ *
+ * **Marcador guarda um `content_hash`, não só o fato de "já derivado" (#8106).**
+ * O gate do Stage 1 tem a opção "rejeitar e re-rodar" (`.claude/agents/orchestrator-stage-1-research.md`
+ * §1x item 2): `01-categorized.json`/`01-approved.json` são regenerados e o
+ * editor passa por um 2º gate. Um marcador que só registra "já rodou uma vez"
+ * (sem checar SE o conteúdo mudou) faz esta função virar no-op silencioso no
+ * 2º gate — exatamente as edições que valem (a 2ª passada) nunca são
+ * derivadas, e só as descartadas (a 1ª) ficam em `editor-requests.jsonl`.
+ * `computeStage1ContentHash` faz sha256 do conteúdo bruto de
+ * `01-categorized.json` + `01-approved.json` concatenado; o marcador só é
+ * tratado como "já derivado pra este conteúdo" quando o hash gravado bate
+ * com o hash atual dos dois arquivos — conteúdo diferente (novo gate) sempre
+ * deriva de novo, e reexecução genuína com os mesmos arquivos (retomada de
+ * Stage 1 interrompido) continua idempotente.
  */
 const STAGE1_DERIVED_MARKER = "_internal/.step-1-editor-requests-derived.json";
 
-function hasStage1DerivedMarker(editionDir: string): boolean {
-  return existsSync(resolve(editionDir, STAGE1_DERIVED_MARKER));
+interface Stage1DerivedMarker {
+  derived_at: string;
+  entries_derived: number;
+  /** sha256 de `01-categorized.json` + `01-approved.json` no momento da derivação (#8106). */
+  content_hash?: string;
 }
 
-function writeStage1DerivedMarker(editionDir: string, count: number): void {
+function readStage1DerivedMarker(editionDir: string): Stage1DerivedMarker | null {
+  const markerPath = resolve(editionDir, STAGE1_DERIVED_MARKER);
+  if (!existsSync(markerPath)) return null;
+  try {
+    return JSON.parse(readFileSync(markerPath, "utf8")) as Stage1DerivedMarker;
+  } catch {
+    return null;
+  }
+}
+
+function computeStage1ContentHash(catPath: string, apprPath: string): string {
+  const catRaw = readFileSync(catPath, "utf8");
+  const apprRaw = readFileSync(apprPath, "utf8");
+  return createHash("sha256").update(catRaw).update(" ").update(apprRaw).digest("hex");
+}
+
+function writeStage1DerivedMarker(editionDir: string, count: number, contentHash: string): void {
   const markerPath = resolve(editionDir, STAGE1_DERIVED_MARKER);
   mkdirSync(dirname(markerPath), { recursive: true });
-  writeFileSync(markerPath, JSON.stringify({ derived_at: new Date().toISOString(), entries_derived: count }, null, 2), "utf8");
+  const marker: Stage1DerivedMarker = { derived_at: new Date().toISOString(), entries_derived: count, content_hash: contentHash };
+  writeFileSync(markerPath, JSON.stringify(marker, null, 2), "utf8");
 }
 
 function deriveStage1(editionDir: string, edition: string): number {
-  if (hasStage1DerivedMarker(editionDir)) {
-    console.log(`[derive-editor-requests] Stage 1 gate: já derivado anteriormente pra esta edição (marcador existe) — no-op, idempotente (#8081).`);
-    return 0;
-  }
-
   const gatePath = join(editionDir, "_internal", ".step-1-gate.json");
   if (!existsSync(gatePath)) {
     console.log(`[derive-editor-requests] Stage 1 gate: .step-1-gate.json ausente — pulando (edição anterior ao #4842, ou apply-gate-edits.ts não rodou).`);
@@ -1184,6 +1214,17 @@ function deriveStage1(editionDir: string, edition: string): number {
     return 0;
   }
 
+  // Idempotência por CONTEÚDO, não só pela existência do marcador (#8106):
+  // "rejeitar e re-rodar" regenera 01-categorized.json/01-approved.json e o
+  // editor passa por um 2º gate — um marcador que só registrasse "já rodou"
+  // faria essa 2ª passada (a que vale) virar no-op silencioso.
+  const contentHash = computeStage1ContentHash(catPath, apprPath);
+  const existingMarker = readStage1DerivedMarker(editionDir);
+  if (existingMarker && existingMarker.content_hash === contentHash) {
+    console.log(`[derive-editor-requests] Stage 1 gate: já derivado anteriormente pra este conteúdo (hash bate) — no-op, idempotente (#8081/#8106).`);
+    return 0;
+  }
+
   let categorizedJson: any;
   let approvedJson: any;
   try {
@@ -1203,7 +1244,7 @@ function deriveStage1(editionDir: string, edition: string): number {
     count++;
   }
 
-  writeStage1DerivedMarker(editionDir, count);
+  writeStage1DerivedMarker(editionDir, count, contentHash);
   console.log(`[derive-editor-requests] Stage 1 gate: ${count} pedidos derivados`);
   return count;
 }
