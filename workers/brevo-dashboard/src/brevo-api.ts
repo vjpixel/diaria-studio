@@ -2670,6 +2670,321 @@ export async function fetchRecentCampaigns(
   });
 }
 
+// ---------------------------------------------------------------------------
+// #8115: paginação por `offset` + backfill THROTTLED/RETOMÁVEL de campanhas
+// além da janela de `CAMPAIGNS_FETCH_LIMIT` (as 100 mais recentes). "Totais
+// por mês" (sections-kv.ts) só agrega a janela ao vivo — meses mais antigos
+// que ~3 semanas ficam incompletos ou somem da tabela (#3080 avisa, não
+// recupera). Este bloco é a Fatia B do #6720 (ficou pendente quando o #6720
+// fechou por acidente via squash de outra PR — ver #8115 comentário 1).
+//
+// Design: 2 estruturas persistidas no MESMO KV `STATS_CACHE` que
+// `fetchRecentCampaigns` já usa —
+//   1. `stats:{id}` (chave JÁ existente, #2314) — reusada tal-e-qual pra
+//      campanhas históricas: o backfill grava `{ gs }` pra qualquer
+//      campanha imutável (`isImmutableCampaign`) que ainda não tenha essa
+//      chave, custando 1 GET por campanha, 1 única vez.
+//   2. `CAMPAIGNS_ARCHIVE_INDEX_KV_KEY` (NOVA) — índice leve (id, nome,
+//      sentDate, listas) de toda campanha que o backfill já visitou, fora
+//      da janela ao vivo. Sem este índice, "Totais por mês" não teria como
+//      saber QUAIS ids buscar no histórico — `stats:{id}` sozinho não lista
+//      nada, só responde por id já conhecido.
+//
+// O CURSOR (`CAMPAIGNS_BACKFILL_CURSOR_KV_KEY`) é o que torna o processo
+// retomável: cada chamada de `runCampaignsBackfillBatch` processa um lote
+// pequeno a partir do offset salvo e escreve o offset seguinte de volta —
+// nunca uma varredura completa numa invocação só (issue #8115, restrição
+// explícita: "sem varredura única obrigatória").
+//
+// Gating de rate limit: este módulo roda TAMBÉM no Worker Cloudflare (sem
+// node:fs, ver o bloco do observador de cota, #6029, logo acima) — por isso
+// `runCampaignsBackfillBatch` NÃO decide sozinho se deve rodar. Quem chama
+// (hoje: `scripts/clarice-backfill-campaigns.ts`, um script Node) é
+// responsável por checar `assertCampaignQuotaHeadroom` de
+// `scripts/lib/brevo-rate-state.ts` ANTES de invocar isto — mesmo padrão já
+// usado por `dashboard-clarice.ts` (`CAMPAIGNS_FETCH_RESERVE`, #5697/#6029).
+// `withRateLimitRetry` (já usado nas 2 chamadas HTTP abaixo) cobre só o
+// backoff de um 429 pontual, não a decisão de "vale a pena começar".
+// ---------------------------------------------------------------------------
+
+/** Metadado mínimo de uma campanha fora da janela ao vivo — NÃO inclui
+ * stats (essas ficam em `stats:{id}`, chave compartilhada com
+ * `fetchRecentCampaigns`). Persistido em `CAMPAIGNS_ARCHIVE_INDEX_KV_KEY`. */
+export interface ArchivedCampaignMeta {
+  id: number;
+  name: string;
+  sentDate: string | null;
+  listIds: number[];
+}
+
+/** Chave KV do índice de campanhas arquivadas — array de `ArchivedCampaignMeta`,
+ * SEM TTL (histórico imutável; só recebe campanhas `isImmutableCampaign`). */
+export const CAMPAIGNS_ARCHIVE_INDEX_KV_KEY = "dash:campaigns:archive-index";
+
+/** Chave KV do cursor de progresso do backfill — ver `CampaignsBackfillCursor`. */
+export const CAMPAIGNS_BACKFILL_CURSOR_KV_KEY = "dash:campaigns:backfill-cursor";
+
+export interface CampaignsBackfillCursor {
+  /** Próximo offset a buscar em `/v3/emailCampaigns?status=sent`. Começa em
+   * `CAMPAIGNS_FETCH_LIMIT` — a janela ao vivo já cobre `[0, 100)`. */
+  offset: number;
+  /** `count` total de campanhas `sent` na conta, medido por
+   * `fetchCampaignsCount` na 1ª chamada. `null` até a 1ª medição. */
+  totalCount: number | null;
+  /** `true` quando `offset` alcançou `totalCount` — nada mais a backfillar
+   * (até uma campanha nova elevar o total; não há re-medição automática). */
+  done: boolean;
+  updatedAt: string;
+}
+
+function defaultCampaignsBackfillCursor(nowMs: number): CampaignsBackfillCursor {
+  return { offset: CAMPAIGNS_FETCH_LIMIT, totalCount: null, done: false, updatedAt: new Date(nowMs).toISOString() };
+}
+
+/** Pura: normaliza um cursor lido do KV. `null` se ausente/shape inválido —
+ * caller cai no default (`defaultCampaignsBackfillCursor`). Exportada pra teste. */
+export function normalizeCampaignsBackfillCursor(raw: unknown): CampaignsBackfillCursor | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const r = raw as Partial<CampaignsBackfillCursor>;
+  if (typeof r.offset !== "number" || typeof r.done !== "boolean" || typeof r.updatedAt !== "string") return null;
+  const totalCount = typeof r.totalCount === "number" ? r.totalCount : null;
+  return { offset: r.offset, totalCount, done: r.done, updatedAt: r.updatedAt };
+}
+
+/** Pura: extrai o campo `count` (total de campanhas na conta, presente em
+ * toda resposta de listagem da Brevo — não só na página) de forma
+ * defensiva. `null` se ausente/inválido. Exportada pra teste. */
+export function parseCampaignsCount(raw: unknown): number | null {
+  const count = (raw as { count?: unknown } | null | undefined)?.count;
+  return typeof count === "number" && Number.isFinite(count) && count >= 0 ? count : null;
+}
+
+/**
+ * Mede o total de campanhas `sent` da conta com 1 GET barato (`limit=1`) —
+ * passo 1 da issue #8115 ("medir antes de varrer"). Não usa cache: é
+ * chamado no máximo 1x por cursor (só quando `totalCount` ainda é `null`).
+ */
+export async function fetchCampaignsCount(
+  env: Env,
+  _fetchFn: typeof brevoFetch = brevoFetch,
+): Promise<number | null> {
+  const data = await withRateLimitRetry(() =>
+    _fetchFn<{ campaigns: BrevoCampaign[]; count?: number }>(
+      `/v3/emailCampaigns?status=sent&limit=1&sort=desc`,
+      env,
+    ),
+  );
+  return parseCampaignsCount(data);
+}
+
+/**
+ * Busca UMA página da listagem de campanhas `sent`, com `offset` — SEM
+ * enriquecimento de stats/lista (1 GET, barato). Distinta de
+ * `fetchRecentCampaigns` (que sempre começa em offset 0 e enriquece cada
+ * campanha com 1-2 GETs adicionais) — o backfill só precisa saber QUAIS
+ * campanhas existem além da janela antes de decidir, campanha a campanha,
+ * se vale buscar stats (`runCampaignsBackfillBatch` abaixo).
+ */
+export async function fetchCampaignsListPage(
+  env: Env,
+  opts: { limit: number; offset: number },
+  _fetchFn: typeof brevoFetch = brevoFetch,
+): Promise<{ campaigns: BrevoCampaign[]; count: number | null }> {
+  const data = await withRateLimitRetry(() =>
+    _fetchFn<{ campaigns: BrevoCampaign[]; count?: number }>(
+      `/v3/emailCampaigns?status=sent&limit=${opts.limit}&offset=${opts.offset}&sort=desc`,
+      env,
+    ),
+  );
+  return { campaigns: data.campaigns ?? [], count: parseCampaignsCount(data) };
+}
+
+/** Fail-soft: `env.STATS_CACHE` ausente (dev local sem KV) devolve array
+ * vazio em vez de lançar — mesmo padrão do resto do arquivo. */
+export async function readCampaignsArchiveIndex(
+  env: Pick<Env, "STATS_CACHE">,
+): Promise<ArchivedCampaignMeta[]> {
+  if (!env.STATS_CACHE) return [];
+  try {
+    const raw = await env.STATS_CACHE.get(CAMPAIGNS_ARCHIVE_INDEX_KV_KEY, "json");
+    return Array.isArray(raw) ? (raw as ArchivedCampaignMeta[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeCampaignsArchiveIndex(
+  env: Pick<Env, "STATS_CACHE">,
+  entries: ArchivedCampaignMeta[],
+): Promise<void> {
+  if (!env.STATS_CACHE) return;
+  try {
+    // Sem TTL — mesmo racional de `stats:{id}` imutável: histórico não muda.
+    await env.STATS_CACHE.put(CAMPAIGNS_ARCHIVE_INDEX_KV_KEY, JSON.stringify(entries));
+  } catch {
+    // fail-soft — write de índice nunca deve derrubar o backfill em curso.
+  }
+}
+
+export async function readCampaignsBackfillCursor(
+  env: Pick<Env, "STATS_CACHE">,
+  nowMs: number = Date.now(),
+): Promise<CampaignsBackfillCursor> {
+  const fallback = defaultCampaignsBackfillCursor(nowMs);
+  if (!env.STATS_CACHE) return fallback;
+  try {
+    const raw = await env.STATS_CACHE.get(CAMPAIGNS_BACKFILL_CURSOR_KV_KEY, "json");
+    return normalizeCampaignsBackfillCursor(raw) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function writeCampaignsBackfillCursor(
+  env: Pick<Env, "STATS_CACHE">,
+  cursor: CampaignsBackfillCursor,
+): Promise<void> {
+  if (!env.STATS_CACHE) return;
+  try {
+    await env.STATS_CACHE.put(CAMPAIGNS_BACKFILL_CURSOR_KV_KEY, JSON.stringify(cursor));
+  } catch {
+    // fail-soft — perder o cursor só faz a próxima chamada remedir/reprocessar,
+    // nunca corrompe dado já gravado em stats:{id}/archive-index.
+  }
+}
+
+export interface CampaignsBackfillBatchResult {
+  /** Campanhas lidas na página desta chamada. */
+  scanned: number;
+  /** Novas entradas gravadas em `stats:{id}` (custo pago pela 1ª vez). */
+  statsFetched: number;
+  /** Campanhas puladas por já terem `stats:{id}` em cache — 0 GET extra. */
+  alreadyCached: number;
+  /** Campanhas puladas por ainda serem mutáveis (<7d, `isImmutableCampaign`
+   * = false) — o backfill só persiste imutáveis; essas continuam cobertas
+   * pela janela ao vivo até completarem 7 dias. */
+  skippedMutable: number;
+  /** Requests HTTP à Brevo gastos nesta chamada (1 listagem + até N stats;
+   * +1 se mediu `totalCount` pela 1ª vez) — pra log/observabilidade do
+   * caller, que é quem decide quando parar de chamar (orçamento próprio). */
+  requestsUsed: number;
+  cursor: CampaignsBackfillCursor;
+}
+
+/**
+ * Passo incremental único do backfill (issue #8115). Lê o cursor, mede
+ * `totalCount` se ainda não souber, busca 1 página de até `batchSize`
+ * campanhas a partir do offset salvo, e para cada uma IMUTÁVEL sem
+ * `stats:{id}` ainda cacheado, faz 1 GET de `globalStats` e grava
+ * permanentemente. Avança e persiste o cursor antes de retornar — chamar de
+ * novo continua exatamente de onde parou (idempotente: campanha já
+ * cacheada nunca gera 2º GET, mesmo que o batch seja re-processado).
+ *
+ * NÃO decide sozinho quando é seguro rodar em relação ao rate limit da
+ * conta — ver o bloco de comentário no topo desta seção. O caller
+ * (`scripts/clarice-backfill-campaigns.ts`) gate via
+ * `assertCampaignQuotaHeadroom` antes de chamar isto.
+ */
+export async function runCampaignsBackfillBatch(
+  env: Env,
+  opts: {
+    /** Campanhas a processar por chamada. Default 20 — pequeno de propósito
+     * (issue #8115: "N campanhas por invocação, nunca varredura completa"). */
+    batchSize?: number;
+    _fetchFn?: typeof brevoFetch;
+    nowMs?: number;
+  } = {},
+): Promise<CampaignsBackfillBatchResult> {
+  const batchSize = opts.batchSize ?? 20;
+  const _fetchFn = opts._fetchFn ?? brevoFetch;
+  const nowMs = opts.nowMs ?? Date.now();
+
+  let cursor = await readCampaignsBackfillCursor(env, nowMs);
+  let requestsUsed = 0;
+
+  if (cursor.totalCount == null) {
+    const totalCount = await fetchCampaignsCount(env, _fetchFn);
+    requestsUsed++;
+    cursor = { ...cursor, totalCount, updatedAt: new Date(nowMs).toISOString() };
+  }
+
+  if (cursor.done || cursor.totalCount == null || cursor.offset >= cursor.totalCount) {
+    const doneCursor: CampaignsBackfillCursor = { ...cursor, done: true, updatedAt: new Date(nowMs).toISOString() };
+    await writeCampaignsBackfillCursor(env, doneCursor);
+    return { scanned: 0, statsFetched: 0, alreadyCached: 0, skippedMutable: 0, requestsUsed, cursor: doneCursor };
+  }
+
+  const page = await fetchCampaignsListPage(env, { limit: batchSize, offset: cursor.offset }, _fetchFn);
+  requestsUsed++;
+
+  const archive = await readCampaignsArchiveIndex(env);
+  const archiveIds = new Set(archive.map((a) => a.id));
+  const newArchiveEntries: ArchivedCampaignMeta[] = [];
+
+  let statsFetched = 0;
+  let alreadyCached = 0;
+  let skippedMutable = 0;
+
+  for (const c of page.campaigns) {
+    if (!isImmutableCampaign(c.sentDate, nowMs)) {
+      // Mutável: nem entra no índice de arquivo (a janela ao vivo já cobre
+      // seu período; entrará quando o backfill re-passar por ela, >7d
+      // depois, com sentDate já imutável).
+      skippedMutable++;
+      continue;
+    }
+    if (!archiveIds.has(c.id)) {
+      newArchiveEntries.push({ id: c.id, name: c.name, sentDate: c.sentDate, listIds: c.recipients?.lists ?? [] });
+    }
+    const kvKey = `stats:${c.id}`;
+    const cached = env.STATS_CACHE ? await env.STATS_CACHE.get(kvKey, "json").catch(() => null) : null;
+    if (cached) {
+      alreadyCached++;
+      continue;
+    }
+    try {
+      const detail = await withRateLimitRetry(() =>
+        _fetchFn<BrevoCampaign>(`/v3/emailCampaigns/${c.id}?statistics=globalStats`, env),
+      );
+      requestsUsed++;
+      const gs = detail.statistics?.globalStats;
+      // #1141: mesmo guard de `fetchRecentCampaigns` — Brevo pode devolver
+      // globalStats zerado; persistir isso sem TTL criaria entrada
+      // permanente e errada, impossível de recuperar sem intervenção manual.
+      if (gs && gs.sent > 0 && env.STATS_CACHE) {
+        await env.STATS_CACHE.put(kvKey, JSON.stringify({ gs })).catch(() => {});
+        statsFetched++;
+      }
+    } catch {
+      // 429 esgotou o retry, ou erro de rede — o índice de arquivo já
+      // registrou nome+data desta campanha acima; só os números ficam
+      // pendentes. Ela permanece SEM `stats:{id}`, então a PRÓXIMA chamada
+      // (depois que o offset avançar) não a re-visita automaticamente —
+      // aceito: o índice basta pra listar a campanha, e um backfill futuro
+      // com `--batch-size` maior ou um script de reconciliação dedicado
+      // pode preencher lacunas por id, se algum dia importar (fora do
+      // escopo desta fatia — ver PR #8115).
+    }
+  }
+
+  if (newArchiveEntries.length > 0) {
+    await writeCampaignsArchiveIndex(env, [...archive, ...newArchiveEntries]);
+  }
+
+  const nextOffset = cursor.offset + page.campaigns.length;
+  const totalCount = cursor.totalCount ?? page.count;
+  const done = page.campaigns.length === 0 || (totalCount != null && nextOffset >= totalCount);
+  const nextCursor: CampaignsBackfillCursor = {
+    offset: nextOffset,
+    totalCount,
+    done,
+    updatedAt: new Date(nowMs).toISOString(),
+  };
+  await writeCampaignsBackfillCursor(env, nextCursor);
+
+  return { scanned: page.campaigns.length, statsFetched, alreadyCached, skippedMutable, requestsUsed, cursor: nextCursor };
+}
+
 /**
  * #2307: helper puro que converte `retryAfterSecs` (campo de BrevoRateLimitError)
  * em milissegundos de espera. Extraído de withRateLimitRetry para:
