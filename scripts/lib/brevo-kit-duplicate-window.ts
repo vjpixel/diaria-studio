@@ -62,6 +62,23 @@
  * dependência injetável (`appendDuplicateWindowLog`, opcional): omitida nos
  * testes (nenhum efeito colateral em disco), injetada com a implementação
  * de produção só por `main()`.
+ *
+ * ## Resultado da medição (15/09/2026) — decisão: aceitar-e-documentar
+ *
+ * Critério definido na própria issue (`aguardando-ate: 2026-09-13`, ~2
+ * semanas de produção real desde o merge de 30/08): `data/brevo-diaria/
+ * kit-duplicate-window-log.jsonl` acumulou **5 detecções**, todas no
+ * primeiro dia após o deploy (30/08 — provável backlog de confirmações
+ * pré-existentes, não tráfego incremental diário) e **nenhuma nova desde
+ * então**, apesar de `evaluate-brevo-diaria.ts` seguir rodando diariamente
+ * em produção (confirmado via `data/run-log.jsonl`). Das 5, todas têm
+ * `brevo_sends_count: 0` e `last_brevo_send_at: null` — ou seja, **zero
+ * duplicidade real observada** (nenhum dos 5 casos detectados chegou a
+ * receber um envio Brevo dentro da janela). Isso bate com a previsão da
+ * própria issue: "se for ~zero na prática, documentar é a resposta certa".
+ * Webhook do Kit e aumento de frequência da rodada ficam descartados por
+ * falta de justificativa — reabrir só se o log voltar a acumular ocorrências
+ * com `brevo_sends_count > 0`.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
