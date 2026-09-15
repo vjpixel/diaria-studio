@@ -1476,10 +1476,36 @@ export function pipeWorkerStream(
  *  interlaçamento de log explicitamente). Listener de `error` nos streams
  *  (achado do review, P3): sem ele, um erro de stream (ex: EPIPE) derrubaria
  *  o processo PAI inteiro sem a mensagem diagnóstica que todo outro caminho
- *  de falha deste arquivo tem. */
+ *  de falha deste arquivo tem.
+ *
+ *  #7430: resolve a Promise no evento `'close'`, nunca no `'exit'`. Node
+ *  emite `'exit'` assim que o processo termina, mas só emite `'close'`
+ *  DEPOIS que os streams stdio do filho (`child.stdout`/`child.stderr`)
+ *  também fecharam — ou seja, depois que tudo que o filho escreveu já foi
+ *  lido pela origem do pipe (`pipeWorkerStream`). Resolver em `'exit'`
+ *  deixava uma janela onde a Promise resolvia (e o worker de nível 1 podia
+ *  considerar o grupo completo) enquanto o `child.stdout`/`child.stderr`
+ *  ainda tinha bytes em trânsito — no caso de 3 níveis de aninhamento que
+ *  motiva esta issue (`test/run-tests.test.ts`, ELE MESMO um dos arquivos
+ *  de um batch real, roda `runTestBatchesParallel` de novo com `fork()`
+ *  genuíno pros seus próprios testes de integração), esse é exatamente o
+ *  worker de nível 1 que hospeda os testes deste arquivo — fechar cedo
+ *  demais é a janela de corrida que a hipótese remanescente do #7430
+ *  (comentário de 260914) aponta como candidata. `'close'` fecha essa
+ *  janela: a mensagem via IPC (`'message'`) só é aceita como resultado
+ *  FINAL depois que os stdio do processo já drenaram por completo, nunca
+ *  antes — sem exigir nenhum vazamento de `process.exitCode` entre
+ *  processos (isolamento de processo por `fork()` nunca foi a causa,
+ *  descartado no comentário de 260904). `'close'` sempre dispara depois de
+ *  `'exit'` (ou no lugar dele, se o processo nunca chegou a rodar) — nunca
+ *  fica pendurado esperando um evento que não vem. */
 function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: string): Promise<WorkerResult> {
   return new Promise((resolvePromise) => {
     let settled = false;
+    // #7430: o resultado do IPC é só CAPTURADO aqui — a Promise só resolve
+    // de fato no handler de `'close'` abaixo, depois que os stdio do filho
+    // já terminaram de drenar. Ver docstring da função.
+    let receivedResult: WorkerResult | null = null;
     const settle = (result: WorkerResult) => {
       if (settled) return;
       settled = true;
@@ -1505,24 +1531,31 @@ function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: stri
     child.on("message", (msg: unknown) => {
       const m = msg as Partial<WorkerResult> | null;
       if (m && typeof m.exitCode === "number" && typeof m.completedFiles === "number") {
-        clearTimeout(timer);
-        settle({
+        receivedResult = {
           exitCode: m.exitCode,
           completedFiles: m.completedFiles,
           totalPass: typeof m.totalPass === "number" ? m.totalPass : 0,
           totalFail: typeof m.totalFail === "number" ? m.totalFail : 0,
           failedBatches: Array.isArray(m.failedBatches) ? m.failedBatches : [],
-        });
+        };
       }
     });
-    child.on("exit", () => {
-      if (!settled) {
-        console.error(
-          `run-tests: worker (${payload.label}) terminou SEM enviar resultado via IPC (crash, OOM, ou kill externo antes de completar) — tratando como falha dura, 0 arquivos completados neste grupo.`,
-        );
-      }
+    // #7430: era `child.on("exit", ...)` — trocado por `"close"` (ver
+    // docstring acima). `clearTimeout` só evita o timer disparar depois que
+    // já temos um desfecho real; não protege contra dupla-resolução (a
+    // guarda `settled` em `settle` já cobre isso).
+    child.on("close", () => {
       clearTimeout(timer);
-      settle({ exitCode: 1, completedFiles: 0, totalPass: 0, totalFail: 0, failedBatches: [`${payload.label} (worker terminou sem enviar resultado)`] });
+      if (receivedResult) {
+        settle(receivedResult);
+      } else {
+        if (!settled) {
+          console.error(
+            `run-tests: worker (${payload.label}) terminou SEM enviar resultado via IPC (crash, OOM, ou kill externo antes de completar) — tratando como falha dura, 0 arquivos completados neste grupo.`,
+          );
+        }
+        settle({ exitCode: 1, completedFiles: 0, totalPass: 0, totalFail: 0, failedBatches: [`${payload.label} (worker terminou sem enviar resultado)`] });
+      }
     });
     child.on("error", (err) => {
       console.error(`run-tests: falha ao iniciar worker (${payload.label}): ${err.message}`);
