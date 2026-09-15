@@ -71,6 +71,8 @@ import {
   assertEmail3ScheduleAuthorized,
   decideLotReconciliation,
   reconcileLotWithKit,
+  rebuildLotPlanForRecreate,
+  findLatestLotForKindDate,
   type OnboardingKitCandidate,
   type OnboardingKitLot,
   type OnboardingKitLotKind,
@@ -191,28 +193,64 @@ export function claimLot(storePath: string, lotPlan: OnboardingKitLotPlan, nowMs
   return withFileLock(
     lockPath,
     () => {
-      const { store: freshStore } = readStore(storePath);
+      // #7922 (gap #2, audit pós-merge da fatia 1/N): `readStore` devolve
+      // `{ store: emptyStore(), corrupted: true }` em SILÊNCIO — sem lançar —
+      // quando o JSON do disco está ilegível. Destructurar só `{ store }`
+      // (como a versão anterior fazia) tratava um store CORROMPIDO como se
+      // fosse um store vazio legítimo — e como esta função é quem ESCREVE de
+      // volta (`writeStore` abaixo), seguir adiante persistiria esse vazio
+      // por cima do arquivo bom, apagando todo `kit_transport.lots`
+      // existente. Abortar alto aqui em vez de proceder.
+      const { store: freshStore, corrupted } = readStore(storePath);
+      if (corrupted) {
+        throw new Error(
+          `[onboarding-kit-transport] store em "${storePath}" está CORROMPIDO (JSON ilegível) — recusando decidir/persistir ` +
+            `kit_transport.lots sobre um snapshot que "readStore" já esvaziou silenciosamente. Escrever agora sobrescreveria o ` +
+            `arquivo bom com um vazio. Repare/restaure o store antes de rodar --send/--reconcile de novo.`,
+        );
+      }
       freshStore.kit_transport ??= { lots: {} };
-      const existingLot = freshStore.kit_transport.lots[lotPlan.lot_id] ?? null;
+      // #7922 (gap #4, audit pós-merge): olha pro lote MAIS NOVO da chave
+      // kind+dateIso (`findLatestLotForKindDate`), nunca fixo em
+      // `lotPlan.lot_id` (sempre seq=1, como o caller — `main()` abaixo —
+      // sempre constrói). Sem isto, depois de uma 1ª recriação (seq=2), toda
+      // chamada seguinte continuaria checando o slot velho (seq=1, morto
+      // pra sempre) e recriaria de novo indefinidamente — nunca veria que o
+      // lote recriado já teve seu broadcast confirmado.
+      const existingLot = findLatestLotForKindDate(freshStore.kit_transport.lots, lotPlan.kind, lotPlan.dateIso);
       const decision = decideLotReconciliation(existingLot, nowMs);
       if (decision.action === "blocked_concurrent") return { decision, lot: null };
       if (decision.action === "reuse") return { decision, lot: decision.lot };
       // action === "create" | "recreate_after_timeout" — seguro criar.
+      //
+      // #7922 (gap #4, audit pós-merge da fatia 1/N): "recreate_after_timeout"
+      // NUNCA reusa lot_id/tag_name do lote velho — precisa de identidade NOVA
+      // (`rebuildLotPlanForRecreate`, seq incrementado via `nextLotSeq`) pra
+      // (a) nunca sobrescrever/perder o registro do lote velho no store
+      // (evidência de auditoria de um possível broadcast órfão no Kit) e
+      // (b) nunca reusar uma tag que possa já estar amarrada a um broadcast
+      // que a tentativa anterior de fato criou, mas cujo response se perdeu
+      // antes de `broadcast_id` ser persistido localmente — risco residual
+      // documentado na docstring de `decideLotReconciliation`/gap #1 (mesmo
+      // audit). "create" (nenhum lote local pra esta chave) continua usando
+      // `lotPlan` tal como veio — não há identidade velha a evitar.
+      const effectivePlan =
+        decision.action === "recreate_after_timeout" ? rebuildLotPlanForRecreate(lotPlan, freshStore.kit_transport.lots) : lotPlan;
       const pending: OnboardingKitLot = {
-        lot_id: lotPlan.lot_id,
-        kind: lotPlan.kind,
-        tag_name: lotPlan.tag_name,
+        lot_id: effectivePlan.lot_id,
+        kind: effectivePlan.kind,
+        tag_name: effectivePlan.tag_name,
         tag_id: null,
         broadcast_id: null,
-        recipient_subscription_ids: lotPlan.recipient_subscription_ids,
-        recipient_emails: lotPlan.recipient_emails,
+        recipient_subscription_ids: effectivePlan.recipient_subscription_ids,
+        recipient_emails: effectivePlan.recipient_emails,
         status: "pending",
         created_at: new Date(nowMs).toISOString(),
         send_at: null,
         last_reconciled_at: null,
         last_error: null,
       };
-      freshStore.kit_transport.lots[lotPlan.lot_id] = pending;
+      freshStore.kit_transport.lots[pending.lot_id] = pending;
       writeStore(freshStore, storePath);
       return { decision, lot: pending };
     },
@@ -230,7 +268,18 @@ export function persistLotUpdate(storePath: string, lot: OnboardingKitLot): void
   withFileLock(
     lockPath,
     () => {
-      const { store: freshStore } = readStore(storePath);
+      // #7922 (gap #2, mesma classe do guard em `claimLot` acima): um store
+      // corrompido nunca deve ser tratado como "vazio, seguro escrever por
+      // cima" — faria este `writeStore` apagar todo `kit_transport.lots`
+      // (e todo o resto do store) que estivesse bom no disco.
+      const { store: freshStore, corrupted } = readStore(storePath);
+      if (corrupted) {
+        throw new Error(
+          `[onboarding-kit-transport] store em "${storePath}" está CORROMPIDO (JSON ilegível) — recusando persistir a ` +
+            `atualização do lote "${lot.lot_id}" sobre um snapshot que "readStore" já esvaziou silenciosamente. Repare/restaure ` +
+            `o store antes de rodar --send/--reconcile de novo.`,
+        );
+      }
       freshStore.kit_transport ??= { lots: {} };
       freshStore.kit_transport.lots[lot.lot_id] = lot;
       writeStore(freshStore, storePath);
@@ -267,7 +316,19 @@ async function main(): Promise<void> {
   const kitCfg = kitResult.config;
 
   const storePath = args.storePath ?? resolve(ROOT, onboardingCfg.store_path ?? DEFAULT_STORE_PATH);
-  const { store } = readStore(storePath);
+  // #7922 (gap #2, mesma classe do guard em `claimLot`/`persistLotUpdate`
+  // abaixo): sem checar `corrupted`, um JSON ilegível vira silenciosamente
+  // um store vazio, e `--cancel-lot`/`--approve-email3-lot`/`--reconcile`
+  // (que leem `store.kit_transport.lots` desta cópia) reportariam "lote não
+  // encontrado" — nunca "store corrompido" — mascarando a causa real.
+  const { store, corrupted } = readStore(storePath);
+  if (corrupted) {
+    process.stderr.write(
+      `[onboarding-kit-transport] store em "${storePath}" está CORROMPIDO (JSON ilegível) — abortando antes de decidir/tocar ` +
+        `qualquer lote sobre um snapshot que "readStore" já esvaziou silenciosamente. Repare/restaure o store antes de rodar de novo.\n`,
+    );
+    process.exit(2);
+  }
   store.kit_transport ??= { lots: {} };
 
   // --- Kill switch dedicado — checado ANTES de qualquer ação de escrita.
@@ -428,6 +489,15 @@ async function main(): Promise<void> {
 
   const dateIso = unixSecondsToBrtDate(nowSec);
   const summary: Record<string, unknown> = { mode: args.send ? "SEND" : "dry-run", now: new Date(nowSec * 1000).toISOString(), lots: [] as unknown[] };
+  // #7922 (gap #3, audit pós-merge da fatia 1/N): `plan.skips` (candidatos
+  // barrados por elegibilidade/guard de conteúdo — snippet ausente/pendente,
+  // idade mínima, sem abertura, etc.) nunca aparecia no output deste
+  // executor, diferente do irmão `onboarding-welcome-run.ts`
+  // (`summary.skips = plan.skips.map(...)`, adicionado depois do #7670: um
+  // skip silencioso fez o e-mail 3 nunca disparar pra ninguém, por meses,
+  // com o script saindo exit 0 o tempo todo). Mesma forma/convenção do
+  // irmão — nunca inclui `entry` bruta (PII) no resumo impresso.
+  summary.skips = plan.skips.map((s) => ({ etapa: s.etapa, motivo: s.motivo, detalhe: s.detalhe }));
 
   for (const kind of ["email1", "email2", "email3"] as OnboardingKitLotKind[]) {
     const actionsOfKind: RunAction[] =
@@ -455,11 +525,16 @@ async function main(): Promise<void> {
     const lotPlan = planLot({ kind, dateIso, seq: 1, eligible });
 
     if (!args.send) {
-      const existingLot = store.kit_transport.lots[lotPlan.lot_id] ?? null;
+      // #7922 (gap #4): mesma fonte de verdade de `claimLot` — o lote MAIS
+      // NOVO da chave, nunca fixo no slot seq=1 — senão o preview de
+      // dry-run mentiria "reconciliation: recreate_after_timeout" pra
+      // sempre depois da 1ª recriação, mesmo já existindo um lote seq=2+
+      // com broadcast confirmado.
+      const existingLot = findLatestLotForKindDate(store.kit_transport.lots, kind, dateIso);
       const decision = decideLotReconciliation(existingLot, Date.now());
       (summary.lots as unknown[]).push({
         kind,
-        lot_id: lotPlan.lot_id,
+        lot_id: existingLot?.lot_id ?? lotPlan.lot_id,
         eligible: eligible.length,
         excluded: excluded.map((x) => ({ email: x.candidate.email, reason: x.reason })),
         reconciliation: decision.action,
@@ -475,22 +550,43 @@ async function main(): Promise<void> {
     // `main()`. Ver docstring de `claimLot`.
     const claim = claimLot(storePath, lotPlan);
 
+    // #7922 (gap #4): `lot_id` no resumo reflete o lote de fato encontrado
+    // (`claim.decision.lot`/`claim.lot`), nunca `lotPlan.lot_id` (sempre
+    // seq=1 fixo) — desde que a reconciliação passou a olhar pro lote MAIS
+    // NOVO da chave, os dois podem divergir depois de uma recriação.
     if (claim.decision.action === "blocked_concurrent") {
-      (summary.lots as unknown[]).push({ kind, lot_id: lotPlan.lot_id, skipped: "blocked_concurrent — outra rodada pode estar processando este lote" });
+      (summary.lots as unknown[]).push({
+        kind,
+        lot_id: claim.decision.lot.lot_id,
+        skipped: "blocked_concurrent — outra rodada pode estar processando este lote",
+      });
       continue;
     }
     if (claim.decision.action === "reuse") {
-      (summary.lots as unknown[]).push({ kind, lot_id: lotPlan.lot_id, skipped: "reuse — broadcast já existe", broadcast_id: claim.lot?.broadcast_id ?? null });
+      (summary.lots as unknown[]).push({
+        kind,
+        lot_id: claim.lot?.lot_id ?? lotPlan.lot_id,
+        skipped: "reuse — broadcast já existe",
+        broadcast_id: claim.lot?.broadcast_id ?? null,
+      });
       continue;
     }
 
     const lot = claim.lot as OnboardingKitLot; // "create"/"recreate_after_timeout" sempre devolve um lote pending
     store.kit_transport.lots[lot.lot_id] = lot; // mantém a cópia em memória coerente pro restante deste processo
 
+    // #7922 (gap #4, audit pós-merge da fatia 1/N): daqui pra baixo, usar
+    // `lot.*` — NUNCA `lotPlan.*` — pra tag/destinatários/lot_id. Num
+    // "recreate_after_timeout", `claimLot` já reconstruiu a identidade
+    // (`rebuildLotPlanForRecreate`, seq incrementado — `lot.lot_id`/
+    // `lot.tag_name` diferem de `lotPlan.lot_id`/`lotPlan.tag_name`, que
+    // continuam apontando pra identidade VELHA). Taguear/criar o broadcast
+    // com `lotPlan.tag_name` aqui reintroduziria exatamente o problema que a
+    // identidade nova existe pra evitar.
     try {
-      const tagId = await resolveOrCreateLotTagId(lotPlan.tag_name, kitCfg);
+      const tagId = await resolveOrCreateLotTagId(lot.tag_name, kitCfg);
       lot.tag_id = tagId;
-      for (const subId of lotPlan.recipient_subscription_ids) {
+      for (const subId of lot.recipient_subscription_ids) {
         const entry = store.entries[subId];
         const kitId = entry?.kit_subscriber_id;
         if (kitId != null) await tagSubscriber(tagId, kitId, kitCfg);
@@ -509,7 +605,7 @@ async function main(): Promise<void> {
       lot.status = broadcast.status === "scheduled" ? "scheduled" : "created";
       lot.send_at = broadcast.send_at;
       persistLotUpdate(storePath, lot);
-      (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, broadcast_id: broadcast.id, recipients: lotPlan.recipient_emails.length });
+      (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, broadcast_id: broadcast.id, recipients: lot.recipient_emails.length });
     } catch (e) {
       lot.last_error = (e as Error).message;
       persistLotUpdate(storePath, lot);
