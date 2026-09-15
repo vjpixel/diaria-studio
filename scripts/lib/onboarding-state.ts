@@ -182,6 +182,32 @@ export function ageDays(entry: OnboardingEntry, nowSec: number): number | null {
   return Math.floor((nowSec - anchor) / DAY_S);
 }
 
+/**
+ * Filtra as entries que precisam de refresh de status/stats nesta rodada —
+ * mesmo critério que decide QUANDO buscar os dados que `buildRunPlan`
+ * consome (#7922: extraído do `main()` de `onboarding-welcome-run.ts` pra
+ * virar reusável — o executor de transporte Kit, #7922, precisa da MESMA
+ * seleção; duplicá-la à mão arriscaria as duas discordarem sobre quando os
+ * dados foram buscados, o mesmo bug de raiz que o #7741 já corrigiu uma vez
+ * para o caminho Brevo). Comportamento preservado 1:1 — ver
+ * `test/onboarding-state.test.ts` para os casos de regressão do #7741.
+ */
+export function selectCandidatesNeedingRefresh(
+  entries: OnboardingEntry[],
+  nowSec: number,
+  email2Days: number,
+  email3Days: number,
+): OnboardingEntry[] {
+  return entries.filter((e) => {
+    const anchor = reguaAnchorSec(e);
+    const needsStatusRefresh =
+      (e.email1_sent_at == null && e.status_detectado !== "active") ||
+      (e.email2_sent_at == null && anchor != null && nowSec >= anchor + email2Days * DAY_S) ||
+      (e.email3_state === "pending" && anchor != null && nowSec >= anchor + email3Days * DAY_S);
+    return needsStatusRefresh;
+  });
+}
+
 /** Stats por assinante que a decisão D+10 consome (expand[]=stats). */
 export interface OpenStats {
   total_unique_opened?: number | null;
