@@ -119,14 +119,18 @@ describe("#7686 brtDateString — 'hoje' é o dia civil em BRT, nunca em UTC", (
 });
 
 describe("#7686 guard — o workflow que regenera a home existe e roda no horário do envio", () => {
-  it("regen-home.yml tem cron 09:00 UTC (06:00 BRT) e faz deploy do worker site", async () => {
+  it("regen-home.yml tem cron na hora 09 UTC (06 BRT) e faz deploy do worker site", async () => {
     const { readFileSync } = await import("node:fs");
     const yaml = readFileSync(".github/workflows/regen-home.yml", "utf8");
 
+    // #8126: o MINUTO deixou de ser fixo em `0` — deslocado pra fora do
+    // topo-da-hora pra reduzir o atraso de scheduled workflows do GitHub
+    // Actions (doc oficial: alta carga concentra no minuto 0 de cada hora).
+    // O invariante do editor é a HORA (09 UTC = 06 BRT), não o minuto exato.
     assert.match(
       yaml,
-      /cron:\s*'0 9 \* \* \*'/,
-      "o horário das 06:00 BRT é a decisão do editor nesta issue — mudar o cron sem mudar a doc do Stage 6 volta a dessincronizar home e envio",
+      /cron:\s*'\d{1,2} 9 \* \* \*'/,
+      "o horário das 06:xx BRT é a decisão do editor nesta issue — mudar a HORA sem mudar a doc do Stage 6 volta a dessincronizar home e envio",
     );
     assert.match(
       yaml,

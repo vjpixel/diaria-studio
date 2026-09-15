@@ -44,15 +44,32 @@ name: Regenerar home às 06:00 BRT
 
 on:
   schedule:
-    # 09:00 UTC = 06:00 BRT. BRT não tem horário de verão desde 2019 (mesma
-    # premissa de `scripts/lib/ads-rolling-window.ts`), então o offset é fixo
-    # e um único cron cobre o ano inteiro.
+    # #8126: era `0 9 * * *` (exatamente em cima da hora) — os últimos 6
+    # disparos agendados mediram 3-6h de atraso (09-09 a 09-14). Investigado
+    # antes de concluir "é o GitHub": `refresh-coupons-kv.yml` deste MESMO
+    # repo agenda `0 9 * * *`, minuto idêntico, todo dia — e a doc do GitHub
+    # Actions é explícita sobre a causa (https://docs.github.com/actions/
+    # using-workflows/events-that-trigger-workflows#schedule): "the schedule
+    # event can be delayed during periods of high loads... high load times
+    # include the start of every hour. To decrease the chance of delay,
+    # schedule your workflow to run at a different time of the hour" — dois
+    # workflows do repo disparando no mesmo minuto-zero é exatamente o padrão
+    # que a doc pede pra evitar. `12` (não-redondo, sem colidir com o minuto
+    # de nenhum outro cron deste repo — conferir `grep -h "cron:"
+    # .github/workflows/*.yml`) desloca só ESTE workflow pra fora do topo da
+    # hora. Mitigação, não garantia: mesmo deslocado, o disparo scheduled do
+    # Actions segue best-effort, sem SLA — se o atraso persistir depois desta
+    # mudança, é sinal de que a causa é carga agregada da plataforma (fora do
+    # nosso controle), não mais este alinhamento. 09:12 UTC = 06:12 BRT. BRT
+    # não tem horário de verão desde 2019 (mesma premissa de
+    # `scripts/lib/ads-rolling-window.ts`), então o offset é fixo e um único
+    # cron cobre o ano inteiro.
     #
     # Todo dia, inclusive fim de semana: em dia sem edição nova o
     # `gen-home-page.ts` reproduz byte a byte o `index.html` já commitado, o
     # passo de diff não acha mudança e o job termina sem abrir PR. Sai mais
     # barato que manter uma lista de dias de publicação em sincronia aqui.
-    - cron: '0 9 * * *'
+    - cron: '12 9 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -91,6 +108,37 @@ jobs:
             echo "Home mudou:"
             git diff --stat -- workers/site/public/index.html
           fi
+
+      - name: Testar artefatos do site antes do merge
+        # #8105: este merge usa GITHUB_TOKEN, que não dispara `ci.yml` (nem no
+        # PR nem no push em master) — a suíte inteira NUNCA roda pra este
+        # merge em nenhum outro ponto do fluxo. Sem este passo, uma quebra em
+        # `gen-home-page.ts`/`site-home-page.ts` (ou num teste que passe a
+        # depender do conteúdo gerado) entra em master sem barreira nenhuma e
+        # só aparece no CI do PR humano seguinte, que herda a base já quebrada
+        # (achado ao vivo: PR #8104, `test/regression-7517-hub-gemini-slug.test.ts`
+        # contra o `index.html` regenerado pelo #8102). Roda só quando o passo
+        # anterior detectou mudança — o commit ainda não existe, os arquivos
+        # já regenerados no working tree são o que os testes leem (mesmos
+        # testes que leriam o `index.html` pós-merge). Escopo: os testes que
+        # leem artefatos de `workers/site/public/` gerados por este workflow
+        # — não a suíte completa (helpers puros de `scripts/lib/**` sem teste
+        # próprio aqui continuam cobertos só pelo `ci.yml` de PRs humanos).
+        if: steps.diff.outputs.changed == 'true'
+        run: >-
+          npx tsx --test
+          test/site-home-archive-cards-7022.test.ts
+          test/site-home-design-tokens-6986.test.ts
+          test/site-home-feed-order-7436.test.ts
+          test/site-home-future-edition-7686.test.ts
+          test/site-home-gtm-6977.test.ts
+          test/site-home-hub-links-6411.test.ts
+          test/site-home-nav-cta-utm-propagation-7360.test.ts
+          test/site-home-page-6375.test.ts
+          test/site-home-signup-6976.test.ts
+          test/site-home-signup-submit-6979.test.ts
+          test/site-home-signup-utm-prefill-7360.test.ts
+          test/regression-7517-hub-gemini-slug.test.ts
 
       - name: Commitar, abrir PR e mergear
         if: steps.diff.outputs.changed == 'true'
