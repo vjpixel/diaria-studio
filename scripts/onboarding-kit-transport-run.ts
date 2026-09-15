@@ -324,8 +324,18 @@ async function main(): Promise<void> {
       process.stderr.write(`[onboarding-kit-transport] lote "${args.approveEmail3LotId}" não tem broadcast criado ainda — rode --send primeiro.\n`);
       process.exit(2);
     }
-    // Guard estrutural — lança se `lot.kind !== "email3"` OR aprovação ausente;
-    // aqui a aprovação É este próprio comando (só existe por invocação explícita).
+    // #8136 fleet review (code-reviewer, P3): `assertEmail3ScheduleAuthorized`
+    // só lança quando `kind === "email3" && !humanApproved` — é um NO-OP pra
+    // qualquer outro `kind` (comentário anterior aqui afirmava o contrário).
+    // Sem este check explícito, `--approve-email3-lot` aceitaria um lot_id
+    // de email1/email2 e reagendaria aquele broadcast silenciosamente.
+    if (lot.kind !== "email3") {
+      process.stderr.write(
+        `[onboarding-kit-transport] lote "${args.approveEmail3LotId}" é kind="${lot.kind}", não "email3" — --approve-email3-lot só se aplica a lotes de e-mail 3.\n`,
+      );
+      process.exit(2);
+    }
+    // aprovação É este próprio comando (só existe por invocação explícita).
     assertEmail3ScheduleAuthorized(lot.kind, true);
     const updated = await updateBroadcast(lot.broadcast_id, { send_at: args.sendAt }, kitCfg);
     lot.send_at = args.sendAt;
@@ -337,20 +347,33 @@ async function main(): Promise<void> {
 
   // --- --reconcile: só releitura de status dos lotes não-terminais ---
   if (args.reconcileOnly) {
+    // #8136 fleet review (comment-analyzer, alta/P2): a versão anterior lia
+    // `store` uma vez no topo de `main()`, mutava vários lotes em memória
+    // durante o loop (com chamadas de rede `await` entre cada um) e só
+    // escrevia tudo de volta com UM `writeStore` não-locked no fim — sem
+    // passar pelo mesmo lock/re-leitura fresca que `claimLot`/
+    // `persistLotUpdate` já usam. Um `--send` concorrente que reivindicasse/
+    // persistisse um lote NESSA janela seria sobrescrito pelo `writeStore`
+    // deste bloco, que carrega um snapshot desatualizado daquele lote. Fix:
+    // persistir CADA lote individualmente via `persistLotUpdate` (mesmo
+    // lock + re-leitura fresca de `claimLot`) assim que ele é reconciliado —
+    // nunca um `writeStore` de lote-múltiplo fora do lock. A chamada de rede
+    // (`reconcileLotWithKit`) continua fora do lock, de propósito (não
+    // segurar o lock por 30s através de N round-trips de rede).
     const results: { lot_id: string; before: string; after: string; error?: string }[] = [];
     for (const lot of Object.values(store.kit_transport.lots)) {
       if (lot.status === "completed" || lot.status === "cancelled") continue;
       const before = lot.status;
       try {
         const reconciled = await reconcileLotWithKit(lot, (id) => getBroadcast(id, kitCfg));
-        store.kit_transport.lots[lot.lot_id] = reconciled;
+        persistLotUpdate(storePath, reconciled);
         results.push({ lot_id: lot.lot_id, before, after: reconciled.status });
       } catch (e) {
         lot.last_error = (e as Error).message;
+        persistLotUpdate(storePath, lot);
         results.push({ lot_id: lot.lot_id, before, after: lot.status, error: (e as Error).message });
       }
     }
-    writeStore(store, storePath);
     console.log(JSON.stringify({ mode: "reconcile", results }, null, 2));
     return;
   }
@@ -363,6 +386,19 @@ async function main(): Promise<void> {
 
   const candidates = selectCandidatesNeedingRefresh(Object.values(store.entries), nowSec, email2Days, email3Days);
   const statsById: Record<string, { total_unique_opened?: number | null; total_clicked?: number | null } | null> = {};
+  // #8136 fleet review (silent-failure-hunter, alta/P1): antes, um lookup
+  // falho deixava `e.status_detectado` intocado — como esse campo é o
+  // ESTADO PERSISTIDO no store (populado na última vez que o refresh deu
+  // certo, tipicamente "active"), `kit_state: e.status_detectado ?? null`
+  // (abaixo) nunca virava `null` num refresh falho, e a exclusão
+  // `status_nao_confirmado` de `selectEligibleKitRecipients` nunca disparava
+  // — exatamente o oposto do requisito da issue ("Falha de consulta não
+  // autoriza envio", já testado no módulo puro, nunca exercitado aqui).
+  // Fix: rastrear falha de refresh NESTA rodada separado do campo
+  // persistido — nunca mutar `status_detectado` numa falha (preserva o
+  // último estado bom conhecido pro store), mas forçar `kit_state: null`
+  // só na hora de montar `rawCandidates` (abaixo) pra quem falhou agora.
+  const refreshFailedThisRun = new Set<string>();
   for (const e of candidates) {
     const fresh = await fetchSubscriptionByIdKit(kitCfg, e.kit_subscriber_id != null ? String(e.kit_subscriber_id) : e.subscription_id, e.email);
     if (fresh) {
@@ -370,7 +406,8 @@ async function main(): Promise<void> {
       statsById[e.subscription_id] = fresh.stats ?? null;
       if (typeof fresh.resolvedKitId === "number") e.kit_subscriber_id = fresh.resolvedKitId;
     } else {
-      process.stderr.write(`[onboarding-kit-transport] refresh falhou pra ${e.subscription_id} — usando estado do store\n`);
+      refreshFailedThisRun.add(e.subscription_id);
+      process.stderr.write(`[onboarding-kit-transport] refresh falhou pra ${e.subscription_id} — status NÃO CONFIRMADO nesta rodada, excluído da seleção (fail-safe)\n`);
     }
   }
 
@@ -403,7 +440,10 @@ async function main(): Promise<void> {
       subscription_id: e.subscription_id,
       email: e.email,
       kit_subscriber_id: e.kit_subscriber_id ?? null,
-      kit_state: e.status_detectado ?? null,
+      // #8136 fleet review, achado acima: refresh falho nesta rodada força
+      // null (não-confirmado), mesmo que `status_detectado` persistido
+      // ainda carregue um valor antigo "active" de uma checagem anterior.
+      kit_state: refreshFailedThisRun.has(e.subscription_id) ? null : (e.status_detectado ?? null),
       seeded_by: e.seeded_by ?? null,
     }));
     const { eligible, excluded } = selectEligibleKitRecipients(rawCandidates);
