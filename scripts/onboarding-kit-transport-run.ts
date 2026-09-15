@@ -223,19 +223,33 @@ export function claimLot(storePath: string, lotPlan: OnboardingKitLotPlan, nowMs
       if (decision.action === "reuse") return { decision, lot: decision.lot };
       // action === "create" | "recreate_after_timeout" — seguro criar.
       //
-      // #7922 (gap #4, audit pós-merge da fatia 1/N): "recreate_after_timeout"
-      // NUNCA reusa lot_id/tag_name do lote velho — precisa de identidade NOVA
-      // (`rebuildLotPlanForRecreate`, seq incrementado via `nextLotSeq`) pra
-      // (a) nunca sobrescrever/perder o registro do lote velho no store
-      // (evidência de auditoria de um possível broadcast órfão no Kit) e
-      // (b) nunca reusar uma tag que possa já estar amarrada a um broadcast
-      // que a tentativa anterior de fato criou, mas cujo response se perdeu
-      // antes de `broadcast_id` ser persistido localmente — risco residual
-      // documentado na docstring de `decideLotReconciliation`/gap #1 (mesmo
-      // audit). "create" (nenhum lote local pra esta chave) continua usando
-      // `lotPlan` tal como veio — não há identidade velha a evitar.
-      const effectivePlan =
-        decision.action === "recreate_after_timeout" ? rebuildLotPlanForRecreate(lotPlan, freshStore.kit_transport.lots) : lotPlan;
+      // #7922 (gap #4, audit pós-merge da fatia 1/N): NUNCA reusar lot_id/
+      // tag_name de um lote velho quando EXISTE um lote velho pra esta chave
+      // — precisa de identidade NOVA (`rebuildLotPlanForRecreate`, seq
+      // incrementado via `nextLotSeq`) pra (a) nunca sobrescrever/perder o
+      // registro do lote velho no store (evidência de auditoria de um
+      // possível broadcast órfão no Kit) e (b) nunca reusar uma tag que
+      // possa já estar amarrada a um broadcast que a tentativa anterior de
+      // fato criou, mas cujo response se perdeu antes de `broadcast_id` ser
+      // persistido localmente — risco residual documentado na docstring de
+      // `decideLotReconciliation`/gap #1 (mesmo audit).
+      //
+      // Fleet review pré-merge (4 achados independentes convergindo no
+      // mesmo bug): a 1ª versão deste fix só rebuildava em
+      // `recreate_after_timeout`, deixando "create" sempre com `lotPlan`
+      // (seq=1 fixo, vindo de `main()`). Isso reabre o buraco quando um
+      // lote seq≥2 (já recriado uma vez) é CANCELADO via `--cancel-lot`:
+      // `decideLotReconciliation` trata "cancelled" como `{action: "create"}`
+      // pra reabrir a chave — mas o `lotPlan` do caller ainda é seq=1, então
+      // a escrita ia pro `lot_id`/`tag_name` do lote seq=1 ORIGINAL (o que
+      // nunca teve `broadcast_id` confirmado), sobrescrevendo esse registro
+      // de auditoria e reusando exatamente a tag que o mecanismo de seq-bump
+      // existe pra evitar reusar. Fix: rebuildar sempre que EXISTE algum
+      // lote pra esta chave (`existingLot != null`), não só quando a decisão
+      // foi "recreate_after_timeout" — "create" sem `existingLot` (nenhum
+      // lote pra esta chave, o caso comum de 1ª rodada do dia) continua
+      // usando `lotPlan` tal como veio, sem identidade velha a evitar.
+      const effectivePlan = existingLot != null ? rebuildLotPlanForRecreate(lotPlan, freshStore.kit_transport.lots) : lotPlan;
       const pending: OnboardingKitLot = {
         lot_id: effectivePlan.lot_id,
         kind: effectivePlan.kind,
@@ -532,9 +546,22 @@ async function main(): Promise<void> {
       // com broadcast confirmado.
       const existingLot = findLatestLotForKindDate(store.kit_transport.lots, kind, dateIso);
       const decision = decideLotReconciliation(existingLot, Date.now());
+      // Fleet review pré-merge: espelha o `effectivePlan` real de `claimLot`
+      // (mesma correção do achado acima) — "reuse" mostra o lote reusado de
+      // verdade; qualquer caso com `existingLot` (recreate OU create-após-
+      // cancelamento) mostra a identidade NOVA que `rebuildLotPlanForRecreate`
+      // de fato geraria; só "create" sem `existingLot` mostra `lotPlan.lot_id`
+      // cru. Sem isso o preview de dry-run mentia o `lot_id` real em 2 dos 3
+      // casos não-reuse.
+      const previewLotId =
+        decision.action === "reuse"
+          ? decision.lot.lot_id
+          : existingLot != null
+            ? rebuildLotPlanForRecreate(lotPlan, store.kit_transport.lots).lot_id
+            : lotPlan.lot_id;
       (summary.lots as unknown[]).push({
         kind,
-        lot_id: existingLot?.lot_id ?? lotPlan.lot_id,
+        lot_id: previewLotId,
         eligible: eligible.length,
         excluded: excluded.map((x) => ({ email: x.candidate.email, reason: x.reason })),
         reconciliation: decision.action,

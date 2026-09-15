@@ -294,4 +294,57 @@ describe("claimLot — exclusão mútua entre rodadas concorrentes (#7922)", () 
       rmSync(storePath, { force: true });
     }
   });
+
+  it("gap #4 (fleet review pré-merge, achado convergente de 4 revisores): cancelar o lote RECRIADO (seq 02) preserva o registro de auditoria do seq 01 e gera seq 03 — nunca sobrescreve seq 01", () => {
+    // Reprodução exata do bug achado por 4 agentes de review independentes
+    // (code-reviewer, type-design-analyzer, pr-test-analyzer, silent-failure-
+    // hunter): a 1ª versão deste fix só reconstruía identidade quando
+    // decision.action === "recreate_after_timeout". Mas `decideLotReconciliation`
+    // trata um lote CANCELADO como `{action: "create"}` pra reabrir a chave —
+    // e "create" caía direto no `lotPlan` cru do caller (sempre seq=1),
+    // sobrescrevendo o registro de auditoria do seq 01 original (que nunca
+    // teve broadcast_id confirmado) e reusando a tag exata que o mecanismo
+    // de seq-bump existe pra nunca reusar.
+    const storePath = tmpStorePath("diaria-7922-lock-cancel-reopens-");
+    try {
+      const plan = lotPlan();
+      const t0 = Date.now() - 40 * 60_000;
+      const first = claimLot(storePath, plan, t0); // seq 01, stale (nunca confirmado)
+      assert.equal(first.lot!.lot_id, "email1-2026-09-15-01");
+
+      const t1 = t0 + 30 * 60_000;
+      const recreated = claimLot(storePath, plan, t1); // recreate_after_timeout → seq 02
+      assert.equal(recreated.decision.action, "recreate_after_timeout");
+      assert.equal(recreated.lot!.lot_id, "email1-2026-09-15-02");
+
+      // Confirma o broadcast do seq 02, depois CANCELA (fluxo real de
+      // --cancel-lot: marca status "cancelled", mantém broadcast_id).
+      recreated.lot!.broadcast_id = 777;
+      recreated.lot!.status = "created";
+      persistLotUpdate(storePath, recreated.lot!);
+      recreated.lot!.status = "cancelled";
+      persistLotUpdate(storePath, recreated.lot!);
+
+      // Próxima rodada: decideLotReconciliation vê o seq 02 (mais recente)
+      // cancelado → {action: "create"}. O FIX precisa gerar seq 03 — nunca
+      // voltar a escrever em seq 01.
+      const third = claimLot(storePath, plan, t1 + 10 * 60_000);
+      assert.equal(third.decision.action, "create");
+      assert.equal(third.lot!.lot_id, "email1-2026-09-15-03", "cancelamento de seq≥2 precisa gerar seq NOVO, não reusar seq 01");
+      assert.equal(third.lot!.tag_name, "onboarding-email1-2026-09-15-03");
+
+      const { store } = readStore(storePath);
+      const lots = store.kit_transport?.lots ?? {};
+      assert.equal(Object.keys(lots).length, 3, "3 lotes distintos no disco — nenhum sobrescrito");
+      // O registro de seq 01 (nunca confirmado) precisa continuar intacto —
+      // é a evidência de auditoria que o mecanismo de seq-bump existe pra
+      // preservar.
+      assert.equal(lots["email1-2026-09-15-01"]?.status, "pending");
+      assert.equal(lots["email1-2026-09-15-01"]?.broadcast_id, null);
+      assert.equal(lots["email1-2026-09-15-01"]?.created_at, first.lot!.created_at, "seq 01 nunca foi reescrito");
+      assert.equal(lots["email1-2026-09-15-02"]?.status, "cancelled");
+    } finally {
+      rmSync(storePath, { force: true });
+    }
+  });
 });
