@@ -86,6 +86,62 @@ describe("diffBucketOverrides", () => {
     assert.equal(moves.length, 1);
     assert.equal(moves[0].direction, "radar->use_melhor");
   });
+
+  // #8121 item 3: itens recategorizados no STAGE 4 (marcados com
+  // `stage4_recategorized_note` em 01-approved.json) não são "correção do
+  // gate do Stage 1" — não devem contar na taxa medida por esta função.
+  it("#8121: item com stage4_recategorized_note NÃO conta como movimento (recategorização do Stage 4, não do gate Stage 1)", () => {
+    const categorized: CategorizedBucketsInput = {
+      lancamento: [],
+      radar: [{ url: "https://example.com/artigo-x", title: "Artigo X" }],
+      use_melhor: [],
+      video: [],
+    };
+    const approved: ApprovedBucketsInput = {
+      highlights: [],
+      runners_up: [],
+      lancamento: [
+        {
+          url: "https://example.com/artigo-x",
+          title: "Artigo X",
+          stage4_recategorized_note: "movido pelo editor no Stage 4, edição 260915",
+        },
+      ],
+      radar: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const moves = diffBucketOverrides(categorized, approved);
+    assert.deepEqual(moves, [], "item com stage4_recategorized_note não deveria gerar BucketMove");
+  });
+
+  it("#8121: item SEM stage4_recategorized_note continua contando normalmente (regressão — a exclusão é seletiva, não desliga a métrica inteira)", () => {
+    const categorized: CategorizedBucketsInput = {
+      lancamento: [],
+      radar: [
+        { url: "https://example.com/artigo-x", title: "Artigo X" },
+        { url: "https://example.com/artigo-y", title: "Artigo Y" },
+      ],
+      use_melhor: [],
+      video: [],
+    };
+    const approved: ApprovedBucketsInput = {
+      highlights: [],
+      runners_up: [],
+      lancamento: [
+        { url: "https://example.com/artigo-x", title: "Artigo X", stage4_recategorized_note: "Stage 4" },
+        { url: "https://example.com/artigo-y", title: "Artigo Y" }, // sem o marcador — conta normalmente
+      ],
+      radar: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const moves = diffBucketOverrides(categorized, approved);
+    assert.equal(moves.length, 1);
+    assert.equal(moves[0].url, "https://example.com/artigo-y");
+  });
 });
 
 describe("summarize", () => {

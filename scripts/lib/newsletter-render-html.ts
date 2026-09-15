@@ -835,35 +835,78 @@ function stripCeremonyMarker(s: string): string {
   return s.replace(/^\s*🎉[︎️]?\s*/u, "").trim();
 }
 
-/** Parágrafo que COMEÇA com um link markdown `[…](…)` (possível `**` interno
- * no rótulo). Âncora de início — não casa link no meio do parágrafo. */
-const LINK_LED_PARAGRAPH_RE = /^\s*\[[^\]]+\]\(/;
+/**
+ * #8119: rótulo FIXO do box de recomendação de leitura — nunca o texto do
+ * snippet-fonte (que podia trazer "Recomendação de leitura" em case
+ * diferente, ou nenhuma linha de título nenhuma). Decisão do editor
+ * (260915): o nome da seção é sempre este texto exato quando o conteúdo tem
+ * a FORMA de recomendação de livro (ver `isBookRecommendationParagraph`
+ * abaixo) — nunca o título do livro, nunca uma variante de capitalização.
+ */
+const BOOK_RECOMMENDATION_TITLE = "Recomendação de Leitura";
 
 /**
- * #3475: sinal ESTRUTURAL (não-emoji) que reidentifica o box "recomendação de
- * leitura" (slot 1) pra restaurar o título serif 26px na 1ª linha — pedido do
- * editor depois que a remoção do marcador 📖 (#3475) fez o box perder o
- * título e cair no tratamento uniforme do #3460.
- *
- * A estrutura CANÔNICA desse box (`data/snippets/recomendacao-leitura.md`)
- * é única entre os boxes que chegam a ESTE branch (não-patrocinado, sem CTA
- * pill estrutural, sem marcador 🎉):
- *   [0] linha de título da seção — curta, SEM link markdown  ("Recomendação de leitura")
- *   [1] parágrafo LIDERADO por link  ("[**Título do livro**](url), de Autor.")
- *   [2] comentário pessoal
- *
- * O discriminador é: `paras[0]` não tem link E `paras[1]` COMEÇA com um link.
- * Isso separa o box da nota pessoal do editor (#3460, ex: boas-vindas), onde
- * NENHUM parágrafo é liderado por link — a nota corre em prosa, com links (se
- * houver) no meio das frases, nunca abrindo o 2º parágrafo. Boxes patrocinados
- * (Clarice) e com CTA pill (Alexa+, ferramenta, apoio) nunca chegam aqui —
- * são interceptados antes por `sponsored`/`forceCtaPill`. Marcador-agnóstico:
- * um 📖 (ou nenhum emoji) no início da 1ª linha não muda a detecção.
+ * #8119: parágrafo no formato canônico do box "Recomendação de Leitura" —
+ * um ÚNICO link markdown em negrito abrindo o parágrafo (`[**Título**](url)`),
+ * seguido de `, de {Autor}.`. Detecta a FORMA do conteúdo (não a posição
+ * de uma linha de título separada), pra permitir sintetizar o título fixo
+ * mesmo quando o snippet-fonte esquece a linha "Recomendação de Leitura"
+ * (causa raiz do #8119: o snippet `recomendacao-leitura-mensal.md` nunca
+ * teve essa linha, e o parágrafo do livro acabava sendo o elemento mais
+ * destacado do box por ausência de qualquer título de verdade).
  */
-function firstLineIsSectionTitle(paras: string[]): boolean {
-  if (paras.length < 2) return false;
-  if (findMarkdownLinks(paras[0]).length > 0) return false;
-  return LINK_LED_PARAGRAPH_RE.test(paras[1]);
+function isBookRecommendationParagraph(p: string): boolean {
+  const links = findMarkdownLinks(p);
+  if (links.length !== 1) return false;
+  const [link] = links;
+  if (p.slice(0, link.start).trim() !== "") return false; // link tem que abrir o parágrafo
+  if (!/^\*\*[^*]+\*\*$/.test(link.label.trim())) return false; // rótulo do link em negrito
+  const suffix = p.slice(link.end);
+  return /^,\s*de\s+\S.*\.\s*$/iu.test(suffix); // ", de {Autor}." depois do link
+}
+
+/**
+ * #3475/#8119: sinal ESTRUTURAL (não-emoji, não dependente de uma linha de
+ * texto específica) que identifica o box "recomendação de leitura" (slot 1)
+ * pra aplicar o título serif fixo 26px — pedido do editor depois que a
+ * remoção do marcador 📖 (#3475) fez o box perder o título e cair no
+ * tratamento uniforme do #3460, e depois de o #8119 achar que a linha de
+ * título em si podia estar AUSENTE do snippet-fonte.
+ *
+ * Duas formas reconhecidas, ambas resultando em `isBookRecommendation: true`
+ * com o MESMO rótulo fixo `BOOK_RECOMMENDATION_TITLE` (nunca o texto literal
+ * do snippet — decisão do editor, #8119):
+ *   - **Linha de título explícita** (`explicitTitleLine: true`):
+ *       [0] linha de título da seção — curta, SEM link markdown
+ *       [1] parágrafo de livro (`isBookRecommendationParagraph`)
+ *       [2+] comentário pessoal
+ *     `paras[0]` é DESCARTADO (nunca usado como texto do título) —
+ *     `bodyParas` começa em `paras[1]`.
+ *   - **Linha de título AUSENTE** (`explicitTitleLine: false`):
+ *       [0] parágrafo de livro (`isBookRecommendationParagraph`)
+ *       [1+] comentário pessoal
+ *     `paras[0]` faz parte do CORPO (é o parágrafo do livro) — `bodyParas`
+ *     começa em `paras[0]`, o título é sintetizado.
+ *
+ * Isso separa o box da nota pessoal do editor (#3460, ex: boas-vindas), onde
+ * NENHUM parágrafo casa `isBookRecommendationParagraph` — a nota corre em
+ * prosa, com links (se houver) no meio das frases ou sem o sufixo ", de
+ * Autor.". Boxes patrocinados (Clarice) e com CTA pill (Alexa+, ferramenta,
+ * apoio) nunca chegam aqui — são interceptados antes por
+ * `sponsored`/`forceCtaPill`. Marcador-agnóstico: um 📖 (ou nenhum emoji) no
+ * início da 1ª linha não muda a detecção.
+ */
+function detectBookRecommendation(
+  paras: string[],
+): { isBookRecommendation: boolean; explicitTitleLine: boolean } {
+  if (paras.length < 2) return { isBookRecommendation: false, explicitTitleLine: false };
+  if (findMarkdownLinks(paras[0]).length === 0 && isBookRecommendationParagraph(paras[1])) {
+    return { isBookRecommendation: true, explicitTitleLine: true };
+  }
+  if (isBookRecommendationParagraph(paras[0])) {
+    return { isBookRecommendation: true, explicitTitleLine: false };
+  }
+  return { isBookRecommendation: false, explicitTitleLine: false };
 }
 
 export function renderIntroCallout(
@@ -881,7 +924,8 @@ export function renderIntroCallout(
   const sponsored = isSponsoredCallout(text);
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const ceremony = hasCeremonyMarker(paras[0] ?? "");
-  const sectionTitle = firstLineIsSectionTitle(paras);
+  const bookRecommendation = detectBookRecommendation(paras);
+  const sectionTitle = bookRecommendation.isBookRecommendation;
   // 260721: box de agradecimento a apoiadores tem um parágrafo CTA-only
   // ("[Quero apoiar também](...)"), então `shouldForceCtaPill` corretamente
   // força o botão pill — mas isso também empurra o 1º parágrafo pro branch de
@@ -907,14 +951,15 @@ export function renderIntroCallout(
   //
   // #3475 follow-up (pedido do editor): o título serif 26px do box
   // "recomendação de leitura" foi RESTAURADO via sinal ESTRUTURAL não-emoji
-  // (`firstLineIsSectionTitle` — 1ª linha sem link seguida de parágrafo
-  // liderado por link), não pelo 📖. Só esse box tem essa forma entre os que
-  // chegam aqui; a nota pessoal do editor (#3460) não é liderada por link em
-  // nenhum parágrafo → continua no tratamento uniforme. Callouts patrocinados
-  // (Clarice, `sponsored=true`), boxes com CTA pill estrutural (Alexa+,
-  // apoio, ferramenta — `forceCtaPill=true`) e o box de campeões/sorteio
-  // (`ceremony`, marcador 🎉 preservado — feature separada) continuam com
-  // título por outros caminhos, sem passar por este branch.
+  // (`detectBookRecommendation` — reconhece o parágrafo do livro com OU sem
+  // uma linha de título separada, #8119), não pelo 📖. Só esse box tem essa
+  // forma entre os que chegam aqui; a nota pessoal do editor (#3460) não tem
+  // nenhum parágrafo no formato `[**Título**](url), de Autor.` → continua no
+  // tratamento uniforme. Callouts patrocinados (Clarice, `sponsored=true`),
+  // boxes com CTA pill estrutural (Alexa+, apoio, ferramenta —
+  // `forceCtaPill=true`) e o box de campeões/sorteio (`ceremony`, marcador
+  // 🎉 preservado — feature separada) continuam com título por outros
+  // caminhos, sem passar por este branch.
   if (paras.length > 1 && !sponsored && !forceCtaPill && !ceremony && !sectionTitle) {
     inner = paras
       .map((p, i) => renderBoxParagraph(p, i === 0 ? "0" : "12px 0 0"))
@@ -923,7 +968,14 @@ export function renderIntroCallout(
     // multi-parágrafo: 1º = título, demais = corpo normal. titleStyle "serif"
     // (default) = título serif grande (sponsored/mid callout); "body" = mesmo
     // tamanho do corpo, em negrito (intro 🎉 — pedido do editor 260701).
-    const title = ceremony ? stripCeremonyMarker(paras[0]) : paras[0];
+    // #8119: box de recomendação de leitura usa SEMPRE o rótulo fixo — nunca
+    // o texto literal do snippet (linha de título variável, ou o parágrafo
+    // do livro quando a linha está ausente e vira `paras[0]` por acidente).
+    const title = bookRecommendation.isBookRecommendation
+      ? BOOK_RECOMMENDATION_TITLE
+      : ceremony
+      ? stripCeremonyMarker(paras[0])
+      : paras[0];
     // #260701 review: estilo do header body-size (título + sub-cabeçalho) num só
     // lugar — evita divergência silenciosa entre os 2 usos (cf. lbStyle em renderEIA).
     const bodyHeadingStyle = `font-family:${FONT_HEADING};font-weight:600;font-size:16px;line-height:1.4;color:${TEXT_COLOR};`;
@@ -940,7 +992,12 @@ export function renderIntroCallout(
     // disclosure de comissão/afiliado) seguem como corpo ABAIXO do botão (#2996
     // — antes só o ÚLTIMO parágrafo virava pill, quebrando o botão quando havia
     // texto de disclosure depois dele).
-    let bodyParas = paras.slice(1);
+    // #8119: quando o título foi SINTETIZADO (linha ausente do snippet),
+    // `paras[0]` é o próprio parágrafo do livro — corpo, não título — e por
+    // isso não é descartado como seria no caso de linha explícita.
+    let bodyParas = bookRecommendation.isBookRecommendation && !bookRecommendation.explicitTitleLine
+      ? paras.slice(0)
+      : paras.slice(1);
     let afterCtaParas: string[] = [];
     let ctaButtonHtml = "";
     if (sponsored || forceCtaPill) {
