@@ -51,6 +51,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
+import { withFileLock } from "./lib/file-lock.ts";
 import {
   createBroadcast,
   updateBroadcast,
@@ -73,6 +74,8 @@ import {
   type OnboardingKitCandidate,
   type OnboardingKitLot,
   type OnboardingKitLotKind,
+  type OnboardingKitLotPlan,
+  type LotReconciliationDecision,
 } from "./lib/onboarding-kit-transport.ts";
 import { loadOnboardingConfig, fetchSubscriptionByIdKit } from "./onboarding-welcome-run.ts";
 import { isMainModule } from "./lib/cli-args.ts";
@@ -155,6 +158,88 @@ async function resolveOrCreateLotTagId(tagName: string, config: KitConfig): Prom
 }
 
 // ---------------------------------------------------------------------------
+// Reivindicação de lote — exclusão mútua entre rodadas/processos concorrentes
+// ---------------------------------------------------------------------------
+
+export interface ClaimLotResult {
+  decision: LotReconciliationDecision;
+  /** `null` só quando `decision.action === "blocked_concurrent"`. */
+  lot: OnboardingKitLot | null;
+}
+
+/**
+ * Decide + (se for o caso) persiste um lote `pending` — ATOMICAMENTE entre
+ * PROCESSOS, não só entre chamadas de função (#7922, achado do self-review:
+ * a versão anterior decidia sobre uma cópia do store capturada em memória no
+ * início de `main()` — duas invocações concorrentes deste script podiam
+ * ambas concluir "nenhum lote existe" sem nunca ver o que a outra acabou de
+ * criar, duplicando o broadcast; `decideLotReconciliation` sozinha é pura e
+ * não fecha essa corrida, só decide dado um snapshot).
+ *
+ * O lock (`file-lock.ts`, mesmo padrão de `social-published-store.ts`) força
+ * as chamadas concorrentes a serializar aqui: quem entra primeiro RELÊ o
+ * store do DISCO (nunca a cópia em memória do caller, que pode já estar
+ * desatualizada), decide, e — se for criar — já persiste o `pending` antes
+ * de soltar o lock. A 2ª chamada, ao adquirir o lock, relê o disco e agora
+ * VÊ o `pending` recém-criado (idade < `LOT_STALE_AFTER_MS`) →
+ * `blocked_concurrent`. Exportado (não só usado inline em `main()`) pra ser
+ * testável sem depender de dois processos OS reais — ver
+ * `test/onboarding-kit-transport-run-lock-7922.test.ts`.
+ */
+export function claimLot(storePath: string, lotPlan: OnboardingKitLotPlan, nowMs: number = Date.now()): ClaimLotResult {
+  const lockPath = `${storePath}.lock`;
+  return withFileLock(
+    lockPath,
+    () => {
+      const { store: freshStore } = readStore(storePath);
+      freshStore.kit_transport ??= { lots: {} };
+      const existingLot = freshStore.kit_transport.lots[lotPlan.lot_id] ?? null;
+      const decision = decideLotReconciliation(existingLot, nowMs);
+      if (decision.action === "blocked_concurrent") return { decision, lot: null };
+      if (decision.action === "reuse") return { decision, lot: decision.lot };
+      // action === "create" | "recreate_after_timeout" — seguro criar.
+      const pending: OnboardingKitLot = {
+        lot_id: lotPlan.lot_id,
+        kind: lotPlan.kind,
+        tag_name: lotPlan.tag_name,
+        tag_id: null,
+        broadcast_id: null,
+        recipient_subscription_ids: lotPlan.recipient_subscription_ids,
+        recipient_emails: lotPlan.recipient_emails,
+        status: "pending",
+        created_at: new Date(nowMs).toISOString(),
+        send_at: null,
+        last_reconciled_at: null,
+        last_error: null,
+      };
+      freshStore.kit_transport.lots[lotPlan.lot_id] = pending;
+      writeStore(freshStore, storePath);
+      return { decision, lot: pending };
+    },
+    30_000,
+  );
+}
+
+/** Persiste um lote JÁ REIVINDICADO (via `claimLot`) de volta no store, sob o
+ *  mesmo lock — usado depois de `createBroadcast`/erro atualizar o `lot` em
+ *  memória com `broadcast_id`/`status`/`last_error`. Relê o disco fresco
+ *  antes de escrever (nunca sobrescreve `kit_transport.lots` de outra chave
+ *  que uma reconciliação concorrente possa ter tocado nesse meio-tempo). */
+export function persistLotUpdate(storePath: string, lot: OnboardingKitLot): void {
+  const lockPath = `${storePath}.lock`;
+  withFileLock(
+    lockPath,
+    () => {
+      const { store: freshStore } = readStore(storePath);
+      freshStore.kit_transport ??= { lots: {} };
+      freshStore.kit_transport.lots[lot.lot_id] = lot;
+      writeStore(freshStore, storePath);
+    },
+    30_000,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -211,14 +296,14 @@ async function main(): Promise<void> {
     try {
       await deleteBroadcast(lot.broadcast_id, kitCfg);
       lot.status = "cancelled";
-      writeStore(store, storePath);
+      persistLotUpdate(storePath, lot);
       console.log(JSON.stringify({ mode: "cancel-lot", lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, ok: true }, null, 2));
     } catch (e) {
       // #7922: 422 "Broadcast has already been sent." é esperado quando o
       // envio já começou entre a leitura do store e esta chamada — não é bug
       // do cancelamento, é o Kit confirmando que não há mais o que cancelar.
       lot.last_error = (e as Error).message;
-      writeStore(store, storePath);
+      persistLotUpdate(storePath, lot);
       console.log(JSON.stringify({ mode: "cancel-lot", lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, ok: false, error: (e as Error).message }, null, 2));
       process.exitCode = 1;
     }
@@ -245,7 +330,7 @@ async function main(): Promise<void> {
     const updated = await updateBroadcast(lot.broadcast_id, { send_at: args.sendAt }, kitCfg);
     lot.send_at = args.sendAt;
     lot.status = updated.status === "scheduled" ? "scheduled" : lot.status;
-    writeStore(store, storePath);
+    persistLotUpdate(storePath, lot);
     console.log(JSON.stringify({ mode: "approve-email3-lot", lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, send_at: args.sendAt, kit_status: updated.status }, null, 2));
     return;
   }
@@ -328,10 +413,10 @@ async function main(): Promise<void> {
     }
 
     const lotPlan = planLot({ kind, dateIso, seq: 1, eligible });
-    const existingLot: OnboardingKitLot | undefined = store.kit_transport.lots[lotPlan.lot_id];
-    const decision = decideLotReconciliation(existingLot ?? null, Date.now());
 
     if (!args.send) {
+      const existingLot = store.kit_transport.lots[lotPlan.lot_id] ?? null;
+      const decision = decideLotReconciliation(existingLot, Date.now());
       (summary.lots as unknown[]).push({
         kind,
         lot_id: lotPlan.lot_id,
@@ -342,33 +427,25 @@ async function main(): Promise<void> {
       continue;
     }
 
-    if (decision.action === "blocked_concurrent") {
+    // #7922 (self-review): decidir "existe lote?" + persistir o `pending`
+    // precisa ser UMA operação atômica entre PROCESSOS, não só entre
+    // chamadas de função (issue: "exclusão mútua para impedir duplicação
+    // entre rodadas") — `claimLot` faz isso sob lock de arquivo, relendo o
+    // disco fresco em vez da cópia em memória capturada no início de
+    // `main()`. Ver docstring de `claimLot`.
+    const claim = claimLot(storePath, lotPlan);
+
+    if (claim.decision.action === "blocked_concurrent") {
       (summary.lots as unknown[]).push({ kind, lot_id: lotPlan.lot_id, skipped: "blocked_concurrent — outra rodada pode estar processando este lote" });
       continue;
     }
-    if (decision.action === "reuse") {
-      (summary.lots as unknown[]).push({ kind, lot_id: lotPlan.lot_id, skipped: "reuse — broadcast já existe", broadcast_id: decision.lot.broadcast_id });
+    if (claim.decision.action === "reuse") {
+      (summary.lots as unknown[]).push({ kind, lot_id: lotPlan.lot_id, skipped: "reuse — broadcast já existe", broadcast_id: claim.lot?.broadcast_id ?? null });
       continue;
     }
 
-    // action === "create" | "recreate_after_timeout" — seguro criar.
-    const nowIso = new Date().toISOString();
-    const lot: OnboardingKitLot = {
-      lot_id: lotPlan.lot_id,
-      kind,
-      tag_name: lotPlan.tag_name,
-      tag_id: null,
-      broadcast_id: null,
-      recipient_subscription_ids: lotPlan.recipient_subscription_ids,
-      recipient_emails: lotPlan.recipient_emails,
-      status: "pending",
-      created_at: nowIso,
-      send_at: null,
-      last_reconciled_at: null,
-      last_error: null,
-    };
-    store.kit_transport.lots[lot.lot_id] = lot;
-    writeStore(store, storePath); // persiste ANTES de criar no Kit — reconciliável mesmo se cair aqui
+    const lot = claim.lot as OnboardingKitLot; // "create"/"recreate_after_timeout" sempre devolve um lote pending
+    store.kit_transport.lots[lot.lot_id] = lot; // mantém a cópia em memória coerente pro restante deste processo
 
     try {
       const tagId = await resolveOrCreateLotTagId(lotPlan.tag_name, kitCfg);
@@ -378,8 +455,7 @@ async function main(): Promise<void> {
         const kitId = entry?.kit_subscriber_id;
         if (kitId != null) await tagSubscriber(tagId, kitId, kitCfg);
       }
-      const snip = KIND_TO_SNIPPET_NUM[kind];
-      const snippet = [null, loadSnippet(snippetsDirAbs, 1), loadSnippet(snippetsDirAbs, 2), loadSnippet(snippetsDirAbs, 3)][snip];
+      const snippet = loadSnippet(snippetsDirAbs, KIND_TO_SNIPPET_NUM[kind]);
       const input = buildOnboardingBroadcastInput({
         kind,
         subject: snippet?.assunto ?? "",
@@ -392,11 +468,11 @@ async function main(): Promise<void> {
       lot.broadcast_id = broadcast.id;
       lot.status = broadcast.status === "scheduled" ? "scheduled" : "created";
       lot.send_at = broadcast.send_at;
-      writeStore(store, storePath);
+      persistLotUpdate(storePath, lot);
       (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, broadcast_id: broadcast.id, recipients: lotPlan.recipient_emails.length });
     } catch (e) {
       lot.last_error = (e as Error).message;
-      writeStore(store, storePath);
+      persistLotUpdate(storePath, lot);
       (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: false, error: (e as Error).message });
     }
   }
