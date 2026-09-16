@@ -31,7 +31,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { logEvent } from "./lib/run-log.ts";
 import {
   DEFAULT_ORPHAN_THRESHOLD_MS,
@@ -103,10 +103,14 @@ export function main(
   // o jeito real de trocar a fonte de dados sem tocar `gh` de verdade.
   fetchFn: () => RevertPrCandidate[] | null = fetchOpenRevertCalibrationPrs,
 ): void {
-  const thresholdHoursArg = getArg(argv, "threshold-hours");
-  const thresholdMs = thresholdHoursArg
-    ? Number(thresholdHoursArg) * 60 * 60 * 1000
-    : DEFAULT_ORPHAN_THRESHOLD_MS;
+  // #6149 (achado do CI em #8197): getArg + Number(...) desacoplado — mesmo
+  // logicamente protegido por ternário, a heurística do guard estrutural só
+  // reconhece proteção na MESMA linha do Number(). getIntArg já valida e
+  // lança em input malformado (nunca o sentinel silencioso Number("")=0),
+  // então resolve os dois problemas de uma vez — é a migração que o próprio
+  // guard recomenda.
+  const thresholdHoursArg = getIntArg(argv, "threshold-hours", { min: 1 });
+  const thresholdMs = thresholdHoursArg !== undefined ? thresholdHoursArg * 60 * 60 * 1000 : DEFAULT_ORPHAN_THRESHOLD_MS;
   const asJson = hasFlag(argv, "json");
 
   const prs = fetchFn();
