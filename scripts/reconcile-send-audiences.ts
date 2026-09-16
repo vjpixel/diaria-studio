@@ -171,8 +171,10 @@ export interface GuardOutcome {
   orphans: ReturnType<typeof findOrphans>;
   recentDelivery: RecentDeliveryMeasurement[];
   beehiivDeliveryGap: ReturnType<typeof checkBeehiivDeliveryGap> | null;
-  /** #7482: `true` quando o gap não foi calculado de propósito (0 ativos +
-   *  backend=kit) — distingue de "não deu pra medir" (measured=false). */
+  /** #7482, condição simplificada pelo #8182 (16/09/2026): `true` quando o
+   *  gap não foi calculado de propósito (backend=kit, independente da
+   *  contagem de ativos residual na Beehiiv) — distingue de "não deu pra
+   *  medir" (measured=false). */
   beehiivGapSkippedPostMigration: boolean;
   /** #7482 (achado do fleet review, 16/09/2026): `true` quando a audiência
    *  de envio do Kit foi medida como "todo ativo" em vez da tag `rampa-kit`
@@ -208,14 +210,21 @@ export function decideOutcome(
   newsletterBackend?: string,
 ): GuardOutcome {
   const beehiivDelivery = recentDelivery.find((r) => r.platform === "beehiiv");
-  // #7482 (decisão do editor, 10/09/2026): com o canal principal já em
-  // "kit", 0 ativos na Beehiiv é o estado ESPERADO pós-migração — não uma
-  // divergência a investigar. O "destinatários reais" que ainda aparece
-  // positivo é sempre resíduo do ÚLTIMO envio real feito antes da migração
-  // terminar (dado histórico, não uma medição de canal errado) — comparar
-  // esse resíduo contra 0 ativos vai gerar sempre o mesmo alarme falso, sem
-  // nunca convergir sozinho. Pular o check inteiro nesse caso.
-  const skipBeehiivGap = newsletterBackend === "kit" && beehiivActiveCount === 0;
+  // #7482 (decisão do editor, 10/09/2026), revisado pelo #8182 (16/09/2026):
+  // com o canal principal já em "kit", a Beehiiv está decomissionada como
+  // canal de ENVIO — `measureBeehiivRecentDelivery` lê o post mais recente
+  // da Beehiiv, que fica CONGELADO no último envio de antes da migração
+  // terminar (nada volta a publicar lá), então esse "destinatários reais" é
+  // sempre um dado HISTÓRICO, nunca uma medição do canal atual. Comparar
+  // esse resíduo contra a contagem de ativos ATUAL não faz sentido —
+  // independente do valor exato do residual: a condição original exigia
+  // `beehiivActiveCount === 0` (achado #8182, 16/09/2026: com 1 residual
+  // ativo em vez de exatamente 0, a condição não disparava e o guard
+  // reportava "inesperado, investigar" pra um estado que já era o esperado
+  // pós-migração). `newsletterBackend === "kit"` sozinho já implica migração
+  // DE FATO completa (#7386) — não uma transição gradual em que a Beehiiv
+  // ainda estivesse enviando de verdade para uma base grande.
+  const skipBeehiivGap = newsletterBackend === "kit";
   const beehiivDeliveryGap =
     !skipBeehiivGap && beehiivDelivery?.measured && typeof beehiivDelivery.recipients === "number"
       ? checkBeehiivDeliveryGap(beehiivActiveCount, beehiivDelivery.recipients)
@@ -263,7 +272,7 @@ function formatReport(outcome: GuardOutcome): string {
   }
   if (outcome.beehiivGapSkippedPostMigration) {
     lines.push(
-      "  gap de entrega Beehiiv: não checado — 0 ativos + backend=kit, esperado pós-migração (decisão do editor, #7482).",
+      "  gap de entrega Beehiiv: não checado — backend=kit, Beehiiv decomissionada como canal de envio (decisão do editor, #7482/#8182).",
     );
   } else if (outcome.beehiivDeliveryGap) {
     const g = outcome.beehiivDeliveryGap;

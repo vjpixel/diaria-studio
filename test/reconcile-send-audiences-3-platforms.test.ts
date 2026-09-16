@@ -293,7 +293,34 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
     assert.equal(outcome.beehiivDeliveryGap?.ok, false);
   });
 
-  it("Beehiiv com ativos > 0 + backend=kit: gap check continua rodando normalmente (só pula quando 0)", () => {
+  // REGRESSÃO #8182 (16/09/2026): a condição original exigia
+  // `beehiivActiveCount === 0` EXATO — com 1 residual ativo (medição ao vivo
+  // do achado #8182), o skip não disparava e o guard reportava "destinatários
+  // reais (314) > ativos contados (1) — inesperado, investigar" pra um
+  // estado que já era o esperado pós-migração. `newsletterBackend === "kit"`
+  // sozinho já basta: a Beehiiv fica decomissionada como canal de ENVIO
+  // independente de quantos residuais ainda aparecem como "ativos".
+  it("1 residual ativo na Beehiiv + backend=kit: pula o gap check mesmo sem ser exatamente 0 (#8182)", () => {
+    const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
+    const outcome = decideOutcome(
+      audience,
+      [],
+      [{ platform: "beehiiv", measured: true, recipients: 314 }],
+      1,
+      "kit",
+    );
+    assert.equal(outcome.beehiivGapSkippedPostMigration, true);
+    assert.equal(outcome.beehiivDeliveryGap, null);
+  });
+
+  // Test original (#7482) esperava o gap check RODAR com 317 ativos +
+  // backend=kit — plausível ANTES do #7386/#8181 confirmarem que backend=kit
+  // já significa migração de fato completa (achado #8182: um "317 ativos
+  // ainda na Beehiiv com backend já kit" não é mais um cenário real de
+  // transição, é sempre `recentDelivery` histórico congelado). Atualizado
+  // pra refletir o comportamento correto pós-#8182: skip sempre que
+  // backend=kit, independente da contagem de ativos.
+  it("Beehiiv com ativos > 0 + backend=kit: pula o gap check do mesmo jeito (backend=kit basta, #8182)", () => {
     const audience = reconcileSendAudiences([{ name: "beehiiv", emails: ["a@x.com"] }]);
     const outcome = decideOutcome(
       audience,
@@ -302,8 +329,8 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       317,
       "kit",
     );
-    assert.equal(outcome.beehiivGapSkippedPostMigration, false);
-    assert.equal(outcome.beehiivDeliveryGap?.ok, true);
+    assert.equal(outcome.beehiivGapSkippedPostMigration, true);
+    assert.equal(outcome.beehiivDeliveryGap, null);
   });
 
   it("decideOutcome expõe kitAudienceIsAllActive no GuardOutcome (#7482 fleet review — paridade com beehiivGapSkippedPostMigration)", () => {
