@@ -37,7 +37,7 @@ import { WORKER_DEV_HOST, APEX_HOSTNAME, WORKER_NAME } from "../scripts/lib/apex
 
 const CFG: Config = { token: "test-token", accountId: "test-account" };
 
-const OK_ROOT_HTML = `<html><head><title>diar.ia.br</title></head></html>`;
+const OK_ROOT_HTML = `<html><head><title>diar.ia.br — notícias de IA todo dia, em português</title></head></html>`;
 const SUBSCRIBE_REDIRECT_LOCATION = "https://diar-ia-br.kit.com/";
 
 interface MockDnsRecord {

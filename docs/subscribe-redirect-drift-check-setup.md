@@ -9,7 +9,7 @@ O Worker `diaria-site` faz `/subscribe` retornar 302 pra `https://diar-ia-br.kit
 Para cada alvo de `buildDefaultTargets` (`scripts/lib/subscribe-redirect-drift-check.ts`):
 
 1. **`kit-subscribe`** — `GET https://diar-ia-br.kit.com/` (destino do redirect, com User-Agent de navegador — sem UA a Cloudflare devolve challenge, ver memória "curl sem UA recebe challenge"). `ok` exige status 200 **e** o corpo conter `type="email"` **e** `>Subscribe<` (confirmados ao vivo em 26/08/2026 — campo de e-mail e botão de submit da página real).
-2. **`worker-root`** — `GET https://{WORKER_DEV_HOST}/` (host `workers.dev` do Worker `diaria-site`, pré-cutover — mesma constante do guard de pré-condição do `--cutover`, `scripts/lib/apex-cutover.ts`). `ok` exige status 200 **e** o corpo conter `EXPECTED_ROOT_MARKER` (`<title>diar.ia.br</title>`).
+2. **`worker-root`** — `GET https://{WORKER_DEV_HOST}/` (host `workers.dev` do Worker `diaria-site`, pré-cutover — mesma constante do guard de pré-condição do `--cutover`, `scripts/lib/apex-cutover.ts`). `ok` exige status 200 **e** o corpo conter `EXPECTED_ROOT_MARKER` (`<title>diar.ia.br — notícias de IA todo dia, em português</title>`, atualizado pelo #8067).
 3. **`worker-sample-page`** — `GET https://{WORKER_DEV_HOST}/p/{SAMPLE_ARCHIVE_SLUG}` (amostra do acervo). `ok` exige status 200 **e** o corpo conter o `<link rel="canonical">` apontando pro apex.
 
 Os alvos 2 e 3 são a extensão pedida pelo item 4 do checklist da issue — fecham o laço entre "config committada parece certa" e "a Cloudflare serve o que a gente quis" (mesma classe do Finding 3 do fleet review da PR #6363: `deploy-site.yml` roda `wrangler deploy` sem smoke-test pós-deploy).

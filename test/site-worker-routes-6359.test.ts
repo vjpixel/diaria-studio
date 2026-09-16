@@ -63,22 +63,44 @@ describe("workers/site/public — / (#6359)", () => {
     assert.ok(existsSync(indexPath), `${indexPath} ausente — apex ficaria 404 em / pós-cutover`);
   });
 
-  it("declara <title>diar.ia.br</title> — mesmo title medido ao vivo no apex hoje (comentário da issue)", () => {
+  // (#8067, 260916) O title/description bare pinado aqui era só a foto do
+  // que o #6359 mediu ao vivo naquele dia, não uma decisão de SEO — GSC
+  // mostrou 0% CTR na busca de marca (posição ~7) por não comunicar a
+  // proposta de valor. Atualizado junto do mesmo texto publicado no painel
+  // Beehiiv (diaria.beehiiv.com).
+  it("declara <title> com a proposta de valor (atualizado pelo #8067)", () => {
     const html = readFileSync(indexPath, "utf8");
-    assert.match(html, /<title>diar\.ia\.br<\/title>/);
+    assert.match(html, /<title>diar\.ia\.br — notícias de IA todo dia, em português<\/title>/);
   });
 
-  it("meta description é a tagline oficial — mesma medida ao vivo no apex hoje", () => {
+  it("meta description com a proposta de valor (atualizado pelo #8067)", () => {
     const html = readFileSync(indexPath, "utf8");
     assert.match(
       html,
-      /<meta name="description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs\.">/,
+      /<meta name="description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail\.">/,
     );
   });
 
   it("tem link pra /assinar (CTA de assinatura na home, #6427 — antes /subscribe)", () => {
     const html = readFileSync(indexPath, "utf8");
     assert.match(html, /href="\/assinar"/);
+  });
+
+  // (#8067, achado do review da PR #8175) og:title/og:description e
+  // twitter:title/twitter:description são cópias MANUAIS do title/description
+  // acima, não derivadas — nada travava as duas em sincronia até este teste.
+  it("og:title/og:description e twitter:title/twitter:description acompanham o title/description (#8067)", () => {
+    const html = readFileSync(indexPath, "utf8");
+    assert.match(html, /<meta property="og:title" content="diar\.ia\.br — notícias de IA todo dia, em português">/);
+    assert.match(
+      html,
+      /<meta property="og:description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail\.">/,
+    );
+    assert.match(html, /<meta name="twitter:title" content="diar\.ia\.br — notícias de IA todo dia, em português">/);
+    assert.match(
+      html,
+      /<meta name="twitter:description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail\.">/,
+    );
   });
 });
 

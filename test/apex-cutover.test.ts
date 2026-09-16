@@ -46,7 +46,7 @@ import {
   selectSingleApexCustomDomain,
 } from "../scripts/lib/apex-cutover.ts";
 
-const OK_ROOT_BODY = `<html><head><title>diar.ia.br</title></head><body></body></html>`;
+const OK_ROOT_BODY = `<html><head><title>diar.ia.br — notícias de IA todo dia, em português</title></head><body></body></html>`;
 const OK_SUBSCRIBE_LOCATION = `https://${EXPECTED_SUBSCRIBE_REDIRECT_HOST}/`;
 
 const READY_INPUT = {
