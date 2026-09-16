@@ -1,6 +1,6 @@
 # Fontes cadastradas — diar.ia.br
 
-**Total:** 49 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 50 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -95,6 +95,11 @@
 ### Anthropic
 - URL: https://www.anthropic.com/news/
 - Site query: `site:anthropic.com/news`
+
+### Flavio Macknight Pies
+- URL: https://flaviomacknightpies.substack.com
+- Site query: `site:flaviomacknightpies.substack.com`
+- RSS: https://flaviomacknightpies.substack.com/feed
 
 ## Secundária
 
