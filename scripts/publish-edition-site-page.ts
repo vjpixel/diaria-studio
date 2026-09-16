@@ -282,7 +282,7 @@ export interface PublishPageDeps {
 }
 
 export type PublishPageResult =
-  | { code: 0; slug: string; bytes: number; published: boolean; prUrl?: string; merged?: boolean }
+  | { code: 0; slug: string; bytes: number; published: boolean; prUrl?: string; merged?: boolean; mergeReason?: string }
   | { code: 2; reason: string }
   | { code: 3; reason: string }
   | { code: 4; reason: string }
@@ -1228,6 +1228,12 @@ export function publishEditionSitePage(
       published: true,
       prUrl: publishResult.prUrl,
       merged: publishResult.merged,
+      // #8158 fleet review, finding 1: `mergeReason` (o PORQUÊ de merged:false —
+      // CI vermelho vs. bloqueado por conflito vs. timeout vs. erro de `gh`, cada
+      // um com texto distinto) estava sendo descartado aqui, sobrando só o
+      // booleano em `_internal/site-page-published.json`. Quem auditar esse
+      // arquivo depois não conseguia distinguir os motivos.
+      mergeReason: publishResult.mergeReason,
     };
   }
   deps.log(`git commit/push rodou sem lançar mas não confirmou push — /p/${built.post.slug} não tem branch pushada ainda`);
@@ -1266,6 +1272,7 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
     // mergeado — CI vermelho/timeout) — o invariant do #7283 pode usar essa
     // distinção pra só alarmar no 2º caso.
     merged: "merged" in result ? result.merged : undefined,
+    mergeReason: "mergeReason" in result ? result.mergeReason : undefined,
     checked_at: new Date().toISOString(),
   };
   try {

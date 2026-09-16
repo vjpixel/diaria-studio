@@ -159,6 +159,36 @@ describe("productionDeps.publish — integração fim-a-fim do auto-merge (#8158
     assert.ok(ghCalls.some((c) => c[0] === "pr" && c[1] === "merge"));
   });
 
+  it("PR REUSADO (não criado — já existe um aberto pra branch) também é mergeado quando o CI vem verde", () => {
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return "master\n";
+      if (args[0] === "rev-parse") return "deadbeef\ndeadbeef\n";
+      if (args[0] === "status") return " M workers/site/public/p/meu-slug/index.html\n";
+      if (args[0] === "diff") return "workers/site/public/p/meu-slug/index.html\n";
+      return "";
+    };
+    const ghCalls: string[][] = [];
+    const gh: GhRunner = (args) => {
+      ghCalls.push(args);
+      if (args[0] === "pr" && args[1] === "list") {
+        return JSON.stringify([{ number: 4321, url: "https://github.com/vjpixel/diaria-studio/pull/4321" }]);
+      }
+      if (args[0] === "pr" && args[1] === "create") {
+        throw new Error("gh pr create não deveria ser chamado — já existe PR aberto pra essa branch");
+      }
+      if (args[0] === "pr" && args[1] === "view") return statusCheckRollupPayload([PASSING_CHECK]);
+      if (args[0] === "pr" && args[1] === "merge") return "Merged\n";
+      return "";
+    };
+    const lock = () => ({ ok: true, stdout: "", stderr: "" });
+    const deps = productionDeps("/repo", git, gh, lock, () => {});
+    const result = deps.publish("meu-slug");
+    assert.equal(result.prCreated, false, "reusa o PR existente, não cria um novo");
+    assert.equal(result.prNumber, 4321);
+    assert.equal(result.merged, true, "o caminho de reuso também precisa mergear quando o CI vem verde");
+    assert.ok(ghCalls.some((c) => c[0] === "pr" && c[1] === "merge" && c.includes("4321")));
+  });
+
   it("sem PR nenhum (gh pr create não devolve URL parseável): merged:false, nunca tenta gh pr view/merge", () => {
     const git: GitRunner = (args) => {
       if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return "master\n";
