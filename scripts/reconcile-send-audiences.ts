@@ -51,18 +51,27 @@
  * que impeça medir a AUDIÊNCIA (item 1), porque é essa medição que sustenta
  * os itens 3/4.
  *
- * Exit codes (mesma convenção de `reconcile-beehiiv-kit.ts`):
- *   0 = guard passa (sem órfão, sem sobreposição)
- *   1 = DIVERGE (órfão e/ou sobreposição encontrados)
+ * Exit codes:
+ *   0 = mediu (com OU sem divergência — ver abaixo)
  *   2 = falha de config/rede — não foi possível medir a audiência
+ *   3 = divergência encontrada mas NÃO registrada em issue (gh/estado falhou)
+ *
+ * Divergência NÃO é exit ≠0 desde #7482 (decisão do editor, 16/09/2026):
+ * sair 1 ao ACHAR algo deixava a unit systemd eternamente `failed`, e o
+ * `Diaria-Systemd-Failed-Units-Alarm` abria issue dizendo "unit quebrada" —
+ * triagens seguidas procuraram defeito na unit em vez de olhar o achado.
+ * Agora o achado vira issue PRÓPRIA (`scripts/lib/alarm-issues.ts`, família
+ * `estado`, fingerprint fixo) que descreve a divergência e fecha sozinha
+ * após 2 execuções limpas; exit ≠0 fica reservado pra "não consegui medir".
  *
  * Uso:
- *   npx tsx scripts/reconcile-send-audiences.ts            # texto humano
- *   npx tsx scripts/reconcile-send-audiences.ts --json      # JSON
+ *   npx tsx scripts/reconcile-send-audiences.ts             # texto humano + issue
+ *   npx tsx scripts/reconcile-send-audiences.ts --json      # JSON + issue
+ *   npx tsx scripts/reconcile-send-audiences.ts --dry-run   # só relata, sem tocar issue
  */
 
 import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -74,6 +83,14 @@ import { listBroadcasts, getBroadcastStats } from "./lib/kit-client.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { brevoListContacts, brevoGetCampaignGlobalStats, fetchCampaignsByStatus } from "./lib/brevo-client.ts";
 import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
+import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
+import {
+  applyAlarmReconciliation,
+  loadAlarmIssuesState,
+  planAlarmReconciliation,
+  saveAlarmIssuesState,
+  type AlarmFinding,
+} from "./lib/alarm-issues.ts";
 import {
   reconcileSendAudiences,
   maskSendAudiencesResultForJson,
@@ -87,6 +104,11 @@ import {
 const LOG_PREFIX = "[reconcile-send-audiences]";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KIT_DEFAULT_AUDIENCE_TAG = "rampa-kit";
+const ALARM_CHECK = "reconcile-send-audiences";
+const ALARM_STATE_PATH = join(ROOT, "data", "reconcile-send-audiences", ".alarm-issues.json");
+const CLOSE_AFTER_RUNS = 2;
+/** Quantos e-mails (mascarados) listar no corpo da issue, por categoria. */
+const ISSUE_LIST_LIMIT = 20;
 
 interface PlatformConfig {
   kit_diaria?: { audience_tag?: string };
@@ -171,9 +193,15 @@ export interface GuardOutcome {
   orphans: ReturnType<typeof findOrphans>;
   recentDelivery: RecentDeliveryMeasurement[];
   beehiivDeliveryGap: ReturnType<typeof checkBeehiivDeliveryGap> | null;
-  /** #7482: `true` quando o gap não foi calculado de propósito (0 ativos +
-   *  backend=kit) — distingue de "não deu pra medir" (measured=false). */
+  /** #7482: `true` quando o gap não foi calculado de propósito (backend=kit
+   *  — a Beehiiv não envia mais a diária) — distingue de "não deu pra
+   *  medir" (measured=false). */
   beehiivGapSkippedPostMigration: boolean;
+  /** #7482 (16/09/2026): sobreposições descartadas por serem as sondas do
+   *  editor (`EDITOR_SEED_EMAILS`), que ficam nas duas pontas de propósito —
+   *  mesma isenção de `brevo-kit-active-exclusion.ts` (#6485).
+   *  `audience.overlaps`/`overlapCount` já vêm SEM elas. */
+  seedOverlapsExempted: number;
   /** #7482 (achado do fleet review, 16/09/2026): `true` quando a audiência
    *  de envio do Kit foi medida como "todo ativo" em vez da tag `rampa-kit`
    *  — espelha `beehiivGapSkippedPostMigration` acima. Sem este campo, um
@@ -200,13 +228,33 @@ export function shouldUseAllActiveAsKitAudience(newsletterBackend?: string): boo
   return newsletterBackend === "kit";
 }
 
+/**
+ * Pura: audiência de ENVIO da Beehiiv (#7482, 16/09/2026). Com backend=kit
+ * a Beehiiv não envia a diária — um ativo residual lá não recebe nada por
+ * ela, então não entra na audiência de envio (senão vira "sobreposição
+ * Beehiiv×Kit" falsa, medida ao vivo: 1 residual também ativo no Kit). Os
+ * ativos da Beehiiv continuam em `activeSources`: quem estiver ativo SÓ na
+ * Beehiiv aparece como órfão, que é o sinal correto.
+ */
+export function beehiivSendAudience(newsletterBackend: string | undefined, beehiivActiveEmails: string[]): string[] {
+  return newsletterBackend === "kit" ? [] : beehiivActiveEmails;
+}
+
 export function decideOutcome(
   audience: ReturnType<typeof reconcileSendAudiences>,
   orphans: ReturnType<typeof findOrphans>,
   recentDelivery: RecentDeliveryMeasurement[],
   beehiivActiveCount: number,
   newsletterBackend?: string,
+  seedEmails: readonly string[] = EDITOR_SEED_EMAILS,
 ): GuardOutcome {
+  // #7482: as sondas do editor ficam na lista Brevo E no Kit de propósito
+  // (inbox placement por provedor). Sem esta isenção o guard reportava
+  // "5 sobreposições bloqueantes" que eram exatamente as 5 sondas.
+  const seeds = new Set(seedEmails.map((e) => e.trim().toLowerCase()));
+  const realOverlaps = audience.overlaps.filter((o) => !seeds.has(o.email.trim().toLowerCase()));
+  const seedOverlapsExempted = audience.overlaps.length - realOverlaps.length;
+  const audienceSemSondas = { ...audience, overlaps: realOverlaps, overlapCount: realOverlaps.length };
   const beehiivDelivery = recentDelivery.find((r) => r.platform === "beehiiv");
   // #7482 (decisão do editor, 10/09/2026): com o canal principal já em
   // "kit", 0 ativos na Beehiiv é o estado ESPERADO pós-migração — não uma
@@ -215,18 +263,23 @@ export function decideOutcome(
   // terminar (dado histórico, não uma medição de canal errado) — comparar
   // esse resíduo contra 0 ativos vai gerar sempre o mesmo alarme falso, sem
   // nunca convergir sozinho. Pular o check inteiro nesse caso.
-  const skipBeehiivGap = newsletterBackend === "kit" && beehiivActiveCount === 0;
+  // 16/09/2026: a condição era `&& beehiivActiveCount === 0` e quebrou no
+  // dia em que a Beehiiv passou a contar 1 ativo residual ("314 > 1,
+  // inesperado"). Com backend=kit a Beehiiv não envia a diária — o gap não
+  // mede nada, qualquer que seja a contagem.
+  const skipBeehiivGap = newsletterBackend === "kit";
   const beehiivDeliveryGap =
     !skipBeehiivGap && beehiivDelivery?.measured && typeof beehiivDelivery.recipients === "number"
       ? checkBeehiivDeliveryGap(beehiivActiveCount, beehiivDelivery.recipients)
       : null;
-  const blocking = audience.overlapCount > 0 || orphans.length > 0;
+  const blocking = audienceSemSondas.overlapCount > 0 || orphans.length > 0;
   return {
-    audience,
+    audience: audienceSemSondas,
     orphans,
     recentDelivery,
     beehiivDeliveryGap,
     beehiivGapSkippedPostMigration: skipBeehiivGap,
+    seedOverlapsExempted,
     kitAudienceIsAllActive: shouldUseAllActiveAsKitAudience(newsletterBackend),
     blocking,
   };
@@ -239,7 +292,10 @@ function formatReport(outcome: GuardOutcome): string {
     lines.push(`  ${s.name}: ${s.total} (hash ${s.hash.slice(0, 12)}…)`);
   }
   lines.push(`  distintos (união): ${outcome.audience.distinctTotal}`);
-  lines.push(`  sobreposição: ${outcome.audience.overlapCount}`);
+  lines.push(
+    `  sobreposição: ${outcome.audience.overlapCount}` +
+      (outcome.seedOverlapsExempted > 0 ? ` (+${outcome.seedOverlapsExempted} sonda(s) do editor, isentas)` : ""),
+  );
   if (outcome.audience.overlapCount > 0) {
     lines.push("  BLOQUEANTE — presentes em >1 audiência de envio:");
     for (const o of maskSendAudiencesResultForJson(outcome.audience).overlaps) {
@@ -263,7 +319,7 @@ function formatReport(outcome: GuardOutcome): string {
   }
   if (outcome.beehiivGapSkippedPostMigration) {
     lines.push(
-      "  gap de entrega Beehiiv: não checado — 0 ativos + backend=kit, esperado pós-migração (decisão do editor, #7482).",
+      "  gap de entrega Beehiiv: não checado — backend=kit, a Beehiiv não envia mais a diária (decisão do editor, #7482).",
     );
   } else if (outcome.beehiivDeliveryGap) {
     const g = outcome.beehiivDeliveryGap;
@@ -277,6 +333,75 @@ function formatReport(outcome: GuardOutcome): string {
   return lines.join("\n");
 }
 
+/**
+ * Pura: o achado de divergência como `AlarmFinding` (#7482). Lista vazia =
+ * guard limpo — `applyAlarmReconciliation` conta a execução limpa e fecha a
+ * issue depois de `CLOSE_AFTER_RUNS`.
+ *
+ * Fingerprint FIXO (mesmo racional de `acervo-staleness-alarm.ts`, PR
+ * #7595): embutir as contagens trocaria o fingerprint a cada variação e
+ * fecharia a issue como "resolvida" sem ter sido. A variação aparece via
+ * `contentSignature`, que comenta na issue quando os números mudam.
+ */
+export function buildDivergenceFindings(outcome: GuardOutcome): AlarmFinding[] {
+  if (!outcome.blocking) return [];
+  const overlaps = maskSendAudiencesResultForJson(outcome.audience).overlaps;
+  const orphans = maskOrphansForJson(outcome.orphans);
+  const lines: string[] = [
+    "Achado automático do guard `Diaria-Reconcile-Send-Audiences`",
+    "(`scripts/reconcile-send-audiences.ts`, #7385; issue própria desde #7482).",
+    "",
+    "A unit systemd **não está quebrada** — o guard mediu as audiências de envio e achou divergência real:",
+    "",
+    "| sinal | valor |",
+    "|---|---|",
+    ...outcome.audience.sources.map((s) => `| audiência ${s.name} | ${s.total} |`),
+    `| sobreposição (mesmo e-mail em >1 canal — recebe 2×) | ${outcome.audience.overlapCount} |`,
+    `| órfãos (ativo, fora de toda audiência — não recebe) | ${outcome.orphans.length} |`,
+    `| sondas do editor isentas | ${outcome.seedOverlapsExempted} |`,
+    `| audiência Kit = todo ativo (backend=kit) | ${outcome.kitAudienceIsAllActive ? "sim" : "não (tag)"} |`,
+    "",
+  ];
+  if (overlaps.length > 0) {
+    lines.push(`Sobreposições (primeiras ${Math.min(ISSUE_LIST_LIMIT, overlaps.length)}):`, "");
+    for (const o of overlaps.slice(0, ISSUE_LIST_LIMIT)) lines.push(`- ${o.email} (${o.sources.join(", ")})`);
+    lines.push("");
+  }
+  if (orphans.length > 0) {
+    lines.push(`Órfãos (primeiros ${Math.min(ISSUE_LIST_LIMIT, orphans.length)}):`, "");
+    for (const o of orphans.slice(0, ISSUE_LIST_LIMIT)) lines.push(`- ${o.email} (ativo em: ${o.activeIn.join(", ")})`);
+    lines.push("");
+  }
+  lines.push(
+    "Reproduzir: `npx tsx scripts/reconcile-send-audiences.ts --dry-run`. Log diário: `data/reconcile-send-audiences/.guard.log`.",
+    "",
+    `Fecha sozinha quando a divergência não reproduzir por ${CLOSE_AFTER_RUNS} execuções.`,
+  );
+  return [
+    {
+      check: ALARM_CHECK,
+      fingerprint: "send-audiences:diverge",
+      contentSignature: `overlap:${outcome.audience.overlapCount}|orphans:${outcome.orphans.length}`,
+      title: `[diar.ia.br] audiências de envio divergem: ${outcome.audience.overlapCount} sobreposição(ões), ${outcome.orphans.length} órfão(s)`,
+      body: lines.join("\n"),
+      family: "estado",
+      labels: ["bug"],
+      priority: "P1",
+    },
+  ];
+}
+
+/**
+ * Pura: exit code depois de uma medição BEM-SUCEDIDA (#7482). Divergência
+ * registrada em issue = 0. Só sai ≠0 quando há divergência E ela não pôde
+ * ser registrada (gh fora, falha ao gravar estado) — aí o único sinal que
+ * resta é a unit `failed`, e perder o achado em silêncio seria pior.
+ * Falha de registro SEM divergência continua 0: não há achado a perder.
+ */
+export function resolveGuardExitCode(blocking: boolean, reportFailed: boolean): 0 | 3 {
+  return blocking && reportFailed ? 3 : 0;
+}
+
 function emitError(asJson: boolean, message: string, code: "config" | "network"): void {
   process.stderr.write(`${message}\n`);
   if (asJson) {
@@ -288,6 +413,7 @@ function emitError(asJson: boolean, message: string, code: "config" | "network")
 async function main(): Promise<void> {
   loadProjectEnv();
   const asJson = hasFlag(process.argv.slice(2), "json");
+  const dryRun = hasFlag(process.argv.slice(2), "dry-run");
 
   const beehiivConfig = resolveBeehiivConfig();
   if (!beehiivConfig.ok) {
@@ -387,7 +513,7 @@ async function main(): Promise<void> {
 
   const sources: EmailSource[] = [
     { name: "kit", emails: kitAudienceEmails },
-    { name: "beehiiv", emails: beehiivActiveEmails },
+    { name: "beehiiv", emails: beehiivSendAudience(newsletterBackend, beehiivActiveEmails) },
     { name: "brevo", emails: brevoAudienceEmails },
   ];
   const audience = reconcileSendAudiences(sources);
@@ -428,7 +554,8 @@ async function main(): Promise<void> {
           beehiivDeliveryGap: outcome.beehiivDeliveryGap,
           beehiivGapSkippedPostMigration: outcome.beehiivGapSkippedPostMigration,
           kitAudienceIsAllActive: outcome.kitAudienceIsAllActive,
-          decision: { exitCode: outcome.blocking ? 1 : 0, blocking: outcome.blocking },
+          seedOverlapsExempted: outcome.seedOverlapsExempted,
+          decision: { exitCode: 0, blocking: outcome.blocking },
         },
         null,
         2,
@@ -437,7 +564,40 @@ async function main(): Promise<void> {
   } else {
     process.stdout.write(formatReport(outcome) + "\n");
   }
-  process.exitCode = outcome.blocking ? 1 : 0;
+
+  // #7482: o achado vira issue própria; a execução sai 0 de qualquer forma
+  // (ver docstring do módulo). Log em stderr pra não sujar o `--json`.
+  const findings = buildDivergenceFindings(outcome);
+  let reportFailed = false;
+  try {
+    const state = loadAlarmIssuesState(ALARM_STATE_PATH);
+    if (dryRun) {
+      const acoes = planAlarmReconciliation(findings, state, CLOSE_AFTER_RUNS);
+      process.stderr.write(
+        `${LOG_PREFIX} --dry-run: ${acoes.length} ação(ões) de issue — ${acoes.map((a) => a.kind).join(", ") || "nenhuma"}\n`,
+      );
+    } else {
+      const { nextState, findingOutcomes } = applyAlarmReconciliation(findings, state, {
+        cwd: ROOT,
+        closeAfterRuns: CLOSE_AFTER_RUNS,
+      });
+      saveAlarmIssuesState(nextState, ALARM_STATE_PATH);
+      for (const o of findingOutcomes) {
+        if (o.action === "failed") reportFailed = true;
+        process.stderr.write(
+          `${LOG_PREFIX} issue ${o.action}${o.issueNumber ? ` #${o.issueNumber}` : ""}${o.url ? ` ${o.url}` : ""}\n`,
+        );
+      }
+    }
+  } catch (e) {
+    // Achado do review da PR #8183: sem este catch, uma falha ao gravar o
+    // estado (data/ é junction OneDrive) caía no `main().catch` e saía 2
+    // depois de uma medição bem-sucedida — o mesmo falso "unit quebrada"
+    // que o #7482 remove.
+    reportFailed = true;
+    process.stderr.write(`${LOG_PREFIX} falha ao registrar a issue do achado: ${(e as Error).message}\n`);
+  }
+  process.exitCode = resolveGuardExitCode(outcome.blocking, reportFailed);
 }
 
 if (isMainModule(import.meta.url)) {
