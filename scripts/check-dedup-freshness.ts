@@ -14,6 +14,24 @@
  * Destaque GPT-5.5 do gate batia com edição 04-25 — dedup não pegou. Editor
  * só notou no review manual.
  *
+ * **2º critério, independente de calendário (#8142).** O critério de idade
+ * acima é FROUXO de propósito (48-96h conforme dia da semana, #675) e por
+ * isso não distingue "não publicamos há dias" de "publicamos todo dia e a
+ * base não enxerga". Caso real: `read_backend` continuou `"beehiiv"` depois
+ * do ENVIO migrar pro Kit (#7388, 04/09/2026) — a Beehiiv nunca mais recebeu
+ * post, `refresh-dedup.ts` saía com `new_posts: 0`/exit 0 (sem erro — a
+ * FONTE que parou, não o fetch) e o critério de idade sozinho não bate
+ * alarme (a Beehiiv continua existindo como arquivo público congelado, então
+ * "publicado há Nh" mede a idade do post ERRADO). `evaluateLocalEditionsUnseen`
+ * cobre isso: varre `data/editions/{AAMMDD}/` por marcador de envio local
+ * (`_internal/05-published.json` — backend Beehiiv, ou
+ * `_internal/newsletter-kit-published.json` — backend Kit) e compara a data
+ * da edição contra `most_recent` do raw. Detalhe crítico: um marcador com
+ * `scheduled_at` no FUTURO não conta — a edição do dia seguinte já tem o
+ * dela gravado na véspera (`stage-6-run.ts` agenda 24h+ à frente); sem esse
+ * cuidado o guard abortaria toda noite por causa da PRÓPRIA edição do dia
+ * seguinte.
+ *
  * Uso pelo orchestrator no Stage 0, **após** o `refresh-dedup-runner`:
  *
  *   npx tsx scripts/check-dedup-freshness.ts
@@ -22,23 +40,27 @@
  *   --max-staleness-hours <N>   default 48 (cobertura de fim de semana)
  *   --raw <path>                default data/past-editions-raw.json
  *   --now <ISO>                 override pra teste/CI; default Date.now()
+ *   --editions-root <path>      default data/editions (override pra teste)
  *
  * Output (stdout, JSON):
  *   { "ok": true,  "most_recent": "2026-04-27T...", "age_hours": 12.3, ... }
  *   { "ok": false, "most_recent": "2026-04-23T...", "age_hours": 96.7, ... }
+ *   { "ok": false, ..., "local_editions_unseen": ["260904", "260908"], ... }
  *
  * Exit codes:
  *   0 = fresh (ou base vazia + bootstrap pendente, decidido pelo caller)
- *   1 = stale (orchestrator: pedir ao editor pra investigar antes de prosseguir)
+ *   1 = stale por idade E/OU por edição local não vista pela base
+ *       (orchestrator: pedir ao editor pra investigar antes de prosseguir)
  *   2 = erro (raw não existe, args inválidos, JSON corrompido)
  *
- * Refs #230.
+ * Refs #230, #675, #8142.
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
 export interface FreshnessResult {
   ok: boolean;
@@ -48,6 +70,10 @@ export interface FreshnessResult {
   age_hours: number | null;
   max_staleness_hours: number;
   reason?: string;
+  /** #8142 — quantas edições locais com marcador de envio (não-futuro) foram checadas. */
+  local_editions_checked?: number;
+  /** #8142 — AAMMDDs com marcador de envio local que a base não enxerga (ordenado asc). */
+  local_editions_unseen?: string[];
 }
 
 interface RawPost {
@@ -135,6 +161,159 @@ export function evaluateFreshness(
   };
 }
 
+// ── critério 2: edições locais que a base não enxerga (#8142) ─────────────
+
+/**
+ * Converte AAMMDD pra "YYYY-MM-DD" (assume século 20xx — mesma convenção do
+ * resto do repo, ex: `editionDir()`). Pura, sem I/O. Lança em input malformado
+ * (mesmo padrão de `editionDir()` em `scripts/lib/edition-paths.ts`).
+ */
+export function aammddToIsoDate(aammdd: string): string {
+  if (!/^\d{6}$/.test(aammdd)) {
+    throw new Error(
+      `aammddToIsoDate: AAMMDD inválido: ${JSON.stringify(aammdd)} (esperado exatamente 6 dígitos)`,
+    );
+  }
+  const yy = aammdd.slice(0, 2);
+  const mm = aammdd.slice(2, 4);
+  const dd = aammdd.slice(4, 6);
+  return `20${yy}-${mm}-${dd}`;
+}
+
+/** Shape mínimo comum a `_internal/05-published.json` (Beehiiv) e
+ * `_internal/newsletter-kit-published.json` (Kit) — só os campos usados
+ * pela classificação abaixo. */
+export interface LocalPublishMarker {
+  status?: string | null;
+  scheduled_at?: string | null;
+  published_at?: string | null;
+}
+
+/**
+ * Pura: decide se um marcador de publicação local representa um envio que
+ * a base de dedup JÁ DEVERIA enxergar (`true`) ou um agendamento futuro que
+ * ainda não conta (`false`) — a edição de amanhã já tem `_internal/05-published.json`/
+ * `newsletter-kit-published.json` gravado na véspera com `scheduled_at` no
+ * futuro (Stage 6 agenda 24h+ à frente); contar isso faria o guard abortar
+ * toda noite (#8142).
+ *
+ * Regra: `published_at` presente conta sempre (já saiu). Sem `published_at`,
+ * `scheduled_at` no futuro NÃO conta; `scheduled_at` no passado/presente
+ * conta. **Sem os dois** (marcador só com `status: "draft"`/`"test_sent"`,
+ * ou sem `status` nenhum) NÃO conta — Stage 5 grava o marcador em modo
+ * `draft` ANTES do gate humano do Stage 6 marcar `scheduled_at`; contar um
+ * draft ainda não agendado como "devido" faria o guard disparar toda noite
+ * em que o editor ainda não passou pelo gate de agendamento da edição
+ * anterior — exatamente o falso-positivo que este critério existe pra
+ * evitar (mesmo cuidado do caso "scheduled_at no futuro" acima).
+ */
+export function isLocalMarkerAlreadyDue(
+  marker: LocalPublishMarker,
+  nowMs: number,
+): boolean {
+  if (typeof marker.published_at === "string" && marker.published_at.length > 0) {
+    return true;
+  }
+  if (typeof marker.scheduled_at === "string" && marker.scheduled_at.length > 0) {
+    const ms = Date.parse(marker.scheduled_at);
+    if (!Number.isNaN(ms)) {
+      return ms <= nowMs;
+    }
+    // scheduled_at presente mas não-parseável: dado corrompido, não dá pra
+    // confirmar timing — tratar como NÃO devido (fail-soft, evita alarme
+    // falso em cima de um campo malformado).
+    return false;
+  }
+  // Sem published_at nem scheduled_at: draft puro, ainda não passou pelo
+  // gate de agendamento — não é "devido" ainda.
+  return false;
+}
+
+export interface LocalEditionMarker {
+  aammdd: string;
+  marker: LocalPublishMarker;
+}
+
+/**
+ * Pura: dado os marcadores de envio local já lidos do disco + o
+ * `most_recent` (ISO) do raw de dedup, retorna quais AAMMDDs "devidos"
+ * (`isLocalMarkerAlreadyDue`) a base NÃO enxerga — comparando a data da
+ * edição (derivada do AAMMDD) contra a data do post mais recente no raw.
+ * Não toca filesystem.
+ */
+export function evaluateLocalEditionsUnseen(
+  markers: LocalEditionMarker[],
+  rawMostRecentIso: string | null,
+  nowMs: number,
+): { checked: number; unseen: string[] } {
+  const rawMostRecentDate = rawMostRecentIso
+    ? rawMostRecentIso.slice(0, 10)
+    : null;
+  const unseen: string[] = [];
+  let checked = 0;
+  for (const { aammdd, marker } of markers) {
+    if (!isLocalMarkerAlreadyDue(marker, nowMs)) continue;
+    checked++;
+    const editionDate = aammddToIsoDate(aammdd);
+    if (rawMostRecentDate === null || editionDate > rawMostRecentDate) {
+      unseen.push(aammdd);
+    }
+  }
+  unseen.sort();
+  return { checked, unseen };
+}
+
+function readJsonObject(path: string): Record<string, unknown> | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * I/O: varre `editionsRootAbs` (`data/editions`, layout flat OU nested por
+ * mês — via `enumerateEditionDirs`) por marcadores de envio local, um por
+ * edição. Prefere `_internal/`, com fallback pra raiz (mesma convenção de
+ * `edition-paths.ts`). Fail-soft: edição sem NENHUM dos dois marcadores é
+ * ignorada (Stage 5 ainda não rodou ali, ou não é uma edição diária).
+ */
+export function collectLocalEditionMarkers(
+  editionsRootAbs: string,
+): LocalEditionMarker[] {
+  const dirs = enumerateEditionDirs(editionsRootAbs);
+  const out: LocalEditionMarker[] = [];
+  for (const [aammdd, dirPath] of dirs) {
+    const candidates = [
+      join(dirPath, "_internal", "05-published.json"),
+      join(dirPath, "05-published.json"),
+      join(dirPath, "_internal", "newsletter-kit-published.json"),
+      join(dirPath, "newsletter-kit-published.json"),
+    ];
+    let marker: Record<string, unknown> | null = null;
+    for (const candidate of candidates) {
+      marker = readJsonObject(candidate);
+      if (marker) break;
+    }
+    if (!marker) continue;
+    out.push({
+      aammdd,
+      marker: {
+        status: typeof marker.status === "string" ? marker.status : null,
+        scheduled_at:
+          typeof marker.scheduled_at === "string" ? marker.scheduled_at : null,
+        published_at:
+          typeof marker.published_at === "string" ? marker.published_at : null,
+      },
+    });
+  }
+  return out;
+}
+
 /**
  * Emite um FreshnessResult em formato JSON pra stdout (#240).
  * Centraliza pra todos os paths de erro emitirem o mesmo schema —
@@ -166,6 +345,7 @@ interface CliFlags {
   maxStalenessHours: number;
   rawPath: string;
   now?: string;
+  editionsRoot: string;
 }
 
 /**
@@ -184,6 +364,7 @@ export function parseArgs(argv: string[]): CliFlags | { error: string } {
   let maxStalenessHours = defaultMaxStalenessHours();
   let rawPath = "data/past-editions-raw.json";
   let now: string | undefined;
+  let editionsRoot = "data/editions";
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--max-staleness-hours" && argv[i + 1]) {
@@ -199,9 +380,12 @@ export function parseArgs(argv: string[]): CliFlags | { error: string } {
     } else if (a === "--now" && argv[i + 1]) {
       now = argv[i + 1];
       i++;
+    } else if (a === "--editions-root" && argv[i + 1]) {
+      editionsRoot = argv[i + 1];
+      i++;
     }
   }
-  return { maxStalenessHours, rawPath, now };
+  return { maxStalenessHours, rawPath, now, editionsRoot };
 }
 
 function main(): void {
@@ -262,8 +446,31 @@ function main(): void {
     parsed.maxStalenessHours,
     parsed.rawPath,
   );
-  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-  process.exit(result.ok ? 0 : 1);
+
+  // Critério 2 (#8142): sempre roda, mesmo se o critério de idade já falhou
+  // — o objeto final reporta os dois motivos possíveis de stale.
+  const editionsRootAbs = resolve(ROOT, parsed.editionsRoot);
+  const localMarkers = collectLocalEditionMarkers(editionsRootAbs);
+  const localCheck = evaluateLocalEditionsUnseen(
+    localMarkers,
+    result.most_recent,
+    nowMs,
+  );
+
+  const combined: FreshnessResult = {
+    ...result,
+    local_editions_checked: localCheck.checked,
+    local_editions_unseen: localCheck.unseen,
+  };
+
+  if (localCheck.unseen.length > 0) {
+    combined.ok = false;
+    const localReason = `${localCheck.unseen.length} edição(ões) com marcador de envio local (05-published.json/newsletter-kit-published.json) não vista(s) por ${parsed.rawPath}: ${localCheck.unseen.join(", ")} — publishing.newsletter.read_backend pode estar apontando pro backend errado, ou refresh-dedup.ts pode ter falhado silenciosamente (#8142)`;
+    combined.reason = combined.reason ? `${combined.reason} | ${localReason}` : localReason;
+  }
+
+  process.stdout.write(JSON.stringify(combined, null, 2) + "\n");
+  process.exit(combined.ok ? 0 : 1);
 }
 
 if (isMainModule(import.meta.url)) {

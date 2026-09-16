@@ -1,10 +1,19 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { evaluateFreshness, parseArgs, defaultMaxStalenessHours } from "../scripts/check-dedup-freshness.ts";
+import {
+  evaluateFreshness,
+  parseArgs,
+  defaultMaxStalenessHours,
+  aammddToIsoDate,
+  isLocalMarkerAlreadyDue,
+  evaluateLocalEditionsUnseen,
+  collectLocalEditionMarkers,
+  type LocalEditionMarker,
+} from "../scripts/check-dedup-freshness.ts";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 
 /** Roda o script CLI e captura {stdout, stderr, exitCode}.
@@ -321,5 +330,322 @@ describe("defaultMaxStalenessHours (#675) — threshold dinâmico por dia da sem
     const posts = [{ id: "a", published_at: "2026-05-01T17:00:00Z" }]; // Sexta 17h → 64h atrás
     const r = evaluateFreshness(posts, monday.getTime(), defaultMaxStalenessHours(monday));
     assert.equal(r.ok, true, "segunda com edição de sexta não deve disparar alarme falso");
+  });
+});
+
+// ── 2º critério, independente de calendário (#8142) ────────────────────────
+//
+// Cenário real que motivou: `read_backend` continuou "beehiiv" depois do
+// ENVIO migrar pro Kit (#7388) — a Beehiiv nunca mais recebeu post,
+// `refresh-dedup.ts` saía com `new_posts: 0`/exit 0 (fetch correto, FONTE
+// vazia) e o critério de idade sozinho não bate alarme porque a Beehiiv
+// segue existindo como arquivo público (idade medida é do backend ERRADO,
+// não do real). O 2º critério pega isso comparando marcadores de envio
+// LOCAIS (que o Stage 5 já gravou) contra o que o raw de dedup enxerga.
+
+describe("aammddToIsoDate (#8142)", () => {
+  it("converte AAMMDD pra YYYY-MM-DD (século 20xx)", () => {
+    assert.equal(aammddToIsoDate("260904"), "2026-09-04");
+    assert.equal(aammddToIsoDate("260101"), "2026-01-01");
+  });
+
+  it("lança em input malformado", () => {
+    assert.throws(() => aammddToIsoDate("2609"), /AAMMDD inválido/);
+    assert.throws(() => aammddToIsoDate("abcdef"), /AAMMDD inválido/);
+  });
+});
+
+describe("isLocalMarkerAlreadyDue (#8142)", () => {
+  const NOW_MS = Date.parse("2026-09-15T20:00:00Z");
+
+  it("published_at presente conta sempre, mesmo com scheduled_at futuro", () => {
+    assert.equal(
+      isLocalMarkerAlreadyDue(
+        { published_at: "2026-09-15T09:00:00Z", scheduled_at: "2026-12-01T09:00:00Z" },
+        NOW_MS,
+      ),
+      true,
+    );
+  });
+
+  it("scheduled_at no FUTURO não conta — edição de amanhã gravada na véspera (#8142 detalhe crítico)", () => {
+    assert.equal(
+      isLocalMarkerAlreadyDue({ status: "scheduled", scheduled_at: "2026-09-16T09:00:00Z" }, NOW_MS),
+      false,
+    );
+  });
+
+  it("scheduled_at no passado/presente conta", () => {
+    assert.equal(
+      isLocalMarkerAlreadyDue({ status: "scheduled", scheduled_at: "2026-09-15T09:00:00Z" }, NOW_MS),
+      true,
+    );
+    assert.equal(
+      isLocalMarkerAlreadyDue({ status: "scheduled", scheduled_at: "2026-09-15T20:00:00Z" }, NOW_MS),
+      true,
+    );
+  });
+
+  it("sem published_at nem scheduled_at (draft puro, ainda não passou pelo gate de agendamento) NÃO conta", () => {
+    // Stage 5 grava o marcador em modo draft ANTES do gate do Stage 6 setar
+    // scheduled_at — contar isso como "devido" dispararia falso-positivo
+    // toda noite em que o editor ainda não agendou a edição anterior.
+    assert.equal(isLocalMarkerAlreadyDue({ status: "draft" }, NOW_MS), false);
+    assert.equal(isLocalMarkerAlreadyDue({}, NOW_MS), false);
+  });
+
+  it("scheduled_at não-parseável NÃO conta (dado corrompido, fail-soft)", () => {
+    assert.equal(isLocalMarkerAlreadyDue({ scheduled_at: "garbage" }, NOW_MS), false);
+  });
+});
+
+describe("evaluateLocalEditionsUnseen (#8142)", () => {
+  const NOW_MS = Date.parse("2026-09-15T20:00:00Z");
+
+  it("cenário real: raw travado em 260903, editions 260904..260915 já enviadas → todas unseen", () => {
+    const markers: LocalEditionMarker[] = [
+      { aammdd: "260904", marker: { status: "published", published_at: "2026-09-04T09:05:00Z" } },
+      { aammdd: "260908", marker: { status: "published", published_at: "2026-09-08T09:05:00Z" } },
+      { aammdd: "260915", marker: { status: "published", published_at: "2026-09-15T09:05:00Z" } },
+    ];
+    const r = evaluateLocalEditionsUnseen(markers, "2026-09-03T09:00:00.000Z", NOW_MS);
+    assert.equal(r.checked, 3);
+    assert.deepEqual(r.unseen, ["260904", "260908", "260915"]);
+  });
+
+  it("marcador com scheduled_at no FUTURO nunca aparece em unseen (não aborta toda noite)", () => {
+    const markers: LocalEditionMarker[] = [
+      { aammdd: "260904", marker: { status: "published", published_at: "2026-09-04T09:05:00Z" } },
+      // edição de amanhã, já gravada na véspera com agendamento 24h+ à frente
+      { aammdd: "260916", marker: { status: "scheduled", scheduled_at: "2026-09-16T09:00:00Z" } },
+    ];
+    const r = evaluateLocalEditionsUnseen(markers, "2026-09-15T09:00:00.000Z", NOW_MS);
+    // 260904 já visto (raw most_recent 260915 > 260904); 260916 excluído por ser futuro — checked=1
+    assert.equal(r.checked, 1);
+    assert.deepEqual(r.unseen, []);
+  });
+
+  it("base vazia (most_recent=null) marca toda edição devida como unseen", () => {
+    const markers: LocalEditionMarker[] = [
+      { aammdd: "260904", marker: { status: "published", published_at: "2026-09-04T09:05:00Z" } },
+    ];
+    const r = evaluateLocalEditionsUnseen(markers, null, NOW_MS);
+    assert.deepEqual(r.unseen, ["260904"]);
+  });
+
+  it("edição vista pela base (data <= most_recent) não conta como unseen", () => {
+    const markers: LocalEditionMarker[] = [
+      { aammdd: "260901", marker: { status: "published", published_at: "2026-09-01T09:05:00Z" } },
+    ];
+    const r = evaluateLocalEditionsUnseen(markers, "2026-09-15T09:00:00.000Z", NOW_MS);
+    assert.deepEqual(r.unseen, []);
+  });
+
+  it("unseen sai ordenado ascendente independente da ordem de input", () => {
+    const markers: LocalEditionMarker[] = [
+      { aammdd: "260915", marker: { status: "published", published_at: "2026-09-15T09:05:00Z" } },
+      { aammdd: "260904", marker: { status: "published", published_at: "2026-09-04T09:05:00Z" } },
+    ];
+    const r = evaluateLocalEditionsUnseen(markers, "2026-09-03T09:00:00.000Z", NOW_MS);
+    assert.deepEqual(r.unseen, ["260904", "260915"]);
+  });
+});
+
+describe("collectLocalEditionMarkers (#8142) — I/O real em diretório temporário", () => {
+  let tmp: string;
+
+  function setup() {
+    tmp = mkdtempSync(join(tmpdir(), "local-editions-"));
+    return tmp;
+  }
+  function cleanup() {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  }
+
+  it("lê marcador Beehiiv (05-published.json) em _internal/, layout nested", () => {
+    const dir = setup();
+    try {
+      const editionDir = join(dir, "2609", "260904");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(editionDir, "_internal", "05-published.json"),
+        JSON.stringify({ status: "published", published_at: "2026-09-04T09:05:00Z" }),
+      );
+      const markers = collectLocalEditionMarkers(dir);
+      assert.equal(markers.length, 1);
+      assert.equal(markers[0].aammdd, "260904");
+      assert.equal(markers[0].marker.published_at, "2026-09-04T09:05:00Z");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("lê marcador Kit (newsletter-kit-published.json)", () => {
+    const dir = setup();
+    try {
+      const editionDir = join(dir, "2609", "260915");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(editionDir, "_internal", "newsletter-kit-published.json"),
+        JSON.stringify({ status: "scheduled", scheduled_at: "2026-09-15T09:00:00Z" }),
+      );
+      const markers = collectLocalEditionMarkers(dir);
+      assert.equal(markers.length, 1);
+      assert.equal(markers[0].aammdd, "260915");
+      assert.equal(markers[0].marker.scheduled_at, "2026-09-15T09:00:00Z");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("edição sem nenhum marcador é ignorada (fail-soft)", () => {
+    const dir = setup();
+    try {
+      mkdirSync(join(dir, "2609", "260910", "_internal"), { recursive: true });
+      const markers = collectLocalEditionMarkers(dir);
+      assert.deepEqual(markers, []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("editions-root inexistente retorna lista vazia (nunca lança)", () => {
+    const markers = collectLocalEditionMarkers(join(tmpdir(), "nunca-existe-xyz-8142"));
+    assert.deepEqual(markers, []);
+  });
+});
+
+describe("CLI: cenário completo #8142 — fetch sai vazio, base congelada, guard pega via marcador local", () => {
+  let tmp: string;
+
+  function setup() {
+    tmp = mkdtempSync(join(tmpdir(), "freshness-local-editions-"));
+    return tmp;
+  }
+  function cleanup() {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  }
+
+  it("raw travado numa data antiga + edições locais já enviadas depois dela → ok=false, exit 1, unseen listado", () => {
+    const dir = setup();
+    try {
+      const editionsRoot = join(dir, "editions");
+      const edA = join(editionsRoot, "2609", "260904", "_internal");
+      const edB = join(editionsRoot, "2609", "260915", "_internal");
+      mkdirSync(edA, { recursive: true });
+      mkdirSync(edB, { recursive: true });
+      writeFileSync(
+        join(edA, "05-published.json"),
+        JSON.stringify({ status: "published", published_at: "2026-09-04T09:05:00Z" }),
+      );
+      writeFileSync(
+        join(edB, "newsletter-kit-published.json"),
+        JSON.stringify({ status: "published", published_at: "2026-09-15T09:05:00Z" }),
+      );
+
+      const raw = join(dir, "raw.json");
+      // raw não avança além de 260903 — cenário real do #8142.
+      writeFileSync(raw, JSON.stringify([{ id: "x", published_at: "2026-09-03T09:00:00Z" }]));
+
+      const { stdout, exitCode } = runCli([
+        "--raw",
+        raw,
+        "--editions-root",
+        editionsRoot,
+        "--now",
+        "2026-09-15T20:00:00Z",
+        // idade sozinha (299h) também estouraria — fixamos uma janela GRANDE
+        // pra provar que É O CRITÉRIO LOCAL, não o de idade, que reprova aqui.
+        "--max-staleness-hours",
+        "10000",
+      ]);
+      assert.equal(exitCode, 1);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.ok, false);
+      // critério de idade sozinho estaria ok (janela de 10000h) — confirma que quem reprovou foi o local.
+      assert.deepEqual(parsed.local_editions_unseen, ["260904", "260915"]);
+      assert.equal(parsed.local_editions_checked, 2);
+      assert.match(parsed.reason ?? "", /marcador de envio local/);
+      assert.match(parsed.reason ?? "", /read_backend/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("marcador de edição de amanhã (scheduled_at futuro) nunca aborta a rodada por si só", () => {
+    const dir = setup();
+    try {
+      const editionsRoot = join(dir, "editions");
+      const edToday = join(editionsRoot, "2609", "260915", "_internal");
+      const edTomorrow = join(editionsRoot, "2609", "260916", "_internal");
+      mkdirSync(edToday, { recursive: true });
+      mkdirSync(edTomorrow, { recursive: true });
+      writeFileSync(
+        join(edToday, "05-published.json"),
+        JSON.stringify({ status: "published", published_at: "2026-09-15T09:05:00Z" }),
+      );
+      // edição de amanhã já gravada na véspera, agendada pro futuro.
+      writeFileSync(
+        join(edTomorrow, "05-published.json"),
+        JSON.stringify({ status: "scheduled", scheduled_at: "2026-09-16T09:00:00Z" }),
+      );
+
+      const raw = join(dir, "raw.json");
+      writeFileSync(raw, JSON.stringify([{ id: "x", published_at: "2026-09-15T09:00:00Z" }]));
+
+      const { stdout, exitCode } = runCli([
+        "--raw",
+        raw,
+        "--editions-root",
+        editionsRoot,
+        "--now",
+        "2026-09-15T20:00:00Z",
+      ]);
+      assert.equal(exitCode, 0);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.ok, true);
+      assert.deepEqual(parsed.local_editions_unseen, []);
+      assert.equal(parsed.local_editions_checked, 1); // só a de hoje conta; amanhã é futuro
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("draft puro (Stage 5 rodou, gate do Stage 6 ainda pendente) nunca aborta a rodada por si só", () => {
+    const dir = setup();
+    try {
+      const editionsRoot = join(dir, "editions");
+      const edDraft = join(editionsRoot, "2609", "260916", "_internal");
+      mkdirSync(edDraft, { recursive: true });
+      // Stage 5 gravou o marcador em modo draft; editor ainda não passou
+      // pelo gate humano do Stage 6 — sem scheduled_at nem published_at.
+      writeFileSync(
+        join(edDraft, "05-published.json"),
+        JSON.stringify({ status: "draft", draft_url: "https://app.beehiiv.com/x" }),
+      );
+
+      const raw = join(dir, "raw.json");
+      // raw travado numa data antiga — critério de idade sozinho reprovaria,
+      // mas a janela abaixo é folgada pra isolar o comportamento do critério local.
+      writeFileSync(raw, JSON.stringify([{ id: "x", published_at: "2026-09-03T09:00:00Z" }]));
+
+      const { stdout, exitCode } = runCli([
+        "--raw",
+        raw,
+        "--editions-root",
+        editionsRoot,
+        "--now",
+        "2026-09-15T20:00:00Z",
+        "--max-staleness-hours",
+        "10000",
+      ]);
+      assert.equal(exitCode, 0);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.ok, true);
+      assert.deepEqual(parsed.local_editions_unseen, []);
+      assert.equal(parsed.local_editions_checked, 0); // draft puro não conta como "devido"
+    } finally {
+      cleanup();
+    }
   });
 });
