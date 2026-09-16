@@ -1,0 +1,50 @@
+name: Audience profile guards
+
+# #8151 item 2 — mesmo padrão do markdown-guards.yml (#6935): job DEDICADO
+# e leve, SEM paths-ignore, pros testes cujo SUJEITO é o profile de
+# audiência (`context/audience-profile.md`) e seu histórico
+# (`docs/audience-history/*.md`).
+#
+# Por que existe: `ci.yml` (job `test`) tem `paths-ignore:` pra CLAUDE.md/
+# **/*.md/docs/** (#6711, #5901 — economiza a suíte inteira em PRs
+# docs-only) — mas a PR #8146 (só `context/audience-profile.md` +
+# `docs/audience-history/*.md`, gerados por `scripts/update-audience.ts`)
+# provou que essa classe de PR é justo a que mais provavelmente carrega um
+# snapshot malformado (3 achados de review nessa mesma PR: #8145, #8149,
+# #8150), e é justo a que `npm test` nunca chegou a rodar contra. Este
+# job roda INCONDICIONALMENTE (sem `paths-ignore`, sem `paths:`) — de
+# propósito, mesma razão do markdown-guards.yml: um path filter aqui
+# reintroduziria a classe de defeito que este workflow existe pra fechar.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: audience-profile-guards-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
+jobs:
+  audience-profile-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      # Lista explícita, não descoberta automática (mesmo racional do
+      # markdown-guards.yml) — os testes cujo SUJEITO é a forma do
+      # documento gerado por scripts/update-audience.ts e o parse dele por
+      # scripts/build-diaria-dashboard-data.ts.
+      - run: >-
+          node --experimental-strip-types --test
+          test/update-audience-main-8151.test.ts
+          test/update-audience-subscriber-count-8145.test.ts
+          test/dashboard-audience-ctr-regex-8149.test.ts
+          test/update-audience-decay.test.ts
+          test/update-audience-archive-guard.test.ts
+          test/audience-profile-shrinkage-4840.test.ts
+          test/audience-profile-shrinkage-4880.test.ts
+          test/audience-history-retention.test.ts

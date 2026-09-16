@@ -1053,7 +1053,12 @@ export function buildAudienceSummary(
       continue;
     }
     if (!inCtrSection) continue;
-    const m = line.match(/^-\s+\*\*([^*]+)\*\*\s+(?:—|-{1,2})\s+CTR\s+([\d.,]+)%\s+\|\s+(\d+)\s+links/i);
+    // #8149: `(?:\s*\([^)]*\))?` tolera o sufixo opcional que
+    // update-audience.ts emite desde o #4840 (shrinkage empírico-Bayes) —
+    // ex: "CTR 0.9% (encolhida) | 105 links". Sem isso o regex não casava
+    // NENHUMA linha real (todas emitidas com o sufixo), e ctr_by_category
+    // vinha vazio em silêncio (fail-soft, sem erro nem log).
+    const m = line.match(/^-\s+\*\*([^*]+)\*\*\s+(?:—|-{1,2})\s+CTR\s+([\d.,]+)%(?:\s*\([^)]*\))?\s+\|\s+(\d+)\s+links/i);
     if (m) {
       ctr_by_category.push({
         category: m[1].trim(),

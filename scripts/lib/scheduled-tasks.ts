@@ -338,6 +338,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4064, #4131 finding 1, #6563, #6695",
   },
   {
+    name: "Diaria-Audience-Profile-Staleness-Alarm",
+    description: "escala o guard de arquivamento duplicado do #4366 (context/audience-profile.md regenerando idêntico ao anterior) de linha muda em run-log.jsonl pra issue GitHub por ocorrência (#8148)",
+    steps: [{ key: "alarm", script: "scripts/audience-profile-staleness-alarm.ts" }],
+    logPath: "audience-profile-staleness-alarm/.alarm-check.log",
+    // Diária — o guard em si roda dentro do Stage 0 de toda edição
+    // (`update-audience.ts`), não faz sentido checar mais que 1x/dia; 09:30
+    // fica depois da janela normal de conclusão do Stage 0 (madrugada/manhã
+    // cedo) e antes do horário em que o editor costuma revisar alarmes.
+    schedule: { kind: "daily", hour: 9, minute: 30 },
+    issue: "#8148",
+  },
+  {
     name: "Diaria-Clarice-Opens-Catchup-Alarm",
     description: "alarme de falha sustentada do catch-up de opens da Clarice",
     steps: [{ key: "alarm", script: "scripts/clarice-opens-catchup-alarm.ts" }],
