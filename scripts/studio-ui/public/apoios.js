@@ -81,6 +81,12 @@ const STATUS_LABEL = {
 // #4437 Entrega 1: "nao_pagou_ainda" vai por ÚLTIMO — não é uma faixa de
 // valor, é um estado de cobrança (carência de 1 mês), visualmente distinto
 // dos 4 níveis (ver .reward-group-pending em apoios.css).
+// Os valores R$ abaixo são literais de propósito — apoios.js é servido cru
+// (sem build step) e não pode `import` scripts/lib/reward-tier-thresholds.ts,
+// a fonte canônica dos 4 limiares (extraída em #8155 pra scripts/lib/
+// site-apoiar-page.ts, que ESSE sim importa por rodar em Node). Mudar
+// REWARD_TIER_*_MIN sem atualizar estas strings desincroniza este painel —
+// test/apoios-js-reward-label-drift.test.ts falha nesse caso.
 const REWARD_GROUP_ORDER = ["patrono", "mantenedor", "apoiador", "amigo", "nao_pagou_ainda"];
 const REWARD_GROUP_LABEL = {
   patrono: "Patrono (R$50+)",
