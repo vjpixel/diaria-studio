@@ -53,9 +53,10 @@
  *   (`KIT_INACTIVE_MV_CHECKPOINT_PATH`, `data/kit-inativos-reativacao/.mv-cache.json`).
  *   A cobertura é medida sobre o pool DESTA rodada (candidatos fora do
  *   store), direto do checkpoint: `processedCount` = candidatos com qualquer
- *   resultado, e só os `ok`/`catch_all` entram. Com o pool inteiro
- *   processado, `--push` roda sem `--i-know-this-skips-mv`; e-mail
- *   rejeitado/inconclusivo nunca é ingerido.
+ *   resultado, e só os `ok`/`catch_all` entram — inclusive com cobertura
+ *   parcial (ingere o subconjunto verificado; o resto espera a próxima
+ *   rodada, ver `decideKitIngestion`). E-mail rejeitado/inconclusivo nunca
+ *   é ingerido. `--i-know-this-skips-mv` (uso manual) ignora o filtro.
  *
  * ## O que NÃO é reusado, de propósito
  *
@@ -125,7 +126,6 @@ import {
   computeCurrentActiveCount,
   ingestContactToBrevo,
   assertStoreFileGuard,
-  assertMvGuardAcknowledged,
   selectContactsForBackfill,
   type MvCoverage,
   type PendingToIngestEntry,
@@ -221,6 +221,28 @@ export function computeKitMvCoverage(
   return { verified, coverage: { processedCount, poolSize: candidateEmails.length } };
 }
 
+/**
+ * Pura (#8192) — quem entra nesta rodada. Por padrão só os verificados
+ * (`ok`/`catch_all`), inclusive com cobertura PARCIAL: diferente do pool
+ * Beehiiv, aqui não existe caminho em que um não-verificado entre sem a flag,
+ * então cobertura parcial não precisa abortar — ingere o subconjunto
+ * verificado e deixa o resto pra próxima rodada (abortar travaria também quem
+ * já foi verificado, por causa de uma falha transitória num único e-mail).
+ * `--i-know-this-skips-mv` (só uso manual; `brevo-diaria-run.ts` nunca
+ * repassa) ignora o filtro quando a cobertura está incompleta.
+ */
+export function decideKitIngestion<T extends { email: string }>(
+  candidates: readonly T[],
+  verified: ReadonlySet<string>,
+  coverage: MvCoverage,
+  skipMvFlag: boolean,
+): { toIngest: T[]; mvComplete: boolean; skipsMv: boolean } {
+  const mvComplete = coverage.processedCount >= coverage.poolSize;
+  const skipsMv = skipMvFlag && !mvComplete;
+  const toIngest = skipsMv ? [...candidates] : candidates.filter((c) => verified.has(c.email));
+  return { toIngest, mvComplete, skipsMv };
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -283,7 +305,7 @@ async function main(): Promise<void> {
   log("buscando assinantes inactive no Kit…");
   const rawInactive = await listAllKitSubscribers(kitConfigResult.config, { status: "inactive" });
   const selection = selectKitInactivePastDoiWindow(rawInactive, Date.now());
-  log(formatKitInactiveSelection(rawInactive.length, selection));
+  log(formatKitInactiveSelection(selection));
   const inactive = mapKitInactiveSubscribers(selection.eligible);
 
   const store = readStore(DEFAULT_STORE_PATH);
@@ -292,35 +314,24 @@ async function main(): Promise<void> {
   const candidates = computeKitContactsToIngest(inactive, store);
   const { verified, coverage } = computeKitMvCoverage(
     candidates.map((c) => c.email),
-    loadCheckpoint(KIT_INACTIVE_MV_CHECKPOINT_PATH),
+    loadCheckpoint(KIT_INACTIVE_MV_CHECKPOINT_PATH, "sync-kit-inactive-to-brevo"),
   );
-  // Pool vazio = nada a ingerir, nada a verificar — não exige a flag.
-  const mvComplete = coverage.poolSize === 0 || coverage.processedCount >= coverage.poolSize;
-  if (push && coverage.poolSize > 0) {
-    try {
-      assertMvGuardAcknowledged(argv, coverage);
-      if (!mvComplete) {
-        log(
-          "aviso: --i-know-this-skips-mv confirmado — ingestão SEM verificação MillionVerifier completa " +
-            `(#8192, ${coverage.processedCount}/${coverage.poolSize} processados). ` +
-            "Risco de bounce aceito explicitamente pelo operador.",
-        );
-      }
-    } catch (e) {
-      // A mensagem vem do guard do pool Beehiiv; o script certo aqui é o do Kit.
-      log(`ERRO: ${(e as Error).message} [pool Kit: o verify é scripts/verify-kit-inactive-emails-mv.ts, #8192]`);
-      process.exit(2);
-    }
+  const decision = decideKitIngestion(candidates, verified, coverage, hasFlag(argv, "i-know-this-skips-mv"));
+  const toIngest = decision.toIngest;
+  if (decision.skipsMv) {
+    log(
+      "aviso: --i-know-this-skips-mv — filtro MV IGNORADO com cobertura incompleta " +
+        `(${coverage.processedCount}/${coverage.poolSize} processados). Risco de bounce aceito explicitamente pelo operador.`,
+    );
+  } else if (!decision.mvComplete) {
+    log(
+      `aviso: cobertura MV parcial (${coverage.processedCount}/${coverage.poolSize}) — só os verificados entram nesta rodada; ` +
+        "o resto fica pra quando scripts/verify-kit-inactive-emails-mv.ts processar.",
+    );
   }
-  const skipsMv = hasFlag(argv, "i-know-this-skips-mv") && !mvComplete;
-  const toIngest = skipsMv
-    ? candidates
-    : candidates.filter((c) => verified.has(c.email));
   log(
     `${toIngest.length} contato(s) novo(s) elegível(is) (dedup pelo store compartilhado — ${store.contacts.length} já tratado(s); ` +
-      `MV: ${coverage.processedCount}/${coverage.poolSize} processado(s), ${verified.size} ok` +
-      (skipsMv ? "; filtro MV IGNORADO por --i-know-this-skips-mv" : "") +
-      `).`,
+      `MV: ${coverage.processedCount}/${coverage.poolSize} processado(s), ${verified.size} ok).`,
   );
 
   // Fila compartilhada com sync-pending-to-brevo.ts (mesmo store/cap/circuit

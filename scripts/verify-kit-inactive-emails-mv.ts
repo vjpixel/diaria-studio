@@ -122,13 +122,13 @@ async function main(): Promise<void> {
 
   const raw = await listAllKitSubscribers(kitConfigResult.config, { status: "inactive" });
   const selection = selectKitInactivePastDoiWindow(raw, Date.now());
-  log(formatKitInactiveSelection(raw.length, selection));
+  log(formatKitInactiveSelection(selection));
 
   const candidates = computeKitMvCandidates(
     selection.eligible.map((s) => s.email_address),
     readStore(DEFAULT_STORE_PATH),
   );
-  const checkpoint = loadCheckpoint(KIT_INACTIVE_MV_CHECKPOINT_PATH);
+  const checkpoint = loadCheckpoint(KIT_INACTIVE_MV_CHECKPOINT_PATH, "verify-kit-inactive-emails-mv");
   const todo = candidates.filter((e) => !(e in checkpoint));
   const limited = limit !== undefined ? todo.slice(0, limit) : todo;
   log(

@@ -13,7 +13,8 @@ import {
   KIT_DOI_WAIT_HOURS,
 } from "../scripts/lib/kit-inactive-reativacao.ts";
 import { computeKitMvCandidates } from "../scripts/verify-kit-inactive-emails-mv.ts";
-import { computeKitMvCoverage } from "../scripts/sync-kit-inactive-to-brevo.ts";
+import { computeKitMvCoverage, decideKitIngestion } from "../scripts/sync-kit-inactive-to-brevo.ts";
+import { extractRunWarnings } from "../scripts/brevo-diaria-stage5-dispatch.ts";
 import type { KitSubscriberSummary } from "../scripts/lib/kit-subscribers.ts";
 import type { BrevoDiariaStore } from "../scripts/lib/brevo-diaria-store.ts";
 
@@ -98,5 +99,50 @@ describe("computeKitMvCoverage — cobertura sobre o pool da rodada (#8192)", ()
       "antigo2@x": { result: "ok" },
     });
     assert.deepEqual(coverage, { processedCount: 0, poolSize: 1 });
+  });
+});
+
+describe("decideKitIngestion — só verificados, mesmo com cobertura parcial (#8192)", () => {
+  const cands = [{ email: "a@x" }, { email: "b@x" }, { email: "c@x" }];
+
+  it("cobertura parcial sem flag: ingere só o subconjunto verificado, nunca aborta", () => {
+    const d = decideKitIngestion(cands, new Set(["a@x"]), { processedCount: 1, poolSize: 3 }, false);
+    assert.deepEqual(d.toIngest.map((c) => c.email), ["a@x"]);
+    assert.equal(d.mvComplete, false);
+    assert.equal(d.skipsMv, false);
+  });
+
+  it("cobertura completa: rejeitados ficam de fora mesmo com a flag", () => {
+    const d = decideKitIngestion(cands, new Set(["a@x", "c@x"]), { processedCount: 3, poolSize: 3 }, true);
+    assert.deepEqual(d.toIngest.map((c) => c.email), ["a@x", "c@x"]);
+    assert.equal(d.skipsMv, false);
+  });
+
+  it("flag + cobertura incompleta: ignora o filtro (uso manual explícito)", () => {
+    const d = decideKitIngestion(cands, new Set(), { processedCount: 0, poolSize: 3 }, true);
+    assert.equal(d.toIngest.length, 3);
+    assert.equal(d.skipsMv, true);
+  });
+
+  it("pool vazio: nada a ingerir, cobertura conta como completa", () => {
+    const d = decideKitIngestion([], new Set(), { processedCount: 0, poolSize: 0 }, false);
+    assert.deepEqual(d.toIngest, []);
+    assert.equal(d.mvComplete, true);
+  });
+});
+
+describe("extractRunWarnings — avisos do pool Kit chegam ao Stage 5 (#8192)", () => {
+  it("lê warnings da última linha JSON do stdout", () => {
+    const out = 'log qualquer\n{"code":0,"warnings":["⚠️ verify falhou"]}';
+    assert.deepEqual(extractRunWarnings(out), ["⚠️ verify falhou"]);
+  });
+
+  it("warnings vazio → lista vazia", () => {
+    assert.deepEqual(extractRunWarnings('{"code":0,"warnings":[]}'), []);
+  });
+
+  it("stdout sem JSON ou sem o campo vira aviso próprio, nunca silêncio", () => {
+    assert.equal(extractRunWarnings("").length, 1);
+    assert.match(extractRunWarnings('{"code":0}')[0], /sem campo warnings/);
   });
 });

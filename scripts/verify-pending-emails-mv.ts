@@ -125,12 +125,12 @@ interface CachedResult {
 }
 type Checkpoint = Record<string, CachedResult>;
 
-export function loadCheckpoint(path: string): Checkpoint {
+export function loadCheckpoint(path: string, logPrefix = "verify-pending-emails-mv"): Checkpoint {
   if (!existsSync(path)) return {};
   try {
     return JSON.parse(readFileSync(path, "utf-8")) as Checkpoint;
   } catch {
-    process.stderr.write(`[verify-pending-emails-mv] AVISO: checkpoint corrompido em ${path} — começando do zero\n`);
+    process.stderr.write(`[${logPrefix}] AVISO: checkpoint corrompido em ${path} — começando do zero\n`);
     return {};
   }
 }

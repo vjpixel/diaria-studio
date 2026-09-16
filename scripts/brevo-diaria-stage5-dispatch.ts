@@ -147,7 +147,28 @@ export type Stage5BrevoResult =
        * candidatos elegíveis existiam nesta rodada (sem cap pra comparar
        * contra). */
       addedActual: number;
+      /** #8192 — avisos dos passos fail-soft de `brevo-diaria-run.ts` (pool
+       * Kit inactive). Vazio = nada a relatar. Não-vazio com `status: "ok"`:
+       * a campanha saiu, mas o pool Kit falhou nesta rodada — o orchestrator
+       * loga `warn` (orchestrator-stage-5.md, passo 5). */
+      warnings: string[];
     };
+
+/**
+ * Pura (#8192) — extrai `warnings` do JSON que `brevo-diaria-run.ts` imprime
+ * na última linha do stdout. JSON ausente/malformado vira um aviso próprio,
+ * nunca lista vazia silenciosa.
+ */
+export function extractRunWarnings(stdout: string): string[] {
+  const lastLine = stdout.trim().split("\n").at(-1) ?? "";
+  try {
+    const parsed = JSON.parse(lastLine) as { warnings?: unknown };
+    if (!Array.isArray(parsed.warnings)) return ["brevo-diaria-run: JSON sem campo warnings — avisos do pool Kit não verificáveis."];
+    return parsed.warnings.filter((w): w is string => typeof w === "string");
+  } catch {
+    return ["brevo-diaria-run: stdout sem JSON parseável — avisos do pool Kit não verificáveis."];
+  }
+}
 
 function tailReason(execResult: ExecResult): string {
   const tail = execResult.stderr.trim().split("\n").slice(-4).join(" | ");
@@ -200,6 +221,7 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
   if (applyResult.code !== 0) {
     return { status: "failed", step: "brevo-diaria-run --apply", reason: tailReason(applyResult) };
   }
+  const warnings = extractRunWarnings(applyResult.stdout);
 
   // Recontagem REAL pós-`--apply` (#5839) — sem cap (#6793), `addedActual`
   // reflete só quantos candidatos elegíveis existiam nesta rodada, não mais
@@ -230,6 +252,7 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
     targetTotal: resolved.targetTotal,
     maxAdd: resolved.maxAdd,
     addedActual,
+    warnings,
   };
 }
 

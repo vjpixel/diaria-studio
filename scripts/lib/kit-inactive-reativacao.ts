@@ -73,7 +73,9 @@ export function selectKitInactivePastDoiWindow(
   return { eligible, tooRecent, invalidCreatedAt, fixtures };
 }
 
-export function formatKitInactiveSelection(total: number, sel: KitInactiveSelection, waitHours = KIT_DOI_WAIT_HOURS): string {
+export function formatKitInactiveSelection(sel: KitInactiveSelection, waitHours = KIT_DOI_WAIT_HOURS): string {
+  // Total derivado das 4 partes — nunca um argumento separado que possa divergir.
+  const total = sel.eligible.length + sel.tooRecent + sel.fixtures + sel.invalidCreatedAt;
   return (
     `${total} inactive no Kit → ${sel.eligible.length} elegível(is) (DOI há ≥${waitHours}h); ` +
     `fora: ${sel.tooRecent} dentro da janela, ${sel.fixtures} fixture(s), ${sel.invalidCreatedAt} sem created_at válido.`

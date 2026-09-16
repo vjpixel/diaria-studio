@@ -223,11 +223,12 @@ describe("runBrevoDiaria — pool Kit inactive ≥72h (#8192)", () => {
   const KIT_VERIFY = "scripts/verify-kit-inactive-emails-mv.ts";
   const KIT_SYNC = "scripts/sync-kit-inactive-to-brevo.ts";
 
-  it("apply: verify Kit sem args por default; sync Kit com --push, depois do pool Beehiiv", () => {
+  it("apply: verify Kit com --limit no teto do guard de custo por default; sync Kit com --push, depois do pool Beehiiv", () => {
     const { exec, calls } = makeFakeExec(Object.fromEntries(APPLY_SCRIPTS.map((s) => [s, ok()])));
     const result = runBrevoDiaria(["--apply"], deps(exec));
     assert.equal(result.code, 0);
-    assert.deepEqual(calls[5], { script: KIT_VERIFY, args: [] });
+    assert.deepEqual(calls[5], { script: KIT_VERIFY, args: ["--limit", "500"] });
+    assert.deepEqual(result.warnings, []);
     assert.deepEqual(calls[6], { script: KIT_SYNC, args: ["--push"] });
   });
 
@@ -257,6 +258,8 @@ describe("runBrevoDiaria — pool Kit inactive ≥72h (#8192)", () => {
     assert.ok(!calls.some((c) => c.script === KIT_SYNC), "sync Kit não pode rodar sem o verify");
     assert.match(result.summary, /AVISOS: .*verify-kit-inactive-emails-mv falhou \(exit 2\)/);
     assert.equal(result.steps.at(-1)?.code, 2, "passo registrado com o exit code real");
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /KIT_API_KEY ausente/);
   });
 
   it("falha (ou exceção de spawn) no sync Kit também é fail-soft", () => {
