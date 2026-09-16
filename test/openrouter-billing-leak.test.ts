@@ -26,7 +26,7 @@ import {
   emptyBillingLeakAlarmState,
   buildBillingLeakAlarmEmail,
   computeExpectedDays,
-  hasPartialCoverage,
+  classifyMissingDays,
   EXPECTED_PAID_MODELS,
   type BillingRow,
 } from "../scripts/lib/openrouter-billing-leak.ts";
@@ -34,6 +34,8 @@ import {
   loadState,
   saveState,
   parseActivityRows,
+  hasActivityDataArray,
+  buildPartialReadFindings,
   resolveExitCode,
   resolveFatalExitCode,
   LEAK_FOUND_EXIT_CODE,
@@ -383,38 +385,6 @@ describe("computeExpectedDays (#6992) — dias esperados na janela", () => {
   });
 });
 
-describe("hasPartialCoverage (#6992) — presença parcial ≠ cobertura completa", () => {
-  const expected3 = ["2026-08-29", "2026-08-30", "2026-08-31"];
-
-  it("todos os dias presentes → false (cobertura completa)", () => {
-    assert.equal(hasPartialCoverage(["2026-08-29", "2026-08-30", "2026-08-31"], expected3), false);
-  });
-
-  // #6992 — O CENÁRIO CENTRAL: só o dia mais velho (D-3) presente, faltando
-  // D-1 e D-2 (justamente onde um vazamento fresco seria visível). O guard
-  // original lia isso como "sem vazamento" porque daysCovered.length > 0.
-  it("apenas D-3 presente, D-1 e D-2 ausentes → true (o bug do #6992)", () => {
-    assert.equal(hasPartialCoverage(["2026-08-29"], expected3), true);
-  });
-
-  it("D-1 (mais recente) ausente → true — é onde o vazamento fresco seria", () => {
-    assert.equal(hasPartialCoverage(["2026-08-29", "2026-08-30"], expected3), true);
-  });
-
-  it("D-1 ausente mas D-3 presente → true", () => {
-    assert.equal(hasPartialCoverage(["2026-08-29"], expected3), true);
-  });
-
-  it("daysCovered vazio → true (mas main() já pega isso como emptyWindow antes)", () => {
-    assert.equal(hasPartialCoverage([], expected3), true);
-  });
-
-  it("dias fora da janela esperado não preenchem os que faltam", () => {
-    // Um dia fora da janela não salva a cobertura
-    assert.equal(hasPartialCoverage(["2026-08-28", "2026-08-31"], expected3), true);
-  });
-});
-
 // #6983 (pr-test-analyzer, P2): verifica que o cutoff usado em main()
 // (Date.now() - days*86400000, convertido pra date-string) e o conjunto
 // retornado por computeExpectedDays — que usa Date.UTC(year, month, day-i) —
@@ -474,86 +444,119 @@ describe("cutoff ⇄ computeExpectedDays alinhamento (#6983 pr-test-analyzer P2)
     const filtered = rows.filter((r) => r.date.slice(0, 10) >= cutoff);
     const daysCovered = [...new Set(filtered.map((r) => r.date.slice(0, 10)))].sort();
     assert.deepEqual(daysCovered, expectedDays, "todos os dias esperados passam pelo cutoff");
-    assert.equal(hasPartialCoverage(daysCovered, expectedDays), false, "cobertura completa → sem partialCoverage");
+    assert.deepEqual(classifyMissingDays(daysCovered, expectedDays), { idle: [], pending: [] }, "cobertura completa → nada ausente");
   });
 });
 
-describe("resolveExitCode (#6992) — presença parcial da janela nunca sai 0", () => {
-  // #6992 — o guard original só tratava janela 100% vazia como indeterminado.
-  // Presença parcial (ex: só D-3 presente) passava despercebida e o processo
-  // saía 0 ("sem vazamento") sobre medição incompleta.
-  it("sem vazamento MAS cobertura parcial → 1, nunca 0", () => {
-    assert.equal(
-      resolveExitCode({ hasLeaks: false, partialRead: false, emptyWindow: false, partialCoverage: true }),
-      1,
-      "ausência de dias recentes é indeterminado — não cobertura completa",
-    );
+// REGRESSÃO #8010 (decisão do editor, 16/09/2026): revê o #6992. Com o gasto
+// no gateway a ~US$ 0,05/dia, dia sem nenhuma chamada virou rotina — e dia sem
+// chamada não aparece no activity. O guard saía 1 ("PARCIAL") quase todo dia
+// (log real 12–16/09: 11/09 e 13/09 ausentes, ambos sem uso), a unit ficava
+// `failed` e a #8010 nunca fechava. Premissa nova: vazamento sempre gera
+// linha; só D-1 pode não ter consolidado.
+describe("classifyMissingDays (#8010) — dia ausente é ocioso, só D-1 é dúvida", () => {
+  const expected3 = ["2026-09-13", "2026-09-14", "2026-09-15"];
+
+  it("cobertura completa → nada ocioso, nada pendente", () => {
+    assert.deepEqual(classifyMissingDays(expected3, expected3), { idle: [], pending: [] });
   });
 
-  it("vazamento ENCONTRADO vence sobre cobertura parcial → 3", () => {
-    // Mesmo dado incompleto, um vazamento achado é informação concreta.
-    assert.equal(
-      resolveExitCode({ hasLeaks: true, partialRead: false, emptyWindow: false, partialCoverage: true }),
-      LEAK_FOUND_EXIT_CODE,
-    );
+  it("caso real de 16/09: 13/09 ausente com 14 e 15 presentes → ocioso, sem pendência", () => {
+    assert.deepEqual(classifyMissingDays(["2026-09-14", "2026-09-15"], expected3), {
+      idle: ["2026-09-13"],
+      pending: [],
+    });
   });
 
-  it("sem vazamento, cobertura COMPLETA, leitura íntegra → 0", () => {
-    assert.equal(
-      resolveExitCode({ hasLeaks: false, partialRead: false, emptyWindow: false, partialCoverage: false }),
-      0,
-    );
+  it("caso real de 14/09: D-1 (13/09) e D-3 (11/09) ausentes → D-3 ocioso, D-1 pendente", () => {
+    assert.deepEqual(classifyMissingDays(["2026-09-12"], ["2026-09-11", "2026-09-12", "2026-09-13"]), {
+      idle: ["2026-09-11"],
+      pending: ["2026-09-13"],
+    });
   });
 
-  it("cobertura parcial E leitura parcial → 1", () => {
-    assert.equal(
-      resolveExitCode({ hasLeaks: false, partialRead: true, emptyWindow: false, partialCoverage: true }),
-      1,
-    );
+  it("janela toda vazia → D-3/D-2 ociosos, D-1 pendente (não é mais 'indeterminado')", () => {
+    assert.deepEqual(classifyMissingDays([], expected3), {
+      idle: ["2026-09-13", "2026-09-14"],
+      pending: ["2026-09-15"],
+    });
+  });
+
+  it("D-1 é o MAIOR dia esperado, independente da ordem recebida", () => {
+    const shuffled = ["2026-09-15", "2026-09-13", "2026-09-14"];
+    assert.deepEqual(classifyMissingDays(["2026-09-13"], shuffled).pending, ["2026-09-15"]);
+  });
+
+  it("janela sem dias esperados → nada", () => {
+    assert.deepEqual(classifyMissingDays([], []), { idle: [], pending: [] });
   });
 });
 
-describe("resolveExitCode (#6716) — o que não foi medido nunca sai 0", () => {
-  it("sem vazamento, leitura íntegra, janela POVOADA e cobertura COMPLETA → 0", () => {
-    assert.equal(resolveExitCode({ hasLeaks: false, partialRead: false, emptyWindow: false, partialCoverage: false }), 0);
+describe("resolveExitCode (#8010) — achado vira issue própria, exit ≠0 só quando não dá pra avisar", () => {
+  it("sem vazamento, leitura íntegra → 0", () => {
+    assert.equal(resolveExitCode({ hasLeaks: false, partialRead: false, partialReadReportFailed: false }), 0);
   });
 
-  // Levantado pela peer no review do #6983: o `/api/v1/activity` agrega por
-  // dias UTC COMPLETOS e não cobre o dia corrente — uma janela que só
-  // pergunte por "hoje" volta vazia SEMPRE. Se zero linhas pudesse virar
-  // exit 0, o guard reportaria "sem vazamento" por ausência de dado, não por
-  // ausência de gasto. É a 3ª vez que esta família de detector aparece com o
-  // silêncio cego indistinguível de saúde (#6966: `LIKE` casando zero linhas
-  // com o watchdog imprimindo "tick ok"; #6927: sinal que some quando o
-  // updater desliga). Aqui isso é impossível por construção.
-  it("JANELA VAZIA nunca sai 0 — zero linhas é indeterminado, não 'limpo'", () => {
-    assert.equal(
-      resolveExitCode({ hasLeaks: false, partialRead: false, emptyWindow: true, partialCoverage: false }),
-      1,
-      "endpoint sem consolidar e gasto zero real são indistinguíveis daqui — não afirmar nenhum dos dois",
-    );
+  it("leitura parcial REGISTRADA em issue → 0 (não marca a unit como failed)", () => {
+    assert.equal(resolveExitCode({ hasLeaks: false, partialRead: true, partialReadReportFailed: false }), 0);
   });
 
-  it("janela vazia E leitura parcial → 1 (as duas são ausência de dado)", () => {
-    assert.equal(resolveExitCode({ hasLeaks: false, partialRead: true, emptyWindow: true, partialCoverage: false }), 1);
+  it("leitura parcial que NÃO pôde ser registrada → 1 (a unit failed é o único sinal que resta)", () => {
+    assert.equal(resolveExitCode({ hasLeaks: false, partialRead: true, partialReadReportFailed: true }), 1);
   });
 
-  // #6983 (review, CRÍTICO): antes disso, `skipped > 0` era só um
-  // `console.error` — com as linhas sobreviventes limpas, o processo saía 0 e
-  // implicava "sem vazamento" sobre uma medição admitidavelmente incompleta.
-  it("sem vazamento MAS leitura parcial → 1, nunca 0", () => {
-    assert.equal(
-      resolveExitCode({ hasLeaks: false, partialRead: true, emptyWindow: false, partialCoverage: false }),
-      1,
-      "não medi ≠ está limpo — é a falha que este guard existe pra não repetir",
-    );
+  it("falha de registro sem leitura parcial → 0 (não há achado a perder)", () => {
+    assert.equal(resolveExitCode({ hasLeaks: false, partialRead: false, partialReadReportFailed: true }), 0);
   });
 
-  it("vazamento → 3, e continua 3 mesmo com leitura parcial", () => {
-    assert.equal(resolveExitCode({ hasLeaks: true, partialRead: false, emptyWindow: false, partialCoverage: false }), LEAK_FOUND_EXIT_CODE);
-    assert.equal(resolveExitCode({ hasLeaks: true, partialRead: true, emptyWindow: true, partialCoverage: false }), LEAK_FOUND_EXIT_CODE);
+  it("vazamento → 3, vença o que vencer", () => {
+    assert.equal(resolveExitCode({ hasLeaks: true, partialRead: false, partialReadReportFailed: false }), LEAK_FOUND_EXIT_CODE);
+    assert.equal(resolveExitCode({ hasLeaks: true, partialRead: true, partialReadReportFailed: true }), LEAK_FOUND_EXIT_CODE);
+  });
+});
+
+describe("hasActivityDataArray (#8010) — payload sem `data` continua indeterminado", () => {
+  // Com dia ausente deixando de ser dúvida, uma janela sem linhas pode sair 0.
+  // `parseActivityRows` devolve `rows: [], skipped: 0` pra payload sem `data`
+  // — sem este guard, mudança de shape do endpoint inteiro viraria "limpo".
+  it("payload com array data → true (inclusive vazio)", () => {
+    assert.equal(hasActivityDataArray({ data: [] }), true);
+    assert.equal(hasActivityDataArray({ data: [{ date: "2026-09-15" }] }), true);
   });
 
+  for (const [nome, payload] of [
+    ["null", null],
+    ["objeto sem data", {}],
+    ["data objeto", { data: {} }],
+    ["data string", { data: "x" }],
+    ["array na raiz", []],
+  ] as const) {
+    it(`${nome} → false`, () => {
+      assert.equal(hasActivityDataArray(payload), false);
+    });
+  }
+});
+
+describe("buildPartialReadFindings (#8010) — leitura parcial como issue própria", () => {
+  it("leitura íntegra → nenhum finding (conta execução limpa pro auto-close)", () => {
+    assert.deepEqual(buildPartialReadFindings(0), []);
+  });
+
+  it("linhas descartadas → 1 finding estado, fingerprint fixo, contagem na assinatura", () => {
+    const [f, ...rest] = buildPartialReadFindings(4);
+    assert.equal(rest.length, 0);
+    assert.equal(f.family, "estado");
+    assert.equal(f.fingerprint, "openrouter-activity:partial-read");
+    assert.equal(f.contentSignature, "skipped:4");
+    assert.match(f.title, /4 linha\(s\)/);
+  });
+
+  it("fingerprint não muda com a contagem (senão fecha como resolvida sem ter sido)", () => {
+    assert.equal(buildPartialReadFindings(1)[0].fingerprint, buildPartialReadFindings(9)[0].fingerprint);
+  });
+});
+
+describe("resolveExitCode + catch de topo (#6716/#6983)", () => {
   // #6983 (review independente, P1 REPRODUZIDO POR EXECUÇÃO): o catch de topo
   // fazia `process.exitCode = 1` incondicional e apagava o 3 que `main()`
   // tinha setado antes de alarmar. Com vazamento real + Gmail sem credencial

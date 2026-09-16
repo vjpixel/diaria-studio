@@ -25,17 +25,23 @@
  * `data/.credentials.json` com scope `gmail.send` só quando há alarme a
  * enviar. Estado: `data/openrouter-billing-leak/state.json`.
  *
- * Exit codes: 0 = sem vazamento; 1 = erro de execução OU **indeterminado**
- * (sem key, HTTP não-ok, janela vazia, leitura parcial, **presença parcial
- * de dias (#6992)** — nunca 0, porque "não consegui medir" jamais pode
- * virar "está limpo"); **3 = vazamento encontrado** — distinto de 1 de
- * propósito, pra um runner poder tratar "achou" diferente de "quebrou".
+ * Exit codes: 0 = leu e avaliou sem vazamento; 1 = erro de execução OU
+ * **não conseguiu ler** (sem key, HTTP não-ok, payload sem `data`) OU leitura
+ * parcial cuja issue não pôde ser registrada; **3 = vazamento encontrado** —
+ * distinto de 1 de propósito, pra um runner poder tratar "achou" diferente de
+ * "quebrou". Desde #8010 (decisão do editor, 16/09/2026): dia ausente na
+ * janela não é mais indeterminado (dia sem chamada não aparece no activity;
+ * só D-1 é dúvida e é reconferido na execução seguinte — ver
+ * `classifyMissingDays`), e leitura parcial vira issue própria em vez de
+ * exit 1.
  *
  * **`--dry-run` NÃO força exit 0** (#6983 review, achado 2 — a redação
  * anterior dizia "0 = sem vazamento (ou dry-run)" e o código nunca fez
  * isso). Dry-run suprime só os EFEITOS (não persiste estado, não envia
  * e-mail); o veredito continua saindo no exit code, senão um preview de
- * vazamento sairia indistinguível de uma janela limpa.
+ * vazamento sairia indistinguível de uma janela limpa. Leitura parcial sai 0
+ * no dry-run porque sai 0 na execução real também (#8010 — vira issue); só a
+ * falha em REGISTRAR a issue daria 1, e o dry-run não tenta registrar.
  *
  * Sem convenção global de exit code neste repo — cada script documenta o
  * seu. (Uma versão anterior deste bloco citava `check-pr-checks-gate.ts`
@@ -62,10 +68,17 @@ import {
   emptyBillingLeakAlarmState,
   buildBillingLeakAlarmEmail,
   computeExpectedDays,
-  hasPartialCoverage,
+  classifyMissingDays,
   type BillingRow,
   type BillingLeakAlarmState,
 } from "./lib/openrouter-billing-leak.ts";
+import {
+  applyAlarmReconciliation,
+  loadAlarmIssuesState,
+  planAlarmReconciliation,
+  saveAlarmIssuesState,
+  type AlarmFinding,
+} from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "openrouter-billing-leak", "state.json");
@@ -74,6 +87,8 @@ const ACTIVITY_URL = "https://openrouter.ai/api/v1/activity";
 const ACTIVITY_TIMEOUT_MS = 30_000;
 /** Exit code dedicado pra "achou vazamento" — nunca confundir com erro. */
 export const LEAK_FOUND_EXIT_CODE = 3;
+const PARTIAL_READ_ISSUES_STATE_PATH = resolve(ROOT, "data", "openrouter-billing-leak", ".alarm-issues.json");
+const PARTIAL_READ_CLOSE_AFTER_RUNS = 2;
 
 /** #7211: forma anterior do estado, salva em disco antes desta issue — só
  * pra migração tolerante em `loadState`, nunca escrita de novo. */
@@ -121,7 +136,7 @@ export function saveState(state: BillingLeakAlarmState, statePath: string = STAT
  * Linha com `usage` não-numérico é DESCARTADA, nunca coagida pra 0: um `0`
  * fabricado aqui viraria "sem vazamento" — exatamente o falso "ok" que este
  * guard existe pra não repetir. O caller conta quantas foram descartadas e
- * trata isso como indeterminado, não como limpo.
+ * trata isso como achado (issue própria, #8010), nunca como limpo.
  */
 /**
  * Converte um campo numérico do payload SEM coagir falsy pra 0.
@@ -140,6 +155,17 @@ function numericField(value: unknown): number {
   if (typeof value === "number") return value;
   if (typeof value === "string" && value.trim() !== "") return Number(value);
   return Number.NaN; // null, false, "", [], {}, undefined → shape inválido
+}
+
+/**
+ * `true` quando o payload tem o array `data` esperado. #8010: com dia ausente
+ * deixando de ser indeterminado, uma janela sem linhas pode sair 0 — então um
+ * payload sem `data` (mudança de shape do endpoint INTEIRO, que
+ * `parseActivityRows` devolve como `rows: []` sem descartar nada) precisa ser
+ * pego à parte, senão viraria "limpo" por construção.
+ */
+export function hasActivityDataArray(payload: unknown): boolean {
+  return Array.isArray((payload as { data?: unknown } | null)?.data);
 }
 
 export function parseActivityRows(payload: unknown): { rows: BillingRow[]; skipped: number } {
@@ -172,35 +198,68 @@ export function parseActivityRows(payload: unknown): { rows: BillingRow[]; skipp
 /**
  * Pura — traduz o resultado da rodada em exit code.
  *
- * Extraída de `main()` no #6983 (review, achado 3) só pra virar testável: a
- * regra que importa é que **leitura parcial nunca sai 0**. `main()` é I/O
- * puro (fetch + Gmail + disco) e nenhum teste a exercita, então a decisão
- * mais fácil de regredir em silêncio era justamente a que ninguém cobria.
+ * Extraída de `main()` no #6983 (review, achado 3) só pra virar testável.
  *
- * `hasLeaks` vence sobre `partialRead`: achado positivo é informação mais
- * forte que "faltou dado" — as duas condições saem diferente de 0 de todo
- * jeito, e o 3 diz ao runner que há gasto concreto a olhar.
+ * #8010 (decisão do editor, 16/09/2026): leitura parcial deixou de ser exit
+ * ≠0. Sair 1 ao ACHAR "dado incompleto" deixava a unit systemd `failed` e o
+ * `Diaria-Systemd-Failed-Units-Alarm` abria issue dizendo "unit quebrada" —
+ * o achado real se perdia (mesmo padrão resolvido na #7482). Agora leitura
+ * parcial vira issue PRÓPRIA; exit ≠0 fica pra "não consegui ler" (sem key,
+ * HTTP, payload sem `data`) e pra quando o achado não pôde ser registrado —
+ * aí a unit `failed` é o único sinal que resta. Dia ausente na janela não
+ * entra aqui: ver `classifyMissingDays`.
+ *
+ * `hasLeaks` vence sobre tudo: achado positivo é informação mais forte que
+ * "faltou dado", e o 3 diz ao runner que há gasto concreto a olhar.
  */
 export function resolveExitCode({
   hasLeaks,
   partialRead,
-  emptyWindow,
-  partialCoverage,
+  partialReadReportFailed,
 }: {
   hasLeaks: boolean;
   partialRead: boolean;
-  /** Nenhuma linha sobrou na janela — o endpoint pode simplesmente não ter
-   *  consolidado ainda. Ver `JANELA VAZIA` abaixo. */
-  emptyWindow: boolean;
-  /** #6992: algum dia esperado na janela está ausente do dado retornado —
-   *  presença parcial da janela lida como cobertura completa pelo guard
-   *  original. Ausência de dias recentes (onde um vazamento fresco seria
-   *  visível) vira INDETERMINADO, não "sem vazamento". */
-  partialCoverage: boolean;
+  /** A issue do achado de leitura parcial não pôde ser registrada. */
+  partialReadReportFailed: boolean;
 }): number {
   if (hasLeaks) return LEAK_FOUND_EXIT_CODE;
-  if (partialRead || emptyWindow || partialCoverage) return 1;
+  if (partialRead && partialReadReportFailed) return 1;
   return 0;
+}
+
+/**
+ * Pura — achado de leitura parcial como `AlarmFinding` (#8010). Lista vazia =
+ * leitura íntegra, que conta como execução limpa pro auto-close.
+ * Fingerprint fixo (mesmo racional de `acervo-staleness-alarm.ts`, PR #7595);
+ * a contagem vai em `contentSignature`.
+ */
+export function buildPartialReadFindings(skipped: number): AlarmFinding[] {
+  if (skipped <= 0) return [];
+  return [
+    {
+      check: "openrouter-billing-leak",
+      fingerprint: "openrouter-activity:partial-read",
+      contentSignature: `skipped:${skipped}`,
+      title: `[diar.ia.br] OpenRouter activity: ${skipped} linha(s) com shape inválido — guard de vazamento lendo dado incompleto`,
+      body: [
+        "Achado automático do `Diaria-Openrouter-Billing-Leak-Alarm`",
+        "(`scripts/openrouter-billing-leak-check.ts`, #6716; issue própria desde #8010).",
+        "",
+        `O \`/api/v1/activity\` devolveu ${skipped} linha(s) que o parser descartou (sem \`date\`/\`model\` ou \`usage\` não numérico).`,
+        "Linha descartada é gasto que o guard não vê — um vazamento justamente nessas linhas passaria em silêncio.",
+        "",
+        "A unit systemd não está quebrada: o guard leu, avaliou as linhas íntegras e registrou este achado.",
+        "",
+        "Investigar: `npx tsx scripts/openrouter-billing-leak-check.ts --dry-run` e comparar o payload cru com `parseActivityRows`",
+        "(provável mudança de shape do endpoint).",
+        "",
+        `Fecha sozinha quando a leitura voltar íntegra por ${PARTIAL_READ_CLOSE_AFTER_RUNS} execuções.`,
+      ].join("\n"),
+      family: "estado",
+      labels: ["bug"],
+      priority: "P1",
+    },
+  ];
 }
 
 /**
@@ -271,7 +330,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { rows: allRows, skipped } = parseActivityRows(await res.json());
+  const payload = await res.json();
+  if (!hasActivityDataArray(payload)) {
+    console.error(`${LOG_PREFIX} INDETERMINADO — activity sem array \`data\` (mudança de shape?). Não dá pra ler o billing.`);
+    process.exitCode = 1;
+    return;
+  }
+  const { rows: allRows, skipped } = parseActivityRows(payload);
   // #6983 (review, CRÍTICO): antes isto era SÓ um console.error, e o fluxo
   // seguia — com linhas sobreviventes limpas, o processo saía 0, gravava
   // `lastAlarmedFingerprint: null` e implicava "sem vazamento" sobre uma
@@ -303,36 +368,19 @@ async function main(): Promise<void> {
     console.log(`${LOG_PREFIX}   ${l.date} ${l.model} — ${l.requests} req US$${l.usageUsd.toFixed(4)}`);
   }
 
-  // JANELA VAZIA — o modo de falha que mais aparece nesta família de guards
-  // (#6966: `LIKE` casando zero linhas e o watchdog imprimindo "tick ok";
-  // #6927: sinal que some por construção quando o updater desliga). Aqui
-  // "zero linhas" tem DUAS causas indistinguíveis daqui: gasto realmente
-  // zero, ou o endpoint ainda não ter consolidado a janela pedida (ele
-  // agrega por dias UTC completos e NÃO cobre o dia corrente). Como não dá
-  // pra separar, nunca sai 0.
-  if (evaluation.daysCovered.length === 0) {
-    console.error(
-      `${LOG_PREFIX} INDETERMINADO — nenhuma linha na janela (cutoff ${cutoff}, --days ${days}). Pode ser gasto zero de verdade OU o endpoint não ter consolidado; este guard não distingue, e não afirma "ok".`,
-    );
-    process.exitCode = resolveExitCode({ hasLeaks: false, partialRead, emptyWindow: true, partialCoverage: false });
-    return;
-  }
-
-  // #6992: além de "janela 100% vazia", o guard também detecta PRESENÇA
-  // PARCIAL — dias esperados ausentes no dado retornado. Um dia com gasto
-  // realmente zero não aparece no activity, então `partialCoverage` pode
-  // sinalizar indeterminado num dia ocioso — ruído aceito de propósito
-  // (#6992: prevenir falso-negativo de vazamento pesa mais que alarme extra
-  // num dia quieto). O cálculo de dias esperados usa o mesmo referencial UTC
-  // do `cutoff` acima para não divergir do filtro aplicado.
+  // Dias ausentes (#6992 → revisto no #8010, decisão do editor 16/09/2026):
+  // dia sem NENHUMA chamada não aparece no activity, e vazamento sempre gera
+  // linha. Só D-1 pode ainda não ter consolidado — e a próxima execução o
+  // cobre de novo. Nenhum dos dois casos sai ≠0 (inclusive janela toda
+  // vazia: D-3/D-2 ociosos + D-1 pendente). O que continua indeterminado de
+  // verdade — payload sem `data` — já saiu 1 acima.
   const expectedDays = computeExpectedDays(days);
-  const partialCoverage = hasPartialCoverage(evaluation.daysCovered, expectedDays);
-  if (partialCoverage) {
-    const covered = new Set(evaluation.daysCovered);
-    const missing = expectedDays.filter((d) => !covered.has(d));
-    console.error(
-      `${LOG_PREFIX} PARCIAL — dias esperados ausentes: ${missing.join(", ")}. Não dá pra afirmar ausência de vazamento sobre janela de ${days} dias com apenas ${evaluation.daysCovered.length} presente(s).`,
-    );
+  const { idle, pending } = classifyMissingDays(evaluation.daysCovered, expectedDays);
+  if (idle.length > 0) {
+    console.log(`${LOG_PREFIX} dias sem uso (ausentes, já consolidados): ${idle.join(", ")}`);
+  }
+  if (pending.length > 0) {
+    console.log(`${LOG_PREFIX} D-1 ausente (${pending.join(", ")}) — pode não ter consolidado; reconferido na próxima execução.`);
   }
 
   // #6983 (review): o exit code de "achou vazamento" é setado ANTES de
@@ -340,11 +388,37 @@ async function main(): Promise<void> {
   // exceção sobe pro catch de `main()` — que setava 1 e apagava a distinção
   // entre "quebrou" e "achou vazamento E quebrou ao avisar". O runner
   // precisa saber que havia vazamento pendente mesmo quando o aviso falhou.
+  // #8010: leitura parcial vira issue própria. Registrada ANTES do exit code
+  // final e sem deixar lançar: falha aqui não pode apagar um 3 nem virar erro
+  // fatal numa execução que leu e avaliou.
+  let partialReadReportFailed = false;
+  try {
+    const findings = buildPartialReadFindings(skipped);
+    const issuesState = loadAlarmIssuesState(PARTIAL_READ_ISSUES_STATE_PATH);
+    if (isDryRun) {
+      const acoes = planAlarmReconciliation(findings, issuesState, PARTIAL_READ_CLOSE_AFTER_RUNS);
+      console.log(`${LOG_PREFIX} --dry-run: ${acoes.length} ação(ões) de issue de leitura parcial — ${acoes.map((a) => a.kind).join(", ") || "nenhuma"}`);
+    } else {
+      const { nextState, findingOutcomes } = applyAlarmReconciliation(findings, issuesState, {
+        cwd: ROOT,
+        closeAfterRuns: PARTIAL_READ_CLOSE_AFTER_RUNS,
+      });
+      mkdirSync(dirname(PARTIAL_READ_ISSUES_STATE_PATH), { recursive: true });
+      saveAlarmIssuesState(nextState, PARTIAL_READ_ISSUES_STATE_PATH);
+      for (const o of findingOutcomes) {
+        if (o.action === "failed") partialReadReportFailed = true;
+        console.log(`${LOG_PREFIX} issue de leitura parcial ${o.action}${o.issueNumber ? ` #${o.issueNumber}` : ""}`);
+      }
+    }
+  } catch (e) {
+    partialReadReportFailed = partialRead;
+    console.error(`${LOG_PREFIX} falha ao registrar issue de leitura parcial: ${(e as Error).message}`);
+  }
+
   process.exitCode = resolveExitCode({
     hasLeaks: evaluation.leaks.length > 0,
     partialRead,
-    emptyWindow: false, // já retornou acima se fosse vazia
-    partialCoverage,
+    partialReadReportFailed,
   });
 
   const state = loadState();
