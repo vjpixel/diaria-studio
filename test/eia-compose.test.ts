@@ -1818,16 +1818,18 @@ describe("buildSdPrompt (#4620 — antes recebia WikimediaImage inteiro, agora r
   it("texto curto: aparece no positive + sufixo de estilo; negative/dimensões fixas", () => {
     const result = buildSdPrompt("A quiet harbor at dawn.");
     assert.match(result.positive, /^A quiet harbor at dawn\./);
-    assert.match(result.positive, /documentary photograph, natural light, candid composition, photorealistic$/);
+    assert.match(result.positive, /documentary photograph, natural light, candid composition, photorealistic\./);
     assert.ok(result.negative.length > 0);
     assert.equal(result.final_width, 800);
     assert.equal(result.final_height, 450);
   });
 
-  it("texto >500 chars é truncado ANTES do sufixo de estilo", () => {
+  it("texto >500 chars é truncado ANTES do sufixo de estilo (e do sufixo de enquadramento)", () => {
     const longText = "x".repeat(600);
     const result = buildSdPrompt(longText);
-    const suffix = ", documentary photograph, natural light, candid composition, photorealistic";
+    const suffix =
+      ", documentary photograph, natural light, candid composition, photorealistic" +
+      ". Leave generous empty margin on all four edges of the frame; group the main subjects — especially any that readers are meant to compare closely — well within the frame, never touching or cropped by the top, bottom, left or right edge.";
     assert.equal(result.positive, "x".repeat(500) + suffix);
   });
 
@@ -1837,9 +1839,40 @@ describe("buildSdPrompt (#4620 — antes recebia WikimediaImage inteiro, agora r
     assert.match(result.positive, /^Roma antiga/);
   });
 
-  it("texto vazio: só o sufixo de estilo sobra, não lança", () => {
+  it("texto vazio: só o sufixo de estilo + enquadramento sobra, não lança", () => {
     const result = buildSdPrompt("");
     assert.match(result.positive, /^, documentary photograph/);
+    assert.match(result.positive, /Leave generous empty margin on all four edges/);
+  });
+
+  // #8147: golden/regression test — edição 260916, a imagem B (gerada por IA)
+  // posicionou os sujeitos (filhotes) rente à borda inferior do frame,
+  // cortados, porque buildSdPrompt() não tinha NENHUMA instrução de
+  // enquadramento/margem (mesma lacuna que `writer-destaque.md` já cobre
+  // pros prompts de imagem de destaque — "agrupar múltiplos sujeitos no
+  // terço central, nunca espalhados pelas bordas"). Este teste trava a
+  // presença da instrução de margem no prompt SD final, pra esse defeito
+  // de composição não voltar em silêncio.
+  it("#8147: prompt final inclui instrução explícita de margem/enquadramento nas 4 bordas", () => {
+    const result = buildSdPrompt(
+      "A group of great cormorant chicks in a nest, with a castle in the background.",
+    );
+    assert.match(
+      result.positive,
+      /generous empty margin on all four edges/,
+      "prompt SD precisa instruir margem segura nas 4 bordas — sujeitos não podem ficar colados na borda do frame",
+    );
+    assert.match(
+      result.positive,
+      /never touching or cropped by the top, bottom, left or right edge/,
+      "instrução precisa cobrir explicitamente as 4 bordas (topo/base/esquerda/direita), não só uma",
+    );
+    // Golden completo: o positive prompt exato pra este input, fim-a-fim.
+    assert.equal(
+      result.positive,
+      "A group of great cormorant chicks in a nest, with a castle in the background., documentary photograph, natural light, candid composition, photorealistic" +
+        ". Leave generous empty margin on all four edges of the frame; group the main subjects — especially any that readers are meant to compare closely — well within the frame, never touching or cropped by the top, bottom, left or right edge.",
+    );
   });
 });
 
