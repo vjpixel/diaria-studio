@@ -745,6 +745,38 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
 
+  // #4517, reordenado pro #8190 (achado 16/09/2026, sessão develop): checado
+  // AQUI — antes de QUALQUER `await` de rede desta função, inclusive o guard
+  // de exclusão Kit-ativo logo abaixo — porque é um guard PURO/síncrono (só
+  // lê env vars, nunca faz fetch) que deveria abortar com exit(4) antes de
+  // qualquer chamada de rede acontecer quando as credenciais do token de
+  // voto estão ausentes. Antes do #8190 ele rodava DEPOIS do guard de
+  // exclusão Kit-ativo (#6485) — que FAZ fetch pra api.kit.com — então um
+  // ambiente sem `KIT_API_KEY`/rota mockada tentava e falhava a exclusão
+  // Kit (retry de 15s×3 tentativas) ANTES de sequer chegar na checagem que
+  // deveria abortar de cara. Resultado observado: teste que afirma "nunca
+  // enumera nada com credenciais de voto ausentes" enumerava as tentativas
+  // HTTP do guard Kit primeiro, e ficava lento e flaky. A checagem SEGUE
+  // valendo só quando `dryRun === false` (dry-run nunca cria campanha,
+  // nunca precisa destas credenciais) — mesma condição de antes, só a
+  // ORDEM relativa ao guard Kit-ativo mudou; `injectPollTokenBrevo` em si
+  // continua rodando mais abaixo, depois do cap/cota da lista, porque
+  // precisa de `brevoDiaria!.list_id` — só a CHECAGEM de credenciais subiu.
+  const pollTokenGuard = checkPollTokenGuards({
+    pollSecret: process.env.POLL_SECRET,
+    cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+    cloudflareWorkersToken: process.env.CLOUDFLARE_WORKERS_TOKEN,
+  });
+  if (!pollTokenGuard.ok) {
+    log(`ERRO: ${(pollTokenGuard as { ok: false; reason: string }).reason}`);
+    // Windows fix (#4651, mesma classe do #4638/#1401): mesmo padrão do
+    // resto do arquivo — process.exitCode + return em vez de process.exit()
+    // depois de qualquer await fetch. Aqui ainda não houve nenhum, mas o
+    // padrão do arquivo é consistente independente disso.
+    process.exitCode = 4;
+    return;
+  }
+
   // #6485: remove da lista Brevo quem já está `active` no Kit (backend de
   // envio, #6114) ANTES de contar/enviar — senão esse contato recebe a
   // edição duas vezes (Kit + esta campanha). Fail-soft de propósito: Kit
@@ -850,19 +882,11 @@ export async function main(rootDirOverride?: string): Promise<void> {
   // capa mais nada (`checkDailySendCap` esvaziado pelo #6793), então o custo
   // real depende só do tamanho atual da lista Brevo. Continua rodando
   // inline mesmo assim — garante que NUNCA falta rodar essa etapa antes de
-  // um disparo real, independente do tamanho.
-  const pollTokenGuard = checkPollTokenGuards({
-    pollSecret: process.env.POLL_SECRET,
-    cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
-    cloudflareWorkersToken: process.env.CLOUDFLARE_WORKERS_TOKEN,
-  });
-  if (!pollTokenGuard.ok) {
-    log(`ERRO: ${(pollTokenGuard as { ok: false; reason: string }).reason}`);
-    // Windows fix (#4651): mesma razão do bloco acima — já houve await fetch
-    // (brevoGetList) antes deste ponto.
-    process.exitCode = 4;
-    return;
-  }
+  // um disparo real, independente do tamanho. A CHECAGEM de credenciais
+  // (`checkPollTokenGuards`, exit 4) subiu pra logo após o `--dry-run`
+  // return (#8190) — ela já rodou antes de qualquer `await` de rede desta
+  // função, inclusive antes do guard de exclusão Kit-ativo; aqui só a
+  // injeção de fato, que já sabe que as credenciais existem.
   const injectionResult = await injectPollTokenBrevo({
     dryRun: false,
     force: false,

@@ -2234,6 +2234,33 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // e acao POSTERIOR do editor.
     issue: "#7776",
   },
+  {
+    name: "Diaria-Revert-Calibration-Orphan-Check",
+    description:
+      "varre PRs abertas em branches revert/calibration-* (scripts/revert-calibration.ts) e alarma " +
+      "as orfas -- abertas ha mais de 2h sem merge/fechamento, sem garantia de que o hook de review " +
+      "pos-gh-pr-create rodou (chamada vem de spawnSync, fora da ferramenta Bash de uma sessao " +
+      "Claude Code -- mesma classe do #6298/#8158), #8176",
+    steps: [{ key: "check", script: "scripts/check-revert-calibration-prs.ts" }],
+    logPath: "revert-calibration/.orphan-check.log",
+    // Interval, nao daily/weekly: nao ha calibracao real mergeada ainda pra
+    // exercitar o fluxo (P3, docstring do proprio revert-calibration.ts ja
+    // registra essa limitacao) -- quando o pipeline de autocalibracao
+    // (#7972) comecar a rodar de verdade, um watchdog que checa a cada
+    // poucas horas detecta o caso orfao rapido sem exigir hora fixa.
+    // 2h == DEFAULT_ORPHAN_THRESHOLD_MS (revert-calibration-orphan.ts) --
+    // checar na mesma cadencia do limiar evita PR ficar orfa por muito
+    // tempo entre uma checagem e outra sem rodar checagens redundantes.
+    schedule: { kind: "interval", hours: 2 },
+    // Sem guard -- o script e fail-soft por design: `gh` indisponivel ou
+    // saida inesperada vira log + return, nunca alarme falso (mesma
+    // disciplina de check-issue-file-collisions.ts).
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
+    // e acao POSTERIOR do editor.
+    issue: "#8176",
+  },
 ];
 
 /**
