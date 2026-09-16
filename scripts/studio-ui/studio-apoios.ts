@@ -520,9 +520,9 @@ export type RewardGroup = "amigo" | "apoiador" | "mantenedor" | "patrono";
  * (`scripts/lib/site-apoiar-page.ts`) precisa dos mesmos números e
  * `scripts/lib/**` não pode importar de `scripts/studio-ui/**`
  * (`test/lib-boundary.test.ts` regra 4). `computeRewardGroup` continua
- * exportado DAQUI (re-export implícito via mesmo nome/módulo) — nenhum dos
- * ~20 call sites que importam `computeRewardGroup` de `studio-apoios.ts`
- * precisa mudar.
+ * declarado AQUI, sem mudar de módulo — só as 4 constantes viraram import;
+ * nenhum dos call sites que importam `computeRewardGroup` de
+ * `studio-apoios.ts` precisa mudar.
  */
 
 /**

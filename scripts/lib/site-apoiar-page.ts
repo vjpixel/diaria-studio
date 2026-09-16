@@ -164,7 +164,7 @@ export function buildApoiarHtml(): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Apoiar — diar.ia.br</title>
-<meta name="description" content="Apoie a curadoria da diar.ia.br a partir de R$5/mês — a edição diária continua sempre gratuita. Veja os benefícios de cada nível.">
+<meta name="description" content="Apoie a curadoria da diar.ia.br a partir de ${formatValorMensal(REWARD_TIER_AMIGO_MIN)} — a edição diária continua sempre gratuita. Veja os benefícios de cada nível.">
 <link rel="canonical" href="https://diar.ia.br/apoiar">
 <style>
 :root {
@@ -227,7 +227,7 @@ ${renderAnalyticsHead()}
     </div>
 
     <div class="cta-row">
-      <a class="btn btn-teal" href="${APOIAR_CLICK_PATH}">Apoiar a partir de R$5/mês</a>
+      <a class="btn btn-teal" href="${APOIAR_CLICK_PATH}">Apoiar a partir de ${formatValorMensal(REWARD_TIER_AMIGO_MIN)}</a>
       <a class="btn btn-ghost" href="/">← Voltar pra diar.ia.br</a>
     </div>
 
