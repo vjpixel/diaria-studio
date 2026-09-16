@@ -9,8 +9,14 @@ import { braveSearch, freshnessForWindow, parseRateLimitCsvHeader } from "../scr
 
 function mockFetch(
   responseFactory: (url: string) => { ok: boolean; status: number; body: unknown; headers?: Record<string, string> },
-) {
-  return async (url: string | URL) => {
+): typeof fetch {
+  // Cast the whole function (not just its return value) to `typeof fetch` —
+  // a bare single-param async arrow isn't structurally assignable to fetch's
+  // overloaded signature under tsconfig.test.json, which pre-existing calls
+  // to this helper already worked around individually via `as unknown as
+  // typeof fetch` at the call site. Fixing it once here, on the shared
+  // helper, avoids every new test adding its own copy of that cast.
+  return (async (url: string | URL) => {
     const { ok, status, body, headers } = responseFactory(url.toString());
     return {
       ok,
@@ -19,7 +25,7 @@ function mockFetch(
       text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
       json: async () => body,
     } as unknown as Response;
-  };
+  }) as unknown as typeof fetch;
 }
 
 describe("braveSearch", () => {
