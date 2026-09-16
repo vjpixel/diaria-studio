@@ -64,6 +64,38 @@
 // PRECISA saber ONDE a concessão mora (o path do arquivo da coordenadora),
 // porque ao contrário das duas irmãs ela vai ESCREVER de volta
 // (`merge_grant.consumedAt`) — as duas irmãs só respondem "existe uma viva?".
+//
+// ─────────────────────────────────────────────────────────────────────────
+// #8188 — CONSUMIR TAMBÉM PRECISA SABER QUAL PR
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Até o #8188, `findLiveMergeGrantFile` casava só por `grant.grantedTo ===
+// sessionId` — nunca comparava `grant.pr` contra a PR que o `gh pr merge`
+// que disparou este `PostToolUse` de fato mergeou. Sessão com múltiplas PRs
+// em voo (comum no modelo de onda/lote, #6299) que mergeia QUALQUER uma
+// delas enquanto segura uma concessão viva pra OUTRA PR tinha essa
+// concessão consumida por engano — a PR que ela realmente cobria nunca foi
+// tocada, mas a janela morria mesmo assim.
+//
+// `block-gh-pr-merge-subagent.mjs` já resolvia isso como DIAGNÓSTICO
+// (`extractGhPrMergeTargetPr`/`resolveGrantWasConsumed`/`grantCoversTarget`)
+// — mostrando que o critério já era conhecido — mas quem de fato ESCREVE
+// `consumedAt` (este arquivo) nunca usava o mesmo critério pra decidir SE
+// deveria consumir. `extractGhPrMergeTargetPr`/`stripQuotedSpans` abaixo são
+// a MESMA implementação duplicada aqui pela mesma razão "self-contained" do
+// resto do arquivo (ver bloco acima) — mantidas em paridade manual com as
+// de `block-gh-pr-merge-subagent.mjs`, travada por
+// `test/session-conflicts-and-merge-grant.test.ts`.
+//
+// Mesmo critério de `resolveGrantWasConsumed`: uma concessão SEM `pr`
+// (retrocompat/genérica) continua consumível por qualquer merge da sessão;
+// uma concessão COM `pr` só é consumida quando `targetPr` bate exatamente.
+// `targetPr` indeterminado (comando sem número, `gh pr merge` que infere a
+// PR pela branch corrente, payload sem `tool_input.command`) preserva o
+// comportamento pré-#8188: casa só por sessão, fail-open na direção "ainda
+// consome" — não trocar a fricção de over-consumo (mitigada por `--force`)
+// pela fricção pior de nunca liberar automaticamente uma concessão genuína
+// nesse caso ambíguo.
 
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
@@ -111,6 +143,63 @@ export function sessionsDir(repoRoot) {
 }
 
 /**
+ * Remove o CONTEÚDO de spans entre aspas (simples ou duplas), preservando
+ * tudo fora deles — inclusive newlines. Duplicado de
+ * `block-gh-pr-merge-subagent.mjs` (`stripQuotedSpans`) pela mesma razão
+ * "self-contained" do resto deste arquivo — ver #8188 no topo. Mesmo
+ * comportamento: aspa simples sem escape interno, aspa dupla respeita `\"`,
+ * aspa não fechada trata o resto da string como dentro do span.
+ */
+export function stripQuotedSpans(command) {
+  let result = "";
+  let i = 0;
+  const n = command.length;
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "'") {
+      let j = i + 1;
+      while (j < n && command[j] !== "'") j++;
+      i = j + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < n && command[j] !== '"') {
+        if (command[j] === "\\") j++;
+        j++;
+      }
+      i = j + 1;
+      continue;
+    }
+    result += ch;
+    i++;
+  }
+  return result;
+}
+
+/**
+ * Extrai o número do PR alvo de um comando `gh pr merge` real. `undefined`
+ * quando não dá pra determinar (comando sem número — infere a PR pela
+ * branch corrente — ou sem `gh pr merge` real nenhum). Duplicado de
+ * `block-gh-pr-merge-subagent.mjs` (`extractGhPrMergeTargetPr`) pela mesma
+ * razão "self-contained" — ver #8188 no topo.
+ */
+export function extractGhPrMergeTargetPr(command) {
+  if (typeof command !== "string") return undefined;
+  const stripped = stripQuotedSpans(command);
+  const invocationRe = /(?:^\s*|(?:&&|;|\|\||\||\n)\s*)gh\s+pr\s+merge\b/g;
+  let end = -1;
+  let m;
+  while ((m = invocationRe.exec(stripped))) end = m.index + m[0].length;
+  if (end === -1) return undefined;
+  const segment = /^[^\n;&|]*/.exec(stripped.slice(end))?.[0] ?? "";
+  const numMatch = /(?:^|\s)(\d+)(?=\s|$)/.exec(segment);
+  if (!numMatch) return undefined;
+  const n = Number(numMatch[1]);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
  * Acha, entre os arquivos de sessão COORDENADORA, o que contém uma concessão
  * viva emitida pra `sessionId` — e devolve `{ path, record, grant }` (não só
  * o grant, como as irmãs de leitura) porque este hook precisa saber ONDE
@@ -121,8 +210,15 @@ export function sessionsDir(repoRoot) {
  * presente = não vale), dentro do TTL com tolerância de clock skew. `null`
  * em qualquer estado onde não dá pra confirmar uma concessão viva — nunca
  * lança.
+ *
+ * `targetPr` (#8188, opcional/`undefined` por padrão — retrocompat total
+ * pra quem chama sem saber o PR): quando informado, uma concessão ESCOPADA
+ * a outro PR (`grant.pr !== undefined && grant.pr !== targetPr`) é ignorada
+ * — mesmo critério de `resolveGrantWasConsumed` em
+ * `block-gh-pr-merge-subagent.mjs`. Concessão sem `pr` (genérica) continua
+ * casando com qualquer `targetPr`, inclusive `undefined`.
  */
-export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now(), includeBackups = false) {
+export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now(), includeBackups = false, targetPr = undefined) {
   if (typeof sessionId !== "string" || sessionId === "") return null;
   const dir = sessionsDir(repoRoot);
   let entries;
@@ -150,6 +246,8 @@ export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now(), in
     if (!grant || grant.grantedTo !== sessionId) continue;
     if (grant.consumedAt) continue; // já consumida — uso único
     if (grant.grantedTo === grant.grantedBy) continue; // auto-concessão nunca vale
+    // #8188: concessão escopada a OUTRO PR nunca é a candidata deste merge.
+    if (grant.pr !== undefined && targetPr !== undefined && grant.pr !== targetPr) continue;
     const grantedMs = Date.parse(grant.grantedAt);
     if (!Number.isFinite(grantedMs)) continue;
     const ageMs = now - grantedMs;
@@ -220,6 +318,14 @@ function breakStaleLock(lockPath) {
  * quanto "não consegui gravar" — este hook é fail-open total e não tem canal
  * de saída (PostToolUse é side-effect puro), então a distinção não teria onde
  * aparecer; quem precisa dela é o CLI, não aqui.
+ *
+ * `targetPr` (#8188): repassado a `findLiveMergeGrantFile` — só concessões
+ * escopadas a ESTE PR (ou sem escopo de PR nenhum) são candidatas. Sem isto,
+ * o loop abaixo consumia INDISCRIMINADAMENTE toda concessão viva da sessão
+ * em `data/sessions/` a cada merge — inclusive a de um PR completamente
+ * diferente que a mesma sessão também tinha em voo (cenário de onda/lote,
+ * #6299) — porque cada iteração faz uma busca nova, sem lembrar QUAL PR
+ * disparou o hook.
  */
 export function consumeGrantUnderLock(
   repoRoot,
@@ -231,6 +337,7 @@ export function consumeGrantUnderLock(
   // orçamento de 300s do batch do runner paralelo. Produção nunca passa isto.
   attempts = CAS_ATTEMPTS,
   lockTimeoutMs = LOCK_TIMEOUT_MS,
+  targetPr = undefined,
 ) {
   // #6952 (achado do review independente): varre o GRUPO inteiro — arquivo
   // real E cópias `-safeBackup-*`. Desde que `mergeSessionRecords` passou a
@@ -241,7 +348,7 @@ export function consumeGrantUnderLock(
   // o lado perigoso: fecha janela, não abre.
   let consumedAny = false;
   for (;;) {
-    const initial = findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true);
+    const initial = findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, targetPr);
     if (!initial) return consumedAny;
     if (!consumeOneUnderLock(initial, nowIso, attempts, lockTimeoutMs)) return consumedAny;
     consumedAny = true;
@@ -318,9 +425,14 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
       const sessionId = payload.session_id;
       if (!sessionId) return; // sem identidade não há concessão pra procurar
       const repoRoot = resolveMainRepoRoot();
+      // #8188: qual PR este `gh pr merge` de fato mergeou — `undefined`
+      // quando indeterminado (comando sem número, payload sem
+      // `tool_input.command`), preservando o comportamento pré-#8188 nesse
+      // caso (ver docblock de `consumeGrantUnderLock`).
+      const targetPr = extractGhPrMergeTargetPr(payload.tool_input?.command);
       // #6952: sob o lock compartilhado, relendo fresco lá dentro — nunca o
       // read-modify-write solto que apagava a escrita concorrente do beacon.
-      consumeGrantUnderLock(repoRoot, sessionId);
+      consumeGrantUnderLock(repoRoot, sessionId, new Date().toISOString(), CAS_ATTEMPTS, LOCK_TIMEOUT_MS, targetPr);
       // Nunca emitir saída — PostToolUse aqui é side-effect puro, nunca decisão.
     } catch {
       // Fail-open total — ver "FAIL-OPEN TOTAL" no topo do arquivo.

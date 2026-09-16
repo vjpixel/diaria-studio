@@ -3,10 +3,25 @@
  * scripts/revert-calibration.ts (#7978, Camada 5 da #7972, ponto 8)
  *
  * Reverte 1 PR de calibração já mergeada — `git revert --no-edit <sha>`,
- * abre PR, deixa pro fluxo normal de auto-merge do #5251 (a REVERSÃO em
- * si é "operação de código" — restaura o estado sign-off ANTERIOR, não
- * introduz um novo; #7978 ponto 8 é explícito: "tratado como operação de
- * código via #5251, sem exigir novo sign-off").
+ * abre PR (a REVERSÃO em si é "operação de código" — restaura o estado
+ * sign-off ANTERIOR, não introduz um novo; #7978 ponto 8 é explícito:
+ * "tratado como operação de código via #5251, sem exigir novo sign-off").
+ *
+ * **A PR NÃO entra sozinha no fluxo normal de auto-merge do #5251 (#8176,
+ * achado 16/09/2026) — não prometer isso.** `#5251` pressupõe uma SESSÃO
+ * interativa rodando `gh pr create` (que dispara o hook `pr-create-review.mjs`
+ * e depois mergeia após review limpo + CI verde). Este script chama `gh pr
+ * create` via `spawnSync` — um subprocesso solto, fora da ferramenta Bash de
+ * uma sessão Claude Code — de dentro do pipeline de autocalibração (#7972,
+ * ainda em construção); não há garantia de nenhuma sessão observando quando
+ * ele roda, e o hook de review pós-`gh pr create` é inconsistente pra essa
+ * classe de invocação (mesmo achado do #8158 item 2, causa não confirmada
+ * na camada de harness, #6298). Rede de segurança real: o watchdog
+ * `scripts/check-revert-calibration-prs.ts` (task agendada
+ * `Diaria-Revert-Calibration-Orphan-Check`, `scripts/lib/scheduled-
+ * tasks.ts`) varre PRs `revert/calibration-*` abertas há mais de 2h sem
+ * merge/fechamento e alarma — ele DETECTA o caso órfão, não mergeia nada
+ * sozinho. A PR ainda precisa de revisão e merge por uma sessão/editor.
  *
  * **PENDÊNCIA NOMEADA:** o próprio commit de revert vai tocar as mesmas
  * linhas dentro de um bloco `CALIBRATED:*` (ou o mesmo arquivo TS

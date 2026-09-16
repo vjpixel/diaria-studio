@@ -50,6 +50,7 @@ import {
   CLOCK_SKEW_TOLERANCE_MS as HOOK_CLOCK_SKEW_TOLERANCE_MS,
   MERGE_GRANT_TTL_MS as HOOK_MERGE_GRANT_TTL_MS,
   MERGE_LOCK_TTL_MS as HOOK_MERGE_LOCK_TTL_MS,
+  extractGhPrMergeTargetPr as BLOCK_HOOK_extractGhPrMergeTargetPr,
   readConsumedGrantFor,
   readLiveMergeGrantFor,
   shouldBlockGhPrMerge,
@@ -58,6 +59,7 @@ import {
   findLiveMergeGrantFile,
   buildConsumedRecord,
   consumeGrantUnderLock,
+  extractGhPrMergeTargetPr,
 } from "../.claude/hooks/consume-merge-grant-on-merge.mjs";
 
 const CONSUME_HOOK_PATH = fileURLToPath(
@@ -876,6 +878,149 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+// ─── #8188 — consumo casa por PR, não só por SESSÃO ───────────────────────
+//
+// Achado ao vivo (16/09/2026, sessão develop): a mesma sessão beneficiária
+// tinha concessões vivas pra DUAS PRs diferentes (uma de cada coordenadora),
+// concedidas em momentos distintos. Mergear a PR #A consumia TAMBÉM a
+// concessão da PR #B, porque `findLiveMergeGrantFile`/`consumeGrantUnderLock`
+// só olhavam `grant.grantedTo === sessionId` — nunca comparavam `grant.pr`
+// contra a PR que o `gh pr merge` de fato mergeou. Este bloco trava o
+// cenário: duas concessões vivas pra mesma sessão, PRs diferentes; consumir
+// com `targetPr` de uma delas nunca deve tocar a outra.
+describe("#8188 — findLiveMergeGrantFile/consumeGrantUnderLock escopam por PR, não só por sessão", () => {
+  it("findLiveMergeGrantFile(targetPr) ignora concessão escopada a OUTRO PR", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coordA", { tag: LOCAL_TAG });
+      grantMergeWindow(root, "overnight", "coordA", "interativa", { pr: 100 });
+      // Concessão viva pra sessão "interativa", mas pro PR 100 — buscar com
+      // targetPr=200 não deveria achá-la.
+      assert.equal(findLiveMergeGrantFile(root, "interativa", Date.now(), false, 200), null);
+      // Buscar com o PR certo (ou sem targetPr, retrocompat) continua achando.
+      assert.ok(findLiveMergeGrantFile(root, "interativa", Date.now(), false, 100));
+      assert.ok(findLiveMergeGrantFile(root, "interativa"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("findLiveMergeGrantFile(targetPr) continua achando concessão SEM escopo de PR (genérica) pra qualquer targetPr", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord", { tag: LOCAL_TAG });
+      grantMergeWindow(root, "overnight", "coord", "interativa", {}); // sem `pr`
+      assert.ok(findLiveMergeGrantFile(root, "interativa", Date.now(), false, 100));
+      assert.ok(findLiveMergeGrantFile(root, "interativa", Date.now(), false, 999));
+      assert.ok(findLiveMergeGrantFile(root, "interativa", Date.now(), false, undefined));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("consumeGrantUnderLock(targetPr) consome só a concessão da PR alvo; a concessão de OUTRA PR permanece viva", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coordA", { tag: LOCAL_TAG });
+      registerSession(root, "develop", "coordB", { tag: LOCAL_TAG });
+      grantMergeWindow(root, "overnight", "coordA", "interativa", { pr: 100 });
+      grantMergeWindow(root, "develop", "coordB", "interativa", { pr: 200 });
+
+      // Relógio REAL (não o `NOW` fixo de 2026-08-26 usado no resto do
+      // arquivo): `grantMergeWindow` sem `meta.now` grava `grantedAt` com
+      // `Date.now()` de verdade — misturar os dois faria a concessão
+      // parecer "no futuro" e ser descartada pela tolerância de clock skew.
+      const nowIso = new Date().toISOString();
+      // Mergeando a PR 100: só a concessão dela deveria ser consumida.
+      assert.equal(consumeGrantUnderLock(root, "interativa", nowIso, 3, 2_000, 100), true);
+
+      const grantoPr100 = findLiveMergeGrantFile(root, "interativa", Date.now(), false, 100);
+      assert.equal(grantoPr100, null, "a concessão da PR 100 já deveria estar consumida");
+
+      const grantPr200 = findLiveMergeGrantFile(root, "interativa", Date.now(), false, 200);
+      assert.ok(grantPr200, "a concessão da PR 200 NÃO deveria ter sido tocada pelo merge da PR 100");
+      assert.equal(grantPr200.grant.consumedAt, undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("CLI end-to-end: gh pr merge 100 consome só a concessão escopada à PR 100, não a da PR 200", () => {
+    const root = mkdtempSync(join(tmpdir(), "8188-scoped-pr-e2e-"));
+    try {
+      mkdirSync(join(root, "data", "sessions"), { recursive: true });
+      spawnSync("git", ["init", "-q"], { cwd: root });
+
+      const grantedAt = new Date().toISOString();
+      const startedAt = new Date(Date.now() - 60_000).toISOString();
+      const lastHeartbeat = new Date(Date.now() - 1_000).toISOString();
+      const pathA = join(root, "data", "sessions", `overnight-${LOCAL_TAG}-coordA.json`);
+      const pathB = join(root, "data", "sessions", `develop-${LOCAL_TAG}-coordB.json`);
+      writeFileSync(
+        pathA,
+        JSON.stringify({
+          kind: "overnight",
+          machineTag: "Neo",
+          sessionId: "coordA",
+          startedAt,
+          lastHeartbeat,
+          merge_grant: { grantedTo: "interativa", grantedBy: "coordA", grantedAt, pr: 100 },
+        }),
+        "utf8",
+      );
+      writeFileSync(
+        pathB,
+        JSON.stringify({
+          kind: "develop",
+          machineTag: "Neo",
+          sessionId: "coordB",
+          startedAt,
+          lastHeartbeat,
+          merge_grant: { grantedTo: "interativa", grantedBy: "coordB", grantedAt, pr: 200 },
+        }),
+        "utf8",
+      );
+
+      const payload = { session_id: "interativa", tool_name: "Bash", tool_input: { command: "gh pr merge 100 --squash" } };
+      const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
+        cwd: root,
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+
+      const updatedA = JSON.parse(readFileSync(pathA, "utf8"));
+      const updatedB = JSON.parse(readFileSync(pathB, "utf8"));
+      assert.ok(updatedA.merge_grant.consumedAt, "concessão da PR 100 deveria ter sido consumida");
+      assert.equal(updatedB.merge_grant.consumedAt, undefined, "concessão da PR 200 NÃO deveria ter sido tocada");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #8188 — extractGhPrMergeTargetPr duplicado concorda com o original ───
+
+describe("#8188 — extractGhPrMergeTargetPr (cópia duplicada em consume-merge-grant-on-merge.mjs) concorda com block-gh-pr-merge-subagent.mjs", () => {
+  const samples = [
+    "gh pr merge 6303 --squash",
+    "gh pr merge --squash --auto 6303",
+    "gh pr merge --squash",
+    'gh pr merge --body "encerrado depois de 100 dias" 6303',
+    "gh pr view 6303",
+    "cd worktree && gh pr merge 42 --squash",
+    undefined,
+    null,
+  ];
+  for (const sample of samples) {
+    it(`${JSON.stringify(sample)}`, () => {
+      assert.equal(extractGhPrMergeTargetPr(sample), BLOCK_HOOK_extractGhPrMergeTargetPr(sample));
+    });
+  }
 });
 
 // ─── #7286 — concessão consumida por sessão que NÃO é a beneficiária ──────
