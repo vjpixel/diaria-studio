@@ -77,7 +77,7 @@ interface BrevoContactAttribute {
   type: string;
 }
 
-interface BrevoContact {
+export interface BrevoContact {
   email: string;
   id?: number;
   attributes?: Record<string, unknown>;
@@ -88,7 +88,7 @@ interface BrevoContactsPage {
   count?: number;
 }
 
-interface ApiOpts {
+export interface ApiOpts {
   apiKey: string;
   listId: number;
 }
@@ -135,7 +135,7 @@ async function ensureContactAttribute(apiKey: string): Promise<void> {
  * `clarice-cta-ab-setup.ts::fetchListEmails`, que já falha alto pro mesmo
  * endpoint em vez de reusar `brevoGet` como se fosse lookup single-contato.
  */
-async function* iterateListContacts(opts: ApiOpts): AsyncGenerator<BrevoContact[]> {
+export async function* iterateListContacts(opts: ApiOpts): AsyncGenerator<BrevoContact[]> {
   const limit = 50;
   let offset = 0;
   for (;;) {
@@ -163,7 +163,7 @@ async function patchContactToken(email: string, token: PollToken, apiKey: string
   });
 }
 
-async function processBatch<T>(
+export async function processBatch<T>(
   items: T[],
   concurrency: number,
   worker: (item: T) => Promise<void>,

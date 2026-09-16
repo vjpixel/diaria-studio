@@ -75,6 +75,13 @@ workers_dev = true
 # platform.config.json -> kit.doiFormId.
 KIT_DOI_FORM_ID = "9897918"
 
+# #8194 — form de SISTEMA "Newsletter site" (sem e-mail de confirmacao). So
+# usado quando o link traz token assinado valido (REATIVAR_SECRET): vincular um
+# subscriber `inactive` a este form o promove a `active` sem DOI (medido ao vivo
+# 16/09/2026; o upsert com state active NAO promove). NUNCA usar como
+# KIT_DOI_FORM_ID — nao envia confirmacao.
+KIT_ACTIVATE_FORM_ID = "9839463"
+
 # #6048 (item 2/5 do checklist de migração Kit) — nome do custom field Kit
 # que recebe o marcador "entrou pelo funil" (KIT_NATIVE_SIGNUP_MARKER, ver
 # scripts/lib/shared/kit-signup-origin.ts). VAR, não secret — nome de custom

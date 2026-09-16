@@ -53,6 +53,15 @@
  * disabled-7894.test.ts`, que falha se `SUBSCRIBE_BACKEND` deixar de estar
  * fixo em `"kit"`.
  *
+ * **#8194 — token assinado**: o link da Brevo passou a levar
+ * `&t={{ contact.REATIVAR_TOKEN }}` (`scripts/lib/shared/reativar-token.ts`).
+ * Com token válido (`REATIVAR_SECRET`), o clique já prova posse da caixa e o
+ * assinante é ativado direto, sem DOI — cadastro novo nasce `active`, e quem
+ * já era `inactive` é promovido pelo vínculo ao form de sistema
+ * `KIT_ACTIVATE_FORM_ID` (o upsert com `state:"active"` não promove, medido
+ * ao vivo). Sem token ou com token inválido, vale tudo o que está descrito
+ * acima (DOI). Riscos aceitos pelo editor: encaminhamento e scanners de link.
+ *
  * O que NÃO mudou nem no caminho Kit: continua sem KV/rate-limit por IP.
  * Chamadas em massa à URL ainda geram e-mails de confirmação não solicitados —
  * é abuso de envio, não mais ativação indevida. Se o volume aparecer, é aí
@@ -125,6 +134,7 @@ import { buildOrigemOriginalCustomFields } from "../../../scripts/lib/shared/bee
 import { sendCompleteRegistrationEvent, logMetaCapiSendResult } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { resolveKitCreateState, vincularKitDoiForm, extrairSubscriberId, mensagemSubscriberIdAusente } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
+import { verifyReativarToken } from "../../../scripts/lib/shared/reativar-token.ts"; // #8194
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -196,6 +206,15 @@ export interface Env {
    * do link sem HMAC descrito no topo deste arquivo: sem o clique de
    * confirmação, a URL sozinha não ativa mais ninguém. VAR, não secret. */
   KIT_DOI_FORM_ID?: string;
+  /** #8194 — secret (`wrangler secret put REATIVAR_SECRET`) do token assinado
+   *  do botão da Brevo. Ausente = nenhum token vale, todo clique segue o DOI. */
+  REATIVAR_SECRET?: string;
+  /** #8194 — form de SISTEMA do Kit (sem e-mail de confirmação) usado pra
+   *  promover `inactive → active` quando o token é válido: o upsert
+   *  `POST /v4/subscribers {state:"active"}` NÃO muda o estado de quem já
+   *  existe como `inactive` (medido ao vivo 16/09/2026), o vínculo a este form
+   *  muda. VAR em `wrangler.toml`. Ausente = só cadastros novos ativam direto. */
+  KIT_ACTIVATE_FORM_ID?: string;
   /** Nomes dos custom fields Kit onde gravar UTM/referring-site de reativação
    * (Kit não tem atribuição nativa — achado ao vivo #6048) — nenhum criado
    * em produção ainda, degrade gracioso. */
@@ -626,6 +645,9 @@ export async function activateSubscriptionKit(
   env: Env,
   email: string,
   fetchImpl: typeof fetch = fetch,
+  // #8194: `true` quando o link trouxe token assinado válido — o clique já
+  // prova posse da caixa, então ativa direto em vez de disparar o DOI.
+  confirmedByToken = false,
 ): Promise<ActivateResult> {
   const apiKey = env.KIT_API_KEY;
   if (!apiKey) {
@@ -654,6 +676,12 @@ export async function activateSubscriptionKit(
     }
     const body = (await getRes.json().catch(() => null)) as { subscribers?: { state?: string }[] } | null;
     const existingState = body?.subscribers?.[0]?.state;
+    // #8194: com token, nunca ressuscita quem saiu (cancelled/complained/
+    // bounced) — o clique no botão da Brevo não desfaz um descadastro no Kit.
+    if (confirmedByToken && existingState && existingState !== "active" && existingState !== "inactive") {
+      console.warn(JSON.stringify({ event: "reativar_kit_token_estado_terminal", state: existingState }));
+      return { ok: true, status: 200, beehiivStatus: existingState };
+    }
     if (existingState === "active") {
       // #6048/#6127: este early-return pula o bloco de `fields` abaixo —
       // um assinante que chega aqui JÁ ativo no Kit nunca recebe o
@@ -705,7 +733,10 @@ export async function activateSubscriptionKit(
   // essa alternativa: criar `inactive` + vincular ao form faz a ativação
   // depender de um clique no e-mail que só chega ao dono do endereço. O link
   // sem HMAC deixa de ativar ninguém sozinho.
-  const createState = resolveKitCreateState(env.KIT_DOI_FORM_ID, "reativar");
+  //
+  // #8194: com token assinado válido, o clique já É a prova de posse — ativa
+  // direto, sem DOI.
+  const createState = confirmedByToken ? "active" : resolveKitCreateState(env.KIT_DOI_FORM_ID, "reativar");
 
   const postBody: Record<string, unknown> = { email_address: email, state: createState };
   if (Object.keys(fields).length > 0) postBody.fields = fields;
@@ -761,11 +792,77 @@ export async function activateSubscriptionKit(
     }
   }
 
+  if (confirmedByToken) {
+    return promoteKitWithToken(env, apiKey, base, email, res, fetchImpl);
+  }
+
   // Kit confirma na resposta o `state` que o POST mandou (achado ao vivo
   // #6048, Fase 1) — sem o estado transitório "validating" da Beehiiv, então
   // sem retry necessário. Com DOI, esse estado é `inactive` até a pessoa
   // confirmar: o retorno reflete isso em vez de afirmar "active".
   return { ok: true, status: res.status, beehiivStatus: createState };
+}
+
+/**
+ * #8194 — pós-upsert do caminho com token. Cadastro novo já nasce `active`
+ * pelo POST. Quem já existia `inactive` (clicou antes e não confirmou o DOI,
+ * ou veio do pool Kit do #8192) continua `inactive` mesmo com
+ * `state:"active"` no upsert — medido ao vivo em 16/09/2026. O vínculo ao form
+ * de sistema (`KIT_ACTIVATE_FORM_ID`, sem e-mail de confirmação) é o que
+ * promove. O estado final vem sempre de `GET /subscribers/{id}`: o corpo do
+ * POST do vínculo ainda diz `inactive` mesmo quando a promoção funcionou.
+ */
+async function promoteKitWithToken(
+  env: Env,
+  apiKey: string,
+  base: string,
+  email: string,
+  createRes: Response,
+  fetchImpl: typeof fetch,
+): Promise<ActivateResult> {
+  const headers = { "X-Kit-Api-Key": apiKey, Accept: "application/json" };
+  const extraido = await extrairSubscriberId(createRes);
+  if (!extraido.ok) {
+    console.error(
+      JSON.stringify({
+        event: "reativar_kit_token_sem_subscriber_id",
+        detail: mensagemSubscriberIdAusente(extraido, email, createRes.status),
+      }),
+    );
+    return { ok: true, status: createRes.status, beehiivStatus: null };
+  }
+  const readState = async (): Promise<string | null> => {
+    const r = await fetchImpl(`${base}/subscribers/${extraido.id}`, {
+      headers,
+      signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
+    });
+    if (!r.ok) return null;
+    const j = (await r.json().catch(() => null)) as { subscriber?: { state?: string } } | null;
+    return j?.subscriber?.state ?? null;
+  };
+  try {
+    let state = await readState();
+    if (state === "inactive" && env.KIT_ACTIVATE_FORM_ID) {
+      const link = await fetchImpl(`${base}/forms/${env.KIT_ACTIVATE_FORM_ID}/subscribers/${extraido.id}`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ referrer: "https://reativar.diaria.workers.dev/?via=token" }),
+        signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
+      });
+      if (!link.ok) {
+        const t = await link.text().catch(() => "<unreadable>");
+        console.error(JSON.stringify({ event: "reativar_kit_token_promote_failed", status: link.status, body: t.slice(0, 300) }));
+      }
+      state = await readState();
+    }
+    if (state !== "active") {
+      console.error(JSON.stringify({ event: "reativar_kit_token_nao_ativou", state }));
+    }
+    return { ok: true, status: 200, beehiivStatus: state };
+  } catch (e) {
+    console.error(JSON.stringify({ event: "reativar_kit_fetch_failed", step: "token_promote", error: String(e) }));
+    return { ok: false, status: 502, reason: "beehiiv_error" };
+  }
 }
 
 // ── HTML (puro) ───────────────────────────────────────────────────────────
@@ -957,8 +1054,11 @@ export async function handleConfirm(
   // #6048: mesma seleção de backend local ao handler — env.SUBSCRIBE_BACKEND
   // não é lido por nenhum outro dispatch fora deste worker.
   const useKit = env.SUBSCRIBE_BACKEND === "kit";
+  // #8194: token assinado válido = clique já vale como confirmação (só Kit).
+  const confirmedByToken =
+    useKit && (await verifyReativarToken(env.REATIVAR_SECRET, parsed.email, url.searchParams.get("t")));
   const result = useKit
-    ? await activateSubscriptionKit(env, parsed.email, fetchImpl)
+    ? await activateSubscriptionKit(env, parsed.email, fetchImpl, confirmedByToken)
     : sleepImpl
       ? await activateSubscription(env, parsed.email, fetchImpl, sleepImpl)
       : await activateSubscription(env, parsed.email, fetchImpl);
