@@ -15,9 +15,13 @@
  *   criar destino dedicado).
  * - Não inventa níveis nem promessas de recompensa — os 4 níveis e valores
  *   abaixo (`Amigo` R$5, `Apoiador` R$10, `Mantenedor` R$25, `Patrono` R$50)
- *   são os mesmos limiares de `computeRewardGroup`
+ *   são DERIVADOS de `REWARD_TIER_*_MIN` (`./reward-tier-thresholds.ts`,
+ *   #8137 follow-up) — a mesma fonte que `computeRewardGroup`
  *   (`scripts/studio-ui/studio-apoios.ts`, decisão do editor confirmada ao
- *   vivo na campanha real, #3844). Os 2 benefícios citados (Artigo Especial
+ *   vivo na campanha real, #3844) usa, nunca uma string duplicada à mão (o
+ *   `TIERS` abaixo formata os números vindos de lá, não valores literais —
+ *   drift-risk apontado pelo `type-design-analyzer` no fleet review da
+ *   #7915). Os 2 benefícios citados (Artigo Especial
  *   completo + bastidores no nível Apoiador; Panorama do Mês + votação do
  *   tema no nível Mantenedor) são os mesmos já transcritos ao vivo da
  *   página da campanha real na issue #7658 — não texto novo. `Amigo` e
@@ -55,6 +59,12 @@ import { escHtml } from "./html-escape.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { renderAnalyticsHead } from "./shared/seo-meta.ts";
 import { DIARIA_ESPECIAL_URL } from "./canonical-urls.ts";
+import {
+  REWARD_TIER_AMIGO_MIN,
+  REWARD_TIER_APOIADOR_MIN,
+  REWARD_TIER_MANTENEDOR_MIN,
+  REWARD_TIER_PATRONO_MIN,
+} from "./reward-tier-thresholds.ts";
 
 /** Mesmo padrão de `renderWordmark()` em `site-home-page.ts`/`site-assinar-page.ts` (#7010). */
 function renderWordmark(): string {
@@ -79,9 +89,18 @@ interface ApoiarTier {
   beneficio: string;
 }
 
+/** `5` → `"R$5/mês"` — formato de exibição único pra todo `ApoiarTier.valor`. */
+function formatValorMensal(min: number): string {
+  return `R$${min}/mês`;
+}
+
 /**
- * Os 4 níveis — valores de `REWARD_TIER_*_MIN` em
- * `scripts/studio-ui/studio-apoios.ts` (#3844). Benefícios de Apoiador
+ * Os 4 níveis — valores DERIVADOS de `REWARD_TIER_*_MIN`
+ * (`./reward-tier-thresholds.ts`, mesma fonte que `computeRewardGroup` em
+ * `scripts/studio-ui/studio-apoios.ts` usa, #3844) em vez de strings
+ * literais duplicadas — uma mudança de preço em `REWARD_TIER_*_MIN` agora
+ * propaga aqui automaticamente (#8137 follow-up, drift-risk apontado pelo
+ * `type-design-analyzer` no fleet review da #7915). Benefícios de Apoiador
  * (Artigo Especial completo + bastidores) e Mantenedor transcritos ao vivo
  * da campanha real no CORPO da issue #7658, seção "O gate do mensal está
  * errado hoje — R$10+ quando a promessa é R$25+" (não um comentário — achado
@@ -98,22 +117,22 @@ interface ApoiarTier {
 const TIERS: ApoiarTier[] = [
   {
     nome: "Amigo",
-    valor: "R$5/mês",
+    valor: formatValorMensal(REWARD_TIER_AMIGO_MIN),
     beneficio: "Apoio de entrada — ajuda a manter a curadoria diária gratuita pra todo mundo.",
   },
   {
     nome: "Apoiador",
-    valor: "R$10/mês",
+    valor: formatValorMensal(REWARD_TIER_APOIADOR_MIN),
     beneficio: "Artigo Especial mensal completo (texto inteiro, mais aprofundado) + acesso a todo o histórico já publicado + bastidores.",
   },
   {
     nome: "Mantenedor",
-    valor: "R$25/mês",
+    valor: formatValorMensal(REWARD_TIER_MANTENEDOR_MIN),
     beneficio: "Tudo do Apoiador, mais o Panorama do Mês (recap mensal enviado toda 1ª semana) + voto no tema do próximo Artigo Especial.",
   },
   {
     nome: "Patrono",
-    valor: "R$50/mês",
+    valor: formatValorMensal(REWARD_TIER_PATRONO_MIN),
     beneficio: "O nível mais alto de apoio — inclui os benefícios de todos os níveis anteriores.",
   },
 ];

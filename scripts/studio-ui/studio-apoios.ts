@@ -191,6 +191,12 @@ import {
 } from "../lib/apoia-se.ts";
 import { previousMonthKey } from "../lib/apoio-month-key.ts";
 import {
+  REWARD_TIER_AMIGO_MIN,
+  REWARD_TIER_APOIADOR_MIN,
+  REWARD_TIER_MANTENEDOR_MIN,
+  REWARD_TIER_PATRONO_MIN,
+} from "../lib/reward-tier-thresholds.ts";
+import {
   drainApoiaSeNotifications,
   type ApoioNotification,
   type DrainedPromessa,
@@ -508,11 +514,16 @@ export type RewardGroup = "amigo" | "apoiador" | "mantenedor" | "patrono";
  * corpo do PR/issue #3844 pra tabela completa de benefícios por nível).
  * Regra de atribuição: MAIOR faixa cujo limiar ≤ valor. Patrono é o teto
  * (não há nível acima).
+ *
+ * Valores em `../lib/reward-tier-thresholds.ts` (extraídos de propósito pra
+ * `scripts/lib/`, #8137 follow-up) — a página `/apoiar`
+ * (`scripts/lib/site-apoiar-page.ts`) precisa dos mesmos números e
+ * `scripts/lib/**` não pode importar de `scripts/studio-ui/**`
+ * (`test/lib-boundary.test.ts` regra 4). `computeRewardGroup` continua
+ * exportado DAQUI (re-export implícito via mesmo nome/módulo) — nenhum dos
+ * ~20 call sites que importam `computeRewardGroup` de `studio-apoios.ts`
+ * precisa mudar.
  */
-const REWARD_TIER_AMIGO_MIN = 5;
-const REWARD_TIER_APOIADOR_MIN = 10;
-const REWARD_TIER_MANTENEDOR_MIN = 25;
-const REWARD_TIER_PATRONO_MIN = 50;
 
 /**
  * Particiona um valor pago no mês nas faixas de nível de recompensa acima.

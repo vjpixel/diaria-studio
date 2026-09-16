@@ -15,6 +15,12 @@ import { fileURLToPath } from "node:url";
 import { buildApoiarHtml, APOIAR_CLICK_PATH } from "../scripts/lib/site-apoiar-page.ts";
 import { DIARIA_ESPECIAL_URL } from "../scripts/lib/canonical-urls.ts";
 import { GTM_CONTAINER_ID } from "../scripts/lib/shared/seo-meta.ts";
+import {
+  REWARD_TIER_AMIGO_MIN,
+  REWARD_TIER_APOIADOR_MIN,
+  REWARD_TIER_MANTENEDOR_MIN,
+  REWARD_TIER_PATRONO_MIN,
+} from "../scripts/lib/reward-tier-thresholds.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -44,6 +50,26 @@ describe("buildApoiarHtml (#7915)", () => {
     }
     for (const nome of ["Amigo", "Apoiador", "Mantenedor", "Patrono"]) {
       assert.ok(html.includes(`>${nome}<`), `nível "${nome}" ausente`);
+    }
+  });
+
+  it("guard de drift (#8137 follow-up): valores exibidos são DERIVADOS de REWARD_TIER_*_MIN, não strings hardcoded — falha se studio-apoios.ts mudar um limiar e a página não acompanhar", () => {
+    // Deliberadamente NÃO importa/reusa nenhuma constante de dentro de
+    // site-apoiar-page.ts — deriva o valor esperado direto do módulo
+    // compartilhado (mesma fonte que computeRewardGroup consome), então
+    // este teste só passa se buildApoiarHtml() de fato ler de lá.
+    const esperado: Record<string, number> = {
+      Amigo: REWARD_TIER_AMIGO_MIN,
+      Apoiador: REWARD_TIER_APOIADOR_MIN,
+      Mantenedor: REWARD_TIER_MANTENEDOR_MIN,
+      Patrono: REWARD_TIER_PATRONO_MIN,
+    };
+    for (const [nome, min] of Object.entries(esperado)) {
+      const valorEsperado = `R$${min}/mês`;
+      assert.ok(
+        html.includes(valorEsperado),
+        `nível "${nome}" deveria mostrar ${valorEsperado} (REWARD_TIER_*_MIN atual) — página desincronizou do limiar canônico`,
+      );
     }
   });
 
