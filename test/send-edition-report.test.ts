@@ -434,3 +434,23 @@ describe("renderHtmlReport — leitura do header Brave (#3389)", () => {
     assert.doesNotMatch(html, /Leitura do header/);
   });
 });
+
+// (#7943, achado ao vivo 260915) Antes deste fix, o editor não tinha como
+// distinguir "sem gap a reportar" de "esta conta nunca vai ter esse sinal" —
+// a linha "Gap real vs. estimativa" simplesmente parava de aparecer, em
+// silêncio, sem dizer por quê. Achado do review automatizado da PR #8159.
+describe("renderHtmlReport — sem sinal mensal do header Brave (#7943)", () => {
+  it("mostra a linha explicando a ausência de sinal quando monthly_quota_unmeasurable=true", () => {
+    const braveCredits: BraveCreditStats = { ...BRAVE_BASE, monthly_quota_unmeasurable: true };
+    delete (braveCredits as { delta_untracked?: number }).delta_untracked;
+    const html = renderHtmlReport("260713", MINIMAL_DOC, null, null, [], [], braveCredits);
+    assert.match(html, /sem sinal mensal/, "deve explicar a ausência do gap, não só omiti-lo em silêncio");
+    assert.match(html, /#7943/);
+  });
+
+  it("omite a linha quando monthly_quota_unmeasurable está ausente (comportamento pré-existente preservado)", () => {
+    const braveCredits: BraveCreditStats = { ...BRAVE_BASE };
+    const html = renderHtmlReport("260713", MINIMAL_DOC, null, null, [], [], braveCredits);
+    assert.doesNotMatch(html, /sem sinal mensal/);
+  });
+});

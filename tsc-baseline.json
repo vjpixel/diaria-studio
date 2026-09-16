@@ -26,7 +26,6 @@
   "test/block-worktree-alien-commit-hook-sync.test.ts::TS7016": 1,
   "test/block-worktree-bare-push-hook.test.ts::TS7016": 1,
   "test/box-click-report.test.ts::TS2741": 6,
-  "test/brave-search.test.ts::TS2322": 5,
   "test/brevo-dashboard-5140-abc-audience-ciclo-atual.test.ts::TS2345": 1,
   "test/brevo-dashboard-abc-audience-schedule.test.ts::TS2739": 1,
   "test/brevo-dashboard-brevo-diaria-4515.test.ts::TS2322": 2,

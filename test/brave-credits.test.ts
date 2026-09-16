@@ -509,6 +509,57 @@ describe("computeBraveCreditStats", () => {
     rmSync(path, { force: true });
   });
 
+  // (#7943, achado ao vivo 260915) REGRESSÃO — o valor "49" travado no header
+  // desta conta não é "1951 queries usadas sem rastro local" (leitura pré-fix
+  // acima): é a janela por-segundo, quase constante. `quota_limit_monthly: 0`
+  // é o sentinela do Brave pra "sem cap mensal" (Postpaid) — quando presente,
+  // `real_used_raw`/`delta_untracked` precisam ficar ausentes (sem sinal),
+  // nunca computar `2000 - 0 = 2000` nem `2000 - 49 = 1951` a partir dele.
+  it("monthly_quota_unmeasurable: real_used_raw/delta_untracked ausentes quando quota_limit_monthly=0 (Postpaid)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-09-15T12:00:00Z");
+    writeFileSync(
+      path,
+      [
+        ...Array.from({ length: 4 }, (_, i) =>
+          JSON.stringify({ timestamp: "2026-09-15T10:00:00Z", query: `q${i}`, status: "ok" }),
+        ),
+        JSON.stringify({
+          timestamp: "2026-09-15T10:05:00Z",
+          query: "q5",
+          status: "ok",
+          quota_remaining: 0,
+          quota_limit_monthly: 0,
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.monthly_quota_unmeasurable, true, "deve sinalizar que o header não mede uso mensal nesta conta");
+    assert.equal(stats.real_used_raw, undefined, "sem sinal utilizável — nunca 2000-0 nem qualquer aritmética sobre o header");
+    assert.equal(stats.delta_untracked, undefined, "mesma razão — não há gap real a reportar");
+    assert.equal(stats.quota_remaining_last_seen, 0, "o valor bruto continua exposto pra quem quiser auditar");
+    assert.equal(stats.effective_used, 5, "alerta segue intacto — base é sempre queries_this_month_real, nunca o header (#3707)");
+    rmSync(path, { force: true });
+  });
+
+  it("monthly_quota_unmeasurable ausente em dados legados sem quota_limit_monthly (backward-compat)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-09-15T12:00:00Z");
+    // Entrada gravada ANTES deste fix — só tem quota_remaining, nunca teve
+    // quota_limit_monthly. Não podemos retroativamente inferir "sem cap" de um
+    // campo que nunca foi capturado; o dado é tratado como sempre foi.
+    writeFileSync(
+      path,
+      JSON.stringify({ timestamp: "2026-09-15T10:00:00Z", query: "q", status: "ok", quota_remaining: 1990 }),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.monthly_quota_unmeasurable, undefined);
+    assert.equal(stats.real_used_raw, 10, "sem o novo campo, comportamento pré-existente é preservado");
+    rmSync(path, { force: true });
+  });
+
   it("max() mantém a contagem LOCAL quando ela é maior que o header (branch invertido)", () => {
     const path = makeTmpPath();
     const now = new Date("2026-06-29T12:00:00Z");

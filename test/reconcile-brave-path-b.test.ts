@@ -75,6 +75,35 @@ test("reconcile: header descartado por divergência implausível → no-op (regr
   rmSync(path, { recursive: true, force: true });
 });
 
+// (#7943, achado ao vivo 260915) Conta Postpaid: X-RateLimit-Limit da janela
+// mensal é 0 (sem cap) → X-RateLimit-Remaining da mesma janela também vem
+// sempre 0 — não um contador real. `computeBraveCreditStats` sinaliza isso via
+// `monthly_quota_unmeasurable`; este script precisa no-opar ANTES de tocar
+// `priorState`/gravar qualquer coisa, com uma razão distinta de "no_header"
+// (o header VEIO, só não mede uso mensal nesta conta).
+test("reconcile: monthly_quota_unmeasurable (Postpaid) → no-op explícito, nunca grava nem toca o estado", () => {
+  const path = tmpPath();
+  const statePath = tmpStatePath();
+  seed(path, [
+    ...Array.from({ length: 4 }, (_, i) => ({ timestamp: `${MONTH}-15T10:00:00Z`, query: `q${i}`, status: "ok" })),
+    {
+      timestamp: `${MONTH}-15T10:05:00Z`,
+      query: "q5",
+      status: "ok",
+      quota_remaining: 0,
+      quota_limit_monthly: 0,
+    },
+  ]);
+
+  main(["--edition", "260701"], path, NOW, statePath);
+
+  const s = computeBraveCreditStats("260701", path, NOW);
+  assert.equal(s.queries_this_month_estimated, 0, "não deve gravar nenhuma estimativa a partir de um header sem sinal mensal");
+  assert.equal(s.queries_this_month, 5, "local permanece 5 — sem reconciliação a partir de um contador que não existe");
+  assert.equal(readBraveReconcileState(statePath), null, "estado do reconcile não deve ser tocado — não há âncora válida a persistir");
+  rmSync(path, { recursive: true, force: true });
+});
+
 test("reconcile: idempotente — re-rodar não duplica", () => {
   const path = tmpPath();
   const statePath = tmpStatePath();

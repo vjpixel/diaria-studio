@@ -11,7 +11,19 @@
  * API key em env `BRAVE_API_KEY` (lida no caller, passada como arg pra manter
  * a função pura/testável). Quando ausente, caller deve fallback pros agents.
  *
+ * (#7943, achado ao vivo 260915) Esta conta reporta `X-RateLimit-Limit: "50, 0"`
+ * — janela mensal com LIMITE 0 (sentinela "sem cap", coerente com Postpaid).
+ * `X-RateLimit-Remaining` correspondente vem sempre "49, 0": a janela mensal
+ * fica travada em "0" porque não há cota mensal real pra decrescer, não porque
+ * o uso é zero. Consequência: nenhum consumidor deste header (nem
+ * `quota_remaining` nem `quota_limit_monthly`) tem sinal utilizável de uso
+ * MENSAL nesta conta — só a janela por-segundo é informativa, e nada aqui a
+ * expõe (não é o que o alerta/reconcile de `brave-credits.ts` precisam). Ver
+ * `computeBraveCreditStats`/`reconcile-brave-path-b.ts` para como isso é
+ * detectado e tratado como "sem sinal", não como "uso zero".
+ *
  * Doc: https://api-dashboard.search.brave.com/app/documentation/web-search/responses
+ * Doc rate-limit headers: https://api-dashboard.search.brave.com/documentation/guides/rate-limiting
  */
 
 export interface BraveSearchOptions {
@@ -40,8 +52,41 @@ export interface BraveSearchResponse {
   status: "ok" | "rate_limited" | "error";
   error_message?: string;
   http_status?: number;
-  // (#2608 C) quota header from Brave API — X-RateLimit-Remaining
+  // (#2608 C, re-parsed #7943) quota header from Brave API — X-RateLimit-Remaining,
+  // MONTHLY window (2nd comma-separated value — see parseRateLimitCsvHeader below).
   quota_remaining?: number;
+  // (#7943) X-RateLimit-Limit, MONTHLY window — 0 means the account has no hard
+  // monthly cap (Postpaid/pay-as-you-go), which makes `quota_remaining` above
+  // permanently uninformative (Brave reports it as a flat "0" too, not a real
+  // countdown). Consumers must check this before trusting `quota_remaining` for
+  // reconciliation — see scripts/lib/brave-credits.ts.
+  quota_limit_monthly?: number;
+}
+
+/**
+ * Parses a Brave rate-limit header value and returns the value for a given
+ * comma-separated window index. Brave documents these headers as CSV, one
+ * value per rate-limit window — for this account, `"49, 0"` means "49 of 50
+ * requests left in the current 1-second window, 0 of 0 in the monthly window"
+ * (https://api-dashboard.search.brave.com/documentation/guides/rate-limiting).
+ *
+ * `parseInt(header, 10)` alone silently returns only the FIRST token — this
+ * was the actual bug (#7943 residual, and the root cause the #3707 comment in
+ * brave-credits.ts already suspected but never fixed at the source): it read
+ * the near-constant per-second remaining (e.g. "49", refilling between calls)
+ * as if it were the monthly counter, producing a `real_used` that never moved
+ * (`HEADER_QUOTA_CYCLE_SIZE - 49` = a fixed 1951 — exactly the false "1951/2000"
+ * alarm from edição 260708 documented in reconcile-brave-path-b.ts).
+ *
+ * `windowIndex`: 0 = per-second window (1st value), 1 = monthly window (2nd
+ * value). Returns `undefined` when the requested index isn't present (header
+ * absent, malformed, or — defensively — only one value, e.g. an older API
+ * shape/a test mock) rather than falling back to the wrong window.
+ */
+export function parseRateLimitCsvHeader(raw: string, windowIndex: 0 | 1): number | undefined {
+  const parts = raw.split(",").map((p) => Number.parseInt(p.trim(), 10));
+  const value = parts[windowIndex];
+  return typeof value === "number" && !Number.isNaN(value) ? value : undefined;
 }
 
 /**
@@ -69,12 +114,17 @@ export async function braveSearch(
       },
     });
 
-    // (#2608 C) capture quota header to enable delta reconciliation (defensive: mock/test may lack headers)
-    const quotaHeader = res.headers?.get?.("X-RateLimit-Remaining") ?? res.headers?.get?.("X-Ratelimit-Remaining") ?? null;
-    const quota_remaining = quotaHeader !== null ? parseInt(quotaHeader, 10) : undefined;
-    const quotaField = typeof quota_remaining === "number" && !isNaN(quota_remaining)
-      ? { quota_remaining }
-      : {};
+    // (#2608 C, re-parsed #7943) capture quota headers to enable delta reconciliation
+    // (defensive: mock/test may lack headers). Both are CSV "<per-second>, <monthly>" —
+    // see parseRateLimitCsvHeader above for why windowIndex=1 (monthly) matters.
+    const remainingHeader = res.headers?.get?.("X-RateLimit-Remaining") ?? res.headers?.get?.("X-Ratelimit-Remaining") ?? null;
+    const limitHeader = res.headers?.get?.("X-RateLimit-Limit") ?? res.headers?.get?.("X-Ratelimit-Limit") ?? null;
+    const quota_remaining = remainingHeader !== null ? parseRateLimitCsvHeader(remainingHeader, 1) : undefined;
+    const quota_limit_monthly = limitHeader !== null ? parseRateLimitCsvHeader(limitHeader, 1) : undefined;
+    const quotaField = {
+      ...(typeof quota_remaining === "number" ? { quota_remaining } : {}),
+      ...(typeof quota_limit_monthly === "number" ? { quota_limit_monthly } : {}),
+    };
 
     if (res.status === 429) {
       return { results: [], query, status: "rate_limited", http_status: 429, ...quotaField };
