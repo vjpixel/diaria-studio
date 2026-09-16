@@ -114,4 +114,42 @@ describe("stage4-post-edit-checks.ts — CLI", () => {
       cleanup();
     }
   });
+
+  it("--check-lock: exit 0 e running:false quando nenhuma rodada rodou ainda (lock ausente) — #8123 review", () => {
+    const { dir, cleanup } = makeEditionDir();
+    try {
+      const result = runCli(["--edition-dir", dir, "--check-lock"]);
+      assert.equal(result.status, 0);
+      const parsed = JSON.parse(result.stdout.trim());
+      assert.equal(parsed.running, false);
+      assert.equal(parsed.generation, 0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--check-lock: exit 0 e running:false depois de uma rodada normal (lock liberado) — #8123 review", () => {
+    const { dir, cleanup } = makeEditionDir();
+    try {
+      runCli(["--edition-dir", dir]); // rodada completa, libera o lock ao final
+      const result = runCli(["--edition-dir", dir, "--check-lock"]);
+      assert.equal(result.status, 0);
+      const parsed = JSON.parse(result.stdout.trim());
+      assert.equal(parsed.running, false);
+      assert.equal(parsed.generation, 1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--check-lock nunca escreve o relatório --out (é só leitura do lock) — #8123 review", () => {
+    const { dir, cleanup } = makeEditionDir();
+    try {
+      const defaultOutPath = join(dir, "_internal", "stage4-post-edit-checks.json");
+      runCli(["--edition-dir", dir, "--check-lock"]);
+      assert.ok(!existsSync(defaultOutPath), "--check-lock não deveria disparar uma rodada de checks");
+    } finally {
+      cleanup();
+    }
+  });
 });

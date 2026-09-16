@@ -64,6 +64,41 @@ describe("claimGeneration / releaseGeneration", () => {
     });
   });
 
+  it("isCheckRunning: PID vivo (o processo de teste, sempre existe) mantém running:true (#8123 review)", () => {
+    withLockPath((lockPath) => {
+      claimGeneration(lockPath); // claimGeneration grava process.pid (o pid deste próprio teste)
+      assert.equal(isCheckRunning(lockPath), true);
+    });
+  });
+
+  it("isCheckRunning: PID morto (processo não existe mais) auto-cura o lock, evita ficar travado pra sempre (#8123 review)", () => {
+    withLockPath((lockPath) => {
+      claimGeneration(lockPath);
+      // Simula o processo em background morrendo anormalmente (SIGKILL/OOM)
+      // ANTES do `finally { releaseGeneration }` rodar: reescreve o lock
+      // com um PID que quase certamente não existe.
+      const DEAD_PID = 999999;
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ running: true, generation: 1, pid: DEAD_PID, started_at: new Date().toISOString() }, null, 2) + "\n",
+        "utf8",
+      );
+      assert.equal(isCheckRunning(lockPath), false, "lock com PID morto não deveria travar isCheckRunning pra sempre");
+    });
+  });
+
+  it("isCheckRunning: lock sem pid gravado (sentinel legado) trata como ainda rodando — conservador", () => {
+    withLockPath((lockPath) => {
+      mkdirSync(join(lockPath, ".."), { recursive: true });
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ running: true, generation: 1 }, null, 2) + "\n",
+        "utf8",
+      );
+      assert.equal(isCheckRunning(lockPath), true);
+    });
+  });
+
   it("coalescing: release de uma generation VELHA nunca apaga o running:true de uma generation mais NOVA (#8123 §3)", () => {
     withLockPath((lockPath) => {
       // Rodada A começa (ajuste 1).

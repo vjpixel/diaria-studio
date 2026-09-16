@@ -25,10 +25,19 @@
  * Uso:
  *   npx tsx scripts/stage4-post-edit-checks.ts --edition-dir <path> [--out <path>]
  *
- * Exit codes:
+ *   # Consulta o lock SEM disparar uma rodada — pro orchestrator (Bash-
+ *   # driven, não importa TS) decidir se dispatcha em background ou não
+ *   # (#8123 review — `stage4-check-lock.ts` não tinha entrypoint de CLI):
+ *   npx tsx scripts/stage4-post-edit-checks.ts --edition-dir <path> --check-lock
+ *
+ * Exit codes (modo padrão):
  *   0  — nenhum achado GATE-BLOCKING (findings warn-only podem existir)
  *   1  — pelo menos 1 achado GATE-BLOCKING
  *   2  — uso inválido (--edition-dir ausente)
+ *
+ * Exit codes (`--check-lock`): `0` = não há rodada em curso (seguro
+ * disparar); `1` = já há rodada em curso (não disparar outra — coalescing).
+ * Imprime `{ running, generation }` em stdout em ambos os casos.
  *
  * Output:
  *   - stdout: 1 linha de resumo BARATO (issue #8123 §3, "notificação de
@@ -39,13 +48,13 @@
  *   - arquivo `--out`: `Stage4PostEditChecksReport` completo (JSON).
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runStage4PostEditChecks } from "./lib/stage4-post-edit-checks-core.ts";
-import { claimGeneration, releaseGeneration } from "./lib/stage4-check-lock.ts";
+import { claimGeneration, isCheckRunning, readLock, releaseGeneration } from "./lib/stage4-check-lock.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -67,6 +76,16 @@ async function main(): Promise<void> {
   const outPath = getArg(argv, "out") || resolve(editionDir, "_internal", "stage4-post-edit-checks.json");
   const lockPath = resolve(editionDir, "_internal", ".stage4-post-edit-checks-lock.json");
 
+  // --check-lock: só consulta o lock, nunca dispara uma rodada. O
+  // orchestrator (Bash-driven) usa isto pra decidir se coalesce em vez de
+  // relançar (#8123 review — antes só existia como função TS sem CLI).
+  if (hasFlag(argv, "check-lock")) {
+    const lock = readLock(lockPath);
+    const running = isCheckRunning(lockPath);
+    console.log(JSON.stringify({ running, generation: lock.generation }));
+    process.exit(running ? 1 : 0);
+  }
+
   const myGeneration = claimGeneration(lockPath);
   let report;
   try {
@@ -75,8 +94,14 @@ async function main(): Promise<void> {
     releaseGeneration(lockPath, myGeneration);
   }
 
+  // Escrita atômica (tmp + rename) — mesmo padrão de `stage4-cas.ts`. Sem
+  // isto, um crash no meio do `writeFileSync` (ou um leitor concorrente —
+  // ex: o gate consultando `--out` pra decidir aprovar `sim`) podia ver um
+  // JSON truncado (#8123 review).
   mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, JSON.stringify(report, null, 2) + "\n", "utf8");
+  const tmpOutPath = `${outPath}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmpOutPath, JSON.stringify(report, null, 2) + "\n", "utf8");
+  renameSync(tmpOutPath, outPath);
 
   // Notificação barata (#8123 §3): 1 linha, sem despejar findings no stdout.
   if (report.findings_count === 0) {

@@ -28,6 +28,8 @@ import {
   computeInputsHash,
 } from "../scripts/lib/stage4-post-edit-checks-core.ts";
 import { runStage4LintReport } from "../scripts/lint-newsletter-md.ts";
+import { runStage4SocialLintReport } from "../scripts/lint-social-md.ts";
+import { writeSentinel } from "../scripts/check-humanizer-social.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
 
@@ -159,6 +161,25 @@ describe("runStage4PostEditChecks", () => {
     }
   });
 
+  it("humanizer-social: hash_mismatch (social editado APÓS a humanização) também vira achado gate-blocking (#8123 review — só sentinel_missing estava coberto)", () => {
+    const { dir, cleanup } = makeEditionDir();
+    try {
+      writeFileSync(join(dir, "03-social.md"), "# LinkedIn\n## d1\nPost humanizado original.\n", "utf8");
+      writeSentinel(dir); // grava o sentinel sobre o conteúdo ATUAL
+      // Editor edita 03-social.md DEPOIS da humanização (loop "ajustar") —
+      // hash do sentinel diverge do hash atual.
+      writeFileSync(join(dir, "03-social.md"), "# LinkedIn\n## d1\nPost editado pelo editor pós-humanização.\n", "utf8");
+
+      const report = runStage4PostEditChecks(dir, PROJECT_ROOT);
+      const humanizerFinding = report.findings.find((f) => f.source === "humanizer-social");
+      assert.ok(humanizerFinding, "esperava achado de humanizer-social com hash divergente");
+      assert.equal(humanizerFinding!.gate_blocking, true);
+      assert.equal(humanizerFinding!.id, "humanizer-social-hash_mismatch");
+    } finally {
+      cleanup();
+    }
+  });
+
   it("validate-lancamentos: URL não-oficial em LANÇAMENTOS vira achado gate-blocking (#160)", () => {
     const { dir, cleanup } = makeEditionDir();
     try {
@@ -180,6 +201,60 @@ describe("runStage4PostEditChecks", () => {
       const report = runStage4PostEditChecks(dir, PROJECT_ROOT);
       assert.ok(report.checks_run.includes("lint-newsletter:stage-4"));
       assert.ok(report.checks_run.includes("invariants:stage-4"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("nunca lança mesmo quando computeInputsHash falha (TOCTOU — #8123 review): report ainda sai, inputs_hash vira sentinel de erro", () => {
+    const { dir, cleanup } = makeEditionDir();
+    try {
+      // Substitui 02-reviewed.md por um DIRETÓRIO com o mesmo nome —
+      // existsSync continua true, mas readFileSync(path, "utf8") lança
+      // EISDIR. Simula o TOCTOU real (arquivo editado/removido entre o
+      // existsSync e o readFileSync de computeInputsHash).
+      rmSync(join(dir, "02-reviewed.md"));
+      mkdirSync(join(dir, "02-reviewed.md"));
+      assert.doesNotThrow(() => runStage4PostEditChecks(dir, PROJECT_ROOT));
+      const report = runStage4PostEditChecks(dir, PROJECT_ROOT);
+      assert.match(report.inputs_hash, /^error:/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("achados de lint-newsletter/lint-social carregam 'detail' com o payload bruto do sub-check (#8123 review — sem isto, o leitor precisava re-rodar o --check isolado)", () => {
+    const { dir, cleanup } = makeEditionDir();
+    try {
+      const report = runStage4PostEditChecks(dir, PROJECT_ROOT);
+      const directReport = runStage4LintReport(dir, PROJECT_ROOT);
+      const firstFailing = directReport.checks.find((c) => !c.ok);
+      assert.ok(firstFailing, "fixture precisa ter ao menos 1 check falhando pra este teste fazer sentido");
+      const matchingFinding = report.findings.find(
+        (f) => f.source === "lint-newsletter" && f.id === firstFailing!.id,
+      );
+      assert.ok(matchingFinding, `esperava achado lint-newsletter/${firstFailing!.id}`);
+      assert.deepEqual(matchingFinding!.detail, firstFailing!.result);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("achados de lint-social também carregam 'detail'", () => {
+    const { dir, cleanup } = makeEditionDir();
+    try {
+      // "agentivo" dispara banned-lexicon (#7260, GATE-BLOCKING) — forma
+      // certa é "agêntico" (CLAUDE.md, feedback_agentico-nunca-agentivo).
+      writeFileSync(join(dir, "03-social.md"), "# LinkedIn\n## d1\nUm post agentivo sobre IA.\n", "utf8");
+      const report = runStage4PostEditChecks(dir, PROJECT_ROOT);
+      const directReport = runStage4SocialLintReport(dir);
+      const firstFailing = directReport.checks.find((c) => !c.ok);
+      assert.ok(firstFailing, "fixture precisa ter ao menos 1 check social falhando pra este teste fazer sentido");
+      const matchingFinding = report.findings.find(
+        (f) => f.source === "lint-social" && f.id === firstFailing!.id,
+      );
+      assert.ok(matchingFinding, `esperava achado lint-social/${firstFailing!.id}`);
+      assert.deepEqual(matchingFinding!.detail, firstFailing!.result);
     } finally {
       cleanup();
     }

@@ -23,8 +23,11 @@
  *   5. `check-invariants.ts --stage 4` (via `getRulesForStage(4)` — inclui
  *      as regras de carrossel `carousel-*`, `intentional-error-present-
  *      in-final`, etc.).
- *   6. `check-humanizer-social.ts --check` (selo do humanizador social) +
- *      `lintTicsOnMismatch` (tics quando o hash diverge).
+ *   6. `check-humanizer-social.ts --check` (selo do humanizador social).
+ *      **NÃO** inclui `lintTicsOnMismatch` — os tics de antítese-revelação/
+ *      gancho-editorial-emendado que ele cobriria já saem do check 2 acima
+ *      (`runStage4SocialLintReport` os roda incondicionalmente); recalcular
+ *      aqui duplicaria o mesmo achado 2× (ver comentário no check 6 abaixo).
  *
  * Cada fonte já tem seu próprio teste unitário — este arquivo não
  * reimplementa nenhuma regra, só chama as funções puras já exportadas e
@@ -63,6 +66,14 @@ export interface Stage4Finding {
   message: string;
   file?: string;
   line?: number;
+  /**
+   * Payload bruto do sub-check de origem (ex: `StageCheckResult.result` de
+   * `runStage4LintReport`/`runStage4SocialLintReport` — carrega linha,
+   * contexto, matches). Sem isto o `id` sozinho força o leitor a re-rodar o
+   * `--check` isolado pra saber ONDE o achado está — o oposto do objetivo
+   * de consolidar N chamadas numa só (achado de review, #8123).
+   */
+  detail?: unknown;
 }
 
 export interface Stage4PostEditChecksReport {
@@ -98,6 +109,32 @@ export function computeInputsHash(editionDir: string): string {
   return hashContent(`${hashContent(reviewed)}:${hashContent(social)}`);
 }
 
+/**
+ * Resumo curto e genérico de `StageCheckResult.result` (formato varia por
+ * check — arrays de matches, `{error}`, etc.) pra caber na `message` de 1
+ * linha do achado. O payload completo, estruturado, vai em `detail` — este
+ * resumo é só pra quem lê a `message` sem abrir `detail`. Nunca lança:
+ * shapes inesperados caem no fallback JSON truncado.
+ * @pure
+ */
+function summarizeCheckResult(result: unknown): string {
+  try {
+    if (result && typeof result === "object") {
+      const obj = result as Record<string, unknown>;
+      if (typeof obj.error === "string") return obj.error.slice(0, 200);
+      for (const [key, value] of Object.entries(obj)) {
+        if (Array.isArray(value) && value.length > 0) {
+          return `${key}: ${value.length} ocorrência(s) — ver detail`;
+        }
+      }
+    }
+    const json = JSON.stringify(result);
+    return json ? json.slice(0, 200) : "ver detail";
+  } catch {
+    return "ver detail";
+  }
+}
+
 function pushFrom(
   findings: Stage4Finding[],
   source: Stage4Finding["source"],
@@ -109,6 +146,7 @@ function pushFrom(
     message: string;
     file?: string;
     line?: number;
+    detail?: unknown;
   }>,
 ): void {
   for (const item of items) {
@@ -124,17 +162,35 @@ function pushFrom(
  */
 export function runStage4PostEditChecks(editionDir: string, root: string): Stage4PostEditChecksReport {
   const startedAt = Date.now();
-  const inputsHash = computeInputsHash(editionDir);
   const findings: Stage4Finding[] = [];
   const checksRun: string[] = [];
 
-  const safely = (name: string, fn: () => void): void => {
+  // `computeInputsHash` faz I/O de arquivo (existsSync + readFileSync) sobre
+  // arquivos que o editor pode estar editando NESTE INSTANTE (loop
+  // "ajustar") — TOCTOU genuíno (achado de review, #8123): o arquivo pode
+  // sumir/mudar entre o `existsSync` e o `readFileSync` dentro da função.
+  // Sem este guard, essa exceção escapava de TODA a função (estava fora de
+  // qualquer `safely()`), subindo até o `main()` da CLI e derrubando o
+  // processo em `exit 2` (o mesmo código de "uso inválido") sem nunca
+  // escrever o relatório em `--out` — o orchestrator ficaria sem sinal
+  // nenhum de que a checagem rodou. `"error:<mensagem>"` como hash de
+  // fallback nunca bate por acidente com um hash sha256 real (comprimento e
+  // charset incompatíveis) — então uma comparação de staleness contra este
+  // valor sempre resulta "diverge", forçando um re-run, nunca um falso "ok".
+  let inputsHash: string;
+  try {
+    inputsHash = computeInputsHash(editionDir);
+  } catch (err) {
+    inputsHash = `error:${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  const safely = (name: string, source: Stage4Finding["source"], fn: () => void): void => {
     checksRun.push(name);
     try {
       fn();
     } catch (err) {
       findings.push({
-        source: "invariants",
+        source,
         id: name,
         severity: "error",
         gate_blocking: true,
@@ -144,7 +200,7 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
   };
 
   // 1. lint-newsletter-md.ts --stage 4 --json
-  safely("lint-newsletter:stage-4", () => {
+  safely("lint-newsletter:stage-4", "lint-newsletter", () => {
     const report = runStage4LintReport(editionDir, root);
     pushFrom(
       findings,
@@ -156,7 +212,8 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
           source_issue: c.source_issue,
           severity: (c.severity === "gate-blocking" ? "error" : "warning") as "error" | "warning",
           gate_blocking: c.severity === "gate-blocking",
-          message: `${c.id}: violação (ver result para detalhe)`,
+          message: `${c.id}: violação — ${summarizeCheckResult(c.result)}`,
+          detail: c.result,
         })),
     );
   });
@@ -165,7 +222,7 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
   // edição pode estar no meio de um ajuste que ainda não gerou o social).
   const socialPath = resolve(editionDir, "03-social.md");
   if (existsSync(socialPath)) {
-    safely("lint-social:stage-4", () => {
+    safely("lint-social:stage-4", "lint-social", () => {
       const report = runStage4SocialLintReport(editionDir);
       pushFrom(
         findings,
@@ -177,7 +234,8 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
             source_issue: c.source_issue,
             severity: (c.severity === "gate-blocking" ? "error" : "warning") as "error" | "warning",
             gate_blocking: c.severity === "gate-blocking",
-            message: `${c.id}: violação (ver result para detalhe)`,
+            message: `${c.id}: violação — ${summarizeCheckResult(c.result)}`,
+            detail: c.result,
           })),
       );
     });
@@ -186,7 +244,7 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
   // 3. validate-lancamentos.ts (modo <md-path> puro, read-only)
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   if (existsSync(reviewedPath)) {
-    safely("validate-lancamentos", () => {
+    safely("validate-lancamentos", "validate-lancamentos", () => {
       const text = readFileSync(reviewedPath, "utf8");
       const allowlist = loadToolAllowlist(root);
       const result = validateLancamentos(text, allowlist);
@@ -229,7 +287,7 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
     });
 
     // 4. validate-domain-diversity.ts (#5735)
-    safely("validate-domain-diversity", () => {
+    safely("validate-domain-diversity", "validate-domain-diversity", () => {
       const text = readFileSync(reviewedPath, "utf8");
       const report = validateDomainDiversity(text);
       for (const v of report.violations) {
@@ -248,7 +306,7 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
 
   // 5. check-invariants.ts --stage 4 (inclui carousel-*, intentional-error-
   // present-in-final, image-crop-warn, etc.)
-  safely("invariants:stage-4", () => {
+  safely("invariants:stage-4", "invariants", () => {
     for (const rule of getRulesForStage(4)) {
       const violations = rule.run(editionDir);
       for (const v of violations) {
@@ -273,7 +331,7 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
   // `no-trailing-editorial-hook` incondicionalmente, não só quando o hash
   // diverge); duplicar aqui produziria o mesmo achado 2×.
   if (existsSync(socialPath)) {
-    safely("humanizer-social:check", () => {
+    safely("humanizer-social:check", "humanizer-social", () => {
       const result = checkSentinel(editionDir);
       if (!result.ok) {
         findings.push({

@@ -87,7 +87,39 @@ export function releaseGeneration(lockPath: string, myGeneration: number): void 
   writeLock(lockPath, { ...current, running: false });
 }
 
-/** true quando existe um run em curso cuja generation é a mais recente conhecida. */
+/**
+ * true quando o PID gravado no lock ainda existe. `process.kill(pid, 0)` não
+ * mata nada (sinal 0) — só testa existência/permissão; lança `ESRCH` se o
+ * processo não existe. Funciona em POSIX e Windows (Node normaliza sinal 0
+ * nas duas plataformas). Fail-open: erro que NÃO seja "processo ausente"
+ * (ex: `EPERM` — processo existe mas é de outro usuário) é tratado como
+ * "ainda vivo" — mais seguro relançar tarde demais (custo: 1 checagem
+ * redundante) do que nunca relançar (custo: Stage 4 inteiro sem checagem
+ * de fundo pelo resto da sessão).
+ */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/**
+ * true quando existe um run em curso cuja generation é a mais recente
+ * conhecida E cujo processo ainda está vivo (#8123 review — o lock ficava
+ * `running: true` pra sempre se o processo em background morresse
+ * anormalmente — SIGKILL/OOM/harness derrubando a sessão — entre
+ * `claimGeneration` e o `finally { releaseGeneration }`, travando TODAS as
+ * checagens de background do Stage 4 pelo resto da sessão, em silêncio).
+ * Lock sem `pid` gravado (sentinel antigo, ou escrita manual) é tratado
+ * como "ainda rodando" — conservador, mesmo comportamento de antes desta
+ * checagem existir.
+ */
 export function isCheckRunning(lockPath: string): boolean {
-  return readLock(lockPath).running;
+  const lock = readLock(lockPath);
+  if (!lock.running) return false;
+  if (lock.pid === undefined) return true;
+  return isPidAlive(lock.pid);
 }
