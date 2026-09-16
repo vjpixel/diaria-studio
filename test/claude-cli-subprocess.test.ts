@@ -128,4 +128,33 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     const result = callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
     assert.equal(result, "texto de resposta");
   });
+
+  it("(#8143) com outputFormat:'json', usa '--output-format json' em vez de 'text'", () => {
+    const capturedCalls: unknown[][] = [];
+    const execFn = ((bin: string, args: string[], opts: unknown) => {
+      capturedCalls.push([bin, args, opts]);
+      return "{}";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", outputFormat: "json" });
+
+    const [, args] = capturedCalls[0] as [string, string[], unknown];
+    const idx = args.indexOf("--output-format");
+    assert.notEqual(idx, -1);
+    assert.equal(args[idx + 1], "json");
+  });
+
+  it("(#8143) sem outputFormat explícito, continua 'text' (default preservado — holistic-critique.ts depende disso)", () => {
+    const capturedCalls: unknown[][] = [];
+    const execFn = ((bin: string, args: string[], opts: unknown) => {
+      capturedCalls.push([bin, args, opts]);
+      return "ok";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
+
+    const [, args] = capturedCalls[0] as [string, string[], unknown];
+    const idx = args.indexOf("--output-format");
+    assert.equal(args[idx + 1], "text");
+  });
 });
