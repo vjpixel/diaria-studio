@@ -6,12 +6,27 @@
  * `workers/cursos/src/gate-page.ts` (#4052), SEM o caminho de cadastro
  * inline (esta issue não pede "vira apoiador aqui" — quem não apoia vai
  * pro apoia.se, ver `artigo-especial-gate-cta.ts`).
+ *
+ * O limiar citado no texto ("a partir de R$X/mês") é DERIVADO de
+ * `REWARD_TIER_APOIADOR_MIN` (`scripts/lib/reward-tier-thresholds.ts`) —
+ * mesma fonte que `artigo-especial-gate-cta.ts` e a página `/apoiar`
+ * (achado do fleet review da #8155, `type-design-analyzer`: este arquivo
+ * hardcodava "R$10/mês" como string solta, sem link mecânico com o limiar
+ * real).
  */
+import { REWARD_TIER_APOIADOR_MIN } from "../../../scripts/lib/reward-tier-thresholds.ts";
+
+/** `10` → `"R$10/mês"` — mesmo formato de `formatValorMensal` em `site-apoiar-page.ts`. */
+function formatValorMensal(min: number): string {
+  return `R$${min}/mês`;
+}
+
 /** `redirectPath` já resolvido pelo caller (`index.ts`, via
  * `gated-articles.ts`) — este módulo não assume nenhum ano fixo, pra não
  * quebrar silenciosamente quando um artigo de ano diferente de 2026 for
  * adicionado. `"/"` (home) é o fallback seguro pra slug desconhecido. */
 export function renderGatePage(redirectPath: string): string {
+  const valorApoiador = formatValorMensal(REWARD_TIER_APOIADOR_MIN);
   return `<!DOCTYPE html>
 <html lang="pt-br">
 <head>
@@ -46,7 +61,7 @@ export function renderGatePage(redirectPath: string): string {
       <button type="submit">Desbloquear</button>
     </form>
     <div id="msg" class="msg"></div>
-    <p style="margin-top:24px;">Ainda não apoia? <a href="https://apoia.se/diaria">apoia.se/diaria</a> — a partir de R$10/mês.</p>
+    <p style="margin-top:24px;">Ainda não apoia? <a href="https://apoia.se/diaria">apoia.se/diaria</a> — a partir de ${valorApoiador}.</p>
   </div>
   <script>
     const form = document.getElementById('gate-form');
