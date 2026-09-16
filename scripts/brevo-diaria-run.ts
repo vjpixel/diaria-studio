@@ -58,6 +58,18 @@
  *    acima). Default OFF pela mesma razão: ingerir contato sem cobertura MV
  *    completa é uma decisão de risco, não um default silencioso.
  *
+ * Pool Kit inactive (#8192) — depois do Passo 3, os dois modos rodam também o
+ *  pool "inactive do Kit com e-mail de confirmação há ≥72h":
+ *  `verify-kit-inactive-emails-mv.ts` (só em `--apply`; recebe `--confirm`
+ *  junto com `--confirm-mv`) e `sync-kit-inactive-to-brevo.ts` (dry-run no
+ *  preflight, `--push [--max-add N]` no apply). `--i-know-this-skips-mv`
+ *  NÃO é repassado pra esse pool — decisão do editor na #8192: ele só
+ *  entra verificado. Esses passos são FAIL-SOFT, diferente dos anteriores:
+ *  o pool Kit é aditivo, e uma falha nele (Kit fora do ar, guard de custo MV)
+ *  não pode impedir a campanha do dia de sair pra quem já está na lista —
+ *  vira aviso no stderr e no `summary`, com o passo registrado em `steps`
+ *  com o exit code real. Se o verify falhar, o sync não roda nesta rodada.
+ *
  * Cada sub-script é invocado por SPAWN (`process.execPath --import tsx`,
  * mesmo guard #4343 de `scripts/lib/task-runner.ts`/`clarice-novos-run.ts`),
  * nunca por import — spawn preserva stdout/stderr/exit code como contrato
@@ -256,6 +268,41 @@ function step(
 // injetado, sem spawn real nem rede.
 // ---------------------------------------------------------------------------
 
+/**
+ * Variante fail-soft de `step` (#8192, pool Kit): registra o passo e devolve
+ * `false` em vez de abortar. Exceção de spawn também vira `false`.
+ */
+function softStep(
+  deps: BrevoDiariaRunDeps,
+  log: StepLog[],
+  warnings: string[],
+  label: string,
+  scriptRelPath: string,
+  args: string[],
+): boolean {
+  process.stderr.write(`▶ ${label}\n`);
+  let result: StepResult;
+  try {
+    result = deps.exec(scriptRelPath, args);
+  } catch (e) {
+    result = { code: 1, stdout: "", stderr: `erro de spawn: ${(e as Error).message}` };
+  }
+  if (result.stderr.trim()) process.stderr.write(result.stderr.trim() + "\n");
+  const stderrTail = result.stderr.trim().split("\n").slice(-8).join("\n");
+  log.push({ label, script: scriptRelPath, args, code: result.code, stderrTail });
+  if (result.code === 0) return true;
+  const warning =
+    `⚠️ ${label} falhou (exit ${result.code}) — pool Kit fica pra próxima rodada, o resto segue: ` +
+    (stderrTail.split("\n").slice(-3).join(" | ") || "(sem stderr)");
+  process.stderr.write(warning + "\n");
+  warnings.push(warning);
+  return false;
+}
+
+function withWarnings(summary: string, warnings: string[]): string {
+  return warnings.length ? `${summary} AVISOS: ${warnings.join(" || ")}` : summary;
+}
+
 export interface BrevoDiariaRunResult {
   code: 0 | 1;
   mode: "preflight" | "apply";
@@ -265,6 +312,7 @@ export interface BrevoDiariaRunResult {
 
 export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoDiariaRunResult {
   const steps: StepLog[] = [];
+  const warnings: string[] = [];
   try {
     const opts = parseBrevoDiariaRunArgs(argv);
 
@@ -272,13 +320,16 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
       step(deps, steps, "Passo 1 — evaluate-brevo-diaria (dry-run)", "scripts/evaluate-brevo-diaria.ts", []);
       step(deps, steps, "Passo 2 — refresh-pending-pool (dry-run)", "scripts/refresh-pending-pool.ts", []);
       step(deps, steps, "Passo 3 — sync-pending-to-brevo (dry-run)", "scripts/sync-pending-to-brevo.ts", []);
+      softStep(deps, steps, warnings, "Passo 3b — sync-kit-inactive-to-brevo (dry-run)", "scripts/sync-kit-inactive-to-brevo.ts", []);
       return {
         code: 0,
         mode: "preflight",
         steps,
-        summary:
-          "preflight concluído — nenhuma mutação aplicada. Apresente o stderr dos 3 passos ao editor no gate " +
-          "(Passo 4 do SKILL.md) antes de rodar `--apply` (--max-add N opcional, #6895).",
+        summary: withWarnings(
+          "preflight concluído — nenhuma mutação aplicada. Apresente o stderr dos passos ao editor no gate " +
+            "(Passo 4 do SKILL.md) antes de rodar `--apply` (--max-add N opcional, #6895).",
+          warnings,
+        ),
       };
     }
 
@@ -307,11 +358,33 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
       ["--push", ...maxAddArgs, ...(opts.iKnowThisSkipsMv ? ["--i-know-this-skips-mv"] : [])],
     );
 
+    const kitVerified = softStep(
+      deps,
+      steps,
+      warnings,
+      "Passo 3b — verify-kit-inactive-emails-mv",
+      "scripts/verify-kit-inactive-emails-mv.ts",
+      opts.confirmMv ? ["--confirm"] : [],
+    );
+    if (kitVerified) {
+      softStep(
+        deps,
+        steps,
+        warnings,
+        `Passo 3b — sync-kit-inactive-to-brevo --push${maxAddLabel}`,
+        "scripts/sync-kit-inactive-to-brevo.ts",
+        ["--push", ...maxAddArgs],
+      );
+    }
+
     return {
       code: 0,
       mode: "apply",
       steps,
-      summary: `apply concluído — 5 passo(s) aplicado(s) na ordem fixa do Passo 4${maxAddLabel}.`,
+      summary: withWarnings(
+        `apply concluído — ${steps.length} passo(s) rodado(s) na ordem fixa do Passo 4${maxAddLabel}.`,
+        warnings,
+      ),
     };
   } catch (e) {
     const abort = e instanceof BrevoDiariaAbort ? e : new BrevoDiariaAbort(`❌ erro inesperado: ${(e as Error).message}`);

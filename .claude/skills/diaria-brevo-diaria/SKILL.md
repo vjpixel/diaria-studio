@@ -215,8 +215,13 @@ do backfill enxergar os novos):
 3. `score-pending-origin.ts`
 4. `verify-pending-emails-mv.ts`
 5. `sync-pending-to-brevo.ts --push --max-add N`
+6. `verify-kit-inactive-emails-mv.ts` (#8192 — pool "inactive do Kit com e-mail de confirmação há ≥72h"; recebe `--confirm` junto com `--confirm-mv`)
+7. `sync-kit-inactive-to-brevo.ts --push --max-add N` (só roda se o 6 passar; nunca recebe `--i-know-this-skips-mv` — esse pool só entra verificado)
 
-O script PARA no primeiro passo que falhar — nunca continua a sequência com
+Os passos 6-7 são FAIL-SOFT: uma falha no pool Kit vira aviso no `summary`
+e não impede a campanha do dia. O preflight também roda o 7 em dry-run.
+
+O script PARA no primeiro passo que falhar (passos 1-5) — nunca continua a sequência com
 uma mutação parcial. Se o passo 4 (`verify-pending-emails-mv`) falhar por
 `MV_COST_GUARD_THRESHOLD` (500 e-mails, ~US$1.14 acima do teto — critério 3
 de "Perguntar é exceção" no CLAUDE.md, gasto real acima do trivial), o erro
