@@ -1321,6 +1321,18 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.match(fnBody, /loadFile\(currentSlug, \{ force: true \}\)/);
   });
 
+  it("GET /revisao.js — bindReviewFileWatch() fecha a conexão SSE anterior antes de abrir uma nova (retry não vaza EventSource)", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("function bindReviewFileWatch(");
+    assert.ok(fnStart >= 0);
+    const fnEnd = body.indexOf("\nfunction fmtTime", fnStart);
+    assert.ok(fnEnd > fnStart);
+    const fnBody = body.slice(fnStart, fnEnd);
+    assert.match(fnBody, /if \(reviewFileWatchSource\) \{/);
+    assert.match(fnBody, /reviewFileWatchSource\.close\(\)/);
+  });
+
   it("GET /revisao.js — init() chama bindReviewFileWatch()", async () => {
     const res = await fetch(new URL("/revisao.js", server.url));
     const body = await res.text();

@@ -72,6 +72,42 @@ describe("computeReviewVersion (#8123)", () => {
       cleanup();
     }
   });
+
+  // #8123 self-review: observar `data/snippets/`/imagens `04-*` sem que o
+  // fingerprint reflita seu conteúdo faria o watcher observar o diretório
+  // certo mas NUNCA notificar uma mudança de fato só nesses arquivos —
+  // regressão coberta explicitamente aqui.
+  it("mudança em data/snippets/ (sem tocar 02-reviewed.md/03-social.md) muda o hash", async () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      const dir = editionDir(root, "260916");
+      writeFileSync(join(dir, "02-reviewed.md"), "conteúdo estável");
+      mkdirSync(join(root, "data", "snippets"), { recursive: true });
+      writeFileSync(join(root, "data", "snippets", "box-a.md"), "copy v1");
+      const a = computeReviewVersion(root, "260916");
+      await delay(10); // garante mtime diferente em filesystems de resolução grosseira
+      writeFileSync(join(root, "data", "snippets", "box-a.md"), "copy v2 — bem diferente");
+      const b = computeReviewVersion(root, "260916");
+      assert.notEqual(a.hash, b.hash, "esperava hash diferente após editar um box de divulgação");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("nova imagem 04-*.jpg na edição (sem tocar o MD) muda o hash", async () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      const dir = editionDir(root, "260916");
+      writeFileSync(join(dir, "02-reviewed.md"), "conteúdo estável");
+      const a = computeReviewVersion(root, "260916");
+      await delay(10);
+      writeFileSync(join(dir, "04-d1-2x1.jpg"), Buffer.from([1, 2, 3]));
+      const b = computeReviewVersion(root, "260916");
+      assert.notEqual(a.hash, b.hash, "esperava hash diferente após uma imagem 04-* aparecer");
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe("watchReviewFiles (#8123)", () => {

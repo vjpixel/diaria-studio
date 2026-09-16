@@ -167,10 +167,25 @@ function renderPreviewVersion(stamp) {
 // mudarem no disco (outra sessão, script, edição manual), sem depender de
 // nenhuma ação no painel. Guard `!dirty` (mesmo de rv:reviewed-saved acima):
 // nunca atropela texto ainda não salvo no textarea desta mesma aba.
+// #8123 self-review: init() roda de novo a cada clique em "Tentar de novo"
+// (el.retryBtn) — sem fechar a conexão anterior, cada retry abriria mais um
+// EventSource pro mesmo /api/events?edition=, acumulando conexões SSE
+// (e watchers de arquivo no servidor) indefinidamente.
+let reviewFileWatchSource = null;
+
 function bindReviewFileWatch() {
+  if (reviewFileWatchSource) {
+    try {
+      reviewFileWatchSource.close();
+    } catch {
+      // no-op
+    }
+    reviewFileWatchSource = null;
+  }
   if (!aammdd || typeof EventSource === "undefined") return;
   try {
     const source = new EventSource(`/api/events?edition=${encodeURIComponent(aammdd)}`);
+    reviewFileWatchSource = source;
     source.addEventListener("review", (ev) => {
       let stamp;
       try {
