@@ -26,7 +26,6 @@ import {
   emptyBillingLeakAlarmState,
   buildBillingLeakAlarmEmail,
   computeExpectedDays,
-  hasPartialCoverage,
   classifyMissingDays,
   EXPECTED_PAID_MODELS,
   type BillingRow,
@@ -386,38 +385,6 @@ describe("computeExpectedDays (#6992) — dias esperados na janela", () => {
   });
 });
 
-describe("hasPartialCoverage (#6992) — presença parcial ≠ cobertura completa", () => {
-  const expected3 = ["2026-08-29", "2026-08-30", "2026-08-31"];
-
-  it("todos os dias presentes → false (cobertura completa)", () => {
-    assert.equal(hasPartialCoverage(["2026-08-29", "2026-08-30", "2026-08-31"], expected3), false);
-  });
-
-  // #6992 — O CENÁRIO CENTRAL: só o dia mais velho (D-3) presente, faltando
-  // D-1 e D-2 (justamente onde um vazamento fresco seria visível). O guard
-  // original lia isso como "sem vazamento" porque daysCovered.length > 0.
-  it("apenas D-3 presente, D-1 e D-2 ausentes → true (o bug do #6992)", () => {
-    assert.equal(hasPartialCoverage(["2026-08-29"], expected3), true);
-  });
-
-  it("D-1 (mais recente) ausente → true — é onde o vazamento fresco seria", () => {
-    assert.equal(hasPartialCoverage(["2026-08-29", "2026-08-30"], expected3), true);
-  });
-
-  it("D-1 ausente mas D-3 presente → true", () => {
-    assert.equal(hasPartialCoverage(["2026-08-29"], expected3), true);
-  });
-
-  it("daysCovered vazio → true (mas main() já pega isso como emptyWindow antes)", () => {
-    assert.equal(hasPartialCoverage([], expected3), true);
-  });
-
-  it("dias fora da janela esperado não preenchem os que faltam", () => {
-    // Um dia fora da janela não salva a cobertura
-    assert.equal(hasPartialCoverage(["2026-08-28", "2026-08-31"], expected3), true);
-  });
-});
-
 // #6983 (pr-test-analyzer, P2): verifica que o cutoff usado em main()
 // (Date.now() - days*86400000, convertido pra date-string) e o conjunto
 // retornado por computeExpectedDays — que usa Date.UTC(year, month, day-i) —
@@ -477,7 +444,7 @@ describe("cutoff ⇄ computeExpectedDays alinhamento (#6983 pr-test-analyzer P2)
     const filtered = rows.filter((r) => r.date.slice(0, 10) >= cutoff);
     const daysCovered = [...new Set(filtered.map((r) => r.date.slice(0, 10)))].sort();
     assert.deepEqual(daysCovered, expectedDays, "todos os dias esperados passam pelo cutoff");
-    assert.equal(hasPartialCoverage(daysCovered, expectedDays), false, "cobertura completa → sem partialCoverage");
+    assert.deepEqual(classifyMissingDays(daysCovered, expectedDays), { idle: [], pending: [] }, "cobertura completa → nada ausente");
   });
 });
 

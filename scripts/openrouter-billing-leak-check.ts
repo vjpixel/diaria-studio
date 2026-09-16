@@ -39,7 +39,9 @@
  * anterior dizia "0 = sem vazamento (ou dry-run)" e o código nunca fez
  * isso). Dry-run suprime só os EFEITOS (não persiste estado, não envia
  * e-mail); o veredito continua saindo no exit code, senão um preview de
- * vazamento sairia indistinguível de uma janela limpa.
+ * vazamento sairia indistinguível de uma janela limpa. Leitura parcial sai 0
+ * no dry-run porque sai 0 na execução real também (#8010 — vira issue); só a
+ * falha em REGISTRAR a issue daria 1, e o dry-run não tenta registrar.
  *
  * Sem convenção global de exit code neste repo — cada script documenta o
  * seu. (Uma versão anterior deste bloco citava `check-pr-checks-gate.ts`
@@ -134,7 +136,7 @@ export function saveState(state: BillingLeakAlarmState, statePath: string = STAT
  * Linha com `usage` não-numérico é DESCARTADA, nunca coagida pra 0: um `0`
  * fabricado aqui viraria "sem vazamento" — exatamente o falso "ok" que este
  * guard existe pra não repetir. O caller conta quantas foram descartadas e
- * trata isso como indeterminado, não como limpo.
+ * trata isso como achado (issue própria, #8010), nunca como limpo.
  */
 /**
  * Converte um campo numérico do payload SEM coagir falsy pra 0.

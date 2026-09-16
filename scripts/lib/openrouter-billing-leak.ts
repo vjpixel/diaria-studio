@@ -136,12 +136,10 @@ export function isBillingLeak(row: BillingRow, expected: ReadonlySet<string> = E
  * `Date.now() - days * 24h` em UTC; este cálculo espelha esse mesmo referencial
  * para que os dois lados da comparação nunca divergam.
  *
- * #6992: `daysCovered` é comparado contra este conjunto. Ausência de qualquer
- * dia esperado — especialmente os mais recentes, onde um vazamento fresco seria
- * visível — vira INDETERMINADO, não "sem vazamento". Um dia com gasto realmente
- * zero (nenhuma chamada feita) também não aparece no activity, então o ruído de
- * "indeterminado em dia ocioso" é aceito de propósito: prevenir um
- * falso-negativo de vazamento pesa mais que um alarme extra num dia quieto.
+ * `daysCovered` é comparado contra este conjunto em `classifyMissingDays`. O
+ * #6992 tratava qualquer dia ausente como INDETERMINADO; o #8010 reviu isso
+ * (dia sem chamada não aparece no activity, vazamento sempre gera linha) — só
+ * D-1 ausente continua sendo dúvida.
  */
 export function computeExpectedDays(days: number, now: Date = new Date()): string[] {
   if (days <= 0) return [];
@@ -151,19 +149,6 @@ export function computeExpectedDays(days: number, now: Date = new Date()): strin
     result.push(d.toISOString().slice(0, 10));
   }
   return result.sort();
-}
-
-/**
- * `true` quando `daysCovered` falta algum dia esperado na janela.
- *
- * #6992: o guard original só tratava janela 100% vazia como indeterminado.
- * Presença parcial (ex: só D-3 presente, faltando D-2 e D-1) era lida como
- * cobertura completa — e um vazamento fresco nos dias recentes escapava sempre,
- * pois o dado consolidado daquele dia ainda não tinha chegado.
- */
-export function hasPartialCoverage(daysCovered: readonly string[], expectedDays: readonly string[]): boolean {
-  const covered = new Set(daysCovered);
-  return expectedDays.some((d) => !covered.has(d));
 }
 
 export interface MissingDaysClassification {
