@@ -45,6 +45,10 @@
  *   6b. Cota da CONTA Brevo (#6146 — balde único de 300/dia, transacional +
  *      marketing, `scripts/lib/brevo-account-quota.ts`). Só AVISA aqui; ver
  *      a nota de exit codes abaixo.
+ *   6c. Token assinado do botão "Confirmar" (`inject-reativar-token-brevo.ts`,
+ *      #8194) — atributo `REATIVAR_TOKEN`. FAIL-SOFT, ao contrário do 6: sem
+ *      `REATIVAR_SECRET` ou com falha, o contato recebe `t=` vazio e o worker
+ *      `reativar` segue o double opt-in. Nunca aborta, sem exit code próprio.
  *   7. Cria a campanha Brevo (`POST /emailCampaigns`) — sem `--send-now`/
  *      `--schedule-at`, fica como rascunho na conta Brevo (mesma cautela do
  *      publisher mensal: nunca dispara sozinho).
@@ -118,6 +122,7 @@ import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } 
 import { renderPendingIntroHtml, injectPendingIntro } from "./lib/brevo-diaria-intro.ts";
 import { brevoPost, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
+import { runInjectReativarToken as injectReativarToken } from "./inject-reativar-token-brevo.ts"; // #8194
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
 import { applyKitActiveExclusionGuard } from "./lib/brevo-kit-active-exclusion.ts"; // #6485
 import { resolveKitConfig } from "./lib/kit-config.ts"; // #6485
@@ -936,6 +941,28 @@ export async function main(rootDirOverride?: string): Promise<void> {
     `tokens de voto (#4517): ${injectionResult.patched} patcheado(s), ` +
       `${injectionResult.skipped_already_correct} já corretos, ${injectionResult.total_contacts} contato(s) na lista.`,
   );
+
+  // #8194: token assinado do botão "Confirmar" (clique vale como confirmação,
+  // sem DOI do Kit). FAIL-SOFT: contato sem token cai no fluxo DOI de sempre
+  // no worker `reativar` — nunca aborta a campanha por isso.
+  if (!process.env.REATIVAR_SECRET) {
+    log("AVISO: REATIVAR_SECRET ausente — botão Confirmar segue exigindo o e-mail de confirmação do Kit (#8194).");
+  } else {
+    try {
+      const reativar = await injectReativarToken({
+        apiOpts: { apiKey: apiKey!, listId: brevoDiaria!.list_id as number },
+        secret: process.env.REATIVAR_SECRET,
+        dryRun: false,
+      });
+      log(
+        `tokens de confirmação (#8194): ${reativar.patched} patcheado(s), ${reativar.skipped_already_correct} já corretos` +
+          (reativar.failed > 0 ? `, ${reativar.failed} falha(s) — esses seguem pelo DOI: ${reativar.failedEmails.slice(0, 10).join(", ")}` : "") +
+          ".",
+      );
+    } catch (e) {
+      log(`AVISO: injeção de REATIVAR_TOKEN falhou (${(e as Error).message}) — botão Confirmar segue pelo DOI nesta edição (#8194).`);
+    }
+  }
 
   // #5677: antes de criar uma campanha nova, checa se esta edição já tem uma
   // registrada em `brevo-diaria-published.json` — sem isso, rodar o script

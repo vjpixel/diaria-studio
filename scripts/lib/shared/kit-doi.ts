@@ -18,7 +18,10 @@
  * O mecanismo, em uma frase: cria o assinante `state: "inactive"` e o VINCULA
  * a um designer form do Kit com "Send confirmation email" ligado — é o
  * vínculo que dispara o e-mail. Sem esse vínculo, `inactive` é uma prisão:
- * nada promove inactive→active sozinho.
+ * nada promove inactive→active sozinho. (Por API há uma saída, usada só com
+ * prova de posse da caixa: vincular ao form de SISTEMA promove a `active`
+ * sem e-mail — medido ao vivo em 16/09/2026, ver `KIT_ACTIVATE_FORM_ID` no
+ * worker `reativar`, #8194. O upsert com `state:"active"` NÃO promove.)
  */
 
 /**
