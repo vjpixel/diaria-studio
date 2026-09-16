@@ -58,10 +58,21 @@ describe("EDITOR_SEED_EMAILS (#4045 — seed inbox de colocação)", () => {
     }
   });
 
-  it("cobre os provedores que pesam na base: Gmail, Google Workspace, Microsoft e Yahoo", () => {
+  // Reduzida de 5 pra 2 endereços em 16/09/2026 (decisão do editor, ver
+  // docstring de EDITOR_SEED_EMAILS em editor-copy.ts) — Microsoft e Yahoo
+  // saíram de propósito, junto com a 2ª caixa Gmail. Cobertura restante:
+  // Gmail pessoal + Google Workspace corporativo.
+  it("cobre os provedores que restaram: Gmail pessoal e Google Workspace corporativo", () => {
     const dominios = EDITOR_SEED_EMAILS.map((e) => e.split("@")[1].toLowerCase());
-    for (const d of ["gmail.com", "memelab.com.br", "hotmail.com", "yahoo.com"]) {
+    for (const d of ["gmail.com", "memelab.com.br"]) {
       assert.ok(dominios.includes(d), `faltou cobertura de ${d}: ${dominios.join(", ")}`);
+    }
+  });
+
+  it("NÃO cobre mais Microsoft/Yahoo (removidos em 16/09/2026) — trava a redução, não uma regressão", () => {
+    const dominios = EDITOR_SEED_EMAILS.map((e) => e.split("@")[1].toLowerCase());
+    for (const d of ["hotmail.com", "yahoo.com"]) {
+      assert.ok(!dominios.includes(d), `${d} deveria ter sido removido de EDITOR_SEED_EMAILS`);
     }
   });
 

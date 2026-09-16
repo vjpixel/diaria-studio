@@ -24,6 +24,7 @@ import {
   stripGreetingAndSupporterBlocks,
 } from "../scripts/publish-daily-brevo.ts";
 import type { NewsletterContent } from "../scripts/lib/newsletter-parse.ts";
+import { EDITOR_SEED_EMAILS } from "../scripts/lib/editor-copy.ts";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -167,12 +168,13 @@ describe("checkDailySendCap — exclui EDITOR_SEED_EMAILS do denominador (#4631,
 });
 
 describe("checkDailySendCap — piso contra totalSubscribers < seedCount (achado convergente silent-failure-hunter + type-design-analyzer, PR #4646)", () => {
-  it("totalSubscribers (4) abaixo de seedCount default (5) → not ok, NUNCA passa por 'líquido negativo <= cap'", () => {
-    const result = checkDailySendCap(4, 300);
+  it("totalSubscribers abaixo do seedCount default (EDITOR_SEED_EMAILS.length) → not ok, NUNCA passa por 'líquido negativo <= cap'", () => {
+    const belowDefault = EDITOR_SEED_EMAILS.length - 1;
+    const result = checkDailySendCap(belowDefault, 300);
     assert.equal(result.ok, false);
     const reason = (result as { ok: false; reason: string }).reason;
-    assert.match(reason, /4/);
-    assert.match(reason, /5/);
+    assert.match(reason, new RegExp(String(belowDefault)));
+    assert.match(reason, new RegExp(String(EDITOR_SEED_EMAILS.length)));
     assert.match(reason, /impossível/i);
   });
 
@@ -181,8 +183,8 @@ describe("checkDailySendCap — piso contra totalSubscribers < seedCount (achado
     assert.equal(result.ok, false);
   });
 
-  it("totalSubscribers exatamente igual a seedCount (5) → ok (líquido 0, dentro de qualquer cap não-negativo) — o piso é só '<', não '<='", () => {
-    assert.deepEqual(checkDailySendCap(5, 300), { ok: true });
+  it("totalSubscribers exatamente igual ao seedCount default → ok (líquido 0, dentro de qualquer cap não-negativo) — o piso é só '<', não '<='", () => {
+    assert.deepEqual(checkDailySendCap(EDITOR_SEED_EMAILS.length, 300), { ok: true });
   });
 
   it("seedCount 0 (compat) → guard nunca dispara pra totalSubscribers >= 0", () => {

@@ -189,13 +189,14 @@ test("computeStoreSummary: ti@clarice.ai é interno — excluído de priority_po
   db.close();
 });
 
-// #4257: os 3 seeds de medição de colocação de caixa do #4045
-// (vjpixel@yahoo.com, vjpixel@hotmail.com, apixel@gmail.com) entraram no
+// #4257: os seeds de medição de colocação de caixa do #4045 entravam no
 // store via sync Brevo SEM registro Stripe/created — igual ao cenário do
 // ti@clarice.ai acima (#2880), mas com `cohort` NULL em vez de atribuído por
 // tier. Antes do fix, isso os fazia aparecer como a linha "sem cohort"
 // (`cohort_stats["null"]`) da aba Cohorts. Mesmo molde do teste ti@clarice.ai
-// acima — replicado pro caso `cohort IS NULL`.
+// acima — replicado pro caso `cohort IS NULL`. `pixel@memelab.com.br`
+// (seed atual — EDITOR_SEED_EMAILS reduzida de 5 pra 2 em 16/09/2026, ver
+// docstring de editor-copy.ts) no lugar de vjpixel@yahoo.com, removido.
 test("computeStoreSummary: seed do editor (#4045) com cohort NULL é interno — some de cohort_stats['null'], segue no total (#4257)", () => {
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
@@ -203,7 +204,7 @@ test("computeStoreSummary: seed do editor (#4045) com cohort NULL é interno —
   // seed do editor: sem tier/cohort (mesmo shape real — entrou só via sync
   // Brevo, sem registro Stripe). Engajado (2 opens de 2 → +40) — não pode
   // aparecer no histograma nem no cohort_stats.
-  ins("INSERT INTO clarice_users (email, opens_count, sends_count) VALUES ('vjpixel@yahoo.com',2,2)");
+  ins("INSERT INTO clarice_users (email, opens_count, sends_count) VALUES ('pixel@memelab.com.br',2,2)");
   // assinante real, cohort explícito — não deve ser afetado.
   ins("INSERT INTO clarice_users (email, tier, cohort, opens_count, sends_count) VALUES ('real@x.com',1,'assinantes-ativos',3,3)");
   recomputeDerived(db);
@@ -212,7 +213,7 @@ test("computeStoreSummary: seed do editor (#4045) com cohort NULL é interno —
 
   // total conta os dois (o seed segue no store); só a exibição exclui.
   assert.equal(s.total, 2);
-  assert.equal(s.priority_points.internal_excluded, 1, "vjpixel@yahoo.com contado como interno");
+  assert.equal(s.priority_points.internal_excluded, 1, "pixel@memelab.com.br contado como interno");
   // A chave "null" NÃO deve existir em cohort_stats — nenhuma linha
   // NÃO-interna ficou sem cohort neste fixture (a regressão do #4257 era
   // justamente essa chave aparecer só por causa do seed).
