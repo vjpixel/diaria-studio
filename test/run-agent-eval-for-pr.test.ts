@@ -10,6 +10,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   findTriggeringAgents,
   pickDefaultReferenceEditions,
@@ -25,6 +28,8 @@ import {
 } from "../scripts/run-agent-eval-for-pr.ts";
 import { PROMPT_EVAL_AGENTS } from "../scripts/lib/agent-eval-trigger-allowlist.ts";
 import type { PromptRegressionEvalReport } from "../scripts/eval-prompt-regression.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const SAMPLE_MD = (model: string, body: string) => ["---", "name: fake", `model: ${model}`, "---", "", body].join("\n");
 
@@ -84,6 +89,13 @@ describe("agentDeclaresMcpTools (#8144)", () => {
 
   it("sem frontmatter: false", () => {
     assert.equal(agentDeclaresMcpTools("corpo qualquer"), false);
+  });
+
+  it("canário (#8144 self-review, item P3) — writer-destaque e social-writer HOJE não declaram ferramenta MCP, protegendo a afirmação em prosa do módulo ('não aplicável hoje') contra apodrecimento silencioso caso um dos 2 ganhe uma tool mcp__* no futuro sem ninguém revisitar o grader anti-fabricação", () => {
+    for (const agentName of ["writer-destaque", "social-writer"]) {
+      const content = readFileSync(join(ROOT, ".claude", "agents", `${agentName}.md`), "utf8");
+      assert.equal(agentDeclaresMcpTools(content), false, `${agentName}.md passou a declarar mcp__* — revisitar o TODO do grader anti-fabricação de MCP na docstring de run-agent-eval-for-pr.ts`);
+    }
   });
 });
 
@@ -182,6 +194,39 @@ describe("renderAgentEvalPrReport (#8144)", () => {
     assert.match(md, /TODO de follow-up/);
   });
 
+  it("aviso agregado 'NÃO significa sem regressão' aparece no TOPO do comentário, antes da lista detalhada por agent, com a contagem de vereditos (#8144 fix, achado silent-failure-hunter na PR #8173)", () => {
+    const md = renderAgentEvalPrReport({
+      prNumber: 1,
+      prUrl: "u",
+      prTitle: "t",
+      triggering: [{ agent, verdict: { agent, bodyChanged: true, modelChanged: false, triggers: true, reason: "corpo mudou" } }],
+      reports: { [agent]: baseReport },
+      costDeltas: [],
+      mcpApplicable: false,
+      live: true,
+    });
+    assert.match(md, /NÃO significa "sem regressão"/);
+    assert.match(md, /0 regressão\(ões\) \/ 0 melhoria\(s\) \/ 1 inconclusive\/unchanged encontrada\(s\)/);
+    const warningIdx = md.indexOf('NÃO significa "sem regressão"');
+    const agentSectionIdx = md.indexOf(`## ${agent}`);
+    assert.ok(warningIdx >= 0 && agentSectionIdx >= 0 && warningIdx < agentSectionIdx, "o aviso agregado precisa vir ANTES da seção detalhada por agent");
+  });
+
+  it("aviso agregado aparece mesmo sem report registrado (dry-run/sem dados) — mas sem contagem fabricada", () => {
+    const md = renderAgentEvalPrReport({
+      prNumber: 1,
+      prUrl: "u",
+      prTitle: "t",
+      triggering: [{ agent, verdict: { agent, bodyChanged: true, modelChanged: false, triggers: true, reason: "corpo mudou" } }],
+      reports: {},
+      costDeltas: [],
+      mcpApplicable: false,
+      live: false,
+    });
+    assert.match(md, /NÃO significa "sem regressão"/);
+    assert.doesNotMatch(md, /regressão\(ões\)/);
+  });
+
   it("delta de custo com model: mudado é destacado explicitamente", () => {
     const md = renderAgentEvalPrReport({
       prNumber: 1,
@@ -246,14 +291,24 @@ describe("fetchFileContentAtRef (#8144)", () => {
     assert.equal(content, "conteúdo do agent");
   });
 
-  it("gh api falha (404, arquivo ausente naquele ref): null", () => {
-    const runner = mockRunner({ "contents/.claude/agents/x.md": { status: 1, stdout: "", stderr: "404" } });
+  it("gh api falha (404 confirmado no stderr, arquivo ausente naquele ref): null", () => {
+    const runner = mockRunner({ "contents/.claude/agents/x.md": { status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" } });
     assert.equal(fetchFileContentAtRef(".claude/agents/x.md", "sha1", runner), null);
   });
 
   it("jq devolve 'null' textual (campo ausente): tratado como null, não a string 'null'", () => {
     const runner = mockRunner({ "contents/.claude/agents/x.md": { status: 0, stdout: "null\n", stderr: "" } });
     assert.equal(fetchFileContentAtRef(".claude/agents/x.md", "sha1", runner), null);
+  });
+
+  it("gh api falha por motivo que NÃO é 404 (ex: rate limit 403): LANÇA, nunca devolve null (#8144 fix — CRÍTICO, confirmado independentemente por pr-test-analyzer e silent-failure-hunter no fleet review da PR #8173). Antes desta correção, falha de infra virava o MESMO null que 'arquivo ausente', fazendo evaluateAgentEvalTrigger(agent, null, null) concluir triggers=false quando na verdade era uma falha de rede/auth escondendo uma mudança real de prompt.", () => {
+    const runner = mockRunner({ "contents/.claude/agents/x.md": { status: 1, stdout: "", stderr: "HTTP 403: API rate limit exceeded" } });
+    assert.throws(() => fetchFileContentAtRef(".claude/agents/x.md", "sha1", runner), /não é 404/);
+  });
+
+  it("gh api falha sem stderr nenhum (timeout/sinal): também LANÇA — ausência de stderr não é evidência de 404", () => {
+    const runner = mockRunner({ "contents/.claude/agents/x.md": { status: null, stdout: "", stderr: "" } });
+    assert.throws(() => fetchFileContentAtRef(".claude/agents/x.md", "sha1", runner), /não é 404/);
   });
 });
 

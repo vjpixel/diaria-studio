@@ -57,6 +57,15 @@ import { stripAgentFrontmatter, PROMPT_EVAL_AGENTS, isPromptEvalAgent, type Prom
 
 export { PROMPT_EVAL_AGENTS, isPromptEvalAgent, type PromptEvalAgent };
 
+/**
+ * Reconhece `.claude/agents/{agent}.md` — path relativo ao root do repo
+ * (sem leading slash), nome do agent capturado no grupo 1. Fonte única
+ * (#8144 self-review, item P3 do fleet review) — antes duplicada
+ * literalmente em `scripts/check-agent-eval-required.ts` e
+ * `scripts/run-agent-eval-for-pr.ts`, os 2 únicos consumidores.
+ */
+export const AGENT_FILE_RE = /^\.claude\/agents\/([^/]+)\.md$/;
+
 // ---------------------------------------------------------------------------
 // 1. Elegibilidade — este agent TEM harness de replay mapeado?
 // ---------------------------------------------------------------------------

@@ -61,11 +61,10 @@
 import { spawnSync } from "node:child_process";
 import { isMainModule } from "./lib/cli-args.ts";
 import type { PrCheckSpawnFn } from "./lib/spawn-types.ts";
-import { classifyAgentEvalEligibility, evaluateAgentEvalTrigger, type PromptEvalAgent } from "./lib/agent-eval-trigger-allowlist.ts";
+import { classifyAgentEvalEligibility, evaluateAgentEvalTrigger, AGENT_FILE_RE, type PromptEvalAgent } from "./lib/agent-eval-trigger-allowlist.ts";
 import { gitShowFileAtSha } from "./lib/diff-touched-lines.ts";
 
 export const AGENT_EVAL_LABEL = "agent-eval:passed";
-const AGENT_FILE_RE = /^\.claude\/agents\/([^/]+)\.md$/;
 
 export type SpawnFn = PrCheckSpawnFn;
 

@@ -173,6 +173,13 @@ describe("evaluateAgentEvalTrigger (#8144)", () => {
     assert.match(v.reason, /removido/);
   });
 
+  it("os 2 lados ausentes (oldContent E newContent null): NÃO dispara — documenta o cenário de risco do #8144 fix (fetchFileContentAtRef falhando dos 2 lados por infra teria colapsado nisto ANTES da correção; agora só chega aqui com um 404 genuíno confirmado dos 2 lados, nunca uma falha de rede/auth mascarada)", () => {
+    const v = evaluateAgentEvalTrigger(agent, null, null);
+    assert.equal(v.triggers, false);
+    assert.equal(v.bodyChanged, false);
+    assert.equal(v.modelChanged, false);
+  });
+
   it("corpo E model: mudaram juntos: os 2 flags ficam true", () => {
     const newMd = SAMPLE_MD.replace("model: claude-sonnet-5", "model: claude-opus-5").replace("Corpo do agent.", "Corpo NOVO.");
     const v = evaluateAgentEvalTrigger(agent, SAMPLE_MD, newMd);

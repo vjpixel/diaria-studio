@@ -91,14 +91,13 @@ import { spawnSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { extractFrontmatter } from "./validate-agent-frontmatter.ts";
-import { classifyAgentEvalEligibility, evaluateAgentEvalTrigger, type AgentEvalTriggerVerdict, type PromptEvalAgent } from "./lib/agent-eval-trigger-allowlist.ts";
+import { classifyAgentEvalEligibility, evaluateAgentEvalTrigger, AGENT_FILE_RE, type AgentEvalTriggerVerdict, type PromptEvalAgent } from "./lib/agent-eval-trigger-allowlist.ts";
 import { runPromptRegressionEval, DEFAULT_REPETITIONS, DEFAULT_BASELINE_REF, type PromptRegressionEvalReport } from "./eval-prompt-regression.ts";
 import { readCostArtifactFromDisk } from "./lib/edition-cost.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
 import { AGENT_EVAL_LABEL } from "./check-agent-eval-required.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const AGENT_FILE_RE = /^\.claude\/agents\/([^/]+)\.md$/;
 const DEFAULT_NUM_EDITIONS = 3;
 
 // ---------------------------------------------------------------------------
@@ -149,10 +148,32 @@ export function fetchPrMeta(prNumber: string, runner: CommandRunner): PrMeta {
   };
 }
 
-/** Busca o conteúdo de 1 arquivo num ref específico via API REST do GitHub — `{owner}`/`{repo}` resolvidos automaticamente pelo `gh api` a partir do repositório do `cwd` (nenhum owner/repo hardcoded). `null` quando o arquivo não existe naquele ref (404) — mesma convenção de `gitShowFileAtSha` (diff-touched-lines.ts). */
+/**
+ * Busca o conteúdo de 1 arquivo num ref específico via API REST do GitHub —
+ * `{owner}`/`{repo}` resolvidos automaticamente pelo `gh api` a partir do
+ * repositório do `cwd` (nenhum owner/repo hardcoded). `null` **só** quando o
+ * arquivo genuinamente NÃO EXISTE naquele ref (404 confirmado no `stderr`) —
+ * mesma convenção de `gitShowFileAtSha` (diff-touched-lines.ts).
+ *
+ * **Qualquer outra falha (rate limit 403, token expirado 401, 5xx, timeout
+ * de rede) LANÇA em vez de devolver `null`** (#8144 fix — achados
+ * independentes de `pr-test-analyzer` e `silent-failure-hunter` no fleet
+ * review da PR #8173). Antes desta correção, `r.status !== 0` colapsava
+ * "arquivo ausente" e "falha de infra" no mesmo `null` — se as DUAS
+ * chamadas (`getOldContent`/`getNewContent` pro mesmo agent) falhassem por
+ * motivo de infra, `evaluateAgentEvalTrigger` recebia `(null, null)` e
+ * concluía `triggers: false`, tornando uma mudança REAL de prompt
+ * indistinguível de "nada mudou" — exatamente o modo de falha que este gate
+ * de CI existe pra prevenir. `main()` (nível superior) já é `async` e
+ * envolvido em `.catch(() => process.exit(1))`, então esta exceção vira
+ * `exit` não-zero sem precisar de try/catch adicional nos chamadores.
+ */
 export function fetchFileContentAtRef(path: string, ref: string, runner: CommandRunner): string | null {
   const r = runner("gh", ["api", `repos/{owner}/{repo}/contents/${path}?ref=${ref}`, "--jq", ".content"]);
-  if (r.status !== 0) return null;
+  if (r.status !== 0) {
+    if (/HTTP 404|Not Found/i.test(r.stderr)) return null; // arquivo genuinamente ausente naquele ref
+    throw new Error(`[#8144] falha ao buscar ${path}@${ref} via gh api (não é 404 — provável falha de infra, ex: rate limit/token expirado/5xx): ${r.stderr || `exit ${r.status}`}`);
+  }
   const b64 = r.stdout.trim();
   if (!b64 || b64 === "null") return null;
   return Buffer.from(b64.replace(/\s/g, ""), "base64").toString("utf8");
@@ -248,6 +269,34 @@ export interface AgentEvalPrReportInput {
   live: boolean;
 }
 
+/**
+ * Agrega os vereditos (`regressed`/`improved`/`unchanged`/`inconclusive`,
+ * `GraderRegressionVerdict` de `scripts/lib/prompt-regression-eval.ts`) de
+ * TODOS os agents/edições/graders já presentes em `input.reports` — sem
+ * recalcular nada, só soma o que a função já recebe estruturado. `null`
+ * quando não há nenhum delta disponível (dry-run, ou nenhum report
+ * registrado) — nunca um "0/0/0" fabricado sobre dado ausente.
+ */
+function summarizeAgentEvalVerdicts(input: AgentEvalPrReportInput): { regressed: number; improved: number; unchangedOrInconclusive: number } | null {
+  let regressed = 0;
+  let improved = 0;
+  let unchangedOrInconclusive = 0;
+  let any = false;
+  for (const t of input.triggering) {
+    const report = input.reports[t.agent];
+    if (!report || report.dry_run) continue;
+    for (const e of report.editions) {
+      for (const d of e.deltas) {
+        any = true;
+        if (d.verdict === "regressed") regressed++;
+        else if (d.verdict === "improved") improved++;
+        else unchangedOrInconclusive++; // "unchanged" | "inconclusive"
+      }
+    }
+  }
+  return any ? { regressed, improved, unchangedOrInconclusive } : null;
+}
+
 /** Renderização pura (markdown) — usada tanto pro arquivo persistido em `data/reports/agent-eval/` quanto (versão resumida) pro comentário da PR. Nunca toca disco/rede. */
 export function renderAgentEvalPrReport(input: AgentEvalPrReportInput): string {
   const lines: string[] = [];
@@ -256,6 +305,20 @@ export function renderAgentEvalPrReport(input: AgentEvalPrReportInput): string {
   lines.push(`PR: ${input.prUrl}`);
   lines.push(`Título: ${input.prTitle}`);
   lines.push(`Modo: ${input.live ? "LIVE (agent real rodou, custo real)" : "DRY-RUN (nenhum agent rodou)"}`);
+  lines.push("");
+  // Resumo agregado NO TOPO (#8144 fix, achado silent-failure-hunter na PR
+  // #8173): a label `agent-eval:passed` significa "o eval rodou e está
+  // registrado", NUNCA "passou sem regressão" — é warning-only por desenho
+  // (ver rodapé). Sem este aviso explícito logo no início, o veredito real
+  // fica enterrado por grader/edição, e quem só olha a label/check da PR
+  // pode ler "passed" como "sem problema".
+  lines.push(`**Este selo NÃO significa "sem regressão" — significa "o eval rodou e foi registrado". Ver vereditos por grader abaixo.**`);
+  const verdictSummary = summarizeAgentEvalVerdicts(input);
+  if (verdictSummary) {
+    lines.push(
+      `${verdictSummary.regressed} regressão(ões) / ${verdictSummary.improved} melhoria(s) / ${verdictSummary.unchangedOrInconclusive} inconclusive/unchanged encontrada(s).`,
+    );
+  }
   lines.push("");
   lines.push("## Agents que dispararam o eval");
   lines.push("");

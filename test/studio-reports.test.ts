@@ -53,6 +53,7 @@ describe("isReportKind / reportId (#3714)", () => {
     assert.equal(isReportKind("develop"), true);
     assert.equal(isReportKind("mensal"), true);
     assert.equal(isReportKind("cac"), true); // #5236: custo por leitor por canal
+    assert.equal(isReportKind("agent-eval"), true); // #8144: eval de regressão de prompt por PR
     assert.equal(isReportKind("qualquer-outra-coisa"), false);
   });
 
