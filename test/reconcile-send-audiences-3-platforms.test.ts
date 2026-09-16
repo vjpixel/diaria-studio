@@ -305,6 +305,14 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
     assert.equal(outcome.beehiivGapSkippedPostMigration, false);
     assert.equal(outcome.beehiivDeliveryGap?.ok, true);
   });
+
+  it("decideOutcome expõe kitAudienceIsAllActive no GuardOutcome (#7482 fleet review — paridade com beehiivGapSkippedPostMigration)", () => {
+    const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
+    const withKitBackend = decideOutcome(audience, [], [], 0, "kit");
+    assert.equal(withKitBackend.kitAudienceIsAllActive, true);
+    const withoutKitBackend = decideOutcome(audience, [], [], 0, "beehiiv");
+    assert.equal(withoutKitBackend.kitAudienceIsAllActive, false);
+  });
 });
 
 describe("shouldUseAllActiveAsKitAudience (#7482, achado 16/09/2026) — audiência de envio do Kit pós-migração", () => {

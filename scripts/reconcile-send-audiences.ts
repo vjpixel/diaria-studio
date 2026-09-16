@@ -38,6 +38,13 @@
  *      envio (`findOrphans`).
  *   4. **Sobreposição** — presente em mais de uma audiência de envio ao
  *      mesmo tempo (`reconcileSendAudiences`), hoje deveria ser sempre 0.
+ *      **Nota (#7482, fleet review 16/09/2026):** com backend=kit, a fonte
+ *      "kit" deste check passa a ser TODO ativo (ver item 1 acima), não só
+ *      a tag — o universo de comparação cresce, então um número de
+ *      sobreposição medido ANTES desta mudança não é comparável direto
+ *      contra um medido DEPOIS (o segundo enxerga duplicatas
+ *      Kit-ativo-fora-da-tag × Brevo que o primeiro deixava passar batido
+ *      — mais correto, não uma regressão de medição).
  *
  * Fail-soft por MEDIÇÃO individual (item 2 é sujeito a `not-measured`, não
  * derruba o resto do guard) — mas fail-hard em qualquer falha de config/rede
@@ -167,6 +174,13 @@ export interface GuardOutcome {
   /** #7482: `true` quando o gap não foi calculado de propósito (0 ativos +
    *  backend=kit) — distingue de "não deu pra medir" (measured=false). */
   beehiivGapSkippedPostMigration: boolean;
+  /** #7482 (achado do fleet review, 16/09/2026): `true` quando a audiência
+   *  de envio do Kit foi medida como "todo ativo" em vez da tag `rampa-kit`
+   *  — espelha `beehiivGapSkippedPostMigration` acima. Sem este campo, um
+   *  consumidor do `--json` não conseguia distinguir "órfãos=0 porque a tag
+   *  bateu de verdade" de "órfãos=0 porque pulei a tag e usei todo-ativo"
+   *  sem reler `platform.config.json` por fora. */
+  kitAudienceIsAllActive: boolean;
   blocking: boolean;
 }
 
@@ -213,6 +227,7 @@ export function decideOutcome(
     recentDelivery,
     beehiivDeliveryGap,
     beehiivGapSkippedPostMigration: skipBeehiivGap,
+    kitAudienceIsAllActive: shouldUseAllActiveAsKitAudience(newsletterBackend),
     blocking,
   };
 }
@@ -412,6 +427,7 @@ async function main(): Promise<void> {
           recentDelivery: outcome.recentDelivery,
           beehiivDeliveryGap: outcome.beehiivDeliveryGap,
           beehiivGapSkippedPostMigration: outcome.beehiivGapSkippedPostMigration,
+          kitAudienceIsAllActive: outcome.kitAudienceIsAllActive,
           decision: { exitCode: outcome.blocking ? 1 : 0, blocking: outcome.blocking },
         },
         null,
