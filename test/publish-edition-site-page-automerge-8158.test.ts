@@ -60,8 +60,8 @@ describe("waitAndMergeSitePagePr (#8158)", () => {
     assert.match(result.reason, /CI verde/);
     assert.equal(slept, 0, "não deveria dormir nenhuma vez — verde de primeira");
     assert.ok(
-      calls.some((c) => c[0] === "pr" && c[1] === "merge" && c.includes("--squash") && c.includes("--delete-branch")),
-      "deve chamar gh pr merge --squash --delete-branch",
+      calls.some((c) => c[0] === "pr" && c[1] === "merge" && c.includes("--squash") && !c.includes("--delete-branch")),
+      "deve chamar gh pr merge --squash SEM --delete-branch (fleet review finding 2: evita apagar a branch local do checkout compartilhado fora da janela do lock)",
     );
   });
 

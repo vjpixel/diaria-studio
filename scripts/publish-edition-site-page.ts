@@ -723,7 +723,21 @@ export function waitAndMergeSitePagePr(
 
     if (result.verdict === "pass") {
       try {
-        gh(["pr", "merge", String(prNumber), "--squash", "--delete-branch"], rootDir);
+        // #8158 fleet review, finding 2: SEM `--delete-branch` de propósito.
+        // Essa flag também apaga a branch LOCAL `site-publish/{slug}` no
+        // checkout compartilhado — e este merge roda DEPOIS que
+        // `acquireSitePublishLock`/`releaseSitePublishLock` já liberou a
+        // janela protegida (`gh pr merge` em si é operação remota via API,
+        // não precisa do checkout na branch, mas a deleção local É uma
+        // mutação do checkout que o lock existe pra proteger, #6626/#6703).
+        // Uma 2ª chamada concorrente pro MESMO slug (retry de sessão
+        // interrompida, Stage 6 rodado 2x) poderia colidir com essa
+        // deleção fora de qualquer proteção. Deletar a branch remota fica
+        // pro GitHub decidir sozinho (settings do repo) ou pra um cleanup
+        // separado — `git checkout -B` já recria a branch do zero a cada
+        // chamada de qualquer forma, então uma branch local órfã não
+        // acumula problema real.
+        gh(["pr", "merge", String(prNumber), "--squash"], rootDir);
         return { merged: true, reason: "CI verde — mergeado automaticamente (#8158, revoga #6598)" };
       } catch (e) {
         return {
