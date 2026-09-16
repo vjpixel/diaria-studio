@@ -31,6 +31,18 @@ export interface ClaudeCliCallOptions {
   maxTurns?: number;
   /** Nome do modelo pro `--model` do CLI (ex: "sonnet"). Sem isto, o CLI usa o default do ambiente — achado de review do #7981 (comment-analyzer, P2): a docstring de `holistic-critique.ts` afirmava "Sonnet, effort baixo" sem NENHUM flag garantindo isso; quem quiser a garantia agora passa este campo explicitamente (mesmo espírito do `model: sonnet` explícito exigido pro dispatch de subagentes ad-hoc, CLAUDE.md). */
   model?: string;
+  /**
+   * `"text"` (default, preserva o comportamento anterior a #8143 — resposta
+   * crua, é o que `holistic-critique.ts` espera pra casar `VEREDITO:`/
+   * `JUSTIFICATIVA:` via regex) ou `"json"` (#8143, eval de regressão de
+   * prompt — `--output-format json` do CLI devolve usage/custo estruturado
+   * junto da resposta, que `parseClaudeCliJsonResult`
+   * (`prompt-regression-eval.ts`) parseia pra gravar custo MEDIDO, não
+   * estimado, de cada replay). O retorno desta função continua sendo a
+   * string crua nos dois casos — quem pede `"json"` faz o próprio
+   * `JSON.parse`.
+   */
+  outputFormat?: "text" | "json";
   execFn?: typeof execFileSync;
   resolveClaudeBinFn?: typeof resolveClaudeBin;
 }
@@ -51,7 +63,7 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
   const filteredEnv = claudeCliEnv(rawEnv);
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
 
-  const args = ["--print", "--permission-mode", "acceptEdits", "--max-turns", String(maxTurns), "--output-format", "text", "--no-session-persistence"];
+  const args = ["--print", "--permission-mode", "acceptEdits", "--max-turns", String(maxTurns), "--output-format", opts.outputFormat ?? "text", "--no-session-persistence"];
   if (opts.model) args.push("--model", opts.model);
   args.push(prompt);
 
