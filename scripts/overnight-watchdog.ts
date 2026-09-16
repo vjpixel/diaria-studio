@@ -122,6 +122,7 @@ import { mtimeMs } from "./lib/mtime.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { listActiveSessions } from "./lib/session-registry.ts";
+import { readPhase as readOvernightSessionMarkerPhase } from "./overnight-session-marker.ts";
 import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
 import { PUSH_IO_TIMEOUT_MS, sendPushNotification } from "./lib/push-notify.ts";
 import {
@@ -563,6 +564,48 @@ export function hasHealthyIdleSession(rootDir: string, kind: WatchableKind, nowM
 }
 
 /**
+ * #8174: `true` quando o coordenador `overnight` está no BRIEFING da Fase 0
+ * (`data/overnight/.active-session-{hostname}.json` → `phase: "briefing"`)
+ * — bloqueado esperando a resposta do `AskUserQuestion` único do briefing,
+ * um estado que **não tem teto de tempo** (a SKILL.md documenta: "o briefing
+ * pressupõe editor presente... se ele sair no meio, a pergunta fica pendente
+ * até ele voltar"). Sem esta checagem, o watchdog não distingue essa espera
+ * legítima de "morreu no meio do loop autônomo" — achado ao vivo na rodada
+ * 260916: ~8h30 de espera do editor produziram 17 `stall_detected` falsos
+ * antes dele responder.
+ *
+ * Só se aplica a `kind === "overnight"` — `continuo` não tem essa fase
+ * (`HEALTHY_IDLE_PHASES` acima já cobre as fases dela via
+ * `session-registry.ts`, um mecanismo diferente). `readOvernightSessionMarkerPhase`
+ * já é fail-soft (marker ausente/corrompido → `null`), então esta função
+ * nunca precisa de try/catch próprio.
+ *
+ * **Escopo aceito conscientemente (achado do fleet review desta PR, #8174):**
+ * `phase: "briefing"` cobre a Fase 0 INTEIRA (passos 1-8 da SKILL — sync,
+ * varredura, classificação, o `AskUserQuestion` em si quando existe, e
+ * confirmação final) — não só a janela em que o `AskUserQuestion` está de
+ * fato pendente. Como a maioria das rodadas não tem nenhuma issue
+ * `precisa-resposta` (#2640/#7493: 20 rodadas seguidas sem uma, o caso
+ * comum), a maior parte do tempo em `phase: "briefing"` NEM chega a chamar
+ * `AskUserQuestion` — é só a Fase 0 rodando suas etapas normais (git, `gh`,
+ * classificação de issues), que deveriam levar segundos a poucos minutos,
+ * não horas. Um hang genuíno nesses passos (rede lenta, `gh` travado) fica
+ * mascarado até o phase virar `"autonomous"` (fim da Fase 0), em vez de
+ * disparar em 45min como aconteceria em qualquer outro ponto da rodada.
+ *
+ * Decisão: aceitar esse escopo mais amplo em vez de introduzir uma 3ª fase
+ * granular (`"awaiting-editor"`, só ao redor do `AskUserQuestion` em si) —
+ * o caso que motivou esta issue (espera real de horas) é bem mais provável
+ * e mais custoso (17 alarmes falsos numa única rodada) do que um hang nos
+ * passos 1-8, que historicamente nunca foi observado. Reavaliar se essa
+ * suposição mudar (um hang real na Fase 0 passando despercebido por >45min
+ * seria o sinal de que vale o custo de instrumentar a fase granular).
+ */
+export function isOvernightAwaitingBriefingResponse(rootDir: string, kind: WatchableKind): boolean {
+  return kind === "overnight" && readOvernightSessionMarkerPhase(rootDir) === "briefing";
+}
+
+/**
  * Checagem de plausibilidade (#7910): um `elapsed_min` cru pode ser um
  * artefato de FONTE quebrada (ex: pós-compactação de contexto, a
  * coordenadora "esquece" de chamar `log-event.ts --agent overnight` — ver
@@ -927,7 +970,7 @@ export function diagnoseWatchdogActivity(params: {
         `[watchdog] Última atividade: ${new Date(lastActivityMs).toISOString()} (fonte: ${lastSource})`,
         `[watchdog] Inatividade: ${elapsedMin} min (limiar: ${thresholdMin} min)`,
         `[watchdog] → ${isStall ? "STALL detectado" : "sem stall"}${
-          isStall && isHealthyIdle ? " — mas sessão registrada como aguardando-resposta/pausada, seria tratado como healthy_idle fora de dry-run" : ""
+          isStall && isHealthyIdle ? " — mas sessão registrada como aguardando-resposta/pausada/briefing, seria tratado como healthy_idle fora de dry-run" : ""
         } (dry-run, sem writes/alertas)`,
       ],
       elapsedMin,
@@ -947,7 +990,8 @@ export function diagnoseWatchdogActivity(params: {
       action: "healthy_idle",
       lines: [
         `[watchdog] Rodada ${aammdd} sem atividade há ${elapsedMin} min, mas sessão registrada como ` +
-          `aguardando-resposta/pausada (session-registry.ts) — não é stall. Skipping.`,
+          `aguardando-resposta/pausada (session-registry.ts) ou coordenador overnight em briefing ` +
+          `(#8174, .active-session-{hostname}.json → phase:"briefing") — não é stall. Skipping.`,
       ],
       elapsedMin,
     };
@@ -1004,7 +1048,8 @@ async function runWatchdogForKind(
     aammdd,
     planPath,
   );
-  const isHealthyIdle = hasHealthyIdleSession(ROOT, kind, nowMs);
+  const isHealthyIdle =
+    hasHealthyIdleSession(ROOT, kind, nowMs) || isOvernightAwaitingBriefingResponse(ROOT, kind);
 
   // #7910: só paga a chamada de rede (`gh pr list`) quando há candidato
   // real a stall — não-dry-run, timestamp disponível, e de fato acima do

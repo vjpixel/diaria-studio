@@ -148,6 +148,33 @@ export function endSession(repoRoot: string): void {
 }
 
 /**
+ * Lê o `phase` atual do marker (`data/overnight/.active-session-{tag}.json`),
+ * sem mutar nada — #8174. Consumido por `overnight-watchdog.ts` pra
+ * distinguir "coordenador legitimamente bloqueado esperando o `AskUserQuestion`
+ * do briefing" (que não tem teto de tempo — o editor pode demorar o quanto
+ * quiser pra responder, ver §"Briefing" da SKILL.md) de "morreu no meio do
+ * loop autônomo" (aí sim, stall real).
+ *
+ * Fail-soft TOTAL, mesmo espírito de `setPhase`: marker ausente (nenhuma
+ * rodada overnight ativa nesta máquina), JSON corrompido, ou campo `phase`
+ * ausente/de tipo inesperado — tudo isso devolve `null`, nunca lança. `null`
+ * é tratado pelo caller como "não sei dizer" — não é o mesmo que `"briefing"`
+ * nem que `"autonomous"`, então nunca suprime um alarme por engano quando o
+ * marker simplesmente não existe (rodada que nunca chamou `--start`, ou já
+ * foi encerrada via `--end`).
+ */
+export function readPhase(repoRoot: string, tag: string = machineTag()): OvernightPhase | null {
+  const path = activeSessionPath(repoRoot, tag);
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed?.phase === "briefing" || parsed?.phase === "autonomous" ? parsed.phase : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Atualiza SÓ o campo `phase` do marker já existente — preserva `started_at`
  * (e qualquer outro campo futuro) intacto (#4450). Retorna `false`, sem
  * lançar, quando não há marker pra atualizar: `--start` nunca rodou nesta
