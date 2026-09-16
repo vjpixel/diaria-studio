@@ -1460,6 +1460,40 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5563",
   },
   {
+    name: "Diaria-Remediate-Never-Armed-Tasks",
+    description:
+      "auto-arma sozinho toda task 'nunca armada' do registro (task-never-setup), fechando o loop que Diaria-Task-Never-Armed-Alarm deixava sempre pra um humano rodar a mão, #8153",
+    steps: [{ key: "remediate", script: "scripts/remediate-never-armed-tasks.ts" }],
+    logPath: "task-never-armed-alarm/.remediate-run.log",
+    // Diária 18:15 BRT — SEMPRE ANTES de Diaria-Task-Never-Armed-Alarm
+    // (18:30, entrada logo abaixo): o alarme só deveria sobrar como sinal
+    // de "o auto-arme falhou" (#8153), então precisa rodar DEPOIS deste
+    // script ter tido a chance de fechar o drift sozinho. Slot livre (ver
+    // grep de `kind: "daily"` neste arquivo) — vizinhos mais próximos são
+    // 18:00 (Diaria-Clarice-Novos-Tarde) e 18:20 (Diaria-Edicao-Diaria-
+    // Staleness-Alarm).
+    //
+    // Decisão do editor registrada na #8153 (comentário
+    // `decisao-editor`, 16/09/2026): "(a) auto-armar tudo" — task
+    // declarada num PR já revisado/mergeado passa a rodar SOZINHA no dia
+    // seguinte, sem gate humano nem campo `autoArm` opcional (opção (b)
+    // rejeitada — mais uma coisa pra lembrar de marcar recria o mesmo
+    // toil, só que silencioso). `remediate-never-armed-tasks.ts` já é
+    // deliberadamente restrito a `neverArmed`/`task-never-setup`
+    // (#7210) — nunca toca `stoppedDeliberately` (timer parado à mão,
+    // decisão humana explícita) nem `orphanTimers` (desarmar é ação
+    // manual do editor) — e é idempotente (nada a armar → nenhuma
+    // escrita, nenhum `systemctl`). Reverter esta task é
+    // `systemctl --user disable --now diaria-remediate-never-armed-tasks.timer`.
+    //
+    // Sem args: o default do script (ausência de `--dry-run`) JÁ é o
+    // modo que gera+arma de verdade — não existe flag `--apply` no CLI
+    // real (a issue citou "--apply" em prosa; o script usa o padrão
+    // oposto, opt-out via `--dry-run`, não opt-in).
+    schedule: { kind: "daily", hour: 18, minute: 15 },
+    issue: "#8153",
+  },
+  {
     name: "Diaria-Task-Never-Armed-Alarm",
     description:
       "detector de drift entre o registro declarativo e o systemd real: task no registro sem timer armado (e o inverso, mais fraco), #5607",
