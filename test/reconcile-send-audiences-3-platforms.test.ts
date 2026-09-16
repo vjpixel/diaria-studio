@@ -29,7 +29,7 @@ import {
   resolveBrevoCampaignRecipients,
   type EmailSource,
 } from "../scripts/lib/beehiiv-kit-reconcile.ts";
-import { decideOutcome } from "../scripts/reconcile-send-audiences.ts";
+import { decideOutcome, shouldUseAllActiveAsKitAudience } from "../scripts/reconcile-send-audiences.ts";
 
 describe("reconcileSendAudiences (#7385) — audiência de ENVIO, não base de ativos", () => {
   it("achado da issue: Kit=629 ativos mas só 280 na tag — a fonte que entra aqui é a TAG, não os 629", () => {
@@ -304,5 +304,20 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
     );
     assert.equal(outcome.beehiivGapSkippedPostMigration, false);
     assert.equal(outcome.beehiivDeliveryGap?.ok, true);
+  });
+});
+
+describe("shouldUseAllActiveAsKitAudience (#7482, achado 16/09/2026) — audiência de envio do Kit pós-migração", () => {
+  it("backend=kit: audiência de envio é TODO ativo, não a tag rampa-kit (publish-newsletter-kit.ts manda pra buildAllSubscribersFilter)", () => {
+    assert.equal(shouldUseAllActiveAsKitAudience("kit"), true);
+  });
+
+  it("backend=beehiiv (ou ausente): a tag continua sendo a audiência de envio real (rampa incremental ainda em curso)", () => {
+    assert.equal(shouldUseAllActiveAsKitAudience("beehiiv"), false);
+    assert.equal(shouldUseAllActiveAsKitAudience(undefined), false);
+  });
+
+  it("qualquer outro valor cai no comportamento antigo (tag) — fail-safe, nunca assume 'todo ativo' sem confirmar backend=kit", () => {
+    assert.equal(shouldUseAllActiveAsKitAudience("outro-backend-hipotetico"), false);
   });
 });

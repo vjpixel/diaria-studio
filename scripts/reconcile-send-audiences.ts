@@ -170,6 +170,22 @@ export interface GuardOutcome {
   blocking: boolean;
 }
 
+/**
+ * Pura: decide se a audiência de ENVIO do Kit deve ser medida como "todo
+ * assinante active" (`true`) em vez de "membros da tag `rampa-kit`"
+ * (`false`) — #7482, achado 16/09/2026, ver comentário completo no call
+ * site. A tag só reflete a audiência real enquanto o canal paralelo
+ * `kit_diaria` (rampa incremental) está ligado; desde que o backend
+ * principal virou "kit" (#7388, 04/09/2026), `publish-newsletter-kit.ts`
+ * manda pra `buildAllSubscribersFilter()` — todo `active`, sem tag — e
+ * nada mais alimenta a tag pra gente nova, então ela fica congelada
+ * enquanto a base cresce, produzindo "órfãos" que na verdade recebem
+ * normalmente.
+ */
+export function shouldUseAllActiveAsKitAudience(newsletterBackend?: string): boolean {
+  return newsletterBackend === "kit";
+}
+
 export function decideOutcome(
   audience: ReturnType<typeof reconcileSendAudiences>,
   orphans: ReturnType<typeof findOrphans>,
@@ -281,6 +297,27 @@ async function main(): Promise<void> {
     return;
   }
   const kitAudienceTag = platformConfig.kit_diaria?.audience_tag?.trim() || KIT_DEFAULT_AUDIENCE_TAG;
+  const newsletterBackend = platformConfig.publishing?.newsletter?.backend;
+  // #7482, achado 16/09/2026: a tag `rampa-kit` era a audiência de envio
+  // REAL do Kit só enquanto `kit_diaria.enabled` estava `true` — a rampa
+  // incremental por ondas, DESLIGADA em 04/09/2026 (#7388) quando o
+  // backend principal virou "kit". Desde então, `publish-newsletter-kit.ts`
+  // manda a edição pra `buildAllSubscribersFilter()` — TODO assinante
+  // `active`, sem filtro de tag nenhum. Como nada mais taggeia gente nova
+  // em `rampa-kit` (só `kit-diaria-stage5-dispatch.ts` fazia isso, e só
+  // roda com `kit_diaria.enabled: true`), a tag ficou CONGELADA no
+  // tamanho de 04/09 enquanto a base ativa cresce — o guard media
+  // "órfãos" (ativo fora da audiência de envio) contra uma audiência que
+  // não é mais a real, e o número só cresce (37 em 05/09, 299 em 16/09,
+  // sempre a MESMA divergência, nunca resolvida por nenhum PR porque
+  // nenhum PR jamais tocou este ponto — as duas rodadas anteriores
+  // trataram isso como pendência de produto/mutação de audiência viva,
+  // quando na verdade é o guard medindo a coisa errada). Com backend=kit,
+  // a audiência de envio do Kit é `kitActiveEmails` (medido de qualquer
+  // forma, ver comentário abaixo) — não a tag, que fica só como registro
+  // histórico das ondas (mesmo racional do `kit_diaria.audience_tag_note`
+  // em platform.config.json).
+  const kitAudienceIsAllActive = shouldUseAllActiveAsKitAudience(newsletterBackend);
 
   let beehiivActiveEmails: string[];
   let kitAudienceEmails: string[];
@@ -297,23 +334,34 @@ async function main(): Promise<void> {
     // MESMA lista pras duas coisas (erro do 1º rascunho deste PR, achado no
     // self-review) faz `findOrphans` nunca encontrar órfão nenhum do lado
     // Kit — por construção, todo elemento de `activeIn` já estaria em
-    // `sendUnion`, porque as duas listas seriam idênticas.
+    // `sendUnion`, porque as duas listas seriam idênticas. **Isso segue
+    // valendo com backend != "kit"** (ou se a rampa for religada, ver
+    // `kit_diaria.enabled_note`) — só o caso `kitAudienceIsAllActive` acima
+    // faz as duas listas convergirem de propósito, porque aí é a REALIDADE
+    // que convergiu, não um bug de medição.
     process.stderr.write(`${LOG_PREFIX} buscando ativos no Kit…\n`);
     const kitActiveSubscribers = await listAllKitSubscribers(undefined, { status: "active" });
     kitActiveEmails = kitActiveSubscribers.map((s) => s.email_address);
 
-    process.stderr.write(`${LOG_PREFIX} resolvendo tag "${kitAudienceTag}" no Kit…\n`);
-    const tagId = await findTagIdByName(kitAudienceTag);
-    if (tagId === null) {
-      emitError(
-        asJson,
-        `${LOG_PREFIX} tag "${kitAudienceTag}" não existe no Kit — não foi possível medir a audiência de envio do Kit.`,
-        "config",
+    if (kitAudienceIsAllActive) {
+      process.stderr.write(
+        `${LOG_PREFIX} backend=kit — audiência de envio do Kit é TODO ativo (buildAllSubscribersFilter), não a tag "${kitAudienceTag}" — pulando lookup de tag.\n`,
       );
-      return;
+      kitAudienceEmails = kitActiveEmails;
+    } else {
+      process.stderr.write(`${LOG_PREFIX} resolvendo tag "${kitAudienceTag}" no Kit…\n`);
+      const tagId = await findTagIdByName(kitAudienceTag);
+      if (tagId === null) {
+        emitError(
+          asJson,
+          `${LOG_PREFIX} tag "${kitAudienceTag}" não existe no Kit — não foi possível medir a audiência de envio do Kit.`,
+          "config",
+        );
+        return;
+      }
+      process.stderr.write(`${LOG_PREFIX} listando membros da tag "${kitAudienceTag}"…\n`);
+      kitAudienceEmails = await listAllTagSubscriberEmails(tagId);
     }
-    process.stderr.write(`${LOG_PREFIX} listando membros da tag "${kitAudienceTag}"…\n`);
-    kitAudienceEmails = await listAllTagSubscriberEmails(tagId);
 
     process.stderr.write(`${LOG_PREFIX} listando contatos da lista Brevo ${brevoListId}…\n`);
     brevoAudienceEmails = await brevoListContacts(brevoApiKey, brevoListId);
