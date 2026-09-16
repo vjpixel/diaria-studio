@@ -31,6 +31,7 @@ import {
   readPlanForStallHandling,
   WATCHDOG_IO_TIMEOUT_MS,
   hasHealthyIdleSession,
+  isOvernightAwaitingBriefingResponse,
   runAllWatchedKinds,
   WATCHED_KINDS,
   buildHaltBannerArgs,
@@ -39,6 +40,7 @@ import {
 } from "../scripts/overnight-watchdog.ts";
 import { parseHaltBannerArgs } from "../scripts/render-halt-banner.ts";
 import { registerSession, heartbeat } from "../scripts/lib/session-registry.ts";
+import { startSession, setPhase, endSession } from "../scripts/overnight-session-marker.ts";
 import type { PlanFileReaders } from "../scripts/overnight-statusline.ts";
 
 // ---------------------------------------------------------------------------
@@ -738,6 +740,52 @@ describe("hasHealthyIdleSession (#5293 item 3)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// #8174: achado ao vivo na rodada 260916 — coordenador bloqueado ~8h30
+// esperando o AskUserQuestion do briefing produziu 17 stall_detected falsos,
+// porque nada distinguia essa espera (sem teto de tempo, editor presente)
+// de um loop autônomo genuinamente travado.
+describe("isOvernightAwaitingBriefingResponse (#8174)", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function freshRoot() {
+    const root = mkdtempSync(join(tmpdir(), "overnight-watchdog-briefing-"));
+    roots.push(root);
+    return root;
+  }
+
+  it("true — kind=overnight, marker em phase:'briefing'", () => {
+    const dir = freshRoot();
+    startSession(dir, "2026-09-16T02:00:00.000Z");
+    assert.equal(isOvernightAwaitingBriefingResponse(dir, "overnight"), true);
+  });
+
+  it("false — kind=overnight, marker já em phase:'autonomous' (Fase 1 em diante, stall real deve alarmar)", () => {
+    const dir = freshRoot();
+    startSession(dir, "2026-09-16T02:00:00.000Z");
+    setPhase(dir, "autonomous");
+    assert.equal(isOvernightAwaitingBriefingResponse(dir, "overnight"), false);
+  });
+
+  it("false — nenhum marker ativo (rodada nunca começou, ou já encerrou via endSession)", () => {
+    const dir = freshRoot();
+    assert.equal(isOvernightAwaitingBriefingResponse(dir, "overnight"), false);
+
+    startSession(dir, "2026-09-16T02:00:00.000Z");
+    endSession(dir);
+    assert.equal(isOvernightAwaitingBriefingResponse(dir, "overnight"), false);
+  });
+
+  it("false — kind=continuo, mesmo com marker overnight em briefing (o mecanismo é exclusivo do overnight)", () => {
+    const dir = freshRoot();
+    startSession(dir, "2026-09-16T02:00:00.000Z");
+    assert.equal(isOvernightAwaitingBriefingResponse(dir, "continuo"), false);
   });
 });
 

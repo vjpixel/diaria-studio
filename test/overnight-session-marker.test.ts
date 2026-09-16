@@ -9,6 +9,7 @@ import {
   startSession,
   endSession,
   setPhase,
+  readPhase,
   resolveSessionIdOrThrow,
 } from "../scripts/overnight-session-marker.ts";
 
@@ -213,6 +214,67 @@ describe("setPhase (#4450)", () => {
     endSession(root);
 
     assert.equal(setPhase(root, "autonomous"), false);
+  });
+});
+
+// #8174: read-side puro consumido por overnight-watchdog.ts
+// (isOvernightAwaitingBriefingResponse) pra distinguir "coordenador
+// bloqueado no AskUserQuestion do briefing" (sem teto de tempo) de "morreu
+// no loop autônomo" (stall real).
+describe("readPhase (#8174)", () => {
+  const roots: string[] = [];
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function freshRoot() {
+    const root = join(
+      tmpdir(),
+      `overnight-session-marker-readphase-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    roots.push(root);
+    return root;
+  }
+
+  it("lê 'briefing' logo após startSession", () => {
+    const root = freshRoot();
+    startSession(root, "2026-09-16T02:00:00.000Z");
+    assert.equal(readPhase(root), "briefing");
+  });
+
+  it("lê 'autonomous' depois de setPhase", () => {
+    const root = freshRoot();
+    startSession(root, "2026-09-16T02:00:00.000Z");
+    setPhase(root, "autonomous");
+    assert.equal(readPhase(root), "autonomous");
+  });
+
+  it("marker ausente (nenhuma rodada, ou já encerrada via endSession) → null, nunca lança", () => {
+    const root = freshRoot();
+    assert.equal(readPhase(root), null);
+
+    startSession(root, "2026-09-16T02:00:00.000Z");
+    endSession(root);
+    assert.equal(readPhase(root), null);
+  });
+
+  it("JSON corrompido no disco → null, nunca lança (fail-soft, mesmo espírito de setPhase)", () => {
+    const root = freshRoot();
+    startSession(root, "2026-09-16T02:00:00.000Z");
+    writeFileSync(activeSessionPath(root), "{ isto nao e json valido", "utf8");
+    assert.equal(readPhase(root), null);
+  });
+
+  it("campo phase ausente ou com valor inesperado → null, nunca inventa uma fase", () => {
+    const root = freshRoot();
+    const path = activeSessionPath(root);
+    mkdirSync(join(root, "data", "overnight"), { recursive: true });
+    writeFileSync(path, JSON.stringify({ started_at: "2026-09-16T02:00:00.000Z" }), "utf8");
+    assert.equal(readPhase(root), null);
+
+    writeFileSync(path, JSON.stringify({ started_at: "2026-09-16T02:00:00.000Z", phase: "algo-inesperado" }), "utf8");
+    assert.equal(readPhase(root), null);
   });
 });
 
