@@ -386,12 +386,16 @@ describe("isLocalMarkerAlreadyDue (#8142)", () => {
     );
   });
 
-  it("sem published_at nem scheduled_at (draft/test_sent local) conta", () => {
-    assert.equal(isLocalMarkerAlreadyDue({ status: "draft" }, NOW_MS), true);
+  it("sem published_at nem scheduled_at (draft puro, ainda não passou pelo gate de agendamento) NÃO conta", () => {
+    // Stage 5 grava o marcador em modo draft ANTES do gate do Stage 6 setar
+    // scheduled_at — contar isso como "devido" dispararia falso-positivo
+    // toda noite em que o editor ainda não agendou a edição anterior.
+    assert.equal(isLocalMarkerAlreadyDue({ status: "draft" }, NOW_MS), false);
+    assert.equal(isLocalMarkerAlreadyDue({}, NOW_MS), false);
   });
 
-  it("scheduled_at não-parseável cai no default (conta)", () => {
-    assert.equal(isLocalMarkerAlreadyDue({ scheduled_at: "garbage" }, NOW_MS), true);
+  it("scheduled_at não-parseável NÃO conta (dado corrompido, fail-soft)", () => {
+    assert.equal(isLocalMarkerAlreadyDue({ scheduled_at: "garbage" }, NOW_MS), false);
   });
 });
 
@@ -602,6 +606,44 @@ describe("CLI: cenário completo #8142 — fetch sai vazio, base congelada, guar
       assert.equal(parsed.ok, true);
       assert.deepEqual(parsed.local_editions_unseen, []);
       assert.equal(parsed.local_editions_checked, 1); // só a de hoje conta; amanhã é futuro
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("draft puro (Stage 5 rodou, gate do Stage 6 ainda pendente) nunca aborta a rodada por si só", () => {
+    const dir = setup();
+    try {
+      const editionsRoot = join(dir, "editions");
+      const edDraft = join(editionsRoot, "2609", "260916", "_internal");
+      mkdirSync(edDraft, { recursive: true });
+      // Stage 5 gravou o marcador em modo draft; editor ainda não passou
+      // pelo gate humano do Stage 6 — sem scheduled_at nem published_at.
+      writeFileSync(
+        join(edDraft, "05-published.json"),
+        JSON.stringify({ status: "draft", draft_url: "https://app.beehiiv.com/x" }),
+      );
+
+      const raw = join(dir, "raw.json");
+      // raw travado numa data antiga — critério de idade sozinho reprovaria,
+      // mas a janela abaixo é folgada pra isolar o comportamento do critério local.
+      writeFileSync(raw, JSON.stringify([{ id: "x", published_at: "2026-09-03T09:00:00Z" }]));
+
+      const { stdout, exitCode } = runCli([
+        "--raw",
+        raw,
+        "--editions-root",
+        editionsRoot,
+        "--now",
+        "2026-09-15T20:00:00Z",
+        "--max-staleness-hours",
+        "10000",
+      ]);
+      assert.equal(exitCode, 0);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.ok, true);
+      assert.deepEqual(parsed.local_editions_unseen, []);
+      assert.equal(parsed.local_editions_checked, 0); // draft puro não conta como "devido"
     } finally {
       cleanup();
     }

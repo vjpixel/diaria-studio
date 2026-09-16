@@ -198,8 +198,14 @@ export interface LocalPublishMarker {
  * toda noite (#8142).
  *
  * Regra: `published_at` presente conta sempre (já saiu). Sem `published_at`,
- * `scheduled_at` no futuro NÃO conta; `scheduled_at` no passado/presente ou
- * ausente conta (draft/test_sent local, sem agendamento pendente).
+ * `scheduled_at` no futuro NÃO conta; `scheduled_at` no passado/presente
+ * conta. **Sem os dois** (marcador só com `status: "draft"`/`"test_sent"`,
+ * ou sem `status` nenhum) NÃO conta — Stage 5 grava o marcador em modo
+ * `draft` ANTES do gate humano do Stage 6 marcar `scheduled_at`; contar um
+ * draft ainda não agendado como "devido" faria o guard disparar toda noite
+ * em que o editor ainda não passou pelo gate de agendamento da edição
+ * anterior — exatamente o falso-positivo que este critério existe pra
+ * evitar (mesmo cuidado do caso "scheduled_at no futuro" acima).
  */
 export function isLocalMarkerAlreadyDue(
   marker: LocalPublishMarker,
@@ -213,8 +219,14 @@ export function isLocalMarkerAlreadyDue(
     if (!Number.isNaN(ms)) {
       return ms <= nowMs;
     }
+    // scheduled_at presente mas não-parseável: dado corrompido, não dá pra
+    // confirmar timing — tratar como NÃO devido (fail-soft, evita alarme
+    // falso em cima de um campo malformado).
+    return false;
   }
-  return true;
+  // Sem published_at nem scheduled_at: draft puro, ainda não passou pelo
+  // gate de agendamento — não é "devido" ainda.
+  return false;
 }
 
 export interface LocalEditionMarker {
