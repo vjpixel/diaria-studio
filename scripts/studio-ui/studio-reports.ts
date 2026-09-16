@@ -94,7 +94,14 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 // é o único chamador — nunca disparado automaticamente por overnight/develop
 // (a REGRA DE OURO exige que uma calibração real sempre seja aberta e
 // registrada por um fluxo que passa pelo gate de sign-off, nunca autônomo).
-export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac" | "calibration";
+// #8144: "agent-eval" — relatório de 1 rodada do eval de regressão de prompt
+// (#8143) sobre o(s) agent(s) que uma PR específica mudou (corpo ou
+// `model:`). `sessionId` = número da PR (mesmo padrão de "calibration").
+// `scripts/run-agent-eval-for-pr.ts` é o único chamador — roda na esteira
+// overnight/develop (sessão autenticada claude.ai, #5608), nunca no runner
+// do GitHub Actions (`scripts/check-agent-eval-required.ts` só DECIDE se
+// precisa, nunca EXECUTA — ver docstring dos dois).
+export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac" | "calibration" | "agent-eval";
 
 const VALID_KINDS: ReportKind[] = [
   "edicao",
@@ -105,6 +112,7 @@ const VALID_KINDS: ReportKind[] = [
   "clarice-envio",
   "cac",
   "calibration",
+  "agent-eval",
 ];
 
 export function isReportKind(value: string): value is ReportKind {
