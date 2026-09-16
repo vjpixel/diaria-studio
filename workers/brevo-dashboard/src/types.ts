@@ -91,6 +91,35 @@ export interface BrevoCampaign {
   };
 }
 
+/**
+ * #8115 (integração do backfill no render de "Totais por mês"): resultado de
+ * `loadMonthlyTotalsArchive` (brevo-api.ts) — campanhas HISTÓRICAS (fora da
+ * janela ao vivo de `CAMPAIGNS_FETCH_LIMIT`) reconstruídas a partir do que
+ * `runCampaignsBackfillBatch` já persistiu no KV (`CAMPAIGNS_ARCHIVE_INDEX_KV_KEY`
+ * + `stats:{id}`). Vive em types.ts (não em brevo-api.ts) para evitar import
+ * circular: brevo-api.ts já importa de sections-core.ts (`renderDashboardHtml`),
+ * e sections-core.ts (`RenderDashboardOptions`) precisa deste tipo — os dois
+ * módulos importam types.ts sem se importarem um ao outro nessa direção.
+ */
+export interface MonthlyTotalsArchive {
+  /** Campanhas reconstruídas (metadado do índice + `stats:{id}` do KV), no
+   * MESMO shape que `fetchRecentCampaigns` produz — prontas pra concatenar
+   * com a janela ao vivo antes de `aggregateByMonth`. Só inclui campanhas
+   * cujo `stats:{id}` já foi gravado (globalStats>0) — entradas do índice
+   * ainda sem stats (falha pontual durante o backfill) ficam de fora até uma
+   * invocação futura do backfill preenchê-las. */
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>;
+  /** `true` quando o backfill AINDA NÃO alcançou o início do histórico — pode
+   * haver campanhas mais antigas que as conhecidas hoje (índice + janela ao
+   * vivo). `false` = cursor "done", histórico completo conhecido. */
+  backfillIncomplete: boolean;
+  /** Quantas campanhas (mais recentes → mais antigas) já foram INSPECIONADAS
+   * pelo backfill (`CampaignsBackfillCursor.offset`) — usado como o "N" do
+   * aviso de janela parcial no lugar do `CAMPAIGNS_FETCH_LIMIT` fixo, quando
+   * o backfill já avançou além da janela ao vivo. */
+  knownOffset: number;
+}
+
 export interface BrevoList {
   id: number;
   name: string;

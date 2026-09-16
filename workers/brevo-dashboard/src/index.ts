@@ -90,6 +90,7 @@ import {
   isRefreshPendingDue, // #5218
   writeRefreshPending, // #5218
   clearRefreshPending, // #5218
+  loadMonthlyTotalsArchive, // #8115
   type LastGoodCampaignsPayload,
 } from "./brevo-api.ts";
 import { LASTGOOD_TTL, POSTMASTER_SPAM_KV_KEY } from "./types.ts";
@@ -564,15 +565,22 @@ async function buildDashboardResponse(
     // profundidade (mesmo padrão do resto desta função) — uma falha
     // inesperada neste canal SECUNDÁRIO nunca pode derrubar o dashboard
     // principal da Clarice.
-    const [linkSectionsByCycle, linkTitlesByCycle, brevoDiaria] = await Promise.all([
+    // #8115: histórico backfillado (fora da janela ao vivo) pra "Totais por
+    // mês" — ZERO chamadas Brevo, só leitura do KV; roda em paralelo com o
+    // resto, mesmo racional do brevoDiaria acima.
+    const [linkSectionsByCycle, linkTitlesByCycle, brevoDiaria, monthlyArchive] = await Promise.all([
       readLinkSectionsByCycle(env, monthlyCycles),
       readLinkTitlesByCycle(env, monthlyCycles), // #4198
       fetchBrevoDiariaTabData(env, isFresh).catch((e) => {
         console.error("[#4515] brevo_diaria tab: falha inesperada fora do fail-soft interno:", e instanceof Error ? e.message : e);
         return null;
       }),
+      loadMonthlyTotalsArchive(env).catch((e) => {
+        console.error("[#8115] loadMonthlyTotalsArchive falhou — 'Totais por mês' cai pro comportamento pré-#8115 (só janela ao vivo):", e instanceof Error ? e.message : e);
+        return null;
+      }),
     ]);
-    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle, linkTitlesByCycle, brevoDiaria, hourTestState }); // #5189
+    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle, linkTitlesByCycle, brevoDiaria, hourTestState, monthlyArchive }); // #5189 / #8115
     const response = new Response(html, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",

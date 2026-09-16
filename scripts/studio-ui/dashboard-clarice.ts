@@ -82,6 +82,7 @@ import {
   buildRateLimitFallback, // #4187: reusa o fallback last-good+banner do Worker (usado só no caminho AO VIVO, ver #4206)
   LASTGOOD_CAMPAIGNS_KEY, // #4206: chave do último payload de campanhas bom conhecido — fonte do render default (KV-only)
   setCampaignQuotaStateObserver, // #6029: alimenta data/brevo-rate-state.json no processo local do Studio
+  loadMonthlyTotalsArchive, // #8115: histórico backfillado pra "Totais por mês" — lê o KV real de produção (buildEnv() abaixo), nunca a Brevo
 } from "../../workers/brevo-dashboard/src/brevo-api.ts";
 // #6029: estado de cota da família /v3/emailCampaigns* — leitura (guard do
 // fresh) e escrita (observer registrado abaixo). node-only, nunca importado
@@ -385,6 +386,10 @@ async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
     // compilador.
     const linkSectionsByCycle = buildLinkSectionsByCycleLocal([...campaigns, ...(scheduled ?? [])]);
     const linkTitlesByCycle = buildLinkTitlesByCycleLocal([...campaigns, ...(scheduled ?? [])]); // #4198
+    // #8115: histórico backfillado pra "Totais por mês" — `env` aqui é o KV
+    // REAL de produção (buildEnv(), ver docstring do módulo), o mesmo que
+    // `readKvTabs` acima já lê; nunca chama a Brevo.
+    const monthlyArchive = await loadMonthlyTotalsArchive(env).catch(() => null);
 
     // #4206: ao contrário de `buildRateLimitFallback` (que passa `null` de
     // propósito — ver comentário lá), aqui passamos o `fetchedAt` REAL: o
@@ -405,7 +410,7 @@ async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
       fetchedAt,
       staleCampaignsLimit,
       postmasterSpam,
-      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle, hourTestState }, // #5189
+      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive }, // #5189 / #8115
     );
     return injectKvOnlyBanner(html, fetchedAt);
   } catch (e) {
@@ -531,6 +536,10 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
     const linkSectionsByCycle = buildLinkSectionsByCycleLocal([...campaigns, ...scheduled]);
     // #4198: idem pro mapa de título editorial.
     const linkTitlesByCycle = buildLinkTitlesByCycleLocal([...campaigns, ...scheduled]);
+    // #8115: histórico backfillado pra "Totais por mês" — `env` aqui (NÃO
+    // `campaignCacheEnv`, que é o cache local de campanhas recentes) é o KV
+    // REAL de produção, onde `clarice-backfill-campaigns.ts` escreve.
+    const monthlyArchive = await loadMonthlyTotalsArchive(env).catch(() => null);
 
     const dataGeneratedAt = new Date().toISOString();
     return renderDashboardHtml(
@@ -545,7 +554,7 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
       dataGeneratedAt,
       CAMPAIGNS_FETCH_LIMIT,
       postmasterSpam,
-      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle, hourTestState }, // #5189
+      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive }, // #5189 / #8115
     );
   } catch (e) {
     if (e instanceof BrevoRateLimitError) {
