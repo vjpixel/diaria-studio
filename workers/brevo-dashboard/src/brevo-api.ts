@@ -35,7 +35,7 @@
 export const BREVO_RATE_LIMIT_GENERAL_RPH = 100; // "todos os outros endpoints" (emailCampaigns*, account)
 export const BREVO_RATE_LIMIT_CONTACTS_RPH = 36000; // /v3/contacts/*
 
-import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, PostmasterCampaignSpamRecord, LinkSectionMap, ClariceHourTestKvState } from "./types.ts"; // #4970: PostmasterCampaignSpamRecord; #5189: ClariceHourTestKvState
+import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, PostmasterCampaignSpamRecord, LinkSectionMap, ClariceHourTestKvState, MonthlyTotalsArchive } from "./types.ts"; // #4970: PostmasterCampaignSpamRecord; #5189: ClariceHourTestKvState; #8115: MonthlyTotalsArchive
 import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, HOUR_TEST_KV_KEY, RECENT_STATS_TTL, MID_RANGE_STATS_TTL, linkSectionsKvKey, linkTitlesKvKey } from "./types.ts"; // #4198: linkTitlesKvKey; #5189: HOUR_TEST_KV_KEY; #6720 Fatia C: MID_RANGE_STATS_TTL
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles, calcCumulativeSentInBillingWindow } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles; #6394: calcCumulativeSentInBillingWindow
@@ -1630,9 +1630,12 @@ export async function buildRateLimitFallback(
     // #4184: coluna "Seção" também populada aqui — ver
     // buildLinkSectionsByCycleForFallback (custo é só KV, nunca Brevo).
     // #4198: idem pro título editorial da coluna "Conteúdo".
-    const [linkSectionsByCycle, linkTitlesByCycle] = await Promise.all([
+    // #8115: histórico backfillado pra "Totais por mês" — só KV, nunca Brevo
+    // (seguro neste caminho de fallback, que por design não pode chamar a Brevo).
+    const [linkSectionsByCycle, linkTitlesByCycle, monthlyArchive] = await Promise.all([
       buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled),
       buildLinkTitlesByCycleForFallback(env, staleCampaigns, staleScheduled),
+      loadMonthlyTotalsArchive(env).catch(() => null),
     ]);
     const html = renderDashboardHtml(
       staleCampaigns,
@@ -1646,7 +1649,7 @@ export async function buildRateLimitFallback(
       null, // dataGeneratedAt: KV stale payload não tem timestamp de render fiável aqui
       staleCampaignsLimit, // #3080: limite gravado junto do payload (self-describing)
       postmasterSpam, // #4063
-      { linkSectionsByCycle, linkTitlesByCycle, hourTestState }, // #4184 / #4198 / #5189
+      { linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive }, // #4184 / #4198 / #5189 / #8115
     );
     // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções de
     // campanha estão atrasadas; Cupons/Contatos estão frescos).
@@ -1707,9 +1710,10 @@ export async function buildUpstreamErrorFallback(
     typeof renderDashboardHtml
   >[1];
   try {
-    const [linkSectionsByCycle, linkTitlesByCycle] = await Promise.all([
+    const [linkSectionsByCycle, linkTitlesByCycle, monthlyArchive] = await Promise.all([
       buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled),
       buildLinkTitlesByCycleForFallback(env, staleCampaigns, staleScheduled),
+      loadMonthlyTotalsArchive(env).catch(() => null), // #8115: só KV, nunca Brevo
     ]);
     const html = renderDashboardHtml(
       staleCampaigns,
@@ -1723,7 +1727,7 @@ export async function buildUpstreamErrorFallback(
       null, // dataGeneratedAt: KV stale payload não tem timestamp de render fiável aqui (o banner usa staleGeneratedAt à parte)
       staleCampaignsLimit,
       postmasterSpam,
-      { linkSectionsByCycle, linkTitlesByCycle, hourTestState }, // #5189
+      { linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive }, // #5189 / #8115
     );
     return buildUpstreamErrorStaleResponse(html, status, staleGeneratedAt);
   } catch (renderErr) {
@@ -1873,9 +1877,11 @@ export async function buildFatalErrorFallback(env: Env, cause: unknown): Promise
     // #4184: coluna "Seção" também populada aqui — mesmo racional de
     // buildRateLimitFallback (custo é só KV, nunca Brevo).
     // #4198: idem pro título editorial da coluna "Conteúdo".
-    const [linkSectionsByCycle, linkTitlesByCycle] = await Promise.all([
+    // #8115: histórico backfillado pra "Totais por mês" — idem, só KV.
+    const [linkSectionsByCycle, linkTitlesByCycle, monthlyArchive] = await Promise.all([
       buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled),
       buildLinkTitlesByCycleForFallback(env, staleCampaigns, staleScheduled),
+      loadMonthlyTotalsArchive(env).catch(() => null),
     ]);
     const html = renderDashboardHtml(
       staleCampaigns,
@@ -1889,7 +1895,7 @@ export async function buildFatalErrorFallback(env: Env, cause: unknown): Promise
       null,
       staleCampaignsLimit,
       postmasterSpam,
-      { linkSectionsByCycle, linkTitlesByCycle, hourTestState }, // #4184 / #4198 / #5189
+      { linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive }, // #4184 / #4198 / #5189 / #8115
     );
     return new Response(injectFatalErrorBanner(html), {
       headers: {
@@ -1964,6 +1970,9 @@ export async function buildInflightCoalescedFallback(
     typeof renderDashboardHtml
   >[1];
   try {
+    // #8115: histórico backfillado pra "Totais por mês" — só KV, nunca Brevo
+    // (seguro neste caminho de coalescing, que por design não chama a Brevo).
+    const monthlyArchive = await loadMonthlyTotalsArchive(env).catch(() => null);
     const html = renderDashboardHtml(
       staleCampaigns,
       staleScheduled,
@@ -1976,7 +1985,7 @@ export async function buildInflightCoalescedFallback(
       null,
       staleCampaignsLimit,
       postmasterSpam, // #4063
-      { hourTestState }, // #5189 self-review: fallback de coalescing também escopa (linkSectionsByCycle/linkTitlesByCycle seguem fora — gap pré-existente, não fechado aqui)
+      { hourTestState, monthlyArchive }, // #5189 / #8115 self-review: fallback de coalescing também escopa (linkSectionsByCycle/linkTitlesByCycle seguem fora — gap pré-existente, não fechado aqui)
     );
     return new Response(injectInflightBanner(html), {
       headers: {
@@ -3019,6 +3028,63 @@ export async function runCampaignsBackfillBatch(
   await writeCampaignsBackfillCursor(env, nextCursor);
 
   return { scanned: processedCount, statsFetched, alreadyCached, skippedMutable, requestsUsed, cursor: nextCursor };
+}
+
+/**
+ * #8115 (integração do backfill no render — o resíduo que o commit 171ab9a0
+ * deixou pendente): reconstrói as campanhas HISTÓRICAS já persistidas pelo
+ * backfill (`CAMPAIGNS_ARCHIVE_INDEX_KV_KEY` + `stats:{id}`), pra concatenar
+ * com a janela ao vivo antes de `aggregateByMonth` (sections-core.ts) — é
+ * isso que faz "Totais por mês" enxergar além dos ~3 semanas atuais.
+ *
+ * ZERO chamadas de rede à Brevo — só leitura do MESMO KV (`env.STATS_CACHE`)
+ * que os 5 call sites de `renderDashboardHtml` já usam (inclusive os 4
+ * caminhos de fallback — rate-limit, upstream-error, fatal-error,
+ * inflight-coalesced — que por design nunca podem chamar a Brevo; ver a
+ * seção "Guard de publicação" em `context/overnight-dispatch-rules.md`).
+ * `readCampaignsArchiveIndex`/`readCampaignsBackfillCursor` já são fail-soft
+ * (env.STATS_CACHE ausente → `[]` / cursor default) — este helper herda o
+ * mesmo comportamento (nunca lança).
+ *
+ * Só entram campanhas cujo `stats:{id}` já está cacheado (globalStats
+ * gravado) — uma entrada do índice sem stats ainda (erro de rede pontual
+ * DURANTE o backfill, ver comentário no `catch` de `runCampaignsBackfillBatch`)
+ * fica de fora até uma invocação futura do backfill preenchê-la; não
+ * corrompe a agregação com um globalStats ausente.
+ */
+export async function loadMonthlyTotalsArchive(
+  env: Pick<Env, "STATS_CACHE">,
+): Promise<MonthlyTotalsArchive> {
+  const [archive, cursor] = await Promise.all([
+    readCampaignsArchiveIndex(env),
+    readCampaignsBackfillCursor(env),
+  ]);
+  const backfillIncomplete = !cursor.done;
+  if (archive.length === 0 || !env.STATS_CACHE) {
+    return { campaigns: [], backfillIncomplete, knownOffset: cursor.offset };
+  }
+  const cache = env.STATS_CACHE;
+  const entries = await Promise.all(
+    archive.map(async (meta): Promise<(BrevoCampaign & { listName?: string; listSize?: number }) | null> => {
+      const cached = (await cache.get(`stats:${meta.id}`, "json").catch(() => null)) as { gs?: BrevoGlobalStats } | null;
+      if (!cached?.gs) return null;
+      return {
+        id: meta.id,
+        name: meta.name,
+        subject: "",
+        status: "sent",
+        sentDate: meta.sentDate,
+        scheduledAt: null,
+        createdAt: meta.sentDate ?? "",
+        recipients: { lists: meta.listIds },
+        statistics: { globalStats: cached.gs },
+      };
+    }),
+  );
+  const campaigns = entries.filter(
+    (c): c is BrevoCampaign & { listName?: string; listSize?: number } => c != null,
+  );
+  return { campaigns, backfillIncomplete, knownOffset: cursor.offset };
 }
 
 /**

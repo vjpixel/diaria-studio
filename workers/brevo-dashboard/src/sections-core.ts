@@ -1,4 +1,4 @@
-import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary, PostmasterSpamEntry, ClariceHourTestKvState } from "./types.ts"; // #5189: ClariceHourTestKvState
+import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary, PostmasterSpamEntry, ClariceHourTestKvState, MonthlyTotalsArchive } from "./types.ts"; // #5189: ClariceHourTestKvState; #8115: MonthlyTotalsArchive
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 // #4405: desempate de ciclo por conteúdo em resolveCampaignCycle (abaixo) — mesma
 // função que render-links.ts já usa pra classificar URL→conteúdo.
@@ -151,6 +151,23 @@ export interface RenderDashboardOptions {
    * filtro estrito (exclui tudo, já que não há janela pra confiar).
    */
   hourTestState?: ClariceHourTestKvState | null;
+  /**
+   * #8115: campanhas HISTÓRICAS (fora da janela ao vivo) que o backfill
+   * throttled/resumável (`runCampaignsBackfillBatch`, brevo-api.ts) já
+   * persistiu no KV — carregadas pelo call site via `loadMonthlyTotalsArchive`
+   * (ZERO chamadas Brevo, só leitura do MESMO `STATS_CACHE`). Usado
+   * EXCLUSIVAMENTE por "Totais por mês" (`monthlyTotalsRows`/
+   * `monthlyTotalsSection` abaixo) — nunca entra nas outras agregações desta
+   * função (Envios, A/B/C, Volume, weekday, etc.), que continuam escopadas à
+   * janela ao vivo (`campaigns`) de propósito. `null`/ausente (default —
+   * preserva TODOS os call sites/testes pré-#8115) = comportamento idêntico
+   * ao anterior: "Totais por mês" só enxerga a janela ao vivo, e o aviso
+   * "(parcial)" segue a regra pré-#8115 (aparece sempre que a janela estava
+   * cheia). Presente com `backfillIncomplete: false` = backfill alcançou o
+   * início do histórico — o aviso desaparece, mesmo com a janela ao vivo
+   * cheia (a tabela cobre 100% dos meses, não só os últimos ~100 envios).
+   */
+  monthlyArchive?: MonthlyTotalsArchive | null;
 }
 
 /**
@@ -777,12 +794,43 @@ ${monthlyAbcSectionsByDate}
   // weekday). Movida pra aba Agendamento (renderWeeklyPlanTabPanel abaixo) —
   // não é mais injetada no panel-visaogeral aqui (#3010).
   // #2369: tabela de totais por mês — à parte da lista detalhada de campanhas.
-  const monthlyTotalsRows = aggregateByMonth(campaigns);
-  // #3080: só passa o limite (habilitando o aviso "(parcial — janela de N campanhas)"
-  // no mês mais antigo) quando a janela buscada estava de fato cheia.
+  // #8115: concatena a janela ao vivo com o histórico já backfillado (KV) —
+  // é isso que faz meses além de ~3 semanas voltarem a aparecer. `?? []`
+  // preserva o comportamento pré-#8115 quando o call site não passa
+  // `opts.monthlyArchive` (nenhum teste/caller antigo passa).
+  const monthlyArchive = opts.monthlyArchive ?? null;
+  const monthlyTotalsRows = aggregateByMonth(
+    monthlyArchive && monthlyArchive.campaigns.length > 0
+      ? [...campaigns, ...monthlyArchive.campaigns]
+      : campaigns,
+  );
+  // #3080/#8115: o aviso "(parcial — janela de N campanhas)" no mês mais
+  // antigo só aparece quando (a) a janela ao vivo estava cheia — sinal
+  // pré-#8115, ainda necessário: se coubesse tudo na janela, nunca haveria
+  // nada faltando — E (b) o backfill ainda NÃO alcançou o início do
+  // histórico. `monthlyArchive` ausente (call site pré-#8115, ou #8115 sem
+  // nenhuma campanha arquivada ainda) trata "incompleto" como `true` — MESMO
+  // comportamento de antes do #8115 (nunca suprime o aviso sem confirmação
+  // positiva de que o backfill terminou). Quando o backfill JÁ terminou
+  // (`backfillIncomplete: false`), o aviso desaparece mesmo com a janela ao
+  // vivo cheia — a tabela agora cobre 100% do histórico. O "N" do aviso usa
+  // `knownOffset` (quantas campanhas o backfill já inspecionou) SÓ quando o
+  // backfill de fato produziu campanhas arquivadas (`monthlyArchive.campaigns.
+  // length > 0`) — `knownOffset` sozinho pode ser só o cursor DEFAULT (nunca
+  // rodou), que não tem relação com o `campaignsWindowLimit` desta chamada
+  // específica (ex: um teste/caller que passa uma janela sintética pequena);
+  // sem arquivo real pra mostrar, o "N" cai pro `campaignsWindowLimit` de
+  // sempre (comportamento idêntico ao pré-#8115).
+  const monthlyTotalsBackfillIncomplete = monthlyArchive?.backfillIncomplete ?? true;
+  const monthlyTotalsWindowLimit =
+    isCampaignsWindowFull && monthlyTotalsBackfillIncomplete && campaignsWindowLimit != null
+      ? monthlyArchive && monthlyArchive.campaigns.length > 0
+        ? Math.max(campaignsWindowLimit, monthlyArchive.knownOffset)
+        : campaignsWindowLimit
+      : null;
   const monthlyTotalsSection = renderMonthlyTotalsSection(
     monthlyTotalsRows,
-    isCampaignsWindowFull ? campaignsWindowLimit : null,
+    monthlyTotalsWindowLimit,
   );
   // #2426: coortes de engajamento por contato (pré-computadas via KV, lidas na rota).
   // #4165/#4173: opts.studioMode troca o stub null pro aviso "indisponível localmente".
