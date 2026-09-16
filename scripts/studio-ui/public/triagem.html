@@ -57,12 +57,6 @@
               <option value="issue:epica">Issues · Épica</option>
               <option value="issue:fora-de-rodada">Issues · Fora de rodada</option>
             </optgroup>
-            <optgroup label="PRs">
-              <option value="pr:overnight">PRs · overnight</option>
-              <option value="pr:develop">PRs · develop</option>
-              <option value="pr:continuo">PRs · continuo</option>
-              <option value="pr:other">PRs · other</option>
-            </optgroup>
           </select>
         </label>
         <div class="filter-field filter-labels-field">
@@ -103,7 +97,7 @@
     </section>
 
     <section class="panel">
-      <h2>PRs abertos (<span id="prs-count" aria-live="polite">0</span>)<span id="prs-filter-chip" class="filter-scope-chip" hidden></span></h2>
+      <h2>PRs abertos (<span id="prs-count" aria-live="polite">0</span>)</h2>
       <p class="hint">
         "CI" resume <code>statusCheckRollup</code>. Não é o gate de merge
         completo (#2210/#2222) — falta checar threads não-resolvidas, que

@@ -139,14 +139,14 @@ describe("GET /triagem + GET /api/issues (#3562)", () => {
     assert.equal(res.status, 404);
   });
 
-  it("(#5175) filtro unificado: 1 único <select id=filter-dispatch-track> com <optgroup> Issues/PRs — não os 2 <select> separados de antes", async () => {
+  it("(#5175) filtro unificado: 1 único <select id=filter-dispatch-track>, sem os 2 <select> separados de antes; filtro por trilha de PR (grupo PRs) foi removido do <select>", async () => {
     const res = await fetch(new URL("/triagem", server.url));
     const body = await res.text();
     assert.ok(body.includes('id="filter-dispatch-track"'), "select unificado precisa existir");
     assert.ok(!body.includes('id="filter-track"'), "select separado de Trilha (PRs) não deveria mais existir");
     assert.ok(!body.includes('id="filter-dispatch"'), "select separado de Classificação (issues) não deveria mais existir");
     assert.ok(body.includes('<optgroup label="Issues">'), "optgroup Issues ausente");
-    assert.ok(body.includes('<optgroup label="PRs">'), "optgroup PRs ausente");
+    assert.ok(!body.includes('<optgroup label="PRs">'), "optgroup PRs deveria ter sido removido — filtro por trilha de PR não existe mais");
   });
 
   it("(#5175) colunas: header 'Classificação' aparece nas DUAS tabelas, na mesma posição (3ª coluna) — 'Trilha' não existe mais", async () => {
@@ -170,19 +170,20 @@ describe("GET /triagem + GET /api/issues (#3562)", () => {
     for (const label of Object.values(EXEC_TRACK_LABELS)) {
       assert.ok(body.includes(`>Issues · ${label}<`), `opção "Issues · ${label}" ausente`);
     }
-    assert.ok(body.includes(">PRs · overnight<"));
-    assert.ok(body.includes(">PRs · develop<"));
-    assert.ok(body.includes(">PRs · other<"));
+    // grupo PRs (filtro por trilha) foi removido do <select> — nenhuma opção
+    // com esse prefixo deve sobrar no markup.
+    assert.ok(!body.includes(">PRs · overnight<"));
+    assert.ok(!body.includes(">PRs · develop<"));
+    assert.ok(!body.includes(">PRs · other<"));
     // nenhuma opção deve ter sobrado sem o prefixo de escopo (regressão do #5212)
     assert.ok(!body.includes('value="issue:overnight">Overnight<'), "opção não deveria ter perdido o prefixo 'Issues ·'");
-    assert.ok(!body.includes('value="pr:overnight">overnight<'), "opção não deveria ter perdido o prefixo 'PRs ·'");
   });
 
-  it("(#5212) chip de escopo (<h2>) e aviso de escopo (não afeta esta lista) existem no markup pras duas tabelas", async () => {
+  it("(#5212) chip de escopo (<h2>) e aviso de escopo (não afeta esta lista) existem no markup — o chip de PRs foi removido junto com o filtro por trilha de PR", async () => {
     const res = await fetch(new URL("/triagem", server.url));
     const body = await res.text();
     assert.ok(body.includes('id="issues-filter-chip"'));
-    assert.ok(body.includes('id="prs-filter-chip"'));
+    assert.ok(!body.includes('id="prs-filter-chip"'), "chip de escopo de PRs não deveria mais existir — a tabela de PRs nunca é afetada pelo filtro de Classificação");
     assert.ok(body.includes('id="issues-scope-notice"'));
     assert.ok(body.includes('id="prs-scope-notice"'));
   });

@@ -1,7 +1,10 @@
 // triagem.js (#3562) — cockpit de triagem VISUAL: issues abertas + PRs
-// abertos do GitHub, filtráveis por prioridade (P0-P3), label e trilha
-// (overnight/develop/other, derivada do prefixo de branch do PR). Vanilla
-// JS, sem build step (mesmo princípio de app.js/edicao.js — #3555/#3558).
+// abertos do GitHub, filtráveis por prioridade (P0-P3) e label. Cada PR
+// exibe sua trilha (overnight/develop/continuo/other, derivada do prefixo
+// de branch) como badge informativo — o menu "PRs" do <select> de
+// Classificação (filtro por trilha) foi removido a pedido do editor.
+// Vanilla JS, sem build step (mesmo princípio de app.js/edicao.js —
+// #3555/#3558).
 //
 // Escopo desta fatia (#3562): READ-ONLY. Nenhum botão aqui fecha, comenta ou
 // mergeia — só lista + linka pro GitHub. Este módulo lê GET /api/issues
@@ -44,7 +47,6 @@ const el = {
   prsCount: document.getElementById("prs-count"),
   prsBody: document.getElementById("prs-tbody"),
   prsEmpty: document.getElementById("prs-empty"),
-  prsFilterChip: document.getElementById("prs-filter-chip"),
   prsScopeNotice: document.getElementById("prs-scope-notice"),
   dispatchTrackLegend: document.getElementById("dispatch-track-legend"),
 };
@@ -61,7 +63,6 @@ let data = { issues: [], prs: [], error: null, cached: false, generatedAt: null 
 /** Estado dos filtros — 100% client-side. */
 const filters = {
   priority: "",
-  track: "",
   dispatch: "",
   labels: new Set(),
 };
@@ -382,12 +383,7 @@ function renderIssuesTable() {
 }
 
 function renderPrsTable() {
-  const filtered = data.prs.filter(
-    (p) =>
-      matchesPriorityFilter(p.priority) &&
-      matchesLabelFilter(p.labels) &&
-      (!filters.track || p.track === filters.track),
-  );
+  const filtered = data.prs.filter((p) => matchesPriorityFilter(p.priority) && matchesLabelFilter(p.labels));
   el.prsCount.textContent = countLabel({ filteredCount: filtered.length, loading });
   updateEmptyState(
     el.prsEmpty,
@@ -414,22 +410,18 @@ function renderPrsTable() {
   }
 }
 
-// #5212: o chip no <h2> ("Classificação: overnight") só existe na tabela
-// afetada pelo filtro de Classificação atual; a tabela oposta ganha uma
-// linha de aviso em texto ("Classificação (PRs) ativa — não afeta esta
-// lista") — as duas leituras vêm dos MESMOS predicados puros
+// #5212: o chip no <h2> ("Classificação: overnight") só existe na tabela de
+// issues, único lugar onde o filtro de Classificação tem efeito (o filtro
+// por trilha de PR foi removido); a tabela de PRs ganha uma linha de aviso
+// em texto ("Classificação (Issues) ativa — não afeta esta lista") quando o
+// filtro está ativo — as duas leituras vêm dos MESMOS predicados puros
 // (triagem-filters.js), nada duplicado aqui além de aplicar ao DOM.
 function renderClassificationScopeUI() {
   const scope = classificationFilterScope(filters);
-  const chipValue = scope === "issues" ? filters.dispatch : scope === "prs" ? filters.track : null;
 
   if (el.issuesFilterChip) {
     el.issuesFilterChip.hidden = scope !== "issues";
-    el.issuesFilterChip.textContent = scope === "issues" ? `Classificação: ${chipValue}` : "";
-  }
-  if (el.prsFilterChip) {
-    el.prsFilterChip.hidden = scope !== "prs";
-    el.prsFilterChip.textContent = scope === "prs" ? `Classificação: ${chipValue}` : "";
+    el.issuesFilterChip.textContent = scope === "issues" ? `Classificação: ${filters.dispatch}` : "";
   }
   if (el.issuesScopeNotice) {
     const notice = classificationScopeNotice(filters, "issues");

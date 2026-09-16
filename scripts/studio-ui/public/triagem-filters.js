@@ -40,80 +40,63 @@ export function issuesFilterActive(filters) {
   return Boolean(filters.priority || filters.dispatch || filters.labels?.size > 0);
 }
 
-/** Filtros que a tabela de PRs aplica: prioridade, trilha, labels. @pure */
+/** Filtros que a tabela de PRs aplica: prioridade, labels. @pure */
 export function prsFilterActive(filters) {
-  return Boolean(filters.priority || filters.track || filters.labels?.size > 0);
+  return Boolean(filters.priority || filters.labels?.size > 0);
 }
 
 /**
- * #5175: aplica o valor do `<select id="filter-dispatch-track">` (1 único
- * controle, 2 `<optgroup>` — Issues/PRs — substituindo os 2 `<select>`
- * separados de antes) aos 2 campos de estado MUTUAMENTE EXCLUSIVOS
- * (`filters.dispatch`, da tabela de issues; `filters.track`, da tabela de
- * PRs). Pura — devolve um objeto NOVO (não muta `filters`), mesmo padrão de
+ * #5175: aplica o valor do `<select id="filter-dispatch-track">` (as opções
+ * carregam o prefixo `issue:`, único grupo restante desde que o grupo "PRs"
+ * — filtro por trilha de PR — foi removido) a `filters.dispatch`. Pura —
+ * devolve um objeto NOVO (não muta `filters`), mesmo padrão de
  * `issuesFilterActive`/`prsFilterActive` acima, pra ser testável sem harness
- * de DOM.
- *
- * `selectValue` carrega o prefixo do grupo de origem (`issue:overnight`,
- * `pr:overnight`) — o grupo decide qual dos 2 campos recebe o valor; o OUTRO
- * é SEMPRE zerado no mesmo update, nunca fica preso a um valor antigo de um
- * grupo diferente do recém-selecionado (o risco que colapsar os 2 controles
- * num só introduz, ver docstring do arquivo). `""` (opção "Todas") não casa
- * nenhum grupo conhecido — zera os dois.
+ * de DOM. `""` (opção "Todas") zera o campo.
  */
 export function applyDispatchTrackFilterValue(filters, selectValue) {
   const [group, value] = String(selectValue).split(":");
   return {
     ...filters,
     dispatch: group === "issue" ? value : "",
-    track: group === "pr" ? value : "",
   };
 }
 
 /**
- * #5212: qual tabela o filtro de Classificação (`<select
- * id="filter-dispatch-track">`) atualmente ativo afeta — `"issues"` (via
- * `filters.dispatch`), `"prs"` (via `filters.track`), ou `null` (nenhum dos
- * dois setado, opção "Todas"). Lê o mesmo par de campos MUTUAMENTE
- * EXCLUSIVOS que `applyDispatchTrackFilterValue` escreve — nunca os dois ao
- * mesmo tempo, então checar `dispatch` primeiro é suficiente.
+ * #5212: se o filtro de Classificação (`<select id="filter-dispatch-track">`)
+ * está ativo — sempre afeta só a tabela de issues (via `filters.dispatch`),
+ * já que o filtro por trilha de PR foi removido. `null` quando não há
+ * filtro ativo (opção "Todas").
  *
- * Existe pra affordance visual (#5212): o `<select>` consolidado (#5175)
- * perde o contexto de qual tabela é afetada quando fechado — este predicado
- * alimenta o chip no `<h2>` da tabela afetada e o aviso "não afeta esta
- * lista" na tabela oposta (`classificationScopeNotice` abaixo).
+ * Existe pra affordance visual (#5212): alimenta o chip no `<h2>` da tabela
+ * de issues e o aviso "não afeta esta lista" na tabela de PRs
+ * (`classificationScopeNotice` abaixo).
  */
 export function classificationFilterScope(filters) {
-  if (filters.dispatch) return "issues";
-  if (filters.track) return "prs";
-  return null;
+  return filters.dispatch ? "issues" : null;
 }
 
 /**
- * #5212: texto do aviso "Classificação (X) ativa — não afeta esta lista",
- * mostrado na tabela OPOSTA à afetada pelo filtro de Classificação
- * selecionado. `null` quando não há filtro de Classificação ativo, ou quando
- * `table` é justamente a tabela afetada (o aviso não se aplica a si mesma —
- * ali quem mostra o filtro ativo é o chip, não este aviso).
+ * #5212: texto do aviso "Classificação (Issues) ativa — não afeta esta
+ * lista", mostrado na tabela de PRs quando o filtro de Classificação está
+ * ativo (ele só afeta a tabela de issues). `null` quando não há filtro
+ * ativo, ou quando `table` é a própria tabela de issues (ali quem mostra o
+ * filtro ativo é o chip, não este aviso).
  */
 export function classificationScopeNotice(filters, table) {
   const scope = classificationFilterScope(filters);
   if (!scope || scope === table) return null;
-  const label = scope === "prs" ? "PRs" : "Issues";
-  return `Classificação (${label}) ativa — não afeta esta lista.`;
+  return "Classificação (Issues) ativa — não afeta esta lista.";
 }
 
 /**
  * #5212: resume, em texto curto, qual filtro está ativo pra tabela `table`
  * ("issues" | "prs") — usado no estado-vazio "sem efeito" quando o total já
  * era 0 antes de qualquer filtro (`emptyStateMessage` abaixo). Prioriza o
- * filtro de Classificação (o mais provável de causar a confusão de escopo
- * que esta issue endereça, já que só afeta 1 das 2 tabelas); cai pra
- * prioridade e depois labels, que afetam as duas tabelas igualmente.
+ * filtro de Classificação (só afeta a tabela de issues); cai pra prioridade
+ * e depois labels, que afetam as duas tabelas igualmente.
  */
 export function activeFilterSummary(filters, table) {
   if (table === "issues" && filters.dispatch) return filters.dispatch;
-  if (table === "prs" && filters.track) return filters.track;
   if (filters.priority) return filters.priority;
   if (filters.labels && filters.labels.size > 0) return [...filters.labels].join(", ");
   return null;
