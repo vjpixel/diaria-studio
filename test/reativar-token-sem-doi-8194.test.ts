@@ -121,6 +121,41 @@ describe("activateSubscriptionKit com token (#8194)", () => {
     });
   }
 
+  it("token válido NÃO passa por cima de descadastro nativo pendente na Brevo (guard vence)", async () => {
+    const kit = fakeKit({ existing: "inactive" });
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      if (String(url).startsWith("https://brevo.test/v3/contacts/")) return jsonRes(200, { emailBlacklisted: true });
+      return kit.fetchImpl(url, init);
+    }) as typeof fetch;
+    const r = await quiet(() =>
+      activateSubscriptionKit(
+        env({ BREVO_DIARIA_API_KEY: "b", BREVO_API_URL: "https://brevo.test/v3" }),
+        "a@x.com",
+        fetchImpl,
+        true,
+      ),
+    );
+    assert.equal(r.reason, "native_unsubscribe_pending");
+    assert.equal(kit.getState(), "inactive");
+    assert.equal(kit.calls.filter((c) => c.method === "POST").length, 0);
+  });
+
+  it("sem KIT_ACTIVATE_FORM_ID: promoção não acontece → cai no DOI (e-mail sai de verdade, a página não mente)", async () => {
+    const kit = fakeKit({ existing: "inactive" });
+    const r = await quiet(() =>
+      activateSubscriptionKit(env({ KIT_ACTIVATE_FORM_ID: undefined }), "a@x.com", kit.fetchImpl, true),
+    );
+    assert.equal(r.ok, true);
+    assert.equal(r.beehiivStatus, "inactive");
+    assert.ok(kit.calls.some((c) => c.method === "POST" && c.url.endsWith("/forms/9897918/subscribers/42")));
+  });
+
+  it("vínculo ao form de sistema não promove → também cai no DOI", async () => {
+    const kit = fakeKit({ existing: "inactive", activateFormPromotes: false });
+    await quiet(() => activateSubscriptionKit(env(), "a@x.com", kit.fetchImpl, true));
+    assert.ok(kit.calls.some((c) => c.method === "POST" && c.url.endsWith("/forms/9897918/subscribers/42")));
+  });
+
   it("SEM token, estado inactive → caminho DOI inalterado (não usa o form de sistema)", async () => {
     const kit = fakeKit({ existing: "inactive" });
     await quiet(() => activateSubscriptionKit(env(), "a@x.com", kit.fetchImpl, false));
@@ -188,5 +223,25 @@ describe("runInjectReativarToken (#8194)", () => {
     assert.equal(r.skipped_already_correct, 1);
     assert.equal(r.patched, 1);
     assert.deepEqual(r.failedEmails, ["falha@x.com"]);
+  });
+});
+
+describe("handleConfirm — sinal de drift do REATIVAR_SECRET (#8194)", () => {
+  it("t presente e inválido loga reativar_token_presente_invalido; t ausente não loga", async () => {
+    const run = async (query: string) => {
+      const kit = fakeKit({ existing: null });
+      const warn = mock.method(console, "warn", () => {});
+      const err = mock.method(console, "error", () => {});
+      try {
+        await handleConfirm(new URL(`https://reativar.test/?${query}`), env(), kit.fetchImpl);
+        return warn.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+      } finally {
+        warn.mock.restore();
+        err.mock.restore();
+      }
+    };
+    const t = await computeReativarToken("segredo-velho", "a@x.com");
+    assert.match(await run(`email=a%40x.com&t=${t}`), /reativar_token_presente_invalido/);
+    assert.doesNotMatch(await run("email=a%40x.com"), /reativar_token_presente_invalido/);
   });
 });

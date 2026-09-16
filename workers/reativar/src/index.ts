@@ -5,7 +5,7 @@
  * próprio do editor (`data/snippets/brevo-diaria-pending-intro.md`) —
  * substitui o formulário de cadastro genérico da Beehiiv (2 etapas: clica →
  * digita o e-mail de novo) por 1 clique só. O e-mail chega via merge tag da
- * Brevo (`?email={{ contact.EMAIL }}`), SEM assinatura HMAC — mesmo padrão
+ * Brevo (`?email={{ contact.EMAIL }}`), SEM assinatura HMAC até o #8194 (hoje leva também `&t={{ contact.REATIVAR_TOKEN }}`, ver abaixo; sem token segue assim) — mesmo padrão
  * já usado no link de voto "É IA?" desde a decisão #1186 (modo merge-tag,
  * `inject-poll-sig.ts` removido — ver CLAUDE.md §Publicação manual requer
  * prep-manual-publish.ts).
@@ -18,7 +18,7 @@
  * nunca colidem porque `evaluate-brevo-diaria.ts` checa auto-confirmação
  * Beehiiv ANTES de avaliar score).
  *
- * ## Sem assinatura HMAC — risco FECHADO pelo double opt-in (#7723)
+ * ## Link sem token: risco FECHADO pelo double opt-in (#7723) — com token, ver #8194 abaixo
  *
  * A URL não é assinada, então qualquer terceiro que descubra o padrão pode
  * chamá-la com e-mail alheio, sem prova de posse da caixa. De 260802 até
@@ -726,7 +726,7 @@ export async function activateSubscriptionKit(
 
   // #7723: double opt-in também aqui — e neste worker ele não é só
   // conformidade, é o conserto de um risco DOCUMENTADO E ACEITO no topo deste
-  // arquivo: o link de reativação não tem assinatura HMAC, então qualquer
+  // arquivo: o link de reativação SEM token válido (#8194) não tem assinatura HMAC, então qualquer
   // terceiro que descubra o padrão da URL pode "confirmar" e-mail alheio sem
   // prova de posse da caixa. Em agosto/2026 o risco foi aceito por falta de
   // alternativa barata ("o pior caso é a pessoa passar a RECEBER"). O DOI é
@@ -846,7 +846,7 @@ async function promoteKitWithToken(
       const link = await fetchImpl(`${base}/forms/${env.KIT_ACTIVATE_FORM_ID}/subscribers/${extraido.id}`, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ referrer: "https://reativar.diaria.workers.dev/?via=token" }),
+        body: JSON.stringify({ referrer: "https://reativar.diar.ia.br/?via=token" }),
         signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
       });
       if (!link.ok) {
@@ -855,7 +855,23 @@ async function promoteKitWithToken(
       }
       state = await readState();
     }
-    if (state !== "active") {
+    if (state === "inactive") {
+      // Promoção não aconteceu (form ausente, vínculo falhou, Kit mudou o
+      // comportamento). Cai no DOI em vez de deixar a pessoa presa: sem isto,
+      // `handleConfirm` mostraria "enviamos um e-mail de confirmação" sem
+      // nenhum e-mail ter saído (achado do review da PR #8196).
+      console.error(JSON.stringify({ event: "reativar_kit_token_nao_ativou_fallback_doi", state }));
+      await vincularKitDoiForm({
+        apiKey,
+        base,
+        formId: env.KIT_DOI_FORM_ID,
+        subscriberId: extraido.id,
+        referrer: "https://reativar.diar.ia.br/?via=token-fallback",
+        fetchImpl,
+        timeoutMs: ACTIVATE_FETCH_TIMEOUT_MS,
+        log: (m) => console.error(JSON.stringify({ event: "reativar_kit_doi_link_failed", detail: m })),
+      });
+    } else if (state !== "active") {
       console.error(JSON.stringify({ event: "reativar_kit_token_nao_ativou", state }));
     }
     return { ok: true, status: 200, beehiivStatus: state };
@@ -1055,8 +1071,16 @@ export async function handleConfirm(
   // não é lido por nenhum outro dispatch fora deste worker.
   const useKit = env.SUBSCRIBE_BACKEND === "kit";
   // #8194: token assinado válido = clique já vale como confirmação (só Kit).
-  const confirmedByToken =
-    useKit && (await verifyReativarToken(env.REATIVAR_SECRET, parsed.email, url.searchParams.get("t")));
+  const tokenParam = url.searchParams.get("t");
+  const confirmedByToken = useKit && (await verifyReativarToken(env.REATIVAR_SECRET, parsed.email, tokenParam));
+  // Token PRESENTE mas inválido é o sinal de drift do REATIVAR_SECRET entre
+  // injeção e worker (todo clique cai no DOI sem erro nenhum) — distinto de
+  // `t` ausente/vazio, que é o fallback esperado de contato sem token.
+  if (useKit && tokenParam && !confirmedByToken) {
+    console.warn(
+      JSON.stringify({ event: "reativar_token_presente_invalido", secretConfigurado: Boolean(env.REATIVAR_SECRET) }),
+    );
+  }
   const result = useKit
     ? await activateSubscriptionKit(env, parsed.email, fetchImpl, confirmedByToken)
     : sleepImpl

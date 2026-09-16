@@ -64,6 +64,13 @@ npx wrangler secret put KIT_API_KEY
 # KIT_REFERRING_SITE_FIELD opcionais — nenhum custom field criado em
 # produção ainda, degrade gracioso (POST não manda `fields`).
 
+# 1e. Secret opcional (#8194). Token assinado do botão "Confirmar" da Brevo:
+# com ele, o clique ativa direto no Kit (sem e-mail de confirmação). Precisa
+# ser IDÊNTICO ao REATIVAR_SECRET do .env/Doppler que injeta o token
+# (scripts/inject-reativar-token-brevo.ts) — divergência faz todo clique cair
+# no DOI (log `reativar_token_presente_invalido`). Ausente → sempre DOI.
+npx wrangler secret put REATIVAR_SECRET
+
 # 2. Deploy
 npx wrangler deploy
 # → confirma URL no output: https://reativar.diaria.workers.dev

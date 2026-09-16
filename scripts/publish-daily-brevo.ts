@@ -45,6 +45,10 @@
  *   6b. Cota da CONTA Brevo (#6146 — balde único de 300/dia, transacional +
  *      marketing, `scripts/lib/brevo-account-quota.ts`). Só AVISA aqui; ver
  *      a nota de exit codes abaixo.
+ *   6c. Token assinado do botão "Confirmar" (`inject-reativar-token-brevo.ts`,
+ *      #8194) — atributo `REATIVAR_TOKEN`. FAIL-SOFT, ao contrário do 6: sem
+ *      `REATIVAR_SECRET` ou com falha, o contato recebe `t=` vazio e o worker
+ *      `reativar` segue o double opt-in. Nunca aborta, sem exit code próprio.
  *   7. Cria a campanha Brevo (`POST /emailCampaigns`) — sem `--send-now`/
  *      `--schedule-at`, fica como rascunho na conta Brevo (mesma cautela do
  *      publisher mensal: nunca dispara sozinho).

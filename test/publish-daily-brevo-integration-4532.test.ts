@@ -236,6 +236,10 @@ function installRouter(opts: RouterOpts): void {
       if (method === "POST" && url.pathname === "/v3/contacts/attributes/normal/POLL_TOKEN") {
         return jsonRes(201, { name: "POLL_TOKEN" });
       }
+      // #8194 — atributo do token do botão Confirmar.
+      if (method === "POST" && url.pathname === "/v3/contacts/attributes/normal/REATIVAR_TOKEN") {
+        return jsonRes(201, { name: "REATIVAR_TOKEN" });
+      }
       if (method === "GET" && url.pathname === `/v3/contacts/lists/${LIST_ID}/contacts`) {
         if (listContactsStatus !== undefined && listContactsStatus !== 200) {
           return jsonRes(listContactsStatus, { message: "erro simulado" });
@@ -551,6 +555,98 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
         )}`,
       );
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("publish-daily-brevo.ts main() — REATIVAR_TOKEN fail-soft (#8194)", () => {
+  function capture(): { out: () => string; restore: () => void } {
+    const buf: string[] = [];
+    const original = process.stderr.write.bind(process.stderr);
+    (process.stderr as NodeJS.WriteStream).write = ((c: string | Uint8Array) => {
+      buf.push(String(c));
+      return true;
+    }) as typeof process.stderr.write;
+    return { out: () => buf.join(""), restore: () => ((process.stderr as NodeJS.WriteStream).write = original) };
+  }
+
+  it("com REATIVAR_SECRET: grava REATIVAR_TOKEN nos contatos e cria a campanha", async () => {
+    const root = mkTmpRoot();
+    const cap = capture();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+      process.env.REATIVAR_SECRET = "segredo";
+      installRouter({ totalSubscribers: 10, contactsPages: generateContactsPages(10) });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+      await main(root);
+      const tokenPuts = calls.filter(
+        (c) => c.method === "PUT" && (c.body as { attributes?: Record<string, unknown> })?.attributes?.REATIVAR_TOKEN,
+      );
+      assert.equal(tokenPuts.length, 10, "todo contato recebe o token");
+      assert.ok(calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"));
+      assert.match(cap.out(), /tokens de confirmação \(#8194\): 10 patcheado/);
+    } finally {
+      cap.restore();
+      delete process.env.REATIVAR_SECRET;
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("sem REATIVAR_SECRET: nenhum PUT de token, aviso, campanha criada assim mesmo", async () => {
+    const root = mkTmpRoot();
+    const cap = capture();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+      delete process.env.REATIVAR_SECRET;
+      installRouter({ totalSubscribers: 10, contactsPages: generateContactsPages(10) });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+      await main(root);
+      assert.ok(!calls.some((c) => (c.body as { attributes?: Record<string, unknown> })?.attributes?.REATIVAR_TOKEN));
+      assert.ok(calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"));
+      assert.match(cap.out(), /REATIVAR_SECRET ausente/);
+    } finally {
+      cap.restore();
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("injeção falhando (PUT 500 em todos): campanha criada assim mesmo, falhas logadas", async () => {
+    const root = mkTmpRoot();
+    const cap = capture();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+      process.env.REATIVAR_SECRET = "segredo";
+      installRouter({ totalSubscribers: 10, contactsPages: generateContactsPages(10) });
+      const inner = globalThis.fetch;
+      globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+        const body = typeof init?.body === "string" ? init.body : "";
+        if ((init?.method ?? "GET") === "PUT" && body.includes("REATIVAR_TOKEN")) {
+          calls.push({ method: "PUT", hostname: "api.brevo.com", pathname: new URL(String(input)).pathname, body: JSON.parse(body) });
+          return jsonRes(500, { message: "erro" });
+        }
+        return inner(input, init);
+      }) as typeof fetch;
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+      await main(root);
+      assert.equal(process.exitCode, undefined, "falha do token nunca aborta");
+      assert.ok(calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"));
+      assert.match(cap.out(), /10 falha\(s\) — esses seguem pelo DOI/);
+    } finally {
+      cap.restore();
+      delete process.env.REATIVAR_SECRET;
+      process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });
     }
   });
