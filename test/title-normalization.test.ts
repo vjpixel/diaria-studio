@@ -19,6 +19,7 @@ import {
   checkTitlePublisherSuffix,
   checkTitleTrailingPeriod,
 } from "../scripts/lib/lint-checks/title-normalization.ts";
+import { SECTION_HEADER_LINE_RE } from "../scripts/lib/lint-checks/highlight-parsing.ts";
 
 // ===========================================================================
 // Helpers para construir snippets de newsletter md
@@ -312,5 +313,85 @@ describe("extractAllTitles — herda guard t !== category do walker compartilhad
       "sufixo de veículo em título pós-'LANÇAMENTOS' deve continuar sendo flagrado",
     );
     assert.equal(result.errors[0].suffix, "Canaltech");
+  });
+});
+
+// ===========================================================================
+// #8152 — SECTION_HEADER_LINE_RE não aceitava emoji no prefixo do header,
+// então `extractAllTitles` NUNCA coletava título nenhum de RADAR/USE
+// MELHOR/LANÇAMENTOS (headers reais SEMPRE levam emoji — ver
+// `context/templates/newsletter.md`) e os dois checks abaixo ficavam mudos
+// pra essas 3 seções desde que foram escritos. Caso real do issue: item do
+// RADAR com sufixo "- BBC News Brasil" (3 palavras, bate a heurística de
+// 1-4 palavras) passou pelo gate sem ser flagrado.
+// ===========================================================================
+
+describe("SECTION_HEADER_LINE_RE — aceita emoji no prefixo do header (#8152)", () => {
+  it("casa com os 3 headers REAIS de seção secundária (com bold e emoji)", () => {
+    for (const header of ["**📡 RADAR**", "**🛠️ USE MELHOR**", "**🚀 LANÇAMENTOS**"]) {
+      // A regex em si não precisa lidar com o `**` de bold — quem chama
+      // (extractAllTitles) já testa a versão stripada — mas o miolo
+      // "emoji + texto maiúsculo" precisa casar depois de remover o bold.
+      const stripped = header.replace(/^\*\*/, "").replace(/\*\*$/, "");
+      assert.equal(
+        SECTION_HEADER_LINE_RE.test(stripped),
+        true,
+        `header real "${header}" (stripado: "${stripped}") deveria casar com SECTION_HEADER_LINE_RE`,
+      );
+    }
+  });
+
+  it("CASO NEGATIVO: continua rejeitando corpo de texto comum", () => {
+    const bodyLines = [
+      "Isso é uma linha de corpo comum, com pontuação normal.",
+      "ChatGPT lança nova função de voz para assinantes Plus",
+      "Por que isso importa: contexto relevante aqui.",
+      "📡", // só emoji, sem texto — não é header
+      "🚀 lançamento de um novo produto qualquer", // minúsculas após o emoji
+    ];
+    for (const line of bodyLines) {
+      assert.equal(
+        SECTION_HEADER_LINE_RE.test(line),
+        false,
+        `linha de corpo comum "${line}" NÃO deveria casar com SECTION_HEADER_LINE_RE`,
+      );
+    }
+  });
+
+  it("CASO REAL #8152: checkTitlePublisherSuffix flagra sufixo de veículo em item do RADAR real ('📡 RADAR')", () => {
+    const md = [
+      "**📡 RADAR**",
+      "",
+      "[Como a IA está mudando o jornalismo - BBC News Brasil](https://example.com/radar-item)",
+      "Descrição do item.",
+    ].join("\n");
+    const result = checkTitlePublisherSuffix(md);
+    assert.equal(result.ok, false, "sufixo de veículo em item RADAR real deve ser flagrado");
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0].suffix, "BBC News Brasil");
+  });
+
+  it("checkTitlePublisherSuffix flagra sufixo de veículo em item de USE MELHOR real ('🛠️ USE MELHOR')", () => {
+    const md = [
+      "**🛠️ USE MELHOR**",
+      "",
+      "[Truque para organizar prompts no ChatGPT - Canaltech](https://example.com/use-melhor-item)",
+      "Descrição do item.",
+    ].join("\n");
+    const result = checkTitlePublisherSuffix(md);
+    assert.equal(result.ok, false, "sufixo de veículo em item USE MELHOR real deve ser flagrado");
+    assert.equal(result.errors[0].suffix, "Canaltech");
+  });
+
+  it("checkTitleTrailingPeriod flagra ponto final em item de LANÇAMENTOS real ('🚀 LANÇAMENTOS')", () => {
+    const md = [
+      "**🚀 LANÇAMENTOS**",
+      "",
+      "[Nova ferramenta de IA chega ao mercado brasileiro.](https://example.com/lancamento-item)",
+      "Descrição do item.",
+    ].join("\n");
+    const result = checkTitleTrailingPeriod(md);
+    assert.equal(result.ok, false, "ponto final em item LANÇAMENTOS real deve ser flagrado");
+    assert.equal(result.errors.length, 1);
   });
 });
