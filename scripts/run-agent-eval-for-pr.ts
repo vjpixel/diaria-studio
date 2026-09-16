@@ -332,6 +332,16 @@ async function main(): Promise<void> {
     process.exit(2);
     return;
   }
+  if (!Number.isInteger(numEditions) || numEditions < 1) {
+    // Self-review (#2038): sem este guard, "--num-editions abc" vira NaN,
+    // que `pickDefaultReferenceEditions`/`Array.prototype.slice` trata como
+    // 0 em silêncio — TODAS as edições candidatas entrariam na rodada em vez
+    // de um erro claro, mesma classe de falha silenciosa que motivou
+    // `getIntArg` (scripts/lib/cli-args.ts, #4497).
+    console.error(`[error] --num-editions deve ser um inteiro ≥ 1, recebido "${values["num-editions"]}"`);
+    process.exit(2);
+    return;
+  }
 
   const runner = defaultRunner;
 
@@ -458,20 +468,27 @@ async function main(): Promise<void> {
     console.error(`[#8144] registro em data/reports/index.jsonl falhou (fail-soft, relatório já foi escrito em disco): ${registerResult.error}`);
   }
 
-  // Reusa o mesmo arquivo persistido em disco (outPath) como --body-file do
-  // comentário — nunca um 2º arquivo temporário duplicado, e nunca monta o
-  // corpo via printf/echo -e (rule #6004, CLAUDE.md/overnight-dispatch-rules
-  // item 19: `%` em taxa/CTR corromperia o corpo em silêncio).
+  // Self-review (#2038): label ANTES do comentário, deliberado — `gh pr edit
+  // --add-label` num label já presente é um no-op idempotente, então um
+  // retry após falha de rede aqui nunca duplica nada. Se a ORDEM fosse
+  // invertida (comentário primeiro), um retry depois de um `addLabel` que
+  // falhasse re-postaria um 2º comentário idêntico antes de tentar a label
+  // de novo — a ordem atual evita essa classe de duplicação sem precisar de
+  // um mecanismo de dedup dedicado.
   try {
-    postComment(prNumber, outPath, runner);
+    addLabel(prNumber, AGENT_EVAL_LABEL, runner);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
     return;
   }
 
+  // Reusa o mesmo arquivo persistido em disco (outPath) como --body-file do
+  // comentário — nunca um 2º arquivo temporário duplicado, e nunca monta o
+  // corpo via printf/echo -e (rule #6004, CLAUDE.md/overnight-dispatch-rules
+  // item 19: `%` em taxa/CTR corromperia o corpo em silêncio).
   try {
-    addLabel(prNumber, AGENT_EVAL_LABEL, runner);
+    postComment(prNumber, outPath, runner);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
