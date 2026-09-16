@@ -27,7 +27,7 @@ import {
   emptyStateMessage,
 } from "../scripts/studio-ui/public/triagem-filters.js";
 
-const none = () => ({ priority: "", track: "", dispatch: "", labels: new Set<string>() });
+const none = () => ({ priority: "", dispatch: "", labels: new Set<string>() });
 
 describe("triagem-filters", () => {
   it("nenhum filtro selecionado → inativo nas duas tabelas", () => {
@@ -41,9 +41,7 @@ describe("triagem-filters", () => {
     assert.equal(prsFilterActive({ ...none(), priority: "P1" }), true);
   });
 
-  it("trilha ativa PRs mas não issues; classificação ativa issues mas não PRs", () => {
-    assert.equal(prsFilterActive({ ...none(), track: "overnight" }), true);
-    assert.equal(issuesFilterActive({ ...none(), track: "overnight" }), false);
+  it("classificação ativa issues mas não PRs (filtro por trilha de PR foi removido)", () => {
     assert.equal(issuesFilterActive({ ...none(), dispatch: "elegivel" }), true);
     assert.equal(prsFilterActive({ ...none(), dispatch: "elegivel" }), false);
   });
@@ -61,35 +59,25 @@ describe("triagem-filters", () => {
 });
 
 describe("applyDispatchTrackFilterValue (#5175)", () => {
-  it("escolher opção do grupo Issues seta dispatch e ZERA track (mesmo se track tinha valor antigo)", () => {
-    const before = { ...none(), track: "overnight" };
-    const after = applyDispatchTrackFilterValue(before, "issue:bloqueada");
+  it("escolher opção do grupo Issues seta dispatch", () => {
+    const after = applyDispatchTrackFilterValue(none(), "issue:bloqueada");
     assert.equal(after.dispatch, "bloqueada");
-    assert.equal(after.track, "", "nenhum filtro fantasma preso do grupo PRs");
   });
 
-  it("escolher opção do grupo PRs seta track e ZERA dispatch (mesmo se dispatch tinha valor antigo)", () => {
+  it("'Todas' (valor vazio) limpa o campo", () => {
     const before = { ...none(), dispatch: "elegivel" };
-    const after = applyDispatchTrackFilterValue(before, "pr:develop");
-    assert.equal(after.track, "develop");
-    assert.equal(after.dispatch, "", "nenhum filtro fantasma preso do grupo Issues");
-  });
-
-  it("'Todas' (valor vazio) limpa os dois campos", () => {
-    const before = { ...none(), dispatch: "elegivel", track: "overnight" };
     const after = applyDispatchTrackFilterValue(before, "");
     assert.equal(after.dispatch, "");
-    assert.equal(after.track, "");
   });
 
   it("não muta o objeto `filters` original (pura)", () => {
-    const before = { ...none(), track: "overnight" };
+    const before = { ...none(), dispatch: "elegivel" };
     applyDispatchTrackFilterValue(before, "issue:ambigua");
-    assert.equal(before.track, "overnight", "argumento original não deve ser alterado");
+    assert.equal(before.dispatch, "elegivel", "argumento original não deve ser alterado");
   });
 
   it("preserva os demais campos de filters (priority, labels) intactos", () => {
-    const before = { priority: "P0", dispatch: "", track: "", labels: new Set(["bug"]) };
+    const before = { priority: "P0", dispatch: "", labels: new Set(["bug"]) };
     const after = applyDispatchTrackFilterValue(before, "issue:elegivel");
     assert.equal(after.priority, "P0");
     assert.deepEqual(after.labels, new Set(["bug"]));
@@ -97,23 +85,15 @@ describe("applyDispatchTrackFilterValue (#5175)", () => {
 
   it("issuesFilterActive/prsFilterActive continuam corretos depois de passar pelo select unificado", () => {
     // #5175: escolher 'bloqueada' (grupo Issues) deve filtrar a tabela de
-    // issues e deixar a de PRs intacta — e vice-versa (comportamento de
-    // antes, preservado com o controle único).
+    // issues e deixar a de PRs intacta (filtro por trilha de PR foi removido
+    // — a tabela de PRs nunca é afetada pelo select de Classificação).
     const afterIssue = applyDispatchTrackFilterValue(none(), "issue:bloqueada");
     assert.equal(issuesFilterActive(afterIssue), true);
     assert.equal(prsFilterActive(afterIssue), false);
-
-    const afterPr = applyDispatchTrackFilterValue(none(), "pr:other");
-    assert.equal(prsFilterActive(afterPr), true);
-    assert.equal(issuesFilterActive(afterPr), false);
   });
 });
 
 describe("classificationFilterScope (#5212)", () => {
-  it("valor do grupo `pr:` ⇒ afeta PRs", () => {
-    assert.equal(classificationFilterScope({ ...none(), track: "overnight" }), "prs");
-  });
-
   it("valor do grupo `issue:` ⇒ afeta Issues", () => {
     assert.equal(classificationFilterScope({ ...none(), dispatch: "elegivel" }), "issues");
   });
@@ -124,12 +104,6 @@ describe("classificationFilterScope (#5212)", () => {
 });
 
 describe("classificationScopeNotice (#5212)", () => {
-  it("filtro de PRs ativo → aviso aparece pra issues, não pra prs", () => {
-    const filters = { ...none(), track: "overnight" };
-    assert.match(classificationScopeNotice(filters, "issues") ?? "", /PRs.*não afeta esta lista/);
-    assert.equal(classificationScopeNotice(filters, "prs"), null);
-  });
-
   it("filtro de Issues ativo → aviso aparece pra prs, não pra issues", () => {
     const filters = { ...none(), dispatch: "bloqueada" };
     assert.match(classificationScopeNotice(filters, "prs") ?? "", /Issues.*não afeta esta lista/);
@@ -143,16 +117,8 @@ describe("classificationScopeNotice (#5212)", () => {
 });
 
 describe("activeFilterSummary (#5212)", () => {
-  it("tabela prs com track setado → resume o valor do track", () => {
-    assert.equal(activeFilterSummary({ ...none(), track: "overnight" }, "prs"), "overnight");
-  });
-
   it("tabela issues com dispatch setado → resume o valor do dispatch", () => {
     assert.equal(activeFilterSummary({ ...none(), dispatch: "elegivel" }, "issues"), "elegivel");
-  });
-
-  it("track setado mas pedindo resumo da tabela issues → ignora track (fora de escopo), cai pro próximo filtro", () => {
-    assert.equal(activeFilterSummary({ ...none(), track: "overnight" }, "issues"), null);
   });
 
   it("sem filtro de Classificação, cai pra prioridade", () => {
