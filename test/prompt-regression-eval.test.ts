@@ -10,7 +10,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -155,13 +155,48 @@ describe("wrapSocialWriterOutputForGrading + runMechanicalGraders — carousel-t
   });
 });
 
-describe("runMechanicalGraders — newsletter-lint-gate-blocking (runStage2LintReport, best-effort)", () => {
+describe("runMechanicalGraders — newsletter-lint-gate-blocking (runStage2LintReport)", () => {
   it("sem _internal/02-draft.md no fixture: não-avaliável, nunca fabricado como ok", () => {
     withTmpDir("prompt-eval-lint-", (dir) => {
       const verdicts = runMechanicalGraders("writer-destaque", "qualquer coisa", dir, dir);
       const lint = verdicts.find((v) => v.name === "newsletter-lint-gate-blocking")!;
       assert.equal(lint.evaluable, false);
       assert.equal(lint.ok, null);
+    });
+  });
+});
+
+describe("runMechanicalGraders — catch de exceção interna vira not-evaluable, NUNCA ok:false fabricado (#8168 fleet review, finding 2)", () => {
+  it("carousel-text-overflow: exceção interna (03-social.md é diretório, não arquivo) → not-evaluable", () => {
+    withTmpDir("prompt-eval-grader-exc-", (dir) => {
+      mkdirSync(join(dir, "03-social.md")); // existsSync passa a checagem inicial; readFileSync interno lança EISDIR
+      const verdicts = runMechanicalGraders("social-writer", "## d1\n\ntexto\n", dir, dir);
+      const carousel = verdicts.find((v) => v.name === "carousel-text-overflow")!;
+      assert.equal(carousel.evaluable, false, "exceção interna deve virar not-evaluable, nunca ok:false fabricado");
+      assert.equal(carousel.ok, null);
+    });
+  });
+
+  it("newsletter-lint-gate-blocking: exceção interna (02-draft.md é diretório, não arquivo) → not-evaluable", () => {
+    withTmpDir("prompt-eval-grader-exc-", (dir) => {
+      mkdirSync(join(dir, "_internal", "02-draft.md"), { recursive: true }); // existsSync passa; readFileSync interno lança EISDIR
+      const verdicts = runMechanicalGraders("writer-destaque", "**DESTAQUE 1 | X**\n\n**[T](https://x.com)**\n", dir, dir);
+      const lint = verdicts.find((v) => v.name === "newsletter-lint-gate-blocking")!;
+      assert.equal(lint.evaluable, false, "exceção interna deve virar not-evaluable, nunca ok:false fabricado");
+      assert.equal(lint.ok, null);
+    });
+  });
+});
+
+describe("runMechanicalGraders — rawText null (#8168 fleet review, finding crítico — agent não produziu output)", () => {
+  it("rawText null: os 4 graders saem not-evaluable, NUNCA avaliados como se fossem string vazia", () => {
+    withTmpDir("prompt-eval-null-", (dir) => {
+      const verdicts = runMechanicalGraders("social-writer", null, dir, dir);
+      assert.equal(verdicts.length, 4);
+      for (const v of verdicts) {
+        assert.equal(v.evaluable, false);
+        assert.equal(v.ok, null);
+      }
     });
   });
 });
@@ -391,7 +426,7 @@ describe("runAgentRepetitions (#8143 item 6 — default dry-run NUNCA spawna cla
     });
     assert.equal(calls, 0);
     assert.equal(outcomes.length, 3);
-    assert.ok(outcomes.every((o) => o.dryRun === true && o.verdicts.length === 0 && o.usage === null));
+    assert.ok(outcomes.every((o) => o.dryRun === true && o.verdicts.length === 0 && o.usage === null && o.producedOutput === false));
   });
 
   it("live (injetado): chama callClaudeCliFn N vezes, lê o arquivo produzido, roda graders e parseia usage", () => {
@@ -419,9 +454,82 @@ describe("runAgentRepetitions (#8143 item 6 — default dry-run NUNCA spawna cla
       assert.equal(outcomes.length, 2);
       for (const o of outcomes) {
         assert.equal(o.dryRun, false);
+        assert.equal(o.producedOutput, true);
         assert.ok(o.rawText?.includes("## d1"));
         assert.equal(o.usage?.subagent_tokens, 120);
         assert.ok(o.verdicts.some((v) => v.name === "banned-lexicon"));
+      }
+    });
+  });
+
+  it("#8168 fleet review, finding 3: writer-destaque grava o fragmento produzido em _internal/02-draft.md — newsletter-lint-gate-blocking fica evaluable quando 01-approved-capped.json também está no fixture", () => {
+    withTmpDir("prompt-eval-writer-destaque-draft-", (dir) => {
+      const producedPath = join(dir, "_internal", "02-d1-draft.md");
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      // #8168 finding 3: em produção `runSideForEdition` (eval-prompt-regression.ts) deriva este
+      // arquivo via `applyStage2Caps` antes de chamar runAgentRepetitions — aqui, no teste de
+      // unidade da lib, escrevemos um capped mínimo à mão pra isolar o comportamento de wiring do
+      // 02-draft.md sem depender do script de orquestração.
+      writeFileSync(join(dir, "_internal", "01-approved-capped.json"), JSON.stringify({ highlights: [] }), "utf8");
+      const outcomes = runAgentRepetitions({
+        agent: "writer-destaque",
+        agentBody: "corpo do agent",
+        input: { destaque_n: 1 },
+        cwd: dir,
+        producedFileAbsPath: producedPath,
+        editionDirForGrading: dir,
+        rootDir: dir,
+        repetitions: 1,
+        dryRun: false,
+        callClaudeCliFn: () => {
+          writeFileSync(producedPath, "**DESTAQUE 1 | MERCADO**\n\n**[Título curto o suficiente](https://x.com)**\n\nBody aqui.\n", "utf8");
+          return JSON.stringify({ usage: { input_tokens: 10, output_tokens: 5 }, num_turns: 1, duration_ms: 50, result: "ok" });
+        },
+      });
+      assert.equal(outcomes.length, 1);
+      const [outcome] = outcomes;
+      assert.equal(outcome.producedOutput, true);
+      // _internal/02-draft.md foi escrito com o fragmento produzido.
+      assert.ok(existsSync(join(dir, "_internal", "02-draft.md")));
+      const lint = outcome.verdicts.find((v) => v.name === "newsletter-lint-gate-blocking")!;
+      assert.equal(lint.evaluable, true, "com 02-draft.md + 01-approved-capped.json presentes, o grader deixa de ser permanentemente not-evaluable");
+    });
+  });
+
+  it("#8168 fleet review, finding crítico: CLI retorna sucesso (sem lançar exceção) mas o arquivo de output NUNCA aparece — not-evaluable pros 4 graders, NUNCA ok:true fabricado sobre string vazia", () => {
+    withTmpDir("prompt-eval-missing-output-", (dir) => {
+      const producedPath = join(dir, "out.md"); // nunca escrito pelo callClaudeCliFn abaixo — simula agent que esgotou turnos/recusou/errou o path.
+      let calls = 0;
+      const outcomes = runAgentRepetitions({
+        agent: "social-writer",
+        agentBody: "corpo do agent",
+        input: { out_dir: "." },
+        cwd: dir,
+        producedFileAbsPath: producedPath,
+        editionDirForGrading: dir,
+        rootDir: dir,
+        repetitions: 2,
+        dryRun: false,
+        callClaudeCliFn: (_prompt, opts) => {
+          calls++;
+          assert.equal(opts.outputFormat, "json");
+          // Nunca escreve producedPath — devolve um JSON de sucesso mesmo assim (o CLI não lançou).
+          return JSON.stringify({ usage: { input_tokens: 50, output_tokens: 5 }, num_turns: 1, duration_ms: 200, result: "ok" });
+        },
+      });
+      assert.equal(calls, 2);
+      assert.equal(outcomes.length, 2);
+      for (const o of outcomes) {
+        assert.equal(o.dryRun, false);
+        assert.equal(o.producedOutput, false, "arquivo nunca apareceu — producedOutput deve ser false");
+        assert.equal(o.rawText, null, "NUNCA vira string vazia fabricada");
+        // usage segue medido (a chamada CLI teve resposta válida) — só o output do agent está ausente.
+        assert.equal(o.usage?.subagent_tokens, 55);
+        assert.equal(o.verdicts.length, 4, "os 4 graders mecânicos ainda aparecem no veredito, todos not-evaluable");
+        for (const v of o.verdicts) {
+          assert.equal(v.evaluable, false, `grader ${v.name} deveria ser not-evaluable, nunca "ok" fabricado`);
+          assert.equal(v.ok, null);
+        }
       }
     });
   });

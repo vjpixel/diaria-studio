@@ -12,7 +12,7 @@
  * checagem de maioria, comparação pareada nunca-nota-isolada, dry-run
  * default).
  *
- * Complementar à Camada 4 da #7972 (`distillation-backtest.ts`, read-only
+ * Complementar à Camada 3 da #7972 (`distillation-backtest.ts`, read-only
  * sobre texto JÁ PRODUZIDO por edições passadas) — este script RE-EXECUTA o
  * agent de verdade, o que aquele módulo explicitamente não faz.
  *
@@ -42,11 +42,12 @@
  * há execução real).
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { createReplayFixture } from "./lib/replay-stage-input.ts";
 import { writeCostArtifact, type AgentCostEntry } from "./lib/edition-cost.ts";
+import { applyStage2Caps, type ApprovedJson } from "./lib/apply-stage2-caps.ts";
 import {
   isPromptEvalAgent,
   readAgentBodyFromDisk,
@@ -119,6 +120,16 @@ function buildInputForFixture(agent: PromptEvalAgent, testDir: string): { input:
   if (agent === "writer-destaque") {
     const article = readApprovedHighlight(approvedJsonPath, WRITER_DESTAQUE_SLOT);
     const otherTitles = readApprovedHighlightTitles(approvedJsonPath).filter((_, idx) => idx !== WRITER_DESTAQUE_SLOT - 1);
+    // #8168 fleet review, finding 5: diferente de `readApprovedHighlight` (que LANÇA se
+    // url/title estiverem ausentes), `readApprovedHighlightTitles` devolve "" em silêncio por
+    // título ausente — e uma edição de 2 destaques (legítima, CLAUDE.md "2 ou 3, nunca 4") sempre
+    // produz só 1 peer title aqui. Nunca lançar (regressão pra edições de 2 destaques), só avisar
+    // antes de injetar peer title vazio num prompt REAL (--live gasta token mesmo assim).
+    if (otherTitles.length < 2 || otherTitles.slice(0, 2).some((t) => !t)) {
+      console.warn(
+        `[eval-prompt-regression] fixture com peer title incompleto (highlights totais no fixture: ${otherTitles.length + 1}, esperado 3) — peer_titles vai incluir string vazia no prompt real do writer-destaque. Esperado pra edições legítimas de 2 destaques; nunca deveria passar despercebido.`,
+      );
+    }
     const peerTitles: [string, string] = [otherTitles[0] ?? "", otherTitles[1] ?? ""];
     const outPathRel = `_internal/02-d${WRITER_DESTAQUE_SLOT}-draft.md`;
     const imagePromptOutPathRel = `_internal/02-d${WRITER_DESTAQUE_SLOT}-prompt.md`;
@@ -159,6 +170,20 @@ function runSideForEdition(params: {
     force: true,
   });
   const testDir = join(params.editionsRootDir, manifest.test_dir_name);
+
+  // #8168 fleet review, finding 3: `newsletter-lint-gate-blocking`
+  // (`gradeStage2LintReport`) exige `_internal/01-approved-capped.json`, que o preset "2" de
+  // `replay-stage-input.ts` nunca copia (só congela `01-approved.json`). Deriva o capped a
+  // partir do approved já presente no fixture, reusando o MESMO helper puro que a produção usa
+  // (`applyStage2Caps`) — nunca uma aproximação inventada. Sem isso, o grader ficava
+  // permanentemente not-evaluable pros dois agents (achado unânime do fleet review).
+  const approvedJsonPathForCaps = join(testDir, "_internal", "01-approved.json");
+  if (existsSync(approvedJsonPathForCaps)) {
+    const approved = JSON.parse(readFileSync(approvedJsonPathForCaps, "utf8")) as ApprovedJson;
+    const { approved: capped } = applyStage2Caps(approved);
+    writeFileSync(join(testDir, "_internal", "01-approved-capped.json"), JSON.stringify(capped, null, 2) + "\n", "utf8");
+  }
+
   const { input, producedFileAbsPath } = buildInputForFixture(params.agent, testDir);
 
   const outcomes = runAgentRepetitions({
@@ -175,6 +200,17 @@ function runSideForEdition(params: {
   });
 
   if (params.live && !params.dryRun) {
+    // #8168 fleet review, finding 4: repetições com `usage === null` (falha de parse do JSON de
+    // resposta do CLI) eram filtradas fora de `costEntries` sem nenhum log — se TODAS as
+    // repetições de um lado falhassem o parse, `writeCostArtifact` nem era chamado, silêncio
+    // total contradizendo "custo MEDIDO, não estimado" (docstring do módulo).
+    for (const o of outcomes) {
+      if (!o.dryRun && o.usage === null) {
+        console.error(
+          `[eval-prompt-regression] ${label} repetição ${o.repetitionIndex}: usage null (JSON da resposta do CLI não parseou) — esta repetição NÃO entra em cost.json, custo medido fica incompleto pra ela.`,
+        );
+      }
+    }
     const costEntries: AgentCostEntry[] = outcomes
       .filter((o) => o.usage !== null)
       .map((o) => ({

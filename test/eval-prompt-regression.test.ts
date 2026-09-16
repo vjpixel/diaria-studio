@@ -132,13 +132,18 @@ describe("runPromptRegressionEval — live injetado (#8143, sem spawn real)", ()
         },
       });
 
-      // como o outPath real não foi escrito pelo callClaudeCliFn de fato (só simulado no JSON), o rawText lido do
-      // disco fica vazio — este teste cobre o WIRING (fixtures, custo, deltas), não o parsing do texto produzido em
-      // si (isso já é coberto por test/prompt-regression-eval.test.ts::runAgentRepetitions).
+      // como o outPath real não foi escrito pelo callClaudeCliFn de fato (só simulado no JSON), o
+      // arquivo de output esperado nunca aparece no disco — desde a correção do #8168 (fleet
+      // review da PR #8168, finding crítico) isso faz `rawText` sair `null` (nunca uma string
+      // vazia fabricada) e `producedOutput: false`. Este teste cobre o WIRING (fixtures, custo,
+      // deltas), não o parsing do texto produzido em si (isso já é coberto por
+      // test/prompt-regression-eval.test.ts::runAgentRepetitions).
       const [edition] = report.editions;
       assert.equal(edition.baseline.outcomes.length, 1);
       assert.equal(edition.candidate.outcomes.length, 1);
       assert.equal(edition.baseline.outcomes[0].dryRun, false);
+      assert.equal(edition.baseline.outcomes[0].producedOutput, false, "outPath nunca escrito pelo callClaudeCliFn simulado — nunca deve virar string vazia fabricada");
+      assert.equal(edition.baseline.outcomes[0].rawText, null);
       assert.ok(edition.baseline.outcomes[0].usage);
     });
   });

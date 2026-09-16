@@ -15,9 +15,13 @@
  *   importa (`checkCarouselTextOverflow`, `checkBannedLexicon`,
  *   `runStage2LintReport`) + `checkTitleLengths` (`lint-checks/
  *   title-length.ts`) pro título ≤52 chars. **Zero checagem nova.**
- * - **Desvio deliberado do texto da issue**: a issue cita
+ * - **Desvio deliberado de uma leitura possível do texto da issue**: uma
+ *   leitura possível do critério de título da issue seria usar
  *   `title_char_count` de `ScoringFeatureRow` (`scoring-features.ts`) como
- *   a fonte do grader de título. Esse campo é `title.length` do artigo de
+ *   a fonte do grader de título — mas a issue #8143 não cita esse campo
+ *   literalmente (conferido via `gh issue view 8143 --json body -q .body`);
+ *   é uma inferência razoável sobre o critério, não uma citação. De
+ *   qualquer forma, esse campo é `title.length` do artigo de
  *   ORIGEM (`01-approved.json`/`01-categorized.json`) — um INPUT que não
  *   muda entre prompt-master e prompt-candidato, porque nenhum dos dois
  *   reescreve o artigo de origem. Usá-lo produziria o MESMO valor nos dois
@@ -66,7 +70,7 @@
  * de `distill-prompt-corrections.ts`.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { checkCarouselTextOverflow } from "./invariant-checks/stage-4.ts";
@@ -112,7 +116,10 @@ function gradeBannedLexicon(rawText: string): GraderVerdict {
     const report = checkBannedLexicon(rawText);
     return evaluableVerdict("banned-lexicon", report.ok, report.errors);
   } catch (err) {
-    return evaluableVerdict("banned-lexicon", false, { error: err instanceof Error ? err.message : String(err) });
+    // #8168 fleet review: exceção interna (bug de regex, TypeError) é "grader não
+    // pôde rodar" (evaluable: false), NUNCA "grader rodou e reprovou" (ok: false) —
+    // as duas eram indistinguíveis antes desta correção.
+    return notEvaluableVerdict("banned-lexicon", `exceção ao rodar o grader: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -131,7 +138,8 @@ function gradeTitleLength(agent: PromptEvalAgent, rawText: string): GraderVerdic
     const report = checkTitleLengths(rawText);
     return evaluableVerdict("title-length-52-chars", report.ok, report.errors);
   } catch (err) {
-    return evaluableVerdict("title-length-52-chars", false, { error: err instanceof Error ? err.message : String(err) });
+    // #8168 fleet review: ver comentário equivalente em gradeBannedLexicon acima.
+    return notEvaluableVerdict("title-length-52-chars", `exceção ao rodar o grader: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -155,7 +163,8 @@ function gradeCarouselOverflow(agent: PromptEvalAgent, editionDir: string): Grad
     const violations = checkCarouselTextOverflow(editionDir);
     return evaluableVerdict("carousel-text-overflow", violations.length === 0, violations);
   } catch (err) {
-    return evaluableVerdict("carousel-text-overflow", false, { error: err instanceof Error ? err.message : String(err) });
+    // #8168 fleet review: ver comentário equivalente em gradeBannedLexicon acima.
+    return notEvaluableVerdict("carousel-text-overflow", `exceção ao rodar o grader: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -165,11 +174,19 @@ function gradeCarouselOverflow(agent: PromptEvalAgent, editionDir: string): Grad
  * `editionDir`. Este agregado cobre MÚLTIPLOS checks de uma vez (url-bucket,
  * section-counts, destaque-min/max-chars, why-matters-length,
  * aprofunde-format) — todos gate-blocking do Stage 2 real. Só avaliável
- * quando o chamador montou esse par de arquivos no fixture (best-effort:
- * `runAgentRepetitions` faz isso pro `writer-destaque`, escrevendo o
- * fragmento produzido como se fosse o `02-draft.md` inteiro — aproximação
- * aceitável pra 1 destaque isolado, já que os checks operam por destaque
- * dentro do documento).
+ * quando o chamador montou esse par de arquivos no fixture: `runAgentRepetitions`
+ * faz isso pro `writer-destaque` (escreve o fragmento produzido em
+ * `_internal/02-draft.md` — aproximação aceitável pra 1 destaque isolado, já
+ * que os checks operam por destaque dentro do documento) e
+ * `runSideForEdition` (`eval-prompt-regression.ts`) deriva
+ * `_internal/01-approved-capped.json` a partir do `01-approved.json` já
+ * congelado no fixture, reusando o MESMO helper puro que a produção usa
+ * (`applyStage2Caps`, `apply-stage2-caps.ts`) — nunca uma aproximação
+ * inventada. **`social-writer` nunca escreve `02-draft.md`** (não é o agent
+ * que produz destaque) — pra esse agent o grader segue `not-evaluable` por
+ * desenho, não por gap (achado unânime do fleet review da PR #8168: até
+ * esta correção, `_internal/02-draft.md` nunca era escrito por ninguém e o
+ * grader era `not-evaluable` 100% do tempo pros dois agents).
  */
 function gradeStage2LintReport(editionDir: string, rootDir: string): GraderVerdict {
   const draftPath = join(editionDir, "_internal", "02-draft.md");
@@ -180,18 +197,44 @@ function gradeStage2LintReport(editionDir: string, rootDir: string): GraderVerdi
     const report = runStage2LintReport(editionDir, rootDir);
     return evaluableVerdict("newsletter-lint-gate-blocking", report.passed, report.checks);
   } catch (err) {
-    return evaluableVerdict("newsletter-lint-gate-blocking", false, { error: err instanceof Error ? err.message : String(err) });
+    // #8168 fleet review: ver comentário equivalente em gradeBannedLexicon acima.
+    return notEvaluableVerdict("newsletter-lint-gate-blocking", `exceção ao rodar o grader: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/** Nomes dos 4 graders — fonte única pra `missingOutputVerdicts` nunca divergir dos nomes reais emitidos pelos `grade*` acima. */
+const MECHANICAL_GRADER_NAMES = ["banned-lexicon", "title-length-52-chars", "carousel-text-overflow", "newsletter-lint-gate-blocking"] as const;
+
+/**
+ * `rawText === null` (#8168 fleet review, finding crítico confirmado por
+ * `pr-test-analyzer` e `silent-failure-hunter`): o agent rodou sem lançar
+ * exceção, mas o arquivo de output esperado nunca apareceu no disco (turnos
+ * esgotados, recusa, path errado, truncamento). Antes desta correção, esse
+ * caso virava `rawText: ""` e os 4 graders rodavam sobre string vazia — os 3
+ * graders de texto (`banned-lexicon`, `title-length-52-chars`,
+ * `carousel-text-overflow`) aprovam trivialmente string vazia
+ * (`ok: true`), então uma FALHA TOTAL do agent podia sair reportada como
+ * `"improved"` na comparação pareada — o pior caso de regressão relatado
+ * como melhoria. Marca os 4 graders `not-evaluable` em vez de fabricar
+ * qualquer veredito sobre dado que não existe.
+ */
+function missingOutputVerdicts(reason: string): GraderVerdict[] {
+  return MECHANICAL_GRADER_NAMES.map((name) => notEvaluableVerdict(name, reason));
 }
 
 /**
  * Roda os 4 graders reusados (#8143 escopo) sobre 1 execução do agent.
- * `rawText` é o texto que o agent gravou no `out_path` pedido;
+ * `rawText` é o texto que o agent gravou no `out_path` pedido, ou `null`
+ * quando o arquivo de output nunca apareceu no disco (ver
+ * `missingOutputVerdicts` acima — `null` NUNCA é tratado como `""`).
  * `editionDir` é o diretório de fixture ABSOLUTO usado como `cwd` da
  * execução (onde `03-social.md`/`_internal/02-draft.md` já devem ter sido
  * escritos pelo chamador quando aplicável — ver `runAgentRepetitions`).
  */
-export function runMechanicalGraders(agent: PromptEvalAgent, rawText: string, editionDir: string, rootDir: string): GraderVerdict[] {
+export function runMechanicalGraders(agent: PromptEvalAgent, rawText: string | null, editionDir: string, rootDir: string): GraderVerdict[] {
+  if (rawText === null) {
+    return missingOutputVerdicts("agent não produziu o arquivo de output esperado — grader não avalia string vazia fabricada.");
+  }
   return [
     gradeBannedLexicon(rawText),
     gradeTitleLength(agent, rawText),
@@ -502,6 +545,15 @@ export interface AgentRunOutcome {
   repetitionIndex: number;
   dryRun: boolean;
   rawText: string | null;
+  /**
+   * `false` quando `dryRun` também é `true` (nada foi produzido, por
+   * desenho), OU quando a execução real rodou sem lançar exceção mas o
+   * arquivo de output esperado nunca apareceu no disco (#8168 fleet review,
+   * finding crítico). Distingue "não produziu nada" de "produziu string
+   * vazia legítima" — as duas eram indistinguíveis antes desta correção
+   * (`rawText: ""` fabricado nos dois casos).
+   */
+  producedOutput: boolean;
   verdicts: GraderVerdict[];
   usage: ParsedCliUsage | null;
 }
@@ -519,7 +571,7 @@ export function runAgentRepetitions(opts: RunAgentRepetitionsOptions): AgentRunO
 
   for (let i = 0; i < opts.repetitions; i++) {
     if (opts.dryRun) {
-      outcomes.push({ repetitionIndex: i, dryRun: true, rawText: null, verdicts: [], usage: null });
+      outcomes.push({ repetitionIndex: i, dryRun: true, rawText: null, producedOutput: false, verdicts: [], usage: null });
       continue;
     }
 
@@ -527,12 +579,34 @@ export function runAgentRepetitions(opts: RunAgentRepetitionsOptions): AgentRunO
     const raw = callFn(prompt, { cwd: opts.cwd, model: opts.model ?? "sonnet", outputFormat: "json" });
     const usage = parseClaudeCliJsonResult(raw);
 
-    const rawText = existsSync(opts.producedFileAbsPath) ? readFileSync(opts.producedFileAbsPath, "utf8") : "";
+    const producedOutput = existsSync(opts.producedFileAbsPath);
+    if (!producedOutput) {
+      // #8168 fleet review, finding crítico (pr-test-analyzer + silent-failure-hunter,
+      // confirmado independentemente pelos dois): o CLI voltou sem lançar exceção, mas o
+      // arquivo esperado nunca apareceu — turnos esgotados, recusa, path errado, truncamento.
+      // NUNCA tratar isso como `rawText: ""` (string vazia passa trivialmente nos 3 graders
+      // de texto, transformando falha total do agent em "improved" na comparação pareada).
+      console.error(
+        `[prompt-regression-eval] repetição ${i} (${opts.agent}): CLI retornou sem lançar exceção, mas ${opts.producedFileAbsPath} não existe no disco — marcando os 4 graders como not-evaluable, nunca fabricando "ok" sobre string vazia.`,
+      );
+      const verdicts = runMechanicalGraders(opts.agent, null, opts.editionDirForGrading, opts.rootDir);
+      outcomes.push({ repetitionIndex: i, dryRun: false, rawText: null, producedOutput: false, verdicts, usage });
+      continue;
+    }
+
+    const rawText = readFileSync(opts.producedFileAbsPath, "utf8");
     if (opts.agent === "social-writer") {
       writeFileSync(join(opts.editionDirForGrading, "03-social.md"), wrapSocialWriterOutputForGrading(rawText), "utf8");
+    } else if (opts.agent === "writer-destaque") {
+      // #8168 fleet review, finding 3: escreve o fragmento produzido como `_internal/02-draft.md`
+      // pra `newsletter-lint-gate-blocking` (`gradeStage2LintReport`) ter o par de arquivos que
+      // exige — companion de `runSideForEdition` (`eval-prompt-regression.ts`), que deriva
+      // `_internal/01-approved-capped.json` no mesmo fixture.
+      mkdirSync(join(opts.editionDirForGrading, "_internal"), { recursive: true });
+      writeFileSync(join(opts.editionDirForGrading, "_internal", "02-draft.md"), rawText, "utf8");
     }
     const verdicts = runMechanicalGraders(opts.agent, rawText, opts.editionDirForGrading, opts.rootDir);
-    outcomes.push({ repetitionIndex: i, dryRun: false, rawText, verdicts, usage });
+    outcomes.push({ repetitionIndex: i, dryRun: false, rawText, producedOutput: true, verdicts, usage });
   }
 
   return outcomes;
