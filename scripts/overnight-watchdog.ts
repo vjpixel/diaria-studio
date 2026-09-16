@@ -579,6 +579,27 @@ export function hasHealthyIdleSession(rootDir: string, kind: WatchableKind, nowM
  * `session-registry.ts`, um mecanismo diferente). `readOvernightSessionMarkerPhase`
  * já é fail-soft (marker ausente/corrompido → `null`), então esta função
  * nunca precisa de try/catch próprio.
+ *
+ * **Escopo aceito conscientemente (achado do fleet review desta PR, #8174):**
+ * `phase: "briefing"` cobre a Fase 0 INTEIRA (passos 1-8 da SKILL — sync,
+ * varredura, classificação, o `AskUserQuestion` em si quando existe, e
+ * confirmação final) — não só a janela em que o `AskUserQuestion` está de
+ * fato pendente. Como a maioria das rodadas não tem nenhuma issue
+ * `precisa-resposta` (#2640/#7493: 20 rodadas seguidas sem uma, o caso
+ * comum), a maior parte do tempo em `phase: "briefing"` NEM chega a chamar
+ * `AskUserQuestion` — é só a Fase 0 rodando suas etapas normais (git, `gh`,
+ * classificação de issues), que deveriam levar segundos a poucos minutos,
+ * não horas. Um hang genuíno nesses passos (rede lenta, `gh` travado) fica
+ * mascarado até o phase virar `"autonomous"` (fim da Fase 0), em vez de
+ * disparar em 45min como aconteceria em qualquer outro ponto da rodada.
+ *
+ * Decisão: aceitar esse escopo mais amplo em vez de introduzir uma 3ª fase
+ * granular (`"awaiting-editor"`, só ao redor do `AskUserQuestion` em si) —
+ * o caso que motivou esta issue (espera real de horas) é bem mais provável
+ * e mais custoso (17 alarmes falsos numa única rodada) do que um hang nos
+ * passos 1-8, que historicamente nunca foi observado. Reavaliar se essa
+ * suposição mudar (um hang real na Fase 0 passando despercebido por >45min
+ * seria o sinal de que vale o custo de instrumentar a fase granular).
  */
 export function isOvernightAwaitingBriefingResponse(rootDir: string, kind: WatchableKind): boolean {
   return kind === "overnight" && readOvernightSessionMarkerPhase(rootDir) === "briefing";
