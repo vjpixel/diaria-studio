@@ -1,0 +1,56 @@
+name: Agent eval gate (#8144)
+
+# Gatilho barato (roda no Actions) do eval de regressão de prompt da #8143.
+# Detecta se o diff muda corpo ou `model:` de um agent com harness de replay
+# mapeado (writer-destaque, social-writer — scripts/lib/prompt-regression-eval.ts)
+# e, se mudar, exige a label "agent-eval:passed" — aplicada pela esteira
+# overnight/develop DEPOIS de rodar `scripts/run-agent-eval-for-pr.ts --live`
+# (sessão autenticada claude.ai, #5608 — o runner do Actions NUNCA dispara o
+# agent de verdade, só decide SE precisa).
+#
+# ⚠️ NASCE PENDENTE de virar required check (#8144, mesmo espírito do #7978
+# — editorial-signoff-required.yml — NUNCA alterar proteção de branch
+# autonomamente). Rodar e reportar aqui é só metade do mecanismo: pra
+# bloquear merge de verdade, o editor precisa tornar este check OBRIGATÓRIO
+# manualmente:
+#   Settings → Branches → master → Require status checks to pass →
+#   adicionar "Check agent-eval gate" (o nome do job abaixo).
+# Até esse passo manual, este workflow é só um sinal visível na PR
+# (vermelho/verde), não um bloqueio mecânico de merge — warning-only por
+# desenho (ver corpo da issue #8144, "Fora de escopo").
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+concurrency:
+  group: agent-eval-required-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-agent-eval:
+    name: Check agent-eval gate
+    # Fora de escopo pedir isto pra PRs de bot (#8144, "Fora de escopo") —
+    # Dependabot nunca toca .claude/agents/*.md, mas pular de cara é mais
+    # barato que deixar o script decidir isso via API.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run check-agent-eval-required
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npx tsx scripts/check-agent-eval-required.ts
