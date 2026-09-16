@@ -12,9 +12,16 @@
  * pro Beehiiv/Worker via `upload-html-public.ts`, que fica intacto.
  *
  * Uso (CLI):
- *   npx tsx scripts/serve-preview.ts --file <path/para/preview.html> [--port N] [--open] \
+ *   npx tsx scripts/serve-preview.ts --file <path/para/preview.html> [--port N] [--open] [--watch] \
  *     [--persist-to <json> --field <nome>]
  *   npx tsx scripts/serve-preview.ts --stop-pid <PID>   # teardown (#3546)
+ *
+ * `--watch` (#8123 Fatia 1) — fallback quando o Studio /revisao não está
+ * rodando: observa o diretório servido e injeta live-reload (SSE em
+ * `GET /__live-reload`) na resposta HTML principal — qualquer processo que
+ * reescreva o arquivo servido dispara o reload no browser, sem re-render
+ * próprio (mesmo princípio "conteúdo, não código" de `review-file-watch.ts`,
+ * usado pelo Studio). Sem `--watch`, comportamento idêntico ao pré-#8123.
  *
  * `--port` omitido ou `0` = porta efêmera OS-assigned (evita colisão entre
  * edições/sessões concorrentes). `--open` tenta abrir o browser default do
@@ -44,7 +51,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { exec } from "node:child_process";
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, existsSync, statSync, watch, type FSWatcher } from "node:fs";
 import { resolve, dirname, basename, join, extname, normalize, sep } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
@@ -80,6 +87,18 @@ export interface PreviewServerOptions {
   filePath: string;
   /** Porta fixa; omitida ou `0` = porta efêmera OS-assigned. */
   port?: number;
+  /** #8123 Fatia 1 (fallback quando o Studio /revisao não está rodando):
+   * observa o diretório servido (mesmo `rootDir` de `filePath`) e injeta
+   * live-reload via SSE (`GET /__live-reload`) na resposta HTML principal —
+   * qualquer script externo que re-renderize o arquivo (ex: re-rodar o
+   * comando que gerou `preview.html`) dispara o reload no browser sem ação
+   * manual. NÃO re-renderiza nada por conta própria — só reflete o que já
+   * está em disco, mesmo princípio "conteúdo, não código" do watcher do
+   * Studio (`review-file-watch.ts`). */
+  watch?: boolean;
+  /** Debounce (ms) do watcher — coalesce um burst de writes numa única
+   * notificação de reload. Default 300ms, mesmo valor da issue #8123. */
+  watchDebounceMs?: number;
 }
 
 export interface PreviewServer {
@@ -106,9 +125,62 @@ export async function startPreviewServer(
   const rootDir = dirname(filePath);
   const fileName = basename(filePath);
 
+  // #8123 Fatia 1: script injetado na resposta HTML quando `opts.watch` está
+  // ligado — abre uma conexão SSE em /__live-reload e recarrega a página
+  // assim que o servidor notificar uma mudança em disco. Sem efeito nenhum
+  // quando `opts.watch` é falso (comportamento pré-#8123 inalterado).
+  const LIVE_RELOAD_SNIPPET =
+    '<script>(function(){try{var s=new EventSource("/__live-reload");' +
+    "s.onmessage=function(){location.reload();};}catch(e){}})();</script>";
+
+  const liveReloadClients = new Set<ServerResponse>();
+  let fileWatcher: FSWatcher | null = null;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  if (opts.watch) {
+    const debounceMs = opts.watchDebounceMs ?? 300;
+    const notifyClients = () => {
+      for (const client of liveReloadClients) {
+        try {
+          client.write("data: reload\n\n");
+        } catch {
+          // cliente já desconectou — 'close' abaixo já remove do Set.
+        }
+      }
+    };
+    const scheduleNotify = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        notifyClients();
+      }, debounceMs);
+      debounceTimer.unref?.();
+    };
+    try {
+      fileWatcher = watch(rootDir, { recursive: true }, () => scheduleNotify());
+      fileWatcher.on("error", () => {
+        // best-effort — sem watcher, o preview simplesmente não auto-recarrega;
+        // refresh manual do browser continua funcionando normalmente.
+      });
+    } catch {
+      // plataforma sem suporte a recursive watch — sem live-reload, degrada
+      // pro comportamento pré-#8123 (refresh manual).
+    }
+  }
+
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     try {
       const urlPath = decodeURIComponent((req.url ?? "/").split("?")[0]);
+      if (opts.watch && urlPath === "/__live-reload") {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        });
+        res.write(": connected\n\n");
+        liveReloadClients.add(res);
+        req.on("close", () => liveReloadClients.delete(res));
+        return;
+      }
       const relPath = urlPath === "/" ? fileName : urlPath.replace(/^\/+/, "");
       const resolved = normalize(join(rootDir, relPath));
       // Guard de path traversal: `resolved` precisa estar DENTRO de rootDir —
@@ -123,9 +195,23 @@ export async function startPreviewServer(
         res.end("Not found");
         return;
       }
+      const contentType = mimeFor(resolved);
+      // #8123 Fatia 1: injeta o snippet de live-reload só nas respostas HTML
+      // quando --watch está ligado — outros tipos (imagem, CSS) servidos sem
+      // alteração, e sem `opts.watch` o comportamento é idêntico ao anterior.
+      if (opts.watch && contentType.startsWith("text/html")) {
+        const html = readFileSync(resolved, "utf8");
+        const withSnippet = html.includes("</body>")
+          ? html.replace("</body>", `${LIVE_RELOAD_SNIPPET}</body>`)
+          : html + LIVE_RELOAD_SNIPPET;
+        const body = Buffer.from(withSnippet, "utf8");
+        res.writeHead(200, { "Content-Type": contentType, "Content-Length": body.length });
+        res.end(body);
+        return;
+      }
       const body = readFileSync(resolved);
       res.writeHead(200, {
-        "Content-Type": mimeFor(resolved),
+        "Content-Type": contentType,
         "Content-Length": body.length,
       });
       res.end(body);
@@ -156,6 +242,23 @@ export async function startPreviewServer(
           return;
         }
         closed = true;
+        // #8123 Fatia 1: conexões SSE de /__live-reload ficam abertas
+        // indefinidamente por design — sem encerrá-las aqui, `server.close()`
+        // nunca chamaria o callback (aguarda TODAS as conexões fecharem).
+        if (debounceTimer) clearTimeout(debounceTimer);
+        try {
+          fileWatcher?.close();
+        } catch {
+          // no-op
+        }
+        for (const client of liveReloadClients) {
+          try {
+            client.end();
+          } catch {
+            // no-op
+          }
+        }
+        liveReloadClients.clear();
         server.close((err) => (err ? reject(err) : resolveClose()));
       }),
   };
@@ -216,7 +319,7 @@ async function main(): Promise<void> {
   const file = values["file"];
   if (!file) {
     console.error(
-      "Uso: serve-preview.ts --file <path.html> [--port N] [--open] [--persist-to <json> --field <nome>]\n" +
+      "Uso: serve-preview.ts --file <path.html> [--port N] [--open] [--watch] [--persist-to <json> --field <nome>]\n" +
         "     serve-preview.ts --stop-pid <PID>",
     );
     process.exit(2);
@@ -226,8 +329,12 @@ async function main(): Promise<void> {
     console.error(`[serve-preview] --port inválido: ${values["port"]}`);
     process.exit(2);
   }
+  // #8123 Fatia 1: fallback de preview ao vivo quando o Studio /revisao não
+  // está rodando — mesmo watcher+debounce+SSE, sem re-renderizar nada por
+  // conta própria (só reflete o que outro processo já escreveu em disco).
+  const watchFlag = flags.has("watch");
 
-  const server = await startPreviewServer({ filePath: file, port: portArg });
+  const server = await startPreviewServer({ filePath: file, port: portArg, watch: watchFlag });
 
   console.log(
     JSON.stringify(

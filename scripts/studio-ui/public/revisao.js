@@ -127,6 +127,7 @@ const el = {
   diffView: document.getElementById("rv-diff-view"),
   previewFrame: document.getElementById("rv-preview-frame"),
   previewRefreshBtn: document.getElementById("rv-preview-refresh-btn"),
+  previewVersion: document.getElementById("rv-preview-version"),
   previewHint: document.getElementById("rv-preview-hint"),
   previewDraftStatus: document.getElementById("rv-preview-draft-status"),
   inlineEditStatus: document.getElementById("rv-inline-edit-status"),
@@ -140,6 +141,56 @@ const el = {
 function setConn(status) {
   el.connDot.className = "dot " + status;
   el.connLabel.textContent = status === "ok" ? "conectado" : status === "down" ? "desconectado" : "conectando…";
+}
+
+// #8123 Fatia 1: carimbo de versão do preview ao vivo — hora (com segundos,
+// granularidade fina o bastante pra confirmar "acabou de atualizar" dentro
+// do mesmo minuto) + hash curto do conteúdo combinado 02-reviewed.md +
+// 03-social.md, recebido via evento `review` de /api/events?edition=AAMMDD.
+function renderPreviewVersion(stamp) {
+  if (!el.previewVersion) return;
+  if (!stamp || !stamp.hash) {
+    el.previewVersion.textContent = "";
+    return;
+  }
+  let time;
+  try {
+    time = new Date(stamp.generatedAt).toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  } catch {
+    time = stamp.generatedAt;
+  }
+  el.previewVersion.textContent = `Preview ao vivo — atualizado ${time} (v${stamp.hash})`;
+}
+
+// #8123 Fatia 1: assina o evento `review` de /api/events?edition=AAMMDD —
+// dispara sempre que 02-reviewed.md/03-social.md/imagens/data/snippets
+// mudarem no disco (outra sessão, script, edição manual), sem depender de
+// nenhuma ação no painel. Guard `!dirty` (mesmo de rv:reviewed-saved acima):
+// nunca atropela texto ainda não salvo no textarea desta mesma aba.
+function bindReviewFileWatch() {
+  if (!aammdd || typeof EventSource === "undefined") return;
+  try {
+    const source = new EventSource(`/api/events?edition=${encodeURIComponent(aammdd)}`);
+    source.addEventListener("review", (ev) => {
+      let stamp;
+      try {
+        stamp = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (!stamp || stamp.aammdd !== aammdd) return;
+      renderPreviewVersion(stamp);
+      if ((currentSlug === "reviewed" || currentSlug === "social") && !dirty) {
+        loadFile(currentSlug, { force: true });
+      }
+    });
+    source.addEventListener("error", () => {
+      // #8123: fail-soft — sem o SSE, o painel volta ao comportamento
+      // pré-existente (refresh manual/por ação); nunca trava a página.
+    });
+  } catch (err) {
+    console.error("EventSource de preview ao vivo (#8123) falhou ao abrir:", err);
+  }
 }
 
 function fmtTime(iso) {
@@ -1037,6 +1088,7 @@ async function init() {
   if (!exists) return;
 
   bindEvents();
+  bindReviewFileWatch();
   renderTabs();
   // #3669 bug 2a / #3672 achado 3: sem try/catch, uma falha de rede em
   // QUALQUER um dos dois `await`s abaixo propagava e nunca chegava em
