@@ -166,6 +166,41 @@ export function hasPartialCoverage(daysCovered: readonly string[], expectedDays:
   return expectedDays.some((d) => !covered.has(d));
 }
 
+export interface MissingDaysClassification {
+  /** Dias ausentes já consolidados — uso zero (dia ocioso), não dúvida. */
+  idle: string[];
+  /** Dias ausentes que ainda podem não ter consolidado (só D-1). */
+  pending: string[];
+}
+
+/**
+ * Pura — separa os dias ausentes da janela em "ocioso" e "pendente".
+ *
+ * #8010 (decisão do editor, 16/09/2026) — revê o ruído aceito no #6992:
+ * depois da #7649 o gasto no gateway caiu a ~US$ 0,05/dia e dia sem NENHUMA
+ * chamada virou rotina; dia sem chamada não aparece no `/activity`, então
+ * "cobertura parcial" passou a sair quase todo dia (medido: 11/09 e 13/09
+ * ausentes, ambos sem uso). A premissa que resolve: **vazamento sempre gera
+ * linha**. Ausência só é ambígua enquanto o dia pode não ter consolidado, e a
+ * consolidação leva ~1 dia — então só o dia mais recente da janela (D-1) é
+ * dúvida. D-1 ausente não alarma: a próxima execução o cobre de novo (vira
+ * D-2 na janela de 3 dias), o que limita o atraso de detecção a +1 dia.
+ */
+export function classifyMissingDays(
+  daysCovered: readonly string[],
+  expectedDays: readonly string[],
+): MissingDaysClassification {
+  const covered = new Set(daysCovered);
+  const latest = expectedDays.length > 0 ? [...expectedDays].sort().at(-1) : undefined;
+  const idle: string[] = [];
+  const pending: string[] = [];
+  for (const d of expectedDays) {
+    if (covered.has(d)) continue;
+    (d === latest ? pending : idle).push(d);
+  }
+  return { idle, pending };
+}
+
 /**
  * Pura — agrega as linhas do gateway e devolve o que foi cobrado fora da
  * allowlist. Linhas do MESMO modelo em dias diferentes ficam separadas de
