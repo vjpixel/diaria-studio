@@ -1476,3 +1476,50 @@ describe("#8117 — Diaria-Clarice-Unblock-Suspended registrada, diária às 08:
     assert.ok(!others.some((s) => s.script === "scripts/clarice-unblock-orphaned-selections.ts"));
   });
 });
+
+describe("#8153 — Diaria-Remediate-Never-Armed-Tasks registrada, diária, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, sem args (default = aplica de verdade)", () => {
+    const t = getScheduledTaskByName("Diaria-Remediate-Never-Armed-Tasks");
+    assert.ok(t, "Diaria-Remediate-Never-Armed-Tasks ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/remediate-never-armed-tasks.ts"],
+    );
+    assert.equal(t!.steps[0].args, undefined);
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 18, minute: 15 });
+    assert.equal(t!.issue, "#8153");
+  });
+
+  it("roda com enabled default (auto-armar tudo, sem gate/campo autoArm — decisão do editor #8153)", () => {
+    const t = getScheduledTaskByName("Diaria-Remediate-Never-Armed-Tasks")!;
+    assert.equal(t.enabled, undefined, "não deve declarar enabled explícito — default true é o comportamento pedido");
+  });
+
+  it("horário de 18:15 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Remediate-Never-Armed-Tasks" && t.schedule.hour === 18 && t.schedule.minute === 15,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("roda ANTES de Diaria-Task-Never-Armed-Alarm (18:30) — o alarme só deveria sobrar como sinal de auto-arme falho", () => {
+    const remediate = getScheduledTaskByName("Diaria-Remediate-Never-Armed-Tasks")!;
+    const alarm = getScheduledTaskByName("Diaria-Task-Never-Armed-Alarm")!;
+    assert.equal(remediate.schedule.kind, "daily");
+    assert.equal(alarm.schedule.kind, "daily");
+    if (remediate.schedule.kind === "daily" && alarm.schedule.kind === "daily") {
+      const remediateMinutes = remediate.schedule.hour * 60 + remediate.schedule.minute;
+      const alarmMinutes = alarm.schedule.hour * 60 + alarm.schedule.minute;
+      assert.ok(remediateMinutes < alarmMinutes, "Remediate-Never-Armed-Tasks deve rodar antes de Task-Never-Armed-Alarm");
+    }
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Remediate-Never-Armed-Tasks").flatMap((t) => t.steps);
+    assert.ok(!others.some((s) => s.script === "scripts/remediate-never-armed-tasks.ts"));
+  });
+});
