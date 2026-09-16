@@ -1300,4 +1300,52 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     const body = await res.text();
     assert.match(body, /id="rv-sanitized-banner"/);
   });
+
+  // #8123 Fatia 1: preview ao vivo dirigido por arquivo — revisao.js assina
+  // o evento `review` de /api/events?edition=AAMMDD e só força reload
+  // (loadFile force:true) quando a aba ativa é reviewed/social E não há
+  // edição não-salva (!dirty) — nunca atropela texto ainda não salvo.
+  it("GET /revisao.js — bindReviewFileWatch() assina /api/events?edition=AAMMDD e reage ao evento `review`", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("function bindReviewFileWatch(");
+    assert.ok(fnStart >= 0, "bindReviewFileWatch deveria existir em revisao.js");
+    const fnEnd = body.indexOf("\nfunction fmtTime", fnStart);
+    assert.ok(fnEnd > fnStart);
+    const fnBody = body.slice(fnStart, fnEnd);
+    assert.match(fnBody, /new EventSource\(`\/api\/events\?edition=\$\{encodeURIComponent\(aammdd\)\}`\)/);
+    assert.match(fnBody, /addEventListener\("review"/);
+    // Guard: só recarrega reviewed/social, e só quando !dirty.
+    assert.match(fnBody, /currentSlug === "reviewed" \|\| currentSlug === "social"/);
+    assert.match(fnBody, /&& !dirty/);
+    assert.match(fnBody, /loadFile\(currentSlug, \{ force: true \}\)/);
+  });
+
+  it("GET /revisao.js — bindReviewFileWatch() fecha a conexão SSE anterior antes de abrir uma nova (retry não vaza EventSource)", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("function bindReviewFileWatch(");
+    assert.ok(fnStart >= 0);
+    const fnEnd = body.indexOf("\nfunction fmtTime", fnStart);
+    assert.ok(fnEnd > fnStart);
+    const fnBody = body.slice(fnStart, fnEnd);
+    assert.match(fnBody, /if \(reviewFileWatchSource\) \{/);
+    assert.match(fnBody, /reviewFileWatchSource\.close\(\)/);
+  });
+
+  it("GET /revisao.js — init() chama bindReviewFileWatch()", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function init(");
+    assert.ok(fnStart >= 0);
+    const fnEnd = body.indexOf("\nel.retryBtn.addEventListener", fnStart);
+    assert.ok(fnEnd > fnStart);
+    assert.match(body.slice(fnStart, fnEnd), /bindReviewFileWatch\(\);/);
+  });
+
+  it("GET /revisao.html contém o carimbo de versão #rv-preview-version", async () => {
+    const res = await fetch(new URL("/revisao.html", server.url));
+    const body = await res.text();
+    assert.match(body, /id="rv-preview-version"/);
+  });
 });

@@ -184,6 +184,100 @@ describe("startPreviewServer", () => {
   });
 });
 
+// #8123 Fatia 1: fallback de preview ao vivo (--watch) quando o Studio
+// /revisao não está rodando — injeta live-reload SSE na resposta HTML e
+// notifica /__live-reload quando o diretório servido muda no disco.
+describe("startPreviewServer --watch (#8123)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "serve-preview-watch-"));
+  const htmlPath = join(dir, "preview.html");
+  writeFileSync(htmlPath, "<html><body>ola mundo</body></html>", "utf8");
+
+  const servers: PreviewServer[] = [];
+  after(async () => {
+    await Promise.all(servers.map((s) => s.close()));
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("sem --watch: resposta HTML não é alterada (sem snippet de live-reload)", async () => {
+    const server = await startPreviewServer({ filePath: htmlPath, port: 0 });
+    servers.push(server);
+    const body = await (await fetch(server.url)).text();
+    assert.equal(body, "<html><body>ola mundo</body></html>");
+    assert.ok(!body.includes("__live-reload"));
+  });
+
+  it("com --watch: injeta o snippet de live-reload na resposta HTML", async () => {
+    const server = await startPreviewServer({ filePath: htmlPath, port: 0, watch: true });
+    servers.push(server);
+    const body = await (await fetch(server.url)).text();
+    assert.match(body, /new EventSource\("\/__live-reload"\)/);
+    assert.ok(body.includes("ola mundo"), "conteúdo original preservado");
+  });
+
+  it("com --watch: GET /__live-reload abre um stream SSE", async () => {
+    const server = await startPreviewServer({ filePath: htmlPath, port: 0, watch: true });
+    servers.push(server);
+    const controller = new AbortController();
+    const res = await fetch(`${server.url.replace(/preview\.html$/, "")}__live-reload`, {
+      signal: controller.signal,
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /text\/event-stream/);
+    controller.abort();
+  });
+
+  it("sem --watch: /__live-reload não vira rota especial (serve como arquivo comum, 404)", async () => {
+    const server = await startPreviewServer({ filePath: htmlPath, port: 0 });
+    servers.push(server);
+    const res = await fetch(`${server.url.replace(/preview\.html$/, "")}__live-reload`);
+    assert.equal(res.status, 404);
+  });
+
+  it("com --watch: mudança no arquivo servido dispara `data: reload` no stream SSE (debounced)", async () => {
+    const server = await startPreviewServer({ filePath: htmlPath, port: 0, watch: true, watchDebounceMs: 30 });
+    servers.push(server);
+
+    const controller = new AbortController();
+    const res = await fetch(`${server.url.replace(/preview\.html$/, "")}__live-reload`, {
+      signal: controller.signal,
+    });
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+
+    // #8123: aguarda o comentário inicial ": connected" antes de escrever —
+    // sem isso a escrita pode acontecer antes do watcher estar de fato
+    // registrado (corrida entre o `fetch` acima e o `watch()` interno).
+    let buffer = "";
+    const connectDeadline = Date.now() + 1000;
+    while (!buffer.includes("connected") && Date.now() < connectDeadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+    }
+
+    writeFileSync(htmlPath, "<html><body>ola mundo v2</body></html>", "utf8");
+
+    const deadline = Date.now() + 2000;
+    while (!buffer.includes("data: reload") && Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+    }
+    controller.abort();
+
+    assert.ok(buffer.includes("data: reload"), "esperava ao menos 1 notificação de reload");
+  });
+
+  it("close() encerra as conexões SSE abertas — sem isso o servidor nunca fecharia", async () => {
+    const server = await startPreviewServer({ filePath: htmlPath, port: 0, watch: true });
+    const controller = new AbortController();
+    await fetch(`${server.url.replace(/preview\.html$/, "")}__live-reload`, { signal: controller.signal });
+
+    await assert.doesNotReject(() => server.close());
+    controller.abort();
+  });
+});
+
 describe("openInBrowser", () => {
   // #3902: o teste original chamava openInBrowser SEM mock, o que disparava
   // exec() real e abria o browser default do editor (127.0.0.1:1/preview.html,

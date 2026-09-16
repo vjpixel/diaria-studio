@@ -9,8 +9,10 @@
  *   - `GET /api/editions/:aammdd` — detalhe de UMA edição via
  *     `studio-edition-detail.ts`;
  *   - `GET /api/events` — SSE: tail do run-log + push de linhas novas
- *     (`run-log-tail.ts`) e mudanças em `plan.json` overnight/develop
- *     (`plan-watch.ts`);
+ *     (`run-log-tail.ts`), mudanças em `plan.json` overnight/develop
+ *     (`plan-watch.ts`), e — com `?edition=AAMMDD` — carimbo de versão do
+ *     conteúdo dessa edição a cada mudança em disco (`review-file-watch.ts`,
+ *     #8123 Fatia 1: preview ao vivo do painel /revisao);
  *   - `GET /tokens.generated.css` — tokens do DS em CSS (`tokens-css.ts`);
  *   - `GET /edicao/:aammdd` — cockpit de UMA edição (#3558): rewrite pra
  *     `public/edicao.html` (SPA shell client-side, sem lógica server nova —
@@ -279,6 +281,9 @@ import { buildStudioState } from "./studio-state.ts";
 import { buildEditionDetail } from "./studio-edition-detail.ts";
 import { tailJsonl, watchRunLogAppends, type RunLogWatchHandle } from "./run-log-tail.ts";
 import { watchPlanFiles, type PlanWatchHandle } from "./plan-watch.ts";
+// #8123 Fatia 1: preview ao vivo dirigido por arquivo — usado só quando
+// `GET /api/events` carrega `?edition=AAMMDD` (painel /revisao).
+import { computeReviewVersion, watchReviewFiles, type ReviewFilesWatchHandle } from "./review-file-watch.ts";
 // #3565: espelho read-only do Studio local — push periódico do snapshot pro
 // KV do worker diaria-dashboard. Ver studio-snapshot-watcher.ts.
 import { watchAndPushStudioSnapshot, type StudioSnapshotWatchHandle } from "./studio-snapshot-watcher.ts";
@@ -525,6 +530,22 @@ function handleApiEvents(
     { pollIntervalMs: opts.pollIntervalMs },
   );
 
+  // #8123 Fatia 1: `?edition=AAMMDD` (painel /revisao) liga o watcher de
+  // conteúdo — 02-reviewed.md/03-social.md/imagens/data/snippets dessa
+  // edição — e empurra um carimbo de versão a cada mudança no disco, sem
+  // depender de nenhuma ação no painel (digitar, trocar de aba, refresh).
+  const reviewAammdd = new URL(req.url ?? "/", "http://localhost").searchParams.get("edition");
+  let reviewWatch: ReviewFilesWatchHandle | null = null;
+  if (reviewAammdd && /^\d{6}$/.test(reviewAammdd)) {
+    res.write(formatSseEvent("review", computeReviewVersion(rootDir, reviewAammdd)));
+    reviewWatch = watchReviewFiles(
+      rootDir,
+      reviewAammdd,
+      (stamp) => res.write(formatSseEvent("review", stamp)),
+      { pollIntervalMs: opts.pollIntervalMs },
+    );
+  }
+
   const heartbeat = setInterval(() => {
     res.write(formatSseComment("heartbeat"));
   }, 20_000);
@@ -533,6 +554,7 @@ function handleApiEvents(
     clearInterval(heartbeat);
     logWatch.close();
     planWatch.close();
+    reviewWatch?.close();
   };
   req.on("close", cleanup);
   res.on("error", cleanup);

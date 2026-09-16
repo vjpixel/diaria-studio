@@ -237,5 +237,33 @@ describe("studio-server (#3555)", () => {
 
     controller.abort();
   });
+
+  it("GET /api/events?edition=AAMMDD empurra um evento `review` com o carimbo de versão (#8123 Fatia 1)", async () => {
+    mkdirSync(join(root, "data", "editions", "260916"), { recursive: true });
+    writeFileSync(join(root, "data", "editions", "260916", "02-reviewed.md"), "conteúdo inicial");
+
+    const controller = new AbortController();
+    const res = await fetch(new URL("/api/events?edition=260916", server.url), { signal: controller.signal });
+    assert.equal(res.status, 200);
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const deadline = Date.now() + 2000;
+    while (!buffer.includes("event: review") && Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+    }
+    controller.abort();
+
+    const reviewBlock = buffer.split("\n\n").find((block) => block.startsWith("event: review"));
+    assert.ok(reviewBlock, "esperava ao menos 1 evento `review` no stream inicial");
+    const dataLine = reviewBlock!.split("\n").find((l) => l.startsWith("data:"));
+    assert.ok(dataLine);
+    const payload = JSON.parse(dataLine!.slice("data:".length).trim());
+    assert.equal(payload.aammdd, "260916");
+    assert.ok(payload.hash);
+  });
 });
 

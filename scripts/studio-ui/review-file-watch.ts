@@ -1,0 +1,238 @@
+/**
+ * review-file-watch.ts (#8123 Fatia 1)
+ *
+ * Preview ao vivo dirigido por arquivo: observa os arquivos gate-facing de
+ * uma edição (`02-reviewed.md`, `03-social.md`, imagens `04-*`,
+ * `_internal/06-public-images.json`, tudo dentro de `editionDir`) mais
+ * `data/snippets/` (boxes de divulgação/CTA, compartilhados entre edições,
+ * #5227) e computa um "carimbo de versão" — hash curto do conteúdo/
+ * fingerprint combinado + hora de geração — sempre que algo muda no disco.
+ *
+ * Não observa o CÓDIGO de render diretamente: no Studio, quem consome este
+ * módulo (`server.ts`, `GET /api/events?edition=AAMMDD`) já roda no mesmo
+ * processo que `enableSourceWatch` reinicia quando `scripts/studio-ui/**`
+ * muda (#5674) — reiniciar o servidor já reflete código novo na próxima
+ * leitura. Este módulo cobre só o lado CONTEÚDO da issue.
+ *
+ * Mesma estratégia dupla de `plan-watch.ts`/`studio-source-watch.ts`:
+ * `fs.watch` recursivo (reação rápida, onde suportado) + polling de baixa
+ * frequência (rede de segurança sobre a junction OneDrive de `data/`, e
+ * fallback em plataformas sem `recursive: true`) — coalescidos por um
+ * debounce curto (~300ms, #8123) pra não disparar 1 evento por escrita
+ * individual quando um script reescreve vários arquivos em sequência
+ * (ex: `image-generate.ts` + `gen-carousel-cards.ts` na mesma cascata).
+ */
+
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
+import { resolve, join, relative } from "node:path";
+import { resolveReviewFile } from "./studio-review.ts";
+
+const AAMMDD_RE = /^\d{6}$/;
+
+export interface ReviewVersionStamp {
+  aammdd: string;
+  /** Hash curto (12 hex) do conteúdo/fingerprint combinado observado.
+   * `null` quando nada existe ainda (edição sem Stage 2 rodado, sem
+   * imagens, sem `data/snippets/`). */
+  hash: string | null;
+  /** ISO timestamp de quando este carimbo foi computado. */
+  generatedAt: string;
+}
+
+function shortHash(parts: string[]): string {
+  const h = createHash("sha256");
+  for (const part of parts) h.update(part).update("\n---#8123-fingerprint-sep---\n"); // separador improvável no conteúdo real
+  return h.digest("hex").slice(0, 12);
+}
+
+/** `nome:mtimeMs:size` de um arquivo, ou `nome:missing` se sumiu entre o
+ * `readdirSync`/`existsSync` e o `statSync` (rewrite concorrente) — nunca
+ * lança. Barato o bastante pra imagens (sem ler o binário inteiro). */
+function fileFingerprint(label: string, path: string): string {
+  try {
+    const st = statSync(path);
+    return `${label}:${st.mtimeMs}:${st.size}`;
+  } catch {
+    return `${label}:missing`;
+  }
+}
+
+/** Fingerprint recursivo de um diretório (nome relativo + mtime + size de
+ * cada arquivo, ordenado) — usado pra `data/snippets/` (#5227, boxes de
+ * divulgação/CTA embutidas no render): mtime/size já é sinal suficiente
+ * pra detectar edição sem precisar ler o conteúdo de cada arquivo. */
+function dirFingerprint(dir: string): string {
+  if (!existsSync(dir)) return "<absent>";
+  const entries: string[] = [];
+  const visit = (current: string): void => {
+    let dirents;
+    try {
+      dirents = readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of dirents) {
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) {
+        visit(full);
+        continue;
+      }
+      entries.push(fileFingerprint(relative(dir, full).split("\\").join("/"), full));
+    }
+  };
+  visit(dir);
+  entries.sort();
+  return entries.join("|");
+}
+
+/**
+ * Lê `02-reviewed.md` + `03-social.md` (conteúdo, quando existem) e computa
+ * um fingerprint (mtime+size, não conteúdo — mais barato) das imagens
+ * `04-*`/`_internal/06-public-images.json` da edição e de `data/snippets/`
+ * (#5227) — tudo combinado num hash curto. AAMMDD inválido devolve
+ * `hash: null` sem lançar, mesma disciplina fail-soft de
+ * `resolveReviewFile`. Cobre a lista de arquivos observados pela issue
+ * #8123 (§"Preview ao vivo dirigido por arquivo") — não só o texto: sem
+ * isso, uma mudança só em imagem/box de divulgação nunca mudaria o hash e
+ * o watcher (abaixo) nunca notificaria o painel, apesar de observar os
+ * diretórios certos.
+ */
+export function computeReviewVersion(rootDir: string, aammdd: string): ReviewVersionStamp {
+  const generatedAt = new Date().toISOString();
+  if (!AAMMDD_RE.test(aammdd)) return { aammdd, hash: null, generatedAt };
+
+  const parts: string[] = [];
+  let any = false;
+  for (const slug of ["reviewed", "social"] as const) {
+    const resolved = resolveReviewFile(rootDir, aammdd, slug);
+    if (resolved && existsSync(resolved.filePath)) {
+      any = true;
+      try {
+        parts.push(readFileSync(resolved.filePath, "utf8"));
+        continue;
+      } catch {
+        // arquivo pode desaparecer entre existsSync e readFileSync (rewrite
+        // concorrente) — cai no branch abaixo, marca a parte como ausente
+        // nesta leitura; o próximo poll pega o conteúdo estável.
+      }
+    }
+    parts.push("");
+  }
+
+  const reviewed = resolveReviewFile(rootDir, aammdd, "reviewed");
+  const editionDir = reviewed?.editionDir ?? null;
+  if (editionDir && existsSync(editionDir)) {
+    let imageNames: string[] = [];
+    try {
+      imageNames = readdirSync(editionDir)
+        .filter((f) => f.startsWith("04-"))
+        .sort();
+    } catch {
+      // diretório pode desaparecer entre checks — próximo poll pega estável.
+    }
+    for (const name of imageNames) {
+      any = true;
+      parts.push(fileFingerprint(name, resolve(editionDir, name)));
+    }
+    const publicImagesPath = resolve(editionDir, "_internal", "06-public-images.json");
+    if (existsSync(publicImagesPath)) {
+      any = true;
+      parts.push(fileFingerprint("06-public-images.json", publicImagesPath));
+    }
+  }
+
+  const snippetsFingerprint = dirFingerprint(resolve(rootDir, "data", "snippets"));
+  if (snippetsFingerprint !== "<absent>") {
+    any = true;
+    parts.push(snippetsFingerprint);
+  }
+
+  return { aammdd, hash: any ? shortHash(parts) : null, generatedAt };
+}
+
+export interface ReviewFilesWatchHandle {
+  close: () => void;
+}
+
+/**
+ * Observa `editionDir` (cobre `02-reviewed.md`, `03-social.md`,
+ * `04-*`, `_internal/06-public-images.json`) e `data/snippets/` da edição
+ * `aammdd`; chama `onChange` com o carimbo de versão sempre que o hash
+ * combinado mudar. Debounce coalesce um burst de writes numa única chamada.
+ */
+export function watchReviewFiles(
+  rootDir: string,
+  aammdd: string,
+  onChange: (stamp: ReviewVersionStamp) => void,
+  opts: { pollIntervalMs?: number; debounceMs?: number } = {},
+): ReviewFilesWatchHandle {
+  let closed = false;
+  let last = computeReviewVersion(rootDir, aammdd);
+  let pending: ReviewVersionStamp | null = null;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const debounceMs = opts.debounceMs ?? 300;
+
+  // #8123 Fatia 1: separa DETECÇÃO (roda a cada chamada, `fs.watch` ou poll)
+  // de NOTIFICAÇÃO (debounced). Compara contra o último valor JÁ AGENDADO
+  // (`pending`), não contra `last` (só atualizado quando o timer de fato
+  // dispara) — comparar contra `last` reagendaria o timer a CADA poll
+  // enquanto o debounce ainda não disparou (mesmo sem nenhuma mudança NOVA
+  // desde o último agendamento), o que nunca deixa o timer sobreviver até o
+  // fim quando `pollIntervalMs` < `debounceMs` (poll mais frequente que o
+  // debounce).
+  const scheduleCheck = (): void => {
+    if (closed) return;
+    const current = computeReviewVersion(rootDir, aammdd);
+    const baseline = pending ? pending.hash : last.hash;
+    if (current.hash === baseline) return; // nada novo desde o último agendamento
+    pending = current;
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      if (!pending) return;
+      last = pending;
+      const toEmit = pending;
+      pending = null;
+      onChange(toEmit);
+    }, debounceMs);
+    debounceTimer.unref?.();
+  };
+
+  const watchers: FSWatcher[] = [];
+  const reviewed = resolveReviewFile(rootDir, aammdd, "reviewed");
+  const dirsToWatch = [reviewed?.editionDir ?? null, resolve(rootDir, "data", "snippets")];
+  for (const dir of dirsToWatch) {
+    if (!dir || !existsSync(dir)) continue;
+    try {
+      const w = watch(dir, { recursive: true }, () => scheduleCheck());
+      w.on("error", () => {
+        // idem plan-watch.ts: polling continua cobrindo.
+      });
+      watchers.push(w);
+    } catch {
+      // plataforma sem suporte a recursive watch — segue só com polling.
+    }
+  }
+
+  const interval = setInterval(scheduleCheck, opts.pollIntervalMs ?? 1000);
+  interval.unref?.();
+
+  return {
+    close: () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(interval);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = null;
+      pending = null;
+      for (const w of watchers) {
+        try {
+          w.close();
+        } catch {
+          // no-op
+        }
+      }
+    },
+  };
+}
