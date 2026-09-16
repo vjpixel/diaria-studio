@@ -86,7 +86,8 @@ export interface BraveCreditEntry {
   // queries_this_month/_edition (Brave does not charge failed requests).
   status: "ok" | "rate_limited" | "error";
   http_status?: number;
-  quota_remaining?: number; // X-RateLimit-Remaining from Brave API response (#2608 C)
+  quota_remaining?: number; // X-RateLimit-Remaining from Brave API response, MONTHLY window (#2608 C, re-parsed #7943)
+  quota_limit_monthly?: number; // X-RateLimit-Limit, MONTHLY window — 0 = no hard cap (#7943)
   estimated?: true; // present when entry is an estimate, not a real API call (#2608 A)
   source?: string; // originating agent/step for estimated entries
 }
@@ -283,6 +284,15 @@ export interface BraveCreditStats {
   // uma leitura de agora quando na verdade é de dias atrás. Ausente quando não
   // há quota_remaining este mês.
   quota_remaining_age_hours?: number;
+  // (#7943, achado ao vivo 260915) `true` quando o último `X-RateLimit-Limit`
+  // (janela mensal) visto este mês é 0 — sentinela do Brave para "sem cap
+  // mensal" (Postpaid), que faz `X-RateLimit-Remaining` reportar sempre "0"
+  // na mesma janela, não um contador real. Quando `true`, `real_used_raw` e
+  // `delta_untracked` ficam ausentes de propósito (não são "sem uso", são
+  // "sem sinal utilizável") — ver `reconcile-brave-path-b.ts`, que trata isto
+  // como motivo de no-op explícito em vez de computar um gap a partir de um
+  // `quota_remaining_last_seen` que não mede nada.
+  monthly_quota_unmeasurable?: true;
 }
 
 // (#7943, resolve #3707 hipótese 1) Confirmado ao vivo (260910): plano
@@ -366,6 +376,7 @@ export function computeBraveCreditStats(
   let queries_this_edition_estimated = 0;
   let quota_remaining_last_seen: number | undefined;
   let quota_remaining_last_seen_ts: string | undefined; // (#3389) staleness tracking
+  let quota_limit_monthly_last_seen: number | undefined; // (#7943)
 
   for (const line of lines) {
     let entry: BraveCreditEntry;
@@ -383,6 +394,11 @@ export function computeBraveCreditStats(
     if (typeof entry.quota_remaining === "number") {
       quota_remaining_last_seen = entry.quota_remaining;
       quota_remaining_last_seen_ts = entry.timestamp; // (#3389)
+    }
+    // (#7943) same scoping as quota_remaining above — tracks the LAST monthly
+    // limit seen this month, to detect the "0 = no cap" sentinel below.
+    if (typeof entry.quota_limit_monthly === "number") {
+      quota_limit_monthly_last_seen = entry.quota_limit_monthly;
     }
 
     // (#3389) "error" entries exist ONLY to keep quota_remaining_last_seen fresh
@@ -407,10 +423,24 @@ export function computeBraveCreditStats(
   const queries_this_month = queries_this_month_real + queries_this_month_estimated;
   const queries_this_edition = queries_this_edition_real + queries_this_edition_estimated;
 
+  // (#7943) `quota_limit_monthly_last_seen === 0` é o sentinela do Brave para
+  // "sem cap mensal" (Postpaid) — verificado ao vivo 260915: esta conta reporta
+  // `X-RateLimit-Limit: "50, 0"` / `X-RateLimit-Remaining: "49, 0"` sempre, ou
+  // seja, a janela mensal nunca decresce porque não existe cota mensal real pra
+  // decrescer. Tratar isso como "sem sinal", nunca como "real_used = 2000 (cap
+  // inteiro) − 0". Só marca quando o valor foi de fato lido este mês — ausência
+  // do header (nunca chamado, ou campo não propagado por uma versão antiga da
+  // entrada) permanece indistinguível de "não sei", não "sem cap".
+  const monthly_quota_unmeasurable: true | undefined =
+    quota_limit_monthly_last_seen === 0 ? true : undefined;
+
   // Uso real do header (clamp ≥ 0 — defensivo contra quota_remaining > limite,
   // ex: mudança de API ou janela errada, que daria real_used negativo).
+  // (#7943) `undefined` quando `monthly_quota_unmeasurable` — nenhuma aritmética
+  // contra HEADER_QUOTA_CYCLE_SIZE faz sentido sobre um "remaining" que é
+  // sempre 0 por não haver cota, não por uso real.
   const real_used =
-    typeof quota_remaining_last_seen === "number"
+    typeof quota_remaining_last_seen === "number" && !monthly_quota_unmeasurable
       ? Math.max(0, HEADER_QUOTA_CYCLE_SIZE - quota_remaining_last_seen)
       : undefined;
 
@@ -518,6 +548,7 @@ export function computeBraveCreditStats(
     effective_used,
     alert_basis,
     ...(typeof quota_remaining_last_seen === "number" ? { quota_remaining_last_seen } : {}),
+    ...(monthly_quota_unmeasurable ? { monthly_quota_unmeasurable } : {}),
     ...(typeof delta_untracked === "number" ? { delta_untracked } : {}),
     ...(header_discarded ? { header_discarded } : {}),
     ...(typeof real_used === "number" ? { real_used_raw: real_used } : {}),

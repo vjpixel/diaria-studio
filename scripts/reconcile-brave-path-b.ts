@@ -85,6 +85,23 @@
  *
  * Roda 1× por edição/mês (idempotente). Uso:
  *   npx tsx scripts/reconcile-brave-path-b.ts --edition AAMMDD   (--edition OBRIGATÓRIO)
+ *
+ * ## Sem sinal nesta conta (#7943, achado ao vivo 260915)
+ *
+ * A conta Brave é Postpaid: `X-RateLimit-Limit` da janela mensal é `0`
+ * (sentinela "sem cap mensal"), o que faz `X-RateLimit-Remaining` da mesma
+ * janela reportar sempre `0` também — nunca um contador que decresce com uso
+ * real. Todo o mecanismo acima (ancoragem incremental, sanity cap) pressupõe
+ * um contador mensal genuíno; para esta conta ele nunca existiu. Este script
+ * detecta isso (`stats.monthly_quota_unmeasurable`) e no-opa explicitamente
+ * (`reason: "monthly_quota_unmeasurable"`) em vez de computar um gap a partir
+ * de um valor sem significado — o que fazia até aqui (a causa raiz real do
+ * falso alarme "1951/2000" de 260708 citado abaixo: `parseInt` sobre o header
+ * CSV pegava a janela por-segundo, quase constante, como se fosse a mensal).
+ * Ver a docstring de `brave-search.ts` para o achado completo. Path B segue
+ * sem reconciliação automática nesta conta — a estimativa `N*2+M+J` original
+ * (ou uma medição direta na origem de cada chamada Path B) é o único caminho
+ * restante se essa visibilidade for desejada de novo.
  */
 
 import {
@@ -111,6 +128,28 @@ export function main(
     process.exit(1);
   }
   const stats = computeBraveCreditStats(edition, path, now);
+
+  // (#7943, achado ao vivo 260915) Conta Postpaid: `X-RateLimit-Limit` da
+  // janela mensal é 0 (sentinela "sem cap"), então `X-RateLimit-Remaining`
+  // correspondente é sempre "0" também — não um contador real. Distinto do
+  // caso "sem header" abaixo: o header VEIO, só não mede nada útil pra este
+  // plano. Sem este check, este script cairia no branch `no_header` (mensagem
+  // errada, "sem header") ou — antes do fix de #7943 na origem do parsing —
+  // computava um `real_used_raw` fantasma a partir do valor da janela por-
+  // segundo, causa raiz do falso alarme "1951/2000" de 260708 e do residual
+  // que travou a decisão (a) desta issue em 260915 (header preso em "49" o
+  // tempo todo). Curto-circuita ANTES de tocar `priorState`/`persistState` —
+  // não há âncora válida a avançar quando o sinal nunca existiu.
+  if (stats.monthly_quota_unmeasurable) {
+    console.error(
+      "[reconcile-brave-path-b] X-RateLimit-Remaining/Limit não mede uso MENSAL nesta conta " +
+        "(Postpaid — janela mensal reporta limite 0 = sem cap, então remaining também vem 0, " +
+        "nunca um contador real). Path B fica sem sinal de reconciliação via header; nada gravado, " +
+        "estado do reconcile não tocado. Ver #7943.",
+    );
+    console.log(JSON.stringify({ reconciled: 0, reason: "monthly_quota_unmeasurable" }));
+    return;
+  }
 
   // delta_untracked ausente = sem header este mês OU header descartado por
   // divergência implausível (#3002) — nada de confiável pra reconciliar.
