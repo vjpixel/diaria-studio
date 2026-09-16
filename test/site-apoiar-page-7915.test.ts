@@ -15,6 +15,12 @@ import { fileURLToPath } from "node:url";
 import { buildApoiarHtml, APOIAR_CLICK_PATH } from "../scripts/lib/site-apoiar-page.ts";
 import { DIARIA_ESPECIAL_URL } from "../scripts/lib/canonical-urls.ts";
 import { GTM_CONTAINER_ID } from "../scripts/lib/shared/seo-meta.ts";
+import {
+  REWARD_TIER_AMIGO_MIN,
+  REWARD_TIER_APOIADOR_MIN,
+  REWARD_TIER_MANTENEDOR_MIN,
+  REWARD_TIER_PATRONO_MIN,
+} from "../scripts/lib/reward-tier-thresholds.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -38,13 +44,47 @@ describe("buildApoiarHtml (#7915)", () => {
     assert.match(html, new RegExp(`['"]${GTM_CONTAINER_ID}['"]`));
   });
 
-  it("lista os 4 níveis de recompensa com os MESMOS valores de computeRewardGroup (#3844) — nunca inventa um novo", () => {
-    for (const valor of ["R$5/mês", "R$10/mês", "R$25/mês", "R$50/mês"]) {
-      assert.ok(html.includes(valor), `valor ${valor} ausente — nível de recompensa deveria bater com REWARD_TIER_*_MIN`);
+  it("lista os 4 níveis de recompensa com os MESMOS valores de computeRewardGroup (#3844) — PAREADOS ao nome certo, nunca inventa um novo", () => {
+    // Checa nome+valor no mesmo bloco tier-head, não só presença solta em
+    // qualquer lugar do documento — uma troca de ordem (ex: Amigo mostrando
+    // o valor do Patrono) passaria despercebida se os asserts fossem só
+    // `includes` independentes pra nome e pra valor (achado do
+    // pr-test-analyzer/type-design-analyzer, fleet review #8155).
+    const pares: Record<string, string> = { Amigo: "R$5/mês", Apoiador: "R$10/mês", Mantenedor: "R$25/mês", Patrono: "R$50/mês" };
+    for (const [nome, valor] of Object.entries(pares)) {
+      const valorEscapado = valor.replace("$", "\\$");
+      assert.match(
+        html,
+        new RegExp(`<span class="tier-name">${nome}</span><span class="tier-value">${valorEscapado}</span>`),
+        `bloco tier-head deveria parear "${nome}" com "${valor}"`,
+      );
     }
-    for (const nome of ["Amigo", "Apoiador", "Mantenedor", "Patrono"]) {
-      assert.ok(html.includes(`>${nome}<`), `nível "${nome}" ausente`);
+  });
+
+  it("guard de drift (#8137 follow-up): valores exibidos são DERIVADOS de REWARD_TIER_*_MIN, não strings hardcoded — falha se studio-apoios.ts mudar um limiar e a página não acompanhar", () => {
+    // Deliberadamente NÃO importa/reusa nenhuma constante de dentro de
+    // site-apoiar-page.ts — deriva o valor esperado direto do módulo
+    // compartilhado (mesma fonte que computeRewardGroup consome), então
+    // este teste só passa se buildApoiarHtml() de fato ler de lá.
+    const esperado: Record<string, number> = {
+      Amigo: REWARD_TIER_AMIGO_MIN,
+      Apoiador: REWARD_TIER_APOIADOR_MIN,
+      Mantenedor: REWARD_TIER_MANTENEDOR_MIN,
+      Patrono: REWARD_TIER_PATRONO_MIN,
+    };
+    for (const [nome, min] of Object.entries(esperado)) {
+      const valorEsperado = `R$${min}/mês`;
+      assert.ok(
+        html.includes(valorEsperado),
+        `nível "${nome}" deveria mostrar ${valorEsperado} (REWARD_TIER_*_MIN atual) — página desincronizou do limiar canônico`,
+      );
     }
+  });
+
+  it("meta description e CTA (fora do card de nível) também derivam de REWARD_TIER_AMIGO_MIN, não string solta (#8155, achado pr-test-analyzer)", () => {
+    const valorAmigo = `R$${REWARD_TIER_AMIGO_MIN}/mês`;
+    assert.match(html, new RegExp(`<meta name="description"[^>]*${valorAmigo.replace("$", "\\$")}`), "meta description deveria citar o valor de entrada atual");
+    assert.match(html, new RegExp(`Apoiar a partir de ${valorAmigo.replace("$", "\\$")}<\\/a>`), "CTA deveria citar o valor de entrada atual");
   });
 
   it("benefícios citados (Apoiador/Mantenedor) são os já transcritos da campanha real na #7658 — não texto novo", () => {
