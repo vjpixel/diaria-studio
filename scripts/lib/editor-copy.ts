@@ -73,8 +73,8 @@ export const EDITOR_COPY_EMAIL = "vjpixel@gmail.com";
  *
  * `EDITOR_COPY_EMAIL` continua sendo a cópia QA canônica do editor e segue
  * primeiro na lista; `pixel@memelab.com.br` é a caixa Google Workspace
- * corporativa (Exchange/filtro distinto do Gmail pessoal), a única seed de
- * colocação restante.
+ * corporativa (filtro de spam/promoções distinto do Gmail pessoal, mesmo
+ * motor de base), a única seed de colocação restante.
  *
  * COBERTURA: o `ensureEditorCopyRow` só alcança os CSVs montados por este
  * pipeline. O fluxo legado `publish-monthly.ts` usa a lista Brevo ESTÁTICA de
