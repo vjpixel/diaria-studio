@@ -43,9 +43,12 @@ apex (404 hoje) e `/sitemap.xml` já era servido certo.
   ninguém rodar este script à mão. Achado original do #6454: a flag
   `--sitemap` existia desde a 1ª versão do script, mas só STAGEAVA o
   arquivo pro commit — nada escrevia o conteúdo, e a home ficou congelada
-  ~10 dias em produção antes do fix. `<title>diar.ia.br</title>`
-  + meta description = tagline oficial são preservados do stub original
-  (guard de regressão do #6359 continua valendo).
+  ~10 dias em produção antes do fix. `<title>`/meta description **deixaram
+  de ser o bare "diar.ia.br" do stub original em #8067 (260916)** — GSC
+  mostrou 0% CTR na busca de marca (207 impr., posição ~7) por não
+  comunicar a proposta de valor; guard de regressão do #6359 atualizado
+  pra travar o novo texto (mesmo já publicado no painel Beehiiv,
+  diaria.beehiiv.com) em vez do antigo.
   **O form de inscrição (masthead + footer) resolve a inscrição no
   PRÓPRIO hero (#6976, 01/09/2026) — deixou de ser decorativo.** Até o
   #6976, a pill inteira era um único `<a href="/subscribe">` (depois

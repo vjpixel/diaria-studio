@@ -419,11 +419,18 @@ describe("workers/site/public/index.html — committed (#6375)", () => {
     assert.ok(existsSync(indexPath));
   });
 
-  it("mantém <title>diar.ia.br</title> e a tagline oficial (guard de regressão do #6359)", () => {
-    assert.match(html, /<title>diar\.ia\.br<\/title>/);
+  // (#8067, 260916) O guard original (#6359) pinava o title/description BARE
+  // ("diar.ia.br" / tagline sem contexto) medidos ao vivo naquele dia — nunca
+  // foi uma decisão de SEO, só uma foto pra não regredir em silêncio antes do
+  // cutover. GSC (28 dias até 06/09) mostrou 207 impressões pra busca de
+  // marca "diar" em posição ~7 com 0% CTR — sinal de que esse title/description
+  // bare não comunica o que o site é. Atualizado pra incluir a proposta de
+  // valor, mesmo texto já publicado no painel Beehiiv (diaria.beehiiv.com).
+  it("mantém <title>/description com a proposta de valor (guard de regressão do #6359, atualizado pelo #8067)", () => {
+    assert.match(html, /<title>diar\.ia\.br — notícias de IA todo dia, em português<\/title>/);
     assert.match(
       html,
-      /<meta name="description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs\.">/,
+      /<meta name="description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail\.">/,
     );
   });
 

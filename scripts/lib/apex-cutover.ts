@@ -174,8 +174,12 @@ export const PRE_CUTOVER_DNS_RECORDS: readonly DnsRecordSnapshot[] = [
  * (`workers/site/public/index.html`, #6363) declara este `<title>`. Só
  * responder 200 não prova que a página é a certa — um Worker que capture uma
  * exceção e devolva HTML de erro com status 200 passaria despercebido sem
- * esta checagem (achado do fleet review da PR #6364, F1). */
-export const EXPECTED_ROOT_MARKER = "<title>diar.ia.br</title>";
+ * esta checagem (achado do fleet review da PR #6364, F1).
+ *
+ * (#8067, 260916) Title atualizado de "diar.ia.br" bare pra incluir a
+ * proposta de valor (GSC: 0% CTR na busca de marca por não comunicar o que
+ * o site é) — este marcador acompanha o mesmo texto. */
+export const EXPECTED_ROOT_MARKER = "<title>diar.ia.br — notícias de IA todo dia, em português</title>";
 
 /** Host de destino esperado do redirect de `/subscribe` — o perfil hospedado
  * padrão da conta Kit (`https://diar-ia-br.kit.com/`, decisão registrada no

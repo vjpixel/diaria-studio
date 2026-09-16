@@ -63,16 +63,21 @@ describe("workers/site/public — / (#6359)", () => {
     assert.ok(existsSync(indexPath), `${indexPath} ausente — apex ficaria 404 em / pós-cutover`);
   });
 
-  it("declara <title>diar.ia.br</title> — mesmo title medido ao vivo no apex hoje (comentário da issue)", () => {
+  // (#8067, 260916) O title/description bare pinado aqui era só a foto do
+  // que o #6359 mediu ao vivo naquele dia, não uma decisão de SEO — GSC
+  // mostrou 0% CTR na busca de marca (posição ~7) por não comunicar a
+  // proposta de valor. Atualizado junto do mesmo texto publicado no painel
+  // Beehiiv (diaria.beehiiv.com).
+  it("declara <title> com a proposta de valor (atualizado pelo #8067)", () => {
     const html = readFileSync(indexPath, "utf8");
-    assert.match(html, /<title>diar\.ia\.br<\/title>/);
+    assert.match(html, /<title>diar\.ia\.br — notícias de IA todo dia, em português<\/title>/);
   });
 
-  it("meta description é a tagline oficial — mesma medida ao vivo no apex hoje", () => {
+  it("meta description com a proposta de valor (atualizado pelo #8067)", () => {
     const html = readFileSync(indexPath, "utf8");
     assert.match(
       html,
-      /<meta name="description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs\.">/,
+      /<meta name="description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail\.">/,
     );
   });
 
