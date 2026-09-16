@@ -520,11 +520,13 @@ export function resolveSubscriberCount(opts: {
       try {
         const summary = getKitActiveSummaryFn(db);
         if (summary.count > 0) return summary.count;
+      } catch (error) {
+        logFileReadWarning("Kit active summary query", dbPath, error, spawnFn, warnFn);
       } finally {
         db.close();
       }
     }
-    // Store indisponível/vazio — cai pro cache Beehiiv abaixo.
+    // Store indisponível/vazio/query falhou — cai pro cache Beehiiv abaixo.
   }
 
   if (!existsFn(pubJsonPath)) return 0;

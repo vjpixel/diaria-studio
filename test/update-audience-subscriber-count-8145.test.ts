@@ -120,6 +120,31 @@ describe("resolveSubscriberCount — backend kit (#8145)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("store Kit abre mas a query lança (schema inesperado/corrupção) → não propaga, cai pro cache Beehiiv, db fecha mesmo assim (achado do self-review #8166)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sub-count-8145-"));
+    try {
+      const pubJsonPath = tmpFile(dir, "publication.json", JSON.stringify({ stats: { active_subscriptions: 42 } }));
+      let closed = false;
+      const fakeDb = { close: () => { closed = true; } };
+      let warned = false;
+      const count = resolveSubscriberCount({
+        backend: "kit",
+        pubJsonPath,
+        openDbFn: () => fakeDb as ReturnType<typeof import("../scripts/lib/diaria-subscribers-db.ts").openDiariaSubscribersDbSafe>,
+        getKitActiveSummaryFn: () => {
+          throw new Error("no such table: subscription");
+        },
+        warnFn: () => { warned = true; },
+        spawnFn: (() => ({}) as ReturnType<typeof import("node:child_process").spawnSync>) as typeof import("node:child_process").spawnSync,
+      });
+      assert.equal(count, 42, "query lançando não deve derrubar o script — cai pro fallback Beehiiv");
+      assert.equal(closed, true, "db precisa fechar mesmo quando a query lança (finally)");
+      assert.equal(warned, true, "o erro real deve ser logado, não engolido em silêncio");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("buildFileReadWarningLogArgs (#8150)", () => {
