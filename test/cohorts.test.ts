@@ -310,13 +310,16 @@ describe("isTestAccount", () => {
 });
 
 // ---------------------------------------------------------------------------
-// #4257: INTERNAL_EMAILS deriva de EDITOR_SEED_EMAILS — os 3 seeds de
-// medição de colocação de caixa (#4045: vjpixel@yahoo.com, vjpixel@hotmail.com,
-// apixel@gmail.com) apareciam como a linha "sem cohort" da aba Cohorts porque
-// não tinham registro Stripe/created e não estavam em INTERNAL_EMAILS (as duas
-// listas eram independentes). O invariante testado aqui é o que impede a
-// regressão de voltar quando um 6º seed for adicionado a EDITOR_SEED_EMAILS
-// sem que ninguém se lembre de tocar cohorts.ts.
+// #4257: INTERNAL_EMAILS deriva de EDITOR_SEED_EMAILS — os seeds de medição
+// de colocação de caixa (#4045) apareciam como a linha "sem cohort" da aba
+// Cohorts porque não tinham registro Stripe/created e não estavam em
+// INTERNAL_EMAILS (as duas listas eram independentes). O invariante testado
+// aqui é o que impede a regressão de voltar quando um novo seed for
+// adicionado a EDITOR_SEED_EMAILS sem que ninguém se lembre de tocar
+// cohorts.ts. EDITOR_SEED_EMAILS reduzida de 5 pra 2 endereços em 16/09/2026
+// (decisão do editor, ver docstring de `editor-copy.ts`) — os 3 removidos
+// (vjpixel@yahoo.com, vjpixel@hotmail.com, apixel@gmail.com, os mesmos do
+// incidente original #4045) não precisam mais de cobertura aqui.
 // ---------------------------------------------------------------------------
 
 describe("INTERNAL_EMAILS deriva de EDITOR_SEED_EMAILS (#4257)", () => {
@@ -328,13 +331,6 @@ describe("INTERNAL_EMAILS deriva de EDITOR_SEED_EMAILS (#4257)", () => {
         `seed do editor '${seed}' precisa estar em INTERNAL_EMAILS — senão vira a linha "sem cohort" na aba Cohorts (#4257)`,
       );
     }
-  });
-
-  it("os 3 seeds do incidente (#4045) especificamente presentes — vjpixel@yahoo.com, vjpixel@hotmail.com, apixel@gmail.com", () => {
-    const internalLower = new Set(INTERNAL_EMAILS.map((e) => e.toLowerCase()));
-    assert.ok(internalLower.has("vjpixel@yahoo.com"));
-    assert.ok(internalLower.has("vjpixel@hotmail.com"));
-    assert.ok(internalLower.has("apixel@gmail.com"));
   });
 
   it("os internos Clarice (não-editor) continuam presentes — sem regressão do #2809/#2880", () => {

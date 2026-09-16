@@ -269,8 +269,9 @@
  * ## Reconciliação de seeds ausentes (#4982)
  *
  * `EDITOR_SEED_EMAILS` (`scripts/lib/editor-copy.ts`) são a sonda de
- * deliverability cross-provedor deste canal — 5 endereços, um por provedor,
- * vinculados MANUALMENTE à lista Brevo (nunca via CSV import; ver
+ * deliverability cross-provedor deste canal — hoje 2 endereços (reduzida de
+ * 5 em 16/09/2026, decisão do editor), vinculados MANUALMENTE à lista Brevo
+ * (nunca via CSV import; ver
  * `ensureEditorCopyRow` no mesmo módulo, que é o mecanismo pro fluxo Clarice,
  * não pro `brevo_diaria`). Ficarem **fora** do store por desenho é
  * INTENCIONAL — não é lacuna: são sinal técnico de onde a mensagem caiu

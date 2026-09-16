@@ -46,33 +46,46 @@ function storeOf(contacts: BrevoDiariaContact[]): BrevoDiariaStore {
   return { contacts };
 }
 
+// Mecanismo puro testado contra uma fixture LITERAL própria (via o 2º
+// parâmetro de `findMissingSeedEmails`, sempre sobrescrevível — ver último
+// teste do bloco) em vez do `EDITOR_SEED_EMAILS` real: decopla estes testes
+// de mecanismo do tamanho/conteúdo atual da lista de produção. Reduzida de 5
+// pra 2 endereços em 16/09/2026 (decisão do editor, ver docstring de
+// `editor-copy.ts`) — antes dessa mudança, vários destes testes hardcodeavam
+// e-mails específicos da lista de produção e quebraram junto com a redução.
+const FIXTURE_SEEDS = ["seed-a@example.com", "seed-b@example.com", "seed-c@example.com"];
+
 describe("findMissingSeedEmails — diff puro, sentido OPOSTO de findOrphanContacts (#4982)", () => {
-  it("todos os 5 EDITOR_SEED_EMAILS presentes na lista Brevo → nenhum ausente", () => {
-    const brevoListEmails = ["known@a.com", ...EDITOR_SEED_EMAILS];
-    assert.deepEqual(findMissingSeedEmails(brevoListEmails), []);
+  it("todos os seeds presentes na lista Brevo → nenhum ausente", () => {
+    const brevoListEmails = ["known@a.com", ...FIXTURE_SEEDS];
+    assert.deepEqual(findMissingSeedEmails(brevoListEmails, FIXTURE_SEEDS), []);
   });
 
-  it("1 dos 5 EDITOR_SEED_EMAILS ausente da lista Brevo → reportado", () => {
-    const present = EDITOR_SEED_EMAILS.filter((e) => e !== "vjpixel@yahoo.com");
+  it("1 dos seeds ausente da lista Brevo → reportado", () => {
+    const present = FIXTURE_SEEDS.filter((e) => e !== "seed-c@example.com");
     const brevoListEmails = ["known@a.com", ...present];
-    assert.deepEqual(findMissingSeedEmails(brevoListEmails), ["vjpixel@yahoo.com"]);
+    assert.deepEqual(findMissingSeedEmails(brevoListEmails, FIXTURE_SEEDS), ["seed-c@example.com"]);
   });
 
-  it("2 dos 5 ausentes (o caso real da issue) → os 2 reportados, na ordem de EDITOR_SEED_EMAILS", () => {
-    const present = EDITOR_SEED_EMAILS.filter(
-      (e) => e !== "pixel@memelab.com.br" && e !== "apixel@gmail.com",
-    );
-    const missing = findMissingSeedEmails(present);
-    assert.deepEqual(missing, ["pixel@memelab.com.br", "apixel@gmail.com"]);
+  it("2 de 3 ausentes → os 2 reportados, na ordem de `seedEmails`", () => {
+    const present = FIXTURE_SEEDS.filter((e) => e !== "seed-a@example.com" && e !== "seed-b@example.com");
+    const missing = findMissingSeedEmails(present, FIXTURE_SEEDS);
+    assert.deepEqual(missing, ["seed-a@example.com", "seed-b@example.com"]);
   });
 
-  it("lista Brevo vazia → todos os 5 reportados como ausentes", () => {
-    assert.deepEqual(findMissingSeedEmails([]), [...EDITOR_SEED_EMAILS]);
+  it("lista Brevo vazia → todos os seeds reportados como ausentes", () => {
+    assert.deepEqual(findMissingSeedEmails([], FIXTURE_SEEDS), [...FIXTURE_SEEDS]);
   });
 
   it("normaliza e-mail (case/trim) antes de comparar — seed presente com capitalização diferente não é reportado ausente", () => {
-    const brevoListEmails = EDITOR_SEED_EMAILS.map((e) => `  ${e.toUpperCase()}  `);
+    const brevoListEmails = FIXTURE_SEEDS.map((e) => `  ${e.toUpperCase()}  `);
+    assert.deepEqual(findMissingSeedEmails(brevoListEmails, FIXTURE_SEEDS), []);
+  });
+
+  it("default de seedEmails é EDITOR_SEED_EMAILS quando o chamador não passa o 2º parâmetro", () => {
+    const brevoListEmails = ["known@a.com", ...EDITOR_SEED_EMAILS];
     assert.deepEqual(findMissingSeedEmails(brevoListEmails), []);
+    assert.deepEqual(findMissingSeedEmails(["known@a.com"]), [...EDITOR_SEED_EMAILS]);
   });
 
   it("seedEmails é sobrescrevível — chamador pode passar uma lista diferente (ex: teste isolado)", () => {
@@ -88,16 +101,17 @@ describe("reconcileStoreWithBrevoList — checagem de seeds ausentes integrada (
   }
 
   it("seed ausente → summary.missingSeedEmails preenchido + log com ALERTA citando o e-mail e #4982", async () => {
-    const present = EDITOR_SEED_EMAILS.filter((e) => e !== "vjpixel@hotmail.com");
+    const missingSeed = EDITOR_SEED_EMAILS[EDITOR_SEED_EMAILS.length - 1];
+    const present = EDITOR_SEED_EMAILS.filter((e) => e !== missingSeed);
     globalThis.fetch = (async () =>
       jsonRes(200, { contacts: [{ email: "known@a.com" }, ...present.map((email) => ({ email }))] })) as typeof fetch;
     const logs: string[] = [];
     try {
       const store = storeOf([contact("known@a.com")]);
       const summary = await reconcileStoreWithBrevoList({ brevoApiKey: "key", listId: 7, store, log: (m) => logs.push(m) });
-      assert.deepEqual(summary.missingSeedEmails, ["vjpixel@hotmail.com"]);
+      assert.deepEqual(summary.missingSeedEmails, [missingSeed]);
       assert.ok(
-        logs.some((l) => l.includes("ALERTA") && l.includes("vjpixel@hotmail.com") && l.includes("#4982")),
+        logs.some((l) => l.includes("ALERTA") && l.includes(missingSeed) && l.includes("#4982")),
         "esperava log de ALERTA citando o seed ausente e a issue #4982",
       );
     } finally {
@@ -105,7 +119,7 @@ describe("reconcileStoreWithBrevoList — checagem de seeds ausentes integrada (
     }
   });
 
-  it("todos os 5 seeds presentes → summary.missingSeedEmails vazio + log informativo, sem ALERTA de seed", async () => {
+  it("todos os EDITOR_SEED_EMAILS presentes → summary.missingSeedEmails vazio + log informativo, sem ALERTA de seed", async () => {
     globalThis.fetch = (async () =>
       jsonRes(200, { contacts: [{ email: "known@a.com" }, ...EDITOR_SEED_EMAILS.map((email) => ({ email }))] })) as typeof fetch;
     const logs: string[] = [];
@@ -121,7 +135,7 @@ describe("reconcileStoreWithBrevoList — checagem de seeds ausentes integrada (
   });
 
   it("nunca muta o store dado, mesmo com seeds ausentes", async () => {
-    const present = EDITOR_SEED_EMAILS.slice(0, 3);
+    const present = EDITOR_SEED_EMAILS.slice(0, 1);
     globalThis.fetch = (async () => jsonRes(200, { contacts: present.map((email) => ({ email })) })) as typeof fetch;
     try {
       const store = storeOf([contact("known@a.com")]);
@@ -134,7 +148,8 @@ describe("reconcileStoreWithBrevoList — checagem de seeds ausentes integrada (
   });
 
   it("órfão E seed ausente no mesmo run → summary reporta os dois independentemente", async () => {
-    const present = EDITOR_SEED_EMAILS.filter((e) => e !== "apixel@gmail.com");
+    const missingSeed = EDITOR_SEED_EMAILS[EDITOR_SEED_EMAILS.length - 1];
+    const present = EDITOR_SEED_EMAILS.filter((e) => e !== missingSeed);
     globalThis.fetch = (async () =>
       jsonRes(200, {
         contacts: [{ email: "known@a.com" }, { email: "orphan@a.com" }, ...present.map((email) => ({ email }))],
@@ -144,9 +159,9 @@ describe("reconcileStoreWithBrevoList — checagem de seeds ausentes integrada (
       const store = storeOf([contact("known@a.com")]);
       const summary = await reconcileStoreWithBrevoList({ brevoApiKey: "key", listId: 7, store, log: (m) => logs.push(m) });
       assert.deepEqual(summary.orphanEmails, ["orphan@a.com"]);
-      assert.deepEqual(summary.missingSeedEmails, ["apixel@gmail.com"]);
+      assert.deepEqual(summary.missingSeedEmails, [missingSeed]);
       assert.ok(logs.some((l) => l.includes("ALERTA reconciliação (#4579)") && l.includes("orphan@a.com")));
-      assert.ok(logs.some((l) => l.includes("ALERTA reconciliação (#4982)") && l.includes("apixel@gmail.com")));
+      assert.ok(logs.some((l) => l.includes("ALERTA reconciliação (#4982)") && l.includes(missingSeed)));
     } finally {
       restore();
     }

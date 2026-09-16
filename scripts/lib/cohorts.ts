@@ -95,7 +95,7 @@ export function isMvExemptCohort(cohort: string | null | undefined): boolean {
 // preserva a invariante Workers-safe que `cohorts.ts` já exige (ver
 // docstring do topo do arquivo) sem criar ciclo nem puxar `node:*`.
 export const INTERNAL_EMAILS: readonly string[] = [
-  ...EDITOR_SEED_EMAILS, // vjpixel@gmail.com, pixel@memelab.com.br, apixel@gmail.com, vjpixel@hotmail.com, vjpixel@yahoo.com
+  ...EDITOR_SEED_EMAILS, // vjpixel@gmail.com, pixel@memelab.com.br (reduzida de 5 pra 2 em 16/09/2026)
   "felipe@clarice.ai",
   // #2880: endereço da equipe Clarice (sem registro Stripe → aparecia como a
   // única linha "sem cohort"). Mesmo tratamento dos demais internos: excluído
