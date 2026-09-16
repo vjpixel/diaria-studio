@@ -1143,6 +1143,18 @@ export async function resolveSdPromptDescription(
   return { text: fallbackText, locale: "pt_fallback" };
 }
 
+// #8147: mesmo espírito da regra de enquadramento de `writer-destaque.md`
+// ("agrupar múltiplos sujeitos no terço central — nunca espalhados pelas
+// bordas laterais"), mas adaptada ao caso do É IA?: a imagem A/B final (800×450)
+// NUNCA é recortada pra outro ratio depois (ao contrário dos heroes de
+// destaque, que viram 1:1/4:5) — por isso a instrução aqui é sobre margem
+// nas 4 bordas do próprio frame final, não sobre "sobreviver a um crop
+// futuro". Achado ao vivo (edição 260916): a imagem B recriou a composição
+// do Wikimedia POTD mas posicionou os sujeitos (filhotes) rente à borda
+// inferior, cortados — sem NENHUMA instrução de margem no prompt até aqui.
+const FRAMING_SUFFIX =
+  ". Leave generous empty margin on all four edges of the frame; group the main subjects — especially any that readers are meant to compare closely — well within the frame, never touching or cropped by the top, bottom, left or right edge.";
+
 /** #4620: transform puro texto→prompt — caller resolve qual texto (idioma/fonte) passar, ver `resolveSdPromptDescription`. */
 export function buildSdPrompt(descriptionText: string): {
   positive: string;
@@ -1154,7 +1166,8 @@ export function buildSdPrompt(descriptionText: string): {
   // Trim para prompt razoável (~500 chars)
   const positive =
     (description.length > 500 ? description.slice(0, 500) : description) +
-    ", documentary photograph, natural light, candid composition, photorealistic";
+    ", documentary photograph, natural light, candid composition, photorealistic" +
+    FRAMING_SUFFIX;
   return {
     positive,
     negative: NEGATIVE_PROMPT,
