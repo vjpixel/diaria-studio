@@ -8,7 +8,14 @@
  *      Gerado via Beehiiv MCP (/diaria-atualiza-audiencia). Mostra quem são
  *      e o que dizem preferir.
  *
- * Subscriber count vem de `data/beehiiv-cache/publication.json`.
+ * Subscriber count respeita `publishing.newsletter.subscriber_backend`
+ * (#8145): backend "kit" lê `getKitActiveSummary` do store unificado local
+ * (`data/diaria-subscribers/diaria-subscribers.db`, síncrono, sem chamada
+ * de rede); backend "beehiiv" (default) continua lendo
+ * `data/beehiiv-cache/publication.json` como sempre fez. O CTR comportamental
+ * (Seção 1) segue vindo da Beehiiv independente do backend de contagem —
+ * as duas perguntas ("quantos assinantes existem" vs "o que clicam") não
+ * são colapsadas numa fonte só.
  *
  * Qualquer fonte pode estar ausente — o script gera o que conseguir.
  *
@@ -31,6 +38,15 @@ import { editionsRoot } from "./lib/edition-paths.ts";
 // compatibilidade com testes e importadores externos.
 import { isAprofundeAnchor, isNonEditorialHost } from "./lib/ctr-utils.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import {
+  DEFAULT_DB_PATH,
+  openDiariaSubscribersDbSafe,
+  getKitActiveSummary,
+} from "./lib/diaria-subscribers-db.ts";
+import {
+  resolveNewsletterSubscriberBackend,
+  type NewsletterSubscriberBackend,
+} from "./lib/shared/newsletter-subscriber-source.ts";
 export { isAprofundeAnchor, isNonEditorialHost };
 import {
   loadCtrRowsH4,
@@ -76,7 +92,7 @@ function countAnswers(responses: BeehiivResponse[], questionMatcher: RegExp) {
 
 // ─── CTR helpers ───────────────────────────────────────────────────────────────
 
-interface CtrAgg {
+export interface CtrAgg {
   count: number;
   clicks: number;
   opens: number;
@@ -191,6 +207,19 @@ export function classifyCtrBand(
   return "sem_sinal";
 }
 
+/**
+ * Pure: formata a linha `- **Categoria** — CTR X.X% (encolhida) | N links |
+ * M aberturas` que `context/audience-profile.md` publica por categoria de
+ * CTR (Seção 1) — extraído da montagem de `lines` em `main()` pra ser a
+ * ÚNICA fonte da forma exata dessa linha (#8149: `buildAudienceSummary` em
+ * `build-diaria-dashboard-data.ts` faz o parse dela via regex, e um teste
+ * que gera a linha por AQUI, em vez de copiar o formato à mão num fixture,
+ * não pode divergir do que o gerador real emite).
+ */
+export function formatCtrCategoryLine(cat: string, agg: CtrAgg, shrunk: ShrunkCtr): string {
+  return `- **${cat}** — CTR ${(shrunk.rate * 100).toFixed(1)}% (encolhida) | ${agg.count} links | ${Math.round(agg.opens)} aberturas`;
+}
+
 export interface CtrParseResult {
   byCategory: Map<string, CtrAgg>;
   byCatOrigin: Map<string, CtrAgg>;
@@ -291,9 +320,9 @@ export function parseCtrFromCsv(csv: string, today: Date = new Date()): CtrParse
   };
 }
 
-function parseCtr(): CtrParseResult | null {
-  if (!existsSync(CTR_CSV)) return null;
-  return parseCtrFromCsv(readFileSync(CTR_CSV, "utf8"));
+function parseCtr(ctrCsvPath: string = CTR_CSV): CtrParseResult | null {
+  if (!existsSync(ctrCsvPath)) return null;
+  return parseCtrFromCsv(readFileSync(ctrCsvPath, "utf8"));
 }
 
 // ─── Archive guard (#4366) ─────────────────────────────────────────────────────
@@ -393,36 +422,215 @@ export function handleArchiveGuard(
   logDuplicateArchiveWarning(todayFile, latestFile as string, spawnFn);
 }
 
-// ─── Main ──────────────────────────────────────────────────────────────────────
+// ─── Log de leitura mal-sucedida de cache (#8150) ───────────────────────────
+//
+// Mesmo canal duplo (console.warn + log-event, #4366) aplicado ao risco
+// estrutural do #8150: os `catch { /* ignore */ }` em torno de PUB_JSON e
+// SURVEY_JSON escondiam qualquer erro de leitura/parse (JSON malformado,
+// arquivo truncado por escrita concorrente, mudança de schema) atrás de um
+// valor default (`0`/`[]`) indistinguível de "arquivo ausente"/"vazio
+// legítimo". `existsSync` já é checado antes de entrar no `try` — chegar
+// aqui significa que o arquivo EXISTE mas não pôde ser lido/parseado.
 
-function main() {
-  const today = new Date().toISOString().slice(0, 10);
+/** Pure: monta os argv extras pra `scripts/log-event.ts` — mesmo formato de `buildDuplicateArchiveLogArgs` acima, aplicado ao erro de leitura de um cache específico. */
+export function buildFileReadWarningLogArgs(sourceLabel: string, filePath: string, error: unknown): string[] {
+  return [
+    "--stage", "0",
+    "--agent", "update-audience",
+    "--level", "warn",
+    "--message",
+    `${sourceLabel} (${filePath}) existe mas não pôde ser lido/parseado — tratado como ausente (ver #8150)`,
+    "--details",
+    JSON.stringify({ file: filePath, error: error instanceof Error ? error.message : String(error), issue: "#8150" }),
+  ];
+}
 
-  // Subscriber count
-  let subscribers = 0;
-  if (existsSync(PUB_JSON)) {
-    try {
-      const pub = JSON.parse(readFileSync(PUB_JSON, "utf8"));
-      subscribers = pub.stats?.active_subscriptions ?? 0;
-    } catch { /* ignore */ }
+/** Mesmo padrão fire-and-forget de `logDuplicateArchiveWarning` — logging nunca pode mascarar/bloquear a regeneração do profile. */
+export function logFileReadWarning(
+  sourceLabel: string,
+  filePath: string,
+  error: unknown,
+  spawnFn: typeof spawnSync = spawnSync,
+  warnFn: (message: string) => void = console.warn,
+): void {
+  warnFn(
+    `[update-audience] AVISO: ${sourceLabel} (${filePath}) existe mas não pôde ser lido — ${error instanceof Error ? error.message : String(error)} (ver #8150)`,
+  );
+  try {
+    spawnFn(
+      process.execPath,
+      ["--import", "tsx", resolve(ROOT, "scripts/log-event.ts"), ...buildFileReadWarningLogArgs(sourceLabel, filePath, error)],
+      { cwd: ROOT, stdio: "ignore", encoding: "utf8" },
+    );
+  } catch {
+    // fire-and-forget: falha de logging nunca pode mascarar/bloquear o script principal.
+  }
+}
+
+// ─── Subscriber count por backend (#8145) ───────────────────────────────────
+
+/**
+ * Resolve a contagem de assinantes ativos respeitando
+ * `publishing.newsletter.subscriber_backend` — mesmo precedente de leitura
+ * condicional que `count-subscriptions-by-utm.ts`
+ * (`fetchAndAggregateKit`/`fetchAndAggregate`) já usa pro eixo SUBSCRIBER.
+ *
+ * Backend `"kit"`: lê `getKitActiveSummary` do store unificado LOCAL
+ * (`data/diaria-subscribers/diaria-subscribers.db`) — síncrono, sem
+ * chamada de rede, mesmo padrão fail-soft de `resolveCrossPlatformDeps`
+ * em `check-metrics-health.ts` (abre, lê, fecha em `finally`, nunca lança).
+ * Se o store está indisponível (sessão sem `data/`, ingestão ainda não
+ * rodou) ou devolve `count === 0` — indistinguível de "ainda não ingerido"
+ * — cai pro cache Beehiiv abaixo como fallback: um número desatualizado
+ * com fonte errada ainda é melhor que nenhum número, e o backend "kit" só
+ * existe quando a base REAL migrou pra lá (#7386/#7388).
+ *
+ * Backend `"beehiiv"` (default): lê `pub.stats?.active_subscriptions` de
+ * `PUB_JSON`, como sempre fez. Erro de leitura/parse passa por
+ * `logFileReadWarning` (#8150) em vez de sumir num `catch` mudo.
+ *
+ * NUNCA lança — qualquer falha degrada pra `0`.
+ */
+export function resolveSubscriberCount(opts: {
+  backend: NewsletterSubscriberBackend;
+  pubJsonPath: string;
+  dbPath?: string;
+  existsFn?: (p: string) => boolean;
+  readFileFn?: (p: string) => string;
+  openDbFn?: (path: string) => ReturnType<typeof openDiariaSubscribersDbSafe>;
+  getKitActiveSummaryFn?: typeof getKitActiveSummary;
+  spawnFn?: typeof spawnSync;
+  warnFn?: (message: string) => void;
+}): number {
+  const {
+    backend,
+    pubJsonPath,
+    dbPath = DEFAULT_DB_PATH,
+    existsFn = existsSync,
+    readFileFn = (p: string) => readFileSync(p, "utf8"),
+    openDbFn = openDiariaSubscribersDbSafe,
+    getKitActiveSummaryFn = getKitActiveSummary,
+    spawnFn,
+    warnFn,
+  } = opts;
+
+  if (backend === "kit") {
+    const db = openDbFn(dbPath);
+    if (db) {
+      try {
+        const summary = getKitActiveSummaryFn(db);
+        if (summary.count > 0) return summary.count;
+      } finally {
+        db.close();
+      }
+    }
+    // Store indisponível/vazio — cai pro cache Beehiiv abaixo.
   }
 
+  if (!existsFn(pubJsonPath)) return 0;
+  try {
+    const pub = JSON.parse(readFileFn(pubJsonPath));
+    return pub.stats?.active_subscriptions ?? 0;
+  } catch (error) {
+    logFileReadWarning("cache de assinantes Beehiiv", pubJsonPath, error, spawnFn, warnFn);
+    return 0;
+  }
+}
+
+/** Pluralização simples pt-BR do substantivo emprestado "subscriber(s)" (#8150 item 3). */
+function pluralizeSubscribers(n: number): string {
+  return n === 1 ? "subscriber" : "subscribers";
+}
+
+// ─── Main ──────────────────────────────────────────────────────────────────────
+
+export interface UpdateAudienceDeps {
+  outPath?: string;
+  historyDir?: string;
+  ctrCsvPath?: string;
+  surveyJsonPath?: string;
+  pubJsonPath?: string;
+  h4HistoryPath?: string;
+  editionsDir?: string;
+  /** Override do arg de linha de comando (`process.argv[2]`) — path de um survey JSON alternativo. `null` explícito = "sem override, usar `surveyJsonPath` se existir". */
+  surveyPathArg?: string | null;
+  /** Data "hoje" — injetável pra determinismo em teste. Default: data real. */
+  today?: Date;
+  subscriberBackend?: NewsletterSubscriberBackend;
+  dbPath?: string;
+  openDbFn?: (path: string) => ReturnType<typeof openDiariaSubscribersDbSafe>;
+  getKitActiveSummaryFn?: typeof getKitActiveSummary;
+  /** Injetável pra teste — evita spawnar `log-event.ts` de verdade (escreveria em `data/run-log.jsonl` real). Default: `spawnSync`. */
+  spawnFn?: typeof spawnSync;
+  warnFn?: (message: string) => void;
+}
+
+export interface UpdateAudienceResult {
+  ok: boolean;
+  reason?: string;
+  outPath?: string;
+  subscribers?: number;
+  sources?: string[];
+}
+
+/**
+ * Núcleo do script — exportado pra teste real de `main()` exercer o
+ * documento gerado de ponta a ponta (#8151), sem depender de `process.exit`
+ * nem de `process.argv`. Todos os paths/deps são injetáveis com default
+ * pros paths reais do repo (mesmo comportamento de antes quando chamado
+ * sem argumentos pela CLI). NUNCA lança — falhas viram `{ ok: false,
+ * reason }`, e é o chamador CLI (guard `isMainModule` no fim do arquivo)
+ * quem decide o exit code a partir disso.
+ */
+export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
+  const {
+    outPath = OUT,
+    historyDir = HISTORY_DIR,
+    ctrCsvPath = CTR_CSV,
+    surveyJsonPath = SURVEY_JSON,
+    pubJsonPath = PUB_JSON,
+    h4HistoryPath = H4_HISTORY,
+    editionsDir = resolve(ROOT, editionsRoot()),
+    surveyPathArg = null,
+    today: todayDate = new Date(),
+    subscriberBackend = resolveNewsletterSubscriberBackend(),
+    dbPath = DEFAULT_DB_PATH,
+    openDbFn = openDiariaSubscribersDbSafe,
+    getKitActiveSummaryFn = getKitActiveSummary,
+    spawnFn = spawnSync,
+    warnFn = console.warn,
+  } = deps;
+
+  const today = todayDate.toISOString().slice(0, 10);
+
+  // Subscriber count (#8145 — respeita subscriber_backend)
+  const subscribers = resolveSubscriberCount({
+    backend: subscriberBackend,
+    pubJsonPath,
+    dbPath,
+    openDbFn,
+    getKitActiveSummaryFn,
+    spawnFn,
+    warnFn,
+  });
+
   // CTR data (primary)
-  const ctr = parseCtr();
+  const ctr = parseCtr(ctrCsvPath);
 
   // Survey data (secondary)
-  const surveyPath = process.argv[2] ?? (existsSync(SURVEY_JSON) ? SURVEY_JSON : null);
+  const surveyPath = surveyPathArg ?? (existsSync(surveyJsonPath) ? surveyJsonPath : null);
   let surveyResponses: BeehiivResponse[] = [];
   if (surveyPath && existsSync(surveyPath)) {
     try {
       const all: BeehiivResponse[] = JSON.parse(readFileSync(surveyPath, "utf8"));
       surveyResponses = all.filter((r) => !r.status || r.status === "active");
-    } catch { /* ignore */ }
+    } catch (error) {
+      logFileReadWarning("survey JSON", surveyPath, error, spawnFn, warnFn);
+    }
   }
 
   if (!ctr && surveyResponses.length === 0) {
-    console.error("Nenhuma fonte disponível (CTR CSV ou survey JSON). Nada a gerar.");
-    process.exit(1);
+    return { ok: false, reason: "Nenhuma fonte disponível (CTR CSV ou survey JSON). Nada a gerar." };
   }
 
   const lines: string[] = [
@@ -452,7 +660,11 @@ function main() {
       "",
       "## 1. Engajamento real (CTR por categoria)",
       "",
-      `Fonte primária: comportamento de ${subscribers || "N"} subscribers em ${ctr.totalEditions} edições.`,
+      subscribers > 0
+        ? `Fonte primária: comportamento de ${subscribers} ${pluralizeSubscribers(subscribers)} em ${ctr.totalEditions} edições.`
+        // #8150: mesmo tratamento da linha 627 acima (omitir/sinalizar quando a
+        // contagem é 0) — nunca o placeholder "N" solto em prosa.
+        : `Fonte primária: comportamento observado em ${ctr.totalEditions} edições (contagem de subscribers indisponível).`,
       `CTR médio geral: ${avgCtr.toFixed(2)}%`,
       "",
       `**Método (#4840):** cada categoria abaixo tem CTR encolhido empírico-Bayes rumo à média geral (k=${CTR_SHRINKAGE_K} "aberturas de prior" — quanto menor o n da categoria, mais a estimativa é puxada pra média). Categorias são agrupadas em 3 bandas em vez de ordenadas por posição — um ranking de posição não é sustentado pelo n típico destas categorias (validação: split cronológico com Spearman ≈0,06 fora da amostra, IC95 do posto cobrindo boa parte das 17 posições). O n (links + aberturas) de cada categoria é sempre publicado, mesmo quando ela cai em "sem sinal".`,
@@ -479,9 +691,7 @@ function main() {
       if (rows.length === 0) continue;
       lines.push(`**${BAND_LABEL[band]}:**`, "");
       for (const { cat, agg, shrunk } of rows) {
-        lines.push(
-          `- **${cat}** — CTR ${(shrunk.rate * 100).toFixed(1)}% (encolhida) | ${agg.count} links | ${Math.round(agg.opens)} aberturas`,
-        );
+        lines.push(formatCtrCategoryLine(cat, agg, shrunk));
       }
       lines.push("");
     }
@@ -635,43 +845,52 @@ function main() {
   // propaga sem arquivar nada) fecha essa janela pro caso comum (erro de
   // montagem de conteúdo); não protege contra falha no meio do próprio I/O de
   // arquivo, que é um risco residual aceito (mesma classe de qualquer script).
-  if (existsSync(OUT)) {
-    mkdirSync(HISTORY_DIR, { recursive: true });
-    const currentContent = readFileSync(OUT, "utf8");
+  // Archive: feito aqui com o CONTEÚDO PRÉ-sobrescrita (currentContent lido
+  // ANTES do writeFileSync abaixo) — é esse arquivamento pré-sobrescrita que
+  // o teste de I/O do #8151 item 3 afirma (rodar main() 2x num tmpdir e
+  // checar que o snapshot recebe o conteúdo da 1ª rodada, não da 2ª).
+  if (existsSync(outPath)) {
+    mkdirSync(historyDir, { recursive: true });
+    const currentContent = readFileSync(outPath, "utf8");
     const todayFile = `${today}.md`;
-    const latestFile = findLatestHistoryFile(HISTORY_DIR, todayFile);
-    const latestContent = latestFile ? readFileSync(resolve(HISTORY_DIR, latestFile), "utf8") : null;
-    handleArchiveGuard(currentContent, todayFile, latestFile, latestContent);
-    copyFileSync(OUT, resolve(HISTORY_DIR, todayFile));
+    const latestFile = findLatestHistoryFile(historyDir, todayFile);
+    const latestContent = latestFile ? readFileSync(resolve(historyDir, latestFile), "utf8") : null;
+    handleArchiveGuard(currentContent, todayFile, latestFile, latestContent, spawnFn, warnFn);
+    copyFileSync(outPath, resolve(historyDir, todayFile));
   }
 
-  writeFileSync(OUT, lines.join("\n"), "utf8");
+  writeFileSync(outPath, lines.join("\n"), "utf8");
 
   const sources: string[] = [];
   if (ctr) sources.push(`CTR (${ctr.totalLinks} links)`);
   if (surveyResponses.length > 0) sources.push(`survey (${surveyResponses.length} respondentes)`);
-  console.log(`Wrote audience profile [${sources.join(" + ")}] → ${OUT}`);
+  console.log(`Wrote audience profile [${sources.join(" + ")}] → ${outPath}`);
 
   // ─── H4: scorer×CTR — computa edições recém-maduras + surfacing semanal (#1619) ─
   // Defensivo: se CTR CSV ausente, pula silenciosamente (aviso já emitido por loadCtrRowsH4).
-  const h4CtrRows = loadCtrRowsH4(CTR_CSV);
+  const h4CtrRows = loadCtrRowsH4(ctrCsvPath);
   if (h4CtrRows.length > 0) {
-    const alreadyComputed = loadHistoryEditions(H4_HISTORY);
-    const editionsDir = resolve(ROOT, editionsRoot());
+    const alreadyComputed = loadHistoryEditions(h4HistoryPath);
     const newEntries = computeNewH4Entries(h4CtrRows, editionsDir, alreadyComputed);
     if (newEntries.length > 0) {
-      appendHistory(H4_HISTORY, newEntries);
+      appendHistory(h4HistoryPath, newEntries);
       console.log(`[H4] +${newEntries.length} edição(ões) nova(s) gravada(s) em data/scorer-ctr-history.jsonl`);
     }
-    const allH4Entries = loadHistory(H4_HISTORY);
+    const allH4Entries = loadHistory(h4HistoryPath);
     const trend = computeH4Trend(allH4Entries);
     console.log(formatH4Trend(trend));
   }
+
+  return { ok: true, outPath, subscribers, sources };
 }
 
 // Run main() apenas quando invocado como CLI direto.
 // Sem este guard, qualquer test que importe deste arquivo dispara main() →
 // `process.exit(1)` quando CTR CSV ausente (CI não tem `data/`).
 if (isMainModule(import.meta.url)) {
-  main();
+  const result = main({ surveyPathArg: process.argv[2] ?? null });
+  if (!result.ok) {
+    console.error(result.reason);
+    process.exit(1);
+  }
 }
