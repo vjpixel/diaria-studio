@@ -86,8 +86,10 @@ export function loadAarrrWhitelist(): ReadonlySet<string> {
 }
 
 /** Dentre várias etapas `aarrr:*` de uma issue, qual manter (a mais abaixo
- * no funil — maior índice em `AARRR_STAGES`). `undefined` se `stages` vazio;
- * etapa fora de `AARRR_STAGES` é ignorada (tratada como "nunca mais funda"). */
+ * no funil — maior índice em `AARRR_STAGES`). `undefined` se `stages` vazio
+ * ou só contiver etapas fora de `AARRR_STAGES` (fail-closed: nunca elege
+ * uma etapa desconhecida como "a mais funda" por falta de concorrente
+ * válida) — etapa conhecida sempre vence sobre desconhecida presente junto. */
 export function deepestAarrrStage(stages: readonly string[]): string | undefined {
   let deepest: string | undefined;
   let deepestIndex = -1;

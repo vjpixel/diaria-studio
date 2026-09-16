@@ -91,6 +91,12 @@ describe("helpers", () => {
     assert.equal(deepestAarrrStage([]), undefined);
   });
 
+  it("deepestAarrrStage trata etapa fora de AARRR_STAGES como 'nunca mais funda' — só ela, undefined", () => {
+    assert.equal(deepestAarrrStage(["bogus"]), undefined);
+    assert.equal(deepestAarrrStage(["bogus", "activation"]), "activation");
+    assert.equal(deepestAarrrStage(["activation", "bogus"]), "activation");
+  });
+
   it("parse é fail-closed e descarta etapa inválida", () => {
     assert.equal(parseAarrrWhitelist("não é json").size, 0);
     assert.equal(parseAarrrWhitelist("{}").size, 0);
