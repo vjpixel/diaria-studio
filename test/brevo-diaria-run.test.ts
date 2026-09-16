@@ -49,6 +49,7 @@ const PREFLIGHT_SCRIPTS = [
   "scripts/evaluate-brevo-diaria.ts",
   "scripts/refresh-pending-pool.ts",
   "scripts/sync-pending-to-brevo.ts",
+  "scripts/sync-kit-inactive-to-brevo.ts", // #8192
 ];
 
 const APPLY_SCRIPTS = [
@@ -57,6 +58,8 @@ const APPLY_SCRIPTS = [
   "scripts/score-pending-origin.ts",
   "scripts/verify-pending-emails-mv.ts",
   "scripts/sync-pending-to-brevo.ts",
+  "scripts/verify-kit-inactive-emails-mv.ts", // #8192
+  "scripts/sync-kit-inactive-to-brevo.ts", // #8192
 ];
 
 describe("parseBrevoDiariaRunArgs", () => {
@@ -107,7 +110,7 @@ describe("parseBrevoDiariaRunArgs", () => {
 });
 
 describe("runBrevoDiaria — modo preflight", () => {
-  it("roda os 3 dry-runs na ordem certa, sem nenhuma flag --push", () => {
+  it("roda os dry-runs na ordem certa (inclui o pool Kit, #8192), sem nenhuma flag --push", () => {
     const handlers = Object.fromEntries(PREFLIGHT_SCRIPTS.map((s) => [s, ok()]));
     const { exec, calls } = makeFakeExec(handlers);
     const result = runBrevoDiaria([], deps(exec));
@@ -137,7 +140,7 @@ describe("runBrevoDiaria — modo preflight", () => {
 });
 
 describe("runBrevoDiaria — modo apply", () => {
-  it("roda os 5 passos na ORDEM FIXA do Passo 4, com os args certos", () => {
+  it("roda os passos na ORDEM FIXA do Passo 4, com os args certos", () => {
     const handlers = Object.fromEntries(APPLY_SCRIPTS.map((s) => [s, ok()]));
     const { exec, calls } = makeFakeExec(handlers);
     const result = runBrevoDiaria(["--apply", "--max-add", "10"], deps(exec));
@@ -213,5 +216,71 @@ describe("runBrevoDiaria — modo apply", () => {
     const result = runBrevoDiaria(["--apply", "--max-add", "5"], deps(exec));
     assert.equal(result.code, 1);
     assert.match(result.summary, /erro inesperado/);
+  });
+});
+
+describe("runBrevoDiaria — pool Kit inactive ≥72h (#8192)", () => {
+  const KIT_VERIFY = "scripts/verify-kit-inactive-emails-mv.ts";
+  const KIT_SYNC = "scripts/sync-kit-inactive-to-brevo.ts";
+
+  it("apply: verify Kit com --limit no teto do guard de custo por default; sync Kit com --push, depois do pool Beehiiv", () => {
+    const { exec, calls } = makeFakeExec(Object.fromEntries(APPLY_SCRIPTS.map((s) => [s, ok()])));
+    const result = runBrevoDiaria(["--apply"], deps(exec));
+    assert.equal(result.code, 0);
+    assert.deepEqual(calls[5], { script: KIT_VERIFY, args: ["--limit", "500"] });
+    assert.deepEqual(result.warnings, []);
+    assert.deepEqual(calls[6], { script: KIT_SYNC, args: ["--push"] });
+  });
+
+  it("--confirm-mv chega ao verify Kit; --max-add chega ao sync Kit", () => {
+    const { exec, calls } = makeFakeExec(Object.fromEntries(APPLY_SCRIPTS.map((s) => [s, ok()])));
+    runBrevoDiaria(["--apply", "--max-add", "7", "--confirm-mv"], deps(exec));
+    assert.deepEqual(calls[5].args, ["--confirm"]);
+    assert.deepEqual(calls[6].args, ["--push", "--max-add", "7"]);
+  });
+
+  it("--i-know-this-skips-mv NUNCA é repassado ao pool Kit (só entra verificado)", () => {
+    const { exec, calls } = makeFakeExec(Object.fromEntries(APPLY_SCRIPTS.map((s) => [s, ok()])));
+    runBrevoDiaria(["--apply", "--i-know-this-skips-mv"], deps(exec));
+    assert.ok(calls[4].args.includes("--i-know-this-skips-mv"), "pool Beehiiv continua recebendo a flag");
+    for (const c of calls.slice(5)) {
+      assert.ok(!c.args.includes("--i-know-this-skips-mv"), `${c.script} não deveria receber a flag`);
+    }
+  });
+
+  it("falha no verify Kit é fail-soft: code 0, sync Kit não roda, aviso no summary", () => {
+    const handlers: Record<string, StepResult> = Object.fromEntries(APPLY_SCRIPTS.map((s) => [s, ok()]));
+    handlers[KIT_VERIFY] = { code: 2, stdout: "", stderr: "ERRO: KIT_API_KEY ausente" };
+    const { exec, calls } = makeFakeExec(handlers);
+    const result = runBrevoDiaria(["--apply"], deps(exec));
+    assert.equal(result.code, 0);
+    assert.equal(result.mode, "apply");
+    assert.ok(!calls.some((c) => c.script === KIT_SYNC), "sync Kit não pode rodar sem o verify");
+    assert.match(result.summary, /AVISOS: .*verify-kit-inactive-emails-mv falhou \(exit 2\)/);
+    assert.equal(result.steps.at(-1)?.code, 2, "passo registrado com o exit code real");
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /KIT_API_KEY ausente/);
+  });
+
+  it("falha (ou exceção de spawn) no sync Kit também é fail-soft", () => {
+    const { exec } = makeFakeExec({
+      ...Object.fromEntries(APPLY_SCRIPTS.map((s) => [s, ok()])),
+      [KIT_SYNC]: () => {
+        throw new Error("spawn ENOENT");
+      },
+    });
+    const result = runBrevoDiaria(["--apply"], deps(exec));
+    assert.equal(result.code, 0);
+    assert.match(result.summary, /sync-kit-inactive-to-brevo --push.*falhou \(exit 1\).*spawn ENOENT/);
+  });
+
+  it("preflight: falha no dry-run do sync Kit não derruba o preflight", () => {
+    const { exec } = makeFakeExec({
+      ...Object.fromEntries(PREFLIGHT_SCRIPTS.map((s) => [s, ok()])),
+      [KIT_SYNC]: { code: 1, stdout: "", stderr: "Kit 503" },
+    });
+    const result = runBrevoDiaria([], deps(exec));
+    assert.equal(result.code, 0);
+    assert.match(result.summary, /AVISOS: .*Kit 503/);
   });
 });

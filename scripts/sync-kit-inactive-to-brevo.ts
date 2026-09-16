@@ -48,20 +48,15 @@
  *   passados como `null`): o pool Kit-inactive é da ordem de unidades/dia
  *   (texto da issue), então FIFO já é suficiente e evita depender de
  *   `score-pending-origin.ts` (que só existe pro pool Beehiiv legado).
- * - **MillionVerifier**: reusa `loadMvVerifiedEmails`/`assertMvGuardAcknowledged`/
- *   `MvCoverage` (mesmo mecanismo, mesma flag `--i-know-this-skips-mv`),
- *   apontando pra um CSV DEDICADO (`KIT_INACTIVE_MV_VERIFIED_CSV_PATH`,
- *   `data/kit-inativos-reativacao/mv-verified.csv`) — não o CSV do pool
- *   Beehiiv (populações diferentes, verificação não é intercambiável).
- *   **Nenhum script `verify-kit-inactive-emails-mv.ts` foi criado nesta
- *   unidade** (fora do escopo do item 3, que pede só "alimentar o Brevo a
- *   partir do cohort inactive") — até que exista, `--push` sempre exige
- *   `--i-know-this-skips-mv` (mesmo comportamento do pool Beehiiv antes do
- *   #4476 item 8 existir). A COBERTURA usada aqui é simplificada em relação
- *   ao par Beehiiv: `processedCount = verifiedEmails.size` (sem quebrar em
- *   rejected/unknown) — aceitável porque, sem o verify script, o cenário
- *   normal é `verifiedEmails === null` (guard exige a flag de qualquer
- *   jeito); a granularidade fina só importa quando o CSV existe de verdade.
+ * - **MillionVerifier (#8192)**: `scripts/verify-kit-inactive-emails-mv.ts`
+ *   verifica o pool antes deste script rodar, com checkpoint próprio
+ *   (`KIT_INACTIVE_MV_CHECKPOINT_PATH`, `data/kit-inativos-reativacao/.mv-cache.json`).
+ *   A cobertura é medida sobre o pool DESTA rodada (candidatos fora do
+ *   store), direto do checkpoint: `processedCount` = candidatos com qualquer
+ *   resultado, e só os `ok`/`catch_all` entram — inclusive com cobertura
+ *   parcial (ingere o subconjunto verificado; o resto espera a próxima
+ *   rodada, ver `decideKitIngestion`). E-mail rejeitado/inconclusivo nunca
+ *   é ingerido. `--i-know-this-skips-mv` (uso manual) ignora o filtro.
  *
  * ## O que NÃO é reusado, de propósito
  *
@@ -80,6 +75,13 @@
  * tocam Brevo/Kit ao vivo não rodam a partir de sessão autônoma). Validado
  * só via testes com fetch/Kit mockados.
  *
+ * ## Corte de 72h (#8192)
+ *
+ * Só entra quem recebeu o e-mail de confirmação do Kit há ≥72h
+ * (`selectKitInactivePastDoiWindow`, `lib/kit-inactive-reativacao.ts` — o
+ * mesmo filtro do verify MV). Endereços de sonda/teste
+ * (`kit-fixture-patterns.ts`) ficam de fora.
+ *
  * ## Gate do editor (#6340, comentário 28/08/2026)
  *
  * "o double opt-in altera quem recebe o quê — aprovação explícita do editor
@@ -87,12 +89,14 @@
  * preparados sem gate; a ativação, não." Este script É a implementação
  * (preparada); RODAR `--push` de verdade é a ativação, e segue fora do
  * alcance de qualquer sessão autônoma até o editor decidir (mesmo guard de
- * publicação de sempre).
+ * publicação de sempre). **Decidido em #8192 (16/09/2026):** o editor pediu
+ * que este pool passe a receber via Brevo — o script entrou no
+ * `brevo-diaria-run.ts --apply` (Etapa 5, automático).
  *
  * ## Uso
  *
  *   npx tsx scripts/sync-kit-inactive-to-brevo.ts              # dry-run (default)
- *   npx tsx scripts/sync-kit-inactive-to-brevo.ts --push --i-know-this-skips-mv
+ *   npx tsx scripts/sync-kit-inactive-to-brevo.ts --push   # exige verify-kit-inactive-emails-mv.ts antes
  *   npx tsx scripts/sync-kit-inactive-to-brevo.ts --push --max-add 5
  *
  * Env: KIT_API_KEY (leitura) + platform.config.json → brevo_diaria.api_key_env (escrita).
@@ -122,13 +126,14 @@ import {
   computeCurrentActiveCount,
   ingestContactToBrevo,
   assertStoreFileGuard,
-  loadMvVerifiedEmails,
-  assertMvGuardAcknowledged,
   selectContactsForBackfill,
   type MvCoverage,
   type PendingToIngestEntry,
 } from "./sync-pending-to-brevo.ts";
 import { buildOrigin } from "./lib/shared/brevo-diaria-origin.ts"; // #6678
+import { selectKitInactivePastDoiWindow, formatKitInactiveSelection } from "./lib/kit-inactive-reativacao.ts"; // #8192
+import { classifyResult, loadCheckpoint } from "./verify-pending-emails-mv.ts";
+import { KIT_INACTIVE_MV_CHECKPOINT_PATH } from "./verify-kit-inactive-emails-mv.ts";
 // #6340 item 4 fix D — importa a constante do prefixo do módulo canônico shared/
 // (brevo-diaria-origin.ts) em vez de do evaluate-brevo-diaria.ts: ambos (produtor
 // aqui e consumidor em evaluate-brevo-diaria.ts) referenciam a MESMA constante
@@ -142,12 +147,6 @@ import { buildOrigin } from "./lib/shared/brevo-diaria-origin.ts"; // #6678
 // test/brevo-diaria-origin-consumers-6699.test.ts (cobre também o store).
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-/** #6340 item 3 — pool dedicado, distinto de `data/pending-reativacao/`
- *  (populações diferentes: Kit `inactive` vs. Beehiiv Pending). Ver docstring
- *  do módulo, seção MillionVerifier, sobre por que ainda não existe um
- *  script que popula este arquivo. */
-export const KIT_INACTIVE_MV_VERIFIED_CSV_PATH = resolve(ROOT, "data/kit-inativos-reativacao/mv-verified.csv");
 
 interface BrevoDiariaConfig {
   api_key_env: string;
@@ -201,6 +200,49 @@ export function computeKitContactsToIngest(
   return out;
 }
 
+/**
+ * Pura (#8192) — cobertura MV do pool desta rodada a partir do checkpoint do
+ * `verify-kit-inactive-emails-mv.ts`. Mede só sobre `candidateEmails` (quem
+ * ainda não está no store), nunca sobre o checkpoint inteiro — entradas de
+ * rodadas antigas não podem inflar a cobertura. `verified` = `ok`/`catch_all`.
+ */
+export function computeKitMvCoverage(
+  candidateEmails: readonly string[],
+  checkpoint: Readonly<Record<string, { result: string }>>,
+): { verified: Set<string>; coverage: MvCoverage } {
+  const verified = new Set<string>();
+  let processedCount = 0;
+  for (const email of candidateEmails) {
+    const cached = checkpoint[email];
+    if (!cached) continue;
+    processedCount++;
+    if (classifyResult(cached.result) === "verified") verified.add(email);
+  }
+  return { verified, coverage: { processedCount, poolSize: candidateEmails.length } };
+}
+
+/**
+ * Pura (#8192) — quem entra nesta rodada. Por padrão só os verificados
+ * (`ok`/`catch_all`), inclusive com cobertura PARCIAL: diferente do pool
+ * Beehiiv, aqui não existe caminho em que um não-verificado entre sem a flag,
+ * então cobertura parcial não precisa abortar — ingere o subconjunto
+ * verificado e deixa o resto pra próxima rodada (abortar travaria também quem
+ * já foi verificado, por causa de uma falha transitória num único e-mail).
+ * `--i-know-this-skips-mv` (só uso manual; `brevo-diaria-run.ts` nunca
+ * repassa) ignora o filtro quando a cobertura está incompleta.
+ */
+export function decideKitIngestion<T extends { email: string }>(
+  candidates: readonly T[],
+  verified: ReadonlySet<string>,
+  coverage: MvCoverage,
+  skipMvFlag: boolean,
+): { toIngest: T[]; mvComplete: boolean; skipsMv: boolean } {
+  const mvComplete = coverage.processedCount >= coverage.poolSize;
+  const skipsMv = skipMvFlag && !mvComplete;
+  const toIngest = skipsMv ? [...candidates] : candidates.filter((c) => verified.has(c.email));
+  return { toIngest, mvComplete, skipsMv };
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -224,8 +266,6 @@ async function main(): Promise<void> {
     log(`ERRO: ${(e as Error).message}`);
     process.exit(2);
   }
-
-  const verifiedEmails = loadMvVerifiedEmails(KIT_INACTIVE_MV_VERIFIED_CSV_PATH, log);
 
   const kitConfigResult = resolveKitConfig();
   if (!kitConfigResult.ok) {
@@ -264,39 +304,34 @@ async function main(): Promise<void> {
 
   log("buscando assinantes inactive no Kit…");
   const rawInactive = await listAllKitSubscribers(kitConfigResult.config, { status: "inactive" });
-  const inactive = mapKitInactiveSubscribers(rawInactive);
-  log(`${inactive.length} assinante(s) inactive encontrado(s) no Kit.`);
-
-  // Coverage simplificada (ver docstring do módulo — sem verify script Kit-
-  // específico ainda, `processedCount` não distingue rejected/unknown).
-  const poolSize = inactive.length;
-  const coverage: MvCoverage | null =
-    verifiedEmails !== null ? { processedCount: verifiedEmails.size, poolSize } : null;
-  const mvComplete = coverage !== null && coverage.poolSize > 0 && coverage.processedCount >= coverage.poolSize;
-  if (push) {
-    try {
-      assertMvGuardAcknowledged(argv, coverage);
-      if (!mvComplete) {
-        log(
-          "aviso: --i-know-this-skips-mv confirmado — ingestão SEM verificação MillionVerifier completa " +
-            `(#6340 item 3${coverage ? `, ${coverage.processedCount}/${coverage.poolSize} processados` : ""}). ` +
-            "Risco de bounce aceito explicitamente pelo operador.",
-        );
-      }
-    } catch (e) {
-      log(`ERRO: ${(e as Error).message}`);
-      process.exit(2);
-    }
-  }
+  const selection = selectKitInactivePastDoiWindow(rawInactive, Date.now());
+  log(formatKitInactiveSelection(selection));
+  const inactive = mapKitInactiveSubscribers(selection.eligible);
 
   const store = readStore(DEFAULT_STORE_PATH);
-  const toIngest = computeKitContactsToIngest(inactive, store, verifiedEmails);
+  // Pool da rodada = elegíveis fora do store (sem filtro MV); a cobertura é
+  // medida sobre ele e o filtro MV é aplicado depois (#8192).
+  const candidates = computeKitContactsToIngest(inactive, store);
+  const { verified, coverage } = computeKitMvCoverage(
+    candidates.map((c) => c.email),
+    loadCheckpoint(KIT_INACTIVE_MV_CHECKPOINT_PATH, "sync-kit-inactive-to-brevo"),
+  );
+  const decision = decideKitIngestion(candidates, verified, coverage, hasFlag(argv, "i-know-this-skips-mv"));
+  const toIngest = decision.toIngest;
+  if (decision.skipsMv) {
+    log(
+      "aviso: --i-know-this-skips-mv — filtro MV IGNORADO com cobertura incompleta " +
+        `(${coverage.processedCount}/${coverage.poolSize} processados). Risco de bounce aceito explicitamente pelo operador.`,
+    );
+  } else if (!decision.mvComplete) {
+    log(
+      `aviso: cobertura MV parcial (${coverage.processedCount}/${coverage.poolSize}) — só os verificados entram nesta rodada; ` +
+        "o resto fica pra quando scripts/verify-kit-inactive-emails-mv.ts processar.",
+    );
+  }
   log(
-    `${toIngest.length} contato(s) novo(s) elegível(is) (dedup pelo store compartilhado — ${store.contacts.length} já tratado(s)` +
-      (verifiedEmails
-        ? `; filtrado por ${verifiedEmails.size} e-mail(s) verificado(s) via MillionVerifier`
-        : "; SEM filtro de MV — nenhuma verificação disponível") +
-      `).`,
+    `${toIngest.length} contato(s) novo(s) elegível(is) (dedup pelo store compartilhado — ${store.contacts.length} já tratado(s); ` +
+      `MV: ${coverage.processedCount}/${coverage.poolSize} processado(s), ${verified.size} ok).`,
   );
 
   // Fila compartilhada com sync-pending-to-brevo.ts (mesmo store/cap/circuit
