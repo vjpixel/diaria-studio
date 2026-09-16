@@ -7,6 +7,7 @@ import {
   isBlockedByAarrrWhitelist,
   parseAarrrWhitelist,
   loadAarrrWhitelist,
+  deepestAarrrStage,
   AARRR_STAGES,
 } from "../scripts/lib/aarrr-whitelist.ts";
 import { resolveDesbloqueioEscopo } from "../scripts/lib/desbloqueia-scan.ts";
@@ -80,6 +81,14 @@ describe("helpers", () => {
     assert.equal(isBlockedByAarrrWhitelist([], new Set()), false);
     assert.equal(isBlockedByAarrrWhitelist(["aarrr:referral"], new Set()), true);
     assert.equal(isBlockedByAarrrWhitelist(["aarrr:referral"], new Set(["referral"])), false);
+  });
+
+  it("deepestAarrrStage mantém a etapa mais abaixo no funil", () => {
+    assert.equal(deepestAarrrStage(["acquisition", "activation"]), "activation");
+    assert.equal(deepestAarrrStage(["activation", "revenue"]), "revenue");
+    assert.equal(deepestAarrrStage(["acquisition", "revenue"]), "revenue");
+    assert.equal(deepestAarrrStage(["revenue"]), "revenue");
+    assert.equal(deepestAarrrStage([]), undefined);
   });
 
   it("parse é fail-closed e descarta etapa inválida", () => {

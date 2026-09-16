@@ -23,6 +23,16 @@
  *
  * Fail-closed: arquivo ausente/malformado = whitelist vazia (bloqueia toda
  * issue etiquetada), nunca "libera tudo".
+ *
+ * REGRA (decisão do editor, 16/09/2026): issue leva no máximo 1 label
+ * `aarrr:*` — a etapa MAIS ABAIXO no funil (maior índice em `AARRR_STAGES`)
+ * quando o tema toca mais de uma. Ex.: issue de ativação com efeito em
+ * receita leva só `aarrr:revenue`, nunca as duas. `deepestAarrrStage` decide
+ * qual manter ao normalizar uma issue que já carrega várias (aplicado
+ * manualmente nas #7916/#7917/#7918 nesta data). O classificador
+ * (`isBlockedByAarrrWhitelist`) continua aceitando múltiplas por
+ * tolerância a issue antiga não normalizada — não é ele quem enforça a
+ * regra.
  */
 import { readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -73,6 +83,22 @@ export function loadAarrrWhitelist(): ReadonlySet<string> {
   }
   cached = { mtimeMs, set: parseAarrrWhitelist(raw) };
   return cached.set;
+}
+
+/** Dentre várias etapas `aarrr:*` de uma issue, qual manter (a mais abaixo
+ * no funil — maior índice em `AARRR_STAGES`). `undefined` se `stages` vazio;
+ * etapa fora de `AARRR_STAGES` é ignorada (tratada como "nunca mais funda"). */
+export function deepestAarrrStage(stages: readonly string[]): string | undefined {
+  let deepest: string | undefined;
+  let deepestIndex = -1;
+  for (const stage of stages) {
+    const index = AARRR_STAGES.indexOf(stage as (typeof AARRR_STAGES)[number]);
+    if (index > deepestIndex) {
+      deepest = stage;
+      deepestIndex = index;
+    }
+  }
+  return deepest;
 }
 
 /** A issue está vetada pela whitelist? Sem label `aarrr:*` → nunca. */
