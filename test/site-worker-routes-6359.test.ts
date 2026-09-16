@@ -85,6 +85,23 @@ describe("workers/site/public — / (#6359)", () => {
     const html = readFileSync(indexPath, "utf8");
     assert.match(html, /href="\/assinar"/);
   });
+
+  // (#8067, achado do review da PR #8175) og:title/og:description e
+  // twitter:title/twitter:description são cópias MANUAIS do title/description
+  // acima, não derivadas — nada travava as duas em sincronia até este teste.
+  it("og:title/og:description e twitter:title/twitter:description acompanham o title/description (#8067)", () => {
+    const html = readFileSync(indexPath, "utf8");
+    assert.match(html, /<meta property="og:title" content="diar\.ia\.br — notícias de IA todo dia, em português">/);
+    assert.match(
+      html,
+      /<meta property="og:description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail\.">/,
+    );
+    assert.match(html, /<meta name="twitter:title" content="diar\.ia\.br — notícias de IA todo dia, em português">/);
+    assert.match(
+      html,
+      /<meta name="twitter:description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail\.">/,
+    );
+  });
 });
 
 describe("workers/site/public/_redirects — /subscribe (#6359)", () => {
