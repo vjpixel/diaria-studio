@@ -33,6 +33,7 @@ import {
   beehiivSendAudience,
   buildDivergenceFindings,
   decideOutcome,
+  resolveGuardExitCode,
   shouldUseAllActiveAsKitAudience,
 } from "../scripts/reconcile-send-audiences.ts";
 import { EDITOR_SEED_EMAILS } from "../scripts/lib/editor-copy.ts";
@@ -458,6 +459,25 @@ describe("buildDivergenceFindings (#7482) — achado vira issue própria", () =>
     );
     assert.equal(buildDivergenceFindings(one)[0].fingerprint, buildDivergenceFindings(two)[0].fingerprint);
     assert.notEqual(buildDivergenceFindings(one)[0].contentSignature, buildDivergenceFindings(two)[0].contentSignature);
+  });
+
+  it("decideOutcome não muta o audience recebido ao isentar sondas", () => {
+    const audience = reconcileSendAudiences([
+      { name: "kit", emails: ["sonda@x.com"] },
+      { name: "brevo", emails: ["sonda@x.com"] },
+    ]);
+    decideOutcome(audience, [], [], 0, "kit", ["sonda@x.com"]);
+    assert.equal(audience.overlapCount, 1);
+  });
+
+  // Achado do review da PR #8183: falha ao registrar a issue não pode virar
+  // exit ≠0 numa medição limpa (volta o falso "unit quebrada"), mas também
+  // não pode engolir uma divergência que não chegou a lugar nenhum.
+  it("resolveGuardExitCode: só sai ≠0 quando há divergência E o registro falhou", () => {
+    assert.equal(resolveGuardExitCode(false, false), 0);
+    assert.equal(resolveGuardExitCode(true, false), 0);
+    assert.equal(resolveGuardExitCode(false, true), 0);
+    assert.equal(resolveGuardExitCode(true, true), 3);
   });
 
   it("corpo da issue nunca expõe e-mail em claro (usa a máscara do --json)", () => {

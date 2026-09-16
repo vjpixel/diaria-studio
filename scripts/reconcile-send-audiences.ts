@@ -54,6 +54,7 @@
  * Exit codes:
  *   0 = mediu (com OU sem divergência — ver abaixo)
  *   2 = falha de config/rede — não foi possível medir a audiência
+ *   3 = divergência encontrada mas NÃO registrada em issue (gh/estado falhou)
  *
  * Divergência NÃO é exit ≠0 desde #7482 (decisão do editor, 16/09/2026):
  * sair 1 ao ACHAR algo deixava a unit systemd eternamente `failed`, e o
@@ -253,7 +254,7 @@ export function decideOutcome(
   const seeds = new Set(seedEmails.map((e) => e.trim().toLowerCase()));
   const realOverlaps = audience.overlaps.filter((o) => !seeds.has(o.email.trim().toLowerCase()));
   const seedOverlapsExempted = audience.overlaps.length - realOverlaps.length;
-  audience = { ...audience, overlaps: realOverlaps, overlapCount: realOverlaps.length };
+  const audienceSemSondas = { ...audience, overlaps: realOverlaps, overlapCount: realOverlaps.length };
   const beehiivDelivery = recentDelivery.find((r) => r.platform === "beehiiv");
   // #7482 (decisão do editor, 10/09/2026): com o canal principal já em
   // "kit", 0 ativos na Beehiiv é o estado ESPERADO pós-migração — não uma
@@ -271,9 +272,9 @@ export function decideOutcome(
     !skipBeehiivGap && beehiivDelivery?.measured && typeof beehiivDelivery.recipients === "number"
       ? checkBeehiivDeliveryGap(beehiivActiveCount, beehiivDelivery.recipients)
       : null;
-  const blocking = audience.overlapCount > 0 || orphans.length > 0;
+  const blocking = audienceSemSondas.overlapCount > 0 || orphans.length > 0;
   return {
-    audience,
+    audience: audienceSemSondas,
     orphans,
     recentDelivery,
     beehiivDeliveryGap,
@@ -388,6 +389,17 @@ export function buildDivergenceFindings(outcome: GuardOutcome): AlarmFinding[] {
       priority: "P1",
     },
   ];
+}
+
+/**
+ * Pura: exit code depois de uma medição BEM-SUCEDIDA (#7482). Divergência
+ * registrada em issue = 0. Só sai ≠0 quando há divergência E ela não pôde
+ * ser registrada (gh fora, falha ao gravar estado) — aí o único sinal que
+ * resta é a unit `failed`, e perder o achado em silêncio seria pior.
+ * Falha de registro SEM divergência continua 0: não há achado a perder.
+ */
+export function resolveGuardExitCode(blocking: boolean, reportFailed: boolean): 0 | 3 {
+  return blocking && reportFailed ? 3 : 0;
 }
 
 function emitError(asJson: boolean, message: string, code: "config" | "network"): void {
@@ -556,25 +568,36 @@ async function main(): Promise<void> {
   // #7482: o achado vira issue própria; a execução sai 0 de qualquer forma
   // (ver docstring do módulo). Log em stderr pra não sujar o `--json`.
   const findings = buildDivergenceFindings(outcome);
-  const state = loadAlarmIssuesState(ALARM_STATE_PATH);
-  if (dryRun) {
-    const acoes = planAlarmReconciliation(findings, state, CLOSE_AFTER_RUNS);
-    process.stderr.write(
-      `${LOG_PREFIX} --dry-run: ${acoes.length} ação(ões) de issue — ${acoes.map((a) => a.kind).join(", ") || "nenhuma"}\n`,
-    );
-  } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(findings, state, {
-      cwd: ROOT,
-      closeAfterRuns: CLOSE_AFTER_RUNS,
-    });
-    saveAlarmIssuesState(nextState, ALARM_STATE_PATH);
-    for (const o of findingOutcomes) {
+  let reportFailed = false;
+  try {
+    const state = loadAlarmIssuesState(ALARM_STATE_PATH);
+    if (dryRun) {
+      const acoes = planAlarmReconciliation(findings, state, CLOSE_AFTER_RUNS);
       process.stderr.write(
-        `${LOG_PREFIX} issue ${o.action}${o.issueNumber ? ` #${o.issueNumber}` : ""}${o.url ? ` ${o.url}` : ""}\n`,
+        `${LOG_PREFIX} --dry-run: ${acoes.length} ação(ões) de issue — ${acoes.map((a) => a.kind).join(", ") || "nenhuma"}\n`,
       );
+    } else {
+      const { nextState, findingOutcomes } = applyAlarmReconciliation(findings, state, {
+        cwd: ROOT,
+        closeAfterRuns: CLOSE_AFTER_RUNS,
+      });
+      saveAlarmIssuesState(nextState, ALARM_STATE_PATH);
+      for (const o of findingOutcomes) {
+        if (o.action === "failed") reportFailed = true;
+        process.stderr.write(
+          `${LOG_PREFIX} issue ${o.action}${o.issueNumber ? ` #${o.issueNumber}` : ""}${o.url ? ` ${o.url}` : ""}\n`,
+        );
+      }
     }
+  } catch (e) {
+    // Achado do review da PR #8183: sem este catch, uma falha ao gravar o
+    // estado (data/ é junction OneDrive) caía no `main().catch` e saía 2
+    // depois de uma medição bem-sucedida — o mesmo falso "unit quebrada"
+    // que o #7482 remove.
+    reportFailed = true;
+    process.stderr.write(`${LOG_PREFIX} falha ao registrar a issue do achado: ${(e as Error).message}\n`);
   }
-  process.exitCode = 0;
+  process.exitCode = resolveGuardExitCode(outcome.blocking, reportFailed);
 }
 
 if (isMainModule(import.meta.url)) {
