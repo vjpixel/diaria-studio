@@ -165,6 +165,7 @@ import {
 } from "./lib/site-archive-pages.ts";
 import { buildEditionArchivePost, type EditionPageInputs } from "./lib/edition-site-page.ts";
 import { buildHomeFeed, buildIndexHtml, ARCHIVE_CARD_LIMIT } from "./lib/site-home-page.ts";
+import { evaluatePrChecksGate } from "./lib/pr-checks-gate.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SITE_PAGES_DIR = resolve(ROOT, "workers", "site", "public", "p");
@@ -251,6 +252,16 @@ export interface PublishResult {
   prUrl?: string;
   prNumber?: number;
   prCreated: boolean;
+  /**
+   * #8158: revoga o #6598 — o PR deixou de "ficar aberto de propósito".
+   * `true` quando `waitAndMergeSitePagePr` confirmou CI verde e mergeou;
+   * `false` quando não mergeou (CI vermelho/bloqueado/timeout, ou nenhum
+   * `prNumber` disponível pra tentar) — o PR fica aberto pra revisão manual
+   * nesse caso, mesmo fallback que era o comportamento ÚNICO pré-#8158.
+   * `mergeReason` sempre populado junto, mesmo quando `merged: true`.
+   */
+  merged?: boolean;
+  mergeReason?: string;
 }
 
 export interface PublishPageDeps {
@@ -271,7 +282,7 @@ export interface PublishPageDeps {
 }
 
 export type PublishPageResult =
-  | { code: 0; slug: string; bytes: number; published: boolean; prUrl?: string }
+  | { code: 0; slug: string; bytes: number; published: boolean; prUrl?: string; merged?: boolean; mergeReason?: string }
   | { code: 2; reason: string }
   | { code: 3; reason: string }
   | { code: 4; reason: string }
@@ -624,10 +635,24 @@ function renewSitePublishLock(rootDir: string, sessionId: string, lock: LockRunn
 }
 
 /**
- * Corpo do PR de publicação de página — documenta a decisão do #6598 (PR
- * fica ABERTO, nunca auto-merge) diretamente no PR, pro coordenador de uma
- * rodada overnight/develop futura (ou o editor) entender o porquê sem
- * precisar caçar a issue.
+ * Pura: extrai o número do PR de uma URL `https://github.com/{org}/{repo}/pull/{N}`
+ * (o formato que `gh pr create` imprime em stdout) — evita uma 2ª chamada de
+ * rede (`gh pr view`/`gh pr list`) só pra descobrir o número que a própria
+ * URL já carrega. `undefined` pra qualquer entrada que não bata o formato
+ * (URL ausente, malformada, ou de outro path do GitHub) — nunca lança.
+ */
+export function parsePrNumberFromUrl(url: string | undefined): number | undefined {
+  if (!url) return undefined;
+  const m = /\/pull\/(\d+)(?:[/?#]|$)/.exec(url);
+  return m ? Number(m[1]) : undefined;
+}
+
+/**
+ * Corpo do PR de publicação de página — documenta o mecanismo atual
+ * (#8158, revoga o #6598) diretamente no PR, pro coordenador de uma rodada
+ * overnight/develop futura (ou o editor) entender o porquê sem precisar
+ * caçar a issue, mesmo que o auto-merge abaixo não confirme a tempo e o PR
+ * acabe ficando aberto de qualquer forma.
  */
 function buildSitePagePrBody(slug: string): string {
   return [
@@ -639,16 +664,103 @@ function buildSitePagePrBody(slug: string): string {
       "`master` passou a exigir PR (ruleset `GH013`) em 260828, e o push direto que " +
       "este script fazia antes (#6202) começou a ser rejeitado.",
     "",
-    "**Este PR fica aberto de propósito (#6598, decisão do editor):** o script " +
-      "NUNCA mergeia sozinho — mergear página de site fora do fluxo normal de " +
-      "branch→CI→merge desta linha de skills (overnight/develop) foge do padrão " +
-      "estabelecido, e Stage 6 já é gate humano, então um PR extra pendente não " +
-      "atrasa a edição. Merge manual (ou pela próxima rodada overnight/develop) é " +
-      "o que falta pro deploy real acontecer " +
-      "(`.github/workflows/deploy-site.yml` dispara em push a `master`).",
+    "**Auto-merge (#8158, revoga o #6598):** o próprio script espera o CI e mergeia " +
+      "sozinho quando fica verde — o diff é sempre 100% artefato gerado por template " +
+      "(HTML + 1 linha de `sitemap.xml`), sem julgamento editorial, mesma categoria de " +
+      "isenção de review do PR-trem/PR de resgate. Se o CI não convergir a tempo ou " +
+      "vier vermelho, o PR fica aberto pra revisão manual — mesmo fallback que era o " +
+      "comportamento único antes do #8158.",
     "",
-    "Refs #6202, #6598",
+    "Refs #6202, #6598, #8158",
   ].join("\n");
+}
+
+/**
+ * #8158 (revoga #6598): espera o CI do PR ficar verde e mergeia sozinho —
+ * fecha o laço que antes exigia ação humana/de outra sessão pra um diff que
+ * é sempre 100% artefato gerado por template (HTML da página + 1 linha de
+ * `sitemap.xml`), nunca conteúdo com julgamento editorial. Reusa a mesma
+ * lógica pura (`evaluatePrChecksGate`, #6225) que o gate de merge autônomo
+ * do overnight/develop já usa — `gh pr view --json statusCheckRollup` em vez
+ * de `gh pr checks --json`, que não existe no `gh` 2.46.0 do `300`.
+ *
+ * Poll simples (sem lock — a janela protegida de `commitAndPushSitePage` já
+ * terminou e o checkout já voltou pro branch original; `gh pr merge` é
+ * operação remota via API, não precisa do checkout na branch do PR).
+ * `maxWaitMs`/`pollIntervalMs` (2min/5s default) refletem a duração real
+ * medida na issue (#8158: 19-44s por check, ~10 checks, historicamente
+ * sempre convergindo em menos de 1min) com folga generosa.
+ *
+ * **Sempre fail-soft**: qualquer desfecho que não seja "CI verde + merge
+ * confirmado" devolve `merged: false` com o motivo — o PR fica aberto,
+ * exatamente o comportamento único que existia antes do #8158. Nunca lança
+ * (uma falha aqui não pode derrubar a publicação da página em si, que já
+ * aconteceu com sucesso antes deste passo rodar).
+ */
+export function waitAndMergeSitePagePr(
+  rootDir: string,
+  prNumber: number,
+  gh: GhRunner = defaultGhRunner,
+  sleep: SleepFn = defaultSleep,
+  maxWaitMs: number = 120_000,
+  pollIntervalMs: number = 5_000,
+): { merged: boolean; reason: string } {
+  const deadline = Date.now() + maxWaitMs;
+  for (;;) {
+    let payload: unknown;
+    try {
+      const raw = gh(["pr", "view", String(prNumber), "--json", "statusCheckRollup,mergeable"], rootDir);
+      payload = JSON.parse(raw);
+    } catch (e) {
+      return {
+        merged: false,
+        reason: `gh pr view falhou (${(e as Error).message}) — PR #${prNumber} fica aberto pra revisão manual`,
+      };
+    }
+    const rollup = (payload as { statusCheckRollup?: unknown }).statusCheckRollup;
+    const mergeable = (payload as { mergeable?: string }).mergeable;
+    const result = evaluatePrChecksGate(rollup, { mergeable });
+
+    if (result.verdict === "pass") {
+      try {
+        // #8158 fleet review, finding 2: SEM `--delete-branch` de propósito.
+        // Essa flag também apaga a branch LOCAL `site-publish/{slug}` no
+        // checkout compartilhado — e este merge roda DEPOIS que
+        // `acquireSitePublishLock`/`releaseSitePublishLock` já liberou a
+        // janela protegida (`gh pr merge` em si é operação remota via API,
+        // não precisa do checkout na branch, mas a deleção local É uma
+        // mutação do checkout que o lock existe pra proteger, #6626/#6703).
+        // Uma 2ª chamada concorrente pro MESMO slug (retry de sessão
+        // interrompida, Stage 6 rodado 2x) poderia colidir com essa
+        // deleção fora de qualquer proteção. Deletar a branch remota fica
+        // pro GitHub decidir sozinho (settings do repo) ou pra um cleanup
+        // separado — `git checkout -B` já recria a branch do zero a cada
+        // chamada de qualquer forma, então uma branch local órfã não
+        // acumula problema real.
+        gh(["pr", "merge", String(prNumber), "--squash"], rootDir);
+        return { merged: true, reason: "CI verde — mergeado automaticamente (#8158, revoga #6598)" };
+      } catch (e) {
+        return {
+          merged: false,
+          reason: `CI verde mas gh pr merge falhou (${(e as Error).message}) — PR #${prNumber} fica aberto pra revisão manual`,
+        };
+      }
+    }
+    if (result.verdict === "fail" || result.verdict === "blocked_by_conflict" || result.verdict === "error") {
+      return {
+        merged: false,
+        reason: `CI ${result.verdict} — PR #${prNumber} fica aberto pra revisão manual (${result.reason})`,
+      };
+    }
+    // "pending": ainda rodando — continua até o timeout.
+    if (Date.now() >= deadline) {
+      return {
+        merged: false,
+        reason: `CI não convergiu em ${maxWaitMs}ms — PR #${prNumber} fica aberto pra revisão manual (fail-soft, mesmo comportamento pré-#8158)`,
+      };
+    }
+    sleep(pollIntervalMs);
+  }
 }
 
 /**
@@ -867,6 +979,16 @@ export function commitAndPushSitePage(
         .pop()
         ?.trim();
       prCreated = true;
+      // #8158 (achado ao implementar o auto-merge): até aqui `prNumber`
+      // NUNCA era populado neste ramo (só no ramo `existing`, que lê
+      // `--json number` de `gh pr list`) — `gh pr create` só imprime a URL.
+      // Sem isso, `waitAndMergeSitePagePr` (que precisa do NÚMERO, não da
+      // URL, pra chamar `gh pr view`/`gh pr merge`) nunca rodaria no caso
+      // comum (1ª publicação de cada edição, que sempre CRIA o PR — reuso
+      // só acontece se uma chamada anterior já tiver criado e a atual
+      // rodar de novo antes do merge). A URL sempre termina em
+      // `/pull/{número}` — extrai dali em vez de outra chamada de rede.
+      prNumber = parsePrNumberFromUrl(prUrl);
     }
   } finally {
     // Sempre volta pro branch original, mesmo em erro — o checkout
@@ -979,7 +1101,14 @@ export function productionDeps(
         lock,
         sleep,
       );
-      return { pushed, prUrl, prNumber, prCreated };
+      // #8158 (revoga #6598): só tenta mergear quando há um PR de verdade
+      // pra checar — `prNumber` ausente (gh pr create/list não devolveu URL
+      // parseável) não é motivo pra lançar aqui, é motivo pra não tentar.
+      if (prNumber === undefined) {
+        return { pushed, prUrl, prNumber, prCreated, merged: false, mergeReason: "sem prNumber — nada a mergear" };
+      }
+      const { merged, reason: mergeReason } = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep);
+      return { pushed, prUrl, prNumber, prCreated, merged, mergeReason };
     },
     log: (line) => process.stderr.write(`[site-page] ${line}\n`),
   };
@@ -1093,11 +1222,33 @@ export function publishEditionSitePage(
   // #6598: `published: true` não significa mais "já no próximo deploy" —
   // significa "branch pushada, PR aberto/reusado, aguardando merge".
   if (publishResult.pushed) {
-    const prNote = publishResult.prUrl
-      ? ` — PR ${publishResult.prCreated ? "aberto" : "reusado"}: ${publishResult.prUrl} (merge pendente pro deploy)`
-      : " — push confirmado, mas gh pr create/list não retornou URL";
+    // #8158 (revoga #6598): "merge pendente pro deploy" só é verdade quando
+    // `waitAndMergeSitePagePr` não conseguiu mergear sozinho — o caso comum
+    // agora é `merged: true`, e o log precisa refletir isso (senão o editor
+    // lê "merge pendente" numa edição que já foi deployada).
+    let prNote: string;
+    if (!publishResult.prUrl) {
+      prNote = " — push confirmado, mas gh pr create/list não retornou URL";
+    } else if (publishResult.merged) {
+      prNote = ` — PR ${publishResult.prCreated ? "aberto" : "reusado"} e MERGEADO automaticamente: ${publishResult.prUrl} (${publishResult.mergeReason})`;
+    } else {
+      prNote = ` — PR ${publishResult.prCreated ? "aberto" : "reusado"}: ${publishResult.prUrl} — NÃO mergeado (${publishResult.mergeReason ?? "motivo desconhecido"}), fica pra revisão manual`;
+    }
     deps.log(`publicado — branch site-publish/${built.post.slug} em dia com o remoto${prNote}`);
-    return { code: 0, slug: built.post.slug, bytes: html.length, published: true, prUrl: publishResult.prUrl };
+    return {
+      code: 0,
+      slug: built.post.slug,
+      bytes: html.length,
+      published: true,
+      prUrl: publishResult.prUrl,
+      merged: publishResult.merged,
+      // #8158 fleet review, finding 1: `mergeReason` (o PORQUÊ de merged:false —
+      // CI vermelho vs. bloqueado por conflito vs. timeout vs. erro de `gh`, cada
+      // um com texto distinto) estava sendo descartado aqui, sobrando só o
+      // booleano em `_internal/site-page-published.json`. Quem auditar esse
+      // arquivo depois não conseguia distinguir os motivos.
+      mergeReason: publishResult.mergeReason,
+    };
   }
   deps.log(`git commit/push rodou sem lançar mas não confirmou push — /p/${built.post.slug} não tem branch pushada ainda`);
   return { code: 0, slug: built.post.slug, bytes: html.length, published: false };
@@ -1130,6 +1281,12 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
     published: "published" in result ? result.published : false,
     reason: "reason" in result ? result.reason : undefined,
     prUrl: "prUrl" in result ? result.prUrl : undefined,
+    // #8158 (revoga #6598): `undefined` (sem PR nenhum, ou publicação nem
+    // chegou nesse ponto) é distinto de `false` (PR aberto mas NÃO
+    // mergeado — CI vermelho/timeout) — o invariant do #7283 pode usar essa
+    // distinção pra só alarmar no 2º caso.
+    merged: "merged" in result ? result.merged : undefined,
+    mergeReason: "mergeReason" in result ? result.mergeReason : undefined,
     checked_at: new Date().toISOString(),
   };
   try {
