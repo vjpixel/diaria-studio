@@ -77,25 +77,36 @@ function brtDayStartMs(dateStr: DateOnlyString): number {
 }
 
 /**
- * Fração do dia BRT `dateStr` (0..1) coberta por pausa (parcial ou total).
- * Intervalos sobrepostos entre si são mesclados antes de somar — sem isso,
- * duas pausas que se sobrepõem contariam a mesma hora duas vezes e o dia
- * pareceria mais pausado do que de fato foi.
- *
- * Falha ALTO (nunca descarta em silêncio) quando `fim < inicio` — `revisao.pausa`
- * é JSON editado à mão e sincronizado por OneDrive; um typo de timestamp que
- * inverte a ordem faria a pausa inteira desaparecer de todos os alarmes (#8262
- * review, achado 7) se só fosse descartada pelo filtro `e > s` abaixo.
- *
- * @pure
+ * Falha ALTO (nunca descarta em silêncio) quando algum intervalo tem
+ * `fim < inicio` — `revisao.pausa` é JSON editado à mão e sincronizado por
+ * OneDrive; um typo de timestamp que inverte a ordem faria a pausa inteira
+ * desaparecer de todos os alarmes (#8262 review, achado 7) se só fosse
+ * descartada por um filtro `e > s` silencioso. Chamada por TODA função
+ * pública que consome `intervals` antes de usá-los — `pausedFractionOfDay`
+ * e `veiculatedBudgetForDay` (via `plannedBudgetBRL`) — pra não reabrir a
+ * classe de falha silenciosa do #8262 num caminho novo (#8270 review,
+ * achado 1: `plannedBudgetBRL` passou a usar `isInstantPaused` em vez de
+ * `pausedFractionOfDay` e perdeu esta validação até este fix).
  */
-export function pausedFractionOfDay(dateStr: DateOnlyString, intervals: readonly AdsTestPauseInterval[]): number {
-  if (intervals.length === 0) return 0;
+function assertValidPauseIntervals(intervals: readonly AdsTestPauseInterval[]): void {
   for (const iv of intervals) {
     if (iv.fim != null && parseIsoMs(iv.fim) < parseIsoMs(iv.inicio)) {
       throw new Error(`ads-test-pause-window: intervalo de pausa invertido — fim (${iv.fim}) antes de inicio (${iv.inicio}).`);
     }
   }
+}
+
+/**
+ * Fração do dia BRT `dateStr` (0..1) coberta por pausa (parcial ou total).
+ * Intervalos sobrepostos entre si são mesclados antes de somar — sem isso,
+ * duas pausas que se sobrepõem contariam a mesma hora duas vezes e o dia
+ * pareceria mais pausado do que de fato foi.
+ *
+ * @pure
+ */
+export function pausedFractionOfDay(dateStr: DateOnlyString, intervals: readonly AdsTestPauseInterval[]): number {
+  if (intervals.length === 0) return 0;
+  assertValidPauseIntervals(intervals);
   const dayStart = brtDayStartMs(dateStr);
   const dayEnd = dayStart + 86_400_000;
   const clipped: Array<[number, number]> = [];
@@ -222,19 +233,96 @@ export function dailyBudgetForDate(
   return current;
 }
 
+/** Orçamento vigente no INSTANTE `ms` (mesma regra de "vigente" de
+ *  `dailyBudgetForDate` — última entrada com `desde <= ms` — mas avaliada
+ *  num ponto no tempo, não no fim de um dia inteiro). Mesmo sort
+ *  defensivo por `desde` ascendente (#8262 review, achado 5). */
+function budgetRateAtInstant(
+  ms: number,
+  schedule: readonly AdsTestBudgetPeriod[] | undefined,
+  defaultBudgetBRL: number,
+): number {
+  if (!schedule || schedule.length === 0) return defaultBudgetBRL;
+  const sorted = [...schedule].sort((a, b) => parseIsoMs(a.desde) - parseIsoMs(b.desde));
+  let current = defaultBudgetBRL;
+  for (const entry of sorted) {
+    if (parseIsoMs(entry.desde) <= ms) current = entry.brl;
+  }
+  return current;
+}
+
+/** `true` se o instante `ms` cai dentro de alguma pausa (`fim: null` =
+ *  pausa em andamento, sem teto superior). */
+function isInstantPaused(ms: number, intervals: readonly AdsTestPauseInterval[]): boolean {
+  for (const iv of intervals) {
+    const s = parseIsoMs(iv.inicio);
+    const e = iv.fim != null ? parseIsoMs(iv.fim) : Infinity;
+    if (ms >= s && ms < e) return true;
+  }
+  return false;
+}
+
+/**
+ * Orçamento efetivamente veiculado (R$) no dia BRT `dateStr`, integrando
+ * pausa e mudança de orçamento na MESMA granularidade de instante (#8270 —
+ * antes deste fix, a pausa entrava por fração de minuto e o orçamento por
+ * dia inteiro, uma assimetria sem justificativa técnica que inflava o
+ * planejado no dia em que o orçamento mudava).
+ *
+ * Mecanismo: recorta o dia em sub-intervalos nos pontos onde OU o
+ * orçamento vigente OU o estado de pausa muda (união dos dois conjuntos de
+ * breakpoints — é isso que compõe as duas frações corretamente quando
+ * caem no mesmo dia, em vez de multiplicá-las ingenuamente feito o código
+ * anterior fazia com `veiculado * dailyBudgetForDate(dia inteiro)`). Cada
+ * sub-intervalo contribui `taxa_vigente × duração` se não estiver pausado
+ * naquele trecho, e 0 se estiver.
+ *
+ * @pure
+ */
+function veiculatedBudgetForDay(
+  dateStr: DateOnlyString,
+  schedule: readonly AdsTestBudgetPeriod[] | undefined,
+  intervals: readonly AdsTestPauseInterval[],
+  defaultBudgetBRL: number,
+): number {
+  assertValidPauseIntervals(intervals);
+  const dayStart = brtDayStartMs(dateStr);
+  const dayEnd = dayStart + 86_400_000;
+  const breakpoints = new Set<number>([dayStart, dayEnd]);
+  if (schedule) {
+    for (const entry of schedule) {
+      const t = parseIsoMs(entry.desde);
+      if (t > dayStart && t < dayEnd) breakpoints.add(t);
+    }
+  }
+  for (const iv of intervals) {
+    const s = parseIsoMs(iv.inicio);
+    if (s > dayStart && s < dayEnd) breakpoints.add(s);
+    if (iv.fim != null) {
+      const e = parseIsoMs(iv.fim);
+      if (e > dayStart && e < dayEnd) breakpoints.add(e);
+    }
+  }
+  const sorted = [...breakpoints].sort((a, b) => a - b);
+  let total = 0;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (b <= a) continue;
+    const mid = (a + b) / 2;
+    if (isInstantPaused(mid, intervals)) continue;
+    total += budgetRateAtInstant(mid, schedule, defaultBudgetBRL) * ((b - a) / 86_400_000);
+  }
+  return total;
+}
+
 /**
  * Planejado acumulado por braço, em R$, de `d0` até `throughDate`
  * (inclusive), integrando o diário VIGENTE (que pode mudar dentro do
  * período, ex: Microsoft R$100->200 em 06/09 17:07) sobre os dias de
- * VEICULAÇÃO (excluindo pausa — #8240 itens 1+3).
- *
- * Precisão: soma por DIA inteiro usando o diário vigente ao FIM daquele
- * dia (`dailyBudgetForDate`) multiplicado pela fração não-pausada do dia —
- * não faz integração sub-diária do próprio orçamento (o dia em que o
- * diário muda e também tem pausa parcial usa o diário vigente ao fim do
- * dia inteiro). A imprecisão é de horas sobre um número que já é uma
- * aproximação de negócio (§"Orçamento do 1º mês" do `00-PROTOCOLO.md` não
- * pretende precisão de minuto).
+ * VEICULAÇÃO (excluindo pausa — #8240 itens 1+3), com a mudança de
+ * orçamento pró-rateada por instante dentro do dia em que ela ocorre
+ * (#8270 — mesma granularidade da pausa, não mais dia inteiro).
  *
  * @pure
  */
@@ -253,8 +341,7 @@ export function plannedBudgetBRL(
   let total = 0;
   let d = d0;
   for (let i = 0; i < totalCalendarDays; i++) {
-    const veiculado = 1 - pausedFractionOfDay(d, intervals);
-    total += veiculado * dailyBudgetForDate(d, schedule, defaultBudgetBRL);
+    total += veiculatedBudgetForDay(d, schedule, intervals, defaultBudgetBRL);
     d = addDays(d, 1);
   }
   return total;

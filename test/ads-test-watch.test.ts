@@ -354,24 +354,21 @@ describe("#8240 — evaluateSpendOverageDeathCondition com pausa + diário vigen
     assert.deepEqual(scheduleNovo, []);
   });
 
-  it("Microsoft: razão real até a pausa ≈0,37× com o diário vigente 100->200 — não regride pro 0,24× antigo", () => {
-    // A issue #8240 estima manualmente ≈0,41× pra este cenário (pró-rateando
-    // o dia 06/09 em duas frações: R$100 até 17:07 e R$200 depois). O
-    // código NÃO integra sub-dia: `dailyBudgetForDate` usa o diário vigente
-    // ao FIM do dia inteiro (doc em ads-test-pause-window.ts:230-237,
-    // decisão deliberada — "não pretende precisão de minuto"), então o dia
-    // 06/09 inteiro entra no planejado já a R$200 (não R$100 parcial +
-    // R$200 parcial). Isso INFLA levemente o planejado em relação à conta
-    // manual da issue, o que torna a razão mais BAIXA (mais conservadora,
-    // nunca escondendo um estouro) — medido aqui em ≈0,37×, não ≈0,41×.
-    // Não é bug: é a mesma aproximação de granularidade-por-dia documentada
-    // na função, e a issue já avisa que a razão depende de qual instante se
-    // usa. O que importa pro critério de aceite é não regredir pro valor
-    // antigo (0,24×, calendário sem desconto de pausa nem diário vigente).
+  it("Microsoft: razão real até a pausa ≈0,41× com o diário vigente 100->200 pró-rateado (#8270) — não regride pro 0,24× antigo nem pro 0,37× (dia inteiro)", () => {
+    // #8270 corrigiu a assimetria de granularidade: `plannedBudgetBRL` agora
+    // pró-rateia a virada de orçamento intra-dia pela MESMA mecânica de
+    // fração-por-instante que a pausa já usava (`veiculatedBudgetForDay`),
+    // em vez de aplicar o diário vigente ao dia inteiro. O dia 06/09 passa a
+    // contribuir R$100 × 17h07/24h + R$200 × 6h53/24h ≈ R$128,68 (antes: o
+    // dia inteiro a R$200). Isso é exatamente o valor ≈0,41× que a issue
+    // #8240 já previa manualmente pra este cenário — o código não faz mais
+    // essa aproximação por dia inteiro (antes: ≈0,37×, e antes disso, sem
+    // nenhum ajuste, 0,24×).
     const schedule = [{ desde: "2026-09-06T17:07:00-03:00", brl: 200 }];
     const planned = plannedBudgetBRL(D0, "2026-09-09", schedule, PAUSE, 100);
     const ratio = 288.03 / planned;
-    assert.ok(Math.abs(ratio - 0.37) < 0.02, `esperava ≈0,37× (aproximação por dia inteiro do código), obtive ${ratio.toFixed(4)}×`);
+    assert.ok(Math.abs(ratio - 0.41) < 0.02, `esperava ≈0,41× (pró-rateado por instante), obtive ${ratio.toFixed(4)}×`);
+    assert.ok(Math.abs(ratio - 0.37) > 0.02, "não pode regredir pra aproximação por dia inteiro (pré-#8270)");
     assert.ok(Math.abs(ratio - 0.24) > 0.05, "não pode regredir pro valor antigo (calendário + R$100 fixo pros 3 braços)");
   });
 

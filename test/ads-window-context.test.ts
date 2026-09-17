@@ -122,8 +122,10 @@ describe("#8246 — computeAdsWindowContext, gasto esperado descontando pausa", 
     // schedule declarado) = 300.
     assert.equal(ctx.gastoEsperadoAteOntemPorBraco?.["Google Ads (teste 2608)"], 3 * 100);
     assert.equal(ctx.gastoEsperadoAteOntemPorBraco?.["Meta Ads (teste 2608)"], 3 * 100);
-    // Microsoft: 05/09 a 100 + 06/09 a 200 (mudou 17h07, vigente ao FIM do
-    // dia — ver docstring de `dailyBudgetForDate`) + 07/09 a 200 = 500.
-    assert.equal(ctx.gastoEsperadoAteOntemPorBraco?.["Microsoft Ads (teste 2608)"], 500);
+    // Microsoft: 05/09 a 100 + 06/09 pró-rateado (100 até 17h07, 200 depois
+    // — #8270, `plannedBudgetBRL` não usa mais o diário vigente ao FIM do
+    // dia inteiro) + 07/09 a 200 ≈ 100 + 128,68 + 200 = 428,68.
+    const v = ctx.gastoEsperadoAteOntemPorBraco?.["Microsoft Ads (teste 2608)"];
+    assert.ok(v !== undefined && Math.abs(v - 428.68) < 0.5, `esperado ~428,68; recebi ${v}`);
   });
 });
