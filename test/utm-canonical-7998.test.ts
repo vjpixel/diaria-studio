@@ -58,6 +58,21 @@ describe("canonicalizeUtmSource — grupos hoje fragmentados (#7998)", () => {
   });
 });
 
+describe("canonicalizeUtmSource — superfície de cadastro própria (#8244)", () => {
+  it("reconhece livros, cursos, arquivo-hub e eia-standalone como canal (critério de aceite #8244)", () => {
+    for (const source of ["livros", "cursos", "arquivo-hub", "eia-standalone"]) {
+      const r = canonicalizeUtmSource(source);
+      assert.equal(r.classe, "canal", `${source} deveria ser classe "canal"`);
+      assert.equal(r.canal, source);
+    }
+  });
+
+  it("reconhece arquivo (superfície própria, mesma família de arquivo-hub)", () => {
+    assert.equal(canonicalizeUtmSource("arquivo").classe, "canal");
+    assert.equal(canonicalizeUtmSource("arquivo").canal, "arquivo");
+  });
+});
+
 describe("canonicalizeUtmSource — direct literal (#7998)", () => {
   it("classifica 'direct' como direct, sem canal", () => {
     const r = canonicalizeUtmSource("direct");

@@ -67,6 +67,14 @@
 import { normalizeKey, resolveGroupKey, filterWindow, type CohortWindow } from "../shared/attribution-keys.ts";
 import { CHANNEL_KEY_SPECS, type ChannelKeySpec } from "../shared/channel-key-specs.ts";
 import { PREFLIGHT_UTM_ARMS } from "../preflight-utm-arms.ts";
+import {
+  LIVROS_INLINE_UTM,
+  CURSOS_GATE_INLINE_UTM,
+  ARQUIVO_INLINE_UTM,
+  HUB_INLINE_UTM,
+  EIA_STANDALONE_SOURCE,
+  DIARIA_APEX_SOURCE,
+} from "../shared/utm-registry.ts";
 
 // ---------------------------------------------------------------------------
 // Taxonomia
@@ -129,16 +137,50 @@ export const INICIATIVA_UTM_SOURCE_CATALOG: readonly string[] = [
 export const NAO_AQUISICAO_UTM_CHANNELS: readonly string[] = ["import", "api"];
 
 /** `utm_source`/marcadores internos que nunca são aquisição real — mesma
- *  disciplina do item acima, valores medidos no snapshot de 30/08. */
+ *  disciplina do item acima, valores medidos no snapshot de 30/08.
+ *
+ *  `eia-standalone` e `livros` NÃO entram mais aqui (#8244) — os dois são
+ *  superfície de cadastro PRÓPRIA (formulário real do nosso site), não
+ *  marcador interno/de sistema. A #7173 os colocou aqui a partir de uma
+ *  amostra só de conta de teste na janela medida (30/08) — conta de teste
+ *  continua saindo por `filterInternalAndTestSubscribers`/
+ *  `TEST_ACCOUNT_PATTERNS` (`scripts/lib/cohorts.ts`), nunca por bloqueio da
+ *  superfície inteira. Ver `SUPERFICIE_PROPRIA_UTM_SOURCES` abaixo. */
 export const NAO_AQUISICAO_UTM_SOURCES: readonly string[] = [
   "internal",
   "seed-inbox",
   "invitation",
-  "eia-standalone",
   "dm",
   "office.net",
   "qrscan.code",
-  "livros",
+];
+
+/**
+ * Catálogo NOMEADO de `utm_source` das superfícies de cadastro PRÓPRIAS do
+ * projeto (#8244) — páginas nossas (livros, cursos, arquivo, hubs, jogo "É
+ * IA?" standalone, apex) que a regra genérica (5, `organico` por qualquer
+ * sinal positivo) já classificava certo por acaso, ou que a lista acima
+ * classificava errado como `indeterminado`. Esta regra torna a decisão
+ * EXPLÍCITA em vez de acidental — mesma disciplina de
+ * `INICIATIVA_UTM_SOURCE_CATALOG` acima.
+ *
+ * Monta-se sempre a partir das constantes de `utm-registry.ts` (nunca
+ * literal solto) — se um emissor mudar o `source` que grava, este catálogo
+ * segue automaticamente, sem precisar de uma 2ª edição aqui.
+ *
+ * Classe = `organico`, não `iniciativa`: `iniciativa` é audiência de
+ * PARCEIRO ou de outro produto nosso (Clarice, boost, SparkLoop);
+ * `SUPERFICIE_PROPRIA_UTM_SOURCES` é tráfego que chegou numa página NOSSA
+ * (mesma natureza do apex). O placar (`organico + iniciativa`) sai igual
+ * nas duas leituras — só muda o "orgânico estrito".
+ */
+export const SUPERFICIE_PROPRIA_UTM_SOURCES: readonly string[] = [
+  LIVROS_INLINE_UTM.source,
+  CURSOS_GATE_INLINE_UTM.source,
+  ARQUIVO_INLINE_UTM.source,
+  HUB_INLINE_UTM.source,
+  EIA_STANDALONE_SOURCE,
+  DIARIA_APEX_SOURCE,
 ];
 
 /**
@@ -174,6 +216,7 @@ export function assertNoDuplicateClassKeys(
   groups: ReadonlyArray<{ keys: readonly string[]; cls: string }> = [
     { keys: REATIVACAO_UTM_SOURCES, cls: "reativacao" },
     { keys: INICIATIVA_UTM_SOURCE_CATALOG, cls: "iniciativa" },
+    { keys: SUPERFICIE_PROPRIA_UTM_SOURCES, cls: "organico" },
     { keys: NAO_AQUISICAO_UTM_SOURCES, cls: "indeterminado" },
   ],
 ): void {
@@ -324,11 +367,18 @@ export function classifyAcquisition(input: AcquisitionClassInput): AcquisitionCl
   if (INICIATIVA_UTM_CHANNELS.includes(channel)) return "iniciativa";
   if (INICIATIVA_UTM_SOURCE_CATALOG.includes(source)) return "iniciativa";
 
-  // 4. indeterminado — cadastro que não é aquisição (import/api, fontes internas).
+  // 4. organico (explícito) — superfície de cadastro PRÓPRIA (#8244): livros,
+  //    cursos, arquivo, hubs, jogo "É IA?" standalone, apex. Decidido ANTES da
+  //    regra 5 genérica (que chegaria na mesma resposta por acaso) e ANTES de
+  //    `indeterminado` (que classificava `livros`/`eia-standalone` errado até
+  //    o #8244 — ver a nota em `NAO_AQUISICAO_UTM_SOURCES`).
+  if (SUPERFICIE_PROPRIA_UTM_SOURCES.includes(source)) return "organico";
+
+  // 5. indeterminado — cadastro que não é aquisição (import/api, fontes internas).
   if (NAO_AQUISICAO_UTM_CHANNELS.includes(channel)) return "indeterminado";
   if (NAO_AQUISICAO_UTM_SOURCES.includes(source)) return "indeterminado";
 
-  // 5. organico — todo utm_source com prefixo "linkedin" (enquanto a spec
+  // 6. organico — todo utm_source com prefixo "linkedin" (enquanto a spec
   //    LinkedIn não tiver gasto real), mais qualquer outro sinal positivo
   //    de origem (source ou referring_site presentes e não capturados acima).
   if (source.startsWith("linkedin") || groupKey.startsWith("linkedin")) return "organico";

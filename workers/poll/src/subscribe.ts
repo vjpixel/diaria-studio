@@ -52,7 +52,7 @@ import { json } from "./index";
 // medium/campaign PRÓPRIOS abaixo distinguem o cadastro inline do CTA-link e
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
-import { ARQUIVO_INLINE_UTM, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2
+import { ARQUIVO_INLINE_UTM, DIARIA_APEX_SOURCE, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2, #8244
 import { sendCompleteRegistrationEvent, logMetaCapiSendResult } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 // #7723: consome a maquinaria COMPARTILHADA (scripts/lib/shared/kit-doi.ts),
@@ -255,7 +255,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
   // confundir com o triplo Clarice em si (esse é dinâmico, resolvido em
   // runtime — ver `resolveSubscribeUtm`).
   apex: {
-    source: "diaria-apex",
+    source: DIARIA_APEX_SOURCE,
     medium: "web",
     campaign: "cadastro-apex",
     referringSite: "apex-subscribe-page",

@@ -106,6 +106,9 @@ export const ARQUIVO_INLINE_UTM = {
   campaign: "arquivo-inline-signup",
 } as const;
 
+/** `utm_source` do triplo default do cadastro do apex (#8244). @see scripts/lib/shared/utm-registry.ts */
+export const DIARIA_APEX_SOURCE = "diaria-apex";
+
 /** Cadastro inline no topo de cada hub temático (#5167 item 2). @see scripts/lib/shared/utm-registry.ts */
 export const HUB_INLINE_UTM = {
   source: "arquivo-hub",

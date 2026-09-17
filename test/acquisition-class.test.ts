@@ -26,9 +26,20 @@ import {
   isNaoPagoNaoReativacao,
   adaptBeehiivAttribution,
   adaptKitAttribution,
+  NAO_AQUISICAO_UTM_SOURCES,
+  SUPERFICIE_PROPRIA_UTM_SOURCES,
   type AcquisitionClass,
   type AcquisitionClassInput,
 } from "../scripts/lib/metrics/acquisition-class.ts";
+import { canonicalizeUtmSource } from "../scripts/lib/shared/utm-canonical.ts";
+import {
+  LIVROS_INLINE_UTM,
+  CURSOS_GATE_INLINE_UTM,
+  ARQUIVO_INLINE_UTM,
+  HUB_INLINE_UTM,
+  EIA_STANDALONE_SOURCE,
+  DIARIA_APEX_SOURCE,
+} from "../scripts/lib/shared/utm-registry.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -227,6 +238,114 @@ describe("classifyAcquisition — cadastro que não é aquisição", () => {
       classifyAcquisition({ utm_source: null, utm_medium: null, utm_channel: null, referring_site: null, created: 1_785_542_400 }),
       "indeterminado",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8244 — superfície de cadastro própria (livros, cursos, arquivo, hubs,
+// eia-standalone, apex) é organico, nunca indeterminado por regra genérica.
+// ---------------------------------------------------------------------------
+
+describe("classifyAcquisition — #8244: superfície de cadastro própria → organico", () => {
+  const created = 1_785_542_400;
+
+  it("livros/inline-hero/livros-inline-signup → organico (era indeterminado antes do #8244)", () => {
+    assert.equal(
+      classifyAcquisition({ utm_source: "livros", utm_medium: "inline-hero", utm_channel: null, referring_site: null, created }),
+      "organico",
+    );
+  });
+  it("livros/inline-footer/livros-inline-signup → organico", () => {
+    assert.equal(
+      classifyAcquisition({ utm_source: "livros", utm_medium: "inline-footer", utm_channel: null, referring_site: null, created }),
+      "organico",
+    );
+  });
+  it("eia-standalone/jogar-inline → organico (era indeterminado antes do #8244)", () => {
+    assert.equal(
+      classifyAcquisition({ utm_source: "eia-standalone", utm_medium: "jogar-inline", utm_channel: null, referring_site: null, created }),
+      "organico",
+    );
+  });
+  it("cursos/gate-inline/cursos-gate-signup → organico (nunca por regra genérica — decisão vem do catálogo)", () => {
+    assert.equal(
+      classifyAcquisition({ utm_source: "cursos", utm_medium: "gate-inline", utm_channel: null, referring_site: null, created }),
+      "organico",
+    );
+  });
+  it("arquivo/inline → organico", () => {
+    assert.equal(
+      classifyAcquisition({ utm_source: "arquivo", utm_medium: "inline", utm_channel: null, referring_site: null, created }),
+      "organico",
+    );
+  });
+  it("arquivo-hub/inline → organico", () => {
+    assert.equal(
+      classifyAcquisition({ utm_source: "arquivo-hub", utm_medium: "inline", utm_channel: null, referring_site: null, created }),
+      "organico",
+    );
+  });
+  it("diaria-apex/web → organico", () => {
+    assert.equal(
+      classifyAcquisition({ utm_source: "diaria-apex", utm_medium: "web", utm_channel: null, referring_site: null, created }),
+      "organico",
+    );
+  });
+
+  it("todo source do catálogo resolve organico mesmo isolado (sem medium/referring_site)", () => {
+    // Nota: para estes 6 valores a regra 6 genérica (groupKey !== "__none__")
+    // já chegaria em `organico` mesmo sem a regra 4 — a regra 4 explícita
+    // existe para (a) documentar a decisão em vez de deixá-la acidental e
+    // (b) travar `assertNoDuplicateClassKeys`: se alguém reintroduzir um
+    // destes valores em `NAO_AQUISICAO_UTM_SOURCES` (o erro original da
+    // #7173), o guard de chave duplicada lança em vez de reclassificar em
+    // silêncio.
+    for (const source of SUPERFICIE_PROPRIA_UTM_SOURCES) {
+      assert.equal(
+        classifyAcquisition({ utm_source: source, utm_medium: null, utm_channel: null, referring_site: null, created }),
+        "organico",
+        `${source} isolado (sem medium/referring_site) deveria ser organico`,
+      );
+    }
+  });
+});
+
+describe("classifyAcquisition — #8244 guard: constantes de formulário do registry nunca em NAO_AQUISICAO_UTM_SOURCES", () => {
+  // Enumera as constantes de formulário de cadastro conhecidas do registry —
+  // se uma superfície nova nascer classificada errado (o mesmo erro do
+  // #7173), este teste falha antes de a próxima issue precisar reabrir isto.
+  const REGISTRY_SIGNUP_SOURCES = [
+    LIVROS_INLINE_UTM.source,
+    CURSOS_GATE_INLINE_UTM.source,
+    ARQUIVO_INLINE_UTM.source,
+    HUB_INLINE_UTM.source,
+    EIA_STANDALONE_SOURCE,
+    DIARIA_APEX_SOURCE,
+  ];
+
+  it("nenhuma está em NAO_AQUISICAO_UTM_SOURCES", () => {
+    for (const source of REGISTRY_SIGNUP_SOURCES) {
+      assert.ok(
+        !NAO_AQUISICAO_UTM_SOURCES.includes(source),
+        `${source} não deveria estar em NAO_AQUISICAO_UTM_SOURCES — é superfície de cadastro própria`,
+      );
+    }
+  });
+
+  it("todas estão em SUPERFICIE_PROPRIA_UTM_SOURCES", () => {
+    for (const source of REGISTRY_SIGNUP_SOURCES) {
+      assert.ok(
+        SUPERFICIE_PROPRIA_UTM_SOURCES.includes(source),
+        `${source} deveria estar em SUPERFICIE_PROPRIA_UTM_SOURCES`,
+      );
+    }
+  });
+
+  it("todas saem como classe \"canal\" em canonicalizeUtmSource (utm-canonical.ts não diverge de acquisition-class.ts)", () => {
+    for (const source of REGISTRY_SIGNUP_SOURCES) {
+      const result = canonicalizeUtmSource(source);
+      assert.equal(result.classe, "canal", `${source} deveria ser classe "canal" em canonicalizeUtmSource`);
+    }
   });
 });
 
