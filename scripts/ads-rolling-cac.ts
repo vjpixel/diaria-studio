@@ -43,6 +43,7 @@ import {
   type EdicaoEmVoo,
   type RollingWindowResult,
 } from "./lib/ads-rolling-window.ts";
+import { normalizePauseIntervals, type AdsTestPauseInterval, type AdsTestRunStateWithPause } from "./lib/ads-test-pause-window.ts";
 
 const CLICKS_CSV = "data/aquisicao/clicks-2608.csv";
 const EDICOES_JSONL = "data/aquisicao/teste-2608/edicoes.jsonl";
@@ -115,6 +116,26 @@ function lerBracos(path: string, fallback: string[]): string[] {
         `CSV. Um braço registrado e ainda sem linha no CSV NÃO aparecerá no relatório até isto ser corrigido.`,
     );
     return fallback;
+  }
+}
+
+/**
+ * Intervalos de pausa do `run-state.json` (#8241 item 2) — fail-soft:
+ * arquivo ausente/ilegível vira lista vazia (nenhuma pausa conhecida), o
+ * mesmo comportamento de `lerBracos` pro caso benigno. `lerBracos` acima já
+ * cobre o caso "arquivo ilegível" com um erro que interrompe o fallback de
+ * braços; aqui um erro de leitura NÃO deveria silenciosamente esconder que
+ * há uma pausa — por isso também loga, mas sem duplicar o aviso de
+ * `lerBracos` quando os dois lerem o MESMO arquivo com sucesso.
+ */
+function lerPauseIntervals(path: string): AdsTestPauseInterval[] {
+  if (!existsSync(path)) return [];
+  try {
+    const st = JSON.parse(readFileSync(path, "utf8")) as AdsTestRunStateWithPause;
+    return normalizePauseIntervals(st.revisao?.pausa);
+  } catch {
+    // Erro já reportado por `lerBracos` (mesmo arquivo) — não duplicar.
+    return [];
   }
 }
 
@@ -214,7 +235,17 @@ export function main(argv = process.argv.slice(2)): number {
     return 1;
   }
   const edicoes = lerEdicoes(edicoesPath);
-  const resultados = bracos.map((canal) => computeRollingWindow(rows, { canal, ate, dias, edicoes }));
+  const pauseIntervals = lerPauseIntervals(runStatePath);
+  // `contarDiasAposUltimaEdicao` roda 1x por braço sobre o MESMO `edicoes`
+  // — sem dedup, uma linha de `tipo` desconhecido avisaria 3x (uma por
+  // braço). O Set garante 1 aviso por mensagem, não 1 por chamada.
+  const avisados = new Set<string>();
+  const warn = (msg: string) => {
+    if (avisados.has(msg)) return;
+    avisados.add(msg);
+    console.warn(`[ads-rolling-cac] ${msg}`);
+  };
+  const resultados = bracos.map((canal) => computeRollingWindow(rows, { canal, ate, dias, edicoes, pauseIntervals, warn }));
   // CAC por dia fechado, pedido do editor em 08/09/2026: a média de 3 dias
   // dilui o efeito de um refinamento feito ontem, e é justamente esse efeito
   // que o editor precisa ver quando está editando as contas todo dia.
