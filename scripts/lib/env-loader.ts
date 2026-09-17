@@ -39,6 +39,11 @@
  * Continua fail-soft: nunca aborta, a precedência de ambiente pode ser
  * intencional (ex: `doppler run --` sobrepondo `.env` de propósito).
  *
+ * **Aviso é 1x por var por processo** (`WARNED_DIVERGENT_KEYS` abaixo) — vários
+ * scripts do repo chamam `loadProjectEnv()` mais de uma vez no mesmo processo
+ * (é o motivo desta função ser documentada como idempotente), e sem esse dedup
+ * uma única divergência real reimprimiria o mesmo warning a cada chamada.
+ *
  * Uso:
  * ```ts
  * import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -52,7 +57,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config as dotenvConfig, parse as dotenvParse } from "dotenv";
+import { parse as dotenvParse } from "dotenv";
+
+/** Vars já avisadas nesta run — evita reimprimir o mesmo warning a cada chamada de `loadProjectEnv()`. */
+const WARNED_DIVERGENT_KEYS = new Set<string>();
 
 /**
  * Carrega `.env` do root do projeto.
@@ -66,8 +74,15 @@ export function loadProjectEnv(rootOverride?: string): string[] {
 
   const envFile = resolve(root, ".env");
   if (existsSync(envFile)) {
-    warnAboutEnvDivergence(envFile);
-    dotenvConfig({ path: envFile, override: false });
+    const parsed = dotenvParse(readFileSync(envFile));
+    for (const [key, value] of Object.entries(parsed)) {
+      const existing = process.env[key];
+      if (existing === undefined) {
+        process.env[key] = value;
+      } else if (existing !== value) {
+        warnAboutDivergence(key);
+      }
+    }
     loaded.push(envFile);
   }
 
@@ -75,22 +90,18 @@ export function loadProjectEnv(rootOverride?: string): string[] {
 }
 
 /**
- * Avisa (stderr) sobre toda var do `.env` que já está presente em
- * `process.env` com um valor DIFERENTE — nunca loga o valor em si.
- * `dotenvConfig({ override: false })` cede a essa var em silêncio; este
- * aviso é o único sinal de que isso aconteceu.
+ * Avisa (stderr, 1x por var por processo) que uma var do `.env` já está
+ * presente em `process.env` com um valor DIFERENTE — nunca loga o valor em
+ * si. A precedência de ambiente (env > .env) cederia a essa var em silêncio;
+ * este aviso é o único sinal de que isso aconteceu.
  */
-function warnAboutEnvDivergence(envFile: string): void {
-  const parsed = dotenvParse(readFileSync(envFile));
-  for (const key of Object.keys(parsed)) {
-    const existing = process.env[key];
-    if (existing !== undefined && existing !== parsed[key]) {
-      console.warn(
-        `[env-loader] ${key} já está definida no ambiente com um valor diferente do .env — ` +
-          `mantendo a do ambiente (override:false). Se isso não for intencional (ex: uma var ` +
-          `genérica injetada por outro processo, não pelo shell/Doppler), confira a origem antes ` +
-          `de assumir que o .env está sendo usado.`,
-      );
-    }
-  }
+function warnAboutDivergence(key: string): void {
+  if (WARNED_DIVERGENT_KEYS.has(key)) return;
+  WARNED_DIVERGENT_KEYS.add(key);
+  console.warn(
+    `[env-loader] ${key} já está definida no ambiente com um valor diferente do .env — ` +
+      `mantendo a do ambiente (override:false). Se isso não for intencional (ex: uma var ` +
+      `genérica injetada por outro processo, não pelo shell/Doppler), confira a origem antes ` +
+      `de assumir que o .env está sendo usado.`,
+  );
 }

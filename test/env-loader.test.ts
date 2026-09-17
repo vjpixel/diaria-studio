@@ -21,6 +21,8 @@ describe("#923 loadProjectEnv", () => {
     "TEST_ENV_LOADER_LOCAL_ONLY",
     "TEST_ENV_LOADER_PROCESS_WIN",
     "TEST_ENV_LOADER_DIVERGENT",
+    "TEST_ENV_LOADER_DIVERGENT_REPEAT",
+    "TEST_ENV_LOADER_SAME_VALUE",
   ];
   const saved: Record<string, string | undefined> = {};
 
@@ -130,6 +132,56 @@ describe("#923 loadProjectEnv", () => {
     }
 
     assert.equal(warnCalls.filter((m) => m.includes("TEST_ENV_LOADER_DIVERGENT")).length, 0);
+
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("não avisa quando o valor já presente é IGUAL ao do .env (não é divergência)", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-7-"));
+    writeFileSync(resolve(tmpRoot, ".env"), "TEST_ENV_LOADER_SAME_VALUE=mesmo-valor\n");
+    process.env.TEST_ENV_LOADER_SAME_VALUE = "mesmo-valor";
+
+    const originalWarn = console.warn;
+    const warnCalls: string[] = [];
+    console.warn = (msg: unknown) => {
+      warnCalls.push(String(msg));
+    };
+
+    try {
+      loadProjectEnv(tmpRoot);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnCalls.filter((m) => m.includes("TEST_ENV_LOADER_SAME_VALUE")).length, 0);
+
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("#8277 — chamar loadProjectEnv() 2× com a mesma divergência avisa só 1× (evita spam — vários scripts chamam mais de uma vez por processo)", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-8-"));
+    writeFileSync(
+      resolve(tmpRoot, ".env"),
+      "TEST_ENV_LOADER_DIVERGENT_REPEAT=from-dotenv\n",
+    );
+    process.env.TEST_ENV_LOADER_DIVERGENT_REPEAT = "from-process";
+
+    const originalWarn = console.warn;
+    const warnCalls: string[] = [];
+    console.warn = (msg: unknown) => {
+      warnCalls.push(String(msg));
+    };
+
+    try {
+      loadProjectEnv(tmpRoot);
+      loadProjectEnv(tmpRoot);
+      loadProjectEnv(tmpRoot);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const relevantWarnings = warnCalls.filter((m) => m.includes("TEST_ENV_LOADER_DIVERGENT_REPEAT"));
+    assert.equal(relevantWarnings.length, 1, "esperava exatamente 1 warning mesmo com 3 chamadas");
 
     rmSync(tmpRoot, { recursive: true, force: true });
   });
