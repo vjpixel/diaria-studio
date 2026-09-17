@@ -35,10 +35,23 @@
  * Env: `data/.credentials.json` com o scope `gmail.send` — só necessário pra
  * ENVIAR o alarme (mesmo requisito dos outros alarmes locais deste repo).
  *
- * Estado: `data/.onedrive-sync-alarm-state.json` (dedup do e-mail) +
- * `data/.onedrive-sync-alarm-issues.json` (tracking de issue por achado,
- * `alarm-issues.ts`) — ambos fora de `data/weekly`/`data/apoia-se`/etc. de
- * propósito: este alarme não pertence a nenhum subsistema existente.
+ * Estado: `data/.onedrive-sync-alarm-issues.json` (tracking de issue por
+ * achado, `alarm-issues.ts`) — fora de `data/weekly`/`data/apoia-se`/etc.
+ * de propósito: este alarme não pertence a nenhum subsistema existente.
+ *
+ * **E-mail (#7960, migrado do estado próprio `lastAlarmedVerdict` pro
+ * portão `notifyEditorForOutcomes`):** severidade `"acao"` — só cria/reusa
+ * a issue, nunca manda e-mail sob `notifications.email_policy:
+ * "urgent_only"`. Sob `"legacy"`, `legacyResendIntent:
+ * "dedupe-new-occurrences-only"` preserva o comportamento histórico: o
+ * fingerprint É o verdict, e `shouldSendOnedriveSyncAlarm` só reenviava
+ * quando o verdict MUDAVA — re-executar com o MESMO verdict reusa a issue
+ * (`action: "reused"`) e não deve re-emitir e-mail; verdict que muda gera
+ * fingerprint novo (`action: "created"`) e continua e-mailiando.
+ * `shouldSendOnedriveSyncAlarm`/`markOnedriveSyncAlarmed`/
+ * `.onedrive-sync-alarm-state.json` continuam definidos em
+ * `lib/onedrive-sync-alarm.ts` (e testados lá) mas não são mais chamados
+ * por este script.
  */
 import { existsSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -48,38 +61,30 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
   parseSystemctlIsActiveOutput,
   buildOnedriveSyncCanary,
   evaluateCanaryFreshness,
   evaluateOnedriveSyncAlarm,
-  shouldSendOnedriveSyncAlarm,
-  markOnedriveSyncAlarmed,
-  emptyOnedriveSyncAlarmState,
   buildOnedriveSyncAlarmEmail,
   isAlarmingVerdict,
   type OnedriveServiceState,
-  type OnedriveSyncAlarmState,
   type OnedriveSyncAlarmVerdict,
 } from "./lib/onedrive-sync-alarm.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   saveAlarmIssuesState,
-  saveState,
   ALARM_ACTION_LABEL,
   type AlarmFinding,
   type AlarmIssuesState,
-  type AlarmIssueResult,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = resolve(ROOT, "data");
 const CANARY_PATH = join(DATA_DIR, ".onedrive-sync-canary.json");
-const STATE_PATH = join(DATA_DIR, ".onedrive-sync-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = join(DATA_DIR, ".onedrive-sync-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[onedrive-sync-alarm]";
@@ -128,26 +133,6 @@ function writeCanary(now: Date): void {
   const canary = buildOnedriveSyncCanary(now, hostname());
   writeFileAtomic(CANARY_PATH, JSON.stringify(canary, null, 2) + "\n");
 }
-
-// ─── Estado (dedup do e-mail) ───────────────────────────────────────────────
-
-function loadState(): OnedriveSyncAlarmState {
-  if (!existsSync(STATE_PATH)) return emptyOnedriveSyncAlarmState();
-  try {
-    const raw = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Partial<OnedriveSyncAlarmState>;
-    const lastAlarmedVerdict =
-      typeof raw.lastAlarmedVerdict === "string" || raw.lastAlarmedVerdict === null
-        ? ((raw.lastAlarmedVerdict as OnedriveSyncAlarmVerdict | null) ?? null)
-        : null;
-    return { lastAlarmedVerdict };
-  } catch {
-    return emptyOnedriveSyncAlarmState();
-  }
-}
-
-// saveState/saveAlarmIssuesState: consolidados em scripts/lib/alarm-issues.ts
-// (#7124) — importados acima (DATA_DIR === dirname(STATE_PATH) ===
-// dirname(ALARM_ISSUES_STATE_PATH), então o helper genérico é equivalente).
 
 // ─── Estado (dedup/reconciliação de ISSUE por achado — alarm-issues.ts) ────
 // loadAlarmIssuesState continua LOCAL (#7124) — diverge do padrão comum ao
@@ -233,61 +218,68 @@ async function main(): Promise<void> {
     writeCanary(now);
   }
 
-  const state = loadState();
-
   const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict)
     ? [toAlarmFinding(evaluation.verdict, serviceState)]
     : [];
   const alarmState = loadAlarmIssuesState();
-  let issueRef: AlarmIssueResult | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
-        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, canário NÃO gravado.`,
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, canário NÃO gravado, e-mail NÃO avaliado.`,
     );
-  } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
-      cwd: ROOT,
-      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
-    });
-    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
-    const outcome = findingOutcomes[0];
-    if (outcome) {
-      issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
-      } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
-      }
+    return;
+  }
+
+  const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    cwd: ROOT,
+    closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+  });
+  saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+  for (const outcome of findingOutcomes) {
+    if (outcome.action === "failed") {
+      console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    } else {
+      console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
     }
   }
 
-  if (!shouldSendOnedriveSyncAlarm(evaluation, state)) {
-    console.log(
-      isAlarmingVerdict(evaluation.verdict)
-        ? `${LOG_PREFIX} já alarmado pra verdict=${evaluation.verdict} nesta invocação anterior — não reenvia.`
-        : `${LOG_PREFIX} nenhum achado (verdict=${evaluation.verdict}) — nenhum alarme necessário.`,
-    );
+  if (findingOutcomes.length === 0) {
+    console.log(`${LOG_PREFIX} nenhum achado (verdict=${evaluation.verdict}) — nenhum alarme necessário.`);
     return;
   }
 
-  const issueLine = issueRef
-    ? issueRef.action === "failed"
-      ? `\n\nIssue: falha ao criar/reusar (${issueRef.error})`
-      : `\n\nIssue: #${issueRef.issueNumber} (${issueRef.url})`
-    : "";
-  const { subject, body } = buildOnedriveSyncAlarmEmail(evaluation, issueLine);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
-    return;
+  const result = await notifyEditorForOutcomes(
+    findingOutcomes,
+    "acao",
+    (qualifying) => {
+      const outcome = qualifying[0];
+      const issueLine =
+        outcome.action === "failed"
+          ? `\n\nIssue: falha ao criar/reusar (${outcome.error})`
+          : `\n\nIssue: #${outcome.issueNumber} (${outcome.url})`;
+      return buildOnedriveSyncAlarmEmail(evaluation, issueLine);
+    },
+    {
+      cwd: ROOT,
+      platformConfigPath: PLATFORM_CONFIG_PATH,
+      emailTo: toOverride,
+      // #8271: fingerprint É o verdict — `shouldSendOnedriveSyncAlarm` só
+      // reenviava quando o verdict MUDAVA. Reexecução com o MESMO verdict
+      // reusa a issue (`action: "reused"`) e não deve re-emitir e-mail sob
+      // `email_policy: "legacy"` — verdict novo gera fingerprint novo
+      // (`action: "created"`) e continua e-mailiando normalmente.
+      legacyResendIntent: "dedupe-new-occurrences-only",
+    },
+  );
+  if (result.qualifying.length === 0) {
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
+  } else if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado (verdict=${evaluation.verdict}).`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
   }
-  await sendGmailMessage(to, subject, body);
-  saveState(markOnedriveSyncAlarmed(evaluation.verdict), STATE_PATH);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (verdict=${evaluation.verdict}).`);
 }
 
 if (isMainModule(import.meta.url)) {

@@ -8,16 +8,21 @@
  *
  *   - `listTodayEnvioReports` — glob + mtime, sobre um diretório temporário
  *     com arquivos `envio-{aammdd}*.md` reais (não mockado — é só fs local).
- *   - `loadState`/`saveState` — roundtrip de idempotência, mesmo molde de
- *     `test/home-meta-check-script.test.ts`.
+ *
+ * `loadState`/`saveState` (roundtrip de `envio-alarm-state.json`) removidos
+ * (#7960) — o script não gerencia mais idempotência de e-mail própria, isso
+ * agora é `notifyEditorForOutcomes`/`shouldEmailForIssueOutcome`
+ * (`scripts/lib/editor-notify.ts`, coberto por `test/editor-notify.test.ts`).
+ * `shouldSendEnvioAlarm`/`markEnvioAlarmed` continuam testados puros em
+ * `test/clarice-envio-alarm.test.ts` (lib), sem I/O — não removidos, só não
+ * mais chamados por este script.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { listTodayEnvioReports, loadState, saveState, toAlarmFinding } from "../scripts/clarice-envio-alarm.ts";
-import { emptyEnvioAlarmState, markEnvioAlarmed } from "../scripts/lib/clarice-envio-alarm.ts";
+import { listTodayEnvioReports, toAlarmFinding } from "../scripts/clarice-envio-alarm.ts";
 
 describe("listTodayEnvioReports", () => {
   it("diretório ausente (junction data/ não montada) => [] sem lançar", () => {
@@ -43,33 +48,6 @@ describe("listTodayEnvioReports", () => {
     writeFileSync(resolve(dir, "envio-260811.md"), "y");
     const found = listTodayEnvioReports(dir, "260811");
     assert.equal(found.length, 2);
-    rmSync(dir, { recursive: true, force: true });
-  });
-});
-
-describe("loadState/saveState (idempotência)", () => {
-  it("arquivo ausente => estado vazio (default LIGADO pra alarmar na 1ª falha real)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "envio-alarm-state-"));
-    const statePath = resolve(dir, "envio-alarm-state.json");
-    assert.deepEqual(loadState(statePath), emptyEnvioAlarmState());
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("roundtrip: save então load devolve o mesmo estado", () => {
-    const dir = mkdtempSync(join(tmpdir(), "envio-alarm-state-"));
-    const statePath = resolve(dir, "sub", "envio-alarm-state.json"); // mkdirSync recursivo no save
-    const state = markEnvioAlarmed(emptyEnvioAlarmState(), "260811");
-    saveState(state, statePath);
-    assert.deepEqual(loadState(statePath), state);
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("JSON corrompido => estado vazio, nunca lança", () => {
-    const dir = mkdtempSync(join(tmpdir(), "envio-alarm-state-"));
-    const statePath = resolve(dir, "envio-alarm-state.json");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(statePath, "{ nao e json valido");
-    assert.deepEqual(loadState(statePath), emptyEnvioAlarmState());
     rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -29,25 +29,35 @@
  * Env: `data/.credentials.json` com o scope `gmail.send` + o junction `data/`
  * (OneDrive) — mesmo requisito dos demais alarmes por e-mail do repo.
  *
- * Estado (idempotência): `data/clarice-subscribers/opens-catchup-alarm-state.json`.
+ * Estado: `data/clarice-subscribers/opens-catchup-alarm-state.json` (streak
+ * de falhas, `advanceState`) + `opens-catchup-alarm-issues.json` (tracking
+ * de issue por achado, `alarm-issues.ts`).
+ *
+ * **E-mail (#7960, migrado do estado próprio `lastAlarmedAt` pro portão
+ * `notifyEditorForOutcomes`):** severidade `"acao"` — só cria/reusa a issue,
+ * nunca manda e-mail sob `notifications.email_policy: "urgent_only"`. Sob
+ * `"legacy"`, `legacyResendIntent: "dedupe-new-occurrences-only"` preserva
+ * o comportamento histórico: o fingerprint é FIXO ("streak-failing")
+ * enquanto o streak persistir, então re-execuções consecutivas reusam a
+ * issue (`action: "reused"`) e não devem re-emitir e-mail — era esse o
+ * dedup que `shouldAlarm`/`lastAlarmedAt` fazia antes (1 alarme por
+ * streak, nunca reenviado a cada checagem — ver docstring de `shouldAlarm`
+ * em `lib/clarice-opens-catchup-alarm.ts`).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import type { OpensCatchupStatus } from "./lib/extract-opens-catchup-status.ts";
 import {
   emptyOpensCatchupAlarmState,
   advanceState,
-  shouldAlarm,
-  markAlarmed,
   buildOpensCatchupAlarmEmail,
   CONSECUTIVE_FAILURE_THRESHOLD,
   type OpensCatchupAlarmState,
 } from "./lib/clarice-opens-catchup-alarm.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
@@ -61,6 +71,11 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATUS_PATH = resolve(ROOT, "data", "clarice-subscribers", "last-opens-catchup-status.json");
+/** Streak de falhas consecutivas — NUNCA a idempotência do e-mail (essa
+ * migrou pro `AlarmIssueResult.action` via `notifyEditorForOutcomes`, #7960).
+ * `lastAlarmedAt` continua no shape (`lib/clarice-opens-catchup-alarm.ts`)
+ * mas este script não escreve mais nele — campo morto, preservado só pra
+ * não mexer no tipo compartilhado por uma migração que não é dele. */
 const STATE_PATH = resolve(ROOT, "data", "clarice-subscribers", "opens-catchup-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "clarice-subscribers", "opens-catchup-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
@@ -160,54 +175,65 @@ async function main(): Promise<void> {
 
   // #5339 — reconcilia issue pro achado (streak acima do threshold) ANTES
   // de montar o e-mail, mesmo padrão do lote 1/3. Roda toda execução
-  // não-dry-run, independente do gate `shouldAlarm` (que é sobre o E-MAIL,
-  // já idempotente por streak via `lastAlarmedAt`).
+  // não-dry-run. #7960: o e-mail (abaixo) é decidido a partir do OUTCOME
+  // desta reconciliação (`notifyEditorForOutcomes`), não mais do gate
+  // `shouldAlarm`/`lastAlarmedAt`.
   const alarmFindings: AlarmFinding[] =
     newState.consecutiveFailures >= CONSECUTIVE_FAILURE_THRESHOLD ? [toAlarmFinding(newState, latestError)] : [];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
-  let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
-        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, e-mail NÃO avaliado.`,
     );
-  } else {
-    const { nextState: nextAlarmIssuesState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
-      cwd: ROOT,
-      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
-    });
-    saveAlarmIssuesState(nextAlarmIssuesState, ALARM_ISSUES_STATE_PATH);
-    const outcome = findingOutcomes[0];
-    if (outcome) {
-      issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
-      } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
-      }
-    }
-  }
-
-  if (shouldAlarm(newState)) {
-    const { subject, body } = buildOpensCatchupAlarmEmail(newState, latestError, issueRef);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-    if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    } else {
-      await sendGmailMessage(to, subject, body);
-      newState = markAlarmed(newState, now);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (streak=${newState.consecutiveFailures}).`);
-    }
-  } else {
-    console.log(`${LOG_PREFIX} nenhum e-mail necessário.`);
-  }
-
-  if (isDryRun) {
     console.log(`${LOG_PREFIX} --dry-run: estado NÃO avançado.`);
     return;
   }
+
+  const { nextState: nextAlarmIssuesState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    cwd: ROOT,
+    closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+  });
+  saveAlarmIssuesState(nextAlarmIssuesState, ALARM_ISSUES_STATE_PATH);
+  for (const outcome of findingOutcomes) {
+    if (outcome.action === "failed") {
+      console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    } else {
+      console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
+    }
+  }
+
+  if (findingOutcomes.length === 0) {
+    console.log(`${LOG_PREFIX} nenhum e-mail necessário.`);
+  } else {
+    const result = await notifyEditorForOutcomes(
+      findingOutcomes,
+      "acao",
+      (qualifying) => buildOpensCatchupAlarmEmail(newState, latestError, qualifying[0]),
+      {
+        cwd: ROOT,
+        platformConfigPath: PLATFORM_CONFIG_PATH,
+        emailTo: toOverride,
+        // #8271: fingerprint FIXO ("streak-failing") enquanto o streak
+        // persistir — 1 e-mail por streak (`shouldAlarm` pré-migração),
+        // não um reenvio periódico deliberado. Reexecução no MESMO streak
+        // reusa a issue (`action: "reused"`) e não deve re-emitir e-mail
+        // sob `email_policy: "legacy"` — era esse o dedup que
+        // `lastAlarmedAt` fazia antes.
+        legacyResendIntent: "dedupe-new-occurrences-only",
+      },
+    );
+    if (result.qualifying.length === 0) {
+      console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
+    } else if (result.emailSent) {
+      console.log(`${LOG_PREFIX} e-mail de alarme enviado (streak=${newState.consecutiveFailures}).`);
+    } else {
+      console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
+    }
+  }
+
   saveState(newState, STATE_PATH);
 }
 

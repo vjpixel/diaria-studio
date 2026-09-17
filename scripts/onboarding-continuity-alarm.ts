@@ -34,43 +34,48 @@
  * `data/.credentials.json` com o scope `gmail.send` (só necessário pra
  * ENVIAR o alarme).
  *
- * Estado: `data/onboarding/.continuity-alarm-state.json` (dedup do e-mail,
- * 1×/dia) + `data/onboarding/.continuity-alarm-issues.json` (tracking de
- * issue, `alarm-issues.ts`) — arquivos PRÓPRIOS, distintos de
- * `store.json` (que este script só LÊ, nunca escreve) e de
- * `.welcome-run.log` (que o run diário já usa).
+ * Estado: `data/onboarding/.continuity-alarm-issues.json` (tracking de
+ * issue, `alarm-issues.ts`) — arquivo PRÓPRIO, distinto de `store.json`
+ * (que este script só LÊ, nunca escreve) e de `.welcome-run.log` (que o
+ * run diário já usa).
+ *
+ * **E-mail (#7960, migrado do estado próprio `lastAlarmedDay` pro portão
+ * `notifyEditorForOutcomes`):** severidade `"acao"` — só cria/reusa a issue,
+ * nunca manda e-mail sob `notifications.email_policy: "urgent_only"`. Sob
+ * `"legacy"`, `legacyResendIntent: "dedupe-new-occurrences-only"` preserva
+ * o comportamento histórico: `shouldSendOnboardingContinuityAlarm` gateava
+ * por DIA (`lastAlarmedDay`), apesar do fingerprint ser FIXO
+ * (`FINDING_FINGERPRINT`) enquanto o streak persistir — re-executar no
+ * MESMO dia reusa a issue (`action: "reused"`) e não deve re-emitir e-mail.
+ * `shouldSendOnboardingContinuityAlarm`/`markOnboardingContinuityAlarmed`/
+ * `.continuity-alarm-state.json` continuam definidos em
+ * `lib/onboarding-continuity-alarm.ts` (e testados lá) mas não são mais
+ * chamados por este script.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { readStore, DEFAULT_STORE_PATH } from "./lib/onboarding-store.ts";
 import {
   evaluateOnboardingContinuity,
-  shouldSendOnboardingContinuityAlarm,
-  markOnboardingContinuityAlarmed,
-  emptyOnboardingContinuityAlarmState,
   buildOnboardingContinuityAlarmEmail,
-  type OnboardingContinuityAlarmState,
   type OnboardingContinuityEvaluation,
 } from "./lib/onboarding-continuity-alarm.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   saveAlarmIssuesState,
-  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
-  type AlarmIssueResult,
+  type AlarmFindingOutcome,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ONBOARDING_DIR = join(ROOT, "data", "onboarding");
-const STATE_PATH = join(ONBOARDING_DIR, ".continuity-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = join(ONBOARDING_DIR, ".continuity-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[onboarding-continuity-alarm]";
@@ -81,16 +86,6 @@ const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
  * entra no fingerprint de propósito (senão cada rodada com streak
  * diferente reabriria uma issue "nova" pro mesmo achado). */
 const FINDING_FINGERPRINT = "zero-detection-streak";
-
-function loadState(statePath: string): OnboardingContinuityAlarmState {
-  if (!existsSync(statePath)) return emptyOnboardingContinuityAlarmState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8")) as Partial<OnboardingContinuityAlarmState>;
-    return { lastAlarmedDay: typeof raw.lastAlarmedDay === "string" ? raw.lastAlarmedDay : null };
-  } catch {
-    return emptyOnboardingContinuityAlarmState();
-  }
-}
 
 // Mesmo padrão de meta-capi-staleness-alarm.ts: loadAlarmIssuesState fica
 // LOCAL (não importado de alarm-issues.ts) pra logar o parse error, não só
@@ -145,7 +140,6 @@ async function main(): Promise<void> {
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");
 
-  const now = new Date();
   const storeExists = existsSync(DEFAULT_STORE_PATH);
   const { store, corrupted } = readStore(DEFAULT_STORE_PATH);
   const evaluation = evaluateOnboardingContinuity(
@@ -174,64 +168,62 @@ async function main(): Promise<void> {
 
   console.log(`${LOG_PREFIX} verdict=${evaluation.verdict} streak=${evaluation.streak} threshold=${evaluation.threshold}`);
 
-  const state = loadState(STATE_PATH);
   const alarmFindings: AlarmFinding[] = evaluation.verdict === "stale" ? [toAlarmFinding(evaluation)] : [];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
-  const issueRefs: AlarmIssueResult[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
-        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado.`,
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, e-mail NÃO avaliado.`,
     );
-  } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
-      cwd: ROOT,
-      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
-    });
-    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
-    for (const outcome of findingOutcomes) {
-      const ref: AlarmIssueResult = {
-        issueNumber: outcome.issueNumber,
-        url: outcome.url,
-        action: outcome.action,
-        error: outcome.error,
-      };
-      issueRefs.push(ref);
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
-      } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
-      }
+    return;
+  }
+
+  const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    cwd: ROOT,
+    closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+  });
+  saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+  for (const outcome of findingOutcomes) {
+    if (outcome.action === "failed") {
+      console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    } else {
+      console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
     }
   }
 
-  if (!shouldSendOnboardingContinuityAlarm(evaluation, state, now)) {
-    console.log(
-      evaluation.verdict === "stale"
-        ? `${LOG_PREFIX} já alarmado hoje — não reenvia.`
-        : `${LOG_PREFIX} sem staleness — nenhum alarme necessário.`,
-    );
+  if (findingOutcomes.length === 0) {
+    console.log(`${LOG_PREFIX} sem staleness — nenhum alarme necessário.`);
     return;
   }
 
-  const issueLines = issueRefs.length
-    ? "\n\nIssues:\n" +
-      issueRefs
+  const buildMessage = (qualifying: readonly AlarmFindingOutcome[]) => {
+    const issueLines =
+      "\n\nIssues:\n" +
+      qualifying
         .map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`))
-        .join("\n")
-    : "";
-  const { subject, body } = buildOnboardingContinuityAlarmEmail(evaluation, issueLines);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
-    return;
+        .join("\n");
+    return buildOnboardingContinuityAlarmEmail(evaluation, issueLines);
+  };
+  const result = await notifyEditorForOutcomes(findingOutcomes, "acao", buildMessage, {
+    cwd: ROOT,
+    platformConfigPath: PLATFORM_CONFIG_PATH,
+    emailTo: toOverride,
+    // #8271: `shouldSendOnboardingContinuityAlarm` gateava por DIA
+    // (`lastAlarmedDay`) apesar do fingerprint fixo enquanto o streak
+    // persistir — 1 e-mail por dia, não reenvio periódico deliberado.
+    // Reexecução no MESMO dia reusa a issue (`action: "reused"`) e não
+    // deve re-emitir e-mail sob `email_policy: "legacy"`.
+    legacyResendIntent: "dedupe-new-occurrences-only",
+  });
+  if (result.qualifying.length === 0) {
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
+  } else if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
   }
-  await sendGmailMessage(to, subject, body);
-  saveState(markOnboardingContinuityAlarmed(now), STATE_PATH);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
 }
 
 if (isMainModule(import.meta.url)) {

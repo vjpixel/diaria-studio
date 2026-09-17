@@ -25,44 +25,46 @@
  * dos outros alarmes locais deste repo) — só necessário pra ENVIAR o alarme;
  * a leitura dos relatórios não precisa de credencial nenhuma.
  *
- * Estado (idempotência): `data/clarice-subscribers/envio-guard-alarm-state.json`
- * (dedicado — NÃO compartilha `envio-alarm-state.json` do run das 19:00,
- * senão um alarme do run "consumiria" o slot do dia e o guard nunca
- * alarmaria, ou vice-versa) — 1 alarme por `aammdd`, mesmo que esta task
- * rode mais de 1x no mesmo dia.
+ * Estado: `data/clarice-subscribers/envio-guard-alarm-issues.json` (tracking
+ * de issue por achado, `alarm-issues.ts`, dedicado — NÃO compartilha o do
+ * run das 19:00).
+ *
+ * **E-mail (#7960, migrado do estado próprio `lastAlarmedAammdd` pro portão
+ * `notifyEditorForOutcomes`):** severidade `"acao"` — só cria/reusa a issue,
+ * nunca manda e-mail sob `notifications.email_policy: "urgent_only"`. Sob
+ * `"legacy"`, `legacyResendIntent: "dedupe-new-occurrences-only"` preserva
+ * o comportamento histórico: o fingerprint inclui `aammdd`, então
+ * re-executar no MESMO dia reusa a issue (`action: "reused"`) e não deve
+ * re-emitir e-mail — era esse o dedup que `lastAlarmedAammdd` fazia antes.
+ * `shouldSendGuardAlarm`/`markGuardAlarmed`/`envio-guard-alarm-state.json`
+ * continuam definidos em `lib/clarice-envio-guard-alarm.ts` (e testados lá)
+ * mas não são mais chamados por este script.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE } from "./lib/next-edition-date.ts";
 import {
   evaluateGuardAlarm,
-  shouldSendGuardAlarm,
-  markGuardAlarmed,
-  emptyEnvioGuardAlarmState,
   buildGuardAlarmEmail,
   type EnvioGuardAlarmEvaluation,
   type EnvioGuardAlarmReportFile,
-  type EnvioGuardAlarmState,
 } from "./lib/clarice-envio-guard-alarm.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   loadAlarmIssuesState,
   saveAlarmIssuesState,
-  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPORTS_DIR = resolve(ROOT, "data", "clarice-subscribers", "envio-reports");
-const STATE_PATH = resolve(ROOT, "data", "clarice-subscribers", "envio-guard-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "clarice-subscribers", "envio-guard-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[clarice-envio-guard-alarm]";
@@ -71,22 +73,8 @@ const LOG_PREFIX = "[clarice-envio-guard-alarm]";
  * mesmo valor de cadência diária usado pelos alarmes já wired (lote 1/3). */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
-export function loadState(statePath: string = STATE_PATH): EnvioGuardAlarmState {
-  if (!existsSync(statePath)) return emptyEnvioGuardAlarmState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8")) as Partial<EnvioGuardAlarmState>;
-    const lastAlarmedAammdd = typeof raw.lastAlarmedAammdd === "string" || raw.lastAlarmedAammdd === null
-      ? raw.lastAlarmedAammdd ?? null
-      : null;
-    return { lastAlarmedAammdd };
-  } catch {
-    return emptyEnvioGuardAlarmState();
-  }
-}
-
-// saveState/loadAlarmIssuesState/saveAlarmIssuesState: consolidados em
+// loadAlarmIssuesState/saveAlarmIssuesState: consolidados em
 // scripts/lib/alarm-issues.ts (#7124) — importados acima.
-export { saveState };
 
 /** Converte uma avaliação NÃO-ok no `AlarmFinding` genérico que
  * `scripts/lib/alarm-issues.ts` consome (#5339). `check` fixo
@@ -214,55 +202,63 @@ async function main(): Promise<void> {
   );
 
   // #5339 — reconcilia issue pro achado (se houver) ANTES de montar o
-  // e-mail, mesmo padrão do lote 1/3. Roda toda execução não-dry-run,
-  // independente de o e-mail idempotente disparar nesta rodada.
+  // e-mail, mesmo padrão do lote 1/3. Roda toda execução não-dry-run.
+  // #7960: o e-mail (abaixo) é decidido a partir do OUTCOME desta
+  // reconciliação (`notifyEditorForOutcomes`), não mais de um estado
+  // `lastAlarmedAammdd` separado.
   const alarmFindings: AlarmFinding[] = evaluation.verdict !== "ok" ? [toAlarmFinding(evaluation, aammdd)] : [];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
-  let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
-        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, e-mail NÃO avaliado.`,
     );
-  } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
-      cwd: ROOT,
-      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
-    });
-    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
-    const outcome = findingOutcomes[0];
-    if (outcome) {
-      issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
-      } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
-      }
+    return;
+  }
+
+  const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    cwd: ROOT,
+    closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+  });
+  saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+  for (const outcome of findingOutcomes) {
+    if (outcome.action === "failed") {
+      console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    } else {
+      console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
     }
   }
 
-  const state = loadState();
-  if (!shouldSendGuardAlarm(evaluation, state, aammdd)) {
-    console.log(
-      evaluation.verdict === "ok"
-        ? `${LOG_PREFIX} rodada de ${aammdd} OK — nenhum alarme necessário.`
-        : `${LOG_PREFIX} já alarmado pra ${aammdd} nesta invocação anterior — não reenvia.`,
-    );
+  if (findingOutcomes.length === 0) {
+    console.log(`${LOG_PREFIX} rodada de ${aammdd} OK — nenhum alarme necessário.`);
     return;
   }
 
-  const { subject, body } = buildGuardAlarmEmail(evaluation, aammdd, issueRef);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
-    return;
+  const result = await notifyEditorForOutcomes(
+    findingOutcomes,
+    "acao",
+    (qualifying) => buildGuardAlarmEmail(evaluation, aammdd, qualifying[0]),
+    {
+      cwd: ROOT,
+      platformConfigPath: PLATFORM_CONFIG_PATH,
+      emailTo: toOverride,
+      // #8271: fingerprint inclui `aammdd` — 1 ocorrência por dia, não um
+      // conjunto persistente que precisa cutucar toda execução enquanto não
+      // resolvido. Reexecução no MESMO dia reusa a issue (`action: "reused"`)
+      // e não deve re-emitir e-mail sob `email_policy: "legacy"` — era esse
+      // o dedup que o estado próprio `lastAlarmedAammdd` fazia antes.
+      legacyResendIntent: "dedupe-new-occurrences-only",
+    },
+  );
+  if (result.qualifying.length === 0) {
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
+  } else if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado (aammdd=${aammdd}, verdict=${evaluation.verdict}).`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
   }
-  await sendGmailMessage(to, subject, body);
-  saveState(markGuardAlarmed(state, aammdd), STATE_PATH);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (aammdd=${aammdd}, verdict=${evaluation.verdict}).`);
 }
 
 if (isMainModule(import.meta.url)) {
