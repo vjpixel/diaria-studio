@@ -393,3 +393,63 @@ describe("buildAdsCampaignEconomics — cache com TTL/forceRefresh", () => {
     }
   });
 });
+
+describe("buildAdsData — followers (#8260 Fase 1)", () => {
+  it("data/metrics/social-followers.jsonl ausente: followers=null, nunca lança (mesmo com o resto do relatório ok)", () => {
+    clearAdsCache();
+    const root = makeRoot();
+    try {
+      writeSpendCsv(root);
+      writeSnapshot(root, "2026-02-01", [subscriberLine()]);
+      const data = buildAdsData(root, { now: () => new Date("2026-02-05T12:00:00Z") });
+      assert.equal(data.followers, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo presente: calcula saldo diário de IG e FB independentemente do resto do relatório", () => {
+    clearAdsCache();
+    const root = makeRoot();
+    try {
+      const dir = join(root, "data", "metrics");
+      mkdirSync(dir, { recursive: true });
+      const lines = [
+        { date: "2026-09-14", platform: "instagram", followersCount: 100 },
+        { date: "2026-09-15", platform: "instagram", followersCount: 102 },
+        { date: "2026-09-14", platform: "facebook", followersCount: 10 },
+        { date: "2026-09-15", platform: "facebook", followersCount: 9 },
+      ];
+      writeFileSync(join(dir, "social-followers.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n", "utf8");
+      const data = buildAdsData(root, { now: () => new Date("2026-09-16T12:00:00Z") });
+      assert.ok(data.followers);
+      assert.equal(data.followers!.instagram.totalDelta, 2);
+      assert.equal(data.followers!.instagram.currentTotal, 102);
+      assert.equal(data.followers!.facebook.totalDelta, -1);
+      assert.equal(data.followers!.facebook.currentTotal, 9);
+      assert.equal(data.followers!.parseErrors.length, 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("linha malformada não derruba o carregamento das outras — vira parseErrors", () => {
+    clearAdsCache();
+    const root = makeRoot();
+    try {
+      const dir = join(root, "data", "metrics");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "social-followers.jsonl"),
+        `${JSON.stringify({ date: "2026-09-14", platform: "instagram", followersCount: 100 })}\nnot json\n`,
+        "utf8",
+      );
+      const data = buildAdsData(root, { now: () => new Date("2026-09-16T12:00:00Z") });
+      assert.ok(data.followers);
+      assert.equal(data.followers!.instagram.points.length, 1);
+      assert.equal(data.followers!.parseErrors.length, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

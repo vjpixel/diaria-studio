@@ -1523,3 +1523,45 @@ describe("#8153 — Diaria-Remediate-Never-Armed-Tasks registrada, diária, syst
     assert.ok(!others.some((s) => s.script === "scripts/remediate-never-armed-tasks.ts"));
   });
 });
+
+describe("#8260 — Diaria-Social-Followers-Collect registrada, diária, systemd-only, NÃO armada", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 07:10", () => {
+    const t = getScheduledTaskByName("Diaria-Social-Followers-Collect");
+    assert.ok(t, "Diaria-Social-Followers-Collect ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/social-followers-collect.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 7, minute: 10 });
+    assert.equal(t!.issue, "#8260");
+  });
+
+  it("declarada mas NÃO armada — guard de publicação/plataforma proíbe execução ao vivo nesta sessão", () => {
+    const t = getScheduledTaskByName("Diaria-Social-Followers-Collect")!;
+    assert.equal(t.enabled, false);
+    assert.ok(listDisabledScheduledTaskNames().includes("Diaria-Social-Followers-Collect"));
+  });
+
+  it("horário de 07:10 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Social-Followers-Collect" && t.schedule.hour === 7 && t.schedule.minute === 10,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Social-Followers-Collect")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+
+  it("sem guard modelado — o script é fail-soft por PLATAFORMA de propósito", () => {
+    const t = getScheduledTaskByName("Diaria-Social-Followers-Collect")!;
+    assert.equal(t.guard, undefined);
+  });
+});

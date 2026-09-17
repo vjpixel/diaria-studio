@@ -62,6 +62,11 @@ import {
   type TestStateTiles,
   type SourceFreshnessEntry,
 } from "../lib/ads-campaign-economics.ts";
+import {
+  parseSocialFollowersJsonl,
+  computeDailyBalances,
+  type DailyFollowerBalanceResult,
+} from "../lib/social-followers.ts";
 
 // ─── tipos do snapshot ──────────────────────────────────────────────────
 
@@ -108,6 +113,21 @@ export interface AdsSnapshot {
    *  fail-soft — store ausente/ilegível nesta máquina, ex: nenhuma
    *  ingestão rodou ainda). `null` quando `report` é `null`. */
   subscribersSource: "store" | "beehiiv-snapshot" | null;
+  /** Seguidores ganhos por dia — Instagram + Facebook (#8260 Fase 1). `null`
+   *  quando `data/metrics/social-followers.jsonl` está ausente (task ainda
+   *  não rodou nesta máquina, ou sessão cloud sem `data/`) — nunca uma
+   *  série vazia disfarçada de "sem seguidor ganho". */
+  followers: AdsFollowersLayer | null;
+}
+
+/** Camada "seguidores ganhos por dia" (#8260) — 1 série de saldo por
+ *  plataforma + erros de parsing por linha (fail-soft, mesmo padrão de
+ *  `AdsSpendLayer.rowErrors`). */
+export interface AdsFollowersLayer {
+  path: string;
+  instagram: DailyFollowerBalanceResult;
+  facebook: DailyFollowerBalanceResult;
+  parseErrors: Array<{ line: number; reason: string }>;
 }
 
 // ─── construção (fail-soft por camada) ──────────────────────────────────
@@ -121,6 +141,27 @@ function loadSpendLayer(path: string): AdsSpendLayer {
   }
 }
 
+/** Lê `data/metrics/social-followers.jsonl` e monta as 2 séries de saldo
+ *  diário (IG + FB). Fail-soft: arquivo ausente/ilegível devolve `null`
+ *  inteiro (nunca lança, nunca uma tabela vazia enganosa — ver docstring de
+ *  `AdsSnapshot.followers`). */
+function loadFollowersLayer(path: string): AdsFollowersLayer | null {
+  if (!existsSync(path)) return null;
+  let content: string;
+  try {
+    content = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  const { samples, errors } = parseSocialFollowersJsonl(content);
+  return {
+    path,
+    instagram: computeDailyBalances(samples, "instagram"),
+    facebook: computeDailyBalances(samples, "facebook"),
+    parseErrors: errors,
+  };
+}
+
 export interface BuildAdsDataOptions {
   now?: () => Date;
   cacheTtlMs?: number;
@@ -130,6 +171,8 @@ export interface BuildAdsDataOptions {
   origemPath?: string;
   /** Store unificado (#8210 Bug 2) — default `data/diaria-subscribers/diaria-subscribers.db`. */
   storePath?: string;
+  /** Seguidores ganhos por dia (#8260) — default `data/metrics/social-followers.jsonl`. */
+  followersPath?: string;
 }
 
 /**
@@ -195,8 +238,10 @@ export function buildAdsData(rootDir: string, opts: BuildAdsDataOptions = {}): A
   const backupRoot = opts.backupRoot ?? resolve(rootDir, "data", "beehiiv-backup");
   const spendPath = opts.spendPath ?? resolve(rootDir, "data", "aquisicao", "spend.csv");
   const origemPath = opts.origemPath ?? resolve(rootDir, "data", "aquisicao", "origem-original.json");
+  const followersPath = opts.followersPath ?? resolve(rootDir, "data", "metrics", "social-followers.jsonl");
 
   const spendLayer = loadSpendLayer(spendPath);
+  const followersLayer = loadFollowersLayer(followersPath);
 
   const dates = listSnapshotDates(backupRoot);
   const snapshotDate = latestSnapshotDate(backupRoot);
@@ -266,6 +311,7 @@ export function buildAdsData(rootDir: string, opts: BuildAdsDataOptions = {}): A
     budget,
     monthKey,
     subscribersSource,
+    followers: followersLayer,
   };
   cacheByRoot.set(rootDir, { data, expiresAt: nowMs + cacheTtlMs });
   return data;

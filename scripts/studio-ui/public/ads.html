@@ -89,6 +89,38 @@
       </div>
     </section>
 
+    <section class="panel" id="followers-panel" hidden>
+      <h2>Seguidores ganhos por dia</h2>
+      <p class="hint">
+        Saldo LÍQUIDO diário (ganhos − perdidos) do Instagram (@diar.ia.br) e
+        do Facebook, derivado de <code>data/metrics/social-followers.jsonl</code>
+        (Fase 1 — total diário, não bruto). Dia sem coleta não vira "0
+        seguidor ganho"; some da linha. 1ª amostra de cada plataforma não tem
+        saldo (sem dia anterior pra comparar).
+      </p>
+      <div id="followers-nodata" class="hint" hidden>
+        Sem dados ainda — a task de coleta (<code>Diaria-Social-Followers-Collect</code>)
+        não rodou nesta máquina, ou <code>data/metrics/social-followers.jsonl</code>
+        ainda não existe.
+      </div>
+      <div class="ads-summary-grid" id="followers-totals-grid"></div>
+      <div id="followers-parse-errors" class="hint" hidden></div>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Dia</th>
+              <th>Instagram — total</th>
+              <th>Instagram — saldo</th>
+              <th>Facebook — total</th>
+              <th>Facebook — saldo</th>
+            </tr>
+          </thead>
+          <tbody id="followers-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="panel" id="ads-table-panel" hidden>
       <div class="panel-header-row">
         <h2>Canais (<span id="ads-count">0</span>)</h2>

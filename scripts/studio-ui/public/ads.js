@@ -28,6 +28,11 @@ const el = {
   campaignChartLegend: document.getElementById("campaign-chart-legend"),
   campaignChannelsTbody: document.getElementById("campaign-channels-tbody"),
   campaignMaturityDate: document.getElementById("campaign-maturity-date"),
+  followersPanel: document.getElementById("followers-panel"),
+  followersNodata: document.getElementById("followers-nodata"),
+  followersTotalsGrid: document.getElementById("followers-totals-grid"),
+  followersParseErrors: document.getElementById("followers-parse-errors"),
+  followersTbody: document.getElementById("followers-tbody"),
 };
 
 function escapeHtml(s) {
@@ -449,6 +454,74 @@ function fmtDdMm(isoDate) {
   return m ? `${m[3]}/${m[2]}` : String(isoDate);
 }
 
+/** Saldo diário (#8260) — `+N`/`−N` com sinal explícito, `—` pra `null`
+ *  (nunca "0" quando o dado não existe: 1ª amostra, ou dia sem coleta). */
+function fmtDelta(delta) {
+  if (delta == null) return "—";
+  if (delta > 0) return `+${delta}`;
+  return String(delta); // já carrega o "-" pra negativo; 0 aparece como "0" (saldo real medido, não ausência)
+}
+
+/** Seguidores ganhos por dia (#8260 Fase 1) — 2 séries (IG/FB) mescladas
+ *  por data numa tabela única; totais atuais + saldo do período nos tiles
+ *  do topo. `data.followers` é `null` quando o arquivo local ainda não
+ *  existe (task nunca rodou nesta máquina, ou sessão cloud) — nunca uma
+ *  tabela vazia disfarçada de "0 seguidor ganho". */
+function renderFollowers(followers) {
+  if (!followers) {
+    el.followersPanel.hidden = false;
+    el.followersNodata.hidden = false;
+    el.followersTotalsGrid.innerHTML = "";
+    el.followersParseErrors.hidden = true;
+    el.followersTbody.innerHTML = "";
+    return;
+  }
+  el.followersPanel.hidden = false;
+  el.followersNodata.hidden = true;
+
+  const ig = followers.instagram;
+  const fb = followers.facebook;
+
+  el.followersTotalsGrid.innerHTML = [
+    tile("Instagram — total atual", fmtInt(ig.currentTotal), ig.lastDate ? `em ${fmtDdMm(ig.lastDate)}` : "sem coleta"),
+    tile("Instagram — saldo do período", fmtDelta(ig.totalDelta), ig.firstDate ? `desde ${fmtDdMm(ig.firstDate)}` : ""),
+    tile("Facebook — total atual", fmtInt(fb.currentTotal), fb.lastDate ? `em ${fmtDdMm(fb.lastDate)}` : "sem coleta"),
+    tile("Facebook — saldo do período", fmtDelta(fb.totalDelta), fb.firstDate ? `desde ${fmtDdMm(fb.firstDate)}` : ""),
+  ].join("");
+
+  if (followers.parseErrors && followers.parseErrors.length > 0) {
+    el.followersParseErrors.hidden = false;
+    el.followersParseErrors.textContent = `${followers.parseErrors.length} linha(s) inválida(s) em social-followers.jsonl (ignoradas): ${followers.parseErrors
+      .map((e) => `linha ${e.line} (${e.reason})`)
+      .join("; ")}`;
+  } else {
+    el.followersParseErrors.hidden = true;
+  }
+
+  const byDate = new Map();
+  for (const p of ig.points) byDate.set(p.date, { ...(byDate.get(p.date) || {}), igTotal: p.followersCount, igDelta: p.delta });
+  for (const p of fb.points) byDate.set(p.date, { ...(byDate.get(p.date) || {}), fbTotal: p.followersCount, fbDelta: p.delta });
+  const dates = [...byDate.keys()].sort().reverse(); // mais recente primeiro
+
+  if (dates.length === 0) {
+    el.followersTbody.innerHTML = `<tr><td colspan="5">Sem amostra coletada ainda.</td></tr>`;
+    return;
+  }
+
+  el.followersTbody.innerHTML = dates
+    .map((date) => {
+      const row = byDate.get(date);
+      return `<tr>
+        <td>${escapeHtml(fmtDdMm(date))}</td>
+        <td>${fmtInt(row.igTotal)}</td>
+        <td>${escapeHtml(fmtDelta(row.igDelta))}</td>
+        <td>${fmtInt(row.fbTotal)}</td>
+        <td>${escapeHtml(fmtDelta(row.fbDelta))}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
 function renderCampaignEconomics(data) {
   if (!data) {
     el.campaignPanel.hidden = true;
@@ -484,6 +557,10 @@ async function refresh(forceRefresh) {
     // Google Ads/Microsoft Ads/Kit são fontes próprias (#7536), podem ter
     // dado mesmo sem `spend.csv`/snapshot Beehiiv locais.
     renderCampaignEconomics(data.campaignEconomics);
+    // #8260: seguidores ganhos por dia é uma fonte INDEPENDENTE de
+    // spend.csv/snapshot Beehiiv (mesmo raciocínio de campaignEconomics
+    // acima) — renderiza mesmo quando `data.report` é null.
+    renderFollowers(data.followers);
 
     if (!data.hasDataDir) {
       el.nodata.hidden = false;
