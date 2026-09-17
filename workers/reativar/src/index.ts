@@ -604,7 +604,19 @@ export async function activateSubscription(
  * `checkNativeUnsubscribePending`, backend-agnóstico — Brevo é a fonte desse
  * guard nos dois caminhos).
  *
- * ## Preservação de "origem original" (#5231) — NÃO IMPLEMENTADA para Kit
+ * ## Preservação de "origem original" — Kit: #8235 (supera o texto histórico abaixo)
+ *
+ * Os `KIT_UTM_*_FIELD` foram ligados no #6318 e o upsert passou a sobrescrever
+ * a origem de quem já existia (teste pago 2608: `google-ads` → `brevo-diaria`
+ * no clique do Confirmar). Desde o #8235, quando o assinante já existe, o
+ * worker lê os campos atuais pelo GET SINGULAR (`readKitSubscriberFields`) e
+ * só manda no POST os campos de origem (`utm_*`, `referring_site`,
+ * `origem_cadastro`) que estão VAZIOS (`filterKitOrigemFields`). Leitura
+ * falhou → nenhum campo de origem vai (fail-closed), a ativação segue. Vale
+ * com e sem token. Log `reativar_kit_origem_preservada` quando algo é poupado.
+ * Cadastro novo continua recebendo a UTM de reativação.
+ *
+ * Texto histórico (pré-#8235):
  *
  * O caminho Beehiiv (`activateSubscription`) lê a UTM original do GET e a
  * preserva num `custom_fields` dedicado antes do DELETE+CREATE sobrescrever
@@ -659,6 +671,10 @@ export async function activateSubscriptionKit(
   const authHeaders = { "X-Kit-Api-Key": apiKey, Accept: "application/json" };
 
   // 1) idempotência — já active não precisa de mais nada.
+  // #8235: `existingId` indica que o assinante JÁ existe — decide, no passo 2,
+  // se os campos de origem precisam ser lidos pelo GET singular antes do upsert.
+  let existingId: string | number | undefined;
+  let existsAlready = false;
   try {
     const getRes = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}`, {
       headers: authHeaders,
@@ -674,8 +690,12 @@ export async function activateSubscriptionKit(
       );
       return { ok: false, status: getRes.status, reason: "beehiiv_error" };
     }
-    const body = (await getRes.json().catch(() => null)) as { subscribers?: { state?: string }[] } | null;
+    const body = (await getRes.json().catch(() => null)) as
+      | { subscribers?: { id?: string | number; state?: string }[] }
+      | null;
     const existingState = body?.subscribers?.[0]?.state;
+    existsAlready = body?.subscribers?.[0] != null;
+    existingId = body?.subscribers?.[0]?.id;
     // #8194: com token, nunca ressuscita quem saiu (cancelled/complained/
     // bounced) — o clique no botão da Brevo não desfaz um descadastro no Kit.
     if (confirmedByToken && existingState && existingState !== "active" && existingState !== "inactive") {
@@ -708,21 +728,47 @@ export async function activateSubscriptionKit(
   }
 
   // 2) upsert direto — sem DELETE, ver docstring acima. `fields` só vai no
-  // corpo quando os respectivos KIT_*_FIELD estão configurados (nenhum
-  // criado em produção ainda) — ver seção "origem original" acima pro
-  // porquê de omitir `fields` também preservar atribuição por default.
-  const fields: Record<string, string> = {};
-  if (env.KIT_UTM_SOURCE_FIELD) fields[env.KIT_UTM_SOURCE_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source;
-  if (env.KIT_UTM_MEDIUM_FIELD) fields[env.KIT_UTM_MEDIUM_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium;
-  if (env.KIT_UTM_CAMPAIGN_FIELD) fields[env.KIT_UTM_CAMPAIGN_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign;
-  if (env.KIT_REFERRING_SITE_FIELD) fields[env.KIT_REFERRING_SITE_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.referringSite;
+  // corpo quando os respectivos KIT_*_FIELD estão configurados — e, desde o
+  // #8235, só os campos que ainda estão VAZIOS no assinante (ver seção
+  // "Preservação de origem original" na docstring).
+  const desired: Record<string, string> = {};
+  if (env.KIT_UTM_SOURCE_FIELD) desired[env.KIT_UTM_SOURCE_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source;
+  if (env.KIT_UTM_MEDIUM_FIELD) desired[env.KIT_UTM_MEDIUM_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium;
+  if (env.KIT_UTM_CAMPAIGN_FIELD) desired[env.KIT_UTM_CAMPAIGN_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign;
+  if (env.KIT_REFERRING_SITE_FIELD) desired[env.KIT_REFERRING_SITE_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.referringSite;
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
   // NÃO cobre o early-return acima (assinante já active) — ver docstring
   // desta função pra essa limitação conhecida (achado do fleet review,
   // #6127) e o log estruturado que sinaliza quando isso acontece.
-  applyKitSignupOriginField(fields, env);
+  applyKitSignupOriginField(desired, env);
+
+  // #8235: assinante que já existe → lê os campos atuais pelo GET SINGULAR
+  // (o endpoint de lista pode servir `fields` defasado) e nunca sobrescreve
+  // origem já gravada. Leitura falhou → não grava NENHUM campo de origem
+  // (fail-closed), mas a ativação segue.
+  let fields: Record<string, string> = desired;
+  if (existsAlready && Object.keys(desired).length > 0) {
+    const current = await readKitSubscriberFields(base, authHeaders, existingId, fetchImpl);
+    fields = filterKitOrigemFields(desired, current);
+    const preservados = Object.keys(desired).filter((k) => !(k in fields));
+    if (preservados.length > 0) {
+      console.warn(
+        JSON.stringify({
+          event: "reativar_kit_origem_preservada",
+          // `leitura_falhou`: GET singular não devolveu os campos — nada de
+          // origem é gravado (fail-closed); `campo_preenchido`: o assinante já
+          // tinha valor nesses campos.
+          motivo: current === null ? "leitura_falhou" : "campo_preenchido",
+          campos: preservados,
+          utm_source_atual:
+            current !== null && env.KIT_UTM_SOURCE_FIELD ? (current[env.KIT_UTM_SOURCE_FIELD] ?? null) : null,
+          token: confirmedByToken,
+        }),
+      );
+    }
+  }
 
   // #7723: double opt-in também aqui — e neste worker ele não é só
   // conformidade, é o conserto de um risco DOCUMENTADO E ACEITO no topo deste
@@ -801,6 +847,83 @@ export async function activateSubscriptionKit(
   // sem retry necessário. Com DOI, esse estado é `inactive` até a pessoa
   // confirmar: o retorno reflete isso em vez de afirmar "active".
   return { ok: true, status: res.status, beehiivStatus: createState };
+}
+
+/**
+ * #8235 — lê os custom fields atuais de um assinante Kit pelo GET SINGULAR
+ * `/v4/subscribers/{id}`. O endpoint de lista (`?email_address=`) pode servir
+ * `fields` defasado, então nunca é usado pra decidir preservação.
+ *
+ * Retorna `null` em QUALQUER falha (sem id, non-2xx, exceção, corpo sem
+ * `subscriber.fields`) — quem chama trata `null` como "origem desconhecida"
+ * e não grava campo de origem nenhum.
+ */
+export async function readKitSubscriberFields(
+  base: string,
+  headers: Record<string, string>,
+  id: string | number | undefined,
+  fetchImpl: typeof fetch,
+): Promise<Record<string, string | null> | null> {
+  if (id == null || id === "") {
+    console.error(JSON.stringify({ event: "reativar_kit_origem_sem_id" }));
+    return null;
+  }
+  try {
+    const r = await fetchImpl(`${base}/subscribers/${encodeURIComponent(String(id))}`, {
+      headers,
+      signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "<unreadable>");
+      console.error(
+        JSON.stringify({ event: "reativar_kit_non_2xx", step: "get_fields", status: r.status, body: t.slice(0, 300) }),
+      );
+      return null;
+    }
+    const text = await r.text().catch(() => "");
+    let j: { subscriber?: { fields?: Record<string, string | null> | null } } | null = null;
+    try {
+      j = JSON.parse(text);
+    } catch {
+      console.error(JSON.stringify({ event: "reativar_kit_origem_sem_fields", motivo: "json_invalido", body: text.slice(0, 300) }));
+      return null;
+    }
+    const f = j?.subscriber?.fields;
+    if (f == null || typeof f !== "object") {
+      console.error(
+        JSON.stringify({
+          event: "reativar_kit_origem_sem_fields",
+          motivo: "sem_campo_fields",
+          // só as chaves — o corpo do assinante traz e-mail.
+          chaves: j?.subscriber ? Object.keys(j.subscriber) : null,
+        }),
+      );
+      return null;
+    }
+    return f;
+  } catch (e) {
+    console.error(JSON.stringify({ event: "reativar_kit_fetch_failed", step: "get_fields", error: String(e) }));
+    return null;
+  }
+}
+
+/**
+ * #8235 — dos campos de origem que o reativar QUERIA gravar, mantém só os que
+ * estão vazios no assinante. `current === null` (leitura falhou) → nenhum.
+ * Reativação não é aquisição (regra de `acquisition-class.ts`), então nenhuma
+ * origem existente é sobrescrita — pagas, Clarice, formulários próprios. @pure
+ */
+export function filterKitOrigemFields(
+  desired: Record<string, string>,
+  current: Record<string, string | null | undefined> | null,
+): Record<string, string> {
+  if (current === null) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(desired)) {
+    const atual = current[k];
+    if (atual == null || String(atual).trim() === "") out[k] = v;
+  }
+  return out;
 }
 
 /**
