@@ -273,7 +273,18 @@ describe("orchestrator-prompt (#634)", () => {
       // #8123 Fatia 5: +1 linha (instrumentação de timing do "ajustar" —
       // scripts/log-stage4-adjust-timing.ts). Teto bumped de 850→851, sem
       // headroom sobrando.
-      "orchestrator-stage-4.md": 851,
+      // #8123 Fatia 4: +48 linhas líquidas — cascatas com preview
+      // progressivo: nova seção §4d.1a (mecanismo de background pra
+      // imagem/carrossel/social de um destaque afetado por troca de título
+      // ou reordenação que muda quem ocupa o slot D1), passos 3/4 reescritos
+      // pra citar §4d.1a em vez de regenerar tudo inline, e uma nota curta
+      // no topo de §4d.1 explicando o mecanismo + por que "pesquisa nova em
+      // background" (#4990) ficou fora do escopo desta Fatia (discovery-
+      // searcher é um Agent call, que bloqueia o turno — diferente dos
+      // scripts TS que image-generate.ts/gen-carousel-cards.ts já rodam via
+      // run_in_background). Arquivo foi a 898 linhas. Teto bumped de
+      // 851→910 com headroom pequeno.
+      "orchestrator-stage-4.md": 910,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
