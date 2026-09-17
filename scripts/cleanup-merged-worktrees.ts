@@ -565,15 +565,19 @@ export function getWorktreeMtimeMsSafe(path: string): number | null {
 
 /**
  * `git worktree remove --force {path}` — nunca lança; retorna resultado pro
- * caller logar. **#8209**: no Windows, `git worktree remove` apaga os
- * arquivos rastreados e a metadata do worktree mas NÃO remove o diretório
- * quando ele contém junction (`node_modules`/`data`) — sobra uma "casca"
- * sem `.git`. Depois do `git worktree remove` retornar (sucesso OU falha —
- * a metadata pode já ter sido limpa mesmo num exit não-zero de aviso), se o
- * diretório ainda existir, `removeWorktreeDirSafely` faz a limpeza segura
- * (remove os links primeiro, sem seguir pro alvo, só então o resto) — nunca
- * um `rm -rf`/equivalente que seguiria a junction pro `node_modules` do
- * checkout principal ou pro `data/` do OneDrive.
+ * caller logar. **#8209**: no Windows, `git worktree remove` retorna SUCESSO
+ * (apaga os arquivos rastreados e a metadata do worktree) mas NÃO remove o
+ * diretório quando ele contém junction (`node_modules`/`data`) — sobra uma
+ * "casca" sem `.git`. Só quando o git reporta SUCESSO e ainda assim o
+ * diretório sobrevive, `removeWorktreeDirSafely` faz a limpeza segura de
+ * rede (remove os links primeiro, sem seguir pro alvo, só então o resto) —
+ * nunca um `rm -rf`/equivalente que seguiria a junction pro `node_modules`
+ * do checkout principal ou pro `data/` do OneDrive. **Deliberadamente NÃO
+ * tenta o fallback quando o `git` reporta FALHA** — um exit não-zero pode
+ * significar path bloqueado/em uso por outro processo (condição de corrida)
+ * ou motivo alheio à junction, e forçar limpeza via FS nesse caso mudaria o
+ * contrato de falha pré-existente da função sem necessidade: o caso real da
+ * issue é sempre git bem-sucedido + diretório remanescente.
  */
 export function removeWorktreeSafe(path: string, cwd: string): { ok: boolean; error?: string } {
   let gitError: string | undefined;
@@ -590,16 +594,21 @@ export function removeWorktreeSafe(path: string, cwd: string): { ok: boolean; er
     gitError = (e as Error).message;
   }
 
+  if (gitError) {
+    return { ok: false, error: gitError };
+  }
   if (!existsSync(path)) {
-    return gitError ? { ok: false, error: gitError } : { ok: true };
+    return { ok: true };
   }
 
-  // #8209: diretório sobreviveu ao `git worktree remove` (com ou sem erro
-  // reportado) — provavelmente casca com junction. Limpeza segura de rede.
+  // #8209: git reportou sucesso, mas o diretório sobreviveu — casca com
+  // junction (Windows). Limpeza segura de rede.
   const cleanup = removeWorktreeDirSafely(path);
   if (!cleanup.dirRemoved) {
-    const combined = [gitError, ...cleanup.errors].filter(Boolean).join("; ");
-    return { ok: false, error: combined || "diretório sobreviveu à limpeza, sem detalhe de erro" };
+    return {
+      ok: false,
+      error: cleanup.errors.join("; ") || "diretório sobreviveu à limpeza pós-remove, sem detalhe de erro",
+    };
   }
   return { ok: true };
 }
