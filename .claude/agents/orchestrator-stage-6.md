@@ -130,9 +130,59 @@ O bloco encaminhável por WhatsApp (dentro do D1 desde #5152, ver `context/templ
 
 Guardar o resultado (`SLUG_CHECK_OK` booleano + instruções de correção manual se `false`) para usar em §6c. **Segue para §6c em qualquer um dos dois casos** — divergência nunca bloqueia esta seção sozinha.
 
+### 6b-site. Publicar a página da edição no Worker `diaria-site` — roda ANTES do gate (#6202, movido pra antes da parada única no #8221, 17/09/2026)
+
+**Decisão do editor (#8221): TUDO — validação e publicação — move pra antes do gate, igual ao guard de slug (§6b-slug, #8205).** Até o #8221 este passo rodava só depois do Schedule confirmado (§6d, mais abaixo); o editor foi apresentado à alternativa de separar validação (antes) de publicação (depois) e escolheu a versão simples e simétrica ao guard de slug — publicar aqui mesmo. **Trade-off aceito por escrito:** se o editor responder `abortar` no gate de §6c, a página do site já terá ido ao ar (o script abre e, desde o #8158, pode mergear sozinho o PR com CI verde — ver `scripts/publish-edition-site-page.ts`). Isso é consequência conhecida da decisão, não um efeito colateral não previsto.
+
+Sem este passo o acervo do site fica congelado nos posts já gerados e não cresce — e é ele que destrava a janela de cutover do #467 (greenlight do editor, 26/08).
+
+**`--slug` é obrigatório aqui, em qualquer backend.** `_internal/05-published.json`
+nunca tem `post_url` populado neste ponto do pipeline (só `refresh-dedup.ts` grava isso,
+no dia seguinte). Backend `"beehiiv"`: passar `{slug_atual_do_get_post}` já obtido em §6b-slug
+(o valor que o guard do bloco WhatsApp acabou de confirmar/apurar, alguns passos acima —
+divergência não impede este passo, ela já virou aviso pro gate). Backend `"kit"` (#7420, fecha a
+lacuna do #464/#6202): passar `seoSlug(d1.title)` — mesmo algoritmo de `deriveEditionUrl`,
+já usado por `publish-newsletter-kit.ts` pra gravar `05-edition-url.txt` na Etapa 5, sem
+chamada de rede. Sem `--slug` o passo sempre cai em "nada a publicar" (`code: 4`, ver
+tabela abaixo).
+
+**`--sitemap` é obrigatório também (#6454)** — sem ela, `sitemap.xml`/`index.html`
+(a home) ficam congelados mesmo com `/p/{slug}` publicado certo (foi essa lacuna
+que travou `https://diar.ia.br/` ~10 dias numa edição antiga, 04/09/2026). Com a
+flag o script atualiza o sitemap e regenera a home no mesmo commit/push da página:
+
+```bash
+npx tsx scripts/publish-edition-site-page.ts \
+  --edition-dir {EDITION_DIR} \
+  --slug {slug_atual_do_get_post ou seoSlug(d1.title) pro Kit} \
+  --sitemap workers/site/public/sitemap.xml
+npx tsx scripts/reconcile-site-sitemap.ts
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4/5} --message "site-page stage6 publish: exit {code}"
+```
+
+**A home NÃO passa a mostrar esta edição agora, e isso é o comportamento correto (#7686).** `buildHomeFeed` descarta entrada de sitemap cuja `<lastmod>` (= data de ENVIO) ainda não chegou, em BRT — então o `index.html` regenerado neste commit sai SEM a edição que você acabou de publicar. Quem a faz aparecer é o workflow `.github/workflows/regen-home.yml`, às 06:00 BRT, junto do envio real. Decisão do editor (08/09/2026): a página `/p/{slug}` pode ficar pronta antes, sem problema; só a HOME espera. **Não "corrija" isso** — antes do #7686 a home anunciava a edição ~9h antes de qualquer assinante recebê-la, e a home é destino de campanha paga (#7575). Se a home amanhecer sem a edição do dia, o culpado é o workflow das 06:00 ter falhado, nunca o filtro: checar `gh run list --workflow=regen-home.yml`.
+
+**`reconcile-site-sitemap.ts` roda SEMPRE, logo depois (#7578)** — aditivo, idempotente, sai `0` quando não há o que fazer. Garante que toda página em `workers/site/public/p/` tenha `<loc>` no `sitemap.xml` e regenera a home. Página fora do sitemap é invisível no buscador **e** em `arquivo.diar.ia.br` (cujo acervo DERIVA do sitemap do apex em request-time, sem fonte própria) — foi assim que 5 edições ficaram órfãs entre 28/08 e 03/09/2026, respondendo 200 sem ninguém chegar nelas.
+
+| exit | significado | ação |
+|---|---|---|
+| `0` | página escrita e branch `site-publish/{slug}` publicada com PR aberto/reusado/mergeado (`git commit` + `push` da branch + `gh pr create`/reuso, mecanismo detalhado abaixo) — desde o #8158 o script tenta mergear sozinho quando CI fica verde | seguir |
+| `2` | edição sem `newsletter-final.html` — arquivo ainda não existe, nada a publicar | seguir, logar info |
+| `3` | escrita, commit, push ou `gh pr create` falhou (inclui checkout DIVERGENTE de `origin/master` — #7287: o guard compara COMMIT, não nome de branch; um checkout numa branch de nome qualquer cujo HEAD bata com `origin/master` passa normalmente) | **logar warn e seguir** |
+| `4` | artefato PRESENTE mas inválido (html/título vazio, `--slug` ausente e sem `post_url`) — bug num stage anterior. Desde #7420, `--slug` sempre basta (não depende de `05-published.json`) | **logar warn e seguir** (nunca silencioso — não é o mesmo caso benigno do `2`) |
+| `5` | GUARD (#6202): `buildArchivePageHtml` recusou por merge tag não resolvida (`UnresolvedMergeTagError`, guard do #6210/#6256) — não é a tag padrão do voto (`{{email}}`, essa é sanitizada antes do guard rodar), é uma tag DESCONHECIDA. Nada escrito/commitado | **logar warn e seguir** (fail-soft; a edição segue normal, só o site não ganha página nova até a tag ser tratada) |
+
+**Fail-soft do SCRIPT, inalterado:** nenhum exit lança nem interrompe §6b-site; no `3` a página costuma ficar escrita localmente. **O invariante `site-page-published` (§6g) marca a falha como `severity: error` desde #7578 (decisão do editor 07/09/2026)** — era `warning`, e o warning provou duas vezes que ninguém o lê (4 edições silenciosas em 31/08–03/09, mais 12 dias de acervo parado depois disso). A premissa de "site é acessório" também caiu: hoje ele é destino de campanha paga (#7575) e a superfície mais indexável do domínio (#7576). **Desde #8221: uma falha vira aviso destacado dentro da parada única de §6c** (mesma tratativa do guard de slug, §6b-slug) — o editor vê o motivo e decide `ok`/`ok HH:MM`/`abortar` já ciente disso, nunca um segundo gate. `check-invariants.ts --stage 6` (§6g) audita o resultado pós-hoc, sem bloquear.
+
+**A visibilidade da falha NÃO depende só de `log-event.ts` (#7283).** O próprio script grava `_internal/site-page-published.json` (`{ code, slug, published, reason, prUrl, checked_at }`) a CADA chamada, determinístico — não depende de o agente lembrar de logar certo. `check-invariants.ts --stage 6` (§6g abaixo) lê esse arquivo e acusa (`severity: error`) quando `published !== true`, sem bloquear. Foi a ausência desse mecanismo que deixou 4 edições consecutivas (31/08–03/09/2026) sem página no acervo sem NENHUM sinal em código — só a prosa deste passo, que ninguém verificava ter sido seguida.
+
+**Mecanismo: branch dedicada + PR, nunca push direto em `master` (#6598).** Script recria `site-publish/{slug}` do `master` local, commita/empurra (`--force-with-lease`) e abre/reusa PR via `gh pr create` — desde o #8158 tenta mergear sozinho se CI ficar verde; senão o PR fica aberto pra revisão manual (decisão do editor). Detalhes/histórico do incidente que motivou (`GH013`, 260828): `docs/site-page-publish-mechanism.md`.
+
+Guardar o resultado (`SITE_PUBLISH_OK` booleano, derivado de `published === true` em `_internal/site-page-published.json`, + o `reason`/`prUrl` se houver) para usar em §6c. **Segue para §6c em qualquer resultado** — falha nunca bloqueia esta seção sozinha.
+
 ### 6c. GATE HUMANO — parada única: revisão do e-mail de teste + agendamento (#8205)
 
-**A revisão visual do e-mail de teste pelo editor é a ÚNICA parada de `/diaria-5-publicacao` (decisão do editor, 17/09/2026, #8205).** Tudo que antes tinha ponto de parada próprio — pedidos editoriais (§6b2), guard de slug (§6b-slug), auto-reporter (§6b abaixo) — entra como CONTEXTO deste gate, nunca como pergunta separada.
+**A revisão visual do e-mail de teste pelo editor é a ÚNICA parada de `/diaria-5-publicacao` (decisão do editor, 17/09/2026, #8205).** Tudo que antes tinha ponto de parada próprio — pedidos editoriais (§6b2), guard de slug (§6b-slug), auto-reporter (§6b abaixo) — entra como CONTEXTO deste gate, nunca como pergunta separada. **A publicação da página do site (§6b-site) já aconteceu antes deste gate (#8221)** — não é um ponto de parada, mas o resultado (ok ou falha) entra como aviso no mesmo lugar do guard de slug.
 
 **Se `--no-gates` (`auto_approve = true`):** pular o gate, usar o default de §6a (06:00 BRT da data da edição, via `resolve-edition-scheduled-at.ts` — nunca "amanhã" contado a partir do relógio) — mesmo horário serve Beehiiv e Brevo diária (#5772, se a campanha existir). Logar:
 ```bash
@@ -167,6 +217,7 @@ Newsletter (rascunho): {draft_url}
 Test email:            {test_email_sent_at} ✓
 Review automatico (review-test-email + lint-test-email-*): {review_status_block — "✓ sem achados" | lista de review_final_issues/unfixed_issues}
 {"⚠ Slug do bloco WhatsApp diverge — link ficaria quebrado no e-mail já enviado. " + instrucoes de correcao manual, SÓ se SLUG_CHECK_OK === false}
+{"⚠ Publicação da página do site falhou (código {code}, motivo {reason}) — a edição não vai pro acervo até re-rodar publish-edition-site-page.ts e mergear o PR. " + prUrl se houver, SÓ se SITE_PUBLISH_OK === false}
 {"📋 Pedidos editoriais aceitos: " + resumo de §6b2, SÓ se o arquivo existia}
 
 Social agendado:
@@ -392,50 +443,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 **Falha aqui NUNCA desfaz o Schedule do Beehiiv já confirmado** — os dois canais são independentes; o Brevo é sempre o secundário/extra (segmento Pending, reativação).
 
-### 6d-site. Publicar a página da edição no Worker `diaria-site` (#6202)
-
-Roda **depois** do agendamento confirmado, nos dois backends. Sem este passo o acervo do site fica congelado nos 253 posts já gerados e não cresce — e é ele que destrava a janela de cutover do #467 (greenlight do editor, 26/08).
-
-**`--slug` é obrigatório aqui, em qualquer backend.** `_internal/05-published.json`
-nunca tem `post_url` populado neste ponto do pipeline (só `refresh-dedup.ts` grava isso,
-no dia seguinte). Backend `"beehiiv"`: passar `{slug_atual_do_get_post}` já obtido em §6b-slug
-(o valor que o guard do bloco WhatsApp confirmou/apurou). Backend `"kit"` (#7420, fecha a
-lacuna do #464/#6202): passar `seoSlug(d1.title)` — mesmo algoritmo de `deriveEditionUrl`,
-já usado por `publish-newsletter-kit.ts` pra gravar `05-edition-url.txt` na Etapa 5, sem
-chamada de rede. Sem `--slug` o passo sempre cai em "nada a publicar" (`code: 4`, ver
-tabela abaixo).
-
-**`--sitemap` é obrigatório também (#6454)** — sem ela, `sitemap.xml`/`index.html`
-(a home) ficam congelados mesmo com `/p/{slug}` publicado certo (foi essa lacuna
-que travou `https://diar.ia.br/` ~10 dias numa edição antiga, 04/09/2026). Com a
-flag o script atualiza o sitemap e regenera a home no mesmo commit/push da página:
-
-```bash
-npx tsx scripts/publish-edition-site-page.ts \
-  --edition-dir {EDITION_DIR} \
-  --slug {slug_atual_do_get_post ou seoSlug(d1.title) pro Kit} \
-  --sitemap workers/site/public/sitemap.xml
-npx tsx scripts/reconcile-site-sitemap.ts
-npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4/5} --message "site-page stage6 publish: exit {code}"
-```
-
-**A home NÃO passa a mostrar esta edição agora, e isso é o comportamento correto (#7686).** `buildHomeFeed` descarta entrada de sitemap cuja `<lastmod>` (= data de ENVIO) ainda não chegou, em BRT — então o `index.html` regenerado neste commit sai SEM a edição que você acabou de publicar. Quem a faz aparecer é o workflow `.github/workflows/regen-home.yml`, às 06:00 BRT, junto do envio real. Decisão do editor (08/09/2026): a página `/p/{slug}` pode ficar pronta antes, sem problema; só a HOME espera. **Não "corrija" isso** — antes do #7686 a home anunciava a edição ~9h antes de qualquer assinante recebê-la, e a home é destino de campanha paga (#7575). Se a home amanhecer sem a edição do dia, o culpado é o workflow das 06:00 ter falhado, nunca o filtro: checar `gh run list --workflow=regen-home.yml`.
-
-**`reconcile-site-sitemap.ts` roda SEMPRE, logo depois (#7578)** — aditivo, idempotente, sai `0` quando não há o que fazer. Garante que toda página em `workers/site/public/p/` tenha `<loc>` no `sitemap.xml` e regenera a home. Página fora do sitemap é invisível no buscador **e** em `arquivo.diar.ia.br` (cujo acervo DERIVA do sitemap do apex em request-time, sem fonte própria) — foi assim que 5 edições ficaram órfãs entre 28/08 e 03/09/2026, respondendo 200 sem ninguém chegar nelas.
-
-| exit | significado | ação |
-|---|---|---|
-| `0` | página escrita e branch `site-publish/{slug}` publicada com PR aberto/reusado (`git commit` + `push` da branch + `gh pr create`/reuso, ver mecanismo abaixo) — **o deploy real só acontece quando o PR for mergeado** | seguir |
-| `2` | edição sem `newsletter-final.html` — arquivo ainda não existe, nada a publicar | seguir, logar info |
-| `3` | escrita, commit, push ou `gh pr create` falhou (inclui checkout DIVERGENTE de `origin/master` — #7287: o guard compara COMMIT, não nome de branch; um checkout numa branch de nome qualquer cujo HEAD bata com `origin/master` passa normalmente) | **logar warn e seguir** |
-| `4` | artefato PRESENTE mas inválido (html/título vazio, `--slug` ausente e sem `post_url`) — bug num stage anterior. Desde #7420, `--slug` sempre basta (não depende de `05-published.json`) | **logar warn e seguir** (nunca silencioso — não é o mesmo caso benigno do `2`) |
-| `5` | GUARD (#6202): `buildArchivePageHtml` recusou por merge tag não resolvida (`UnresolvedMergeTagError`, guard do #6210/#6256) — não é a tag padrão do voto (`{{email}}`, essa é sanitizada antes do guard rodar), é uma tag DESCONHECIDA. Nada escrito/commitado | **logar warn e seguir** (fail-soft; a edição segue normal, só o site não ganha página nova até a tag ser tratada) |
-
-**Fail-soft do SCRIPT, inalterado:** nenhum exit lança nem interrompe §6d-site; no `3` a página costuma ficar escrita localmente. **O invariante `site-page-published` (§6g) marca a falha como `severity: error` desde #7578 (decisão do editor 07/09/2026)** — era `warning`, e o warning provou duas vezes que ninguém o lê (4 edições silenciosas em 31/08–03/09, mais 12 dias de acervo parado depois disso). A premissa de "site é acessório" também caiu: hoje ele é destino de campanha paga (#7575) e a superfície mais indexável do domínio (#7576). **Desde #8205: isto não é um 2º gate** — a falha entra no relatório/resumo final da edição (§6h em diante) como aviso destacado, não como uma pausa nova pedindo confirmação; o pipeline segue até o fim e o editor resolve depois (re-rodar o comando acima e mergear o PR).
-
-**A visibilidade da falha NÃO depende mais só deste `log-event.ts` (#7283).** O próprio script grava `_internal/site-page-published.json` (`{ code, slug, published, reason, prUrl, checked_at }`) a CADA chamada, determinístico — não depende de o agente lembrar de logar certo. `check-invariants.ts --stage 6` (§6g abaixo) lê esse arquivo e acusa (`severity: error`) quando `published !== true`, sem bloquear. Foi a ausência desse mecanismo que deixou 4 edições consecutivas (31/08–03/09/2026) sem página no acervo sem NENHUM sinal em código — só a prosa deste passo, que ninguém verificava ter sido seguida.
-
-**Mecanismo: branch dedicada + PR, nunca push direto em `master` (#6598).** Script recria `site-publish/{slug}` do `master` local, commita/empurra (`--force-with-lease`) e abre/reusa PR via `gh pr create` — nunca mergeia sozinho (decisão do editor). Detalhes/histórico do incidente que motivou (`GH013`, 260828): `docs/site-page-publish-mechanism.md`.
+**Publicação da página do site: já feita, antes do gate.** Ver §6b-site — o #8221 moveu esse passo inteiro (validação + publicação) pra antes da parada única de §6c, junto do guard de slug. Não roda de novo aqui.
 
 ### 6e. Atualizar `05-published.json` com scheduled_at
 
@@ -493,7 +501,7 @@ de fato. O `--status done` correto fica no passo **6b-7**, apos o report ser esc
 npx tsx scripts/check-invariants.ts --stage 6 --edition-dir {EDITION_DIR}/
 ```
 
-Exit 1 = logar warn (nao bloquear auto-reporter). Sempre pós-hoc, nunca interativo (#8205 — a parada única do pipeline é §6c, nenhuma regra aqui espera resposta do editor): `whatsapp-slug-guard-ok` (#4574) confirma que `_internal/whatsapp-slug-check.json` existe com `ok:true` — se divergiu, já apareceu como aviso destacado no gate de §6c (§6b-slug) e o editor seguiu ciente; esta checagem só audita que o arquivo foi de fato gravado (agente não pulou §6b-slug por engano). `site-page-published` (#7283) lê `_internal/site-page-published.json` e acusa `severity: error` quando `published !== true` — `severity: error` marca a falha como digna de destaque no relatório/dashboard (usado por `docs/editorial-invariants.md`/Studio), mas **não é um 2º gate**: a regra irmã `site-sitemap-no-orphans` (#7578) segue o mesmo padrão, acusando página em `workers/site/public/p/` sem entrada no `sitemap.xml` (órfã, invisível no buscador e em `arquivo.diar.ia.br`).
+Exit 1 = logar warn (nao bloquear auto-reporter). Sempre pós-hoc, nunca interativo (#8205 — a parada única do pipeline é §6c, nenhuma regra aqui espera resposta do editor): `whatsapp-slug-guard-ok` (#4574) confirma que `_internal/whatsapp-slug-check.json` existe com `ok:true` — se divergiu, já apareceu como aviso destacado no gate de §6c (§6b-slug) e o editor seguiu ciente; esta checagem só audita que o arquivo foi de fato gravado (agente não pulou §6b-slug por engano). `site-page-published` (#7283) lê `_internal/site-page-published.json` e acusa `severity: error` quando `published !== true` — se falhou, já apareceu como aviso destacado no gate de §6c (§6b-site, #8221) e o editor seguiu ciente; `severity: error` marca a falha como digna de destaque no relatório/dashboard (usado por `docs/editorial-invariants.md`/Studio) além disso, mas **não é um 2º gate**: a regra irmã `site-sitemap-no-orphans` (#7578) segue o mesmo padrão, acusando página em `workers/site/public/p/` sem entrada no `sitemap.xml` (órfã, invisível no buscador e em `arquivo.diar.ia.br`).
 
 ### 6h. Purga automatica de votos do editor no leaderboard (#3032)
 

@@ -344,6 +344,15 @@ describe("orchestrator-prompt (#634)", () => {
       // sessão, e reforça que o assert do sentinel roda mesmo assim — sem
       // isso, quem lê o playbook pode achar que "acabei de rodar o Stage 5"
       // dispensa a checagem. Teto 747→753 com headroom mínimo.
+      // #8221 (17/09): +8 linhas líquidas — §6d-site (publicação da página
+      // do site) moveu pra antes do gate único (nova §6b-site), decisão do
+      // editor de espelhar o guard de slug (#8205). A seção antiga virou
+      // uma nota de 2 linhas apontando pra §6b-site; a nova seção reusa o
+      // texto (tabela de exit codes, mecanismo, fail-soft), mas troca a
+      // narrativa de "roda depois do agendamento" por "roda antes do gate,
+      // trade-off aceito pelo editor" e acrescenta a variável
+      // `SITE_PUBLISH_OK` pro aviso dentro do template do gate (§6c). Arquivo
+      // foi a 705 linhas — segue dentro do teto atual, sem bump.
       "orchestrator-stage-6.md": 753,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
