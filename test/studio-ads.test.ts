@@ -10,7 +10,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAdsData, clearAdsCache, buildAdsCampaignEconomics, clearAdsCampaignEconomicsCache } from "../scripts/studio-ui/studio-ads.ts";
+import {
+  buildAdsData,
+  clearAdsCache,
+  buildAdsCampaignEconomics,
+  clearAdsCampaignEconomicsCache,
+  makeMemoizedStoreResultProvider,
+} from "../scripts/studio-ui/studio-ads.ts";
 import { openDiariaSubscribersDb, ensureSubscriber, upsertSubscription } from "../scripts/lib/diaria-subscribers-db.ts";
 
 function makeRoot(): string {
@@ -530,6 +536,103 @@ describe("buildAdsData — followers (#8260 Fase 1)", () => {
       assert.ok(data.followers);
       assert.equal(data.followers!.instagram.points.length, 1);
       assert.equal(data.followers!.parseErrors.length, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// storeResultProvider (#8292) — leitura ÚNICA do store compartilhada entre
+// buildAdsData e buildAdsCampaignEconomics no mesmo request. Antes desta
+// correção, `handleApiAds` chamava as 2 funções sem compartilhar nada e
+// cada uma relia (via `buildCacCompatibleSubscribersFromStore`) numa
+// varredura completa do store — 2 leituras completas por request, medidas
+// em 77s CADA em produção (#8292). Este teste trava que, quando um
+// `storeResultProvider` memoizado é passado pras 2 funções, o loader
+// subjacente roda NO MÁXIMO 1 vez, mesmo as 2 funções pedindo o resultado.
+// ---------------------------------------------------------------------------
+
+describe("storeResultProvider (#8292) — 1 única leitura do store por request", () => {
+  it("buildAdsData + buildAdsCampaignEconomics compartilhando o mesmo provider: o loader roda no máximo 1 vez", async () => {
+    clearAdsCache();
+    clearAdsCampaignEconomicsCache();
+    const root = makeRoot();
+    try {
+      writeSpendCsv(root, "canal,mes,moeda,valor,fonte\nMeta Ads (teste 2608),2026-09,BRL,517.85,teste\n");
+      writeRunState(root);
+      const storeDir = join(root, "data", "diaria-subscribers");
+      mkdirSync(storeDir, { recursive: true });
+      const storePath = join(storeDir, "diaria-subscribers.db");
+      const db = openDiariaSubscribersDb(storePath);
+      const subscriberId = ensureSubscriber(db, "kit", "kit-1", "leitor-kit@example.com", "2026-09-01T00:00:00.000Z");
+      upsertSubscription(
+        db,
+        subscriberId,
+        "kit",
+        { status: "active", enteredAt: "2026-09-01T00:00:00.000Z", exitedAt: null, source: "kit", utmSource: "meta-ads" },
+        "2026-09-01T00:00:00.000Z",
+      );
+      db.close();
+
+      // 1 único provider memoizado, passado pras 2 funções — a leitura real
+      // do DB (dentro de `loadStoreSubscribers`) acontece na 1ª chamada,
+      // NENHUMA das duas vezes seguintes refaz o scan (garantido por
+      // `makeMemoizedStoreResultProvider` — ver o teste dedicado abaixo
+      // que trava essa memoização isoladamente).
+      const sharedProvider = makeMemoizedStoreResultProvider(storePath);
+      const fetchImpl = (async () => jsonResponse(200, { results: [] })) as typeof fetch;
+
+      const adsData = buildAdsData(root, {
+        forceRefresh: true,
+        now: () => new Date("2026-09-17T12:00:00Z"),
+        storeResultProvider: sharedProvider,
+      });
+      const campaignEconomics = await buildAdsCampaignEconomics(root, {
+        forceRefresh: true,
+        now: () => new Date("2026-09-17T12:00:00Z"),
+        env: {},
+        fetchImpl,
+        storeResultProvider: sharedProvider,
+      });
+
+      assert.equal(adsData.subscribersSource, "store");
+      const metaRow = campaignEconomics.channels.find((c) => c.canal === "Meta Ads (teste 2608)")!;
+      assert.equal(metaRow.ativosTotal, 1, "resultado do store compartilhado ainda chega corretamente nas 2 funções");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("makeMemoizedStoreResultProvider: chama loadStoreSubscribers no máximo 1 vez mesmo com N chamadas ao provider", () => {
+    const root = makeRoot();
+    try {
+      const storeDir = join(root, "data", "diaria-subscribers");
+      mkdirSync(storeDir, { recursive: true });
+      const storePath = join(storeDir, "diaria-subscribers.db");
+      const db = openDiariaSubscribersDb(storePath);
+      ensureSubscriber(db, "kit", "kit-1", "leitor-kit@example.com", "2026-09-01T00:00:00.000Z");
+      db.close();
+
+      const provider = makeMemoizedStoreResultProvider(storePath);
+      const r1 = provider();
+      const r2 = provider();
+      const r3 = provider();
+      assert.equal(r1, r2, "mesma referência de objeto — não recalcula");
+      assert.equal(r2, r3);
+      assert.ok(r1); // store presente, não deveria vir null
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("store ausente: provider memoizado devolve null de forma estável (nunca lança), sem virar 0 em nenhum caller", () => {
+    const root = makeRoot();
+    try {
+      const storePath = join(root, "data", "diaria-subscribers", "diaria-subscribers.db"); // dir nem existe
+      const provider = makeMemoizedStoreResultProvider(storePath);
+      assert.equal(provider(), null);
+      assert.equal(provider(), null); // 2ª chamada também estável
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

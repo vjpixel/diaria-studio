@@ -176,6 +176,21 @@ export interface BuildAdsDataOptions {
   storePath?: string;
   /** Seguidores ganhos por dia (#8260) — default `data/metrics/social-followers.jsonl`. */
   followersPath?: string;
+  /** #8292: quando fornecido, usado no lugar de `loadStoreSubscribers(storePath)`
+   *  — permite o caller (`handleApiAds`) compartilhar 1 única leitura do
+   *  store entre `buildAdsData` e `buildAdsCampaignEconomics` no mesmo
+   *  request, em vez de cada função reler o store do zero (era a causa dos
+   *  77s×2 medidos em produção — #8283 somou uma 2ª leitura completa sem
+   *  reusar a 1ª). Use `makeMemoizedStoreResultProvider` pra montar isto
+   *  preguiçosamente (só lê se/quando alguém de fato pedir). */
+  storeResultProvider?: () => StoreSubscribersResult | null;
+}
+
+/** Retorno de `loadStoreSubscribers` — nomeado pra ser reusável como tipo
+ *  de `storeResultProvider` (#8292). */
+export interface StoreSubscribersResult {
+  subs: BeehiivBackupSubscriber[];
+  internalFiltered: number;
 }
 
 /**
@@ -187,10 +202,14 @@ export interface BuildAdsDataOptions {
  * aos braços de aquisição que mandam pro Kit. Nunca lança: store
  * ausente/ilegível (nenhuma ingestão rodou ainda nesta máquina) devolve
  * `null`, e o caller cai fail-soft pro snapshot Beehiiv antigo — degradado,
- * nunca uma tela vazia. */
-function loadStoreSubscribers(
+ * nunca uma tela vazia.
+ *
+ * Exportada (desde #8292) pra permitir que `handleApiAds` (`server.ts`)
+ * monte um `storeResultProvider` memoizado compartilhado entre
+ * `buildAdsData`/`buildAdsCampaignEconomics` — ver `BuildAdsDataOptions.storeResultProvider`. */
+export function loadStoreSubscribers(
   storePath: string,
-): { subs: BeehiivBackupSubscriber[]; internalFiltered: number } | null {
+): StoreSubscribersResult | null {
   const db = openDiariaSubscribersDbSafe(storePath);
   if (!db) return null;
   try {
@@ -202,6 +221,29 @@ function loadStoreSubscribers(
   } finally {
     db.close();
   }
+}
+
+/**
+ * Monta um provider LAZY + MEMOIZADO de `StoreSubscribersResult` pra 1
+ * `storePath` — chama `loadStoreSubscribers` no máximo 1 vez, na primeira
+ * vez que algum caller de fato pedir o resultado (nunca eager: se os 2
+ * caches de `buildAdsData`/`buildAdsCampaignEconomics` estiverem quentes,
+ * nenhum dos dois chama o provider, e o store nunca é lido — preserva o
+ * caminho rápido de cache-hit). Usado por `handleApiAds` (#8292) pra
+ * compartilhar 1 única leitura do store entre as 2 funções no mesmo
+ * request, em vez de cada uma reler o store do zero. */
+export function makeMemoizedStoreResultProvider(
+  storePath: string,
+): () => StoreSubscribersResult | null {
+  let called = false;
+  let result: StoreSubscribersResult | null = null;
+  return () => {
+    if (!called) {
+      result = loadStoreSubscribers(storePath);
+      called = true;
+    }
+    return result;
+  };
 }
 
 interface CacheEntry {
@@ -272,7 +314,7 @@ export function buildAdsData(rootDir: string, opts: BuildAdsDataOptions = {}): A
     // (que é fixo no CHECKOUT, não no `rootDir` recebido — importante pra
     // teste com `rootDir` de tmpdir, e pra sessão que passa um root não-padrão).
     const storePath = opts.storePath ?? resolve(rootDir, "data", "diaria-subscribers", "diaria-subscribers.db");
-    const storeResult = loadStoreSubscribers(storePath);
+    const storeResult = opts.storeResultProvider ? opts.storeResultProvider() : loadStoreSubscribers(storePath);
     if (storeResult) {
       // #8210 Bug 2: caminho DEFAULT — não depende de snapshot Beehiiv nem
       // de `previousDate` (o store não tem o conceito de "snapshot
@@ -408,6 +450,10 @@ export interface BuildAdsCampaignEconomicsOptions {
    *  `data/diaria-subscribers/diaria-subscribers.db`, mesmo arquivo de
    *  `buildAdsData`. */
   storePath?: string;
+  /** #8292 — ver `BuildAdsDataOptions.storeResultProvider`: mesmo
+   *  mecanismo, pra compartilhar 1 única leitura do store com
+   *  `buildAdsData` no mesmo request em vez de reler do zero. */
+  storeResultProvider?: () => StoreSubscribersResult | null;
   /** Injetáveis pra teste — default `fetch`/`process.env` reais. */
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
@@ -516,7 +562,7 @@ export async function buildAdsCampaignEconomics(
   // linha sai com `ativosTotal: null`, nunca `0` (mesmo invariante do gasto
   // desconhecido, `buildChannelTable` acima).
   const storePath = opts.storePath ?? resolve(rootDir, "data", "diaria-subscribers", "diaria-subscribers.db");
-  const storeResult = loadStoreSubscribers(storePath);
+  const storeResult = opts.storeResultProvider ? opts.storeResultProvider() : loadStoreSubscribers(storePath);
   const activeCountsByChannel: Record<string, ChannelActiveCounts> = {};
   if (storeResult) {
     for (const canal of ADS_TEST_2608_BRACOS) {
