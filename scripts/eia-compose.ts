@@ -72,11 +72,47 @@ export interface WikimediaImage {
   // (feed pedida em /wikipedia/pt/featured/..., ver fetchPotd) e portanto
   // dispensa tradução via Gemini + lookup de langlinks.
   description?: { text?: string; html?: string; lang?: string };
+  // #8198: alguns POTDs (achado ao vivo: título em bengali, edição 260917)
+  // vêm SEM `description` nenhum (nem `.text`, `.html`, `.lang`) — só esse
+  // formato mais novo (Wikibase/Commons), um mapa de legendas por idioma.
+  // `resolveDescriptionText` abaixo é o único ponto que sabe cair pra cá.
+  structured?: { captions?: Record<string, string> };
   thumbnail?: { source?: string; width?: number; height?: number };
   image?: { source?: string; width?: number; height?: number };
   artist?: { text?: string; html?: string };
   credit?: { text?: string; html?: string };
   license?: { type?: string; url?: string };
+}
+
+/**
+ * #8198: único ponto de leitura do texto de descrição da imagem — antes
+ * cada call site lia `image.description?.text` direto, resolvendo sempre
+ * `undefined` quando a Wikimedia respondia só com `structured.captions`
+ * (formato Wikibase/Commons mais novo, sem `description` nenhum). Isso
+ * propagava vazio em cascata: `resolveTranslatedSentence` mandava string
+ * vazia pro Gemini traduzir, e a resposta do Gemini pedindo o texto virava
+ * a "tradução" — tanto a credit line visível ao leitor quanto o prompt
+ * positivo de `buildSdPrompt` (achado ao vivo, edição 260917: legenda saiu
+ * "Por favor, envie o texto que deseja que seja traduzido." e a imagem IA
+ * saiu sem nenhuma relação com o tema da foto real).
+ *
+ * Fallback: `description.text` quando presente, senão
+ * `structured.captions.pt ?? .["pt-br"] ?? .en ?? primeira legenda
+ * disponível` — nessa ordem, pt/pt-br preferidos por já vir no idioma certo
+ * (evita tradução desnecessária, mesmo espírito de `isPtDescription`).
+ */
+export function resolveDescriptionText(
+  image: Pick<WikimediaImage, "description" | "structured">,
+): string | undefined {
+  if (image.description?.text) return image.description.text;
+  const captions = image.structured?.captions;
+  if (!captions) return undefined;
+  return (
+    captions.pt ??
+    captions["pt-br"] ??
+    captions.en ??
+    Object.values(captions).find((v) => v !== undefined && v !== "")
+  );
 }
 
 interface WikimediaResponse {
@@ -95,7 +131,7 @@ interface WikimediaResponse {
  * mudou — sem esse warn, cairíamos no fallback Gemini+langlinks silenciosamente
  * mesmo com texto já nativo em português.
  */
-export function isPtDescription(image: Pick<WikimediaImage, "description">): boolean {
+export function isPtDescription(image: Pick<WikimediaImage, "description" | "structured">): boolean {
   const lang = image.description?.lang;
   if (lang === "pt") return true;
   if (lang !== undefined && lang !== "en") {
@@ -128,6 +164,14 @@ export function isPtDescription(image: Pick<WikimediaImage, "description">): boo
           "Gemini+langlinks, que pode tentar traduzir um texto já em português.\n",
       );
     }
+    // #8198: `description` totalmente ausente (só `structured.captions`) não
+    // tem `lang` nenhum pra ler — mas se `structured.captions.pt` existe, a
+    // legenda já chegou nativa em pt, mesmo sem o campo `description.lang`
+    // de antes. Tratar como pt evita mandar essa legenda pro fallback
+    // Gemini+langlinks (que tentaria traduzir um texto já em português, ou
+    // pior, ficaria sem texto nenhum pra ler já que esse fallback só olha
+    // `description.html`/`.text`).
+    if (image.structured?.captions?.pt) return true;
   }
   return false;
 }
@@ -1003,7 +1047,7 @@ export function buildCreditLine(
   image: WikimediaImage,
   opts?: { ptLabel?: string | null; ptWikipediaUrl?: string | null; translatedSentence?: string | null },
 ): string {
-  const description = stripHtml(image.description?.text ?? "");
+  const description = stripHtml(resolveDescriptionText(image) ?? "");
   const firstSent = firstSentence(description) || "Imagem do dia da Wikimedia Commons.";
 
   // #285: substituir o texto exato do link no html (em vez de regex de
@@ -1115,13 +1159,13 @@ export function resolveImageScriptName(imageGenerator: ImageGenerator): string {
  */
 export async function resolveSdPromptDescription(
   imageGenerator: ImageGenerator,
-  image: Pick<WikimediaImage, "description">,
+  image: Pick<WikimediaImage, "description" | "structured">,
   imageDate: string,
   edition: string,
   fetchEn: (iso: string) => Promise<WikimediaImage | null> = (iso) => fetchPotd(iso, 3, "en"),
   rootDir: string = process.cwd(), // injetável em teste, mesmo padrão de logEvent (#612)
 ): Promise<{ text: string; locale: "pt" | "en" | "pt_fallback" }> {
-  const fallbackText = image.description?.text ?? "";
+  const fallbackText = resolveDescriptionText(image) ?? "";
   const sourceIsPt = isPtDescription(image);
   const needsEn = resolveImageScriptName(imageGenerator) !== "scripts/gemini-image.js" && sourceIsPt;
   if (!needsEn) {
@@ -1152,8 +1196,20 @@ export async function resolveSdPromptDescription(
 // futuro". Achado ao vivo (edição 260916): a imagem B recriou a composição
 // do Wikimedia POTD mas posicionou os sujeitos (filhotes) rente à borda
 // inferior, cortados — sem NENHUMA instrução de margem no prompt até aqui.
+//
+// #8201 (2ª ocorrência, edição 260917): mesmo padrão de falha recorreu —
+// monges espremidos na borda inferior, ~70% do quadro em árvores/estrutura
+// vazia — MESMO com o texto acima presente no prompt (o Gemini simplesmente
+// não seguiu a instrução de margem de forma confiável). Reforço aplicado:
+// margem QUANTIFICADA (percentual explícito) em vez de só "generous margin"
+// (subjetivo, sem número pro modelo ancorar) + teto de altura do sujeito
+// (não mais que os dois terços superiores do frame) — mudança barata e
+// reversível no mesmo padrão já existente (opção 1 das 3 possíveis; a
+// verificação determinística pós-geração tipo image-crop-reviewer, opção 2,
+// e aceitar risco residual documentado, opção 3, seguem em aberto como
+// próximo passo se o problema recorrer uma 3ª vez).
 const FRAMING_SUFFIX =
-  ". Leave generous empty margin on all four edges of the frame; group the main subjects — especially any that readers are meant to compare closely — well within the frame, never touching or cropped by the top, bottom, left or right edge.";
+  ". Leave at least 12% empty margin on all four edges of the frame; the main subjects — especially any that readers are meant to compare closely — must occupy no more than the upper two-thirds of the frame height, fully visible and never touching or cropped by the top, bottom, left or right edge.";
 
 /** #4620: transform puro texto→prompt — caller resolve qual texto (idioma/fonte) passar, ver `resolveSdPromptDescription`. */
 export function buildSdPrompt(descriptionText: string): {
@@ -1484,7 +1540,7 @@ async function main(): Promise<void> {
   // #4619 item 2: gate (`!sourceIsPt` → chama Gemini; `sourceIsPt` → nunca)
   // extraído pra `resolveTranslatedSentence`, testável sem depender de
   // `main()` — ver docstring lá pro porquê.
-  const translatedSentence = await resolveTranslatedSentence(sourceIsPt, image.description?.text);
+  const translatedSentence = await resolveTranslatedSentence(sourceIsPt, resolveDescriptionText(image));
   const creditLine = buildCreditLine(image, { ptLabel, ptWikipediaUrl, translatedSentence });
   // #3984: frase de descrição em texto plano (sem markdown/links) — mesma
   // fonte que buildCreditLine usa internamente pra montar `sentence`
@@ -1492,7 +1548,7 @@ async function main(): Promise<void> {
   // gravar em 01-eia-meta.json e viajar pipeline→KV→revelação do jogo (o
   // creditLine acima é só pro corpo de 01-eia.md, nunca chega no Worker).
   const descriptionSentence =
-    translatedSentence ?? firstSentence(stripHtml(image.description?.text ?? ""));
+    translatedSentence ?? firstSentence(stripHtml(resolveDescriptionText(image) ?? ""));
   const prevStats = readPrevPollStats(outDir);
   const prevResultLine = buildPrevResultLine(prevStats);
   const mdPath = resolve(outDir, "01-eia.md");
