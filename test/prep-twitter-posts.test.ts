@@ -463,7 +463,7 @@ describe("resolveTwitterImage (#4264)", () => {
 });
 
 describe("resolveTwitterImages (#8056, multi-imagem)", () => {
-  it("com carrossel completo (capa+3 parágrafos+CTA): usa só os 3 slides de parágrafo, descarta capa e CTA", () => {
+  it("com carrossel completo (capa+3 parágrafos+CTA): usa capa + 3 slides de parágrafo, nessa ordem, descarta só o CTA (#8202)", () => {
     const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-imgs-carousel-"));
     try {
       writePublicImages(dir, {
@@ -475,10 +475,14 @@ describe("resolveTwitterImages (#8056, multi-imagem)", () => {
       });
       const result = resolveTwitterImages(dir, "d1", "260729");
       assert.equal(result.reason, null);
-      assert.equal(result.images.length, 3);
+      assert.equal(result.images.length, 4);
+      assert.ok(!result.images.some((i) => i.url.includes("cta")), "CTA nunca vai pro X");
+      assert.match(result.images[0].altText, /^Capa do destaque D1/);
+      assert.match(result.images[1].altText, /^Slide 1 do destaque D1/);
       assert.deepEqual(
         result.images.map((i) => i.url),
         [
+          "https://poll.diaria.workers.dev/img/d1-4x5.jpg",
           "https://poll.diaria.workers.dev/img/d1-p1.jpg",
           "https://poll.diaria.workers.dev/img/d1-p2.jpg",
           "https://poll.diaria.workers.dev/img/d1-p3.jpg",
@@ -542,7 +546,7 @@ describe("prepTwitterPosts — imageUrl/skipped_image (#4264)", () => {
     }
   });
 
-  it("#8056: com carrossel completo, posts[].images traz os 3 slides de parágrafo (não a capa/CTA)", () => {
+  it("#8202: com carrossel completo, posts[].images traz capa + 3 slides de parágrafo (não o CTA)", () => {
     const dir = makeEditionDir("diaria-twitter-prep-carousel-", MD_CURTO);
     try {
       writePublicImages(dir, {
@@ -554,17 +558,18 @@ describe("prepTwitterPosts — imageUrl/skipped_image (#4264)", () => {
       });
       const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
       const d1 = result.posts.find((p) => p.destaque === "d1");
-      assert.equal(d1?.images.length, 3);
+      assert.equal(d1?.images.length, 4);
       assert.deepEqual(
         d1?.images.map((i) => i.url),
         [
+          "https://poll.diaria.workers.dev/img/d1-4x5.jpg",
           "https://poll.diaria.workers.dev/img/d1-p1.jpg",
           "https://poll.diaria.workers.dev/img/d1-p2.jpg",
           "https://poll.diaria.workers.dev/img/d1-p3.jpg",
         ],
       );
       // imageUrl (singular, compat) continua apontando pra 1ª entry de images.
-      assert.equal(d1?.imageUrl, "https://poll.diaria.workers.dev/img/d1-p1.jpg");
+      assert.equal(d1?.imageUrl, "https://poll.diaria.workers.dev/img/d1-4x5.jpg");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

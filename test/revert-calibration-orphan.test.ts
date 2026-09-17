@@ -123,7 +123,9 @@ describe("check-revert-calibration-prs.ts main() (#8176, gh mockado)", () => {
     try {
       const { main } = await import("../scripts/check-revert-calibration-prs.ts");
       main(root, [], () => [
-        pr({ number: 7, headRefName: "revert/calibration-fresh", createdAt: isoAgo(5 * 60 * 1000) }),
+        // Relógio REAL, não NOW fixo: main() usa Date.now(), e com NOW fixo a PR "fresca" envelhece
+        // além do limiar assim que o relógio passa de NOW+2h (bomba-relógio, quebrou o CI do #8203).
+        pr({ number: 7, headRefName: "revert/calibration-fresh", createdAt: new Date(Date.now() - 5 * 60 * 1000).toISOString() }),
       ]);
 
       const logPath = join(root, "data", "run-log.jsonl");
