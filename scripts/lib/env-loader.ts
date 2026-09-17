@@ -57,11 +57,23 @@ import { fileURLToPath } from "node:url";
 import { config as dotenvConfig, parse as dotenvParse } from "dotenv";
 
 /**
+ * Chaves já avisadas nesta execução do processo — `loadProjectEnv()` roda
+ * mais de uma vez por pipeline (ex: `stage-0-run.ts` chama direto E de novo
+ * via `preflightExternalLocks()`), e como a divergência é sempre a mesma
+ * enquanto o processo pai não muda, repetir o aviso idêntico só adiciona
+ * ruído sem informação nova. Módulo-level de propósito — nunca reseta
+ * dentro do mesmo processo Node; um processo novo (próxima invocação do
+ * script) volta a avisar, que é o comportamento certo.
+ */
+const warnedKeys = new Set<string>();
+
+/**
  * Compara as chaves do `.env` contra `process.env` e imprime em `stderr` um
  * aviso por chave cujo valor diverge — nunca lança, nunca muda qual valor
  * "ganha" (isso continua sendo decidido só por `dotenvConfig({override:false})`
- * em `loadProjectEnv`, chamado logo depois). Exportado separadamente pra
- * teste isolar a lógica de comparação sem depender de `process.env` real.
+ * em `loadProjectEnv`, chamado logo depois). No máximo 1 aviso por chave por
+ * processo (`warnedKeys`). Exportado separadamente pra teste isolar a lógica
+ * de comparação sem depender de `process.env` real.
  */
 export function warnOnEnvDivergence(envFile: string, env: NodeJS.ProcessEnv = process.env): void {
   let parsed: Record<string, string>;
@@ -72,7 +84,8 @@ export function warnOnEnvDivergence(envFile: string, env: NodeJS.ProcessEnv = pr
   }
   for (const [key, fileValue] of Object.entries(parsed)) {
     const envValue = env[key];
-    if (envValue !== undefined && envValue !== fileValue) {
+    if (envValue !== undefined && envValue !== fileValue && !warnedKeys.has(key)) {
+      warnedKeys.add(key);
       console.warn(
         `env-loader: "${key}" já está definida no ambiente com um valor diferente do que está em .env — ` +
           `a variável do ambiente vence (precedência deliberada, ver docstring de loadProjectEnv), o .env é ` +
