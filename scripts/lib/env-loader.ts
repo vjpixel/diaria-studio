@@ -21,7 +21,23 @@
  * arquivo local (checagem pendente do PR, ver PR body).
  *
  * **Precedência:** vars já presentes em `process.env` ganham (não sobrescreve
- * o que já foi setado no shell/ambiente).
+ * o que já foi setado no shell/ambiente). **#8277, 17/09/2026:** essa
+ * precedência pode ceder em silêncio pra uma var que não veio do shell do
+ * usuário nem de `doppler run --`, mas de injeção do PROCESSO PAI (achado
+ * ao vivo no Neo: o app desktop do Claude Code injeta `GOOGLE_CLIENT_ID`/
+ * `GOOGLE_CLIENT_SECRET` de um app OAuth interno seu, sem relação com este
+ * projeto, no ambiente de todo processo filho). Como `microsoft-ads-ingest.ts`
+ * reusa de propósito o par `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` do
+ * `.env` deste repo (ver docstring de `authConfigFromEnv` em
+ * `scripts/microsoft-ads-ingest-spend.ts`, #5928) pra autenticar contra a
+ * conta Google do Microsoft Ads, uma colisão de nome com esse valor injetado
+ * faz o script autenticar contra o app Google ERRADO, sem nenhum erro —
+ * `override: false` cede em silêncio. Por isso `loadProjectEnv` agora avisa
+ * (stderr, sem nunca logar o VALOR — pode ser um secret) sempre que uma var
+ * do `.env` diverge de um valor já presente no ambiente, pra quem depurar
+ * tenha um ponto de partida em vez de um 401/token de conta errada.
+ * Continua fail-soft: nunca aborta, a precedência de ambiente pode ser
+ * intencional (ex: `doppler run --` sobrepondo `.env` de propósito).
  *
  * Uso:
  * ```ts
@@ -33,10 +49,10 @@
  * Pode ser chamado multiplas vezes — idempotente.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config as dotenvConfig } from "dotenv";
+import { config as dotenvConfig, parse as dotenvParse } from "dotenv";
 
 /**
  * Carrega `.env` do root do projeto.
@@ -50,9 +66,31 @@ export function loadProjectEnv(rootOverride?: string): string[] {
 
   const envFile = resolve(root, ".env");
   if (existsSync(envFile)) {
+    warnAboutEnvDivergence(envFile);
     dotenvConfig({ path: envFile, override: false });
     loaded.push(envFile);
   }
 
   return loaded;
+}
+
+/**
+ * Avisa (stderr) sobre toda var do `.env` que já está presente em
+ * `process.env` com um valor DIFERENTE — nunca loga o valor em si.
+ * `dotenvConfig({ override: false })` cede a essa var em silêncio; este
+ * aviso é o único sinal de que isso aconteceu.
+ */
+function warnAboutEnvDivergence(envFile: string): void {
+  const parsed = dotenvParse(readFileSync(envFile));
+  for (const key of Object.keys(parsed)) {
+    const existing = process.env[key];
+    if (existing !== undefined && existing !== parsed[key]) {
+      console.warn(
+        `[env-loader] ${key} já está definida no ambiente com um valor diferente do .env — ` +
+          `mantendo a do ambiente (override:false). Se isso não for intencional (ex: uma var ` +
+          `genérica injetada por outro processo, não pelo shell/Doppler), confira a origem antes ` +
+          `de assumir que o .env está sendo usado.`,
+      );
+    }
+  }
 }
