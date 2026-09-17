@@ -121,7 +121,11 @@
  * trabalho futuro, não coberto nesta PR.
  *
  * Exit codes: 1 uso/erro fatal genérico; 2 config/flag ausente ou backend
- * != "kit"; 7 assunto vazio (`content.title` ausente).
+ * != "kit"; 7 assunto vazio (`content.title` ausente); 8 o HTML Kit ainda
+ * menciona a Beehiiv (crédito de plataforma não substituído, #6195); 10
+ * PATCH do draft existente zerou `send_at` de um broadcast já agendado e o
+ * reagendamento automático de defesa em profundidade também falhou — ver
+ * `updateExistingKitBroadcast` (#8208), INTERVENÇÃO MANUAL necessária.
  *
  * Idempotência: `<edition-dir>/_internal/newsletter-kit-published.json` é
  * escrito assim que o draft é criado — uma invocação seguinte pra MESMA
@@ -149,7 +153,9 @@ import {
   resolveTestSendTagId,
   buildTestSendFilter,
   buildAllSubscribersFilter,
+  type UpdateBroadcastInput,
 } from "./lib/kit-broadcasts.ts";
+import { getBroadcast } from "./lib/kit-client.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -297,6 +303,125 @@ export function checkKitBackendEnabled(platformConfig: PlatformConfig): BackendC
   return { ok: true };
 }
 
+// ── PATCH do draft existente (rede, defesa em profundidade #8208) ───────
+
+/**
+ * Injetável (mesmo padrão de `ScheduleNewsletterKitDeps` em
+ * `schedule-newsletter-kit.ts`) — `updateBroadcast`/`getBroadcast` reais por
+ * default, substituíveis em teste sem tocar rede.
+ */
+export interface UpdateExistingBroadcastDeps {
+  updateBroadcast: (id: number, input: UpdateBroadcastInput) => ReturnType<typeof updateBroadcast>;
+  getBroadcast: (id: number) => ReturnType<typeof getBroadcast>;
+}
+
+export type UpdateExistingBroadcastResult =
+  | { ok: true; broadcastId: number; publicUrl: string | undefined; sendAtRescued: boolean }
+  | { ok: false; broadcastId: number; reason: string };
+
+/**
+ * PATCH do draft/broadcast já rastreado em `_internal/newsletter-kit-published.json`
+ * — com defesa em profundidade contra o achado do #8208: um `PATCH` de
+ * conteúdo (`--send-test` pós-Stage-6, ou re-rodar `/diaria-5-publicacao`
+ * pra corrigir algo depois do agendamento) ZERA `send_at` no broadcast de
+ * PRODUÇÃO já agendado pela Etapa 6, mesmo sem `send_at` aparecer no corpo
+ * do PATCH — confirmado ao vivo na edição 260917 e já documentado como
+ * armadilha conhecida da API (`kit-client.ts`, tabela "Armadilhas da API
+ * v4", item 4: "Editar broadcast agendado desagenda").
+ *
+ * Duas camadas, a 2ª nunca dependendo só da 1ª ter funcionado (2xx não
+ * prova efeito — mesma disciplina #573 já usada no resto do módulo):
+ *
+ * 1. **Reforço explícito**: se o estado local diz `status: "scheduled"` com
+ *    `scheduled_at` conhecido, o PATCH já sai levando `send_at` — nunca
+ *    confiar em "campo omitido = preservado" (a docstring de
+ *    `kit-broadcasts.ts` registrava essa suposição; o achado do #8208 prova
+ *    que ela é falsa pra este campo especificamente).
+ * 2. **Releitura + reagendamento automático**: mesmo com o reforço acima,
+ *    relê o broadcast via `GET` logo depois do `PATCH` — se `send_at`
+ *    ainda assim voltou `null`, reagenda automaticamente
+ *    (`updateBroadcast(id, { send_at })`) e confirma por uma 2ª releitura
+ *    implícita (o próprio retorno do 2º PATCH). Se `send_at` continuar
+ *    `null` mesmo depois do retry, devolve `ok:false` com instrução
+ *    explícita de intervenção manual (rodar `schedule-newsletter-kit.ts`) —
+ *    nunca falha em silêncio, que era exatamente o modo de falha original
+ *    do #8208 (a edição não sairia amanhã, sem nenhum sinal no stdout).
+ */
+export async function updateExistingKitBroadcast(
+  existing: KitNewsletterPublished,
+  patchFields: { subject: string; preview_text: string; content: string; public: boolean },
+  log: (msg: string) => void,
+  deps: UpdateExistingBroadcastDeps = { updateBroadcast, getBroadcast },
+): Promise<UpdateExistingBroadcastResult> {
+  const wasScheduled = existing.status === "scheduled" && typeof existing.scheduled_at === "string";
+  const patchBody: UpdateBroadcastInput = { ...patchFields };
+  if (wasScheduled) {
+    patchBody.send_at = existing.scheduled_at;
+  }
+
+  let updated: Awaited<ReturnType<typeof updateBroadcast>>;
+  try {
+    updated = await deps.updateBroadcast(existing.broadcast_id, patchBody);
+  } catch (e) {
+    return {
+      ok: false,
+      broadcastId: existing.broadcast_id,
+      reason: `PATCH /broadcasts/${existing.broadcast_id} falhou: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  if (!wasScheduled) {
+    return { ok: true, broadcastId: updated.id, publicUrl: updated.public_url, sendAtRescued: false };
+  }
+
+  let reread: Awaited<ReturnType<typeof getBroadcast>>;
+  try {
+    reread = await deps.getBroadcast(updated.id);
+  } catch (e) {
+    return {
+      ok: false,
+      broadcastId: updated.id,
+      reason:
+        `GET /broadcasts/${updated.id} (verificação pós-PATCH de send_at, #8208) falhou: ` +
+        `${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  if (reread.send_at) {
+    return { ok: true, broadcastId: updated.id, publicUrl: updated.public_url, sendAtRescued: false };
+  }
+
+  log(
+    `[#8208] ALERTA: broadcast_id=${updated.id} estava agendado (scheduled_at=${existing.scheduled_at}) ` +
+      "e o PATCH zerou send_at apesar do reforço explícito — reagendando automaticamente.",
+  );
+  let rescheduled: Awaited<ReturnType<typeof updateBroadcast>>;
+  try {
+    rescheduled = await deps.updateBroadcast(updated.id, { send_at: existing.scheduled_at });
+  } catch (e) {
+    return {
+      ok: false,
+      broadcastId: updated.id,
+      reason:
+        `[#8208] send_at zerou pelo PATCH e a tentativa de reagendamento automático falhou: ` +
+        `${e instanceof Error ? e.message : String(e)}. INTERVENÇÃO MANUAL: rode ` +
+        `"npx tsx scripts/schedule-newsletter-kit.ts --edition-dir <dir> --scheduled-at ${existing.scheduled_at}".`,
+    };
+  }
+  if (!rescheduled.send_at) {
+    return {
+      ok: false,
+      broadcastId: updated.id,
+      reason:
+        `[#8208] send_at zerou pelo PATCH e continua null mesmo após o reagendamento automático. ` +
+        `INTERVENÇÃO MANUAL: rode "npx tsx scripts/schedule-newsletter-kit.ts --edition-dir <dir> ` +
+        `--scheduled-at ${existing.scheduled_at}".`,
+    };
+  }
+  log(`[#8208] reagendamento automático confirmado: send_at=${rescheduled.send_at}`);
+  return { ok: true, broadcastId: updated.id, publicUrl: updated.public_url, sendAtRescued: true };
+}
+
 // ── main ──────────────────────────────────────────────────────────────
 
 export async function main(rootDirOverride?: string): Promise<void> {
@@ -376,14 +501,18 @@ export async function main(rootDirOverride?: string): Promise<void> {
   let publicUrl: string | undefined;
   if (existing) {
     log(`draft já existe (broadcast_id=${existing.broadcast_id}) — atualizando em vez de criar um 2º.`);
-    const updated = await updateBroadcast(existing.broadcast_id, {
-      subject,
-      preview_text: previewText,
-      content: html,
-      public: true,
-    });
-    broadcastId = updated.id;
-    publicUrl = updated.public_url;
+    const updateResult = await updateExistingKitBroadcast(
+      existing,
+      { subject, preview_text: previewText, content: html, public: true },
+      log,
+    );
+    if (!updateResult.ok) {
+      log(`ERRO: ${updateResult.reason}`);
+      process.exitCode = 10;
+      return;
+    }
+    broadcastId = updateResult.broadcastId;
+    publicUrl = updateResult.publicUrl;
   } else {
     const created = await createBroadcast({
       subject,
@@ -425,6 +554,14 @@ export async function main(rootDirOverride?: string): Promise<void> {
     preview_text: previewText,
     status: existing?.status ?? "draft",
     test_broadcast_ids: existing?.test_broadcast_ids ?? [],
+    // #8208: preservar `scheduled_at` do estado anterior — sem isso, uma
+    // atualização de conteúdo pós-Stage-6 apagaria o valor do estado LOCAL
+    // mesmo com o broadcast real continuando agendado (ou reagendado pela
+    // defesa em profundidade de `updateExistingKitBroadcast` acima), e a
+    // PRÓXIMA invocação perderia `existing.scheduled_at` — desarmando o
+    // reforço explícito/releitura desta função sem nenhum PATCH ter mudado
+    // o agendamento de verdade.
+    ...(existing?.scheduled_at ? { scheduled_at: existing.scheduled_at } : {}),
   };
   writePublishedState(editionDir, state);
 
