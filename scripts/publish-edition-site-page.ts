@@ -15,10 +15,15 @@
  *
  * ## Onde roda, e por que ali
  *
- * Etapa 6, **depois** do agendamento confirmado. Não antes: publicar a página
- * de uma edição que ainda pode mudar no gate criaria divergência entre o que
- * o leitor vê no site e o que recebe por e-mail.
+ * Etapa 6, **antes** da parada única do gate (§6b-site, #8221 — movido de
+ * depois do agendamento confirmado, espelhando o guard de slug do #8205).
+ * Decisão explícita do editor (17/09/2026): o trade-off de a página do site
+ * já estar publicada mesmo que o editor responda `abortar` no gate foi
+ * aceito por escrito — a alternativa (separar validação-antes de
+ * publicação-depois) foi apresentada e recusada em favor da versão simples
+ * e simétrica ao guard de slug.
  *
+
  * ## O slug vem de `--slug`, nunca de `post_url` sozinho (#6202 review, problema 1)
  *
  * `_internal/05-published.json` nunca tem `post_url` populado no momento em
@@ -29,11 +34,11 @@
  * seguinte. Sem `--slug`, toda execução normal caía no "nada a publicar",
  * em silêncio, permanentemente.
  *
- * O dado já está na mão: §6d do orchestrator (que roda ANTES deste passo)
- * já busca `mcp__claude_ai_Beehiiv__get_post({ post_id })` →
- * `web_settings.slug` e, desde #4570, esse slug é GATE-BLOCKING (o guard do
- * bloco WhatsApp já para o Stage 6 se ele não bater) — então quando este
- * passo roda, o slug real já foi confirmado. §6d-site recebe esse MESMO
+ * O dado já está na mão: §6b-slug do orchestrator (que roda ANTES deste
+ * passo, e antes do gate — #8205/#8221) já busca
+ * `mcp__claude_ai_Beehiiv__get_post({ post_id })` → `web_settings.slug` —
+ * então quando este passo roda, o slug real já foi apurado (divergência,
+ * se houver, vira aviso no gate, não bloqueia). §6b-site recebe esse MESMO
  * valor via `--slug`.
  *
  * `--slug` ausente ainda é suportado (invocação ad-hoc pós-`refresh-dedup`,
@@ -323,7 +328,7 @@ export function readEditionInputs(
   // backend Kit (que nunca escreve esse arquivo), passar `--slug` ainda caía
   // no `code: 2` benigno logo abaixo, porque o guard exigia os DOIS
   // (`htmlExists && publishedExists`) antes mesmo de olhar `slugOverride`. Na
-  // prática isso significava que o workaround documentado em §6d-site
+  // prática isso significava que o workaround documentado em §6b-site
   // ("passe --slug explicitamente") nunca funcionava de verdade pra Kit —
   // apenas trocava um `code: 4` silencioso por um `code: 2` igualmente mudo.
   // Com `slugOverride`, ignoramos `05-published.json` por completo (nem
@@ -364,7 +369,7 @@ export function readEditionInputs(
       throw new EditionInputsInvalid(
         "backend Kit selecionado (publishing.newsletter.backend) — newsletter-final.html existe, mas " +
           "05-published.json (única fonte de slug do caminho Beehiiv) nunca é escrito por edições Kit, " +
-          "e nenhum --slug foi passado. Passe --slug explicitamente (ver §6d-site em orchestrator-stage-6.md).",
+          "e nenhum --slug foi passado. Passe --slug explicitamente (ver §6b-site em orchestrator-stage-6.md).",
       );
     }
     return null;
@@ -379,8 +384,8 @@ export function readEditionInputs(
   if (!published.post_url) {
     throw new EditionInputsInvalid(
       "05-published.json existe mas não tem post_url, e nenhum --slug foi passado — " +
-        "no Stage 6 normal, §6d-site deve receber --slug com o valor confirmado via " +
-        "get_post em §6d (o mesmo slug que o guard do bloco WhatsApp já verificou).",
+        "no Stage 6 normal, §6b-site deve receber --slug com o valor confirmado via " +
+        "get_post em §6b-slug (o mesmo slug que o guard do bloco WhatsApp já verificou).",
     );
   }
 
@@ -1260,7 +1265,7 @@ export function publishEditionSitePage(
  * de o orchestrator lembrar de chamar `log-event.ts` com o nível certo
  * (prosa, não reforçado por código — mesma classe de falha do #4574: sem
  * isto, nada em CÓDIGO verifica que o passo rodou nem qual foi o resultado,
- * só a prosa de `orchestrator-stage-6.md` §6d-site instrui um agente LLM a
+ * só a prosa de `orchestrator-stage-6.md` §6b-site instrui um agente LLM a
  * logar; se ele pular/errar isso, a falha vira silêncio absoluto — foi
  * exatamente o que aconteceu nas 4 edições do #7283/#7266). O invariant
  * `site-page-published` (`scripts/lib/invariant-checks/stage-6.ts`) lê este
