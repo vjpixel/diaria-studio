@@ -880,12 +880,24 @@ export async function readKitSubscriberFields(
       );
       return null;
     }
-    const j = (await r.json().catch(() => null)) as
-      | { subscriber?: { fields?: Record<string, string | null> | null } }
-      | null;
+    const text = await r.text().catch(() => "");
+    let j: { subscriber?: { fields?: Record<string, string | null> | null } } | null = null;
+    try {
+      j = JSON.parse(text);
+    } catch {
+      console.error(JSON.stringify({ event: "reativar_kit_origem_sem_fields", motivo: "json_invalido", body: text.slice(0, 300) }));
+      return null;
+    }
     const f = j?.subscriber?.fields;
     if (f == null || typeof f !== "object") {
-      console.error(JSON.stringify({ event: "reativar_kit_origem_sem_fields" }));
+      console.error(
+        JSON.stringify({
+          event: "reativar_kit_origem_sem_fields",
+          motivo: "sem_campo_fields",
+          // só as chaves — o corpo do assinante traz e-mail.
+          chaves: j?.subscriber ? Object.keys(j.subscriber) : null,
+        }),
+      );
       return null;
     }
     return f;

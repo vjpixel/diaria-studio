@@ -224,7 +224,11 @@ export interface SubscriptionFields {
    *   dia da reativação (decisão 9 do #7172). Distinto de `classifyAcquisition`
    *   retornar `"reativacao"` por `utm_source`: depois do override de origem
    *   recuperada, `utm_source` volta a ser o ORIGINAL, então só este campo
-   *   sinaliza a ressalva.
+   *   sinaliza a ressalva. Linhas `kit` (#8235): `true` quando a ingestão
+   *   viu a origem trocar para uma UTM de reativação (clique no Confirmar)
+   *   e preservou a origem anterior — sem troca de `id` nem de `entered_at`;
+   *   pegajoso entre rodadas (`resolveKitOrigemOnReativacao`,
+   *   `kit-subscribers-ingest.ts`).
    * - `origemSerie`: qual série escreveu esta linha (`"kit-vivo"` — F2,
    *   `"backfill-beehiiv"`/`"seed-kit"` — F7) — nunca ausente numa linha
    *   nova, pra nenhum leitor confundir "campo nunca populado" com "série

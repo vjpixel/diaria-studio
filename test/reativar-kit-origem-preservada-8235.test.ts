@@ -273,6 +273,16 @@ describe("ingestKitRoster preserva a origem sobrescrita pelo reativar (#8235)", 
     assert.equal(r.reativado, null);
   });
 
+  it("todas as fontes de REATIVACAO_UTM_SOURCES disparam o guard, com caixa/espaços normalizados", () => {
+    const prev = { source: "google-ads", utm_source: "google-ads", utm_medium: "cpc", utm_campaign: null, utm_channel: null, utm_term: null, utm_content: null, referring_site: null, origem_cadastro: null, reativado: null };
+    for (const nova of ["sendinblue", " Brevo-Diaria "]) {
+      const r = resolveKitOrigemOnReativacao(prev, { ...prev, source: nova, utm_source: nova, utm_medium: "x" });
+      assert.equal(r.fields.utm_source, "google-ads", nova);
+      assert.equal(r.fields.utm_medium, "cpc", nova);
+      assert.equal(r.reativado, true, nova);
+    }
+  });
+
   it("linha pré-#7207 (só `source`) também é protegida", () => {
     const r = resolveKitOrigemOnReativacao(
       { source: "meta-ads", utm_source: null, utm_medium: null, utm_campaign: null, utm_channel: null, utm_term: null, utm_content: null, referring_site: null, origem_cadastro: null, reativado: null },
