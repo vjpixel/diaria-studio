@@ -132,6 +132,11 @@ import {
   type BannedLexiconReport,
 } from "./lib/lint-checks/banned-lexicon.ts"; // #7260
 import {
+  checkDestaqueCategoryNoticias,
+  type DestaqueCategoryNoticiasError,
+  type DestaqueCategoryNoticiasReport,
+} from "./lib/lint-checks/destaque-category-noticias.ts"; // #8200
+import {
   runSnippetStalenessCheck,
   type SnippetStalenessReport,
   type SnippetStalenessWarning,
@@ -285,6 +290,11 @@ export {
   type BannedLexiconError,
   type BannedLexiconReport,
 } from "./lib/lint-checks/banned-lexicon.ts"; // #7260
+export {
+  checkDestaqueCategoryNoticias,
+  type DestaqueCategoryNoticiasError,
+  type DestaqueCategoryNoticiasReport,
+} from "./lib/lint-checks/destaque-category-noticias.ts"; // #8200
 export {
   runSnippetStalenessCheck,
   resolveUsedSnippets,
@@ -605,6 +615,13 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
       checkBannedLexicon(md),
     );
 
+    // #8200: categoria de destaque literal "NOTÍCIAS" — proibida pelo #6083
+    // ("categoria nunca deve ser 'notícias'"), sem exceção legítima conhecida
+    // (mesmo racional do banned-lexicon acima). GATE-BLOCKING.
+    runCheckSafely(push, "destaque-category-noticias", "#8200", "gate-blocking", () =>
+      checkDestaqueCategoryNoticias(md),
+    );
+
     runCheckSafely(push, "snippet-staleness", "#4076", "warn-only", () =>
       runSnippetStalenessCheck(mdPath, root),
     );
@@ -758,6 +775,7 @@ import { runCli as run_stackedIntroCallouts } from "./lib/lint-checks/cli/stacke
 import { runCli as run_orphanBoxInGap } from "./lib/lint-checks/cli/orphan-box-in-gap.ts";
 import { runCli as run_noXmlArtifacts } from "./lib/lint-checks/cli/no-xml-artifacts.ts";
 import { runCli as run_bannedLexicon } from "./lib/lint-checks/cli/banned-lexicon.ts";
+import { runCli as run_destaqueCategoryNoticias } from "./lib/lint-checks/cli/destaque-category-noticias.ts";
 import { runCli as run_snippetStaleness } from "./lib/lint-checks/cli/snippet-staleness.ts";
 import { runCli as run_agradecimentoHardcoded } from "./lib/lint-checks/cli/agradecimento-hardcoded.ts";
 
@@ -801,6 +819,7 @@ const CHECK_HANDLERS: Record<string, (args: Record<string, string>, root: string
   "orphan-box-in-gap": run_orphanBoxInGap,
   "no-xml-artifacts": run_noXmlArtifacts,
   "banned-lexicon": run_bannedLexicon,
+  "destaque-category-noticias": run_destaqueCategoryNoticias,
   "snippet-staleness": run_snippetStaleness,
   "agradecimento-hardcoded": run_agradecimentoHardcoded,
 };
@@ -875,6 +894,7 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check aprofunde-format --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check no-xml-artifacts --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check banned-lexicon --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check destaque-category-noticias --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check snippet-staleness --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check agradecimento-hardcoded [--snippet <path>]",
     );

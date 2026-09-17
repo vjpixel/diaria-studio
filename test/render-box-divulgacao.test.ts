@@ -196,6 +196,48 @@ Estou terminando agora e gosto da estrutura: cada capítulo abre com um conto.`;
       "o parágrafo do livro deve ter a MESMA margem/espaçamento, com ou sem a linha de título explícita no snippet",
     );
   });
+
+  // #8199: snippets com `categoria: Recomendação de Leitura` (kicker externo)
+  // E `titulo: false` (`plainFirstParagraph`, #5882) saíam com o rótulo
+  // "Recomendação de Leitura" DUAS vezes — kicker + sintetizado como 1ª linha
+  // do corpo, porque `plainFirstParagraph` só rebaixava o ESTILO do título
+  // sintetizado (serif→corpo), nunca causava sua OMISSÃO. O comentário do
+  // próprio snippet (`data/snippets/inteligencia-artificial-do-zero-a-superpoderes.md`,
+  // `recomendacao-leitura-mensal.md`) já documentava a intenção correta: com
+  // `titulo: false`, nenhum "Recomendação de Leitura" deveria renderizar
+  // dentro do box — só o kicker externo carrega o rótulo.
+  it("#8199: titulo:false (plainFirstParagraph=true) em box de recomendação de livro NÃO sintetiza 'Recomendação de Leitura' dentro do corpo", () => {
+    const html = renderBoxDivulgacao(RECOMENDACAO_SEM_LINHA, null, true, false, false, null, true);
+    assert.doesNotMatch(
+      html,
+      /Recomendação de Leitura/,
+      "plainFirstParagraph=true deve OMITIR o rótulo sintetizado, não só rebaixar seu estilo",
+    );
+    assert.doesNotMatch(html, /font-size:26px/, "sem título serif quando plainFirstParagraph=true");
+    // conteúdo preservado — o box não pode ficar vazio, só sem o rótulo duplicado.
+    assert.ok(html.includes("link.amazon/B05FlAaJ7"), "link do livro preservado");
+    assert.ok(html.includes("cada capítulo abre com um conto"), "comentário preservado");
+  });
+
+  it("#8199: sanity — titulo:false (plainFirstParagraph=true) na variante COM linha de título explícita AINDA renderiza a linha, porque ali ela é conteúdo AUTORADO, não sintetizado", () => {
+    // Diferença chave: quando a linha "Recomendação de Leitura" está
+    // explicitamente no snippet-fonte (explicitTitleLine=true), ela É
+    // `paras[0]` de verdade — o branch plano (#8199) renderiza TODOS os
+    // parágrafos tal como vieram, sem sintetizar nada. `plainFirstParagraph`
+    // suprime só o rótulo SINTETIZADO (`BOOK_RECOMMENDATION_TITLE`, caso
+    // `RECOMENDACAO_SEM_LINHA` acima) — nunca apaga texto que o editor de
+    // fato escreveu no snippet. Os snippets reais (#8199) não têm essa linha
+    // explícita quando `titulo: false` — por isso o teste acima (sem linha)
+    // é o cenário real; este é só documentação do limite do comportamento.
+    const comLinha = `Recomendação de Leitura\n\n${RECOMENDACAO_SEM_LINHA}`;
+    const html = renderBoxDivulgacao(comLinha, null, true, false, false, null, true);
+    assert.match(
+      html,
+      /Recomendação de Leitura/,
+      "linha de título EXPLICITAMENTE autorada no snippet não é 'sintetizada' — plainFirstParagraph não a remove",
+    );
+    assert.doesNotMatch(html, /font-size:26px/, "mas continua sem o estilo de título serif 26px");
+  });
 });
 
 describe("renderBoxDivulgacao — peso de fonte do box só-texto (#3373)", () => {
