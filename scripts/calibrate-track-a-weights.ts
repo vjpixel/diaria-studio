@@ -54,9 +54,9 @@
  *
  * Mesma conversão de Track B: âncora empírica quando a feature já tem
  * valor de pontos comparável (rubric.json pra `primary_source`/
- * `hands_on`/`academy`/`howto_br`(`_source`); `COVERAGE_BONUS_PER_SOURCE`
- * de `coverage-bonus.ts` pra `coverage_bonus_present`, já que esse bônus
- * não vive em rubric.json), senão `DEFAULT_POINTS_PER_LOG_ODDS_TRACK_A`
+ * `hands_on`; `COVERAGE_BONUS_PER_SOURCE` de `coverage-bonus.ts` pra
+ * `coverage_bonus_present`, já que esse bônus não vive em rubric.json),
+ * senão `DEFAULT_POINTS_PER_LOG_ODDS_TRACK_A`
  * (mesmo valor de Track B, 10 — nenhuma razão pra divergir sem dado que
  * justifique).
  */
@@ -93,13 +93,12 @@ interface RubricFile {
   bonuses: Record<string, RubricBonus>;
 }
 
-/** Pontos existentes pra ancorar a escala log-odds→pontos — rubric.json pras 5 features com bônus fixo, `COVERAGE_BONUS_PER_SOURCE` pra `coverage_bonus_present` (não vive em rubric.json, é constante própria de coverage-bonus.ts). */
+/** Pontos existentes pra ancorar a escala log-odds→pontos — rubric.json pras 2 features com bônus fixo (`primary_source`/`hands_on`), `COVERAGE_BONUS_PER_SOURCE` pra `coverage_bonus_present` (não vive em rubric.json, é constante própria de coverage-bonus.ts). `howto_br_source` (com `points_source_extra` em vez de `points`) saiu junto com `academy`/`howto_br` em #8254 — ver docstring de `TRACK_A_CANDIDATE_FEATURES`. */
 function existingPointsAnchor(rubric: RubricFile, feature: TrackACandidateFeature): number | null {
   if (feature === "coverage_bonus_present") return COVERAGE_BONUS_PER_SOURCE;
   if (rubric.bonuses === null || typeof rubric.bonuses !== "object") {
     throw new Error(`existingPointsAnchor: rubric.bonuses não é um objeto (${typeof rubric.bonuses}) — rubric.json malformado?`);
   }
-  if (feature === "howto_br_source") return rubric.bonuses.howto_br?.points_source_extra ?? null;
   return rubric.bonuses[feature]?.points ?? null;
 }
 

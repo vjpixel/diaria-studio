@@ -18,8 +18,10 @@
  * sem campo de track próprio). **`TRACK_A_REPORT_FEATURE_PREFIX`
  * ("track-a:") é o que evita a colisão entre os dois tracks** — achado
  * de review do #7980 (P1, alta confiança): Track A e Track B
- * compartilham 5 de 6 nomes de feature (`primary_source`/`hands_on`/
- * `academy`/`howto_br`/`howto_br_source`); sem um jeito de distinguir de
+ * compartilham os nomes de feature `primary_source`/`hands_on`
+ * (`academy`/`howto_br`/`howto_br_source` saíram do escopo de Track A em
+ * #8254 — estruturalmente nunca observáveis num destaque, ver docstring
+ * de `TRACK_A_CANDIDATE_FEATURES`); sem um jeito de distinguir de
  * qual track um relatório "Calibração {feature} — PR #N" veio, uma PR de
  * Track B mergeada pra `primary_source` bloquearia `primary_source` do
  * Track A PARA SEMPRE (e vice-versa), silenciosamente, contradizendo a

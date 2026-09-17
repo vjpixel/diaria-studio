@@ -85,6 +85,32 @@ describe("buildTrackAPowerReport (#7980)", () => {
     }
   });
 
+  it("#8254: academy/howto_br/howto_br_source NUNCA aparecem no relatório — são estruturalmente inatingíveis pro Track A (só computadas no bucket use_melhor, que nunca vira destaque), diferente de uma feature que só está acumulando dado", () => {
+    // Mesmo corpus forte do teste acima — mas os 3 bônus só se aplicam a candidatos
+    // do bucket use_melhor via annotateUseMelhorBucket (scripts/lib/audience-affinity.ts),
+    // nunca ao bucket highlights que este writeTrackAEdition simula. Antes do fix, essas
+    // 3 features entravam no relatório com n_true=0 SEMPRE (não "ainda não observado") —
+    // agora nem aparecem, porque saíram de TRACK_A_CANDIDATE_FEATURES.
+    const dir = mkdtempSync(join(tmpdir(), "power-report-a-no-dead-features-"));
+    try {
+      for (let e = 0; e < 60; e++) {
+        const ed = String(260800 + e);
+        writeTrackAEdition(dir, ed, [
+          { url: `https://x.com/${ed}-a`, primary_source: true, approved: true },
+          { url: `https://x.com/${ed}-b`, primary_source: false, approved: false },
+        ]);
+      }
+      const report = buildTrackAPowerReport(dir);
+      const featureNames: string[] = report.features.map((x) => x.feature).sort();
+      assert.deepEqual(featureNames, ["coverage_bonus_present", "hands_on", "primary_source"].sort());
+      assert.equal(featureNames.includes("academy"), false);
+      assert.equal(featureNames.includes("howto_br"), false);
+      assert.equal(featureNames.includes("howto_br_source"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("sinal se INVERTE na 2ª metade do corpus: passa o piso de evento/edição mas FALHA o gate de janelas (Track A é mais estrito que Track B aqui)", () => {
     const dir = mkdtempSync(join(tmpdir(), "power-report-a-flip-"));
     try {
