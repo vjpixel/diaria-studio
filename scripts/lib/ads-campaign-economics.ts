@@ -43,6 +43,9 @@
  *    CLAUDE.md) é `"desconhecido"` — NUNCA `"ativa"` por omissão.
  */
 
+import { isDatePaused, normalizePauseIntervals, type AdsTestPauseField } from "./ads-test-pause-window.ts";
+import type { AdsTestRunStateRevisao } from "./ads-test-run-state.ts";
+
 // ---------------------------------------------------------------------------
 // Tipos canônicos — o que os adaptadores Google/Microsoft normalizam pra cá
 // ---------------------------------------------------------------------------
@@ -350,19 +353,40 @@ export function buildChannelTable(
  * `revisao` ausente (nenhuma pausa jamais registrada, OU infra sem
  * consumidor que a escreva ainda — ver CLAUDE.md sobre `revisao.pausas`)
  * devolve `"desconhecido"`, NUNCA `"ativa"` — decisão explícita do editor
- * (#8210): dado ausente não vira presunção otimista. `todayIso` dentro de
- * alguma pausa (`desde`/`ate` inclusivos) → `"pausada"`; caso contrário,
- * com `revisao` presente, → `"ativa"`.
+ * (#8210): dado ausente não vira presunção otimista.
+ *
+ * `revisao` aceita os DOIS formatos (hotfix desta função — #8283/#8284
+ * combinados quebraram a leitura do formato real de produção, ver PR do
+ * hotfix): o ATUAL `revisao.pausa` (singular, com hora — interpretado por
+ * `normalizePauseIntervals`/`isDatePaused` de `ads-test-pause-window.ts`,
+ * a ÚNICA fonte de verdade pra esse shape — nunca duplicar o parser aqui)
+ * tem precedência quando presente; o formato ANTIGO `revisao.pausas`
+ * (plural, só data) segue aceito por retrocompatibilidade quando `pausa`
+ * está ausente. Nenhum dos dois presente → `"desconhecido"` (mesma leitura
+ * de `revisao` ausente — dado insuficiente não vira presunção). `todayIso`
+ * dentro de alguma pausa (qualquer fração do dia, formato atual; `desde`/
+ * `ate` inclusivos, formato antigo) → `"pausada"`; caso contrário, com
+ * pausa(s) conhecida(s), → `"ativa"`.
  *
  * @pure
  */
 export function computeCampaignPauseStatus(
-  revisao: { pausas: readonly { desde: string; ate: string }[] } | undefined,
+  revisao: AdsTestRunStateRevisao | undefined,
   todayIso: string,
 ): CampaignPauseStatus {
   if (!revisao) return "desconhecido";
-  const paused = revisao.pausas.some((p) => todayIso >= p.desde && todayIso <= p.ate);
-  return paused ? "pausada" : "ativa";
+
+  const currentFormatIntervals = normalizePauseIntervals(revisao.pausa as AdsTestPauseField);
+  if (currentFormatIntervals.length > 0) {
+    return isDatePaused(todayIso, currentFormatIntervals) ? "pausada" : "ativa";
+  }
+
+  if (revisao.pausas && revisao.pausas.length > 0) {
+    const paused = revisao.pausas.some((p) => todayIso >= p.desde && todayIso <= p.ate);
+    return paused ? "pausada" : "ativa";
+  }
+
+  return "desconhecido";
 }
 
 // ---------------------------------------------------------------------------

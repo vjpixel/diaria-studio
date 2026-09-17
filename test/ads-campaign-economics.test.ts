@@ -283,6 +283,39 @@ describe("#8210 melhoria 2 — computeCampaignPauseStatus: badge ativa/pausada/d
     assert.equal(computeCampaignPauseStatus(revisao, "2026-09-17"), "ativa");
   });
 
+  describe("hotfix #8283/#8284 — shape REAL de produção (revisao.pausa singular, sem revisao.pausas)", () => {
+    // Fixture real: data/aquisicao/teste-2608/run-state.json grava a pausa
+    // em `revisao.pausa` (singular, com HORA) — nunca em `pausas` (plural,
+    // formato antigo). `computeCampaignPauseStatus` estourava em
+    // `revisao.pausas.some(...)` sobre `undefined` nesse shape.
+    const revisaoReal = {
+      pausa: {
+        inicio: "2026-09-09T16:05:36-03:00",
+        fim: "2026-09-17T00:16:00-03:00",
+        inicio_por_braco: {
+          "Google Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
+          "Microsoft Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
+          "Meta Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
+        },
+      },
+    };
+
+    it("não lança e devolve 'pausada' pra uma data dentro do intervalo", () => {
+      assert.doesNotThrow(() => computeCampaignPauseStatus(revisaoReal, "2026-09-12"));
+      assert.equal(computeCampaignPauseStatus(revisaoReal, "2026-09-12"), "pausada");
+    });
+
+    it("não lança e devolve 'ativa' pra uma data bem depois do fim da pausa", () => {
+      assert.doesNotThrow(() => computeCampaignPauseStatus(revisaoReal, "2026-09-20"));
+      assert.equal(computeCampaignPauseStatus(revisaoReal, "2026-09-20"), "ativa");
+    });
+  });
+
+  it("revisao presente mas sem `pausa` NEM `pausas` — 'desconhecido', sem lançar", () => {
+    assert.doesNotThrow(() => computeCampaignPauseStatus({}, "2026-09-17"));
+    assert.equal(computeCampaignPauseStatus({}, "2026-09-17"), "desconhecido");
+  });
+
   it("buildChannelTable aplica o MESMO pauseStatus aos 3 braços (pausas são da campanha inteira, não por canal)", () => {
     const metrics: ChannelDailyMetric[] = [
       { canal: "Google Ads (teste 2608)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 },
