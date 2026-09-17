@@ -183,7 +183,7 @@ async function main(): Promise<void> {
   }
 
   const result = await notifyEditorForOutcomes(
-    findingOutcomes as AlarmFindingOutcome[],
+    findingOutcomes,
     "acao",
     (qualifying) => {
       const issueLines =

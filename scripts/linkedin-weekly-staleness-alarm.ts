@@ -163,7 +163,7 @@ async function main(): Promise<void> {
   }
 
   const result = await notifyEditorForOutcomes(
-    findingOutcomes as AlarmFindingOutcome[],
+    findingOutcomes,
     "acao",
     (qualifying) => buildLinkedinWeeklyStalenessAlarmEmail(cycle, qualifying[0]),
     { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride },
