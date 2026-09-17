@@ -95,7 +95,7 @@ import {
 import { findPrimarySourceUrl, stripTrackingParams } from "./lib/hub-primary-source.ts";
 import { isSafeUrlScheme } from "./lib/shared/markdown-links.ts";
 import type { RawCachedPost } from "./generate-arquivo-titles.ts";
-import { loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
+import { isPublicEdition, loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HUBS_DIR = resolve(ROOT, "scripts/lib/hubs");
@@ -510,6 +510,22 @@ export function collectHubSources(
       warnings.push(`post confirmado e casado, mas sem slug resolvível: "${where}"`);
       continue;
     }
+    // Página de hub é superfície PÚBLICA: envio de teste do Stage 5
+    // (`teste-*`) e variante Patronos (`*-patronos`, duplicata da edição
+    // que já está aqui sob o slug canônico) nunca entram. Os dois chegam
+    // como `status: "confirmed"` no cache unificado desde o cutover pro Kit
+    // — ver `isPublicEdition`.
+    //
+    // Checado DEPOIS do guard de slug, não antes: `isPublicEdition` também
+    // responde `false` pra post SEM slug, e adiantá-lo engoliria em
+    // silêncio o warning "sem slug resolvível" que o fleet review do #4558
+    // exigiu — trocaria um drop diagnosticado por um drop mudo.
+    //
+    // Este drop, por outro lado, é silencioso de propósito: não é dado
+    // ausente nem falha, é uma edição que não pertence a esta superfície, e
+    // um warning por ocorrência afogaria os que importam (21 entradas na
+    // medição de 17/09/2026).
+    if (!isPublicEdition(post)) continue;
     // #4796: override por slug primeiro, cai no publish_date bruto pra todo o resto.
     const date = resolvePublishDate(post.slug, post.publish_date, overridesResult.overrides);
     if (!date) {
@@ -536,7 +552,72 @@ export function collectHubSources(
     });
   }
   rows.sort((a, b) => a.date.localeCompare(b.date));
-  return { rows, warnings };
+  return { rows: dedupeBySlug(rows), warnings };
+}
+
+/**
+ * Uma edição por slug. Desde o canal Kit PARALELO (#6114), a MESMA edição é
+ * publicada nos dois ESPs no mesmo dia — base legada na Beehiiv, quem se
+ * cadastrou depois do corte no Kit — e a camada unificada devolve as duas,
+ * corretamente (são dois envios reais, e quem mede ENTREGA precisa dos
+ * dois). Numa página de hub isso vira a mesma matéria listada duas vezes.
+ *
+ * Medição de 17/09/2026: 3 duplicatas nos 3 hubs regenerados
+ * (`tem-22-a-25-anos...`, `gates-propoe-empregos...`,
+ * `claude-e-codex-instalaram...`), todas com o par Beehiiv+Kit — a Beehiiv
+ * sempre alguns segundos antes.
+ *
+ * Mantém a PRIMEIRA ocorrência em ordem de data (`rows` já vem ordenado),
+ * e nunca descarta informação: `matchedHeadlines` e `primarySourceUrls` da
+ * duplicata são unidos na linha mantida, porque `computePrimarySourceUrls`
+ * pode ter resolvido a fonte primária num dos dois registros e não no
+ * outro.
+ *
+ * ## A união compara em NFC, não pelo byte
+ *
+ * Os dois ESPs devolvem o MESMO título em normalizações Unicode
+ * diferentes: o Kit em **NFC** (`já` = U+00E1) e a Beehiiv em **NFD**
+ * (`ja` + U+0301 combinante). São strings `!==` que renderizam idênticas —
+ * um `new Set` cru mantém as duas e a manchete sai repetida no dataset
+ * (achado ao vivo 17/09/2026, ao regenerar `mercado-trabalho`:
+ * "Tem 22 a 25 anos? A IA já pode afetar seu emprego" duplicada dentro da
+ * MESMA entrada). A chave de comparação é NFC, e a forma guardada também —
+ * NFC é o que o resto do repo e a web assumem.
+ *
+ * Isto conserta a união AQUI; a divergência na origem continua existindo
+ * pra todo consumidor da camada unificada que compare título entre as duas
+ * origens.
+ */
+export function dedupeBySlug(rows: readonly HubSourceEntry[]): HubSourceEntry[] {
+  const unionNfc = (a: readonly string[], b: readonly string[]): string[] => {
+    const seen = new Map<string, string>();
+    for (const value of [...a, ...b]) {
+      const nfc = value.normalize("NFC");
+      if (!seen.has(nfc)) seen.set(nfc, nfc);
+    }
+    return [...seen.values()];
+  };
+
+  const bySlug = new Map<string, HubSourceEntry>();
+  for (const row of rows) {
+    const kept = bySlug.get(row.editionSlug);
+    if (!kept) {
+      bySlug.set(row.editionSlug, row);
+      continue;
+    }
+    const primary = unionNfc(kept.primarySourceUrls ?? [], row.primarySourceUrls ?? []);
+    bySlug.set(row.editionSlug, {
+      ...kept,
+      matchedHeadlines: unionNfc(kept.matchedHeadlines, row.matchedHeadlines),
+      ...(primary.length > 0 ? { primarySourceUrls: primary } : {}),
+      // NFC explícito, não "o título de quem sobreviveu": sem isto a forma
+      // Unicode gravada dependeria de qual origem o cache listou primeiro,
+      // e o arquivo COMMITADO mudaria sozinho entre regens só por ordem de
+      // leitura de diretório.
+      editionTitle: (kept.editionTitle ?? row.editionTitle)?.normalize("NFC"),
+    });
+  }
+  return [...bySlug.values()];
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   computeHubSourcesDiff,
   writeGeneratedHubSources,
   mergeManualHubSources,
+  dedupeBySlug,
   type HubSourceEntry,
 } from "../scripts/generate-hub-sources.ts";
 import type { RawCachedPost } from "../scripts/generate-arquivo-titles.ts";
@@ -42,6 +43,73 @@ describe("collectHubSources (#4558 Parte A)", () => {
     const { rows } = collectHubSources(posts, PATTERN);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].matchedHeadlines.length, 1);
+  });
+
+  it("exclui envio de teste do Stage 5 (teste-*) e variante Patronos (*-patronos) da superfície pública", () => {
+    // Os dois chegam como `status: "confirmed"` no cache unificado desde o
+    // cutover pro Kit — indistinguíveis de edição real por status. Sem o
+    // filtro, o regen de 17/09/2026 pôs 5 `teste-*` e 1 `-patronos` em
+    // páginas públicas de hub.
+    const posts: RawCachedPost[] = [
+      { slug: "teste-claude-faz-algo", title: "Claude faz algo", status: "confirmed", publish_date: 1753000000 },
+      {
+        slug: "claude-faz-algo-patronos",
+        title: "Claude faz algo - patronos",
+        status: "confirmed",
+        publish_date: 1753000100,
+      },
+      { slug: "claude-faz-algo", title: "Claude faz algo", status: "confirmed", publish_date: 1753000200 },
+    ];
+    const { rows } = collectHubSources(posts, PATTERN);
+    assert.deepEqual(
+      rows.map((r) => r.editionSlug),
+      ["claude-faz-algo"],
+      "envio de teste ou variante Patronos vazou pra superfície pública",
+    );
+  });
+
+  it("uma edição publicada nos DOIS ESPs (canal Kit paralelo, #6114) entra uma vez só", () => {
+    // Mesmo slug, mesmo dia, duas origens — a camada unificada devolve as
+    // duas corretamente (são dois envios reais); a página de hub não pode
+    // listar a mesma matéria duas vezes.
+    const posts: RawCachedPost[] = [
+      { slug: "claude-faz-algo", title: "Claude faz algo", status: "confirmed", publish_date: 1753000000 },
+      { slug: "claude-faz-algo", title: "Claude faz algo", status: "confirmed", publish_date: 1753000030 },
+    ];
+    const { rows } = collectHubSources(posts, PATTERN);
+    assert.equal(rows.length, 1, "edição duplicada entre Beehiiv e Kit virou duas entradas no hub");
+  });
+
+  it("dedupeBySlug une manchetes comparando em NFC — Kit manda NFC, Beehiiv manda NFD", () => {
+    // Achado ao vivo 17/09/2026: o MESMO título vem em normalizações
+    // diferentes das duas origens, então `new Set` cru guarda os dois e a
+    // manchete sai repetida dentro da mesma entrada.
+    const titulo = "Claude submetido a análise psicológica";
+    const base: HubSourceEntry = {
+      date: "2026-09-10",
+      editionSlug: "claude-analise",
+      url: "https://diar.ia.br/p/claude-analise",
+      matchedHeadlines: [titulo.normalize("NFD")],
+      editionTitle: titulo.normalize("NFD"),
+    };
+    const gemeo: HubSourceEntry = { ...base, matchedHeadlines: [titulo.normalize("NFC")] };
+
+    const [row] = dedupeBySlug([base, gemeo]);
+    assert.deepEqual(row.matchedHeadlines, [titulo.normalize("NFC")]);
+    assert.equal(row.editionTitle, titulo.normalize("NFC"), "editionTitle precisa ser NFC determinístico");
+  });
+
+  it("dedupeBySlug preserva a fonte primária que só uma das duas origens resolveu", () => {
+    const base: HubSourceEntry = {
+      date: "2026-09-10",
+      editionSlug: "claude-analise",
+      url: "https://diar.ia.br/p/claude-analise",
+      matchedHeadlines: ["Claude faz algo"],
+    };
+    const comFonte: HubSourceEntry = { ...base, primarySourceUrls: ["https://exemplo.com/fonte"] };
+
+    const [row] = dedupeBySlug([base, comFonte]);
+    assert.deepEqual(row.primarySourceUrls, ["https://exemplo.com/fonte"]);
   });
 
   it("ignora posts não confirmados (draft)", () => {

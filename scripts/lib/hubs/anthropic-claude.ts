@@ -172,7 +172,18 @@ const PUBLISHED_DATE = "2026-08-04";
 // Mythos) que `sections[2]`/FAQ já cobrem, e o gap de 38 dias desde o
 // lançamento anterior (27/07) fica abaixo do hiato de 125 dias já citado
 // como "o" hiato longo do período, então não abre um 3º surto.
-const UPDATED_DATE = "2026-09-03";
+//
+// 2026-09-17 (#7101, sessão /diaria-desbloqueia): `generate-hub-sources.ts`
+// trouxe 1 edição nova (10/09/2026, "Pesquisador da Anthropic teme fim da
+// humanidade", fonte primária BBC). Bump de PISO, não de corpo — mesmo caso
+// do #6274 e do #5123: `validateHubContent` exige `updatedDate >=` a edição
+// mais recente de `sourceEditions`, e a prosa hand-authored não mudou.
+// Sem seção nova: declaração pública de um pesquisador sobre risco
+// existencial não abre eixo próprio — é cobertura do MESMO tema de
+// segurança/alinhamento que o hub já narra, e `sections` deste hub deriva
+// título de `matchedHeadlines`, então a edição entra na lista sem exigir
+// reescrita.
+const UPDATED_DATE = "2026-09-17";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
  * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a
