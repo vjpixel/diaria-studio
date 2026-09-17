@@ -38,13 +38,14 @@ import {
   computeMonthBudgetUsage,
   MONTHLY_BUDGET_FLOOR_BRL,
   filterInternalAndTestSubscribers,
+  subscribersForChannel,
   type CacReport,
   type MonthBudgetUsage,
 } from "../lib/cac.ts";
 import { loadOrigemIndex, loadPreparedSubscribers } from "../cac-report.ts";
 import { openDiariaSubscribersDbSafe } from "../lib/diaria-subscribers-db.ts";
 import { buildCacCompatibleSubscribersFromStore } from "../lib/leitor-store.ts";
-import { assertValidRunState, type AdsTestRunState } from "../lib/ads-test-run-state.ts";
+import { assertValidRunState, ADS_TEST_2608_BRACOS, type AdsTestRunState } from "../lib/ads-test-run-state.ts";
 import { daysBetween } from "../lib/ads-test-schedule.ts";
 import { resolveKitConfig } from "../lib/kit-config.ts";
 import {
@@ -57,10 +58,12 @@ import {
   buildChannelTable,
   buildTestStateTiles,
   computeSourceFreshness,
+  computeCampaignPauseStatus,
   type CumulativeSeriesResult,
   type ChannelSummaryRow,
   type TestStateTiles,
   type SourceFreshnessEntry,
+  type ChannelActiveCounts,
 } from "../lib/ads-campaign-economics.ts";
 import {
   parseSocialFollowersJsonl,
@@ -401,6 +404,10 @@ export interface BuildAdsCampaignEconomicsOptions {
   /** Fallback manual de gasto (#8210 Bug 3c) — default
    *  `data/aquisicao/spend.csv`, mesmo arquivo de `buildAdsData`. */
   spendPath?: string;
+  /** Store unificado pro funil por canal (#8210 melhoria 1) — default
+   *  `data/diaria-subscribers/diaria-subscribers.db`, mesmo arquivo de
+   *  `buildAdsData`. */
+  storePath?: string;
   /** Injetáveis pra teste — default `fetch`/`process.env` reais. */
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
@@ -500,9 +507,37 @@ export async function buildAdsCampaignEconomics(
     channelsWithUnknownLiveSpend.size > 0
       ? loadManualSpendFallback(opts.spendPath ?? resolve(rootDir, "data", "aquisicao", "spend.csv"))
       : {};
+
+  // #8210 melhoria 1 — funil cliques→cadastros→ativos: ativos vêm do STORE
+  // unificado (mesmo caminho de `buildAdsData`/`loadStoreSubscribers`),
+  // filtrado pelas MESMAS `CHANNEL_KEY_SPECS` que já casam os 3 nomes de
+  // canal "(teste 2608)" (`ADS_TEST_2608_BRACOS`). Store ausente/ilegível
+  // nesta máquina (nenhuma ingestão rodou ainda) deixa o mapa vazio — cada
+  // linha sai com `ativosTotal: null`, nunca `0` (mesmo invariante do gasto
+  // desconhecido, `buildChannelTable` acima).
+  const storePath = opts.storePath ?? resolve(rootDir, "data", "diaria-subscribers", "diaria-subscribers.db");
+  const storeResult = loadStoreSubscribers(storePath);
+  const activeCountsByChannel: Record<string, ChannelActiveCounts> = {};
+  if (storeResult) {
+    for (const canal of ADS_TEST_2608_BRACOS) {
+      const channelSubs = subscribersForChannel(storeResult.subs, canal);
+      activeCountsByChannel[canal] = {
+        ativos: channelSubs.filter((s) => s.status === "active").length,
+        totalNoStore: channelSubs.length,
+      };
+    }
+  }
+
+  // #8210 melhoria 2 — badge ativa/pausada, mesmo valor pros 3 braços
+  // (pausas são da campanha inteira — ver docstring de
+  // `computeCampaignPauseStatus`).
+  const pauseStatus = computeCampaignPauseStatus(runState?.revisao, todayIso);
+
   const channels = buildChannelTable(sourcesResult.metrics, sourcesResult.signups, {
     channelsWithUnknownLiveSpend,
     manualFallback,
+    activeCountsByChannel,
+    pauseStatus,
   });
   const testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, runState, todayIso);
   const freshness = computeSourceFreshness(sourcesResult.sources, nowMs);

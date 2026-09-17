@@ -169,3 +169,16 @@
 .ads-chart-legend-swatch.c2 {
   background: var(--status-warn-ink);
 }
+
+/* #8210 melhoria 1 — % ativo/ativos com "n" abaixo do piso
+   (ATIVOS_AMOSTRA_MIN em ads.js) fica esmaecido, nunca escondido. */
+.ads-dim {
+  opacity: 0.55;
+}
+
+/* #8210 melhoria 2 — badge ativa/pausada/desconhecido por braço. Reusa
+   .state-badge de integracoes.css (já linkado em ads.html); só as 3 cores
+   são específicas desta página. */
+.state-ativa { background: var(--status-ok); color: var(--on-status); border-color: var(--status-ok); }
+.state-pausada { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
+.state-desconhecido { background: var(--paper-alt); opacity: 0.6; }

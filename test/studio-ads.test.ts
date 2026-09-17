@@ -338,6 +338,88 @@ describe("buildAdsCampaignEconomics — run-state.json presente + fontes respond
       assert.equal(googleRow.custoPorCadastroBrl, 5);
       const googleFreshness = data.freshness.find((f) => f.source === "Google Ads")!;
       assert.equal(googleFreshness.status, "ok");
+      // #8210 melhoria 1/2: sem store nesta fixture (nenhum DB em
+      // data/diaria-subscribers/) e sem `revisao` no run-state.json — nunca
+      // 0/"ativa" por omissão.
+      assert.equal(googleRow.ativosTotal, null, "sem store ingerido — ativosTotal nunca vira 0");
+      assert.equal(googleRow.ativosAmostraN, 0);
+      assert.equal(googleRow.pctAtivo, null);
+      assert.equal(googleRow.pauseStatus, "desconhecido", "sem revisao.pausas — nunca 'ativa' por omissão");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#8210 melhoria 1 — buildAdsCampaignEconomics: funil por canal a partir do store unificado", () => {
+  it("store presente (Kit) com cadastro 'meta-ads' active — canal Meta Ads (teste 2608) ganha ativosTotal > 0, n visível", async () => {
+    clearAdsCampaignEconomicsCache();
+    const root = makeRoot();
+    try {
+      writeRunState(root);
+      const storeDir = join(root, "data", "diaria-subscribers");
+      mkdirSync(storeDir, { recursive: true });
+      const storePath = join(storeDir, "diaria-subscribers.db");
+      const db = openDiariaSubscribersDb(storePath);
+      const subscriberId = ensureSubscriber(db, "kit", "kit-1", "leitor-kit@example.com", "2026-01-02T00:00:00.000Z");
+      upsertSubscription(
+        db,
+        subscriberId,
+        "kit",
+        { status: "active", enteredAt: "2026-01-02T00:00:00.000Z", exitedAt: null, source: "kit", utmSource: "meta-ads" },
+        "2026-01-02T00:00:00.000Z",
+      );
+      db.close();
+
+      const fetchImpl = (async () => jsonResponse(200, { results: [] })) as typeof fetch;
+      const data = await buildAdsCampaignEconomics(root, { now: () => new Date("2026-01-05T12:00:00Z"), env: {}, fetchImpl });
+
+      const metaRow = data.channels.find((c) => c.canal === "Meta Ads (teste 2608)")!;
+      assert.ok(metaRow, "canal Meta Ads (teste 2608) deveria aparecer (activeCountsByChannel cobre os 3 braços de ADS_TEST_2608_BRACOS)");
+      assert.equal(metaRow.ativosTotal, 1);
+      assert.equal(metaRow.ativosAmostraN, 1);
+      assert.equal(metaRow.pctAtivo, 1);
+
+      // Braço sem NENHUM subscriber no store ainda ganha entrada com
+      // ativosTotal=0 (dado real medido — "0 de 0" é diferente de
+      // "desconhecido"), nunca aparece ausente do mapa.
+      const googleRow = data.channels.find((c) => c.canal === "Google Ads (teste 2608)")!;
+      assert.equal(googleRow.ativosTotal, 0);
+      assert.equal(googleRow.ativosAmostraN, 0);
+      assert.equal(googleRow.pctAtivo, null, "sem amostra (n=0) — pctAtivo continua null, nunca 0/0");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#8210 melhoria 2 — buildAdsCampaignEconomics: badge ativa/pausada a partir de revisao.pausas", () => {
+  it("today dentro de revisao.pausas — os 3 braços saem com pauseStatus='pausada'", async () => {
+    clearAdsCampaignEconomicsCache();
+    const root = makeRoot();
+    try {
+      const dir = join(root, "data", "aquisicao", "teste-2608");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "run-state.json"),
+        JSON.stringify({
+          d0: "2026-01-01",
+          fim_janela: "2026-01-15",
+          religar_brevo: "2026-01-22",
+          coorte_madura: "2026-02-11",
+          apuracao_snapshot: "2026-02-15",
+          bracos: ["Google Ads (teste 2608)", "Microsoft Ads (teste 2608)", "Meta Ads (teste 2608)"],
+          registrado_em: "2026-01-01T00:00:00.000Z",
+          revisao: { pausas: [{ desde: "2026-01-04", ate: "2026-01-06" }] },
+        }),
+        "utf8",
+      );
+
+      const fetchImpl = (async () => jsonResponse(200, { results: [] })) as typeof fetch;
+      const data = await buildAdsCampaignEconomics(root, { now: () => new Date("2026-01-05T12:00:00Z"), env: {}, fetchImpl });
+
+      assert.ok(data.channels.length > 0);
+      assert.ok(data.channels.every((c) => c.pauseStatus === "pausada"));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

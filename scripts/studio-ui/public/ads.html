@@ -70,18 +70,27 @@
       <div id="campaign-chart-legend" class="ads-chart-legend"></div>
 
       <h3>Canais (tabela)</h3>
-      <p class="hint">Cada linha usa só os dados do próprio canal — nunca uma média entre canais.</p>
+      <p class="hint">
+        Cada linha usa só os dados do próprio canal — nunca uma média entre
+        canais. "Ativos (store)"/"% ativo" vêm do store unificado
+        (Kit+Beehiiv); "—" esmaecido quando o store ainda não tem dado desse
+        canal (nunca 0). Status ativa/pausada é o mesmo pros 3 braços
+        (pausas são da campanha inteira).
+      </p>
       <div class="table-scroll">
         <table class="triage-table">
           <thead>
             <tr>
               <th>Canal</th>
+              <th>Status</th>
               <th>Gasto</th>
               <th>Cliques</th>
               <th>Impressões</th>
               <th>CPC médio</th>
               <th>Cadastros</th>
               <th>Custo/cadastro</th>
+              <th>Ativos (store)</th>
+              <th>% ativo</th>
             </tr>
           </thead>
           <tbody id="campaign-channels-tbody"></tbody>
