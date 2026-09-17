@@ -1176,12 +1176,17 @@ export async function resolveSdPromptDescription(
     fetchError = e instanceof Error ? e.message : String(e);
     return null;
   });
-  if (enImage?.description?.text) {
-    return { text: enImage.description.text, locale: "en" };
+  // #8198 (mesma causa, superfície do fetch EN): o POTD em `en` pode vir
+  // com o mesmo shape novo (só `structured.captions`), então ler
+  // `.description.text` direto aqui cairia em `pt_fallback` mesmo havendo
+  // legenda EN disponível.
+  const enText = enImage ? resolveDescriptionText(enImage) : undefined;
+  if (enText) {
+    return { text: enText, locale: "en" };
   }
   const message = fetchError
     ? `image_generator="${imageGenerator}" (!= gemini) e description é pt, mas o fetch EN de fallback FALHOU (${fetchError}) — prompt SD seguirá em pt-BR (#4620), pode degradar fidelidade do backend Stable Diffusion.`
-    : `image_generator="${imageGenerator}" (!= gemini) e description é pt, mas o fetch EN de fallback veio SEM description.text (sem erro — provavelmente não há POTD nessa data no locale en) — prompt SD seguirá em pt-BR (#4620), pode degradar fidelidade do backend Stable Diffusion.`;
+    : `image_generator="${imageGenerator}" (!= gemini) e description é pt, mas o fetch EN de fallback veio SEM texto de descrição (nem description.text nem structured.captions; sem erro — provavelmente não há POTD nessa data no locale en) — prompt SD seguirá em pt-BR (#4620), pode degradar fidelidade do backend Stable Diffusion.`;
   process.stderr.write(`[eia-compose] warn: ${message}\n`);
   logEvent({ edition, stage: 3, agent: "eia-compose", level: "warn", message, details: { imageDate, imageGenerator, fetchError } }, rootDir);
   return { text: fallbackText, locale: "pt_fallback" };

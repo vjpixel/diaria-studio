@@ -2030,6 +2030,20 @@ describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente
     assert.equal(calledWithIso, "2026-08-04");
   });
 
+  // #8198 (mesma causa raiz, superfície do fetch EN — finding 1 do self-review
+  // da PR #8213): o POTD em `en` pode vir com o shape novo (só
+  // `structured.captions`, sem `description` nenhum) igual ao pt que motivou a
+  // issue. Ler `.description.text` direto aqui degradava pra `pt_fallback`
+  // mesmo havendo legenda EN perfeitamente utilizável.
+  it("#8198: comfyui + description pt + fetch EN devolve SÓ structured.captions.en → usa a legenda EN, locale=en (não degrada pra pt_fallback)", async () => {
+    const fetchEn = async () => ({
+      structured: { captions: { en: "Buddhist monks light candles at the festival." } },
+    });
+    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", EDITION, fetchEn);
+    assert.equal(result.text, "Buddhist monks light candles at the festival.");
+    assert.equal(result.locale, "en");
+  });
+
   it("image_generator=cloudflare + description pt + fetch EN falha (exceção) → fail-soft, cai pro texto pt, locale=pt_fallback, warn em stderr E run-log com a mensagem de erro real", async () => {
     const tmpRoot = makeTmpRoot();
     const fetchEn = async () => {
@@ -2072,7 +2086,7 @@ describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente
     const entries = readRunLog(tmpRoot) as Array<{ message: string; details: { fetchError: string | null } }>;
     assert.equal(entries.length, 1);
     assert.equal(entries[0].details.fetchError, null, "sem exceção — não deve inventar uma mensagem de erro");
-    assert.match(entries[0].message, /SEM description\.text \(sem erro/);
+    assert.match(entries[0].message, /SEM texto de descrição \(nem description\.text nem structured\.captions; sem erro/);
   });
 
   it("image_generator=comfyui + description pt + fetch EN retorna null → fail-soft, cai pro texto pt, locale=pt_fallback", async () => {
