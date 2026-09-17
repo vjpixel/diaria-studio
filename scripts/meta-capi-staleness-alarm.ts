@@ -193,7 +193,20 @@ async function main(): Promise<void> {
           .join("\n");
       return buildMetaCapiStalenessAlarmEmail(evaluation, issueLines);
     },
-    { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride },
+    {
+      cwd: ROOT,
+      platformConfigPath: PLATFORM_CONFIG_PATH,
+      emailTo: toOverride,
+      // #8271: fingerprint é "never-fired"/"stale" (`toAlarmFinding`) — uma
+      // ocorrência por dia de staleness, não um conjunto persistente que
+      // precisa cutucar toda execução enquanto não resolvido (diferente de
+      // on-hold-vencimento-alarm.ts/route-marker-staleness-alarm.ts, que
+      // mantêm o default). Reexecução no MESMO dia reusa a issue (`action:
+      // "reused"`) e não deve re-emitir e-mail sob `email_policy: "legacy"`
+      // — era esse o dedup que o estado próprio `lastAlarmedDay` fazia
+      // antes da migração #8251.
+      legacyResendIntent: "dedupe-new-occurrences-only",
+    },
   );
   if (result.qualifying.length === 0) {
     console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);

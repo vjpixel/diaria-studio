@@ -166,7 +166,22 @@ async function main(): Promise<void> {
     findingOutcomes,
     "acao",
     (qualifying) => buildLinkedinWeeklyStalenessAlarmEmail(cycle, qualifying[0]),
-    { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride },
+    {
+      cwd: ROOT,
+      platformConfigPath: PLATFORM_CONFIG_PATH,
+      emailTo: toOverride,
+      // #8271: o fingerprint aqui é o CICLO (`toAlarmFinding`) — uma
+      // ocorrência por ciclo faltante, não um conjunto persistente que
+      // precisa continuar cutucando enquanto não resolvido (diferente de
+      // on-hold-vencimento-alarm.ts/route-marker-staleness-alarm.ts, que
+      // mantêm o default). Reexecução no MESMO ciclo (retry manual, disparo
+      // duplicado do cron) reusa a issue (`action: "reused"`) e não deve
+      // re-emitir e-mail sob `email_policy: "legacy"` — era esse o dedup
+      // que o estado próprio `lastAlarmedCycle` fazia antes da migração
+      // #8251, e que a policy `legacy` (default global, action !== "failed")
+      // não reproduzia sozinha.
+      legacyResendIntent: "dedupe-new-occurrences-only",
+    },
   );
   if (result.qualifying.length === 0) {
     console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
