@@ -2,7 +2,10 @@
 
 Issue: [#5249](https://github.com/vjpixel/diaria-studio/issues/5249) (depende de [#5235](https://github.com/vjpixel/diaria-studio/issues/5235)/[#5236](https://github.com/vjpixel/diaria-studio/issues/5236), já mergeadas).
 
-Não existia nenhuma tarefa vigiando degradação de canal de aquisição. Este alarme roda **semanalmente**, sobre o snapshot já produzido pela task `Diaria-Beehiiv-Backup` (`data/beehiiv-backup/`, #5229) — **nunca chama a API Beehiiv ao vivo**.
+Não existia nenhuma tarefa vigiando degradação de canal de aquisição. Este alarme roda **semanalmente** — a fonte depende de `publishing.newsletter.subscriber_backend` (`platform.config.json`):
+
+- `"beehiiv"` (default): sobre o snapshot já produzido pela task `Diaria-Beehiiv-Backup` (`data/beehiiv-backup/`, #5229) — **nunca chama a API Beehiiv ao vivo**.
+- qualquer outro valor (hoje `"kit"`, desde a migração #7386/#7395): sobre o store unificado (`data/diaria-subscribers/`, `scripts/lib/acquisition-health-store.ts`, #8243 item 2) — a Beehiiv fica congelada pós-migração e continuar lendo o snapshot morto fabricava achados falsos (`sobrevivência 0%` medido ao vivo em 06/09 e 13/09/2026, #8086). Só cadastro **NATIVO** do Kit entra no denominador de sobrevivência — a migração em bloco (que copiou só quem estava ativo na Beehiiv) é excluída para não inflar o número no sentido oposto (viés de sobrevivente). CTR por canal fica suprimido enquanto a identidade partida do Kit (#8236) não for corrigida — a métrica de sobrevivência já é confiável, o CTR não.
 
 ## Os 3 sinais
 
