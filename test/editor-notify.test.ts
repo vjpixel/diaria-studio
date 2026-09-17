@@ -322,3 +322,101 @@ describe("notifyEditorForOutcomes (#7960)", () => {
     assert.equal(result.emailError, "smtp indisponível");
   });
 });
+
+/**
+ * `legacyResendIntent` (#8271) — regressão achada no review consolidado da
+ * rodada `/diaria-overnight` 260917b sobre a migração #8251: sob
+ * `email_policy: "legacy"`, `shouldEmailForIssueOutcome` tratava
+ * `action: "reused"` igual a `"created"`, reintroduzindo o e-mail duplicado
+ * que a dedup POR-SCRIPT (`lastAlarmedCycle`/`lastAlarmedDay`) impedia antes
+ * de `linkedin-weekly-staleness-alarm.ts`/`meta-capi-staleness-alarm.ts`
+ * migrarem pro portão. Ao mesmo tempo, `on-hold-vencimento-alarm.ts`/
+ * `route-marker-staleness-alarm.ts` (citados nominalmente na #7960) DEPENDEM
+ * de reenvio periódico intencional em `"reused"` — o fix não pode
+ * silenciá-los.
+ */
+describe("shouldEmailForIssueOutcome + legacyResendIntent (#8271)", () => {
+  const created: AlarmIssueResult = { issueNumber: 1, url: "u", action: "created" };
+  const reused: AlarmIssueResult = { issueNumber: 1, url: "u", action: "reused" };
+  const reopened: AlarmIssueResult = { issueNumber: 1, url: "u", action: "reopened" };
+  const updated: AlarmIssueResult = { issueNumber: 1, url: "u", action: "updated" };
+
+  it("default (sem legacyResendIntent) preserva o comportamento histórico: 'reused' ainda e-mailia sob legacy", () => {
+    assert.equal(shouldEmailForIssueOutcome("acao", reused, "legacy"), true);
+    assert.equal(shouldEmailForIssueOutcome("acao", updated, "legacy"), true);
+  });
+
+  it("'dedupe-new-occurrences-only': só 'created'/'reopened' e-mailiam sob legacy, 'reused'/'updated' não", () => {
+    assert.equal(shouldEmailForIssueOutcome("acao", created, "legacy", "dedupe-new-occurrences-only"), true);
+    assert.equal(shouldEmailForIssueOutcome("acao", reopened, "legacy", "dedupe-new-occurrences-only"), true);
+    assert.equal(shouldEmailForIssueOutcome("acao", reused, "legacy", "dedupe-new-occurrences-only"), false);
+    assert.equal(shouldEmailForIssueOutcome("acao", updated, "legacy", "dedupe-new-occurrences-only"), false);
+  });
+
+  it("'resend-every-run' explícito é equivalente ao default", () => {
+    assert.equal(shouldEmailForIssueOutcome("acao", reused, "legacy", "resend-every-run"), true);
+  });
+
+  it("legacyResendIntent não afeta 'urgent_only' (já é dedupe por construção)", () => {
+    assert.equal(shouldEmailForIssueOutcome("urgente", created, "urgent_only", "dedupe-new-occurrences-only"), true);
+    assert.equal(shouldEmailForIssueOutcome("urgente", reused, "urgent_only", "resend-every-run"), false);
+  });
+});
+
+describe("notifyEditorForOutcomes + legacyResendIntent (#8271) — critério de pronto da issue", () => {
+  function outcome(overrides: Partial<AlarmFindingOutcome> = {}): AlarmFindingOutcome {
+    return {
+      check: "meta-capi-staleness",
+      fingerprint: "stale",
+      issueNumber: 7001,
+      url: "https://github.com/vjpixel/diaria-studio/issues/7001",
+      action: "created",
+      ...overrides,
+    };
+  }
+
+  it("2 execuções seguidas do MESMO alarme na MESMA janela sob 'legacy': 1 e-mail só (piloto dedupe)", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
+    const buildMessage = (_q: readonly AlarmFindingOutcome[]) => ({ subject: "s", body: "b" });
+    const deps = { sendPush, emailPolicy: "legacy" as const, legacyResendIntent: "dedupe-new-occurrences-only" as const };
+
+    // 1ª execução: issue recém-criada -> e-mail.
+    const first = await notifyEditorForOutcomes([outcome({ action: "created" })], "acao", buildMessage, deps);
+    assert.equal(first.emailSent, true);
+
+    // 2ª execução, mesma janela: mesmo fingerprint reusa a issue -> SEM e-mail.
+    const second = await notifyEditorForOutcomes([outcome({ action: "reused" })], "acao", buildMessage, deps);
+    assert.equal(second.emailSent, false);
+    assert.deepEqual(second.qualifying, []);
+
+    assert.equal(sendPush.mock.callCount(), 1, "e-mail deveria ter sido enviado exatamente 1 vez nas 2 execuções");
+  });
+
+  it("remetente de reenvio periódico intencional (default, sem legacyResendIntent) continua reenviando em 'reused' sob legacy", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
+    const buildMessage = (_q: readonly AlarmFindingOutcome[]) => ({ subject: "s", body: "b" });
+    // Sem legacyResendIntent — mesmo padrão de on-hold-vencimento-alarm.ts/
+    // route-marker-staleness-alarm.ts, que chamam notifyEditor() sem passar
+    // o campo (fingerprint derivado do CONJUNTO de achados; achado que
+    // persiste semana após semana produz o mesmo fingerprint -> "reused").
+    const deps = { sendPush, emailPolicy: "legacy" as const };
+
+    const week1 = await notifyEditorForOutcomes(
+      [outcome({ check: "route-marker-staleness-alarm", fingerprint: "conjunto-x", action: "created" })],
+      "acao",
+      buildMessage,
+      deps,
+    );
+    assert.equal(week1.emailSent, true);
+
+    const week2 = await notifyEditorForOutcomes(
+      [outcome({ check: "route-marker-staleness-alarm", fingerprint: "conjunto-x", action: "reused" })],
+      "acao",
+      buildMessage,
+      deps,
+    );
+    assert.equal(week2.emailSent, true, "achado ainda pendente na semana seguinte deve continuar e-mailiando");
+
+    assert.equal(sendPush.mock.callCount(), 2);
+  });
+});

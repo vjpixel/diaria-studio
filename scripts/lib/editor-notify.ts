@@ -122,6 +122,10 @@ export interface NotifyEditorFinding {
   /** Default `"P2"` (CLAUDE.md: toda issue nasce com label de prioridade) —
    * repassado a `ensureAlarmIssue`, que já aplica esse default sozinho. */
   priority?: AlarmPriority;
+  /** #8271 — só relevante sob `email_policy: "legacy"`; ver docstring de
+   * `LegacyResendIntent`. Default `"resend-every-run"` (comportamento
+   * histórico). */
+  legacyResendIntent?: LegacyResendIntent;
 }
 
 export interface NotifyEditorDeps {
@@ -167,15 +171,60 @@ function defaultPlatformConfigPath(cwd: string): string {
   return `${cwd}/platform.config.json`;
 }
 
+/**
+ * Intenção de reenvio do REMETENTE sob `email_policy: "legacy"` (#8271,
+ * regressão achada no review consolidado 260917b sobre a migração #8251).
+ *
+ * A migração pra `notifyEditor`/`notifyEditorForOutcomes` tirou a dedup
+ * POR-SCRIPT que existia antes (`lastAlarmedCycle`/`lastAlarmedDay` e
+ * afins) e passou a decisão inteiramente pro portão — mas os remetentes
+ * migrados não são todos iguais quanto ao que "reenviar" deveria significar
+ * sob `legacy`:
+ *
+ *   - `"dedupe-new-occurrences-only"` — só manda e-mail quando o achado é
+ *     genuinamente NOVO (`action === "created"` ou `"reopened"`, nunca
+ *     `"reused"`/`"updated"`). É o que `linkedin-weekly-staleness-alarm.ts`
+ *     e `meta-capi-staleness-alarm.ts` precisam: antes da migração, rodar
+ *     2× na mesma janela (mesmo ciclo/dia) só e-mailiava na 1ª — o estado
+ *     próprio impedia a 2ª. Sem este campo, `legacy` tratava `"reused"`
+ *     igual a `"created"` e reintroduziu o e-mail duplicado que a dedup
+ *     antiga existia pra evitar.
+ *   - `"resend-every-run"` (default, preserva o comportamento histórico de
+ *     `legacy` pré-#8271) — manda e-mail em qualquer outcome bem-sucedido
+ *     (`action !== "failed"`), inclusive `"reused"`. É o que
+ *     `on-hold-vencimento-alarm.ts` e `route-marker-staleness-alarm.ts`
+ *     precisam DE PROPÓSITO (#7960): o fingerprint deles é derivado do
+ *     CONJUNTO de achados da execução atual, então um achado que continua
+ *     pendente semana após semana produz o MESMO fingerprint → `"reused"`
+ *     → e ainda assim precisa continuar cutucando o editor toda semana até
+ *     ele agir — "resend periódico enquanto não resolvido" é o
+ *     comportamento intencional, documentado nominalmente na #7960. Trocar
+ *     o default pra `"dedupe-new-occurrences-only"` silenciaria esses dois
+ *     alarmes depois da 1ª semana, o que é um defeito PIOR que o duplicado
+ *     que este campo corrige (alarme que silencia > alarme que repete).
+ *
+ * Todo remetente ainda não migrado (ALLOWLIST de
+ * `test/editor-notify-boundary.test.ts`) nunca passa este campo — herda o
+ * default `"resend-every-run"`, idêntico ao comportamento de `legacy` antes
+ * deste campo existir. Só quem sabe que seu fingerprint já é uma dedup por
+ * OCORRÊNCIA (não por conjunto persistente) deve optar por
+ * `"dedupe-new-occurrences-only"`.
+ */
+export type LegacyResendIntent = "dedupe-new-occurrences-only" | "resend-every-run";
+
+const DEFAULT_LEGACY_RESEND_INTENT: LegacyResendIntent = "resend-every-run";
+
 /** `true` se, sob `policy`, este resultado de `ensureAlarmIssue` deve gerar
  * e-mail — pura, sem I/O, exposta pra teste direto do rollout switch.
  *
  *   - `"urgent_only"`: só `severity === "urgente"` E `issue.action ===
- *     "created"` (issue RECÉM-CRIADA, nunca reused/reopened/updated).
- *   - `"legacy"`: qualquer `"acao"`/`"urgente"` com issue tratada com
- *     sucesso (`action !== "failed"`) — preserva "manda e-mail toda vez que
- *     há achado", o comportamento pré-#7957 de todo script ainda não
- *     migrado.
+ *     "created"` (issue RECÉM-CRIADA, nunca reused/reopened/updated) —
+ *     `legacyResendIntent` não se aplica aqui (já é dedupe por construção).
+ *   - `"legacy"`: `"acao"`/`"urgente"` com issue tratada com sucesso
+ *     (`action !== "failed"`) — QUANDO manda e-mail depende de
+ *     `legacyResendIntent` (ver docstring do tipo acima); default
+ *     `"resend-every-run"` preserva o comportamento pré-#8271 (qualquer
+ *     outcome bem-sucedido e-mailia).
  *
  * `"info"`/`"silencio"` nunca chegam aqui (tratados antes, sem issue).
  */
@@ -183,10 +232,15 @@ export function shouldEmailForIssueOutcome(
   severity: "acao" | "urgente",
   issue: AlarmIssueResult,
   policy: EmailPolicy,
+  legacyResendIntent: LegacyResendIntent = DEFAULT_LEGACY_RESEND_INTENT,
 ): boolean {
   if (issue.action === "failed") return false;
   if (policy === "urgent_only") return severity === "urgente" && issue.action === "created";
-  return true; // "legacy"
+  // "legacy"
+  if (legacyResendIntent === "dedupe-new-occurrences-only") {
+    return issue.action === "created" || issue.action === "reopened";
+  }
+  return true; // "resend-every-run"
 }
 
 /**
@@ -246,7 +300,7 @@ export async function notifyEditor(
     return { severity: finding.severity, emailPolicy, issue, emailSent: false };
   }
 
-  if (!shouldEmailForIssueOutcome(finding.severity, issue, emailPolicy)) {
+  if (!shouldEmailForIssueOutcome(finding.severity, issue, emailPolicy, finding.legacyResendIntent)) {
     return { severity: finding.severity, emailPolicy, issue, emailSent: false };
   }
 
@@ -272,6 +326,16 @@ export interface NotifyEditorForOutcomesDeps {
   sendPush?: (message: PushMessage, opts: { to?: string; platformConfigPath?: string }) => Promise<{ ok: boolean; error?: string }>;
   emailTo?: string;
   emailPolicy?: EmailPolicy;
+  /** #8271 — só relevante sob `email_policy: "legacy"`; ver docstring de
+   * `LegacyResendIntent`. Default `"resend-every-run"` (comportamento
+   * histórico — preserva o reenvio periódico intencional de
+   * `on-hold-vencimento-alarm.ts`/`route-marker-staleness-alarm.ts`, que
+   * chamam `notifyEditor` direto e nunca passam este campo). Callers de
+   * `notifyEditorForOutcomes` cujo fingerprint já dedupla por OCORRÊNCIA
+   * (ex: ciclo/dia, não um conjunto persistente de achados) devem passar
+   * `"dedupe-new-occurrences-only"` — caso de `linkedin-weekly-staleness-alarm.ts`
+   * e `meta-capi-staleness-alarm.ts`. */
+  legacyResendIntent?: LegacyResendIntent;
 }
 
 export interface NotifyEditorForOutcomesResult {
@@ -315,7 +379,7 @@ export async function notifyEditorForOutcomes(
   const emailPolicy = deps.emailPolicy ?? resolveEmailPolicy(platformConfigPath);
   const sendPush = deps.sendPush ?? sendPushNotification;
 
-  const qualifying = outcomes.filter((o) => shouldEmailForIssueOutcome(severity, o, emailPolicy));
+  const qualifying = outcomes.filter((o) => shouldEmailForIssueOutcome(severity, o, emailPolicy, deps.legacyResendIntent));
   if (qualifying.length === 0) {
     return { emailPolicy, emailSent: false, qualifying: [] };
   }
