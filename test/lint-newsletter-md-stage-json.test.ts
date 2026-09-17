@@ -180,13 +180,14 @@ describe("runStage4LintReport (#5416)", () => {
     rmSync(editionDir, { recursive: true, force: true });
   });
 
-  it("18 checks presentes (17 do MD + agradecimento-hardcoded)", () => {
+  it("19 checks presentes (18 do MD + agradecimento-hardcoded, #8200 adicionou destaque-category-noticias)", () => {
     const editionDir = makeEditionDir();
     const report = runStage4LintReport(editionDir, PROJECT_ROOT);
     const ids = report.checks.map((c) => c.id).sort();
     assert.deepEqual(ids, [
       "agradecimento-hardcoded",
       "banned-lexicon",
+      "destaque-category-noticias",
       "mid-sentence-ellipsis",
       "no-trailing-ellipsis",
       "no-untranslated-summary",
@@ -424,8 +425,9 @@ describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malfor
     assert.ok(trailingPeriod, "title-trailing-period deveria continuar presente");
     assert.deepEqual(trailingPeriod.result, checkTitleTrailingPeriod(buildMd()));
 
-    // Todos os 18 checks continuam presentes — nenhum foi engolido (#7260 adicionou banned-lexicon).
-    assert.equal(out.checks.length, 18);
+    // Todos os 19 checks continuam presentes — nenhum foi engolido (#7260
+    // adicionou banned-lexicon, #8200 adicionou destaque-category-noticias).
+    assert.equal(out.checks.length, 19);
 
     rmSync(dir, { recursive: true, force: true });
   });

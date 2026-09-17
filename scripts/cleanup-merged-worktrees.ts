@@ -181,10 +181,11 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { listActiveSessions, type SessionRecord } from "./lib/session-registry.ts";
+import { removeWorktreeDirSafely, findWorktreeHusks } from "./lib/worktree-remove.ts"; // #8209
 // #7044 + #7048: a extração pro módulo compartilhado vale pro guard PURO
 // (`shouldSkipForSharedSession`, re-exportado abaixo e reusado por
 // `scripts/branch-cleanup.ts`), mas NÃO pro `listActiveSessionsSafe` — o #7048
@@ -562,8 +563,20 @@ export function getWorktreeMtimeMsSafe(path: string): number | null {
   }
 }
 
-/** `git worktree remove --force {path}` — nunca lança; retorna resultado pro caller logar. */
+/**
+ * `git worktree remove --force {path}` — nunca lança; retorna resultado pro
+ * caller logar. **#8209**: no Windows, `git worktree remove` apaga os
+ * arquivos rastreados e a metadata do worktree mas NÃO remove o diretório
+ * quando ele contém junction (`node_modules`/`data`) — sobra uma "casca"
+ * sem `.git`. Depois do `git worktree remove` retornar (sucesso OU falha —
+ * a metadata pode já ter sido limpa mesmo num exit não-zero de aviso), se o
+ * diretório ainda existir, `removeWorktreeDirSafely` faz a limpeza segura
+ * (remove os links primeiro, sem seguir pro alvo, só então o resto) — nunca
+ * um `rm -rf`/equivalente que seguiria a junction pro `node_modules` do
+ * checkout principal ou pro `data/` do OneDrive.
+ */
 export function removeWorktreeSafe(path: string, cwd: string): { ok: boolean; error?: string } {
+  let gitError: string | undefined;
   try {
     const result = spawnSync("git", ["worktree", "remove", "--force", path], {
       cwd,
@@ -571,12 +584,24 @@ export function removeWorktreeSafe(path: string, cwd: string): { ok: boolean; er
       timeout: GH_TIMEOUT_MS,
     });
     if (result.status !== 0) {
-      return { ok: false, error: (result.stderr || result.stdout || `exit ${result.status}`).trim() };
+      gitError = (result.stderr || result.stdout || `exit ${result.status}`).trim();
     }
-    return { ok: true };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    gitError = (e as Error).message;
   }
+
+  if (!existsSync(path)) {
+    return gitError ? { ok: false, error: gitError } : { ok: true };
+  }
+
+  // #8209: diretório sobreviveu ao `git worktree remove` (com ou sem erro
+  // reportado) — provavelmente casca com junction. Limpeza segura de rede.
+  const cleanup = removeWorktreeDirSafely(path);
+  if (!cleanup.dirRemoved) {
+    const combined = [gitError, ...cleanup.errors].filter(Boolean).join("; ");
+    return { ok: false, error: combined || "diretório sobreviveu à limpeza, sem detalhe de erro" };
+  }
+  return { ok: true };
 }
 
 function listWorktreesSafe(cwd: string): WorktreeEntry[] {
@@ -1005,6 +1030,37 @@ function main(): void {
 
     if (!dryRun) {
       console.log(`[cleanup-merged-worktrees] fim: ${removed} removido(s), ${failed} falha(s).`);
+    }
+
+    // #8209: varredura de CASCAS — diretórios sob `.claude/worktrees/` que
+    // sobraram de um `git worktree remove` anterior que não conseguiu
+    // apagar o diretório por causa de junction/symlink (Windows), e por
+    // isso não são mais listados por `git worktree list` (a checagem acima
+    // parte dele). Exclui explicitamente qualquer path que `git worktree
+    // list` AINDA reconheça (`all`, antes de `excludeMainWorktree`) — nunca
+    // trata um worktree vivo como casca. Diretório com arquivo real (não
+    // husk, ex: cópia manual do repo) só é reportado, nunca apagado.
+    const worktreesDir = join(repoRoot, ".claude", "worktrees");
+    const stillTrackedPaths = new Set(all.map((e) => e.path));
+    const husks = findWorktreeHusks(worktreesDir, stillTrackedPaths);
+    if (husks.length > 0) {
+      if (dryRun) {
+        console.log(
+          `[cleanup-merged-worktrees] (dry-run) ${husks.length} casca(s) de worktree (#8209) seriam removidas: ${husks.join(", ")}.`,
+        );
+      } else {
+        let huskRemoved = 0;
+        for (const husk of husks) {
+          const result = removeWorktreeDirSafely(husk);
+          if (result.dirRemoved) {
+            huskRemoved++;
+            console.log(`[cleanup-merged-worktrees] casca removida (#8209): ${husk}`);
+          } else {
+            console.warn(`[cleanup-merged-worktrees] falha ao remover casca ${husk}: ${result.errors.join("; ")}`);
+          }
+        }
+        console.log(`[cleanup-merged-worktrees] varredura de cascas (#8209): ${huskRemoved}/${husks.length} removida(s).`);
+      }
     }
   } catch (e) {
     console.warn(`[cleanup-merged-worktrees] erro inesperado, pulando cleanup (fail-soft): ${(e as Error).message}`);

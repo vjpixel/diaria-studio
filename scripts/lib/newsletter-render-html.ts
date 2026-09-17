@@ -960,7 +960,15 @@ export function renderIntroCallout(
   // `forceCtaPill=true`) e o box de campeões/sorteio (`ceremony`, marcador
   // 🎉 preservado — feature separada) continuam com título por outros
   // caminhos, sem passar por este branch.
-  if (paras.length > 1 && !sponsored && !forceCtaPill && !ceremony && !sectionTitle) {
+  //
+  // #8199: `sectionTitle` (livro detectado) some da exclusão quando
+  // `plainFirstParagraph` (`titulo: false` do snippet, #5882) é true — senão
+  // o branch abaixo (que SEMPRE sintetiza `BOOK_RECOMMENDATION_TITLE` como
+  // 1ª linha do corpo) duplica o rótulo "Recomendação de Leitura" que já sai
+  // como kicker externo (`categoria` do snippet). `plainFirstParagraph` só
+  // deveria REBAIXAR o estilo do título sintetizado, nunca causar sua
+  // OMISSÃO — o bug era o branch abaixo nunca ter essa saída.
+  if (paras.length > 1 && !sponsored && !forceCtaPill && !ceremony && (!sectionTitle || plainFirstParagraph)) {
     inner = paras
       .map((p, i) => renderBoxParagraph(p, i === 0 ? "0" : "12px 0 0"))
       .join("\n      ");
