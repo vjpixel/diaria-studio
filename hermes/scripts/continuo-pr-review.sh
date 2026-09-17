@@ -348,7 +348,11 @@ try_merge_gate() {
     0)
       REVIEWED_HEAD_SHA=$(printf '%s' "$GATE_JSON" | jq -r '.details.reviewedHeadSha // empty')
       echo "[continuo-pr-review] PR #$pr: merge"
-      # JSON cru vai só pro log local (editor: mensagens curtas no Telegram, 09/09)
+      # Editor (09/09): stdout é a entrega curta no Telegram; o JSON cru do gate
+      # vai pro STDERR, que o cron captura no log. Mesmo tratamento do
+      # transcript do `claude -p` logo abaixo. Silenciar de vez perderia o
+      # único rastro de POR QUE o gate decidiu assim (#8212 review, P2).
+      echo "$GATE_JSON" >&2
 
       # #6934: adquire o merge-lock cross-sessão IMEDIATAMENTE ANTES do
       # `gh pr merge` — nunca antes disso (o gate acima não toca o checkout
@@ -464,7 +468,11 @@ try_merge_gate() {
       trap - EXIT
       ;;
     1)
-      # JSON cru vai só pro log local (editor: mensagens curtas no Telegram, 09/09)
+      # Editor (09/09): stdout é a entrega curta no Telegram; o JSON cru do gate
+      # vai pro STDERR, que o cron captura no log. Mesmo tratamento do
+      # transcript do `claude -p` logo abaixo. Silenciar de vez perderia o
+      # único rastro de POR QUE o gate decidiu assim (#8212 review, P2).
+      echo "$GATE_JSON" >&2
       ESCALATED=$((ESCALATED + 1))
       # #7446 item 2: label idempotente + notificação só na PRIMEIRA vez que
       # esta PR escala — ticks seguintes contam ESCALATED em silêncio, sem
@@ -531,7 +539,11 @@ try_merge_gate() {
       ;;
     2)
       echo "[continuo-pr-review] PR #$pr: rejeitada"
-      # JSON cru vai só pro log local (editor: mensagens curtas no Telegram, 09/09)
+      # Editor (09/09): stdout é a entrega curta no Telegram; o JSON cru do gate
+      # vai pro STDERR, que o cron captura no log. Mesmo tratamento do
+      # transcript do `claude -p` logo abaixo. Silenciar de vez perderia o
+      # único rastro de POR QUE o gate decidiu assim (#8212 review, P2).
+      echo "$GATE_JSON" >&2
       REJECTED=$((REJECTED + 1))
       # #6926: comenta o motivo e (desde #7567) labela a PR — nunca
       # fecha/reabre a PR sozinho aqui (fora de escopo; fechamento de PR
@@ -777,7 +789,13 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   try_merge_gate "$PR"
 done
 
-echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))"
+# Entrega curta por padrão (editor, 09/09). `bloqueadas-por-lock` só aparece
+# quando NÃO-zero: o docblock de LOCK_BLOCKED chama esse contador de "sinal
+# agregado de isto aconteceu N vezes" — some da entrega no dia normal, mas
+# nunca justo no dia em que há contenção de lock pra relatar (#8212 review, P3).
+LOCK_NOTE=""
+[ "$LOCK_BLOCKED" -gt 0 ] 2>/dev/null && LOCK_NOTE=" bloqueadas-por-lock=$LOCK_BLOCKED"
+echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))$LOCK_NOTE"
 # #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
 # infra — a linha de resumo é o que o Telegram carrega; sem isso
 # "erros-de-infra=1" chegava sem nenhum rastro de causa. Log completo
