@@ -32,6 +32,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { exitWithError } from "./lib/exit-handler.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #535
+import { applySemanticTiebreaker, type CategorizedBuckets } from "./lib/semantic-tiebreaker.ts"; // #8211
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
 import {
   AI_RELEVANT_TERMS,
@@ -241,7 +242,7 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
 // CLI
 // ---------------------------------------------------------------------------
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
 
@@ -251,9 +252,21 @@ function main(): void {
 
   const articlesPath = values["articles"];
   const outPath = values["out"] ?? null;
+  const edition = values["edition"] ?? null; // #8211: opcional, só pra correlacionar no run-log
 
   const articles: Article[] = JSON.parse(readFileSync(articlesPath, "utf8"));
-  const result = categorizeArticles(articles);
+  let result: CategorizedBuckets = categorizeArticles(articles);
+
+  // #8211: passo OPCIONAL, atrás de flag (platform.config.json →
+  // semantic_tiebreaker.enabled), que reconsidera SÓ os artigos que caíram
+  // num dos dois defaults silenciosos (lancamento-default/noticias-default).
+  // Fail-soft — flag off, key ausente, ou falha de rede devolvem `result`
+  // sem nenhuma alteração (ver scripts/lib/semantic-tiebreaker.ts).
+  const tiebreak = await applySemanticTiebreaker(result, { edition });
+  result = tiebreak.result;
+  if (tiebreak.applied && tiebreak.reclassified > 0) {
+    console.log(`[categorize] #8211: tie-breaker semântico reclassificou ${tiebreak.reclassified} artigo(s)`);
+  }
 
   const stats = `lancamento:${result.lancamento.length} radar:${result.radar.length} use_melhor:${result.use_melhor.length} video:${result.video.length}`;
 
@@ -268,6 +281,9 @@ function main(): void {
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  main().catch((e) => {
+    console.error("[categorize] ERRO:", e);
+    process.exit(1);
+  });
 }
 
