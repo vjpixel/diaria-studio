@@ -227,7 +227,7 @@ function groupAliasesByCanonicalEmail(
     // item 3, duplicata DENTRO da mesma plataforma). Sem o flag (default),
     // o agrupamento é só por e-mail, cross-plataforma — o que
     // `resolveIdentitiesByEmail`/`planIdentityMerges` sempre usaram.
-    const key = scopeByPlatform ? `${r.platform} ${canon}` : canon;
+    const key = scopeByPlatform ? `${r.platform}::${canon}` : canon;
     let set = groups.get(key);
     if (!set) {
       set = new Set();
@@ -574,7 +574,7 @@ export function detectSamePlatformDuplicateIdentities(
 
   for (const [key, ids] of groups) {
     if (ids.size < 2) continue;
-    const sep = key.indexOf(" ");
+    const sep = key.indexOf("::");
     const platform = key.slice(0, sep) as Platform;
     totalGroups++;
     totalSubscribers += ids.size;
