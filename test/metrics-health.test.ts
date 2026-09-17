@@ -16,6 +16,7 @@ import {
   assertQuedaMinAbsCobreUnidades,
   evaluateFrescorFromCapturaLog,
   evaluateFrescorFromResult,
+  evaluateIdentidadeDuplicada,
   evaluateIndeterminadoCrescendo,
   evaluateMetaSinal,
   evaluateQueda,
@@ -388,6 +389,51 @@ describe("evaluateRegistryMudo (#6798 — a classe de defeito mais cara)", () =>
 
   it("registry genuinamente vazio (0 declaradas) não é este sinal", () => {
     assert.equal(evaluateRegistryMudo(0, 0), null);
+  });
+});
+
+describe("evaluateIdentidadeDuplicada (#8236 item 3 — identidade partida DENTRO da mesma plataforma)", () => {
+  it("0 grupos duplicados -> nenhum achado (nunca fabrica um finding sobre um store limpo)", () => {
+    const finding = evaluateIdentidadeDuplicada({
+      total_duplicate_email_groups: 0,
+      total_duplicate_subscribers: 0,
+      by_platform: [
+        { platform: "kit", duplicate_email_groups: 0, duplicate_subscribers: 0 },
+        { platform: "beehiiv", duplicate_email_groups: 0, duplicate_subscribers: 0 },
+      ],
+    });
+    assert.equal(finding, null);
+  });
+
+  it(">0 grupos duplicados -> achado sinal identidade-duplicada, motivo cita a plataforma e a contagem", () => {
+    const finding = evaluateIdentidadeDuplicada({
+      total_duplicate_email_groups: 285,
+      total_duplicate_subscribers: 295,
+      by_platform: [
+        { platform: "kit", duplicate_email_groups: 275, duplicate_subscribers: 283 },
+        { platform: "beehiiv", duplicate_email_groups: 7, duplicate_subscribers: 12 },
+        { platform: "brevo_diaria", duplicate_email_groups: 0, duplicate_subscribers: 0 },
+      ],
+    });
+    assert.ok(finding);
+    assert.equal(finding!.sinal, "identidade-duplicada");
+    assert.equal(finding!.metrica_id, "identidade-duplicada");
+    assert.match(finding!.motivo, /285/);
+    assert.match(finding!.motivo, /kit=275/);
+    assert.match(finding!.motivo, /beehiiv=7/);
+    assert.doesNotMatch(finding!.motivo, /brevo_diaria=0/, "plataforma com 0 fica fora do motivo — só as que têm duplicata");
+  });
+
+  it("toMetricsHealthAlarmFinding monta título/labels normalmente pro novo sinal (SINAL_LABEL wireado)", () => {
+    const finding = evaluateIdentidadeDuplicada({
+      total_duplicate_email_groups: 1,
+      total_duplicate_subscribers: 2,
+      by_platform: [{ platform: "kit", duplicate_email_groups: 1, duplicate_subscribers: 2 }],
+    });
+    assert.ok(finding);
+    const alarmFinding = toMetricsHealthAlarmFinding(finding!);
+    assert.match(alarmFinding.title, /identidade duplicada/);
+    assert.equal(alarmFinding.fingerprint, "identidade-duplicada:identidade-duplicada");
   });
 });
 

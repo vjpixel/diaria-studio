@@ -78,6 +78,7 @@ import {
 import { fetchAudience, fetchUrlClicks, todasOuNenhuma, type BroadcastAudience, type DrainResult } from "./kit-provider-split.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getStoreCounts, getKitActiveSummary } from "./lib/diaria-subscribers-db.ts";
 import { runCanonicalEdicaoBackfillFailSoft } from "./lib/diaria-subscribers-edicao-canonica.ts";
+import { detectSamePlatformDuplicateIdentities } from "./lib/diaria-subscribers-identity-resolve.ts";
 import {
   ingestBroadcastAudience,
   ingestBroadcastUrlClicks,
@@ -555,6 +556,34 @@ export async function main(
   // #7204 (pós-#7249): último passo — refresca `event.edicao_canonica` com o
   // dado recém-ingerido (fail-soft, ver docstring de `runCanonicalEdicaoBackfillFailSoft`).
   const canonicalEdicaoBackfill = runCanonicalEdicaoBackfillFailSoft(dbPath);
+  // #8236 item 3: detector de identidade partida DENTRO da plataforma Kit —
+  // conta e-mails com >1 subscriber_id no Kit (o defeito que o fix de
+  // `ensureSubscriber`, item 1/#8259, previne daqui pra frente, mas não cura
+  // o que já está partido — item 2, cura manual do editor). Mesmo padrão
+  // fail-soft de `runCanonicalEdicaoBackfillFailSoft` acima: nunca derruba a
+  // ingestão por causa deste passo de leitura, e nunca fabrica um `0`
+  // quando a leitura falha — `null` propaga "não avaliado" honestamente.
+  let samePlatformDuplicateReport: ReturnType<typeof detectSamePlatformDuplicateIdentities> | null = null;
+  try {
+    const dupDb = openDiariaSubscribersDb(dbPath);
+    try {
+      samePlatformDuplicateReport = detectSamePlatformDuplicateIdentities(dupDb);
+    } finally {
+      dupDb.close();
+    }
+  } catch (e) {
+    console.error(
+      `[diaria-subscribers-ingest-kit] detector de identidade partida (#8236 item 3) falhou — ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  const kitDuplicateStat = samePlatformDuplicateReport?.by_platform.find((p) => p.platform === "kit") ?? null;
+  if (kitDuplicateStat && kitDuplicateStat.duplicate_email_groups > 0) {
+    console.error(
+      `⚠️  identidade partida no Kit (#8236): ${kitDuplicateStat.duplicate_email_groups} e-mail(s) com >1 subscriber_id ` +
+        `na mesma plataforma (${kitDuplicateStat.duplicate_subscribers} assinante(s) ao todo) — cura é ação manual do ` +
+        "editor via `diaria-subscribers-resolve-identity.ts --apply` (item 2 da issue), nunca automática.",
+    );
+  }
   console.log(
     JSON.stringify(
       {
@@ -567,6 +596,7 @@ export async function main(
         events_already_known: eventsAlreadyKnownTotal,
         coverage,
         canonical_edicao_backfill: canonicalEdicaoBackfill,
+        same_platform_duplicate_identities_kit: kitDuplicateStat,
       },
       null,
       2,
