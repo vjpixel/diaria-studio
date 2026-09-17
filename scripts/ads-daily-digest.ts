@@ -40,11 +40,13 @@ import { addDays } from "./lib/ads-test-schedule.ts";
 import { readSpendCsv } from "./lib/aquisicao-spend.ts";
 import { assertValidRunState, type AdsTestRunState } from "./lib/ads-test-run-state.ts";
 import { latestSnapshotDate, readSnapshotSubscribers } from "./lib/beehiiv-backup-snapshots.ts";
+import { parseClicksCsv } from "./lib/ads-test-watch.ts";
 import {
   computeChannelDeltas,
   summarizeTeste2608,
   totalSpendByKnownChannel,
   computeReadersByChannel,
+  computeSpendWatchDigestLines,
   buildAdsDailyDigestEmail,
   toHistoryRows,
   emptyDigestHistory,
@@ -56,6 +58,7 @@ const AQUISICAO_DIR = resolve(ROOT, "data/aquisicao");
 export const DEFAULT_SPEND_CSV_PATH = resolve(AQUISICAO_DIR, "spend.csv");
 export const DEFAULT_HISTORY_PATH = resolve(AQUISICAO_DIR, ".ads-daily-digest-history.json");
 export const DEFAULT_RUN_STATE_PATH = resolve(AQUISICAO_DIR, "teste-2608/run-state.json");
+export const DEFAULT_CLICKS_CSV_PATH = resolve(AQUISICAO_DIR, "clicks-2608.csv");
 export const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data/beehiiv-backup");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[ads-daily-digest]";
@@ -64,6 +67,7 @@ export interface AdsDailyDigestDeps {
   spendCsvPath: string;
   historyPath: string;
   runStatePath: string;
+  clicksCsvPath: string;
   backupRoot: string;
   now: () => Date;
   sendEmail: (to: string, subject: string, body: string) => Promise<GmailSendResult>;
@@ -75,6 +79,7 @@ function defaultDeps(): AdsDailyDigestDeps {
     spendCsvPath: DEFAULT_SPEND_CSV_PATH,
     historyPath: DEFAULT_HISTORY_PATH,
     runStatePath: DEFAULT_RUN_STATE_PATH,
+    clicksCsvPath: DEFAULT_CLICKS_CSV_PATH,
     backupRoot: DEFAULT_BACKUP_ROOT,
     now: () => new Date(),
     sendEmail: sendGmailMessage,
@@ -146,12 +151,29 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
   const subs = snapshotDate ? readSnapshotSubscribers(deps.backupRoot, snapshotDate) : null;
   const readers = computeReadersByChannel(subs, spendByChannel);
 
+  // #8240 item 4 — aviso de gasto (1,25×-2×) + projeção de cruzamento do
+  // nominal, como SEÇÃO deste digest (nunca e-mail próprio). Só lê o CSV
+  // reconciliado à mão — este script nunca chama API paga ao vivo (ver
+  // docstring do arquivo); `clicksCsvPath` ausente é benigno (teste ainda
+  // não começou a reconciliar, ou junction `data/` sem esse arquivo ainda).
+  let spendWatchLines: string[] = [];
+  if (existsSync(deps.clicksCsvPath)) {
+    try {
+      const { rows: clicksRows, errors: clicksErrors } = parseClicksCsv(readFileSync(deps.clicksCsvPath, "utf8"));
+      for (const err of clicksErrors) console.error(`${LOG_PREFIX} clicks-2608.csv linha ${err.line}: ${err.reason}`);
+      spendWatchLines = computeSpendWatchDigestLines(clicksRows, runState, todayIso);
+    } catch (e) {
+      console.error(`${LOG_PREFIX} falha ao ler/parsear clicks-2608.csv (${(e as Error).message}) — seção de aviso de gasto omitida hoje.`);
+    }
+  }
+
   const { subject, body } = buildAdsDailyDigestEmail({
     periodDate,
     deltas,
     teste2608,
     readers,
     readersSnapshotDate: snapshotDate,
+    spendWatchLines,
   });
 
   const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);

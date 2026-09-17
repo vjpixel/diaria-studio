@@ -10,9 +10,17 @@
  * `build-origem-map.ts` + `cac-report.ts` (SEMPRE nessa ordem, imediatamente
  * um após o outro — §7.2), comentar em #5838.
  *
- * **NUNCA chama nenhuma API paga (Google/Meta/Microsoft Ads) ao vivo** —
- * leitura local de `clicks-2608.csv` (reconciliado manualmente pelo editor,
- * §8.3) e do snapshot Beehiiv já existente em disco.
+ * **Lê relatório de gasto das APIs pagas (Google/Meta/Microsoft Ads) —
+ * NUNCA escreve nelas (#8240 item 3).** Até o #8240 este script só lia
+ * `clicks-2608.csv` (reconciliado manualmente, §8.3), invisível pro gasto
+ * pós-retomada enquanto ninguém digita a linha do dia. Ler relatório de
+ * gasto não gera custo — mesmo caminho REST fail-soft de
+ * `scripts/lib/ads-campaign-economics-fetch.ts` (usado pela tela `/ads`,
+ * #7536) — e complementa o CSV, nunca o substitui: sem NENHUMA linha ainda
+ * no CSV pra um braço, a fonte automática não tem baseline pra
+ * complementar (`resolveArmSpend`, `scripts/lib/ads-test-watch.ts`).
+ * Credencial ausente/erro de rede é fail-soft (o braço cai pro CSV com
+ * rótulo `fonte manual, até DD/MM`), nunca aborta a task inteira.
  *
  * Uso:
  *   npx tsx scripts/ads-test-watch.ts               # avalia + age
@@ -48,6 +56,10 @@ import {
   parseClicksCsv,
   findMissingClicksBracosForDate,
   evaluateSpendOverageDeathCondition,
+  evaluateSpendWarning,
+  projectBudgetCrossing,
+  resolveArmSpend,
+  buildSpendWatchDigestSection,
   buildMissingD0OverdueEmail,
   buildMissingClicksCoverageEmail,
   buildDeathConditionEmail,
@@ -55,8 +67,13 @@ import {
   buildApuracaoSnapshotUnusableEmail,
   buildApuracaoSuccessEmail,
   DEFAULT_PLANNED_DAILY_BUDGET_BRL,
+  DEFAULT_NOMINAL_ARM_BUDGET_BRL,
   type AdsTestWatchState,
+  type ClicksCsvRow,
 } from "./lib/ads-test-watch.ts";
+import { normalizePauseIntervals, dailyBudgetForDate, type AdsTestRunStateWithPause } from "./lib/ads-test-pause-window.ts";
+import { fetchCampaignEconomicsSources } from "./lib/ads-campaign-economics-fetch.ts";
+import { resolveKitConfig } from "./lib/kit-config.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const AQUISICAO_DIR = resolve(ROOT, "data/aquisicao");
@@ -99,6 +116,14 @@ export interface AdsTestWatchDeps {
   /** Injetável só pra teste (evita depender do junction `data/` real do
    *  worktree que roda a suíte) — em produção sempre `detectExecMode`. */
   execMode: () => "local" | "cloud";
+  /** #8240 item 3 — busca o gasto diário AO VIVO dos 3 canais pra
+   *  complementar `clicks-2608.csv` nos dias depois da última linha
+   *  reconciliada. `braco -> Map<data YYYY-MM-DD, gastoBrl do dia>`.
+   *  Fail-soft por natureza (nunca lança) — credencial ausente/erro de
+   *  rede em QUALQUER fonte não impede as demais nem aborta a task;
+   *  `resolveArmSpend` (`scripts/lib/ads-test-watch.ts`) trata a ausência
+   *  de dado pra um braço como fallback pro CSV, rotulado. */
+  fetchAutoSpend: () => Promise<Map<string, Map<string, number>>>;
 }
 
 function realBuildOrigemMap(): boolean {
@@ -117,6 +142,37 @@ function realCacReport(snapshotDate: string): boolean {
   const failed = process.exitCode !== undefined && process.exitCode !== 0;
   process.exitCode = priorExitCode;
   return !failed;
+}
+
+/**
+ * Implementação real de `fetchAutoSpend` — `fetchCampaignEconomicsSources`
+ * já é fail-soft POR FONTE (uma credencial ausente vira `{error}` daquela
+ * fonte só); aqui só reagrupamos `ChannelDailyMetric[]` (1 linha por
+ * canal+dia) em `braco -> Map<data, gastoBrl>`, e envolvemos a chamada
+ * inteira num try/catch extra — uma falha de rede não capturada por
+ * `fetchCampaignEconomicsSources` (ex: `fetch` global ausente/polyfill
+ * quebrado) não pode derrubar `Diaria-Ads-Test-Watch`, que tem outras 4
+ * checagens a fazer no mesmo dia.
+ */
+async function realFetchAutoSpend(): Promise<Map<string, Map<string, number>>> {
+  const out = new Map<string, Map<string, number>>();
+  try {
+    const kitResult = resolveKitConfig();
+    const result = await fetchCampaignEconomicsSources(fetch as typeof fetch, kitResult.ok ? kitResult.config : null, {
+      lookbackDays: 30,
+    });
+    for (const m of result.metrics) {
+      if (!out.has(m.canal)) out.set(m.canal, new Map());
+      out.get(m.canal)!.set(m.date, m.gastoBrl);
+    }
+    const errs = Object.entries(result.sources)
+      .filter(([, s]) => s.error)
+      .map(([k, s]) => `${k}: ${s.error}`);
+    if (errs.length > 0) console.warn(`${LOG_PREFIX} fonte automática de gasto com falha parcial — ${errs.join(" | ")}`);
+  } catch (e) {
+    console.warn(`${LOG_PREFIX} fonte automática de gasto indisponível (${e instanceof Error ? e.message : e}) — braços caem pro CSV manual.`);
+  }
+  return out;
 }
 
 function defaultDeps(argv: string[]): AdsTestWatchDeps {
@@ -139,6 +195,7 @@ function defaultDeps(argv: string[]): AdsTestWatchDeps {
     commentOnReligarBrevoIssue: (body) =>
       spawnGhSync(["issue", "comment", String(RELIGAR_BREVO_ISSUE_NUMBER), "--body", body], ROOT),
     execMode: () => detectExecMode({ projectRoot: ROOT }),
+    fetchAutoSpend: realFetchAutoSpend,
   };
 }
 
@@ -222,14 +279,49 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
           if (missing.length > 0) emails.push(buildMissingClicksCoverageEmail(missing, yesterday));
         }
         if (plan.checkDeathConditions) {
+          const runStateExt = runState as unknown as AdsTestRunStateWithPause;
+          const pauseIntervals = normalizePauseIntervals(runStateExt.revisao?.pausa);
+          const budgetScheduleByBraco = runStateExt.orcamento_diario_brl ?? {};
+
+          // #8240 item 3 — complementa o CSV com a fonte automática ANTES de
+          // avaliar morte/aviso/projeção: os 3 avaliadores operam sobre
+          // `rows`, então basta injetar 1 linha "resolvida" por braço (data +
+          // acumulado mais recente conhecidos, CSV+automática combinados) —
+          // ela vira automaticamente a linha mais recente pros 3 (datas
+          // maiores vencem no `reduce` de cada avaliador).
+          const autoSpendByCanal = await deps.fetchAutoSpend();
+          const resolvedRows: ClicksCsvRow[] = [];
+          for (const braco of runState.bracos) {
+            const resolved = resolveArmSpend(braco, rows, nowDateStr, autoSpendByCanal.get(braco) ?? null);
+            if (resolved.label) console.log(`${LOG_PREFIX} ${braco}: ${resolved.label}`);
+            resolvedRows.push({ canal: braco, data_apuracao: resolved.lastKnownDate, gasto_acumulado: resolved.gastoAcumulado });
+          }
+          const evalRows = [...rows, ...resolvedRows];
+
           const findings = evaluateSpendOverageDeathCondition(
-            rows,
+            evalRows,
             runState.bracos,
             runState.d0,
             nowDateStr,
             deps.plannedDailyBudgetBRL,
+            { pauseIntervals, budgetScheduleByBraco },
           );
           if (findings.length > 0) emails.push(buildDeathConditionEmail(findings));
+
+          // Aviso + projeção (#8240 item 4) — NUNCA e-mail próprio, só
+          // console/`--dry-run` aqui; `ads-daily-digest.ts` é quem os
+          // consome como seção do e-mail diário que já sai todo dia.
+          const warnings = evaluateSpendWarning(evalRows, runState.bracos, runState.d0, nowDateStr, deps.plannedDailyBudgetBRL, {
+            pauseIntervals,
+            budgetScheduleByBraco,
+          });
+          const projections = runState.bracos
+            .map((braco) => {
+              const ritmoFallback = dailyBudgetForDate(nowDateStr, budgetScheduleByBraco[braco], deps.plannedDailyBudgetBRL);
+              return projectBudgetCrossing(evalRows, braco, nowDateStr, runState!.fim_janela, DEFAULT_NOMINAL_ARM_BUDGET_BRL, ritmoFallback);
+            })
+            .filter((p): p is NonNullable<typeof p> => p !== null);
+          for (const line of buildSpendWatchDigestSection(warnings, projections)) console.log(`${LOG_PREFIX} ${line}`);
         }
       } catch (e) {
         console.error(`${LOG_PREFIX} falha ao ler/parsear clicks-2608.csv: ${(e as Error).message}`);

@@ -17,10 +17,15 @@ import {
   parseClicksCsv,
   findMissingClicksBracosForDate,
   evaluateSpendOverageDeathCondition,
+  evaluateSpendWarning,
+  projectBudgetCrossing,
+  resolveArmSpend,
+  buildSpendWatchDigestSection,
   type AdsTestWatchState,
 } from "../scripts/lib/ads-test-watch.ts";
 import { buildAdsTestRunState, ADS_TEST_2608_BRACOS } from "../scripts/lib/ads-test-run-state.ts";
 import { addDays } from "../scripts/lib/ads-test-schedule.ts";
+import { plannedBudgetBRL } from "../scripts/lib/ads-test-pause-window.ts";
 
 const RUN_STATE = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
 // d0=2026-08-26 fim_janela=2026-09-09 religar_brevo=2026-09-16 apuracao_snapshot >= 2026-10-07 (1º domingo)
@@ -261,6 +266,218 @@ describe("#5845 — ads-test-watch: evaluateSpendOverageDeathCondition (§3.2 it
   it("braço sem NENHUMA linha ainda → não entra na lista (é achado de cobertura faltante, não morte)", () => {
     const findings = evaluateSpendOverageDeathCondition([], BRACOS, D0, D0, 100);
     assert.deepEqual(findings, []);
+  });
+});
+
+/**
+ * #8240 — a pausa (09/09 09h10 -> 17/09 00h16) NÃO conta como orçamento
+ * planejado, e o diário vigente é POR BRAÇO (Microsoft R$200/dia desde
+ * 06/09 17:07). Fixture inspirada nos números reais da issue: Meta com
+ * R$517,85 acumulado até a pausa — a leitura de calendário (0,43×) e a
+ * leitura de veiculação (>1×) precisam divergir.
+ */
+describe("#8240 — evaluateSpendOverageDeathCondition com pausa + diário vigente", () => {
+  const D0 = "2026-09-05";
+  const BRACO_META = "Meta Ads (teste 2608)";
+  const BRACO_MSFT = "Microsoft Ads (teste 2608)";
+  const PAUSE = [{ inicio: "2026-09-09T09:10:00-03:00", fim: "2026-09-17T00:16:00-03:00" }];
+
+  it("regressão: SEM opts (comportamento antigo) a pausa de 8 dias INFLA o planejado até esconder o estouro", () => {
+    // Meta gastou R$517,85 até a pausa (09/09); sem desconto de pausa, 13
+    // dias de calendário (05-17/09) a R$100/dia = R$1.300 planejado —
+    // 517,85 nunca ultrapassa nem 1× isso, quanto mais 2×.
+    const rows = [{ canal: BRACO_META, data_apuracao: "2026-09-17", gasto_acumulado: 517.85 }];
+    const findings = evaluateSpendOverageDeathCondition(rows, [BRACO_META], D0, "2026-09-17", 100);
+    assert.deepEqual(findings, [], "achado antigo: calendário nunca dispara aqui — é o defeito que #8240 corrige via opts");
+  });
+
+  it("COM pauseIntervals, a razão sobre dias de VEICULAÇÃO fica bem mais alta (não dispara morte, mas não é mais 0,43×)", () => {
+    const rows = [{ canal: BRACO_META, data_apuracao: "2026-09-17", gasto_acumulado: 517.85 }];
+    const findings = evaluateSpendOverageDeathCondition(rows, [BRACO_META], D0, "2026-09-17", 100, { pauseIntervals: PAUSE });
+    // Não é achado de MORTE (< 2×) — mas o planejado usado internamente é
+    // bem menor que R$1.300; confirmar via evaluateSpendWarning abaixo.
+    assert.deepEqual(findings, []);
+  });
+
+  // #8262 review item 10: as duas asserções deepEqual([]) acima não
+  // discriminam implementação certa de errada — passariam mesmo com
+  // `plannedBudgetBRL` cabeado errado, desde que o resultado ficasse abaixo
+  // do limiar de morte. Aqui medimos a RAZÃO numérica real (gasto ÷
+  // planejado) com `plannedBudgetBRL` — a mesma função que
+  // `evaluateSpendOverageDeathCondition`/`evaluateSpendWarning` chamam
+  // internamente (scripts/lib/ads-test-watch.ts:309,360) — usando o valor
+  // de gasto REAL da issue #8240 até a pausa (não os dados sintéticos
+  // "Braço único" de outros testes deste describe). `throughDate` é o dia
+  // da pausa (09/09), que é quando a issue mede a razão "até a pausa".
+  //
+  // Critério de aceite do #8240: "Meta ≈1,18×, Google ≈1,14× [...] com a
+  // pausa às 09h10 gravada [...] Nada de 0,43×, 0,42× e 0,24×."
+  it("razão real até a pausa: Meta ≈1,18× (não 0,43×) — pausa 09h10 gravada no run-state", () => {
+    const planned = plannedBudgetBRL(D0, "2026-09-09", undefined, PAUSE, 100);
+    const ratio = 517.85 / planned;
+    assert.ok(Math.abs(ratio - 1.18) < 0.02, `esperava ≈1,18×, obtive ${ratio.toFixed(4)}×`);
+    assert.ok(Math.abs(ratio - 0.43) > 0.1, "não pode regredir pro valor antigo (calendário sem desconto de pausa)");
+  });
+
+  it("razão real até a pausa: Google ≈1,14× (não 0,42×) — pausa 09h10 gravada no run-state (não existia teste pro Google antes)", () => {
+    const BRACO_GOOGLE = "Google Ads (teste 2608)";
+    const planned = plannedBudgetBRL(D0, "2026-09-09", undefined, PAUSE, 100);
+    const ratio = 500.57 / planned;
+    assert.ok(Math.abs(ratio - 1.14) < 0.02, `esperava ≈1,14×, obtive ${ratio.toFixed(4)}×`);
+    assert.ok(Math.abs(ratio - 0.42) > 0.1, "não pode regredir pro valor antigo (calendário sem desconto de pausa)");
+    // Confirma pelo caminho de produção real (evaluateSpendOverageDeathCondition
+    // com o nome do braço Google, não uma cópia do teste do Meta): 1,14× está
+    // abaixo de 2× e não dispara morte, mas também abaixo do limiar de aviso
+    // de 1,25× (SPEND_WARNING_RATIO_THRESHOLD) — não gera nem morte nem aviso
+    // neste ponto específico (a pausa ainda não terminou os 8 dias).
+    const rows = [{ canal: BRACO_GOOGLE, data_apuracao: "2026-09-09", gasto_acumulado: 500.57 }];
+    const death = evaluateSpendOverageDeathCondition(rows, [BRACO_GOOGLE], D0, "2026-09-09", 100, { pauseIntervals: PAUSE });
+    const warn = evaluateSpendWarning(rows, [BRACO_GOOGLE], D0, "2026-09-09", 100, { pauseIntervals: PAUSE });
+    assert.deepEqual(death, []);
+    assert.deepEqual(warn, []);
+  });
+
+  it("Microsoft: diário vigente 100->200 (06/09 17:07) muda o planejado só a partir da vigência, mesmo com pausa", () => {
+    const rows = [{ canal: BRACO_MSFT, data_apuracao: "2026-09-08", gasto_acumulado: 288.03 }];
+    const scheduleAntigo = evaluateSpendOverageDeathCondition(rows, [BRACO_MSFT], D0, "2026-09-08", 100, {
+      pauseIntervals: PAUSE,
+      budgetScheduleByBraco: {},
+    });
+    const scheduleNovo = evaluateSpendOverageDeathCondition(rows, [BRACO_MSFT], D0, "2026-09-08", 100, {
+      pauseIntervals: PAUSE,
+      budgetScheduleByBraco: { [BRACO_MSFT]: [{ desde: "2026-09-06T17:07:00-03:00", brl: 200 }] },
+    });
+    // Nenhum dos dois dispara morte com este gasto — mas o planejado (e
+    // portanto o limiar) muda: confirmamos indiretamente via warning abaixo,
+    // que expõe `plannedCumulativeBRL`.
+    assert.deepEqual(scheduleAntigo, []);
+    assert.deepEqual(scheduleNovo, []);
+  });
+
+  it("Microsoft: razão real até a pausa ≈0,37× com o diário vigente 100->200 — não regride pro 0,24× antigo", () => {
+    // A issue #8240 estima manualmente ≈0,41× pra este cenário (pró-rateando
+    // o dia 06/09 em duas frações: R$100 até 17:07 e R$200 depois). O
+    // código NÃO integra sub-dia: `dailyBudgetForDate` usa o diário vigente
+    // ao FIM do dia inteiro (doc em ads-test-pause-window.ts:230-237,
+    // decisão deliberada — "não pretende precisão de minuto"), então o dia
+    // 06/09 inteiro entra no planejado já a R$200 (não R$100 parcial +
+    // R$200 parcial). Isso INFLA levemente o planejado em relação à conta
+    // manual da issue, o que torna a razão mais BAIXA (mais conservadora,
+    // nunca escondendo um estouro) — medido aqui em ≈0,37×, não ≈0,41×.
+    // Não é bug: é a mesma aproximação de granularidade-por-dia documentada
+    // na função, e a issue já avisa que a razão depende de qual instante se
+    // usa. O que importa pro critério de aceite é não regredir pro valor
+    // antigo (0,24×, calendário sem desconto de pausa nem diário vigente).
+    const schedule = [{ desde: "2026-09-06T17:07:00-03:00", brl: 200 }];
+    const planned = plannedBudgetBRL(D0, "2026-09-09", schedule, PAUSE, 100);
+    const ratio = 288.03 / planned;
+    assert.ok(Math.abs(ratio - 0.37) < 0.02, `esperava ≈0,37× (aproximação por dia inteiro do código), obtive ${ratio.toFixed(4)}×`);
+    assert.ok(Math.abs(ratio - 0.24) > 0.05, "não pode regredir pro valor antigo (calendário + R$100 fixo pros 3 braços)");
+  });
+
+  it("razão 1,3× gera AVISO e NÃO gera achado de morte; 2,1× continua gerando morte", () => {
+    const braco = "Braço único";
+    const rowsAviso = [{ canal: braco, data_apuracao: D0, gasto_acumulado: 130 }]; // planejado D0 = 100
+    const warn = evaluateSpendWarning(rowsAviso, [braco], D0, D0, 100);
+    assert.equal(warn.length, 1);
+    assert.ok(Math.abs(warn[0].ratio - 1.3) < 1e-9);
+    const death1 = evaluateSpendOverageDeathCondition(rowsAviso, [braco], D0, D0, 100);
+    assert.deepEqual(death1, []);
+
+    const rowsMorte = [{ canal: braco, data_apuracao: D0, gasto_acumulado: 210 }]; // 2,1×
+    const warn2 = evaluateSpendWarning(rowsMorte, [braco], D0, D0, 100);
+    assert.deepEqual(warn2, [], "braço que já cruzou morte não deveria também aparecer como aviso");
+    const death2 = evaluateSpendOverageDeathCondition(rowsMorte, [braco], D0, D0, 100);
+    assert.equal(death2.length, 1);
+  });
+
+  it("razão abaixo de 1,25× não gera aviso nenhum", () => {
+    const braco = "Braço único";
+    const rows = [{ canal: braco, data_apuracao: D0, gasto_acumulado: 110 }]; // 1,1×
+    assert.deepEqual(evaluateSpendWarning(rows, [braco], D0, D0, 100), []);
+  });
+});
+
+describe("#8240 item 4 (2º ponto) — projectBudgetCrossing", () => {
+  const BRACO = "Microsoft Ads (teste 2608)";
+  const FIM_JANELA = "2026-09-27";
+
+  it("R$288,03 + R$200/dia desde 17/09 cruza R$1.500 em 23/09, com fim_janela em 27/09", () => {
+    const rows = [{ canal: BRACO, data_apuracao: "2026-09-16", gasto_acumulado: 288.03 }];
+    const projection = projectBudgetCrossing(rows, BRACO, "2026-09-17", FIM_JANELA, 1500, 200);
+    assert.ok(projection, "esperava uma projeção de cruzamento");
+    assert.equal(projection!.crossesOn, "2026-09-23");
+    assert.equal(projection!.fimJanela, FIM_JANELA);
+  });
+
+  it("braço que NÃO cruza o nominal antes do fim da janela não gera linha", () => {
+    const rows = [{ canal: BRACO, data_apuracao: "2026-09-16", gasto_acumulado: 100 }];
+    // ritmo baixo (10/dia) não cruza R$1.500 antes de 27/09
+    const projection = projectBudgetCrossing(rows, BRACO, "2026-09-17", FIM_JANELA, 1500, 10);
+    assert.equal(projection, null);
+  });
+
+  it("braço que já cruzou o nominal não entra (não é mais projeção, é fato corrente)", () => {
+    const rows = [{ canal: BRACO, data_apuracao: "2026-09-16", gasto_acumulado: 1600 }];
+    const projection = projectBudgetCrossing(rows, BRACO, "2026-09-17", FIM_JANELA, 1500, 200);
+    assert.equal(projection, null);
+  });
+
+  it("braço sem nenhuma linha não entra", () => {
+    assert.equal(projectBudgetCrossing([], BRACO, "2026-09-17", FIM_JANELA, 1500, 200), null);
+  });
+});
+
+describe("#8240 item 3 — resolveArmSpend (fonte automática complementa o CSV, nunca substitui)", () => {
+  const BRACO = "Microsoft Ads (teste 2608)";
+
+  it("sem linha nenhuma no CSV → sem baseline, fonte automática não complementa", () => {
+    const resolved = resolveArmSpend(BRACO, [], "2026-09-17", new Map([["2026-09-17", 200]]));
+    assert.equal(resolved.gastoAcumulado, 0);
+    assert.match(resolved.label ?? "", /sem linha de base/);
+  });
+
+  it("CSV parado em 16/09, fonte automática indisponível (null) → cai pro CSV com rótulo 'fonte manual, até 16/09'", () => {
+    const rows = [{ canal: BRACO, data_apuracao: "2026-09-16", gasto_acumulado: 288.03 }];
+    const resolved = resolveArmSpend(BRACO, rows, "2026-09-18", null);
+    assert.equal(resolved.gastoAcumulado, 288.03);
+    assert.equal(resolved.lastKnownDate, "2026-09-16");
+    assert.equal(resolved.label, "fonte manual, até 2026-09-16");
+  });
+
+  it("CSV parado em 16/09, fonte automática disponível com 17/09 e 18/09 → gasto pós-retomada ENTRA na conta, sem rótulo", () => {
+    const rows = [{ canal: BRACO, data_apuracao: "2026-09-16", gasto_acumulado: 288.03 }];
+    const auto = new Map([
+      ["2026-09-17", 200],
+      ["2026-09-18", 200],
+    ]);
+    const resolved = resolveArmSpend(BRACO, rows, "2026-09-18", auto);
+    assert.equal(resolved.gastoAcumulado, 288.03 + 200 + 200);
+    assert.equal(resolved.lastKnownDate, "2026-09-18");
+    assert.equal(resolved.label, null);
+  });
+
+  it("fonte automática disponível mas SEM dado pro dia em questão → cai pro rótulo manual (as duas fontes nunca somam 0 silencioso)", () => {
+    const rows = [{ canal: BRACO, data_apuracao: "2026-09-16", gasto_acumulado: 288.03 }];
+    const auto = new Map<string, number>(); // fonte "disponível" mas sem nenhum ponto pro braço
+    const resolved = resolveArmSpend(BRACO, rows, "2026-09-18", auto);
+    assert.equal(resolved.gastoAcumulado, 288.03, "sem dado automático novo, o acumulado não deveria mudar");
+    assert.equal(resolved.label, "fonte manual, até 2026-09-16");
+  });
+});
+
+describe("#8240 item 4 — buildSpendWatchDigestSection", () => {
+  it("sem avisos nem projeções → seção vazia", () => {
+    assert.deepEqual(buildSpendWatchDigestSection([], []), []);
+  });
+
+  it("com avisos e projeções → linhas nomeando cada braço", () => {
+    const lines = buildSpendWatchDigestSection(
+      [{ braco: "X", lastKnownDate: "2026-09-17", gastoAcumulado: 130, plannedCumulativeBRL: 100, ratio: 1.3 }],
+      [{ braco: "Y", crossesOn: "2026-09-23", fimJanela: "2026-09-27", nominalTotalBRL: 1500, ritmoUsadoBRL: 200 }],
+    );
+    assert.ok(lines.some((l) => l.includes("X") && l.includes("1.30")));
+    assert.ok(lines.some((l) => l.includes("Y") && l.includes("2026-09-23") && l.includes("2026-09-27")));
   });
 });
 

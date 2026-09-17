@@ -159,6 +159,7 @@ describe("#7577 — janela que cruza refinamento não é estado estável", () =>
       cadastrosAcumulado: null,
       baseData: null,
       janelaDias: 3,
+      estavel: true,
     };
     assert.match(descreverEstabilidade({ ...base, diasAposUltimaEdicao: null, ultimaEdicao: null }), /estável/);
     assert.match(

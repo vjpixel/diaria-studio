@@ -49,6 +49,7 @@
  * domínio diferente: quem mede não ranqueia.
  */
 import type { ClicksCsvRow } from "./ads-test-watch.ts";
+import { pausedDatesInRange, type AdsTestPauseInterval } from "./ads-test-pause-window.ts";
 
 /**
  * BRT (America/Sao_Paulo) não tem horário de verão desde 2019 — offset fixo.
@@ -135,16 +136,95 @@ export interface RollingWindowResult {
   diasAposUltimaEdicao: number | null;
   /** Data da última edição em voo do braço (BRT), se houve alguma. */
   ultimaEdicao: string | null;
+  /**
+   * #8241 — `true` quando a frase de `descreverEstabilidade` seria "estado
+   * estável" (nenhuma edição registrada, OU todos os dias cobertos são
+   * posteriores à última) E a janela não cruza nenhum dia pausado. Exposto
+   * pra consumidores (`--json`) não terem que re-derivar a regra em prosa
+   * — ver docstring de `descreverEstabilidade`.
+   */
+  estavel: boolean;
 }
 
 /**
- * Registro mínimo de `data/aquisicao/teste-2608/edicoes.jsonl` que interessa
- * aqui. O arquivo tem muito mais campos; só estes dois importam para a janela.
+ * Registro de `data/aquisicao/teste-2608/edicoes.jsonl` — schema ANTIGO
+ * (`tipo: "edicao-em-voo"`, `braco`, `registrado_em_utc`) e schema NOVO
+ * (#8241: `ts`, `tipo`, `braco?` — ausente = `"todos"`) no MESMO shape de
+ * leitura. O arquivo tem muito mais campos por linha; só estes interessam
+ * aqui. Ver {@link normalizeEdicaoRegistro}.
  */
 export interface EdicaoEmVoo {
   braco?: string;
   registrado_em_utc?: string;
+  /** #8241 — schema novo usa `ts` no lugar de `registrado_em_utc`. */
+  ts?: string;
   tipo?: string;
+}
+
+/**
+ * O que uma linha de `edicoes.jsonl` SIGNIFICA para a leitura da janela —
+ * só `"mudanca"` conta pra `contarDiasAposUltimaEdicao` (#8241 item 1).
+ */
+export type EdicaoEfeito = "mudanca" | "pausa" | "retomada" | "registro";
+
+/**
+ * Tabela EXPLÍCITA `tipo -> efeito`, cobrindo tanto o schema antigo quanto
+ * as 7 linhas reais gravadas entre 09-17/09/2026 (#8241, snapshot à data
+ * desta issue — `edicoes.jsonl` já tem mais linhas hoje). `tipo` fora desta
+ * tabela conta como `"mudanca"` (ver {@link normalizeEdicaoRegistro}) —
+ * ignorar em silêncio é exatamente o defeito que esta issue corrige.
+ */
+export const EDICAO_EFEITOS: readonly EdicaoEfeito[] = ["mudanca", "pausa", "retomada", "registro"] as const;
+
+/** Exportada pra `scripts/ads-registrar-edicao.ts` (#8241 item 4) auto-derivar
+ *  `efeito` de um `tipo` já catalogado, em vez de exigir o operador
+ *  declarar os dois em toda linha nova. */
+export const TIPO_TO_EFEITO: Readonly<Record<string, EdicaoEfeito>> = {
+  "edicao-em-voo": "mudanca",
+  investigacao: "registro",
+  "edicao-nao-executada": "registro",
+  "correcao-de-registro": "registro",
+  // "registro" (não "mudanca") — corrige um NÚMERO já reportado (conversões
+  // que chegaram atrasadas do Google Ads), não altera a campanha em voo; não
+  // deve reiniciar a fase de aprendizado do algoritmo que só linhas
+  // "mudanca" disparam (ver `contarDiasAposUltimaEdicao` abaixo).
+  "backfill-conversao-google-ads": "registro",
+  "pausa-total-anuncios": "pausa",
+  "retomada-pre-registro": "registro",
+  "retomada-executada": "retomada",
+  "correcao-data-termino-pre-registro": "registro",
+  // "registro" (não "mudanca") — mesma razão do backfill acima: corrige um
+  // CAMPO de metadado (data de término já executada), não é uma edição de
+  // segmentação/orçamento/criativo da campanha em voo.
+  "correcao-data-termino-executada": "registro",
+};
+
+export interface NormalizedEdicaoRegistro {
+  /** `"todos"` quando a linha não declara `braco` (schema novo, #8241). */
+  braco: string;
+  ts: string;
+  tipo: string;
+  efeito: EdicaoEfeito;
+}
+
+/**
+ * Normaliza 1 linha de `edicoes.jsonl` (schema antigo OU novo) — `null`
+ * quando a linha não tem timestamp/tipo reconhecível (nada a normalizar,
+ * não é um "tipo desconhecido", é ausência do mínimo indispensável). `tipo`
+ * fora de {@link TIPO_TO_EFEITO} vira `"mudanca"` + aviso via `warn` (nunca
+ * ignorado em silêncio — #8241 item 1).
+ *
+ * @pure (o único efeito colateral é a chamada opcional a `warn`)
+ */
+export function normalizeEdicaoRegistro(raw: EdicaoEmVoo, warn?: (msg: string) => void): NormalizedEdicaoRegistro | null {
+  const ts = raw.ts ?? raw.registrado_em_utc;
+  const tipo = raw.tipo;
+  if (!ts || !tipo) return null;
+  const braco = raw.braco ?? "todos";
+  const efeitoConhecido = TIPO_TO_EFEITO[tipo];
+  if (efeitoConhecido) return { braco, ts, tipo, efeito: efeitoConhecido };
+  warn?.(`ads-rolling-window: tipo desconhecido "${tipo}" (braço ${braco}, ${ts}) — tratado como "mudanca", nunca ignorado em silêncio.`);
+  return { braco, ts, tipo, efeito: "mudanca" };
 }
 
 /**
@@ -155,22 +235,41 @@ export interface EdicaoEmVoo {
  * recém-editado tende a piorar antes de melhorar. Uma janela de 3 dias que
  * CRUZA uma edição não é estado estável e não deve ser lida como tal.
  *
- * Só conta `tipo: "edicao-em-voo"`: `investigacao` e `edicao-nao-executada`
- * registram que algo foi OLHADO ou TENTADO, não que a conta mudou — contá-las
- * marcaria como instável uma janela em que nada foi alterado.
+ * Só conta linhas com `efeito: "mudanca"` (#8241 item 1 — schema unificado
+ * via {@link normalizeEdicaoRegistro}): `investigacao`/`edicao-nao-executada`/
+ * `*-pre-registro` registram que algo foi OLHADO ou TENTADO, não que a
+ * conta mudou; `retomada-executada` (`efeito: "retomada"`) TAMBÉM não conta
+ * aqui de propósito — é a pausa em si (`opts.pauseIntervals` de
+ * `computeRollingWindow`) que já derruba `comparavel`, e contar a retomada
+ * como "mudança" duplicaria o mesmo sinal sob um nome diferente. `braco:
+ * "todos"` conta para QUALQUER canal (#8241 item 1 — "vale para os 3
+ * braços").
  */
 export function contarDiasAposUltimaEdicao(
   edicoes: EdicaoEmVoo[],
   canal: string,
   dias: string[],
+  warn?: (msg: string) => void,
 ): { diasApos: number | null; ultimaEdicao: string | null } {
   const datas = edicoes
-    .filter((e) => e.braco === canal && e.tipo === "edicao-em-voo" && e.registrado_em_utc)
-    .map((e) => brtDateOf(e.registrado_em_utc!))
+    .map((e) => normalizeEdicaoRegistro(e, warn))
+    .filter((n): n is NormalizedEdicaoRegistro => n !== null)
+    .filter((n) => (n.braco === canal || n.braco === "todos") && n.efeito === "mudanca")
+    .map((n) => brtDateOf(n.ts))
     .sort();
   const ultimaEdicao = datas.at(-1) ?? null;
   if (!ultimaEdicao) return { diasApos: null, ultimaEdicao: null };
   return { diasApos: dias.filter((d) => d > ultimaEdicao).length, ultimaEdicao };
+}
+
+/** `true` quando `descreverEstabilidade` diria "estado estável" — nenhuma
+ *  edição registrada, ou todos os dias cobertos são posteriores à última.
+ *  @pure */
+function computeEstavel(ultimaEdicao: string | null, diasAposUltimaEdicao: number | null, diasCobertosLength: number): boolean {
+  if (ultimaEdicao === null) return true;
+  if (diasAposUltimaEdicao === null) return true;
+  if (diasCobertosLength === 0) return true;
+  return diasAposUltimaEdicao >= diasCobertosLength;
 }
 
 /**
@@ -182,7 +281,22 @@ export function contarDiasAposUltimaEdicao(
  */
 export function computeRollingWindow(
   rows: ClicksCsvRow[],
-  opts: { canal: string; ate: string; dias?: number; edicoes?: EdicaoEmVoo[] },
+  opts: {
+    canal: string;
+    ate: string;
+    dias?: number;
+    edicoes?: EdicaoEmVoo[];
+    /** #8241 item 2 — intervalos de pausa (`revisao.pausa`, normalizados
+     *  via `normalizePauseIntervals` de `ads-test-pause-window.ts`). Dia
+     *  BRT dentro de `[inicio, ate]` com QUALQUER cobertura de pausa
+     *  (total ou parcial) derruba `comparavel` — Emenda 07/09: janela que
+     *  cruza uma mudança de estado (inclusive pausa/retomada) não pode ser
+     *  lida como estável. Omitido/vazio = comportamento pré-#8241. */
+    pauseIntervals?: readonly AdsTestPauseInterval[];
+    /** Callback de aviso pra `tipo` desconhecido em `edicoes` (#8241 item
+     *  1) — repassado a `contarDiasAposUltimaEdicao`/`normalizeEdicaoRegistro`. */
+    warn?: (msg: string) => void;
+  },
 ): RollingWindowResult {
   const dias = opts.dias ?? DEFAULT_WINDOW_DAYS;
   const doCanal = rows
@@ -197,7 +311,13 @@ export function computeRollingWindow(
   const ultima = naJanela.at(-1);
 
   const diasCobertos = naJanela.map((r) => r.data_apuracao);
-  const { diasApos, ultimaEdicao } = contarDiasAposUltimaEdicao(opts.edicoes ?? [], opts.canal, diasCobertos);
+  const { diasApos, ultimaEdicao } = contarDiasAposUltimaEdicao(opts.edicoes ?? [], opts.canal, diasCobertos, opts.warn);
+
+  // #8241 item 2 — dias PAUSADOS dentro do range NOMINAL da janela
+  // (`inicio..ate`), não só os dias com linha no CSV: um dia pausado pode
+  // não ter linha nenhuma (buraco de reconciliação, §8.3) e ainda assim
+  // invalidar a leitura de "estado estável" por não ter havido veiculação.
+  const diasPausadosNaJanela = pausedDatesInRange(inicio, opts.ate, opts.pauseIntervals ?? []);
 
   if (!ultima) {
     return {
@@ -208,12 +328,23 @@ export function computeRollingWindow(
       cadastrosJanela: 0,
       custoPorCadastro: null,
       comparavel: false,
-      motivo: `sem nenhuma linha de apuração entre ${inicio} e ${opts.ate}`,
+      motivo:
+        diasPausadosNaJanela.length > 0
+          ? `sem nenhuma linha de apuração entre ${inicio} e ${opts.ate}, e a janela cruza dia(s) pausado(s): ${diasPausadosNaJanela.join(", ")}`
+          : `sem nenhuma linha de apuração entre ${inicio} e ${opts.ate}`,
       gastoAcumulado: doCanal.at(-1)?.gasto_acumulado ?? 0,
       cadastrosAcumulado: doCanal.at(-1)?.cadastrosAcumulado ?? null,
       baseData: base?.data_apuracao ?? null,
       diasAposUltimaEdicao: diasApos,
       ultimaEdicao,
+      // Mesma fórmula do branch com dado (self-review): `estavel` segue a
+      // regra de EDIÇÕES (nenhuma registrada = estável) menos a pausa —
+      // nunca hardcoded `false` só por faltar dado. Sem isso, uma janela
+      // sem NENHUMA linha e sem pausa nem edição sairia com `estavel:
+      // false` enquanto `descreverEstabilidade` diria "estado estável"
+      // pro mesmo objeto — os dois discordando é pior do que qualquer um
+      // dos dois sozinho errado.
+      estavel: computeEstavel(ultimaEdicao, diasApos, diasCobertos.length) && diasPausadosNaJanela.length === 0,
     };
   }
 
@@ -301,6 +432,20 @@ export function computeRollingWindow(
       `mais dia(s) que o(s) ${dias} pedido(s)`;
   }
 
+  // #8241 item 2 — Emenda 07/09: janela que cruza pausa/retomada não é
+  // estado estável, mesmo que a aritmética de gasto/cadastros continue
+  // correta (é diferença de acumulado, independe de pausa). Última
+  // checagem, mesma prioridade estrutural do #7790 acima — sobrepõe
+  // qualquer `comparavel: true` anterior, nunca reverte um `false` já
+  // decidido por outro motivo (a 1ª causa de incomparabilidade encontrada
+  // é a que fica registrada).
+  if (comparavel && diasPausadosNaJanela.length > 0) {
+    comparavel = false;
+    motivo = `janela cruza dia(s) pausado(s): ${diasPausadosNaJanela.join(", ")} — pausa/retomada não pode ser lida como estado estável (Emenda 07/09)`;
+  }
+
+  const estavel = computeEstavel(ultimaEdicao, diasApos, diasCobertos.length) && diasPausadosNaJanela.length === 0;
+
   return {
     canal: opts.canal,
     dias: diasCobertos,
@@ -315,6 +460,7 @@ export function computeRollingWindow(
     baseData: base?.data_apuracao ?? null,
     diasAposUltimaEdicao: diasApos,
     ultimaEdicao,
+    estavel,
   };
 }
 
@@ -328,14 +474,23 @@ export function descreverEstabilidade(r: RollingWindowResult): string {
     faltando > 0
       ? ` (atenção: ${faltando} de ${r.janelaDias} dias sem linha de apuração — o CAC segue correto, mas a janela tem buraco)`
       : "";
-  if (r.ultimaEdicao === null) return `janela sem edição em voo — estado estável${gap}`;
+  // #8241 item 2 — pausa/retomada derruba `estavel` independente do que a
+  // leitura de EDIÇÕES diria sozinha (Emenda 07/09: nunca "estado estável"
+  // numa janela que cruza pausa). `r.motivo` já carrega a lista de dias
+  // pausados quando é essa a causa (ver `computeRollingWindow`).
+  const pausaNota = !r.estavel && r.motivo?.includes("pausado") ? ` — ${r.motivo}` : "";
+  if (r.ultimaEdicao === null) {
+    return r.estavel ? `janela sem edição em voo — estado estável${gap}` : `janela sem edição em voo — não é estado estável${gap}${pausaNota}`;
+  }
   if (r.diasAposUltimaEdicao === 0) {
-    return `TODOS os ${r.dias.length} dias com apuração são anteriores ou iguais à última edição (${r.ultimaEdicao}) — não é estado estável${gap}`;
+    return `TODOS os ${r.dias.length} dias com apuração são anteriores ou iguais à última edição (${r.ultimaEdicao}) — não é estado estável${gap}${pausaNota}`;
   }
   if (r.diasAposUltimaEdicao !== null && r.diasAposUltimaEdicao < r.dias.length) {
-    return `${r.diasAposUltimaEdicao} de ${r.dias.length} dias com apuração são posteriores à última edição (${r.ultimaEdicao}) — janela cruza refinamento${gap}`;
+    return `${r.diasAposUltimaEdicao} de ${r.dias.length} dias com apuração são posteriores à última edição (${r.ultimaEdicao}) — janela cruza refinamento${gap}${pausaNota}`;
   }
-  return `todos os ${r.dias.length} dias com apuração são posteriores à última edição (${r.ultimaEdicao}) — estado estável${gap}`;
+  return r.estavel
+    ? `todos os ${r.dias.length} dias com apuração são posteriores à última edição (${r.ultimaEdicao}) — estado estável${gap}`
+    : `todos os ${r.dias.length} dias com apuração são posteriores à última edição (${r.ultimaEdicao}), mas a janela cruza pausa/retomada — não é estado estável${gap}${pausaNota}`;
 }
 
 /**

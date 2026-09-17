@@ -32,9 +32,18 @@
  */
 
 import type { SpendRow } from "./aquisicao-spend.ts";
-import { ADS_TEST_2608_BRACOS } from "./ads-test-run-state.ts";
+import { ADS_TEST_2608_BRACOS, type AdsTestRunState } from "./ads-test-run-state.ts";
 import { CHANNEL_GROUP_KEYS, subscribersForChannel, countLeitoresV1 } from "./cac.ts";
 import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
+import {
+  evaluateSpendWarning,
+  projectBudgetCrossing,
+  buildSpendWatchDigestSection,
+  DEFAULT_PLANNED_DAILY_BUDGET_BRL,
+  DEFAULT_NOMINAL_ARM_BUDGET_BRL,
+  type ClicksCsvRow,
+} from "./ads-test-watch.ts";
+import { normalizePauseIntervals, dailyBudgetForDate, type AdsTestRunStateWithPause } from "./ads-test-pause-window.ts";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -175,6 +184,60 @@ export function summarizeTeste2608(
 }
 
 // ---------------------------------------------------------------------------
+// Aviso + projeção de gasto do teste 2608 (#8240 item 4) como SEÇÃO deste
+// digest — nunca um e-mail próprio.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reusa a mesma função pura `buildSpendWatchDigestSection`
+ * (`scripts/lib/ads-test-watch.ts`) que o alarme condicional já calcula, mas
+ * NUNCA envia como e-mail separado (#8240 item 4: "o aviso e a projeção não
+ * criam e-mail novo... a função pura é chamada pelos dois"). Antes desta
+ * função, o aviso/projeção só apareciam no `console.log`/`--dry-run` do
+ * `ads-test-watch.ts` — invisível pro editor, que nunca lê o log de uma
+ * task que roda no `300` (#8262 review, achado 1).
+ *
+ * Só opera sobre `clicks-2608.csv` — NUNCA chama a fonte automática de
+ * gasto (`fetchAutoSpend`/`fetchCampaignEconomicsSources`), porque este
+ * script (`scripts/ads-daily-digest.ts`) tem o invariante de nunca chamar
+ * nenhuma API paga ao vivo (ver docstring do arquivo). Um braço com o CSV
+ * parado simplesmente usa a última linha conhecida — mesmo comportamento
+ * de antes da fonte automática existir (#8240 item 3, exclusivo do outro
+ * script).
+ *
+ * `runState == null` (teste 2608 nunca começou, ou fora da janela) ->
+ * lista vazia, sem chamar nada.
+ *
+ * @pure
+ */
+export function computeSpendWatchDigestLines(
+  rows: readonly ClicksCsvRow[],
+  runState: AdsTestRunState | null,
+  todayIso: string,
+  plannedDailyBudgetBRL: number = DEFAULT_PLANNED_DAILY_BUDGET_BRL,
+): string[] {
+  if (!runState) return [];
+  // Mesma extensão estrutural (duck-typed) de `revisao.pausa`/
+  // `orcamento_diario_brl` que `scripts/ads-test-watch.ts` usa — ver a
+  // docstring de `AdsTestRunStateWithPause` (`ads-test-pause-window.ts`)
+  // pelo motivo (fronteira de arquivo do #8250 em voo na época do #8240).
+  const runStateExt = runState as unknown as AdsTestRunStateWithPause;
+  const pauseIntervals = normalizePauseIntervals(runStateExt.revisao?.pausa);
+  const budgetScheduleByBraco = runStateExt.orcamento_diario_brl ?? {};
+  const opts = { pauseIntervals, budgetScheduleByBraco };
+
+  const warnings = evaluateSpendWarning(rows, runState.bracos, runState.d0, todayIso, plannedDailyBudgetBRL, opts);
+  const projections = runState.bracos
+    .map((braco) => {
+      const ritmoFallback = dailyBudgetForDate(todayIso, budgetScheduleByBraco[braco], plannedDailyBudgetBRL);
+      return projectBudgetCrossing(rows, braco, todayIso, runState.fim_janela, DEFAULT_NOMINAL_ARM_BUDGET_BRL, ritmoFallback);
+    })
+    .filter((p): p is NonNullable<typeof p> => p !== null);
+
+  return buildSpendWatchDigestSection(warnings, projections);
+}
+
+// ---------------------------------------------------------------------------
 // Leitores adquiridos por canal + custo por leitor (mesma métrica do #5236)
 // ---------------------------------------------------------------------------
 
@@ -236,6 +299,10 @@ export interface AdsDailyDigestEmailInput {
   /** `null` = sem snapshot Beehiiv local disponível. */
   readers: ChannelReaderSummary[] | null;
   readersSnapshotDate: string | null;
+  /** Linhas de {@link computeSpendWatchDigestLines} (#8240 item 4) — `[]`
+   *  quando não há nada a avisar/projetar (teste fora da janela, sem CSV,
+   *  ou nenhum braço em 1,25×-2× nem projetado a cruzar o nominal). */
+  spendWatchLines?: readonly string[];
 }
 
 /** Rótulo de linha pro e-mail — inclui o subcanal quando presente
@@ -279,6 +346,11 @@ export function buildAdsDailyDigestEmail(input: AdsDailyDigestEmailInput): { sub
   if (input.teste2608 && input.teste2608.emAndamento) {
     lines.push(`Teste 2608 (em andamento) — gasto acumulado total: R$ ${input.teste2608.totalAcumulado.toFixed(2)}`);
     lines.push(`  Braços: ${input.teste2608.bracos.join(", ")}`);
+    lines.push("");
+  }
+
+  if (input.spendWatchLines && input.spendWatchLines.length > 0) {
+    lines.push(...input.spendWatchLines);
     lines.push("");
   }
 

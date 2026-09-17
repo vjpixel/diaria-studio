@@ -45,6 +45,7 @@
 import Papa from "papaparse";
 import { addDays, daysBetween, type DateOnlyString } from "./ads-test-schedule.ts";
 import type { AdsTestRunState } from "./ads-test-run-state.ts";
+import { plannedBudgetBRL, type AdsTestBudgetPeriod, type AdsTestPauseInterval } from "./ads-test-pause-window.ts";
 
 // ---------------------------------------------------------------------------
 // Plano diário
@@ -260,17 +261,33 @@ export interface SpendOverageFinding {
   ratio: number;
 }
 
+/** Opções de {@link evaluateSpendOverageDeathCondition}/
+ *  {@link evaluateSpendWarning} — pausa (#8240 item 1) e diário vigente por
+ *  braço (#8240 item 3), ambas OPCIONAIS: omitidas, o comportamento é
+ *  idêntico ao pré-#8240 (planejado = diário fixo × dias de CALENDÁRIO,
+ *  sem desconto de pausa) — é o que mantém os testes de regressão do #5845
+ *  passando sem mudança. */
+export interface SpendOverageEvalOptions {
+  pauseIntervals?: readonly AdsTestPauseInterval[];
+  /** Braço ausente do mapa usa `plannedDailyBudgetBRL` (o default) —
+   *  mesma semântica de `dailyBudgetForDate` em `ads-test-pause-window.ts`. */
+  budgetScheduleByBraco?: Readonly<Record<string, readonly AdsTestBudgetPeriod[]>>;
+}
+
 /**
  * §3.2 item 3 — "cobrança acima do nominal: gasto acumulado > 2× o
  * planejado do período". Pra cada braço, usa a linha mais recente conhecida
  * (`data_apuracao` mais próxima de `todayDateStr`, sem ultrapassá-lo) e
- * compara `gasto_acumulado` contra 2× o orçamento diário planejado
- * acumulado desde D0 até aquela data (inclusive). Braço sem nenhuma linha
- * ainda não entra na lista (nada a avaliar — vira achado de cobertura
- * faltante, não de morte).
+ * compara `gasto_acumulado` contra 2× o planejado acumulado desde D0 até
+ * aquela data (inclusive). Braço sem nenhuma linha ainda não entra na lista
+ * (nada a avaliar — vira achado de cobertura faltante, não de morte).
  *
- * `plannedDailyBudgetBRL` é passado pelo caller (não hardcoded aqui) — o
- * número em si é decisão de negócio (`00-PROTOCOLO.md` §"Orçamento do 1º
+ * O planejado é `plannedBudgetBRL` (`ads-test-pause-window.ts`) — dias de
+ * VEICULAÇÃO (não calendário, `opts.pauseIntervals`) × diário VIGENTE por
+ * braço (`opts.budgetScheduleByBraco`, com histórico de vigência — #8240
+ * item 3). `plannedDailyBudgetBRL` continua sendo o default pra braço sem
+ * schedule declarado E o multiplicador quando `opts` é omitido inteiro —
+ * o número em si é decisão de negócio (`00-PROTOCOLO.md` §"Orçamento do 1º
  * mês", R$ 100/dia por braço na revisão de 18/08/2026) e pode mudar sem
  * exigir mudança de código.
  *
@@ -282,14 +299,20 @@ export function evaluateSpendOverageDeathCondition(
   d0: DateOnlyString,
   todayDateStr: DateOnlyString,
   plannedDailyBudgetBRL: number,
+  opts: SpendOverageEvalOptions = {},
 ): SpendOverageFinding[] {
   const findings: SpendOverageFinding[] = [];
   for (const braco of bracos) {
     const candidateRows = rows.filter((r) => r.canal === braco && r.data_apuracao <= todayDateStr);
     if (candidateRows.length === 0) continue;
     const latest = candidateRows.reduce((a, b) => (a.data_apuracao >= b.data_apuracao ? a : b));
-    const daysElapsed = Math.max(1, daysBetween(d0, latest.data_apuracao) + 1);
-    const plannedCumulativeBRL = plannedDailyBudgetBRL * daysElapsed;
+    const plannedCumulativeBRL = plannedBudgetBRL(
+      d0,
+      latest.data_apuracao,
+      opts.budgetScheduleByBraco?.[braco],
+      opts.pauseIntervals ?? [],
+      plannedDailyBudgetBRL,
+    );
     const threshold = 2 * plannedCumulativeBRL;
     if (latest.gasto_acumulado > threshold) {
       findings.push({
@@ -304,11 +327,246 @@ export function evaluateSpendOverageDeathCondition(
   return findings;
 }
 
+/** Limiar de AVISO (#8240 item 4) — abaixo da condição de morte (2×), mas
+ *  alto o suficiente pra não disparar em ruído do dia a dia. Decisão desta
+ *  issue, não do `00-PROTOCOLO.md` (que só define o limiar de morte). */
+export const SPEND_WARNING_RATIO_THRESHOLD = 1.25;
+
+/**
+ * Aviso SEM efeito de morte (#8240 item 4) — mesmo cálculo de planejado de
+ * {@link evaluateSpendOverageDeathCondition}, mas o intervalo é
+ * `[SPEND_WARNING_RATIO_THRESHOLD, 2]` (INCLUSIVO nas duas pontas — ratio
+ * exatamente `2` entra aqui, nunca na condição de morte, que só dispara
+ * acima de `2×` estrito; um braço abaixo do limiar de aviso não gera nada).
+ * Um braço que já cruzou a morte (`> 2×`) só
+ * aparece em {@link evaluateSpendOverageDeathCondition} — reportá-lo nas
+ * duas listas duplicaria a mesma informação com urgências diferentes.
+ *
+ * @pure
+ */
+export function evaluateSpendWarning(
+  rows: readonly ClicksCsvRow[],
+  bracos: readonly string[],
+  d0: DateOnlyString,
+  todayDateStr: DateOnlyString,
+  plannedDailyBudgetBRL: number,
+  opts: SpendOverageEvalOptions = {},
+): SpendOverageFinding[] {
+  const findings: SpendOverageFinding[] = [];
+  for (const braco of bracos) {
+    const candidateRows = rows.filter((r) => r.canal === braco && r.data_apuracao <= todayDateStr);
+    if (candidateRows.length === 0) continue;
+    const latest = candidateRows.reduce((a, b) => (a.data_apuracao >= b.data_apuracao ? a : b));
+    const plannedCumulativeBRL = plannedBudgetBRL(
+      d0,
+      latest.data_apuracao,
+      opts.budgetScheduleByBraco?.[braco],
+      opts.pauseIntervals ?? [],
+      plannedDailyBudgetBRL,
+    );
+    if (plannedCumulativeBRL <= 0) continue;
+    const ratio = latest.gasto_acumulado / plannedCumulativeBRL;
+    if (ratio >= SPEND_WARNING_RATIO_THRESHOLD && ratio <= 2) {
+      findings.push({ braco, lastKnownDate: latest.data_apuracao, gastoAcumulado: latest.gasto_acumulado, plannedCumulativeBRL, ratio });
+    }
+  }
+  return findings;
+}
+
+export interface BudgetCrossingProjection {
+  braco: string;
+  /** Data (BRT) em que o acumulado projetado cruza `nominalTotalBRL`. */
+  crossesOn: DateOnlyString;
+  fimJanela: DateOnlyString;
+  nominalTotalBRL: number;
+  /** Ritmo diário usado na projeção — média dos últimos deltas fechados
+   *  conhecidos, ou o diário vigente quando não há deltas (braço parado/
+   *  recém-retomado). */
+  ritmoUsadoBRL: number;
+}
+
+/**
+ * Projeta se `braco` cruza `nominalTotalBRL` (entrega nominal do braço,
+ * ex: R$ 1.500) ANTES de `fimJanela` — aviso sem efeito de morte (#8240
+ * item 4, 2º ponto). `null` quando: braço sem nenhuma linha; braço já
+ * cruzou (não é mais "projeção", é fato corrente — cabe às funções acima);
+ * ritmo não-positivo (nunca cruza); ou o cruzamento só aconteceria depois
+ * de `fimJanela`.
+ *
+ * Ritmo: média dos últimos até 3 deltas dia-a-dia FECHADOS e não-negativos
+ * (um acumulado que caiu é dado inconsistente, mesma disciplina de
+ * `ads-rolling-window.ts` — não entra na média). Sem nenhum delta assim
+ * (braço pausado a série inteira, ou só 1 linha conhecida), cai no
+ * `ritmoFallbackBRL` do caller — tipicamente o diário vigente do braço em
+ * `todayDateStr`.
+ *
+ * @pure
+ */
+export function projectBudgetCrossing(
+  rows: readonly ClicksCsvRow[],
+  braco: string,
+  todayDateStr: DateOnlyString,
+  fimJanela: DateOnlyString,
+  nominalTotalBRL: number,
+  ritmoFallbackBRL: number,
+): BudgetCrossingProjection | null {
+  const bracoRows = rows
+    .filter((r) => r.canal === braco && r.data_apuracao <= todayDateStr)
+    .sort((a, b) => a.data_apuracao.localeCompare(b.data_apuracao));
+  if (bracoRows.length === 0) return null;
+  const latest = bracoRows[bracoRows.length - 1];
+  if (latest.gasto_acumulado > nominalTotalBRL) return null;
+
+  // Normalizado por dia de CALENDÁRIO entre as duas linhas — `rows` é uma
+  // série de reconciliação manual que pode ficar parada vários dias (fonte
+  // automática do #8240 item 3 resolve isso numa linha só quando o CSV tem
+  // baseline, mas o CSV cru continua podendo ter saltos). Sem dividir por
+  // `daysBetween`, um salto de 4 dias de gasto num delta só inflava o ritmo
+  // ~4× e antecipava falsamente o aviso de cruzamento (#8262 review, achado 3).
+  const closedDeltas: number[] = [];
+  for (let i = bracoRows.length - 1; i > 0 && closedDeltas.length < 3; i--) {
+    const delta = bracoRows[i].gasto_acumulado - bracoRows[i - 1].gasto_acumulado;
+    const dias = Math.max(1, daysBetween(bracoRows[i - 1].data_apuracao, bracoRows[i].data_apuracao));
+    if (delta >= 0) closedDeltas.push(delta / dias);
+  }
+  const ritmo = closedDeltas.length > 0 ? closedDeltas.reduce((a, b) => a + b, 0) / closedDeltas.length : ritmoFallbackBRL;
+  if (ritmo <= 0) return null;
+
+  let acumulado = latest.gasto_acumulado;
+  let d = latest.data_apuracao;
+  while (acumulado <= nominalTotalBRL) {
+    if (d >= fimJanela) return null;
+    d = addDays(d, 1);
+    acumulado += ritmo;
+  }
+  return { braco, crossesOn: d, fimJanela, nominalTotalBRL, ritmoUsadoBRL: ritmo };
+}
+
+// ---------------------------------------------------------------------------
+// Fonte de gasto pós-CSV (#8240 item 3) — a fonte automática (ver
+// `scripts/lib/ads-campaign-economics-fetch.ts`) COMPLEMENTA o baseline
+// manual do CSV, nunca o substitui: sem nenhuma linha no CSV ainda, não há
+// baseline pra complementar. As duas fontes nunca são somadas em cima uma
+// da outra — a automática só entra nos dias DEPOIS da última linha do CSV.
+// ---------------------------------------------------------------------------
+
+export interface ArmSpendResolution {
+  gastoAcumulado: number;
+  lastKnownDate: DateOnlyString;
+  /** `null` quando a fonte automática cobriu todo o intervalo desde a
+   *  última linha do CSV. Presente quando caiu total ou parcialmente no
+   *  fallback manual — o texto nomeia a última data confiável (§ critério
+   *  de aceite #8240 item 3: rótulo "fonte manual, até DD/MM"). */
+  label: string | null;
+}
+
+/**
+ * Resolve o gasto acumulado de `braco` até `todayDateStr`, complementando
+ * o CSV com `autoDailySpend` (dia -> gasto DAQUELE dia, já filtrado pro
+ * braço — o shape de `ChannelDailyMetric.gastoBrl` de
+ * `ads-campaign-economics-fetch.ts`) pros dias FECHADOS depois da última
+ * linha do CSV. `autoDailySpend: null` = fonte automática indisponível
+ * (credencial ausente, erro de rede) — cai inteiro no CSV, rotulado.
+ *
+ * @pure
+ */
+export function resolveArmSpend(
+  braco: string,
+  rows: readonly ClicksCsvRow[],
+  todayDateStr: DateOnlyString,
+  autoDailySpend: ReadonlyMap<DateOnlyString, number> | null,
+): ArmSpendResolution {
+  const bracoRows = rows
+    .filter((r) => r.canal === braco && r.data_apuracao <= todayDateStr)
+    .sort((a, b) => a.data_apuracao.localeCompare(b.data_apuracao));
+  const lastCsv = bracoRows.length > 0 ? bracoRows[bracoRows.length - 1] : null;
+
+  if (!lastCsv) {
+    // Sem baseline: a fonte automática não tem o que complementar (ver
+    // docstring do módulo) — nem tentamos, senão o "acumulado" reportado
+    // seria só o incremento automático, subestimando o total real.
+    return { gastoAcumulado: 0, lastKnownDate: todayDateStr, label: "sem linha de base no CSV — fonte automática não pode complementar" };
+  }
+  if (!autoDailySpend) {
+    return { gastoAcumulado: lastCsv.gasto_acumulado, lastKnownDate: lastCsv.data_apuracao, label: `fonte manual, até ${lastCsv.data_apuracao}` };
+  }
+
+  let acumulado = lastCsv.gasto_acumulado;
+  let lastKnownDate = lastCsv.data_apuracao;
+  let anyAuto = false;
+  // Datas dentro do intervalo SEM valor automático — inclui tanto um buraco
+  // no MEIO do range (dia sem dado entre dois dias com dado) quanto uma
+  // lacuna no FINAL (API ainda não publicou o dia mais recente). Um buraco
+  // no meio contribui 0 pro acumulado mas NÃO deve virar "fonte automática
+  // completa, sem ressalva" — subestimaria `gasto_acumulado` sem avisar
+  // (#8262 review, achado 4).
+  const missingDates: DateOnlyString[] = [];
+  let d = addDays(lastCsv.data_apuracao, 1);
+  while (d <= todayDateStr) {
+    const v = autoDailySpend.get(d);
+    if (v != null) {
+      acumulado += v;
+      lastKnownDate = d;
+      anyAuto = true;
+    } else {
+      missingDates.push(d);
+    }
+    d = addDays(d, 1);
+  }
+  let label: string | null;
+  if (!anyAuto) {
+    label = `fonte manual, até ${lastCsv.data_apuracao}`;
+  } else if (missingDates.length > 0) {
+    label = `automático com lacuna em ${missingDates.join(", ")}`;
+  } else {
+    label = null;
+  }
+  return { gastoAcumulado: acumulado, lastKnownDate, label };
+}
+
 /** Orçamento diário planejado por braço, R$ (§"Orçamento do 1º mês",
  *  18/08/2026 — os 3 braços do teste 2608 têm o mesmo diário nominal).
  *  Override via `--planned-daily-budget` no script CLI se o valor de
  *  negócio mudar antes do código ser atualizado. */
 export const DEFAULT_PLANNED_DAILY_BUDGET_BRL = 100;
+
+/** Entrega nominal por braço, R$ (`00-PROTOCOLO.md` §"Paridade é por
+ *  ENTREGA" — R$ 1.500/braço na janela de 15 dias, R$ 100/dia × 15). Usado
+ *  só por {@link projectBudgetCrossing} (#8240 item 4, 2º aviso) — a
+ *  condição de morte em si (§3.2 item 3) nunca compara contra este valor,
+ *  só contra 2× o planejado do período. */
+export const DEFAULT_NOMINAL_ARM_BUDGET_BRL = 1500;
+
+/**
+ * Seção de texto (linhas prontas, sem e-mail próprio — #8240 item 4: "o
+ * aviso e a projeção não criam e-mail novo") pros avisos de gasto e
+ * projeções de cruzamento do teste 2608. Consumida por `ads-test-watch.ts`
+ * (console/`--dry-run`) e, no digest diário (`ads-daily-digest.ts`), como
+ * mais uma seção do e-mail que já sai todo dia — nunca as duas juntas
+ * disparando alarme separado. Vazio (`[]`) quando não há nada a dizer.
+ *
+ * @pure
+ */
+export function buildSpendWatchDigestSection(
+  warnings: readonly SpendOverageFinding[],
+  projections: readonly BudgetCrossingProjection[],
+): string[] {
+  if (warnings.length === 0 && projections.length === 0) return [];
+  const lines: string[] = ["Teste 2608 — avisos de gasto (sem efeito de morte):"];
+  for (const w of warnings) {
+    lines.push(
+      `  - ${w.braco}: R$ ${w.gastoAcumulado.toFixed(2)} acumulado até ${w.lastKnownDate} ` +
+        `(planejado: R$ ${w.plannedCumulativeBRL.toFixed(2)}, razão ${w.ratio.toFixed(2)}×) — acima de ${SPEND_WARNING_RATIO_THRESHOLD}×.`,
+    );
+  }
+  for (const p of projections) {
+    lines.push(
+      `  - ${p.braco}: cruza R$ ${p.nominalTotalBRL.toFixed(2)} em ${p.crossesOn}, antes do fim da janela (${p.fimJanela}) ` +
+        `— ritmo projetado R$ ${p.ritmoUsadoBRL.toFixed(2)}/dia.`,
+    );
+  }
+  return lines;
+}
 
 // ---------------------------------------------------------------------------
 // E-mails
