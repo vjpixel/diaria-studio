@@ -60,12 +60,19 @@ describe("collectHubSources (#4558 Parte A)", () => {
       },
       { slug: "claude-faz-algo", title: "Claude faz algo", status: "confirmed", publish_date: 1753000200 },
     ];
-    const { rows } = collectHubSources(posts, PATTERN);
+    const { rows, warnings } = collectHubSources(posts, PATTERN);
     assert.deepEqual(
       rows.map((r) => r.editionSlug),
       ["claude-faz-algo"],
       "envio de teste ou variante Patronos vazou pra superfície pública",
     );
+    // O drop é agregado, mas NUNCA mudo: `isPublicEdition` decide por
+    // prefixo de slug, e uma edição real chamada "Teste de resistência..."
+    // slugifica pra `teste-*`. Sem esta linha, o falso positivo sumiria.
+    assert.equal(warnings.length, 1, "exclusão de edição não-pública precisa aparecer na saída do regen");
+    assert.match(warnings[0], /2 edição\(ões\) excluída\(s\) da superfície pública/);
+    assert.match(warnings[0], /teste-claude-faz-algo/);
+    assert.match(warnings[0], /claude-faz-algo-patronos/);
   });
 
   it("uma edição publicada nos DOIS ESPs (canal Kit paralelo, #6114) entra uma vez só", () => {
@@ -97,6 +104,90 @@ describe("collectHubSources (#4558 Parte A)", () => {
     const [row] = dedupeBySlug([base, gemeo]);
     assert.deepEqual(row.matchedHeadlines, [titulo.normalize("NFC")]);
     assert.equal(row.editionTitle, titulo.normalize("NFC"), "editionTitle precisa ser NFC determinístico");
+  });
+
+  it("dedupeBySlug mantém o pareamento por índice quando cada origem resolve uma manchete diferente", () => {
+    // O caso que quebra uma união por Set independente dos dois arrays: as
+    // manchetes são as MESMAS, mas cada ESP resolveu a âncora de uma delas.
+    // `primarySourceUrls[i]` tem que continuar apontando pra
+    // `matchedHeadlines[i]` depois da fusão.
+    const base: HubSourceEntry = {
+      date: "2026-09-10",
+      editionSlug: "claude-analise",
+      url: "https://diar.ia.br/p/claude-analise",
+      matchedHeadlines: ["Manchete A sobre Claude", "Manchete B sobre Claude"],
+      primarySourceUrls: ["https://exemplo.com/a", null],
+    };
+    const gemeo: HubSourceEntry = { ...base, primarySourceUrls: [null, "https://exemplo.com/b"] };
+
+    const [row] = dedupeBySlug([base, gemeo]);
+    assert.deepEqual(row.matchedHeadlines, ["Manchete A sobre Claude", "Manchete B sobre Claude"]);
+    assert.deepEqual(
+      row.primarySourceUrls,
+      ["https://exemplo.com/a", "https://exemplo.com/b"],
+      "fonte primária desalinhou da manchete na fusão",
+    );
+    assert.equal(row.primarySourceUrls?.length, row.matchedHeadlines.length);
+  });
+
+  it("dedupeBySlug OMITE primarySourceUrls quando nenhuma manchete resolveu âncora", () => {
+    // Mesmo contrato de `computePrimarySourceUrls`: array de só `null` não
+    // carrega informação nova, então o campo não entra no dataset.
+    const base: HubSourceEntry = {
+      date: "2026-09-10",
+      editionSlug: "claude-analise",
+      url: "https://diar.ia.br/p/claude-analise",
+      matchedHeadlines: ["Manchete A sobre Claude"],
+      primarySourceUrls: [null],
+    };
+    const [row] = dedupeBySlug([base, { ...base }]);
+    assert.ok(!("primarySourceUrls" in row), "campo deveria sair omitido, não como [null]");
+  });
+
+  it("dedupeBySlug funde 3+ ocorrências do mesmo slug, não só um par", () => {
+    const mk = (headline: string, source: string | null): HubSourceEntry => ({
+      date: "2026-09-10",
+      editionSlug: "claude-analise",
+      url: "https://diar.ia.br/p/claude-analise",
+      matchedHeadlines: [headline],
+      ...(source === null ? {} : { primarySourceUrls: [source] }),
+    });
+    const [row] = dedupeBySlug([
+      mk("Claude um", "https://exemplo.com/1"),
+      mk("Claude dois", null),
+      mk("Claude três", "https://exemplo.com/3"),
+    ]);
+    assert.deepEqual(row.matchedHeadlines, ["Claude um", "Claude dois", "Claude três"]);
+    assert.deepEqual(row.primarySourceUrls, ["https://exemplo.com/1", null, "https://exemplo.com/3"]);
+  });
+
+  it("dedupeBySlug preserva a ordem de entrada (a ordenação por data de collectHubSources sobrevive à fusão)", () => {
+    // `dedupeBySlug` é exportada e depende de `rows` já vir ordenado —
+    // `Map.set` sobre chave existente preserva a posição de inserção. Sem
+    // este teste, uma troca de estrutura interna reordenaria o dataset
+    // commitado em silêncio.
+    const mk = (slug: string, date: string): HubSourceEntry => ({
+      date,
+      editionSlug: slug,
+      url: `https://diar.ia.br/p/${slug}`,
+      matchedHeadlines: ["Claude " + slug],
+    });
+    const rows = dedupeBySlug([mk("a", "2026-01-01"), mk("b", "2026-02-01"), mk("a", "2026-01-01"), mk("c", "2026-03-01")]);
+    assert.deepEqual(
+      rows.map((r) => r.editionSlug),
+      ["a", "b", "c"],
+    );
+  });
+
+  it("dedupeBySlug sem duplicata nenhuma devolve a lista intacta; lista vazia devolve vazia", () => {
+    const row: HubSourceEntry = {
+      date: "2026-09-10",
+      editionSlug: "claude-analise",
+      url: "https://diar.ia.br/p/claude-analise",
+      matchedHeadlines: ["Claude faz algo"],
+    };
+    assert.deepEqual(dedupeBySlug([row]), [row]);
+    assert.deepEqual(dedupeBySlug([]), []);
   });
 
   it("dedupeBySlug preserva a fonte primária que só uma das duas origens resolveu", () => {
