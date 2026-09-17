@@ -125,9 +125,13 @@ import {
   getAllSubscriberPlatforms,
   getAllSubscriptionsBySubscriber,
   getAllAliasesBySubscriber,
+  getAllEventsBySubscriber,
   resolveSubscriberAttribution,
   computeSubscriptionCoverage,
   type Platform,
+  type SubscriberAlias,
+  type SubscriptionRecord,
+  type SubscriberEventRow,
 } from "./diaria-subscribers-db.ts";
 import { isLeitorV1, LEITOR_V1_THRESHOLDS, type LeitorInput, type LeitorThresholds } from "./leitor.ts";
 import { CROSS_PLATFORM_FLOOR_NOTE } from "./diaria-subscribers-identity-resolve.ts";
@@ -325,6 +329,22 @@ export function computeStoreLeitorInputCanonicalDedup(
   return { status, totalReceived: receivedSet.size, totalUniqueClicked: clickedSet.size };
 }
 
+/** Núcleo puro de `resolveCrossPlatformStatus` — opera sobre `subs` já
+ *  carregado (batch ou per-subscriber), sem tocar o DB. Extraído em #8292
+ *  pra ser reusável por `computeStoreLeitorInputCanonicalDedupBatched`
+ *  (que recebe `subs` de `getAllSubscriptionsBySubscriber`, 1 scan) sem
+ *  duplicar a regra "active" se QUALQUER `subscription` coberta estiver
+ *  ativa hoje. */
+function resolveCrossPlatformStatusFromSubs(
+  subs: readonly SubscriptionRecord[],
+  platforms: readonly Platform[],
+): string {
+  const anyActive = subs.some(
+    (s) => platforms.includes(s.platform) && s.status === "active",
+  );
+  return anyActive ? "active" : "inactive";
+}
+
 /** Status cross-plataforma: "active" se QUALQUER `subscription` coberta
  *  (dentre `platforms`) estiver ativa hoje — alguém migrado (ex:
  *  `unsubscribed` na Beehiiv, `active` no Kit) continua sendo assinante
@@ -336,10 +356,102 @@ function resolveCrossPlatformStatus(
   platforms: readonly Platform[],
 ): string {
   const subs = getSubscriptionsForSubscriber(db, subscriberId);
-  const anyActive = subs.some(
-    (s) => platforms.includes(s.platform) && s.status === "active",
-  );
-  return anyActive ? "active" : "inactive";
+  return resolveCrossPlatformStatusFromSubs(subs, platforms);
+}
+
+// ---------------------------------------------------------------------------
+// Versão BATCHED de computeStoreLeitorInputCanonicalDedup (#8292) — opera
+// só sobre arrays já carregados em memória (1 scan prévio do store inteiro),
+// zero query por subscriber. Usada por `buildCacCompatibleSubscribersFromStore`
+// pra eliminar o N+1 que fazia 1 leitura completa do store custar 77s para
+// 2.018 linhas (~38ms/linha — cada linha disparava várias queries
+// `event`/`subscription` por plataforma × tipo).
+// ---------------------------------------------------------------------------
+
+function groupEventsByPlatformType(
+  events: readonly SubscriberEventRow[],
+): Map<Platform, Map<string, EdicaoEventEntry[]>> {
+  const byPlatform = new Map<Platform, Map<string, EdicaoEventEntry[]>>();
+  for (const e of events) {
+    let byType = byPlatform.get(e.platform);
+    if (!byType) {
+      byType = new Map();
+      byPlatform.set(e.platform, byType);
+    }
+    let list = byType.get(e.type);
+    if (!list) {
+      list = [];
+      byType.set(e.type, list);
+    }
+    list.push({ platform: e.platform, edicao: e.edicao, externalEventId: e.external_event_id });
+  }
+  return byPlatform;
+}
+
+/** Mesma regra de `receivedEditionKeysForPlatform`, mas lendo de um mapa
+ *  `platform -> type -> entries[]` já agrupado em memória, sem query. */
+function receivedEditionKeysForPlatformBatched(
+  grouped: Map<Platform, Map<string, EdicaoEventEntry[]>>,
+  platform: Platform,
+  caps: PlatformCapabilities,
+  canonicalMap: Map<string, string>,
+): Set<string> {
+  const byType = grouped.get(platform);
+  if (!byType) return new Set();
+  if (caps.platformsWithDelivered.has(platform)) {
+    return new Set((byType.get("delivered") ?? []).map((e) => canonicalKeyOf(e, canonicalMap)));
+  }
+  const sentKeys = new Set((byType.get("sent") ?? []).map((e) => canonicalKeyOf(e, canonicalMap)));
+  const bounceKeys = new Set((byType.get("bounce") ?? []).map((e) => canonicalKeyOf(e, canonicalMap)));
+  for (const k of bounceKeys) sentKeys.delete(k);
+  return sentKeys;
+}
+
+/** Mesma regra de `clickedEditionKeysForPlatform`, batched. */
+function clickedEditionKeysForPlatformBatched(
+  grouped: Map<Platform, Map<string, EdicaoEventEntry[]>>,
+  platform: Platform,
+  canonicalMap: Map<string, string>,
+): Set<string> {
+  const byType = grouped.get(platform);
+  if (!byType) return new Set();
+  return new Set((byType.get("click") ?? []).map((e) => canonicalKeyOf(e, canonicalMap)));
+}
+
+/**
+ * Mesmo `LeitorInput` que `computeStoreLeitorInputCanonicalDedup`, mas
+ * recebendo `events`/`aliases`/`subs` JÁ carregados (de
+ * `getAllEventsBySubscriber`/`getAllAliasesBySubscriber`/
+ * `getAllSubscriptionsBySubscriber`, cada 1 scan do store inteiro) em vez
+ * de consultar o DB por subscriber — 0 queries por chamada. Usada só por
+ * `buildCacCompatibleSubscribersFromStore` (#8292); os demais consumidores
+ * (ficha de identidade de 1 subscriber no painel, #6590) seguem com a
+ * versão não-batched acima, onde 1 lookup pontual não justifica pré-carregar
+ * o store inteiro.
+ */
+export function computeStoreLeitorInputCanonicalDedupBatched(
+  events: readonly SubscriberEventRow[],
+  aliases: readonly SubscriberAlias[],
+  subs: readonly SubscriptionRecord[],
+  caps: PlatformCapabilities,
+  canonicalMap: Map<string, string>,
+  platforms: readonly Platform[] = LEITOR_DIARIA_PLATFORMS,
+): LeitorInput {
+  const present = new Set(aliases.map((a) => a.platform));
+  const grouped = groupEventsByPlatformType(events);
+  const receivedSet = new Set<string>();
+  const clickedSet = new Set<string>();
+  for (const platform of platforms) {
+    if (!present.has(platform)) continue;
+    for (const k of receivedEditionKeysForPlatformBatched(grouped, platform, caps, canonicalMap)) {
+      receivedSet.add(k);
+    }
+    for (const k of clickedEditionKeysForPlatformBatched(grouped, platform, canonicalMap)) {
+      clickedSet.add(k);
+    }
+  }
+  const status = present.size > 0 ? resolveCrossPlatformStatusFromSubs(subs, platforms) : "inactive";
+  return { status, totalReceived: receivedSet.size, totalUniqueClicked: clickedSet.size };
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +576,10 @@ export function buildCacCompatibleSubscribersFromStore(
   const allPlatforms = getAllSubscriberPlatforms(db);
   const subscriptionsBySubscriber = getAllSubscriptionsBySubscriber(db);
   const aliasesBySubscriber = getAllAliasesBySubscriber(db);
+  // #8292: 1 scan de `event` pro store inteiro, em vez de N queries
+  // (1 por subscriber × plataforma × tipo) — era a raiz dos 77s/2.018
+  // linhas medidos em produção.
+  const eventsBySubscriber = getAllEventsBySubscriber(db);
 
   const out: BeehiivBackupSubscriber[] = [];
   for (const [subscriberId, platformSet] of allPlatforms) {
@@ -483,7 +599,15 @@ export function buildCacCompatibleSubscribersFromStore(
       .filter((ms) => Number.isFinite(ms));
     const created = enteredMs.length > 0 ? Math.floor(Math.min(...enteredMs) / 1000) : 0;
 
-    const input = computeStoreLeitorInputCanonicalDedup(db, subscriberId, caps, canonicalMap, platforms);
+    const events = eventsBySubscriber.get(subscriberId) ?? [];
+    const input = computeStoreLeitorInputCanonicalDedupBatched(
+      events,
+      aliases,
+      subs,
+      caps,
+      canonicalMap,
+      platforms,
+    );
 
     out.push({
       email,

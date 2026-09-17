@@ -366,7 +366,7 @@ import { buildTasksData } from "./studio-tasks.ts";
 import { refreshPollEiaSummaryLocal } from "../build-poll-eia-data.ts";
 // #5236: custo por leitor por canal — qual canal traz leitor mais barato,
 // abertura da coorte vs. base, orçamento do mês, degradação. Ver studio-ads.ts.
-import { buildAdsData, buildAdsCampaignEconomics } from "./studio-ads.ts";
+import { buildAdsData, buildAdsCampaignEconomics, makeMemoizedStoreResultProvider } from "./studio-ads.ts";
 // #6590: busca por e-mail -> timeline unificada + coorte por migração,
 // sobre o store diaria-subscribers-db.ts (épico #6464). Read-only por
 // construção — ver studio-subscribers.ts.
@@ -1278,14 +1278,21 @@ function handleApiTasks(rootDir: string, req: IncomingMessage, res: ServerRespon
  * padrão de `handleApiMetrics`. */
 function handleApiAds(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
   const forceRefresh = new URL(req.url ?? "/", "http://localhost").searchParams.get("refresh") === "1";
+  // #8292: 1 provider memoizado compartilhado entre buildAdsData e
+  // buildAdsCampaignEconomics — lê o store unificado no MÁXIMO 1 vez por
+  // request (só se/quando alguma das duas de fato precisar, nunca eager),
+  // em vez de cada função reler do zero (era a causa dos 77s×2 medidos em
+  // produção que deixaram `/api/ads` sem responder).
+  const storePath = resolve(rootDir, "data", "diaria-subscribers", "diaria-subscribers.db");
+  const storeResultProvider = makeMemoizedStoreResultProvider(storePath);
   let adsData: ReturnType<typeof buildAdsData>;
   try {
-    adsData = buildAdsData(rootDir, { forceRefresh });
+    adsData = buildAdsData(rootDir, { forceRefresh, storeResultProvider });
   } catch (e) {
     sendJson(res, 500, { error: (e as Error).message });
     return;
   }
-  buildAdsCampaignEconomics(rootDir, { forceRefresh })
+  buildAdsCampaignEconomics(rootDir, { forceRefresh, storeResultProvider })
     .then((campaignEconomics) => sendJson(res, 200, { ...adsData, campaignEconomics }))
     .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
 }
