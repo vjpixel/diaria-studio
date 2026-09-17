@@ -531,7 +531,10 @@ export async function buildAdsCampaignEconomics(
   // #8210 melhoria 2 — badge ativa/pausada, mesmo valor pros 3 braços
   // (pausas são da campanha inteira — ver docstring de
   // `computeCampaignPauseStatus`).
-  const pauseStatus = computeCampaignPauseStatus(runState?.revisao, todayIso);
+  // `generatedAt` como instante de referência (#8288): a pausa do formato
+  // atual tem HORA, então a badge responde "pausada AGORA?", não "houve
+  // pausa em algum momento de hoje?".
+  const pauseStatus = computeCampaignPauseStatus(runState?.revisao, todayIso, generatedAt);
 
   const channels = buildChannelTable(sourcesResult.metrics, sourcesResult.signups, {
     channelsWithUnknownLiveSpend,

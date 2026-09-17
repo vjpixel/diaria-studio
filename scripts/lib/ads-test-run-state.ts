@@ -18,6 +18,7 @@
  */
 
 import { deriveAdsTestSchedule, type AdsTestSchedule, type DateOnlyString } from "./ads-test-schedule.ts";
+import type { AdsTestPauseField } from "./ads-test-pause-window.ts";
 
 /** Os 3 braços do teste 2608 — nomes de canal EXATOS que já vivem em
  *  `CHANNEL_GROUP_KEYS` (`scripts/lib/cac.ts`) e nas linhas de `spend.csv`
@@ -52,13 +53,15 @@ export interface AdsTestRunStateRevisao {
   pausas?: readonly AdsTestPause[];
   /** Formato ATUAL (#8240/#8241/#8262/#8242) — 1 intervalo de pausa (ou
    *  lista, para uma 2ª pausa futura) com timestamp ISO COM hora (não só
-   *  data). `unknown` aqui de propósito: quem interpreta a forma exata
-   *  (`inicio`/`fim`/`inicio_por_braco`) é `AdsTestPauseField`/
-   *  `AdsTestRunStateWithPause` em `ads-test-pause-window.ts` — este
-   *  arquivo só valida que, quando presente, tem a forma mínima de um
-   *  intervalo (ver {@link assertValidRunState}), sem duplicar aquele
-   *  tipo. */
-  pausa?: unknown;
+   *  data). O tipo vem de `ads-test-pause-window.ts` (import só de tipo,
+   *  sem ciclo: aquele módulo depende apenas de `ads-test-schedule.ts`) —
+   *  era `unknown` até o #8288, e o `unknown` era justamente o que deixava
+   *  todo consumidor livre pra achar que este campo não existia, incluindo
+   *  o `computeCampaignPauseStatus` que derrubou `/api/ads` com 500 lendo
+   *  só `pausas`. A forma mínima continua validada aqui (ver
+   *  {@link assertValidRunState}); a INTERPRETAÇÃO segue sendo exclusiva
+   *  de `ads-test-pause-window.ts`. */
+  pausa?: AdsTestPauseField;
   /** Metadados livres de auditoria de uma regravação de revisão — nunca
    *  validados em detalhe aqui (não afetam nenhum cálculo, só leitura
    *  humana/relatório). */

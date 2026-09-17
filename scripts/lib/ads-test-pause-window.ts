@@ -251,6 +251,24 @@ function budgetRateAtInstant(
   return current;
 }
 
+/**
+ * `true` se o INSTANTE `nowIso` (ISO 8601 com offset) cai dentro de alguma
+ * pausa — a pergunta "está pausada AGORA?", diferente de
+ * {@link isDatePaused}, que é "este DIA teve qualquer fração de pausa?".
+ * A badge ativa/pausada do `/ads` (#8288) precisa da primeira: a pausa de
+ * produção terminou às 00:16 de 17/09, então 17/09 é um dia "com pausa"
+ * (`isDatePaused` → `true`) e, ao mesmo tempo, um instante de agora que
+ * está veiculando. Mostrar "pausada" o dia inteiro por causa de 16 minutos
+ * de madrugada seria errado pro leitor do painel.
+ *
+ * @pure
+ */
+export function isInstantPausedAt(nowIso: string, intervals: readonly AdsTestPauseInterval[]): boolean {
+  if (intervals.length === 0) return false;
+  assertValidPauseIntervals(intervals);
+  return isInstantPaused(parseIsoMs(nowIso), intervals);
+}
+
 /** `true` se o instante `ms` cai dentro de alguma pausa (`fim: null` =
  *  pausa em andamento, sem teto superior). */
 function isInstantPaused(ms: number, intervals: readonly AdsTestPauseInterval[]): boolean {
