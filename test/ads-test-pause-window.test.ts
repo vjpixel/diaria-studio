@@ -168,14 +168,15 @@ describe("#8240 itens 1+3 — plannedBudgetBRL (integra diário vigente sobre di
     assert.equal(plannedBudgetBRL("2026-08-26", "2026-08-28", undefined, [], 100), 300);
   });
 
-  it("Microsoft: 100/dia até 06/09 17:07, 200/dia depois, planejado NÃO conta os 8 dias pausados", () => {
+  it("Microsoft: 100/dia até 06/09 17:07, 200/dia depois, pró-rateado no dia da virada (#8270)", () => {
     const schedule = [{ desde: "2026-09-06T17:07:00-03:00", brl: 200 }];
     const pauseIntervals = [{ inicio: "2026-09-09T09:10:00-03:00", fim: "2026-09-17T00:16:00-03:00" }];
-    // 05/09 (100) + 06/09 (200, vigente ao fim do dia) + 07/09 (200) + 08/09 (200)
-    // + fração de 09/09 pausada (~0,382 × 200) — nada de 10 a 16/09 (pausados 100%)
+    // 05/09 (100) + 06/09 pró-rateado (100 × 17h07/24h + 200 × 6h53/24h ≈ 128,68)
+    // + 07/09 (200) + 08/09 (200) + fração de 09/09 pausada (~0,382 × 200)
+    // — nada de 10 a 16/09 (pausados 100%)
     const planejado = plannedBudgetBRL("2026-09-05", "2026-09-09", schedule, pauseIntervals, 100);
-    // 100 + 200 + 200 + 200 + (0,382 × 200) ≈ 776,4
-    assert.ok(planejado > 770 && planejado < 785, `esperado ~776; recebi ${planejado}`);
+    // 100 + 128,68 + 200 + 200 + (0,382 × 200) ≈ 705,07 (valor que a #8270 pediu)
+    assert.ok(planejado > 700 && planejado < 710, `esperado ~705,07; recebi ${planejado}`);
   });
 
   // #8262 review item 6 (continuação): `plannedBudgetBRL` consome a mesma
@@ -191,6 +192,27 @@ describe("#8240 itens 1+3 — plannedBudgetBRL (integra diário vigente sobre di
     const planejadoOrdenado = plannedBudgetBRL("2026-09-05", "2026-09-09", orderedSchedule, pauseIntervals, 100);
     const planejadoDesordenado = plannedBudgetBRL("2026-09-05", "2026-09-09", shuffledSchedule, pauseIntervals, 100);
     assert.equal(planejadoDesordenado, planejadoOrdenado);
-    assert.ok(planejadoOrdenado > 770 && planejadoOrdenado < 785, `esperado ~776; recebi ${planejadoOrdenado}`);
+    assert.ok(planejadoOrdenado > 700 && planejadoOrdenado < 710, `esperado ~705,07; recebi ${planejadoOrdenado}`);
+  });
+
+  // #8270: caso de borda explícito — pausa E virada de orçamento no MESMO
+  // dia. As duas frações precisam compor (união de breakpoints), nunca
+  // multiplicar ingenuamente `(1 - fraçãoPausada) × orçamentoDoDiaInteiro`.
+  it("pausa e virada de orçamento no MESMO dia compõem por sub-intervalo, não multiplicam ingenuamente", () => {
+    // Dia único: orçamento 100 até 12:00, 300 dali em diante; pausa das
+    // 18:00 às 24:00 (6h). Frações do dia: [00-12h]=100 não pausado,
+    // [12-18h]=300 não pausado, [18-24h]=300 mas pausado (0).
+    const schedule = [{ desde: "2026-09-10T12:00:00-03:00", brl: 300 }];
+    const pauseIntervals = [{ inicio: "2026-09-10T18:00:00-03:00", fim: "2026-09-11T00:00:00-03:00" }];
+    const planejado = plannedBudgetBRL("2026-09-10", "2026-09-10", schedule, pauseIntervals, 100);
+    // 100 × 12/24 + 300 × 6/24 = 50 + 75 = 125 (a fração pausada das 18-24h
+    // não contribui nada, mesmo sendo o trecho de orçamento MAIOR).
+    assert.ok(Math.abs(planejado - 125) < 1e-6, `esperado 125; recebi ${planejado}`);
+
+    // Contraprova: o cálculo ingênuo antigo (fração-não-pausada do dia ×
+    // orçamento-vigente-ao-fim-do-dia) daria (1 - 6/24) × 300 = 225 —
+    // bem diferente do valor composto corretamente.
+    const ingenuo = (1 - 6 / 24) * 300;
+    assert.ok(Math.abs(planejado - ingenuo) > 50, "a versão correta não pode coincidir com a conta ingênua neste cenário");
   });
 });
