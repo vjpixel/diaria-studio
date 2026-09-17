@@ -58,7 +58,11 @@ function fakeKit(opts: {
     calls.push({ method, url: u, body });
     if (method === "GET" && u.includes("/subscribers?email_address=")) {
       // Lista com `fields` DEFASADO de propósito — o worker não pode confiar nele.
-      return jsonRes(200, { subscribers: sub ? [{ id: 42, state: sub.state, fields: {} }] : [] });
+      // Comportamento REAL do Kit v4 (hotfix #8235): sem `status=all` a lista
+      // devolve só assinantes `active` — um inactive some da busca.
+      const incluiTodos = new URL(u).searchParams.get("status") === "all";
+      const visivel = sub !== null && (incluiTodos || sub.state === "active");
+      return jsonRes(200, { subscribers: visivel ? [{ id: 42, state: sub!.state, fields: {} }] : [] });
     }
     if (method === "GET" && u.endsWith("/subscribers/42")) {
       const modo = opts.singularGet ?? "ok";
@@ -187,6 +191,17 @@ describe("activateSubscriptionKit preserva a origem de quem já existe (#8235)",
       assert.equal(log?.motivo, "leitura_falhou");
     });
   }
+});
+
+describe("lookup do assinante enxerga inactive (hotfix #8235)", () => {
+  it("a busca por e-mail pede status=all — senão o inactive vira 'inexistente' e a origem é sobrescrita", async () => {
+    const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
+    await capture(() => activateSubscriptionKit(env(), "x@y.com", kit.fetchImpl, true));
+    const lookup = kit.calls.find((c) => c.method === "GET" && c.url.includes("/subscribers?email_address="));
+    assert.ok(lookup, "deveria buscar o assinante por e-mail");
+    assert.equal(new URL(lookup!.url).searchParams.get("status"), "all");
+    assert.equal(kit.get()!.fields.utm_source, "google-ads");
+  });
 });
 
 describe("filterKitOrigemFields (#8235)", () => {

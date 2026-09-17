@@ -676,7 +676,11 @@ export async function activateSubscriptionKit(
   let existingId: string | number | undefined;
   let existsAlready = false;
   try {
-    const getRes = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}`, {
+    // #8235 (hotfix): `status=all` é obrigatório — sem ele o endpoint de lista do
+    // Kit devolve SÓ assinantes active, então um inactive (exatamente o público
+    // do botão Confirmar) voltava como inexistente e o upsert sobrescrevia a
+    // origem. Medido ao vivo em 17/09/2026 com fixture +probe.
+    const getRes = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}&status=all`, {
       headers: authHeaders,
       signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
     });
