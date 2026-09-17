@@ -17,19 +17,38 @@
  * fallback verdadeiro são reconsiderados, e só quando a flag está ligada e o
  * classificador responde. Ver `applySemanticTiebreaker` abaixo.
  *
- * ⚠️ CONTRATO DA API NÃO CONFIRMADO — LER ANTES DE CONFIAR EM PRODUÇÃO.
- * Antes desta unidade o repo não tinha nenhuma chamada real à TypeSafe: sem
- * doc, sem exemplo de request/response, sem menção prévia em `.env.example`.
- * `classifyBatchViaTypeSafe` abaixo implementa um contrato PLAUSÍVEL — batch
- * de `questions` numa única request (a issue cita o cookbook
- * `parallel_questions` da TypeSafe, "12x mais barato batchado"), resposta com
- * um array `answers` casado por `id` (usamos a própria URL como id) — mas é
- * uma SUPOSIÇÃO, não um fato verificado contra a API real. Isolado nesta
- * única função de transporte pra ser trivial de corrigir sem tocar
- * composição/fail-soft/flag quando o contrato real for confirmado. O PR desta
- * unidade lista explicitamente o que precisa ser validado antes da flag ser
- * confiável em produção. Nenhum teste desta unidade chama a rede de verdade —
- * todos injetam `fetchImpl` stubado.
+ * Contrato confirmado (#8219, 17/09/2026) contra a API real — 1 chamada de
+ * verificação manual, `POST https://api.typesafe.ai/v1/systemone`, `200` com
+ * o shape abaixo. Antes desta correção o transporte era uma SUPOSIÇÃO
+ * plausível (endpoint `/v1/questions/batch`, request com array `questions`
+ * casado por `id`, resposta com array `answers`) que nunca tinha sido
+ * verificada — sempre caía no fail-soft em produção (flag "ligada" mas o
+ * classificador nunca respondia de verdade, #8219). O contrato real foi
+ * recuperado do script de medição original do #5995/#8211
+ * (`scripts/experiments/typesafe-bucket-eval.ts`, nunca versionado — ver
+ * #8219 pra onde ele foi achado) e confirmado byte-a-byte com uma chamada
+ * real:
+ *
+ *   POST /v1/systemone
+ *   Authorization: Bearer <TYPESAFE_API_KEY>
+ *   { "model": "jev-latest",
+ *     "state": { "title", "url", "summary" },
+ *     "questions": { "bucket": { "type": "choice", "instructions", "criteria": { "lancamento", "radar" } } } }
+ *   →
+ *   { "model": "jev-1.13.0",
+ *     "answers": { "bucket": { "type": "choice", "choice": "lancamento", "confidence": 1.0, "probabilities": {...} } },
+ *     "usage": { "input_tokens", "output_tokens" } }
+ *
+ * A API não expõe um endpoint de BATCH real (um `POST` = uma pergunta sobre
+ * um item) — o script de medição original também fazia 1 request por item,
+ * só com concorrência (`Promise.all` em lotes de 8). `classifyBatchViaTypeSafe`
+ * abaixo reproduz esse padrão: N requests concorrentes (teto
+ * `TYPESAFE_CONCURRENCY`), nunca 1 request com N itens dentro — a leitura de
+ * "batchar" no item 5 do #8211 era sobre concorrência, não sobre um payload
+ * de array único (não confirmado, e a issue nunca citou o shape de um batch
+ * real). Isolado nesta única função de transporte por design (mesmo padrão
+ * de antes) — nenhum teste desta unidade chama a rede de verdade, todos
+ * injetam `fetchImpl` stubado.
  *
  * Fail-soft (#8211 item 4): `TYPESAFE_API_KEY` ausente, timeout, erro de
  * rede, HTTP não-2xx, ou resposta que não bate o shape esperado →
@@ -83,25 +102,42 @@ export function isSemanticTiebreakerEnabled(configPath: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Transporte — isolado, contrato NÃO confirmado (ver aviso no topo do arquivo)
+// Transporte — contrato confirmado (#8219, ver aviso no topo do arquivo)
 // ---------------------------------------------------------------------------
 
-const TYPESAFE_ENDPOINT = "https://api.typesafe.ai/v1/questions/batch"; // NÃO CONFIRMADO
+const TYPESAFE_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const TYPESAFE_MODEL = "jev-latest";
 
+/** Teto de requests concorrentes por edição — mesmo valor usado no script de
+ * medição original do #5995/#8211 (`typesafe-bucket-eval.ts`, `CONC = 8`). */
+const TYPESAFE_CONCURRENCY = 8;
+
 /**
- * Critério passado ao classificador — mesmo espírito do #160 (LANÇAMENTOS só
- * com link oficial) e do resíduo medido na #5995: distinguir "anúncio oficial
- * de produto/feature que o leitor pode usar" de "notícia/cobertura/relatório/
- * marco institucional sobre a empresa". Texto deliberadamente curto — a
- * issue reporta que o controle contra prompt-tuning (texto de critério
- * ORIGINAL, escrito antes de conhecer o corpus) deu o mesmo resultado.
+ * Critérios passados ao classificador (questão `bucket`, tipo `choice`) —
+ * mesmo espírito do #160 (LANÇAMENTOS só com link oficial) e do resíduo
+ * medido na #5995: distinguir "anúncio oficial de produto/feature que o
+ * leitor pode usar" de "notícia/cobertura/relatório/marco institucional
+ * sobre a empresa". Só as duas chaves que o tie-breaker sabe interpretar —
+ * `use_melhor` fica fora de propósito (#8211 escopo: "só o fallback, não
+ * encostar nas regras fortes"; este módulo nunca move nada PARA use_melhor).
+ * Texto deliberadamente curto — a issue reporta que o controle contra
+ * prompt-tuning (texto de critério ORIGINAL, escrito antes de conhecer o
+ * corpus) deu o mesmo resultado.
  */
-const TIEBREAKER_CRITERION =
+const TIEBREAKER_INSTRUCTIONS =
   "Este link anuncia o LANÇAMENTO de um produto, feature ou modelo de IA que " +
-  "o leitor pode usar diretamente — responda 'lancamento'. Se for notícia, " +
-  "cobertura de imprensa, relatório, marco institucional, parceria de " +
-  "negócio ou opinião sobre a empresa/produto — responda 'radar'.";
+  "o leitor pode usar diretamente, ou é notícia/cobertura de imprensa/" +
+  "relatório/marco institucional/parceria de negócio/opinião sobre a " +
+  "empresa ou produto?";
+
+const TIEBREAKER_CRITERIA: Record<string, string> = {
+  lancamento:
+    "Anúncio OFICIAL, feito pela própria empresa que o criou, de um produto, " +
+    "ferramenta, modelo ou feature NOVA que o leitor pode começar a usar.",
+  radar:
+    "Notícia, análise, entrevista, ensaio, relatório, pesquisa, marco " +
+    "corporativo ou anúncio institucional — sem lançar um produto usável.",
+};
 
 export class TypeSafeHttpError extends Error {
   readonly status: number;
@@ -135,14 +171,18 @@ export interface ClassifyBatchOptions {
 }
 
 /**
- * Chama a TypeSafe em lote (#8211 item 5 — batching, "12x mais barato" no
- * cookbook `parallel_questions` citado na issue). Lança em qualquer falha —
- * quem chama (`applySemanticTiebreaker`) trata como fail-soft.
+ * Chama a TypeSafe pra UM item (a API não tem endpoint de batch real — ver
+ * aviso no topo do arquivo). Lança em qualquer falha de transporte (rede,
+ * timeout, HTTP não-2xx, shape estruturalmente inesperado) — quem chama
+ * (`classifyBatchViaTypeSafe`) decide se isso derruba só o item ou o lote
+ * inteiro.
  */
-export async function classifyBatchViaTypeSafe(opts: ClassifyBatchOptions): Promise<TieBreakerAnswer[]> {
-  if (opts.items.length === 0) return [];
-  const fetchFn = opts.fetchImpl ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? 30_000;
+async function classifyOneViaTypeSafe(
+  item: TieBreakerQuestionItem,
+  apiKey: string,
+  fetchFn: typeof fetch,
+  timeoutMs: number,
+): Promise<TieBreakerAnswer | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -152,15 +192,18 @@ export async function classifyBatchViaTypeSafe(opts: ClassifyBatchOptions): Prom
       method: "POST",
       headers: {
         "Content-Type": "application/json; charset=utf-8",
-        Authorization: `Bearer ${opts.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: TYPESAFE_MODEL,
-        questions: opts.items.map((item) => ({
-          id: item.url,
-          criterion: TIEBREAKER_CRITERION,
-          context: `${item.title}\n\n${item.summary}`.trim(),
-        })),
+        state: { title: item.title, url: item.url, summary: item.summary },
+        questions: {
+          bucket: {
+            type: "choice",
+            instructions: TIEBREAKER_INSTRUCTIONS,
+            criteria: TIEBREAKER_CRITERIA,
+          },
+        },
       }),
       signal: controller.signal,
     });
@@ -174,37 +217,74 @@ export async function classifyBatchViaTypeSafe(opts: ClassifyBatchOptions): Prom
   }
 
   const raw = (await res.json()) as unknown;
-  return parseTypeSafeResponse(raw, opts.items);
+  const verdict = parseTypeSafeAnswer(raw);
+  return verdict ? { url: item.url, verdict } : null;
 }
 
 /**
- * Parseia/valida a resposta da TypeSafe. Exposto pra teste — não faz I/O.
- * Item malformado ou `id` que não bate nenhuma URL requisitada é IGNORADO
- * (nunca lançado) — resposta parcialmente inválida ainda deixa os itens
- * válidos serem aproveitados; os itens sem resposta ficam sem verdict e
- * `applySemanticTiebreaker` mantém o bucket original pra eles (fail-soft por
- * item, não só por request).
+ * Chama a TypeSafe pra todos os itens do lote — N requests concorrentes
+ * (teto `TYPESAFE_CONCURRENCY`), nunca 1 request com N itens dentro (ver
+ * aviso no topo do arquivo). Fail-soft de DUAS camadas:
+ *   - por item: erro de transporte num item específico não derruba os
+ *     outros — o item some do retorno e `applySemanticTiebreaker` mantém o
+ *     bucket original pra ele.
+ *   - por lote: se TODOS os itens falharem (ex: API fora do ar, key
+ *     inválida), lança — `applySemanticTiebreaker` trata como falha total de
+ *     transporte, loga e devolve os buckets originais sem nenhuma alteração
+ *     (mesmo contrato de antes, só a implementação interna mudou).
  */
-export function parseTypeSafeResponse(raw: unknown, items: TieBreakerQuestionItem[]): TieBreakerAnswer[] {
+export async function classifyBatchViaTypeSafe(opts: ClassifyBatchOptions): Promise<TieBreakerAnswer[]> {
+  if (opts.items.length === 0) return [];
+  const fetchFn = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const concurrency = Math.max(1, Math.min(TYPESAFE_CONCURRENCY, opts.items.length));
+
+  const results: Array<TieBreakerAnswer | null> = new Array(opts.items.length).fill(null);
+  const errors: unknown[] = [];
+  let cursor = 0;
+
+  async function worker(): Promise<void> {
+    while (cursor < opts.items.length) {
+      const idx = cursor++;
+      try {
+        results[idx] = await classifyOneViaTypeSafe(opts.items[idx], opts.apiKey, fetchFn, timeoutMs);
+      } catch (err) {
+        errors.push(err);
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  if (errors.length === opts.items.length) {
+    throw errors[0];
+  }
+
+  return results.filter((r): r is TieBreakerAnswer => r !== null);
+}
+
+/**
+ * Parseia/valida a resposta de UM item da TypeSafe. Exposto pra teste — não
+ * faz I/O. Shape estruturalmente inesperado (não é objeto, sem `answers`,
+ * sem `answers.bucket`) LANÇA — sinal de que o contrato mudou, tratado como
+ * falha de transporte pelo chamador. `choice` que não bate nenhuma das
+ * `TIEBREAKER_CRITERIA` (ex: a API respondeu algo fora do vocabulário
+ * esperado) devolve `null` sem lançar — item fica sem verdict,
+ * `applySemanticTiebreaker` mantém o bucket original pra ele.
+ */
+export function parseTypeSafeAnswer(raw: unknown): TieBreakerVerdict | null {
   if (!raw || typeof raw !== "object") {
     throw new Error("[semantic-tiebreaker] resposta da TypeSafe não é um objeto JSON");
   }
   const answers = (raw as Record<string, unknown>).answers;
-  if (!Array.isArray(answers)) {
-    throw new Error("[semantic-tiebreaker] resposta da TypeSafe sem array `answers`");
+  if (!answers || typeof answers !== "object") {
+    throw new Error("[semantic-tiebreaker] resposta da TypeSafe sem objeto `answers`");
   }
-  const validUrls = new Set(items.map((i) => i.url));
-  const out: TieBreakerAnswer[] = [];
-  for (const entry of answers) {
-    if (!entry || typeof entry !== "object") continue;
-    const id = (entry as Record<string, unknown>).id;
-    const answerRaw = (entry as Record<string, unknown>).answer;
-    if (typeof id !== "string" || !validUrls.has(id)) continue;
-    const verdict = normalizeVerdict(answerRaw);
-    if (!verdict) continue;
-    out.push({ url: id, verdict });
+  const bucket = (answers as Record<string, unknown>).bucket;
+  if (!bucket || typeof bucket !== "object") {
+    throw new Error("[semantic-tiebreaker] resposta da TypeSafe sem `answers.bucket`");
   }
-  return out;
+  return normalizeVerdict((bucket as Record<string, unknown>).choice);
 }
 
 function normalizeVerdict(raw: unknown): TieBreakerVerdict | null {
