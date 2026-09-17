@@ -64,6 +64,10 @@ describe("#8239 — META_ADS_CANAL trava contra drift de nome de canal", () => {
     // braço do teste 2608.
     assert.equal(isReserved, true, "sanity check: RESERVED_CHANNEL_NAMES deveria seguir citando o nome canônico legado");
     assert.equal(hasSpec, false, "sanity check: o valor antigo não deveria ter spec própria — é essa lacuna que causa o defeito 2 do #8239");
-    assert.equal(ADS_TEST_2608_BRACOS.includes(driftedCanal), false, "sanity check: 'Meta' não é um braço do teste 2608");
+    assert.equal(
+      (ADS_TEST_2608_BRACOS as readonly string[]).includes(driftedCanal),
+      false,
+      "sanity check: 'Meta' não é um braço do teste 2608",
+    );
   });
 });
