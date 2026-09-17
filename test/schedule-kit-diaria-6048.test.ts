@@ -316,3 +316,38 @@ describe("#7285 idempotência confirma contra o broadcast VIVO, nunca só o cach
     assert.equal(written.length, 0);
   });
 });
+
+describe("#8207 item 2 — scheduled-at precisa datar (BRT) o mesmo dia da edição", () => {
+  // Edition dir com AAMMDD reconhecível no basename (EDITION dos blocos acima
+  // é "/tmp/edicao-fake-6048" — não bate no padrão, guard sempre pulado ali
+  // de propósito). WHEN = "2026-08-26T09:00:00Z" = 26/08 06:00 BRT.
+  const EDITION_260826 = "/tmp/data/editions/260826";
+
+  it("scheduled-at no MESMO dia civil BRT da edição → segue o fluxo normal", async () => {
+    const { deps, patched } = makeDeps();
+    const r = await scheduleKitDiaria(EDITION_260826, WHEN, deps);
+    assert.equal(r.code, 0);
+    assert.deepEqual(patched, [4242]);
+  });
+
+  it("scheduled-at 1 dia DEPOIS da edição (o bug do #8207) ⇒ code 5, nunca chama PATCH/GET", async () => {
+    const { deps, patched } = makeDeps();
+    let verifyCalled = false;
+    deps.verify = async () => {
+      verifyCalled = true;
+      return { send_at: "2026-08-27T09:00:00Z" };
+    };
+    const r = await scheduleKitDiaria(EDITION_260826, "2026-08-27T09:00:00Z", deps);
+    assert.equal(r.code, 5);
+    if (r.code === 5) assert.match(r.reason, /allow-other-date/);
+    assert.deepEqual(patched, [], "guard roda antes de ler config/estado — nunca chega no PATCH");
+    assert.equal(verifyCalled, false);
+  });
+
+  it("--allow-other-date (opts.allowOtherDate) libera a divergência explicitamente", async () => {
+    const { deps, patched } = makeDeps({ verifyReturns: { send_at: "2026-08-27T09:00:00Z" } });
+    const r = await scheduleKitDiaria(EDITION_260826, "2026-08-27T09:00:00Z", deps, { allowOtherDate: true });
+    assert.equal(r.code, 0);
+    assert.deepEqual(patched, [4242]);
+  });
+});
