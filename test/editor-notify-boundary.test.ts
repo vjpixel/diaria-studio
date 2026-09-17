@@ -55,7 +55,7 @@ const ALLOWLIST: string[] = [
   "scripts/ads-kill-switch-alarm.ts",
   "scripts/ads-test-watch.ts",
 
-  // #7960 (residual da #7965 — "REFS #7960, NÃO CLOSES"): os 25 scripts
+  // #7960 (residual da #7965 — "REFS #7960, NÃO CLOSES"): os scripts
   // abaixo usam `planAlarmReconciliation`/`applyAlarmReconciliation`
   // (`scripts/lib/alarm-issues.ts`), não `ensureAlarmIssue` direto como os
   // 12 já migrados nas PRs #7965/#7973 — chamar `notifyEditor()` neles
@@ -66,27 +66,33 @@ const ALLOWLIST: string[] = [
   // não é um risco teórico, é o comportamento literal de chamar
   // `ensureAlarmIssue` 2x pro mesmo achado na mesma execução.
   //
-  // Abordagem correta pra uma unidade dedicada (não implementada aqui):
-  // manter `applyAlarmReconciliation` INTOCADO (issue continua exatamente
-  // como está) e decidir só o E-MAIL a partir do `AlarmIssueResult` que ele
-  // já devolve em `findingOutcomes` — usando a função pura já exportada
-  // `shouldEmailForIssueOutcome(severity, outcome, emailPolicy)`
-  // (`scripts/lib/editor-notify.ts`) por outcome, e enviando via
-  // `sendPushNotification` (`scripts/lib/push-notify.ts`, o mesmo canal de
-  // baixo nível que `notifyEditor` usa por baixo) quando QUALQUER outcome
-  // qualificar. Isso NÃO duplica `ensureAlarmIssue` e preserva a política de
-  // severidade/`email_policy` do #7957 sem recalcular a issue.
+  // Abordagem correta (#7960, PILOTO implementado + generalizado em
+  // `linkedin-weekly-staleness-alarm.ts`/`meta-capi-staleness-alarm.ts` —
+  // ambos SAÍRAM desta allowlist, usar como referência de diff pros
+  // restantes): manter `applyAlarmReconciliation` INTOCADO (issue continua
+  // exatamente como está) e decidir só o E-MAIL a partir do
+  // `AlarmFindingOutcome[]` que ele já devolve em `findingOutcomes` — via
+  // `notifyEditorForOutcomes(outcomes, severity, buildMessage, deps)`
+  // (`scripts/lib/editor-notify.ts`, envolve `shouldEmailForIssueOutcome`
+  // + `sendPushNotification` num helper pronto pra reusar) em vez de
+  // `shouldEmailForIssueOutcome` cru. Isso NÃO duplica `ensureAlarmIssue` e
+  // preserva a política de severidade/`email_policy` do #7957 sem
+  // recalcular a issue.
   //
-  // O que falta pra fazer isso com segurança, script a script (por isso
-  // ficou de fora desta unidade): cada um destes 25 hoje decide o e-mail
-  // por uma idempotência PRÓPRIA (arquivo de estado dedicado, ex:
-  // `data/hub-drift-check/state.json`), independente da idempotência da
-  // issue — nem sempre "e-mail só quando a issue é criada" é uma troca
-  // neutra. `on-hold-vencimento-alarm.ts`/`route-marker-staleness-alarm.ts`
-  // (já migrados, fora desta lista) documentaram um caso real de reenvio
-  // PERIÓDICO intencional que só funcionou trocando o fingerprint pra
-  // derivar do conteúdo — a mesma armadilha pode existir aqui e exige
-  // conferir a intenção de cada script, não um `sed` em massa.
+  // O que falta conferir pra fazer isso com segurança, script a script (por
+  // isso os demais ficaram de fora desta unidade): cada um dos restantes
+  // hoje decide o e-mail por uma idempotência PRÓPRIA (arquivo de estado
+  // dedicado, ex: `data/hub-drift-check/state.json`), independente da
+  // idempotência da issue — nem sempre "e-mail só quando a issue é criada"
+  // é uma troca neutra. `on-hold-vencimento-alarm.ts`/
+  // `route-marker-staleness-alarm.ts` (já migrados, fora desta lista)
+  // documentaram um caso real de reenvio PERIÓDICO intencional que só
+  // funcionou trocando o fingerprint pra derivar do conteúdo — a mesma
+  // armadilha pode existir aqui e exige conferir a intenção de cada
+  // script, não um `sed` em massa. O piloto migrado (staleness simples, 1
+  // achado por execução, sem reenvio periódico intencional) NÃO cobriu
+  // essa armadilha — quem pegar um script com reenvio periódico precisa
+  // ler o tratamento de `on-hold-vencimento-alarm.ts` primeiro.
   "scripts/ads-spend-ingest-alarm.ts",
   "scripts/apoios-diff-alarm.ts",
   "scripts/check-metrics-health.ts",
@@ -103,8 +109,6 @@ const ALLOWLIST: string[] = [
   "scripts/hub-staleness-check.ts",
   "scripts/kit-doi-orphan-guard.ts",
   "scripts/kit-subscriber-limit-alarm.ts",
-  "scripts/linkedin-weekly-staleness-alarm.ts",
-  "scripts/meta-capi-staleness-alarm.ts",
   "scripts/onboarding-continuity-alarm.ts",
   "scripts/onedrive-sync-alarm.ts",
   "scripts/robots-txt-drift-check.ts",

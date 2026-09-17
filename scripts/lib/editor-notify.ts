@@ -67,6 +67,7 @@ import {
   ensureAlarmIssue,
   type AlarmFamily,
   type AlarmFinding,
+  type AlarmFindingOutcome,
   type AlarmIssueResult,
   type AlarmPriority,
   type GhRunFn,
@@ -260,5 +261,71 @@ export async function notifyEditor(
     issue,
     emailSent: pushResult.ok,
     emailError: pushResult.ok ? undefined : pushResult.error,
+  };
+}
+
+export interface NotifyEditorForOutcomesDeps {
+  /** cwd usado só pra derivar `platformConfigPath` default — este helper
+   * NUNCA chama `gh` (não cria/atualiza issue nenhuma). Default `process.cwd()`. */
+  cwd?: string;
+  platformConfigPath?: string;
+  sendPush?: (message: PushMessage, opts: { to?: string; platformConfigPath?: string }) => Promise<{ ok: boolean; error?: string }>;
+  emailTo?: string;
+  emailPolicy?: EmailPolicy;
+}
+
+export interface NotifyEditorForOutcomesResult {
+  emailPolicy: EmailPolicy;
+  emailSent: boolean;
+  emailError?: string;
+  /** Outcomes que passaram por `shouldEmailForIssueOutcome` — vazio quando
+   * nenhum e-mail é necessário (inclusive quando `outcomes` está vazio). */
+  qualifying: AlarmFindingOutcome[];
+}
+
+/**
+ * Decide e manda (no máximo) 1 e-mail combinado a partir de
+ * `AlarmFindingOutcome[]` já produzido por `applyAlarmReconciliation` — pra
+ * scripts que usam `planAlarmReconciliation`/`applyAlarmReconciliation`
+ * (não `ensureAlarmIssue` direto) e por isso não podem chamar `notifyEditor()`
+ * (chamaria `ensureAlarmIssue` uma 2ª VEZ pro mesmo achado, arriscando
+ * reabrir uma issue que a reconciliação acabou de fechar ou disputar o
+ * mesmo fingerprint com resultado divergente — ver a ALLOWLIST de
+ * `test/editor-notify-boundary.test.ts`, seção "#7960").
+ *
+ * NÃO cria/atualiza issue nenhuma — a reconciliação (`applyAlarmReconciliation`)
+ * continua INTOCADA, chamada normalmente pelo script antes deste helper.
+ * Aqui só se decide o E-MAIL, reusando `shouldEmailForIssueOutcome` (mesma
+ * política de `notifyEditor`) por outcome, e mandando via
+ * `sendPushNotification` (o mesmo canal de baixo nível que `notifyEditor`
+ * usa por baixo) quando QUALQUER outcome qualificar.
+ *
+ * `buildMessage` recebe só os outcomes QUALIFICANTES (nunca a lista
+ * completa) — o caller decide o assunto/corpo do e-mail combinado a partir
+ * deles; chamado só quando `qualifying.length > 0` (nunca com array vazio).
+ */
+export async function notifyEditorForOutcomes(
+  outcomes: readonly AlarmFindingOutcome[],
+  severity: "acao" | "urgente",
+  buildMessage: (qualifying: readonly AlarmFindingOutcome[]) => PushMessage,
+  deps: NotifyEditorForOutcomesDeps = {},
+): Promise<NotifyEditorForOutcomesResult> {
+  const cwd = deps.cwd ?? process.cwd();
+  const platformConfigPath = deps.platformConfigPath ?? defaultPlatformConfigPath(cwd);
+  const emailPolicy = deps.emailPolicy ?? resolveEmailPolicy(platformConfigPath);
+  const sendPush = deps.sendPush ?? sendPushNotification;
+
+  const qualifying = outcomes.filter((o) => shouldEmailForIssueOutcome(severity, o, emailPolicy));
+  if (qualifying.length === 0) {
+    return { emailPolicy, emailSent: false, qualifying: [] };
+  }
+
+  const message = buildMessage(qualifying);
+  const pushResult = await sendPush(message, { to: deps.emailTo, platformConfigPath });
+  return {
+    emailPolicy,
+    emailSent: pushResult.ok,
+    emailError: pushResult.ok ? undefined : pushResult.error,
+    qualifying,
   };
 }

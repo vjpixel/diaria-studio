@@ -12,8 +12,8 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
-import { notifyEditor, resolveEmailPolicy, shouldEmailForIssueOutcome } from "../scripts/lib/editor-notify.ts";
-import type { AlarmIssueResult } from "../scripts/lib/alarm-issues.ts";
+import { notifyEditor, notifyEditorForOutcomes, resolveEmailPolicy, shouldEmailForIssueOutcome } from "../scripts/lib/editor-notify.ts";
+import type { AlarmFindingOutcome, AlarmIssueResult } from "../scripts/lib/alarm-issues.ts";
 import type { PushMessage } from "../scripts/lib/push-notify.ts";
 
 function ghRunCreating(issueNumber = 42): (args: string[], cwd: string) => GhSpawnResult {
@@ -224,5 +224,101 @@ describe("notifyEditor", () => {
     assert.equal(result.emailSent, false);
     assert.equal(sendPush.mock.callCount(), 0);
     assert.equal(log.mock.callCount(), 1);
+  });
+});
+
+/**
+ * `notifyEditorForOutcomes` (#7960) — helper pra scripts que já chamam
+ * `applyAlarmReconciliation` eles mesmos (não `ensureAlarmIssue` direto):
+ * decide/manda o e-mail a partir de outcomes JÁ PRODUZIDOS, sem tocar em
+ * issue nenhuma. `outcomes` aqui são fixtures — nunca resultado de um
+ * `ensureAlarmIssue` real (nenhum `gh` é chamado por este helper).
+ */
+describe("notifyEditorForOutcomes (#7960)", () => {
+  function outcome(overrides: Partial<AlarmFindingOutcome> = {}): AlarmFindingOutcome {
+    return {
+      check: "linkedin-weekly-staleness",
+      fingerprint: "26w32",
+      issueNumber: 5404,
+      url: "https://github.com/vjpixel/diaria-studio/issues/5404",
+      action: "created",
+      ...overrides,
+    };
+  }
+
+  it("nenhum outcome (findingOutcomes vazio) — nunca manda e-mail, buildMessage nunca é chamado", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
+    const buildMessage = mock.fn((_q: readonly AlarmFindingOutcome[]) => ({ subject: "s", body: "b" }));
+    const result = await notifyEditorForOutcomes([], "acao", buildMessage, { sendPush, emailPolicy: "urgent_only" });
+    assert.equal(result.emailSent, false);
+    assert.deepEqual(result.qualifying, []);
+    assert.equal(buildMessage.mock.callCount(), 0);
+    assert.equal(sendPush.mock.callCount(), 0);
+  });
+
+  it("severity 'acao' sob 'urgent_only': issue criada, mas NUNCA manda e-mail (tabela do #7957 — staleness/drift são issue-only)", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
+    const buildMessage = mock.fn((_q: readonly AlarmFindingOutcome[]) => ({ subject: "s", body: "b" }));
+    const result = await notifyEditorForOutcomes([outcome({ action: "created" })], "acao", buildMessage, {
+      sendPush,
+      emailPolicy: "urgent_only",
+    });
+    assert.equal(result.emailSent, false);
+    assert.deepEqual(result.qualifying, []);
+    assert.equal(buildMessage.mock.callCount(), 0);
+    assert.equal(sendPush.mock.callCount(), 0);
+  });
+
+  it("severity 'urgente' + action 'created' sob 'urgent_only': manda e-mail, buildMessage recebe só os outcomes qualificantes", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
+    const created = outcome({ action: "created" });
+    const reused = outcome({ fingerprint: "26w33", action: "reused", issueNumber: 5500 });
+    const buildMessage = mock.fn((q: readonly AlarmFindingOutcome[]) => ({ subject: `${q.length} achado(s)`, body: "b" }));
+    const result = await notifyEditorForOutcomes([created, reused], "urgente", buildMessage, {
+      sendPush,
+      emailPolicy: "urgent_only",
+    });
+    assert.equal(result.emailSent, true);
+    assert.deepEqual(result.qualifying, [created]);
+    assert.equal(buildMessage.mock.callCount(), 1);
+    assert.deepEqual(buildMessage.mock.calls[0]!.arguments[0], [created]);
+    const [message] = sendPush.mock.calls[0]!.arguments;
+    assert.equal((message as PushMessage).subject, "1 achado(s)");
+  });
+
+  it("outcome 'failed' nunca qualifica, em nenhuma severidade/política", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
+    const buildMessage = mock.fn((_q: readonly AlarmFindingOutcome[]) => ({ subject: "s", body: "b" }));
+    const result = await notifyEditorForOutcomes(
+      [outcome({ action: "failed", issueNumber: null, url: null, error: "gh indisponível" })],
+      "urgente",
+      buildMessage,
+      { sendPush, emailPolicy: "legacy" },
+    );
+    assert.equal(result.emailSent, false);
+    assert.deepEqual(result.qualifying, []);
+    assert.equal(sendPush.mock.callCount(), 0);
+  });
+
+  it("severity 'acao' sob 'legacy' (rollback): manda e-mail (comportamento pré-#7957 preservado)", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
+    const buildMessage = mock.fn((_q: readonly AlarmFindingOutcome[]) => ({ subject: "s", body: "b" }));
+    const result = await notifyEditorForOutcomes([outcome({ action: "reused" })], "acao", buildMessage, {
+      sendPush,
+      emailPolicy: "legacy",
+    });
+    assert.equal(result.emailSent, true);
+    assert.equal(result.qualifying.length, 1);
+  });
+
+  it("propaga emailError quando sendPush falha", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: false, error: "smtp indisponível" }));
+    const buildMessage = () => ({ subject: "s", body: "b" });
+    const result = await notifyEditorForOutcomes([outcome({ action: "created" })], "urgente", buildMessage, {
+      sendPush,
+      emailPolicy: "urgent_only",
+    });
+    assert.equal(result.emailSent, false);
+    assert.equal(result.emailError, "smtp indisponível");
   });
 });
