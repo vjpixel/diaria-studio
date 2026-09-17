@@ -134,6 +134,33 @@ describe("#8240 item 3 — dailyBudgetForDate (diário vigente por braço)", () 
     assert.equal(dailyBudgetForDate("2026-09-06", schedule, 100), 200, "dia INTEIRO usa o vigente ao FIM do dia (200)");
     assert.equal(dailyBudgetForDate("2026-09-07", schedule, 100), 200);
   });
+
+  // #8262 review item 6: `dailyBudgetForDate` já ordena defensivamente
+  // (`[...schedule].sort(...)`, ver comentário na função) mas nenhum teste
+  // passava schedule fora de ordem — um refactor que removesse o sort não
+  // quebraria nada aqui. 3 vigências deliberadamente desordenadas (a mais
+  // recente primeiro) devem produzir o MESMO resultado que a mesma lista
+  // ordenada ascendente por `desde`.
+  it("schedule fora de ordem (mais recente primeiro) dá o mesmo resultado da lista ordenada — regressão do sort defensivo", () => {
+    const ordered = [
+      { desde: "2026-09-05T00:00:00-03:00", brl: 100 },
+      { desde: "2026-09-06T17:07:00-03:00", brl: 200 },
+      { desde: "2026-09-10T00:00:00-03:00", brl: 300 },
+    ];
+    const shuffled = [ordered[2], ordered[0], ordered[1]];
+    for (const date of ["2026-09-05", "2026-09-06", "2026-09-07", "2026-09-10", "2026-09-11"] as const) {
+      assert.equal(
+        dailyBudgetForDate(date, shuffled, 100),
+        dailyBudgetForDate(date, ordered, 100),
+        `dailyBudgetForDate(${date}) diverge entre schedule ordenado e desordenado`,
+      );
+    }
+    // valores concretos, não só "os dois batem entre si" — trava contra os
+    // dois lados quebrarem do mesmo jeito
+    assert.equal(dailyBudgetForDate("2026-09-05", shuffled, 100), 100);
+    assert.equal(dailyBudgetForDate("2026-09-07", shuffled, 100), 200);
+    assert.equal(dailyBudgetForDate("2026-09-11", shuffled, 100), 300);
+  });
 });
 
 describe("#8240 itens 1+3 — plannedBudgetBRL (integra diário vigente sobre dias de veiculação)", () => {
@@ -149,5 +176,21 @@ describe("#8240 itens 1+3 — plannedBudgetBRL (integra diário vigente sobre di
     const planejado = plannedBudgetBRL("2026-09-05", "2026-09-09", schedule, pauseIntervals, 100);
     // 100 + 200 + 200 + 200 + (0,382 × 200) ≈ 776,4
     assert.ok(planejado > 770 && planejado < 785, `esperado ~776; recebi ${planejado}`);
+  });
+
+  // #8262 review item 6 (continuação): `plannedBudgetBRL` consome a mesma
+  // `schedule` — confirmar que o sort defensivo protege também este caminho,
+  // não só `dailyBudgetForDate` isolado.
+  it("schedule fora de ordem produz o MESMO planejado que a lista ordenada", () => {
+    const orderedSchedule = [
+      { desde: "2026-09-05T00:00:00-03:00", brl: 100 },
+      { desde: "2026-09-06T17:07:00-03:00", brl: 200 },
+    ];
+    const shuffledSchedule = [orderedSchedule[1], orderedSchedule[0]];
+    const pauseIntervals = [{ inicio: "2026-09-09T09:10:00-03:00", fim: "2026-09-17T00:16:00-03:00" }];
+    const planejadoOrdenado = plannedBudgetBRL("2026-09-05", "2026-09-09", orderedSchedule, pauseIntervals, 100);
+    const planejadoDesordenado = plannedBudgetBRL("2026-09-05", "2026-09-09", shuffledSchedule, pauseIntervals, 100);
+    assert.equal(planejadoDesordenado, planejadoOrdenado);
+    assert.ok(planejadoOrdenado > 770 && planejadoOrdenado < 785, `esperado ~776; recebi ${planejadoOrdenado}`);
   });
 });

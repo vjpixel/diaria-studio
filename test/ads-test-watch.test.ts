@@ -25,6 +25,7 @@ import {
 } from "../scripts/lib/ads-test-watch.ts";
 import { buildAdsTestRunState, ADS_TEST_2608_BRACOS } from "../scripts/lib/ads-test-run-state.ts";
 import { addDays } from "../scripts/lib/ads-test-schedule.ts";
+import { plannedBudgetBRL } from "../scripts/lib/ads-test-pause-window.ts";
 
 const RUN_STATE = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
 // d0=2026-08-26 fim_janela=2026-09-09 religar_brevo=2026-09-16 apuracao_snapshot >= 2026-10-07 (1º domingo)
@@ -298,6 +299,44 @@ describe("#8240 — evaluateSpendOverageDeathCondition com pausa + diário vigen
     assert.deepEqual(findings, []);
   });
 
+  // #8262 review item 10: as duas asserções deepEqual([]) acima não
+  // discriminam implementação certa de errada — passariam mesmo com
+  // `plannedBudgetBRL` cabeado errado, desde que o resultado ficasse abaixo
+  // do limiar de morte. Aqui medimos a RAZÃO numérica real (gasto ÷
+  // planejado) com `plannedBudgetBRL` — a mesma função que
+  // `evaluateSpendOverageDeathCondition`/`evaluateSpendWarning` chamam
+  // internamente (scripts/lib/ads-test-watch.ts:309,360) — usando o valor
+  // de gasto REAL da issue #8240 até a pausa (não os dados sintéticos
+  // "Braço único" de outros testes deste describe). `throughDate` é o dia
+  // da pausa (09/09), que é quando a issue mede a razão "até a pausa".
+  //
+  // Critério de aceite do #8240: "Meta ≈1,18×, Google ≈1,14× [...] com a
+  // pausa às 09h10 gravada [...] Nada de 0,43×, 0,42× e 0,24×."
+  it("razão real até a pausa: Meta ≈1,18× (não 0,43×) — pausa 09h10 gravada no run-state", () => {
+    const planned = plannedBudgetBRL(D0, "2026-09-09", undefined, PAUSE, 100);
+    const ratio = 517.85 / planned;
+    assert.ok(Math.abs(ratio - 1.18) < 0.02, `esperava ≈1,18×, obtive ${ratio.toFixed(4)}×`);
+    assert.ok(Math.abs(ratio - 0.43) > 0.1, "não pode regredir pro valor antigo (calendário sem desconto de pausa)");
+  });
+
+  it("razão real até a pausa: Google ≈1,14× (não 0,42×) — pausa 09h10 gravada no run-state (não existia teste pro Google antes)", () => {
+    const BRACO_GOOGLE = "Google Ads (teste 2608)";
+    const planned = plannedBudgetBRL(D0, "2026-09-09", undefined, PAUSE, 100);
+    const ratio = 500.57 / planned;
+    assert.ok(Math.abs(ratio - 1.14) < 0.02, `esperava ≈1,14×, obtive ${ratio.toFixed(4)}×`);
+    assert.ok(Math.abs(ratio - 0.42) > 0.1, "não pode regredir pro valor antigo (calendário sem desconto de pausa)");
+    // Confirma pelo caminho de produção real (evaluateSpendOverageDeathCondition
+    // com o nome do braço Google, não uma cópia do teste do Meta): 1,14× está
+    // abaixo de 2× e não dispara morte, mas também abaixo do limiar de aviso
+    // de 1,25× (SPEND_WARNING_RATIO_THRESHOLD) — não gera nem morte nem aviso
+    // neste ponto específico (a pausa ainda não terminou os 8 dias).
+    const rows = [{ canal: BRACO_GOOGLE, data_apuracao: "2026-09-09", gasto_acumulado: 500.57 }];
+    const death = evaluateSpendOverageDeathCondition(rows, [BRACO_GOOGLE], D0, "2026-09-09", 100, { pauseIntervals: PAUSE });
+    const warn = evaluateSpendWarning(rows, [BRACO_GOOGLE], D0, "2026-09-09", 100, { pauseIntervals: PAUSE });
+    assert.deepEqual(death, []);
+    assert.deepEqual(warn, []);
+  });
+
   it("Microsoft: diário vigente 100->200 (06/09 17:07) muda o planejado só a partir da vigência, mesmo com pausa", () => {
     const rows = [{ canal: BRACO_MSFT, data_apuracao: "2026-09-08", gasto_acumulado: 288.03 }];
     const scheduleAntigo = evaluateSpendOverageDeathCondition(rows, [BRACO_MSFT], D0, "2026-09-08", 100, {
@@ -313,6 +352,27 @@ describe("#8240 — evaluateSpendOverageDeathCondition com pausa + diário vigen
     // que expõe `plannedCumulativeBRL`.
     assert.deepEqual(scheduleAntigo, []);
     assert.deepEqual(scheduleNovo, []);
+  });
+
+  it("Microsoft: razão real até a pausa ≈0,37× com o diário vigente 100->200 — não regride pro 0,24× antigo", () => {
+    // A issue #8240 estima manualmente ≈0,41× pra este cenário (pró-rateando
+    // o dia 06/09 em duas frações: R$100 até 17:07 e R$200 depois). O
+    // código NÃO integra sub-dia: `dailyBudgetForDate` usa o diário vigente
+    // ao FIM do dia inteiro (doc em ads-test-pause-window.ts:230-237,
+    // decisão deliberada — "não pretende precisão de minuto"), então o dia
+    // 06/09 inteiro entra no planejado já a R$200 (não R$100 parcial +
+    // R$200 parcial). Isso INFLA levemente o planejado em relação à conta
+    // manual da issue, o que torna a razão mais BAIXA (mais conservadora,
+    // nunca escondendo um estouro) — medido aqui em ≈0,37×, não ≈0,41×.
+    // Não é bug: é a mesma aproximação de granularidade-por-dia documentada
+    // na função, e a issue já avisa que a razão depende de qual instante se
+    // usa. O que importa pro critério de aceite é não regredir pro valor
+    // antigo (0,24×, calendário sem desconto de pausa nem diário vigente).
+    const schedule = [{ desde: "2026-09-06T17:07:00-03:00", brl: 200 }];
+    const planned = plannedBudgetBRL(D0, "2026-09-09", schedule, PAUSE, 100);
+    const ratio = 288.03 / planned;
+    assert.ok(Math.abs(ratio - 0.37) < 0.02, `esperava ≈0,37× (aproximação por dia inteiro do código), obtive ${ratio.toFixed(4)}×`);
+    assert.ok(Math.abs(ratio - 0.24) > 0.05, "não pode regredir pro valor antigo (calendário + R$100 fixo pros 3 braços)");
   });
 
   it("razão 1,3× gera AVISO e NÃO gera achado de morte; 2,1× continua gerando morte", () => {
