@@ -34,30 +34,25 @@ Voce (top-level Claude Code) **le `.claude/agents/orchestrator-stage-6.md` como 
 
 Ler `_internal/05-published.json` e `_internal/06-social-published.json` para compor o resumo de agendamento.
 
-### Etapa 6b — GATE HUMANO
+### Etapa 6b — GATE HUMANO ÚNICO (#8205)
 
-Apresentar resumo consolidado ao editor:
+**A revisão visual do e-mail de teste pelo editor é a única parada desta skill.** Apresentar o gate único (texto completo e mecanismo em `.claude/agents/orchestrator-stage-6.md` §6c) — pede pra conferir o e-mail de teste na caixa (`publishing.newsletter.test_email`), mostra o resumo consolidado (rascunho, review automático + lints, social agendado, avisos de guard de slug/pedidos editoriais como contexto, nunca como perguntas separadas) e aceita:
+
 ```
-📅 AGENDAMENTO — Edicao {AAMMDD}
-
-Newsletter (rascunho): {draft_url}
-Test email:            {status}
-Social agendado:       LinkedIn+Facebook por destaque
-
-Agendar envio da newsletter no Beehiiv?
-  sim [HH:MM]  → agenda (default: amanha 06:00 BRT)
-  abortar      → nao agenda; rascunho permanece
+  ok           → agenda para 06:00 BRT do dia da edição (default)
+  ok HH:MM     → agenda para {horario informado} BRT do dia da edição
+  abortar      → nao agenda nada; rascunho permanece
 ```
 
-Se `--no-gates`: pular o gate e auto-agendar com o default (amanha 06:00 BRT).
+Se `--no-gates`: pular o gate e auto-agendar com o default (06:00 BRT **da data da edição**, via `resolve-edition-scheduled-at.ts` — nunca "amanhã" pelo relógio, #8207).
 
-### Etapa 6c — Schedule do Beehiiv + verificacao
+### Etapa 6c — Schedule (Beehiiv ou Kit) + verificacao
 
-Executar Schedule seguindo `context/publishers/beehiiv-playbook.md` §9-10. Verificar estado via `scripts/verify-scheduled-post.ts` (#2074).
+Executar Schedule seguindo `context/publishers/beehiiv-playbook.md` §9-10 (backend Beehiiv) ou `schedule-newsletter-kit.ts` (backend Kit). Verificar estado via `scripts/verify-scheduled-post.ts` (#2074). O guard de slug do bloco WhatsApp já rodou ANTES do gate (§6b-slug) — se divergiu, o editor já viu o aviso no gate e decidiu seguir; não há um 2º ponto de parada aqui (#8205).
 
-### Etapa 6d — Auto-reporter + relatorio
+### Etapa 6d — Auto-reporter (sem gate, #8205) + relatorio
 
-Coletar sinais (`collect-edition-signals.ts`), disparar `auto-reporter`, enviar relatorio por email (`send-edition-report.ts`).
+Coletar sinais (`collect-edition-signals.ts`), disparar `auto-reporter` — cria/comenta issues diretamente, sem esperar aprovação (decisão coberta pela regra "nunca perguntar se deve criar issue" do CLAUDE.md) —, enviar relatorio por email (`send-edition-report.ts`).
 
 ## Output
 

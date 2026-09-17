@@ -9,9 +9,9 @@ description: Detalhe da Etapa 6 (agendamento — gate humano + Schedule Beehiiv 
 
 ## Etapa 6 — Agendamento (gate humano) — #1694
 
-Stage 6 e o **gate final do pipeline**. Apresenta ao editor o resumo completo de agendamento (draft Beehiiv, social agendado, achados do review), recebe a confirmacao e executa o Schedule do Beehiiv. Termina com o auto-reporter.
+Stage 6 e o **gate final do pipeline**. Apresenta ao editor a parada única (revisão visual do e-mail de teste + resumo de agendamento — draft Beehiiv, social agendado, achados do review, avisos de invariantes que persistiram após tentativa de correção automática, #8205), recebe a confirmacao e executa o Schedule do Beehiiv. Termina com o auto-reporter (sem gate próprio, #8205).
 
-Interacao humana SO neste stage (alem do Stage 4).
+Interacao humana SO neste stage (alem do Stage 4) — e dentro dele, **uma única parada** (§6c), não mais (#8205).
 
 > **Fusao 5+6 (#7983, 11/09/2026).** O caminho NORMAL de chegada aqui e a continuacao direta do `orchestrator-stage-5.md` na MESMA sessao — nao uma invocacao nova. `/diaria-6-agendamento` continua valendo como porta de RETOMADA (a sessao morreu depois do dispatch, o editor saiu e voltou horas depois, ou e retry do agendamento); nos dois casos este playbook e identico, porque tudo que ele consome vem de arquivo. A fronteira que NAO mudou e a do #6171 (pos-gate 4): o Stage 5 continua comecando sempre em sessao nova.
 
@@ -67,55 +67,72 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --
 
 ### 6b. Montar resumo de agendamento
 
-Compor o resumo que sera exibido no gate:
+Compor o resumo que sera exibido no gate único de §6c — inclui o pedido de revisão visual do e-mail de teste (#8205) mais todo o contexto que antes tinha parada própria:
 
+- **Revisão visual do e-mail de teste (#8205):** `{test_email}` de `publishing.newsletter.test_email` em `platform.config.json`; assunto `[teste] {title}` (Kit) ou `[TEST] {title}` (Beehiiv).
 - **Newsletter Beehiiv:**
   - URL do rascunho: `draft_url` de `05-published.json`.
   - Test email: `test_email_sent_at` formatado em BRT.
   - Status do review: se `review_completed: true` → `✓ review ok`; se `review_status: "inconclusive"` → `⚠ review inconclusivo`; se issues → listar.
 - **Social agendado:** horarios LinkedIn + Facebook por destaque (D1/D2/D3).
-- **Achados do review-test-email** (se `review_final_issues` nao vazio ou `review_status !== "ok"`).
+- **Achados do review-test-email** (se `review_final_issues` nao vazio ou `review_status !== "ok"`) **+ achados dos lints determinísticos `lint-test-email-*`** que o `review-test-email` já roda internamente (link tracking, structure, encoding, image freshness — ver `.claude/agents/review-test-email.md`).
+- **Guard de slug do bloco WhatsApp (§6b-slug):** se `SLUG_CHECK_OK === false`, incluir aviso destacado com a instrução de correção manual — nunca um gate próprio.
 - **Brevo diária (#5772):** se `_internal/brevo-diaria-published.json` existe, `campaign_id` + status atual ("rascunho pronto pra agendar"). Se ausente, omitir esta linha (canal pulado/falhou na Etapa 5).
 
-### 6b2. Revisao de pedidos editoriais registrados (#4966)
+### 6b2. Pedidos editoriais registrados — aceitos direto, sem gate (#4966, #8205)
 
 Ler `{EDITION_DIR}/_internal/editor-requests.jsonl` (escrito ao longo da edicao via `npx tsx scripts/log-editor-request.ts`, ver `.claude/agents/orchestrator.md` secao "Pedidos editoriais do editor"). **Se o arquivo nao existir ou estiver vazio, pular esta secao inteira** — nada a revisar.
 
-**Se `--no-gates` (`auto_approve = true`):** aceitar a lista como registrada, sem perguntar (nao ha editor presente pra revisar). Logar a origem, mesmo espirito de `_internal/05-publish-consent.json`:
+**Desde #8205 (17/09/2026): aceitar a lista como registrada, sempre, em QUALQUER modo (interativo ou `--no-gates`)** — a revisão visual do e-mail de teste em §6c é a única parada desta skill; um 2º gate só pra confirmar entradas que o próprio editor já registrou ao longo da edição (via `log-editor-request.ts`, tipicamente no gate do Stage 4) não passa em nenhum dos 4 critérios de "Perguntar é exceção" do CLAUDE.md. Logar a origem, mesmo espírito de `_internal/05-publish-consent.json`:
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info \
-  --message "editor requests aceitos sem revisao via --no-gates" \
-  --details '{"source":"auto_approve_default","count":{N}}'
-```
-Prosseguir para §6c sem exibir o bloco abaixo.
-
-**Se modo interativo:** apresentar a lista antes do gate de Schedule (pode ser no mesmo turno, acima do bloco `📅 AGENDAMENTO`):
-
-```
-📋 PEDIDOS EDITORIAIS DESTA EDICAO — {AAMMDD}
-
-1. [{stage}] {request_type} · {target} — "{description resumida a ~80 chars}" ({resolution})
-2. [{stage}] {request_type} · {target} — "{description resumida a ~80 chars}" ({resolution})
-...
-
-Confirmar tudo, corrigir uma entrada, ou descartar alguma?
-
-  confirmar         → aceita a lista como esta
-  corrigir N campo=valor → reescreve o campo (request_type|target|resolution|description) da entrada N
-  descartar N       → remove a entrada N (registrada indevidamente)
-  Qualquer outra entrada → repetir a lista (fail-closed)
+  --message "editor requests aceitos sem gate (#8205)" \
+  --details '{"source":"accepted_no_gate","count":{N}}'
 ```
 
-Aguardar resposta. `corrigir`/`descartar` reescrevem `_internal/editor-requests.jsonl` inteiro (regravar todas as linhas com a entrada N alterada/removida) e voltam a exibir a lista atualizada — repetir ate o editor responder `confirmar`. `corrigir` com `request_type`/`target`/`resolution` fora da taxonomia valida de `scripts/log-editor-request.ts` e rejeitado, mostrando os valores aceitos, sem aplicar a mudanca.
+A lista (resumida a ~80 chars por entrada, `[{stage}] {request_type} · {target} — "{description}" ({resolution})`) entra como contexto informativo dentro do gate único de §6c — não como pergunta separada. Prosseguir para §6c.
 
-Ao confirmar, logar a origem:
-```bash
-npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info \
-  --message "editor requests confirmados no gate 6" \
-  --details '{"source":"editor_confirmed","count":{N},"corrections":{M}}'
-```
+### 6b-slug. Guard de slug do bloco WhatsApp — roda ANTES do gate, nunca bloqueia sozinho (#4570, não-bloqueante desde #8205)
 
-### 6c. GATE HUMANO — Schedule Beehiiv
+**Só backend `"beehiiv"`.** Com backend `"kit"`, pular esta seção inteira — problema específico da UI de SEO/URL slug da Beehiiv, sem equivalente no Kit (`public_url` do broadcast já é a URL final).
+
+O bloco encaminhável por WhatsApp (dentro do D1 desde #5152, ver `context/templates/newsletter.md`) já tem a URL `https://diar.ia.br/p/{seoSlug(title)}` BAKED IN no corpo do e-mail desde o pré-render do Stage 4 — se o slug real do post divergir, esse link 404 pra quem abrir o e-mail. **Até #8205 esta checagem rodava DEPOIS do clique em Schedule e travava o Stage 6 com um halt banner pedindo `'corrigido'` — um 2º ponto de parada, além do gate de §6c.** Desde #8205, ela roda AQUI (antes de qualquer gate), a correção automática (permanentemente bloqueada pelo plano, #3449) é tentada do mesmo jeito por completude de log, e se a divergência persistir ela vira **aviso destacado dentro da parada única de §6c** — o editor decide ali, na mesma resposta, nunca um segundo gate.
+
+1. Buscar o slug real do post: `mcp__claude_ai_Beehiiv__get_post({ post_id })` → `web_settings.slug`. **Se `get_post` falhar/erroar** (não apenas retornar slug ausente — timeout, disconnect, erro de API), tratar como falha de MCP (#738) — halt banner (comando abaixo), nunca prosseguir assumindo divergência resolvida ou slug correto. Isto **continua sendo halt de infra**, não o gate editorial que este item reduz:
+   ```bash
+   npx tsx scripts/render-halt-banner.ts \
+     --stage "6 — Agendamento" \
+     --reason "mcp__claude_ai_Beehiiv desconectado (get_post falhou ao buscar slug)" \
+     --action "reconecte e responda 'retry', ou 'abort' para abortar"
+   ```
+2. Rodar o guard determinístico (comparação pura, `scripts/lib/whatsapp-slug-guard.ts`), gravando o resultado em `_internal/whatsapp-slug-check.json` (`--out`, #4574 — backstop determinístico consumido por `check-invariants.ts --stage 6` em §6g):
+   ```bash
+   npx tsx scripts/check-whatsapp-slug-guard.ts \
+     --post-id {post_id} \
+     --d1-title "{title}" \
+     --actual-slug "{slug_atual_do_get_post}" \
+     --out {EDITION_DIR}/_internal/whatsapp-slug-check.json
+   ```
+   (omitir `--actual-slug` se `web_settings.slug` vier ausente/vazio — o guard trata ausência como divergência.) **Exit 2 (args inválidos — `post_id`/`title` ausentes)** é bug do orchestrator, não divergência de slug: investigar antes de repetir, sem tratar como aviso pro editor.
+3. **Se divergir (exit 1):** tentar a correção automática por completude — sempre falha no plano atual (#3449, `403 SEND_API_NOT_ENTERPRISE_PLAN`, não transitório), então isto é só registro, não um passo que precisa suceder:
+   ```bash
+   npx tsx scripts/fix-post-slug.ts --post-id {post_id} --slug {slug_correto} --execute
+   # exit 3 esperado (#3449) — stderr traz instrucoes manuais formatadas
+   ```
+   Guardar a mensagem de `formatManualSlugFixInstructions` (reusada pelo stderr do comando acima) para exibir como o aviso destacado dentro do gate de §6c — **nunca** renderizar halt banner nem esperar resposta aqui.
+4. Logar o resultado (ok ou diverge), em qualquer caso:
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
+     --level {info se ok, warn se diverge} \
+     --message "whatsapp slug guard: {ok|diverge}" \
+     --details '{"ok":{ok},"expectedSlug":"{expected_slug}","actualSlug":"{actual_slug}"}'
+   ```
+
+Guardar o resultado (`SLUG_CHECK_OK` booleano + instruções de correção manual se `false`) para usar em §6c. **Segue para §6c em qualquer um dos dois casos** — divergência nunca bloqueia esta seção sozinha.
+
+### 6c. GATE HUMANO — parada única: revisão do e-mail de teste + agendamento (#8205)
+
+**A revisão visual do e-mail de teste pelo editor é a ÚNICA parada de `/diaria-5-publicacao` (decisão do editor, 17/09/2026, #8205).** Tudo que antes tinha ponto de parada próprio — pedidos editoriais (§6b2), guard de slug (§6b-slug), auto-reporter (§6b abaixo) — entra como CONTEXTO deste gate, nunca como pergunta separada.
 
 **Se `--no-gates` (`auto_approve = true`):** pular o gate, usar o default de §6a (06:00 BRT da data da edição, via `resolve-edition-scheduled-at.ts` — nunca "amanhã" contado a partir do relógio) — mesmo horário serve Beehiiv e Brevo diária (#5772, se a campanha existir). Logar:
 ```bash
@@ -138,14 +155,19 @@ Exit code:
 
 Guardar stdout em `POST_PIXEL_TEXT`.
 
-**Se modo interativo:** apresentar gate:
+**Se modo interativo:** apresentar o gate único. `{test_email}` vem de `publishing.newsletter.test_email` em `platform.config.json`:
 
 ```
-📅 AGENDAMENTO — Edicao {AAMMDD}
+✉️  REVISE O E-MAIL DE TESTE — Edicao {AAMMDD}
+
+Confira o e-mail de teste na sua caixa ({test_email}, assunto "[teste] {title}"
+ou "[TEST] {title}" conforme o backend).
 
 Newsletter (rascunho): {draft_url}
 Test email:            {test_email_sent_at} ✓
-{review_status_block se houver issues}
+Review automatico (review-test-email + lint-test-email-*): {review_status_block — "✓ sem achados" | lista de review_final_issues/unfixed_issues}
+{"⚠ Slug do bloco WhatsApp diverge — link ficaria quebrado no e-mail já enviado. " + instrucoes de correcao manual, SÓ se SLUG_CHECK_OK === false}
+{"📋 Pedidos editoriais aceitos: " + resumo de §6b2, SÓ se o arquivo existia}
 
 Social agendado:
   LinkedIn  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT}
@@ -162,30 +184,28 @@ Poste manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia):
 {POST_PIXEL_TEXT}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Agendar envio da newsletter no Beehiiv{ + " e a campanha Brevo diária" se o bloco acima apareceu}?
-
-  sim          → agenda para 06:00 BRT do dia da edição (default)
-  sim HH:MM    → agenda para {horario informado} BRT do dia da edição
-  abortar      → nao agenda nenhum dos dois; rascunhos permanecem, sentinel nao escrito
+  ok           → agenda para 06:00 BRT do dia da edição (default)
+  ok HH:MM     → agenda para {horario informado} BRT do dia da edição
+  abortar      → nao agenda nada; rascunhos permanecem, sentinel nao escrito
   Qualquer outra entrada → repetir (fail-closed)
 ```
 
-Aguardar resposta do editor. Interpretar — **`{AAMMDD}` (a data da edição), nunca "amanhã" pelo relógio (#8207)**: os dois ramos usam o MESMO comando de §6a, só variando `--hhmm` — `sim` (sem horario, default 06:00 BRT) → `scheduled_at` = `npx tsx scripts/resolve-edition-scheduled-at.ts --aammdd {AAMMDD}`; `sim HH:MM` (validar HH 0-23, MM 0-59) → `... --aammdd {AAMMDD} --hhmm {HH:MM}`.
+Aguardar resposta do editor. Interpretar — **`{AAMMDD}` (a data da edição), nunca "amanhã" pelo relógio (#8207)**: os dois ramos usam o MESMO comando de §6a, só variando `--hhmm` — `ok` (sem horario, default 06:00 BRT) → `scheduled_at` = `npx tsx scripts/resolve-edition-scheduled-at.ts --aammdd {AAMMDD}`; `ok HH:MM` (validar HH 0-23, MM 0-59) → `... --aammdd {AAMMDD} --hhmm {HH:MM}`.
 - `abortar` → logar warn, NAO escrever sentinel, encerrar Stage 6. Editor pode re-rodar `/diaria-6-agendamento {AAMMDD}` depois.
 - Qualquer outra coisa → exibir o gate novamente (fail-closed).
 
-**Um único `scheduled_at` serve os dois canais (#5772)** — decisão do editor: o gate não pergunta o horário 2×. Se a campanha Brevo não existir (`_internal/brevo-diaria-published.json` ausente), o bloco acima nunca aparece e §6d-brevo (abaixo) é pulado sem erro — a resposta do editor vale só pro Beehiiv nesse caso.
+**Um único `scheduled_at` serve todos os canais (Beehiiv/Kit, Brevo diária, Kit diária)** — decisão do editor: o gate não pergunta o horário mais de uma vez. Se algum canal não existir (`_internal/brevo-diaria-published.json`/`kit-diaria-published.json` ausente), o bloco correspondente nunca aparece e a seção de agendamento daquele canal (abaixo) é pulada sem erro.
 
 Logar resposta:
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info \
-  --message "gate 6 response: {sim HH:MM|abortar}" \
-  --details '{"response":"{resposta}","scheduled_at":"{scheduled_at_iso}"}'
+  --message "gate 6 response: {ok HH:MM|abortar}" \
+  --details '{"response":"{resposta}","scheduled_at":"{scheduled_at_iso}","slug_check_ok":{SLUG_CHECK_OK}}'
 ```
 
 ### 6d. Executar Schedule do Beehiiv
 
-**Só roda com backend `"beehiiv"` (default, ver §6a).** Com backend `"kit"`, pular esta seção INTEIRA (incluindo a checagem de slug do bloco WhatsApp — ela existe pra um problema específico da UI de SEO/URL slug da Beehiiv que não tem equivalente no Kit: `public_url` do broadcast já é a URL final, sem etapa manual de slug que possa divergir dela) e seguir direto para **§6d-kit** abaixo.
+**Só roda com backend `"beehiiv"` (default, ver §6a).** Com backend `"kit"`, pular esta seção INTEIRA (a checagem de slug do bloco WhatsApp em §6b-slug já pulou por igual motivo — problema específico da UI de SEO/URL slug da Beehiiv sem equivalente no Kit) e seguir direto para **§6d-kit** abaixo.
 
 **Exibir banner pre-Schedule ao editor ANTES de pedir o clique** (evitar Publish acidental, incidente 260611 #2074):
 
@@ -242,79 +262,7 @@ O botao clicado foi "Publish" (envio imediato), nao "Schedule".
 data/past-editions.md regenerado via refresh-dedup.
 ```
 
-**Verificar e corrigir slug pos-Schedule (#2011, #3449) — GATE-BLOCKING desde #4570:**
-
-O bloco encaminhavel por WhatsApp (dentro do D1 desde #5152, ver `context/templates/newsletter.md`)
-ja tem a URL `https://diar.ia.br/p/{seoSlug(title)}` BAKED IN no corpo do
-e-mail desde o pre-render do Stage 4 — se o slug real do post divergir, esse
-link ja enviado 404 pra quem abrir o e-mail. Por isso esta checagem deixou de
-ser so-corrija-se-puder (#2011) e passou a **bloquear o Stage 6** ate o slug
-bater (#4570).
-
-1. Buscar o slug real do post: `mcp__claude_ai_Beehiiv__get_post({ post_id })`
-   → `web_settings.slug`. **Se `get_post` falhar/erroar** (não apenas
-   retornar slug ausente — timeout, disconnect, erro de API), tratar como
-   falha de MCP (#738) — halt banner (comando exato abaixo), nunca
-   prosseguir assumindo divergência resolvida ou slug correto.
-2. Rodar o guard determinístico (comparação pura, `scripts/lib/whatsapp-slug-guard.ts`),
-   gravando o resultado em `_internal/whatsapp-slug-check.json` (`--out`,
-   #4574 — backstop determinístico consumido por `check-invariants.ts --stage 6`
-   em §6g; sem esse arquivo, ou com `ok:false` nele, o Stage 6 nunca é aceito
-   como íntegro, independente do que este passo faça):
-   ```bash
-   npx tsx scripts/check-whatsapp-slug-guard.ts \
-     --post-id {post_id} \
-     --d1-title "{title}" \
-     --actual-slug "{slug_atual_do_get_post}" \
-     --out {EDITION_DIR}/_internal/whatsapp-slug-check.json
-   ```
-   (omitir `--actual-slug` se `web_settings.slug` vier ausente/vazio — o guard
-   trata ausência como divergência.)
-3. Logar o resultado (mesmo padrão de todo outro ponto de decisão deste
-   arquivo — início do stage, resposta do gate, purga de leaderboard):
-   ```bash
-   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
-     --level {info se ok, error se não} \
-     --message "whatsapp slug guard: {ok|diverge}" \
-     --details '{"ok":{ok},"expectedSlug":"{expected_slug}","actualSlug":"{actual_slug}"}'
-   ```
-
-| Exit | Significado | Ação |
-|------|-------------|------|
-| `0` | Slug bate com `seoSlug(title)` — o link do bloco WhatsApp é válido. | Continuar para §6e. |
-| `1` | **GATE-BLOCKING.** Slug diverge (mangling PT-BR, #1989, ou nunca setado). | Ver abaixo — **não prosseguir para §6e/§6f/§6g/§6h/auto-reporter** enquanto não sair `0`. |
-| `2` | Args inválidos (bug do orchestrator — `post_id`/`title` ausentes). | Investigar antes de repetir. |
-
-**No exit 1:** a correção via API está **permanentemente bloqueada** no plano
-atual (#3449, confirmado 260714 — `403 SEND_API_NOT_ENTERPRISE_PLAN`, não
-transitório). Ir direto pra correção manual — o stderr do guard já traz a
-mensagem formatada (reusa `formatManualSlugFixInstructions`, #3449): aba
-visível → campo `#text-input-slug` em Settings → SEO/URL slug → digitar o
-slug correto via teclado real (mesmo passo documentado em
-`context/publishers/beehiiv-playbook.md` §9). Não vale gastar uma chamada de
-`fix-post-slug.ts --execute` esperando sucesso — ela vai retornar `exit 3`
-(plan-gated) e só serve pra reconfirmar/logar o estado, se necessário:
-
-```bash
-npx tsx scripts/fix-post-slug.ts \
-  --post-id {post_id} \
-  --slug {slug_correto} \
-  --execute
-# exit 3 esperado (#3449) — stderr traz instrucoes manuais formatadas
-```
-
-Renderizar halt banner (mesmo padrão do #738), comando exato:
-
-```bash
-npx tsx scripts/render-halt-banner.ts \
-  --stage "6 — Agendamento" \
-  --reason "slug do post diverge do link já enviado no bloco WhatsApp" \
-  --action "corrigir manualmente em Settings → SEO/URL slug, depois responder 'corrigido'"
-```
-
-Ao receber confirmação do editor, re-buscar o slug via `get_post` e re-rodar
-o guard (passo 2 acima, mesmo `--out`) — repetir até sair `0`. Só então
-prosseguir para §6e.
+**Slug do bloco WhatsApp — já conferido em §6b-slug, antes do gate (#8205).** Não roda de novo aqui. Se `_internal/whatsapp-slug-check.json` gravou `ok:false`, o editor já viu o aviso destacado no gate de §6c e decidiu seguir mesmo assim (`ok`/`ok HH:MM`) — nunca um 2º halt aqui. `check-invariants.ts --stage 6` (§6g) confere o arquivo pós-hoc pra auditoria, sem bloquear.
 
 **Guard refresh-dedup apos schedule confirmado:** rodar `/diaria-refresh-dedup` (equivalente a `npx tsx scripts/refresh-dedup.ts`) para manter `data/past-editions.md` atualizado.
 
@@ -450,8 +398,8 @@ Roda **depois** do agendamento confirmado, nos dois backends. Sem este passo o a
 
 **`--slug` é obrigatório aqui, em qualquer backend.** `_internal/05-published.json`
 nunca tem `post_url` populado neste ponto do pipeline (só `refresh-dedup.ts` grava isso,
-no dia seguinte). Backend `"beehiiv"`: passar `{slug_atual_do_get_post}` já obtido em §6d
-(o valor que o guard do bloco WhatsApp confirmou bater). Backend `"kit"` (#7420, fecha a
+no dia seguinte). Backend `"beehiiv"`: passar `{slug_atual_do_get_post}` já obtido em §6b-slug
+(o valor que o guard do bloco WhatsApp confirmou/apurou). Backend `"kit"` (#7420, fecha a
 lacuna do #464/#6202): passar `seoSlug(d1.title)` — mesmo algoritmo de `deriveEditionUrl`,
 já usado por `publish-newsletter-kit.ts` pra gravar `05-edition-url.txt` na Etapa 5, sem
 chamada de rede. Sem `--slug` o passo sempre cai em "nada a publicar" (`code: 4`, ver
@@ -483,9 +431,9 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 | `4` | artefato PRESENTE mas inválido (html/título vazio, `--slug` ausente e sem `post_url`) — bug num stage anterior. Desde #7420, `--slug` sempre basta (não depende de `05-published.json`) | **logar warn e seguir** (nunca silencioso — não é o mesmo caso benigno do `2`) |
 | `5` | GUARD (#6202): `buildArchivePageHtml` recusou por merge tag não resolvida (`UnresolvedMergeTagError`, guard do #6210/#6256) — não é a tag padrão do voto (`{{email}}`, essa é sanitizada antes do guard rodar), é uma tag DESCONHECIDA. Nada escrito/commitado | **logar warn e seguir** (fail-soft; a edição segue normal, só o site não ganha página nova até a tag ser tratada) |
 
-**Fail-soft do SCRIPT, inalterado:** nenhum exit lança nem interrompe §6d-site; no `3` a página costuma ficar escrita localmente. **Mas o GATE agora trava (#7578, decisão do editor 07/09/2026).** O invariante `site-page-published` de §6g virou `error` — era `warning`, e o warning provou duas vezes que ninguém o lê (4 edições silenciosas em 31/08–03/09, mais 12 dias de acervo parado depois disso). A premissa de "site é acessório" também caiu: hoje ele é destino de campanha paga (#7575) e a superfície mais indexável do domínio (#7576). **O script segue, o gate é que para** — quem decide publicar assim mesmo é o editor, com a falha na frente. Destravar: re-rodar o comando acima e mergear o PR, ou aprovar ciente de que `/p/{slug}` fica 404.
+**Fail-soft do SCRIPT, inalterado:** nenhum exit lança nem interrompe §6d-site; no `3` a página costuma ficar escrita localmente. **O invariante `site-page-published` (§6g) marca a falha como `severity: error` desde #7578 (decisão do editor 07/09/2026)** — era `warning`, e o warning provou duas vezes que ninguém o lê (4 edições silenciosas em 31/08–03/09, mais 12 dias de acervo parado depois disso). A premissa de "site é acessório" também caiu: hoje ele é destino de campanha paga (#7575) e a superfície mais indexável do domínio (#7576). **Desde #8205: isto não é um 2º gate** — a falha entra no relatório/resumo final da edição (§6h em diante) como aviso destacado, não como uma pausa nova pedindo confirmação; o pipeline segue até o fim e o editor resolve depois (re-rodar o comando acima e mergear o PR).
 
-**A visibilidade da falha NÃO depende mais só deste `log-event.ts` (#7283).** O próprio script grava `_internal/site-page-published.json` (`{ code, slug, published, reason, prUrl, checked_at }`) a CADA chamada, determinístico — não depende de o agente lembrar de logar certo. `check-invariants.ts --stage 6` (§6g abaixo) lê esse arquivo e acusa (`severity: error`, **GATE-BLOCKING desde #7578** — era `warning`) quando `published !== true`. Foi a ausência desse mecanismo que deixou 4 edições consecutivas (31/08–03/09/2026) sem página no acervo sem NENHUM sinal em código — só a prosa deste passo, que ninguém verificava ter sido seguida.
+**A visibilidade da falha NÃO depende mais só deste `log-event.ts` (#7283).** O próprio script grava `_internal/site-page-published.json` (`{ code, slug, published, reason, prUrl, checked_at }`) a CADA chamada, determinístico — não depende de o agente lembrar de logar certo. `check-invariants.ts --stage 6` (§6g abaixo) lê esse arquivo e acusa (`severity: error`) quando `published !== true`, sem bloquear. Foi a ausência desse mecanismo que deixou 4 edições consecutivas (31/08–03/09/2026) sem página no acervo sem NENHUM sinal em código — só a prosa deste passo, que ninguém verificava ter sido seguida.
 
 **Mecanismo: branch dedicada + PR, nunca push direto em `master` (#6598).** Script recria `site-publish/{slug}` do `master` local, commita/empurra (`--force-with-lease`) e abre/reusa PR via `gh pr create` — nunca mergeia sozinho (decisão do editor). Detalhes/histórico do incidente que motivou (`GH013`, 260828): `docs/site-page-publish-mechanism.md`.
 
@@ -545,7 +493,7 @@ de fato. O `--status done` correto fica no passo **6b-7**, apos o report ser esc
 npx tsx scripts/check-invariants.ts --stage 6 --edition-dir {EDITION_DIR}/
 ```
 
-Exit 1 = logar warn (nao bloquear auto-reporter). Duas regras aqui: `whatsapp-slug-guard-ok` (#4574) é um backstop pós-hoc — confirma que `_internal/whatsapp-slug-check.json` existe com `ok:true`; se §6d já loopou até `0`, passa por construção, e só existe pra pegar o agente que pulou a prosa de §6d (o bloqueio real já aconteceu lá). `site-page-published` (#7283) é diferente — mecanismo PRIMÁRIO de detecção do fail-soft de §6d-site: lê `_internal/site-page-published.json` e acusa `severity: error` quando `published !== true`. **Bloqueia desde #7578** (decisão do editor 07/09/2026; era `warning`, e o silêncio deixou 12 dias de acervo parado). A regra irmã `site-sitemap-no-orphans` (#7578) também é `error`: acusa página em `workers/site/public/p/` sem entrada no `sitemap.xml` — órfã é invisível no buscador E em `arquivo.diar.ia.br`, que deriva o acervo daquele sitemap.
+Exit 1 = logar warn (nao bloquear auto-reporter). Sempre pós-hoc, nunca interativo (#8205 — a parada única do pipeline é §6c, nenhuma regra aqui espera resposta do editor): `whatsapp-slug-guard-ok` (#4574) confirma que `_internal/whatsapp-slug-check.json` existe com `ok:true` — se divergiu, já apareceu como aviso destacado no gate de §6c (§6b-slug) e o editor seguiu ciente; esta checagem só audita que o arquivo foi de fato gravado (agente não pulou §6b-slug por engano). `site-page-published` (#7283) lê `_internal/site-page-published.json` e acusa `severity: error` quando `published !== true` — `severity: error` marca a falha como digna de destaque no relatório/dashboard (usado por `docs/editorial-invariants.md`/Studio), mas **não é um 2º gate**: a regra irmã `site-sitemap-no-orphans` (#7578) segue o mesmo padrão, acusando página em `workers/site/public/p/` sem entrada no `sitemap.xml` (órfã, invisível no buscador e em `arquivo.diar.ia.br`).
 
 ### 6h. Purga automatica de votos do editor no leaderboard (#3032)
 
@@ -628,12 +576,9 @@ Script grava `{edition_dir}/_internal/issues-draft.json`.
 
 Se `signals_count === 0`, logar info e pular auto-reporter.
 
-### 6b-3. Sempre rodar (#1502)
+### 6b-3. Sempre rodar, sem gate (#1502, #8205)
 
-Auto-reporter roda em **todos os modos** (interativo, `auto_approve`). E o unico mecanismo de observabilidade pos-edicao.
-
-- **`auto_approve = true`**: gate do auto-reporter e auto-aprovado.
-- **Modo interativo**: gate normal.
+Auto-reporter roda em **todos os modos** (interativo, `auto_approve`) e **sempre sem gate** — cria/comenta issues diretamente (ver `.claude/agents/auto-reporter.md`, atualizado no #8205). E o unico mecanismo de observabilidade pos-edicao; nunca a 2ª parada do Stage 6 — a única parada é §6c.
 
 ### 6b-4. Disparar auto-reporter
 
