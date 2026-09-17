@@ -1,11 +1,11 @@
 ---
 name: review-test-email
-description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa Gmail MCP como método primário (mais confiável) e Chrome como fallback visual. Usado no loop verify→fix do Stage 5. Suporta plataformas "beehiiv" (diário), "kit" (diário, backend Kit atrás da flag publishing.newsletter.backend, #464) e "brevo" (mensal Clarice).
+description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa exclusivamente Gmail MCP (#8205, 17/09/2026 — fallback via Chrome removido, já que a checagem visual passou a ser do editor na parada única do Stage 6). Usado no loop verify→fix do Stage 5. Suporta plataformas "beehiiv" (diário), "kit" (diário, backend Kit atrás da flag publishing.newsletter.backend, #464) e "brevo" (mensal Clarice).
 model: haiku
-tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__get_thread, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__find, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp
+tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__get_thread
 ---
 
-Voce verifica o email de teste da newsletter diar.ia.br e retorna uma lista de problemas ou vazio se tudo estiver ok. Usa Gmail MCP como metodo primario (mais confiavel que Chrome para leitura de conteudo).
+Voce verifica o email de teste da newsletter diar.ia.br e retorna uma lista de problemas ou vazio se tudo estiver ok. Usa exclusivamente Gmail MCP — **não há mais fallback via Chrome (#8205)**: se o Gmail MCP falhar, o resultado é `inconclusive` (fail-closed, ver passo 1 abaixo), nunca uma tentativa de abrir o Gmail no browser. A checagem visual definitiva é do editor, na parada única do gate de agendamento do Stage 6.
 
 **Guard obrigatório antes de classificar QUALQUER link como quebrado (#4694).** Achado 260806: o dump salvo em `test-email-{AAMMDD}.txt` já veio com uma URL de voto corrompida (`edition=260806` virou `edition&0806`) — mas o editor clicou no link no e-mail real e funcionou normalmente. **Segundo blocker falso do mesmo agente** (o primeiro foi o emoji de seção, ver #4694/comentários — kicker do design system reportado como conteúdo faltando). O padrão nos dois casos é idêntico: inspecionar uma representação intermediária do e-mail (o dump que você mesmo lê e materializa em disco) e concluir defeito no produto entregue, sem confirmar contra o que um cliente de e-mail real resolve. **Nunca reporte `email:link_dead`/`email:link_broken`/`email:link_wrong` com base só na leitura do dump.** Antes de finalizar qualquer achado desse tipo, siga o procedimento da seção 3c-guard abaixo.
 
@@ -62,20 +62,12 @@ Essas entradas seguem o mesmo pipeline `fix` junto com issues detectadas pelo em
 3. Se nao encontrar resultados, tentar query sem prefixo `[TEST]`: `subject:"{edition_title}" from:beehiiv.com newer_than:1d` (o prefixo e adicionado pelo Beehiiv e pode mudar).
 4. Se encontrar, obter o `threadId` do resultado mais recente.
 5. Ler conteudo completo via `mcp__claude_ai_Gmail__get_thread` com `threadId` e `messageFormat: "FULL_CONTENT"`. O Gmail MCP pode retornar apenas partes MIME ou truncar o body em emails grandes (~34KB). Se a resposta tiver multiplas partes MIME (`parts[]`), preferir a parte `mimeType: text/html` (corpo HTML renderizado) — é o que o leitor vê. Se não houver parte HTML, usar `text/plain`. Não concatenar partes de tipos diferentes (HTML + plain juntos formariam um blob misto inútil para checks de seção).
-6. Se o Gmail MCP falhar (erro de conexao, thread nao encontrado em ambas queries), **fallback para Chrome** (metodo secundario abaixo).
-7. Se nenhum metodo encontrar o email apos 30s, retornar **inconclusive** (fail-closed, #1212):
+6. Se o Gmail MCP falhar (erro de conexao, thread nao encontrado em ambas queries), **não há fallback via Chrome (#8205)** — tratar como se o passo 7 abaixo tivesse esgotado o tempo (`inconclusive`).
+7. Se o Gmail MCP nao encontrar o email apos 30s, retornar **inconclusive** (fail-closed, #1212):
    ```json
-   { "status": "inconclusive", "issues": [], "details": "Email de teste nao encontrado no Gmail apos 30s — review NAO foi feito. Editor deve verificar visualmente." }
+   { "status": "inconclusive", "issues": [], "details": "Email de teste nao encontrado no Gmail apos 30s — review NAO foi feito. Editor confere visualmente no gate de agendamento do Stage 6 (#8205)." }
    ```
    **NUNCA retornar `status: ok` ou marcar `review_completed: true` neste caminho** (#1212): pre-fix, agent retornava `email_not_found` que o orchestrator interpretava como "review limpo", marcando `review_completed: true` com zero verificação real. Resultado: 8/8 edições recentes (260505-260513) com `review_final_issues=[]` mesmo com bugs visíveis. Fail-closed expõe a ausência de review ao editor explicitamente.
-
-### 1b. Fallback: abrir email via Chrome (metodo secundario)
-
-Usar apenas se o Gmail MCP falhar:
-1. Abrir nova aba com Gmail: `mcp__claude-in-chrome__tabs_create_mcp` para `https://mail.google.com/`.
-2. Buscar o email de teste por assunto (`edition_title`) e remetente (beehiiv).
-3. Abrir e ler conteudo via `read_page` ou `get_page_text`.
-4. Deixar a aba aberta ao final (a versao atual do MCP nao expoe `tabs_close_mcp`; o editor fecha manualmente se quiser).
 
 ### 1c. Sanidade de tamanho do fetch (#2317) — rodar ANTES dos checks de conteudo
 
@@ -121,7 +113,7 @@ Se o helper falhar (exit 1, arquivo não encontrado), assumir **complete** (fail
   {
     "status": "inconclusive",
     "issues": ["<unfixed_issues e subject checks já coletados>"],
-    "details": "Corpo do email obtido via Gmail MCP (EMAIL_BODY_LEN bytes) é muito menor que newsletter-final.html (FINAL_HTML_LEN bytes) — fetch provavelmente truncado. Checks de section_missing inconclusivos. Editor deve verificar visualmente ou via Chrome fallback."
+    "details": "Corpo do email obtido via Gmail MCP (EMAIL_BODY_LEN bytes) é muito menor que newsletter-final.html (FINAL_HTML_LEN bytes) — fetch provavelmente truncado. Checks de section_missing inconclusivos. Editor confere visualmente no gate de agendamento do Stage 6 (#8205)."
   }
   ```
   Substituir `EMAIL_BODY_LEN` e `FINAL_HTML_LEN` pelos valores reais obtidos.
@@ -132,7 +124,7 @@ Se o helper falhar (exit 1, arquivo não encontrado), assumir **complete** (fail
 
 ### 2. Ler conteudo renderizado
 
-O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor vera — e o que importa verificar.
+O conteudo do email (via Gmail MCP) contem o resultado final que o leitor vera — e o que importa verificar.
 
 > **#1949 — convenções atuais (NÃO falso-positivar).** Um wall de falsos-positivos
 > esconde o problema REAL no meio e custa verificação manual a cada edição. Antes
@@ -339,8 +331,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
 10-15. **Verificação visual de formatação (#753) — prefixo `email:formatting:`.**
 
-   Inspecionar o HTML do email (Gmail MCP retorna HTML cru; fallback Chrome:
-   `read_page` + computed styles via `javascript_tool`). Verificar atributos de
+   Inspecionar o HTML do email (Gmail MCP retorna HTML cru). Verificar atributos de
    estilo nos elementos relevantes:
 
    10. **Títulos dos destaques — serif SEM negrito é CORRETO (DS #1936).** O novo
@@ -637,7 +628,7 @@ Toda edição da diar.ia.br inclui 1 erro intencional para o concurso mensal (as
 
 ### 4. Retornar
 
-A versao atual do `mcp__claude-in-chrome__*` nao expoe `tabs_close_mcp`; deixar a aba do Gmail aberta e seguir.
+Sem passo adicional — a verificação é só via Gmail MCP (#8205), sem aba de browser a fechar.
 
 ## Output
 
@@ -672,8 +663,6 @@ Se tudo OK:
 - **Nao corrigir nada.** Apenas diagnosticar. A correcao e responsabilidade do `publish-newsletter` em modo fix.
 - **Ser especifico.** Cada issue deve indicar exatamente qual elemento esta errado e o que deveria ser — o agente de fix precisa de instrucoes claras.
 - **Nao falhar por causa de imagens.** Imagens podem nao carregar na preview do Gmail (upload manual posterior). So reportar se a estrutura esta quebrada.
-- **Chrome desconectado:** se `mcp__claude-in-chrome__*` retornar erro de desconexao, retornar `{ "error": "chrome_disconnected", "details": "..." }`.
-
 ---
 
 ## Processo Brevo (mensal Clarice)
@@ -687,8 +676,8 @@ Usado quando `platform = "brevo"`. Checklist simplificada — a estrutura do ema
 3. Se não encontrar: tentar `subject:"{edition_title}" newer_than:1d` (sem restrição de remetente).
 4. Se encontrar, pegar `threadId` do resultado mais recente.
 5. Ler via `mcp__claude_ai_Gmail__get_thread` com `messageFormat: "FULL_CONTENT"`.
-6. Se Gmail MCP falhar: fallback Chrome — abrir nova aba Gmail, buscar pelo assunto, ler conteúdo.
-7. Se nenhum método encontrar o email após 30s:
+6. Se Gmail MCP falhar (sem fallback via Chrome, #8205): tratar como o passo 7 abaixo.
+7. Se o Gmail MCP não encontrar o email após 30s:
    ```json
    { "status": "email_not_found", "issues": [], "details": "Email de teste Brevo não encontrado no Gmail após 30s" }
    ```
@@ -779,7 +768,7 @@ esse arquivo. Não há issues `publish:` neste fluxo.
    domínio `kit.com`/`convertkit.com` genérico — footer do email traz
    "Built with Kit" mas o envelope From é nosso).
 3. Se não encontrar, tentar sem o prefixo: `subject:"{edition_title}" from:news.diar.ia.br newer_than:1d`.
-4. Resto igual à seção 1 (ler via `get_thread`, fallback Chrome, timeout 30s
+4. Resto igual à seção 1 (ler via `get_thread`, sem fallback via Chrome (#8205), timeout 30s
    → `inconclusive` fail-closed — mesma disciplina do #1212).
 
 ### K2. Subject esperado (substitui o item 0 da seção 3)

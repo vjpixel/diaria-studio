@@ -15,7 +15,7 @@ Este comando leva a edição do dispatch até o fim do pipeline. Ao terminar o S
 
 **O que continua separado, de propósito:** os números dos stages, os dois sentinels (`.step-5-done.json`/`.step-6-done.json`), os invariants por stage, `find-current-edition --stage 5|6`, a statusline e o Studio. A fusão é de **invocação**, nunca de estado.
 
-**O gate NÃO sai.** O gate de agendamento (§6c do playbook do Stage 6) é um dos dois gates de projeto do CLAUDE.md — critério 1, irreversível pra terceiros. Único ponto de parada desta skill.
+**O gate NÃO sai — e desde #8205 é a ÚNICA parada da skill inteira.** O gate de agendamento (§6c do playbook do Stage 6) é um dos dois gates de projeto do CLAUDE.md — critério 1, irreversível pra terceiros — e agora também pede explicitamente a revisão visual do e-mail de teste pelo editor. Tudo que antes tinha parada própria (pedidos editoriais registrados, guard de slug do bloco WhatsApp, auto-reporter) virou contexto dentro deste único gate ou execução automática sem pergunta — nunca uma 2ª parada.
 
 **Exceção nomeada ao princípio #5578.** Esta é a única transição `/diaria-N-*` que encadeia sozinha. O princípio segue valendo em todas as outras — inclusive na fronteira pós-gate 4 (#6171), que é quem garante que esta skill sempre começa em sessão nova.
 
@@ -135,13 +135,13 @@ npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode soci
 7. `brevo-diaria-stage5-dispatch.ts` — só se `consent.brevo === "auto"`; cria só o RASCUNHO
 8. `kit-diaria-stage5-dispatch.ts` — só se `consent.kit === "auto"` **e** `kit_diaria.enabled === true`; cria só o RASCUNHO
 
-Após todos retornarem, **loop de review-test-email** roda em cima do draft da newsletter (Beehiiv ou Kit).
+Após todos retornarem, **loop de review-test-email** roda em cima do draft da newsletter (Beehiiv ou Kit) — só via Gmail MCP, sem fallback via Chrome (#8205).
 
-**Gate único** (legacy `pre_gate = false`) ou **auto-approve** (quando `pre_gate = true` e aprovação ocorreu no Stage 4).
+**Stage 5 não tem gate próprio** — dispatch puro (#1326). A única parada de toda a skill é o gate único do Stage 6 (§6c) — revisão visual do e-mail de teste pelo editor + agendamento (#8205).
 
 ### Etapa 5c — Resumo e continuação para o Stage 6 (#7983, MESMA sessão)
 
-Stage 5 encerra o dispatch (newsletter draft + todos os canais sociais agendados + Brevo/Kit diária como rascunho) e, na mesma sessão, segue direto para o **Stage 6 (Agendamento)** — leia `.claude/agents/orchestrator-stage-6.md` e execute-o em seguida. Auto-reporter e relatório por email rodam dentro do Stage 6, após o editor confirmar o Schedule da newsletter no gate de §6c.
+Stage 5 encerra o dispatch (newsletter draft + todos os canais sociais agendados + Brevo/Kit diária como rascunho) e, na mesma sessão, segue direto para o **Stage 6 (Agendamento)** — leia `.claude/agents/orchestrator-stage-6.md` e execute-o em seguida. Auto-reporter roda sem gate dentro do Stage 6 (#8205); relatório por email é gerado ao final, depois que o editor confirma o Schedule da newsletter na parada única de §6c.
 
 ## Output
 
