@@ -800,6 +800,135 @@ describe("ensureSubscriber / upsertSubscription / recordEvent — fixture 3 plat
 });
 
 // ---------------------------------------------------------------------------
+// #8236 — ensureSubscriber casa por e-mail DENTRO da mesma plataforma quando
+// um dos dois lados não tem external_id, em vez de partir a identidade em 2
+// subscriber (achado ao vivo: 282 e-mails duplicados na mesma plataforma,
+// 275 Kit + 7 Beehiiv, porque o roster grava external_id e a ingestão de
+// broadcast/poll não).
+// ---------------------------------------------------------------------------
+
+describe("ensureSubscriber — casamento por e-mail dentro da mesma plataforma (#8236)", () => {
+  it("roster (com id) depois eventos (sem id) casam no mesmo subscriber_id", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const rosterId = ensureSubscriber(db, "kit", "kit-123", "leitor@example.com");
+    const eventId = ensureSubscriber(db, "kit", null, "leitor@example.com");
+    assert.equal(eventId, rosterId);
+
+    const aliases = db
+      .prepare(
+        "SELECT external_id FROM identity_alias WHERE subscriber_id = ? ORDER BY external_id IS NULL, external_id",
+      )
+      .all(rosterId) as Array<{ external_id: string | null }>;
+    assert.deepEqual(
+      aliases.map((a) => a.external_id).sort(),
+      ["kit-123", null].sort(),
+    );
+    db.close();
+  });
+
+  it("eventos (sem id) depois roster (com id) casam no mesmo subscriber_id — ordem inversa", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const eventId = ensureSubscriber(db, "kit", null, "leitor@example.com");
+    const rosterId = ensureSubscriber(db, "kit", "kit-123", "leitor@example.com");
+    assert.equal(rosterId, eventId);
+    db.close();
+  });
+
+  it("depois do casamento, subscription do roster e eventos do broadcast aparecem no MESMO subscriber_id (o bug real do #8236)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const rosterId = ensureSubscriber(db, "kit", "kit-123", "leitor@example.com");
+    upsertSubscription(db, rosterId, "kit", {
+      status: "active",
+      enteredAt: "2026-09-05T00:00:00.000Z",
+      exitedAt: null,
+      source: "roster",
+    });
+
+    const eventId = ensureSubscriber(db, "kit", null, "leitor@example.com");
+    recordEvent(db, {
+      subscriberId: eventId,
+      platform: "kit",
+      type: "sent",
+      externalEventId: "broadcast-1:leitor@example.com",
+      ts: "2026-09-06T00:00:00.000Z",
+    });
+
+    assert.equal(eventId, rosterId);
+    const timeline = getSubscriberTimeline(db, rosterId);
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].type, "sent");
+    db.close();
+  });
+
+  it("reingestão idempotente: rodar roster+broadcast 2x não cria um 3º subscriber nem novo alias", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id1 = ensureSubscriber(db, "kit", "kit-123", "leitor@example.com");
+    const id2 = ensureSubscriber(db, "kit", null, "leitor@example.com");
+    // 2ª rodada da task (mesmo dia seguinte) — reingestão de ambos.
+    const id3 = ensureSubscriber(db, "kit", "kit-123", "leitor@example.com");
+    const id4 = ensureSubscriber(db, "kit", null, "leitor@example.com");
+    assert.equal(id1, id2);
+    assert.equal(id1, id3);
+    assert.equal(id1, id4);
+
+    const aliasCount = db
+      .prepare("SELECT COUNT(*) AS n FROM identity_alias WHERE platform = 'kit' AND email = 'leitor@example.com'")
+      .get() as { n: number };
+    assert.equal(aliasCount.n, 2); // (kit, kit-123, email) + (kit, NULL, email), nunca mais.
+
+    const subscriberCount = db.prepare("SELECT COUNT(*) AS n FROM subscriber").get() as { n: number };
+    assert.equal(subscriberCount.n, 1);
+    db.close();
+  });
+
+  it("dois external_id NÃO-nulos e diferentes pro mesmo e-mail continuam em subscribers separados (não funde na escrita)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id1 = ensureSubscriber(db, "beehiiv", "beehiiv-id-1", "reativado@example.com");
+    const id2 = ensureSubscriber(db, "beehiiv", "beehiiv-id-2", "reativado@example.com");
+    assert.notEqual(id1, id2);
+    db.close();
+  });
+
+  it("(beehiiv, id1, x@y) e (beehiiv, id2, x@y) continuam separados; (kit, NULL, x@y) casa com o único (kit, id, x@y) — critério de aceite da issue", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const beehiivId1 = ensureSubscriber(db, "beehiiv", "beehiiv-id-1", "pessoa@example.com");
+    const beehiivId2 = ensureSubscriber(db, "beehiiv", "beehiiv-id-2", "pessoa@example.com");
+    assert.notEqual(beehiivId1, beehiivId2);
+
+    const kitRosterId = ensureSubscriber(db, "kit", "kit-9", "pessoa@example.com");
+    const kitEventId = ensureSubscriber(db, "kit", null, "pessoa@example.com");
+    assert.equal(kitEventId, kitRosterId);
+    // O casamento do Kit não interfere na separação já estabelecida na Beehiiv.
+    assert.notEqual(kitRosterId, beehiivId1);
+    assert.notEqual(kitRosterId, beehiivId2);
+    db.close();
+  });
+
+  it("2 external_id não-nulos e diferentes já existentes (reativação) + evento sem id: não escolhe arbitrariamente, cria subscriber novo", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // Cenário real (docstring do módulo, `subscription.reativado`): a mesma
+    // pessoa gera 2 `external_id` diferentes na Beehiiv ao longo do tempo
+    // (DELETE+CREATE na reativação). As duas já ficam em subscribers
+    // separados (comportamento correto — não é este fix que decide qual dos
+    // dois é o "certo").
+    const idA = ensureSubscriber(db, "beehiiv", "beehiiv-id-1", "reativado@example.com");
+    const idB = ensureSubscriber(db, "beehiiv", "beehiiv-id-2", "reativado@example.com");
+    assert.notEqual(idA, idB);
+
+    // Agora um evento sem id chega pro mesmo e-mail: há 2 candidatos "com
+    // id" (idA e idB) — não escolhe nenhum arbitrariamente, cria um 3º
+    // subscriber e deixa a decisão pro resolver cross-plataforma/manual.
+    const eventId = ensureSubscriber(db, "beehiiv", null, "reativado@example.com");
+    assert.notEqual(eventId, idA);
+    assert.notEqual(eventId, idB);
+
+    const subscriberCount = db.prepare("SELECT COUNT(*) AS n FROM subscriber").get() as { n: number };
+    assert.equal(subscriberCount.n, 3);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // As duas consultas que importam
 // ---------------------------------------------------------------------------
 

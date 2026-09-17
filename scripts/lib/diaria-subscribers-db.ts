@@ -692,12 +692,37 @@ export function openDiariaSubscribersDbSafe(
  * sempre retorna o MESMO `subscriber_id` — nunca cria um 2º subscriber pro
  * alias já visto.
  *
- * Não faz merge cross-plataforma — dois aliases de PLATAFORMAS DIFERENTES
- * pra mesma pessoa real criam, nesta chamada, dois `subscriber` distintos.
- * Isso é esperado e transitório: `resolveIdentitiesByEmail`
- * (`diaria-subscribers-identity-resolve.ts`, fatia 5, #6589) roda DEPOIS da
- * ingestão e funde por e-mail canonicalizado (`UPDATE identity_alias SET
- * subscriber_id = ?`) — este helper nunca precisa saber disso.
+ * ## Casamento por e-mail DENTRO da mesma plataforma (#8236)
+ *
+ * Antes deste fix, uma plataforma cujo `external_id` só é conhecido em
+ * ALGUMAS chamadas (Kit: o roster tem `external_id`, mas
+ * `/subscribers/filter` — usado pra ingestão de broadcast/poll — não) partia
+ * a identidade em dois `subscriber`: `(kit, 123, x@y)` e `(kit, NULL, x@y)`
+ * nunca casavam na tripla exata, e o merge cross-plataforma
+ * (`resolveIdentitiesByEmail`, fatia 5) só roda como passo manual separado —
+ * na prática quase nunca rodou (#8236: 282 e-mails duplicados dentro da
+ * própria plataforma quando medido). Correção na ESCRITA, sem heurística
+ * nova: quando a tripla exata não casa e há e-mail, procura outro alias da
+ * MESMA plataforma com o MESMO e-mail normalizado, mas só considera casar
+ * quando um dos dois lados (o alias que está sendo gravado agora, ou o alias
+ * já existente) tem `external_id` NULL — é exatamente o par
+ * "roster com id" ↔ "evento sem id" que gera a duplicata. Dois
+ * `external_id` não-nulos e DIFERENTES pro mesmo e-mail (ex: Beehiiv
+ * DELETE+CREATE na reativação, ver `subscription.reativado`) nunca casam
+ * aqui — ficam em `subscriber` separados e só o resolver decide (fundir
+ * na escrita faria a linha única `UNIQUE(subscriber_id, platform)` de
+ * `subscription` herdar arbitrariamente o status do último id processado).
+ * Se mais de 1 `subscriber_id` já casar por esse critério (caso raro — mais
+ * de 1 "lado sem id" pro mesmo e-mail), não escolhe arbitrariamente: cria um
+ * `subscriber` novo, como antes, e deixa pro resolver.
+ *
+ * Merge CROSS-plataforma continua fora deste helper — dois aliases de
+ * PLATAFORMAS DIFERENTES pra mesma pessoa real criam, nesta chamada, dois
+ * `subscriber` distintos. Isso é esperado e transitório:
+ * `resolveIdentitiesByEmail` (`diaria-subscribers-identity-resolve.ts`,
+ * fatia 5, #6589) roda DEPOIS da ingestão e funde por e-mail canonicalizado
+ * (`UPDATE identity_alias SET subscriber_id = ?`) — este helper nunca
+ * precisa saber disso.
  *
  * `externalId`/`email` podem ser `null` individualmente, mas ao menos um dos
  * dois precisa estar presente (senão não há como reidentificar o alias numa
@@ -726,15 +751,48 @@ export function ensureSubscriber(
     | undefined;
   if (existing) return existing.subscriber_id;
 
+  // Sem match exato: procura o "outro lado" da mesma pessoa dentro da MESMA
+  // plataforma (roster com id ↔ evento sem id) — ver docstring acima. Se o
+  // alias sendo gravado agora não tem external_id, o candidato precisa TER
+  // (senão já teria batido no match exato acima); se tem, o candidato
+  // precisa NÃO ter (aliases com external_id não-nulo e diferente ficam de
+  // fora, de propósito).
+  let mergeSubscriberId: number | null = null;
+  if (normalizedEmail) {
+    const candidateSql =
+      externalId === null
+        ? "SELECT DISTINCT subscriber_id FROM identity_alias WHERE platform = ? AND email = ? AND external_id IS NOT NULL"
+        : "SELECT DISTINCT subscriber_id FROM identity_alias WHERE platform = ? AND email = ? AND external_id IS NULL";
+    const candidates = db
+      .prepare(candidateSql)
+      .all(platform, normalizedEmail) as Array<{ subscriber_id: number }>;
+    if (candidates.length === 1) {
+      mergeSubscriberId = candidates[0].subscriber_id;
+    }
+    // candidates.length === 0: ninguém pra casar, segue pro create abaixo.
+    // candidates.length > 1: mais de um "lado sem id" pro mesmo e-mail —
+    // não escolhe arbitrariamente, cria subscriber novo e deixa pro
+    // resolver cross-plataforma decidir.
+  }
+
   db.exec("BEGIN");
   try {
-    db.prepare(
-      "INSERT INTO subscriber (created_at, updated_at) VALUES (?, ?)",
-    ).run(now, now);
-    const row = db.prepare("SELECT last_insert_rowid() AS id").get() as {
-      id: number;
-    };
-    const subscriberId = row.id;
+    let subscriberId: number;
+    if (mergeSubscriberId !== null) {
+      subscriberId = mergeSubscriberId;
+      db.prepare("UPDATE subscriber SET updated_at = ? WHERE id = ?").run(
+        now,
+        subscriberId,
+      );
+    } else {
+      db.prepare(
+        "INSERT INTO subscriber (created_at, updated_at) VALUES (?, ?)",
+      ).run(now, now);
+      const row = db.prepare("SELECT last_insert_rowid() AS id").get() as {
+        id: number;
+      };
+      subscriberId = row.id;
+    }
     db.prepare(
       `INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at)
        VALUES (?, ?, ?, ?, ?)`,

@@ -414,6 +414,81 @@ describe("ingestKitRoster", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #8236 — roster (com external_id) e ingestão de broadcast (sem external_id,
+// `/subscribers/filter` do Kit não devolve id) pro MESMO e-mail precisam
+// cair no MESMO subscriber_id — achado ao vivo: 274 cadastros desde 05/09
+// partidos em 2 subscriber_id, subscription e eventos nunca casando por
+// subscriber_id (só por e-mail).
+// ---------------------------------------------------------------------------
+
+describe("ingestKitRoster + ingestBroadcastAudience — mesmo e-mail cai no mesmo subscriber_id (#8236)", () => {
+  it("roster primeiro, broadcast depois: subscription e eventos sent/open/click no mesmo subscriber_id", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const roster = ingestKitRoster(
+      db,
+      [makeSub({ id: 42, email_address: "leitor@example.com" })],
+      "2026-09-05T04:25:00.000Z",
+    );
+    assert.equal(roster.subscriptionsWritten, 1);
+
+    const [subscriberId] = findSubscriberIdsByEmail(db, "leitor@example.com");
+    assert.equal(getStoreCounts(db).subscribers, 1, "1 subscriber só, não 2");
+
+    ingestBroadcastAudience(db, 900, "sent", ["leitor@example.com"], "2026-09-06T09:00:00.000Z");
+    ingestBroadcastAudience(db, 900, "delivered", ["leitor@example.com"], "2026-09-06T09:00:00.000Z");
+    ingestBroadcastAudience(db, 900, "opens", ["leitor@example.com"], "2026-09-06T09:05:00.000Z");
+    ingestBroadcastAudience(db, 900, "clicks", ["leitor@example.com"], "2026-09-06T09:10:00.000Z");
+
+    // Continua 1 único subscriber — os eventos casaram na escrita, não
+    // criaram um 2º subscriber "sem id".
+    assert.equal(getStoreCounts(db).subscribers, 1);
+
+    const subscriptions = getSubscriptionsForSubscriber(db, subscriberId);
+    assert.equal(subscriptions.length, 1, "subscription do roster está no MESMO subscriber_id dos eventos");
+    assert.equal(subscriptions[0].platform, "kit");
+
+    const timeline = getSubscriberTimeline(db, subscriberId);
+    const types = timeline.map((e) => e.type).sort();
+    assert.deepEqual(types, ["click", "delivered", "open", "sent", "subscribe"]);
+    db.close();
+  });
+
+  it("broadcast primeiro, roster depois (ordem indeterminada entre fatias 3/4): mesmo resultado", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBroadcastAudience(db, 900, "sent", ["leitor@example.com"], "2026-09-06T09:00:00.000Z");
+    ingestBroadcastAudience(db, 900, "opens", ["leitor@example.com"], "2026-09-06T09:05:00.000Z");
+
+    const roster = ingestKitRoster(
+      db,
+      [makeSub({ id: 42, email_address: "leitor@example.com" })],
+      "2026-09-07T04:25:00.000Z",
+    );
+    assert.equal(roster.subscriptionsWritten, 1);
+
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    const [subscriberId] = findSubscriberIdsByEmail(db, "leitor@example.com");
+    const subscriptions = getSubscriptionsForSubscriber(db, subscriberId);
+    assert.equal(subscriptions.length, 1);
+
+    const timeline = getSubscriberTimeline(db, subscriberId);
+    assert.equal(timeline.filter((e) => e.type === "sent").length, 1);
+    assert.equal(timeline.filter((e) => e.type === "open").length, 1);
+    assert.equal(timeline.filter((e) => e.type === "subscribe").length, 1);
+    db.close();
+  });
+
+  it("2 execuções seguidas da task diária (roster+broadcast 2x) não fazem a duplicata voltar", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    for (const day of ["2026-09-05T04:25:00.000Z", "2026-09-06T04:25:00.000Z"]) {
+      ingestKitRoster(db, [makeSub({ id: 42, email_address: "leitor@example.com" })], day);
+      ingestBroadcastAudience(db, 900, "sent", ["leitor@example.com"], day);
+    }
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // extractKitFieldAttributes / atributos no roster (#7202)
 // ---------------------------------------------------------------------------
 
