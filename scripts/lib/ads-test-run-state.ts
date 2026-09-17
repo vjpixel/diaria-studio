@@ -31,9 +31,10 @@ export const ADS_TEST_2608_BRACOS = [
 
 /** Um intervalo de PAUSA de veiculação (campanha desativada nos 3 braços) —
  *  `desde`/`ate` inclusivos, mesma convenção `YYYY-MM-DD` do resto do
- *  módulo. Registrado manualmente pelo editor quando a campanha é pausada e
- *  religada (ex: pausa 09/09→17/09 do teste 2608) — nada grava isto
- *  automaticamente hoje. */
+ *  módulo. Formato ANTIGO (pré-#8240), só por DATA — nenhuma pausa real do
+ *  teste 2608 usa mais este shape hoje (a pausa 09/09→17/09 foi gravada em
+ *  `revisao.pausa`, com hora — ver abaixo), mas segue aceito por
+ *  retrocompatibilidade. */
 export interface AdsTestPause {
   desde: DateOnlyString;
   ate: DateOnlyString;
@@ -47,7 +48,23 @@ export interface AdsTestPause {
  *  os dias pausados da contagem de "dias de veiculação real", sem alterar
  *  `d0`/`fim_janela`/os demais marcos derivados. */
 export interface AdsTestRunStateRevisao {
-  pausas: readonly AdsTestPause[];
+  /** Formato ANTIGO — ver {@link AdsTestPause}. */
+  pausas?: readonly AdsTestPause[];
+  /** Formato ATUAL (#8240/#8241/#8262/#8242) — 1 intervalo de pausa (ou
+   *  lista, para uma 2ª pausa futura) com timestamp ISO COM hora (não só
+   *  data). `unknown` aqui de propósito: quem interpreta a forma exata
+   *  (`inicio`/`fim`/`inicio_por_braco`) é `AdsTestPauseField`/
+   *  `AdsTestRunStateWithPause` em `ads-test-pause-window.ts` — este
+   *  arquivo só valida que, quando presente, tem a forma mínima de um
+   *  intervalo (ver {@link assertValidRunState}), sem duplicar aquele
+   *  tipo. */
+  pausa?: unknown;
+  /** Metadados livres de auditoria de uma regravação de revisão — nunca
+   *  validados em detalhe aqui (não afetam nenhum cálculo, só leitura
+   *  humana/relatório). */
+  em?: string;
+  motivo?: string;
+  valores_anteriores?: Record<string, unknown>;
 }
 
 export interface AdsTestRunState extends AdsTestSchedule {
@@ -158,19 +175,56 @@ export function assertValidRunState(raw: unknown): asserts raw is AdsTestRunStat
       throw new Error('ads-test-run-state: campo "revisao" presente mas não é um objeto.');
     }
     const revisao = r.revisao as Record<string, unknown>;
-    if (!Array.isArray(revisao.pausas)) {
-      throw new Error('ads-test-run-state: campo "revisao.pausas" ausente ou não é uma lista.');
+    // Formato ANTIGO (`pausas`, plural, só por data) — OPCIONAL desde
+    // #8242: nenhuma pausa real do teste 2608 usa mais este shape, e
+    // exigi-lo incondicionalmente rejeitava o `run-state.json` real (que
+    // só tem `pausa`, formato atual, abaixo). Quando presente, a forma
+    // continua validada.
+    if (revisao.pausas !== undefined) {
+      if (!Array.isArray(revisao.pausas)) {
+        throw new Error('ads-test-run-state: campo "revisao.pausas" presente mas não é uma lista.');
+      }
+      for (const pausa of revisao.pausas) {
+        if (
+          typeof pausa !== "object" ||
+          pausa === null ||
+          typeof (pausa as Record<string, unknown>).desde !== "string" ||
+          typeof (pausa as Record<string, unknown>).ate !== "string" ||
+          !/^\d{4}-\d{2}-\d{2}$/.test((pausa as Record<string, unknown>).desde as string) ||
+          !/^\d{4}-\d{2}-\d{2}$/.test((pausa as Record<string, unknown>).ate as string)
+        ) {
+          throw new Error('ads-test-run-state: item de "revisao.pausas" precisa de "desde"/"ate" YYYY-MM-DD.');
+        }
+      }
     }
-    for (const pausa of revisao.pausas) {
-      if (
-        typeof pausa !== "object" ||
-        pausa === null ||
-        typeof (pausa as Record<string, unknown>).desde !== "string" ||
-        typeof (pausa as Record<string, unknown>).ate !== "string" ||
-        !/^\d{4}-\d{2}-\d{2}$/.test((pausa as Record<string, unknown>).desde as string) ||
-        !/^\d{4}-\d{2}-\d{2}$/.test((pausa as Record<string, unknown>).ate as string)
-      ) {
-        throw new Error('ads-test-run-state: item de "revisao.pausas" precisa de "desde"/"ate" YYYY-MM-DD.');
+    // Formato ATUAL (`pausa`, singular ou lista, com hora — #8240/#8241/
+    // #8262/#8242) — só a forma mínima é validada aqui (`inicio`
+    // obrigatório, ISO string; `fim` ausente/`null`/string; `inicio_por_braco`
+    // opcional, mapa de string->string). A interpretação fica em
+    // `ads-test-pause-window.ts`, que é quem de fato lê este campo.
+    if (revisao.pausa !== undefined && revisao.pausa !== null) {
+      const items = Array.isArray(revisao.pausa) ? revisao.pausa : [revisao.pausa];
+      for (const item of items) {
+        if (typeof item !== "object" || item === null) {
+          throw new Error('ads-test-run-state: item de "revisao.pausa" precisa ser um objeto.');
+        }
+        const iv = item as Record<string, unknown>;
+        if (typeof iv.inicio !== "string" || iv.inicio.trim() === "") {
+          throw new Error('ads-test-run-state: item de "revisao.pausa" precisa de "inicio" (ISO string).');
+        }
+        if (iv.fim !== undefined && iv.fim !== null && typeof iv.fim !== "string") {
+          throw new Error('ads-test-run-state: "revisao.pausa.fim", quando presente, precisa ser string ou null.');
+        }
+        if (iv.inicio_por_braco !== undefined) {
+          if (typeof iv.inicio_por_braco !== "object" || iv.inicio_por_braco === null || Array.isArray(iv.inicio_por_braco)) {
+            throw new Error('ads-test-run-state: "revisao.pausa.inicio_por_braco", quando presente, precisa ser um objeto braço->ISO string.');
+          }
+          for (const [braco, ts] of Object.entries(iv.inicio_por_braco as Record<string, unknown>)) {
+            if (typeof ts !== "string" || ts.trim() === "") {
+              throw new Error(`ads-test-run-state: "revisao.pausa.inicio_por_braco.${braco}" precisa ser uma ISO string.`);
+            }
+          }
+        }
       }
     }
   }

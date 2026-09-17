@@ -103,4 +103,60 @@ describe("#5845 — ads-test-run-state: assertValidRunState", () => {
     const state = { ...buildAdsTestRunState("2026-08-26", NOW_ISO), registrado_em: "" };
     assert.throws(() => assertValidRunState(state));
   });
+
+  it("#8242 — aceita `revisao.pausa` (formato ATUAL, com hora) sem `pausas` — regressão: run-state.json real lançava antes", () => {
+    const state = {
+      ...buildAdsTestRunState("2026-08-26", NOW_ISO),
+      revisao: {
+        em: "2026-09-17T00:18:00-03:00",
+        motivo: "pausa simetrica dos 3 bracos 09/09 16h05 (Google/Meta) / 16h18 (Microsoft)",
+        pausa: {
+          inicio: "2026-09-09T16:05:36-03:00",
+          fim: "2026-09-17T00:16:00-03:00",
+          inicio_por_braco: {
+            "Google Ads (teste 2608)": "2026-09-09T16:05:49-03:00",
+            "Meta Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
+            "Microsoft Ads (teste 2608)": "2026-09-09T16:18:21-03:00",
+          },
+        },
+      },
+    };
+    assert.doesNotThrow(() => assertValidRunState(state));
+  });
+
+  it("#8242 — aceita `revisao.pausa` como LISTA (2ª pausa futura) e `fim: null` (pausa em andamento)", () => {
+    const state = {
+      ...buildAdsTestRunState("2026-08-26", NOW_ISO),
+      revisao: { pausa: [{ inicio: "2026-09-09T16:05:36-03:00", fim: "2026-09-17T00:16:00-03:00" }, { inicio: "2026-10-01T00:00:00-03:00", fim: null }] },
+    };
+    assert.doesNotThrow(() => assertValidRunState(state));
+  });
+
+  it("#8242 — aceita `revisao` sem `pausas` nem `pausa` (nenhuma pausa registrada ainda)", () => {
+    const state = { ...buildAdsTestRunState("2026-08-26", NOW_ISO), revisao: { em: "2026-09-17T00:18:00-03:00" } };
+    assert.doesNotThrow(() => assertValidRunState(state));
+  });
+
+  it("#8242 — rejeita `revisao.pausa` sem `inicio`", () => {
+    const state = { ...buildAdsTestRunState("2026-08-26", NOW_ISO), revisao: { pausa: { fim: null } } };
+    assert.throws(() => assertValidRunState(state));
+  });
+
+  it("#8242 — rejeita `revisao.pausa.inicio_por_braco` com valor não-string", () => {
+    const state = {
+      ...buildAdsTestRunState("2026-08-26", NOW_ISO),
+      revisao: { pausa: { inicio: "2026-09-09T16:05:36-03:00", inicio_por_braco: { Google: 123 } } },
+    };
+    assert.throws(() => assertValidRunState(state));
+  });
+
+  it("continua aceitando `revisao.pausas` (formato ANTIGO, ainda suportado)", () => {
+    const state = { ...buildAdsTestRunState("2026-08-26", NOW_ISO), revisao: { pausas: [{ desde: "2026-09-09", ate: "2026-09-17" }] } };
+    assert.doesNotThrow(() => assertValidRunState(state));
+  });
+
+  it("continua rejeitando `revisao.pausas` malformado (formato ANTIGO)", () => {
+    const state = { ...buildAdsTestRunState("2026-08-26", NOW_ISO), revisao: { pausas: [{ desde: "09/09/2026", ate: "2026-09-17" }] } };
+    assert.throws(() => assertValidRunState(state));
+  });
 });

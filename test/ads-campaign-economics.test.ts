@@ -186,6 +186,23 @@ describe("#7536 — buildTestStateTiles: nunca média por canal, sempre estado d
     const tiles = buildTestStateTiles([], [], { d0: "2026-01-01", fim_janela: "2026-01-15" }, "2026-02-01");
     assert.equal(tiles.emAndamento, false);
   });
+
+  it("#8242 — revisao presente SEM `pausas` (formato real do run-state.json, que só grava `pausa`) não lança e não desconta dias", () => {
+    // Regressão: `assertValidRunState` exigia `revisao.pausas` incondicionalmente
+    // antes do #8242, então `runState` nunca chegava aqui de verdade contra o
+    // arquivo real (fail-soft do caller devolvia sempre `null`). Depois do
+    // #8242, `pausas` é opcional — este tile precisa continuar funcionando
+    // (sem desconto de dias pausados, que é follow-up separado) em vez de
+    // lançar `TypeError: pausas.some is not a function` sobre `undefined`.
+    const tiles = buildTestStateTiles(
+      [],
+      [],
+      { d0: "2026-01-01", fim_janela: "2026-01-15", revisao: {} },
+      "2026-01-05",
+    );
+    assert.equal(tiles.diasDecorridos, 4);
+    assert.equal(tiles.diasVeiculacaoReal, 4);
+  });
 });
 
 describe("#7536 — computeSourceFreshness: requisito 5 (idade/frescor por fonte)", () => {
