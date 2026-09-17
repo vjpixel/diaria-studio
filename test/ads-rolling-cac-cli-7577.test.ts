@@ -30,13 +30,17 @@ const HEADER =
  * declarar um braço registrado SEM linha no CSV — que é justamente o caso do
  * incidente CRLF.
  */
-function csvFixture(linhas: string[], bracos?: string[]): { dir: string; args: string[] } {
+function csvFixture(
+  linhas: string[],
+  bracos?: string[],
+  runStateExtra?: Record<string, unknown>,
+): { dir: string; args: string[] } {
   const dir = mkdtempSync(join(tmpdir(), "rolling-cac-7577-"));
   const path = join(dir, "clicks.csv");
   writeFileSync(path, HEADER + linhas.map((l) => `${l}\n`).join(""), "utf8");
   const runState = join(dir, "run-state.json");
   const derivados = [...new Set(linhas.map((l) => l.split(",")[0]))];
-  writeFileSync(runState, JSON.stringify({ bracos: bracos ?? derivados }), "utf8");
+  writeFileSync(runState, JSON.stringify({ bracos: bracos ?? derivados, ...runStateExtra }), "utf8");
   const edicoes = join(dir, "edicoes.jsonl");
   writeFileSync(edicoes, "", "utf8");
   return { dir, args: ["--csv", path, "--run-state", runState, "--edicoes", edicoes] };
@@ -264,6 +268,68 @@ describe("#7577 — CLI: colunas de CAC diário (ontem e anteontem)", () => {
       );
       assert.equal(braco.diarios[0].custoPorCadastro, 4);
       assert.equal(braco.diarios[1].custoPorCadastro, 10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * #8246 — `contextoJanela` no `--json`: substitui a aritmética de
+ * fim_janela/coorte_madura que antes vivia em PROSA no SKILL.md local da
+ * task `relatorio-diario-teste-2608`. Miolo puro coberto em
+ * `test/ads-window-context.test.ts`; aqui só a fiação da CLI (lê run-state,
+ * calcula `hoje` a partir de `--ate`, expõe no `--json`).
+ */
+describe("#8246 — CLI ads-rolling-cac: contextoJanela", () => {
+  it("run-state sem d0/fim_janela -> contextoJanela.d0 null (nunca inferido)", () => {
+    const { dir, args } = csvFixture(["Google Ads (teste 2608),2026-09-04,190,22,,0,painel"]);
+    try {
+      const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-04", "--json"]));
+      assert.equal(valor, 0);
+      const j = JSON.parse(out);
+      assert.equal(j.contextoJanela.d0, null);
+      assert.equal(j.contextoJanela.janelaEncerrada, null);
+      assert.equal(j.contextoJanela.gastoEsperadoAteOntemPorBraco, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--ate 2026-09-19 com fim_janela=2026-09-27 (run-state corrigido pelo #8262) -> janela NÃO encerrada", () => {
+    // Este É o caso concreto da issue: a prosa velha do SKILL.md dizia
+    // `fim = 2026-09-19` e podia levar o agente a desativar a task a partir
+    // de 20/09. `--ate 19/09` => hoje=20/09; com fim_janela real (27/09) a
+    // janela segue em andamento.
+    const { dir, args } = csvFixture(
+      ["Google Ads (teste 2608),2026-09-19,1900,50,,0,painel"],
+      undefined,
+      { d0: "2026-09-05", fim_janela: "2026-09-27", coorte_madura: "2026-10-24" },
+    );
+    try {
+      const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-19", "--json"]));
+      assert.equal(valor, 0);
+      const j = JSON.parse(out);
+      assert.equal(j.contextoJanela.d0, "2026-09-05");
+      assert.equal(j.contextoJanela.fimJanela, "2026-09-27");
+      assert.equal(j.contextoJanela.janelaEncerrada, false);
+      assert.equal(j.contextoJanela.coorteAtingida, false);
+      assert.equal(typeof j.contextoJanela.gastoEsperadoAteOntemPorBraco["Google Ads (teste 2608)"], "number");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--ate após fim_janela -> janelaEncerrada true, e o texto humano avisa 'ENCERRADA'", () => {
+    const { dir, args } = csvFixture(
+      ["Google Ads (teste 2608),2026-09-28,2700,80,,0,painel"],
+      undefined,
+      { d0: "2026-09-05", fim_janela: "2026-09-27", coorte_madura: "2026-10-24" },
+    );
+    try {
+      const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-28"]));
+      assert.equal(valor, 0);
+      assert.match(out, /ENCERRADA/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
