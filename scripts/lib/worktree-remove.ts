@@ -46,6 +46,7 @@
 
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync, unlinkSync, type Dirent } from "node:fs";
 import { join } from "node:path";
+import { isMainModule } from "./cli-args.ts";
 
 /** `true` só quando `path` existe e é um symlink (Linux/macOS) ou junction (Windows) — nunca segue o alvo. */
 export function isSymlinkOrJunction(path: string): boolean {
@@ -213,4 +214,58 @@ export function findWorktreeHusks(baseDir: string, excludePaths: ReadonlySet<str
     if (isHuskDirectory(full)) husks.push(full);
   }
   return husks;
+}
+
+export interface GitRemovalResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Aplica a limpeza segura do #8209 em cima do resultado de um
+ * `git worktree remove --force` já executado pelo chamador: quando o git
+ * reporta SUCESSO mas `path` sobrevive — a casca com junction/symlink que
+ * motivou a issue —, tenta `removeWorktreeDirSafely` antes de reportar
+ * falha. **Deliberadamente NÃO tenta o fallback quando o `git` reporta
+ * FALHA** — um exit não-zero pode significar path bloqueado/em uso por
+ * outro processo (condição de corrida) ou motivo alheio à junction, e
+ * forçar limpeza via FS nesse caso mudaria o contrato de falha da função
+ * sem necessidade: o caso real da issue é sempre git bem-sucedido +
+ * diretório remanescente (mesma decisão já tomada em
+ * `cleanup-merged-worktrees.ts` no PR #8216 — este helper extrai essa
+ * lógica pra ser compartilhada, em vez de reimplementada, por
+ * `cleanup-merged-worktrees.ts`, `branch-cleanup.ts` e
+ * `merge-train-live.ts`). Só toca o sistema de arquivos (nenhuma chamada a
+ * `git`), então é testável com um diretório temporário real, sem precisar
+ * mockar subprocess.
+ */
+export function resolveWorktreeRemoval(gitResult: GitRemovalResult, path: string): GitRemovalResult {
+  if (!gitResult.ok) return gitResult;
+  if (!existsSync(path)) return { ok: true };
+
+  const cleanup = removeWorktreeDirSafely(path);
+  if (cleanup.dirRemoved) {
+    return { ok: true };
+  }
+
+  const detail = cleanup.errors.join("; ") || "diretório sobreviveu à limpeza pós-remove, sem detalhe de erro";
+  return { ok: false, error: `git worktree remove reportou sucesso mas sobrou uma casca (#8209): ${detail}` };
+}
+
+/**
+ * CLI standalone (#8209): `npx tsx scripts/lib/worktree-remove.ts <path>`
+ * remove `path` com segurança (links primeiro, nunca seguindo pro alvo) e
+ * sai 0 se o diretório deixou de existir, 1 caso contrário — usado como
+ * fallback best-effort em `dispatch-glm-lane-unit.sh`, que não tem runtime
+ * Node/TS pra chamar `removeWorktreeDirSafely` diretamente.
+ */
+if (isMainModule(import.meta.url)) {
+  const target = process.argv[2];
+  if (!target) {
+    console.error("uso: npx tsx scripts/lib/worktree-remove.ts <path>");
+    process.exit(1);
+  }
+  const result = removeWorktreeDirSafely(target);
+  console.log(JSON.stringify(result));
+  process.exit(result.dirRemoved ? 0 : 1);
 }

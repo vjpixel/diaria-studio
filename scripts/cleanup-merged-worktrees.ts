@@ -185,7 +185,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { listActiveSessions, type SessionRecord } from "./lib/session-registry.ts";
-import { removeWorktreeDirSafely, findWorktreeHusks } from "./lib/worktree-remove.ts"; // #8209
+import { removeWorktreeDirSafely, findWorktreeHusks, resolveWorktreeRemoval } from "./lib/worktree-remove.ts"; // #8209
 // #7044 + #7048: a extração pro módulo compartilhado vale pro guard PURO
 // (`shouldSkipForSharedSession`, re-exportado abaixo e reusado por
 // `scripts/branch-cleanup.ts`), mas NÃO pro `listActiveSessionsSafe` — o #7048
@@ -594,23 +594,11 @@ export function removeWorktreeSafe(path: string, cwd: string): { ok: boolean; er
     gitError = (e as Error).message;
   }
 
-  if (gitError) {
-    return { ok: false, error: gitError };
-  }
-  if (!existsSync(path)) {
-    return { ok: true };
-  }
-
-  // #8209: git reportou sucesso, mas o diretório sobreviveu — casca com
-  // junction (Windows). Limpeza segura de rede.
-  const cleanup = removeWorktreeDirSafely(path);
-  if (!cleanup.dirRemoved) {
-    return {
-      ok: false,
-      error: cleanup.errors.join("; ") || "diretório sobreviveu à limpeza pós-remove, sem detalhe de erro",
-    };
-  }
-  return { ok: true };
+  // A lógica de fallback (limpeza segura só quando o git reportou sucesso
+  // e mesmo assim sobrou uma casca) mora em resolveWorktreeRemoval — helper
+  // único compartilhado com branch-cleanup.ts e merge-train-live.ts (#8209
+  // residual).
+  return resolveWorktreeRemoval(gitError ? { ok: false, error: gitError } : { ok: true }, path);
 }
 
 function listWorktreesSafe(cwd: string): WorktreeEntry[] {

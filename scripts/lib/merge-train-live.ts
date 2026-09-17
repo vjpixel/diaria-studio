@@ -59,6 +59,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveWorktreeRemoval } from "./worktree-remove.ts"; // #8209
 import {
   parseClosesIssues,
   bisectBatch,
@@ -494,6 +495,22 @@ export function cleanupIntegrationBranch(runner: TrainRunner, branchName: string
   if (!removeWorktree.ok) {
     runner.warn(`git worktree remove --force falhou pra ${worktreePath} — diretório temp pode ficar órfão: ${removeWorktree.stderr}`);
   }
+
+  // #8209: git pode reportar sucesso e mesmo assim `worktreePath` sobreviver
+  // (junction/symlink dentro dele) — resolveWorktreeRemoval faz a limpeza
+  // segura de fallback só nesse caso (nunca quando o git em si falhou, ver
+  // docstring do helper), mesmo mecanismo compartilhado por
+  // cleanup-merged-worktrees.ts e branch-cleanup.ts. Só toca o filesystem —
+  // não passa pelo TrainRunner injetado, então nunca precisa de mock de
+  // `exec` pra ser testado.
+  const worktreeResolved = resolveWorktreeRemoval(
+    removeWorktree.ok ? { ok: true } : { ok: false, error: removeWorktree.stderr },
+    worktreePath,
+  );
+  if (removeWorktree.ok && !worktreeResolved.ok) {
+    runner.warn(`limpeza segura pós-remove (#8209) falhou pra ${worktreePath}: ${worktreeResolved.error}`);
+  }
+
   runner.exec("git", ["push", "origin", "--delete", branchName], mainCwd); // best-effort — branch pode nunca ter sido pushada
   const deleteLocal = runner.exec("git", ["branch", "-D", branchName], mainCwd);
   if (!deleteLocal.ok && removeWorktree.ok) {
@@ -501,7 +518,7 @@ export function cleanupIntegrationBranch(runner: TrainRunner, branchName: string
     // esperada — git recusa deletar branch ainda checked out em worktree).
     runner.warn(`git branch -D ${branchName} falhou após remover o worktree: ${deleteLocal.stderr}`);
   }
-  return removeWorktree.ok ? { ok: true } : { ok: false, error: `worktree remove falhou: ${removeWorktree.stderr}` };
+  return worktreeResolved.ok ? { ok: true } : { ok: false, error: `worktree remove falhou: ${worktreeResolved.error}` };
 }
 
 export interface MergeSoloOptions {

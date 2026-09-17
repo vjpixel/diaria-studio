@@ -22,6 +22,7 @@ import {
   removeWorktreeDirSafely,
   isHuskDirectory,
   findWorktreeHusks,
+  resolveWorktreeRemoval,
 } from "../scripts/lib/worktree-remove.ts";
 
 function mktmp(prefix: string): string {
@@ -215,6 +216,60 @@ test("findWorktreeHusks: acha só as cascas, exclui worktrees ativos (excludePat
 
   const husks = findWorktreeHusks(base, new Set([activeWorktree])).sort();
   assert.deepEqual(husks, [huskA, huskB].sort());
+
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("resolveWorktreeRemoval: git reportou sucesso + casca sobrevivente (junction node_modules) -> limpa e reporta ok, alvo intacto", () => {
+  const base = mktmp("diaria-wtrm-resolve-ok-");
+  const worktree = join(base, "worktree");
+  const target = join(base, "SHARED-node-modules-descartavel");
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, "canary.txt"), "conteúdo real do node_modules do checkout principal");
+  mkdirSync(worktree, { recursive: true });
+  symlinkSync(target, join(worktree, "node_modules"), "dir");
+
+  const result = resolveWorktreeRemoval({ ok: true }, worktree);
+
+  assert.equal(result.ok, true);
+  assert.equal(existsSync(worktree), false, "casca precisa sumir depois do fallback");
+  // Asserção mais importante: o ALVO do link sobrevive intacto — é ela que
+  // prova que o risco destrutivo (#8209, seguir a junction) não se
+  // materializa.
+  assert.equal(existsSync(target), true, "alvo do link precisa sobreviver intacto");
+  assert.equal(readFileSync(join(target, "canary.txt"), "utf8"), "conteúdo real do node_modules do checkout principal");
+
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("resolveWorktreeRemoval: git falhou -> NUNCA tenta o fallback (decisão deliberada), devolve o erro do git intacto", () => {
+  const base = mktmp("diaria-wtrm-resolve-gitfail-");
+  const worktree = join(base, "worktree");
+  const target = join(base, "SHARED-target-descartavel");
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, "canary.txt"), "não deve ser tocado");
+  mkdirSync(worktree, { recursive: true });
+  symlinkSync(target, join(worktree, "node_modules"), "dir");
+
+  const result = resolveWorktreeRemoval({ ok: false, error: "worktree travado por outro processo" }, worktree);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "worktree travado por outro processo", "erro do git precisa passar intacto, sem reescrita");
+  // Nunca tentou o fallback: a casca (e o link) continuam lá, alvo intocado.
+  assert.equal(existsSync(worktree), true, "resultado de git falho não mexe no diretório");
+  assert.equal(existsSync(target), true);
+  assert.equal(readFileSync(join(target, "canary.txt"), "utf8"), "não deve ser tocado");
+
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("resolveWorktreeRemoval: git ok + diretório já sumiu -> ok true sem tocar nada (caso comum, sem casca)", () => {
+  const base = mktmp("diaria-wtrm-resolve-gone-");
+  const worktree = join(base, "ja-removido-com-sucesso");
+
+  const result = resolveWorktreeRemoval({ ok: true }, worktree);
+
+  assert.equal(result.ok, true);
 
   rmSync(base, { recursive: true, force: true });
 });
