@@ -615,6 +615,22 @@ function main() {
   // `loadUnifiedEditionCache` já lança se POSTS_DIR (Beehiiv) não existir —
   // mesma checagem que o `existsSync` acima fazia, agora feita 1x na camada
   // compartilhada.
+  //
+  // Classificação (#8233): MEDIÇÃO DE ENVIO, não superfície pública —
+  // `isPublicEdition` NÃO é aplicado aqui de propósito. Este script gera
+  // `data/link-ctr-table.csv`, uma tabela de CTR por link ao longo do
+  // tempo; a variante Patronos (`*-patronos`) foi um envio REAL a 5
+  // apoiadores (ver docstring de `isPublicEdition`) e sua CTR é dado
+  // legítimo de engajamento, não ruído a descartar. O envio de teste do
+  // Stage 5 (`teste-*`, 1 destinatário — o editor) permanece incluído
+  // também: não há mecanismo aqui pra diferenciar CTR "envio real pequeno"
+  // de "teste com 1 destinatário", e qualquer heurística de contagem
+  // reintroduziria o problema que `isPublicEdition` evita resolver por slug
+  // (achar teto/piso de destinatário caro de manter calibrado). Efeito
+  // prático aceito: até 20 linhas (medição de 17/09/2026) de CTR de 1
+  // destinatário cada podem aparecer na tabela — ruído mensurável, mas
+  // pequeno frente ao corpus e sem viés sistemático (o editor nunca clica
+  // no próprio teste de forma a inflar CTR real).
   const posts: any[] = loadUnifiedEditionCache({
     beehiivPostsDir: POSTS_DIR,
     kitBroadcastsDir: KIT_BROADCASTS_DIR,

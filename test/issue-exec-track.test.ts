@@ -1095,7 +1095,7 @@ describe("#7694 — triada-overnight confirma o default sem sobrepor sinal real"
     assert.notEqual(comLabel.matched, "default");
   });
 
-  it("perde pra TODO sinal real — nunca reclassifica uma issue que outra label já decidiu", () => {
+  it("perde pra sinal de precedência MAIS ALTA — nunca reclassifica bloqueio/agendamento/máquina/trade-off (#8230)", () => {
     const casos: Array<[string[], string]> = [
       [["triada-overnight", "on-hold"], "fora-de-rodada"],
       [["triada-overnight", "wontfix"], "fora-de-rodada"],
@@ -1105,8 +1105,39 @@ describe("#7694 — triada-overnight confirma o default sem sobrepor sinal real"
       [["triada-overnight", "not-this-week"], "bloqueada"],
       [["triada-overnight", "windows"], "develop"],
       [["triada-overnight", "develop-track"], "develop"],
-      [["triada-overnight", "decisao-registrada"], "fora-de-rodada"],
-      [["triada-overnight", "sem-direcao-acionavel"], "fora-de-rodada"],
+    ];
+    for (const [labels, esperado] of casos) {
+      assert.equal(classifyExecTrack({ labels, body: null, state: "OPEN" }), esperado, labels.join("+"));
+    }
+  });
+
+  it("#8230 — vence RESOLVED_BY_PROSE_LABELS: 'já conferi, apesar da decisão/alarme/sem-direção há código pendente'", () => {
+    // Inversão de precedência do #8230: antes, `triada-overnight` era
+    // checada DEPOIS de `RESOLVED_BY_PROSE_LABELS` e por isso nunca
+    // alcançava estes 3 casos (a issue já tinha sido capturada como
+    // `fora-de-rodada` antes de chegar na checagem de `triada-overnight`).
+    // Sem essa inversão não existia caminho pra levar uma issue com
+    // `decisao-registrada` + código pendente pra `overnight` (#8230,
+    // mesma família do #4555 — decisão parcial não fecha a issue inteira).
+    const casos: Array<[string[], string]> = [
+      [["triada-overnight", "decisao-registrada"], "overnight"],
+      [["triada-overnight", "alarm"], "overnight"],
+      [["triada-overnight", "sem-direcao-acionavel"], "overnight"],
+    ];
+    for (const [labels, esperado] of casos) {
+      const r = classifyExecTrackWithRule({ labels, body: null, state: "OPEN" });
+      assert.equal(r.track, esperado, labels.join("+"));
+      assert.equal(r.matched, "label:triada-overnight", labels.join("+"));
+    }
+  });
+
+  it("#8230 — sem 'triada-overnight', RESOLVED_BY_PROSE_LABELS continua vencendo normalmente", () => {
+    // Contraparte do teste acima: a label sozinha não muda nada do
+    // comportamento pré-#8230 pra quem NÃO tem `triada-overnight`.
+    const casos: Array<[string[], string]> = [
+      [["decisao-registrada"], "fora-de-rodada"],
+      [["alarm"], "fora-de-rodada"],
+      [["sem-direcao-acionavel"], "fora-de-rodada"],
     ];
     for (const [labels, esperado] of casos) {
       assert.equal(classifyExecTrack({ labels, body: null, state: "OPEN" }), esperado, labels.join("+"));

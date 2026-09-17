@@ -162,6 +162,7 @@ import {
   type InstagramRankedCandidate,
 } from "./lib/weekly-instagram-select.ts";
 import {
+  filterPublicEditionsWithWarning,
   loadBeehiivCache as loadUnifiedBeehiivCache,
   loadKitCache,
   mergeEditionsByDate,
@@ -443,11 +444,18 @@ export async function resolveWeeklyImageUrls(
  * `loadKitCache` já é fail-soft. Usada só pra SELEÇÃO por clique (ranking)
  * — o manifest de enriquecimento via MCP (`identifyInstagramPostsNeedingClicks`)
  * continua Beehiiv-only de propósito e usa `loadBeehiivCache` (abaixo).
+ *
+ * **Superfície PÚBLICA (#8233): filtra por `isPublicEdition`.** O resultado
+ * ranqueia candidatos a POST PÚBLICO de Instagram/Facebook — mesma
+ * justificativa de `select-linkedin-weekly.ts::loadUnifiedPostsForRanking`:
+ * um envio de teste (`teste-*`) ou a variante Patronos (`*-patronos`,
+ * duplicata da mesma matéria já presente sob o slug canônico) nunca pode
+ * virar candidato a ranking/publicação real.
  */
-function loadUnifiedPostsForRanking(beehiivPostsDir: string, kitBroadcastsDir: string) {
+export function loadUnifiedPostsForRanking(beehiivPostsDir: string, kitBroadcastsDir: string) {
   const beehiiv = existsSync(beehiivPostsDir) ? loadUnifiedBeehiivCache(beehiivPostsDir) : [];
   const kit = loadKitCache(kitBroadcastsDir);
-  return mergeEditionsByDate(beehiiv, kit);
+  return filterPublicEditionsWithWarning(mergeEditionsByDate(beehiiv, kit), "publish-weekly-social");
 }
 
 /** Lê `data/beehiiv-cache/posts/*.json` (cache local, populado por `scripts/beehiiv-sync.ts` + MCP `list_post_clicks`). Beehiiv-only de propósito — ver docstring de `loadUnifiedPostsForRanking` acima. */

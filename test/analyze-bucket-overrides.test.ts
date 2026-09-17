@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   diffBucketOverrides,
+  diffDestaqueMoves,
   analyzeEditionsUnderRoot,
   summarize,
   type CategorizedBucketsInput,
@@ -166,6 +167,105 @@ describe("summarize", () => {
     const radarToUseMelhor = summary.directions.find((d) => d.direction === "radar->use_melhor");
     assert.equal(radarToUseMelhor?.count, 1);
   });
+
+  it("#8233 — destaqueMoves ausente (edição de antes do fix) não quebra: conta como 0 promoções/rebaixamentos", () => {
+    const editionMoves = [{ edition: "260807", moves: [] }];
+    const summary = summarize(editionMoves, 5);
+    assert.equal(summary.destaque.total, 0);
+    assert.equal(summary.destaque.promotions, 0);
+    assert.equal(summary.destaque.demotions, 0);
+    assert.equal(summary.destaque.editionsWithDestaqueMove, 0);
+  });
+
+  it("#8233 — agrega promoções e rebaixamentos de destaqueMoves, separado da matriz de bucket", () => {
+    const editionMoves = [
+      {
+        edition: "260807",
+        moves: [],
+        destaqueMoves: [
+          { url: "a", title: "A", direction: "promote" as const },
+          { url: "b", title: "B", direction: "demote" as const },
+          { url: "c", title: "C", direction: "promote" as const },
+        ],
+      },
+      { edition: "260808", moves: [], destaqueMoves: [] },
+    ];
+    const summary = summarize(editionMoves, 5);
+    assert.equal(summary.destaque.promotions, 2);
+    assert.equal(summary.destaque.demotions, 1);
+    assert.equal(summary.destaque.total, 3);
+    assert.equal(summary.destaque.editionsWithDestaqueMove, 1);
+    assert.equal(summary.destaque.promoteExamples.length, 2);
+    assert.equal(summary.destaque.demoteExamples.length, 1);
+    // a matriz de bucket original continua zerada — os dois fenômenos não se misturam
+    assert.equal(summary.totalMoves, 0);
+  });
+});
+
+describe("diffDestaqueMoves (#8233 — cruzada POOL↔destaque, ponto cego que a #5995 mediu em 11/25 edições)", () => {
+  it("URL que sai do pool (categorizado) e entra em highlights (aprovado) é 'promote'", () => {
+    const categorized: CategorizedBucketsInput = {
+      radar: [{ url: "https://exemplo.com/a", title: "Notícia A" }],
+    };
+    const approved: ApprovedBucketsInput = {
+      highlights: [{ url: "https://exemplo.com/a", title: "Notícia A promovida" }],
+    };
+    const moves = diffDestaqueMoves(categorized, approved);
+    assert.deepEqual(moves, [{ url: "https://exemplo.com/a", title: "Notícia A promovida", direction: "promote" }]);
+  });
+
+  it("URL que sai de highlights (categorizado) e entra no pool (aprovado) é 'demote'", () => {
+    const categorized: CategorizedBucketsInput = {
+      highlights: [{ url: "https://exemplo.com/b", title: "Notícia B" }],
+    };
+    const approved: ApprovedBucketsInput = {
+      use_melhor: [{ url: "https://exemplo.com/b", title: "Notícia B rebaixada" }],
+    };
+    const moves = diffDestaqueMoves(categorized, approved);
+    assert.deepEqual(moves, [{ url: "https://exemplo.com/b", title: "Notícia B rebaixada", direction: "demote" }]);
+  });
+
+  it("URL em highlights nos DOIS lados não conta como movimento", () => {
+    const categorized: CategorizedBucketsInput = {
+      highlights: [{ url: "https://exemplo.com/c", title: "Notícia C" }],
+    };
+    const approved: ApprovedBucketsInput = {
+      highlights: [{ url: "https://exemplo.com/c", title: "Notícia C" }],
+    };
+    assert.deepEqual(diffDestaqueMoves(categorized, approved), []);
+  });
+
+  it("URL que sai do pool mas não aparece em highlights do aprovado (cortada de verdade) não conta como destaqueMove", () => {
+    const categorized: CategorizedBucketsInput = {
+      radar: [{ url: "https://exemplo.com/d", title: "Notícia D" }],
+    };
+    const approved: ApprovedBucketsInput = {};
+    assert.deepEqual(diffDestaqueMoves(categorized, approved), []);
+  });
+
+  it("movimento DENTRO do pool (radar->use_melhor) nunca aparece aqui — é diffBucketOverrides, não isto", () => {
+    const categorized: CategorizedBucketsInput = {
+      radar: [{ url: "https://exemplo.com/e", title: "Notícia E" }],
+    };
+    const approved: ApprovedBucketsInput = {
+      use_melhor: [{ url: "https://exemplo.com/e", title: "Notícia E" }],
+    };
+    // Sem highlights em nenhum dos dois lados — a URL nunca cruza a
+    // fronteira pool<->destaque, então diffDestaqueMoves não reporta nada
+    // (mesmo movimento que diffBucketOverrides já cobre).
+    assert.deepEqual(diffDestaqueMoves(categorized, approved), []);
+  });
+
+  it("URL em highlights via article.url (shape de 01-categorized.json) é reconhecida igual a url direto", () => {
+    const categorized: CategorizedBucketsInput = {
+      highlights: [{ article: { url: "https://exemplo.com/f", title: "Notícia F" } }],
+    };
+    const approved: ApprovedBucketsInput = {
+      radar: [{ url: "https://exemplo.com/f", title: "Notícia F rebaixada" }],
+    };
+    const moves = diffDestaqueMoves(categorized, approved);
+    assert.deepEqual(moves, [{ url: "https://exemplo.com/f", title: "Notícia F rebaixada", direction: "demote" }]);
+  });
 });
 
 describe("analyzeEditionsUnderRoot", () => {
@@ -219,6 +319,43 @@ describe("analyzeEditionsUnderRoot", () => {
     assert.equal(result.length, 1);
     assert.equal(result[0].edition, "260807");
     assert.equal(result[0].moves.length, 1);
+    // #8233 — sem highlights nos fixtures acima, destaqueMoves fica vazio
+    // (não populado com undefined/ausente — é sempre um array).
+    assert.deepEqual(result[0].destaqueMoves, []);
+  });
+
+  it("#8233 — popula destaqueMoves quando o categorizado/aprovado tem highlights cruzando com o pool", () => {
+    const root = makeEditionsRoot();
+    const edInternal = join(root, "260907", "_internal");
+    mkdirSync(edInternal, { recursive: true });
+    writeFileSync(
+      join(edInternal, "01-categorized.json"),
+      JSON.stringify({
+        lancamento: [],
+        radar: [{ url: "https://exemplo.com/promovida", title: "História promovida" }],
+        use_melhor: [],
+        video: [],
+        highlights: [],
+      }),
+    );
+    writeFileSync(
+      join(edInternal, "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ url: "https://exemplo.com/promovida", title: "História promovida" }],
+        runners_up: [],
+        lancamento: [],
+        radar: [],
+        use_melhor: [],
+        video: [],
+      }),
+    );
+
+    const result = analyzeEditionsUnderRoot(root);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].moves.length, 0);
+    assert.deepEqual(result[0].destaqueMoves, [
+      { url: "https://exemplo.com/promovida", title: "História promovida", direction: "promote" },
+    ]);
   });
 
   it("retorna [] quando o diretório de edições não existe", () => {

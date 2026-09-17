@@ -12,7 +12,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
+import { isPublicEdition, type UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
 import { makeAnnualEditionUrlResolver, relinkAnnualEditionHtml } from "../scripts/lib/anual/annual-relink.ts";
 
 const unix = (iso: string) => Math.floor(Date.parse(iso) / 1000);
@@ -54,6 +54,39 @@ describe("resolver de URL de edição — editorialDate, não publish_date cru",
       post({ web_url: "https://diaria.beehiiv.com/p/edicao-260715", publish_date: unix("2026-07-15T00:00:00Z") }),
     ];
     assert.equal(makeAnnualEditionUrlResolver(posts)("260715"), "https://diar.ia.br/p/edicao-260715");
+  });
+});
+
+describe("#8233 — resolver monta o mapa por ORDEM DE CHEGADA ('1ª ocorrência vence'), então a lista precisa vir pré-filtrada", () => {
+  it("sem filtro: um post teste-* com a MESMA data editorial pode vencer a corrida e virar o link publicado", () => {
+    // `makeAnnualEditionUrlResolver` não sabe nada sobre `isPublicEdition` —
+    // é `publish-annual-kit.ts` (o call site) quem precisa filtrar ANTES de
+    // passar `posts` pra cá. Este teste demonstra o problema que o filtro
+    // do #8233 evita: sem ele, um envio de teste do Stage 5 com a mesma
+    // data editorial da edição real vence só por vir primeiro no array.
+    const posts = [
+      post({ slug: "teste-260715", web_url: "https://diar.ia.br/p/teste-260715", publish_date: unix("2026-07-15T00:00:00Z") }),
+      post({ slug: "edicao-260715", web_url: "https://diar.ia.br/p/edicao-260715", publish_date: unix("2026-07-15T00:00:00Z") }),
+    ];
+    assert.equal(makeAnnualEditionUrlResolver(posts)("260715"), "https://diar.ia.br/p/teste-260715");
+  });
+
+  it("com o filtro isPublicEdition (o que publish-annual-kit.ts agora faz antes de chamar isto), o teste-* nunca entra na corrida", () => {
+    const posts = [
+      post({ slug: "teste-260715", web_url: "https://diar.ia.br/p/teste-260715", publish_date: unix("2026-07-15T00:00:00Z") }),
+      post({ slug: "edicao-260715", web_url: "https://diar.ia.br/p/edicao-260715", publish_date: unix("2026-07-15T00:00:00Z") }),
+    ];
+    const filtered = posts.filter(isPublicEdition);
+    assert.equal(makeAnnualEditionUrlResolver(filtered)("260715"), "https://diar.ia.br/p/edicao-260715");
+  });
+
+  it("com o filtro, a variante -patronos (duplicata da mesma matéria) também nunca vence o slug canônico", () => {
+    const posts = [
+      post({ slug: "edicao-260715-patronos", web_url: "https://diar.ia.br/p/edicao-260715-patronos", publish_date: unix("2026-07-15T00:00:00Z") }),
+      post({ slug: "edicao-260715", web_url: "https://diar.ia.br/p/edicao-260715", publish_date: unix("2026-07-15T00:00:00Z") }),
+    ];
+    const filtered = posts.filter(isPublicEdition);
+    assert.equal(makeAnnualEditionUrlResolver(filtered)("260715"), "https://diar.ia.br/p/edicao-260715");
   });
 });
 

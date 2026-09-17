@@ -21,6 +21,8 @@ import {
   loadKitCache,
   loadUnifiedEditionCache,
   editorialDate,
+  isPublicEdition,
+  filterPublicEditionsWithWarning,
   KIT_STATUS_TO_BEEHIIV_STATUS,
   DEFAULT_BEEHIIV_POSTS_DIR,
   type UnifiedCachedPost,
@@ -487,6 +489,79 @@ describe("mergeEditionsByDate", () => {
   it("array vazio de um dos lados não quebra o merge", () => {
     const merged = mergeEditionsByDate([p({ slug: "x", publish_date: 1 })], []);
     assert.equal(merged.length, 1);
+  });
+});
+
+describe("isPublicEdition (#8233 — consumidores de loadUnifiedEditionCache que precisam filtrar)", () => {
+  it("slug ausente/vazio nunca é público", () => {
+    assert.equal(isPublicEdition({ slug: undefined }), false);
+    assert.equal(isPublicEdition({ slug: "" }), false);
+  });
+
+  it("envio de teste do Stage 5 (prefixo teste-) não é público", () => {
+    assert.equal(isPublicEdition({ slug: "teste-260715" }), false);
+  });
+
+  it("variante Patronos (sufixo -patronos) não é público", () => {
+    assert.equal(isPublicEdition({ slug: "260715-uma-edicao-patronos" }), false);
+  });
+
+  it("edição normal é pública", () => {
+    assert.equal(isPublicEdition({ slug: "260715-uma-edicao-normal" }), true);
+  });
+
+  it("'patronos' no MEIO do slug (não como sufixo) continua público — só sufixo exato exclui", () => {
+    assert.equal(isPublicEdition({ slug: "260715-sobre-patronos-de-ia" }), true);
+  });
+
+  it("prefixo 'teste' que não é seguido de hífen (edição real cujo título começa com Teste) continua público", () => {
+    // Achado documentado na própria docstring de isPublicEdition/#8233: o
+    // filtro é por PREFIXO `teste-`, não por qualquer ocorrência de "teste"
+    // — um slug como "testemunhas-de-ia" não bate a regex `^teste-`.
+    assert.equal(isPublicEdition({ slug: "testemunhas-de-ia-260715" }), true);
+  });
+});
+
+describe("filterPublicEditionsWithWarning (#8233 — isPublicEdition + aviso agregado no stderr, réplica do padrão de generate-hub-sources.ts)", () => {
+  it("filtra teste-*/-patronos, mantém edição normal, e imprime 1 warning agregado no stderr", () => {
+    const posts = [
+      { slug: "260715-normal" },
+      { slug: "teste-260715" },
+      { slug: "260715-normal-patronos" },
+    ];
+    const originalWrite = process.stderr.write;
+    const written: string[] = [];
+    process.stderr.write = ((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const kept = filterPublicEditionsWithWarning(posts, "teste-label");
+      assert.deepEqual(kept.map((p) => p.slug), ["260715-normal"]);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.equal(written.length, 1);
+    assert.match(written[0], /\[teste-label\]/);
+    assert.match(written[0], /teste-260715/);
+    assert.match(written[0], /260715-normal-patronos/);
+  });
+
+  it("sem nada a excluir, não imprime warning nenhum", () => {
+    const posts = [{ slug: "260715-normal" }];
+    const originalWrite = process.stderr.write;
+    let called = false;
+    process.stderr.write = ((chunk: string) => {
+      called = true;
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const kept = filterPublicEditionsWithWarning(posts, "teste-label");
+      assert.equal(kept.length, 1);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.equal(called, false);
   });
 });
 

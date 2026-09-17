@@ -58,10 +58,22 @@ function writeEdition(root: string, date: string, md: string): void {
   writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
 }
 
+/**
+ * `slug: id` é default, não incondicional (#8233 fixer) — `isPublicEdition`
+ * (`edition-cache-reader.ts`) trata `slug` ausente/vazio como NÃO-público
+ * (excluído por `loadUnifiedPostsForRanking`, que `select-linkedin-weekly.ts`
+ * usa pra seleção). Nenhum destes IDs de fixture (`post_727`, `post_810`,
+ * ...) começa com `teste-`/termina em `-patronos`, então o default é seguro
+ * e produz o mesmo shape que um post REAL do cache sempre carrega (slug
+ * nunca ausente em produção — todo fixture de `edition-cache-reader.test.ts`
+ * também segue essa convenção). Caller que passar `slug` explícito no
+ * literal de `post` continua vencendo (spread depois do default).
+ */
 function writeCachePost(root: string, id: string, post: unknown): void {
   const dir = join(root, "data/beehiiv-cache/posts");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${id}.json`), JSON.stringify(post), "utf8");
+  const withSlug = { slug: id, ...(post as Record<string, unknown>) };
+  writeFileSync(join(dir, `${id}.json`), JSON.stringify(withSlug), "utf8");
 }
 
 /** #6185: escreve um broadcast Kit em `data/kit-cache/broadcasts/{id}.json`
@@ -70,10 +82,23 @@ function writeCachePost(root: string, id: string, post: unknown): void {
  *  opcional). Usado pra provar que a seleção por clique lê edições de
  *  origem Kit, não só Beehiiv (o manifest de enriquecimento via MCP
  *  continua Beehiiv-only, de propósito — não testado aqui). */
+/**
+ * Default de `public_url` (#8233 fixer) — diferente do lado Beehiiv,
+ * `normalizeKitBroadcast` (`edition-cache-reader.ts`) NUNCA lê um campo
+ * `slug` do JSON bruto: o slug do post Kit é sempre DERIVADO de
+ * `b.public_url` via `slugFromUrl` (último segmento do path). Sem
+ * `public_url`, `slugFromUrl` devolve `undefined`, e `isPublicEdition`
+ * trata slug ausente como NÃO-público — exatamente o "actual: []" que o
+ * CI acusou (`loadUnifiedPostsForRanking` filtrando os 3 fixtures Kit
+ * inteiros). IDs numéricos usados aqui (`900902`, `900831`, `900904`)
+ * nunca colidem com `teste-*`/`-patronos`, então o path sintético é seguro.
+ * Caller que passar `public_url` explícito no literal continua vencendo.
+ */
 function writeKitCachePost(root: string, id: string | number, broadcast: unknown): void {
   const dir = join(root, "data/kit-cache/broadcasts");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${id}.json`), JSON.stringify(broadcast), "utf8");
+  const withPublicUrl = { public_url: `https://diar.ia.br/p/kit-${id}`, ...(broadcast as Record<string, unknown>) };
+  writeFileSync(join(dir, `${id}.json`), JSON.stringify(withPublicUrl), "utf8");
 }
 
 function mkTmpRoot(): string {

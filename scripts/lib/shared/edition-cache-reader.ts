@@ -501,6 +501,45 @@ export function isPublicEdition(post: Pick<UnifiedCachedPost, "slug">): boolean 
 }
 
 /**
+ * `isPublicEdition` aplicado + WARNING AGREGADO no drop (#8233), pra
+ * consumidor que filtra fora do fluxo já instrumentado de
+ * `generate-hub-sources.ts::collectHubSources` (que monta seu próprio
+ * warning agregado dentro de um array de retorno já existente). Sem essa
+ * variante, os 4 consumidores migrados no #8233
+ * (`select-linkedin-weekly.ts`, `publish-weekly-social.ts`,
+ * `prep-weekly-twitter.ts`, `publish-annual-kit.ts`) teriam o mesmo drop
+ * MUDO que motivou o cuidado de `collectHubSources` (#4558) — sem sinal
+ * nenhum se `isPublicEdition` errar por falso positivo (edição real cujo
+ * título/slug começa com "Teste").
+ *
+ * `console.error` (não `warnings[]` de retorno) porque nenhum destes 4
+ * consumidores tem hoje um canal de warning agregado pro caller — a
+ * alternativa seria mudar a assinatura de 4 funções só pra propagar um
+ * array, custo desproporcional ao ganho aqui (estes scripts já imprimem
+ * avisos ad-hoc via stderr em vários outros pontos, mesma convenção).
+ * `label` identifica o call site na saída (ex: "select-linkedin-weekly").
+ */
+export function filterPublicEditionsWithWarning<T extends Pick<UnifiedCachedPost, "slug">>(
+  posts: readonly T[],
+  label: string,
+): T[] {
+  const excluded: string[] = [];
+  const kept = posts.filter((p) => {
+    if (isPublicEdition(p)) return true;
+    excluded.push(p.slug ?? "(sem slug)");
+    return false;
+  });
+  if (excluded.length > 0) {
+    process.stderr.write(
+      `[${label}] ${excluded.length} edição(ões) excluída(s) por isPublicEdition (envio de teste do Stage 5 / ` +
+        `variante Patronos): ${excluded.join(", ")} — se alguma for uma edição REAL cujo slug começa com "teste-" ` +
+        `ou termina em "-patronos", o filtro por prefixo/sufixo enganou e precisa de um sinal mais forte (#8233).\n`,
+    );
+  }
+  return kept;
+}
+
+/**
  * `-safeBackup-*` (cópia de conflito de escrita concorrente do OneDrive,
  * mesmo mecanismo documentado em `scripts/lib/session-registry.ts` §151
  * para `data/sessions/`) é excluído do glob — sem isso, um post com backup
@@ -613,6 +652,33 @@ export interface LoadUnifiedEditionsOptions {
  * item 3. Todo consumidor que hoje só lê `data/beehiiv-cache/posts/*.json`
  * (via `generate-hub-sources.ts::loadPosts` e vizinhos) migra pra isto sem
  * precisar saber nada sobre a existência do cache Kit.
+ *
+ * **Não filtra por `isPublicEdition` — nunca filtrou, de propósito (ver a
+ * docstring de `isPublicEdition` acima).** Cada consumidor decide. Registro
+ * (#8233) de como os 8 call sites conhecidos (diretos desta função OU dos
+ * 3 primitivos que ela combina — `loadBeehiivCache`+`loadKitCache`+
+ * `mergeEditionsByDate` reimplementados manualmente por um wrapper
+ * fail-soft próprio) classificaram, pra não precisar auditar todo o
+ * `scripts/` de novo pra saber o estado:
+ *
+ * - **Superfície pública (`isPublicEdition` aplicado):**
+ *   `generate-hub-sources.ts::loadPosts`, `select-linkedin-weekly.ts::
+ *   loadUnifiedPostsForRanking`, `publish-weekly-social.ts::
+ *   loadUnifiedPostsForRanking`, `prep-weekly-twitter.ts::
+ *   loadUnifiedPostsForRanking`, `publish-annual-kit.ts` (posts passados
+ *   pro relink de `annual-relink.ts`).
+ * - **Medição de envio (sem filtro, `-patronos` é envio real a preservar):**
+ *   `build-link-ctr.ts`, `box-click-report.ts::loadUnifiedPostsCache`.
+ * - **Já filtrado por mecanismo PRÓPRIO, não por `isPublicEdition`:**
+ *   `collect-annual.ts` → `collectAnnual`/`groupPostsByMonth` usa
+ *   `isRealEditionTitle` (`lib/anual/annual-collect.ts`, #8035) — filtro
+ *   por TÍTULO, não por slug; as duas listas de exclusão coincidem hoje mas
+ *   não há teste cruzado garantindo que nunca divirjam (gap aceito, ver
+ *   comentário no call site).
+ *
+ * Um novo consumidor entra nesta lista ao ser escrito — decidir a
+ * classificação no ponto de uso (comentário no call site), não aqui
+ * primeiro; este bloco é registro depois do fato, não checklist prévio.
  */
 export function loadUnifiedEditionCache(opts: LoadUnifiedEditionsOptions = {}): UnifiedCachedPost[] {
   const beehiiv = loadBeehiivCache(opts.beehiivPostsDir);

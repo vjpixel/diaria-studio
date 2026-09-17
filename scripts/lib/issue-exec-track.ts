@@ -499,15 +499,27 @@ const TRADE_OFF_LABEL = "trade-off-real";
  * `issue-decisions.ts`/#5373 evita pra decisão do editor, aqui aplicada ao
  * ato de TRIAR).
  *
- * Não muda veredito nenhum — o track continua `overnight`, exatamente como
- * seria sem ela. O que muda é só `matched`, que passa de `"default"` pra
- * `"label:triada-overnight"`, e o badge deixa de dizer `·sem sinal`.
+ * **Veredito que ela produz mudou no #8230** — antes desse fix, esta label
+ * nunca mudava o track (só o `matched`, de `"default"` pra
+ * `"label:triada-overnight"`): era checada por ÚLTIMO, depois de
+ * `RESOLVED_BY_PROSE_LABELS`, então qualquer issue com `decisao-registrada`/
+ * `alarm`/`sem-direcao-acionavel` já tinha sido capturada como
+ * `fora-de-rodada` antes de chegar aqui — não existia caminho pra sinalizar
+ * "conferi, e apesar da decisão/alarme registrado ainda há código
+ * pendente". Agora `triada-overnight` é checada ANTES de
+ * `RESOLVED_BY_PROSE_LABELS` (ver `classifyExecTrackWithRule`): na presença
+ * de qualquer uma dessas 3 labels, `triada-overnight` VENCE e o veredito
+ * passa a ser `overnight` de verdade, não só o `matched` mudando.
  *
- * Precedência: é a ÚLTIMA regra antes do `default`, de propósito. Toda outra
- * label (bloqueio, deferimento, máquina, trade-off, prosa) vence — a label
- * só confirma o caminho que a issue já ia tomar por omissão, nunca sobrepõe
- * um sinal real. Consequência: `triada-overnight` + `on-hold` continua
- * `fora-de-rodada`, `triada-overnight` + `windows` continua `develop`, etc.
+ * Precedência atual: perde pra bloqueio real, `agendada`, deferimento vago,
+ * `develop` (máquina/credencial/humano) e `trade-off-real`/alarmes de
+ * EVENTO/AÇÃO — todos continuam checados antes. Vence
+ * `RESOLVED_BY_PROSE_LABELS` (`decisao-registrada`, `alarm`,
+ * `sem-direcao-acionavel`) e é a última regra antes do `default`.
+ * Consequência: `triada-overnight` + `on-hold` continua `fora-de-rodada`,
+ * `triada-overnight` + `windows` continua `develop`, mas
+ * `triada-overnight` + `decisao-registrada` (sem nenhuma label mais forte)
+ * agora é `overnight`, não mais `fora-de-rodada`.
  *
  * Diferente de `TRADE_OFF_LABEL` (#7493), que também mantém `overnight` mas
  * significa "triada E tem pergunta pro briefing": esta significa "triada e
@@ -701,6 +713,19 @@ export function formatWaitUntilLabel(date: Date, now: Date = new Date()): string
  *                         normaliza por AÇÃO (`alarm-acao`): checado ANTES do
  *                         passo 8 pra vencer a label `alarm` companheira, que
  *                         sozinha cairia em fora-de-rodada.
+ * 7b. `overnight`      — (#8230) `triada-overnight` — "já conferi esta
+ *                         issue: apesar da decisão registrada/alarme/'sem
+ *                         direção' abaixo, ainda há código pendente".
+ *                         Checado DEPOIS do passo 7 (`trade-off-real`/alarmes
+ *                         de evento/ação continuam vencendo — mais
+ *                         informativos) e ANTES do passo 8
+ *                         (`RESOLVED_BY_PROSE_LABELS`) — inversão do #7694,
+ *                         que checava esta label por ÚLTIMO e por isso nunca
+ *                         alcançava o caso: `decisao-registrada`/`alarm`/
+ *                         `sem-direcao-acionavel` já tinham capturado a
+ *                         issue como `fora-de-rodada` antes de chegar lá. Ver
+ *                         docstring de `TRIAGED_OVERNIGHT_LABEL` pro
+ *                         histórico completo da inversão.
  *   8. `fora-de-rodada` — (2ª checagem, #5532) já resolvida em prosa
  *                         (`decisao-registrada`) ou alarme de ESTADO que se
  *                         auto-resolve (`alarm`, sem `alarm-evento`), ou
@@ -708,11 +733,13 @@ export function formatWaitUntilLabel(date: Date, now: Date = new Date()): string
  *                         overnight já concluiu "sem ação de código clara",
  *                         3º desfecho distinto de
  *                         `precisa-resposta`/`trade-off-real`), e nenhuma
- *                         das labels acima já decidiu por ela — ver
- *                         docstring de `RESOLVED_BY_PROSE_LABELS` pro porquê
- *                         desta checagem vir depois de `bloqueada`/`develop`,
- *                         não junto da 1ª.
- *   9. `overnight`      — sobrou.
+ *                         das labels acima — inclusive `triada-overnight`
+ *                         do passo 7b — já decidiu por ela.
+ *   9. `overnight`      — sobrou (inclui `triada-overnight` cujo único
+ *                         efeito, sem nenhuma label do passo 8 presente, é
+ *                         trocar `matched` de `"default"` pra
+ *                         `"label:triada-overnight"` — mesmo comportamento
+ *                         de antes do #8230 nesse caso específico).
  *
  * `bloqueada` é retornada de dois pontos (passos 3 e 5) — preço de encaixar
  * `agendada` entre bloqueio-duro e deferimento-vago (#5682); os dois branches
@@ -775,15 +802,45 @@ export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResul
   if (has(ALARM_EVENT_LABEL)) return { track: "overnight", matched: "label:alarm-evento" };
   if (has(ALARM_ACTION_LABEL)) return { track: "overnight", matched: "label:alarm-acao" };
 
+  // #8230 — `triada-overnight` agora é checada ANTES de `RESOLVED_BY_PROSE_LABELS`
+  // (era depois, ver histórico abaixo). Sem isso não existia caminho pro
+  // verbo (`route-issue.ts`) levar uma issue com `decisao-registrada` +
+  // código ainda pendente pra `overnight`: `decisao-registrada` está em
+  // `RESOLVED_BY_PROSE_LABELS` (2ª checagem, `fora-de-rodada`) E em
+  // `PROVENIENCE_LABELS` (`issue-route.ts`, nunca removida por
+  // `route-issue.ts`) — as duas juntas prendiam a issue em
+  // `fora-de-rodada` pra sempre, mesmo quando uma rodada já tinha
+  // conferido que a decisão só resolveu PARTE do escopo (mesma família do
+  // caso #4555, mas ali é `trade-off-real` que resolve — aqui não havia
+  // label equivalente pra "decisão parcial + resta código").
+  //
+  // A partir daqui, `triada-overnight` na presença de QUALQUER label de
+  // `RESOLVED_BY_PROSE_LABELS` (`decisao-registrada`, `alarm`,
+  // `sem-direcao-acionavel`) vence e devolve `overnight` — o sinal
+  // explícito "já conferi: apesar da [decisão registrada/alarme/'sem
+  // direção'], há código pendente" tem que valer sobre a leitura padrão
+  // dessas labels, não só sobre a AUSÊNCIA de sinal (que era o único caso
+  // coberto até aqui). Quem aplica `triada-overnight` numa issue que já
+  // resolveu tudo por prosa está fazendo julgamento errado — o mecanismo
+  // não protege contra isso, do mesmo jeito que nenhuma outra label deste
+  // classificador protege contra aplicação equivocada.
+  //
+  // Continua perdendo pra tudo que já foi checado acima (bloqueio real,
+  // `agendada`, deferimento vago, `develop`, `trade-off-real`, alarmes) —
+  // só trocou de posição em relação a `RESOLVED_BY_PROSE_LABELS`, não
+  // ganhou precedência sobre nada além disso.
+  if (has(TRIAGED_OVERNIGHT_LABEL)) return { track: "overnight", matched: "label:triada-overnight" };
+
+  // #7694 — a checagem original ficava AQUI, como última regra antes do
+  // default: `triada-overnight` só CONFIRMAVA o caminho que a issue já ia
+  // tomar por omissão (nenhuma label de `RESOLVED_BY_PROSE_LABELS`
+  // presente) — ver docstring de `TRIAGED_OVERNIGHT_LABEL`. O #8230 moveu a
+  // checagem pra cima porque essa posição nunca alcançava o caso descrito
+  // ali: se `decisao-registrada` (ou `alarm`/`sem-direcao-acionavel`)
+  // estivesse presente, a regra abaixo capturava a issue ANTES de chegar
+  // aqui, e `triada-overnight` nunca tinha chance de mudar nada.
   const proseLabel = labels.find((l) => RESOLVED_BY_PROSE_LABELS.has(l));
   if (proseLabel) return { track: "fora-de-rodada", matched: `label:${proseLabel}`  };
-
-  // #7694 — última regra antes do default, de propósito: `triada-overnight`
-  // só CONFIRMA o caminho que a issue já ia tomar por omissão (ver docstring
-  // de `TRIAGED_OVERNIGHT_LABEL`). O track é o mesmo; o que muda é `matched`,
-  // que deixa de ser `"default"` — e com isso o badge do painel deixa de
-  // dizer `·sem sinal` pra uma issue que alguém de fato conferiu.
-  if (has(TRIAGED_OVERNIGHT_LABEL)) return { track: "overnight", matched: "label:triada-overnight" };
 
   return { track: "overnight", matched: "default" };
 }

@@ -357,6 +357,22 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
   for (const w of window.warnings) log(`aviso: ${w}`);
   log(`janela: ${window.label} (${window.months.length} meses) — tipo ${window.tipo}, dir ${slug}`);
 
+  // Superfície PÚBLICA (#8233): já filtrada, mas NÃO por `isPublicEdition`
+  // — `collectAnnual` → `groupPostsByMonth` chama `isRealEditionTitle`
+  // (`lib/anual/annual-collect.ts`, #8035), um filtro por TÍTULO
+  // (`[teste-...]`, sufixo `- patronos`/`- apoiadores`) em vez de por SLUG.
+  // As duas listas de exclusão coincidem hoje (envio de teste do Stage 5 +
+  // variante Patronos), mas nasceram de mecanismos diferentes e não
+  // convergidas: `isRealEditionTitle` existe desde antes de
+  // `isPublicEdition` (#8035 é anterior) e mede pelo campo que a issue de
+  // origem media (assunto do e-mail), não pelo slug. Gap registrado, não
+  // corrigido nesta rodada: não há teste cruzado garantindo que os dois
+  // filtros nunca divirjam (ex: um slug `teste-*` cujo TÍTULO não começa
+  // com `[` passaria por `isRealEditionTitle` mas seria pego por
+  // `isPublicEdition`, e vice-versa). `posts` aqui NÃO é filtrado por
+  // `isPublicEdition` antes de entrar em `collectAnnual` de propósito —
+  // fazer os dois picles empilhados só esconderia a divergência em vez de
+  // resolvê-la.
   const posts = loadUnifiedEditionCache();
   const localEditionDirs = enumerateEditionDirs(resolve(rootDir, "data/editions"));
   const { destaques, months, warnings } = collectAnnual({ window, posts, localEditionDirs });

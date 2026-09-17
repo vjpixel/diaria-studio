@@ -468,16 +468,23 @@ describe("routeIssue --motivo #6197 item 2", () => {
     assert.ok(!gh.state.labels.includes("bloqueio-execucao"));
   });
 
-  it("--track agendada --motivo epica agora falha na validacao (#6201: epica vence agendada na precedencia)", () => {
+  it("--track agendada --motivo epica agora falha no dry-run pre-escrita, sem tocar a issue (#6201 + #8230)", () => {
     // Antes do #6201, `epic-guarda-chuva` classificava `fora-de-rodada`
     // (checado bem depois de `agendada`), entao esta combinacao produzia
     // "agendada" de verdade. Com `epica` promovida a track proprio e
     // checada logo no topo da precedencia (2o passo, antes de
-    // bloqueada/agendada), a label sozinha ja classifica "epica" —
-    // routeIssue detecta a divergencia no passo 4 e falha ruidosamente em
-    // vez de reportar sucesso mentiroso. Quem quer "epica com data" usa
-    // --track epica direto (sem --until — agendada e o unico track com
-    // marcador, ver docstring do modulo).
+    // bloqueada/agendada), a label sozinha ja classifica "epica" — um
+    // conflito de precedencia detectavel ANTES de qualquer escrita.
+    //
+    // Ate o #8230, `routeIssue` so detectava isso DEPOIS de ja ter escrito a
+    // label + comentario (Passo 4, validacao pos-escrita) — deixando a
+    // issue com `epic-guarda-chuva` aplicada e um comentario "Roteado para
+    // agendada" que contradizia o track mecanico real (exatamente o
+    // "marcador enganoso" que o #8230 corrigiu). Agora o dry-run pre-escrita
+    // recusa ANTES de qualquer `gh issue edit`/`gh issue comment`: nenhuma
+    // label e adicionada, nenhum comentario e postado. Quem quer "epica com
+    // data" usa --track epica direto (sem --until — agendada e o unico
+    // track com marcador, ver docstring do modulo).
     const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
     const result = routeIssue({
       issue: 54,
@@ -492,8 +499,11 @@ describe("routeIssue --motivo #6197 item 2", () => {
     assert.equal(result.ok, false);
     assert.equal(result.validated, false);
     assert.equal(result.resolvedTrack, "epica");
-    assert.deepEqual(result.labelsAdded, ["epic-guarda-chuva"]);
-    assert.ok(gh.state.labels.includes("epic-guarda-chuva"));
+    assert.match(result.error ?? "", /dry-run pré-escrita, #8230/);
+    assert.deepEqual(result.labelsAdded, []);
+    assert.ok(!gh.state.labels.includes("epic-guarda-chuva"));
+    assert.equal(gh.calls.length, 1, "so o fetch inicial (gh issue view) deveria ter rodado");
+    assert.equal(gh.state.comments.length, 0);
   });
 
   it("--track epica (sem --motivo, sem --until) roteia com sucesso", () => {
@@ -661,16 +671,24 @@ describe("routeIssue #6197 3b — preservacao de label de bloqueio preexistente"
 });
 
 describe("routeIssue — validacao pos-escrita falha ruidosamente", () => {
-  it("issue CLOSED nunca vira 'develop' — validacao recusa e reporta o resolvedTrack real", () => {
+  it("issue CLOSED nunca vira 'develop' — dry-run pre-escrita recusa antes de tocar a issue (#8230)", () => {
+    // Ate o #8230, esta combinacao (state CLOSED + --track develop) so era
+    // pega no Passo 4 (validacao POS-escrita): a label `develop-track` ja
+    // tinha sido gravada na issue antes do erro aparecer. Agora o dry-run
+    // pre-escrita (Passo 0) pega o mesmo conflito ANTES de qualquer
+    // `gh issue edit` — `state: "CLOSED"` vence QUALQUER label na
+    // precedencia de `classifyExecTrackWithRule` (1o passo), entao a
+    // projecao ja devolve "fora-de-rodada" sem precisar escrever nada.
     const gh = fakeGh({ labels: [], body: "", state: "CLOSED", comments: [] });
     const result = routeIssue({ issue: 48, track: "develop", cwd: "/tmp", ghRun: gh.run });
     assert.equal(result.ok, false);
     assert.equal(result.validated, false);
     assert.equal(result.resolvedTrack, "fora-de-rodada");
-    assert.match(result.error ?? "", /falhou/);
-    assert.match(result.error ?? "", /pedido --track develop/);
-    // As escritas ja feitas (label) nao sao silenciadas mesmo com a falha:
-    assert.deepEqual(result.labelsAdded, ["develop-track"]);
+    assert.match(result.error ?? "", /dry-run pré-escrita, #8230/);
+    // Nada foi escrito: nem a label pedida, nem qualquer chamada de escrita.
+    assert.deepEqual(result.labelsAdded, []);
+    assert.ok(!gh.state.labels.includes("develop-track"));
+    assert.equal(gh.calls.length, 1, "so o fetch inicial (gh issue view) deveria ter rodado");
   });
 
   it("label 'alarm' sobrevive ao roteamento e o conflito de precedencia falha RUIDOSAMENTE (#6223)", () => {

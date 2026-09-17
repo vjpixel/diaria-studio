@@ -523,6 +523,18 @@ export function renderMarkdownTable(rows: RankingRow[]): string {
  * cru — este script é só apoio informativo, nunca deve travar por dado
  * ausente). Compartilhado por este script e por `select-boxes-by-clicks.ts`
  * (mesmo par de origens, mesma exigência de fail-soft).
+ *
+ * Classificação (#8233): MEDIÇÃO DE ENVIO, não superfície pública —
+ * `isPublicEdition` NÃO é aplicado aqui de propósito, mesma decisão e
+ * mesmo racional de `build-link-ctr.ts` (que este módulo cita como
+ * referência de "não dá pra usar" no topo do arquivo): a variante Patronos
+ * (`*-patronos`) foi um envio REAL a 5 apoiadores, e o clique na box de
+ * divulgação daquele envio é dado legítimo pro ranking que apoia a decisão
+ * do editor no gate do Stage 4. O envio de teste do Stage 5 (`teste-*`, 1
+ * destinatário) permanece incluído — ruído mensurável e pequeno, sem viés
+ * sistemático, e sem mecanismo barato pra diferenciá-lo de um envio real
+ * pequeno sem reintroduzir o problema que `isPublicEdition` evita (heurística
+ * de contagem de destinatário).
  */
 export function loadUnifiedPostsCache(
   beehiivDir: string = POSTS_DIR,
