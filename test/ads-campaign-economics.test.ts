@@ -360,6 +360,27 @@ describe("#8210 melhoria 2 — computeCampaignPauseStatus: badge ativa/pausada/d
     assert.equal(computeCampaignPauseStatus({}, "2026-09-17"), "ativa");
   });
 
+  it("#8288 — `pausa` vence `pausas` quando os dois coexistem (precedência do formato ATUAL)", () => {
+    const revisao = {
+      pausa: { inicio: "2026-09-09T16:05:36-03:00", fim: "2026-09-17T00:16:00-03:00" },
+      pausas: [{ desde: "2026-09-20", ate: "2026-09-25" }],
+    };
+    assert.equal(
+      computeCampaignPauseStatus(revisao, "2026-09-22", "2026-09-22T10:00:00-03:00"),
+      "ativa",
+      "22/09 está dentro do `pausas` legado, mas o formato ATUAL manda e já retomou",
+    );
+  });
+
+  it("#8288 review achado 1 — pausa com timestamp INVERTIDO lança aqui (fail-loud do #8262, quem trata é a tela)", () => {
+    // Não é um descuido: `assertValidPauseIntervals` falha alto de propósito
+    // (#8262) porque descartar em silêncio sumiria com a pausa de todos os
+    // ALARMES. O contrato de "não derrubar a rota" é do caller HTTP — ver o
+    // teste correspondente em test/studio-ads.test.ts.
+    const revisao = { pausa: { inicio: "2026-09-17T00:16:00-03:00", fim: "2026-09-09T16:05:36-03:00" } };
+    assert.throws(() => computeCampaignPauseStatus(revisao, "2026-09-17", "2026-09-17T20:00:00-03:00"), /invertido/);
+  });
+
   it("buildChannelTable aplica o MESMO pauseStatus aos 3 braços (pausas são da campanha inteira, não por canal)", () => {
     const metrics: ChannelDailyMetric[] = [
       { canal: "Google Ads (teste 2608)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 },

@@ -48,6 +48,7 @@ import {
   normalizePauseIntervals,
   veiculationDaysInRange,
   type AdsTestPauseField,
+  type AdsTestPauseInterval,
 } from "./ads-test-pause-window.ts";
 
 // ---------------------------------------------------------------------------
@@ -373,9 +374,22 @@ export function buildChannelTable(
  *
  * `revisao` presente mas sem nenhum dos dois campos → `"ativa"`
  * (comportamento de antes: houve revisão registrada, sem pausa nela).
- * **Nunca lança** — o bug que motivou o #8288 foi exatamente um
- * `revisao.pausas.some(...)` sem guard derrubando `GET /api/ads` inteiro
- * com 500 contra o `run-state.json` REAL, que só tem `pausa`.
+ * Campo de pausa AUSENTE nunca lança — era o bug que motivou o #8288
+ * (`revisao.pausas.some(...)` sem guard derrubando `GET /api/ads` inteiro
+ * com 500 contra o `run-state.json` REAL, que só tem `pausa`).
+ *
+ * **Lança**, porém, em pausa INCOERENTE (`fim < inicio`) — vem de
+ * `assertValidPauseIntervals`, e é deliberado: descartar em silêncio uma
+ * pausa com timestamp invertido sumiria com ela de todos os alarmes
+ * (#8262). Quem serve uma TELA (e não um alarme) precisa tratar isso —
+ * ver o `try` em `buildAdsCampaignEconomics` (`studio-ui/studio-ads.ts`),
+ * que degrada pra `"desconhecido"` e reporta o motivo em vez de 500.
+ *
+ * `nowIso` é o instante de referência e o caller de produção SEMPRE o
+ * passa. O default (fim do dia BRT de `todayIso`) existe só pra chamadas
+ * que não têm um instante à mão, e assume `todayIso` como data de
+ * calendário BRT — se o caller derivar `todayIso` de um ISO UTC fatiado,
+ * passe `nowIso` explicitamente (#8288 review, achado 5).
  *
  * @pure
  */
@@ -455,7 +469,7 @@ function countPausedDaysWithin(pausas: readonly { desde: string; ate: string }[]
  *  topo de `ads-test-pause-window.ts`: um único lugar decide o que
  *  "pausado" significa). @pure */
 function countPausedFractionWithin(
-  intervals: readonly { inicio: string; fim: string | null }[],
+  intervals: readonly AdsTestPauseInterval[],
   d0: string,
   todayIso: string,
 ): number {

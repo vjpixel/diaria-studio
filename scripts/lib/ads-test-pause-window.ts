@@ -22,8 +22,12 @@ import { addDays, daysBetween, type DateOnlyString } from "./ads-test-schedule.t
 export interface AdsTestPauseInterval {
   /** ISO 8601 com offset (ex: "2026-09-09T09:10:00-03:00"). */
   inicio: string;
-  /** ISO 8601 com offset, ou `null` = pausa em andamento (ainda não retomada). */
-  fim: string | null;
+  /** ISO 8601 com offset, ou `null` = pausa em andamento (ainda não
+   *  retomada). **Opcional** (#8288 review, achado 4): `assertValidRunState`
+   *  aceita o campo AUSENTE, então declará-lo obrigatório era o tipo
+   *  mentindo sobre o que de fato passa pela validação. Todo consumidor
+   *  daqui já testa `fim != null`, que trata ausente e `null` igual. */
+  fim?: string | null;
 }
 
 /** `revisao.pausa` aceita objeto único (formato atual) OU lista (2ª pausa
