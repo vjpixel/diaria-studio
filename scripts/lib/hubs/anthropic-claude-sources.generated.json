@@ -948,14 +948,14 @@
     "editionSlug": "claude-e-codex-instalaram-codigo-sem-dono",
     "url": "https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono",
     "matchedHeadlines": [
-      "Claude e Codex instalaram código sem dono",
-      "Extensão do Claude chega a todo plano pago"
+      "Claude e Codex instalaram código sem dono",
+      "Extensão do Claude chega a todo plano pago"
     ],
     "primarySourceUrls": [
       "https://arstechnica.com/security/2026/08/claude-codex-and-hermes-installed-unowned-code-inside-corporate-networks/",
       "https://claude.com/blog/claude-in-chrome-generally-available"
     ],
-    "editionTitle": "Claude e Codex instalaram código sem dono"
+    "editionTitle": "Claude e Codex instalaram código sem dono"
   },
   {
     "date": "2026-09-03",
@@ -968,5 +968,17 @@
       "https://www.anthropic.com/claude-fable-and-mythos-5-1"
     ],
     "editionTitle": "Google lança dois modelos Gemini de uma vez"
+  },
+  {
+    "date": "2026-09-10",
+    "editionSlug": "pesquisador-da-anthropic-teme-fim-da-humanidade",
+    "url": "https://diar.ia.br/p/pesquisador-da-anthropic-teme-fim-da-humanidade",
+    "matchedHeadlines": [
+      "Pesquisador da Anthropic teme fim da humanidade"
+    ],
+    "primarySourceUrls": [
+      "https://www.bbc.com/news/articles/ckgwy1k42w4o"
+    ],
+    "editionTitle": "Pesquisador da Anthropic teme fim da humanidade"
   }
 ]

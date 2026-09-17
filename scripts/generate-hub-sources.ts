@@ -95,7 +95,7 @@ import {
 import { findPrimarySourceUrl, stripTrackingParams } from "./lib/hub-primary-source.ts";
 import { isSafeUrlScheme } from "./lib/shared/markdown-links.ts";
 import type { RawCachedPost } from "./generate-arquivo-titles.ts";
-import { loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
+import { isPublicEdition, loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HUBS_DIR = resolve(ROOT, "scripts/lib/hubs");
@@ -486,6 +486,8 @@ export function collectHubSources(
 ): CollectHubSourcesResult {
   const rows: HubSourceEntry[] = [];
   const warnings: string[] = [];
+  /** Slugs excluídos por `isPublicEdition` — reportados AGREGADOS no fim. */
+  const naoPublicas: string[] = [];
 
   // #4803: mesmo racional de generate-arquivo-titles.ts::buildTitlesCache —
   // falha de override não pode ficar só em stderr.
@@ -508,6 +510,27 @@ export function collectHubSources(
     const where = post.slug ?? post.title ?? "(post sem slug nem title)";
     if (!post.slug) {
       warnings.push(`post confirmado e casado, mas sem slug resolvível: "${where}"`);
+      continue;
+    }
+    // Página de hub é superfície PÚBLICA: envio de teste do Stage 5
+    // (`teste-*`) e variante Patronos (`*-patronos`, duplicata da edição
+    // que já está aqui sob o slug canônico) nunca entram. Os dois chegam
+    // como `status: "confirmed"` no cache unificado desde o cutover pro Kit
+    // — ver `isPublicEdition`.
+    //
+    // Checado DEPOIS do guard de slug, não antes: `isPublicEdition` também
+    // responde `false` pra post SEM slug, e adiantá-lo engoliria em
+    // silêncio o warning "sem slug resolvível" que o fleet review do #4558
+    // exigiu — trocaria um drop diagnosticado por um drop mudo.
+    //
+    // O drop é AGREGADO num warning só, não um por ocorrência (21 entradas
+    // na medição de 17/09/2026 afogariam os warnings que importam) e nunca
+    // mudo: `isPublicEdition` decide por PREFIXO de slug, e um título
+    // editorial legítimo começando com "Teste..." slugifica pra `teste-*`
+    // e seria excluído por engano. Com a linha agregada, esse falso
+    // positivo aparece na saída do regen em vez de sumir em silêncio.
+    if (!isPublicEdition(post)) {
+      naoPublicas.push(post.slug);
       continue;
     }
     // #4796: override por slug primeiro, cai no publish_date bruto pra todo o resto.
@@ -535,8 +558,123 @@ export function collectHubSources(
       editionTitle: post.title || undefined,
     });
   }
+  if (naoPublicas.length > 0) {
+    warnings.push(
+      `${naoPublicas.length} edição(ões) excluída(s) da superfície pública (envio de teste do Stage 5 / variante Patronos): ` +
+        `${naoPublicas.join(", ")} — se alguma delas for uma edição REAL cujo título começa com "Teste", ` +
+        `o prefixo de slug enganou isPublicEdition e o filtro precisa de um sinal mais forte`,
+    );
+  }
   rows.sort((a, b) => a.date.localeCompare(b.date));
-  return { rows, warnings };
+  return { rows: dedupeBySlug(rows), warnings };
+}
+
+/**
+ * Uma edição por slug. Desde o canal Kit PARALELO (#6114), a MESMA edição é
+ * publicada nos dois ESPs no mesmo dia — base legada na Beehiiv, quem se
+ * cadastrou depois do corte no Kit — e a camada unificada devolve as duas,
+ * corretamente (são dois envios reais, e quem mede ENTREGA precisa dos
+ * dois). Numa página de hub isso vira a mesma matéria listada duas vezes.
+ *
+ * Medição de 17/09/2026: 3 duplicatas nos 3 hubs regenerados
+ * (`tem-22-a-25-anos...`, `gates-propoe-empregos...`,
+ * `claude-e-codex-instalaram...`), todas com o par Beehiiv+Kit — a Beehiiv
+ * sempre alguns segundos antes.
+ *
+ * Mantém a PRIMEIRA ocorrência em ordem de data (`rows` já vem ordenado),
+ * e nunca descarta informação: `matchedHeadlines` e `primarySourceUrls` da
+ * duplicata são unidos na linha mantida, porque `computePrimarySourceUrls`
+ * pode ter resolvido a fonte primária num dos dois registros e não no
+ * outro.
+ *
+ * ## A união compara em NFC, não pelo byte
+ *
+ * Os dois ESPs devolvem o MESMO título em normalizações Unicode
+ * diferentes: o Kit em **NFC** (`já` = U+00E1) e a Beehiiv em **NFD**
+ * (`ja` + U+0301 combinante). São strings `!==` que renderizam idênticas —
+ * um `new Set` cru mantém as duas e a manchete sai repetida no dataset
+ * (achado ao vivo 17/09/2026, ao regenerar `mercado-trabalho`:
+ * "Tem 22 a 25 anos? A IA já pode afetar seu emprego" duplicada dentro da
+ * MESMA entrada). A chave de comparação é NFC, e a forma guardada também —
+ * NFC é o que o resto do repo e a web assumem.
+ *
+ * Isto conserta a união AQUI; a divergência na origem continua existindo
+ * pra todo consumidor da camada unificada que compare título entre as duas
+ * origens.
+ */
+export function dedupeBySlug(rows: readonly HubSourceEntry[]): HubSourceEntry[] {
+  const bySlug = new Map<string, HubSourceEntry>();
+  for (const row of rows) {
+    const kept = bySlug.get(row.editionSlug);
+    if (!kept) {
+      bySlug.set(row.editionSlug, row);
+      continue;
+    }
+    bySlug.set(row.editionSlug, mergeDuplicateRows(kept, row));
+  }
+  return [...bySlug.values()];
+}
+
+/**
+ * Funde duas linhas da MESMA edição preservando o pareamento por índice
+ * entre `matchedHeadlines` e `primarySourceUrls` (ver a docstring do campo
+ * em `HubSourceEntry`).
+ *
+ * Deduplicar os dois arrays SEPARADAMENTE — o caminho óbvio — corrompe esse
+ * pareamento: `matchedHeadlines` encolhe na união e `primarySourceUrls`
+ * encolhe de forma diferente (os `null` somem), então
+ * `primarySourceUrls[i]` passa a apontar pra outra manchete. A unidade de
+ * deduplicação aqui é o PAR, não cada array.
+ *
+ * A chave do par é a manchete em NFC, e a fonte primária mantida é a
+ * primeira NÃO-`null` vista pra aquela manchete: a mesma manchete pode ter
+ * resolvido âncora numa origem e não na outra, porque `findPrimarySourceUrl`
+ * trabalha sobre o HTML do post, e os dois ESPs renderizam HTML diferente
+ * pro mesmo conteúdo.
+ *
+ * `primarySourceUrls` sai OMITIDO quando nenhuma manchete resolveu âncora —
+ * o mesmo contrato de `computePrimarySourceUrls` (array de só `null` não
+ * carrega informação nova).
+ */
+function mergeDuplicateRows(kept: HubSourceEntry, dup: HubSourceEntry): HubSourceEntry {
+  const sourceByHeadline = new Map<string, string | null>();
+  const headlines: string[] = [];
+
+  for (const row of [kept, dup]) {
+    row.matchedHeadlines.forEach((headline, i) => {
+      const nfc = headline.normalize("NFC");
+      const source = row.primarySourceUrls?.[i] ?? null;
+      if (!sourceByHeadline.has(nfc)) {
+        headlines.push(nfc);
+        sourceByHeadline.set(nfc, source);
+      } else if (sourceByHeadline.get(nfc) === null && source !== null) {
+        sourceByHeadline.set(nfc, source);
+      }
+    });
+  }
+
+  const sources = headlines.map((h) => sourceByHeadline.get(h) ?? null);
+  // `primarySourceUrls` sai do spread de propósito: um spread condicional só
+  // ADICIONA o campo, nunca remove o que veio de `kept`. Sem isto, uma linha
+  // que chegou com `[null]` manteria esse array na fusão e o contrato de
+  // omissão (array de só `null` não entra no dataset) valeria só pra quem
+  // nunca teve o campo — achado do review automatizado da PR #8232.
+  //
+  // `editionTitle` sai junto e volta por último só pra preservar a ORDEM das
+  // chaves das linhas não-fundidas — senão a fusão produz `editionTitle`
+  // antes de `primarySourceUrls` e o mesmo arquivo commitado fica com duas
+  // convenções de ordem, gerando diff cosmético a cada regen.
+  const { primarySourceUrls: _descartado, editionTitle: _reposicionado, ...restoDeKept } = kept;
+  return {
+    ...restoDeKept,
+    matchedHeadlines: headlines,
+    ...(sources.some((u) => u !== null) ? { primarySourceUrls: sources } : {}),
+    // NFC explícito, não "o título de quem sobreviveu": sem isto a forma
+    // Unicode gravada dependeria de qual origem o cache listou primeiro,
+    // e o arquivo COMMITADO mudaria sozinho entre regens só por ordem de
+    // leitura de diretório.
+    editionTitle: (kept.editionTitle ?? dup.editionTitle)?.normalize("NFC"),
+  };
 }
 
 /**

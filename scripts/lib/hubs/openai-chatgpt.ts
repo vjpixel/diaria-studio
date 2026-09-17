@@ -146,7 +146,19 @@ const PUBLISHED_DATE = "2026-08-09";
 // é a janela de cobertura (`oldest`/`newest`, 100% derivada) do FAQ
 // "Com que frequência..." avançar até 03/09/2026 — nenhuma prosa
 // hand-authored cita essa data, então nenhuma reescrita de corpo.
-const UPDATED_DATE = "2026-09-03";
+//
+// 2026-09-17 (#7103, sessão /diaria-desbloqueia): `generate-hub-sources.ts`
+// trouxe 3 edições novas — 09/09 ("Bots da OpenAI invadem site alemão"),
+// 11/09 ("10 mil agentes da OpenAI resolvem enigma de 90 anos") e 16/09
+// ("DeepSeek quase iguala GPT-6 Astra por 1/4 do custo"). Bump de PISO, não
+// de corpo, mesmo critério conservador das notas acima: nenhuma casa os
+// padrões literais deste arquivo (`GPT5X_PATTERN`, `CODEX_PATTERN`,
+// `HACK_AUTONOMO_PATTERN`, `MICROSOFT_PATTERN`, `FINANCEIRO_PATTERN`,
+// `PROCESSOS_PATTERN`, `SAUDE_PATTERN`, `LAUNCH_PATTERN`) e nenhuma abre
+// eixo próprio — crawler, demonstração de escala e comparação de custo com
+// concorrente são fatos isolados sobre a OpenAI, não uma série nova. Único
+// efeito é a janela de cobertura derivada do FAQ avançar até 16/09/2026.
+const UPDATED_DATE = "2026-09-17";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`, agora em

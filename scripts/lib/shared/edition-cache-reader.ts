@@ -465,6 +465,42 @@ export function editorialDate(post: Pick<UnifiedCachedPost, "displayed_date" | "
 }
 
 /**
+ * Uma edição é PÚBLICA quando aparece legitimamente numa superfície aberta
+ * do projeto (página de hub, página de entidade, arquivo, retrospectiva).
+ * Duas classes de edição vivem no mesmo cache e **não** são públicas:
+ *
+ * - **`teste-*`** — o envio de teste do loop de revisão do Stage 5
+ *   (`review-test-email`). Vira um broadcast real no ESP, com `status:
+ *   "confirmed"` e 1 destinatário (o editor), e por isso é indistinguível
+ *   de uma edição de verdade por status. Medição de 17/09/2026: 20 no cache
+ *   unificado.
+ * - **`*-patronos`** — a variante Patronos de uma edição que JÁ está no
+ *   cache sob o slug canônico (#4275). Não é uma edição a mais: incluí-la
+ *   duplica a mesma matéria na superfície pública.
+ *
+ * Por que por SLUG e não por `stats.email.recipients`: a contagem de
+ * destinatários descreve o ENVIO, não a natureza da edição — uma edição
+ * real com base pequena (o canal Kit nasceu com dezenas) teria o mesmo
+ * perfil numérico de um teste, e o limiar precisaria ser recalibrado a cada
+ * mudança de base. O slug é escolhido pelo próprio pipeline no momento em
+ * que decide que aquele envio é de teste/Patronos, então descreve a
+ * intenção diretamente (mesma disciplina do #573: ler o estado do
+ * mecanismo, não inferi-lo de um número correlacionado).
+ *
+ * **Não é filtrado por `loadUnifiedEditionCache` por default, de propósito.**
+ * Os consumidores se dividem: quem gera superfície pública precisa excluir
+ * estas edições; quem mede ENVIO (cliques por link, CTR, relatório de box)
+ * precisa incluir o `-patronos`, que foi um envio real a 5 apoiadores.
+ * Filtrar na raiz apagaria esse dado em silêncio — então o predicado é
+ * explícito no ponto de uso.
+ */
+export function isPublicEdition(post: Pick<UnifiedCachedPost, "slug">): boolean {
+  const slug = post.slug ?? "";
+  if (slug === "") return false;
+  return !/^teste-/.test(slug) && !/-patronos$/.test(slug);
+}
+
+/**
  * `-safeBackup-*` (cópia de conflito de escrita concorrente do OneDrive,
  * mesmo mecanismo documentado em `scripts/lib/session-registry.ts` §151
  * para `data/sessions/`) é excluído do glob — sem isso, um post com backup
