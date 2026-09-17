@@ -20,7 +20,9 @@ import { join } from "node:path";
 import { scheduleNewsletterKit, main, type ScheduleNewsletterKitDeps } from "../scripts/schedule-newsletter-kit.ts";
 import { readPublishedState, writePublishedState, type KitNewsletterPublished } from "../scripts/publish-newsletter-kit.ts";
 
-const EDITION_DIR = "/fake/root/data/editions/2608/260825";
+// #8207: EDITION_DIR precisa datar (BRT) o MESMO dia de SCHEDULED_AT — o guard
+// novo (checkScheduledAtMatchesEditionDate) recusaria a divergência.
+const EDITION_DIR = "/fake/root/data/editions/2608/260826";
 const SCHEDULED_AT = "2026-08-26T09:00:00.000Z";
 
 function draftState(overrides: Partial<KitNewsletterPublished> = {}): KitNewsletterPublished {
@@ -188,6 +190,58 @@ describe("scheduleNewsletterKit (#464)", () => {
     assert.equal(patchCalled, false, "PATCH nunca deveria ser chamado — broadcast Kit já agendado/completed é imutável");
     assert.equal(getCalled, false);
     assert.equal(writeCalled, false);
+  });
+
+  it("#8207 item 3 — status 'scheduled' mas horário GRAVADO diverge do PEDIDO → reagenda (chama PATCH), nunca reporta already_scheduled à toa", async () => {
+    let patchCalled = false;
+    const OTHER_SCHEDULED_AT = "2026-08-26T10:00:00.000Z"; // 1h depois do gravado
+    const deps = makeDeps({
+      readPublished: () => draftState({ status: "scheduled", scheduled_at: SCHEDULED_AT }),
+      patchSchedule: async () => {
+        patchCalled = true;
+        return {};
+      },
+      getBroadcastStatus: async () => ({ status: "scheduled", sendAt: OTHER_SCHEDULED_AT }),
+    });
+    const result = await scheduleNewsletterKit(EDITION_DIR, OTHER_SCHEDULED_AT, deps);
+    assert.equal(patchCalled, true, "horário pedido diverge do gravado — reagendar pelo script precisa de fato reagendar");
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.alreadyScheduled, undefined, "não é o caminho de idempotência — passou pelo PATCH de verdade");
+      assert.equal(result.scheduledAt, OTHER_SCHEDULED_AT);
+    }
+  });
+
+  it("#8207 item 2 — --scheduled-at cuja data BRT diverge da data da edição → code 6, nunca chama PATCH/GET", async () => {
+    let patchCalled = false;
+    let getCalled = false;
+    const deps = makeDeps({
+      patchSchedule: async () => {
+        patchCalled = true;
+        return {};
+      },
+      getBroadcastStatus: async () => {
+        getCalled = true;
+        return { status: "scheduled", sendAt: SCHEDULED_AT };
+      },
+    });
+    // EDITION_DIR data (BRT) = 260826; este scheduledAt cai em 260827.
+    const result = await scheduleNewsletterKit(EDITION_DIR, "2026-08-27T09:00:00.000Z", deps);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, 6);
+      assert.match(result.reason, /allow-other-date/);
+    }
+    assert.equal(patchCalled, false);
+    assert.equal(getCalled, false);
+  });
+
+  it("#8207 item 2 — --allow-other-date libera a divergência de data explicitamente", async () => {
+    const deps = makeDeps({
+      getBroadcastStatus: async () => ({ status: "scheduled", sendAt: "2026-08-27T09:00:00.000Z" }),
+    });
+    const result = await scheduleNewsletterKit(EDITION_DIR, "2026-08-27T09:00:00.000Z", deps, { allowOtherDate: true });
+    assert.equal(result.ok, true);
   });
 
   it("scheduledAt recebido em offset diferente representando o MESMO instante enviado → ok, nunca code 5", async () => {

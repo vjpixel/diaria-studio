@@ -57,9 +57,9 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --
 - Ler `_internal/06-social-published.json` → extrair: horarios agendados dos 3 posts LinkedIn e 3 posts Facebook (`scheduled_at` por destaque).
 - Ler `_internal/06-verify-dispatch.json` (se existir) → extrair quaisquer warnings de verificacao.
 - Ler `post_id` de `_internal/05-published.json` (necessario para o Schedule Beehiiv e para verificacao pos-Schedule).
-- Ler horario default de agendamento: amanha 06:00 BRT = `{edition_date}` as 09:00 UTC.
+- Ler horario default de agendamento: 06:00 BRT da DATA DA EDIÇÃO (`{AAMMDD}`) — **nunca** "amanhã" pelo relógio de agora (#8207: Etapa 6 rodada depois da meia-noite BRT com "amanhã" contado pelo relógio agendou a edição 260917 um dia atrasado no Kit e na Brevo diária). `scripts/resolve-edition-scheduled-at.ts` é o ÚNICO lugar que faz essa conta — usar o MESMO comando aqui e no ramo `sim HH:MM` do §6c abaixo:
   ```bash
-  node -e "const s='{AAMMDD}';const d=new Date('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-'+s.slice(4,6)+'T09:00:00Z');process.stdout.write(d.toISOString())"
+  npx tsx scripts/resolve-edition-scheduled-at.ts --aammdd {AAMMDD}
   ```
 - **Ler `_internal/brevo-diaria-published.json` (#5772), se existir** → extrair `campaign_id`, `status`. Ausente = canal Brevo pulado/falhou na Etapa 5 (`--skip brevo`, config ausente, store ausente) — nada a agendar aqui, pular §6d-brevo abaixo sem erro.
 
@@ -117,7 +117,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 ### 6c. GATE HUMANO — Schedule Beehiiv
 
-**Se `--no-gates` (`auto_approve = true`):** pular o gate, usar default (amanha 06:00 BRT) — mesmo horário serve Beehiiv e Brevo diária (#5772, se a campanha existir). Logar:
+**Se `--no-gates` (`auto_approve = true`):** pular o gate, usar o default de §6a (06:00 BRT da data da edição, via `resolve-edition-scheduled-at.ts` — nunca "amanhã" contado a partir do relógio) — mesmo horário serve Beehiiv e Brevo diária (#5772, se a campanha existir). Logar:
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn \
   --message "Stage 6 auto-agendado via --no-gates: {scheduled_at_iso}" \
@@ -164,15 +164,13 @@ Poste manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia):
 
 Agendar envio da newsletter no Beehiiv{ + " e a campanha Brevo diária" se o bloco acima apareceu}?
 
-  sim          → agenda para amanha 06:00 BRT (default)
-  sim HH:MM    → agenda para amanha {horario informado} BRT
+  sim          → agenda para 06:00 BRT do dia da edição (default)
+  sim HH:MM    → agenda para {horario informado} BRT do dia da edição
   abortar      → nao agenda nenhum dos dois; rascunhos permanecem, sentinel nao escrito
   Qualquer outra entrada → repetir (fail-closed)
 ```
 
-Aguardar resposta do editor. Interpretar:
-- `sim` (sem horario) → `scheduled_at` = amanha 06:00 BRT.
-- `sim HH:MM` → `scheduled_at` = amanha `HH:MM` BRT; validar HH 0-23, MM 0-59.
+Aguardar resposta do editor. Interpretar — **`{AAMMDD}` (a data da edição), nunca "amanhã" pelo relógio (#8207)**: os dois ramos usam o MESMO comando de §6a, só variando `--hhmm` — `sim` (sem horario, default 06:00 BRT) → `scheduled_at` = `npx tsx scripts/resolve-edition-scheduled-at.ts --aammdd {AAMMDD}`; `sim HH:MM` (validar HH 0-23, MM 0-59) → `... --aammdd {AAMMDD} --hhmm {HH:MM}`.
 - `abortar` → logar warn, NAO escrever sentinel, encerrar Stage 6. Editor pode re-rodar `/diaria-6-agendamento {AAMMDD}` depois.
 - Qualquer outra coisa → exibir o gate novamente (fail-closed).
 
@@ -325,7 +323,7 @@ prosseguir para §6e.
 **Exibir o mesmo banner de segurança do §6d antes de agendar** — a diferença
 aqui é que não há clique manual: o script faz o PATCH direto. Confirmar o
 horário com o editor antes de rodar (mesmo horário default calculado em
-§6a: amanhã 06:00 BRT).
+§6a: 06:00 BRT do dia da edição).
 
 ```bash
 npx tsx scripts/schedule-newsletter-kit.ts \
@@ -347,10 +345,11 @@ Exit codes:
 | `3` | `_internal/newsletter-kit-published.json` ausente/sem `broadcast_id`. | Etapa 5 não rodou o publisher Kit pra esta edição — voltar pro Stage 5 antes de continuar (não há o que agendar). |
 | `4` | PATCH falhou (erro de API). | Logar erro com o `reason` do JSON de stdout; **bloqueia** o Stage 6 (diferente do Brevo em §6d-brevo — aqui é o ÚNICO canal de newsletter, não um secundário) — investigar antes de retry manual. |
 | `5` | GET pós-PATCH não confirma o agendamento. | Mesmo tratamento do exit 4 — bloqueia, investigar antes de retry. |
+| `6` | `--scheduled-at` diverge da data da edição (#8207) — não deveria acontecer se `{scheduled_at_iso}` veio de `resolve-edition-scheduled-at.ts` (§6a/§6c). | Bloqueia — investigar como `{scheduled_at_iso}` divergiu antes de qualquer retry. Retry manual intencional (editor pediu explicitamente outro dia) usa `--allow-other-date`, nunca por padrão. |
 
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
-  --level {info se exit 0, error se 3/4/5} \
+  --level {info se exit 0, error se 3/4/5/6} \
   --message "newsletter kit stage6 schedule: exit {code}" \
   --details '{json de saída do script}'
 ```
@@ -416,10 +415,11 @@ Exit codes:
 | `3` | PUT falhou (erro de API). | Logar warn com o `reason` do JSON de stdout; **não bloqueia** o resto do Stage 6 (Beehiiv já agendado é o que importa, #5772 fail-soft) — avisar o editor que o Brevo precisa de retry manual (`npx tsx scripts/schedule-daily-brevo.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}`). |
 | `4` | GET pós-PUT não confirma o agendamento. | Mesmo tratamento do exit 3 — warn, não bloqueia, sugerir retry manual. |
 | `5` | **Cota da CONTA Brevo insuficiente pro tamanho da campanha (#6146).** O plano free tem 300 e-mails/dia num balde ÚNICO (transacional + marketing) — outro processo pode ter gastado a cota mesmo com a FILA folgada (`daily_send_cap`). Também cobre falha de leitura da cota, que degrada pra "não agenda". | Warn, **não bloqueia** o resto do Stage 6 (mesmo fail-soft dos exits 3/4). **Mas comunicar ao editor com destaque, não como warn de rodapé:** foi exatamente este cenário que derrubou o canal por ~12h em silêncio em 260825 — campanha criada, agendada, e a Brevo marcou `suspended` com `sent: 0`. **NÃO sugerir retry cego** (diferente do 3/4): repetir o comando falha igual enquanto a cota não virar. O guard mede o dia UTC do ENVIO; se o envio é amanhã, a Brevo nem aceita consultar aquele dia (HTTP 400) e o veredito passa de graça — nesse caso o sinal útil é o aviso de TRANSBORDO no stderr. Conferir o consumo antes de qualquer retry (`scripts/lib/brevo-account-quota.ts`). |
+| `6` | `--scheduled-at` diverge da data da edição (#8207) — não deveria acontecer se `{scheduled_at_iso}` veio de `resolve-edition-scheduled-at.ts` (§6a/§6c). | Bloqueia (diferente do fail-soft dos exits 3/4/5 — isto é o mesmo bug que atrasou a edição 260917, nunca tratar como falha de API). Investigar como `{scheduled_at_iso}` divergiu antes de qualquer retry. Retry manual intencional (editor pediu explicitamente outro dia) usa `--allow-other-date`, nunca por padrão. |
 
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
-  --level {info se exit 0, warn se 3/4/5, info se 2} \
+  --level {info se exit 0, warn se 3/4/5, error se 6, info se 2} \
   --message "brevo-diaria stage6 schedule: exit {code}" \
   --details '{json de saída do script}'
 ```
@@ -430,7 +430,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
 
 ```bash
 npx tsx scripts/schedule-kit-diaria.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}
-npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4} --message "kit-diaria stage6 schedule: exit {code}"
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4, error se 5} --message "kit-diaria stage6 schedule: exit {code}"
 ```
 
 | Exit | Ação |
@@ -439,6 +439,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 | `2` | Canal desligado ou estado ausente — **não é erro**, não participou desta edição; omitir do resumo. |
 | `3` | PATCH falhou / config-estado ilegível. Warn, **não bloqueia** (fail-soft do Brevo), sugerir retry. |
 | `4` | GET pós-PATCH não confirma `send_at`. Warn, não bloqueia. **Nunca reportar como agendado** — pode ter ficado rascunho. |
+| `5` | `--scheduled-at` diverge da data da edição (#8207) — não deveria acontecer se `{scheduled_at_iso}` veio de `resolve-edition-scheduled-at.ts` (§6a/§6c). Bloqueia — investigar antes de retry; `--allow-other-date` só sob pedido explícito do editor. |
 
 
 **Falha aqui NUNCA desfaz o Schedule do Beehiiv já confirmado** — os dois canais são independentes; o Brevo é sempre o secundário/extra (segmento Pending, reativação).

@@ -31,7 +31,7 @@
  * depois do gate humano — nunca antes.
  *
  * Uso:
- *   npx tsx scripts/schedule-newsletter-kit.ts --edition-dir <dir> --scheduled-at <ISO8601>
+ *   npx tsx scripts/schedule-newsletter-kit.ts --edition-dir <dir> --scheduled-at <ISO8601> [--allow-other-date]
  *
  * Exit codes:
  *   0 — agendado e verificado (GET confirma status "scheduled" + send_at
@@ -43,15 +43,18 @@
  *       (nada a agendar — Etapa 5 não rodou o publisher Kit ainda)
  *   4 — PATCH falhou (erro de API)
  *   5 — GET de verificação pós-PATCH não confirma o agendamento esperado
+ *   6 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
+ *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getStringArg, isMainModule } from "./lib/cli-args.ts";
+import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { updateBroadcast } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -61,7 +64,7 @@ interface PlatformConfig {
 
 export type ScheduleNewsletterKitResult =
   | { ok: true; broadcastId: number; scheduledAt: string; status: string; alreadyScheduled?: boolean }
-  | { ok: false; code: 3 | 4 | 5; reason: string };
+  | { ok: false; code: 3 | 4 | 5 | 6; reason: string };
 
 /**
  * Pura o suficiente pra ser testável — `deps.readPublished`/`deps.writePublished`/
@@ -82,7 +85,22 @@ export async function scheduleNewsletterKit(
   editionDir: string,
   scheduledAtIso: string,
   deps: ScheduleNewsletterKitDeps,
+  options: { allowOtherDate?: boolean } = {},
 ): Promise<ScheduleNewsletterKitResult> {
+  // #8207 item 2 — recusa `--scheduled-at` cuja data-calendário em BRT diverge
+  // da data da edição, salvo `--allow-other-date` explícito. Roda ANTES de
+  // qualquer leitura/mutação (fail fast). Quando o editionDir não é um
+  // diretório de edição reconhecível (`AAMMDD` no basename — ex: tmpdir
+  // arbitrário de teste), não há data-alvo pra comparar: pula o guard em vez
+  // de recusar por um path que nunca foi uma edição de verdade.
+  const editionAammdd = editionAammddFromDir(editionDir);
+  if (editionAammdd) {
+    const dateCheck = checkScheduledAtMatchesEditionDate(editionAammdd, scheduledAtIso, options.allowOtherDate);
+    if (!dateCheck.ok) {
+      return { ok: false, code: 6, reason: dateCheck.reason };
+    }
+  }
+
   const published = deps.readPublished(editionDir);
   if (!published || typeof published.broadcast_id !== "number") {
     return {
@@ -95,18 +113,30 @@ export async function scheduleNewsletterKit(
   }
   const broadcastId = published.broadcast_id;
 
-  // Idempotência (mesmo padrão do #5781/Brevo): um broadcast Kit `completed`
-  // não pode ser atualizado (ver docstring de `kit-broadcasts.ts` — 422
-  // "Broadcast has already been sent."). Resume após sucesso mas antes do
-  // sentinel do Stage 6 não deve re-tentar o PATCH.
+  // Idempotência HONESTA (#8207 item 3, achado do bug secundário que mascarou
+  // a causa raiz do agendamento-no-dia-errado: reagendar pelo script oficial
+  // respondia "sucesso" sem mudar nada). `already_scheduled` só quando o
+  // horário GRAVADO é o MESMO instante do pedido — mesmo padrão já usado
+  // pra confirmar sucesso mais abaixo (compara instantes via `Date.parse`,
+  // não strings: dois formatos podem representar o mesmo instante). Pedido
+  // com horário DIFERENTE cai pro PATCH normal abaixo — mesmo padrão de
+  // `schedule-kit-diaria.ts` (#7285), que já reagenda em vez de confiar
+  // cegamente no cache quando o alvo diverge. Broadcast Kit `completed`
+  // (já enviado, 422 "Broadcast has already been sent.", ver docstring de
+  // `kit-broadcasts.ts`) segue coberto — reagendar tenta o PATCH e o erro
+  // vira `code: 4` normalmente, nunca um falso sucesso.
   if (published.status === "scheduled" && typeof published.scheduled_at === "string") {
-    return {
-      ok: true,
-      broadcastId,
-      scheduledAt: published.scheduled_at,
-      status: "already_scheduled",
-      alreadyScheduled: true,
-    };
+    const storedMs = Date.parse(published.scheduled_at);
+    const requestedMs = Date.parse(scheduledAtIso);
+    if (Number.isFinite(storedMs) && Number.isFinite(requestedMs) && storedMs === requestedMs) {
+      return {
+        ok: true,
+        broadcastId,
+        scheduledAt: published.scheduled_at,
+        status: "already_scheduled",
+        alreadyScheduled: true,
+      };
+    }
   }
 
   try {
@@ -179,7 +209,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const scheduledAtArg = getStringArg(argv, "scheduled-at");
   if (!editionDirArg || !scheduledAtArg) {
     process.stderr.write(
-      "uso: npx tsx scripts/schedule-newsletter-kit.ts --edition-dir <dir> --scheduled-at <ISO8601>\n",
+      "uso: npx tsx scripts/schedule-newsletter-kit.ts --edition-dir <dir> --scheduled-at <ISO8601> [--allow-other-date]\n",
     );
     process.exitCode = 1;
     return;
@@ -194,7 +224,8 @@ export async function main(rootDirOverride?: string): Promise<void> {
   }
 
   const editionDir = resolve(editionDirArg);
-  const result = await scheduleNewsletterKit(editionDir, scheduledAtArg, productionDeps());
+  const allowOtherDate = hasFlag(argv, "allow-other-date");
+  const result = await scheduleNewsletterKit(editionDir, scheduledAtArg, productionDeps(), { allowOtherDate });
   console.log(JSON.stringify(result));
   process.exitCode = result.ok ? 0 : result.code;
 }
