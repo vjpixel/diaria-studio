@@ -108,7 +108,16 @@ function isRetriableStatus(status: number): boolean {
  * 4. **Editar broadcast agendado desagenda.** Qualquer `PATCH` num broadcast
  *    com `send_at` exige reagendar depois — ver `schedule-kit-diaria.ts`.
  *    Esta foi a mais cara: no piloto dos Patronos, mudar o assunto cancelou o
- *    envio do dia seguinte sem erro nenhum.
+ *    envio do dia seguinte sem erro nenhum. **2ª ocorrência confirmada ao vivo
+ *    (#8208, edição 260917):** o mesmo aconteceu no broadcast de PRODUÇÃO da
+ *    newsletter Kit — reenviar o test email pós-Stage-6 (`publish-newsletter-kit.ts
+ *    --send-test`) zerou `send_at` do broadcast real já agendado, mesmo sem
+ *    `send_at` aparecer no corpo do PATCH. `updateExistingKitBroadcast`
+ *    (`publish-newsletter-kit.ts`) agora reforça `send_at` explicitamente no
+ *    PATCH quando o estado local diz `scheduled`, e relê + reagenda
+ *    automaticamente se ainda assim vier `null` — a releitura é a defesa
+ *    real (nunca confiar no 2xx da mutação, #573); o reforço explícito é
+ *    só a 1ª camada, não confirmada suficiente sozinha ao vivo.
  * 5. **Nunca verificar quem está numa tag por `GET /tags/{id}/subscribers`.**
  *    Medido em 26/08: após taguear um assinante, essa listagem levou **180s**
  *    para incluí-lo — e no intervalo devolveu `has_next_page: false`, ou seja,

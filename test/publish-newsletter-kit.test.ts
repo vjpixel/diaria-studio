@@ -21,10 +21,12 @@ import {
   resolvePublishedStatePath,
   readPublishedState,
   writePublishedState,
+  updateExistingKitBroadcast,
   main,
   type KitNewsletterPublished,
 } from "../scripts/publish-newsletter-kit.ts";
 import { extractContent } from "../scripts/lib/newsletter-parse.ts";
+import type { KitBroadcastDetail } from "../scripts/lib/kit-client.ts";
 
 describe("buildKitSubject / buildKitPreviewText", () => {
   it("subject é content.title, preview é content.subtitle — sem transformação", () => {
@@ -142,6 +144,165 @@ describe("buildKitHtml", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ── updateExistingKitBroadcast (#8208) ──────────────────────────────────
+//
+// Reproduz o bug real da edição 260917: PATCH de conteúdo num broadcast já
+// agendado (Stage 6) zera `send_at` mesmo sem o campo aparecer no corpo do
+// PATCH. Cobre as duas camadas de defesa: reforço explícito no corpo do
+// PATCH, e releitura + reagendamento automático quando o reforço não basta.
+
+const SCHEDULED_EXISTING: KitNewsletterPublished = {
+  broadcast_id: 25955349,
+  subject: "Assunto agendado",
+  preview_text: "Preview agendado",
+  status: "scheduled",
+  test_broadcast_ids: [],
+  scheduled_at: "2026-09-18T09:00:00.000Z",
+};
+
+const DRAFT_PATCH_FIELDS = {
+  subject: "Assunto novo",
+  preview_text: "Preview novo",
+  content: "<p>conteúdo</p>",
+  public: true,
+};
+
+function fakeBroadcast(overrides: Partial<KitBroadcastDetail>): KitBroadcastDetail {
+  return {
+    id: 25955349,
+    subject: "x",
+    send_at: null,
+    status: "draft",
+    public: true,
+    published_at: null,
+    created_at: "2026-09-17T00:00:00.000Z",
+    preview_text: null,
+    description: null,
+    thumbnail_alt: null,
+    thumbnail_url: null,
+    publication_id: 1,
+    content: null,
+    public_url: undefined,
+    email_address: "x@example.com",
+    email_template: { id: 1, name: "x" },
+    ...overrides,
+  };
+}
+
+describe("updateExistingKitBroadcast (#8208)", () => {
+  it("existing.status !== 'scheduled': PATCH sem send_at reforçado, sem GET de verificação", async () => {
+    const draftExisting: KitNewsletterPublished = {
+      broadcast_id: 777,
+      subject: "x",
+      preview_text: "x",
+      status: "draft",
+      test_broadcast_ids: [],
+    };
+    const patchCalls: unknown[] = [];
+    let getCalled = false;
+    const result = await updateExistingKitBroadcast(draftExisting, DRAFT_PATCH_FIELDS, () => {}, {
+      updateBroadcast: async (id, input) => {
+        patchCalls.push(input);
+        return fakeBroadcast({ id, send_at: null, status: "draft" });
+      },
+      getBroadcast: async (id) => {
+        getCalled = true;
+        return fakeBroadcast({ id });
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(getCalled, false, "sem agendamento prévio, não há motivo pra reler send_at");
+    assert.equal((patchCalls[0] as { send_at?: string }).send_at, undefined, "PATCH não reforça send_at quando não estava agendado");
+  });
+
+  it("existing.status === 'scheduled': PATCH já sai com send_at reforçado explicitamente (defesa 1)", async () => {
+    const patchCalls: { id: number; input: unknown }[] = [];
+    const result = await updateExistingKitBroadcast(SCHEDULED_EXISTING, DRAFT_PATCH_FIELDS, () => {}, {
+      updateBroadcast: async (id, input) => {
+        patchCalls.push({ id, input });
+        // Kit real: mesmo reforçando, devolve send_at intacto desta vez.
+        return fakeBroadcast({ id, send_at: SCHEDULED_EXISTING.scheduled_at!, status: "scheduled" });
+      },
+      getBroadcast: async (id) => fakeBroadcast({ id, send_at: SCHEDULED_EXISTING.scheduled_at!, status: "scheduled" }),
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.sendAtRescued, false, "send_at sobreviveu — nenhum reagendamento necessário");
+    assert.equal(patchCalls.length, 1, "só 1 PATCH — não precisou reagendar");
+    assert.equal(
+      (patchCalls[0].input as { send_at?: string }).send_at,
+      SCHEDULED_EXISTING.scheduled_at,
+      "#8208 defesa 1: send_at vai explícito no PATCH quando já estava agendado",
+    );
+  });
+
+  it("#8208 reprodução do bug real: PATCH zera send_at mesmo reforçado — reagenda automaticamente (defesa 2)", async () => {
+    const logs: string[] = [];
+    const patchCalls: { id: number; input: unknown }[] = [];
+    let getCalls = 0;
+    const result = await updateExistingKitBroadcast(SCHEDULED_EXISTING, DRAFT_PATCH_FIELDS, (msg) => logs.push(msg), {
+      updateBroadcast: async (id, input) => {
+        patchCalls.push({ id, input });
+        if (patchCalls.length === 1) {
+          // Reproduz o bug: mesmo com send_at no corpo do 1º PATCH, o Kit
+          // devolve send_at:null (achado ao vivo #8208, edição 260917).
+          return fakeBroadcast({ id, send_at: null, status: "draft" });
+        }
+        // 2º PATCH (reagendamento automático) — desta vez pega.
+        return fakeBroadcast({ id, send_at: SCHEDULED_EXISTING.scheduled_at!, status: "scheduled" });
+      },
+      getBroadcast: async (id) => {
+        getCalls += 1;
+        // GET pós-1º-PATCH confirma que send_at de fato zerou (não é só o
+        // retorno do PATCH mentindo) — 2xx não é prova, #573.
+        return fakeBroadcast({ id, send_at: null, status: "draft" });
+      },
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.sendAtRescued, true, "reagendamento automático precisou acontecer");
+      assert.equal(result.broadcastId, SCHEDULED_EXISTING.broadcast_id);
+    }
+    assert.equal(patchCalls.length, 2, "1º PATCH de conteúdo + 2º PATCH de reagendamento");
+    assert.equal(
+      (patchCalls[1].input as { send_at?: string }).send_at,
+      SCHEDULED_EXISTING.scheduled_at,
+      "2º PATCH (reagendamento) leva só send_at, igual a schedule-newsletter-kit.ts",
+    );
+    assert.equal(getCalls, 1, "1 releitura pós-PATCH pra confirmar o zeramento antes de reagendar");
+    assert.ok(
+      logs.some((l) => l.includes("[#8208]") && l.includes("ALERTA")),
+      "alerta visível no stdout — nunca falha em silêncio (era o bug original)",
+    );
+    assert.ok(
+      logs.some((l) => l.includes("[#8208]") && l.includes("reagendamento automático confirmado")),
+      "confirmação do reagendamento também logada",
+    );
+  });
+
+  it("#8208: reagendamento automático falha (send_at continua null) — ok:false com instrução de intervenção manual, nunca silencioso", async () => {
+    const result = await updateExistingKitBroadcast(SCHEDULED_EXISTING, DRAFT_PATCH_FIELDS, () => {}, {
+      updateBroadcast: async (id) => fakeBroadcast({ id, send_at: null, status: "draft" }),
+      getBroadcast: async (id) => fakeBroadcast({ id, send_at: null, status: "draft" }),
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.reason, /INTERVENÇÃO MANUAL/);
+      assert.match(result.reason, /schedule-newsletter-kit\.ts/);
+    }
+  });
+
+  it("#8208: GET de verificação pós-PATCH falha (rede) — ok:false, nunca assume sucesso", async () => {
+    const result = await updateExistingKitBroadcast(SCHEDULED_EXISTING, DRAFT_PATCH_FIELDS, () => {}, {
+      updateBroadcast: async (id) => fakeBroadcast({ id, send_at: null, status: "draft" }),
+      getBroadcast: async () => {
+        throw new Error("rede indisponível");
+      },
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.reason, /GET .*falhou/);
   });
 });
 
@@ -428,6 +589,99 @@ describe("main() — integração", () => {
         "https://diar.ia.br/p/modelos-se-replicam-sozinhos",
         "05-edition-url.txt gravado normalmente — deriva do título do D1, não do public_url",
       );
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#8208: PATCH pós-Stage-6 zera send_at do broadcast REAL já agendado — main() reagenda sozinho e preserva scheduled_at no estado", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260998");
+      const scheduledAt = "2026-09-18T09:00:00.000Z";
+      writePublishedState(editionDir, {
+        broadcast_id: 25955349,
+        subject: "Assunto antigo",
+        preview_text: "Preview antigo",
+        status: "scheduled",
+        test_broadcast_ids: [],
+        scheduled_at: scheduledAt,
+      });
+      let patchCount = 0;
+      mockFetch((call) => {
+        if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/25955349") {
+          patchCount += 1;
+          if (patchCount === 1) {
+            // Reproduz o bug ao vivo (#8208, edição 260917): mesmo com
+            // send_at reforçado no corpo (defesa 1), o Kit devolve o
+            // broadcast como se tivesse voltado a rascunho.
+            assert.equal((call.body as { send_at?: string }).send_at, scheduledAt, "defesa 1: PATCH de conteúdo já reforça send_at");
+            return jsonRes(200, { broadcast: { id: 25955349, status: "draft", send_at: null } });
+          }
+          // 2º PATCH — reagendamento automático (defesa 2).
+          assert.deepEqual(call.body, { send_at: scheduledAt }, "PATCH de reagendamento leva só send_at");
+          return jsonRes(200, { broadcast: { id: 25955349, status: "scheduled", send_at: scheduledAt } });
+        }
+        if (call.method === "GET" && call.pathname === "/v4/broadcasts/25955349") {
+          // Releitura pós-1º-PATCH confirma o zeramento (2xx da mutação não
+          // é prova, #573) — dispara o reagendamento automático.
+          return jsonRes(200, { broadcast: { id: 25955349, status: "draft", send_at: null } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, undefined, "reagendamento automático bem-sucedido não é erro");
+      assert.equal(patchCount, 2, "1 PATCH de conteúdo + 1 PATCH de reagendamento");
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.broadcast_id, 25955349);
+      assert.equal(state?.status, "scheduled", "status local continua scheduled");
+      assert.equal(
+        state?.scheduled_at,
+        scheduledAt,
+        "#8208: scheduled_at PRESERVADO no estado local — sem isso, a PRÓXIMA " +
+          "invocação perderia existing.scheduled_at e a defesa nunca mais dispararia",
+      );
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#8208: reagendamento automático também falha — main() sai com exitCode 10, nunca finge sucesso", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260998");
+      const scheduledAt = "2026-09-18T09:00:00.000Z";
+      writePublishedState(editionDir, {
+        broadcast_id: 25955349,
+        subject: "Assunto antigo",
+        preview_text: "Preview antigo",
+        status: "scheduled",
+        test_broadcast_ids: [],
+        scheduled_at: scheduledAt,
+      });
+      mockFetch((call) => {
+        if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/25955349") {
+          return jsonRes(200, { broadcast: { id: 25955349, status: "draft", send_at: null } });
+        }
+        if (call.method === "GET" && call.pathname === "/v4/broadcasts/25955349") {
+          return jsonRes(200, { broadcast: { id: 25955349, status: "draft", send_at: null } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 10, "falha real de agendamento nunca deve sair como sucesso silencioso");
+      // Estado NÃO deve ter sido reescrito com um broadcast_id/estado que
+      // sugira sucesso — main() retorna antes de writePublishedState.
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.scheduled_at, scheduledAt, "estado local não foi corrompido pela falha");
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });
