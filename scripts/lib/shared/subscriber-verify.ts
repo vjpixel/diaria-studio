@@ -152,8 +152,19 @@ export interface KitByEmailDeps {
 
 /**
  * Verificação SECUNDÁRIA equivalente à Beehiiv, mas contra o Kit (#6048,
- * migração Beehiiv → Kit, #461/#463) — `GET /v4/subscribers?email_address=`,
- * auth via header `X-Kit-Api-Key` (não Bearer, diferente da Beehiiv).
+ * migração Beehiiv → Kit, #461/#463) — `GET /v4/subscribers?email_address=
+ * ...&status=all`, auth via header `X-Kit-Api-Key` (não Bearer, diferente
+ * da Beehiiv).
+ *
+ * **`status=all` é obrigatório (#8269, generalização do hotfix #8235):
+ * sem ele o endpoint só devolve assinantes `active`** — um `cancelled`,
+ * `bounced`, `complained` ou `inactive` (exatamente os 4 estados que esta
+ * função existe pra distinguir de "nunca foi assinante") some da lista e
+ * a docstring original ("os outros 4 mapeiam pra inactive") nunca entrava
+ * em ação: o `subscribers.length === 0` batia primeiro e a função devolvia
+ * `"unknown"`. Medido ao vivo em 17/09/2026 no call site irmão
+ * (`workers/reativar`, PR #8266) — mesma classe de defeito, endpoint
+ * idêntico.
  *
  * **Diferença de shape confirmada ao vivo (24/08/2026): "não encontrado" é
  * HTTP 200 com `subscribers: []`, NUNCA 404** — ao contrário do endpoint
@@ -169,6 +180,11 @@ export interface KitByEmailDeps {
  * `inactive`/`cancelled`). Qualquer não-2xx ou exceção de rede/parse vira
  * `"verification_failed"` — mesma semântica do #4321 (distinto de "não é
  * assinante").
+ *
+ * **Só match exato de e-mail conta (#8269, mesmo achado #7373/#8266)** — a
+ * lista pode devolver assinante que não bate o e-mail buscado (busca
+ * aproximada). Sem match exato entre os resultados, trata como "unknown"
+ * em vez de operar sobre o 1º item da lista.
  *
  * **Tem caller em produção (achado do review da PR #6082 — "ainda não tem
  * nenhum caller" — está DESATUALIZADO, ver #8047).** `workers/poll/src/web-gate.ts`
@@ -187,13 +203,14 @@ export async function verifySubscriberViaKitByEmail(
   const fetchImpl = deps.fetchImpl ?? fetch;
   const base = deps.baseUrl ?? "https://api.kit.com/v4";
   try {
-    const res = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}`, {
+    const res = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}&status=all`, {
       headers: { "X-Kit-Api-Key": apiKey },
       signal: AbortSignal.timeout(deps.timeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS),
     });
     if (!res.ok) return "verification_failed";
-    const body = (await res.json()) as { subscribers?: { state?: string }[] };
-    const sub = body?.subscribers?.[0];
+    const body = (await res.json()) as { subscribers?: { state?: string; email_address?: string }[] };
+    const alvo = email.trim().toLowerCase();
+    const sub = (body?.subscribers ?? []).find((s) => (s.email_address ?? "").trim().toLowerCase() === alvo);
     if (!sub) return "unknown";
     if (sub.state === "active") return "active";
     if (sub.state === "cancelled" || sub.state === "bounced" || sub.state === "complained" || sub.state === "inactive") {

@@ -106,15 +106,26 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
     assert.equal(body.state, "active");
   });
 
-  it("registro existente não-active (ex: cancelled) → também upsert direto via POST, sem DELETE", async () => {
+  it("registro existente não-active mas NÃO terminal (ex: inactive) → também upsert direto via POST, sem DELETE", async () => {
     const { fetchImpl, calls } = routedFetch({
-      get: () => jsonRes(200, { subscribers: [{ id: 5, email_address: "a@b.com", state: "cancelled" }] }),
+      get: () => jsonRes(200, { subscribers: [{ id: 5, email_address: "a@b.com", state: "inactive" }] }),
       post: () => jsonRes(200, { subscriber: { id: 5, state: "active" } }),
     });
     const r = await activateSubscriptionKit(kitEnv(), "a@b.com", fetchImpl);
     assert.equal(r.ok, true);
     assert.equal(calls.some((c) => c.method === "DELETE"), false);
     assert.equal(calls.filter((c) => c.method === "POST").length, 1);
+  });
+
+  it("registro existente com estado TERMINAL (ex: cancelled) → #8194/#8269 item 4: nunca ressuscita, nem sem token — sem POST nenhum", async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () => jsonRes(200, { subscribers: [{ id: 5, email_address: "a@b.com", state: "cancelled" }] }),
+      post: () => jsonRes(200, { subscriber: { id: 5, state: "active" } }),
+    });
+    const r = await activateSubscriptionKit(kitEnv(), "a@b.com", fetchImpl);
+    assert.equal(r.ok, true);
+    assert.equal(r.beehiivStatus, "cancelled");
+    assert.equal(calls.filter((c) => c.method === "POST").length, 0, "estado terminal não pode disparar upsert/DOI, nem sem token");
   });
 
   it("sem nenhum KIT_UTM_*_FIELD configurado: POST não manda fields (preserva atribuição original de graça — ver docstring do módulo)", async () => {

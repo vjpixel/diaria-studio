@@ -22,6 +22,7 @@ import {
   formatCohortReport,
   formatAuditReport,
   applyCohortWave,
+  findKitSubscriberByEmail,
   KIT_RAMP_BLAST_RADIUS_THRESHOLD,
   type CohortEmailResult,
 } from "../scripts/kit-ramp-cohort.ts";
@@ -231,6 +232,44 @@ describe("formatCohortReport / formatAuditReport", () => {
     const result = computeKitRampDivergence(["a@x.com"], ["b@x.com"]);
     const text = formatAuditReport("rampa-kit", result);
     assert.match(text, /OK/);
+  });
+});
+
+// ── findKitSubscriberByEmail — regressão #8269 ──────────────────────────
+
+describe("findKitSubscriberByEmail (#8269)", () => {
+  const config = { apiKey: "kit_test_key" };
+
+  it("pede status=all — sem ele um Kit real esconderia um assinante inactive/cancelled/etc.", async () => {
+    let urlPedida: string | undefined;
+    const results = await withMockFetch(
+      (async (url: string) => {
+        urlPedida = url;
+        return jsonResponse(200, { subscribers: [{ id: 7, email_address: "ex@x.com", state: "cancelled" }] });
+      }) as typeof fetch,
+      () => findKitSubscriberByEmail("ex@x.com", config),
+    );
+    assert.ok(urlPedida?.includes("status=all"), `esperava status=all na URL, viu: ${urlPedida}`);
+    assert.deepEqual(results, { id: 7, email_address: "ex@x.com", state: "cancelled" });
+  });
+
+  it("lista vazia → null (ausência real)", async () => {
+    const result = await withMockFetch(
+      (async () => jsonResponse(200, { subscribers: [] })) as typeof fetch,
+      () => findKitSubscriberByEmail("ninguem@x.com", config),
+    );
+    assert.equal(result, null);
+  });
+
+  it("lista com e-mail diferente do buscado (busca aproximada, #7373/#8266) → lança, nunca opera sobre o alheio", async () => {
+    await assert.rejects(
+      () =>
+        withMockFetch(
+          (async () => jsonResponse(200, { subscribers: [{ id: 1, email_address: "outra.pessoa@y.com", state: "active" }] })) as typeof fetch,
+          () => findKitSubscriberByEmail("x@y.com", config),
+        ),
+      /nenhum bate o e-mail exato/,
+    );
   });
 });
 
@@ -549,7 +588,7 @@ describe("applyCohortWave", () => {
       (async (url: string) => {
         // ambos já tagueados — 2 chamadas Kit por e-mail (find + fetchTags), sem POST.
         if (url.includes("/subscribers?email_address=")) {
-          const email = decodeURIComponent(url.split("email_address=")[1] ?? "");
+          const email = new URL(url, "https://api.kit.com").searchParams.get("email_address") ?? "";
           const id = email.startsWith("a@") ? 1 : 2;
           return jsonResponse(200, { subscribers: [{ id, email_address: email, state: "active" }] });
         }

@@ -88,8 +88,8 @@ export interface KitByEmailDeps {
 
 /**
  * Espelho de `verifySubscriberViaKitByEmail` — ver docstring completa em
- * `scripts/lib/shared/subscriber-verify.ts` (#6048). `test/poll-shared-mirror-4054.test.ts`
- * trava a divergência.
+ * `scripts/lib/shared/subscriber-verify.ts` (#6048, `status=all` desde
+ * #8269). `test/poll-shared-mirror-4054.test.ts` trava a divergência.
  */
 export async function verifySubscriberViaKitByEmail(
   apiKey: string,
@@ -99,13 +99,14 @@ export async function verifySubscriberViaKitByEmail(
   const fetchImpl = deps.fetchImpl ?? fetch;
   const base = deps.baseUrl ?? "https://api.kit.com/v4";
   try {
-    const res = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}`, {
+    const res = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}&status=all`, {
       headers: { "X-Kit-Api-Key": apiKey },
       signal: AbortSignal.timeout(deps.timeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS),
     });
     if (!res.ok) return "verification_failed";
-    const body = (await res.json()) as { subscribers?: { state?: string }[] };
-    const sub = body?.subscribers?.[0];
+    const body = (await res.json()) as { subscribers?: { state?: string; email_address?: string }[] };
+    const alvo = email.trim().toLowerCase();
+    const sub = (body?.subscribers ?? []).find((s) => (s.email_address ?? "").trim().toLowerCase() === alvo);
     if (!sub) return "unknown";
     if (sub.state === "active") return "active";
     if (sub.state === "cancelled" || sub.state === "bounced" || sub.state === "complained" || sub.state === "inactive") {

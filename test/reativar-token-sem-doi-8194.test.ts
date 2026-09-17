@@ -164,6 +164,15 @@ describe("activateSubscriptionKit com token (#8194)", () => {
     await quiet(() => activateSubscriptionKit(env(), "a@x.com", kit.fetchImpl, false));
     assert.ok(!kit.calls.some((c) => c.url.includes("/forms/9839463/")));
   });
+
+  for (const terminal of ["cancelled", "complained", "bounced"]) {
+    it(`#8269 item 4: SEM token, estado ${terminal} → também não ressuscita (o guard não é mais exclusivo do caminho com token)`, async () => {
+      const kit = fakeKit({ existing: terminal });
+      const r = await quiet(() => activateSubscriptionKit(env(), "a@x.com", kit.fetchImpl, false));
+      assert.equal(r.beehiivStatus, terminal);
+      assert.equal(kit.calls.filter((c) => c.method === "POST").length, 0, "nenhum e-mail de DOI deve sair pra um estado terminal");
+    });
+  }
 });
 
 describe("handleConfirm — token decide entre ativar direto e DOI (#8194)", () => {

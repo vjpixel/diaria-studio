@@ -60,7 +60,14 @@
  * já era `inactive` é promovido pelo vínculo ao form de sistema
  * `KIT_ACTIVATE_FORM_ID` (o upsert com `state:"active"` não promove, medido
  * ao vivo). Sem token ou com token inválido, vale tudo o que está descrito
- * acima (DOI). Riscos aceitos pelo editor: encaminhamento e scanners de link.
+ * acima (DOI) — **exceto** estado terminal (`cancelled`/`bounced`/
+ * `complained`), que aborta ANTES do DOI mesmo sem token (#8269 item 4,
+ * decisão registrada na issue: a versão original do guard só cobria o
+ * caminho com token, o que deixava o caminho DOI mandar um e-mail de
+ * confirmação pra quem já tinha reclamado de spam ou tido bounce — nada
+ * nesse caminho prova posse nova da caixa, então não há razão pra tratar os
+ * dois caminhos diferente aqui). Riscos aceitos pelo editor: encaminhamento
+ * e scanners de link.
  *
  * O que NÃO mudou nem no caminho Kit: continua sem KV/rate-limit por IP.
  * Chamadas em massa à URL ainda geram e-mails de confirmação não solicitados —
@@ -712,10 +719,16 @@ export async function activateSubscriptionKit(
     const existingState = match?.state;
     existsAlready = match != null || lista.length > 0;
     existingId = match?.id;
-    // #8194: com token, nunca ressuscita quem saiu (cancelled/complained/
-    // bounced) — o clique no botão da Brevo não desfaz um descadastro no Kit.
-    if (confirmedByToken && existingState && existingState !== "active" && existingState !== "inactive") {
-      console.warn(JSON.stringify({ event: "reativar_kit_token_estado_terminal", state: existingState }));
+    // #8194/#8269 item 4: nunca ressuscita quem saiu (cancelled/complained/
+    // bounced) — o clique no botão da Brevo não desfaz um descadastro no
+    // Kit. Vale COM ou SEM token (decisão #8269: a assimetria original —
+    // guard só no caminho com token — deixava o caminho SEM token, que
+    // ainda dispara o DOI, mandar um e-mail de confirmação pra um endereço
+    // `complained`/`bounced`; nada nessa via prova posse nova da caixa, e
+    // reenviar pra quem já reclamou de spam é o dano que este guard existe
+    // pra evitar em primeiro lugar).
+    if (existingState && existingState !== "active" && existingState !== "inactive") {
+      console.warn(JSON.stringify({ event: "reativar_kit_estado_terminal", state: existingState, token: confirmedByToken }));
       return { ok: true, status: 200, beehiivStatus: existingState };
     }
     if (existingState === "active") {
