@@ -511,10 +511,20 @@ function addImageFixture(dir: string, n: 1 | 2 | 3, imageUrl: string): void {
   writeFileSync(publicImagesPath, JSON.stringify(existing), "utf8");
 }
 
+/**
+ * `slug: id` é default, não incondicional (#8233 fixer) — `isPublicEdition`
+ * (`edition-cache-reader.ts`) trata `slug` ausente/vazio como NÃO-público, e
+ * `loadUnifiedPostsForRanking` (que `publish-weekly-social.ts` passou a usar
+ * pra selecionar candidatos públicos, #8233) filtra em cima disso. Nenhum
+ * ID de fixture usado neste arquivo (`post_a`, `post_1220`, ...) começa com
+ * `teste-`/termina em `-patronos`, então o default é seguro. Caller que
+ * passar `slug` explícito no literal de `post` continua vencendo.
+ */
 function writeCachePost(dataRoot: string, id: string, post: unknown): void {
   const dir = resolve(dataRoot, "beehiiv-cache/posts");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(resolve(dir, `${id}.json`), JSON.stringify(post), "utf8");
+  const withSlug = { slug: id, ...(post as Record<string, unknown>) };
+  writeFileSync(resolve(dir, `${id}.json`), JSON.stringify(withSlug), "utf8");
 }
 
 /** #6185: escreve um broadcast Kit em `data/kit-cache/broadcasts/{id}.json`
@@ -522,11 +532,20 @@ function writeCachePost(dataRoot: string, id: string, post: unknown): void {
  *  espera (`RawKitBroadcastFile` = `KitBroadcastSummary` + `clicks`
  *  opcional). Usado pra provar que a seleção por clique do carrossel
  *  semanal do Instagram lê edições de origem Kit, não só Beehiiv — mesmo
- *  padrão de `test/select-linkedin-weekly-integration.test.ts`. */
+ *  padrão de `test/select-linkedin-weekly-integration.test.ts`.
+ *
+ * Default de `public_url` (#8233 fixer) — `normalizeKitBroadcast` nunca lê
+ * um campo `slug` do JSON bruto: o slug de um post Kit é sempre DERIVADO de
+ * `public_url` via `slugFromUrl`. Sem ele, `isPublicEdition` trata o post
+ * como sem slug (não-público) e `loadUnifiedPostsForRanking` o filtra
+ * inteiro — era exatamente isso que fazia o CLI abortar com "dado de
+ * clique INCOMPLETO" (o fixture Kit desaparecia do pool). ID usado aqui
+ * (`900_1221`) nunca colide com `teste-*`/`-patronos`. */
 function writeKitCachePost(dataRoot: string, id: string | number, broadcast: unknown): void {
   const dir = resolve(dataRoot, "kit-cache/broadcasts");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(resolve(dir, `${id}.json`), JSON.stringify(broadcast), "utf8");
+  const withPublicUrl = { public_url: `https://diar.ia.br/p/kit-${id}`, ...(broadcast as Record<string, unknown>) };
+  writeFileSync(resolve(dir, `${id}.json`), JSON.stringify(withPublicUrl), "utf8");
 }
 
 function epochFor(aammdd: string): number {
