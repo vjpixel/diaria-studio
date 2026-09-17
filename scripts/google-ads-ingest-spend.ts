@@ -49,6 +49,27 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SPEND_CSV_PATH = resolve(ROOT, "data", "aquisicao", "spend.csv");
 
 /**
+ * Canal escrito em `spend.csv` (#8210 Bug 1) — precisa bater EXATO com a
+ * entrada correspondente em `CHANNEL_KEY_SPECS`
+ * (`scripts/lib/shared/channel-key-specs.ts`), senão a linha cai no caminho
+ * "canal desconhecido" (aviso em stderr + n=0 no relatório) mesmo com gasto
+ * real acontecendo. Antes desta constante, `runGoogleAdsIngest` usava o
+ * default `"Google Ads"` (`opts.canal ?? "Google Ads"` em
+ * `scripts/lib/google-ads-ingest.ts`) — nome DIFERENTE do braço `"Google Ads
+ * (teste 2608)"` que a reconciliação manual grava pro mesmo gasto real
+ * (`CHANNEL_KEY_SPECS`, #5862 §8.2). Resultado: 2 linhas por mês pro MESMO
+ * gasto (`Google Ads` da ingestão automática + `Google Ads (teste 2608)` da
+ * reconciliação manual), somadas silenciosamente no tile "Orçamento" do
+ * Studio `/ads` — gasto contado 2× (achado ao vivo #8210, 17/09/2026:
+ * R$ 1.807,34 exibido contra R$ 1.306,44 real). Espelha
+ * `MICROSOFT_ADS_CANAL` (`scripts/microsoft-ads-ingest-spend.ts`), mesmo
+ * padrão. Quando as specs temporárias "(teste 2608)" saírem (decisão da
+ * #5862), este valor muda junto — `test/google-ads-ingest-spend.test.ts`
+ * trava que ele sempre bate com uma entrada real de `CHANNEL_KEY_SPECS`.
+ */
+export const GOOGLE_ADS_CANAL = "Google Ads (teste 2608)";
+
+/**
  * `GOOGLE_PROJECT_ID` NÃO entra aqui de propósito (corrigido em 17/08/2026).
  * Ele é exigido pelo servidor MCP oficial (`.mcp.json`, caminho ADC), não
  * por esta chamada REST — que autentica com CLIENT_ID/SECRET/REFRESH_TOKEN.
@@ -136,6 +157,7 @@ export async function main(): Promise<number> {
   const result = await runGoogleAdsIngest(fetch, {
     auth: configResult.auth,
     existingRows,
+    canal: GOOGLE_ADS_CANAL,
   });
 
   if (result.kind === "fallback") {

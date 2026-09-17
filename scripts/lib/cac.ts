@@ -827,12 +827,65 @@ export function buildCacReport(
  *  sozinho (ver issue #5236: "o custo ranqueia, não reprova"). */
 export const MONTHLY_BUDGET_FLOOR_BRL = 4000;
 
+/** Nome-base de um canal — remove um sufixo `" (...)"` final (ex: `"Google
+ *  Ads (teste 2608)"` → `"Google Ads"`) pra permitir comparar variantes do
+ *  MESMO canal/conta que a ingestão automática e a reconciliação manual
+ *  gravam com nomes diferentes (#8210 Bug 1). @pure */
+function baseChannelName(canal: string): string {
+  return canal.replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
+export interface DuplicateChannelSpendWarning {
+  monthKey: string;
+  baseChannel: string;
+  /** Todos os nomes de canal (ordenados) que colidiram no mesmo mês/base — 2+ sempre. */
+  canais: string[];
+}
+
+/**
+ * Detecta linhas de `spendRows` no MESMO mês cujo nome de canal, depois de
+ * remover um sufixo `" (...)"`, é idêntico — sinal de que a MESMA conta/
+ * campanha foi gravada 2× sob nomes diferentes (achado ao vivo #8210,
+ * 17/09/2026: `"Google Ads"` da ingestão automática + `"Google Ads (teste
+ * 2608)"` da reconciliação manual, mesmo gasto do mesmo mês, somados em
+ * silêncio no tile "Orçamento"). **Nunca decide sozinho qual linha é a
+ * correta nem remove nenhuma** — só torna a colisão VISÍVEL (requisito
+ * explícito da issue: "vira aviso visível, nunca soma silenciosa"); o
+ * caller (`computeMonthBudgetUsage`/Studio `/ads`) decide como exibir.
+ *
+ * @pure
+ */
+export function detectDuplicateChannelSpend(spendRows: SpendRow[]): DuplicateChannelSpendWarning[] {
+  const byKey = new Map<string, Set<string>>();
+  for (const row of spendRows) {
+    const key = `${row.mes} ${baseChannelName(row.canal)}`;
+    let set = byKey.get(key);
+    if (!set) {
+      set = new Set();
+      byKey.set(key, set);
+    }
+    set.add(row.canal);
+  }
+  const out: DuplicateChannelSpendWarning[] = [];
+  for (const [key, canais] of byKey) {
+    if (canais.size < 2) continue;
+    const [monthKey, baseChannel] = key.split(" ");
+    out.push({ monthKey, baseChannel, canais: [...canais].sort() });
+  }
+  return out.sort((a, b) => a.monthKey.localeCompare(b.monthKey) || a.baseChannel.localeCompare(b.baseChannel));
+}
+
 export interface MonthBudgetUsage {
   monthKey: string;
   spentBrl: number;
   budgetFloorBrl: number;
   /** Fração 0-1+ (pode passar de 1 se o gasto exceder o piso conhecido). */
   fractionUsed: number;
+  /** Colisões de canal (ver `detectDuplicateChannelSpend`) restritas a ESTE
+   *  mês — `[]` no caso comum. Presença de itens aqui significa que
+   *  `spentBrl` pode estar contando o mesmo gasto real 2× (nunca omitido
+   *  silenciosamente, mas também nunca auto-corrigido). */
+  duplicateWarnings: DuplicateChannelSpendWarning[];
 }
 
 /** Soma `valor` de todas as linhas de `spendRows` cujo `mes` bate com
@@ -846,10 +899,12 @@ export function computeMonthBudgetUsage(
   budgetFloorBrl: number = MONTHLY_BUDGET_FLOOR_BRL,
 ): MonthBudgetUsage {
   const spentBrl = spendRows.filter((r) => r.mes === monthKey).reduce((sum, r) => sum + r.valor, 0);
+  const duplicateWarnings = detectDuplicateChannelSpend(spendRows).filter((w) => w.monthKey === monthKey);
   return {
     monthKey,
     spentBrl,
     budgetFloorBrl,
     fractionUsed: budgetFloorBrl > 0 ? spentBrl / budgetFloorBrl : 0,
+    duplicateWarnings,
   };
 }

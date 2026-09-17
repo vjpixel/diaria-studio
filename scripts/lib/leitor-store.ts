@@ -123,6 +123,9 @@ import {
   getAliasesForSubscriber,
   getSubscriptionsForSubscriber,
   getAllSubscriberPlatforms,
+  getAllSubscriptionsBySubscriber,
+  getAllAliasesBySubscriber,
+  resolveSubscriberAttribution,
   computeSubscriptionCoverage,
   type Platform,
 } from "./diaria-subscribers-db.ts";
@@ -133,6 +136,7 @@ import {
   nativeEdicaoKey,
   type EdicaoEventEntry,
 } from "./diaria-subscribers-edicao-canonica.ts";
+import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 
 /** As plataformas da DIÁRIA — desde #7196, `PLATFORMS` do store já é
  *  exclusivamente diária (`brevo_clarice` nunca entra), então isto é hoje
@@ -397,6 +401,102 @@ export function computeStoreLeitorResult(
   const subs = getSubscriptionsForSubscriber(db, subscriberId);
   const missingSubscriptionData = !subs.some((s) => platforms.includes(s.platform));
   return { subscriberId, input, isLeitor: isLeitorV1(input, thresholds), missingSubscriptionData };
+}
+
+// ---------------------------------------------------------------------------
+// Adaptador pro shape `BeehiivBackupSubscriber` (#8210 Bug 2) — reusa TODO
+// o núcleo de `scripts/lib/cac.ts` (agrupamento por canal, CTR/leitor-v1,
+// janela, degradação) sem reescrever nada dele: só troca a FONTE dos
+// registros de "snapshot Beehiiv" pra "store unificado" (Kit + Beehiiv +
+// Brevo diária).
+// ---------------------------------------------------------------------------
+
+/**
+ * Converte cada subscriber do store unificado (com alias em ao menos 1 das
+ * `platforms` cobertas) num registro no MESMO shape que
+ * `readSnapshotSubscribers`/`beehiiv-backup-snapshots.ts` produzem — pronto
+ * pra passar direto pra `buildCacReport` (`scripts/lib/cac.ts`), que nunca
+ * precisa saber que a fonte mudou.
+ *
+ * **Por que isto existe (#8210 Bug 2, 17/09/2026):** a tela `/ads` (Studio)
+ * lia só o snapshot Beehiiv (`loadPreparedSubscribers`) pro "custo por
+ * leitor" — com `publishing.newsletter.backend = "kit"`, cadastro novo NÃO
+ * passa pela Beehiiv, então os 3 braços de um teste pago apareciam com "0
+ * cadastros · vazia" mesmo tendo cadastros REAIS no Kit (achado ao vivo:
+ * 221 cadastros na seção "Economia da campanha ao vivo" via Kit API contra
+ * 0 no snapshot Beehiiv). Decisão do editor (17/09/2026, comentário da
+ * issue): o store unificado (`data/diaria-subscribers/`, Kit + Beehiiv +
+ * Brevo diária) substitui o snapshot Beehiiv NESTA TELA — mesma fonte que
+ * a contagem de cadastros por braço da #7999 já usa. Não decide a #6591
+ * (substituir ou coexistir em TODO o projeto) — vale só aqui.
+ *
+ * Mapeamento de campos:
+ * - `email`/`created` (epoch segundos, MENOR `entered_at` entre as
+ *   `subscription` do subscriber — cadastro mais antigo conhecido).
+ * - `status`/`stats.{total_received,total_unique_clicked}` vêm de
+ *   `computeStoreLeitorInputCanonicalDedup` — MESMA definição `leitor-v1`
+ *   cross-plataforma com dedup por edição canônica que `summarizeStoreLeitoresCanonicalDedup`
+ *   já usa como caminho DEFAULT (#7204) — não uma 2ª definição.
+ * - `utm_source`/`utm_medium`/`utm_campaign`/`referring_site` vêm de
+ *   `resolveSubscriberAttribution` (precedência kit > beehiiv >
+ *   brevo_diaria, #7207) — o MESMO campo que `subscribersForChannel`/
+ *   `resolveGroupKey` (`cac.ts`) já esperam pra casar canal.
+ *
+ * Subscriber sem NENHUM email em `identity_alias` (nunca deveria acontecer
+ * — toda ingestão grava email) é OMITIDO — sem email não dá pra aplicar o
+ * filtro de conta interna/teste (`isInternalOrTestEmail`) nem casar
+ * identidade, e inventar um placeholder poluiria a base com uma linha
+ * incorreta em vez de simplesmente faltar 1 registro.
+ *
+ * Custo: 1 varredura completa (`getAllSubscriberPlatforms`/
+ * `getAllSubscriptionsBySubscriber`/`getAllAliasesBySubscriber`, cada 1
+ * scan) + N chamadas a `computeStoreLeitorInputCanonicalDedup` (1 por
+ * subscriber coberto) — mesmo padrão de custo que `summarizeStoreLeitores`
+ * já paga pra varrer o store inteiro; aceitável no volume atual (dezenas de
+ * milhares de subscribers, não milhões).
+ */
+export function buildCacCompatibleSubscribersFromStore(
+  db: DatabaseSync,
+  platforms: readonly Platform[] = LEITOR_DIARIA_PLATFORMS,
+): BeehiivBackupSubscriber[] {
+  const caps = detectPlatformCapabilities(db, platforms);
+  const canonicalMap = buildCanonicalEdicaoMapFromEvents(db);
+  const allPlatforms = getAllSubscriberPlatforms(db);
+  const subscriptionsBySubscriber = getAllSubscriptionsBySubscriber(db);
+  const aliasesBySubscriber = getAllAliasesBySubscriber(db);
+
+  const out: BeehiivBackupSubscriber[] = [];
+  for (const [subscriberId, platformSet] of allPlatforms) {
+    const coversAny = platforms.some((p) => platformSet.has(p));
+    if (!coversAny) continue;
+
+    const aliases = aliasesBySubscriber.get(subscriberId) ?? [];
+    const email = aliases.find((a) => a.email)?.email;
+    if (!email) continue; // ver docstring — sem email, sem registro.
+
+    const subs = subscriptionsBySubscriber.get(subscriberId) ?? [];
+    const attribution = resolveSubscriberAttribution(subs);
+    const enteredMs = subs
+      .map((s) => s.entered_at)
+      .filter((v): v is string => typeof v === "string")
+      .map((v) => Date.parse(v))
+      .filter((ms) => Number.isFinite(ms));
+    const created = enteredMs.length > 0 ? Math.floor(Math.min(...enteredMs) / 1000) : 0;
+
+    const input = computeStoreLeitorInputCanonicalDedup(db, subscriberId, caps, canonicalMap, platforms);
+
+    out.push({
+      email,
+      status: input.status,
+      created,
+      utm_source: attribution.utmSource ?? "",
+      utm_medium: attribution.utmMedium ?? "",
+      utm_campaign: attribution.utmCampaign ?? "",
+      referring_site: attribution.referringSite ?? "",
+      stats: { total_received: input.totalReceived, total_unique_clicked: input.totalUniqueClicked },
+    });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
