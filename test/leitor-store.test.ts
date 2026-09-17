@@ -936,12 +936,13 @@ describe("buildCacCompatibleSubscribersFromStore — leitura única (#8292)", ()
       const email = `leitor${i}@x.com`;
       const row = byEmail.get(email);
       assert.ok(row, `subscriber ${email} ausente do resultado batched`);
+      assert.ok(row.stats, `subscriber ${email} veio sem stats no resultado batched`);
       // subscriberId é sequencial a partir de 1 nesta seed (1 ensureSubscriber por loop).
       const subscriberId = i + 1;
       const perSubscriber = computeStoreLeitorInputCanonicalDedup(db, subscriberId, caps, canonicalMap);
-      assert.equal(row!.stats.total_received, perSubscriber.totalReceived);
-      assert.equal(row!.stats.total_unique_clicked, perSubscriber.totalUniqueClicked);
-      assert.equal(row!.status, perSubscriber.status);
+      assert.equal(row.stats.total_received, perSubscriber.totalReceived);
+      assert.equal(row.stats.total_unique_clicked, perSubscriber.totalUniqueClicked);
+      assert.equal(row.status, perSubscriber.status);
     }
     db.close();
   });
