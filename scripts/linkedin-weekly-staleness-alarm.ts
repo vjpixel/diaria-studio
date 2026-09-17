@@ -16,43 +16,39 @@
  *   npx tsx scripts/linkedin-weekly-staleness-alarm.ts --dry-run      # avalia + imprime, NÃO envia nem persiste
  *   npx tsx scripts/linkedin-weekly-staleness-alarm.ts --to email@x   # override do destinatário
  *
- * Env: `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos
- * outros alarmes locais deste repo) — só necessário pra ENVIAR o alarme; a
- * checagem de existência do artefato não precisa de credencial nenhuma.
+ * Estado: `data/weekly/linkedin-staleness-alarm-issues.json` (tracking de
+ * issue por achado, `alarm-issues.ts`).
  *
- * Estado (idempotência): `data/weekly/linkedin-staleness-alarm-state.json` —
- * 1 alarme por ciclo, mesmo que esta task rode mais de 1x na mesma semana.
+ * **E-mail (#7960, migrado do estado próprio `lastAlarmedCycle` pro portão
+ * `notifyEditor`):** severidade `"acao"` (staleness — não é dos 5 canais
+ * `"urgente"` do #7957) — só cria/reusa a issue, nunca manda e-mail sob
+ * `notifications.email_policy: "urgent_only"`. `shouldSendLinkedinWeeklyStalenessAlarm`/
+ * `markLinkedinWeeklyStalenessAlarmed`/`data/weekly/linkedin-staleness-alarm-state.json`
+ * continuam definidos em `lib/linkedin-weekly-staleness-alarm.ts` (e
+ * testados lá) mas não são mais chamados por este script — a idempotência
+ * do e-mail agora vem de `AlarmIssueResult.action === "created"`
+ * (`notifyEditorForOutcomes`, `scripts/lib/editor-notify.ts`), não de um
+ * estado por ciclo separado.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
-import {
-  mostRecentCompletedCycle,
-  evaluateLinkedinWeeklyStalenessAlarm,
-  shouldSendLinkedinWeeklyStalenessAlarm,
-  markLinkedinWeeklyStalenessAlarmed,
-  emptyLinkedinWeeklyStalenessAlarmState,
-  buildLinkedinWeeklyStalenessAlarmEmail,
-  type LinkedinWeeklyStalenessAlarmState,
-} from "./lib/linkedin-weekly-staleness-alarm.ts";
+import { mostRecentCompletedCycle, evaluateLinkedinWeeklyStalenessAlarm, buildLinkedinWeeklyStalenessAlarmEmail } from "./lib/linkedin-weekly-staleness-alarm.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   saveAlarmIssuesState,
-  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
-  type AlarmIssueResult,
+  type AlarmFindingOutcome,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const STATE_PATH = resolve(ROOT, "data", "weekly", "linkedin-staleness-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "weekly", "linkedin-staleness-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[linkedin-weekly-staleness-alarm]";
@@ -61,18 +57,6 @@ const LOG_PREFIX = "[linkedin-weekly-staleness-alarm]";
  * de #5112 em diante (`cursos-error-alarm.ts`, deste mesmo lote, usa 24 —
  * cadência diária, não semanal), aplicado à cadência semanal desta task. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
-
-export function loadState(statePath: string = STATE_PATH): LinkedinWeeklyStalenessAlarmState {
-  if (!existsSync(statePath)) return emptyLinkedinWeeklyStalenessAlarmState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8")) as Partial<LinkedinWeeklyStalenessAlarmState>;
-    const lastAlarmedCycle =
-      typeof raw.lastAlarmedCycle === "string" || raw.lastAlarmedCycle === null ? raw.lastAlarmedCycle ?? null : null;
-    return { lastAlarmedCycle };
-  } catch {
-    return emptyLinkedinWeeklyStalenessAlarmState();
-  }
-}
 
 // saveState/saveAlarmIssuesState: consolidados em scripts/lib/alarm-issues.ts
 // (#7124) — importados acima.
@@ -144,57 +128,53 @@ async function main(): Promise<void> {
   const evaluation = evaluateLinkedinWeeklyStalenessAlarm(cycle, exists);
   console.log(`${LOG_PREFIX} cycle=${cycle} artifact_exists=${exists} verdict=${evaluation.verdict}`);
 
-  const state = loadState();
-
-  // #5339 — reconcilia uma issue pro ciclo faltante ANTES de montar o
-  // e-mail, mesmo padrão dos demais alarmes deste lote. Roda toda execução
-  // não-dry-run, independente de um e-mail novo disparar nesta rodada.
+  // #5339 — reconcilia uma issue pro ciclo faltante; roda toda execução
+  // não-dry-run. #7960: o e-mail (abaixo) é decidido a partir do OUTCOME
+  // desta reconciliação (`action === "created"` sob `urgent_only`), não
+  // mais de um estado `lastAlarmedCycle` separado.
   const alarmFindings: AlarmFinding[] = evaluation.verdict === "alarm-missing" ? [toAlarmFinding(cycle)] : [];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
-  let issueRef: AlarmIssueResult | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
-        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, e-mail NÃO avaliado.`,
     );
-  } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
-      cwd: ROOT,
-      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
-    });
-    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
-    const outcome = findingOutcomes[0];
-    if (outcome) {
-      issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
-      } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
-      }
+    return;
+  }
+
+  const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    cwd: ROOT,
+    closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+  });
+  saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+  for (const outcome of findingOutcomes) {
+    if (outcome.action === "failed") {
+      console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    } else {
+      console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
     }
   }
 
-  if (!shouldSendLinkedinWeeklyStalenessAlarm(evaluation, state)) {
-    console.log(
-      evaluation.verdict === "ok"
-        ? `${LOG_PREFIX} ciclo ${cycle} OK — nenhum alarme necessário.`
-        : `${LOG_PREFIX} já alarmado pra ${cycle} nesta invocação anterior — não reenvia.`,
-    );
+  if (findingOutcomes.length === 0) {
+    console.log(`${LOG_PREFIX} ciclo ${cycle} OK — nenhum alarme necessário.`);
     return;
   }
 
-  const { subject, body } = buildLinkedinWeeklyStalenessAlarmEmail(cycle, issueRef);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
-    return;
+  const result = await notifyEditorForOutcomes(
+    findingOutcomes as AlarmFindingOutcome[],
+    "acao",
+    (qualifying) => buildLinkedinWeeklyStalenessAlarmEmail(cycle, qualifying[0]),
+    { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride },
+  );
+  if (result.qualifying.length === 0) {
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
+  } else if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado (cycle=${cycle}).`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
   }
-  await sendGmailMessage(to, subject, body);
-  saveState(markLinkedinWeeklyStalenessAlarmed(cycle), STATE_PATH);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (cycle=${cycle}).`);
 }
 
 if (isMainModule(import.meta.url)) {

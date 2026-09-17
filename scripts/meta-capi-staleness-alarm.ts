@@ -32,54 +32,46 @@
  * Env: `META_CAPI_ACCESS_TOKEN` (leitura do dataset) + `data/.credentials.json`
  * com o scope `gmail.send` (só necessário pra ENVIAR o alarme).
  *
- * Estado: `data/aquisicao/.meta-capi-staleness-alarm-state.json` (dedup do
- * e-mail, 1×/dia) + `data/aquisicao/.meta-capi-staleness-alarm-issues.json`
- * (tracking de issue por achado, `alarm-issues.ts`).
+ * Estado: `data/aquisicao/.meta-capi-staleness-alarm-issues.json` (tracking
+ * de issue por achado, `alarm-issues.ts`).
+ *
+ * **E-mail (#7960, migrado do estado próprio `lastAlarmedDay` pro portão
+ * `notifyEditor`):** severidade `"acao"` (staleness — não é dos 5 canais
+ * `"urgente"` do #7957) — só cria/reusa a issue, nunca manda e-mail sob
+ * `notifications.email_policy: "urgent_only"`. `shouldSendMetaCapiStalenessAlarm`/
+ * `markMetaCapiStalenessAlarmed`/`data/aquisicao/.meta-capi-staleness-alarm-state.json`
+ * continuam definidos em `lib/meta-capi-staleness.ts` (e testados lá) mas
+ * não são mais chamados por este script — a idempotência do e-mail agora
+ * vem de `AlarmIssueResult.action === "created"` (`notifyEditorForOutcomes`,
+ * `scripts/lib/editor-notify.ts`), não de um estado por dia separado.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
   evaluateMetaCapiStaleness,
-  shouldSendMetaCapiStalenessAlarm,
-  markMetaCapiStalenessAlarmed,
-  emptyMetaCapiStalenessAlarmState,
   buildMetaCapiStalenessAlarmEmail,
-  type MetaCapiStalenessAlarmState,
   type MetaCapiStalenessEvaluation,
 } from "./lib/meta-capi-staleness.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   saveAlarmIssuesState,
-  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
-  type AlarmIssueResult,
+  type AlarmFindingOutcome,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const AQUISICAO_DIR = join(ROOT, "data", "aquisicao");
-const STATE_PATH = join(AQUISICAO_DIR, ".meta-capi-staleness-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = join(AQUISICAO_DIR, ".meta-capi-staleness-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[meta-capi-staleness-alarm]";
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
-
-function loadState(statePath: string): MetaCapiStalenessAlarmState {
-  if (!existsSync(statePath)) return emptyMetaCapiStalenessAlarmState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8")) as Partial<MetaCapiStalenessAlarmState>;
-    return { lastAlarmedDay: typeof raw.lastAlarmedDay === "string" ? raw.lastAlarmedDay : null };
-  } catch {
-    return emptyMetaCapiStalenessAlarmState();
-  }
-}
 
 // loadAlarmIssuesState continua LOCAL (mesmo padrão de
 // `ads-spend-ingest-alarm.ts`/`geo-citation-staleness-alarm.ts`) — diverge
@@ -160,64 +152,56 @@ async function main(): Promise<void> {
       `neverFired=${evaluation.check?.neverFired} daysSinceLastFired=${evaluation.check?.daysSinceLastFired ?? "null"}`,
   );
 
-  const state = loadState(STATE_PATH);
   const alarmFindings: AlarmFinding[] = evaluation.verdict === "stale" ? [toAlarmFinding(evaluation)] : [];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
-  const issueRefs: AlarmIssueResult[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
-        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado.`,
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado, e-mail NÃO avaliado.`,
     );
-  } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
-      cwd: ROOT,
-      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
-    });
-    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
-    for (const outcome of findingOutcomes) {
-      const ref: AlarmIssueResult = {
-        issueNumber: outcome.issueNumber,
-        url: outcome.url,
-        action: outcome.action,
-        error: outcome.error,
-      };
-      issueRefs.push(ref);
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
-      } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
-      }
+    return;
+  }
+
+  const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    cwd: ROOT,
+    closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+  });
+  saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+  for (const outcome of findingOutcomes) {
+    if (outcome.action === "failed") {
+      console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    } else {
+      console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
     }
   }
 
-  if (!shouldSendMetaCapiStalenessAlarm(evaluation, state, now)) {
-    console.log(
-      evaluation.verdict === "stale"
-        ? `${LOG_PREFIX} já alarmado hoje — não reenvia.`
-        : `${LOG_PREFIX} sem staleness — nenhum alarme necessário.`,
-    );
+  if (findingOutcomes.length === 0) {
+    console.log(`${LOG_PREFIX} sem staleness — nenhum alarme necessário.`);
     return;
   }
 
-  const issueLines = issueRefs.length
-    ? "\n\nIssues:\n" +
-      issueRefs
-        .map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`))
-        .join("\n")
-    : "";
-  const { subject, body } = buildMetaCapiStalenessAlarmEmail(evaluation, issueLines);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
-    return;
+  const result = await notifyEditorForOutcomes(
+    findingOutcomes as AlarmFindingOutcome[],
+    "acao",
+    (qualifying) => {
+      const issueLines =
+        "\n\nIssues:\n" +
+        qualifying
+          .map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`))
+          .join("\n");
+      return buildMetaCapiStalenessAlarmEmail(evaluation, issueLines);
+    },
+    { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride },
+  );
+  if (result.qualifying.length === 0) {
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
+  } else if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
   }
-  await sendGmailMessage(to, subject, body);
-  saveState(markMetaCapiStalenessAlarmed(now), STATE_PATH);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
 }
 
 if (isMainModule(import.meta.url)) {
