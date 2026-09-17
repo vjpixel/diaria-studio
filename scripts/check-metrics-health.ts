@@ -81,7 +81,7 @@ import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getKitActiveSummary, getSubscriptionAsOf } from "./lib/diaria-subscribers-db.ts";
 import { summarizeStoreLeitoresCanonicalDedup, LEITOR_DIARIA_PLATFORMS, type StoreLeitorSummary } from "./lib/leitor-store.ts";
-import { CROSS_PLATFORM_FLOOR_NOTE } from "./lib/diaria-subscribers-identity-resolve.ts";
+import { CROSS_PLATFORM_FLOOR_NOTE, detectSamePlatformDuplicateIdentities } from "./lib/diaria-subscribers-identity-resolve.ts";
 import { buildAcquisitionDepsFromStore, brtDayKey } from "./lib/metrics/acquisition-store-deps.ts";
 import { hasCaptureOnDay, type CapturaLogEntry } from "./lib/metrics/captura-log.ts";
 import {
@@ -104,6 +104,7 @@ import {
   evaluateFrescorFromCapturaLog,
   evaluateFrescorFromResult,
   evaluateIndeterminadoCrescendo,
+  evaluateIdentidadeDuplicada,
   evaluateMetaSinal,
   evaluateQueda,
   evaluateRegistryMudo,
@@ -354,6 +355,7 @@ const SINAL_LABEL: Record<MetricsHealthFinding["sinal"], string> = {
   "meta-nao-atingida": "meta não atingida",
   "indeterminado-alto": "indeterminado alto",
   "registry-mudo": "registry mudo",
+  "identidade-duplicada": "identidade duplicada",
 };
 
 export function toMetricsHealthAlarmFinding(f: MetricsHealthFinding): AlarmFinding {
@@ -658,6 +660,29 @@ async function main(): Promise<void> {
   // declaração de `avaliadasComInsumoReal` acima (#7378).
   const registryMudo = evaluateRegistryMudo(METRICAS.length, avaliadasComInsumoReal.size);
   if (registryMudo) findings.push(registryMudo);
+
+  // ── Sinal 6: identidade-duplicada (#8236 item 3) ──────────────────────
+  // Checagem estrutural do store (`identity_alias`), fora do
+  // `MetricResult`/registry — mesmo padrão fail-soft de
+  // `resolveCrossPlatformDeps` acima: qualquer falha ao abrir/ler o store
+  // vira warning e PULA o sinal (nunca fabrica um relatório de 0 grupos —
+  // ver docstring de `evaluateIdentidadeDuplicada`).
+  try {
+    const identityDb = openDiariaSubscribersDb(dbPath);
+    let duplicateReport;
+    try {
+      duplicateReport = detectSamePlatformDuplicateIdentities(identityDb);
+    } finally {
+      identityDb.close();
+    }
+    const identidadeDuplicada = evaluateIdentidadeDuplicada(duplicateReport);
+    if (identidadeDuplicada) findings.push(identidadeDuplicada);
+  } catch (err) {
+    console.error(
+      `${LOG_PREFIX} store do #6464 indisponível/falhou (${dbPath}) pro detector de identidade duplicada (#8236 item 3): ` +
+        `${(err as Error).message} — sinal identidade-duplicada não avaliado nesta execução.`,
+    );
+  }
 
   // ── Sinais 1-2 por métrica avaliada ───────────────────────────────────
   for (const id of WIRED_METRIC_IDS) {

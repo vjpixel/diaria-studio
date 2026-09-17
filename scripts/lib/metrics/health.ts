@@ -46,7 +46,7 @@
  *     nada além de `MetricResult`/`MetaStatus` já produzidos por F3/F5 —
  *     não há caminho de "afirmar sem checar" neste código.
  *
- * ## Os 5 sinais
+ * ## Os 6 sinais
  *
  *   1. `queda`      — métrica com `qualidade` exato/piso/faixa movendo na
  *      direção RUIM (`MetricDef.direcao`) além dos DOIS pisos (relativo E
@@ -66,7 +66,17 @@
  *   5. `registry-mudo` — o registry declara N métricas (N > 0) mas ZERO
  *      foram avaliáveis nesta execução — a classe de defeito que a #6798
  *      aponta como a mais cara (indistinguível de "0 findings, tudo bem").
+ *   6. `identidade-duplicada` — (#8236 item 3) o store unificado
+ *      (`diaria-subscribers-db.ts`, #6464) tem e-mails com mais de 1
+ *      `subscriber_id` DENTRO DA MESMA plataforma — sintoma de identidade
+ *      partida na ingestão (ex: roster com `external_id` e evento de
+ *      broadcast sem ele nunca casando). Diferente dos sinais 1-5, não vem
+ *      de `MetricResult`/`MetaStatus` — é uma checagem estrutural direta
+ *      sobre `identity_alias` (`detectSamePlatformDuplicateIdentities`,
+ *      `diaria-subscribers-identity-resolve.ts`), puramente de contagem,
+ *      sem `qualidade`/`frescor`/piso.
  *
+
  * ## Por que "queda" nunca recalcula a fórmula
  *
  * `MetricResult.valor` já É o piso pra qualidade `'faixa'`/`'piso'` (ver
@@ -124,12 +134,21 @@ export const METRICS_HEALTH_THRESHOLDS: MetricsHealthThresholds = {
 // O contrato do achado
 // ---------------------------------------------------------------------------
 
-export type MetricsHealthSinal = "queda" | "frescor" | "meta-nao-atingida" | "indeterminado-alto" | "registry-mudo";
+export type MetricsHealthSinal =
+  | "queda"
+  | "frescor"
+  | "meta-nao-atingida"
+  | "indeterminado-alto"
+  | "registry-mudo"
+  | "identidade-duplicada";
 
 export interface MetricsHealthFinding {
   sinal: MetricsHealthSinal;
   /** id da métrica (`MetricDef.id`) — `"registry"` só pro sinal
-   *  `registry-mudo`, que não é sobre 1 métrica específica. */
+   *  `registry-mudo`, que não é sobre 1 métrica específica; `"identidade-
+   *  duplicada"` (literal, não um id do registry) só pro sinal
+   *  `identidade-duplicada`, que também não é sobre 1 métrica do
+   *  `registry.ts` — é uma checagem estrutural do store (#8236 item 3). */
   metrica_id: string;
   motivo: string;
 }
@@ -423,5 +442,54 @@ export function evaluateRegistryMudo(registrySize: number, avaliadas: number): M
     motivo:
       `registry declara ${registrySize} métrica(s), mas 0 foram avaliáveis nesta execução — dessincronia entre ` +
       "declaração e execução (#6798), nunca tratada como '0 findings, tudo ok'",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sinal 6 — identidade-duplicada (#8236 item 3)
+// ---------------------------------------------------------------------------
+
+/** Subconjunto de `SamePlatformDuplicateReport`
+ *  (`diaria-subscribers-identity-resolve.ts`) que este módulo precisa —
+ *  declarado aqui em vez de importado pra `health.ts` continuar puro/sem
+ *  dependência de `node:sqlite` (o tipo completo carrega `DatabaseSync` nas
+ *  assinaturas do módulo de origem; o chamador em `check-metrics-health.ts`
+ *  já produz o shape completo, que é estruturalmente compatível). */
+export interface IdentidadeDuplicadaReportInput {
+  total_duplicate_email_groups: number;
+  total_duplicate_subscribers: number;
+  by_platform: ReadonlyArray<{
+    platform: string;
+    duplicate_email_groups: number;
+    duplicate_subscribers: number;
+  }>;
+}
+
+/**
+ * `report.total_duplicate_email_groups > 0` vira achado — contagem acima de
+ * 0 é aviso visível (critério de aceite da #8236), nunca silêncio. Nunca
+ * fabrica o número: o chamador (`check-metrics-health.ts`) só invoca esta
+ * função quando o detector de fato rodou contra o store real — se a leitura
+ * falhar (store indisponível), o chamador pula a checagem inteira em vez de
+ * simular um relatório de 0 grupos (mesmo princípio de
+ * `resolveCrossPlatformDeps`: degradar pra "não avaliado", nunca pra "0,
+ * tudo bem" fabricado).
+ */
+export function evaluateIdentidadeDuplicada(
+  report: IdentidadeDuplicadaReportInput,
+): MetricsHealthFinding | null {
+  if (report.total_duplicate_email_groups === 0) return null;
+  const porPlataforma = report.by_platform
+    .filter((p) => p.duplicate_email_groups > 0)
+    .map((p) => `${p.platform}=${p.duplicate_email_groups}`)
+    .join(", ");
+  return {
+    sinal: "identidade-duplicada",
+    metrica_id: "identidade-duplicada",
+    motivo:
+      `${report.total_duplicate_email_groups} grupo(s) de e-mail com mais de 1 subscriber_id NA MESMA ` +
+      `plataforma no store (${report.total_duplicate_subscribers} assinante(s) ao todo) — ${porPlataforma}. ` +
+      "Cura é ação manual do editor via diaria-subscribers-resolve-identity.ts --apply (#8236 item 2), " +
+      "nunca automática.",
   };
 }

@@ -198,10 +198,17 @@ function mergeSubscribers(
  * `resolveIdentitiesByEmail` (que funde de verdade) e `planIdentityMerges`
  * (que só relata o que fundiria, #7205). Nenhuma escrita acontece aqui.
  */
-function groupAliasesByCanonicalEmail(db: DatabaseSync): Map<string, Set<number>> {
+function groupAliasesByCanonicalEmail(
+  db: DatabaseSync,
+  scopeByPlatform: boolean = false,
+): Map<string, Set<number>> {
   const rows = db
-    .prepare("SELECT subscriber_id, email FROM identity_alias WHERE email IS NOT NULL AND email != ''")
-    .all() as Array<{ subscriber_id: number; email: string }>;
+    .prepare(
+      scopeByPlatform
+        ? "SELECT subscriber_id, platform, email FROM identity_alias WHERE email IS NOT NULL AND email != ''"
+        : "SELECT subscriber_id, email FROM identity_alias WHERE email IS NOT NULL AND email != ''",
+    )
+    .all() as Array<{ subscriber_id: number; platform?: Platform; email: string }>;
 
   const groups = new Map<string, Set<number>>();
   for (const r of rows) {
@@ -214,10 +221,17 @@ function groupAliasesByCanonicalEmail(db: DatabaseSync): Map<string, Set<number>
     // `ensureSubscriber`), mas a regra "só e-mail canonicalizado casa"
     // pressupõe um e-mail de verdade, não a ausência de um.
     if (!canon || !canon.includes("@")) continue;
-    let set = groups.get(canon);
+    // `scopeByPlatform`: chave inclui a plataforma, então dois aliases só
+    // caem no mesmo grupo quando (plataforma, e-mail canônico) baterem —
+    // é o agrupamento que `detectSamePlatformDuplicateIdentities` usa (#8236
+    // item 3, duplicata DENTRO da mesma plataforma). Sem o flag (default),
+    // o agrupamento é só por e-mail, cross-plataforma — o que
+    // `resolveIdentitiesByEmail`/`planIdentityMerges` sempre usaram.
+    const key = scopeByPlatform ? `${r.platform} ${canon}` : canon;
+    let set = groups.get(key);
     if (!set) {
       set = new Set();
-      groups.set(canon, set);
+      groups.set(key, set);
     }
     set.add(r.subscriber_id);
   }
@@ -501,5 +515,83 @@ export function buildUnmatchedReport(
     by_platform: byPlatform,
     weak_signals: weakSignals,
     note: CROSS_PLATFORM_FLOOR_NOTE,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Detector de identidade partida DENTRO da mesma plataforma (#8236 item 3)
+// ---------------------------------------------------------------------------
+
+export interface SamePlatformDuplicatePlatformStat {
+  platform: Platform;
+  /** Grupos de e-mail canonicalizado com >1 `subscriber_id` NESTA plataforma. */
+  duplicate_email_groups: number;
+  /** Soma de `subscriber_id` distintos abrangidos por esses grupos (>= 2 ×
+   *  `duplicate_email_groups`, já que cada grupo tem no mínimo 2 ids). */
+  duplicate_subscribers: number;
+}
+
+export interface SamePlatformDuplicateReport {
+  generated_at: string;
+  total_duplicate_email_groups: number;
+  total_duplicate_subscribers: number;
+  by_platform: SamePlatformDuplicatePlatformStat[];
+}
+
+/**
+ * Detector do item 3 da #8236: conta e-mails com mais de 1 `subscriber_id`
+ * NA MESMA plataforma — o defeito que o fix de `ensureSubscriber` (item 1,
+ * #8259) corrige na ESCRITA daqui pra frente, mas que não cura o que já
+ * está partido no store (item 2, aplicação manual do editor via
+ * `diaria-subscribers-resolve-identity.ts --apply`).
+ *
+ * Reusa o mesmo agrupamento por e-mail canonicalizado de
+ * `resolveIdentitiesByEmail`/`planIdentityMerges`
+ * (`groupAliasesByCanonicalEmail`), só que com `scopeByPlatform: true` — a
+ * chave do agrupamento passa a ser `(platform, e-mail canônico)` em vez de
+ * só e-mail canônico, então dois aliases da MESMA pessoa em plataformas
+ * DIFERENTES (caso legítimo, tratado pelo resolver cross-plataforma) nunca
+ * contam aqui. Só entra na contagem quem deveria ter casado na ESCRITA
+ * (mesma plataforma, mesmo e-mail) e não casou.
+ *
+ * Puro/read-only, sem escrita — nunca funde nada, só conta. Idempotente por
+ * natureza (é uma leitura): rodar 2x sem nenhuma escrita nova no meio
+ * devolve o MESMO número — é esse o critério de aceite da issue ("depois de
+ * 2 execuções seguidas da task, a contagem continua 0"), que só passa a ser
+ * 0 de fato depois do item 2 (cura manual) rodar; até lá, o número real do
+ * store aparece aqui de propósito — não é fabricado, nunca zerado
+ * artificialmente para "parecer saudável".
+ */
+export function detectSamePlatformDuplicateIdentities(
+  db: DatabaseSync,
+  now: string = new Date().toISOString(),
+): SamePlatformDuplicateReport {
+  const groups = groupAliasesByCanonicalEmail(db, /* scopeByPlatform */ true);
+
+  const byPlatform = new Map<Platform, { groups: number; subscribers: number }>();
+  let totalGroups = 0;
+  let totalSubscribers = 0;
+
+  for (const [key, ids] of groups) {
+    if (ids.size < 2) continue;
+    const sep = key.indexOf(" ");
+    const platform = key.slice(0, sep) as Platform;
+    totalGroups++;
+    totalSubscribers += ids.size;
+    const entry = byPlatform.get(platform) ?? { groups: 0, subscribers: 0 };
+    entry.groups++;
+    entry.subscribers += ids.size;
+    byPlatform.set(platform, entry);
+  }
+
+  return {
+    generated_at: now,
+    total_duplicate_email_groups: totalGroups,
+    total_duplicate_subscribers: totalSubscribers,
+    by_platform: PLATFORMS.map((p) => ({
+      platform: p,
+      duplicate_email_groups: byPlatform.get(p)?.groups ?? 0,
+      duplicate_subscribers: byPlatform.get(p)?.subscribers ?? 0,
+    })),
   };
 }

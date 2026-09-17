@@ -18,6 +18,7 @@ import {
   planIdentityMerges,
   checkMergeConservation,
   backupStoreFile,
+  detectSamePlatformDuplicateIdentities,
   CROSS_PLATFORM_FLOOR_NOTE,
 } from "../scripts/lib/diaria-subscribers-identity-resolve.ts";
 
@@ -557,5 +558,88 @@ describe("backupStoreFile", () => {
     const dataRoot = tmpDataRoot("dsri-backup-missing-");
     const dbPath = resolve(dataRoot, "nao-existe.db");
     assert.throws(() => backupStoreFile(dbPath, NOW), /não encontrado/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectSamePlatformDuplicateIdentities — detector do #8236 item 3
+// ---------------------------------------------------------------------------
+
+describe("detectSamePlatformDuplicateIdentities", () => {
+  it("acusa quando o MESMO e-mail tem 2 subscriber_id na MESMA plataforma (identidade partida)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // Simula o defeito da #8236 diretamente — 2 aliases Kit pro mesmo
+    // e-mail em subscribers DIFERENTES (o que `ensureSubscriber` pós-fix,
+    // #8259, não deixaria mais acontecer via chamada normal — este teste
+    // exercita o DETECTOR contra um store já partido, não a escrita).
+    const s1 = ensureSubscriber(db, "kit", "kit-123", "leitor@example.com", NOW);
+    // Força uma 2ª identidade pro mesmo e-mail na mesma plataforma sem
+    // passar pelo caminho de merge de `ensureSubscriber` (insere um
+    // subscriber + alias novo à mão, reproduzindo o estado pré-#8259).
+    db.prepare("INSERT INTO subscriber (created_at, updated_at) VALUES (?, ?)").run(NOW, NOW);
+    const s2 = (db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id;
+    db.prepare(
+      "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, ?, ?, ?, ?)",
+    ).run(s2, "kit", null, "leitor@example.com", NOW);
+    assert.notEqual(s1, s2);
+
+    const report = detectSamePlatformDuplicateIdentities(db, NOW);
+
+    assert.equal(report.total_duplicate_email_groups, 1);
+    assert.equal(report.total_duplicate_subscribers, 2);
+    const kitStat = report.by_platform.find((p) => p.platform === "kit");
+    assert.ok(kitStat);
+    assert.equal(kitStat!.duplicate_email_groups, 1);
+    assert.equal(kitStat!.duplicate_subscribers, 2);
+    db.close();
+  });
+
+  it("devolve 0 num store LIMPO — mesmo e-mail em plataformas DIFERENTES não conta (não é o mesmo defeito)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ensureSubscriber(db, "beehiiv", "bh-1", "leitor@example.com", NOW);
+    ensureSubscriber(db, "kit", "kit-1", "leitor@example.com", NOW);
+    ensureSubscriber(db, "kit", "kit-2", "outra@example.com", NOW);
+
+    const report = detectSamePlatformDuplicateIdentities(db, NOW);
+
+    assert.equal(report.total_duplicate_email_groups, 0);
+    assert.equal(report.total_duplicate_subscribers, 0);
+    for (const stat of report.by_platform) {
+      assert.equal(stat.duplicate_email_groups, 0);
+      assert.equal(stat.duplicate_subscribers, 0);
+    }
+    db.close();
+  });
+
+  it("é idempotente — 2 chamadas seguidas sem escrita nova no meio devolvem o MESMO número (critério de aceite #8236)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ensureSubscriber(db, "kit", "kit-1", "a@example.com", NOW);
+    db.prepare("INSERT INTO subscriber (created_at, updated_at) VALUES (?, ?)").run(NOW, NOW);
+    const s2 = (db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id;
+    db.prepare(
+      "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, ?, ?, ?, ?)",
+    ).run(s2, "kit", null, "a@example.com", NOW);
+
+    const first = detectSamePlatformDuplicateIdentities(db, NOW);
+    const second = detectSamePlatformDuplicateIdentities(db, NOW);
+
+    assert.deepEqual(first.by_platform, second.by_platform);
+    assert.equal(first.total_duplicate_email_groups, second.total_duplicate_email_groups);
+    assert.equal(first.total_duplicate_subscribers, second.total_duplicate_subscribers);
+    db.close();
+  });
+
+  it("o fix de ensureSubscriber (#8259) já impede o caso mais comum de dupe (roster com id -> evento sem id) — detector fica em 0 após reingestão normal", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // Mesmo padrão exato do bug original: roster grava com external_id,
+    // ingestão de broadcast grava sem. Pós-#8259, ensureSubscriber já casa
+    // os dois na ESCRITA — o detector nunca vê 2 subscribers aqui.
+    const rosterId = ensureSubscriber(db, "kit", "kit-999", "assinante@example.com", NOW);
+    const eventId = ensureSubscriber(db, "kit", null, "assinante@example.com", NOW);
+    assert.equal(rosterId, eventId);
+
+    const report = detectSamePlatformDuplicateIdentities(db, NOW);
+    assert.equal(report.total_duplicate_email_groups, 0);
+    db.close();
   });
 });

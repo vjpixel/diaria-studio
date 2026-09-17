@@ -31,6 +31,7 @@ import {
   findSubscriberIdByAlias,
   getSubscriptionsForSubscriber,
   getSubscriberTimeline,
+  ensureSubscriber,
 } from "../scripts/lib/diaria-subscribers-db.ts";
 import type { KitSubscriberSummary } from "../scripts/lib/kit-subscribers.ts";
 
@@ -402,6 +403,85 @@ describe("main() — ponta a ponta com deps injetadas (fixture de /subscribers/f
     assert.equal(process.exitCode, 1);
     assert.equal(calledFetch, false, "guard de data/ ausente roda ANTES de qualquer chamada de rede");
     process.exitCode = originalExit;
+  });
+});
+
+describe("main() — detector de identidade duplicada na mesma plataforma (#8236 item 3)", () => {
+  /** Captura a última chamada de `console.log` (o JSON summary final do
+   *  CLI) sem depender de mock library — restaura no `finally`. */
+  async function captureStdoutJson(run: () => Promise<void>): Promise<Record<string, unknown>> {
+    const original = console.log;
+    let captured = "";
+    console.log = ((msg: string) => {
+      captured = msg;
+    }) as typeof console.log;
+    try {
+      await run();
+    } finally {
+      console.log = original;
+    }
+    return JSON.parse(captured) as Record<string, unknown>;
+  }
+
+  it("store LIMPO: same_platform_duplicate_identities_kit sai com 0 — nunca omitido, nunca fabricado", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-ingest-dup-clean-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+
+    const output = await captureStdoutJson(() => main(["--db", dbPath, "--manifest", manifestPath], fakeDeps()));
+
+    const stat = output.same_platform_duplicate_identities_kit as {
+      platform: string;
+      duplicate_email_groups: number;
+      duplicate_subscribers: number;
+    } | null;
+    assert.ok(stat, "campo precisa estar presente mesmo quando não há duplicata nenhuma");
+    assert.equal(stat!.platform, "kit");
+    assert.equal(stat!.duplicate_email_groups, 0);
+    assert.equal(stat!.duplicate_subscribers, 0);
+  });
+
+  it("store JÁ PARTIDO (pré-existente, fora desta rodada): detector acusa a duplicata real, sem escondê-la nem corrigi-la sozinho", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-ingest-dup-dirty-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+
+    // Semeia o defeito ANTES de rodar o CLI — reproduz o estado real do
+    // store (#8236: identidade partida por uma ingestão anterior ao fix de
+    // `ensureSubscriber`, #8259) sem passar pelo caminho de escrita normal.
+    mkdirSync(resolve(tmp, "data/diaria-subscribers"), { recursive: true });
+    const seedDb = openDiariaSubscribersDb(dbPath);
+    ensureSubscriber(seedDb, "kit", "kit-1", "partido@example.com", "2026-09-10T00:00:00.000Z");
+    ensureSubscriber(seedDb, "kit", "kit-2", "partido@example.com", "2026-09-10T00:00:00.000Z");
+    seedDb.close();
+
+    const output = await captureStdoutJson(() => main(["--db", dbPath, "--manifest", manifestPath], fakeDeps()));
+
+    const stat = output.same_platform_duplicate_identities_kit as {
+      duplicate_email_groups: number;
+      duplicate_subscribers: number;
+    } | null;
+    assert.ok(stat);
+    assert.equal(stat!.duplicate_email_groups, 1);
+    assert.equal(stat!.duplicate_subscribers, 2);
+  });
+
+  it("idempotente na TASK: 2 execuções seguidas de main() sem novo defeito mantêm a MESMA contagem (critério de aceite #8236)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-ingest-dup-idem-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+
+    const first = await captureStdoutJson(() => main(["--db", dbPath, "--manifest", manifestPath], fakeDeps()));
+    const second = await captureStdoutJson(() => main(["--db", dbPath, "--manifest", manifestPath], fakeDeps()));
+
+    assert.deepEqual(
+      first.same_platform_duplicate_identities_kit,
+      second.same_platform_duplicate_identities_kit,
+      "2ª rodada da task Diaria-Kit-Roster-Ingest não pode introduzir nem esconder duplicata",
+    );
   });
 });
 
