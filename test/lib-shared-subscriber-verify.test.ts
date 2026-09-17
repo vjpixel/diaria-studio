@@ -145,7 +145,9 @@ describe("subscriber-verify (#4052)", () => {
   describe("verifySubscriberViaKitByEmail — secundário (#6048, migração Beehiiv → Kit), fail-soft", () => {
     it("ATIVO: subscribers[0].state === active", async () => {
       const fetchImpl = (async () =>
-        new Response(JSON.stringify({ subscribers: [{ state: "active" }] }), { status: 200 })) as typeof fetch;
+        new Response(JSON.stringify({ subscribers: [{ state: "active", email_address: "x@example.com" }] }), {
+          status: 200,
+        })) as typeof fetch;
       const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
       assert.equal(r, "active");
     });
@@ -153,10 +155,36 @@ describe("subscriber-verify (#4052)", () => {
     it("INATIVO: cada um dos 4 estados não-active mapeia pra inactive (cancelled/bounced/complained/inactive)", async () => {
       for (const state of ["cancelled", "bounced", "complained", "inactive"]) {
         const fetchImpl = (async () =>
-          new Response(JSON.stringify({ subscribers: [{ state }] }), { status: 200 })) as typeof fetch;
+          new Response(JSON.stringify({ subscribers: [{ state, email_address: "x@example.com" }] }), {
+            status: 200,
+          })) as typeof fetch;
         const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
         assert.equal(r, "inactive", `state=${state}`);
       }
+    });
+
+    it("#8269: pede status=all — sem ele, um Kit real esconderia inactive/cancelled/bounced/complained", async () => {
+      let urlPedida: string | undefined;
+      const fetchImpl = (async (url: string | URL) => {
+        urlPedida = String(url);
+        return new Response(
+          JSON.stringify({ subscribers: [{ state: "cancelled", email_address: "x@example.com" }] }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+      const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
+      assert.equal(r, "inactive");
+      assert.ok(urlPedida?.includes("status=all"));
+    });
+
+    it("#8269 (mesmo achado #7373/#8266): lista com e-mail diferente do buscado (busca aproximada) nunca é tratada como match", async () => {
+      const fetchImpl = (async () =>
+        new Response(
+          JSON.stringify({ subscribers: [{ state: "active", email_address: "outra.pessoa@y.com" }] }),
+          { status: 200 },
+        )) as typeof fetch;
+      const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
+      assert.equal(r, "unknown");
     });
 
     it("INEXISTENTE: 200 com subscribers:[] — achado ao vivo #6048, Kit NÃO usa 404 pra 'não encontrado' (diferente da Beehiiv)", async () => {
@@ -200,7 +228,9 @@ describe("subscriber-verify (#4052)", () => {
 
     it("state ausente/desconhecido no subscriber encontrado: unknown", async () => {
       const fetchImpl = (async () =>
-        new Response(JSON.stringify({ subscribers: [{}] }), { status: 200 })) as typeof fetch;
+        new Response(JSON.stringify({ subscribers: [{ email_address: "x@example.com" }] }), {
+          status: 200,
+        })) as typeof fetch;
       const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
       assert.equal(r, "unknown");
     });

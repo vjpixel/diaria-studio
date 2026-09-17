@@ -30,7 +30,22 @@ beforeEach(() => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("beehiiv")) return beehiivResponder();
-    if (url.includes("kit.com")) return kitResponder();
+    if (url.includes("kit.com")) {
+      // #8269: verifySubscriberViaKitByEmail agora só aceita match exato de
+      // e-mail. Os responders deste arquivo declaram `subscribers` sem
+      // `email_address` (irrelevante pro que cada teste cobre) — injeta o
+      // e-mail pedido na URL pra não quebrar esses testes por um detalhe
+      // ortogonal ao que eles verificam.
+      const res = kitResponder();
+      const emailBuscado = new URL(url).searchParams.get("email_address");
+      if (!res.ok || !emailBuscado) return res;
+      const body = (await res.json().catch(() => null)) as { subscribers?: { email_address?: string }[] } | null;
+      if (!body?.subscribers?.length) return jsonRes(body ?? {}, res.status);
+      return jsonRes(
+        { ...body, subscribers: body.subscribers.map((s) => ({ email_address: emailBuscado, ...s })) },
+        res.status,
+      );
+    }
     throw new Error(`fetch inesperado: ${url}`);
   }) as typeof fetch;
 });

@@ -116,8 +116,8 @@ describe("#4054 — espelho de subscriber-verify.ts não pode driftar", () => {
       (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
 
     for (const [status, body] of [
-      [200, { subscribers: [{ state: "active" }] }],
-      [200, { subscribers: [{ state: "cancelled" }] }],
+      [200, { subscribers: [{ state: "active", email_address: "x@example.com" }] }],
+      [200, { subscribers: [{ state: "cancelled", email_address: "x@example.com" }] }],
       // #6048: "não encontrado" no Kit é 200 com array vazio, NUNCA 404
       // (diferente da Beehiiv) — ver docstring de verifySubscriberViaKitByEmail.
       [200, { subscribers: [] }],
@@ -138,6 +138,40 @@ describe("#4054 — espelho de subscriber-verify.ts não pode driftar", () => {
       await mirrorSubscriber.verifySubscriberViaKitByEmail("k", "x@example.com", { fetchImpl: failFetchKit }),
       await sharedSubscriber.verifySubscriberViaKitByEmail("k", "x@example.com", { fetchImpl: failFetchKit }),
     );
+  });
+
+  it("verifySubscriberViaKitByEmail (#8269) — pede status=all e ignora resultado com e-mail diferente", async () => {
+    const urlsPedidas: string[] = [];
+    const fetchImpl = (async (url: string | URL) => {
+      urlsPedidas.push(String(url));
+      // Kit v4 real: sem status=all a lista só traria active. Aqui devolvemos
+      // um cancelled pra provar que o parâmetro foi de fato enviado — sem ele,
+      // um Kit real teria devolvido [] e o teste não distinguiria as duas coisas.
+      return new Response(
+        JSON.stringify({ subscribers: [{ state: "cancelled", email_address: "x@example.com" }] }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    for (const impl of [sharedSubscriber, mirrorSubscriber]) {
+      const antes = urlsPedidas.length;
+      const res = await impl.verifySubscriberViaKitByEmail("k", "x@example.com", { fetchImpl });
+      assert.equal(res, "inactive", "cancelled só é visível — e portanto mapeado — com status=all");
+      const urlDestaChamada = urlsPedidas[antes];
+      assert.ok(urlDestaChamada?.includes("status=all"), "a busca precisa pedir status=all");
+    }
+
+    // Busca aproximada (#7373/#8266): lista não vazia mas SEM match exato de
+    // e-mail nunca deve ser tratada como achado.
+    const fetchOutraPessoa = (async () =>
+      new Response(
+        JSON.stringify({ subscribers: [{ state: "active", email_address: "outra.pessoa@y.com" }] }),
+        { status: 200 },
+      )) as typeof fetch;
+    for (const impl of [sharedSubscriber, mirrorSubscriber]) {
+      const res = await impl.verifySubscriberViaKitByEmail("k", "x@example.com", { fetchImpl: fetchOutraPessoa });
+      assert.equal(res, "unknown", "sem match exato de e-mail não pode virar active");
+    }
   });
 });
 

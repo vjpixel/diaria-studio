@@ -318,9 +318,19 @@ interface KitSubscribersByEmailResponse {
 }
 
 /**
- * `GET /v4/subscribers?email_address=...` — leitura PURA, nunca cria.
- * "não encontrado" é 200 com array vazio, não 404 (confirmado ao vivo em
- * `verifySubscriberViaKitByEmail`, `scripts/lib/shared/subscriber-verify.ts`).
+ * `GET /v4/subscribers?email_address=...&status=all` — leitura PURA, nunca
+ * cria. `status=all` é obrigatório (#8269, generalização do hotfix #8235):
+ * sem ele o Kit só devolve `active`, e um assinante `inactive`/`cancelled`/
+ * etc. voltava como "não encontrado" aqui, fazendo `existedInKit: false`
+ * errado e um `createOrUpdateSubscriber` desnecessário. Só match exato de
+ * e-mail conta (mesmo achado #7373/#8266 — busca aproximada); lista não
+ * vazia sem match exato lança — o `catch` por e-mail em `applyCohortWave`
+ * já trata isso como erro daquele e-mail, sem abortar a coorte inteira.
+ * (Não delega pra `getKitSubscriberByEmail`, `lib/kit-subscribers.ts` —
+ * mesmo endpoint/semântica, mas aquele helper pede `include[]=attribution`
+ * também, o que muda a ordem dos parâmetros da query string; mantém o
+ * `email_address` como 1º parâmetro aqui só por estabilidade dos mocks de
+ * teste existentes, que casam por esse prefixo.)
  * Existe pra permitir checar "esta pessoa já é subscriber no Kit?" sem o
  * efeito colateral de criação que `createOrUpdateSubscriber` (POST, upsert)
  * sempre tem — essencial pro `--dry-run` nunca mutar (ver docstring do
@@ -331,10 +341,19 @@ export async function findKitSubscriberByEmail(
   config: KitConfig,
 ): Promise<KitSubscriberSummary | null> {
   const data = await kitFetch<KitSubscribersByEmailResponse>(
-    `/subscribers?email_address=${encodeURIComponent(email)}`,
+    `/subscribers?email_address=${encodeURIComponent(email)}&status=all`,
     { config },
   );
-  return data.subscribers?.[0] ?? null;
+  const subscribers = data.subscribers ?? [];
+  const alvo = email.trim().toLowerCase();
+  const match = subscribers.find((s) => (s.email_address ?? "").trim().toLowerCase() === alvo);
+  if (match) return match;
+  if (subscribers.length === 0) return null;
+  const [first] = subscribers;
+  throw new Error(
+    `findKitSubscriberByEmail(${email}): API devolveu ${subscribers.length} assinante(s) mas nenhum bate o e-mail exato ` +
+      `(ex: id=${first.id}, email_address="${first.email_address}") — abortando.`,
+  );
 }
 
 interface KitSubscriberTagsResponse {
