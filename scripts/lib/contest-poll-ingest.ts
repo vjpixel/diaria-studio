@@ -21,13 +21,18 @@
  * Worker `poll` têm uma "plataforma de origem" nesse sentido; as duas são
  * ações de quem já É assinante em alguma das 3. `"beehiiv"` é a escolha
  * (não `"kit"`/`"brevo_diaria"`) porque é a plataforma PRIMÁRIA da diária
- * hoje — o efeito prático é transitório: `resolveIdentitiesByEmail`
- * (`diaria-subscribers-identity-resolve.ts`, fatia 5, #6589) funde por
- * e-mail canonicalizado DEPOIS da ingestão, então uma pessoa que só existe
- * na Beehiiv via este módulo se funde com o alias Kit/Brevo dela assim que
- * ambos forem ingeridos — a etiqueta de plataforma aqui não prende a pessoa
- * a essa plataforma pra sempre, só precisa satisfazer o `NOT NULL` até a
- * fusão rodar.
+ * hoje. Dentro da própria plataforma Beehiiv o efeito é imediato, não
+ * transitório: `ensureSubscriber(db, "beehiiv", null, email, now)` casa na
+ * ESCRITA com o alias `(beehiiv, <id>, email)` já ingerido por
+ * `beehiiv-subscribers-ingest.ts` para a mesma pessoa (#8236 — antes desse
+ * fix, o par "com id"/"sem id" ficava em `subscriber` separados até alguém
+ * rodar o resolver manualmente). O que continua transitório é a fusão
+ * CROSS-plataforma: uma pessoa que só existe aqui via Beehiiv e tem alias
+ * Kit/Brevo com e-mail diferente daqui só funde quando
+ * `resolveIdentitiesByEmail` (`diaria-subscribers-identity-resolve.ts`,
+ * fatia 5, #6589) rodar depois da ingestão — a etiqueta de plataforma aqui
+ * não prende a pessoa a essa plataforma pra sempre, só precisa satisfazer o
+ * `NOT NULL` até essa fusão cross-plataforma acontecer.
  *
  * ## Identidade anônima do voto — NUNCA funde (#4433, `purge-leaderboard`)
  *

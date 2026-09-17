@@ -20,6 +20,7 @@ import {
 } from "../scripts/lib/contest-poll-ingest.ts";
 import {
   openDiariaSubscribersDb,
+  ensureSubscriber,
   findSubscriberIdByAlias,
   getSubscriberTimeline,
   getStoreCounts,
@@ -316,6 +317,63 @@ describe("ingestPollVotes", () => {
     const result = ingestPollVotes(db, [{ email: "  ", edition: "260901", ts: "2026-09-01T12:00:00Z" }]);
     assert.equal(result.skippedNoEmail, 1);
     assert.equal(getStoreCounts(db).subscribers, 0);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8236 — contest_reply/poll_vote gravam `ensureSubscriber(db, "beehiiv",
+// null, email, now)` (id não é conhecido aqui, ver docstring do módulo). Uma
+// pessoa que JÁ tem alias beehiiv com external_id real (roster/engagement,
+// `beehiiv-subscribers-ingest.ts`) precisa casar no mesmo subscriber_id, não
+// ficar partida em 2 — era a origem das 7 duplicatas Beehiiv medidas no
+// #8236.
+// ---------------------------------------------------------------------------
+
+describe("ingestContestReplies / ingestPollVotes — casam com alias beehiiv já existente COM external_id (#8236)", () => {
+  it("ingestContestReplies casa no subscriber_id do alias beehiiv com id real já ingerido (roster/engagement)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const rosterSubscriberId = ensureSubscriber(db, "beehiiv", "beehiiv-ext-1", "leitor@example.com");
+
+    const result = ingestContestReplies(db, [
+      { reader_email: "leitor@example.com", edition: "260901", confirmed_at: "2026-09-01T10:00:00Z" },
+    ]);
+    assert.equal(result.newEvents, 1);
+
+    assert.equal(getStoreCounts(db).subscribers, 1, "não cria um 2º subscriber pro mesmo e-mail/plataforma");
+    const timeline = getSubscriberTimeline(db, rosterSubscriberId);
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].type, "contest_reply");
+    db.close();
+  });
+
+  it("ingestPollVotes casa no subscriber_id do alias beehiiv com id real já ingerido", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const rosterSubscriberId = ensureSubscriber(db, "beehiiv", "beehiiv-ext-1", "leitor@example.com");
+
+    const result = ingestPollVotes(db, [
+      { email: "leitor@example.com", edition: "260901", ts: "2026-09-01T12:00:00Z" },
+    ]);
+    assert.equal(result.newEvents, 1);
+    assert.equal(getStoreCounts(db).subscribers, 1);
+
+    const timeline = getSubscriberTimeline(db, rosterSubscriberId);
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].type, "poll_vote");
+    db.close();
+  });
+
+  it("ordem inversa: contest_reply primeiro (sem id), roster/engagement depois (com id) — mesmo subscriber_id", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestContestReplies(db, [
+      { reader_email: "leitor@example.com", edition: "260901", confirmed_at: "2026-09-01T10:00:00Z" },
+    ]);
+    const laterSubscriberId = ensureSubscriber(db, "beehiiv", "beehiiv-ext-1", "leitor@example.com");
+
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    const timeline = getSubscriberTimeline(db, laterSubscriberId);
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].type, "contest_reply");
     db.close();
   });
 });
