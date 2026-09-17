@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { main, loadState, saveState } from "../scripts/check-acquisition-health.ts";
 import { emptyAcquisitionHealthState } from "../scripts/lib/acquisition-health.ts";
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
+import { openDiariaSubscribersDb, ensureSubscriber, upsertSubscription } from "../scripts/lib/diaria-subscribers-db.ts";
 
 function sub(overrides: Partial<BeehiivBackupSubscriber> = {}): BeehiivBackupSubscriber {
   return {
@@ -399,6 +400,174 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
 
       assert.ok(existsSync(statePath));
       assert.equal(loadState(statePath).lastCheckedSnapshotDate, "2026-08-02");
+    });
+  });
+
+  describe("#8243 item 2 — runOverStore (subscriber_backend=kit, leitura do store unificado)", () => {
+    function writeKitConfig(path: string): void {
+      writeFileSync(path, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "kit" } } }));
+    }
+
+    function seedKitSubscriber(
+      db: ReturnType<typeof openDiariaSubscribersDb>,
+      opts: { email: string; status: string; enteredAt: string; utmSource: string; origemCadastro?: string | null },
+    ): void {
+      const subscriberId = ensureSubscriber(db, "kit", opts.email, opts.email);
+      upsertSubscription(db, subscriberId, "kit", {
+        status: opts.status,
+        enteredAt: opts.enteredAt,
+        exitedAt: null,
+        source: opts.utmSource,
+        utmSource: opts.utmSource,
+        origemCadastro: opts.origemCadastro ?? null,
+      });
+    }
+
+    it("meta-ads e google-ads voltam a ser monitorados — sobrevivência real vira achado, nunca 0/0 fabricado", async () => {
+      const kitConfigPath = join(tmpRoot, "platform.config.8243-store-monitor.json");
+      writeKitConfig(kitConfigPath);
+      const storeDbPath = join(tmpRoot, "store-8243-monitor.db");
+      const statePath = join(tmpRoot, "state-8243-store-monitor.json");
+
+      const db = openDiariaSubscribersDb(storeDbPath);
+      try {
+        // meta-ads: 25 cadastros nativos (acima do cohortMinSize=20), só 5
+        // ativos — sobrevivência real de 20%, abaixo do piso de 30%.
+        for (let i = 0; i < 25; i++) {
+          seedKitSubscriber(db, {
+            email: `meta${i}@x.com`,
+            status: i < 5 ? "active" : "cancelled",
+            enteredAt: "2026-09-10T00:00:00.000Z",
+            utmSource: "meta-ads",
+          });
+        }
+        // Migração em bloco da Beehiiv (#7386) — precisa ficar de fora do
+        // denominador, senão infla a sobrevivência artificialmente.
+        for (let i = 0; i < 30; i++) {
+          seedKitSubscriber(db, {
+            email: `migrado${i}@x.com`,
+            status: "active",
+            enteredAt: "2026-08-01T00:00:00.000Z",
+            utmSource: "www.alquimiaoperativa.news",
+            origemCadastro: "beehiiv-sync",
+          });
+        }
+      } finally {
+        db.close();
+      }
+
+      const originalLog = console.log;
+      const logs: string[] = [];
+      console.log = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      try {
+        await main(["--dry-run", "--config", kitConfigPath, "--store-db", storeDbPath, "--state", statePath]);
+      } finally {
+        console.log = originalLog;
+      }
+
+      assert.ok(
+        logs.some((l) => l.includes("[sobrevivencia_baixa] meta-ads") && l.includes("20%") && l.includes("5/25")),
+        `esperava achado real de meta-ads nos logs, recebi:\n${logs.join("\n")}`,
+      );
+      // A migração excluída nunca aparece como canal avaliado.
+      assert.ok(!logs.some((l) => l.includes("alquimiaoperativa")));
+      // --dry-run nunca escreve state.
+      assert.ok(!existsSync(statePath));
+    });
+
+    it("store sem nenhuma captura: 'sem dado' visível (warning), NUNCA um achado fabricado nem state.json escrito", async () => {
+      const kitConfigPath = join(tmpRoot, "platform.config.8243-store-empty.json");
+      writeKitConfig(kitConfigPath);
+      const storeDbPath = join(tmpRoot, "store-8243-empty.db");
+      const statePath = join(tmpRoot, "state-8243-store-empty.json");
+      // Cria o arquivo só com o schema (sem nenhuma subscription) —
+      // equivalente a "captura nunca rodou".
+      openDiariaSubscribersDb(storeDbPath).close();
+
+      const originalWarn = console.warn;
+      const warns: string[] = [];
+      console.warn = (...args: unknown[]) => {
+        warns.push(args.map(String).join(" "));
+      };
+      const originalLog = console.log;
+      const logs: string[] = [];
+      console.log = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      try {
+        await main(["--config", kitConfigPath, "--store-db", storeDbPath, "--state", statePath]); // sem --dry-run
+      } finally {
+        console.warn = originalWarn;
+        console.log = originalLog;
+      }
+
+      assert.ok(warns.some((w) => w.includes("sem captura recente")));
+      assert.ok(!logs.some((l) => l.includes("findings=") || l.includes("achado")));
+      assert.ok(!existsSync(statePath));
+    });
+
+    it("troca de fonte (beehiiv → store) reseta o baseline: meta-ads/google-ads nunca disparam canal_desconhecido na 1ª rodada sobre o store", async () => {
+      const kitConfigPath = join(tmpRoot, "platform.config.8243-store-switch.json");
+      writeKitConfig(kitConfigPath);
+      const storeDbPath = join(tmpRoot, "store-8243-switch.db");
+      const statePath = join(tmpRoot, "state-8243-store-switch.json");
+
+      // State anterior, construído sobre a fonte Beehiiv — meta-ads/
+      // google-ads nunca apareceram lá (corpo da #8243).
+      const beehiivState = {
+        ...emptyAcquisitionHealthState(),
+        source: "beehiiv" as const,
+        knownChannels: ["direct", "google.com"],
+        lastCheckedSnapshotDate: "2026-08-30",
+      };
+      saveState(beehiivState, statePath);
+
+      const db = openDiariaSubscribersDb(storeDbPath);
+      try {
+        // Todos ATIVOS e cadastrados AGORA (dentro da janela atual de 7
+        // dias) — sobrevivência 100% (sem achado) e `novosNaJanela` atual
+        // não-zero (sem `canal_parou`), pra este teste ficar restrito ao
+        // que ele verifica (reset de baseline), sem depender de nenhum
+        // achado real disparar `notifyEditor` de verdade (guard de
+        // publicação — este teste nunca pode criar issue/e-mail real).
+        const nowIso = new Date().toISOString();
+        for (let i = 0; i < 25; i++) {
+          seedKitSubscriber(db, { email: `meta${i}@x.com`, status: "active", enteredAt: nowIso, utmSource: "meta-ads" });
+        }
+      } finally {
+        db.close();
+      }
+
+      const originalLog = console.log;
+      const logs: string[] = [];
+      console.log = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      try {
+        await main(["--config", kitConfigPath, "--store-db", storeDbPath, "--state", statePath]); // sem --dry-run
+      } finally {
+        console.log = originalLog;
+      }
+
+      // Cinto e suspensório (guard de publicação, context/overnight-dispatch-rules.md
+      // item 1): nenhum achado disparado nesta rodada — nunca deveria ter
+      // chamado notifyEditor de verdade.
+      assert.ok(logs.some((l) => l.includes("findings=0")), `esperava 0 achados nesta rodada:\n${logs.join("\n")}`);
+
+      // Formato de finding real é "[canal_desconhecido] {canal}: ..." — a
+      // linha informativa de reset de baseline também menciona a palavra
+      // ("sem alarmar canal_desconhecido nesta rodada"), então checar o
+      // formato de finding evita falso-positivo contra o próprio log
+      // explicativo.
+      assert.ok(
+        !logs.some((l) => l.includes("[canal_desconhecido]")),
+        `não devia alarmar canal_desconhecido:\n${logs.join("\n")}`,
+      );
+      const nextState = loadState(statePath);
+      assert.equal(nextState.source, "store");
+      assert.ok(nextState.knownChannels.includes("meta-ads"));
     });
   });
 });
