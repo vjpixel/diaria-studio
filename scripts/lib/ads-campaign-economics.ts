@@ -25,6 +25,22 @@
  *    uma média de custo/CPC entre braços; métrica por canal só em
  *    `buildChannelTable`.
  * 5. Indicador de idade/frescor por fonte — `computeSourceFreshness`.
+ *
+ * ## #8210 melhorias 1-2 (residual da issue, PR #8250 já fechou os 4 bugs)
+ *
+ * 1. **Funil por canal** (cliques → cadastros → ativos) — `ChannelSummaryRow`
+ *    ganha `ativosTotal`/`ativosAmostraN`/`pctAtivo`, calculados a partir do
+ *    STORE unificado (`data/diaria-subscribers/`, via `leitor-store.ts`/
+ *    `subscribersForChannel` de `cac.ts` — `studio-ads.ts` monta o mapa e
+ *    passa em `BuildChannelTableOptions.activeCountsByChannel`). Canal
+ *    ausente do mapa (store não ingerido ainda nesta máquina) sai com
+ *    `ativosTotal: null` — NUNCA `0` (mesmo invariante do Bug 3c).
+ * 2. **Badge ativa/pausada por braço** — `computeCampaignPauseStatus` deriva
+ *    de `AdsTestRunStateRevisao.pausas`, que é GLOBAL à campanha (os 3
+ *    braços pausam/religam juntos — ver docstring de
+ *    `AdsTestRunStateRevisao`), então o mesmo status vale pros 3 braços.
+ *    `revisao` ausente (infra sem consumidor que a escreva ainda, ver
+ *    CLAUDE.md) é `"desconhecido"` — NUNCA `"ativa"` por omissão.
  */
 
 // ---------------------------------------------------------------------------
@@ -192,7 +208,39 @@ export interface ChannelSummaryRow {
    *  é `unknown` (#8210 Bug 3c: "custo/cadastro R$ 0,00" enganava o canal
    *  como o mais barato quando a API só tinha falhado). */
   custoPorCadastroBrl: number | null;
+  /** #8210 melhoria 1 — ativos no STORE unificado atribuídos a este canal.
+   *  `null` quando o canal não está em `activeCountsByChannel` (store ainda
+   *  não ingerido nesta máquina) — NUNCA `0` nesse caso (mesmo invariante do
+   *  gasto desconhecido acima). */
+  ativosTotal: number | null;
+  /** "n" do `pctAtivo` — total de subscribers do canal no STORE. `0` quando
+   *  `ativosTotal` é `null` (só pra não deixar `undefined` na resposta;
+   *  quem consome já sabe checar `ativosTotal` primeiro). */
+  ativosAmostraN: number;
+  /** `ativosTotal / ativosAmostraN`, fração 0-1 — `null` sem amostra
+   *  (`ativosAmostraN === 0`) ou sem dado (`ativosTotal === null`). Nunca
+   *  exibir sem `ativosAmostraN` ao lado (requisito da issue — taxa sem `n`
+   *  visível engana). */
+  pctAtivo: number | null;
+  /** #8210 melhoria 2 — mesmo valor pros 3 braços (pausas são da campanha
+   *  inteira). */
+  pauseStatus: CampaignPauseStatus;
 }
+
+/** Contagem de ativos por canal vinda do STORE unificado (#8210 melhoria 1)
+ *  — `studio-ads.ts` monta isto filtrando o store pelas mesmas
+ *  `CHANNEL_KEY_SPECS` de `cac.ts`/`subscribersForChannel`. */
+export interface ChannelActiveCounts {
+  ativos: number;
+  /** Total de subscribers do STORE atribuídos a este canal — é o "n" do %
+   *  ativo. Pode divergir de `cadastrosTotal` (que vem da API do Kit via
+   *  `ads-campaign-economics-fetch.ts`, fonte diferente) — as duas contagens
+   *  não são forçadas a bater. */
+  totalNoStore: number;
+}
+
+/** ativa/pausada/desconhecido — ver `computeCampaignPauseStatus`. */
+export type CampaignPauseStatus = "ativa" | "pausada" | "desconhecido";
 
 export interface BuildChannelTableOptions {
   /** Canais cuja fonte de gasto AO VIVO falhou nesta chamada (a API do
@@ -206,6 +254,12 @@ export interface BuildChannelTableOptions {
    *  métricas ao vivo — nunca sobrepõe dado AO VIVO real (inclusive
    *  zero real, que é `gastoFonte: "live"`, não fallback). */
   manualFallback?: Readonly<Record<string, { totalBrl: number; asOfDate: string }>>;
+  /** #8210 melhoria 1 — canal ausente daqui (store não ingerido nesta
+   *  máquina) sai com `ativosTotal: null`/`pctAtivo: null`, nunca `0`. */
+  activeCountsByChannel?: Readonly<Record<string, ChannelActiveCounts>>;
+  /** #8210 melhoria 2 — aplicado uniformemente a TODAS as linhas (pausas
+   *  são da campanha inteira, não por braço). Default `"desconhecido"`. */
+  pauseStatus?: CampaignPauseStatus;
 }
 
 /**
@@ -224,6 +278,8 @@ export function buildChannelTable(
 ): ChannelSummaryRow[] {
   const channelsWithUnknownLiveSpend = opts.channelsWithUnknownLiveSpend ?? new Set<string>();
   const manualFallback = opts.manualFallback ?? {};
+  const activeCountsByChannel = opts.activeCountsByChannel ?? {};
+  const pauseStatus = opts.pauseStatus ?? "desconhecido";
 
   const channels = new Set<string>();
   for (const m of metrics) channels.add(m.canal);
@@ -261,6 +317,10 @@ export function buildChannelTable(
       }
     }
 
+    const activeEntry = activeCountsByChannel[canal];
+    const ativosTotal = activeEntry ? activeEntry.ativos : null;
+    const ativosAmostraN = activeEntry ? activeEntry.totalNoStore : 0;
+
     rows.push({
       canal,
       gastoTotalBrl,
@@ -271,9 +331,38 @@ export function buildChannelTable(
       cpcMedioBrl: gastoTotalBrl != null && cliquesTotal > 0 ? round2(gastoTotalBrl / cliquesTotal) : null,
       cadastrosTotal,
       custoPorCadastroBrl: gastoTotalBrl != null && cadastrosTotal > 0 ? round2(gastoTotalBrl / cadastrosTotal) : null,
+      ativosTotal,
+      ativosAmostraN,
+      pctAtivo: ativosTotal != null && ativosAmostraN > 0 ? round2(ativosTotal / ativosAmostraN) : null,
+      pauseStatus,
     });
   }
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// #8210 melhoria 2: badge ativa/pausada (aplicado uniformemente aos 3 braços
+// — pausas são registradas pra campanha inteira, ver docstring de
+// `AdsTestRunStateRevisao` em `ads-test-run-state.ts`)
+// ---------------------------------------------------------------------------
+
+/**
+ * `revisao` ausente (nenhuma pausa jamais registrada, OU infra sem
+ * consumidor que a escreva ainda — ver CLAUDE.md sobre `revisao.pausas`)
+ * devolve `"desconhecido"`, NUNCA `"ativa"` — decisão explícita do editor
+ * (#8210): dado ausente não vira presunção otimista. `todayIso` dentro de
+ * alguma pausa (`desde`/`ate` inclusivos) → `"pausada"`; caso contrário,
+ * com `revisao` presente, → `"ativa"`.
+ *
+ * @pure
+ */
+export function computeCampaignPauseStatus(
+  revisao: { pausas: readonly { desde: string; ate: string }[] } | undefined,
+  todayIso: string,
+): CampaignPauseStatus {
+  if (!revisao) return "desconhecido";
+  const paused = revisao.pausas.some((p) => todayIso >= p.desde && todayIso <= p.ate);
+  return paused ? "pausada" : "ativa";
 }
 
 // ---------------------------------------------------------------------------

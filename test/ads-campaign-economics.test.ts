@@ -13,6 +13,7 @@ import {
   buildChannelTable,
   buildTestStateTiles,
   computeSourceFreshness,
+  computeCampaignPauseStatus,
   type ChannelDailyMetric,
   type ChannelDailySignup,
 } from "../scripts/lib/ads-campaign-economics.ts";
@@ -207,5 +208,76 @@ describe("#7536 — computeSourceFreshness: requisito 5 (idade/frescor por fonte
     assert.equal(byName["Microsoft Ads"].status, "stale");
     assert.equal(byName["Kit"].status, "error");
     assert.equal(byName["Outra"].status, "unavailable");
+  });
+});
+
+describe("#8210 melhoria 1 — buildChannelTable: funil (ativos/% ativo) por canal a partir do store", () => {
+  it("canal AUSENTE de activeCountsByChannel (store não ingerido nesta máquina) nunca vira 0 — ativosTotal/pctAtivo ficam null", () => {
+    const metrics: ChannelDailyMetric[] = [{ canal: "Microsoft Ads (teste 2608)", date: "2026-09-01", gastoBrl: 288.02, cliques: 4, impressoes: 200 }];
+    const signups: ChannelDailySignup[] = [{ canal: "Microsoft Ads (teste 2608)", date: "2026-09-01", cadastros: 1 }];
+    // opts sem `activeCountsByChannel` — o caso "nenhuma ingestão do store rodou ainda".
+    const rows = buildChannelTable(metrics, signups);
+    const ms = rows.find((r) => r.canal === "Microsoft Ads (teste 2608)")!;
+    assert.equal(ms.ativosTotal, null, "dado desconhecido — nunca 0");
+    assert.equal(ms.ativosAmostraN, 0);
+    assert.equal(ms.pctAtivo, null);
+  });
+
+  it("canal com n BAIXO (achado #7999: Microsoft, 2 cadastros, 0 ativos) expõe o n em vez de esconder a taxa enganosa", () => {
+    const metrics: ChannelDailyMetric[] = [{ canal: "Microsoft Ads (teste 2608)", date: "2026-09-01", gastoBrl: 288.02, cliques: 4, impressoes: 200 }];
+    const signups: ChannelDailySignup[] = [{ canal: "Microsoft Ads (teste 2608)", date: "2026-09-01", cadastros: 2 }];
+    const rows = buildChannelTable(metrics, signups, {
+      activeCountsByChannel: { "Microsoft Ads (teste 2608)": { ativos: 0, totalNoStore: 2 } },
+    });
+    const ms = rows.find((r) => r.canal === "Microsoft Ads (teste 2608)")!;
+    assert.equal(ms.ativosTotal, 0, "0 ativos é um dado REAL medido, não 'desconhecido' — ver teste anterior");
+    assert.equal(ms.ativosAmostraN, 2, "n sempre visível — UI decide esmaecer com base nele, nunca esconder");
+    assert.equal(ms.pctAtivo, 0);
+  });
+
+  it("canal com dado normal: pctAtivo = ativos/totalNoStore, independente de cadastrosTotal (fonte diferente, Kit vs. store)", () => {
+    const metrics: ChannelDailyMetric[] = [];
+    const signups: ChannelDailySignup[] = [{ canal: "Google Ads (teste 2608)", date: "2026-09-01", cadastros: 10 }];
+    const rows = buildChannelTable(metrics, signups, {
+      activeCountsByChannel: { "Google Ads (teste 2608)": { ativos: 6, totalNoStore: 8 } },
+    });
+    const google = rows.find((r) => r.canal === "Google Ads (teste 2608)")!;
+    assert.equal(google.cadastrosTotal, 10, "cadastrosTotal segue vindo do Kit — não é sobrescrito pelo store");
+    assert.equal(google.ativosTotal, 6);
+    assert.equal(google.ativosAmostraN, 8);
+    assert.equal(google.pctAtivo, 0.75);
+  });
+});
+
+describe("#8210 melhoria 2 — computeCampaignPauseStatus: badge ativa/pausada/desconhecido", () => {
+  it("sem revisao (infra sem consumidor que a escreva, ou nenhuma pausa jamais registrada) — 'desconhecido', NUNCA 'ativa'", () => {
+    assert.equal(computeCampaignPauseStatus(undefined, "2026-09-17"), "desconhecido");
+  });
+
+  it("todayIso dentro de uma pausa registrada — 'pausada'", () => {
+    const revisao = { pausas: [{ desde: "2026-09-09", ate: "2026-09-16" }] };
+    assert.equal(computeCampaignPauseStatus(revisao, "2026-09-12"), "pausada");
+    assert.equal(computeCampaignPauseStatus(revisao, "2026-09-09"), "pausada", "limite inferior inclusivo");
+    assert.equal(computeCampaignPauseStatus(revisao, "2026-09-16"), "pausada", "limite superior inclusivo");
+  });
+
+  it("todayIso fora de qualquer pausa, com revisao presente — 'ativa'", () => {
+    const revisao = { pausas: [{ desde: "2026-09-09", ate: "2026-09-16" }] };
+    assert.equal(computeCampaignPauseStatus(revisao, "2026-09-17"), "ativa");
+  });
+
+  it("buildChannelTable aplica o MESMO pauseStatus aos 3 braços (pausas são da campanha inteira, não por canal)", () => {
+    const metrics: ChannelDailyMetric[] = [
+      { canal: "Google Ads (teste 2608)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 },
+      { canal: "Meta Ads (teste 2608)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 },
+    ];
+    const rows = buildChannelTable(metrics, [], { pauseStatus: "pausada" });
+    assert.ok(rows.every((r) => r.pauseStatus === "pausada"));
+  });
+
+  it("sem pauseStatus em opts (default): 'desconhecido' — nunca 'ativa' por omissão", () => {
+    const metrics: ChannelDailyMetric[] = [{ canal: "Google Ads (teste 2608)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 }];
+    const rows = buildChannelTable(metrics, []);
+    assert.equal(rows[0].pauseStatus, "desconhecido");
   });
 });

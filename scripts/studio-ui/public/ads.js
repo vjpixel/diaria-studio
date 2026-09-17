@@ -339,18 +339,55 @@ function gastoFonteBadge(row) {
   return "";
 }
 
+/** #8210 melhoria 2 — mesmo texto/classe pros 3 braços (badge ativa/pausada
+ *  é da campanha inteira, ver `computeCampaignPauseStatus`). Ausência
+ *  (`"desconhecido"`) nunca aparece como "ativa" por omissão. */
+function pauseStatusBadge(status) {
+  const labelByStatus = { ativa: "ativa", pausada: "pausada", desconhecido: "desconhecido" };
+  const label = labelByStatus[status] ?? status;
+  return `<span class="state-badge state-${escapeHtml(status)}">${escapeHtml(label)}</span>`;
+}
+
+/** #8210 melhoria 1 — mínimo de "n" (mesmo piso de `AMOSTRA_PEQUENA_THRESHOLD`
+ *  em `cohort-engagement.ts`) abaixo do qual o % ativo fica esmaecido em vez
+ *  de aparecer como um número confiável (ex: "50%" com n=1). */
+const ATIVOS_AMOSTRA_MIN = 5;
+
+/** `ativosTotal`/`pctAtivo` nunca viram "0"/"0%" quando o canal ainda não
+ *  tem dado no store (`ativosTotal === null`) — sempre "—". Com dado
+ *  presente mas `n` abaixo do piso, o valor aparece esmaecido (nunca
+ *  escondido — a issue pede visível, só não com peso de número confiável). */
+function ativosCell(row) {
+  if (row.ativosTotal == null) {
+    return `${fmtInt(null)}<div class="reachable-subtext">sem dado no store ainda</div>`;
+  }
+  const dim = row.ativosAmostraN < ATIVOS_AMOSTRA_MIN;
+  return `<span class="${dim ? "ads-dim" : ""}">${fmtInt(row.ativosTotal)} <span class="reachable-subtext">n=${fmtInt(
+    row.ativosAmostraN,
+  )}</span></span>`;
+}
+
+function pctAtivoCell(row) {
+  if (row.pctAtivo == null) return fmtPct(null);
+  const dim = row.ativosAmostraN < ATIVOS_AMOSTRA_MIN;
+  return `<span class="${dim ? "ads-dim" : ""}">${fmtPct(row.pctAtivo)}</span>`;
+}
+
 function renderCampaignChannelsTable(channels) {
   el.campaignChannelsTbody.innerHTML = channels
     .map(
       (row) => `
     <tr>
       <td><strong>${escapeHtml(shortChannelLabel(row.canal))}</strong></td>
+      <td>${pauseStatusBadge(row.pauseStatus)}</td>
       <td class="mono">${fmtBrl(row.gastoTotalBrl)}${gastoFonteBadge(row)}</td>
       <td>${fmtInt(row.cliquesTotal)}</td>
       <td>${fmtInt(row.impressoesTotal)}</td>
       <td class="mono">${fmtBrl(row.cpcMedioBrl)}</td>
       <td>${fmtInt(row.cadastrosTotal)}</td>
       <td class="mono">${fmtBrl(row.custoPorCadastroBrl)}</td>
+      <td class="mono">${ativosCell(row)}</td>
+      <td class="mono">${pctAtivoCell(row)}</td>
     </tr>`,
     )
     .join("");
