@@ -292,11 +292,19 @@ describe("classifyAcquisition — #8244: superfície de cadastro própria → or
     );
   });
 
-  it("a decisão vem do catálogo, não da regra genérica 6 — cada source de SUPERFICIE_PROPRIA_UTM_SOURCES pertence ao catálogo", () => {
+  it("todo source do catálogo resolve organico mesmo isolado (sem medium/referring_site)", () => {
+    // Nota: para estes 6 valores a regra 6 genérica (groupKey !== "__none__")
+    // já chegaria em `organico` mesmo sem a regra 4 — a regra 4 explícita
+    // existe para (a) documentar a decisão em vez de deixá-la acidental e
+    // (b) travar `assertNoDuplicateClassKeys`: se alguém reintroduzir um
+    // destes valores em `NAO_AQUISICAO_UTM_SOURCES` (o erro original da
+    // #7173), o guard de chave duplicada lança em vez de reclassificar em
+    // silêncio.
     for (const source of SUPERFICIE_PROPRIA_UTM_SOURCES) {
-      assert.ok(
-        SUPERFICIE_PROPRIA_UTM_SOURCES.includes(source),
-        `${source} deveria pertencer a SUPERFICIE_PROPRIA_UTM_SOURCES`,
+      assert.equal(
+        classifyAcquisition({ utm_source: source, utm_medium: null, utm_channel: null, referring_site: null, created }),
+        "organico",
+        `${source} isolado (sem medium/referring_site) deveria ser organico`,
       );
     }
   });
