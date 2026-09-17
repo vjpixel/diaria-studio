@@ -76,7 +76,15 @@ describe("continuo-pr-review.sh — modelo nunca mergeia, bash só mergeia atrá
     // garantia original: NENHUMA linha do prompt instrui o modelo a mergear.
     const src = readScript();
     const promptStart = src.indexOf('PROMPT="');
-    const promptEnd = src.indexOf('\n\n  set +e\n  echo "$PROMPT"');
+    // Âncora do FIM do bloco: o `set +e` que segue a atribuição de PROMPT.
+    // Buscada a partir de `promptStart` e sem exigir que `echo "$PROMPT"`
+    // venha imediatamente depois — antes a âncora era a string exata
+    // `\n\n  set +e\n  echo "$PROMPT"`, que um comentário inserido entre as
+    // duas linhas derrubava, fazendo este guard falhar por MOTIVO ERRADO
+    // ("não encontrou os limites") em vez de por violação real. O que o teste
+    // protege é o CONTEÚDO do prompt; a forma exata do código ao redor não é
+    // parte da propriedade.
+    const promptEnd = src.indexOf('\n  set +e\n', promptStart);
     assert.ok(promptStart !== -1 && promptEnd !== -1 && promptEnd > promptStart, "não encontrou os limites do bloco $PROMPT no script");
     const promptBlock = src.slice(promptStart, promptEnd);
     const lines = promptBlock.split("\n");
