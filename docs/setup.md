@@ -5,6 +5,12 @@ instalação/troubleshooting não precisa estar no arquivo carregado
 incondicionalmente em toda sessão e todo dispatch de subagente. `CLAUDE.md`
 §"Como usar" mantém só a lista de passos + este ponteiro.
 
+Se você está montando uma máquina do zero pela primeira vez, `docs/installation.md`
+é o walkthrough mais didático (pré-requisitos em tabela, validação por seção);
+este arquivo é o texto original que o `CLAUDE.md` carregava — mais denso,
+mesmo conteúdo operacional, com achados ao vivo (#7106, #4823 etc.) que o
+`installation.md` não repete.
+
 1. Exportar `CLARICE_API_KEY` no ambiente do shell. **Uma key serve os dois caminhos** da Clarice: o MCP (`.mcp.json` manda no header `X-Clarice-Api-Key`, via `${CLARICE_API_KEY}`) e o REST fallback (`scripts/clarice-correct.ts` → `cortex.clarice.ai`). Pegue a sua em https://cortex.clarice.ai (cada usuário usa a própria — o servidor é passthrough, não tem key compartilhada). No Windows (persistente, requer reabrir o terminal):
    ```powershell
    [Environment]::SetEnvironmentVariable("CLARICE_API_KEY", "SEU_TOKEN_AQUI", "User")
@@ -39,7 +45,7 @@ incondicionalmente em toda sessão e todo dispatch de subagente. `CLAUDE.md`
    Confirme com `/agents`: `pr-review-toolkit:code-reviewer` deve aparecer. **É opcional de propósito** — sem ele o hook pós-PR e as Fases 1.5 caem no `general-purpose` com rubrico inline (review pior, nunca review nenhum). Diferente do `humanizador` (3a), que aborta o Stage 2 se faltar.
 4. Abrir Claude Code neste diretório: `cd diaria-studio && claude`.
 5. Confirmar que os MCPs estão ativos: `/mcp` deve listar `clarice` (HTTP, de `.mcp.json` — header-auth via `${CLARICE_API_KEY}`, **não** OAuth), `claude.ai Beehiiv` e `claude.ai Gmail` (conectores nativos). Para Fase 2 (imagens), instalar ComfyUI local (ver `docs/comfyui-setup.md`). Para Fase 3 (publicação), instalar e logar a extensão `Claude in Chrome` em Beehiiv/LinkedIn/Facebook (ver `docs/browser-publish-setup.md`). Para o MCP `google-ads` (opcional): requer `pipx` instalado + `GOOGLE_ADS_SERVICE_ACCOUNT_JSON` via Doppler materializada com `npx tsx scripts/materialize-google-ads-credentials.ts` — ver `docs/google-ads-api-setup.md` (#6450).
-6. **Inbox editorial** (endereço documentado em `docs/gmail-inbox-setup.md`): nenhum setup necessário — o drain busca direto na pasta Enviados da conta pessoal (ver `docs/gmail-inbox-setup.md`). Isso permite enviar links/temas durante o dia que são considerados na próxima edição automaticamente.
+6. **Inbox editorial** (endereço em `docs/gmail-inbox-setup.md`): nenhum setup necessário — o drain busca direto na pasta Enviados da conta pessoal. Isso permite enviar links/temas durante o dia que são considerados na próxima edição automaticamente.
 7. Rodar `/diaria-atualiza-audiencia` para importar respostas de survey do Beehiiv em `data/audience-raw.json` (re-rodar semanalmente ou quando quiser recalibrar). O `context/audience-profile.md` é regenerado automaticamente no Stage 0, combinando CTR comportamental (primário) e survey (secundário).
 8. **Config do Claude Code entre máquinas (#4804).** `~/.claude` (settings, comandos, agentes, CLAUDE.md global) é sincronizado via repo privado `github.com/vjpixel/claude-config`, não via OneDrive — nova máquina roda `git clone https://github.com/vjpixel/claude-config.git ~/claude-config && ~/claude-config/bootstrap.sh` (`bootstrap.ps1` no Windows). **A propagação é automática desde o #6310** — antes nada puxava, e config commitada valia só na máquina de origem, em silêncio. Conservador por padrão (nunca força, nunca resolve conflito sozinho); estado do último check em `~/claude-config/.sync-state.json`. Ver `docs/claude-config-sync.md` para o mecanismo completo, o que fica de fora de propósito (credenciais) e o estado pendente do rollout. **`memory/` NÃO fica mais de fora** — a política de "nunca commitar" foi revertida em 06/09/2026 (#7533): sincroniza via repo git próprio e privado (distinto do `claude-config`), `MEMORY.md` passa a ser gerado (nunca editado à mão) por `scripts/extract-memory-index.ts`/`scripts/regenerate-memory-index.ts`, e `scripts/memory-sync.ts` faz o auto-commit + `pull --rebase` — ver `docs/claude-config-sync.md` §"Política de `memory/`" para o setup manual 1x do repo remoto.
 

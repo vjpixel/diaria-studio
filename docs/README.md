@@ -7,6 +7,7 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 | Doc | O que cobre |
 |---|---|
 | [`installation.md`](./installation.md) | Passo-a-passo completo do zero ao primeiro `/diaria-edicao` funcional (~30-45min) |
+| [`setup.md`](./setup.md) | Setup (1x) por máquina extraído do `CLAUDE.md` (#8228) — Clarice key, Node, Doppler, junction `data/`, skill `humanizador`, plugin `pr-review-toolkit`, MCPs, inbox editorial, sync de config `~/.claude` |
 | [`comfyui-setup.md`](./comfyui-setup.md) | Instalar/configurar ComfyUI + LoRA Van Gogh impasto pras imagens da Fase 2 |
 | [`browser-publish-setup.md`](./browser-publish-setup.md) | MCP Claude in Chrome pros Stages 5-6 (publicação Beehiiv/LinkedIn/Facebook) |
 | [`gmail-inbox-setup.md`](./gmail-inbox-setup.md) | Forward + label pro inbox editorial `diariaeditor@gmail.com` |
@@ -24,6 +25,8 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 
 | Doc | O que cobre |
 |---|---|
+| [`pipeline-detail.md`](./pipeline-detail.md) | Tabela detalhada de scripts/subagentes/outputs por etapa (extraído do `CLAUDE.md`, #8228) — fonte viva é o playbook `orchestrator-stage-N-*.md` de cada etapa |
+| [`pr-review-effort.md`](./pr-review-effort.md) | Trajetória de decisão e mecanismo completo do effort do review automatizado por PR (#4234, extraído do `CLAUDE.md` no #8228) |
 | [`secret-rotation.md`](./secret-rotation.md) | Ponto único de consulta pra rotação/expiração das 7 credenciais da pipeline |
 | [`archival.md`](./archival.md) | `scripts/archive-editions.ts` — mover edições antigas de `data/editions/` pra manter o working tree leve |
 | [`editorial-invariants.md`](./editorial-invariants.md) | **Auto-gerado** (`npx tsx scripts/list-invariants.ts`) — não editar à mão |
