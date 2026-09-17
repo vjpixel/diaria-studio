@@ -25,6 +25,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   fetchTrainPrInfo,
   revalidateGate2,
@@ -275,6 +278,36 @@ describe("cleanupIntegrationBranch", () => {
     const result = cleanupIntegrationBranch(runner, "merge-train/lote-1", "/tmp/wt1", MAIN_CWD);
     assert.equal(result.ok, false);
     assert.ok(runner.warnings.some((w) => /worktree remove/.test(w)));
+  });
+
+  it("#8209 (regressão #633): git reporta sucesso mas sobra uma casca com junction node_modules -> resolveWorktreeRemoval limpa via fallback, alvo intacto", () => {
+    const base = mkdtempSync(join(tmpdir(), "diaria-mtl-8209-"));
+    const worktreePath = join(base, "worktree-integracao");
+    const nodeModulesTarget = join(base, "SHARED-node-modules-descartavel");
+    mkdirSync(nodeModulesTarget, { recursive: true });
+    writeFileSync(join(nodeModulesTarget, "canary.txt"), "conteúdo real do node_modules do checkout principal");
+    mkdirSync(worktreePath, { recursive: true });
+    symlinkSync(nodeModulesTarget, join(worktreePath, "node_modules"), "dir");
+
+    const runner = new FakeTrainRunner();
+    runner
+      // git relata sucesso, mas — igual ao #8209 no Windows — o diretório
+      // sobrevive por causa da junction/symlink lá dentro.
+      .on("git", (a, cwd) => a[0] === "worktree" && a[1] === "remove" && cwd === MAIN_CWD, () => ok())
+      .on("git", (a, cwd) => a[0] === "push" && a.includes("--delete") && cwd === MAIN_CWD, () => ok())
+      .on("git", (a, cwd) => a[0] === "branch" && a.includes("-D") && cwd === MAIN_CWD, () => ok());
+
+    const result = cleanupIntegrationBranch(runner, "merge-train/lote-1", worktreePath, MAIN_CWD);
+
+    assert.equal(result.ok, true, "a limpeza segura de fallback recupera a casca — o resultado final continua ok");
+    assert.equal(existsSync(worktreePath), false, "a casca precisa sumir depois do fallback");
+    // Asserção mais importante do teste (#8209): o ALVO do link sobrevive
+    // intacto — prova que a limpeza NUNCA seguiu a junction/symlink pra
+    // dentro do node_modules do checkout principal.
+    assert.equal(existsSync(nodeModulesTarget), true, "alvo do link precisa sobreviver intacto");
+    assert.equal(readFileSync(join(nodeModulesTarget, "canary.txt"), "utf8"), "conteúdo real do node_modules do checkout principal");
+
+    rmSync(base, { recursive: true, force: true });
   });
 });
 

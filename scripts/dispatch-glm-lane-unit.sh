@@ -149,6 +149,15 @@ cleanup_worktree() {
       echo "[glm-lane] ABORTADO (rc=$rc) — removendo worktree $WORKTREE_DIR. A issue #$ISSUE pode continuar reivindicada: rode 'session-registry.ts unclaim-issue --issue $ISSUE --kind interactive' se não for retentar." >&2
     fi
     git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
+    if [ -d "$WORKTREE_DIR" ]; then
+      # #8209: git pode reportar sucesso (ou falhar) e a pasta sobreviver —
+      # junction/symlink node_modules/data dentro do worktree. Fallback
+      # seguro via o mesmo helper TS usado em cleanup-merged-worktrees.ts/
+      # branch-cleanup.ts/merge-train-live.ts (nunca segue link pro alvo:
+      # node_modules do checkout principal, data/ do OneDrive). Best-effort
+      # — nunca falha a saída do script por conta disso.
+      npx tsx "$REPO/scripts/lib/worktree-remove.ts" "$WORKTREE_DIR" 2>/dev/null || true
+    fi
   fi
 }
 trap cleanup_worktree EXIT

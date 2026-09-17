@@ -89,6 +89,7 @@
 
 import { execFileSync } from "node:child_process";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { resolveWorktreeRemoval } from "./lib/worktree-remove.ts"; // #8209
 import {
   classifyBranchForCleanup,
   classifyWorktreeForCleanup,
@@ -385,12 +386,18 @@ async function main(): Promise<void> {
         continue;
       }
       const removeResult = execFileSyncCaptured(["worktree", "remove", "--force", w.path], cwd);
-      removalResults.push(removeResult);
-      if (removeResult.ok) {
+      // #8209: git pode reportar sucesso e a pasta sobreviver (junction
+      // node_modules/data dentro do worktree) — resolveWorktreeRemoval faz
+      // a limpeza segura de fallback nesse caso (nunca quando o git em si
+      // falhou — ver docstring do helper), mesmo helper único usado por
+      // cleanup-merged-worktrees.ts e merge-train-live.ts.
+      const finalResult = resolveWorktreeRemoval(removeResult, w.path);
+      removalResults.push(finalResult);
+      if (finalResult.ok) {
         removedWt++;
         console.log(`${LOG_PREFIX} worktree removido: ${w.path}`);
       } else {
-        console.error(`${LOG_PREFIX} falha ao remover worktree ${w.path}: ${removeResult.error}`);
+        console.error(`${LOG_PREFIX} falha ao remover worktree ${w.path}: ${finalResult.error}`);
       }
     }
   }
