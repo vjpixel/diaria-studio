@@ -113,7 +113,7 @@ O bloco encaminhável por WhatsApp (dentro do D1 desde #5152, ver `context/templ
      --actual-slug "{slug_atual_do_get_post}" \
      --out {EDITION_DIR}/_internal/whatsapp-slug-check.json
    ```
-   (omitir `--actual-slug` se `web_settings.slug` vier ausente/vazio — o guard trata ausência como divergência.)
+   (omitir `--actual-slug` se `web_settings.slug` vier ausente/vazio — o guard trata ausência como divergência.) **Exit 2 (args inválidos — `post_id`/`title` ausentes)** é bug do orchestrator, não divergência de slug: investigar antes de repetir, sem tratar como aviso pro editor.
 3. **Se divergir (exit 1):** tentar a correção automática por completude — sempre falha no plano atual (#3449, `403 SEND_API_NOT_ENTERPRISE_PLAN`, não transitório), então isto é só registro, não um passo que precisa suceder:
    ```bash
    npx tsx scripts/fix-post-slug.ts --post-id {post_id} --slug {slug_correto} --execute
