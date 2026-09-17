@@ -32,7 +32,10 @@ function fakeKit(opts: { existing: string | null; activateFormPromotes?: boolean
     const body = init?.body ? JSON.parse(init.body as string) : undefined;
     calls.push({ method, url: u, body });
     if (method === "GET" && u.includes("/subscribers?email_address=")) {
-      return jsonRes(200, { subscribers: state ? [{ id: 42, state }] : [] });
+      // Kit v4 real (#8235): sem status=all a lista devolve só active.
+      const qs = new URL(u).searchParams;
+      const visivel = state !== null && (qs.get("status") === "all" || state === "active");
+      return jsonRes(200, { subscribers: visivel ? [{ id: 42, email_address: qs.get("email_address"), state }] : [] });
     }
     if (method === "GET" && u.endsWith("/subscribers/42")) return jsonRes(200, { subscriber: { id: 42, state } });
     if (method === "POST" && u.endsWith("/subscribers")) {

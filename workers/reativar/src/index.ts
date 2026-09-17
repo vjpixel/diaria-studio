@@ -676,7 +676,11 @@ export async function activateSubscriptionKit(
   let existingId: string | number | undefined;
   let existsAlready = false;
   try {
-    const getRes = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}`, {
+    // #8235 (hotfix): `status=all` é obrigatório — sem ele o endpoint de lista do
+    // Kit devolve SÓ assinantes active, então um inactive (exatamente o público
+    // do botão Confirmar) voltava como inexistente e o upsert sobrescrevia a
+    // origem. Medido ao vivo em 17/09/2026 com fixture +probe.
+    const getRes = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}&status=all`, {
       headers: authHeaders,
       signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
     });
@@ -691,11 +695,23 @@ export async function activateSubscriptionKit(
       return { ok: false, status: getRes.status, reason: "beehiiv_error" };
     }
     const body = (await getRes.json().catch(() => null)) as
-      | { subscribers?: { id?: string | number; state?: string }[] }
+      | { subscribers?: { id?: string | number; state?: string; email_address?: string }[] }
       | null;
-    const existingState = body?.subscribers?.[0]?.state;
-    existsAlready = body?.subscribers?.[0] != null;
-    existingId = body?.subscribers?.[0]?.id;
+    // #8235 (review da #8266): a lista pode devolver assinante que NÃO bate o
+    // e-mail buscado (busca aproximada — mesmo achado do #7373 em
+    // getKitSubscriberByEmail). Só match exato conta como "este assinante".
+    // Lista não vazia SEM match exato = ambíguo: trata como existente com
+    // estado e id desconhecidos — a ativação segue, mas nenhum campo de origem
+    // é gravado (readKitSubscriberFields sem id → null → fail-closed).
+    const lista = body?.subscribers ?? [];
+    const alvo = email.trim().toLowerCase();
+    const match = lista.find((s) => (s.email_address ?? "").trim().toLowerCase() === alvo);
+    if (lista.length > 0 && !match) {
+      console.warn(JSON.stringify({ event: "reativar_kit_lookup_sem_match_exato", resultados: lista.length }));
+    }
+    const existingState = match?.state;
+    existsAlready = match != null || lista.length > 0;
+    existingId = match?.id;
     // #8194: com token, nunca ressuscita quem saiu (cancelled/complained/
     // bounced) — o clique no botão da Brevo não desfaz um descadastro no Kit.
     if (confirmedByToken && existingState && existingState !== "active" && existingState !== "inactive") {

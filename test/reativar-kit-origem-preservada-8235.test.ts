@@ -48,6 +48,8 @@ const ORIGEM_PAGA = {
 function fakeKit(opts: {
   existing: { state: string; fields: Record<string, string | null> } | null;
   singularGet?: "ok" | "500" | "throw" | "sem-fields";
+  /** E-mail devolvido pela lista (default: o buscado). Diferente = busca aproximada (#7373). */
+  listaEmail?: string;
 }) {
   const calls: Call[] = [];
   let sub = opts.existing ? { state: opts.existing.state, fields: { ...opts.existing.fields } } : null;
@@ -58,7 +60,15 @@ function fakeKit(opts: {
     calls.push({ method, url: u, body });
     if (method === "GET" && u.includes("/subscribers?email_address=")) {
       // Lista com `fields` DEFASADO de propósito — o worker não pode confiar nele.
-      return jsonRes(200, { subscribers: sub ? [{ id: 42, state: sub.state, fields: {} }] : [] });
+      // Comportamento REAL do Kit v4 (hotfix #8235): sem `status=all` a lista
+      // devolve só assinantes `active` — um inactive some da busca.
+      const qs = new URL(u).searchParams;
+      const incluiTodos = qs.get("status") === "all";
+      const visivel = sub !== null && (incluiTodos || sub.state === "active");
+      const emailBuscado = qs.get("email_address") ?? "";
+      return jsonRes(200, {
+        subscribers: visivel ? [{ id: 42, email_address: opts.listaEmail ?? emailBuscado, state: sub!.state, fields: {} }] : [],
+      });
     }
     if (method === "GET" && u.endsWith("/subscribers/42")) {
       const modo = opts.singularGet ?? "ok";
@@ -187,6 +197,29 @@ describe("activateSubscriptionKit preserva a origem de quem já existe (#8235)",
       assert.equal(log?.motivo, "leitura_falhou");
     });
   }
+});
+
+describe("lookup do assinante enxerga inactive (hotfix #8235)", () => {
+  it("a busca por e-mail pede status=all — senão o inactive vira 'inexistente' e a origem é sobrescrita", async () => {
+    const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
+    await capture(() => activateSubscriptionKit(env(), "x@y.com", kit.fetchImpl, true));
+    const lookup = kit.calls.find((c) => c.method === "GET" && c.url.includes("/subscribers?email_address="));
+    assert.ok(lookup, "deveria buscar o assinante por e-mail");
+    assert.equal(new URL(lookup!.url).searchParams.get("status"), "all");
+    assert.equal(kit.get()!.fields.utm_source, "google-ads");
+  });
+
+  it("lista devolve assinante com OUTRO e-mail (busca aproximada) → não usa o id alheio e não grava origem", async () => {
+    const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } }, listaEmail: "outra.pessoa@y.com" });
+    const { warns } = await capture(() => activateSubscriptionKit(env(), "x@y.com", kit.fetchImpl, true));
+    assert.ok(warns.some((w) => w.event === "reativar_kit_lookup_sem_match_exato"));
+    const primeiroPost = kit.calls.findIndex((c) => c.method === "POST");
+    const leituraAntesDoPost = kit.calls.findIndex((c, i) => i < primeiroPost && c.method === "GET" && c.url.endsWith("/subscribers/42"));
+    assert.equal(leituraAntesDoPost, -1, "não deveria ler campos pelo id de um assinante que não bate o e-mail");
+    const post = kit.calls.find((c) => c.method === "POST" && c.url.endsWith("/subscribers"));
+    assert.ok(post, "a ativação segue");
+    assert.equal((post!.body as { fields?: unknown }).fields, undefined, "sem match exato, nenhum campo de origem vai no upsert");
+  });
 });
 
 describe("filterKitOrigemFields (#8235)", () => {

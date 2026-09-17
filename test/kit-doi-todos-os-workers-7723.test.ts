@@ -161,7 +161,8 @@ test("assinante já ATIVO não é rebaixado a inactive pelo nosso payload", asyn
     const url = String(u);
     chamadas.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
     if (url.includes("?email_address=")) {
-      return new Response(JSON.stringify({ subscribers: [{ id: 1, state: "active" }] }), { status: 200 });
+      const emailBuscado = new URL(url).searchParams.get("email_address");
+      return new Response(JSON.stringify({ subscribers: [{ id: 1, email_address: emailBuscado, state: "active" }] }), { status: 200 });
     }
     return new Response(JSON.stringify({ subscriber: { id: 1 } }), { status: 200 });
   };
