@@ -403,6 +403,15 @@ export const ARQUIVO_INLINE_UTM = {
   campaign: "arquivo-inline-signup",
 } as const;
 
+/** `utm_source` do triplo DEFAULT do cadastro do apex (#6427,
+ *  `workers/poll/src/subscribe.ts` → `SUBSCRIBE_UTM_BY_SOURCE.apex`) — antes
+ *  um literal solto no call site (#8244). Constante própria (não um objeto
+ *  `{source,medium,campaign}` como os demais desta seção) porque `medium`/
+ *  `campaign` do triplo `apex` já vivem só no Worker e não têm outro
+ *  consumidor fora dele; o classificador de aquisição (#8244) só precisa do
+ *  `source`. */
+export const DIARIA_APEX_SOURCE = "diaria-apex";
+
 /** Cadastro inline no topo de cada hub temático (#5167 item 2,
  * `arquivo.diar.ia.br/temas/{slug}`) — mesmo mecanismo/motivação de
  * `ARQUIVO_INLINE_UTM` acima. `utm_source` PRÓPRIO (não `"arquivo"`): os hubs

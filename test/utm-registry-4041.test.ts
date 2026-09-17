@@ -71,6 +71,7 @@ const MIRRORED = [
   "JOGAR_POSTWEB_UTM", // #4578
   "ARQUIVO_INLINE_UTM", // #5167 item 1
   "HUB_INLINE_UTM", // #5167 item 2
+  "DIARIA_APEX_SOURCE", // #8244
 ] as const;
 
 describe("#4041 — espelho do registry dentro do Worker não pode driftar", () => {

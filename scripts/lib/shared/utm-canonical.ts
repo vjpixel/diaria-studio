@@ -30,6 +30,15 @@
  * `lib/diaria/`/`lib/mensal/`. @pure em todo o módulo.
  */
 
+import {
+  LIVROS_INLINE_UTM,
+  CURSOS_GATE_INLINE_UTM,
+  ARQUIVO_INLINE_UTM,
+  HUB_INLINE_UTM,
+  EIA_STANDALONE_SOURCE,
+  DIARIA_APEX_SOURCE,
+} from "./utm-registry.ts";
+
 /**
  * Classe explícita de um `utm_source` cru:
  * - `"canal"` — canal canônico reconhecido (`canal` populado).
@@ -76,7 +85,7 @@ const CANONICAL_CHANNEL_ALIASES: Readonly<Record<string, string>> = Object.freez
   "microsoft-ads": "microsoft-ads",
   "clarice": "clarice",
   "clarice-email": "clarice",
-  "diaria-apex": "diaria-apex",
+  [DIARIA_APEX_SOURCE]: DIARIA_APEX_SOURCE,
   "linkedin": "linkedin",
   "linkedin.com": "linkedin",
   "linkedin.android": "linkedin",
@@ -86,6 +95,15 @@ const CANONICAL_CHANNEL_ALIASES: Readonly<Record<string, string>> = Object.freez
   "instagram-diaria": "instagram",
   "instagram.com": "instagram",
   "instagram-pessoal": "instagram",
+  // #8244: mesmas superfícies de cadastro próprias de `acquisition-class.ts`
+  // (`SUPERFICIE_PROPRIA_UTM_SOURCES`) — importadas das mesmas constantes do
+  // registry pra não divergir das duas taxonomias de novo (achado #7998: as
+  // duas tabelas já tinham divergido justo nesse vocabulário).
+  [LIVROS_INLINE_UTM.source]: LIVROS_INLINE_UTM.source,
+  [CURSOS_GATE_INLINE_UTM.source]: CURSOS_GATE_INLINE_UTM.source,
+  [ARQUIVO_INLINE_UTM.source]: ARQUIVO_INLINE_UTM.source,
+  [HUB_INLINE_UTM.source]: HUB_INLINE_UTM.source,
+  [EIA_STANDALONE_SOURCE]: EIA_STANDALONE_SOURCE,
 });
 
 /**
