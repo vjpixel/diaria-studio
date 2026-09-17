@@ -11,7 +11,9 @@ import assert from "node:assert/strict";
 import { scheduleDailyBrevo, type ScheduleDailyBrevoDeps } from "../scripts/schedule-daily-brevo.ts";
 import type { BrevoDiariaPublished } from "../scripts/publish-daily-brevo.ts";
 
-const EDITION_DIR = "/fake/root/data/editions/2608/260820";
+// #8207: EDITION_DIR precisa datar (BRT) o MESMO dia de SCHEDULED_AT — o guard
+// novo (checkScheduledAtMatchesEditionDate) recusaria a divergência.
+const EDITION_DIR = "/fake/root/data/editions/2608/260821";
 const SCHEDULED_AT = "2026-08-21T09:00:00.000Z";
 
 function draftState(overrides: Partial<BrevoDiariaPublished> = {}): BrevoDiariaPublished {
@@ -185,6 +187,64 @@ describe("scheduleDailyBrevo (#5772)", () => {
     assert.equal(putCalled, false, "PUT nunca deveria ser chamado — campanha Brevo agendada é imutável");
     assert.equal(getCalled, false);
     assert.equal(writeCalled, false);
+  });
+
+  it("#8207 item 3 — status 'scheduled' mas horário GRAVADO diverge do PEDIDO → reagenda (chama PUT), nunca reporta already_scheduled à toa", async () => {
+    let putCalled = false;
+    const OTHER_SCHEDULED_AT = "2026-08-21T10:00:00.000Z"; // 1h depois do gravado
+    const deps = makeDeps({
+      readPublished: () => draftState({ status: "scheduled", scheduled_at: SCHEDULED_AT }),
+      putSchedule: async () => {
+        putCalled = true;
+        return {};
+      },
+      getCampaign: async () => ({ status: "queued", scheduledAt: OTHER_SCHEDULED_AT }),
+    });
+    const result = await scheduleDailyBrevo(EDITION_DIR, OTHER_SCHEDULED_AT, deps);
+    assert.equal(putCalled, true, "horário pedido diverge do gravado — reagendar pelo script precisa de fato reagendar");
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.alreadyScheduled, undefined, "não é o caminho de idempotência — passou pelo PUT de verdade");
+      assert.equal(result.scheduledAt, OTHER_SCHEDULED_AT);
+    }
+  });
+
+  it("#8207 item 2 — --scheduled-at cuja data BRT diverge da data da edição → code 6, nunca chama PUT/GET/checkQuota", async () => {
+    let putCalled = false;
+    let getCalled = false;
+    let quotaCalled = false;
+    const deps = makeDeps({
+      putSchedule: async () => {
+        putCalled = true;
+        return {};
+      },
+      getCampaign: async () => {
+        getCalled = true;
+        return { status: "queued", scheduledAt: SCHEDULED_AT };
+      },
+      checkQuota: async () => {
+        quotaCalled = true;
+        return { check: { ok: true as const, consumed: 0, available: 300 }, warnings: [] };
+      },
+    });
+    // EDITION_DIR data (BRT) = 260821; este scheduledAt cai em 260822.
+    const result = await scheduleDailyBrevo(EDITION_DIR, "2026-08-22T09:00:00.000Z", deps);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, 6);
+      assert.match(result.reason, /allow-other-date/);
+    }
+    assert.equal(putCalled, false);
+    assert.equal(getCalled, false);
+    assert.equal(quotaCalled, false);
+  });
+
+  it("#8207 item 2 — --allow-other-date libera a divergência de data explicitamente", async () => {
+    const deps = makeDeps({
+      getCampaign: async () => ({ status: "queued", scheduledAt: "2026-08-22T09:00:00.000Z" }),
+    });
+    const result = await scheduleDailyBrevo(EDITION_DIR, "2026-08-22T09:00:00.000Z", deps, { allowOtherDate: true });
+    assert.equal(result.ok, true);
   });
 
   it("#5851 — scheduledAt recebido em offset local (-03:00) representando o MESMO instante enviado (Z) → ok, nunca code 4", async () => {

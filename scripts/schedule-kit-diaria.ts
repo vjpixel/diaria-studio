@@ -48,15 +48,17 @@
  *       prosa; o código numérico é o mesmo porque o tratamento do chamador
  *       (warn, não bloqueia, nunca reporta "agendado") já é idêntico nos
  *       dois.
+ *   5 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
+ *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
  *
  * Uso:
- *   npx tsx scripts/schedule-kit-diaria.ts --edition-dir data/editions/AAMMDD/ --scheduled-at 2026-08-26T09:00:00Z
+ *   npx tsx scripts/schedule-kit-diaria.ts --edition-dir data/editions/AAMMDD/ --scheduled-at 2026-08-26T09:00:00Z [--allow-other-date]
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { updateBroadcast } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
 import {
@@ -64,13 +66,14 @@ import {
   writeKitDiariaState,
 } from "./kit-diaria-stage5-dispatch.ts";
 import type { KitDiariaChannelConfig } from "./lib/kit-diaria-channel.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export type ScheduleKitDiariaResult =
   | { code: 0; scheduledAt: string; broadcastId: number }
   | { code: 2; reason: string }
-  | { code: 3 | 4; reason: string };
+  | { code: 3 | 4 | 5; reason: string };
 
 export interface ScheduleKitDiariaDeps {
   readPlatformConfig(): {
@@ -103,7 +106,20 @@ export async function scheduleKitDiaria(
   editionDir: string,
   scheduledAt: string,
   deps: ScheduleKitDiariaDeps,
+  options: { allowOtherDate?: boolean } = {},
 ): Promise<ScheduleKitDiariaResult> {
+  // #8207 item 2 — mesmo guard de `schedule-newsletter-kit.ts`/
+  // `schedule-daily-brevo.ts`: recusa `--scheduled-at` cuja data-calendário
+  // em BRT diverge da data da edição, salvo `--allow-other-date`. Roda antes
+  // de ler config/estado (fail fast).
+  const editionAammdd = editionAammddFromDir(editionDir);
+  if (editionAammdd) {
+    const dateCheck = checkScheduledAtMatchesEditionDate(editionAammdd, scheduledAt, options.allowOtherDate);
+    if (!dateCheck.ok) {
+      return { code: 5, reason: dateCheck.reason };
+    }
+  }
+
   let cfg: {
     kit_diaria?: KitDiariaChannelConfig;
     publishing?: { newsletter?: { backend?: string } };
@@ -229,13 +245,14 @@ export async function main(): Promise<void> {
   const editionDir = getArg(argv, "edition-dir");
   const scheduledAt = getArg(argv, "scheduled-at");
   if (!editionDir || !scheduledAt) {
-    console.error("uso: npx tsx scripts/schedule-kit-diaria.ts --edition-dir <dir> --scheduled-at <ISO>");
+    console.error("uso: npx tsx scripts/schedule-kit-diaria.ts --edition-dir <dir> --scheduled-at <ISO> [--allow-other-date]");
     process.exitCode = 1;
     return;
   }
+  const allowOtherDate = hasFlag(argv, "allow-other-date");
   let result: ScheduleKitDiariaResult;
   try {
-    result = await scheduleKitDiaria(resolve(ROOT, editionDir), scheduledAt, productionDeps());
+    result = await scheduleKitDiaria(resolve(ROOT, editionDir), scheduledAt, productionDeps(), { allowOtherDate });
   } catch (e) {
     result = { code: 3, reason: `erro inesperado: ${(e as Error).message}` };
   }

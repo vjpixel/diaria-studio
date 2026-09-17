@@ -22,7 +22,7 @@
  * fora de um gate humano.
  *
  * Uso:
- *   npx tsx scripts/schedule-daily-brevo.ts --edition-dir <dir> --scheduled-at <ISO8601>
+ *   npx tsx scripts/schedule-daily-brevo.ts --edition-dir <dir> --scheduled-at <ISO8601> [--allow-other-date]
  *
  * Exit codes:
  *   0 — agendado e verificado (GET confirma status "queued"/scheduledAt correto)
@@ -33,12 +33,14 @@
  *   4 — GET de verificação pós-PUT não confirma o agendamento esperado
  *   5 — cota da CONTA Brevo insuficiente/ilegível pro dia (#6146): agendar
  *       aqui produziria uma campanha `suspended` no horário, em silêncio
+ *   6 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
+ *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getStringArg, isMainModule } from "./lib/cli-args.ts";
+import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { brevoPut, brevoGetCampaign, brevoGetList } from "./lib/brevo-client.ts";
 import {
   checkAccountSendQuota,
@@ -55,6 +57,7 @@ import {
   buildScheduledPublishedState,
   type BrevoDiariaPublished,
 } from "./publish-daily-brevo.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -67,7 +70,7 @@ interface PlatformConfig {
 
 export type ScheduleDailyBrevoResult =
   | { ok: true; campaignId: number; scheduledAt: string; status: string; alreadyScheduled?: boolean }
-  | { ok: false; code: 2 | 3 | 4 | 5; reason: string };
+  | { ok: false; code: 2 | 3 | 4 | 5 | 6; reason: string };
 
 /**
  * Pura o suficiente pra ser testável — `deps.readPublished`/`deps.writePublished`/
@@ -91,7 +94,19 @@ export async function scheduleDailyBrevo(
   editionDir: string,
   scheduledAtIso: string,
   deps: ScheduleDailyBrevoDeps,
+  options: { allowOtherDate?: boolean } = {},
 ): Promise<ScheduleDailyBrevoResult> {
+  // #8207 item 2 — mesmo guard de `schedule-newsletter-kit.ts`: recusa
+  // `--scheduled-at` cuja data-calendário em BRT diverge da data da edição,
+  // salvo `--allow-other-date`. Roda antes de qualquer leitura/mutação.
+  const editionAammdd = editionAammddFromDir(editionDir);
+  if (editionAammdd) {
+    const dateCheck = checkScheduledAtMatchesEditionDate(editionAammdd, scheduledAtIso, options.allowOtherDate);
+    if (!dateCheck.ok) {
+      return { ok: false, code: 6, reason: dateCheck.reason };
+    }
+  }
+
   const published = deps.readPublished(editionDir);
   if (!published || typeof published.campaign_id !== "number") {
     return {
@@ -104,18 +119,27 @@ export async function scheduleDailyBrevo(
   }
   const campaignId = published.campaign_id;
 
-  // Idempotência (#5781): campanha Brevo agendada é imutável (docstring
-  // acima) — resume após sucesso mas antes do sentinel do Stage 6 não deve
-  // re-tentar o PUT (falharia de novo pelo mesmo motivo). Espelha
-  // "already_done" de brevo-diaria-stage5-dispatch.ts.
+  // Idempotência HONESTA (#8207 item 3, mesmo achado do #464 — reagendar pelo
+  // script oficial respondia "sucesso" sem mudar nada quando o horário pedido
+  // divergia do gravado). `already_scheduled` só quando o horário GRAVADO é o
+  // MESMO instante do pedido (compara instantes via `Date.parse`, não
+  // strings — mesma disciplina do #5851 já usado mais abaixo). Pedido com
+  // horário DIFERENTE cai pro PUT normal abaixo, apesar da campanha Brevo
+  // agendada ser nominalmente imutável (docstring acima) — é exatamente esse
+  // PUT que o editor rodou manualmente em 17/09 pra corrigir a edição 260917;
+  // este guard só formaliza o caminho.
   if (published.status === "scheduled" && typeof published.scheduled_at === "string") {
-    return {
-      ok: true,
-      campaignId,
-      scheduledAt: published.scheduled_at,
-      status: "already_scheduled",
-      alreadyScheduled: true,
-    };
+    const storedMs = Date.parse(published.scheduled_at);
+    const requestedMs = Date.parse(scheduledAtIso);
+    if (Number.isFinite(storedMs) && Number.isFinite(requestedMs) && storedMs === requestedMs) {
+      return {
+        ok: true,
+        campaignId,
+        scheduledAt: published.scheduled_at,
+        status: "already_scheduled",
+        alreadyScheduled: true,
+      };
+    }
   }
 
   // #6146: checado DEPOIS do short-circuit de idempotência acima (uma
@@ -228,12 +252,13 @@ if (isMainModule(import.meta.url)) {
   const scheduledAtArg = getStringArg(argv, "scheduled-at");
   if (!editionDirArg || !scheduledAtArg) {
     process.stderr.write(
-      "uso: npx tsx scripts/schedule-daily-brevo.ts --edition-dir <dir> --scheduled-at <ISO8601>\n",
+      "uso: npx tsx scripts/schedule-daily-brevo.ts --edition-dir <dir> --scheduled-at <ISO8601> [--allow-other-date]\n",
     );
     process.exit(1);
   }
   const editionDir = resolve(editionDirArg);
-  scheduleDailyBrevo(editionDir, scheduledAtArg, productionDeps(ROOT)).then((result) => {
+  const allowOtherDate = hasFlag(argv, "allow-other-date");
+  scheduleDailyBrevo(editionDir, scheduledAtArg, productionDeps(ROOT), { allowOtherDate }).then((result) => {
     console.log(JSON.stringify(result));
     if (result.ok) {
       process.exitCode = 0;
