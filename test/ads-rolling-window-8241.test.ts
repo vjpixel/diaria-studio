@@ -166,4 +166,11 @@ describe("#8241 item 2 — computeRollingWindow: janela com dia pausado NUNCA é
     assert.match(r.motivo ?? "", /pausado/);
     assert.equal(r.estavel, false);
   });
+
+  it("REGRESSÃO (self-review): janela SEM dado e SEM pausa/edição -> estavel:true, coerente com descreverEstabilidade dizendo 'estado estável' (não pode faltar dado E ficar estavel:false por hardcode)", () => {
+    const r = computeRollingWindow([], { canal: CANAL, ate: "2026-01-05", dias: 3 }); // sem pauseIntervals, sem edicoes
+    assert.equal(r.ultimaEdicao, null);
+    assert.equal(r.estavel, true, "sem edição registrada e sem pausa, o campo estavel não pode discordar do texto de descreverEstabilidade");
+    assert.match(descreverEstabilidade(r), /estado estável/);
+  });
 });

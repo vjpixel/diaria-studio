@@ -329,7 +329,14 @@ export function computeRollingWindow(
       baseData: base?.data_apuracao ?? null,
       diasAposUltimaEdicao: diasApos,
       ultimaEdicao,
-      estavel: false,
+      // Mesma fórmula do branch com dado (self-review): `estavel` segue a
+      // regra de EDIÇÕES (nenhuma registrada = estável) menos a pausa —
+      // nunca hardcoded `false` só por faltar dado. Sem isso, uma janela
+      // sem NENHUMA linha e sem pausa nem edição sairia com `estavel:
+      // false` enquanto `descreverEstabilidade` diria "estado estável"
+      // pro mesmo objeto — os dois discordando é pior do que qualquer um
+      // dos dois sozinho errado.
+      estavel: computeEstavel(ultimaEdicao, diasApos, diasCobertos.length) && diasPausadosNaJanela.length === 0,
     };
   }
 
