@@ -11,7 +11,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { loadProjectEnv } from "../scripts/lib/env-loader.ts";
+import { loadProjectEnv, warnOnEnvDivergence } from "../scripts/lib/env-loader.ts";
 
 describe("#923 loadProjectEnv", () => {
   let tmpRoot: string;
@@ -85,5 +85,70 @@ describe("#923 loadProjectEnv", () => {
     assert.ok(true);
 
     rmSync(tmpRoot, { recursive: true, force: true });
+  });
+});
+
+describe("#8237 warnOnEnvDivergence", () => {
+  let tmpRoot: string;
+
+  after(() => {
+    if (tmpRoot) rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("avisa (stderr) quando uma chave do .env diverge do ambiente já presente", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-divergence-"));
+    const envFile = resolve(tmpRoot, ".env");
+    writeFileSync(envFile, "GOOGLE_CLIENT_ID=from-dotenv\n");
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    try {
+      warnOnEnvDivergence(envFile, { GOOGLE_CLIENT_ID: "from-parent-process" } as NodeJS.ProcessEnv);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /GOOGLE_CLIENT_ID/);
+    assert.match(warnings[0], /ambiente vence/);
+  });
+
+  it("não avisa quando o valor do ambiente bate com o do .env", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-divergence-match-"));
+    const envFile = resolve(tmpRoot, ".env");
+    writeFileSync(envFile, "SOME_KEY=same-value\n");
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    try {
+      warnOnEnvDivergence(envFile, { SOME_KEY: "same-value" } as NodeJS.ProcessEnv);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 0);
+  });
+
+  it("não avisa quando a chave não está no ambiente (caso comum — nada setado ainda)", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-divergence-absent-"));
+    const envFile = resolve(tmpRoot, ".env");
+    writeFileSync(envFile, "SOME_OTHER_KEY=value\n");
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    try {
+      warnOnEnvDivergence(envFile, {} as NodeJS.ProcessEnv);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 0);
+  });
+
+  it("nunca lança — arquivo ilegível vira no-op silencioso (dotenvConfig trata o erro de verdade)", () => {
+    assert.doesNotThrow(() => warnOnEnvDivergence(resolve(tmpdir(), "arquivo-que-nao-existe.env")));
   });
 });
