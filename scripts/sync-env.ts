@@ -80,17 +80,28 @@ export class EnvBackupError extends Error {
 }
 
 /**
- * Nome de variável de ambiente válido, depois de tirar um `export ` opcional.
- * Exige UPPER_SNAKE_CASE (não só POSIX `[A-Za-z_][A-Za-z0-9_]*`) de propósito:
- * as ~73 chaves reais do `.env` deste projeto são todas UPPER_SNAKE_CASE, e
- * restringir a isso também rejeita a maioria dos fragmentos de base64 de uma
- * continuação de valor multilinha vazada (chave privada, JSON de service
- * account) — esses quase sempre têm alguma letra minúscula no meio, então
- * caem em "malformado" em vez de virar falsamente uma "chave válida" cujo
- * nome (o próprio fragmento de segredo) seria ecoado em
- * `LocalOnlyEnvKeysError.message`.
+ * Nome de variável de ambiente válido (POSIX `[A-Za-z_][A-Za-z0-9_]*`),
+ * case-insensitive de propósito — não restringimos a UPPER_SNAKE_CASE
+ * apesar de ser a convenção real das ~73 chaves do projeto, pra não
+ * silenciosamente perder a proteção de `LocalOnlyEnvKeysError` (guard
+ * contra apagar credencial em silêncio, #5155) numa chave legítima que por
+ * algum motivo não siga a convenção. A linha real que motivou este guard
+ * (achado ao vivo, 260917: continuação de um JSON multilinha colado sem
+ * escapar `\n`, ex: `"private_key": "-----BEGIN PRIVATE KEY-----...`) já
+ * falha este regex por ter espaço/aspas/dois-pontos/hífen — não depende de
+ * exigir maiúsculas. `MAX_ENV_KEY_LENGTH` cobre o resíduo (linha de
+ * continuação que é só base64 puro, sem nenhum símbolo — improvável, mas
+ * teoricamente passaria neste regex).
  */
-const VALID_ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
+const VALID_ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Maior nome de chave real observado no `.env` do projeto tem 34 chars;
+ * 64 dá folga generosa sem deixar uma linha de continuação toda-alfanumérica
+ * (base64 sem `+`/`/`, portanto sem cair no `eqIndex === -1` nem no regex
+ * acima por causa de símbolo) passar como "chave válida".
+ */
+const MAX_ENV_KEY_LENGTH = 64;
 
 /** Resultado de `parseEnvKeys`: chaves válidas + contagem de linhas malformadas. */
 interface ParsedEnvKeys {
@@ -127,7 +138,7 @@ function parseEnvKeys(content: string): ParsedEnvKeys {
     let key = line.slice(0, eqIndex).trim();
     if (key.startsWith("export ")) key = key.slice("export ".length).trim();
     if (!key) continue;
-    if (VALID_ENV_KEY_RE.test(key)) {
+    if (VALID_ENV_KEY_RE.test(key) && key.length <= MAX_ENV_KEY_LENGTH) {
       keys.add(key);
     } else {
       malformedCount++;

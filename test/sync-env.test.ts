@@ -220,6 +220,34 @@ describe("syncEnv", () => {
     }
   });
 
+  it("chave só-local em minúscula/mista (não UPPER_SNAKE_CASE) continua protegida por LocalOnlyEnvKeysError (review PR #8280, finding 1)", () => {
+    // O regex de chave válida é case-insensitive de propósito — restringir a
+    // UPPER_SNAKE_CASE perderia silenciosamente a proteção do #5155 (guard
+    // contra apagar credencial em silêncio) pra qualquer chave legítima que
+    // não siga a convenção do projeto. A linha real que motivou o guard de
+    // linha malformada já falha por ter espaço/aspas/dois-pontos, não por
+    // causa de minúscula — não precisa de UPPER_SNAKE_CASE pra ser pega.
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-test-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "CLARICE_API_KEY=old\nmy_legacy_lowercase_key=segredo-local\n");
+
+      assert.throws(
+        () => syncEnv(envPath, () => "CLARICE_API_KEY=new\n"),
+        (err: unknown) => {
+          assert.ok(err instanceof LocalOnlyEnvKeysError);
+          assert.deepEqual(err.keys, ["my_legacy_lowercase_key"]);
+          assert.ok(!err.message.includes("segredo-local"));
+          return true;
+        },
+      );
+
+      assert.equal(existsSync(`${envPath}.bak`), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("linha de continuação de valor multilinha com '=' no meio (chave JSON malformada) nunca vaza pra LocalOnlyEnvKeysError (260917)", () => {
     // Reproduz o achado ao vivo: `GOOGLE_ADS_SERVICE_ACCOUNT_JSON` colado
     // sem escapar `\n` — a 2ª linha (fragmento de private_key em base64,
