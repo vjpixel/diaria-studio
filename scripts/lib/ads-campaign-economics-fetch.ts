@@ -202,12 +202,21 @@ export async function fetchMicrosoftAdsChannelMetrics(
 // Meta Ads — Graph API `insights` diária (gasto + cliques + impressões)
 // ---------------------------------------------------------------------------
 
-/** Rótulo de canal usado nesta unidade (teste 2608) — distinto de
- *  `META_ADS_CANAL` (`"Meta"`, em `meta-ads-ingest.ts`), que é o nome
- *  RESERVADO usado pelo caminho mensal de `spend.csv`
- *  (`RESERVED_CHANNEL_NAMES` em `cac.ts`). Os dois namespaces não se
- *  confundem: aquele agrega por MÊS pro CAC report; este é 1 ponto por DIA
- *  pro gráfico acumulado do teste. */
+/** Rótulo de canal usado nesta unidade (teste 2608) — mesma STRING (não por
+ *  acaso: #8239) do `META_ADS_CANAL` exportado por
+ *  `scripts/meta-ads-ingest-spend.ts` (o CLI que grava o caminho MENSAL de
+ *  `spend.csv` durante o teste 2608), mas um namespace distinto: aquele
+ *  agrega por MÊS pro CAC report a partir de um envelope MCP capturado à
+ *  mão; este é 1 ponto por DIA pro gráfico acumulado do teste, buscado
+ *  direto na Graph API `insights`. **Premissa antiga já descartada (#7544
+ *  pro Microsoft, #8239 pro Meta):** antes do #8239, o caminho mensal usava
+ *  o default de `scripts/lib/meta-ads-ingest.ts` — `META_ADS_CANAL =
+ *  "Meta"`, o nome RESERVADO (`RESERVED_CHANNEL_NAMES` em `cac.ts`) sem
+ *  spec própria em `CHANNEL_KEY_SPECS` — então a 1ª execução real teria
+ *  duplicado o gasto do teste numa linha `Meta` que nenhum braço reconhece.
+ *  O default da lib continua `"Meta"` (usado fora do período de teste,
+ *  quando não há `canal` explícito); é só o CLI que agora sobrescreve com
+ *  este mesmo valor. */
 export const META_ADS_TESTE_CANAL = "Meta Ads (teste 2608)";
 
 /** Subconjunto de `fetch` usado — mesma assinatura de `GoogleFetchLike`/

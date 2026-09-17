@@ -1,10 +1,9 @@
 /**
- * scripts/meta-ads-ingest-spend.ts (#5469)
+ * scripts/meta-ads-ingest-spend.ts (#5469, #8239)
  *
  * CLI fino em cima de `scripts/lib/meta-ads-ingest.ts` (núcleo puro/
  * testável). Atualiza `data/aquisicao/spend.csv` (#5236) com as linhas do
- * canal `"Meta"` (nome canônico — `scripts/lib/cac.ts` →
- * `RESERVED_CHANNEL_NAMES`) — mantendo Google Ads/Microsoft
+ * canal `META_ADS_CANAL` abaixo — mantendo Google Ads/Microsoft
  * Advertising/LinkedIn/Beehiiv Boosts e qualquer mês fora do range
  * consultado intocados.
  *
@@ -52,6 +51,28 @@ import { runMetaAdsIngest } from "./lib/meta-ads-ingest.ts";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SPEND_CSV_PATH = resolve(ROOT, "data", "aquisicao", "spend.csv");
 
+/**
+ * Canal escrito em `spend.csv` (#8239, espelha #7544 Defeito 2 do
+ * Microsoft) — precisa bater EXATO com a entrada correspondente em
+ * `CHANNEL_KEY_SPECS` (`scripts/lib/shared/channel-key-specs.ts`) e em
+ * `ADS_TEST_2608_BRACOS` (`scripts/lib/ads-test-run-state.ts`), senão a
+ * linha cai no caminho "canal desconhecido" (`unknownCanais`, aviso em
+ * stderr + n=0 no relatório) mesmo com gasto real acontecendo, e/ou
+ * duplica o gasto do teste 2608 numa linha `Meta` avulsa que nenhum braço
+ * do teste reconhece (achado ao vivo #8239 — mesmo defeito do Google já
+ * confirmado em produção, aqui ainda LATENTE porque `meta-ads-ingest-spend.ts`
+ * não tem task agendada). `runMetaAdsIngest` (`scripts/lib/meta-ads-ingest.ts`)
+ * usa o default `META_ADS_CANAL = "Meta"` (`RESERVED_CHANNEL_NAMES`, não
+ * `CHANNEL_KEY_SPECS`) quando nenhum `canal` é passado — nome reservado mas
+ * SEM spec cadastrada, então nunca seria `measured`. Passar esta constante
+ * explicitamente em `runMetaAdsIngest({ canal: META_ADS_CANAL, ... })`
+ * evita esse caminho. Quando as specs temporárias "(teste 2608)" saírem
+ * (decisão da #5862, prevista 08/10), este valor muda junto —
+ * `test/meta-ads-ingest-spend.test.ts` trava que ele sempre bate com uma
+ * entrada real de `CHANNEL_KEY_SPECS` E de `ADS_TEST_2608_BRACOS`.
+ */
+export const META_ADS_CANAL = "Meta Ads (teste 2608)";
+
 function fallback(reason: string): void {
   console.warn(`[meta-ads-ingest-spend] fallback pro CSV manual — ${reason}`);
   console.warn("  spend.csv não foi alterado. Editar manualmente se necessário.");
@@ -90,7 +111,7 @@ export async function main(): Promise<number> {
 
   const existingRows: SpendRow[] = existsSync(spendPath) ? readSpendCsv(spendPath).rows : [];
 
-  const result = await runMetaAdsIngest({ envelopePayload, existingRows });
+  const result = await runMetaAdsIngest({ envelopePayload, existingRows, canal: META_ADS_CANAL });
 
   if (result.kind === "fallback") {
     fallback(result.reason);

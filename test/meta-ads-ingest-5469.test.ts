@@ -40,7 +40,13 @@ describe("#5469 — META_ADS_AD_ACCOUNT_ID travado", () => {
     assert.equal(META_ADS_AD_ACCOUNT_ID, "10151064543294811");
   });
 
-  it("META_ADS_CANAL bate com o nome canônico reservado em cac.ts (RESERVED_CHANNEL_NAMES)", () => {
+  it("META_ADS_CANAL (default da LIB, sem override) bate com o nome canônico reservado em cac.ts (RESERVED_CHANNEL_NAMES) — #8239 mudou quem ESCREVE em spend.csv, não este default", () => {
+    // `runMetaAdsIngest` só cai neste default quando NENHUM `canal` é
+    // passado (ex: uso fora do período de teste 2608). O caminho real de
+    // `scripts/meta-ads-ingest-spend.ts` passa `canal: META_ADS_CANAL`
+    // (constante PRÓPRIA do script, "Meta Ads (teste 2608)") explicitamente
+    // — ver `test/meta-ads-ingest-spend.test.ts` (#8239) pra esse guard.
+    // Este teste cobre só o default da lib, não o valor final em spend.csv.
     assert.equal(META_ADS_CANAL, "Meta");
   });
 });
