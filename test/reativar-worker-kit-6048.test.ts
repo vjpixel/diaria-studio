@@ -54,7 +54,7 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
 
   it("já ativo (GET traz state:active) → idempotente, NUNCA faz POST", async () => {
     const { fetchImpl, calls } = routedFetch({
-      get: () => jsonRes(200, { subscribers: [{ id: 1, state: "active" }] }),
+      get: () => jsonRes(200, { subscribers: [{ id: 1, email_address: "a@b.com", state: "active" }] }),
     });
     const r = await activateSubscriptionKit(kitEnv(), "a@b.com", fetchImpl);
     assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active" });
@@ -63,7 +63,7 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
 
   it("já ativo + KIT_ORIGEM_CADASTRO_FIELD configurado → marcador NÃO é escrito (early-return pula o POST), mas emite log estruturado (achado do fleet review #6127)", async () => {
     const { fetchImpl } = routedFetch({
-      get: () => jsonRes(200, { subscribers: [{ id: 1, state: "active" }] }),
+      get: () => jsonRes(200, { subscribers: [{ id: 1, email_address: "a@b.com", state: "active" }] }),
     });
     const warnMock = mock.method(console, "warn", () => {});
     try {
@@ -80,7 +80,7 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
 
   it("já ativo SEM KIT_ORIGEM_CADASTRO_FIELD configurado → não emite o log (ruído evitado quando a var nem existe)", async () => {
     const { fetchImpl } = routedFetch({
-      get: () => jsonRes(200, { subscribers: [{ id: 1, state: "active" }] }),
+      get: () => jsonRes(200, { subscribers: [{ id: 1, email_address: "a@b.com", state: "active" }] }),
     });
     const warnMock = mock.method(console, "warn", () => {});
     try {
@@ -108,7 +108,7 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
 
   it("registro existente não-active (ex: cancelled) → também upsert direto via POST, sem DELETE", async () => {
     const { fetchImpl, calls } = routedFetch({
-      get: () => jsonRes(200, { subscribers: [{ id: 5, state: "cancelled" }] }),
+      get: () => jsonRes(200, { subscribers: [{ id: 5, email_address: "a@b.com", state: "cancelled" }] }),
       post: () => jsonRes(200, { subscriber: { id: 5, state: "active" } }),
     });
     const r = await activateSubscriptionKit(kitEnv(), "a@b.com", fetchImpl);
