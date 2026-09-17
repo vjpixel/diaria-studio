@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import {
   applySemanticTiebreaker,
   composeWithOfficialDomainGate,
-  parseTypeSafeResponse,
+  parseTypeSafeAnswer,
   readSemanticTiebreakerConfig,
   isSemanticTiebreakerEnabled,
   type CategorizedBuckets,
@@ -48,6 +48,18 @@ function article(overrides: Partial<Article> & { url: string }): Article {
 
 function emptyBuckets(overrides: Partial<CategorizedBuckets> = {}): CategorizedBuckets {
   return { lancamento: [], radar: [], use_melhor: [], video: [], ...overrides };
+}
+
+/** Resposta 200 no shape real confirmado em #8219 — 1 pergunta (`bucket`), 1 choice. */
+function typeSafeOk(choice: string): Response {
+  return new Response(
+    JSON.stringify({
+      model: "jev-1.13.0",
+      answers: { bucket: { type: "choice", choice, confidence: 1 } },
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }),
+    { status: 200 },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -256,8 +268,7 @@ describe("applySemanticTiebreaker — reclassificação real via fetch stubado (
     const buckets = emptyBuckets({
       radar: [article({ url, category: "noticias", category_rule: "noticias-default" })],
     });
-    const fakeFetch = (async () =>
-      new Response(JSON.stringify({ answers: [{ id: url, answer: "lancamento" }] }), { status: 200 })) as unknown as typeof fetch;
+    const fakeFetch = (async () => typeSafeOk("lancamento")) as unknown as typeof fetch;
 
     const out = await applySemanticTiebreaker(buckets, { configPath, apiKey: "k", fetchImpl: fakeFetch, rootDir: tmpDir });
 
@@ -275,8 +286,7 @@ describe("applySemanticTiebreaker — reclassificação real via fetch stubado (
     const buckets = emptyBuckets({
       radar: [article({ url, category: "noticias", category_rule: "noticias-default" })],
     });
-    const fakeFetch = (async () =>
-      new Response(JSON.stringify({ answers: [{ id: url, answer: "lancamento" }] }), { status: 200 })) as unknown as typeof fetch;
+    const fakeFetch = (async () => typeSafeOk("lancamento")) as unknown as typeof fetch;
 
     const out = await applySemanticTiebreaker(buckets, { configPath, apiKey: "k", fetchImpl: fakeFetch, rootDir: tmpDir });
 
@@ -293,8 +303,7 @@ describe("applySemanticTiebreaker — reclassificação real via fetch stubado (
     const buckets = emptyBuckets({
       lancamento: [article({ url, category: "lancamento", category_rule: "lancamento-default" })],
     });
-    const fakeFetch = (async () =>
-      new Response(JSON.stringify({ answers: [{ id: url, answer: "radar" }] }), { status: 200 })) as unknown as typeof fetch;
+    const fakeFetch = (async () => typeSafeOk("radar")) as unknown as typeof fetch;
 
     const out = await applySemanticTiebreaker(buckets, { configPath, apiKey: "k", fetchImpl: fakeFetch, rootDir: tmpDir });
 
@@ -306,14 +315,15 @@ describe("applySemanticTiebreaker — reclassificação real via fetch stubado (
     assert.equal(out.result.radar[0].category_rule, "semantic-tiebreaker-radar");
   });
 
-  it("artigo sem resposta da TypeSafe (id ausente na answers) mantém bucket original, sem contar reclassificação", async () => {
+  it("artigo com choice fora do vocabulário esperado mantém bucket original, sem contar reclassificação", async () => {
     const configPath = writeConfig(true);
     const url = "https://openai.com/index/no-answer";
     const buckets = emptyBuckets({
       lancamento: [article({ url, category: "lancamento", category_rule: "lancamento-default" })],
     });
-    const fakeFetch = (async () =>
-      new Response(JSON.stringify({ answers: [] }), { status: 200 })) as unknown as typeof fetch;
+    // choice não bate nenhuma das TIEBREAKER_CRITERIA (lancamento/radar) —
+    // parseTypeSafeAnswer devolve null, item fica sem verdict.
+    const fakeFetch = (async () => typeSafeOk("use_melhor")) as unknown as typeof fetch;
 
     const out = await applySemanticTiebreaker(buckets, { configPath, apiKey: "k", fetchImpl: fakeFetch, rootDir: tmpDir });
 
@@ -322,7 +332,7 @@ describe("applySemanticTiebreaker — reclassificação real via fetch stubado (
     assert.deepEqual(out.result, buckets);
   });
 
-  it("regras FORTES (não-fallback) nunca entram na chamada — não aparecem em `items` do fetch", async () => {
+  it("N requests concorrentes, 1 por item — nunca 1 request com N itens dentro (#8219, contrato real sem batch)", async () => {
     const configPath = writeConfig(true);
     const strongUrl = "https://openai.com/index/gpt-6"; // lancamento-type-hint, regra forte
     const fallbackUrl = "https://openai.com/index/other"; // lancamento-default, fallback
@@ -332,54 +342,90 @@ describe("applySemanticTiebreaker — reclassificação real via fetch stubado (
         article({ url: fallbackUrl, category: "lancamento", category_rule: "lancamento-default" }),
       ],
     });
-    let sentUrls: string[] = [];
+    const calls: string[] = [];
     const fakeFetch = (async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body));
-      sentUrls = body.questions.map((q: { id: string }) => q.id);
-      return new Response(JSON.stringify({ answers: [{ id: fallbackUrl, answer: "radar" }] }), { status: 200 });
+      calls.push(body.state.url);
+      assert.equal(body.model, "jev-latest");
+      assert.ok(body.questions.bucket, "request deve ter questions.bucket (não um array)");
+      return typeSafeOk("radar");
     }) as unknown as typeof fetch;
 
     const out = await applySemanticTiebreaker(buckets, { configPath, apiKey: "k", fetchImpl: fakeFetch, rootDir: tmpDir });
 
-    assert.deepEqual(sentUrls, [fallbackUrl]);
-    // a regra forte permanece intocada em lancamento
+    // 1 request, só pro item de fallback — regra forte nunca entra na chamada.
+    assert.deepEqual(calls, [fallbackUrl]);
     assert.equal(out.result.lancamento.some((a) => a.url === strongUrl && a.category_rule === "lancamento-type-hint"), true);
     assert.equal(out.result.lancamento.some((a) => a.url === fallbackUrl), false);
     assert.equal(out.result.radar.some((a) => a.url === fallbackUrl), true);
   });
+
+  it("2 itens de fallback: 1 transporte falha, o outro reclassifica — falha de item não derruba o lote (#8219)", async () => {
+    const configPath = writeConfig(true);
+    const okUrl = "https://openai.com/index/new-model";
+    const badUrl = "https://example.com/broken";
+    const buckets = emptyBuckets({
+      radar: [
+        article({ url: okUrl, category: "noticias", category_rule: "noticias-default" }),
+        article({ url: badUrl, category: "noticias", category_rule: "noticias-default" }),
+      ],
+    });
+    const fakeFetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.state.url === badUrl) return new Response("server error", { status: 500 });
+      return typeSafeOk("lancamento");
+    }) as unknown as typeof fetch;
+
+    const out = await applySemanticTiebreaker(buckets, { configPath, apiKey: "k", fetchImpl: fakeFetch, rootDir: tmpDir });
+
+    assert.equal(out.applied, true); // nem todos os itens falharam
+    assert.equal(out.reclassified, 1);
+    assert.equal(out.result.lancamento.some((a) => a.url === okUrl), true);
+    // o item com falha de transporte mantém o bucket original (fail-soft por item)
+    assert.equal(out.result.radar.some((a) => a.url === badUrl && a.category_rule === "noticias-default"), true);
+  });
 });
 
 // ---------------------------------------------------------------------------
-// parseTypeSafeResponse — parsing puro
+// parseTypeSafeAnswer — parsing puro
 // ---------------------------------------------------------------------------
 
-describe("parseTypeSafeResponse (#8211)", () => {
-  const items = [{ url: "https://a.com/1", title: "t", summary: "s" }];
-
+describe("parseTypeSafeAnswer (#8211, contrato confirmado em #8219)", () => {
   it("lança se raw não é objeto", () => {
-    assert.throws(() => parseTypeSafeResponse(null, items));
-    assert.throws(() => parseTypeSafeResponse("str", items));
+    assert.throws(() => parseTypeSafeAnswer(null));
+    assert.throws(() => parseTypeSafeAnswer("str"));
   });
 
-  it("lança se `answers` não é array", () => {
-    assert.throws(() => parseTypeSafeResponse({ answers: "nope" }, items));
+  it("lança se `answers` não é objeto", () => {
+    assert.throws(() => parseTypeSafeAnswer({ answers: "nope" }));
   });
 
-  it("ignora entrada com id fora do conjunto de items requisitados", () => {
-    const out = parseTypeSafeResponse({ answers: [{ id: "https://outro.com", answer: "radar" }] }, items);
-    assert.deepEqual(out, []);
+  it("lança se `answers.bucket` não é objeto", () => {
+    assert.throws(() => parseTypeSafeAnswer({ answers: {} }));
   });
 
-  it("ignora entrada com answer não reconhecida", () => {
-    const out = parseTypeSafeResponse({ answers: [{ id: items[0].url, answer: "talvez" }] }, items);
-    assert.deepEqual(out, []);
+  it("choice não reconhecida devolve null (sem lançar)", () => {
+    assert.equal(parseTypeSafeAnswer({ answers: { bucket: { choice: "use_melhor" } } }), null);
   });
 
   it("normaliza variantes de texto (lançamento/launch, notícias/news)", () => {
-    const out = parseTypeSafeResponse(
-      { answers: [{ id: items[0].url, answer: "Lançamento" }] },
-      items,
-    );
-    assert.deepEqual(out, [{ url: items[0].url, verdict: "lancamento" }]);
+    assert.equal(parseTypeSafeAnswer({ answers: { bucket: { choice: "Lançamento" } } }), "lancamento");
+    assert.equal(parseTypeSafeAnswer({ answers: { bucket: { choice: "news" } } }), "radar");
+  });
+
+  it("shape real confirmado em #8219 (com confidence/probabilities/usage) parseia normalmente", () => {
+    const raw = {
+      model: "jev-1.13.0",
+      answers: {
+        bucket: {
+          type: "choice",
+          choice: "lancamento",
+          confidence: 1.0,
+          probabilities: { use_melhor: 0.0, radar: 0.0, lancamento: 1.0 },
+        },
+      },
+      usage: { input_tokens: 513, output_tokens: 46 },
+    };
+    assert.equal(parseTypeSafeAnswer(raw), "lancamento");
   });
 });

@@ -141,7 +141,7 @@
   },
   "semantic_tiebreaker": {
     "enabled": true,
-    "note": "#8211 — classificador semântico externo (TypeSafe, modelo jev-latest) como tie-breaker SÓ do fallback do categorizador (lancamento-default/noticias-default, 77% do corpus, único ponto com erro medido na #5995 — as regras fortes não erraram uma vez). Composto com #160 (isOfficialLancamentoUrl): veredito lancamento só vale em URL de domínio oficial. Default LIGADO (decisão do editor, 17/09/2026) — fail-soft obrigatório: TYPESAFE_API_KEY ausente ou API indisponível cai no comportamento de hoje sem travar o Stage 1, log em data/run-log.jsonl. ⚠️ Contrato da API NÃO confirmado contra produção nesta unidade — ver aviso no topo de scripts/lib/semantic-tiebreaker.ts e o PR #8211 pro que falta validar antes de confiar no resultado em produção. Desligar (enabled:false) é a saída rápida se o classificador degradar ou o vendor sumir."
+    "note": "#8211 — classificador semântico externo (TypeSafe, modelo jev-latest) como tie-breaker SÓ do fallback do categorizador (lancamento-default/noticias-default, 77% do corpus, único ponto com erro medido na #5995 — as regras fortes não erraram uma vez). Composto com #160 (isOfficialLancamentoUrl): veredito lancamento só vale em URL de domínio oficial. Default LIGADO (decisão do editor, 17/09/2026) — fail-soft obrigatório: TYPESAFE_API_KEY ausente ou API indisponível cai no comportamento de hoje sem travar o Stage 1, log em data/run-log.jsonl. Contrato da API confirmado contra produção em #8219 (17/09/2026) — ver o topo de scripts/lib/semantic-tiebreaker.ts pro shape. Desligar (enabled:false) é a saída rápida se o classificador degradar ou o vendor sumir."
   },
   "experiment_d3_radar": {
     "enabled": false,
