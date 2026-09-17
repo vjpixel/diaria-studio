@@ -64,6 +64,8 @@ import {
   type EventType,
 } from "./diaria-subscribers-db.ts";
 import type { KitSubscriberSummary } from "./kit-subscribers.ts";
+import { REATIVACAO_UTM_SOURCES } from "./metrics/acquisition-class.ts"; // #8235
+import { normalizeKey } from "./shared/attribution-keys.ts"; // #8235
 
 /** Eixo do Kit → tipo de evento do store. `opens`/`clicks` (plural, vocabulário
  *  da API) viram `open`/`click` (singular, vocabulário do store) de propósito
@@ -307,6 +309,69 @@ export function extractKitFieldAttributes(
  */
 const KIT_EXITED_STATES: ReadonlySet<string> = new Set(["cancelled", "bounced", "complained"]);
 
+/** #8235 — bundle de origem de uma linha `subscription` do Kit (colunas cruas). */
+export interface KitOrigemBundle {
+  source: string | null;
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_channel: string | null;
+  utm_term: string | null;
+  utm_content: string | null;
+  referring_site: string | null;
+  origem_cadastro: string | null;
+}
+
+/** #8235 — linha anterior lida do store (inclui `reativado` como 0/1/null). */
+export type KitPreviousOrigem = KitOrigemBundle & { reativado: number | null };
+
+/**
+ * #8235 — decide que bundle de origem gravar numa reingestão do Kit.
+ *
+ * O worker `reativar` sobrescrevia `fields.utm_*` com a UTM de reativação
+ * (`brevo-diaria`) no clique do Confirmar, e a ingestão diária copiava isso
+ * pro store — a origem paga do teste 2608 sumia um dia depois do clique.
+ *
+ * Regra: se a linha anterior tem `utm_source` (ou `source`, linhas pré-#7207)
+ * FORA de `REATIVACAO_UTM_SOURCES` e o valor novo está DENTRO, mantém o
+ * bundle anterior inteiro (utm_*, source, referring_site, origem_cadastro —
+ * todos vieram juntos no mesmo upsert do worker) e marca `reativado = true`.
+ *
+ * `reativado` é pegajoso: uma vez `1`, continua `true` nas rodadas seguintes
+ * (o `ON CONFLICT` do `upsertSubscription` gravaria `null` por cima, já que a
+ * ingestão do Kit não tem outro sinal pra esse campo). Como a linha
+ * preservada fica com a origem original, a regra acima também volta a casar
+ * em toda rodada enquanto o Kit seguir com `brevo-diaria`. Sem reativação,
+ * `reativado` fica `null` (comportamento anterior). @pure
+ */
+export function resolveKitOrigemOnReativacao(
+  previous: KitPreviousOrigem | null,
+  incoming: KitOrigemBundle,
+): { fields: KitOrigemBundle; reativado: boolean | null } {
+  const reativacao = new Set(REATIVACAO_UTM_SOURCES.map(normalizeKey));
+  const prevSource = normalizeKey(previous?.utm_source ?? previous?.source);
+  const newSource = normalizeKey(incoming.utm_source);
+  const jaReativado = previous?.reativado === 1;
+
+  if (previous && prevSource !== "__none__" && !reativacao.has(prevSource) && reativacao.has(newSource)) {
+    return {
+      fields: {
+        source: previous.source ?? previous.utm_source,
+        utm_source: previous.utm_source ?? previous.source,
+        utm_medium: previous.utm_medium,
+        utm_campaign: previous.utm_campaign,
+        utm_channel: previous.utm_channel,
+        utm_term: previous.utm_term,
+        utm_content: previous.utm_content,
+        referring_site: previous.referring_site,
+        origem_cadastro: previous.origem_cadastro,
+      },
+      reativado: true,
+    };
+  }
+  return { fields: incoming, reativado: jaReativado ? true : null };
+}
+
 /**
  * Ingerir o ROSTER completo do Kit — 1 `subscriber` + 1 `subscription` +
  * (no mínimo) 1 evento `subscribe` por assinante, gravados via
@@ -363,9 +428,27 @@ export function ingestKitRoster(
     // módulo) gera um `externalEventId` novo (chave inclui o dia da
     // captura) e o evento `unsub` seria reinserido para sempre.
     const previousSubscription = db
-      .prepare("SELECT exited_at FROM subscription WHERE subscriber_id = ? AND platform = 'kit'")
-      .get(subscriberId) as { exited_at: string | null } | undefined;
+      .prepare(
+        `SELECT exited_at, source, utm_source, utm_medium, utm_campaign, utm_channel,
+                utm_term, utm_content, referring_site, origem_cadastro, reativado
+         FROM subscription WHERE subscriber_id = ? AND platform = 'kit'`,
+      )
+      .get(subscriberId) as (KitPreviousOrigem & { exited_at: string | null }) | undefined;
     const wasExitedBefore = previousSubscription != null && previousSubscription.exited_at != null;
+
+    // #8235: rede de segurança do store — sobrescrita de origem pelo
+    // reativar que tenha escapado do worker não apaga a origem gravada aqui.
+    const origem = resolveKitOrigemOnReativacao(previousSubscription ?? null, {
+      source: fields.utm_source ?? null,
+      utm_source: fields.utm_source ?? null,
+      utm_medium: fields.utm_medium ?? null,
+      utm_campaign: fields.utm_campaign ?? null,
+      utm_channel: fields.utm_channel ?? null,
+      utm_term: fields.utm_term ?? null,
+      utm_content: fields.utm_content ?? null,
+      referring_site: fields.referring_site ?? null,
+      origem_cadastro: fields.origem_cadastro ?? null,
+    });
 
     upsertSubscription(
       db,
@@ -375,15 +458,16 @@ export function ingestKitRoster(
         status,
         enteredAt: sub.created_at ?? null,
         exitedAt: exited ? now : null,
-        source: fields.utm_source ?? null,
-        utmMedium: fields.utm_medium ?? null,
-        utmCampaign: fields.utm_campaign ?? null,
-        utmChannel: fields.utm_channel ?? null,
-        referringSite: fields.referring_site ?? null,
-        origemCadastro: fields.origem_cadastro ?? null,
-        utmSource: fields.utm_source ?? null,
-        utmTerm: fields.utm_term ?? null,
-        utmContent: fields.utm_content ?? null,
+        source: origem.fields.source,
+        utmMedium: origem.fields.utm_medium,
+        utmCampaign: origem.fields.utm_campaign,
+        utmChannel: origem.fields.utm_channel,
+        referringSite: origem.fields.referring_site,
+        origemCadastro: origem.fields.origem_cadastro,
+        utmSource: origem.fields.utm_source,
+        utmTerm: origem.fields.utm_term,
+        utmContent: origem.fields.utm_content,
+        reativado: origem.reativado,
         // #7179 (F7): série viva do Kit — distingue de "backfill-beehiiv"/
         // "seed-kit" nas linhas reconstruídas pelo backfill histórico.
         origemSerie: "kit-vivo",
