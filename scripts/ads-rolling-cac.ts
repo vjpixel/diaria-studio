@@ -16,6 +16,12 @@
  * "zero". Cada uma dessas já apareceu errada em relatório antes. Aqui elas são
  * determinísticas e testadas; o agente narra o resultado.
  *
+ * Desde #8246, `--json` também devolve `contextoJanela` (D0/fim da janela,
+ * se já encerrou, coorte madura, gasto esperado por braço até ontem — ver
+ * `scripts/lib/ads-window-context.ts`) — é isto que substitui a aritmética
+ * de janela que antes vivia em PROSA no SKILL.md local da task
+ * `relatorio-diario-teste-2608`, fora do repo e sem teste.
+ *
  * Uso:
  *   npx tsx scripts/ads-rolling-cac.ts
  *   npx tsx scripts/ads-rolling-cac.ts --ate 2026-09-06 --dias 3
@@ -44,6 +50,8 @@ import {
   type RollingWindowResult,
 } from "./lib/ads-rolling-window.ts";
 import { normalizePauseIntervals, type AdsTestPauseInterval, type AdsTestRunStateWithPause } from "./lib/ads-test-pause-window.ts";
+import { computeAdsWindowContext, type AdsWindowContext, type AdsWindowContextRunState } from "./lib/ads-window-context.ts";
+import { DEFAULT_PLANNED_DAILY_BUDGET_BRL } from "./lib/ads-test-watch.ts";
 
 const CLICKS_CSV = "data/aquisicao/clicks-2608.csv";
 const EDICOES_JSONL = "data/aquisicao/teste-2608/edicoes.jsonl";
@@ -108,10 +116,13 @@ function lerEdicoes(path: string): EdicaoEmVoo[] {
  * silêncio é pior que aparecer vazio — por isso todo caminho de falha SEMPRE
  * `console.warn`/`console.error`, nunca engole em silêncio.
  */
-function lerRunStateParaRelatorio(path: string, fallbackBracos: string[]): { bracos: string[]; pauseIntervals: AdsTestPauseInterval[] } {
+function lerRunStateParaRelatorio(
+  path: string,
+  fallbackBracos: string[],
+): { bracos: string[]; pauseIntervals: AdsTestPauseInterval[]; runStateForContext: AdsWindowContextRunState | null } {
   if (!existsSync(path)) {
     console.warn(`[ads-rolling-cac] ${path} ausente — usando os braços presentes no CSV, sem pausa conhecida.`);
-    return { bracos: fallbackBracos, pauseIntervals: [] };
+    return { bracos: fallbackBracos, pauseIntervals: [], runStateForContext: null };
   }
   let raw: unknown;
   try {
@@ -121,9 +132,9 @@ function lerRunStateParaRelatorio(path: string, fallbackBracos: string[]): { bra
       `[ads-rolling-cac] ${path} ilegível (${e instanceof Error ? e.message : e}) — usando os braços presentes no ` +
         `CSV, sem pausa conhecida. Um braço registrado e ainda sem linha no CSV NÃO aparecerá no relatório até isto ser corrigido.`,
     );
-    return { bracos: fallbackBracos, pauseIntervals: [] };
+    return { bracos: fallbackBracos, pauseIntervals: [], runStateForContext: null };
   }
-  const st = raw as { bracos?: string[] } & AdsTestRunStateWithPause;
+  const st = raw as { bracos?: string[] } & AdsTestRunStateWithPause & AdsWindowContextRunState;
   let bracos = fallbackBracos;
   if (st.bracos?.length) {
     bracos = st.bracos;
@@ -131,7 +142,16 @@ function lerRunStateParaRelatorio(path: string, fallbackBracos: string[]): { bra
     console.error(`[ads-rolling-cac] ${path} não declara \`bracos\` — usando os presentes no CSV. Conferir o arquivo.`);
   }
   const pauseIntervals = normalizePauseIntervals(st.revisao?.pausa);
-  return { bracos, pauseIntervals };
+  // Mesma leitura, sem 2º parse do arquivo (#8262 achado 7) — o contexto de
+  // janela (#8246) usa d0/fim_janela/coorte_madura/orcamento_diario_brl do
+  // MESMO objeto já parseado acima.
+  const runStateForContext: AdsWindowContextRunState = {
+    d0: st.d0,
+    fim_janela: st.fim_janela,
+    coorte_madura: st.coorte_madura,
+    orcamento_diario_brl: st.orcamento_diario_brl,
+  };
+  return { bracos, pauseIntervals, runStateForContext };
 }
 
 function fmtBRL(v: number): string {
@@ -204,7 +224,10 @@ export function main(argv = process.argv.slice(2)): number {
     return 1;
   }
 
-  const { bracos, pauseIntervals } = lerRunStateParaRelatorio(runStatePath, [...new Set(rows.map((r) => r.canal))]);
+  const { bracos, pauseIntervals, runStateForContext } = lerRunStateParaRelatorio(
+    runStatePath,
+    [...new Set(rows.map((r) => r.canal))],
+  );
 
   // Cobertura do último dia — e este guard NÃO é redundante com o de cima.
   //
@@ -247,17 +270,41 @@ export function main(argv = process.argv.slice(2)): number {
     bracos.map((canal) => [canal, computeDailyCacSeries(rows, { canal, ate, n: DIAS_CAC_DIARIO })]),
   );
 
+  // Contexto de janela (#8246) — hoje é `ate + 1` (o dia em curso, já que
+  // `ate` é sempre o último dia FECHADO); janela encerrada/coorte madura são
+  // perguntas sobre HOJE, não sobre o último dia fechado.
+  const hoje = shiftDate(ate, 1);
+  const contextoJanela: AdsWindowContext = computeAdsWindowContext(
+    runStateForContext,
+    bracos,
+    pauseIntervals,
+    hoje,
+    DEFAULT_PLANNED_DAILY_BUDGET_BRL,
+  );
+
   if (argv.includes("--json")) {
     // `comparacaoPossivel` no topo em vez de deixar cada consumidor
     // re-derivar de `resultados[].comparavel` — é a mesma disciplina de não
     // reconstruir um julgamento a partir de saída ad-hoc.
     const comparacaoPossivel = resultados.filter((r) => r.comparavel).length >= 2;
     const comDiarios = resultados.map((r) => ({ ...r, diarios: diarios.get(r.canal) ?? [] }));
-    console.log(JSON.stringify({ ate, dias, comparacaoPossivel, resultados: comDiarios }, null, 2));
+    console.log(JSON.stringify({ ate, dias, comparacaoPossivel, resultados: comDiarios, contextoJanela }, null, 2));
     return 0;
   }
 
   console.log(`Janela móvel de ${dias} dias (BRT), até ${ate} — último dia fechado.\n`);
+  if (contextoJanela.d0 === null) {
+    console.log(`Contexto da janela: ${runStatePath} sem \`d0\`/\`fim_janela\` conhecidos — não é possível dizer se a janela terminou.\n`);
+  } else {
+    console.log(
+      `Contexto da janela: D0 ${contextoJanela.d0} → fim ${contextoJanela.fimJanela} ` +
+        `(${contextoJanela.janelaEncerrada ? "ENCERRADA" : "em andamento"})` +
+        (contextoJanela.coorteMadura
+          ? `. Coorte madura: ${contextoJanela.coorteMadura} (${contextoJanela.coorteAtingida ? "atingida" : "ainda não atingida"}).`
+          : ".") +
+        "\n",
+    );
+  }
   // Rótulos derivados da PRÓPRIA série, nunca recalculados aqui: repetir a
   // fórmula de datas deixaria cabeçalho e células livres para divergir em
   // silêncio — "número certo com rótulo errado" (achado do review da #7632).
