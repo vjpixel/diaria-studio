@@ -174,3 +174,46 @@ describe("#8241 item 2 — computeRollingWindow: janela com dia pausado NUNCA é
     assert.match(descreverEstabilidade(r), /estado estável/);
   });
 });
+
+describe("#8262 achado 8 — as 4 janelas de transição do critério de aceite original do #8241 (17-20/09)", () => {
+  // Pausa real de produção: 09/09 09:10 -> 17/09 00:16. Rows contíguas
+  // 13-20/09 com gasto/cadastros sempre crescentes o bastante pra nunca
+  // cair no piso de MIN_CADASTROS_PARA_COMPARAR nem disparar os guards de
+  // borda/decréscimo — o que está sob teste aqui é SÓ `comparavel`/`estavel`
+  // reagindo à pausa e à `retomada-executada` das LINHAS_REAIS_NOVO_FORMATO.
+  const PAUSE = [{ inicio: "2026-09-09T09:10:00-03:00", fim: "2026-09-17T00:16:00-03:00" }];
+  const ROWS: ClicksCsvRow[] = [
+    row("2026-09-13", 500, 130),
+    row("2026-09-14", 510, 133),
+    row("2026-09-15", 515, 135),
+    row("2026-09-16", 520, 138),
+    row("2026-09-17", 525, 142),
+    row("2026-09-18", 530, 146),
+    row("2026-09-19", 535, 150),
+    row("2026-09-20", 540, 154),
+  ];
+
+  it("até 17/09 -> comparavel:false por dia pausado (16 e 17 ambos com alguma cobertura de pausa) — bate com o critério de aceite do #8241", () => {
+    const r = computeRollingWindow(ROWS, { canal: CANAL, ate: "2026-09-17", dias: 3, pauseIntervals: PAUSE, edicoes: LINHAS_REAIS_NOVO_FORMATO });
+    assert.equal(r.comparavel, false);
+    assert.match(r.motivo ?? "", /pausado/);
+  });
+
+  it("até 18/09 -> comparavel:false por dia pausado (16 100% + 17 parcial ainda dentro da janela [16,17,18]) — bate com o critério de aceite do #8241", () => {
+    const r = computeRollingWindow(ROWS, { canal: CANAL, ate: "2026-09-18", dias: 3, pauseIntervals: PAUSE, edicoes: LINHAS_REAIS_NOVO_FORMATO });
+    assert.equal(r.comparavel, false);
+    assert.match(r.motivo ?? "", /pausado/);
+  });
+
+  it("até 19/09 -> DIVERGE do texto literal do critério de aceite do #8241 (\"comparável, mas cruza a retomada\"): sai comparavel:false porque 17/09 ainda tem fração de pausa > 0 (~0,011 do dia, pausa termina 00:16). Decisão registrada em isDatePaused (ads-test-pause-window.ts) — leitura conservadora preferida a um piso arbitrário de fração mínima.", () => {
+    const r = computeRollingWindow(ROWS, { canal: CANAL, ate: "2026-09-19", dias: 3, pauseIntervals: PAUSE, edicoes: LINHAS_REAIS_NOVO_FORMATO });
+    assert.equal(r.comparavel, false);
+    assert.match(r.motivo ?? "", /pausado/);
+  });
+
+  it("até 20/09, sem mudança nova (retomada não conta como 'mudanca') -> estavel:true, comparavel:true — bate com o critério de aceite do #8241", () => {
+    const r = computeRollingWindow(ROWS, { canal: CANAL, ate: "2026-09-20", dias: 3, pauseIntervals: PAUSE, edicoes: LINHAS_REAIS_NOVO_FORMATO });
+    assert.equal(r.comparavel, true);
+    assert.equal(r.estavel, true);
+  });
+});

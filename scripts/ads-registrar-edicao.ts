@@ -6,8 +6,8 @@
  * no schema unificado (#8241 item 1 — `ts`, `braco`, `tipo`, `efeito`,
  * `origem` + campos livres extras) — em vez de continuar sendo JSON escrito
  * à mão por sessões diferentes, o que foi exatamente a causa do desvio de
- * formato que motivou esta issue (7 linhas gravadas entre 09-17/09/2026sem
- * `braco` nem `registrado_em_utc`).
+ * formato que motivou esta issue (snapshot à data desta issue: 7 linhas
+ * gravadas entre 09-17/09/2026 sem `braco` nem `registrado_em_utc`).
  *
  * NUNCA reescreve o arquivo — é JSONL append-only (vive no OneDrive,
  * escrito por várias sessões concorrentes); esta CLI só faz `appendFile`.

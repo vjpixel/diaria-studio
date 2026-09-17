@@ -82,10 +82,20 @@ function brtDayStartMs(dateStr: DateOnlyString): number {
  * duas pausas que se sobrepõem contariam a mesma hora duas vezes e o dia
  * pareceria mais pausado do que de fato foi.
  *
+ * Falha ALTO (nunca descarta em silêncio) quando `fim < inicio` — `revisao.pausa`
+ * é JSON editado à mão e sincronizado por OneDrive; um typo de timestamp que
+ * inverte a ordem faria a pausa inteira desaparecer de todos os alarmes (#8262
+ * review, achado 7) se só fosse descartada pelo filtro `e > s` abaixo.
+ *
  * @pure
  */
 export function pausedFractionOfDay(dateStr: DateOnlyString, intervals: readonly AdsTestPauseInterval[]): number {
   if (intervals.length === 0) return 0;
+  for (const iv of intervals) {
+    if (iv.fim != null && parseIsoMs(iv.fim) < parseIsoMs(iv.inicio)) {
+      throw new Error(`ads-test-pause-window: intervalo de pausa invertido — fim (${iv.fim}) antes de inicio (${iv.inicio}).`);
+    }
+  }
   const dayStart = brtDayStartMs(dateStr);
   const dayEnd = dayStart + 86_400_000;
   const clipped: Array<[number, number]> = [];
@@ -111,8 +121,31 @@ export function pausedFractionOfDay(dateStr: DateOnlyString, intervals: readonly
   return Math.min(1, merged / 86_400_000);
 }
 
-/** `true` se QUALQUER parte de `dateStr` (dia BRT) caiu dentro de alguma
- *  pausa — parcial conta (#8241: "pausada, total ou parcial"). @pure */
+/**
+ * `true` se QUALQUER parte de `dateStr` (dia BRT) caiu dentro de alguma
+ * pausa — parcial conta (#8241: "pausada, total ou parcial"), sem piso
+ * mínimo de fração.
+ *
+ * **Decisão registrada (#8262 review, achado 8):** o critério de aceite
+ * literal do #8241 ("até 19/09: comparável, mas 'cruza' a retomada de
+ * 17/09") diverge do comportamento real quando aplicado à pausa de produção
+ * (fim às 00:16 de 17/09 — fração pausada de 17/09 é só ~0,011 do dia). Uma
+ * janela `[17,18,19]` cruza esse resíduo de 17/09 e, com este critério
+ * SEM piso, sai `comparavel: false` (não `true`) — a leitura conservadora
+ * venceu a leitura literal da issue de propósito: qualquer fração > 0 de
+ * pausa significa horas reais sem veiculação, que já afetam
+ * gasto/cadastros acumulados daquele dia; introduzir um piso arbitrário
+ * (ex: só conta pausa >= X% do dia) esconderia esse efeito atrás de um
+ * número mágico sem justificativa de negócio documentada, trocando um
+ * falso-negativo raro (`comparavel: false` num dia quase todo veiculado)
+ * por um falso-positivo sistemático (`comparavel: true` numa janela que
+ * de fato teve horas sem veiculação). Ver
+ * `test/ads-rolling-window-8241.test.ts` ("#8262 achado 8") pelas 4 datas
+ * (17-20/09) que o critério de aceite original pedia como regressão — três
+ * batem, a de 19/09 diverge por este motivo, registrado ali e aqui.
+ *
+ * @pure
+ */
 export function isDatePaused(dateStr: DateOnlyString, intervals: readonly AdsTestPauseInterval[]): boolean {
   return pausedFractionOfDay(dateStr, intervals) > 0;
 }
@@ -175,8 +208,15 @@ export function dailyBudgetForDate(
 ): number {
   if (!schedule || schedule.length === 0) return defaultBudgetBRL;
   const dayEndMs = brtDayStartMs(dateStr) + 86_400_000;
+  // A docstring do campo (`AdsTestRunStateWithPause.orcamento_diario_brl`)
+  // exige ordem ascendente por `desde`, mas isso era só um comentário — um
+  // dado fora de ordem (edição manual do JSON) dava orçamento plausível e
+  // ERRADO em silêncio, a mesma classe de defeito R$100 vs R$200 que este PR
+  // corrige (#8262 review, achado 5). Ordenar defensivamente aqui torna a
+  // invariante mecânica em vez de confiar em quem escreve o arquivo.
+  const sorted = [...schedule].sort((a, b) => parseIsoMs(a.desde) - parseIsoMs(b.desde));
   let current = defaultBudgetBRL;
-  for (const entry of schedule) {
+  for (const entry of sorted) {
     if (parseIsoMs(entry.desde) < dayEndMs) current = entry.brl;
   }
   return current;
@@ -205,8 +245,11 @@ export function plannedBudgetBRL(
   intervals: readonly AdsTestPauseInterval[],
   defaultBudgetBRL: number,
 ): number {
-  const totalCalendarDays = daysBetween(d0, throughDate) + 1;
-  if (totalCalendarDays <= 0) return 0;
+  // Piso de 1 dia (mesmo `Math.max(1, ...)` do código pré-#8240) — sem ele,
+  // uma linha de CSV anterior a `d0` (`throughDate < d0`) zerava o
+  // planejado, e QUALQUER gasto positivo disparava a condição de morte
+  // falsamente (#8262 review, achado 6: "plannedBudgetBRL perdeu o piso").
+  const totalCalendarDays = Math.max(1, daysBetween(d0, throughDate) + 1);
   let total = 0;
   let d = d0;
   for (let i = 0; i < totalCalendarDays; i++) {

@@ -14,12 +14,15 @@ import {
   summarizeTeste2608,
   totalSpendByKnownChannel,
   computeReadersByChannel,
+  computeSpendWatchDigestLines,
   buildAdsDailyDigestEmail,
   toHistoryRows,
   type ChannelDeltaRow,
 } from "../scripts/lib/ads-daily-digest.ts";
 import type { SpendRow } from "../scripts/lib/aquisicao-spend.ts";
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
+import type { ClicksCsvRow } from "../scripts/lib/ads-test-watch.ts";
+import { buildAdsTestRunState } from "../scripts/lib/ads-test-run-state.ts";
 
 function spendRow(overrides: Partial<SpendRow> = {}): SpendRow {
   return { canal: "Google Ads", mes: "2026-09", moeda: "BRL", valor: 100, fonte: "teste", ...overrides };
@@ -215,6 +218,38 @@ describe("#7487 — totalSpendByKnownChannel / computeReadersByChannel", () => {
   });
 });
 
+describe("#8262 P1 (achado 1) — computeSpendWatchDigestLines: mesma função pura de ads-test-watch.ts, chamada também pelo digest", () => {
+  const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+  const braco = runState.bracos[0];
+
+  function row(data: string, gasto: number): ClicksCsvRow {
+    return { canal: braco, data_apuracao: data as ClicksCsvRow["data_apuracao"], gasto_acumulado: gasto, leitoresAcumulado: null, cadastrosAcumulado: null };
+  }
+
+  it("runState null (teste 2608 nunca começou) -> lista vazia, nunca lança", () => {
+    assert.deepEqual(computeSpendWatchDigestLines([row("2026-09-01", 999)], null, "2026-09-01"), []);
+  });
+
+  it("gasto na faixa de aviso (1,25x-2x do planejado) -> linha nomeando o braço, mesmo texto de buildSpendWatchDigestSection", () => {
+    // planejado até 2026-09-01 (7 dias desde d0 26/08, R$100/dia default) = 700.
+    const rows = [row("2026-09-01", 1000)]; // ratio ~1.43x
+    const lines = computeSpendWatchDigestLines(rows, runState, "2026-09-01");
+    assert.ok(lines.some((l) => l.includes(braco)), "linha deveria nomear o braço");
+    assert.match(lines.join("\n"), /avisos de gasto/);
+  });
+
+  it("ritmo alto o bastante pra cruzar o nominal (R$1.500) antes do fim da janela -> linha de projeção", () => {
+    const rows = [row("2026-08-26", 0), row("2026-08-27", 500)]; // ritmo 500/dia
+    const lines = computeSpendWatchDigestLines(rows, runState, "2026-08-27");
+    assert.ok(lines.some((l) => l.includes(braco) && l.includes("cruza")), "linha de projeção deveria citar o braço e 'cruza'");
+  });
+
+  it("gasto bem abaixo do planejado, sem ritmo pra cruzar antes do fim da janela -> lista vazia", () => {
+    const rows = [row("2026-09-01", 50)];
+    assert.deepEqual(computeSpendWatchDigestLines(rows, runState, "2026-09-01"), []);
+  });
+});
+
 describe("#7487 — buildAdsDailyDigestEmail", () => {
   it("sem canais em spend.csv → mensagem explícita de SEM GASTO (nunca omite o e-mail)", () => {
     const { subject, body } = buildAdsDailyDigestEmail({
@@ -308,5 +343,38 @@ describe("#7487 — buildAdsDailyDigestEmail", () => {
     });
     assert.match(body, /N\/A \(ainda sem leitor\)/);
     assert.doesNotMatch(body, /Infinity|NaN/);
+  });
+
+  it("#8262 P1 (achado 1) — spendWatchLines presentes → aparecem no corpo do e-mail (o editor via aqui, não só no console de ads-test-watch.ts)", () => {
+    const { body } = buildAdsDailyDigestEmail({
+      periodDate: "2026-09-05",
+      deltas: [],
+      teste2608: null,
+      readers: null,
+      readersSnapshotDate: null,
+      spendWatchLines: ["Teste 2608 — avisos de gasto (sem efeito de morte):", "  - Google Ads (teste 2608): acima de 1.25×."],
+    });
+    assert.match(body, /avisos de gasto/);
+    assert.match(body, /Google Ads \(teste 2608\)/);
+  });
+
+  it("spendWatchLines vazio/omitido → nenhuma seção extra, corpo idêntico ao comportamento pré-#8262", () => {
+    const semLinhas = buildAdsDailyDigestEmail({
+      periodDate: "2026-09-05",
+      deltas: [],
+      teste2608: null,
+      readers: null,
+      readersSnapshotDate: null,
+      spendWatchLines: [],
+    });
+    const omitido = buildAdsDailyDigestEmail({
+      periodDate: "2026-09-05",
+      deltas: [],
+      teste2608: null,
+      readers: null,
+      readersSnapshotDate: null,
+    });
+    assert.equal(semLinhas.body, omitido.body);
+    assert.doesNotMatch(omitido.body, /avisos de gasto/);
   });
 });

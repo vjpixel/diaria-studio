@@ -335,9 +335,10 @@ export const SPEND_WARNING_RATIO_THRESHOLD = 1.25;
 /**
  * Aviso SEM efeito de morte (#8240 item 4) — mesmo cálculo de planejado de
  * {@link evaluateSpendOverageDeathCondition}, mas o intervalo é
- * `[SPEND_WARNING_RATIO_THRESHOLD, 2]` (exclusivo em ambas as pontas: braço
- * exatamente no limiar de morte não soma às duas listas, e um braço abaixo
- * do limiar de aviso não gera nada). Um braço que já cruzou a morte só
+ * `[SPEND_WARNING_RATIO_THRESHOLD, 2]` (INCLUSIVO nas duas pontas — ratio
+ * exatamente `2` entra aqui, nunca na condição de morte, que só dispara
+ * acima de `2×` estrito; um braço abaixo do limiar de aviso não gera nada).
+ * Um braço que já cruzou a morte (`> 2×`) só
  * aparece em {@link evaluateSpendOverageDeathCondition} — reportá-lo nas
  * duas listas duplicaria a mesma informação com urgências diferentes.
  *
@@ -416,10 +417,17 @@ export function projectBudgetCrossing(
   const latest = bracoRows[bracoRows.length - 1];
   if (latest.gasto_acumulado > nominalTotalBRL) return null;
 
+  // Normalizado por dia de CALENDÁRIO entre as duas linhas — `rows` é uma
+  // série de reconciliação manual que pode ficar parada vários dias (fonte
+  // automática do #8240 item 3 resolve isso numa linha só quando o CSV tem
+  // baseline, mas o CSV cru continua podendo ter saltos). Sem dividir por
+  // `daysBetween`, um salto de 4 dias de gasto num delta só inflava o ritmo
+  // ~4× e antecipava falsamente o aviso de cruzamento (#8262 review, achado 3).
   const closedDeltas: number[] = [];
   for (let i = bracoRows.length - 1; i > 0 && closedDeltas.length < 3; i--) {
     const delta = bracoRows[i].gasto_acumulado - bracoRows[i - 1].gasto_acumulado;
-    if (delta >= 0) closedDeltas.push(delta);
+    const dias = Math.max(1, daysBetween(bracoRows[i - 1].data_apuracao, bracoRows[i].data_apuracao));
+    if (delta >= 0) closedDeltas.push(delta / dias);
   }
   const ritmo = closedDeltas.length > 0 ? closedDeltas.reduce((a, b) => a + b, 0) / closedDeltas.length : ritmoFallbackBRL;
   if (ritmo <= 0) return null;
@@ -486,6 +494,13 @@ export function resolveArmSpend(
   let acumulado = lastCsv.gasto_acumulado;
   let lastKnownDate = lastCsv.data_apuracao;
   let anyAuto = false;
+  // Datas dentro do intervalo SEM valor automático — inclui tanto um buraco
+  // no MEIO do range (dia sem dado entre dois dias com dado) quanto uma
+  // lacuna no FINAL (API ainda não publicou o dia mais recente). Um buraco
+  // no meio contribui 0 pro acumulado mas NÃO deve virar "fonte automática
+  // completa, sem ressalva" — subestimaria `gasto_acumulado` sem avisar
+  // (#8262 review, achado 4).
+  const missingDates: DateOnlyString[] = [];
   let d = addDays(lastCsv.data_apuracao, 1);
   while (d <= todayDateStr) {
     const v = autoDailySpend.get(d);
@@ -493,10 +508,20 @@ export function resolveArmSpend(
       acumulado += v;
       lastKnownDate = d;
       anyAuto = true;
+    } else {
+      missingDates.push(d);
     }
     d = addDays(d, 1);
   }
-  return { gastoAcumulado: acumulado, lastKnownDate, label: anyAuto ? null : `fonte manual, até ${lastCsv.data_apuracao}` };
+  let label: string | null;
+  if (!anyAuto) {
+    label = `fonte manual, até ${lastCsv.data_apuracao}`;
+  } else if (missingDates.length > 0) {
+    label = `automático com lacuna em ${missingDates.join(", ")}`;
+  } else {
+    label = null;
+  }
+  return { gastoAcumulado: acumulado, lastKnownDate, label };
 }
 
 /** Orçamento diário planejado por braço, R$ (§"Orçamento do 1º mês",

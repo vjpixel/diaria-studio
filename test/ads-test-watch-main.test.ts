@@ -195,6 +195,97 @@ describe("#5845 — ads-test-watch main (I/O): religar-brevo", () => {
   });
 });
 
+describe("#8262 P1 (achado 2) — ads-test-watch main (I/O): fetchAutoSpend/resolveArmSpend/evalRows wiring dentro de main()", () => {
+  it("#8240 item 3 — fonte automática COMPLEMENTA o CSV e empurra um braço pra condição de morte que o CSV sozinho não alcançaria", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      const braco = runState.bracos[0];
+      const header = "canal,data_apuracao,gasto_acumulado,cliques,impressoes,cpc_medio,conversoes,custo_por_conversao,perda_orcamento,perda_ranking,fonte\n";
+      // Baseline no CSV: 100 em 01/09. Sozinho, contra o planejado até essa
+      // data (10 dias × R$100 = R$1.000, limiar de morte R$2.000), não
+      // dispara nada — é a fonte automática dos dias 02-04/09 (R$700/dia,
+      // #8240 item 3) que empurra o acumulado pra R$2.200 e cruza o limiar.
+      const csv = header + runState.bracos.map((b) => `${b},2026-09-01,100,,,,,,,,\n`).join("");
+      writeFileSync(join(dir, "clicks-2608.csv"), csv);
+
+      const fetchCalls: string[] = [];
+      const sentEmails: Array<{ subject: string; body: string }> = [];
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date("2026-09-05T06:30:00.000Z"), // dentro da janela, "ontem" = 04/09
+          fetchAutoSpend: async () => {
+            fetchCalls.push("fetch");
+            const perDay = new Map<string, number>([
+              ["2026-09-02", 700],
+              ["2026-09-03", 700],
+              ["2026-09-04", 700],
+            ]);
+            return new Map([[braco, perDay]]);
+          },
+          sendEmail: async (_to, subject, body) => {
+            sentEmails.push({ subject, body });
+            return { id: "x" } as never;
+          },
+        }),
+      );
+
+      assert.equal(fetchCalls.length, 1, "deps.fetchAutoSpend() deveria ter sido chamado exatamente 1x");
+      const deathEmail = sentEmails.find((e) => /condição de morte disparada/.test(e.subject));
+      assert.ok(deathEmail, "o gasto complementado pela fonte automática deveria disparar a condição de morte");
+      assert.match(deathEmail!.body, new RegExp(braco.replace(/[()]/g, "\\$&")));
+      assert.match(deathEmail!.body, /R\$ 2200[.,]00/, "gasto acumulado deveria ser 100 (CSV) + 700×3 (automático) = 2200");
+    });
+  });
+
+  it("#8240 item 4 — aviso (1,25x-2x) e projeção vão pro console (buildSpendWatchDigestSection), NUNCA um e-mail próprio", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      const braco = runState.bracos[0];
+      const header = "canal,data_apuracao,gasto_acumulado,cliques,impressoes,cpc_medio,conversoes,custo_por_conversao,perda_orcamento,perda_ranking,fonte\n";
+      // Planejado até 01/09 (10 dias × R$100) = R$1.000. Gasto 1.400 -> razão
+      // 1,4x: dentro da faixa de aviso (1,25x-2x), abaixo do limiar de morte.
+      const csv = header + runState.bracos.map((b) => `${b},2026-09-01,1400,,,,,,,,\n`).join("");
+      writeFileSync(join(dir, "clicks-2608.csv"), csv);
+
+      const sentEmails: Array<{ subject: string }> = [];
+      const logged: string[] = [];
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => {
+        logged.push(args.map(String).join(" "));
+      };
+      try {
+        await main(
+          [],
+          baseDeps(dir, {
+            now: () => new Date("2026-09-02T06:30:00.000Z"),
+            fetchAutoSpend: async () => new Map(),
+            sendEmail: async (_to, subject) => {
+              sentEmails.push({ subject });
+              return { id: "x" } as never;
+            },
+          }),
+        );
+      } finally {
+        console.log = originalLog;
+      }
+
+      assert.ok(
+        !sentEmails.some((e) => /morte|aviso/i.test(e.subject)),
+        "aviso/projeção NUNCA deveriam gerar e-mail próprio (#8240 item 4)",
+      );
+      assert.ok(
+        logged.some((l) => l.includes("avisos de gasto")),
+        "a seção de aviso deveria aparecer no console (buildSpendWatchDigestSection), mesmo sem e-mail",
+      );
+      assert.ok(logged.some((l) => l.includes(braco)), "console deveria nomear o braço no aviso");
+    });
+  });
+});
+
 describe("#5845 — ads-test-watch main (I/O): D0 ausente/reconciliação/guard de data/", () => {
   it("sem run-state.json, D0 planejado já passou → alarma, sem tentar ler clicks-2608.csv", async () => {
     await withTmpDir(async (dir) => {

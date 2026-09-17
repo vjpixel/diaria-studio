@@ -91,52 +91,47 @@ function lerEdicoes(path: string): EdicaoEmVoo[] {
 }
 
 /**
- * Lista de braços do relatório.
+ * Lê `run-state.json` UMA VEZ e devolve tanto os braços quanto os intervalos
+ * de pausa (#8262 review, achado 7 — antes eram 2 funções lendo o MESMO
+ * arquivo independentemente, e a leitura de pausa dependia da premissa "erro
+ * já reportado pela leitura de braços" para não duplicar warning; a premissa
+ * só vale se as duas leituras virem conteúdo IDÊNTICO, o que não é garantido
+ * quando `run-state.json` é multi-writer via OneDrive — 2 reads podem ver 2
+ * estados diferentes do arquivo no meio de uma gravação).
  *
- * O fallback são os canais DERIVADOS do CSV, e por isso as duas causas de
- * "não consegui ler o run-state" não podem ser tratadas igual: arquivo ausente
- * é benigno, arquivo presente e ilegível é corrupção — e nesse segundo caso um
- * braço registrado que ainda não tem nenhuma linha no CSV (recém-ligado, ou
- * com o feed de gasto quebrado) simplesmente NÃO APARECERIA no relatório, sem
- * nenhuma linha dizendo que sumiu. Some em silêncio é pior que aparecer vazio.
+ * O fallback de `bracos` são os canais DERIVADOS do CSV, e por isso as duas
+ * causas de "não consegui ler o run-state" não podem ser tratadas igual:
+ * arquivo ausente é benigno, arquivo presente e ilegível é corrupção — e
+ * nesse segundo caso um braço registrado que ainda não tem nenhuma linha no
+ * CSV (recém-ligado, ou com o feed de gasto quebrado) simplesmente NÃO
+ * APARECERIA no relatório, sem nenhuma linha dizendo que sumiu. Some em
+ * silêncio é pior que aparecer vazio — por isso todo caminho de falha SEMPRE
+ * `console.warn`/`console.error`, nunca engole em silêncio.
  */
-function lerBracos(path: string, fallback: string[]): string[] {
+function lerRunStateParaRelatorio(path: string, fallbackBracos: string[]): { bracos: string[]; pauseIntervals: AdsTestPauseInterval[] } {
   if (!existsSync(path)) {
-    console.warn(`[ads-rolling-cac] ${path} ausente — usando os braços presentes no CSV.`);
-    return fallback;
+    console.warn(`[ads-rolling-cac] ${path} ausente — usando os braços presentes no CSV, sem pausa conhecida.`);
+    return { bracos: fallbackBracos, pauseIntervals: [] };
   }
+  let raw: unknown;
   try {
-    const st = JSON.parse(readFileSync(path, "utf8")) as { bracos?: string[] };
-    if (st.bracos?.length) return st.bracos;
-    console.error(`[ads-rolling-cac] ${path} não declara \`bracos\` — usando os presentes no CSV. Conferir o arquivo.`);
-    return fallback;
+    raw = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
     console.error(
       `[ads-rolling-cac] ${path} ilegível (${e instanceof Error ? e.message : e}) — usando os braços presentes no ` +
-        `CSV. Um braço registrado e ainda sem linha no CSV NÃO aparecerá no relatório até isto ser corrigido.`,
+        `CSV, sem pausa conhecida. Um braço registrado e ainda sem linha no CSV NÃO aparecerá no relatório até isto ser corrigido.`,
     );
-    return fallback;
+    return { bracos: fallbackBracos, pauseIntervals: [] };
   }
-}
-
-/**
- * Intervalos de pausa do `run-state.json` (#8241 item 2) — fail-soft:
- * arquivo ausente/ilegível vira lista vazia (nenhuma pausa conhecida), o
- * mesmo comportamento de `lerBracos` pro caso benigno. `lerBracos` acima já
- * cobre o caso "arquivo ilegível" com um erro que interrompe o fallback de
- * braços; aqui um erro de leitura NÃO deveria silenciosamente esconder que
- * há uma pausa — por isso também loga, mas sem duplicar o aviso de
- * `lerBracos` quando os dois lerem o MESMO arquivo com sucesso.
- */
-function lerPauseIntervals(path: string): AdsTestPauseInterval[] {
-  if (!existsSync(path)) return [];
-  try {
-    const st = JSON.parse(readFileSync(path, "utf8")) as AdsTestRunStateWithPause;
-    return normalizePauseIntervals(st.revisao?.pausa);
-  } catch {
-    // Erro já reportado por `lerBracos` (mesmo arquivo) — não duplicar.
-    return [];
+  const st = raw as { bracos?: string[] } & AdsTestRunStateWithPause;
+  let bracos = fallbackBracos;
+  if (st.bracos?.length) {
+    bracos = st.bracos;
+  } else {
+    console.error(`[ads-rolling-cac] ${path} não declara \`bracos\` — usando os presentes no CSV. Conferir o arquivo.`);
   }
+  const pauseIntervals = normalizePauseIntervals(st.revisao?.pausa);
+  return { bracos, pauseIntervals };
 }
 
 function fmtBRL(v: number): string {
@@ -209,7 +204,7 @@ export function main(argv = process.argv.slice(2)): number {
     return 1;
   }
 
-  const bracos = lerBracos(runStatePath, [...new Set(rows.map((r) => r.canal))]);
+  const { bracos, pauseIntervals } = lerRunStateParaRelatorio(runStatePath, [...new Set(rows.map((r) => r.canal))]);
 
   // Cobertura do último dia — e este guard NÃO é redundante com o de cima.
   //
@@ -235,7 +230,6 @@ export function main(argv = process.argv.slice(2)): number {
     return 1;
   }
   const edicoes = lerEdicoes(edicoesPath);
-  const pauseIntervals = lerPauseIntervals(runStatePath);
   // `contarDiasAposUltimaEdicao` roda 1x por braço sobre o MESMO `edicoes`
   // — sem dedup, uma linha de `tipo` desconhecido avisaria 3x (uma por
   // braço). O Set garante 1 aviso por mensagem, não 1 por chamada.

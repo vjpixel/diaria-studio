@@ -169,7 +169,8 @@ export type EdicaoEfeito = "mudanca" | "pausa" | "retomada" | "registro";
 
 /**
  * Tabela EXPLÍCITA `tipo -> efeito`, cobrindo tanto o schema antigo quanto
- * as 7 linhas reais gravadas entre 09-17/09/2026 (#8241). `tipo` fora desta
+ * as 7 linhas reais gravadas entre 09-17/09/2026 (#8241, snapshot à data
+ * desta issue — `edicoes.jsonl` já tem mais linhas hoje). `tipo` fora desta
  * tabela conta como `"mudanca"` (ver {@link normalizeEdicaoRegistro}) —
  * ignorar em silêncio é exatamente o defeito que esta issue corrige.
  */
@@ -183,11 +184,18 @@ export const TIPO_TO_EFEITO: Readonly<Record<string, EdicaoEfeito>> = {
   investigacao: "registro",
   "edicao-nao-executada": "registro",
   "correcao-de-registro": "registro",
+  // "registro" (não "mudanca") — corrige um NÚMERO já reportado (conversões
+  // que chegaram atrasadas do Google Ads), não altera a campanha em voo; não
+  // deve reiniciar a fase de aprendizado do algoritmo que só linhas
+  // "mudanca" disparam (ver `contarDiasAposUltimaEdicao` abaixo).
   "backfill-conversao-google-ads": "registro",
   "pausa-total-anuncios": "pausa",
   "retomada-pre-registro": "registro",
   "retomada-executada": "retomada",
   "correcao-data-termino-pre-registro": "registro",
+  // "registro" (não "mudanca") — mesma razão do backfill acima: corrige um
+  // CAMPO de metadado (data de término já executada), não é uma edição de
+  // segmentação/orçamento/criativo da campanha em voo.
   "correcao-data-termino-executada": "registro",
 };
 
