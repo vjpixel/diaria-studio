@@ -34,17 +34,28 @@
  * Env: `data/.credentials.json` com o scope `gmail.send` — só necessário pra
  * ENVIAR o alarme.
  *
- * Estado: `data/.edicao-diaria-staleness-alarm-state.json` (dedup do
- * e-mail, 1x por edição) + `data/.edicao-diaria-staleness-alarm-issues.json`
- * (tracking de issue por achado, `alarm-issues.ts`).
+ * Estado: `data/.edicao-diaria-staleness-alarm-issues.json` (tracking de
+ * issue por achado, `alarm-issues.ts`).
+ *
+ * **E-mail (#7960, migrado do estado próprio `lastAlarmedEdition` pro
+ * portão `notifyEditorForOutcomes`):** severidade `"acao"` — só cria/reusa
+ * a issue, nunca manda e-mail sob `notifications.email_policy:
+ * "urgent_only"`. Sob `"legacy"`, `legacyResendIntent:
+ * "dedupe-new-occurrences-only"` preserva o comportamento histórico: o
+ * fingerprint é o `aammdd` da edição — 1 ocorrência por edição, não um
+ * conjunto persistente. Re-executar sobre a MESMA edição pendente reusa a
+ * issue (`action: "reused"`) e não deve re-emitir e-mail — era esse o
+ * dedup que `lastAlarmedEdition` fazia antes.
+ * `shouldSendEdicaoDiariaStalenessAlarm`/`markEdicaoDiariaStalenessAlarmed`/
+ * `.edicao-diaria-staleness-alarm-state.json` continuam definidos em
+ * `lib/edicao-diaria-staleness-alarm.ts` (e testados lá) mas não são mais
+ * chamados por este script.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { nextEditionDate } from "./lib/next-edition-date.ts";
 import { queryTaskArmed } from "./lib/scheduled-task-status.ts";
 import {
@@ -55,32 +66,26 @@ import {
   findLastEdicaoLogEntry,
   isEdicaoDiariaScheduledWeekday,
   evaluateEdicaoDiariaStaleness,
-  shouldSendEdicaoDiariaStalenessAlarm,
-  markEdicaoDiariaStalenessAlarmed,
-  emptyEdicaoDiariaStalenessAlarmState,
   buildEdicaoDiariaStalenessAlarmEmail,
   isAlarmingVerdict,
   edicaoDirCandidates,
   TIMER_DISABLED_CROSS_MACHINE_CAVEAT,
-  type EdicaoDiariaStalenessAlarmState,
   type EdicaoDiariaStalenessEvaluation,
   type EdicaoTimerState,
 } from "./lib/edicao-diaria-staleness-alarm.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   saveAlarmIssuesState,
-  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
-  type AlarmIssueResult,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = resolve(ROOT, "data");
 const SCHEDULE_LOG_PATH = join(DATA_DIR, "overnight-schedule.log");
-const STATE_PATH = join(DATA_DIR, ".edicao-diaria-staleness-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = join(DATA_DIR, ".edicao-diaria-staleness-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[edicao-diaria-staleness-alarm]";
@@ -134,20 +139,8 @@ function readScheduleLogLines(): string[] {
   }
 }
 
-function loadState(): EdicaoDiariaStalenessAlarmState {
-  if (!existsSync(STATE_PATH)) return emptyEdicaoDiariaStalenessAlarmState();
-  try {
-    const raw = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Partial<EdicaoDiariaStalenessAlarmState>;
-    const lastAlarmedEdition = typeof raw.lastAlarmedEdition === "string" ? raw.lastAlarmedEdition : null;
-    return { lastAlarmedEdition };
-  } catch {
-    return emptyEdicaoDiariaStalenessAlarmState();
-  }
-}
-
-// saveState/saveAlarmIssuesState: consolidados em scripts/lib/alarm-issues.ts
-// (#7124) — importados acima (DATA_DIR === dirname(STATE_PATH) ===
-// dirname(ALARM_ISSUES_STATE_PATH), então o helper genérico é equivalente).
+// saveAlarmIssuesState: consolidado em scripts/lib/alarm-issues.ts (#7124)
+// — importado acima.
 
 // loadAlarmIssuesState continua LOCAL (#7124) — diverge do padrão comum ao
 // logar o parse error via console.error, não só um catch silencioso; não
@@ -248,53 +241,59 @@ async function main(): Promise<void> {
     `${LOG_PREFIX} aammdd=${aammdd} scheduledDay=${isScheduledDay} editionExists=${editionExists} timerState=${timerStateLabel} verdict=${evaluation.verdict}`,
   );
 
-  const state = loadState();
   const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict) ? [toAlarmFinding(evaluation)] : [];
   const alarmState = loadAlarmIssuesState();
-  let issueRef: AlarmIssueResult | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
-        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado.`,
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, e-mail NÃO avaliado.`,
     );
-  } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
-      cwd: ROOT,
-      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
-    });
-    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
-    const outcome = findingOutcomes[0];
-    if (outcome) {
-      issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
-      } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
-      }
+    return;
+  }
+
+  const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    cwd: ROOT,
+    closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+  });
+  saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+  for (const outcome of findingOutcomes) {
+    if (outcome.action === "failed") {
+      console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    } else {
+      console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
     }
   }
 
-  if (!shouldSendEdicaoDiariaStalenessAlarm(evaluation, state)) {
-    console.log(
-      isAlarmingVerdict(evaluation.verdict)
-        ? `${LOG_PREFIX} já alarmado pra edição ${evaluation.aammdd} nesta invocação anterior — não reenvia.`
-        : `${LOG_PREFIX} nenhum achado (verdict=${evaluation.verdict}) — nenhum alarme necessário.`,
-    );
+  if (findingOutcomes.length === 0) {
+    console.log(`${LOG_PREFIX} nenhum achado (verdict=${evaluation.verdict}) — nenhum alarme necessário.`);
     return;
   }
 
-  const { subject, body } = buildEdicaoDiariaStalenessAlarmEmail(evaluation, issueRef);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
-    return;
+  const result = await notifyEditorForOutcomes(
+    findingOutcomes,
+    "acao",
+    (qualifying) => buildEdicaoDiariaStalenessAlarmEmail(evaluation, qualifying[0]),
+    {
+      cwd: ROOT,
+      platformConfigPath: PLATFORM_CONFIG_PATH,
+      emailTo: toOverride,
+      // #8271: fingerprint é o `aammdd` da edição — 1 ocorrência por
+      // edição, não um conjunto persistente. Reexecução sobre a MESMA
+      // edição pendente reusa a issue (`action: "reused"`) e não deve
+      // re-emitir e-mail sob `email_policy: "legacy"` — era esse o dedup
+      // que `lastAlarmedEdition` fazia antes.
+      legacyResendIntent: "dedupe-new-occurrences-only",
+    },
+  );
+  if (result.qualifying.length === 0) {
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
+  } else if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado (edição ${evaluation.aammdd}).`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
   }
-  await sendGmailMessage(to, subject, body);
-  saveState(markEdicaoDiariaStalenessAlarmed(evaluation.aammdd), STATE_PATH);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (edição ${evaluation.aammdd}).`);
 }
 
 if (isMainModule(import.meta.url)) {

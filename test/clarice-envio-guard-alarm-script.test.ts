@@ -10,16 +10,20 @@
  *     com arquivos `envio-{aammdd}-guard-*.md` reais (não mockado — é só fs
  *     local). Cobre o Gap 2 central: NUNCA pega um relatório do run das
  *     19:00 (sem `-guard`), mesmo do mesmo dia.
- *   - `loadState`/`saveState` — roundtrip de idempotência, mesmo molde de
- *     `test/clarice-envio-alarm-script.test.ts`.
+ *
+ * `loadState`/`saveState` (roundtrip de `envio-guard-alarm-state.json`)
+ * removidos (#7960) — o script não gerencia mais idempotência de e-mail
+ * própria, isso agora é `notifyEditorForOutcomes`/`shouldEmailForIssueOutcome`
+ * (`scripts/lib/editor-notify.ts`, coberto por `test/editor-notify.test.ts`).
+ * `shouldSendGuardAlarm`/`markGuardAlarmed` continuam testados puros em
+ * `test/clarice-envio-guard-alarm.test.ts` (lib), sem I/O.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { listTodayGuardReports, loadState, saveState, toAlarmFinding } from "../scripts/clarice-envio-guard-alarm.ts";
-import { emptyEnvioGuardAlarmState, markGuardAlarmed } from "../scripts/lib/clarice-envio-guard-alarm.ts";
+import { listTodayGuardReports, toAlarmFinding } from "../scripts/clarice-envio-guard-alarm.ts";
 
 describe("listTodayGuardReports", () => {
   it("diretório ausente (junction data/ não montada) => [] sem lançar", () => {
@@ -56,33 +60,6 @@ describe("listTodayGuardReports", () => {
     writeFileSync(resolve(dir, "envio-260812-guard-ok.md"), "y");
     const found = listTodayGuardReports(dir, "260812");
     assert.equal(found.length, 2);
-    rmSync(dir, { recursive: true, force: true });
-  });
-});
-
-describe("loadState/saveState (idempotência)", () => {
-  it("arquivo ausente => estado vazio (default LIGADO pra alarmar na 1ª falha real)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "envio-guard-alarm-state-"));
-    const statePath = resolve(dir, "envio-guard-alarm-state.json");
-    assert.deepEqual(loadState(statePath), emptyEnvioGuardAlarmState());
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("roundtrip: save então load devolve o mesmo estado", () => {
-    const dir = mkdtempSync(join(tmpdir(), "envio-guard-alarm-state-"));
-    const statePath = resolve(dir, "sub", "envio-guard-alarm-state.json"); // mkdirSync recursivo no save
-    const state = markGuardAlarmed(emptyEnvioGuardAlarmState(), "260812");
-    saveState(state, statePath);
-    assert.deepEqual(loadState(statePath), state);
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("JSON corrompido => estado vazio, nunca lança", () => {
-    const dir = mkdtempSync(join(tmpdir(), "envio-guard-alarm-state-"));
-    const statePath = resolve(dir, "envio-guard-alarm-state.json");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(statePath, "{ nao e json valido");
-    assert.deepEqual(loadState(statePath), emptyEnvioGuardAlarmState());
     rmSync(dir, { recursive: true, force: true });
   });
 });

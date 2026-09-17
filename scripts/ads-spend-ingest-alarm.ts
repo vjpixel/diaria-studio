@@ -36,38 +36,43 @@
  * Env: `data/.credentials.json` com o scope `gmail.send` — só necessário pra
  * ENVIAR o alarme (mesmo requisito dos outros alarmes locais deste repo).
  *
- * Estado: `data/aquisicao/.ads-spend-ingest-alarm-state.json` (dedup do
- * e-mail, 1×/dia) + `data/aquisicao/.ads-spend-ingest-alarm-issues.json`
- * (tracking de issue por achado, `alarm-issues.ts`).
+ * Estado: `data/aquisicao/.ads-spend-ingest-alarm-issues.json` (tracking de
+ * issue por achado, `alarm-issues.ts`).
+ *
+ * **E-mail (#7960, migrado do estado próprio `lastAlarmedDay` pro portão
+ * `notifyEditorForOutcomes`):** severidade `"acao"` — só cria/reusa a issue,
+ * nunca manda e-mail sob `notifications.email_policy: "urgent_only"`. Sob
+ * `"legacy"`, `legacyResendIntent: "dedupe-new-occurrences-only"` preserva
+ * o comportamento histórico: fingerprint fixo por verdict ("defect"/
+ * "no-run") mas `shouldSendAdsSpendIngestAlarm` já gateava por DIA
+ * (`lastAlarmedDay`) — re-executar no MESMO dia reusa a issue (`action:
+ * "reused"`) e não deve re-emitir e-mail. `shouldSendAdsSpendIngestAlarm`/
+ * `markAdsSpendIngestAlarmed`/`.ads-spend-ingest-alarm-state.json` continuam
+ * definidos em `lib/ads-spend-ingest-alarm.ts` (e testados lá) mas não são
+ * mais chamados por este script.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
   evaluateAdsSpendIngestAlarm,
-  shouldSendAdsSpendIngestAlarm,
-  markAdsSpendIngestAlarmed,
-  emptyAdsSpendIngestAlarmState,
   buildAdsSpendIngestAlarmEmail,
   isAlarmingVerdict,
-  type AdsSpendIngestAlarmState,
   type AdsSpendIngestAlarmEvaluation,
   type PlatformLogInput,
   platformLabel,
 } from "./lib/ads-spend-ingest-alarm.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   saveAlarmIssuesState,
-  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
-  type AlarmIssueResult,
+  type AlarmFindingOutcome,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -86,7 +91,6 @@ const AQUISICAO_DIR = join(DATA_DIR, "aquisicao");
  *  #7518). */
 export const DEFAULT_GOOGLE_LOG_PATH = join(AQUISICAO_DIR, ".google-ads-ingest.log");
 export const DEFAULT_MICROSOFT_LOG_PATH = join(AQUISICAO_DIR, ".microsoft-ads-ingest.log");
-const STATE_PATH = join(AQUISICAO_DIR, ".ads-spend-ingest-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = join(AQUISICAO_DIR, ".ads-spend-ingest-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[ads-spend-ingest-alarm]";
@@ -138,18 +142,8 @@ export function toAlarmFinding(evaluation: AdsSpendIngestAlarmEvaluation): Alarm
   };
 }
 
-function loadState(statePath: string): AdsSpendIngestAlarmState {
-  if (!existsSync(statePath)) return emptyAdsSpendIngestAlarmState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8")) as Partial<AdsSpendIngestAlarmState>;
-    return { lastAlarmedDay: typeof raw.lastAlarmedDay === "string" ? raw.lastAlarmedDay : null };
-  } catch {
-    return emptyAdsSpendIngestAlarmState();
-  }
-}
-
-// saveState/saveAlarmIssuesState: consolidados em scripts/lib/alarm-issues.ts
-// (#7124) — importados acima.
+// saveAlarmIssuesState: consolidado em scripts/lib/alarm-issues.ts (#7124)
+// — importado acima.
 
 // loadAlarmIssuesState continua LOCAL (#7124) — diverge do padrão comum ao
 // logar o parse error via console.error, não só um catch silencioso; não
@@ -211,64 +205,61 @@ async function main(): Promise<void> {
     return;
   }
 
-  const state = loadState(STATE_PATH);
   const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict) ? [toAlarmFinding(evaluation)] : [];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
-  const issueRefs: AlarmIssueResult[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
-        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado.`,
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, e-mail NÃO avaliado.`,
     );
-  } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
-      cwd: ROOT,
-      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
-    });
-    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
-    for (const outcome of findingOutcomes) {
-      const ref: AlarmIssueResult = {
-        issueNumber: outcome.issueNumber,
-        url: outcome.url,
-        action: outcome.action,
-        error: outcome.error,
-      };
-      issueRefs.push(ref);
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
-      } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
-      }
+    return;
+  }
+
+  const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    cwd: ROOT,
+    closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+  });
+  saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+  for (const outcome of findingOutcomes) {
+    if (outcome.action === "failed") {
+      console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    } else {
+      console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
     }
   }
 
-  if (!shouldSendAdsSpendIngestAlarm(evaluation, state, now)) {
-    console.log(
-      isAlarmingVerdict(evaluation.verdict)
-        ? `${LOG_PREFIX} já alarmado hoje — não reenvia.`
-        : `${LOG_PREFIX} run de hoje sem defeito — nenhum alarme necessário.`,
-    );
+  if (findingOutcomes.length === 0) {
+    console.log(`${LOG_PREFIX} run de hoje sem defeito — nenhum alarme necessário.`);
     return;
   }
 
-  const issueLines = issueRefs.length
-    ? "\n\nIssues:\n" +
-      issueRefs
+  const buildMessage = (qualifying: readonly AlarmFindingOutcome[]) => {
+    const issueLines =
+      "\n\nIssues:\n" +
+      qualifying
         .map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`))
-        .join("\n")
-    : "";
-  const { subject, body } = buildAdsSpendIngestAlarmEmail(evaluation, issueLines);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
-    return;
+        .join("\n");
+    return buildAdsSpendIngestAlarmEmail(evaluation, issueLines);
+  };
+  const result = await notifyEditorForOutcomes(findingOutcomes, "acao", buildMessage, {
+    cwd: ROOT,
+    platformConfigPath: PLATFORM_CONFIG_PATH,
+    emailTo: toOverride,
+    // #8271: `shouldSendAdsSpendIngestAlarm` gateava por DIA
+    // (`lastAlarmedDay`) — 1 e-mail por dia, não um reenvio periódico
+    // deliberado. Reexecução no MESMO dia reusa a issue (`action:
+    // "reused"`) e não deve re-emitir e-mail sob `email_policy: "legacy"`.
+    legacyResendIntent: "dedupe-new-occurrences-only",
+  });
+  if (result.qualifying.length === 0) {
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
+  } else if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
   }
-  await sendGmailMessage(to, subject, body);
-  saveState(markAdsSpendIngestAlarmed(now), STATE_PATH);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
 }
 
 if (isMainModule(import.meta.url)) {
