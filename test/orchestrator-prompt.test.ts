@@ -270,7 +270,10 @@ describe("orchestrator-prompt (#634)", () => {
       // fact-check `NOT_FOUND_IN_SOURCE` em §4c.6 (render-halt-banner.ts,
       // #738) em vez de inventar outro mecanismo. Arquivo foi a 846 linhas.
       // Teto bumped de 840→850 com headroom pequeno.
-      "orchestrator-stage-4.md": 850,
+      // #8123 Fatia 5: +1 linha (instrumentação de timing do "ajustar" —
+      // scripts/log-stage4-adjust-timing.ts). Teto bumped de 850→851, sem
+      // headroom sobrando.
+      "orchestrator-stage-4.md": 851,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
