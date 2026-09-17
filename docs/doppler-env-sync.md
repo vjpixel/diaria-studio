@@ -65,6 +65,31 @@ https://dashboard.doppler.com) na config certa (`dev`/`dev_personal`/`stg`/
 normalmente — a chave deixa de ser só-local e o guard para de disparar para
 ela.
 
+**Guard de linha malformada (#8279, 17/09/2026).** `sync-env` só reconhece
+como "chave" uma linha `NOME=valor` cujo nome bate um identificador POSIX
+(`[A-Za-z_][A-Za-z0-9_]*`, case-insensitive — não exige UPPER_SNAKE_CASE de
+propósito, pra não perder silenciosamente a proteção do guard de chave
+só-local numa chave legítima fora da convenção) e tem no máximo 64
+caracteres (a maior chave real do projeto tem 34; 64 dá folga generosa sem
+deixar uma linha de continuação inteiramente alfanumérica — base64 sem
+`+`/`/` — passar como "chave válida"). Uma linha com `=` que não bate esse
+formato (achado ao vivo: continuação de um valor JSON multilinha colado sem
+escapar `\n` — por exemplo `"private_key": "-----BEGIN PRIVATE
+KEY-----...`, cujo fragmento de base64 carrega `=`) nunca vira chave — é
+contada como "malformada" e reportada só como NÚMERO (`Aviso: .env local
+tem N linha(s) malformada(s)...`), nunca com o conteúdo da linha. Antes
+deste guard, esse tipo de linha virava uma "chave" espúria e, se ausente no
+snapshot do Doppler, seu NOME (na prática um fragmento do segredo) era
+ecoado dentro de `LocalOnlyEnvKeysError.message` — vazando material de
+credencial no stdout/stderr da própria proteção que existe pra não vazar
+segredo. O aviso de linha malformada é warning-only (não bloqueia o sync
+sozinho); o guard de chave só-local acima continua bloqueando normalmente
+quando alguma chave VÁLIDA está ausente no vault, **de qualquer case**. Se
+`.env` tiver um valor multilinha desse tipo, a correção é colocá-lo numa
+única linha escapando as quebras (`\n` literal dentro de uma string entre
+aspas, não uma quebra de linha real no
+arquivo) — o formato que o Doppler já usa pro mesmo valor.
+
 **Precedência preservada:** `scripts/lib/env-loader.ts` (`loadProjectEnv`)
 carrega `.env` com `override: false` — uma var já presente em `process.env`
 (por exemplo, setada por `doppler run -- <comando>` em vez de via `.env`)
