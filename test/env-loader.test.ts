@@ -151,4 +151,43 @@ describe("#8237 warnOnEnvDivergence", () => {
   it("nunca lança — arquivo ilegível vira no-op silencioso (dotenvConfig trata o erro de verdade)", () => {
     assert.doesNotThrow(() => warnOnEnvDivergence(resolve(tmpdir(), "arquivo-que-nao-existe.env")));
   });
+
+  it("no máximo 1 aviso por chave por processo — chamadas repetidas não reemitem", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-divergence-dedupe-"));
+    const envFile = resolve(tmpRoot, ".env");
+    writeFileSync(envFile, "DEDUPE_KEY=from-dotenv\n");
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    try {
+      const env = { DEDUPE_KEY: "from-parent-process" } as NodeJS.ProcessEnv;
+      warnOnEnvDivergence(envFile, env);
+      warnOnEnvDivergence(envFile, env);
+      warnOnEnvDivergence(envFile, env);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 1);
+  });
+
+  it("loadProjectEnv() de verdade aciona o aviso quando o .env carregado diverge do ambiente", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-divergence-wired-"));
+    writeFileSync(resolve(tmpRoot, ".env"), "TEST_ENV_LOADER_WIRED_DIVERGENCE=from-dotenv\n");
+    process.env.TEST_ENV_LOADER_WIRED_DIVERGENCE = "from-process";
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    try {
+      loadProjectEnv(tmpRoot);
+    } finally {
+      console.warn = originalWarn;
+      delete process.env.TEST_ENV_LOADER_WIRED_DIVERGENCE;
+    }
+
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /TEST_ENV_LOADER_WIRED_DIVERGENCE/);
+  });
 });
