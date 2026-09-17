@@ -2261,6 +2261,31 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // e acao POSTERIOR do editor.
     issue: "#8176",
   },
+  {
+    name: "Diaria-Social-Followers-Collect",
+    description: "grava followers_count diario do Instagram e do Facebook (data/metrics/social-followers.jsonl, #8260 Fase 1)",
+    steps: [{ key: "collect", script: "scripts/social-followers-collect.ts" }],
+    logPath: "metrics/.social-followers-collect.log",
+    // Diaria 07:10 BRT -- slot livre (nada entre 06:45 e 08:30 no restante
+    // do registro). O dia da Meta fecha no horario do Pacifico (07:00 UTC,
+    // ver corpo da issue) -- rodar logo depois evita ler o total ANTES do
+    // fechamento do dia anterior, sem competir com o cluster 09:00-12:45.
+    schedule: { kind: "daily", hour: 7, minute: 10 },
+    // Sem guard -- o script e fail-soft POR PLATAFORMA de proposito
+    // (credencial ausente ou erro de rede numa plataforma nao aborta a
+    // outra, ver docstring de collectSocialFollowers) -- nunca ha "arquivo
+    // esperado ausente" que justifique abortar a run inteira antes de
+    // tentar.
+    //
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado de subagente
+    // overnight -- guard de publicacao/plataforma do CLAUDE.md proibe
+    // EXECUTAR chamada ao vivo contra Instagram/Facebook nesta sessao,
+    // #8260) -- armar via `scripts/setup-systemd-timers.ts` na checkout
+    // compartilhada (`300`) e acao POSTERIOR do editor, junto com o 1o
+    // fetch real.
+    enabled: false,
+    issue: "#8260",
+  },
 ];
 
 /**
