@@ -47,10 +47,10 @@
  * anexadas, exibidas em grade. Cada post agora também ganha `images`
  * (`resolveTwitterImages`, `TWITTER_IMAGE_LIMIT` = 4): quando o carrossel de
  * 5 slides do destaque está completo em `06-public-images.json` (capa + 3
- * parágrafos + CTA, `gen-carousel-cards.ts` no Stage 3), usa os 3 slides de
- * PARÁGRAFO — descarta capa e CTA (moldura/branding, não conteúdo) — MESMO
- * critério ad-hoc que o editor já aplicou ao carrossel semanal (registrado
- * na issue #8056, pendente de confirmação formal; reverter é trocar o slice
+ * parágrafos + CTA, `gen-carousel-cards.ts` no Stage 3), usa a CAPA + os 3
+ * slides de PARÁGRAFO, nessa ordem (a mesma do Instagram) — descarta só o CTA.
+ * São 4 imagens, exatamente `TWITTER_IMAGE_LIMIT`. O #8056 descartava também
+ * a capa; o editor pediu a capa de volta no #8202 (reverter é trocar o slice
  * em `resolveTwitterImages`). Sem carrossel completo (edição antiga, upload
  * parcial), cai pro fallback de sempre — 1 imagem só, via
  * `resolveTwitterImage`. `imageUrl`/`altText` (singular) continuam
@@ -239,9 +239,9 @@ export const TWITTER_IMAGE_LIMIT = 4;
  * Resolve até `TWITTER_IMAGE_LIMIT` imagens pro tweet de um destaque (#8056).
  * Prefere o carrossel de 5 slides (capa + 3 parágrafos + CTA) já gerado pro
  * Instagram/Facebook/Threads — via `resolveCarouselImageUrls`, tudo-ou-nada,
- * `null` se QUALQUER slide faltar — descartando capa (índice 0) e CTA
- * (último): só os 3 slides de PARÁGRAFO viram imagem no X (critério ad-hoc
- * já aplicado pelo editor ao carrossel semanal, ver docstring do arquivo).
+ * `null` se QUALQUER slide faltar — descartando só o CTA (último): capa +
+ * 3 slides de PARÁGRAFO viram imagem no X, nessa ordem (#8202, ver docstring
+ * do arquivo).
  * Sem carrossel completo, cai pro fallback de sempre: 1 imagem só
  * (`resolveTwitterImage`, hero 4x5/2x1). Nunca lança — JSON corrompido cai
  * no mesmo fallback de 1 imagem que `resolveTwitterImage` já trata.
@@ -259,11 +259,14 @@ export function resolveTwitterImages(
       };
       const carousel = resolveCarouselImageUrls(parsed.images, destaque);
       if (carousel) {
-        const paragraphSlides = carousel.slice(1, -1); // descarta capa (0) e CTA (último)
+        const slides = carousel.slice(0, -1).slice(0, TWITTER_IMAGE_LIMIT); // #8202: capa + 3 parágrafos, descarta o CTA (último)
         return {
-          images: paragraphSlides.map((url, i) => ({
+          images: slides.map((url, i) => ({
             url,
-            altText: `Slide ${i + 1} do destaque ${destaque.toUpperCase()} da edição diar.ia.br de ${editionDate}`,
+            altText:
+              i === 0
+                ? `Capa do destaque ${destaque.toUpperCase()} da edição diar.ia.br de ${editionDate}`
+                : `Slide ${i} do destaque ${destaque.toUpperCase()} da edição diar.ia.br de ${editionDate}`,
           })),
           reason: null,
         };
