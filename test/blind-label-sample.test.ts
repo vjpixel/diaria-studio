@@ -33,9 +33,11 @@ import {
   stableRank,
   bucketQuota,
   selectByThreshold,
+  asked,
   MIN_PER_BUCKET,
   type Sampled,
 } from "../scripts/blind-label-sample.ts";
+import { parseArgs } from "../scripts/lib/cli-args.ts";
 
 function item(url: string): Sampled {
   return {
@@ -140,5 +142,34 @@ describe("selectByThreshold — amostra aditiva", () => {
 
   it("devolve vazio para lista vazia", () => {
     assert.deepEqual(selectByThreshold([], 10, new Set()), []);
+  });
+
+  it("quota >= candidatos inclui TODO mundo (ramo do piso MIN_PER_BUCKET)", () => {
+    const pool = corpus(5);
+    assert.equal(selectByThreshold(pool, 8, new Set()).length, 5);
+  });
+});
+
+/**
+ * `parseArgs` classifica `--generate 60` como VALUE e `--generate` sozinho como
+ * FLAG. `asked` é o predicado que reconcilia os dois — sem ele, `--generate 60`
+ * caía no usage e não gerava nada (bug real, pego rodando a ferramenta).
+ * `getIntArg` é quem depois rejeita a flag sem valor, por contrato próprio.
+ */
+describe("asked", () => {
+  it("reconhece --key com valor", () => {
+    assert.equal(asked(parseArgs(["--generate", "60"]), "generate"), true);
+  });
+
+  it("reconhece --key sem valor (pra getIntArg poder recusar com mensagem)", () => {
+    assert.equal(asked(parseArgs(["--generate"]), "generate"), true);
+  });
+
+  it("reconhece a sintaxe --key=valor", () => {
+    assert.equal(asked(parseArgs(["--generate=60"]), "generate"), true);
+  });
+
+  it("é falso para chave ausente", () => {
+    assert.equal(asked(parseArgs(["--next", "4"]), "generate"), false);
   });
 });

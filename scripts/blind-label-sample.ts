@@ -231,6 +231,13 @@ function generate(n: number) {
     console.error(`ABORTADO: ${lost.length} item(ns) já rotulado(s) sairiam da amostra.`);
     for (const u of lost) console.error(`  ${u}`);
     console.error(`Nada foi gravado — o estado anterior segue intacto em ${STATE}.`);
+    console.error(
+      `\nIsto significa que a premissa "era silêncio" deixou de valer pra esse(s) item(ns):\n` +
+        `o editor moveu de bucket depois, ou a edição de origem ficou ilegível.\n` +
+        `Se a mudança é real e o rótulo antigo não serve mais, remova a entrada à mão\n` +
+        `de ${STATE} e rode de novo. Se a edição só está ilegível por sync do OneDrive,\n` +
+        `espere o sync assentar — nada a fazer.`,
+    );
     process.exit(1);
   }
 
@@ -299,7 +306,7 @@ function report() {
  * `getIntArg` decide o número (lançando em `--generate abc`, em vez de deixar
  * `NaN` virar amostra vazia em silêncio, que era o bug do #8206 finding 4).
  */
-function asked(parsed: ReturnType<typeof parseArgs>, key: string): boolean {
+export function asked(parsed: ReturnType<typeof parseArgs>, key: string): boolean {
   return parsed.flags.has(key) || parsed.values[key] !== undefined;
 }
 
@@ -330,9 +337,14 @@ if (isMainModule(import.meta.url)) {
   try {
     main();
   } catch (e) {
-    // getIntArg lança com mensagem própria em `--generate abc`/`--generate=""`.
-    // Stack trace crua aqui não ajuda ninguém — a mensagem já diz o que fazer.
-    console.error(e instanceof Error ? e.message : String(e));
+    // `getIntArg` lança com mensagem própria e acionável em `--generate abc` —
+    // stack trace ali só atrapalha. Mas engolir TODA exceção esconderia bug
+    // interno de `generate`/`collectUntouched` atrás de uma linha
+    // (#8206 re-review, P3): erro de input do usuário sai limpo, o resto
+    // re-lança com stack.
+    const userInput = e instanceof Error && /^--\w+ (deve ser|foi passado)/.test(e.message);
+    if (!userInput) throw e;
+    console.error(e.message);
     process.exit(2);
   }
 }
