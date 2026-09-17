@@ -33,10 +33,22 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
   const tmpRoot = mkdtempSync(join(tmpdir(), "acq-health-"));
   after(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
+  // #8243: main() agora checa `subscriber_backend` ANTES de tocar em
+  // qualquer snapshot — sem isto, os testes abaixo leriam o
+  // platform.config.json REAL do repo (hoje "kit", ver #7395) e todo
+  // main() de teste curto-circuitaria no guard, sem nunca exercitar a
+  // lógica de snapshot que estes testes cobrem. Fixture próprio, sempre
+  // "beehiiv", passado via `--config` em toda chamada de main() abaixo.
+  const beehiivConfigPath = join(tmpRoot, "platform.config.beehiiv.json");
+  writeFileSync(
+    beehiivConfigPath,
+    JSON.stringify({ publishing: { newsletter: { subscriber_backend: "beehiiv" } } }),
+  );
+
   it("sem nenhum snapshot: sai sem erro, sem escrever state", async () => {
     const root = join(tmpRoot, "empty-root");
     const statePath = join(tmpRoot, "empty-state.json");
-    await main(["--dry-run", "--root", root, "--state", statePath]);
+    await main(["--dry-run", "--root", root, "--state", statePath, "--config", beehiivConfigPath]);
     assert.ok(!existsSync(statePath));
   });
 
@@ -54,7 +66,7 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
         .join("\n") + "\n",
     );
 
-    await main(["--root", root, "--state", statePath]); // sem --dry-run — precisa persistir
+    await main(["--root", root, "--state", statePath, "--config", beehiivConfigPath]); // sem --dry-run — precisa persistir
 
     assert.ok(existsSync(statePath));
     const state = loadState(statePath);
@@ -92,7 +104,7 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
       logs.push(args.map(String).join(" "));
     };
     try {
-      await main(["--dry-run", "--root", root, "--state", statePath]);
+      await main(["--dry-run", "--root", root, "--state", statePath, "--config", beehiivConfigPath]);
     } finally {
       console.log = originalLog;
     }
@@ -114,10 +126,10 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
       `${JSON.stringify(sub({ email: "a@x.com", utm_source: "google-ads" }))}\n`,
     );
 
-    await main(["--root", root, "--state", statePath]);
+    await main(["--root", root, "--state", statePath, "--config", beehiivConfigPath]);
     const afterFirst = loadState(statePath);
 
-    await main(["--root", root, "--state", statePath]);
+    await main(["--root", root, "--state", statePath, "--config", beehiivConfigPath]);
     const afterSecond = loadState(statePath);
 
     assert.deepEqual(afterFirst, afterSecond);
@@ -154,7 +166,7 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
         logs.push(args.map(String).join(" "));
       };
       try {
-        await main(["--dry-run", "--root", root, "--state", statePath]);
+        await main(["--dry-run", "--root", root, "--state", statePath, "--config", beehiivConfigPath]);
       } finally {
         console.log = originalLog;
       }
@@ -194,7 +206,7 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
       warns.push(args.map(String).join(" "));
     };
     try {
-      await main(["--root", root, "--state", statePath]); // sem --dry-run
+      await main(["--root", root, "--state", statePath, "--config", beehiivConfigPath]); // sem --dry-run
     } finally {
       console.warn = originalWarn;
     }
@@ -219,7 +231,7 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
       warns.push(args.map(String).join(" "));
     };
     try {
-      await main(["--root", root, "--state", statePath]);
+      await main(["--root", root, "--state", statePath, "--config", beehiivConfigPath]);
     } finally {
       console.warn = originalWarn;
     }
@@ -239,7 +251,7 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
       join(root, "2026-08-09", "subscribers.jsonl"),
       `${JSON.stringify(sub({ email: "a@x.com", utm_source: "google-ads" }))}\n`,
     );
-    await main(["--root", root, "--state", statePath]);
+    await main(["--root", root, "--state", statePath, "--config", beehiivConfigPath]);
     const afterFirstWeek = loadState(statePath);
     assert.equal(afterFirstWeek.lastCheckedSnapshotDate, "2026-08-09");
 
@@ -260,7 +272,7 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
       warns.push(args.map(String).join(" "));
     };
     try {
-      await main(["--root", root, "--state", statePath]);
+      await main(["--root", root, "--state", statePath, "--config", beehiivConfigPath]);
     } finally {
       console.warn = originalWarn;
     }
@@ -287,8 +299,106 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
 
     // Não deve lançar — deve cair pro conteúdo de fato de subscribers.jsonl
     // (que aqui é usável) e avançar o cursor normalmente.
-    await assert.doesNotReject(() => main(["--root", root, "--state", statePath]));
+    await assert.doesNotReject(() => main(["--root", root, "--state", statePath, "--config", beehiivConfigPath]));
     const state = loadState(statePath);
     assert.equal(state.lastCheckedSnapshotDate, "2026-08-16");
+  });
+
+  describe("#8243 — guard de fonte cega (subscriber_backend != beehiiv)", () => {
+    // Reproduz o bug real de 06/09 e 13/09/2026 (#8086): migração pro Kit
+    // zerou a base ativa na Beehiiv (317 → 0), mas o script continuou
+    // lendo o snapshot Beehiiv congelado e fabricou "sobrevivência 0%" pra
+    // toda origem conhecida — 2 rodadas seguidas de alarme falso.
+    function writeKitConfig(path: string): void {
+      writeFileSync(path, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "kit" } } }));
+    }
+
+    it("subscriber_backend=kit + snapshot Beehiiv com base zerada: NENHUM achado fabricado, state intocado", async () => {
+      const root = join(tmpRoot, "root-8243-fabricado");
+      const statePath = join(tmpRoot, "state-8243-fabricado.json");
+      const kitConfigPath = join(tmpRoot, "platform.config.8243-fabricado.json");
+      writeKitConfig(kitConfigPath);
+
+      // Semana anterior: base saudável (como antes da migração).
+      mkdirSync(join(root, "2026-08-30"), { recursive: true });
+      const healthySubs: BeehiivBackupSubscriber[] = [];
+      for (let i = 0; i < 25; i++) {
+        healthySubs.push(sub({ email: `h${i}@x.com`, utm_source: "google-ads", status: "active" }));
+      }
+      writeFileSync(join(root, "2026-08-30", "subscribers.jsonl"), healthySubs.map((s) => JSON.stringify(s)).join("\n") + "\n");
+
+      // Semana da migração: TODOS os mesmos cadastros viram `inactive` na
+      // Beehiiv (base migrou pro Kit, snapshot Beehiiv congela) — sem o
+      // guard, isso é exatamente o achado fabricado "sobrevivência 0%".
+      mkdirSync(join(root, "2026-09-06"), { recursive: true });
+      const frozenSubs = healthySubs.map((s) => ({ ...s, status: "inactive" as const }));
+      writeFileSync(join(root, "2026-09-06", "subscribers.jsonl"), frozenSubs.map((s) => JSON.stringify(s)).join("\n") + "\n");
+
+      const originalWarn = console.warn;
+      const warns: string[] = [];
+      console.warn = (...args: unknown[]) => {
+        warns.push(args.map(String).join(" "));
+      };
+      const originalLog = console.log;
+      const logs: string[] = [];
+      console.log = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      try {
+        await main(["--root", root, "--state", statePath, "--config", kitConfigPath]); // sem --dry-run
+      } finally {
+        console.warn = originalWarn;
+        console.log = originalLog;
+      }
+
+      // O bug real: nenhuma menção a "sobrevivencia_baixa" nem a "0%" — o
+      // achado fabricado nunca chega a ser calculado.
+      assert.ok(!logs.some((l) => l.includes("sobrevivencia_baixa")));
+      assert.ok(!logs.some((l) => l.includes("0% (0/")));
+      // Warning explícito de fonte cega, citando o backend real.
+      assert.ok(warns.some((w) => w.includes("subscriber_backend=kit")));
+      // state.json nunca é tocado — nem criado.
+      assert.ok(!existsSync(statePath));
+    });
+
+    it("subscriber_backend=kit: idempotência do state anterior preservada (nunca avança nem reseta)", async () => {
+      const root = join(tmpRoot, "root-8243-state-intocado");
+      const statePath = join(tmpRoot, "state-8243-state-intocado.json");
+      const kitConfigPath = join(tmpRoot, "platform.config.8243-state-intocado.json");
+      writeKitConfig(kitConfigPath);
+
+      mkdirSync(join(root, "2026-09-13"), { recursive: true });
+      writeFileSync(
+        join(root, "2026-09-13", "subscribers.jsonl"),
+        `${JSON.stringify(sub({ email: "a@x.com", utm_source: "google-ads", status: "inactive" }))}\n`,
+      );
+
+      // Seed de um state anterior (simulando a última rodada boa, antes da
+      // migração) — o guard não pode nem avançar nem apagar isso.
+      const seeded = { ...emptyAcquisitionHealthState(), knownChannels: ["google-ads"], lastCheckedSnapshotDate: "2026-08-30" };
+      saveState(seeded, statePath);
+
+      await main(["--root", root, "--state", statePath, "--config", kitConfigPath]);
+
+      assert.deepEqual(loadState(statePath), seeded);
+    });
+
+    it("subscriber_backend ausente do config (default beehiiv): guard NÃO dispara, comportamento normal preservado", async () => {
+      const root = join(tmpRoot, "root-8243-default");
+      const statePath = join(tmpRoot, "state-8243-default.json");
+      const emptyConfigPath = join(tmpRoot, "platform.config.8243-default.json");
+      writeFileSync(emptyConfigPath, JSON.stringify({}));
+
+      mkdirSync(join(root, "2026-08-02"), { recursive: true });
+      writeFileSync(
+        join(root, "2026-08-02", "subscribers.jsonl"),
+        `${JSON.stringify(sub({ email: "a@x.com", utm_source: "google-ads" }))}\n`,
+      );
+
+      await main(["--root", root, "--state", statePath, "--config", emptyConfigPath]);
+
+      assert.ok(existsSync(statePath));
+      assert.equal(loadState(statePath).lastCheckedSnapshotDate, "2026-08-02");
+    });
   });
 });
