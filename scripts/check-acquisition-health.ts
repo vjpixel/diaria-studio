@@ -26,11 +26,15 @@
  * Uso:
  *   npx tsx scripts/check-acquisition-health.ts [--dry-run] [--to email@x.com]
  *     [--root data/beehiiv-backup] [--state data/acquisition-health/state.json]
+ *     [--config platform.config.json]
  *
  *   --dry-run  computa os findings e avalia se alarmaria, mas NÃO envia
  *              e-mail nem avança o state (mesmo contrato dos outros alarmes
  *              locais deste repo — cursos-error-alarm.ts, apoios-diff-alarm.ts).
  *   --to       override do destinatário (default: resolveEditorEmail).
+ *   --config   override de `platform.config.json` (default: o real do repo) —
+ *              usado pelo guard de fonte cega (#8243, ver abaixo) e por
+ *              testes que precisam simular `subscriber_backend: "kit"`.
  *
  * Env: `data/.credentials.json` com o scope `gmail.send` (mesmo requisito
  * dos outros alarmes locais) pra ENVIAR o alarme — a leitura/detecção em si
@@ -55,6 +59,24 @@
  *
  * Estado (idempotência + baseline de canais conhecidos):
  *   `data/acquisition-health/state.json`.
+ *
+ * ## Guard de fonte cega (#8243)
+ *
+ * Este script SÓ sabe ler `data/beehiiv-backup/` — se
+ * `publishing.newsletter.subscriber_backend` (`resolveNewsletterSubscriberBackend`,
+ * `lib/shared/newsletter-subscriber-source.ts`) não for `"beehiiv"`, a base
+ * viva de assinantes não é mais a Beehiiv (ex.: migrou pro Kit, #7386/#7395)
+ * e o snapshot Beehiiv fica CONGELADO — continuar avaliando sobre ele produz
+ * achados FABRICADOS (ex.: "sobrevivência 0%" porque a base inteira ficou
+ * inativa na Beehiiv, não porque nenhum canal parou de entregar de verdade;
+ * medido ao vivo em 06/09 e 13/09/2026, #8086). `main()` checa o backend
+ * ANTES de tocar em qualquer snapshot: se não for `"beehiiv"`, loga um
+ * `console.warn` explícito, não gera nenhum finding, não envia alarme, e
+ * NÃO toca `state.json` — "alarme calado com log" é preferível a "alarme
+ * afirmando algo falso" (mesmo eixo de veracidade do #6798). Migrar a
+ * leitura pra ler o store unificado (`data/diaria-subscribers/`, ver
+ * `scripts/lib/leitor-store.ts`) fica para follow-up (issue #8243, item 2) —
+ * esta guarda é só o estancamento imediato da fabricação.
  */
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -63,6 +85,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
+import { resolveNewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 import { listSnapshotDates, readSnapshotSubscribers, isSubscribersSnapshotUsable } from "./lib/beehiiv-backup-snapshots.ts";
 import {
   computeChannelStats,
@@ -108,6 +131,24 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const toOverride = getArg(argv, "to");
   const root = getArg(argv, "root") || DEFAULT_BACKUP_ROOT;
   const statePath = getArg(argv, "state") || DEFAULT_STATE_PATH;
+
+  // #8243: a Beehiiv só é a fonte viva de assinantes se
+  // subscriber_backend === "beehiiv" — qualquer outro valor (hoje "kit")
+  // significa que o snapshot Beehiiv está congelado (nenhum cadastro novo
+  // chega ali) e avaliar sobre ele fabrica achados falsos. Guard ANTES de
+  // ler qualquer snapshot; nunca toca state.json.
+  const configPathOverride = getArg(argv, "config");
+  const subscriberBackend = configPathOverride
+    ? resolveNewsletterSubscriberBackend(configPathOverride)
+    : resolveNewsletterSubscriberBackend();
+  if (subscriberBackend !== "beehiiv") {
+    console.warn(
+      `${LOG_PREFIX} fonte Beehiiv não é a base de assinantes (subscriber_backend=${subscriberBackend}) — ` +
+        `snapshot Beehiiv está congelado, avaliação produziria achados fabricados. Nenhum achado gerado, ` +
+        `state.json intocado. Ver #8243.`,
+    );
+    return;
+  }
 
   const dates = listSnapshotDates(root); // ascendente
   if (dates.length === 0) {
