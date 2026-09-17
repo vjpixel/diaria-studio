@@ -72,9 +72,12 @@ async function fetchFollowersCount(
   objectId: string,
   accessToken: string,
 ): Promise<{ followersCount: number | null; error: string | null }> {
-  const url = `${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${objectId}?fields=followers_count&access_token=${encodeURIComponent(accessToken)}`;
+  // Token vai no header Authorization, nunca na query string (#7779, mesma
+  // disciplina de `fetchPermalink` em publish-instagram.ts) — a query
+  // string vaza o segredo pro log sem ninguém logar a URL de propósito.
+  const url = `${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${objectId}?fields=followers_count`;
   try {
-    const res = await fetchImpl(url);
+    const res = await fetchImpl(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     const body = (await res.json().catch(() => null)) as { followers_count?: number; error?: { message?: string } } | null;
     if (!res.ok || !body) {
       const msg = body?.error?.message ?? `HTTP ${res.status}`;
