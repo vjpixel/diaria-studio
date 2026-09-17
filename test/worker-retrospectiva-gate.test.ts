@@ -96,8 +96,12 @@ function kitFetch(active: string[]): typeof fetch {
     const u = new URL(String(url));
     const email = (u.searchParams.get("email_address") ?? "").toLowerCase();
     const found = active.includes(email);
+    // #8269: verifySubscriberViaKitByEmail agora só aceita match exato de
+    // e-mail — o mock precisa devolver `email_address` batendo o que foi
+    // buscado, senão a busca nunca acha (comportamento correto do Kit real,
+    // ver docstring de verifySubscriberViaKitByEmail).
     return new Response(
-      JSON.stringify({ subscribers: found ? [{ state: "active" }] : [] }),
+      JSON.stringify({ subscribers: found ? [{ state: "active", email_address: email }] : [] }),
       { status: 200 },
     );
   }) as unknown as typeof fetch;
