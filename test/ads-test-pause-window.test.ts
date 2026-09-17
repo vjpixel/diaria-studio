@@ -215,4 +215,54 @@ describe("#8240 itens 1+3 — plannedBudgetBRL (integra diário vigente sobre di
     const ingenuo = (1 - 6 / 24) * 300;
     assert.ok(Math.abs(planejado - ingenuo) > 50, "a versão correta não pode coincidir com a conta ingênua neste cenário");
   });
+
+  // #8270 review, achado 1: o caminho novo (`veiculatedBudgetForDay`, usado
+  // por `plannedBudgetBRL`) parou de chamar `pausedFractionOfDay` e, com
+  // isso, perdeu a validação de "fim < inicio" que #8262 (achado 7) já
+  // tinha endurecido — reabria a mesma classe de falha silenciosa num
+  // caminho novo. Trava aqui que `plannedBudgetBRL` também falha alto.
+  it("intervalo de pausa invertido (fim < inicio) falha ALTO também via plannedBudgetBRL, não só pausedFractionOfDay", () => {
+    const invertido = [{ inicio: "2026-09-10T18:00:00-03:00", fim: "2026-09-10T09:00:00-03:00" }];
+    assert.throws(
+      () => plannedBudgetBRL("2026-09-10", "2026-09-10", undefined, invertido, 100),
+      /intervalo de pausa invertido/,
+    );
+  });
+
+  // #8270 review, achado 2: pausa em andamento (`fim: null`) combinada com
+  // virada de orçamento no MESMO dia — cobre o breakpoint condicional que
+  // só existe pra `fim != null` (a pausa sem fim não adiciona breakpoint de
+  // TÉRMINO, e precisa ainda assim cobrir o resto do dia).
+  it("pausa EM ANDAMENTO (fim: null) + virada de orçamento no mesmo dia: cobre até o fim do dia inteiro", () => {
+    // Orçamento 100 até 10:00, 400 dali em diante. Pausa começa 15:00, sem fim.
+    const schedule = [{ desde: "2026-09-10T10:00:00-03:00", brl: 400 }];
+    const pauseIntervals = [{ inicio: "2026-09-10T15:00:00-03:00", fim: null }];
+    const planejado = plannedBudgetBRL("2026-09-10", "2026-09-10", schedule, pauseIntervals, 100);
+    // [00-10h]=100 não pausado (10h) + [10-15h]=400 não pausado (5h) + [15-24h] pausado (0).
+    const esperado = 100 * (10 / 24) + 400 * (5 / 24);
+    assert.ok(Math.abs(planejado - esperado) < 1e-6, `esperado ${esperado}; recebi ${planejado}`);
+  });
+
+  // #8270 review, achado 2: MÚLTIPLAS mudanças de orçamento no mesmo dia.
+  it("múltiplas mudanças de orçamento no mesmo dia produzem 3 sub-intervalos, não 2", () => {
+    const schedule = [
+      { desde: "2026-09-10T08:00:00-03:00", brl: 200 },
+      { desde: "2026-09-10T16:00:00-03:00", brl: 300 },
+    ];
+    const planejado = plannedBudgetBRL("2026-09-10", "2026-09-10", schedule, [], 100);
+    // [00-08h]=100 (8h) + [08-16h]=200 (8h) + [16-24h]=300 (8h)
+    const esperado = 100 * (8 / 24) + 200 * (8 / 24) + 300 * (8 / 24);
+    assert.ok(Math.abs(planejado - esperado) < 1e-6, `esperado ${esperado}; recebi ${planejado}`);
+  });
+
+  // #8270 review, achado 2: entrada de schedule EXATAMENTE na virada do dia
+  // (meia-noite BRT) — não deve gerar breakpoint espúrio nem deixar o dia
+  // anterior contaminado pelo novo valor.
+  it("entrada de schedule exatamente à meia-noite BRT vale o dia inteiro seguinte, sem afetar o dia anterior", () => {
+    const schedule = [{ desde: "2026-09-11T00:00:00-03:00", brl: 500 }];
+    const dia10 = plannedBudgetBRL("2026-09-10", "2026-09-10", schedule, [], 100);
+    const dia11 = plannedBudgetBRL("2026-09-11", "2026-09-11", schedule, [], 100);
+    assert.equal(dia10, 100, "dia anterior à virada segue no default");
+    assert.equal(dia11, 500, "dia da virada (desde à meia-noite) já entra 100% no novo valor");
+  });
 });

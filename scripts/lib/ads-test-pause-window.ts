@@ -77,25 +77,36 @@ function brtDayStartMs(dateStr: DateOnlyString): number {
 }
 
 /**
- * Fração do dia BRT `dateStr` (0..1) coberta por pausa (parcial ou total).
- * Intervalos sobrepostos entre si são mesclados antes de somar — sem isso,
- * duas pausas que se sobrepõem contariam a mesma hora duas vezes e o dia
- * pareceria mais pausado do que de fato foi.
- *
- * Falha ALTO (nunca descarta em silêncio) quando `fim < inicio` — `revisao.pausa`
- * é JSON editado à mão e sincronizado por OneDrive; um typo de timestamp que
- * inverte a ordem faria a pausa inteira desaparecer de todos os alarmes (#8262
- * review, achado 7) se só fosse descartada pelo filtro `e > s` abaixo.
- *
- * @pure
+ * Falha ALTO (nunca descarta em silêncio) quando algum intervalo tem
+ * `fim < inicio` — `revisao.pausa` é JSON editado à mão e sincronizado por
+ * OneDrive; um typo de timestamp que inverte a ordem faria a pausa inteira
+ * desaparecer de todos os alarmes (#8262 review, achado 7) se só fosse
+ * descartada por um filtro `e > s` silencioso. Chamada por TODA função
+ * pública que consome `intervals` antes de usá-los — `pausedFractionOfDay`
+ * e `veiculatedBudgetForDay` (via `plannedBudgetBRL`) — pra não reabrir a
+ * classe de falha silenciosa do #8262 num caminho novo (#8270 review,
+ * achado 1: `plannedBudgetBRL` passou a usar `isInstantPaused` em vez de
+ * `pausedFractionOfDay` e perdeu esta validação até este fix).
  */
-export function pausedFractionOfDay(dateStr: DateOnlyString, intervals: readonly AdsTestPauseInterval[]): number {
-  if (intervals.length === 0) return 0;
+function assertValidPauseIntervals(intervals: readonly AdsTestPauseInterval[]): void {
   for (const iv of intervals) {
     if (iv.fim != null && parseIsoMs(iv.fim) < parseIsoMs(iv.inicio)) {
       throw new Error(`ads-test-pause-window: intervalo de pausa invertido — fim (${iv.fim}) antes de inicio (${iv.inicio}).`);
     }
   }
+}
+
+/**
+ * Fração do dia BRT `dateStr` (0..1) coberta por pausa (parcial ou total).
+ * Intervalos sobrepostos entre si são mesclados antes de somar — sem isso,
+ * duas pausas que se sobrepõem contariam a mesma hora duas vezes e o dia
+ * pareceria mais pausado do que de fato foi.
+ *
+ * @pure
+ */
+export function pausedFractionOfDay(dateStr: DateOnlyString, intervals: readonly AdsTestPauseInterval[]): number {
+  if (intervals.length === 0) return 0;
+  assertValidPauseIntervals(intervals);
   const dayStart = brtDayStartMs(dateStr);
   const dayEnd = dayStart + 86_400_000;
   const clipped: Array<[number, number]> = [];
@@ -274,6 +285,7 @@ function veiculatedBudgetForDay(
   intervals: readonly AdsTestPauseInterval[],
   defaultBudgetBRL: number,
 ): number {
+  assertValidPauseIntervals(intervals);
   const dayStart = brtDayStartMs(dateStr);
   const dayEnd = dayStart + 86_400_000;
   const breakpoints = new Set<number>([dayStart, dayEnd]);
