@@ -6,17 +6,17 @@
  * (Track B, `scripts/calibration-power-report.ts`), porque o escopo da
  * #7980 é mais estreito: só os bônus determinísticos que decidem quem
  * chega perto da lista de finalistas (`coverage-bonus.ts` via
- * `cluster_sources_count`, e os bônus booleanos `hands_on`/`academy`/
- * `howto_br`/`howto_br_source`/`primary_source` já existentes no rubrico
- * do scorer) — nunca o julgamento holístico de `scorer-select.md`, nunca
- * os backstops determinísticos (`ensureNegativeImpactHighlight`, exclusão
- * categórica de bucket `use_melhor`, contagem travada em 2-3), que
- * permanecem hard-coded fora de escopo de calibração PARA SEMPRE (#7972
- * §"O que NUNCA muda" do Track A).
+ * `cluster_sources_count`, e os bônus booleanos `hands_on`/`primary_source`
+ * já existentes no rubrico do scorer) — nunca o julgamento holístico de
+ * `scorer-select.md`, nunca os backstops determinísticos
+ * (`ensureNegativeImpactHighlight`, exclusão categórica de bucket
+ * `use_melhor`, contagem travada em 2-3), que permanecem hard-coded fora
+ * de escopo de calibração PARA SEMPRE (#7972 §"O que NUNCA muda" do
+ * Track A).
  *
- * Duas exclusões explícitas em relação ao texto literal da issue #7980
+ * Quatro exclusões explícitas em relação ao texto literal da issue #7980
  * ("coverage-bonus, audience-affinity, hands_on/academy/howto_br/
- * primary_source"), ambas resolvidas a favor da versão mais cuidadosa do
+ * primary_source"), resolvidas a favor da versão mais cuidadosa do
  * design em `#7972` (corpo da epic, não o resumo da sub-issue):
  *
  * 1. **`audience_affinity` fica de fora** — mitigação C-2 do design:
@@ -38,6 +38,28 @@
  *    com link oficial — categorização de bucket, não seleção de
  *    destaque). Mantido fora daqui; segue calibrável só via Track B
  *    (`scripts/calibrate-scoring-weights.ts`).
+ * 3. **`academy`, `howto_br` e `howto_br_source` ficam de fora — removidas
+ *    em #8254 pelo MESMO motivo estrutural do item 1, achado ao vivo em
+ *    17/09/2026 (607 eventos avaliáveis, `n_true=0` pras 3, 0 edições
+ *    avaliáveis).** As três, assim como `audience_affinity`, só são
+ *    calculadas dentro de `annotateAudienceAffinity`
+ *    (`scripts/lib/audience-affinity.ts`), que só roda via
+ *    `annotateUseMelhorBucket` — restrito ao bucket `use_melhor`. Como
+ *    destaques NUNCA vêm desse bucket (mesma exclusão categórica do item
+ *    1), `bonuses_applied` de uma linha `highlights`/`runners_up` nunca
+ *    pode conter `"academy:+N"`/`"howto_br:+N"`/`"howto_br_source:+N"` —
+ *    não é falta de dado acumulando, é impossibilidade estrutural: o
+ *    critério de saída do Track A (piso de evento + 2 janelas de
+ *    validação) é inatingível pra sempre pra essas 3, exatamente como já
+ *    era documentado pra `audience_affinity` acima. As três continuam
+ *    reais e calibráveis no **Track B** (`CANDIDATE_FEATURES` de
+ *    `scripts/calibration-power-report.ts`), onde a população cobre TODO
+ *    o pool de `01-approved.json`, incluindo `use_melhor` — só não fazem
+ *    sentido aqui. `hands_on` e `primary_source` sobrevivem porque são
+ *    computadas por anotadores explicitamente bucket-agnósticos
+ *    (`annotateHandsOnAllBuckets` #4843, `annotatePrimarySourceAllBuckets`
+ *    #5665) — única diferença estrutural real entre os 5 bônus booleanos
+ *    do rubrico.
  *
  * `coverage_bonus_present` é uma feature SINTÉTICA (não existe como campo
  * de `ScoringFeatureRow`) — deriva de `cluster_sources_count > 0`, que É
@@ -55,9 +77,6 @@ import type { ScoringFeatureRow } from "./scoring-features.ts";
 export const TRACK_A_CANDIDATE_FEATURES = [
   "primary_source",
   "hands_on",
-  "academy",
-  "howto_br",
-  "howto_br_source",
   "coverage_bonus_present",
 ] as const;
 
@@ -87,9 +106,8 @@ export function trackAFeatureValue(row: ScoringFeatureRow, feature: TrackACandid
  * alta confiança). `generate-calibration-evidence-report.ts` grava o
  * título como `"Calibração {feature} — PR #{n}"` pros DOIS tracks, sem
  * nenhum campo de track no registro (`data/reports/index.jsonl`) — e
- * `TRACK_A_CANDIDATE_FEATURES` compartilha 5 de 6 nomes com
- * `CANDIDATE_FEATURES` de Track B (`primary_source`/`hands_on`/`academy`/
- * `howto_br`/`howto_br_source`). Sem um prefixo, uma PR de Track B
+ * `TRACK_A_CANDIDATE_FEATURES` compartilha os nomes `primary_source`/
+ * `hands_on` com `CANDIDATE_FEATURES` de Track B. Sem um prefixo, uma PR de Track B
  * mergeada pra `primary_source` bloquearia `primary_source` do Track A
  * PARA SEMPRE em `trigger-track-a-calibration.ts` (e vice-versa) — os dois
  * tracks têm barra de evidência, diretório de pesos e escopo de feature

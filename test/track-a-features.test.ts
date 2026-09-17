@@ -40,15 +40,21 @@ function row(overrides: Partial<ScoringFeatureRow> = {}): ScoringFeatureRow {
   };
 }
 
-describe("TRACK_A_CANDIDATE_FEATURES (#7980)", () => {
-  it("exclui audience_affinity e has_official_link — só os 6 nomeados no escopo do Track A", () => {
-    assert.deepEqual([...TRACK_A_CANDIDATE_FEATURES].sort(), ["academy", "coverage_bonus_present", "hands_on", "howto_br", "howto_br_source", "primary_source"].sort());
+describe("TRACK_A_CANDIDATE_FEATURES (#7980, #8254)", () => {
+  it("exclui audience_affinity, has_official_link, academy, howto_br e howto_br_source — só os 3 nomeados no escopo do Track A", () => {
+    assert.deepEqual([...TRACK_A_CANDIDATE_FEATURES].sort(), ["coverage_bonus_present", "hands_on", "primary_source"].sort());
     assert.equal(isTrackACandidateFeature("audience_affinity"), false);
     assert.equal(isTrackACandidateFeature("has_official_link"), false);
     assert.equal(isTrackACandidateFeature("negative_impact"), false);
+    // #8254: as 3 features só computadas dentro de `annotateUseMelhorBucket` (bucket
+    // use_melhor) — bucket categoricamente excluído de virar destaque, mesma razão
+    // estrutural de `audience_affinity` — não fazem mais parte do Track A.
+    assert.equal(isTrackACandidateFeature("academy"), false);
+    assert.equal(isTrackACandidateFeature("howto_br"), false);
+    assert.equal(isTrackACandidateFeature("howto_br_source"), false);
   });
 
-  it("isTrackACandidateFeature reconhece todos os 6 nomes válidos", () => {
+  it("isTrackACandidateFeature reconhece todos os 3 nomes válidos", () => {
     for (const f of TRACK_A_CANDIDATE_FEATURES) assert.equal(isTrackACandidateFeature(f), true);
   });
 });
@@ -58,9 +64,7 @@ describe("trackAFeatureValue (#7980)", () => {
     assert.equal(trackAFeatureValue(row({ primary_source: true }), "primary_source"), true);
     assert.equal(trackAFeatureValue(row({ primary_source: false }), "primary_source"), false);
     assert.equal(trackAFeatureValue(row({ hands_on: true }), "hands_on"), true);
-    assert.equal(trackAFeatureValue(row({ academy: true }), "academy"), true);
-    assert.equal(trackAFeatureValue(row({ howto_br: true }), "howto_br"), true);
-    assert.equal(trackAFeatureValue(row({ howto_br_source: true }), "howto_br_source"), true);
+    assert.equal(trackAFeatureValue(row({ hands_on: false }), "hands_on"), false);
   });
 
   it("coverage_bonus_present é sintética: deriva de cluster_sources_count > 0", () => {
