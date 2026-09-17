@@ -347,8 +347,12 @@ try_merge_gate() {
   case "$GATE_RC" in
     0)
       REVIEWED_HEAD_SHA=$(printf '%s' "$GATE_JSON" | jq -r '.details.reviewedHeadSha // empty')
-      echo "[continuo-pr-review] PR #$pr: gate=merge (head=$REVIEWED_HEAD_SHA)"
-      echo "$GATE_JSON"
+      echo "[continuo-pr-review] PR #$pr: merge"
+      # Editor (09/09): stdout é a entrega curta no Telegram; o JSON cru do gate
+      # vai pro STDERR, que o cron captura no log. Mesmo tratamento do
+      # transcript do `claude -p` logo abaixo. Silenciar de vez perderia o
+      # único rastro de POR QUE o gate decidiu assim (#8212 review, P2).
+      echo "$GATE_JSON" >&2
 
       # #6934: adquire o merge-lock cross-sessão IMEDIATAMENTE ANTES do
       # `gh pr merge` — nunca antes disso (o gate acima não toca o checkout
@@ -464,7 +468,11 @@ try_merge_gate() {
       trap - EXIT
       ;;
     1)
-      echo "$GATE_JSON"
+      # Editor (09/09): stdout é a entrega curta no Telegram; o JSON cru do gate
+      # vai pro STDERR, que o cron captura no log. Mesmo tratamento do
+      # transcript do `claude -p` logo abaixo. Silenciar de vez perderia o
+      # único rastro de POR QUE o gate decidiu assim (#8212 review, P2).
+      echo "$GATE_JSON" >&2
       ESCALATED=$((ESCALATED + 1))
       # #7446 item 2: label idempotente + notificação só na PRIMEIRA vez que
       # esta PR escala — ticks seguintes contam ESCALATED em silêncio, sem
@@ -524,14 +532,18 @@ try_merge_gate() {
         log_infra_error "$pr" "escalate_label_rc=$ESCALATE_RC" "$ESCALATE_STDERR"
       fi
       if [ "$FIRST_TIME" = "true" ]; then
-        echo "[continuo-pr-review] PR #$pr: gate=escalate (1ª vez) — label continuo-escalado aplicado, deixando pro pickup do /diaria-overnight ou revisão humana (fallback, #6823/#7446)"
+        echo "[continuo-pr-review] PR #$pr: escalate (1ª vez) — revisão humana"
       else
-        echo "[continuo-pr-review] PR #$pr: gate=escalate (já sinalizada — sem repetir notificação)"
+        echo "[continuo-pr-review] PR #$pr: escalate (já sinalizada)"
       fi
       ;;
     2)
-      echo "[continuo-pr-review] PR #$pr: gate=reject — NÃO mergear"
-      echo "$GATE_JSON"
+      echo "[continuo-pr-review] PR #$pr: rejeitada"
+      # Editor (09/09): stdout é a entrega curta no Telegram; o JSON cru do gate
+      # vai pro STDERR, que o cron captura no log. Mesmo tratamento do
+      # transcript do `claude -p` logo abaixo. Silenciar de vez perderia o
+      # único rastro de POR QUE o gate decidiu assim (#8212 review, P2).
+      echo "$GATE_JSON" >&2
       REJECTED=$((REJECTED + 1))
       # #6926: comenta o motivo e (desde #7567) labela a PR — nunca
       # fecha/reabre a PR sozinho aqui (fora de escopo; fechamento de PR
@@ -657,7 +669,7 @@ for PR in $PR_NUMBERS; do
     # buscar/fabricar aqui. Marcador legado sem `head=` (pré-#6926) resolve
     # sozinho pra `reviewedHeadSha=null` → o gate escala, nunca assume que
     # o HEAD atual é o que foi revisado.
-    echo "[continuo-pr-review] PR #$PR já tem review independente (verdict=pass) — pulando revisão, indo direto ao portão de merge (#6926)"
+    echo "[continuo-pr-review] PR #$PR: já com review — direto ao merge"
     SKIPPED=$((SKIPPED + 1))
     try_merge_gate "$PR"
     continue
@@ -701,7 +713,7 @@ for PR in $PR_NUMBERS; do
 
   IFS=$'\t' read -r BASE_SHA HEAD_SHA PR_TITLE <<< "$API_OUT"
 
-  echo "[continuo-pr-review] revisando PR #$PR ($PR_TITLE, $BASE_SHA..$HEAD_SHA)..."
+  # (editor: sem "revisando" — só resultado)
 
   # #6849: identidade de execução gerada AQUI, pelo processo externo — a
   # sessão de review abaixo só a conhece porque este script a passa no
@@ -751,11 +763,14 @@ Se não encontrar NENHUM achado de confiança alta ou média (P0/P1): poste mesm
 VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramentas permitidas. Decidir e mergear é responsabilidade do SCRIPT BASH que te invocou, depois que você sair — não sua. Seu único trabalho é revisar e postar o comentário com o veredito."
 
   set +e
+  # Editor (10/09): entrega curta no Telegram — stdout completo do claude vai
+  # pro log (stderr), só 1 linha de veredito no stdout.
   echo "$PROMPT" | timeout 1800 claude -p \
     --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)" \
-    --model sonnet --effort low
+    --model sonnet --effort low 1>&2
   CLAUDE_RC=$?
   set -e
+  echo "[continuo-pr-review] PR #$PR: revisada — veredito/comentário na PR no GitHub"
 
   if [ "$CLAUDE_RC" -ne 0 ]; then
     echo "[continuo-pr-review] PR #$PR: sessão de review saiu com rc=$CLAUDE_RC — não conta como revisada, tenta de novo no próximo tick" >&2
@@ -774,7 +789,13 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   try_merge_gate "$PR"
 done
 
-echo "[continuo-pr-review] concluído — revisadas=$REVIEWED já-tinham-review=$SKIPPED falharam=$FAILED erros-de-infra=$INFRA_ERRORS mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED bloqueadas-por-lock=$LOCK_BLOCKED"
+# Entrega curta por padrão (editor, 09/09). `bloqueadas-por-lock` só aparece
+# quando NÃO-zero: o docblock de LOCK_BLOCKED chama esse contador de "sinal
+# agregado de isto aconteceu N vezes" — some da entrega no dia normal, mas
+# nunca justo no dia em que há contenção de lock pra relatar (#8212 review, P3).
+LOCK_NOTE=""
+[ "$LOCK_BLOCKED" -gt 0 ] 2>/dev/null && LOCK_NOTE=" bloqueadas-por-lock=$LOCK_BLOCKED"
+echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))$LOCK_NOTE"
 # #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
 # infra — a linha de resumo é o que o Telegram carrega; sem isso
 # "erros-de-infra=1" chegava sem nenhum rastro de causa. Log completo
