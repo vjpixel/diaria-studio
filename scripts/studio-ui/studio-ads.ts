@@ -28,18 +28,28 @@
  * `forceRefresh` bypassa.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { detectExecMode, type ExecMode } from "../lib/exec-mode.ts";
-import { latestSnapshotDate, listSnapshotDates } from "../lib/beehiiv-backup-snapshots.ts";
+import { latestSnapshotDate, listSnapshotDates, type BeehiivBackupSubscriber } from "../lib/beehiiv-backup-snapshots.ts";
 import { readSpendCsv, type SpendRow, type SpendRowError } from "../lib/aquisicao-spend.ts";
-import { buildCacReport, computeMonthBudgetUsage, MONTHLY_BUDGET_FLOOR_BRL, type CacReport, type MonthBudgetUsage } from "../lib/cac.ts";
+import {
+  buildCacReport,
+  computeMonthBudgetUsage,
+  MONTHLY_BUDGET_FLOOR_BRL,
+  filterInternalAndTestSubscribers,
+  type CacReport,
+  type MonthBudgetUsage,
+} from "../lib/cac.ts";
 import { loadOrigemIndex, loadPreparedSubscribers } from "../cac-report.ts";
+import { openDiariaSubscribersDbSafe } from "../lib/diaria-subscribers-db.ts";
+import { buildCacCompatibleSubscribersFromStore } from "../lib/leitor-store.ts";
 import { assertValidRunState, type AdsTestRunState } from "../lib/ads-test-run-state.ts";
 import { daysBetween } from "../lib/ads-test-schedule.ts";
 import { resolveKitConfig } from "../lib/kit-config.ts";
 import {
   fetchCampaignEconomicsSources,
+  META_ADS_TESTE_CANAL,
   type CampaignEconomicsSourcesResult,
 } from "../lib/ads-campaign-economics-fetch.ts";
 import {
@@ -92,6 +102,12 @@ export interface AdsSnapshot {
   report: CacReport | null;
   budget: MonthBudgetUsage | null;
   monthKey: string | null;
+  /** Fonte dos SUBSCRIBERS usados em `report` (#8210 Bug 2) — `"store"`
+   *  (store unificado, Kit+Beehiiv+Brevo diária via `leitor-store.ts`,
+   *  caminho DEFAULT desde 17/09/2026) ou `"beehiiv-snapshot"` (fallback
+   *  fail-soft — store ausente/ilegível nesta máquina, ex: nenhuma
+   *  ingestão rodou ainda). `null` quando `report` é `null`. */
+  subscribersSource: "store" | "beehiiv-snapshot" | null;
 }
 
 // ─── construção (fail-soft por camada) ──────────────────────────────────
@@ -112,6 +128,34 @@ export interface BuildAdsDataOptions {
   backupRoot?: string;
   spendPath?: string;
   origemPath?: string;
+  /** Store unificado (#8210 Bug 2) — default `data/diaria-subscribers/diaria-subscribers.db`. */
+  storePath?: string;
+}
+
+/**
+ * Carrega subscribers pro "custo por leitor" a partir do STORE UNIFICADO
+ * (#8210 Bug 2) — caminho DEFAULT desde 17/09/2026, decisão do editor: o
+ * store (`data/diaria-subscribers/`, Kit+Beehiiv+Brevo diária) substitui o
+ * snapshot Beehiiv NESTA TELA, porque com `publishing.newsletter.backend =
+ * "kit"` cadastro novo não passa pela Beehiiv — o snapshot ficava "cego"
+ * aos braços de aquisição que mandam pro Kit. Nunca lança: store
+ * ausente/ilegível (nenhuma ingestão rodou ainda nesta máquina) devolve
+ * `null`, e o caller cai fail-soft pro snapshot Beehiiv antigo — degradado,
+ * nunca uma tela vazia. */
+function loadStoreSubscribers(
+  storePath: string,
+): { subs: BeehiivBackupSubscriber[]; internalFiltered: number } | null {
+  const db = openDiariaSubscribersDbSafe(storePath);
+  if (!db) return null;
+  try {
+    const raw = buildCacCompatibleSubscribersFromStore(db);
+    const { kept, removedCount } = filterInternalAndTestSubscribers(raw);
+    return { subs: kept, internalFiltered: removedCount };
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
 }
 
 interface CacheEntry {
@@ -172,12 +216,41 @@ export function buildAdsData(rootDir: string, opts: BuildAdsDataOptions = {}): A
   let report: CacReport | null = null;
   let budget: MonthBudgetUsage | null = null;
   let monthKey: string | null = null;
+  let subscribersSource: "store" | "beehiiv-snapshot" | null = null;
 
-  if (spendLayer.error == null && spendLayer.rows.length > 0 && snapshotDate) {
-    const { subs, internalFiltered } = loadPreparedSubscribers(backupRoot, snapshotDate, origemIndex);
-    const previousSubs = previousDate ? loadPreparedSubscribers(backupRoot, previousDate, origemIndex).subs : undefined;
-    report = buildCacReport(spendLayer.rows, subs, { previousSubs, originApplied: origemApplied, internalFiltered });
-    monthKey = snapshotDate.slice(0, 7);
+  if (spendLayer.error == null && spendLayer.rows.length > 0) {
+    // Mesmo padrão de `backupRoot`/`spendPath`/`origemPath` acima — deriva de
+    // `rootDir`, nunca do path absoluto default de `diaria-subscribers-db.ts`
+    // (que é fixo no CHECKOUT, não no `rootDir` recebido — importante pra
+    // teste com `rootDir` de tmpdir, e pra sessão que passa um root não-padrão).
+    const storePath = opts.storePath ?? resolve(rootDir, "data", "diaria-subscribers", "diaria-subscribers.db");
+    const storeResult = loadStoreSubscribers(storePath);
+    if (storeResult) {
+      // #8210 Bug 2: caminho DEFAULT — não depende de snapshot Beehiiv nem
+      // de `previousDate` (o store não tem o conceito de "snapshot
+      // anterior"; a tile de degradação some pra `null` quando este caminho
+      // roda — ver docstring de `loadStoreSubscribers`).
+      report = buildCacReport(spendLayer.rows, storeResult.subs, {
+        originApplied: true, // atribuição já resolvida cross-plataforma — o mecanismo de "origem recuperada" é Beehiiv-específico, não se aplica aqui.
+        internalFiltered: storeResult.internalFiltered,
+      });
+      subscribersSource = "store";
+    } else if (snapshotDate) {
+      // Fail-soft (#8210): store ainda não ingerido nesta máquina — volta
+      // ao caminho antigo em vez de deixar a tela sem relatório nenhum.
+      const { subs, internalFiltered } = loadPreparedSubscribers(backupRoot, snapshotDate, origemIndex);
+      const previousSubs = previousDate ? loadPreparedSubscribers(backupRoot, previousDate, origemIndex).subs : undefined;
+      report = buildCacReport(spendLayer.rows, subs, { previousSubs, originApplied: origemApplied, internalFiltered });
+      subscribersSource = "beehiiv-snapshot";
+    }
+  }
+  // #8210 Bug 4c: o tile "Orçamento" é sempre do MÊS CORRENTE (`now`), nunca
+  // do mês do snapshot Beehiiv — um snapshot do mês anterior (ex: rodando
+  // no dia 1º antes do snapshot semanal atualizar) mostrava o orçamento do
+  // mês ERRADO. Independente de `report`/`snapshotDate` existirem — o
+  // orçamento só precisa de `spend.csv`, nunca do snapshot.
+  if (spendLayer.error == null && spendLayer.rows.length > 0) {
+    monthKey = new Date(nowMs).toISOString().slice(0, 7);
     budget = computeMonthBudgetUsage(spendLayer.rows, monthKey, MONTHLY_BUDGET_FLOOR_BRL);
   }
 
@@ -192,9 +265,52 @@ export function buildAdsData(rootDir: string, opts: BuildAdsDataOptions = {}): A
     report,
     budget,
     monthKey,
+    subscribersSource,
   };
   cacheByRoot.set(rootDir, { data, expiresAt: nowMs + cacheTtlMs });
   return data;
+}
+
+/** Nome da FONTE em `sourcesResult.sources` (chave fixa de
+ *  `fetchCampaignEconomicsSources`) → nome do CANAL do teste 2608 em
+ *  `spend.csv`/`ChannelSummaryRow.canal` — precisa pra traduzir "a fonte
+ *  Google Ads falhou" em "o canal 'Google Ads (teste 2608)' tem gasto
+ *  desconhecido" (#8210 Bug 3). */
+const SOURCE_TO_TESTE_2608_CANAL: Readonly<Record<string, string>> = {
+  "Google Ads": "Google Ads (teste 2608)",
+  "Microsoft Ads": "Microsoft Ads (teste 2608)",
+  "Meta Ads": META_ADS_TESTE_CANAL,
+};
+
+/** Último gasto reconciliado à mão por canal, lido de `spend.csv` — só
+ *  usado como FALLBACK quando a fonte ao vivo daquele canal falhou (nunca
+ *  sobrepõe dado ao vivo real, inclusive zero real). `asOfDate` é a data de
+ *  modificação do PRÓPRIO `spend.csv` (proxy de "até quando esse número foi
+ *  conferido" — o CSV não carrega uma data de reconciliação por linha;
+ *  decisão pragmática registrada aqui, não uma garantia forte). Quando o
+ *  canal tem mais de 1 linha (meses diferentes), usa o `mes` mais recente —
+ *  é o número mais provável de ainda ser relevante. Nunca lança: arquivo
+ *  ausente/ilegível vira mapa vazio (todo canal falho cai em "unknown"). */
+function loadManualSpendFallback(
+  spendPath: string,
+): Record<string, { totalBrl: number; asOfDate: string }> {
+  if (!existsSync(spendPath)) return {};
+  let rows: SpendRow[];
+  let asOfDate: string;
+  try {
+    rows = readSpendCsv(spendPath).rows;
+    asOfDate = statSync(spendPath).mtime.toISOString().slice(0, 10);
+  } catch {
+    return {};
+  }
+  const latestByCanal = new Map<string, SpendRow>();
+  for (const row of rows) {
+    const current = latestByCanal.get(row.canal);
+    if (!current || row.mes > current.mes) latestByCanal.set(row.canal, row);
+  }
+  const out: Record<string, { totalBrl: number; asOfDate: string }> = {};
+  for (const [canal, row] of latestByCanal) out[canal] = { totalBrl: row.valor, asOfDate };
+  return out;
 }
 
 // ─── #7536: "Economia da campanha ao vivo" (teste 2608) — Google Ads +
@@ -236,6 +352,9 @@ export interface BuildAdsCampaignEconomicsOptions {
   cacheTtlMs?: number;
   forceRefresh?: boolean;
   runStatePath?: string;
+  /** Fallback manual de gasto (#8210 Bug 3c) — default
+   *  `data/aquisicao/spend.csv`, mesmo arquivo de `buildAdsData`. */
+  spendPath?: string;
   /** Injetáveis pra teste — default `fetch`/`process.env` reais. */
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
@@ -320,7 +439,25 @@ export async function buildAdsCampaignEconomics(
   };
 
   const cumulative = buildCumulativeSeries(sourcesResult.metrics, sourcesResult.signups, dateRange);
-  const channels = buildChannelTable(sourcesResult.metrics, sourcesResult.signups);
+
+  // #8210 Bug 3c: gasto desconhecido nunca vira 0 — canal cuja fonte ao vivo
+  // falhou (`sourcesResult.sources[fonte].error`) cai pro último gasto
+  // reconciliado em `spend.csv` (selo `gastoFonte: "manual"`), ou `null`
+  // (`"unknown"`) se nem isso existir — nunca soma silenciosamente com 0.
+  const channelsWithUnknownLiveSpend = new Set<string>();
+  for (const [source, info] of Object.entries(sourcesResult.sources)) {
+    if (!info.error) continue;
+    const canal = SOURCE_TO_TESTE_2608_CANAL[source];
+    if (canal) channelsWithUnknownLiveSpend.add(canal);
+  }
+  const manualFallback =
+    channelsWithUnknownLiveSpend.size > 0
+      ? loadManualSpendFallback(opts.spendPath ?? resolve(rootDir, "data", "aquisicao", "spend.csv"))
+      : {};
+  const channels = buildChannelTable(sourcesResult.metrics, sourcesResult.signups, {
+    channelsWithUnknownLiveSpend,
+    manualFallback,
+  });
   const testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, runState, todayIso);
   const freshness = computeSourceFreshness(sourcesResult.sources, nowMs);
 

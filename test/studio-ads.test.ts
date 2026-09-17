@@ -11,6 +11,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAdsData, clearAdsCache, buildAdsCampaignEconomics, clearAdsCampaignEconomicsCache } from "../scripts/studio-ui/studio-ads.ts";
+import { openDiariaSubscribersDb, ensureSubscriber, upsertSubscription } from "../scripts/lib/diaria-subscribers-db.ts";
 
 function makeRoot(): string {
   return mkdtempSync(join(tmpdir(), "studio-ads-"));
@@ -119,11 +120,56 @@ describe("buildAdsData — caminho feliz", () => {
     try {
       writeSpendCsv(root);
       writeSnapshot(root, "2026-08-14", [subscriberLine({ email: "a@example.com" }), subscriberLine({ email: "b@example.com", utm_source: "direct" })]);
-      const data = buildAdsData(root, { forceRefresh: true });
+      // #8210 Bug 4c: monthKey/budget agora vêm do mês CORRENTE (`now`), não
+      // mais de `snapshotDate.slice(0,7)` — precisa fixar `now` pra manter
+      // este teste determinístico (era implícito antes, via o snapshot).
+      const data = buildAdsData(root, { forceRefresh: true, now: () => new Date("2026-08-20T12:00:00Z") });
       assert.ok(data.report);
       assert.equal(data.report!.rows.length, 2);
       assert.ok(data.budget);
       assert.equal(data.monthKey, "2026-08");
+      // #8210 Bug 2: sem store nesta fixture (nenhum DB criado em
+      // data/diaria-subscribers/) — fail-soft pro caminho antigo.
+      assert.equal(data.subscribersSource, "beehiiv-snapshot");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#8210 Bug 2: store unificado presente vira o caminho DEFAULT — subscribersSource='store', canal só-Kit aparece com cadastros > 0", () => {
+    clearAdsCache();
+    const root = makeRoot();
+    try {
+      writeSpendCsv(root, "canal,mes,moeda,valor,fonte\nMeta Ads (teste 2608),2026-09,BRL,517.85,teste\n");
+      // NENHUM snapshot Beehiiv escrito — o caso real do #8210 (cadastro do
+      // teste foi só pro Kit, o backend do backend está em "kit").
+      const storeDir = join(root, "data", "diaria-subscribers");
+      mkdirSync(storeDir, { recursive: true });
+      const storePath = join(storeDir, "diaria-subscribers.db");
+      const db = openDiariaSubscribersDb(storePath);
+      const subscriberId = ensureSubscriber(db, "kit", "kit-1", "leitor-kit@example.com", "2026-09-01T00:00:00.000Z");
+      upsertSubscription(
+        db,
+        subscriberId,
+        "kit",
+        {
+          status: "active",
+          enteredAt: "2026-09-01T00:00:00.000Z",
+          exitedAt: null,
+          source: "kit",
+          utmSource: "meta-ads",
+        },
+        "2026-09-01T00:00:00.000Z",
+      );
+      db.close();
+
+      const data = buildAdsData(root, { forceRefresh: true, now: () => new Date("2026-09-17T12:00:00Z") });
+      assert.equal(data.subscribersSource, "store");
+      assert.ok(data.report, "store presente deveria montar report mesmo sem snapshot Beehiiv");
+      const metaRow = data.report!.rows.find((r) => r.canal === "Meta Ads (teste 2608)") as any;
+      assert.ok(metaRow, "canal Meta Ads (teste 2608) deveria aparecer, vindo do store (Kit)");
+      assert.equal(metaRow.kind, "measured");
+      assert.ok(metaRow.cadastros > 0, "cadastro ingerido só no Kit precisa contar — era invisível no snapshot Beehiiv");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -162,16 +162,50 @@ export function buildCumulativeSeries(
 // Requisito 4: tabela por canal (nunca média entre canais)
 // ---------------------------------------------------------------------------
 
+/** Origem do `gastoTotalBrl` de uma linha (#8210 Bug 3c) — nunca inferida
+ *  implicitamente, sempre explícita na linha:
+ *  - `"live"` — soma de `ChannelDailyMetric[]` da própria chamada (API
+ *    respondeu, gasto real, inclusive quando o valor É zero).
+ *  - `"manual"` — API falhou; caiu pro último gasto reconciliado à mão
+ *    (`spend.csv`), com `gastoAsOf` marcando até quando esse valor é bom.
+ *  - `"unknown"` — API falhou E não há fallback manual pra este canal.
+ *    `gastoTotalBrl` é `null` aqui — NUNCA `0` (era o bug: canal com API
+ *    fora do ar aparecia com "gasto R$ 0,00", parecendo o canal mais barato
+ *    quando na verdade o dado é ausente). */
+export type ChannelSpendSource = "live" | "manual" | "unknown";
+
 export interface ChannelSummaryRow {
   canal: string;
-  gastoTotalBrl: number;
+  /** `null` quando `gastoFonte === "unknown"` — ver `ChannelSpendSource`. */
+  gastoTotalBrl: number | null;
+  gastoFonte: ChannelSpendSource;
+  /** Data (`YYYY-MM-DD`) até quando o valor de `spend.csv` é conhecido bom
+   *  — só preenchido quando `gastoFonte === "manual"`. */
+  gastoAsOf: string | null;
   cliquesTotal: number;
   impressoesTotal: number;
-  /** `null` sem cliques (divisão por zero evitada explicitamente). */
+  /** `null` sem cliques OU gasto desconhecido (divisão por zero/indefinida
+   *  evitada explicitamente). */
   cpcMedioBrl: number | null;
   cadastrosTotal: number;
-  /** `null` sem cadastros. */
+  /** `null` sem cadastros OU gasto desconhecido — NUNCA `0` quando o gasto
+   *  é `unknown` (#8210 Bug 3c: "custo/cadastro R$ 0,00" enganava o canal
+   *  como o mais barato quando a API só tinha falhado). */
   custoPorCadastroBrl: number | null;
+}
+
+export interface BuildChannelTableOptions {
+  /** Canais cuja fonte de gasto AO VIVO falhou nesta chamada (a API do
+   *  canal reportou `error`, não "gasto zero real") — vem de
+   *  `sources`/`fetchCampaignEconomicsSources`, mapeado canal→erro pelo
+   *  caller (`studio-ads.ts`). Canal aqui SEM entrada em `manualFallback`
+   *  sai com `gastoFonte: "unknown"`, `gastoTotalBrl: null`. */
+  channelsWithUnknownLiveSpend?: ReadonlySet<string>;
+  /** Último gasto reconciliado à mão (`spend.csv`) por canal, usado só
+   *  quando o canal está em `channelsWithUnknownLiveSpend` E não tem
+   *  métricas ao vivo — nunca sobrepõe dado AO VIVO real (inclusive
+   *  zero real, que é `gastoFonte: "live"`, não fallback). */
+  manualFallback?: Readonly<Record<string, { totalBrl: number; asOfDate: string }>>;
 }
 
 /**
@@ -183,26 +217,60 @@ export interface ChannelSummaryRow {
  *
  * @pure
  */
-export function buildChannelTable(metrics: ChannelDailyMetric[], signups: ChannelDailySignup[]): ChannelSummaryRow[] {
+export function buildChannelTable(
+  metrics: ChannelDailyMetric[],
+  signups: ChannelDailySignup[],
+  opts: BuildChannelTableOptions = {},
+): ChannelSummaryRow[] {
+  const channelsWithUnknownLiveSpend = opts.channelsWithUnknownLiveSpend ?? new Set<string>();
+  const manualFallback = opts.manualFallback ?? {};
+
   const channels = new Set<string>();
   for (const m of metrics) channels.add(m.canal);
   for (const s of signups) channels.add(s.canal);
+  // Canal só conhecido por ter uma fonte de gasto que FALHOU (sem nenhuma
+  // métrica ao vivo e sem cadastro registrado ainda) também precisa
+  // aparecer — senão a falha fica invisível em vez de virar linha "unknown".
+  for (const canal of channelsWithUnknownLiveSpend) channels.add(canal);
 
   const rows: ChannelSummaryRow[] = [];
   for (const canal of channels) {
     const own = metrics.filter((m) => m.canal === canal);
-    const gastoTotalBrl = round2(own.reduce((sum, m) => sum + m.gastoBrl, 0));
     const cliquesTotal = own.reduce((sum, m) => sum + m.cliques, 0);
     const impressoesTotal = own.reduce((sum, m) => sum + m.impressoes, 0);
     const cadastrosTotal = signups.filter((s) => s.canal === canal).reduce((sum, s) => sum + s.cadastros, 0);
+
+    let gastoTotalBrl: number | null;
+    let gastoFonte: ChannelSpendSource;
+    let gastoAsOf: string | null = null;
+    if (own.length > 0 || !channelsWithUnknownLiveSpend.has(canal)) {
+      // Dado AO VIVO real — inclusive quando `own` está vazio mas o canal
+      // não está marcado como falho (ex: API respondeu, gasto genuinamente
+      // zero no período): soma de `[]` é 0, e É um zero real.
+      gastoTotalBrl = round2(own.reduce((sum, m) => sum + m.gastoBrl, 0));
+      gastoFonte = "live";
+    } else {
+      const fallback = manualFallback[canal];
+      if (fallback) {
+        gastoTotalBrl = round2(fallback.totalBrl);
+        gastoFonte = "manual";
+        gastoAsOf = fallback.asOfDate;
+      } else {
+        gastoTotalBrl = null;
+        gastoFonte = "unknown";
+      }
+    }
+
     rows.push({
       canal,
       gastoTotalBrl,
+      gastoFonte,
+      gastoAsOf,
       cliquesTotal,
       impressoesTotal,
-      cpcMedioBrl: cliquesTotal > 0 ? round2(gastoTotalBrl / cliquesTotal) : null,
+      cpcMedioBrl: gastoTotalBrl != null && cliquesTotal > 0 ? round2(gastoTotalBrl / cliquesTotal) : null,
       cadastrosTotal,
-      custoPorCadastroBrl: cadastrosTotal > 0 ? round2(gastoTotalBrl / cadastrosTotal) : null,
+      custoPorCadastroBrl: gastoTotalBrl != null && cadastrosTotal > 0 ? round2(gastoTotalBrl / cadastrosTotal) : null,
     });
   }
   return rows;
@@ -216,9 +284,16 @@ export interface TestStateTiles {
   /** `null` quando não há `run-state.json` (teste ainda não começou). */
   d0: string | null;
   fimJanela: string | null;
-  /** `null` fora do período conhecido (sem `run-state.json`). */
+  /** `null` fora do período conhecido (sem `run-state.json`). Dias
+   *  CORRIDOS desde `d0` — inclui dias de pausa (#8210 Bug 4b). */
   diasDecorridos: number | null;
   diasRestantes: number | null;
+  /** Dias de veiculação REAL (`diasDecorridos` menos os dias cobertos por
+   *  `runState.revisao.pausas`) — `null` quando `runState` ausente OU sem
+   *  `revisao` registrada (nesse caso, ver `diasDecorridos`; #8210 Bug 4b —
+   *  antes desta revisão existir, calendário e veiculação real eram
+   *  indistinguíveis). Nunca negativo. */
+  diasVeiculacaoReal: number | null;
   emAndamento: boolean;
   gastoAcumuladoTotalBrl: number;
   cadastrosAcumuladosTotal: number;
@@ -239,10 +314,24 @@ export interface TestStateTiles {
  *
  * @pure
  */
+/** Conta quantas das datas `YYYY-MM-DD` no intervalo `[d0, todayIso]`
+ *  (inclusive nas duas pontas) caem dentro de QUALQUER pausa de
+ *  `pausas` (cada pausa também inclusiva em `desde`/`ate`) — comparação de
+ *  string funciona porque todas as datas já estão no formato ordenável
+ *  `YYYY-MM-DD`. @pure */
+function countPausedDaysWithin(pausas: readonly { desde: string; ate: string }[], d0: string, todayIso: string): number {
+  const end = todayIso < d0 ? d0 : todayIso;
+  let count = 0;
+  for (const date of dateRangeInclusive(d0, end)) {
+    if (pausas.some((p) => date >= p.desde && date <= p.ate)) count++;
+  }
+  return count;
+}
+
 export function buildTestStateTiles(
   metrics: ChannelDailyMetric[],
   signups: ChannelDailySignup[],
-  runState: { d0: string; fim_janela: string } | null,
+  runState: { d0: string; fim_janela: string; revisao?: { pausas: readonly { desde: string; ate: string }[] } } | null,
   todayIso: string,
 ): TestStateTiles {
   const gastoAcumuladoTotalBrl = round2(metrics.reduce((sum, m) => sum + m.gastoBrl, 0));
@@ -261,6 +350,7 @@ export function buildTestStateTiles(
       fimJanela: null,
       diasDecorridos: null,
       diasRestantes: null,
+      diasVeiculacaoReal: null,
       emAndamento: false,
       gastoAcumuladoTotalBrl,
       cadastrosAcumuladosTotal,
@@ -277,12 +367,16 @@ export function buildTestStateTiles(
   const diasDecorridos = Math.round((toUtcMs(todayIso) - toUtcMs(runState.d0)) / dayMs);
   const diasRestantes = Math.round((toUtcMs(runState.fim_janela) - toUtcMs(todayIso)) / dayMs);
   const emAndamento = todayIso >= runState.d0 && todayIso <= runState.fim_janela;
+  const diasVeiculacaoReal = runState.revisao
+    ? Math.max(0, diasDecorridos - countPausedDaysWithin(runState.revisao.pausas, runState.d0, todayIso))
+    : null;
 
   return {
     d0: runState.d0,
     fimJanela: runState.fim_janela,
     diasDecorridos,
     diasRestantes,
+    diasVeiculacaoReal,
     emAndamento,
     gastoAcumuladoTotalBrl,
     cadastrosAcumuladosTotal,

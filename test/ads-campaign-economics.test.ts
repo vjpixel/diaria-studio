@@ -111,6 +111,52 @@ describe("#7536 — buildChannelTable: requisito 4 (nunca média entre canais)",
   });
 });
 
+describe("#8210 Bug 3c — gasto desconhecido nunca vira 0 (custo/cadastro nunca R$ 0,00 por API fora do ar)", () => {
+  it("achado ao vivo #8210: canal com API falhando + cadastros reais via Kit NÃO mostra custo/cadastro R$ 0,00", () => {
+    // Sem `metrics` nenhum pro canal (API do Meta Ads falhou) — só cadastros
+    // via Kit. Antes do fix: gastoTotalBrl calculava como 0 (soma de []) e
+    // custoPorCadastroBrl saía 0/146 = 0 — "grátis" enganoso.
+    const metrics: ChannelDailyMetric[] = [];
+    const signups: ChannelDailySignup[] = [{ canal: "Meta Ads (teste 2608)", date: "2026-09-01", cadastros: 146 }];
+    const rows = buildChannelTable(metrics, signups, {
+      channelsWithUnknownLiveSpend: new Set(["Meta Ads (teste 2608)"]),
+    });
+    const meta = rows.find((r) => r.canal === "Meta Ads (teste 2608)")!;
+    assert.ok(meta, "canal com gasto desconhecido ainda precisa aparecer na tabela");
+    assert.equal(meta.gastoTotalBrl, null, "nunca 0 — gasto é DESCONHECIDO, não zero real");
+    assert.equal(meta.gastoFonte, "unknown");
+    assert.equal(meta.custoPorCadastroBrl, null, "nunca R$ 0,00 — era exatamente o bug reportado na issue");
+  });
+
+  it("com fallback manual (spend.csv reconciliado): gastoFonte='manual', custo/cadastro calculado sobre o valor manual", () => {
+    const signups: ChannelDailySignup[] = [{ canal: "Meta Ads (teste 2608)", date: "2026-09-01", cadastros: 100 }];
+    const rows = buildChannelTable([], signups, {
+      channelsWithUnknownLiveSpend: new Set(["Meta Ads (teste 2608)"]),
+      manualFallback: { "Meta Ads (teste 2608)": { totalBrl: 517.85, asOfDate: "2026-09-09" } },
+    });
+    const meta = rows.find((r) => r.canal === "Meta Ads (teste 2608)")!;
+    assert.equal(meta.gastoTotalBrl, 517.85);
+    assert.equal(meta.gastoFonte, "manual");
+    assert.equal(meta.gastoAsOf, "2026-09-09");
+    assert.equal(meta.custoPorCadastroBrl, 5.18);
+  });
+
+  it("gasto AO VIVO genuinamente zero (API respondeu, canal não gastou) continua gastoFonte='live', não vira 'unknown'", () => {
+    const metrics: ChannelDailyMetric[] = [{ canal: "Google Ads (teste 2608)", date: "2026-09-01", gastoBrl: 0, cliques: 0, impressoes: 0 }];
+    const rows = buildChannelTable(metrics, [], { channelsWithUnknownLiveSpend: new Set() });
+    const google = rows.find((r) => r.canal === "Google Ads (teste 2608)")!;
+    assert.equal(google.gastoTotalBrl, 0);
+    assert.equal(google.gastoFonte, "live");
+  });
+
+  it("sem opts (default): comportamento idêntico a antes — nenhuma linha vira 'unknown'/'manual' sem pedir", () => {
+    const metrics: ChannelDailyMetric[] = [{ canal: "A", date: "2026-01-01", gastoBrl: 100, cliques: 10, impressoes: 1000 }];
+    const rows = buildChannelTable(metrics, []);
+    assert.equal(rows[0].gastoFonte, "live");
+    assert.equal(rows[0].gastoTotalBrl, 100);
+  });
+});
+
 describe("#7536 — buildTestStateTiles: nunca média por canal, sempre estado do teste", () => {
   it("sem run-state.json: datas/janela null, mas totais de gasto/cadastro seguem reportados", () => {
     const metrics: ChannelDailyMetric[] = [{ canal: "A", date: "2026-01-01", gastoBrl: 200, cliques: 1, impressoes: 1 }];

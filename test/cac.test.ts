@@ -28,6 +28,7 @@ import {
   computeBaseMetrics,
   buildCacReport,
   computeMonthBudgetUsage,
+  detectDuplicateChannelSpend,
   MONTHLY_BUDGET_FLOOR_BRL,
   DEGRADATION_THRESHOLD_PCT,
   type CacMeasuredRow,
@@ -558,6 +559,59 @@ describe("computeMonthBudgetUsage", () => {
     const usage = computeMonthBudgetUsage([spend({ mes: "2026-01" })], "2026-08");
     assert.equal(usage.spentBrl, 0);
     assert.equal(usage.fractionUsed, 0);
+  });
+
+  it("sem colisão: duplicateWarnings vazio", () => {
+    const usage = computeMonthBudgetUsage([spend({ canal: "Google Ads", mes: "2026-09", valor: 500 })], "2026-09");
+    assert.deepEqual(usage.duplicateWarnings, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectDuplicateChannelSpend (#8210 Bug 1 — gasto de setembro contado 2×)
+// ---------------------------------------------------------------------------
+
+describe("detectDuplicateChannelSpend", () => {
+  it("achado ao vivo #8210: 'Google Ads' + 'Google Ads (teste 2608)' no MESMO mês colide", () => {
+    const rows: SpendRow[] = [
+      spend({ canal: "Google Ads", mes: "2026-09", valor: 500.9 }),
+      spend({ canal: "Google Ads (teste 2608)", mes: "2026-09", valor: 500.57 }),
+      spend({ canal: "Microsoft Ads (teste 2608)", mes: "2026-09", valor: 288.02 }),
+    ];
+    const warnings = detectDuplicateChannelSpend(rows);
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].monthKey, "2026-09");
+    assert.equal(warnings[0].baseChannel, "Google Ads");
+    assert.deepEqual(warnings[0].canais, ["Google Ads", "Google Ads (teste 2608)"]);
+  });
+
+  it("mesmo canal-base em MESES diferentes não colide", () => {
+    const rows: SpendRow[] = [
+      spend({ canal: "Google Ads", mes: "2026-08", valor: 100 }),
+      spend({ canal: "Google Ads (teste 2608)", mes: "2026-09", valor: 200 }),
+    ];
+    assert.deepEqual(detectDuplicateChannelSpend(rows), []);
+  });
+
+  it("canais genuinamente distintos (sem base comum) não colidem", () => {
+    const rows: SpendRow[] = [
+      spend({ canal: "Google Ads (teste 2608)", mes: "2026-09", valor: 100 }),
+      spend({ canal: "Microsoft Ads (teste 2608)", mes: "2026-09", valor: 200 }),
+    ];
+    assert.deepEqual(detectDuplicateChannelSpend(rows), []);
+  });
+
+  it("computeMonthBudgetUsage propaga só os warnings DO mês pedido, nunca soma silenciosa (soma continua acontecendo, mas fica visível)", () => {
+    const rows: SpendRow[] = [
+      spend({ canal: "Google Ads", mes: "2026-09", valor: 500.9 }),
+      spend({ canal: "Google Ads (teste 2608)", mes: "2026-09", valor: 500.57 }),
+      spend({ canal: "Google Ads (velho)", mes: "2026-01", valor: 999 }),
+      spend({ canal: "Google Ads", mes: "2026-01", valor: 1 }),
+    ];
+    const usage = computeMonthBudgetUsage(rows, "2026-09");
+    assert.ok(Math.abs(usage.spentBrl - (500.9 + 500.57)) < 1e-9, "soma continua — o guard só avisa, não corrige sozinho");
+    assert.equal(usage.duplicateWarnings.length, 1);
+    assert.equal(usage.duplicateWarnings[0].monthKey, "2026-09");
   });
 });
 

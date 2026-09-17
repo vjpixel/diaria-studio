@@ -27,6 +27,7 @@ const el = {
   campaignChartContainer: document.getElementById("campaign-chart-container"),
   campaignChartLegend: document.getElementById("campaign-chart-legend"),
   campaignChannelsTbody: document.getElementById("campaign-channels-tbody"),
+  campaignMaturityDate: document.getElementById("campaign-maturity-date"),
 };
 
 function escapeHtml(s) {
@@ -123,11 +124,18 @@ function renderSummary(data) {
 
   // 3) Quanto do orçamento do mês já foi consumido?
   if (budget) {
+    // #8210 Bug 1: colisão de canal (ex: "Google Ads" + "Google Ads (teste
+    // 2608)" no mesmo mês) vira aviso VISÍVEL aqui — nunca some numa soma
+    // silenciosa (a soma continua acontecendo; o aviso é o que muda).
+    const dupWarning =
+      budget.duplicateWarnings && budget.duplicateWarnings.length > 0
+        ? ` ⚠ possível dupla-contagem: ${budget.duplicateWarnings.map((w) => w.canais.join(" + ")).join("; ")}.`
+        : "";
     tiles.push(
       tile(
         `Orçamento ${escapeHtml(budget.monthKey)}`,
         `${fmtBrl(budget.spentBrl)} / ${fmtBrl(budget.budgetFloorBrl)}`,
-        `${fmtPct(budget.fractionUsed)} do piso conhecido`,
+        `${fmtPct(budget.fractionUsed)} do piso conhecido${escapeHtml(dupWarning)}`,
       ),
     );
   } else {
@@ -199,7 +207,7 @@ function sectionHeaderRow(label, colspan) {
   return tr;
 }
 
-function renderTable(report) {
+function renderTable(report, subscribersSource) {
   el.count.textContent = String(report.rows.length);
   el.tbody.innerHTML = "";
 
@@ -236,6 +244,16 @@ function renderTable(report) {
   }
 
   const warnings = [];
+  // #8210 Bug 2: torna VISÍVEL qual fonte de subscribers montou este
+  // relatório — o fallback fail-soft pro snapshot Beehiiv precisa aparecer
+  // aqui, senão a tela volta a ficar "cega" ao Kit em silêncio (era
+  // exatamente o bug original) sem ninguém notar que o store não estava
+  // disponível.
+  if (subscribersSource === "beehiiv-snapshot") {
+    warnings.push(
+      "⚠ store unificado indisponível — usando fallback snapshot Beehiiv (cego a cadastros só-Kit). Rode a ingestão do store.",
+    );
+  }
   if (report.internalFiltered > 0) warnings.push(`${report.internalFiltered} conta(s) interna(s)/teste excluída(s).`);
   if (!report.originApplied) warnings.push("mapa de origem recuperada não aplicado — utm_source cru do snapshot.");
   if (report.unmappedChannels && report.unmappedChannels.length > 0) {
@@ -264,9 +282,14 @@ function shortChannelLabel(canal) {
 function renderCampaignTiles(testState) {
   const tiles = [];
   if (testState.d0) {
+    const totalDias = testState.diasDecorridos + Math.max(testState.diasRestantes, 0);
+    const realSuffix =
+      testState.diasVeiculacaoReal != null && testState.diasVeiculacaoReal !== testState.diasDecorridos
+        ? ` (${testState.diasVeiculacaoReal} de veiculação real, descontando pausa)`
+        : "";
     const janela =
       testState.emAndamento
-        ? `dia ${testState.diasDecorridos} de ${testState.diasDecorridos + Math.max(testState.diasRestantes, 0)} · ${testState.diasRestantes} restante(s)`
+        ? `dia ${testState.diasDecorridos} de ${totalDias}${realSuffix} · ${testState.diasRestantes} restante(s)`
         : "janela de veiculação encerrada";
     tiles.push(tile("Janela do teste", `${testState.d0} → ${testState.fimJanela}`, janela));
   } else {
@@ -297,13 +320,27 @@ function renderCampaignFreshness(freshness) {
   el.campaignFreshness.innerHTML = freshness.map(freshnessBadge).join("");
 }
 
+/** #8210 Bug 3c: gasto NUNCA aparece como "R$ 0,00" quando é desconhecido —
+ *  `gastoTotalBrl` já vem `null` nesse caso (`fmtBrl` mostra "—"); este
+ *  badge só acrescenta a EXPLICAÇÃO ("fonte manual" / "desconhecido")
+ *  visível ao lado do valor, em vez de deixar o "—" sem contexto. */
+function gastoFonteBadge(row) {
+  if (row.gastoFonte === "manual") {
+    return `<div class="reachable-subtext">fonte manual, até ${escapeHtml(fmtDdMm(row.gastoAsOf))}</div>`;
+  }
+  if (row.gastoFonte === "unknown") {
+    return `<div class="reachable-subtext">⚠ gasto desconhecido (API fora do ar)</div>`;
+  }
+  return "";
+}
+
 function renderCampaignChannelsTable(channels) {
   el.campaignChannelsTbody.innerHTML = channels
     .map(
       (row) => `
     <tr>
       <td><strong>${escapeHtml(shortChannelLabel(row.canal))}</strong></td>
-      <td class="mono">${fmtBrl(row.gastoTotalBrl)}</td>
+      <td class="mono">${fmtBrl(row.gastoTotalBrl)}${gastoFonteBadge(row)}</td>
       <td>${fmtInt(row.cliquesTotal)}</td>
       <td>${fmtInt(row.impressoesTotal)}</td>
       <td class="mono">${fmtBrl(row.cpcMedioBrl)}</td>
@@ -339,15 +376,24 @@ function renderCampaignChart(cumulative) {
   const plotH = CHART_HEIGHT - CHART_MARGIN.top - CHART_MARGIN.bottom;
 
   const xForIndex = (i) => (allDates.length <= 1 ? 0 : (i / (allDates.length - 1)) * plotW);
-  const yForValue = (v) => plotH - (v / yMax) * plotH;
+  // #8210 melhoria 4: escala RAIZ QUADRADA, não linear — um canal caro
+  // (ex: R$ 288,02/cadastro, n baixo) achatava o mais barato (R$ 6,77)
+  // contra o zero numa escala linear compartilhada. sqrt() comprime a
+  // ponta alta sem inverter a ordem nem exigir eixo por canal (que violaria
+  // o requisito 2 da #7536, "escala compartilhada"). `scale(0) = 0` sempre.
+  const scale = (v) => Math.sqrt(Math.max(v, 0));
+  const yScaledMax = scale(yMax) || 1;
+  const yForValue = (v) => plotH - (scale(v) / yScaledMax) * plotH;
 
   const axisLines = [
     `<line class="ads-chart-axis-line" x1="0" y1="${plotH}" x2="${plotW}" y2="${plotH}" />`,
     `<line class="ads-chart-axis-line" x1="0" y1="0" x2="0" y2="${plotH}" />`,
   ];
-  const yTicks = [0, 0.5, 1].map((frac) => {
-    const y = plotH - frac * plotH;
+  // Posições dos ticks em ESPAÇO ESCALADO (frações do eixo), rótulos no
+  // VALOR real — pega 4 pontos pra compensar a compressão do topo.
+  const yTicks = [0, 0.25, 0.5, 1].map((frac) => {
     const value = frac * yMax;
+    const y = plotH - (scale(value) / yScaledMax) * plotH;
     return `<text class="ads-chart-axis-label" x="-6" y="${y + 3}" text-anchor="end">${fmtBrl(value)}</text>`;
   });
   const xTicks = [0, allDates.length - 1]
@@ -396,6 +442,13 @@ function renderCampaignChart(cumulative) {
   }
 }
 
+/** `YYYY-MM-DD` → `DD/MM` — só reformatação de string, sem fuso (a data já
+ *  é um dia de calendário puro, não um instante). */
+function fmtDdMm(isoDate) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate));
+  return m ? `${m[3]}/${m[2]}` : String(isoDate);
+}
+
 function renderCampaignEconomics(data) {
   if (!data) {
     el.campaignPanel.hidden = true;
@@ -406,6 +459,15 @@ function renderCampaignEconomics(data) {
   renderCampaignFreshness(data.freshness);
   renderCampaignChart(data.cumulative);
   renderCampaignChannelsTable(data.channels);
+  // #8210 Bug 4a: data de maturação vem do run-state, nunca fixa no HTML —
+  // "02/10" hardcoded ficava defasado toda vez que o run-state era revisado
+  // (achado ao vivo: coorte_madura já tinha ido pra 24/10 quando o HTML
+  // ainda dizia 02/10).
+  if (el.campaignMaturityDate) {
+    el.campaignMaturityDate.textContent = data.runState
+      ? `por volta de ${fmtDdMm(data.runState.coorte_madura)}`
+      : "quando a coorte cruzar o piso de 20 edições (ver run-state)";
+  }
 }
 
 async function refresh(forceRefresh) {
@@ -449,7 +511,7 @@ async function refresh(forceRefresh) {
     el.summaryPanel.hidden = false;
     el.tablePanel.hidden = false;
     renderSummary(data);
-    renderTable(data.report);
+    renderTable(data.report, data.subscribersSource);
     setFetchStatus("ok", `${data.report.rows.length} canal(is)${data.cached ? " (cache)" : ""}`);
     const snapshotLabel = data.snapshot && data.snapshot.date ? ` · snapshot ${data.snapshot.date}` : "";
     el.lastUpdated.textContent = data.generatedAt ? `gerado em ${fmtTime(data.generatedAt)}${snapshotLabel}` : "";

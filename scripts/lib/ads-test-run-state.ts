@@ -29,11 +29,35 @@ export const ADS_TEST_2608_BRACOS = [
   "Meta Ads (teste 2608)",
 ] as const;
 
+/** Um intervalo de PAUSA de veiculação (campanha desativada nos 3 braços) —
+ *  `desde`/`ate` inclusivos, mesma convenção `YYYY-MM-DD` do resto do
+ *  módulo. Registrado manualmente pelo editor quando a campanha é pausada e
+ *  religada (ex: pausa 09/09→17/09 do teste 2608) — nada grava isto
+ *  automaticamente hoje. */
+export interface AdsTestPause {
+  desde: DateOnlyString;
+  ate: DateOnlyString;
+}
+
+/** Revisão OPCIONAL do cronograma derivado — registra pausas de veiculação
+ *  que `deriveAdsTestSchedule` não sabe (ela só conhece D0, nunca eventos
+ *  supervenientes). Ausente = comportamento de sempre (dias corridos,
+ *  #8210 Bug 4b: era a única leitura possível antes desta revisão existir).
+ *  Presente = `buildTestStateTiles` (`ads-campaign-economics.ts`) desconta
+ *  os dias pausados da contagem de "dias de veiculação real", sem alterar
+ *  `d0`/`fim_janela`/os demais marcos derivados. */
+export interface AdsTestRunStateRevisao {
+  pausas: readonly AdsTestPause[];
+}
+
 export interface AdsTestRunState extends AdsTestSchedule {
   bracos: readonly string[];
   /** Timestamp ISO de quando o arquivo foi gravado (não confundir com
    *  `d0` — este é "quando registramos", aquele é "quando acende"). */
   registrado_em: string;
+  /** Ver {@link AdsTestRunStateRevisao} — `undefined` no caso comum (teste
+   *  sem pausa registrada ainda). */
+  revisao?: AdsTestRunStateRevisao;
 }
 
 /** Uma entrada do histórico de regravações (`run-state-history.jsonl`) —
@@ -128,5 +152,26 @@ export function assertValidRunState(raw: unknown): asserts raw is AdsTestRunStat
   }
   if (typeof r.registrado_em !== "string" || r.registrado_em.trim() === "") {
     throw new Error('ads-test-run-state: campo "registrado_em" ausente ou vazio.');
+  }
+  if (r.revisao !== undefined) {
+    if (typeof r.revisao !== "object" || r.revisao === null) {
+      throw new Error('ads-test-run-state: campo "revisao" presente mas não é um objeto.');
+    }
+    const revisao = r.revisao as Record<string, unknown>;
+    if (!Array.isArray(revisao.pausas)) {
+      throw new Error('ads-test-run-state: campo "revisao.pausas" ausente ou não é uma lista.');
+    }
+    for (const pausa of revisao.pausas) {
+      if (
+        typeof pausa !== "object" ||
+        pausa === null ||
+        typeof (pausa as Record<string, unknown>).desde !== "string" ||
+        typeof (pausa as Record<string, unknown>).ate !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test((pausa as Record<string, unknown>).desde as string) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test((pausa as Record<string, unknown>).ate as string)
+      ) {
+        throw new Error('ads-test-run-state: item de "revisao.pausas" precisa de "desde"/"ate" YYYY-MM-DD.');
+      }
+    }
   }
 }
