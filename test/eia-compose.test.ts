@@ -27,6 +27,7 @@ import {
   buildSdPrompt,
   resolveSdPromptDescription,
   resolveImageScriptName,
+  resolveDescriptionText,
 } from "../scripts/eia-compose.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
@@ -1554,6 +1555,88 @@ describe("isPtDescription (#4618)", () => {
     }
     assert.doesNotMatch(captured, /shape drift/);
   });
+
+  // #8198: description.lang ausente porque `description` inteiro está
+  // ausente (só structured.captions) — sem esse caso, isPtDescription()
+  // caía no fallback Gemini+langlinks mesmo com a legenda pt já disponível
+  // em structured.captions.pt, e o texto vazio que resultava disso é a
+  // causa raiz da imagem desconexa/legenda corrompida da edição 260917.
+  it("#8198: description ausente MAS structured.captions.pt presente → true (pt nativo via captions, sem lang nenhum pra ler)", () => {
+    assert.equal(
+      isPtDescription({ structured: { captions: { pt: "Monges budistas acendem velas." } } }),
+      true,
+    );
+  });
+
+  it("#8198: description ausente e structured.captions SEM pt (só en) → false (sem versão pt disponível)", () => {
+    assert.equal(
+      isPtDescription({ structured: { captions: { en: "Buddhist monks light candles." } } }),
+      false,
+    );
+  });
+});
+
+describe("resolveDescriptionText (#8198 — único ponto de leitura do texto de descrição)", () => {
+  it("description.text presente → usa direto, ignora structured.captions", () => {
+    const result = resolveDescriptionText({
+      description: { text: "Rome is on the Tiber." },
+      structured: { captions: { pt: "Roma fica no Tibre." } },
+    });
+    assert.equal(result, "Rome is on the Tiber.");
+  });
+
+  // #8198: caso REAL que motivou a issue — edição 260917, a resposta da
+  // Wikimedia pra um POTD com título em bengali não trazia `description`
+  // nenhum (nem .text, nem .html, nem .lang), só `structured.captions.en`
+  // (formato Wikibase/Commons mais novo). Sem este fallback,
+  // `image.description?.text` resolvia `undefined` e propagava vazio em
+  // cascata até virar a legenda "Por favor, envie o texto que deseja que
+  // seja traduzido." (a resposta do Gemini pedindo texto) e um prompt SD
+  // sem sujeito nenhum, gerando uma imagem desconexa do tema.
+  it("#8198: description totalmente ausente + structured.captions presente → cai pro fallback de captions (caso real, edição 260917)", () => {
+    const result = resolveDescriptionText({
+      structured: {
+        captions: {
+          en: "Buddhist monks light candles at the Prabarana Purnima festival.",
+        },
+      },
+    });
+    assert.equal(result, "Buddhist monks light candles at the Prabarana Purnima festival.");
+  });
+
+  it("#8198: description ausente, structured.captions com pt e en → prefere pt", () => {
+    const result = resolveDescriptionText({
+      structured: {
+        captions: {
+          en: "Buddhist monks light candles.",
+          pt: "Monges budistas acendem velas.",
+        },
+      },
+    });
+    assert.equal(result, "Monges budistas acendem velas.");
+  });
+
+  it("#8198: description ausente, structured.captions só com 'pt-br' (sem 'pt') → usa pt-br", () => {
+    const result = resolveDescriptionText({
+      structured: { captions: { "pt-br": "Monges budistas acendem velas." } },
+    });
+    assert.equal(result, "Monges budistas acendem velas.");
+  });
+
+  it("#8198: description ausente, structured.captions sem pt/pt-br/en → usa a 1ª legenda disponível", () => {
+    const result = resolveDescriptionText({
+      structured: { captions: { bn: "প্রবারণা পূর্ণিমা উৎসবে মোমবাতি জ্বালাচ্ছেন বৌদ্ধ ভিক্ষুরা।" } },
+    });
+    assert.equal(result, "প্রবারণা পূর্ণিমা উৎসবে মোমবাতি জ্বালাচ্ছেন বৌদ্ধ ভিক্ষুরা।");
+  });
+
+  it("description e structured ambos ausentes → undefined (fail-soft, sem lançar)", () => {
+    assert.equal(resolveDescriptionText({}), undefined);
+  });
+
+  it("description presente mas sem .text, structured ausente → undefined", () => {
+    assert.equal(resolveDescriptionText({ description: { lang: "en" } }), undefined);
+  });
 });
 
 describe("resolveTranslatedSentence — gate central do #4618 não gasta Gemini quando já é pt (#4619 item 2)", () => {
@@ -1829,7 +1912,7 @@ describe("buildSdPrompt (#4620 — antes recebia WikimediaImage inteiro, agora r
     const result = buildSdPrompt(longText);
     const suffix =
       ", documentary photograph, natural light, candid composition, photorealistic" +
-      ". Leave generous empty margin on all four edges of the frame; group the main subjects — especially any that readers are meant to compare closely — well within the frame, never touching or cropped by the top, bottom, left or right edge.";
+      ". Leave at least 12% empty margin on all four edges of the frame; the main subjects — especially any that readers are meant to compare closely — must occupy no more than the upper two-thirds of the frame height, fully visible and never touching or cropped by the top, bottom, left or right edge.";
     assert.equal(result.positive, "x".repeat(500) + suffix);
   });
 
@@ -1842,7 +1925,7 @@ describe("buildSdPrompt (#4620 — antes recebia WikimediaImage inteiro, agora r
   it("texto vazio: só o sufixo de estilo + enquadramento sobra, não lança", () => {
     const result = buildSdPrompt("");
     assert.match(result.positive, /^, documentary photograph/);
-    assert.match(result.positive, /Leave generous empty margin on all four edges/);
+    assert.match(result.positive, /Leave at least 12% empty margin on all four edges/);
   });
 
   // #8147: golden/regression test — edição 260916, a imagem B (gerada por IA)
@@ -1859,7 +1942,7 @@ describe("buildSdPrompt (#4620 — antes recebia WikimediaImage inteiro, agora r
     );
     assert.match(
       result.positive,
-      /generous empty margin on all four edges/,
+      /empty margin on all four edges/,
       "prompt SD precisa instruir margem segura nas 4 bordas — sujeitos não podem ficar colados na borda do frame",
     );
     assert.match(
@@ -1871,7 +1954,30 @@ describe("buildSdPrompt (#4620 — antes recebia WikimediaImage inteiro, agora r
     assert.equal(
       result.positive,
       "A group of great cormorant chicks in a nest, with a castle in the background., documentary photograph, natural light, candid composition, photorealistic" +
-        ". Leave generous empty margin on all four edges of the frame; group the main subjects — especially any that readers are meant to compare closely — well within the frame, never touching or cropped by the top, bottom, left or right edge.",
+        ". Leave at least 12% empty margin on all four edges of the frame; the main subjects — especially any that readers are meant to compare closely — must occupy no more than the upper two-thirds of the frame height, fully visible and never touching or cropped by the top, bottom, left or right edge.",
+    );
+  });
+
+  // #8201: 2ª ocorrência do MESMO padrão de falha do #8147 (monges budistas
+  // espremidos na borda inferior, edição 260917) — desta vez com o texto do
+  // #8147 já presente no prompt, o que prova que "generous margin" sem
+  // número não é instrução suficiente pro modelo seguir de forma confiável.
+  // Reforço: margem QUANTIFICADA (percentual) + teto de altura do sujeito
+  // (não mais que os dois terços superiores do frame). Trava as duas
+  // mudanças pra não regredir em silêncio pra "generous margin" solto.
+  it("#8201: prompt final inclui margem quantificada (percentual) e teto de altura do sujeito", () => {
+    const result = buildSdPrompt(
+      "Buddhist monks lighting candles at the Prabarana Purnima festival.",
+    );
+    assert.match(
+      result.positive,
+      /Leave at least 12% empty margin on all four edges/,
+      "margem precisa ser quantificada (percentual), não só 'generous' — texto subjetivo já se provou insuficiente 2×",
+    );
+    assert.match(
+      result.positive,
+      /must occupy no more than the upper two-thirds of the frame height/,
+      "prompt precisa de um teto explícito de altura do sujeito, não só instrução de margem",
     );
   });
 });
@@ -1924,6 +2030,20 @@ describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente
     assert.equal(calledWithIso, "2026-08-04");
   });
 
+  // #8198 (mesma causa raiz, superfície do fetch EN — finding 1 do self-review
+  // da PR #8213): o POTD em `en` pode vir com o shape novo (só
+  // `structured.captions`, sem `description` nenhum) igual ao pt que motivou a
+  // issue. Ler `.description.text` direto aqui degradava pra `pt_fallback`
+  // mesmo havendo legenda EN perfeitamente utilizável.
+  it("#8198: comfyui + description pt + fetch EN devolve SÓ structured.captions.en → usa a legenda EN, locale=en (não degrada pra pt_fallback)", async () => {
+    const fetchEn = async () => ({
+      structured: { captions: { en: "Buddhist monks light candles at the festival." } },
+    });
+    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", EDITION, fetchEn);
+    assert.equal(result.text, "Buddhist monks light candles at the festival.");
+    assert.equal(result.locale, "en");
+  });
+
   it("image_generator=cloudflare + description pt + fetch EN falha (exceção) → fail-soft, cai pro texto pt, locale=pt_fallback, warn em stderr E run-log com a mensagem de erro real", async () => {
     const tmpRoot = makeTmpRoot();
     const fetchEn = async () => {
@@ -1966,7 +2086,7 @@ describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente
     const entries = readRunLog(tmpRoot) as Array<{ message: string; details: { fetchError: string | null } }>;
     assert.equal(entries.length, 1);
     assert.equal(entries[0].details.fetchError, null, "sem exceção — não deve inventar uma mensagem de erro");
-    assert.match(entries[0].message, /SEM description\.text \(sem erro/);
+    assert.match(entries[0].message, /SEM texto de descrição \(nem description\.text nem structured\.captions; sem erro/);
   });
 
   it("image_generator=comfyui + description pt + fetch EN retorna null → fail-soft, cai pro texto pt, locale=pt_fallback", async () => {
