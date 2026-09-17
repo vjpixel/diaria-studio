@@ -79,9 +79,46 @@ export class EnvBackupError extends Error {
   }
 }
 
-/** Extrai o conjunto de nomes de variável (`KEY=`) de um conteúdo `.env`-like. */
-function parseEnvKeys(content: string): Set<string> {
+/**
+ * Nome de variável de ambiente válido, depois de tirar um `export ` opcional.
+ * Exige UPPER_SNAKE_CASE (não só POSIX `[A-Za-z_][A-Za-z0-9_]*`) de propósito:
+ * as ~73 chaves reais do `.env` deste projeto são todas UPPER_SNAKE_CASE, e
+ * restringir a isso também rejeita a maioria dos fragmentos de base64 de uma
+ * continuação de valor multilinha vazada (chave privada, JSON de service
+ * account) — esses quase sempre têm alguma letra minúscula no meio, então
+ * caem em "malformado" em vez de virar falsamente uma "chave válida" cujo
+ * nome (o próprio fragmento de segredo) seria ecoado em
+ * `LocalOnlyEnvKeysError.message`.
+ */
+const VALID_ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
+
+/** Resultado de `parseEnvKeys`: chaves válidas + contagem de linhas malformadas. */
+interface ParsedEnvKeys {
+  keys: Set<string>;
+  /**
+   * Linhas com `=` que não têm o formato `NOME_VALIDO=valor` antes dele —
+   * tipicamente a continuação de um valor multilinha que vazou pra fora do
+   * `KEY=` original (ex: uma chave JSON de service account colada sem
+   * escapar as quebras de linha, cujo fragmento de base64 contém `=`).
+   * Nunca guarda o CONTEÚDO da linha, só a contagem — ver `LocalOnlyEnvKeysError`.
+   */
+  malformedCount: number;
+}
+
+/**
+ * Extrai o conjunto de nomes de variável (`KEY=`) de um conteúdo `.env`-like.
+ *
+ * Só aceita nomes que batem `VALID_ENV_KEY_RE` — uma linha com `=` cujo
+ * lado esquerdo não é um nome de variável válido (achado ao vivo, 260917:
+ * uma linha de continuação de um JSON multilinha colado sem escapar `\n`,
+ * carregando um fragmento de base64 com `=` no meio) NÃO vira chave. Sem
+ * este guard, `[...keys].join(", ")` no `LocalOnlyEnvKeysError` acabava
+ * ecoando fragmento de segredo no stdout/stderr — o oposto do que a doc
+ * promete (`docs/doppler-env-sync.md`: "keys traz só os NOMES").
+ */
+function parseEnvKeys(content: string): ParsedEnvKeys {
   const keys = new Set<string>();
+  let malformedCount = 0;
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
@@ -89,9 +126,14 @@ function parseEnvKeys(content: string): Set<string> {
     if (eqIndex === -1) continue;
     let key = line.slice(0, eqIndex).trim();
     if (key.startsWith("export ")) key = key.slice("export ".length).trim();
-    if (key) keys.add(key);
+    if (!key) continue;
+    if (VALID_ENV_KEY_RE.test(key)) {
+      keys.add(key);
+    } else {
+      malformedCount++;
+    }
   }
-  return keys;
+  return { keys, malformedCount };
 }
 
 /**
@@ -125,9 +167,22 @@ export function syncEnv(
       );
     }
 
+    // Malformado é reportado sempre (força/não-força) — é sinal de `.env`
+    // quebrado (valor multilinha sem escapar), independente do guard de
+    // chave só-local abaixo. Warning-only: nunca bloqueia o sync sozinho,
+    // já que a chave malformada pode ser remota (raro) ou uma continuação
+    // sem nenhum efeito prático além de poluir o parse.
+    const { keys: localKeys, malformedCount: localMalformed } = parseEnvKeys(existingContent);
+    if (localMalformed > 0) {
+      console.warn(
+        `Aviso: .env local tem ${localMalformed} linha(s) malformada(s) (com "=" mas sem nome de variável válido antes dele) — ` +
+          `provável valor multilinha colado sem escapar quebras de linha (ex: uma chave JSON). ` +
+          `O conteúdo dessas linhas NUNCA aparece neste aviso. Considere colocar o valor numa única linha (escapando \\n) antes do próximo sync.`,
+      );
+    }
+
     if (!options.force) {
-      const localKeys = parseEnvKeys(existingContent);
-      const remoteKeys = parseEnvKeys(content);
+      const { keys: remoteKeys } = parseEnvKeys(content);
       const localOnlyKeys = [...localKeys].filter((key) => !remoteKeys.has(key));
       if (localOnlyKeys.length > 0) {
         throw new LocalOnlyEnvKeysError(localOnlyKeys);

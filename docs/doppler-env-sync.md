@@ -65,6 +65,26 @@ https://dashboard.doppler.com) na config certa (`dev`/`dev_personal`/`stg`/
 normalmente — a chave deixa de ser só-local e o guard para de disparar para
 ela.
 
+**Guard de linha malformada (#8279, 17/09/2026).** `sync-env` só reconhece
+como "chave" uma linha `NOME_EM_UPPER_SNAKE_CASE=valor` — nome em
+UPPER_SNAKE_CASE, batendo a convenção real das ~73 chaves do projeto. Uma
+linha com `=` cujo lado esquerdo não bate esse formato (achado ao vivo:
+continuação de um valor JSON multilinha colado sem escapar `\n` — por
+exemplo o corpo de uma chave privada de service account, cujo fragmento de
+base64 carrega `=`) nunca vira chave — é contada como "malformada" e
+reportada só como NÚMERO (`Aviso: .env local tem N linha(s) malformada(s)
+...`), nunca com o conteúdo da linha. Antes deste guard, esse tipo de linha
+virava uma "chave" espúria e, se ausente no snapshot do Doppler, seu NOME
+(na prática um fragmento do segredo) era ecoado dentro de
+`LocalOnlyEnvKeysError.message` — vazando material de credencial no
+stdout/stderr da própria proteção que existe pra não vazar segredo. O aviso
+de linha malformada é warning-only (não bloqueia o sync sozinho); o guard de
+chave só-local acima continua bloqueando normalmente quando alguma chave
+VÁLIDA está ausente no vault. Se `.env` tiver um valor multilinha desse
+tipo, a correção é colocá-lo numa única linha escapando as quebras (`\n`
+literal dentro de uma string entre aspas, não uma quebra de linha real no
+arquivo) — o formato que o Doppler já usa pro mesmo valor.
+
 **Precedência preservada:** `scripts/lib/env-loader.ts` (`loadProjectEnv`)
 carrega `.env` com `override: false` — uma var já presente em `process.env`
 (por exemplo, setada por `doppler run -- <comando>` em vez de via `.env`)

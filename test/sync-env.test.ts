@@ -220,6 +220,75 @@ describe("syncEnv", () => {
     }
   });
 
+  it("linha de continuação de valor multilinha com '=' no meio (chave JSON malformada) nunca vaza pra LocalOnlyEnvKeysError (260917)", () => {
+    // Reproduz o achado ao vivo: `GOOGLE_ADS_SERVICE_ACCOUNT_JSON` colado
+    // sem escapar `\n` — a 2ª linha (fragmento de private_key em base64,
+    // que contém `=`) seria tratada como uma CHAVE nova antes do fix, e
+    // `LocalOnlyEnvKeysError.message` (via `keys.join(", ")`) ecoaria esse
+    // fragmento de segredo no stdout/stderr.
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-test-"));
+    try {
+      const envPath = join(dir, ".env");
+      const secretFragment =
+        '"private_key": "-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDfakekeymaterial==\\n-----END PRIVATE KEY-----\\n"}';
+      writeFileSync(
+        envPath,
+        `CLARICE_API_KEY=old\nGOOGLE_ADS_SERVICE_ACCOUNT_JSON={"type":"service_account",\n${secretFragment}\nANTHROPIC_API_KEY=segredo-local\n`,
+      );
+
+      assert.throws(
+        () => syncEnv(envPath, () => "CLARICE_API_KEY=new\n"),
+        (err: unknown) => {
+          assert.ok(err instanceof LocalOnlyEnvKeysError);
+          // Só as chaves VÁLIDAS ficam no diff — a linha de continuação
+          // malformada (sem nome de variável válido antes do "=") nunca
+          // vira chave, nem "GOOGLE_ADS_SERVICE_ACCOUNT_JSON={"type":"service_account","
+          // (que teria "=" só depois do "{").
+          assert.deepEqual(err.keys, ["GOOGLE_ADS_SERVICE_ACCOUNT_JSON", "ANTHROPIC_API_KEY"]);
+          // A mensagem nunca contém fragmento nenhum do valor/continuação —
+          // nem o marcador "BEGIN PRIVATE KEY", nem o trecho de base64.
+          assert.ok(!err.message.includes("BEGIN PRIVATE KEY"));
+          assert.ok(!err.message.includes("MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDfakekeymaterial"));
+          assert.ok(!err.message.includes("segredo-local"));
+          return true;
+        },
+      );
+
+      assert.equal(existsSync(`${envPath}.bak`), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("linha malformada com '=' emite aviso com CONTAGEM, nunca conteúdo, e não bloqueia sync sem chave só-local real", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-test-"));
+    try {
+      const envPath = join(dir, ".env");
+      const secretFragment = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDfakekeymaterial==";
+      writeFileSync(envPath, `CLARICE_API_KEY=old\n${secretFragment}\n`);
+
+      const originalWarn = console.warn;
+      const warnings: string[] = [];
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args.map(String).join(" "));
+      };
+      try {
+        // Doppler já devolve CLARICE_API_KEY — sem chave só-local real,
+        // então o sync completa (o aviso de malformado é separado do guard).
+        syncEnv(envPath, () => "CLARICE_API_KEY=new\n");
+      } finally {
+        console.warn = originalWarn;
+      }
+
+      assert.equal(readFileSync(envPath, "utf8"), "CLARICE_API_KEY=new\n");
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /1 linha\(s\) malformada/);
+      assert.ok(!warnings[0].includes(secretFragment));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("backup atômico (#5155 fleet review finding 1): falha na escrita de .env.bak não deixa .env sobrescrito nem cria .env.bak", () => {
     const dir = mkdtempSync(join(tmpdir(), "sync-env-test-"));
     try {
