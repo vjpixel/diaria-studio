@@ -67,7 +67,12 @@ function main(): void {
     process.exitCode = 2;
     return;
   }
-  const calls = Number(args.calls ?? "");
+  if (args.calls === undefined) {
+    console.error("--calls é obrigatório");
+    process.exitCode = 2;
+    return;
+  }
+  const calls = Number(args.calls);
   if (!Number.isInteger(calls) || calls < 0) {
     console.error(`--calls deve ser um inteiro ≥ 0 (recebeu ${JSON.stringify(args.calls)})`);
     process.exitCode = 2;

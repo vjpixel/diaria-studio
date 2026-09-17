@@ -8,7 +8,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,6 +110,31 @@ describe("log-stage4-adjust-timing.ts — CLI", () => {
       const res = runCli(["--edition", "260918"], dir);
       assert.equal(res.status, 2);
       assert.match(res.stderr, /requested-at/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("exit 2 quando --calls está AUSENTE (nunca defaulta a 0 em silêncio)", () => {
+    const { dir, cleanup } = makeTmpRoot();
+    try {
+      const res = runCli(
+        [
+          "--edition",
+          "260918",
+          "--requested-at",
+          "2026-09-18T12:00:00.000Z",
+          "--edited-at",
+          "2026-09-18T12:00:02.000Z",
+          "--preview-served-at",
+          "2026-09-18T12:00:07.000Z",
+        ],
+        dir,
+      );
+      assert.equal(res.status, 2);
+      assert.match(res.stderr, /--calls é obrigatório/);
+      const logPath = join(dir, "data", "run-log.jsonl");
+      assert.equal(existsSync(logPath), false);
     } finally {
       cleanup();
     }
