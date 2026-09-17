@@ -73,7 +73,7 @@ import {
   type InstagramRankedCandidate,
   type BeehiivCachePost,
 } from "./lib/weekly-instagram-select.ts";
-import { loadBeehiivCache as loadUnifiedBeehiivCache, loadKitCache, mergeEditionsByDate } from "./lib/shared/edition-cache-reader.ts";
+import { filterPublicEditionsWithWarning, loadBeehiivCache as loadUnifiedBeehiivCache, loadKitCache, mergeEditionsByDate } from "./lib/shared/edition-cache-reader.ts";
 import { resolveWeeklyImageUrls, computeWeeklyScheduledAt, DEFAULT_WEEKLY_TIME, DEFAULT_MODE_DAY_OFFSET, WEEKLY_EXPECTED_ITEMS, WEEKLY_MIN_ITEMS } from "./publish-weekly-social.ts";
 import { formatTwitterWeekly, TWITTER_WEEKLY_MAX_ITEMS, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
 import { readSocialPublished } from "./lib/social-published-store.ts";
@@ -133,10 +133,18 @@ export async function buildTwitterWeeklyPost(
   };
 }
 
-function loadUnifiedPostsForRanking(beehiivPostsDir: string, kitBroadcastsDir: string) {
+/**
+ * **Superfície PÚBLICA (#8233): filtra por `isPublicEdition`.** Mesma
+ * justificativa de `select-linkedin-weekly.ts`/`publish-weekly-social.ts`::
+ * `loadUnifiedPostsForRanking` (que esta função espelha) — o resultado
+ * ranqueia candidatos a POST PÚBLICO no X/Twitter; um envio de teste
+ * (`teste-*`) ou a variante Patronos (`*-patronos`) nunca pode virar
+ * candidato.
+ */
+export function loadUnifiedPostsForRanking(beehiivPostsDir: string, kitBroadcastsDir: string) {
   const beehiiv = existsSync(beehiivPostsDir) ? loadUnifiedBeehiivCache(beehiivPostsDir) : [];
   const kit = loadKitCache(kitBroadcastsDir);
-  return mergeEditionsByDate(beehiiv, kit);
+  return filterPublicEditionsWithWarning(mergeEditionsByDate(beehiiv, kit), "prep-weekly-twitter");
 }
 
 /**

@@ -118,6 +118,7 @@
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import {
+  applyRouteLabelPlan,
   autoMotivoForTrack,
   diffRouteLabelPlan,
   formatRouteIssueMarker,
@@ -133,6 +134,7 @@ import { classifyExecTrack } from "./lib/issue-exec-track.ts";
 import {
   clearWaitUntilMarkerOnIssue,
   computeWaitUntilMarkerDate,
+  removeWaitUntilMarker,
   syncWaitUntilMarkerOnIssue,
   upsertWaitUntilMarker,
 } from "./lib/wait-until-sync.ts";
@@ -360,8 +362,57 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
       ? new Date(now.getTime() + vagueDeferralDays * 24 * 60 * 60 * 1000).toISOString()
       : undefined;
 
-  // Passo 1 — labels: aplica e remove o conjunto certo pro veredito.
   const plan = planRouteLabels(track, motivo);
+
+  // Passo 0 (#8230) — dry-run: projeta o estado PÓS-escrita (labels + corpo
+  // com o marcador `aguardando-ate:` já aplicado/removido) e roda
+  // `classifyExecTrack` sobre a projeção ANTES de escrever qualquer coisa.
+  // Existia só o Passo 4 (validação PÓS-escrita, mais abaixo) — útil como
+  // rede de segurança contra TOCTOU real (issue mudou entre o fetch e a
+  // escrita), mas não impedia o caso comum: uma label de precedência mais
+  // alta já presente na issue (ex: `decisao-registrada`) faz o veredito
+  // pedido nunca "pegar", e o Passo 4 só constata isso DEPOIS de labels +
+  // marcador + comentário já terem sido escritos — deixando a issue com um
+  // comentário "Roteado para X" que contradiz o track mecânico real
+  // (`classifyExecTrack` devolve outra coisa), o "marcador enganoso" que o
+  // #8230 descreve (mesma classe do #5125). Recusar aqui, antes de
+  // qualquer `gh issue edit`/`gh issue comment`, garante que uma chamada
+  // que ia falhar a validação nunca deixa rastro escrito na issue.
+  const projectedLabels = applyRouteLabelPlan(fetchedBefore.data.labels, plan);
+  let projectedBody = fetchedBefore.data.body;
+  if (track === "agendada") {
+    projectedBody = upsertWaitUntilMarker(projectedBody, computeWaitUntilMarkerDate(until as string));
+  } else if (vagueDeferralUntilIso) {
+    projectedBody = upsertWaitUntilMarker(projectedBody, computeWaitUntilMarkerDate(vagueDeferralUntilIso));
+  } else {
+    projectedBody = removeWaitUntilMarker(projectedBody);
+  }
+  const dryRunExpectedTrack = vagueDeferralUntilIso ? "agendada" : track;
+  const dryRunTrack = classifyExecTrack({
+    labels: projectedLabels,
+    body: projectedBody,
+    state: fetchedBefore.data.state,
+    now,
+  });
+  if (dryRunTrack !== dryRunExpectedTrack) {
+    return {
+      ok: false,
+      labelsAdded: [],
+      labelsRemoved: [],
+      markerAction: "skipped",
+      commentAction: "skipped",
+      validated: false,
+      resolvedTrack: dryRunTrack,
+      error:
+        `recusado (dry-run pré-escrita, #8230): aplicar --track ${track} na issue #${issue} resultaria em ` +
+        `classifyExecTrack devolvendo "${dryRunTrack}" ≠ "${dryRunExpectedTrack}" — nenhuma label, marcador ou ` +
+        `comentário foi escrito. Causa provável: outra label já presente na issue tem precedência mais alta ` +
+        `sobre "${track}" (ver a docstring de precedência de classifyExecTrackWithRule em issue-exec-track.ts). ` +
+        `Remova/ajuste essa label primeiro, ou roteie pro track que classifyExecTrack de fato produziria.`,
+    };
+  }
+
+  // Passo 1 — labels: aplica e remove o conjunto certo pro veredito.
   const { toAdd, toRemove } = diffRouteLabelPlan(fetchedBefore.data.labels, plan);
   if (toAdd.length > 0 || toRemove.length > 0) {
     const args = ["issue", "edit", String(issue)];

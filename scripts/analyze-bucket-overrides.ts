@@ -9,15 +9,23 @@
  * reporta a matriz de direções de movimento entre os buckets
  * lancamento/radar/use_melhor.
  *
- * Escopo deliberadamente restrito a esses 3 buckets (exclui `video` e a
- * promoção pool→destaque/highlight): a fricção medida na #5995 é
- * especificamente "o categorizador errou o bucket", não "o editor promoveu
- * um item a destaque" (isso é outro fluxo, sem relação com o detector de
- * tutorial/lançamento). Um artigo que sai de `radar`/`use_melhor`/
- * `lancamento` no categorizado e vira `highlight` no aprovado não conta como
- * "movimento de bucket" aqui — ele simplesmente não aparece nos 3 buckets do
- * aprovado, e o join por URL não o encontra (silenciosamente ignorado, é o
- * comportamento correto, não um bug).
+ * Escopo da MATRIZ principal (`directions`/`diffBucketOverrides`)
+ * deliberadamente restrito a esses 3 buckets (exclui `video`): a fricção
+ * medida na #5995 é especificamente "o categorizador errou o bucket", sem
+ * relação com o detector de tutorial/lançamento.
+ *
+ * **A cruzada pool↔destaque (promoção/rebaixamento) É medida, mas
+ * SEPARADA da matriz principal (#8233, escopo adicional do #7964).** Um
+ * artigo que sai de `radar`/`use_melhor`/`lancamento` no categorizado e vira
+ * `highlight` no aprovado (ou o inverso) não conta como "movimento de
+ * bucket" na matriz — reportado à parte por `diffDestaqueMoves`/
+ * `DestaqueSummary`, seção "DESTAQUE ↔ SEÇÃO" da saída (`renderReport`).
+ * Motivo de ficar separado, não fundido na mesma matriz: são fenômenos
+ * editoriais diferentes ("o categorizador errou o bucket" vs. "o editor
+ * decidiu que a história merece/não merece destaque") — a régua da #5995
+ * media 0 dessas cruzadas antes deste fix (11/25 edições medidas
+ * manualmente pelo editor em 11/09/2026 tinham o movimento, ponto cego que
+ * motivou a extensão).
  *
  * `data/editions/` tem dois formatos coexistindo: pastas de mês `YYMM` (4
  * dígitos) contendo subpastas de edição `AAMMDD` (a maioria do corpus real) e
@@ -75,16 +83,30 @@ export interface BucketArticleLike {
   [key: string]: unknown;
 }
 
+/** Shape de 1 entrada de `highlights[]` — tanto em `01-categorized.json`
+ * (proposta do scorer-select, sempre 6 candidatos) quanto em
+ * `01-approved.json` (2-3 finais pós-gate) — mesmo formato que
+ * `derive-editor-requests.ts::classifyStage1DestaqueDiff` já lê. */
+export interface HighlightArticleLike {
+  url?: string;
+  title?: string;
+  article?: { url?: string; title?: string } | null;
+  [key: string]: unknown;
+}
+
 export interface CategorizedBucketsInput {
   lancamento?: BucketArticleLike[];
   radar?: BucketArticleLike[];
   use_melhor?: BucketArticleLike[];
   video?: BucketArticleLike[];
+  /** #8233 (escopo adicional do #7964): presente em `01-categorized.json`
+   * — os 6 candidatos do scorer-select, ANTES de qualquer gate. */
+  highlights?: HighlightArticleLike[];
   [key: string]: unknown;
 }
 
 export interface ApprovedBucketsInput {
-  highlights?: unknown[];
+  highlights?: HighlightArticleLike[];
   runners_up?: unknown[];
   lancamento?: BucketArticleLike[];
   radar?: BucketArticleLike[];
@@ -99,6 +121,49 @@ export interface BucketMove {
   from: Bucket;
   to: Bucket;
   direction: string; // "from->to"
+}
+
+/**
+ * #8233 (escopo adicional do #7964, comentário do editor de 11/09/2026):
+ * movimento entre o POOL (lancamento/radar/use_melhor) e `highlights`
+ * (destaque) — ponto cego que `diffBucketOverrides` exclui de propósito
+ * (ver a docstring dela: "saiu dos 3 buckets... fora de escopo"). A #5995
+ * mediu 11/25 edições com essa cruzada e 0 relatadas por este script antes
+ * deste fix.
+ *
+ * Só a DIREÇÃO importa aqui — não qual destaque (`d1`/`d2`/`d3`) nem qual
+ * posição, diferente de `derive-editor-requests.ts::classifyStage1DestaqueDiff`
+ * (que existe pra DERIVAR pedido editorial com granularidade de slot,
+ * consumido por `editor-requests.jsonl`). Este é um script de MEDIÇÃO
+ * agregada (#5995) — a régua quer saber SE o editor promoveu/rebaixou, não
+ * qual slot exato, então o pareamento por rank não é necessário aqui.
+ */
+export interface DestaqueMove {
+  url: string;
+  title: string;
+  direction: "promote" | "demote";
+}
+
+/** Extrai URL canonicalizada de um item de `highlights[]` — aceita tanto
+ * `url` direto (`01-approved.json`) quanto `article.url` (`01-categorized.json`). */
+function highlightUrlOf(h: HighlightArticleLike): string | null {
+  const url = h?.url ?? h?.article?.url;
+  return typeof url === "string" && url !== "" ? url : null;
+}
+
+function highlightTitleOf(h: HighlightArticleLike): string {
+  return h?.article?.title ?? h?.title ?? "";
+}
+
+/** URL canonicalizada -> título, a partir de `highlights[]`. */
+function indexHighlights(buckets: CategorizedBucketsInput | ApprovedBucketsInput): Map<string, string> {
+  const map = new Map<string, string>();
+  const highlights = Array.isArray(buckets.highlights) ? buckets.highlights : [];
+  for (const h of highlights) {
+    const url = highlightUrlOf(h);
+    if (url) map.set(canonicalize(url), highlightTitleOf(h));
+  }
+  return map;
 }
 
 /**
@@ -178,9 +243,48 @@ export function diffBucketOverrides(
   return moves;
 }
 
+/**
+ * #8233 — diffa a cruzada POOL↔destaque de UMA edição. `promote` = URL saiu
+ * do pool (qualquer um dos TRACKED_BUCKETS) no categorizado e entrou em
+ * `highlights` no aprovado; `demote` = o inverso. URL que está em `highlights`
+ * nos DOIS lados, ou em nenhum, nunca conta — só a TRAVESSIA da fronteira
+ * pool↔destaque é medida aqui (mesma URL mudando de bucket DENTRO do pool
+ * continua sendo `diffBucketOverrides`, não isto).
+ */
+export function diffDestaqueMoves(
+  categorized: CategorizedBucketsInput,
+  approved: ApprovedBucketsInput,
+): DestaqueMove[] {
+  const catPool = indexByUrl(categorized);
+  const apprPool = indexByUrl(approved);
+  const catHighlights = indexHighlights(categorized);
+  const apprHighlights = indexHighlights(approved);
+  const moves: DestaqueMove[] = [];
+
+  for (const [url, title] of apprHighlights) {
+    if (catHighlights.has(url)) continue; // já era destaque nos dois lados
+    const catEntry = catPool.get(url);
+    if (!catEntry) continue; // não veio do pool rastreado (ex: já não existia no categorizado)
+    moves.push({ url, title: title || catEntry.title, direction: "promote" });
+  }
+
+  for (const [url, catTitle] of catHighlights) {
+    if (apprHighlights.has(url)) continue; // continua destaque
+    const apprEntry = apprPool.get(url);
+    if (!apprEntry) continue; // saiu do cache inteiro (corte), não virou pool — fora de escopo
+    moves.push({ url, title: apprEntry.title || catTitle, direction: "demote" });
+  }
+
+  return moves;
+}
+
 export interface EditionMoves {
   edition: string;
   moves: BucketMove[];
+  /** #8233 — opcional (default `[]` quando ausente) pra não quebrar callers/
+   * literais existentes que constroem `EditionMoves` sem essa chave (ex:
+   * fixtures de teste anteriores ao #8233). */
+  destaqueMoves?: DestaqueMove[];
 }
 
 const MONTH_DIR_RE = /^\d{4}$/;
@@ -254,7 +358,8 @@ export function analyzeEditionsUnderRoot(editionsDir: string): EditionMoves[] {
     }
 
     const moves = diffBucketOverrides(categorized, approved);
-    results.push({ edition, moves });
+    const destaqueMoves = diffDestaqueMoves(categorized, approved);
+    results.push({ edition, moves, destaqueMoves });
   }
 
   return results;
@@ -540,6 +645,18 @@ export interface AnalysisSummary {
   directions: DirectionSummary[];
   /** Taxa em janela (#5995 item 5). Null só quando não há edições no corpus. */
   windowed: WindowedRate | null;
+  /** #8233 — cruzada POOL↔destaque, medida à parte de `directions` (que só
+   * cobre movimento DENTRO do pool). Ver docstring de `DestaqueMove`. */
+  destaque: DestaqueSummary;
+}
+
+export interface DestaqueSummary {
+  promotions: number;
+  demotions: number;
+  total: number;
+  editionsWithDestaqueMove: number;
+  promoteExamples: DestaqueMove[];
+  demoteExamples: DestaqueMove[];
 }
 
 export interface WindowedRate {
@@ -625,12 +742,26 @@ export function summarize(
 
   directions.sort((a, b) => b.count - a.count);
 
+  const allDestaqueMoves = editionMoves.flatMap((e) => e.destaqueMoves ?? []);
+  const editionsWithDestaqueMove = editionMoves.filter((e) => (e.destaqueMoves ?? []).length > 0).length;
+  const promoteMoves = allDestaqueMoves.filter((m) => m.direction === "promote");
+  const demoteMoves = allDestaqueMoves.filter((m) => m.direction === "demote");
+  const destaque: DestaqueSummary = {
+    promotions: promoteMoves.length,
+    demotions: demoteMoves.length,
+    total: allDestaqueMoves.length,
+    editionsWithDestaqueMove,
+    promoteExamples: promoteMoves.slice(0, examplesPerDirection),
+    demoteExamples: demoteMoves.slice(0, examplesPerDirection),
+  };
+
   return {
     editionsScanned: editionMoves.length,
     editionsWithMoves,
     totalMoves: allMoves.length,
     directions,
     windowed: editionMoves.length > 0 ? computeWindowedRate(editionMoves, window) : null,
+    destaque,
   };
 }
 
@@ -669,6 +800,29 @@ function renderReport(summary: AnalysisSummary): string {
     for (const ex of d.examples) {
       lines.push(`  - ${ex.title || "(sem título)"} — ${ex.url}`);
     }
+    lines.push("");
+  }
+
+  // #8233 — cruzada POOL↔destaque, fora da matriz acima de propósito (ver
+  // docstring de DestaqueMove).
+  const ds = summary.destaque;
+  lines.push("DESTAQUE ↔ SEÇÃO (#8233 — fora da matriz de bucket acima, ver docstring de DestaqueMove):");
+  lines.push(
+    `  edições com ≥1 promoção/rebaixamento: ${ds.editionsWithDestaqueMove} de ${summary.editionsScanned}` +
+      (summary.editionsScanned > 0 ? ` (${Math.round((ds.editionsWithDestaqueMove / summary.editionsScanned) * 100)}%)` : ""),
+  );
+  lines.push(`  pool → destaque (promote):    ${String(ds.promotions).padStart(4)}`);
+  lines.push(`  destaque → pool (demote):     ${String(ds.demotions).padStart(4)}`);
+  lines.push(`  ${"TOTAL".padEnd(27)} ${String(ds.total).padStart(4)}`);
+  lines.push("");
+  if (ds.promoteExamples.length > 0) {
+    lines.push("Exemplos pool → destaque:");
+    for (const ex of ds.promoteExamples) lines.push(`  - ${ex.title || "(sem título)"} — ${ex.url}`);
+    lines.push("");
+  }
+  if (ds.demoteExamples.length > 0) {
+    lines.push("Exemplos destaque → pool:");
+    for (const ex of ds.demoteExamples) lines.push(`  - ${ex.title || "(sem título)"} — ${ex.url}`);
     lines.push("");
   }
 

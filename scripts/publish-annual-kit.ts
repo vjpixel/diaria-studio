@@ -45,7 +45,7 @@ import { annualPaths, themeIndexFromImageFilename } from "./lib/anual/annual-pat
 import { parseAnnualDraft } from "./lib/anual/annual-parse.ts";
 import { renderAnnualEmail } from "./lib/anual/annual-render.ts";
 import { relinkAnnualEditionHtml } from "./lib/anual/annual-relink.ts";
-import { loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
+import { filterPublicEditionsWithWarning, loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
 import { lintAnnualDraft } from "./lint-annual-draft.ts";
 import { tipoFromSlug, type AnnualTipo } from "./lib/anual/annual-window.ts";
 
@@ -200,7 +200,20 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
       const raw = JSON.parse(readFileSync(paths.rawDestaques, "utf8")) as {
         destaques?: { url?: string; edition?: string }[];
       };
-      const posts = loadUnifiedEditionCache();
+      // Superfície PÚBLICA (#8233): filtra por `isPublicEdition`
+      // (`filterPublicEditionsWithWarning` — mesmo predicado + aviso
+      // agregado no stderr se algo for excluído, mesma proteção contra
+      // falso positivo de `generate-hub-sources.ts::collectHubSources`).
+      // `makeAnnualEditionUrlResolver` (`annual-relink.ts`) indexa AAMMDD →
+      // URL por ORDEM DE CHEGADA no array ("1ª ocorrência vence") — sem
+      // este filtro, um envio de teste do Stage 5 (`teste-*`) ou a variante
+      // Patronos (`*-patronos`) com a MESMA data editorial da edição
+      // canônica poderia vencer a corrida e virar o link publicado no
+      // documento ANUAL, que é público de verdade (vai pros leitores via
+      // Kit). `*-patronos` também nunca deveria ganhar aqui mesmo sem
+      // colisão de data: é a mesma matéria já representada pelo slug
+      // canônico, então o link correto é sempre o canônico.
+      const posts = filterPublicEditionsWithWarning(loadUnifiedEditionCache(), "publish-annual-kit");
       // #7613 (achado do self-review da #7587 item 2): sem sourceOverride,
       // buildRelink cai no default "clarice" — errado aqui, o canal da anual
       // é Kit (ver publishing.newsletter.backend), não Clarice.

@@ -61,6 +61,7 @@ import {
   type BeehiivCachePost,
 } from "./lib/weekly-linkedin-clicks.ts";
 import {
+  filterPublicEditionsWithWarning,
   loadBeehiivCache as loadUnifiedBeehiivCache,
   loadKitCache,
   mergeEditionsByDate,
@@ -126,11 +127,19 @@ function readEdition(date: string, editionsRootDir: string): EditionRead {
  * Usada só pra SELEÇÃO por clique (ranking) — o manifest de enriquecimento
  * via MCP (`identifyWeeklyPostsNeedingClicks`) continua Beehiiv-only de
  * propósito e usa `loadBeehiivCache` (RAW, abaixo) em vez desta função.
+ *
+ * **Superfície PÚBLICA (#8233): filtra por `isPublicEdition`.** O resultado
+ * ranqueia candidatos a POST PÚBLICO de LinkedIn — igual a
+ * `generate-hub-sources.ts`, nunca pode ranquear/publicar conteúdo de um
+ * envio de teste do Stage 5 (`teste-*`) ou da variante Patronos
+ * (`*-patronos`, duplicata da mesma matéria já presente sob o slug
+ * canônico — incluí-la inflaria artificialmente os cliques do candidato ou
+ * competiria como um 2º candidato pra história que já está representada).
  */
-function loadUnifiedPostsForRanking(beehiivPostsDir: string, kitBroadcastsDir: string) {
+export function loadUnifiedPostsForRanking(beehiivPostsDir: string, kitBroadcastsDir: string) {
   const beehiiv = existsSync(beehiivPostsDir) ? loadUnifiedBeehiivCache(beehiivPostsDir) : [];
   const kit = loadKitCache(kitBroadcastsDir);
-  return mergeEditionsByDate(beehiiv, kit);
+  return filterPublicEditionsWithWarning(mergeEditionsByDate(beehiiv, kit), "select-linkedin-weekly");
 }
 
 /**
