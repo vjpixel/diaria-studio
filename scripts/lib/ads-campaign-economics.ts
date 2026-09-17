@@ -420,7 +420,7 @@ function countPausedDaysWithin(pausas: readonly { desde: string; ate: string }[]
 export function buildTestStateTiles(
   metrics: ChannelDailyMetric[],
   signups: ChannelDailySignup[],
-  runState: { d0: string; fim_janela: string; revisao?: { pausas: readonly { desde: string; ate: string }[] } } | null,
+  runState: { d0: string; fim_janela: string; revisao?: { pausas?: readonly { desde: string; ate: string }[] } } | null,
   todayIso: string,
 ): TestStateTiles {
   const gastoAcumuladoTotalBrl = round2(metrics.reduce((sum, m) => sum + m.gastoBrl, 0));
@@ -456,8 +456,19 @@ export function buildTestStateTiles(
   const diasDecorridos = Math.round((toUtcMs(todayIso) - toUtcMs(runState.d0)) / dayMs);
   const diasRestantes = Math.round((toUtcMs(runState.fim_janela) - toUtcMs(todayIso)) / dayMs);
   const emAndamento = todayIso >= runState.d0 && todayIso <= runState.fim_janela;
+  // `revisao.pausas` (plural, só por DATA) é o formato ANTIGO — a pausa
+  // real do teste 2608 (09/09->17/09) foi gravada em `revisao.pausa`
+  // (singular, com hora — #8240/#8241/#8262/#8242), que este tile ainda
+  // não lê (`pausedDatesInRange` de `ads-test-pause-window.ts` é quem
+  // sabe interpretar aquele campo; wire-up é follow-up separado, fora do
+  // escopo do #8242). `pausas` ausente aqui não é "sem revisão registrada"
+  // — é só "sem pausa no formato antigo": `diasVeiculacaoReal` cai para
+  // `diasDecorridos` (sem desconto), nunca `null` nem exceção (`assertValidRunState`
+  // deixou de exigir `pausas` em #8242 — antes disso `runState` nunca
+  // chegava aqui de verdade: `assertValidRunState` lançava contra o
+  // `run-state.json` real e o caller fail-soft devolvia sempre `null`).
   const diasVeiculacaoReal = runState.revisao
-    ? Math.max(0, diasDecorridos - countPausedDaysWithin(runState.revisao.pausas, runState.d0, todayIso))
+    ? Math.max(0, diasDecorridos - countPausedDaysWithin(runState.revisao.pausas ?? [], runState.d0, todayIso))
     : null;
 
   return {

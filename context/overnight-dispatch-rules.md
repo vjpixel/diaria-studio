@@ -953,6 +953,22 @@ e rede de segurança pós-dispatch.
 
 ## 29. PR grande exige `removal-declaration:` no corpo (#7115)
 
+**Passo MECÂNICO, antes de escrever o corpo do `gh pr create` (#8274):**
+rode `git diff --shortstat master...HEAD` (ou `origin/master...HEAD` se
+`master` local estiver desatualizado) e olhe o número de **adições**. Se
+> 500, a linha `removal-declaration:` (formato abaixo) entra no corpo JÁ
+NA CRIAÇÃO — nunca depois de o gate reprovar. Isto existe porque a regra
+condicional ("SE o diff for grande") não tem como "acordar sozinha" no
+momento em que o subagente escreve o corpo — ele não tem o tamanho do
+próprio diff em mãos a menos que peça. Medido na rodada 260917b: **3 de 11
+PRs** reprovaram só por pular este passo, todas adições legítimas >500
+linhas. Comando único, incondicional (custa uma chamada rápida mesmo
+quando o diff é pequeno):
+
+```
+git diff --shortstat master...HEAD
+```
+
 O workflow **"PR removal declaration (#7115)"** reprova qualquer PR que
 adicione mais de **500 linhas** sem uma linha `removal-declaration: ...` no
 corpo. A mensagem do gate é explícita sobre o que ele aceita:
