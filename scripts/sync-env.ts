@@ -130,7 +130,12 @@ interface ParsedEnvKeys {
 function parseEnvKeys(content: string): ParsedEnvKeys {
   const keys = new Set<string>();
   let malformedCount = 0;
-  for (const rawLine of content.split(/\r?\n/)) {
+  // Tira um BOM UTF-8 de abertura (alguns editores Windows salvam .env com
+  // ﻿ na frente) — sem isso a 1ª chave real do arquivo ganharia
+  // ﻿ colado no nome, falharia o regex, e seria contada como
+  // "malformada" em vez de reconhecida (review PR #8280, finding 2).
+  const withoutBom = content.startsWith("﻿") ? content.slice(1) : content;
+  for (const rawLine of withoutBom.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
     const eqIndex = line.indexOf("=");

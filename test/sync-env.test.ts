@@ -248,6 +248,33 @@ describe("syncEnv", () => {
     }
   });
 
+  it("BOM UTF-8 no início do .env não faz a 1ª chave virar 'malformada' (review PR #8280, finding 2)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-test-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "﻿CLARICE_API_KEY=old\n");
+
+      const originalWarn = console.warn;
+      const warnings: string[] = [];
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args.map(String).join(" "));
+      };
+      try {
+        syncEnv(envPath, () => "CLARICE_API_KEY=new\n");
+      } finally {
+        console.warn = originalWarn;
+      }
+
+      assert.equal(readFileSync(envPath, "utf8"), "CLARICE_API_KEY=new\n");
+      // Sem chave "malformada" fantasma (﻿CLARICE_API_KEY) e sem
+      // LocalOnlyEnvKeysError — CLARICE_API_KEY reconhecida normalmente
+      // dos dois lados apesar do BOM.
+      assert.equal(warnings.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("linha de continuação de valor multilinha com '=' no meio (chave JSON malformada) nunca vaza pra LocalOnlyEnvKeysError (260917)", () => {
     // Reproduz o achado ao vivo: `GOOGLE_ADS_SERVICE_ACCOUNT_JSON` colado
     // sem escapar `\n` — a 2ª linha (fragmento de private_key em base64,
