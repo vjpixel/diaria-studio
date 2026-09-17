@@ -160,6 +160,10 @@ não seguir sozinho até o merge.
 Seguir as convenções de commit/PR do `CLAUDE.md`. PR abre com `Closes #NNNN` (um
 `closes` por issue do lote). Título com `(#NNNN)` / `(#A, #B, ...)`.
 
+**Diff grande (>500 adições) exige também `removal-declaration:` no corpo, já
+na criação do PR — ver item 29.** O gate lê o corpo do evento original, então
+adicionar a linha depois custa um push novo.
+
 **`Closes` é obrigatório POR ISSUE totalmente resolvida — nunca ambíguo (#5010).**
 Confirmado ao vivo na rodada 260811: 4 de ~13 PRs saíram sem nenhum `Closes` no
 body, deixando issues já resolvidas presas abertas até triagem manual na rodada
@@ -946,3 +950,45 @@ ver o `SKILL.md` de cada skill pro texto exato). Não substitui o item 21 nem
 o item 14 (preflight do subagente) — os três cobrem estados diferentes da
 mesma pergunta ("essa issue já está sendo/foi resolvida?"): merged, em voo,
 e rede de segurança pós-dispatch.
+
+## 29. PR grande exige `removal-declaration:` no corpo — e o gate lê o corpo do evento ORIGINAL (#7115)
+
+O workflow **"PR removal declaration (#7115)"** reprova qualquer PR que
+adicione mais de **500 linhas** sem uma linha `removal-declaration: ...` no
+corpo. A mensagem do gate é explícita sobre o que ele aceita:
+
+```
+[#7115] PR adiciona N linhas (limiar: 500) sem declarar o que remove. Adicione ao corpo do PR:
+  removal-declaration: <o que este PR remove> — ou por que legitimamente não remove nada
+("feature nova" é resposta válida; "não pensei nisso" não é.)
+```
+
+**Inclua a linha JÁ NA CRIAÇÃO do PR** sempre que o diff for grande — não
+depois. Duas razões:
+
+1. O gate lê `PR_BODY` **do evento que disparou o workflow**, não o corpo
+   atual. Editar o corpo e rodar `gh run rerun` **não resolve** — o rerun
+   reusa o corpo capturado no evento original. Destravar exige um evento
+   `pull_request synchronize` novo, ou seja, um push de verdade
+   (`git commit --allow-empty` + `git push` resolve, mas é um round-trip
+   inteiro desperdiçado).
+2. Editar o corpo depois exige `npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N
+   --body-file {arquivo}` — nunca `gh pr edit --body`, que falha em silêncio
+   com `exit 0` sem alterar nada (#6292). E o `--body-file` vai pro
+   scratchpad da sessão, nunca pra raiz do checkout (item 20).
+
+**Medido na rodada 260917: 3 de 7 PRs reprovaram neste gate** — o prompt de
+dispatch só passou a avisar a partir da 4ª unidade, e cada ocorrência custou
+uma edição de corpo + um commit vazio + uma volta inteira de CI. O limiar é
+fácil de cruzar sem perceber: um PR de instrumentação com 2 arquivos novos e
+teste saiu com 515 adições.
+
+**O que conta como declaração honesta:** o que o PR de fato remove ou
+substitui (código morto, caminho antigo, prosa que deixou de valer), ou por
+que legitimamente não remove nada — "feature nova, não substitui código
+existente" é resposta válida quando é verdade. Teste e snapshot regenerado
+contam como saldo positivo legítimo; vale dizer isso explicitamente.
+
+**Onde plugar:** no prompt de dispatch de toda unidade cujo escopo sugira
+diff grande (módulo novo + suíte de teste nova, migração, reescrita de
+playbook). Na dúvida, incluir — a linha não atrapalha num PR pequeno.
