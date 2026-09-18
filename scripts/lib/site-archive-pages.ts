@@ -28,6 +28,8 @@ import type { UnifiedCachedPost } from "./shared/edition-cache-reader.ts";
 import { editionCtaBlock } from "./edition-page-cta.ts";
 import { stripArchiveHero } from "./strip-duplicate-hero.ts";
 import { GEO_AUTHOR, type GeoAuthor } from "./shared/geo-faq.ts";
+import { renderSeoMeta } from "./shared/seo-meta.ts";
+import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
 
 export interface ArchivePost {
   slug: string;
@@ -49,6 +51,19 @@ export interface ArchivePost {
    */
   displayed_date?: number | null;
   publish_date?: number | null;
+  /**
+   * Imagem de capa 2:1 do post — mesmo campo já lido por
+   * `scripts/generate-arquivo-titles.ts` (`RawCachedPost.thumbnail_url`,
+   * #5131) pra alimentar `og:image`/`twitter:image` da raiz do acervo e dos
+   * hubs. Reusado aqui pra og:image (#8352) — dimensão assumida fixa
+   * (`COVER_IMAGE_WIDTH`/`COVER_IMAGE_HEIGHT`, 1600×800), mesma premissa que
+   * os outros dois consumidores já fazem, porque a Beehiiv não expõe
+   * dimensão de imagem na API. `undefined`/`null` (posts sem capa, ou o
+   * lado Kit — `kitUnifiedPostToArchivePost` não tem equivalente) omite
+   * `og:image`/`twitter:image` da página, igual a qualquer outro caller de
+   * `renderSeoMeta` sem `image`.
+   */
+  thumbnail_url?: string | null;
   content?: {
     free?: {
       web?: string | null;
@@ -273,6 +288,33 @@ export function rewriteLegacyImageHost(html: string): string {
 }
 
 /**
+ * #8351: 2 boxes de rodapé (livros/cursos) do HTML capturado da Beehiiv
+ * apontam pra paths que só existiam no host legado — `diaria.beehiiv.com`
+ * só redireciona `/p/{slug}`, qualquer outro path é 404 genuíno (medido ao
+ * vivo com UA de Googlebot). 258 ocorrências em 98 páginas (98 de 270 — os
+ * outros 172 posts não citam os boxes, ou já saíram de uma versão do
+ * template que não os incluía).
+ *
+ * Reescreve pro host de MARCA já no ar (`livros.diar.ia.br`/
+ * `cursos.diar.ia.br` — a mesma substituição cega de host que
+ * `rewriteLegacyImageHost` já faz pra imagens, mesmo ponto de injeção),
+ * preservando o resto da URL (query string, UTM) intacto — o bug é o host
+ * responder 404, não o UTM estar “errado”; trocar UTM é escopo separado, não
+ * pedido pela issue. `/authors/angelo-pixel` (5 ocorrências, citado na
+ * issue como "não verificado") FICA DE FORA: confirmado ao vivo (18/09/2026,
+ * UA de Googlebot) que esse path responde 200 no host legado — não é 404,
+ * fora do escopo desta correção.
+ */
+const LEGACY_BOOKS_LINK_RE = /https:\/\/diaria\.beehiiv\.com\/livros-sobre-ia/g;
+const LEGACY_COURSES_LINK_RE = /https:\/\/diaria\.beehiiv\.com\/cursos-gratuitos-de-ia/g;
+
+export function rewriteLegacyResourceLinks(html: string): string {
+  return html
+    .replace(LEGACY_BOOKS_LINK_RE, "https://livros.diar.ia.br")
+    .replace(LEGACY_COURSES_LINK_RE, "https://cursos.diar.ia.br");
+}
+
+/**
  * Tier 1 do #7116: remove blocos `<style>` BYTE-IDÊNTICOS repetidos dentro
  * da MESMA página, mantendo só a 1ª ocorrência de cada um — a Beehiiv
  * carimba o mesmo CSS (global do tema + por bloco de conteúdo) várias vezes
@@ -302,6 +344,56 @@ export function dedupeStyleBlocksInPage(html: string): string {
     seen.add(block);
     return block;
   });
+}
+
+/**
+ * #8354: hierarquia de headings — exatamente 1 `<h1>` por página (o título
+ * da edição), destaques/radar/use-melhor como `<h2>`.
+ *
+ * Medido ao vivo (18/09/2026, 270 páginas): 182/270 (67%) sem exatamente 1
+ * `<h1>` — 134 têm 4 (o caso dominante), porque o HTML capturado da Beehiiv
+ * marca CADA título de bloco de conteúdo como `<h1>` (destaque, radar, use
+ * melhor — templates diferentes, todos com o mesmo bug), não só o título da
+ * edição. 11 páginas têm 0 (formato mais recente da newsletter,
+ * `newsletter-render-html.ts`, que não tem nenhum `<h1>` — só h2/h3 no
+ * corpo, sem nenhum título visível equivalente ao `<title>` da página).
+ *
+ * O título da EDIÇÃO é sempre o 1º `<h1>` do documento quando existe pelo
+ * menos um (confirmado nos templates reais: 36px Poppins/Karla, sempre
+ * primeiro, dentro do bloco `id='web-header'`) — nunca precisa ser
+ * localizado por seletor/estilo, só por ORDEM. Qualquer `<h1>` depois do
+ * primeiro é subseção do corpo (destaque/radar/use melhor) e vira `<h2>`,
+ * preservando os atributos originais (`style=...`) intactos — só o nome da
+ * tag muda. Assume que `<h1>` não aninha `<h1>` (nunca visto no corpus
+ * real); se o documento não tiver `</h1>` correspondente ao(s) `<h1>`
+ * encontrado(s) (HTML malformado — não visto no corpus real), devolve o
+ * `html` sem tocar em nada, em vez de arriscar um split no lugar errado.
+ *
+ * Página SEM nenhum `<h1>` ganha um, visualmente oculto (padrão acessível
+ * "sr-only" — presente pra leitor de tela/crawler, sem mudar o layout
+ * capturado da Beehiiv, que essas 11 páginas nunca tiveram desde a origem),
+ * logo após `<body...>`, com o título da própria edição — o MESMO texto que
+ * já vai em `<title>` (`derivePageTitle`), então título visível (aba do
+ * browser) e `<h1>` (SEO/acessibilidade) nunca divergem.
+ */
+export function normalizeHeadingHierarchy(html: string, pageTitle: string): string {
+  const hasH1 = /<h1[\s>]/i.test(html);
+  if (!hasH1) {
+    const hiddenH1 =
+      `<h1 style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;` +
+      `overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;">${escHtml(pageTitle)}</h1>`;
+    return html.replace(/<body[^>]*>/i, (full) => `${full}${hiddenH1}`);
+  }
+
+  const firstClose = html.match(/<\/h1\s*>/i);
+  if (!firstClose || firstClose.index === undefined) return html;
+  const splitAt = firstClose.index + firstClose[0].length;
+  const head = html.slice(0, splitAt);
+  const tail = html
+    .slice(splitAt)
+    .replace(/<h1(\b[^>]*)>/gi, "<h2$1>")
+    .replace(/<\/h1\s*>/gi, "</h2>");
+  return head + tail;
 }
 
 /**
@@ -352,6 +444,7 @@ export function kitUnifiedPostToArchivePost(u: UnifiedCachedPost): ArchivePost |
     web_url: u.web_url ?? null,
     displayed_date: null,
     publish_date: u.publish_date ?? null,
+    thumbnail_url: u.thumbnail_url ?? null,
     content: u.content ?? null,
   };
 }
@@ -374,14 +467,33 @@ export function buildArchivePageHtml(post: ArchivePost): string {
     throw new Error(`post "${post.slug}" não tem content.free.web — não é gerável`);
   }
 
-  const title = escHtml(derivePageTitle(post));
-  const description = escHtml(deriveMetaDescription(post));
+  const rawTitle = derivePageTitle(post);
+  const rawDescription = deriveMetaDescription(post);
+  const title = escHtml(rawTitle);
   const dek = deriveDek(post);
   const canonical = archiveUrlForSlug(post.slug);
   // #8336: dateline estruturado (datePublished/dateModified/author/publisher)
   // — undefined quando a data não resolve, omitido do <head> nesse caso (ver
   // docstring de buildArchiveNewsArticleJsonLd).
   const newsArticleJsonLd = buildArchiveNewsArticleJsonLd(post);
+  // #8352: og:image/twitter:image a partir da MESMA capa que
+  // generate-arquivo-titles.ts já usa pra raiz do acervo/hubs (#5131) —
+  // undefined pra post sem thumbnail_url (nunca escreve og:image inválido).
+  const coverImage = post.thumbnail_url
+    ? { url: post.thumbnail_url, width: COVER_IMAGE_WIDTH, height: COVER_IMAGE_HEIGHT }
+    : undefined;
+  // Reusa o MESMO resolvedor de data do JSON-LD acima (nunca duas leituras
+  // divergentes da data editorial da mesma página) — article:published_time
+  // só é emitido quando a data resolve, mesmo fail-soft do JSON-LD.
+  const articlePublishedTime = publishDateToIso(post);
+  const seoMetaBlock = renderSeoMeta({
+    title: rawTitle,
+    description: rawDescription,
+    url: canonical,
+    image: coverImage,
+    type: "article",
+    articlePublishedTime,
+  });
 
   let html = rawHtml;
 
@@ -408,6 +520,19 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   // a partir do mesmo namespace.
   html = rewriteLegacyImageHost(html);
 
+  // #8351 — 98 páginas citam os boxes de rodapé de livros/cursos apontando
+  // pro host legado (`diaria.beehiiv.com/livros-sobre-ia`,
+  // `.../cursos-gratuitos-de-ia`), que só redireciona `/p/{slug}` — qualquer
+  // outro path é 404 genuíno. Mesma lição do #7412/#7911 acima: corrigir só
+  // os arquivos de saída não sobrevive à próxima regeneração em massa.
+  html = rewriteLegacyResourceLinks(html);
+
+  // #8354 — hierarquia de <h1> quebrada (182/270 páginas sem exatamente 1).
+  // Independente do guard de <html> logo abaixo (normalizeHeadingHierarchy só
+  // depende de <body>/<h1>, nunca de <html>/<head>) — feito aqui, ao lado das
+  // demais correções estruturais do HTML capturado, por coesão de leitura.
+  html = normalizeHeadingHierarchy(html, rawTitle);
+
   // Precisa haver <html ...> pra injetar lang + (no fallback abaixo) head —
   // sem essa tag, um .replace() vira no-op silencioso e a página sai sem
   // lang/title/description/canonical sem nenhum erro. Falha alto e nomeia o
@@ -431,14 +556,19 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   const headInject =
     `<meta charset="utf-8">` +
     `<title>${title}</title>` +
-    `<meta name="description" content="${description}">` +
+    // #8352: `<meta name="description">`/`<link rel="canonical">` + favicon +
+    // Open Graph + Twitter Card, via o MESMO helper que já serve
+    // cursos/livros/hubs/poll (`renderSeoMeta`) — não mais construídos à mão
+    // aqui. `description`/`canonical` continuam exatamente onde estavam
+    // (1º/2º elemento do bloco, ver `renderSeoMeta`), então nenhum teste que
+    // dependia da posição relativa desses dois quebra.
+    seoMetaBlock +
     // #7921: "linha fina" pra consumo da HOME (site-home-page.ts,
     // extractPageDek) — SÓ D2 | D3, distinto de <meta name="description">
     // acima (que carrega D1 + D2|D3 de propósito, #6281). Omitido quando a
     // edição não tem D2/D3 (deriveDek devolve undefined) — o HOME trata a
     // ausência sem quebrar (ver extractPageDek/buildHomeFeed).
     (dek ? `<meta name="dek" content="${escHtml(dek)}">` : "") +
-    `<link rel="canonical" href="${escHtml(canonical)}">` +
     (newsArticleJsonLd ?? "");
 
   if (/<head[^>]*>/i.test(html)) {

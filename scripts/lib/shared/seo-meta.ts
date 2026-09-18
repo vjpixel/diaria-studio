@@ -139,6 +139,19 @@ export interface SeoMetaOptions {
      * assinaturas. Default: "{siteName} — Feed RSS". */
     title?: string;
   };
+  /**
+   * `og:type` (#8352) — `"website"` (default, preserva o comportamento de
+   * todo caller anterior a esta opção) ou `"article"` pra página de
+   * conteúdo (edição da newsletter, post) que quer `article:published_time`.
+   */
+  type?: "website" | "article";
+  /**
+   * `article:published_time` (#8352) — data ISO (YYYY-MM-DD ou datetime
+   * completo) da publicação. Só emitido quando `type === "article"` E este
+   * valor está presente; omitido por padrão (nenhum caller antes do #8352
+   * precisava, e a tag não faz sentido em `og:type=website`).
+   */
+  articlePublishedTime?: string;
 }
 
 function escAttr(s: string): string {
@@ -169,7 +182,17 @@ export const FAVICON_DATA_URI =
  * e a ausência de og:image/twitter:image quando `image` não é passado.
  */
 export function renderSeoMeta(opts: SeoMetaOptions): string {
-  const { title, description, url, siteName = "diar.ia.br", locale = "pt_BR", image, feed } = opts;
+  const {
+    title,
+    description,
+    url,
+    siteName = "diar.ia.br",
+    locale = "pt_BR",
+    image,
+    feed,
+    type = "website",
+    articlePublishedTime,
+  } = opts;
   const t = escAttr(title);
   const d = escAttr(description);
   const u = escAttr(url);
@@ -182,15 +205,21 @@ export function renderSeoMeta(opts: SeoMetaOptions): string {
   const feedTag = feed
     ? `\n<link rel="alternate" type="application/rss+xml" title="${escAttr(feed.title ?? `${siteName} — Feed RSS`)}" href="${escAttr(feed.url)}">`
     : "";
+  // #8352: article:published_time só faz sentido junto de og:type=article, e
+  // só quando a data resolveu (nunca escrever a tag com valor ausente).
+  const articleTag =
+    type === "article" && articlePublishedTime
+      ? `\n<meta property="article:published_time" content="${escAttr(articlePublishedTime)}">`
+      : "";
   return `<meta name="description" content="${d}">
 <link rel="canonical" href="${u}">
 <link rel="icon" href="${FAVICON_DATA_URI}">${feedTag}
-<meta property="og:type" content="website">
+<meta property="og:type" content="${escAttr(type)}">
 <meta property="og:site_name" content="${escAttr(siteName)}">
 <meta property="og:locale" content="${escAttr(locale)}">
 <meta property="og:title" content="${t}">
 <meta property="og:description" content="${d}">
-<meta property="og:url" content="${u}">${imageTags}
+<meta property="og:url" content="${u}">${imageTags}${articleTag}
 <meta name="twitter:card" content="${image ? "summary_large_image" : "summary"}">
 <meta name="twitter:title" content="${t}">
 <meta name="twitter:description" content="${d}">`;
