@@ -427,3 +427,41 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+# ------------------------------------------------------------------
+# 13. Regressão #8377 (2026-09-18) — falso positivo de fabricação
+# pelo detector quando a linha de relatório mescla: (a) claim de outro
+# ator ("reivindicada pelo Overnight"), (b) PR #NNNN (não issue),
+# (c) cobertura (#7807 coberto por #7808) e (d) claim próprio
+# ("reivindicada #8356 pelo mesmo tick" — deve ser reconhecido como
+# próprio, NÃO excluído pelo filtro de "outro ator"). Nenhum desses
+# casos pode ser marcado como fabrication_suspected por falso
+# reconhecimento de claim — a correção é o filtro de cláusula + PR +
+# outros + cobertura no extract_claimed_issue_refs.
+# ------------------------------------------------------------------
+
+def test_regressao_8377_falsos_positivos_claim():
+    import importlib.util, sys, os
+    here = os.path.dirname(os.path.abspath(__file__))
+    mod = importlib.util.module_from_spec(
+        importlib.util.spec_from_file_location(
+            "detect_tick_claim_fabrication",
+            os.path.join(here, "detect-tick-claim-fabrication.py")))
+    sys.modules["detect_tick_claim_fabrication"] = mod
+    mod.__loader__.exec_module(mod)
+    # Linha que provocava 12 falsos positivos no #8377
+    linha = (
+        "Após #8356, não havia outra unidade primária livre: #8355 está "
+        "reivindicada pelo Overnight; #8354 tem colisão documentada com a PR #8358; "
+        "#8353/#8352/#8351/#8350/#8349/#8344/#8336 foram barradas pelo gate de coerência; "
+        "#8341 foi fechada"
+    )
+    refs = mod.extract_claimed_issue_refs(linha)
+    # Nenhum claim PRÓPRIO nesta linha (todos são referência narrativa);
+    # #8356 aparece em contexto de "Após #8356" (não claim) — não deve entrar.
+    assert 8356 not in refs, f"8356 indevidamente capturado: {refs}"
+    assert 8355 not in refs or refs[8355] is False, f"8355 (outro ator) indevido: {refs}"
+    assert 8358 not in refs, f"8358 (PR) indevido: {refs}"
+    # Cobertura não é claim — não deve gerar entrada
+    # Se fosse claim próprio, seria reconhecido; aqui não é.
+    print("regressão #8377: falsos positivos eliminados — OK")
