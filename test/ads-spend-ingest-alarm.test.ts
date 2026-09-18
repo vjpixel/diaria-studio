@@ -111,14 +111,14 @@ const MICROSOFT_ZERO_SPEND_RUN =
  *  `BENIGN_FALLBACK_REASON_MARKERS` — token ausente é DEFEITO real (o
  *  próprio pré-requisito não satisfeito no `300`), não estado esperado. */
 const META_TOKEN_MISSING_RUN =
-  "\n===== 2026-08-17T09:54:00.000Z - ingestao diaria de gasto do Meta Ads (Graph API) para data/aquisicao/spend.csv =====\n" +
+  "\n===== 2026-08-17T09:54:00.000Z - ingestao diaria de gasto do Meta Ads (Graph API insights) para data/aquisicao/spend.csv =====\n" +
   "----- ingest -----\n" +
   "[meta-ads-ingest-spend] fallback pro CSV manual — variável(is) de ambiente ausente(s): META_ADS_ACCESS_TOKEN\n" +
   "  spend.csv não foi alterado. Editar manualmente se necessário.\n" +
   "===== fim (ingest=0) =====\n";
 
 const META_OK_RUN =
-  "\n===== 2026-08-17T09:54:00.000Z - ingestao diaria de gasto do Meta Ads (Graph API) para data/aquisicao/spend.csv =====\n" +
+  "\n===== 2026-08-17T09:54:00.000Z - ingestao diaria de gasto do Meta Ads (Graph API insights) para data/aquisicao/spend.csv =====\n" +
   "----- ingest -----\n" +
   "[meta-ads-ingest-spend] ✔ data/aquisicao/spend.csv atualizado (2 linha(s) diárias da Graph API insights agregadas).\n" +
   "===== fim (ingest=0) =====\n";
