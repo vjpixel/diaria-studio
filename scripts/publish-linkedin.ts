@@ -96,8 +96,11 @@ import {
   type MakeWebhookResponse,
   type WorkerQueueResponse,
   parseMakeWebhookPayload,
-  parseWorkerQueueResponse,
 } from "./lib/schemas/linkedin-payload.ts";
+// #8311 — cópia local de postToWorkerQueue colapsada no cliente compartilhado
+// (era duplicação de scripts/lib/worker-queue-client.ts sem o guard de 4xx
+// do #8303; publish-instagram.ts já delegava assim desde #3944 Parte B).
+import { postToWorkerQueue as sharedPostToWorkerQueue } from "./lib/worker-queue-client.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -407,6 +410,26 @@ export async function postToMakeWebhook(
  * Enfileira o post no Cloudflare Worker `diaria-linkedin-cron` (KV-backed).
  * Worker fira o webhook Make automaticamente quando `scheduled_at` chega.
  *
+ * O cliente HTTP em si mora em `scripts/lib/worker-queue-client.ts` (#8311 —
+ * colapsa a cópia local que existia aqui desde antes do #3944 Parte B, e que
+ * não herdava o guard de #8303: `WorkerQueueError{status,code}` + parar de
+ * retentar em 4xx, já que reenviar o MESMO payload — inclusive o MESMO
+ * `X-Diaria-Token`, capturado fora do loop, sem refresh entre tentativas —
+ * não muda um erro de validação). Reexportado aqui por compat com callers
+ * (`dispatchEntry` abaixo) e testes existentes; mesmo padrão de wrapper fino
+ * que `publish-instagram.ts` já usa desde #3944 Parte B.
+ *
+ * `channel: "linkedin"` é explícito no payload repassado ao cliente
+ * compartilhado — o Worker já assumia esse default quando `channel` vinha
+ * ausente (`dispatch.ts`: `entry.channel ?? "linkedin"`), então isto nomeia
+ * no payload o que já era implícito, sem mudar o que o Worker recebe.
+ *
+ * MUDANÇA DE COMPORTAMENTO (ver corpo da PR #8311 para detalhes): em erro
+ * 4xx do Worker, esta função agora faz 1 tentativa em vez de 2 — o `wmsg`
+ * de erro segue no mesmo formato ("Worker queue HTTP NNN: ..."), então
+ * `isClientError`/`dispatchEntry` continuam classificando e propagando a
+ * falha exatamente como antes; só o número de POSTs reais ao Worker muda.
+ *
  * Retorna a resposta do Worker (com `key` da fila) ou lança em falha.
  */
 export async function postToWorkerQueue(
@@ -415,42 +438,15 @@ export async function postToWorkerQueue(
   payload: MakeWebhookPayload,
   maxAttempts = 2,
 ): Promise<WorkerQueueResponse> {
-  // Worker espera /queue endpoint
-  const queueUrl = workerUrl.replace(/\/+$/, "") + "/queue";
-  let lastError: Error | null = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const res = await fetch(queueUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Diaria-Token": token,
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
-      });
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`Worker queue HTTP ${res.status}: ${body.slice(0, 300)}`);
-      }
-      const text = await res.text();
-      try {
-        // #1032: schema-validated parse (queued: true required, etc)
-        return parseWorkerQueueResponse(JSON.parse(text));
-      } catch (parseErr) {
-        throw new Error(
-          `Worker response inválido (schema ou JSON): ${text.slice(0, 200)} — ${(parseErr as Error).message}`,
-        );
-      }
-    } catch (e) {
-      lastError = e instanceof Error ? e : new Error(String(e));
-      console.error(`[publish-linkedin] worker attempt ${attempt} failed: ${lastError.message}`);
-      if (attempt < maxAttempts) {
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-  }
-  throw lastError ?? new Error("worker_queue_failed");
+  // `scheduled_at` nunca é null neste call site (dispatchEntry só chama esta
+  // função quando `route === "worker_queue"`, que exige scheduledAt futuro
+  // não-null) — o `as string` é só pra tipo, não coage o valor em runtime.
+  const queuePayload = {
+    ...payload,
+    scheduled_at: payload.scheduled_at as string,
+    channel: "linkedin" as const,
+  };
+  return sharedPostToWorkerQueue(workerUrl, token, queuePayload, maxAttempts, "publish-linkedin");
 }
 
 // ── Dispatch helper (#595) ────────────────────────────────────────────
