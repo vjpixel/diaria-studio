@@ -172,7 +172,12 @@ npx tsx scripts/embed-images-base64.ts \
   --out data/annual/$SLUG/_internal/04-preview-embedded.html
 ```
 
-Servir com `scripts/serve-preview.ts` no padrão stop-old → serve-new da mensal (`--port 0`, `--persist-to _internal/preview-server-url.json`, `run_in_background: true`), e persistir o `tabId` para o teardown.
+Servir com `scripts/serve-preview.ts` no padrão stop-old → serve-new da mensal (`run_in_background: true`), e persistir o `tabId` para o teardown:
+```bash
+npx tsx scripts/serve-preview.ts \
+  --file data/annual/$SLUG/_internal/04-preview-embedded.html --port 0 --watch --edition $SLUG \
+  --persist-to data/annual/$SLUG/_internal/preview-server-url.json --field preview_url &
+```
 
 ### 4b. Lints
 

@@ -374,7 +374,7 @@ OLD_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/m
 [ -n "$OLD_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$OLD_PID"
 
 npx tsx scripts/serve-preview.ts \
-  --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 \
+  --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 --watch --edition $CYCLE \
   --persist-to data/monthly/$CYCLE/_internal/preview-server-url.json --field preview_url &
 ```
 Rodar com `run_in_background: true` no Bash tool. Ler `preview_url` (e
@@ -475,7 +475,7 @@ OLD_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/m
 [ -n "$OLD_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$OLD_PID"
 
 npx tsx scripts/serve-preview.ts \
-  --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 \
+  --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 --watch --edition $CYCLE \
   --persist-to data/monthly/$CYCLE/_internal/preview-server-url.json --field preview_url &
 ```
 Rodar com `run_in_background: true`. Ler `preview_url` novo de `preview-server-url.json` pra popular `{preview_url}` no resumo do gate (4e) — diferente do Artifact, a URL muda a cada re-render (porta efêmera nova), nunca fica igual entre 3c e 4b.
