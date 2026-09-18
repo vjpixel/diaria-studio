@@ -15,6 +15,13 @@ Só quando o editor **designa**, na conversa da própria sessão, UMA sessão in
 5. Prioridade de fila é do editor; sem indicação, ordem de chegada.
 6. PR sem dono vivo (ex.: do cron do contínuo com o merger parado) pode ser **adotada** pela coordenadora ou por quem ela indicar: aplica o review pendente, resolve os threads, e mergeia pelo mesmo caminho.
 
+## Razão adição:remoção (#7113, defeito 1 da #7292)
+
+A coordenadora é quem emite `round_diff_stats` desta rodada — é ela quem enxerga o começo e o fim, as demais sessões só têm a própria PR. Mesma proeminência que `/diaria-overnight`/`/diaria-develop` já dão a isso (ver as respectivas `SKILL.md`, seção "Razão adição:remoção"): antes desta seção existir, uma rodada coordenada de sessão interativa não emitia o evento — a série de 7d só via metade do trabalho real do repo (achado ao vivo: comentário 2 da #7292, rodada de 03/09/2026, 14 PRs/+5.042/−140, medida à mão porque não apareceu em nenhum `run-log.jsonl`).
+
+1. Ao aceitar a designação (início do papel de coordenadora), gravar `git rev-parse HEAD` como o commit-base da rodada.
+2. Ao encerrar o papel (revogação, ou fim da sessão) — ou periodicamente após um lote de merges, se a rodada for longa —, rodar `npx tsx scripts/measure-round-diff-stats.ts --base {sha do passo 1} --session-kind interactive`, depois `npx tsx scripts/round-diff-stats-report.ts --check-alarm` e colar a tabela no encerramento reportado ao editor. `--check-alarm` reconcilia sozinho a issue de alarme se a razão de 7d cruzar o limiar — nada a decidir além de colar o output.
+
 ## Revogação — com critério mecânico
 
 A designação termina quando o editor a revoga na sessão coordenadora, **ou** quando a sessão coordenadora encerra. "Encerrou" não é impressão, é verificável:

@@ -14,9 +14,11 @@ import {
   computeWindowedRoundDiffStats,
   evaluateRoundDiffAlarm,
   formatRoundDiffStatsReport,
+  isValidRoundSessionKind,
   parseRoundDiffStatsEvents,
   ROUND_DIFF_RATIO_ALARM_THRESHOLD,
   ROUND_DIFF_STATS_MESSAGE,
+  VALID_ROUND_SESSION_KINDS,
   type RoundDiffStatsRecord,
 } from "../scripts/lib/round-diff-stats.ts";
 
@@ -162,6 +164,35 @@ describe("evaluateRoundDiffAlarm", () => {
 
   it("usa ROUND_DIFF_RATIO_ALARM_THRESHOLD (10) por default", () => {
     assert.equal(ROUND_DIFF_RATIO_ALARM_THRESHOLD, 10);
+  });
+});
+
+describe("isValidRoundSessionKind / VALID_ROUND_SESSION_KINDS (#7292 — defeito 1: cobertura de sessão interativa coordenada)", () => {
+  it("aceita 'interactive' — sem isso, o CLI (measure-round-diff-stats.ts) rejeitava --session-kind interactive e a rodada coordenada nunca emitia round_diff_stats (achado ao vivo: comentário 2 da #7292, rodada de 03/09/2026 medida à mão)", () => {
+    assert.equal(isValidRoundSessionKind("interactive"), true);
+    assert.ok(VALID_ROUND_SESSION_KINDS.includes("interactive"));
+  });
+
+  it("continua aceitando os 3 kinds originais", () => {
+    assert.equal(isValidRoundSessionKind("overnight"), true);
+    assert.equal(isValidRoundSessionKind("develop"), true);
+    assert.equal(isValidRoundSessionKind("continuo"), true);
+  });
+
+  it("rejeita kind desconhecido", () => {
+    assert.equal(isValidRoundSessionKind("nao-existe"), false);
+  });
+
+  it("um record com sessionKind 'interactive' é parseado e agregado normalmente (a agregação é agnóstica a kind — a lacuna era só na validação do CLI)", () => {
+    const now = new Date("2026-09-10T00:00:00.000Z");
+    const rec = record({ sessionKind: "interactive", added: 5042, removed: 140, capturedAt: "2026-09-09T00:00:00.000Z" });
+    const parsed = parseRoundDiffStatsEvents([{ message: ROUND_DIFF_STATS_MESSAGE, details: rec }]);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].sessionKind, "interactive");
+    const w = computeWindowedRoundDiffStats(parsed, 7, now);
+    assert.equal(w.rounds, 1);
+    assert.equal(w.added, 5042);
+    assert.equal(w.removed, 140);
   });
 });
 
