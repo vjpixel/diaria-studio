@@ -181,6 +181,15 @@ describe("buildFlatCardTexts (#5330 — textos dos slides sem foto, por modo)", 
     const clicked = buildFlatCardTexts("clicked", ["260810"]);
     assert.deepEqual(highlights.cta, clicked.cta);
   });
+
+  it("#8055 — CTA manda pro endereço, nunca pro 'link da bio': o card é o MESMO nos 4 canais", () => {
+    // O JPEG do CTA é compartilhado por Instagram, Threads, LinkedIn e
+    // Facebook (`carouselImageUrls`), e em 3 deles não existe bio com link.
+    // A legenda continua podendo ser específica por canal — a ARTE, não.
+    const { cta } = buildFlatCardTexts("highlights", ["260810"]);
+    assert.match(cta.title, /Assine em diar\.ia\.br\./);
+    assert.doesNotMatch(cta.title, /link da bio/i);
+  });
 });
 
 describe("resolveDestaqueImageUrl (#4483 — paramétrico em n, D1/D2/D3)", () => {
