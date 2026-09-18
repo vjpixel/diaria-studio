@@ -20,16 +20,33 @@ sobre deixar o que existe apodrecer.
 **O dado que motivou** (auditoria de 18/09/2026, sobre
 `data/geo-citations/history.jsonl`, 493 registros de 07/08 a 13/09):
 
-- Painel `hubs`: **0 citações em 177 respostas válidas**, 3 provedores, 5
-  rodadas semanais. Painel `geral`, na mesma janela: 9/134 (6,7%).
-- Duas das cinco explicações concorrentes pré-registradas abaixo **caíram**:
-  a de descoberta (item 2 — os bots de recuperação batem no `arquivo` todo
-  dia, medido no KV via `ai-fetch-report.ts`) e a de indexação (item 5 — as
-  9 URLs do `arquivo`, incluindo os 7 hubs e o índice `/temas/`, estão
-  indexadas no GSC; 8/9 em 30/08, 9/9 desde 06/09).
+- Painel `hubs`: **0 citações em 177 respostas válidas** (267 registros, 90
+  erros), distribuídas em 6 datas de rodada — 11/08, 16/08, 23/08, 30/08,
+  06/09 e 13/09. As duas primeiras rodaram incompletas (11/08 sem
+  `anthropic`, 16/08 sem `google`); os 3 provedores só aparecem juntos a
+  partir de 23/08. Painel `geral`, na mesma janela: 9/134 (6,7%).
+- Duas das cinco explicações concorrentes pré-registradas abaixo **caíram —
+  mas só valem para a ponta recente da janela**, e essa ressalva é parte do
+  registro:
+  - Descoberta (item 2): os bots de recuperação batem no `arquivo`
+    diariamente — 11 a 17 fetches/dia entre 13 e 17/09, lidos **ao vivo do
+    KV** em 18/09 (`ai-fetch-report.ts --days 7 --dry-run`). O JSONL
+    commitado (`data/ai-fetch/history.jsonl`) está parado em 18/08 e não
+    serve pra conferir isso — é exatamente o achado E4 da auditoria (o
+    script não tem task agendada). O contador é por `(bot, dia)` no Worker
+    inteiro, sem path: prova que o `arquivo` é buscado, não que cada um dos
+    7 hubs foi.
+  - Indexação (item 5): as 9 URLs do `arquivo` — home, índice `/temas/` e
+    os 7 hubs — estão indexadas no GSC. Mas a série mostra 2/9 em 12 e
+    16/08, 8/9 em 30/08 e 9/9 só a partir de 06/09; **as 3 primeiras
+    rodadas do painel `hubs` aconteceram com a maioria dos hubs ainda fora
+    do índice**. Uma fração do 0/177 agregado vem de um período em que esta
+    explicação ainda era plenamente válida.
 - Restam de pé a de demanda em pt-BR (item 3) e a da própria tese no volume
   atual de acervo (item 4) — e é entre essas duas que a pausa escolhe parar
-  de gastar esforço editorial antes de saber qual é.
+  de gastar esforço editorial antes de saber qual é. A pausa é reversível
+  justamente porque a janela limpa (3 provedores × 9 URLs indexadas) tem só
+  as rodadas de 06/09 e 13/09.
 
 **O que esta decisão NÃO é:** não é veredito sobre a tese GEO, e não
 transforma o 0/177 em prova de nada — a seção "O que o checkpoint PODE e NÃO
