@@ -25,15 +25,22 @@ import {
   markAdsSpendIngestAlarmed,
   emptyAdsSpendIngestAlarmState,
   buildAdsSpendIngestAlarmEmail,
+  platformLabel,
   type PlatformLogInput,
 } from "../scripts/lib/ads-spend-ingest-alarm.ts";
-import { toAlarmFinding, DEFAULT_GOOGLE_LOG_PATH, DEFAULT_MICROSOFT_LOG_PATH } from "../scripts/ads-spend-ingest-alarm.ts";
+import {
+  toAlarmFinding,
+  DEFAULT_GOOGLE_LOG_PATH,
+  DEFAULT_MICROSOFT_LOG_PATH,
+  DEFAULT_META_LOG_PATH,
+} from "../scripts/ads-spend-ingest-alarm.ts";
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT_PATH = resolve(PROJECT_ROOT, "scripts", "ads-spend-ingest-alarm.ts");
 
 const GOOGLE_LOG_PATH = "data/aquisicao/.google-ads-ingest.log";
 const MICROSOFT_LOG_PATH = "data/aquisicao/.microsoft-ads-ingest.log";
+const META_LOG_PATH = "data/aquisicao/.meta-ads-ingest.log";
 
 const GOOGLE_OK_RUN =
   "\n===== 2026-08-17T09:50:00.000Z - ingestao diaria de gasto do Google Ads (GAQL) para data/aquisicao/spend.csv =====\n" +
@@ -95,6 +102,25 @@ const MICROSOFT_ZERO_SPEND_RUN =
   "\n===== 2026-08-17T09:52:00.000Z - ingestao diaria de gasto do Microsoft Ads (Reporting API) para data/aquisicao/spend.csv =====\n" +
   "----- ingest -----\n" +
   "[microsoft-ads-ingest-spend] fallback pro CSV manual — [identidade: Google] fetch não devolveu nenhuma linha com custo — nada pra atualizar\n" +
+  "===== fim (ingest=0) =====\n";
+
+/** Run real de `scripts/meta-ads-ingest-spend.ts` (headless, #8245) sem
+ *  `META_ADS_ACCESS_TOKEN` no ambiente — mesmo texto/formato de fallback
+ *  genérico do Google/Microsoft (`fallback()` em `meta-ads-ingest-spend.ts`).
+ *  Por decisão explícita do item 6 da issue #8245, este texto NÃO entra em
+ *  `BENIGN_FALLBACK_REASON_MARKERS` — token ausente é DEFEITO real (o
+ *  próprio pré-requisito não satisfeito no `300`), não estado esperado. */
+const META_TOKEN_MISSING_RUN =
+  "\n===== 2026-08-17T09:54:00.000Z - ingestao diaria de gasto do Meta Ads (Graph API insights) para data/aquisicao/spend.csv =====\n" +
+  "----- ingest -----\n" +
+  "[meta-ads-ingest-spend] fallback pro CSV manual — variável(is) de ambiente ausente(s): META_ADS_ACCESS_TOKEN\n" +
+  "  spend.csv não foi alterado. Editar manualmente se necessário.\n" +
+  "===== fim (ingest=0) =====\n";
+
+const META_OK_RUN =
+  "\n===== 2026-08-17T09:54:00.000Z - ingestao diaria de gasto do Meta Ads (Graph API insights) para data/aquisicao/spend.csv =====\n" +
+  "----- ingest -----\n" +
+  "[meta-ads-ingest-spend] ✔ data/aquisicao/spend.csv atualizado (2 linha(s) diárias da Graph API insights agregadas).\n" +
   "===== fim (ingest=0) =====\n";
 
 function input(logPath: string, exists: boolean, content: string | null): PlatformLogInput {
@@ -420,6 +446,64 @@ describe("toAlarmFinding", () => {
   });
 });
 
+describe("#8245 item 6 — 3ª plataforma (meta), OPCIONAL em evaluateAdsSpendIngestAlarm", () => {
+  const NOW = new Date("2026-08-17T20:00:00.000Z");
+
+  it("sem passar `meta`: composição idêntica à de antes (2 plataformas), meta nunca aparece em `platforms`", () => {
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN), NOW);
+    assert.equal(ev.verdict, "ok");
+    assert.equal(ev.platforms.length, 2);
+    assert.ok(!ev.platforms.some((p) => p.platform === "meta"));
+  });
+
+  it("google+microsoft ok, meta com log ausente (task ainda não armada): combinado cannot-verify, não alarma", () => {
+    const ev = evaluateAdsSpendIngestAlarm(
+      input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN),
+      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
+      NOW,
+      input(META_LOG_PATH, false, null),
+    );
+    assert.equal(ev.verdict, "cannot-verify");
+    assert.equal(isAlarmingVerdict(ev.verdict), false);
+    const meta = ev.platforms.find((p) => p.platform === "meta")!;
+    assert.equal(meta.verdict, "cannot-verify");
+    assert.equal(meta.cannotVerifyReason, "log_missing");
+  });
+
+  it("token ausente no run de hoje do Meta: veredito da plataforma é `defect` (não `cannot-verify`) — decisão explícita do item 6", () => {
+    const ev = evaluateAdsSpendIngestAlarm(
+      input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN),
+      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
+      NOW,
+      input(META_LOG_PATH, true, META_TOKEN_MISSING_RUN),
+    );
+    assert.equal(ev.verdict, "alarm-defect");
+    const meta = ev.platforms.find((p) => p.platform === "meta")!;
+    assert.equal(meta.verdict, "defect");
+    assert.equal(toAlarmFinding(ev).fingerprint, "defect");
+    assert.match(toAlarmFinding(ev).title, /Meta Ads/);
+  });
+
+  it("as 3 plataformas ok: combinado ok", () => {
+    const ev = evaluateAdsSpendIngestAlarm(
+      input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN),
+      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
+      NOW,
+      input(META_LOG_PATH, true, META_OK_RUN),
+    );
+    assert.equal(ev.verdict, "ok");
+    assert.equal(ev.platforms.length, 3);
+  });
+
+  it("platformLabel(meta) === 'Meta Ads'", () => {
+    assert.equal(platformLabel("meta"), "Meta Ads");
+  });
+
+  it("DEFAULT_META_LOG_PATH aponta pro arquivo real esperado (.meta-ads-ingest.log)", () => {
+    assert.match(DEFAULT_META_LOG_PATH, /\.meta-ads-ingest\.log$/);
+  });
+});
+
 describe("CLI: resolução de --google-log-path/--microsoft-log-path ausentes (#7518, achado 260910)", () => {
   it("sem os overrides de path, usa os DEFAULT_*_LOG_PATH reais — nunca colapsa pra string vazia", () => {
     // Achado ao vivo (rodada overnight 260910): `getArg(argv, "google-log-path") ?? DEFAULT_GOOGLE_LOG_PATH`
@@ -444,5 +528,37 @@ describe("CLI: resolução de --google-log-path/--microsoft-log-path ausentes (#
     // vazio nunca é).
     assert.ok(stdout.includes(DEFAULT_GOOGLE_LOG_PATH), `stdout deveria conter o path default do Google: ${stdout}`);
     assert.ok(stdout.includes(DEFAULT_MICROSOFT_LOG_PATH), `stdout deveria conter o path default do Microsoft: ${stdout}`);
+  });
+
+  it("#8245 item 6 — sem --meta-log-path, usa DEFAULT_META_LOG_PATH real (mesmo guard do Google/Microsoft acima, agora com a 3ª plataforma)", () => {
+    const result = spawnSync(process.execPath, ["--import", "tsx", SCRIPT_PATH, "--dry-run"], {
+      cwd: PROJECT_ROOT,
+      encoding: "utf8",
+    });
+    const stdout = result.stdout ?? "";
+    assert.doesNotMatch(stdout, /meta=[a-z-]+\(\)/);
+    assert.ok(stdout.includes(DEFAULT_META_LOG_PATH), `stdout deveria conter o path default do Meta: ${stdout}`);
+  });
+
+  it("#8245 item 6 — CLI lê o 3º log SEMPRE (não é opcional no nível do CLI, só na função pura): sem nenhum dos 3 logs presentes, verdict combinado é cannot-verify (fail-soft, sem alarme) — comportamento esperado até Diaria-Meta-Ads-Spend-Ingest estar armada em toda máquina", () => {
+    // Achado do review automatizado da PR: `evaluateAdsSpendIngestAlarm`
+    // trata `meta` como parâmetro OPCIONAL (preserva o comportamento das 2
+    // plataformas quando omitido), mas o CLI (main() deste script) sempre
+    // lê e passa o 3º log — nunca omite. Isso é intencional (item 6 exige
+    // que o alarme REAL passe a enxergar o Meta), mas tem um efeito
+    // colateral esperado: numa máquina onde `.meta-ads-ingest.log` ainda
+    // não existe (task não armada), o veredito combinado passa de `ok`
+    // (2 plataformas) pra `cannot-verify` (3ª sem log) — nunca dispara
+    // e-mail/issue (mesma disciplina de cannot-verify de sempre), só muda
+    // o texto do console. Este teste fixa esse comportamento de propósito,
+    // pra nunca virar surpresa quando alguém notar o console mudando de
+    // "ok" pra "cannot-verify" num ambiente sem o log do Meta.
+    const result = spawnSync(process.execPath, ["--import", "tsx", SCRIPT_PATH, "--dry-run"], {
+      cwd: PROJECT_ROOT,
+      encoding: "utf8",
+    });
+    const stdout = result.stdout ?? "";
+    assert.match(stdout, /verdict=cannot-verify/);
+    assert.match(stdout, /cannot-verify — pelo menos uma plataforma sem log legível; nenhum alarme disparado \(fail-soft\)\./);
   });
 });

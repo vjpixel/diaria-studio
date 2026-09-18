@@ -103,10 +103,10 @@
  * nenhuma task grava) de voltar — não um alarme em runtime.
  */
 
-/** Verdict por PLATAFORMA (Google ou Microsoft), lido do log real dela. */
+/** Verdict por PLATAFORMA (Google, Microsoft ou Meta), lido do log real dela. */
 export type SinglePlatformVerdict = "ok" | "defect" | "no-run" | "cannot-verify";
 
-export type AdsSpendPlatform = "google" | "microsoft";
+export type AdsSpendPlatform = "google" | "microsoft" | "meta";
 
 /** Motivo de `cannot-verify` — usado só pra mensagem, não muda a composição. */
 export type CannotVerifyReason = "log_missing" | "log_unparseable";
@@ -124,14 +124,16 @@ export interface SinglePlatformEvaluation {
   cannotVerifyReason?: CannotVerifyReason;
 }
 
-/** Veredito COMBINADO das duas plataformas — ver docstring do módulo pra
- *  a tabela de precedência completa. */
+/** Veredito COMBINADO das plataformas avaliadas (Google+Microsoft sempre,
+ *  Meta quando passada) — ver docstring do módulo pra a tabela de
+ *  precedência completa. */
 export type AdsSpendIngestAlarmVerdict = "ok" | "alarm-defect" | "alarm-no-run" | "cannot-verify";
 
 export interface AdsSpendIngestAlarmEvaluation {
   verdict: AdsSpendIngestAlarmVerdict;
-  /** Sempre as 2 plataformas, nesta ordem — nunca omitido, mesmo quando
-   *  `verdict` só reflete uma delas (a que "venceu" a precedência). */
+  /** Sempre as plataformas avaliadas (2 ou 3, conforme `meta` foi passado),
+   *  nesta ordem — nunca omitido, mesmo quando `verdict` só reflete uma
+   *  delas (a que "venceu" a precedência). */
   platforms: SinglePlatformEvaluation[];
   /** Texto do run que motivou o veredito combinado (a 1ª plataforma que bate
    *  a regra vencedora) — `null` em `ok`/`cannot-verify`. */
@@ -286,9 +288,17 @@ export interface PlatformLogInput {
 }
 
 /**
- * Avalia as DUAS plataformas e compõe o veredito combinado — ver docstring
- * do módulo pra a tabela de precedência (`defect` > `cannot-verify` >
- * `no-run` > `ok`).
+ * Avalia Google + Microsoft (sempre) e, opcionalmente, Meta (#8245 item 6) —
+ * compõe o veredito combinado. Ver docstring do módulo pra a tabela de
+ * precedência (`defect` > `cannot-verify` > `no-run` > `ok`).
+ *
+ * `meta` é OPCIONAL, de propósito: `Diaria-Meta-Ads-Spend-Ingest` foi
+ * declarada mas ainda não armada em toda máquina (#8245 item 8, pendente
+ * `sync-env` no `300`) — chamadores que ainda não têm o path do log do
+ * Meta continuam avaliando só as 2 plataformas originais, sem que a
+ * ausência do 3º input vire `cannot-verify`/alarme por conta própria
+ * (omitido ≠ log ausente). Passar `meta` inclui a 3ª plataforma na mesma
+ * composição de precedência.
  *
  * @pure
  */
@@ -296,11 +306,15 @@ export function evaluateAdsSpendIngestAlarm(
   google: PlatformLogInput,
   microsoft: PlatformLogInput,
   now: Date,
+  meta?: PlatformLogInput,
 ): AdsSpendIngestAlarmEvaluation {
   const platforms: SinglePlatformEvaluation[] = [
     evaluateSinglePlatformLog("google", google.logPath, google.exists, google.content, now),
     evaluateSinglePlatformLog("microsoft", microsoft.logPath, microsoft.exists, microsoft.content, now),
   ];
+  if (meta) {
+    platforms.push(evaluateSinglePlatformLog("meta", meta.logPath, meta.exists, meta.content, now));
+  }
 
   const defectPlatform = platforms.find((p) => p.verdict === "defect");
   if (defectPlatform) {
@@ -365,7 +379,9 @@ export function markAdsSpendIngestAlarmed(now: Date): AdsSpendIngestAlarmState {
  *  fonte única em vez de duplicar o ternário nos 2 arquivos (achado do
  *  self-review da #7518). */
 export function platformLabel(platform: AdsSpendPlatform): string {
-  return platform === "google" ? "Google Ads" : "Microsoft Ads";
+  if (platform === "google") return "Google Ads";
+  if (platform === "microsoft") return "Microsoft Ads";
+  return "Meta Ads";
 }
 
 /** Descreve o estado de UMA plataforma numa linha, pro corpo do e-mail —
@@ -390,14 +406,14 @@ export function buildAdsSpendIngestAlarmEmail(
     return {
       subject: "⚠️ Diaria-Ads-Spend-Ingest: DEFEITO real detectado no log (exit code não avisa)",
       body:
-        `Uma das ingestões de gasto (Google Ads / Microsoft Ads) contém sinal de defeito no run mais recente ` +
+        `Uma das ingestões de gasto (Google Ads / Microsoft Ads / Meta Ads) contém sinal de defeito no run mais recente ` +
         `(${evaluation.latestRunAt}) — "✖ DEFEITO" ou fallback pro CSV manual sem ser o caso normal de gasto ` +
         `zero. Por decisão do #5237/#5502, os scripts saem com exit 0 mesmo neste caso (pra não calar a ` +
         `ingestão da plataforma vizinha) — este alarme existe justamente pra tornar visível o que o exit code ` +
         `esconde.\n\n` +
         `Estado por plataforma:\n${platformLines}\n\n` +
         `Trecho do run:\n\n${evaluation.latestRun}\n\n` +
-        `Corrigir em scripts/lib/google-ads-ingest.ts / scripts/lib/microsoft-ads-ingest.ts (query/token/versão de ` +
+        `Corrigir em scripts/lib/google-ads-ingest.ts / scripts/lib/microsoft-ads-ingest.ts / scripts/meta-ads-ingest-spend.ts (query/token/versão de ` +
         `API) — esperar não resolve.` +
         issueLines,
     };
@@ -410,7 +426,7 @@ export function buildAdsSpendIngestAlarmEmail(
         `(systemd não armado/desabilitado, máquina desligada na janela).\n\n` +
         `Estado por plataforma:\n${platformLines}\n\n` +
         `Verifique: systemctl --user list-timers | grep ads-spend, e journalctl --user -u ` +
-        `diaria-google-ads-spend-ingest.service / diaria-microsoft-ads-spend-ingest.service -n 50 se a unit existir.` +
+        `diaria-google-ads-spend-ingest.service / diaria-microsoft-ads-spend-ingest.service / diaria-meta-ads-spend-ingest.service -n 50 se a unit existir.` +
         issueLines,
     };
   }
