@@ -39,6 +39,21 @@ describe("evaluateContinuoMergeGate (#6926) — cada portão NEGANDO merge", () 
     assert.match(result.reason, /reject/);
   });
 
+  it("#8376: reject genuine (SHA revisado == HEAD atual, verdict=reject) ainda rejeita — o portão 4 sobrevive à reordenação", () => {
+    // Contra-parte do teste anterior: mover os portões de staleness antes
+    // do reject não pode apagar a rejeição legítima. Depois que o author
+    // rebasou e o HEAD bateu com o revisado, um reject de fato cobrindo
+    // aquele SHA continua recusando.
+    const result = evaluateContinuoMergeGate({
+      ...GREEN,
+      verdict: "reject",
+      currentHeadSha: "abc123", // == reviewedHeadSha (GREEN)
+      reviewedHeadSha: "abc123",
+    });
+    assert.equal(result.action, "reject");
+    assert.match(result.reason, /reject/);
+  });
+
   it("verdict=null (sem review independente, ou marcador legado sem campo verdict=) → escalate, nunca merge", () => {
     const result = evaluateContinuoMergeGate({ ...GREEN, verdict: null });
     assert.equal(result.action, "escalate");
@@ -48,6 +63,30 @@ describe("evaluateContinuoMergeGate (#6926) — cada portão NEGANDO merge", () 
     const result = evaluateContinuoMergeGate({ ...GREEN, currentHeadSha: "def456" });
     assert.equal(result.action, "escalate");
     assert.match(result.reason, /5716/);
+  });
+
+  it("#8376: review stale (HEAD divergente) + verdict=reject → escalate, NUNCA reject", () => {
+    // O bug da fila de PRs sem merge: na ordem antiga o portão
+    // `verdict === "reject"` vinha antes do de HEAD divergente, então um
+    // review que rejeitou um HEAD antigo (author rebasou depois) era
+    // permanentemente rejeitado — a PR nunca saía da fila.
+    const result = evaluateContinuoMergeGate({
+      ...GREEN,
+      verdict: "reject",
+      currentHeadSha: "4f324a88", // != reviewedHeadSha (abc123)
+    });
+    assert.equal(result.action, "escalate");
+    assert.match(result.reason, /5716/);
+  });
+
+  it("#8376: reviewedHeadSha null + verdict=reject → escalate (não rejeita por falta de SHA)", () => {
+    const result = evaluateContinuoMergeGate({
+      ...GREEN,
+      verdict: "reject",
+      reviewedHeadSha: null,
+    });
+    assert.equal(result.action, "escalate");
+    assert.match(result.reason, /SHA revisado desconhecido/);
   });
 
   it("currentHeadSha null (gh falhou ao buscar HEAD atual) → escalate", () => {
