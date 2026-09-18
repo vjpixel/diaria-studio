@@ -177,7 +177,7 @@ import { resolveOrGenerateNewsCardUrl, type NewsCardGenerator } from "./lib/week
 import { computeCarouselTitleFontSize } from "./lib/weekly-carousel-font-size.ts";
 import { formatInstagramWeekly, formatFacebookWeekly, formatThreadsWeekly, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
-import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
+import { postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
 import { validateScheduledTime, publishFacebookCarouselByUrl } from "./publish-facebook.ts";
 
@@ -1381,8 +1381,38 @@ async function runOneMode(
           channel: "linkedin",
         });
       } catch (e: any) {
-        console.error(`FAILED linkedin/${destaqueKey}: ${e.message}`);
-        tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
+        // #8303 — o Worker (workers/linkedin-cron/src/index.ts::handleEnqueue)
+        // rejeita o enqueue ANTES de aceitar, quando channel=linkedin carrega
+        // carrossel (image_urls) e LINKEDIN_ACCESS_TOKEN/LINKEDIN_AUTHOR_URN
+        // não estão configurados nele — quem tem a credencial é o Worker,
+        // não este processo, então a fonte de verdade sobre "está
+        // configurado?" é a resposta do Worker, não uma leitura local de
+        // process.env (que não veria a config do Worker de qualquer forma).
+        // ANTES desta mudança, o Worker aceitava o POST sem validar, este
+        // script gravava status:"scheduled", e só no disparo (minutos/horas
+        // depois) é que caía no DLQ em silêncio — o store local afirmava um
+        // envio que nunca sairia. `WorkerQueueError.code` distingue essa
+        // rejeição específica (não-retriable, config ausente) de qualquer
+        // outra falha real (rede, timeout, 5xx) — só a primeira vira
+        // "skipped"; o resto continua "failed" como antes.
+        if (e instanceof WorkerQueueError && e.code === "linkedin_creds_missing") {
+          console.log(
+            `SKIP linkedin/${destaqueKey} — credencial da API direta do LinkedIn ausente no Worker ` +
+              `(LINKEDIN_ACCESS_TOKEN/LINKEDIN_AUTHOR_URN, #8052/#8303). Nada foi enfileirado; ` +
+              `demais canais seguem normalmente.`,
+          );
+          tagAndAppend({
+            platform: "linkedin",
+            destaque: destaqueKey,
+            url: null,
+            status: "skipped",
+            scheduled_at: null,
+            reason: "linkedin_creds_missing",
+          });
+        } else {
+          console.error(`FAILED linkedin/${destaqueKey}: ${e.message}`);
+          tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
+        }
       }
       if (response) {
         console.log(`OK linkedin/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);

@@ -1923,6 +1923,62 @@ describe("main(): dispatch mockado", () => {
       assert.equal(igEntry.status, "failed", "sem Worker configurado, TODOS os canais que passam por /queue falham — mas cada um com sua própria entry, nenhum trava o outro");
     });
 
+    it("#8303: Worker rejeita enqueue (creds LinkedIn ausentes no Worker) — LinkedIn marca 'skipped' com motivo, NÃO 'scheduled'/'failed', Instagram/Threads seguem normalmente", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      const queueCalls: string[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          queueCalls.push(body.channel);
+          // #8303 — mesma resposta que o Worker real dá (handleEnqueue) quando
+          // channel=linkedin carrega carrossel e LINKEDIN_ACCESS_TOKEN/
+          // LINKEDIN_AUTHOR_URN não estão configurados nele. Instagram e
+          // Threads continuam 200 normalmente — o Worker rejeita só o canal
+          // sem credencial, não o request inteiro.
+          if (body.channel === "linkedin") {
+            return {
+              statusCode: 400,
+              data: JSON.stringify({
+                error:
+                  "channel='linkedin' com carrossel (image_urls) requer LINKEDIN_ACCESS_TOKEN e LINKEDIN_AUTHOR_URN configurados no Worker (API direta, #8052) — não configurados",
+                code: "linkedin_creds_missing",
+              }),
+            };
+          }
+          return {
+            statusCode: 200,
+            data: JSON.stringify({ queued: true, key: `queue:${body.channel}:1`, scheduled_at: "2027-12-26T11:00:00-03:00", destaque: body.destaque }),
+          };
+        })
+        .times(3); // instagram + threads + linkedin (linkedin responde 400, sem retry — ver worker-queue-client.ts)
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      assert.ok(queueCalls.includes("linkedin"), "o script AINDA tenta o enqueue — quem recusa é o Worker, não uma checagem local de process.env");
+      assert.equal(queueCalls.filter((c) => c === "linkedin").length, 1, "HTTP 400 (rejeição de validação) não deve ser re-tentado — retry não mudaria o resultado");
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const liEntry = out.posts.find((p: any) => p.platform === "linkedin");
+      assert.equal(liEntry.status, "skipped", "nunca 'scheduled' pra algo que o Worker recusou — era exatamente o falso positivo do #8303");
+      assert.equal(liEntry.reason, "linkedin_creds_missing");
+      assert.equal(liEntry.worker_queue_key, undefined, "nada foi enfileirado — sem key de fila pra registrar");
+
+      // Instagram e Threads não são afetados pelo LinkedIn ter sido pulado.
+      const igEntry = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(igEntry.status, "scheduled");
+      const threadsEntry = out.posts.find((p: any) => p.platform === "threads");
+      assert.equal(threadsEntry.status, "scheduled");
+    });
+
     it("skip-existing: LinkedIn já 'scheduled' de uma tentativa anterior NÃO é re-tentado", async () => {
       const saturday = new Date(2027, 11, 25);
       const saturdayStr = aammddOf(saturday);

@@ -34,7 +34,14 @@ export interface PostEntry {
   /** #595 — subtipo do entry; default "main" pra backward-compat. */
   subtype?: PostSubtype;
   url: string | null;
-  status: "draft" | "scheduled" | "failed" | "published" | "deleted";
+  // #8303 — "skipped": canal deliberadamente pulado ANTES de tentar publicar
+  // (ex: LinkedIn sem credencial da API direta pro carrossel semanal —
+  // publish-weekly-social.ts). Diferente de "failed" (uma tentativa real
+  // falhou) — "skipped" nunca tentou, e o `reason` explica por quê. Evita
+  // que o store afirme "scheduled" pra algo que o Worker rejeitou no
+  // enqueue, e evita rotular como "failed" algo que não é erro transitório
+  // (retry não ajudaria).
+  status: "draft" | "scheduled" | "failed" | "published" | "deleted" | "skipped";
   scheduled_at: string | null;
   reason?: string;
   /** Campos platform-specific (fb_post_id, make_request_id, published_at,

@@ -406,6 +406,38 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   ) {
     return json({ error: "image_url or image_urls is required when channel='instagram'" }, 400);
   }
+  // #8303 — channel=linkedin (ou ausente, default de backward-compat) com
+  // carrossel (image_urls com >1 item) publica via API DIRETA do LinkedIn
+  // (fireLinkedInCarousel, #8052), que exige LINKEDIN_ACCESS_TOKEN +
+  // LINKEDIN_AUTHOR_URN no Worker (ver resolveLinkedInCreds em dispatch.ts).
+  // Sem essa checagem, o enqueue aceitava o POST (esta rota não validava
+  // credencial), o caller registrava status "scheduled" e só no disparo
+  // (fireQueueEntry) é que caía no DLQ silenciosamente — o store local
+  // afirmava um envio que nunca sairia. Mesmo racional dos guards de
+  // image_url (Instagram) e de tamanho de texto (Threads) acima: falhar aqui
+  // (enqueue, com erro que o caller propaga) é melhor que falhar só no
+  // disparo, horas/dias depois. Single-image (webhook Make) não exige essa
+  // credencial — só o caminho carrossel.
+  const linkedInChannel = body.channel === undefined || body.channel === "linkedin";
+  const linkedInImageCount = Array.isArray(body.image_urls)
+    ? body.image_urls.length
+    : body.image_url
+      ? 1
+      : 0;
+  if (linkedInChannel && linkedInImageCount > 1 && !resolveLinkedInCreds(env)) {
+    // `code` machine-readable (além de `error` em prosa) — o caller
+    // (`scripts/lib/worker-queue-client.ts::postToWorkerQueue`) o propaga
+    // via `WorkerQueueError.code` pra `publish-weekly-social.ts` ramificar
+    // sem parsear a mensagem de erro (#8303).
+    return json(
+      {
+        error:
+          "channel='linkedin' com carrossel (image_urls) requer LINKEDIN_ACCESS_TOKEN e LINKEDIN_AUTHOR_URN configurados no Worker (API direta, #8052) — não configurados",
+        code: "linkedin_creds_missing",
+      },
+      400,
+    );
+  }
   // #3944 Parte B — chunking agendado (thread multi-post via reply_to_id)
   // não é suportado no Worker: risco de duplicar posts em retry automático.
   // Falhar aqui (enqueue) é melhor que a Threads API truncar silenciosamente
