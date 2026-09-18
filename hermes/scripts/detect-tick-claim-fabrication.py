@@ -183,7 +183,7 @@ _CLAIM_KEYWORDS = re.compile(r"reivindic|claim", re.IGNORECASE)
 #      mesmo tick" (#8356, linha 5 do relatório real) é claim PRÓPRIO.
 #   4. **Cobertura de outro issue** — "#7807: o trabalho já estava coberto
 #      por #7808" (caso de teste #7996) é cobertura, não claim.
-_CLAUSE_SPLIT = re.compile(r";")
+_CLAUSE_SPLIT = re.compile(r";|\. (?=[A-Z#])")
 _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 _OTHERS_CLAIM = re.compile(
     r"#(\d+)\b[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+"
@@ -353,9 +353,10 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
             released = bool(_RELEASE_SIGNAL.search(segment))
             pr_refs = {int(n) for n in _PR_REF.findall(segment)}
             others = {int(n) for n in _OTHERS_CLAIM.findall(segment)}
+            covered = {int(n) for n in _COVERED_BY.findall(segment)}
             for m in _ISSUE_REF.finditer(segment):
                 n = int(m.group(1))
-                if n in pr_refs or n in others:
+                if n in pr_refs or n in others or n in covered:
                     continue
                 refs[n] = refs.get(n, False) or released
     return refs

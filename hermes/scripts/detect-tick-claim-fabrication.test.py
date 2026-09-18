@@ -464,4 +464,24 @@ def test_regressao_8377_falsos_positivos_claim():
     assert 8358 not in refs, f"8358 (PR) indevido: {refs}"
     # Cobertura não é claim — não deve gerar entrada
     # Se fosse claim próprio, seria reconhecido; aqui não é.
-    print("regressão #8377: falsos positivos eliminados — OK")
+    # Regra: claim próprio preservado — "reivindicada pelo mesmo tick" é próprio
+    linha_proprio = "#8356 está reivindicada pelo mesmo tick; liberação completa"
+    refs_proprio = mod.extract_claimed_issue_refs(linha_proprio)
+    assert 8356 in refs_proprio, f"claim próprio #8356 deve ser preservado: {refs_proprio}"
+    print("regressão #8377: falsos positivos eliminados + claim próprio preservado — OK")
+
+# Regressão real #7807 coberto por #7808 (#7996): cobertura não é claim
+def test_regressao_7807_coberto_por_7808():
+    import importlib.util, sys, os
+    here = os.path.dirname(os.path.abspath(__file__))
+    mod = importlib.util.module_from_spec(
+        importlib.util.spec_from_file_location(
+            "detect_tick_claim_fabrication",
+            os.path.join(here, "detect-tick-claim-fabrication.py")))
+    sys.modules["detect_tick_claim_fabrication"] = mod
+    mod.__loader__.exec_module(mod)
+    linha = "- #7807: o trabalho já estava coberto por #7808. A PR #7827 foi fechada."
+    refs = mod.extract_claimed_issue_refs(linha)
+    assert 7807 not in refs, f"#7807 (coberto) indevidamente como claim: {refs}"
+    assert 7808 not in refs, f"#7808 (cobertura) indevidamente como claim: {refs}"
+    print("regressão #7807 coberto por #7808: cobertura excluída — OK")
