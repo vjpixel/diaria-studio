@@ -383,7 +383,7 @@ export const FOOTER_DOMAINS = [
   // bug de #2498 pro cursos/livros.diaria.workers.dev).
   "apoia.se",
   // #8298: CTA "Convide um amigo a assinar" do PARA ENCERRAR — link fixo
-  // `wa.me/?text=...` gerado por `buildInviteWhatsappCta`
+  // `wa.me/?text=...` gerado por `buildConviteAmigoShareLink`
   // (`newsletter-render-html.ts`), nunca um artigo pesquisado. Mesma
   // motivação do `apoia.se` acima: sem isso, o link de convite do rodapé
   // vazava como "link de conteúdo divergente" em qualquer comparação

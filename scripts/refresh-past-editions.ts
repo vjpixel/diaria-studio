@@ -521,8 +521,11 @@ export function renderMarkdown(posts: Post[], root: string = ROOT): string {
     // Só compara quando approvedLinks não é vazio: edição sem 01-approved.json
     // local (importada, ou de outra máquina) faria TODO htmlLink parecer
     // "divergente" por ausência de baseline, não por troca pós-gate — ruído,
-    // não sinal.
-    if (approvedLinks.length > 0 && p.html) {
+    // não sinal. Checa `htmlContent` (não só `p.html`) — `htmlLinks` também
+    // é derivado de `p.markdown` quando presente; gatear só em `p.html`
+    // deixaria uma divergência vinda só de `markdown` passar em silêncio,
+    // contradizendo o "nunca silêncio" acima (achado do code-review da PR #8299).
+    if (approvedLinks.length > 0 && htmlContent) {
       const missingFromApproved = htmlLinks.filter((u) => !approvedLinks.includes(u));
       if (missingFromApproved.length > 0) {
         logEvent(

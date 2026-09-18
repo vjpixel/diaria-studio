@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderMarkdown, extractLinks } from "../scripts/refresh-past-editions.ts";
+import { renderMarkdown, extractLinks, isContentLink } from "../scripts/refresh-past-editions.ts";
 import { execFileSync } from "node:child_process";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 import {
@@ -147,6 +147,53 @@ describe("renderMarkdown", () => {
     const md = renderMarkdown([]);
     assert.ok(md.includes("**edições carregadas:** 0"));
     assert.ok(!md.includes("##"));
+  });
+});
+
+describe("isContentLink (#8298)", () => {
+  it("aceita URL de conteúdo comum", () => {
+    assert.ok(isContentLink("https://real-source.example.com/artigo"));
+  });
+
+  it("rejeita URL de imagem mesmo com query string/hash", () => {
+    assert.ok(!isContentLink("https://cdn.example.com/hero.jpg"));
+    assert.ok(!isContentLink("https://cdn.example.com/hero.jpg?w=800"));
+    assert.ok(!isContentLink("https://cdn.example.com/hero.png#top"));
+    assert.ok(!isContentLink("https://cdn.example.com/hero.webp"));
+    assert.ok(!isContentLink("https://cdn.example.com/hero.svg"));
+  });
+
+  it("NÃO rejeita URL de conteúdo cujo path só CONTÉM 'jpg' sem ser extensão", () => {
+    // regressão de falso-positivo: a extensão precisa estar no fim do path
+    // (antes de `?`/`#`/fim de string), não em qualquer lugar da URL.
+    assert.ok(isContentLink("https://example.com/artigo-jpg-no-mercado-de-ia"));
+  });
+
+  it("rejeita domínio de FOOTER_DOMAINS (rodapé/hub/afiliado/canal próprio)", () => {
+    assert.ok(!isContentLink("https://diar.ia.br/hub/anthropic-claude"));
+    assert.ok(!isContentLink("https://wa.me/?text=oi"));
+    assert.ok(!isContentLink("https://amzn.to/xyz"));
+    assert.ok(!isContentLink("https://www.linkedin.com/company/diar.ia.br"));
+    assert.ok(!isContentLink("https://diaria.beehiiv.com/p/edicao"));
+  });
+
+  it("NÃO rejeita host que só contém um FOOTER_DOMAINS como substring de OUTRO domínio", () => {
+    // achado do code-review da PR #8299: FOOTER_DOMAINS casa por `.includes()`,
+    // não por hostname exato — documentando o comportamento atual (conhecido,
+    // aceito) em vez de deixá-lo implícito. `notdiar.ia.br.evil.com` contém a
+    // string "diar.ia.br" mas não é o domínio diar.ia.br — hoje isso EXCLUI
+    // (falso positivo de boilerplate), risco aceito por não haver, na prática,
+    // domínio de conteúdo real que contenha essas substrings.
+    assert.ok(!isContentLink("https://notdiar.ia.br.evil.example.com/artigo"));
+  });
+
+  it("URL malformada não lança — isContentLink é string-check puro (sem new URL()), só a extensão/substring decide", () => {
+    assert.doesNotThrow(() => isContentLink("not a url"));
+    // "not a url" não bate nem IMAGE_EXTENSION_RE nem FOOTER_DOMAINS — passa
+    // como conteúdo. extractLinks() já garante que só URLs http(s) bem
+    // formadas chegam até aqui (via `new URL()` interno), então este caso não
+    // ocorre no fluxo real de renderMarkdown — documentando o contrato.
+    assert.ok(isContentLink("not a url"));
   });
 });
 
