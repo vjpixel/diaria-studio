@@ -4,6 +4,44 @@ Registro da decisão citada no #4905 (Refs #4558). Não é runbook — é o mesm
 tipo de "nota de fato apurado" que `docs/seo-notes.md` mantém pra dado de SEO,
 aqui aplicado à leitura do checkpoint de citação por assistente de ~07/out.
 
+## Decisão de 18/09/2026 — produção de hub NOVO está pausada
+
+**Decisão do editor, 18/09/2026, na auditoria de GEO desta data: "vamos parar
+de criar hubs novos por enquanto."** Vale a partir daqui e até o editor
+reabrir — não tem data de retorno marcada.
+
+**O que a pausa cobre:** criar hub temático novo (módulo em
+`scripts/lib/hubs/{slug}.ts` + entrada em `HUB_LOADERS`/`HUB_META` + asset
+`.generated.ts`). Os 7 hubs publicados continuam **em manutenção normal** —
+`Diaria-Hub-Staleness-Check`, `Diaria-Hub-Drift-Check`, correção de número
+errado, regeneração após mudança de renderer. Pausa é sobre acervo NOVO, não
+sobre deixar o que existe apodrecer.
+
+**O dado que motivou** (auditoria de 18/09/2026, sobre
+`data/geo-citations/history.jsonl`, 493 registros de 07/08 a 13/09):
+
+- Painel `hubs`: **0 citações em 177 respostas válidas**, 3 provedores, 5
+  rodadas semanais. Painel `geral`, na mesma janela: 9/134 (6,7%).
+- Duas das cinco explicações concorrentes pré-registradas abaixo **caíram**:
+  a de descoberta (item 2 — os bots de recuperação batem no `arquivo` todo
+  dia, medido no KV via `ai-fetch-report.ts`) e a de indexação (item 5 — as
+  9 URLs do `arquivo`, incluindo os 7 hubs e o índice `/temas/`, estão
+  indexadas no GSC; 8/9 em 30/08, 9/9 desde 06/09).
+- Restam de pé a de demanda em pt-BR (item 3) e a da própria tese no volume
+  atual de acervo (item 4) — e é entre essas duas que a pausa escolhe parar
+  de gastar esforço editorial antes de saber qual é.
+
+**O que esta decisão NÃO é:** não é veredito sobre a tese GEO, e não
+transforma o 0/177 em prova de nada — a seção "O que o checkpoint PODE e NÃO
+PODE concluir" abaixo continua valendo inteira, inclusive a proibição de ler
+snapshot como resultado causal. A série semanal segue rodando sem data de
+corte; o que parou foi a produção, não a medição.
+
+**Como reabrir:** decisão explícita do editor, como esta. O sinal natural pra
+reavaliar é o painel `geral` ou o painel `acervo` (#8334) mostrarem que
+citação acontece e de onde ela vem — aí a pergunta "hub ajuda?" volta a ter
+contraste pra ser respondida.
+
 ## A decisão
 
 Até 10/08/2026 havia a opção de tratar `anthropic-claude` como hub "tratado"
