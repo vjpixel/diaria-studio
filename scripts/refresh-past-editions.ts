@@ -86,11 +86,87 @@ export function extractLinks(content: string): string[] {
 // `extractLinks`/`FOOTER_DOMAINS`), nunca um link de conteúdo/fonte.
 const IMAGE_EXTENSION_RE = /\.(?:jpe?g|png|gif|webp|avif|svg)(?:[?#]|$)/i;
 
+// #8302: assets estáticos de template (fonte, folha de estilo, script, ícone)
+// — nunca conteúdo editorial. Deliberadamente NÃO inclui `pdf`/`mp4`: medição
+// real contra `data/past-editions-raw.json` (janela de 14 edições) achou um
+// headline PESQUISA legítimo cujo link oficial é um PDF
+// (`pearson.com/.../BR-AI-Readiness-PTBR.pdf`, edição 260904) — excluir por
+// extensão genérica apagaria conteúdo real, não só boilerplate.
+const ASSET_EXTENSION_RE = /\.(?:woff2?|ttf|otf|eot|css|js|ico)(?:[?#]|$)/i;
+
+// #8302: hosts que só aparecem em markup/infra do e-mail, nunca em conteúdo
+// editorial — achados na mesma medição real:
+//   - `w3.org`: namespace XML do template (`xmlns="http://www.w3.org/1999/xhtml"`).
+//   - `fonts.gstatic.com`/`fonts.googleapis.com`: CDN de fonte do Google Fonts
+//     usado pelo CSS do e-mail (Librefranklin) — mesma família de host, mesmo
+//     motivo do `.woff2` acima, mas o host também aparece em `<link>` de
+//     stylesheet sem extensão de arquivo capturável pelo regex.
+//   - `beehiivstatus.com`: honeypot anti-spam do Beehiiv (`email.beehiivstatus.com/
+//     {{omnivery_honeypot_hash}}/hclick`, 1px invisível, `clicktracking="off"`)
+//     — subdomínio distinto de `beehiiv.com` (que `extractLinks` já filtra),
+//     por isso passava batido.
+const NON_CONTENT_HOSTS = new Set([
+  "w3.org",
+  "fonts.gstatic.com",
+  "fonts.googleapis.com",
+  "beehiivstatus.com",
+]);
+
 /**
- * #8298: true se `url` é um link de CONTEÚDO editorial (candidato a "fonte
- * usada nesta edição"), false se é boilerplate — CTA/rodapé fixo (mesma
- * lista `FOOTER_DOMAINS` que `findMismatchedUrls` em `canonical-urls.ts` já
- * usa pra distinguir link de conteúdo de link de template) ou URL de imagem.
+ * #8302: true se `host` é (ou é subdomínio de) algum de `NON_CONTENT_HOSTS`.
+ * Subdomínio, não substring — `beehiivstatus.com` não pode casar um domínio
+ * de conteúdo real que só contenha a string no meio (ex: `not-beehiivstatus.com.br`).
+ */
+function isNonContentHost(host: string): boolean {
+  return [...NON_CONTENT_HOSTS].some((d) => host === d || host.endsWith(`.${d}`));
+}
+
+/**
+ * #8302: true se `parsed` (já um `new URL()`) é o link de afiliado Amazon com
+ * a tag da diária (`tag=diaria-20`, gerado pelo SiteStripe nos boxes de
+ * divulgação de livros). Checa a QUERY, não o domínio — `amazon.com.br` bare
+ * fica de fora de `FOOTER_DOMAINS` de propósito (#3028: uma página de
+ * produto Amazon pode ser link oficial de um LANÇAMENTO legítimo; excluir o
+ * domínio inteiro suprimiria esse artigo). O parâmetro `tag=diaria-20` é
+ * específico de afiliado e nunca aparece num link oficial de lançamento.
+ *
+ * Recebe o `URL` já parseado (não a string) — code-review da PR #8302: o
+ * `isContentLink` chamador faz UM `new URL()` só e repassa pra todos os
+ * checks de host/query, em vez de cada um reparsear a mesma string.
+ */
+function isAmazonAffiliateLink(parsed: URL, host: string): boolean {
+  return host === "amazon.com.br" && parsed.searchParams.get("tag") === "diaria-20";
+}
+
+/**
+ * #8302: true se `parsed` (já um `new URL()`) é uma página de perfil de
+ * usuário do Flickr (`flickr.com/people/{id}`) — link de crédito de foto
+ * embutido perto de uma imagem no HTML publicado (achado real: edição
+ * 260914), nunca um artigo. Path-based (não domínio inteiro): uma página
+ * `flickr.com/photos/...` poderia em tese ser citada como fonte de uma
+ * notícia sobre a própria foto — o padrão `/people/` é especificamente a
+ * página de perfil do fotógrafo, o que o Beehiiv usa pra créditar a imagem,
+ * nunca conteúdo editorial.
+ */
+function isFlickrProfileLink(parsed: URL, host: string): boolean {
+  return host === "flickr.com" && parsed.pathname.startsWith("/people/");
+}
+
+/**
+ * #8298/#8302: true se `url` é um link de CONTEÚDO editorial (candidato a
+ * "fonte usada nesta edição"), false se é boilerplate — CTA/rodapé fixo
+ * (mesma lista `FOOTER_DOMAINS` que `findMismatchedUrls` em
+ * `canonical-urls.ts` já usa pra distinguir link de conteúdo de link de
+ * template), asset estático de markup (imagem/fonte/CSS/JS), namespace/CDN
+ * de infraestrutura do e-mail, honeypot anti-spam, afiliado Amazon com tag
+ * da diária, ou crédito de foto do Flickr.
+ *
+ * #8302: o default de `IMAGE_EXTENSION_RE`/`FOOTER_DOMAINS` sozinhos era
+ * PERMISSIVO demais — medição real (`data/past-editions-raw.json`, 14
+ * edições) achou até 75 URLs "divergentes" numa única edição antiga, quase
+ * todas fonte `.woff2`/namespace `w3.org`. Os checks abaixo foram todos
+ * ancorados em URL real observada nessa medição (comentários inline),
+ * não em suposição — ver corpo da PR #8302 pra medição antes/depois completa.
  *
  * Usado só pro lado que vem de `extractLinks(html)` em `renderMarkdown` —
  * `p.links` (vindo do `01-approved.json`) já é só link de bucket editorial,
@@ -98,7 +174,21 @@ const IMAGE_EXTENSION_RE = /\.(?:jpe?g|png|gif|webp|avif|svg)(?:[?#]|$)/i;
  */
 export function isContentLink(url: string): boolean {
   if (IMAGE_EXTENSION_RE.test(url)) return false;
+  if (ASSET_EXTENSION_RE.test(url)) return false;
   if (FOOTER_DOMAINS.some((d) => url.includes(d))) return false;
+  // #8302 code-review: um único `new URL()` compartilhado pelos 3 checks de
+  // host/query abaixo, em vez de cada helper reparsear a mesma string.
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (isNonContentHost(host)) return false;
+    if (isAmazonAffiliateLink(parsed, host)) return false;
+    if (isFlickrProfileLink(parsed, host)) return false;
+  } catch {
+    // URL malformada — deixa passar pro comportamento anterior (extractLinks
+    // já descarta o que não parseia como URL antes de chegar aqui).
+    return true;
+  }
   return true;
 }
 

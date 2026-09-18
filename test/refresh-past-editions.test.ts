@@ -93,6 +93,74 @@ describe("renderMarkdown", () => {
     assert.ok(!md.includes("linkedin.com/company"));
   });
 
+  it("#8302: filtra fonte/.woff2, namespace w3.org, X próprio e afiliado Amazon — só o link de conteúdo real entra em links", () => {
+    // Regressão do #8302: isContentLink deixava passar tudo isso pra
+    // past-editions.md porque o default era permissivo (só excluía extensão
+    // de imagem + FOOTER_DOMAINS antigo). Fixture reproduz exatamente os 4
+    // tipos de boilerplate achados na medição real (data/past-editions-raw.json).
+    const tmpRoot = mkdtempSync(join(tmpdir(), "past-editions-8302-boilerplate-"));
+    const posts = [
+      {
+        id: "post8302",
+        title: "Edição 8302",
+        published_at: "2026-09-18T10:00:00Z",
+        links: ["https://forced.com/a"],
+        html: [
+          '<html xmlns="http://www.w3.org/1999/xhtml">', // namespace XML do template
+          '<link href="https://fonts.gstatic.com/s/librefranklin/v18/abc.woff2" rel="stylesheet">', // fonte
+          "<p>https://forced.com/a</p>",
+          '<a href="https://x.com/diariabr">Siga no X</a>', // canal próprio (rodapé social)
+          '<a href="https://www.amazon.com.br/dp/B0DB9VVG22?tag=diaria-20">Livro</a>', // afiliado
+          '<a href="https://real-source.example.com/artigo-novo">Manchete</a>', // conteúdo real, ausente de links[]
+        ].join("\n"),
+      },
+    ];
+    const md = renderMarkdown(posts, tmpRoot);
+    assert.ok(md.includes("- https://forced.com/a"));
+    assert.ok(
+      md.includes("- https://real-source.example.com/artigo-novo"),
+      "único link de conteúdo real do html precisa entrar na união",
+    );
+    assert.ok(!md.includes("w3.org"));
+    assert.ok(!md.includes("fonts.gstatic.com"));
+    assert.ok(!md.includes("x.com/diariabr"));
+    assert.ok(!md.includes("amazon.com.br"));
+  });
+
+  it("#8302: janela de 14 edições-fixture trava em EXATAMENTE 1 divergência — não volta a inflar em silêncio", () => {
+    // Trava o NÚMERO, não só a presença/ausência de um domínio — reproduz em
+    // miniatura a medição real (14 edições, janela dedupEditionCount) que
+    // motivou o #8302: 13 divergiam por boilerplate antes do fix, deveria
+    // sobrar só a divergência de conteúdo real.
+    const tmpRoot = mkdtempSync(join(tmpdir(), "past-editions-8302-window-"));
+    const boilerplateHtml = [
+      '<html xmlns="http://www.w3.org/1999/xhtml">',
+      '<link href="https://fonts.gstatic.com/s/librefranklin/v18/abc.woff2" rel="stylesheet">',
+      '<a href="https://x.com/diariabr">Siga no X</a>',
+      '<a href="https://www.amazon.com.br/dp/XYZ?tag=diaria-20">Livro</a>',
+      '<a href="https://www.flickr.com/people/91981596@N06">crédito</a>',
+      '<a href="https://email.beehiivstatus.com/{{hash}}/hclick">honeypot</a>',
+    ].join("\n");
+    const posts = Array.from({ length: 14 }, (_, i) => ({
+      id: `post-window-${i}`,
+      title: `Edição janela ${i}`,
+      published_at: `2026-09-${String(i + 1).padStart(2, "0")}T10:00:00Z`,
+      links: ["https://forced.com/a"],
+      html: `<p>https://forced.com/a</p>\n${boilerplateHtml}`,
+    }));
+    // Só a última edição da janela tem 1 link de conteúdo real divergente —
+    // as outras 13 têm SÓ boilerplate (mesma proporção 13/14 da medição real).
+    posts[13].html += '\n<a href="https://real-source.example.com/unica-divergencia">Manchete</a>';
+
+    let totalDivergentEditions = 0;
+    for (const p of posts) {
+      const md = renderMarkdown([p], tmpRoot);
+      if (md.includes("real-source.example.com")) totalDivergentEditions++;
+      assert.ok(!md.includes("w3.org") && !md.includes("fonts.gstatic.com") && !md.includes("x.com/diariabr") && !md.includes("amazon.com.br") && !md.includes("flickr.com") && !md.includes("beehiivstatus.com"));
+    }
+    assert.equal(totalDivergentEditions, 1, "só a edição com o link de conteúdo real deve divergir — as outras 13 são só boilerplate");
+  });
+
   it("guard: loga warning (nunca silêncio) quando html tem link de conteúdo ausente de links[] (#8298)", async () => {
     const { readFileSync: readFileSyncLocal } = await import("node:fs");
     const tmpRoot = mkdtempSync(join(tmpdir(), "past-editions-guard-"));
@@ -187,13 +255,55 @@ describe("isContentLink (#8298)", () => {
     assert.ok(!isContentLink("https://notdiar.ia.br.evil.example.com/artigo"));
   });
 
-  it("URL malformada não lança — isContentLink é string-check puro (sem new URL()), só a extensão/substring decide", () => {
+  it("URL malformada não lança — isContentLink faz new URL() internamente (#8302), mas cai pro fallback permissivo se não parsear", () => {
     assert.doesNotThrow(() => isContentLink("not a url"));
-    // "not a url" não bate nem IMAGE_EXTENSION_RE nem FOOTER_DOMAINS — passa
-    // como conteúdo. extractLinks() já garante que só URLs http(s) bem
-    // formadas chegam até aqui (via `new URL()` interno), então este caso não
-    // ocorre no fluxo real de renderMarkdown — documentando o contrato.
+    // "not a url" não bate extensão/FOOTER_DOMAINS por substring, e o
+    // `new URL()` interno (usado pelo host-check de #8302: w3.org/fonts CDN/
+    // honeypot/amazon afiliado/flickr) lança — capturado, cai no fallback
+    // `return true`. extractLinks() já garante que só URLs http(s) bem
+    // formadas chegam até aqui (via `new URL()` interno próprio), então este
+    // caso não ocorre no fluxo real de renderMarkdown — documentando o contrato.
     assert.ok(isContentLink("not a url"));
+  });
+
+  it("rejeita asset estático (fonte/CSS/JS/ícone), não só imagem (#8302)", () => {
+    assert.ok(!isContentLink("https://fonts.gstatic.com/s/librefranklin/v18/abc.woff2"));
+    assert.ok(!isContentLink("https://cdn.example.com/style.css"));
+    assert.ok(!isContentLink("https://cdn.example.com/app.js"));
+    assert.ok(!isContentLink("https://cdn.example.com/favicon.ico"));
+    assert.ok(!isContentLink("https://cdn.example.com/font.ttf"));
+  });
+
+  it("NÃO rejeita PDF/vídeo por extensão — pode ser link oficial de lançamento/pesquisa (#8302)", () => {
+    // achado real: edição 260904, PESQUISA — pearson.com/.../BR-AI-Readiness-PTBR.pdf
+    // é o link OFICIAL de um relatório, não boilerplate. Excluir por extensão
+    // genérica apagaria conteúdo real junto com o asset estático.
+    assert.ok(isContentLink("https://www.pearson.com/content/dam/global-store/global/resources/ai-readiness/BR-AI-Readiness-PTBR.pdf"));
+    assert.ok(isContentLink("https://example.com/video-oficial.mp4"));
+  });
+
+  it("rejeita namespace/CDN de infraestrutura do e-mail (#8302)", () => {
+    assert.ok(!isContentLink("http://www.w3.org/1999/xhtml"));
+    assert.ok(!isContentLink("https://fonts.googleapis.com/css?family=Geist"));
+    assert.ok(!isContentLink("https://email.beehiivstatus.com/{{omnivery_honeypot_hash}}/hclick"));
+  });
+
+  it("rejeita link do X/Twitter da própria diária, mas não outro conteúdo em x.com (#8302)", () => {
+    assert.ok(!isContentLink("https://x.com/diariabr"));
+    assert.ok(!isContentLink("https://x.com/diariabr/status/123"));
+  });
+
+  it("rejeita afiliado Amazon com tag=diaria-20, mas NÃO amazon.com.br sem essa tag (#8302)", () => {
+    assert.ok(!isContentLink("https://www.amazon.com.br/dp/B0DB9VVG22?tag=diaria-20"));
+    // #3028: amazon.com.br bare pode ser link oficial de lançamento — não
+    // pode virar boilerplate genérico, só o padrão de afiliado específico.
+    assert.ok(isContentLink("https://www.amazon.com.br/dp/B0DB9VVG22"));
+    assert.ok(isContentLink("https://www.amazon.com.br/dp/B0DB9VVG22?tag=outraconta-20"));
+  });
+
+  it("rejeita crédito de foto do Flickr (/people/), mas não outros paths do Flickr (#8302)", () => {
+    assert.ok(!isContentLink("https://www.flickr.com/people/91981596@N06"));
+    assert.ok(isContentLink("https://www.flickr.com/photos/91981596@N06/12345"));
   });
 });
 

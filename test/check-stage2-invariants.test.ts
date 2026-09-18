@@ -1087,6 +1087,32 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
     }
   });
 
+  // #8302: DIARIA_X_SLUG (x.com/diariabr) entrou em FOOTER_DOMAINS junto com
+  // o fix de isContentLink — mesma categoria do linkedin.com/in/vjpixel acima
+  // (link de rodapé social próprio injetado por SOCIAL_INVITE em toda edição).
+  // Trava o comportamento neste OUTRO consumidor de FOOTER_DOMAINS (o teste
+  // irmão pra findMismatchedUrls vive em test/canonical-urls.test.ts).
+  it("x.com/diariabr (conta própria no X) NÃO bloqueia mesmo ausente do cache (#8302)", async () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\nSiga no [X](https://x.com/diariabr).`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = await checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, true, "x.com/diariabr deve ser allowlistado");
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("URL de vídeo (youtu.be) NÃO bloqueia mesmo ausente do cache — verdict video nunca é cacheado por design (#4263)", async () => {
     const { dir, cleanup } = mkEdition();
     try {

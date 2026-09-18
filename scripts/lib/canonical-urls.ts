@@ -340,6 +340,12 @@ export const FOOTER_DOMAINS = [
   // edição — ruído estrutural, não curadoria.
   "linkedin.com/in/vjpixel",
   DIARIA_FACEBOOK_PAGE_SLUG,
+  // #8302: `SOCIAL_INVITE` (encerramento-snippet.ts) injeta o link da conta
+  // própria no X em TODA edição — mesma categoria de "link de rodapé social
+  // próprio" já allowlistada acima pro LinkedIn/Facebook; achado ao vivo:
+  // `x.com/diariabr` passava por `isContentLink` (refresh-past-editions.ts)
+  // como se fosse artigo de conteúdo em quase toda a janela de 14 edições.
+  DIARIA_X_SLUG,
   "wikipedia.org", // todas as variantes (pt/en/es/...)
   "wikimedia.org", // commons + upload
   "creativecommons.org",

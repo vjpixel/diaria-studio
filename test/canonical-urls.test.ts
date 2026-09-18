@@ -20,6 +20,7 @@ import {
   DIARIA_YOUTUBE_URL,
   DIARIA_CURSOS_URL,
   DIARIA_LIVROS_URL,
+  DIARIA_X_SLUG,
 } from "../scripts/lib/canonical-urls.ts";
 
 describe("getCanonicalUrls (#1456)", () => {
@@ -224,6 +225,26 @@ Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor desta newsl
     assert.equal(DIARIA_FACEBOOK_PAGE_SLUG, "facebook.com/diar.ia.br");
     assert.equal(DIARIA_FACEBOOK_PAGE_URL, "https://www.facebook.com/diar.ia.br");
     assert.ok(FOOTER_DOMAINS.includes(DIARIA_FACEBOOK_PAGE_SLUG));
+  });
+
+  // #8302: DIARIA_X_SLUG (x.com/diariabr) entrou em FOOTER_DOMAINS junto com
+  // este PR — mesma categoria de "link de rodapé social próprio" já coberta
+  // acima pro LinkedIn/Facebook (SOCIAL_INVITE injeta os 5 em toda edição).
+  // Trava o comportamento nos OUTROS 2 consumidores de FOOTER_DOMAINS além de
+  // isContentLink (refresh-past-editions.ts, já coberto em
+  // test/refresh-past-editions.test.ts): findMismatchedUrls aqui, e
+  // check-stage2-invariants.ts (teste irmão no arquivo daquele script) —
+  // sem isso, um futuro rename/remoção da constante não seria acusado por
+  // nenhum dos dois.
+  it("ignora o link do X/Twitter da própria diária (#8302)", () => {
+    assert.equal(DIARIA_X_SLUG, "x.com/diariabr");
+    assert.ok(FOOTER_DOMAINS.includes(DIARIA_X_SLUG));
+    const approved = { radar: [{ title: "N", url: "https://example.com/n" }] };
+    const md = `
+[**N**](https://example.com/n)
+[Siga no X](https://x.com/diariabr)
+`;
+    assert.deepEqual(findMismatchedUrls(md, approved), []);
   });
 
   it("DIARIA_CURSOS_URL/DIARIA_LIVROS_URL apontam pro domínio de marca (#3698)", () => {
