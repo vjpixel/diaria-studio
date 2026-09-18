@@ -122,7 +122,7 @@ distorcem o CAC visivelmente.
 
 ## Passo 2c — registrar em clicks-2608.csv e spend.csv (#8246)
 
-Uma linha por braço em `data/aquisicao/teste-2608/clicks-2608.csv`. Header
+Uma linha por braço em `data/aquisicao/clicks-2608.csv`. Header
 vigente: `canal,data_apuracao,gasto_acumulado,cadastros_acumulado,custo_por_cadastro,leitores_acumulado,cliques,impressoes,cpc_medio,conversoes,custo_por_conversao,perda_orcamento,perda_ranking,fonte`.
 
 - `canal`, `data_apuracao`, `gasto_acumulado` são **obrigatórios**:

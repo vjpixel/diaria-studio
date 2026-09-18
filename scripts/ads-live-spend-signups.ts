@@ -49,20 +49,24 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as dotenvParse } from "dotenv";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { fetchCampaignEconomicsSources } from "./lib/ads-campaign-economics-fetch.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { resolveKitConfig } from "./lib/kit-config.ts";
+import { daysBetween, formatDateOnly } from "./lib/ads-test-schedule.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Só estas 3 — nunca generalizar o force pra outras chaves (#8237: a
  *  precedência "ambiente vence" é deliberada em todo o resto do projeto,
  *  `test/env-loader.test.ts` trava isso). @pure — recebe o texto do .env
- *  já lido, nunca lê disco. */
+ *  já lido (via `dotenv.parse`, mesmo parser de `env-loader.ts` — nunca
+ *  regex própria, que erra em valor com `=`/aspas/CRLF), nunca lê disco. */
 export function forceFromDotenvText(envText: string, keys: readonly string[], target: NodeJS.ProcessEnv): void {
+  const parsed = dotenvParse(envText);
   for (const key of keys) {
-    const m = envText.match(new RegExp(`^${key}=(.*)$`, "m"));
-    if (m) target[key] = m[1].replace(/^"|"$/g, "");
+    if (key in parsed) target[key] = parsed[key];
   }
 }
 
@@ -103,8 +107,13 @@ export function formatSignupsTable(canal: string, rows: readonly { date: string;
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   loadProjectEnv(ROOT);
-  const envText = readFileSync(resolve(ROOT, ".env"), "utf8");
-  forceFromDotenvText(envText, FORCE_FROM_DOTENV_KEYS, process.env);
+  // Fail-soft de propósito (mesmo padrão de `loadProjectEnv` acima): .env
+  // ausente (clone fresco, sessão cloud) não deve abortar o script — só
+  // significa que o force das 3 chaves não tem o que sobrescrever.
+  const envFilePath = resolve(ROOT, ".env");
+  if (existsSync(envFilePath)) {
+    forceFromDotenvText(readFileSync(envFilePath, "utf8"), FORCE_FROM_DOTENV_KEYS, process.env);
+  }
 
   const runStatePath = resolve(ROOT, "data/aquisicao/teste-2608/run-state.json");
   if (!existsSync(runStatePath)) {
@@ -121,10 +130,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   const now = new Date();
-  const lookbackDays = Math.ceil((now.getTime() - Date.parse(`${d0}T00:00:00-03:00`)) / 86_400_000) + 1;
-  const kitApiKey = process.env.KIT_API_KEY;
+  // Aritmética de calendário pura (dias corridos, sem hora-do-dia) — nunca
+  // `Date.parse` + subtração de epoch, que fica sensível à hora em que o
+  // script roda (achado do review da #8246: um `now` à noite soma quase 1
+  // dia inteiro a mais que um `now` de manhã pro MESMO `d0`).
+  const lookbackDays = daysBetween(d0, formatDateOnly(now)) + 1;
+  const kitConfig = resolveKitConfig();
 
-  const res = await fetchCampaignEconomicsSources(fetch, kitApiKey ? { apiKey: kitApiKey } : null, { now, lookbackDays });
+  const res = await fetchCampaignEconomicsSources(fetch, kitConfig.ok ? kitConfig.config : null, {
+    now,
+    lookbackDays,
+    kitDateRangeStart: d0,
+  });
 
   if (hasFlag(argv, "json")) {
     console.log(JSON.stringify({ runState, corte: now.toISOString(), ...res }, null, 2));

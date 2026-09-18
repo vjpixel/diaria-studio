@@ -15,6 +15,7 @@ import {
   forceFromDotenvText,
   FORCE_FROM_DOTENV_KEYS,
 } from "../scripts/ads-live-spend-signups.ts";
+import { daysBetween, formatDateOnly } from "../scripts/lib/ads-test-schedule.ts";
 
 describe("#8246 — ads-live-spend-signups: formatadores e force de env", () => {
   it("formatSpendTable ordena por data e acumula, independente da ordem de entrada", () => {
@@ -69,5 +70,20 @@ describe("#8246 — ads-live-spend-signups: formatadores e force de env", () => 
     const target: NodeJS.ProcessEnv = { GOOGLE_CLIENT_ID: "valor-original" };
     forceFromDotenvText("OUTRA_COISA=x", FORCE_FROM_DOTENV_KEYS, target);
     assert.equal(target.GOOGLE_CLIENT_ID, "valor-original");
+  });
+
+  it("lookbackDays (daysBetween + formatDateOnly) é insensível à hora do dia — mesmo d0, hora diferente de 'now'", () => {
+    // Achado do review da PR #8357: a versão anterior usava Date.parse +
+    // subtração de epoch, que soma quase 1 dia a mais quando `now` é à
+    // noite vs. de manhã pro MESMO d0. daysBetween/formatDateOnly (mesma
+    // dupla usada por scripts/ads-live-spend-signups.ts) são aritmética de
+    // calendário pura — o resultado não pode variar com a hora.
+    const d0 = "2026-09-06";
+    const manha = new Date("2026-09-10T05:00:00Z");
+    const noite = new Date("2026-09-10T23:00:00Z");
+    const lookbackManha = daysBetween(d0, formatDateOnly(manha)) + 1;
+    const lookbackNoite = daysBetween(d0, formatDateOnly(noite)) + 1;
+    assert.equal(lookbackManha, lookbackNoite);
+    assert.equal(lookbackManha, 5);
   });
 });
