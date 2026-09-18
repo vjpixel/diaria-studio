@@ -182,3 +182,59 @@
 .state-ativa { background: var(--status-ok); color: var(--on-status); border-color: var(--status-ok); }
 .state-pausada { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
 .state-desconhecido { background: var(--paper-alt); opacity: 0.6; }
+/* Tooltip do gráfico de custo/cadastro (#8300) */
+#campaign-chart-container {
+  position: relative;
+}
+
+.ads-chart-guide {
+  stroke: var(--ink);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* SVG não honra o atributo `hidden` do HTML em todo browser — o display:none
+   explícito é o que de fato esconde a guia vertical. */
+.ads-chart-guide[hidden] {
+  display: none;
+}
+
+.ads-chart-tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.ads-chart-tooltip[hidden] {
+  display: none;
+}
+
+.ads-chart-tooltip-date {
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.ads-chart-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.ads-chart-tooltip-row strong {
+  margin-left: auto;
+  padding-left: 0.8rem;
+  font-family: var(--font-mono, monospace);
+}
