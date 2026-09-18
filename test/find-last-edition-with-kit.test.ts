@@ -6,16 +6,21 @@ import { join } from "node:path";
 import { findLastEditionWithKit } from "../scripts/find-last-edition-with-kit.ts";
 
 function setupEditions(
-  editions: Array<{ name: string; hasKit?: boolean; nested?: boolean }>,
+  editions: Array<{ name: string; hasKit?: boolean; hasKitPrimary?: boolean; nested?: boolean }>,
 ): string {
   const tmp = mkdtempSync(join(tmpdir(), "diaria-find-kit-"));
   for (const e of editions) {
     const dir = e.nested ? join(tmp, e.name.slice(0, 4), e.name) : join(tmp, e.name);
     mkdirSync(dir, { recursive: true });
-    if (e.hasKit) {
+    if (e.hasKit || e.hasKitPrimary) {
       const internalDir = join(dir, "_internal");
       mkdirSync(internalDir, { recursive: true });
-      writeFileSync(join(internalDir, "kit-diaria-published.json"), '{"broadcast_id":1}');
+      if (e.hasKit) {
+        writeFileSync(join(internalDir, "kit-diaria-published.json"), '{"broadcast_id":1}');
+      }
+      if (e.hasKitPrimary) {
+        writeFileSync(join(internalDir, "newsletter-kit-published.json"), '{"broadcast_id":2}');
+      }
     }
   }
   return tmp;
@@ -80,6 +85,20 @@ describe("findLastEditionWithKit", () => {
     const dir = setupEditions([{ name: "260423", hasKit: true, nested: true }]);
     try {
       assert.equal(findLastEditionWithKit(dir, "260424"), "data/editions/2604/260423");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("encontra edição com só newsletter-kit-published.json (backend Kit primário, #8318) — sem canal paralelo desde a migração de #7388", () => {
+    const dir = setupEditions([
+      { name: "260903", hasKit: true },
+      { name: "260904", hasKitPrimary: true },
+      { name: "260908", hasKitPrimary: true },
+      { name: "260909" }, // current
+    ]);
+    try {
+      assert.equal(findLastEditionWithKit(dir, "260909"), "data/editions/260908");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
