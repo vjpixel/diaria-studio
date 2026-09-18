@@ -37,6 +37,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
+import { isMainModule } from "./lib/cli-args.ts";
 import { buildImagePdf, readJpegHeader, type ImagePdfPage } from "./lib/image-pdf.ts";
 
 /** Teto da Documents API do LinkedIn — 100MB por documento. Conferido
@@ -159,7 +160,7 @@ async function main(): Promise<void> {
 }
 
 // CLI guard — importar este módulo (teste) nunca dispara download.
-if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}` || process.argv[1]?.endsWith("gen-weekly-carousel-pdf.ts")) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(String(e instanceof Error ? e.message : e));
     process.exit(1);

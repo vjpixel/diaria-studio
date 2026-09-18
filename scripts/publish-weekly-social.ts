@@ -275,7 +275,16 @@ export function buildFlatCardTexts(
     cover: { kicker: "Resumo semanal", title: coverTitle, footer: range ? `${range} · diar.ia.br` : "diar.ia.br" },
     cta: {
       kicker: "Grátis, toda manhã",
-      title: "A edição completa chega no seu e-mail. Assine no link da bio.",
+      // #8055: era "Assine no link da bio". "Link da bio" é idioma de
+      // Instagram, e ESTE card não é do Instagram — o mesmo JPEG vai pros 4
+      // canais (`carouselImageUrls` é compartilhado por Instagram, Threads,
+      // LinkedIn e Facebook), onde não existe bio com link. O projeto já
+      // trata essa diferença na LEGENDA (`format-weekly-social.ts`: Facebook
+      // leva link direto, Instagram leva "link da bio" — travado em
+      // `test/format-weekly-social.test.ts`); a arte era o ponto que ficara
+      // para trás, dizendo a mesma frase de Instagram em toda parte.
+      // Endereço explícito funciona nos 4.
+      title: "A edição completa chega no seu e-mail. Assine em diar.ia.br.",
       footer: "diar.ia.br",
     },
   };
