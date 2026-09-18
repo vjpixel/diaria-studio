@@ -6,7 +6,7 @@
 // ?refresh=1) — nenhuma edição de spend.csv nesta página (import manual é
 // fora do Studio, ver `scripts/seed-spend-csv.ts`/CLAUDE.md).
 
-import { nearestDateIndex, tooltipRowsForIndex } from "./ads-chart-tooltip.js";
+import { clampToContainer, nearestDateIndex, tooltipRowsForIndex } from "./ads-chart-tooltip.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -422,7 +422,10 @@ function attachCampaignChartTooltip(cumulative, { allDates, plotW, xForIndex }) 
     if (rect.width === 0) return;
     const scale = CHART_WIDTH / rect.width;
     const plotX = (event.clientX - rect.left) * scale - CHART_MARGIN.left;
-    const nearest = nearestDateIndex(xForIndex, allDates.length, plotX, plotW);
+    // Folga = margem esquerda do gráfico: qualquer x DENTRO do SVG resolve
+    // uma coluna, inclusive sobre os rótulos do eixo. Esconder ali seria
+    // outra forma do bug do #8300 (mouse no gráfico, nenhum valor).
+    const nearest = nearestDateIndex(xForIndex, allDates.length, plotX, plotW, CHART_MARGIN.left);
     if (nearest === null) {
       hide();
       return;
@@ -448,8 +451,12 @@ function attachCampaignChartTooltip(cumulative, { allDates, plotW, xForIndex }) 
     const containerRect = el.campaignChartContainer.getBoundingClientRect();
     const dotLeft = rect.left - containerRect.left + (CHART_MARGIN.left + xForIndex(nearest)) / scale;
     const flip = dotLeft > containerRect.width / 2;
-    tooltip.style.left = `${flip ? dotLeft - tooltip.offsetWidth - 12 : dotLeft + 12}px`;
-    tooltip.style.top = `${Math.max(0, event.clientY - containerRect.top - tooltip.offsetHeight - 12)}px`;
+    const rawLeft = flip ? dotLeft - tooltip.offsetWidth - 12 : dotLeft + 12;
+    const rawTop = event.clientY - containerRect.top - tooltip.offsetHeight - 12;
+    // Clamp nas 4 bordas do container: sem isso o tooltip vaza pra fora do
+    // painel nas colunas das pontas e no topo do gráfico (review da #8300).
+    tooltip.style.left = `${clampToContainer(rawLeft, tooltip.offsetWidth, containerRect.width)}px`;
+    tooltip.style.top = `${clampToContainer(rawTop, tooltip.offsetHeight, containerRect.height)}px`;
   });
   svg.addEventListener("mouseleave", hide);
 }

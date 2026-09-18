@@ -14,6 +14,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  clampToContainer,
   nearestDateIndex,
   tooltipRowsForIndex,
 } from "../scripts/studio-ui/public/ads-chart-tooltip.js";
@@ -45,6 +46,15 @@ describe("nearestDateIndex (#8300)", () => {
   it("folga pequena nas pontas ainda resolve — o mouse não precisa ser cirúrgico", () => {
     assert.equal(nearestDateIndex(xForIndex, COUNT, -5, PLOT_W), 0);
     assert.equal(nearestDateIndex(xForIndex, COUNT, PLOT_W + 5, PLOT_W), COUNT - 1);
+  });
+
+  it("folga explícita cobre as margens do SVG — hover sobre o rótulo do eixo ainda resolve", () => {
+    // `ads.js` passa CHART_MARGIN.left (56) justamente pra que qualquer x
+    // dentro do SVG devolva uma coluna: esconder sobre o eixo seria outra
+    // forma do bug do #8300 (mouse no gráfico, nenhum valor).
+    assert.equal(nearestDateIndex(xForIndex, COUNT, -50, PLOT_W, 56), 0);
+    assert.equal(nearestDateIndex(xForIndex, COUNT, PLOT_W + 50, PLOT_W, 56), COUNT - 1);
+    assert.equal(nearestDateIndex(xForIndex, COUNT, -80, PLOT_W, 56), null);
   });
 
   it("série de 1 ponto só resolve a coluna 0", () => {
@@ -109,5 +119,28 @@ describe("tooltipRowsForIndex (#8300)", () => {
   it("defensivo: série ausente ou índice inválido devolve lista vazia", () => {
     assert.deepEqual(tooltipRowsForIndex(undefined, 0), []);
     assert.deepEqual(tooltipRowsForIndex(SERIES, -1), []);
+  });
+});
+
+describe("clampToContainer (#8300, finding do review)", () => {
+  it("posição confortável passa intacta", () => {
+    assert.equal(clampToContainer(120, 180, 700), 120);
+  });
+
+  it("vazamento pela borda inicial vira 0", () => {
+    assert.equal(clampToContainer(-30, 180, 700), 0);
+  });
+
+  it("vazamento pela borda final encosta no fim do container", () => {
+    assert.equal(clampToContainer(650, 180, 700), 520);
+  });
+
+  it("tooltip maior que o container encosta no início — nunca corta a data", () => {
+    assert.equal(clampToContainer(40, 900, 700), 0);
+  });
+
+  it("defensivo: medida ausente (offsetWidth 0 antes do 1º layout) nunca vira NaN", () => {
+    assert.equal(clampToContainer(Number.NaN, 180, 700), 0);
+    assert.equal(clampToContainer(50, Number.NaN, 700), 50);
   });
 });

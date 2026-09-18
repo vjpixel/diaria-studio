@@ -44,3 +44,15 @@ export function tooltipRowsForIndex(series, index) {
     };
   });
 }
+
+/** Mantém o tooltip dentro do container nas duas pontas do eixo.
+ *
+ *  Sem isso ele vaza pra fora do painel nas colunas das extremidades e no
+ *  topo do gráfico (finding do review da #8300). Quando o tooltip é MAIOR
+ *  que o container, a borda inicial vence (0) — cortar no fim esconderia
+ *  justamente a data e o primeiro canal. */
+export function clampToContainer(pos, size, containerSize) {
+  if (!Number.isFinite(pos)) return 0;
+  if (!Number.isFinite(size) || !Number.isFinite(containerSize)) return Math.max(0, pos);
+  return Math.max(0, Math.min(pos, Math.max(0, containerSize - size)));
+}
