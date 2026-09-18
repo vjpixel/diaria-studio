@@ -1586,6 +1586,50 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7544",
   },
   {
+    // #8245 — a credencial Meta Ads (`META_ADS_ACCESS_TOKEN`, System User
+    // token `ads_read`, sem expiração, #7536) já alimenta o fetch REST ao
+    // vivo do `/ads` desde 09/09/2026, mas nenhuma task rodava a mesma
+    // busca pro caminho MENSAL de `data/aquisicao/spend.csv` — o script
+    // (`scripts/meta-ads-ingest-spend.ts`) só tinha o caminho manual
+    // `--input` (dump do MCP `ads_get_ad_entities`, #5469). O headless
+    // (#8245) reusa `fetchMetaAdsChannelMetrics`
+    // (`scripts/lib/ads-campaign-economics-fetch.ts`) — mesmo fetch/auth/
+    // paginação do `/ads`, nada reimplementado.
+    //
+    // 09:54 BRT — livre entre o Microsoft Ads acima (09:52) e
+    // Diaria-Session-Registry-Gc (09:55, ver grep de `hour: 9, minute:`
+    // neste arquivo), ainda dentro do cluster matinal e antes de
+    // Diaria-Ads-Spend-Ingest-Alarm (10:05) — mesma disciplina de
+    // espaçamento de 2min usada entre Google (09:50) e Microsoft (09:52).
+    //
+    // Fail-soft por design (#5469/#8245): sem META_ADS_ACCESS_TOKEN ou com
+    // a API indisponível, o script sai limpo com exit 0 sem tocar
+    // spend.csv — mesma disciplina do Google/Microsoft acima.
+    //
+    // Pré-requisito no `300` (item 8 da issue #8245): `META_ADS_ACCESS_TOKEN`
+    // não chega lá hoje (Doppler ainda não sincronizado com essa chave, ver
+    // corpo da issue) — a task fica DECLARADA sem produzir dado real até o
+    // editor rodar `npm run sync-env` no checkout compartilhado. Até lá,
+    // esta task roda todo dia e só emite o fallback "variável(is) de
+    // ambiente ausente(s): META_ADS_ACCESS_TOKEN" — comportamento esperado,
+    // não um defeito (mesmo texto que `Diaria-Ads-Spend-Ingest-Alarm`
+    // classificaria como `defect` SE lesse este log, o que ainda não faz —
+    // extensão de `AdsSpendPlatform`/leitura do log do Meta ficou fora do
+    // escopo do #8245, ver corpo da PR).
+    //
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5704/#7544 acima) -- máquina Windows não roda mais
+    // tasks Diaria (#5074); arme real é ação POSTERIOR do editor via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (300),
+    // depois do `sync-env` acima.
+    name: "Diaria-Meta-Ads-Spend-Ingest",
+    description: "ingestao diaria de gasto do Meta Ads (Graph API insights) para data/aquisicao/spend.csv",
+    steps: [{ key: "ingest", script: "scripts/meta-ads-ingest-spend.ts" }],
+    logPath: "aquisicao/.meta-ads-ingest.log",
+    schedule: { kind: "daily", hour: 9, minute: 54 },
+    issue: "#8245",
+  },
+  {
     // #5878 — Campaign Management API v13 (SOAP) capta motivos editoriais de
     // assets rejeitados. Diferente da Reporting API (Google Ads Spend Ingest
     // acima, #5704), esta é uma chamada SINCRONA (GetAssetGroupsEditorialReasons
