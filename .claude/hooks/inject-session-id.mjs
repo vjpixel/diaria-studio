@@ -239,14 +239,80 @@ const SESSION_ID_TARGETS = [
 /**
  * Heurística de "comando encadeado" — nunca injeta no meio de um `&&`/`;`/`|`
  * nem quando o comando alvo não é a ÚLTIMA linha de um script multi-linha
- * (#5161 fleet review item 6): sem o `\n` aqui, um heredoc/script Bash de
- * várias linhas com `session-registry.ts register ...` numa linha que não é
- * a última faz o hook anexar `--session-id` no FIM da string inteira (na
+ * (#5161 fleet review item 6): sem checar `\n` aqui, um heredoc/script Bash
+ * de várias linhas com `session-registry.ts register ...` numa linha que não
+ * é a última faz o hook anexar `--session-id` no FIM da string inteira (na
  * última linha, não na linha do `register`) — flag mal-direcionada, o
  * subcomando real ainda falha por falta dela.
+ *
+ * #8346: até aqui, a checagem era uma regex sobre a string CRUA — sem noção
+ * de citação, um metacaractere DENTRO de aspas (`--reason "…; …"`, prosa
+ * livre de `self-authorize-merge`/`grant-merge`) era lido como encadeamento
+ * e a chamada standalone legítima era recusada (3ª instância da família do
+ * #7264/#7281, agora aqui em vez de em `isScriptInvoked`). Fix: percorre o
+ * comando caractere a caractere rastreando aspas simples/duplas — só conta
+ * um metacaractere quando ele aparece FORA de qualquer aspa. Mesmo espírito
+ * dos dois fixes irmãos: reconhecer citação, não afrouxar a detecção — um
+ * comando genuinamente encadeado (metacaractere fora de aspas) continua
+ * batendo `true`, igual antes.
+ *
+ * Regras de aspas/escape (decisão explícita, não dedutível da regex antiga):
+ * - Aspas simples: tudo dentro é literal (inclusive `\`, igual ao shell
+ *   POSIX) — só uma outra aspa simples fecha.
+ * - Aspas duplas: `\` escapa o próximo caractere (inclusive a própria aspa
+ *   dupla, `\"`) e não fecha a citação sozinho.
+ * - Fora de aspas: `\;`, `\|` etc. também contam como escapado — `\` consome
+ *   o caractere seguinte sem disparar a detecção. Não é o caso do #8346 (que
+ *   é sempre dentro de aspas), mas mantém a mesma leitura de "escape suprime
+ *   o metacaractere" nos dois contextos, em vez de uma regra só pra dentro
+ *   de aspas.
+ * - Aspa não fechada até o fim da string: comando malformado — tratado como
+ *   ENCADEADO (fail-closed). Nunca abrir a porta por causa de uma aspa
+ *   órfã; na pior hipótese um comando standalone legítimo mas mal-escapado
+ *   simplesmente não recebe a injeção automática (mesmo modo de falha
+ *   fail-open de sempre — ver o `try/catch` no entrypoint do hook), nunca
+ *   pior que isso.
+ * - `&` sozinho (background, sem par) nunca contou como encadeamento nesta
+ *   heurística (a regex antiga só casava `&&`) — preservado aqui.
  */
 export function isChainedCommand(command) {
-  return /&&|\|\||;|\|(?!\|)|\r?\n/.test(command);
+  if (typeof command !== "string") return false;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (inSingleQuote) {
+      if (ch === "'") inSingleQuote = false;
+      continue;
+    }
+    if (inDoubleQuote) {
+      if (ch === "\\") {
+        i++; // escapa o próximo caractere (inclusive \" ) — não fecha a aspa
+        continue;
+      }
+      if (ch === '"') inDoubleQuote = false;
+      continue;
+    }
+    // Fora de qualquer aspa.
+    if (ch === "\\") {
+      i++; // escapa o próximo caractere (ex: `\;`) — suprime a detecção
+      continue;
+    }
+    if (ch === "'") {
+      inSingleQuote = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDoubleQuote = true;
+      continue;
+    }
+    if (ch === "\n" || ch === "\r") return true;
+    if (ch === ";") return true;
+    if (ch === "|") return true; // cobre `|` e `||` — ambos disparam
+    if (ch === "&" && command[i + 1] === "&") return true;
+  }
+  // Aspa não fechada: comando malformado, fail-closed.
+  return inSingleQuote || inDoubleQuote;
 }
 
 /**

@@ -64,6 +64,61 @@ describe("isChainedCommand", () => {
       true,
     );
   });
+
+  // #8346: metacaractere DENTRO de aspas não é encadeamento — reprodução
+  // real da issue (self-authorize-merge --reason "...;...") e os outros 4
+  // metacaracteres, em aspas duplas e simples.
+  it("os 5 metacaracteres dentro de aspas DUPLAS não marcam como encadeado", () => {
+    assert.equal(isChainedCommand('npx tsx scripts/lib/session-registry.ts end --reason "a && b"'), false);
+    assert.equal(isChainedCommand('npx tsx scripts/lib/session-registry.ts end --reason "a || b"'), false);
+    assert.equal(isChainedCommand('npx tsx scripts/lib/session-registry.ts end --reason "a; b"'), false);
+    assert.equal(isChainedCommand('npx tsx scripts/lib/session-registry.ts end --reason "a | b"'), false);
+    assert.equal(isChainedCommand('npx tsx scripts/lib/session-registry.ts end --reason "a\nb"'), false);
+  });
+
+  it("os 5 metacaracteres dentro de aspas SIMPLES não marcam como encadeado", () => {
+    assert.equal(isChainedCommand("npx tsx scripts/lib/session-registry.ts end --reason 'a && b'"), false);
+    assert.equal(isChainedCommand("npx tsx scripts/lib/session-registry.ts end --reason 'a || b'"), false);
+    assert.equal(isChainedCommand("npx tsx scripts/lib/session-registry.ts end --reason 'a; b'"), false);
+    assert.equal(isChainedCommand("npx tsx scripts/lib/session-registry.ts end --reason 'a | b'"), false);
+    assert.equal(isChainedCommand("npx tsx scripts/lib/session-registry.ts end --reason 'a\nb'"), false);
+  });
+
+  it("os mesmos 5 metacaracteres FORA de aspas continuam encadeados (não regride #5161/#7212)", () => {
+    assert.equal(isChainedCommand("npx tsx scripts/lib/session-registry.ts end && echo ok"), true);
+    assert.equal(isChainedCommand("npx tsx scripts/lib/session-registry.ts end || echo fail"), true);
+    assert.equal(isChainedCommand("npx tsx scripts/lib/session-registry.ts end; echo ok"), true);
+    assert.equal(isChainedCommand("npx tsx scripts/lib/session-registry.ts end | cat"), true);
+    assert.equal(isChainedCommand("npx tsx scripts/lib/session-registry.ts end\necho ok"), true);
+  });
+
+  it("escape (\\;) fora de aspas suprime a detecção", () => {
+    assert.equal(
+      isChainedCommand("npx tsx scripts/lib/session-registry.ts end --reason a\\;b"),
+      false,
+    );
+  });
+
+  it("aspas não fechadas são fail-closed (tratado como encadeado)", () => {
+    assert.equal(
+      isChainedCommand('npx tsx scripts/lib/session-registry.ts end --reason "sem fechar'),
+      true,
+    );
+    assert.equal(
+      isChainedCommand("npx tsx scripts/lib/session-registry.ts end --reason 'sem fechar"),
+      true,
+    );
+  });
+
+  it("reprodução literal da issue #8346 — self-authorize-merge com ; dentro de --reason → standalone", () => {
+    assert.equal(
+      isChainedCommand(
+        'npx tsx scripts/lib/session-registry.ts self-authorize-merge --pr 8337 ' +
+          '--reason "Editor pediu o merge nesta sessao interativa; grant-merge pedido ao 300 sem resposta"',
+      ),
+      false,
+    );
+  });
 });
 
 describe("needsSessionId", () => {
