@@ -561,6 +561,46 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4755",
   },
   {
+    name: "Diaria-Ai-Fetch-Report",
+    description: "le do KV os contadores diarios de fetch/referrer por bot de IA e anexa em data/ai-fetch/history.jsonl",
+    // `--days 2` (não `--days 1`): overlap de 1 dia cobre virada de fuso
+    // (o script lê datas em UTC, esta task roda em BRT) e uma execução
+    // perdida (task que falhar 1 dia é recoberta automaticamente no dia
+    // seguinte, sem furo na série) — mesmo raciocínio da issue de origem
+    // (#8340). `appendAiFetchLog` é idempotente por `date` desde este
+    // mesmo PR: reler o mesmo dia substitui o registro antigo, nunca
+    // duplica.
+    steps: [{ key: "report", script: "scripts/ai-fetch-report.ts", args: ["--days", "2"] }],
+    logPath: "ai-fetch/.report.log",
+    // Diária 10:12 BRT — qualquer horário depois da virada UTC serve (o
+    // script lê datas em UTC e o overlap de `--days 2` cobre o dia ainda
+    // incompleto), e a própria issue #8340 sugeriu encaixar "junto do bloco
+    // de checks diários das 10h-11h BRT". Slot livre conferido contra
+    // `--list` antes de escolher (10:10 Backlog-Reconcile, 10:15
+    // Robots-Txt-Drift-Check — nada em 10:11-10:14).
+    schedule: { kind: "daily", hour: 10, minute: 12 },
+    issue: "#8340, refs #4902, #4754, #8062",
+  },
+  {
+    name: "Diaria-Ai-Fetch-Staleness-Alarm",
+    description: "alarme de staleness da serie ai-fetch (data/ai-fetch/history.jsonl parado de crescer)",
+    // #8340 item "guard construído tem que ser armado" (#7137 item 27): a
+    // própria issue de origem é "task mergeada, nunca agendada, série nunca
+    // acumulou" — registrar só o report sem um alarme companheiro deixaria
+    // a MESMA classe de falha se repetir em silêncio assim que a task
+    // parar de rodar por qualquer motivo (unit desarmada, credencial
+    // Cloudflare expirada). Mesmo padrão do par Geo-Citation-Monitor /
+    // Geo-Citation-Staleness-Alarm acima.
+    steps: [{ key: "alarm", script: "scripts/ai-fetch-staleness-alarm.ts" }],
+    logPath: "ai-fetch/.staleness-alarm.log",
+    // Diária 10:47 BRT — 35min depois do Ai-Fetch-Report (10:12), folga
+    // suficiente pra ele terminar antes do alarme checar o resultado do
+    // dia. Slot livre conferido contra `--list` (10:45 Branch-Cleanup,
+    // 10:50 Codex-Credential-Alarm + GA4-Sync — nada em 10:46-10:49).
+    schedule: { kind: "daily", hour: 10, minute: 47 },
+    issue: "#8340",
+  },
+  {
     name: "Diaria-LinkedIn-Weekly-Staleness-Alarm",
     description: "alarme de staleness da newsletter semanal do LinkedIn (ln-{cycle}.json ausente)",
     steps: [{ key: "alarm", script: "scripts/linkedin-weekly-staleness-alarm.ts" }],
