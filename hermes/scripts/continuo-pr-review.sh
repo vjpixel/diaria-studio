@@ -795,14 +795,18 @@ done
 # nunca justo no dia em que há contenção de lock pra relatar (#8212 review, P3).
 LOCK_NOTE=""
 [ "$LOCK_BLOCKED" -gt 0 ] 2>/dev/null && LOCK_NOTE=" bloqueadas-por-lock=$LOCK_BLOCKED"
-echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))$LOCK_NOTE"
-# #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
-# infra — a linha de resumo é o que o Telegram carrega; sem isso
-# "erros-de-infra=1" chegava sem nenhum rastro de causa. Log completo
-# (não-truncado, todas as ocorrências, não só as desta rodada) sempre em
-# $INFRA_ERROR_LOG.
+# Restaura o stdout original ANTES do bloco de entrega: o `exec 1>&2` do
+# topo redirecionou stdout→stderr pra todo o corpo do script (detalhes do
+# loop), e a entrega do cron (Telegram) carrega só o stdout — se o
+# restauro viesse DEPOIS do `if`, o motivo de erro de infra ia parar em
+# stderr e o operador receberia `falhas=1` sem rastro de causa (exato
+# sintoma do #6910, reintroduzido pelo rescue). #6910: o motivo de erro
+# de infra é deliverable — never just a count.
+exec 1>&3
+exec 3>&-
 if [ "$INFRA_ERRORS" -gt 0 ]; then
-  echo "[continuo-pr-review] motivo(s) do(s) erro(s) de infra desta rodada:" >&1
-  printf '%s\n' "$INFRA_ERROR_SUMMARY" >&1
-  echo "[continuo-pr-review] log completo: $INFRA_ERROR_LOG" >&1
+  echo "[continuo-pr-review] motivo(s) do(s) erro(s) de infra desta rodada:"
+  printf '%s' "$INFRA_ERROR_SUMMARY"
+  echo "[continuo-pr-review] log completo: $INFRA_ERROR_LOG"
 fi
+echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))$LOCK_NOTE"

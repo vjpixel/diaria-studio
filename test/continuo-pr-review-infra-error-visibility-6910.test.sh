@@ -106,6 +106,71 @@ assert_true \
   "log_infra_error() avisa em stderr quando não consegue escrever o log (não engole em silêncio, P2 do review)" \
   "$(echo "$STDERR_OUT" | grep -q 'log_infra_error' && echo 1 || echo 0)"
 
+# #8327 (review rejeitou): o rescue trocou a ordem — `exec 1>&3` (restaura
+# stdout) vinha DEPOIS do bloco `if [ "$INFRA_ERRORS" -gt 0 ]`, então, com
+# o `exec 1>&2` do topo redirecionando stdout→stderr por todo o corpo, o
+# motivo de erro de infra ia parar em stderr e o Telegram (que carrega só
+# o stdout) recebia `falhas=1` sem nenhuma causa — o mesmo sintoma que o
+# #6910 corrigiu, reintroduzido pela própria PR. Testa o comportamento de
+# verdade: executa o trecho final do script real com fd1 redirecionado
+# (como o topo do script faz) e exige que o motive chegue no stdout.
+DELIVER_SRC=$(awk '/^exec 1>&3$/{f=1} f{print}' "$SCRIPT")
+if [ -z "$DELIVER_SRC" ]; then
+  echo "FAIL: não conseguiu extrair o trecho de entrega (exec 1>&3) de $SCRIPT"
+  exit 1
+fi
+# sanity estrutural: o trecho extraído contém a linha de resumo final
+case "$DELIVER_SRC" in
+  *'[continuo-pr-review] fim — revisadas='*) ;;
+  *) echo "FAIL: trecho de entrega extraído está incompleto"; exit 1 ;;
+esac
+
+INFRA_ERRORS=1
+INFRA_ERROR_SUMMARY="PR #1234 (auth_rc=3): gh: command not found"
+INFRA_ERROR_LOG="$TMPDIR/infra-errors.jsonl"
+LOCK_BLOCKED=0
+LOCK_NOTE=""
+REVIEWED=5 MERGED=3 ESCALATED=0 REJECTED=1 FAILED=0
+# os captures vivem FORA do TMPDIR: o `trap 'rm -rf "$TMPDIR"' EXIT` herda
+# pro subshell e apaga os arquivos de saída antes dos asserts de baixo
+# (o subshell sai antes do bloco de checagens).
+CAPTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR" "$CAPTURE_DIR"' EXIT
+STDOUT_CAPTURE="$CAPTURE_DIR/delivery.stdout"
+STDERR_CAPTURE="$CAPTURE_DIR/delivery.stderr"
+# simula o estado do topo do script (fd3 = stdout original, fd1 = stderr)
+SUB_RC=0
+(
+  exec 3>&1
+  exec 1>&2
+  eval "$DELIVER_SRC"
+) 1>"$STDOUT_CAPTURE" 2>"$STDERR_CAPTURE" || SUB_RC=$?
+
+assert_true \
+  "entrega: motivo de erro de infra chega no STDOUT (Telegram), não só em stderr" \
+  "$(grep -q 'motivo(s) do(s) erro(s) de infra' "$STDOUT_CAPTURE" && echo 1 || echo 0)"
+assert_true \
+  "entrega: motivo completo (PR #1234 + causa) vai no stdout" \
+  "$(grep -q 'PR #1234.*gh: command not found' "$STDOUT_CAPTURE" && echo 1 || echo 0)"
+assert_true \
+  "entrega: caminho do log completo vai no stdout" \
+  "$(grep -q 'log completo:' "$STDOUT_CAPTURE" && echo 1 || echo 0)"
+assert_true \
+  "entrega: linha de resumo final (falhas=1) vai no stdout" \
+  "$(grep -qE 'fim — revisadas=5.*falhas=1' "$STDOUT_CAPTURE" && echo 1 || echo 0)"
+assert_true \
+  "entrega: com INFRA_ERRORS>0 o motivo NÃO é apenas um count sem causa (stdout tem rastro)" \
+  "$(grep -q 'PR #1234' "$STDOUT_CAPTURE" && echo 1 || echo 0)"
+
+# estrutura: o restauro de stdout (exec 1>&3) vem ANTES do bloco de motivo,
+# não depois — é isso que o teste acima prova behaviorally, mas o assertion
+# estrutural pega se alguém reverter a ordem de novo.
+RESTORE_LINE=$(awk '/^exec 1>&3$/{print NR; exit}' "$SCRIPT")
+MOTIVO_LINE=$(grep -n 'motivo(s) do(s) erro(s) de infra' "$SCRIPT" | head -1 | cut -d: -f1)
+assert_true \
+  "estrutura: exec 1>&3 (restaura stdout) aparece antes do bloco de motivo de infra" \
+  "$([ -n "$RESTORE_LINE" ] && [ -n "$MOTIVO_LINE" ] && [ "$RESTORE_LINE" -lt "$MOTIVO_LINE" ] && echo 1 || echo 0)"
+
 if [ "$FAILED" -gt 0 ]; then
   echo ""
   echo "$FAILED asserção(ões) falharam"
