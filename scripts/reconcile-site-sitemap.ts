@@ -171,14 +171,37 @@ export function main(argv = process.argv.slice(2)): number {
     const f = join(pagesDir, slug, "index.html");
     return existsSync(f) ? readFileSync(f, "utf8") : null;
   };
-  const feed = buildHomeFeed(readFileSync(sitemapPath, "utf8"), readPageHtml, ARCHIVE_CARD_LIMIT + 1);
-  writeFileSync(homePath, buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1) }), "utf8");
-
-  console.log(
-    `[reconcile-site-sitemap] ${orphans.length} entrada(s) acrescentada(s), 0 órfãs restantes; home regenerada` +
-      (semData > 0 ? ` (${semData} sem <lastmod> — nenhuma fonte de data disponível)` : "") +
-      (corrupt.length > 0 ? ` (${corrupt.length} arquivo(s) de cache ilegível)` : ""),
-  );
+  // #8360: no diff do sitemap a mudança parece "só reordenação", mas é ela
+  // que decide qual edição a home elege — foi assim que o #8358 trocou o
+  // hero de 18/09 por 03/09 sem nenhum aviso. Nomear a troca explicitamente.
+  const heroAntes = buildHomeFeed(xml, readPageHtml, ARCHIVE_CARD_LIMIT + 1)[0]?.slug ?? null;
+  const feed = buildHomeFeed(next, readPageHtml, ARCHIVE_CARD_LIMIT + 1);
+  if (feed[0] && feed[0].date == null) {
+    // Fail-safe: hero eleito sem NENHUMA data (nem `<lastmod>`, nem data na
+    // página — o empate total cai no desempate lexicográfico por `<loc>`).
+    // Substituir a home existente por essa eleição seria trocar uma edição
+    // real por um guess alfabético; a home fica intacta e o próximo rodar
+    // com `data/` montada dataria as entradas e regeneraria de verdade.
+    console.error(
+      `[reconcile-site-sitemap] home NÃO regenerada: nenhuma entrada tem data (nem <lastmod> nem data na página) — ` +
+        `a eleição do hero degradaria para ordem alfabética. Re-rodar com data/ montada para datar as entradas.`,
+    );
+  } else {
+    writeFileSync(homePath, buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1) }), "utf8");
+    console.log(
+      `[reconcile-site-sitemap] ${orphans.length} entrada(s) acrescentada(s), 0 órfãs restantes; home regenerada` +
+        (semData > 0
+          ? ` (${semData} sem <lastmod> — sem data a entrada não compete pelo hero; re-rodar com data/ montada para datá-las)`
+          : "") +
+        (corrupt.length > 0 ? ` (${corrupt.length} arquivo(s) de cache ilegível)` : ""),
+    );
+    const heroDepois = feed[0]?.slug ?? null;
+    if (heroDepois !== heroAntes) {
+      console.log(
+        `[reconcile-site-sitemap] hero da home mudou: ${heroAntes ?? "(nenhum)"} → ${heroDepois ?? "(nenhum)"}`,
+      );
+    }
+  }
   return 0;
 }
 
