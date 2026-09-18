@@ -213,6 +213,8 @@ PR_NUMBERS=$(gh pr list --state open --json number,headRefName \
   --jq '.[] | select(.headRefName | startswith("bot/") | not) | .number')
 
 if [ -z "$PR_NUMBERS" ]; then
+  exec 1>&3
+  exec 3>&-
   echo "[continuo-pr-review] nenhuma PR elegível aberta (exceto bot/*) — noop"
   exit 0
 fi
@@ -350,7 +352,7 @@ try_merge_gate() {
   case "$GATE_RC" in
     0)
       REVIEWED_HEAD_SHA=$(printf '%s' "$GATE_JSON" | jq -r '.details.reviewedHeadSha // empty')
-  echo "[continuo-pr-review] PR #$pr: merge" >&2
+      echo "[continuo-pr-review] PR #$pr: merge" >&2
       # Editor (09/09): stdout é a entrega curta no Telegram; o JSON cru do gate
       # vai pro STDERR, que o cron captura no log. Mesmo tratamento do
       # transcript do `claude -p` logo abaixo. Silenciar de vez perderia o
@@ -807,7 +809,7 @@ echo "fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeita
 # (não-truncado, todas as ocorrências, não só as desta rodada) sempre em
 # $INFRA_ERROR_LOG.
 if [ "$INFRA_ERRORS" -gt 0 ]; then
-  echo "motivo(s) de infra:" >&2
-  printf '%s' "$INFRA_ERROR_SUMMARY" >&2
-  echo "log completo: $INFRA_ERROR_LOG" >&2
+  echo "[continuo-pr-review] motivo(s) do(s) erro(s) de infra:"
+  printf '%s' "$INFRA_ERROR_SUMMARY"
+  echo "[continuo-pr-review] log completo: $INFRA_ERROR_LOG"
 fi
