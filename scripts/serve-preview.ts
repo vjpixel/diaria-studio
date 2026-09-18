@@ -136,6 +136,17 @@ export interface PreviewServerOptions {
  * Best-effort absoluto: qualquer erro é engolido. Medir não pode atrasar
  * nem quebrar o reload que está sendo medido.
  */
+/** mtime em ms do arquivo, ou `null` se ele não existe / não dá pra ler.
+ *  `null` nunca conta como "mudou" — na dúvida, não medir é melhor que medir
+ *  errado. */
+function safeMtimeMs(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 function logPreviewReloadCycle(entry: {
   fileChangedAt: number;
   servedAt: number;
@@ -212,6 +223,17 @@ export async function startPreviewServer(
     // única que a issue diz que sai do modelo por completo, e portanto a
     // única que pode ser medida sem depender de alguém lembrar de medir.
     let burstStartedAt: number | null = null;
+    // mtime do ARQUIVO SERVIDO na última notificação. O watcher observa o
+    // diretório inteiro de propósito (Fatia 1 — asset relativo também deve
+    // disparar reload), mas MEDIR o diretório inteiro seria outra coisa: o
+    // `_internal/` recebe escrita que nada tem a ver com o preview
+    // (`04-newsletter-url.json` do próprio `--persist-to`, segundos depois do
+    // start; `stage4-post-edit-checks.json`; `editor-requests.jsonl`;
+    // cascade-status). Cada uma dessas geraria uma amostra "rapidíssima" que
+    // entraria na mediana como se fosse latência de ajuste — medição
+    // contaminada com aparência de correta, exatamente a classe de falha que
+    // este trabalho existe pra fechar (#8313 review, achado 1).
+    let lastServedMtimeMs = safeMtimeMs(filePath);
     const notifyClients = () => {
       const servedAt = Date.now();
       let delivered = 0;
@@ -223,7 +245,12 @@ export async function startPreviewServer(
           // cliente já desconectou — 'close' abaixo já remove do Set.
         }
       }
-      if (burstStartedAt != null) {
+      // Reload sempre acontece (pode ter sido asset); a MEDIÇÃO só quando o
+      // arquivo servido em si mudou.
+      const mtimeNow = safeMtimeMs(filePath);
+      const servedFileChanged = mtimeNow != null && mtimeNow !== lastServedMtimeMs;
+      if (mtimeNow != null) lastServedMtimeMs = mtimeNow;
+      if (burstStartedAt != null && servedFileChanged) {
         logPreviewReloadCycle({
           fileChangedAt: burstStartedAt,
           servedAt,
@@ -231,8 +258,8 @@ export async function startPreviewServer(
           edition: opts.edition ?? null,
           rootDir: opts.timingLogRootDir,
         });
-        burstStartedAt = null;
       }
+      burstStartedAt = null;
     };
     const scheduleNotify = () => {
       burstStartedAt ??= Date.now();

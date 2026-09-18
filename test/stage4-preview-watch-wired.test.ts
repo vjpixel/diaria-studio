@@ -30,10 +30,26 @@ const PLAYBOOK = resolve(import.meta.dirname, "..", ".claude", "agents", "orches
 /** Linhas que sobem um servidor de preview — `--file ... --port N`. O
  *  teardown (`--stop-pid`) não sobe nada e fica de fora. */
 function serveInvocationLines(text: string): { lineNo: number; line: string }[] {
-  return text
-    .split("\n")
-    .map((line, i) => ({ lineNo: i + 1, line }))
-    .filter(({ line }) => line.includes("--file ") && line.includes("--port "));
+  // Junta as continuações de linha (barra invertida no fim) ANTES de filtrar
+  // (#8313 review): sem isso, um reflow que separasse `--file` e `--port` em
+  // linhas diferentes — bash igualmente válido — faria a invocação sair do
+  // radar do guard em silêncio. Falso negativo num guard é pior que guard
+  // nenhum, porque desaparece sem ninguém notar.
+  const lines = text.split("\n");
+  const out: { lineNo: number; line: string }[] = [];
+  let buffer = "";
+  let bufferStart = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (buffer === "") bufferStart = i + 1;
+    buffer += (buffer ? " " : "") + raw.replace(/\\$/, "").trim();
+    if (raw.trimEnd().endsWith("\\")) continue;
+    if (buffer.includes("--file ") && buffer.includes("--port ")) {
+      out.push({ lineNo: bufferStart, line: buffer });
+    }
+    buffer = "";
+  }
+  return out;
 }
 
 describe("#8123 residual — o playbook do Stage 4 LIGA o live-reload que a Fatia 1 entregou", () => {

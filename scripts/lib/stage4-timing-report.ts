@@ -77,8 +77,12 @@ export interface Stage4TimingReport {
   maxEditToPreviewMs: number | null;
   /** Quantas medições automáticas ficaram dentro dos 10s. */
   withinTargetCount: number;
-  /** `true` quando há ao menos 1 medição automática E todas bateram a meta. */
-  allWithinTarget: boolean;
+  /** `true` = mediu e todas bateram a meta; `false` = mediu e alguma
+   *  estourou; **`null` = não mediu nada**. O `null` é o ponto (#8313 review,
+   *  achado 3): com `boolean`, "sem amostra" virava `false`, indistinguível
+   *  de "meta perdida" — e qualquer consumidor futuro (gate de CI, badge do
+   *  Studio, alarme) leria ausência de dado como falha. */
+  allWithinTarget: boolean | null;
 }
 
 function median(values: number[]): number | null {
@@ -128,9 +132,15 @@ export function buildStage4TimingReport(entries: readonly RunLogEntry[], edition
     // Fatia 5: o CLI grava as métricas de `computeAdjustTimingMetrics` no
     // `details`. Detectado pela presença dos campos, não pelo texto da
     // mensagem — mensagem é prosa e muda.
-    const requestToEdit = num(d.requestToEditMs) ?? num(d.request_to_edit_ms);
-    const editToPreview = num(d.editToPreviewMs) ?? num(d.edit_to_preview_ms);
-    const requestToPreview = num(d.requestToPreviewMs) ?? num(d.request_to_preview_ms);
+    // camelCase e nada mais: `log-stage4-adjust-timing.ts` espalha o retorno
+    // de `computeAdjustTimingMetrics` direto no `details`, e `AdjustTimingMetrics`
+    // só tem campos camelCase. Uma variante snake_case aqui seria fallback
+    // especulativo — passaria a "funcionar" no dia em que algum produtor novo
+    // escrevesse esse nome com OUTRA semântica, sem nada distinguindo o
+    // fallback correto do homônimo acidental (#8313 review).
+    const requestToEdit = num(d.requestToEditMs);
+    const editToPreview = num(d.editToPreviewMs);
+    const requestToPreview = num(d.requestToPreviewMs);
     if (requestToEdit == null && requestToPreview == null) continue;
     adjusts.push({
       at: e.timestamp ?? "",
@@ -138,7 +148,7 @@ export function buildStage4TimingReport(entries: readonly RunLogEntry[], edition
       requestToEditMs: requestToEdit,
       editToPreviewMs: editToPreview,
       requestToPreviewMs: requestToPreview,
-      toolCalls: num(d.toolCalls) ?? num(d.tool_calls),
+      toolCalls: num(d.toolCalls),
     });
   }
 
@@ -152,7 +162,7 @@ export function buildStage4TimingReport(entries: readonly RunLogEntry[], edition
     medianEditToPreviewMs: median(cycleMs),
     maxEditToPreviewMs: cycleMs.length > 0 ? Math.max(...cycleMs) : null,
     withinTargetCount,
-    allWithinTarget: previewCycles.length > 0 && withinTargetCount === previewCycles.length,
+    allWithinTarget: previewCycles.length === 0 ? null : withinTargetCount === previewCycles.length,
   };
 }
 
@@ -177,8 +187,18 @@ export function renderStage4TimingReport(report: Stage4TimingReport): string {
     lines.push("Nenhuma medição no run-log para este escopo.");
     lines.push("");
     lines.push(
-      "A perna automática (edição→preview) só é gravada quando o preview local roda com `--watch` " +
-        "(`serve-preview.ts`). Se a revisão usou outra superfície, não há o que medir aqui.",
+      "Duas causas possíveis, e elas NÃO são equivalentes (#8313 review, achado 2):",
+    );
+    lines.push("");
+    lines.push(
+      "1. O preview local não rodou com `--watch` (`serve-preview.ts`), ou a revisão usou outra superfície. " +
+        "Desde o residual do #8123 o playbook do Stage 4 passa `--watch` nas 4 invocações, então isto virou o caso RARO.",
+    );
+    lines.push(
+      "2. **A escrita do log falhou em silêncio.** `logPreviewReloadCycle` e `logEvent` engolem toda exceção de propósito " +
+        "(medir não pode derrubar o que se mede), então disco cheio, permissão ou lock do OneDrive produzem exatamente " +
+        "esta mesma saída. Antes de concluir \"não usou --watch\", conferir se `data/run-log.jsonl` está sendo escrito " +
+        "por outros produtores no mesmo período.",
     );
     return lines.join("\n");
   }

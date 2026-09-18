@@ -19,6 +19,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { resolveRunLogPath } from "./lib/run-log.ts";
 import { buildStage4TimingReport, renderStage4TimingReport, type RunLogEntry } from "./lib/stage4-timing-report.ts";
 
 /** Lê o run-log linha a linha. Linha inválida é pulada em silêncio: o
@@ -43,7 +44,12 @@ export function readRunLog(path: string): RunLogEntry[] {
 function main(): void {
   const { values, flags } = parseCliArgs(process.argv.slice(2));
   const rootDir = values["root-dir"] ?? process.cwd();
-  const logPath = resolve(rootDir, "data", "run-log.jsonl");
+  // `resolveRunLogPath`, nunca o caminho fixo (#8313 review): o ESCRITOR
+  // (`logEvent`) resolve via `logging.path` do platform.config.json. Hoje os
+  // dois coincidem, então um caminho fixo aqui estaria certo por acidente —
+  // e no dia em que a config mudasse, este relatório leria um arquivo vazio
+  // e diria "nenhuma medição" em vez de falhar.
+  const logPath = resolveRunLogPath(rootDir);
   const edition = values["edition"] ?? null;
 
   const report = buildStage4TimingReport(readRunLog(logPath), edition);
