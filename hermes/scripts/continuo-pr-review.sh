@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Entrega ao Telegram: stdout reservado para um único resumo final; detalhes vão para stderr.
+exec 3>&1
+exec 1>&2
 # continuo-pr-review.sh (#6865, autoridade de merge desde #6926, escopo
 # ampliado a qualquer branch no #7446 item 4)
 #
@@ -795,14 +798,10 @@ done
 # nunca justo no dia em que há contenção de lock pra relatar (#8212 review, P3).
 LOCK_NOTE=""
 [ "$LOCK_BLOCKED" -gt 0 ] 2>/dev/null && LOCK_NOTE=" bloqueadas-por-lock=$LOCK_BLOCKED"
-echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))$LOCK_NOTE"
-# #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
-# infra — a linha de resumo é o que o Telegram carrega; sem isso
-# "erros-de-infra=1" chegava sem nenhum rastro de causa. Log completo
-# (não-truncado, todas as ocorrências, não só as desta rodada) sempre em
-# $INFRA_ERROR_LOG.
+# Detalhes ficam em stderr; apenas este resumo vai ao Telegram.
 if [ "$INFRA_ERRORS" -gt 0 ]; then
-  echo "[continuo-pr-review] motivo(s) do(s) erro(s) de infra desta rodada:"
-  printf '%s' "$INFRA_ERROR_SUMMARY"
-  echo "[continuo-pr-review] log completo: $INFRA_ERROR_LOG"
+  echo "[continuo-pr-review] infra: $INFRA_ERRORS erro(s) — ver logs" >&2
 fi
+exec 1>&3
+exec 3>&-
+echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))$LOCK_NOTE"
