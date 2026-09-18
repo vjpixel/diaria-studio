@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>Perplexity transforma Mac mini em agente de IA 24/7</title><meta name="description" content="Perplexity transforma Mac mini em agente de IA 24/7. Apple lança MacBook Air e iPad Air com IA expandida | Big Tech financia IA com US$ 600 bi em…"><link rel="canonical" href="https://diar.ia.br/p/perplexity-transforma-mac-mini-em-agente-de-ia-24-7"><link href='https://fonts.gstatic.com' rel='preconnect'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><style type='text/css'>
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>Perplexity transforma Mac mini em agente de IA 24/7</title><meta name="description" content="Perplexity transforma Mac mini em agente de IA 24/7. Apple lança MacBook Air e iPad Air com IA expandida | Big Tech financia IA com US$ 600 bi em…"><meta name="dek" content="Apple lança MacBook Air e iPad Air com IA expandida | Big Tech financia IA com US$ 600 bi em emissão de dívida"><link rel="canonical" href="https://diar.ia.br/p/perplexity-transforma-mac-mini-em-agente-de-ia-24-7"><script type="application/ld+json">{"@context":"https://schema.org","@type":"NewsArticle","headline":"Perplexity transforma Mac mini em agente de IA 24/7","description":"Perplexity transforma Mac mini em agente de IA 24/7. Apple lança MacBook Air e iPad Air com IA expandida | Big Tech financia IA com US$ 600 bi em…","url":"https://diar.ia.br/p/perplexity-transforma-mac-mini-em-agente-de-ia-24-7","mainEntityOfPage":"https://diar.ia.br/p/perplexity-transforma-mac-mini-em-agente-de-ia-24-7","datePublished":"2026-03-13","dateModified":"2026-03-13","author":{"@type":"Person","name":"Pixel","url":"https://www.linkedin.com/in/vjpixel/"},"publisher":{"@type":"Organization","name":"diar.ia.br","url":"https://diar.ia.br"},"inLanguage":"pt-BR"}</script><link href='https://fonts.gstatic.com' rel='preconnect'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><style type='text/css'>
 :root {
   --wt-primary-color: #030712;
   --wt-text-on-primary-color: #F9FAFB;
@@ -354,6 +354,17 @@ li a { word-break: break-word; }
           utm_source: val('input[name="utm_source"]'),
           utm_medium: val('input[name="utm_medium"]'),
           utm_campaign: val('input[name="utm_campaign"]'),
+          // #8003: sinal SEPARADO do triplo UTM acima — nunca sobrescreve
+          // source/medium/campaign/utm_* (ver docstring de
+          // clientOriginSignalPayloadFieldsJs, scripts/lib/shared/client-utm-payload.ts).
+          referrer: (document.referrer || "").slice(0, 300),
+          click_id: (function () {
+            var p = new URLSearchParams(window.location.search);
+            if (p.get("gclid")) return "gclid:" + p.get("gclid");
+            if (p.get("fbclid")) return "fbclid:" + p.get("fbclid");
+            if (p.get("msclkid")) return "msclkid:" + p.get("msclkid");
+            return "";
+          })(),
         };
         if (typeof window.fetch !== "function") {
           // Sem fetch: deixa o form nativo submeter normalmente
