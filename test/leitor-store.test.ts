@@ -33,9 +33,11 @@ import {
   computeUniqueClickedForPlatform,
   computeStoreLeitorInput,
   computeStoreLeitorInputCanonicalDedup,
+  computeStoreLeitorInputCanonicalDedupBatched,
   computeStoreLeitorResult,
   summarizeStoreLeitores,
   summarizeStoreLeitoresCanonicalDedup,
+  buildCacCompatibleSubscribersFromStore,
   main as leitorStoreMain,
 } from "../scripts/lib/leitor-store.ts";
 import { isLeitorV1 } from "../scripts/lib/leitor.ts";
@@ -830,5 +832,184 @@ describe("main (CLI)", () => {
     } finally {
       process.exitCode = originalExitCode;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildCacCompatibleSubscribersFromStore — regressão de leitura ÚNICA (#8292)
+// ---------------------------------------------------------------------------
+//
+// Produção mediu 77s pra 2.018 linhas porque `computeStoreLeitorInputCanonicalDedup`
+// disparava várias queries `event`/`subscription` POR SUBSCRIBER. A correção
+// (#8292) prega 1 scan de `event`/`subscription`/`identity_alias` pro store
+// inteiro (`getAllEventsBySubscriber`/`getAllSubscriptionsBySubscriber`/
+// `getAllAliasesBySubscriber`) e computa tudo em memória
+// (`computeStoreLeitorInputCanonicalDedupBatched`). Estes testes travam
+// que o número de queries SQL NÃO cresce com o número de subscribers —
+// se alguém reintroduzir uma query por subscriber, o teste abaixo acusa.
+
+describe("buildCacCompatibleSubscribersFromStore — leitura única (#8292)", () => {
+  /** Popula `n` subscribers, cada 1 com alias `kit` + `beehiiv`, 1
+   *  `subscription` ativa em cada plataforma, e 2 eventos (`delivered` +
+   *  `click`) em cada plataforma — o mesmo formato de dado real que
+   *  disparava N queries por subscriber antes da correção. */
+  function seedSubscribers(db: ReturnType<typeof openDiariaSubscribersDb>, n: number): void {
+    for (let i = 0; i < n; i++) {
+      const email = `leitor${i}@x.com`;
+      const kitId = ensureSubscriber(db, "kit", `kit-${i}`, email, NOW);
+      db.prepare(
+        "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'beehiiv', NULL, ?, ?)",
+      ).run(kitId, email, NOW);
+      upsertSubscription(db, kitId, "kit", { status: "active", enteredAt: NOW, exitedAt: null, source: "test" }, NOW);
+      upsertSubscription(db, kitId, "beehiiv", { status: "active", enteredAt: NOW, exitedAt: null, source: "test" }, NOW);
+      for (const platform of ["kit", "beehiiv"] as const) {
+        recordEvent(db, {
+          subscriberId: kitId,
+          platform,
+          type: "delivered",
+          externalEventId: `${platform}-${i}-d1`,
+          edicao: `edicao-${i}`,
+          ts: NOW,
+        });
+        recordEvent(db, {
+          subscriberId: kitId,
+          platform,
+          type: "click",
+          externalEventId: `${platform}-${i}-c1`,
+          edicao: `edicao-${i}`,
+          ts: NOW,
+        });
+      }
+    }
+  }
+
+  /** Substitui `db.prepare` por uma versão que conta chamadas, preservando
+   *  o comportamento real (delega pro `prepare` original). */
+  function countPrepareCalls(db: ReturnType<typeof openDiariaSubscribersDb>): { count: () => number } {
+    const original = db.prepare.bind(db);
+    let calls = 0;
+    (db as unknown as { prepare: (...args: unknown[]) => unknown }).prepare = (...args: unknown[]) => {
+      calls++;
+      return (original as (...a: unknown[]) => unknown)(...args);
+    };
+    return { count: () => calls };
+  }
+
+  it("número de queries SQL não escala com o número de subscribers", () => {
+    const dbSmall = openDiariaSubscribersDb(":memory:");
+    seedSubscribers(dbSmall, 3);
+    const counterSmall = countPrepareCalls(dbSmall);
+    buildCacCompatibleSubscribersFromStore(dbSmall);
+    const callsForSmall = counterSmall.count();
+    dbSmall.close();
+
+    const dbBig = openDiariaSubscribersDb(":memory:");
+    seedSubscribers(dbBig, 30); // 10x mais subscribers
+    const counterBig = countPrepareCalls(dbBig);
+    buildCacCompatibleSubscribersFromStore(dbBig);
+    const callsForBig = counterBig.count();
+    dbBig.close();
+
+    // Antes da correção (#8292): O(subscribers) — 30 subscribers disparava
+    // ~10x mais queries que 3. Depois: O(1) — 1 scan de cada tabela,
+    // independente de quantos subscribers existem. Um pequeno delta é
+    // tolerado (detectPlatformCapabilities faz 1 query por plataforma, fixo),
+    // mas o crescimento tem que ficar MUITO abaixo de linear.
+    assert.ok(
+      callsForBig <= callsForSmall + 5,
+      `esperado ~mesmo número de queries pra 3 vs 30 subscribers (O(1)), mas foi ${callsForSmall} vs ${callsForBig} — sinal de N+1 reintroduzido`,
+    );
+  });
+
+  it("resultado batched é idêntico ao caminho per-subscriber (correção não muda o dado)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    seedSubscribers(db, 5);
+
+    const batched = buildCacCompatibleSubscribersFromStore(db);
+
+    // Recalcula pelo caminho per-subscriber antigo (ainda exportado, usado
+    // pela ficha de identidade de 1 subscriber no painel) e compara.
+    const caps = detectPlatformCapabilities(db);
+    const canonicalMap = buildCanonicalEdicaoMapFromEvents(db);
+    const byEmail = new Map(batched.map((s) => [s.email, s]));
+    for (let i = 0; i < 5; i++) {
+      const email = `leitor${i}@x.com`;
+      const row = byEmail.get(email);
+      assert.ok(row, `subscriber ${email} ausente do resultado batched`);
+      assert.ok(row.stats, `subscriber ${email} veio sem stats no resultado batched`);
+      // subscriberId é sequencial a partir de 1 nesta seed (1 ensureSubscriber por loop).
+      const subscriberId = i + 1;
+      const perSubscriber = computeStoreLeitorInputCanonicalDedup(db, subscriberId, caps, canonicalMap);
+      assert.equal(row.stats.total_received, perSubscriber.totalReceived);
+      assert.equal(row.stats.total_unique_clicked, perSubscriber.totalUniqueClicked);
+      assert.equal(row.status, perSubscriber.status);
+    }
+    db.close();
+  });
+
+  it("store vazio (sem subscribers) devolve lista vazia, nunca lança", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = buildCacCompatibleSubscribersFromStore(db);
+    assert.deepEqual(result, []);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeStoreLeitorInputCanonicalDedupBatched — mesma regra da versão
+// per-subscriber, mas 0 queries (só arrays em memória)
+// ---------------------------------------------------------------------------
+
+describe("computeStoreLeitorInputCanonicalDedupBatched", () => {
+  it("dedup por edição canônica funciona igual à versão per-subscriber (2 plataformas, mesma edição)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "beehiiv", "bh-1", "leitor@x.com", NOW);
+    db.prepare(
+      "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'kit', NULL, ?, ?)",
+    ).run(id, "leitor@x.com", NOW);
+    recordEvent(db, {
+      subscriberId: id,
+      platform: "beehiiv",
+      type: "delivered",
+      externalEventId: "bh-d1",
+      edicao: "post_abc",
+      ts: "2026-04-27T09:00:00.000Z",
+    });
+    recordEvent(db, {
+      subscriberId: id,
+      platform: "kit",
+      type: "delivered",
+      externalEventId: "kit-d1",
+      edicao: "bcast_xyz",
+      ts: "2026-04-27T09:10:00.000Z",
+    });
+    upsertSubscription(db, id, "beehiiv", { status: "active", enteredAt: NOW, exitedAt: null, source: "test" }, NOW);
+
+    const caps = detectPlatformCapabilities(db);
+    const canonicalMap = buildCanonicalEdicaoMapFromEvents(db);
+
+    const events = db
+      .prepare("SELECT subscriber_id, platform, type, edicao, external_event_id FROM event WHERE subscriber_id = ?")
+      .all(id) as unknown as Array<{ platform: "beehiiv" | "kit"; type: string; edicao: string | null; external_event_id: string }>;
+    const aliases = db
+      .prepare("SELECT platform, external_id, email FROM identity_alias WHERE subscriber_id = ?")
+      .all(id) as unknown as Array<{ platform: "beehiiv" | "kit"; external_id: string | null; email: string | null }>;
+    const subs = db
+      .prepare("SELECT platform, status FROM subscription WHERE subscriber_id = ?")
+      .all(id) as unknown as Array<{ platform: "beehiiv" | "kit"; status: string }>;
+
+    const batched = computeStoreLeitorInputCanonicalDedupBatched(events, aliases, subs as never, caps, canonicalMap);
+    const perSubscriber = computeStoreLeitorInputCanonicalDedup(db, id, caps, canonicalMap);
+
+    assert.equal(batched.totalReceived, perSubscriber.totalReceived);
+    assert.equal(batched.totalReceived, 1); // dedup: mesma edição do dia, 2 plataformas
+    assert.equal(batched.status, perSubscriber.status);
+    db.close();
+  });
+
+  it("subscriber sem alias em nenhuma plataforma coberta: status inactive, zeros", () => {
+    const caps = { platformsWithDelivered: new Set<"kit" | "beehiiv" | "brevo_diaria">() };
+    const result = computeStoreLeitorInputCanonicalDedupBatched([], [], [], caps, new Map());
+    assert.deepEqual(result, { status: "inactive", totalReceived: 0, totalUniqueClicked: 0 });
   });
 });

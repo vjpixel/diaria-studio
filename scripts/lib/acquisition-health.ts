@@ -281,6 +281,15 @@ export function median(values: number[]): number | null {
 // ---------------------------------------------------------------------------
 
 export interface AcquisitionHealthState {
+  /** Fonte de dado da rodada que gravou este state — `"beehiiv"` (snapshot
+   *  semanal, `data/beehiiv-backup/`) ou `"store"` (store unificado,
+   *  `data/diaria-subscribers/`, #8243). Ausente em state gravado antes do
+   *  #8243 — o caller trata `undefined` como `"beehiiv"` (comportamento
+   *  histórico). Troca de fonte reseta o baseline de canais conhecidos
+   *  (ver `check-acquisition-health.ts`): comparar `canal_desconhecido`
+   *  contra `knownChannels` construído sobre a OUTRA fonte fabricaria
+   *  achado (a Beehiiv nunca viu `meta-ads`/`google-ads`, por exemplo). */
+  source?: "beehiiv" | "store";
   /** Canais já vistos em qualquer rodada anterior — ordenado, sem
    *  duplicata. Vazio + `lastCheckedSnapshotDate === null` = nunca rodou
    *  (1ª execução). */

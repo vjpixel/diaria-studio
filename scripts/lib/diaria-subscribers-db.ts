@@ -1625,3 +1625,45 @@ export function getAllAliasesBySubscriber(
   }
   return map;
 }
+
+/** 1 linha de `event`, sem `subscriber_id` (já é a chave do Map devolvido
+ *  por `getAllEventsBySubscriber`). */
+export interface SubscriberEventRow {
+  platform: Platform;
+  type: string;
+  edicao: string | null;
+  external_event_id: string;
+}
+
+/**
+ * Todas as linhas de `event` do store (exceto as raras sem `subscriber_id`
+ * resolvido), agrupadas por `subscriber_id` — 1 scan (#8292), mesmo padrão
+ * de `getAllSubscriptionsBySubscriber`/`getAllAliasesBySubscriber` acima.
+ *
+ * Existe pra eliminar o N+1 de `buildCacCompatibleSubscribersFromStore`
+ * (`leitor-store.ts`): antes desta função, cada subscriber disparava várias
+ * queries `SELECT ... FROM event WHERE subscriber_id = ?` (uma por
+ * plataforma × tipo de evento) — em 2.018 linhas isso mediu 77s. 1 scan
+ * aqui + agrupamento em memória (`computeStoreLeitorInputCanonicalDedupBatched`)
+ * substitui todas essas queries por buscas em Map já carregado.
+ */
+export function getAllEventsBySubscriber(
+  db: DatabaseSync,
+): Map<number, SubscriberEventRow[]> {
+  const rows = db
+    .prepare(
+      `SELECT subscriber_id, platform, type, edicao, external_event_id
+       FROM event WHERE subscriber_id IS NOT NULL`,
+    )
+    .all() as unknown as Array<SubscriberEventRow & { subscriber_id: number }>;
+  const map = new Map<number, SubscriberEventRow[]>();
+  for (const { subscriber_id, ...rest } of rows) {
+    let list = map.get(subscriber_id);
+    if (!list) {
+      list = [];
+      map.set(subscriber_id, list);
+    }
+    list.push(rest);
+  }
+  return map;
+}

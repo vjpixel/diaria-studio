@@ -44,12 +44,13 @@
  */
 
 import {
-  isInstantPausedAt,
+  isDatePaused,
   normalizePauseIntervals,
   veiculationDaysInRange,
-  type AdsTestPauseField,
   type AdsTestPauseInterval,
 } from "./ads-test-pause-window.ts";
+import { addDays } from "./ads-test-schedule.ts";
+import type { AdsTestRunStateRevisao } from "./ads-test-run-state.ts";
 
 // ---------------------------------------------------------------------------
 // Tipos canônicos — o que os adaptadores Google/Microsoft normalizam pra cá
@@ -360,54 +361,38 @@ export function buildChannelTable(
  * devolve `"desconhecido"`, NUNCA `"ativa"` — decisão explícita do editor
  * (#8210): dado ausente não vira presunção otimista.
  *
- * Lê os DOIS formatos de pausa, nesta ordem (#8288):
- *
- * - **`revisao.pausa`** (formato ATUAL — objeto ou lista, com HORA):
- *   pausada se o INSTANTE `nowIso` cai dentro de algum intervalo
- *   (`isInstantPausedAt`). É a pergunta certa pra uma badge: a pausa de
- *   produção terminou 00:16 de 17/09, e o painel aberto às 20h de 17/09
- *   tem de dizer "ativa", não "pausada porque houve pausa hoje de
- *   madrugada".
- * - **`revisao.pausas`** (formato ANTIGO, só por DATA): fallback, mantido
- *   porque o tipo ainda o aceita e nada garante que algum `run-state.json`
- *   histórico não o use.
- *
- * `revisao` presente mas sem nenhum dos dois campos → `"ativa"`
- * (comportamento de antes: houve revisão registrada, sem pausa nela).
- * Campo de pausa AUSENTE nunca lança — era o bug que motivou o #8288
- * (`revisao.pausas.some(...)` sem guard derrubando `GET /api/ads` inteiro
- * com 500 contra o `run-state.json` REAL, que só tem `pausa`).
- *
- * **Lança**, porém, em pausa INCOERENTE (`fim < inicio`) — vem de
- * `assertValidPauseIntervals`, e é deliberado: descartar em silêncio uma
- * pausa com timestamp invertido sumiria com ela de todos os alarmes
- * (#8262). Quem serve uma TELA (e não um alarme) precisa tratar isso —
- * ver o `try` em `buildAdsCampaignEconomics` (`studio-ui/studio-ads.ts`),
- * que degrada pra `"desconhecido"` e reporta o motivo em vez de 500.
- *
- * `nowIso` é o instante de referência e o caller de produção SEMPRE o
- * passa. O default (fim do dia BRT de `todayIso`) existe só pra chamadas
- * que não têm um instante à mão, e assume `todayIso` como data de
- * calendário BRT — se o caller derivar `todayIso` de um ISO UTC fatiado,
- * passe `nowIso` explicitamente (#8288 review, achado 5).
+ * `revisao` aceita os DOIS formatos (hotfix desta função — #8283/#8284
+ * combinados quebraram a leitura do formato real de produção, ver PR do
+ * hotfix): o ATUAL `revisao.pausa` (singular, com hora — interpretado por
+ * `normalizePauseIntervals`/`isDatePaused` de `ads-test-pause-window.ts`,
+ * a ÚNICA fonte de verdade pra esse shape — nunca duplicar o parser aqui)
+ * tem precedência quando presente; o formato ANTIGO `revisao.pausas`
+ * (plural, só data) segue aceito por retrocompatibilidade quando `pausa`
+ * está ausente. Nenhum dos dois presente → `"desconhecido"` (mesma leitura
+ * de `revisao` ausente — dado insuficiente não vira presunção). `todayIso`
+ * dentro de alguma pausa (qualquer fração do dia, formato atual; `desde`/
+ * `ate` inclusivos, formato antigo) → `"pausada"`; caso contrário, com
+ * pausa(s) conhecida(s), → `"ativa"`.
  *
  * @pure
  */
 export function computeCampaignPauseStatus(
-  revisao: { pausas?: readonly { desde: string; ate: string }[]; pausa?: AdsTestPauseField } | undefined,
+  revisao: AdsTestRunStateRevisao | undefined,
   todayIso: string,
-  nowIso?: string,
 ): CampaignPauseStatus {
   if (!revisao) return "desconhecido";
-  const intervals = normalizePauseIntervals(revisao.pausa);
-  if (intervals.length > 0) {
-    // Sem `nowIso`, ancora no FIM do dia BRT de `todayIso` — a leitura mais
-    // recente possível dentro do dia que o caller declarou como "hoje",
-    // nunca a meia-noite (que responderia pelo estado de 24h atrás).
-    return isInstantPausedAt(nowIso ?? `${todayIso}T23:59:59-03:00`, intervals) ? "pausada" : "ativa";
+
+  const currentFormatIntervals = normalizePauseIntervals(revisao.pausa);
+  if (currentFormatIntervals.length > 0) {
+    return isDatePaused(todayIso, currentFormatIntervals) ? "pausada" : "ativa";
   }
-  const paused = (revisao.pausas ?? []).some((p) => todayIso >= p.desde && todayIso <= p.ate);
-  return paused ? "pausada" : "ativa";
+
+  if (revisao.pausas && revisao.pausas.length > 0) {
+    const paused = revisao.pausas.some((p) => todayIso >= p.desde && todayIso <= p.ate);
+    return paused ? "pausada" : "ativa";
+  }
+
+  return "desconhecido";
 }
 
 // ---------------------------------------------------------------------------
@@ -422,8 +407,10 @@ export interface TestStateTiles {
    *  CORRIDOS desde `d0` — inclui dias de pausa (#8210 Bug 4b). */
   diasDecorridos: number | null;
   diasRestantes: number | null;
-  /** Dias de veiculação REAL (`diasDecorridos` menos os dias cobertos por
-   *  `runState.revisao.pausas`) — `null` quando `runState` ausente OU sem
+  /** Dias de veiculação REAL (`diasDecorridos` menos os dias/frações
+   *  pausados de `runState.revisao.pausa` — formato ATUAL, com precedência
+   *  — ou `runState.revisao.pausas` — formato ANTIGO, fallback; ver
+   *  `effectivePauseIntervals`) — `null` quando `runState` ausente OU sem
    *  `revisao` registrada (nesse caso, ver `diasDecorridos`; #8210 Bug 4b —
    *  antes desta revisão existir, calendário e veiculação real eram
    *  indistinguíveis). Nunca negativo. */
@@ -448,44 +435,42 @@ export interface TestStateTiles {
  *
  * @pure
  */
-/** Conta quantas das datas `YYYY-MM-DD` no intervalo `[d0, todayIso]`
- *  (inclusive nas duas pontas) caem dentro de QUALQUER pausa de
- *  `pausas` (cada pausa também inclusiva em `desde`/`ate`) — comparação de
- *  string funciona porque todas as datas já estão no formato ordenável
- *  `YYYY-MM-DD`. @pure */
-function countPausedDaysWithin(pausas: readonly { desde: string; ate: string }[], d0: string, todayIso: string): number {
-  const end = todayIso < d0 ? d0 : todayIso;
-  let count = 0;
-  for (const date of dateRangeInclusive(d0, end)) {
-    if (pausas.some((p) => date >= p.desde && date <= p.ate)) count++;
-  }
-  return count;
+/** Converte `revisao.pausas` (formato ANTIGO, só por DATA, inclusive nas
+ *  duas pontas) em intervalos de INSTANTE (00:00 BRT do dia seguinte ao
+ *  `ate`, exclusivo) — a mesma convenção semi-aberta que
+ *  `AdsTestPauseInterval` usa em todo `ads-test-pause-window.ts`. Permite
+ *  reusar `veiculationDaysInRange` (que só entende instantes) também pro
+ *  formato antigo, em vez de manter uma 2ª aritmética paralela por string
+ *  de data — foi justamente essa 2ª aritmética (baseline `diasDecorridos`,
+ *  EXCLUSIVO na ponta inicial porque é "dias que já se passaram desde
+ *  d0", contra um desconto somado sobre `[d0, todayIso]` INCLUSIVO) que
+ *  cobrava o mesmo `d0` duas vezes quando ele caía dentro de uma pausa
+ *  (#8293). @pure */
+function legacyPausasToIntervals(pausas: readonly { desde: string; ate: string }[]): AdsTestPauseInterval[] {
+  return pausas.map((p) => ({
+    inicio: `${p.desde}T00:00:00-03:00`,
+    fim: `${addDays(p.ate, 1)}T00:00:00-03:00`,
+  }));
 }
 
-/** Soma das FRAÇÕES de dia pausadas em `[d0, todayIso]` (inclusive), para o
- *  formato ATUAL de pausa (`revisao.pausa`, com hora) — contraparte de
- *  {@link countPausedDaysWithin}, que só sabe contar dia inteiro. Delegado
- *  a `veiculationDaysInRange` pra não duplicar o parser de pausa (regra do
- *  topo de `ads-test-pause-window.ts`: um único lugar decide o que
- *  "pausado" significa). @pure */
-function countPausedFractionWithin(
-  intervals: readonly AdsTestPauseInterval[],
-  d0: string,
-  todayIso: string,
-): number {
-  const end = todayIso < d0 ? d0 : todayIso;
-  const calendarDays = dateRangeInclusive(d0, end).length;
-  return calendarDays - veiculationDaysInRange(d0, end, intervals);
+/** Intervalos de pausa efetivos de `revisao` pra fins de desconto de
+ *  veiculação — formato ATUAL (`revisao.pausa`, singular, com hora) tem
+ *  precedência quando presente; o formato ANTIGO (`revisao.pausas`,
+ *  plural, só data) segue aceito por retrocompatibilidade quando `pausa`
+ *  está ausente. Mesma precedência de `computeCampaignPauseStatus` acima
+ *  — ambos delegam a `normalizePauseIntervals`/`ads-test-pause-window.ts`
+ *  pra nunca duplicar o parser de pausa (ver docstring do topo do
+ *  arquivo). @pure */
+function effectivePauseIntervals(revisao: AdsTestRunStateRevisao): AdsTestPauseInterval[] {
+  const current = normalizePauseIntervals(revisao.pausa);
+  if (current.length > 0) return current;
+  return legacyPausasToIntervals(revisao.pausas ?? []);
 }
 
 export function buildTestStateTiles(
   metrics: ChannelDailyMetric[],
   signups: ChannelDailySignup[],
-  runState: {
-    d0: string;
-    fim_janela: string;
-    revisao?: { pausas?: readonly { desde: string; ate: string }[]; pausa?: AdsTestPauseField };
-  } | null,
+  runState: { d0: string; fim_janela: string; revisao?: AdsTestRunStateRevisao } | null,
   todayIso: string,
 ): TestStateTiles {
   const gastoAcumuladoTotalBrl = round2(metrics.reduce((sum, m) => sum + m.gastoBrl, 0));
@@ -521,30 +506,27 @@ export function buildTestStateTiles(
   const diasDecorridos = Math.round((toUtcMs(todayIso) - toUtcMs(runState.d0)) / dayMs);
   const diasRestantes = Math.round((toUtcMs(runState.fim_janela) - toUtcMs(todayIso)) / dayMs);
   const emAndamento = todayIso >= runState.d0 && todayIso <= runState.fim_janela;
-  // Dois formatos de pausa, mesma ordem de precedência de
-  // `computeCampaignPauseStatus` (#8288 — este é o wire-up que o #8242
-  // deixou como follow-up):
-  //
-  // - `revisao.pausa` (ATUAL, com hora): `veiculationDaysInRange` desconta
-  //   a FRAÇÃO pausada de cada dia, então uma pausa que começou 16h05 de
-  //   09/09 e terminou 00:16 de 17/09 não custa 9 dias inteiros nem 0 —
-  //   custa o que de fato cobriu. Arredondado só na saída, pra o tile
-  //   continuar sendo um número de dias.
-  // - `revisao.pausas` (ANTIGO, só por DATA): dia inteiro pausado ou nada.
-  //
-  // `revisao` presente sem nenhum dos dois campos → `diasDecorridos` sem
-  // desconto, nunca `null` nem exceção. `revisao` ausente → `null` (ver
-  // docstring do campo).
-  //
-  // Nos dois ramos o desconto é aplicado sobre `diasDecorridos` (dias
-  // CORRIDOS, `today - d0`, exclusivo na ponta inicial) e não sobre a
-  // contagem inclusiva de datas do calendário — senão os dois formatos
-  // dariam respostas com 1 dia de diferença pro mesmo período.
-  const pauseIntervals = normalizePauseIntervals(runState.revisao?.pausa);
+  // `diasDecorridos` é EXCLUSIVO na ponta inicial — conta os dias na
+  // janela `(d0, todayIso]`, não `[d0, todayIso]` (o próprio `d0` ainda
+  // não "decorreu"). O contrato deste campo é "`diasDecorridos` menos os
+  // dias pausados" (ver docstring de `diasVeiculacaoReal` acima) — mudar
+  // esse baseline pra dias de CALENDÁRIO é decisão de produto separada
+  // (fora de escopo, #8293), então o desconto de pausa usa a MESMA janela
+  // exclusiva-no-início: `[addDays(d0, 1), todayIso]`. Antes deste fix, o
+  // desconto rodava sobre `[d0, todayIso]` inclusivo — 1 dia maior do que
+  // `diasDecorridos` — então uma pausa cobrindo o próprio `d0` descontava
+  // um dia que `diasDecorridos` nunca tinha contado, cobrando-o 2x (o
+  // off-by-one do #8293). Com a janela alinhada, `veiculationDaysInRange`
+  // já devolve `diasDecorridos - pausa` diretamente — não precisa de uma
+  // subtração separada. `revisao` presente sem nenhuma pausa registrada em
+  // qualquer formato é "sem pausa" — `effectivePauseIntervals` devolve
+  // lista vazia e o resultado cai de volta a `diasDecorridos` sem desconto
+  // (nunca `null` nem exceção; `assertValidRunState` deixou de exigir
+  // `pausas` em #8242 — antes disso `runState` nunca chegava aqui de
+  // verdade). `revisao` AUSENTE (nenhuma pausa jamais registrada, infra
+  // sem consumidor ainda) segue `null`, nunca uma presunção.
   const diasVeiculacaoReal = runState.revisao
-    ? pauseIntervals.length > 0
-      ? Math.max(0, Math.round(diasDecorridos - countPausedFractionWithin(pauseIntervals, runState.d0, todayIso)))
-      : Math.max(0, diasDecorridos - countPausedDaysWithin(runState.revisao.pausas ?? [], runState.d0, todayIso))
+    ? Math.max(0, veiculationDaysInRange(addDays(runState.d0, 1), todayIso, effectivePauseIntervals(runState.revisao)))
     : null;
 
   return {

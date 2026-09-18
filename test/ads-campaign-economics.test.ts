@@ -205,42 +205,78 @@ describe("#7536 — buildTestStateTiles: nunca média por canal, sempre estado d
     assert.equal(tiles.diasVeiculacaoReal, 4);
   });
 
-  it("#8288 — `revisao.pausa` (formato ATUAL, com hora) desconta a FRAÇÃO pausada de `diasVeiculacaoReal`", () => {
-    // Shape REAL de data/aquisicao/teste-2608/run-state.json em 17/09/2026:
-    // pausa de 09/09 16h05 a 17/09 00h16 BRT. Dias corridos d0->hoje = 12;
-    // pausados ~7,34 dias (do meio de 09/09 até a madrugada de 17/09), então
-    // veiculação real ~5 — NUNCA os 12 que o ramo antigo (`pausas` ausente)
-    // devolveria sem desconto nenhum.
+  it("#8293 — pausa cobrindo o próprio d0 (formato ATUAL, `revisao.pausa`) não cobra o dia 2x", () => {
+    // d0 = 05/09 inteiramente pausado, today = 06/09 sem pausa nenhuma:
+    // diasDecorridos = 1 (05->06); o único dia "decorrido" (06) veiculou
+    // o dia inteiro, então diasVeiculacaoReal deve ser 1 — não 0 (bug
+    // relatado na issue: o desconto rodava sobre [d0, today] inclusivo,
+    // 1 dia maior que a janela exclusiva-no-início de `diasDecorridos`).
     const tiles = buildTestStateTiles(
       [],
       [],
       {
         d0: "2026-09-05",
-        fim_janela: "2026-09-27",
-        revisao: { pausa: { inicio: "2026-09-09T16:05:36-03:00", fim: "2026-09-17T00:16:00-03:00" } },
+        fim_janela: "2026-09-20",
+        revisao: { pausa: { inicio: "2026-09-05T00:00:00-03:00", fim: "2026-09-06T00:00:00-03:00" } },
       },
-      "2026-09-17",
+      "2026-09-06",
     );
-    assert.equal(tiles.diasDecorridos, 12);
-    assert.equal(tiles.diasVeiculacaoReal, 5);
+    assert.equal(tiles.diasDecorridos, 1);
+    assert.equal(tiles.diasVeiculacaoReal, 1);
   });
 
-  it("#8288 — pausa EM ANDAMENTO (`fim: null`) desconta até hoje, sem lançar", () => {
+  it("#8293 — pausa cobrindo o próprio d0 (formato ANTIGO, `revisao.pausas`) também não cobra o dia 2x", () => {
+    // Mesmo cenário acima, mas no formato de fallback (plural, só data) —
+    // a issue registra que o off-by-one "vale para os dois formatos".
     const tiles = buildTestStateTiles(
       [],
       [],
-      { d0: "2026-09-05", fim_janela: "2026-09-27", revisao: { pausa: { inicio: "2026-09-09T00:00:00-03:00", fim: null } } },
-      "2026-09-17",
+      {
+        d0: "2026-09-05",
+        fim_janela: "2026-09-20",
+        revisao: { pausas: [{ desde: "2026-09-05", ate: "2026-09-05" }] },
+      },
+      "2026-09-06",
     );
-    assert.equal(tiles.diasDecorridos, 12);
-    assert.equal(
-      tiles.diasVeiculacaoReal,
-      3,
-      "9 dias pausados (09..17) descontados de `diasDecorridos` (12, CORRIDOS) — não da contagem " +
-        "inclusiva de datas (13), que daria 4. O contrato do campo é 'diasDecorridos menos os pausados', " +
-        "e o ramo do formato antigo faz exatamente a mesma conta; alinhar os dois é o que impede os " +
-        "formatos de divergirem em 1 dia pro MESMO período.",
+    assert.equal(tiles.diasDecorridos, 1);
+    assert.equal(tiles.diasVeiculacaoReal, 1);
+  });
+
+  it("#8293 — borda vizinha: pausa em curso sem fim (`fim: null`) segue descontando todo dia posterior ao d0", () => {
+    const tiles = buildTestStateTiles(
+      [],
+      [],
+      {
+        d0: "2026-09-01",
+        fim_janela: "2026-09-20",
+        revisao: { pausa: { inicio: "2026-09-09T16:05:36-03:00", fim: null } },
+      },
+      "2026-09-11",
     );
+    // diasDecorridos = 10 (01->11). 01-08 sem pausa (8 dias), 09 pausado
+    // fração do dia (a partir das 16:05:36), 10 e 11 pausados o dia
+    // inteiro (pausa em andamento). Só o dia 09 conta fração < 1.
+    assert.equal(tiles.diasDecorridos, 10);
+    assert.ok(tiles.diasVeiculacaoReal !== null && tiles.diasVeiculacaoReal > 7 && tiles.diasVeiculacaoReal < 8);
+  });
+
+  it("#8293 — borda vizinha: pausa que não cobre o d0 continua descontando normalmente (regressão do comportamento pré-fix)", () => {
+    // d0 = 01/09, pausa só a partir de 05/09 (não cobre d0) — resultado
+    // precisa ser idêntico ao que `countPausedDaysWithin` (aritmética
+    // antiga) já produzia pra esse caso, já que aqui não há ambiguidade
+    // de baseline.
+    const tiles = buildTestStateTiles(
+      [],
+      [],
+      {
+        d0: "2026-09-01",
+        fim_janela: "2026-09-20",
+        revisao: { pausas: [{ desde: "2026-09-05", ate: "2026-09-05" }] },
+      },
+      "2026-09-08",
+    );
+    assert.equal(tiles.diasDecorridos, 7);
+    assert.equal(tiles.diasVeiculacaoReal, 6);
   });
 });
 
@@ -321,64 +357,37 @@ describe("#8210 melhoria 2 — computeCampaignPauseStatus: badge ativa/pausada/d
     assert.equal(computeCampaignPauseStatus(revisao, "2026-09-17"), "ativa");
   });
 
-  it("#8288 — `revisao` com só `pausa` (shape REAL do run-state.json) não lança: era 500 em GET /api/ads", () => {
-    // Regressão do bug que derrubou a rota inteira: `revisao.pausas.some(...)`
-    // sem guard contra o arquivo de produção, que só tem `pausa` (singular).
-    const revisao = { pausa: { inicio: "2026-09-09T16:05:36-03:00", fim: "2026-09-17T00:16:00-03:00" } };
-    assert.doesNotThrow(() => computeCampaignPauseStatus(revisao, "2026-09-17"));
-  });
-
-  it("#8288 — badge lê o INSTANTE, não o dia: 17/09 às 20h é 'ativa' apesar da pausa ter coberto a madrugada", () => {
-    const revisao = { pausa: { inicio: "2026-09-09T16:05:36-03:00", fim: "2026-09-17T00:16:00-03:00" } };
-    assert.equal(computeCampaignPauseStatus(revisao, "2026-09-17", "2026-09-17T20:00:00-03:00"), "ativa");
-    assert.equal(
-      computeCampaignPauseStatus(revisao, "2026-09-17", "2026-09-17T00:05:00-03:00"),
-      "pausada",
-      "instante ANTES da retomada, no mesmo dia",
-    );
-    assert.equal(computeCampaignPauseStatus(revisao, "2026-09-12", "2026-09-12T10:00:00-03:00"), "pausada");
-  });
-
-  it("#8288 — sem `nowIso`, ancora no fim do dia BRT de `todayIso` (leitura mais recente do dia, nunca a meia-noite)", () => {
-    const revisao = { pausa: { inicio: "2026-09-09T16:05:36-03:00", fim: "2026-09-17T00:16:00-03:00" } };
-    assert.equal(computeCampaignPauseStatus(revisao, "2026-09-17"), "ativa");
-    assert.equal(computeCampaignPauseStatus(revisao, "2026-09-16"), "pausada");
-  });
-
-  it("#8288 — pausa como LISTA (2ª pausa futura) é aceita igual ao objeto único", () => {
-    const revisao = {
-      pausa: [
-        { inicio: "2026-09-09T16:05:36-03:00", fim: "2026-09-17T00:16:00-03:00" },
-        { inicio: "2026-09-20T08:00:00-03:00", fim: null },
-      ],
+  describe("hotfix #8283/#8284 — shape REAL de produção (revisao.pausa singular, sem revisao.pausas)", () => {
+    // Fixture real: data/aquisicao/teste-2608/run-state.json grava a pausa
+    // em `revisao.pausa` (singular, com HORA) — nunca em `pausas` (plural,
+    // formato antigo). `computeCampaignPauseStatus` estourava em
+    // `revisao.pausas.some(...)` sobre `undefined` nesse shape.
+    const revisaoReal = {
+      pausa: {
+        inicio: "2026-09-09T16:05:36-03:00",
+        fim: "2026-09-17T00:16:00-03:00",
+        inicio_por_braco: {
+          "Google Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
+          "Microsoft Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
+          "Meta Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
+        },
+      },
     };
-    assert.equal(computeCampaignPauseStatus(revisao, "2026-09-21", "2026-09-21T09:00:00-03:00"), "pausada");
-    assert.equal(computeCampaignPauseStatus(revisao, "2026-09-18", "2026-09-18T09:00:00-03:00"), "ativa");
+
+    it("não lança e devolve 'pausada' pra uma data dentro do intervalo", () => {
+      assert.doesNotThrow(() => computeCampaignPauseStatus(revisaoReal, "2026-09-12"));
+      assert.equal(computeCampaignPauseStatus(revisaoReal, "2026-09-12"), "pausada");
+    });
+
+    it("não lança e devolve 'ativa' pra uma data bem depois do fim da pausa", () => {
+      assert.doesNotThrow(() => computeCampaignPauseStatus(revisaoReal, "2026-09-20"));
+      assert.equal(computeCampaignPauseStatus(revisaoReal, "2026-09-20"), "ativa");
+    });
   });
 
-  it("#8288 — `revisao` presente sem nenhum dos dois campos de pausa — 'ativa' (houve revisão, sem pausa nela)", () => {
-    assert.equal(computeCampaignPauseStatus({}, "2026-09-17"), "ativa");
-  });
-
-  it("#8288 — `pausa` vence `pausas` quando os dois coexistem (precedência do formato ATUAL)", () => {
-    const revisao = {
-      pausa: { inicio: "2026-09-09T16:05:36-03:00", fim: "2026-09-17T00:16:00-03:00" },
-      pausas: [{ desde: "2026-09-20", ate: "2026-09-25" }],
-    };
-    assert.equal(
-      computeCampaignPauseStatus(revisao, "2026-09-22", "2026-09-22T10:00:00-03:00"),
-      "ativa",
-      "22/09 está dentro do `pausas` legado, mas o formato ATUAL manda e já retomou",
-    );
-  });
-
-  it("#8288 review achado 1 — pausa com timestamp INVERTIDO lança aqui (fail-loud do #8262, quem trata é a tela)", () => {
-    // Não é um descuido: `assertValidPauseIntervals` falha alto de propósito
-    // (#8262) porque descartar em silêncio sumiria com a pausa de todos os
-    // ALARMES. O contrato de "não derrubar a rota" é do caller HTTP — ver o
-    // teste correspondente em test/studio-ads.test.ts.
-    const revisao = { pausa: { inicio: "2026-09-17T00:16:00-03:00", fim: "2026-09-09T16:05:36-03:00" } };
-    assert.throws(() => computeCampaignPauseStatus(revisao, "2026-09-17", "2026-09-17T20:00:00-03:00"), /invertido/);
+  it("revisao presente mas sem `pausa` NEM `pausas` — 'desconhecido', sem lançar", () => {
+    assert.doesNotThrow(() => computeCampaignPauseStatus({}, "2026-09-17"));
+    assert.equal(computeCampaignPauseStatus({}, "2026-09-17"), "desconhecido");
   });
 
   it("buildChannelTable aplica o MESMO pauseStatus aos 3 braços (pausas são da campanha inteira, não por canal)", () => {
@@ -394,5 +403,27 @@ describe("#8210 melhoria 2 — computeCampaignPauseStatus: badge ativa/pausada/d
     const metrics: ChannelDailyMetric[] = [{ canal: "Google Ads (teste 2608)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 }];
     const rows = buildChannelTable(metrics, []);
     assert.equal(rows[0].pauseStatus, "desconhecido");
+  });
+});
+
+describe("#8288 — pausa com timestamp incoerente: falha ALTO aqui, tratada na tela", () => {
+  it("intervalo invertido (`fim < inicio`) lança em computeCampaignPauseStatus", () => {
+    // Não é descuido: `assertValidPauseIntervals` falha alto de propósito
+    // (#8262) porque descartar em silêncio sumiria com a pausa de todos os
+    // ALARMES. `assertValidRunState` valida os TIPOS de `revisao.pausa`, não
+    // a coerência dos timestamps, então este shape CHEGA aqui vindo de um
+    // `run-state.json` editado à mão. Quem tem contrato de "não derrubar a
+    // rota" é o caller HTTP — ver o teste correspondente em
+    // test/studio-ads.test.ts.
+    const revisao = { pausa: { inicio: "2026-09-17T00:16:00-03:00", fim: "2026-09-09T16:05:36-03:00" } };
+    assert.throws(() => computeCampaignPauseStatus(revisao, "2026-09-17"), /invertido/);
+  });
+
+  it("intervalo invertido também lança em buildTestStateTiles (mesma origem, outro caminho)", () => {
+    const revisao = { pausa: { inicio: "2026-09-17T00:16:00-03:00", fim: "2026-09-09T16:05:36-03:00" } };
+    assert.throws(
+      () => buildTestStateTiles([], [], { d0: "2026-09-05", fim_janela: "2026-09-27", revisao }, "2026-09-17"),
+      /invertido/,
+    );
   });
 });
