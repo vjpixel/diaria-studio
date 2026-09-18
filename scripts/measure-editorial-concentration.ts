@@ -2,6 +2,8 @@
 /**
  * scripts/measure-editorial-concentration.ts (#8370, Peça 3)
  *
+ * @one-off-validity: permanente motivo="invariante mensal recorrente — roda pela task agendada Diaria-Editorial-Concentration-Monthly-Measure (dia 2, 09:00 BRT) e faz upsert por mês em data/editorial-concentration-monthly.jsonl; o prefixo measure-* casa o padrão one-off por coincidência de nome, mas a série existe justamente para acumular ao longo do tempo, não para responder uma pergunta de uma vez"
+ *
  * Invariante mensal: % big-tech/lab, % Brasil, % `exploracao` e CTR
  * exploração-vs-resto, medidos do acervo público (`workers/site/public/p/`
  * + `sitemap.xml`, ambos versionados — funciona sem `data/`). Método e
