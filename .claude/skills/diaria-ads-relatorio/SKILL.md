@@ -71,13 +71,13 @@ do Kit, ambas desde `d0`. Mesma fonte de dados do Passo 2 abaixo
 soma PMax + Search automaticamente (separação por campanha é escopo do
 #8256, não desta skill).
 
-**Os cadastros aqui são contagem BRUTA do Kit — não excluem e-mail de teste
-do editor** (endereço contendo o texto `vjpixel` ou `pixel` seguido de
-`memelab`). Antes de usar esse número no relatório, descarte manualmente
-qualquer cadastro de teste reconhecível (mesmo procedimento do Passo 2
-abaixo). `--json` devolve o
-mesmo resultado estruturado, incluindo `sources` (status por fonte) e
-`signups`/`metrics` crus.
+**Desde o #8349, os cadastros aqui JÁ excluem e-mail de teste do editor** —
+`fetchKitSignupsByChannel` filtra por `isEditorTestSignupEmail` (plus-address
+`vjpixel+…` e a caixa Workspace do editor) antes de agregar por braço. **Não
+descarte nada à mão sobre esse número**: subtrair de novo o que o código já
+tirou conta o mesmo cadastro duas vezes e infla o CAC — num braço de baixo
+volume, visivelmente. `--json` devolve o mesmo resultado estruturado,
+incluindo `sources` (status por fonte) e `signups`/`metrics` crus.
 
 ## Passo 2 — achados de gasto acima do esperado
 
@@ -102,7 +102,7 @@ abortar (`resolveArmSpend`). Um braço com mais de uma campanha em voo
 fonte automática/`run-state.json` somar — esta skill nunca soma campanhas
 por conta própria.
 
-## Passo 2b — cadastros por braço, com dedup de teste (#8246)
+## Passo 2b — cadastros por braço (dedup de teste agora é do código, #8349)
 
 Os cadastros vêm do **Kit** (`subscriber_backend` é Kit, não Beehiiv). A
 atribuição vive nos **campos personalizados** `utm_source`/`utm_medium`/
@@ -110,15 +110,24 @@ atribuição vive nos **campos personalizados** `utm_source`/`utm_medium`/
 `utm_source: null` e engana quem olha ele.
 
 O Passo 1b já traz a contagem por braço/dia via `fetchCampaignEconomicsSources`
-(mesma fonte do `/ads` do Studio) — é contagem BRUTA, sem excluir e-mail de
-teste. **Antes de usar o número no relatório, descarte** qualquer cadastro
-cujo e-mail contenha o texto `vjpixel` ou a sequência `pixel` seguida de
-`memelab` (ex: um alias `vjpixel+algo` de teste) — para isso, consulte o Kit diretamente
-(`filter_subscribers`/MCP, ou `listKitSubscribersPage` de
-`scripts/lib/kit-subscribers.ts`) filtrando por `fields.utm_source` do
-braço, e subtraia os que casarem. **Diga no relatório quantos foram
-descartados por braço** — num braço de baixo volume, 2 cadastros falsos
-distorcem o CAC visivelmente.
+(mesma fonte do `/ads` do Studio) — e **desde o #8349 essa contagem já vem sem
+os cadastros de teste do editor**: `fetchKitSignupsByChannel` filtra por
+`isEditorTestSignupEmail` (`scripts/lib/ads-campaign-economics-fetch.ts`), que
+reusa `isEditorTestEmail`/`EDITOR_TEST_EMAIL_PATTERN` (plus-address
+`vjpixel+…`) e `EDITOR_WORKSPACE_EMAIL` (a caixa Workspace do editor).
+
+**Não subtraia nada à mão.** Este passo era manual porque o filtro não existia
+no código; agora existe, e descartar de novo contaria o mesmo cadastro duas
+vezes — o efeito é CAC inflado, que é exatamente o erro que o passo manual
+existia pra evitar. O e-mail simples do editor (sem plus-address) segue NÃO
+filtrado de propósito (#8349): não há evidência de que ele seja fonte de
+contaminação, e excluí-lo descartaria cadastro potencialmente real.
+
+O que ainda vale conferir à mão: se aparecer um cadastro de teste com endereço
+que **não** casa nenhum desses padrões (um domínio novo, por exemplo), ele
+passa pelo filtro — nesse caso, descarte, **diga no relatório quantos e por
+quê**, e abra issue pra estender o filtro no código em vez de deixar a
+correção só na prosa desta skill.
 
 ## Passo 2c — registrar em clicks-2608.csv e spend.csv (#8246)
 
