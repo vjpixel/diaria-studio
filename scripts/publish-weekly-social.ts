@@ -138,7 +138,7 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -1152,6 +1152,34 @@ async function runOneMode(
     return true;
   }
   const carouselImageUrls = [coverUrl, ...resolvedImages.urls, ctaUrl];
+
+  // #8055: registra a ORDEM REAL do carrossel. Sem isto, quem for reusar
+  // estes slides depois (ex: `gen-weekly-carousel-pdf.ts`, que encaderna o
+  // carrossel num PDF) só tem os caches `06-flat-cards.json`/
+  // `06-news-cards.json` pra reconstruir a sequência — e a chave do cache de
+  // notícia (`{data}-{destaque}-{fontSize}`) descarta justamente a ordem: ela
+  // permite recuperar ordem CRONOLÓGICA, que é a do modo `highlights`, mas
+  // NÃO a do modo `clicked` (ranqueado por clique) nem a de `--force-urls`
+  // (ordem explícita do editor). Reconstruir por ordenação de chave daria,
+  // nesses dois casos, um documento com a sequência trocada — estruturalmente
+  // perfeito e narrativamente errado, o tipo de falha que ninguém pega
+  // revisando o arquivo. Achado pelo review do PR #8305.
+  //
+  // Fail-soft de propósito: isto é um registro auxiliar, não um passo da
+  // publicação. Disco cheio ou permissão não pode derrubar um carrossel que
+  // já foi renderizado — quem consome o manifesto falha alto por conta
+  // própria quando ele não existe.
+  try {
+    const orderPath = resolve(dataRoot, "weekly", carouselKey, "_internal", "06-carousel-urls.json");
+    mkdirSync(dirname(orderPath), { recursive: true });
+    writeFileSync(
+      orderPath,
+      JSON.stringify({ carouselKey, mode, generated_at: new Date().toISOString(), urls: carouselImageUrls }, null, 2),
+      "utf8",
+    );
+  } catch (e) {
+    console.error(`AVISO: não consegui gravar 06-carousel-urls.json (${(e as Error).message}) — publicação segue normal.`);
+  }
 
   // ── Instagram (#4146/#4483/#5330) ──
   //

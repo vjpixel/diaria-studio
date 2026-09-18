@@ -19,14 +19,20 @@
  * Corolário: este script só funciona DEPOIS que a semana foi publicada.
  * Sem cache, falha alto dizendo qual arquivo falta — nunca inventa slide.
  *
- * ## Estado (#8055)
+ * ## Estado (#8055) — RE-DERIVAR, nunca confiar neste parágrafo
  *
- * A PUBLICAÇÃO do PDF no LinkedIn segue bloqueada: exige a Documents API,
- * sob o produto Community Management API, que em 17/09/2026 continua
- * "Review in progress" no app `264772062`, e o Worker nem tem
- * `LINKEDIN_ACCESS_TOKEN` provisionado. Este script é a metade que NÃO
- * depende disso — gera e valida o artefato, pra que, quando a aprovação
- * sair, reste só a chamada de upload.
+ * A PUBLICAÇÃO do PDF no LinkedIn depende da Documents API, sob o produto
+ * Community Management API. Na última medição (18/09/2026) o produto estava
+ * "Review in progress" no app `264772062` e o Worker não tinha
+ * `LINKEDIN_ACCESS_TOKEN` provisionado — então este script é a metade que
+ * NÃO depende disso: gera e valida o artefato, e quando a aprovação sair
+ * resta só a chamada de upload.
+ *
+ * Essas DUAS condições vivem fora do repositório (fila de review da
+ * LinkedIn; segredos do Worker no Cloudflare), e nenhum teste aqui as
+ * verifica — pela disciplina do #1172, quem for retomar isto re-deriva ao
+ * vivo (`wrangler secret list` no `diaria-linkedin-cron`; aba Products do
+ * app no Developer Portal) em vez de tomar esta data como estado atual.
  *
  * ## Uso
  *
@@ -38,7 +44,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
 import { isMainModule } from "./lib/cli-args.ts";
-import { buildImagePdf, readJpegHeader, type ImagePdfPage } from "./lib/image-pdf.ts";
+import { buildImagePdf, type ImagePdfPage } from "./lib/image-pdf.ts";
 
 /** Teto da Documents API do LinkedIn — 100MB por documento. Conferido
  *  aqui pra a falha aparecer na geração, não no upload. */
@@ -50,21 +56,57 @@ const LINKEDIN_DOC_MAX_PAGES = 300;
 export interface WeeklyCarouselSlides {
   /** URLs na ordem final do carrossel: capa, notícias, CTA. */
   urls: string[];
+  /** De onde a ordem veio — `"manifest"` é a ordem REAL registrada na
+   *  publicação; `"cache-chronological"` é reconstrução, só permitida no
+   *  modo `highlights` (ver {@link resolveSlideUrlsFromCache}). */
+  source: "manifest" | "cache-chronological";
+}
+
+/** `JSON.parse` com o caminho do arquivo na mensagem — mesma disciplina de
+ *  `readNewsCardUrl` (`lib/weekly-carousel-news-card.ts`), que já distingue
+ *  "corrompido" de "ausente" pros MESMOS arquivos. Cache lido no meio de uma
+ *  escrita concorrente do `publish-weekly-social.ts` é o caso real. */
+function readJsonFile<T>(path: string): T {
+  const raw = readFileSync(path, "utf8");
+  try {
+    return JSON.parse(raw) as T;
+  } catch (e) {
+    throw new Error(`gen-weekly-carousel-pdf: ${path} corrompido (${(e as Error).message}) — pode ser leitura no meio de uma escrita concorrente; re-tente.`);
+  }
 }
 
 /**
- * Lê os caches da semana e devolve as URLs dos slides NA ORDEM do
- * carrossel. `newsOrder` (as chaves de `06-news-cards.json`, na ordem em
- * que o carrossel as usou) é opcional: sem ela, as chaves do cache são
- * ordenadas alfabeticamente, o que coincide com a ordem cronológica
- * porque a chave começa com a data da edição (`260908-d1-52`).
+ * Devolve as URLs dos slides NA ORDEM do carrossel.
  *
- * @pure exceto pela leitura dos 2 JSONs.
+ * ## Por que a ordem não se reconstrói dos caches (achado do review, #8305)
+ *
+ * A chave do cache de notícia é `{data}-{destaque}-{fontSize}`, então
+ * ordenar as chaves dá ordem CRONOLÓGICA. Isso é a ordem real **só** no
+ * modo `highlights` (os 5 D1 da semana, em ordem de data). NÃO é no modo
+ * `clicked`, que ranqueia por clique, nem com `--force-urls`, onde o editor
+ * dá uma ordem explícita. Nesses dois casos a reconstrução produziria um
+ * documento com a sequência trocada — estruturalmente perfeito, narrativa
+ * errada, e ninguém pega isso revisando o PDF.
+ *
+ * Por isso a fonte preferida é `06-carousel-urls.json`, o manifesto que
+ * `publish-weekly-social.ts` grava com a ordem exata que foi publicada. A
+ * reconstrução cronológica fica como fallback e **só** para `-highlights`;
+ * qualquer outro modo sem manifesto falha alto, em vez de adivinhar.
  */
 export function resolveSlideUrlsFromCache(dataRoot: string, carouselKey: string): WeeklyCarouselSlides {
   const dir = resolve(dataRoot, "weekly", carouselKey, "_internal");
+  const manifestPath = resolve(dir, "06-carousel-urls.json");
   const flatPath = resolve(dir, "06-flat-cards.json");
   const newsPath = resolve(dir, "06-news-cards.json");
+
+  if (existsSync(manifestPath)) {
+    const manifest = readJsonFile<{ urls?: unknown }>(manifestPath);
+    const urls = manifest.urls;
+    if (!Array.isArray(urls) || urls.length === 0 || !urls.every((u) => typeof u === "string" && u)) {
+      throw new Error(`gen-weekly-carousel-pdf: ${manifestPath} sem uma lista de urls utilizável.`);
+    }
+    return { urls: urls as string[], source: "manifest" };
+  }
 
   if (!existsSync(flatPath)) {
     throw new Error(
@@ -72,16 +114,25 @@ export function resolveSlideUrlsFromCache(dataRoot: string, carouselKey: string)
         `Rode publish-weekly-social.ts primeiro; este script encaderna o que já foi ao ar, nunca gera arte nova.`,
     );
   }
-  const flat = JSON.parse(readFileSync(flatPath, "utf8")) as Record<string, { url?: string }>;
+
+  // Sem manifesto (semana publicada antes do #8055), só `-highlights` pode
+  // ser reconstruída com segurança — ver docstring acima.
+  if (!carouselKey.endsWith("-highlights")) {
+    throw new Error(
+      `gen-weekly-carousel-pdf: "${carouselKey}" não tem ${manifestPath} e não é modo "highlights" — a ordem real do ` +
+        `carrossel não é recuperável dos caches (o modo "clicked" ranqueia por clique, "--force-urls" usa ordem do ` +
+        `editor; a chave do cache só guarda a data). Re-publique a semana pra gerar o manifesto, ou passe as URLs à mão.`,
+    );
+  }
+
+  const flat = readJsonFile<Record<string, { url?: string }>>(flatPath);
   const coverUrl = flat.cover?.url;
   const ctaUrl = flat.cta?.url;
   if (!coverUrl || !ctaUrl) {
     throw new Error(`gen-weekly-carousel-pdf: ${flatPath} sem cover/cta — cache incompleto, não dá pra montar o documento.`);
   }
 
-  const news: Record<string, { url?: string }> = existsSync(newsPath)
-    ? (JSON.parse(readFileSync(newsPath, "utf8")) as Record<string, { url?: string }>)
-    : {};
+  const news: Record<string, { url?: string }> = existsSync(newsPath) ? readJsonFile(newsPath) : {};
   const newsUrls = Object.keys(news)
     .sort()
     .map((k) => {
@@ -95,13 +146,26 @@ export function resolveSlideUrlsFromCache(dataRoot: string, carouselKey: string)
       `gen-weekly-carousel-pdf: nenhum card de notícia em ${newsPath} — um documento só com capa e CTA não tem conteúdo.`,
     );
   }
-  return { urls: [coverUrl, ...newsUrls, ctaUrl] };
+  return { urls: [coverUrl, ...newsUrls, ctaUrl], source: "cache-chronological" };
 }
 
-async function downloadJpeg(url: string): Promise<Uint8Array> {
+export async function downloadJpeg(url: string): Promise<Uint8Array> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`gen-weekly-carousel-pdf: GET ${url} -> ${res.status} ${res.statusText}`);
-  return new Uint8Array(await res.arrayBuffer());
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  // Corpo cortado no meio da transferência chega com 200 e sem erro
+  // nenhum (#8305 review). `readJpegHeader` pega o caso pelo EOI ausente,
+  // mas conferir aqui nomeia a causa REAL — "veio menos byte do que o
+  // servidor prometeu" — em vez de mandar quem depura investigar um JPEG
+  // supostamente malformado na origem.
+  const declared = res.headers.get("content-length");
+  if (declared != null && Number(declared) !== bytes.length) {
+    throw new Error(
+      `gen-weekly-carousel-pdf: GET ${url} veio truncado — content-length dizia ${declared} bytes, chegaram ${bytes.length}.`,
+    );
+  }
+  if (bytes.length === 0) throw new Error(`gen-weekly-carousel-pdf: GET ${url} devolveu corpo vazio.`);
+  return bytes;
 }
 
 /** Baixa os slides e monta o PDF. Separado do `main` pra ser testável com
@@ -114,10 +178,21 @@ export async function buildWeeklyCarouselPdf(
     throw new Error(`gen-weekly-carousel-pdf: ${urls.length} páginas excede o teto de ${LINKEDIN_DOC_MAX_PAGES} da Documents API.`);
   }
   const pages: ImagePdfPage[] = [];
+  let bytesSoFar = 0;
   for (const url of urls) {
     const jpeg = await fetchJpeg(url);
-    const { widthPx, heightPx, components } = readJpegHeader(jpeg);
-    pages.push({ jpeg, widthPx, heightPx, components });
+    bytesSoFar += jpeg.length;
+    // Aborta assim que os JPEGs já somam mais que o teto, em vez de baixar o
+    // resto e montar um PDF que não tem como ser aceito. O PDF é ~a soma dos
+    // JPEGs (DCTDecode não recomprime), então esta soma é um piso honesto do
+    // tamanho final — a checagem final continua depois, sobre o valor real.
+    if (bytesSoFar > LINKEDIN_DOC_MAX_BYTES) {
+      throw new Error(
+        `gen-weekly-carousel-pdf: os slides já somam ${(bytesSoFar / 1024 / 1024).toFixed(1)}MB, acima do teto de ` +
+          `${LINKEDIN_DOC_MAX_BYTES / 1024 / 1024}MB da Documents API — abortado sem baixar o resto.`,
+      );
+    }
+    pages.push({ jpeg });
   }
   const pdf = buildImagePdf(pages);
   if (pdf.length > LINKEDIN_DOC_MAX_BYTES) {

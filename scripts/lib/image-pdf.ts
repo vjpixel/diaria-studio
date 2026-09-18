@@ -37,15 +37,27 @@
  *   `.jpeg({quality:88})`).
  */
 
-/** Uma página do PDF — 1 JPEG e suas dimensões em PIXELS. */
+/**
+ * Uma página do PDF — só os bytes do JPEG.
+ *
+ * Largura, altura e nº de componentes NÃO entram aqui de propósito (#8305
+ * review): são deriváveis dos próprios bytes via {@link readJpegHeader}, e
+ * aceitá-los do caller permitia construir uma página inconsistente — um
+ * `/Width` que não bate com a imagem estica a página no aspecto errado, um
+ * `/ColorSpace` errado troca as cores. Nos dois casos o PDF sai
+ * estruturalmente perfeito e visualmente errado, que é justamente a falha
+ * que este módulo diz não aceitar. Derivando internamente, o estado
+ * inconsistente deixa de ser representável.
+ */
 export interface ImagePdfPage {
   jpeg: Uint8Array;
-  widthPx: number;
-  heightPx: number;
-  /** `3` = YCbCr/RGB (`DeviceRGB`), `1` = tons de cinza (`DeviceGray`).
-   *  Default `3` — todos os cards do projeto são coloridos. */
-  components?: number;
 }
+
+/** Componentes que `DCTDecode` sabe mapear pra um `/ColorSpace` nosso.
+ *  4 (CMYK/YCCK) fica de fora: exigiria `/DeviceCMYK` + `/Decode` invertido
+ *  pra JPEG de origem Adobe, e nada no projeto produz isso — melhor recusar
+ *  do que publicar cor errada. */
+export type JpegComponents = 1 | 3;
 
 export interface ImagePdfOptions {
   /** Largura da página em PONTOS (1/72"). A altura sai da proporção de
@@ -64,6 +76,14 @@ const DEFAULT_PAGE_WIDTH_PT = 540;
  *  também não cobre. */
 const SOF_BASELINE = new Set([0xc0, 0xc1]);
 const SOF_PROGRESSIVE = 0xc2;
+/** Todo marcador `0xC0`–`0xCF` é um SOF, EXCETO estes três, que só
+ *  compartilham a faixa: `C4` = DHT (tabelas de Huffman), `C8` = JPG
+ *  (reservado), `CC` = DAC (codificação aritmética). Sem esta distinção, um
+ *  JPEG lossless/aritmético (SOF3, SOF5+) não era reconhecido como SOF
+ *  nenhum e caía no erro genérico "nenhum marcador SOF encontrado", que
+ *  manda quem depura procurar arquivo truncado quando o problema é modo não
+ *  suportado (#8305 review). */
+const NOT_SOF_IN_RANGE = new Set([0xc4, 0xc8, 0xcc]);
 
 /**
  * Lê largura/altura/nº de componentes direto dos bytes do JPEG, varrendo
@@ -72,9 +92,24 @@ const SOF_PROGRESSIVE = 0xc2;
  *
  * @pure
  */
-export function readJpegHeader(jpeg: Uint8Array): { widthPx: number; heightPx: number; components: number } {
+export function readJpegHeader(jpeg: Uint8Array): { widthPx: number; heightPx: number; components: JpegComponents } {
   if (jpeg.length < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
     throw new Error("image-pdf: não é um JPEG (falta o SOI 0xFFD8).");
+  }
+  // JPEG TRUNCADO é a falha mais perigosa deste módulo (#8305 review): um
+  // arquivo cortado DEPOIS do SOF tem header íntegro, devolve largura/altura
+  // corretas e entra no PDF com `/Width`, `/Height` e `/Length` todos certos
+  // — passa em cada checagem estrutural que este arquivo faz e rende uma
+  // página corrompida ou em branco no leitor. É o desfecho exato que a
+  // recusa de JPEG progressivo existe pra evitar, alcançado por outro
+  // caminho. O EOI no fim é o que separa "baixei o arquivo" de "baixei parte
+  // do arquivo" — download interrompido depois dos headers é o caso real
+  // (ver `downloadJpeg` em gen-weekly-carousel-pdf.ts).
+  if (jpeg[jpeg.length - 2] !== 0xff || jpeg[jpeg.length - 1] !== 0xd9) {
+    throw new Error(
+      "image-pdf: JPEG sem o marcador EOI (0xFFD9) no fim — arquivo truncado. " +
+        "Embutir assim daria uma página estruturalmente válida e visualmente corrompida.",
+    );
   }
   let i = 2;
   while (i < jpeg.length - 1) {
@@ -100,7 +135,23 @@ export function readJpegHeader(jpeg: Uint8Array): { widthPx: number; heightPx: n
       const widthPx = (jpeg[i + 7] << 8) | jpeg[i + 8];
       const components = jpeg[i + 9];
       if (!widthPx || !heightPx) throw new Error("image-pdf: SOF com dimensão zero.");
+      if (components !== 1 && components !== 3) {
+        throw new Error(
+          `image-pdf: JPEG com ${components} componentes não é suportado — só 1 (tons de cinza) e 3 (RGB/YCbCr). ` +
+            "CMYK/YCCK (4) exigiria /DeviceCMYK e, em JPEG de origem Adobe, /Decode invertido; rotular como /DeviceRGB " +
+            "publicaria o documento com as cores erradas.",
+        );
+      }
       return { widthPx, heightPx, components };
+    }
+    // SOF que não é baseline nem progressivo (lossless, aritmético): nomeia o
+    // modo em vez de deixar cair no "nenhum SOF encontrado" lá embaixo, que
+    // sugere arquivo truncado e manda quem depura pro lugar errado.
+    if (marker >= 0xc0 && marker <= 0xcf && !NOT_SOF_IN_RANGE.has(marker)) {
+      throw new Error(
+        `image-pdf: modo JPEG SOF 0x${marker.toString(16).toUpperCase()} (lossless/aritmético) não é suportado por DCTDecode — ` +
+          "reencode como baseline.",
+      );
     }
     i += 2 + segLen;
   }
@@ -165,11 +216,21 @@ export function buildImagePdf(pages: readonly ImagePdfPage[], opts: ImagePdfOpti
     const objImage = objPage + 1;
     const objContents = objPage + 2;
 
-    if (!(page.widthPx > 0) || !(page.heightPx > 0)) {
-      throw new Error(`image-pdf: página ${i + 1} com dimensão inválida (${page.widthPx}×${page.heightPx}).`);
+    // Dimensões e colorspace vêm dos BYTES, nunca do caller (#8305 review) —
+    // é o que torna impossível uma página descrever uma imagem diferente da
+    // que ela embute. `readJpegHeader` também é onde JPEG truncado,
+    // progressivo, de modo exótico ou com nº de componentes não suportado é
+    // recusado, então toda página que chega aqui já passou por esses guards.
+    let widthPx: number;
+    let heightPx: number;
+    let components: JpegComponents;
+    try {
+      ({ widthPx, heightPx, components } = readJpegHeader(page.jpeg));
+    } catch (e) {
+      throw new Error(`image-pdf: página ${i + 1} — ${(e as Error).message}`);
     }
-    const pageHeightPt = (pageWidthPt * page.heightPx) / page.widthPx;
-    const colorSpace = (page.components ?? 3) === 1 ? "/DeviceGray" : "/DeviceRGB";
+    const pageHeightPt = (pageWidthPt * heightPx) / widthPx;
+    const colorSpace = components === 1 ? "/DeviceGray" : "/DeviceRGB";
 
     beginObject(objPage);
     pushText(
@@ -179,7 +240,7 @@ export function buildImagePdf(pages: readonly ImagePdfPage[], opts: ImagePdfOpti
 
     beginObject(objImage);
     pushText(
-      `<< /Type /XObject /Subtype /Image /Width ${page.widthPx} /Height ${page.heightPx} ` +
+      `<< /Type /XObject /Subtype /Image /Width ${widthPx} /Height ${heightPx} ` +
         `/ColorSpace ${colorSpace} /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.jpeg.length} >>\nstream\n`,
     );
     push(page.jpeg);
