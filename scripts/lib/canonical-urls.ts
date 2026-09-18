@@ -216,6 +216,20 @@ export const DIARIA_ARQUIVO_URL = "https://arquivo.diar.ia.br";
  */
 export const DIARIA_ESPECIAL_URL = "https://especial.diar.ia.br";
 
+/**
+ * URL canônica do CTA de afiliado da Clarice na página de cupom (#8338) —
+ * plano/preços com o tracking de afiliado `via=diaria` (Rewardful) já
+ * embutido. Mesmo literal já usado no box de patrocínio da newsletter
+ * (`scripts/stitch-newsletter.ts`, `para_encerrar_tools`) e travado por
+ * `SPONSORED_LITERALS` em `scripts/verify-clarice-coupons.ts` — fonte única
+ * pra evitar 2 grafias divergentes do mesmo link. **Não** é o link sem o
+ * parâmetro de afiliado (path `/precos-planos`, sem `?via=diaria`) — todo
+ * consumidor novo deve importar esta constante em vez de montar a URL à
+ * mão, pra nunca cair no guard `clariceLinkMissingVia` abaixo por
+ * esquecimento.
+ */
+export const DIARIA_CLARICE_PRECOS_URL = "https://clarice.ai/precos-planos?via=diaria";
+
 interface ArticleLike {
   url?: string;
   title?: string;
