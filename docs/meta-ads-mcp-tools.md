@@ -107,10 +107,16 @@ Fora do escopo prático deste projeto (newsletter, sem catálogo de produto/e-co
       `{"ad_entities": "<json-string>"}` foi capturado ao vivo (zero campanhas,
       `ad_entities: "[]"`, fixture `test/fixtures/meta-ads/ad-entities-empty.json`) e os
       valores de gasto foram preenchidos à mão sobre esse mesmo shape
-      (`test/fixtures/meta-ads/ad-entities-synthetic.json`). Diferente de
-      Google/Microsoft, este script **não faz `fetch`** — não há `META_ADS_*` no
-      ambiente nem endpoint REST com key própria pra este projeto; ele consome um
-      dump de `ads_get_ad_entities` via `--input <path.json>`, gerado por uma sessão
-      com o conector Meta Ads. **Fixture sintética valida o parser, não o
-      contrato** — quando a campanha real da #5524 gerar o primeiro gasto,
-      re-verificar o envelope ao vivo e comentar em #5469 antes de fechá-la.
+      (`test/fixtures/meta-ads/ad-entities-synthetic.json`). Com `--input`, este
+      script **não faz `fetch`** — consome um dump de `ads_get_ad_entities` via
+      `--input <path.json>`, gerado por uma sessão com o conector Meta Ads (o nível
+      de detalhe por campanha desse envelope não tem equivalente REST documentado).
+      **Prosa vencida corrigida (#8245, 18/09/2026):** `META_ADS_ACCESS_TOKEN`
+      EXISTE no ambiente desde #7536 (System User token, `ads_read`) — sem
+      `--input`, o mesmo script agora chama `fetchMetaAdsChannelMetrics`
+      (`scripts/lib/ads-campaign-economics-fetch.ts`, REST puro via Graph API
+      `insights`) pro caminho headless/agendado, espelhando Google/Microsoft. O
+      `--input` continua sendo o único caminho pro nível `ad_entities` por
+      campanha. **Fixture sintética valida o parser, não o contrato** — quando a
+      campanha real da #5524 gerar o primeiro gasto, re-verificar o envelope ao
+      vivo e comentar em #5469 antes de fechá-la.
