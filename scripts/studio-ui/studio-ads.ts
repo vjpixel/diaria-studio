@@ -59,6 +59,7 @@ import {
   buildTestStateTiles,
   computeSourceFreshness,
   computeCampaignPauseStatus,
+  effectivePauseIntervals,
   type CumulativeSeriesResult,
   type ChannelSummaryRow,
   type TestStateTiles,
@@ -66,11 +67,7 @@ import {
   type SourceFreshnessEntry,
   type ChannelActiveCounts,
 } from "../lib/ads-campaign-economics.ts";
-import {
-  normalizePauseIntervals,
-  type AdsTestPauseField,
-  type AdsTestPauseInterval,
-} from "../lib/ads-test-pause-window.ts";
+import { type AdsTestPauseInterval } from "../lib/ads-test-pause-window.ts";
 import {
   parseSocialFollowersJsonl,
   computeDailyBalances,
@@ -556,7 +553,7 @@ export async function buildAdsCampaignEconomics(
   let testState: TestStateTiles;
   let pauseReadError: string | null = null;
   try {
-    pauseIntervals = normalizePauseIntervals((runState?.revisao as { pausa?: AdsTestPauseField } | undefined)?.pausa);
+    pauseIntervals = effectivePauseIntervals(runState?.revisao);
     pauseStatus = computeCampaignPauseStatus(runState?.revisao, todayIso);
     testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, runState, todayIso);
   } catch (e) {

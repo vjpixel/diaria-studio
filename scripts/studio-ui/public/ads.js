@@ -6,7 +6,7 @@
 // ?refresh=1) — nenhuma edição de spend.csv nesta página (import manual é
 // fora do Studio, ver `scripts/seed-spend-csv.ts`/CLAUDE.md).
 
-import { clampToContainer, nearestDateIndex, skippedPausedLabel, tooltipRowsForIndex } from "./ads-chart.js";
+import { clampToContainer, formatDdMm as fmtDdMm, nearestDateIndex, skippedPausedLabel, tooltipRowsForIndex } from "./ads-chart.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -558,13 +558,6 @@ function renderCampaignChart(cumulative) {
   if (skipped.length > 0) {
     el.campaignChartLegend.innerHTML += `<span class="hint">${escapeHtml(skippedPausedLabel(skipped))}</span>`;
   }
-}
-
-/** `YYYY-MM-DD` → `DD/MM` — só reformatação de string, sem fuso (a data já
- *  é um dia de calendário puro, não um instante). */
-function fmtDdMm(isoDate) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate));
-  return m ? `${m[3]}/${m[2]}` : String(isoDate);
 }
 
 /** Saldo diário (#8260) — `+N`/`−N` com sinal explícito, `—` pra `null`

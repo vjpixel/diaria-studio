@@ -1,5 +1,5 @@
 /**
- * test/ads-chart-tooltip.test.ts (#8300) — regressão do bug "passar o mouse
+ * test/ads-chart.test.ts (#8300, #8307) — regressão do bug "passar o mouse
  * sobre os pontos não mostra os valores" no gráfico "Custo/cadastro
  * acumulado por canal" do painel /ads.
  *
@@ -162,6 +162,16 @@ describe("skippedPausedLabel (#8307)", () => {
     // A pausa de produção (10 a 16/09) é exatamente este caso.
     const pausa = ["2026-09-10", "2026-09-11", "2026-09-12", "2026-09-13", "2026-09-14", "2026-09-15", "2026-09-16"];
     assert.equal(skippedPausedLabel(pausa), "7 dias sem veiculação (pausa) fora do gráfico: 10/09 a 16/09");
+  });
+
+  it("datas não-contíguas não viram intervalo — 2 pausas separadas dizem \"entre\"", () => {
+    // Achado 3 do review da PR #8312: "10/09 a 22/09" prometeria 13 dias
+    // seguidos de pausa que não existiram.
+    const duasPausas = ["2026-09-10", "2026-09-11", "2026-09-21", "2026-09-22"];
+    assert.equal(
+      skippedPausedLabel(duasPausas),
+      "4 dias sem veiculação (pausa) fora do gráfico: entre 10/09 e 22/09",
+    );
   });
 
   it("nada pulado → string vazia (a UI não imprime nota nenhuma)", () => {

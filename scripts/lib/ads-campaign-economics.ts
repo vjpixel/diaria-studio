@@ -206,10 +206,25 @@ export function buildCumulativeSeries(
   const cadastrosByChannelDate = new Map<string, number>();
   for (const s of signups) cadastrosByChannelDate.set(`${s.canal}|${s.date}`, (cadastrosByChannelDate.get(`${s.canal}|${s.date}`) ?? 0) + s.cadastros);
 
-  // #8307: datas SEM NENHUMA veiculação (dia 100% dentro de uma pausa) não
-  // viram ponto. A acumulação passa por elas normalmente (ver loop abaixo) —
-  // o que some é só o PONTO, nunca o gasto/cadastro daquele dia.
-  const skippedPausedDates = (opts.pauseIntervals?.length ?? 0) > 0 ? dates.filter((d) => isFullyPausedDate(d, opts.pauseIntervals!)) : [];
+  // #8307: datas SEM NENHUMA veiculação (dia 100% dentro de uma pausa E sem
+  // nenhum lançamento de gasto/cadastro) não viram ponto.
+  //
+  // A 2ª condição não é zelo (achado 2 do review da PR #8312): sem ela, um
+  // lançamento em dia pausado só reaparece se existir um dia veiculado
+  // DEPOIS dele — numa pausa em andamento (que cobre o fim do intervalo) não
+  // existe, e gasto/cadastro real sumia do gráfico em silêncio. Dia em que
+  // algo foi cobrado não é "nada aconteceu": é dado, e dado aparece.
+  const hasActivityOnDate = (date: string): boolean => {
+    for (const canal of channels) {
+      if ((gastoByChannelDate.get(`${canal}|${date}`) ?? 0) !== 0) return true;
+      if ((cadastrosByChannelDate.get(`${canal}|${date}`) ?? 0) !== 0) return true;
+    }
+    return false;
+  };
+  const skippedPausedDates =
+    (opts.pauseIntervals?.length ?? 0) > 0
+      ? dates.filter((d) => isFullyPausedDate(d, opts.pauseIntervals!) && !hasActivityOnDate(d))
+      : [];
   const skippedSet = new Set(skippedPausedDates);
   const plottedDates = dates.filter((d) => !skippedSet.has(d));
 
@@ -224,9 +239,9 @@ export function buildCumulativeSeries(
     for (const date of dates) {
       gastoAcumulado = round2(gastoAcumulado + (gastoByChannelDate.get(`${canal}|${date}`) ?? 0));
       cadastrosAcumulados += cadastrosByChannelDate.get(`${canal}|${date}`) ?? 0;
-      // Dia 100% pausado acumula (acima) mas não é plotado — um eventual
-      // resíduo de gasto/cadastro nele aparece no ponto do PRÓXIMO dia
-      // veiculado, nunca se perde.
+      // Dia pulado acumula (acima) mas não é plotado. Ele nunca carrega
+      // lançamento nenhum (ver `hasActivityOnDate`), então pular não pode
+      // esconder gasto/cadastro de ninguém.
       if (skippedSet.has(date)) continue;
       const custoPorCadastroAcumulado = cadastrosAcumulados > 0 ? round2(gastoAcumulado / cadastrosAcumulados) : null;
       points.push({ canal, date, gastoAcumuladoBrl: gastoAcumulado, cadastrosAcumulados, custoPorCadastroAcumulado });
@@ -522,7 +537,8 @@ function legacyPausasToIntervals(pausas: readonly { desde: string; ate: string }
  *  — ambos delegam a `normalizePauseIntervals`/`ads-test-pause-window.ts`
  *  pra nunca duplicar o parser de pausa (ver docstring do topo do
  *  arquivo). @pure */
-function effectivePauseIntervals(revisao: AdsTestRunStateRevisao): AdsTestPauseInterval[] {
+export function effectivePauseIntervals(revisao: AdsTestRunStateRevisao | undefined | null): AdsTestPauseInterval[] {
+  if (!revisao) return [];
   const current = normalizePauseIntervals(revisao.pausa);
   if (current.length > 0) return current;
   return legacyPausasToIntervals(revisao.pausas ?? []);
