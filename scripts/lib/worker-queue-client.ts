@@ -98,6 +98,32 @@ export async function deleteFromWorkerQueue(
   return { deleted: true, alreadyGone: false, key };
 }
 
+/**
+ * WorkerQueueError (#8303)
+ *
+ * Erro tipado lançado quando o Worker responde HTTP não-2xx a `POST /queue`.
+ * Carrega `status` + `code` (opcional — o `code` machine-readable que o
+ * Worker inclui no corpo JSON pra rejeições que o caller precisa distinguir
+ * programaticamente, ex: `"linkedin_creds_missing"` — ver
+ * `workers/linkedin-cron/src/index.ts::handleEnqueue`). Callers que só
+ * precisam logar o erro continuam funcionando sem mudança (é um `Error`
+ * normal); callers que precisam ramificar por causa (como
+ * `publish-weekly-social.ts`, que trata `linkedin_creds_missing` como
+ * `status: "skipped"` em vez de `"failed"`) checam `.code` em vez de fazer
+ * parsing de string na mensagem — mais robusto a mudança de texto no Worker.
+ */
+export class WorkerQueueError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(status: number, body: string, code?: string) {
+    super(`Worker queue HTTP ${status}: ${body.slice(0, 300)}`);
+    this.name = "WorkerQueueError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export async function postToWorkerQueue(
   workerUrl: string,
   token: string,
@@ -119,8 +145,19 @@ export async function postToWorkerQueue(
         signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
       });
       if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`Worker queue HTTP ${res.status}: ${body.slice(0, 300)}`);
+        const bodyText = await res.text();
+        // #8303 — extrai `code` do corpo JSON quando presente, pra callers
+        // ramificarem sem parsear a mensagem de erro em prosa. Corpo não-JSON
+        // (ou sem `code`) não é erro — cai pro WorkerQueueError sem code, que
+        // qualquer caller já tratava como falha genérica antes desta mudança.
+        let code: string | undefined;
+        try {
+          const parsed = JSON.parse(bodyText) as { code?: string };
+          if (typeof parsed.code === "string") code = parsed.code;
+        } catch {
+          // corpo não é JSON — segue sem code
+        }
+        throw new WorkerQueueError(res.status, bodyText, code);
       }
       const text = await res.text();
       try {
@@ -133,8 +170,17 @@ export async function postToWorkerQueue(
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e));
       console.error(`[${logPrefix}] worker attempt ${attempt} failed: ${lastError.message}`);
-      if (attempt < maxAttempts) {
+      // #8303 — HTTP 4xx é rejeição de VALIDAÇÃO (payload/config inválidos p/
+      // este request específico) — reenviar o MESMO payload não muda o
+      // resultado, só atrasa o erro em CONFIG.timeouts.makeWebhook + 2s à
+      // toa. Diferente de 5xx/timeout/rede, que são transitórios e o retry
+      // já existia pra cobrir. Não muda o comportamento de erros não-HTTP
+      // (rede, timeout, parse) — só de WorkerQueueError com status 4xx.
+      const isClientError = e instanceof WorkerQueueError && e.status >= 400 && e.status < 500;
+      if (attempt < maxAttempts && !isClientError) {
         await new Promise((r) => setTimeout(r, 2000));
+      } else if (isClientError) {
+        break;
       }
     }
   }

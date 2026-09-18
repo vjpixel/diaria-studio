@@ -920,6 +920,101 @@ describe("#894 P2-B DELETE /dlq/:key endpoint", () => {
   });
 });
 
+// ── #8303 — handleEnqueue: channel=linkedin + carrossel exige credencial ───
+
+describe("#8303 handleEnqueue: channel=linkedin com carrossel (image_urls>1) exige credenciais da API direta", () => {
+  it("rejeita (400) quando LINKEDIN_ACCESS_TOKEN/LINKEDIN_AUTHOR_URN ausentes — canal explícito", async () => {
+    const { env, kv } = mkEnv(); // sem LINKEDIN_ACCESS_TOKEN/LINKEDIN_AUTHOR_URN no env
+    const body = {
+      text: "carrossel semanal",
+      image_urls: ["https://x.test/1.jpg", "https://x.test/2.jpg"],
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "weekly",
+      channel: "linkedin",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 400);
+    const data = (await res.json()) as { error: string; code?: string };
+    assert.match(data.error, /LINKEDIN_ACCESS_TOKEN/);
+    assert.match(data.error, /LINKEDIN_AUTHOR_URN/);
+    // `code` machine-readable — `postToWorkerQueue` (worker-queue-client.ts)
+    // propaga isto como `WorkerQueueError.code` pro caller ramificar sem
+    // parsear a mensagem em prosa.
+    assert.equal(data.code, "linkedin_creds_missing");
+    // Nada foi gravado no KV — o falso positivo que o #8303 corrige é
+    // exatamente aceitar o enqueue sem poder cumpri-lo.
+    assert.equal(kv.store.size, 0);
+  });
+
+  it("rejeita (400) quando channel está ausente (default linkedin, backward-compat)", async () => {
+    const { env, kv } = mkEnv();
+    const body = {
+      text: "carrossel semanal sem channel explícito",
+      image_urls: ["https://x.test/1.jpg", "https://x.test/2.jpg"],
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "weekly",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 400);
+    assert.equal(kv.store.size, 0);
+  });
+
+  it("aceita (202) quando LINKEDIN_ACCESS_TOKEN/LINKEDIN_AUTHOR_URN estão presentes", async () => {
+    const kv = new MockKV();
+    const env: Env = {
+      LINKEDIN_QUEUE: kv as unknown as KVNamespace,
+      DIARIA_TOKEN: "secret-token",
+      MAKE_WEBHOOK_URL: "https://make.test/webhook",
+      LINKEDIN_ACCESS_TOKEN: "li-token",
+      LINKEDIN_AUTHOR_URN: "urn:li:organization:12345",
+    };
+    const body = {
+      text: "carrossel semanal",
+      image_urls: ["https://x.test/1.jpg", "https://x.test/2.jpg"],
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "weekly",
+      channel: "linkedin",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 202);
+    assert.equal(kv.store.size, 1);
+  });
+
+  it("aceita (202) canal linkedin com 1 imagem só (não-carrossel), mesmo sem credenciais — caminho Make intacto", async () => {
+    const { env, kv } = mkEnv();
+    const body = {
+      text: "post normal",
+      image_url: "https://x.test/only.jpg",
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "d1",
+      channel: "linkedin",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 202);
+    assert.equal(kv.store.size, 1);
+  });
+});
+
 // ── #919 — verify-after-put em handleEnqueue ───────────────────────────────
 
 describe("#919 handleEnqueue verify-after-put (silent fail prevention)", () => {
