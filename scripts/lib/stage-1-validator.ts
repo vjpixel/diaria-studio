@@ -255,6 +255,67 @@ export function validateDriveSyncConfirmed(
 }
 
 /**
+ * Confirma que `_internal/scoring-features.json` (§1v-scoring-features,
+ * #7975) foi escrito pra esta edição — o feature store determinístico que
+ * a autocalibração de score (#7972: Track B #7976/#7990, Track A #7980)
+ * usa como população de treino/teste.
+ *
+ * Bug coberto (#7980, medido em 18/09/2026): o passo existia só na prosa
+ * do playbook (`orchestrator-stage-1-research.md` §1v-scoring-features) e
+ * nunca entrou em `stage-1-run.ts`, o runner determinístico que de fato
+ * executa o Stage 1. Resultado: as 5 edições seguintes ao backfill
+ * histórico (260914..260918) saíram TODAS sem o arquivo — 30 eventos
+ * Track A descartados da população, crescendo 6/dia, e ninguém avisado.
+ * O passo agora roda no runner; esta assertion é o backstop pro caminho
+ * em prosa (documentado como "referência/fallback") e pro caso de o
+ * passo rodar e falhar — ambos, hoje, sairiam silenciosos.
+ *
+ * `warn`, nunca `blocker`: ausência do feature store atrasa a calibração,
+ * jamais impede a edição de sair (mesma decisão fail-soft do playbook).
+ * Recuperável depois com `backfill-scoring-features.ts --edition AAMMDD`,
+ * que lê só `01-categorized.json` — por isso o custo de perder é atraso,
+ * não perda definitiva, DESDE QUE alguém perceba. Esta assertion é o
+ * "alguém perceba".
+ */
+export function validateScoringFeaturesPresent(editionDir: string): AssertionResult {
+  const path = join(editionDir, "_internal", "scoring-features.json");
+  if (!existsSync(path)) {
+    return {
+      name: "scoring_features_present",
+      status: "warn",
+      message:
+        "_internal/scoring-features.json ausente — a edição não entra na população de calibração de score (#7972). Rodar `npx tsx scripts/backfill-scoring-features.ts --edition {AAMMDD} --editions-dir data/editions`.",
+      details: { path },
+    };
+  }
+  let rows: unknown;
+  try {
+    rows = JSON.parse(readFileSync(path, "utf8"))?.rows;
+  } catch (err) {
+    return {
+      name: "scoring_features_present",
+      status: "warn",
+      message: `_internal/scoring-features.json existe mas está corrompido (${err instanceof Error ? err.message : String(err)}) — re-rodar backfill-scoring-features.ts --force.`,
+      details: { path },
+    };
+  }
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return {
+      name: "scoring_features_present",
+      status: "warn",
+      message: `_internal/scoring-features.json existe mas ${Array.isArray(rows) ? "tem \`rows\` vazio" : "não tem um array \`rows\`"} — nada entra na calibração. Re-rodar backfill-scoring-features.ts --force.`,
+      details: { path, rows: Array.isArray(rows) ? rows.length : null },
+    };
+  }
+  return {
+    name: "scoring_features_present",
+    status: "ok",
+    message: `Feature store de scoring presente (${rows.length} candidato(s)).`,
+    details: { path, rows: rows.length },
+  };
+}
+
+/**
  * Pure: extrai todos os números de lista numerada (`^\d+\. `) do MD e
  * verifica se a sequência é monotonicamente crescente cross-section.
  *
@@ -489,6 +550,8 @@ export function runStage1Validation(
         });
       }
     }
+
+    assertions.push(validateScoringFeaturesPresent(editionDir));
 
     const eiaPath = join(editionDir, "01-eia.md");
     const eiaMd = existsSync(eiaPath) ? readFileSync(eiaPath, "utf8") : null;

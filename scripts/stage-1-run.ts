@@ -105,7 +105,8 @@
  *     (fallback) → §1r (promoção de runners_up até 6, in-JS) → §1s
  *     (finalize-stage1) → §1t (avisos de mínimo por seção, in-JS) → §1u
  *     (shape final + strip verifier, in-JS) → §1u-bis/§1u-ter (dedup
- *     intra-edição + evergreen) → §1v (render MD) → §1v-bis..1v-quinquies
+ *     intra-edição + evergreen) → §1v (render MD) → §1v-scoring-features
+ *     (feature store de scoring, fail-soft) → §1v-bis..1v-quinquies
  *     (lints warn-only) → §1w-quint (anti-skip 1f, BLOQUEIA) → §1w-bis
  *     (validate-stage-1-output, blocker vira HALT) → §1w-quat
  *     (check-invariants categorized-has-eia-section, BLOQUEIA) → §1w-ter
@@ -1314,6 +1315,26 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
   // --- §1v renderizar MD ---
   const mdPath = `${editionDir}/01-categorized.md`;
   step(deps, report, "render-categorized-md (1v)", "scripts/render-categorized-md.ts", ["--in", categorizedPath, "--out", mdPath, "--edition", opts.edition, "--source-health", "data/source-health.json"]);
+
+  // --- §1v-scoring-features: feature store de scoring (#7975, Camada 1 da
+  // #7972) ---
+  //
+  // Este passo existia SÓ na prosa do playbook desde o #7986 e nunca chegou
+  // a este runner, que é o que de fato executa o Stage 1 — resultado medido
+  // em 18/09/2026 (#7980): TODAS as 5 edições produzidas depois do backfill
+  // histórico de 11/09 (260914..260918) ficaram sem
+  // `_internal/scoring-features.json`, 30 eventos Track A (~29% das edições
+  // com evento) descartados da população de calibração, e o número crescendo
+  // 6 eventos/dia. Não houve falha nenhuma: o passo simplesmente nunca rodou.
+  //
+  // Fail-soft de propósito (mesma decisão do playbook): ausência do feature
+  // store atrasa a calibração, nunca bloqueia a edição.
+  softStep(deps, report, "backfill-scoring-features (1v-scoring-features)", "scripts/backfill-scoring-features.ts", [
+    "--edition",
+    opts.edition,
+    "--editions-dir",
+    "data/editions",
+  ]);
 
   // --- lints warn-only (1v-bis..1v-quinquies) ---
   const lancamentosResult = deps.exec("scripts/validate-lancamentos.ts", [mdPath]);
