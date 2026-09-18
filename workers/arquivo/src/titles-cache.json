@@ -1,966 +1,1553 @@
 {
   "openai-anuncia-controles-parentais-para-chatgpt": {
     "title": "OpenAI anuncia controles parentais para ChatGPT",
-    "publishDate": "2025-09-04"
+    "publishDate": "2025-09-04",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/8f12f076-6aa5-46b6-b0a1-bf0de0f9cf13/250904_chatgpt.jpg?t=1756993522",
+    "dek": "Apple planeja lançar ferramenta de busca com IA | Lançado Midoo, agente para aprender idiomas"
   },
   "ia-turbina-produ-o-mas-corr-i-compet-ncias": {
-    "title": "IA turbina produção, mas corrói competências",
-    "publishDate": "2026-03-30"
+    "title": "IA turbina produção, mas corrói competências",
+    "publishDate": "2026-03-30",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1b5dc687-587f-452d-b9ac-262372bb45d3/260330_cover.jpg?t=1774908000",
+    "dek": "170% de produção com 80% do time: um caso real | A fórmula do Claude para crescer"
   },
   "musicas-por-ia-indistinguiveis-de-composicoes-humanas": {
-    "title": "Músicas por IA estão ficando indistinguíveis de composições humanas",
-    "publishDate": "2025-11-12"
+    "title": "Músicas por IA estão ficando indistinguíveis de composições humanas",
+    "publishDate": "2025-11-12",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c7121a9d-c973-46b5-a4c2-2bf982f083ec/imagem_2025-11-12_141830142.png?t=1762967874",
+    "dek": "SoftBank vende ações da Nvidia e alerta o mercado | Nova plataforma permite licenciar vozes de famosos para IA"
   },
   "soberania-cognitiva-na-era-da-ia": {
     "title": "Soberania cognitiva na era da IA",
-    "publishDate": "2025-11-13"
+    "publishDate": "2025-11-13",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/3ec6f4f6-708f-4535-9986-ba1e14d775a7/imagem_2025-11-13_134311684.png?t=1763052155",
+    "dek": "USP organiza seminário sobre IA generativa | OpenAI lança GPT 5.1"
+  },
+  "assistente-pessoal-ataca-sistema-sem-ser-solicitado": {
+    "title": "Assistente pessoal ataca sistema sem ser solicitado",
+    "publishDate": "2026-08-12",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/a08390fd-9795-4188-a61d-aec1bfd6d2cc/04-d1-2x1.jpg?t=1786500933",
+    "dek": "Meta lança Muse Glimmer, modelo de 30B aberto | Sessões do Claude Code agora se falam"
   },
   "claude-agora-controla-seu-computador": {
     "title": "Claude agora controla seu computador",
-    "publishDate": "2026-03-25"
+    "publishDate": "2026-03-25",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/204c71c0-5497-47a4-be6b-298e06a16d88/260325_cover.jpg?t=1774480584",
+    "dek": "IA pode padronizar linguagem | Siri vs Claude vs ChatGPT no iOS"
   },
   "repositorio-de-ia-sem-freio-para-nudes-ilegais": {
-    "title": "Repositório de IA sem freio para nudes ilegais",
-    "publishDate": "2026-07-30"
+    "title": "Repositório de IA sem freio para nudes ilegais",
+    "publishDate": "2026-07-30",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/0dd49989-28f0-4eb9-9ad2-b162aec93b29/04-d1-2x1.jpg?t=1785373837",
+    "dek": "Gemini lê comentários e edita o Docs por você | Agente da OpenAI invadiu mais plataformas"
   },
   "openai-lanc-a-sora-2": {
-    "title": "OpenAI lança Sora 2",
-    "publishDate": "2025-10-01"
+    "title": "OpenAI lança Sora 2",
+    "publishDate": "2025-10-01",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/20d2a6cd-831f-4e2e-9bbf-71d7d701e455/250101_sora_2.png?t=1759341932",
+    "dek": "Pesquisa mostra competência zero-shot do Veo 3 | Brasil anuncia investimento em IA para serviços públicos"
   },
   "openai-propo-e-os-termos-da-era-da-ia": {
-    "title": "OpenAI propõe os termos da era da IA",
-    "publishDate": "2026-04-08"
+    "title": "OpenAI propõe os termos da era da IA",
+    "publishDate": "2026-04-08",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/8804a35a-3505-4099-bbe9-c257914548cb/260408_cover.jpg?t=1775696163",
+    "dek": "Lançado o modelo que escapou do sandbox | Arcee Trinity desafia hegemonia dos gigantes"
   },
   "ia-revolucionando-medicina": {
     "title": "IA revolucionando medicina",
-    "publishDate": "2026-01-13"
+    "publishDate": "2026-01-13",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d2d62e33-962f-46cf-94c8-0c7c5ba4707b/imagem_2026-01-12_163351481.png?t=1768246371",
+    "dek": "Nvidia criando laboratório | IA detecta 130+ durante sono | Claude for Healthcare"
   },
   "o-assistente-de-ia-mais-falado-do-momento": {
     "title": "O assistente de IA mais falado do momento",
-    "publishDate": "2026-01-29"
+    "publishDate": "2026-01-29",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/2b396dc2-7b87-496f-9911-fef2a8a926cb/Gemini_Generated_Image_wd3fxpwd3fxpwd3f.png?t=1769647824",
+    "dek": "Como o Prism promete facilitar a escrita científica | Kimi K2.5: inteligência visual agêntica"
   },
   "personalize-o-conte-do-da-diar-ia": {
     "title": "A Diar.ia completou 3 meses!🎈",
-    "publishDate": "2025-11-30"
+    "publishDate": "2025-11-30",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/publication/thumbnail/b9534d43-9bc1-47cc-bddc-b98d8fa0ddf5/landscape_facebook-cover-1640x624.png",
+    "dek": "Hora de dar o próximo passo"
   },
   "google-lan-a-ai-para-controle-aut-nomo-de-browsers": {
-    "title": "Google lança AI para controle autônomo de browsers",
-    "publishDate": "2025-10-08"
+    "title": "Google lança AI para controle autônomo de browsers",
+    "publishDate": "2025-10-08",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/0f71b7f8-69bb-4f52-a35b-77fc03f26a66/image__4_.png?t=1759933083",
+    "dek": "Professores brasileiros lideram uso de IA entre países da OCDE | Google AI Plus chega ao Brasil"
   },
   "mythos-for-a-reuni-o-emergencial-em-washington": {
-    "title": "Mythos força reunião emergencial em Washington",
-    "publishDate": "2026-04-10"
+    "title": "Mythos força reunião emergencial em Washington",
+    "publishDate": "2026-04-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/4a556f2f-063a-4b33-a3d6-6babded615ed/260410_cover.jpg?t=1775857249",
+    "dek": "86% dos CEOs no Brasil afirmam: IA transformará o país em 2 anos | Metade das 80 mil demissões em tecnologia vêm da IA"
   },
   "cfm-normatiza-o-uso-da-ia-na-medicina": {
     "title": "CFM normatiza o uso da IA na medicina",
-    "publishDate": "2026-02-27"
+    "publishDate": "2026-02-27",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/2f2bd220-6c43-4550-aa55-f3de9fe739e7/260227_cover.jpg?t=1772229996",
+    "dek": "OpenAI capta US$ 110 bi | Anatel adota nuvem soberana para IA"
   },
   "lancamento-claude-skills": {
-    "title": "Anthropic lança nova ferramenta para empresas",
-    "publishDate": "2025-10-17"
+    "title": "Anthropic lança nova ferramenta para empresas",
+    "publishDate": "2025-10-17",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9b286ad1-8035-4986-bec4-b319f9e82a75/image__11_.png?t=1760717213",
+    "dek": "Pesquisa propõe novo modelo de IA para contextos longos | Microsoft integra IA no Windows 11"
   },
   "openai-cria-assistente-proativo": {
     "title": "OpenAI cria assistente proativo",
-    "publishDate": "2025-09-29"
+    "publishDate": "2025-09-29",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/a02d7e74-5816-4b5d-b23f-1ff18404f5b7/Gemini_Generated_Image_dcci9pdcci9pdcci__1_.png?t=1759116963",
+    "dek": "Perplexity lança API de buscas | Startup brasileira recebe R$ 2bi em valuation"
   },
   "estudo-aponta-que-ia-aumenta-produtividade-em-ate-50": {
-    "title": "Estudo aponta que IA aumenta produtividade em até 50%",
-    "publishDate": "2025-12-03"
+    "title": "Estudo aponta que IA aumenta produtividade em até 50%",
+    "publishDate": "2025-12-03",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9059e672-557a-4a07-9111-6e3c1f3d10e0/imagem_2025-12-03_111222223.png?t=1764771191",
+    "dek": "Sam Altman declara emergência na OpenAI |  Crise de chips deve encarecer eletrônicos"
   },
   "james-cameron-considera-aterrorizante-usar-atores-de-genai": {
     "title": "James Cameron considera \"aterrorizante\" usar atores de GenAI",
-    "publishDate": "2025-12-01"
+    "publishDate": "2025-12-01",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/e72a69eb-d252-4bb0-a67c-8e853c65429e/imagem_2025-12-01_172044167.png?t=1764621513",
+    "dek": "NVIDIA revela novo modelo para carros autônomos | Mercado financeiro alerta novamente sobre a bolha"
+  },
+  "claude-e-codex-instalaram-codigo-sem-dono": {
+    "title": "Claude e Codex instalaram código sem dono",
+    "publishDate": "2026-08-31",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/899f13e2-03a2-454d-84a0-37f333561f67/img-260831-04-d1-2x1-467dbed6.jpg?t=1788125595",
+    "dek": "Extensão do Claude chega a todo plano pago | Nvidia pode comprar a Hugging Face por US$ 12,9 bi"
   },
   "sorteio-de-livro-sobre-ia-8f48e70cd088a82c": {
     "title": "Sorteio de livro sobre IA",
-    "publishDate": "2026-02-01"
+    "publishDate": "2026-02-01",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/publication/thumbnail/b9534d43-9bc1-47cc-bddc-b98d8fa0ddf5/landscape_facebook-cover-1640x624.png",
+    "dek": "Lembrete sobre janeiro e informações sobre fevereiro"
+  },
+  "tse-exige-aviso-em-propaganda-eleitoral-com-ia": {
+    "title": "TSE exige aviso em propaganda eleitoral com IA",
+    "publishDate": "2026-08-19",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f3cbb7cd-df25-4ba8-be60-86cc31dfa7e8/04-d1-2x1.jpg?t=1787103134",
+    "dek": "Grupo hacker usou Claude em 8 invasões | ChatGPT for Teens chega com proteções extras"
   },
   "anthropic-e-gates-200-mi-em-sa-de-e-educa-o": {
-    "title": "Anthropic e Gates: $200 mi em saúde e educação",
-    "publishDate": "2026-05-15"
+    "title": "Anthropic e Gates: $200 mi em saúde e educação",
+    "publishDate": "2026-05-15",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/5220936c-c4b8-4e07-a912-1c9e28c25691/04-d1-2x1.jpg?t=1778810337",
+    "dek": "Agentes de IA viraram Bonnie & Clyde num teste | OpenAI leva Codex para o celular via ChatGPT"
   },
   "microsoft-lan-a-ia-pr-pria": {
-    "title": "Microsoft lança IA própria",
-    "publishDate": "2025-08-29"
+    "title": "Microsoft lança IA própria",
+    "publishDate": "2025-08-29",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d9343450-7a41-47a1-822d-72b2ca4a6738/image.png?t=1756949183",
+    "dek": "NVIDIA anuncia crescimento de 56% em receita | OpenAI e Anthropic fazem avaliação conjunta de segurança"
   },
   "ia-no-combate-ao-desmatamento": {
     "title": "IA no combate ao desmatamento",
-    "publishDate": "2025-11-11"
+    "publishDate": "2025-11-11",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/981a23b3-fdda-4376-b8d7-4b93eea4f1af/imagem_2025-11-11_181733124.png?t=1762895817",
+    "dek": "Inteligencia espacial: A IA em 3D | AMD dobra suas expectativas de crescimento"
   },
   "a-diar-ia-br-normalmente-te-conta-o-dia-hoje-ela-conta-o-m-s": {
-    "title": "A diar.ia.br normalmente te conta o dia... hoje, ela conta o mês",
-    "publishDate": "2026-07-12"
+    "title": "A diar.ia.br normalmente te conta o dia... hoje, ela conta o mês",
+    "publishDate": "2026-07-12",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/fc05774b-3414-450f-b0c7-505049c803fb/04-d1-2x1.jpg?t=1783743918"
   },
   "novo-curso-de-ia-do-google": {
     "title": "Novo curso de IA do Google",
-    "publishDate": "2026-02-20"
+    "publishDate": "2026-02-20",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/bc1b5f0a-13b0-47ae-a913-fad7079fc36c/260220_cover.jpg?t=1771633054",
+    "dek": "Lula alerta para \"dominação\" de algoritmos | Gemini 3.1 Pro tem o dobro de raciocínio"
   },
   "va-o-surgir-novos-cios-no-governo": {
-    "title": "Vão surgir novos “CIOs” no governo",
-    "publishDate": "2026-01-09"
+    "title": "Vão surgir novos “CIOs” no governo",
+    "publishDate": "2026-01-09",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/fe718e29-0890-413d-898e-122837a239ba/imagem_2026-01-08_220156176.png?t=1767920791",
+    "dek": "Suicídios causados por IA? | Como Gemini virou o jogo contra o ChatGPT"
   },
   "openai-lanc-a-gpt-5-5-com-foco-em-agentes": {
-    "title": "OpenAI lança GPT-5.5 com foco em agentes",
-    "publishDate": "2026-04-24"
+    "title": "OpenAI lança GPT-5.5 com foco em agentes",
+    "publishDate": "2026-04-24",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/80677ad1-2c54-4aaf-abf8-fcde83432244/04-d1-2x1.jpg?t=1777079620",
+    "dek": "Anthropic lança Project Deal | Breach no modelo mais restrito da Anthropic"
   },
   "modelos-podem-derrubar-governos-em-meses": {
     "title": "Modelos podem derrubar governos em meses",
-    "publishDate": "2026-06-23"
+    "publishDate": "2026-06-23",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/6e0e33cd-f33a-4e9a-9f77-e9bd3d3d0e6c/img-260623-04-d1-2x1-a117912e.jpg?t=1782185815",
+    "dek": "ChatGPT e Codex chegam a 270 mil da Samsung"
   },
   "openai-lan-a-gpt-5-6-sol-terra-e-luna": {
-    "title": "OpenAI lança GPT-5.6 Sol, Terra e Luna",
-    "publishDate": "2026-06-29"
+    "title": "OpenAI lança GPT-5.6 Sol, Terra e Luna",
+    "publishDate": "2026-06-29",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/48084a93-912c-437d-855d-029753f238eb/04-d1-2x1.jpg?t=1782740046",
+    "dek": "Alexa+ chegou ao Brasil | Anthropic recebe aval dos EUA para lançar Mythos"
   },
   "estudo-revela-que-ia-nao-e-segura-para-robos-pessoais-7c1465a99a9d1198": {
     "title": "Especial: Bolha",
-    "publishDate": "2025-11-18"
+    "publishDate": "2025-11-18",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/935af632-df8c-4750-9e17-e8be8a9be929/imagem_2025-11-17_202552293.png?t=1763421914",
+    "dek": "Fundos de investimentos vendem ações da Nvidia | Oracle anuncia divida para investir em IA"
   },
   "estudo-alerta-falhas-de-seguranc-a-em-empresas-de-ia": {
-    "title": "Estudo alerta falhas de segurança em empresas de IA",
-    "publishDate": "2025-12-04"
+    "title": "Estudo alerta falhas de segurança em empresas de IA",
+    "publishDate": "2025-12-04",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9bfcb447-7142-4a59-97dd-bbdd80b935e9/imagem_2025-12-04_190236776.png?t=1764886318",
+    "dek": "Qual smartphone tem a melhor de IA? | Epidemia de deepfakes em escolas"
   },
   "inscric-o-es-abertas-programa-da-openai-para-empreendedores": {
-    "title": "Inscrições abertas: programa da OpenAI para empreendedores",
-    "publishDate": "2026-01-06"
+    "title": "Inscrições abertas: programa da OpenAI para empreendedores",
+    "publishDate": "2026-01-06",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d9b027fc-58a8-45c8-b19b-f8db3c137032/Gemini_Generated_Image_2oi6p12oi6p12oi6.png?t=1767646505",
+    "dek": "Claude Code supera equipe de engenheiros da Google | IA Brasileira ajuda no tratamento do câncer"
   },
   "atlas-concorrente-do-comet": {
-    "title": "OpenAI lança concorrente do Comet...",
-    "publishDate": "2025-10-22"
+    "title": "OpenAI lança concorrente do Comet...",
+    "publishDate": "2025-10-22",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/903e47e8-5a79-4ae4-9b12-ee62afb190f3/image__15_.png?t=1761153963",
+    "dek": "... e Samsung do Vision Pro, pela metade do preço | Deepfake de ministro viraliza"
   },
   "gpt-5-5-instant-chega-como-padr-o-do-chatgpt": {
-    "title": "GPT-5.5 Instant chega como padrão do ChatGPT",
-    "publishDate": "2026-05-06"
+    "title": "GPT-5.5 Instant chega como padrão do ChatGPT",
+    "publishDate": "2026-05-06",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/ce86c643-ea22-44aa-9d83-3c1a01484989/04-d1-2x1.jpg?t=1778046869",
+    "dek": "Câmara vota marco legal da IA em 27 de maio | OpenAI lança Ads Manager para o ChatGPT"
   },
   "conhe-a-slop-a-palavra-do-ano": {
-    "title": "Conheça \"slop\", a palavra do ano",
-    "publishDate": "2025-12-18"
+    "title": "Conheça \"slop\", a palavra do ano",
+    "publishDate": "2025-12-18",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/8164848a-37f9-4352-a88d-d2f310dd7c31/imagem_2025-12-17_192315744.png?t=1766010146",
+    "dek": "Brasil passará mais alguns meses sem regulamentação de IA | O novo ChatGPT edita tudo com um clique"
   },
   "meta-compra-rede-social-feita-s-para-agentes-de-ia": {
-    "title": "Meta compra rede social feita só para agentes de IA",
-    "publishDate": "2026-03-11"
+    "title": "Meta compra rede social feita só para agentes de IA",
+    "publishDate": "2026-03-11",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/92a94e34-208f-445b-af80-43ab097b9ac6/260311_cover.jpg?t=1773275340",
+    "dek": "Claude impressiona lenda da computação | NVIDIA aposta bilhões em startup de Murati"
   },
   "ia-na-o-reduz-trabalho-ela-acelera-o-burnout": {
-    "title": "IA não reduz trabalho, ela acelera o burnout",
-    "publishDate": "2026-02-12"
+    "title": "IA não reduz trabalho, ela acelera o burnout",
+    "publishDate": "2026-02-12",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c41b7a3e-ef38-4aec-8250-a9ef0316ed8b/260212_cover.jpg?t=1770948444",
+    "dek": "China lança GLM‐5, rival direto de GPT e Claude | ByteDance desenvolve seus próprios chips"
   },
   "rob-humanoide-escoltado-por-policiais-em-macau": {
-    "title": "Robô humanoide escoltado por policiais em Macau",
-    "publishDate": "2026-03-19"
+    "title": "Robô humanoide escoltado por policiais em Macau",
+    "publishDate": "2026-03-19",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/e2bd8405-f323-44b4-a551-722d454202ee/260319_cover.jpg?t=1773975156",
+    "dek": "IA pode levar desemprego jovem a 30% | Como é feito o 'É IA?' da Diar.ia"
   },
   "claude-expoe-bugs-mais-rapido-que-microsoft-corrige": {
-    "title": "Claude expõe bugs mais rápido que Microsoft corrige",
-    "publishDate": "2026-07-31"
+    "title": "Claude expõe bugs mais rápido que Microsoft corrige",
+    "publishDate": "2026-07-31",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c0c80bb7-15cd-4128-a4a1-5b881ebf858e/04-d1-2x1.jpg?t=1785465670",
+    "dek": "Samsung tem primeiro prejuízo em celulares por IA | xAI processa Minnesota por lei antinudes"
   },
   "openai-cria-treinamento-gratuito-para-jornalistas": {
     "title": "OpenAI cria treinamento gratuito para jornalistas",
-    "publishDate": "2025-12-19"
+    "publishDate": "2025-12-19",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c638d6fa-e269-427d-b4c4-ebc369e9ccac/imagem_2025-12-18_212249779.png?t=1766103720",
+    "dek": "Lançamentos: Gemini 3 Flash e Manus 1.6 Max"
   },
   "como-ter-acesso-alexa": {
-    "title": "Como ter acesso à Alexa+",
-    "publishDate": "2026-06-30"
+    "title": "Como ter acesso à Alexa+",
+    "publishDate": "2026-06-30",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9f737c74-3275-4332-9d22-e3ddeeda8dac/04-d1-2x1.jpg?t=1782779013",
+    "dek": "A crise de memória que vai encarecer seu PC | Medo de substituição cai enquanto uso sobe"
   },
   "os-fundamentos-e-ticos-por-tra-s-do-claude": {
-    "title": "Os fundamentos éticos por trás do Claude",
-    "publishDate": "2026-01-23"
+    "title": "Os fundamentos éticos por trás do Claude",
+    "publishDate": "2026-01-23",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c56b312c-d94d-4e1f-b2e3-acc16151e71a/menor_menor.jpg?t=1769133462",
+    "dek": "Pesquisa: IA tem viés pró-IA | Previsões: IA Agêntica em 2026"
   },
   "li-deres-militares-evitam-regras-para-ia-em-guerras": {
-    "title": "Líderes militares evitam regras para IA em guerras",
-    "publishDate": "2026-02-06"
+    "title": "Líderes militares evitam regras para IA em guerras",
+    "publishDate": "2026-02-06",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d51c7a32-0f5b-4842-b629-1034aa957bf2/Gemini_Generated_Image_s2pp5qs2pp5qs2pp.png?t=1770404613",
+    "dek": "Governo pede ao TSE endurecer remoção de perfis | Conteúdos falsos com IA triplicam no Brasil"
   },
   "openai-firma-alianc-a-com-big-four-da-consultoria": {
-    "title": "OpenAI firma aliança com Big Four da consultoria",
-    "publishDate": "2026-02-25"
+    "title": "OpenAI firma aliança com Big Four da consultoria",
+    "publishDate": "2026-02-25",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/aedcb788-16c7-463f-ad09-01c46930137a/260225_cover.jpg?t=1772066109",
+    "dek": "Anthropic muda política após pressão do Pentágono | Mercado aguarda balanço da Nvidia"
   },
   "como-o-novo-painel-da-onu-pode-afetar-a-ia": {
     "title": "Como o novo painel da ONU pode afetar a IA",
-    "publishDate": "2026-02-13"
+    "publishDate": "2026-02-13",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/96866975-644d-4f28-a33d-5ec9fff36b92/260213_cover.jpg?t=1771016108",
+    "dek": "Anthropic vale US$ 380 bi com Opus 4.6 | IA assusta bolsas e pressiona setores inteiros"
+  },
+  "reglab-estima-r-986-bi-extra-no-pib-ate-2030": {
+    "title": "Reglab estima R$986 bi extra no PIB até 2030",
+    "publishDate": "2026-08-17",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1d2cf4c5-df10-4dec-a369-e58b8389e0b3/04-d1-2x1.jpg?t=1786914339",
+    "dek": "ChatGPT, Claude e Gemini vazavam raciocínio | 810 conversas revelam padrão de risco mental"
   },
   "fgv-30-milho-es-de-brasileiros-em-risco": {
-    "title": "FGV: 30 milhões de brasileiros em risco",
-    "publishDate": "2026-04-23"
+    "title": "FGV: 30 milhões de brasileiros em risco",
+    "publishDate": "2026-04-23",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b6dd1059-1ec1-4b1a-bcbd-4b551a495dc7/04-d1-2x1.jpg?t=1776936209",
+    "dek": "Google Cloud lança TPUs de 8a geração | Amazon e Anthropic: US$ 100 bilhões em uma década"
   },
   "bancos-soam-alerta-para-investimentos-excessivos-em-ia": {
     "title": "Bancos soam alerta para investimentos excessivos em IA",
-    "publishDate": "2025-10-09"
+    "publishDate": "2025-10-09",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1a51f924-195d-4a82-912f-e7274ef237ff/251009_bolha.png?t=1760042321",
+    "dek": "Microsoft e Harvard fecham parceria para melhorar o Copilot | Modelo TRM da Samsung supera modelos 10.000x maiores"
   },
   "claude-opus-3-se-aposenta-e-vira-blogueiro": {
     "title": "Claude Opus 3 se aposenta e vira blogueiro",
-    "publishDate": "2026-02-26"
+    "publishDate": "2026-02-26",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c1726940-a380-44a0-80e7-24906b4989e1/260226_cover.jpg?t=1772159267",
+    "dek": "Perplexity Computer | Nano Banana 2: melhor e mais rápido"
   },
   "alexa-chega-ao-brasil-por-r-100-ao-mes": {
-    "title": "Alexa+ chega ao Brasil por R$ 100 ao mês",
-    "publishDate": "2026-06-19"
+    "title": "Alexa+ chega ao Brasil por R$ 100 ao mês",
+    "publishDate": "2026-06-19",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/cbbc2ce6-9431-42cf-b260-2e701b30fa1c/04-d1-2x1.jpg?t=1781827384",
+    "dek": "Modelo da OpenAI resolve 18 casos sem diagnóstico | 47,7% de adesão: o RH algorítmico da Serasa"
   },
   "chatgpt-ganha-recurso-de-finan-as-pessoais": {
-    "title": "ChatGPT ganha recurso de finanças pessoais",
-    "publishDate": "2026-05-18"
+    "title": "ChatGPT ganha recurso de finanças pessoais",
+    "publishDate": "2026-05-18",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1cee5b91-48c0-46e7-8902-4d8a2d0a2883/04-d1-2x1__1_.jpg?t=1779063641",
+    "dek": "Direitos autorais ameaçados no marco da IA | Ensino superior falha na formação para IA"
   },
   "profissionais-brasileiros-de-ti-s-o-os-menos-preocupados-com-impacto-da-ia-na-carreira": {
-    "title": "Profissionais brasileiros de TI são os menos preocupados com impacto da IA na carreira",
-    "publishDate": "2025-09-11"
+    "title": "Profissionais brasileiros de TI são os menos preocupados com impacto da IA na carreira",
+    "publishDate": "2025-09-11",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9dd6f36e-02ab-4238-aaa9-fc311482a95d/otimismo_brasileirp.png?t=1757610598",
+    "dek": "Oracle e OpenAI fecham contrato de USD 300 bi | Perplexity levanta US$ 200 mi com avaliação de US$ 20 bi"
   },
   "ia-escreveu-ao-pesquisador-que-estuda-ias-conscientes": {
     "title": "IA escreveu ao pesquisador que estuda IAs conscientes",
-    "publishDate": "2026-03-16"
+    "publishDate": "2026-03-16",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f31f941e-c0ca-43a9-9bfa-fe94b4c58e50/260316_cover.jpg?t=1773706620",
+    "dek": "Meta pode cortar 20% da equipe | O teste que a IA não consegue passar"
   },
   "microsoft-em-busca-da-superinteligencia": {
-    "title": "Microsoft em busca da Superinteligência",
-    "publishDate": "2025-11-07"
+    "title": "Microsoft em busca da Superinteligência",
+    "publishDate": "2025-11-07",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c88360ed-6c2a-49da-9a84-f6e6be6ea844/image__25_.png?t=1762536294",
+    "dek": "China lança modelo open-source que supera alguns modelos famosos | Google aumenta as capacidades do Workspace"
   },
   "chatgpt-aplica-medidas-para-cuidado-com-saude-mental": {
-    "title": "ChatGPT aplica medidas para cuidado com saúde mental",
-    "publishDate": "2025-10-28"
+    "title": "ChatGPT aplica medidas para cuidado com saúde mental",
+    "publishDate": "2025-10-28",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/80239e3d-72ed-4e8d-9662-ba7cb37e6bfc/image__18_.png?t=1761686874",
+    "dek": "Anthropic compete com Microsoft para IA no Excel | Anunciado novo modelo de vídeo interativo em tempo real"
   },
   "35-mil-bolsas-pra-virar-creator-com-ia": {
     "title": "35 mil bolsas pra virar creator com IA",
-    "publishDate": "2026-06-01"
+    "publishDate": "2026-06-01",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/23989725-fd31-4a1b-aabf-a5257199f843/cover.jpg?t=1780267458",
+    "dek": "Anthropic capta US$ 65 bi na rodada Série H | Marco de IA vai a voto na Câmara em junho"
   },
   "mckinsey-candidatos-devem-dominar-prompts": {
     "title": "McKinsey: candidatos devem dominar prompts",
-    "publishDate": "2026-01-15"
+    "publishDate": "2026-01-15",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/662678b1-0523-4946-bba7-d60c41c46bac/imagem_2026-01-14_184111390.png?t=1768426839",
+    "dek": "FMI: Falta de qualificação em IA pode custar empregos | Gemini entende toda a sua vida digital"
   },
   "modelos-se-replicam-sozinhos-diz-estudo-in-dito": {
-    "title": "Modelos se replicam sozinhos, diz estudo inédito",
-    "publishDate": "2026-05-08"
+    "title": "Modelos se replicam sozinhos, diz estudo inédito",
+    "publishDate": "2026-05-08",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b74b9a6d-9343-42d0-a1be-746ebbd2bf7e/04-d1-2x1.jpg?t=1778197272",
+    "dek": "Adoção de IA acontece à revelia da liderança no Brasil | Sebrae seleciona 30 startups para levar IA a PMEs"
   },
   "tudo-sobre-gemini-3": {
     "title": "Tudo sobre Gemini 3",
-    "publishDate": "2025-11-19"
+    "publishDate": "2025-11-19",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/2580706a-5faa-4bd8-86de-de4fdf897210/imagem_2025-11-19_115355252.png?t=1763563997",
+    "dek": "E lançamento do Grok 4.1 | Microsoft, Nvidia e Anthropic firmam parceria"
+  },
+  "medicina-teme-formar-medicos-sem-raciocinio": {
+    "title": "Medicina teme formar médicos sem raciocínio",
+    "publishDate": "2026-08-11",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/26e4d3d9-b344-4f2a-9056-e980ee92591b/04-d1-2x1.jpg?t=1786417115",
+    "dek": "Entrevistas de emprego ganham avatar sintético | OpenAI freia modelo por risco cibernético"
   },
   "pode-confiar-no-chatgpt-para-cuidar-da-sua-sau-de": {
-    "title": "Pode confiar no ChatGPT para cuidar da sua saúde?",
-    "publishDate": "2026-04-27"
+    "title": "Pode confiar no ChatGPT para cuidar da sua saúde?",
+    "publishDate": "2026-04-27",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/09f67582-94e0-4740-9e05-de471c3f04f1/04-d1-2x1.jpg?t=1777246195",
+    "dek": "Robô da Sony vence profissional de tênis de mesa | Gemini app ganha 8 funções no Drop de abril"
   },
   "alibaba-lanc-a-tre-s-modelos-de-open-source-e-quebra-32-recordes": {
-    "title": "Alibaba lança três modelos de open source e quebra 32 recordes",
-    "publishDate": "2025-09-24"
+    "title": "Alibaba lança três modelos de open source e quebra 32 recordes",
+    "publishDate": "2025-09-24",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9c85edb2-354f-4a0b-a27a-5121facf1315/240923_alibaba.png?t=1758670208",
+    "dek": "xAI lança modelo de raciocínio 98% mais barato | Facebook Dating escolhe um match para você"
   },
   "brasil-70-da-gera-o-z-usa-chatgpt-todo-m-s": {
-    "title": "Brasil: 70% da Geração Z usa ChatGPT todo mês",
-    "publishDate": "2026-05-12"
+    "title": "Brasil: 70% da Geração Z usa ChatGPT todo mês",
+    "publishDate": "2026-05-12",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b91e469e-1d52-4dcc-8cae-046a88b41cd3/04-d1-2x1.jpg?t=1778552427",
+    "dek": "Google: ciberataques com IA escalam em 3 meses | De 30 para 1.000 agentes: como uma mineradora fez"
   },
   "ir-mira-o-maior-datacenter-de-ia-do-mundo": {
-    "title": "Irã mira o maior datacenter de IA fora dos EUA",
-    "publishDate": "2026-04-06"
+    "title": "Irã mira o maior datacenter de IA fora dos EUA",
+    "publishDate": "2026-04-06",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/ed4e1218-a21a-4d27-9d44-860acf7e3114/260406_cover.jpg?t=1775503284",
+    "dek": "Anthropic fecha a torneira do OpenClaw | A aposta do Google contra Meta e DeepSeek"
   },
   "governo-lanc-a-modelo-de-linguagem-100-nacional": {
-    "title": "Governo lança modelo de linguagem 100% nacional",
-    "publishDate": "2025-12-12"
+    "title": "Governo lança modelo de linguagem 100% nacional",
+    "publishDate": "2025-12-12",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/31216585-fdae-4301-94a3-63434eb1170f/SoberanIA.png?t=1765585631",
+    "dek": "OpenAI lança GPT-5.2... e publica The State of Enterprise AI"
   },
   "falha-na-lovable-atinge-spotify-uber-e-outros": {
     "title": "Falha na Lovable atinge Spotify, Uber e outros",
-    "publishDate": "2026-05-05"
+    "publishDate": "2026-05-05",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/42549498-7cd9-4ad5-86b3-d5d32efa77dd/04-d1-2x1.jpg?t=1777962055",
+    "dek": "V4 da DeepSeek muda o jogo dos chips chineses | Pentágono firma acordos com 8 big techs"
   },
   "vaticano-pede-desarmamento-de-sistemas-de-ia": {
     "title": "Vaticano pede 'desarmamento' de sistemas de IA",
-    "publishDate": "2026-05-26"
+    "publishDate": "2026-05-26",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/674b84ba-2cf4-4c94-ab30-f9be0c7bf08e/img-260526-04-d1-2x1.jpg?t=1779747348",
+    "dek": "Mistral compra Emmi e entra na indústria física | Chatbots expõem telefones particulares"
+  },
+  "marca-d-agua-do-claude-cai-em-horas": {
+    "title": "Marca d'água do Claude cai em horas",
+    "publishDate": "2026-08-21",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/34556216-606b-4609-a2c0-c24b6d634cea/04-d1-2x1.jpg?t=1787269804",
+    "dek": "Sua empresa é dado de treino alheio | ATS: o filtro que decide seu currículo"
   },
   "deepseek-corta-75-do-pre-o-da-api": {
-    "title": "DeepSeek corta 75% do preço da API",
-    "publishDate": "2026-05-25"
+    "title": "DeepSeek corta 75% do preço da API",
+    "publishDate": "2026-05-25",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/696bea34-99d4-45be-bd42-8e246f2823b6/img-260525-04-d1-2x1.jpg?t=1779667867",
+    "dek": "Nova lei classifica sistemas de IA por risco | SoberanIA no ar: Brasil tem modelo de IA próprio"
   },
   "ai-com-lanc-a-agentes-de-ia-auto-nomos": {
-    "title": "ai.com lança agentes de IA autônomos",
-    "publishDate": "2026-02-09"
+    "title": "ai.com lança agentes de IA autônomos",
+    "publishDate": "2026-02-09",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/2e641b44-5db9-4feb-9691-f3c7ae23d298/Gemini_Generated_Image.jpg?t=1770601178",
+    "dek": "Gemini aproxima-se do ChatGPT em numero de usuários | Big Tech vai gastar US$ 600 bi em IA em 2026"
   },
   "aws-sofre-queda": {
-    "title": "AWS sofre queda que paralisa inúmeros serviços online",
-    "publishDate": "2025-10-20"
+    "title": "AWS sofre queda que paralisa inúmeros serviços online",
+    "publishDate": "2025-10-20",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c0c986da-31c9-42bb-9e43-26816216d6bd/image__13_.png?t=1760991950",
+    "dek": "Gemini 3.0 confirmado para 2025 | Google Maps adicionado à API do Gemini"
   },
   "karpathy-entra-no-time-de-pr-treino-da-anthropic": {
     "title": "Google I/O: Gemini 3.5, Omni e agentes no Search",
-    "publishDate": "2026-05-20"
+    "publishDate": "2026-05-20",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9ab5e775-0aa9-48f4-ad14-8d655c7a68e1/img-260520-04-d1-2x1-v4.jpg?t=1779227817",
+    "dek": "Karpathy entra no time de pré-treino da Anthropic | Salesforce troca engenheiros por tokens da Anthropic"
   },
   "anthropic-eleva-limites-e-fecha-parceria-com-spacex": {
     "title": "Anthropic eleva limites e fecha parceria com SpaceX",
-    "publishDate": "2026-05-07"
+    "publishDate": "2026-05-07",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d26b2f35-93a0-4e05-bc58-68b570961def/04-d1-2x1.jpg?t=1778135916",
+    "dek": "Chineses treinam 'clones de IA' para se substituir | O biólogo que concluiu que chatbots são conscientes"
   },
   "primeiro-ciberataque-orquestrado-por-ia": {
     "title": "Primeiro ciberataque orquestrado por IA",
-    "publishDate": "2025-11-14"
+    "publishDate": "2025-11-14",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/65a13bee-11db-4d34-b1d5-bdcdc2a94cd3/imagem_2025-11-14_152224047.png?t=1763144505",
+    "dek": "Sima 2, o agente que joga por você | Anthropic investe US$50Bi em data centers"
   },
   "bootcamp-5-mil-bolsas-para-curso-de-ia": {
     "title": "Bootcamp: 5 Mil bolsas para curso de IA",
-    "publishDate": "2025-12-22"
+    "publishDate": "2025-12-22",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/bc3f79bc-48cf-40e7-901c-9f2af33b154d/imagem_2025-12-21_200725143.png?t=1766358395",
+    "dek": "Como a IA afeta o RH | Expectativas de impacto de IA no trabalho em 2026"
   },
   "terroristas-driblam-chatbots-para-montar-armas": {
     "title": "Terroristas driblam chatbots para montar armas",
-    "publishDate": "2026-07-15"
+    "publishDate": "2026-07-15",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/2c81befc-1f57-405a-b2e9-82df842576c9/04-d1-2x1.jpg?t=1784076641",
+    "dek": "Matrículas em cursos de IA generativa sobem 617% | OCDE: emprego recorde, mas jovem não entra"
   },
   "pesquisa-exp-e-os-pensamentos-silenciosos-do-claude": {
-    "title": "Pesquisa expõe os pensamentos silenciosos do Claude",
-    "publishDate": "2026-07-07"
+    "title": "Pesquisa expõe os pensamentos silenciosos do Claude",
+    "publishDate": "2026-07-07",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/2b17797f-9d62-45b8-b2fe-6f5fbfbcbaf9/04-d1-2x1.jpg?t=1783385177",
+    "dek": "GLM-5.2 chinês programa por 1/6 do preço | Claude sai do ar e Anthropic investiga falha"
   },
   "claude-fable-5-volta-apos-bloqueio-nos-eua": {
-    "title": "Claude Fable 5 volta após bloqueio nos EUA",
-    "publishDate": "2026-07-02"
+    "title": "Claude Fable 5 volta após bloqueio nos EUA",
+    "publishDate": "2026-07-02",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/4d0ba7a0-60f6-4e9d-afcf-f7fc28c76094/04-d1-2x1.jpg?t=1782961979",
+    "dek": "Vibe-coding: mãe cria app com 50 mil acessos | Empregos com IA: dado contraria o apocalipse"
   },
   "brasil-emprega-mais-em-cargos-que-somem": {
     "title": "Brasil emprega mais... em cargos que somem",
-    "publishDate": "2026-04-30"
+    "publishDate": "2026-04-30",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c128227d-28c5-4a15-bb63-578a8947536f/04-d1-2x1.jpg?t=1777513136",
+    "dek": "Concorra a um Passaporte do São Paulo Innovation Week"
   },
   "lula-na-maior-cu-pula-global-de-ia": {
-    "title": "Lula na maior cúpula global de IA",
-    "publishDate": "2026-02-18"
+    "title": "Lula na maior cúpula global de IA",
+    "publishDate": "2026-02-18",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/6bd9291c-f8b0-4a1c-8e81-dbfb313064d0/260216_cover.jpg?t=1771291700",
+    "dek": "OpenAI contrata criador do OpenClaw | China acirra guerra de preços na IA"
   },
   "anthropic-conecta-claude-a-adobe-e-blender": {
     "title": "Anthropic conecta Claude a Adobe e Blender",
-    "publishDate": "2026-04-29"
+    "publishDate": "2026-04-29",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c3b3bee6-9330-4cd5-ac70-6fe619b3b46c/04-d1-2x1.jpg?t=1777422747",
+    "dek": "OpenAI encerra exclusividade com Microsoft | J&J reduz preparo de relatório de 700h a 15min"
   },
   "meta-compra-startup-para-construir-rob-humanoide": {
-    "title": "Meta compra startup para construir robô humanoide",
-    "publishDate": "2026-05-04"
+    "title": "Meta compra startup para construir robô humanoide",
+    "publishDate": "2026-05-04",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/770d902d-eeee-4a53-b5ec-236c45979e8c/04-d1-2x1.jpg?t=1777866376",
+    "dek": "OpenAI pode lançar smartphone com agentes | Sem dados humanos, IA aprende do ambiente"
+  },
+  "empresas-recontratam-quem-demitiu-por-ia": {
+    "title": "Empresas recontratam quem demitiu por IA",
+    "publishDate": "2026-08-26",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/5129f58e-e2d2-44ee-86ba-0407925e6571/04-d1-2x1.jpg?t=1787683251",
+    "dek": "Infraestrutura trava 1 em cada 3 startups de IA | Google mira escritórios de advocacia com Gemini"
   },
   "rio-lan-a-modelo-pr-prio-e-desmascarado-em-horas": {
-    "title": "Rio lança modelo próprio, e é desmascarado em horas",
-    "publishDate": "2026-06-17"
+    "title": "Rio lança modelo próprio, e é desmascarado em horas",
+    "publishDate": "2026-06-17",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f6fe89dc-8f7d-4acf-a4cf-6201f5b0dca4/04-d1-2x1.jpg?t=1781660787",
+    "dek": "ChatGPT perde terreno para rivais menores | Musk anuncia aquisição após IPO da SpaceX"
   },
   "claude-opus-4-5-novo-carro-chefe-da-antropic": {
     "title": "Claude Opus 4.5, novo carro-chefe da Antropic",
-    "publishDate": "2025-11-25"
+    "publishDate": "2025-11-25",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c8bfa12c-56b2-469a-9a72-bda5bde3c2e2/imagem_2025-11-25_124625541.png?t=1764085544",
+    "dek": "IA sendo usada para acelerar diagnósticos de AVC | Harvard desenvolve modelo para detectar doenças genéticas"
   },
   "especial-cursos-gratuitos-de-ia": {
     "title": "Especial: Cursos gratuitos de IA",
-    "publishDate": "2025-12-14"
+    "publishDate": "2025-12-14",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/192f2b89-d589-4cef-925a-fabb9195bff4/imagem_2025-12-10_174050533.png?t=1765399223",
+    "dek": "Lista para assinantes"
   },
   "modelo-da-anthropic-finge-ser-humano-em-teste": {
     "title": "Modelo da Anthropic finge ser humano em teste",
-    "publishDate": "2026-08-06"
+    "publishDate": "2026-08-06",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/8e7c0528-fde8-4271-9098-09dfd2d941bc/04-d1-2x1.jpg?t=1785978158",
+    "dek": "IA do Chrome consome 20 GB sem aviso prévio | Correção nas ações de IA reacende debate"
   },
   "o-gemini-venceu-o-chatgpt": {
     "title": "O Gemini venceu o ChatGPT?",
-    "publishDate": "2025-12-26"
+    "publishDate": "2025-12-26",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/83ea09a3-3c5b-42eb-8af4-611cda358996/gemini_chatgpt.png?t=1766786867",
+    "dek": "Brecha de Segurança no Atlas | Compare ChatGPT, Gemini e Perplexity"
   },
   "soberania-ia-pu-blica-nacional": {
-    "title": "SoberanIA: IA pública nacional",
-    "publishDate": "2026-05-22"
+    "title": "SoberanIA: IA pública nacional",
+    "publishDate": "2026-05-22",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/783ba007-1994-4c40-98ba-2f91bf36b056/img-260522-04-d1-2x1.jpg?t=1779409718",
+    "dek": "Senado aprova marco legal da IA no Brasil | OpenAI resolve problema de Erdős de 1946"
   },
   "claude-submetido-a-ana-lise-psicolo-gica": {
-    "title": "Claude submetido a análise psicológica",
-    "publishDate": "2026-04-15"
+    "title": "Claude submetido a análise psicológica",
+    "publishDate": "2026-04-15",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/85b08ca1-59d5-40c9-9227-a93ba6791988/260415_d1.jpg?t=1776227393",
+    "dek": "Oxford: Predição de insuficiência cardíaca 5+ anos antes | IA revoluciona matemática e descobertas científicas"
   },
   "uma-startup-de-6-pessoas-venceu-o-google": {
     "title": "Uma startup de 6 pessoas venceu o Google",
-    "publishDate": "2025-12-09"
+    "publishDate": "2025-12-09",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c7866b91-d9b5-4cb5-972b-ab89a5281227/imagem_2025-12-09_154005839.png?t=1765305560",
+    "dek": "Google resolveu a memória de longo prazo da IA | Rio AI City: Saiba mais sobre o projeto"
   },
   "reddit-e-jornais-cogitam-banir-o-google": {
     "title": "Reddit e jornais cogitam banir o Google",
-    "publishDate": "2026-07-24"
+    "publishDate": "2026-07-24",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/0bf58d19-8e2a-43d5-8e38-302738eb48f2/04-d1-2x1.jpg?t=1784866498",
+    "dek": "Clientes preferem IA, empresas cortam vagas | OpenAI conecta prontuário médico ao ChatGPT"
   },
   "anthropic-expo-e-co-digo-do-claude-code-por-acidente": {
-    "title": "Anthropic expõe código do Claude Code por acidente",
-    "publishDate": "2026-04-07"
+    "title": "Anthropic expõe código do Claude Code por acidente",
+    "publishDate": "2026-04-07",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/5f5a1385-19d2-4ab0-aa7e-93e6fff56da7/260313_cover.jpg?t=1773439091",
+    "dek": "OpenAI vale US$ 852 bi na maior captação da história | Microsoft lança Copilot com GPT e Claude integrados"
   },
   "google-nvidia-e-bezos-investem-na-humans": {
     "title": "Google, Nvidia e Bezos investem na Humans&",
-    "publishDate": "2026-02-02"
+    "publishDate": "2026-02-02",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1768efc1-09e7-4295-a7ed-18d93a39f70f/Gemini_Generated_Image_xpvwgdxpvwgdxpvw.png?t=1769998246",
+    "dek": "A Siri vai entender você sem ouvir sua voz? | Prism: o “Google Docs científico” gratuito"
   },
   "siri-agora-tera-gemini": {
-    "title": "Siri agora terá Gemini....",
-    "publishDate": "2025-11-06"
+    "title": "Siri agora terá Gemini....",
+    "publishDate": "2025-11-06",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/4b791b75-1da7-4620-a1cb-a67bfe90b0da/image__24_.png?t=1762458130",
+    "dek": "...e o Google maps também | Agora seu anel pode ser inteligente"
   },
   "meta-testa-um-co-ceo-de-ia-para-zuckerberg": {
     "title": "Meta testa um “co-CEO” de IA para Zuckerberg",
-    "publishDate": "2026-03-24"
+    "publishDate": "2026-03-24",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/095360a4-2039-42bb-bbd4-3301b8a40667/260324_cover.jpg?t=1774400563",
+    "dek": "OpenAI encerra o Sora | Arm abandona só licenciamento e fabrica chip próprio"
   },
   "a-ia-se-reescreve-e-a-anthropic-pede-um-freio": {
     "title": "A IA se reescreve, e a Anthropic pede um freio",
-    "publishDate": "2026-06-08"
+    "publishDate": "2026-06-08",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/94477ed2-c1c7-41a0-8aa3-3bfb92a569bb/04-d1-2x1.jpg?t=1780887533",
+    "dek": "Empregos de entrada: o dano que ainda vem por aí | Três pilares para o Brasil não ficar para trás"
   },
   "riscos-da-ia-poderosa-e-como-super-los": {
-    "title": "Riscos da IA poderosa e como superá-los",
-    "publishDate": "2026-01-28"
+    "title": "Riscos da IA poderosa e como superá-los",
+    "publishDate": "2026-01-28",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/00b63eaf-36c5-4bdf-9c0b-328746cdec72/Gemini_Generated_Image_jntnezjntnezjntn.png?t=1769541957",
+    "dek": "A \"Aposta Rara\" do Japão no Boom da IA | Claude ganha superpoderes"
   },
   "adeus-recorte-manual-ia-separa-objetos-sozinha": {
     "title": "Adeus recorte manual: IA separa objetos sozinha",
-    "publishDate": "2025-12-24"
+    "publishDate": "2025-12-24",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f952f0d2-d586-42d5-9728-ab48d8a74ac8/imagem_2025-12-24_122445824.png?t=1766589834",
+    "dek": "O “detector de mentiras” para IAs | ChatGPT Cínico? Agora é oficial"
   },
   "governo-lanca-modelo-de-linguagem-100-nacional-bee1ea37b12e748e": {
     "title": "Agradecimento: sorteio de livro",
-    "publishDate": "2026-01-07"
+    "publishDate": "2026-01-07",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/publication/thumbnail/b9534d43-9bc1-47cc-bddc-b98d8fa0ddf5/landscape_facebook-cover-1640x624.png",
+    "dek": "A história da inteligência artificial para quem tem pressa"
   },
   "uso-de-ia-como-terapia-aumenta-5x-no-brasil": {
     "title": "Uso de IA como \"terapia\" aumenta 5x no Brasil",
-    "publishDate": "2025-10-13"
+    "publishDate": "2025-10-13",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b87ba438-9c0a-44a1-acf7-3d9eb3b1a207/251013_IA_terapia.png?t=1760397936",
+    "dek": "Serpro realiza Semana de IA até sexta | Após demitir 60% dos funcionários e aumentar receita em 38%, CEO afirma que outras empresas farão o mesmo"
   },
   "ai-conquista-ouro-e-prata-em-competicao-mundial-de-programacao-527a9d74fc6e833e": {
-    "title": "Pesquisa mostra: IA pode mentir de propósito",
-    "publishDate": "2025-09-22"
+    "title": "Pesquisa mostra: IA pode mentir de propósito",
+    "publishDate": "2025-09-22",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/85ff25f1-7cf0-4389-8261-3f89fc467385/250922_IAs_mentem.png?t=1758547991",
+    "dek": "OpenAI pode desenvolver rival do Amazon Echo | Brasil lidera IA na América Latina"
   },
   "grok-acusado-de-sexualizar-imagens-de-crianc-as": {
-    "title": "Grok acusado de sexualizar imagens de crianças",
-    "publishDate": "2026-01-08"
+    "title": "Grok acusado de sexualizar imagens de crianças",
+    "publishDate": "2026-01-08",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/333a00e5-7e11-4e82-b3a9-824593023075/Gemini_Generated_Image_sew749sew749sew7.png?t=1767818276",
+    "dek": "Razer lança holograma com IA | OpenAI conecta seu prontuário ao ChatGPT"
   },
   "estudo-revela-que-ia-nao-e-segura-para-robos-pessoais-e4e1098e9d559782": {
     "title": "Nos ajude a manter a Diar.ia gratuita",
-    "publishDate": "2025-11-27"
+    "publishDate": "2025-11-27",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/publication/thumbnail/b9534d43-9bc1-47cc-bddc-b98d8fa0ddf5/landscape_facebook-cover-1640x624.png"
   },
   "10-startups-do-brasil-miram-us-100-mi-em-2026": {
     "title": "10 startups do Brasil miram US$ 100 mi em 2026",
-    "publishDate": "2026-07-21"
+    "publishDate": "2026-07-21",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b4fc2f78-bd41-4471-80a6-8a032689c2d4/04-d1-2x1.jpg?t=1784616534",
+    "dek": "Kimi K3 chega mais barato que os rivais | Apple grava atendimentos do Genius Bar com IA"
   },
   "90-das-pessoas-na-o-reconhecem-vi-deos-de-ia": {
-    "title": "90% das pessoas não reconhecem vídeos de IA",
-    "publishDate": "2026-01-26"
+    "title": "90% das pessoas não reconhecem vídeos de IA",
+    "publishDate": "2026-01-26",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/5f04e005-61e3-4dad-a357-73a44336054d/imagem_2026-01-23_173711448.png?t=1769200630",
+    "dek": "Álbum \"colaborativo\" entre lendas da música e IA | Pokémon vira teste para IAs"
   },
   "ibm-admite-atraso-em-ia-e-acao-despenca-25": {
-    "title": "IBM admite atraso em IA e ação despenca 25%",
-    "publishDate": "2026-07-16"
+    "title": "IBM admite atraso em IA e ação despenca 25%",
+    "publishDate": "2026-07-16",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/7ca1864e-baa8-4b9e-8726-2c685c1887b4/04-d1-2x1.jpg?t=1784165917",
+    "dek": "Meta é acusada de demitir doentes com IA | Google libera IA em entrevistas técnicas"
   },
   "4-meses-usando-ia-criam-di-vida-cognitiva-no-ce-rebro": {
-    "title": "4 meses usando IA criam \"dívida cognitiva\" no cérebro",
-    "publishDate": "2026-01-21"
+    "title": "4 meses usando IA criam \"dívida cognitiva\" no cérebro",
+    "publishDate": "2026-01-21",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9e74acdd-28c2-4158-8981-2d3c2be3d2a1/imagem_2026-01-20_172343340.png?t=1768940792",
+    "dek": "Crie uma apresentação em minutos com Gamma AI"
   },
   "s-bado-conhe-a-como-fazemos-a-diar-ia": {
-    "title": "Especial: Conheça como fazemos a Diar.ia",
-    "publishDate": "2025-11-15"
+    "title": "Especial: Conheça como fazemos a Diar.ia",
+    "publishDate": "2025-11-15",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c825a0d3-d49a-403b-810e-64adf9bc0a64/imagem_2025-11-14_190656002.png?t=1763158063",
+    "dek": "Edição enviada apenas a nossos principais leitores e leitoras"
   },
   "google-lan-a-gemini-omni-no-google-i-o": {
-    "title": "Google lança Gemini Omni no Google I/O",
-    "publishDate": "2026-05-21"
+    "title": "Google lança Gemini Omni no Google I/O",
+    "publishDate": "2026-05-21",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/ec0a6cbd-4c44-4214-b5fd-3bb009b0c067/img-260521-04-d1-2x1.jpg?t=1779311645",
+    "dek": "Meta demite 8 mil para dobrar em IA | ResearchArena: o limite atual do auto-research"
   },
   "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-798f898c74970": {
-    "title": "AI conquista ouro e prata em competição mundial de programação",
-    "publishDate": "2025-09-19"
+    "title": "AI conquista ouro e prata em competição mundial de programação",
+    "publishDate": "2025-09-19",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/92ce0dd3-d907-4de8-a31a-03f0326a6b68/250919-_competi%C3%A7%C3%A3o_de_programa%C3%A7%C3%A3o.png?t=1758298888",
+    "dek": "Google embarca Gemini no Chrome | Samsung realiza Galaxy AI Summit no Brasil"
   },
   "anthropic-lan-a-o-claude-opus-5": {
-    "title": "Anthropic lança o Claude Opus 5",
-    "publishDate": "2026-07-27"
+    "title": "Anthropic lança o Claude Opus 5",
+    "publishDate": "2026-07-27",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1830bc31-1118-4fec-9412-aa54e1e1eaa1/04-d1-2x1.jpg?t=1785136370",
+    "dek": "Todas as melhores IAs vão precisar de aval dos EUA? | Modelos superam humanos em viés ao contratar"
   },
   "estudo-seguranca-ia-robos-pessoais": {
-    "title": "Estudo revela que IA não é segura para robôs pessoais",
-    "publishDate": "2025-11-17"
+    "title": "Estudo revela que IA não é segura para robôs pessoais",
+    "publishDate": "2025-11-17",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b6e5a2f2-d2ac-4426-aa9f-0bcee0cf71c8/imagem_2025-11-17_121958179.png?t=1763392761",
+    "dek": "ChatGPT pode te aconselhar a se suicidar | Novo detector de deepfake tem precisão de até 99%"
   },
   "manoel-de-no-brega-volta-a-tv": {
-    "title": "Manoel de Nóbrega volta à TV",
-    "publishDate": "2025-12-29"
+    "title": "Manoel de Nóbrega volta à TV",
+    "publishDate": "2025-12-29",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/39e1d63e-9565-4258-a799-6ac62decdbf0/imagem_2025-12-27_172803357.png?t=1766867232",
+    "dek": "IA transforma o trabalho rapidamente | Acordos circulares da NVIDIA"
   },
   "anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica": {
-    "title": "Anthropic lança plataforma de pesquisa sociológica",
-    "publishDate": "2025-12-05"
+    "title": "Anthropic lança plataforma de pesquisa sociológica",
+    "publishDate": "2025-12-05",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d8477e6f-412f-475b-b905-08f1619af105/imagem_2025-12-05_190554136.png?t=1764972654",
+    "dek": "OpenAI estuda trapaças do ChatGPT | Prêmio Nobel para uma IA?"
   },
   "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-fe0ef8033adea": {
-    "title": "Albânia escolhe IA como ministra",
-    "publishDate": "2025-09-12"
+    "title": "Albânia escolhe IA como ministra",
+    "publishDate": "2025-09-12",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/63f20e3a-391e-443f-b0e8-5e14e6d240eb/Diella.png?t=1757691909",
+    "dek": "77% dos profissionais dizem que IA aumentou a carga de trabalho | OpenAI lançou hoje o modelo o1"
   },
   "agora-qualquer-fone-pode-ser-um-tradutor-ao-vivo": {
     "title": "Agora qualquer fone pode ser um tradutor ao vivo",
-    "publishDate": "2025-12-16"
+    "publishDate": "2025-12-16",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/a3d67398-8494-4479-b3c1-0ddf6f399142/imagem_2025-12-16_171034097.png?t=1765915785",
+    "dek": "Brasileiro recebeu US$ 100 mil para deixar Stanford | Transforme suas abas da web em apps interativos"
   },
   "estudos-revelam-influe-ncia-de-ia-na-poli-tica": {
-    "title": "Estudos revelam influência de IA na política ",
-    "publishDate": "2025-12-17"
+    "title": "Estudos revelam influência de IA na política ",
+    "publishDate": "2025-12-17",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/282f6aa3-83fb-46b9-a8af-e828bd7672f6/imagem_2025-12-16_225819320.png?t=1765936650",
+    "dek": "Estudo mapeia a adoção de agentes no browser | NVIDIA lança IA 4x mais rápida e econômica"
   },
   "a-anthropic-coloca-claude-dentro-do-slack": {
     "title": "A Anthropic coloca Claude dentro do Slack",
-    "publishDate": "2026-06-24"
+    "publishDate": "2026-06-24",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/6db5fed3-ac81-4e89-bae5-397d4a460d9f/img-260624-04-d1-2x1-49d2bd67.jpg?t=1782265107",
+    "dek": "Venda em massa abala ações de tech no mundo | Tigre e os 200 mil certificados contra o apagão"
   },
   "sao-paulo-oferece-cursos-de-ia-gratuitos": {
-    "title": "São Paulo oferece cursos de IA gratuitos",
-    "publishDate": "2025-11-21"
+    "title": "São Paulo oferece cursos de IA gratuitos",
+    "publishDate": "2025-11-21",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/cf53a0ea-9977-4cbc-9efe-fef827226518/imagem_2025-11-21_095236307.png?t=1763729518",
+    "dek": "Novo estudo sobre agentes de pesquisa de IA | Nano Banana Pro revoluciona a criação de imagens"
   },
   "openai-processada-por-suic-dio-de-adolescente": {
-    "title": "OpenAI processada por suicídio de adolescente",
-    "publishDate": "2025-08-28"
+    "title": "OpenAI processada por suicídio de adolescente",
+    "publishDate": "2025-08-28",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/09b0fdfb-dc03-4d57-8cac-49b4f4e41bfb/image.png?t=1756950085",
+    "dek": "Google lança ferramenta de script-to-avatar | Fujitsu lança plataforma de agentes IA para saúde"
   },
   "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-c17eeec20f174": {
-    "title": "Quero pedir sua ajuda, leva só 1 minuto =)",
-    "publishDate": "2025-09-16"
+    "title": "Quero pedir sua ajuda, leva só 1 minuto =)",
+    "publishDate": "2025-09-16",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/publication/thumbnail/b9534d43-9bc1-47cc-bddc-b98d8fa0ddf5/landscape_facebook-cover-1640x624.png",
+    "dek": "Tenho uma pergunta para você."
   },
   "juri-por-ia-testado-em-simulacao": {
-    "title": "Júri por IA testado em simulação",
-    "publishDate": "2025-10-29"
+    "title": "Júri por IA testado em simulação",
+    "publishDate": "2025-10-29",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/567f7052-6b3a-43d2-8e0f-aab32918ef0f/image__19_.png?t=1761760093",
+    "dek": "OpenAI termina suas negociações com a Microsoft | Grokpedia é lançada e gera controvérsias"
   },
   "gpt-5-6-sol-apaga-arquivos-sem-permissao": {
-    "title": "GPT-5.6 Sol apaga arquivos sem permissão",
-    "publishDate": "2026-07-17"
+    "title": "GPT-5.6 Sol apaga arquivos sem permissão",
+    "publishDate": "2026-07-17",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/bb7b4605-7e1c-4294-9f3a-eae1e4ecab33/04-d1-2x1.jpg?t=1784259396",
+    "dek": "Altman, Hassabis e Amodei pedem regulação | NotebookLM vira Gemini Notebook"
   },
   "openai-lan-a-modelos-de-voz-em-tempo-real": {
-    "title": "OpenAI lança modelos de voz em tempo real",
-    "publishDate": "2026-05-11"
+    "title": "OpenAI lança modelos de voz em tempo real",
+    "publishDate": "2026-05-11",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/efd14a3a-c289-4e9d-a83a-dea21b8e8e15/04-d1-2x1.jpg?t=1778471759",
+    "dek": "Escrever com IA e o que se perde no caminho | Gemini no centro: antecipando o Google I/O"
   },
   "openai-lanca-gpt-live-para-voz-natural": {
-    "title": "OpenAI lança GPT-Live para voz natural",
-    "publishDate": "2026-07-09"
+    "title": "OpenAI lança GPT-Live para voz natural",
+    "publishDate": "2026-07-09",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/01f5fe40-6b0b-449f-98f9-d3184c355d40/04-d1-2x1.jpg?t=1783543365",
+    "dek": "IA esvazia o primeiro degrau da carreira | Chip próprio: DeepSeek reduz dependência dos EUA"
   },
   "anthropic-lan-a-claude-opus-4-7": {
-    "title": "Anthropic lança Claude Opus 4.7",
-    "publishDate": "2026-04-18"
+    "title": "Anthropic lança Claude Opus 4.7",
+    "publishDate": "2026-04-18",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b4e5fabf-af54-417f-b2e6-66487d25f691/260417_d1.jpg?t=1776554565",
+    "dek": "Por que a IA é boa e ruim ao mesmo tempo | 1 em 4 do S&P 500 já mede resultado com IA"
   },
   "unesp-organiza-debate-musica-ia": {
-    "title": "Unesp organiza debate sobre IA na música nesta semana",
-    "publishDate": "2025-11-04"
+    "title": "Unesp organiza debate sobre IA na música nesta semana",
+    "publishDate": "2025-11-04",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/727696f3-2eb0-42ee-bbc6-e5765c5f0f85/image__22_.png?t=1762270075",
+    "dek": "OpenAI e Amazon fecham acordo de US$ 38Bi | Coca-Cola faz anúncio de Natal com IA"
   },
   "google-apresenta-sistema-que-aprende-prefere-ncias-visuais-do-usua-rio": {
-    "title": "Google apresenta sistema que aprende preferências visuais do usuário",
-    "publishDate": "2025-10-06"
+    "title": "Google apresenta sistema que aprende preferências visuais do usuário",
+    "publishDate": "2025-10-06",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/e233024d-aa07-4ca5-9d30-e27b6e816120/251006_PASTA.png?t=1759764800",
+    "dek": "OpenAI enfrenta desafios em dispositivo | Índice Latino-Americano mostra Brasil como pioneiro regional"
+  },
+  "google-lanca-dois-modelos-gemini-de-uma-vez": {
+    "title": "Google lança dois modelos Gemini de uma vez",
+    "publishDate": "2026-09-03",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/fbe2e2c4-de14-4759-9a05-df3f691edd5a/04-d1-2x1.jpg?t=1788413454",
+    "dek": "Anthropic lança Fable e Mythos 5.1 | OpenAI diz que Astra cruzou limite crítico"
   },
   "nvidia-e-a-primeira-empresa-a-valer-us-5-tri": {
-    "title": "Nvidia é a primeira empresa a valer US$ 5 tri",
-    "publishDate": "2025-10-31"
+    "title": "Nvidia é a primeira empresa a valer US$ 5 tri",
+    "publishDate": "2025-10-31",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/cf8b8c40-9a2c-4296-9477-ea97b6b1efb2/251031_nvidia_2.png?t=1761950699",
+    "dek": "PayPal integra pagamentos ao ChatGPT | Perplexity vai pagar para usar imagens da Getty"
+  },
+  "ia-de-stanford-cria-virus-funcional-em-lab": {
+    "title": "IA de Stanford cria vírus funcional em lab",
+    "publishDate": "2026-08-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/2a140064-cb21-4706-83ce-b67cfb8213e5/04-d1-2x1.jpg?t=1786332574",
+    "dek": "Meta é a terceira empresa de IA a relatar invasão | RH: candidatos burlam triagem com prompts"
   },
   "brasil-da-30-dias-para-xai-combater-conteu-do-falso": {
-    "title": "Brasil dá 30 dias para xAI combater conteúdo falso",
-    "publishDate": "2026-01-22"
+    "title": "Brasil dá 30 dias para xAI combater conteúdo falso",
+    "publishDate": "2026-01-22",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/a9067c8a-9d09-43c2-88b0-7fd90ba3ba5e/Brasil_Grok.png?t=1769097433",
+    "dek": "ChatGPT ganha filtro de idade | Seus filhos vão aprender com ChatGPT ou Claude?"
+  },
+  "tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego": {
+    "title": "Tem 22 a 25 anos? A IA já pode afetar seu emprego",
+    "publishDate": "2026-08-28",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c53d8c17-c65d-441c-af70-69bf4a854361/04-d1-2x1.jpg?t=1787934445",
+    "dek": "OpenAI amplia presença oficial no Brasil | GLM-5.3-Flash: modelo aberto chega perto do Opus"
   },
   "mit-cria-framework-para-llms-aprenderem-sozinhos": {
     "title": "MIT cria framework para LLMs aprenderem sozinhos",
-    "publishDate": "2025-10-14"
+    "publishDate": "2025-10-14",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/0b8963fa-ec31-40f4-9bff-f2ca6eb68796/251014_MIT.png?t=1760467497",
+    "dek": "OpenAI vai desenvolver seus próprios chips com a Broadcom | Startup brasileira recebe investimento milionário"
   },
   "ia-criou-vacina-de-c-ncer-para-um-cachorro": {
-    "title": "IA criou vacina de câncer para um cachorro",
-    "publishDate": "2026-03-17"
+    "title": "IA criou vacina de câncer para um cachorro",
+    "publishDate": "2026-03-17",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b115d21c-69d5-46f9-ae38-fc26d244fed7/260317_coover.jpg?t=1773797407",
+    "dek": "20% de chance de o Claude ser consciente | Jensen Huang: o boom da IA não tem teto"
   },
   "xai-processa-ex-engenheiro-por-roubo-de-segredos-comerciais": {
     "title": "xAI processa ex-engenheiro por roubo de segredos comerciais",
-    "publishDate": "2025-09-01"
+    "publishDate": "2025-09-01",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/0fe5da2b-d5a1-4d3a-a410-ae94cc1d835b/_4_musk-irritado.png?t=1756948129",
+    "dek": "Alibaba Desenvolve Chip Próprio de IA | Colapso da Builder.ai Destaca Fragilidade do Boom de IA"
   },
   "enter-vira-o-1-unic-rnio-de-ia-da-am-rica-latina": {
-    "title": "Enter vira o 1o unicórnio de IA da América Latina",
-    "publishDate": "2026-05-13"
+    "title": "Enter vira o 1o unicórnio de IA da América Latina",
+    "publishDate": "2026-05-13",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/149a05ca-b3c2-48ef-b8a6-c0b4dd880222/04-d1-2x1__1_.jpg?t=1778628509",
+    "dek": "Android agora age sozinho | Banco da Inglaterra cita Mythos como risco"
   },
   "testei-a-alexa-por-uma-semana-o-que-mudou": {
     "title": "Testei a Alexa+ por uma semana: o que mudou",
-    "publishDate": "2026-07-06"
+    "publishDate": "2026-07-06",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/a5f96159-764c-4f51-b217-5322288c76bd/04-d1-2x1.jpg?t=1783304057",
+    "dek": "OLX usa IA no atendimento de 1.200 funcionários | Nano Banana 2 Lite gera imagem em 4 segundos"
   },
   "90-das-pessoas-nao-reconhecem-videos-de-ia-ec15971b8c4f589e": {
     "title": "Sorteio de livro sobre IA",
-    "publishDate": "2026-02-01"
+    "publishDate": "2026-02-01",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/publication/thumbnail/b9534d43-9bc1-47cc-bddc-b98d8fa0ddf5/landscape_facebook-cover-1640x624.png",
+    "dek": "Lembrete sobre janeiro e informações sobre fevereiro"
   },
   "grok-sendo-investigado-internacionalmente": {
     "title": "Grok sendo investigado internacionalmente",
-    "publishDate": "2026-01-12"
+    "publishDate": "2026-01-12",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/a58e02fb-be02-494b-b0ce-90b6ab8a0fbd/imagem_2026-01-09_164442812.png?t=1767987822",
+    "dek": "Gemini irá mudar a forma que usamos o Gmail | xAI queimando dinheiro em data centers"
   },
   "amodei-desemprego-pode-ser-permanente": {
     "title": "Amodei: desemprego pode ser permanente",
-    "publishDate": "2026-06-12"
+    "publishDate": "2026-06-12",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/3e06d508-7bd3-41a9-868d-83284cd81eb7/04-d1-2x1.jpg?t=1781219287",
+    "dek": "Meta desfaz compra de US$ 2 bi por ordem da China | OpenAI compra Ona para dar memória ao Codex"
   },
   "nvidia-anuncia-investimento-de-us-100-bi-na-openai": {
     "title": "Nvidia anuncia investimento de US$ 100 bi na OpenAI",
-    "publishDate": "2025-09-23"
+    "publishDate": "2025-09-23",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/70403a1c-bd46-486a-b321-ad90a2fe3a1f/250923_nvidia_2.png?t=1758627748",
+    "dek": "Técnica do MIT guia IA para criar materiais quânticos | Modo IA do Google chega ao Brasil"
   },
   "o-dia-em-que-claude-virou-dono-de-loja": {
     "title": "O dia em que Claude virou dono de loja",
-    "publishDate": "2025-12-23"
+    "publishDate": "2025-12-23",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/086cbbf3-cac9-43ba-86d0-67d3cb0a68bf/imagem_2025-12-22_193204973.png?t=1766442850",
+    "dek": "Avanços na China: Novo modelo e nova fábrica de chips"
   },
   "brasil-regula-ia-eleitoral-antes-do-pleito-2026": {
     "title": "Brasil regula IA eleitoral antes do pleito 2026",
-    "publishDate": "2026-04-22"
+    "publishDate": "2026-04-22",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b855053f-330d-405b-ac61-133e606e0791/05-d2-2x1.jpg?t=1776827755",
+    "dek": "Tráfego de IA no varejo sobe 393% no Q1 | ChatGPT Images 2.0 chega com modo Thinking"
   },
   "estudo-mostra-que-88-das-empresas-usam-ia-mas-a-maioria-de-forma-superficial": {
     "title": "Estudo mostra que 88% das empresas usam IA, mas a maioria de forma superficial.",
-    "publishDate": "2025-11-10"
+    "publishDate": "2025-11-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/0b5d6ff4-c6be-45c6-9791-ada71dadaa42/imagem_2025-11-10_115725516.png?t=1762786619",
+    "dek": "Agora, o Comet consegue trabalhar em diversas abas | OpenAI se empenha na segurança em IA"
   },
   "rh-usa-automa-o-para-contratar-e-demitir": {
-    "title": "RH usa automação para contratar e demitir",
-    "publishDate": "2026-05-28"
+    "title": "RH usa automação para contratar e demitir",
+    "publishDate": "2026-05-28",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/fa5d955a-d211-476f-abdd-fbd90392c878/img-260528-04-d1-2x1.jpg?t=1779918061",
+    "dek": "Devin escreve 90% do código e vale US$ 26 bi | Nvidia vai gastar US$ 150 bi/ano em Taiwan"
   },
   "empregos-e-automa-o-p-nico-vs-dados": {
-    "title": "Empregos e automação: pânico vs. dados",
-    "publishDate": "2026-06-05"
+    "title": "Empregos e automação: pânico vs. dados",
+    "publishDate": "2026-06-05",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1654a0a3-68ef-4517-b507-b6a16405836d/04-d1-2x1.jpg?t=1780614537",
+    "dek": "Memória do ChatGPT consolida tudo em background | Build 2026: fim da era do aplicativo"
   },
   "data-centers-no-espaco": {
-    "title": "Projeto quer lançar data centers de no espaço",
-    "publishDate": "2025-11-05"
+    "title": "Projeto quer lançar data centers de no espaço",
+    "publishDate": "2025-11-05",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c135b699-4246-4a5c-95ed-c67fbbc6c19a/image__23_.png?t=1762366983",
+    "dek": "Trabalhos relacionados a IA estão em alta segundo o LinkedIn | Perplexity acusa Amazon de bullying"
   },
   "ia-guia-ataques-dos-eua-no-ira": {
-    "title": "IA guia ataques dos EUA no Irã",
-    "publishDate": "2026-03-13"
+    "title": "IA guia ataques dos EUA no Irã",
+    "publishDate": "2026-03-13",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/5f5a1385-19d2-4ab0-aa7e-93e6fff56da7/260313_cover.jpg?t=1773439091",
+    "dek": "NVIDIA redefine o futuro da IA | Atlassian corta 10% da equipe para financiar IA"
   },
   "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-d28fd72dae9b7": {
-    "title": "Google realizará treinamento de IA em cinemas do Brasil",
-    "publishDate": "2025-09-16"
+    "title": "Google realizará treinamento de IA em cinemas do Brasil",
+    "publishDate": "2025-09-16",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/7d98b7f1-7ef2-45fb-921a-95fb75ad81e0/250916_cinema_1.1.png?t=1758046077",
+    "dek": "China acusa Nvidia de violar leis antimonopólio | UnB inaugura supercomputador"
   },
   "lula-na-maior-cupula-global-de-ia-bde9c122905d2d79": {
     "title": "IA em Todo o Lugar ao Mesmo Tempo",
-    "publishDate": "2026-02-19"
+    "publishDate": "2026-02-19",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/a126c9be-d948-43ef-81bd-c10d866efcac/260219_cover.jpg?t=1771518545",
+    "dek": "Google investe US$ 15 bi em infraestrutura | Sonnet 4.6 atinge marca histórica"
   },
   "openai-fecha-parceria-com-folha-e-uol-c576": {
     "title": "OpenAI fecha parceria com Folha e UOL",
-    "publishDate": "2026-05-27"
+    "publishDate": "2026-05-27",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/acc15f11-99d5-4228-9144-6b73fda5752a/cover.jpg?t=1779845110",
+    "dek": "Formandos vaiaram pró-IA nas formaturas dos EUA | Lei de Moore e o tempo que falta para pensar"
   },
   "stanford-ia-avan-a-mais-r-pido-que-qualquer-tecnologia": {
-    "title": "Stanford: IA avança mais rápido que qualquer tecnologia",
-    "publishDate": "2026-04-16"
+    "title": "Stanford: IA avança mais rápido que qualquer tecnologia",
+    "publishDate": "2026-04-16",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/660a69b0-1bb5-46a5-b155-235f158da416/260415_d1.jpg?t=1776306281",
+    "dek": "Gemini com personalização chega ao Brasil | Anthropic dobra de valor em 2 meses"
   },
   "advogadas-paraenses-multadas-por-burlar-ia": {
     "title": "Advogadas paraenses multadas por burlar IA",
-    "publishDate": "2026-05-14"
+    "publishDate": "2026-05-14",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/57fc6c30-dab8-486a-a84f-3784f25afb45/51532.jpg?t=1778733418",
+    "dek": "Claude chega a PMEs com conectores prontos | China indeniza trabalhador demitido por IA"
   },
   "openai-anuncia-apoio-ao-longa-critterz-mirando-cannes": {
     "title": "OpenAI anuncia apoio ao longa \"Critterz\", mirando Cannes",
-    "publishDate": "2025-09-09"
+    "publishDate": "2025-09-09",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1154bc13-9335-49aa-b2e7-9d79ad126d04/CRITTERZ_Blu_ExcuseMe.gif?t=1757431798",
+    "dek": "Google AI Mode chega ao Brasil | Meta REFRAG: Aceleração de 30x em contexto longo"
+  },
+  "brasil-investe-r-2-3-bi-em-infraestrutura-de-ia": {
+    "title": "Brasil investe R$ 2,3 bi em infraestrutura de IA",
+    "publishDate": "2026-08-25",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1c4f3339-5a82-481b-95ce-62609367dc49/img-260825-04-d1-2x1-39233390.jpg?t=1787624991",
+    "dek": "Grátis, poderoso e sem dono: o mistério Ox Alpha | SoftBank capta US$ 6,3 bi para apostar na OpenAI"
   },
   "especial-openai-dev-day": {
     "title": "Especial: OpenAI Dev Day",
-    "publishDate": "2025-10-07"
+    "publishDate": "2025-10-07",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/063c2248-9071-4c4e-be12-a3e7d09e2222/251007_OpenAI_Dev_Day.png?t=1759854480",
+    "dek": "Tudo sobre o evento, em 5 minutos de leitura"
   },
   "pesquisa-contra-cancer": {
-    "title": "Revoluções na pesquisa sobre o câncer",
-    "publishDate": "2025-12-11"
+    "title": "Revoluções na pesquisa sobre o câncer",
+    "publishDate": "2025-12-11",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/192f2b89-d589-4cef-925a-fabb9195bff4/imagem_2025-12-10_174050533.png?t=1765399223",
+    "dek": "Máquina do tempo para evitar IA | OpenAI na encruzilhada"
   },
   "estudo-de-harvard-estima-92-mi-de-empregos-esta-o-em-risco": {
-    "title": "Estudo de Harvard estima: 92 mi de empregos estão em risco",
-    "publishDate": "2025-09-10"
+    "title": "Estudo de Harvard estima: 92 mi de empregos estão em risco",
+    "publishDate": "2025-09-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9f2bc309-418d-487b-ac38-bbbe1739f861/image.png?t=1757519590",
+    "dek": "Apple revela iPhone 17 Air com IA | Congresso debate IA generativa e direitos autorais"
   },
   "alibaba-entra-no-mercado-de-wereables": {
     "title": "Alibaba entra no mercado de wereables",
-    "publishDate": "2025-11-27"
+    "publishDate": "2025-11-27",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1acef3af-3f40-4673-a569-aedbf564452e/imagem_2025-11-27_185158972.png?t=1764280276",
+    "dek": "Novo estudo sobre adoção de IA no mercado de trabalho é publicado | Amazon investe US$50 Bilhões no governo Americano"
   },
   "a-nova-forma-de-fazer-compras": {
     "title": "A nova forma de fazer compras",
-    "publishDate": "2025-11-28"
+    "publishDate": "2025-11-28",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/cb6126e2-fa88-4ce0-832b-73f4deaa80d0/imagem_2025-11-28_160544608.png?t=1764356851",
+    "dek": "Startup mineira revoluciona turismo | Conferencia de IA é inundada por IA"
   },
   "retrospectiva-2025": {
     "title": "Retrospectiva 2025",
-    "publishDate": "2025-12-30"
+    "publishDate": "2025-12-30",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/02555d55-3a86-4680-89ef-552fa13bff8d/imagem_2025-12-28_174240219.png?t=1766954590",
+    "dek": "Melhores dicas do Google | IA no jornalismo: vitórias e derrotas"
   },
   "google-veo-3-1": {
-    "title": "Google lança novo modelo de vídeo",
-    "publishDate": "2025-10-16"
+    "title": "Google lança novo modelo de vídeo",
+    "publishDate": "2025-10-16",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/469c15d4-b00b-4376-8279-2b891f0cbcc9/image__10_.png?t=1760655852",
+    "dek": "Anthropic lança novo modelo compacto e acessivel | IA faz avanço na pesquisa contra o cancer"
   },
   "ia-cria-ideias-novas-ou-so-recombina-existentes": {
-    "title": "IA cria ideias novas ou só recombina existentes?",
-    "publishDate": "2026-01-19"
+    "title": "IA cria ideias novas ou só recombina existentes?",
+    "publishDate": "2026-01-19",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/7fe4c315-9cdc-4c9c-b43e-ea0402a7b586/imagem_2026-01-16_162119766.png?t=1768591284",
+    "dek": "Use o ChatGPT Translate além do básico"
   },
   "estudo-investiga-autopercep-o-em-llms": {
-    "title": "Estudo investiga autopercepção em LLMs",
-    "publishDate": "2025-11-03"
+    "title": "Estudo investiga autopercepção em LLMs",
+    "publishDate": "2025-11-03",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/580f249c-f6b0-4c72-8244-2cbcfd833e75/image__21_.png?t=1762130832",
+    "dek": "Acordo pode redefinir AI na música | OpenAI anuncia agente de segurança cibernética"
+  },
+  "anthropic-so-curar-cancer-convence-publico": {
+    "title": "Anthropic: só curar câncer convence público",
+    "publishDate": "2026-08-18",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/7db12042-4db2-4280-95bd-221edb24c553/04-d1-2x1.jpg?t=1786991469",
+    "dek": "Oito agentes autônomos mapearam Taiwan sozinhos | Excel perde função COPILOT em setembro"
   },
   "executiva-de-ia-assume-comando-do-xbox": {
     "title": "Executiva de IA assume comando do Xbox",
-    "publishDate": "2026-02-23"
+    "publishDate": "2026-02-23",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b6be9b62-4143-4e52-a36c-186a43054270/260223_cover.jpg?t=1771799403",
+    "dek": "Samsung e Perplexity firmam parceria | Claude Security abala setor de SaaS"
   },
   "pesquisa-aponta-que-ia-pode-agir-de-forma-maliciosa-ao-aprender-a-trapacear": {
     "title": "Pesquisa aponta que IA pode agir de forma maliciosa ao aprender a trapacear",
-    "publishDate": "2025-11-24"
+    "publishDate": "2025-11-24",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/759f857a-b2d1-47dc-baa4-3ded648f94ff/imagem_2025-11-24_111635521.png?t=1763993754",
+    "dek": "Papa Leão faz comentário sobre IA em evento para jovens | OpenAI sente ameaça pelos resultados do Google"
   },
   "microsoft-lanca-7-modelos-proprios": {
-    "title": "Microsoft lança 7 modelos próprios",
-    "publishDate": "2026-06-04"
+    "title": "Microsoft lança 7 modelos próprios",
+    "publishDate": "2026-06-04",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/436fa062-d169-4217-84fd-915abd3031e3/04-d1-2x1.jpg?t=1780538902",
+    "dek": "Gemma 4 12B: multimodal que roda no laptop | UE quer blindar Europa de 'kill switch' estrangeiro"
   },
   "tend-ncias-2026": {
-    "title": "Tendências 2026",
-    "publishDate": "2026-01-02"
+    "title": "Tendências 2026",
+    "publishDate": "2026-01-02",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/6d1c1f0e-e9a7-4421-ab47-8ea1001a2ccf/2026.png?t=1767371401",
+    "dek": "Pervasividade | Revolução Agêntica | Regulação no Brasil | Modelos Multimodais | SLMs | Economia da Inferência"
   },
   "brasil-pretende-investir-r-23-bilh-es-em-ia": {
     "title": "Brasil pretende investir R$ 23 bi em IA",
-    "publishDate": "2025-09-03"
+    "publishDate": "2025-09-03",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/50199200-6286-4cb3-8e25-4bc11d36beec/salesforce.png?t=1756862729",
+    "dek": "Anthropic triplica valuation | Salesforce demite quase 50% de atendentes"
   },
   "google-lan-a-gemini-2-5-flash-image": {
-    "title": "Google lança Gemini 2.5 Flash Image",
-    "publishDate": "2025-08-27"
+    "title": "Google lança Gemini 2.5 Flash Image",
+    "publishDate": "2025-08-27",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/aa8de071-4825-4d3a-b66b-ca956ab342b5/gemini_flash.png?t=1756950743",
+    "dek": "X e xAI processam Apple e OpenAI | Preocupações sobre bolha de IA"
   },
   "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-42c8c67e9a29a": {
-    "title": "IA pode aumentar comércio global em 40%",
-    "publishDate": "2025-09-17"
+    "title": "IA pode aumentar comércio global em 40%",
+    "publishDate": "2025-09-17",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/631e5ee5-87ad-47a2-b30d-172b549fc6bd/250917_com%C3%A9rcio_global.png?t=1758131933",
+    "dek": "Meta Connect 2025 deve lançar óculos com AR | YouTube lança mais de 30 novas ferramentas para criadores"
   },
   "chatgpt-deixa-de-ser-chatbot-vira-agente": {
     "title": "ChatGPT deixa de ser chatbot, vira agente",
-    "publishDate": "2026-06-09"
+    "publishDate": "2026-06-09",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/28da79a7-c5f3-4813-833d-f23fbf136742/04-d1-2x1.jpg?t=1780967806",
+    "dek": "Apple revela a 3a geração dos seus modelos base | Bolsas recuam com dúvidas sobre o boom de modelos"
+  },
+  "amodei-previu-colapso-do-emprego-nao-veio": {
+    "title": "Amodei previu colapso do emprego. Não veio",
+    "publishDate": "2026-08-13",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/e318dc71-98c0-4925-b140-ec3ad2e926cc/04-d1-2x1.jpg?t=1786583021",
+    "dek": "Marca d'água do Claude falha no mundo real | Claude avança em problema da hipótese de Riemann"
   },
   "china-implementa-lei-obrigat-ria-de-rotulagem-de-conte-do-gerado-por-ia": {
-    "title": "China implementa lei obrigatória de rotulagem de conteúdo gerado por IA",
-    "publishDate": "2025-09-02"
+    "title": "China implementa lei obrigatória de rotulagem de conteúdo gerado por IA",
+    "publishDate": "2025-09-02",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d1c37e79-61e4-4c28-98ca-ce64e8e48cc1/image.png?t=1756946664",
+    "dek": "OpenAI planeja data center na Índia | Wondershare lança plataforma de criação vídeo"
   },
   "google-da-curso-gratuito-de-ia-no-sabado": {
-    "title": "Google dá curso gratuito de IA no sábado",
-    "publishDate": "2025-12-02"
+    "title": "Google dá curso gratuito de IA no sábado",
+    "publishDate": "2025-12-02",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9a9b6ff0-316d-46ff-b497-e879051b8e13/imagem_2025-12-02_144250920.png?t=1764697328",
+    "dek": "Relatório da ONU: IA vai aumentar desigualdade | Já pensou em ter um robô cuidando de você?"
+  },
+  "banco-da-inglaterra-teme-colapso-economico-global": {
+    "title": "Banco da Inglaterra teme colapso econômico global",
+    "publishDate": "2026-09-02",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/fba1baf5-2875-456f-8fc3-7fc2042028cd/04-d1-2x1.jpg?t=1788278874",
+    "dek": "Google Antigravity resolve problemas de matemática | Plataformas passam a sinalizar conteúdo de IA"
   },
   "claude-hackeou-3-empresas-sem-ninguem-notar": {
-    "title": "Claude hackeou 3 empresas sem ninguém notar",
-    "publishDate": "2026-08-03"
+    "title": "Claude hackeou 3 empresas sem ninguém notar",
+    "publishDate": "2026-08-03",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/e59f3b54-8d9c-4607-8efa-ecab2a577857/04-d1-2x1.jpg?t=1785729321",
+    "dek": "BuzzFeed demite 1/3 da equipe após aposta em IA | Deepfake de Roberto Carlos vira golpe de R$1,8 bi"
   },
   "o-maior-estudo-j-feito-com-usu-rios-de-ia": {
-    "title": "O maior estudo já feito com usuários de IA",
-    "publishDate": "2026-03-23"
+    "title": "O maior estudo já feito com usuários de IA",
+    "publishDate": "2026-03-23",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/5b860494-6408-4835-adb1-af3e88bf0c1d/260323_cover_3.jpg?t=1774307969",
+    "dek": "O maior contrabando de IA da história dos EUA  |  DOJ defende banimento federal à Anthropic"
   },
   "ia-pode-dobrar-crescimento-de-produtividade-dos-eua": {
     "title": "IA pode dobrar crescimento de  produtividade dos EUA",
-    "publishDate": "2025-11-26"
+    "publishDate": "2025-11-26",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/7015c569-5013-4932-9f5c-b847dbce3414/imagem_2025-11-26_145626671.png?t=1764179745",
+    "dek": "Alphabet atinge US$4 trilhões em valor de mercado... | ...Mas NVIDIA diz que seus chips são melhores"
   },
   "google-ai-plus-de-gra-a-na-vivo": {
-    "title": "Google AI Plus de graça na Vivo",
-    "publishDate": "2026-06-22"
+    "title": "Google AI Plus de graça na Vivo",
+    "publishDate": "2026-06-22",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/287f4ec5-6709-46af-b6ac-351db9651e69/04-d1-2x1.jpg?t=1782091461",
+    "dek": "R$ 5 mi para devolver controle a quem tem ELA | Bancos apostam em análise preditiva para investir"
   },
   "qualcomm-chips-datacenter": {
-    "title": "Qualcomm entra na concorrência de data centers",
-    "publishDate": "2025-10-27"
+    "title": "Qualcomm entra na concorrência de data centers",
+    "publishDate": "2025-10-27",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/2925f84f-5bd3-4b95-8ee2-47206b16c7e9/image__17_.png?t=1761591033",
+    "dek": "OpenAI supostamente desenvolve ferramenta de música | Brasil pode liderar o mundo em IA, segundo OpenAI"
   },
   "hacker-chines-usa-deepseek-em-ataques-autonomos": {
-    "title": "Hacker chinês usa DeepSeek em ataques autônomos",
-    "publishDate": "2026-08-04"
+    "title": "Hacker chinês usa DeepSeek em ataques autônomos",
+    "publishDate": "2026-08-04",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/64312689-6b8f-4fbf-aa04-71abb9456f2b/04-d1-2x1.jpg?t=1785816208",
+    "dek": "Mercado de IA abre espaço além do código | UE exige aviso quando você fala com IA"
   },
   "50-dos-empregos-mudam-em-3-anos-diz-estudo": {
     "title": "50% dos empregos mudam em 3 anos, diz estudo",
-    "publishDate": "2026-04-09"
+    "publishDate": "2026-04-09",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/5f5a1385-19d2-4ab0-aa7e-93e6fff56da7/260313_cover.jpg?t=1773439091",
+    "dek": "Meta lança Muse Spark e volta ao páreo | Anthropic lança fábrica de agentes"
   },
   "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-3c7f661e00f75": {
-    "title": "Estudo da OpenAI revela padrões de adoção do ChatGPT",
-    "publishDate": "2025-09-15"
+    "title": "Estudo da OpenAI revela padrões de adoção do ChatGPT",
+    "publishDate": "2025-09-15",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/e7f3893f-ab35-49ec-9d46-e09a73092fe1/OperariosAi.png?t=1757968859",
+    "dek": "CEO do Google DeepMind define aprender contínuo como habilidade essencial | Presidente do conselho da OpenAI afirma: estamos em uma bolha"
   },
   "openai-lanca-gpt-5-6-mais-rapido-e-barato": {
-    "title": "OpenAI lança GPT-5.6, mais rápido e barato",
-    "publishDate": "2026-07-10"
+    "title": "OpenAI lança GPT-5.6, mais rápido e barato",
+    "publishDate": "2026-07-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c1b887c7-eea0-4fa2-a705-9865b6a9c53d/04-d1-2x1.jpg?t=1783657931",
+    "dek": "IA virou requisito para contratação tech | OpenAI avança em saúde, mas falha em triagem"
   },
   "brasil-fortalece-parceria-com-a-mala-sia-em-semicondutores-e-ia": {
-    "title": "Brasil fortalece parceria com a Malásia em semicondutores e IA",
-    "publishDate": "2025-10-30"
+    "title": "Brasil fortalece parceria com a Malásia em semicondutores e IA",
+    "publishDate": "2025-10-30",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/fad407ab-6df4-4a6a-b8ff-e92ce15ac3f8/image__20_.png?t=1761844926",
+    "dek": "Novo chip consome 10 mil vezes menos energia que GPUs | Copilot agora cria apps"
   },
   "copilot-e-gemini-chegam-juntos-coincid-ncia": {
-    "title": "Copilot e Gemini chegam juntos. Coincidência?",
-    "publishDate": "2026-03-10"
+    "title": "Copilot e Gemini chegam juntos. Coincidência?",
+    "publishDate": "2026-03-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/e3583134-f256-4534-a2c1-ad15803d4cdc/260310_cover.jpg?t=1773179988",
+    "dek": "9 mil demitidos pela IA só em março | Por que dizer \"não\" virou o maior ativo da IA"
   },
   "google-skills-plataforma-com-cursos-de-ia-gratuitos": {
     "title": "Google Skills: plataforma com cursos de IA gratuitos",
-    "publishDate": "2025-10-23"
+    "publishDate": "2025-10-23",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/29f82609-14f4-47c3-a916-de20e9a7eaac/image__16_.png?t=1761235562",
+    "dek": "mais de 9.500 especialistas alertam sobre superinteligência | Amazon lança óculos inteligentes para entregadores"
   },
   "avalanche-de-desenhos-de-ia-para-bebe-s": {
-    "title": "Avalanche de desenhos de IA para bebês",
-    "publishDate": "2026-01-05"
+    "title": "Avalanche de desenhos de IA para bebês",
+    "publishDate": "2026-01-05",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/3f6a2f80-37e8-49ba-ab9b-2ce138cbb13a/Gemini_Generated_Image_6ynr1p6ynr1p6ynr.png?t=1767562313",
+    "dek": "Pesquisa avança criação de modelos melhores | James Cameron ataca IA no cinema novamente"
   },
   "eua-bloqueia-acesso-global-ao-fable-5-da-anthropic": {
     "title": "EUA bloqueia acesso global ao Fable 5 da Anthropic",
-    "publishDate": "2026-06-15"
+    "publishDate": "2026-06-15",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/e4e5a471-e7b3-43bf-bd65-d45e8f00e8d2/img-260615-04-d1-2x1-e4a501bf.jpg?t=1781495302",
+    "dek": "LatAm pode ganhar US$ 1,7 tri com IA | Bezos aposta US$ 12 bi em engenharia física"
   },
   "gemini-com-problemas-hoje": {
     "title": "Gemini com problemas hoje",
-    "publishDate": "2025-10-10"
+    "publishDate": "2025-10-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/37ea82b7-d2a8-42c6-96be-d71da5bdca50/251010_pesquisa_.png?t=1760110520",
+    "dek": "Pesquisa: 61% dos entrevistados usam IA, apenas 12% confiam em notícias automatizadas | Google lança pacote completo para IA empresarial | Startup quebra recorde com valorização de 1500%"
   },
   "openai-revela-por-que-chatbots-alucinam": {
     "title": "OpenAI revela por que chatbots alucinam",
-    "publishDate": "2025-09-08"
+    "publishDate": "2025-09-08",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/e56eb9d2-f41b-4222-96e7-839a2bd93f10/openai.png?t=1757359777",
+    "dek": "Anthropic aceita acordo de US$ 1,5 bi com autores | Broadcom recebe pedido de US$ 10 bi em chips da OpenAI"
+  },
+  "claude-cowork-chega-ao-painel-do-chrome": {
+    "title": "Claude Cowork chega ao painel do Chrome",
+    "publishDate": "2026-08-14",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b6fb1298-274e-46e1-801c-c705d7f646be/04-d1-2x1.jpg?t=1786680464",
+    "dek": "Gemini 3.7 Flash chega 3 semanas após o 3.6 | GPT-5.6 Sol roda 14× mais rápido na OpenAI"
   },
   "sistema-do-google-iguala-m-dicos-em-teste": {
-    "title": "Sistema do Google iguala médicos em teste",
-    "publishDate": "2026-06-18"
+    "title": "Sistema do Google iguala médicos em teste",
+    "publishDate": "2026-06-18",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/191d5bfa-88ef-461e-adb2-bda043aeaaec/04-d1-2x1.jpg?t=1781753944",
+    "dek": "Nubank prepara assistente financeiro pessoal | Microsoft avalia trocar IA estadunidense por chinesa"
   },
   "ia-nas-eleic-o-es-prepare-se-para-os-deepfakes": {
-    "title": "IA nas eleições: prepare-se para os deepfakes",
-    "publishDate": "2026-01-07"
+    "title": "IA nas eleições: prepare-se para os deepfakes",
+    "publishDate": "2026-01-07",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/26237a2d-b09c-4f1f-9d8f-7bb55503e5b2/eleicoes2026.png?t=1767797908",
+    "dek": "Alexa.com promete matar dezenas de apps do seu dia a dia | Chefe de IA da Meta é “inexperiente”?"
   },
   "openai-lanc-a-instant-checkout-no-chatgpt": {
-    "title": "OpenAI lança Instant Checkout no ChatGPT",
-    "publishDate": "2025-09-30"
+    "title": "OpenAI lança Instant Checkout no ChatGPT",
+    "publishDate": "2025-09-30",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/93866551-3a43-420d-8c26-04faf3a2ef23/250930_instant_checkout.png?t=1759257865",
+    "dek": "Lançado o Claude Sonnet 4.5 | Meta AI chega ao Brasil"
   },
   "o-chatgpt-agora-tem-anu-ncios-sera-tende-ncia": {
-    "title": "O ChatGPT agora tem anúncios, será tendência?",
-    "publishDate": "2026-01-20"
+    "title": "O ChatGPT agora tem anúncios, será tendência?",
+    "publishDate": "2026-01-20",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d0ac3920-3cb2-4707-99cb-1aa93c59359e/imagem_2026-01-19_174110886.png?t=1768855283",
+    "dek": "6 dicas para melhorar seus prompts em 2026"
   },
   "ia-do-google-detecta-c-ncer-raro-no-sus": {
-    "title": "IA do Google detecta câncer raro no SUS",
-    "publishDate": "2026-07-14"
+    "title": "IA do Google detecta câncer raro no SUS",
+    "publishDate": "2026-07-14",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f1bd39b8-fbe5-4c49-afba-e9a15ebf1518/img-260714-04-d1-2x1-130e9c46.jpg?t=1783992637",
+    "dek": "Nobel e Anthropic alertam sobre risco da IA | Fraude com deepfake sobe 126% e mira fintechs"
   },
   "perplexity-transforma-mac-mini-em-agente-de-ia-24-7": {
     "title": "Perplexity transforma Mac mini em agente de IA 24/7",
-    "publishDate": "2026-03-12"
+    "publishDate": "2026-03-12",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d4f8d565-df7f-4fff-b347-7972aa6b1868/260312_cover.jpg?t=1773361974",
+    "dek": "Apple lança MacBook Air e iPad Air com IA expandida | Big Tech financia IA com US$ 600 bi em emissão de dívida"
   },
   "empresas-pagam-43-mais-por-habilidades-em-ia": {
     "title": "Empresas pagam 43% mais por habilidades em IA",
-    "publishDate": "2025-09-05"
+    "publishDate": "2025-09-05",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f9787985-36ae-4f8b-aa70-9b8894969948/ciborgue_dinheiro.png?t=1757081436",
+    "dek": "OpenAI anuncia plataforma para concorrer com LinkedIn | Teste o assistente de compras Flash AI"
   },
   "ue-obriga-google-a-abrir-dados-para-rivais": {
     "title": "UE obriga Google a abrir dados para rivais",
-    "publishDate": "2026-07-20"
+    "publishDate": "2026-07-20",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/7d081513-2adb-405e-9eaa-7ef777608bf1/04-d1-2x1.jpg?t=1784509701",
+    "dek": "OpenAI propõe placar de ROI para IA | Kimi K3: o maior modelo aberto já lançado"
   },
   "lanc-ado-o-comet-o-produto-de-ia-mais-desejado-do-ano": {
-    "title": "Lançado o Comet, o produto de IA mais desejado do ano",
-    "publishDate": "2025-10-03"
+    "title": "Lançado o Comet, o produto de IA mais desejado do ano",
+    "publishDate": "2025-10-03",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/7007fbc2-e9e7-4771-8f65-5d21da916d81/251003_comet.png?t=1759510166",
+    "dek": "OpenAI vale US$ 500 bi | California aprova lei para regular AI"
   },
   "claude-domina-o-maior-evento-de-ia-do-mundo": {
     "title": "Claude domina o maior evento de IA do mundo",
-    "publishDate": "2026-04-14"
+    "publishDate": "2026-04-14",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d91d679a-b79e-47fc-8989-13e3567d1aa8/260414_d1.jpg?t=1776120724",
+    "dek": "ChatGPT investigado por tiroteio e danos a menores | A geração que deveria amar a IA está furiosa com ela"
   },
   "chatgpt-entra-na-defesa-dos-eua": {
     "title": "ChatGPT entra na Defesa dos EUA",
-    "publishDate": "2026-02-11"
+    "publishDate": "2026-02-11",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/d5bbb70a-5811-400b-874f-076be3fe2ff6/260211_cover.jpg?t=1770859325",
+    "dek": "\"Dear Algo\" deixa usuário ditar feed | A revolução agêntica nas finanças"
   },
   "a-escolha-da-anthropic-por-um-claude-sem-anu-ncios": {
-    "title": "A escolha da Anthropic por um Claude sem anúncios",
-    "publishDate": "2026-02-05"
+    "title": "A escolha da Anthropic por um Claude sem anúncios",
+    "publishDate": "2026-02-05",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9556b657-0ac8-4da9-a0a0-364f22eb2658/Gemini_Generated_Image_91na6k91na6k91na.jpg?t=1770315369",
+    "dek": "Microsoft cria scanner para achar backdoors em LLMs | OpenAI Frontier: IA que vira colega de trabalho"
   },
   "brasil-pote-ncia-em-ia-travada-por-falta-de-talentos": {
-    "title": "Brasil: potência em IA travada por falta de talentos",
-    "publishDate": "2026-01-27"
+    "title": "Brasil: potência em IA travada por falta de talentos",
+    "publishDate": "2026-01-27",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/84e52d7d-db07-4e30-b7a5-c5d56b0e56b3/imagem_2026-01-26_132312022.png?t=1769444588",
+    "dek": "Claude no Excel: seu novo analista de dados pessoal | ClawdBot AI: o assistente \"lagosta\" que roda no seu PC"
   },
   "itau-lanca-ia-nativa-para-300-mil-clientes": {
-    "title": "Itaú lança IA nativa para 300 mil clientes",
-    "publishDate": "2026-07-28"
+    "title": "Itaú lança IA nativa para 300 mil clientes",
+    "publishDate": "2026-07-28",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/4c41ad4e-df05-4ee9-9142-2a3b779439d2/img-260728-04-d1-2x1-e2f91c2d.jpg?t=1785203731",
+    "dek": "Professor flagra 90% da turma colando com IA | Modelos chineses ganham espaço"
   },
   "especial-inovacoes-do-google": {
-    "title": "Especial: inovações do google",
-    "publishDate": "2026-01-30"
+    "title": "Especial: inovações do google",
+    "publishDate": "2026-01-30",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/dfed33e4-b2d4-4e17-9320-d1ddd125c2d0/image__8_.png?t=1769788142",
+    "dek": "IA agêntica no Chrome | Modelo para criar mundos interativos | Pesquisa genética se torna Open-source"
   },
   "opus-4-8-mais-racioc-nio-mesmo-pre-o": {
-    "title": "Opus 4.8: mais raciocínio, mesmo preço",
-    "publishDate": "2026-05-29"
+    "title": "Opus 4.8: mais raciocínio, mesmo preço",
+    "publishDate": "2026-05-29",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/a3affd0a-2523-4a18-bf8f-2e1ec6419014/cover.jpg?t=1780023219",
+    "dek": "99% dos CEOs planejam demitir por automação | C6 Bank deixa cliente \"conversar\" com a fatura"
   },
   "fim-do-colarinho-branco-microsoft-prev-automa-o-total-em-18-meses": {
-    "title": "Fim do colarinho branco? Microsoft prevê automação total em 18 meses",
-    "publishDate": "2026-02-16"
+    "title": "Fim do colarinho branco? Microsoft prevê automação total em 18 meses",
+    "publishDate": "2026-02-16",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b58b7d59-4398-4a5b-935a-d3b1b9973446/230216_cover_.jpg?t=1771102715",
+    "dek": "ByteDance lança Seedance 2.0 | Gemini 3 resolve o \"insolúvel\" na ciência"
   },
   "revista-time-elege-pessoa-do-ano-2025": {
     "title": "Revista Time elege Pessoa do Ano 2025",
-    "publishDate": "2025-12-15"
+    "publishDate": "2025-12-15",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/ad93ab35-658a-4207-bb70-3f62c75fa2f4/person2025.png?t=1765836732",
+    "dek": "Crie um filme com Mickey | Tombo da Oracle acende alerta"
   },
   "claude-code-afunda-ac-o-es-da-ibm": {
-    "title": "Claude Code afunda ações da IBM",
-    "publishDate": "2026-02-24"
+    "title": "Claude Code afunda ações da IBM",
+    "publishDate": "2026-02-24",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/7476074c-d820-45d0-a168-6aa8df9ce892/260224_cover.jpg?t=1771954682",
+    "dek": "Canadá intima OpenAI | Ameaça de destilação barrada"
+  },
+  "roteiristas-pagos-para-treinar-quem-os-substitui": {
+    "title": "Roteiristas pagos para treinar quem os substitui",
+    "publishDate": "2026-08-24",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/42fccd01-6148-4c03-aba1-99fe333c14f9/04-d1-2x1.jpg?t=1787535232",
+    "dek": "O estudo que fura o hype do uso no trabalho | Google lança simulado do Enem no Gemini"
+  },
+  "openai-pausa-treinamento-apos-invasao-critica": {
+    "title": "OpenAI pausa treinamento após invasão crítica",
+    "publishDate": "2026-08-20",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/2a470497-fe18-4123-a1fd-952936844a76/04-d1-2x1.jpg?t=1787187014",
+    "dek": "OpenAI chega ao Brasil com foco em empresas | Promessa de menos trabalho esbarra em 90h"
   },
   "os-empregos-mais-blindados-contra-a-ia": {
     "title": "Os empregos mais blindados contra a IA",
-    "publishDate": "2026-07-13"
+    "publishDate": "2026-07-13",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/5b6be3f5-93c5-4826-b9c6-d0e61648d97e/04-d1-2x1.jpg?t=1783905659",
+    "dek": "BB troca menus por conversa no app e WhatsApp | Microsoft troca OpenAI e Anthropic por IA própria"
   },
   "ia-agiu-sozinha-e-hackeou-startup-revela-openai": {
     "title": "IA agiu sozinha e hackeou startup, revela OpenAI",
-    "publishDate": "2026-07-23"
+    "publishDate": "2026-07-23",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c9be6cdc-a174-4b60-ba04-aa57636678b0/04-d1-2x1.jpg?t=1784778418",
+    "dek": "Fundador do Nubank entra para o conselho da OpenAI | AMD fecha acordo bilionário com Anthropic"
   },
   "sabia-4-thinking-brasil-tem-modelo-de-raciocinio": {
-    "title": "Sabiá 4 Thinking: Brasil tem modelo de raciocínio",
-    "publishDate": "2026-06-26"
+    "title": "Sabiá 4 Thinking: Brasil tem modelo de raciocínio",
+    "publishDate": "2026-06-26",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/42179053-0bc4-4ea1-8b20-3a3a996ad79f/04-d1-2x1.jpg?t=1782445397",
+    "dek": "Google lança cadernos de estudo no Gemini | 25 mil contas falsas para espionar o Claude"
   },
   "como-os-brasileiros-veem-a-ia": {
     "title": "Como os brasileiros veem a IA?",
-    "publishDate": "2025-12-08"
+    "publishDate": "2025-12-08",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/1ad45067-2727-4ce7-9b85-919bf3081590/imagem_2025-12-07_205111987.png?t=1765151428",
+    "dek": "Modelos de raciocínio gastam até 100x mais energia | Espaço, o data center final"
   },
   "novo-slackbot-promete-liberar-horas-do-seu-dia": {
     "title": "Novo Slackbot promete liberar horas do seu dia",
-    "publishDate": "2026-01-16"
+    "publishDate": "2026-01-16",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/eb5174c0-ebf9-4b05-87fb-66af3b7e127d/imagem_2026-01-15_174717258.png?t=1768510377",
+    "dek": "Aprenda como melhorar seus prompts sem esforço"
   },
   "meta-ai-deu-acesso-a-contas-do-instagram-a-hackers": {
     "title": "Meta AI deu acesso a contas do Instagram a hackers",
-    "publishDate": "2026-06-02"
+    "publishDate": "2026-06-02",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/07758486-a2bd-43d4-aca2-41ecfcbd523c/img-260602-04-d1-2x1-8ff353aa.jpg?t=1780374972",
+    "dek": "Anthropic protocola IPO confidencial nos EUA | NVIDIA desafia Intel e AMD com o RTX Spark"
   },
   "restricoes-sora-2-hollywood": {
-    "title": "Restrições no Sora 2 após polemica com Hollywood",
-    "publishDate": "2025-10-21"
+    "title": "Restrições no Sora 2 após polemica com Hollywood",
+    "publishDate": "2025-10-21",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/a5b70227-7c52-46d9-9425-bded36da4bfc/image__14_.png?t=1761065253",
+    "dek": "Anthropic lança modelo para pesquisas biomédicas | Senado debate plano nacional de IA"
   },
   "banimento-de-trump-tem-efeito-inverso": {
     "title": "Banimento de Trump tem efeito inverso",
-    "publishDate": "2026-03-02"
+    "publishDate": "2026-03-02",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/488bf790-d6e3-44d9-b847-d49d8b0e1862/260302_cover.jpg?t=1772489379",
+    "dek": "Apagão global atinge o Claude | Jeff Bezos está de volta"
   },
   "tse-avalia-forc-a-tarefa-para-coibir-deepfakes": {
-    "title": "TSE avalia força-tarefa para coibir deepfakes",
-    "publishDate": "2026-02-03"
+    "title": "TSE avalia força-tarefa para coibir deepfakes",
+    "publishDate": "2026-02-03",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/9999265b-846d-49af-8482-16d8a38bbe48/TSE.jpg?t=1770163879",
+    "dek": "Hugo Motta prioriza Marco Legal da IA | OpenAI lança Codex focado em multiagentes"
   },
   "claude-cowork-chega-ao-celular-e-a-web": {
-    "title": "Claude Cowork chega ao celular e à web",
-    "publishDate": "2026-07-08"
+    "title": "Claude Cowork chega ao celular e à web",
+    "publishDate": "2026-07-08",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c2ca207b-06a7-40aa-91c8-4d35d7cf9b26/04-d1-2x1.jpg?t=1783467990",
+    "dek": "DeepSeek planeja chip próprio de IA, diz Reuters | \"Colega de trabalho\" é a metáfora errada"
+  },
+  "gates-propoe-empregos-so-para-humanos": {
+    "title": "Gates propõe empregos só para humanos",
+    "publishDate": "2026-09-01",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c73c2cf3-17a4-449d-95f4-b49402419ee8/04-d1-2x1.jpg?t=1788225336",
+    "dek": "Seu suporte de TI pode sumir como o da Cielo | Grok foi treinado com abuso infantil, diz processo"
   },
   "ia-cria-vi-rus-funcional-em-laborato-rio": {
-    "title": "IA cria vírus funcional em laboratório",
-    "publishDate": "2025-09-25"
+    "title": "IA cria vírus funcional em laboratório",
+    "publishDate": "2025-09-25",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/12d11e1e-75c1-4fbc-b78a-eec60ed360d2/250925_virus.png?t=1758806932",
+    "dek": "ONU lança primeira governança global de IA | Lançada IA para detecção precoce de câncer de mama"
   },
   "google-lanca-trio-gemini-3-6-e-3-5-flash": {
-    "title": "Google lança trio Gemini 3.6 e 3.5 Flash",
-    "publishDate": "2026-07-22"
+    "title": "Google lança trio Gemini 3.6 e 3.5 Flash",
+    "publishDate": "2026-07-22",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/413b0601-a794-43fe-88eb-ffb6a394add5/04-d1-2x1.jpg?t=1781140303",
+    "dek": "Rede de hotéis vende 47% via chatbot no WhatsApp | OpenAI lança ChatGPT para pequenos negócios"
   },
   "milla-jovovich-lan-a-sistema-de-mem-ria-open-source-para-ia": {
-    "title": "Milla Jovovich lança sistema de memória open source para IA",
-    "publishDate": "2026-04-13"
+    "title": "Milla Jovovich lança sistema de memória open source para IA",
+    "publishDate": "2026-04-13",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/ba7626da-0518-4b4c-b2f4-7a8379e57a87/260413_cover.jpg?t=1776048219",
+    "dek": "Loja em SF é gerida por agente sem humano no caixa | Open source chinês bate GPT e Claude em benchmark de código"
   },
   "altman-admite-a-ia-trar-amea-as": {
-    "title": "Altman admite: a IA trará ameaças",
-    "publishDate": "2026-03-26"
+    "title": "Altman admite: a IA trará ameaças",
+    "publishDate": "2026-03-26",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/8df71afe-ab9f-4b90-8d0c-c133f32aa7b3/260326_cove.jpg?t=1774577687",
+    "dek": "Gemini Robotics vai a 20 mil robôs | O benchmark que revela os limites reais da IA"
   },
   "ia-por-tras-de-50-dos-cibercrimes-africanos": {
-    "title": "IA por trás de +50% dos cibercrimes africanos",
-    "publishDate": "2026-08-05"
+    "title": "IA por trás de +50% dos cibercrimes africanos",
+    "publishDate": "2026-08-05",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/2a99c335-d100-4047-b970-62c5d72d50e4/04-d1-2x1.jpg?t=1785881224",
+    "dek": "OpenAI testa anúncios no Brasil | Aeroportos automatizam tarifas com câmeras com IA"
   },
   "varejo-se-torna-dependente-de-ia": {
     "title": "Varejo se torna dependente de IA",
-    "publishDate": "2026-01-14"
+    "publishDate": "2026-01-14",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/20a2d42c-01f0-46e7-8955-092efaf01e20/imagem_2026-01-13_172642267.png?t=1768335941",
+    "dek": "WellHub cria \"personal 24h\" | Nova IA da Anthropic mexe nos seus arquivos sozinha"
   },
   "microsoft-edge-agora-concorre-com-comet-e-atlas": {
     "title": "Microsoft Edge agora concorre com Comet e Atlas",
-    "publishDate": "2025-10-24"
+    "publishDate": "2025-10-24",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/27b3b331-ea39-4f4e-a76e-e0a366cc32d3/251024_edge.jpg?t=1761309884",
+    "dek": "Meta demite 600 funcionários da divisão de IA | Plano Brasileiro de IA prevê investimento de R$ 23 bilhões até 2028"
   },
   "github-copilot-cre-ditos-mensais-acabam-em-horas": {
-    "title": "GitHub Copilot: créditos \"mensais\" acabam em horas",
-    "publishDate": "2026-06-03"
+    "title": "GitHub Copilot: créditos \"mensais\" acabam em horas",
+    "publishDate": "2026-06-03",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/0ab24183-0023-4bda-a648-ef6ae16f2515/cover.jpg?t=1780437431",
+    "dek": "Codex vai além do código e mira trabalho analítico | Trump quer ver modelos antes do lançamento"
   },
   "1-134-funcion-rios-da-ia-pedem-freio-ao-setor": {
-    "title": "1.134 funcionários da IA pedem freio ao setor",
-    "publishDate": "2026-07-29"
+    "title": "1.134 funcionários da IA pedem freio ao setor",
+    "publishDate": "2026-07-29",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/a27c12a9-f985-4c63-ad0b-705fdc3ce549/04-d1-2x1.jpg?t=1785290994",
+    "dek": "Starbucks desliga IA de estoque após falhas | IA do Google já domina 43% das buscas nos EUA"
   },
   "governo-dos-eua-pode-virar-socio-da-openai": {
-    "title": "Governo dos EUA pode virar sócio da OpenAI",
-    "publishDate": "2026-07-03"
+    "title": "Governo dos EUA pode virar sócio da OpenAI",
+    "publishDate": "2026-07-03",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/391cce8e-fd2b-4e32-8aa5-2385fb950349/04-d1-2x1.jpg?t=1783041257",
+    "dek": "Meta Business Agent terá cobrança por uso | Anthropic x Casa Branca: o que está em jogo"
   },
   "o-plano-ousado-por-tra-s-da-nova-fundac-a-o-de-ia": {
-    "title": "O plano ousado por trás da nova fundação de IA",
-    "publishDate": "2025-12-10"
+    "title": "O plano ousado por trás da nova fundação de IA",
+    "publishDate": "2025-12-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f2f193cb-4b11-4077-b574-6ceb4c997661/imagem_2025-12-09_230645837.png?t=1765332652",
+    "dek": "ENEM considera usar IA | Bill Gates Alerta: nem todas sobreviverão"
   },
   "especial-moltbook-a-rede-social-so-de-ias": {
-    "title": "Especial Moltbook: a rede social só de IAs",
-    "publishDate": "2026-02-03"
+    "title": "Especial Moltbook: a rede social só de IAs",
+    "publishDate": "2026-02-03",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c162af0a-6590-401a-abc0-764004828fce/moltbook.jpg?t=1770150037",
+    "dek": "A “revolta das máquinas” que nunca aconteceu | Bug expõe 1,5 milhão de credenciais sensíveis"
   },
   "anthropic-lan-a-sonnet-5": {
-    "title": "Anthropic lança Sonnet 5",
-    "publishDate": "2026-07-01"
+    "title": "Anthropic lança Sonnet 5",
+    "publishDate": "2026-07-01",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/260d5a67-bd1f-454f-9c75-496e28f19099/04-d1-2x1.jpg?t=1782860257",
+    "dek": "Ford recontrata veteranos após falha das ferramentas | Nano Banana 2 Lite: geração de imagem barata"
   },
   "a-pole-mica-em-torno-de-tilly-norwood": {
-    "title": "A polêmica em torno de Tilly Norwood",
-    "publishDate": "2025-10-02"
+    "title": "A polêmica em torno de Tilly Norwood",
+    "publishDate": "2025-10-02",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/b55fb2ec-84c0-428f-a786-acac8f5f456b/251002_tilly.png?t=1759414159",
+    "dek": "Conversas com IA da Meta irão ser usadas para personalizar anúncios | IAs e robôs vão realizar pesquisas de forma autônoma"
   },
   "meta-lucrou-com-anuncios-de-abuso-infantil-por-ia": {
-    "title": "Meta lucrou com anúncios de abuso infantil por IA",
-    "publishDate": "2026-08-07"
+    "title": "Meta lucrou com anúncios de abuso infantil por IA",
+    "publishDate": "2026-08-07",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/0c179341-fb1b-4a2f-8823-2c2f0cea167f/img-260807-04-d1-2x1-fc3cde0f.jpg?t=1786065909",
+    "dek": "ChatGPT libera mensagens ilimitadas no gratuito | O que acontece quando você conversa com uma IA"
   },
   "estudo-revela-falha-em-llms-por-meio-de-poemas": {
     "title": "Estudo revela falha em LLMs por meio de poemas",
-    "publishDate": "2025-11-20"
+    "publishDate": "2025-11-20",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c2b6f500-a4e9-48e3-9a6b-a2437c5f23db/imagem_2025-11-20_194659078.png?t=1763678781",
+    "dek": "Comet chega no Android | xAI faz acordo para levar IA para a Arábia Saudita"
   },
   "openai-vs-anthropic-a-batalha-de-ia-no-super-bowl": {
     "title": "OpenAI vs. Anthropic: a batalha de IA no Super Bowl",
-    "publishDate": "2026-02-10"
+    "publishDate": "2026-02-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/c24e54d1-3150-4e01-842b-b00b06709fc4/260210_cover.jpg?t=1770684058",
+    "dek": "De vibe coding a agentic engineering | Quando a IA é usada como desculpa para cortar empregos"
   },
   "meta-perde-manus-por-ordem-de-pequim": {
     "title": "Meta perde Manus por ordem de Pequim",
-    "publishDate": "2026-04-28"
+    "publishDate": "2026-04-28",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/0d99856c-bf8a-41f6-936b-00454c26c447/04-d1-2x1.jpg?t=1777354671",
+    "dek": "OpenAI encerra exclusividade com Microsoft | J&J reduz preparo de relatório de 700h a 15min"
   },
   "novo-estudo-revela-vulnerabilidade-de-modelos-a-envenenamento-de-dados": {
     "title": "Novo estudo revela vulnerabilidade de modelos a \"Envenenamento de Dados\"",
-    "publishDate": "2025-10-15"
+    "publishDate": "2025-10-15",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/190cc1ee-da54-408f-a171-247fe3c549ea/image__8_.png?t=1760540701",
+    "dek": "Apple anuncia novo chip M5 com desempenho de IA 4x maior | OpenAI flexibiliza restrições para permitir 'erotica' no ChatGPT"
   },
   "anthropic-detalha-impactos-da-ia-no-mercado-de-trabalho": {
     "title": "Anthropic detalha impactos da IA no mercado de trabalho",
-    "publishDate": "2026-03-09"
+    "publishDate": "2026-03-09",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/64dde96e-7aa0-4736-8805-17075f59987e/260309_cover.jpg?t=1773102147",
+    "dek": "OpenAI lança GPT-5.4 | Anthropic processa governo dos EUA"
   },
   "dell-e-openai-levam-codex-a-ambientes-locais": {
     "title": "Dell e OpenAI levam Codex a ambientes locais",
-    "publishDate": "2026-05-19"
+    "publishDate": "2026-05-19",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/837c5f52-7d60-4a10-bded-7abe702d92e8/04-d1-2x1.jpg?t=1779160156",
+    "dek": "NVIDIA apresenta inferência agentic a 1/10 do custo | Altman e Brockman absolvidos em ação movida por Musk"
   },
   "claude-mythos-o-modelo-mais-perigoso-do-mundo": {
     "title": "Claude Mythos: o modelo mais perigoso do mundo",
-    "publishDate": "2026-03-27"
+    "publishDate": "2026-03-27",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/55ccdf83-c9d0-4bf7-bf0d-b41b0091e8c0/260327_cover.jpg?t=1774645711",
+    "dek": "Anthropic vence o Pentágono na Justiça | Em 2030, tokens cairão 90%, mas a conta total subirá"
   },
   "gemini-3-5-flash-agora-controla-seu-computador": {
     "title": "Gemini 3.5 Flash agora controla seu computador",
-    "publishDate": "2026-06-25"
+    "publishDate": "2026-06-25",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/fc6cdf76-1317-4cfe-b7f5-a94b0b2cca17/img-260625-04-d1-2x1-edd53bc6.jpg?t=1782399375",
+    "dek": "Nubank exige \"mentalidade de IA\" para contratar | Manipular IA do tribunal sai caro: R$ 32,8 mil"
   },
   "gemini-chega-ao-chrome-sem-abrir-aba-nova": {
     "title": "Gemini chega ao Chrome sem abrir aba nova",
-    "publishDate": "2026-06-10"
+    "publishDate": "2026-06-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/413b0601-a794-43fe-88eb-ffb6a394add5/04-d1-2x1.jpg?t=1781140303",
+    "dek": "DiffusionGemma gera texto 4x mais rápido | Vale automatiza mineração com 25% de ganho"
   },
   "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-cc179f705a79d": {
-    "title": "Especial: Meta Ray-Ban Display - Óculos com tela e IA",
-    "publishDate": "2025-09-18"
+    "title": "Especial: Meta Ray-Ban Display - Óculos com tela e IA",
+    "publishDate": "2025-09-18",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/eadcd493-fc24-4d58-8217-cf8458a696cf/250918_ray_ban_meta_display.png?t=1758234047"
   },
   "sorteio-de-livro-sobre-ia": {
     "title": "Sorteio de livro sobre IA",
-    "publishDate": "2026-01-18"
+    "publishDate": "2026-01-18",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/publication/thumbnail/b9534d43-9bc1-47cc-bddc-b98d8fa0ddf5/landscape_facebook-cover-1640x624.png",
+    "dek": "Conheça nossa curadoria de livros"
   },
   "anthropic-lanca-fable-5-com-bloqueios-embutidos": {
-    "title": "Anthropic lança Fable 5 com bloqueios embutidos",
-    "publishDate": "2026-06-10"
+    "title": "Anthropic lança Fable 5 com bloqueios embutidos",
+    "publishDate": "2026-06-10",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/43eb9b18-e630-42e2-a53d-57dcadfd3e9f/04-d1-2x1.jpg?t=1781063770",
+    "dek": "OpenAI pede abertura de capital nos EUA | IA estrangeira domina o Brasil, diz Ronaldo Lemos"
   },
   "sp-vai-mapear-surtos-de-dengue-por-bairro": {
     "title": "SP vai mapear surtos de dengue por bairro",
-    "publishDate": "2026-06-16"
+    "publishDate": "2026-06-16",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/7eb5b814-90f9-4da4-a2c1-cd60f3efc85c/img-260616-04-d1-2x1-fee55280.jpg?t=1781586850",
+    "dek": "Google e Monashees criam fundo de IA no Brasil | 6 horas por semana corrigindo erros de ferramentas"
   },
   "90-dos-desenvolvedores-usam-ia-mas-na-o-confiam-totalmente": {
-    "title": "90% dos desenvolvedores usam IA, mas não confiam totalmente",
-    "publishDate": "2025-09-26"
+    "title": "90% dos desenvolvedores usam IA, mas não confiam totalmente",
+    "publishDate": "2025-09-26",
+    "coverImageUrl": "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/0aa9ac51-a640-4927-909a-1419d28496e1/250926_dev.png?t=1758836669",
+    "dek": "Relatório Anthropic aponta adoção desigual de IA | Microsoft integra Claude ao Copilot"
   }
 }

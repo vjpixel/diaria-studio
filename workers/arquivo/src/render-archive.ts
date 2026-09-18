@@ -86,6 +86,14 @@ export interface TitleCacheEntry {
    * novo (ver docstring daquele script), e opcional pra sempre em posts sem
    * thumbnail associada. */
   coverImageUrl?: string;
+  /** "Linha fina" da edição — D2|D3, nunca o D1 (#8345). Mesmo texto que já
+   * vive no `<meta name="dek">` de cada página `/p/*` (`deriveDek`,
+   * `lib/site-archive-pages.ts`) — não é fonte nova, só passa a ser
+   * exibido também na LISTAGEM do arquivo, pra um crawler (ou leitor) que
+   * chega pela home do arquivo ter uma linha de conteúdo por edição em vez
+   * de só data + título. Ausente em ~5/269 edições sem `subtitle`/
+   * `preview_text` — a `<li>` cai pro shape "só título" de sempre. */
+  dek?: string;
 }
 
 export type TitlesCacheMap = Record<string, TitleCacheEntry>;
@@ -138,7 +146,9 @@ function renderArchiveListStyles(): string {
   section li a { display: block; padding: 13px 2px; font-family: ${FONTS.sans}; font-size: 16px;
     line-height: 1.4; color: var(--ink); text-decoration: none; }
   section li a:hover { color: var(--teal); }
-  section li .li-date { color: var(--teal); font-weight: 700; margin-right: 8px; }`;
+  section li .li-date { color: var(--teal); font-weight: 700; margin-right: 8px; }
+  section li .li-dek { display: block; font-family: ${FONTS.serif}; font-size: 13px;
+    font-style: italic; line-height: 1.4; color: var(--ink); opacity: .7; margin-top: 2px; }`;
 }
 
 const MONTH_NAMES_PT = [
@@ -204,6 +214,32 @@ function resolveTitle(loc: string, slug: string, cache: TitlesCacheMap): string 
   return cache[slug]?.title ?? displayTextFromLoc(loc);
 }
 
+/** #8345: dek do cache, casado por slug — `undefined` quando ausente
+ * (título antigo sem `subtitle`/`preview_text`, ou slug fora do cache).
+ * Não há fallback derivado do slug/loc (ao contrário de `resolveTitle`):
+ * "sem dek" é um estado legítimo, não um dado corrompido a reconstruir. */
+function resolveDek(slug: string, cache: TitlesCacheMap): string | undefined {
+  return cache[slug]?.dek;
+}
+
+/** Trunca o dek pro tamanho de exibição na LISTAGEM (não afeta o `<meta
+ * name="dek">` das páginas `/p/*`, que continua sem corte — #6281/#7921).
+ * 270 entradas com dek adicionam ~35 KB de HTML (medido no dataset real,
+ * #8345); a maioria já cabe inteira (mediana 90 chars, máximo 190 chars no
+ * corpus medido em 260918), então o teto só afeta os poucos outliers.
+ * Corta na última palavra completa antes do limite, sempre com reticências
+ * — mesma técnica de `truncateDescription` (`lib/site-archive-pages.ts`),
+ * não importada aqui por rodar em Worker isolado (ver nota do módulo sobre
+ * `slugFromUrl`/fronteira Node vs. Worker bundle). */
+const LISTING_DEK_MAX_LENGTH = 160;
+function truncateListingDek(dek: string): string {
+  if (dek.length <= LISTING_DEK_MAX_LENGTH) return dek;
+  const cut = dek.slice(0, LISTING_DEK_MAX_LENGTH);
+  const lastSpace = cut.lastIndexOf(" ");
+  const safe = (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd();
+  return `${safe}…`;
+}
+
 /** Primeiros 10 caracteres (`YYYY-MM-DD`) de uma data/datetime ISO, ou o
  * texto original (trimado) se não bater o formato — normaliza `lastmod`
  * (que pode vir como `YYYY-MM-DD` ou datetime completo) pra comparação
@@ -252,6 +288,10 @@ export interface GroupedEntry {
   /** Data efetiva `YYYY-MM-DD` — `publishDate` do cache ou `lastmod`
    * normalizado (#4265 item 2). Fonte única de agrupamento/ordenação/exibição. */
   date: string;
+  /** "Linha fina" D2|D3 do cache (#8345) — `undefined` quando a edição não
+   * tem (ver `TitleCacheEntry.dek`). Sem fallback: diferente de `title`,
+   * não há como derivar um dek plausível do slug/loc quando falta. */
+  dek?: string;
 }
 
 /**
@@ -282,6 +322,7 @@ export function resolveEditions(
         slug,
         title: resolveTitle(e.loc, slug, cache),
         date: effectiveDate(slug, e.lastmod as string, cache),
+        dek: resolveDek(slug, cache),
       };
     });
 }
@@ -436,7 +477,14 @@ export function buildArchiveHtml(
       .map((e) => {
         const dm = dayMonthLabel(e.date);
         const datePrefix = dm ? `<span class="li-date">${esc(dm)}</span>` : "";
-        return `      <li><a href="${esc(e.loc)}">${datePrefix}${esc(e.title)}</a></li>`;
+        // #8345: dek opcional abaixo do título, DENTRO do mesmo <a> (área
+        // clicável cobre a linha inteira, não só o título) — mesmo texto do
+        // <meta name="dek"> da página individual, truncado pro tamanho de
+        // listagem.
+        const dekHtml = e.dek
+          ? `<span class="li-dek">${esc(truncateListingDek(e.dek))}</span>`
+          : "";
+        return `      <li><a href="${esc(e.loc)}">${datePrefix}${esc(e.title)}${dekHtml}</a></li>`;
       })
       .join("\n");
     return `    <section id="${esc(key)}">\n      <h2>${esc(monthLabel(key))}</h2>\n      <ul>\n${items}\n      </ul>\n    </section>`;

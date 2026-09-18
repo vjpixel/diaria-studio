@@ -55,6 +55,7 @@ import {
   unixSecondsToBrtDate,
   type PublishDateOverridesResult,
 } from "./lib/beehiiv-publish-date.ts";
+import { deriveDek } from "./lib/site-archive-pages.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
@@ -70,6 +71,11 @@ export interface RawCachedPost {
   slug?: string;
   title?: string;
   subtitle?: string;
+  /** Teaser D2|D3, fallback do `dek` quando `subtitle` está ausente — mesmo
+   * campo que `deriveDek` (`lib/site-archive-pages.ts`) já usa como 2º
+   * candidato pro `<meta name="dek">` das páginas `/p/*` (#7921). Reusado
+   * aqui (#8345) pra alimentar o MESMO `dek` na listagem do arquivo. */
+  preview_text?: string;
   subject?: string;
   web_url?: string;
   publish_date?: number | null;
@@ -116,6 +122,14 @@ export interface ArquivoTitleEntry {
    * tinha thumbnail no momento do sync (nunca bloqueia — og:image vira
    * opcional no Worker consumidor). */
   coverImageUrl?: string;
+  /** "Linha fina" da edição — D2|D3, nunca o D1 (#8345). Mesmo valor que
+   * `deriveDek` (`lib/site-archive-pages.ts`) produz pro `<meta name="dek">`
+   * das páginas `/p/*` — reusado aqui (import direto, não duplicado) pra
+   * alimentar a listagem do arquivo com o MESMO texto. Ausente quando a
+   * edição não tem `subtitle` nem `preview_text` (raro — 5/269 no dataset
+   * medido em 260918); o Worker consumidor trata como "sem dek", nunca
+   * renderiza `undefined`. */
+  dek?: string;
 }
 
 export type TitlesCache = Record<string, ArquivoTitleEntry>;
@@ -205,7 +219,16 @@ export function buildTitlesCache(
     // algum consumidor futuro checar só `!== undefined`).
     const coverImageUrl = post.thumbnail_url ? post.thumbnail_url : undefined;
 
-    cache[slug] = { title, publishDate, ...(coverImageUrl ? { coverImageUrl } : {}) };
+    // #8345: mesma derivação que alimenta <meta name="dek"> nas páginas
+    // /p/* (deriveDek — subtitle, senão preview_text, senão ausente).
+    const dek = deriveDek({ subtitle: post.subtitle, preview_text: post.preview_text });
+
+    cache[slug] = {
+      title,
+      publishDate,
+      ...(coverImageUrl ? { coverImageUrl } : {}),
+      ...(dek ? { dek } : {}),
+    };
   }
 
   return { cache, warnings };
