@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderMarkdown, extractLinks } from "../scripts/refresh-past-editions.ts";
+import { renderMarkdown, extractLinks, isContentLink } from "../scripts/refresh-past-editions.ts";
 import { execFileSync } from "node:child_process";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 import {
@@ -38,20 +38,94 @@ describe("renderMarkdown", () => {
     assert.ok(md.includes("- https://other.com"));
   });
 
-  it("usa links explícitos quando disponíveis (sem extrair do html)", () => {
+  it("une links[] explícitos com links de conteúdo do html (#8298 — união, não precedência)", () => {
+    // #8298: antes o approved.json (links[]) VENCIA e o html era só fallback
+    // quando links[] estava vazio — um link que entrasse na edição por troca
+    // editorial pós-gate (fora do approved.json congelado) nunca chegava ao
+    // MD. Regressão desta issue: html publicado é fonte de verdade, então um
+    // link de conteúdo presente no html mas ausente de links[] TEM que
+    // aparecer na união.
+    const tmpRoot = mkdtempSync(join(tmpdir(), "past-editions-union-"));
     const posts = [
       {
         id: "post2",
         title: "Edição B",
         published_at: "2026-04-26T10:00:00Z",
         links: ["https://forced.com/a", "https://forced.com/b"],
-        html: "<p>https://ignored.com</p>", // ignorado quando links[] presente
+        html: "<p>https://forced.com/a e https://promoted-post-gate.example.com</p>",
       },
     ];
-    const md = renderMarkdown(posts);
+    const md = renderMarkdown(posts, tmpRoot); // root isolado — guard de divergência não deve tocar data/ real
     assert.ok(md.includes("- https://forced.com/a"));
     assert.ok(md.includes("- https://forced.com/b"));
-    assert.ok(!md.includes("https://ignored.com"));
+    assert.ok(
+      md.includes("- https://promoted-post-gate.example.com"),
+      "link de conteúdo presente só no html (troca pós-gate) precisa aparecer na união",
+    );
+  });
+
+  it("filtra boilerplate (rodapé/social/hub/amazon/wa.me/imagem) do lado que vem do html (#8298)", () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "past-editions-boilerplate-"));
+    const posts = [
+      {
+        id: "post2b",
+        title: "Edição B2",
+        published_at: "2026-04-26T10:00:00Z",
+        links: ["https://forced.com/a"],
+        html: [
+          "<p>https://forced.com/a</p>",
+          '<img src="https://cdn.example.com/hero.jpg">', // imagem
+          '<a href="https://wa.me/?text=oi">WhatsApp</a>', // CTA fixo de rodapé
+          '<a href="https://diar.ia.br/hub/anthropic-claude">hub</a>', // hub interno
+          '<a href="https://amzn.to/xyz">Amazon</a>', // afiliado
+          '<a href="https://linkedin.com/company/diar.ia.br">LinkedIn</a>', // canal próprio
+          "<p>https://real-source.example.com/artigo</p>", // conteúdo de verdade
+        ].join("\n"),
+      },
+    ];
+    const md = renderMarkdown(posts, tmpRoot);
+    assert.ok(md.includes("- https://forced.com/a"));
+    assert.ok(md.includes("- https://real-source.example.com/artigo"));
+    assert.ok(!md.includes("hero.jpg"));
+    assert.ok(!md.includes("wa.me"));
+    assert.ok(!md.includes("diar.ia.br/hub"));
+    assert.ok(!md.includes("amzn.to"));
+    assert.ok(!md.includes("linkedin.com/company"));
+  });
+
+  it("guard: loga warning (nunca silêncio) quando html tem link de conteúdo ausente de links[] (#8298)", async () => {
+    const { readFileSync: readFileSyncLocal } = await import("node:fs");
+    const tmpRoot = mkdtempSync(join(tmpdir(), "past-editions-guard-"));
+    const posts = [
+      {
+        id: "post2c",
+        title: "Edição B3",
+        published_at: "2026-04-26T10:00:00Z",
+        links: ["https://forced.com/a"],
+        html: "<p>https://forced.com/a e https://divergente.example.com</p>",
+      },
+    ];
+    renderMarkdown(posts, tmpRoot);
+    const logPath = join(tmpRoot, "data", "run-log.jsonl");
+    assert.ok(existsSync(logPath), "guard deveria ter gravado um warning em run-log.jsonl");
+    const logContent = readFileSyncLocal(logPath, "utf8");
+    assert.ok(logContent.includes("divergente.example.com"));
+    assert.ok(logContent.includes('"level":"warn"'));
+  });
+
+  it("guard NÃO loga quando links[] está vazio (sem baseline pra comparar — edição importada/outra máquina)", () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "past-editions-noguard-"));
+    const posts = [
+      {
+        id: "post2d",
+        title: "Edição B4",
+        published_at: "2026-04-26T10:00:00Z",
+        html: "<p>https://qualquer.example.com</p>", // sem links[] — nada pra comparar
+      },
+    ];
+    renderMarkdown(posts, tmpRoot);
+    const logPath = join(tmpRoot, "data", "run-log.jsonl");
+    assert.ok(!existsSync(logPath), "sem approvedLinks, não há divergência real — não deveria logar");
   });
 
   it("inclui temas se themes[] estiver presente", () => {
@@ -73,6 +147,53 @@ describe("renderMarkdown", () => {
     const md = renderMarkdown([]);
     assert.ok(md.includes("**edições carregadas:** 0"));
     assert.ok(!md.includes("##"));
+  });
+});
+
+describe("isContentLink (#8298)", () => {
+  it("aceita URL de conteúdo comum", () => {
+    assert.ok(isContentLink("https://real-source.example.com/artigo"));
+  });
+
+  it("rejeita URL de imagem mesmo com query string/hash", () => {
+    assert.ok(!isContentLink("https://cdn.example.com/hero.jpg"));
+    assert.ok(!isContentLink("https://cdn.example.com/hero.jpg?w=800"));
+    assert.ok(!isContentLink("https://cdn.example.com/hero.png#top"));
+    assert.ok(!isContentLink("https://cdn.example.com/hero.webp"));
+    assert.ok(!isContentLink("https://cdn.example.com/hero.svg"));
+  });
+
+  it("NÃO rejeita URL de conteúdo cujo path só CONTÉM 'jpg' sem ser extensão", () => {
+    // regressão de falso-positivo: a extensão precisa estar no fim do path
+    // (antes de `?`/`#`/fim de string), não em qualquer lugar da URL.
+    assert.ok(isContentLink("https://example.com/artigo-jpg-no-mercado-de-ia"));
+  });
+
+  it("rejeita domínio de FOOTER_DOMAINS (rodapé/hub/afiliado/canal próprio)", () => {
+    assert.ok(!isContentLink("https://diar.ia.br/hub/anthropic-claude"));
+    assert.ok(!isContentLink("https://wa.me/?text=oi"));
+    assert.ok(!isContentLink("https://amzn.to/xyz"));
+    assert.ok(!isContentLink("https://www.linkedin.com/company/diar.ia.br"));
+    assert.ok(!isContentLink("https://diaria.beehiiv.com/p/edicao"));
+  });
+
+  it("NÃO rejeita host que só contém um FOOTER_DOMAINS como substring de OUTRO domínio", () => {
+    // achado do code-review da PR #8299: FOOTER_DOMAINS casa por `.includes()`,
+    // não por hostname exato — documentando o comportamento atual (conhecido,
+    // aceito) em vez de deixá-lo implícito. `notdiar.ia.br.evil.com` contém a
+    // string "diar.ia.br" mas não é o domínio diar.ia.br — hoje isso EXCLUI
+    // (falso positivo de boilerplate), risco aceito por não haver, na prática,
+    // domínio de conteúdo real que contenha essas substrings.
+    assert.ok(!isContentLink("https://notdiar.ia.br.evil.example.com/artigo"));
+  });
+
+  it("URL malformada não lança — isContentLink é string-check puro (sem new URL()), só a extensão/substring decide", () => {
+    assert.doesNotThrow(() => isContentLink("not a url"));
+    // "not a url" não bate nem IMAGE_EXTENSION_RE nem FOOTER_DOMAINS — passa
+    // como conteúdo. extractLinks() já garante que só URLs http(s) bem
+    // formadas chegam até aqui (via `new URL()` interno), então este caso não
+    // ocorre no fluxo real de renderMarkdown — documentando o contrato.
+    assert.ok(isContentLink("not a url"));
   });
 });
 
