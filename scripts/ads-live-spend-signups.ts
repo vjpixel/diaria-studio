@@ -15,14 +15,17 @@
  * nível de conta, então as 2 campanhas já vêm somadas — ver #8256 pra
  * separação por campanha (fora do escopo desta unidade).
  *
- * Os cadastros do Kit aqui são CONTAGEM BRUTA — `fetchKitSignupsByChannel`
- * (a mesma função que alimenta `/ads`) não exclui os e-mails de teste do
- * próprio editor (endereço contendo o texto `vjpixel` ou `pixel` seguido de
- * `memelab`). A exclusão continua
- * manual, como no SKILL.md local (Passo 2) — o número aqui é o ponto de
- * partida pro agente, não o CAC final. Achado registrado em #8349 (gap
- * genérico de `fetchKitSignupsByChannel`, fora do escopo desta unidade —
- * afeta também o dashboard `/ads`, não só este relatório).
+ * Os cadastros do Kit aqui JÁ EXCLUEM os e-mails de teste do próprio editor
+ * desde o #8349: `fetchKitSignupsByChannel` (a mesma função que alimenta
+ * `/ads`) filtra por `isEditorTestSignupEmail`, que reusa
+ * `isEditorTestEmail`/`EDITOR_TEST_EMAIL_PATTERN` (plus-address
+ * `vjpixel+…@gmail.com`) e `EDITOR_WORKSPACE_EMAIL` (`pixel@memelab.com.br`).
+ * **Não subtraia de novo à mão** — descartar o que o código já tirou conta o
+ * mesmo cadastro duas vezes e infla o CAC, que é o oposto do que a exclusão
+ * pretende. O e-mail simples do editor (sem plus-address) segue fora do filtro
+ * de propósito (#8349). O único caso que ainda pede olho humano é um endereço
+ * de teste que não casa nenhum desses padrões (domínio novo, por exemplo) — aí
+ * o certo é estender o filtro no código, não corrigir só na prosa.
  *
  * ## Workaround de ambiente (Neo)
  *
