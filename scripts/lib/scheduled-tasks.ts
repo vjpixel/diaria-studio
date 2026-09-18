@@ -525,6 +525,21 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         script: "scripts/geo-citation-monitor.ts",
         args: ["--panel", "acervo", "--strict", "--max-monthly-usd", "8"],
       },
+      // #8344: painel novo, cobre as 8 páginas
+      // `especial.diar.ia.br/entidades/{slug}/` (alibaba, amazon, apple,
+      // deepseek, oracle, perplexity, samsung, xai) — a 2ª maior aposta de
+      // conteúdo GEO do projeto depois dos hubs, e que nenhum dos 3 painéis
+      // acima testava (conferido contra as 24 questões de `GEO_QUESTIONS`+
+      // `GEO_HUB_QUESTIONS`+`GEO_ACERVO_QUESTIONS`, #8344). Mesmo
+      // `--max-monthly-usd 8` (mesmo raciocínio do `monitor-acervo` acima —
+      // é POR CHAMADA de `main()`, os 4 passos seguem sob o mesmo teto
+      // real). Custo: 16 consultas × ~US$0,007 Anthropic / ~US$0,002
+      // Google ≈ US$0,11/rodada (ver docstring de `GEO_ENTITY_QUESTIONS`).
+      {
+        key: "monitor-entidades",
+        script: "scripts/geo-citation-monitor.ts",
+        args: ["--panel", "entidades", "--strict", "--max-monthly-usd", "8"],
+      },
     ],
     logPath: "geo-citations/.monitor.log",
     // Domingo 07:00 (mudou de segunda 10:30, decisão do editor 260810 —
@@ -532,7 +547,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // Brevo-Diaria-Evaluate diário (05:30) e antes do Clarice-Sync diário
     // (08:30, roda todo dia incl. domingo) — sem colisão de horário.
     schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 7, minute: 0 },
-    issue: "#4558 Parte C, #4754, #4900",
+    issue: "#4558 Parte C, #4754, #4900, #8344",
   },
   {
     name: "Diaria-Geo-Citation-Staleness-Alarm",

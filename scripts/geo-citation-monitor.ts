@@ -34,12 +34,22 @@
  * esperadas e tratadas fail-soft, não são bug.
  *
  * Uso:
- *   npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--out <path>] [--panel geral|hubs|acervo]
- *     [--max-monthly-usd <n>]
+ *   npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--out <path>] [--panel geral|hubs|acervo|entidades]
+ *     [--max-monthly-usd <n>] [--history-report]
  *
  * `--dry-run`: não faz nenhuma chamada de rede nem escreve o log — só
  * imprime quais providers estão configurados (key presente) e as perguntas
  * que seriam consultadas. Útil pra verificar o mecanismo sem gastar tokens.
+ *
+ * `--history-report` (#8341, itens 1 e 3 da issue): não consulta nenhum
+ * provider (sem custo, sem rede) — lê `history.jsonl` inteiro (ou só o
+ * `--panel` pedido) e imprime, por provider, `citadas/VÁLIDAS` (não a
+ * fração crua sobre o total) com a taxa de erro ao lado, reclassificando
+ * `errorKind` NA LEITURA pra 429 histórico que já era cota/crédito esgotado
+ * mas ficou gravado como `"http"` (pré-#8061) — nunca reescreve o arquivo.
+ * Sai antes de qualquer outra lógica de `main()`, independe de key
+ * configurada. Ver `summarizeHistoryByProviderReclassified`/
+ * `deriveEffectiveErrorKind` em `scripts/lib/geo-citation-monitor.ts`.
  *
  * `--max-monthly-usd` (#4904): teto de gasto mensal, em USD. Antes de
  * disparar a 1ª chamada da rodada, soma `estimatedCostUsd` de todos os
@@ -61,16 +71,19 @@
  * é o painel de cauda longa sobre o conteúdo do acervo de edições
  * (`GEO_ACERVO_QUESTIONS`, cobre `/p/{slug}`) — a superfície que mais
  * recebe fetch de bot (73-122/dia vs 11-17 dos hubs, medição que motivou a
- * issue) e que nenhum dos 2 painéis anteriores testava. **Desde
+ * issue) e que nenhum dos 2 painéis anteriores testava; `entidades` (#8344)
+ * cobre as 8 páginas `especial.diar.ia.br/entidades/{slug}/`
+ * (`GEO_ENTITY_QUESTIONS`), a 2ª maior aposta de conteúdo GEO do projeto
+ * depois dos hubs e que nenhum dos 3 painéis anteriores testava. **Desde
  * 10/08/2026 os painéis `geral`+`hubs` rodam no cron** da task
  * `Diaria-Geo-Citation-Monitor`, como passos independentes — o duplo
  * escritor que segurava a ativação foi fechado (#4806/#4807) e o arquivo de
- * conflito, investigado e removido (#4900 item c); `acervo` entra como um
- * 3º passo independente, mesmo molde (task `Diaria-Geo-Citation-Monitor`,
- * `scripts/lib/scheduled-tasks.ts`). Ver docstring de
- * `GEO_HUB_QUESTIONS`/`GEO_ACERVO_QUESTIONS` pro porquê de cada lista de
- * perguntas NÃO ser derivada automaticamente do respectivo registry de
- * conteúdo.
+ * conflito, investigado e removido (#4900 item c); `acervo` e `entidades`
+ * entram como passos independentes adicionais, mesmo molde (task
+ * `Diaria-Geo-Citation-Monitor`, `scripts/lib/scheduled-tasks.ts`). Ver
+ * docstring de `GEO_HUB_QUESTIONS`/`GEO_ACERVO_QUESTIONS`/`GEO_ENTITY_QUESTIONS`
+ * pro porquê de cada lista de perguntas NÃO ser derivada automaticamente do
+ * respectivo registry de conteúdo.
  *
  * Exit (invocação manual, default): 0 sempre que rodar sem exceção
  * não-tratada (mesmo se todos os providers estiverem sem key — isso é
@@ -102,6 +115,7 @@ import {
   GEO_QUESTIONS,
   GEO_HUB_QUESTIONS,
   GEO_ACERVO_QUESTIONS,
+  GEO_ENTITY_QUESTIONS,
   DEFAULT_GEO_CITATIONS_LOG_PATH,
   appendGeoCitationLog,
   runGeoCitationMonitor,
@@ -110,9 +124,25 @@ import {
   detectProviderDrop,
   detectProviderTotalFailure,
   detectSafeBackupConflictFiles,
+  detectHighErrorRateProviders,
+  errorRatePct,
+  summarizeHistoryByProviderReclassified,
+  GEO_ERROR_RATE_ALARM_THRESHOLD_PCT,
   type GeoQuestionPanel,
 } from "./lib/geo-citation-monitor.ts";
 import type { GeoCitationRecord } from "./lib/geo-citation-monitor.ts";
+
+/** Normaliza `panel` (campo cru, possivelmente ausente/legado/desconhecido)
+ * pro conjunto atual de painéis válidos — mesma regra de leitura repetida
+ * em `readHistoryRecordsForPanel`/`readHistoryRecordsForReport` (#8334,
+ * estendida com `"entidades"` no #8344): qualquer valor fora do conjunto
+ * conhecido (ausente, legado pré-`"hubs"`, ou um painel futuro ainda não
+ * lido por este build) cai em `"geral"` — nunca lança, nunca inventa um
+ * painel novo por engano de leitura. Fonte única pra não deixar as 2+
+ * cópias divergirem quando um painel novo nascer. */
+function normalizeHistoryPanel(rawPanel: unknown): GeoQuestionPanel {
+  return rawPanel === "hubs" || rawPanel === "acervo" || rawPanel === "entidades" ? rawPanel : "geral";
+}
 
 export interface StrictOutcome {
   code: number;
@@ -239,15 +269,14 @@ export function readHistoryRecordsForPanel(
     try {
       const r = JSON.parse(line) as Partial<GeoCitationRecord>;
       if (typeof r.date !== "string" || typeof r.provider !== "string") continue;
-      // #8334: normaliza pros 3 painéis válidos — "hubs"/"acervo" passam
-      // como estão, qualquer outra coisa (ausente, legado, valor
-      // desconhecido futuro) cai em "geral" (mesma regra de leitura do
-      // resto do módulo, ver docstring de `GeoCitationRecord.panel`). Sem
-      // isso, um registro `panel: "acervo"` cairia em "geral" aqui e
-      // contaminaria a detecção de provider-drop/rodada-anterior dos DOIS
+      // #8334/#8344: normaliza pro conjunto de painéis válidos — mesma
+      // regra de leitura do resto do módulo (ver `normalizeHistoryPanel`,
+      // docstring de `GeoCitationRecord.panel`). Sem isso, um registro
+      // `panel: "acervo"`/`"entidades"` cairia em "geral" aqui e
+      // contaminaria a detecção de provider-drop/rodada-anterior dos
       // painéis (#4900 item b depende de comparar só registros do MESMO
       // painel).
-      const recordPanel: GeoQuestionPanel = r.panel === "hubs" || r.panel === "acervo" ? r.panel : "geral";
+      const recordPanel: GeoQuestionPanel = normalizeHistoryPanel(r.panel);
       if (recordPanel !== panel) continue;
       out.push({ date: r.date, provider: r.provider });
     } catch {
@@ -282,6 +311,48 @@ export function readHistoryRecordsForCostGuard(
       const r = JSON.parse(line) as Partial<GeoCitationRecord>;
       if (typeof r.date !== "string") continue;
       out.push({ date: r.date, estimatedCostUsd: typeof r.estimatedCostUsd === "number" ? r.estimatedCostUsd : undefined });
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+/**
+ * Lê `history.jsonl` e devolve os campos que `summarizeHistoryByProviderReclassified`
+ * precisa (#8341) — provider/cited/errorKind/httpStatus/error, opcionalmente
+ * filtrado por painel (`panelFilter` ausente = TODOS os painéis, o default
+ * do `--history-report` do CLI). Mesma disciplina fail-soft de
+ * `readHistoryRecordsForPanel`/`readHistoryRecordsForCostGuard`: arquivo
+ * ausente ou linha corrompida nunca lançam, só são ignorados.
+ */
+export function readHistoryRecordsForReport(
+  historyPath: string,
+  panelFilter?: GeoQuestionPanel,
+): Array<Pick<GeoCitationRecord, "provider" | "cited" | "errorKind" | "httpStatus" | "error">> {
+  if (!existsSync(historyPath)) return [];
+  let raw: string;
+  try {
+    raw = readFileSync(historyPath, "utf8");
+  } catch {
+    return [];
+  }
+  const out: Array<Pick<GeoCitationRecord, "provider" | "cited" | "errorKind" | "httpStatus" | "error">> = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as Partial<GeoCitationRecord>;
+      if (typeof r.provider !== "string") continue;
+      // Mesma normalização de `readHistoryRecordsForPanel` acima.
+      const recordPanel: GeoQuestionPanel = normalizeHistoryPanel(r.panel);
+      if (panelFilter && recordPanel !== panelFilter) continue;
+      out.push({
+        provider: r.provider,
+        cited: Boolean(r.cited),
+        errorKind: r.errorKind,
+        httpStatus: r.httpStatus,
+        error: r.error,
+      });
     } catch {
       continue;
     }
@@ -413,12 +484,18 @@ async function main(): Promise<number> {
   // válido (#4616), mas no caminho agendado exit 0 sem medição é mentira.
   const strict = flags.has("strict");
   const outPath = values["out"] ?? DEFAULT_GEO_CITATIONS_LOG_PATH;
-  // #4900 item a / #8334: painel "geral" (default, GEO_QUESTIONS), "hubs"
-  // (GEO_HUB_QUESTIONS) ou "acervo" (GEO_ACERVO_QUESTIONS) — qualquer outro
-  // valor cai em "geral".
-  const panel: GeoQuestionPanel =
-    values["panel"] === "hubs" ? "hubs" : values["panel"] === "acervo" ? "acervo" : "geral";
-  const questions = panel === "hubs" ? GEO_HUB_QUESTIONS : panel === "acervo" ? GEO_ACERVO_QUESTIONS : GEO_QUESTIONS;
+  // #4900 item a / #8334 / #8344: painel "geral" (default, GEO_QUESTIONS),
+  // "hubs" (GEO_HUB_QUESTIONS), "acervo" (GEO_ACERVO_QUESTIONS) ou
+  // "entidades" (GEO_ENTITY_QUESTIONS) — qualquer outro valor cai em "geral".
+  const panel: GeoQuestionPanel = normalizeHistoryPanel(values["panel"]);
+  const questions =
+    panel === "hubs"
+      ? GEO_HUB_QUESTIONS
+      : panel === "acervo"
+        ? GEO_ACERVO_QUESTIONS
+        : panel === "entidades"
+          ? GEO_ENTITY_QUESTIONS
+          : GEO_QUESTIONS;
   // #4904 item 5: teto de gasto mensal — undefined = sem teto (comportamento
   // inalterado). Validado aqui (não em resolveMonthlyCostGuardOutcome, que é
   // pura e recebe um número já válido ou undefined).
@@ -431,6 +508,38 @@ async function main(): Promise<number> {
       return 2;
     }
     maxMonthlyUsd = n;
+  }
+
+  // #8341 (item 1 e 3 da issue): relatório histórico SOBRE O JÁ MEDIDO,
+  // sem gastar nenhuma chamada de rede nova — lê `history.jsonl` inteiro
+  // (ou só o painel pedido via --panel), reclassifica errorKind na LEITURA
+  // (`deriveEffectiveErrorKind`, nunca reescreve o arquivo) e reporta
+  // sempre citadas/válidas + taxa de erro, nunca a fração crua "citou/total".
+  // Roda ANTES de qualquer outra lógica de main() — não depende de key
+  // configurada nem de --dry-run.
+  if (flags.has("history-report")) {
+    const rawPanel = values["panel"];
+    const panelFilter: GeoQuestionPanel | undefined =
+      rawPanel === "hubs" || rawPanel === "acervo" || rawPanel === "entidades" || rawPanel === "geral" ? rawPanel : undefined;
+    const historyRecords = readHistoryRecordsForReport(outPath, panelFilter);
+    const rows = summarizeHistoryByProviderReclassified(historyRecords);
+    console.log(
+      `[geo-citation-monitor] relatório histórico de ${outPath}` +
+        (panelFilter ? ` (painel "${panelFilter}")` : " (todos os painéis)") +
+        ` — errorKind reclassificado só na LEITURA (#8341), o arquivo nunca é reescrito:`,
+    );
+    if (rows.length === 0) {
+      console.log("  (nenhum registro legível)");
+    }
+    for (const row of rows) {
+      console.log(
+        `  - ${row.provider}: ${row.cited}/${row.valid} citaram (válidas), ${row.validCitationRatePct}% de taxa de citação válida — ` +
+          `${row.total} consultas totais, ${row.errorRatePct}% de erro (${row.errors}` +
+          (row.quotaErrors > 0 ? `, dos quais ${row.quotaErrors} cota/crédito esgotado` : "") +
+          `).`,
+      );
+    }
+    return 0;
   }
 
   const configured = GEO_PROVIDERS.filter((p) => Boolean(process.env[p.envKey]));
@@ -510,11 +619,40 @@ async function main(): Promise<number> {
   appendGeoCitationLog(records, outPath);
 
   const summary = summarizeGeoCitationRecords(records);
+  // #8341 (item 3 da issue): reportar sempre citadas/válidas com a taxa de
+  // erro ao lado — nunca a fração crua "citou/total", que mistura "nunca
+  // citou" com "nunca chegou a ser perguntado de verdade" (erro) no mesmo
+  // número. `validTotal` é o denominador correto pra "quantas vezes este
+  // provider de fato respondeu"; `errorRatePct` (`scripts/lib/geo-citation-monitor.ts`)
+  // é 0 quando `total` é 0, nunca `NaN`.
+  const validTotal = summary.total - summary.errors;
+  const overallErrorRatePct = errorRatePct(summary.total, summary.errors);
   console.log(
-    `[geo-citation-monitor] ${summary.total} consultas, ${summary.cited} citaram diar.ia.br, ${summary.errors} erro(s). Log: ${outPath}`,
+    `[geo-citation-monitor] ${summary.total} consultas (${validTotal} válidas), ${summary.cited} citaram diar.ia.br, ` +
+      `${summary.errors} erro(s) (${overallErrorRatePct}% de taxa de erro). Log: ${outPath}`,
   );
   for (const [providerId, s] of Object.entries(summary.byProvider)) {
-    console.log(`  - ${providerId}: ${s.cited}/${s.total} citaram` + (s.errors > 0 ? `, ${s.errors} erro(s)` : ""));
+    const providerValidTotal = s.total - s.errors;
+    const providerErrorRatePct = errorRatePct(s.total, s.errors);
+    console.log(
+      `  - ${providerId}: ${s.cited}/${providerValidTotal} citaram (válidas)` +
+        (s.errors > 0 ? `, ${providerErrorRatePct}% de taxa de erro (${s.errors}/${s.total})` : ""),
+    );
+  }
+
+  // #8341 (item 4 da issue): alarme de taxa de erro por rodada — a ausência
+  // disto foi o que deixou 2 semanas de crédito OpenAI zerado passarem como
+  // rate-limit saudável (#8061). WARN, nunca muda o exit code (mesmo nível
+  // dos demais avisos desta rodada) — a queda PERMANENTE de cota já reprova
+  // sob --strict via `resolveStrictOutcome` mais abaixo; isto cobre a faixa
+  // intermediária que não chega a 100% de erro mas já é sintoma real.
+  const highErrorRateProviders = detectHighErrorRateProviders(summary.byProvider, GEO_ERROR_RATE_ALARM_THRESHOLD_PCT);
+  if (highErrorRateProviders.length > 0) {
+    console.warn(
+      `[geo-citation-monitor] AVISO: taxa de erro acima de ${GEO_ERROR_RATE_ALARM_THRESHOLD_PCT}% nesta rodada (painel "${panel}"): ` +
+        highErrorRateProviders.map((p) => `${p.provider} ${p.errorRatePct}% (${p.errors}/${p.total})`).join(", ") +
+        ". Rode --history-report pra ver a série completa reclassificada (#8341).",
+    );
   }
 
   // #4904, achado do silent-failure-hunter desta PR: um provider quebrado

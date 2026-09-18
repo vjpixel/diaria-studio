@@ -279,11 +279,25 @@ describe("Diaria-Geo-Citation-Monitor: painel 'acervo' registrado como 3º passo
     assert.ok(step!.args?.includes("--max-monthly-usd"), "mesmo teto de custo dos outros 2 passos");
   });
 
-  it("os 3 painéis ('monitor'/'monitor-hubs'/'monitor-acervo') continuam presentes — nenhum foi substituído", () => {
+  it("os 3 painéis pré-existentes ('monitor'/'monitor-hubs'/'monitor-acervo') continuam presentes — nenhum foi substituído", () => {
     const t = getScheduledTaskByName("Diaria-Geo-Citation-Monitor");
     assert.ok(t);
     const keys = t!.steps.map((s) => s.key);
-    assert.deepEqual(keys, ["monitor", "monitor-hubs", "monitor-acervo"]);
+    assert.deepEqual(keys, ["monitor", "monitor-hubs", "monitor-acervo", "monitor-entidades"]);
+  });
+});
+
+describe("Diaria-Geo-Citation-Monitor: painel 'entidades' registrado como 4º passo (#8344)", () => {
+  it("step 'monitor-entidades' chama geo-citation-monitor.ts com --panel entidades --strict", () => {
+    const t = getScheduledTaskByName("Diaria-Geo-Citation-Monitor");
+    assert.ok(t);
+    const step = t!.steps.find((s) => s.key === "monitor-entidades");
+    assert.ok(step, "step 'monitor-entidades' ausente");
+    assert.equal(step!.script, "scripts/geo-citation-monitor.ts");
+    assert.ok(step!.args?.includes("--panel"));
+    assert.ok(step!.args?.includes("entidades"));
+    assert.ok(step!.args?.includes("--strict"));
+    assert.ok(step!.args?.includes("--max-monthly-usd"), "mesmo teto de custo dos outros 3 passos");
   });
 });
 
