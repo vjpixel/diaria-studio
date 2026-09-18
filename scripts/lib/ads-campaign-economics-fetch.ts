@@ -414,18 +414,18 @@ export interface KitSignupsFetchResult {
  * contar como aquisição paga real? Dois padrões conhecidos, ambos citados
  * na issue — não inventar/ampliar além do que ela documenta:
  *
- * 1. Qualquer plus-address do Gmail pessoal (`vjpixel+utm-microsoft@gmail.com`,
- *    o exemplo concreto citado em #8256) — reusa `isEditorTestEmail` de
+ * 1. Qualquer plus-address do Gmail pessoal do editor (exemplo concreto
+ *    citado em #8256) — reusa `isEditorTestEmail` de
  *    `google-ads-enhanced-conversions.ts` (mesmo padrão já usado pra filtrar
  *    conversões do Google Ads, `EDITOR_TEST_EMAIL_PATTERN`), em vez de
  *    duplicar a regex aqui.
- * 2. `EDITOR_WORKSPACE_EMAIL` (`pixel@memelab.com.br`, caixa Google
- *    Workspace do editor) — literal exato, reusado de `editor-copy.ts` (onde
- *    já existe como seed de QA de colocação) em vez de repeti-lo aqui.
+ * 2. `EDITOR_WORKSPACE_EMAIL` (caixa Google Workspace corporativa do
+ *    editor, `scripts/lib/editor-copy.ts`) — literal exato, reusado de lá
+ *    (onde já existe como seed de QA de colocação) em vez de repeti-lo aqui.
  *
- * Deliberadamente NÃO inclui `EDITOR_COPY_EMAIL` (`vjpixel@gmail.com`, sem
- * `+`) — a issue não cita esse endereço como fonte de contaminação, e
- * incluí-lo seria inventar exclusão sem evidência. @pure
+ * Deliberadamente NÃO inclui `EDITOR_COPY_EMAIL` (Gmail pessoal do editor,
+ * sem plus-address) — a issue não cita esse endereço como fonte de
+ * contaminação, e incluí-lo seria inventar exclusão sem evidência. @pure
  */
 function isEditorTestSignupEmail(email: string): boolean {
   const normalized = email.trim().toLowerCase();
