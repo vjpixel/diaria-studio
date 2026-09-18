@@ -182,4 +182,41 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
     assert.equal(code, 0);
     assert.equal(existsSync(spendPath), false);
   });
+
+  it("linhas sem date_start (schema drift no upstream): já filtradas por fetchMetaAdsChannelMetrics ANTES de chegar aqui — trata como gasto zero, não como defeito", async () => {
+    // `normalizeMetaAdsInsightsRows` (ads-campaign-economics-fetch.ts,
+    // código COMPARTILHADO com o `/ads` ao vivo) já descarta silenciosamente
+    // qualquer linha sem `date_start` reconhecível antes de produzir
+    // `ChannelDailyMetric[]` — o que chega em `runHeadless` já vem filtrado.
+    // Achado do code-review da PR #8304: a checagem de data em
+    // `aggregateMetaAdsChannelMetricsByMonth` nunca dispara por ESTE
+    // caminho (só é exercida diretamente pelos testes puros acima, com
+    // `ChannelDailyMetric[]` sintético malformado). Este teste documenta o
+    // comportamento real end-to-end: 2 linhas SEM date_start viram
+    // `fetchResult.metrics: []`, e o resultado é "sem gasto no período",
+    // igual a uma resposta genuinamente vazia da API.
+    process.env.META_ADS_ACCESS_TOKEN = "tok-fake";
+    const fetchImpl = (async () =>
+      jsonResponse(200, {
+        data: [
+          { spend: "50", clicks: "1", impressions: "10" },
+          { spend: "20", clicks: "1", impressions: "10" },
+        ],
+        paging: {},
+      })) as typeof fetch;
+
+    const logLines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => logLines.push(args.join(" "));
+    let code: number;
+    try {
+      code = await runHeadless(spendPath, fetchImpl);
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.equal(code, 0);
+    assert.equal(existsSync(spendPath), false);
+    assert.match(logLines.join("\n"), /sem gasto no período consultado/);
+  });
 });

@@ -63,7 +63,7 @@ import { fileURLToPath } from "node:url";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { readSpendCsv, formatSpendCsv, type SpendRow } from "./lib/aquisicao-spend.ts";
 import { runMetaAdsIngest } from "./lib/meta-ads-ingest.ts";
-import { mergeSpendRows } from "./lib/spend-ingest.ts";
+import { runSpendIngest, type SpendIngestFetchResult } from "./lib/spend-ingest.ts";
 import { fetchMetaAdsChannelMetrics, metaAdsAuthConfigFromEnv } from "./lib/ads-campaign-economics-fetch.ts";
 import type { ChannelDailyMetric } from "./lib/ads-campaign-economics.ts";
 
@@ -112,7 +112,19 @@ export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=acc
  * bruto), então cada caminho tem seu próprio agregador; o merge final
  * (`mergeSpendRows`) é o único ponto genérico compartilhado pelos dois.
  * Linha sem `date` reconhecível é descartada — nunca contamina a soma como
- * `0` silencioso (mesma disciplina de `aggregateGaqlSpendByMonthWithDiscards`).
+ * `0` silencioso. **Na prática, via `runHeadless` abaixo, essa checagem
+ * nunca dispara:** `fetchMetaAdsChannelMetrics`/`normalizeMetaAdsInsightsRows`
+ * (`ads-campaign-economics-fetch.ts`, código COMPARTILHADO com o `/ads` ao
+ * vivo) já descarta silenciosamente qualquer linha sem `date_start`
+ * reconhecível ANTES de produzir `ChannelDailyMetric[]` — todo item que
+ * chega aqui já passou por aquele mesmo regex. A checagem continua aqui
+ * como defesa de contrato pra quem chamar esta função com outra fonte
+ * (é exercida diretamente pelos testes puros com `ChannelDailyMetric[]`
+ * sintético malformado), não porque o caminho real precise dela hoje.
+ * Discard-visibility no ponto onde ele PODE de fato acontecer (dentro de
+ * `normalizeMetaAdsInsightsRows`, compartilhado por Google/Microsoft/Meta)
+ * é decisão de escopo maior — toca os 3 fetchers do `/ads` ao vivo, fora
+ * desta PR (ver corpo do #8304).
  *
  * **Janela vs. mês truncado (fora de escopo do #8245, latente aqui como no
  * Google — ver comentário da issue #8245 item 3):** `mergeSpendRows` troca a
@@ -165,26 +177,19 @@ function fallback(reason: string): void {
 /**
  * Caminho headless (#8245) — sem `--input`. Com `META_ADS_ACCESS_TOKEN` no
  * ambiente, busca via `fetchMetaAdsChannelMetrics` (reuso do fetch REST do
- * `/ads`, sem reimplementar auth/paginação) e grava em `spend.csv`. Sem o
- * token: `fallback()` com o motivo explícito, exit 0 — mesmo contrato do
- * Google/Microsoft. `fetchImpl` é injetável só pra teste (default `fetch`
- * global), mesmo padrão de `runGoogleAdsIngest(fetch, …)`.
+ * `/ads`, sem reimplementar auth/paginação) e grava em `spend.csv` via
+ * `runSpendIngest`/`mergeSpendRows` (`scripts/lib/spend-ingest.ts`) — o
+ * mesmo núcleo genérico fetch→merge que `google-ads-ingest.ts`/
+ * `microsoft-ads-ingest.ts` já usam, em vez de reimplementar a orquestração
+ * aqui (achado do code-review da PR #8304). Sem o token: `fallback()` com o
+ * motivo explícito, exit 0 — mesmo contrato do Google/Microsoft. `fetchImpl`
+ * é injetável só pra teste (default `fetch` global), mesmo padrão de
+ * `runGoogleAdsIngest(fetch, …)`.
  */
 export async function runHeadless(spendPath: string, fetchImpl: typeof fetch = fetch): Promise<number> {
   const authResult = metaAdsAuthConfigFromEnv();
   if ("missing" in authResult) {
     fallback(`variável(is) de ambiente ausente(s): ${authResult.missing.join(", ")}`);
-    return 0;
-  }
-
-  const fetchResult = await fetchMetaAdsChannelMetrics(fetchImpl, authResult.auth.accessToken);
-  if (fetchResult.error) {
-    fallback(`Graph API (Meta Ads insights) falhou — ${fetchResult.error}`);
-    return 0;
-  }
-  if (fetchResult.metrics.length === 0) {
-    console.log("[meta-ads-ingest-spend] ✔ API respondeu, sem gasto no período consultado.");
-    console.log("  Não é falha: spend.csv fica como está porque não há gasto a registrar.");
     return 0;
   }
 
@@ -195,11 +200,43 @@ export async function runHeadless(spendPath: string, fetchImpl: typeof fetch = f
   if (!existsSync(spendDir)) mkdirSync(spendDir, { recursive: true });
   const existingRows: SpendRow[] = existsSync(spendPath) ? readSpendCsv(spendPath).rows : [];
 
-  const incoming = aggregateMetaAdsChannelMetricsByMonth(fetchResult.metrics, META_ADS_CANAL);
-  const merged = mergeSpendRows(existingRows, incoming);
-  writeFileSync(spendPath, formatSpendCsv(merged), "utf8");
+  // `runSpendIngest` colapsa "fetcher devolveu erro de rede/API" e "fetcher
+  // devolveu rows: [] de propósito (gasto zero real)" no mesmo
+  // `{kind:"fallback"}` (só carrega `reason: string`) — `networkErrorReason`
+  // viaja por fora do closure pra distinguir os dois na hora de escolher o
+  // banner certo, sem recorrer a inspecionar o texto de `result.reason`.
+  let networkErrorReason: string | null = null;
+  let fetchedMetricsCount = 0;
+
+  const fetcher = async (): Promise<SpendIngestFetchResult> => {
+    const fetchResult = await fetchMetaAdsChannelMetrics(fetchImpl, authResult.auth.accessToken);
+    if (fetchResult.error) {
+      networkErrorReason = `Graph API (Meta Ads insights) falhou — ${fetchResult.error}`;
+      return { kind: "error", reason: networkErrorReason };
+    }
+    fetchedMetricsCount = fetchResult.metrics.length;
+    const rows = aggregateMetaAdsChannelMetricsByMonth(fetchResult.metrics, META_ADS_CANAL);
+    return { kind: "ok", rows, fetchedCount: fetchResult.metrics.length };
+  };
+
+  const result = await runSpendIngest({ fetcher, existingRows });
+
+  if (result.kind === "fallback") {
+    if (networkErrorReason !== null) {
+      fallback(result.reason);
+    } else {
+      // A API respondeu com sucesso, só não achou métrica nenhuma no
+      // range — gasto zero real, nunca falha externa; banner de sucesso,
+      // não o warning genérico de fallback.
+      console.log("[meta-ads-ingest-spend] ✔ API respondeu, sem gasto no período consultado.");
+      console.log("  Não é falha: spend.csv fica como está porque não há gasto a registrar.");
+    }
+    return 0;
+  }
+
+  writeFileSync(spendPath, formatSpendCsv(result.rows), "utf8");
   console.log(
-    `[meta-ads-ingest-spend] ✔ ${spendPath} atualizado (${fetchResult.metrics.length} linha(s) diárias da Graph API insights agregadas).`,
+    `[meta-ads-ingest-spend] ✔ ${spendPath} atualizado (${fetchedMetricsCount} linha(s) diárias da Graph API insights agregadas).`,
   );
   return 0;
 }
