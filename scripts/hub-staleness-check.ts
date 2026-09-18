@@ -99,8 +99,7 @@ import {
 import { isMainModule, hasFlag, getArg } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
@@ -298,18 +297,29 @@ async function main(): Promise<void> {
 
   // Alarme — #5123 item 3.
   let nextAlarmState = state.alarm;
-  if (shouldAlarmStaleness(state.alarm, overdue)) {
-    const { subject, body } = buildStalenessAlarmEmail(overdue, thresholdDays, now, issueRefs);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-    // Mesmo racional de hub-drift-check.ts: sem try/catch — se o envio
-    // falhar, o cursor abaixo não avança, então a próxima execução tenta
-    // alarmar de novo em vez de marcar como "já avisado" sem o editor ter
-    // recebido nada.
-    await sendGmailMessage(to, subject, body);
-    console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (${overdue.length} vencida(s)).`);
-    nextAlarmState = advanceStalenessState(computeStalenessFingerprint(overdue), now);
-  } else if (overdue.length > 0) {
-    console.log(`${LOG_PREFIX} ${overdue.length} vencida(s), mas o mesmo conjunto já foi alarmado antes — sem novo e-mail.`);
+  if (overdue.length > 0) {
+    // #7960: `shouldAlarmStaleness(state.alarm, overdue)` gateava por
+    // `computeStalenessFingerprint(overdue) !== state.lastAlarmedFingerprint`
+    // (fingerprint AGREGADO do conjunto vencido) — `"dedupe-new-occurrences-only"`
+    // sobre TODOS os outcomes desta rodada reproduz a idempotência: só
+    // reenvia quando ao menos 1 hub vencido é genuinamente NOVO (issue
+    // `created`/`reopened`).
+    const result = await notifyEditorForOutcomes(
+      findingOutcomes,
+      "acao",
+      () => buildStalenessAlarmEmail(overdue, thresholdDays, now, issueRefs),
+      { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
+    );
+    if (result.qualifying.length > 0) {
+      nextAlarmState = advanceStalenessState(computeStalenessFingerprint(overdue), now);
+      if (result.emailSent) {
+        console.log(`${LOG_PREFIX} e-mail de alarme enviado (${overdue.length} vencida(s)).`);
+      } else {
+        console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
+      }
+    } else {
+      console.log(`${LOG_PREFIX} ${overdue.length} vencida(s), mas política '${result.emailPolicy}': sem novo e-mail.`);
+    }
   } else {
     console.log(`${LOG_PREFIX} nenhuma entrada vencida — sem alarme.`);
     nextAlarmState = advanceStalenessState(null, now);

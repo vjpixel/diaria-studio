@@ -77,8 +77,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getKitActiveSummary, getSubscriptionAsOf } from "./lib/diaria-subscribers-db.ts";
 import { summarizeStoreLeitoresCanonicalDedup, LEITOR_DIARIA_PLATFORMS, type StoreLeitorSummary } from "./lib/leitor-store.ts";
 import { CROSS_PLATFORM_FLOOR_NOTE, detectSamePlatformDuplicateIdentities } from "./lib/diaria-subscribers-identity-resolve.ts";
@@ -784,18 +783,35 @@ async function main(): Promise<void> {
     return;
   }
 
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  const subject = `[diar.ia.br] Diaria-Metrics-Health-Alarm — ${findings.length} achado(s)`;
-  const body = [
-    `Janela avaliada: ${dias[0]}..${dias[dias.length - 1]} (${dias.length} dias, hoje=${hoje} BRT)`,
-    "",
-    ...findings.map((f) => `- [${f.sinal}] ${f.metrica_id}: ${f.motivo}`),
-    "",
-    "Issues:",
-    ...issueRefs.map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`)),
-  ].join("\n");
-  await sendGmailMessage(to, subject, body);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+  // #7960: sem gate de dedup PRÓPRIO por conteúdo (o script sempre e-mailiava
+  // toda execução com `findings.length > 0`, mesmo achado repetindo dia após
+  // dia) — `legacyResendIntent` default (`"resend-every-run"`) preserva
+  // exatamente esse comportamento: 1 e-mail combinado sempre que houver
+  // achado, independente do outcome (`created`/`reused`/`reopened`) de cada
+  // issue individual.
+  const result = await notifyEditorForOutcomes(
+    findingOutcomes,
+    "acao",
+    () => ({
+      subject: `[diar.ia.br] Diaria-Metrics-Health-Alarm — ${findings.length} achado(s)`,
+      body: [
+        `Janela avaliada: ${dias[0]}..${dias[dias.length - 1]} (${dias.length} dias, hoje=${hoje} BRT)`,
+        "",
+        ...findings.map((f) => `- [${f.sinal}] ${f.metrica_id}: ${f.motivo}`),
+        "",
+        "Issues:",
+        ...issueRefs.map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`)),
+      ].join("\n"),
+    }),
+    { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride },
+  );
+  if (result.qualifying.length === 0) {
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
+  } else if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
+  }
 }
 
 /** `AAAA-MM-DD` + delta dias (pode ser negativo) — mesma implementação de

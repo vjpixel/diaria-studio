@@ -53,13 +53,12 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { parseSystemctlIsActiveOutput, type OnedriveServiceState } from "./lib/onedrive-sync-alarm.ts";
 import { ALARM_ACTION_LABEL } from "./lib/alarm-issues.ts";
 import {
   recordStudioHttpCheck,
-  shouldSendStudioLivenessAlarm,
   markStudioLivenessAlarmed,
   emptyStudioLivenessAlarmState,
   buildStudioLivenessAlarmEmail,
@@ -75,6 +74,7 @@ import {
   saveAlarmIssuesState,
   saveState,
   type AlarmFinding,
+  type AlarmFindingOutcome,
   type AlarmIssuesState,
   type AlarmIssueResult,
 } from "./lib/alarm-issues.ts";
@@ -240,6 +240,7 @@ async function main(): Promise<void> {
   const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict) ? [toAlarmFinding(evaluation)] : [];
   const alarmState = loadAlarmIssuesState();
   const issueRefs: AlarmIssueResult[] = [];
+  let allFindingOutcomes: AlarmFindingOutcome[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -253,6 +254,7 @@ async function main(): Promise<void> {
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
     saveAlarmIssuesState(nextAlarmState, ALARM_ISSUES_STATE_PATH);
+    allFindingOutcomes = findingOutcomes;
     for (const outcome of findingOutcomes) {
       const ref: AlarmIssueResult = {
         issueNumber: outcome.issueNumber,
@@ -269,32 +271,48 @@ async function main(): Promise<void> {
     }
   }
 
-  if (!shouldSendStudioLivenessAlarm(evaluation, state)) {
-    if (!isDryRun) saveState(nextState, STATE_PATH);
+  // #7960: `shouldSendStudioLivenessAlarm(evaluation, state)` gateava por
+  // streak PRÓPRIO (`alarmedThisStreak`/`lastAlarmedAt`, reset quando o
+  // streak zera) — o fingerprint do finding É CONSTANTE ("unreachable"),
+  // então a issue fica "reused" enquanto o streak persistir e só vira
+  // "created"/"reopened" no INÍCIO de um streak novo (issue fechada após
+  // `CLOSE_ALARM_ISSUE_AFTER_RUNS` checks limpos) — `"dedupe-new-occurrences-only"`
+  // reproduz a MESMA idempotência via o outcome da issue.
+  if (isDryRun) {
+    const issueLines = issueRefs.length
+      ? "\n\nIssues:\n" + issueRefs.map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`)).join("\n")
+      : "";
+    const { subject, body } = buildStudioLivenessAlarmEmail(evaluation, issueLines);
+    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH)}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
+    return;
+  }
+  const notifyResult = await notifyEditorForOutcomes(
+    allFindingOutcomes,
+    "acao",
+    (qualifying) => {
+      const issueLines = qualifying.length
+        ? "\n\nIssues:\n" + qualifying.map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`)).join("\n")
+        : "";
+      return buildStudioLivenessAlarmEmail(evaluation, issueLines);
+    },
+    { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
+  );
+  if (notifyResult.qualifying.length === 0) {
     console.log(
       isAlarmingVerdict(evaluation.verdict)
         ? `${LOG_PREFIX} já alarmado pro mesmo streak de falhas — não reenvia.`
         : `${LOG_PREFIX} check ${checkResult === "ok" ? "ok" : "degradado mas abaixo do limiar"} — nenhum alarme necessário.`,
     );
+    saveState(nextState, STATE_PATH);
     return;
   }
-
-  const issueLines = issueRefs.length
-    ? "\n\nIssues:\n" +
-      issueRefs
-        .map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`))
-        .join("\n")
-    : "";
-  const { subject, body } = buildStudioLivenessAlarmEmail(evaluation, issueLines);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
-    return;
+  if (notifyResult.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${notifyResult.emailError}`);
   }
-  await sendGmailMessage(to, subject, body);
   saveState(markStudioLivenessAlarmed(nextState), STATE_PATH);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
 }
 
 if (isMainModule(import.meta.url)) {

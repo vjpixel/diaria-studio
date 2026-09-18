@@ -55,59 +55,53 @@ const ALLOWLIST: string[] = [
   "scripts/ads-kill-switch-alarm.ts",
   "scripts/ads-test-watch.ts",
 
-  // #7960 (residual da #7965 — "REFS #7960, NÃO CLOSES"): os scripts
-  // abaixo usam `planAlarmReconciliation`/`applyAlarmReconciliation`
-  // (`scripts/lib/alarm-issues.ts`), não `ensureAlarmIssue` direto como os
-  // 12 já migrados nas PRs #7965/#7973 — chamar `notifyEditor()` neles
-  // chamaria `ensureAlarmIssue` UMA 2ª VEZ pro mesmo achado (a reconciliação
-  // já rodou antes, com seu próprio state file de idempotência), o que pode
-  // reabrir uma issue que a reconciliação acabou de FECHAR (finding
-  // resolvido) ou disputar o mesmo fingerprint com resultado divergente —
-  // não é um risco teórico, é o comportamento literal de chamar
-  // `ensureAlarmIssue` 2x pro mesmo achado na mesma execução.
+  // #7960: os scripts abaixo usam `planAlarmReconciliation`/
+  // `applyAlarmReconciliation` (`scripts/lib/alarm-issues.ts`), não
+  // `ensureAlarmIssue` direto como os já migrados nas PRs #7965/#7973/#8251/
+  // #8285 — chamar `notifyEditor()` neles chamaria `ensureAlarmIssue` UMA 2ª
+  // VEZ pro mesmo achado, o que pode reabrir uma issue que a reconciliação
+  // acabou de FECHAR ou disputar o mesmo fingerprint com resultado
+  // divergente. Abordagem correta (piloto #linkedin-weekly-staleness-alarm.ts/
+  // meta-capi-staleness-alarm.ts, generalizada nas fatias 3/4): manter
+  // `applyAlarmReconciliation` INTOCADO e decidir só o E-MAIL a partir do
+  // `AlarmFindingOutcome[]` via `notifyEditorForOutcomes(outcomes, severity,
+  // buildMessage, deps)` (`scripts/lib/editor-notify.ts`).
   //
-  // Abordagem correta (#7960, PILOTO implementado + generalizado em
-  // `linkedin-weekly-staleness-alarm.ts`/`meta-capi-staleness-alarm.ts` —
-  // ambos SAÍRAM desta allowlist, usar como referência de diff pros
-  // restantes): manter `applyAlarmReconciliation` INTOCADO (issue continua
-  // exatamente como está) e decidir só o E-MAIL a partir do
-  // `AlarmFindingOutcome[]` que ele já devolve em `findingOutcomes` — via
-  // `notifyEditorForOutcomes(outcomes, severity, buildMessage, deps)`
-  // (`scripts/lib/editor-notify.ts`, envolve `shouldEmailForIssueOutcome`
-  // + `sendPushNotification` num helper pronto pra reusar) em vez de
-  // `shouldEmailForIssueOutcome` cru. Isso NÃO duplica `ensureAlarmIssue` e
-  // preserva a política de severidade/`email_policy` do #7957 sem
-  // recalcular a issue.
+  // 4ª fatia (#8295+, este PR): mais 13 migrados. `legacyResendIntent`
+  // decidido lendo o gate de e-mail antigo de CADA script (nunca por padrão
+  // de nome — mesmo critério das fatias anteriores):
+  //   - `"dedupe-new-occurrences-only"` (11 — gate próprio era um fingerprint
+  //     AGREGADO comparado contra `state.lastAlarmedFingerprint`; o outcome
+  //     da issue reproduz a mesma idempotência): `apoios-diff-alarm.ts`,
+  //     `clarice-postmaster-alarm.ts` (2 achados independentes no mesmo
+  //     arquivo, ambos fingerprint CONSTANTE — dedup por streak, não por
+  //     conteúdo), `dmarc-drain.ts` (já filtrava `created`/`reopened` antes
+  //     da migração — swap 1:1), `geo-citation-staleness-alarm.ts` (2
+  //     achados), `home-meta-check.ts`, `hub-drift-check.ts`,
+  //     `hub-staleness-check.ts`, `kit-doi-orphan-guard.ts`,
+  //     `robots-txt-drift-check.ts`, `studio-liveness-alarm.ts` (fingerprint
+  //     CONSTANTE "unreachable" — dedup por streak, mesmo caso de
+  //     clarice-postmaster-alarm.ts), `subscribe-redirect-drift-check.ts`.
+  //   - default `"resend-every-run"` (2 — sem gate de dedup PRÓPRIO nenhum;
+  //     o script sempre e-mailiava toda execução com achado presente, então
+  //     o default já reproduz o comportamento literal):
+  //     `check-metrics-health.ts`, `clarice-guardrail-alarm.ts` (idempotência
+  //     real aqui é `markEvaluated` — campanha nunca reavaliada, então o
+  //     e-mail já sai no máximo 1x na vida por campanha independente do
+  //     `legacyResendIntent` escolhido).
   //
-  // O que falta conferir pra fazer isso com segurança, script a script (por
-  // isso os demais ficaram de fora desta unidade): cada um dos restantes
-  // hoje decide o e-mail por uma idempotência PRÓPRIA (arquivo de estado
-  // dedicado, ex: `data/hub-drift-check/state.json`), independente da
-  // idempotência da issue — nem sempre "e-mail só quando a issue é criada"
-  // é uma troca neutra. `on-hold-vencimento-alarm.ts`/
-  // `route-marker-staleness-alarm.ts` (já migrados, fora desta lista)
-  // documentaram um caso real de reenvio PERIÓDICO intencional que só
-  // funcionou trocando o fingerprint pra derivar do conteúdo — a mesma
-  // armadilha pode existir aqui e exige conferir a intenção de cada
-  // script, não um `sed` em massa. O piloto migrado (staleness simples, 1
-  // achado por execução, sem reenvio periódico intencional) NÃO cobriu
-  // essa armadilha — quem pegar um script com reenvio periódico precisa
-  // ler o tratamento de `on-hold-vencimento-alarm.ts` primeiro.
-  "scripts/apoios-diff-alarm.ts",
-  "scripts/check-metrics-health.ts",
-  "scripts/clarice-guardrail-alarm.ts",
-  "scripts/clarice-postmaster-alarm.ts",
-  "scripts/dmarc-drain.ts",
-  "scripts/geo-citation-staleness-alarm.ts",
-  "scripts/home-meta-check.ts",
-  "scripts/hub-drift-check.ts",
-  "scripts/hub-staleness-check.ts",
-  "scripts/kit-doi-orphan-guard.ts",
-  "scripts/robots-txt-drift-check.ts",
-  "scripts/studio-liveness-alarm.ts",
-  "scripts/subscribe-redirect-drift-check.ts",
+  // Ficam 3, cada um com motivo PRÓPRIO pra não entrar nesta fatia:
   "scripts/systemd-failed-units-alarm.ts",
   "scripts/task-never-armed-alarm.ts",
+  // `worker-drift-check.ts`: tem 2 fluxos de e-mail distintos no mesmo
+  // arquivo — o alarme de drift (issue-based, migraria como os 13 acima)
+  // E o alarme de falha SUSTENTADA da API Cloudflare (`shouldAlarmApiError`),
+  // que NUNCA passa por `ensureAlarmIssue`/`applyAlarmReconciliation` (sem
+  // AlarmFinding, sem issue) — não há outcome pra alimentar
+  // `notifyEditorForOutcomes`. Migrar exigiria decidir se esse 2º alarme
+  // passa a abrir issue própria (mudança de comportamento além do escopo
+  // desta fatia) ou ganha um caminho de e-mail direto fora do portão —
+  // decisão que merece unidade dedicada, não um encaixe forçado aqui.
   "scripts/worker-drift-check.ts",
 
   // #7960 (item 4 da #7957): implementação de baixo nível de

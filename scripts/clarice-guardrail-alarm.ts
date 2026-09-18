@@ -43,8 +43,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoGet, assertCampaignQuotaHeadroom, BrevoCampaignQuotaLowError } from "./lib/brevo-client.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { isExitCodeArmedForUnit } from "./lib/systemd-unit-exit-guard.ts";
 import {
   evaluateSendGuardrails,
@@ -62,6 +61,7 @@ import {
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   type AlarmFinding,
+  type AlarmFindingOutcome,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
 
@@ -382,6 +382,7 @@ async function main(): Promise<void> {
   const alarmFindings: AlarmFinding[] = breached.map(({ item, guardrail }) => toAlarmFinding(item, guardrail));
   const alarmState = loadAlarmIssuesState();
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
+  let allFindingOutcomes: AlarmFindingOutcome[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -395,6 +396,7 @@ async function main(): Promise<void> {
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
     saveAlarmIssuesState(nextAlarmIssuesState);
+    allFindingOutcomes = findingOutcomes;
     issueRefs = new Map(
       findingOutcomes.map((o) => [o.fingerprint, { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error }]),
     );
@@ -411,13 +413,29 @@ async function main(): Promise<void> {
   for (const { item, guardrail } of evaluations) {
     if (guardrail.anyBreach) {
       const issueRef = issueRefs?.get(`campaign-${item.id}`);
-      const { subject, body } = buildGuardrailAlarmEmail(item.name, guardrail, nextScheduled, now, undefined, issueRef);
-      const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
       if (isDryRun) {
-        console.log(`[clarice-guardrail-alarm] --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+        const { subject, body } = buildGuardrailAlarmEmail(item.name, guardrail, nextScheduled, now, undefined, issueRef);
+        console.log(`[clarice-guardrail-alarm] --dry-run: enviaria e-mail:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
       } else {
-        await sendGmailMessage(to, subject, body);
-        console.log(`[clarice-guardrail-alarm] e-mail de alarme enviado pra ${to} (campanha "${item.name}").`);
+        // #7960: mesma idempotência de antes — cada campanha só é AVALIADA
+        // 1 vez na vida (`markEvaluated`, estado abaixo), então o outcome
+        // pra essa campanha é sempre "created" nesta 1ª (e única) avaliação;
+        // `legacyResendIntent` default ("resend-every-run") preserva o
+        // comportamento literal (1 e-mail por campanha com breach).
+        const outcome = allFindingOutcomes.find((o) => o.fingerprint === `campaign-${item.id}`);
+        const result = await notifyEditorForOutcomes(
+          outcome ? [outcome] : [],
+          "acao",
+          () => buildGuardrailAlarmEmail(item.name, guardrail, nextScheduled, now, undefined, issueRef),
+          { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride },
+        );
+        if (result.qualifying.length === 0) {
+          console.log(`[clarice-guardrail-alarm] política '${result.emailPolicy}': nenhum e-mail necessário (campanha "${item.name}").`);
+        } else if (result.emailSent) {
+          console.log(`[clarice-guardrail-alarm] e-mail de alarme enviado (campanha "${item.name}").`);
+        } else {
+          console.error(`[clarice-guardrail-alarm] falha ao enviar e-mail (campanha "${item.name}"): ${result.emailError}`);
+        }
       }
     }
 

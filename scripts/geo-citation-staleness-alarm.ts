@@ -38,8 +38,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   DEFAULT_GEO_CITATIONS_LOG_PATH,
   GEO_PROVIDERS,
@@ -52,10 +51,8 @@ import {
   computeMultiPanelStaleness,
   fingerprintFor,
   advanceState,
-  shouldAlarm,
   buildGeoCitationStalenessAlarmEmail,
   computeMultiPanelMissingProviders,
-  shouldAlarmMissingProviders,
   buildMissingProviderAlarmEmail,
   type GeoCitationStalenessAlarmState,
 } from "./lib/geo-citation-staleness-alarm.ts";
@@ -66,6 +63,7 @@ import {
   saveAlarmIssuesState,
   saveState,
   type AlarmFinding,
+  type AlarmFindingOutcome,
   type AlarmIssuesState,
   type AlarmIssueResult,
 } from "./lib/alarm-issues.ts";
@@ -346,6 +344,7 @@ async function main(): Promise<void> {
   ];
   const alarmState = loadAlarmIssuesState();
   let issueRefs: Map<string, AlarmIssueResult> | undefined;
+  let allFindingOutcomes: AlarmFindingOutcome[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -359,6 +358,7 @@ async function main(): Promise<void> {
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+    allFindingOutcomes = findingOutcomes;
     issueRefs = new Map(
       findingOutcomes.map((o) => [
         o.check,
@@ -374,38 +374,66 @@ async function main(): Promise<void> {
     }
   }
 
-  if (shouldAlarm(state, check, fingerprint)) {
+  // #7960: `shouldAlarm(state, check, fingerprint)`/`shouldAlarmMissingProviders(...)`
+  // gateavam por `fingerprint !== state.lastAlarmedFingerprint` (`fingerprint`
+  // aqui é `agg.fingerprint`, o MESMO usado no `AlarmFinding` acima) —
+  // `"dedupe-new-occurrences-only"` reproduz a mesma idempotência via o
+  // outcome da issue (só reenvia quando o achado muda de conteúdo/reabre).
+  if (check.isStale) {
+    const outcome = allFindingOutcomes.find((o) => o.check === "geo-citation-staleness");
     const worst = agg.stalePanels[0];
-    const { subject, body } = buildGeoCitationStalenessAlarmEmail(
-      worst.latestRecordTs,
-      worst.check.staleDays,
-      agg.stalePanels.map((p) => p.panel).join(", "),
-      issueRefs?.get("geo-citation-staleness"),
-    );
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+      const { subject, body } = buildGeoCitationStalenessAlarmEmail(
+        worst.latestRecordTs,
+        worst.check.staleDays,
+        agg.stalePanels.map((p) => p.panel).join(", "),
+        issueRefs?.get("geo-citation-staleness"),
+      );
+      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+      const result = await notifyEditorForOutcomes(
+        outcome ? [outcome] : [],
+        "acao",
+        () =>
+          buildGeoCitationStalenessAlarmEmail(
+            worst.latestRecordTs,
+            worst.check.staleDays,
+            agg.stalePanels.map((p) => p.panel).join(", "),
+            issueRefs?.get("geo-citation-staleness"),
+          ),
+        { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
+      );
+      if (result.qualifying.length === 0) {
+        console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário (staleness).`);
+      } else if (result.emailSent) {
+        console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+      } else {
+        console.error(`${LOG_PREFIX} falha ao enviar e-mail (staleness): ${result.emailError}`);
+      }
     }
   } else {
-    console.log(`${LOG_PREFIX} nenhum e-mail necessário (não stale, ou esta staleness já foi alarmada antes).`);
+    console.log(`${LOG_PREFIX} nenhum e-mail necessário (não stale).`);
   }
 
-  if (shouldAlarmMissingProviders(state, missingCheck, missingCheck.fingerprint)) {
-    const { subject, body } = buildMissingProviderAlarmEmail(
-      missingCheck.panelsWithMissing,
-      issueRefs?.get("geo-citation-missing-provider"),
-    );
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+  if (missingCheck.hasMissing) {
+    const outcome = allFindingOutcomes.find((o) => o.check === "geo-citation-missing-provider");
     if (isDryRun) {
-      console.log(
-        `${LOG_PREFIX} --dry-run: enviaria e-mail (provider ausente) pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`,
-      );
+      const { subject, body } = buildMissingProviderAlarmEmail(missingCheck.panelsWithMissing, issueRefs?.get("geo-citation-missing-provider"));
+      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail (provider ausente):\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme (provider ausente) enviado pra ${to}.`);
+      const result = await notifyEditorForOutcomes(
+        outcome ? [outcome] : [],
+        "acao",
+        () => buildMissingProviderAlarmEmail(missingCheck.panelsWithMissing, issueRefs?.get("geo-citation-missing-provider")),
+        { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
+      );
+      if (result.qualifying.length === 0) {
+        console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail de provider ausente necessário.`);
+      } else if (result.emailSent) {
+        console.log(`${LOG_PREFIX} e-mail de alarme (provider ausente) enviado.`);
+      } else {
+        console.error(`${LOG_PREFIX} falha ao enviar e-mail (provider ausente): ${result.emailError}`);
+      }
     }
   } else {
     console.log(`${LOG_PREFIX} nenhum e-mail de provider ausente necessário.`);
