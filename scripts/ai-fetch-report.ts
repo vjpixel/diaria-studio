@@ -52,8 +52,8 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { getTextFromWorkerKV } from "./lib/cloudflare-kv-upload.ts";
-import { appendFileWithRetry } from "./lib/source-runs.ts";
-import { mkdirSync } from "node:fs";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   AI_FETCH_BOTS,
@@ -201,24 +201,60 @@ export async function fetchAiFetchCountersForDate(
   };
 }
 
-/** Anexa os registros ao log JSONL — mesmo padrão de
- * `appendGeoCitationLog` (`scripts/lib/geo-citation-monitor.ts`). Cria o
- * diretório se não existir. `ioFns` injetável em teste. */
+/**
+ * Anexa os registros ao log JSONL — **idempotente por `date`** (#8340): a
+ * task diária roda com `--days 2` de propósito (overlap de 1 dia cobre
+ * virada de fuso e execução perdida sem furo na série), então o MESMO dia é
+ * relido em execuções consecutivas. Um append cego duplicaria essa data a
+ * cada rodada; em vez disso, qualquer linha existente cuja `date` bate com
+ * uma das `records` desta chamada é descartada antes de escrever — o
+ * registro mais recente (desta chamada) sempre vence. Linha corrompida
+ * (JSON inválido, sem `date`) é preservada como está — nunca perdida por um
+ * parse que falhou.
+ *
+ * Implementação: lê o arquivo inteiro (se existir), filtra, e reescreve via
+ * `writeFileAtomic` (tmp + fsync + rename, com retry em EPERM/OneDrive —
+ * mesma robustez do antigo `appendFileWithRetry`, mas cobrindo também a
+ * reescrita do conteúdo pré-existente). O arquivo é pequeno (~330 bytes/
+ * registro/ano, ver docstring do módulo) — ler tudo em memória é barato.
+ *
+ * `ioFns` injetável em teste. Cria o diretório se não existir.
+ */
 export function appendAiFetchLog(
   records: AiFetchDailyRecord[],
   logPath: string = DEFAULT_AI_FETCH_LOG_PATH,
   ioFns: {
     mkdirSync: (path: string, opts: { recursive: true }) => void;
-    appendFileSync: (path: string, data: string) => void;
+    readFileIfExists: (path: string) => string | null;
+    writeFileSync: (path: string, data: string) => void;
   } = {
     mkdirSync: (p, o) => mkdirSync(p, o),
-    appendFileSync: (p, d) => appendFileWithRetry(p, d),
+    readFileIfExists: (p) => (existsSync(p) ? readFileSync(p, "utf8") : null),
+    writeFileSync: (p, d) => writeFileAtomic(p, d),
   },
 ): void {
   if (records.length === 0) return;
   ioFns.mkdirSync(dirname(logPath), { recursive: true });
-  const lines = records.map((r) => JSON.stringify(r) + "\n").join("");
-  ioFns.appendFileSync(logPath, lines);
+
+  const newDates = new Set(records.map((r) => r.date));
+  const keptLines: string[] = [];
+  const existing = ioFns.readFileIfExists(logPath);
+  if (existing) {
+    for (const rawLine of existing.split("\n")) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      try {
+        const parsed = JSON.parse(line) as { date?: unknown };
+        if (typeof parsed.date === "string" && newDates.has(parsed.date)) continue; // substituído pelo registro novo
+      } catch {
+        // linha corrompida — preserva sem tentar interpretar
+      }
+      keptLines.push(line);
+    }
+  }
+  const newLines = records.map((r) => JSON.stringify(r));
+  const content = [...keptLines, ...newLines].map((l) => l + "\n").join("");
+  ioFns.writeFileSync(logPath, content);
 }
 
 async function main(): Promise<number> {
