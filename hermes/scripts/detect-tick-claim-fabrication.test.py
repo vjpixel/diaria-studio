@@ -101,6 +101,66 @@ def _open_issues_file(td: Path, count: int) -> Path:
     return p
 
 
+# ------------------------------------------------------------------
+# 13. Regressão #8377 (2026-09-18) — falso positivo de fabricação
+# pelo detector quando a linha de relatório mescla: (a) claim de outro
+# ator ("reivindicada pelo Overnight"), (b) PR #NNNN (não issue),
+# (c) cobertura (#7807 coberto por #7808) e (d) claim próprio
+# ("reivindicada #8356 pelo mesmo tick" — deve ser reconhecido como
+# próprio, NÃO excluído pelo filtro de "outro ator"). Nenhum desses
+# casos pode ser marcado como fabrication_suspected por falso
+# reconhecimento de claim — a correção é o filtro de cláusula + PR +
+# outros + cobertura + proximidade no extract_claimed_issue_refs.
+# ------------------------------------------------------------------
+
+def test_regressao_8377_falsos_positivos_claim():
+    import importlib.util, sys, os
+    here = os.path.dirname(os.path.abspath(__file__))
+    mod = importlib.util.module_from_spec(
+        importlib.util.spec_from_file_location(
+            "detect_tick_claim_fabrication",
+            os.path.join(here, "detect-tick-claim-fabrication.py")))
+    sys.modules["detect_tick_claim_fabrication"] = mod
+    mod.__loader__.exec_module(mod)
+    # Linha que provocava 12 falsos positivos no #8377
+    linha = (
+        "Após #8356, não havia outra unidade primária livre: #8355 está "
+        "reivindicada pelo Overnight; #8354 tem colisão documentada com a PR #8358; "
+        "#8353/#8352/#8351/#8350/#8349/#8344/#8336 foram barradas pelo gate de coerência; "
+        "#8341 foi fechada"
+    )
+    refs = mod.extract_claimed_issue_refs(linha)
+    # Nenhum claim PRÓPRIO nesta linha (todos são referência narrativa);
+    # #8356 aparece em contexto de "Após #8356" (não claim) — não deve entrar.
+    assert 8356 not in refs, f"8356 indevidamente capturado: {refs}"
+    assert 8355 not in refs or refs[8355] is False, f"8355 (outro ator) indevido: {refs}"
+    assert 8358 not in refs, f"8358 (PR) indevido: {refs}"
+    # Cobertura não é claim — não deve gerar entrada
+    # Se fosse claim próprio, seria reconhecido; aqui não é.
+    # Regra: claim próprio preservado — "reivindicada pelo mesmo tick" é próprio
+    linha_proprio = "#8356 está reivindicada pelo mesmo tick; Claim liberada"
+    refs_proprio = mod.extract_claimed_issue_refs(linha_proprio)
+    assert 8356 in refs_proprio, f"claim próprio #8356 deve ser preservado: {refs_proprio}"
+    print("regressão #8377: falsos positivos eliminados + claim próprio preservado — OK")
+
+
+# Regressão real #7807 coberto por #7808 (#7996): cobertura não é claim
+def test_regressao_7807_coberto_por_7808():
+    import importlib.util, sys, os
+    here = os.path.dirname(os.path.abspath(__file__))
+    mod = importlib.util.module_from_spec(
+        importlib.util.spec_from_file_location(
+            "detect_tick_claim_fabrication",
+            os.path.join(here, "detect-tick-claim-fabrication.py")))
+    sys.modules["detect_tick_claim_fabrication"] = mod
+    mod.__loader__.exec_module(mod)
+    linha = "- #7807: o trabalho já estava coberto por #7808. A PR #7827 foi fechada."
+    refs = mod.extract_claimed_issue_refs(linha)
+    assert 7807 not in refs, f"#7807 (coberto) indevidamente como claim: {refs}"
+    assert 7808 not in refs, f"#7808 (cobertura) indevidamente como claim: {refs}"
+    print("regressão #7807 coberto por #7808: cobertura excluída — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -359,10 +419,21 @@ def main() -> int:
         # do tick 09/09/2026 20:00 (#7827 fechada, #7808/#5910 mergeados —
         # confirmados via `gh`, nao fabricados).
         # ------------------------------------------------------------------
+        # Texto REVISADO pós-#8377: a linha original do tick real
+        # (#7807 coberto por #7808, PR #7827 fechada, "Claim liberada.")
+        # não declara claim PRÓPRIO — todos os #NNNN são cobertura/PR, e
+        # com os filtros de #8377 (cobertura + PR) nenhum sobrevive, o que
+        # tornava o teste em `not_applicable` em vez de `indeterminate`.
+        # A hipótese do #7996 (claim próprio declarado e liberado no mesmo
+        # tick, ausente do registro por design do `unclaimIssue`) é
+        # reproduzida com uma linha em que o #NNNN e o keyword de claim
+        # estão no MESMO segmento e a liberação aparece no mesmos linha
+        # (em outro segmento, separado por `;` — o caso que o avaliar por
+        # segmento orfanearia).
         report_text_12 = (
             "## Tick 20:00\n### Trabalhado\n"
-            "- #7807: a tentativa revelou que o trabalho ja estava coberto por #7808. "
-            "A PR #7827 foi fechada com explicacao e a issue permanece aberta. Claim liberada.\n"
+            "- #7807: a issue foi reivindicada e o trabalho ja estava coberto por #7808; "
+            "a PR #7827 foi fechada com explicacao; a claim foi liberada.\n"
         )
         claimed_from_test8 = mod.all_continuo_claimed_issues(sessions8)  # {100} -- reusa dir do teste 8; NAO vazio (review PR #8014, achado 4)
         check12 = mod.check_claimed_issues(report_text_12, claimed_from_test8, sessions8.is_dir())
@@ -418,6 +489,16 @@ def main() -> int:
             check12d["status"] == "fabrication_suspected",
         )
 
+        # ------------------------------------------------------------------
+        # 13. Regressão #8377 (falsos positivos de claim) + #7996
+        # (cobertura não é claim) — funções autônomas que não eram
+        # chamadas pelo runner (review da PR #8381, 3ª objeção: o teste
+        # de regressão prometia verificar claim-próprio/cobertura e não
+        # rodava). Agora executadas aqui, como parte da suíte.
+        # ------------------------------------------------------------------
+        test_regressao_8377_falsos_positivos_claim()
+        test_regressao_7807_coberto_por_7808()
+
         if FAILED:
             print(f"\n{FAILED} assercao(es) falharam")
             return 1
@@ -427,61 +508,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-# ------------------------------------------------------------------
-# 13. Regressão #8377 (2026-09-18) — falso positivo de fabricação
-# pelo detector quando a linha de relatório mescla: (a) claim de outro
-# ator ("reivindicada pelo Overnight"), (b) PR #NNNN (não issue),
-# (c) cobertura (#7807 coberto por #7808) e (d) claim próprio
-# ("reivindicada #8356 pelo mesmo tick" — deve ser reconhecido como
-# próprio, NÃO excluído pelo filtro de "outro ator"). Nenhum desses
-# casos pode ser marcado como fabrication_suspected por falso
-# reconhecimento de claim — a correção é o filtro de cláusula + PR +
-# outros + cobertura no extract_claimed_issue_refs.
-# ------------------------------------------------------------------
-
-def test_regressao_8377_falsos_positivos_claim():
-    import importlib.util, sys, os
-    here = os.path.dirname(os.path.abspath(__file__))
-    mod = importlib.util.module_from_spec(
-        importlib.util.spec_from_file_location(
-            "detect_tick_claim_fabrication",
-            os.path.join(here, "detect-tick-claim-fabrication.py")))
-    sys.modules["detect_tick_claim_fabrication"] = mod
-    mod.__loader__.exec_module(mod)
-    # Linha que provocava 12 falsos positivos no #8377
-    linha = (
-        "Após #8356, não havia outra unidade primária livre: #8355 está "
-        "reivindicada pelo Overnight; #8354 tem colisão documentada com a PR #8358; "
-        "#8353/#8352/#8351/#8350/#8349/#8344/#8336 foram barradas pelo gate de coerência; "
-        "#8341 foi fechada"
-    )
-    refs = mod.extract_claimed_issue_refs(linha)
-    # Nenhum claim PRÓPRIO nesta linha (todos são referência narrativa);
-    # #8356 aparece em contexto de "Após #8356" (não claim) — não deve entrar.
-    assert 8356 not in refs, f"8356 indevidamente capturado: {refs}"
-    assert 8355 not in refs or refs[8355] is False, f"8355 (outro ator) indevido: {refs}"
-    assert 8358 not in refs, f"8358 (PR) indevido: {refs}"
-    # Cobertura não é claim — não deve gerar entrada
-    # Se fosse claim próprio, seria reconhecido; aqui não é.
-    # Regra: claim próprio preservado — "reivindicada pelo mesmo tick" é próprio
-    linha_proprio = "#8356 está reivindicada pelo mesmo tick; liberação completa"
-    refs_proprio = mod.extract_claimed_issue_refs(linha_proprio)
-    assert 8356 in refs_proprio, f"claim próprio #8356 deve ser preservado: {refs_proprio}"
-    print("regressão #8377: falsos positivos eliminados + claim próprio preservado — OK")
-
-# Regressão real #7807 coberto por #7808 (#7996): cobertura não é claim
-def test_regressao_7807_coberto_por_7808():
-    import importlib.util, sys, os
-    here = os.path.dirname(os.path.abspath(__file__))
-    mod = importlib.util.module_from_spec(
-        importlib.util.spec_from_file_location(
-            "detect_tick_claim_fabrication",
-            os.path.join(here, "detect-tick-claim-fabrication.py")))
-    sys.modules["detect_tick_claim_fabrication"] = mod
-    mod.__loader__.exec_module(mod)
-    linha = "- #7807: o trabalho já estava coberto por #7808. A PR #7827 foi fechada."
-    refs = mod.extract_claimed_issue_refs(linha)
-    assert 7807 not in refs, f"#7807 (coberto) indevidamente como claim: {refs}"
-    assert 7808 not in refs, f"#7808 (cobertura) indevidamente como claim: {refs}"
-    print("regressão #7807 coberto por #7808: cobertura excluída — OK")

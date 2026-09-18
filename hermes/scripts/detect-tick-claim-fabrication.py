@@ -183,6 +183,19 @@ _CLAIM_KEYWORDS = re.compile(r"reivindic|claim", re.IGNORECASE)
 #      mesmo tick" (#8356, linha 5 do relatório real) é claim PRÓPRIO.
 #   4. **Cobertura de outro issue** — "#7807: o trabalho já estava coberto
 #      por #7808" (caso de teste #7996) é cobertura, não claim.
+# **#8377 (2026-09-18), parte 2.** A segmento por cláusula sozinho não
+# basta: em "Após #8356, não havia outra unidade primária livre: #8355
+# está reivindicada pelo Overnight", o #8356 está no MESMO segmento que
+# "reivindicada" (a keyword se refere a #8355, attribuída a outro ator) —
+# e o segmento filter não o exclui. O que difere um claim real de uma
+# referência narrativa que divide cláusula com um keyword é a
+# PROXIMIDADE: no claim real o #NNNN está junto ao verbo
+# ("#8356 está reivindicada", "reivindicada #300"); na narrativa ele
+# aparece longe ("Após #8356, ... reivindicada"). Janela de 40 chars —
+# cobre "#8356 está reivindicada pelo mesmo tick" (dist ~11) e
+# "reivindicada #300" (adjacente), e descarta o #8356 a 52 chars do
+# keyword no relatório real do tick 15:54.
+_CLAIM_PROXIMITY = 40
 _CLAUSE_SPLIT = re.compile(r";|\. (?=[A-Z#])")
 _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 _OTHERS_CLAIM = re.compile(
@@ -337,20 +350,27 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
          aí o claim é de OUTRO ator (ex: "pelo Overnight"), não deste
          coordenador.
 
-    Devolve `{issue: released}` — `released=True` quando o MESMO segmento
+    Devolve `{issue: released}` — `released=True` quando a MESMA LINHA
     também sinaliza liberação do claim (`_RELEASE_SIGNAL`, ex: "Claim
-    liberada"). Ver `check_claimed_issues` e a seção (c) do docstring do
-    módulo para o porquê disso importar (#7996): `unclaimIssue` apaga a
-    entrada do session-registry ao liberar, então ausência de um claim
-    liberado não é evidência de fabricação. Se o mesmo número aparecer em
-    mais de uma linha, `released` vira `True` assim que QUALQUER uma delas
-    sinalizar liberação (OR, nunca perde o sinal)."""
+    liberada"). O sinal de liberação é avaliado por LINHA (não por
+    segmento cláusula): o verbo de liberação pode legítimamente aparecer
+    em um clause distante do #NNNN na mesma linha — ex: "#8356 está
+    reivindicada pelo mesmo tick; liberação completa" (o `;` separa os dois
+    segmentos) ou "#7807: ... Claim liberada." (separados por `.`). Avaliar
+    por segmento orfanearia o sinal e converteria um claim liberado (ausente
+    do registro por design do `unclaimIssue`, #6453) em
+    `fabrication_suspected` — falso positivo na direção que este detector
+    deve evitar (#7996). Ver `check_claimed_issues` e a seção (c) do
+    docstring do módulo para o porquê disso importar. Se o mesmo número
+    aparecer em mais de uma linha, `released` vira `True` assim que
+    QUALQUER uma delas sinalizar liberação (OR, nunca perde o sinal)."""
     refs: dict[int, bool] = {}
     for line in report_text.splitlines():
+        line_released = bool(_RELEASE_SIGNAL.search(line))
         for segment in _CLAUSE_SPLIT.split(line):
-            if not _CLAIM_KEYWORDS.search(segment):
+            kw = _CLAIM_KEYWORDS.search(segment)
+            if not kw:
                 continue
-            released = bool(_RELEASE_SIGNAL.search(segment))
             pr_refs = {int(n) for n in _PR_REF.findall(segment)}
             others = {int(n) for n in _OTHERS_CLAIM.findall(segment)}
             covered = {int(n) for n in _COVERED_BY.findall(segment)}
@@ -358,7 +378,11 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
                 n = int(m.group(1))
                 if n in pr_refs or n in others or n in covered:
                     continue
-                refs[n] = refs.get(n, False) or released
+                # Proximidade: o #NNNN precisa estar junto ao keyword
+                # (#8377 parte 2).
+                if abs(m.start() - kw.start()) > _CLAIM_PROXIMITY:
+                    continue
+                refs[n] = refs.get(n, False) or line_released
     return refs
 
 
