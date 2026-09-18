@@ -133,16 +133,20 @@ export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=acc
  * de um mês, o agregado parcial desse mês SUBSTITUIRIA (não somaria) o
  * gasto real já registrado pros dias que ficaram fora da janela — ex:
  * rodada em 06/10 com janela iniciando 07/09 reescreveria setembro sem
- * 05-06/09. Esta função evita isso: quando há **2 ou mais meses distintos**
+ * 05-06/09. Esta função mitiga isso: quando há **2 ou mais meses distintos**
  * no `metrics` recebido, o mês mais ANTIGO só é incluído no resultado se o
- * dia mais cedo com dado nesse mês for o dia 1 (cobertura completa) — caso
- * contrário essa linha é DESCARTADA do retorno (nunca enviada a
- * `mergeSpendRows`), preservando o que já está em `spend.csv` pra esse mês.
- * Com apenas 1 mês presente (o caso comum: janela inteira dentro do mês
- * corrente), nada é descartado — é o mesmo comportamento incremental que
- * Google/Microsoft já têm pro mês em andamento, sem risco de perda porque
- * não há um mês MAIS RECENTE que comprove que a cobertura do mês antigo é
- * de fato parcial.
+ * dia mais cedo com dado nesse mês for o dia 1 — caso contrário essa linha
+ * é DESCARTADA do retorno (nunca enviada a `mergeSpendRows`), preservando o
+ * que já está em `spend.csv` pra esse mês. **O check é "começa no dia 1",
+ * não "sem lacuna interna"** — confia no contrato de `fetchMetaAdsChannelMetrics`
+ * (janela contígua dia a dia, sem buracos no meio); se esse contrato
+ * mudasse (paginação parcial, filtro que pulasse dias), um mês com dia 1
+ * presente mas um buraco no meio passaria pelo check sem ser pego — fora do
+ * que este guard cobre hoje. Com apenas 1 mês presente (o caso comum:
+ * janela inteira dentro do mês corrente), nada é descartado — é o mesmo
+ * comportamento incremental que Google/Microsoft já têm pro mês em
+ * andamento, sem risco de perda porque não há um mês MAIS RECENTE que
+ * comprove que a cobertura do mês antigo é de fato parcial.
  *
  * @pure
  */

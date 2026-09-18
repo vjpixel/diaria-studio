@@ -529,4 +529,36 @@ describe("CLI: resolução de --google-log-path/--microsoft-log-path ausentes (#
     assert.ok(stdout.includes(DEFAULT_GOOGLE_LOG_PATH), `stdout deveria conter o path default do Google: ${stdout}`);
     assert.ok(stdout.includes(DEFAULT_MICROSOFT_LOG_PATH), `stdout deveria conter o path default do Microsoft: ${stdout}`);
   });
+
+  it("#8245 item 6 — sem --meta-log-path, usa DEFAULT_META_LOG_PATH real (mesmo guard do Google/Microsoft acima, agora com a 3ª plataforma)", () => {
+    const result = spawnSync(process.execPath, ["--import", "tsx", SCRIPT_PATH, "--dry-run"], {
+      cwd: PROJECT_ROOT,
+      encoding: "utf8",
+    });
+    const stdout = result.stdout ?? "";
+    assert.doesNotMatch(stdout, /meta=[a-z-]+\(\)/);
+    assert.ok(stdout.includes(DEFAULT_META_LOG_PATH), `stdout deveria conter o path default do Meta: ${stdout}`);
+  });
+
+  it("#8245 item 6 — CLI lê o 3º log SEMPRE (não é opcional no nível do CLI, só na função pura): sem nenhum dos 3 logs presentes, verdict combinado é cannot-verify (fail-soft, sem alarme) — comportamento esperado até Diaria-Meta-Ads-Spend-Ingest estar armada em toda máquina", () => {
+    // Achado do review automatizado da PR: `evaluateAdsSpendIngestAlarm`
+    // trata `meta` como parâmetro OPCIONAL (preserva o comportamento das 2
+    // plataformas quando omitido), mas o CLI (main() deste script) sempre
+    // lê e passa o 3º log — nunca omite. Isso é intencional (item 6 exige
+    // que o alarme REAL passe a enxergar o Meta), mas tem um efeito
+    // colateral esperado: numa máquina onde `.meta-ads-ingest.log` ainda
+    // não existe (task não armada), o veredito combinado passa de `ok`
+    // (2 plataformas) pra `cannot-verify` (3ª sem log) — nunca dispara
+    // e-mail/issue (mesma disciplina de cannot-verify de sempre), só muda
+    // o texto do console. Este teste fixa esse comportamento de propósito,
+    // pra nunca virar surpresa quando alguém notar o console mudando de
+    // "ok" pra "cannot-verify" num ambiente sem o log do Meta.
+    const result = spawnSync(process.execPath, ["--import", "tsx", SCRIPT_PATH, "--dry-run"], {
+      cwd: PROJECT_ROOT,
+      encoding: "utf8",
+    });
+    const stdout = result.stdout ?? "";
+    assert.match(stdout, /verdict=cannot-verify/);
+    assert.match(stdout, /cannot-verify — pelo menos uma plataforma sem log legível; nenhum alarme disparado \(fail-soft\)\./);
+  });
 });
