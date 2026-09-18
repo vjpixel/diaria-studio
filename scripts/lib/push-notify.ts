@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 import { sendGmailMessage } from "./gmail-send.ts";
 import { resolveEditorEmail } from "./inbox-stats.ts";
 import { withTimeout } from "./mcp-guard.ts";
+import { isNodeTestContext, testContextRefusalMessage } from "./test-context-guard.ts";
 
 export const PUSH_IO_TIMEOUT_MS = 10_000;
 
@@ -90,14 +91,28 @@ export interface SendPushNotificationOptions {
  * rede, timeout, HTTP não-2xx). O caller pode inspecionar `ok`/`error` pra
  * logar, mas não precisa de try/catch — mesmo contrato do módulo do canal
  * anterior.
+ *
+ * #8290: quando `opts.sendFn` não é injetado (produção usaria
+ * `sendGmailMessage` de verdade) E o processo está rodando sob contexto de
+ * teste (`isNodeTestContext`), recusa ANTES de tocar rede — devolve
+ * `{ok:false, error}` (fail-soft preservado, nunca lança) com o motivo
+ * explícito, visível também via `console.error`. Mesma defesa de
+ * `defaultAlarmGhRun` (`scripts/lib/alarm-issues.ts`), pro caso de um
+ * `sendPush` chegar aqui sem o `ghRun` correspondente ter barrado antes
+ * (#8287 — ver docstring de `test-context-guard.ts`).
  */
 export async function sendPushNotification(
   message: PushMessage,
   opts: SendPushNotificationOptions = {},
 ): Promise<PushNotifyResult> {
   const to = opts.to ?? resolveEditorEmail(opts.platformConfigPath ?? PLATFORM_CONFIG_PATH_DEFAULT);
-  const sendFn = opts.sendFn ?? sendGmailMessage;
   const timeoutMs = opts.timeoutMs ?? PUSH_IO_TIMEOUT_MS;
+  if (opts.sendFn === undefined && isNodeTestContext()) {
+    const refusal = testContextRefusalMessage("sendGmailMessage (e-mail real)");
+    console.error(`[push-notify] ${refusal}`);
+    return { ok: false, error: refusal };
+  }
+  const sendFn = opts.sendFn ?? sendGmailMessage;
   try {
     await withTimeout(() => sendFn(to, message.subject, message.body), timeoutMs);
     return { ok: true };

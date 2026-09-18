@@ -112,6 +112,7 @@ import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawnGhSync, type GhSpawnResult } from "./shared/gh-run.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { isNodeTestContext, testContextRefusalMessage } from "./test-context-guard.ts";
 
 /** Label que este módulo aplica a toda issue de alarme (#5338: precisa
  * existir no repo — nunca existiu antes desta unidade, então `gh issue
@@ -520,8 +521,26 @@ export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
 /** Produção: `gh` de verdade, com o mesmo teto de tempo de
  * `scripts/lib/shared/gh-run.ts` (nunca trava o event loop indefinidamente
- * se `gh auth` expirou ou a API do GitHub degradou). */
+ * se `gh auth` expirou ou a API do GitHub degradou).
+ *
+ * #8290: recusa rodar sob contexto de teste (`isNodeTestContext`) — este é
+ * o `GhRunFn` default que `ensureAlarmIssue`/`planAlarmReconciliation`/
+ * `applyAlarmReconciliation` usam sempre que o caller não injeta um mock,
+ * e foi exatamente essa lacuna (chamar `main()` de um `*-alarm.ts` de
+ * dentro de um teste, sem `--dry-run` nem `run` injetado) que abriu uma
+ * issue real no incidente #8287. Fail-soft (nunca lança — mesmo contrato
+ * de `GhSpawnResult`): devolve `status: 1` com o motivo em `stderr`, que
+ * `ensureAlarmIssue` já trata como falha normal (`action: "failed"`),
+ * então nenhuma issue é criada/atualizada e — como
+ * `shouldEmailForIssueOutcome` também recusa e-mail pra `action: "failed"`
+ * — o e-mail nunca chega a ser tentado. Log visível via `console.error`
+ * além do `stderr` estruturado, pra nunca falhar em silêncio. */
 export function defaultAlarmGhRun(args: string[], cwd: string): GhSpawnResult {
+  if (isNodeTestContext()) {
+    const message = testContextRefusalMessage(`gh ${args.join(" ")}`);
+    console.error(`[alarm-issues] ${message}`);
+    return { status: 1, stdout: "", stderr: message };
+  }
   return spawnGhSync(args, cwd);
 }
 
