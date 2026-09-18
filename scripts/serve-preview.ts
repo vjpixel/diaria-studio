@@ -60,6 +60,7 @@ import { detectExecMode } from "./lib/exec-mode.ts";
 // esse script usa pra gravar `{campo}_url` em `04-newsletter-url.json`/
 // `05-social-preview.json` (só que agora com uma URL loopback, não Worker).
 import { persistFieldToJsonFile } from "./upload-html-public.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 // #3546: SEMPRE loopback — nunca 0.0.0.0, nunca exposto na rede local.
 const HOST = "127.0.0.1";
@@ -99,6 +100,74 @@ export interface PreviewServerOptions {
   /** Debounce (ms) do watcher — coalesce um burst de writes numa única
    * notificação de reload. Default 300ms, mesmo valor da issue #8123. */
   watchDebounceMs?: number;
+  /** Edição (AAMMDD) a atribuir às medições de reload do watcher. Só
+   *  etiqueta o log — ausente, a medição ainda é gravada (com `edition:
+   *  null`), porque o número que interessa (edição→preview) não depende de
+   *  saber QUAL edição era. */
+  edition?: string | null;
+  /** Só pra teste: aponta o run-log pra um tmpdir isolado, mesmo parâmetro
+   *  que `logEvent` já expõe. Em produção nunca é passado. */
+  timingLogRootDir?: string;
+}
+
+/**
+ * Grava um ciclo de reload do watcher no run-log (#8123 residual).
+ *
+ * ## Por que aqui, e não numa instrução de playbook
+ *
+ * A Fatia 5 entregou `log-stage4-adjust-timing.ts`, que depende do
+ * orchestrator lembrar de capturar 3 timestamps à mão e chamar o CLI ao
+ * fim de cada ajuste. Medido em produção: a revisão de Stage 4 da edição
+ * 260918 teve ajustes (o HTML final mudou entre o snapshot pré-gate e a
+ * aprovação, registrado em `_internal/editor-requests.jsonl`) e o run-log
+ * saiu com ZERO medições. A instrução vive em §4d.1, que é exatamente a
+ * seção que o fast path da Fatia 2 manda **não reler** ("sem reler esta
+ * seção do zero") — instrumentação que depende de lembrar, dentro do
+ * trecho cujo objetivo é não ser lido.
+ *
+ * Este log não depende de ninguém lembrar: o watcher já sabe a hora em que
+ * o arquivo mudou e a hora em que empurrou o reload. É precisamente a
+ * perna "edição no disco → preview na tela" que a issue define como livre
+ * de modelo — e a que a meta de ~10s mede.
+ *
+ * Fica de fora, por construção, a perna "pedido do editor → edição no
+ * disco": essa só o orchestrator conhece, e continua com o CLI da Fatia 5.
+ *
+ * Best-effort absoluto: qualquer erro é engolido. Medir não pode atrasar
+ * nem quebrar o reload que está sendo medido.
+ */
+function logPreviewReloadCycle(entry: {
+  fileChangedAt: number;
+  servedAt: number;
+  clients: number;
+  edition: string | null;
+  rootDir?: string;
+}): void {
+  try {
+    const elapsedMs = entry.servedAt - entry.fileChangedAt;
+    logEvent(
+      {
+        edition: entry.edition,
+        stage: 4,
+        agent: "serve-preview",
+        level: elapsedMs <= 10_000 ? "info" : "warn",
+        message: "preview local: ciclo de reload do watcher",
+        details: {
+          file_changed_at: new Date(entry.fileChangedAt).toISOString(),
+          preview_served_at: new Date(entry.servedAt).toISOString(),
+          edit_to_preview_ms: elapsedMs,
+          within_target_10s: elapsedMs <= 10_000,
+          // 0 clientes = ninguém com a aba aberta. A medição continua
+          // válida como tempo de servidor, mas não como tempo até o editor
+          // VER — por isso o número fica registrado em vez de inferido.
+          clients_notified: entry.clients,
+        },
+      },
+      entry.rootDir ?? process.cwd(),
+    );
+  } catch {
+    // Instrumentação nunca derruba o que instrumenta.
+  }
 }
 
 export interface PreviewServer {
@@ -138,16 +207,35 @@ export async function startPreviewServer(
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   if (opts.watch) {
     const debounceMs = opts.watchDebounceMs ?? 300;
+    // #8123 residual: instante da PRIMEIRA mudança de arquivo da rajada
+    // atual. É o começo da perna "edição no disco → preview na tela" — a
+    // única que a issue diz que sai do modelo por completo, e portanto a
+    // única que pode ser medida sem depender de alguém lembrar de medir.
+    let burstStartedAt: number | null = null;
     const notifyClients = () => {
+      const servedAt = Date.now();
+      let delivered = 0;
       for (const client of liveReloadClients) {
         try {
           client.write("data: reload\n\n");
+          delivered++;
         } catch {
           // cliente já desconectou — 'close' abaixo já remove do Set.
         }
       }
+      if (burstStartedAt != null) {
+        logPreviewReloadCycle({
+          fileChangedAt: burstStartedAt,
+          servedAt,
+          clients: delivered,
+          edition: opts.edition ?? null,
+          rootDir: opts.timingLogRootDir,
+        });
+        burstStartedAt = null;
+      }
     };
     const scheduleNotify = () => {
+      burstStartedAt ??= Date.now();
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
@@ -334,7 +422,15 @@ async function main(): Promise<void> {
   // conta própria (só reflete o que outro processo já escreveu em disco).
   const watchFlag = flags.has("watch");
 
-  const server = await startPreviewServer({ filePath: file, port: portArg, watch: watchFlag });
+  // `--edition` só etiqueta as medições de reload do watcher no run-log
+  // (#8123 residual). Sem ela a medição continua sendo gravada — o tempo
+  // edição→preview não depende de saber qual edição era.
+  const server = await startPreviewServer({
+    filePath: file,
+    port: portArg,
+    watch: watchFlag,
+    edition: values["edition"] ?? null,
+  });
 
   console.log(
     JSON.stringify(
