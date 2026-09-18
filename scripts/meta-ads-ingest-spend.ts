@@ -126,14 +126,23 @@ export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=acc
  * é decisão de escopo maior — toca os 3 fetchers do `/ads` ao vivo, fora
  * desta PR (ver corpo do #8304).
  *
- * **Janela vs. mês truncado (fora de escopo do #8245, latente aqui como no
- * Google — ver comentário da issue #8245 item 3):** `mergeSpendRows` troca a
- * linha `(canal, mes)` inteira; se a janela de `fetchMetaAdsChannelMetrics`
- * (default `lookbackDays=30`) começar NO MEIO de um mês, o agregado parcial
- * desse mês SUBSTITUI (não soma) o gasto real já registrado pros dias que
- * ficaram fora da janela — mesma borda já latente na janela de 90 dias do
- * Google (`buildDefaultGaqlQuery`), documentada e deliberadamente não
- * corrigida por nenhuma das duas unidades ainda.
+ * **Janela vs. mês truncado (#8245 item 3, corrigido aqui — Google segue
+ * latente, `buildDefaultGaqlQuery` continua fora de escopo).** `mergeSpendRows`
+ * troca a linha `(canal, mes)` inteira; se a janela de
+ * `fetchMetaAdsChannelMetrics` (default `lookbackDays=30`) começar NO MEIO
+ * de um mês, o agregado parcial desse mês SUBSTITUIRIA (não somaria) o
+ * gasto real já registrado pros dias que ficaram fora da janela — ex:
+ * rodada em 06/10 com janela iniciando 07/09 reescreveria setembro sem
+ * 05-06/09. Esta função evita isso: quando há **2 ou mais meses distintos**
+ * no `metrics` recebido, o mês mais ANTIGO só é incluído no resultado se o
+ * dia mais cedo com dado nesse mês for o dia 1 (cobertura completa) — caso
+ * contrário essa linha é DESCARTADA do retorno (nunca enviada a
+ * `mergeSpendRows`), preservando o que já está em `spend.csv` pra esse mês.
+ * Com apenas 1 mês presente (o caso comum: janela inteira dentro do mês
+ * corrente), nada é descartado — é o mesmo comportamento incremental que
+ * Google/Microsoft já têm pro mês em andamento, sem risco de perda porque
+ * não há um mês MAIS RECENTE que comprove que a cobertura do mês antigo é
+ * de fato parcial.
  *
  * @pure
  */
@@ -147,6 +156,18 @@ export function aggregateMetaAdsChannelMetricsByMonth(metrics: ChannelDailyMetri
     entry.sum += m.gastoBrl;
     entry.dates.push(m.date);
     byMonth.set(mes, entry);
+  }
+
+  // #8245 item 3: com 2+ meses no resultado, o mais ANTIGO pode ser um
+  // fragmento da janela (ela começou no meio dele) — descartar em vez de
+  // deixar `mergeSpendRows` sobrescrever a linha completa já existente.
+  const mesesOrdenados = [...byMonth.keys()].sort();
+  if (mesesOrdenados.length >= 2) {
+    const maisAntigo = mesesOrdenados[0];
+    const datasDoMesMaisAntigo = byMonth.get(maisAntigo)!.dates;
+    const primeiroDia = datasDoMesMaisAntigo.slice().sort()[0];
+    const cobreDesdeODia1 = primeiroDia.slice(8, 10) === "01";
+    if (!cobreDesdeODia1) byMonth.delete(maisAntigo);
   }
 
   return [...byMonth.entries()]

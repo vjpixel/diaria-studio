@@ -3,17 +3,25 @@
  * scripts/ads-spend-ingest-alarm.ts (#5597, reescrito no #7518)
  *
  * Alarme que interpreta o CONTEÚDO (não só o exit code) dos logs
- * acumulados de `scripts/google-ads-ingest-spend.ts` e
- * `scripts/microsoft-ads-ingest-spend.ts` — decisão deliberada do
- * #5237/#5502 mantém exit code 0 mesmo em `defect` (query malformada,
- * versão de API descontinuada), pra não calar a ingestão da plataforma
+ * acumulados de `scripts/google-ads-ingest-spend.ts`,
+ * `scripts/microsoft-ads-ingest-spend.ts` e (#8245 item 6)
+ * `scripts/meta-ads-ingest-spend.ts` — decisão deliberada do #5237/#5502
+ * mantém exit code 0 mesmo em `defect` (query malformada, versão de API
+ * descontinuada, token ausente), pra não calar a ingestão da plataforma
  * vizinha. Sem este alarme, nenhum mecanismo existente
  * (`Diaria-Systemd-Failed-Units-Alarm`, `--state=failed`) enxerga um
  * defeito real — a unit sempre reporta sucesso.
  *
  * Lógica pura em `scripts/lib/ads-spend-ingest-alarm.ts` — este arquivo é
- * só I/O: ler os DOIS logs em disco (um por plataforma), enviar e-mail,
- * dedup/criação de issue via `scripts/lib/alarm-issues.ts`.
+ * só I/O: ler os TRÊS logs em disco (um por plataforma), enviar e-mail,
+ * dedup/criação de issue via `scripts/lib/alarm-issues.ts`. **Meta ainda
+ * sem task armada em toda máquina (#8245 item 8, pendente `sync-env` no
+ * `300`)** — até lá, `.meta-ads-ingest.log` não existe e a plataforma
+ * resolve `cannot-verify` (não alarma sozinha, mesma disciplina do resto
+ * do módulo); depois de armada e com `META_ADS_ACCESS_TOKEN` ausente no
+ * `.env`, o log passa a existir com o fallback genérico e o veredito da
+ * plataforma vira `defect` (não `cannot-verify`) — token ausente é
+ * classificado como defeito real, por decisão explícita da issue.
  *
  * **Correção de causa raiz (#7518, 09/09/2026):** a versão original lia um
  * ÚNICO path (`data/aquisicao/.ads-spend-ingest.log`) que descrevia a
@@ -91,6 +99,10 @@ const AQUISICAO_DIR = join(DATA_DIR, "aquisicao");
  *  #7518). */
 export const DEFAULT_GOOGLE_LOG_PATH = join(AQUISICAO_DIR, ".google-ads-ingest.log");
 export const DEFAULT_MICROSOFT_LOG_PATH = join(AQUISICAO_DIR, ".microsoft-ads-ingest.log");
+/** #8245 item 6 — bate com `logPath` de `Diaria-Meta-Ads-Spend-Ingest`
+ *  (`scripts/lib/scheduled-tasks.ts`), mesmo guard do par Google/Microsoft
+ *  acima (`test/ads-spend-ingest-alarm-log-path-guard.test.ts`). */
+export const DEFAULT_META_LOG_PATH = join(AQUISICAO_DIR, ".meta-ads-ingest.log");
 const ALARM_ISSUES_STATE_PATH = join(AQUISICAO_DIR, ".ads-spend-ingest-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[ads-spend-ingest-alarm]";
@@ -183,11 +195,13 @@ async function main(): Promise<void> {
   const googleLogPath = getStringArg(argv, "google-log-path", { example: DEFAULT_GOOGLE_LOG_PATH }) ?? DEFAULT_GOOGLE_LOG_PATH;
   const microsoftLogPath =
     getStringArg(argv, "microsoft-log-path", { example: DEFAULT_MICROSOFT_LOG_PATH }) ?? DEFAULT_MICROSOFT_LOG_PATH;
+  const metaLogPath = getStringArg(argv, "meta-log-path", { example: DEFAULT_META_LOG_PATH }) ?? DEFAULT_META_LOG_PATH;
 
   const now = new Date();
   const google = readPlatformLog(googleLogPath);
   const microsoft = readPlatformLog(microsoftLogPath);
-  const evaluation = evaluateAdsSpendIngestAlarm(google, microsoft, now);
+  const meta = readPlatformLog(metaLogPath);
+  const evaluation = evaluateAdsSpendIngestAlarm(google, microsoft, now, meta);
   console.log(
     `${LOG_PREFIX} verdict=${evaluation.verdict} ` +
       evaluation.platforms.map((p) => `${p.platform}=${p.verdict}(${p.logPath})`).join(" "),

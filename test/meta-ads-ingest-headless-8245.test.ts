@@ -14,7 +14,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -59,9 +59,12 @@ describe("#8245 — aggregateMetaAdsChannelMetricsByMonth", () => {
     assert.equal(rows[0].fonte, `${META_ADS_HEADLESS_FONTE_LABEL}, 1 dia(s) (2026-09-05), ingestão automática`);
   });
 
-  it("2 meses distintos geram 2 linhas SpendRow, cada uma com sua própria soma", () => {
+  it("2 meses distintos geram 2 linhas SpendRow, cada uma com sua própria soma (mês mais antigo cobrindo desde o dia 1 — sem truncamento)", () => {
+    // Datas do mês mais antigo (agosto) começando no dia 1 — não aciona o
+    // guard de janela truncada do #8245 item 3 (ver describe dedicado
+    // abaixo), então este teste continua cobrindo só a agregação simples.
     const metrics: ChannelDailyMetric[] = [
-      { canal: "x", date: "2026-08-30", gastoBrl: 5, cliques: 0, impressoes: 0 },
+      { canal: "x", date: "2026-08-01", gastoBrl: 5, cliques: 0, impressoes: 0 },
       { canal: "x", date: "2026-08-31", gastoBrl: 5, cliques: 0, impressoes: 0 },
       { canal: "x", date: "2026-09-01", gastoBrl: 7, cliques: 0, impressoes: 0 },
     ];
@@ -84,6 +87,66 @@ describe("#8245 — aggregateMetaAdsChannelMetricsByMonth", () => {
     const rows = aggregateMetaAdsChannelMetricsByMonth(metrics, META_ADS_CANAL);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].valor, 10);
+  });
+
+  // ---------------------------------------------------------------------
+  // #8245 item 3 — janela sem mês truncado
+  // ---------------------------------------------------------------------
+
+  it("2 meses, o mais antigo TRUNCADO (não começa no dia 1): mês antigo é descartado, só o mais recente é retornado", () => {
+    // Caso real da issue: rodada em 06/10 com lookbackDays=30 começaria em
+    // 07/09 — setembro (07-30) é fragmento, outubro (01-06) é o mês
+    // corrente completo até ontem. Descartar setembro evita que
+    // mergeSpendRows sobrescreva o setembro completo já em spend.csv com
+    // um valor menor (perdendo 05-06/09 = R$ 291,01 no caso real).
+    const metrics: ChannelDailyMetric[] = [
+      { canal: "x", date: "2026-09-07", gastoBrl: 100, cliques: 0, impressoes: 0 },
+      { canal: "x", date: "2026-09-30", gastoBrl: 50, cliques: 0, impressoes: 0 },
+      { canal: "x", date: "2026-10-01", gastoBrl: 20, cliques: 0, impressoes: 0 },
+      { canal: "x", date: "2026-10-06", gastoBrl: 30, cliques: 0, impressoes: 0 },
+    ];
+    const rows = aggregateMetaAdsChannelMetricsByMonth(metrics, META_ADS_CANAL);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].mes, "2026-10");
+    assert.equal(rows[0].valor, 50);
+  });
+
+  it("2 meses, o mais antigo COMPLETO (começa no dia 1): nenhum é descartado", () => {
+    const metrics: ChannelDailyMetric[] = [
+      { canal: "x", date: "2026-09-01", gastoBrl: 100, cliques: 0, impressoes: 0 },
+      { canal: "x", date: "2026-09-30", gastoBrl: 50, cliques: 0, impressoes: 0 },
+      { canal: "x", date: "2026-10-01", gastoBrl: 20, cliques: 0, impressoes: 0 },
+    ];
+    const rows = aggregateMetaAdsChannelMetricsByMonth(metrics, META_ADS_CANAL);
+    assert.equal(rows.length, 2);
+    assert.deepEqual(
+      rows.map((r) => r.mes),
+      ["2026-09", "2026-10"],
+    );
+  });
+
+  it("1 único mês, truncado (janela toda dentro do mês corrente): NÃO descarta — mesmo comportamento incremental do Google/Microsoft pro mês em andamento", () => {
+    const metrics: ChannelDailyMetric[] = [
+      { canal: "x", date: "2026-09-10", gastoBrl: 10, cliques: 0, impressoes: 0 },
+      { canal: "x", date: "2026-09-18", gastoBrl: 20, cliques: 0, impressoes: 0 },
+    ];
+    const rows = aggregateMetaAdsChannelMetricsByMonth(metrics, META_ADS_CANAL);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].mes, "2026-09");
+    assert.equal(rows[0].valor, 30);
+  });
+
+  it("3 meses: só o mais antigo é candidato a truncamento — os 2 mais recentes sempre entram", () => {
+    const metrics: ChannelDailyMetric[] = [
+      { canal: "x", date: "2026-08-15", gastoBrl: 5, cliques: 0, impressoes: 0 }, // truncado (não é dia 1)
+      { canal: "x", date: "2026-09-01", gastoBrl: 10, cliques: 0, impressoes: 0 },
+      { canal: "x", date: "2026-10-01", gastoBrl: 15, cliques: 0, impressoes: 0 },
+    ];
+    const rows = aggregateMetaAdsChannelMetricsByMonth(metrics, META_ADS_CANAL);
+    assert.deepEqual(
+      rows.map((r) => r.mes),
+      ["2026-09", "2026-10"],
+    );
   });
 });
 
@@ -181,6 +244,52 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
 
     assert.equal(code, 0);
     assert.equal(existsSync(spendPath), false);
+  });
+
+  it("#8245 item 3 — janela truncada (mockando spend.csv pré-existente): setembro completo NÃO é reduzido pelo agregado parcial", async () => {
+    // Simula: spend.csv já tem setembro completo (R$ 517.85, reconciliação
+    // manual real da issue). Uma rodada em 2026-10-06 (lookbackDays=30,
+    // janela começando 2026-09-07) traria setembro FRAGMENTADO — a
+    // regressão do item 3 é `mergeSpendRows` substituir a linha completa
+    // pela fragmentada. Com o guard, setembro fica intocado e só outubro é
+    // atualizado.
+    const { formatSpendCsv } = await import("../scripts/lib/aquisicao-spend.ts");
+    writeFileSync(
+      spendPath,
+      formatSpendCsv([
+        {
+          canal: META_ADS_CANAL,
+          mes: "2026-09",
+          moeda: "BRL",
+          valor: 517.85,
+          fonte: "reconciliação manual 10/09/2026",
+        },
+      ]),
+      "utf8",
+    );
+
+    process.env.META_ADS_ACCESS_TOKEN = "tok-fake";
+    const fetchImpl = (async () =>
+      jsonResponse(200, {
+        data: [
+          { date_start: "2026-09-07", spend: "100", clicks: "1", impressions: "10" },
+          { date_start: "2026-09-30", spend: "50", clicks: "1", impressions: "10" },
+          { date_start: "2026-10-01", spend: "20", clicks: "1", impressions: "10" },
+          { date_start: "2026-10-06", spend: "30", clicks: "1", impressions: "10" },
+        ],
+        paging: {},
+      })) as typeof fetch;
+
+    const code = await runHeadless(spendPath, fetchImpl);
+    assert.equal(code, 0);
+
+    const csv = readFileSync(spendPath, "utf8");
+    // Setembro preservado, intocado — nem a linha antiga some, nem é
+    // substituída pelo fragmento (150) que a janela truncada traria.
+    assert.match(csv, /Meta Ads \(teste 2608\),2026-09,BRL,517\.85,/);
+    assert.doesNotMatch(csv, /Meta Ads \(teste 2608\),2026-09,BRL,150/);
+    // Outubro é o mês mais recente — sempre atualizado.
+    assert.match(csv, /Meta Ads \(teste 2608\),2026-10,BRL,50,/);
   });
 
   it("linhas sem date_start (schema drift no upstream): já filtradas por fetchMetaAdsChannelMetrics ANTES de chegar aqui — trata como gasto zero, não como defeito", async () => {
