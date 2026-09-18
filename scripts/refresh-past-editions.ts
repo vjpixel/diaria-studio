@@ -25,6 +25,7 @@ import { resolveEditionDir, enumerateEditionDirs } from "./lib/find-current-edit
 import { logEvent } from "./lib/run-log.ts"; // #3495: warn quando 01-approved.json falta numa edição que existe no disco
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
+import { FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #8298: filtro de boilerplate/rodapé JÁ EXISTENTE (usado por findMismatchedUrls pro mesmo propósito) — reuso, não duplico a lista de domínios aqui
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
@@ -78,6 +79,27 @@ export function extractLinks(content: string): string[] {
     console.warn(`[extractLinks] descartou ${dropped} URL(s) malformada(s)`);
   }
   return [...urls];
+}
+
+// #8298: regex extrai QUALQUER URL http(s) de `content` — inclusive `src` de
+// `<img>` (Beehiiv/Kit CDN quando não estiver sob um host já filtrado por
+// `extractLinks`/`FOOTER_DOMAINS`), nunca um link de conteúdo/fonte.
+const IMAGE_EXTENSION_RE = /\.(?:jpe?g|png|gif|webp|avif|svg)(?:[?#]|$)/i;
+
+/**
+ * #8298: true se `url` é um link de CONTEÚDO editorial (candidato a "fonte
+ * usada nesta edição"), false se é boilerplate — CTA/rodapé fixo (mesma
+ * lista `FOOTER_DOMAINS` que `findMismatchedUrls` em `canonical-urls.ts` já
+ * usa pra distinguir link de conteúdo de link de template) ou URL de imagem.
+ *
+ * Usado só pro lado que vem de `extractLinks(html)` em `renderMarkdown` —
+ * `p.links` (vindo do `01-approved.json`) já é só link de bucket editorial,
+ * não precisa deste filtro.
+ */
+export function isContentLink(url: string): boolean {
+  if (IMAGE_EXTENSION_RE.test(url)) return false;
+  if (FOOTER_DOMAINS.some((d) => url.includes(d))) return false;
+  return true;
 }
 
 /**
@@ -457,7 +479,12 @@ function mergeById(existing: Post[], incoming: Post[]): Post[] {
   return [...byId.values()];
 }
 
-export function renderMarkdown(posts: Post[]): string {
+/**
+ * #8298: `root` é opcional (default `ROOT`) só pro guard de divergência
+ * logar via `logEvent` — tests passam um `root` isolado (tmpdir) pra nunca
+ * tocar `data/run-log.jsonl` real.
+ */
+export function renderMarkdown(posts: Post[], root: string = ROOT): string {
   const lines: string[] = [
     "# Últimas edições publicadas — para dedup",
     "",
@@ -472,10 +499,46 @@ export function renderMarkdown(posts: Post[]): string {
 
   for (const p of posts) {
     const date = p.published_at.slice(0, 10);
-    const links =
-      p.links?.length
-        ? p.links
-        : extractLinks([p.html, p.markdown].filter(Boolean).join("\n"));
+    // #8298: UNIÃO, não precedência — `p.links` (snapshot do gate da Etapa 1,
+    // via `01-approved.json`) fica cego a troca/promoção editorial pós-gate;
+    // o HTML publicado é a fonte de verdade sobre o que de fato saiu. O lado
+    // que vem do HTML passa por `isContentLink` pra não inflar o arquivo com
+    // boilerplate (rodapé social, hubs, amazon, wa.me, imagens — extractLinks
+    // pega QUALQUER URL http(s) do conteúdo, sem noção de <a> vs <img>).
+    const approvedLinks = p.links ?? [];
+    const htmlContent = [p.html, p.markdown].filter(Boolean).join("\n");
+    const htmlLinks = htmlContent
+      ? extractLinks(htmlContent).filter(isContentLink)
+      : [];
+    const links = [...new Set([...approvedLinks, ...htmlLinks])];
+
+    // Guard (#8298): quando já havia links[] do approved E o HTML publicado
+    // contém link de conteúdo ausente dali, é sinal de troca/promoção
+    // editorial pós-gate — loga warning explícito, nunca silêncio. Warning
+    // (não invariante duro): este caminho roda regenerando past-editions.md
+    // no Stage 0, e falhar duro aqui travaria a pipeline por causa de um dado
+    // de proveniência, não de um erro editorial — a união já corrige o dado.
+    // Só compara quando approvedLinks não é vazio: edição sem 01-approved.json
+    // local (importada, ou de outra máquina) faria TODO htmlLink parecer
+    // "divergente" por ausência de baseline, não por troca pós-gate — ruído,
+    // não sinal.
+    if (approvedLinks.length > 0 && p.html) {
+      const missingFromApproved = htmlLinks.filter((u) => !approvedLinks.includes(u));
+      if (missingFromApproved.length > 0) {
+        logEvent(
+          {
+            edition: aammddFromIso(p.published_at),
+            stage: null,
+            agent: "refresh-past-editions",
+            level: "warn",
+            message: `renderMarkdown: ${missingFromApproved.length} link(s) de conteúdo no HTML publicado ausentes de links[]/01-approved.json — provável troca/promoção editorial pós-gate (#8298)`,
+            details: { post_id: p.id, title: p.title, missing: missingFromApproved },
+          },
+          root,
+        );
+      }
+    }
+
     lines.push(
       `## ${date} — "${p.title}"`,
       p.web_url ? `URL: ${p.web_url}` : "",

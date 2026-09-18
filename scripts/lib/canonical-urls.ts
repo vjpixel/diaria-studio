@@ -382,6 +382,14 @@ export const FOOTER_DOMAINS = [
   // artigo pesquisado. Sem isso, urls_accessible flagaria not_in_cache (mesmo
   // bug de #2498 pro cursos/livros.diaria.workers.dev).
   "apoia.se",
+  // #8298: CTA "Convide um amigo a assinar" do PARA ENCERRAR — link fixo
+  // `wa.me/?text=...` gerado por `buildInviteWhatsappCta`
+  // (`newsletter-render-html.ts`), nunca um artigo pesquisado. Mesma
+  // motivação do `apoia.se` acima: sem isso, o link de convite do rodapé
+  // vazava como "link de conteúdo divergente" em qualquer comparação
+  // extractLinks(html) vs. approved.json (achado do #8298 — auditoria das
+  // 14 edições de `past-editions-raw.json`).
+  "wa.me",
   // #2695 self-review: `as const` — agora que o array é exportado e
   // compartilhado por referência entre 3 importers (era privado a este
   // arquivo antes), congela o tipo em readonly pra um `.push`/`.splice`
