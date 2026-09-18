@@ -324,34 +324,64 @@ export function kitDiariaPublishedPath(editionDirPath: string): string {
 }
 
 /**
- * Resolve o broadcast do canal Kit paralelo de uma edição a partir de
- * `_internal/kit-diaria-published.json`. Lança com mensagem acionável quando
- * o arquivo falta ou não tem `broadcast_id` numérico — `--edition` pede
- * EXPLICITAMENTE a instrumentação desta edição, então "nenhum broadcast" não
- * pode degradar em silêncio pra "nada a medir".
+ * Path de `_internal/newsletter-kit-published.json` — mesmo arquivo que
+ * `scripts/publish-newsletter-kit.ts::resolvePublishedStatePath` escreve
+ * pro backend Kit PRIMÁRIO (`publishing.newsletter.backend === "kit"`,
+ * migração concluída em 04/09/2026, #7388).
+ *
+ * Fallback de `readEditionKitBroadcastId` (#8318): a migração de #7388
+ * absorveu o canal Kit paralelo (`kit_diaria`) no envio principal —
+ * `decideKitChannelDispatch` recusa o dispatch paralelo enquanto o backend
+ * for "kit" (guard #6321), então nenhuma edição a partir de 260904 volta a
+ * escrever `kit-diaria-published.json`. O broadcast real da edição passou a
+ * viver só aqui, e nada nesta função sabia procurá-lo — a série de
+ * `data/kit-delivery/history.jsonl` congelou em 260903 em silêncio (#8318).
+ */
+export function newsletterKitPublishedPath(editionDirPath: string): string {
+  return resolve(editionDirPath, "_internal", "newsletter-kit-published.json");
+}
+
+/**
+ * Resolve o broadcast Kit de uma edição — tenta primeiro o canal paralelo
+ * (`kit-diaria-published.json`, `kit-diaria-stage5-dispatch.ts`) e, se
+ * ausente, cai pro backend primário (`newsletter-kit-published.json`,
+ * `publish-newsletter-kit.ts` — único caminho desde a migração de #7388 em
+ * 04/09/2026, #8318). Lança com mensagem acionável quando NENHUM dos dois
+ * existe ou tem `broadcast_id` numérico — `--edition` pede EXPLICITAMENTE a
+ * instrumentação desta edição, então "nenhum broadcast" não pode degradar
+ * em silêncio pra "nada a medir".
  */
 export function readEditionKitBroadcastId(
   editionDirPath: string,
   readFileFn: (path: string, encoding: "utf8") => string = (p, e) => readFileSync(p, e),
 ): number {
-  const path = kitDiariaPublishedPath(editionDirPath);
-  let raw: string;
-  try {
-    raw = readFileFn(path, "utf8");
-  } catch {
+  const candidates = [kitDiariaPublishedPath(editionDirPath), newsletterKitPublishedPath(editionDirPath)];
+  let raw: string | undefined;
+  let usedPath = candidates[0];
+  for (const path of candidates) {
+    try {
+      raw = readFileFn(path, "utf8");
+      usedPath = path;
+      break;
+    } catch {
+      continue;
+    }
+  }
+  if (raw === undefined) {
     throw new Error(
-      `[kit-provider-split] ${path} não encontrado — a edição ainda não foi despachada pelo canal Kit ` +
-        `paralelo (kit-diaria-stage5-dispatch.ts, Etapa 5) ou não usa este canal.`,
+      `[kit-provider-split] não encontrado: nem ${candidates[0]} (canal Kit paralelo, ` +
+        `kit-diaria-stage5-dispatch.ts, Etapa 5) nem ${candidates[1]} (backend Kit primário, ` +
+        `publish-newsletter-kit.ts) — a edição ainda não foi despachada por nenhum dos dois canais Kit.`,
     );
   }
   let parsed: KitDiariaPublishedMinimal;
   try {
     parsed = JSON.parse(raw) as KitDiariaPublishedMinimal;
   } catch (e) {
-    throw new Error(`[kit-provider-split] ${path} não é JSON válido: ${(e as Error).message}`);
+    throw new Error(`[kit-provider-split] ${usedPath} não é JSON válido: ${(e as Error).message}`);
   }
   if (typeof parsed.broadcast_id !== "number") {
-    throw new Error(`[kit-provider-split] ${path} não tem "broadcast_id" numérico.`);
+    throw new Error(`[kit-provider-split] ${usedPath} não tem "broadcast_id" numérico.`);
   }
   return parsed.broadcast_id;
 }

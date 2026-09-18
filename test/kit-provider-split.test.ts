@@ -21,6 +21,7 @@ import {
   resolveBroadcastId,
   resolveEditionArg,
   kitDiariaPublishedPath,
+  newsletterKitPublishedPath,
   readEditionKitBroadcastId,
   kitDeliverySplitPath,
   buildKitDeliveryRecord,
@@ -358,6 +359,45 @@ describe("kitDiariaPublishedPath / readEditionKitBroadcastId", () => {
     assert.throws(
       () => readEditionKitBroadcastId("d", () => JSON.stringify({ broadcast_id: "25622689" })),
       /não tem "broadcast_id" numérico/,
+    );
+  });
+
+  it("monta o path de newsletter-kit-published.json dentro de _internal/", () => {
+    assert.equal(
+      newsletterKitPublishedPath("data/editions/2609/260904"),
+      resolvePath("data/editions/2609/260904", "_internal", "newsletter-kit-published.json"),
+    );
+  });
+
+  it("#8318: cai pra newsletter-kit-published.json (backend Kit primário) quando kit-diaria-published.json não existe — regressão da série congelada em 260903", () => {
+    const kitDiaria = kitDiariaPublishedPath("data/editions/2609/260904");
+    const newsletterKit = newsletterKitPublishedPath("data/editions/2609/260904");
+    const fakeRead = (path: string): string => {
+      if (path === kitDiaria) throw new Error("ENOENT");
+      if (path === newsletterKit) return JSON.stringify({ broadcast_id: 25754729, status: "scheduled" });
+      throw new Error(`fakeRead: path inesperado ${path}`);
+    };
+    assert.equal(readEditionKitBroadcastId("data/editions/2609/260904", fakeRead), 25754729);
+  });
+
+  it("#8318: prefere kit-diaria-published.json quando os DOIS existem (canal paralelo ainda ativo)", () => {
+    const kitDiaria = kitDiariaPublishedPath("data/editions/2608/260828");
+    const newsletterKit = newsletterKitPublishedPath("data/editions/2608/260828");
+    const fakeRead = (path: string): string => {
+      if (path === kitDiaria) return JSON.stringify({ broadcast_id: 111 });
+      if (path === newsletterKit) return JSON.stringify({ broadcast_id: 222 });
+      throw new Error(`fakeRead: path inesperado ${path}`);
+    };
+    assert.equal(readEditionKitBroadcastId("data/editions/2608/260828", fakeRead), 111);
+  });
+
+  it("LANÇA (mensagem acionável) quando NENHUM dos dois arquivos existe", () => {
+    const fakeRead = (): string => {
+      throw new Error("ENOENT");
+    };
+    assert.throws(
+      () => readEditionKitBroadcastId("data/editions/2609/260904", fakeRead),
+      /não encontrado.*kit-diaria-stage5-dispatch.*newsletter-kit-published\.json/s,
     );
   });
 });
