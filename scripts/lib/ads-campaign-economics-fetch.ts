@@ -44,6 +44,8 @@ import { listKitSubscribersPage, type KitSubscriberSummary } from "./kit-subscri
 import type { KitConfig } from "./kit-config.ts";
 import { META_ADS_AD_ACCOUNT_ID } from "./meta-ads-ingest.ts";
 import type { ChannelDailyMetric, ChannelDailySignup } from "./ads-campaign-economics.ts";
+import { isEditorTestEmail } from "./google-ads-enhanced-conversions.ts";
+import { EDITOR_WORKSPACE_EMAIL } from "./editor-copy.ts";
 
 export interface ChannelFetchResult {
   metrics: ChannelDailyMetric[];
@@ -408,6 +410,29 @@ export interface KitSignupsFetchResult {
 }
 
 /**
+ * `email` é um cadastro de TESTE do próprio editor (#8349) e nunca deve
+ * contar como aquisição paga real? Dois padrões conhecidos, ambos citados
+ * na issue — não inventar/ampliar além do que ela documenta:
+ *
+ * 1. Qualquer plus-address do Gmail pessoal do editor (exemplo concreto
+ *    citado em #8256) — reusa `isEditorTestEmail` de
+ *    `google-ads-enhanced-conversions.ts` (mesmo padrão já usado pra filtrar
+ *    conversões do Google Ads, `EDITOR_TEST_EMAIL_PATTERN`), em vez de
+ *    duplicar a regex aqui.
+ * 2. `EDITOR_WORKSPACE_EMAIL` (caixa Google Workspace corporativa do
+ *    editor, `scripts/lib/editor-copy.ts`) — literal exato, reusado de lá
+ *    (onde já existe como seed de QA de colocação) em vez de repeti-lo aqui.
+ *
+ * Deliberadamente NÃO inclui `EDITOR_COPY_EMAIL` (Gmail pessoal do editor,
+ * sem plus-address) — a issue não cita esse endereço como fonte de
+ * contaminação, e incluí-lo seria inventar exclusão sem evidência. @pure
+ */
+function isEditorTestSignupEmail(email: string): boolean {
+  const normalized = email.trim().toLowerCase();
+  return isEditorTestEmail(normalized) || normalized === EDITOR_WORKSPACE_EMAIL.toLowerCase();
+}
+
+/**
  * Pagina `/v4/subscribers` (status `all` — cadastro de teste pode estar
  * `inactive` em double opt-in pendente) e agrega cadastros por dia+canal a
  * partir de `fields.utm_source` — NUNCA do bloco `attribution` (que vem
@@ -415,7 +440,13 @@ export interface KitSignupsFetchResult {
  * ver `docs`/memória `atribuicao-cadastro-kit-so-por-email`). Assinante sem
  * `fields.utm_source` reconhecido (não bate nenhuma chave de
  * `utmSourceToCanal`) é simplesmente ignorado — não é erro, é "não veio de
- * um canal pago rastreado aqui".
+ * um canal pago rastreado aqui". Cadastro de TESTE do próprio editor
+ * (`isEditorTestSignupEmail`, #8349) também é ignorado, mesmo quando tem
+ * `utm_source` reconhecido — sem isso, um cadastro de QA feito pelo editor
+ * pra validar um funil pago inflava a contagem de aquisição real desse
+ * canal, distorcendo o CAC exibido em `/ads` (a exclusão manual já existia
+ * só na hora de escrever o relatório em prosa, `diaria-ads-relatorio`
+ * Passo 2b — este é o fix na LEITURA, que cobre todo consumidor).
  *
  * Nunca lança — qualquer falha de rede/auth vira `{ signups: [], error }`.
  */
@@ -448,6 +479,7 @@ export async function fetchKitSignupsByChannel(
         const canal = utmSourceToCanal[utmSourceRaw.trim().toLowerCase()];
         if (!canal) continue;
         if (!sub.created_at) continue;
+        if (sub.email_address && isEditorTestSignupEmail(sub.email_address)) continue;
         const date = sub.created_at.slice(0, 10);
         if (dateRangeStart && date < dateRangeStart) continue;
         const key = `${canal}|${date}`;

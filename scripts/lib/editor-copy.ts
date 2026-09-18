@@ -72,7 +72,7 @@ export const EDITOR_COPY_EMAIL = "vjpixel@gmail.com";
  * Workspace corporativo seguem instrumentados.
  *
  * `EDITOR_COPY_EMAIL` continua sendo a cópia QA canônica do editor e segue
- * primeiro na lista; `pixel@memelab.com.br` é a caixa Google Workspace
+ * primeiro na lista; `EDITOR_WORKSPACE_EMAIL` é a caixa Google Workspace
  * corporativa (filtro de spam/promoções distinto do Gmail pessoal, mesmo
  * motor de base), a única seed de colocação restante.
  *
@@ -83,9 +83,19 @@ export const EDITOR_COPY_EMAIL = "vjpixel@gmail.com";
  * descrito no comentário de topo deste arquivo; essa lista estática NÃO foi
  * tocada por esta redução (fora do escopo de uma mudança só-de-código).
  */
+
+/**
+ * Caixa Google Workspace corporativa do editor — fonte única do literal
+ * (#8349): antes vivia só inline em `EDITOR_SEED_EMAILS`; extraído pra
+ * constante nomeada pra que `ads-campaign-economics-fetch.ts` (exclusão de
+ * cadastros de teste do editor em `fetchKitSignupsByChannel`) reuse o mesmo
+ * valor em vez de duplicar o literal num 3º arquivo.
+ */
+export const EDITOR_WORKSPACE_EMAIL = "pixel@memelab.com.br";
+
 export const EDITOR_SEED_EMAILS: readonly string[] = [
-  EDITOR_COPY_EMAIL,            // Gmail pessoal — 73% da base é Gmail
-  "pixel@memelab.com.br",       // Google Workspace — Gmail corporativo filtra diferente do pessoal
+  EDITOR_COPY_EMAIL,       // Gmail pessoal — 73% da base é Gmail
+  EDITOR_WORKSPACE_EMAIL,  // Google Workspace — Gmail corporativo filtra diferente do pessoal
 ];
 
 /**
