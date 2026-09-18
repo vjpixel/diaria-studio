@@ -2172,23 +2172,56 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
   },
   {
     id: "ads-microsoft-2608",
-    label: "Microsoft Advertising — teste de 3 canais pagos (2608)",
+    label: "Microsoft Advertising — teste de 3 canais pagos (2608), campanha PMax",
     source: "microsoft-ads",
     // Mesma exceção de medium que `ads-google-2608` acima, mesmo motivo.
     medium: "cpc",
     campaign: "ads-microsoft-2608",
     panelUrl: "https://ads.microsoft.com",
-    field: "Configurações da campanha → URL de destino → Sufixo de URL final",
+    // Corrigido em 18/09/2026 (#8256): NÃO é o campo "Final URL suffix" da
+    // campanha nem do grupo de anúncio — os dois estão vazios, confirmado ao
+    // vivo. O UTM está embutido direto no Final URL do asset group da PMax
+    // (único asset group, "diar.ia.br - 4 conceitos").
+    field: "Asset group (PMax) → Final URL",
     description:
-      "Sufixo de URL final aplicado na campanha do teste de 3 canais pagos " +
-      "(#5845/#5838, D0=26/08/2026). `utm_source=microsoft-ads` é EXCLUSIVO " +
-      "deste teste (nomes canônicos reservados desde #5493 — RESERVED_CHANNEL_NAMES " +
-      "usa \"Microsoft Advertising\" como nome de CANAL em spend.csv, distinto " +
+      "UTM aplicado direto no Final URL do asset group da campanha PMax do " +
+      "teste de 3 canais pagos (#5845/#5838, D0=26/08/2026). `utm_source=" +
+      "microsoft-ads` é COMPARTILHADO com a campanha Search irmã (`ads-" +
+      "microsoft-2608-search`, abaixo) — as duas casam no mesmo braço em " +
+      "`CHANNEL_KEY_SPECS` (que agrega por `utm_source`, não por `campaign`); " +
+      "é o `campaign` que as distingue por asset group/anúncio (nomes " +
+      "canônicos reservados desde #5493 — RESERVED_CHANNEL_NAMES usa " +
+      "\"Microsoft Advertising\" como nome de CANAL em spend.csv, distinto " +
       "deste `utm_source`).",
     status: "ativo",
-    // Mesma ressalva de `ads-google-2608`: data de aplicação real no painel
-    // não confirmada por esta unidade.
+    // Confirmado ao vivo em 18/09/2026 (#8256): Final URL do asset group lido
+    // via Chrome logado, valor bate. Data de aplicação original (26/08) não
+    // reconfirmada por esta unidade, só o estado atual.
     appliedAt: "2026-08-21",
+  },
+  {
+    id: "ads-microsoft-2608-search",
+    label: "Microsoft Advertising — teste de 3 canais pagos (2608), campanha Search",
+    source: "microsoft-ads",
+    // Mesma exceção de medium que `ads-microsoft-2608` acima, mesmo motivo.
+    medium: "cpc",
+    campaign: "ads-microsoft-2608-search",
+    panelUrl: "https://ads.microsoft.com",
+    field: "Ad (Search) → Final URL",
+    description:
+      "2ª campanha do braço Microsoft (#8256): Search 571615527, criada em " +
+      "06/09/2026 pra medir intenção de uso separada da PMax. UTM embutido " +
+      "direto no Final URL do único ad do único grupo (AG1 - intencao de " +
+      "uso), não no campo Final URL suffix (vazio em campanha e grupo, " +
+      "confirmado ao vivo). `utm_source=microsoft-ads` compartilhado com a " +
+      "PMax (`ads-microsoft-2608` acima) — o braço soma as duas no relatório " +
+      "de gasto e no `CHANNEL_KEY_SPECS`; só o `campaign` distingue qual " +
+      "anúncio gerou o cadastro.",
+    status: "ativo",
+    // edicoes.jsonl linha 3 (2026-09-06T20:07:58Z / 17:07:58 BRT): criação da
+    // campanha já com este utm_campaign. Confirmado ao vivo em 18/09/2026
+    // (#8256) que o valor segue live no Final URL do ad.
+    appliedAt: "2026-09-06",
   },
   {
     id: "ads-meta-2608",
