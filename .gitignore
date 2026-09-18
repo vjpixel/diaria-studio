@@ -64,3 +64,13 @@ test/_tmp_*/
 # de runtime com e-mail de 100 assinantes pro repo PÚBLICO (#6691).
 scripts/_tmp_*/
 __pycache__/
+# #7130: scratch da daily-review do contínuo — corpos de finding/review
+# escritos na RAIZ do checkout (`.dr-body.md`, `.dr-review-{pr}.md`,
+# `.dr-steps.txt`) só para alimentar `gh issue create --body-file` /
+# `gh pr comment --body-file`. Conteúdo efêmero: o destino real é a issue ou
+# o comentário da PR, nunca o repo. Sem esta entrada o
+# `rescue-continuo-orphaned-work.ts` (que varre untracked sem allowlist)
+# empacota esses restos numa PR de "trabalho órfão recuperado" — foi a PR
+# #8281, 123 linhas cujo conteúdo já tinha virado a issue #8106 e reviews
+# de 4 PRs já mergeadas. ATENÇÃO: comentário em linha PRÓPRIA (ver #6691).
+.dr-*
