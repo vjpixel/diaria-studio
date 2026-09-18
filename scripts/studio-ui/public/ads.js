@@ -6,6 +6,8 @@
 // ?refresh=1) — nenhuma edição de spend.csv nesta página (import manual é
 // fora do Studio, ver `scripts/seed-spend-csv.ts`/CLAUDE.md).
 
+import { nearestDateIndex, tooltipRowsForIndex } from "./ads-chart-tooltip.js";
+
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
   fetchLabel: document.getElementById("fetch-label"),
@@ -397,6 +399,61 @@ const CHART_WIDTH = 720;
 const CHART_HEIGHT = 260;
 const CHART_MARGIN = { top: 16, right: 16, bottom: 28, left: 56 };
 
+/** Tooltip do gráfico (#8300): o SVG é desenhado à mão, então
+ *  não vem tooltip de graça de nenhuma lib. Em vez de depender de acertar
+ *  o `<circle>` de r=2.5 (alvo pequeno demais), o hover é por COLUNA de
+ *  data — qualquer x dentro do plot resolve o índice mais próximo e mostra
+ *  o valor de TODOS os canais naquele dia, que é a comparação que a tela
+ *  existe pra fazer. Canal sem valor no dia aparece como "—", nunca some
+ *  (some seria indistinguível de "canal não existe"). */
+function attachCampaignChartTooltip(cumulative, { allDates, plotW, xForIndex }) {
+  const svg = el.campaignChartContainer.querySelector("svg");
+  const tooltip = el.campaignChartContainer.querySelector(".ads-chart-tooltip");
+  const guide = el.campaignChartContainer.querySelector(".ads-chart-guide");
+  if (!svg || !tooltip || allDates.length === 0) return;
+
+  const hide = () => {
+    tooltip.hidden = true;
+    guide.hidden = true;
+  };
+
+  svg.addEventListener("mousemove", (event) => {
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0) return;
+    const scale = CHART_WIDTH / rect.width;
+    const plotX = (event.clientX - rect.left) * scale - CHART_MARGIN.left;
+    const nearest = nearestDateIndex(xForIndex, allDates.length, plotX, plotW);
+    if (nearest === null) {
+      hide();
+      return;
+    }
+
+    const rows = tooltipRowsForIndex(cumulative.series, nearest)
+      .map(
+        (row) =>
+          `<span class="ads-chart-tooltip-row"><span class="ads-chart-legend-swatch c${row.colorIndex}"></span>${escapeHtml(
+            shortChannelLabel(row.canal),
+          )}<strong>${row.value === null ? "—" : fmtBrl(row.value)}</strong></span>`,
+      )
+      .join("");
+    tooltip.innerHTML = `<span class="ads-chart-tooltip-date">${escapeHtml(allDates[nearest])}</span>${rows}`;
+    tooltip.hidden = false;
+
+    guide.setAttribute("x1", xForIndex(nearest).toFixed(1));
+    guide.setAttribute("x2", xForIndex(nearest).toFixed(1));
+    guide.hidden = false;
+
+    // Posiciona em px do container (o SVG escala com viewBox; converter de
+    // volta pelo mesmo `scale` mantém o tooltip colado na coluna certa).
+    const containerRect = el.campaignChartContainer.getBoundingClientRect();
+    const dotLeft = rect.left - containerRect.left + (CHART_MARGIN.left + xForIndex(nearest)) / scale;
+    const flip = dotLeft > containerRect.width / 2;
+    tooltip.style.left = `${flip ? dotLeft - tooltip.offsetWidth - 12 : dotLeft + 12}px`;
+    tooltip.style.top = `${Math.max(0, event.clientY - containerRect.top - tooltip.offsetHeight - 12)}px`;
+  });
+  svg.addEventListener("mouseleave", hide);
+}
+
 /** Gráfico de linhas SVG desenhado à mão (sem lib externa — Studio serve
  *  estático, sem build step) — custo/cadastro ACUMULADO por canal, eixo Y
  *  COMPARTILHADO entre todos os canais (requisitos 1/2 da issue #7536).
@@ -465,8 +522,12 @@ function renderCampaignChart(cumulative) {
         ${yTicks.join("")}
         ${xTicks.join("")}
         ${lines}
+        <line class="ads-chart-guide" x1="0" y1="0" x2="0" y2="${plotH}" hidden />
       </g>
-    </svg>`;
+    </svg>
+    <div class="ads-chart-tooltip" hidden></div>`;
+
+  attachCampaignChartTooltip(cumulative, { allDates, plotW, xForIndex });
 
   el.campaignChartLegend.innerHTML = cumulative.series
     .map(
