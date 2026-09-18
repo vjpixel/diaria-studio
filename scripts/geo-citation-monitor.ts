@@ -34,7 +34,7 @@
  * esperadas e tratadas fail-soft, não são bug.
  *
  * Uso:
- *   npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--out <path>] [--panel geral|hubs]
+ *   npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--out <path>] [--panel geral|hubs|acervo]
  *     [--max-monthly-usd <n>]
  *
  * `--dry-run`: não faz nenhuma chamada de rede nem escreve o log — só
@@ -56,14 +56,21 @@
  *
  * `--panel` (#4900 item a, default `geral`): qual conjunto de perguntas
  * rodar — `geral` são as 8 originais (`GEO_QUESTIONS`, posicionamento da
- * diar.ia.br); `hubs` é o painel temático novo (`GEO_HUB_QUESTIONS`, cobre
- * o que as páginas `arquivo.diar.ia.br/temas/{slug}` respondem). **Desde
- * 10/08/2026 os DOIS painéis rodam no cron** da task
- * `Diaria-Geo-Citation-Monitor`, como 2 passos independentes — o duplo
+ * diar.ia.br); `hubs` é o painel temático (`GEO_HUB_QUESTIONS`, cobre o que
+ * as páginas `arquivo.diar.ia.br/temas/{slug}` respondem); `acervo` (#8334)
+ * é o painel de cauda longa sobre o conteúdo do acervo de edições
+ * (`GEO_ACERVO_QUESTIONS`, cobre `/p/{slug}`) — a superfície que mais
+ * recebe fetch de bot (73-122/dia vs 11-17 dos hubs, medição que motivou a
+ * issue) e que nenhum dos 2 painéis anteriores testava. **Desde
+ * 10/08/2026 os painéis `geral`+`hubs` rodam no cron** da task
+ * `Diaria-Geo-Citation-Monitor`, como passos independentes — o duplo
  * escritor que segurava a ativação foi fechado (#4806/#4807) e o arquivo de
- * conflito, investigado e removido (#4900 item c). Ver docstring de
- * `GEO_HUB_QUESTIONS` pro porquê de a lista de perguntas NÃO ser derivada
- * do registry de hubs.
+ * conflito, investigado e removido (#4900 item c); `acervo` entra como um
+ * 3º passo independente, mesmo molde (task `Diaria-Geo-Citation-Monitor`,
+ * `scripts/lib/scheduled-tasks.ts`). Ver docstring de
+ * `GEO_HUB_QUESTIONS`/`GEO_ACERVO_QUESTIONS` pro porquê de cada lista de
+ * perguntas NÃO ser derivada automaticamente do respectivo registry de
+ * conteúdo.
  *
  * Exit (invocação manual, default): 0 sempre que rodar sem exceção
  * não-tratada (mesmo se todos os providers estiverem sem key — isso é
@@ -94,6 +101,7 @@ import {
   GEO_PROVIDERS,
   GEO_QUESTIONS,
   GEO_HUB_QUESTIONS,
+  GEO_ACERVO_QUESTIONS,
   DEFAULT_GEO_CITATIONS_LOG_PATH,
   appendGeoCitationLog,
   runGeoCitationMonitor,
@@ -231,7 +239,15 @@ export function readHistoryRecordsForPanel(
     try {
       const r = JSON.parse(line) as Partial<GeoCitationRecord>;
       if (typeof r.date !== "string" || typeof r.provider !== "string") continue;
-      const recordPanel: GeoQuestionPanel = r.panel === "hubs" ? "hubs" : "geral";
+      // #8334: normaliza pros 3 painéis válidos — "hubs"/"acervo" passam
+      // como estão, qualquer outra coisa (ausente, legado, valor
+      // desconhecido futuro) cai em "geral" (mesma regra de leitura do
+      // resto do módulo, ver docstring de `GeoCitationRecord.panel`). Sem
+      // isso, um registro `panel: "acervo"` cairia em "geral" aqui e
+      // contaminaria a detecção de provider-drop/rodada-anterior dos DOIS
+      // painéis (#4900 item b depende de comparar só registros do MESMO
+      // painel).
+      const recordPanel: GeoQuestionPanel = r.panel === "hubs" || r.panel === "acervo" ? r.panel : "geral";
       if (recordPanel !== panel) continue;
       out.push({ date: r.date, provider: r.provider });
     } catch {
@@ -397,10 +413,12 @@ async function main(): Promise<number> {
   // válido (#4616), mas no caminho agendado exit 0 sem medição é mentira.
   const strict = flags.has("strict");
   const outPath = values["out"] ?? DEFAULT_GEO_CITATIONS_LOG_PATH;
-  // #4900 item a: painel "geral" (default, GEO_QUESTIONS) ou "hubs"
-  // (GEO_HUB_QUESTIONS) — qualquer outro valor cai em "geral".
-  const panel: GeoQuestionPanel = values["panel"] === "hubs" ? "hubs" : "geral";
-  const questions = panel === "hubs" ? GEO_HUB_QUESTIONS : GEO_QUESTIONS;
+  // #4900 item a / #8334: painel "geral" (default, GEO_QUESTIONS), "hubs"
+  // (GEO_HUB_QUESTIONS) ou "acervo" (GEO_ACERVO_QUESTIONS) — qualquer outro
+  // valor cai em "geral".
+  const panel: GeoQuestionPanel =
+    values["panel"] === "hubs" ? "hubs" : values["panel"] === "acervo" ? "acervo" : "geral";
+  const questions = panel === "hubs" ? GEO_HUB_QUESTIONS : panel === "acervo" ? GEO_ACERVO_QUESTIONS : GEO_QUESTIONS;
   // #4904 item 5: teto de gasto mensal — undefined = sem teto (comportamento
   // inalterado). Validado aqui (não em resolveMonthlyCostGuardOutcome, que é
   // pura e recebe um número já válido ou undefined).

@@ -42,6 +42,8 @@ import {
   applyLegacySlugCorrections,
   rewriteLegacyImageHost,
   deriveDek,
+  buildArchiveNewsArticleJsonLd,
+  publishDateToIso,
 } from "../scripts/lib/site-archive-pages.ts";
 import { generateArchivePages, loadPosts, loadKitArchivePosts } from "../scripts/gen-archive-pages.ts";
 import type { UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
@@ -207,6 +209,23 @@ describe("buildArchivePageHtml", () => {
     const html = buildArchivePageHtml(makePost());
     assert.match(html, /<title>Exemplo de edição<\/title>/);
     assert.match(html, /<meta name="description" content="Exemplo de edição\. Subtítulo da edição">/);
+    assert.match(html, /<link rel="canonical" href="https:\/\/diar\.ia\.br\/p\/exemplo-de-edicao">/);
+  });
+
+  it("injeta o <script type=\"application/ld+json\"> de NewsArticle no <head> (#8336)", () => {
+    const html = buildArchivePageHtml(makePost());
+    assert.match(html, /<script type="application\/ld\+json">\{"@context":"https:\/\/schema\.org","@type":"NewsArticle"/);
+    assert.match(html, /"datePublished":"2025-08-24"/);
+    assert.match(html, /"author":\{"@type":"Person","name":"Pixel"/);
+    // o <script> vem DEPOIS do <link rel="canonical"> (ordem de headInject).
+    const canonicalIdx = html.indexOf('<link rel="canonical"');
+    const scriptIdx = html.indexOf('<script type="application/ld+json">');
+    assert.ok(canonicalIdx >= 0 && scriptIdx > canonicalIdx);
+  });
+
+  it("omite o <script> de NewsArticle quando a data não resolve, sem quebrar o resto do <head> (#8336)", () => {
+    const html = buildArchivePageHtml(makePost({ publish_date: null }));
+    assert.doesNotMatch(html, /application\/ld\+json/);
     assert.match(html, /<link rel="canonical" href="https:\/\/diar\.ia\.br\/p\/exemplo-de-edicao">/);
   });
 
@@ -380,6 +399,64 @@ describe("dedupeStyleBlocksInPage (#7116, Tier 1)", () => {
 describe("archiveUrlForSlug", () => {
   it("monta a URL /p/{slug} no apex", () => {
     assert.equal(archiveUrlForSlug("minha-edicao"), "https://diar.ia.br/p/minha-edicao");
+  });
+});
+
+describe("buildArchiveNewsArticleJsonLd (#8336 — dateline estruturado do acervo)", () => {
+  it("emite NewsArticle com headline/description/url/datePublished/dateModified/author/publisher", () => {
+    const post = makePost({ slug: "edicao-x", title: "Título da edição", publish_date: 1755993600 });
+    const script = buildArchiveNewsArticleJsonLd(post);
+    assert.ok(script, "esperava um <script> não-undefined");
+    assert.match(script!, /^<script type="application\/ld\+json">.*<\/script>$/);
+    const jsonText = script!.replace(/^<script type="application\/ld\+json">/, "").replace(/<\/script>$/, "");
+    const node = JSON.parse(jsonText);
+    assert.equal(node["@context"], "https://schema.org");
+    assert.equal(node["@type"], "NewsArticle");
+    assert.equal(node.headline, derivePageTitle(post));
+    assert.equal(node.description, deriveMetaDescription(post));
+    assert.equal(node.url, "https://diar.ia.br/p/edicao-x");
+    assert.equal(node.mainEntityOfPage, "https://diar.ia.br/p/edicao-x");
+    assert.equal(node.datePublished, "2025-08-24");
+    assert.equal(node.dateModified, "2025-08-24");
+    assert.deepEqual(node.author, { "@type": "Person", name: "Pixel", url: "https://www.linkedin.com/in/vjpixel/" });
+    assert.deepEqual(node.publisher, { "@type": "Organization", name: "diar.ia.br", url: "https://diar.ia.br" });
+    assert.equal(node.inLanguage, "pt-BR");
+  });
+
+  it("datePublished/dateModified batem com o MESMO resolvedor do <lastmod> do sitemap (publishDateToIso) — nunca divergem", () => {
+    const post = makePost({ slug: "edicao-y", publish_date: 1755993600 });
+    const script = buildArchiveNewsArticleJsonLd(post);
+    const node = JSON.parse(script!.replace(/^<script[^>]*>/, "").replace(/<\/script>$/, ""));
+    assert.equal(node.datePublished, publishDateToIso(post));
+  });
+
+  it("undefined quando a data não resolve (sem publish_date nem override) — buildArchivePageHtml nunca escreve datePublished inválido", () => {
+    const post = makePost({ slug: "sem-data-nenhuma", publish_date: null });
+    assert.equal(buildArchiveNewsArticleJsonLd(post), undefined);
+  });
+
+  it("</script>-safe: '<' dentro de headline/description vira \\u003c, nunca fecha o <script> cedo", () => {
+    const post = makePost({ slug: "edicao-com-tag", title: "Título com </script><script>alert(1)</script>" });
+    const script = buildArchiveNewsArticleJsonLd(post);
+    // Exatamente 1 ocorrência literal de "</script>" — a tag de fechamento
+    // real; qualquer "</script>" que viesse do TÍTULO precisa ter virado
+    // "</script>" (sem "<" cru) antes de chegar aqui.
+    assert.equal((script!.match(/<\/script>/g) ?? []).length, 1);
+    assert.ok(script!.endsWith("</script>"));
+    assert.match(script!, /\\u003c\/script>\\u003cscript>alert\(1\)\\u003c\/script>/);
+  });
+
+  it("#8336: displayed_date (precedência de editorialDate()) vence o publish_date cru quando presente", () => {
+    // 2025-08-27 (displayed_date) vs 2025-09-04 (publish_date, data de
+    // importação em lote) — mesma classe de correção que
+    // beehiiv-publish-date-overrides.json já faz pras 6 edições mais
+    // antigas, agora também via o campo displayed_date quando populado.
+    const post = makePost({ slug: "edicao-importada-com-displayed-date", publish_date: 1725408000, displayed_date: 1756252800 });
+    assert.equal(publishDateToIso(post), "2025-08-27");
+    const node = JSON.parse(
+      buildArchiveNewsArticleJsonLd(post)!.replace(/^<script[^>]*>/, "").replace(/<\/script>$/, ""),
+    );
+    assert.equal(node.datePublished, "2025-08-27");
   });
 });
 

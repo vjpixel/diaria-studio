@@ -233,8 +233,8 @@ tratada como "gastou zero".
 então nenhum guard de custo rodava de fato — o único freio era o teto de
 US$10/mês configurado direto na org do Console, opaco pra este repo, sem
 log nem registro se fosse atingido). `SCHEDULED_TASKS`
-(`scripts/lib/scheduled-tasks.ts`) passa `--max-monthly-usd 8` nos dois
-steps (`geral` e `hubs`) — deliberadamente ABAIXO dos US$10 do Console,
+(`scripts/lib/scheduled-tasks.ts`) passa `--max-monthly-usd 8` nos 3
+steps (`geral`, `hubs` e, desde #8334, `acervo`) — deliberadamente ABAIXO dos US$10 do Console,
 porque este guard é um PISO (não conta chamadas da Anthropic que deram
 timeout mas foram cobradas mesmo assim — ver tabela acima) e precisa de
 folga pra disparar ANTES do teto rígido do Console, com uma mensagem clara
@@ -286,14 +286,19 @@ Três defeitos achados na auditoria de 10/ago, endereçados por código nesta
 issue (a documentação completa do achado — incluindo o paper que embasa a
 cadência semanal — vive no corpo da própria issue, não duplicada aqui):
 
-- **`--panel geral|hubs`** (default `geral`, comportamento inalterado). O
-  painel `hubs` (`GEO_HUB_QUESTIONS`) cobre o que as páginas
+- **`--panel geral|hubs|acervo`** (default `geral`, comportamento
+  inalterado). O painel `hubs` (`GEO_HUB_QUESTIONS`) cobre o que as páginas
   `arquivo.diar.ia.br/temas/{slug}` respondem (Anthropic/Claude, OpenAI/
   ChatGPT, Google/Gemini) — série SEPARADA de `GEO_QUESTIONS`, nunca uma
   substituição (trocar as perguntas originais depois de já ter série medida
-  invalidaria o baseline de 07/ago). **Deliberadamente fora do cron por
-  enquanto** — ativar antes de fechar o duplo escritor (item abaixo / épica
-  #4798) multiplicaria o registro perdido a cada rodada nova.
+  invalidaria o baseline de 07/ago). O painel `acervo` (#8334, adicionado
+  depois deste registro histórico) cobre cauda longa sobre o conteúdo real
+  das edições publicadas (`/p/{slug}`) — ver docstring de
+  `GEO_ACERVO_QUESTIONS` em `scripts/lib/geo-citation-monitor.ts` pro
+  racional completo e a janela de derivação. Os 3 painéis rodam no cron
+  (`Diaria-Geo-Citation-Monitor`) desde #8334; `hubs` ficou fora dele por
+  um tempo até fechar o duplo escritor (item abaixo / épica #4798) — `acervo`
+  nasceu ativo, sem essa restrição.
 - **Aviso de queda de provedor.** Se a rodada atual roda com menos providers
   configurados que a rodada anterior do mesmo painel (ex: `GEMINI_API_KEY`
   ficou vazia nesta máquina), o log imprime um `AVISO` explícito — antes,
