@@ -1063,6 +1063,47 @@ describe("runStage1 --phase post-select-render", () => {
     });
   });
 
+  // Regressão #7980 (medido 18/09/2026): o passo §1v-scoring-features existia
+  // SÓ na prosa do playbook (`orchestrator-stage-1-research.md`, adicionado
+  // pelo #7986) e nunca entrou neste runner — que é o que de fato executa o
+  // Stage 1. Consequência silenciosa: as 5 edições posteriores ao backfill
+  // histórico de 11/09 (260914..260918) saíram TODAS sem
+  // `_internal/scoring-features.json`, tirando 30 eventos Track A (~29% das
+  // edições com evento) da população de calibração da #7972, com o número
+  // crescendo 6/dia. Nenhum erro foi emitido: o passo simplesmente não rodou.
+  // Antes do fix este teste falha (o script nunca aparece em `calls`).
+  it("§1v-scoring-features: backfill-scoring-features.ts roda sempre, com a edição corrente (#7980)", async () => {
+    return withTmpRoot("stage-1-run-p4-scoring-features-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec, calls } = makeFakeExec(happyHandlers());
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        const call = calls.find((c) => c.script.endsWith("backfill-scoring-features.ts"));
+        assert.ok(call, "backfill-scoring-features.ts não foi chamado no post-select-render");
+        assert.deepEqual(call.args, ["--edition", "260423", "--editions-dir", "data/editions"]);
+      });
+    });
+  });
+
+  // Fail-soft: o feature store atrasa a calibração, nunca bloqueia a edição
+  // (mesma decisão registrada no playbook). Um exit != 0 aqui vira nota de
+  // aviso, jamais HALT nem code 2.
+  it("§1v-scoring-features falhando NÃO bloqueia o Stage 1 (fail-soft, #7980)", async () => {
+    return withTmpRoot("stage-1-run-p4-scoring-features-soft-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec } = makeFakeExec(happyHandlers({ "backfill-scoring-features.ts": () => fail(1, "disco cheio") }));
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        assert.ok(!result.haltRequired);
+        assert.ok(result.notes.some((n) => n.includes("backfill-scoring-features") && n.includes("fail-soft")));
+      });
+    });
+  });
+
   it("validate-stage-1-completeness exit 1 -> HALT (code 2)", async () => {
     return withTmpRoot("stage-1-run-p4-completeness-", (root, editionDir) => {
       seedScored(root, editionDir);

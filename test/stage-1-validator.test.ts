@@ -15,6 +15,7 @@ import {
   validateSequentialNumbering,
   validateSectionMinimums,
   validateEmbeddingHealth,
+  validateScoringFeaturesPresent,
   runStage1Validation,
   type EmbeddingHealthStats,
 } from "../scripts/lib/stage-1-validator.ts";
@@ -171,6 +172,15 @@ describe("runStage1Validation (#581) — integration", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "stage1-run-"));
     mkdirSync(join(tmpDir, "_internal"), { recursive: true });
+    // #7980: uma edição bem-formada tem feature store de scoring. Os testes
+    // deste bloco contam warns/oks exatos pra OUTRAS assertions — sem esta
+    // fixture, a assertion nova entraria como warn em todos eles e os
+    // números diriam respeito a ela, não ao que cada teste mede.
+    writeFileSync(
+      join(tmpDir, "_internal", "scoring-features.json"),
+      JSON.stringify({ rows: [{ url: "u1" }] }),
+      "utf8",
+    );
   });
 
   afterEach(() => {
@@ -407,6 +417,67 @@ describe("validateSectionMinimums (#581 → #488 → #1568 → #1629)", () => {
       minUseMelhor: 0,
     });
     assert.equal(result.status, "ok");
+  });
+});
+
+describe("validateScoringFeaturesPresent (#7980)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "stage1-scoring-features-"));
+    mkdirSync(join(tmpDir, "_internal"), { recursive: true });
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  // Regressão do modo de falha real: §1v-scoring-features nunca rodou em
+  // 260914..260918 e nada avisou — 30 eventos Track A fora da população de
+  // calibração (#7972), crescendo 6/dia, descobertos só porque alguém foi
+  // ler o relatório de potência à mão.
+  it("arquivo ausente vira warn visível no gate, nunca blocker nem silêncio", () => {
+    const a = validateScoringFeaturesPresent(tmpDir);
+    assert.equal(a.status, "warn");
+    assert.ok(a.message.includes("backfill-scoring-features.ts"), "a mensagem precisa dizer como recuperar");
+  });
+
+  it("arquivo com rows vira ok e reporta a contagem", () => {
+    writeFileSync(
+      join(tmpDir, "_internal", "scoring-features.json"),
+      JSON.stringify({ rows: [{ url: "u1" }, { url: "u2" }] }),
+      "utf8",
+    );
+    const a = validateScoringFeaturesPresent(tmpDir);
+    assert.equal(a.status, "ok");
+    assert.equal(a.details?.rows, 2);
+  });
+
+  it("arquivo corrompido não colapsa em ok — warn próprio", () => {
+    writeFileSync(join(tmpDir, "_internal", "scoring-features.json"), "{ nao é json", "utf8");
+    const a = validateScoringFeaturesPresent(tmpDir);
+    assert.equal(a.status, "warn");
+    assert.ok(a.message.includes("corrompido"));
+  });
+
+  it("rows vazio conta como ausente pra calibração (warn)", () => {
+    writeFileSync(join(tmpDir, "_internal", "scoring-features.json"), JSON.stringify({ rows: [] }), "utf8");
+    const a = validateScoringFeaturesPresent(tmpDir);
+    assert.equal(a.status, "warn");
+  });
+
+  it("runStage1Validation inclui a assertion (não fica órfã)", () => {
+    writeFileSync(join(tmpDir, "01-categorized.md"), "x".repeat(300), "utf8");
+    writeFileSync(
+      join(tmpDir, "_internal", "01-categorized.json"),
+      JSON.stringify({ radar: [{ url: "u1", title: "GPT-5 release", summary: "x".repeat(60) }] }),
+      "utf8",
+    );
+    const result = runStage1Validation("260918", tmpDir, TEST_OPTS_NO_AUX);
+    const a = result.assertions.find((x) => x.name === "scoring_features_present");
+    assert.ok(a, "scoring_features_present precisa aparecer em runStage1Validation");
+    assert.equal(a.status, "warn");
+    assert.equal(result.blocking_count, 0, "nunca bloqueia a edição");
   });
 });
 
