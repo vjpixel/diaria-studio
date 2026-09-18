@@ -97,10 +97,13 @@ describe("verifyWeeklyWorkerDispatch — orquestra list+dlq+reconcile sem rede r
     assert.equal(r.updated.status, "failed");
   });
 
-  // Regressão #8310 — entrada nova DLQ passa por notifyEditor (portão #7960)
-  it("notifyWeeklyDlqAlarm chama notifyEditor (regressão #8310)", async () => {
-    const { notifyWeeklyDlqAlarm } = await import("../scripts/lib/weekly-worker-dlq-alarm.ts");
-    const res = await notifyWeeklyDlqAlarm(2, 0);
+  it("notifyWeeklyDlqAlarm só sinaliza entradas novas (regressão #8310)", async () => {
+    const { evaluateWeeklyWorkerDlqAlarm, notifyWeeklyDlqAlarm } = await import(
+      "../scripts/lib/weekly-worker-dlq-alarm.ts"
+    );
+    assert.equal(evaluateWeeklyWorkerDlqAlarm(2, 2).verdict, "ok");
+    assert.equal(evaluateWeeklyWorkerDlqAlarm(3, 2).newEntries, 1);
+    const res = await notifyWeeklyDlqAlarm(1, 2);
     assert.equal(typeof res, "object");
   });
 });

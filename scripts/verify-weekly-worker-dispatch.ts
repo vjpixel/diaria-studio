@@ -92,6 +92,9 @@ async function main(): Promise<void> {
     const published = JSON.parse(readFileSync(publishedPath, "utf8")) as {
       posts: unknown[];
     };
+    const previousFailed = (published.posts as Array<{ status?: string }>).filter(
+      (p) => p.status === "failed",
+    ).length;
     const { updated, changes } = await verifyWeeklyWorkerDispatch(
       published as Parameters<typeof verifyWeeklyWorkerDispatch>[0],
       workerUrl,
@@ -99,12 +102,12 @@ async function main(): Promise<void> {
     );
     if (changes > 0) {
       writeFileSync(publishedPath, JSON.stringify(updated, null, 2) + "\n", "utf8");
-      const newFailed = (updated.posts as Array<{ status?: string }>).filter((p) => p.status === "failed").length;
-      if (newFailed > 0) {
-        const alarm = evaluateWeeklyWorkerDlqAlarm(newFailed, 0); // caller real: notifica editor
-        if (alarm.verdict === "alarm-new-dlq-entry") {
-          await notifyWeeklyDlqAlarm(alarm.newEntries, 0);
-        }
+      const currentFailed = (updated.posts as Array<{ status?: string }>).filter(
+        (p) => p.status === "failed",
+      ).length;
+      const alarm = evaluateWeeklyWorkerDlqAlarm(currentFailed, previousFailed);
+      if (alarm.verdict === "alarm-new-dlq-entry") {
+        await notifyWeeklyDlqAlarm(alarm.newEntries, previousFailed);
       }
       console.log(`[verify-weekly-worker] ${changes} post(s) atualizados em data/weekly/${saturday}/06-weekly-published.json`);
     } else {
