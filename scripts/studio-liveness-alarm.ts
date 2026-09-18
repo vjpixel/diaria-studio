@@ -308,11 +308,15 @@ async function main(): Promise<void> {
     return;
   }
   if (notifyResult.emailSent) {
+    // Marca alarmado só em envio CONFIRMADO — se o push falhar, não avança
+    // (mesmo racional do `sem try/catch` pré-#7960: envio falho não é
+    // "editor já avisado").
     console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+    saveState(markStudioLivenessAlarmed(nextState), STATE_PATH);
   } else {
     console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${notifyResult.emailError}`);
+    saveState(nextState, STATE_PATH);
   }
-  saveState(markStudioLivenessAlarmed(nextState), STATE_PATH);
 }
 
 if (isMainModule(import.meta.url)) {

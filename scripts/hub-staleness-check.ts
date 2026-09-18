@@ -310,15 +310,15 @@ async function main(): Promise<void> {
       () => buildStalenessAlarmEmail(overdue, thresholdDays, now, issueRefs),
       { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
     );
-    if (result.qualifying.length > 0) {
-      nextAlarmState = advanceStalenessState(computeStalenessFingerprint(overdue), now);
-      if (result.emailSent) {
-        console.log(`${LOG_PREFIX} e-mail de alarme enviado (${overdue.length} vencida(s)).`);
-      } else {
-        console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
-      }
-    } else {
+    if (result.qualifying.length === 0) {
       console.log(`${LOG_PREFIX} ${overdue.length} vencida(s), mas política '${result.emailPolicy}': sem novo e-mail.`);
+    } else if (result.emailSent) {
+      // Marca alarmado só em envio CONFIRMADO — se o push falhar, não
+      // avança (mesmo racional do `sem try/catch` pré-#7960).
+      nextAlarmState = advanceStalenessState(computeStalenessFingerprint(overdue), now);
+      console.log(`${LOG_PREFIX} e-mail de alarme enviado (${overdue.length} vencida(s)).`);
+    } else {
+      console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
     }
   } else {
     console.log(`${LOG_PREFIX} nenhuma entrada vencida — sem alarme.`);

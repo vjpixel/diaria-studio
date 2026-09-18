@@ -297,12 +297,13 @@ async function main(): Promise<void> {
         () => buildPostmasterStaleAlarmEmail(newState, entry ? { date: entry.date } : null, issueRefs?.get("clarice-postmaster")),
         { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
       );
-      if (result.qualifying.length > 0) {
-        newState = markAlarmed(newState, now);
-      }
       if (result.qualifying.length === 0) {
         console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário (staleness geral).`);
       } else if (result.emailSent) {
+        // Marca alarmado só em envio CONFIRMADO — se o push falhar, não
+        // avança (mesmo racional do `sem try/catch` pré-#7960: um envio
+        // falho não pode ser tratado como "editor já avisado").
+        newState = markAlarmed(newState, now);
         console.log(`${LOG_PREFIX} e-mail de alarme enviado (streak=${newState.consecutiveStale}).`);
       } else {
         console.error(`${LOG_PREFIX} falha ao enviar e-mail (staleness geral): ${result.emailError}`);
@@ -324,12 +325,10 @@ async function main(): Promise<void> {
         () => buildCampaignSpamMissingAlarmEmail(newCampaignSpamMissingState, issueRefs?.get("clarice-postmaster-campaign-spam")),
         { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
       );
-      if (result.qualifying.length > 0) {
-        newCampaignSpamMissingState = markCampaignSpamMissingAlarmed(newCampaignSpamMissingState, now);
-      }
       if (result.qualifying.length === 0) {
         console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário (campaignSpam ausente).`);
       } else if (result.emailSent) {
+        newCampaignSpamMissingState = markCampaignSpamMissingAlarmed(newCampaignSpamMissingState, now);
         console.log(`${LOG_PREFIX} e-mail de alarme (campaignSpam ausente) enviado (streak=${newCampaignSpamMissingState.consecutiveMissing}).`);
       } else {
         console.error(`${LOG_PREFIX} falha ao enviar e-mail (campaignSpam ausente): ${result.emailError}`);
