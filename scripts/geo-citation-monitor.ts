@@ -413,8 +413,9 @@ async function main(): Promise<number> {
   // válido (#4616), mas no caminho agendado exit 0 sem medição é mentira.
   const strict = flags.has("strict");
   const outPath = values["out"] ?? DEFAULT_GEO_CITATIONS_LOG_PATH;
-  // #4900 item a: painel "geral" (default, GEO_QUESTIONS) ou "hubs"
-  // (GEO_HUB_QUESTIONS) — qualquer outro valor cai em "geral".
+  // #4900 item a / #8334: painel "geral" (default, GEO_QUESTIONS), "hubs"
+  // (GEO_HUB_QUESTIONS) ou "acervo" (GEO_ACERVO_QUESTIONS) — qualquer outro
+  // valor cai em "geral".
   const panel: GeoQuestionPanel =
     values["panel"] === "hubs" ? "hubs" : values["panel"] === "acervo" ? "acervo" : "geral";
   const questions = panel === "hubs" ? GEO_HUB_QUESTIONS : panel === "acervo" ? GEO_ACERVO_QUESTIONS : GEO_QUESTIONS;
