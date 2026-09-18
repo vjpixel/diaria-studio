@@ -91,8 +91,9 @@ export async function verifyWeeklyWorkerDispatch(
   published: SocialPublished,
   workerUrl: string,
   token: string,
+  fetchJson?: FetchJsonFn,
   now: Date = new Date(),
   retry: Parameters<typeof verifyWorkerDispatch>[5] = {},
 ): Promise<{ updated: SocialPublished; changes: number }> {
-  return verifyWorkerDispatch(published, workerUrl, token, undefined, now, retry);
+  return verifyWorkerDispatch(published, workerUrl, token, fetchJson, now, retry);
 }

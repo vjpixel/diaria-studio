@@ -78,6 +78,7 @@ describe("verifyWeeklyWorkerDispatch — orquestra list+dlq+reconcile sem rede r
       "tok",
       fetchJson,
       NOW,
+      { maxAttempts: 1 },
     );
 
     assert.equal(changes, 3); // t1 fired, t2 fired, t4 dlq — t3 still queued, facebook untouched
