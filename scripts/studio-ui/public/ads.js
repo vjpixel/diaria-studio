@@ -6,7 +6,7 @@
 // ?refresh=1) — nenhuma edição de spend.csv nesta página (import manual é
 // fora do Studio, ver `scripts/seed-spend-csv.ts`/CLAUDE.md).
 
-import { clampToContainer, nearestDateIndex, tooltipRowsForIndex } from "./ads-chart-tooltip.js";
+import { clampToContainer, nearestDateIndex, skippedPausedLabel, tooltipRowsForIndex } from "./ads-chart.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -549,6 +549,14 @@ function renderCampaignChart(cumulative) {
     el.campaignChartLegend.innerHTML += `<span class="hint">Sem linha (gastou, 0 cadastro): ${cumulative.omittedNoSignups
       .map((c) => escapeHtml(shortChannelLabel(c)))
       .join(", ")}</span>`;
+  }
+
+  // #8307 — o eixo X pula os dias sem veiculação, e isso precisa aparecer:
+  // comprimir o tempo em silêncio trocaria uma leitura falsa (trecho reto
+  // que parece estabilidade) por outra (dias que somem sem explicação).
+  const skipped = cumulative.skippedPausedDates ?? [];
+  if (skipped.length > 0) {
+    el.campaignChartLegend.innerHTML += `<span class="hint">${escapeHtml(skippedPausedLabel(skipped))}</span>`;
   }
 }
 

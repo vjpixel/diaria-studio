@@ -41,11 +41,22 @@
  *    `AdsTestRunStateRevisao`), então o mesmo status vale pros 3 braços.
  *    `revisao` ausente (infra sem consumidor que a escreva ainda, ver
  *    CLAUDE.md) é `"desconhecido"` — NUNCA `"ativa"` por omissão.
+ *
+ * ## #8307 — dia sem veiculação não vira ponto no gráfico
+ *
+ * O requisito 1 acima já evita a leitura falsa no eixo Y (acumulado em vez
+ * de diário). O #8307 fecha a mesma classe no eixo X: dia 100% dentro de
+ * uma pausa NÃO recebe ponto, porque desenhá-lo produz um trecho horizontal
+ * que lê como "o custo/cadastro ficou estável", quando o fato é "não houve
+ * veiculação". Só o dia INTEIRAMENTE pausado some — dia parcial veiculou de
+ * verdade (ver `isFullyPausedDate`). A acumulação continua atravessando os
+ * dias pulados, então nenhum gasto/cadastro residual se perde.
  */
 
 import {
   isDatePaused,
   normalizePauseIntervals,
+  pausedFractionOfDay,
   veiculationDaysInRange,
   type AdsTestPauseInterval,
 } from "./ads-test-pause-window.ts";
@@ -105,6 +116,15 @@ export interface CumulativeSeriesResult {
    *  aqui pra a UI poder dizer "X gastou e não converteu nenhum cadastro"
    *  em vez de simplesmente não mencionar o canal. */
   omittedNoSignups: string[];
+  /** #8307 — datas do intervalo que ficaram FORA do gráfico por não terem
+   *  tido veiculação nenhuma (dia 100% dentro de uma pausa). A UI usa isto
+   *  pra dizer quantos dias sumiram, em vez de comprimir o eixo X em
+   *  silêncio. Vazio quando nenhuma pausa foi informada. */
+  skippedPausedDates: string[];
+  /** As datas de fato plotadas, em ordem — `dateRangeInclusive` menos
+   *  `skippedPausedDates`. Todo ponto de todo canal segue este eixo X
+   *  comum (as pausas são da campanha inteira, nunca de um braço só). */
+  plottedDates: string[];
 }
 
 function round2(n: number): number {
@@ -128,6 +148,29 @@ function dateRangeInclusive(start: string, end: string): string[] {
 }
 
 /**
+ * Dia SEM NENHUMA veiculação — a fração pausada cobre as 24h do dia BRT
+ * (#8307).
+ *
+ * Critério DIFERENTE de `isDatePaused` de propósito, e a diferença é a
+ * decisão da issue: `isDatePaused` responde "qualquer fração pausada?",
+ * porque quem pergunta lá é ALARME/comparabilidade de janela (#8241/#8262),
+ * onde o conservador é suspeitar do dia inteiro. Aqui quem pergunta é um
+ * GRÁFICO de série temporal, e o conservador é o oposto: apagar um dia que
+ * veiculou 20h (09/09, pausou 16:05; 17/09, religou 00:16) esconderia gasto
+ * e cadastros reais daquele dia. Só some o dia em que nada rodou.
+ *
+ * Tolerância de 1 minuto em 24h (`>= 1 - 1/1440`) porque a fração vem de
+ * aritmética de milissegundos sobre timestamps com offset: pausa que cobre
+ * o dia inteiro pode sair 0,9999… por arredondamento, e um `>= 1` estrito
+ * deixaria o dia plotado por causa de um erro de ponto flutuante.
+ *
+ * @pure
+ */
+function isFullyPausedDate(dateStr: string, intervals: readonly AdsTestPauseInterval[]): boolean {
+  return pausedFractionOfDay(dateStr as Parameters<typeof pausedFractionOfDay>[0], intervals) >= 1 - 1 / 1440;
+}
+
+/**
  * Constrói a série acumulada por canal, dia a dia, dentro de
  * `[dateRange.start, dateRange.end]` — dia sem linha em `metrics`/`signups`
  * pra um canal conta como 0 NAQUELE dia, mas o acumulado segue carregando o
@@ -137,12 +180,19 @@ function dateRangeInclusive(start: string, end: string): string[] {
  * (canal sem NENHUM dado nas duas listas não aparece em lugar nenhum, não
  * há o que reportar).
  *
+ * `opts.pauseIntervals` (#8307, normalizados por `normalizePauseIntervals`)
+ * tira do gráfico as datas 100% pausadas — as datas efetivamente plotadas
+ * saem em `plottedDates` e as puladas em `skippedPausedDates`. Omitir o
+ * campo preserva o comportamento anterior (todo dia do intervalo vira
+ * ponto), que é o que os callers sem pausa conhecida devem fazer.
+ *
  * @pure
  */
 export function buildCumulativeSeries(
   metrics: ChannelDailyMetric[],
   signups: ChannelDailySignup[],
   dateRange: { start: string; end: string },
+  opts: { pauseIntervals?: readonly AdsTestPauseInterval[] } = {},
 ): CumulativeSeriesResult {
   const channels = new Set<string>();
   for (const m of metrics) channels.add(m.canal);
@@ -156,6 +206,13 @@ export function buildCumulativeSeries(
   const cadastrosByChannelDate = new Map<string, number>();
   for (const s of signups) cadastrosByChannelDate.set(`${s.canal}|${s.date}`, (cadastrosByChannelDate.get(`${s.canal}|${s.date}`) ?? 0) + s.cadastros);
 
+  // #8307: datas SEM NENHUMA veiculação (dia 100% dentro de uma pausa) não
+  // viram ponto. A acumulação passa por elas normalmente (ver loop abaixo) —
+  // o que some é só o PONTO, nunca o gasto/cadastro daquele dia.
+  const skippedPausedDates = (opts.pauseIntervals?.length ?? 0) > 0 ? dates.filter((d) => isFullyPausedDate(d, opts.pauseIntervals!)) : [];
+  const skippedSet = new Set(skippedPausedDates);
+  const plottedDates = dates.filter((d) => !skippedSet.has(d));
+
   const series: Array<{ canal: string; points: CumulativeSeriesPoint[] }> = [];
   const omittedNoSignups: string[] = [];
   let sharedYAxisMax: number | null = null;
@@ -167,6 +224,10 @@ export function buildCumulativeSeries(
     for (const date of dates) {
       gastoAcumulado = round2(gastoAcumulado + (gastoByChannelDate.get(`${canal}|${date}`) ?? 0));
       cadastrosAcumulados += cadastrosByChannelDate.get(`${canal}|${date}`) ?? 0;
+      // Dia 100% pausado acumula (acima) mas não é plotado — um eventual
+      // resíduo de gasto/cadastro nele aparece no ponto do PRÓXIMO dia
+      // veiculado, nunca se perde.
+      if (skippedSet.has(date)) continue;
       const custoPorCadastroAcumulado = cadastrosAcumulados > 0 ? round2(gastoAcumulado / cadastrosAcumulados) : null;
       points.push({ canal, date, gastoAcumuladoBrl: gastoAcumulado, cadastrosAcumulados, custoPorCadastroAcumulado });
       if (custoPorCadastroAcumulado !== null && (sharedYAxisMax === null || custoPorCadastroAcumulado > sharedYAxisMax)) {
@@ -180,7 +241,7 @@ export function buildCumulativeSeries(
     }
   }
 
-  return { series, sharedYAxisMax, omittedNoSignups };
+  return { series, sharedYAxisMax, omittedNoSignups, skippedPausedDates, plottedDates };
 }
 
 // ---------------------------------------------------------------------------

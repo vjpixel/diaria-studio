@@ -63,7 +63,10 @@
       <p class="hint">
         Acumulado desde o D0 — nunca o valor diário (dia sem cadastro
         seria divisão por zero). Escala compartilhada entre os canais;
-        canal sem nenhum cadastro no período não ganha linha.
+        canal sem nenhum cadastro no período não ganha linha. Dia sem
+        veiculação nenhuma (pausa cobrindo as 24h) fica fora do eixo —
+        plotá-lo pareceria estabilidade onde não houve campanha; dia
+        parcialmente pausado veiculou de verdade e continua no gráfico.
       </p>
       <div id="campaign-chart-empty" class="hint" hidden>Sem cadastro em nenhum canal ainda neste período.</div>
       <div id="campaign-chart-container"></div>

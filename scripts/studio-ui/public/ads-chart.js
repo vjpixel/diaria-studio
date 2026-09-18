@@ -1,5 +1,7 @@
-// ads-chart-tooltip.js (#8300) — lógica PURA do tooltip do gráfico
-// "Custo/cadastro acumulado por canal" do painel /ads.
+// ads-chart.js (#8300, #8307) — lógica PURA do gráfico "Custo/cadastro
+// acumulado por canal" do painel /ads: resolução de hover do tooltip e a
+// nota dos dias sem veiculação. (Nasceu como `ads-chart-tooltip.js` no
+// #8300 e foi renomeado no #8307, quando deixou de ser só do tooltip.)
 //
 // O gráfico é SVG desenhado à mão (`renderCampaignChart` em `ads.js`,
 // #7536) — sem lib externa, portanto sem tooltip de graça. Até o #8300 os
@@ -55,4 +57,31 @@ export function clampToContainer(pos, size, containerSize) {
   if (!Number.isFinite(pos)) return 0;
   if (!Number.isFinite(size) || !Number.isFinite(containerSize)) return Math.max(0, pos);
   return Math.max(0, Math.min(pos, Math.max(0, containerSize - size)));
+}
+
+/** Nota dos dias sem veiculação que ficaram FORA do gráfico (#8307).
+ *
+ *  O eixo X pula esses dias; comprimir o tempo em silêncio trocaria uma
+ *  leitura falsa (trecho reto que parece estabilidade) por outra (dias que
+ *  somem sem explicação), então a contagem fica visível ao lado da legenda.
+ *
+ *  Até 3 datas saem listadas; acima disso vira "N dias … (primeira a
+ *  última)" — nunca a lista inteira, que empurraria a legenda pra várias
+ *  linhas numa pausa longa como a de 10–16/09. */
+export function skippedPausedLabel(dates, fmtDate = formatDdMm) {
+  if (!Array.isArray(dates) || dates.length === 0) return "";
+  const noun = dates.length === 1 ? "dia sem veiculação (pausa)" : "dias sem veiculação (pausa)";
+  const detail =
+    dates.length <= 3
+      ? dates.map((d) => fmtDate(d)).join(", ")
+      : `${fmtDate(dates[0])} a ${fmtDate(dates[dates.length - 1])}`;
+  return `${dates.length} ${noun} fora do gráfico: ${detail}`;
+}
+
+/** `YYYY-MM-DD` → `DD/MM`. Só reformatação de string: a data já vem do
+ *  servidor como dia BRT, então passar por `new Date()` só arriscaria
+ *  deslocar um dia por fuso. */
+function formatDdMm(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso ?? ""));
+  return m ? `${m[3]}/${m[2]}` : String(iso ?? "");
 }
