@@ -260,9 +260,9 @@ export const GEO_ACERVO_QUESTIONS: readonly string[] = [
  * sitemap de `especial` e têm regeneração + alarme de defasagem diários
  * próprios (`Diaria-Entity-Pages-Regen`, #5125) — a 2ª maior aposta de
  * conteúdo GEO do projeto depois dos hubs, e até esta issue a única sem
- * medição de citação nenhuma (conferido contra as 24 questões de `GEO_QUESTIONS`
- * + `GEO_HUB_QUESTIONS` + `GEO_ACERVO_QUESTIONS`, nenhuma delas cobria essas
- * 8 páginas).
+ * medição de citação nenhuma (conferido contra as 30 questões de `GEO_QUESTIONS`
+ * (8) + `GEO_HUB_QUESTIONS` (16) + `GEO_ACERVO_QUESTIONS` (6), nenhuma delas
+ * cobria essas 8 páginas).
  *
  * **Forma da pergunta é mais perto de `GEO_HUB_QUESTIONS` que de
  * `GEO_ACERVO_QUESTIONS`** (decisão de desenho da issue, não uma escolha

@@ -529,8 +529,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       // `especial.diar.ia.br/entidades/{slug}/` (alibaba, amazon, apple,
       // deepseek, oracle, perplexity, samsung, xai) — a 2ª maior aposta de
       // conteúdo GEO do projeto depois dos hubs, e que nenhum dos 3 painéis
-      // acima testava (conferido contra as 24 questões de `GEO_QUESTIONS`+
-      // `GEO_HUB_QUESTIONS`+`GEO_ACERVO_QUESTIONS`, #8344). Mesmo
+      // acima testava (conferido contra as 30 questões de `GEO_QUESTIONS` (8)+
+      // `GEO_HUB_QUESTIONS` (16)+`GEO_ACERVO_QUESTIONS` (6), #8344). Mesmo
       // `--max-monthly-usd 8` (mesmo raciocínio do `monitor-acervo` acima —
       // é POR CHAMADA de `main()`, os 4 passos seguem sob o mesmo teto
       // real). Custo: 16 consultas × ~US$0,007 Anthropic / ~US$0,002

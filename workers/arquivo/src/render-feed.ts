@@ -17,12 +17,18 @@
  * **Conteúdo por item: título, link, data, resumo — NUNCA o corpo inteiro**
  * (issue item 2, fora de escopo explícito: "evita discussão de duplicata e
  * mantém o feed leve"). `description` de cada `<item>` é o PRÓPRIO título —
- * `titles-cache.json` não carrega um resumo/subtítulo por edição hoje (só
- * `title`+`publishDate`, ver `ArquivoTitleEntry`); usar o título como
- * `description` é um resumo honesto e curto, nunca o corpo. Se
- * `generate-arquivo-titles.ts` ganhar um campo de resumo real no futuro
- * (`subtitle` já existe em `RawCachedPost`, só não é lido hoje), trocar a
- * fonte aqui é a única mudança necessária.
+ * usar o título como `description` é um resumo honesto e curto, nunca o corpo.
+ *
+ * **Estado desde o #8345 (18/09/2026):** `titles-cache.json` JÁ carrega um
+ * resumo por edição — `generate-arquivo-titles.ts` passou a gravar `dek`
+ * (derivado de `subtitle`/`preview_text` via `deriveDek`, o mesmo que alimenta
+ * a `<meta name="dek">` das páginas `/p/*`), hoje consumido pela listagem HTML
+ * do arquivo (`render-archive.ts`). O feed **continua** usando só o título, e
+ * isso é estado corrente por inércia, não decisão registrada: ninguém avaliou
+ * se enriquecer a `description` com o `dek` (≤160 chars, bem dentro do
+ * "resumo curto, nunca o corpo" do item 2) é desejável. Quem for mexer aqui
+ * decide isso explicitamente — a troca de fonte em si é de uma linha, o campo
+ * já está no cache.
  *
  * **`MAX_FEED_ITEMS` — bounded, não as ~250 edições inteiras.** Convenção
  * comum de feed (mais recentes primeiro, tamanho previsível) — um leitor de
