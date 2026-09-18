@@ -16,10 +16,17 @@
  * HEAD atual no momento da medição (default). Não é o diff de 1 PR — é o
  * diff acumulado de TODOS os merges da rodada.
  *
+ * `--session-kind` aceita `overnight`, `develop`, `continuo` ou `interactive`
+ * (#7292, defeito 1 — sessão interativa coordenada, protocolo de
+ * `docs/coordenacao-merges.md`, passou a poder se declarar; antes só as 3
+ * skills automatizadas emitiam, e a série de 7d media só metade do
+ * trabalho real do repo).
+ *
  * Uso:
  *   npx tsx scripts/measure-round-diff-stats.ts --base <sha> --session-kind overnight
  *   npx tsx scripts/measure-round-diff-stats.ts --base <sha> --head <sha> --session-kind develop --edition 260902
  *   npx tsx scripts/measure-round-diff-stats.ts --base <sha> --session-kind continuo --dry-run
+ *   npx tsx scripts/measure-round-diff-stats.ts --base <sha> --session-kind interactive
  *
  * `--dry-run` calcula e imprime, mas NÃO grava no run-log.
  *
@@ -35,15 +42,11 @@ import { logEvent } from "./lib/run-log.ts";
 import {
   buildRoundDiffStatsRecord,
   buildRoundDiffStatsRunLogEvent,
-  type RoundSessionKind,
+  isValidRoundSessionKind,
+  VALID_ROUND_SESSION_KINDS,
 } from "./lib/round-diff-stats.ts";
 
 const LOG_PREFIX = "[measure-round-diff-stats]";
-const VALID_SESSION_KINDS: readonly RoundSessionKind[] = ["overnight", "develop", "continuo"];
-
-function isValidSessionKind(v: string): v is RoundSessionKind {
-  return (VALID_SESSION_KINDS as readonly string[]).includes(v);
-}
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -54,11 +57,11 @@ async function main(): Promise<void> {
   const dryRun = hasFlag(argv, "dry-run");
 
   if (!base || !sessionKind) {
-    console.error(`${LOG_PREFIX} uso: --base <sha> --session-kind overnight|develop|continuo [--head <sha>] [--edition AAMMDD] [--dry-run]`);
+    console.error(`${LOG_PREFIX} uso: --base <sha> --session-kind ${VALID_ROUND_SESSION_KINDS.join("|")} [--head <sha>] [--edition AAMMDD] [--dry-run]`);
     process.exit(1);
   }
-  if (!isValidSessionKind(sessionKind)) {
-    console.error(`${LOG_PREFIX} --session-kind inválido: '${sessionKind}' (esperado: ${VALID_SESSION_KINDS.join(", ")})`);
+  if (!isValidRoundSessionKind(sessionKind)) {
+    console.error(`${LOG_PREFIX} --session-kind inválido: '${sessionKind}' (esperado: ${VALID_ROUND_SESSION_KINDS.join(", ")})`);
     process.exit(1);
   }
 

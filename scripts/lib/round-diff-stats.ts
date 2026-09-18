@@ -6,6 +6,19 @@
  * `/diaria-develop`, `/diaria-continuo`), e agrega a série em janelas (7d/
  * 30d/90d) pra tornar a razão consultável, não só pontual.
  *
+ * ─── `interactive` (#7292, defeito 1) ──────────────────────────────────────
+ *
+ * Os 3 kinds originais cobrem só as 3 skills automatizadas. Uma sessão
+ * interativa COORDENADA (protocolo de `docs/coordenacao-merges.md` — várias
+ * sessões trabalhando issues em paralelo, uma delas mergeando) também
+ * acumula diff de rodada, mas não roda nenhuma dessas skills — não tinha
+ * `sessionKind` válido pra se declarar, então nunca emitia o evento. Achado
+ * ao vivo na #7292 (comentário 2, 03/09/2026): a rodada coordenada daquela
+ * noite (14 PRs, 55 arquivos, +5.042/−140) não apareceu em NENHUM
+ * `run-log.jsonl` — teve que ser medida à mão com `git diff --shortstat`,
+ * e a série de 7d acabou vendo só metade do trabalho real do repo (o lado
+ * `overnight`). `interactive` fecha essa lacuna de cobertura.
+ *
  * ─── Onde a série mora ─────────────────────────────────────────────────────
  *
  * Não é um arquivo novo — reusa `data/run-log.jsonl` (via
@@ -28,7 +41,20 @@ import type { RunLogEvent } from "./run-log.ts";
 
 export const ROUND_DIFF_STATS_MESSAGE = "round_diff_stats";
 
-export type RoundSessionKind = "overnight" | "develop" | "continuo";
+export type RoundSessionKind = "overnight" | "develop" | "continuo" | "interactive";
+
+/** Todos os `sessionKind` válidos — fonte única pro CLI (`measure-round-diff-stats.ts`)
+ * validar `--session-kind`, em vez de duplicar a lista lá (#7292). */
+export const VALID_ROUND_SESSION_KINDS: readonly RoundSessionKind[] = [
+  "overnight",
+  "develop",
+  "continuo",
+  "interactive",
+];
+
+export function isValidRoundSessionKind(value: string): value is RoundSessionKind {
+  return (VALID_ROUND_SESSION_KINDS as readonly string[]).includes(value);
+}
 
 export interface RoundDiffStatsRecord {
   sessionKind: RoundSessionKind;
