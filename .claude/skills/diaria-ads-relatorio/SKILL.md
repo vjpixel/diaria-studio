@@ -72,9 +72,10 @@ soma PMax + Search automaticamente (separação por campanha é escopo do
 #8256, não desta skill).
 
 **Os cadastros aqui são contagem BRUTA do Kit — não excluem e-mail de teste
-do editor** (`vjpixel+...`/`pixel@memelab.com.br`). Antes de usar esse
-número no relatório, descarte manualmente qualquer cadastro de teste
-reconhecível (mesmo procedimento do Passo 2 abaixo). `--json` devolve o
+do editor** (endereço contendo o texto `vjpixel` ou `pixel` seguido de
+`memelab`). Antes de usar esse número no relatório, descarte manualmente
+qualquer cadastro de teste reconhecível (mesmo procedimento do Passo 2
+abaixo). `--json` devolve o
 mesmo resultado estruturado, incluindo `sources` (status por fonte) e
 `signups`/`metrics` crus.
 
@@ -111,8 +112,8 @@ atribuição vive nos **campos personalizados** `utm_source`/`utm_medium`/
 O Passo 1b já traz a contagem por braço/dia via `fetchCampaignEconomicsSources`
 (mesma fonte do `/ads` do Studio) — é contagem BRUTA, sem excluir e-mail de
 teste. **Antes de usar o número no relatório, descarte** qualquer cadastro
-cujo e-mail contenha `vjpixel` ou `pixel@memelab` (ex:
-`vjpixel+gtm-teste@gmail.com`) — para isso, consulte o Kit diretamente
+cujo e-mail contenha o texto `vjpixel` ou a sequência `pixel` seguida de
+`memelab` (ex: um alias `vjpixel+algo` de teste) — para isso, consulte o Kit diretamente
 (`filter_subscribers`/MCP, ou `listKitSubscribersPage` de
 `scripts/lib/kit-subscribers.ts`) filtrando por `fields.utm_source` do
 braço, e subtraia os que casarem. **Diga no relatório quantos foram

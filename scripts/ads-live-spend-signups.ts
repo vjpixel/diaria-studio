@@ -17,7 +17,8 @@
  *
  * Os cadastros do Kit aqui são CONTAGEM BRUTA — `fetchKitSignupsByChannel`
  * (a mesma função que alimenta `/ads`) não exclui os e-mails de teste do
- * próprio editor (`vjpixel+...`/`pixel@memelab.com.br`). A exclusão continua
+ * próprio editor (endereço contendo o texto `vjpixel` ou `pixel` seguido de
+ * `memelab`). A exclusão continua
  * manual, como no SKILL.md local (Passo 2) — o número aqui é o ponto de
  * partida pro agente, não o CAC final. Achado registrado em #8349 (gap
  * genérico de `fetchKitSignupsByChannel`, fora do escopo desta unidade —
