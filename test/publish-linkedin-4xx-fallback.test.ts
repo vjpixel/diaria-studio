@@ -7,6 +7,14 @@
  * 4xx propaga como falha dura; fallback só para 5xx/timeout/rede;
  * `allowImmediateFallback: false` bloqueia fallback até para 5xx.
  *
+ * #8311: `postToWorkerQueue` (publish-linkedin.ts) colapsou na cópia
+ * compartilhada de `scripts/lib/worker-queue-client.ts`, que herda o guard
+ * do #8303 — 1 tentativa em 4xx, não `maxAttempts`. O 1o teste abaixo foi
+ * ajustado (`workerCalls: 1`, era 2) pra refletir isso; o resultado final
+ * (`entry.status === "failed"`, zero chamadas ao Make) continua igual,
+ * porque quem decide propagar 4xx como falha dura é `isClientError` em
+ * `dispatchEntry`, não o número de tentativas do cliente HTTP.
+ *
  * Testes in-process com globalThis.fetch mockado (mesmo padrão da suite #595
  * em publish-linkedin.test.ts).
  */
@@ -71,7 +79,10 @@ describe("#6015 dispatchEntry: Worker 4xx não cai no fallback Make imediato", (
       assert.equal(entry.status, "failed", "4xx deve virar falha dura, não draft/publicado");
       assert.notEqual(entry.fallback_used, true, "não pode marcar fallback_used");
       assert.equal(makeCalls, 0, `webhook Make não pode ser chamado (recebeu ${makeCalls} chamadas)`);
-      assert.equal(workerCalls, 2, "2 tentativas ao Worker (maxAttempts default), depois desiste");
+      // #8311: 1 tentativa ao Worker, não maxAttempts (2) — o cliente
+      // compartilhado (#8303) não retenta 4xx, já que reenviar o mesmo
+      // payload/token não muda um erro de validação.
+      assert.equal(workerCalls, 1, "4xx não deve retentar — 1 tentativa ao Worker, depois desiste");
       assert.match((entry.reason as string) ?? "", /HTTP 400|validação/i);
     } finally {
       cleanup();

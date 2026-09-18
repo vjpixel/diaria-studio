@@ -196,11 +196,16 @@ describe("postToWorkerQueue (Cloudflare Worker enqueue)", () => {
     assert.equal(r.key, "queue:retry-ok");
   });
 
-  it("lanca apos maxAttempts com 401 unauthorized", async () => {
+  it("lanca com 401 unauthorized, SEM retentar (#8303 — 4xx é erro de validação, retry não muda o resultado)", async () => {
+    // #8311: desde o colapso no cliente compartilhado, esta função herda o
+    // guard do #8303 — 4xx aborta na 1a tentativa em vez de gastar as
+    // `maxAttempts` (2) configuradas. O 2o POST seria byte a byte idêntico
+    // ao 1o (mesmo token, capturado fora do loop, sem refresh entre
+    // tentativas), então reenviar nunca mudaria o 401 em outra coisa.
     let n = 0;
     globalThis.fetch = async (_u: string | URL | Request, _o?: RequestInit) => { n++; return new Response("unauthorized", { status: 401 }); };
     await assert.rejects(() => postToWorkerQueue(workerUrl, "wrong-token", payload, 2), /Worker queue HTTP 401/);
-    assert.equal(n, 2);
+    assert.equal(n, 1, "4xx não deve retentar — 1 tentativa, não maxAttempts");
   });
 
   it("normaliza trailing slash no workerUrl", async () => {
