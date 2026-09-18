@@ -90,9 +90,15 @@ const ALLOWLIST: string[] = [
   //     e-mail já sai no máximo 1x na vida por campanha independente do
   //     `legacyResendIntent` escolhido).
   //
-  // Ficam 3, cada um com motivo PRÓPRIO pra não entrar nesta fatia:
-  "scripts/systemd-failed-units-alarm.ts",
-  "scripts/task-never-armed-alarm.ts",
+  // `systemd-failed-units-alarm.ts` e `task-never-armed-alarm.ts` migrados
+  // (5ª fatia, #7960): o 1º tinha `ALARM_DEDUP_EXPIRY_MS` (reenvio
+  // periódico independente do conjunto mudar) — mantido como gate CUSTOM
+  // externo a `notifyEditorForOutcomes` (que usa `"resend-every-run"`,
+  // porque o gate externo já decide o dedup de verdade). O 2º não tinha
+  // TTL, só comparação pura de conjunto — migrou como os 13 anteriores,
+  // `"dedupe-new-occurrences-only"`, sem state file próprio.
+  //
+  // Fica 1, com motivo PRÓPRIO pra não entrar nesta fatia:
   // `worker-drift-check.ts`: tem 2 fluxos de e-mail distintos no mesmo
   // arquivo — o alarme de drift (issue-based, migraria como os 13 acima)
   // E o alarme de falha SUSTENTADA da API Cloudflare (`shouldAlarmApiError`),
