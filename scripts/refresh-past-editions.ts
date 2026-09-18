@@ -122,41 +122,34 @@ function isNonContentHost(host: string): boolean {
 }
 
 /**
- * #8302: true se `url` é o link de afiliado Amazon com a tag da diária
- * (`tag=diaria-20`, gerado pelo SiteStripe nos boxes de divulgação de livros).
- * Checa a QUERY, não o domínio — `amazon.com.br` bare fica de fora de
- * `FOOTER_DOMAINS` de propósito (#3028: uma página de produto Amazon pode ser
- * link oficial de um LANÇAMENTO legítimo; excluir o domínio inteiro
- * suprimiria esse artigo). O parâmetro `tag=diaria-20` é específico de
- * afiliado e nunca aparece num link oficial de lançamento.
+ * #8302: true se `parsed` (já um `new URL()`) é o link de afiliado Amazon com
+ * a tag da diária (`tag=diaria-20`, gerado pelo SiteStripe nos boxes de
+ * divulgação de livros). Checa a QUERY, não o domínio — `amazon.com.br` bare
+ * fica de fora de `FOOTER_DOMAINS` de propósito (#3028: uma página de
+ * produto Amazon pode ser link oficial de um LANÇAMENTO legítimo; excluir o
+ * domínio inteiro suprimiria esse artigo). O parâmetro `tag=diaria-20` é
+ * específico de afiliado e nunca aparece num link oficial de lançamento.
+ *
+ * Recebe o `URL` já parseado (não a string) — code-review da PR #8302: o
+ * `isContentLink` chamador faz UM `new URL()` só e repassa pra todos os
+ * checks de host/query, em vez de cada um reparsear a mesma string.
  */
-function isAmazonAffiliateLink(url: string): boolean {
-  try {
-    const u = new URL(url);
-    const host = u.hostname.replace(/^www\./, "");
-    return host === "amazon.com.br" && u.searchParams.get("tag") === "diaria-20";
-  } catch {
-    return false;
-  }
+function isAmazonAffiliateLink(parsed: URL, host: string): boolean {
+  return host === "amazon.com.br" && parsed.searchParams.get("tag") === "diaria-20";
 }
 
 /**
- * #8302: true se `url` é uma página de perfil de usuário do Flickr
- * (`flickr.com/people/{id}`) — link de crédito de foto embutido perto de uma
- * imagem no HTML publicado (achado real: edição 260914), nunca um artigo.
- * Path-based (não domínio inteiro): uma página `flickr.com/photos/...`
- * poderia em tese ser citada como fonte de uma notícia sobre a própria foto —
- * o padrão `/people/` é especificamente a página de perfil do fotógrafo, o
- * que o Beehiiv usa pra créditar a imagem, nunca conteúdo editorial.
+ * #8302: true se `parsed` (já um `new URL()`) é uma página de perfil de
+ * usuário do Flickr (`flickr.com/people/{id}`) — link de crédito de foto
+ * embutido perto de uma imagem no HTML publicado (achado real: edição
+ * 260914), nunca um artigo. Path-based (não domínio inteiro): uma página
+ * `flickr.com/photos/...` poderia em tese ser citada como fonte de uma
+ * notícia sobre a própria foto — o padrão `/people/` é especificamente a
+ * página de perfil do fotógrafo, o que o Beehiiv usa pra créditar a imagem,
+ * nunca conteúdo editorial.
  */
-function isFlickrProfileLink(url: string): boolean {
-  try {
-    const u = new URL(url);
-    const host = u.hostname.replace(/^www\./, "");
-    return host === "flickr.com" && u.pathname.startsWith("/people/");
-  } catch {
-    return false;
-  }
+function isFlickrProfileLink(parsed: URL, host: string): boolean {
+  return host === "flickr.com" && parsed.pathname.startsWith("/people/");
 }
 
 /**
@@ -183,11 +176,14 @@ export function isContentLink(url: string): boolean {
   if (IMAGE_EXTENSION_RE.test(url)) return false;
   if (ASSET_EXTENSION_RE.test(url)) return false;
   if (FOOTER_DOMAINS.some((d) => url.includes(d))) return false;
-  if (isAmazonAffiliateLink(url)) return false;
-  if (isFlickrProfileLink(url)) return false;
+  // #8302 code-review: um único `new URL()` compartilhado pelos 3 checks de
+  // host/query abaixo, em vez de cada helper reparsear a mesma string.
   try {
-    const host = new URL(url).hostname.replace(/^www\./, "");
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
     if (isNonContentHost(host)) return false;
+    if (isAmazonAffiliateLink(parsed, host)) return false;
+    if (isFlickrProfileLink(parsed, host)) return false;
   } catch {
     // URL malformada — deixa passar pro comportamento anterior (extractLinks
     // já descarta o que não parseia como URL antes de chegar aqui).
