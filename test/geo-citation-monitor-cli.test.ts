@@ -125,6 +125,22 @@ describe("scripts/geo-citation-monitor.ts main() (#4558 Parte C)", () => {
       assert.equal(code, 0);
       assert.ok(logs.some((l) => l.includes('painel "geral"')));
     });
+
+    it("--dry-run --panel acervo imprime as perguntas do painel de acervo (#8334), não as de GEO_QUESTIONS/GEO_HUB_QUESTIONS", async () => {
+      process.argv = ["node", "geo-citation-monitor.ts", "--dry-run", "--panel", "acervo"];
+      const code = await main();
+      assert.equal(code, 0);
+      assert.ok(logs.some((l) => l.includes('painel "acervo"')));
+      assert.ok(
+        logs.some((l) => l.includes("OpenAI")),
+        "esperava alguma pergunta do painel de acervo mencionando OpenAI",
+      );
+      assert.ok(!logs.some((l) => l.includes("newsletter diária")), "não deveria imprimir pergunta do painel 'geral'");
+      assert.ok(
+        !logs.some((l) => l.includes("Claude Opus 5")),
+        "não deveria imprimir pergunta do painel 'hubs'",
+      );
+    });
   });
 
   describe("--max-monthly-usd (#4904 item 5)", () => {
@@ -260,6 +276,25 @@ describe("readHistoryRecordsForPanel (scripts/geo-citation-monitor.ts, I/O real 
     const path = resolve(tmpDir, "history.jsonl");
     writeFileSync(path, "não é json\n" + JSON.stringify({ date: "2026-08-03", provider: "openai" }) + "\n");
     assert.deepEqual(readHistoryRecordsForPanel(path, "geral"), [{ date: "2026-08-03", provider: "openai" }]);
+  });
+
+  it("#8334: filtra 'acervo' corretamente — NÃO cai em 'geral' (regressão do bug que a issue teria introduzido sem o fix)", () => {
+    const path = resolve(tmpDir, "history.jsonl");
+    const lines = [
+      JSON.stringify({ date: "2026-09-14", provider: "openai", panel: "geral" }),
+      JSON.stringify({ date: "2026-09-14", provider: "google", panel: "hubs" }),
+      JSON.stringify({ date: "2026-09-14", provider: "anthropic", panel: "acervo" }),
+    ];
+    writeFileSync(path, lines.join("\n") + "\n");
+
+    const acervo = readHistoryRecordsForPanel(path, "acervo");
+    assert.equal(acervo.length, 1);
+    assert.equal(acervo[0].provider, "anthropic");
+
+    // sanity: 'acervo' não vaza pro balde de 'geral'.
+    const geral = readHistoryRecordsForPanel(path, "geral");
+    assert.equal(geral.length, 1);
+    assert.equal(geral[0].provider, "openai");
   });
 });
 

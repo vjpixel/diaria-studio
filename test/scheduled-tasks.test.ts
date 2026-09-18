@@ -213,6 +213,78 @@ describe("Diaria-SEO-Weekly: loop semanal roda os dois scripts de medição (#41
     // teto nominal, é a cota real (GSC) que decide, não este teste.
     assert.ok(somaNominal >= GSC_URL_INSPECTION_DAILY_QUOTA, "sanity: os dois --limit nominais juntos cobrem a cota inteira");
   });
+
+  // #8335: 4 hosts de curadoria que nunca entraram na checagem semanal —
+  // mesmo molde do step "index-arquivo" acima.
+  for (const { key, host } of [
+    { key: "index-especial", host: "especial.diar.ia.br" },
+    { key: "index-livros", host: "livros.diar.ia.br" },
+    { key: "index-cursos", host: "cursos.diar.ia.br" },
+    { key: "index-retrospectiva", host: "retrospectiva.diar.ia.br" },
+  ]) {
+    it(`step '${key}' chama seo-index-check.ts com --sitemap de ${host}, SEM --only-posts (#8335)`, () => {
+      const t = getScheduledTaskByName("Diaria-SEO-Weekly");
+      assert.ok(t);
+      const step = t!.steps.find((s) => s.key === key);
+      assert.ok(step, `step '${key}' ausente`);
+      assert.equal(step!.script, "scripts/seo-index-check.ts");
+      assert.ok(step!.args?.includes(`https://${host}/sitemap.xml`));
+      assert.ok(
+        !step!.args?.includes("--only-posts"),
+        `--only-posts zeraria o sitemap de ${host} (filtro /\\/p\\//, nenhum destes hosts usa esse path)`,
+      );
+      const limitIndex = step!.args?.indexOf("--limit") ?? -1;
+      assert.ok(limitIndex >= 0, `--limit ausente no step '${key}'`);
+      assert.equal(step!.args![limitIndex + 1], String(GSC_URL_INSPECTION_DAILY_QUOTA));
+      const suffixIndex = step!.args?.indexOf("--out-suffix") ?? -1;
+      assert.ok(suffixIndex >= 0, `--out-suffix ausente no step '${key}' (colidiria com os demais steps)`);
+    });
+  }
+
+  it("artigo.diar.ia.br NÃO entra na checagem — responde 400 em /robots.txt e serve sitemap vazio (#7793, issue separada)", () => {
+    const t = getScheduledTaskByName("Diaria-SEO-Weekly");
+    assert.ok(t);
+    for (const step of t!.steps) {
+      assert.ok(
+        !step.args?.some((a) => a.includes("artigo.diar.ia.br")),
+        `step '${step.key}' não deveria citar artigo.diar.ia.br (#7793)`,
+      );
+    }
+  });
+
+  it("os --out-suffix dos 6 steps 'index*' são todos distintos — nenhum colide no mesmo index-status-{data}.json/.md", () => {
+    const t = getScheduledTaskByName("Diaria-SEO-Weekly");
+    assert.ok(t);
+    const indexSteps = t!.steps.filter((s) => s.key.startsWith("index"));
+    assert.equal(indexSteps.length, 6, "esperava 'index' + 5 steps 'index-{host}' (arquivo/especial/livros/cursos/retrospectiva)");
+    const suffixes = indexSteps.map((s) => {
+      const i = s.args?.indexOf("--out-suffix") ?? -1;
+      return i >= 0 ? s.args![i + 1] : undefined; // step "index" (host principal) não tem --out-suffix — undefined é o valor esperado só pra ele
+    });
+    const named = suffixes.filter((s): s is string => s !== undefined);
+    assert.equal(new Set(named).size, named.length, "--out-suffix duplicado entre steps");
+  });
+});
+
+describe("Diaria-Geo-Citation-Monitor: painel 'acervo' registrado como 3º passo (#8334)", () => {
+  it("step 'monitor-acervo' chama geo-citation-monitor.ts com --panel acervo --strict", () => {
+    const t = getScheduledTaskByName("Diaria-Geo-Citation-Monitor");
+    assert.ok(t);
+    const step = t!.steps.find((s) => s.key === "monitor-acervo");
+    assert.ok(step, "step 'monitor-acervo' ausente");
+    assert.equal(step!.script, "scripts/geo-citation-monitor.ts");
+    assert.ok(step!.args?.includes("--panel"));
+    assert.ok(step!.args?.includes("acervo"));
+    assert.ok(step!.args?.includes("--strict"));
+    assert.ok(step!.args?.includes("--max-monthly-usd"), "mesmo teto de custo dos outros 2 passos");
+  });
+
+  it("os 3 painéis ('monitor'/'monitor-hubs'/'monitor-acervo') continuam presentes — nenhum foi substituído", () => {
+    const t = getScheduledTaskByName("Diaria-Geo-Citation-Monitor");
+    assert.ok(t);
+    const keys = t!.steps.map((s) => s.key);
+    assert.deepEqual(keys, ["monitor", "monitor-hubs", "monitor-acervo"]);
+  });
 });
 
 describe("getScheduledTaskByName / listScheduledTaskNames", () => {

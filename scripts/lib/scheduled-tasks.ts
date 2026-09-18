@@ -483,13 +483,16 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Geo-Citation-Monitor",
     description: "monitor semanal de citacao por assistente de IA",
-    // Dois painéis, dois passos independentes (#4900 item a). O passo `hubs`
-    // foi ativado em 10/08/2026: ele estava pronto e desligado esperando o
-    // fim do duplo escritor (#4806/#4807, ambas fechadas) e a resolução do
-    // arquivo de conflito (item c — investigado, era subconjunto estrito do
-    // arquivo bom, removido). Passos separados e não um flag só porque cada
-    // painel tem a própria série e o próprio baseline: se um provedor cair
-    // no `geral`, o `hubs` daquela semana ainda é registrado.
+    // Três painéis, três passos independentes (#4900 item a; `acervo`,
+    // #8334). O passo `hubs` foi ativado em 10/08/2026: ele estava pronto e
+    // desligado esperando o fim do duplo escritor (#4806/#4807, ambas
+    // fechadas) e a resolução do arquivo de conflito (item c —
+    // investigado, era subconjunto estrito do arquivo bom, removido). O
+    // passo `monitor-acervo` nasce ativo desde o #8334 — sem o duplo
+    // escritor que segurou `hubs`. Passos separados e não um flag só porque
+    // cada painel tem a própria série e o próprio baseline: se um provedor
+    // cair no `geral`, o `hubs`/`acervo` daquela semana ainda são
+    // registrados.
     //
     // `--max-monthly-usd 8` (#4904, achado do silent-failure-hunter da PR
     // que reativou a Anthropic): antes NENHUM guard de custo rodava na task
@@ -508,6 +511,19 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         key: "monitor-hubs",
         script: "scripts/geo-citation-monitor.ts",
         args: ["--panel", "hubs", "--strict", "--max-monthly-usd", "8"],
+      },
+      // #8334: painel novo, cauda longa sobre o ACERVO de edições
+      // (`/p/{slug}`) — a superfície que mais recebe fetch de bot
+      // (73-122/dia vs 11-17 dos hubs, medição que motivou a issue) e que
+      // nenhum dos 2 painéis acima testava. Mesmo `--max-monthly-usd 8`
+      // (não soma com os outros 2 passos — é POR CHAMADA de `main()`, cada
+      // passo lê o gasto do mês inteiro já acumulado em `history.jsonl`
+      // ANTES de disparar, então os 3 passos juntos seguem sob o mesmo
+      // teto real, só que checado 3x ao longo da rodada).
+      {
+        key: "monitor-acervo",
+        script: "scripts/geo-citation-monitor.ts",
+        args: ["--panel", "acervo", "--strict", "--max-monthly-usd", "8"],
       },
     ],
     logPath: "geo-citations/.monitor.log",
@@ -1171,6 +1187,66 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
           String(GSC_URL_INSPECTION_DAILY_QUOTA),
           "--out-suffix",
           "arquivo",
+        ],
+      },
+      // #8335: 4 hosts de curadoria que nunca entraram nesta checagem —
+      // mesmo molde do step "index-arquivo" acima (propriedade GSC
+      // verificada é sc-domain:diar.ia.br, cobre o subdomínio inteiro sem
+      // --site próprio; SEM --only-posts, que é o filtro /\/p\//
+      // (filterPosts em seo-index-check.ts) e zeraria qualquer um destes 4
+      // sitemaps, que não usam esse path). `--out-suffix` por host evita
+      // colisão no mesmo index-status-{data}.json/.md dos demais steps
+      // (mesma razão do #4909 citada acima).
+      //
+      // `artigo.diar.ia.br` fica de FORA de propósito: responde 400 em
+      // /robots.txt e serve sitemap vazio (#7793, issue separada ainda
+      // aberta) — incluir aqui faria o step nascer falhando.
+      {
+        key: "index-especial",
+        script: "scripts/seo-index-check.ts",
+        args: [
+          "--sitemap",
+          "https://especial.diar.ia.br/sitemap.xml",
+          "--limit",
+          String(GSC_URL_INSPECTION_DAILY_QUOTA),
+          "--out-suffix",
+          "especial",
+        ],
+      },
+      {
+        key: "index-livros",
+        script: "scripts/seo-index-check.ts",
+        args: [
+          "--sitemap",
+          "https://livros.diar.ia.br/sitemap.xml",
+          "--limit",
+          String(GSC_URL_INSPECTION_DAILY_QUOTA),
+          "--out-suffix",
+          "livros",
+        ],
+      },
+      {
+        key: "index-cursos",
+        script: "scripts/seo-index-check.ts",
+        args: [
+          "--sitemap",
+          "https://cursos.diar.ia.br/sitemap.xml",
+          "--limit",
+          String(GSC_URL_INSPECTION_DAILY_QUOTA),
+          "--out-suffix",
+          "cursos",
+        ],
+      },
+      {
+        key: "index-retrospectiva",
+        script: "scripts/seo-index-check.ts",
+        args: [
+          "--sitemap",
+          "https://retrospectiva.diar.ia.br/sitemap.xml",
+          "--limit",
+          String(GSC_URL_INSPECTION_DAILY_QUOTA),
+          "--out-suffix",
+          "retrospectiva",
         ],
       },
       { key: "pull", script: "scripts/seo-pull.ts", args: ["--days", "28"] },

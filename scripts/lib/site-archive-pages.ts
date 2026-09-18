@@ -27,6 +27,7 @@ import { loadPublishDateOverrides } from "./beehiiv-publish-date.ts";
 import type { UnifiedCachedPost } from "./shared/edition-cache-reader.ts";
 import { editionCtaBlock } from "./edition-page-cta.ts";
 import { stripArchiveHero } from "./strip-duplicate-hero.ts";
+import { GEO_AUTHOR, type GeoAuthor } from "./shared/geo-faq.ts";
 
 export interface ArchivePost {
   slug: string;
@@ -37,7 +38,16 @@ export interface ArchivePost {
   meta_default_description?: string | null;
   status: string;
   web_url?: string | null;
-  displayed_date?: string | null;
+  /**
+   * Unix seconds — mesmo tipo de `publish_date` (#8336 corrige o tipo, era
+   * `string | null` sem nenhum consumidor real; a fonte crua,
+   * `RawBeehiivPostFile.displayed_date` em `shared/edition-cache-reader.ts`,
+   * sempre foi `number | null`). Ver `resolvePublishTimestampMs` abaixo pra
+   * como este campo entra na resolução de data — hoje nenhum script de
+   * sync o popula (grep confirmado nesta PR), mas o tipo certo evita que um
+   * futuro writer herde o bug em silêncio.
+   */
+  displayed_date?: number | null;
   publish_date?: number | null;
   content?: {
     free?: {
@@ -368,6 +378,10 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   const description = escHtml(deriveMetaDescription(post));
   const dek = deriveDek(post);
   const canonical = archiveUrlForSlug(post.slug);
+  // #8336: dateline estruturado (datePublished/dateModified/author/publisher)
+  // — undefined quando a data não resolve, omitido do <head> nesse caso (ver
+  // docstring de buildArchiveNewsArticleJsonLd).
+  const newsArticleJsonLd = buildArchiveNewsArticleJsonLd(post);
 
   let html = rawHtml;
 
@@ -424,7 +438,8 @@ export function buildArchivePageHtml(post: ArchivePost): string {
     // edição não tem D2/D3 (deriveDek devolve undefined) — o HOME trata a
     // ausência sem quebrar (ver extractPageDek/buildHomeFeed).
     (dek ? `<meta name="dek" content="${escHtml(dek)}">` : "") +
-    `<link rel="canonical" href="${escHtml(canonical)}">`;
+    `<link rel="canonical" href="${escHtml(canonical)}">` +
+    (newsArticleJsonLd ?? "");
 
   if (/<head[^>]*>/i.test(html)) {
     html = html.replace(/<head[^>]*>/i, (full) => `${full}${headInject}`);
@@ -640,6 +655,17 @@ function resolvePublishTimestampMs(post: ArchivePost): number | undefined {
     const ms = Date.parse(`${overrides[post.slug]}T00:00:00Z`);
     if (!Number.isNaN(ms)) return ms;
   }
+  // #8336: `displayed_date` antes do `publish_date` cru — mesma precedência
+  // de `editorialDate()` (`shared/edition-cache-reader.ts`, #7569). Sem
+  // efeito prático hoje (nenhum script de sync popula este campo em
+  // post_*.json, confirmado por grep nesta PR), mas fecha o gap se algum
+  // dia a API Beehiiv passar a devolvê-lo — sem esperar uma entrada nova em
+  // beehiiv-publish-date-overrides.json pra cada edição futura corrigida
+  // dessa forma.
+  if (post.displayed_date) {
+    const ms = post.displayed_date > 1e12 ? post.displayed_date : post.displayed_date * 1000;
+    if (!Number.isNaN(ms)) return ms;
+  }
   const publishDate = post.publish_date;
   if (!publishDate) return undefined;
   // publish_date do cache Beehiiv vem em epoch segundos (ver
@@ -661,6 +687,70 @@ export function publishDateToIso(post: ArchivePost): string | undefined {
   const date = new Date(ms);
   if (Number.isNaN(date.getTime())) return undefined;
   return date.toISOString().slice(0, 10);
+}
+
+/**
+ * JSON-LD `NewsArticle` pra cada página do acervo (#8336) — supre o
+ * dateline ausente que nenhuma das 270 páginas de `/p/{slug}` carrega hoje
+ * (0 `<script type="application/ld+json">` medido ao vivo). Escopo
+ * DIFERENTE do contrato de prosa dos hubs (`shared/hub-page.ts`,
+ * "Descartado pela auditoria, não reintroduzir"): aquele descarta a
+ * EXPANSÃO de `FAQPage` nos HUBS (rich result de FAQ aposentado em
+ * 07/05/2026, quasi-experimento da Ahrefs mediu −4,6% em AI Overviews) —
+ * decisão que esta PR NÃO revoga. Este gerador é outra superfície (o
+ * acervo de edições, não os hubs temáticos) e não emite `FAQPage` nenhum —
+ * só um node `NewsArticle`, sem `@graph`.
+ *
+ * `datePublished`/`dateModified` vêm de `publishDateToIso(post)` — o MESMO
+ * resolvedor que este módulo já usa pro `<lastmod>` do sitemap
+ * (`sitemapEntriesForPosts`/`sitemapEntryFromPost`), não uma chamada direta
+ * a `editorialDate()` (`shared/edition-cache-reader.ts`, #7569): aquela
+ * função opera sobre `UnifiedCachedPost`, um shape diferente de
+ * `ArchivePost`, e sua precedência (`displayed_date ?? publish_date`) seria
+ * hoje um NO-OP puro — nenhum script de sync popula `displayed_date` em
+ * `post_*.json` (confirmado por grep no repo inteiro nesta PR). O que de
+ * fato corrige a mesma classe de bug que a issue descreve (`publish_date`
+ * cru mentindo pras 6 edições mais antigas, importadas em bloco em
+ * 04/09/2025) é `beehiiv-publish-date-overrides.json` (#4796, curado à mão
+ * pelo editor a partir do Gmail) — já embutido em
+ * `resolvePublishTimestampMs`, que agora TAMBÉM honra `displayed_date`
+ * quando presente (ver comentário lá, #8336), fechando o gap pra quando a
+ * API Beehiiv passar a devolvê-lo. Reaproveitar `publishDateToIso` aqui, em
+ * vez de reescrever a resolução, garante que `<lastmod>` do sitemap e
+ * `datePublished` do JSON-LD da MESMA página nunca divirjam.
+ *
+ * `dateModified` = `datePublished`: uma edição do acervo não tem rastro de
+ * revisão pós-envio (o gerador é idempotente/sobrescreve o ARQUIVO, mas o
+ * CONTEÚDO da edição publicada não muda depois) — usar `new Date()` em
+ * runtime quebraria o congelamento contra o HTML committed toda vez que o
+ * gerador rodasse de novo (mesma razão pela qual `geo-faq.ts` documenta
+ * "datas estáticas, não wall-clock" pra livros/cursos).
+ *
+ * `undefined` quando a data não resolve (post sem `publish_date` nem
+ * override) — nunca escreve `datePublished` inválido; `buildArchivePageHtml`
+ * omite o `<script>` inteiro nesse caso, mesmo padrão fail-soft do
+ * `<lastmod>` opcional no sitemap.
+ */
+export function buildArchiveNewsArticleJsonLd(post: ArchivePost, author: GeoAuthor = GEO_AUTHOR): string | undefined {
+  const datePublished = publishDateToIso(post);
+  if (!datePublished) return undefined;
+  const canonical = archiveUrlForSlug(post.slug);
+  const node = {
+    "@context": "https://schema.org",
+    "@type": "NewsArticle",
+    headline: derivePageTitle(post),
+    description: deriveMetaDescription(post),
+    url: canonical,
+    mainEntityOfPage: canonical,
+    datePublished,
+    dateModified: datePublished,
+    author: { "@type": "Person", name: author.name, url: author.url },
+    publisher: { "@type": "Organization", name: "diar.ia.br", url: ARCHIVE_BASE_URL },
+    inLanguage: "pt-BR",
+  };
+  // </script>-safe embed — mesmo padrão de renderGeoJsonLd (shared/geo-faq.ts).
+  const json = JSON.stringify(node).replaceAll("<", "\\u003c");
+  return `<script type="application/ld+json">${json}</script>`;
 }
 
 function escXml(s: string): string {

@@ -94,12 +94,14 @@ export const GEO_QUESTIONS: readonly string[] = [
 ] as const;
 
 /** Painel de perguntas — `"geral"` são as 8 originais acima (posicionamento
- * da diar.ia.br); `"hubs"` é o painel novo (#4900 item a), temático,
- * derivado das perguntas frequentes que as páginas `arquivo.diar.ia.br/temas/{slug}`
- * já respondem (`scripts/lib/hubs/*.ts`). Um registro sem `panel` (escrito
- * antes desta mudança) é lido como `"geral"` por default — ver `panel` em
+ * da diar.ia.br); `"hubs"` é o painel temático (#4900 item a), derivado das
+ * perguntas frequentes que as páginas `arquivo.diar.ia.br/temas/{slug}` já
+ * respondem (`scripts/lib/hubs/*.ts`); `"acervo"` (#8334) é o painel de
+ * cauda longa sobre o conteúdo real das edições publicadas em `/p/{slug}`
+ * — ver `GEO_ACERVO_QUESTIONS`. Um registro sem `panel` (escrito antes de
+ * `"hubs"` existir) é lido como `"geral"` por default — ver `panel` em
  * `GeoCitationRecord` e `summarizeGeoCitationRecords`. */
-export type GeoQuestionPanel = "geral" | "hubs";
+export type GeoQuestionPanel = "geral" | "hubs" | "acervo";
 
 /**
  * Perguntas fixas, pt-BR, do painel TEMÁTICO (#4900 item a) — cobrem
@@ -182,6 +184,60 @@ export const GEO_HUB_QUESTIONS: readonly string[] = [
   // na adição do brasil-regulacao.
   "O que a IA já mudou na medicina e na saúde?",
   "O CFM já regulamentou o uso de IA por médicos no Brasil?",
+] as const;
+
+/**
+ * Perguntas fixas, pt-BR, do painel de ACERVO (#8334) — cauda longa
+ * derivada de conteúdo REAL publicado nas edições diárias (`/p/{slug}`),
+ * não pergunta genérica de posicionamento (`GEO_QUESTIONS`) nem cronologia
+ * de empresa (`GEO_HUB_QUESTIONS`). Motivação da issue: o acervo de 270
+ * edições é a superfície que mais recebe fetch de bot (73-122/dia contra
+ * 11-17 dos hubs, medido ao vivo em `get_crawler_analytics`/logs de
+ * referrer) e nenhum dos 2 painéis anteriores testava especificamente essa
+ * superfície.
+ *
+ * **Janela de derivação (decisão de desenho desta PR — #8334 pedia pra
+ * decidir e registrar, não perguntar):** conjunto FIXO e pequeno, não
+ * gerado por rodada — simplicidade e comparabilidade > cobertura total,
+ * dado que o objetivo inicial é só detectar SE alguma citação de acervo já
+ * existe (mesmo raciocínio de `GEO_HUB_QUESTIONS` acima: trocar o
+ * instrumento depois de ver resultado invalida a série). 6 perguntas — a
+ * issue recomendava começar pequeno (4-6/rodada) dado o custo incremental
+ * (~US$0,007/pergunta Anthropic + ~US$0,002/pergunta Google) numa
+ * superfície nova ainda sem baseline. Ancoradas em 6 edições REAIS,
+ * publicadas entre 21/08/2026 e 18/09/2026 (as mais recentes disponíveis
+ * no acervo committed no momento desta PR — `workers/site/public/p/*`,
+ * ordenadas por `<lastmod>` do `sitemap.xml`), uma por edição, sempre
+ * sobre o D1 (destaque principal) — não uma leitura direta de
+ * `data/editions/{AAMMDD}/01-approved.json` (que a issue citava como
+ * fonte): esse diretório é gitignored e não existe num worktree isolado
+ * (mesma classe de ausência que `data/snippets/`/`data/beehiiv-cache/`
+ * documentam em CLAUDE.md), então esta PR ancorou nas 270 páginas do
+ * acervo JÁ COMMITTED em `workers/site/public/p/` — a MESMA fonte
+ * editorial de conteúdo (título/D1 de cada edição, ambos derivados do
+ * mesmo `post_*.json`/`01-approved.json` no pipeline), só lida via o
+ * artefato publicado em vez do intermediário de pipeline.
+ *
+ * **A lista é escrita à mão, como `GEO_HUB_QUESTIONS` — não regenerar
+ * automaticamente a cada rodada** (mesmo racional: cauda longa comparável
+ * ao longo do tempo > cobertura ampla que muda toda semana). Quando o
+ * editor quiser expandir a janela (mais edições, cadência de rotação), é
+ * decisão consciente de reset de baseline — mesmo tratamento que
+ * `GEO_HUB_QUESTIONS` já documenta pra hub novo.
+ */
+export const GEO_ACERVO_QUESTIONS: readonly string[] = [
+  // "OpenAI cria regra para revelar erros da própria IA" (18/09/2026)
+  "A OpenAI criou uma regra pra IA revelar os próprios erros? O que ela exige?",
+  // "DeepSeek quase iguala GPT-6 Astra por 1,4% do custo" (16/09/2026)
+  "É verdade que o DeepSeek chegou perto do desempenho do GPT-6 Astra gastando só uma fração do custo?",
+  // "10 mil agentes da OpenAI resolvem enigma de 90 anos" (11/09/2026)
+  "10 mil agentes de IA da OpenAI resolveram um enigma matemático de 90 anos — isso aconteceu de verdade?",
+  // "Pesquisador da Anthropic teme fim da humanidade" (10/09/2026)
+  "Por que um pesquisador da Anthropic disse temer o fim da humanidade por causa da IA?",
+  // "Nvidia diz que a AGI chegou, cientistas duvidam" (08/09/2026)
+  "A Nvidia afirmou que a AGI já chegou — outros cientistas concordam com isso?",
+  // "Tem 22 a 25 anos? A IA já pode afetar seu emprego" (28/08/2026)
+  "Pessoas de 22 a 25 anos já estão perdendo emprego por causa da IA?",
 ] as const;
 
 /** Domínio checado nas respostas (sem protocolo/path — substring match). */
@@ -891,8 +947,9 @@ export interface GeoCitationRecord {
    * (que resolveria sozinho e continua `"http"`+`httpStatus:429`). Ver
    * `classifyHttp429ErrorKind` pro critério de classificação por provider. */
   errorKind?: "http" | "network" | "parse" | "extract" | "provider" | "quota";
-  /** Painel de origem da pergunta (#4900 item a) — `"geral"` (`GEO_QUESTIONS`)
-   * ou `"hubs"` (`GEO_HUB_QUESTIONS`). **Opcional de propósito**: registros
+  /** Painel de origem da pergunta (#4900 item a) — `"geral"` (`GEO_QUESTIONS`),
+   * `"hubs"` (`GEO_HUB_QUESTIONS`) ou `"acervo"` (`GEO_ACERVO_QUESTIONS`,
+   * #8334). **Opcional de propósito**: registros
    * escritos antes desta mudança não têm o campo — leitores tratam ausência
    * como `"geral"` (ver `summarizeGeoCitationRecords`), nunca migram o
    * arquivo. Registros novos sempre vêm com o campo populado

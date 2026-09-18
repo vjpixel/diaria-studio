@@ -283,7 +283,7 @@ export function readPanelProviderRecords(
  * derivado do registry de propósito: derivar acoplaria o alarme ao formato
  * dos args da task, e um painel removido da task deve continuar sendo
  * checado até alguém decidir explicitamente que a série dele acabou. */
-const MONITORED_PANELS = ["geral", "hubs"] as const;
+const MONITORED_PANELS = ["geral", "hubs", "acervo"] as const;
 
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
