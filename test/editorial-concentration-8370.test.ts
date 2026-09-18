@@ -41,6 +41,22 @@ describe("editorial-concentration — parsePageSignal", () => {
   it("sem <title>, retorna null em vez de lançar (arquivo corrompido/truncado)", () => {
     assert.equal(parsePageSignal("<html><body>sem head</body></html>", "sem-title"), null);
   });
+
+  it("NUNCA conta D1 duas vezes — regressão do bug que inflou a tabela-baseline da issue #8370 (89 vs. 66 em set/2025)", () => {
+    // A description sempre REPETE o título como prefixo
+    // ("${title}. ${d2} | ${d3}", ownEditionDescription em
+    // site-archive-pages.ts). Um parser que soma <title> + os itens da
+    // description sem stripar esse prefixo conta D1 2x por página (4
+    // "destaques" numa edição de 3, nunca 3) — foi exatamente esse bug que
+    // inflou a tabela-baseline da issue original (89 vs. os 66 corretos
+    // medidos por esta lib em set/2025). Este teste é a regressão que
+    // impediria alguém de "consertar" a contagem de volta pro número errado.
+    const html = `<title>X</title><meta name="description" content="X. Y | Z">`;
+    const signal = parsePageSignal(html, "x");
+    assert.equal(signal?.items.length, 3, "página com D1+D2+D3 tem que contar exatamente 3 itens, nunca 4");
+    assert.deepEqual(signal?.items, ["X", "Y", "Z"]);
+    assert.equal(signal?.items.filter((item) => item === "X").length, 1, "D1 ('X') só pode aparecer 1 vez na lista de itens");
+  });
 });
 
 describe("editorial-concentration — classifyItem", () => {

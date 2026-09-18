@@ -52,6 +52,37 @@
  *   (que não publicou a lista usada na tabela-baseline) — os números desta
  *   lib podem divergir da tabela por causa disso, não só por causa dos
  *   ajustes 1/2 acima. Ver `RESULTADO DIVERGE DO BASELINE?` no CLI.
+ *
+ * ## A tabela-baseline da #8370 NÃO é comparável item a item com esta série
+ * (achado do coordenador na review da PR, confirmado ao vivo)
+ *
+ * A contagem de "destaques" desta lib (ex: 66 em set/2025) é MENOR que a da
+ * tabela-baseline da issue (89 no mesmo mês) — e a causa é conhecida, não
+ * ruído de método diferente: **o proxy original da issue somou `<title>` +
+ * os 3 itens da `<meta name="description">` sem descontar que a description
+ * já REPETE o D1 como prefixo** (`"${title}. ${d2} | ${d3}"`, formato
+ * confirmado em páginas de pontas opostas da janela — `google-lan-a-gemini-
+ * 2-5-flash-image`, 27/08/2025, e `tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-
+ * emprego`, 28/08/2026). Somar os dois campos sem stripar o prefixo conta D1
+ * DUAS vezes por página — 4 "destaques" numa edição de 3, nunca 3.
+ *
+ * A aritmética fecha: 23 edições de set/2025, a maioria com 3 destaques (a
+ * regra editorial só permite 2 ou 3, `CLAUDE.md`) → 23×4 = 92, descontando
+ * as poucas edições de 2 destaques ≈ **89** (o número da issue). Esta lib
+ * (`parsePageSignal` strippa o prefixo `${title}. ` antes de splitar — ver
+ * função abaixo) conta 23×3 = 69, descontando o mesmo desconto ≈ **66** (o
+ * número medido aqui). **A série desta lib está correta; a tabela-baseline
+ * da issue está inflada por essa duplicação de D1** — não é "outro método
+ * igualmente válido", é um bug de contagem no proxy ad-hoc original.
+ *
+ * **A TENDÊNCIA não muda com a duplicação** (D1 entra no numerador — item
+ * classificado como big-tech/Brasil — e no denominador — total de itens —
+ * na mesma proporção em todos os meses): a alta de concentração em
+ * big-tech ao longo de 2026 que a issue descreve é real, só a contagem
+ * ABSOLUTA de destaques/mês da tabela-baseline está inflada. Quem comparar
+ * esta série com a tabela da issue precisa saber disso — não é uma
+ * "diferença de metodologia" indeterminada, é uma duplicação identificável
+ * e evitável.
  * - Parte da alta de big-tech em 2026 é ciclo real de lançamentos (Fable,
  *   Opus 5, Gemini) — correlação com o loop de reforço do scorer, não prova
  *   de causa.
