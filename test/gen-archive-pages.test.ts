@@ -41,6 +41,8 @@ import {
   LEGACY_SLUG_CORRECTIONS,
   applyLegacySlugCorrections,
   rewriteLegacyImageHost,
+  rewriteLegacyResourceLinks,
+  normalizeHeadingHierarchy,
   deriveDek,
   buildArchiveNewsArticleJsonLd,
   publishDateToIso,
@@ -927,6 +929,7 @@ describe("kitUnifiedPostToArchivePost (#6184 — adaptador Kit → ArchivePost)"
       web_url: "https://diar.ia.br/kit/edicao-kit",
       displayed_date: null,
       publish_date: 1_700_000_000,
+      thumbnail_url: null,
       content: { free: { web: "<!DOCTYPE html><html><head></head><body><h1>Kit</h1></body></html>" } },
     });
   });
@@ -1254,6 +1257,187 @@ describe("rewriteLegacyImageHost (#7911)", () => {
     const html = buildArchivePageHtml(post);
     assert.ok(!html.includes("diar-ia-poll.diaria.workers.dev"), "host antigo não deveria sobrar na página gerada");
     assert.ok(html.includes("https://diar.ia.br/img/img-260512-04-d1-2x1.jpg"));
+  });
+});
+
+// #8351 — 98 páginas do acervo servem 258 links 404 pro host legado
+// (`diaria.beehiiv.com/livros-sobre-ia`, `.../cursos-gratuitos-de-ia`) —
+// confirmado ao vivo (18/09/2026, UA de Googlebot) que esse host só
+// redireciona `/p/{slug}`, qualquer outro path é 404 genuíno. Regressão que
+// reprova se `buildArchivePageHtml` voltar a deixar o host morto passar.
+describe("rewriteLegacyResourceLinks (#8351)", () => {
+  it("reescreve o box de livros pro host de marca, preservando a query string", () => {
+    const out = rewriteLegacyResourceLinks(
+      '<a href="https://diaria.beehiiv.com/livros-sobre-ia?utm_source=diar.ia.br&utm_medium=newsletter">livros</a>',
+    );
+    assert.equal(
+      out,
+      '<a href="https://livros.diar.ia.br?utm_source=diar.ia.br&utm_medium=newsletter">livros</a>',
+    );
+  });
+
+  it("reescreve o box de cursos pro host de marca, preservando a query string", () => {
+    const out = rewriteLegacyResourceLinks(
+      '<a href="https://diaria.beehiiv.com/cursos-gratuitos-de-ia?utm_campaign=x">cursos</a>',
+    );
+    assert.equal(out, '<a href="https://cursos.diar.ia.br?utm_campaign=x">cursos</a>');
+  });
+
+  it("reescreve MÚLTIPLAS ocorrências dos dois boxes na mesma página", () => {
+    const html =
+      '<a href="https://diaria.beehiiv.com/livros-sobre-ia?a=1">l1</a>' +
+      '<a href="https://diaria.beehiiv.com/livros-sobre-ia?a=2">l2</a>' +
+      '<a href="https://diaria.beehiiv.com/cursos-gratuitos-de-ia?a=3">c1</a>';
+    const out = rewriteLegacyResourceLinks(html);
+    assert.equal(out.match(/diaria\.beehiiv\.com/g), null, "nenhuma ocorrência do host legado deveria sobrar");
+    assert.equal((out.match(/https:\/\/livros\.diar\.ia\.br/g) ?? []).length, 2);
+    assert.equal((out.match(/https:\/\/cursos\.diar\.ia\.br/g) ?? []).length, 1);
+  });
+
+  it("HTML sem os dois boxes passa intacto", () => {
+    const html = '<p>texto normal</p><a href="https://diar.ia.br/p/outra-edicao">link interno</a>';
+    assert.equal(rewriteLegacyResourceLinks(html), html);
+  });
+
+  it("não mexe em outra rota do mesmo host legado (ex: /authors/angelo-pixel, que responde 200)", () => {
+    const html = '<a href="https://diaria.beehiiv.com/authors/angelo-pixel">Pixel</a>';
+    assert.equal(rewriteLegacyResourceLinks(html), html);
+  });
+
+  it("integração: buildArchivePageHtml entrega os boxes já no host de marca, nunca 404", () => {
+    const post = makePost({
+      slug: "edicao-com-boxes-legados",
+      content: {
+        free: {
+          web:
+            '<!DOCTYPE html><html><head></head><body>' +
+            '<a href="https://diaria.beehiiv.com/livros-sobre-ia?utm_campaign=edicao-com-boxes-legados">livros</a>' +
+            '<a href="https://diaria.beehiiv.com/cursos-gratuitos-de-ia?utm_campaign=edicao-com-boxes-legados">cursos</a>' +
+            "</body></html>",
+        },
+      },
+    });
+    const html = buildArchivePageHtml(post);
+    assert.ok(!html.includes("diaria.beehiiv.com/livros-sobre-ia"), "box de livros não deveria sobrar 404");
+    assert.ok(!html.includes("diaria.beehiiv.com/cursos-gratuitos-de-ia"), "box de cursos não deveria sobrar 404");
+    assert.ok(html.includes("https://livros.diar.ia.br"));
+    assert.ok(html.includes("https://cursos.diar.ia.br"));
+  });
+});
+
+// #8354 — hierarquia de <h1> quebrada em 182/270 páginas (134 têm 4: o HTML
+// capturado da Beehiiv marca cada bloco de conteúdo — destaque, radar, use
+// melhor — como <h1>, não só o título da edição; 11 têm 0, formato mais
+// recente da newsletter sem hero <h1> nenhum). Regressão que reprova se
+// `buildArchivePageHtml` voltar a deixar mais/menos de 1 <h1> por página.
+describe("normalizeHeadingHierarchy (#8354)", () => {
+  it("1 único <h1> já correto passa intacto", () => {
+    const html = "<body><h1>Título</h1><p>texto</p></body>";
+    assert.equal(normalizeHeadingHierarchy(html, "Título"), html);
+  });
+
+  it("demote todo <h1> DEPOIS do primeiro pra <h2>, preservando atributos", () => {
+    const html =
+      "<body><h1 style='font-size:36px'>Edição</h1>" +
+      "<h1 style=\"font-size:30px\">Destaque 1</h1>" +
+      "<h1 style=\"font-size:30px\">Destaque 2</h1></body>";
+    const out = normalizeHeadingHierarchy(html, "Edição");
+    assert.equal((out.match(/<h1[\s>]/g) ?? []).length, 1, "exatamente 1 <h1> deve sobrar");
+    assert.equal((out.match(/<\/h1>/g) ?? []).length, 1);
+    assert.equal((out.match(/<h2 style="font-size:30px">/g) ?? []).length, 2, "atributos preservados na demoção");
+    assert.match(out, /<h1 style='font-size:36px'>Edição<\/h1>/, "o 1º h1 (título da edição) não muda");
+  });
+
+  it("página SEM nenhum <h1> ganha um oculto, logo após <body>, com o título da edição", () => {
+    const html = "<body><p>sem nenhum h1</p></body>";
+    const out = normalizeHeadingHierarchy(html, "Título da edição");
+    assert.equal((out.match(/<h1[\s>]/g) ?? []).length, 1);
+    assert.match(out, /<body><h1[^>]*>Título da edição<\/h1>/);
+  });
+
+  it("escapa o título injetado (dado externo, mesma disciplina de XSS do <title>)", () => {
+    const html = "<body><p>sem h1</p></body>";
+    const out = normalizeHeadingHierarchy(html, 'Preço "especial" & <script>alert(1)</script>');
+    assert.doesNotMatch(out, /<h1[^>]*><script>/);
+    assert.match(out, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  });
+
+  it("integração: buildArchivePageHtml entrega exatamente 1 <h1> mesmo partindo de HTML cacheado com 4", () => {
+    const post = makePost({
+      slug: "edicao-com-4-h1",
+      content: {
+        free: {
+          web:
+            "<!DOCTYPE html><html><head></head><body>" +
+            "<h1 style='font-size:36px'>Edição</h1>" +
+            "<h1 style=\"font-size:24px\">Radar 1</h1>" +
+            "<h1 style=\"font-size:24px\">Radar 2</h1>" +
+            "<h1 style=\"font-size:24px\">Radar 3</h1>" +
+            "</body></html>",
+        },
+      },
+    });
+    const html = buildArchivePageHtml(post);
+    assert.equal((html.match(/<h1[\s>]/g) ?? []).length, 1);
+    assert.equal((html.match(/<h2 style="font-size:24px">/g) ?? []).length, 3);
+  });
+
+  it("integração: buildArchivePageHtml injeta <h1> oculto quando a página de origem não tem nenhum", () => {
+    const post = makePost({
+      slug: "edicao-sem-h1",
+      title: "Edição sem H1",
+      content: {
+        free: { web: "<!DOCTYPE html><html><head></head><body><h2>Bloco</h2></body></html>" },
+      },
+    });
+    const html = buildArchivePageHtml(post);
+    assert.equal((html.match(/<h1[\s>]/g) ?? []).length, 1);
+    assert.match(html, /<h1[^>]*>Edição sem H1<\/h1>/);
+  });
+});
+
+// #8352 — 0 das 270 páginas do acervo tinham Open Graph ou Twitter Card,
+// então todo compartilhamento diário (LinkedIn/Facebook/Instagram/Threads/X,
+// WhatsApp) saía sem preview. Regressão que reprova se buildArchivePageHtml
+// voltar a omitir os dois.
+describe("Open Graph / Twitter Card no acervo (#8352)", () => {
+  it("emite og:type=article, og:title, og:description, og:url, twitter:card", () => {
+    const html = buildArchivePageHtml(makePost());
+    assert.match(html, /<meta property="og:type" content="article">/);
+    assert.match(html, /<meta property="og:title" content="Exemplo de edição">/);
+    assert.match(html, /<meta property="og:url" content="https:\/\/diar\.ia\.br\/p\/exemplo-de-edicao">/);
+    assert.match(html, /<meta name="twitter:card" content="summary">/);
+  });
+
+  it("com thumbnail_url, emite og:image/twitter:image + dimensão fixa 1600x800", () => {
+    const html = buildArchivePageHtml(makePost({ thumbnail_url: "https://cdn.example.com/capa.jpg" }));
+    assert.match(html, /<meta property="og:image" content="https:\/\/cdn\.example\.com\/capa\.jpg">/);
+    assert.match(html, /<meta property="og:image:width" content="1600">/);
+    assert.match(html, /<meta property="og:image:height" content="800">/);
+    assert.match(html, /<meta name="twitter:image" content="https:\/\/cdn\.example\.com\/capa\.jpg">/);
+    assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
+  });
+
+  it("sem thumbnail_url, omite og:image/twitter:image (nunca escreve tag com valor ausente)", () => {
+    const html = buildArchivePageHtml(makePost({ thumbnail_url: null }));
+    assert.doesNotMatch(html, /og:image/);
+    assert.doesNotMatch(html, /twitter:image/);
+  });
+
+  it("emite article:published_time = mesma data do JSON-LD datePublished (#8336) — nunca divergem", () => {
+    const html = buildArchivePageHtml(makePost({ publish_date: 1755993600 })); // 2025-08-24
+    assert.match(html, /<meta property="article:published_time" content="2025-08-24">/);
+    assert.match(html, /"datePublished":"2025-08-24"/);
+  });
+
+  it("sem data resolvível, omite article:published_time (nunca escreve valor ausente)", () => {
+    const html = buildArchivePageHtml(makePost({ publish_date: null }));
+    assert.doesNotMatch(html, /article:published_time/);
+  });
+
+  it("também ganha favicon (bônus de reusar renderSeoMeta em vez de montar o <head> à mão)", () => {
+    const html = buildArchivePageHtml(makePost());
+    assert.match(html, /<link rel="icon" href="data:image\/svg\+xml/);
   });
 });
 
