@@ -395,14 +395,27 @@ async function main(): Promise<void> {
   // semântica (só reenvia quando ≥1 achado é `created`/`reopened`), mesmo
   // padrão usado em `hub-drift-check.ts` (#7960 fatia 4) — sem precisar de
   // estado próprio (`.task-never-armed-alarm-state.json` removido).
+  //
+  // Diferença DELIBERADA em relação ao gate antigo (achado do review da PR
+  // #8363): `sameStringSet` comparava os DOIS lados (qualquer mudança —
+  // crescer OU encolher — reenviava). Um conjunto que só ENCOLHE (algo foi
+  // resolvido, nada novo apareceu) agora não gera outcome `created`/
+  // `reopened` nenhum — `applyAlarmReconciliation` só fecha a issue do item
+  // resolvido — e por isso não reenvia. Decisão: é o comportamento
+  // desejado, não uma regressão — evita ruído pra uma melhoria pura (a
+  // issue fechada já é o sinal), e é exatamente o preço já aceito na
+  // migração equivalente de `hub-drift-check.ts`.
   const result = await notifyEditorForOutcomes(
     findingOutcomes,
     "acao",
     () => buildTaskNeverArmedAlarmEmail(evaluation, issueLines),
     { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
   );
+  const anyIssueSucceeded = findingOutcomes.some((o) => o.action !== "failed");
   if (result.emailSent) {
     console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+  } else if (!anyIssueSucceeded) {
+    console.error(`${LOG_PREFIX} gh falhou pra todos os achados — nenhuma issue criada/atualizada, nenhum e-mail tentado.`);
   } else if (result.qualifying.length === 0) {
     console.log(`${LOG_PREFIX} nenhum e-mail necessário (mesmo conjunto de achados já alarmado antes, ou política '${result.emailPolicy}' suprime).`);
   } else {

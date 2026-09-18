@@ -266,6 +266,28 @@ function loadAlarmIssuesState(): AlarmIssuesState {
   }
 }
 
+/**
+ * #7960 (achado do review da PR #8363) — pura, testável isoladamente.
+ *
+ * `saveState`/`markSystemdFailedUnitsAlarmed` original só rodava depois de
+ * `sendGmailMessage` ter sucesso — uma exceção de envio abortava `main()`
+ * ANTES da gravação, então o estado nunca avançava em falha (a próxima
+ * execução tentava de novo, respeitando o TTL de 6h corretamente).
+ * `notifyEditorForOutcomes` nunca lança (fail-soft por desenho), então
+ * gravar incondicionalmente depois dele congelaria o TTL mesmo quando NADA
+ * chegou ao editor — seja porque o push falhou genuinamente
+ * (`qualifying.length > 0 && !emailSent`), seja porque `gh` falhou pra
+ * TODOS os achados desta execução (nenhum outcome não-`failed` — nem
+ * sequer virou issue). Só persiste quando pelo menos 1 achado foi tratado
+ * com sucesso pelo `gh` E o push não falhou genuinamente (sucesso real, ou
+ * supressão DELIBERADA pela política `emailPolicy`, nunca por falha de
+ * infra).
+ */
+export function shouldPersistAlarmedState(anyIssueSucceeded: boolean, qualifyingCount: number, emailSent: boolean): boolean {
+  const pushGenuinelyFailed = qualifyingCount > 0 && !emailSent;
+  return anyIssueSucceeded && !pushGenuinelyFailed;
+}
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
@@ -372,13 +394,22 @@ async function main(): Promise<void> {
     emailTo: toOverride,
     legacyResendIntent: "resend-every-run",
   });
-  saveState(markSystemdFailedUnitsAlarmed(evaluation.failedUnits), STATE_PATH);
+
+  const anyIssueSucceeded = findingOutcomes.some((o) => o.action !== "failed");
+  if (shouldPersistAlarmedState(anyIssueSucceeded, result.qualifying.length, result.emailSent)) {
+    saveState(markSystemdFailedUnitsAlarmed(evaluation.failedUnits), STATE_PATH);
+  } else {
+    console.error(`${LOG_PREFIX} estado NÃO gravado (retry na próxima execução) — ${anyIssueSucceeded ? "push falhou" : "gh falhou pra todos os achados desta execução"}.`);
+  }
+
   if (result.emailSent) {
     console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
-  } else if (result.qualifying.length === 0) {
-    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário sob a política vigente.`);
-  } else {
+  } else if (!anyIssueSucceeded) {
+    console.error(`${LOG_PREFIX} gh falhou pra todos os achados — nenhuma issue criada/atualizada, nenhum e-mail tentado.`);
+  } else if (result.qualifying.length > 0) {
     console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
+  } else {
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário sob a política vigente.`);
   }
 }
 
