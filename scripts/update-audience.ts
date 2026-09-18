@@ -470,6 +470,86 @@ export function logFileReadWarning(
 // ─── Subscriber count por backend (#8145) ───────────────────────────────────
 
 /**
+ * Piso de plausibilidade (#8322) pra contagem "kit ativo" lida de
+ * `getKitActiveSummary`. A base real está na casa das centenas há meses
+ * (ver `docs/audience-history/`) — um `COUNT(*)` retornando algo entre 1 e
+ * este piso-1 nunca foi uma leitura genuína da base, e sim sinal de uma
+ * leitura em trânsito/parcial da fonte (achado #8322: `docs/audience-
+ * history/2026-09-15.md` e `2026-09-16.md` gravaram `**subscribers
+ * ativos:** 1`, um valor implausível frente aos vizinhos de ~890 — a causa
+ * exata da leitura parcial não foi isolada, mas o valor em si nunca deveria
+ * ter sido aceito como contagem real). Não é piso EDITORIAL (a base pode
+ * legitimamente cair, um dia, abaixo disto) — é piso de SANIDADE: `0` já
+ * tem tratamento dedicado ("ainda não ingerido", cai pro fallback Beehiiv
+ * em silêncio, comportamento pré-existente e mantido); qualquer valor entre
+ * 1 e este piso é tratado como NÃO RESOLVIDO, nunca aceito nem escondido.
+ */
+export const MIN_PLAUSIBLE_KIT_ACTIVE_COUNT = 10;
+
+/** Pure: mensagem explicada de contagem "kit ativo" implausível (#8322) —
+ *  usada tanto no `warnFn`/log-event quanto no texto gravado no snapshot. */
+export function buildImplausibleKitCountWarning(rawCount: number, dbPath: string): string {
+  return (
+    `contagem Kit ativa implausível (${rawCount}, abaixo do piso de plausibilidade ` +
+    `${MIN_PLAUSIBLE_KIT_ACTIVE_COUNT}) lida de ${dbPath} — tratando como NÃO RESOLVIDA ` +
+    `em vez de aceitar como valor real (#8322).`
+  );
+}
+
+/** Pure: monta os argv extras pra `scripts/log-event.ts` registrar o warning
+ *  de contagem implausível (#8322) — mesmo padrão de `buildDuplicateArchiveLogArgs`. */
+export function buildImplausibleKitCountLogArgs(rawCount: number, dbPath: string): string[] {
+  return [
+    "--stage", "0",
+    "--agent", "update-audience",
+    "--level", "warn",
+    "--message",
+    `contagem Kit ativa implausível (${rawCount}) lida de ${dbPath} — tratada como não resolvida, nunca aceita como valor real (#8322)`,
+    "--details",
+    JSON.stringify({ raw_count: rawCount, db_path: dbPath, floor: MIN_PLAUSIBLE_KIT_ACTIVE_COUNT, issue: "#8322" }),
+  ];
+}
+
+/**
+ * Dispara `warnFn` (console.warn por padrão) + `scripts/log-event.ts`
+ * fire-and-forget (nunca lança) pro warning de contagem "kit ativo"
+ * implausível — canal duplo dedicado (#8322), separado de
+ * `logFileReadWarning` (#8150, que cobre falha de LEITURA, não valor lido
+ * com sucesso porém implausível — reusar aquele produziria a mensagem
+ * contraditória "existe mas não pôde ser lido" para um valor que FOI lido).
+ */
+export function logImplausibleKitCountWarning(
+  rawCount: number,
+  dbPath: string,
+  spawnFn: typeof spawnSync = spawnSync,
+  warnFn: (message: string) => void = console.warn,
+): void {
+  warnFn(`[update-audience] AVISO: ${buildImplausibleKitCountWarning(rawCount, dbPath)}`);
+  try {
+    spawnFn(
+      process.execPath,
+      ["--import", "tsx", resolve(ROOT, "scripts/log-event.ts"), ...buildImplausibleKitCountLogArgs(rawCount, dbPath)],
+      { cwd: ROOT, stdio: "ignore", encoding: "utf8" },
+    );
+  } catch {
+    // fire-and-forget: falha de logging nunca pode mascarar/bloquear o script principal.
+  }
+}
+
+export interface ResolvedSubscriberCount {
+  /** Melhor contagem disponível — pode vir do fallback Beehiiv (ou `0`)
+   *  quando `warning` está presente, já que a leitura primária (Kit) foi
+   *  descartada por implausível. */
+  count: number;
+  /** #8322 — presente quando a contagem PRIMÁRIA (Kit) devolveu um valor
+   *  implausível (>0, abaixo de `MIN_PLAUSIBLE_KIT_ACTIVE_COUNT`). `main()`
+   *  grava este texto EXPLICITAMENTE no snapshot no lugar do número cru —
+   *  nunca aceita o valor implausível, nunca omite o campo em silêncio
+   *  (critério de aceite da #8322). */
+  warning?: string;
+}
+
+/**
  * Resolve a contagem de assinantes ativos respeitando
  * `publishing.newsletter.subscriber_backend` — mesmo precedente de leitura
  * condicional que `count-subscriptions-by-utm.ts`
@@ -483,13 +563,16 @@ export function logFileReadWarning(
  * rodou) ou devolve `count === 0` — indistinguível de "ainda não ingerido"
  * — cai pro cache Beehiiv abaixo como fallback: um número desatualizado
  * com fonte errada ainda é melhor que nenhum número, e o backend "kit" só
- * existe quando a base REAL migrou pra lá (#7386/#7388).
+ * existe quando a base REAL migrou pra lá (#7386/#7388). Um `count` entre 1
+ * e `MIN_PLAUSIBLE_KIT_ACTIVE_COUNT` (exclusive) é tratado diferente: nunca
+ * "ainda não ingerido" (#8322) — dispara `warnFn`/log-event e devolve
+ * `warning` preenchido, mesmo caindo pro mesmo fallback Beehiiv por baixo.
  *
  * Backend `"beehiiv"` (default): lê `pub.stats?.active_subscriptions` de
  * `PUB_JSON`, como sempre fez. Erro de leitura/parse passa por
  * `logFileReadWarning` (#8150) em vez de sumir num `catch` mudo.
  *
- * NUNCA lança — qualquer falha degrada pra `0`.
+ * NUNCA lança — qualquer falha degrada pra `{ count: 0 }`.
  */
 export function resolveSubscriberCount(opts: {
   backend: NewsletterSubscriberBackend;
@@ -501,7 +584,7 @@ export function resolveSubscriberCount(opts: {
   getKitActiveSummaryFn?: typeof getKitActiveSummary;
   spawnFn?: typeof spawnSync;
   warnFn?: (message: string) => void;
-}): number {
+}): ResolvedSubscriberCount {
   const {
     backend,
     pubJsonPath,
@@ -514,12 +597,34 @@ export function resolveSubscriberCount(opts: {
     warnFn,
   } = opts;
 
+  const readBeehiivFallback = (): number => {
+    if (!existsFn(pubJsonPath)) return 0;
+    try {
+      const pub = JSON.parse(readFileFn(pubJsonPath));
+      return pub.stats?.active_subscriptions ?? 0;
+    } catch (error) {
+      logFileReadWarning("cache de assinantes Beehiiv", pubJsonPath, error, spawnFn, warnFn);
+      return 0;
+    }
+  };
+
   if (backend === "kit") {
     const db = openDbFn(dbPath);
     if (db) {
       try {
         const summary = getKitActiveSummaryFn(db);
-        if (summary.count > 0) return summary.count;
+        if (summary.count >= MIN_PLAUSIBLE_KIT_ACTIVE_COUNT) return { count: summary.count };
+        if (summary.count > 0) {
+          // #8322: valor implausível (>0, abaixo do piso) — nunca aceito
+          // como contagem real, nunca confundido com "0, ainda não
+          // ingerido". Avisa alto e cai pro fallback, mas marca `warning`
+          // pra main() gravar isso explicitamente no snapshot.
+          const warning = buildImplausibleKitCountWarning(summary.count, dbPath);
+          logImplausibleKitCountWarning(summary.count, dbPath, spawnFn, warnFn);
+          return { count: readBeehiivFallback(), warning };
+        }
+        // summary.count === 0: comportamento pré-existente, mantido —
+        // "ainda não ingerido", cai pro fallback Beehiiv sem warning.
       } catch (error) {
         logFileReadWarning("Kit active summary query", dbPath, error, spawnFn, warnFn);
       } finally {
@@ -529,14 +634,7 @@ export function resolveSubscriberCount(opts: {
     // Store indisponível/vazio/query falhou — cai pro cache Beehiiv abaixo.
   }
 
-  if (!existsFn(pubJsonPath)) return 0;
-  try {
-    const pub = JSON.parse(readFileFn(pubJsonPath));
-    return pub.stats?.active_subscriptions ?? 0;
-  } catch (error) {
-    logFileReadWarning("cache de assinantes Beehiiv", pubJsonPath, error, spawnFn, warnFn);
-    return 0;
-  }
+  return { count: readBeehiivFallback() };
 }
 
 /** Pluralização simples pt-BR do substantivo emprestado "subscriber(s)" (#8150 item 3). */
@@ -572,6 +670,9 @@ export interface UpdateAudienceResult {
   reason?: string;
   outPath?: string;
   subscribers?: number;
+  /** #8322 — presente quando a contagem "kit ativo" primária foi descartada
+   *  por implausível; o mesmo texto que foi gravado no snapshot. */
+  subscriberWarning?: string;
   sources?: string[];
 }
 
@@ -605,8 +706,9 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
 
   const today = todayDate.toISOString().slice(0, 10);
 
-  // Subscriber count (#8145 — respeita subscriber_backend)
-  const subscribers = resolveSubscriberCount({
+  // Subscriber count (#8145 — respeita subscriber_backend; #8322 — nunca
+  // aceita uma contagem "kit ativo" implausível em silêncio)
+  const subscriberResolution = resolveSubscriberCount({
     backend: subscriberBackend,
     pubJsonPath,
     dbPath,
@@ -615,6 +717,8 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
     spawnFn,
     warnFn,
   });
+  const subscribers = subscriberResolution.count;
+  const subscriberWarning = subscriberResolution.warning;
 
   // CTR data (primary)
   const ctr = parseCtr(ctrCsvPath);
@@ -639,7 +743,15 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
     "# Perfil de Audiência — diar.ia.br",
     "",
     `**updated_at:** ${today}`,
-    ...(subscribers > 0 ? [`**subscribers ativos:** ${subscribers}`] : []),
+    // #8322: `subscriberWarning` presente vence sobre o número — nunca grava
+    // o valor implausível, nunca omite o campo em silêncio nesse caso (a
+    // omissão silenciosa quando `subscribers === 0` SEM warning continua
+    // válida — "ainda não ingerido", comportamento pré-existente do #8150).
+    ...(subscriberWarning
+      ? [`**subscribers ativos:** indisponível — ${subscriberWarning}`]
+      : subscribers > 0
+        ? [`**subscribers ativos:** ${subscribers}`]
+        : []),
     ...(surveyResponses.length > 0 ? [`**respondentes survey:** ${surveyResponses.length}`] : []),
     ...(ctr
       ? [
@@ -662,11 +774,16 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
       "",
       "## 1. Engajamento real (CTR por categoria)",
       "",
-      subscribers > 0
-        ? `Fonte primária: comportamento de ${subscribers} ${pluralizeSubscribers(subscribers)} em ${ctr.totalEditions} edições.`
-        // #8150: mesmo tratamento da linha 627 acima (omitir/sinalizar quando a
-        // contagem é 0) — nunca o placeholder "N" solto em prosa.
-        : `Fonte primária: comportamento observado em ${ctr.totalEditions} edições (contagem de subscribers indisponível).`,
+      subscriberWarning
+        // #8322: mesmo critério do header acima — contagem implausível nunca
+        // vira "N subscribers" na prosa, mesmo quando o fallback Beehiiv
+        // deu um `subscribers` > 0 pra usar em outro lugar.
+        ? `Fonte primária: comportamento observado em ${ctr.totalEditions} edições (contagem de subscribers indisponível — ${subscriberWarning}).`
+        : subscribers > 0
+          ? `Fonte primária: comportamento de ${subscribers} ${pluralizeSubscribers(subscribers)} em ${ctr.totalEditions} edições.`
+          // #8150: mesmo tratamento da linha 627 acima (omitir/sinalizar quando a
+          // contagem é 0) — nunca o placeholder "N" solto em prosa.
+          : `Fonte primária: comportamento observado em ${ctr.totalEditions} edições (contagem de subscribers indisponível).`,
       `CTR médio geral: ${avgCtr.toFixed(2)}%`,
       "",
       `**Método (#4840):** cada categoria abaixo tem CTR encolhido empírico-Bayes rumo à média geral (k=${CTR_SHRINKAGE_K} "aberturas de prior" — quanto menor o n da categoria, mais a estimativa é puxada pra média). Categorias são agrupadas em 3 bandas em vez de ordenadas por posição — um ranking de posição não é sustentado pelo n típico destas categorias (validação: split cronológico com Spearman ≈0,06 fora da amostra, IC95 do posto cobrindo boa parte das 17 posições). O n (links + aberturas) de cada categoria é sempre publicado, mesmo quando ela cai em "sem sinal".`,
@@ -883,7 +1000,7 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
     console.log(formatH4Trend(trend));
   }
 
-  return { ok: true, outPath, subscribers, sources };
+  return { ok: true, outPath, subscribers, subscriberWarning, sources };
 }
 
 // Run main() apenas quando invocado como CLI direto.

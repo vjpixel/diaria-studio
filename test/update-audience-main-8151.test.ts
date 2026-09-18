@@ -200,6 +200,37 @@ describe("main() — forma do documento gerado (#8151)", () => {
     }
   });
 
+  it("backend kit devolve contagem implausível (1) — #8322: nunca grava '1', nunca omite o campo, sinaliza explícito", () => {
+    const dir = mkdtempSync(join(tmpdir(), "update-audience-main-8151-"));
+    try {
+      writeFileSync(join(dir, "link-ctr-table.csv"), buildCtrCsv(), "utf8");
+      // Sem publication.json — o fallback Beehiiv também resolve pra 0, pior
+      // caso: nenhuma fonte devolve um número confiável.
+      const fakeDb = { close: () => {} };
+      const deps = baseDeps(dir, {
+        subscriberBackend: "kit",
+        openDbFn: () => fakeDb as ReturnType<typeof import("../scripts/lib/diaria-subscribers-db.ts").openDiariaSubscribersDbSafe>,
+        // Fixture: a resposta real que produziu "**subscribers ativos:** 1"
+        // em docs/audience-history/2026-09-15.md e 2026-09-16.md (#8322).
+        getKitActiveSummaryFn: () => ({ count: 1, asOf: "2026-09-16T00:00:00Z" }),
+      });
+      const result = main(deps);
+      assert.equal(result.ok, true);
+      assert.notEqual(result.subscribers, 1, "nunca aceita a contagem implausível");
+      assert.ok(result.subscriberWarning, "resultado deve carregar o warning explícito");
+
+      const doc = readFileSync(deps.outPath!, "utf8");
+      assert.doesNotMatch(doc, /\*\*subscribers ativos:\*\* 1\b/, "nunca grava '1' cru no snapshot");
+      assert.doesNotMatch(doc, /comportamento de 1 subscribers?\b/, "nunca a frase 'comportamento de 1 subscriber(s)' — nem a versão historicamente quebrada, nem uma versão corrigida");
+      // Campo nunca omitido em silêncio — a linha de header existe, só que
+      // como warning explícito em vez do número.
+      assert.match(doc, /\*\*subscribers ativos:\*\* indisponível — .*implausível.*#8322/);
+      assert.match(doc, /contagem de subscribers indisponível — .*implausível.*#8322/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("nenhuma fonte disponível → ok:false com motivo, nada escrito", () => {
     const dir = mkdtempSync(join(tmpdir(), "update-audience-main-8151-"));
     try {
