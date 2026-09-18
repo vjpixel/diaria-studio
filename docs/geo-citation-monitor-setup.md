@@ -314,6 +314,48 @@ cadência semanal — vive no corpo da própria issue, não duplicada aqui):
   arquivo órfão de volta é operação manual sobre dado real de produção. A
   causa raiz (2 máquinas rodando a mesma task) fecha com a épica #4798.
 
+## Retry generalizado, taxa de erro sobre o denominador correto, e painel de entidades (#8341, #8344)
+
+Auditoria de 18/09/2026 mediu **29% de erro em `history.jsonl`** (143 de
+493 registros): 56 timeouts de rede da Anthropic sem retry nenhum, 48 429
+da OpenAI que eram cota/crédito esgotado (não recusa), 24 429 do Google.
+Três mudanças, todas em `scripts/lib/geo-citation-monitor.ts`/
+`scripts/geo-citation-monitor.ts`:
+
+- **Retry generalizado (`isRetryableGeoError`).** O retry único que antes
+  só cobria HTTP 429 agora também cobre `errorKind: "network"` (timeout
+  incluso) e HTTP 5xx — o mesmo delay curto (`GEO_RATE_LIMIT_RETRY_DELAY_MS`).
+  `errorKind: "quota"` (#8061) **nunca** é retentado — é falha PERMANENTE, e
+  `"parse"`/`"extract"`/`"provider"` também não (não são falha de
+  transporte).
+- **Reporte sempre sobre o denominador de consultas VÁLIDAS**, nunca a
+  fração crua "citou/total" — tanto no print de fim de rodada quanto no
+  modo novo `--history-report` (lê `history.jsonl` inteiro sem gastar
+  chamada de rede, reclassificando `errorKind` de 429 histórico pré-#8061
+  que já era cota mas ficou gravado como `"http"` — **reclassificação só
+  na LEITURA, `history.jsonl` nunca é reescrito**, ver
+  `deriveEffectiveErrorKind`/`summarizeHistoryByProviderReclassified`).
+- **Alarme de taxa de erro por rodada** (`detectHighErrorRateProviders`,
+  limiar `GEO_ERROR_RATE_ALARM_THRESHOLD_PCT` = 25%) — WARN no log quando
+  um provider cruza o limiar NESTA rodada, sem esperar 100% de erro (o
+  que `resolveStrictOutcome` já cobria sob `--strict`).
+
+**Painel `entidades` (#8344, 4º passo de `Diaria-Geo-Citation-Monitor`,
+`--panel entidades`)**: 16 perguntas fixas (`GEO_ENTITY_QUESTIONS`, 2 por
+entidade) cobrindo as 8 páginas `especial.diar.ia.br/entidades/{slug}/`
+(alibaba, amazon, apple, deepseek, oracle, perplexity, samsung, xai) — a 2ª
+maior aposta de conteúdo GEO do projeto depois dos hubs, sem medição de
+citação nenhuma até esta issue. Mesmo `--max-monthly-usd 8` dos outros 3
+passos; custo ~US$0,11/rodada. A issue #8344 recomendava esperar a #8335
+(checagem de indexação estendida a `especial`) antes de ligar o painel — a
+#8335 fechou no #8343 (18/09/2026), mas a indexação REAL das 8 URLs de
+`/entidades/` depende da API do Search Console e não foi reconfirmada ao
+vivo nesta PR (fora do alcance de um worktree isolado, sem rede/credencial
+— mesma limitação documentada em quase toda decisão de GEO deste arquivo).
+Ativado seguindo o mesmo precedente do painel `hubs` (`docs/geo-hub-experiment.md`
+item 5: 0 citação em página ainda não indexada é esperado, não é falha —
+a 1ª rodada real É o sinal de indexação, não um pré-requisito bloqueante).
+
 ## Setup (ação local one-time do editor)
 
 `local` — precisa do junction `data/` (OneDrive) + ao menos UMA de

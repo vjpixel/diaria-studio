@@ -68,10 +68,20 @@
  * `errorKind`/`httpStatus` pra tornar a ORIGEM do erro auditável (rede vs.
  * HTTP vs. parse vs. regressão de `extractText`) em vez de um `error: string`
  * solto e indistinguível. `runGeoCitationMonitor` faz 1 retry com backoff
- * curto (`GEO_RATE_LIMIT_RETRY_DELAY_MS`) especificamente pra 429 — outros
- * erros não são retentados de propósito (rede/parse/extract tendem a não ser
- * transitórios da mesma forma que rate-limit, e mais retries alongaria as
- * ~24 chamadas seriais de uma rodada completa sem ganho claro).
+ * curto (`GEO_RATE_LIMIT_RETRY_DELAY_MS`).
+ *
+ * **Retry generalizado pra `network`/5xx, não só 429 (#8341).** A auditoria
+ * de 18/09/2026 mediu 29% de erro em `history.jsonl` (493 registros), com o
+ * maior balde sendo 56 timeouts de rede da Anthropic (quase metade do erro
+ * total) que não tinham retry nenhum antes desta mudança — só 429 tinha.
+ * `isRetryableGeoError` decide: `"network"` (timeout incluso) e HTTP 5xx
+ * entram no mesmo retry único de 429 (mesmo `sleepFn`/delay, `queryProvider`
+ * chamado de novo com o `timeoutMs` do provider); `"quota"` (#8061) NUNCA é
+ * retentado — é falha PERMANENTE (crédito zerado), reter só queima mais uma
+ * chamada cobrada sem chance de suceder; `"parse"`/`"extract"`/`"provider"`
+ * também não — repetir a MESMA chamada tende a repetir o MESMO resultado
+ * (não são falhas de transporte), e mais retries alongaria as ~24 chamadas
+ * seriais de uma rodada completa sem ganho.
  */
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -98,10 +108,12 @@ export const GEO_QUESTIONS: readonly string[] = [
  * perguntas frequentes que as páginas `arquivo.diar.ia.br/temas/{slug}` já
  * respondem (`scripts/lib/hubs/*.ts`); `"acervo"` (#8334) é o painel de
  * cauda longa sobre o conteúdo real das edições publicadas em `/p/{slug}`
- * — ver `GEO_ACERVO_QUESTIONS`. Um registro sem `panel` (escrito antes de
- * `"hubs"` existir) é lido como `"geral"` por default — ver `panel` em
- * `GeoCitationRecord` e `summarizeGeoCitationRecords`. */
-export type GeoQuestionPanel = "geral" | "hubs" | "acervo";
+ * — ver `GEO_ACERVO_QUESTIONS`; `"entidades"` (#8344) cobre as 8 páginas
+ * `especial.diar.ia.br/entidades/{slug}/` — ver `GEO_ENTITY_QUESTIONS`. Um
+ * registro sem `panel` (escrito antes de `"hubs"` existir) é lido como
+ * `"geral"` por default — ver `panel` em `GeoCitationRecord` e
+ * `summarizeGeoCitationRecords`. */
+export type GeoQuestionPanel = "geral" | "hubs" | "acervo" | "entidades";
 
 /**
  * Perguntas fixas, pt-BR, do painel TEMÁTICO (#4900 item a) — cobrem
@@ -238,6 +250,86 @@ export const GEO_ACERVO_QUESTIONS: readonly string[] = [
   "A Nvidia afirmou que a AGI já chegou — outros cientistas concordam com isso?",
   // "Tem 22 a 25 anos? A IA já pode afetar seu emprego" (28/08/2026)
   "Pessoas de 22 a 25 anos já estão perdendo emprego por causa da IA?",
+] as const;
+
+/**
+ * Perguntas fixas, pt-BR, do painel de ENTIDADES (#8344) — cobrem as 8
+ * páginas `especial.diar.ia.br/entidades/{slug}/` (alibaba, amazon, apple,
+ * deepseek, oracle, perplexity, samsung, xai), que serve `Article` +
+ * `FAQPage` + `ItemList` + `Organization` + `Person` em JSON-LD, estão no
+ * sitemap de `especial` e têm regeneração + alarme de defasagem diários
+ * próprios (`Diaria-Entity-Pages-Regen`, #5125) — a 2ª maior aposta de
+ * conteúdo GEO do projeto depois dos hubs, e até esta issue a única sem
+ * medição de citação nenhuma (conferido contra as 24 questões de `GEO_QUESTIONS`
+ * + `GEO_HUB_QUESTIONS` + `GEO_ACERVO_QUESTIONS`, nenhuma delas cobria essas
+ * 8 páginas).
+ *
+ * **Forma da pergunta é mais perto de `GEO_HUB_QUESTIONS` que de
+ * `GEO_ACERVO_QUESTIONS`** (decisão de desenho da issue, não uma escolha
+ * livre desta PR): cada página de entidade responde "o que a empresa X fez
+ * em IA?", não cauda longa sobre 1 edição específica — por isso as 2
+ * perguntas por entidade seguem o mesmo molde do painel `hubs` (1 genérica
+ * de "o que aconteceu" + 1 específica ancorada num fato real da própria
+ * página), nunca misturadas no MESMO painel que `acervo` (a issue #8344 é
+ * explícita: misturar estragaria a leitura de ambos, mesmo motivo que
+ * separou `geral`/`hubs` desde o #4900).
+ *
+ * **2 perguntas × 8 entidades = 16, ancoradas no `<meta name="description">`
+ * real de cada página (`workers/artigos/public/entidades/{slug}/index.html`,
+ * conferido ao vivo nesta PR) — não geradas, mesmo racional de
+ * `GEO_HUB_QUESTIONS`/`GEO_ACERVO_QUESTIONS`: instrumento FIXO, cauda longa
+ * comparável ao longo do tempo > cobertura ampla que muda toda rodada.**
+ * Custo: ~US$ 0,11/rodada nos preços de `GEO_NON_ANTHROPIC_TOKEN_PRICING`
+ * abaixo (16 consultas × ~US$0,007 Anthropic / ~US$0,002 Google, conforme a
+ * issue) — cabe folgado no teto `--max-monthly-usd 8` já configurado pros
+ * outros 3 painéis (`scripts/lib/scheduled-tasks.ts`).
+ *
+ * **Ordem de ativação (nota da issue #8344, não decisão desta PR): esperar
+ * a #8335 (checagem de indexação estendida a `especial`) antes de LIGAR
+ * este painel no cron** — sem saber se as 8 páginas estão indexadas, um
+ * zero aqui teria a mesma ambiguidade que o 0/177 dos hubs teve até 06/09
+ * (`docs/geo-hub-experiment.md`, que documenta o mesmo precedente sendo
+ * ativado a 2/8 indexado, com a ambiguidade registrada e não bloqueante —
+ * não "zero indexação bloqueia ativação"). A #8335 já fechou (#8343,
+ * 18/09/2026, 4 hosts novos em `Diaria-SEO-Weekly` incluindo `especial`) —
+ * a checagem real de indexação das 8 URLs específicas de `/entidades/`
+ * depende da API do Search Console (fora do alcance de um worktree
+ * isolado, sem credencial/rede real) e não foi reconfirmada AO VIVO nesta
+ * sessão. Registrado como passo ATIVO (`monitor-entidades`) seguindo o
+ * mesmo precedente do painel `hubs` — a 1ª rodada real do painel, quando
+ * rodar, é o próprio sinal de indexação (0 citações em página não-indexada
+ * é esperado e não é falha; ver `docs/geo-hub-experiment.md` item 5).
+ *
+ * **A lista é escrita à mão, como `GEO_HUB_QUESTIONS`/`GEO_ACERVO_QUESTIONS`
+ * — não regenerar automaticamente por entidade nova.** Entidade nova (9ª
+ * página publicada) é decisão consciente de reset de baseline, mesmo
+ * tratamento documentado pra hub novo em `GEO_HUB_QUESTIONS`.
+ */
+export const GEO_ENTITY_QUESTIONS: readonly string[] = [
+  // alibaba
+  "O que a Alibaba fez em inteligência artificial em 2026?",
+  "A Alibaba acusou o Claude, da Anthropic, de usar 25 mil contas falsas? O que aconteceu?",
+  // amazon
+  "O que aconteceu com a Amazon no mercado de inteligência artificial em 2026?",
+  "Como está a disputa entre a Amazon e a Perplexity por causa de IA?",
+  // apple
+  "O que a Apple fez em inteligência artificial em 2026?",
+  "A Apple foi processada pela X e pela xAI? Por quê?",
+  // deepseek
+  "O que a DeepSeek fez em 2026 que chamou atenção no mercado de inteligência artificial?",
+  "É verdade que a DeepSeek cortou 75% no preço da própria API?",
+  // oracle
+  "O que aconteceu com a Oracle no mercado de inteligência artificial em 2026?",
+  "O contrato da Oracle com a OpenAI é mesmo de US$ 300 bilhões?",
+  // perplexity
+  "O que aconteceu com a Perplexity em 2026?",
+  "A Perplexity deixou de ser só um buscador de IA e virou um agente autônomo?",
+  // samsung
+  "O que a Samsung fez em inteligência artificial em 2026?",
+  "A Samsung teve prejuízo na área de celulares por causa do boom de IA?",
+  // xai
+  "O que aconteceu com a xAI e o Grok em 2026?",
+  "A xAI teve um escândalo envolvendo imagens geradas pelo Grok? O que aconteceu?",
 ] as const;
 
 /** Domínio checado nas respostas (sem protocolo/path — substring match). */
@@ -948,8 +1040,8 @@ export interface GeoCitationRecord {
    * `classifyHttp429ErrorKind` pro critério de classificação por provider. */
   errorKind?: "http" | "network" | "parse" | "extract" | "provider" | "quota";
   /** Painel de origem da pergunta (#4900 item a) — `"geral"` (`GEO_QUESTIONS`),
-   * `"hubs"` (`GEO_HUB_QUESTIONS`) ou `"acervo"` (`GEO_ACERVO_QUESTIONS`,
-   * #8334). **Opcional de propósito**: registros
+   * `"hubs"` (`GEO_HUB_QUESTIONS`), `"acervo"` (`GEO_ACERVO_QUESTIONS`,
+   * #8334) ou `"entidades"` (`GEO_ENTITY_QUESTIONS`, #8344). **Opcional de propósito**: registros
    * escritos antes desta mudança não têm o campo — leitores tratam ausência
    * como `"geral"` (ver `summarizeGeoCitationRecords`), nunca migram o
    * arquivo. Registros novos sempre vêm com o campo populado
@@ -989,7 +1081,7 @@ export interface GeoCitationRecord {
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
-type QueryProviderResult =
+export type QueryProviderResult =
   | { ok: true; text: string; usage?: GeoProviderUsage }
   | { ok: false; error: string; errorKind: "http" | "network" | "parse" | "extract" | "provider" | "quota"; httpStatus?: number };
 
@@ -1188,21 +1280,47 @@ export function buildUsageRecordFields(
   return out;
 }
 
-/** Delay do único retry de rate-limit (item 4 do achado #4616) — curto de
- * propósito, só o bastante pra dar uma segunda chance a um 429 transitório
- * sem alongar sensivelmente as ~24 chamadas seriais de uma rodada completa. */
+/** Delay do único retry (item 4 do achado #4616; generalizado além de 429
+ * no #8341 — ver `isRetryableGeoError`) — curto de propósito, só o bastante
+ * pra dar uma segunda chance a um erro transitório sem alongar
+ * sensivelmente as ~24 chamadas seriais de uma rodada completa. */
 export const GEO_RATE_LIMIT_RETRY_DELAY_MS = 1_500;
+
+/**
+ * Pure: decide se um resultado de erro de `queryProvider` merece o retry
+ * único de `runGeoCitationMonitor` (#8341 — generaliza o retry que antes só
+ * cobria HTTP 429, ver docstring do módulo). Retryable: `"network"`
+ * (inclui timeout — o maior balde de erro medido na auditoria de
+ * 18/09/2026, 56 dos 143 erros) e HTTP 5xx (erro do lado do servidor,
+ * tende a ser transitório) — mesmo `errorKind` `"http"` que já cobria 429.
+ * **NUNCA retryable:** `"quota"` (#8061, falha PERMANENTE — crédito/cota
+ * esgotados; repetir a chamada só queima outra cobrança sem chance de
+ * suceder, e só volta com ação do editor) nem `"parse"`/`"extract"`/
+ * `"provider"` (não são falhas de TRANSPORTE — a resposta chegou e o
+ * problema está no conteúdo/parsing dela; repetir a MESMA chamada tende a
+ * repetir o MESMO resultado, sem ganho).
+ */
+export function isRetryableGeoError(result: Extract<QueryProviderResult, { ok: false }>): boolean {
+  if (result.errorKind === "network") return true;
+  if (result.errorKind === "http") {
+    if (result.httpStatus === 429) return true;
+    if (result.httpStatus !== undefined && result.httpStatus >= 500) return true;
+  }
+  return false;
+}
 
 /**
  * Roda TODAS as combinações provider×pergunta pros providers cuja API key
  * está presente em `env` (providers sem key são pulados — fail-soft, nunca
  * erro). Retorna 1 `GeoCitationRecord` por combinação executada.
  *
- * **Rate-limit (#4616 achado 4):** um 429 recebe exatamente 1 retry, após
- * `GEO_RATE_LIMIT_RETRY_DELAY_MS` — o suficiente pra não perder uma
- * combinação inteira por um rate-limit transitório de 1 chamada, sem virar
- * um backoff geral (outros erros — rede/parse/extract — não são retentados;
- * ver docstring do módulo pra rationale de escopo). `sleepFn` é injetável em
+ * **Retry transitório (#4616 achado 4, generalizado no #8341):** um erro
+ * `isRetryableGeoError` (429, HTTP 5xx, ou `"network"`/timeout) recebe
+ * exatamente 1 retry, após `GEO_RATE_LIMIT_RETRY_DELAY_MS` — o suficiente
+ * pra não perder uma combinação inteira por uma falha transitória de 1
+ * chamada, sem virar um backoff geral (`"quota"`/`"parse"`/`"extract"`/
+ * `"provider"` NUNCA são retentados; ver docstring do módulo e de
+ * `isRetryableGeoError` pro rationale de escopo). `sleepFn` é injetável em
  * teste pra não esperar o delay real.
  *
  * `panel` (#4900 item a, default `"geral"`) é estampado em TODO record
@@ -1227,7 +1345,7 @@ export async function runGeoCitationMonitor(
     const model = env[`${provider.envKey}_MODEL`] || provider.defaultModel;
     for (const question of questions) {
       let result = await queryProvider(provider, question, apiKey, model, fetchImpl, provider.timeoutMs);
-      if (!result.ok && result.errorKind === "http" && result.httpStatus === 429) {
+      if (!result.ok && isRetryableGeoError(result)) {
         await sleepFn(GEO_RATE_LIMIT_RETRY_DELAY_MS);
         result = await queryProvider(provider, question, apiKey, model, fetchImpl, provider.timeoutMs);
       }
@@ -1446,4 +1564,153 @@ export function detectProviderDrop(
  * em `scripts/geo-citation-monitor.ts` pro wrapper de I/O). */
 export function detectSafeBackupConflictFiles(filenames: readonly string[]): string[] {
   return filenames.filter((f) => f.includes("-safeBackup-"));
+}
+
+// ---------------------------------------------------------------------------
+// #8341 — taxa de erro sobre o denominador correto (nunca a fração crua
+// sobre o total), alarme de taxa de erro por rodada, e reclassificação de
+// errorKind histórico feita só na LEITURA (nunca reescrevendo history.jsonl).
+// ---------------------------------------------------------------------------
+
+/** Pure: taxa de erro em %, 1 casa decimal — `0` quando `total` é 0 (nunca
+ * `NaN`/`Infinity`). Usada tanto no print de fim de rodada quanto no alarme
+ * de taxa de erro abaixo. */
+export function errorRatePct(total: number, errors: number): number {
+  if (total <= 0) return 0;
+  return Math.round((errors / total) * 1000) / 10;
+}
+
+export interface HighErrorRateProvider {
+  provider: string;
+  total: number;
+  errors: number;
+  errorRatePct: number;
+}
+
+/** Limiar default do alarme de taxa de erro por rodada (#8341, item 4 da
+ * issue) — 25%: acima da taxa "saudável" de rate-limit isolado (0-15% na
+ * série medida em 18/09/2026 pro Google) e abaixo da taxa que já indicava
+ * problema real (40% Anthropic, 28% OpenAI, ambos causados por falha
+ * sistêmica — timeout sem retry e cota esgotada, respectivamente). */
+export const GEO_ERROR_RATE_ALARM_THRESHOLD_PCT = 25;
+
+/**
+ * Pure: providers cuja taxa de erro NESTA RODADA cruza `thresholdPct` (#8341,
+ * item 4 da issue — "alarme quando a taxa de erro de um provider passar de
+ * um limiar por rodada"). Foi a ausência disto que deixou 2 semanas de
+ * crédito OpenAI zerado passarem como rate-limit saudável (#8061). Não
+ * decide o que fazer com o resultado (WARN/exit code) — quem decide é o
+ * caller, mesmo padrão de `detectProviderTotalFailure` acima (que cobre só
+ * o caso extremo de 100%; isto cobre qualquer taxa acima do limiar).
+ * `total === 0` nunca entra (sem consulta, sem taxa a medir).
+ */
+export function detectHighErrorRateProviders(
+  byProvider: Record<string, { total: number; cited: number; errors: number }>,
+  thresholdPct: number = GEO_ERROR_RATE_ALARM_THRESHOLD_PCT,
+): HighErrorRateProvider[] {
+  const out: HighErrorRateProvider[] = [];
+  for (const [provider, s] of Object.entries(byProvider)) {
+    if (s.total === 0) continue;
+    const pct = errorRatePct(s.total, s.errors);
+    if (pct >= thresholdPct) out.push({ provider, total: s.total, errors: s.errors, errorRatePct: pct });
+  }
+  return out.sort((a, b) => b.errorRatePct - a.errorRatePct);
+}
+
+/**
+ * Pure: deriva o `errorKind` EFETIVO de um registro histórico, reclassificando
+ * 429 pré-#8061 que ficaram gravados como `"http"` mas cujo corpo (`error`,
+ * formato `"HTTP 429: <body>"` — ver `queryProvider`) já indicava cota/
+ * crédito esgotado (#8341, item 1 da issue: "os 48 erros da OpenAI são todos
+ * crédito zerado, não recusa... os registros históricos são anteriores ao
+ * fix e ficaram como errorKind: 'http'"). **NUNCA reescreve `history.jsonl`**
+ * — é série temporal de produção; a reclassificação acontece só quando um
+ * leitor (ex: `summarizeHistoryByProviderReclassified` abaixo) escolhe
+ * aplicá-la. Registros já escritos com `errorKind: "quota"` (pós-#8061) e
+ * qualquer erro que não seja HTTP 429 passam intactos —
+ * `classifyHttp429ErrorKind` já é pure/nunca lança e tolera corpo truncado
+ * ou não-JSON (fallback textual), então chamá-la de novo sobre um `error`
+ * já classificado como `"http"` é seguro e idempotente.
+ */
+export function deriveEffectiveErrorKind(
+  record: Pick<GeoCitationRecord, "errorKind" | "httpStatus" | "error">,
+): GeoCitationRecord["errorKind"] {
+  if (record.errorKind === "http" && record.httpStatus === 429 && typeof record.error === "string") {
+    // `record.error` tem o formato "HTTP 429: <body>" (ver `queryProvider`)
+    // — passar a string INTEIRA pra `classifyHttp429ErrorKind` faz o
+    // `JSON.parse` interno falhar sempre (o prefixo "HTTP 429: " não é JSON
+    // válido), o que quebraria silenciosamente os 2 caminhos de
+    // classificação por `code`/`status` (OpenAI `insufficient_quota`,
+    // Google `RESOURCE_EXHAUSTED`+`PerDay`) e deixaria só o fallback
+    // textual "no credits" funcionando por acidente — achado de self-review
+    // desta PR, confirmado ao vivo (`JSON.parse('HTTP 429: {...}')` lança).
+    // Remove o prefixo ANTES de classificar, igual ao `body` que
+    // `queryProvider` já passa pra `classifyHttp429ErrorKind` no caminho de
+    // escrita (nunca com o prefixo).
+    const body = record.error.replace(/^HTTP \d+:\s?/, "");
+    return classifyHttp429ErrorKind(body);
+  }
+  return record.errorKind;
+}
+
+export interface ProviderHistoryReportRow {
+  provider: string;
+  /** Total de consultas (válidas + erro) deste provider no recorte lido. */
+  total: number;
+  /** Quantas citaram `diar.ia.br` — só entre as VÁLIDAS (uma consulta com
+   * erro nunca tem `cited: true`, ver `runGeoCitationMonitor`). */
+  cited: number;
+  /** `total - errors` — o denominador correto pra ler "quantas vezes o
+   * provider foi de fato perguntado e respondeu" (#8341, item 3: "nunca a
+   * fração crua sobre o total"). */
+  valid: number;
+  /** Erros após reclassificação (`deriveEffectiveErrorKind`). */
+  errors: number;
+  /** Subconjunto de `errors` que é cota/crédito esgotado (permanente). */
+  quotaErrors: number;
+  errorRatePct: number;
+  /** `cited / valid * 100`, 1 casa — `0` quando `valid` é 0 (nenhuma
+   * consulta válida, taxa indefinida tratada como 0, nunca `NaN`). */
+  validCitationRatePct: number;
+}
+
+/**
+ * Pure: agrega registros históricos por provider, reportando SEMPRE sobre o
+ * denominador de consultas VÁLIDAS (#8341, item 3 da issue) e reclassificando
+ * `errorKind` na leitura (`deriveEffectiveErrorKind`) — nunca sobre a fração
+ * crua "citou/total", que mistura "nunca citou" com "nunca chegou a ser
+ * perguntado de verdade" no mesmo número. Usado pelo `--history-report` do
+ * CLI (`scripts/geo-citation-monitor.ts`) para ler `data/geo-citations/history.jsonl`
+ * sem gastar nenhuma chamada de rede nova.
+ */
+export function summarizeHistoryByProviderReclassified(
+  records: readonly Pick<GeoCitationRecord, "provider" | "cited" | "errorKind" | "httpStatus" | "error">[],
+): ProviderHistoryReportRow[] {
+  const byProvider = new Map<string, { total: number; cited: number; errors: number; quotaErrors: number }>();
+  for (const r of records) {
+    if (!byProvider.has(r.provider)) byProvider.set(r.provider, { total: 0, cited: 0, errors: 0, quotaErrors: 0 });
+    const s = byProvider.get(r.provider)!;
+    s.total += 1;
+    if (r.cited) s.cited += 1;
+    const effectiveKind = deriveEffectiveErrorKind(r);
+    if (effectiveKind !== undefined) {
+      s.errors += 1;
+      if (effectiveKind === "quota") s.quotaErrors += 1;
+    }
+  }
+  const rows: ProviderHistoryReportRow[] = [];
+  for (const [provider, s] of byProvider.entries()) {
+    const valid = s.total - s.errors;
+    rows.push({
+      provider,
+      total: s.total,
+      cited: s.cited,
+      valid,
+      errors: s.errors,
+      quotaErrors: s.quotaErrors,
+      errorRatePct: errorRatePct(s.total, s.errors),
+      validCitationRatePct: valid > 0 ? Math.round((s.cited / valid) * 1000) / 10 : 0,
+    });
+  }
+  return rows.sort((a, b) => a.provider.localeCompare(b.provider));
 }

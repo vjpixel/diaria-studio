@@ -20,6 +20,7 @@ import {
   resolveStrictOutcome,
   readHistoryRecordsForPanel,
   readHistoryRecordsForCostGuard,
+  readHistoryRecordsForReport,
   sumMonthToDateCostUsd,
   resolveMonthlyCostGuardOutcome,
   listSafeBackupConflictFiles,
@@ -140,6 +141,101 @@ describe("scripts/geo-citation-monitor.ts main() (#4558 Parte C)", () => {
         !logs.some((l) => l.includes("Claude Opus 5")),
         "não deveria imprimir pergunta do painel 'hubs'",
       );
+    });
+
+    it("--dry-run --panel entidades imprime as perguntas do painel de entidades (#8344), não as dos outros 3 painéis", async () => {
+      process.argv = ["node", "geo-citation-monitor.ts", "--dry-run", "--panel", "entidades"];
+      const code = await main();
+      assert.equal(code, 0);
+      assert.ok(logs.some((l) => l.includes('painel "entidades"')));
+      assert.ok(
+        logs.some((l) => l.includes("Alibaba")),
+        "esperava alguma pergunta do painel de entidades mencionando a Alibaba",
+      );
+      assert.ok(!logs.some((l) => l.includes("newsletter diária")), "não deveria imprimir pergunta do painel 'geral'");
+      assert.ok(!logs.some((l) => l.includes("Claude Opus 5")), "não deveria imprimir pergunta do painel 'hubs'");
+      assert.ok(!logs.some((l) => l.includes("OpenAI criou")), "não deveria imprimir pergunta do painel 'acervo'");
+    });
+  });
+
+  describe("--history-report (#8341, itens 1 e 3 da issue)", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), "geo-citation-history-report-"));
+    });
+
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("nunca chama fetch — sai antes de qualquer lógica de rede, mesmo com key configurada", async () => {
+      const originalFetch = global.fetch;
+      global.fetch = (async () => {
+        throw new Error("--history-report nunca deveria chamar fetch");
+      }) as typeof fetch;
+      try {
+        const outPath = resolve(tmpDir, "history.jsonl");
+        writeFileSync(outPath, JSON.stringify({ provider: "openai", cited: true, panel: "geral" }) + "\n");
+        process.env.ANTHROPIC_API_KEY = "fake-key";
+        process.argv = ["node", "geo-citation-monitor.ts", "--history-report", "--out", outPath];
+        const code = await main();
+        assert.equal(code, 0);
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    it("reporta citadas/válidas com taxa de erro — reclassifica 429 histórico de cota (#8061) na leitura", async () => {
+      const outPath = resolve(tmpDir, "history.jsonl");
+      const lines = [
+        JSON.stringify({ provider: "openai", cited: false, panel: "geral" }),
+        JSON.stringify({ provider: "openai", cited: false, panel: "geral" }),
+        JSON.stringify({
+          provider: "openai",
+          cited: false,
+          panel: "geral",
+          errorKind: "http",
+          httpStatus: 429,
+          error: 'HTTP 429: {"error":{"code":"insufficient_quota","message":"You have no credits remaining"}}',
+        }),
+      ];
+      writeFileSync(outPath, lines.join("\n") + "\n");
+      process.argv = ["node", "geo-citation-monitor.ts", "--history-report", "--out", outPath];
+      const code = await main();
+      assert.equal(code, 0);
+      assert.ok(logs.some((l) => l.includes("relatório histórico")));
+      assert.ok(
+        logs.some((l) => l.includes("openai: 0/2 citaram") && l.includes("cota/crédito esgotado")),
+        `esperava a linha do openai reclassificando o 429 histórico como cota — logs: ${JSON.stringify(logs)}`,
+      );
+    });
+
+    it("--panel filtra o relatório a um único painel", async () => {
+      const outPath = resolve(tmpDir, "history.jsonl");
+      const lines = [
+        JSON.stringify({ provider: "openai", cited: true, panel: "geral" }),
+        JSON.stringify({ provider: "anthropic", cited: false, panel: "hubs" }),
+      ];
+      writeFileSync(outPath, lines.join("\n") + "\n");
+      process.argv = ["node", "geo-citation-monitor.ts", "--history-report", "--panel", "hubs", "--out", outPath];
+      const code = await main();
+      assert.equal(code, 0);
+      assert.ok(logs.some((l) => l.includes("anthropic")));
+      assert.ok(!logs.some((l) => l.includes("openai")));
+    });
+
+    it("arquivo ausente -> relatório vazio, sem lançar", async () => {
+      process.argv = [
+        "node",
+        "geo-citation-monitor.ts",
+        "--history-report",
+        "--out",
+        resolve(tmpDir, "nao-existe.jsonl"),
+      ];
+      const code = await main();
+      assert.equal(code, 0);
+      assert.ok(logs.some((l) => l.includes("nenhum registro legível")));
     });
   });
 
@@ -295,6 +391,71 @@ describe("readHistoryRecordsForPanel (scripts/geo-citation-monitor.ts, I/O real 
     const geral = readHistoryRecordsForPanel(path, "geral");
     assert.equal(geral.length, 1);
     assert.equal(geral[0].provider, "openai");
+  });
+});
+
+describe("readHistoryRecordsForReport (scripts/geo-citation-monitor.ts, I/O real via tmpdir — #8341)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "geo-citation-history-report-io-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("arquivo inexistente -> []", () => {
+    assert.deepEqual(readHistoryRecordsForReport(resolve(tmpDir, "nao-existe.jsonl")), []);
+  });
+
+  it("sem panelFilter: lê TODOS os painéis (diferente de readHistoryRecordsForPanel, que sempre filtra)", () => {
+    const path = resolve(tmpDir, "history.jsonl");
+    const lines = [
+      JSON.stringify({ provider: "openai", cited: true, panel: "geral" }),
+      JSON.stringify({ provider: "anthropic", cited: false, panel: "hubs" }),
+      JSON.stringify({ provider: "google", cited: false, panel: "acervo" }),
+      JSON.stringify({ provider: "openai", cited: false, panel: "entidades" }),
+    ];
+    writeFileSync(path, lines.join("\n") + "\n");
+    const records = readHistoryRecordsForReport(path);
+    assert.equal(records.length, 4);
+  });
+
+  it("com panelFilter: filtra igual readHistoryRecordsForPanel (legado sem 'panel' conta como 'geral')", () => {
+    const path = resolve(tmpDir, "history.jsonl");
+    const lines = [
+      JSON.stringify({ provider: "openai", cited: true }), // legado, sem panel
+      JSON.stringify({ provider: "anthropic", cited: false, panel: "entidades" }),
+    ];
+    writeFileSync(path, lines.join("\n") + "\n");
+    const geral = readHistoryRecordsForReport(path, "geral");
+    assert.equal(geral.length, 1);
+    assert.equal(geral[0].provider, "openai");
+    const entidades = readHistoryRecordsForReport(path, "entidades");
+    assert.equal(entidades.length, 1);
+    assert.equal(entidades[0].provider, "anthropic");
+  });
+
+  it("linha corrompida não invalida as outras (fail-soft linha a linha)", () => {
+    const path = resolve(tmpDir, "history.jsonl");
+    writeFileSync(path, "não é json\n" + JSON.stringify({ provider: "openai", cited: true }) + "\n");
+    const records = readHistoryRecordsForReport(path);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].provider, "openai");
+  });
+
+  it("propaga errorKind/httpStatus/error pra deriveEffectiveErrorKind poder reclassificar", () => {
+    const path = resolve(tmpDir, "history.jsonl");
+    writeFileSync(
+      path,
+      JSON.stringify({ provider: "openai", cited: false, errorKind: "http", httpStatus: 429, error: "HTTP 429: no credits" }) +
+        "\n",
+    );
+    const records = readHistoryRecordsForReport(path);
+    assert.equal(records[0].errorKind, "http");
+    assert.equal(records[0].httpStatus, 429);
+    assert.equal(records[0].error, "HTTP 429: no credits");
   });
 });
 

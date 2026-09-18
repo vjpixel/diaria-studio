@@ -18,22 +18,53 @@ import {
   GEO_PROVIDERS,
   GEO_QUESTIONS,
   GEO_HUB_QUESTIONS,
+  GEO_ENTITY_QUESTIONS,
   GEO_RATE_LIMIT_RETRY_DELAY_MS,
   GEO_TARGET_DOMAIN,
+  GEO_ERROR_RATE_ALARM_THRESHOLD_PCT,
   appendGeoCitationLog,
   buildUsageRecordFields,
   classifyHttp429ErrorKind,
   detectCitation,
+  detectHighErrorRateProviders,
+  deriveEffectiveErrorKind,
   detectProviderDrop,
   detectProviderTotalFailure,
   detectSafeBackupConflictFiles,
+  errorRatePct,
+  isRetryableGeoError,
   latestRoundProviders,
   providersByRoundDate,
   queryProvider,
   runGeoCitationMonitor,
   summarizeGeoCitationRecords,
+  summarizeHistoryByProviderReclassified,
   type GeoCitationRecord,
 } from "../scripts/lib/geo-citation-monitor.ts";
+
+describe("GEO_ENTITY_QUESTIONS (#8344)", () => {
+  it("tem exatamente 16 perguntas (2 por entidade × 8 entidades), todas em pt-BR não-vazias", () => {
+    assert.equal(GEO_ENTITY_QUESTIONS.length, 16);
+    for (const q of GEO_ENTITY_QUESTIONS) {
+      assert.ok(q.trim().length > 0);
+      assert.match(q, /[a-záàâãéêíóôõúç]/i, `pergunta "${q}" não parece pt-BR`);
+    }
+  });
+
+  it("cobre as 8 entidades (cada slug de especial.diar.ia.br/entidades/{slug}/ mencionado em pelo menos 1 pergunta)", () => {
+    const entities = ["Alibaba", "Amazon", "Apple", "DeepSeek", "Oracle", "Perplexity", "Samsung", "xAI"];
+    for (const entity of entities) {
+      assert.ok(
+        GEO_ENTITY_QUESTIONS.some((q) => q.includes(entity)),
+        `nenhuma pergunta menciona "${entity}"`,
+      );
+    }
+  });
+
+  it("nenhuma pergunta duplicada", () => {
+    assert.equal(new Set(GEO_ENTITY_QUESTIONS).size, GEO_ENTITY_QUESTIONS.length);
+  });
+});
 
 describe("GEO_QUESTIONS (#4558)", () => {
   it("tem entre 5 e 10 perguntas fixas, todas em pt-BR não-vazias", () => {
@@ -962,7 +993,17 @@ describe("runGeoCitationMonitor (#4558 Parte C)", () => {
 
   it("propaga errorKind/httpStatus pro record (#4616 achado 1)", async () => {
     const fakeFetch = async () => new Response("nope", { status: 500 });
-    const records = await runGeoCitationMonitor({ ANTHROPIC_API_KEY: "fake-key" }, ["pergunta"], fakeFetch);
+    // sleepFn no-op (#8341: 500 agora é retentado, ver teste dedicado abaixo)
+    // — só pra este teste não esperar o delay real de 1,5s; a asserção aqui
+    // é sobre o record FINAL, não sobre quantas chamadas aconteceram.
+    const records = await runGeoCitationMonitor(
+      { ANTHROPIC_API_KEY: "fake-key" },
+      ["pergunta"],
+      fakeFetch,
+      undefined,
+      undefined,
+      async () => {},
+    );
     assert.equal(records.length, 1);
     assert.equal(records[0].errorKind, "http");
     assert.equal(records[0].httpStatus, 500);
@@ -1013,15 +1054,113 @@ describe("runGeoCitationMonitor (#4558 Parte C)", () => {
     assert.equal(records[0].httpStatus, 429);
   });
 
-  it("erro não-429 (ex: 500) NÃO é retentado (só 429 tem o retry, #4616 achado 4)", async () => {
+  it("HTTP 5xx (ex: 500) É retentado desde #8341 — sucede na 2ª tentativa", async () => {
     let calls = 0;
     const fakeFetch = async () => {
       calls += 1;
-      return new Response("boom", { status: 500 });
+      if (calls === 1) return new Response("boom", { status: 500 });
+      return new Response(JSON.stringify({ content: [{ type: "text", text: "sem citação" }] }), { status: 200 });
+    };
+    const sleeps: number[] = [];
+    const records = await runGeoCitationMonitor(
+      { ANTHROPIC_API_KEY: "fake-key" },
+      ["pergunta"],
+      fakeFetch,
+      undefined,
+      undefined,
+      async (ms) => {
+        sleeps.push(ms);
+      },
+    );
+    assert.equal(calls, 2, "esperava 2 chamadas: o 500 original + o retry");
+    assert.deepEqual(sleeps, [GEO_RATE_LIMIT_RETRY_DELAY_MS]);
+    assert.equal(records.length, 1, "1 record final — não 2");
+    assert.equal(records[0].error, undefined, "o retry sucedeu, não deve sobrar erro no record");
+  });
+
+  it("HTTP 5xx que persiste nas 2 tentativas vira record de erro (sem retry infinito, #8341)", async () => {
+    let calls = 0;
+    const fakeFetch = async () => {
+      calls += 1;
+      return new Response("boom", { status: 503 });
+    };
+    const records = await runGeoCitationMonitor(
+      { ANTHROPIC_API_KEY: "fake-key" },
+      ["pergunta"],
+      fakeFetch,
+      undefined,
+      undefined,
+      async () => {},
+    );
+    assert.equal(calls, 2, "1 tentativa original + exatamente 1 retry, nunca mais");
+    assert.equal(records.length, 1);
+    assert.equal(records[0].errorKind, "http");
+    assert.equal(records[0].httpStatus, 503);
+  });
+
+  it("erro HTTP não-429/não-5xx (ex: 401/404) NÃO é retentado (#8341 — só transitório entra no retry)", async () => {
+    let calls = 0;
+    const fakeFetch = async () => {
+      calls += 1;
+      return new Response("unauthorized", { status: 401 });
     };
     const records = await runGeoCitationMonitor({ ANTHROPIC_API_KEY: "fake-key" }, ["pergunta"], fakeFetch);
-    assert.equal(calls, 1, "500 não deve disparar o retry de rate-limit");
-    assert.equal(records[0].httpStatus, 500);
+    assert.equal(calls, 1, "401 não é transitório, não deve disparar retry");
+    assert.equal(records[0].httpStatus, 401);
+  });
+
+  it("erro 'network' (timeout) É retentado desde #8341 — o maior balde de erro medido na auditoria de 18/09", async () => {
+    let calls = 0;
+    const fakeFetch = async (_url: string, init?: RequestInit) => {
+      calls += 1;
+      if (calls === 1) {
+        // 1ª chamada: rejeita como falha de rede (não timeout do AbortController,
+        // pra não depender de timing real).
+        throw new Error("ECONNRESET");
+      }
+      return new Response(JSON.stringify({ content: [{ type: "text", text: "sem citação" }] }), { status: 200 });
+    };
+    const sleeps: number[] = [];
+    const records = await runGeoCitationMonitor(
+      { ANTHROPIC_API_KEY: "fake-key" },
+      ["pergunta"],
+      fakeFetch,
+      undefined,
+      undefined,
+      async (ms) => {
+        sleeps.push(ms);
+      },
+    );
+    assert.equal(calls, 2, "esperava 2 chamadas: a falha de rede original + o retry");
+    assert.deepEqual(sleeps, [GEO_RATE_LIMIT_RETRY_DELAY_MS]);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].error, undefined, "o retry sucedeu, não deve sobrar erro no record");
+  });
+
+  it("errorKind 'quota' NUNCA é retentado, mesmo sendo HTTP 429 (#8341 — falha permanente, #8061)", async () => {
+    let calls = 0;
+    const fakeFetch = async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({
+          error: { message: "You have no credits remaining", type: "insufficient_quota", code: "insufficient_quota" },
+        }),
+        { status: 429 },
+      );
+    };
+    const records = await runGeoCitationMonitor(
+      { OPENAI_API_KEY: "fake-key" },
+      ["pergunta"],
+      fakeFetch,
+      undefined,
+      undefined,
+      async () => {
+        throw new Error("sleepFn não deveria ser chamado — quota nunca retenta");
+      },
+    );
+    assert.equal(calls, 1, "quota é falha permanente, nunca deve retentar");
+    assert.equal(records.length, 1);
+    assert.equal(records[0].errorKind, "quota");
   });
 
   describe("panel (#4900 item a)", () => {
@@ -1256,5 +1395,240 @@ describe("appendGeoCitationLog (IO injetado — nunca grava em disco de verdade)
     assert.equal(lines.length, 2);
     assert.equal(JSON.parse(lines[0]).question, "q1");
     assert.equal(JSON.parse(lines[1]).question, "q2");
+  });
+});
+
+describe("isRetryableGeoError (#8341)", () => {
+  it("network (timeout incluso) é retryable", () => {
+    assert.equal(isRetryableGeoError({ ok: false, error: "x", errorKind: "network" }), true);
+  });
+
+  it("http 429 é retryable (comportamento pré-existente, #4616)", () => {
+    assert.equal(isRetryableGeoError({ ok: false, error: "x", errorKind: "http", httpStatus: 429 }), true);
+  });
+
+  it("http 5xx (500, 502, 503) é retryable", () => {
+    for (const status of [500, 502, 503]) {
+      assert.equal(
+        isRetryableGeoError({ ok: false, error: "x", errorKind: "http", httpStatus: status }),
+        true,
+        `status ${status} deveria ser retryable`,
+      );
+    }
+  });
+
+  it("http 4xx que não é 429 NÃO é retryable (ex: 401, 404)", () => {
+    for (const status of [401, 403, 404]) {
+      assert.equal(
+        isRetryableGeoError({ ok: false, error: "x", errorKind: "http", httpStatus: status }),
+        false,
+        `status ${status} não deveria ser retryable`,
+      );
+    }
+  });
+
+  it("quota NUNCA é retryable, mesmo sem httpStatus explícito no shape (#8061 — falha permanente)", () => {
+    assert.equal(isRetryableGeoError({ ok: false, error: "x", errorKind: "quota", httpStatus: 429 }), false);
+  });
+
+  it("parse/extract/provider NÃO são retryable (não são falha de transporte)", () => {
+    assert.equal(isRetryableGeoError({ ok: false, error: "x", errorKind: "parse" }), false);
+    assert.equal(isRetryableGeoError({ ok: false, error: "x", errorKind: "extract" }), false);
+    assert.equal(isRetryableGeoError({ ok: false, error: "x", errorKind: "provider" }), false);
+  });
+});
+
+describe("errorRatePct (#8341)", () => {
+  it("total 0 devolve 0, nunca NaN", () => {
+    assert.equal(errorRatePct(0, 0), 0);
+  });
+
+  it("arredonda pra 1 casa decimal", () => {
+    // 56/171 = 32,7485...% -> 32.7
+    assert.equal(errorRatePct(171, 56), 32.7);
+  });
+
+  it("0 erros em N consultas dá 0%", () => {
+    assert.equal(errorRatePct(24, 0), 0);
+  });
+
+  it("100% de erro dá 100", () => {
+    assert.equal(errorRatePct(10, 10), 100);
+  });
+});
+
+describe("detectHighErrorRateProviders (#8341, item 4 da issue)", () => {
+  it("não reporta provider abaixo do limiar", () => {
+    const byProvider = { google: { total: 146, cited: 5, errors: 24 } }; // 16,4%
+    assert.deepEqual(detectHighErrorRateProviders(byProvider, GEO_ERROR_RATE_ALARM_THRESHOLD_PCT), []);
+  });
+
+  it("reporta provider igual/acima do limiar, ordenado por taxa desc", () => {
+    const byProvider = {
+      anthropic: { total: 171, cited: 8, errors: 69 }, // 40,4%
+      openai: { total: 176, cited: 0, errors: 50 }, // 28,4%
+      google: { total: 146, cited: 5, errors: 24 }, // 16,4%
+    };
+    const result = detectHighErrorRateProviders(byProvider, 25);
+    assert.deepEqual(
+      result.map((r) => r.provider),
+      ["anthropic", "openai"],
+    );
+    assert.equal(result[0].errorRatePct, 40.4);
+  });
+
+  it("provider com total 0 nunca entra (sem consulta, sem taxa a medir)", () => {
+    const byProvider = { anthropic: { total: 0, cited: 0, errors: 0 } };
+    assert.deepEqual(detectHighErrorRateProviders(byProvider, 0), []);
+  });
+});
+
+describe("deriveEffectiveErrorKind (#8341, item 1 da issue — reclassificação SÓ NA LEITURA)", () => {
+  it("reclassifica http 429 histórico (pré-#8061) cujo corpo já indicava cota esgotada", () => {
+    const record = {
+      errorKind: "http" as const,
+      httpStatus: 429,
+      error: 'HTTP 429: {"error":{"message":"You have no credits remaining","type":"insufficient_quota","code":"insufficient_quota"}}',
+    };
+    assert.equal(deriveEffectiveErrorKind(record), "quota");
+  });
+
+  it("mantém http 429 de rate-limit comum como 'http' (não reclassifica sem sinal de quota)", () => {
+    const record = { errorKind: "http" as const, httpStatus: 429, error: "HTTP 429: rate limited" };
+    assert.equal(deriveEffectiveErrorKind(record), "http");
+  });
+
+  it("registro já gravado como 'quota' (pós-#8061) passa intacto", () => {
+    const record = { errorKind: "quota" as const, httpStatus: 429, error: "HTTP 429: no credits" };
+    assert.equal(deriveEffectiveErrorKind(record), "quota");
+  });
+
+  it("errorKind não-http/não-429 passa intacto (network, parse, extract, provider, undefined)", () => {
+    assert.equal(deriveEffectiveErrorKind({ errorKind: "network", httpStatus: undefined, error: "timeout" }), "network");
+    assert.equal(deriveEffectiveErrorKind({ errorKind: undefined, httpStatus: undefined, error: undefined }), undefined);
+  });
+
+  it("http não-429 (ex: 500) passa intacto, nunca reclassificado como quota", () => {
+    const record = { errorKind: "http" as const, httpStatus: 500, error: "HTTP 500: boom" };
+    assert.equal(deriveEffectiveErrorKind(record), "http");
+  });
+
+  /**
+   * Achado de self-review desta PR: `record.error` guarda o formato
+   * "HTTP 429: <body>" (ver `queryProvider`) — passar a string INTEIRA pra
+   * `classifyHttp429ErrorKind` faz `JSON.parse` falhar sempre (o prefixo
+   * "HTTP 429: " não é JSON válido), quebrando os 2 caminhos de
+   * classificação por `code`/`status` (só o fallback textual "no credits"
+   * sobreviveria por acidente). `deriveEffectiveErrorKind` precisa
+   * REMOVER o prefixo antes de classificar — este teste prova o caso que
+   * dependeria do `code` OpenAI (não só da mensagem) e o caso Google
+   * PerDay, que dependem de `JSON.parse` bem-sucedido.
+   */
+  it("reclassifica via error.code (não só via texto 'no credits') mesmo com o prefixo 'HTTP 429: ' no error armazenado", () => {
+    const record = {
+      errorKind: "http" as const,
+      httpStatus: 429,
+      error: 'HTTP 429: {"error":{"code":"insufficient_quota","type":"insufficient_quota","message":"billing hard limit reached"}}',
+    };
+    assert.equal(deriveEffectiveErrorKind(record), "quota", "deveria classificar via error.code, sem depender do texto 'no credits'");
+  });
+
+  it("reclassifica Google/Gemini RESOURCE_EXHAUSTED com quotaId PerDay mesmo com o prefixo 'HTTP 429: '", () => {
+    const body = JSON.stringify({
+      error: {
+        status: "RESOURCE_EXHAUSTED",
+        message: "You exceeded your current quota, please check your plan and billing details.",
+        details: [
+          {
+            violations: [
+              { quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests", quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" },
+            ],
+          },
+        ],
+      },
+    });
+    const record = { errorKind: "http" as const, httpStatus: 429, error: `HTTP 429: ${body}` };
+    assert.equal(deriveEffectiveErrorKind(record), "quota");
+  });
+
+  it("Google/Gemini RESOURCE_EXHAUSTED de rate-limit por MINUTO (sem PerDay) permanece 'http', mesmo com o prefixo", () => {
+    const body = JSON.stringify({
+      error: {
+        status: "RESOURCE_EXHAUSTED",
+        message: "You exceeded your current quota, please check your plan and billing details.",
+        details: [
+          {
+            violations: [
+              { quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests", quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" },
+            ],
+          },
+        ],
+      },
+    });
+    const record = { errorKind: "http" as const, httpStatus: 429, error: `HTTP 429: ${body}` };
+    assert.equal(deriveEffectiveErrorKind(record), "http");
+  });
+});
+
+describe("summarizeHistoryByProviderReclassified (#8341, item 3 da issue)", () => {
+  it("agrega citadas/válidas com denominador correto — reproduz o cenário da auditoria de 18/09/2026", () => {
+    // Reproduz o achado da issue: OpenAI tinha 48 erros HTTP 429 que na
+    // verdade eram cota esgotada (registrados como "http" pré-#8061) — a
+    // leitura reclassificada deve mostrar 0 erros de rate-limit "http" e 48
+    // de "quota", com o denominador de citação sendo só as válidas.
+    const records: Array<Pick<GeoCitationRecord, "provider" | "cited" | "errorKind" | "httpStatus" | "error">> = [
+      // 3 consultas válidas, 0 citaram.
+      { provider: "openai", cited: false, errorKind: undefined, httpStatus: undefined, error: undefined },
+      { provider: "openai", cited: false, errorKind: undefined, httpStatus: undefined, error: undefined },
+      { provider: "openai", cited: false, errorKind: undefined, httpStatus: undefined, error: undefined },
+      // 2 erros de quota histórica (gravados como "http"+429, corpo de cota).
+      {
+        provider: "openai",
+        cited: false,
+        errorKind: "http",
+        httpStatus: 429,
+        error: 'HTTP 429: {"error":{"code":"insufficient_quota","message":"You have no credits remaining"}}',
+      },
+      {
+        provider: "openai",
+        cited: false,
+        errorKind: "http",
+        httpStatus: 429,
+        error: 'HTTP 429: {"error":{"code":"insufficient_quota","message":"You have no credits remaining"}}',
+      },
+    ];
+    const rows = summarizeHistoryByProviderReclassified(records);
+    assert.equal(rows.length, 1);
+    const [row] = rows;
+    assert.equal(row.provider, "openai");
+    assert.equal(row.total, 5);
+    assert.equal(row.valid, 3);
+    assert.equal(row.errors, 2);
+    assert.equal(row.quotaErrors, 2, "os 2 erros deveriam reclassificar pra quota, não ficar como http/rate-limit");
+    assert.equal(row.cited, 0);
+    assert.equal(row.errorRatePct, 40);
+    assert.equal(row.validCitationRatePct, 0);
+  });
+
+  it("valid 0 (todas as consultas deram erro) dá validCitationRatePct 0, nunca NaN", () => {
+    const records: Array<Pick<GeoCitationRecord, "provider" | "cited" | "errorKind" | "httpStatus" | "error">> = [
+      { provider: "anthropic", cited: false, errorKind: "network", httpStatus: undefined, error: "timeout" },
+    ];
+    const rows = summarizeHistoryByProviderReclassified(records);
+    assert.equal(rows[0].valid, 0);
+    assert.equal(rows[0].validCitationRatePct, 0);
+  });
+
+  it("multi-provider sai ordenado alfabeticamente", () => {
+    const records: Array<Pick<GeoCitationRecord, "provider" | "cited" | "errorKind" | "httpStatus" | "error">> = [
+      { provider: "openai", cited: true, errorKind: undefined, httpStatus: undefined, error: undefined },
+      { provider: "anthropic", cited: false, errorKind: undefined, httpStatus: undefined, error: undefined },
+      { provider: "google", cited: false, errorKind: undefined, httpStatus: undefined, error: undefined },
+    ];
+    const rows = summarizeHistoryByProviderReclassified(records);
+    assert.deepEqual(
+      rows.map((r) => r.provider),
+      ["anthropic", "google", "openai"],
+    );
   });
 });
