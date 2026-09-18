@@ -47,7 +47,6 @@ import {
   isDatePaused,
   normalizePauseIntervals,
   veiculationDaysInRange,
-  type AdsTestPauseField,
   type AdsTestPauseInterval,
 } from "./ads-test-pause-window.ts";
 import { addDays } from "./ads-test-schedule.ts";
@@ -383,7 +382,7 @@ export function computeCampaignPauseStatus(
 ): CampaignPauseStatus {
   if (!revisao) return "desconhecido";
 
-  const currentFormatIntervals = normalizePauseIntervals(revisao.pausa as AdsTestPauseField);
+  const currentFormatIntervals = normalizePauseIntervals(revisao.pausa);
   if (currentFormatIntervals.length > 0) {
     return isDatePaused(todayIso, currentFormatIntervals) ? "pausada" : "ativa";
   }
@@ -463,7 +462,7 @@ function legacyPausasToIntervals(pausas: readonly { desde: string; ate: string }
  *  pra nunca duplicar o parser de pausa (ver docstring do topo do
  *  arquivo). @pure */
 function effectivePauseIntervals(revisao: AdsTestRunStateRevisao): AdsTestPauseInterval[] {
-  const current = normalizePauseIntervals(revisao.pausa as AdsTestPauseField);
+  const current = normalizePauseIntervals(revisao.pausa);
   if (current.length > 0) return current;
   return legacyPausasToIntervals(revisao.pausas ?? []);
 }

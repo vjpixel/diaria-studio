@@ -405,3 +405,25 @@ describe("#8210 melhoria 2 — computeCampaignPauseStatus: badge ativa/pausada/d
     assert.equal(rows[0].pauseStatus, "desconhecido");
   });
 });
+
+describe("#8288 — pausa com timestamp incoerente: falha ALTO aqui, tratada na tela", () => {
+  it("intervalo invertido (`fim < inicio`) lança em computeCampaignPauseStatus", () => {
+    // Não é descuido: `assertValidPauseIntervals` falha alto de propósito
+    // (#8262) porque descartar em silêncio sumiria com a pausa de todos os
+    // ALARMES. `assertValidRunState` valida os TIPOS de `revisao.pausa`, não
+    // a coerência dos timestamps, então este shape CHEGA aqui vindo de um
+    // `run-state.json` editado à mão. Quem tem contrato de "não derrubar a
+    // rota" é o caller HTTP — ver o teste correspondente em
+    // test/studio-ads.test.ts.
+    const revisao = { pausa: { inicio: "2026-09-17T00:16:00-03:00", fim: "2026-09-09T16:05:36-03:00" } };
+    assert.throws(() => computeCampaignPauseStatus(revisao, "2026-09-17"), /invertido/);
+  });
+
+  it("intervalo invertido também lança em buildTestStateTiles (mesma origem, outro caminho)", () => {
+    const revisao = { pausa: { inicio: "2026-09-17T00:16:00-03:00", fim: "2026-09-09T16:05:36-03:00" } };
+    assert.throws(
+      () => buildTestStateTiles([], [], { d0: "2026-09-05", fim_janela: "2026-09-27", revisao }, "2026-09-17"),
+      /invertido/,
+    );
+  });
+});

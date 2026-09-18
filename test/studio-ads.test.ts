@@ -250,7 +250,7 @@ function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function writeRunState(root: string): void {
+function writeRunState(root: string, extra: Record<string, unknown> = {}): void {
   const dir = join(root, "data", "aquisicao", "teste-2608");
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -264,6 +264,7 @@ function writeRunState(root: string): void {
         apuracao_snapshot: "2026-02-15",
         bracos: ["Google Ads (teste 2608)", "Microsoft Ads (teste 2608)", "Meta Ads (teste 2608)"],
         registrado_em: "2026-01-01T00:00:00.000Z",
+        ...extra,
       },
       null,
       2,
@@ -351,6 +352,60 @@ describe("buildAdsCampaignEconomics — run-state.json presente + fontes respond
       assert.equal(googleRow.ativosAmostraN, 0);
       assert.equal(googleRow.pctAtivo, null);
       assert.equal(googleRow.pauseStatus, "desconhecido", "sem revisao.pausas — nunca 'ativa' por omissão");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#8288 — run-state.json com revisao.pausa", () => {
+  async function build(root: string) {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => jsonResponse(500, {})) as typeof fetch;
+    try {
+      return await buildAdsCampaignEconomics(root, {
+        now: () => new Date("2026-01-10T12:00:00Z"),
+        env: {},
+        fetchImpl: (async () => jsonResponse(500, {})) as typeof fetch,
+      });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  it("formato ATUAL (`pausa`, só ele — o shape REAL de produção) é lido: badge e dias de veiculação refletem a pausa", async () => {
+    clearAdsCampaignEconomicsCache();
+    const root = makeRoot();
+    try {
+      // Pausa ABERTA desde 05/01 — em 10/01 a campanha está pausada.
+      writeRunState(root, { revisao: { pausa: { inicio: "2026-01-05T00:00:00-03:00", fim: null } } });
+      const data = await build(root);
+      assert.equal(data.runStateError, null, "o shape real nunca é erro de leitura");
+      assert.ok(data.runState, "runState carrega — se virar null, o dateRange colapsa pra hoje..hoje");
+      assert.equal(data.testState.diasDecorridos, 9);
+      assert.equal(data.testState.diasVeiculacaoReal, 3, "01..04 veiculados; de 05/01 em diante, pausa aberta");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("achado 1 do review — pausa com timestamp INVERTIDO degrada visivelmente, NUNCA derruba a rota com 500", async () => {
+    clearAdsCampaignEconomicsCache();
+    const root = makeRoot();
+    try {
+      // `assertValidRunState` aceita (tipos corretos), `ads-test-pause-window`
+      // recusa (fim < inicio). Sem o guard no caller, isto era um 500 no
+      // `GET /api/ads` inteiro — a MESMA classe de falha que o #8288 fecha.
+      writeRunState(root, {
+        revisao: { pausa: { inicio: "2026-01-10T00:00:00-03:00", fim: "2026-01-05T00:00:00-03:00" } },
+      });
+      const data = await build(root);
+      assert.match(data.runStateError ?? "", /invertido/, "o motivo é reportado, nunca engolido em silêncio");
+      assert.equal(data.testState.d0, null, "janela do teste sai null — nunca número derivado de dado ilegível");
+      assert.equal(data.testState.emAndamento, false);
+      for (const row of data.channels) {
+        assert.equal(row.pauseStatus, "desconhecido", `${row.canal}: dado ilegível nunca vira 'ativa' por omissão`);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

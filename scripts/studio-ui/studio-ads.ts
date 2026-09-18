@@ -62,6 +62,7 @@ import {
   type CumulativeSeriesResult,
   type ChannelSummaryRow,
   type TestStateTiles,
+  type CampaignPauseStatus,
   type SourceFreshnessEntry,
   type ChannelActiveCounts,
 } from "../lib/ads-campaign-economics.ts";
@@ -577,7 +578,33 @@ export async function buildAdsCampaignEconomics(
   // #8210 melhoria 2 — badge ativa/pausada, mesmo valor pros 3 braços
   // (pausas são da campanha inteira — ver docstring de
   // `computeCampaignPauseStatus`).
-  const pauseStatus = computeCampaignPauseStatus(runState?.revisao, todayIso);
+  //
+  // O `try` NÃO é decorativo (#8288 review, achado 1): `assertValidRunState`
+  // valida a forma mínima de `revisao.pausa` (tipos dos campos) mas NÃO a
+  // coerência dos timestamps, e `ads-test-pause-window.ts` falha ALTO de
+  // propósito em intervalo invertido (`fim < inicio`) — decisão do #8262,
+  // porque descartar em silêncio sumiria com a pausa de todos os ALARMES.
+  // Só que aqui não é alarme: é uma tela de leitura. Um `run-state.json`
+  // editado à mão com typo de timestamp não pode derrubar `GET /api/ads`
+  // inteiro com 500 — que é exatamente a classe de falha que esta issue
+  // existe pra fechar. Degrada visivelmente (badge "desconhecido", tiles
+  // sem janela) e o motivo vai pro `runStateError`, que a página já
+  // renderiza; nunca degrada em silêncio.
+  let pauseStatus: CampaignPauseStatus;
+  let testState: TestStateTiles;
+  let pauseReadError: string | null = null;
+  try {
+    pauseStatus = computeCampaignPauseStatus(runState?.revisao, todayIso);
+    testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, runState, todayIso);
+  } catch (e) {
+    pauseReadError = `revisao.pausa inválida em run-state.json: ${(e as Error).message}`;
+    pauseStatus = "desconhecido";
+    // `null` no lugar de `runState`: os totais de gasto/cadastro continuam
+    // reportados (mesmo invariante do `runState` ausente), só a janela do
+    // teste sai `null` — nunca um número derivado de dado que não dá pra
+    // interpretar.
+    testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, null, todayIso);
+  }
 
   const channels = buildChannelTable(sourcesResult.metrics, sourcesResult.signups, {
     channelsWithUnknownLiveSpend,
@@ -585,7 +612,6 @@ export async function buildAdsCampaignEconomics(
     activeCountsByChannel,
     pauseStatus,
   });
-  const testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, runState, todayIso);
   const freshness = computeSourceFreshness(sourcesResult.sources, nowMs);
 
   const data: AdsCampaignEconomicsSnapshot = {
@@ -593,7 +619,12 @@ export async function buildAdsCampaignEconomics(
     cached: false,
     hasDataDir,
     runState,
-    runStateError,
+    // `pauseReadError` entra pelo mesmo campo que o erro de leitura do
+    // arquivo (#8288): pra quem lê a página, "o run-state não deu pra
+    // usar" é a mesma informação, venha de JSON malformado ou de
+    // timestamp de pausa incoerente. Concatena em vez de sobrescrever —
+    // os dois podem coexistir.
+    runStateError: [runStateError, pauseReadError].filter(Boolean).join(" | ") || null,
     cumulative,
     channels,
     testState,
