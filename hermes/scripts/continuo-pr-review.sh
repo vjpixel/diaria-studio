@@ -802,7 +802,7 @@ echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escalad
 # (não-truncado, todas as ocorrências, não só as desta rodada) sempre em
 # $INFRA_ERROR_LOG.
 if [ "$INFRA_ERRORS" -gt 0 ]; then
-  echo "[continuo-pr-review] motivo(s) do(s) erro(s) de infra desta rodada:"
-  printf '%s' "$INFRA_ERROR_SUMMARY"
-  echo "[continuo-pr-review] log completo: $INFRA_ERROR_LOG"
+  echo "[continuo-pr-review] motivo(s) do(s) erro(s) de infra desta rodada:" >&1
+  printf '%s\n' "$INFRA_ERROR_SUMMARY" >&1
+  echo "[continuo-pr-review] log completo: $INFRA_ERROR_LOG" >&1
 fi
