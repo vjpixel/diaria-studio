@@ -204,6 +204,80 @@ describe("#7536 — buildTestStateTiles: nunca média por canal, sempre estado d
     assert.equal(tiles.diasDecorridos, 4);
     assert.equal(tiles.diasVeiculacaoReal, 4);
   });
+
+  it("#8293 — pausa cobrindo o próprio d0 (formato ATUAL, `revisao.pausa`) não cobra o dia 2x", () => {
+    // d0 = 05/09 inteiramente pausado, today = 06/09 sem pausa nenhuma:
+    // diasDecorridos = 1 (05->06); o único dia "decorrido" (06) veiculou
+    // o dia inteiro, então diasVeiculacaoReal deve ser 1 — não 0 (bug
+    // relatado na issue: o desconto rodava sobre [d0, today] inclusivo,
+    // 1 dia maior que a janela exclusiva-no-início de `diasDecorridos`).
+    const tiles = buildTestStateTiles(
+      [],
+      [],
+      {
+        d0: "2026-09-05",
+        fim_janela: "2026-09-20",
+        revisao: { pausa: { inicio: "2026-09-05T00:00:00-03:00", fim: "2026-09-06T00:00:00-03:00" } },
+      },
+      "2026-09-06",
+    );
+    assert.equal(tiles.diasDecorridos, 1);
+    assert.equal(tiles.diasVeiculacaoReal, 1);
+  });
+
+  it("#8293 — pausa cobrindo o próprio d0 (formato ANTIGO, `revisao.pausas`) também não cobra o dia 2x", () => {
+    // Mesmo cenário acima, mas no formato de fallback (plural, só data) —
+    // a issue registra que o off-by-one "vale para os dois formatos".
+    const tiles = buildTestStateTiles(
+      [],
+      [],
+      {
+        d0: "2026-09-05",
+        fim_janela: "2026-09-20",
+        revisao: { pausas: [{ desde: "2026-09-05", ate: "2026-09-05" }] },
+      },
+      "2026-09-06",
+    );
+    assert.equal(tiles.diasDecorridos, 1);
+    assert.equal(tiles.diasVeiculacaoReal, 1);
+  });
+
+  it("#8293 — borda vizinha: pausa em curso sem fim (`fim: null`) segue descontando todo dia posterior ao d0", () => {
+    const tiles = buildTestStateTiles(
+      [],
+      [],
+      {
+        d0: "2026-09-01",
+        fim_janela: "2026-09-20",
+        revisao: { pausa: { inicio: "2026-09-09T16:05:36-03:00", fim: null } },
+      },
+      "2026-09-11",
+    );
+    // diasDecorridos = 10 (01->11). 01-08 sem pausa (8 dias), 09 pausado
+    // fração do dia (a partir das 16:05:36), 10 e 11 pausados o dia
+    // inteiro (pausa em andamento). Só o dia 09 conta fração < 1.
+    assert.equal(tiles.diasDecorridos, 10);
+    assert.ok(tiles.diasVeiculacaoReal !== null && tiles.diasVeiculacaoReal > 7 && tiles.diasVeiculacaoReal < 8);
+  });
+
+  it("#8293 — borda vizinha: pausa que não cobre o d0 continua descontando normalmente (regressão do comportamento pré-fix)", () => {
+    // d0 = 01/09, pausa só a partir de 05/09 (não cobre d0) — resultado
+    // precisa ser idêntico ao que `countPausedDaysWithin` (aritmética
+    // antiga) já produzia pra esse caso, já que aqui não há ambiguidade
+    // de baseline.
+    const tiles = buildTestStateTiles(
+      [],
+      [],
+      {
+        d0: "2026-09-01",
+        fim_janela: "2026-09-20",
+        revisao: { pausas: [{ desde: "2026-09-05", ate: "2026-09-05" }] },
+      },
+      "2026-09-08",
+    );
+    assert.equal(tiles.diasDecorridos, 7);
+    assert.equal(tiles.diasVeiculacaoReal, 6);
+  });
 });
 
 describe("#7536 — computeSourceFreshness: requisito 5 (idade/frescor por fonte)", () => {
