@@ -6,7 +6,7 @@
 // ?refresh=1) — nenhuma edição de spend.csv nesta página (import manual é
 // fora do Studio, ver `scripts/seed-spend-csv.ts`/CLAUDE.md).
 
-import { clampToContainer, nearestDateIndex, tooltipRowsForIndex } from "./ads-chart-tooltip.js";
+import { clampToContainer, formatDdMm as fmtDdMm, nearestDateIndex, skippedPausedLabel, tooltipRowsForIndex } from "./ads-chart.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -550,13 +550,14 @@ function renderCampaignChart(cumulative) {
       .map((c) => escapeHtml(shortChannelLabel(c)))
       .join(", ")}</span>`;
   }
-}
 
-/** `YYYY-MM-DD` → `DD/MM` — só reformatação de string, sem fuso (a data já
- *  é um dia de calendário puro, não um instante). */
-function fmtDdMm(isoDate) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate));
-  return m ? `${m[3]}/${m[2]}` : String(isoDate);
+  // #8307 — o eixo X pula os dias sem veiculação, e isso precisa aparecer:
+  // comprimir o tempo em silêncio trocaria uma leitura falsa (trecho reto
+  // que parece estabilidade) por outra (dias que somem sem explicação).
+  const skipped = cumulative.skippedPausedDates ?? [];
+  if (skipped.length > 0) {
+    el.campaignChartLegend.innerHTML += `<span class="hint">${escapeHtml(skippedPausedLabel(skipped))}</span>`;
+  }
 }
 
 /** Saldo diário (#8260) — `+N`/`−N` com sinal explícito, `—` pra `null`

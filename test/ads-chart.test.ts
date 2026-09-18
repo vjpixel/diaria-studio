@@ -1,5 +1,5 @@
 /**
- * test/ads-chart-tooltip.test.ts (#8300) — regressão do bug "passar o mouse
+ * test/ads-chart.test.ts (#8300, #8307) — regressão do bug "passar o mouse
  * sobre os pontos não mostra os valores" no gráfico "Custo/cadastro
  * acumulado por canal" do painel /ads.
  *
@@ -16,8 +16,9 @@ import assert from "node:assert/strict";
 import {
   clampToContainer,
   nearestDateIndex,
+  skippedPausedLabel,
   tooltipRowsForIndex,
-} from "../scripts/studio-ui/public/ads-chart-tooltip.js";
+} from "../scripts/studio-ui/public/ads-chart.js";
 
 // Mesma geometria do gráfico real: 13 colunas espalhadas em 648px de plot.
 const PLOT_W = 648;
@@ -142,5 +143,43 @@ describe("clampToContainer (#8300, finding do review)", () => {
   it("defensivo: medida ausente (offsetWidth 0 antes do 1º layout) nunca vira NaN", () => {
     assert.equal(clampToContainer(Number.NaN, 180, 700), 0);
     assert.equal(clampToContainer(50, Number.NaN, 700), 50);
+  });
+});
+
+describe("skippedPausedLabel (#8307)", () => {
+  it("lista as datas quando são poucas", () => {
+    assert.equal(
+      skippedPausedLabel(["2026-09-10", "2026-09-11"]),
+      "2 dias sem veiculação (pausa) fora do gráfico: 10/09, 11/09",
+    );
+  });
+
+  it("singular com 1 dia só", () => {
+    assert.equal(skippedPausedLabel(["2026-09-10"]), "1 dia sem veiculação (pausa) fora do gráfico: 10/09");
+  });
+
+  it("acima de 3 dias vira intervalo — legenda não vira uma lista de 7 datas", () => {
+    // A pausa de produção (10 a 16/09) é exatamente este caso.
+    const pausa = ["2026-09-10", "2026-09-11", "2026-09-12", "2026-09-13", "2026-09-14", "2026-09-15", "2026-09-16"];
+    assert.equal(skippedPausedLabel(pausa), "7 dias sem veiculação (pausa) fora do gráfico: 10/09 a 16/09");
+  });
+
+  it("datas não-contíguas não viram intervalo — 2 pausas separadas dizem \"entre\"", () => {
+    // Achado 3 do review da PR #8312: "10/09 a 22/09" prometeria 13 dias
+    // seguidos de pausa que não existiram.
+    const duasPausas = ["2026-09-10", "2026-09-11", "2026-09-21", "2026-09-22"];
+    assert.equal(
+      skippedPausedLabel(duasPausas),
+      "4 dias sem veiculação (pausa) fora do gráfico: entre 10/09 e 22/09",
+    );
+  });
+
+  it("nada pulado → string vazia (a UI não imprime nota nenhuma)", () => {
+    assert.equal(skippedPausedLabel([]), "");
+    assert.equal(skippedPausedLabel(undefined), "");
+  });
+
+  it("formata a data como DD/MM sem passar por Date — nunca desloca um dia por fuso", () => {
+    assert.match(skippedPausedLabel(["2026-01-01"]), /01\/01/);
   });
 });

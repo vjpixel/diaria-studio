@@ -59,6 +59,7 @@ import {
   buildTestStateTiles,
   computeSourceFreshness,
   computeCampaignPauseStatus,
+  effectivePauseIntervals,
   type CumulativeSeriesResult,
   type ChannelSummaryRow,
   type TestStateTiles,
@@ -66,6 +67,7 @@ import {
   type SourceFreshnessEntry,
   type ChannelActiveCounts,
 } from "../lib/ads-campaign-economics.ts";
+import { type AdsTestPauseInterval } from "../lib/ads-test-pause-window.ts";
 import {
   parseSocialFollowersJsonl,
   computeDailyBalances,
@@ -538,7 +540,34 @@ export async function buildAdsCampaignEconomics(
     end: runState?.fim_janela && runState.fim_janela < todayIso ? runState.fim_janela : todayIso,
   };
 
-  const cumulative = buildCumulativeSeries(sourcesResult.metrics, sourcesResult.signups, dateRange);
+  // #8307 — os dias 100% pausados saem do gráfico. A leitura de
+  // `revisao.pausa` mora no MESMO `try` degradante do `pauseStatus` abaixo
+  // (mesmo motivo: `run-state.json` com timestamp invertido faz
+  // `ads-test-pause-window.ts` lançar de propósito, e isso não pode derrubar
+  // `GET /api/ads` inteiro). Pausa ilegível → `[]` → gráfico volta ao
+  // comportamento pré-#8307 (plota todo dia do intervalo), nunca 500 e
+  // nunca em silêncio: o motivo vai pro `runStateError` que a página
+  // renderiza.
+  let pauseIntervals: AdsTestPauseInterval[] = [];
+  let pauseStatus: CampaignPauseStatus;
+  let testState: TestStateTiles;
+  let pauseReadError: string | null = null;
+  try {
+    pauseIntervals = effectivePauseIntervals(runState?.revisao);
+    pauseStatus = computeCampaignPauseStatus(runState?.revisao, todayIso);
+    testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, runState, todayIso);
+  } catch (e) {
+    pauseReadError = `revisao.pausa inválida em run-state.json: ${(e as Error).message}`;
+    pauseIntervals = [];
+    pauseStatus = "desconhecido";
+    // `null` no lugar de `runState`: os totais de gasto/cadastro continuam
+    // reportados (mesmo invariante do `runState` ausente), só a janela do
+    // teste sai `null` — nunca um número derivado de dado que não dá pra
+    // interpretar.
+    testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, null, todayIso);
+  }
+
+  const cumulative = buildCumulativeSeries(sourcesResult.metrics, sourcesResult.signups, dateRange, { pauseIntervals });
 
   // #8210 Bug 3c: gasto desconhecido nunca vira 0 — canal cuja fonte ao vivo
   // falhou (`sourcesResult.sources[fonte].error`) cai pro último gasto
@@ -573,37 +602,6 @@ export async function buildAdsCampaignEconomics(
         totalNoStore: channelSubs.length,
       };
     }
-  }
-
-  // #8210 melhoria 2 — badge ativa/pausada, mesmo valor pros 3 braços
-  // (pausas são da campanha inteira — ver docstring de
-  // `computeCampaignPauseStatus`).
-  //
-  // O `try` NÃO é decorativo (#8288 review, achado 1): `assertValidRunState`
-  // valida a forma mínima de `revisao.pausa` (tipos dos campos) mas NÃO a
-  // coerência dos timestamps, e `ads-test-pause-window.ts` falha ALTO de
-  // propósito em intervalo invertido (`fim < inicio`) — decisão do #8262,
-  // porque descartar em silêncio sumiria com a pausa de todos os ALARMES.
-  // Só que aqui não é alarme: é uma tela de leitura. Um `run-state.json`
-  // editado à mão com typo de timestamp não pode derrubar `GET /api/ads`
-  // inteiro com 500 — que é exatamente a classe de falha que esta issue
-  // existe pra fechar. Degrada visivelmente (badge "desconhecido", tiles
-  // sem janela) e o motivo vai pro `runStateError`, que a página já
-  // renderiza; nunca degrada em silêncio.
-  let pauseStatus: CampaignPauseStatus;
-  let testState: TestStateTiles;
-  let pauseReadError: string | null = null;
-  try {
-    pauseStatus = computeCampaignPauseStatus(runState?.revisao, todayIso);
-    testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, runState, todayIso);
-  } catch (e) {
-    pauseReadError = `revisao.pausa inválida em run-state.json: ${(e as Error).message}`;
-    pauseStatus = "desconhecido";
-    // `null` no lugar de `runState`: os totais de gasto/cadastro continuam
-    // reportados (mesmo invariante do `runState` ausente), só a janela do
-    // teste sai `null` — nunca um número derivado de dado que não dá pra
-    // interpretar.
-    testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, null, todayIso);
   }
 
   const channels = buildChannelTable(sourcesResult.metrics, sourcesResult.signups, {
