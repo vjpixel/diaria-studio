@@ -224,9 +224,13 @@ function resolveDek(slug: string, cache: TitlesCacheMap): string | undefined {
 
 /** Trunca o dek pro tamanho de exibição na LISTAGEM (não afeta o `<meta
  * name="dek">` das páginas `/p/*`, que continua sem corte — #6281/#7921).
- * 270 entradas com dek adicionam ~35 KB de HTML (medido no dataset real,
- * #8345); a maioria já cabe inteira (mediana 90 chars, máximo 190 chars no
- * corpus medido em 260918), então o teto só afeta os poucos outliers.
+ * 270 entradas com dek adicionam ~25 KB de HTML — 72 KB → 97,4 KB, medido
+ * sobre o sitemap real + `titles-cache.json` regenerado em 260918, JÁ com o
+ * teto de truncamento abaixo aplicado. (Os ~35 KB citados na #8345 são a
+ * ESTIMATIVA da issue ANTES do truncamento, não uma medição — não usar esse
+ * número como referência de peso.) A maioria dos deks já cabe inteira
+ * (mediana 90 chars, máximo 190 chars no mesmo corpus), então o teto só
+ * afeta os poucos outliers.
  * Corta na última palavra completa antes do limite, sempre com reticências
  * — mesma técnica de `truncateDescription` (`lib/site-archive-pages.ts`),
  * não importada aqui por rodar em Worker isolado (ver nota do módulo sobre
