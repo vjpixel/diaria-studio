@@ -5,11 +5,18 @@ name: Deploy Worker (reusable)
 # comentário de proveniência à parte (checkout@v4 -> setup-node@v4 node 24
 # -> npm ci na raiz -> `wrangler deploy` via `npm run deploy`). Este
 # workflow reutilizável extrai esse bloco; os callers em
-# deploy-{draft,poll,linkedin-cron,site,artigo-mensal,diaria-dashboard,
-# reativar,brevo-dashboard}.yml passam a chamar via `workflow_call`,
+# deploy-{draft,poll,linkedin-cron,artigo-mensal,diaria-dashboard,
+# reativar,brevo-dashboard}.yml (+ regen-home.yml, que deploya `site` depois
+# de regenerar a home — #8103) passam a chamar via `workflow_call`,
 # parametrizando só o que de fato varia (nome do worker — trigger `paths:`,
 # `concurrency.group` e `working-directory` continuam declarados em cada
-# caller, que é quem os usa antes/depois da chamada).
+# caller, que é quem os usa antes/depois da chamada). **`deploy-site.yml`
+# SAIU desta lista no #8355** — ganhou pós-processamento próprio (IndexNow
+# pras páginas do acervo) e virou standalone, mesmo padrão de
+# arquivo/cursos/livros abaixo; `regen-home.yml` continua chamando este
+# reusable pra deployar o MESMO Worker `site` depois de regenerar a home
+# (motivo documentado lá: só a home muda nesse fluxo, não o acervo, então
+# não precisa do gate de IndexNow do `deploy-site.yml`).
 #
 # Por que `workflow_call` entre ARQUIVOS aqui e não o padrão de `ci.yml`
 # (#6711, que optou por DUPLICAR o bloco entre os dois triggers de um mesmo
@@ -25,8 +32,8 @@ name: Deploy Worker (reusable)
 # "dois ramos num arquivo só": são 8 arquivos que já eram pequenos e
 # continuam pequenos, só que sem repetir os mesmos 4 steps.
 #
-# Os 4 workers com pós-processamento divergente (arquivo, artigos, cursos,
-# livros — IndexNow ping e/ou guard de KV namespace) permanecem como
+# Os 5 workers com pós-processamento divergente (arquivo, artigos, cursos,
+# livros, site — IndexNow ping e/ou guard de KV namespace) permanecem como
 # workflows standalone, decisão explícita da issue: convergir só pra
 # parametrizar o bloco IndexNow trocaria duplicação por uma matriz
 # condicional mais difícil de ler que os steps lineares atuais.

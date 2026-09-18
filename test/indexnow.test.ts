@@ -15,7 +15,11 @@ import {
   buildIndexNowPayload,
   hasSinglePageContentChanged,
   buildSinglePageIndexNowPayload,
+  extractChangedArchiveSlugs,
+  buildArchivePagesIndexNowUrls,
+  buildArchivePagesIndexNowPayload,
   ARQUIVO_HOST,
+  SITE_HOST,
 } from "../scripts/lib/indexnow.ts";
 
 describe("extractChangedHubSlugs (#4909)", () => {
@@ -225,5 +229,113 @@ describe("buildSinglePageIndexNowPayload (#5703)", () => {
     assert.ok(payload);
     assert.equal(payload!.keyLocation, "https://staging.example.com/k.txt");
     assert.deepEqual(payload!.urlList, ["https://staging.example.com/"]);
+  });
+});
+
+describe("extractChangedArchiveSlugs (#8355)", () => {
+  it("extrai o slug de um index.html de página do acervo alterado", () => {
+    assert.deepEqual(
+      extractChangedArchiveSlugs(["workers/site/public/p/google-lanca-gemini/index.html"]),
+      ["google-lanca-gemini"],
+    );
+  });
+
+  it("extrai múltiplos slugs, preservando ordem (regeneração em massa, #8358)", () => {
+    assert.deepEqual(
+      extractChangedArchiveSlugs([
+        "workers/site/public/p/edicao-a/index.html",
+        "workers/site/public/p/edicao-b/index.html",
+      ]),
+      ["edicao-a", "edicao-b"],
+    );
+  });
+
+  it("lista sem nenhum p/{slug}/index.html -> lista vazia (o gate)", () => {
+    assert.deepEqual(
+      extractChangedArchiveSlugs([
+        "workers/site/src/index.ts",
+        "workers/site/public/index.html",
+        "workers/site/public/sitemap.xml",
+        "scripts/gen-archive-pages.ts",
+      ]),
+      [],
+    );
+  });
+
+  it("lista vazia -> lista vazia", () => {
+    assert.deepEqual(extractChangedArchiveSlugs([]), []);
+  });
+
+  it("ignora index.html fora de workers/site/public/p/", () => {
+    assert.deepEqual(extractChangedArchiveSlugs(["workers/livros/public/index.html"]), []);
+  });
+
+  it("descarta path mais fundo que {slug}/index.html (defensivo)", () => {
+    assert.deepEqual(extractChangedArchiveSlugs(["workers/site/public/p/slug/sub/index.html"]), []);
+  });
+
+  it("normaliza separador de path Windows (\\\\ -> /) e prefixo ./", () => {
+    assert.deepEqual(
+      extractChangedArchiveSlugs(["./workers\\site\\public\\p\\edicao-c\\index.html"]),
+      ["edicao-c"],
+    );
+  });
+});
+
+describe("buildArchivePagesIndexNowUrls (#8355)", () => {
+  it("monta 1 URL /p/{slug} por slug alterado, deduplicado", () => {
+    assert.deepEqual(
+      buildArchivePagesIndexNowUrls([
+        "workers/site/public/p/edicao-a/index.html",
+        "workers/site/public/p/edicao-a/index.html",
+        "workers/site/public/p/edicao-b/index.html",
+      ]),
+      [`https://${SITE_HOST}/p/edicao-a`, `https://${SITE_HOST}/p/edicao-b`],
+    );
+  });
+
+  it("lista sem mudança -> []", () => {
+    assert.deepEqual(buildArchivePagesIndexNowUrls(["docs/seo-notes.md"]), []);
+  });
+
+  it("baseUrl customizado é respeitado", () => {
+    assert.deepEqual(
+      buildArchivePagesIndexNowUrls(["workers/site/public/p/edicao-a/index.html"], "https://staging.example.com"),
+      ["https://staging.example.com/p/edicao-a"],
+    );
+  });
+});
+
+describe("buildArchivePagesIndexNowPayload (#8355)", () => {
+  const CHANGED = ["workers/site/public/p/edicao-a/index.html", "workers/site/public/p/edicao-b/index.html"];
+
+  it("monta payload com 1 URL por página alterada quando o gate abre e a chave está presente", () => {
+    const payload = buildArchivePagesIndexNowPayload(CHANGED, "chave-site");
+    assert.ok(payload);
+    assert.equal(payload!.host, SITE_HOST);
+    assert.equal(payload!.key, "chave-site");
+    assert.equal(payload!.keyLocation, `https://${SITE_HOST}/chave-site.txt`);
+    assert.deepEqual(payload!.urlList, [`https://${SITE_HOST}/p/edicao-a`, `https://${SITE_HOST}/p/edicao-b`]);
+  });
+
+  it("nenhuma página do acervo alterada -> null (gate fechado)", () => {
+    assert.equal(buildArchivePagesIndexNowPayload(["workers/site/src/index.ts"], "chave"), null);
+  });
+
+  it("chave vazia -> null, mesmo com páginas alteradas", () => {
+    assert.equal(buildArchivePagesIndexNowPayload(CHANGED, ""), null);
+  });
+
+  it("host/baseUrl customizados são respeitados", () => {
+    const payload = buildArchivePagesIndexNowPayload(CHANGED, "k", {
+      host: "staging.example.com",
+      baseUrl: "https://staging.example.com",
+    });
+    assert.ok(payload);
+    assert.equal(payload!.keyLocation, "https://staging.example.com/k.txt");
+    assert.deepEqual(payload!.urlList, [
+      "https://staging.example.com/p/edicao-a",
+      "https://staging.example.com/p/edicao-b",
+    ]);
   });
 });

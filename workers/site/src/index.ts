@@ -70,6 +70,16 @@ import {
 // confirmação continua vindo do apoia.se/Stripe fora deste repo.
 import { apoiarViewCounterKey, apoiarClickCounterKey, incrementApoiarCounter } from "../../../scripts/lib/shared/apoiar-counters.ts";
 import { DIARIA_APOIASE_URL } from "../../../scripts/lib/canonical-urls.ts";
+// #8355: ETag fraco + Last-Modified + 304 condicional pras páginas do
+// acervo (`/p/{slug}`) — mesmo padrão já em produção em
+// workers/arquivo/src/index.ts (#4909/#5134), extraído pra scripts/lib/shared/
+// porque este Worker é o 2º consumidor (ver docstring do módulo pro porquê
+// de `arquivo` não ter sido migrado pra importar daqui nesta mesma PR).
+import { weakEtag, toHttpDate, conditionalNotModified } from "../../../scripts/lib/shared/http-conditional.ts";
+// #8355: arquivo de chave do IndexNow — mesmo padrão já usado por
+// workers/cursos e workers/livros (#5703), que por sua vez generalizou o
+// que nasceu em workers/arquivo (#4909 item 2).
+import { matchIndexNowKeyPath } from "../../../scripts/lib/shared/indexnow-key-route.ts";
 
 export interface Env {
   ASSETS: Fetcher;
@@ -81,6 +91,12 @@ export interface Env {
    *  (`counter:ai-fetch:site:`). `incrementAiFetchCounter` trata KV ausente
    *  como no-op — binding opcional em runtime mesmo sendo declarado real. */
   CURSOS_SUBSCRIBERS?: KVNamespace;
+  /** #8355: chave opaca gerada pelo editor em indexnow.org/documentation,
+   *  provisionada via `wrangler secret put INDEXNOW_KEY --name diaria-site`
+   *  (fora deste repo, análogo a `workers/cursos`/`workers/livros`, #5703).
+   *  Serve `GET /{INDEXNOW_KEY}.txt` — é assim que o Bing confirma que quem
+   *  pinga é dono do host. Ausente = nenhuma rota nova (fallback normal). */
+  INDEXNOW_KEY?: string;
 }
 
 /** Casa `/p/{slug}` (com ou sem barra final — `html_handling` já resolve a
@@ -89,6 +105,60 @@ export interface Env {
 export function matchArchiveSlug(pathname: string): string | null {
   const match = pathname.match(/^\/p\/([^/]+)\/?$/);
   return match ? match[1] : null;
+}
+
+/**
+ * #8355: extrai `datePublished` (`YYYY-MM-DD`) do `<script type="application/
+ * ld+json">` `NewsArticle` que `buildArchiveNewsArticleJsonLd`
+ * (`scripts/lib/site-archive-pages.ts`, #8336) grava em cada página do
+ * acervo. **Esta é a data EDITORIAL** — já passou pela resolução de
+ * `resolvePublishTimestampMs`/`publishDateToIso` no momento da geração da
+ * página (honra `beehiiv-publish-date-overrides.json`, #4796), nunca o
+ * `publish_date` cru que mente pras 6 edições mais antigas (importadas em
+ * bloco em 04/09/2025, datadas pelo dia do IMPORT — a 1ª edição real é
+ * 27/08/2025). Ler daqui, em vez de recalcular a partir de outra fonte
+ * dentro do Worker, garante que `Last-Modified` nunca divirja do
+ * `datePublished` que o crawler já vê no `<head>` da mesma página.
+ *
+ * `undefined` (nunca lança) quando a página não carrega o JSON-LD ainda —
+ * cobre o estado ATUAL das 270 páginas committed (0 têm o script até a
+ * regeneração da #8358 rodar) sem quebrar nada: o Worker simplesmente não
+ * emite `Last-Modified` até a página ser regenerada, o `ETag` sozinho já
+ * habilita revalidação.
+ */
+export function extractDatePublishedFromArchivePage(html: string): string | undefined {
+  const match = html.match(/"@type"\s*:\s*"NewsArticle"[^}]*"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})"/);
+  return match ? match[1] : undefined;
+}
+
+/**
+ * #8355: monta a resposta 200 (ou 304) de uma página do acervo com
+ * `ETag`/`Last-Modified` — chamada só quando `env.ASSETS.fetch` já
+ * confirmou 200 pra um path `/p/{slug}`. `request.method === "HEAD"` sempre
+ * refaz o fetch como GET internamente: RFC 7231 §4.3.2 exige que os headers
+ * de uma resposta HEAD sejam idênticos aos que a mesma GET produziria, e
+ * calcular o `ETag`/extrair `datePublished` exige o corpo — que uma
+ * `Response` de HEAD pode não carregar (comportamento não garantido pelo
+ * binding de assets). O custo extra (1 fetch a mais) só acontece pra HEAD
+ * em `/p/{slug}`, nunca pra GET nem pros demais paths.
+ */
+async function withArchiveCacheValidators(request: Request, response: Response, env: Env): Promise<Response> {
+  let bodyResponse = response;
+  if (request.method === "HEAD") {
+    const getRequest = new Request(request.url, { method: "GET", headers: request.headers });
+    const refetched = await env.ASSETS.fetch(getRequest);
+    if (refetched.status !== 200) return response; // defensivo — nunca deveria divergir do HEAD já 200
+    bodyResponse = refetched;
+  }
+  const body = await bodyResponse.clone().text();
+  const datePublished = extractDatePublishedFromArchivePage(body);
+
+  const headers = new Headers(bodyResponse.headers);
+  headers.set("ETag", weakEtag(body));
+  if (datePublished) headers.set("Last-Modified", toHttpDate(datePublished));
+
+  const withValidators = new Response(request.method === "HEAD" ? null : body, { status: 200, headers });
+  return conditionalNotModified(request, withValidators) ?? withValidators;
 }
 
 export default {
@@ -143,6 +213,21 @@ export default {
       return handleConfirmadoPage();
     }
 
+    // #8355: arquivo de chave do IndexNow — mesmo padrão de
+    // workers/cursos/workers/livros (#5703), que generalizou o que nasceu
+    // em workers/arquivo (#4909 item 2). Só casa quando `env.INDEXNOW_KEY`
+    // está configurada; ausente, este `if` nunca é verdadeiro e o path cai
+    // no fallback normal (`env.ASSETS.fetch`), comportamento inalterado.
+    if (request.method === "GET") {
+      const indexNowKey = matchIndexNowKeyPath(reqUrl.pathname, env.INDEXNOW_KEY);
+      if (indexNowKey) {
+        return new Response(indexNowKey, {
+          status: 200,
+          headers: { "Content-Type": "text/plain;charset=utf-8", "Cache-Control": "public, max-age=3600" },
+        });
+      }
+    }
+
     // #7915: /apoiar/ir — sem arquivo em public/ (é uma ROTA, não uma
     // página), resolvido ANTES do asset lookup pelo mesmo motivo do
     // /confirmado acima. Incrementa o contador de CLIQUE (nunca pagamento
@@ -179,6 +264,17 @@ export default {
     }
 
     const response = await env.ASSETS.fetch(request);
+
+    // #8355: só pra páginas do acervo (`/p/{slug}`) servidas com sucesso —
+    // ver docstring de `withArchiveCacheValidators` acima pro racional
+    // completo (ETag/Last-Modified/304). Passos anteriores (`/img/{key}`,
+    // `/confirmado`, `/apoiar/*`) já retornaram antes de chegar aqui, então
+    // esta checagem nunca compete com eles.
+    if (response.status === 200 && (request.method === "GET" || request.method === "HEAD")) {
+      const okSlug = matchArchiveSlug(reqUrl.pathname);
+      if (okSlug) return withArchiveCacheValidators(request, response, env);
+    }
+
     if (response.status !== 404) return response;
 
     const url = new URL(request.url);
