@@ -280,6 +280,61 @@ describe("buildArchiveHtml (#4105)", () => {
     });
   });
 
+  describe("(#8345) dek na listagem", () => {
+    it("edição com dek no cache: emite <span class=\"li-dek\"> dentro do <a> da linha", () => {
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/com-dek", "2026-07-15")],
+        { "com-dek": { title: "Com dek", publishDate: "2026-07-15", dek: "D2 title | D3 title" } },
+      );
+      assert.match(
+        html,
+        /<a href="https:\/\/diar\.ia\.br\/p\/com-dek">.*Com dek<span class="li-dek">D2 title \| D3 title<\/span><\/a>/,
+      );
+    });
+
+    it("edição sem dek no cache: <li> sai no shape de sempre, sem <span class=\"li-dek\">", () => {
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/sem-dek", "2026-07-15")],
+        { "sem-dek": { title: "Sem dek", publishDate: "2026-07-15" } },
+      );
+      assert.match(html, /<a href="https:\/\/diar\.ia\.br\/p\/sem-dek">.*Sem dek<\/a>/);
+      assert.doesNotMatch(html, /<span class="li-dek">/);
+    });
+
+    it("slug fora do cache: nenhum dek (mesmo fallback de título derivado do slug)", () => {
+      const html = buildArchiveHtml([entry("https://diar.ia.br/p/fora-do-cache", "2026-07-15")], {});
+      assert.doesNotMatch(html, /<span class="li-dek">/);
+    });
+
+    it("dek maior que o limite de listagem é truncado com reticências, na última palavra completa", () => {
+      const longDek = "A".repeat(170); // > LISTING_DEK_MAX_LENGTH (160), sem espaço — corta bruto
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/dek-longo", "2026-07-15")],
+        { "dek-longo": { title: "Dek longo", publishDate: "2026-07-15", dek: longDek } },
+      );
+      assert.match(html, /<span class="li-dek">A{160}…<\/span>/);
+    });
+
+    it("dek dentro do limite não é truncado nem ganha reticências", () => {
+      const shortDek = "Um dek curto e normal, bem abaixo do limite.";
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/dek-curto", "2026-07-15")],
+        { "dek-curto": { title: "Dek curto", publishDate: "2026-07-15", dek: shortDek } },
+      );
+      assert.match(html, new RegExp(`<span class="li-dek">${shortDek.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</span>`));
+      assert.doesNotMatch(html, /<span class="li-dek">[^<]*…/);
+    });
+
+    it("dek é HTML-escapado (nunca injeta markup cru)", () => {
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/dek-com-html", "2026-07-15")],
+        { "dek-com-html": { title: "Dek com html", publishDate: "2026-07-15", dek: '<script>alert("x")</script>' } },
+      );
+      assert.doesNotMatch(html, /<script>alert/);
+      assert.match(html, /&lt;script&gt;/);
+    });
+  });
+
   describe("(#4265 item 4, form inline #5167 item 1) CTA de assinatura + caminho de volta pro site", () => {
     it("tem um FORM inline de assinatura (não link puro pro /subscribe da Beehiiv)", () => {
       const html = buildArchiveHtml([entry("https://diar.ia.br/p/edicao-x", "2026-07-15")]);

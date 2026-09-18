@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>CFM normatiza o uso da IA na medicina</title><meta name="description" content="CFM normatiza o uso da IA na medicina. OpenAI capta US$ 110 bi | Anatel adota nuvem soberana para IA"><meta name="dek" content="OpenAI capta US$ 110 bi | Anatel adota nuvem soberana para IA"><link rel="canonical" href="https://diar.ia.br/p/cfm-normatiza-o-uso-da-ia-na-medicina"><link href='https://fonts.gstatic.com' rel='preconnect'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><style type='text/css'>
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>CFM normatiza o uso da IA na medicina</title><meta name="description" content="CFM normatiza o uso da IA na medicina. OpenAI capta US$ 110 bi | Anatel adota nuvem soberana para IA"><meta name="dek" content="OpenAI capta US$ 110 bi | Anatel adota nuvem soberana para IA"><link rel="canonical" href="https://diar.ia.br/p/cfm-normatiza-o-uso-da-ia-na-medicina"><script type="application/ld+json">{"@context":"https://schema.org","@type":"NewsArticle","headline":"CFM normatiza o uso da IA na medicina","description":"CFM normatiza o uso da IA na medicina. OpenAI capta US$ 110 bi | Anatel adota nuvem soberana para IA","url":"https://diar.ia.br/p/cfm-normatiza-o-uso-da-ia-na-medicina","mainEntityOfPage":"https://diar.ia.br/p/cfm-normatiza-o-uso-da-ia-na-medicina","datePublished":"2026-02-27","dateModified":"2026-02-27","author":{"@type":"Person","name":"Pixel","url":"https://www.linkedin.com/in/vjpixel/"},"publisher":{"@type":"Organization","name":"diar.ia.br","url":"https://diar.ia.br"},"inLanguage":"pt-BR"}</script><link href='https://fonts.gstatic.com' rel='preconnect'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><style type='text/css'>
 :root {
   --wt-primary-color: #030712;
   --wt-text-on-primary-color: #F9FAFB;
@@ -354,6 +354,17 @@ li a { word-break: break-word; }
           utm_source: val('input[name="utm_source"]'),
           utm_medium: val('input[name="utm_medium"]'),
           utm_campaign: val('input[name="utm_campaign"]'),
+          // #8003: sinal SEPARADO do triplo UTM acima — nunca sobrescreve
+          // source/medium/campaign/utm_* (ver docstring de
+          // clientOriginSignalPayloadFieldsJs, scripts/lib/shared/client-utm-payload.ts).
+          referrer: (document.referrer || "").slice(0, 300),
+          click_id: (function () {
+            var p = new URLSearchParams(window.location.search);
+            if (p.get("gclid")) return "gclid:" + p.get("gclid");
+            if (p.get("fbclid")) return "fbclid:" + p.get("fbclid");
+            if (p.get("msclkid")) return "msclkid:" + p.get("msclkid");
+            return "";
+          })(),
         };
         if (typeof window.fetch !== "function") {
           // Sem fetch: deixa o form nativo submeter normalmente

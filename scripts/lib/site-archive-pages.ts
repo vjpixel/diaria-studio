@@ -138,7 +138,7 @@ function ownEditionDescription(post: ArchivePost): string | undefined {
  * ausentes) — o chamador decide o fallback (home hoje esconde a linha fina
  * vazia via CSS/condicional, nunca mostra "undefined").
  */
-export function deriveDek(post: ArchivePost): string | undefined {
+export function deriveDek(post: Pick<ArchivePost, "subtitle" | "preview_text">): string | undefined {
   return post.subtitle?.trim() || post.preview_text?.trim() || undefined;
 }
 

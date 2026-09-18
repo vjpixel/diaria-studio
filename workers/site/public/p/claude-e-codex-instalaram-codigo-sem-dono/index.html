@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>Claude e Codex instalaram código sem dono</title><meta name="description" content="Claude e Codex instalaram código sem dono. Extensão do Claude chega a todo plano pago | Nvidia pode comprar a Hugging Face por US$ 12,9 bi"><link rel="canonical" href="https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono"><link href='https://fonts.gstatic.com' rel='preconnect'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><style type='text/css'>
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>Claude e Codex instalaram código sem dono</title><meta name="description" content="Claude e Codex instalaram código sem dono. Extensão do Claude chega a todo plano pago | Nvidia pode comprar a Hugging Face por US$ 12,9 bi"><meta name="dek" content="Extensão do Claude chega a todo plano pago | Nvidia pode comprar a Hugging Face por US$ 12,9 bi"><link rel="canonical" href="https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono"><script type="application/ld+json">{"@context":"https://schema.org","@type":"NewsArticle","headline":"Claude e Codex instalaram código sem dono","description":"Claude e Codex instalaram código sem dono. Extensão do Claude chega a todo plano pago | Nvidia pode comprar a Hugging Face por US$ 12,9 bi","url":"https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono","mainEntityOfPage":"https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono","datePublished":"2026-08-31","dateModified":"2026-08-31","author":{"@type":"Person","name":"Pixel","url":"https://www.linkedin.com/in/vjpixel/"},"publisher":{"@type":"Organization","name":"diar.ia.br","url":"https://diar.ia.br"},"inLanguage":"pt-BR"}</script><link href='https://fonts.gstatic.com' rel='preconnect'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><link href='https://fonts.googleapis.com/css2?family=Inter&display=swap' rel='stylesheet'><style type='text/css'>
 :root {
   --wt-primary-color: #030712;
   --wt-text-on-primary-color: #F9FAFB;
@@ -334,6 +334,17 @@ li a { word-break: break-word; }
           utm_source: val('input[name="utm_source"]'),
           utm_medium: val('input[name="utm_medium"]'),
           utm_campaign: val('input[name="utm_campaign"]'),
+          // #8003: sinal SEPARADO do triplo UTM acima — nunca sobrescreve
+          // source/medium/campaign/utm_* (ver docstring de
+          // clientOriginSignalPayloadFieldsJs, scripts/lib/shared/client-utm-payload.ts).
+          referrer: (document.referrer || "").slice(0, 300),
+          click_id: (function () {
+            var p = new URLSearchParams(window.location.search);
+            if (p.get("gclid")) return "gclid:" + p.get("gclid");
+            if (p.get("fbclid")) return "fbclid:" + p.get("fbclid");
+            if (p.get("msclkid")) return "msclkid:" + p.get("msclkid");
+            return "";
+          })(),
         };
         if (typeof window.fetch !== "function") {
           // Sem fetch: deixa o form nativo submeter normalmente

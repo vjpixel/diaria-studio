@@ -206,6 +206,42 @@ describe("buildTitlesCache — coverImageUrl (#5131)", () => {
   });
 });
 
+describe("buildTitlesCache — dek (#8345)", () => {
+  it("post com subtitle → dek entra no cache com o mesmo valor", () => {
+    const posts: RawCachedPost[] = [
+      {
+        slug: "com-subtitle",
+        title: "Edição com subtitle",
+        publish_date: Date.UTC(2026, 6, 1, 18) / 1000,
+        subtitle: "D2 title | D3 title",
+      },
+    ];
+    const { cache } = buildTitlesCache(posts);
+    assert.equal(cache["com-subtitle"]?.dek, "D2 title | D3 title");
+  });
+
+  it("subtitle ausente → cai pro preview_text (mesma prioridade de deriveDek)", () => {
+    const posts: RawCachedPost[] = [
+      {
+        slug: "so-preview",
+        title: "Edição só com preview_text",
+        publish_date: Date.UTC(2026, 6, 1, 18) / 1000,
+        preview_text: "Preview D2|D3",
+      },
+    ];
+    const { cache } = buildTitlesCache(posts);
+    assert.equal(cache["so-preview"]?.dek, "Preview D2|D3");
+  });
+
+  it("nem subtitle nem preview_text → dek ausente do objeto (não `undefined` explícito)", () => {
+    const posts: RawCachedPost[] = [
+      { slug: "sem-dek", title: "Edição sem dek", publish_date: Date.UTC(2026, 6, 1, 18) / 1000 },
+    ];
+    const { cache } = buildTitlesCache(posts);
+    assert.equal("dek" in cache["sem-dek"], false);
+  });
+});
+
 describe("buildTitlesCache — propagação do override de data (#4803)", () => {
   it("um override presente e válido vence o publish_date bruto no cache final", () => {
     const posts: RawCachedPost[] = [
