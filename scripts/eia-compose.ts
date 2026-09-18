@@ -72,11 +72,38 @@ export interface WikimediaImage {
   // (feed pedida em /wikipedia/pt/featured/..., ver fetchPotd) e portanto
   // dispensa tradução via Gemini + lookup de langlinks.
   description?: { text?: string; html?: string; lang?: string };
+  // #8198: algumas respostas do feed da Wikimedia (observado em POTDs com
+  // título em script não-latino, ex: bengali) vêm SEM `description` nenhum
+  // — só `structured.captions`, formato usado pelo Wikibase/Commons novo.
+  // Sem este campo no tipo, `image.description?.text` sempre resolvia pra
+  // `undefined`, e o texto vazio ia parar tanto na credit line quanto no
+  // prompt de geração da imagem AI (ver `resolveDescriptionText`).
+  structured?: { captions?: Record<string, string> };
   thumbnail?: { source?: string; width?: number; height?: number };
   image?: { source?: string; width?: number; height?: number };
   artist?: { text?: string; html?: string };
   credit?: { text?: string; html?: string };
   license?: { type?: string; url?: string };
+}
+
+/**
+ * Texto de descrição da imagem, com fallback pra `structured.captions`
+ * quando `description.text` vem ausente/vazio (achado ao vivo, edição
+ * 260917: `description` de todo ausente na resposta, código lia
+ * `image.description?.text` como `undefined`, mandava string vazia pro
+ * Gemini traduzir — a resposta confusa do modelo ("Por favor, envie o
+ * texto...") virou credit line E prompt SD, gerando imagem sem relação
+ * nenhuma com a foto real). Preferência: pt nativo > en > qualquer outro.
+ */
+export function resolveDescriptionText(image: Pick<WikimediaImage, "description" | "structured">): string {
+  const native = image.description?.text?.trim();
+  if (native) return native;
+  const captions = image.structured?.captions;
+  if (captions) {
+    const fallback = captions.pt ?? captions["pt-br"] ?? captions.en ?? Object.values(captions)[0];
+    if (fallback) return fallback.trim();
+  }
+  return "";
 }
 
 interface WikimediaResponse {
@@ -95,9 +122,14 @@ interface WikimediaResponse {
  * mudou — sem esse warn, cairíamos no fallback Gemini+langlinks silenciosamente
  * mesmo com texto já nativo em português.
  */
-export function isPtDescription(image: Pick<WikimediaImage, "description">): boolean {
+export function isPtDescription(image: Pick<WikimediaImage, "description" | "structured">): boolean {
   const lang = image.description?.lang;
   if (lang === "pt") return true;
+  // #8198: description ausente (só `structured.captions`) mas com caption pt
+  // nativa — tratar como já-pt evita tradução via Gemini desnecessária.
+  if (lang === undefined && !image.description?.text && image.structured?.captions?.pt) {
+    return true;
+  }
   if (lang !== undefined && lang !== "en") {
     process.stderr.write(
       `[eia-compose] warn: description.lang="${lang}" não é "pt" nem "en" nem ausente — ` +
@@ -1003,7 +1035,7 @@ export function buildCreditLine(
   image: WikimediaImage,
   opts?: { ptLabel?: string | null; ptWikipediaUrl?: string | null; translatedSentence?: string | null },
 ): string {
-  const description = stripHtml(image.description?.text ?? "");
+  const description = stripHtml(resolveDescriptionText(image));
   const firstSent = firstSentence(description) || "Imagem do dia da Wikimedia Commons.";
 
   // #285: substituir o texto exato do link no html (em vez de regex de
@@ -1121,7 +1153,7 @@ export async function resolveSdPromptDescription(
   fetchEn: (iso: string) => Promise<WikimediaImage | null> = (iso) => fetchPotd(iso, 3, "en"),
   rootDir: string = process.cwd(), // injetável em teste, mesmo padrão de logEvent (#612)
 ): Promise<{ text: string; locale: "pt" | "en" | "pt_fallback" }> {
-  const fallbackText = image.description?.text ?? "";
+  const fallbackText = resolveDescriptionText(image);
   const sourceIsPt = isPtDescription(image);
   const needsEn = resolveImageScriptName(imageGenerator) !== "scripts/gemini-image.js" && sourceIsPt;
   if (!needsEn) {
@@ -1484,7 +1516,7 @@ async function main(): Promise<void> {
   // #4619 item 2: gate (`!sourceIsPt` → chama Gemini; `sourceIsPt` → nunca)
   // extraído pra `resolveTranslatedSentence`, testável sem depender de
   // `main()` — ver docstring lá pro porquê.
-  const translatedSentence = await resolveTranslatedSentence(sourceIsPt, image.description?.text);
+  const translatedSentence = await resolveTranslatedSentence(sourceIsPt, resolveDescriptionText(image));
   const creditLine = buildCreditLine(image, { ptLabel, ptWikipediaUrl, translatedSentence });
   // #3984: frase de descrição em texto plano (sem markdown/links) — mesma
   // fonte que buildCreditLine usa internamente pra montar `sentence`
@@ -1492,7 +1524,7 @@ async function main(): Promise<void> {
   // gravar em 01-eia-meta.json e viajar pipeline→KV→revelação do jogo (o
   // creditLine acima é só pro corpo de 01-eia.md, nunca chega no Worker).
   const descriptionSentence =
-    translatedSentence ?? firstSentence(stripHtml(image.description?.text ?? ""));
+    translatedSentence ?? firstSentence(stripHtml(resolveDescriptionText(image)));
   const prevStats = readPrevPollStats(outDir);
   const prevResultLine = buildPrevResultLine(prevStats);
   const mdPath = resolve(outDir, "01-eia.md");

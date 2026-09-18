@@ -843,7 +843,7 @@ function stripCeremonyMarker(s: string): string {
  * a FORMA de recomendação de livro (ver `isBookRecommendationParagraph`
  * abaixo) — nunca o título do livro, nunca uma variante de capitalização.
  */
-const BOOK_RECOMMENDATION_TITLE = "Recomendação de Leitura";
+export const BOOK_RECOMMENDATION_TITLE = "Recomendação de Leitura";
 
 /**
  * #8119: parágrafo no formato canônico do box "Recomendação de Leitura" —
@@ -896,7 +896,7 @@ function isBookRecommendationParagraph(p: string): boolean {
  * `sponsored`/`forceCtaPill`. Marcador-agnóstico: um 📖 (ou nenhum emoji) no
  * início da 1ª linha não muda a detecção.
  */
-function detectBookRecommendation(
+export function detectBookRecommendation(
   paras: string[],
 ): { isBookRecommendation: boolean; explicitTitleLine: boolean } {
   if (paras.length < 2) return { isBookRecommendation: false, explicitTitleLine: false };
@@ -960,7 +960,16 @@ export function renderIntroCallout(
   // `forceCtaPill=true`) e o box de campeões/sorteio (`ceremony`, marcador
   // 🎉 preservado — feature separada) continuam com título por outros
   // caminhos, sem passar por este branch.
-  if (paras.length > 1 && !sponsored && !forceCtaPill && !ceremony && !sectionTitle) {
+  // #8199 (achado ao vivo, edição 260917): `plainFirstParagraph` (campo
+  // `titulo: false` do snippet) documenta a intenção de NENHUM título dentro
+  // do box — só o kicker externo (`categoria:`) rotula a seção (ver comentário
+  // em `data/snippets/inteligencia-artificial-do-zero-a-superpoderes.md`).
+  // Sem este `|| plainFirstParagraph` aqui, um box de recomendação de leitura
+  // com `titulo: false` ainda caía no branch de baixo, que sintetiza
+  // `BOOK_RECOMMENDATION_TITLE` como parágrafo PLANO (só rebaixa o ESTILO de
+  // serif pra texto normal, nunca omite o texto) — duplicando literalmente o
+  // texto do kicker dentro do próprio box.
+  if (paras.length > 1 && !sponsored && !forceCtaPill && !ceremony && (!sectionTitle || plainFirstParagraph)) {
     inner = paras
       .map((p, i) => renderBoxParagraph(p, i === 0 ? "0" : "12px 0 0"))
       .join("\n      ");
@@ -979,7 +988,17 @@ export function renderIntroCallout(
     // #260701 review: estilo do header body-size (título + sub-cabeçalho) num só
     // lugar — evita divergência silenciosa entre os 2 usos (cf. lbStyle em renderEIA).
     const bodyHeadingStyle = `font-family:${FONT_HEADING};font-weight:600;font-size:16px;line-height:1.4;color:${TEXT_COLOR};`;
-    const titleHtml = agradecimento || plainFirstParagraph
+    // #8199 follow-up: um box com link de afiliado (`?tag=`) é `sponsored`
+    // (`isSponsoredCallout`) e por isso NUNCA chega no branch acima, mesmo com
+    // `plainFirstParagraph` — os boxes de recomendação de leitura da diária
+    // usam link Amazon com `tag=diaria-20`, então SEMPRE caem aqui. Sem este
+    // caso, `plainFirstParagraph` só rebaixava o texto sintetizado
+    // (`BOOK_RECOMMENDATION_TITLE`) de título serif pra parágrafo plano —
+    // nunca o omitia — duplicando o kicker externo dentro do próprio box
+    // (achado ao vivo, edição 260917, com screenshot do editor).
+    const titleHtml = bookRecommendation.isBookRecommendation && plainFirstParagraph
+      ? ""
+      : agradecimento || plainFirstParagraph
       ? renderBoxParagraph(title, "0")
       : titleStyle === "body"
       ? `<p style="margin:0 0 10px;${bodyHeadingStyle}">${processInlineLinks(title)}</p>`
