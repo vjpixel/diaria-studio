@@ -27,7 +27,7 @@
 
 import { stripHtmlBasic } from "./strip-html.ts";
 import { escHtml } from "./html-escape.ts";
-import { parseSitemap } from "./fetch-sitemap.ts";
+import { parseSitemap, type SitemapEntry } from "./fetch-sitemap.ts";
 import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
@@ -230,6 +230,37 @@ export function extractPageMeta(html: string): { title: string; description: str
  * fina. `""` quando a tag não existe (edição sem D2/D3, ou HTML pré-#7921
  * ainda não regenerado) — mesma degradação de `extractPageMeta`.
  */
+/**
+ * Data editorial (`YYYY-MM-DD`) embutida na PRÓPRIA página de edição —
+ * `<meta property="article:published_time">` (#8352) ou, em segunda
+ * instância, `datePublished` do JSON-LD (#8336). Ambos são escritos por
+ * `buildArchivePageHtml` a partir de `publishDateToIso(post)` — a MESMA
+ * resolução que grava o `<lastmod>` do sitemap — então refletem a data
+ * editorial da edição, não a data de geração do arquivo.
+ *
+ * #8360: consumida por `buildHomeFeed` quando a entrada do sitemap chega SEM
+ * `<lastmod>` (publicação via backend Kit, #7437) — a home não pode depender
+ * da posição do documento pra eleger o hero, e a página é a fonte de data
+ * que sobra nesse caminho. Devolve `null` quando a página não traz data
+ * (páginas Kit atuais não trazem) — quem chama degrada.
+ */
+export function extractPageDate(html: string): string | null {
+  // Atributo `property` ou `name`, em qualquer ordem — casa a TAG inteira
+  // primeiro e extrai o `content` dela depois.
+  const metaTag = html.match(/<meta\s+[^>]*article:published_time[^>]*>/i)?.[0];
+  const metaDate = metaTag?.match(/content\s*=\s*["']([^"']*)["']/i)?.[1];
+  const jsonLdDate = html.match(/datePublished["']?\s*:\s*["']([^"']+)["']/i)?.[1];
+  for (const raw of [metaDate, jsonLdDate]) {
+    if (!raw) continue;
+    // Recorta o prefixo de data de um ISO completo (`2026-09-18T06:00:00Z`)
+    // e valida a FAIXA — "2026-99-99" viraria `NaN` no `Date.parse` de quem
+    // ordena e degradaria silenciosamente a comparação.
+    const iso = raw.match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+    if (iso && !Number.isNaN(Date.parse(`${iso}T00:00:00Z`))) return iso;
+  }
+  return null;
+}
+
 export function extractPageDek(html: string): string {
   const dekMatch = html.match(/<meta\s+name=["']dek["']\s+content=["']([^"']*)["']/i);
   return dekMatch ? stripHtmlBasic(dekMatch[1]) : "";
@@ -411,18 +442,30 @@ export function brtDateString(now: Date = new Date()): string {
  * de casar um shape novo de URL) encolheria a home em silêncio, indistinguível
  * de "esta edição legitimamente não tem página ainda".
  *
- * Ordena as entradas por `lastmod` desc ANTES de cortar em `limit` (#7436) —
- * não confia na ordem do documento do `sitemap.xml`. `gen-archive-pages.ts`
- * de fato escreve newest-first, mas `addSitemapEntry` (`site-archive-pages.ts`)
- * insere a entrada de uma edição nova sempre no FIM do XML (append, não
- * insert-sorted) — sem essa ordenação aqui, a edição recém-publicada nunca
- * aparecia nos `limit` primeiros cards da home (achado ao vivo, edição
- * 260905: a home ficava congelada na edição anterior a cada publicação nova
- * via `--sitemap`). Ordenar aqui, e não corrigir só o ponto de inserção,
- * fecha a classe inteira — qualquer sitemap fora de ordem (append, merge,
- * edição manual) já sai correto. Entrada sem `lastmod` (ex: publicação via
- * backend Kit com `--slug`, #7437) ordena por último, não quebra a
- * comparação.
+ * Ordena as entradas por DATA EDITORIAL desc ANTES de cortar em `limit`
+ * (#7436) — não confia na ordem do documento do `sitemap.xml`.
+ * `gen-archive-pages.ts` de fato escreve newest-first, mas `addSitemapEntry`
+ * (`site-archive-pages.ts`) insere a entrada de uma edição nova sempre no
+ * FIM do XML (append, não insert-sorted) — sem essa ordenação aqui, a edição
+ * recém-publicada nunca aparecia nos `limit` primeiros cards da home (achado
+ * ao vivo, edição 260905: a home ficava congelada na edição anterior a cada
+ * publicação nova via `--sitemap`).
+ *
+ * #8360 — a data editorial de cada entrada é resolvida ANTES de ordenar:
+ * `<lastmod>` do sitemap quando houver; senão a data da PRÓPRIA PÁGINA
+ * (`extractPageDate` — `article:published_time`/`datePublished`, as mesmas
+ * resoluções de `publishDateToIso` que gerariam o `<lastmod>`). O #8358
+ * mostrou o custo do `lastmod` ausente: o reconciler religou 11 entradas Kit
+ * sem data e a home ficou presa numa edição de 03/09 enquanto a de 18/09 já
+ * estava no sitemap — sem data, a entrada caía pro fim e a POSIÇÃO era o
+ * único sinal que restava.
+ *
+ * A ordenação é TOTAL, nunca dependente da posição no documento: data desc,
+ * empate de data (e o caso "nenhuma data" — `-Infinity` de propósito, uma
+ * entrada indatada não pode roubar o hero de uma datada) quebra por `<loc>`
+ * asc. Com isso qualquer permutação do XML (append, merge, edição manual,
+ * `reconcile-site-sitemap.ts`) produz exatamente o mesmo feed — regressão
+ * travada em `test/site-home-hero-permutation-8360.test.ts`.
  */
 export function buildHomeFeed(
   sitemapXml: string,
@@ -433,15 +476,25 @@ export function buildHomeFeed(
   // #7686: "hoje" em BRT. Injetável só pra teste — produção sempre usa o
   // relógio real; nenhum caller de produção passa `todayBrt`.
   const todayBrt = opts.todayBrt ?? brtDateString();
-  const entries = [...parseSitemap(sitemapXml)].sort((a, b) => {
-    const aMs = a.lastmod ? Date.parse(a.lastmod) : Number.NEGATIVE_INFINITY;
-    const bMs = b.lastmod ? Date.parse(b.lastmod) : Number.NEGATIVE_INFINITY;
-    const aVal = Number.isNaN(aMs) ? Number.NEGATIVE_INFINITY : aMs;
-    const bVal = Number.isNaN(bMs) ? Number.NEGATIVE_INFINITY : bMs;
-    return bVal - aVal;
-  });
+  const editorialDate = (entry: SitemapEntry): string | null => {
+    if (entry.lastmod) return entry.lastmod;
+    const slug = slugFromCanonicalUrl(entry.loc);
+    return slug ? extractPageDate(readPageHtml(slug) ?? "") : null;
+  };
+  const entries = [...parseSitemap(sitemapXml)]
+    .map((entry) => ({ entry, date: editorialDate(entry) }))
+    .sort((a, b) => {
+      const aMs = a.date ? Date.parse(a.date) : Number.NEGATIVE_INFINITY;
+      const bMs = b.date ? Date.parse(b.date) : Number.NEGATIVE_INFINITY;
+      const aVal = Number.isNaN(aMs) ? Number.NEGATIVE_INFINITY : aMs;
+      const bVal = Number.isNaN(bMs) ? Number.NEGATIVE_INFINITY : bMs;
+      // #8360: desempate por `loc` — sem ele, empate de data (e o caso
+      // "nenhuma data") caía no stable sort, que mantém a ordem do
+      // documento, e reordenar o sitemap mudava o hero.
+      return bVal - aVal || (a.entry.loc < b.entry.loc ? -1 : a.entry.loc > b.entry.loc ? 1 : 0);
+    });
   const feed: HomeFeedEntry[] = [];
-  for (const entry of entries) {
+  for (const { entry, date } of entries) {
     // #7686: edição cuja data de ENVIO ainda não chegou não entra na home.
     // O Stage 6 publica `/p/{slug}` + entrada no sitemap na NOITE ANTERIOR
     // (a página pode ficar pronta antes, decisão do editor 08/09/2026) e
@@ -455,15 +508,16 @@ export function buildHomeFeed(
     // ENCOLHERIA a home de hoje em um card.
     //
     // Comparação lexicográfica direta: os dois lados são `YYYY-MM-DD`.
-    // Entrada SEM `lastmod` (caminho legado/Kit pré-#7437) passa — não dá
+    // #8360: filtra pela data editorial RESOLVIDA — data na página também
+    // conta como "ainda não saiu". Entrada sem data nenhuma passa — não dá
     // pra julgar o que não tem data, e o default seguro aqui é mostrar (a
     // alternativa esconderia acervo antigo em silêncio).
-    if (entry.lastmod && entry.lastmod > todayBrt) {
+    if (date && date > todayBrt) {
       // console.log e não console.warn: este skip é o caminho ESPERADO toda
       // noite de Stage 6, não um sintoma. Um warn diário aqui viraria ruído
       // e treinaria a ignorar os warns reais logo abaixo.
       console.log(
-        `site-home-page: "${entry.loc}" tem lastmod ${entry.lastmod} > hoje (${todayBrt}) — ainda não publicada, fora da home`,
+        `site-home-page: "${entry.loc}" tem data editorial ${date} > hoje (${todayBrt}) — ainda não publicada, fora da home`,
       );
       continue;
     }
@@ -498,7 +552,9 @@ export function buildHomeFeed(
       console.warn(`site-home-page: sem <img class="hero"> pra slug "${slug}" — entrada do feed sem capa`);
     }
     const readingMinutes = estimateReadingMinutes(html);
-    feed.push({ slug, title, description, url: entry.loc, date: entry.lastmod, image, readingMinutes });
+    // #8360: `date` é a data editorial RESOLVIDA (lastmod ?? página) — o card
+    // mostra a data real mesmo quando a entrada do sitemap veio sem lastmod.
+    feed.push({ slug, title, description, url: entry.loc, date, image, readingMinutes });
   }
   return feed;
 }
