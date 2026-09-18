@@ -798,9 +798,13 @@ done
 # nunca justo no dia em que há contenção de lock pra relatar (#8212 review, P3).
 LOCK_NOTE=""
 [ "$LOCK_BLOCKED" -gt 0 ] 2>/dev/null && LOCK_NOTE=" bloqueadas-por-lock=$LOCK_BLOCKED"
-# Detalhes ficam em stderr; apenas este resumo vai ao Telegram.
+# Detalhes ficam em stderr (o `exec 1>&2` no topo já redirecionou o stdout
+# pra stderr); apenas o resumo final abaixo vai ao Telegram. #6910: o
+# motivo de erro de infra é deliverable — never just a count.
 if [ "$INFRA_ERRORS" -gt 0 ]; then
-  echo "[continuo-pr-review] infra: $INFRA_ERRORS erro(s) — ver logs" >&2
+  echo "[continuo-pr-review] motivo(s) do(s) erro(s) de infra desta rodada:"
+  printf '%s' "$INFRA_ERROR_SUMMARY"
+  echo "[continuo-pr-review] log completo: $INFRA_ERROR_LOG"
 fi
 exec 1>&3
 exec 3>&-
