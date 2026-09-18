@@ -35,6 +35,13 @@
  *   npx tsx scripts/ping-indexnow.ts --changed-files-file lista.txt --key <chave> \
  *     --host cursos.diar.ia.br --watch-prefix workers/cursos/src/courses-full.generated.ts
  *
+ * Uso (host `site`, MUITAS páginas — apex `diar.ia.br`/`/p/{slug}`, #8355):
+ * passar `--archive-pages` troca pro gate `buildArchivePagesIndexNowPayload`
+ * — pinga 1 URL por slug de `workers/site/public/p/{slug}/index.html`
+ * alterado na lista de arquivos (pode ser MUITAS URLs num push só, ex: uma
+ * regeneração em massa do acervo). `--host` opcional (default `diar.ia.br`):
+ *   npx tsx scripts/ping-indexnow.ts --changed-files-file lista.txt --key <chave> --archive-pages
+ *
  * `--key` opcional na CLI — se omitido, cai pra `process.env.INDEXNOW_KEY`
  * (é assim que o workflow passa o secret). Sem chave (nem flag nem env) =
  * gate fechado, exit 0 sem pingar (ver docstring de `buildIndexNowPayload`
@@ -45,11 +52,13 @@
  * com payload não-vazio.
  */
 import { readFileSync } from "node:fs";
-import { getStringArg, isMainModule } from "./lib/cli-args.ts";
+import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
   buildIndexNowPayload,
   buildSinglePageIndexNowPayload,
+  buildArchivePagesIndexNowPayload,
   ARQUIVO_HOST,
+  SITE_HOST,
   type IndexNowPayload,
 } from "./lib/indexnow.ts";
 
@@ -181,6 +190,7 @@ async function main(): Promise<number> {
   const key = getStringArg(argv, "key") ?? process.env.INDEXNOW_KEY ?? "";
   const watchPrefixes = readWatchPrefixes(argv);
   const host = getStringArg(argv, "host");
+  const archivePages = hasFlag(argv, "archive-pages");
 
   // #5703: `--watch-prefix` presente troca pro gate genérico de página
   // única (host obrigatório, sem default — ao contrário do modo hub, que
@@ -193,15 +203,22 @@ async function main(): Promise<number> {
     console.error(`${LOG_PREFIX} erro: --watch-prefix requer --host explícito (modo página única, #5703).`);
     return 1;
   }
+  // #8355: os 3 modos são mutuamente exclusivos — misturar `--archive-pages`
+  // com `--watch-prefix` seria ambíguo sobre qual gate decide o payload.
+  if (archivePages && watchPrefixes.length > 0) {
+    console.error(`${LOG_PREFIX} erro: --archive-pages e --watch-prefix são mutuamente exclusivos (#8355 vs #5703).`);
+    return 1;
+  }
 
-  const payload =
-    watchPrefixes.length > 0
+  const payload = archivePages
+    ? buildArchivePagesIndexNowPayload(changedFiles, key, { host: host ?? SITE_HOST })
+    : watchPrefixes.length > 0
       ? buildSinglePageIndexNowPayload(changedFiles, key, { host: host!, watchPrefixes })
       : buildIndexNowPayload(changedFiles, key, { host: host ?? ARQUIVO_HOST });
 
   if (!payload) {
     console.log(
-      `${LOG_PREFIX} gate fechado (nenhum .generated.ts na lista de ${changedFiles.length} arquivo(s), ou --key/INDEXNOW_KEY ausente) — nada a pingar.`,
+      `${LOG_PREFIX} gate fechado (nenhum arquivo relevante na lista de ${changedFiles.length} alterado(s), ou --key/INDEXNOW_KEY ausente) — nada a pingar.`,
     );
     return 0;
   }

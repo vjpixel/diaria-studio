@@ -30,6 +30,9 @@ import { HUB_REGISTRY } from "../../workers/arquivo/src/hubs/registry.ts"; // #7
 /** Host canônico do Worker `arquivo` — único host com hubs temáticos hoje. */
 export const ARQUIVO_HOST = "arquivo.diar.ia.br";
 
+/** Host canônico do Worker `site` — apex `diar.ia.br` (#8355). */
+export const SITE_HOST = "diar.ia.br";
+
 /** Diretório (relativo à raiz do repo, POSIX) onde `scripts/build-hub-page.ts`
  * escreve o HTML gerado de cada hub — mesmo diretório importado por
  * `workers/arquivo/src/hubs/registry.ts`. */
@@ -193,4 +196,68 @@ export function buildSinglePageIndexNowPayload(
   if (!hasSinglePageContentChanged(changedFiles, opts.watchPrefixes)) return null;
   const baseUrl = opts.baseUrl ?? `https://${opts.host}`;
   return { host: opts.host, key, keyLocation: `${baseUrl}/${key}.txt`, urlList: [`${baseUrl}/`] };
+}
+
+/** Diretório (relativo à raiz do repo, POSIX) onde `scripts/gen-archive-pages.ts`
+ * escreve o HTML de cada edição — 1 arquivo `index.html` por subdiretório
+ * `{slug}/`, ao contrário do hub (`{slug}.generated.ts`, arquivo único no
+ * mesmo diretório). */
+const ARCHIVE_PAGES_DIR = "workers/site/public/p/";
+const ARCHIVE_PAGE_FILENAME = "index.html";
+
+/**
+ * Pura — 3º gate de mudança (#8355), pra hosts com MUITAS páginas
+ * individuais (`workers/site`: 270 edições em `/p/{slug}`, não 1 hub e não
+ * 1 página única). Extrai os slugs cujo `{slug}/index.html` está na lista
+ * de arquivos alterados. Mesma normalização de separador (`\` → `/`) e
+ * prefixo `./` dos outros dois gates — ver `extractChangedHubSlugs`.
+ */
+export function extractChangedArchiveSlugs(changedFiles: readonly string[]): string[] {
+  const slugs: string[] = [];
+  for (const raw of changedFiles) {
+    const f = raw.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+    if (!f.startsWith(ARCHIVE_PAGES_DIR) || !f.endsWith(`/${ARCHIVE_PAGE_FILENAME}`)) continue;
+    const slug = f.slice(ARCHIVE_PAGES_DIR.length, f.length - `/${ARCHIVE_PAGE_FILENAME}`.length);
+    // Defensivo: um slug com "/" indicaria um path mais fundo que
+    // `{slug}/index.html` (não existe no layout de `gen-archive-pages.ts`
+    // hoje) — descartado em vez de produzir uma URL /p/algo/errado.
+    if (slug && !slug.includes("/")) slugs.push(slug);
+  }
+  return slugs;
+}
+
+/**
+ * Pura — URLs `/p/{slug}` a pingar, uma por slug alterado (deduplicado,
+ * preservando ordem). Ao contrário do hub (`buildIndexNowUrls`), toda
+ * página do acervo é indexável (não há um `index-page.generated.ts` não-hub
+ * a filtrar aqui) — sem validação contra registry.
+ */
+export function buildArchivePagesIndexNowUrls(
+  changedFiles: readonly string[],
+  baseUrl: string = `https://${SITE_HOST}`,
+): string[] {
+  const urls = extractChangedArchiveSlugs(changedFiles).map((slug) => `${baseUrl}/p/${slug}`);
+  return Array.from(new Set(urls));
+}
+
+/**
+ * Pura — monta o payload IndexNow pro host `site` (#8355), ou `null` se o
+ * gate "alguma página do acervo mudou desde o último deploy" não abrir OU
+ * `key` vier vazia (mesma semântica "ainda não provisionado, não erro" dos
+ * outros dois builders). Ao contrário de `buildSinglePageIndexNowPayload`,
+ * `urlList` pode ter MUITAS entradas num push só (ex: a regeneração em
+ * massa das 270 páginas do #8358) — o protocolo IndexNow aceita até 10.000
+ * URLs por submissão, bem acima do tamanho do acervo hoje.
+ */
+export function buildArchivePagesIndexNowPayload(
+  changedFiles: readonly string[],
+  key: string,
+  opts: { host?: string; baseUrl?: string } = {},
+): IndexNowPayload | null {
+  if (!key) return null;
+  const host = opts.host ?? SITE_HOST;
+  const baseUrl = opts.baseUrl ?? `https://${host}`;
+  const urlList = buildArchivePagesIndexNowUrls(changedFiles, baseUrl);
+  if (urlList.length === 0) return null;
+  return { host, key, keyLocation: `${baseUrl}/${key}.txt`, urlList };
 }

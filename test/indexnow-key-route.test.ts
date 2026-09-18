@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import { matchIndexNowKeyPath } from "../scripts/lib/shared/indexnow-key-route.ts";
 import cursosWorker, { type Env as CursosEnv } from "../workers/cursos/src/index.ts";
 import livrosWorker, { type Env as LivrosEnv } from "../workers/livros/src/index.ts";
+import siteWorker, { type Env as SiteEnv } from "../workers/site/src/index.ts";
 
 describe("matchIndexNowKeyPath (#5703)", () => {
   it("path exato /{key}.txt -> devolve a chave", () => {
@@ -101,5 +102,35 @@ describe("workers/livros: GET /{INDEXNOW_KEY}.txt (#5703)", () => {
     const env = makeLivrosEnv({ INDEXNOW_KEY: "chave-livros-opaca" });
     const res = await livrosWorker.fetch(new Request("https://livros.diar.ia.br/outra-coisa.txt"), env);
     assert.equal(await res.text(), "livros teaser");
+  });
+});
+
+function makeSiteEnv(overrides: Partial<SiteEnv> = {}): SiteEnv {
+  return {
+    ASSETS: { fetch: async () => new Response("site asset", { status: 200 }) } as unknown as Fetcher,
+    POLL: { get: async () => null },
+    ...overrides,
+  };
+}
+
+describe("workers/site: GET /{INDEXNOW_KEY}.txt (#8355)", () => {
+  it("sem INDEXNOW_KEY configurada -> nenhuma rota nova, cai no fallback ASSETS (comportamento inalterado)", async () => {
+    const env = makeSiteEnv();
+    const res = await siteWorker.fetch(new Request("https://diar.ia.br/algo.txt"), env);
+    assert.equal(await res.text(), "site asset");
+  });
+
+  it("com INDEXNOW_KEY configurada -> GET /{chave}.txt devolve 200 com a própria chave", async () => {
+    const env = makeSiteEnv({ INDEXNOW_KEY: "chave-site-opaca" });
+    const res = await siteWorker.fetch(new Request("https://diar.ia.br/chave-site-opaca.txt"), env);
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), "chave-site-opaca");
+    assert.match(res.headers.get("Content-Type") ?? "", /text\/plain/);
+  });
+
+  it("com INDEXNOW_KEY configurada, path diferente -> não casa a rota nova (fallback normal)", async () => {
+    const env = makeSiteEnv({ INDEXNOW_KEY: "chave-site-opaca" });
+    const res = await siteWorker.fetch(new Request("https://diar.ia.br/outra-coisa.txt"), env);
+    assert.equal(await res.text(), "site asset");
   });
 });
