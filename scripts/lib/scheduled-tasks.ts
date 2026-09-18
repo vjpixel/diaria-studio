@@ -1504,6 +1504,34 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5128, #5130",
   },
   {
+    name: "Diaria-Editorial-Concentration-Monthly-Measure",
+    description:
+      "invariante mensal de concentração editorial (% big-tech/lab, % Brasil, % exploração, CTR " +
+      "exploração-vs-resto) a partir do acervo público (workers/site/public/p/ + sitemap.xml, ambos " +
+      "versionados) -- sem isso a Peça 1 (#8366) e a Peça 2 (cota de exploração no scorer) da #8370 " +
+      "viram loop novo, sem número que meça se mudou algo depois de implementadas",
+    steps: [{ key: "measure", script: "scripts/measure-editorial-concentration.ts" }],
+    logPath: "editorial-concentration/.measure.log",
+    // Dia 2, 09:00 BRT -- dia seguinte ao Bing-Seo-Monthly-Pull (dia 1,
+    // 09:00, acima), mesma janela de "1x por mês" sem colidir com ela;
+    // dia 2 cai dentro do intervalo 1-28 válido pra `monthly` (ver
+    // docstring de `ScheduledTaskSchedule`). Mensal, não diário/semanal: o
+    // acervo cresce ~1 página/dia útil, então uma leitura semanal já
+    // mediria a mesma tendência com mais ruído por amostra pequena.
+    schedule: { kind: "monthly", day: 2, hour: 9, minute: 0 },
+    // Sem guard -- o script só lê arquivos versionados do próprio checkout
+    // (workers/site/public/p/**, sitemap.xml), nunca chama rede nem `gh`,
+    // e persiste em data/editorial-concentration-monthly.jsonl só quando
+    // data/ está presente (degrada pra stdout-only em worktree isolado ou
+    // clone fresco, ver docstring do script). Exit code sempre 0 -- é
+    // medição, não gate.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
+    // e ação POSTERIOR do editor.
+    issue: "#8370",
+  },
+  {
     name: "Diaria-On-Hold-Vencimento-Alarm",
     description: "alarme semanal de vencimento das issues on-hold (Vencimento: AAAA-MM-DD no corpo)",
     steps: [{ key: "alarm", script: "scripts/on-hold-vencimento-alarm.ts" }],
