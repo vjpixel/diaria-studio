@@ -294,6 +294,57 @@ describe("#7536 — fetchKitSignupsByChannel", () => {
     assert.equal(metaD3?.cadastros, 1);
   });
 
+  it("#8349: cadastro de teste do editor (vjpixel+.../pixel@memelab.com.br) nunca conta como aquisição paga real", async () => {
+    const result = await withMockFetch(
+      (async () =>
+        jsonResponse(200, {
+          subscribers: [
+            {
+              // Cadastro REAL — deve contar.
+              id: 1,
+              email_address: "leitor-real@example.com",
+              state: "active",
+              created_at: "2026-01-05T10:00:00.000Z",
+              fields: { utm_source: "google-ads" },
+            },
+            {
+              // Plus-address de teste do editor (exemplo citado em #8256) — nunca conta.
+              id: 2,
+              email_address: "vjpixel+utm-microsoft@gmail.com",
+              state: "active",
+              created_at: "2026-01-05T11:00:00.000Z",
+              fields: { utm_source: "microsoft-ads" },
+            },
+            {
+              // Caixa Workspace do editor — nunca conta.
+              id: 3,
+              email_address: "pixel@memelab.com.br",
+              state: "active",
+              created_at: "2026-01-06T10:00:00.000Z",
+              fields: { utm_source: "meta-ads" },
+            },
+            {
+              // Plus-address case-insensitive — mesmo padrão, ainda assim excluído.
+              id: 4,
+              email_address: "VJPixel+Teste@Gmail.com",
+              state: "active",
+              created_at: "2026-01-06T12:00:00.000Z",
+              fields: { utm_source: "google-ads" },
+            },
+          ],
+          pagination: emptyPagination,
+        })) as typeof fetch,
+      () => fetchKitSignupsByChannel(TEST_CONFIG),
+    );
+
+    assert.equal(result.error, null);
+    // Só o cadastro real (id 1) deve contar — os 3 de teste do editor são excluídos.
+    assert.equal(result.signups.length, 1);
+    assert.equal(result.signups[0].canal, "Google Ads (teste 2608)");
+    assert.equal(result.signups[0].date, "2026-01-05");
+    assert.equal(result.signups[0].cadastros, 1);
+  });
+
   it("dateRangeStart filtra cadastros anteriores ao início do teste", async () => {
     const result = await withMockFetch(
       (async () =>
