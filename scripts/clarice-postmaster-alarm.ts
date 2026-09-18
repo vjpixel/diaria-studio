@@ -38,13 +38,11 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { DEFAULT_DASHBOARD_URL, fetchPostmasterSpamEntryDetailed } from "./clarice-schedule-ramp.ts";
 import {
   emptyPostmasterStaleAlarmState,
   advanceState,
-  shouldAlarm,
   markAlarmed,
   buildPostmasterStaleAlarmEmail,
   CONSECUTIVE_STALE_THRESHOLD,
@@ -53,7 +51,6 @@ import {
   // do de staleness geral acima (ver docstring do módulo).
   emptyCampaignSpamMissingAlarmState,
   advanceCampaignSpamMissingState,
-  shouldAlarmCampaignSpamMissing,
   markCampaignSpamMissingAlarmed,
   buildCampaignSpamMissingAlarmEmail,
   CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS,
@@ -67,6 +64,7 @@ import {
   saveAlarmIssuesState,
   saveState,
   type AlarmFinding,
+  type AlarmFindingOutcome,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
 
@@ -251,6 +249,7 @@ async function main(): Promise<void> {
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   type IssueRef = { issueNumber: number | null; url: string | null; action: string; error?: string };
   let issueRefs: Map<string, IssueRef> | undefined;
+  let allFindingOutcomes: AlarmFindingOutcome[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -264,6 +263,7 @@ async function main(): Promise<void> {
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
     saveAlarmIssuesState(nextAlarmIssuesState, ALARM_ISSUES_STATE_PATH);
+    allFindingOutcomes = findingOutcomes;
     issueRefs = new Map(
       findingOutcomes.map((o) => [o.check, { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error }]),
     );
@@ -276,40 +276,63 @@ async function main(): Promise<void> {
     }
   }
 
-  if (shouldAlarm(newState)) {
-    const { subject, body } = buildPostmasterStaleAlarmEmail(
-      newState,
-      entry ? { date: entry.date } : null,
-      issueRefs?.get("clarice-postmaster"),
-    );
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+  // #7960: `shouldAlarm(newState)`/`shouldAlarmCampaignSpamMissing(...)`
+  // gateavam o e-mail por streak PRÓPRIO (`lastAlarmedAt === null` — só a
+  // 1ª execução de cada streak alarma; reset externo ao zerar o streak). O
+  // fingerprint de CADA achado é CONSTANTE ("signal-stale"/
+  // "campaign-spam-missing") — a issue fica "reused" enquanto o streak
+  // persistir e só vira "created"/"reopened" no INÍCIO de um streak novo
+  // (issue fechada depois de `CLOSE_ALARM_ISSUE_AFTER_RUNS` limpos) —
+  // `"dedupe-new-occurrences-only"` reproduz a MESMA idempotência via o
+  // outcome da issue, em vez do `lastAlarmedAt` próprio.
+  if (newState.consecutiveStale >= CONSECUTIVE_STALE_THRESHOLD) {
+    const outcome = allFindingOutcomes.find((o) => o.check === "clarice-postmaster");
     if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+      const { subject, body } = buildPostmasterStaleAlarmEmail(newState, entry ? { date: entry.date } : null, issueRefs?.get("clarice-postmaster"));
+      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
-      await sendGmailMessage(to, subject, body);
-      newState = markAlarmed(newState, now);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (streak=${newState.consecutiveStale}).`);
+      const result = await notifyEditorForOutcomes(
+        outcome ? [outcome] : [],
+        "acao",
+        () => buildPostmasterStaleAlarmEmail(newState, entry ? { date: entry.date } : null, issueRefs?.get("clarice-postmaster")),
+        { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
+      );
+      if (result.qualifying.length === 0) {
+        console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário (staleness geral).`);
+      } else if (result.emailSent) {
+        // Marca alarmado só em envio CONFIRMADO — se o push falhar, não
+        // avança (mesmo racional do `sem try/catch` pré-#7960: um envio
+        // falho não pode ser tratado como "editor já avisado").
+        newState = markAlarmed(newState, now);
+        console.log(`${LOG_PREFIX} e-mail de alarme enviado (streak=${newState.consecutiveStale}).`);
+      } else {
+        console.error(`${LOG_PREFIX} falha ao enviar e-mail (staleness geral): ${result.emailError}`);
+      }
     }
   } else {
     console.log(`${LOG_PREFIX} nenhum e-mail (staleness geral) necessário.`);
   }
 
-  if (shouldAlarmCampaignSpamMissing(newCampaignSpamMissingState)) {
-    const { subject, body } = buildCampaignSpamMissingAlarmEmail(
-      newCampaignSpamMissingState,
-      issueRefs?.get("clarice-postmaster-campaign-spam"),
-    );
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+  if (newCampaignSpamMissingState.consecutiveMissing >= CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS) {
+    const outcome = allFindingOutcomes.find((o) => o.check === "clarice-postmaster-campaign-spam");
     if (isDryRun) {
-      console.log(
-        `${LOG_PREFIX} --dry-run: enviaria e-mail (campaignSpam ausente) pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`,
-      );
+      const { subject, body } = buildCampaignSpamMissingAlarmEmail(newCampaignSpamMissingState, issueRefs?.get("clarice-postmaster-campaign-spam"));
+      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail (campaignSpam ausente):\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
-      await sendGmailMessage(to, subject, body);
-      newCampaignSpamMissingState = markCampaignSpamMissingAlarmed(newCampaignSpamMissingState, now);
-      console.log(
-        `${LOG_PREFIX} e-mail de alarme (campaignSpam ausente) enviado pra ${to} (streak=${newCampaignSpamMissingState.consecutiveMissing}).`,
+      const result = await notifyEditorForOutcomes(
+        outcome ? [outcome] : [],
+        "acao",
+        () => buildCampaignSpamMissingAlarmEmail(newCampaignSpamMissingState, issueRefs?.get("clarice-postmaster-campaign-spam")),
+        { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
       );
+      if (result.qualifying.length === 0) {
+        console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário (campaignSpam ausente).`);
+      } else if (result.emailSent) {
+        newCampaignSpamMissingState = markCampaignSpamMissingAlarmed(newCampaignSpamMissingState, now);
+        console.log(`${LOG_PREFIX} e-mail de alarme (campaignSpam ausente) enviado (streak=${newCampaignSpamMissingState.consecutiveMissing}).`);
+      } else {
+        console.error(`${LOG_PREFIX} falha ao enviar e-mail (campaignSpam ausente): ${result.emailError}`);
+      }
     }
   } else {
     console.log(`${LOG_PREFIX} nenhum e-mail (campaignSpam ausente) necessário.`);

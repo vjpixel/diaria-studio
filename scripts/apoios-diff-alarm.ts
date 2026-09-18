@@ -53,7 +53,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
@@ -69,7 +69,6 @@ import {
 import {
   emptyApoiosDiffAlarmState,
   advanceState,
-  shouldAlarm,
   hasPendingDiff,
   computeDiffFingerprint,
   buildApoiosDiffAlarmEmail,
@@ -86,6 +85,7 @@ import {
   saveAlarmIssuesState,
   saveState,
   type AlarmFinding,
+  type AlarmFindingOutcome,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
 
@@ -284,6 +284,7 @@ async function main(): Promise<void> {
   const alarmFindings = hasPendingDiff(input) ? [toAlarmFinding(input)] : [];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
+  let findingOutcome: AlarmFindingOutcome | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -297,18 +298,18 @@ async function main(): Promise<void> {
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
-    const outcome = findingOutcomes[0];
-    if (outcome) {
-      issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    findingOutcome = findingOutcomes[0];
+    if (findingOutcome) {
+      issueRef = { issueNumber: findingOutcome.issueNumber, url: findingOutcome.url, action: findingOutcome.action, error: findingOutcome.error };
+      if (findingOutcome.action === "failed") {
+        console.error(`${LOG_PREFIX} issue não criada/reusada: ${findingOutcome.error}`);
       } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
+        console.log(`${LOG_PREFIX} issue #${findingOutcome.issueNumber} (${findingOutcome.action}): ${findingOutcome.url}`);
       }
     }
   }
 
-  if (shouldAlarm(state, input)) {
+  if (hasPendingDiff(input)) {
     // Self-review finding 5 (PR #4503): informa no e-mail quais remoções um
     // `--push` real recusaria — avaliado SEM os escape hatches
     // (`--allow-partial`/`--force-blast-radius`), o pior caso, já que este
@@ -329,18 +330,33 @@ async function main(): Promise<void> {
       blastRadiusBlocked: blastGuard.blocked,
       blastRadiusRatioPct: Math.round(blastGuard.ratio * 1000) / 10,
     };
-    const { subject, body } = buildApoiosDiffAlarmEmail(input, guardWarnings, issueRef);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
+      const { subject, body } = buildApoiosDiffAlarmEmail(input, guardWarnings, issueRef);
+      const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
       console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+      // #7960: e-mail decidido a partir do OUTCOME de `applyAlarmReconciliation`
+      // (`findingOutcome`, calculado acima), não mais do `shouldAlarm(state, input)`
+      // próprio — o fingerprint do finding É `computeDiffFingerprint(input)`, o
+      // MESMO que `shouldAlarm` comparava contra `lastAlarmedFingerprint`, então
+      // `"dedupe-new-occurrences-only"` reproduz a mesma idempotência (só reenvia
+      // quando o diff muda de conteúdo, ou reabre depois de resolvido).
+      const result = await notifyEditorForOutcomes(
+        findingOutcome ? [findingOutcome] : [],
+        "acao",
+        () => buildApoiosDiffAlarmEmail(input, guardWarnings, issueRef),
+        { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
+      );
+      if (result.qualifying.length === 0) {
+        console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário (diff já alarmado antes).`);
+      } else if (result.emailSent) {
+        console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+      } else {
+        console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
+      }
     }
   } else {
-    console.log(
-      `${LOG_PREFIX} nenhum e-mail necessário (sem diff pendente, ou o mesmo diff já foi alarmado antes).`,
-    );
+    console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem diff pendente).`);
   }
 
   if (isDryRun) {

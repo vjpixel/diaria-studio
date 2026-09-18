@@ -74,7 +74,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
 import {
@@ -84,7 +84,6 @@ import {
   findLatestPostUrl,
   hasHomeMetaDrift,
   computeHomeMetaFingerprint,
-  shouldAlarmHomeMetaDrift,
   advanceHomeMetaAlarmState,
   emptyHomeMetaAlarmState,
   buildHomeMetaDriftAlarmEmail,
@@ -102,6 +101,7 @@ import {
   saveAlarmIssuesState,
   saveState,
   type AlarmFinding,
+  type AlarmFindingOutcome,
   type AlarmIssuesState,
   type AlarmPriority,
   type AlarmAllowlist,
@@ -386,6 +386,7 @@ async function main(): Promise<void> {
     buildAggregate: (_group, groupFindings) => buildAggregatedHomeMetaFinding(groupFindings),
   });
   let issueRefs: Map<string, HomeMetaFindingIssueRef> | undefined;
+  let allFindingOutcomes: AlarmFindingOutcome[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS, ALARM_ALLOWLIST);
@@ -400,6 +401,7 @@ async function main(): Promise<void> {
       allowlist: ALARM_ALLOWLIST,
     });
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+    allFindingOutcomes = findingOutcomes;
     issueRefs = new Map(
       findingOutcomes.map((o) => [
         o.fingerprint,
@@ -422,22 +424,35 @@ async function main(): Promise<void> {
       `(última checagem: ${state.lastCheckedAt ?? "nunca"}).`,
   );
 
-  if (shouldAlarmHomeMetaDrift(state, findings)) {
-    const { subject, body } = buildHomeMetaDriftAlarmEmail(findings, extract, HOME_URL, issueRefs);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-    if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+  if (isDryRun) {
+    if (pending) {
+      const { subject, body } = buildHomeMetaDriftAlarmEmail(findings, extract, HOME_URL, issueRefs);
+      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH)}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
-      // Mesmo racional de hub-drift-check.ts/worker-drift-check.ts: sem
-      // try/catch — se o envio falhar, o cursor abaixo não avança (aborta
-      // antes do saveState), então a próxima execução tenta alarmar de novo
-      // em vez de marcar este drift como "já avisado" sem o editor ter
-      // recebido nada.
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+      console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem drift pendente).`);
+    }
+  } else if (pending) {
+    // #7960: `shouldAlarmHomeMetaDrift(state, findings)` gateava por
+    // `computeHomeMetaFingerprint(findings) !== state.lastAlarmedFingerprint`
+    // (fingerprint AGREGADO do conjunto de achados) — `"dedupe-new-occurrences-only"`
+    // aplicado a TODOS os outcomes desta rodada reproduz a mesma idempotência
+    // por outro caminho: só reenvia quando pelo menos 1 achado é genuinamente
+    // NOVO (issue `created`/`reopened`), nunca quando todos seguem `reused`.
+    const result = await notifyEditorForOutcomes(
+      allFindingOutcomes,
+      "acao",
+      () => buildHomeMetaDriftAlarmEmail(findings, extract, HOME_URL, issueRefs),
+      { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
+    );
+    if (result.qualifying.length === 0) {
+      console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário (drift já alarmado antes).`);
+    } else if (result.emailSent) {
+      console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+    } else {
+      console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
     }
   } else {
-    console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem drift pendente, ou o mesmo drift já foi alarmado antes).`);
+    console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem drift pendente).`);
   }
 
   if (isDryRun) {

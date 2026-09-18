@@ -52,14 +52,13 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getStringArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { discoverWorkerPublicHosts } from "./lib/worker-public-hosts.ts";
 import {
   evaluateAllRobotsDrift,
   hasPendingRobotsDrift,
   computeRobotsDriftFingerprint,
-  shouldAlarmRobotsDrift,
   advanceRobotsDriftState,
   emptyRobotsDriftAlarmState,
   buildRobotsDriftAlarmEmail,
@@ -76,6 +75,7 @@ import {
   saveAlarmIssuesState,
   saveState,
   type AlarmFinding,
+  type AlarmFindingOutcome,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
 
@@ -232,6 +232,7 @@ async function main(): Promise<void> {
   const alarmFindings = driftedResults.map(toAlarmFinding);
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
+  let allFindingOutcomes: AlarmFindingOutcome[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -245,6 +246,7 @@ async function main(): Promise<void> {
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+    allFindingOutcomes = findingOutcomes;
     issueRefs = new Map(
       findingOutcomes.map((o) => [
         o.fingerprint,
@@ -260,22 +262,34 @@ async function main(): Promise<void> {
     }
   }
 
-  if (shouldAlarmRobotsDrift(state, results)) {
-    const { subject, body } = buildRobotsDriftAlarmEmail(results, new Date(), issueRefs);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-    if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+  if (isDryRun) {
+    if (pending) {
+      const { subject, body } = buildRobotsDriftAlarmEmail(results, new Date(), issueRefs);
+      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH)}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
-      // Sem try/catch — mesmo racional de hub-drift-check.ts/
-      // apoios-diff-alarm.ts: se o envio falhar, o cursor abaixo não avança
-      // (aborta antes do saveState), então a próxima execução tenta
-      // alarmar de novo em vez de marcar este drift como "já avisado" sem
-      // o editor ter recebido nada.
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+      console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem drift pendente).`);
+    }
+  } else if (pending) {
+    // #7960: `shouldAlarmRobotsDrift(state, results)` gateava por
+    // `computeRobotsDriftFingerprint(results) !== state.lastAlarmedFingerprint`
+    // (fingerprint AGREGADO) — `"dedupe-new-occurrences-only"` sobre TODOS os
+    // outcomes reproduz a idempotência: só reenvia quando ao menos 1 host é
+    // genuinamente NOVO (issue `created`/`reopened`).
+    const result = await notifyEditorForOutcomes(
+      allFindingOutcomes,
+      "acao",
+      () => buildRobotsDriftAlarmEmail(results, new Date(), issueRefs),
+      { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
+    );
+    if (result.qualifying.length === 0) {
+      console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário (drift já alarmado antes).`);
+    } else if (result.emailSent) {
+      console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+    } else {
+      console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
     }
   } else {
-    console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem drift pendente, ou o mesmo drift já foi alarmado antes).`);
+    console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem drift pendente).`);
   }
 
   if (isDryRun) {

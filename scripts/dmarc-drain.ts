@@ -92,8 +92,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { gFetch } from "./google-auth.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { parseGmailThreadsList } from "./lib/schemas/gmail.ts";
 import {
   unwrapDmarcAttachment,
@@ -468,19 +467,25 @@ async function main(): Promise<void> {
     }
   }
 
-  const opened = findingOutcomes.filter((r) => r.action === "created" || r.action === "reopened");
-  if (opened.length > 0) {
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-    const subject = `[diar.ia.br] DMARC: volume não-autenticado em ${opened.length} domínio(s)`;
-    const body = `${renderDmarcSummaryText(summaries)}\n\nIssues: ${opened.map((r) => r.url).join(", ")}`;
-    try {
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado para ${to}`);
-    } catch (e) {
-      console.error(`${LOG_PREFIX} falha ao enviar e-mail de alarme (issue já registrada, e-mail é best-effort): ${(e as Error).message}`);
-    }
-  } else {
+  // #7960: o filtro `created`/`reopened` já era a idempotência do script —
+  // `"dedupe-new-occurrences-only"` é a mesma regra, agora decidida dentro
+  // do portão (best-effort preservado: `notifyEditorForOutcomes` nunca
+  // lança, a issue já está registrada de qualquer forma).
+  const notifyResult = await notifyEditorForOutcomes(
+    findingOutcomes,
+    "acao",
+    (qualifying) => ({
+      subject: `[diar.ia.br] DMARC: volume não-autenticado em ${qualifying.length} domínio(s)`,
+      body: `${renderDmarcSummaryText(summaries)}\n\nIssues: ${qualifying.map((r) => r.url).join(", ")}`,
+    }),
+    { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
+  );
+  if (notifyResult.qualifying.length === 0) {
     console.log(`${LOG_PREFIX} sem achado novo pra alarmar.`);
+  } else if (notifyResult.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail de alarme (issue já registrada, e-mail é best-effort): ${notifyResult.emailError}`);
   }
 }
 
