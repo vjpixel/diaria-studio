@@ -174,14 +174,42 @@ describe("workers/site/public — robots.txt + sitemap.xml (guard de regressão,
     assert.match(body, /Sitemap: https:\/\/diar\.ia\.br\/sitemap\.xml/);
   });
 
+  /**
+   * Páginas ESTÁTICAS conhecidas que legitimamente vivem no sitemap fora do
+   * padrão `/p/{slug}` (edições) — allowlist pequena e explícita, não um
+   * "aceita qualquer coisa" que esvaziaria a garantia que este teste existe
+   * pra dar. Toda entrada fora de `/p/` PRECISA estar aqui por nome; o que
+   * este teste continua travando é que TODA entrada — `/p/` ou estática —
+   * é uma URL bem formada do host `diar.ia.br`, e que a esmagadora maioria
+   * (o acervo de edições) segue no formato `/p/{slug}`.
+   *
+   * `/clarice` entrou no #8338 (página dedicada de cupom, otimizada pra
+   * busca orgânica) — 1ª página estática do sitemap desde a criação deste
+   * teste (#6359), que assumia até então que só `/p/` existia ali.
+   */
+  const KNOWN_STATIC_SITEMAP_PATHS = new Set(["https://diar.ia.br/clarice"]);
+
   it("sitemap.xml existe e é XML válido com ao menos 1 <loc> de /p/{slug}", () => {
     assert.ok(existsSync(sitemapPath), `${sitemapPath} ausente`);
     const xml = readFileSync(sitemapPath, "utf8");
     const entries = parseSitemap(xml);
     assert.ok(entries.length > 0, "sitemap.xml não tem nenhuma <url>");
+    const pEntries = entries.filter((e) => !KNOWN_STATIC_SITEMAP_PATHS.has(e.loc));
+    assert.ok(pEntries.length > 0, "sitemap.xml não tem nenhuma entrada /p/{slug} (só estáticas?)");
     assert.ok(
-      entries.every((e) => /^https:\/\/diar\.ia\.br\/p\/[^/]+$/.test(e.loc)),
-      "toda entrada do sitemap deveria ser https://diar.ia.br/p/{slug}",
+      pEntries.every((e) => /^https:\/\/diar\.ia\.br\/p\/[^/]+$/.test(e.loc)),
+      "toda entrada NÃO listada em KNOWN_STATIC_SITEMAP_PATHS deveria ser https://diar.ia.br/p/{slug}",
+    );
+    // Entrada estática desconhecida (não é /p/{slug} nem está na allowlist)
+    // continua reprovando — o objetivo da allowlist é nomear exceções
+    // conhecidas, nunca abrir a asserção pra qualquer formato.
+    const unknownEntries = entries.filter(
+      (e) => !/^https:\/\/diar\.ia\.br\/p\/[^/]+$/.test(e.loc) && !KNOWN_STATIC_SITEMAP_PATHS.has(e.loc),
+    );
+    assert.deepEqual(
+      unknownEntries.map((e) => e.loc),
+      [],
+      "entrada de sitemap fora do padrão /p/{slug} e fora de KNOWN_STATIC_SITEMAP_PATHS — adicione à allowlist explicitamente (ou é regressão real)",
     );
   });
 });
