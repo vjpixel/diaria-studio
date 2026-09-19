@@ -142,6 +142,7 @@ import { sendCompleteRegistrationEvent, logMetaCapiSendResult } from "../../../s
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { resolveKitCreateState, vincularKitDoiForm, extrairSubscriberId, mensagemSubscriberIdAusente } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
 import { verifyReativarToken } from "../../../scripts/lib/shared/reativar-token.ts"; // #8194
+import { REATIVAR_CONFIRMOU_VIA_VALUE } from "../../../scripts/lib/shared/reativar-confirmou-via.ts"; // #8438
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -237,6 +238,18 @@ export interface Env {
    *  var pra ligar. Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD`
    *  acima. */
   KIT_ORIGEM_CADASTRO_FIELD?: string;
+  /**
+   * #8438 — nome do custom field Kit (`confirmou_via`) onde o worker grava
+   * `REATIVAR_CONFIRMOU_VIA_VALUE` ("brevo-reativar") SEMPRE que o clique chega
+   * com token válido (#8194) — independente de origem de aquisição. É o único
+   * sinal MEDÍVEL de "clicou no botão" pra quem entrou por google-ads/clarice/
+   * diaria-apex (a UTM de reativação só carimba campos VAZIOS, #8235).
+   * VAR, não secret (mesmo tratamento dos demais `KIT_*_FIELD` acima — nome de
+   * custom field não é sensível). Ausente = field NUNCA é escrito, e
+   * `evaluate-brevo-diaria.ts` Passo 1 lê como vazio → comportamento de hoje
+   * (`self_confirmed_kit`/`self_confirmed_beehiiv`). Mesmo degrade gracioso
+   * dos demais `KIT_*_FIELD`. */
+  KIT_CONFIRMOU_VIA_FIELD?: string;
   /**
    * #7524 (lado OUTGOING do Kit Creator Network, follow-up do #6674) —
    * URL do widget de recomendações da Kit (`https://{subdomínio}.kit.com/profile/recommendations`,
@@ -772,6 +785,27 @@ export async function activateSubscriptionKit(
   // desta função pra essa limitação conhecida (achado do fleet review,
   // #6127) e o log estruturado que sinaliza quando isso acontece.
   applyKitSignupOriginField(desired, env);
+
+  // #8438: sinal MEDÍVEL de "clicou no botão de confirmar" — escrito SEMPRE
+  // que o clique chegou com token válido (#8194), independente de origem de
+  // aquisição. Diferente das UTM de reativação (que o #8235 proibe de
+  // sobrescrever origem já preenchida), este field é ORTEGONAL à origem: quem
+  // entrou por google-ads/clarice/diaria-apex já tem utm_source gravado, então
+  // o clique NUNCA carimba a origem — e aí o fato de "clicou" era
+  // indistinguível de "quem era esse contato antes". Com este field, o
+  // `evaluate-brevo-diaria.ts` Passo 1 lê `confirmou_via` e refinamento o
+  // `resolution_reason` pra `self_confirmed_kit_botao`.
+  //
+  // Fail-soft: sem `KIT_CONFIRMOU_VIA_FIELD` configurado, o field NUNCA é
+  // escrito — o evaluate lê como vazio e o comportamento de hoje é
+  // preservado (`self_confirmed_kit`/`self_confirmed_beehiiv`). O `via` é
+  // condicional a `confirmedByToken`: no caminho DOI (sem token) NINGUÉM
+  // clicou no botão de fato, então não há o que medir — e escrever o field
+  // ali seria um falso positivo (o evaluate veria "botão" pra quem só
+  // recebeu o e-mail de DOI e ainda não clicou).
+  if (confirmedByToken && env.KIT_CONFIRMOU_VIA_FIELD) {
+    desired[env.KIT_CONFIRMOU_VIA_FIELD] = REATIVAR_CONFIRMOU_VIA_VALUE;
+  }
 
   // #8235: assinante que já existe → lê os campos atuais pelo GET SINGULAR
   // (o endpoint de lista pode servir `fields` defasado) e nunca sobrescreve
