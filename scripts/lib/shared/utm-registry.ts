@@ -2230,8 +2230,23 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
       "confirmado ao vivo). `utm_source=microsoft-ads` compartilhado com a " +
       "PMax (`ads-microsoft-2608` acima) — o braço soma as duas no relatório " +
       "de gasto e no `CHANNEL_KEY_SPECS`; só o `campaign` distingue qual " +
-      "anúncio gerou o cadastro.",
-    status: "ativo",
+      "anúncio gerou o cadastro. " +
+      "PAUSADA no painel em 19/09/2026 (campanha 571615527 → `Paused` via " +
+      "UpdateCampaigns, confirmado por releitura): R$ 656,34 gastos, 77 " +
+      "cliques a CPC R$ 8,52, ZERO cadastros. A atribuição foi verificada ao " +
+      "vivo antes da pausa e está INTACTA — o Final URL do ad traz o " +
+      "`utm_campaign` acima e o braço casa por `utm_source`, então um " +
+      "cadastro da Search teria entrado; o zero é real, não UTM dropado. " +
+      "`aposentado` aqui significa só 'não emite tráfego novo' (mesma " +
+      "semântica de `mensal-apoiadores-brevo`): os 77 cliques históricos " +
+      "seguem válidos sob este `utm_campaign`, e despausar a campanha no " +
+      "painel é o gatilho pra voltar este campo a `ativo`.",
+    // `aposentado` e não `ativo` porque a campanha está pausada: manter
+    // `ativo` faria `computeDrift` acusar `sem_conversao` ("link quebrado,
+    // posição morta, ou UTM dropado") toda rodada — justamente a hipótese
+    // que a verificação ao vivo de 19/09 descartou. Vocabulário é fechado
+    // (`ativo` | `aposentado`), não há valor "pausado".
+    status: "aposentado",
     // edicoes.jsonl linha 3 (2026-09-06T20:07:58Z / 17:07:58 BRT): criação da
     // campanha já com este utm_campaign. Confirmado ao vivo em 18/09/2026
     // (#8256) que o valor segue live no Final URL do ad.
