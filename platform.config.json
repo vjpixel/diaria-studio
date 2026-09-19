@@ -143,6 +143,13 @@
     "enabled": false,
     "note": "#4505 item 3 — critic pass opcional (subagente social-critic) sobre 03-social.md final no Stage 4, antes do gate humano. Default desligado (custo extra de Sonnet por edição); ativar setando enabled:true. Ver scripts/run-social-critic.ts e .claude/agents/social-critic.md."
   },
+  "editorial_exploration": {
+    "enabled": true,
+    "slots_per_week": 4,
+    "affinity_max": 0.1,
+    "score_gap_pts": 8,
+    "note": "#8370 Peça 2 — cota SEMANAL de exploração no scorer (epsilon-greedy manual). N = 3-4 destaques/semana é decisão do editor registrada na #8370 (briefing overnight 260918c); 4 é a ponta agressiva que ele escolheu, revisável pra baixo se o CTR de exploração cair abaixo do resto na série da Peça 3 (scripts/measure-editorial-concentration.ts). A cota marca no máximo 1 destaque por edição (por construção — não há knob por edição, quem quiser mais sobe slots_per_week). affinity_max = teto de audience_affinity que caracteriza sinal exógeno; score_gap_pts = quantos pontos abaixo do destaque mais fraco do dia um candidato ainda conta como competitivo. Mecanismo: scripts/lib/exploration-quota.ts + backstop em scripts/assemble-scored.ts."
+  },
   "semantic_tiebreaker": {
     "enabled": true,
     "note": "#8211 — classificador semântico externo (TypeSafe, modelo jev-latest) como tie-breaker SÓ do fallback do categorizador (lancamento-default/noticias-default, 77% do corpus, único ponto com erro medido na #5995 — as regras fortes não erraram uma vez). Composto com #160 (isOfficialLancamentoUrl): veredito lancamento só vale em URL de domínio oficial. Default LIGADO (decisão do editor, 17/09/2026) — fail-soft obrigatório: TYPESAFE_API_KEY ausente ou API indisponível cai no comportamento de hoje sem travar o Stage 1, log em data/run-log.jsonl. Contrato da API confirmado contra produção em #8219 (17/09/2026) — ver o topo de scripts/lib/semantic-tiebreaker.ts pro shape. Desligar (enabled:false) é a saída rápida se o classificador degradar ou o vendor sumir."

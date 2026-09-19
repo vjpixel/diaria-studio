@@ -17,7 +17,8 @@
  *   npx tsx scripts/assemble-scored.ts \
  *     --selection data/editions/{AAMMDD}/_internal/tmp-selection.json \
  *     --allscored data/editions/{AAMMDD}/_internal/tmp-allscored.json \
- *     --out data/editions/{AAMMDD}/_internal/tmp-scored.json
+ *     --out data/editions/{AAMMDD}/_internal/tmp-scored.json \
+ *     --edition {AAMMDD}
  *
  * Output stdout: JSON { highlights, runners_up, all_scored } counts.
  */
@@ -27,8 +28,26 @@ import { resolve } from "node:path";
 import type { ScorePair } from "./merge-scored-chunks.ts";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { ensureNegativeImpactHighlight, type FinalistLike } from "./lib/negative-impact-promotion.ts"; // #3916, #3918
-import { demotePlaceholderTitleHighlights, type PlaceholderDemotion } from "./lib/placeholder-title-guard.ts"; // #4102
+import {
+  demotePlaceholderTitleHighlights,
+  isPlaceholderHighlightTitle,
+  type PlaceholderDemotion,
+} from "./lib/placeholder-title-guard.ts"; // #4102
 import { reconcileClusterSources, type ClusterSourcesRestoration } from "./lib/cluster-sources-backstop.ts"; // #4838
+import { annotateAudienceAffinity, loadAudienceSignals, type AudienceSignals } from "./lib/audience-affinity.ts"; // #2063
+import {
+  applyExplorationQuota,
+  countWeekUsage,
+  explorationWeekOfEdition,
+  loadExplorationConfig,
+  readExplorationState,
+  recordExplorationDecision,
+  writeExplorationState,
+  clearExploracaoFlags,
+  EXPLORATION_STATE_RELATIVE_PATH,
+  type ExplorationFinalistLike,
+  type ExplorationPromotion,
+} from "./lib/exploration-quota.ts"; // #8370 Peça 2
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -74,6 +93,10 @@ export interface AssembledOutput {
   // ≥1 highlight a partir do finalist correspondente (scorer-select não
   // preservou o campo ao copiar o article).
   cluster_sources_restored?: ClusterSourcesRestoration[];
+  // #8370 Peça 2: presente só quando a cota semanal de exploração marcou um
+  // destaque `exploracao: true` nesta edição (promovendo do pool ou
+  // reconhecendo um item exógeno já selecionado por mérito).
+  exploracao_promoted?: ExplorationPromotion;
 }
 
 /**
@@ -167,6 +190,164 @@ export function applyClusterSourcesBackstop(
   };
 }
 
+export interface ExplorationBackstopDeps {
+  /** Raiz do repo (default: a raiz resolvida deste script). */
+  rootDir?: string;
+  /** Sinais de audiência já carregados — injetáveis pra teste. */
+  signals?: AudienceSignals;
+  /** Path do estado da cota (default: `data/exploration-quota.json`). */
+  statePath?: string;
+  now?: Date;
+  /** Log de diagnóstico (default: `console.error`). */
+  log?: (msg: string) => void;
+}
+
+/**
+ * #8370 Peça 2 — cota SEMANAL de exploração. Roda por último, depois dos 3
+ * backstops acima: os outros decidem QUAIS destaques a edição tem por regra
+ * editorial já estabelecida (impacto negativo, título placeholder, cluster
+ * sources); este decide se um dos slots do dia vai para um item de sinal
+ * EXÓGENO (afinidade abaixo do teto = nunca exibido antes, CTR indefinido) em
+ * vez de para mais um item que o loop de reforço já favorece.
+ *
+ * Rodar por último é deliberado: a cota compara o candidato exógeno contra o
+ * destaque mais fraco do dia, e esse conjunto só está estável depois que a
+ * promoção de impacto negativo e a demoção de título placeholder já
+ * aconteceram. Rodar antes compararia contra uma seleção que ainda ia mudar.
+ *
+ * Fail-soft em todas as bordas: sem `data/` (worktree, CI) os sinais de
+ * audiência não carregam, `affinityOf` devolve `null` pra tudo e a cota vira
+ * no-op sem registrar nada — nunca marca `exploracao` sem sinal que sustente
+ * a marcação, e nunca derruba o Stage 1.
+ */
+export function applyExplorationQuotaBackstop(
+  assembled: AssembledOutput,
+  finalists: FinalistLike[],
+  edition: string,
+  deps: ExplorationBackstopDeps = {},
+): AssembledOutput {
+  const rootDir = deps.rootDir ?? ROOT;
+  const log = deps.log ?? ((msg: string) => console.error(msg));
+
+  /**
+   * Toda saída sem decisão devolve os highlights SEM `exploracao`. O
+   * `scorer-select` pode ter marcado o campo por conta própria (o prompt pede
+   * isso) — deixá-lo passar quando a cota não rodou produziria um destaque
+   * marcado que nenhum slot debitou, e a série da Peça 3 contaria uma
+   * exploração que a cota semanal nunca viu.
+   */
+  const withoutFlags = (): AssembledOutput => {
+    const highlights = clearExploracaoFlags(assembled.highlights);
+    return highlights === assembled.highlights ? assembled : { ...assembled, highlights };
+  };
+
+  const week = explorationWeekOfEdition(edition);
+  if (!week) {
+    log(`[assemble-scored] cota de exploração pulada: edição "${edition}" não é um AAMMDD válido (#8370)`);
+    return withoutFlags();
+  }
+
+  const config = loadExplorationConfig(rootDir, log);
+  if (!config.enabled) return withoutFlags();
+
+  const signals = deps.signals ?? loadAudienceSignals(rootDir);
+  if (!signals.loaded) {
+    log(
+      "[assemble-scored] cota de exploração pulada: sinais de audiência indisponíveis " +
+        "(sem data/link-ctr-table.csv) — nenhuma edição marcada (#8370)",
+    );
+    return withoutFlags();
+  }
+
+  const affinityCache = new Map<string, number | null>();
+  const affinityOf = (item: { url?: string; article?: { url?: string } | undefined }): number | null => {
+    const article = (item.article ?? {}) as { url?: string; title?: string; summary?: string; category?: string };
+    const key = item.url ?? article.url ?? "";
+    if (affinityCache.has(key)) return affinityCache.get(key) ?? null;
+    const affinity = annotateAudienceAffinity(article, signals)?.affinity ?? null;
+    affinityCache.set(key, affinity);
+    return affinity;
+  };
+
+  const statePath = deps.statePath ?? resolve(rootDir, EXPLORATION_STATE_RELATIVE_PATH);
+  const read = readExplorationState(statePath);
+  if (read.corrupted) {
+    // Contador perdido ≠ contador zerado. Seguir com estado vazio daria à
+    // semana N slots extras em silêncio — exatamente o cap editorial que a
+    // #8370 existe pra respeitar. E não sobrescrever: o arquivo pode ser
+    // recuperável (conflito de sync do OneDrive), e regravá-lo aqui apagaria
+    // o registro das outras edições da semana junto.
+    log(
+      `[assemble-scored] cota de exploração PULADA: ${statePath} existe mas não deu pra ler ` +
+        `(${read.error ?? "erro desconhecido"}) — o contador semanal está perdido, então esta edição ` +
+        "não marca exploração nem regrava o arquivo. Restaure/apague o arquivo à mão (#8370).",
+    );
+    return withoutFlags();
+  }
+  const state = read.state;
+  // A própria edição sai da conta: re-rodar o Stage 1 dela (resume) tem que
+  // reproduzir a mesma decisão, não ler a si mesma como consumo alheio.
+  const weekUsageBefore = countWeekUsage(state, week, edition);
+
+  const result = applyExplorationQuota(assembled.highlights, finalists as ExplorationFinalistLike[], {
+    config,
+    week,
+    weekUsageBefore,
+    affinityOf,
+    // Título placeholder nunca vira destaque (#4102) — a cota não é brecha.
+    isEligibleCandidate: (f) => !isPlaceholderHighlightTitle(f.article?.title as string | undefined),
+  });
+
+  const decidedAt = (deps.now ?? new Date()).toISOString();
+  const nextState = recordExplorationDecision(
+    state,
+    edition,
+    result.promotion
+      ? {
+          week,
+          exploracao: true,
+          url: result.promotion.promoted_url,
+          origin: result.promotion.origin,
+          decided_at: decidedAt,
+        }
+      : { week, exploracao: false, decided_at: decidedAt },
+  );
+  if (!writeExplorationState(statePath, nextState)) {
+    log(
+      `[assemble-scored] cota de exploração: estado NÃO persistido (${statePath} — data/ ausente neste ` +
+        "checkout); a decisão desta edição vale, mas não conta pra semana (#8370)",
+    );
+  }
+
+  if (!result.promotion) {
+    log(`[assemble-scored] cota de exploração sem promoção nesta edição: ${result.skipped ?? "sem motivo registrado"} (#8370)`);
+    // `result.highlights` aqui já vem sem marca de `exploracao` (a cota limpa
+    // a marca do agent quando não debita slot) — devolver `assembled` cru
+    // deixaria passar justamente o que o registro acabou de dizer que não
+    // houve.
+    return { ...assembled, highlights: result.highlights };
+  }
+
+  log(
+    `[assemble-scored] cota de exploração marcou ${result.promotion.promoted_url} como exploracao:true ` +
+      `(${result.promotion.origin}, slot ${weekUsageBefore + 1}/${config.slotsPerWeek} de ${week})` +
+      (result.promotion.demoted_url ? ` — demoveu ${result.promotion.demoted_url}` : "") +
+      " (#8370 Peça 2)",
+  );
+
+  return { ...assembled, highlights: result.highlights, exploracao_promoted: result.promotion };
+}
+
+/**
+ * Deriva o `AAMMDD` do path de saída (`data/editions/260919/_internal/...`).
+ * `null` quando o path não segue a convenção — o caller então pula a cota em
+ * vez de inventar uma edição.
+ */
+export function editionFromPath(path: string): string | null {
+  const m = /editions[/\\](\d{6})[/\\]/.exec(path);
+  return m ? m[1] : null;
+}
+
 export function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const selectionPath = args.selection;
@@ -176,7 +357,7 @@ export function main(): void {
 
   if (!selectionPath || !allscoredPath || !outPath) {
     console.error(
-      "Uso: assemble-scored.ts --selection <tmp-selection.json> --allscored <tmp-allscored.json> --out <tmp-scored.json> [--finalists <tmp-finalists.json>]",
+      "Uso: assemble-scored.ts --selection <tmp-selection.json> --allscored <tmp-allscored.json> --out <tmp-scored.json> [--finalists <tmp-finalists.json>] [--edition AAMMDD]",
     );
     process.exit(1);
   }
@@ -231,6 +412,28 @@ export function main(): void {
         );
       }
     }
+
+    // #8370 Peça 2: por último — ver doc de applyExplorationQuotaBackstop.
+    const edition = (args.edition as string | undefined) ?? editionFromPath(outPath);
+    if (edition) {
+      assembled = applyExplorationQuotaBackstop(assembled, finalists, edition);
+    } else {
+      console.error(
+        "[assemble-scored] cota de exploração pulada: edição não informada (--edition) nem derivável do " +
+          `--out ("${outPath}") (#8370)`,
+      );
+    }
+  } else {
+    // Caminho 1q-fallback / single-call: sem `tmp-finalists.json` os 4
+    // backstops inteiros não rodam (comportamento pré-existente). Pra cota de
+    // exploração isso significa que a edição não deixa registro NENHUM em
+    // `data/exploration-quota.json` — nem `exploracao: false` — e quem for
+    // auditar o arquivo por data vai achar um buraco. Dizer isso em voz alta
+    // é mais barato que explicar o buraco depois (#8370).
+    console.error(
+      "[assemble-scored] cota de exploração não rodou nesta edição: --finalists ausente " +
+        "(caminho single-call/1q-fallback) — sem registro em data/exploration-quota.json (#8370)",
+    );
   }
 
   writeFileSync(resolve(ROOT, outPath), JSON.stringify(assembled, null, 2), "utf8");
@@ -243,6 +446,7 @@ export function main(): void {
       ...(assembled.negative_impact_promoted ? { negative_impact_promoted: true } : {}),
       ...(assembled.placeholder_title_demoted ? { placeholder_title_demoted: assembled.placeholder_title_demoted.length } : {}),
       ...(assembled.cluster_sources_restored ? { cluster_sources_restored: assembled.cluster_sources_restored.length } : {}),
+      ...(assembled.exploracao_promoted ? { exploracao_promoted: true } : {}),
     }) + "\n",
   );
 }

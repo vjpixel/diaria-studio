@@ -87,17 +87,22 @@
  *   Opus 5, Gemini) — correlação com o loop de reforço do scorer, não prova
  *   de causa.
  *
- * ## `exploracao`/CTR — degradação graciosa (Peça 2 ainda não existe)
+ * ## `exploracao`/CTR — fonte e degradação graciosa
  *
- * O campo `exploracao` nasce só com a Peça 2 (cota de exploração no
- * scorer), que depende de decisão editorial (N slots/semana) fora de
- * escopo desta PR. Nenhuma fonte no repo hoje marca um item como
- * `exploracao` (grep confirmado nesta PR) — as páginas estáticas do acervo
- * também não carregam esse metadado. `computeExploracaoSignal` sempre
- * retorna `null` até que exista uma fonte real; o parâmetro `flags` já
- * aceita um mapa slug→boolean pronto pra quando a Peça 2 landar (ex: lendo
- * `_internal/02-scored.json` por edição, ou um campo equivalente
- * replicado pro acervo estático).
+ * O campo `exploracao` nasceu com a **Peça 2** (#8370, cota semanal de
+ * exploração no scorer, N = 3-4/semana por decisão do editor). A fonte é
+ * `data/exploration-quota.json`, escrito por `assemble-scored.ts` a cada
+ * edição; `explorationFlagsBySlug` (`exploration-quota.ts`) converte o
+ * registro por edição no `Map<slug, boolean>` que `aggregateByMonth` aceita
+ * aqui, fazendo o join pela data editorial do próprio `sitemap.xml`.
+ *
+ * Quando o mapa vem vazio — `data/` ausente (worktree isolado, clone
+ * fresco), ou meses anteriores à Peça 2 — `exploracaoPct` volta a sair
+ * `null` em vez de `0`: "não medido" e "medido e deu zero" são estados
+ * diferentes, e um `0%` falso em set/2025 faria a série mentir sobre o
+ * baseline. **CTR real continua sem fonte** (`ctrBySlug` vazio →
+ * `exploracaoCtr`/`restCtr` `null`); é a peça que falta pra fechar o
+ * critério "se o CTR de exploração for competitivo, a cota pode subir".
  */
 
 export interface PageSignal {
@@ -121,7 +126,7 @@ export interface MonthlyConcentrationRow {
   brasilCount: number;
   bigTechPct: number;
   brasilPct: number;
-  /** `null` — Peça 2 (campo `exploracao`) ainda não existe em nenhuma fonte. */
+  /** `null` quando nenhuma edição do mês tem registro de cota (#8370 Peça 2). */
   exploracaoPct: number | null;
   exploracaoCtr: number | null;
   restCtr: number | null;
