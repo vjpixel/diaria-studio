@@ -176,8 +176,16 @@ echo "[daily-review] concluído — marco avançado para $HEAD_SHA" >&2
 # "está tudo bem" a partir de um resumo que não deu pra ler — silêncio ali
 # seria indistinguível de um dia limpo. Dia limpo de verdade: silêncio.
 RESUMO=$(command grep -m1 "RESUMO-DAILY-REVIEW:" "$OUT_FILE" || true)
-FINDINGS=$(printf '%s' "$RESUMO" | command grep -oE 'findings=[0-9]+' | head -1 | cut -d= -f2)
-ISSUES_FALHARAM=$(printf '%s' "$RESUMO" | command grep -oE 'issues_falharam=[0-9]+' | head -1 | cut -d= -f2)
+# `|| true` nos DOIS (achado P0 do review da #8454): o script roda sob
+# `set -euo pipefail`, e um `grep` sem match sai 1 — que o `pipefail`
+# propaga pro status da substituição e o `set -e` transforma em abort
+# IMEDIATO da atribuição. Sem isso, um resumo sem `findings=` (desvio de
+# formatação do Opus — exatamente o caso pro qual o ramo "não pôde ser
+# lido" abaixo foi escrito) matava o script ANTES de chegar nele, com
+# stdout vazio: o único cenário que a política manda sempre avisar virava
+# justo o silencioso. Reproduzido ao vivo no review.
+FINDINGS=$(printf '%s' "$RESUMO" | command grep -oE 'findings=[0-9]+' | head -1 | cut -d= -f2 || true)
+ISSUES_FALHARAM=$(printf '%s' "$RESUMO" | command grep -oE 'issues_falharam=[0-9]+' | head -1 | cut -d= -f2 || true)
 
 if [ -z "$FINDINGS" ] || [ -z "$ISSUES_FALHARAM" ]; then
   echo "[daily-review] resumo do dia não pôde ser lido (findings/issues_falharam ausentes) — transcript em $OUT_FILE"

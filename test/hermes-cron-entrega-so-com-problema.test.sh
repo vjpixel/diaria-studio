@@ -132,25 +132,127 @@ assert_true \
   "watch: as linhas que SOBRARAM em stderr são anomalias, nunca 'ok' — o alerta de FAILS>0 carrega o stderr inteiro" \
   "$(grep -E '^[[:space:]]*echo "\[watch\]' "$WATCH" | grep '>&2' | grep -qE ' ok[ )\"]' && echo 0 || echo 1)"
 assert_true \
+  "watch: INDETERMINADO/falha segue em stderr, não demovido pro log junto com as linhas 'ok' (P3 do review da #8454)" \
+  "$(grep -c 'echo "\[watch\].*INDETERMINADO' "$WATCH" | grep -qvx 0 && echo 1 || echo 0)"
+assert_true \
+  "watch: \$WATCH_LOG tem teto de tamanho (P3 do review da #8454: note() escreve ~30 linhas/dia pra sempre)" \
+  "$(grep -q 'WATCH_LOG_MAX_LINES' "$WATCH" && echo 1 || echo 0)"
+assert_true \
   "watch: file_issue conta a issue criada (senão o stdout final nunca dispara)" \
   "$(grep -q 'ISSUES_CREATED=\$((ISSUES_CREATED + 1))' "$WATCH" && echo 1 || echo 0)"
 assert_true \
   "watch: exit honesto preservado — FAILS>0 ainda sai 1 (#6469, P2)" \
   "$(grep -q '\[ "\$FAILS" -eq 0 \] || exit 1' "$WATCH" && echo 1 || echo 0)"
 
-# ── opus-daily-diff-review.sh ───────────────────────────────────────────────
+# ── opus-daily-diff-review.sh: bloco de entrega executado de verdade ────────
+# Achado P1 do review da #8454: esta seção só fazia `grep` no texto do script,
+# então passava mesmo que o caminho fosse inalcançável — e não pegou o P0
+# (`set -e` + `pipefail` matando a atribuição de FINDINGS num resumo sem
+# `findings=`, justo o cenário do ramo "não pôde ser lido"). Agora o bloco
+# REAL roda contra um $OUT_FILE forjado, igual à seção do pr-review.
+DBLOCK="$TMPDIR/daily-delivery.sh"
+awk '/^RESUMO=\$\(command grep -m1 /,0' "$DAILY" > "$DBLOCK"
+if [ ! -s "$DBLOCK" ]; then
+  echo "FAIL: não extraiu o bloco de entrega de $DAILY (marcador RESUMO= mudou?)"
+  exit 1
+fi
+
+# Roda o bloco real sob `set -euo pipefail` (como no script) com um
+# transcript forjado. Devolve o stdout — o que o Telegram receberia.
+run_daily() {
+  printf '%s\n' "$1" > "$TMPDIR/out.txt"
+  bash -c "
+    set -euo pipefail
+    OUT_FILE='$TMPDIR/out.txt'
+    source '$DBLOCK'
+  " 2>/dev/null || true
+}
+# rc do bloco, separado: sem o `|| true` acima, um bloco que ABORTA (o bug P0
+# fazia exatamente isso) derrubaria este próprio teste via `set -e` em vez de
+# produzir um FAIL legível — a asserção morreria antes de ser avaliada.
+run_daily_rc() {
+  local rc
+  set +e
+  bash -c "
+    set -euo pipefail
+    OUT_FILE='$TMPDIR/out.txt'
+    source '$DBLOCK'
+  " >/dev/null 2>&1
+  rc=$?
+  set -e
+  return "$rc"
+}
+
+OUT=$(run_daily "blá blá
+RESUMO-DAILY-REVIEW: commits=12 findings=0 issues_criadas=nenhuma issues_falharam=0")
+assert_true \
+  "daily-review: dia limpo (findings=0) não escreve NADA no stdout" \
+  "$([ -z "$OUT" ] && echo 1 || echo 0)"
+
+OUT=$(run_daily "RESUMO-DAILY-REVIEW: commits=12 findings=3 issues_criadas=x issues_falharam=0")
+assert_true \
+  "daily-review: findings>0 entrega a linha de resumo" \
+  "$(echo "$OUT" | grep -q 'findings=3' && echo 1 || echo 0)"
+assert_true \
+  "daily-review: entrega SÓ a linha de resumo, nunca o transcript" \
+  "$([ "$(printf '%s' "$OUT" | wc -l)" -le 1 ] && echo 1 || echo 0)"
+
+OUT=$(run_daily "RESUMO-DAILY-REVIEW: commits=12 findings=0 issues_criadas=x issues_falharam=2")
+assert_true \
+  "daily-review: issues_falharam>0 avisa mesmo com findings=0 (achado que não foi registrado é o pior caso)" \
+  "$(echo "$OUT" | grep -q 'issues_falharam=2' && echo 1 || echo 0)"
+
+# O P0 do review: resumo presente mas SEM o campo findings= (desvio de
+# formatação do Opus). Antes do `|| true`, `set -e`+`pipefail` abortavam a
+# atribuição e o script morria com stdout vazio — silêncio no único cenário
+# que a política manda sempre avisar.
+OUT=$(run_daily "RESUMO-DAILY-REVIEW: commits=12 issues_criadas=nenhuma")
+assert_true \
+  "daily-review: resumo SEM campo findings= avisa em vez de morrer calado (P0 do review da #8454)" \
+  "$(echo "$OUT" | grep -q 'não pôde ser lido' && echo 1 || echo 0)"
+printf '%s\n' "RESUMO-DAILY-REVIEW: commits=12 issues_criadas=nenhuma" > "$TMPDIR/out.txt"
+DAILY_RC=0
+run_daily_rc || DAILY_RC=$?
+assert_true \
+  "daily-review: resumo malformado ainda sai com exit 0 (o aviso já é a mensagem; exit 1 duplicaria com alerta de crash)" \
+  "$([ "$DAILY_RC" -eq 0 ] && echo 1 || echo 0)"
+
+OUT=$(run_daily "transcript sem marcador nenhum")
+assert_true \
+  "daily-review: transcript sem marcador RESUMO avisa (não se afirma 'tudo bem' sem ler)" \
+  "$(echo "$OUT" | grep -q 'não pôde ser lido' && echo 1 || echo 0)"
+
 assert_true \
   "daily-review: transcript do Opus vai pro log (tee ... >&2), não pro Telegram" \
   "$(grep -qE 'tee "\$OUT_FILE" >&2' "$DAILY" && echo 1 || echo 0)"
 assert_true \
-  "daily-review: entrega condicionada a findings>0 ou issues_falharam>0" \
-  "$(grep -q 'if \[ "\$FINDINGS" -gt 0 \] || \[ "\$ISSUES_FALHARAM" -gt 0 \]; then' "$DAILY" && echo 1 || echo 0)"
-assert_true \
-  "daily-review: resumo ilegível avisa em vez de virar silêncio (não se afirma 'tudo bem' sem ler)" \
-  "$(grep -q 'resumo do dia não pôde ser lido' "$DAILY" && echo 1 || echo 0)"
-assert_true \
   "daily-review: gate do marcador RESUMO-DAILY-REVIEW preservado (exit 4, review incompleto)" \
   "$(grep -q 'exit 4' "$DAILY" && echo 1 || echo 0)"
+
+# ── watch-continuo-health.sh: portão de stdout executado de verdade ─────────
+WBLOCK="$TMPDIR/watch-delivery.sh"
+awk '/^if \[ "\$ISSUES_CREATED" -gt 0 \]; then$/,/^fi$/' "$WATCH" > "$WBLOCK"
+if [ ! -s "$WBLOCK" ]; then
+  echo "FAIL: não extraiu o portão de stdout de $WATCH"
+  exit 1
+fi
+run_watch() {
+  bash -c "
+    set -uo pipefail
+    ISSUES_CREATED=$1
+    ISSUES_CREATED_TITLES='- [watch-continuo] exemplo
+'
+    source '$WBLOCK'
+  " 2>/dev/null
+}
+OUT=$(run_watch 0)
+assert_true \
+  "watch: varredura sem issue aberta não escreve NADA no stdout" \
+  "$([ -z "$OUT" ] && echo 1 || echo 0)"
+OUT=$(run_watch 2)
+assert_true \
+  "watch: issue aberta entrega contagem + título (o diagnóstico fica na issue)" \
+  "$(echo "$OUT" | grep -q '2 issue(s)' && echo "$OUT" | grep -q 'exemplo' && echo 1 || echo 0)"
 
 if [ "$FAILED" -gt 0 ]; then
   echo ""

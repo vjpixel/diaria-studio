@@ -84,6 +84,24 @@ mkdir -p "$(dirname "$WATCH_LOG")" 2>/dev/null || true
 note() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$WATCH_LOG" 2>/dev/null || true
 }
+# Teto do log (review de #8454, P3): `note()` escreve ~30 linhas por
+# varredura, todo dia, pra sempre — crescimento sem limite introduzido por
+# esta mudança. Apara uma vez por execução, mantendo as últimas
+# WATCH_LOG_MAX_LINES (algumas centenas de varreduras, muito além de
+# qualquer investigação real). Best-effort: falhar aqui nunca pode derrubar
+# a varredura, que é o trabalho de verdade deste script.
+WATCH_LOG_MAX_LINES=20000
+trim_watch_log() {
+  local lines
+  lines=$(wc -l < "$WATCH_LOG" 2>/dev/null) || return 0
+  [ "$lines" -gt "$WATCH_LOG_MAX_LINES" ] 2>/dev/null || return 0
+  local tmp="$WATCH_LOG.trim.$$"
+  tail -n "$WATCH_LOG_MAX_LINES" "$WATCH_LOG" > "$tmp" 2>/dev/null \
+    && mv "$tmp" "$WATCH_LOG" 2>/dev/null \
+    || rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+trim_watch_log
 
 # ── 0. Captura de sidecars de tick (#7814) ───────────────────────────────────
 # Só LÊ ~/.hermes/logs/, só ESCREVE em data/continuo/tick-sidecars/ (não em
@@ -146,7 +164,7 @@ if [ -f "$MARCO" ]; then
   MTIME=$(stat -c %Y "$MARCO" 2>/dev/null || echo "")
   if [ -z "$MTIME" ]; then
     # arquivo sumiu entre o -f e o stat (sync OneDrive) — indeterminado, nunca "ok"
-    note "[watch] review diário: INDETERMINADO (stat falhou)" >&2; FAILS=$((FAILS+1)); MTIME=0
+    echo "[watch] review diário: INDETERMINADO (stat falhou)" >&2; FAILS=$((FAILS+1)); MTIME=0
   fi
   AGE_H=$(( ( $(date +%s) - MTIME ) / 3600 ))
   if [ "$MTIME" -eq 0 ]; then AGE_H=-1; fi
@@ -176,7 +194,7 @@ try:
 except Exception: print('__ERR__')" 2>/dev/null || echo "__ERR__")
 case "$STREAK" in *__ERR__*) STREAK="__ERR__" ;; esac
 if [ "$STREAK" = "__ERR__" ] || [ -z "$STREAK" ]; then
-  note "[watch] streak: INDETERMINADO (jobs.json ilegível ou job ausente)" >&2; FAILS=$((FAILS+1))
+  echo "[watch] streak: INDETERMINADO (jobs.json ilegível ou job ausente)" >&2; FAILS=$((FAILS+1))
 elif [ "$STREAK" -ge 2 ] 2>/dev/null; then
   file_issue "[watch-continuo] Diária Contínuo com failure_streak" \
     "[watch-continuo] Diária Contínuo com failure_streak=$STREAK" \
@@ -203,7 +221,7 @@ except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
 case "$LEAK" in *__ERR__*) LEAK="__ERR__" ;; esac
 if [ "$LEAK" = "__ERR__" ]; then
-  note "[watch] claims: INDETERMINADO (registry/parse falhou)" >&2; FAILS=$((FAILS+1)); LEAK=""
+  echo "[watch] claims: INDETERMINADO (registry/parse falhou)" >&2; FAILS=$((FAILS+1)); LEAK=""
 fi
 if [ -n "$LEAK" ]; then
   file_issue "[watch-continuo] claims do contínuo presos" \
@@ -243,7 +261,7 @@ except Exception:
 # Reproduzido ao vivo. `case` com glob cobre as duas formas.
 case "$VAZ" in *__ERR__*) VAZ="__ERR__" ;; esac
 if [ "$VAZ" = "__ERR__" ]; then
-  note "[watch] custo: INDETERMINADO (cost-report falhou)" >&2; FAILS=$((FAILS+1)); VAZ=""
+  echo "[watch] custo: INDETERMINADO (cost-report falhou)" >&2; FAILS=$((FAILS+1)); VAZ=""
 fi
 if [ -n "$VAZ" ]; then
   file_issue "[watch-continuo] cobrança em modelo pago" \
@@ -328,7 +346,7 @@ except Exception:
   case "$DEGRADED" in *__ERR__*) DEGRADED="__ERR__" ;; esac
 
   if [ "$DEGRADED" = "__ERR__" ]; then
-    note "[watch] composição de tick: parse do resultado falhou" >&2; FAILS=$((FAILS + 1))
+    echo "[watch] composição de tick: parse do resultado falhou" >&2; FAILS=$((FAILS + 1))
   elif [ "$TICKCOUNT" = "0" ]; then
     echo "[watch] composição de tick: INDETERMINADO — ZERO ticks do contínuo na janela (#6963). Não é 'ok': ou o job está pausado de propósito, ou o contínuo parou, ou o detector voltou a ficar cego. Conferir com 'hermes cron list --all' e com o formato de session_id em session_model_usage." >&2
     FAILS=$((FAILS + 1))
