@@ -11,9 +11,14 @@
  * Gasto e cadastros no NÍVEL DE CONTA (Google GAQL, Microsoft Reporting
  * API, Meta Graph `insights`, Kit `/v4/subscribers`) — o mesmo caminho da
  * página `/ads` do Studio (`scripts/lib/ads-campaign-economics-fetch.ts`).
- * O braço Microsoft soma PMax (571543153) + Search (571615527): a fonte é
- * nível de conta, então as 2 campanhas já vêm somadas — ver #8256 pra
- * separação por campanha (fora do escopo desta unidade).
+ * O braço Microsoft soma PMax (571543153) + Search (571615527) nas tabelas
+ * de "por braço" abaixo — total inalterado, #8256. A quebra por campanha
+ * (gasto + cadastros de cada uma separadamente) sai numa seção ADICIONAL,
+ * "Quebra por campanha (Microsoft Ads, #8256)", alimentada por
+ * `res.microsoftCampaignBreakdown` (gasto, via `CampaignId` na Reporting
+ * API) e `res.signupsByCampaign` (cadastros, via `fields.utm_campaign` do
+ * Kit) — os dois campos que `fetchCampaignEconomicsSources` passou a expor
+ * além de `metrics`/`signups`, que continuam sendo o total do braço.
  *
  * Os cadastros do Kit aqui JÁ EXCLUEM os e-mails de teste do próprio editor
  * desde o #8349: `fetchKitSignupsByChannel` (a mesma função que alimenta
@@ -54,7 +59,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as dotenvParse } from "dotenv";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { fetchCampaignEconomicsSources } from "./lib/ads-campaign-economics-fetch.ts";
+import { fetchCampaignEconomicsSources, MICROSOFT_ADS_TESTE_CANAL } from "./lib/ads-campaign-economics-fetch.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { daysBetween, formatDateOnly } from "./lib/ads-test-schedule.ts";
@@ -107,6 +112,24 @@ export function formatSignupsTable(canal: string, rows: readonly { date: string;
     lines.push(`${r.date}  ${String(r.cadastros).padStart(9)}  ${String(acc).padStart(9)}`);
   }
   return lines.join("\n");
+}
+
+/** Agrupa uma lista `{canal, date, ...}` por canal, descartando dias
+ *  anteriores a `d0` — mesmo filtro que as 2 tabelas "por braço" abaixo já
+ *  aplicavam inline; extraído (#8256) pra também servir a quebra por
+ *  campanha sem repetir o loop uma 3ª vez. @pure */
+export function groupByCanalSince<T extends { canal: string; date: string }, R>(
+  rows: readonly T[],
+  d0: string,
+  pick: (row: T) => R,
+): Map<string, R[]> {
+  const byCanal = new Map<string, R[]>();
+  for (const row of rows) {
+    if (row.date < d0) continue;
+    if (!byCanal.has(row.canal)) byCanal.set(row.canal, []);
+    byCanal.get(row.canal)!.push(pick(row));
+  }
+  return byCanal;
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -162,21 +185,30 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.log(`${fonte}: ${s.error ? `ERRO — ${s.error}` : "ok"}`);
   }
 
-  const spendByCanal = new Map<string, { date: string; gastoBrl: number }[]>();
-  for (const m of res.metrics) {
-    if (m.date < d0) continue;
-    if (!spendByCanal.has(m.canal)) spendByCanal.set(m.canal, []);
-    spendByCanal.get(m.canal)!.push({ date: m.date, gastoBrl: m.gastoBrl });
-  }
+  const spendByCanal = groupByCanalSince(res.metrics, d0, (m) => ({ date: m.date, gastoBrl: m.gastoBrl }));
   for (const [canal, rows] of spendByCanal) console.log(formatSpendTable(canal, rows));
 
-  const signupsByCanal = new Map<string, { date: string; cadastros: number }[]>();
-  for (const s of res.signups) {
-    if (s.date < d0) continue;
-    if (!signupsByCanal.has(s.canal)) signupsByCanal.set(s.canal, []);
-    signupsByCanal.get(s.canal)!.push({ date: s.date, cadastros: s.cadastros });
-  }
+  const signupsByCanal = groupByCanalSince(res.signups, d0, (s) => ({ date: s.date, cadastros: s.cadastros }));
   for (const [canal, rows] of signupsByCanal) console.log(formatSignupsTable(canal, rows));
+
+  // #8256 — quebra por campanha do braço Microsoft (PMax vs Search): as
+  // tabelas acima (canal MICROSOFT_ADS_TESTE_CANAL) continuam sendo o total
+  // do braço, somado — esta seção só ACRESCENTA o detalhe por campanha,
+  // nunca substitui nada.
+  const campaignSpendByCanal = groupByCanalSince(res.microsoftCampaignBreakdown, d0, (m) => ({ date: m.date, gastoBrl: m.gastoBrl }));
+  const campaignSignupsByUtm = new Map<string, { date: string; cadastros: number }[]>();
+  for (const s of res.signupsByCampaign) {
+    if (s.canal !== MICROSOFT_ADS_TESTE_CANAL) continue;
+    if (s.date < d0) continue;
+    const label = `${MICROSOFT_ADS_TESTE_CANAL} — utm_campaign=${s.utmCampaign}`;
+    if (!campaignSignupsByUtm.has(label)) campaignSignupsByUtm.set(label, []);
+    campaignSignupsByUtm.get(label)!.push({ date: s.date, cadastros: s.cadastros });
+  }
+  if (campaignSpendByCanal.size > 0 || campaignSignupsByUtm.size > 0) {
+    console.log("\n--- Quebra por campanha (Microsoft Ads, #8256) — total do braço acima segue inalterado ---");
+    for (const [canal, rows] of campaignSpendByCanal) console.log(formatSpendTable(canal, rows));
+    for (const [canal, rows] of campaignSignupsByUtm) console.log(formatSignupsTable(canal, rows));
+  }
 }
 
 if (isMainModule(import.meta.url)) {

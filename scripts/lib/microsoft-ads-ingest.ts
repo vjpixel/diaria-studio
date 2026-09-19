@@ -107,6 +107,12 @@ export interface MicrosoftAdsReportRow {
  */
 export interface MicrosoftAdsPerformanceReportRow {
   TimePeriod?: string;
+  /** Numérico, como string (ex: `"571543153"`) — identificador ESTÁVEL da
+   *  campanha, ao contrário de `CampaignName` (pode ser renomeado no
+   *  painel). É o que `ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN`
+   *  pede pra separar PMax/Search do braço Microsoft do teste 2608
+   *  (#8256) sem depender do nome exibido no painel. */
+  CampaignId?: string;
   CampaignName?: string;
   Impressions?: string | number;
   Clicks?: string | number;
@@ -898,7 +904,7 @@ async function downloadAndParseReport(fetchImpl: FetchLike, downloadUrl: string)
 /** Colunas de valor (não-percentual) que `parsePerformanceReportCsv` mapeia
  *  quando presentes no header — `TimePeriod` é tratado à parte porque é
  *  obrigatória (sem ela não há como agrupar/datar a linha). */
-const PERFORMANCE_VALUE_COLUMN_KEYS = ["CampaignName", "Impressions", "Clicks", "Spend"] as const;
+const PERFORMANCE_VALUE_COLUMN_KEYS = ["CampaignId", "CampaignName", "Impressions", "Clicks", "Spend"] as const;
 
 /** Colunas percentuais — convertidas via `parseMicrosoftAdsPercent` no parse
  *  (a linha já sai com `number | undefined`, nunca a string crua). */
@@ -1129,17 +1135,39 @@ export async function fetchMicrosoftAdsPerformanceRows(
  *  irmã já existente em vez de duplicar o fluxo submit→poll→download→parse. */
 export const ADS_DASHBOARD_PERFORMANCE_COLUMNS = ["TimePeriod", "Impressions", "Clicks", "Spend"] as const;
 
-/** Normaliza `MicrosoftAdsPerformanceReportRow[]` (de `fetchMicrosoftAdsPerformanceRows`,
- *  #7539) pro shape canônico `ChannelDailyMetric` que `ads-campaign-economics.ts`
- *  (#7536) consome — mesma disciplina de descarte silencioso só por `TimePeriod`
- *  irreconhecível (nunca inventa dia) que `aggregateMicrosoftAdsSpendByMonthWithDiscards`
- *  já usa; `Impressions`/`Clicks` ausentes/malformados viram `0` (nunca
- *  `NaN` propagado pro acumulado). @pure */
-export function normalizeMicrosoftAdsPerformanceRows(
+/**
+ * Variante de `ADS_DASHBOARD_PERFORMANCE_COLUMNS` com `CampaignId` (#8256).
+ * Pedir esta coluna extra muda o comportamento do relatório: sem nenhuma
+ * coluna de atributo (`CampaignId`/`CampaignName`), a Reporting API agrega
+ * automaticamente entre campanhas ("Columns that Group the Data" — mesma
+ * regra documentada em `SPEND_REPORT_COLUMNS` acima), então cada linha já
+ * sai como o TOTAL da conta no dia; pedindo `CampaignId`, a API para de
+ * agregar e devolve 1 linha por campanha/dia. `fetchMicrosoftAdsChannelMetrics`
+ * usa esta variante e depois SOMA as linhas em TS pra reconstituir o total
+ * da conta (idêntico ao que a variante sem `CampaignId` já devolvia) — o
+ * pedido extra é só isso, uma coluna a mais na MESMA chamada, nunca uma 2ª
+ * requisição de rede.
+ */
+export const ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN = ["TimePeriod", "CampaignId", "Impressions", "Clicks", "Spend"] as const;
+
+/**
+ * Normaliza `MicrosoftAdsPerformanceReportRow[]` preservando a
+ * granularidade por campanha em vez de assumir 1 linha por dia (#8256) —
+ * consome as linhas da MESMA chamada de `ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN`,
+ * agrupando por `CampaignId` em vez de somar tudo. `campaignIdToCanal`
+ * resolve o rótulo de canal por campanha conhecida (ex: PMax/Search do
+ * teste 2608); uma `CampaignId` fora do mapa NUNCA é descartada — cai no
+ * rótulo de fallback `Microsoft Ads (campanha {id})`, pra nunca perder
+ * gasto de uma campanha nova/desconhecida em silêncio. Linha sem
+ * `CampaignId` (não deveria acontecer com a coluna pedida, mas a API já
+ * surpreendeu antes — ver `KNOWN_COLUMN_KEYS` acima) cai no mesmo
+ * fallback usando o literal `"(sem CampaignId)"` como id. @pure
+ */
+export function normalizeMicrosoftAdsPerformanceRowsByCampaign(
   rows: MicrosoftAdsPerformanceReportRow[],
-  canal: string,
-): Array<{ canal: string; date: string; gastoBrl: number; cliques: number; impressoes: number }> {
-  const out: Array<{ canal: string; date: string; gastoBrl: number; cliques: number; impressoes: number }> = [];
+  campaignIdToCanal: Record<string, string> = {},
+): Array<{ canal: string; campaignId: string; date: string; gastoBrl: number; cliques: number; impressoes: number }> {
+  const out: Array<{ canal: string; campaignId: string; date: string; gastoBrl: number; cliques: number; impressoes: number }> = [];
   const toNum = (v: string | number | undefined): number => {
     if (v === undefined) return 0;
     const n = typeof v === "string" ? Number(v) : v;
@@ -1149,8 +1177,11 @@ export function normalizeMicrosoftAdsPerformanceRows(
     if (!row.TimePeriod) continue;
     const date = normalizeMicrosoftDate(row.TimePeriod);
     if (!date) continue;
+    const campaignId = row.CampaignId ?? "(sem CampaignId)";
+    const canal = campaignIdToCanal[campaignId] ?? `Microsoft Ads (campanha ${campaignId})`;
     out.push({
       canal,
+      campaignId,
       date,
       gastoBrl: Math.round(toNum(row.Spend) * 100) / 100,
       cliques: toNum(row.Clicks),
