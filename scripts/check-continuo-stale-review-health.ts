@@ -50,11 +50,15 @@ function main(): void {
     return;
   }
 
+  // Arquivo de estado ilegível NUNCA vira "0 tentativas": o merger grava de forma não
+  // atômica em data/ (sincronizado por OneDrive), e ler truncado como zero produziria
+  // um falso merger-nao-tenta (review da PR #8455). Sem estado confiável, não afirma.
   let attempts: ReReviewAttempts = {};
   try {
     if (existsSync(attemptsFile)) attempts = JSON.parse(readFileSync(attemptsFile, "utf8")) as ReReviewAttempts;
   } catch {
-    readErrors.push(`${attemptsFile}: ilegível — tratado como zero tentativas`);
+    console.log(JSON.stringify({ status: "indeterminate", reason: "arquivo de estado das tentativas ilegível — não dá pra distinguir merger parado de estado corrompido", findings: [], readErrors }));
+    return;
   }
 
   const probes: StaleReviewProbe[] = [];
@@ -75,6 +79,14 @@ function main(): void {
     } catch {
       readErrors.push(`#${number}: não foi possível ler (pulada)`);
     }
+  }
+
+  // Varredura cega (gh pr view falhando na maioria) não pode virar "ok": não conseguir
+  // checar não é o mesmo que não haver nada (review da PR #8455).
+  if (prs.length > 0 && probes.length * 2 < prs.length) {
+    const reason = `só ${probes.length} de ${prs.length} PR(s) legíveis — varredura insuficiente pra afirmar ok`;
+    console.log(JSON.stringify({ status: "indeterminate", reason, findings: [], readErrors }));
+    return;
   }
 
   const findings = evaluateStaleReviewHealth(probes, attempts, new Date().toISOString());

@@ -18,7 +18,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -70,14 +70,20 @@ function main(): void {
   try {
     if (existsSync(attemptsFile)) state = JSON.parse(readFileSync(attemptsFile, "utf8")) as ReReviewAttempts;
   } catch {
-    state = {};
+    // Estado ilegível NUNCA reseta o teto: zerar aqui reabriria o laço de custo que o teto
+    // existe pra impedir. Caminho seguro (sem re-review); o gate escala como sempre.
+    console.log(JSON.stringify({ pr, ...result, reReview: false, currentHeadSha, reviewedHeadSha, reason: result.reason + " — arquivo de estado das tentativas ilegível, mantendo caminho seguro" }));
+    process.exit(0);
   }
   const { allowed, next } = consumeReReviewAttempt(state, pr, currentHeadSha);
   let persisted = false;
   if (allowed) {
     try {
       mkdirSync(dirname(attemptsFile), { recursive: true });
-      writeFileSync(attemptsFile, JSON.stringify(next));
+      // escrita atômica: leitor concorrente (o detector diário) nunca vê JSON truncado
+      const tmp = `${attemptsFile}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(next));
+      renameSync(tmp, attemptsFile);
       persisted = true;
     } catch {
       persisted = false;

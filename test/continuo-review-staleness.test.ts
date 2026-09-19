@@ -120,3 +120,33 @@ describe("#8445 — verificação automática (invariante, não sintoma)", () =>
     assert.match(attemptsFilePath("/repo/"), /^\/repo\/data\/continuo\/re-review-attempts\.json$/);
   });
 });
+
+import { readFileSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+describe("#8455 review — merger e detector leem/gravam o MESMO arquivo, com estado ilegível no sentido seguro", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const merger = readFileSync(join(root, "scripts", "check-continuo-review-stale.ts"), "utf8");
+  const health = readFileSync(join(root, "scripts", "check-continuo-stale-review-health.ts"), "utf8");
+
+  it("os dois resolvem o arquivo por attemptsFilePath(REPO_ROOT), nunca por caminho relativo ao cwd", () => {
+    for (const [nome, src] of [["merger", merger], ["detector", health]] as const) {
+      assert.match(src, /attemptsFilePath\(REPO_ROOT\)/, `${nome} não usa attemptsFilePath(REPO_ROOT)`);
+      assert.doesNotMatch(src, /resolve\("data\/continuo/, `${nome} voltou a resolver relativo ao cwd`);
+    }
+  });
+
+  it("merger grava de forma atômica (tmp + rename) — leitor concorrente nunca vê JSON truncado", () => {
+    assert.match(merger, /renameSync\(tmp, attemptsFile\)/);
+  });
+
+  it("estado ilegível: o merger NÃO reseta o teto de custo e o detector NÃO afirma merger parado", () => {
+    assert.doesNotMatch(merger, /catch \{\s*\n\s*state = \{\};/, "zerar o estado no catch reabre o laço de custo");
+    assert.match(health, /ilegível — não dá pra distinguir merger parado de estado corrompido/);
+  });
+
+  it("varredura cega vira indeterminate, não ok", () => {
+    assert.match(health, /probes\.length \* 2 < prs\.length/);
+  });
+});
