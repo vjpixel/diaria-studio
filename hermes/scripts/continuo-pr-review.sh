@@ -221,6 +221,11 @@ INFRA_ERRORS=0
 INFRA_ERROR_SUMMARY=""
 MERGED=0
 ESCALATED=0
+# #8446: escalada REINCIDENTE (`firstTime=false`) é sinal diferente de escalada
+# nova — a PR já estava aguardando decisão e nada mudou. Contada à parte pra o
+# resumo do tick (entregue ao Telegram) nunca mais parecer trabalho feito.
+ESCALATED_RECURRING=0
+ESCALATED_RECURRING_PRS=""
 REJECTED=0
 LOCK_BLOCKED=0
 
@@ -535,6 +540,8 @@ try_merge_gate() {
         echo "[continuo-pr-review] PR #$pr: escalate (1ª vez) — revisão humana"
       else
         echo "[continuo-pr-review] PR #$pr: escalate (já sinalizada)"
+        ESCALATED_RECURRING=$((ESCALATED_RECURRING + 1))
+        ESCALATED_RECURRING_PRS="$ESCALATED_RECURRING_PRS #$pr"
       fi
       ;;
     2)
@@ -662,17 +669,37 @@ for PR in $PR_NUMBERS; do
   set -e
 
   if [ "$AUTH_RC" -eq 0 ]; then
-    # #6926: deixou de ser skip incondicional. Já existe review independente
-    # — pular a REVISÃO (não revisar de novo à toa), mas ir direto ao
-    # portão de merge. `check-continuo-merge-gate.ts` auto-deriva o SHA
-    # revisado do PRÓPRIO marcador (campo `head=`, #6932 P0/P1) — nada pra
-    # buscar/fabricar aqui. Marcador legado sem `head=` (pré-#6926) resolve
-    # sozinho pra `reviewedHeadSha=null` → o gate escala, nunca assume que
-    # o HEAD atual é o que foi revisado.
-    echo "[continuo-pr-review] PR #$PR: já com review — direto ao merge"
-    SKIPPED=$((SKIPPED + 1))
-    try_merge_gate "$PR"
-    continue
+    # #8445: "tem review" só vale se o review cobre o HEAD ATUAL. O CI fixer
+    # (ou qualquer push) muda o HEAD depois da revisão, e o portão de merge
+    # escala toda PR cuja revisão não cobre o SHA atual (#5716) — sem re-
+    # revisar, o par "já com review — direto ao merge" + "escalate" se repetia
+    # eternamente (medido: #8381/#8367, ~7 ticks só em 19/09/2026). `stale`
+    # (exit 1) só ocorre com os DOIS SHAs conhecidos e diferentes; qualquer
+    # outro resultado (fresh/unknown/falha de infra) mantém o caminho de
+    # sempre, então o custo extra é 1 review por push real, nunca por tick.
+    set +e
+    npx tsx scripts/check-continuo-review-stale.ts --pr "$PR" >/dev/null 2>&1
+    STALE_RC=$?
+    set -e
+    # 10 (STALE_EXIT_CODE), nunca 1: Node/tsx saem 1 em qualquer exceção não tratada,
+    # e um crash do checker não pode virar review pago a cada tick (review da PR #8451).
+    # O próprio checker limita a 2 re-reviews por PR+SHA (data/continuo/re-review-attempts.json).
+    if [ "$STALE_RC" -eq 10 ]; then
+      echo "[continuo-pr-review] PR #$PR: review cobre um SHA anterior ao HEAD atual — re-revisando (#8445)"
+      AUTH_RC=1
+    else
+      # #6926: deixou de ser skip incondicional. Já existe review independente
+      # — pular a REVISÃO (não revisar de novo à toa), mas ir direto ao
+      # portão de merge. `check-continuo-merge-gate.ts` auto-deriva o SHA
+      # revisado do PRÓPRIO marcador (campo `head=`, #6932 P0/P1) — nada pra
+      # buscar/fabricar aqui. Marcador legado sem `head=` (pré-#6926) resolve
+      # sozinho pra `reviewedHeadSha=null` → o gate escala, nunca assume que
+      # o HEAD atual é o que foi revisado.
+      echo "[continuo-pr-review] PR #$PR: já com review — direto ao merge"
+      SKIPPED=$((SKIPPED + 1))
+      try_merge_gate "$PR"
+      continue
+    fi
   fi
   if [ "$AUTH_RC" -eq 3 ]; then
     # #738/CLAUDE.md: falha de infra (gh indisponível, PR sumiu) não é
@@ -796,6 +823,14 @@ done
 LOCK_NOTE=""
 [ "$LOCK_BLOCKED" -gt 0 ] 2>/dev/null && LOCK_NOTE=" bloqueadas-por-lock=$LOCK_BLOCKED"
 echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))$LOCK_NOTE"
+# #8446: 7 ticks seguidos com `mergeadas=0 escaladas=2` e output byte-a-byte
+# idêntico não acionaram NENHUM sinal — o alarme de fila (#8442) só apareceu
+# 26h depois, por outro caminho. Escalada reincidente vira linha própria,
+# porque este stdout é o que o Telegram entrega: "escalei de novo, ninguém
+# decidiu" precisa ser distinguível de "escalei agora".
+if [ "$ESCALATED_RECURRING" -gt 0 ]; then
+  echo "[continuo-pr-review] ATENÇÃO: $ESCALATED_RECURRING PR(s) escalada(s) REINCIDENTE(S), ainda sem merge desde a 1ª escalada:$ESCALATED_RECURRING_PRS — o motivo está no JSON do gate (stderr do tick); pode ser decisão pendente OU condição transitória (CI/mergeable)"
+fi
 # #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
 # infra — a linha de resumo é o que o Telegram carrega; sem isso
 # "erros-de-infra=1" chegava sem nenhum rastro de causa. Log completo
