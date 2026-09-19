@@ -473,12 +473,56 @@ export function kitUnifiedPostToArchivePost(u: UnifiedCachedPost): ArchivePost |
 }
 
 /**
+ * Uma edição vizinha (#8353 item 1) — só o necessário pra montar o link:
+ * `slug` (pra `archiveUrlForSlug`) e `title` já derivado (`derivePageTitle`
+ * do vizinho, resolvido pelo CALLER — este módulo não sabe navegar a lista
+ * inteira de posts, só desenhar o link a partir de 1 vizinho já resolvido).
+ */
+export interface ArchiveNeighbor {
+  slug: string;
+  title: string;
+}
+
+/**
+ * Nav prev/next por data (#8353 item 1) — link pra edição publicada
+ * imediatamente ANTES (`prev`) e DEPOIS (`next`) da atual, na mesma ordem
+ * cronológica que `selectPublishedPosts` já usa pro acervo/sitemap. `""`
+ * quando os dois faltam (post mais antigo do acervo inteiro não tem `prev`;
+ * o mais recente não tem `next` até a próxima edição sair) — nunca um `<nav>`
+ * vazio.
+ *
+ * Marcado com `class="archive-nav"` de propósito: é o marcador que
+ * `scripts/lib/site-archive-page-backfill.ts` usa pra detectar "esta página
+ * já tem nav" e não duplicar numa 2ª passada (idempotência do backfill).
+ */
+export function buildArchiveNeighborNavHtml(prev?: ArchiveNeighbor, next?: ArchiveNeighbor): string {
+  if (!prev && !next) return "";
+  const prevLink = prev
+    ? `<a href="${archiveUrlForSlug(prev.slug)}" rel="prev">← ${escHtml(prev.title)}</a>`
+    : "";
+  const nextLink = next
+    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${escHtml(next.title)} →</a>`
+    : "";
+  return (
+    `<nav class="archive-nav" aria-label="Navegação entre edições" ` +
+    `style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;` +
+    `padding:12px 16px;font-family:Arial,Helvetica,sans-serif;font-size:14px;` +
+    `color:#00A0A0;">${prevLink}${nextLink}</nav>`
+  );
+}
+
+export interface BuildArchivePageHtmlOptions {
+  /** #8353 item 1 — omitido (default) preserva o comportamento de antes: sem nav. */
+  neighbors?: { prev?: ArchiveNeighbor; next?: ArchiveNeighbor };
+}
+
+/**
  * Injeta `lang="pt-BR"`, `<title>`, `<meta name="description">` e
  * `<link rel="canonical">` no HTML cru de `content.free.web` — que não tem
  * NENHUM desses (confirmado ao vivo nos 258 posts do cache, #467).
  * Preserva o resto do documento (estilos inline, corpo) sem tocar.
  */
-export function buildArchivePageHtml(post: ArchivePost): string {
+export function buildArchivePageHtml(post: ArchivePost, opts: BuildArchivePageHtmlOptions = {}): string {
   if (!isPublishedPost(post)) {
     throw new Error(
       `post "${post.slug}" não é publicado (status="${post.status}") — buildArchivePageHtml não gera página pra rascunho`,
@@ -567,6 +611,14 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   // depende de <body>/<h1>, nunca de <html>/<head>) — feito aqui, ao lado das
   // demais correções estruturais do HTML capturado, por coesão de leitura.
   html = normalizeHeadingHierarchy(html, rawTitle);
+
+  // #8353 item 1 — nav prev/next logo após o <h1> (visível ou sr-only, ver
+  // normalizeHeadingHierarchy acima). Omitido (post sem nenhum vizinho
+  // resolvido pelo caller) preserva o HTML de antes byte a byte.
+  const neighborNavHtml = buildArchiveNeighborNavHtml(opts.neighbors?.prev, opts.neighbors?.next);
+  if (neighborNavHtml) {
+    html = html.replace(/<body[^>]*>/i, (full) => `${full}${neighborNavHtml}`);
+  }
 
   // Precisa haver <html ...> pra injetar lang + (no fallback abaixo) head —
   // sem essa tag, um .replace() vira no-op silencioso e a página sai sem

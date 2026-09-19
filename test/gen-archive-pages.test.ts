@@ -47,6 +47,7 @@ import {
   deriveDek,
   buildArchiveNewsArticleJsonLd,
   publishDateToIso,
+  buildArchiveNeighborNavHtml,
 } from "../scripts/lib/site-archive-pages.ts";
 import { generateArchivePages, loadPosts, loadKitArchivePosts } from "../scripts/gen-archive-pages.ts";
 import type { UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
@@ -485,6 +486,59 @@ describe("buildSitemapXml / sitemapEntriesForPosts", () => {
   });
 });
 
+// #8353 item 1 — nav prev/next.
+describe("buildArchiveNeighborNavHtml", () => {
+  it("sem prev nem next devolve string vazia (nunca <nav> vazio)", () => {
+    assert.equal(buildArchiveNeighborNavHtml(undefined, undefined), "");
+  });
+
+  it("só prev — emite link rel=prev, nenhum rel=next", () => {
+    const html = buildArchiveNeighborNavHtml({ slug: "mais-antiga", title: "Edição mais antiga" });
+    assert.match(html, /class="archive-nav"/);
+    assert.match(html, /rel="prev"/);
+    assert.match(html, /href="https:\/\/diar\.ia\.br\/p\/mais-antiga"/);
+    assert.match(html, />← Edição mais antiga<\/a>/);
+    assert.doesNotMatch(html, /rel="next"/);
+  });
+
+  it("só next — emite link rel=next, nenhum rel=prev", () => {
+    const html = buildArchiveNeighborNavHtml(undefined, { slug: "mais-nova", title: "Edição mais nova" });
+    assert.match(html, /rel="next"/);
+    assert.match(html, /href="https:\/\/diar\.ia\.br\/p\/mais-nova"/);
+    assert.doesNotMatch(html, /rel="prev"/);
+  });
+
+  it("prev e next — escapa título (XSS/HTML injection do vizinho)", () => {
+    const html = buildArchiveNeighborNavHtml(
+      { slug: "a", title: '<script>alert(1)</script>' },
+      { slug: "b", title: "Normal" },
+    );
+    assert.doesNotMatch(html, /<script>alert/);
+    assert.match(html, /&lt;script&gt;/);
+    assert.match(html, /rel="prev"/);
+    assert.match(html, /rel="next"/);
+  });
+});
+
+describe("buildArchivePageHtml com opts.neighbors (#8353 item 1)", () => {
+  it("sem opts (default) não injeta nenhum <nav> — comportamento byte-a-byte igual a antes da feature", () => {
+    const html = buildArchivePageHtml(makePost());
+    assert.doesNotMatch(html, /archive-nav/);
+  });
+
+  it("com neighbors.prev/next, injeta o nav logo após <body ...>", () => {
+    const html = buildArchivePageHtml(makePost(), {
+      neighbors: {
+        prev: { slug: "anterior", title: "Edição anterior" },
+        next: { slug: "seguinte", title: "Edição seguinte" },
+      },
+    });
+    assert.match(html, /<body[^>]*><nav class="archive-nav"/);
+    assert.match(html, /href="https:\/\/diar\.ia\.br\/p\/anterior"/);
+    assert.match(html, /href="https:\/\/diar\.ia\.br\/p\/seguinte"/);
+  });
+});
+
 describe("generateArchivePages (integração, tmpdir)", () => {
   it("escreve 1 index.html por post publicado + sitemap.xml, pulando drafts e posts sem HTML", () => {
     const tmp = mkdtempSync(join(tmpdir(), "archive-pages-test-"));
@@ -516,6 +570,69 @@ describe("generateArchivePages (integração, tmpdir)", () => {
       assert.match(sitemap, /\/p\/edicao-2</);
       assert.doesNotMatch(sitemap, /\/p\/rascunho</);
       assert.doesNotMatch(sitemap, /\/p\/sem-html</);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("#8353 item 1 — injeta nav prev/next em ordem cronológica, extremos sem o lado que falta", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "archive-pages-test-"));
+    try {
+      const outDir = join(tmp, "p");
+      const sitemapPath = join(tmp, "sitemap.xml");
+      // publish_date desc: mais-nova (3000) > meio (2000) > mais-antiga (1000).
+      const posts = [
+        makePost({ slug: "mais-nova", title: "Mais nova", publish_date: 3000 }),
+        makePost({ slug: "meio", title: "Do meio", publish_date: 2000 }),
+        makePost({ slug: "mais-antiga", title: "Mais antiga", publish_date: 1000 }),
+      ];
+
+      generateArchivePages(posts, outDir, sitemapPath);
+
+      const htmlNova = readFileSync(join(outDir, "mais-nova", "index.html"), "utf8");
+      const htmlMeio = readFileSync(join(outDir, "meio", "index.html"), "utf8");
+      const htmlAntiga = readFileSync(join(outDir, "mais-antiga", "index.html"), "utf8");
+
+      // A mais nova só tem PREV (não existe edição mais nova que ela ainda).
+      assert.match(htmlNova, /rel="prev"/);
+      assert.match(htmlNova, /href="https:\/\/diar\.ia\.br\/p\/meio"/);
+      assert.doesNotMatch(htmlNova, /rel="next"/);
+
+      // A do meio tem os dois — prev aponta pra mais antiga, next pra mais nova.
+      assert.match(htmlMeio, /href="https:\/\/diar\.ia\.br\/p\/mais-antiga" rel="prev"/);
+      assert.match(htmlMeio, /href="https:\/\/diar\.ia\.br\/p\/mais-nova" rel="next"/);
+
+      // A mais antiga só tem NEXT (não existe edição mais antiga que ela).
+      assert.match(htmlAntiga, /rel="next"/);
+      assert.match(htmlAntiga, /href="https:\/\/diar\.ia\.br\/p\/meio"/);
+      assert.doesNotMatch(htmlAntiga, /rel="prev"/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("#8353 item 1 — post sem content.free.web nunca vira vizinho de ninguém (não gera link morto)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "archive-pages-test-"));
+    try {
+      const outDir = join(tmp, "p");
+      const sitemapPath = join(tmp, "sitemap.xml");
+      const posts = [
+        makePost({ slug: "nova", publish_date: 3000 }),
+        makePost({ slug: "sem-html", publish_date: 2000, content: { free: { web: null } } }),
+        makePost({ slug: "antiga", publish_date: 1000 }),
+      ];
+
+      generateArchivePages(posts, outDir, sitemapPath);
+
+      const htmlNova = readFileSync(join(outDir, "nova", "index.html"), "utf8");
+      const htmlAntiga = readFileSync(join(outDir, "antiga", "index.html"), "utf8");
+
+      // "sem-html" nunca foi escrito — os dois vizinhos reais se apontam
+      // direto, pulando o buraco no meio.
+      assert.match(htmlNova, /href="https:\/\/diar\.ia\.br\/p\/antiga"/);
+      assert.doesNotMatch(htmlNova, /sem-html/);
+      assert.match(htmlAntiga, /href="https:\/\/diar\.ia\.br\/p\/nova"/);
+      assert.doesNotMatch(htmlAntiga, /sem-html/);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
