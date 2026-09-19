@@ -60,23 +60,41 @@
  * duplicado que #3714 tinha eliminado.
  *
  * **#4708 (2026-08-06): o editor quer o relatório COMPLETO de volta no
- * corpo do e-mail, não só título + link.** `buildReportEmail` agora lê o
- * conteúdo real do relatório (via `resolveReportHtml`, mesma resolução
- * segura contra path traversal já usada pelo Studio) e o embute no corpo —
- * ver `buildReportEmail` abaixo pro mecanismo (conversão HTML→texto puro,
- * truncamento explícito quando o conteúdo é grande). O link continua no
- * corpo (ler no e-mail OU agir no Studio, ambos úteis) — só deixou de ser a
- * ÚNICA coisa que o e-mail carrega.
+ * corpo do e-mail, não só título + link.** `buildReportEmail` (removida no
+ * #7960, ver bloco abaixo) passou a ler o conteúdo real do relatório (via
+ * `resolveReportHtml`, mesma resolução segura contra path traversal já
+ * usada pelo Studio) e o embutia no corpo (conversão HTML→texto puro,
+ * truncamento explícito quando o conteúdo era grande). Histórico
+ * preservado pela mesma razão do bloco #4475/#4708 acima — quem lesse só
+ * "canal de e-mail removido" sem este contexto poderia achar que o
+ * conteúdo rico nunca foi um requisito real.
+ *
+ * **#7960 (2026-09-19, item 5 da #7957 — decisão do editor): `registerReport`
+ * deixa de ter canal de e-mail PRÓPRIO e passa a delegar ao portão único
+ * `notifyEditor` (`scripts/lib/editor-notify.ts`), severidade `"info"`.**
+ * `notifyEditor` já vive em `scripts/lib/` (não em `studio-ui/`), então
+ * importar dele daqui não viola a fronteira `lib/`↔`studio-ui/` (regra 4 de
+ * `test/lib-boundary.test.ts` só proíbe o sentido contrário). Severidade
+ * `"info"` nunca dispara e-mail nem abre issue em NENHUMA política de
+ * `notifications.email_policy` (`"legacy"`/`"urgent_only"`) — só garante
+ * que o registro fica visível em `data/run-log.jsonl` (lido por
+ * `/diaria-log` e pelo auto-reporter), além do índice do Studio em si. Essa
+ * é, na prática, a MESMA conclusão a que #7960 (item 4) já tinha chegado
+ * pro relatório de `ads-daily-digest.ts` — que registra via `registerReport`
+ * e separadamente chama `notifyEditor({severity: "info"})` — só que agora
+ * dobrada pra dentro do próprio `registerReport`, em vez de cada caller
+ * reimplementar o par. Todo o código Gmail bespoke (`sendGmailMessage`,
+ * `buildReportEmail`, `resolveEditorEmail`, `defaultHasCredentials`,
+ * `dispatchReportEmail`) foi removido — já estava morto na prática desde
+ * que `registerReport` ganhou `notify = false` como default (#7957/#8077)
+ * e nenhum caller de produção passava `notify: true` explícito.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { escHtml } from "../lib/html-escape.ts";
-import { stripHtml } from "../lib/strip-html.ts"; // #4708 — corpo completo do e-mail (reverte o "leve" do #4475)
-import { sendGmailMessage, type GmailSendResult } from "../lib/gmail-send.ts";
-import { resolveEditorEmail } from "../lib/inbox-stats.ts";
-import { gFetch, CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../google-auth.ts"; // #4478 achados 1/2
+import { notifyEditor } from "../lib/editor-notify.ts"; // #7960 (item 5 da #7957) — substitui o canal de Gmail bespoke
 import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — lock + write atômico do registry
 
 // #4347: "clarice-novos" — relatório da skill /diaria-clarice-novos (rodada
@@ -175,20 +193,23 @@ export interface ReportEntry extends ReportRegistryInput {
   /** Path servido pelo Studio — `GET {url}` (ver `server.ts`). */
   url: string;
   /**
-   * `true` quando ALGUM registro deste `id` já disparou (ou tentou disparar) o
-   * e-mail de notificação (#5521).
+   * `true` quando ALGUM registro deste `id` já disparou (ou tentou disparar) a
+   * notificação via `notifyEditor` (`severity: "info"`, #7960 — antes do
+   * #7960 isto gatilhava um e-mail de verdade via Gmail; hoje só garante que
+   * o registro fica visível em `data/run-log.jsonl`).
    *
-   * É a chave de dedup de e-mail — e é deliberadamente "já NOTIFICOU", não "já
-   * existe entrada". A diferença não é acadêmica: o Stage 6 registra o MESMO
-   * `edicao-{AAMMDD}` duas vezes de propósito (6b-6 com `notify:false` só pra
-   * satisfazer o invariante de conclusão do stage, 6b-8 com o default `true` —
-   * é a 2ª que deve notificar o editor, ver `send-edition-report.ts`). Dedup
-   * por existência de entrada engoliria justamente esse e-mail, que é o
-   * relatório diário da edição.
+   * É a chave de dedup — e é deliberadamente "já NOTIFICOU", não "já existe
+   * entrada". A diferença não é acadêmica: um caller pode registrar o MESMO
+   * id mais de uma vez de propósito (ex: um HTML descartável seguido da
+   * versão final, ver `notify:false`/`notify:true` em
+   * `send-edition-report.ts`) — dedup por existência de entrada engoliria a
+   * notificação da versão final. Nenhum caller de produção passa
+   * `notify: true` hoje (#7960: default virou `false` em toda a cadeia), mas
+   * o mecanismo continua correto pro dia em que um precisar.
    *
    * Ausente nas entradas gravadas antes do #5521 — tratado como `false`, então
    * o 1º registro pós-upgrade de uma rodada antiga ainda notifica (preferível
-   * a suprimir um e-mail legítimo por falta de dado histórico).
+   * a suprimir uma notificação legítima por falta de dado histórico).
    */
   notified?: boolean;
 }
@@ -197,144 +218,83 @@ export interface RegisterReportResult {
   ok: boolean;
   entry: ReportEntry | null;
   error: string | null;
-  /** Resultado do disparo (best-effort) do e-mail de notificação (#4475) —
+  /** Resultado do disparo (best-effort) da notificação ao editor (#7960) —
    * nunca rejeita. Callers de produção ignoram (fire-and-forget: o registro
    * em `index.jsonl` já aconteceu antes deste disparo começar, então uma
-   * falha de e-mail nunca reflete no `ok`/`error` acima); testes podem
+   * falha de notificação nunca reflete no `ok`/`error` acima); testes podem
    * `await` pra asserção determinística. */
-  emailDispatch: Promise<ReportEmailDispatchResult>;
+  notifyDispatch: Promise<ReportNotifyDispatchResult>;
 }
 
-// ─── Envio de e-mail de notificação (#4475) ─────────────────────────────────
+// ─── Notificação ao editor (#7960, item 5 da #7957) ─────────────────────────
 //
-// Decisão do editor (#4475): todo relatório registrado no Studio também sai
-// por e-mail (Gmail API direta, mesmo mecanismo do alarme de guardrail —
-// `sendGmailMessage`, nunca MCP, porque callers como `/diaria-overnight`
-// podem rodar sem sessão Claude Code viva no momento do registro). Fail-soft
-// obrigatório: o envio SÓ é tentado depois que o append em `index.jsonl` já
-// terminou (`registerReport` chama `dispatchReportEmail` como último passo do
-// caminho de sucesso), então qualquer falha de rede/token/escopo nunca reflete
-// no resultado do registro em si — só um warning em stderr.
+// Decisão do editor (19/09/2026): `registerReport` delega ao portão único
+// `notifyEditor` (`scripts/lib/editor-notify.ts`), severidade `"info"`, em
+// vez de manter um canal de e-mail Gmail próprio (histórico completo desse
+// canal — #4475/#4708/#4478 — no bloco de comentários do topo do arquivo).
+// `"info"` nunca dispara e-mail nem abre issue em NENHUMA política de
+// `notifications.email_policy` — só garante que o registro fica visível em
+// `data/run-log.jsonl` (`/diaria-log`, auto-reporter), além do índice do
+// Studio em si. Fail-soft obrigatório, mesma disciplina do canal antigo: o
+// disparo SÓ é tentado depois que o append em `index.jsonl` já terminou
+// (`registerReport` chama `dispatchReportNotify` como último passo do
+// caminho de sucesso), então qualquer falha nunca reflete no resultado do
+// registro em si — só um warning em stderr.
 
 /**
- * Resultado do disparo de e-mail de notificação — union discriminada por
- * `sent` (#4478, achado type-design-analyzer do fleet review #4383: a
- * interface flat anterior — `{sent: boolean, skipped?, error?}` — permitia o
- * estado impossível `{sent: true, error: "x"}`, já que "enviado" e "erro"
- * nunca coexistem de verdade). 3 formas possíveis:
- *  - `{sent: true}` — enviado com sucesso.
- *  - `{sent: false, skipped: ...}` — nunca tentado: `no-credentials` (sessão
- *    cloud ou `oauth-setup.ts` nunca rodado), `register-failed` (o append em
- *    `index.jsonl` falhou antes do disparo — nada a notificar) ou
- *    `notify-disabled` (caller passou `notify: false` pro `registerReport` —
- *    #4478, ver a chamada "descartável" 6b-6 do Stage 6).
- *  - `{sent: false, error: ...}` — tentado e falhou (rede, token, escopo —
- *    fail-soft, nunca lançado, só reportado aqui).
+ * Resultado do disparo de notificação — union discriminada por `notified`
+ * (mesmo desenho de #4478/type-design-analyzer que o antigo
+ * `ReportEmailDispatchResult` tinha: uma interface flat permitiria o estado
+ * impossível `{notified: true, error: "x"}`). 3 formas possíveis:
+ *  - `{notified: true}` — `notifyEditor` rodou com sucesso.
+ *  - `{notified: false, skipped: ...}` — nunca tentado: `register-failed`
+ *    (o append em `index.jsonl` falhou antes do disparo — nada a notificar)
+ *    ou `notify-disabled` (caller passou `notify: false` pro
+ *    `registerReport` — default desde #7960, ver a chamada "descartável"
+ *    6b-6 do Stage 6 em `send-edition-report.ts`).
+ *  - `{notified: false, error: ...}` — `deps.notify` lançou (não deveria
+ *    acontecer com a implementação de produção — `notifyEditor` em
+ *    `severity: "info"` só grava em `data/run-log.jsonl` via `logEvent`,
+ *    que é fail-soft por desenho — mas `deps.notify` é injetável, e um dep
+ *    de teste customizado que lance é coberto pelo mesmo `catch`).
  */
-export type ReportEmailDispatchResult =
-  | { sent: true }
+export type ReportNotifyDispatchResult =
+  | { notified: true }
   | {
-      sent: false;
+      notified: false;
       skipped:
-        | "no-credentials"
         | "register-failed"
         | "notify-disabled"
         /**
-         * #5521: um registro anterior deste mesmo `id` já disparou o e-mail —
-         * ou seja, é RE-registro da mesma rodada, não rodada nova.
-         *
-         * Uma rodada que fecha, é reaberta pelo editor e fecha de novo
-         * re-registra o relatório a cada fecho; antes disso cada re-registro
-         * mandava um e-mail novo, todos se apresentando como definitivos (a
-         * rodada 260816e mandou 4, com contagens diferentes entre si), e um
-         * retry mandava o MESMO assunto duas vezes (260816, 80s de intervalo).
-         *
-         * Como o registro é upsert e a URL do relatório é derivada do `id`, o
-         * link do PRIMEIRO e-mail já aponta pro conteúdo mais recente — então
-         * suprimir os e-mails seguintes não esconde nada do editor: 1 e-mail
-         * por rodada, sempre linkando a versão atual.
+         * #5521 (mecanismo herdado do antigo canal de e-mail): um registro
+         * anterior deste mesmo `id` já notificou — ou seja, é RE-registro da
+         * mesma rodada, não rodada nova. Como o registro é upsert e a URL do
+         * relatório é derivada do `id`, o link da 1ª notificação já aponta
+         * pro conteúdo mais recente — suprimir as notificações seguintes não
+         * esconde nada do editor.
          */
         | "already-notified"
     }
-  | { sent: false; error: string };
+  | { notified: false; error: string };
 
-/** Dependências injetáveis do disparo de e-mail — mesmo padrão de
- * `_fetchImpl` em `sendGmailMessage` (gmail-send.ts), pra tornar
- * `dispatchReportEmail`/`registerReport` testáveis sem rede real. */
-export interface ReportEmailDeps {
-  sendMail: (to: string, subject: string, body: string) => Promise<GmailSendResult>;
-  resolveEditorEmail: (platformConfigPath: string) => string;
-  /** `true` se há credencial OAuth local capaz de enviar e-mail — default
-   * checa a presença de `{rootDir}/data/.credentials.json` (mesmo sinal
-   * fail-soft de `scripts/lib/exec-mode.ts`: sessão cloud/clone fresco nunca
-   * tem esse arquivo, então o envio é pulado silenciosamente, não tratado
-   * como erro). */
-  hasCredentials: (rootDir: string) => boolean;
+/** Dependências injetáveis do disparo de notificação — mesmo padrão de
+ * `AdsDailyDigestDeps.notify` (`scripts/ads-daily-digest.ts`), que já
+ * injeta `notifyEditor` da mesma forma para o mesmo fim (#7960 item 4). */
+export interface ReportNotifyDeps {
+  /** `notifyEditor` injetável (testes) — default a implementação de
+   * produção de `scripts/lib/editor-notify.ts`. */
+  notify: typeof notifyEditor;
 }
 
-/**
- * #4478 achado 1 (fleet review #4383, CRÍTICO): respeita
- * `DIARIA_TEST_CREDENTIALS_PATH` (`CREDENTIALS_PATH_TEST_OVERRIDE_ENV`,
- * `scripts/google-auth.ts`) quando definida — mesmo override que já protege
- * `data/.credentials.json` REAL em `getAccessToken`/`gFetch` desde o #4344.
- * Sem isso, um caller que passa o `rootDir` REAL do repo em vez do `rootDir`
- * fake de teste (exatamente o que `send-edition-report.ts`/`writeReportFile`
- * fazem — `ROOT` é sempre calculado a partir do path do próprio script,
- * nunca do `--edition-dir` de teste) faz `defaultHasCredentials` checar o
- * `data/.credentials.json` de VERDADE da máquina. 2 testes pré-existentes
- * (`test/send-edition-report-out.test.ts`, `test/ensure-edition-report-1950.test.ts`)
- * bateriam no Gmail real rodando `npm test` localmente numa máquina com
- * credenciais configuradas — mesma classe de incidente do #4344, dessa vez
- * no caminho de e-mail em vez do Drive. Este fix é defesa SISTÊMICA —
- * protege qualquer caller futuro que esqueça de passar
- * `--no-email`/`notify: false`, não só os 2 identificados agora (que também
- * ganharam a flag explícita — defesa em profundidade, ver os 2 arquivos
- * citados acima).
- *
- * Exportado (só pra teste direto, sem passar por `dispatchReportEmail`/
- * `registerReport` — evita qualquer risco de acionar `defaultEmailDeps.sendMail`
- * de verdade num teste, ver `test/studio-reports.test.ts`).
- */
-export function defaultHasCredentials(rootDir: string): boolean {
-  const override = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
-  return existsSync(override || resolve(rootDir, "data", ".credentials.json"));
-}
-
-/**
- * #4478 achado 2 (silent-failure-hunter, MEDIUM-HIGH): timeout curto pro
- * fetch fire-and-forget do e-mail de notificação. `gFetch`/`authedFetch`
- * (`scripts/google-auth.ts`) chamam `fetch()` puro, sem `AbortController` —
- * e `runMain` (`scripts/lib/exit-handler.ts`) NÃO chama `process.exit()` no
- * caminho de sucesso, então o processo Node fica vivo até o event loop
- * esvaziar, inclusive um fetch pendurado. Como `send-edition-report.ts --out
- * ...` é uma chamada BLOQUEANTE do orchestrator (Stage 6, passos 6b-6/6b-8),
- * um travamento de rede/DNS durante o envio "fire-and-forget" travaria a
- * invocação inteira bem além do limite de 60s do CLAUDE.md (#738). Poucos
- * segundos bastam pra uma notificação leve (título + link) — não precisa do
- * timeout mais longo (25s) do fetch in-page do Beehiiv (#4196), que espera
- * um payload bem maior.
- */
-const NOTIFY_EMAIL_TIMEOUT_MS = 8_000;
-
-function sendMailWithTimeout(to: string, subject: string, body: string): Promise<GmailSendResult> {
-  return sendGmailMessage(to, subject, body, (url: string, options: RequestInit = {}) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), NOTIFY_EMAIL_TIMEOUT_MS);
-    return gFetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
-  });
-}
-
-const defaultEmailDeps: ReportEmailDeps = {
-  sendMail: sendMailWithTimeout,
-  resolveEditorEmail,
-  hasCredentials: defaultHasCredentials,
+const defaultNotifyDeps: ReportNotifyDeps = {
+  notify: notifyEditor,
 };
 
-/** URL pública do relatório pro link do e-mail — prefere `STUDIO_REMOTE_URL`
- * (túnel Cloudflare, acessível fora da rede local/mobile, ver
- * `scripts/studio/verify-remote-tunnel.ts`) quando definida; fallback
- * `http://127.0.0.1:{STUDIO_PORT ?? 4174}` (mesmo default de
- * `scripts/register-report.ts`). */
+/** URL pública do relatório pro link da notificação — prefere
+ * `STUDIO_REMOTE_URL` (túnel Cloudflare, acessível fora da rede
+ * local/mobile, ver `scripts/studio/verify-remote-tunnel.ts`) quando
+ * definida; fallback `http://127.0.0.1:{STUDIO_PORT ?? 4174}` (mesmo
+ * default de `scripts/register-report.ts`). */
 function resolveReportUrl(entry: ReportEntry): string {
   const base = (process.env.STUDIO_REMOTE_URL || `http://127.0.0.1:${process.env.STUDIO_PORT ?? "4174"}`).replace(
     /\/$/,
@@ -344,146 +304,66 @@ function resolveReportUrl(entry: ReportEntry): string {
 }
 
 /**
- * Tamanho prático de leitura pro corpo do e-mail (#4708) — não é um limite
- * técnico da Gmail API (que aceita mensagens bem maiores), é o ponto em que
- * um relatório deixa de ser "leitura rápida no e-mail" e vira "melhor ler no
- * Studio". O relatório overnight de 260805 tinha ~7 KB de markdown (texto
- * puro depois de stripHtml fica ainda menor); 30.000 caracteres dá folga
- * generosa acima disso pro caso comum, sem deixar uma rodada excepcionalmente
- * grande (muitos findings/PRs) produzir um e-mail impraticável. Truncamento é
- * SEMPRE explícito no corpo (nunca silencioso) — ver `buildReportEmail`.
+ * Dispara (best-effort) a notificação de um relatório recém-registrado via
+ * `notifyEditor({severity: "info"})` (#7960). Nunca lança — qualquer falha
+ * vira `{notified: false, error}` e um warning em stderr; o caller
+ * (`registerReport`) já persistiu a entry em `index.jsonl` antes de chamar
+ * isto, então o registro em si nunca depende do resultado da notificação.
+ *
+ * Corpo leve (título + link) — não embute mais o conteúdo completo do
+ * relatório (isso era específico do e-mail lido na caixa de entrada, #4708;
+ * ver histórico no topo do arquivo). `"info"` só precisa ficar visível em
+ * `data/run-log.jsonl`; o conteúdo completo já está a 1 clique via
+ * `entry.url`/`resolveReportUrl`, servido pelo próprio Studio.
+ *
+ * **Limitação conhecida, aceita (achado do silent-failure-hunter na PR
+ * #8452, #8453):** pra `severity: "info"`, `notifyEditor` só chama
+ * `logEvent` (`scripts/lib/run-log.ts`), que NUNCA lança (fail-soft por
+ * design — "logging must never mask the original error"). Ou seja, o
+ * `catch` abaixo nunca captura uma falha real de escrita em
+ * `run-log.jsonl` (permissão, disco cheio, lock do OneDrive) — `notified`
+ * fica `true` mesmo que o log não tenha sido gravado. Comportamento
+ * PRÉ-EXISTENTE do portão `notifyEditor` (já documentado em
+ * `worker-drift-check.ts` como trade-off aceito ao trocar o Gmail — que
+ * lançava — por este portão), não introduzido por esta migração — os
+ * outros 2 callers atuais (`weekly-worker-dlq-alarm.ts`,
+ * `kit-subscriber-limit-alarm.ts`) já convivem com o mesmo gap. Risco
+ * atual zero: todo caller de produção de `registerReport` fixa
+ * `notify: false`. Consertar exige mexer em `logEvent`/`editor-notify.ts`
+ * (afeta todos os callers do portão) — ver #8453 antes de ligar
+ * `notify: true` em qualquer caller novo.
  */
-export const REPORT_EMAIL_BODY_MAX_CHARS = 30_000;
-
-/** Remove blocos `<style>`/`<script>` inteiros ANTES de `stripHtml` — sem
- * isso, o CSS/JS cru dos relatórios HTML (`resolveReportHtml` embute um
- * `<style>` tanto no wrap de markdown quanto no `edition-report.html` nativo)
- * vazaria como texto ilegível no corpo do e-mail (`stripHtml` só remove TAGS,
- * não o conteúdo textual entre elas). */
-function htmlReportToPlainText(html: string): string {
-  const withoutStyleAndScript = html
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
-  return stripHtml(withoutStyleAndScript);
-}
-
-export interface TruncateReportBodyResult {
-  text: string;
-  truncated: boolean;
-}
-
-/** Corta `text` em `maxChars` — puro, testável isoladamente do resto do
- * pipeline de e-mail. `truncated: true` é o sinal que `buildReportEmail` usa
- * pra nunca truncar em silêncio (#4708, pedido explícito da issue). */
-export function truncateReportBody(
-  text: string,
-  maxChars: number = REPORT_EMAIL_BODY_MAX_CHARS,
-): TruncateReportBodyResult {
-  if (text.length <= maxChars) return { text, truncated: false };
-  return { text: text.slice(0, maxChars).trimEnd(), truncated: true };
-}
-
-/**
- * Monta o e-mail de notificação — título + CONTEÚDO COMPLETO do relatório +
- * link (#4708, reverte o "só título + link" do #4475 — ver o bloco de
- * histórico no topo do arquivo).
- *
- * Precisa de `rootDir` (novo parâmetro nesta revisão) porque o conteúdo é
- * lido do disco via `resolveReportHtml` — a MESMA resolução usada pra servir
- * `/relatorios/:id` no Studio, então herda de graça o guard de path
- * traversal e o fallback gracioso "arquivo não encontrado" (nunca lança
- * aqui). O HTML resolvido (que pra `.md` já vem envolto em `<style>` +
- * `<h1>{title}</h1>` + corpo renderizado, e pra `.html` é servido cru) passa
- * por `htmlReportToPlainText` (remove `<style>`/`<script>`, depois
- * `stripHtml` — preserva `href` de link como URL inline) pra virar texto
- * plano legível — `sendGmailMessage`/`buildMimeMessage` (`gmail-send.ts`)
- * só sabem montar `Content-Type: text/plain`, então HTML de verdade no
- * corpo nunca foi uma opção sem also reescrever o MIME builder; texto plano
- * cobre o pedido da issue ("o relatório completo no corpo") sem esse escopo
- * extra.
- *
- * **Truncamento explícito, nunca silencioso (#4708):** acima de
- * `REPORT_EMAIL_BODY_MAX_CHARS`, o corpo termina com
- * `[relatório truncado — íntegra em {url}]` em vez de só cortar o texto sem
- * aviso. Abaixo do limite, o corpo termina com `Ver no Studio: {url}` — o
- * link SEMPRE aparece, truncado ou não (pedido explícito da issue: "ter os
- * dois é útil").
- *
- * **Kinds com resumo curto pronto no próprio título** (overnight/develop —
- * ex: "diar.ia.br overnight 260720 — 5 resolvidas, 2 puladas, 1 finding",
- * montado por `.claude/skills/diaria-overnight/SKILL.md` Fase 2 passo 3)
- * continuam usando esse resumo como primeira linha do corpo (via
- * `entry.title`) — o conteúdo completo do relatório vem logo depois.
- *
- * **`[diar.ia.br]` só é prefixado quando o título ainda não começa com
- * "diar.ia.br" (achado do self-review, #4478; grafia atualizada #4424).**
- * Todo `entry.title` de kind hoje em uso (`overnight`/`develop`/
- * `clarice-novos`/`edicao`) já começa com "diar.ia.br" — sem esse guard o
- * subject saía `"[diar.ia.br] diar.ia.br overnight ..."`, duplicando a marca.
- */
-export function buildReportEmail(rootDir: string, entry: ReportEntry): { subject: string; body: string } {
-  const subject = entry.title.startsWith("diar.ia.br") ? entry.title : `[diar.ia.br] ${entry.title}`;
-  const url = resolveReportUrl(entry);
-  const { html } = resolveReportHtml(rootDir, entry);
-  const plainContent = htmlReportToPlainText(html);
-  const { text: content, truncated } = truncateReportBody(plainContent);
-  const closingLine = truncated ? `[relatório truncado — íntegra em ${url}]` : `Ver no Studio: ${url}`;
-  const body = `${entry.title}\n\n${content}\n\n${closingLine}\n`;
-  return { subject, body };
-}
-
-/**
- * Dispara (best-effort) o e-mail de notificação de um relatório recém-
- * registrado. Nunca lança — toda falha (sem credencial, rede, token
- * expirado/escopo ausente) vira `{sent: false, skipped|error}` e um warning
- * em stderr; o caller (`registerReport`) já persistiu a entry em
- * `index.jsonl` antes de chamar isto, então o registro em si nunca depende
- * do resultado do e-mail.
- *
- * **`deps.hasCredentials` roda DENTRO do `try` (achado do self-review,
- * #4478).** Defesa em profundidade: com o dep default (`defaultHasCredentials`,
- * só um `existsSync`) essa checagem nunca lança na prática, mas `ReportEmailDeps`
- * é um tipo exportado pra injeção — um `hasCredentials` customizado (ex: teste,
- * ou um dep futuro que valide a credencial de verdade em vez de só checar a
- * presença do arquivo) que lance é coberto pelo mesmo `catch` de baixo, sem
- * precisar de um segundo bloco de tratamento.
- */
-export async function dispatchReportEmail(
+export async function dispatchReportNotify(
   rootDir: string,
   entry: ReportEntry,
-  deps: ReportEmailDeps = defaultEmailDeps,
-): Promise<ReportEmailDispatchResult> {
+  deps: ReportNotifyDeps = defaultNotifyDeps,
+): Promise<ReportNotifyDispatchResult> {
   try {
-    if (!deps.hasCredentials(rootDir)) {
-      // #4478 achado 4 (silent-failure-hunter, MEDIUM): antes 100% silencioso.
-      // Em sessão cloud isto é esperado/documentado — mas se as credenciais
-      // sumirem numa sessão LOCAL (arquivo corrompido/movido), toda
-      // notificação parava de sair pra sempre sem nenhum rastro. Nível baixo
-      // (não é warning de verdade — a função não é hot-path, roda 1x por
-      // registro).
-      console.warn(
-        `[studio-reports] info: e-mail de notificação do relatório ${entry.id} pulado — sem credencial OAuth em ${rootDir} (esperado em sessão cloud; se isto aparecer numa sessão LOCAL, as credenciais podem ter sumido/corrompido — ver npx tsx scripts/oauth-setup.ts).`,
-      );
-      return { sent: false, skipped: "no-credentials" };
-    }
-    const to = deps.resolveEditorEmail(resolve(rootDir, "platform.config.json"));
-    const { subject, body } = buildReportEmail(rootDir, entry);
-    await deps.sendMail(to, subject, body);
-    return { sent: true };
+    const url = resolveReportUrl(entry);
+    await deps.notify(
+      {
+        check: "studio-report",
+        fingerprint: entry.id,
+        severity: "info",
+        subject: entry.title,
+        body: `${entry.title}\n\nVer no Studio: ${url}`,
+      },
+      { cwd: rootDir, rootDir },
+    );
+    return { notified: true };
   } catch (e) {
-    // #4478 achado 3 (silent-failure-hunter, MEDIUM): padrão já estabelecido
-    // em `scripts/lib/exit-handler.ts::runMain` — antes, `(e as Error).message`
-    // fazia uma falha de rede esperada e um bug de código novo (throw de um
-    // valor não-Error) gerarem o MESMO log "fail-soft, ignore", sem stack
-    // trace pra diferenciar os dois casos.
+    // Mesmo padrão de `scripts/lib/exit-handler.ts::runMain`: `(e as
+    // Error).message` faria uma falha esperada e um bug de código novo
+    // (throw de um valor não-Error) gerarem o MESMO log "fail-soft, ignore",
+    // sem stack trace pra diferenciar os dois casos.
     const message = e instanceof Error ? e.message : String(e);
     console.warn(
-      `[studio-reports] aviso: envio de e-mail do relatório ${entry.id} falhou (fail-soft, registro em index.jsonl já concluído): ${message}`,
+      `[studio-reports] aviso: notifyEditor falhou pro relatório ${entry.id} (fail-soft, registro em index.jsonl já concluído): ${message}`,
     );
     if (e instanceof Error && e.stack) {
       console.warn(e.stack);
     }
-    return { sent: false, error: message };
+    return { notified: false, error: message };
   }
 }
 
@@ -518,37 +398,39 @@ export async function dispatchReportEmail(
  * travar o pipeline por causa do registro no Studio; é só observabilidade
  * extra, não um passo crítico.
  *
- * **#4475: também dispara e-mail de notificação** (título + link, best-effort,
- * via `dispatchReportEmail`) depois que o upsert acima já terminou — a
- * promise fica disponível em `result.emailDispatch` pra quem quiser aguardar
- * (testes) mas NUNCA precisa ser aguardada por callers de produção (fail-soft:
- * `dispatchReportEmail` nunca rejeita).
+ * **#7960 (item 5 da #7957, decisão do editor 19/09/2026): também notifica
+ * via `notifyEditor({severity: "info"})`** (título + link, best-effort, via
+ * `dispatchReportNotify`) depois que o upsert acima já terminou — a promise
+ * fica disponível em `result.notifyDispatch` pra quem quiser aguardar
+ * (testes) mas NUNCA precisa ser aguardada por callers de produção
+ * (fail-soft: `dispatchReportNotify` nunca rejeita). Isto substitui o canal
+ * de e-mail Gmail bespoke que existia até aqui (#4475/#4708/#4478, ver
+ * histórico no topo do arquivo) — `"info"` nunca dispara e-mail nem abre
+ * issue em nenhuma política de `notifications.email_policy`.
  *
- * **#4478: `notify` suprime o disparo do e-mail sem afetar o registro.** O
- * Stage 6 diário chama `send-edition-report.ts` 2× pro MESMO id
- * (`edicao-{AAMMDD}`) — 6b-6 gera `edition-report.html` só pra satisfazer
- * `blockReasonForMarkingStageDone` (o próprio doc descreve essa geração como
- * "descartável, não é o que vai pro rascunho de e-mail"); 6b-8 regenera e
- * registra de novo o MESMO id como ÚLTIMO passo do pipeline. Sem supressão,
- * `dispatchReportEmail` dispararia 1×em 6b-6 e outra em 6b-8 — 2 e-mails por
- * edição, todo dia. `notify: false` pula o disparo inteiramente (nem chama
- * `dispatchReportEmail`, então `deps.hasCredentials` nunca roda pra essa
- * invocação) e resolve `emailDispatch` direto com
- * `{sent: false, skipped: "notify-disabled"}` — o upsert em `index.jsonl`
- * acontece igual, só o e-mail é que não sai.
+ * **`notify` suprime o disparo sem afetar o registro (#4478, mecanismo
+ * preservado da migração).** O Stage 6 diário chama `send-edition-report.ts`
+ * 2× pro MESMO id (`edicao-{AAMMDD}`) — 6b-6 gera `edition-report.html` só
+ * pra satisfazer `blockReasonForMarkingStageDone` (o próprio doc descreve
+ * essa geração como "descartável"); 6b-8 regenera e registra de novo o
+ * MESMO id como ÚLTIMO passo do pipeline. Sem supressão,
+ * `dispatchReportNotify` dispararia 1× em 6b-6 e outra em 6b-8. `notify:
+ * false` pula o disparo inteiramente (nem chama `dispatchReportNotify`) e
+ * resolve `notifyDispatch` direto com `{notified: false, skipped:
+ * "notify-disabled"}` — o upsert em `index.jsonl` acontece igual, só a
+ * notificação é que não sai.
  *
- * **#7960 (item 4 da #7957): default virou `false`.** Antes do #7957,
- * `true` preservava o comportamento anterior (#4475: todo registro dispara
- * e-mail) pra todo caller que não passasse nada. A tabela de severidade do
- * editor (#7957, 10/09/2026) classifica TODO relatório registrado aqui —
+ * **#7960 (item 4 da #7957, PR #8077): default virou `false`.** Antes,
+ * `true` preservava o comportamento anterior (#4475: todo registro
+ * notifica) pra todo caller que não passasse nada. A tabela de severidade
+ * do editor (#7957, 10/09/2026) classifica TODO relatório registrado aqui —
  * edição, overnight/develop, Clarice novos/envio/guard, CAC, calibração —
- * como "Studio /relatorios, sem e-mail": o editor lê no `/relatorios`, o
- * e-mail deixou de ser o canal. Nenhum caller de produção passa `notify`
- * explicitamente (todos dependiam deste default) — a mudança silencia
- * TODOS eles de uma vez, que é exatamente o objetivo. O parâmetro continua
- * existindo (e a lógica de dedup/retry abaixo continua exercitável via
- * `notify: true` explícito) caso uma severidade `"urgente"` real precise
- * deste canal no futuro — mas hoje nenhum caller o faz.
+ * como "Studio /relatorios, sem e-mail": o editor lê no `/relatorios`. Nenhum
+ * caller de produção passa `notify` explicitamente (todos dependiam deste
+ * default) — a mudança silencia TODOS eles de uma vez, que é exatamente o
+ * objetivo. O parâmetro continua existindo (e a lógica de dedup/retry abaixo
+ * continua exercitável via `notify: true` explícito) caso uma severidade
+ * mais alta precise deste canal no futuro — mas hoje nenhum caller o faz.
  *
  * **Assimetria conhecida (achado do fleet review da PR #8077, baixa
  * prioridade, não endereçada):** `editor-notify.ts` (#7957) faz esse MESMO
@@ -567,7 +449,7 @@ export async function dispatchReportEmail(
 export function registerReport(
   rootDir: string,
   input: ReportRegistryInput,
-  emailDeps: ReportEmailDeps = defaultEmailDeps,
+  notifyDeps: ReportNotifyDeps = defaultNotifyDeps,
   notify = false,
 ): RegisterReportResult {
   const id = reportId(input.kind, input.sessionId);
@@ -603,18 +485,19 @@ export function registerReport(
       ok: true,
       entry,
       error: null,
-      emailDispatch: !notify
-        ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "notify-disabled" })
+      notifyDispatch: !notify
+        ? Promise.resolve<ReportNotifyDispatchResult>({ notified: false, skipped: "notify-disabled" })
         : alreadyNotified
-          ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "already-notified" })
+          ? Promise.resolve<ReportNotifyDispatchResult>({ notified: false, skipped: "already-notified" })
           : // #5521: `notified` é gravado OTIMISTA (antes do disparo, que é
-            // assíncrono e fire-and-forget). Se o envio não acontecer — sem
-            // credencial, rede fora, token expirado — desfazer a marca, senão
-            // a rodada fica marcada como notificada para sempre e o e-mail se
-            // perde em silêncio: um retry veria `already-notified` e não
+            // assíncrono e fire-and-forget). Se `notifyEditor` lançar (dep de
+            // teste customizado — a implementação de produção não lança, ver
+            // docstring de `dispatchReportNotify`), desfazer a marca, senão a
+            // rodada fica marcada como notificada para sempre e a notificação
+            // se perde em silêncio: um retry veria `already-notified` e não
             // tentaria de novo. Fail-soft como todo este caminho.
-            dispatchReportEmail(rootDir, entry, emailDeps).then((result) => {
-              if (!result.sent) clearNotifiedFlag(rootDir, id);
+            dispatchReportNotify(rootDir, entry, notifyDeps).then((result) => {
+              if (!result.notified) clearNotifiedFlag(rootDir, id);
               return result;
             }),
     };
@@ -623,7 +506,7 @@ export function registerReport(
       ok: false,
       entry: null,
       error: (e as Error).message,
-      emailDispatch: Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "register-failed" }),
+      notifyDispatch: Promise.resolve<ReportNotifyDispatchResult>({ notified: false, skipped: "register-failed" }),
     };
   }
 }
@@ -632,7 +515,7 @@ export function registerReport(
  * Desfaz `notified` quando o disparo não aconteceu (#5521) — deixa a próxima
  * invocação livre pra tentar de novo. Fail-soft: qualquer erro aqui é
  * engolido, porque isto roda depois do registro já ter sucedido e nunca deve
- * transformar "e-mail falhou" em "registro falhou".
+ * transformar "notificação falhou" em "registro falhou".
  */
 function clearNotifiedFlag(rootDir: string, id: string): void {
   try {

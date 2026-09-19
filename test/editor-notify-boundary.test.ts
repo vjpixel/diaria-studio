@@ -69,22 +69,11 @@ const ALLOWLIST: string[] = [
   //   uma 2ª vez pro mesmo achado) — `legacyResendIntent` decidido lendo o
   //   gate de e-mail antigo de CADA script, nunca por padrão de nome.
 
-  // #7960 (item 4 da #7957): implementação de baixo nível de
-  // `dispatchReportEmail`/`buildReportEmail` — o canal de e-mail que
-  // `registerReport()` (agora `notify: false` por default, ver
-  // `scripts/studio-ui/studio-reports.ts`) usa quando ALGUÉM passa
-  // `notify: true` explícito. Papel análogo a `scripts/lib/push-notify.ts`
-  // (canal de baixo nível de `notifyEditor`, por isso NEVER_DEBT) — mas
-  // fica na allowlist e não em NEVER_DEBT porque, ao contrário de
-  // `push-notify.ts`, este módulo NÃO é usado por `editor-notify.ts`; é uma
-  // superfície paralela e mais antiga (#4475/#3714) que hoje só serve
-  // relatórios (severidade "info"), nunca alarmes. Migrar de vez exigiria
-  // decidir se `registerReport` deve delegar pra `notifyEditor`
-  // (severidade "info" -> log, nunca e-mail) em vez de manter seu próprio
-  // canal de e-mail paralelo — não implementado aqui, ver a "nota de
-  // arquitetura" da #7960 sobre `editor-notify.ts` não poder importar de
-  // `studio-ui/**` (regra 4 de `test/lib-boundary.test.ts`).
-  "scripts/studio-ui/studio-reports.ts",
+  // `scripts/studio-ui/studio-reports.ts` MIGROU (#7960, item 5 da #7957,
+  // decisão do editor 19/09/2026): `registerReport` delega a `notifyEditor`
+  // (severidade "info") em vez de manter canal de Gmail próprio — a última
+  // entry desta allowlist, zerando-a. Ver o próprio arquivo pro mecanismo
+  // (`dispatchReportNotify`).
 ].sort();
 
 /** Lista .ts recursivamente sob `dir` (paths relativos à raiz do repo). */

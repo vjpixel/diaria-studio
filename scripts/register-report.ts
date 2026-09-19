@@ -182,11 +182,11 @@ async function main(): Promise<void> {
   const port = process.env.STUDIO_PORT ?? DEFAULT_STUDIO_PORT;
   const url = `http://127.0.0.1:${port}${result.entry.url}`;
   process.stderr.write(`[register-report] registrado: ${result.entry.id} -> ${result.entry.htmlPath}\n`);
-  const dispatch = await result.emailDispatch;
-  if (!dispatch.sent && "skipped" in dispatch && dispatch.skipped === "already-notified") {
+  const dispatch = await result.notifyDispatch;
+  if (!dispatch.notified && "skipped" in dispatch && dispatch.skipped === "already-notified") {
     process.stderr.write(
-      "[register-report] e-mail suprimido: esta rodada já foi notificada — " +
-        "o link do e-mail original já aponta pra versão atual (#5521).\n",
+      "[register-report] notificação suprimida: esta rodada já foi notificada — " +
+        "o link registrado já aponta pra versão atual (#5521).\n",
     );
   }
   process.stdout.write(`${url}\n`);
