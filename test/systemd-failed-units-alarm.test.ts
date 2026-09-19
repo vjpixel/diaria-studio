@@ -28,6 +28,7 @@ import {
   toAlarmFinding,
   readUnitDiagnosticFields,
   postCorrelationComments,
+  shouldPersistAlarmedState,
 } from "../scripts/systemd-failed-units-alarm.ts";
 import type { AlarmFindingOutcome } from "../scripts/lib/alarm-issues.ts";
 
@@ -488,5 +489,23 @@ describe("postCorrelationComments — cross-linka issues já criadas por NÚMERO
     };
     postCorrelationComments([outcome("diaria-a.service", 100), outcome("diaria-b.service", 101)], "/repo", run);
     assert.equal(calls.length, 2);
+  });
+});
+
+describe("shouldPersistAlarmedState (#7960, achado do review da PR #8363)", () => {
+  it("gh e push com sucesso -> persiste", () => {
+    assert.equal(shouldPersistAlarmedState(true, 1, true), true);
+  });
+
+  it("push genuinamente falhou (qualifying>0, não enviado) -> NÃO persiste (retry na próxima)", () => {
+    assert.equal(shouldPersistAlarmedState(true, 1, false), false);
+  });
+
+  it("gh falhou pra TODOS os achados (nenhuma issue criada) -> NÃO persiste, mesmo com qualifying=0", () => {
+    assert.equal(shouldPersistAlarmedState(false, 0, false), false);
+  });
+
+  it("política suprime deliberadamente (qualifying=0, mas gh teve sucesso) -> persiste (supressão não é falha)", () => {
+    assert.equal(shouldPersistAlarmedState(true, 0, false), true);
   });
 });

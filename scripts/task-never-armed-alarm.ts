@@ -37,9 +37,9 @@
  * Env: `data/.credentials.json` com o scope `gmail.send` — só necessário pra
  * ENVIAR o alarme (mesmo requisito dos outros alarmes locais deste repo).
  *
- * Estado: `data/.task-never-armed-alarm-state.json` (dedup do e-mail) +
- * `data/.task-never-armed-alarm-issues.json` (tracking de issue por achado,
- * `alarm-issues.ts`).
+ * Estado: `data/.task-never-armed-alarm-issues.json` (tracking de issue por
+ * achado, `alarm-issues.ts`) — dedup do e-mail é via `notifyEditorForOutcomes`
+ * (#7960), sem state file próprio.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -47,7 +47,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { listScheduledTaskNames, listDisabledScheduledTaskNames } from "./lib/scheduled-tasks.ts";
 import { unitBaseName } from "./lib/systemd-units.ts";
@@ -55,12 +55,8 @@ import { queryUnitState, type SystemdUnitState } from "./lib/systemd-unit-state.
 import {
   parseSystemctlListTimersOutput,
   evaluateTaskNeverArmed,
-  shouldSendTaskNeverArmedAlarm,
-  markTaskNeverArmedAlarmed,
-  emptyTaskNeverArmedAlarmState,
   buildTaskNeverArmedAlarmEmail,
   isAlarmingVerdict,
-  type TaskNeverArmedAlarmState,
   type TaskNeverArmedEvaluation,
 } from "./lib/task-never-armed-alarm.ts";
 import {
@@ -68,15 +64,14 @@ import {
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   saveAlarmIssuesState,
-  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmIssueResult,
+  type AlarmFindingOutcome,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = resolve(ROOT, "data");
-const STATE_PATH = join(DATA_DIR, ".task-never-armed-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = join(DATA_DIR, ".task-never-armed-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[task-never-armed-alarm]";
@@ -233,31 +228,12 @@ export function toOrphanTimerFinding(unitBaseName: string): AlarmFinding {
   };
 }
 
-function loadState(): TaskNeverArmedAlarmState {
-  if (!existsSync(STATE_PATH)) return emptyTaskNeverArmedAlarmState();
-  try {
-    const raw = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Partial<TaskNeverArmedAlarmState>;
-    if (
-      raw.lastAlarmed &&
-      Array.isArray(raw.lastAlarmed.neverArmed) &&
-      Array.isArray(raw.lastAlarmed.orphanTimers)
-    ) {
-      return {
-        lastAlarmed: {
-          neverArmed: raw.lastAlarmed.neverArmed.filter((s): s is string => typeof s === "string"),
-          orphanTimers: raw.lastAlarmed.orphanTimers.filter((s): s is string => typeof s === "string"),
-        },
-      };
-    }
-    return emptyTaskNeverArmedAlarmState();
-  } catch {
-    return emptyTaskNeverArmedAlarmState();
-  }
-}
-
-// saveState/saveAlarmIssuesState: consolidados em scripts/lib/alarm-issues.ts
-// (#7124) — importados acima (DATA_DIR === dirname(STATE_PATH) ===
-// dirname(ALARM_ISSUES_STATE_PATH), então o helper genérico é equivalente).
+// saveAlarmIssuesState: consolidado em scripts/lib/alarm-issues.ts (#7124),
+// importado acima. O estado de dedup de e-mail próprio
+// (`.task-never-armed-alarm-state.json`) foi removido na migração pro
+// portão `notifyEditor` (#7960) — `legacyResendIntent: "dedupe-new-
+// occurrences-only"` reproduz a mesma semântica de dedup por conjunto sem
+// precisar de state file próprio (mesmo padrão de `hub-drift-check.ts`).
 
 // loadAlarmIssuesState continua LOCAL (#7124) — diverge do padrão comum ao
 // logar o parse error via console.error, não só um catch silencioso; não
@@ -347,8 +323,8 @@ async function main(): Promise<void> {
   const stoppedDeliberatelySet = new Set(evaluation.stoppedDeliberately);
   const neverSetupTaskNames = evaluation.neverArmed.filter((n) => !stoppedDeliberatelySet.has(n));
 
-  const state = loadState();
-  const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict)
+  const pending = isAlarmingVerdict(evaluation.verdict);
+  const alarmFindings: AlarmFinding[] = pending
     ? [
         ...neverSetupTaskNames.map(toNeverArmedFinding),
         ...evaluation.stoppedDeliberately.map(toStoppedDeliberatelyFinding),
@@ -357,6 +333,7 @@ async function main(): Promise<void> {
     : [];
   const alarmState = loadAlarmIssuesState();
   const issueRefs: AlarmIssueResult[] = [];
+  let findingOutcomes: AlarmFindingOutcome[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -365,10 +342,11 @@ async function main(): Promise<void> {
         `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado.`,
     );
   } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    const { nextState, findingOutcomes: outcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
+    findingOutcomes = outcomes;
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     for (const outcome of findingOutcomes) {
       const ref: AlarmIssueResult = {
@@ -386,31 +364,63 @@ async function main(): Promise<void> {
     }
   }
 
-  if (!shouldSendTaskNeverArmedAlarm(evaluation, state)) {
-    console.log(
-      isAlarmingVerdict(evaluation.verdict)
-        ? `${LOG_PREFIX} já alarmado pro mesmo conjunto nesta invocação anterior — não reenvia.`
-        : `${LOG_PREFIX} nenhum drift registro↔systemd — nenhum alarme necessário.`,
-    );
-    return;
-  }
-
   const issueLines = issueRefs.length
     ? "\n\nIssues:\n" +
       issueRefs
         .map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`))
         .join("\n")
     : "";
-  const { subject, body } = buildTaskNeverArmedAlarmEmail(evaluation, issueLines);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+
   if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
+    if (pending) {
+      const { subject, body } = buildTaskNeverArmedAlarmEmail(evaluation, issueLines);
+      const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to} SE algum achado for novo/reaberto:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+    } else {
+      console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem drift pendente).`);
+    }
     return;
   }
-  await sendGmailMessage(to, subject, body);
-  saveState(markTaskNeverArmedAlarmed(evaluation), STATE_PATH);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+
+  if (!pending) {
+    console.log(`${LOG_PREFIX} nenhum drift registro↔systemd — nenhum alarme necessário.`);
+    return;
+  }
+
+  // #7960: `shouldSendTaskNeverArmedAlarm(evaluation, state)` gateava por
+  // comparação PURA de conjunto (neverArmed/orphanTimers), sem TTL de
+  // reenvio periódico — diferente de `systemd-failed-units-alarm.ts`
+  // (que tem `ALARM_DEDUP_EXPIRY_MS`). Por isso `"dedupe-new-occurrences-only"`
+  // sobre os outcomes de `applyAlarmReconciliation` reproduz a mesma
+  // semântica (só reenvia quando ≥1 achado é `created`/`reopened`), mesmo
+  // padrão usado em `hub-drift-check.ts` (#7960 fatia 4) — sem precisar de
+  // estado próprio (`.task-never-armed-alarm-state.json` removido).
+  //
+  // Diferença DELIBERADA em relação ao gate antigo (achado do review da PR
+  // #8363): `sameStringSet` comparava os DOIS lados (qualquer mudança —
+  // crescer OU encolher — reenviava). Um conjunto que só ENCOLHE (algo foi
+  // resolvido, nada novo apareceu) agora não gera outcome `created`/
+  // `reopened` nenhum — `applyAlarmReconciliation` só fecha a issue do item
+  // resolvido — e por isso não reenvia. Decisão: é o comportamento
+  // desejado, não uma regressão — evita ruído pra uma melhoria pura (a
+  // issue fechada já é o sinal), e é exatamente o preço já aceito na
+  // migração equivalente de `hub-drift-check.ts`.
+  const result = await notifyEditorForOutcomes(
+    findingOutcomes,
+    "acao",
+    () => buildTaskNeverArmedAlarmEmail(evaluation, issueLines),
+    { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
+  );
+  const anyIssueSucceeded = findingOutcomes.some((o) => o.action !== "failed");
+  if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+  } else if (!anyIssueSucceeded) {
+    console.error(`${LOG_PREFIX} gh falhou pra todos os achados — nenhuma issue criada/atualizada, nenhum e-mail tentado.`);
+  } else if (result.qualifying.length === 0) {
+    console.log(`${LOG_PREFIX} nenhum e-mail necessário (mesmo conjunto de achados já alarmado antes, ou política '${result.emailPolicy}' suprime).`);
+  } else {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
+  }
 }
 
 if (isMainModule(import.meta.url)) {

@@ -52,7 +52,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
+import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
   parseSystemctlListUnitsFailedOutput,
@@ -266,6 +266,28 @@ function loadAlarmIssuesState(): AlarmIssuesState {
   }
 }
 
+/**
+ * #7960 (achado do review da PR #8363) — pura, testável isoladamente.
+ *
+ * `saveState`/`markSystemdFailedUnitsAlarmed` original só rodava depois de
+ * `sendGmailMessage` ter sucesso — uma exceção de envio abortava `main()`
+ * ANTES da gravação, então o estado nunca avançava em falha (a próxima
+ * execução tentava de novo, respeitando o TTL de 6h corretamente).
+ * `notifyEditorForOutcomes` nunca lança (fail-soft por desenho), então
+ * gravar incondicionalmente depois dele congelaria o TTL mesmo quando NADA
+ * chegou ao editor — seja porque o push falhou genuinamente
+ * (`qualifying.length > 0 && !emailSent`), seja porque `gh` falhou pra
+ * TODOS os achados desta execução (nenhum outcome não-`failed` — nem
+ * sequer virou issue). Só persiste quando pelo menos 1 achado foi tratado
+ * com sucesso pelo `gh` E o push não falhou genuinamente (sucesso real, ou
+ * supressão DELIBERADA pela política `emailPolicy`, nunca por falha de
+ * infra).
+ */
+export function shouldPersistAlarmedState(anyIssueSucceeded: boolean, qualifyingCount: number, emailSent: boolean): boolean {
+  const pushGenuinelyFailed = qualifyingCount > 0 && !emailSent;
+  return anyIssueSucceeded && !pushGenuinelyFailed;
+}
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
@@ -289,11 +311,26 @@ async function main(): Promise<void> {
     : [];
   const alarmState = loadAlarmIssuesState();
   const issueRefs: AlarmIssueResult[] = [];
-  // #6788 — mesmo gate do e-mail (dedup por CONJUNTO + expiração #5978):
-  // só cross-linka issues por comentário quando este É um alarme NOVO
-  // (conjunto mudou ou dedup expirou) — nunca a cada execução enquanto o
-  // mesmo conjunto de units segue failed, senão o comentário de correlação
-  // reapareceria em loop a cada 2h sem nada de novo pra dizer.
+  let findingOutcomes: AlarmFindingOutcome[] = [];
+  // #6788/#7960 — mesmo gate do e-mail (dedup por CONJUNTO + expiração
+  // #5978): só cross-linka issues por comentário quando este É um alarme
+  // NOVO (conjunto mudou ou dedup expirou) — nunca a cada execução enquanto
+  // o mesmo conjunto de units segue failed, senão o comentário de
+  // correlação reapareceria em loop a cada 2h sem nada de novo pra dizer.
+  //
+  // Este gate NÃO migra para `legacyResendIntent: "dedupe-new-occurrences-only"`
+  // (o default dos outros ~13 remetentes já migrados, #7960 fatia 4): ele
+  // tem um componente de reenvio PERIÓDICO (`ALARM_DEDUP_EXPIRY_MS`, 6h)
+  // independente do conjunto de units mudar — a mesma classe de alarme
+  // "resend enquanto não resolvido" que a docstring de `LegacyResendIntent`
+  // (editor-notify.ts) nomeia para `on-hold-vencimento-alarm.ts`/
+  // `route-marker-staleness-alarm.ts`. Trocar para dedupe-only silenciaria
+  // este alarme P1 depois do 1º e-mail enquanto a unit continuasse failed —
+  // pior que o duplicado que a #7957 corrige. Por isso o gate CUSTOM
+  // (`shouldSendSystemdFailedUnitsAlarm`) permanece intocado, decidindo
+  // SE emails; quando decide que sim, `notifyEditorForOutcomes` abaixo usa
+  // `"resend-every-run"` (todo outcome não-`failed` qualifica) porque o
+  // gate externo já fez a dedup de verdade.
   const shouldAlarmNow = shouldSendSystemdFailedUnitsAlarm(evaluation, state);
 
   if (isDryRun) {
@@ -303,10 +340,11 @@ async function main(): Promise<void> {
         `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado.`,
     );
   } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    const { nextState, findingOutcomes: outcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
+    findingOutcomes = outcomes;
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     for (const outcome of findingOutcomes) {
       const ref: AlarmIssueResult = {
@@ -344,15 +382,35 @@ async function main(): Promise<void> {
         .join("\n")
     : "";
   const { subject, body } = buildSystemdFailedUnitsAlarmEmail(evaluation, issueLines);
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
   if (isDryRun) {
+    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
     return;
   }
-  await sendGmailMessage(to, subject, body);
-  saveState(markSystemdFailedUnitsAlarmed(evaluation.failedUnits), STATE_PATH);
-  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+  const result = await notifyEditorForOutcomes(findingOutcomes, "acao", () => ({ subject, body }), {
+    cwd: ROOT,
+    platformConfigPath: PLATFORM_CONFIG_PATH,
+    emailTo: toOverride,
+    legacyResendIntent: "resend-every-run",
+  });
+
+  const anyIssueSucceeded = findingOutcomes.some((o) => o.action !== "failed");
+  if (shouldPersistAlarmedState(anyIssueSucceeded, result.qualifying.length, result.emailSent)) {
+    saveState(markSystemdFailedUnitsAlarmed(evaluation.failedUnits), STATE_PATH);
+  } else {
+    console.error(`${LOG_PREFIX} estado NÃO gravado (retry na próxima execução) — ${anyIssueSucceeded ? "push falhou" : "gh falhou pra todos os achados desta execução"}.`);
+  }
+
+  if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado.`);
+  } else if (!anyIssueSucceeded) {
+    console.error(`${LOG_PREFIX} gh falhou pra todos os achados — nenhuma issue criada/atualizada, nenhum e-mail tentado.`);
+  } else if (result.qualifying.length > 0) {
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
+  } else {
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário sob a política vigente.`);
+  }
 }
 
 if (isMainModule(import.meta.url)) {
