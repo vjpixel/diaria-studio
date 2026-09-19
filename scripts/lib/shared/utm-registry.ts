@@ -620,7 +620,8 @@ export type HubSlug =
   | "meta-ai"
   | "brasil-regulacao"
   | "mercado-trabalho"
-  | "medicina-saude";
+  | "medicina-saude"
+  | "deepfake";
 
 export function hubFooterNavUtm(slug: HubSlug) {
   return {
@@ -1571,6 +1572,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Medicina e saúde ' +
       "(#5741, 7º hub temático — 1º hub por SETOR DE APLICAÇÃO).",
+    status: "ativo",
+  },
+  {
+    id: "hub-deepfake-footer-nav",
+    label: "Hub Deepfake — link de rodapé pra diar.ia.br",
+    source: hubFooterNavUtm("deepfake").source,
+    medium: hubFooterNavUtm("deepfake").medium,
+    campaignPattern: "hub-deepfake-footer-nav",
+    originFile: "scripts/lib/hubs/deepfake.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Deepfake ' +
+      "(#8391, 8º hub temático — exceção ÚNICA à pausa de produção de hub novo de 18/09/2026, " +
+      "aberta por dado de DEMANDA de busca; ver docs/geo-hub-experiment.md).",
     status: "ativo",
   },
   {

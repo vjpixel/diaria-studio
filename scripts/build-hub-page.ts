@@ -70,6 +70,7 @@ import { getMetaAiHub } from "./lib/hubs/meta-ai.ts";
 import { getBrasilRegulacaoHub } from "./lib/hubs/brasil-regulacao.ts";
 import { getMercadoTrabalhoHub } from "./lib/hubs/mercado-trabalho.ts";
 import { getMedicinaSaudeHub } from "./lib/hubs/medicina-saude.ts";
+import { getDeepfakeHub } from "./lib/hubs/deepfake.ts";
 // #4913 item 1: só o builder (Node-side) enumera todos os hubs pra montar a
 // nav "Outros temas" — `scripts/lib/shared/hub-page.ts` NÃO importa
 // `HUB_META` diretamente (inverteria a fronteira que a docstring de
@@ -98,6 +99,7 @@ export const HUB_LOADERS: Record<string, () => HubContent> = {
   "brasil-regulacao": getBrasilRegulacaoHub,
   "mercado-trabalho": getMercadoTrabalhoHub,
   "medicina-saude": getMedicinaSaudeHub,
+  deepfake: getDeepfakeHub,
 };
 
 function outPathFor(slug: string): string {

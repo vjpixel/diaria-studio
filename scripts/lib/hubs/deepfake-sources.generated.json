@@ -1,0 +1,115 @@
+[
+  {
+    "date": "2025-09-02",
+    "editionSlug": "china-implementa-lei-obrigat-ria-de-rotulagem-de-conte-do-gerado-por-ia",
+    "url": "https://diar.ia.br/p/china-implementa-lei-obrigat-ria-de-rotulagem-de-conte-do-gerado-por-ia",
+    "matchedHeadlines": [
+      "China implementa lei obrigatória de rotulagem de conteúdo gerado por IA"
+    ],
+    "editionTitle": "China implementa lei obrigatória de rotulagem de conteúdo gerado por IA"
+  },
+  {
+    "date": "2025-10-22",
+    "editionSlug": "atlas-concorrente-do-comet",
+    "url": "https://diar.ia.br/p/atlas-concorrente-do-comet",
+    "matchedHeadlines": [
+      "Deepfake de ministro viraliza"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/introducing-chatgpt-atlas"
+    ],
+    "editionTitle": "OpenAI lança concorrente do Comet..."
+  },
+  {
+    "date": "2025-11-17",
+    "editionSlug": "estudo-seguranca-ia-robos-pessoais",
+    "url": "https://diar.ia.br/p/estudo-seguranca-ia-robos-pessoais",
+    "matchedHeadlines": [
+      "Novo detector de deepfake tem precisão de até 99%"
+    ],
+    "primarySourceUrls": [
+      "https://www.cnnbrasil.com.br/tecnologia/robos-com-ia-sao-inseguros-para-uso-pessoal-diz-estudo"
+    ],
+    "editionTitle": "Estudo revela que IA não é segura para robôs pessoais"
+  },
+  {
+    "date": "2025-12-04",
+    "editionSlug": "estudo-alerta-falhas-de-seguranc-a-em-empresas-de-ia",
+    "url": "https://diar.ia.br/p/estudo-alerta-falhas-de-seguranc-a-em-empresas-de-ia",
+    "matchedHeadlines": [
+      "Epidemia de deepfakes em escolas"
+    ],
+    "primarySourceUrls": [
+      "https://www.cnnbrasil.com.br/economia/macroeconomia/seguranca-de-empresas-de-ia-nao-atende-a-padroes-globais-diz-estudo/"
+    ],
+    "editionTitle": "Estudo alerta falhas de segurança em empresas de IA"
+  },
+  {
+    "date": "2026-01-07",
+    "editionSlug": "ia-nas-eleic-o-es-prepare-se-para-os-deepfakes",
+    "url": "https://diar.ia.br/p/ia-nas-eleic-o-es-prepare-se-para-os-deepfakes",
+    "matchedHeadlines": [
+      "IA nas eleições: prepare-se para os deepfakes"
+    ],
+    "editionTitle": "IA nas eleições: prepare-se para os deepfakes"
+  },
+  {
+    "date": "2026-02-03",
+    "editionSlug": "tse-avalia-forc-a-tarefa-para-coibir-deepfakes",
+    "url": "https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes",
+    "matchedHeadlines": [
+      "TSE avalia força-tarefa para coibir deepfakes"
+    ],
+    "editionTitle": "TSE avalia força-tarefa para coibir deepfakes"
+  },
+  {
+    "date": "2026-02-06",
+    "editionSlug": "li-deres-militares-evitam-regras-para-ia-em-guerras",
+    "url": "https://diar.ia.br/p/li-deres-militares-evitam-regras-para-ia-em-guerras",
+    "matchedHeadlines": [
+      "Governo pede ao TSE endurecer remoção de perfis",
+      "Conteúdos falsos com IA triplicam no Brasil"
+    ],
+    "primarySourceUrls": [
+      null,
+      "https://www.reuters.com/business/aerospace-defense/us-china-opt-out-joint-declaration-ai-use-military-2026-02-05/"
+    ],
+    "editionTitle": "Líderes militares evitam regras para IA em guerras"
+  },
+  {
+    "date": "2026-07-14",
+    "editionSlug": "ia-do-google-detecta-c-ncer-raro-no-sus",
+    "url": "https://diar.ia.br/p/ia-do-google-detecta-c-ncer-raro-no-sus",
+    "matchedHeadlines": [
+      "Fraude com deepfake sobe 126% e mira fintechs"
+    ],
+    "primarySourceUrls": [
+      "https://finsidersbrasil.com.br/noticias-sobre-fintechs/fraudes/deepfake-fraudes-inteligencia-artificial-fintechs-brasil/"
+    ],
+    "editionTitle": "IA do Google detecta câncer raro no SUS"
+  },
+  {
+    "date": "2026-08-03",
+    "editionSlug": "claude-hackeou-3-empresas-sem-ninguem-notar",
+    "url": "https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar",
+    "matchedHeadlines": [
+      "Deepfake de Roberto Carlos vira golpe de R$1,8 bi"
+    ],
+    "primarySourceUrls": [
+      "https://exame.com/inteligencia-artificial/por-tras-de-um-deepfake-de-roberto-carlos-um-esquema-que-move-r-18-bilhao-em-golpes/"
+    ],
+    "editionTitle": "Claude hackeou 3 empresas sem ninguém notar"
+  },
+  {
+    "date": "2026-08-19",
+    "editionSlug": "tse-exige-aviso-em-propaganda-eleitoral-com-ia",
+    "url": "https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia",
+    "matchedHeadlines": [
+      "TSE exige aviso em propaganda eleitoral com IA"
+    ],
+    "primarySourceUrls": [
+      "https://g1.globo.com/jornal-hoje/noticia/2026/08/17/eleicoes-2026-entenda-riscos-do-uso-de-inteligencia-artificial-nas-campanhas-veja-como-identificar-conteudos-criados-por-ia.ghtml"
+    ],
+    "editionTitle": "TSE exige aviso em propaganda eleitoral com IA"
+  }
+]

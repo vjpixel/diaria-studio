@@ -12,10 +12,18 @@ reabrir — não tem data de retorno marcada.
 
 **O que a pausa cobre:** criar hub temático novo (módulo em
 `scripts/lib/hubs/{slug}.ts` + entrada em `HUB_LOADERS`/`HUB_META` + asset
-`.generated.ts`). Os 7 hubs publicados continuam **em manutenção normal** —
+`.generated.ts`). Os hubs já publicados continuam **em manutenção normal** —
 `Diaria-Hub-Staleness-Check`, `Diaria-Hub-Drift-Check`, correção de número
 errado, regeneração após mudança de renderer. Pausa é sobre acervo NOVO, não
 sobre deixar o que existe apodrecer.
+
+> **Uma exceção foi aberta desde então:** a página `deepfake` (#8391,
+> 19/09/2026), por dado de DEMANDA de busca — eixo que esta pausa não
+> considerou. Ela é ÚNICA e não reabre a produção; ver a seção "Exceção
+> ÚNICA de 19/09/2026" logo abaixo antes de decidir qualquer coisa a partir
+> deste parágrafo. Por causa dela os hubs publicados passaram de 7 para 8 —
+> as contagens "7 hubs"/"9 URLs" no restante desta seção descrevem o estado
+> em 18/09/2026, que é o estado sobre o qual a medição do 0/177 foi feita.
 
 **O dado que motivou** (auditoria de 18/09/2026, sobre
 `data/geo-citations/history.jsonl`, 493 registros de 07/08 a 13/09):
@@ -58,6 +66,63 @@ corte; o que parou foi a produção, não a medição.
 reavaliar é o painel `geral` ou o painel `acervo` (#8334) mostrarem que
 citação acontece e de onde ela vem — aí a pergunta "hub ajuda?" volta a ter
 contraste pra ser respondida.
+
+## Exceção ÚNICA de 19/09/2026 — a página `deepfake` (#8391)
+
+**Decisão do editor, 19/09/2026, resposta literal "8391: a e c": está
+autorizada UMA página perene sobre deepfake, no molde dos hubs existentes.
+A pausa registrada acima continua valendo para qualquer outro tema.** Uma
+segunda exceção exige nova decisão explícita do editor. Este parágrafo é o
+registro canônico dela — quem ler a pausa acima e encontrar
+`scripts/lib/hubs/deepfake.ts` no repo deve ler esta seção antes de concluir
+que a produção de hubs reabriu (não reabriu) ou que o hub foi criado
+irregularmente (não foi).
+
+**O motivo, e por que ele não contradiz a pausa:** a pausa de 18/09 foi
+motivada por dado de **citação por assistente** (painel `hubs`, 0/177). A
+exceção é motivada por dado de **demanda de busca** — o Google Ads Keyword
+Planner (Brasil/pt) mede `deepfake` em **33.100 buscas/mês com competição
+LOW**, a melhor relação volume×alcançabilidade da auditoria. Esse eixo não
+entrou na deliberação da pausa porque o dado ainda não existia: o Keyword
+Planner só foi acessado horas depois. Duas perguntas diferentes, duas
+respostas diferentes — a pausa segue de pé para o eixo que ela mediu.
+
+**O que a página é, para não ser lida como mais um hub temático:** é escrita
+PARA O TERMO. `<title>`, `<h1>`, `introHeading`, os headings de seção e o
+FAQ usam o fraseado de busca ("deepfake", "o que é deepfake", "como
+identificar deepfake"), não o fraseado de manchete que os 7 hubs anteriores
+usam ("O que aconteceu com X desde Y?"). A infraestrutura é a mesma —
+mesmo renderer, mesmo JSON-LD, mesmo `<lastmod>`, mesma entrada no sitemap
+do `arquivo`, mesmo IndexNow no deploy; nada de superfície nova.
+
+**Critério pré-registrado (escrito antes da medição, #8391):**
+
+- Medir na primeira rodada de `Diaria-SEO-Weekly` **8 semanas após a página
+  entrar no índice** — não após publicar; a série do `arquivo` mostra 2–3
+  semanas de defasagem, e `especial`/`arquivo` já estão na checagem de
+  indexação desde o #8343.
+- **Funcionou:** impressões em consultas contendo "deepfake" **e** alguma em
+  posição ≤20.
+- **Não funcionou:** indexada e ~0 impressão, como o resto do acervo.
+- Resultado intermediário fica registrado como intermediário.
+- É também o teste limpo da tese "cobrir o que tem volume faz aparecer": se
+  não funcionar com 33k/LOW e material próprio, o resultado pesa contra
+  estender a lógica a outros temas — e a favor da opção B do #8350.
+
+**O painel GEO não é o critério desta página.** As duas perguntas de
+deepfake acrescentadas a `GEO_HUB_QUESTIONS` existem só para satisfazer o
+guard de cobertura por hub (`test/geo-hub-questions-cobrem-hubs-4900.test.ts`)
+e manter a série do painel `hubs` homogênea. Ler o resultado delas como
+veredito sobre a #8391 seria trocar o critério depois da medição.
+
+**Limitação conhecida, registrada para não ser reaberta como achado novo:**
+o comentário de decisão pedia puxar as variantes e volumes do termo no
+Keyword Planner antes de escrever. O #8366 está bloqueado — o MCP do Google
+Ads não conecta na máquina onde a página foi escrita (`pipx` ausente) e ligar
+o Keyword Planner é tarefa de sessão `develop`. O fraseado usa o único
+volume MEDIDO que existe (o termo-raiz) mais as variantes de pergunta que o
+próprio corpus sustenta; nenhum volume por variante foi inventado. Refinar o
+fraseado com os volumes finos continua em aberto e depende da #8366.
 
 ## A decisão
 
@@ -208,7 +273,11 @@ que sairia caro em outubro, se ninguém tivesse escrito isto antes.
   10/08/2026. Quem quiser mudá-la fala com ele — não é decisão de sessão.
 - **Não autoriza criar hub extra "pra recuperar N".** Contraria a mesma
   decisão e a regra de "não escrever hub novo até o checkpoint" (#4558), e
-  de todo modo não resolve a ausência de randomização.
+  de todo modo não resolve a ausência de randomização. A exceção única de
+  19/09/2026 (`deepfake`, #8391, seção acima) não é um caso disso: ela não
+  foi aberta para melhorar o N deste experimento — é uma medição de OUTRO
+  eixo (demanda de busca), com critério próprio, e o editor a autorizou
+  explicitamente como única.
 - **Não introduz gate mecânico.** Não existe (nem deveria existir) lint que
   imponha simetria de prosa entre os 3 `scripts/lib/hubs/*.ts` — isso
   proibiria manutenção legítima de um hub só (ex: corrigir um número errado

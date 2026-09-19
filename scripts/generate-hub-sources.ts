@@ -418,6 +418,50 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   // pior que hub nenhum").
   "medicina-saude":
     /\bmedicin[a-z]*\b|\bsaude\b|\bhospital(es)?\b|\bmedico(s)?\b|diagnostic|\bpaciente(s)?\b|\bcfm\b|clinic|cirurgi|\banvisa\b|\bsus\b|enfermeir|radiologia|\blaudo(s)?\b|\bexame(s)?\b|oncolog|\bfda\b|farmac|cancer|doenc|vacina|prontuari|terapi/i,
+  // #8391 (8º hub, 4º TEMÁTICO transversal — e a EXCEÇÃO ÚNICA à pausa de
+  // produção de hub novo registrada em `docs/geo-hub-experiment.md`, decisão
+  // do editor de 19/09/2026; ver aquele documento antes de concluir que a
+  // produção reabriu). Tema é mídia sintética que se passa por real:
+  // clonagem de voz e rosto, pornografia não-consensual gerada por IA,
+  // fraude financeira por identidade sintética, desinformação eleitoral e
+  // as três respostas que apareceram no acervo — detecção técnica,
+  // rotulagem obrigatória e norma eleitoral. NÃO é "conteúdo gerado por IA"
+  // em geral (slop, arte generativa, texto de LLM): o recorte é o uso que
+  // IMITA uma pessoa ou um fato real com intenção de enganar.
+  //
+  // Verificado ao vivo contra os 270 posts do cache (19/09/2026): a raiz
+  // `deep\s?fake` casa 7 edições no par título+subtítulo e 27 no CORPO
+  // completo — a contagem de 27 citada na issue é BRUTA (regex sobre o
+  // corpo) e NÃO vira lastro de hub, porque `collectHubSources` casa só
+  // título+subtítulo e porque a leitura manual que
+  // `docs/entity-page-candidates.md` §Metodologia item 5 exige derrubou a
+  // maioria das 20 restantes: são bullets de OUTRAS NOTÍCIAS/RADAR sem
+  // parágrafo próprio (FTC/Take It Down, Oversight Board, Hany Farid,
+  // crianças do Reino Unido, OpenAI/leis eleitorais), menção de passagem
+  // numa matéria sobre outro assunto (ElevenLabs Iconic Marketplace cita
+  // deepfake como risco que o produto endereça; "Marca d'água do Claude cai
+  // em horas" só traz deepfake num item de RADAR), ou glossário.
+  //
+  // As 5 âncoras literais cobrem manchetes cujo CORPO é deepfake mas cujo
+  // TÍTULO não usa a palavra — exatamente a lacuna de vocabulário que o
+  // item C da #8391 endereça no prompt do `writer`/`writer-destaque`, e o
+  // mesmo recurso já usado por `meta-ai.ts`/`brasil-regulacao.ts`/
+  // `mercado-trabalho.ts`:
+  //   - `rotulagem de conteudo gerado por ia` — China, 01/09/2025 (o corpo
+  //     é a lei de rotulagem; o "por que isso importa" nomeia deepfakes).
+  //   - `conteudos falsos com ia` — Observatório Lupa, +308% em 2025.
+  //   - `endurecer remocao de perfis` — pedido do governo ao TSE, cujo
+  //     corpo lista deepfakes entre os abusos digitais a coibir.
+  //   - `aviso em propaganda eleitoral` — resolução do TSE de 2026.
+  //   - `detector de deepfake` já casa pela raiz; não precisa de âncora.
+  //
+  // Overlap deliberado com `brasil-regulacao` (as 4 manchetes de TSE/
+  // governo) é legítimo por design (#4558: "um hub pode aparecer em mais de
+  // um painel temático") — os dois recortam o mesmo fato por eixos
+  // distintos: lá é o processo regulatório, aqui é a tecnologia que a norma
+  // persegue.
+  deepfake:
+    /deep\s?fake|rotulagem de conteudo gerado por ia|conteudos falsos com ia|endurecer remocao de perfis|aviso em propaganda eleitoral/i,
 };
 
 /** Exportado (#4907) — `scripts/lib/hub-match.ts` reusa esta mesma
