@@ -2,7 +2,7 @@
   "_meta": {
     "issue": "#1745, #2451, #3458",
     "status": "31 cursos — fonte: doc de pesquisa do editor 'Busca Cursos Gratuitos IA' (Google Drive, dez/2025) + cursos oficiais Anthropic e OpenAI (#2451) + catálogo completo das duas academias mapeado via WebFetch/WebSearch (#3458). Todos gratuitos ou de auditoria livre; 11 PT-BR, 20 EN.",
-    "instrucoes": "Fonte de verdade: a curadoria do editor (doc Drive) + catálogo oficial das academias Anthropic/OpenAI (#3458, verificado ao vivo via WebFetch em cada URL). REGRAS: (1) links DIRETOS pra plataforma/curso — SEM encurtador de afiliado fabricado (#1632); (2) quando há versão PT-BR, listar a PT; (3) duração de cursos 'Variável' no doc, OU sem duração publicada pela academia, é ESTIMATIVA (marcada com duration_estimated:true); (4) cost: 'free' = 100% grátis (acesso+conteúdo); a coluna certificate indica se há certificado SEM custo extra (auditoria do Coursera = cert pago → certificate:false). Rode `npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html` pra regenerar. #4052: campo teaser marca cursos abertos (não-gated) no HTML público — 4 cursos marcados, cobrindo pt-br/en e plataformas distintas.",
+    "instrucoes": "Fonte de verdade: a curadoria do editor (doc Drive) + catálogo oficial das academias Anthropic/OpenAI (#3458, verificado ao vivo via WebFetch em cada URL). REGRAS: (1) links DIRETOS pra plataforma/curso — SEM encurtador de afiliado fabricado (#1632); (2) quando há versão PT-BR, listar a PT; (3) duração de cursos 'Variável' no doc, OU sem duração publicada pela academia, é ESTIMATIVA (marcada com duration_estimated:true); (4) cost: 'free' = 100% grátis (acesso+conteúdo); a coluna certificate indica se há certificado SEM custo extra (auditoria do Coursera = cert pago → certificate:false). Rode `npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html` pra regenerar. #4052: campo teaser marca cursos abertos (não-gated) no HTML público — 6 cursos marcados (rebalanceados em #8470, 19/09/2026: os 4 marcados originais eram homogêneos em nível/formato/certificado, o que fazia esses filtros sumirem no teaser antes do #8470 derivar as OPÇÕES do catálogo completo — ver `renderCursosPage`/`computeFacetOpts`), cobrindo ≥2 níveis, ≥2 formatos, ≥1 sem certificado, pt-br/en e 6 plataformas distintas (sem repetir nenhuma).",
     "schema": {
       "id": "slug-kebab-case (estável)",
       "title": "string",
@@ -155,7 +155,8 @@
         "NLP",
         "Deep Learning"
       ],
-      "summary": "PNL aplicada à língua portuguesa, nível acadêmico (USP). Auditoria gratuita; certificado é pago."
+      "summary": "PNL aplicada à língua portuguesa, nível acadêmico (USP). Auditoria gratuita; certificado é pago.",
+      "teaser": true
     },
     {
       "id": "deeplearning-introducao-genai-ptbr",
@@ -171,8 +172,7 @@
       "themes": [
         "IA Generativa"
       ],
-      "summary": "Módulo curto de fundamentos de GenAI no idioma local — arquiteturas de modelo generativo e GCP.",
-      "teaser": true
+      "summary": "Módulo curto de fundamentos de GenAI no idioma local — arquiteturas de modelo generativo e GCP."
     },
     {
       "id": "microsoft-azure-ai-900",
@@ -190,7 +190,8 @@
         "Cloud",
         "Fundamentos"
       ],
-      "summary": "Material de estudo (gratuito) pra certificação Azure AI Fundamentals. O exame de certificação é pago."
+      "summary": "Material de estudo (gratuito) pra certificação Azure AI Fundamentals. O exame de certificação é pago.",
+      "teaser": true
     },
     {
       "id": "fgv-ia-futuro-negocios",
@@ -243,7 +244,8 @@
         "Machine Learning",
         "Redes Neurais"
       ],
-      "summary": "Curso 2 da ML Specialization — redes neurais e algoritmos de aprendizado avançados. Auditoria gratuita."
+      "summary": "Curso 2 da ML Specialization — redes neurais e algoritmos de aprendizado avançados. Auditoria gratuita.",
+      "teaser": true
     },
     {
       "id": "deeplearning-ml-c3-unsupervised",
