@@ -41,6 +41,7 @@ jobs:
 
       # #1465: branch protection bloqueia push direto pra master — abrimos PR.
       - name: Open PR if changed
+        id: cpr
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -49,10 +50,36 @@ jobs:
           body: |
             Regen automático semanal do `docs/bug-heatmap.md` (#1014).
 
-            Mergear se o snapshot atualizado for útil; fechar sem merge caso
-            contrário. Workflow não falha mais se não houver mudanças (ver #1465).
+            Mergeada automaticamente pelo próprio workflow assim que os checks
+            passarem (#8489). Workflow não falha mais se não houver mudanças
+            (ver #1465).
           branch: bot/heatmap-weekly-regen
           delete-branch: true
           add-paths: docs/bug-heatmap.md
           author: "diaria-bot <diaria-bot@noreply.github.com>"
           committer: "diaria-bot <diaria-bot@noreply.github.com>"
+
+      # #8489: sem este passo a PR fica aberta indefinidamente — PR de bot é
+      # exceção da regra "1 PR aberto por vez" e overnight/develop trabalham
+      # fila de issues, então nada a drena. Não dá pra usar `gh pr merge
+      # --auto`: a ruleset de master não exige status check nenhum, e o
+      # auto-merge mergearia na hora, antes do "PR Checks" rodar. O --watch
+      # segura o job (~1min) até os checks fecharem e falha se algum quebrar.
+      - name: Merge quando os checks passarem
+        if: steps.cpr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.cpr.outputs.pull-request-number }}
+        run: |
+          # Os checks levam alguns segundos pra aparecer na PR recém-criada, e
+          # `gh pr checks` sai com erro quando ainda não há nenhum — esperamos
+          # o primeiro registrar antes de observar (teto 3min).
+          for _ in $(seq 1 18); do
+            n=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup | length')
+            [ "${n:-0}" -gt 0 ] && break
+            sleep 10
+          done
+          # Falha aqui (check vermelho, ou nenhum check em 3min) deixa a PR
+          # aberta de propósito: nunca mergear sem verificação.
+          gh pr checks "$PR" --watch --fail-fast
+          gh pr merge "$PR" --squash --delete-branch
