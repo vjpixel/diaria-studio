@@ -121,7 +121,8 @@ export async function evaluateFeature(
   const labeled = loadLabeledSample(rootDir, feature);
   if (!labeled) throw new Error(`sem amostra gerada pra ${feature} — rode blind-label-sample.ts --generate primeiro`);
 
-  const usable = labeled.filter((i): i is LabeledItem & { label: string } => !!i.label && i.label !== "nao_pertence");
+  const optOut = new Set(def.optOutLabels ?? []);
+  const usable = labeled.filter((i): i is LabeledItem & { label: string } => !!i.label && !optOut.has(i.label));
   if (usable.length === 0) {
     return { results: [], errors: new Map() };
   }

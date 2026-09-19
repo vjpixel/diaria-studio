@@ -54,6 +54,16 @@ export interface FeatureDef {
   labels: readonly string[];
   /** Coleta o pool de candidatos "em silêncio" pra esta feature. `rootDir` = raiz do repo. */
   collectPool(rootDir: string): { pool: PoolItem[]; skipped: string[] };
+  /**
+   * Rótulos de OPT-OUT — "isto não pertence a nenhuma das opções que o
+   * mecanismo/Jev conseguem produzir" (ex: `nao_pertence` do bucket do
+   * categorizador). Itens rotulados assim saem do cálculo de acordo/
+   * discordância de `report()` e da avaliação de `jev-eval.ts` — contar
+   * como erro puniria QUALQUER classificador pela mesma limitação
+   * estrutural de vocabulário, não por ter julgado mal. Default `[]` (toda
+   * feature sem opt-out declarado avalia 100% dos rótulos).
+   */
+  optOutLabels?: readonly string[];
 }
 
 interface SampleState {
@@ -221,10 +231,11 @@ export interface ReportSummary {
   disagreements: Array<{ id: string; hiddenGuess: string; label: string; hiddenRule?: string }>;
 }
 
-export function report(rootDir: string, feature: string): ReportSummary | null {
-  const labeled = loadLabeledSample(rootDir, feature);
+export function report(rootDir: string, def: FeatureDef): ReportSummary | null {
+  const labeled = loadLabeledSample(rootDir, def.id);
   if (!labeled) return null;
-  const done = labeled.filter((i) => i.label);
+  const optOut = new Set(def.optOutLabels ?? []);
+  const done = labeled.filter((i) => i.label && !optOut.has(i.label));
   const agree = done.filter((i) => i.hiddenGuess === i.label).length;
   const disagreements = done
     .filter((i) => i.hiddenGuess !== i.label)

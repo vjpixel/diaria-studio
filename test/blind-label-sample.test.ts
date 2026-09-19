@@ -164,7 +164,7 @@ describe("generate/record/next/report — fluxo completo (feature sintética)", 
     const [first] = next(rootDir, def.id, 1);
     record(rootDir, def, first.id, "radar");
     record(rootDir, def, first.id, "lancamento");
-    const rep = report(rootDir, def.id);
+    const rep = report(rootDir, def);
     assert.ok(rep);
     const found = rep!.disagreements.find((d) => d.id === first.id) ?? null;
     // o rótulo final é "lancamento" — se o hiddenGuess original for "radar", isso aparece como discordância.
@@ -182,12 +182,28 @@ describe("generate/record/next/report — fluxo completo (feature sintética)", 
       const flipped = item.hiddenGuess === "radar" ? "lancamento" : "radar";
       record(rootDir, def, item.id, isFirst ? flipped : item.hiddenGuess);
     }
-    const rep = report(rootDir, def.id);
+    const rep = report(rootDir, def);
     assert.ok(rep);
     assert.equal(rep!.labeled, sample.length);
     assert.equal(rep!.agree, sample.length - 1);
     assert.equal(rep!.disagreements.length, 1);
     assert.equal(rep!.disagreements[0].id, sample[0].id);
+  });
+
+  it("report exclui optOutLabels do cálculo de acordo/discordância (self-review #8413: regressão vs. o script original, que excluía `nao_pertence`)", () => {
+    const optOutDef: FeatureDef = { ...def, optOutLabels: ["nao_pertence"] };
+    generate(rootDir, optOutDef, 10);
+    const sample = next(rootDir, optOutDef.id, 5);
+    assert.ok(sample.length >= 2, "fixture precisa de ao menos 2 itens");
+    record(rootDir, optOutDef, sample[0].id, "nao_pertence"); // opt-out — deve sair do report
+    record(rootDir, optOutDef, sample[1].id, sample[1].hiddenGuess); // concorda — deve entrar
+
+    const rep = report(rootDir, optOutDef);
+    assert.ok(rep);
+    assert.ok(!rep!.disagreements.some((d) => d.id === sample[0].id), "item opt-out não deveria aparecer no report");
+    // só o item concordante conta pra `labeled`/`agree` — o opt-out é excluído do denominador inteiro.
+    assert.equal(rep!.labeled, 1);
+    assert.equal(rep!.agree, 1);
   });
 
   it("generate ABORTA sem gravar se um item já rotulado sairia da amostra", () => {

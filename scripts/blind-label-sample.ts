@@ -107,7 +107,7 @@ function cmdRecord(argv: string[]) {
 
 function cmdReport(argv: string[]) {
   const def = requireFeature(argv);
-  const r = report(ROOT, def.id);
+  const r = report(ROOT, def);
   if (!r) {
     console.error("rode --generate primeiro");
     process.exit(2);

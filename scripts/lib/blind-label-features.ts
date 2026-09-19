@@ -27,6 +27,7 @@ const BUCKETS = ["lancamento", "radar", "use_melhor"] as const;
 export const BUCKET_TIEBREAKER_8211_FEATURE: FeatureDef = {
   id: "bucket-tiebreaker-8211",
   labels: [...BUCKETS, "nao_pertence"],
+  optOutLabels: ["nao_pertence"],
   collectPool(rootDir: string) {
     const editionsRoot = join(rootDir, "data", "editions");
     const pool: PoolItem[] = [];
