@@ -24,6 +24,45 @@ import { execFileSync } from "node:child_process";
 import { resolveClaudeBin } from "./resolve-claude-bin.ts";
 import { claudeCliEnv } from "../overnight/run-scheduled-edicao.ts";
 
+/**
+ * Exceção estruturada lançada por `callClaudeCli` quando o subprocesso
+ * `claude --print` sai com erro. `execFileSync` já captura `status`/
+ * `stdout`/`stderr` no objeto de erro que joga (`Command failed: …`),
+ * mas o `catch` de quem chama `callClaudeCli` (ex:
+ * `run-agent-eval-for-pr.ts::main`) imprimia só `error.message` — que é
+ * `Command failed: <cmd + argv inteiro>`, ecoando ~30KB de prompt e
+ * deixando o `error.stderr` (onde está a causa real) invisível (#8405).
+ *
+ * Esta classe preserva o `stderr`/`stdout`/`status` como campos
+ * programáticos (quem quiser tratar o erro pode lê-los) e monta uma
+ * mensagem legível que NUNCA ecoa o prompt inteiro — o resumo do
+ * comando substitui o argv por `<prompt N chars>`.
+ */
+export class ClaudeCliError extends Error {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly command: string;
+
+  constructor(
+    message: string,
+    opts: { status: number | null; stdout: string; stderr: string; command: string },
+  ) {
+    super(message);
+    this.name = "ClaudeCliError";
+    this.status = opts.status;
+    this.stdout = opts.stdout;
+    this.stderr = opts.stderr;
+    this.command = opts.command;
+    Object.setPrototypeOf(this, ClaudeCliError.prototype);
+  }
+}
+
+/** Trunca um texto pro exibição, mantendo o inteiro disponível no campo `.stderr` do erro. */
+function preview(text: string, max = 1200): string {
+  return text.length > max ? text.slice(0, max) + `\n… [${text.length - max} chars ocultos na mensagem — leia err.stderr para o inteiro]` : text;
+}
+
 export interface ClaudeCliCallOptions {
   cwd: string;
   /** Env BRUTO (não-filtrado) do chamador — `claudeCliEnv()` roda por cima, sempre. Default `process.env`. */
@@ -67,10 +106,27 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
   if (opts.model) args.push("--model", opts.model);
   args.push(prompt);
 
-  return execFn(resolveClaudeBinFn(), args, {
-    cwd: opts.cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: filteredEnv,
-  });
+  const bin = resolveClaudeBinFn();
+  const command = `${bin} ${args.map((a) => (a === prompt ? `<prompt ${prompt.length} chars>` : a)).join(" ")}`;
+  try {
+    return execFn(bin, args, {
+      cwd: opts.cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: filteredEnv,
+    });
+  } catch (err) {
+    // #8405: `execFileSync` joga um Error cujo `.message` é `Command failed: <cmd + argv inteiro>`
+    // e que carrega `status`/`stdout`/`stderr` — o stdout/stderr é onde está a causa real
+    // (ex: `--max-turns` esgotado, `maxBuffer` estourado, cwd sem permissão). Reencapsulamos
+    // como ClaudeCliError pra o chamador poder ler esses campos sem ecoar o prompt inteiro.
+    const status = (err as { status?: number | null }).status ?? null;
+    const stdout = (err as { stdout?: string }).stdout ?? "";
+    const stderr = (err as { stderr?: string }).stderr ?? "";
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new ClaudeCliError(
+      `claude CLI falhou (status ${status ?? "sinal"}): ${msg.replace(/^Command failed: /, "")}`,
+      { status, stdout, stderr, command },
+    );
+  }
 }
