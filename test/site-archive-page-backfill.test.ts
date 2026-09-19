@@ -161,12 +161,21 @@ describe("backfillArchivePageOnDisk — página legada estilo Kit (#8352/#8354/#
     assert.equal(twice.html, once.html);
   });
 
-  it("falha fechada (não altera nada) se faltar description ou canonical — nunca visto no corpus real, mas não deve piorar", () => {
+  it("falha fechada (não altera nada além do robots) se faltar description ou canonical — nunca visto no corpus real, mas não deve piorar", () => {
     const broken = `<!doctype html><html><head><title>Só título</title></head><body></body></html>`;
     const result = backfillArchivePageOnDisk(broken, { slug: "x" });
     assert.equal(result.addedSeo, false);
-    assert.equal(result.changed, false); // sem SEO (faltam campos) e sem nav (sem prev/next)
-    assert.equal(result.html, broken);
+    assert.equal(result.addedNav, false);
+    // #8390: `max-image-preview:large` NÃO depende de description/canonical
+    // (é uma diretiva de robô, não um campo de compartilhamento), então ele
+    // entra mesmo aqui — e só ele. A falha fechada que este teste guarda é a
+    // do BLOCO DE SEO, que segue não sendo escrito.
+    assert.equal(result.addedRobots, true);
+    assert.equal(result.addedJsonLdImage, false); // sem JSON-LD nem capa nesta página
+    assert.equal(
+      result.html,
+      broken.replace("</title>", '</title><meta name="robots" content="max-image-preview:large">'),
+    );
   });
 });
 
