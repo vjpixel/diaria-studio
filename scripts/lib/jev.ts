@@ -111,9 +111,6 @@ export interface JevScoreQuestion {
    * `score` pode sair 1.16, não necessariamente um dos índices inteiros).
    */
   criteria: string[];
-  /** Mantidos por compatibilidade de documentação — a API confirmadamente os ignora (não fazem parte do envelope enviado); não passar mais valor aqui. */
-  min?: number;
-  max?: number;
 }
 
 /** "Noul" — probabilidade 0-1 de uma afirmação ser verdadeira (#8412). */

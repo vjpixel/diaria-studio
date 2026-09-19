@@ -59,8 +59,11 @@ export function loadCandidates(editionsRoot: string, maxEditions: number): { can
       if (items.length === 0) continue;
       candidates.push(...items);
       editionsUsed.push(ed);
-    } catch {
-      // edição com JSON corrompido — pula, não derruba a medição inteira
+    } catch (e) {
+      // edição com JSON corrompido — pula, não derruba a medição inteira,
+      // mas nomeia a edição/erro (#8415 review: catch silencioso escondia
+      // qual edição falhou quando a contagem final vinha menor que --editions).
+      console.error(`[jev-composite-score-eval] ${ed}: 01-approved.json ilegível (${e instanceof Error ? e.message : String(e)}) — pulada`);
     }
   }
   return { candidates, editionsUsed };
@@ -77,11 +80,18 @@ export async function scoreCandidatesViaJev(
   opts: { apiKey: string; cacheDir?: string | null; fetchImpl?: typeof fetch },
 ): Promise<{ scored: ScoredCandidate[]; itemErrors: number }> {
   const questions = axesToJevQuestions(COMPOSITE_AXES);
+  // #8415 review: `id`/`cacheKey` são escopados por (edição, url) — não só
+  // `url` — porque a regra editorial só proíbe repetir link nas ÚLTIMAS 3
+  // edições, e o corpus padrão desta medição cobre 20. A mesma URL
+  // reaparecendo >3 edições depois colidiria em `askJevBatch` (2 requests
+  // concorrentes na mesma cacheKey, resultado não-determinístico ganhando a
+  // corrida) e faria as duas ocorrências herdarem os mesmos axisAnswers.
+  const itemKey = (c: Candidate) => `${c.edition}::${c.url}`;
   const items = candidates.map((c) => ({
-    id: c.url,
+    id: itemKey(c),
     state: { title: c.title, summary: c.summary, source: c.source, published_at: c.published_at, url: c.url },
     questions,
-    cacheKey: c.url,
+    cacheKey: itemKey(c),
   }));
 
   const { results, errors } = await askJevBatch(items, {
@@ -89,10 +99,10 @@ export async function scoreCandidatesViaJev(
     cacheDir: opts.cacheDir,
     fetchImpl: opts.fetchImpl,
   });
-  const byUrl = new Map(results.map((r) => [r.id, r.answers]));
+  const byKey = new Map(results.map((r) => [r.id, r.answers]));
 
   const scored: ScoredCandidate[] = candidates.map((c) => {
-    const answers = byUrl.get(c.url) ?? [];
+    const answers = byKey.get(itemKey(c)) ?? [];
     const axisAnswers: Record<string, JevScoreAnswer> = {};
     for (const a of answers) if (a.type === "score") axisAnswers[a.id] = a;
     return {
@@ -191,6 +201,14 @@ async function main(): Promise<void> {
 
   const { candidates, editionsUsed } = loadCandidates(editionsRoot, maxEditions);
   console.error(`dataset: ${candidates.length} candidatos de ${editionsUsed.length} edições`);
+
+  // #8415 review: sem isto, um corpus vazio (clone fresco, nenhuma edição com
+  // 01-approved.json) produzia um relatório com "undefined..undefined" e
+  // divisões 0/0 (`NaN%`) em vez de um erro claro.
+  if (candidates.length === 0 || editionsUsed.length === 0) {
+    console.error("nenhum candidato encontrado — verifique se data/editions/ tem edições com _internal/01-approved.json.");
+    process.exit(2);
+  }
 
   if (dryRun) {
     console.error("(--dry-run — sem chamada à API)");
