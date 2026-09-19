@@ -61,6 +61,7 @@ import {
   evaluateKitSubscriberLimitAlarm,
   buildKitSubscriberLimitAlarmEmail,
   KIT_SUBSCRIBER_LIMIT_FINDING_KEY,
+  kitSubscriberLimitSeverity,
   type KitSubscriberLimitEvaluation,
 } from "./lib/kit-subscriber-limit-alarm.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
@@ -199,7 +200,7 @@ async function main(): Promise<void> {
 
   const result = await notifyEditorForOutcomes(
     findingOutcomes,
-    "acao",
+    kitSubscriberLimitSeverity(evaluation),
     (qualifying) => buildKitSubscriberLimitAlarmEmail(evaluation, new Date(), qualifying[0]),
     {
       cwd: ROOT,

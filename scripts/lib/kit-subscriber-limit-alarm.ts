@@ -174,3 +174,24 @@ export function buildKitSubscriberLimitAlarmEmail(
 
   return { subject, body: lines.join("\n") };
 }
+
+/**
+ * Severidade do portão `notifyEditor` para este alarme (#8439, achado do
+ * review da PR que ligou `email_policy: "urgent_only"`).
+ *
+ * A docstring de `scripts/lib/editor-notify.ts` lista "limite de assinantes
+ * Kit" como exemplo de `"urgente"`, mas o script chamava `"acao"` — que sob
+ * `urgent_only` NUNCA manda e-mail. As duas coisas estavam certas pela
+ * metade: 85% é AVISO PRÉVIO (a issue é canal suficiente), 100% é o EVENTO
+ * (o Kit bloqueia cadastro novo — crescimento para, e o editor não descobre
+ * lendo a fila de issues).
+ *
+ * Por isso a severidade é derivada da ocupação, não fixa:
+ *   - ocupação >= 100% do teto → `"urgente"` (e-mail na criação da issue);
+ *   - cruzou o threshold mas ainda abaixo do teto → `"acao"` (só issue).
+ *
+ * Pura — o caller passa a avaliação já calculada.
+ */
+export function kitSubscriberLimitSeverity(evaluation: KitSubscriberLimitEvaluation): "urgente" | "acao" {
+  return evaluation.subscriberLimit > 0 && evaluation.activeCount >= evaluation.subscriberLimit ? "urgente" : "acao";
+}
