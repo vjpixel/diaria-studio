@@ -177,14 +177,22 @@ interface GrayZoneArticle {
   edition: string;
 }
 
-/** Achata os 6 buckets de `01-categorized.json` numa lista única, dedup por URL (1ª ocorrência vence). */
-function flattenCategorizedArticles(edition: string, dir: string): GrayZoneArticle[] {
+/**
+ * Achata os 6 buckets de `01-categorized.json` numa lista única, dedup por
+ * URL (1ª ocorrência vence). `skipped` recebe a edição + motivo em caso de
+ * JSON malformado — mesmo tratamento de `BUCKET_TIEBREAKER_8211_FEATURE`/
+ * `NEGATIVE_IMPACT_8414_FEATURE` acima (nunca engolir silenciosamente: o
+ * operador de `blind-label-sample.ts --generate` só vê isso porque o
+ * caller aqui empurra pro array compartilhado).
+ */
+function flattenCategorizedArticles(edition: string, dir: string, skipped: string[]): GrayZoneArticle[] {
   const p = join(dir, "_internal", "01-categorized.json");
   if (!existsSync(p)) return [];
   let j: Record<string, unknown>;
   try {
     j = JSON.parse(readFileSync(p, "utf8"));
-  } catch {
+  } catch (e) {
+    skipped.push(`${edition} (${e instanceof Error ? e.message.slice(0, 60) : "JSON inválido"})`);
     return [];
   }
   const out: GrayZoneArticle[] = [];
@@ -232,17 +240,23 @@ function collectGrayZonePairs(
   const editions = [...dirs.keys()].sort();
   const allArticles: GrayZoneArticle[] = [];
   for (const e of editions) {
-    allArticles.push(...flattenCategorizedArticles(e, dirs.get(e)!));
+    allArticles.push(...flattenCategorizedArticles(e, dirs.get(e)!, skipped));
   }
 
+  // Pré-tokeniza cada título 1x (era recalculado em toda iteração do laço
+  // O(n²) abaixo, quadrático em cima do quadrático já aceito pela docstring).
+  const tokens = allArticles.map((a) => tokenizeForJaccard(a.title));
+
   const seenPairs = new Set<string>();
-  for (const A of allArticles) {
-    for (const B of allArticles) {
+  for (let i = 0; i < allArticles.length; i++) {
+    const A = allArticles[i];
+    for (let j = 0; j < allArticles.length; j++) {
+      const B = allArticles[j];
       if (A.edition <= B.edition) continue; // A estritamente depois de B — evita duplo-conta e par intra-edição
       if (A.url === B.url) continue;
       const pairId = [A.url, B.url].sort().join("|||");
       if (seenPairs.has(pairId)) continue;
-      const jac = jaccardSimilarity(tokenizeForJaccard(A.title), tokenizeForJaccard(B.title));
+      const jac = jaccardSimilarity(tokens[i], tokens[j]);
       if (jac < opts.zoneLo || jac >= opts.zoneHi) continue;
       seenPairs.add(pairId);
       const { threshold: effThreshold } = thresholdForPair(A.title, B.title, opts.defaultThreshold, opts.loweredThreshold);
@@ -257,7 +271,13 @@ function collectGrayZonePairs(
           a: { title: A.title, summary: A.summary, source: A.source },
           b: { title: B.title, summary: B.summary, source: B.source },
         },
-        stratum: opts.stratum,
+        // Estratifica por hiddenGuess (não por um valor constante) — garante
+        // que `stratumQuota`/`MIN_PER_STRATUM` (blind-label-core.ts) dêem um
+        // piso de amostra a AMBAS as classes do mecanismo, mesmo padrão de
+        // `NEGATIVE_IMPACT_8414_FEATURE` acima. Sem isso, a classe minoritária
+        // da zona cinzenta (tipicamente `sameLabel`, mais rara que `diffLabel`
+        // no espectro completo) podia sair sub-representada na amostra.
+        stratum: `${opts.stratum}:${hiddenGuess}`,
         hiddenGuess,
         hiddenRule: `jaccard=${jac.toFixed(2)} vs threshold=${effThreshold}`,
         edition: A.edition,

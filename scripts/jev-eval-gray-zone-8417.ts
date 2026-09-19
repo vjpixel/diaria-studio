@@ -33,16 +33,31 @@ import { buildConfusionMatrix, renderConfusionMatrix, confidenceAccuracyCurve } 
 
 const ROOT = resolve(import.meta.dirname, "..");
 
-/** Rótulo "positivo" (probabilidade alta) por feature — o outro rótulo do vocabulário é o negativo. */
-function positiveLabelFor(feature: string): string {
-  if (feature === "dedup-grayzone-8417") return "mesma_historia";
-  if (feature === "highlight-themes-grayzone-8417") return "mesmo_tema";
-  throw new Error(`positiveLabelFor: feature desconhecida ${feature}`);
-}
-function negativeLabelFor(feature: string): string {
-  if (feature === "dedup-grayzone-8417") return "historias_distintas";
-  if (feature === "highlight-themes-grayzone-8417") return "temas_distintos";
-  throw new Error(`negativeLabelFor: feature desconhecida ${feature}`);
+/**
+ * Rótulo "positivo" (probabilidade `noul` alta) por feature — o outro
+ * rótulo do vocabulário `FeatureDef.labels` é o negativo. Só o NOME do
+ * rótulo positivo precisa ser declarado aqui (não dá pra derivar
+ * automaticamente do vocabulário de 2 elementos qual é "positivo" — é
+ * semântica da pergunta, não da estrutura); `resolveLabels` abaixo valida
+ * contra `def.labels` (fonte única em `blind-label-features.ts`) e lança
+ * cedo — com o feature id no erro — se o nome citado aqui não existir mais
+ * lá (ex: renomeado num refactor futuro), em vez de falhar tarde/confuso
+ * num mismatch de string na hora do eval.
+ */
+const POSITIVE_LABEL_BY_FEATURE: Record<string, string> = {
+  "dedup-grayzone-8417": "mesma_historia",
+  "highlight-themes-grayzone-8417": "mesmo_tema",
+};
+
+function resolveLabels(feature: string, labels: readonly string[]): { positive: string; negative: string } {
+  const positive = POSITIVE_LABEL_BY_FEATURE[feature];
+  if (!positive) throw new Error(`POSITIVE_LABEL_BY_FEATURE: feature desconhecida ${feature}`);
+  if (!labels.includes(positive)) {
+    throw new Error(`POSITIVE_LABEL_BY_FEATURE[${feature}]="${positive}" não está em FeatureDef.labels=[${labels.join(", ")}] — vocabulário divergiu, atualize os dois juntos`);
+  }
+  const negative = labels.find((l) => l !== positive);
+  if (!negative) throw new Error(`feature ${feature}: labels=[${labels.join(", ")}] não tem um 2º rótulo pra ser o negativo`);
+  return { positive, negative };
 }
 
 export interface GrayZoneEvalItem {
@@ -76,8 +91,7 @@ export async function evaluateOnce(opts: {
   const optOut = new Set(def.optOutLabels ?? []);
   const usable = labeled.filter((i): i is LabeledItem & { label: string } => !!i.label && !optOut.has(i.label));
 
-  const posLabel = positiveLabelFor(opts.feature);
-  const negLabel = negativeLabelFor(opts.feature);
+  const { positive: posLabel, negative: negLabel } = resolveLabels(opts.feature, def.labels);
 
   const { results: jevResults, errors } = await askJevBatch(
     usable.map((item) => ({ id: item.id, state: item.jevState, questions: [spec.question], cacheKey: item.id })),
@@ -152,7 +166,7 @@ export function renderReport(feature: string, results: GrayZoneEvalItem[], error
   lines.push("");
   for (const r of both) {
     if (r.mechanismGuess !== r.jevGuess) {
-      lines.push(`- \`${r.label}\` — mecanismo=${r.mechanismGuess}, Jev=${r.jevGuess} (p=${r.jevProbability?.toFixed(2)}, conf=${r.jevConfidence?.toFixed(2)})`);
+      lines.push(`- \`${r.label}\` — mecanismo=${r.mechanismGuess}, Jev=${r.jevGuess} (p=${r.jevProbability?.toFixed(2)}, conf=${r.jevConfidence?.toFixed(2)}) — ${r.id.slice(0, 120)}`);
     }
   }
   lines.push("");

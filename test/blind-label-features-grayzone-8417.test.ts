@@ -86,6 +86,33 @@ describe("DEDUP_GRAYZONE_8417_FEATURE.collectPool", () => {
   it("labels aceitos", () => {
     assert.deepEqual([...DEDUP_GRAYZONE_8417_FEATURE.labels].sort(), ["historias_distintas", "mesma_historia"]);
   });
+
+  it("edição com 01-categorized.json malformado entra em `skipped`, não derruba o resto (#8472 review)", () => {
+    const badDir = join(rootDir, "data", "editions", "260103", "_internal");
+    mkdirSync(badDir, { recursive: true });
+    writeFileSync(join(badDir, "01-categorized.json"), "{ json malformado");
+
+    const A = { url: "https://a.com/ok-a", title: "GPT-6 Astra: OpenAI lança modelo mais inteligente da história do ChatGPT", summary: "s" };
+    const B = { url: "https://a.com/ok-b", title: "OpenAI lança GPT-6 Astra, modelo que atingiu nível crítico de cibersegurança", summary: "s" };
+    writeEdition("260101", { lancamento: [], radar: [B], use_melhor: [] });
+    writeEdition("260102", { lancamento: [], radar: [A], use_melhor: [] });
+
+    const { pool, skipped } = DEDUP_GRAYZONE_8417_FEATURE.collectPool(rootDir);
+    assert.equal(pool.length, 1, "edição boa continua produzindo par válido");
+    assert.equal(skipped.length, 1);
+    assert.match(skipped[0], /260103/);
+  });
+
+  it("estratifica por hiddenGuess, não por um stratum constante (#8472 review)", () => {
+    // Par que o mecanismo classifica como historias_distintas (jaccard=0.38 < threshold 0.6/0.55).
+    const A = { url: "https://a.com/s-a", title: "GPT-6 Astra: OpenAI lança modelo mais inteligente da história do ChatGPT", summary: "s" };
+    const B = { url: "https://a.com/s-b", title: "OpenAI lança GPT-6 Astra, modelo que atingiu nível crítico de cibersegurança", summary: "s" };
+    writeEdition("260101", { lancamento: [], radar: [B], use_melhor: [] });
+    writeEdition("260102", { lancamento: [], radar: [A], use_melhor: [] });
+    const { pool } = DEDUP_GRAYZONE_8417_FEATURE.collectPool(rootDir);
+    assert.equal(pool.length, 1);
+    assert.equal(pool[0].stratum, `dedup:${pool[0].hiddenGuess}`);
+  });
 });
 
 describe("HIGHLIGHT_THEMES_GRAYZONE_8417_FEATURE.collectPool", () => {
@@ -97,7 +124,7 @@ describe("HIGHLIGHT_THEMES_GRAYZONE_8417_FEATURE.collectPool", () => {
     writeEdition("260102", { lancamento: [], radar: [A], use_melhor: [] });
     const { pool } = HIGHLIGHT_THEMES_GRAYZONE_8417_FEATURE.collectPool(rootDir);
     assert.equal(pool.length, 1);
-    assert.equal(pool[0].stratum, "highlight_themes");
+    assert.match(pool[0].stratum, /^highlight_themes:/);
   });
 
   it("labels aceitos", () => {
