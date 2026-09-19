@@ -15,7 +15,7 @@
  *
  * ## Achado ao vivo que motivou (260907, issue #7570)
  *
- * `/diaria-instagram-semanal` (modo `clicked`) abortou porque a edição
+ * `/diaria-retro-semanal` (modo `clicked`) abortou porque a edição
  * 260904 tinha sido publicada — só que via Kit, não Beehiiv (a diária
  * migrou o ENVIO pro Kit em #7388, 04/09/2026) — e `data/kit-cache/
  * broadcasts/` estava (e sempre esteve) vazio. `build-link-ctr.ts` também
