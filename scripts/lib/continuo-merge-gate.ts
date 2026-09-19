@@ -41,16 +41,28 @@
  * 1. `superseded` — issue(s) já fechada(s) por outra coisa → `reject`
  *    incondicional, ANTES até do veredito da revisão (não importa o que o
  *    review achou: não há mais nada útil a mergear, #6238).
- * 2. veredito da revisão == `reject` → `reject`.
- * 3. `reviewedHeadSha` desconhecido (`null` — nenhum review independente
+ * 2. `reviewedHeadSha` desconhecido (`null` — nenhum review independente
  *    encontrado, ou marcador legado sem o campo `head=`, #6926) →
  *    `escalate`. Sem SHA revisado não há como saber SE o HEAD atual é o
- *    mesmo que foi revisado — nunca assumir que sim.
- * 4. HEAD mudou depois do início da revisão (`currentHeadSha !==
+ *    mesmo que foi revisado — nunca assumir que sim. VEM ANTES do
+ *    veredito `reject`: um review que rejeitou um HEAD sem que o SHA
+ *    revisado seja conhecido não pode ser permanentemente rejeitado — o
+ *    próximo tick re-revisa (#8376).
+ * 3. HEAD mudou depois do início da revisão (`currentHeadSha !==
  *    reviewedHeadSha` — corrida do #5716 aplicada aqui: a revisão não
  *    cobre commits pós-revisão) → `escalate` (não `reject` — a PR pode
  *    estar ótima, só precisa de review de novo no SHA novo; o próximo tick
- *    do cron cobre isso).
+ *    do cron cobre isso). VEM ANTES do veredito `reject`: rejeitar um HEAD
+ *    que já não é o atual congela a PR na fila para sempre (#8376) — o
+ *    author só conserta a divergência (rebase) e o reject já está gravado,
+ *    então o próximo tick vê `verdict=reject` e rejeita de novo sem
+ *    jamais chegar ao portão de staleness.
+ * 4. veredito da revisão == `reject` → `reject`. Só chega aqui quando o SHA
+ *    revisado é conhecido (portão 2) E bate com o HEAD atual (portão 3) —
+ *    ou seja, é um reject genuine, cobrindo o HEAD de fato. Rejeitar um
+ *    review stale (HEAD divergente) aqui foi o bug da fila de PRs sem
+ *    merge (#8376): na ordem antiga o portão de `verdict === "reject"`
+ *    vinha antes dos de staleness e capturava reject de reviews obsoletos.
  * 5. caminho sensível (guard fail-closed: `null`/erro conta como sensível)
  *    → `escalate` — revisão humana.
  * 6. CI não `pass` → `escalate` — não decide sozinho enquanto CI não
@@ -64,6 +76,22 @@
  *    `--effort low`), só decide sobre o que consegue julgar; diff grande
  *    fica pro overnight/editor.
  * 10. nada do acima → `merge`.
+ *
+ * ## Invariante #8376 (ordem dos portões 2/3 × 4)
+ *
+ * Os portões de staleness (2 e 3) vêm antes do `reject` (4) por uma razão
+ * específica e não por hierarquia de severidade: um `reject` é um veredito
+ * **gravado** — `continuo-pr-review.sh` comenta na PR e aplica a label
+ * `continuo-rejeitado` (idempotente, mas permanente). Um review stale é um
+ * veredito legítimo que cobriu um HEAD que já não é o atual: a PR foi
+ * alterada pelo author (rebase) depois de a revisão ter rodado. Rejeitar
+ * isso de forma permanente é o que prende a fila — o author corrige, o
+ * HEAD bate de novo, e o próximo tick vê `verdict=reject` (o mesmo
+ * marcador, mesmo SHA revisado) e rejeita de novo, porque o portão de
+ * divergência nunca é alcançado. Escalando em vez de rejeitar, o próximo
+ * tick re-revisa o SHA novo e o ciclo recupera. Um reject genuine (SHA
+ * revisado == HEAD atual, verdict=reject) continua rejeitado — o portão 4
+ * ainda existe, só depois dos de staleness.
  */
 
 export type ContinuoMergeAction = "merge" | "escalate" | "reject";
@@ -85,10 +113,10 @@ export interface ContinuoMergeGateInput {
    *  campo `head=` do marcador de review (#6926,
    *  `extractIndependentReviewHeadSha`), NUNCA fabricado a partir do HEAD
    *  atual pelo chamador (achado do review da PR #6932: um chamador que
-   *  fizesse `reviewedHeadSha = currentHeadSha` neutralizaria o portão 4
+   *  fizesse `reviewedHeadSha = currentHeadSha` neutralizaria o portão 3
    *  por construção — os dois SEMPRE bateriam). `null` cobre "nenhum
    *  review independente encontrado" e "marcador legado sem o campo
-   *  `head=`" — os dois casos escalam (portão 3), nunca assumem que o
+   *  `head=`" — os dois casos escalam (portão 2), nunca assumem que o
    *  HEAD atual foi o revisado. */
   reviewedHeadSha: string | null;
   /** `null` = a lista de arquivos alterados não pôde ser obtida/validada
@@ -118,10 +146,6 @@ export function evaluateContinuoMergeGate(input: ContinuoMergeGateInput): Contin
     };
   }
 
-  if (input.verdict === "reject") {
-    return { action: "reject", reason: "veredito da revisão: reject" };
-  }
-
   if (input.reviewedHeadSha === null) {
     return {
       action: "escalate",
@@ -135,6 +159,10 @@ export function evaluateContinuoMergeGate(input: ContinuoMergeGateInput): Contin
       action: "escalate",
       reason: `HEAD mudou depois do início da revisão (revisado=${input.reviewedHeadSha}, atual=${input.currentHeadSha ?? "desconhecido"}) — corrida do #5716, revisão não cobre o SHA atual`,
     };
+  }
+
+  if (input.verdict === "reject") {
+    return { action: "reject", reason: "veredito da revisão: reject" };
   }
 
   if (input.sensitive !== false) {
@@ -169,7 +197,7 @@ export function evaluateContinuoMergeGate(input: ContinuoMergeGateInput): Contin
   if (input.verdict !== "approve") {
     // Caminho LEGÍTIMO, não caso defensivo improvável: `verdict === null`
     // chegando até aqui é o resultado normal de um marcador com `head=`
-    // válido (passou o portão 3 acima) mas SEM o campo `verdict=` — ex.
+    // válido (passou o portão 2 acima) mas SEM o campo `verdict=` — ex.
     // review de formato legado que já tinha `head=` antes de `verdict=`
     // existir, hipoteticamente, ou uma fonte de marcador diferente deste
     // script. Fail-closed: exige `"approve"` explícito, nunca aprova por
