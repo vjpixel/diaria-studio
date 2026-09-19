@@ -385,7 +385,6 @@ export function buildChannelTable(
 
   const rows: ChannelSummaryRow[] = [];
   for (const canal of Array.from(channels).sort()) {
-    if (excluded.has(canal)) continue;
     const own = metrics.filter((m) => m.canal === canal);
     const cliquesTotal = own.reduce((sum, m) => sum + m.cliques, 0);
     const impressoesTotal = own.reduce((sum, m) => sum + m.impressoes, 0);
