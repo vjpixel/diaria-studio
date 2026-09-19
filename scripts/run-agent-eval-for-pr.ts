@@ -32,6 +32,13 @@
  * aborta — pode haver motivo legítimo (testar mudança local ainda não
  * pusheada).
  *
+ * ## Compatibilidade com o `gh` 2.46.0 (#8403)
+ *
+ * O SHA base da PR vem de `gh api repos/{owner}/{repo}/pulls/{n}`
+ * (`.base.sha`), não de `gh pr view --json baseRefOid`: o `gh` do servidor
+ * `300` é 2.46.0 e não conhece esse campo. Ver `fetchPrBaseSha` para o
+ * porquê de `.base.sha` (e não o merge-base) preservar a semântica.
+ *
  * ## Detecção do gatilho — via API do GitHub, não via disco local
  *
  * Ao contrário do corpo candidato (lido do disco, ver acima), a detecção
@@ -127,12 +134,56 @@ export interface PrMeta {
   files: string[];
 }
 
+const SHA40_RE = /^[0-9a-f]{40}$/;
+
+/**
+ * SHA base da PR via API REST (`repos/{owner}/{repo}/pulls/{n}` → `.base.sha`)
+ * em vez de `gh pr view --json baseRefOid` (#8403).
+ *
+ * **Por que não `--json baseRefOid`:** o `gh` do servidor `300` é 2.46.0 e
+ * não expõe esse campo — `gh pr view ... --json ...,baseRefOid` aborta com
+ * `Unknown JSON field: "baseRefOid"`, matando o script inteiro antes de
+ * qualquer eval (e deixando o check `Check agent-eval gate` impossível de
+ * satisfazer nessa máquina). Mesma classe do #6225 (`gh pr checks --json`
+ * inexistente no 2.46.0, ver `scripts/lib/pr-checks-gate.ts`): a correção é
+ * adaptar o script à versão que a distro entrega, nunca exigir um `gh` mais
+ * novo.
+ *
+ * **Por que `.base.sha` e não o merge-base:** `.base.sha` do REST é
+ * exatamente o mesmo valor que o `baseRefOid` do GraphQL — ambos leem o
+ * `base_sha` gravado no registro da PR (verificado ao vivo na PR #8401 em
+ * 19/09/2026: REST `.base.sha` e GraphQL `baseRefOid` devolveram o mesmo
+ * `0e758609…`). O **merge-base** (`compare/{base}...{head}` →
+ * `.merge_base_commit.sha`) é OUTRO commit sempre que o base ref andou entre
+ * o fork da branch e a abertura da PR (na mesma #8401 deu `8c02a79a…`, 1
+ * commit antes) — trocar por ele mudaria a semântica do conteúdo "antigo"
+ * comparado por `fetchFileContentAtRef`, então não é a substituição certa.
+ *
+ * Falha ALTO (lança) em qualquer erro do `gh` ou se a saída não for um SHA
+ * de 40 hex — nunca degrada pra string vazia, que faria
+ * `fetchFileContentAtRef` buscar um ref inválido e (via 404) concluir
+ * "arquivo ausente na base", ou seja, um trigger de eval fabricado.
+ */
+export function fetchPrBaseSha(prNumber: string, runner: CommandRunner): string {
+  const r = runner("gh", ["api", `repos/{owner}/{repo}/pulls/${prNumber}`, "--jq", ".base.sha"]);
+  if (r.status !== 0) {
+    throw new Error(`[#8403] gh api repos/{owner}/{repo}/pulls/${prNumber} (.base.sha) falhou: ${r.stderr || `exit ${r.status}`}`);
+  }
+  const sha = r.stdout.trim();
+  if (!SHA40_RE.test(sha)) {
+    throw new Error(`[#8403] base.sha da PR ${prNumber} não é um SHA de 40 hex (recebido: ${JSON.stringify(sha)}) — abortando em vez de seguir com ref inválido.`);
+  }
+  return sha;
+}
+
 export function fetchPrMeta(prNumber: string, runner: CommandRunner): PrMeta {
-  const r = runner("gh", ["pr", "view", prNumber, "--json", "number,url,title,baseRefOid,headRefOid,files"]);
+  // `number,url,title,headRefOid,files` são todos suportados no gh 2.46.0
+  // (conferido ao vivo); só `baseRefOid` não é — ele vem do REST, acima.
+  const r = runner("gh", ["pr", "view", prNumber, "--json", "number,url,title,headRefOid,files"]);
   if (r.status !== 0) {
     throw new Error(`[#8144] gh pr view ${prNumber} falhou: ${r.stderr || `exit ${r.status}`}`);
   }
-  let parsed: { number: number; url: string; title: string; baseRefOid: string; headRefOid: string; files: Array<{ path: string }> };
+  let parsed: { number: number; url: string; title: string; headRefOid: string; files: Array<{ path: string }> };
   try {
     parsed = JSON.parse(r.stdout);
   } catch (err) {
@@ -142,7 +193,7 @@ export function fetchPrMeta(prNumber: string, runner: CommandRunner): PrMeta {
     number: parsed.number,
     url: parsed.url,
     title: parsed.title,
-    baseRefOid: parsed.baseRefOid,
+    baseRefOid: fetchPrBaseSha(prNumber, runner),
     headRefOid: parsed.headRefOid,
     files: (parsed.files ?? []).map((f) => f.path),
   };
