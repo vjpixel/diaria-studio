@@ -153,7 +153,7 @@ describe("loadArchiveImageMigrationMap (#8364)", () => {
 });
 
 describe("buildArchivePageHtml — integração real com o mapa committed (#8364)", () => {
-  it("acervo real: uma URL media.beehiiv.com AUSENTE do mapa committed hoje passa intocada (estado esperado até a migração real rodar)", () => {
+  it("acervo real: uma URL media.beehiiv.com AUSENTE do mapa committed passa intocada (a migração real já rodou — esta fixture usa uma URL sintética que nunca esteve no acervo, então segue fora do mapa de propósito)", () => {
     const post = makePost({
       content: {
         free: {
