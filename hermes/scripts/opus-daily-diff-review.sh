@@ -75,12 +75,12 @@ else
 fi
 
 if [ -z "${BASE_SHA:-}" ] || [ "$BASE_SHA" = "$HEAD_SHA" ]; then
-  echo "[daily-review] nada novo desde o último review ($HEAD_SHA) — noop"
+  echo "[daily-review] nada novo desde o último review ($HEAD_SHA) — noop" >&2
   exit 0
 fi
 
 NLINES=$(git diff --stat "$BASE_SHA..$HEAD_SHA" | tail -1)
-echo "[daily-review] range $BASE_SHA..$HEAD_SHA ($NLINES)"
+echo "[daily-review] range $BASE_SHA..$HEAD_SHA ($NLINES)" >&2
 
 DIFF_LINES=$(git diff "$BASE_SHA..$HEAD_SHA" | wc -l)
 RANGE_NOTE=""
@@ -125,7 +125,7 @@ Se alguma chamada de gh issue create FALHOU, conte em issues_falharam e liste o 
 OUT_FILE="$STATE_DIR/last-daily-review-output.txt"
 echo "$PROMPT" | timeout 5400 claude -p \
   --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh pr list:*)" \
-  --model opus --effort low | tee "$OUT_FILE"
+  --model opus --effort low | tee "$OUT_FILE" >&2
 
 # #6987/#6989 (01/09/2026): `command grep` — neste ambiente `grep` é uma
 # função de shell que shella pro binário `claude`; se ele quebrar, todo
@@ -160,4 +160,32 @@ sed -i '/RESUMO-DAILY-REVIEW:/{s|,\(https\?://\)|, \1|g; s|issues_criadas=\(http
 
 # Marco avança só depois do review completar sem erro (set -e garante).
 echo "$HEAD_SHA" > "$STATE_FILE"
-echo "[daily-review] concluído — marco avançado para $HEAD_SHA"
+echo "[daily-review] concluído — marco avançado para $HEAD_SHA" >&2
+
+# Entrega SÓ QUANDO HÁ PROBLEMA (editor, 19/09/2026) ─────────────────────────
+# O job de cron é `no_agent=True` no Hermes: o stdout deste script é entregue
+# verbatim no Telegram e stdout VAZIO vira tick silencioso. Antes, o `tee`
+# acima jogava o TRANSCRIPT INTEIRO do Opus no stdout — todo dia, revisão
+# limpa inclusive. Pedido do editor: "só receber mensagem se algum problema
+# estiver acontecendo". O transcript segue completo em $OUT_FILE (e no log do
+# cron, via stderr); o que decide a mensagem é a linha de resumo.
+#
+# Problema = findings > 0 (há o que olhar) ou issues_falharam > 0 (o review
+# achou algo e NÃO conseguiu registrar — o pior caso, porque some sem deixar
+# rastro acionável). Resumo ilegível/ausente TAMBÉM avisa: não se afirma
+# "está tudo bem" a partir de um resumo que não deu pra ler — silêncio ali
+# seria indistinguível de um dia limpo. Dia limpo de verdade: silêncio.
+RESUMO=$(command grep -m1 "RESUMO-DAILY-REVIEW:" "$OUT_FILE" || true)
+FINDINGS=$(printf '%s' "$RESUMO" | command grep -oE 'findings=[0-9]+' | head -1 | cut -d= -f2)
+ISSUES_FALHARAM=$(printf '%s' "$RESUMO" | command grep -oE 'issues_falharam=[0-9]+' | head -1 | cut -d= -f2)
+
+if [ -z "$FINDINGS" ] || [ -z "$ISSUES_FALHARAM" ]; then
+  echo "[daily-review] resumo do dia não pôde ser lido (findings/issues_falharam ausentes) — transcript em $OUT_FILE"
+  echo "$RESUMO"
+  exit 0
+fi
+
+if [ "$FINDINGS" -gt 0 ] || [ "$ISSUES_FALHARAM" -gt 0 ]; then
+  echo "$RESUMO"
+fi
+exit 0
