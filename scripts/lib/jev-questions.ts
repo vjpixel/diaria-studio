@@ -81,11 +81,34 @@ export const BUCKET_TIEBREAKER_8211: JevQuestionSpec = {
 };
 
 /**
+ * Medição 1 do epic #8412 (#8414) — `negative_impact` por artigo via Jev
+ * (tipo `noul`) vs. tag do `scorer-chunk` + backstop determinístico
+ * (`negative-impact-promotion.ts`). Texto EXATO da issue #8414 — nenhum
+ * ajuste pós-corpus.
+ */
+export const NEGATIVE_IMPACT_8414: JevQuestionSpec = {
+  id: "negative-impact-8414",
+  issue: "#8414",
+  expectedState: ["title", "url", "summary"],
+  expectedOutcome:
+    "ganho medido sobre a tag do scorer-chunk no gabarito cego (McNemar) — critério de pronto de #8414",
+  question: {
+    id: "negative_impact",
+    type: "noul",
+    instructions:
+      "Este artigo documenta um dano REAL já causado por IA (prejuízo, vítima, perda, " +
+      "decisão adversa, falha com consequência) — não uma menção de risco hipotético, " +
+      "não um benchmark ruim, não uma crítica de opinião.",
+  },
+};
+
+/**
  * Registro por id — cada medição futura adiciona sua entrada aqui (#8414+).
  * `jev-eval.ts --feature X` resolve a pergunta por este mapa.
  */
 export const JEV_QUESTION_REGISTRY: Record<string, JevQuestionSpec> = {
   [BUCKET_TIEBREAKER_8211.id]: BUCKET_TIEBREAKER_8211,
+  [NEGATIVE_IMPACT_8414.id]: NEGATIVE_IMPACT_8414,
 };
 
 export function getJevQuestionSpec(id: string): JevQuestionSpec | undefined {

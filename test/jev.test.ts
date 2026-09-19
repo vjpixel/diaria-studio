@@ -96,6 +96,11 @@ describe("parseJevAnswers", () => {
   it("lança se noul.probability não é número", () => {
     assert.throws(() => parseJevAnswers({ answers: { harm: { type: "noul" } } }, [NOUL_Q]), /não é número/);
   });
+
+  it("parseia noul.noul — contrato REAL confirmado ao vivo (#8414, 19/09/2026): a API responde `noul`, não `probability`", () => {
+    const answers = parseJevAnswers({ answers: { harm: { type: "noul", noul: 0.82 } } }, [NOUL_Q]);
+    assert.deepEqual(answers[0], { id: "harm", type: "noul", probability: 0.82, confidence: 1 });
+  });
 });
 
 describe("hashJevQuestions", () => {
