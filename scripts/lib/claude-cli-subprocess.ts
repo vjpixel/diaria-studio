@@ -58,8 +58,14 @@ export class ClaudeCliError extends Error {
   }
 }
 
-/** Trunca um texto pro exibição, mantendo o inteiro disponível no campo `.stderr` do erro. */
-function preview(text: string, max = 1200): string {
+/**
+ * Trunca um texto pro exibição, mantendo o inteiro disponível no campo
+ * `.stderr`/`.stdout` do erro (#8405). Exportado pra `prompt-regression-eval.ts`
+ * e `run-agent-eval-for-pr.ts` usarem a MESMA regra de truncamento — duplicar
+ * a lógica em cada `catch` que imprimisse stderr seria o caminho pra
+ * divergirem silenciosamente.
+ */
+export function preview(text: string, max = 1200): string {
   return text.length > max ? text.slice(0, max) + `\n… [${text.length - max} chars ocultos na mensagem — leia err.stderr para o inteiro]` : text;
 }
 
@@ -123,9 +129,17 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
     const status = (err as { status?: number | null }).status ?? null;
     const stdout = (err as { stdout?: string }).stdout ?? "";
     const stderr = (err as { stderr?: string }).stderr ?? "";
-    const msg = err instanceof Error ? err.message : String(err);
+    // #8405 (review): a mensagem é montada a partir de `command`, que já
+    // substitui o argv pelo `<prompt N chars>`, e NUNCA a partir de
+    // `err.message` — o `execFileSync` embute o prompt inteiro (~30KB) na
+    // própria mensagem (`Command failed: <cmd + argv>`), então ler
+    // `err.message` ecoaria o prompt de volta, exatamente o que a issue
+    // #8405 denunciou. Mesmo que o Error lançado não seja do `execFileSync`
+    // (ex: lançado manualmente com a string inteira), o prompt nunca entra
+    // na mensagem: o inteiro só vive em `err.stderr`/`err.stdout`, que o
+    // chamador lê sob demanda.
     throw new ClaudeCliError(
-      `claude CLI falhou (status ${status ?? "sinal"}): ${msg.replace(/^Command failed: /, "")}`,
+      `claude CLI falhou (status ${status ?? "sinal"}): ${command}`,
       { status, stdout, stderr, command },
     );
   }

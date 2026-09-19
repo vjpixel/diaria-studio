@@ -77,20 +77,10 @@ import { checkCarouselTextOverflow } from "./invariant-checks/stage-4.ts";
 import { checkBannedLexicon } from "./lint-checks/banned-lexicon.ts";
 import { checkTitleLengths, MAX_TITLE_LENGTH } from "./lint-checks/title-length.ts";
 import { runStage2LintReport } from "../lint-newsletter-md.ts";
-import { callClaudeCli, ClaudeCliError, type ClaudeCliCallOptions } from "./claude-cli-subprocess.ts";
+import { callClaudeCli, ClaudeCliError, preview, type ClaudeCliCallOptions } from "./claude-cli-subprocess.ts";
 
 export const PROMPT_EVAL_AGENTS = ["writer-destaque", "social-writer"] as const;
 export type PromptEvalAgent = (typeof PROMPT_EVAL_AGENTS)[number];
-
-/**
- * #8405: preview helper used by the `callClaudeCli` catch in
- * `runAgentRepetitions` — stderr/stdout can be huge (a JSON response is
- * 1MB+; the prompt itself is ~30KB). Never echo the whole thing: truncate
- * and point at the full `err.stderr` field.
- */
-function preview(text: string, max = 1200): string {
-  return text.length > max ? text.slice(0, max) + `\n… [${text.length - max} chars ocultos na mensagem — leia err.stderr para o inteiro]` : text;
-}
 
 export function isPromptEvalAgent(value: string): value is PromptEvalAgent {
   return (PROMPT_EVAL_AGENTS as readonly string[]).includes(value);

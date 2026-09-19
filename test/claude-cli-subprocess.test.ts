@@ -130,8 +130,15 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
   });
 
   it("(#8405) falha do subprocesso vira ClaudeCliError com status/stdout/stderr legíveis, NUNCA ecoando o prompt inteiro", () => {
-    const execFn = (() => {
-      const err = new Error("Command failed: /fake/claude --print ... <prompt 30000 chars>");
+    // O fixture reproduz o que `execFileSync` joga de fato: um Error cuja
+    // `.message` é `Command failed: <bin> <argv inteiro>` — com o prompt
+    // (~30KB) embutido. Antes do fix, `callClaudeCli` lia `err.message`
+    // e ecoava isso na mensagem do ClaudeCliError; o teste anterior não
+    // reproduzia isso (a mensagem falsa já trazia `<prompt 30000 chars>`,
+    // então o assert passava sem testar nada). Aqui o prompt é real.
+    const prompt = "X".repeat(30000);
+    const execFn = ((bin: string, args: string[]) => {
+      const err = new Error(`Command failed: ${bin} ${args.join(" ")}`);
       (err as { status?: number }).status = 1;
       (err as { stdout?: string }).stdout = "stdout legível";
       (err as { stderr?: string }).stderr = "stderr com a causa real: max_turns esgotado";
@@ -139,11 +146,11 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     }) as unknown as typeof import("node:child_process").execFileSync;
 
     assert.throws(
-      () => callClaudeCli("X".repeat(30000), { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" }),
+      () => callClaudeCli(prompt, { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" }),
       ClaudeCliError,
     );
     try {
-      callClaudeCli("X".repeat(30000), { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
+      callClaudeCli(prompt, { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
       assert.fail("devia lançar");
     } catch (err) {
       assert.ok(err instanceof ClaudeCliError, "deveria ser ClaudeCliError");
@@ -151,9 +158,11 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
       assert.equal(err.stdout, "stdout legível");
       assert.equal(err.stderr, "stderr com a causa real: max_turns esgotado");
       assert.ok(err.command.includes("/fake/claude"));
+      assert.ok(err.command.includes("<prompt 30000 chars>"), "o prompt é substituído por um resumo no command");
       // #8405: a mensagem NUNCA ecoa o prompt inteiro — o argv é truncado.
-      assert.ok(!err.message.includes("X".repeat(30000)), "a mensagem não pode ecoar o prompt inteiro");
-      assert.ok(err.message.includes("<prompt 30000 chars>"), "o prompt é substituído por um resumo");
+      assert.ok(!err.message.includes(prompt), "a mensagem não pode ecoar o prompt inteiro");
+      assert.ok(err.message.includes("<prompt 30000 chars>"), "o prompt é substituído por um resumo na mensagem");
+      assert.ok(!err.message.includes("Command failed:"), "a mensagem não repete a capa do execFileSync");
     }
   });
 
@@ -169,6 +178,27 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
       assert.equal(err.status, null);
       assert.equal(err.stdout, "");
       assert.equal(err.stderr, "");
+    }
+  });
+
+  it("(#8405) mesmo com um Error genérico que carrega o prompt na message, o prompt não entra na mensagem do ClaudeCliError", () => {
+    // Caso de defesa: alguém chama callClaudeCli e o execFn joga um Error
+    // qualquer cuja `.message` é o prompt cru (não o formato do execFileSync).
+    // O fix não deve confiar em `err.message` em momento algum.
+    const prompt = "esse é o prompt de 30 mil caracteres ".repeat(2000);
+    const execFn = (() => {
+      throw new Error(prompt);
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    try {
+      callClaudeCli(prompt, { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
+      assert.fail("devia lançar");
+    } catch (err) {
+      assert.ok(err instanceof ClaudeCliError);
+      assert.equal(err.status, null);
+      assert.equal(err.stdout, "");
+      assert.equal(err.stderr, "");
+      assert.ok(!err.message.includes(prompt), "a mensagem não pode ecoar o prompt, mesmo vindo de um Error genérico");
+      assert.ok(err.message.includes("/fake/claude"), "a mensagem é construída a partir do command, não do err.message");
     }
   });
 
