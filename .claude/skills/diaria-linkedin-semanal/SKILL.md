@@ -21,7 +21,7 @@ inteira antes — não só o body.
 ## Decisões do editor já tomadas (não são desta skill pra revisitar)
 
 - **Canal: newsletter nativa do LinkedIn** (perfil pessoal do editor, não a
-  Page) — diferente de `/diaria-instagram-semanal` (post de feed, só
+  Page) — diferente de `/diaria-retro-semanal` (post de feed, só
   Instagram desde #4483, sábado, com ranking por clique restrito a
   D1/D2/D3). As duas skills seguem **separadas** (ver "Sobreposição"
   abaixo) — não fundir, não renomear esta.
@@ -124,7 +124,7 @@ O **ciclo** (`{YY}w{WW}`, ex: `26w31`) é derivado da semana de CONTEÚDO
 
 - As edições da semana (segunda a sexta) precisam ter
   `data/editions/{AAMMDD}/02-reviewed.md` no disco — mesmo risco de
-  retenção documentado em `/diaria-instagram-semanal` (se
+  retenção documentado em `/diaria-retro-semanal` (se
   `data/editions/{AAMMDD}/` for arquivado antes de rodar esta skill, essa
   edição não pode ser recuperada pro cálculo).
 - **Dois caches de clique, os dois obrigatórios** — ambos populados
@@ -698,9 +698,9 @@ Chrome — e corrigir depois é retrabalho (artigo já agendado não é editáve
 sem desagendar). A decisão do editor foi mover os DOIS pro Passo 9 manual
 (capa E o clique de agendar, não só o 2º) — ver Passo 8/9 acima.
 
-## Sobreposição com `/diaria-instagram-semanal` — mantenha separadas
+## Sobreposição com `/diaria-retro-semanal` — mantenha separadas
 
-| | `/diaria-instagram-semanal` | `/diaria-linkedin-semanal` |
+| | `/diaria-retro-semanal` | `/diaria-linkedin-semanal` |
 |---|---|---|
 | Seleção | itens mais clicados (D1/D2/D3; RADAR/USE MELHOR ainda não competem — limitação técnica de asset, não decisão de escopo, ver #4513) | 3 destaques (D1/D2/D3) por taxa de clique — RADAR/LANÇAMENTOS/VÍDEOS/USE MELHOR nunca competem por manchete (#8029) |
 | Cadência | produz sexta, publica sábado | produz domingo, publica segunda |
@@ -710,8 +710,8 @@ sem desagendar). A decisão do editor foi mover os DOIS pro Passo 9 manual
 
 Decisão do editor (comentário 260802 do #4456): **produtos diferentes,
 seguem separados.** `/diaria-semanal` foi renomeada pra
-`/diaria-instagram-semanal` e restrita a Instagram pelo #4483 (260803) —
-`.claude/skills/diaria-instagram-semanal/` é a skill atual, não mexer nela
+`/diaria-retro-semanal` e restrita a Instagram pelo #4483 (260803) —
+`.claude/skills/diaria-retro-semanal/` é a skill atual, não mexer nela
 daqui.
 
 ## Casos de borda

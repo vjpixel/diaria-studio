@@ -4,7 +4,7 @@
  * Núcleo de ranking/blocklist compartilhado pelas 2 skills semanais que
  * ranqueiam candidatos por taxa de clique — `/diaria-linkedin-semanal`
  * (#4456, `weekly-linkedin-select.ts`/`weekly-linkedin-filter.ts`) e
- * `/diaria-instagram-semanal` (#4483, `weekly-instagram-select.ts`).
+ * `/diaria-retro-semanal` (#4483, `weekly-instagram-select.ts`).
  *
  * Até o #4511, essas funções viviam DUPLICADAS byte-a-byte nos 2 lados —
  * `weekly-instagram-select.ts` explicava a duplicação como proposital (ver

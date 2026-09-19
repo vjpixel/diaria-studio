@@ -3,7 +3,7 @@
  *
  * Regressão do defeito de fusão Beehiiv×Kit na resolução "qual post do cache
  * é a edição do dia X" — a peça que `/diaria-linkedin-semanal` e
- * `/diaria-instagram-semanal` compartilham desde o #7637 (antes disso, duas
+ * `/diaria-retro-semanal` compartilham desde o #7637 (antes disso, duas
  * cópias byte-a-byte, e o defeito estava nas duas).
  *
  * Sem rede, sem disco — fixtures em memória, mesmo padrão de

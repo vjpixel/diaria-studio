@@ -157,7 +157,7 @@ Sete padrões que não aparecem no grupo A:
   (2x1/1x1/4x5); se vier a ganhar formato de carrossel próprio, o padrão de
   "1 slide = 1 batida narrativa" com texto grande sobre a imagem é o modelo a
   seguir, não um resumo estático do artigo. **Carrossel no Instagram já existe
-  fora do pipeline diário**, na skill `/diaria-instagram-semanal`
+  fora do pipeline diário**, na skill `/diaria-retro-semanal`
   (`scripts/lib/weekly-carousel-news-card.ts`) — vale conferir esse código
   antes de reimplementar do zero, ele já se aproxima do padrão "1 slide = 1
   batida".
