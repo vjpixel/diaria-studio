@@ -114,14 +114,7 @@ def _open_issues_file(td: Path, count: int) -> Path:
 # ------------------------------------------------------------------
 
 def test_regressao_8377_falsos_positivos_claim():
-    import importlib.util, sys, os
-    here = os.path.dirname(os.path.abspath(__file__))
-    mod = importlib.util.module_from_spec(
-        importlib.util.spec_from_file_location(
-            "detect_tick_claim_fabrication",
-            os.path.join(here, "detect-tick-claim-fabrication.py")))
-    sys.modules["detect_tick_claim_fabrication"] = mod
-    mod.__loader__.exec_module(mod)
+    mod = _load_module()
     # Linha que provocava 12 falsos positivos no #8377
     linha = (
         "Após #8356, não havia outra unidade primária livre: #8355 está "
@@ -133,7 +126,7 @@ def test_regressao_8377_falsos_positivos_claim():
     # Nenhum claim PRÓPRIO nesta linha (todos são referência narrativa);
     # #8356 aparece em contexto de "Após #8356" (não claim) — não deve entrar.
     assert 8356 not in refs, f"8356 indevidamente capturado: {refs}"
-    assert 8355 not in refs or refs[8355] is False, f"8355 (outro ator) indevido: {refs}"
+    assert 8355 not in refs, f"8355 (outro ator) indevido: {refs}"
     assert 8358 not in refs, f"8358 (PR) indevido: {refs}"
     # Cobertura não é claim — não deve gerar entrada
     # Se fosse claim próprio, seria reconhecido; aqui não é.
@@ -146,14 +139,7 @@ def test_regressao_8377_falsos_positivos_claim():
 
 # Regressão real #7807 coberto por #7808 (#7996): cobertura não é claim
 def test_regressao_7807_coberto_por_7808():
-    import importlib.util, sys, os
-    here = os.path.dirname(os.path.abspath(__file__))
-    mod = importlib.util.module_from_spec(
-        importlib.util.spec_from_file_location(
-            "detect_tick_claim_fabrication",
-            os.path.join(here, "detect-tick-claim-fabrication.py")))
-    sys.modules["detect_tick_claim_fabrication"] = mod
-    mod.__loader__.exec_module(mod)
+    mod = _load_module()
     linha = "- #7807: o trabalho já estava coberto por #7808. A PR #7827 foi fechada."
     refs = mod.extract_claimed_issue_refs(linha)
     assert 7807 not in refs, f"#7807 (coberto) indevidamente como claim: {refs}"
@@ -168,19 +154,43 @@ def test_regressao_7807_coberto_por_7808():
 # no mesmo segmento que uma cobertura de outro issue era derrubado junto
 # ("#7807 reivindicada, trabalho coberto por #7808" -> #7807 sumia).
 def test_regressao_exclusao_por_ref_nao_bloqueia_claim_proprio():
-    import importlib.util, sys, os
-    here = os.path.dirname(os.path.abspath(__file__))
-    mod = importlib.util.module_from_spec(
-        importlib.util.spec_from_file_location(
-            "detect_tick_claim_fabrication",
-            os.path.join(here, "detect-tick-claim-fabrication.py")))
-    sys.modules["detect_tick_claim_fabrication"] = mod
-    mod.__loader__.exec_module(mod)
+    mod = _load_module()
     linha = "#7807 foi reivindicada ontem, mas o trabalho estava coberto por #7808."
     refs = mod.extract_claimed_issue_refs(linha)
     assert 7807 in refs, f"claim próprio #7807 derrubado pela cobertura de #7808: {refs}"
     assert 7808 not in refs, f"#7808 (cobertura) indevidamente como claim: {refs}"
     print("regressão: exclusão por ref preserva claim próprio no mesmo segmento — OK")
+
+
+# Revisão da PR #8381 — FALSOS NEGATIVOS dos filtros: fabricação real não
+# pode virar not_applicable por lista longa, `;`, título longo ou
+# "Reivindiquei".
+def test_adversarial_falsos_negativos_extraem_todos():
+    mod = _load_module()
+    casos = [
+        ("Issues reivindicadas neste tick: #8301, #8302, #8303, #8304, #8305, #8306.",
+         {8301, 8302, 8303, 8304, 8305, 8306}),
+        ("Claim de #8301, #8302, #8303, #8304, #8305 e #8306 registrada.",
+         {8301, 8302, 8303, 8304, 8305, 8306}),
+        ("- #8400 corrigir o parser de datas do scorer quando o feed vem sem timezone (reivindicada).",
+         {8400}),
+        ("Claims: #100; #101; #102", {100, 101, 102}),
+        ("- #500: descrição da unidade. Claim registrada.", {500}),
+        ("Reivindiquei #8301", {8301}),
+        ("Reivindiquei #8301 e #8302", {8301, 8302}),
+    ]
+    for texto, esperado in casos:
+        got = set(mod.extract_claimed_issue_refs(texto))
+        assert got == esperado, f"{texto!r}: esperado {esperado}, veio {got}"
+    print("adversarial: lista longa / ; / titulo longo / reivindiquei — OK")
+
+
+def test_controle_claim_proprio_ausente_do_registro_e_fabricacao():
+    mod = _load_module()
+    texto = "Issues reivindicadas neste tick: #8301, #8302, #8303, #8304, #8305, #8306."
+    check = mod.check_claimed_issues(texto, {8301, 8302, 8303}, True)
+    assert check["status"] == "fabrication_suspected", check
+    print("controle: claim proprio ausente do registro -> fabrication_suspected — OK")
 
 
 def main() -> int:
@@ -521,6 +531,8 @@ def main() -> int:
         test_regressao_8377_falsos_positivos_claim()
         test_regressao_7807_coberto_por_7808()
         test_regressao_exclusao_por_ref_nao_bloqueia_claim_proprio()
+        test_adversarial_falsos_negativos_extraem_todos()
+        test_controle_claim_proprio_ausente_do_registro_e_fabricacao()
 
         if FAILED:
             print(f"\n{FAILED} assercao(es) falharam")
