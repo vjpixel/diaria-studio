@@ -16,10 +16,31 @@
  * `inactive` e é vinculado ao designer form no MESMO request — é esse
  * vínculo que dispara o e-mail. Então `created_at` ≈ momento do envio.
  *
- * Ressalva conhecida: o worker `reativar` faz DELETE+CREATE, então quem
- * clica de novo no botão ganha `created_at` novo e volta a esperar 72h
- * antes de ser elegível. Isso só afeta quem ainda não está no store — quem
- * já foi ingerido segue na lista Brevo (dedup é pelo store, por e-mail).
+ * Ressalva ERRADA, corrigida em 19/09/2026: dizia que o worker `reativar`
+ * faz DELETE+CREATE e por isso quem clica de novo no botão ganha
+ * `created_at` novo e recomeça as 72h. DELETE+CREATE é só o caminho
+ * BEEHIIV (`activateSubscription`, legado — `SUBSCRIBE_BACKEND = "kit"` em
+ * produção desde #6048). O caminho Kit (`activateSubscriptionKit`) faz
+ * upsert por e-mail, sem DELETE: o assinante mantém id e `created_at`, e o
+ * relógio das 72h nunca reinicia por clique.
+ *
+ * O que o clique de fato faz, por via (#8194) — MEDIDO ao vivo em
+ * 19/09/2026 contra o worker deployado (`reativar.diaria.workers.dev`), com
+ * 2 probes na convenção `+probe-{issue}-{data}` de `kit-fixture-patterns.ts`:
+ * - COM token assinado válido (o caso normal — `inject-reativar-token-brevo.ts`
+ *   popula `REATIVAR_TOKEN` em toda a lista 7 a cada campanha): vincula ao
+ *   form de SISTEMA `KIT_ACTIVATE_FORM_ID` (9839463) e promove a `active`
+ *   sem e-mail nenhum — o equivalente exato a clicar no link do DOI. Medido:
+ *   `inactive` -> `active`, mesmo id, mesmo `created_at`.
+ * - SEM token (`t=` vazio, link copiado/reencaminhado): re-vincula ao
+ *   `KIT_DOI_FORM_ID` e segue `inactive`, com id e `created_at` intactos —
+ *   ou seja, continua elegível pro Brevo se já tinha passado das 72h.
+ *   Medido: o re-vínculo NÃO disparou um 2º e-mail de confirmação (probe
+ *   recém-vinculado ao form; não testado com dias de intervalo, então não
+ *   afirma nada sobre re-envio depois de janela longa).
+ *
+ * A premissa `created_at` ≈ envio do DOI também foi medida nessa rodada: o
+ * e-mail de confirmação chegou 4s e 2s depois do `created_at` dos 2 probes.
  */
 
 import { matchFixtureEmail } from "./kit-fixture-patterns.ts";
