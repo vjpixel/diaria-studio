@@ -447,8 +447,15 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   // item C da #8391 endereça no prompt do `writer`/`writer-destaque`, e o
   // mesmo recurso já usado por `meta-ai.ts`/`brasil-regulacao.ts`/
   // `mercado-trabalho.ts`:
-  //   - `rotulagem de conteudo gerado por ia` — China, 01/09/2025 (o corpo
-  //     é a lei de rotulagem; o "por que isso importa" nomeia deepfakes).
+  //   - `china implementa lei obrigatoria de rotulagem` — China, 01/09/2025
+  //     (o corpo é a lei de rotulagem; o "por que isso importa" nomeia
+  //     deepfakes). Âncora presa à MANCHETE, não ao conceito: "rotulagem de
+  //     conteúdo gerado por IA" sozinha é mais ampla que o recorte deste hub
+  //     e casaria, por exemplo, uma regra de disclosure para texto de
+  //     marketing gerado por LLM, que não imita ninguém (achado do review da
+  //     PR #8401). O preço é conhecido e aceito: manchete FUTURA sobre
+  //     rotulagem com outro fraseado não casa — ela entra aqui do mesmo jeito
+  //     que as demais, via âncora própria, quando houver.
   //   - `conteudos falsos com ia` — Observatório Lupa, +308% em 2025.
   //   - `endurecer remocao de perfis` — pedido do governo ao TSE, cujo
   //     corpo lista deepfakes entre os abusos digitais a coibir.
@@ -461,7 +468,7 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   // distintos: lá é o processo regulatório, aqui é a tecnologia que a norma
   // persegue.
   deepfake:
-    /deep\s?fake|rotulagem de conteudo gerado por ia|conteudos falsos com ia|endurecer remocao de perfis|aviso em propaganda eleitoral/i,
+    /deep\s?fake|china implementa lei obrigatoria de rotulagem|conteudos falsos com ia|endurecer remocao de perfis|aviso em propaganda eleitoral/i,
 };
 
 /** Exportado (#4907) — `scripts/lib/hub-match.ts` reusa esta mesma

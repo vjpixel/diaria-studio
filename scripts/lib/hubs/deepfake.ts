@@ -115,7 +115,15 @@ const UPDATED_DATE = "2026-09-19";
 const GOLPE_PATTERN = /fraude|golpe/iu;
 
 /** Manchetes cujo eixo é ELEIÇÃO — Justiça Eleitoral, propaganda, remoção
- * de perfil, desinformação política. */
+ * de perfil, desinformação política. Casa 4 manchetes: o alerta do
+ * InternetLab (07/01/2026), a força-tarefa de Gilmar Mendes (03/02/2026), o
+ * pedido do governo ao TSE (06/02/2026) e a resolução do TSE (19/08/2026).
+ * NÃO casa "Deepfake de ministro viraliza" nem "Conteúdos falsos com IA
+ * triplicam no Brasil" — as duas são sobre desinformação política, mas o
+ * título não usa nenhum dos termos, e por isso a prosa que cita este número
+ * enumera as 4 que ele conta, nunca essas outras (achado do review da PR
+ * #8401: citar exemplos fora do conjunto contado faz o número parecer
+ * errado para quem confere). */
 const ELEITORAL_PATTERN = /elei[çc]|eleitoral|\bTSE\b|perfis/iu;
 
 /** Cronologia completa do tema — casa TODAS as manchetes do dataset (as 7
@@ -214,7 +222,7 @@ function buildIntro(sources: HubSourceEntry[]): [string, string] {
   const { between } = hubCoverageWindow(sources);
   const { totalEditions, totalMentions, cadenceDays, golpe, eleitoral } = deriveDeepfakeFacts(sources);
   return [
-    `Deepfake é conteúdo sintético gerado por IA que imita o rosto ou a voz de uma pessoa real com qualidade suficiente para passar por gravação autêntica. Entre ${between}, o assunto apareceu como destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, uma a cada ${cadenceDays} dias corridos, em média. ${golpe} dessas manchetes tratam de fraude financeira com identidade sintética — fraudes com deepfake subiram 126% no Brasil em 2025 e um único esquema, o do vídeo falso do cantor Roberto Carlos, movimentou R$ 1,8 bilhão contra bancos brasileiros. ${eleitoral} tratam de eleição: um áudio falso do ministro da Fazenda em outubro de 2025, um crescimento de 308% em conteúdo falso gerado por IA entre 2024 e 2025 e uma resolução do TSE de agosto de 2026 obrigando campanha a avisar quando usa IA.`,
+    `Deepfake é conteúdo sintético gerado por IA que imita o rosto ou a voz de uma pessoa real com qualidade suficiente para passar por gravação autêntica. Entre ${between}, o assunto apareceu como destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, uma a cada ${cadenceDays} dias corridos, em média. ${golpe} dessas manchetes tratam de fraude financeira com identidade sintética — fraudes com deepfake subiram 126% no Brasil em 2025 e um único esquema, o do vídeo falso do cantor Roberto Carlos, movimentou R$ 1,8 bilhão contra bancos brasileiros. ${eleitoral} tratam de eleição, e são exatamente estas: o alerta do InternetLab sobre desinformação eleitoral em janeiro de 2026, a força-tarefa pericial proposta no TSE em fevereiro, o pedido do governo para ampliar a remoção de perfil no mesmo mês, e a resolução de agosto de 2026 que obriga campanha a avisar quando usa IA. Fora desses dois eixos, dois números dão a escala do problema: um áudio falso do ministro da Fazenda marcou 22 pontos num teste de autenticidade de 0 a 100 em outubro de 2025, e o conteúdo falso gerado por IA cresceu 308% no Brasil entre 2024 e 2025.`,
     `Do lado das vítimas que não são políticos nem celebridades, a reportagem mais dura do período é de 4 de dezembro de 2025: aplicativos de "nudify" gerando pornografia falsa de colegas em escolas do Reino Unido e dos Estados Unidos, 75% das vítimas com 14 anos ou menos. Do lado das respostas, três frentes apareceram e nenhuma resolveu o problema sozinha — detecção automática (o UNITE, de novembro de 2025, com precisão entre 95% e 99%, descrito pelos próprios autores como ainda em desenvolvimento), rotulagem obrigatória (a China ligou a sua em 1º de setembro de 2025) e norma eleitoral (a força-tarefa pericial proposta em fevereiro de 2026 e a resolução publicada em agosto). Como identificar um deepfake continua sendo, na prática, verificar a origem do conteúdo antes de acreditar nele.`,
   ];
 }
