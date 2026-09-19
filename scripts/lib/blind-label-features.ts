@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { categorizeWithRule, categoryToBucket, isFallbackCategorizationRule, type Bucket } from "./launch-heuristics.ts";
 import { enumerateEditionDirs } from "./find-current-edition.ts";
+import { tokenizeForJaccard, jaccardSimilarity, thresholdForPair } from "./title-similarity.ts";
 import type { FeatureDef, PoolItem } from "./blind-label-core.ts";
 
 const BUCKETS = ["lancamento", "radar", "use_melhor"] as const;
@@ -163,9 +164,172 @@ export const NEGATIVE_IMPACT_8414_FEATURE: FeatureDef = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// #8417 (medição 4 do epic #8412) — zona cinzenta do dedup e do
+// check-highlight-themes: "A e B são a mesma história/tema?"
+// ---------------------------------------------------------------------------
+
+interface GrayZoneArticle {
+  url: string;
+  title: string;
+  summary: string;
+  source: string;
+  edition: string;
+}
+
+/** Achata os 6 buckets de `01-categorized.json` numa lista única, dedup por URL (1ª ocorrência vence). */
+function flattenCategorizedArticles(edition: string, dir: string): GrayZoneArticle[] {
+  const p = join(dir, "_internal", "01-categorized.json");
+  if (!existsSync(p)) return [];
+  let j: Record<string, unknown>;
+  try {
+    j = JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    return [];
+  }
+  const out: GrayZoneArticle[] = [];
+  const seen = new Set<string>();
+  const buckets = ["highlights", "runners_up", "lancamento", "radar", "use_melhor", "video"] as const;
+  for (const b of buckets) {
+    for (const raw of ((j[b] as any[]) ?? [])) {
+      const a = raw?.article ?? raw;
+      if (!a?.url || !a?.title) continue;
+      if (seen.has(a.url)) continue;
+      seen.add(a.url);
+      out.push({ url: a.url, title: a.title, summary: String(a.summary ?? ""), source: String(a.source ?? ""), edition });
+    }
+  }
+  return out;
+}
+
+/**
+ * Coleta pares cross-edição (A de edição estritamente posterior a B) cujo
+ * Jaccard de título cai em `[zoneLo, zoneHi)` — a "zona cinzenta" que o Jev
+ * (Noul) vai desempatar (#8417). `hiddenGuess` reflete a decisão que o
+ * mecanismo MECÂNICO já toma hoje nesse ponto exato do espectro, usando o
+ * MESMO threshold com entity-lowering (`thresholdForPair`) que
+ * `scripts/dedup.ts` usa de verdade — não um threshold inventado pra
+ * medição.
+ *
+ * Escopo assumido (decisão registrada aqui, não perguntada — #5321): a
+ * medição ignora a janela de edições (3 pro dedup, 10-12 pro
+ * check-highlight-themes) e compara QUALQUER par cross-edição do corpus —
+ * o que está sob teste é o JULGAMENTO semântico "isto é a mesma
+ * história/tema", não a lógica de janela (que não muda nesta medição).
+ * `O(n²)` em `allArticles` é aceitável aqui: roda 1x por `--generate`,
+ * nunca no caminho de produção.
+ */
+function collectGrayZonePairs(
+  rootDir: string,
+  opts: { zoneLo: number; zoneHi: number; stratum: string; sameLabel: string; diffLabel: string; defaultThreshold: number; loweredThreshold: number },
+): { pool: PoolItem[]; skipped: string[] } {
+  const editionsRoot = join(rootDir, "data", "editions");
+  const pool: PoolItem[] = [];
+  const skipped: string[] = [];
+  if (!existsSync(editionsRoot)) return { pool, skipped };
+
+  const dirs = enumerateEditionDirs(editionsRoot);
+  const editions = [...dirs.keys()].sort();
+  const allArticles: GrayZoneArticle[] = [];
+  for (const e of editions) {
+    allArticles.push(...flattenCategorizedArticles(e, dirs.get(e)!));
+  }
+
+  const seenPairs = new Set<string>();
+  for (const A of allArticles) {
+    for (const B of allArticles) {
+      if (A.edition <= B.edition) continue; // A estritamente depois de B — evita duplo-conta e par intra-edição
+      if (A.url === B.url) continue;
+      const pairId = [A.url, B.url].sort().join("|||");
+      if (seenPairs.has(pairId)) continue;
+      const jac = jaccardSimilarity(tokenizeForJaccard(A.title), tokenizeForJaccard(B.title));
+      if (jac < opts.zoneLo || jac >= opts.zoneHi) continue;
+      seenPairs.add(pairId);
+      const { threshold: effThreshold } = thresholdForPair(A.title, B.title, opts.defaultThreshold, opts.loweredThreshold);
+      const hiddenGuess = jac >= effThreshold ? opts.sameLabel : opts.diffLabel;
+      pool.push({
+        id: pairId,
+        display: {
+          titleA: A.title, summaryA: A.summary.slice(0, 300), sourceA: A.source, editionA: A.edition,
+          titleB: B.title, summaryB: B.summary.slice(0, 300), sourceB: B.source, editionB: B.edition,
+        },
+        jevState: {
+          a: { title: A.title, summary: A.summary, source: A.source },
+          b: { title: B.title, summary: B.summary, source: B.source },
+        },
+        stratum: opts.stratum,
+        hiddenGuess,
+        hiddenRule: `jaccard=${jac.toFixed(2)} vs threshold=${effThreshold}`,
+        edition: A.edition,
+      });
+    }
+  }
+  return { pool, skipped };
+}
+
+/**
+ * Feature `dedup-grayzone-8417` — zona cinzenta de `scripts/dedup.ts`
+ * (Pass 1c, subject Jaccard vs. artigo de edição anterior). Threshold real
+ * do mecanismo: 0.60 default / 0.55 quando há entidade nomeada
+ * compartilhada (`thresholdForPair`, mesmos valores de `dedup.ts`). Zona
+ * cinzenta calibrada em `[0.35, 0.70)` — abaixo de 0.35 o Jaccard já é
+ * baixo o bastante pra não confundir (mesmo piso do
+ * `check-highlight-themes.ts`); 0.70 cobre folga acima do threshold mais
+ * alto (0.60) sem entrar na faixa onde o Jaccard já é inequivocamente alto
+ * (>=0.75, onde a amostra real não tinha mais candidato "cinzento" — ver
+ * relatório da medição na issue #8417).
+ */
+export const DEDUP_GRAYZONE_8417_FEATURE: FeatureDef = {
+  id: "dedup-grayzone-8417",
+  labels: ["mesma_historia", "historias_distintas"],
+  collectPool(rootDir: string) {
+    return collectGrayZonePairs(rootDir, {
+      zoneLo: 0.35,
+      zoneHi: 0.7,
+      stratum: "dedup",
+      sameLabel: "mesma_historia",
+      diffLabel: "historias_distintas",
+      defaultThreshold: 0.6,
+      loweredThreshold: 0.55,
+    });
+  },
+};
+
+/**
+ * Feature `highlight-themes-grayzone-8417` — zona cinzenta de
+ * `scripts/check-highlight-themes.ts` (`JACCARD_THRESHOLD` 0.35 /
+ * `JACCARD_THRESHOLD_WITH_ENTITY` 0.25). Zona cinzenta `[0.15, 0.55)`
+ * (mesmo piso do `SECONDARY_JACCARD_THRESHOLD` até uma folga acima do
+ * threshold principal). Simplificação assumida (registrada, não
+ * perguntada — #5321): usa o MESMO `thresholdForPair` do dedup (0.35/0.25
+ * em vez de 0.60/0.55) para computar `hiddenGuess` — a lógica de
+ * entity-lowering do dedup e do highlight-themes usa o mesmo formato
+ * (`thresholdForPair`), só os valores absolutos mudam; não replica os 3
+ * gatilhos empilhados (`entity-only`, `saga`) de `check-highlight-themes.ts`
+ * porque o critério de pronto da medição é comparar o SINAL PRINCIPAL
+ * (Jaccard + entity-lowering), não reproduzir os backstops adicionais.
+ */
+export const HIGHLIGHT_THEMES_GRAYZONE_8417_FEATURE: FeatureDef = {
+  id: "highlight-themes-grayzone-8417",
+  labels: ["mesmo_tema", "temas_distintos"],
+  collectPool(rootDir: string) {
+    return collectGrayZonePairs(rootDir, {
+      zoneLo: 0.15,
+      zoneHi: 0.55,
+      stratum: "highlight_themes",
+      sameLabel: "mesmo_tema",
+      diffLabel: "temas_distintos",
+      defaultThreshold: 0.35,
+      loweredThreshold: 0.25,
+    });
+  },
+};
+
 export const FEATURE_REGISTRY: Record<string, FeatureDef> = {
   [BUCKET_TIEBREAKER_8211_FEATURE.id]: BUCKET_TIEBREAKER_8211_FEATURE,
   [NEGATIVE_IMPACT_8414_FEATURE.id]: NEGATIVE_IMPACT_8414_FEATURE,
+  [DEDUP_GRAYZONE_8417_FEATURE.id]: DEDUP_GRAYZONE_8417_FEATURE,
+  [HIGHLIGHT_THEMES_GRAYZONE_8417_FEATURE.id]: HIGHLIGHT_THEMES_GRAYZONE_8417_FEATURE,
 };
 
 export function getFeature(id: string): FeatureDef | undefined {

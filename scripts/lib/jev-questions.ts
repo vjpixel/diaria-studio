@@ -103,12 +103,62 @@ export const NEGATIVE_IMPACT_8414: JevQuestionSpec = {
 };
 
 /**
+ * Medição 4 do epic #8412 (#8417) — zona cinzenta do `dedup.ts` (Pass 1c):
+ * "A e B são a mesma história?" via Jev (`noul`). Texto EXATO da issue #8417
+ * — nenhum ajuste pós-corpus. `state` recebe `{a: {title,summary,source},
+ * b: {title,summary,source}}` (par, não item único — diferente das duas
+ * perguntas anteriores).
+ */
+export const DEDUP_GRAYZONE_8417: JevQuestionSpec = {
+  id: "dedup-grayzone-8417",
+  issue: "#8417",
+  expectedState: ["a", "b"],
+  expectedOutcome: "ganho medido sobre a heurística Jaccard/thresholdForPair na zona cinzenta (McNemar) — critério de pronto de #8417",
+  question: {
+    id: "same_story",
+    type: "noul",
+    instructions:
+      "Dados dois artigos A e B sobre inteligência artificial, A e B relatam o mesmo " +
+      "fato/anúncio (mesma história), e não dois fatos distintos sobre o mesmo assunto? " +
+      "Considere apenas título, resumo e fonte de cada artigo, fornecidos em `a` e `b` " +
+      "do estado.",
+  },
+};
+
+/**
+ * Medição 4 do epic #8412 (#8417) — zona cinzenta do
+ * `check-highlight-themes.ts`: "A é o mesmo TEMA de B ao ponto de um leitor
+ * sentir repetição?" — critério mais frouxo que `dedup-grayzone-8417`
+ * (mesmo fato) de propósito, pois é o que a issue pede para essa 2ª
+ * pergunta. Texto EXATO da issue #8417.
+ */
+export const HIGHLIGHT_THEMES_GRAYZONE_8417: JevQuestionSpec = {
+  id: "highlight-themes-grayzone-8417",
+  issue: "#8417",
+  expectedState: ["a", "b"],
+  expectedOutcome: "ganho medido sobre a heurística Jaccard/thresholdForPair na zona cinzenta (McNemar) — critério de pronto de #8417",
+  question: {
+    id: "same_theme",
+    type: "noul",
+    instructions:
+      "Dados dois artigos A e B sobre inteligência artificial, A é o mesmo TEMA de B ao " +
+      "ponto de um leitor sentir repetição numa newsletter diária, mesmo que não sejam o " +
+      "mesmo fato/anúncio específico? Este critério é MAIS FROUXO que \"mesma história\" — " +
+      "artigos sobre o mesmo assunto geral já contam, mesmo com fatos distintos. " +
+      "Considere apenas título, resumo e fonte de cada artigo, fornecidos em `a` e `b` " +
+      "do estado.",
+  },
+};
+
+/**
  * Registro por id — cada medição futura adiciona sua entrada aqui (#8414+).
  * `jev-eval.ts --feature X` resolve a pergunta por este mapa.
  */
 export const JEV_QUESTION_REGISTRY: Record<string, JevQuestionSpec> = {
   [BUCKET_TIEBREAKER_8211.id]: BUCKET_TIEBREAKER_8211,
   [NEGATIVE_IMPACT_8414.id]: NEGATIVE_IMPACT_8414,
+  [DEDUP_GRAYZONE_8417.id]: DEDUP_GRAYZONE_8417,
+  [HIGHLIGHT_THEMES_GRAYZONE_8417.id]: HIGHLIGHT_THEMES_GRAYZONE_8417,
 };
 
 export function getJevQuestionSpec(id: string): JevQuestionSpec | undefined {
