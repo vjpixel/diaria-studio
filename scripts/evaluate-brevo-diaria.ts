@@ -1404,6 +1404,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // pelo Passo 0 (quando `emailBlacklisted`) e reusado pelo Passo 1 —
       // nunca 2 GETs ao Kit no mesmo run pro mesmo contato.
       let kitConfirmed: boolean | undefined;
+      let confirmouVia: string | undefined; // #8438 — lido no GET singular do Kit (Passo 1) e passado pra `applySelfConfirmed` no bloco de auto-confirmação abaixo
       // #6705 — `created_at` do subscriber Kit, capturado sempre que um GET
       // ao Kit roda nesta iteração (Passo 0 ou Passo 1 abaixo), reusado pela
       // instrumentação da janela de duplicidade quando `kitConfirmed` vira
@@ -1676,7 +1677,6 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 );
                 kitAutoConfirmSkipped++;
               } else {
-                let confirmouVia: string | undefined; // #8438
                 try {
                   const kitSubscriber = await getSubscriberById(kitParseResult.id, { apiKey: kitApiKey });
                   kitConfirmed = kitSubscriber.state === "active";
