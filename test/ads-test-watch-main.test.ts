@@ -336,6 +336,103 @@ describe("#5845 — ads-test-watch main (I/O): D0 ausente/reconciliação/guard 
   });
 });
 
+describe("#8432 — cursor de idempotência não avança quando notifyEditor falha", () => {
+  it("religar-brevo: comentário postado + notify falha (issue action=failed) → cursor NÃO persistido, retry na próxima execução", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      // Pré-existe (nulo) pra distinguir "nunca escreveu" de "escreveu nulo" —
+      // se main() persistisse incondicionalmente, este arquivo seria
+      // reescrito com religarBrevoTriggeredAt preenchido.
+      writeFileSync(
+        join(dir, "watch-state.json"),
+        JSON.stringify({ religarBrevoTriggeredAt: null, apuracaoCompletedAt: null, apuracaoReportPath: null }),
+      );
+      const ghCalls: string[] = [];
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.religar_brevo + "T06:30:00.000Z"),
+          commentOnReligarBrevoIssue: (body) => {
+            ghCalls.push(body);
+            return { status: 0, stdout: "", stderr: "" };
+          },
+          // Simula notifyEditor falhando completamente — ensureAlarmIssue não
+          // conseguiu criar/atualizar a issue (gh indisponível, por exemplo).
+          notify: async () => fakeNotifyResult({ issue: { issueNumber: null, url: null, action: "failed", error: "gh indisponível" }, emailSent: false }),
+        }),
+      );
+
+      assert.equal(ghCalls.length, 1, "o comentário no #5838 ainda deve ser postado (side effect independente do cursor)");
+      const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
+      assert.equal(
+        watchState.religarBrevoTriggeredAt,
+        null,
+        "cursor NÃO deve avançar quando a notificação não chegou ao editor — senão o alarme se perde pra sempre",
+      );
+    });
+  });
+
+  it("apuração: cac-report roda + notify falha (issue action=failed) → cursor NÃO persistido, relatório congelado é refeito na próxima execução", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      writeFileSync(
+        join(dir, "watch-state.json"),
+        JSON.stringify({ religarBrevoTriggeredAt: "2026-09-16T06:30:00.000Z", apuracaoCompletedAt: null, apuracaoReportPath: null }),
+      );
+      const callOrder: string[] = [];
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.apuracao_snapshot + "T06:30:00.000Z"),
+          runBuildOrigemMap: () => {
+            callOrder.push("origem");
+            return true;
+          },
+          runCacReport: () => {
+            callOrder.push("cac");
+            return true;
+          },
+          notify: async () => fakeNotifyResult({ issue: { issueNumber: null, url: null, action: "failed", error: "gh indisponível" }, emailSent: false }),
+        }),
+      );
+
+      assert.deepEqual(callOrder, ["origem", "cac"], "os 2 comandos ainda devem rodar (side effect independente do cursor)");
+      const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
+      assert.equal(
+        watchState.apuracaoCompletedAt,
+        null,
+        "cursor NÃO deve avançar quando a notificação não chegou ao editor — senão o alarme se perde pra sempre",
+      );
+    });
+  });
+
+  it("religar-brevo: notify tem sucesso (issue reused, e-mail suprimido pela política) → cursor persiste normalmente", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.religar_brevo + "T06:30:00.000Z"),
+          commentOnReligarBrevoIssue: () => ({ status: 0, stdout: "", stderr: "" }),
+          // Issue já existia (reused) e a política suprimiu o e-mail de
+          // propósito — isso conta como "chegou ao editor" (a issue já era
+          // conhecida), não como falha.
+          notify: async () => fakeNotifyResult({ issue: { action: "reused", issueNumber: 5838, url: "x" }, emailSent: false }),
+        }),
+      );
+
+      const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
+      assert.ok(watchState.religarBrevoTriggeredAt, "cursor deve persistir quando o achado foi tratado com sucesso pelo gh, mesmo sem e-mail");
+    });
+  });
+});
+
 describe("#7960 — ads-test-watch main (I/O): --dry-run nunca notifica o editor", () => {
   it("D0 vencido + --dry-run → NÃO chama notify, watch-state intacto", async () => {
     await withTmpDir(async (dir) => {

@@ -38,7 +38,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, getStringArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { notifyEditor, type NotifyEditorFinding, type NotifyEditorResult } from "./lib/editor-notify.ts";
+import { notifyEditor, notifyEditorResultReachedEditor, type NotifyEditorFinding, type NotifyEditorResult } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { addDays } from "./lib/ads-test-schedule.ts";
@@ -264,7 +264,19 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
   );
 
   const findings: NotifyEditorFinding[] = [];
-  let nextWatchState = watchState;
+  // #8432 — os 2 cursores de idempotência (religarBrevoTriggeredAt/
+  // apuracaoCompletedAt) só podem avançar quando a notificação do achado
+  // CORRESPONDENTE de fato chegar ao editor (`notifyEditorResultReachedEditor`,
+  // scripts/lib/editor-notify.ts) — nunca incondicionalmente. Por isso a
+  // mutação fica pendente aqui (candidata, baseada no `watchState` original,
+  // nunca em cima de si mesma) e só é aplicada depois do laço de
+  // notificação no fim de `main`, quando o resultado de `deps.notify` pro
+  // `check` respectivo já é conhecido. Os side effects que a acompanham
+  // (comentário no #5838, build-origem-map+cac-report) continuam rodando
+  // incondicionalmente — só o CURSOR fica condicionado; se ele não avançar,
+  // a próxima execução re-tenta tudo, inclusive o alarme.
+  let pendingReligarBrevoState: AdsTestWatchState | null = null;
+  let pendingApuracaoState: AdsTestWatchState | null = null;
 
   if (plan.alarmMissingD0Overdue && deps.plannedD0) {
     const { subject, body } = buildMissingD0OverdueEmail(deps.plannedD0, nowDateStr);
@@ -381,7 +393,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
         console.error(`${LOG_PREFIX} falha ao comentar em #${RELIGAR_BREVO_ISSUE_NUMBER}: ${result.stderr}`);
       } else {
         console.log(`${LOG_PREFIX} comentário postado em #${RELIGAR_BREVO_ISSUE_NUMBER}.`);
-        nextWatchState = markReligarBrevoTriggered(nextWatchState, now.toISOString());
+        pendingReligarBrevoState = markReligarBrevoTriggered(watchState, now.toISOString());
       }
     }
     findings.push({
@@ -418,7 +430,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
         } else {
           const reportPath = `data/aquisicao/cac-reports/${reportId("cac", runState.apuracao_snapshot)}.md`;
           const reportUrl = `/relatorios/${reportId("cac", runState.apuracao_snapshot)}`;
-          nextWatchState = markApuracaoCompleted(nextWatchState, now.toISOString(), reportPath);
+          pendingApuracaoState = markApuracaoCompleted(watchState, now.toISOString(), reportPath);
           const { subject, body } = buildApuracaoSuccessEmail(runState.apuracao_snapshot, reportUrl);
           findings.push({
             check: "ads-test-watch-apuracao-success",
@@ -439,6 +451,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
   }
 
   const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+  const notifyResultsByCheck = new Map<string, NotifyEditorResult>();
   for (const finding of findings) {
     if (isDryRun) {
       console.log(
@@ -447,12 +460,45 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
       continue;
     }
     const result = await deps.notify(finding);
+    notifyResultsByCheck.set(finding.check, result);
     if (result.emailSent) {
       console.log(`${LOG_PREFIX} e-mail enviado pra ${to}: "${finding.subject}"`);
     } else {
       console.log(
         `${LOG_PREFIX} achado registrado (issue #${result.issue?.issueNumber ?? "?"}, action=${result.issue?.action ?? "n/a"}) — ` +
           `e-mail não enviado nesta execução (política ${result.emailPolicy}).`,
+      );
+    }
+  }
+
+  // #8432 — só aplica cada mutação PENDENTE se a notificação do achado
+  // correspondente de fato alcançou o editor (issue criada/atualizada com
+  // sucesso pelo `gh` — `notifyEditorResultReachedEditor`). Sem isso o
+  // cursor avançaria mesmo quando `notifyEditor` falhou por completo
+  // (`ensureAlarmIssue` com `action === "failed"`), perdendo o alarme pra
+  // sempre — o gate nunca dispararia de novo na próxima execução.
+  let nextWatchState = watchState;
+  if (pendingReligarBrevoState) {
+    const result = notifyResultsByCheck.get("ads-test-watch-religar-brevo");
+    if (result && notifyEditorResultReachedEditor(result)) {
+      nextWatchState = { ...nextWatchState, religarBrevoTriggeredAt: pendingReligarBrevoState.religarBrevoTriggeredAt };
+    } else {
+      console.error(
+        `${LOG_PREFIX} religar-brevo: notificação NÃO chegou ao editor — cursor não persistido, próxima execução re-tenta.`,
+      );
+    }
+  }
+  if (pendingApuracaoState) {
+    const result = notifyResultsByCheck.get("ads-test-watch-apuracao-success");
+    if (result && notifyEditorResultReachedEditor(result)) {
+      nextWatchState = {
+        ...nextWatchState,
+        apuracaoCompletedAt: pendingApuracaoState.apuracaoCompletedAt,
+        apuracaoReportPath: pendingApuracaoState.apuracaoReportPath,
+      };
+    } else {
+      console.error(
+        `${LOG_PREFIX} apuração: notificação NÃO chegou ao editor — cursor não persistido, próxima execução re-tenta.`,
       );
     }
   }
