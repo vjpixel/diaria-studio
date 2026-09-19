@@ -41,6 +41,7 @@ import {
   LEGACY_SLUG_CORRECTIONS,
   applyLegacySlugCorrections,
   rewriteLegacyImageHost,
+  rewriteLegacyPollWorkersDevImageHost,
   rewriteLegacyResourceLinks,
   normalizeHeadingHierarchy,
   deriveDek,
@@ -1257,6 +1258,59 @@ describe("rewriteLegacyImageHost (#7911)", () => {
     const html = buildArchivePageHtml(post);
     assert.ok(!html.includes("diar-ia-poll.diaria.workers.dev"), "host antigo não deveria sobrar na página gerada");
     assert.ok(html.includes("https://diar.ia.br/img/img-260512-04-d1-2x1.jpg"));
+  });
+});
+
+// #8364: `poll.diaria.workers.dev/img/` — 2º host `workers.dev` legado de
+// imagem, DISTINTO de `diar-ia-poll.diaria.workers.dev` acima (hostname
+// diferente, mesmo remédio). 230 ocorrências medidas na issue, servindo os
+// MESMOS bytes que `diar.ia.br/img/{key}` (mesmo KV `POLL`).
+describe("rewriteLegacyPollWorkersDevImageHost (#8364)", () => {
+  it("reescreve o host workers.dev pro atual, preservando a key", () => {
+    const out = rewriteLegacyPollWorkersDevImageHost(
+      '<img src="https://poll.diaria.workers.dev/img/img-260721-04-d1-2x1-58cebbeb.jpg">',
+    );
+    assert.equal(out, '<img src="https://diar.ia.br/img/img-260721-04-d1-2x1-58cebbeb.jpg">');
+  });
+
+  it("reescreve MÚLTIPLAS ocorrências na mesma página", () => {
+    const html =
+      '<img src="https://poll.diaria.workers.dev/img/a.jpg">' +
+      '<img src="https://poll.diaria.workers.dev/img/b.jpg">';
+    const out = rewriteLegacyPollWorkersDevImageHost(html);
+    assert.equal(out.match(/poll\.diaria\.workers\.dev\/img\//g), null, "nenhuma ocorrência do /img/ legado deveria sobrar");
+    assert.equal((out.match(/https:\/\/diar\.ia\.br\/img\//g) ?? []).length, 2);
+  });
+
+  it("HTML sem o host legado passa intacto", () => {
+    const html = '<img src="https://diar.ia.br/img/ja-correto.jpg"><p>texto normal</p>';
+    assert.equal(rewriteLegacyPollWorkersDevImageHost(html), html);
+  });
+
+  it("NÃO mexe nas outras rotas do MESMO host (/vote, /jogar, /leaderboard) — só /img/", () => {
+    const html =
+      '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260721&choice=A">A</a>' +
+      '<a href="https://poll.diaria.workers.dev/jogar?edition=260721">jogar</a>' +
+      '<a href="https://poll.diaria.workers.dev/leaderboard">líderes</a>';
+    assert.equal(rewriteLegacyPollWorkersDevImageHost(html), html);
+  });
+
+  it("integração: buildArchivePageHtml entrega img já no host atual, mesmo partindo de HTML cacheado com poll.diaria.workers.dev", () => {
+    const post = makePost({
+      slug: "edicao-com-poll-workers-dev",
+      content: {
+        free: {
+          web:
+            '<!DOCTYPE html><html><head><style>body{color:#000}</style></head>' +
+            '<body><img src="https://poll.diaria.workers.dev/img/img-260721-04-d1-2x1-58cebbeb.jpg">' +
+            '<a href="https://poll.diaria.workers.dev/jogar?edition=260721">jogar</a></body></html>',
+        },
+      },
+    });
+    const html = buildArchivePageHtml(post);
+    assert.ok(!html.includes("poll.diaria.workers.dev/img/"), "host legado de imagem não deveria sobrar");
+    assert.ok(html.includes("https://diar.ia.br/img/img-260721-04-d1-2x1-58cebbeb.jpg"));
+    assert.ok(html.includes("https://poll.diaria.workers.dev/jogar?edition=260721"), "link /jogar deveria sobreviver intacto");
   });
 });
 
