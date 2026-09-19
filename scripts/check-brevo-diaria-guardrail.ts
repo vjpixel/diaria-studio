@@ -47,6 +47,18 @@
  * entregabilidade — pausar o backfill não corrige nada e ainda criaria um
  * segundo estado pro editor despausar à mão.
  *
+ * ## Guard de seed blacklisted/inexistente (#8436)
+ *
+ * ANTES de qualquer outra checagem, valida via `GET /v3/contacts/{email}`
+ * que `brevo_diaria.test_email` e os `EDITOR_SEED_EMAILS`
+ * (`scripts/lib/editor-copy.ts`) não estão `emailBlacklisted` nem ausentes
+ * da conta — falha ALTO (`exit(2)`, inclusive em `--dry-run`) se algum
+ * estiver. Achado ao vivo: `vjpixel@gmail.com` (test_email) ficou
+ * `emailBlacklisted: true` em 17/09/2026, quebrando `sendTest` e apagando em
+ * silêncio a sonda de inbox placement do Gmail pessoal. A decisão de fundo
+ * (trocar o seed vs remover o blacklist) fica com o editor — este guard só
+ * recusa prosseguir sem alguém decidir.
+ *
  * ## Latch — não despausa sozinho
  *
  * Uma vez pausado, o estado permanece pausado até `--unpause` explícito
@@ -77,6 +89,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { brevoGet } from "./lib/brevo-client.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
+import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 import {
   evaluateBrevoDiariaRolloutGuardrail,
   describeBreaches,
@@ -85,6 +98,8 @@ import {
   applyGuardrailCheck,
   unpauseRollout,
   selectUnalarmedSuspended,
+  checkSeedEmailsBlacklisted,
+  describeSeedBlacklistFailures,
   type CampaignGuardrailInput,
   type RolloutGuardrailState,
 } from "./lib/brevo-diaria-guardrail.ts";
@@ -94,6 +109,7 @@ const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 
 interface BrevoDiariaConfig {
   api_key_env: string;
+  test_email?: string;
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
@@ -345,6 +361,27 @@ async function main(): Promise<void> {
   const apiKey = process.env[brevoDiaria!.api_key_env];
   if (!apiKey) {
     log(`ERRO: ${brevoDiaria!.api_key_env} não definido no ambiente.`);
+    process.exit(2);
+  }
+
+  // #8436: ANTES de qualquer outra checagem — seed blacklisted/inexistente
+  // quebra o caminho de teste (`--send-test`) e a sonda de inbox placement
+  // em silêncio, sem nenhum sinal hoje. Falha ALTO (não warning), inclusive
+  // em --dry-run: é uma precondição de config/conta, não uma decisão de
+  // persistência que o --dry-run deva pular.
+  const seedEmails = Array.from(new Set([brevoDiaria!.test_email, ...EDITOR_SEED_EMAILS].filter((e): e is string => !!e)));
+  const seedResults = await checkSeedEmailsBlacklisted(seedEmails, (email) =>
+    brevoGet(apiKey!, `/contacts/${encodeURIComponent(email)}`),
+  );
+  const seedFailures = describeSeedBlacklistFailures(seedResults);
+  if (seedFailures.length > 0) {
+    log("ERRO: seed(s) de teste/QA indisponíveis na conta Brevo da diária (#8436):");
+    for (const f of seedFailures) log(`  - ${f}`);
+    log(
+      "Decisão pendente com o editor (#8436): trocar o seed afetado em platform.config.json → " +
+        "brevo_diaria.test_email/scripts/lib/editor-copy.ts, OU remover o blacklist na Brevo se não foi deliberado. " +
+        "Este script não decide isso sozinho — só recusa prosseguir com um seed cego.",
+    );
     process.exit(2);
   }
 
