@@ -29,7 +29,7 @@ describe("#8445 — PR com review de SHA antigo é re-revisada, não empurrada p
     assert.ok(staleCall < shortcut, "a checagem de obsolescência tem de vir antes do atalho direto-ao-merge");
   });
 
-  it("stale (exit 1) rebaixa AUTH_RC pra 1 (cai no caminho de review real); qualquer outro rc mantém o atalho", () => {
+  it("stale (exit 10) rebaixa AUTH_RC pra 1 (cai no caminho de review real); qualquer outro rc mantém o atalho", () => {
     // 10, nunca 1: o Node sai 1 em qualquer exceção não tratada (review da PR #8451)
     assert.match(review, /if \[ "\$STALE_RC" -eq 10 \]; then[\s\S]{0,500}AUTH_RC=1/);
     assert.doesNotMatch(review, /"\$STALE_RC" -eq 1 \]/, "reagir a exit 1 confunde crash do checker com stale");
@@ -77,5 +77,27 @@ describe("#8447 — PR bot/* não conta no alarme de fila parada", () => {
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
     const unfiltered = section.match(/gh pr list --state open --json[^\n]*\n(?!\s*--jq)/g) ?? [];
     assert.deepEqual(unfiltered, [], "há `gh pr list --state open` sem filtro de bot/* na §9");
+  });
+});
+
+describe("#8445 — a verificação automática está LIGADA (não depende de alguém lembrar)", () => {
+  it("watch-continuo-health.sh chama o detector e abre issue P1 no alarme", () => {
+    assert.match(watch, /check-continuo-stale-review-health\.ts --json/);
+    assert.match(watch, /file_issue "\[watch-continuo\] review obsoleto sem resolução"[\s\S]{0,400}"bug,P1"/);
+  });
+
+  it("a seção 14 roda ANTES do fim da varredura (senão nunca executa) e indeterminate não alarma", () => {
+    const sec = watch.indexOf("# ── 14. review obsoleto");
+    const end = watch.indexOf('echo "[watch] varredura concluída');
+    assert.ok(sec > 0 && sec < end, "seção 14 tem de vir antes do 'varredura concluída'");
+    assert.match(watch.slice(sec, end), /indeterminate" \]; then\s*\n\s*echo "\[watch\] review obsoleto: indeterminado[^"]*não alarma/);
+  });
+});
+
+describe("#8445 — dedup da seção 14 (guard #6771: marcador precisa ser substring do título)", () => {
+  it("o marcador do file_issue da seção 14 está contido no título criado pela MESMA chamada", () => {
+    const m = watch.match(/file_issue "(\[watch-continuo\] review obsoleto sem resolução)" \\s*\n\s*"([^"]+)"/);
+    assert.ok(m, "chamada file_issue da seção 14 não encontrada");
+    assert.ok(m![2].includes(m![1]), `marcador "${m![1]}" ausente do título "${m![2]}" — have_issue nunca acharia a issue criada e o watch duplicaria a cada corrida`);
   });
 });

@@ -76,3 +76,78 @@ export function consumeReReviewAttempt(
   if (used >= max) return { allowed: false, next: state };
   return { allowed: true, next: { ...state, [key]: used + 1 } };
 }
+
+// ── Verificação automática do fix #8445 (não depende de alguém lembrar) ────────
+
+/** 2 ticks do merger (cron de 120m): se a PR está `stale`, sem nenhuma tentativa
+ *  registrada e o HEAD já tem mais que isso, o merger NÃO está agindo. */
+export const MERGER_SILENT_HOURS = 4;
+
+export interface StaleReviewProbe {
+  pr: number;
+  headRefName: string;
+  currentHeadSha: string | null;
+  reviewedHeadSha: string | null;
+  headCommittedAt: string | null;
+}
+
+export type StaleReviewFindingKind = "re-review-esgotado" | "merger-nao-tenta";
+
+export interface StaleReviewFinding {
+  pr: number;
+  headRefName: string;
+  kind: StaleReviewFindingKind;
+  attemptsUsed: number;
+  headAgeHours: number | null;
+  currentHeadSha: string;
+  reviewedHeadSha: string;
+}
+
+/**
+ * Invariante do #8445: PR com review obsoleto não pode ficar assim. Dois modos
+ * de falha, ambos silenciosos sem esta checagem:
+ *  - `re-review-esgotado`: o merger re-revisou {MAX} vezes e o SHA atual segue
+ *    sem review válido (sessão sai 0 sem postar marcador, marcador malformado…).
+ *  - `merger-nao-tenta`: `stale`, zero tentativas e HEAD antigo — o fix não foi
+ *    implantado no checkout do cron, o arquivo de estado não grava, ou o merger
+ *    está parado. Sem idade legível do HEAD não dá pra afirmar: não alarma.
+ * Puro: sem I/O. `attempts` é o conteúdo de data/continuo/re-review-attempts.json.
+ */
+export function evaluateStaleReviewHealth(
+  probes: readonly StaleReviewProbe[],
+  attempts: ReReviewAttempts,
+  nowIso: string,
+  opts: { maxAttempts?: number; silentHours?: number } = {},
+): StaleReviewFinding[] {
+  const max = opts.maxAttempts ?? MAX_RE_REVIEW_ATTEMPTS;
+  const silentHours = opts.silentHours ?? MERGER_SILENT_HOURS;
+  const nowMs = Date.parse(nowIso);
+  const findings: StaleReviewFinding[] = [];
+  for (const p of probes) {
+    const s = evaluateReviewStaleness({ currentHeadSha: p.currentHeadSha, reviewedHeadSha: p.reviewedHeadSha });
+    if (s.verdict !== "stale" || !p.currentHeadSha || !p.reviewedHeadSha) continue;
+    const raw = attempts[`${p.pr}@${p.currentHeadSha}`];
+    const attemptsUsed = Number.isInteger(raw) ? raw : 0;
+    const committedMs = p.headCommittedAt ? Date.parse(p.headCommittedAt) : NaN;
+    const headAgeHours =
+      Number.isFinite(committedMs) && Number.isFinite(nowMs) ? Math.max(0, (nowMs - committedMs) / 3_600_000) : null;
+    const base = {
+      pr: p.pr,
+      headRefName: p.headRefName,
+      attemptsUsed,
+      headAgeHours,
+      currentHeadSha: p.currentHeadSha,
+      reviewedHeadSha: p.reviewedHeadSha,
+    };
+    if (attemptsUsed >= max) {
+      findings.push({ ...base, kind: "re-review-esgotado" });
+    } else if (attemptsUsed === 0 && headAgeHours !== null && headAgeHours >= silentHours) {
+      findings.push({ ...base, kind: "merger-nao-tenta" });
+    }
+  }
+  return findings;
+}
+
+export function attemptsFilePath(repoRoot: string): string {
+  return `${repoRoot.replace(/[\/]+$/, "")}/data/continuo/re-review-attempts.json`;
+}
