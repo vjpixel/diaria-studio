@@ -151,6 +151,47 @@ export const HIGHLIGHT_THEMES_GRAYZONE_8417: JevQuestionSpec = {
 };
 
 /**
+ * Medição 5 do epic #8412 (#8418) — relevância de entrada no pool
+ * (source-researcher/discovery-searcher) via DUAS perguntas `noul` no MESMO
+ * request (`askJev` avalia N perguntas em paralelo sobre 1 `state` — ver
+ * `docs/jev.md`): `about_ai` (IA é o assunto principal, não menção lateral)
+ * e `audience_fit` (interessa ao público leitor, ver
+ * `context/audience-profile.md`). Diferente de #8414 (1 pergunta), esta
+ * medição precisa das DUAS respostas por item — `jev-eval-pool-relevance.ts`
+ * busca as duas specs por id e passa `[a.question, b.question]` numa única
+ * chamada `askJev`. Texto EXATO da issue #8418 — nenhum ajuste pós-corpus.
+ */
+export const POOL_RELEVANCE_8418_ABOUT_AI: JevQuestionSpec = {
+  id: "pool-relevance-8418-about-ai",
+  issue: "#8418",
+  expectedState: ["title", "url", "summary"],
+  expectedOutcome:
+    "shadow em ≥5 edições com 0 falso-positivo grave (item aprovado pelo editor que seria filtrado) — critério de pronto de #8418",
+  question: {
+    id: "about_ai",
+    type: "noul",
+    instructions: "IA é o assunto principal deste artigo, não uma menção lateral.",
+  },
+};
+
+export const POOL_RELEVANCE_8418_AUDIENCE_FIT: JevQuestionSpec = {
+  id: "pool-relevance-8418-audience-fit",
+  issue: "#8418",
+  expectedState: ["title", "url", "summary"],
+  expectedOutcome:
+    "shadow em ≥5 edições com 0 falso-positivo grave (item aprovado pelo editor que seria filtrado) — critério de pronto de #8418",
+  question: {
+    id: "audience_fit",
+    type: "noul",
+    instructions:
+      "Este artigo interessa a um profissional brasileiro não técnico que usa IA no " +
+      "trabalho (uso casual/consciente de ferramentas de IA, não pesquisador nem " +
+      "desenvolvedor de ML) — não é jargão técnico de pesquisa acadêmica sem aplicação " +
+      "prática, nem conteúdo hiperespecializado que só interessa a especialista.",
+  },
+};
+
+/**
  * Registro por id — cada medição futura adiciona sua entrada aqui (#8414+).
  * `jev-eval.ts --feature X` resolve a pergunta por este mapa.
  */
@@ -159,6 +200,8 @@ export const JEV_QUESTION_REGISTRY: Record<string, JevQuestionSpec> = {
   [NEGATIVE_IMPACT_8414.id]: NEGATIVE_IMPACT_8414,
   [DEDUP_GRAYZONE_8417.id]: DEDUP_GRAYZONE_8417,
   [HIGHLIGHT_THEMES_GRAYZONE_8417.id]: HIGHLIGHT_THEMES_GRAYZONE_8417,
+  [POOL_RELEVANCE_8418_ABOUT_AI.id]: POOL_RELEVANCE_8418_ABOUT_AI,
+  [POOL_RELEVANCE_8418_AUDIENCE_FIT.id]: POOL_RELEVANCE_8418_AUDIENCE_FIT,
 };
 
 export function getJevQuestionSpec(id: string): JevQuestionSpec | undefined {
