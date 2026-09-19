@@ -50,6 +50,25 @@
  * de idade no momento em que a skill roda — sem este passo explícito, a
  * seleção rodaria com clicks zerados pra semana inteira.
  *
+ * `--images-only` (#8385): resolve/gera as imagens do carrossel (capa +
+ * item por item recomposto no tamanho único da rodada + CTA — MESMA
+ * pipeline que `--schedule` usaria) e imprime as URLs em JSON no stdout —
+ * SEM despachar pra nenhum canal e SEM escrever em
+ * `06-weekly-published.json`. Existe pra o Passo 2b de
+ * `/diaria-instagram-semanal` (gate humano visual, #8022) poder renderizar
+ * o carrossel de verdade no Artifact de prévia, em vez de só a caption em
+ * texto — o gate aprovava um carrossel que ninguém tinha visto de fato.
+ * Idempotente pelo MESMO cache que `--schedule` usa
+ * (`06-flat-cards.json`/`06-news-cards.json`/`06-public-images.json`): se a
+ * rodada já rodou `--schedule` antes (ou um `--images-only` anterior), não
+ * regenera nem regasta custo de API paga — só RESOLVE o que já existe.
+ * Quando a resolução PRECISA gerar algo novo (item de RADAR sem card
+ * pré-gerado, #4513), o custo é o MESMO que `--schedule` teria pago de
+ * qualquer forma — `--images-only` só ANTECIPA esse custo pro momento do
+ * preview, nunca o duplica (a chave de cache é idêntica). Incompatível com
+ * `--schedule` na mesma invocação (a resolução de imagem já é parte do
+ * fluxo de agendamento — rodar os dois juntos não faz sentido).
+ *
  * Horário — `--time` (default "11:00", ver DEFAULT_WEEKLY_TIME abaixo) é uma
  * ASSUNÇÃO da implementação, não uma decisão do editor (herdada do #4101).
  * Timezone vem de `platform.config.json` (`publishing.social.timezone`,
@@ -59,7 +78,7 @@
  *   npx tsx scripts/publish-weekly-social.ts --saturday 260801 [--schedule]
  *     [--editions-root data/editions] [--time 11:00]
  *     [--no-skip-existing] [--force-incomplete-week]
- *     [--force-incomplete-click-data] [--manifest-only]
+ *     [--force-incomplete-click-data] [--manifest-only] [--images-only]
  *     [--force-urls url1,url2,...] [--force-font-size N]
  *
  * `--saturday` é OBRIGATÓRIO e explícito (mesmo invariante de CLAUDE.md pras
