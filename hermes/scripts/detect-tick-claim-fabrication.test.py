@@ -10,13 +10,16 @@ Cobre:
      relatorio AUSENTE -> fabrication_suspected, exit 2.
   3. Relatorio ausente e NENHUMA sessao correlacionada -> indeterminado
      (1o tick legitimo), nunca "ok" nem "fabricacao" por default.
-  4. Relatorio existe mas mtime ANTERIOR ao inicio da janela do tick
-     (relatorio obsoleto de um tick anterior sendo reaproveitado) ->
-     fabrication_suspected.
-  4b. Relatorio existe mas mtime POSTERIOR ao fim da janela do tick ->
-     indeterminado (cannot-verify), NUNCA fabrication_suspected — achado do
-     #7641: mtime mais novo so pode vir de escrita real e posterior, nunca
-     de arquivo obsoleto reaproveitado (que preservaria mtime antigo).
+  4. #8378/#7641 REGRESSÃO — sessao continuo recente de OUTRO tick (janela
+     NAO se sobrepoe a do relatorio) + relatorio antigo -> indeterminate,
+     NUNCA fabrication_suspected. O detector antigo (`latest_continuo_session`)
+     pegava essa sessao de outro tick em silencio e correlacionava errado.
+  4b. Contraponto do 4: sessao que SE sobrepoe a janela do relatorio +
+     relatorio fresco -> ok (a correlacao por sobreposição acerta o caso
+     honesto).
+  4c. `correlate_continuo_session` em isolation: devolve a sessao cuja
+     janela se sobrepoe; ignora sessao de outro tick (None). E a primitiva
+     que substitui `latest_continuo_session` no `run()`.
   5. Contagem de issues classificadas alegada no relatorio ("n=4 issues")
      diverge muito do real (41 abertas, via --open-issues-json) ->
      fabrication_suspected (mesmo padrao do #7537).
@@ -155,49 +158,91 @@ def main() -> int:
         )
 
         # ------------------------------------------------------------------
-        # 4. Relatorio com mtime FORA da janela do tick -> fabrication_suspected
+        # 4. #7641 REGRESSÃO — o defeito que esta correção encerra: tick com
+        #    relatório ANTIGO e uma sessão `continuo` RECENTE que é de OUTRO
+        #    tick (não sobreõe a janela do relatório). O detector ANTIGO
+        #    (`latest_continuo_session`) pegava essa sessão de outro tick e
+        #    trataria o relatório obsoleto como se fosse deste tick ->
+        #    fabrication_suspected. Com a correlação por SOPOSIÇÃO DE
+        #    JANELA (`correlate_continuo_session`), a sessão de outro tick
+        #    não conta, e o relatório antigo sozinho é indistinguível de
+        #    "job pausado de propósito" -> indeterminate, NUNCA fabricacao.
+        #    É o caso real do #7641 (tick sem registro proprio, sessao
+        #    correlacionada errada em silencio).
         # ------------------------------------------------------------------
         repo4 = td / "repo4"
         report4 = repo4 / "data" / "continuo" / "last-tick-report.md"
         sessions4 = repo4 / "data" / "sessions"
-        _write_session(sessions4, "tick-d", now - timedelta(minutes=10), now)
-        old_mtime = now - timedelta(hours=5)  # bem fora da janela de 45min
-        _write_report(report4, "## Tick antigo\n### Trabalhado\nnada.\n", mtime=old_mtime)
+        old_mtime = now - timedelta(hours=5)  # relatorio de um tick anterior
+        _write_report(report4, "## Tick de ha 5h\n### Trabalhado\nnada.\n", mtime=old_mtime)
+        # sessao continuo recente, mas de OUTRO tick: janela [now-10, now]
+        # NAO se sobrepoe a [old_mtime-45, old_mtime+45]
+        _write_session(sessions4, "tick-outro", now - timedelta(minutes=10), now)
         result4 = mod.run(repo4, report4, sessions4, 45, now, None)
         assert_true(
-            "4. relatorio com mtime fora da janela (obsoleto) -> fabrication_suspected",
-            result4["status"] == "fabrication_suspected",
+            "4. sessao de OUTRO tick (nao sobreõe a janela) + relatorio antigo "
+            "-> NUNCA fabrication_suspected (#7641)",
+            result4["status"] != "fabrication_suspected",
+        )
+        assert_true(
+            "4. status agregado fica indeterminate (cannot-verify), nao 'ok' silencioso",
+            result4["status"] == "indeterminate",
+        )
+        assert_true(
+            "4. correlacao NAO escolheu a sessao de outro tick (session_correlated e None)",
+            result4["session_correlated"] is None,
+        )
+        assert_true(
+            "4. checagem report_freshness fica indeterminada (relatorio antigo sem sessao correlacionada)",
+            any(c["check"] == "report_freshness" and c["status"] == "indeterminate"
+                for c in result4["checks"]),
         )
 
         # ------------------------------------------------------------------
-        # 4b. Relatorio com mtime POSTERIOR ao fim da janela -> indeterminado,
-        # NUNCA fabricacao presumida (achado #7641: mtime mais novo que a
-        # janela so pode vir de escrita real e posterior — nao de arquivo
-        # obsoleto reaproveitado, que preservaria mtime antigo. E o padrao
-        # exato da sessao 604fba55-476a-41a1-9432-1194484f4f31: um tick REAL
-        # e mais recente escreveu o relatorio de verdade, so nao registrou
-        # sessao propria em data/sessions/ pra ser correlacionado).
+        # 4b. Contraponto do 4: quando a sessao É de fato do tick (janela
+        #     se sobrepõe à do relatório) e o relatório existe, o frescor
+        #     é ok — a correlação por sobreposição acerta o caso honesto.
+        #     Sem isto, o 4 sozinho daria a impressão de que qualquer
+        #     relatorio fresco vira indeterminate.
         # ------------------------------------------------------------------
         repo4b = td / "repo4b"
         report4b = repo4b / "data" / "continuo" / "last-tick-report.md"
         sessions4b = repo4b / "data" / "sessions"
-        _write_session(sessions4b, "tick-d2", now - timedelta(hours=7), now - timedelta(hours=6))
-        newer_mtime = now  # bem depois do fim da janela (heartbeat + buffer)
-        _write_report(report4b, "## Tick mais novo que a sessao correlacionada\n### Trabalhado\nnada.\n",
-                       mtime=newer_mtime)
+        rep_mtime = now - timedelta(minutes=20)
+        _write_report(report4b, "## Tick 12:00\n### Trabalhado\nnada.\n", mtime=rep_mtime)
+        # sessao cuja janela se sobrepõe a [rep_mtime-45, rep_mtime+45]
+        _write_session(sessions4b, "tick-mesmo", rep_mtime - timedelta(minutes=10),
+                        rep_mtime + timedelta(minutes=5))
         result4b = mod.run(repo4b, report4b, sessions4b, 45, now, None)
         assert_true(
-            "4b. relatorio com mtime POSTERIOR a janela -> NUNCA fabrication_suspected (#7641)",
-            result4b["status"] != "fabrication_suspected",
+            "4b. sessao sobrepondo a janela do relatorio + relatorio fresco -> ok",
+            result4b["status"] == "ok",
         )
         assert_true(
-            "4b. status agregado fica indeterminado (cannot-verify), nao 'ok' silencioso",
-            result4b["status"] == "indeterminate",
+            "4b. sessao correlacionada e a do proprio tick (session_correlated)",
+            result4b["session_correlated"] == "tick-mesmo",
+        )
+
+        # ------------------------------------------------------------------
+        # 4c. `correlate_continuo_session` em isolation: puro, por
+        #     sobreposição de janela. Sobreõe -> devolve a sessao; nao
+        #     sobreõe (sessao de outro tick) -> None. É a primitiva que
+        #     substitui `latest_continuo_session` no `run()` e o nucleo
+        #     desta correção (#8378).
+        # ------------------------------------------------------------------
+        cs_ok = mod.correlate_continuo_session(
+            sessions4b, rep_mtime - timedelta(minutes=45), rep_mtime + timedelta(minutes=45)
         )
         assert_true(
-            "4b. checagem report_freshness fica indeterminada, distinguindo do caso 4 (mtime anterior)",
-            any(c["check"] == "report_freshness" and c["status"] == "indeterminate"
-                for c in result4b["checks"]),
+            "4c. correlate_continuo_session devolve a sessao que se sobrepoe",
+            cs_ok is not None and cs_ok.get("sessionId") == "tick-mesmo",
+        )
+        cs_none = mod.correlate_continuo_session(
+            sessions4, old_mtime - timedelta(minutes=45), old_mtime + timedelta(minutes=45)
+        )
+        assert_true(
+            "4c. correlate_continuo_session ignora sessao de outro tick -> None",
+            cs_none is None,
         )
 
         # ------------------------------------------------------------------
