@@ -48,11 +48,18 @@ Resposta:
   (artigos, edições), são N requests concorrentes — `askJevBatch` faz isso
   com um teto de concorrência (`JEV_CONCURRENCY = 8`, mesmo valor usado pelo
   script de medição original do #5995/#8211).
-- **Só o tipo `choice`, com 1 pergunta por request, foi confirmado contra a
-  API real** (#8219, 17/09/2026). `score` e `noul` seguem o mesmo envelope
-  por analogia — a 1ª medição que os usar de verdade (#8414 usa `noul`,
-  #8415 usa `score`) deve fazer a mesma verificação pontual de contrato que
-  o #8219 fez pra `choice`, e atualizar este documento se o shape divergir.
+- **`choice` confirmado contra a API real** (#8219, 17/09/2026), **`noul`
+  confirmado contra a API real** (#8414, 19/09/2026) — `score` segue o
+  mesmo envelope só por analogia até a 1ª medição que o usar de verdade
+  (#8415) fizer a mesma verificação pontual, e atualizar este documento se o
+  shape divergir.
+- **`noul` diverge da analogia original**: a resposta real é
+  `{"type":"noul","noul":0.82}` — a CHAVE é `noul`, não `probability`/`prob`
+  como o shape documentado antes de qualquer medição real usar o tipo
+  sugeria. `jev.ts` (`parseJevAnswers`) aceita `noul` primeiro, com
+  `probability`/`prob` como fallback tolerante. `confidence` também veio
+  ausente na resposta real observada (vira `1`, mesma leniência já descrita
+  abaixo).
 
 ## Os 3 tipos de pergunta
 
