@@ -28,7 +28,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateCard } from "../gen-social-card-4x5.ts";
+import { generateCard, WEEKLY_OVERLAY_WRAP } from "../gen-social-card-4x5.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
 import { DIARIA_EIA_URL } from "./canonical-urls.ts";
@@ -91,7 +91,7 @@ export type NewsCardGenerator = (input: NewsCardRecomposeInput & { outPath: stri
 export const defaultNewsCardGenerator: NewsCardGenerator = async ({ editionDir, destaque, title, category, fontSize, outPath, kvKey }) => {
   await assertBrandSerifAvailable("weekly-carousel-news-card");
 
-  const cardPath = await generateCard(editionDir, destaque, title, category, "4x5", "overlay", { fontSizeOverride: fontSize, outPath });
+  const cardPath = await generateCard(editionDir, destaque, title, category, "4x5", "overlay", { fontSizeOverride: fontSize, outPath, wrap: WEEKLY_OVERLAY_WRAP });
   if (!cardPath) {
     throw new Error(`arte-base de ${destaque} ausente em ${editionDir} (nem -4x5-nativo.jpg, nem -master.jpg, nem -2x1.jpg)`);
   }

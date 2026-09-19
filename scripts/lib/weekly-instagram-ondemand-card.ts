@@ -51,7 +51,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateCard } from "../gen-social-card-4x5.ts";
+import { generateCard, WEEKLY_OVERLAY_WRAP } from "../gen-social-card-4x5.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
 import { cloudflareKvKey } from "../upload-images-public.ts";
@@ -83,9 +83,10 @@ function stableUrlKeyBase(raw: string): string {
  * Pure: chave de cache do card sob demanda pra um item de seção — determinística
  * por seção+URL, então re-execuções acham o mesmo card já gerado/uploadado.
  */
-export function sectionCardCacheKey(section: "radar" | "use_melhor", url: string): string {
+export function sectionCardCacheKey(section: "radar" | "use_melhor", url: string, fontSize?: number): string {
   const hash = createHash("md5").update(stableUrlKeyBase(url)).digest("hex").slice(0, 10);
-  return `${section}_${hash}_4x5`;
+  // fontSize na chave: card gerado em outro tamanho (edição diária, rodada anterior) não pode ser reusado no carrossel, que exige tamanho único.
+  return fontSize != null ? `${section}_${hash}_4x5_fs${fontSize}` : `${section}_${hash}_4x5`;
 }
 
 /**
@@ -183,7 +184,7 @@ export const defaultSectionCardGenerator: SectionCardGenerator = async ({ item, 
     { stdio: "inherit", cwd: ROOT },
   );
 
-  const cardPath = await generateCard(editionDir, destaqueId, item.title, item.category, "4x5", "overlay", { fontSizeOverride });
+  const cardPath = await generateCard(editionDir, destaqueId, item.title, item.category, "4x5", "overlay", { fontSizeOverride, wrap: WEEKLY_OVERLAY_WRAP });
   if (!cardPath) {
     throw new Error(
       `geração da arte 4x5 nativa não produziu ${destaqueId} em ${editionDir} — image-generate.ts deveria ter criado 04-${destaqueId}-4x5-nativo.jpg`,
@@ -230,7 +231,7 @@ export async function resolveOrGenerateSectionCardUrl(
       error: `item sem section (kind=${item.kind}) — resolveOrGenerateSectionCardUrl só serve pra RADAR/USE MELHOR`,
     };
   }
-  const cacheKey = sectionCardCacheKey(item.section, item.url);
+  const cacheKey = sectionCardCacheKey(item.section, item.url, fontSizeOverride);
   const cached = readSectionCardUrl(editionDir, cacheKey);
   if (cached.corruptError) {
     return { url: null, generated: false, error: `06-public-images.json corrompido: ${cached.corruptError}` };
