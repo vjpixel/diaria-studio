@@ -31,8 +31,10 @@ import { renderGatePage } from "./gate-page.ts";
 import { checkApoioGate, checkGateRateLimit } from "./apoio-gate.ts";
 import { clearSessionCookieHeader, issueSessionCookie, readSessionEmail } from "./cookie.ts";
 import { articleForPath, articlePathForSlug, gatedArticlePaths, type GatedArticle } from "./gated-articles.ts";
+import { parseCicloVotacao } from "./voto-tema-core.ts";
+import { handleVotacaoOpcaoGet, handleVotacaoPlacar, handleVotoPost, type VotoTemaEnv } from "./voto-tema.ts";
 
-export interface Env {
+export interface Env extends VotoTemaEnv {
   ASSETS: Fetcher;
   /** #7030: KV do sync de nível de apoio — chave `apoio:{sha256(email)}`.
    * Criar via `wrangler kv namespace create ARTIGOS_APOIO_NIVEL` (ver PR body). */
@@ -41,6 +43,22 @@ export interface Env {
    * worker não consegue emitir nem ler sessão nenhuma (mesmo guard fail-soft
    * de `workers/cursos`, #4305). */
   COOKIE_HMAC_SECRET: string;
+  // POLL (`VotoTemaEnv`) — 2º binding KV, reusa o namespace do worker `poll`
+  // (id 72784da4ae39444481eb422ebac357c6), prefixo `tema:` (#8371). Ver
+  // wrangler.toml.
+}
+
+/** `/votacao/{ciclo}[/{n}]` — `ciclo` precisa bater `AAMM` (`parseCicloVotacao`);
+ *  `n` (opcional) é a opção escolhida. `null` se o path não casar a forma. */
+function parseVotacaoPath(pathname: string): { ciclo: string; n: number | null } | null {
+  const m = /^\/votacao\/([^/]+)(?:\/([^/]+))?\/?$/.exec(pathname);
+  if (!m) return null;
+  const ciclo = parseCicloVotacao(m[1]);
+  if (!ciclo) return null;
+  if (m[2] === undefined) return { ciclo, n: null };
+  const n = Number(m[2]);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  return { ciclo, n };
 }
 
 function json(data: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
@@ -114,6 +132,22 @@ export default {
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204 });
+    }
+
+    // #8371: votação do tema do Artigo Especial — antes do roteamento de
+    // artigo/gate (paths disjuntos, `/votacao/**`, mas checado primeiro por
+    // ser a rota nova).
+    const votacao = parseVotacaoPath(url.pathname);
+    if (votacao) {
+      if (votacao.n === null && request.method === "GET") {
+        return handleVotacaoPlacar(request, env, votacao.ciclo);
+      }
+      if (votacao.n !== null && request.method === "GET") {
+        return handleVotacaoOpcaoGet(request, env, votacao.ciclo, votacao.n);
+      }
+      if (votacao.n !== null && request.method === "POST") {
+        return handleVotoPost(request, env, votacao.ciclo, votacao.n);
+      }
     }
 
     const article = articleForPath(url.pathname);

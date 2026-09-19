@@ -44,6 +44,9 @@ function baseEnv(overrides: Partial<Env> = {}): Env {
     ASSETS: makeAssets(),
     ARTIGOS_APOIO_NIVEL: makeMapKV(),
     COOKIE_HMAC_SECRET: "cookie-secret",
+    // #8371: 2º binding KV (votação de tema) — não exercitado por este
+    // teste, mas obrigatório na forma de `Env`.
+    POLL: makeMapKV(),
     ...overrides,
   };
 }

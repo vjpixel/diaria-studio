@@ -82,3 +82,15 @@ run_worker_first = [
 [[kv_namespaces]]
 binding = "ARTIGOS_APOIO_NIVEL"
 id = "5c23c8b443e94c95bfcc3ae7d42a880a"
+
+# #8371: votação do tema do Artigo Especial pelos apoiadores. Reusa o MESMO
+# namespace físico `POLL` do worker `poll` (id abaixo, já provisionado) sob o
+# prefixo `tema:` — não é um namespace novo, então não reabre a dança do
+# PLACEHOLDER_... acima nem exige provisionamento adicional. A tabela reversa
+# `polltoken:{token} -> email` já vive lá (é como o "É IA?" grava tokens de
+# voto) e é exatamente o que a resolução de identidade do voto de tema
+# precisa — ver `src/voto-tema.ts`/`src/voto-tema-core.ts` e o corpo da
+# #8371 pro diagrama completo.
+[[kv_namespaces]]
+binding = "POLL"
+id = "72784da4ae39444481eb422ebac357c6"

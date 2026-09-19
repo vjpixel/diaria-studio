@@ -22,6 +22,9 @@ function fakeEnv(store: Record<string, string>): Env {
       get: mock.fn(async (key: string) => store[key] ?? null),
     } as unknown as KVNamespace,
     COOKIE_HMAC_SECRET: "test-secret",
+    // #8371: 2º binding KV (votação de tema) — não exercitado por este
+    // teste, mas obrigatório na forma de `Env`.
+    POLL: {} as unknown as KVNamespace,
   };
 }
 
