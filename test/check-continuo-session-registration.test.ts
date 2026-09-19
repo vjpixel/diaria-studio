@@ -181,6 +181,176 @@ describe("check-continuo-session-registration CLI", () => {
     }
   });
 
+  // ─── #8378 — sessão que registrou, deu heartbeat e ENCERROU LIMPO dentro
+  // da janela do tick some de `data/sessions/` (`endSession` faz `rmSync`) —
+  // sem o log de ciclo de vida (`data/session-lifecycle.jsonl`, #6624) como
+  // 2ª fonte, o checker alarma sobre um tick que na verdade registrou
+  // corretamente. Esta é a reprodução do modo de falha real por trás do
+  // "17 de 17" da issue.
+  describe("#8378 — sessão encerrada limpo é lida de data/session-lifecycle.jsonl", () => {
+    function writeLifecycleEvent(
+      lifecycleDir: string,
+      event: { event: "ended" | "gc-removed-without-end"; kind: string; sessionId: string; startedAt: string; lastHeartbeat: string | null; ts: string },
+    ): void {
+      mkdirSync(lifecycleDir, { recursive: true });
+      writeFileSync(join(lifecycleDir, "session-lifecycle.jsonl"), `${JSON.stringify(event)}\n`, "utf8");
+    }
+
+    it("tick cuja sessão continuo já terminou (arquivo removido) ainda conta como registrada via lifecycle log", () => {
+      const root = mkdtempSync(join(tmpdir(), "continuo-session-check-8378-"));
+      try {
+        const rootSidecarDir = join(root, "tick-sidecars");
+        const rootSessionsDir = join(root, "sessions"); // propositalmente SEM nenhum arquivo — sessão já terminou e foi removida
+        mkdirSync(rootSidecarDir, { recursive: true });
+        mkdirSync(rootSessionsDir, { recursive: true });
+        writeFileSync(
+          join(rootSidecarDir, "cron_x_20260917_161543.json"),
+          JSON.stringify({
+            sessionId: "cron_x_20260917_161543",
+            firstAt: "2026-09-17T19:15:54.453Z",
+            lastAt: "2026-09-17T19:22:03.387Z",
+            toolCallCount: 5,
+            toolCalls: [],
+            capturedAt: "2026-09-17T20:30:00.000Z",
+          }),
+          "utf8",
+        );
+        // Sem lifecycle log ainda: deve alarmar (comportamento pré-fix preservado).
+        const before = runCheck(rootSidecarDir, rootSessionsDir, "2026-09-17T20:30:00.000Z");
+        assert.equal(before.status, "alarm");
+
+        // Sessão registrou, deu heartbeat e encerrou LIMPO dentro da janela
+        // do tick (com folga) — `endSession` apagou o arquivo real, mas
+        // gravou o evento "ended" com startedAt/lastHeartbeat capturados
+        // antes da remoção.
+        writeLifecycleEvent(root, {
+          event: "ended",
+          kind: "continuo",
+          sessionId: "uuid-real-8378",
+          startedAt: "2026-09-17T19:16:10.000Z",
+          lastHeartbeat: "2026-09-17T19:21:50.000Z",
+          ts: "2026-09-17T19:22:05.000Z",
+        });
+
+        const after = runCheck(rootSidecarDir, rootSessionsDir, "2026-09-17T20:30:00.000Z");
+        assert.equal(after.status, "ok", after.reason);
+        assert.equal(after.unregisteredTicks.length, 0);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("evento gc-removed-without-end também conta como registro (o register RODOU, só não chamou end)", () => {
+      const root = mkdtempSync(join(tmpdir(), "continuo-session-check-8378-gc-"));
+      try {
+        const rootSidecarDir = join(root, "tick-sidecars");
+        const rootSessionsDir = join(root, "sessions");
+        mkdirSync(rootSidecarDir, { recursive: true });
+        mkdirSync(rootSessionsDir, { recursive: true });
+        writeFileSync(
+          join(rootSidecarDir, "cron_x_20260918_010536.json"),
+          JSON.stringify({
+            sessionId: "cron_x_20260918_010536",
+            firstAt: "2026-09-18T04:05:46.765Z",
+            lastAt: "2026-09-18T04:21:57.847Z",
+            toolCallCount: 4,
+            toolCalls: [],
+            capturedAt: "2026-09-18T05:00:00.000Z",
+          }),
+          "utf8",
+        );
+        writeLifecycleEvent(root, {
+          event: "gc-removed-without-end",
+          kind: "continuo",
+          sessionId: "uuid-gc-8378",
+          startedAt: "2026-09-18T04:06:00.000Z",
+          lastHeartbeat: "2026-09-18T04:20:00.000Z",
+          ts: "2026-09-18T06:00:00.000Z",
+        });
+        const result = runCheck(rootSidecarDir, rootSessionsDir, "2026-09-18T05:00:00.000Z");
+        assert.equal(result.status, "ok", result.reason);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("evento de OUTRO kind (overnight/develop) no lifecycle log nunca conta pro correlacionador do contínuo", () => {
+      const root = mkdtempSync(join(tmpdir(), "continuo-session-check-8378-otherkind-"));
+      try {
+        const rootSidecarDir = join(root, "tick-sidecars");
+        const rootSessionsDir = join(root, "sessions");
+        mkdirSync(rootSidecarDir, { recursive: true });
+        mkdirSync(rootSessionsDir, { recursive: true });
+        writeFileSync(
+          join(rootSidecarDir, "cron_x_20260918_022237.json"),
+          JSON.stringify({
+            sessionId: "cron_x_20260918_022237",
+            firstAt: "2026-09-18T05:22:44.162Z",
+            lastAt: "2026-09-18T05:24:57.765Z",
+            toolCallCount: 2,
+            toolCalls: [],
+            capturedAt: "2026-09-18T06:00:00.000Z",
+          }),
+          "utf8",
+        );
+        writeLifecycleEvent(root, {
+          event: "ended",
+          kind: "overnight",
+          sessionId: "uuid-overnight-8378",
+          startedAt: "2026-09-18T05:23:00.000Z",
+          lastHeartbeat: "2026-09-18T05:24:30.000Z",
+          ts: "2026-09-18T05:25:00.000Z",
+        });
+        const result = runCheck(rootSidecarDir, rootSessionsDir, "2026-09-18T06:00:00.000Z");
+        assert.equal(result.status, "alarm");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("--lifecycle-log-path explícito sobrescreve o default derivado de sessions-dir", () => {
+      const root = mkdtempSync(join(tmpdir(), "continuo-session-check-8378-explicit-"));
+      try {
+        const rootSidecarDir = join(root, "tick-sidecars");
+        const rootSessionsDir = join(root, "sessions");
+        const otherLifecycleDir = join(root, "elsewhere");
+        mkdirSync(rootSidecarDir, { recursive: true });
+        mkdirSync(rootSessionsDir, { recursive: true });
+        mkdirSync(otherLifecycleDir, { recursive: true });
+        writeFileSync(
+          join(rootSidecarDir, "cron_x_20260918_032538.json"),
+          JSON.stringify({
+            sessionId: "cron_x_20260918_032538",
+            firstAt: "2026-09-18T06:25:57.483Z",
+            lastAt: "2026-09-18T06:44:10.920Z",
+            toolCallCount: 3,
+            toolCalls: [],
+            capturedAt: "2026-09-18T07:00:00.000Z",
+          }),
+          "utf8",
+        );
+        writeFileSync(
+          join(otherLifecycleDir, "custom-lifecycle.jsonl"),
+          `${JSON.stringify({
+            event: "ended",
+            kind: "continuo",
+            sessionId: "uuid-explicit-8378",
+            startedAt: "2026-09-18T06:26:10.000Z",
+            lastHeartbeat: "2026-09-18T06:43:00.000Z",
+            ts: "2026-09-18T06:44:15.000Z",
+          })}\n`,
+          "utf8",
+        );
+        const result = runCheck(rootSidecarDir, rootSessionsDir, "2026-09-18T07:00:00.000Z", {
+          lifecycleLogPath: join(otherLifecycleDir, "custom-lifecycle.jsonl"),
+        });
+        assert.equal(result.status, "ok", result.reason);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("sidecar corrompido (JSON inválido) é ignorado, não derruba a checagem inteira", () => {
     const corruptDir = mkdtempSync(join(tmpdir(), "continuo-session-check-corrupt-"));
     try {

@@ -1873,6 +1873,19 @@ export interface SessionLifecycleEvent {
    * em ms — `undefined` quando `startedAt` não foi legível. Só contexto pra
    * quem for analisar o log depois; não entra em nenhuma decisão. */
   ageMs?: number;
+  /** `startedAt`/`lastHeartbeat` do record removido, capturados ANTES da
+   * remoção (#8378) — existem pra reconstruir a JANELA `[startedAt,
+   * lastHeartbeat]` da sessão depois que o arquivo real já sumiu de
+   * `data/sessions/`. Sem isto, `endSession` apagando o arquivo (`rmSync`)
+   * torna TODA sessão `kind=continuo` que termina limpo invisível pra
+   * `continuo-session-registration-check.ts` — o checker roda depois,
+   * hora em hora, e por essa hora o registro já não existe mais; o alarme
+   * "sem sessão registrada" nesse caso é falso-positivo estrutural, não
+   * evidência de que `register` não rodou. `null` quando o campo não era
+   * legível no record; ambos `undefined` só em eventos gravados antes desta
+   * mudança (log histórico, nunca reescrito). */
+  startedAt?: string | null;
+  lastHeartbeat?: string | null;
 }
 
 function sessionLifecycleLogPath(repoRoot: string): string {
@@ -2034,6 +2047,8 @@ export function endSession(
       sessionId,
       ts: new Date(now).toISOString(),
       ageMs: Number.isFinite(startedMs) ? now - startedMs : undefined,
+      startedAt: outcome.record.startedAt ?? null,
+      lastHeartbeat: outcome.record.lastHeartbeat ?? null,
     });
   }
   return outcome.removed;
@@ -4322,6 +4337,8 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
         sessionId: lifecycleRecord.sessionId,
         ts: new Date(now).toISOString(),
         ageMs: Number.isFinite(startedMs) ? now - startedMs : undefined,
+        startedAt: lifecycleRecord.startedAt ?? null,
+        lastHeartbeat: lifecycleRecord.lastHeartbeat ?? null,
       });
     }
   }
