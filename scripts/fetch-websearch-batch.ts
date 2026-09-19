@@ -44,6 +44,7 @@ import { fetchOgMetadata } from "./lib/extract-og.ts"; // #1559 B
 import { recordBraveCredit } from "./lib/brave-credits.ts"; // #1558
 import { getHowToDiscoveryQueries } from "./lib/use-melhor-curation.ts"; // #2278
 import { getNegativeImpactDiscoveryQueries } from "./lib/negative-impact-curation.ts"; // #3916, #3918
+import { loadSearchDemandIdeas, pickSearchDemandDiscoveryQueries } from "./lib/search-demand-curation.ts"; // #8370 Peça 1
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -526,6 +527,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     discoveryTopics.push({ query: q });
   }
   console.error(`[fetch-websearch-batch] +${negativeImpactQueries.length} query(ies) de impacto-negativo adicionada(s) (#3916, #3918)`);
+
+  // #8370 Peça 1: demanda de busca real (Google Keyword Planner, #8366) como
+  // FONTE de queries — complementa as estáticas com um sinal exógeno que não
+  // deriva do que já publicamos. Fail-soft: sem pull mensal ainda rodado,
+  // `demandQueries` é [] e não muda nada do fluxo existente.
+  const demandIdeas = loadSearchDemandIdeas(ROOT);
+  const demandQueries = pickSearchDemandDiscoveryQueries(demandIdeas, safeEditionNum, 2);
+  for (const q of demandQueries) {
+    discoveryTopics.push({ query: q });
+  }
+  console.error(`[fetch-websearch-batch] +${demandQueries.length} query(ies) de demanda de busca adicionada(s) (#8370)`);
 
   const totalQueries = sources.length + discoveryTopics.length;
   console.error(

@@ -81,11 +81,127 @@ export const BUCKET_TIEBREAKER_8211: JevQuestionSpec = {
 };
 
 /**
+ * Medição 1 do epic #8412 (#8414) — `negative_impact` por artigo via Jev
+ * (tipo `noul`) vs. tag do `scorer-chunk` + backstop determinístico
+ * (`negative-impact-promotion.ts`). Texto EXATO da issue #8414 — nenhum
+ * ajuste pós-corpus.
+ */
+export const NEGATIVE_IMPACT_8414: JevQuestionSpec = {
+  id: "negative-impact-8414",
+  issue: "#8414",
+  expectedState: ["title", "url", "summary"],
+  expectedOutcome:
+    "ganho medido sobre a tag do scorer-chunk no gabarito cego (McNemar) — critério de pronto de #8414",
+  question: {
+    id: "negative_impact",
+    type: "noul",
+    instructions:
+      "Este artigo documenta um dano REAL já causado por IA (prejuízo, vítima, perda, " +
+      "decisão adversa, falha com consequência) — não uma menção de risco hipotético, " +
+      "não um benchmark ruim, não uma crítica de opinião.",
+  },
+};
+
+/**
+ * Medição 4 do epic #8412 (#8417) — zona cinzenta do `dedup.ts` (Pass 1c):
+ * "A e B são a mesma história?" via Jev (`noul`). Texto EXATO da issue #8417
+ * — nenhum ajuste pós-corpus. `state` recebe `{a: {title,summary,source},
+ * b: {title,summary,source}}` (par, não item único — diferente das duas
+ * perguntas anteriores).
+ */
+export const DEDUP_GRAYZONE_8417: JevQuestionSpec = {
+  id: "dedup-grayzone-8417",
+  issue: "#8417",
+  expectedState: ["a", "b"],
+  expectedOutcome: "ganho medido sobre a heurística Jaccard/thresholdForPair na zona cinzenta (McNemar) — critério de pronto de #8417",
+  question: {
+    id: "same_story",
+    type: "noul",
+    instructions:
+      "Dados dois artigos A e B sobre inteligência artificial, A e B relatam o mesmo " +
+      "fato/anúncio (mesma história), e não dois fatos distintos sobre o mesmo assunto? " +
+      "Considere apenas título, resumo e fonte de cada artigo, fornecidos em `a` e `b` " +
+      "do estado.",
+  },
+};
+
+/**
+ * Medição 4 do epic #8412 (#8417) — zona cinzenta do
+ * `check-highlight-themes.ts`: "A é o mesmo TEMA de B ao ponto de um leitor
+ * sentir repetição?" — critério mais frouxo que `dedup-grayzone-8417`
+ * (mesmo fato) de propósito, pois é o que a issue pede para essa 2ª
+ * pergunta. Texto EXATO da issue #8417.
+ */
+export const HIGHLIGHT_THEMES_GRAYZONE_8417: JevQuestionSpec = {
+  id: "highlight-themes-grayzone-8417",
+  issue: "#8417",
+  expectedState: ["a", "b"],
+  expectedOutcome: "ganho medido sobre a heurística Jaccard/thresholdForPair na zona cinzenta (McNemar) — critério de pronto de #8417",
+  question: {
+    id: "same_theme",
+    type: "noul",
+    instructions:
+      "Dados dois artigos A e B sobre inteligência artificial, A é o mesmo TEMA de B ao " +
+      "ponto de um leitor sentir repetição numa newsletter diária, mesmo que não sejam o " +
+      "mesmo fato/anúncio específico? Este critério é MAIS FROUXO que \"mesma história\" — " +
+      "artigos sobre o mesmo assunto geral já contam, mesmo com fatos distintos. " +
+      "Considere apenas título, resumo e fonte de cada artigo, fornecidos em `a` e `b` " +
+      "do estado.",
+  },
+};
+
+/**
+ * Medição 5 do epic #8412 (#8418) — relevância de entrada no pool
+ * (source-researcher/discovery-searcher) via DUAS perguntas `noul` no MESMO
+ * request (`askJev` avalia N perguntas em paralelo sobre 1 `state` — ver
+ * `docs/jev.md`): `about_ai` (IA é o assunto principal, não menção lateral)
+ * e `audience_fit` (interessa ao público leitor, ver
+ * `context/audience-profile.md`). Diferente de #8414 (1 pergunta), esta
+ * medição precisa das DUAS respostas por item — `jev-eval-pool-relevance.ts`
+ * busca as duas specs por id e passa `[a.question, b.question]` numa única
+ * chamada `askJev`. Texto EXATO da issue #8418 — nenhum ajuste pós-corpus.
+ */
+export const POOL_RELEVANCE_8418_ABOUT_AI: JevQuestionSpec = {
+  id: "pool-relevance-8418-about-ai",
+  issue: "#8418",
+  expectedState: ["title", "url", "summary"],
+  expectedOutcome:
+    "shadow em ≥5 edições com 0 falso-positivo grave (item aprovado pelo editor que seria filtrado) — critério de pronto de #8418",
+  question: {
+    id: "about_ai",
+    type: "noul",
+    instructions: "IA é o assunto principal deste artigo, não uma menção lateral.",
+  },
+};
+
+export const POOL_RELEVANCE_8418_AUDIENCE_FIT: JevQuestionSpec = {
+  id: "pool-relevance-8418-audience-fit",
+  issue: "#8418",
+  expectedState: ["title", "url", "summary"],
+  expectedOutcome:
+    "shadow em ≥5 edições com 0 falso-positivo grave (item aprovado pelo editor que seria filtrado) — critério de pronto de #8418",
+  question: {
+    id: "audience_fit",
+    type: "noul",
+    instructions:
+      "Este artigo interessa a um profissional brasileiro não técnico que usa IA no " +
+      "trabalho (uso casual/consciente de ferramentas de IA, não pesquisador nem " +
+      "desenvolvedor de ML) — não é jargão técnico de pesquisa acadêmica sem aplicação " +
+      "prática, nem conteúdo hiperespecializado que só interessa a especialista.",
+  },
+};
+
+/**
  * Registro por id — cada medição futura adiciona sua entrada aqui (#8414+).
  * `jev-eval.ts --feature X` resolve a pergunta por este mapa.
  */
 export const JEV_QUESTION_REGISTRY: Record<string, JevQuestionSpec> = {
   [BUCKET_TIEBREAKER_8211.id]: BUCKET_TIEBREAKER_8211,
+  [NEGATIVE_IMPACT_8414.id]: NEGATIVE_IMPACT_8414,
+  [DEDUP_GRAYZONE_8417.id]: DEDUP_GRAYZONE_8417,
+  [HIGHLIGHT_THEMES_GRAYZONE_8417.id]: HIGHLIGHT_THEMES_GRAYZONE_8417,
+  [POOL_RELEVANCE_8418_ABOUT_AI.id]: POOL_RELEVANCE_8418_ABOUT_AI,
+  [POOL_RELEVANCE_8418_AUDIENCE_FIT.id]: POOL_RELEVANCE_8418_AUDIENCE_FIT,
 };
 
 export function getJevQuestionSpec(id: string): JevQuestionSpec | undefined {

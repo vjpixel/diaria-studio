@@ -653,8 +653,9 @@ export function writeReportFile(
  * **#4478 achado 1 (defesa em profundidade): `notify` propaga pro
  * `writeReportFile`/`registerReport`.** Testes que exercitam este caminho
  * com um `rootDir`/`editionDir` fake podem passar `notify: false`
- * explicitamente pra nunca depender só do fix sistêmico de
- * `defaultHasCredentials` (`scripts/studio-ui/studio-reports.ts`).
+ * explicitamente — relevante quando `notify` disparava e-mail via Gmail por
+ * default; desde o #7960 `registerReport` delega a
+ * `notifyEditor({severity: "info"})`, que nunca toca Gmail/credenciais.
  *
  * **#7960 (item 4 da #7957): default virou `false`** — mesma mudança de
  * `writeReportFile` acima. `refresh-dedup.ts::ensureEditionReport` (único

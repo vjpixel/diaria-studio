@@ -24,6 +24,12 @@ concurrency:
   group: audience-profile-guards-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
+# #8483: evita baixar o Chrome do puppeteer em `npm ci` — nenhum job
+# deste workflow usa o browser real (scripts que precisam dele, como
+# capture-livros-promo.ts/verify-accessibility.ts, rodam fora do CI).
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "true"
+
 jobs:
   audience-profile-guards:
     runs-on: ubuntu-latest

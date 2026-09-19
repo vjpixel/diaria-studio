@@ -323,6 +323,9 @@
 }
 .ci-green { background: var(--status-ok); color: var(--on-status); border-color: var(--status-ok); }
 .ci-red { background: var(--status-danger); color: var(--on-status); border-color: var(--status-danger); }
+/* "stale" (#8484): CANCELLED isolado de "red" — nem sucesso nem falha real,
+   info neutra ("re-rodar"), nunca a cor de alarme de "red". */
+.ci-stale { background: var(--status-info); color: var(--on-status); border-color: var(--status-info); }
 .ci-pending { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
 .ci-none { opacity: 0.5; }
 

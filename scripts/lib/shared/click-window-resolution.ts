@@ -3,7 +3,7 @@
  *
  * Resolução "qual post do cache representa a edição do dia X" — a peça que
  * as DUAS skills semanais (`/diaria-linkedin-semanal` via
- * `weekly-linkedin-clicks.ts`, `/diaria-instagram-semanal` via
+ * `weekly-linkedin-clicks.ts`, `/diaria-retro-semanal` via
  * `weekly-instagram-select.ts`) usam pra cruzar candidatos de
  * `02-reviewed.md` com cliques reais.
  *

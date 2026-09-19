@@ -117,6 +117,8 @@ export interface CumulativeSeriesResult {
    *  aqui pra a UI poder dizer "X gastou e não converteu nenhum cadastro"
    *  em vez de simplesmente não mencionar o canal. */
   omittedNoSignups: string[];
+  /** #8475 Parte A — canais excluídos do gráfico por escala (ex.: Microsoft Ads). */
+  omittedScale: string[];
   /** #8307 — datas do intervalo que ficaram FORA do gráfico por não terem
    *  tido veiculação nenhuma (dia 100% dentro de uma pausa). A UI usa isto
    *  pra dizer quantos dias sumiram, em vez de comprimir o eixo X em
@@ -193,7 +195,7 @@ export function buildCumulativeSeries(
   metrics: ChannelDailyMetric[],
   signups: ChannelDailySignup[],
   dateRange: { start: string; end: string },
-  opts: { pauseIntervals?: readonly AdsTestPauseInterval[] } = {},
+  opts: { pauseIntervals?: readonly AdsTestPauseInterval[]; excludeChannels?: readonly string[] } = {},
 ): CumulativeSeriesResult {
   const channels = new Set<string>();
   for (const m of metrics) channels.add(m.canal);
@@ -229,11 +231,17 @@ export function buildCumulativeSeries(
   const skippedSet = new Set(skippedPausedDates);
   const plottedDates = dates.filter((d) => !skippedSet.has(d));
 
+  const excluded = new Set(opts.excludeChannels ?? []);
+  const omittedScale: string[] = [];
+  for (const c of Array.from(channels)) {
+    if (excluded.has(c) && !omittedScale.includes(c)) omittedScale.push(c);
+  }
   const series: Array<{ canal: string; points: CumulativeSeriesPoint[] }> = [];
   const omittedNoSignups: string[] = [];
   let sharedYAxisMax: number | null = null;
 
-  for (const canal of channels) {
+  for (const canal of Array.from(channels).sort()) {
+    if (excluded.has(canal)) continue;
     let gastoAcumulado = 0;
     let cadastrosAcumulados = 0;
     const points: CumulativeSeriesPoint[] = [];
@@ -257,7 +265,7 @@ export function buildCumulativeSeries(
     }
   }
 
-  return { series, sharedYAxisMax, omittedNoSignups, skippedPausedDates, plottedDates };
+  return { series, sharedYAxisMax, omittedNoSignups, omittedScale, skippedPausedDates, plottedDates };
 }
 
 // ---------------------------------------------------------------------------
@@ -376,7 +384,7 @@ export function buildChannelTable(
   for (const canal of channelsWithUnknownLiveSpend) channels.add(canal);
 
   const rows: ChannelSummaryRow[] = [];
-  for (const canal of channels) {
+  for (const canal of Array.from(channels).sort()) {
     const own = metrics.filter((m) => m.canal === canal);
     const cliquesTotal = own.reduce((sum, m) => sum + m.cliques, 0);
     const impressoesTotal = own.reduce((sum, m) => sum + m.impressoes, 0);

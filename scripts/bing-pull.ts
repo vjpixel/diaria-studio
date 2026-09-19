@@ -112,7 +112,9 @@
  *   npx tsx scripts/bing-pull.ts [--site https://diar.ia.br/] \
  *     [--out data/seo/bing-{slug}-{YYYY-MM-DD}.json]
  *   npx tsx scripts/bing-pull.ts --mode keywords [--country br] [--language pt-BR] \
- *     [--days 30] [--out data/seo/bing-keywords-{YYYY-MM-DD}.json]
+ *     [--days 30] [--out data/seo/bing-keywords-{YYYY-MM-DD}.json] \
+ *     [--seeds "newsletter de ia,ferramentas de ia"] \
+ *     [--report-out data/seo/bing-related-{YYYY-MM-DD}.md]
  *   npx tsx scripts/bing-pull.ts --mode links [--site https://diar.ia.br/] \
  *     [--max-pages 20] [--out data/seo/bing-links-{YYYY-MM-DD}.json]
  *
@@ -491,6 +493,106 @@ export function buildBingDemandTerms(seeds: string[] = loadBingKeywordSeeds()): 
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// #8356 — related.data saía [] com related.raw.d populado
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Consultas de marca/navegação que dominam o topo do `GetRelatedKeywords`
+ * e não são acionáveis como oportunidade de conteúdo (#8356): são o
+ * público buscando pelo nome da ferramenta/plataforma, não uma intenção
+ * de aprender ou descobrir. Exemplos reais do pull 2026-09-01 (br/pt-BR):
+ * `canva` (787.721 impressões, 45% do total), `notebook lm` (81.139),
+ * `senac` (27.704). Filtrar é decisão editorial — a lista é curada, não
+ * derivada de regex genérica; adicionar marca nova pede julgamento.
+ */
+const BING_RELATED_BRAND_QUERIES: readonly string[] = [
+  "canva",
+  "notebook lm",
+  "notebooklm",
+  "senac",
+];
+
+/** Uma query é de marca/navegação se contém algum termo da lista acima como
+ * substring (case-insensitive, sem acento). Pure — testável sem I/O. */
+export function isBrandNavigationalQuery(query: string): boolean {
+  const q = normalizeForMatch(query);
+  return BING_RELATED_BRAND_QUERIES.some((b) => q.includes(b));
+}
+
+/** Linha de `related` deduplicada por query, com a semente de origem anotada
+ * — usada pelo relatório agregado de #8356. */
+export interface BingRelatedAggregatedRow {
+  query: string;
+  impressions: number;
+  broadImpressions: number;
+  seeds: string[];
+}
+
+/**
+ * Agrega todas as linhas de `related` de um pull (#8356 item 2): deduplica
+ * por query (uma mesma query pode vir de sementes diferentes — ex: `ia`
+ * vem de "ferramentas de inteligência artificial" e de "inteligência
+ * artificial substitui programador"), SOMA impressions/broadImpressions
+ * e anota quais sementes a trouxeram. Mantém o ORDER de chegada (a
+ * ordenação final por impressions é feita pelo caller). Pure.
+ */
+export function aggregateRelatedRows(entries: BingKeywordTermEntry[]): BingRelatedAggregatedRow[] {
+  const map = new Map<string, BingRelatedAggregatedRow>();
+  for (const e of entries) {
+    if (!e.related.ok) continue;
+    // #8356: agrega do PAYLOAD BRUTO (`related.raw`), não do campo `data`
+    // filtrado — o ponto do issue é que `data` sai [] pra quase toda
+    // semente, então ler só `data` produziria um relatório vazio (o mesmo
+    // defeito que a issue denuncia, só num .md). O `raw` tem as 1.404 linhas
+    // completas; o parser é o mesmo confirmado em #5128.
+    const rows = parseBingKeywordRowsResponse(e.related.raw);
+    for (const r of rows) {
+      const key = r.query;
+      const existing = map.get(key);
+      if (existing) {
+        existing.impressions += r.impressions;
+        existing.broadImpressions += r.broadImpressions;
+        if (!existing.seeds.includes(e.term)) existing.seeds.push(e.term);
+      } else {
+        map.set(key, { query: r.query, impressions: r.impressions, broadImpressions: r.broadImpressions, seeds: [e.term] });
+      }
+    }
+  }
+  return [...map.values()];
+}
+
+/**
+ * Relatório de #8356 item 2 em markdown: termos relacionados agregados e
+ * ordenados por impressions (desc), com consultas de marca/navegação
+ * filtradas. `header` é o título do relatório (caller passa data/intervalo).
+ * Pure — sem I/O, testável sem rede.
+ */
+export function buildRelatedTermsReport(
+  entries: BingKeywordTermEntry[],
+  header: string,
+): string {
+  const aggregated = aggregateRelatedRows(entries)
+    .filter((r) => !isBrandNavigationalQuery(r.query))
+    .sort((a, b) => b.impressions - a.impressions);
+  const totalImpressions = aggregated.reduce((s, r) => s + r.impressions, 0);
+  const lines: string[] = [];
+  lines.push(`# ${header}`);
+  lines.push("");
+  lines.push(`- Termos relacionados agregados: **${aggregated.length}**`);
+  lines.push(`- Impressões totais (soma, deduplicada por query): **${totalImpressions.toLocaleString("pt-BR")}**`);
+  lines.push(`- Consultas de marca/navegação filtradas (canva, notebook lm, senac): ver em ` +
+    `data/seo/bing-related-*.json (não entram nesta lista)`);
+  lines.push("");
+  lines.push("| # | Termo relacionado | Impressões | Sementes de origem |");
+  lines.push("|---|-------------------|------------|--------------------|");
+  aggregated.forEach((r, i) => {
+    lines.push(`| ${i + 1} | ${r.query} | ${r.impressions.toLocaleString("pt-BR")} | ${r.seeds.join(", ")} |`);
+  });
+  lines.push("");
+  return lines.join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // #5253 item 4 — filtro de relevância de domínio pro `related` da API
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -860,7 +962,13 @@ async function mainKeywords(nowMs: number, values: Record<string, string>): Prom
   const pulledAt = isoDate(nowMs);
   const endDate = pulledAt;
   const startDate = isoDate(nowMs - days * 24 * 3600 * 1000);
-  const terms = buildBingDemandTerms();
+  // #8356 item 3: sementes por CLI — `--seeds a,b,c` sobrescreve o CSV curado
+  // de `seed/keywords.csv`, permitindo testar uma hipótese nova sem tocar
+  // o código nem commitar. Sem a flag, comportamento inalterado.
+  const seedsArg = values["seeds"];
+  const terms = seedsArg
+    ? seedsArg.split(",").map((s) => s.trim()).filter((s) => s.length > 0)
+    : buildBingDemandTerms();
 
   const entries: BingKeywordTermEntry[] = [];
   for (const term of terms) {
@@ -880,6 +988,17 @@ async function mainKeywords(nowMs: number, values: Record<string, string>): Prom
   const jsonPath = String(values["out"] ?? resolve(seoDir, `bing-keywords-${pulledAt}.json`));
   const output = buildBingKeywordsPullOutput(country, language, startDate, endDate, pulledAt, entries);
   writeFileSync(jsonPath, JSON.stringify(output, null, 2));
+
+  // #8356 item 2: relatório em .md com os relacionados agregados e ordenados,
+  // filtrando consultas de marca/navegação (canva, notebook lm, senac) que
+  // dominam o topo e não são acionáveis. O JSON continua guardando o `raw`
+  // inteiro pra auditoria; este .md é o que alguém leria.
+  const reportMd = buildRelatedTermsReport(
+    entries,
+    `Bing Related Keywords — ${pulledAt} (${startDate} a ${endDate}, ${country}/${language})`,
+  );
+  const mdPath = String(values["report-out"] ?? resolve(seoDir, `bing-related-${pulledAt}.md`));
+  writeFileSync(mdPath, reportMd);
 
   // #5253 item 5: reporta quantas sementes voltaram com volume zero — nunca
   // silencioso sobre isso, é sinal de que a semente pode precisar de revisão.

@@ -229,6 +229,67 @@ export function shouldPauseRollout(_result: ArmGuardrailResult): boolean {
  * ramp Clarice, sem duplicar formatação aqui. */
 export { describeBreaches };
 
+// ─── Seed emails (test_email + EDITOR_SEED_EMAILS) blacklisted na conta (#8436) ───
+
+/**
+ * #8436 (19/09/2026): o `brevo_diaria.test_email` configurado apareceu
+ * `emailBlacklisted: true` na conta Brevo da diária — `sendTest` passou a
+ * falhar 400 ("Test emails cannot be sent to non-existent/blacklisted/
+ * without-contact-list users") e a sonda de inbox placement do Gmail
+ * pessoal (`EDITOR_SEED_EMAILS`, ver `scripts/lib/editor-copy.ts`) parou de
+ * receber a campanha em silêncio — nada no código comparava "seeds que
+ * deviam receber" com "seeds que de fato recebem".
+ *
+ * Este bloco é só o guard MECÂNICO sugerido pela issue — checar, ANTES da
+ * campanha, que nenhum seed está `emailBlacklisted` (ou ausente da conta) —
+ * e falhar ALTO quando estiver. A decisão de fundo (trocar o seed vs
+ * remover o blacklist) é editorial e fica pendente, fora do escopo desta
+ * unidade (ver corpo/comentário da #8436).
+ */
+export type SeedContactStatus = "ok" | "blacklisted" | "not_found";
+
+export interface SeedBlacklistCheckResult {
+  email: string;
+  status: SeedContactStatus;
+}
+
+/** Pura — classifica a resposta de `GET /v3/contacts/{email}` pro seed. */
+export function classifySeedContactStatus(status: number, body: unknown): SeedContactStatus {
+  if (status === 404) return "not_found";
+  if ((body as { emailBlacklisted?: unknown } | null)?.emailBlacklisted === true) return "blacklisted";
+  return "ok";
+}
+
+/**
+ * Checa cada email de `emails` via `fetchContact` (injeção — o caller passa
+ * um wrapper de `brevoGet(apiKey, "/contacts/{email}")`, testável sem rede
+ * real). Sequencial de propósito: lista curta (test_email + 2 seeds, #8349),
+ * sem necessidade de paralelizar contra uma API com rate limit por conta.
+ */
+export async function checkSeedEmailsBlacklisted(
+  emails: readonly string[],
+  fetchContact: (email: string) => Promise<{ status: number; body: unknown }>,
+): Promise<SeedBlacklistCheckResult[]> {
+  const out: SeedBlacklistCheckResult[] = [];
+  for (const email of emails) {
+    const { status, body } = await fetchContact(email);
+    out.push({ email, status: classifySeedContactStatus(status, body) });
+  }
+  return out;
+}
+
+/** Pura — mensagens legíveis só pros seeds com problema (`status !== "ok"`),
+ * nomeando o email e o problema — vazio se todos ok. */
+export function describeSeedBlacklistFailures(results: readonly SeedBlacklistCheckResult[]): string[] {
+  return results
+    .filter((r) => r.status !== "ok")
+    .map((r) =>
+      r.status === "blacklisted"
+        ? `${r.email} está emailBlacklisted na conta Brevo da diária — sendTest e a campanha diária não alcançam este seed`
+        : `${r.email} não existe como contato na conta Brevo da diária (404 em GET /v3/contacts) — sendTest e a campanha diária não alcançam este seed`,
+    );
+}
+
 // ─── Estado persistido (latch) ─────────────────────────────────────────────
 
 export interface RolloutGuardrailState {

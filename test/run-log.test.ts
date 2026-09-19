@@ -4,6 +4,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -168,6 +169,27 @@ describe("logEvent (#612) — append append-only ao JSONL", () => {
     assert.doesNotThrow(() => {
       logEvent({ edition: null, stage: null, agent: null, level: "info", message: "x" }, tmpRoot);
     });
+  });
+
+  it("escrita bem-sucedida devolve true (#8453)", () => {
+    const result = logEvent({ edition: null, stage: null, agent: null, level: "info", message: "x" }, tmpRoot);
+    assert.equal(result, true);
+  });
+
+  it("falha real de appendFileSync devolve false, sem lançar (#8453 — achado #7960/PR #8452)", () => {
+    // Simula disco cheio/permissão/lock do OneDrive sem mockar node:fs
+    // (o módulo é read-only, `mock.method` não consegue redefinir suas
+    // propriedades): força uma falha REAL de I/O criando um DIRETÓRIO no
+    // caminho exato do log — `appendFileSync` contra um diretório lança
+    // EISDIR. `logEvent` precisa continuar engolindo o erro (nunca mascarar
+    // o erro original do caller) MAS agora sinalizar a falha via retorno,
+    // em vez de devolver o mesmo `undefined` que uma escrita bem-sucedida.
+    fs.mkdirSync(join(tmpRoot, "data", "run-log.jsonl"), { recursive: true });
+    let result: boolean | undefined;
+    assert.doesNotThrow(() => {
+      result = logEvent({ edition: null, stage: null, agent: null, level: "info", message: "x" }, tmpRoot);
+    });
+    assert.equal(result, false);
   });
 
   it("event tem todos os campos esperados (#612 schema)", () => {

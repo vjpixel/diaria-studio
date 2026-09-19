@@ -110,7 +110,7 @@ export interface ClickWindowPost extends ClickWindowPostBase {
 
 /**
  * Resolução por data (#7637): `matchPostsToWindow` e vizinhas moram em
- * `shared/click-window-resolution.ts` — `/diaria-instagram-semanal`
+ * `shared/click-window-resolution.ts` — `/diaria-retro-semanal`
  * (`weekly-instagram-select.ts`) carregava a MESMA cópia byte-a-byte, e o
  * defeito de fusão Beehiiv×Kit que o #7637 corrigiu estava nas duas.
  * Re-exportadas daqui pra nenhum caller precisar trocar de import.

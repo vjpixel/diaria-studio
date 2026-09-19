@@ -626,3 +626,202 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #8238 — --fonte store: a coorte do teste 2608 nasce no Kit, nunca no
+// snapshot Beehiiv. Fixture: store SQLite real (mesmo padrão de
+// test/studio-ads.test.ts) com um subscriber "kit" cujo utm_source casa
+// "Google Ads (teste 2608)" — o snapshot Beehiiv correspondente fica VAZIO
+// de propósito (é exatamente o cenário real do #8238).
+// ---------------------------------------------------------------------------
+
+describe("#8238 — main --fonte store: coorte que só existe no Kit é capturada corretamente", () => {
+  it("--fonte beehiiv (default) com snapshot Beehiiv vazio -> 0 cadastros no braço; --fonte store com o MESMO store -> cadastros > 0", async () => {
+    const { openDiariaSubscribersDb, ensureSubscriber, upsertSubscription } = await import("../scripts/lib/diaria-subscribers-db.ts");
+    const root = mkdtempSync(join(tmpdir(), "cac-report-fonte-store-"));
+    try {
+      // Snapshot Beehiiv "usável" mas SEM os assinantes do teste — o sintoma
+      // exato do #8238 (cadastro nasceu no Kit, nunca passou pela Beehiiv).
+      const backupRoot = join(root, "beehiiv-backup");
+      mkdirSync(join(backupRoot, "2026-09-17"), { recursive: true });
+      writeFileSync(join(backupRoot, "2026-09-17", "subscribers.jsonl"), subscriberLine({ email: "outro@example.com" }) + "\n", "utf8");
+
+      const spendPath = join(root, "spend.csv");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+
+      // Store unificado: 2 cadastros REAIS no Kit com utm_source="google-ads"
+      // (a chave exata de CHANNEL_KEY_SPECS pro braço Google do teste 2608).
+      const storeDir = join(root, "data", "diaria-subscribers");
+      mkdirSync(storeDir, { recursive: true });
+      const storePath = join(storeDir, "diaria-subscribers.db");
+      const db = openDiariaSubscribersDb(storePath);
+      for (const [i, email] of ["leitor1@example.com", "leitor2@example.com"].entries()) {
+        const subscriberId = ensureSubscriber(db, "kit", `kit-${i}`, email, "2026-09-10T00:00:00.000Z");
+        upsertSubscription(
+          db,
+          subscriberId,
+          "kit",
+          { status: "active", enteredAt: "2026-09-10T00:00:00.000Z", exitedAt: null, source: "kit", utmSource: "google-ads" },
+          "2026-09-10T00:00:00.000Z",
+        );
+      }
+      db.close();
+
+      const origemPath = join(root, "origem-inexistente.json");
+
+      // --fonte beehiiv (default): a coorte do teste some — 0 cadastros.
+      const exitBefore = process.exitCode;
+      process.exitCode = undefined;
+      const beehiivReport = await main(
+        ["--root", backupRoot, "--spend", spendPath, "--origem", origemPath, "--store-db", storePath, "--no-register", "--no-kit", "--no-store-leitores"],
+        root,
+      );
+      process.exitCode = exitBefore;
+
+      assert.ok(beehiivReport, "relatório --fonte beehiiv deveria ter sido computado (não é erro de insumo)");
+      const beehiivRow = beehiivReport!.rows.find((r) => r.canal === "Google Ads (teste 2608)");
+      assert.equal(beehiivRow?.kind === "measured" ? beehiivRow.cadastros : -1, 0, "snapshot Beehiiv não viu os cadastros do Kit");
+
+      // --fonte store: mesmo spend.csv, mesmo store — os 2 cadastros aparecem.
+      process.exitCode = undefined;
+      const storeReport = await main(
+        [
+          "--fonte", "store",
+          "--snapshot", "2026-09-17",
+          "--spend", spendPath,
+          "--origem", origemPath,
+          "--store-db", storePath,
+          "--no-register",
+          "--no-kit",
+          "--no-store-leitores",
+        ],
+        root,
+      );
+      process.exitCode = exitBefore;
+
+      assert.ok(storeReport, "relatório --fonte store deveria ter sido computado");
+      const storeRow = storeReport!.rows.find((r) => r.canal === "Google Ads (teste 2608)");
+      assert.equal(storeRow?.kind, "measured");
+      assert.equal(storeRow?.kind === "measured" ? storeRow.cadastros : -1, 2, "os 2 cadastros do Kit deveriam aparecer com --fonte store");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--fonte store sem --snapshot -> exit 1 (rótulo/corte é obrigatório nesta fonte)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cac-report-fonte-store-nosnap-"));
+    try {
+      const spendPath = join(root, "spend.csv");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+
+      const exitBefore = process.exitCode;
+      process.exitCode = undefined;
+      const report = await main(["--fonte", "store", "--spend", spendPath, "--no-kit", "--no-store-leitores"], root);
+      const exit = process.exitCode;
+      process.exitCode = exitBefore;
+
+      assert.equal(exit, 1);
+      assert.equal(report, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--fonte inválido -> exit 1, main() devolve null", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cac-report-fonte-invalida-"));
+    try {
+      const spendPath = join(root, "spend.csv");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads,2026-02,BRL,956.21,teste\n", "utf8");
+
+      const exitBefore = process.exitCode;
+      process.exitCode = undefined;
+      const report = await main(["--fonte", "kit-direto", "--spend", spendPath, "--no-kit", "--no-store-leitores"], root);
+      const exit = process.exitCode;
+      process.exitCode = exitBefore;
+
+      assert.equal(exit, 1);
+      assert.equal(report, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#8238 — detectTeste2608BeehiivStoreMismatch: guard warn-before-zero (mecanismo de detecção sob --fonte beehiiv)", () => {
+  it("Beehiiv com 0 cadastros no braço + store com cadastros reais -> aviso citando o canal, no markdown default (sem trocar de fonte)", async () => {
+    const { openDiariaSubscribersDb, ensureSubscriber, upsertSubscription } = await import("../scripts/lib/diaria-subscribers-db.ts");
+    const root = mkdtempSync(join(tmpdir(), "cac-report-mismatch-"));
+    try {
+      const backupRoot = join(root, "beehiiv-backup");
+      mkdirSync(join(backupRoot, "2026-09-17"), { recursive: true });
+      writeFileSync(join(backupRoot, "2026-09-17", "subscribers.jsonl"), subscriberLine({ email: "outro@example.com" }) + "\n", "utf8");
+
+      const spendPath = join(root, "spend.csv");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+
+      const storeDir = join(root, "data", "diaria-subscribers");
+      mkdirSync(storeDir, { recursive: true });
+      const storePath = join(storeDir, "diaria-subscribers.db");
+      const db = openDiariaSubscribersDb(storePath);
+      const subscriberId = ensureSubscriber(db, "kit", "kit-1", "leitor@example.com", "2026-09-10T00:00:00.000Z");
+      upsertSubscription(
+        db,
+        subscriberId,
+        "kit",
+        { status: "active", enteredAt: "2026-09-10T00:00:00.000Z", exitedAt: null, source: "kit", utmSource: "google-ads" },
+        "2026-09-10T00:00:00.000Z",
+      );
+      db.close();
+
+      // Sem --fonte (default beehiiv) — a checagem #8238 roda por baixo dos
+      // panos e escreve o aviso já no report.md registrado, sem precisar
+      // que o caller peça nada além do de sempre.
+      const exitBefore = process.exitCode;
+      process.exitCode = undefined;
+      const report = await main(
+        ["--root", backupRoot, "--spend", spendPath, "--store-db", storePath, "--no-kit", "--no-store-leitores"],
+        root,
+      );
+      process.exitCode = exitBefore;
+
+      assert.ok(report);
+      const row = report!.rows.find((r) => r.canal === "Google Ads (teste 2608)");
+      assert.equal(row?.kind === "measured" ? row.cadastros : -1, 0, "sanity: Beehiiv de fato não vê o cadastro do Kit");
+
+      const reportPath = join(root, "data", "aquisicao", "cac-reports", "2026-09-17.md");
+      assert.ok(existsSync(reportPath));
+      const md = readFileSync(reportPath, "utf8");
+      assert.match(md, /Possível coorte na fonte errada/);
+      assert.match(md, /Google Ads \(teste 2608\)/);
+      assert.match(md, /--fonte store/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("store ausente/ilegível -> checagem falha silenciosamente (fail-soft), relatório principal continua saindo normal", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cac-report-mismatch-nostore-"));
+    try {
+      const backupRoot = join(root, "beehiiv-backup");
+      mkdirSync(join(backupRoot, "2026-09-17"), { recursive: true });
+      writeFileSync(join(backupRoot, "2026-09-17", "subscribers.jsonl"), subscriberLine() + "\n", "utf8");
+
+      const spendPath = join(root, "spend.csv");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+
+      const exitBefore = process.exitCode;
+      process.exitCode = undefined;
+      const report = await main(
+        ["--root", backupRoot, "--spend", spendPath, "--store-db", join(root, "nao-existe.db"), "--no-kit", "--no-store-leitores"],
+        root,
+      );
+      const exit = process.exitCode;
+      process.exitCode = exitBefore;
+
+      assert.notEqual(exit, 1, "store ausente não deveria derrubar o relatório principal (fail-soft, #8238)");
+      assert.ok(report);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

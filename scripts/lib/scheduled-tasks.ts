@@ -1504,6 +1504,17 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5128, #5130",
   },
   {
+    name: "Diaria-Google-Keyword-Monthly-Pull",
+    description: "pull mensal de demanda de busca do Google (Ads Keyword Planner, volume BR)",
+    steps: [{ key: "keywords", script: "scripts/google-keyword-pull.ts" }],
+    logPath: "seo/.google-keyword-monthly-pull.log",
+    // Dia 1, 09:30 BRT -- meia hora depois do Bing-Seo-Monthly-Pull (09:00),
+    // mesma janela mensal sem disputar processo com ele. Volume de busca e
+    // serie lenta (media de 12 meses), nao precisa de semana (#8366).
+    schedule: { kind: "monthly", day: 1, hour: 9, minute: 30 },
+    issue: "#8366",
+  },
+  {
     name: "Diaria-Editorial-Concentration-Monthly-Measure",
     description:
       "invariante mensal de concentração editorial (% big-tech/lab, % Brasil, % exploração, CTR " +

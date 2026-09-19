@@ -418,7 +418,18 @@ export function attachClaims(
   return issues.map((issue) => ({ ...issue, claim: byIssue.get(issue.number) ?? null }));
 }
 
-export type CiState = "green" | "red" | "pending" | "none";
+/**
+ * `stale` (#8484): `CANCELLED` isolado — normalmente um push novo superou o
+ * run anterior via `concurrency`/`cancel-in-progress`, não código quebrado.
+ * Distinto de `red`: a ação certa é "re-rodar", não "consertar". Só a
+ * EXIBIÇÃO no painel do Studio diferencia os dois — gates de merge
+ * (`scripts/lib/pr-checks-gate.ts`, `scripts/lib/issue-open-pr-check.ts`
+ * etc.) continuam tratando `CANCELLED` como não-verde, propositalmente não
+ * importando `summarizeChecks`/`FAILURE_CONCLUSIONS` daqui (ver issue #8484
+ * "Checar se outros consumidores... têm a mesma confusão" — não têm: cada
+ * um deriva seu próprio estado de CI de forma independente).
+ */
+export type CiState = "green" | "red" | "stale" | "pending" | "none";
 
 /** Shape variável — `gh` normaliza StatusContext (`state`) e CheckRun
  * (`status`/`conclusion`) no mesmo array de `statusCheckRollup`. */
@@ -429,7 +440,15 @@ interface RawCheckRollupItem {
 }
 
 const FAILURE_STATES = new Set(["FAILURE", "ERROR"]);
-const FAILURE_CONCLUSIONS = new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"]);
+/** Falha REAL — o código está quebrado, a ação é "consertar". `CANCELLED`
+ * saiu daqui (#8484): é um estado conhecido e distinto (run superado por um
+ * push novo via `concurrency`), não uma falha de código. `TIMED_OUT` e
+ * `ACTION_REQUIRED` continuam aqui — costumam indicar problema real
+ * (deadline/hang de teste, aprovação manual pendente de workflow), diferente
+ * de `CANCELLED` (assimetria discutida na issue #8484). */
+const FAILURE_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED"]);
+/** Conclusion conhecida e distinta de falha — ver docstring de `CiState`. */
+const STALE_CONCLUSIONS = new Set(["CANCELLED"]);
 
 /**
  * Resume `statusCheckRollup` (array bruto, shape variável) num único
@@ -437,10 +456,15 @@ const FAILURE_CONCLUSIONS = new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ACTIO
  * conta como `pending`, nunca como `green` silencioso — melhor sub-relatar
  * confiança que afirmar "tudo verde" errado (#573 é sobre validar estado
  * externo antes de relayar; mesmo espírito aqui, read-only). Pura.
+ *
+ * Precedência quando a PR tem mistura de conclusions (#8484): `red` > `stale`
+ * > `pending` > `green` — 1 `FAILURE` real entre vários `CANCELLED` nunca
+ * fica escondido atrás do rótulo mais brando.
  */
 export function summarizeChecks(rollup: unknown): CiState {
   if (!Array.isArray(rollup) || rollup.length === 0) return "none";
   let sawFailure = false;
+  let sawStale = false;
   let sawPending = false;
   for (const raw of rollup as RawCheckRollupItem[]) {
     if (!raw || typeof raw !== "object") {
@@ -450,6 +474,10 @@ export function summarizeChecks(rollup: unknown): CiState {
     const { state, status, conclusion } = raw;
     if ((state && FAILURE_STATES.has(state)) || (conclusion && FAILURE_CONCLUSIONS.has(conclusion))) {
       sawFailure = true;
+      continue;
+    }
+    if (conclusion && STALE_CONCLUSIONS.has(conclusion)) {
+      sawStale = true;
       continue;
     }
     if (status && status !== "COMPLETED") {
@@ -465,6 +493,7 @@ export function summarizeChecks(rollup: unknown): CiState {
     }
   }
   if (sawFailure) return "red";
+  if (sawStale) return "stale";
   if (sawPending) return "pending";
   return "green";
 }

@@ -368,11 +368,26 @@ describe("estrutura GEO (#4558 Parte B)", () => {
   const html = renderCursosPage(courses, "full");
 
   it("H2 em formato de pergunta + FAQ (6-10 perguntas) + byline aparecem no HTML", () => {
-    assert.match(html, /<h2 class="geo-h2">Quais são os melhores cursos gratuitos de inteligência artificial\?<\/h2>/);
+    // #8470: H2 mudou de texto pra não duplicar literalmente a pergunta 1 do
+    // FAQ logo abaixo (mesmo H2/Q1 antes do #8470) — continua em formato de
+    // pergunta (#4558 item 2), só não é mais char-by-char igual a nenhuma
+    // pergunta do FAQ.
+    assert.match(html, /<h2 class="geo-h2">[^<]+\?<\/h2>/);
     assert.match(html, /<section class="geo-faq"/);
     const faqQuestions = [...html.matchAll(/<div class="geo-faq-item">\s*<h2>/g)];
     assert.ok(faqQuestions.length >= 6 && faqQuestions.length <= 10);
     assert.match(html, /Por <a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/" rel="author">Pixel<\/a>/);
+  });
+
+  it("#8470 Parte F: o H2 da intro não repete literalmente nenhuma pergunta do FAQ", () => {
+    const h2Match = /<h2 class="geo-h2">([^<]+)<\/h2>/.exec(html);
+    assert.ok(h2Match, "deve achar o H2 da intro");
+    const faqQuestionTexts = [...html.matchAll(/<div class="geo-faq-item">\s*<h2>([^<]+)<\/h2>/g)].map((m) => m[1]);
+    assert.ok(faqQuestionTexts.length > 0, "sanity: FAQ deve ter perguntas");
+    assert.ok(
+      !faqQuestionTexts.includes(h2Match![1]),
+      `H2 "${h2Match![1]}" não pode ser char-by-char igual a uma pergunta do FAQ`,
+    );
   });
 
   it("JSON-LD FAQPage + Article presente e válido no <head>", () => {
@@ -490,5 +505,73 @@ describe("seed cursos — cursos oficiais Anthropic e OpenAI (#2451)", () => {
     const html = renderCursosPage(loadCourses());
     assert.ok(html.includes("Anthropic Academy"), "Anthropic Academy deve aparecer no HTML");
     assert.ok(html.includes("OpenAI Academy"), "OpenAI Academy deve aparecer no HTML");
+  });
+});
+
+describe("#8470: filtros do teaser derivam do CATÁLOGO COMPLETO, não do recorte visível", () => {
+  const FILTER_IDS = ["f-lang", "f-level", "f-cost", "f-format", "f-duration", "f-platform", "f-cert", "f-theme"];
+
+  it("contra o seed REAL: os 8 filtros aparecem no teaser (é o teste que teria pego a regressão)", () => {
+    const html = renderCursosPage(loadCourses(), "teaser");
+    for (const id of FILTER_IDS) {
+      assert.ok(html.includes(`id="${id}"`), `filtro ${id} deveria aparecer no teaser contra o seed real`);
+    }
+  });
+
+  it("todo id do mapa SIMPLE embutido no JS existe como <select> no HTML — sem isso o JS itera sobre um select que não existe (el() devolve null em silêncio)", () => {
+    for (const mode of ["teaser", "full"] as const) {
+      const html = renderCursosPage(loadCourses(), mode);
+      const simpleMatch = /var SIMPLE = \{([^}]*)\}/.exec(html);
+      assert.ok(simpleMatch, `${mode}: deve achar o mapa SIMPLE embutido`);
+      const ids = [...simpleMatch![1].matchAll(/'([^']+)':/g)].map((m) => m[1]);
+      assert.ok(ids.length > 0, `${mode}: sanity — SIMPLE não pode estar vazio`);
+      for (const id of ids) {
+        assert.ok(html.includes(`id="${id}"`), `${mode}: SIMPLE referencia '${id}' mas não existe <select id="${id}">`);
+      }
+    }
+  });
+
+  it("teaser homogêneo (6 cursos abertos idênticos em nível/formato/duração/certificado) ainda renderiza os 4 dropdowns que sumiam antes do #8470 — o catálogo completo tem a variedade", () => {
+    // Reproduz a causa exata da issue: o recorte VISÍVEL no teaser (20% do
+    // catálogo) é homogêneo em 4 dimensões, mas o CATÁLOGO COMPLETO não é.
+    const homogeneous = (i: number): Course =>
+      course({ id: `open-${i}`, level: "iniciante", format: "video", duration_hours: 1, certificate: true, teaser: true });
+    const diverse = (i: number): Course =>
+      course({
+        id: `gated-${i}`,
+        level: i % 2 === 0 ? "avancado" : "intermediario",
+        format: i % 2 === 0 ? "hands-on" : "texto",
+        duration_hours: 30,
+        certificate: false,
+      });
+    // 5 abertos (teaser:true) homogêneos + 20 fechados diversos → 25 cursos,
+    // openCourseCount(25) = 5, todos os 5 marcados entram.
+    const courses = [...Array.from({ length: 5 }, (_, i) => homogeneous(i)), ...Array.from({ length: 20 }, (_, i) => diverse(i))];
+    const html = renderCursosPage(courses, "teaser");
+    for (const id of ["f-level", "f-format", "f-duration", "f-cert"]) {
+      assert.ok(html.includes(`id="${id}"`), `filtro ${id} deveria existir — o CATÁLOGO tem variedade mesmo com o teaser homogêneo`);
+    }
+  });
+
+  it("opção de faceta de um valor exclusivo de curso GATED aparece (é enum, não vaza nada), mas a plataforma/tema desse curso gated continua ausente (#4052)", () => {
+    const openCourses = Array.from({ length: 5 }, (_, i) =>
+      course({ id: `open-${i}`, level: "iniciante", format: "video", teaser: true, platform: "Coursera" }),
+    );
+    const gatedAdvanced = course({
+      id: "gated-avancado",
+      level: "avancado",
+      format: "hands-on",
+      platform: "Plataforma Exclusiva Gated",
+      themes: ["Tema Exclusivo Gated"],
+    });
+    const courses = [...openCourses, gatedAdvanced, ...Array.from({ length: 20 }, (_, i) => course({ id: `filler-${i}` }))];
+    const html = renderCursosPage(courses, "teaser");
+    // O valor de enum "avancado"/"hands-on" pode aparecer — já está hardcoded
+    // no código-fonte (LEVEL_LABEL/FORMAT_LABEL), não revela QUAL curso gated o tem.
+    assert.ok(html.includes('value="avancado"'), "opção de nível avançado (enum) deveria aparecer nas options");
+    assert.ok(html.includes('value="hands-on"'), "opção de formato hands-on (enum) deveria aparecer nas options");
+    // Plataforma/tema exclusivos do gated NUNCA podem vazar.
+    assert.ok(!html.includes("Plataforma Exclusiva Gated"), "plataforma exclusiva de curso gated vazou");
+    assert.ok(!html.includes("Tema Exclusivo Gated"), "tema exclusivo de curso gated vazou");
   });
 });

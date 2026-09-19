@@ -18,15 +18,19 @@
  */
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  attemptsFilePath,
   consumeReReviewAttempt,
   evaluateReviewStaleness,
   STALE_EXIT_CODE,
   type ReReviewAttempts,
 } from "./lib/continuo-review-staleness.ts";
 import { extractIndependentReviewHeadSha } from "./lib/pr-review-authenticity.ts";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function main(): void {
   const { values } = parseArgs(process.argv.slice(2));
@@ -59,19 +63,27 @@ function main(): void {
   }
   // stale: só re-revisa se ainda há tentativa pra este PR+SHA, e só se conseguir
   // GRAVAR o consumo — sem persistência não há teto, e sem teto o laço de custo volta.
-  const attemptsFile = resolve(values["attempts-file"] ?? "data/continuo/re-review-attempts.json");
+  // mesma resolução (relativa ao REPO, nunca ao cwd) do detector check-continuo-stale-review-health.ts —
+  // se divergissem, o detector leria um arquivo diferente do que o merger grava.
+  const attemptsFile = resolve(values["attempts-file"] ?? attemptsFilePath(REPO_ROOT));
   let state: ReReviewAttempts = {};
   try {
     if (existsSync(attemptsFile)) state = JSON.parse(readFileSync(attemptsFile, "utf8")) as ReReviewAttempts;
   } catch {
-    state = {};
+    // Estado ilegível NUNCA reseta o teto: zerar aqui reabriria o laço de custo que o teto
+    // existe pra impedir. Caminho seguro (sem re-review); o gate escala como sempre.
+    console.log(JSON.stringify({ pr, ...result, reReview: false, currentHeadSha, reviewedHeadSha, reason: result.reason + " — arquivo de estado das tentativas ilegível, mantendo caminho seguro" }));
+    process.exit(0);
   }
   const { allowed, next } = consumeReReviewAttempt(state, pr, currentHeadSha);
   let persisted = false;
   if (allowed) {
     try {
       mkdirSync(dirname(attemptsFile), { recursive: true });
-      writeFileSync(attemptsFile, JSON.stringify(next));
+      // escrita atômica: leitor concorrente (o detector diário) nunca vê JSON truncado
+      const tmp = `${attemptsFile}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(next));
+      renameSync(tmp, attemptsFile);
       persisted = true;
     } catch {
       persisted = false;

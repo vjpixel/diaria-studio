@@ -941,6 +941,62 @@ else
   note "[watch] parada por auth: ok ($AUTH_REASON; #7647)"
 fi
 
+# ── 14. review obsoleto sem resolução (#8445) ────────────────────────────────
+# Verificação AUTOMÁTICA do fix do #8445, que existe porque "confirmar no próximo
+# tick" dependia de alguém lembrar. Checa a INVARIANTE — PR com review de SHA
+# anterior ao HEAD não pode ficar assim — e não o sintoma. Dois modos de falha,
+# ambos silenciosos sem esta checagem: (a) `re-review-esgotado`: o merger
+# re-revisou o teto de vezes e o SHA atual segue sem review válido; (b)
+# `merger-nao-tenta`: stale, zero tentativas e HEAD com mais de 4h (2 ticks) —
+# fix não implantado no checkout do cron, data/continuo/ sem escrita, ou merger
+# parado. Roda 1x/dia, então o intervalo entre a implantação e a 1ª leitura é
+# sempre >> 2 ticks: sem falso positivo de "o merger ainda não teve tick".
+# Read-only (o TS nunca consome tentativa). indeterminate NÃO alarma.
+STALE_JSON=$(npx tsx /home/vjpixel/diaria-studio/scripts/check-continuo-stale-review-health.ts --json 2>/dev/null)
+STALE_PARSE=$(printf '%s' "$STALE_JSON" | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin)['status'])
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+case "$STALE_PARSE" in *__ERR__*) STALE_PARSE="__ERR__" ;; esac
+case "$STALE_PARSE" in ok|alarm|indeterminate) : ;; *) STALE_PARSE="__ERR__" ;; esac
+if [ "$STALE_PARSE" = "__ERR__" ]; then
+  echo "[watch] review obsoleto: INDETERMINADO (check-continuo-stale-review-health falhou)" >&2
+  FAILS=$((FAILS + 1))
+elif [ "$STALE_PARSE" = "indeterminate" ]; then
+  note "[watch] review obsoleto: indeterminado (gh indisponível — ok, não alarma; #8445)"
+elif [ "$STALE_PARSE" = "alarm" ]; then
+  STALE_DETAILS=$(printf '%s' "$STALE_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    for f in d.get('findings', []):
+        age = f['headAgeHours']
+        age_s = f'{age:.1f}h' if isinstance(age, (int, float)) else '?'
+        print(f\"  #{f['pr']} ({f['headRefName']}): {f['kind']} — tentativas={f['attemptsUsed']}, HEAD há {age_s}, revisado={f['reviewedHeadSha'][:8]} atual={f['currentHeadSha'][:8]}\")
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+  file_issue "[watch-continuo] review obsoleto sem resolução" \
+    "[watch-continuo] review obsoleto sem resolução (fix do #8445 não está agindo)" \
+    "bug,P1" \
+    "Detectado por watch-continuo-health.sh via scripts/check-continuo-stale-review-health.ts (#8445) — PR(s) cujo review independente cobre um SHA anterior ao HEAD atual e que o merger do contínuo não resolveu:
+
+\`\`\`
+$STALE_DETAILS
+\`\`\`
+
+**Significado de cada tipo**
+- \`merger-nao-tenta\` — stale, **zero** tentativas de re-review e HEAD com mais de 4h. O merger deveria ter re-revisado no 1º tick. Causas prováveis: o \`continuo-pr-review.sh\` do checkout do 300 está defasado/dirty (o \`git pull --ff-only\` recusa com edição local — conferir \`git status\` e \`git log -1\` em ~/diaria-studio), \`data/continuo/\` sem permissão de escrita (o checker só re-revisa se conseguir GRAVAR o consumo — sem isso cai no caminho seguro), ou o cron do revisor parado (\`hermes cron list --all\`).
+- \`re-review-esgotado\` — o merger re-revisou o teto (2) de vezes neste SHA e ele segue sem review válido. Causa provável: a sessão de review sai 0 sem postar o marcador \`continuo-review: ... head=<sha>\` (marcador malformado, \`gh pr comment\` negado). Ler o transcript do último tick em ~/.hermes/cron/output/3330b108a5b2/.
+
+**Não é correção automática**: o detector é read-only (nunca consome tentativa, nunca comenta, nunca mergeia). Estado das tentativas: \`data/continuo/re-review-attempts.json\` no 300.
+
+P1: é a mesma classe do #8442 (fila travada sem sinal); a lacuna que este alarme fecha é o fix do #8445 falhar em silêncio."
+else
+  note "[watch] review obsoleto: ok (nenhuma PR com review obsoleto sem resolução; #8445)"
+fi
+
 note "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS, issues criadas: $ISSUES_CREATED)"
 
 # Entrega: silêncio quando a varredura passou limpa. Issue criada é o sinal

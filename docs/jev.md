@@ -48,18 +48,33 @@ Resposta:
   (artigos, edições), são N requests concorrentes — `askJevBatch` faz isso
   com um teto de concorrência (`JEV_CONCURRENCY = 8`, mesmo valor usado pelo
   script de medição original do #5995/#8211).
-- **Só o tipo `choice`, com 1 pergunta por request, foi confirmado contra a
-  API real** (#8219, 17/09/2026). `score` e `noul` seguem o mesmo envelope
-  por analogia — a 1ª medição que os usar de verdade (#8414 usa `noul`,
-  #8415 usa `score`) deve fazer a mesma verificação pontual de contrato que
-  o #8219 fez pra `choice`, e atualizar este documento se o shape divergir.
+- **Os 3 tipos estão confirmados contra a API real: `choice`** (#8219,
+  17/09/2026), **`noul`** (#8414, 19/09/2026), **`score`** (#8415,
+  19/09/2026) — cada confirmação corrigiu uma suposição do #8413 (harness
+  original, feito por analogia antes de qualquer medição real exercitar os
+  tipos).
+- **`noul` diverge da analogia original**: a resposta real é
+  `{"type":"noul","noul":0.82}` — a CHAVE é `noul`, não `probability`/`prob`
+  como o shape documentado antes de qualquer medição real usar o tipo
+  sugeria. `jev.ts` (`parseJevAnswers`) aceita `noul` primeiro, com
+  `probability`/`prob` como fallback tolerante. `confidence` também veio
+  ausente na resposta real observada (vira `1`, mesma leniência já descrita
+  abaixo).
+- **`score` diverge da analogia original**: o request **não** usa `min`/`max`
+  numéricos (isso dá `422 Field required: criteria`) — exige
+  `criteria: string[]`, níveis ORDENADOS do mais baixo ao mais alto (mesma
+  ideia de `choice`, só como array em vez de objeto `{opção: descrição}`). A
+  resposta devolve `score` como valor **contínuo** — o índice esperado sobre
+  `criteria`, ponderado pelas `probabilities` de cada nível (ex: 3 níveis →
+  `score` pode sair `1.16`, não um dos índices inteiros). `jev.ts`/
+  `test/jev.test.ts` já refletem o contrato real.
 
 ## Os 3 tipos de pergunta
 
 | tipo | pergunta | resposta | uso |
 |---|---|---|---|
 | `choice` | 1 de N opções, com `criteria: {opção: descrição}` | `{ choice, confidence, probabilities? }` | classificação categórica (ex: bucket do categorizador) |
-| `score` | nível numa escala descrita (`min`/`max`) | `{ score, confidence }` | eixo atômico de um score composto (ex: gravidade) |
+| `score` | nível numa escala de níveis ORDENADOS descritos (`criteria: string[]`, #8415) | `{ score, confidence }` — `score` contínuo (índice esperado sobre `criteria`) | eixo atômico de um score composto (ex: gravidade) |
 | `noul` | probabilidade 0-1 de uma afirmação ser verdadeira | `{ probability, confidence }` | julgamento binário com incerteza (ex: "isto causa dano real?") |
 
 `confidence` pode vir ausente na resposta real — `jev.ts` trata isso como

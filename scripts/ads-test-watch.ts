@@ -38,7 +38,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, getStringArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { notifyEditor, type NotifyEditorFinding, type NotifyEditorResult } from "./lib/editor-notify.ts";
+import { notifyEditor, notifyEditorResultReachedEditor, type NotifyEditorFinding, type NotifyEditorResult } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { addDays } from "./lib/ads-test-schedule.ts";
@@ -46,7 +46,7 @@ import { assertValidRunState, type AdsTestRunState } from "./lib/ads-test-run-st
 import { isSubscribersSnapshotUsable } from "./lib/beehiiv-backup-snapshots.ts";
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { main as buildOrigemMapMain } from "./build-origem-map.ts";
-import { main as cacReportMain } from "./cac-report.ts";
+import { main as cacReportMain, cacReportSnapshotId } from "./cac-report.ts";
 import { reportId } from "./studio-ui/studio-reports.ts";
 import {
   planAdsTestWatchActions,
@@ -66,6 +66,8 @@ import {
   buildReligarBrevoDueEmail,
   buildApuracaoSnapshotUnusableEmail,
   buildApuracaoSuccessEmail,
+  buildApuracaoZeroCadastrosEmail,
+  detectZeroCadastrosAcrossArmsFromReport,
   DEFAULT_PLANNED_DAILY_BUDGET_BRL,
   DEFAULT_NOMINAL_ARM_BUDGET_BRL,
   type AdsTestWatchState,
@@ -116,8 +118,18 @@ export interface AdsTestWatchDeps {
   /** Roda `build-origem-map.ts` (sempre ANTES de `runCacReport`, #7.2) —
    *  retorna `ok:false` se o script sinalizar falha via `process.exitCode`. */
   runBuildOrigemMap: () => boolean;
-  /** Roda `cac-report.ts --snapshot {date}` — mesma convenção de retorno. */
-  runCacReport: (snapshotDate: string) => boolean;
+  /** Roda `cac-report.ts --snapshot {date} --fonte store` (#8238 — a coorte
+   *  do teste 2608 nasce no Kit, nunca no snapshot Beehiiv) e AGUARDA o
+   *  resultado (`cacReportMain` é async — bug corrigido no #8238: antes
+   *  disto o `await` faltava e o sucesso era decidido antes do relatório
+   *  existir de fato). `zeroCadastrosArms` vem de
+   *  `detectZeroCadastrosAcrossArmsFromReport` sobre o `CacReport` que
+   *  `cac-report.ts::main()` agora retorna — `[]` quando `ok:false` (não dá
+   *  pra avaliar cadastros de um relatório que não rodou). */
+  runCacReport: (
+    snapshotDate: string,
+    bracos: readonly string[],
+  ) => Promise<{ ok: boolean; zeroCadastrosArms: readonly string[] }>;
   isSnapshotUsable: (root: string, date: string) => { usable: boolean; reason: string | null };
   commentOnReligarBrevoIssue: (body: string) => GhSpawnResult;
   /** Injetável só pra teste (evita depender do junction `data/` real do
@@ -142,13 +154,25 @@ function realBuildOrigemMap(): boolean {
   return !failed;
 }
 
-function realCacReport(snapshotDate: string): boolean {
+/**
+ * #8238: `cacReportMain` é `async` — este wrapper agora `await`a a Promise
+ * ANTES de decidir sucesso (o bug original: `cacReportMain([...])` era
+ * chamado sem `await`, então `failed` era lido antes do relatório existir
+ * de fato, e uma rejeição pós-`await` interno virava rejeição não tratada).
+ * `--fonte store` (#8238): a coorte do teste 2608 nasce no Kit, nunca no
+ * snapshot Beehiiv — ver docstring de `AdsTestWatchDeps.runCacReport`.
+ */
+async function realCacReport(
+  snapshotDate: string,
+  bracos: readonly string[],
+): Promise<{ ok: boolean; zeroCadastrosArms: readonly string[] }> {
   const priorExitCode = process.exitCode;
   process.exitCode = undefined;
-  cacReportMain(["--snapshot", snapshotDate]);
+  const report = await cacReportMain(["--snapshot", snapshotDate, "--fonte", "store"]);
   const failed = process.exitCode !== undefined && process.exitCode !== 0;
   process.exitCode = priorExitCode;
-  return !failed;
+  if (failed || !report) return { ok: !failed, zeroCadastrosArms: [] };
+  return { ok: true, zeroCadastrosArms: detectZeroCadastrosAcrossArmsFromReport(report, bracos) };
 }
 
 /**
@@ -264,7 +288,19 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
   );
 
   const findings: NotifyEditorFinding[] = [];
-  let nextWatchState = watchState;
+  // #8432 — os 2 cursores de idempotência (religarBrevoTriggeredAt/
+  // apuracaoCompletedAt) só podem avançar quando a notificação do achado
+  // CORRESPONDENTE de fato chegar ao editor (`notifyEditorResultReachedEditor`,
+  // scripts/lib/editor-notify.ts) — nunca incondicionalmente. Por isso a
+  // mutação fica pendente aqui (candidata, baseada no `watchState` original,
+  // nunca em cima de si mesma) e só é aplicada depois do laço de
+  // notificação no fim de `main`, quando o resultado de `deps.notify` pro
+  // `check` respectivo já é conhecido. Os side effects que a acompanham
+  // (comentário no #5838, build-origem-map+cac-report) continuam rodando
+  // incondicionalmente — só o CURSOR fica condicionado; se ele não avançar,
+  // a próxima execução re-tenta tudo, inclusive o alarme.
+  let pendingReligarBrevoState: AdsTestWatchState | null = null;
+  let pendingApuracaoState: AdsTestWatchState | null = null;
 
   if (plan.alarmMissingD0Overdue && deps.plannedD0) {
     const { subject, body } = buildMissingD0OverdueEmail(deps.plannedD0, nowDateStr);
@@ -381,7 +417,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
         console.error(`${LOG_PREFIX} falha ao comentar em #${RELIGAR_BREVO_ISSUE_NUMBER}: ${result.stderr}`);
       } else {
         console.log(`${LOG_PREFIX} comentário postado em #${RELIGAR_BREVO_ISSUE_NUMBER}.`);
-        nextWatchState = markReligarBrevoTriggered(nextWatchState, now.toISOString());
+        pendingReligarBrevoState = markReligarBrevoTriggered(watchState, now.toISOString());
       }
     }
     findings.push({
@@ -412,13 +448,35 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
       if (!origemOk) {
         console.error(`${LOG_PREFIX} build-origem-map.ts falhou — apuração abortada, cac-report.ts NÃO rodou.`);
       } else {
-        const cacOk = deps.runCacReport(runState.apuracao_snapshot);
-        if (!cacOk) {
+        const cacResult = await deps.runCacReport(runState.apuracao_snapshot, runState.bracos);
+        if (!cacResult.ok) {
           console.error(`${LOG_PREFIX} cac-report.ts falhou para snapshot ${runState.apuracao_snapshot}.`);
+        } else if (cacResult.zeroCadastrosArms.length === runState.bracos.length) {
+          // #8238: TODOS os braços zeraram — sinal forte de fonte de dados
+          // errada (ex: cac-report.ts ainda lendo o snapshot Beehiiv em vez
+          // do store). NUNCA marcar como concluída silenciosamente — alarme
+          // que se repete todo dia, mesma disciplina do snapshot inutilizável
+          // acima, até o dado aparecer ou o editor investigar.
+          const { subject, body } = buildApuracaoZeroCadastrosEmail(runState.apuracao_snapshot, cacResult.zeroCadastrosArms);
+          findings.push({
+            check: "ads-test-watch-apuracao-zero-cadastros",
+            fingerprint: `apuracao-zero-cadastros:${runState.apuracao_snapshot}`,
+            severity: "urgente",
+            subject,
+            body,
+          });
+          console.error(
+            `${LOG_PREFIX} apuração gerou 0 cadastros nos ${runState.bracos.length} braços (${cacResult.zeroCadastrosArms.join(", ")}) — ` +
+              `fonte de dados provavelmente errada; NÃO marcando como concluída (#8238).`,
+          );
         } else {
-          const reportPath = `data/aquisicao/cac-reports/${reportId("cac", runState.apuracao_snapshot)}.md`;
-          const reportUrl = `/relatorios/${reportId("cac", runState.apuracao_snapshot)}`;
-          nextWatchState = markApuracaoCompleted(nextWatchState, now.toISOString(), reportPath);
+          // #8238: `realCacReport` sempre roda com `--fonte store` — o id
+          // (e portanto o path) leva o sufixo `--store` (`cacReportSnapshotId`,
+          // fonte única compartilhada com `cac-report.ts::main()`).
+          const snapshotId = cacReportSnapshotId(runState.apuracao_snapshot, "store");
+          const reportPath = `data/aquisicao/cac-reports/${reportId("cac", snapshotId)}.md`;
+          const reportUrl = `/relatorios/${reportId("cac", snapshotId)}`;
+          pendingApuracaoState = markApuracaoCompleted(watchState, now.toISOString(), reportPath);
           const { subject, body } = buildApuracaoSuccessEmail(runState.apuracao_snapshot, reportUrl);
           findings.push({
             check: "ads-test-watch-apuracao-success",
@@ -439,6 +497,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
   }
 
   const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+  const notifyResultsByCheck = new Map<string, NotifyEditorResult>();
   for (const finding of findings) {
     if (isDryRun) {
       console.log(
@@ -447,12 +506,45 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
       continue;
     }
     const result = await deps.notify(finding);
+    notifyResultsByCheck.set(finding.check, result);
     if (result.emailSent) {
       console.log(`${LOG_PREFIX} e-mail enviado pra ${to}: "${finding.subject}"`);
     } else {
       console.log(
         `${LOG_PREFIX} achado registrado (issue #${result.issue?.issueNumber ?? "?"}, action=${result.issue?.action ?? "n/a"}) — ` +
           `e-mail não enviado nesta execução (política ${result.emailPolicy}).`,
+      );
+    }
+  }
+
+  // #8432 — só aplica cada mutação PENDENTE se a notificação do achado
+  // correspondente de fato alcançou o editor (issue criada/atualizada com
+  // sucesso pelo `gh` — `notifyEditorResultReachedEditor`). Sem isso o
+  // cursor avançaria mesmo quando `notifyEditor` falhou por completo
+  // (`ensureAlarmIssue` com `action === "failed"`), perdendo o alarme pra
+  // sempre — o gate nunca dispararia de novo na próxima execução.
+  let nextWatchState = watchState;
+  if (pendingReligarBrevoState) {
+    const result = notifyResultsByCheck.get("ads-test-watch-religar-brevo");
+    if (result && notifyEditorResultReachedEditor(result)) {
+      nextWatchState = { ...nextWatchState, religarBrevoTriggeredAt: pendingReligarBrevoState.religarBrevoTriggeredAt };
+    } else {
+      console.error(
+        `${LOG_PREFIX} religar-brevo: notificação NÃO chegou ao editor — cursor não persistido, próxima execução re-tenta.`,
+      );
+    }
+  }
+  if (pendingApuracaoState) {
+    const result = notifyResultsByCheck.get("ads-test-watch-apuracao-success");
+    if (result && notifyEditorResultReachedEditor(result)) {
+      nextWatchState = {
+        ...nextWatchState,
+        apuracaoCompletedAt: pendingApuracaoState.apuracaoCompletedAt,
+        apuracaoReportPath: pendingApuracaoState.apuracaoReportPath,
+      };
+    } else {
+      console.error(
+        `${LOG_PREFIX} apuração: notificação NÃO chegou ao editor — cursor não persistido, próxima execução re-tenta.`,
       );
     }
   }

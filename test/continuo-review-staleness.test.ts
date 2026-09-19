@@ -75,3 +75,78 @@ describe("#8451 review — exit code e teto de re-review (custo)", () => {
     assert.equal(consumeReReviewAttempt({ "1@x": "lixo" as unknown as number }, 1, "x").allowed, true);
   });
 });
+
+import { evaluateStaleReviewHealth, MERGER_SILENT_HOURS, attemptsFilePath } from "../scripts/lib/continuo-review-staleness.ts";
+
+describe("#8445 — verificação automática (invariante, não sintoma)", () => {
+  const NOW = "2026-09-19T20:00:00Z";
+  const hoursAgo = (h: number) => new Date(Date.parse(NOW) - h * 3_600_000).toISOString();
+  const stale = (pr: number, over: Partial<{ headCommittedAt: string | null; current: string | null; reviewed: string | null }> = {}) => ({
+    pr,
+    headRefName: `continuo/x-${pr}`,
+    currentHeadSha: over.current === undefined ? "B" : over.current,
+    reviewedHeadSha: over.reviewed === undefined ? "A" : over.reviewed,
+    headCommittedAt: over.headCommittedAt === undefined ? hoursAgo(10) : over.headCommittedAt,
+  });
+
+  it("merger-nao-tenta: stale, 0 tentativas e HEAD antigo — é o estado exato de #8381/#8367 hoje", () => {
+    const f = evaluateStaleReviewHealth([stale(8381)], {}, NOW);
+    assert.equal(f.length, 1);
+    assert.equal(f[0].kind, "merger-nao-tenta");
+  });
+
+  it("re-review-esgotado: o merger tentou o teto e o SHA segue sem review válido", () => {
+    const f = evaluateStaleReviewHealth([stale(8381)], { "8381@B": MAX_RE_REVIEW_ATTEMPTS }, NOW);
+    assert.equal(f[0]?.kind, "re-review-esgotado");
+  });
+
+  it("NÃO alarma: HEAD recente (o merger ainda não teve tick), tentativa em curso, fresh ou unknown", () => {
+    assert.deepEqual(evaluateStaleReviewHealth([stale(1, { headCommittedAt: hoursAgo(MERGER_SILENT_HOURS - 1) })], {}, NOW), []);
+    assert.deepEqual(evaluateStaleReviewHealth([stale(1)], { "1@B": 1 }, NOW), [], "1 tentativa < teto = em curso, não falha");
+    assert.deepEqual(evaluateStaleReviewHealth([stale(1, { reviewed: "B" })], {}, NOW), [], "fresh");
+    assert.deepEqual(evaluateStaleReviewHealth([stale(1, { reviewed: null })], {}, NOW), [], "marcador legado = unknown, nunca stale");
+  });
+
+  it("sem idade legível do HEAD não afirma merger-nao-tenta (mas o esgotado independe de idade)", () => {
+    assert.deepEqual(evaluateStaleReviewHealth([stale(1, { headCommittedAt: null })], {}, NOW), []);
+    assert.equal(evaluateStaleReviewHealth([stale(1, { headCommittedAt: null })], { "1@B": 2 }, NOW)[0]?.kind, "re-review-esgotado");
+  });
+
+  it("cota é por SHA: tentativas de um SHA antigo não contam pro atual", () => {
+    assert.equal(evaluateStaleReviewHealth([stale(1)], { "1@OUTRO": 2 }, NOW)[0]?.kind, "merger-nao-tenta");
+  });
+
+  it("caminho do estado é o mesmo pro merger e pro detector (sem depender de cwd)", () => {
+    assert.match(attemptsFilePath("/repo/"), /^\/repo\/data\/continuo\/re-review-attempts\.json$/);
+  });
+});
+
+import { readFileSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+describe("#8455 review — merger e detector leem/gravam o MESMO arquivo, com estado ilegível no sentido seguro", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const merger = readFileSync(join(root, "scripts", "check-continuo-review-stale.ts"), "utf8");
+  const health = readFileSync(join(root, "scripts", "check-continuo-stale-review-health.ts"), "utf8");
+
+  it("os dois resolvem o arquivo por attemptsFilePath(REPO_ROOT), nunca por caminho relativo ao cwd", () => {
+    for (const [nome, src] of [["merger", merger], ["detector", health]] as const) {
+      assert.match(src, /attemptsFilePath\(REPO_ROOT\)/, `${nome} não usa attemptsFilePath(REPO_ROOT)`);
+      assert.doesNotMatch(src, /resolve\("data\/continuo/, `${nome} voltou a resolver relativo ao cwd`);
+    }
+  });
+
+  it("merger grava de forma atômica (tmp + rename) — leitor concorrente nunca vê JSON truncado", () => {
+    assert.match(merger, /renameSync\(tmp, attemptsFile\)/);
+  });
+
+  it("estado ilegível: o merger NÃO reseta o teto de custo e o detector NÃO afirma merger parado", () => {
+    assert.doesNotMatch(merger, /catch \{\s*\n\s*state = \{\};/, "zerar o estado no catch reabre o laço de custo");
+    assert.match(health, /ilegível — não dá pra distinguir merger parado de estado corrompido/);
+  });
+
+  it("varredura cega vira indeterminate, não ok", () => {
+    assert.match(health, /probes\.length \* 2 < prs\.length/);
+  });
+});

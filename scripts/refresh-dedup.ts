@@ -210,9 +210,10 @@ export function autoStampPublishedJson(
  * quebra o refresh-dedup). Retorna true quando gerou.
  *
  * **#4478: `notify` propaga pro `writeEditionReport`.** Testes que exercitam
- * este caminho podem passar `notify: false` como defesa em profundidade (ver
- * `defaultHasCredentials` em `scripts/studio-ui/studio-reports.ts` pro fix
- * sistêmico equivalente).
+ * este caminho podem passar `notify: false` como defesa em profundidade —
+ * relevante quando `notify` era `true` por default e disparava e-mail via
+ * Gmail (risco removido no #7960: `registerReport` delega a
+ * `notifyEditor({severity: "info"})`, que nunca toca Gmail/credenciais).
  *
  * **#7960 (item 4 da #7957): default virou `false`** — a chamada de
  * produção em `main()`, abaixo, não passa `notify`, então esse relatório

@@ -25,6 +25,7 @@ import {
   claimIssue,
   claimIssueCheckAndSet,
   claimIssueAutoRegistering,
+  heartbeatAutoRegistering,
   unclaimIssue,
   isIssueClaimedByOther,
   isIssueClaimedByActiveSession,
@@ -1545,6 +1546,99 @@ describe("claimIssueAutoRegistering — sessão sem registro prévio nunca vira 
     assert.equal(result.reason, "blocked-by-other");
     assert.equal(result.autoRegistered, true);
     assert.equal(result.blockedBy?.sessionId, "sess-dona");
+  });
+});
+
+// ─── heartbeatAutoRegistering — fecha o no-op silencioso do #8443 ─────────
+// (o MESMO buraco do #6369, mas pro `heartbeat` — que é chamado em muito
+// mais pontos do loop `continuo` do que `claim-issue`, então um tick que
+// nunca reivindica issue nova continuava sem NENHUM registro de sessão).
+
+describe("heartbeatAutoRegistering — sessão sem registro prévio nunca vira no-op silencioso (#8443)", () => {
+  const NOW = Date.parse("2026-09-18T15:23:56.000Z");
+
+  it(
+    "cenário real da issue #8443: tick continuo chama heartbeat --phase pausado-edicao sem ter chamado " +
+      "register antes (guard de colisão editorial pausa cedo) — auto-registra em vez de virar no-op",
+    () => {
+      const root = freshRoot();
+      // Nenhum registerSession chamado — reproduz o tick medido em #8443
+      // (11 de 19 ticks recentes sem NENHUMA sessão continuo correlacionada).
+      const result = heartbeatAutoRegistering(
+        root,
+        "continuo",
+        "cron_5d791ef6fc2c_20260918_122347",
+        { phase: "pausado-edicao" },
+        "300",
+        new Date(NOW).toISOString(),
+      );
+
+      assert.equal(result.ok, true);
+      assert.equal(result.autoRegistered, true);
+      assert.equal(result.autoRegisterMode, "fresh");
+
+      // A sessão agora EXISTE de fato em disco — é exatamente o que
+      // `check-continuo-session-registration.ts` precisa achar pra
+      // correlacionar contra a janela do sidecar do tick.
+      const content = JSON.parse(
+        readFileSync(sessionFilePath(root, "continuo", "300", "cron_5d791ef6fc2c_20260918_122347"), "utf8"),
+      );
+      assert.equal(content.kind, "continuo");
+      assert.equal(content.phase, "pausado-edicao");
+      assert.equal(content.startedAt, new Date(NOW).toISOString());
+    },
+  );
+
+  it("sessão JÁ registrada não é tocada por registerSession de novo — autoRegistered: false, comportamento normal", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "sess-viva", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+
+    const result = heartbeatAutoRegistering(root, "continuo", "sess-viva", {}, "host-a", new Date(NOW).toISOString());
+
+    assert.equal(result.ok, true);
+    assert.equal(result.autoRegistered, false);
+  });
+
+  it("âncora sumida com sessão viva (#7002/#7003) é RECUPERADA de backup órfão, nunca recriada zerada", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, `continuo-host-a-sess-viva-host-a-safeBackup-0001.json`, {
+      kind: "continuo",
+      machineTag: "host-a",
+      sessionId: "sess-viva",
+      startedAt: new Date(NOW - 60 * 60 * 1000).toISOString(),
+      lastHeartbeat: new Date(NOW - 60 * 1000).toISOString(),
+      claimed_issues: [8443],
+    });
+
+    const result = heartbeatAutoRegistering(root, "continuo", "sess-viva", {}, "host-a", new Date(NOW).toISOString());
+
+    assert.equal(result.ok, true);
+    assert.equal(result.autoRegistered, true);
+    assert.equal(result.autoRegisterMode, "recovered-from-orphan-backups");
+    assert.equal(result.recoveredFromFiles, 1);
+    const onDisk = JSON.parse(readFileSync(sessionFilePath(root, "continuo", "host-a", "sess-viva"), "utf8"));
+    assert.deepEqual(onDisk.claimed_issues, [8443], "claim anterior sobrevive ao auto-registro do heartbeat");
+  });
+
+  it("CLI: heartbeat sem register prévio sai com exit 0 e avisa que auto-registrou, em vez de exit 1 no-op", () => {
+    const root = freshCliRoot();
+    const res = cli7002(root, [
+      "heartbeat",
+      "--kind",
+      "continuo",
+      "--session-id",
+      "cli-8443-sem-register",
+      "--phase",
+      "trabalhando",
+    ]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /heartbeat ok/);
+    assert.match(res.stdout, /auto-registrada agora antes do heartbeat, ver #8443/);
+    const onDisk = JSON.parse(
+      readFileSync(sessionFilePath(root, "continuo", machineTag(), "cli-8443-sem-register"), "utf8"),
+    );
+    assert.equal(onDisk.phase, "trabalhando");
   });
 });
 

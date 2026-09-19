@@ -33,13 +33,14 @@ async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 }
 
 /** Caminho feliz do `registerReport` real (file-based, fail-soft, nunca
- * dispara e-mail desde que `notify` fique no default `false`). */
+ * notifica desde que `notify` fique no default `false` — #7960: o canal
+ * migrou de e-mail Gmail pra `notifyEditor`, mas o default continua `false`). */
 function okRegisterResult(): RegisterReportResult {
   return {
     ok: true,
     entry: null,
     error: null,
-    emailDispatch: Promise.resolve({ sent: false, skipped: "notify-disabled" }),
+    notifyDispatch: Promise.resolve({ notified: false, skipped: "notify-disabled" }),
   } as unknown as RegisterReportResult;
 }
 

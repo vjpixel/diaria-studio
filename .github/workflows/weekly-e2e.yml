@@ -12,6 +12,12 @@ on:
     - cron: '0 9 * * 5'
   workflow_dispatch: # Permite trigger manual via gh ou UI.
 
+# #8483: evita baixar o Chrome do puppeteer em `npm ci` — nenhum job
+# deste workflow usa o browser real (scripts que precisam dele, como
+# capture-livros-promo.ts/verify-accessibility.ts, rodam fora do CI).
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "true"
+
 jobs:
   e2e:
     runs-on: ubuntu-latest

@@ -2950,6 +2950,84 @@ export function claimIssueAutoRegistering(
 }
 
 /**
+ * Resultado de `heartbeatAutoRegistering` — mesmo shape de
+ * `ClaimIssueAutoRegisterResult`, mas sem `reason`/`blockedBy` (heartbeat não
+ * disputa dono de issue, só confirma vivacidade).
+ */
+export interface HeartbeatAutoRegisterResult {
+  /** `true` quando o heartbeat (a 1ª tentativa, ou o retry pós auto-registro)
+   * de fato atualizou `lastHeartbeat`. Só falso quando até o retry pós
+   * auto-registro falhou — não deveria acontecer (mesma rede de segurança de
+   * `claim-issue`, ver comentário do case "heartbeat" no CLI). */
+  ok: boolean;
+  autoRegistered: boolean;
+  autoRegisterMode?: "fresh" | "recovered-from-orphan-backups";
+  recoveredClaims?: number[];
+  recoveredFromFiles?: number;
+}
+
+/**
+ * Wrapper de `heartbeat` que fecha o MESMO buraco que `claimIssueAutoRegistering`
+ * fechou pra `claim-issue` (#6369/#7003), agora pro `heartbeat` (#8443).
+ *
+ * **Por que o heartbeat também precisava disto.** O ciclo `continuo` do cron
+ * Hermes chama `session-registry.ts register --kind continuo` como um passo em
+ * PROSA no início do tick (SKILL.md, "Preparar e sincronizar") — o `claim-issue`
+ * já tinha essa mesma dependência de prosa e o #6369 fechou o buraco pra ele.
+ * O `heartbeat`, entretanto, é chamado em MUITO mais pontos do loop do que
+ * `claim-issue` — inclusive no caminho que **nunca** reivindica issue nova (fila
+ * de PRs abertos, conserto de CI, guard de colisão com a edição diária, que
+ * instrui `heartbeat --phase pausado-edicao` e vai direto dormir) — então um
+ * tick que pula o `register` explícito e não chega a reivindicar nenhuma issue
+ * nova continuava, até aqui, SEM NENHUM registro de sessão em `data/sessions/`,
+ * mesmo tendo rodado (e mesmo chamando `heartbeat` várias vezes). Medido ao
+ * vivo: `scripts/check-continuo-session-registration.ts` (#7890) reportou 11 de
+ * 19 ticks recentes sem sessão `continuo` correlacionada (#8443) — o auto-
+ * registro do `claim-issue` sozinho não cobre esse caminho porque ele só
+ * dispara quando uma issue NOVA é de fato reivindicada.
+ *
+ * Mesma lógica do `claimIssueAutoRegistering`: tenta o `heartbeat` normal
+ * primeiro; se a sessão não existe, procura cópias de conflito órfãs e vivas
+ * da própria identidade antes de assumir "sessão nova" (mesma ressalva do
+ * #7002/#7003 — a âncora pode ter sumido no meio de uma sessão viva, não
+ * nunca ter existido); só cria um registro do zero quando não há nada pra
+ * recuperar. `autoRegistered`/`autoRegisterMode` no retorno tornam a
+ * intervenção visível pra quem chama (o CLI abaixo avisa alto), nunca um
+ * passe silencioso.
+ */
+export function heartbeatAutoRegistering(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  patch: Partial<Pick<SessionRecord, "phase" | "active_worktrees">> = {},
+  tag: string = machineTag(),
+  now: string = new Date().toISOString(),
+): HeartbeatAutoRegisterResult {
+  const first = heartbeat(repoRoot, kind, sessionId, patch, tag, now);
+  if (first) return { ok: true, autoRegistered: false };
+  const recovered = recoverAnchorFromOrphanBackups(repoRoot, kind, sessionId, tag, now);
+  if (recovered) {
+    warnAnchorRecoveredFromOrphanBackups(
+      "heartbeat",
+      sessionId,
+      sessionFilePath(repoRoot, kind, tag, sessionId),
+      recovered,
+    );
+    const retried = heartbeat(repoRoot, kind, sessionId, patch, tag, now);
+    return {
+      ok: retried,
+      autoRegistered: true,
+      autoRegisterMode: "recovered-from-orphan-backups",
+      recoveredClaims: [...(recovered.record.claimed_issues ?? [])],
+      recoveredFromFiles: recovered.files.length,
+    };
+  }
+  registerSession(repoRoot, kind, sessionId, { tag, startedAt: now });
+  const retried = heartbeat(repoRoot, kind, sessionId, patch, tag, now);
+  return { ok: retried, autoRegistered: true, autoRegisterMode: "fresh" };
+}
+
+/**
  * Wrapper booleano de `claimIssueCheckAndSet` (#6236) — mantém a assinatura
  * histórica (`true`/`false`) pros chamadores que só precisam saber se o
  * claim colou, sem inspecionar o motivo. Ver `claimIssueCheckAndSet` para o
@@ -6106,9 +6184,26 @@ function main(): void {
         const patch: Partial<Pick<SessionRecord, "phase" | "active_worktrees">> = {};
         if (values.phase) patch.phase = values.phase;
         if (values["active-worktrees"]) patch.active_worktrees = Number(values["active-worktrees"]);
-        const ok = heartbeat(repoRoot, kind, sessionId, patch);
-        process.stdout.write(`session-registry: heartbeat ${ok ? "ok" : "no-op (sessão inexistente)"}\n`);
-        if (!ok) process.exitCode = 1;
+        // #8443: sessão sem registro prévio (ex: ciclo `continuo` do cron
+        // Hermes chamando `heartbeat` sem nunca ter chamado `register` —
+        // mesma classe do #6369, mas pro heartbeat, que é chamado em MUITO
+        // mais pontos do loop do que `claim-issue`) não vira mais no-op
+        // silencioso — `heartbeatAutoRegistering` registra uma sessão mínima
+        // (ou recupera de backup órfão, #7003) e tenta de novo.
+        const result = heartbeatAutoRegistering(repoRoot, kind, sessionId, patch);
+        const autoRegisterSuffix = !result.autoRegistered
+          ? ""
+          : result.autoRegisterMode === "recovered-from-orphan-backups"
+            ? ` [ALERTA: a ÂNCORA desta sessão SUMIU do disco com a sessão VIVA — reconstruída de ` +
+              `${result.recoveredFromFiles} cópia(s) de conflito do OneDrive, ` +
+              `${(result.recoveredClaims ?? []).length} claim(s) recuperada(s)` +
+              `${(result.recoveredClaims ?? []).length > 0 ? `: #${(result.recoveredClaims ?? []).join(", #")}` : ""}` +
+              ". Isto é escrita concorrente, não sessão nova — ver #7002/#7003]"
+            : " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do heartbeat, ver #8443]";
+        process.stdout.write(
+          `session-registry: heartbeat ${result.ok ? "ok" : "no-op (sessão inexistente mesmo após tentativa de auto-registro)"}${autoRegisterSuffix}\n`,
+        );
+        if (!result.ok) process.exitCode = 1;
         break;
       }
       case "end": {

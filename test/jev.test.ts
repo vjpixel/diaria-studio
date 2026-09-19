@@ -37,7 +37,12 @@ const CHOICE_Q: JevQuestion = {
   criteria: { x: "descrição x", y: "descrição y" },
 };
 
-const SCORE_Q: JevQuestion = { id: "sev", type: "score", instructions: "gravidade 0-10", min: 0, max: 10 };
+const SCORE_Q: JevQuestion = {
+  id: "sev",
+  type: "score",
+  instructions: "gravidade",
+  criteria: ["baixa", "média", "alta"],
+};
 const NOUL_Q: JevQuestion = { id: "harm", type: "noul", instructions: "isto causa dano real?" };
 
 function okResponse(body: unknown): Response {
@@ -96,6 +101,17 @@ describe("parseJevAnswers", () => {
   it("lança se noul.probability não é número", () => {
     assert.throws(() => parseJevAnswers({ answers: { harm: { type: "noul" } } }, [NOUL_Q]), /não é número/);
   });
+
+  it("parseia noul.noul — contrato REAL confirmado ao vivo (#8414, 19/09/2026): a API responde `noul`, não `probability`", () => {
+    const answers = parseJevAnswers({ answers: { harm: { type: "noul", noul: 0.82 } } }, [NOUL_Q]);
+    assert.deepEqual(answers[0], { id: "harm", type: "noul", probability: 0.82, confidence: 1 });
+  });
+
+  it("`noul` tem precedência sobre `probability`/`prob` quando os dois vêm presentes (#8416 — reprodução independente do contrato do #8414, mesma medição de confirmação)", () => {
+    const raw = { answers: { harm: { type: "noul", noul: 0.71, probability: 0.2 } } };
+    const [a] = parseJevAnswers(raw, [NOUL_Q]);
+    assert.equal((a as { probability: number }).probability, 0.71);
+  });
 });
 
 describe("hashJevQuestions", () => {
@@ -147,6 +163,19 @@ describe("cache em disco", () => {
 describe("askJev — transporte", () => {
   it("nunca chama a rede real (todos os testes injetam fetchImpl) — sanity check do próprio arquivo", () => {
     assert.equal(typeof fetch, "function"); // fetch global existe mas não é usado sem opts.fetchImpl explícito nestes testes
+  });
+
+  it("wire de score envia `criteria` (lista ordenada), nunca `min`/`max` (#8415 — contrato confirmado contra a API real)", async () => {
+    let sentBody: Record<string, unknown> | null = null;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      sentBody = JSON.parse(init.body as string);
+      return okResponse({ answers: { sev: { type: "score", score: 1.4, confidence: 0.6 } } });
+    }) as unknown as typeof fetch;
+    await askJev({ url: "https://x.com" }, [SCORE_Q], { apiKey: "k", fetchImpl });
+    const wireQuestion = (sentBody as any).questions.sev;
+    assert.deepEqual(wireQuestion, { type: "score", instructions: "gravidade", criteria: ["baixa", "média", "alta"] });
+    assert.equal("min" in wireQuestion, false);
+    assert.equal("max" in wireQuestion, false);
   });
 
   it("cacheKey default vem de state.url", async () => {

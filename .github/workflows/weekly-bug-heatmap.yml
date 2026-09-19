@@ -9,6 +9,19 @@ on:
     - cron: '0 10 * * 5'
   workflow_dispatch:
 
+# #8483: evita baixar o Chrome do puppeteer em `npm ci` — nenhum job
+# deste workflow usa o browser real (scripts que precisam dele, como
+# capture-livros-promo.ts/verify-accessibility.ts, rodam fora do CI).
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "true"
+
+# #8489: com o merge automático abaixo, 2 runs sobrepostos (cron + um
+# workflow_dispatch manual perto do horário) disputariam a MESMA PR e o
+# mesmo branch fixo `bot/heatmap-weekly-regen`.
+concurrency:
+  group: weekly-bug-heatmap
+  cancel-in-progress: false
+
 jobs:
   heatmap:
     runs-on: ubuntu-latest
@@ -35,6 +48,7 @@ jobs:
 
       # #1465: branch protection bloqueia push direto pra master — abrimos PR.
       - name: Open PR if changed
+        id: cpr
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -43,10 +57,49 @@ jobs:
           body: |
             Regen automático semanal do `docs/bug-heatmap.md` (#1014).
 
-            Mergear se o snapshot atualizado for útil; fechar sem merge caso
-            contrário. Workflow não falha mais se não houver mudanças (ver #1465).
+            Mergeada automaticamente pelo próprio workflow assim que os checks
+            passarem (#8489). Workflow não falha mais se não houver mudanças
+            (ver #1465).
           branch: bot/heatmap-weekly-regen
           delete-branch: true
           add-paths: docs/bug-heatmap.md
           author: "diaria-bot <diaria-bot@noreply.github.com>"
           committer: "diaria-bot <diaria-bot@noreply.github.com>"
+
+      # #8489: sem este passo a PR fica aberta indefinidamente — PR de bot é
+      # exceção da regra "1 PR aberto por vez" e overnight/develop trabalham
+      # fila de issues, então nada a drena. Não dá pra usar `gh pr merge
+      # --auto`: a ruleset de master não exige status check nenhum, e o
+      # auto-merge mergearia na hora, antes do "PR Checks" rodar. O --watch
+      # abaixo segura o job até os checks fecharem e falha se algum quebrar.
+      - name: Merge quando os checks passarem
+        if: steps.cpr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.cpr.outputs.pull-request-number }}
+        run: |
+          # `gh pr checks` sai com erro enquanto NENHUM check se registrou na
+          # PR recém-criada — espera o primeiro aparecer (teto 3min). Falha do
+          # `gh pr view` é tolerada de propósito: blip de API vira leitura
+          # vazia e o loop só espera mais, em vez de derrubar a rodada.
+          for _ in $(seq 1 18); do
+            n=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup | length' || echo "")
+            [ "${n:-0}" -gt 0 ] && break
+            sleep 10
+          done
+          # Os ~14 checks vêm de 5 workflows distintos e NÃO se registram no
+          # mesmo instante: observar só os que já existem pode devolver "tudo
+          # verde" tendo esperado 1 check de 14. Por isso o --watch roda até a
+          # CONTAGEM estabilizar entre duas rodadas — nenhum retardatário novo
+          # apareceu depois da rodada anterior fechar.
+          prev=""
+          for _ in $(seq 1 20); do
+            gh pr checks "$PR" --watch --fail-fast
+            n=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup | length' || echo "")
+            [ -n "$n" ] && [ "$n" = "$prev" ] && break
+            prev=$n
+            sleep 20
+          done
+          # Check vermelho (ou nenhum check dentro do teto) aborta antes daqui
+          # pelo `bash -e` default: a PR fica aberta de propósito.
+          gh pr merge "$PR" --squash --delete-branch

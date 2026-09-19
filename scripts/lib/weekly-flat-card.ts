@@ -46,7 +46,7 @@ const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-se
 
 /** Tamanho de fonte candidato — maior primeiro, pra achar o maior que cabe. */
 const TITLE_SIZE_MIN = 46;
-const TITLE_SIZE_MAX = 148;
+const TITLE_SIZE_MAX = 84;
 const TITLE_SIZE_STEP = 2;
 
 /**
@@ -57,6 +57,9 @@ const TITLE_SIZE_STEP = 2;
  * fixo, senão os dois divergiam em silêncio.
  */
 const CHAR_WIDTH_RATIO = 0.52;
+
+/** Razão conservadora só do auto-size `fill` (capa/CTA semanais): o rasterizador cai em serif mais larga que Georgia quando ela não está instalada, e 0.52 deixava linha vazar do card (achado ao vivo 260919). */
+const FILL_CHAR_WIDTH_RATIO = 0.62;
 
 /** Geometria vertical do bloco de texto — o mesmo em `fill` e em `fixed`. */
 const KICKER_Y = 168;
@@ -347,14 +350,14 @@ export function measureFlatCardBody(
  */
 function fillingFontSize(title: string, availableWidth: number, availableHeight: number): { size: number; lines: FlatCardLine[] } {
   for (let size = TITLE_SIZE_MAX; size >= TITLE_SIZE_MIN; size -= TITLE_SIZE_STEP) {
-    const maxCharsPerLine = Math.floor(availableWidth / (size * CHAR_WIDTH_RATIO));
+    const maxCharsPerLine = Math.floor(availableWidth / (size * FILL_CHAR_WIDTH_RATIO));
     if (maxCharsPerLine < 1) continue;
     const lines = wrapBody(title, maxCharsPerLine);
     const lineGap = Math.round(size * 1.18);
     const blockHeight = lines.length * lineGap;
     if (blockHeight <= availableHeight) return { size, lines };
   }
-  const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (TITLE_SIZE_MIN * CHAR_WIDTH_RATIO)));
+  const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (TITLE_SIZE_MIN * FILL_CHAR_WIDTH_RATIO)));
   return { size: TITLE_SIZE_MIN, lines: wrapBody(title, maxCharsPerLine) };
 }
 
