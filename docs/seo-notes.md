@@ -465,6 +465,14 @@ pro Google — mesma disciplina de erosão de confiança do `<lastmod>`/IndexNow
 
 ## Fato 10 — decisão negativa sobre Google News/Publisher Center, Bing News PubHub e MSN Partner Hub (12/ago/2026, #5132)
 
+> **Premissa 3 CADUCOU em 26/ago/2026; requisitos cumpridos em 19/set/2026
+> (#8390).** O motivo 3 abaixo ("moram todos no HTML do apex, onde este repo
+> não tem alavanca") valeu enquanto o apex era servido pela Beehiiv. O apex
+> foi cutovado pro Worker `site` em 26/08 (#467) e o HTML de `/p/{slug}` sai
+> de `buildArchivePageHtml()` desde então — a alavanca passou a ser nossa,
+> exatamente o cenário que o parágrafo "Discover não está descartado" logo
+> abaixo previu. Ver §Fato 10b para o que foi feito e como ler o resultado.
+
 **Não perseguir Google News/Publisher Center.** Investigação exaustiva do
 histórico do repo (`gh issue list --state all`) não achou nenhuma issue
 prévia mencionando "Google News" ou "Publisher Center" — a porta nunca foi
@@ -507,6 +515,53 @@ externo, não omissão nossa):
 
 Nenhuma linha de código muda por este Fato — decisão de escrita pura, para
 que a frente Discover/News da épica #5116 pare de reabrir a cada auditoria.
+
+## Fato 10b — requisitos técnicos de Discover/News cumpridos no apex próprio (19/set/2026, #8390)
+
+Sucessor do Fato 10 acima, não revogação dele: os motivos 1 e 2 (não há
+cadastro; não há leitura autoritativa fora do GSC) **seguem inteiros**. O
+que mudou é só a premissa 3 — e com ela um achado novo, que é o que de fato
+pesa.
+
+**O que estava faltando, medido em 18/09/2026 nas 270 páginas de `/p/{slug}`:**
+
+| requisito | antes | depois (#8390) |
+|---|---|---|
+| imagem ≥1200px | já atendia (capa 1600×800) | inalterado |
+| `<meta name="robots" content="max-image-preview:large">` | 0 de 270 | 270 de 270 |
+| JSON-LD `NewsArticle` (`headline`/`datePublished`/`dateModified`/`author`/`publisher`) | 270 de 270 (#8336/#8359) | inalterado, mais `image` (1600×800) nas 270 |
+| `xmlns:news` + `<news:news>` no `sitemap.xml` | 0 ocorrências | emitido pra toda URL dentro da janela de 48h |
+
+**O `<news:news>` é REGRESSÃO DO CUTOVER, não feature nova.** O item 4 do
+Fato 10 registrou, em ago/2026, que o sitemap da Beehiiv emitia `xmlns:news`
++ `<news:news>` nas 2 URLs mais recentes por conta própria. Ao assumir o
+apex em 26/08 passamos a gerar o sitemap nós mesmos (`buildSitemapXml`,
+`scripts/lib/site-archive-pages.ts`) e ele saía só com `<loc>` + `<lastmod>`
+— perdemos o markup sem ninguém notar por 3 semanas. É o risco estrutural de
+assumir uma superfície de terceiro: some junto o que a plataforma fazia por
+nós e não estava em lugar nenhum da nossa lista.
+
+**Janela e expiração.** A entrada sai do bloco news 48h depois da publicação
+(`NEWS_SITEMAP_WINDOW_MS`); `pruneExpiredNewsBlocks` roda em toda escrita
+incremental do sitemap (`addSitemapEntry`, o caminho do Stage 6), então o
+vencimento acontece na publicação da edição seguinte — cadência diária, sem
+task própria. A data usada é a **editorial**
+(`beehiiv-publish-date-overrides.json` antes de `publish_date` cru, igual ao
+`<lastmod>` e ao `datePublished` do JSON-LD): as 6 edições importadas em
+bloco em 04/09/2025 carregam a data do IMPORT em `publish_date`, e usá-la
+crua declararia uma edição de agosto/2025 como notícia do dia.
+
+**Como ler o resultado — e o que isto NÃO é.** A entrada no Discover/News
+continua automática: não há cadastro, não há solicitação, nada garante
+inclusão (motivos 1 e 2 do Fato 10, intactos). Isto é cumprir pré-requisito
+e deixar a medição que já existe responder. O instrumento é o de sempre:
+`seo-pull.ts` já coleta `type: "discover"`/`"news"` (#5119 item 4) e ambos
+vinham com **0 linhas toda semana** até aqui — a leitura é
+`data/seo/gsc-*.json` → `discover.total_rows` / `news.total_rows`. A data de
+corte pra comparar antes/depois é **19/09/2026**; qualquer leitura de
+`gsc-*.json` anterior a ela mede um período em que nenhum dos requisitos
+estava cumprido. Seguir em 0 depois do corte é resultado legítimo e
+esperado como hipótese — elegibilidade é do Google, não nossa.
 
 ## Fato 11 — decisão pré-registrada: demanda pt-BR zero/rala nas perguntas-alvo do hub NÃO é evidência de fracasso da página (#4908 item 4, 13/ago/2026)
 

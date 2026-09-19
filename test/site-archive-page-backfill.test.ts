@@ -161,12 +161,105 @@ describe("backfillArchivePageOnDisk — página legada estilo Kit (#8352/#8354/#
     assert.equal(twice.html, once.html);
   });
 
-  it("falha fechada (não altera nada) se faltar description ou canonical — nunca visto no corpus real, mas não deve piorar", () => {
+  it("falha fechada (não altera nada além do robots) se faltar description ou canonical — nunca visto no corpus real, mas não deve piorar", () => {
     const broken = `<!doctype html><html><head><title>Só título</title></head><body></body></html>`;
     const result = backfillArchivePageOnDisk(broken, { slug: "x" });
     assert.equal(result.addedSeo, false);
-    assert.equal(result.changed, false); // sem SEO (faltam campos) e sem nav (sem prev/next)
-    assert.equal(result.html, broken);
+    assert.equal(result.addedNav, false);
+    // #8390: `max-image-preview:large` NÃO depende de description/canonical
+    // (é uma diretiva de robô, não um campo de compartilhamento), então ele
+    // entra mesmo aqui — e só ele. A falha fechada que este teste guarda é a
+    // do BLOCO DE SEO, que segue não sendo escrito.
+    assert.equal(result.addedRobots, true);
+    assert.equal(result.addedJsonLdImage, false); // sem JSON-LD nem capa nesta página
+    assert.equal(
+      result.html,
+      broken.replace("</title>", '</title><meta name="robots" content="max-image-preview:large">'),
+    );
+  });
+});
+
+describe("backfillArchivePageOnDisk — unidades do #8390 (robots + image no JSON-LD)", () => {
+  /** Página no estado PÓS-#8359 e PRÉ-#8390: SEO completo, JSON-LD
+   * `NewsArticle` presente mas SEM `image`, og:image declarado, sem robots. */
+  function pagina8359(extra: { jsonLd?: string; head?: string; body?: string } = {}): string {
+    const jsonLd =
+      extra.jsonLd ??
+      '<script type="application/ld+json">{"@context":"https://schema.org","@type":"NewsArticle","headline":"Edição X","datePublished":"2026-09-11"}</script>';
+    return (
+      `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Edição X</title>` +
+      `<meta property="og:type" content="article">` +
+      `<meta property="og:image" content="https://eia.diar.ia.br/img/capa.jpg">` +
+      `${extra.head ?? ""}${jsonLd}</head><body>${extra.body ?? "<p>corpo</p>"}</body></html>`
+    );
+  }
+
+  it("acrescenta image ao NewsArticle usando o og:image já declarado", () => {
+    const r = backfillArchivePageOnDisk(pagina8359(), { slug: "x" });
+    assert.equal(r.addedJsonLdImage, true);
+    assert.equal(r.addedRobots, true);
+    const node = JSON.parse(r.html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)![1]);
+    assert.equal(node.image.url, "https://eia.diar.ia.br/img/capa.jpg");
+    assert.equal(node.image["@type"], "ImageObject");
+    // Só UM node JSON-LD — nunca um 2º NewsArticle descrevendo a mesma URL.
+    assert.equal(r.html.match(/application\/ld\+json/g)?.length, 1);
+  });
+
+  it("sem og:image, cai no <img class=\"hero\"> do corpo", () => {
+    const semOg = pagina8359({ body: '<img class="hero" src="https://eia.diar.ia.br/img/hero.jpg">' }).replace(
+      '<meta property="og:image" content="https://eia.diar.ia.br/img/capa.jpg">',
+      "",
+    );
+    const r = backfillArchivePageOnDisk(semOg, { slug: "x" });
+    assert.equal(r.addedJsonLdImage, true);
+    const node = JSON.parse(r.html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)![1]);
+    assert.equal(node.image.url, "https://eia.diar.ia.br/img/hero.jpg");
+  });
+
+  it("no-op quando o node já tem image (2ª passada é idempotente)", () => {
+    const uma = backfillArchivePageOnDisk(pagina8359(), { slug: "x" });
+    const duas = backfillArchivePageOnDisk(uma.html, { slug: "x" });
+    assert.equal(duas.addedJsonLdImage, false);
+    assert.equal(duas.addedRobots, false);
+    assert.equal(duas.html, uma.html);
+  });
+
+  it("no-op quando o node não é NewsArticle (não sequestra JSON-LD de outro tipo)", () => {
+    const outroTipo = pagina8359({
+      jsonLd: '<script type="application/ld+json">{"@type":"WebSite","name":"diar.ia.br"}</script>',
+    });
+    const r = backfillArchivePageOnDisk(outroTipo, { slug: "x" });
+    assert.equal(r.addedJsonLdImage, false);
+    assert.ok(!r.html.includes("ImageObject"));
+  });
+
+  it("JSON-LD ilegível: no-op no HTML, mas AVISA (não some no balde de 'não precisava')", () => {
+    const quebrado = pagina8359({ jsonLd: '<script type="application/ld+json">{ não é json }</script>' });
+    const avisos: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    (process.stderr as { write: unknown }).write = (chunk: string) => {
+      avisos.push(String(chunk));
+      return true;
+    };
+    try {
+      const r = backfillArchivePageOnDisk(quebrado, { slug: "slug-corrompido" });
+      assert.equal(r.addedJsonLdImage, false);
+      assert.ok(r.html.includes("{ não é json }"), "o node ilegível foi alterado");
+    } finally {
+      (process.stderr as { write: unknown }).write = orig;
+    }
+    assert.ok(
+      avisos.some((a) => a.includes("slug-corrompido") && a.includes("JSON-LD ilegível")),
+      `nenhum aviso nomeando o slug: ${JSON.stringify(avisos)}`,
+    );
+  });
+
+  it("página que JÁ declara <meta name=\"robots\"> (qualquer valor) não ganha uma 2ª tag", () => {
+    const comRobots = pagina8359({ head: '<meta name="robots" content="noindex">' });
+    const r = backfillArchivePageOnDisk(comRobots, { slug: "x" });
+    assert.equal(r.addedRobots, false);
+    assert.equal(r.html.match(/name="robots"/g)?.length, 1);
+    assert.ok(r.html.includes('content="noindex"'), "a diretiva do editor foi sobrescrita");
   });
 });
 

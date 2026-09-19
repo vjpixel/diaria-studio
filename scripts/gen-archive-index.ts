@@ -175,11 +175,20 @@ export function main(argv = process.argv.slice(2)): number {
     const added: string[] = [];
     for (let page = 1; page <= totalPages; page++) {
       const loc = archiveIndexUrl(page);
-      const before = xml;
-      // `addSitemapEntry` já é no-op pra `<loc>` idêntico (#7280) — o
-      // diff é o que diz se entrou, sem reimplementar o dedup aqui.
+      // "Entrou?" é medido pela PRESENÇA da `<loc>`, não pelo diff da string
+      // inteira. Até o #8390 o diff servia (`addSitemapEntry` era no-op
+      // exato pra `<loc>` idêntico, #7280), mas ele passou a PODAR blocos
+      // `<news:news>` vencidos de OUTRAS URLs em toda chamada — então o XML
+      // muda rotineiramente sem que nada de índice tenha sido acrescentado,
+      // e o diff passaria a reportar "+N entrada(s)" com N errado. A `<loc>`
+      // de índice (`https://diar.ia.br/archive/{n}`) não tem caractere que
+      // `escXml` altere, então a comparação crua é exata.
+      const locTag = `<loc>${loc}</loc>`;
+      const jaEstava = xml.includes(locTag);
       xml = addSitemapEntry(xml, { loc });
-      if (xml !== before) added.push(loc);
+      // Confirma a INSERÇÃO, não a intenção — mesmo princípio do
+      // "verifica o próprio conserto" de `reconcile-site-sitemap.ts`.
+      if (!jaEstava && xml.includes(locTag)) added.push(loc);
     }
     // Entrada de página que deixou de existir sai do sitemap junto —
     // senão o buscador continuaria batendo num 404 que este mesmo script

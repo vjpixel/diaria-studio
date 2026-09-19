@@ -43,6 +43,7 @@
 import {
   type ArchivePost,
   type ArchiveNeighbor,
+  ARCHIVE_ROBOTS_META,
   archiveUrlForSlug,
   buildArchiveNeighborNavHtml,
   buildArchiveNewsArticleJsonLd,
@@ -61,6 +62,11 @@ const SEO_MARKER = 'property="og:type"';
  * marcador que `buildArchiveNeighborNavHtml` grava. */
 export const ARCHIVE_NAV_MARKER = 'class="archive-nav"';
 
+/** Marcador de "já tem `<meta name="robots">`" (#8390) — qualquer valor,
+ * não só o nosso: página que já declare `robots` por outro caminho não deve
+ * ganhar uma 2ª tag concorrente. */
+const ROBOTS_MARKER_RE = /<meta\s+name=["']robots["']/i;
+
 export interface BackfillContext {
   slug: string;
   prev?: ArchiveNeighbor;
@@ -78,6 +84,10 @@ export interface BackfillResult {
   changed: boolean;
   addedSeo: boolean;
   addedNav: boolean;
+  /** #8390 — `<meta name="robots" content="max-image-preview:large">`. */
+  addedRobots: boolean;
+  /** #8390 — `image` acrescentado ao JSON-LD `NewsArticle` já presente. */
+  addedJsonLdImage: boolean;
 }
 
 /**
@@ -213,9 +223,86 @@ function backfillNav(html: string, ctx: BackfillContext): { html: string; change
 }
 
 /**
- * Aplica os dois backfills (SEO + nav) numa única página, cada um guardado
- * pelo seu próprio marcador — uma página pode precisar só de um dos dois
- * (ex: uma das 259 Beehiiv já tem SEO completo, só falta nav).
+ * #8390 — injeta `<meta name="robots" content="max-image-preview:large">`
+ * logo depois do `</title>`, a mesma posição em que `buildArchivePageHtml`
+ * o emite pra página gerada do zero (as duas superfícies produzem `<head>`
+ * equivalente). Página que já declare QUALQUER `<meta name="robots">` fica
+ * intocada — nunca duas tags concorrentes.
+ */
+function backfillRobotsMeta(html: string): { html: string; changed: boolean } {
+  if (ROBOTS_MARKER_RE.test(html)) return { html, changed: false };
+  if (!/<\/title>/i.test(html)) return { html, changed: false };
+  return { html: html.replace(/<\/title>/i, (m) => `${m}${ARCHIVE_ROBOTS_META}`), changed: true };
+}
+
+/**
+ * Capa desta página como o `<head>` JÁ a declara — `og:image` (escrito por
+ * `renderSeoMeta` desde #8352, presente nas 270) primeiro, `<img
+ * class="hero">` do corpo como reserva.
+ *
+ * A ordem importa: `og:image` vem de `thumbnail_url` do cache nas 259
+ * páginas Beehiiv, e SÓ 75 das 270 têm `<img class="hero">` no corpo
+ * (medido nesta PR) — tirar a imagem do hero teria deixado 195 páginas sem
+ * `image` no JSON-LD sem nenhum motivo, já que a URL certa estava no head
+ * ao lado. Usar a MESMA URL que `og:image` também garante que as duas
+ * declarações da capa nunca divirjam, que é a razão de
+ * `buildArchivePageHtml` alimentar as duas do mesmo `thumbnail_url`.
+ */
+function extractDeclaredCoverUrl(html: string): string | undefined {
+  const og = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
+  return og?.[1] ?? extractHeroImageUrl(html);
+}
+
+/**
+ * #8390 — acrescenta `image` ao JSON-LD `NewsArticle` que as páginas já
+ * tinham (#8336/#8359 escreveram o node SEM imagem; o campo passou a ser
+ * emitido por `buildArchiveNewsArticleJsonLd` só agora). Reescreve o node
+ * existente em vez de emitir um 2º `<script>`: dois `NewsArticle`
+ * descrevendo a MESMA URL é ambiguidade pro parser, não redundância inócua.
+ *
+ * No-op quando: não há node JSON-LD, ele não é `NewsArticle`, já tem
+ * `image`, ou a página não declara capa nenhuma. JSON ilegível também é
+ * no-op (nunca visto — o node é sempre escrito por nós — mas quebrar o
+ * `<head>` de 270 páginas por um parse falho seria pior que deixar uma sem
+ * `image`) — esse caso, ao contrário dos outros 4, AVISA em stderr: os
+ * demais são "não precisava", este é "precisava e não deu", e sem o aviso
+ * os dois colapsariam na mesma linha de resumo ("0 páginas alteradas"),
+ * escondendo um node de fato corrompido (achado do fleet review desta PR).
+ */
+function backfillJsonLdImage(html: string, slug?: string): { html: string; changed: boolean } {
+  const heroImageUrl = extractDeclaredCoverUrl(html);
+  if (!heroImageUrl) return { html, changed: false };
+  const m = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
+  if (!m) return { html, changed: false };
+  let node: Record<string, unknown>;
+  try {
+    // `buildArchiveNewsArticleJsonLd` escapa `<` como `\u003c` na serialização;
+    // `JSON.parse` desfaz isso sozinho, então o texto cru serve direto.
+    node = JSON.parse(m[1]) as Record<string, unknown>;
+  } catch (e) {
+    process.stderr.write(
+      `[archive-backfill] aviso: JSON-LD ilegível em ${slug ?? "(slug desconhecido)"} ` +
+        `(${(e as Error).message}) — página fica sem \`image\` no NewsArticle. ` +
+        `Node corrompido também quebra a validação de structured data; conferir à mão.\n`,
+    );
+    return { html, changed: false };
+  }
+  if (node["@type"] !== "NewsArticle" || node.image !== undefined) return { html, changed: false };
+  node.image = {
+    "@type": "ImageObject",
+    url: heroImageUrl,
+    width: COVER_IMAGE_WIDTH,
+    height: COVER_IMAGE_HEIGHT,
+  };
+  const json = JSON.stringify(node).replaceAll("<", "\\u003c");
+  return { html: html.replace(m[0], `<script type="application/ld+json">${json}</script>`), changed: true };
+}
+
+/**
+ * Aplica os backfills (SEO, nav, robots, image do JSON-LD) numa única
+ * página, cada um guardado pelo seu próprio marcador — uma página pode
+ * precisar só de alguns (ex: uma das 259 Beehiiv já tem SEO completo e nav,
+ * só falta o `robots` do #8390).
  */
 export function backfillArchivePageOnDisk(html: string, ctx: BackfillContext): BackfillResult {
   let out = html;
@@ -234,7 +321,22 @@ export function backfillArchivePageOnDisk(html: string, ctx: BackfillContext): B
     addedNav = navResult.changed;
   }
 
-  return { html: out, changed: addedSeo || addedNav, addedSeo, addedNav };
+  // Roda DEPOIS do backfillSeo: quando ele acabou de escrever o bloco novo,
+  // o JSON-LD já sai com `image` (buildArchiveNewsArticleJsonLd), e este
+  // passo vira no-op pelo guard de `image` presente — sem dupla injeção.
+  const robotsResult = backfillRobotsMeta(out);
+  out = robotsResult.html;
+  const jsonLdResult = backfillJsonLdImage(out, ctx.slug);
+  out = jsonLdResult.html;
+
+  return {
+    html: out,
+    changed: addedSeo || addedNav || robotsResult.changed || jsonLdResult.changed,
+    addedSeo,
+    addedNav,
+    addedRobots: robotsResult.changed,
+    addedJsonLdImage: jsonLdResult.changed,
+  };
 }
 
 /** Reexportado pra quem só precisa montar a URL de um vizinho sem importar

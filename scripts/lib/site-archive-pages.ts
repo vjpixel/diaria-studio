@@ -75,6 +75,24 @@ export interface ArchivePost {
 export const ARCHIVE_BASE_URL = "https://diar.ia.br";
 
 /**
+ * `<meta name="robots">` das páginas do acervo (#8390).
+ *
+ * `max-image-preview:large` é PRÉ-REQUISITO do Google Discover: sem ele o
+ * Google limita a miniatura ao formato pequeno, e a superfície do Discover
+ * serve card de imagem grande — as 270 páginas de `/p/{slug}` saíam sem
+ * nenhuma `<meta name="robots">` (medido em 18/09/2026, #8390).
+ *
+ * NÃO carrega `index`/`follow`: são os defaults do robô, e declará-los
+ * explicitamente não muda nada (a diretiva só existe pra NEGAR). Manter só a
+ * diretiva que de fato altera comportamento evita a leitura errada de que
+ * esta linha é quem torna a página indexável.
+ *
+ * Escopo deliberadamente limitado ao acervo — hubs/cursos/livros passam por
+ * `renderSeoMeta`, que segue sem `robots` (fora do escopo do #8390).
+ */
+export const ARCHIVE_ROBOTS_META = '<meta name="robots" content="max-image-preview:large">';
+
+/**
  * Só posts publicados de verdade entram no acervo — nunca rascunho (ex: o
  * `new-post` duplicado achado no cache). Type predicate (não só `boolean`)
  * pra `posts.filter(isPublishedPost)` estreitar o tipo de retorno —
@@ -643,6 +661,8 @@ export function buildArchivePageHtml(post: ArchivePost, opts: BuildArchivePageHt
   const headInject =
     `<meta charset="utf-8">` +
     `<title>${title}</title>` +
+    // #8390: pré-requisito do Google Discover (ver ARCHIVE_ROBOTS_META).
+    ARCHIVE_ROBOTS_META +
     // #8352: `<meta name="description">`/`<link rel="canonical">` + favicon +
     // Open Graph + Twitter Card, via o MESMO helper que já serve
     // cursos/livros/hubs/poll (`renderSeoMeta`) — não mais construídos à mão
@@ -810,15 +830,80 @@ export function injectBeforeBodyEnd(html: string, block: string, slug: string): 
 ${html.slice(ultima.index)}`;
 }
 
+/**
+ * Janela do Google News (#8390). A entrada de uma URL sai do bloco
+ * `<news:news>` 48h depois da publicação — é o prazo que o próprio Google
+ * documenta pro news sitemap ("remova o artigo do sitemap de notícias depois
+ * de 2 dias"; ele continua no sitemap normal, só sem o bloco news). O
+ * vencimento não é cosmético: news sitemap cheio de URL velha é sinal de
+ * sitemap mal-mantido, não de acervo grande.
+ */
+export const NEWS_SITEMAP_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+/** `<news:publication><news:name>` — como a publicação se chama. */
+export const NEWS_PUBLICATION_NAME = "diar.ia.br";
+
+/**
+ * `<news:language>` — o schema do Google News aceita código ISO 639 de 2 ou
+ * 3 letras (só `zh-cn`/`zh-tw` fogem disso), então é `pt`, NUNCA `pt-BR`
+ * (que é o valor certo pro `lang=`/`inLanguage` do HTML — os dois vocabulários
+ * não são o mesmo e a divergência aqui é intencional).
+ */
+export const NEWS_PUBLICATION_LANGUAGE = "pt";
+
+/** Namespace do news sitemap, declarado no `<urlset>` só quando há bloco news. */
+const NEWS_XMLNS_ATTR = ' xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"';
+
+export interface SitemapNewsEntry {
+  /** Título do artigo como sai no `<news:title>`. */
+  title: string;
+  /** Data/hora W3C (ISO 8601 completo) da publicação EDITORIAL. */
+  publicationDate: string;
+}
+
 export interface SitemapEntry {
   loc: string;
   lastmod?: string;
+  /**
+   * #8390 — presente só enquanto a URL está dentro da janela de 48h; quem
+   * monta a entrada (`sitemapEntriesForPosts`/`sitemapEntryFromPost`) já
+   * aplica o corte, e `pruneExpiredNewsBlocks` remove o bloco de um XML já
+   * gravado quando ele vence.
+   */
+  news?: SitemapNewsEntry;
 }
 
-export function sitemapEntriesForPosts(posts: ArchivePost[]): SitemapEntry[] {
+/**
+ * Bloco `<news:news>` desta edição, ou `undefined` se ela estiver fora da
+ * janela de 48h (ou sem data resolvível).
+ *
+ * A data vem de `resolvePublishTimestampMs` — a MESMA resolução editorial do
+ * `<lastmod>` e do `datePublished` do JSON-LD, ou seja, honrando
+ * `beehiiv-publish-date-overrides.json` (#4796) antes do `publish_date` cru.
+ * Isso importa aqui mais do que em qualquer outro consumidor: as 6 edições
+ * importadas em bloco pra Beehiiv em 04/09/2025 carregam a data do IMPORT em
+ * `publish_date`, e usá-la crua declararia como "notícia de hoje" (dentro da
+ * janela, no dia do import) uma edição de agosto/2025. Ao contrário do
+ * `<lastmod>`, que só ficaria feio, aqui o erro vira submissão de conteúdo
+ * velho como notícia fresca.
+ *
+ * `nowMs` é parâmetro (não `Date.now()` embutido) porque o vencimento é
+ * testável só com relógio injetável — os dois lados da janela precisam ser
+ * exercidos, e esperar 48h não é teste.
+ */
+export function newsEntryForPost(post: ArchivePost, nowMs: number = Date.now()): SitemapNewsEntry | undefined {
+  const ms = resolvePublishTimestampMs(post);
+  if (ms === undefined) return undefined;
+  if (nowMs - ms >= NEWS_SITEMAP_WINDOW_MS) return undefined;
+  return { title: derivePageTitle(post), publicationDate: new Date(ms).toISOString() };
+}
+
+export function sitemapEntriesForPosts(posts: ArchivePost[], opts: { now?: number } = {}): SitemapEntry[] {
+  const now = opts.now ?? Date.now();
   return selectPublishedPosts(posts).map((post) => ({
     loc: archiveUrlForSlug(post.slug),
     lastmod: publishDateToIso(post),
+    news: newsEntryForPost(post, now),
   }));
 }
 
@@ -826,8 +911,12 @@ export function sitemapEntriesForPosts(posts: ArchivePost[]): SitemapEntry[] {
  * #6454: monta a entrada de sitemap para uma única página — usada ao adicionar
  * uma edição nova sem regenerar o sitemap inteiro a partir do cache.
  */
-export function sitemapEntryFromPost(post: ArchivePost): SitemapEntry {
-  return { loc: archiveUrlForSlug(post.slug), lastmod: publishDateToIso(post) };
+export function sitemapEntryFromPost(post: ArchivePost, opts: { now?: number } = {}): SitemapEntry {
+  return {
+    loc: archiveUrlForSlug(post.slug),
+    lastmod: publishDateToIso(post),
+    news: newsEntryForPost(post, opts.now ?? Date.now()),
+  };
 }
 
 /**
@@ -838,7 +927,19 @@ export function sitemapEntryFromPost(post: ArchivePost): SitemapEntry {
  * levemente diferente do `buildSitemapXml` padrão). Se o XML for malformado,
  * a inclusão ainda funciona — é só uma string dentro de `</urlset>`.
  */
-export function addSitemapEntry(existingXml: string, entry: SitemapEntry): string {
+export function addSitemapEntry(
+  existingXml: string,
+  entry: SitemapEntry,
+  opts: { now?: number } = {},
+): string {
+  const now = opts.now ?? Date.now();
+  // #8390: PODA ANTES de qualquer coisa, inclusive quando a entrada nova já
+  // existe (`return` do guard de idempotência logo abaixo devolve o XML
+  // PODADO, não o original) — o vencimento de 48h é do XML inteiro, não da
+  // entrada que este chamador trouxe. Este é o único caminho de escrita
+  // incremental do sitemap (Stage 6 publica uma edição por dia por aqui), e
+  // sem a poda aqui o bloco news da edição de anteontem ficaria pra sempre.
+  existingXml = pruneExpiredNewsBlocks(existingXml, now);
   // #7280 (achado do fleet review): `existingXml.includes(entry.loc)` era um
   // substring check — falso positivo sempre que `entry.loc` é PREFIXO da URL
   // de outra página já presente (ex: adicionar
@@ -851,8 +952,93 @@ export function addSitemapEntry(existingXml: string, entry: SitemapEntry): strin
   // casa a URL exata.
   if (existingXml.includes(`<loc>${escXml(entry.loc)}</loc>`)) return existingXml;
   const lastmodLine = entry.lastmod ? `\n    <lastmod>${escXml(entry.lastmod)}</lastmod>` : '';
-  const insertion = `  <url>\n    <loc>${escXml(entry.loc)}</loc>${lastmodLine}\n  </url>\n`;
-  return existingXml.replace('</urlset>', insertion + '</urlset>');
+  // A entrada pode vir com `news` montado num `now` anterior (ex: o processo
+  // subiu ontem): re-checa a janela com o `now` desta chamada em vez de
+  // confiar no que o chamador trouxe.
+  let news = entry.news && isNewsEntryFresh(entry.news, now) ? entry.news : undefined;
+  // Achado do fleet review desta PR: `ensureNewsNamespace` é um `.replace()`
+  // sobre `<urlset ...>`, e num XML que não casa esse shape (arquivo
+  // truncado por escrita parcial, editado à mão, vindo de outro gerador) ele
+  // devolveria a string intacta em SILÊNCIO — e o bloco `<news:news>` sairia
+  // com prefixo não declarado, que faz o Google descartar o sitemap INTEIRO,
+  // não só o bloco. Aqui a falha degrada pro comportamento de antes do
+  // #8390: a `<url>` entra sem bloco news, com aviso nomeando a causa.
+  let xmlBase = existingXml;
+  if (news) {
+    const ns = ensureNewsNamespace(existingXml);
+    if (ns.ok) {
+      xmlBase = ns.xml;
+    } else {
+      process.stderr.write(
+        `[site-archive-pages] aviso: sitemap sem tag <urlset ...> reconhecível — ` +
+          `xmlns:news não pôde ser declarado, então ${entry.loc} entra SEM bloco <news:news> ` +
+          `(emitir o bloco sem o namespace invalidaria o sitemap inteiro pro Google).\n`,
+      );
+      news = undefined;
+    }
+  }
+  const insertion = `  <url>\n    <loc>${escXml(entry.loc)}</loc>${lastmodLine}${news ? renderNewsBlock(news) : ''}\n  </url>\n`;
+  return xmlBase.replace('</urlset>', insertion + '</urlset>');
+}
+
+function isNewsEntryFresh(news: SitemapNewsEntry, now: number): boolean {
+  const ts = Date.parse(news.publicationDate);
+  if (Number.isNaN(ts)) return false;
+  return now - ts < NEWS_SITEMAP_WINDOW_MS;
+}
+
+/** Bloco `<news:news>` indentado pra caber dentro de um `<url>` de `buildSitemapXml`. */
+function renderNewsBlock(news: SitemapNewsEntry): string {
+  return (
+    `\n    <news:news>` +
+    `\n      <news:publication>` +
+    `\n        <news:name>${escXml(NEWS_PUBLICATION_NAME)}</news:name>` +
+    `\n        <news:language>${NEWS_PUBLICATION_LANGUAGE}</news:language>` +
+    `\n      </news:publication>` +
+    `\n      <news:publication_date>${escXml(news.publicationDate)}</news:publication_date>` +
+    `\n      <news:title>${escXml(news.title)}</news:title>` +
+    `\n    </news:news>`
+  );
+}
+
+/**
+ * Declara `xmlns:news` no `<urlset>` se ainda não estiver lá. Sem isso o XML
+ * com bloco `<news:news>` é malformado (prefixo não declarado) e o parser do
+ * Google descarta o sitemap INTEIRO — não só o bloco.
+ *
+ * Devolve `ok: false` quando não há tag `<urlset ...>` onde declarar (XML
+ * truncado, editado à mão, de outro gerador) em vez de devolver a string
+ * intacta como se tivesse declarado — o chamador PRECISA distinguir os dois
+ * casos, senão emite o bloco news sem namespace e derruba o sitemap todo.
+ */
+function ensureNewsNamespace(xml: string): { xml: string; ok: boolean } {
+  if (xml.includes("xmlns:news=")) return { xml, ok: true };
+  const next = xml.replace(/<urlset(\s[^>]*)?>/i, (full) => `${full.slice(0, -1)}${NEWS_XMLNS_ATTR}>`);
+  return { xml: next, ok: next !== xml };
+}
+
+/**
+ * #8390 — remove de um sitemap JÁ GRAVADO todo bloco `<news:news>` cuja
+ * `publication_date` passou da janela de 48h, e a declaração `xmlns:news` do
+ * `<urlset>` junto quando não sobrar nenhum bloco (namespace declarado e não
+ * usado é ruído, e a ausência dele é o que mantém o XML byte-idêntico ao de
+ * antes do #8390 quando o acervo não tem edição fresca).
+ *
+ * Bloco com `publication_date` ausente ou ilegível é REMOVIDO (fail-closed):
+ * `<news:news>` sem data válida é inválido pro schema, e manter um bloco
+ * quebrado arrisca o sitemap inteiro — o custo de errar pro outro lado é
+ * perder 48h de elegibilidade de UMA URL.
+ */
+export function pruneExpiredNewsBlocks(xml: string, now: number = Date.now()): string {
+  if (!xml.includes("<news:news>")) return xml;
+  let out = xml.replace(/\s*<news:news>[\s\S]*?<\/news:news>/g, (block) => {
+    const m = block.match(/<news:publication_date>([^<]*)<\/news:publication_date>/);
+    const ts = m ? Date.parse(m[1].trim()) : Number.NaN;
+    if (Number.isNaN(ts)) return "";
+    return now - ts < NEWS_SITEMAP_WINDOW_MS ? block : "";
+  });
+  if (!out.includes("<news:news>")) out = out.replace(NEWS_XMLNS_ATTR, "");
+  return out;
 }
 
 /**
@@ -947,6 +1133,22 @@ export function publishDateToIso(post: ArchivePost): string | undefined {
  * override) — nunca escreve `datePublished` inválido; `buildArchivePageHtml`
  * omite o `<script>` inteiro nesse caso, mesmo padrão fail-soft do
  * `<lastmod>` opcional no sitemap.
+ *
+ * ## `image` e `publisher.logo` (#8390)
+ *
+ * `image` entrou no #8390: o Google Discover pede imagem de largura ≥1200px
+ * declarada, e a capa que `thumbnail_url` aponta já é 1600×800
+ * (`COVER_IMAGE_WIDTH`/`COVER_IMAGE_HEIGHT`, a MESMA que `og:image` desta
+ * página declara desde #8352 — nunca uma 2ª fonte de verdade). Post sem
+ * `thumbnail_url` sai sem `image`, mesmo fail-soft do `og:image`.
+ *
+ * `publisher.logo` continua AUSENTE de propósito: o projeto não tem nenhum
+ * logotipo rasterizado hospedado (a marca é tipografia em CSS —
+ * `brand-wordmark.ts` — e o favicon é um SVG em `data:` URI, que não é uma
+ * URL buscável por robô). Declarar um `logo` apontando pra URL que responde
+ * 404 é pior que omitir o campo: vira erro no Rich Results Test em vez de
+ * campo recomendado ausente. Quando existir um PNG de marca hospedado, este
+ * é o ponto de injeção.
  */
 export function buildArchiveNewsArticleJsonLd(post: ArchivePost, author: GeoAuthor = GEO_AUTHOR): string | undefined {
   const datePublished = publishDateToIso(post);
@@ -961,6 +1163,16 @@ export function buildArchiveNewsArticleJsonLd(post: ArchivePost, author: GeoAuth
     mainEntityOfPage: canonical,
     datePublished,
     dateModified: datePublished,
+    ...(post.thumbnail_url
+      ? {
+          image: {
+            "@type": "ImageObject",
+            url: post.thumbnail_url,
+            width: COVER_IMAGE_WIDTH,
+            height: COVER_IMAGE_HEIGHT,
+          },
+        }
+      : {}),
     author: { "@type": "Person", name: author.name, url: author.url },
     publisher: { "@type": "Organization", name: "diar.ia.br", url: ARCHIVE_BASE_URL },
     inLanguage: "pt-BR",
@@ -974,14 +1186,21 @@ function escXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * `xmlns:news` só é declarado quando ALGUMA entrada tem bloco news (#8390) —
+ * um sitemap sem edição dentro da janela de 48h sai byte-idêntico ao de
+ * antes desta mudança.
+ */
 export function buildSitemapXml(entries: SitemapEntry[]): string {
   const urls = entries
     .map((entry) => {
       const lastmod = entry.lastmod ? `\n    <lastmod>${escXml(entry.lastmod)}</lastmod>` : "";
-      return `  <url>\n    <loc>${escXml(entry.loc)}</loc>${lastmod}\n  </url>`;
+      const news = entry.news ? renderNewsBlock(entry.news) : "";
+      return `  <url>\n    <loc>${escXml(entry.loc)}</loc>${lastmod}${news}\n  </url>`;
     })
     .join("\n");
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`;
+  const newsNs = entries.some((e) => e.news) ? NEWS_XMLNS_ATTR : "";
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"${newsNs}>\n${urls}\n</urlset>\n`;
 }
 
 /**

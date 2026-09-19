@@ -74,7 +74,11 @@ export interface SitemapPageEntry {
  */
 export function parseSitemapPageEntries(xml: string): SitemapPageEntry[] {
   const entries: SitemapPageEntry[] = [];
-  const urlRe = /<url>\s*<loc>([\s\S]*?)<\/loc>(?:\s*<lastmod>([\s\S]*?)<\/lastmod>)?\s*<\/url>/g;
+  // O `[\s\S]*?` final tolera filhos DEPOIS do `<lastmod>` — hoje o bloco
+  // `<news:news>` do #8390. Sem ele a entrada com bloco news simplesmente
+  // não casava, e a página correspondente sumia do backfill em SILÊNCIO
+  // (nenhum erro: o `continue` do loop trata "não casou" como "não é /p/").
+  const urlRe = /<url>\s*<loc>([\s\S]*?)<\/loc>(?:\s*<lastmod>([\s\S]*?)<\/lastmod>)?[\s\S]*?<\/url>/g;
   let m: RegExpExecArray | null;
   while ((m = urlRe.exec(xml))) {
     const loc = m[1].trim();
@@ -101,6 +105,10 @@ export interface BackfillRunResult {
   changed: number;
   seoChanged: number;
   navChanged: number;
+  /** #8390 — páginas que ganharam `<meta name="robots">`. */
+  robotsChanged: number;
+  /** #8390 — páginas cujo JSON-LD ganhou `image`. */
+  jsonLdImageChanged: number;
 }
 
 /**
@@ -141,6 +149,8 @@ export function runBackfill(
   let changed = 0;
   let seoChanged = 0;
   let navChanged = 0;
+  let robotsChanged = 0;
+  let jsonLdImageChanged = 0;
 
   for (let i = 0; i < order.length; i++) {
     const { slug, lastmod } = order[i];
@@ -170,6 +180,8 @@ export function runBackfill(
       changed++;
       if (result.addedSeo) seoChanged++;
       if (result.addedNav) navChanged++;
+      if (result.addedRobots) robotsChanged++;
+      if (result.addedJsonLdImage) jsonLdImageChanged++;
       if (!opts.dryRun) writePage(p, result.html);
     }
   }
@@ -181,6 +193,8 @@ export function runBackfill(
     changed,
     seoChanged,
     navChanged,
+    robotsChanged,
+    jsonLdImageChanged,
   };
 }
 
@@ -197,7 +211,8 @@ async function main() {
 
   console.log(
     `backfill-archive-page-links-seo: ${result.changed}/${result.pagesFound} páginas alteradas ` +
-      `(${result.seoChanged} SEO, ${result.navChanged} nav) de ${result.totalInSitemap} no sitemap` +
+      `(${result.seoChanged} SEO, ${result.navChanged} nav, ${result.robotsChanged} robots, ` +
+        `${result.jsonLdImageChanged} JSON-LD image) de ${result.totalInSitemap} no sitemap` +
       `${dryRun ? " [dry-run]" : ""}`,
   );
   if (result.pagesMissing.length > 0) {
