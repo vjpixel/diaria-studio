@@ -5,11 +5,23 @@ import {
   applyNegativeImpactBackstop,
   applyPlaceholderTitleBackstop,
   applyClusterSourcesBackstop,
+  applyExplorationQuotaBackstop,
+  editionFromPath,
   type Selection,
   type AllScoredFile,
   type AssembledOutput,
 } from "../scripts/assemble-scored.ts";
 import type { FinalistLike } from "../scripts/lib/negative-impact-promotion.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import type { AudienceSignals } from "../scripts/lib/audience-affinity.ts";
+import {
+  emptyExplorationState,
+  readExplorationState,
+  recordExplorationDecision,
+  writeExplorationState,
+} from "../scripts/lib/exploration-quota.ts";
 
 const ALL: AllScoredFile = {
   all_scored: [
@@ -249,5 +261,136 @@ describe("applyClusterSourcesBackstop", () => {
     assert.equal(out.cluster_sources_restored![0].url, "a");
     assert.equal(out.cluster_sources_restored![0].restored_count, 2);
     assert.deepEqual(out.highlights[0].article?.cluster_sources, clusterSources);
+  });
+});
+
+// ─── #8370 Peça 2: cota semanal de exploração ──────────────────────────────
+
+describe("applyExplorationQuotaBackstop (#8370 Peça 2)", () => {
+  /**
+   * Sinais de audiência fabricados: a categoria "Treinamento" tem CTR
+   * relativo alto, então um item que a menciona sai endógeno (affinity acima
+   * do teto) e um que não menciona nada conhecido sai exógeno.
+   */
+  const signals: AudienceSignals = {
+    ctrByCategory: new Map([["Treinamento", 6.0]]),
+    avgCtr: 0.01,
+    surveyTools: new Set(["chatgpt"]),
+    source: "ctr+survey",
+    loaded: true,
+  };
+
+  function assembledFixture(): AssembledOutput {
+    return {
+      highlights: [
+        { rank: 1, score: 95, url: "https://a", article: { url: "https://a", title: "Treinamento com ChatGPT" } },
+        { rank: 2, score: 90, url: "https://b", article: { url: "https://b", title: "Treinamento novo" } },
+        { rank: 3, score: 85, url: "https://c", article: { url: "https://c", title: "Treinamento de times" } },
+      ],
+      runners_up: [],
+      all_scored: [],
+    };
+  }
+
+  const exogenousFinalists: FinalistLike[] = [
+    {
+      url: "https://exogeno",
+      score: 80,
+      bucket: "noticias",
+      article: { url: "https://exogeno", title: "Anatel abre consulta sobre uso de IA" },
+    },
+  ];
+
+  function withTmpDir<T>(fn: (dir: string) => T): T {
+    const dir = mkdtempSync(resolve(tmpdir(), "assemble-exploration-"));
+    try {
+      return fn(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("marca exploracao:true no highlight e registra a decisão da semana", () => {
+    withTmpDir((dir) => {
+      const statePath = resolve(dir, "exploration-quota.json");
+      const out = applyExplorationQuotaBackstop(assembledFixture(), exogenousFinalists, "260919", {
+        signals,
+        statePath,
+        log: () => {},
+      });
+
+      assert.ok(out.exploracao_promoted, "esperava promoção de exploração");
+      assert.equal(out.exploracao_promoted!.promoted_url, "https://exogeno");
+      assert.equal(out.exploracao_promoted!.week, "2026-W38");
+      // O campo chega ao highlight — é ele que a Peça 3 mede.
+      const marked = out.highlights.filter((h) => h.exploracao === true);
+      assert.equal(marked.length, 1);
+      assert.equal(marked[0].article?.url, "https://exogeno");
+      // D1 intacto: a cota nunca derruba o melhor candidato do dia.
+      assert.equal(out.highlights[0].article?.url, "https://a");
+
+      const state = readExplorationState(statePath);
+      assert.equal(state.editions["260919"].exploracao, true);
+      assert.equal(state.editions["260919"].week, "2026-W38");
+    });
+  });
+
+  it("não estoura a cota: com a semana cheia, a edição sai sem exploração", () => {
+    withTmpDir((dir) => {
+      const statePath = resolve(dir, "exploration-quota.json");
+      let state = emptyExplorationState();
+      for (const edition of ["260914", "260915", "260916", "260917"]) {
+        state = recordExplorationDecision(state, edition, {
+          week: "2026-W38",
+          exploracao: true,
+          decided_at: "2026-09-17T00:00:00.000Z",
+        });
+      }
+      writeExplorationState(statePath, state);
+
+      const out = applyExplorationQuotaBackstop(assembledFixture(), exogenousFinalists, "260919", {
+        signals,
+        statePath,
+        log: () => {},
+      });
+
+      assert.equal(out.exploracao_promoted, undefined);
+      assert.equal(out.highlights.filter((h) => h.exploracao === true).length, 0);
+      // A edição é registrada como sem exploração — "medido e deu zero".
+      assert.equal(readExplorationState(statePath).editions["260919"].exploracao, false);
+    });
+  });
+
+  it("sem sinais de audiência (sem data/) não marca nem registra nada", () => {
+    withTmpDir((dir) => {
+      const statePath = resolve(dir, "exploration-quota.json");
+      const out = applyExplorationQuotaBackstop(assembledFixture(), exogenousFinalists, "260919", {
+        signals: { ctrByCategory: new Map(), avgCtr: 0, surveyTools: new Set(), source: "none", loaded: false },
+        statePath,
+        log: () => {},
+      });
+      assert.equal(out.exploracao_promoted, undefined);
+      assert.deepEqual(readExplorationState(statePath), emptyExplorationState());
+    });
+  });
+
+  it("edição inválida é pulada com aviso, sem tocar no estado", () => {
+    withTmpDir((dir) => {
+      const statePath = resolve(dir, "exploration-quota.json");
+      const logs: string[] = [];
+      const out = applyExplorationQuotaBackstop(assembledFixture(), exogenousFinalists, "nao-e-data", {
+        signals,
+        statePath,
+        log: (m) => logs.push(m),
+      });
+      assert.equal(out.exploracao_promoted, undefined);
+      assert.match(logs.join("\n"), /não é um AAMMDD válido/);
+      assert.deepEqual(readExplorationState(statePath), emptyExplorationState());
+    });
+  });
+
+  it("editionFromPath deriva o AAMMDD do --out, e devolve null fora da convenção", () => {
+    assert.equal(editionFromPath("data/editions/260919/_internal/tmp-scored.json"), "260919");
+    assert.equal(editionFromPath("/tmp/qualquer/tmp-scored.json"), null);
   });
 });

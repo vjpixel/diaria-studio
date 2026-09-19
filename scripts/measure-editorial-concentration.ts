@@ -6,8 +6,11 @@
  *
  * Invariante mensal: % big-tech/lab, % Brasil, % `exploracao` e CTR
  * exploração-vs-resto, medidos do acervo público (`workers/site/public/p/`
- * + `sitemap.xml`, ambos versionados — funciona sem `data/`). Método e
- * ressalvas completos: `scripts/lib/editorial-concentration.ts`.
+ * + `sitemap.xml`, ambos versionados — funciona sem `data/`). A coluna
+ * `% exploração` passou a ter fonte real com a Peça 2
+ * (`data/exploration-quota.json`, só disponível onde `data/` existe);
+ * `CTR exploração`/`CTR resto` seguem sem fonte. Método e ressalvas
+ * completos: `scripts/lib/editorial-concentration.ts`.
  *
  * Sem isso, a Peça 1 (#8366) e a Peça 2 (cota de exploração no scorer) da
  * #8370 viram loop novo — nenhuma das duas se justifica sem um número que
@@ -35,6 +38,11 @@ import {
   type MonthlyConcentrationRow,
   type PageSignal,
 } from "./lib/editorial-concentration.ts";
+import {
+  explorationFlagsBySlug,
+  readExplorationState,
+  EXPLORATION_STATE_RELATIVE_PATH,
+} from "./lib/exploration-quota.ts"; // #8370 Peça 2
 
 const ROOT = resolve(import.meta.dirname, "..");
 const PAGES_DIR = resolve(ROOT, "workers/site/public/p");
@@ -106,10 +114,14 @@ export async function main(): Promise<void> {
   const sitemapXml = readFileSync(SITEMAP_PATH, "utf8");
   const lastmodBySlug = new Map(parseSitemapEntries(sitemapXml).map((entry) => [entry.slug, entry.lastmod]));
 
-  // Peça 2 (campo `exploracao`) e CTR real não têm fonte hoje — degradação
-  // graciosa documentada em `editorial-concentration.ts`. Mapas vazios
-  // fazem `aggregateByMonth` já devolver `null` nas 3 colunas dependentes.
-  const rows = aggregateByMonth(pages, lastmodBySlug, new Map(), new Map());
+  // #8370 Peça 2: `data/exploration-quota.json` registra, por edição, se ela
+  // gastou um slot da cota semanal de exploração. `explorationFlagsBySlug`
+  // faz o join edição→slug pela data editorial do próprio sitemap. Sem
+  // `data/` (worktree, clone fresco) o estado sai vazio e a coluna volta a
+  // degradar pra `null`, como antes desta peça. CTR real segue sem fonte.
+  const explorationState = readExplorationState(resolve(ROOT, EXPLORATION_STATE_RELATIVE_PATH));
+  const exploracaoFlags = explorationFlagsBySlug(explorationState, lastmodBySlug);
+  const rows = aggregateByMonth(pages, lastmodBySlug, exploracaoFlags, new Map());
 
   if (flags.has("json")) {
     console.log(JSON.stringify(rows, null, 2));

@@ -1236,6 +1236,10 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
       internalPath(editionDir, "tmp-finalists.json"),
       "--out",
       scoredPath,
+      // #8370 Peça 2: a cota de exploração é SEMANAL — assemble-scored
+      // precisa do AAMMDD pra saber em que semana debitar o slot.
+      "--edition",
+      opts.edition,
     ]);
   } else {
     // fallback: scorer single-call já escreveu tmp-scored.json (mesmo path
