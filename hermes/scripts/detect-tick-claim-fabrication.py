@@ -216,7 +216,8 @@ _REF_LIST = re.compile(
 _LEADING_LIST = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?(?=#\d)")
 _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 _OTHERS_CLAIM = re.compile(
-    r"#(\d+)\b[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+"
+    r"(?P<refs>" + _REF_LIST.pattern + r")"
+    r"\s*reivindicad\w*\s+(?:por|pelo|pelas)\s+"
     r"(?:outr[oa]|outros|outras|overnight|terceir[oa])\b",
     re.IGNORECASE,
 )
@@ -404,7 +405,11 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
                 continue
             # Exclusões aplicadas SÓ ao número que as justificou (#8377).
             pr_ref_n = {int(n) for n in _PR_REF.findall(segment)}
-            others_n = {int(n) for n in _OTHERS_CLAIM.findall(segment)}
+            others_n = set()
+            for om in _OTHERS_CLAIM.finditer(segment):
+                refs_text = om.group("refs")
+                for n_s in _ISSUE_REF.findall(refs_text):
+                    others_n.add(int(n_s))
             covered_n = {int(n) for n in _COVERED_BY.findall(segment)}
             for lm in attached:
                 for n_s in _ISSUE_REF.findall(lm.group(0)):
