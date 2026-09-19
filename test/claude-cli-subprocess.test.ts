@@ -13,7 +13,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { callClaudeCli } from "../scripts/lib/claude-cli-subprocess.ts";
+import { callClaudeCli, ClaudeCliError } from "../scripts/lib/claude-cli-subprocess.ts";
 import { CLAUDE_CLI_STRIPPED_ENV_VARS } from "../scripts/overnight/run-scheduled-edicao.ts";
 
 function fakeExecFn(capturedEnvs: NodeJS.ProcessEnv[]) {
@@ -127,6 +127,49 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     const execFn = (() => "texto de resposta") as unknown as typeof import("node:child_process").execFileSync;
     const result = callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
     assert.equal(result, "texto de resposta");
+  });
+
+  it("(#8405) falha do subprocesso vira ClaudeCliError com status/stdout/stderr legíveis, NUNCA ecoando o prompt inteiro", () => {
+    const execFn = (() => {
+      const err = new Error("Command failed: /fake/claude --print ... <prompt 30000 chars>");
+      (err as { status?: number }).status = 1;
+      (err as { stdout?: string }).stdout = "stdout legível";
+      (err as { stderr?: string }).stderr = "stderr com a causa real: max_turns esgotado";
+      throw err;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    assert.throws(
+      () => callClaudeCli("X".repeat(30000), { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" }),
+      ClaudeCliError,
+    );
+    try {
+      callClaudeCli("X".repeat(30000), { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
+      assert.fail("devia lançar");
+    } catch (err) {
+      assert.ok(err instanceof ClaudeCliError, "deveria ser ClaudeCliError");
+      assert.equal(err.status, 1);
+      assert.equal(err.stdout, "stdout legível");
+      assert.equal(err.stderr, "stderr com a causa real: max_turns esgotado");
+      assert.ok(err.command.includes("/fake/claude"));
+      // #8405: a mensagem NUNCA ecoa o prompt inteiro — o argv é truncado.
+      assert.ok(!err.message.includes("X".repeat(30000)), "a mensagem não pode ecoar o prompt inteiro");
+      assert.ok(err.message.includes("<prompt 30000 chars>"), "o prompt é substituído por um resumo");
+    }
+  });
+
+  it("(#8405) ClaudeCliError preserva os campos mesmo quando o Error do execFileSync não os tiver", () => {
+    const execFn = (() => {
+      throw new Error("falha qualquer");
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    try {
+      callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
+      assert.fail("devia lançar");
+    } catch (err) {
+      assert.ok(err instanceof ClaudeCliError);
+      assert.equal(err.status, null);
+      assert.equal(err.stdout, "");
+      assert.equal(err.stderr, "");
+    }
   });
 
   it("(#8143) com outputFormat:'json', usa '--output-format json' em vez de 'text'", () => {
