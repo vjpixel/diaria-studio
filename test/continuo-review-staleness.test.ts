@@ -42,3 +42,36 @@ describe("#8445 — review de SHA antigo não é review da PR", () => {
     );
   });
 });
+
+import { consumeReReviewAttempt, MAX_RE_REVIEW_ATTEMPTS, STALE_EXIT_CODE } from "../scripts/lib/continuo-review-staleness.ts";
+
+describe("#8451 review — exit code e teto de re-review (custo)", () => {
+  it("stale NUNCA usa exit 1 — Node/tsx saem 1 em toda exceção, e um crash viraria review pago por tick", () => {
+    assert.notEqual(STALE_EXIT_CODE, 1);
+    assert.ok(![0, 2, 3].includes(STALE_EXIT_CODE), "não pode colidir com os outros códigos do CLI");
+  });
+
+  it("permite até o teto por PR+SHA e depois nega, sem alterar o estado", () => {
+    let state = {};
+    for (let i = 0; i < MAX_RE_REVIEW_ATTEMPTS; i++) {
+      const r = consumeReReviewAttempt(state, 8381, "abc");
+      assert.equal(r.allowed, true, `tentativa ${i + 1} deveria ser permitida`);
+      state = r.next;
+    }
+    const denied = consumeReReviewAttempt(state, 8381, "abc");
+    assert.equal(denied.allowed, false, "sessão que sai 0 sem postar marcador não pode gerar review infinito");
+    assert.deepEqual(denied.next, state);
+  });
+
+  it("o teto é por SHA: um push novo reabre a cota, e outra PR não consome a cota desta", () => {
+    let state = consumeReReviewAttempt({}, 8381, "abc").next;
+    state = consumeReReviewAttempt(state, 8381, "abc").next;
+    assert.equal(consumeReReviewAttempt(state, 8381, "abc").allowed, false);
+    assert.equal(consumeReReviewAttempt(state, 8381, "def").allowed, true, "SHA novo = review legítimo");
+    assert.equal(consumeReReviewAttempt(state, 8367, "abc").allowed, true, "outra PR");
+  });
+
+  it("estado corrompido (valor não inteiro) é tratado como zero, nunca lança", () => {
+    assert.equal(consumeReReviewAttempt({ "1@x": "lixo" as unknown as number }, 1, "x").allowed, true);
+  });
+});

@@ -47,3 +47,32 @@ export function evaluateReviewStaleness(input: {
   }
   return { verdict: "fresh", reason: "review cobre o HEAD atual" };
 }
+
+/**
+ * Exit code distintivo pra `stale`. NÃO pode ser 1: Node/tsx saem 1 em toda
+ * exceção não tratada, então um crash do CLI seria indistinguível de "stale"
+ * e dispararia review pago (Sonnet, até 1800s) a cada tick — o laço que o
+ * #8445 existe pra eliminar (achado do review da PR #8451).
+ */
+export const STALE_EXIT_CODE = 10;
+
+/** Teto de re-reviews por par PR+SHA: se a sessão sai 0 sem postar marcador
+ *  válido, o review antigo continua o mais recente e a PR seguiria `stale`
+ *  pra sempre. */
+export const MAX_RE_REVIEW_ATTEMPTS = 2;
+
+export type ReReviewAttempts = Record<string, number>;
+
+/** Decide se ainda cabe uma tentativa pra `pr@sha` e devolve o novo estado.
+ *  Puro: quem grava/lê o arquivo é o CLI. */
+export function consumeReReviewAttempt(
+  state: ReReviewAttempts,
+  pr: number,
+  sha: string,
+  max: number = MAX_RE_REVIEW_ATTEMPTS,
+): { allowed: boolean; next: ReReviewAttempts } {
+  const key = `${pr}@${sha}`;
+  const used = Number.isInteger(state[key]) ? state[key] : 0;
+  if (used >= max) return { allowed: false, next: state };
+  return { allowed: true, next: { ...state, [key]: used + 1 } };
+}

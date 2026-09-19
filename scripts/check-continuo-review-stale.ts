@@ -10,13 +10,22 @@
  * Uso: npx tsx scripts/check-continuo-review-stale.ts --pr 8381
  *
  * Saída: JSON `{pr, verdict, reason, currentHeadSha, reviewedHeadSha}`.
- * Exit: 0 = fresh ou unknown (manter o comportamento de sempre),
- *       1 = stale (re-revisar), 2 = uso inválido, 3 = gh falhou/payload ruim
- *       (o chamador trata como "não re-revisar": o portão decide sozinho).
+ * Exit: 0 = fresh, unknown ou stale-com-tentativas-esgotadas (manter o caminho de sempre),
+ *       10 = stale (re-revisar), 2 = uso inválido, 3 = gh falhou/payload ruim.
+ *       NUNCA 1 pra stale: exceção não tratada do Node sai 1 (review da PR #8451).
+ *       O chamador só re-revisa em 10; qualquer outro código mantém o caminho seguro.
+ *       Teto de MAX_RE_REVIEW_ATTEMPTS por PR+SHA (estado em --attempts-file).
  */
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { evaluateReviewStaleness } from "./lib/continuo-review-staleness.ts";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import {
+  consumeReReviewAttempt,
+  evaluateReviewStaleness,
+  STALE_EXIT_CODE,
+  type ReReviewAttempts,
+} from "./lib/continuo-review-staleness.ts";
 import { extractIndependentReviewHeadSha } from "./lib/pr-review-authenticity.ts";
 
 function main(): void {
@@ -44,8 +53,33 @@ function main(): void {
   const currentHeadSha = typeof payload.headRefOid === "string" ? payload.headRefOid : null;
   const reviewedHeadSha = extractIndependentReviewHeadSha(payload.comments);
   const result = evaluateReviewStaleness({ currentHeadSha, reviewedHeadSha });
-  console.log(JSON.stringify({ pr, ...result, currentHeadSha, reviewedHeadSha }));
-  process.exit(result.verdict === "stale" ? 1 : 0);
+  if (result.verdict !== "stale" || !currentHeadSha) {
+    console.log(JSON.stringify({ pr, ...result, currentHeadSha, reviewedHeadSha }));
+    process.exit(0);
+  }
+  // stale: só re-revisa se ainda há tentativa pra este PR+SHA, e só se conseguir
+  // GRAVAR o consumo — sem persistência não há teto, e sem teto o laço de custo volta.
+  const attemptsFile = resolve(values["attempts-file"] ?? "data/continuo/re-review-attempts.json");
+  let state: ReReviewAttempts = {};
+  try {
+    if (existsSync(attemptsFile)) state = JSON.parse(readFileSync(attemptsFile, "utf8")) as ReReviewAttempts;
+  } catch {
+    state = {};
+  }
+  const { allowed, next } = consumeReReviewAttempt(state, pr, currentHeadSha);
+  let persisted = false;
+  if (allowed) {
+    try {
+      mkdirSync(dirname(attemptsFile), { recursive: true });
+      writeFileSync(attemptsFile, JSON.stringify(next));
+      persisted = true;
+    } catch {
+      persisted = false;
+    }
+  }
+  const reReview = allowed && persisted;
+  console.log(JSON.stringify({ pr, ...result, reReview, currentHeadSha, reviewedHeadSha, ...(allowed ? {} : { reason: result.reason + " — tentativas esgotadas pra este SHA, mantendo caminho seguro" }) }));
+  process.exit(reReview ? STALE_EXIT_CODE : 0);
 }
 
 if (isMainModule(import.meta.url)) main();

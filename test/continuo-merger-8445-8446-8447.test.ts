@@ -30,7 +30,9 @@ describe("#8445 — PR com review de SHA antigo é re-revisada, não empurrada p
   });
 
   it("stale (exit 1) rebaixa AUTH_RC pra 1 (cai no caminho de review real); qualquer outro rc mantém o atalho", () => {
-    assert.match(review, /if \[ "\$STALE_RC" -eq 1 \]; then[\s\S]{0,300}AUTH_RC=1/);
+    // 10, nunca 1: o Node sai 1 em qualquer exceção não tratada (review da PR #8451)
+    assert.match(review, /if \[ "\$STALE_RC" -eq 10 \]; then[\s\S]{0,500}AUTH_RC=1/);
+    assert.doesNotMatch(review, /"\$STALE_RC" -eq 1 \]/, "reagir a exit 1 confunde crash do checker com stale");
     // o atalho vive no `else` — fresh/unknown/infra não re-revisam (sem laço de custo)
     assert.match(review, /AUTH_RC=1\s*\n\s*else[\s\S]{0,700}try_merge_gate "\$PR"\s*\n\s*continue/);
   });

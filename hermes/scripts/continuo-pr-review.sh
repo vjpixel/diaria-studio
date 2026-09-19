@@ -681,7 +681,10 @@ for PR in $PR_NUMBERS; do
     npx tsx scripts/check-continuo-review-stale.ts --pr "$PR" >/dev/null 2>&1
     STALE_RC=$?
     set -e
-    if [ "$STALE_RC" -eq 1 ]; then
+    # 10 (STALE_EXIT_CODE), nunca 1: Node/tsx saem 1 em qualquer exceção não tratada,
+    # e um crash do checker não pode virar review pago a cada tick (review da PR #8451).
+    # O próprio checker limita a 2 re-reviews por PR+SHA (data/continuo/re-review-attempts.json).
+    if [ "$STALE_RC" -eq 10 ]; then
       echo "[continuo-pr-review] PR #$PR: review cobre um SHA anterior ao HEAD atual — re-revisando (#8445)"
       AUTH_RC=1
     else
@@ -826,7 +829,7 @@ echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escalad
 # porque este stdout é o que o Telegram entrega: "escalei de novo, ninguém
 # decidiu" precisa ser distinguível de "escalei agora".
 if [ "$ESCALATED_RECURRING" -gt 0 ]; then
-  echo "[continuo-pr-review] ATENÇÃO: $ESCALATED_RECURRING PR(s) escalada(s) REINCIDENTE(S), sem decisão desde a 1ª escalada:$ESCALATED_RECURRING_PRS — nada mergeia sozinho até alguém decidir"
+  echo "[continuo-pr-review] ATENÇÃO: $ESCALATED_RECURRING PR(s) escalada(s) REINCIDENTE(S), ainda sem merge desde a 1ª escalada:$ESCALATED_RECURRING_PRS — o motivo está no JSON do gate (stderr do tick); pode ser decisão pendente OU condição transitória (CI/mergeable)"
 fi
 # #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
 # infra — a linha de resumo é o que o Telegram carrega; sem isso
