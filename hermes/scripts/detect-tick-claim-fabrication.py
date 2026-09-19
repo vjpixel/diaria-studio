@@ -377,12 +377,22 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
             if lists:
                 lead = _LEADING_LIST.match(segment)
                 for kw in kws:
-                    if lead and lists[0].start() == lead.end() and (
-                        kw.start() - lists[0].end() <= _LEADING_MAX_GAP
-                    ):
-                        attached.append(lists[0])
                     before = [l for l in lists if l.end() <= kw.start()]
                     after = [l for l in lists if l.start() >= kw.end()]
+                    # Leading-list só se aplica quando é a MESMA lista que o
+                    # heurístico de distância (abaixo) já escolheria — nunca
+                    # uma lista DIFERENTE só porque abre a linha. #8463:
+                    # "#8355 ficou bloqueada porque #8354 foi reivindicada
+                    # pelo Overnight" tem #8355 abrindo a linha, mas quem
+                    # "reivindicada" de fato reclama é #8354 (mais perto,
+                    # já excluído por `_OTHERS_CLAIM` abaixo) — sem esta
+                    # checagem, #8355 entrava como claim próprio fabricado
+                    # só por ser a 1ª lista da linha, mesmo não sendo a que
+                    # o keyword se refere.
+                    if lead and lists[0].start() == lead.end() and (
+                        kw.start() - lists[0].end() <= _LEADING_MAX_GAP
+                    ) and (not before or before[-1] is lists[0]):
+                        attached.append(lists[0])
                     cand = []
                     db = kw.start() - before[-1].end() if before else None
                     da = after[0].start() - kw.end() if after else None
