@@ -24,7 +24,7 @@ import {
   compareTitleWithReport,
   isTitleOk,
 } from "../scripts/lib/overnight-report-counts.ts";
-import { registerReport } from "../scripts/studio-ui/studio-reports.ts";
+import { registerReport, type ReportNotifyDeps } from "../scripts/studio-ui/studio-reports.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -426,7 +426,7 @@ describe("título sem contagem conferível é reprovado (#5521)", () => {
 // #5521: 1 e-mail por rodada + --no-email
 // ---------------------------------------------------------------------------
 
-describe("registerReport: e-mail único por rodada (#5521)", () => {
+describe("registerReport: notificação única por rodada (#5521, canal migrado pro notifyEditor em #7960)", () => {
   let tmpRoot: string;
 
   const input = (title: string) => ({
@@ -436,12 +436,10 @@ describe("registerReport: e-mail único por rodada (#5521)", () => {
     htmlPath: "data/overnight/260817/report.md",
   });
 
-  /** Deps injetadas: nunca tocam rede nem credencial real. */
-  const deps = {
-    hasCredentials: () => true,
-    resolveEditorEmail: () => "editor@exemplo.test",
-    sendMail: async () => ({ ok: true }),
-  } as unknown as Parameters<typeof registerReport>[2];
+  /** Deps injetadas: nunca tocam `data/run-log.jsonl` real nem `gh`. */
+  const deps: ReportNotifyDeps = {
+    notify: async (finding) => ({ severity: finding.severity, emailPolicy: "urgent_only", emailSent: false }),
+  };
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), "reg-notify-"));
@@ -456,69 +454,71 @@ describe("registerReport: e-mail único por rodada (#5521)", () => {
   // si (não a política de default), então passam `true` explícito, mesmo
   // padrão adotado em `test/studio-reports.test.ts`.
 
-  it("REGRESSÃO: re-registro da MESMA rodada não manda e-mail de novo", async () => {
+  it("REGRESSÃO: re-registro da MESMA rodada não notifica de novo", async () => {
     // A rodada 260816e mandou 4 e-mails, todos se apresentando como definitivos;
     // a 260816 mandou o mesmo assunto 2x em 80s. Como o registro é upsert e a
-    // URL deriva do id, o link do 1º e-mail já aponta pra versão atual.
+    // URL deriva do id, o link da 1ª notificação já aponta pra versão atual.
     const first = registerReport(tmpRoot, input("overnight 260817 — 1 unidades, 1 issues"), deps, true);
     assert.equal(first.ok, true);
-    assert.deepEqual(await first.emailDispatch, { sent: true });
+    assert.deepEqual(await first.notifyDispatch, { notified: true });
 
     const second = registerReport(tmpRoot, input("overnight 260817 — 4 unidades, 6 issues"), deps, true);
     assert.equal(second.ok, true, "o registro em si tem que ser atualizado");
-    assert.deepEqual(await second.emailDispatch, { sent: false, skipped: "already-notified" });
+    assert.deepEqual(await second.notifyDispatch, { notified: false, skipped: "already-notified" });
   });
 
   it("REGRESSÃO: registro com notify:false NÃO consome a notificação (Stage 6)", async () => {
     // O Stage 6 registra o MESMO `edicao-{AAMMDD}` 2×: 6b-6 com notify:false
     // (HTML descartável, só pra fechar o invariante do stage) e 6b-8 com
     // `notify:true` explícito — é a 2ª que manda o relatório diário pro
-    // editor. Dedup por "já existe entrada" engolia justamente esse e-mail.
+    // editor. Dedup por "já existe entrada" engolia justamente essa notificação.
     const primeira = registerReport(tmpRoot, input("descartável — 1 unidades"), deps, false);
-    assert.deepEqual(await primeira.emailDispatch, { sent: false, skipped: "notify-disabled" });
+    assert.deepEqual(await primeira.notifyDispatch, { notified: false, skipped: "notify-disabled" });
 
     const segunda = registerReport(tmpRoot, input("final — 1 unidades"), deps, true);
     assert.deepEqual(
-      await segunda.emailDispatch,
-      { sent: true },
+      await segunda.notifyDispatch,
+      { notified: true },
       "a chamada final do Stage 6 TEM que notificar",
     );
   });
 
-  it("REGRESSÃO: envio que FALHA não queima a notificação — o retry tenta de novo", async () => {
+  it("REGRESSÃO: notifyEditor que FALHA não queima a notificação — o retry tenta de novo", async () => {
     // `notified` é gravado antes do disparo (que é assíncrono). Sem desfazer
-    // em caso de falha, uma queda de rede marcaria a rodada como notificada
-    // para sempre e o e-mail sumiria em silêncio.
-    const semCredencial = {
-      hasCredentials: () => false,
-      resolveEditorEmail: () => "editor@exemplo.test",
-      sendMail: async () => ({ ok: true }),
-    } as unknown as Parameters<typeof registerReport>[2];
+    // em caso de falha, uma falha pontual marcaria a rodada como notificada
+    // para sempre e a notificação sumiria em silêncio.
+    const notifyFalha: ReportNotifyDeps = {
+      notify: async () => {
+        throw new Error("falha simulada em notifyEditor");
+      },
+    };
 
-    const falhou = registerReport(tmpRoot, input("tentativa 1 — 1 unidades"), semCredencial, true);
-    assert.deepEqual(await falhou.emailDispatch, { sent: false, skipped: "no-credentials" });
+    const falhou = registerReport(tmpRoot, input("tentativa 1 — 1 unidades"), notifyFalha, true);
+    const resultadoFalha = await falhou.notifyDispatch;
+    assert.equal(resultadoFalha.notified, false);
+    assert.match("error" in resultadoFalha ? resultadoFalha.error : "", /falha simulada/);
 
     const retry = registerReport(tmpRoot, input("tentativa 2 — 1 unidades"), deps, true);
     assert.deepEqual(
-      await retry.emailDispatch,
-      { sent: true },
-      "com credencial de volta, o retry TEM que enviar",
+      await retry.notifyDispatch,
+      { notified: true },
+      "com notifyEditor funcionando de novo, o retry TEM que notificar",
     );
   });
 
-  it("rodada DIFERENTE continua mandando e-mail", async () => {
-    await registerReport(tmpRoot, input("a — 1 unidades"), deps, true).emailDispatch;
+  it("rodada DIFERENTE continua notificando", async () => {
+    await registerReport(tmpRoot, input("a — 1 unidades"), deps, true).notifyDispatch;
     const outra = registerReport(
       tmpRoot,
       { ...input("b — 1 unidades"), sessionId: "260818" },
       deps,
       true,
     );
-    assert.deepEqual(await outra.emailDispatch, { sent: true });
+    assert.deepEqual(await outra.notifyDispatch, { notified: true });
   });
 
-  it("notify:false (o --no-email do CLI) nunca manda", async () => {
+  it("notify:false (o --no-email do CLI) nunca notifica", async () => {
     const r = registerReport(tmpRoot, input("x — 1 unidades"), deps, false);
-    assert.deepEqual(await r.emailDispatch, { sent: false, skipped: "notify-disabled" });
+    assert.deepEqual(await r.notifyDispatch, { notified: false, skipped: "notify-disabled" });
   });
 });

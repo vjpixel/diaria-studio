@@ -10,27 +10,22 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   registerReport,
+  dispatchReportNotify,
   listReports,
   getReportById,
   resolveReportHtml,
   renderMarkdownToHtml,
-  buildReportEmail,
-  dispatchReportEmail,
-  defaultHasCredentials,
   reportId,
   isReportKind,
   pruneReportsRegistry,
-  truncateReportBody,
-  REPORT_EMAIL_BODY_MAX_CHARS,
   type ReportEntry,
-  type ReportEmailDeps,
+  type ReportNotifyDeps,
 } from "../scripts/studio-ui/studio-reports.ts";
-import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4478 achado 1
 
 let root: string | null = null;
 
@@ -420,30 +415,39 @@ describe("pruneReportsRegistry (#4666 — limpeza de duplicatas legadas)", () =>
   });
 });
 
-describe("registerReport — e-mail de notificação (#4475)", () => {
+describe("registerReport — notificação ao editor via notifyEditor (#7960, item 5 da #7957)", () => {
   interface MockCall {
-    to: string;
+    check: string;
+    fingerprint: string;
+    severity: string;
     subject: string;
     body: string;
   }
 
-  function mockDeps(overrides: Partial<ReportEmailDeps> = {}): { deps: ReportEmailDeps; calls: MockCall[] } {
+  /** Mock de `ReportNotifyDeps.notify` — mesmo padrão dos mocks de
+   * `notify: typeof notifyEditor` usados em `test/ads-daily-digest-main.test.ts`
+   * e afins: nunca toca `data/run-log.jsonl` real nem `gh`. */
+  function mockNotifyDeps(overrides: Partial<ReportNotifyDeps> = {}): { deps: ReportNotifyDeps; calls: MockCall[] } {
     const calls: MockCall[] = [];
-    const deps: ReportEmailDeps = {
-      sendMail: async (to, subject, body) => {
-        calls.push({ to, subject, body });
-        return { id: "msg-1", threadId: "thread-1" };
+    const deps: ReportNotifyDeps = {
+      notify: async (finding) => {
+        calls.push({
+          check: finding.check,
+          fingerprint: finding.fingerprint,
+          severity: finding.severity,
+          subject: finding.subject,
+          body: finding.body,
+        });
+        return { severity: finding.severity, emailPolicy: "urgent_only", emailSent: false };
       },
-      resolveEditorEmail: () => "vjpixel@gmail.com",
-      hasCredentials: () => true,
       ...overrides,
     };
     return { deps, calls };
   }
 
-  it("com credencial disponível -> chama sendMail com subject/body corretos (título + link)", async () => {
+  it("notify:true -> chama notifyEditor com severity 'info', subject/body corretos (título + link)", async () => {
     const r = makeRoot();
-    const { deps, calls } = mockDeps();
+    const { deps, calls } = mockNotifyDeps();
     const result = registerReport(
       r,
       {
@@ -453,28 +457,28 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
         htmlPath: "data/overnight/260720/report.md",
       },
       deps,
-      true, // #7960: notify explícito — default virou false, este teste exercita o mecanismo de envio em si
+      true, // #7960: notify explícito — default virou false, este teste exercita o mecanismo de notificação em si
     );
 
-    const dispatch = await result.emailDispatch;
-    assert.equal(dispatch.sent, true);
+    const dispatch = await result.notifyDispatch;
+    assert.equal(dispatch.notified, true);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].to, "vjpixel@gmail.com");
+    assert.equal(calls[0].severity, "info");
+    assert.equal(calls[0].check, "studio-report");
+    assert.equal(calls[0].fingerprint, "overnight-260720");
     assert.match(calls[0].subject, /diar\.ia\.br overnight 260720 — 5 resolvidas, 2 puladas/);
     assert.match(calls[0].body, /diar\.ia\.br overnight 260720 — 5 resolvidas, 2 puladas/);
     assert.match(calls[0].body, /\/relatorios\/overnight-260720/);
   });
 
-  it("falha simulada no envio (rede/token) não impede a escrita em index.jsonl", async () => {
+  it("falha simulada em notifyEditor não impede a escrita em index.jsonl", async () => {
     const r = makeRoot();
     let attempts = 0;
-    const deps: ReportEmailDeps = {
-      sendMail: async () => {
+    const deps: ReportNotifyDeps = {
+      notify: async () => {
         attempts++;
-        throw new Error("Gmail API users.messages.send falhou (401): token expirado");
+        throw new Error("logEvent falhou (simulado)");
       },
-      resolveEditorEmail: () => "vjpixel@gmail.com",
-      hasCredentials: () => true,
     };
 
     const result = registerReport(
@@ -484,14 +488,14 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
       true, // #7960: notify explícito — default virou false
     );
 
-    // O registro em si (append no index.jsonl) já aconteceu ANTES do envio
-    // ser tentado — nunca reflete falha de e-mail.
+    // O registro em si (append no index.jsonl) já aconteceu ANTES da
+    // notificação ser tentada — nunca reflete falha de notificação.
     assert.equal(result.ok, true);
     assert.equal(result.entry?.id, "develop-260802");
 
-    const dispatch = await result.emailDispatch;
-    assert.equal(dispatch.sent, false);
-    assert.match(dispatch.error ?? "", /token expirado/);
+    const dispatch = await result.notifyDispatch;
+    assert.equal(dispatch.notified, false);
+    assert.match("error" in dispatch ? dispatch.error : "", /logEvent falhou/);
     assert.equal(attempts, 1); // tentativa de fato ocorreu
 
     const reports = listReports(r);
@@ -499,52 +503,37 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     assert.equal(reports[0].id, "develop-260802");
   });
 
-  it("ausência de credencial (sessão cloud) -> sem tentativa de envio, sem erro", async () => {
+  it("notifyDeps default (sem override) -> grava um evento 'info' de verdade em data/run-log.jsonl", async () => {
+    // Diferente do antigo canal Gmail (que precisava de credencial OAuth e
+    // podia bater na rede real), o default de produção (`notifyEditor` real)
+    // só escreve em disco — seguro de exercitar sem mock num rootDir de
+    // teste isolado (nunca o repo real).
     const r = makeRoot();
-    const { deps, calls } = mockDeps({ hasCredentials: () => false });
-
     const result = registerReport(
       r,
       { kind: "edicao", sessionId: "260802", title: "Edição 260802", htmlPath: "x.html" },
-      deps,
-      true, // #7960: notify explícito — este teste exercita a ausência de credencial, não o default
-    );
-
-    assert.equal(result.ok, true); // registro não depende de credencial de e-mail
-    const dispatch = await result.emailDispatch;
-    assert.equal(dispatch.sent, false);
-    assert.equal(dispatch.skipped, "no-credentials");
-    assert.equal(dispatch.error, undefined);
-    assert.equal(calls.length, 0); // sendMail nunca chamado
-  });
-
-  it("emailDeps default (sem override): rootDir de teste sem data/.credentials.json -> pula silenciosamente, mesmo padrão de sessão cloud", async () => {
-    const r = makeRoot();
-    const result = registerReport(
-      r,
-      {
-        kind: "edicao",
-        sessionId: "260802",
-        title: "Edição 260802",
-        htmlPath: "x.html",
-      },
       undefined,
-      true, // #7960: notify explícito — este teste exercita defaultHasCredentials, não o default de notify
+      true, // #7960: notify explícito — este teste exercita o default de produção, não o default de notify
     );
 
     assert.equal(result.ok, true);
-    const dispatch = await result.emailDispatch;
-    assert.equal(dispatch.sent, false);
-    assert.equal(dispatch.skipped, "no-credentials");
+    const dispatch = await result.notifyDispatch;
+    assert.equal(dispatch.notified, true);
+
+    const logPath = join(r, "data", "run-log.jsonl");
+    assert.ok(existsSync(logPath), "notifyEditor(severity: info) tem que gravar em data/run-log.jsonl");
+    const lines = readFileSync(logPath, "utf8").trim().split("\n");
+    const event = JSON.parse(lines[lines.length - 1]) as { level: string; message: string };
+    assert.equal(event.level, "info");
+    assert.equal(event.message, "Edição 260802");
   });
 
-
-  it("registro falha (mkdir impossível) -> emailDispatch resolve sem tentar enviar", async () => {
+  it("registro falha (mkdir impossível) -> notifyDispatch resolve sem tentar notificar", async () => {
     const r = makeRoot();
     // Mesmo truque do teste de fail-soft acima (linha ~175): arquivo no lugar
     // do diretório `data` força mkdirSync a falhar.
     writeFileSync(join(r, "data"), "não é um diretório");
-    const { deps, calls } = mockDeps();
+    const { deps, calls } = mockNotifyDeps();
 
     const result = registerReport(
       r,
@@ -553,21 +542,15 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     );
 
     assert.equal(result.ok, false);
-    const dispatch = await result.emailDispatch;
-    assert.equal(dispatch.sent, false);
-    assert.equal(dispatch.skipped, "register-failed");
+    const dispatch = await result.notifyDispatch;
+    assert.equal(dispatch.notified, false);
+    assert.equal("skipped" in dispatch ? dispatch.skipped : undefined, "register-failed");
     assert.equal(calls.length, 0);
   });
 
-  it("#4478: notify=false -> registra normalmente mas NUNCA chama sendMail (nem hasCredentials)", async () => {
+  it("#4478: notify=false -> registra normalmente mas NUNCA chama notifyEditor", async () => {
     const r = makeRoot();
-    const hasCredCalls: string[] = [];
-    const { deps, calls } = mockDeps({
-      hasCredentials: (rootDir) => {
-        hasCredCalls.push(rootDir);
-        return true;
-      },
-    });
+    const { deps, calls } = mockNotifyDeps();
 
     const result = registerReport(
       r,
@@ -580,16 +563,15 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     assert.equal(result.entry?.id, "edicao-260802");
     assert.equal(listReports(r).length, 1);
 
-    const dispatch = await result.emailDispatch;
-    assert.equal(dispatch.sent, false);
-    assert.equal(dispatch.skipped, "notify-disabled");
-    assert.equal(calls.length, 0); // sendMail nunca chamado
-    assert.equal(hasCredCalls.length, 0); // dispatchReportEmail nem chegou a rodar
+    const dispatch = await result.notifyDispatch;
+    assert.equal(dispatch.notified, false);
+    assert.equal("skipped" in dispatch ? dispatch.skipped : undefined, "notify-disabled");
+    assert.equal(calls.length, 0); // notifyEditor nunca chamado
   });
 
-  it("#4478/#7960: notify=true explícito -> chama sendMail normalmente (mecanismo continua disponível pra quem pedir)", async () => {
+  it("#4478/#7960: notify=true explícito -> chama notifyEditor normalmente (mecanismo continua disponível pra quem pedir)", async () => {
     const r = makeRoot();
-    const { deps, calls } = mockDeps();
+    const { deps, calls } = mockNotifyDeps();
 
     const result = registerReport(
       r,
@@ -598,12 +580,12 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
       true, // notify explícito
     );
 
-    const dispatch = await result.emailDispatch;
-    assert.equal(dispatch.sent, true);
+    const dispatch = await result.notifyDispatch;
+    assert.equal(dispatch.notified, true);
     assert.equal(calls.length, 1);
   });
 
-  it("#7960 (item 4 da #7957): sem passar notify -> NÃO manda mais e-mail (default virou false)", async () => {
+  it("#7960 (item 4 da #7957): sem passar notify -> NÃO notifica mais (default virou false)", async () => {
     // Antes do #7957/#7960, omitir `notify` preservava o comportamento
     // pré-existente (#4475: default `true`, dispara e-mail sempre). A
     // tabela de severidade do editor (#7957, 10/09/2026) classifica TODO
@@ -612,7 +594,7 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     // passava `notify` explicitamente) precise de mudança pra parar de
     // notificar.
     const r = makeRoot();
-    const { deps, calls } = mockDeps();
+    const { deps, calls } = mockNotifyDeps();
 
     const result = registerReport(
       r,
@@ -622,86 +604,34 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     );
 
     assert.equal(result.ok, true); // o registro em si continua acontecendo
-    const dispatch = await result.emailDispatch;
-    assert.equal(dispatch.sent, false);
-    assert.equal(dispatch.skipped, "notify-disabled");
-    assert.equal(calls.length, 0); // sendMail nunca chamado
+    const dispatch = await result.notifyDispatch;
+    assert.equal(dispatch.notified, false);
+    assert.equal("skipped" in dispatch ? dispatch.skipped : undefined, "notify-disabled");
+    assert.equal(calls.length, 0); // notifyEditor nunca chamado
+  });
+
+  it("REGRESSÃO (#633/#7960): registerReport nunca para de notificar em silêncio quando notify:true", async () => {
+    // Guarda contra a classe de regressão que a própria migração deste
+    // arquivo poderia introduzir: se um refactor futuro removesse a chamada
+    // a `dispatchReportNotify`/`deps.notify` por engano (ex: ao "limpar" o
+    // caminho de sucesso), nenhum outro teste desta suíte perceberia — o
+    // registro em `index.jsonl` continuaria acontecendo normalmente, e o
+    // editor perderia a última via de visibilidade que sobrou depois da
+    // remoção do canal de e-mail (run-log/`/diaria-log`).
+    const r = makeRoot();
+    const { deps, calls } = mockNotifyDeps();
+    await registerReport(
+      r,
+      { kind: "cac", sessionId: "2026-09-19", title: "Custo por leitor — snapshot 2026-09-19", htmlPath: "x.md" },
+      deps,
+      true,
+    ).notifyDispatch;
+    assert.equal(calls.length, 1, "notifyEditor tem que ser chamado quando notify:true");
+    assert.equal(calls[0].severity, "info");
   });
 });
 
-describe("defaultHasCredentials (#4478 achado 1, CRÍTICO — fleet review #4383)", () => {
-  // Testado DIRETO (função pura, sem passar por dispatchReportEmail/
-  // registerReport) — evita qualquer risco de acionar defaultEmailDeps.sendMail
-  // de verdade (que faria uma chamada de rede real à Gmail API se
-  // hasCredentials retornasse true com os deps default).
-  function withOverride(path: string | undefined, fn: () => void): void {
-    const prev = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
-    if (path === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
-    else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = path;
-    try {
-      fn();
-    } finally {
-      if (prev === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
-      else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prev;
-    }
-  }
-
-  it("sem override -> reflete existsSync(rootDir/data/.credentials.json) (ausente numa raiz de teste fresca)", () => {
-    const r = makeRoot();
-    withOverride(undefined, () => {
-      assert.equal(defaultHasCredentials(r), false);
-    });
-  });
-
-  it("com DIARIA_TEST_CREDENTIALS_PATH apontando pra um path que EXISTE -> true, independente do rootDir passado", () => {
-    const r = makeRoot();
-    const overrideDir = mkdtempSync(join(tmpdir(), "studio-reports-creds-override-"));
-    const overridePath = join(overrideDir, "fake-override-creds.json");
-    writeFileSync(overridePath, JSON.stringify({ fake: true }), "utf8");
-    try {
-      withOverride(overridePath, () => {
-        assert.equal(defaultHasCredentials(r), true);
-      });
-    } finally {
-      rmSync(overrideDir, { recursive: true, force: true });
-    }
-  });
-
-  it("com DIARIA_TEST_CREDENTIALS_PATH apontando pra um path que NÃO existe -> false — o override VETA a checagem, nunca cai de volta pro rootDir/data/.credentials.json real (cenário do bug: send-edition-report.ts passa o ROOT real do repo, não o rootDir fake de teste)", () => {
-    const r = makeRoot();
-    withOverride(join(r, "nonexistent-override.json"), () => {
-      assert.equal(defaultHasCredentials(r), false);
-    });
-  });
-});
-
-describe("buildReportEmail — prefixo [diar.ia.br] não duplica a marca (#4478, grafia #4424)", () => {
-  function mkEntry(overrides: Partial<ReportEntry> = {}): ReportEntry {
-    return {
-      id: "edicao-260802",
-      kind: "edicao",
-      sessionId: "260802",
-      title: "diar.ia.br — relatório de edição 260802",
-      htmlPath: "x.html",
-      createdAt: new Date().toISOString(),
-      url: "/relatorios/edicao-260802",
-      ...overrides,
-    };
-  }
-
-  it("título já começa com 'diar.ia.br' -> subject usa o título cru, sem prefixo duplicado", () => {
-    const { subject } = buildReportEmail(makeRoot(), mkEntry());
-    assert.equal(subject, "diar.ia.br — relatório de edição 260802");
-    assert.ok(!subject.startsWith("[diar.ia.br] diar.ia.br"));
-  });
-
-  it("título NÃO começa com 'diar.ia.br' -> prefixo [diar.ia.br] continua sendo adicionado", () => {
-    const { subject } = buildReportEmail(makeRoot(), mkEntry({ title: "Relatório sem prefixo" }));
-    assert.equal(subject, "[diar.ia.br] Relatório sem prefixo");
-  });
-});
-
-describe("buildReportEmail / dispatchReportEmail (#4475, corpo completo desde #4708)", () => {
+describe("dispatchReportNotify (#7960 — corpo leve: título + link, sem conteúdo completo do relatório)", () => {
   function mkEntry(overrides: Partial<ReportEntry> = {}): ReportEntry {
     return {
       id: "overnight-260720",
@@ -715,132 +645,52 @@ describe("buildReportEmail / dispatchReportEmail (#4475, corpo completo desde #4
     };
   }
 
-  it("buildReportEmail: subject e body carregam o título do relatório + URL (arquivo ausente -> fallback gracioso, nunca lança)", () => {
-    const { subject, body } = buildReportEmail(makeRoot(), mkEntry());
-    assert.match(subject, /diar\.ia\.br overnight 260720 — 5 resolvidas/);
-    assert.match(body, /diar\.ia\.br overnight 260720 — 5 resolvidas/);
-    assert.match(body, /\/relatorios\/overnight-260720/);
+  it("chamado direto (fora de registerReport) também respeita deps.notify injetado", async () => {
+    const calls: Array<{ subject: string }> = [];
+    const deps: ReportNotifyDeps = {
+      notify: async (finding) => {
+        calls.push({ subject: finding.subject });
+        return { severity: "info", emailPolicy: "urgent_only", emailSent: false };
+      },
+    };
+    const result = await dispatchReportNotify(makeRoot(), mkEntry(), deps);
+    assert.equal(result.notified, true);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].subject, /diar\.ia\.br overnight 260720/);
   });
 
-  it("buildReportEmail respeita STUDIO_REMOTE_URL quando definida (link acessível fora da rede local)", () => {
+  it("respeita STUDIO_REMOTE_URL quando definida (link acessível fora da rede local)", async () => {
     const prevRemote = process.env.STUDIO_REMOTE_URL;
     process.env.STUDIO_REMOTE_URL = "https://studio.diar.ia.br";
+    const calls: Array<{ body: string }> = [];
     try {
-      const { body } = buildReportEmail(
+      const deps: ReportNotifyDeps = {
+        notify: async (finding) => {
+          calls.push({ body: finding.body });
+          return { severity: "info", emailPolicy: "urgent_only", emailSent: false };
+        },
+      };
+      await dispatchReportNotify(
         makeRoot(),
         mkEntry({ id: "edicao-260802", url: "/relatorios/edicao-260802" }),
+        deps,
       );
-      assert.match(body, /https:\/\/studio\.diar\.ia\.br\/relatorios\/edicao-260802/);
+      assert.match(calls[0].body, /https:\/\/studio\.diar\.ia\.br\/relatorios\/edicao-260802/);
     } finally {
       if (prevRemote === undefined) delete process.env.STUDIO_REMOTE_URL;
       else process.env.STUDIO_REMOTE_URL = prevRemote;
     }
   });
 
-  it("#4708: relatório markdown REAL -> o conteúdo (não só título+link) aparece no corpo do e-mail", () => {
-    const r = makeRoot();
-    mkdirSync(join(r, "data", "overnight", "260720"), { recursive: true });
-    writeFileSync(
-      join(r, "data", "overnight", "260720", "report.md"),
-      "# Overnight 260720\n\n**Resolvidas:** 5\n\n- issue #1234 — fix X\n- issue #1235 — fix Y\n",
-    );
-    const { body } = buildReportEmail(r, mkEntry());
-    // conteúdo de verdade (não só título+link, o comportamento pré-#4708).
-    assert.match(body, /Resolvidas:\s*5/);
-    assert.match(body, /issue #1234 — fix X/);
-    assert.match(body, /issue #1235 — fix Y/);
-    // link continua presente (pedido explícito da issue: "ter os dois é útil").
-    assert.match(body, /Ver no Studio:.*\/relatorios\/overnight-260720/);
-    // sem truncamento aqui — não deve aparecer o marcador de truncado.
-    assert.ok(!body.includes("relatório truncado"));
-  });
-
-  it("#4708: relatório HTML (edicao) REAL -> conteúdo aparece, <style>/<script> nunca vazam como texto cru", () => {
-    const r = makeRoot();
-    mkdirSync(join(r, "data", "editions", "260802", "_internal"), { recursive: true });
-    writeFileSync(
-      join(r, "data", "editions", "260802", "_internal", "edition-report.html"),
-      `<!doctype html><html><head><style>body { color: #2563eb; font-family: sans-serif; }</style>` +
-        `<script>window.alert('nunca deveria vazar isto');</script></head>` +
-        `<body><h1>diar.ia.br — Report edicao 260802</h1><p>Newsletter publicada com sucesso.</p></body></html>`,
-    );
-    const entry = mkEntry({
-      id: "edicao-260802",
-      kind: "edicao",
-      sessionId: "260802",
-      title: "diar.ia.br — relatório de edição 260802",
-      htmlPath: "data/editions/260802/_internal/edition-report.html",
-      url: "/relatorios/edicao-260802",
-    });
-    const { body } = buildReportEmail(r, entry);
-    assert.match(body, /Newsletter publicada com sucesso/);
-    assert.match(body, /Report edicao 260802/);
-    // CSS/JS crus nunca vazam pro corpo do e-mail (htmlReportToPlainText remove <style>/<script> inteiros).
-    assert.ok(!body.includes("color: #2563eb"));
-    assert.ok(!body.includes("window.alert"));
-    assert.ok(!body.includes("nunca deveria vazar isto"));
-  });
-
-  it("#4708: conteúdo maior que REPORT_EMAIL_BODY_MAX_CHARS -> truncamento EXPLÍCITO no corpo, nunca silencioso", () => {
-    const r = makeRoot();
-    mkdirSync(join(r, "data", "overnight", "260805"), { recursive: true });
-    const bigContent = "linha de conteúdo bem grande repetida. ".repeat(2000); // >> 30_000 chars
-    writeFileSync(join(r, "data", "overnight", "260805", "report.md"), `# Overnight 260805\n\n${bigContent}`);
-    const entry = mkEntry({
-      id: "overnight-260805",
-      sessionId: "260805",
-      htmlPath: "data/overnight/260805/report.md",
-      url: "/relatorios/overnight-260805",
-    });
-    const { body } = buildReportEmail(r, entry);
-    assert.match(body, /relatório truncado — íntegra em/);
-    assert.match(body, /\/relatorios\/overnight-260805/);
-    // o marcador de truncamento substitui a linha "Ver no Studio:" (não os dois ao mesmo tempo).
-    assert.ok(!body.includes("Ver no Studio:"));
-  });
-
-  it("dispatchReportEmail: chamado direto (fora de registerReport) também respeita hasCredentials/sendMail injetados", async () => {
-    const calls: Array<{ to: string }> = [];
-    const deps: ReportEmailDeps = {
-      sendMail: async (to) => {
-        calls.push({ to });
-        return { id: "m1", threadId: "t1" };
+  it("falha em deps.notify -> {notified: false, error}, nunca lança", async () => {
+    const deps: ReportNotifyDeps = {
+      notify: async () => {
+        throw new Error("falha simulada");
       },
-      resolveEditorEmail: () => "editor@example.com",
-      hasCredentials: () => true,
     };
-    const result = await dispatchReportEmail(makeRoot(), mkEntry(), deps);
-    assert.equal(result.sent, true);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].to, "editor@example.com");
-  });
-});
-
-describe("truncateReportBody (#4708 — puro)", () => {
-  it("texto menor que o limite -> não trunca", () => {
-    const result = truncateReportBody("texto curto", 100);
-    assert.deepEqual(result, { text: "texto curto", truncated: false });
-  });
-
-  it("texto igual ao limite -> não trunca (fronteira inclusiva)", () => {
-    const text = "x".repeat(100);
-    const result = truncateReportBody(text, 100);
-    assert.equal(result.truncated, false);
-    assert.equal(result.text, text);
-  });
-
-  it("texto maior que o limite -> trunca em maxChars, truncated: true", () => {
-    const text = "a".repeat(150);
-    const result = truncateReportBody(text, 100);
-    assert.equal(result.truncated, true);
-    assert.equal(result.text.length, 100);
-  });
-
-  it("default maxChars é REPORT_EMAIL_BODY_MAX_CHARS quando omitido", () => {
-    const text = "b".repeat(REPORT_EMAIL_BODY_MAX_CHARS + 10);
-    const result = truncateReportBody(text);
-    assert.equal(result.truncated, true);
-    assert.ok(result.text.length <= REPORT_EMAIL_BODY_MAX_CHARS);
+    const result = await dispatchReportNotify(makeRoot(), mkEntry(), deps);
+    assert.equal(result.notified, false);
+    assert.match("error" in result ? result.error : "", /falha simulada/);
   });
 });
 
