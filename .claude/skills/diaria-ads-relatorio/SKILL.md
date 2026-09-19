@@ -17,9 +17,9 @@ CLIs abaixo, que leem `data/aquisicao/teste-2608/run-state.json` na hora.
 `test/no-literal-dates-diaria-ads-relatorio.test.ts` trava isso em CI.
 
 **A task local `relatorio-diario-teste-2608` (Neo, diária 10:07 BRT — ver
-`docs/scheduled-tasks-registry.md`) deve ser um PONTEIRO de poucas linhas
-pra esta skill**, não uma cópia. Trocar o conteúdo dela pelo ponteiro é
-passo manual do editor, feito na máquina Neo — não faz parte desta PR.
+`docs/scheduled-tasks-registry.md`) é um PONTEIRO de poucas linhas pra
+esta skill**, não uma cópia. Troca feita direto na máquina Neo (#8246) —
+não gera diff neste repo, só o registro em `docs/scheduled-tasks-registry.md`.
 
 ## Passo 1 — CAC da janela móvel + contexto de janela
 
