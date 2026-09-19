@@ -76,6 +76,12 @@ concurrency:
   group: regen-home
   cancel-in-progress: false
 
+# #8483: evita baixar o Chrome do puppeteer em `npm ci` — nenhum job
+# deste workflow usa o browser real (scripts que precisam dele, como
+# capture-livros-promo.ts/verify-accessibility.ts, rodam fora do CI).
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "true"
+
 jobs:
   regen:
     runs-on: ubuntu-latest

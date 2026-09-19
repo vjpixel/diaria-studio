@@ -82,6 +82,16 @@ jobs:
       # passo separado "Install brevo-dashboard worker deps" (npm ci dentro
       # de workers/brevo-dashboard) foi removido porque não existe mais
       # lockfile por worker pra ele rodar contra.
+      # #8483: este job PRECISA do Chrome real do puppeteer — achado ao vivo
+      # (run 35474594708, job 105981540676): `npm test` roda
+      # test/verify-accessibility-e2e.test.ts, que exercita o fallback de
+      # browser real de `verify-accessibility.ts` (fetch puro com body
+      # <500 chars cai pro Puppeteer) — sem o binário baixado o teste falha
+      # com o browser indisponível. Por isso `ci.yml` é o único workflow do
+      # repo SEM `PUPPETEER_SKIP_DOWNLOAD` (ver
+      # test/ci-puppeteer-skip-download.test.ts, WORKFLOWS_NEEDING_BROWSER)
+      # — os outros 17 workflows + a reusable deploy-worker.yml continuam
+      # com o skip, confirmado que não usam o browser.
       - run: npm ci
       - run: npm run typecheck
       - name: Typecheck brevo-dashboard worker (#3164)
