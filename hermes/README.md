@@ -35,6 +35,32 @@ Só a SKILL (`hermes-diaria-continuo`, primeira linha da tabela acima) usa
 symlink de verdade — o guard de traversal do cron se aplica a `--script`
 de job (o que dispara os scripts abaixo), não ao carregamento de skill.
 
+## Como estes scripts falam com o editor (`no_agent=True`)
+
+**Os 3 jobs de cron que rodam scripts daqui têm `no_agent: true` — o campo
+`prompt` do job NÃO é lido por ninguém.** É o erro mais fácil de cometer
+aqui: o job `3330b108a5b2` carregava um prompt dizendo "entregue um resumo
+de NO MÁXIMO 2 linhas" e mesmo assim despejava o progresso inteiro no
+Telegram todo tick, porque nesse modo não existe agente pra ler prompt
+nenhum. Pedir brevidade no prompt de um job `no_agent` não tem efeito.
+
+O contrato real, implementado em `cron/scheduler.py` do Hermes:
+
+| canal do script | o que acontece |
+| --- | --- |
+| **stdout** | entregue **verbatim** no Telegram |
+| **stdout vazio** | tick **silencioso** — nenhuma mensagem |
+| **stderr** | descartado, **exceto** quando o script sai não-zero (aí vai junto no alerta de erro) |
+| **exit ≠ 0** | alerta "watchdog quebrou", com stdout + stderr anexados |
+
+Daí a política dos 3 scripts (editor, 19/09/2026 — *"só receber mensagem se
+algum problema estiver acontecendo"*): **rodada saudável escreve nada em
+stdout.** Progresso e linhas "ok" vão pro log (stderr, ou um arquivo em
+`data/` no caso do `watch-continuo-health.sh`, cujo stderr fica reservado
+pras anomalias que acompanham o exit 1). Quem quiser mudar o que é
+entregue mexe no **fim do script**, nunca no prompt do job. Travado por
+`test/hermes-cron-entrega-so-com-problema.test.sh`.
+
 **Drift confirmado ao vivo, #6943 (01/09/2026): `~/.hermes/scripts/
 claude-delegate.sh` era um SYMLINK de verdade no `300`, não o STUB
 que esta tabela documenta.** Achado via transcript do tick das 12:06
