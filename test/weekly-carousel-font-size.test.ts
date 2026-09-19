@@ -7,8 +7,15 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { computeCarouselTitleFontSize } from "../scripts/lib/weekly-carousel-font-size.ts";
+import { computeCarouselTitleFontSize, WEEKLY_CAROUSEL_NEWS_CARD_SIZE } from "../scripts/lib/weekly-carousel-font-size.ts";
 import { DAILY_CAROUSEL_BODY_SIZE } from "../scripts/lib/daily-carousel-card.ts";
+
+describe("WEEKLY_CAROUSEL_NEWS_CARD_SIZE (#8480, 260919)", () => {
+  it("é exatamente o piso do carrossel diário (62px) — mesma constante, sem drift", () => {
+    assert.equal(WEEKLY_CAROUSEL_NEWS_CARD_SIZE, DAILY_CAROUSEL_BODY_SIZE);
+    assert.equal(WEEKLY_CAROUSEL_NEWS_CARD_SIZE, 62);
+  });
+});
 
 describe("computeCarouselTitleFontSize", () => {
   it("título único: retorna o mesmo tamanho que buildOverlaySvg computaria sozinho", () => {

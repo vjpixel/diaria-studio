@@ -1854,6 +1854,94 @@ describe("main(): dispatch mockado", () => {
     });
   });
 
+  describe("#8480 (260919): capa/CTA sempre 84px, cards internos sempre 62px — overflow ABORTA em vez de encolher", () => {
+    it("capa/CTA: card sem foto sempre renderiza fixo em 84px, mesmo com título curto que ANTES encolheria/cresceria via fill", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "D1 curto", url: "https://exemplo.com/d1" }]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      let receivedLayouts: unknown[] = [];
+      const layoutCapturingFlatCardGenerator: FlatCardGenerator = async ({ kvKey, layout }) => {
+        receivedLayouts.push(layout);
+        return { url: `https://cdn.example.com/flat/${kvKey}` };
+      };
+
+      mockAgent.get("https://worker.test").intercept({ path: "/queue", method: "POST" }).reply(200, {
+        queued: true,
+        key: "queue:instagram:1",
+        scheduled_at: "2027-12-25T11:00:00-03:00",
+        destaque: "weekly-highlights",
+      });
+
+      await main(
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        { dataRoot, flatCardGenerator: layoutCapturingFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      // 2 chamadas: cover + cta, ambas com o MESMO layout fixo 84px (nunca
+      // `{ mode: "fill" }`, que era o default pré-#8480).
+      assert.equal(receivedLayouts.length, 2);
+      for (const layout of receivedLayouts) {
+        assert.deepEqual(layout, { mode: "fixed", size: 84 });
+      }
+    });
+
+    it("cards internos (com foto): SEMPRE fontSize=62 embutido na URL do card de notícia, mesmo com títulos curtos que ANTES subiriam pra até 88px", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      // Título de 2 chars ("IA") — com o cálculo antigo (computeCarouselTitleFontSize)
+      // um único título curto fecharia perto do teto (88px). Com o piso
+      // fixo (#8480), sai sempre 62.
+      const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "IA", url: "https://exemplo.com/d1" }]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      let capturedBody: any = null;
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          capturedBody = JSON.parse(opts.body as string);
+          return {
+            statusCode: 200,
+            data: JSON.stringify({ queued: true, key: "queue:instagram:1", scheduled_at: "2027-12-25T11:00:00-03:00", destaque: "weekly-highlights" }),
+          };
+        });
+
+      await main(
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      assert.match(capturedBody.image_urls[1], /\/news\/img-unknown-weekly-271225-highlights-271220-d1-62-4x5\.jpg$/);
+    });
+
+    it("cards internos: título que NÃO cabe no piso fixo (62px) ABORTA o carrossel inteiro (status:failed pros 4 canais), reescrever é o fix indicado", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      // Título deliberadamente longo — o teto de 52 chars é regra de D1/D2/D3,
+      // não vale pra RADAR/USE MELHOR (o caso real que motivou a issue).
+      const overflowingTitle =
+        "Um título de notícia extraordinariamente longo, do tipo que só um item de RADAR ou USE MELHOR carregaria, sem o teto editorial de 52 caracteres dos destaques";
+      const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: overflowingTitle, url: "https://exemplo.com/d1" }]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      // Nenhum mockAgent.intercept — se o script tentasse postar mesmo
+      // assim, o teste falharia por disableNetConnect() (undici lança em
+      // request não-interceptada), confirmando que o overflow ABORTA antes
+      // de qualquer chamada de rede pro /queue.
+      await main(
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const post = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(post.status, "failed");
+      assert.match(post.reason, /overlay_title_overflow_62px/);
+    });
+  });
+
   describe("#5348: Facebook — mesmo carrossel do Instagram, publicado junto (sem flag/canal separado)", () => {
     it("sucesso nos 2 canais — Facebook recebe o MESMO carrossel (cover+news+cta), agenda no MESMO horário do Instagram", async () => {
       const saturday = new Date(2027, 11, 25);

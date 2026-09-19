@@ -289,6 +289,40 @@ export function overlayFittingFontSize(
   return Math.max(DAILY_CAROUSEL_BODY_SIZE, Math.min(88, Math.floor(availableWidth / (longest * wrap.ratio))));
 }
 
+/**
+ * Pure: `title` transborda a largura disponível quando renderizado no
+ * overlay a `fontSize` FIXO (#8480, carrossel semanal — cards internos
+ * passam a usar sempre `WEEKLY_CAROUSEL_NEWS_CARD_SIZE`, ignorando
+ * `overlayFittingFontSize`/`computeCarouselTitleFontSize`)?
+ *
+ * Mesmo upper-bound de largura já usado como asserção de regressão em
+ * `test/gen-social-card-4x5.test.ts` ("título wrapado em 1 linha não estoura
+ * a largura... em bold"): `line.length * fontSize * wrap.ratio` é a largura
+ * estimada da linha mais larga produzida por `wrapTitle` (mesmo divisor de
+ * `wrap` que `buildOverlaySvg` usa pra quebrar, independente do tamanho
+ * final). Título de D1/D2/D3 (≤52 chars, regra editorial) sempre cabe a
+ * 62px+; um item de RADAR/USE MELHOR (sem esse teto) pode não caber — é
+ * esse caso que este guard existe pra pegar ANTES de renderizar, em vez de
+ * deixar um card cortado sair em silêncio (mesma política do carrossel
+ * diário, #6078: quem não cabe é reescrito, nunca encolhido/cortado).
+ *
+ * `wrap` (#8485) PRECISA ser o mesmo que o render real usa — o carrossel
+ * SEMANAL renderiza com `WEEKLY_OVERLAY_WRAP` (`weekly-carousel-news-card.ts`/
+ * `weekly-instagram-ondemand-card.ts`, via `generateCard({ wrap })`), então
+ * quem chama este guard pro caminho semanal deve passar `WEEKLY_OVERLAY_WRAP`
+ * explicitamente — o default (constantes diárias) serve só o card do feed
+ * diário, que nunca chama este guard hoje (usa auto-size, não tamanho fixo).
+ */
+export function overlayTitleOverflows(
+  title: string,
+  fontSize: number,
+  availableWidth: number = W - PAD * 2,
+  wrap: OverlayWrap = { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO },
+): boolean {
+  const lines = wrapTitle(title, Math.floor(availableWidth / wrap.divisor));
+  return lines.some((line) => line.length * fontSize * wrap.ratio > availableWidth);
+}
+
 export function buildOverlaySvg(
   title: string,
   dateLabel = "",

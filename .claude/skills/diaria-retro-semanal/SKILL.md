@@ -52,19 +52,28 @@ modos separadamente.
 apresentação e fecham com um card de CTA convidando a assinar, os dois sem
 foto. Paleta CLARA canônica da marca (`COLORS.paper` fundo, `COLORS.ink`
 texto, `COLORS.brand` teal de acento — mesma do site/newsletter), não mais um
-fundo escuro imitando o overlay dos cards de notícia. Título em auto-size que
-cresce até preencher o card inteiro (`fillingFontSize`, 46-148px, testa do
-maior tamanho pro menor até caber) — "preenche o card todo, assim não sente
-falta de não ter imagem". Ver `scripts/lib/weekly-flat-card.ts`.
+fundo escuro imitando o overlay dos cards de notícia. **Título em tamanho
+FIXO 84px (`WEEKLY_FLAT_CARD_LAYOUT`, #8480, 260919)** — antes era auto-size
+que crescia até preencher o card (`fillingFontSize`, 46-148px); texto que não
+coubesse a 84px encolhia sozinho, e a política do editor virou a mesma do
+carrossel diário (#6078): ABORTAR e pedir reescrita, nunca encolher. Ver
+`scripts/lib/weekly-flat-card.ts`.
 
 **Os 5 slides do meio são RECOMPOSTOS, não reusados como estão (#5345).**
 Antes do #5345, cada card de notícia usava o clamp dinâmico de
 `buildOverlaySvg` (44-88px, escalado pelo comprimento do próprio título) —
 títulos de comprimento bem diferente publicados em dias diferentes da semana
 saíam em tamanhos bem diferentes lado a lado no mesmo carrossel (50-88px numa
-semana real, achado ao vivo do editor). `computeCarouselTitleFontSize`
-(`scripts/lib/weekly-carousel-font-size.ts`) acha o MENOR tamanho que caiba
-todos os títulos do carrossel, e `weekly-carousel-news-card.ts` gera um card
+semana real, achado ao vivo do editor). O #5330 corrigiu isso computando 1
+tamanho único por carrossel (`computeCarouselTitleFontSize`, o MENOR que
+coubesse todos os títulos — ainda assim oscilava 62-88 conforme o conjunto
+daquela rodada); **desde o #8480 (260919) o tamanho é sempre FIXO
+(`WEEKLY_CAROUSEL_NEWS_CARD_SIZE`, 62px)** — `computeCarouselTitleFontSize`
+segue existindo (só `--force-font-size` ainda o contorna manualmente) mas
+deixou de ser o cálculo padrão. Título que não coubesse no tamanho fixo
+ABORTA (`overlayTitleOverflows`) em vez de renderizar cortado — caso real de
+item RADAR/USE MELHOR, que não tem o teto de 52 chars dos destaques.
+`weekly-carousel-news-card.ts` gera um card
 4:5 NOVO pra cada D1/D2/D3 selecionado, nesse tamanho único — a partir da
 MESMA arte-base do card diário, mas **o `04-{destaque}-4x5.jpg` já publicado
 no feed diário nunca é sobrescrito** (arquivo/upload novo, cacheado por
@@ -442,15 +451,16 @@ Carrossel: 7 slides — capa (sem foto) + 1 card 4:5 por item selecionado
 (resolvido pelo destaque/edição de origem PRÓPRIOS de cada item — 2 itens
 podem vir da mesma edição, e uma edição pode não contribuir nenhum) + CTA
 final (sem foto). O tamanho de fonte comum do carrossel
-(`computeCarouselTitleFontSize`) é calculado 1x, a partir do SET inteiro de
-itens selecionados nessa rodada; cada item D1/D2/D3 é então RECOMPOSTO nesse
-tamanho (`resolveOrGenerateNewsCardUrl`, #5345 — ver seção acima), nunca
-reusado no tamanho publicado originalmente no feed diário. Item de RADAR sem
-card pré-existente tem o card gerado SOB DEMANDA nesse momento (#4513),
-recebendo o MESMO `carouselFontSize` da rodada via `fontSizeOverride` — o
-que muda é só o mecanismo de geração/cache, não o tamanho de fonte
-aplicado. Capa/CTA (paleta clara, auto-size —
-ver seção acima) são gerados/upados sob demanda na 1ª execução e cacheados
+(`WEEKLY_CAROUSEL_NEWS_CARD_SIZE`, 62px fixo — #8480) é o mesmo em toda
+rodada (não depende mais do SET de itens selecionados); título que não coubesse
+aborta antes de renderizar (ver seção acima). Cada item D1/D2/D3 é então
+RECOMPOSTO nesse tamanho (`resolveOrGenerateNewsCardUrl`, #5345 — ver seção
+acima), nunca reusado no tamanho publicado originalmente no feed diário. Item
+de RADAR sem card pré-existente tem o card gerado SOB DEMANDA nesse momento
+(#4513), recebendo o MESMO `carouselFontSize` da rodada via
+`fontSizeOverride` — o que muda é só o mecanismo de geração/cache, não o
+tamanho de fonte aplicado. Capa/CTA (paleta clara, tamanho fixo 84px — ver
+seção acima) são gerados/upados sob demanda na 1ª execução e cacheados
 depois (`data/weekly/{saturday}-{mode}/_internal/06-flat-cards.json` — ver
 `scripts/lib/weekly-flat-card.ts`). Se QUALQUER item de notícia não resolver
 imagem (falha de leitura, recomposição OU geração sob demanda), o post
