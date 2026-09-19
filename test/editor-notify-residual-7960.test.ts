@@ -40,10 +40,6 @@ import { runPushNotifyTick } from "../scripts/studio-ui/studio-push-notify.ts";
 import type { StudioState } from "../scripts/studio-ui/studio-state.ts";
 import { createInMemoryNotifiedStore } from "../scripts/lib/push-notify.ts";
 import { isReportKind } from "../scripts/studio-ui/studio-reports.ts";
-import {
-  resolveEmailPolicyInline,
-  sendNotification,
-} from "../.claude/hooks/notify-continuo-askuserquestion.mjs";
 
 function withTmpDir<T>(fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "notify-residual-7960-"));
@@ -450,37 +446,12 @@ describe("#7960 item 5 — studio-push-notify respeita email_policy", () => {
   });
 });
 
-describe("#7960 item 5 — hook do contínuo respeita email_policy", () => {
-  it("resolveEmailPolicyInline concorda com resolveEmailPolicy do portão (as duas não podem divergir)", () => {
-    withTmpDir((dir) => {
-      writePolicy(dir, "urgent_only");
-      assert.equal(resolveEmailPolicyInline(dir), "urgent_only");
-    });
-    withTmpDir((dir) => {
-      writePolicy(dir, "legacy");
-      assert.equal(resolveEmailPolicyInline(dir), "legacy");
-    });
-    // Fail-soft NA DIREÇÃO DE NOTIFICAR: config ausente/corrompido nunca
-    // pode silenciar o hook que existe justamente pra o editor não perder
-    // um AskUserQuestion bloqueante.
-    withTmpDir((dir) => {
-      assert.equal(resolveEmailPolicyInline(dir), "legacy");
-    });
-    withTmpDir((dir) => {
-      writeFileSync(join(dir, "platform.config.json"), "{ nao é json", "utf8");
-      assert.equal(resolveEmailPolicyInline(dir), "legacy");
-    });
-  });
-
-  it("urgent_only → sendNotification não faz NENHUM fetch (nem refresh de token)", () => {
-    return withTmpDir(async (dir) => {
-      writePolicy(dir, "urgent_only");
-      await sendNotification({ subject: "s", body: "b" }, dir, () => {
-        throw new Error("nenhum fetch deveria acontecer sob urgent_only");
-      });
-    });
-  });
-});
+// O hook do contínuo (`.claude/hooks/notify-continuo-askuserquestion.mjs`)
+// é testado em `test/notify-continuo-askuserquestion.test.ts`, junto com o
+// resto do hook — e não aqui — porque importar um `.mjs` sem declaração de
+// tipos a partir de um arquivo NOVO acrescentaria um TS7016 ao
+// `tsc-baseline.json` (`Typecheck ratchet`, #6217). Aquele arquivo já
+// carrega a entrada de baseline desse import; este não precisa criar outra.
 
 // ───────────────────────────────────────────────────────────────────────────
 // Guard de WIRING: worker-drift-check.ts (achado P2 do pr-test-analyzer)
