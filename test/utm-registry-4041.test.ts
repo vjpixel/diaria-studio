@@ -546,7 +546,7 @@ describe("#5205 — ENTITY_PERPLEXITY_FOOTER_NAV_UTM estava fora de UTM_EMITTERS
 });
 
 describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constantes HUB_*/ENTITY_*_FOOTER_NAV_UTM", () => {
-  it("hubFooterNavUtm(slug) emite {source: 'hub-{slug}', medium: 'footer-nav'} — mesmos valores das 7 constantes removidas", () => {
+  it("hubFooterNavUtm(slug) emite {source: 'hub-{slug}', medium: 'footer-nav'} — mesmos valores das 7 constantes removidas (mais o hub novo do #8391)", () => {
     const slugs: shared.HubSlug[] = [
       "anthropic-claude",
       "openai-chatgpt",
@@ -555,6 +555,7 @@ describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constant
       "brasil-regulacao",
       "mercado-trabalho",
       "medicina-saude",
+      "deepfake",
     ];
     for (const slug of slugs) {
       assert.deepEqual(shared.hubFooterNavUtm(slug), {
@@ -584,7 +585,7 @@ describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constant
     );
   });
 
-  it("UTM_EMITTERS ainda registra as 7 entries hub-*-footer-nav com os valores emitidos pela factory", () => {
+  it("UTM_EMITTERS registra uma entry hub-*-footer-nav por hub, com os valores emitidos pela factory", () => {
     const hubSlugs: shared.HubSlug[] = [
       "anthropic-claude",
       "openai-chatgpt",
@@ -593,6 +594,7 @@ describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constant
       "brasil-regulacao",
       "mercado-trabalho",
       "medicina-saude",
+      "deepfake",
     ];
     for (const slug of hubSlugs) {
       const entry = shared.findUtmEmitter(`hub-${slug}-footer-nav`);

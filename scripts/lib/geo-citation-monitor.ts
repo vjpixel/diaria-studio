@@ -196,6 +196,23 @@ export const GEO_HUB_QUESTIONS: readonly string[] = [
   // na adição do brasil-regulacao.
   "O que a IA já mudou na medicina e na saúde?",
   "O CFM já regulamentou o uso de IA por médicos no Brasil?",
+  // #8391 (8º hub, deepfake — EXCEÇÃO ÚNICA à pausa de produção de hub novo
+  // de 18/09/2026, ver `docs/geo-hub-experiment.md`) — acrescentadas por
+  // `test/geo-hub-questions-cobrem-hubs-4900.test.ts` (guard que exige 1+
+  // pergunta por hub publicado), MID-SÉRIE como as três adições acima.
+  // Mesma decisão de não resetar o baseline sozinho — ver a nota completa
+  // na adição do brasil-regulacao.
+  //
+  // **O painel GEO não é o critério de sucesso deste hub.** A #8391
+  // pré-registrou a medição em IMPRESSÃO DE BUSCA no GSC (consultas
+  // contendo "deepfake", 8 semanas após a página entrar no índice), não em
+  // citação por assistente — o eixo da página é demanda de busca, que é
+  // justamente o eixo que a pausa dos hubs não considerou. Estas duas
+  // perguntas existem para satisfazer o guard de cobertura e manter a série
+  // do painel `hubs` homogênea; ler o resultado delas como veredito sobre a
+  // #8391 seria trocar o critério depois da medição.
+  "O que é um deepfake?",
+  "Como identificar um deepfake?",
 ] as const;
 
 /**

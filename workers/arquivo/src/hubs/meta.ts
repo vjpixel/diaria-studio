@@ -58,4 +58,5 @@ export const HUB_META: readonly HubMeta[] = [
   { slug: "brasil-regulacao", label: "Regulação de IA no Brasil" },
   { slug: "mercado-trabalho", label: "Mercado de trabalho e IA" },
   { slug: "medicina-saude", label: "Medicina e saúde" },
+  { slug: "deepfake", label: "Deepfake" },
 ];

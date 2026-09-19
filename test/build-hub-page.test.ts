@@ -296,9 +296,19 @@ for (const slug of Object.keys(HUB_LOADERS)) {
       // todo". Isto é o "nada automático religando os dois" que faltava:
       // se `{slug}-sources.generated.json` for regenerado e a prosa do
       // INTRO não acompanhar, este teste quebra.
-      const faqMatch = /(\d+) edições da diar\.ia\.br, somando (\d+) manchetes/.exec(hub.faq[0]?.answer ?? "");
-      assert.ok(faqMatch, `FAQ #1 do hub "${slug}" não tem o formato esperado de contagem`);
-      const introMatch = /(\d+) edições da diar\.ia\.br, (\d+) manchetes ao todo/.exec(hub.introParagraph);
+      // #8391: a pergunta de CONTAGEM é procurada em QUALQUER posição do
+      // FAQ, não só no índice 0. Os 7 primeiros hubs a colocam em 1º porque
+      // seguem o fraseado de manchete; o hub `deepfake` abre o FAQ pelas
+      // perguntas de BUSCA ("O que é um deepfake?") e deixa a contagem por
+      // último, de propósito. O que o guard protege — FAQ e INTRO afirmando
+      // os MESMOS dois números — não depende da posição, só da existência.
+      const faqMatch = hub.faq
+        .map((q) => /(\d+) edições da diar\.ia\.br, somando (\d+) manchetes/.exec(q.answer ?? ""))
+        .find((m): m is RegExpExecArray => m !== null);
+      assert.ok(faqMatch, `nenhum item do FAQ do hub "${slug}" tem o formato esperado de contagem`);
+      const introMatch = /(\d+) edições da diar\.ia\.br, (\d+) manchetes ao todo/.exec(
+        typeof hub.introParagraph === "string" ? hub.introParagraph : hub.introParagraph.join(" "),
+      );
       assert.ok(introMatch, `INTRO do hub "${slug}" não tem o formato esperado de contagem`);
       assert.equal(
         faqMatch![1],
@@ -694,6 +704,17 @@ describe("checkUpdatedDateCeiling (#5124 item 3) — heurístico, nunca bloqueia
     // (se um hub voltar a estourar o limiar, é este assert que quebra).
     for (const slug of Object.keys(HUB_LOADERS)) {
       const hub = HUB_LOADERS[slug]();
+      // #8391: hub que NUNCA foi revisado (`updatedDate === publishedDate`)
+      // fica fora deste guard. O heurístico do #5124 mede "bump de prosa que
+      // ficou parado semanas sem fonte nova" — pressupõe, portanto, que
+      // houve bump. Numa página recém-nascida cujo acervo mais recente é de
+      // algumas semanas atrás (o caso de `deepfake`, publicado em
+      // 19/09/2026 com última fonte em 19/08/2026), o gap não diz nada sobre
+      // defasagem: diz só que o tema não rendeu manchete no último mês. A
+      // isenção é estreita de propósito — some no primeiro bump de prosa que
+      // o hub receber, e a partir daí ele volta a ser vigiado como os
+      // demais.
+      if (hub.updatedDate === hub.publishedDate) continue;
       const warnings = checkUpdatedDateCeiling(hub);
       assert.deepEqual(warnings, [], `hub "${slug}" tem warning de teto inesperado: ${warnings.join("; ")}`);
     }
