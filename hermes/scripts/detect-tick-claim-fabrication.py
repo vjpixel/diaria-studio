@@ -207,6 +207,15 @@ _CLAIM_KEYWORDS = re.compile(r"reivindic|reivindiq|claim", re.IGNORECASE)
 # ("- #8400 título longo (reivindicada)", até `_LEADING_MAX_GAP` chars).
 # `;` só separa cláusulas quando NÃO está entre dois refs.
 _LEADING_MAX_GAP = 160
+
+# **#8463 (2026-09-19).** Separadores de lista que o `_REF_LIST` original
+# não cobria — `and #N` (inglês) e `e a #N` (português, "e" + artigo).
+# Sem eles, "reivindicada #100 and #101" devolve só [100] e o #101 é
+# sub-extraído (falso negativo: uma claim fabricada em #101 passaria
+# despercebida). `and`/`e a` só casam quando rodeados de `#\d+`, então
+# não inventam listas em contextos que não são de refs.
+_REF_LIST_SEP_AND = re.compile(r"\s+and\s+", re.IGNORECASE)
+_REF_LIST_SEP_E_A = re.compile(r"\s+e\s+a\s+", re.IGNORECASE)
 _CLAUSE_SPLIT = re.compile(r"\. (?=[A-Z#])")
 _REF_SEMI = re.compile(r"(#\d+)\s*;\s*(?=#\d)")
 _REF_LIST = re.compile(
@@ -215,9 +224,21 @@ _REF_LIST = re.compile(
 )
 _LEADING_LIST = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?(?=#\d)")
 _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
+# **#8463 (2026-09-19).** O `_OTHERS_CLAIM` original capturava SÓ o #N
+# imediatamente antes de "reivindicad..." (`[^#]{0,80}?` parava na 1ª ref):
+# "#8355/#8354 reivindicadas pelo Overnight" → [8355] (falso positivo —
+# o claim é do Overnight, não deste coordenador). Agora a regex pega a
+# LISTA inteira de refs (`_REF_LIST`) antes do keyword, e o ator pode ser
+# "sessão"/"tick"/"mesmo" além de "Overnight"/"outros"/etc., cobrindo
+# "pela sessão do Overnight" e "pelo tick anterior". Só exclui o #N que
+# REALMENTE está na cláusula de atribuição a outro ator — um claim
+# próprio no mesmo segmento ("#8356 reivindicada pelo mesmo tick") é
+# reconhecido (#8377), e "pelo mesmo tick" não cai nessa exclusão.
 _OTHERS_CLAIM = re.compile(
-    r"#(\d+)\b[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+"
-    r"(?:outr[oa]|outros|outras|overnight|terceir[oa])\b",
+    r"(?P<refs>" + _REF_LIST.pattern + r")"
+    r"\s*reivindicad\w*\s+(?:por|pelo|pelas)\s+"
+    r"(?:outr[oa]|outros|outras|overnight|terceir[oa]|"
+    r"sess[ãa]o|tick|mesm[oa])\b",
     re.IGNORECASE,
 )
 _COVERED_BY = re.compile(
@@ -361,6 +382,16 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
         line_released = bool(_RELEASE_SIGNAL.search(line))
         # `;` entre dois refs é separador de LISTA, não de cláusula.
         norm = _REF_SEMI.sub(lambda m: m.group(1) + ",", line)
+        # **#8463.** `and #N` / `e a #N` são separadores de lista em
+        # inglês/português que o `_REF_LIST` original não cobria — sem
+        # normalização, "reivindicada #100 and #101" capturava só [100]
+        # (falso negativo: claim em #101 passava despercebida). A
+        # normalização roda ANTES de split de cláusulas porque `and`/
+        # `e a` em meio a uma frase normal ("#100 and the fix") não
+        # devem quebrar a cláusula — só viram separador de refs quando
+        # flanqueados por `#\d+`.
+        norm = _REF_LIST_SEP_AND.sub(",", norm)
+        norm = _REF_LIST_SEP_E_A.sub(",", norm)
         # `;` restante separa cláusulas; `. ` + maiúscula/# também.
         segments = [
             seg
@@ -376,10 +407,19 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
             if lists:
                 lead = _LEADING_LIST.match(segment)
                 for kw in kws:
-                    if lead and lists[0].start() == lead.end() and (
-                        kw.start() - lists[0].end() <= _LEADING_MAX_GAP
-                    ):
-                        attached.append(lists[0])
+                    # A lista que ABRE o segmento ("- #N: ...") só é
+                    # anexada quando é a ref do PRÓPRIO item — ou seja,
+                    # quando não há nenhuma ref distinta entre ela e o
+                    # keyword. Sem isso, a janela de 160 chars anexava
+                    # o 1º #N a QUALQUER keyword da cláusula, tratando
+                    # o #N inicial como claim quando ele é só o TEMA
+                    # da frase: "#8355 ficou bloqueada porque #8354 foi
+                    # reivindicada pelo Overnight" → [8355] (falso
+                    # positivo) e "#7807 coberto por #7808, #7809
+                    # reivindicada" → [7807, 7809] (falso positivo).
+                    # A regra estrutural é a mesma das demais refs: só
+                    # anexa a ref mais próxima (antes ou depois, menor
+                    # distância); o #N distante fica solto, como deve.
                     before = [l for l in lists if l.end() <= kw.start()]
                     after = [l for l in lists if l.start() >= kw.end()]
                     cand = []
@@ -389,6 +429,20 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
                         cand.append(before[-1])
                     if da is not None and (db is None or da <= db):
                         cand.append(after[0])
+                    # leading list é o item ("#8400 ... (reivindicada)",
+                    # "#8355/#8354 reivindicadas pelo Overnight"): anexar
+                    # só quando for a ref mais próxima do keyword (ou a
+                    # única). Se houver uma ref distinta mais próxima
+                    # ("#8355 ... #8354 reivindicada"), o #8355 é tema, não
+                    # claim — e o #8354 (mais próximo) é que entra, sendo
+                    # depois excluído pelo `_OTHERS_CLAIM` se for de outro
+                    # ator.
+                    if lead and lists[0].start() == lead.end() and (
+                        not cand or any(c is lists[0] for c in cand)
+                    ):
+                        gap = kw.start() - lists[0].end()
+                        if gap <= _LEADING_MAX_GAP:
+                            cand.append(lists[0])
                     attached.extend(cand)
             elif idx > 0:
                 # "- #N: descrição. Claim registrada." — o keyword abre a
@@ -403,8 +457,17 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
             if not attached:
                 continue
             # Exclusões aplicadas SÓ ao número que as justificou (#8377).
+            # `_OTHERS_CLAIM` agora captura a LISTA de refs ("#8355/#8354
+            # reivindicadas pelo Overnight"), não só o #N mais próximo —
+            # portanto its `findall` devolve o texto da lista inteira, e
+            # preciso extrair cada #N dela com `_ISSUE_REF` (o `int(n)`
+            # direto quebraria em "#8355/#8354"). `_PR_REF`/`_COVERED_BY`
+            # continuam capturando #N soltos, inalterados.
             pr_ref_n = {int(n) for n in _PR_REF.findall(segment)}
-            others_n = {int(n) for n in _OTHERS_CLAIM.findall(segment)}
+            others_n = set()
+            for om in _OTHERS_CLAIM.finditer(segment):
+                for n_s in _ISSUE_REF.findall(om.group(0)):
+                    others_n.add(int(n_s))
             covered_n = {int(n) for n in _COVERED_BY.findall(segment)}
             for lm in attached:
                 for n_s in _ISSUE_REF.findall(lm.group(0)):
