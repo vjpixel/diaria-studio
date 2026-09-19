@@ -17,7 +17,7 @@ import { json } from "./index";
 import { checkKvRateLimit } from "../../../scripts/lib/shared/rate-limit.ts";
 import { CURSOS_GATE_INLINE_UTM } from "../../../scripts/lib/shared/utm-registry.ts"; // #4295 fold-in do drift (literais locais antes)
 import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
-import { sendCompleteRegistrationEvent, logMetaCapiSendResult } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776
+import { sendCompleteRegistrationEvent, logMetaCapiSendResult, extractMetaCapiClientSignals } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1)
 import { resolveKitCreateState, vincularKitDoiForm, extrairSubscriberId, mensagemSubscriberIdAusente } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
@@ -499,9 +499,14 @@ export async function handleGateSubscribe(
   // (8s) sempre que a Meta respondia lento.
   // #7776: log estruturado no meio do mesmo caminho fire-and-forget — ver
   // docstring de `logMetaCapiSendResult` (meta-capi.ts).
+  // #8388 item 3: mesmos sinais de match quality do worker `poll` — IP/UA
+  // dos headers, `_fbp`/`_fbc` do cookie first-party, `fbc` derivado do
+  // `click_id` do #8003. Extração pura, nunca lança; campo ausente é
+  // OMITIDO, nunca string vazia.
+  const clientSignals = extractMetaCapiClientSignals(request.headers, { clickId: origin.clickId });
   const sendEvent = logMetaCapiSendResult(
     sendCompleteRegistrationEvent(
-      { email: v.email, eventSourceUrl: request.url },
+      { email: v.email, eventSourceUrl: request.url, clientSignals },
       { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
     ),
     "cursos",
