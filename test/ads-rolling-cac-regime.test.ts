@@ -74,7 +74,6 @@ describe("#8396 — ads-rolling-cac.ts declara o regime vigente em toda saída",
   });
 });
 
-
 const PROTOCOLO = "data/aquisicao/campanhas-260816/00-PROTOCOLO.md";
 
 const secao = (aviso: string, corpo: string[]): string =>
@@ -133,6 +132,48 @@ describe("#8396 — detector de seção SUBSTITUÍDA que mantém o texto morto a
       findSecoesSubstituidasComTextoMorto(md),
       [],
       "a palavra aparece no corpo, mas a seção é a regra VIVA — acusar aqui tornaria o guard inútil por ruído",
+    );
+  });
+
+  it("NÃO acusa aviso escrito com continuação preguiçosa de blockquote (review #8396, finding 2)", () => {
+    // No Markdown, linha sem `>` logo abaixo de uma com `>` ainda é citação.
+    const md = secao([AVISO, "continuação do aviso sem `>`, ainda dentro da citação", "e mais uma linha assim"].join("\n"), []);
+    assert.deepEqual(findSecoesSubstituidasComTextoMorto(md), []);
+  });
+
+  it("a linha em branco FECHA a citação — prosa depois dela volta a ser viva", () => {
+    const md = secao(AVISO, [
+      "Proibido alterar keyword.",
+      "",
+      "**Qualquer edição reinicia a janela.**",
+      "",
+      "Terceira linha morta.",
+      "",
+      "Quarta linha morta.",
+    ]);
+    assert.equal(findSecoesSubstituidasComTextoMorto(md).length, 1);
+  });
+
+  it("cabeçalho de QUALQUER nível fecha a seção (review #8396, finding 6)", () => {
+    const md = [
+      "### 3.4 Congelamento",
+      "",
+      AVISO,
+      "",
+      "# Título de nível 1 que fecha a seção",
+      "",
+      "Prosa viva que pertence à OUTRA seção.",
+      "",
+      "Mais prosa viva.",
+      "",
+      "E mais.",
+      "",
+      "E mais ainda.",
+    ].join("\n");
+    assert.deepEqual(
+      findSecoesSubstituidasComTextoMorto(md),
+      [],
+      "sem fechar em `#`, o corpo da seção substituída vazaria por cima do resto do documento",
     );
   });
 

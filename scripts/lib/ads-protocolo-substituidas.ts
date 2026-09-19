@@ -40,7 +40,13 @@ export type SecaoComTextoMorto = {
  */
 export const MAX_LINHAS_APOS_AVISO = 3;
 
-const isCabecalho = (linha: string): boolean => /^#{2,4} /.test(linha);
+/**
+ * Qualquer nível de cabeçalho delimita seção, `#` inclusive. O arquivo usa
+ * `##`/`###` para as seções e `#` só no título, mas fechar em `{2,4}` faria o
+ * corpo de uma seção vazar por cima de um `#` ou `#####` futuro e contar
+ * linhas que não são dela (review da #8396, finding 6).
+ */
+const isCabecalho = (linha: string): boolean => /^#{1,6} /.test(linha);
 
 /**
  * O aviso é, por convenção, a PRIMEIRA coisa do corpo e vem como citação
@@ -58,12 +64,36 @@ const abreComAvisoDeSubstituicao = (corpo: readonly string[]): boolean => {
 
 /**
  * Linha "viva" = prosa que um leitor da seção toma como regra. Linha em
- * branco e linha de citação (`>`) ficam de fora: o aviso pode ser tão longo
- * quanto precisar, desde que seja aviso — é o texto FORA da citação que
- * volta a parecer regra vigente.
+ * branco e linha de citação ficam de fora: o aviso pode ser tão longo quanto
+ * precisar, desde que seja aviso — é o texto FORA da citação que volta a
+ * parecer regra vigente.
+ *
+ * "Linha de citação" inclui a **continuação preguiçosa** do Markdown: uma
+ * linha sem `>` logo abaixo de uma linha com `>`, sem linha em branco entre
+ * elas, ainda pertence ao blockquote. Contá-la como viva acusaria um aviso
+ * escrito nesse estilo (review da #8396, finding 2) — falso positivo que
+ * gastaria o crédito do guard à toa. A linha em branco fecha a citação, que é
+ * como o Markdown de fato funciona.
  */
-const linhasVivas = (corpo: readonly string[]): string[] =>
-  corpo.filter((l) => l.trim() !== "" && !l.trimStart().startsWith(">"));
+const linhasVivas = (corpo: readonly string[]): string[] => {
+  const vivas: string[] = [];
+  let dentroDeCitacao = false;
+
+  for (const linha of corpo) {
+    if (linha.trim() === "") {
+      dentroDeCitacao = false;
+      continue;
+    }
+    if (linha.trimStart().startsWith(">")) {
+      dentroDeCitacao = true;
+      continue;
+    }
+    if (dentroDeCitacao) continue;
+    vivas.push(linha);
+  }
+
+  return vivas;
+};
 
 /** Seções que declaram substituição e ainda assim mantêm corpo legível. */
 export function findSecoesSubstituidasComTextoMorto(
