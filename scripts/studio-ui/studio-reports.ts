@@ -315,6 +315,23 @@ function resolveReportUrl(entry: ReportEntry): string {
  * ver histórico no topo do arquivo). `"info"` só precisa ficar visível em
  * `data/run-log.jsonl`; o conteúdo completo já está a 1 clique via
  * `entry.url`/`resolveReportUrl`, servido pelo próprio Studio.
+ *
+ * **Limitação conhecida, aceita (achado do silent-failure-hunter na PR
+ * #8452, #8453):** pra `severity: "info"`, `notifyEditor` só chama
+ * `logEvent` (`scripts/lib/run-log.ts`), que NUNCA lança (fail-soft por
+ * design — "logging must never mask the original error"). Ou seja, o
+ * `catch` abaixo nunca captura uma falha real de escrita em
+ * `run-log.jsonl` (permissão, disco cheio, lock do OneDrive) — `notified`
+ * fica `true` mesmo que o log não tenha sido gravado. Comportamento
+ * PRÉ-EXISTENTE do portão `notifyEditor` (já documentado em
+ * `worker-drift-check.ts` como trade-off aceito ao trocar o Gmail — que
+ * lançava — por este portão), não introduzido por esta migração — os
+ * outros 2 callers atuais (`weekly-worker-dlq-alarm.ts`,
+ * `kit-subscriber-limit-alarm.ts`) já convivem com o mesmo gap. Risco
+ * atual zero: todo caller de produção de `registerReport` fixa
+ * `notify: false`. Consertar exige mexer em `logEvent`/`editor-notify.ts`
+ * (afeta todos os callers do portão) — ver #8453 antes de ligar
+ * `notify: true` em qualquer caller novo.
  */
 export async function dispatchReportNotify(
   rootDir: string,
