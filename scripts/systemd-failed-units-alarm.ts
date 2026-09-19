@@ -52,7 +52,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
+import { notifyEditorForOutcomes, shouldPersistAlarmedState } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
   parseSystemctlListUnitsFailedOutput,
@@ -266,27 +266,14 @@ function loadAlarmIssuesState(): AlarmIssuesState {
   }
 }
 
-/**
- * #7960 (achado do review da PR #8363) — pura, testável isoladamente.
- *
- * `saveState`/`markSystemdFailedUnitsAlarmed` original só rodava depois de
- * `sendGmailMessage` ter sucesso — uma exceção de envio abortava `main()`
- * ANTES da gravação, então o estado nunca avançava em falha (a próxima
- * execução tentava de novo, respeitando o TTL de 6h corretamente).
- * `notifyEditorForOutcomes` nunca lança (fail-soft por desenho), então
- * gravar incondicionalmente depois dele congelaria o TTL mesmo quando NADA
- * chegou ao editor — seja porque o push falhou genuinamente
- * (`qualifying.length > 0 && !emailSent`), seja porque `gh` falhou pra
- * TODOS os achados desta execução (nenhum outcome não-`failed` — nem
- * sequer virou issue). Só persiste quando pelo menos 1 achado foi tratado
- * com sucesso pelo `gh` E o push não falhou genuinamente (sucesso real, ou
- * supressão DELIBERADA pela política `emailPolicy`, nunca por falha de
- * infra).
- */
-export function shouldPersistAlarmedState(anyIssueSucceeded: boolean, qualifyingCount: number, emailSent: boolean): boolean {
-  const pushGenuinelyFailed = qualifyingCount > 0 && !emailSent;
-  return anyIssueSucceeded && !pushGenuinelyFailed;
-}
+// `shouldPersistAlarmedState` (#7960, achado do review da PR #8363) foi
+// PROMOVIDA pra `scripts/lib/editor-notify.ts` na fatia 6 da mesma issue,
+// quando `worker-drift-check.ts` precisou da mesma decisão — a armadilha
+// ("`notifyEditorForOutcomes` nunca lança, então gravar o cursor
+// incondicionalmente congela o TTL mesmo sem nada ter chegado ao editor")
+// é da MIGRAÇÃO inteira, não deste script. Re-exportada aqui porque
+// `test/systemd-failed-units-alarm.test.ts` a importa deste módulo.
+export { shouldPersistAlarmedState };
 
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);

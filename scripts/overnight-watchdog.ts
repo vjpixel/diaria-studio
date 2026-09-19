@@ -124,7 +124,8 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { listActiveSessions } from "./lib/session-registry.ts";
 import { readPhase as readOvernightSessionMarkerPhase } from "./overnight-session-marker.ts";
 import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
-import { PUSH_IO_TIMEOUT_MS, sendPushNotification } from "./lib/push-notify.ts";
+import { PUSH_IO_TIMEOUT_MS } from "./lib/push-notify.ts";
+import { notifyEditor, type NotifyEditorDeps } from "./lib/editor-notify.ts";
 import {
   CI_WAIT_TIMEOUT_MIN,
   OVERNIGHT_STALL_THRESHOLD_MIN,
@@ -674,10 +675,54 @@ export async function fetchRecentMergeActivity(
 // dele; a lógica em si não é mais duplicada aqui.
 export const WATCHDOG_IO_TIMEOUT_MS = PUSH_IO_TIMEOUT_MS;
 
-async function sendPushAlert(subject: string, body: string): Promise<void> {
-  const result = await sendPushNotification({ subject, body });
-  if (!result.ok && !result.skipped) {
-    process.stderr.write(`[watchdog] Notificação push falhou: ${result.error}\n`);
+/**
+ * #7960 (item 5 da #7957) — o alerta de STALL passou a atravessar o portão
+ * `notifyEditor` (`severity: "acao"`) em vez de chamar `sendPushNotification`
+ * direto: abre/reusa **1 issue por rodada** (o `fingerprint` é
+ * `{kind}:{aammdd}`, constante dentro da rodada) em vez de só mandar um
+ * e-mail que se repete a cada stall detectado.
+ *
+ * `legacyResendIntent: "dedupe-new-occurrences-only"` é o ponto da mudança:
+ * sob `email_policy: "legacy"` (a vigente), o editor recebe 1 e-mail na 1ª
+ * vez que a rodada trava — as detecções seguintes da MESMA rodada reusam a
+ * issue (`action: "reused"`) e não re-emitem e-mail. O default
+ * `"resend-every-run"` teria preservado o e-mail recorrente, que é
+ * exatamente o que esta issue existe pra eliminar. A dedup por JANELA que já
+ * existia (`isDeduped` sobre `plan.stall_events`) continua intocada e roda
+ * ANTES disto — são camadas independentes: uma corta re-detecções próximas,
+ * a outra corta o 2º e-mail da mesma rodada horas depois.
+ *
+ * O halt banner no terminal (passo (c) de `runWatchdogForKind`) e o evento
+ * no run-log (passo (b)) NÃO mudaram — o canal síncrono do #738 segue
+ * exatamente como era.
+ */
+export async function sendStallAlert(
+  rootDir: string,
+  kind: WatchableKind,
+  aammdd: string,
+  subject: string,
+  body: string,
+  notifyDeps: NotifyEditorDeps = {},
+): Promise<void> {
+  const result = await notifyEditor(
+    {
+      check: "overnight-watchdog-stall",
+      fingerprint: `${kind}:${aammdd}`,
+      severity: "acao",
+      subject,
+      body,
+      labels: ["bug"],
+      priority: "P1",
+      family: "estado",
+      legacyResendIntent: "dedupe-new-occurrences-only",
+    },
+    { cwd: rootDir, rootDir, ...notifyDeps },
+  );
+  if (result.issue?.action === "failed") {
+    process.stderr.write(`[watchdog] Issue de stall não criada/reusada: ${result.issue.error}\n`);
+  }
+  if (result.emailError) {
+    process.stderr.write(`[watchdog] Notificação push falhou: ${result.emailError}\n`);
   }
 }
 
@@ -1138,8 +1183,12 @@ async function runWatchdogForKind(
   // (c) Renderiza halt banner
   renderHaltBanner(ROOT, kind, aammdd, elapsedMin, thresholdMin);
 
-  // (d) Push por e-mail (#5341, fail-soft TOTAL)
-  await sendPushAlert(
+  // (d) Notificação ao editor (#5341; via portão `notifyEditor` desde #7960
+  // — 1 issue por rodada + no máximo 1 e-mail por rodada, fail-soft TOTAL)
+  await sendStallAlert(
+    ROOT,
+    kind,
+    aammdd,
     `[diar.ia.br ${kind}] STALL detectado — rodada ${aammdd}`,
     [
       `Rodada ${aammdd} sem atividade há ${elapsedMin} min (limiar: ${thresholdMin} min).`,

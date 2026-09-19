@@ -101,7 +101,13 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 // overnight/develop (sessão autenticada claude.ai, #5608), nunca no runner
 // do GitHub Actions (`scripts/check-agent-eval-required.ts` só DECIDE se
 // precisa, nunca EXECUTA — ver docstring dos dois).
-export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac" | "calibration" | "agent-eval";
+// #7960 (item 4 da #7957): "ads-digest" — digest DIÁRIO de gasto em ads
+// (`scripts/ads-daily-digest.ts`), que até então saía por e-mail todo dia.
+// `sessionId` = `periodDate` (`YYYY-MM-DD`, o dia coberto pelo digest).
+// É `severity: "info"` no vocabulário do portão `notifyEditor` — nunca
+// acionável; o que exige ação continua nos alarmes condicionais dedicados
+// (`ads-test-watch.ts`, `ads-kill-switch-alarm.ts`).
+export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac" | "calibration" | "agent-eval" | "ads-digest";
 
 const VALID_KINDS: ReportKind[] = [
   "edicao",
@@ -113,6 +119,7 @@ const VALID_KINDS: ReportKind[] = [
   "cac",
   "calibration",
   "agent-eval",
+  "ads-digest",
 ];
 
 export function isReportKind(value: string): value is ReportKind {

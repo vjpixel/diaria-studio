@@ -44,71 +44,42 @@ const NEVER_DEBT = new Set(["scripts/lib/gmail-send.ts", "scripts/lib/push-notif
 /** Dívida conhecida — ver docstring acima. Ordenada, 1 por linha, pra diff
  * pequeno a cada remoção. */
 const ALLOWLIST: string[] = [
-  // #7960: ads-daily-digest.ts (severidade "info" — precisa da integração
-  // com registerReport do Studio, item 4 da #7957, ainda não feita),
-  // ads-kill-switch-alarm.ts e ads-test-watch.ts (severidade "urgente", mas
-  // injetam `sendEmail`/`GmailSendResult` via DI própria com cobertura de
-  // teste extensa em cima desse shape exato — migrar exige trocar a forma
+  // #7960 (6ª fatia): `ads-daily-digest.ts` SAIU daqui — virou relatório do
+  // Studio (`registerReport({kind: "ads-digest"})` + `notifyEditor` com
+  // `severity: "info"`), que é o item 4 da #7957. Ficam
+  // `ads-kill-switch-alarm.ts` e `ads-test-watch.ts` (severidade "urgente",
+  // mas injetam `sendEmail`/`GmailSendResult` via DI própria com cobertura
+  // de teste extensa em cima desse shape exato — migrar exige trocar a forma
   // do dep e reescrever os testes correspondentes, deixado pra uma unidade
-  // dedicada) ficam de fora por ora.
-  "scripts/ads-daily-digest.ts",
+  // dedicada).
   "scripts/ads-kill-switch-alarm.ts",
   "scripts/ads-test-watch.ts",
 
-  // #7960: os scripts abaixo usam `planAlarmReconciliation`/
-  // `applyAlarmReconciliation` (`scripts/lib/alarm-issues.ts`), não
-  // `ensureAlarmIssue` direto como os já migrados nas PRs #7965/#7973/#8251/
-  // #8285 — chamar `notifyEditor()` neles chamaria `ensureAlarmIssue` UMA 2ª
-  // VEZ pro mesmo achado, o que pode reabrir uma issue que a reconciliação
-  // acabou de FECHAR ou disputar o mesmo fingerprint com resultado
-  // divergente. Abordagem correta (piloto #linkedin-weekly-staleness-alarm.ts/
-  // meta-capi-staleness-alarm.ts, generalizada nas fatias 3/4): manter
+  // #7960: TODOS os ~25 scripts que usam `planAlarmReconciliation`/
+  // `applyAlarmReconciliation` (`scripts/lib/alarm-issues.ts`) já migraram
+  // (fatias #7965/#7973/#8251/#8285/#8297/#8363 e a 6ª, #8xxx). A abordagem
+  // que os destravou, registrada aqui pra quem for migrar um caso análogo
+  // no futuro: NUNCA chamar `notifyEditor()` nesses scripts (chamaria
+  // `ensureAlarmIssue` uma 2ª VEZ pro mesmo achado, podendo reabrir uma
+  // issue que a reconciliação acabou de FECHAR, ou disputar o mesmo
+  // fingerprint com resultado divergente). Em vez disso: manter
   // `applyAlarmReconciliation` INTOCADO e decidir só o E-MAIL a partir do
   // `AlarmFindingOutcome[]` via `notifyEditorForOutcomes(outcomes, severity,
-  // buildMessage, deps)` (`scripts/lib/editor-notify.ts`).
+  // buildMessage, deps)` (`scripts/lib/editor-notify.ts`), com
+  // `legacyResendIntent` decidido lendo o gate de e-mail antigo de CADA
+  // script — nunca por padrão de nome.
   //
-  // 4ª fatia (#8295+, este PR): mais 13 migrados. `legacyResendIntent`
-  // decidido lendo o gate de e-mail antigo de CADA script (nunca por padrão
-  // de nome — mesmo critério das fatias anteriores):
-  //   - `"dedupe-new-occurrences-only"` (11 — gate próprio era um fingerprint
-  //     AGREGADO comparado contra `state.lastAlarmedFingerprint`; o outcome
-  //     da issue reproduz a mesma idempotência): `apoios-diff-alarm.ts`,
-  //     `clarice-postmaster-alarm.ts` (2 achados independentes no mesmo
-  //     arquivo, ambos fingerprint CONSTANTE — dedup por streak, não por
-  //     conteúdo), `dmarc-drain.ts` (já filtrava `created`/`reopened` antes
-  //     da migração — swap 1:1), `geo-citation-staleness-alarm.ts` (2
-  //     achados), `home-meta-check.ts`, `hub-drift-check.ts`,
-  //     `hub-staleness-check.ts`, `kit-doi-orphan-guard.ts`,
-  //     `robots-txt-drift-check.ts`, `studio-liveness-alarm.ts` (fingerprint
-  //     CONSTANTE "unreachable" — dedup por streak, mesmo caso de
-  //     clarice-postmaster-alarm.ts), `subscribe-redirect-drift-check.ts`.
-  //   - default `"resend-every-run"` (2 — sem gate de dedup PRÓPRIO nenhum;
-  //     o script sempre e-mailiava toda execução com achado presente, então
-  //     o default já reproduz o comportamento literal):
-  //     `check-metrics-health.ts`, `clarice-guardrail-alarm.ts` (idempotência
-  //     real aqui é `markEvaluated` — campanha nunca reavaliada, então o
-  //     e-mail já sai no máximo 1x na vida por campanha independente do
-  //     `legacyResendIntent` escolhido).
-  //
-  // `systemd-failed-units-alarm.ts` e `task-never-armed-alarm.ts` migrados
-  // (5ª fatia, #7960): o 1º tinha `ALARM_DEDUP_EXPIRY_MS` (reenvio
-  // periódico independente do conjunto mudar) — mantido como gate CUSTOM
-  // externo a `notifyEditorForOutcomes` (que usa `"resend-every-run"`,
-  // porque o gate externo já decide o dedup de verdade). O 2º não tinha
-  // TTL, só comparação pura de conjunto — migrou como os 13 anteriores,
-  // `"dedupe-new-occurrences-only"`, sem state file próprio.
-  //
-  // Fica 1, com motivo PRÓPRIO pra não entrar nesta fatia:
-  // `worker-drift-check.ts`: tem 2 fluxos de e-mail distintos no mesmo
-  // arquivo — o alarme de drift (issue-based, migraria como os 13 acima)
-  // E o alarme de falha SUSTENTADA da API Cloudflare (`shouldAlarmApiError`),
-  // que NUNCA passa por `ensureAlarmIssue`/`applyAlarmReconciliation` (sem
-  // AlarmFinding, sem issue) — não há outcome pra alimentar
-  // `notifyEditorForOutcomes`. Migrar exigiria decidir se esse 2º alarme
-  // passa a abrir issue própria (mudança de comportamento além do escopo
-  // desta fatia) ou ganha um caminho de e-mail direto fora do portão —
-  // decisão que merece unidade dedicada, não um encaixe forçado aqui.
-  "scripts/worker-drift-check.ts",
+  // 2 armadilhas que o review pegou ao longo das fatias, ambas invisíveis no
+  // diff e mudas no CI:
+  //   1. **Fingerprint estático** congela a issue no conteúdo da 1ª execução
+  //      (fatia 1) — derivar do CONJUNTO de achados quando a semântica for
+  //      essa.
+  //   2. **Cursor de estado avançando sem nada ter chegado ao editor**
+  //      (fatias 4/5/6): `sendGmailMessage` LANÇAVA e abortava `main()`
+  //      antes do `saveState`, então o retry era garantido por acidente do
+  //      fluxo de controle; `notifyEditor*` nunca lança. Decisão extraída
+  //      em `shouldPersistAlarmedState`/`notifyEditorResultReachedEditor`
+  //      (`scripts/lib/editor-notify.ts`) — REUSAR, nunca reimplementar.
 
   // #7960 (item 4 da #7957): implementação de baixo nível de
   // `dispatchReportEmail`/`buildReportEmail` — o canal de e-mail que

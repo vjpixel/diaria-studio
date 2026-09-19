@@ -496,6 +496,34 @@ export function shouldAlarm(state: WorkerDriftAlarmState, results: readonly Work
 }
 
 /**
+ * Pura (#7960 fatia 6) — resolve o `lastAlarmedFingerprint` a PERSISTIR
+ * nesta execução.
+ *
+ * Existe por causa da armadilha central da migração pro portão
+ * `notifyEditor`: `sendGmailMessage` LANÇAVA em falha de envio, abortando
+ * `main()` antes do `saveState`, então "não gravar o cursor quando o alarme
+ * se perdeu" era garantido por ACIDENTE do fluxo de controle.
+ * `notifyEditorForOutcomes` nunca lança — sem esta função, o cursor
+ * avançaria mesmo com o push falho e aquele drift NUNCA mais seria
+ * reportado (a execução seguinte veria o mesmo fingerprint "já alarmado" e
+ * ficaria muda).
+ *
+ * `alarmReachedEditor` vem de `shouldPersistAlarmedState`
+ * (`scripts/lib/editor-notify.ts`) e é `true` também quando nenhum alarme
+ * foi TENTADO nesta execução (nada a preservar) ou quando a política
+ * suprimiu o e-mail de propósito — só é `false` em falha de infra real.
+ */
+export function resolveNextAlarmedFingerprint(opts: {
+  previousFingerprint: string | null;
+  pending: boolean;
+  computedFingerprint: string | null;
+  alarmReachedEditor: boolean;
+}): string | null {
+  if (!opts.alarmReachedEditor) return opts.previousFingerprint;
+  return opts.pending ? opts.computedFingerprint : null;
+}
+
+/**
  * Pura — `false` quando o cursor de idempotência NÃO deve ser persistido
  * nesta execução: `--dry-run` (nunca grava) OU falha da consulta Cloudflair
  * para a conta inteira (`metadataError` presente).
