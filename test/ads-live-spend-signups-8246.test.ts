@@ -16,6 +16,7 @@ import {
   FORCE_FROM_DOTENV_KEYS,
 } from "../scripts/ads-live-spend-signups.ts";
 import { daysBetween, formatDateOnly } from "../scripts/lib/ads-test-schedule.ts";
+import { isEditorTestSignupEmail } from "../scripts/lib/ads-campaign-economics-fetch.ts";
 
 describe("#8246 — ads-live-spend-signups: formatadores e force de env", () => {
   it("formatSpendTable ordena por data e acumula, independente da ordem de entrada", () => {
@@ -41,9 +42,31 @@ describe("#8246 — ads-live-spend-signups: formatadores e force de env", () => 
     assert.match(lines[3], /2026-09-07\s+3\s+5/);
   });
 
-  it("formatSignupsTable avisa que a contagem é bruta (sem excluir e-mail de teste)", () => {
-    const out = formatSignupsTable("Google Ads (teste 2608)", []);
-    assert.match(out, /contagem bruta, sem excluir e-mail de teste/);
+  // #8433: o cabeçalho dizia "contagem bruta, sem excluir e-mail de teste",
+  // contradizendo o filtro que `fetchKitSignupsByChannel` aplica desde o
+  // #8349. O rótulo errado convidava justamente o erro que o #8349 quis
+  // evitar: descartar à mão o que o código já descartou, inflando o CAC num
+  // braço de baixo volume. Este teste casa o rótulo com o COMPORTAMENTO do
+  // filtro — se `isEditorTestSignupEmail` deixar de excluir, ele quebra. O
+  // elo seguinte da corrente (que `fetchKitSignupsByChannel` de fato CHAMA
+  // esse predicado) é coberto pelo teste `#8349: cadastro de teste do editor
+  // ... nunca conta como aquisição paga real` em
+  // `test/ads-campaign-economics-fetch.test.ts` — os dois juntos travam o
+  // rótulo na ponta e a exclusão na fonte.
+  it("formatSignupsTable declara a exclusão do e-mail de teste, e o filtro de fato exclui (#8433)", () => {
+    const out = formatSignupsTable("Google Ads (teste 2608)", [
+      { date: "2026-09-06", cadastros: 2 },
+      { date: "2026-09-07", cadastros: 1 },
+    ]);
+    assert.match(out, /e-mail de teste do editor já excluído, #8349/);
+    assert.doesNotMatch(out, /contagem bruta/);
+    assert.doesNotMatch(out, /sem excluir/);
+
+    // O rótulo só é verdadeiro porque a fonte filtra — ancorar nos dois
+    // endereços que o #8349 nomeia, e no que ele deliberadamente deixa de fora.
+    assert.equal(isEditorTestSignupEmail("vjpixel+teste2608@gmail.com"), true);
+    assert.equal(isEditorTestSignupEmail("pixel@memelab.com.br"), true);
+    assert.equal(isEditorTestSignupEmail("leitor.qualquer@gmail.com"), false);
   });
 
   it("forceFromDotenvText só sobrescreve as 3 chaves da allowlist, nunca outras", () => {
