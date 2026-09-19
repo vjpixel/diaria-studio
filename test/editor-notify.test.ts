@@ -143,6 +143,43 @@ describe("notifyEditor", () => {
     assert.equal(sendPush.mock.callCount(), 0);
   });
 
+  it("severity 'info': logWriteOk é undefined quando o `log` injetado não devolve boolean (back-compat com mocks legados)", async () => {
+    const log = mock.fn(); // não devolve nada — mesmo shape dos mocks pré-#8453
+    const result = await notifyEditor(
+      { check: "ads-daily-digest", fingerprint: "2609-01", severity: "info", subject: "s", body: "b" },
+      { log, emailPolicy: "urgent_only" },
+    );
+    assert.equal(result.logWriteOk, undefined);
+  });
+
+  it("severity 'info': logWriteOk propaga true quando a escrita do run-log teve sucesso (#8453)", async () => {
+    const log = mock.fn(() => true);
+    const result = await notifyEditor(
+      { check: "ads-daily-digest", fingerprint: "2609-01", severity: "info", subject: "s", body: "b" },
+      { log, emailPolicy: "urgent_only" },
+    );
+    assert.equal(result.logWriteOk, true);
+  });
+
+  it("severity 'info': logWriteOk propaga false quando a escrita do run-log falhou em silêncio (#8453 — achado #7960/PR #8452)", async () => {
+    const log = mock.fn(() => false);
+    const result = await notifyEditor(
+      { check: "ads-daily-digest", fingerprint: "2609-01", severity: "info", subject: "s", body: "b" },
+      { log, emailPolicy: "urgent_only" },
+    );
+    assert.equal(result.emailSent, false);
+    assert.equal(result.logWriteOk, false);
+  });
+
+  it("severity 'silencio': logWriteOk propaga false quando a escrita do run-log falhou em silêncio (#8453)", async () => {
+    const log = mock.fn(() => false);
+    const result = await notifyEditor(
+      { check: "codex-credential-alarm", fingerprint: "conta-x", severity: "silencio", subject: "s", body: "b" },
+      { log, emailPolicy: "urgent_only" },
+    );
+    assert.equal(result.logWriteOk, false);
+  });
+
   it("severity 'acao': garante a issue, nunca manda e-mail sob 'urgent_only'", async () => {
     const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
     const result = await notifyEditor(
