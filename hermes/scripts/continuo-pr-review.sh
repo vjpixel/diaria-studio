@@ -210,7 +210,7 @@ PR_NUMBERS=$(gh pr list --state open --json number,headRefName \
   --jq '.[] | select(.headRefName | startswith("bot/") | not) | .number')
 
 if [ -z "$PR_NUMBERS" ]; then
-  echo "[continuo-pr-review] nenhuma PR elegível aberta (exceto bot/*) — noop"
+  echo "[continuo-pr-review] nenhuma PR elegível aberta (exceto bot/*) — noop" >&2
   exit 0
 fi
 
@@ -222,6 +222,12 @@ INFRA_ERROR_SUMMARY=""
 MERGED=0
 ESCALATED=0
 REJECTED=0
+# Entrega silenciosa em dia normal (editor, 19/09): só estes dois contadores
+# — "1ª vez", isto é, PR que ACABOU de virar responsabilidade do editor —
+# mais falhas/erros de infra disparam mensagem. Merge e review bem-sucedidos
+# não avisam nada (o Hermes trata stdout vazio como tick silencioso).
+ESCALATED_NEW=0
+REJECTED_NEW=0
 LOCK_BLOCKED=0
 
 # #6910 (01/09/2026): o motivo de um erro de infra (exit 3 de
@@ -347,7 +353,7 @@ try_merge_gate() {
   case "$GATE_RC" in
     0)
       REVIEWED_HEAD_SHA=$(printf '%s' "$GATE_JSON" | jq -r '.details.reviewedHeadSha // empty')
-      echo "[continuo-pr-review] PR #$pr: merge"
+      echo "[continuo-pr-review] PR #$pr: merge" >&2
       # Editor (09/09): stdout é a entrega curta no Telegram; o JSON cru do gate
       # vai pro STDERR, que o cron captura no log. Mesmo tratamento do
       # transcript do `claude -p` logo abaixo. Silenciar de vez perderia o
@@ -421,7 +427,7 @@ try_merge_gate() {
         # retenta no próximo tick) — `command grep` fecha o caso mesmo assim,
         # pra não depender de sorte de direção em toda chamada futura.
         if echo "$MERGED_STATE" | command grep -q "^MERGED"; then
-          echo "[continuo-pr-review] PR #$pr: gh pr merge saiu com erro (rc=$MERGE_RC) mas o estado remoto confirma MERGED — contando como mergeada"
+          echo "[continuo-pr-review] PR #$pr: gh pr merge saiu com erro (rc=$MERGE_RC) mas o estado remoto confirma MERGED — contando como mergeada" >&2
           MERGED=$((MERGED + 1))
           MERGE_CONFIRMED=1
         else
@@ -432,7 +438,7 @@ try_merge_gate() {
       else
         MERGED=$((MERGED + 1))
         MERGE_CONFIRMED=1
-        echo "[continuo-pr-review] PR #$pr: mergeada"
+        echo "[continuo-pr-review] PR #$pr: mergeada" >&2
       fi
 
       # `git pull` só quando o merge foi de fato confirmado — mesmo critério
@@ -451,7 +457,7 @@ try_merge_gate() {
       # escaparia da rede de logging desta PR).
       if [ "$MERGE_CONFIRMED" -eq 1 ]; then
         set +e
-        git pull --ff-only
+        git pull --ff-only >&2
         PULL_RC=$?
         set -e
         if [ "$PULL_RC" -ne 0 ]; then
@@ -532,13 +538,14 @@ try_merge_gate() {
         log_infra_error "$pr" "escalate_label_rc=$ESCALATE_RC" "$ESCALATE_STDERR"
       fi
       if [ "$FIRST_TIME" = "true" ]; then
-        echo "[continuo-pr-review] PR #$pr: escalate (1ª vez) — revisão humana"
+        echo "[continuo-pr-review] PR #$pr: escalate (1ª vez) — revisão humana" >&2
+        ESCALATED_NEW=$((ESCALATED_NEW + 1))
       else
-        echo "[continuo-pr-review] PR #$pr: escalate (já sinalizada)"
+        echo "[continuo-pr-review] PR #$pr: escalate (já sinalizada)" >&2
       fi
       ;;
     2)
-      echo "[continuo-pr-review] PR #$pr: rejeitada"
+      echo "[continuo-pr-review] PR #$pr: rejeitada" >&2
       # Editor (09/09): stdout é a entrega curta no Telegram; o JSON cru do gate
       # vai pro STDERR, que o cron captura no log. Mesmo tratamento do
       # transcript do `claude -p` logo abaixo. Silenciar de vez perderia o
@@ -580,7 +587,7 @@ try_merge_gate() {
       fi
 
       if [ "$SKIP_COMMENT" = "true" ]; then
-        echo "[continuo-pr-review] PR #$pr: motivo de rejeição idêntico ao último comentário — não duplicando (#7446 item 1)"
+        echo "[continuo-pr-review] PR #$pr: motivo de rejeição idêntico ao último comentário — não duplicando (#7446 item 1)" >&2
       else
         set +e
         gh pr comment "$pr" --body "$REJECT_BODY"
@@ -642,9 +649,10 @@ try_merge_gate() {
         log_infra_error "$pr" "reject_label_rc=$REJECT_LABEL_RC" "$REJECT_LABEL_STDERR"
       fi
       if [ "$REJECT_FIRST_TIME" = "true" ]; then
-        echo "[continuo-pr-review] PR #$pr: gate=reject (1ª vez) — label continuo-rejeitado aplicado, decidir entre consertar ou fechar (hermes-diaria-continuo/SKILL.md §3 passo 1, #7567)"
+        echo "[continuo-pr-review] PR #$pr: gate=reject (1ª vez) — label continuo-rejeitado aplicado, decidir entre consertar ou fechar (hermes-diaria-continuo/SKILL.md §3 passo 1, #7567)" >&2
+        REJECTED_NEW=$((REJECTED_NEW + 1))
       else
-        echo "[continuo-pr-review] PR #$pr: gate=reject (já sinalizada — sem repetir notificação)"
+        echo "[continuo-pr-review] PR #$pr: gate=reject (já sinalizada — sem repetir notificação)" >&2
       fi
       ;;
     *)
@@ -669,7 +677,7 @@ for PR in $PR_NUMBERS; do
     # buscar/fabricar aqui. Marcador legado sem `head=` (pré-#6926) resolve
     # sozinho pra `reviewedHeadSha=null` → o gate escala, nunca assume que
     # o HEAD atual é o que foi revisado.
-    echo "[continuo-pr-review] PR #$PR: já com review — direto ao merge"
+    echo "[continuo-pr-review] PR #$PR: já com review — direto ao merge" >&2
     SKIPPED=$((SKIPPED + 1))
     try_merge_gate "$PR"
     continue
@@ -770,7 +778,7 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
     --model sonnet --effort low 1>&2
   CLAUDE_RC=$?
   set -e
-  echo "[continuo-pr-review] PR #$PR: revisada — veredito/comentário na PR no GitHub"
+  echo "[continuo-pr-review] PR #$PR: revisada — veredito/comentário na PR no GitHub" >&2
 
   if [ "$CLAUDE_RC" -ne 0 ]; then
     echo "[continuo-pr-review] PR #$PR: sessão de review saiu com rc=$CLAUDE_RC — não conta como revisada, tenta de novo no próximo tick" >&2
@@ -789,20 +797,60 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   try_merge_gate "$PR"
 done
 
-# Entrega curta por padrão (editor, 09/09). `bloqueadas-por-lock` só aparece
-# quando NÃO-zero: o docblock de LOCK_BLOCKED chama esse contador de "sinal
-# agregado de isto aconteceu N vezes" — some da entrega no dia normal, mas
-# nunca justo no dia em que há contenção de lock pra relatar (#8212 review, P3).
+# Entrega SÓ QUANDO HÁ PROBLEMA (editor, 19/09/2026). Antes, toda rodada
+# despejava no Telegram o progresso PR a PR + o resumo; o editor pediu
+# "só receber mensagem se algum problema estiver acontecendo". O job é
+# `no_agent=True` no Hermes, então o `prompt` do job ("resuma em 2 linhas")
+# NUNCA é lido — o stdout do script é entregue verbatim, e stdout vazio é
+# tratado como tick silencioso (sem mensagem nenhuma). Por isso a entrega
+# curta é feita AQUI, não no prompt: todo o progresso foi pra stderr (que o
+# Hermes só entrega quando o script sai não-zero) e o stdout abaixo só é
+# escrito quando há algo que exige o editor.
+#
+# O que conta como problema: PR que acabou de virar responsabilidade humana
+# (escalate/reject de 1ª vez — repetição já é deduplicada acima), falha de
+# sessão de review, e erro de infra. Merge, review limpo e "nada elegível"
+# são normalidade: silêncio.
+NOTIFY=0
+[ "$ESCALATED_NEW" -gt 0 ] 2>/dev/null && NOTIFY=1
+[ "$REJECTED_NEW" -gt 0 ] 2>/dev/null && NOTIFY=1
+[ "$((FAILED + INFRA_ERRORS))" -gt 0 ] 2>/dev/null && NOTIFY=1
+
+# `bloqueadas-por-lock` só aparece quando NÃO-zero: o docblock de
+# LOCK_BLOCKED chama esse contador de "sinal agregado de isto aconteceu N
+# vezes" — some da entrega no dia normal, mas nunca justo no dia em que há
+# contenção de lock pra relatar (#8212 review, P3).
 LOCK_NOTE=""
 [ "$LOCK_BLOCKED" -gt 0 ] 2>/dev/null && LOCK_NOTE=" bloqueadas-por-lock=$LOCK_BLOCKED"
-echo "[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))$LOCK_NOTE"
+
+SUMMARY="[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))$LOCK_NOTE"
+# O resumo sempre vai pro log (stderr), mesmo em rodada silenciosa — o
+# histórico por tick não pode depender de ter havido problema.
+echo "$SUMMARY" >&2
+
+if [ "$NOTIFY" -eq 0 ]; then
+  exit 0
+fi
+
+echo "$SUMMARY"
+if [ "$ESCALATED_NEW" -gt 0 ]; then
+  echo "[continuo-pr-review] $ESCALATED_NEW PR(s) escalada(s) agora — precisam de revisão humana (label continuo-escalado)"
+fi
+if [ "$REJECTED_NEW" -gt 0 ]; then
+  echo "[continuo-pr-review] $REJECTED_NEW PR(s) rejeitada(s) agora — consertar ou fechar (label continuo-rejeitado)"
+fi
 # #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
-# infra — a linha de resumo é o que o Telegram carrega; sem isso
-# "erros-de-infra=1" chegava sem nenhum rastro de causa. Log completo
-# (não-truncado, todas as ocorrências, não só as desta rodada) sempre em
-# $INFRA_ERROR_LOG.
+# infra — sem isso "erros-de-infra=1" chegava sem nenhum rastro de causa.
+# Log completo (não-truncado, todas as ocorrências, não só as desta rodada)
+# sempre em $INFRA_ERROR_LOG.
 if [ "$INFRA_ERRORS" -gt 0 ]; then
   echo "[continuo-pr-review] motivo(s) do(s) erro(s) de infra desta rodada:"
   printf '%s' "$INFRA_ERROR_SUMMARY"
   echo "[continuo-pr-review] log completo: $INFRA_ERROR_LOG"
 fi
+
+# `exit 0` explícito: sob `set -e` o status final do script é o do último
+# comando, e um `if` cujo teste falha deixaria o script saindo não-zero —
+# o Hermes trata saída não-zero como "o watchdog quebrou" e entrega um
+# alerta de erro, justo o oposto do silêncio que esta seção existe pra dar.
+exit 0
