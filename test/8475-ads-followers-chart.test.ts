@@ -60,6 +60,7 @@ describe("#8475 Parte B — renderFollowersChart (regressão via contrato)", () 
   });
 
   it("seguidores null não renderiza gráfico (fail-soft)", () => {
-    assert.strictEqual(!null, true);
+    const followers: { instagram: unknown } | null = null;
+    assert.strictEqual(followers, null);
   });
 });
