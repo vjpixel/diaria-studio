@@ -53,9 +53,9 @@
  * que `brevo_diaria.test_email` e os `EDITOR_SEED_EMAILS`
  * (`scripts/lib/editor-copy.ts`) não estão `emailBlacklisted` nem ausentes
  * da conta — falha ALTO (`exit(2)`, inclusive em `--dry-run`) se algum
- * estiver. Achado ao vivo: `vjpixel@gmail.com` (test_email) ficou
- * `emailBlacklisted: true` em 17/09/2026, quebrando `sendTest` e apagando em
- * silêncio a sonda de inbox placement do Gmail pessoal. A decisão de fundo
+ * estiver. Achado ao vivo (17/09/2026): o `test_email` configurado ficou
+ * `emailBlacklisted: true`, quebrando `sendTest` e apagando em silêncio a
+ * sonda de inbox placement do Gmail pessoal (ver #8436). A decisão de fundo
  * (trocar o seed vs remover o blacklist) fica com o editor — este guard só
  * recusa prosseguir sem alguém decidir.
  *

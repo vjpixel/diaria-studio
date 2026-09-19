@@ -232,7 +232,7 @@ export { describeBreaches };
 // ─── Seed emails (test_email + EDITOR_SEED_EMAILS) blacklisted na conta (#8436) ───
 
 /**
- * #8436 (19/09/2026): `brevo_diaria.test_email` (vjpixel@gmail.com) apareceu
+ * #8436 (19/09/2026): o `brevo_diaria.test_email` configurado apareceu
  * `emailBlacklisted: true` na conta Brevo da diária — `sendTest` passou a
  * falhar 400 ("Test emails cannot be sent to non-existent/blacklisted/
  * without-contact-list users") e a sonda de inbox placement do Gmail
