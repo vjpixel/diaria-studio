@@ -121,4 +121,44 @@ describe("resolveGateResult — regressão #8425: incompatibilidade de flag --js
     );
     assert.equal(result.verdict, "error");
   });
+
+  it("regressão rev.2 (self-trap do PR #8427): gh saudável + payload JSON válido cujo commits[].messageBody cita as assinaturas do detector NUNCA vira gh_incompatible_flags", () => {
+    // `gh pr view --json statusCheckRollup,mergeable,commits` devolve o
+    // corpo de cada commit do PR como DADO dentro de `commits`. Um PR cujo
+    // próprio commit body discute (em prosa) as duas regexes que este
+    // detector procura — como o PR que introduziu o detector, ou qualquer
+    // PR futuro que corrija/discuta o mesmo achado — não pode fazer um
+    // `gh` são e um payload válido serem lidos como incompatibilidade de
+    // versão. O veredito precisa vir só do `statusCheckRollup` real.
+    const payload = JSON.stringify({
+      statusCheckRollup: [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }],
+      mergeable: "MERGEABLE",
+      commits: [
+        {
+          committedDate: "2026-09-19T00:00:00Z",
+          messageBody:
+            'O detector reconhece "unknown flag: --json" e "Unknown JSON field" no stdout/stderr do gh.',
+        },
+      ],
+    });
+    const result = resolveGateResult(spawnOutcome({ status: 0, stdout: payload, stderr: "" }));
+    assert.equal(result.verdict, "pass");
+    assert.notEqual(result.verdict, "gh_incompatible_flags");
+  });
+
+  it("regressão rev.2: mesmo payload citando a assinatura do binário claude (#7189) também não é promovido a claude_binary_error quando o gh está saudável", () => {
+    const payload = JSON.stringify({
+      statusCheckRollup: [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }],
+      mergeable: "MERGEABLE",
+      commits: [
+        {
+          committedDate: "2026-09-19T00:00:00Z",
+          messageBody: "fix: detecta a assinatura claude native binary not installed em stdout/stderr",
+        },
+      ],
+    });
+    const result = resolveGateResult(spawnOutcome({ status: 0, stdout: payload, stderr: "" }));
+    assert.equal(result.verdict, "pass");
+    assert.notEqual(result.verdict, "claude_binary_error");
+  });
 });

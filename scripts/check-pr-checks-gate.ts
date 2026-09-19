@@ -148,10 +148,38 @@ function extractHeadCommittedAt(commits: unknown): string | null {
  * isso nunca pode virar `verdict: "error"` genérico (que o chamador de
  * espera trataria como falha TRANSITÓRIA, retentável) nem, pior, ser
  * mascarado por um `status`/JSON qualquer que sobre no mesmo output.
+ *
+ * #8425 rev.2 (regressão do PR #8427 que introduziu o item acima): `gh pr
+ * view --json statusCheckRollup,mergeable,commits` devolve, dentro de
+ * `commits`, a mensagem de cada commit do PR — texto de DADO, não de erro.
+ * Um PR cujo próprio commit body cita as assinaturas acima (ex: o PR que
+ * corrige este arquivo, ou qualquer PR que discuta o achado em prosa) fazia
+ * `stdout` casar mesmo com `gh` saudável e o payload sendo um
+ * `statusCheckRollup` real — self-trap medido ao vivo no PR #8427. `stdout`
+ * só entra na varredura de qualquer uma das duas assinaturas quando ele NÃO
+ * é um payload JSON válido (comando falhou, ou o texto capturado não é JSON
+ * — que é exatamente o shape do erro real do `gh`/wrapper: texto solto, não
+ * um objeto). `stderr` e a mensagem de erro do `spawnSync` continuam
+ * sempre varridos, sem essa condição — são canais que só carregam ERRO,
+ * nunca payload de sucesso.
  */
+function shouldScanStdoutForErrorSignatures(result: GhPrViewSpawnOutcome): boolean {
+  if (result.error) return true;
+  if (result.status !== 0) return true;
+  if (!result.stdout) return true;
+  try {
+    JSON.parse(result.stdout);
+    return false; // stdout é um payload JSON válido — nunca um canal de erro.
+  } catch {
+    return true; // stdout não parseia como JSON — trata como texto de erro em potencial.
+  }
+}
+
 export function resolveGateResult(result: GhPrViewSpawnOutcome): CliGateResult {
+  const scanStdout = shouldScanStdoutForErrorSignatures(result);
+
   const envErrorSource = findClaudeBinaryErrorSignature({
-    stdout: result.stdout,
+    ...(scanStdout ? { stdout: result.stdout } : {}),
     stderr: result.stderr,
     "mensagem de erro do spawn": result.error?.message,
   });
@@ -170,7 +198,7 @@ export function resolveGateResult(result: GhPrViewSpawnOutcome): CliGateResult {
   }
 
   const ghFlagErrorSource = findGhJsonFlagIncompatibilitySignature({
-    stdout: result.stdout,
+    ...(scanStdout ? { stdout: result.stdout } : {}),
     stderr: result.stderr,
     "mensagem de erro do spawn": result.error?.message,
   });
