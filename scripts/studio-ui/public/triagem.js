@@ -274,7 +274,16 @@ export function reasonCell(track, matched, reasonUiOverride, waitUntilLabel, res
 }
 
 function ciBadge(ciState) {
-  const labelPt = { green: "verde", red: "vermelho", pending: "pendente", none: "sem checks" }[ciState] ?? ciState;
+  // "stale" (#8484): CANCELLED isolado de "red" — normalmente um push novo
+  // superou o run anterior via concurrency, não código quebrado. Rótulo
+  // já nomeia a ação certa (re-rodar), distinta da de "red" (consertar).
+  const labelPt = {
+    green: "verde",
+    red: "vermelho",
+    stale: "cancelado — re-rodar",
+    pending: "pendente",
+    none: "sem checks",
+  }[ciState] ?? ciState;
   return `<span class="ci-badge ci-${ciState}">${labelPt}</span>`;
 }
 
