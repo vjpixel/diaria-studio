@@ -39,11 +39,15 @@ import {
   pullBingUrlLinks,
   buildBingLinksPullOutput,
   pullOneSite,
+  isBrandNavigationalQuery,
+  aggregateRelatedRows,
+  buildRelatedTermsReport,
   type BingQueryRow,
   type BingTrafficRow,
   type BingKeywordRow,
   type BingKeywordTermEntry,
   type BingLinksPageDetail,
+  type BingRelatedAggregatedRow,
 } from "../scripts/bing-pull.ts";
 import { BING_KNOWN_SITES } from "../scripts/lib/bing.ts";
 import { GEO_HUB_QUESTIONS } from "../scripts/lib/geo-citation-monitor.ts";
@@ -798,5 +802,150 @@ describe("pullOneSite (#5621) — usado por `--mode site --site all`", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── #8356 — related.data saía [] com related.raw.d populado (regressão do bug)
+describe("isBrandNavigationalQuery (#8356 item 2)", () => {
+  it("casos reais do pull 2026-09-01 são marcados", () => {
+    assert.ok(isBrandNavigationalQuery("canva"));
+    assert.ok(isBrandNavigationalQuery("canva entrar"));
+    assert.ok(isBrandNavigationalQuery("canva gratuito"));
+    assert.ok(isBrandNavigationalQuery("notebook lm"));
+    assert.ok(isBrandNavigationalQuery("notebooklm"));
+    assert.ok(isBrandNavigationalQuery("notebook lm google"));
+    assert.ok(isBrandNavigationalQuery("senac"));
+    assert.ok(isBrandNavigationalQuery("senac cursos gratuitos"));
+  });
+
+  it("termos que não são marca/navegação passam", () => {
+    assert.ok(!isBrandNavigationalQuery("detector de ia"));
+    assert.ok(!isBrandNavigationalQuery("como usar ia no trabalho"));
+    assert.ok(!isBrandNavigationalQuery("ia"));
+    assert.ok(!isBrandNavigationalQuery("chatgpt"));
+  });
+
+  it("tolerante a acento/case", () => {
+    assert.ok(isBrandNavigationalQuery("CAnVa"));
+    assert.ok(isBrandNavigationalQuery("SENAC"));
+  });
+});
+
+describe("aggregateRelatedRows / buildRelatedTermsReport (#8356 item 2)", () => {
+  const row = (query: string, impressions: number, seed: string): BingKeywordRow => ({
+    query,
+    date: null,
+    impressions,
+    broadImpressions: impressions * 2,
+  });
+
+  // #8356: `aggregateRelatedRows` lê o PAYLOAD BRUTO (`related.raw`), não o
+  // campo `data` filtrado — é o ponto do issue. O `raw` deve ser o shape
+  // bruto da API (`{ d: [{ Query, Impressions, BroadImpressions }] }`) que
+  // `parseBingKeywordRowsResponse` parseia de volta nas mesmas linhas.
+  const entry = (term: string, related: BingKeywordRow[]): BingKeywordTermEntry => ({
+    term,
+    keyword: { ok: true, data: { query: term, impressions: 0, broadImpressions: 0 }, raw: {} },
+    related: {
+      ok: true,
+      data: related,
+      raw: { d: related.map((r) => ({ Query: r.query, Impressions: r.impressions, BroadImpressions: r.broadImpressions })) },
+    },
+    stats: { ok: true, data: [], raw: [] },
+  });
+
+  it("deduplica por query e soma impressions de sementes diferentes", () => {
+    const entries = [
+      entry("newsletter de ia", [row("detector de ia", 3440, "newsletter de ia")]),
+      entry("ferramentas de ia", [row("detector de ia", 100, "ferramentas de ia"), row("ia", 5, "ferramentas de ia")]),
+    ];
+    const agg = aggregateRelatedRows(entries);
+    assert.deepEqual(agg, [
+      { query: "detector de ia", impressions: 3540, broadImpressions: 7080, seeds: ["newsletter de ia", "ferramentas de ia"] },
+      { query: "ia", impressions: 5, broadImpressions: 10, seeds: ["ferramentas de ia"] },
+    ]);
+  });
+
+  it("ignora related.ok=false (chamada que falhou não contribui)", () => {
+    const entries: BingKeywordTermEntry[] = [
+      { term: "x", keyword: { ok: true, data: { query: "x", impressions: 0, broadImpressions: 0 }, raw: {} }, related: { ok: false, error: "boom" }, stats: { ok: true, data: [], raw: [] } },
+    ];
+    assert.deepEqual(aggregateRelatedRows(entries), []);
+  });
+
+  it("#8356 REGRESSÃO — agrega do raw mesmo quando data é filtrado vazio (o bug em si)", () => {
+    // Cenário real do issue: semente "newsletter de ia" → related.data=[]
+    // (filterRelevantRelated descartou tudo), mas related.raw.d tem 80 linhas
+    // com demanda real (detector de ia, 3440 impressões). O relatório SÓ
+    // funciona se ler o raw.
+    const rawRelated = {
+      d: [
+        { Query: "detector de ia", Impressions: 3440, BroadImpressions: 4000 },
+        { Query: "humanizador de ia", Impressions: 730, BroadImpressions: 800 },
+        { Query: "canva", Impressions: 787721, BroadImpressions: 900000 },
+      ],
+    };
+    const entries: BingKeywordTermEntry[] = [
+      {
+        term: "newsletter de ia",
+        keyword: { ok: true, data: { query: "newsletter de ia", impressions: 0, broadImpressions: 0 }, raw: {} },
+        related: { ok: true, data: [], raw: rawRelated }, // data VAZIO como no bug
+        stats: { ok: true, data: [], raw: [] },
+      },
+    ];
+    const agg = aggregateRelatedRows(entries);
+    // 3 linhas do raw, nenhuma do data vazio
+    assert.equal(agg.length, 3);
+    assert.deepEqual(agg, [
+      { query: "detector de ia", impressions: 3440, broadImpressions: 4000, seeds: ["newsletter de ia"] },
+      { query: "humanizador de ia", impressions: 730, broadImpressions: 800, seeds: ["newsletter de ia"] },
+      { query: "canva", impressions: 787721, broadImpressions: 900000, seeds: ["newsletter de ia"] },
+    ]);
+  });
+
+  it("buildRelatedTermsReport filtra marca/navegação e ordena por impressions desc", () => {
+    const entries = [
+      entry("como criar imagens com inteligência artificial", [
+        row("canva", 787721, "como criar imagens com inteligência artificial"),
+        row("como criar personagens jogos", 66100, "como criar imagens com inteligência artificial"),
+        row("canva entrar", 64355, "como criar imagens com inteligência artificial"),
+      ]),
+      entry("curso de ia em português", [row("senac", 27704, "curso de ia em português")]),
+    ];
+    const md = buildRelatedTermsReport(entries, "Título de teste");
+    // canva, canva entrar e senac são filtrados; só entra "como criar personagens jogos"
+    assert.ok(md.includes("como criar personagens jogos"));
+    assert.ok(md.includes("66.100"));
+    // "canva"/"senac" só aparecem na linha de legenda de filtragem, nunca como
+    // linha de termo relacionado — checar a linha de tabela, não o texto inteiro.
+    const tableRows = md.split("\n").filter((l) => l.startsWith("| ") && !l.startsWith("| #"));
+    for (const row of tableRows) {
+      assert.ok(!row.includes("canva"), `linha de termo não deve conter marca: ${row}`);
+      assert.ok(!row.includes("senac"), `linha de termo não deve conter marca: ${row}`);
+    }
+    // ordenação: 66100 vem antes de qualquer outro
+    const posPersonagens = md.indexOf("como criar personagens jogos");
+    assert.ok(posPersonagens > -1);
+  });
+
+  it("buildRelatedTermsReport header e totais", () => {
+    const entries = [entry("a", [row("ia", 10, "a"), row("chatgpt", 5, "a")])];
+    const md = buildRelatedTermsReport(entries, "Bing Related Keywords — 2026-09-01");
+    assert.ok(md.startsWith("# Bing Related Keywords — 2026-09-01"));
+    assert.ok(md.includes("- Termos relacionados agregados: **2**"));
+    assert.ok(md.includes("- Impressões totais (soma, deduplicada por query): **15**"));
+  });
+
+  it("lista vazia não crasha — relatório com 0 linhas", () => {
+    const md = buildRelatedTermsReport([], "vazio");
+    assert.ok(md.startsWith("# vazio"));
+    assert.ok(md.includes("- Termos relacionados agregados: **0**"));
+    assert.ok(md.includes("- Impressões totais (soma, deduplicada por query): **0**"));
+  });
+});
+
+describe("#8356 item 3 — seeds por CLI (--seeds)", () => {
+  it("buildBingDemandTerms com seeds explícita não toca o disco", () => {
+    assert.deepEqual(buildBingDemandTerms(["chatgpt", "gemini"]), ["chatgpt", "gemini"]);
   });
 });
