@@ -67,9 +67,17 @@ Complementa o Passo 1 quando o CSV (`clicks-2608.csv`) está atrasado ou
 você quer conferir a fonte automática direto — imprime, por braço, a série
 diária de gasto (dia fechado + hoje parcial) e a série diária de cadastros
 do Kit, ambas desde `d0`. Mesma fonte de dados do Passo 2 abaixo
-(`fetchCampaignEconomicsSources`), no nível de CONTA — o braço Microsoft
-soma PMax + Search automaticamente (separação por campanha é escopo do
-#8256, não desta skill).
+(`fetchCampaignEconomicsSources`), no nível de CONTA — as tabelas "por
+braço" seguem somando PMax + Search no total do braço Microsoft, inalterado.
+
+**Desde o #8256, a mesma chamada também separa por campanha.** Uma seção
+adicional, "Quebra por campanha (Microsoft Ads, #8256)", imprime gasto e
+cadastros de PMax e Search SEPARADAMENTE — gasto via `CampaignId` na
+Reporting API (`res.microsoftCampaignBreakdown`), cadastros via
+`fields.utm_campaign` do Kit (`res.signupsByCampaign`, filtrado ao canal
+Microsoft). Narrar essa seção quando presente (ela só aparece com dado —
+braço pausado ou sem cadastro no período não some, mas fica vazia). `--json`
+devolve os 2 campos crus junto do resto.
 
 **Desde o #8349, os cadastros aqui JÁ excluem e-mail de teste do editor** —
 `fetchKitSignupsByChannel` filtra por `isEditorTestSignupEmail` (plus-address
@@ -151,8 +159,10 @@ vigente: `canal,data_apuracao,gasto_acumulado,cadastros_acumulado,custo_por_cada
   pra ler o gasto.
 - `fonte`: de onde veio cada número e a hora de corte. Um braço com mais de
   uma campanha em voo (Microsoft: PMax + Search) sempre soma as campanhas
-  na mesma linha — nunca uma linha por campanha aqui (separação por
-  campanha é o escopo do #8256, num arquivo à parte se algum dia existir).
+  na mesma linha — nunca uma linha por campanha aqui. A quebra por campanha
+  (#8256) sai à parte, na seção "Quebra por campanha" do Passo 1b — nunca
+  neste CSV, que é lido por `ads-test-watch.ts`/`ads-kill-switch.ts` como o
+  total por braço.
 
 Atualize também o gasto acumulado do mês vigente em `data/aquisicao/spend.csv`.
 Os nomes de canal precisam bater **byte a byte** com `CHANNEL_KEY_SPECS`

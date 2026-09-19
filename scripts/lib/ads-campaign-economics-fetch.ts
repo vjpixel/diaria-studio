@@ -35,8 +35,8 @@ import {
 import {
   refreshMicrosoftAdsAccessToken,
   fetchMicrosoftAdsPerformanceRows,
-  normalizeMicrosoftAdsPerformanceRows,
-  ADS_DASHBOARD_PERFORMANCE_COLUMNS,
+  normalizeMicrosoftAdsPerformanceRowsByCampaign,
+  ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN,
   type MicrosoftAdsAuthConfig,
   type FetchLike as MicrosoftFetchLike,
 } from "./microsoft-ads-ingest.ts";
@@ -51,6 +51,14 @@ export interface ChannelFetchResult {
   metrics: ChannelDailyMetric[];
   fetchedAt: string | null;
   error: string | null;
+  /** Quebra ADICIONAL por campanha (#8256) — só `fetchMicrosoftAdsChannelMetrics`
+   *  preenche hoje (o braço Microsoft do teste 2608 tem 2 campanhas, PMax e
+   *  Search, na mesma conta). `metrics` acima segue sendo o total do canal,
+   *  inalterado — este campo nunca substitui `metrics`, só o complementa;
+   *  ausente/`undefined` em qualquer outro canal (Google/Meta), nunca um
+   *  array vazio fingindo "sem campanha" quando a informação simplesmente
+   *  não foi coletada. */
+  campaignBreakdown?: ChannelDailyMetric[];
 }
 
 // ---------------------------------------------------------------------------
@@ -175,16 +183,48 @@ export interface FetchMicrosoftAdsChannelMetricsOptions {
   canal?: string;
 }
 
+/** Mesmo padrão de `META_ADS_TESTE_CANAL` abaixo — extraído aqui (#8256)
+ *  porque o literal `"Microsoft Ads (teste 2608)"` vivia duplicado em 2
+ *  lugares (`fetchMicrosoftAdsChannelMetrics`/`DEFAULT_UTM_SOURCE_TO_CANAL`)
+ *  e um 3º consumidor (`ads-live-spend-signups.ts`, quebra por campanha)
+ *  precisava do mesmo valor pra casar `signupsByCampaign` com o braço certo. */
+export const MICROSOFT_ADS_TESTE_CANAL = "Microsoft Ads (teste 2608)";
+
+/**
+ * As 2 campanhas do braço Microsoft do teste 2608 (#8256) — PMax e Search,
+ * na mesma conta, cada uma com seu `utm_campaign` próprio (registrado em
+ * `utm-registry.ts`). `CampaignId` é o identificador ESTÁVEL vindo da
+ * Reporting API (lado do GASTO); os rótulos aqui são só pra exibição —
+ * nunca usados pra decidir se um cadastro/gasto conta no braço (isso segue
+ * sendo só `utm_source=microsoft-ads`, ver `fetchKitSignupsByChannel`
+ * abaixo e `classifyAcquisition`, que é agnóstico a `utm_campaign` por
+ * construção).
+ */
+export const MICROSOFT_ADS_2608_CAMPAIGN_ID_TO_CANAL: Record<string, string> = {
+  "571543153": `${MICROSOFT_ADS_TESTE_CANAL} — PMax`,
+  "571615527": `${MICROSOFT_ADS_TESTE_CANAL} — Search`,
+};
+
 /** Busca gasto/cliques/impressões diários do Microsoft Ads pra `canal`,
  *  via `fetchMicrosoftAdsPerformanceRows` (#7536/#7539 — colunas
- *  estendidas). Nunca lança, mesma disciplina de `runMicrosoftAdsIngest`. */
+ *  estendidas). Nunca lança, mesma disciplina de `runMicrosoftAdsIngest`.
+ *
+ *  Desde #8256, a MESMA chamada pede `CampaignId`
+ *  (`ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN`) — isso faz a Reporting
+ *  API devolver 1 linha por campanha/dia em vez do total já agregado da
+ *  conta (ver docstring da constante de colunas). `metrics` reconstitui o
+ *  total SOMANDO essas linhas em TS (idêntico ao valor que a variante sem
+ *  `CampaignId` devolvia antes — nenhuma mudança pra quem só lê `metrics`);
+ *  `campaignBreakdown` expõe as linhas por campanha separadamente, rotuladas
+ *  via `MICROSOFT_ADS_2608_CAMPAIGN_ID_TO_CANAL` (campanha desconhecida cai
+ *  no fallback `Microsoft Ads (campanha {id})`, nunca é descartada). */
 export async function fetchMicrosoftAdsChannelMetrics(
   fetchImpl: MicrosoftFetchLike,
   auth: MicrosoftAdsAuthConfig,
   opts: FetchMicrosoftAdsChannelMetricsOptions = {},
 ): Promise<ChannelFetchResult> {
   const now = opts.now ?? new Date();
-  const canal = opts.canal ?? "Microsoft Ads (teste 2608)";
+  const canal = opts.canal ?? MICROSOFT_ADS_TESTE_CANAL;
   const lookbackDays = opts.lookbackDays ?? 30;
 
   const tokenResult = await refreshMicrosoftAdsAccessToken(fetchImpl, auth);
@@ -193,11 +233,39 @@ export async function fetchMicrosoftAdsChannelMetrics(
   const end = new Date(now.getTime());
   const start = new Date(now.getTime() - (lookbackDays - 1) * 24 * 60 * 60 * 1000);
   const perfResult = await fetchMicrosoftAdsPerformanceRows(fetchImpl, auth, tokenResult.accessToken, { start, end }, {
-    columns: ADS_DASHBOARD_PERFORMANCE_COLUMNS,
+    columns: ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN,
   });
   if ("error" in perfResult) return { metrics: [], fetchedAt: null, error: perfResult.error };
 
-  return { metrics: normalizeMicrosoftAdsPerformanceRows(perfResult.rows, canal), fetchedAt: now.toISOString(), error: null };
+  const byCampaign = normalizeMicrosoftAdsPerformanceRowsByCampaign(perfResult.rows, MICROSOFT_ADS_2608_CAMPAIGN_ID_TO_CANAL);
+
+  // Reconstitui o total da conta somando as linhas por campanha/dia — nunca
+  // reusa `normalizeMicrosoftAdsPerformanceRows` sobre `perfResult.rows`
+  // direto: com `CampaignId` no header, aquela função ainda produziria 1
+  // linha por CAMPANHA (ela não agrupa), então "usar a função de sempre"
+  // silenciosamente pararia de agregar — a soma explícita abaixo é o que
+  // preserva o total inalterado (#8256, "com o total do braço inalterado").
+  const totalByDate = new Map<string, { gastoBrl: number; cliques: number; impressoes: number }>();
+  for (const row of byCampaign) {
+    const acc = totalByDate.get(row.date) ?? { gastoBrl: 0, cliques: 0, impressoes: 0 };
+    acc.gastoBrl = Math.round((acc.gastoBrl + row.gastoBrl) * 100) / 100;
+    acc.cliques += row.cliques;
+    acc.impressoes += row.impressoes;
+    totalByDate.set(row.date, acc);
+  }
+  const metrics: ChannelDailyMetric[] = [...totalByDate.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, acc]) => ({ canal, date, ...acc }));
+
+  const campaignBreakdown: ChannelDailyMetric[] = byCampaign.map(({ canal: campaignCanal, date, gastoBrl, cliques, impressoes }) => ({
+    canal: campaignCanal,
+    date,
+    gastoBrl,
+    cliques,
+    impressoes,
+  }));
+
+  return { metrics, fetchedAt: now.toISOString(), error: null, campaignBreakdown };
 }
 
 // ---------------------------------------------------------------------------
@@ -399,12 +467,29 @@ export interface FetchKitSignupsByChannelOptions {
 
 const DEFAULT_UTM_SOURCE_TO_CANAL: Record<string, string> = {
   "google-ads": "Google Ads (teste 2608)",
-  "microsoft-ads": "Microsoft Ads (teste 2608)",
+  "microsoft-ads": MICROSOFT_ADS_TESTE_CANAL,
   "meta-ads": META_ADS_TESTE_CANAL,
 };
 
+/** Quebra ADICIONAL de `ChannelDailySignup` por `fields.utm_campaign`
+ *  (#8256) — cadastro sem `utm_campaign` preenchido entra no bucket
+ *  `"(sem utm_campaign)"` em vez de ser descartado, pra que a soma desta
+ *  quebra por canal sempre bata com `ChannelDailySignup.cadastros` do
+ *  mesmo canal/dia em `signups` (nunca perde cadastro só por faltar o
+ *  campo). `utmCampaign` normalizado (trim + lowercase), mesma disciplina
+ *  de `utm_source` logo abaixo. */
+export interface ChannelCampaignDailySignup {
+  canal: string;
+  utmCampaign: string;
+  date: string;
+  cadastros: number;
+}
+
 export interface KitSignupsFetchResult {
   signups: ChannelDailySignup[];
+  /** Ver `ChannelCampaignDailySignup` — nunca substitui `signups` (que
+   *  segue sendo o total por canal/dia, inalterado), só complementa. */
+  signupsByCampaign: ChannelCampaignDailySignup[];
   fetchedAt: string | null;
   error: string | null;
 }
@@ -459,6 +544,7 @@ export async function fetchKitSignupsByChannel(
   const maxPages = opts.maxPages ?? 50;
 
   const countByChannelDate = new Map<string, number>();
+  const countByChannelCampaignDate = new Map<string, number>();
   let after: string | undefined;
   let pages = 0;
 
@@ -468,6 +554,7 @@ export async function fetchKitSignupsByChannel(
       if (pages > maxPages) {
         return {
           signups: [],
+          signupsByCampaign: [],
           fetchedAt: null,
           error: `fetchKitSignupsByChannel: excedeu maxPages=${maxPages} sem chegar ao fim da paginação — abortando em vez de continuar indefinidamente.`,
         };
@@ -484,11 +571,21 @@ export async function fetchKitSignupsByChannel(
         if (dateRangeStart && date < dateRangeStart) continue;
         const key = `${canal}|${date}`;
         countByChannelDate.set(key, (countByChannelDate.get(key) ?? 0) + 1);
+        // Quebra adicional por utm_campaign (#8256) — separa PMax de Search
+        // dentro do braço microsoft-ads sem mexer no total acima. Ausência
+        // do campo cai no bucket `(sem utm_campaign)` em vez de ser
+        // ignorada, pra que a soma desta quebra sempre bata com o total
+        // de `countByChannelDate` do mesmo canal/dia.
+        const utmCampaignRaw = sub.fields?.utm_campaign;
+        const utmCampaign = utmCampaignRaw && utmCampaignRaw.trim() ? utmCampaignRaw.trim().toLowerCase() : "(sem utm_campaign)";
+        const campaignKey = `${canal}|${utmCampaign}|${date}`;
+        countByChannelCampaignDate.set(campaignKey, (countByChannelCampaignDate.get(campaignKey) ?? 0) + 1);
       }
       if (!pagination.has_next_page) break;
       if (!pagination.end_cursor) {
         return {
           signups: [],
+          signupsByCampaign: [],
           fetchedAt: null,
           error: "fetchKitSignupsByChannel: has_next_page=true sem end_cursor — lista truncada, abortando (mesmo guard de #7200/#6491).",
         };
@@ -496,14 +593,21 @@ export async function fetchKitSignupsByChannel(
       after = pagination.end_cursor;
     }
   } catch (e) {
-    return { signups: [], fetchedAt: null, error: e instanceof Error ? e.message : String(e) };
+    return { signups: [], signupsByCampaign: [], fetchedAt: null, error: e instanceof Error ? e.message : String(e) };
   }
 
   const signups: ChannelDailySignup[] = [...countByChannelDate.entries()].map(([key, cadastros]) => {
     const sep = key.lastIndexOf("|");
     return { canal: key.slice(0, sep), date: key.slice(sep + 1), cadastros };
   });
-  return { signups, fetchedAt: new Date().toISOString(), error: null };
+  const signupsByCampaign: ChannelCampaignDailySignup[] = [...countByChannelCampaignDate.entries()].map(([key, cadastros]) => {
+    const lastSep = key.lastIndexOf("|");
+    const date = key.slice(lastSep + 1);
+    const rest = key.slice(0, lastSep);
+    const midSep = rest.lastIndexOf("|");
+    return { canal: rest.slice(0, midSep), utmCampaign: rest.slice(midSep + 1), date, cadastros };
+  });
+  return { signups, signupsByCampaign, fetchedAt: new Date().toISOString(), error: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +620,15 @@ export interface CampaignEconomicsSourcesResult {
   /** 1 entrada por fonte — `Google Ads`, `Microsoft Ads`, `Meta Ads`, `Kit`
    *  — pra `computeSourceFreshness` (ads-campaign-economics.ts, requisito 5). */
   sources: Record<string, { fetchedAt: string | null; error: string | null }>;
+  /** Quebra ADICIONAL do braço Microsoft por campanha (PMax/Search, #8256)
+   *  — `[]` quando a fonte Microsoft falhou/não rodou (ver `sources["Microsoft Ads"]`
+   *  pro erro). Nunca faz parte de `metrics` acima, que segue sendo o total
+   *  do braço, inalterado. */
+  microsoftCampaignBreakdown: ChannelDailyMetric[];
+  /** Quebra ADICIONAL dos cadastros do Kit por `utm_campaign` dentro de
+   *  cada canal (#8256) — mesma disciplina de `microsoftCampaignBreakdown`:
+   *  nunca substitui `signups`, `[]` quando o Kit falhou/não rodou. */
+  signupsByCampaign: ChannelCampaignDailySignup[];
 }
 
 export interface FetchCampaignEconomicsSourcesOptions {
@@ -574,7 +687,7 @@ export async function fetchCampaignEconomicsSources(
 
   const kitPromise: Promise<KitSignupsFetchResult> = kitConfig
     ? fetchKitSignupsByChannel(kitConfig, { dateRangeStart: opts.kitDateRangeStart })
-    : Promise.resolve({ signups: [], fetchedAt: null, error: "KIT_API_KEY não definida." });
+    : Promise.resolve({ signups: [], signupsByCampaign: [], fetchedAt: null, error: "KIT_API_KEY não definida." });
 
   const [google, microsoft, meta, kit] = await Promise.all([googlePromise, microsoftPromise, metaPromise, kitPromise]);
 
@@ -587,5 +700,7 @@ export async function fetchCampaignEconomicsSources(
       "Meta Ads": { fetchedAt: meta.fetchedAt, error: meta.error },
       Kit: { fetchedAt: kit.fetchedAt, error: kit.error },
     },
+    microsoftCampaignBreakdown: microsoft.campaignBreakdown ?? [],
+    signupsByCampaign: kit.signupsByCampaign,
   };
 }
