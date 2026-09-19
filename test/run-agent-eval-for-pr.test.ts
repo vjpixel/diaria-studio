@@ -20,6 +20,7 @@ import {
   computeCostDelta,
   renderAgentEvalPrReport,
   fetchPrMeta,
+  fetchPrBaseSha,
   fetchFileContentAtRef,
   addLabel,
   postComment,
@@ -265,16 +266,23 @@ describe("fetchPrMeta (#8144)", () => {
           number: 8200,
           url: "https://github.com/vjpixel/diaria-studio/pull/8200",
           title: "fix: X",
-          baseRefOid: "aaa",
           headRefOid: "bbb",
           files: [{ path: ".claude/agents/social-writer.md" }, { path: "README.md" }],
         }),
+        stderr: "",
+      },
+      // #8403: o SHA base não vem mais do `pr view` (campo inexistente no gh
+      // 2.46.0) e sim do REST — o mock precisa cobrir as duas chamadas.
+      "api repos/{owner}/{repo}/pulls/8200": {
+        status: 0,
+        stdout: "0e75860935c1a56ca712f733ab25cd65e9c11de7\n",
         stderr: "",
       },
     });
     const meta = fetchPrMeta("8200", runner);
     assert.equal(meta.number, 8200);
     assert.deepEqual(meta.files, [".claude/agents/social-writer.md", "README.md"]);
+    assert.equal(meta.baseRefOid, "0e75860935c1a56ca712f733ab25cd65e9c11de7");
   });
 
   it("gh falha: lança erro claro em vez de devolver meta parcial", () => {
@@ -331,5 +339,80 @@ describe("addLabel / postComment (#8144)", () => {
   it("postComment: status != 0 lança", () => {
     const runner = mockRunner({ "pr comment 42": { status: 1, stdout: "", stderr: "rate limited" } });
     assert.throws(() => postComment("42", "/tmp/x.md", runner), /rate limited/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8403 — regressão: gh 2.46.0 (o do servidor `300`) não conhece o campo
+// `baseRefOid` em `gh pr view --json`. O runner abaixo emula a versão REAL:
+// qualquer `pr view --json` que peça `baseRefOid` sai com o mesmo
+// `Unknown JSON field` que o gh 2.46.0 imprime. Antes do fix, fetchPrMeta
+// batia exatamente nisso e o script inteiro abortava antes de qualquer eval.
+// ---------------------------------------------------------------------------
+
+/** Saída literal do gh 2.46.0 ao receber um campo --json que ele não conhece. */
+const GH_246_UNKNOWN_FIELD_STDERR =
+  'Unknown JSON field: "baseRefOid"\nAvailable fields:\n  additions\n  assignees\n  author\n  baseRefName\n  body\n';
+
+function gh246Runner(opts: { baseSha?: string; baseShaStatus?: number; baseShaStderr?: string } = {}): {
+  runner: CommandRunner;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const runner: CommandRunner = (cmd, args) => {
+    const key = `${cmd} ${args.join(" ")}`;
+    calls.push(key);
+    if (args[0] === "pr" && args[1] === "view") {
+      const fields = args[args.indexOf("--json") + 1] ?? "";
+      if (fields.split(",").includes("baseRefOid")) {
+        return { status: 1, stdout: "", stderr: GH_246_UNKNOWN_FIELD_STDERR };
+      }
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          number: 8401,
+          url: "https://github.com/vjpixel/diaria-studio/pull/8401",
+          title: "feat: X",
+          headRefOid: "2c8a32bb830adee1c310d14aee8824820643b015",
+          files: [{ path: ".claude/agents/writer-destaque.md" }],
+        }),
+        stderr: "",
+      };
+    }
+    if (args[0] === "api" && /\/pulls\/\d+$/.test(args[1] ?? "")) {
+      return {
+        status: opts.baseShaStatus ?? 0,
+        stdout: opts.baseSha ?? "0e75860935c1a56ca712f733ab25cd65e9c11de7\n",
+        stderr: opts.baseShaStderr ?? "",
+      };
+    }
+    throw new Error(`gh246Runner: comando não mockado: ${key}`);
+  };
+  return { runner, calls };
+}
+
+describe("fetchPrBaseSha / gh 2.46.0 (#8403)", () => {
+  it("fetchPrMeta resolve o SHA base sem pedir baseRefOid ao gh pr view", () => {
+    const { runner, calls } = gh246Runner();
+    const meta = fetchPrMeta("8401", runner);
+    assert.equal(meta.baseRefOid, "0e75860935c1a56ca712f733ab25cd65e9c11de7");
+    assert.equal(meta.headRefOid, "2c8a32bb830adee1c310d14aee8824820643b015");
+    assert.deepEqual(meta.files, [".claude/agents/writer-destaque.md"]);
+    // O cenário que falhava: nenhuma chamada pode pedir baseRefOid ao pr view.
+    assert.ok(!calls.some((c) => c.includes("pr view") && c.includes("baseRefOid")), calls.join(" | "));
+    assert.ok(calls.some((c) => c.includes("api repos/{owner}/{repo}/pulls/8401")), calls.join(" | "));
+  });
+
+  it("gh api falhando: lança alto, nunca devolve SHA vazio", () => {
+    const { runner } = gh246Runner({ baseShaStatus: 1, baseShaStderr: "gh: rate limit (HTTP 403)" });
+    assert.throws(() => fetchPrBaseSha("8401", runner), /\.base\.sha\) falhou.*rate limit/s);
+    assert.throws(() => fetchPrMeta("8401", runner), /\.base\.sha\) falhou/);
+  });
+
+  it("saída que não é SHA de 40 hex (vazio, 'null', ref simbólico): lança em vez de degradar", () => {
+    for (const bad of ["", "\n", "null\n", "master\n", "0e75860\n"]) {
+      const { runner } = gh246Runner({ baseSha: bad });
+      assert.throws(() => fetchPrBaseSha("8401", runner), /não é um SHA de 40 hex/, `deveria rejeitar ${JSON.stringify(bad)}`);
+    }
   });
 });
