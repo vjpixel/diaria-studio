@@ -109,6 +109,18 @@ describe("weekly-bug-heatmap.yml: a PR semanal se fecha sozinha (#8489)", () => 
     );
   });
 
+  it("o workflow tem concurrency group (2 runs sobrepostos disputariam a MESMA PR agora que o merge é automático)", () => {
+    // Antes do merge automático, sobreposição entre o cron e um
+    // workflow_dispatch manual só duplicava push no branch fixo
+    // `bot/heatmap-weekly-regen` — chato e inofensivo. Com o merge no
+    // próprio workflow, os dois runs passam a disputar a mesma PR.
+    assert.match(
+      yamlText,
+      new RegExp("^concurrency:\\s+group:\\s*\\S+", "m"),
+      "workflow perdeu o bloco concurrency: (review do PR #8491, finding 3)",
+    );
+  });
+
   it("o passo de merge não sobrescreve o shell (o bash -e default é o que aborta o merge quando o check falha)", () => {
     assert.doesNotMatch(
       mergeStep!,

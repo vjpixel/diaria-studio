@@ -15,6 +15,13 @@ on:
 env:
   PUPPETEER_SKIP_DOWNLOAD: "true"
 
+# #8489: com o merge automático abaixo, 2 runs sobrepostos (cron + um
+# workflow_dispatch manual perto do horário) disputariam a MESMA PR e o
+# mesmo branch fixo `bot/heatmap-weekly-regen`.
+concurrency:
+  group: weekly-bug-heatmap
+  cancel-in-progress: false
+
 jobs:
   heatmap:
     runs-on: ubuntu-latest
@@ -64,22 +71,35 @@ jobs:
       # fila de issues, então nada a drena. Não dá pra usar `gh pr merge
       # --auto`: a ruleset de master não exige status check nenhum, e o
       # auto-merge mergearia na hora, antes do "PR Checks" rodar. O --watch
-      # segura o job (~1min) até os checks fecharem e falha se algum quebrar.
+      # abaixo segura o job até os checks fecharem e falha se algum quebrar.
       - name: Merge quando os checks passarem
         if: steps.cpr.outputs.pull-request-number != ''
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.cpr.outputs.pull-request-number }}
         run: |
-          # Os checks levam alguns segundos pra aparecer na PR recém-criada, e
-          # `gh pr checks` sai com erro quando ainda não há nenhum — esperamos
-          # o primeiro registrar antes de observar (teto 3min).
+          # `gh pr checks` sai com erro enquanto NENHUM check se registrou na
+          # PR recém-criada — espera o primeiro aparecer (teto 3min). Falha do
+          # `gh pr view` é tolerada de propósito: blip de API vira leitura
+          # vazia e o loop só espera mais, em vez de derrubar a rodada.
           for _ in $(seq 1 18); do
-            n=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup | length')
+            n=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup | length' || echo "")
             [ "${n:-0}" -gt 0 ] && break
             sleep 10
           done
-          # Falha aqui (check vermelho, ou nenhum check em 3min) deixa a PR
-          # aberta de propósito: nunca mergear sem verificação.
-          gh pr checks "$PR" --watch --fail-fast
+          # Os ~14 checks vêm de 5 workflows distintos e NÃO se registram no
+          # mesmo instante: observar só os que já existem pode devolver "tudo
+          # verde" tendo esperado 1 check de 14. Por isso o --watch roda até a
+          # CONTAGEM estabilizar entre duas rodadas — nenhum retardatário novo
+          # apareceu depois da rodada anterior fechar.
+          prev=""
+          for _ in $(seq 1 20); do
+            gh pr checks "$PR" --watch --fail-fast
+            n=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup | length' || echo "")
+            [ -n "$n" ] && [ "$n" = "$prev" ] && break
+            prev=$n
+            sleep 20
+          done
+          # Check vermelho (ou nenhum check dentro do teto) aborta antes daqui
+          # pelo `bash -e` default: a PR fica aberta de propósito.
           gh pr merge "$PR" --squash --delete-branch
