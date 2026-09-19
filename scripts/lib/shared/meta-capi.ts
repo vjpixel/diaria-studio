@@ -159,6 +159,16 @@ export const META_CAPI_COMPLETE_REGISTRATION_CURRENCY = "BRL";
  * seguem carregando só nome do worker + desfecho, travado por teste, e (b)
  * os 4 são exatamente os sinais que o pixel client-side no navegador do
  * visitante já entregaria à Meta por conta própria.
+ *
+ * **Cobertura deliberadamente parcial dos call sites:** só `workers/poll` e
+ * `workers/cursos` mandam estes 4 — são os dois handlers que recebem o
+ * `Request` do cadastro. `workers/reativar` NÃO manda: `handleConfirm`
+ * recebe uma `URL`, não o `Request`, então não há headers/cookies de onde
+ * tirá-los sem mudar a assinatura e os call sites; o batch
+ * (`meta-capi-batch-send.ts`, `system_generated`) reprocessa um snapshot e
+ * não tem request nenhum. Não é esquecimento — quem for fechar a ponta do
+ * `reativar` depois precisa passar o `Request` (ou só os headers) pra
+ * dentro do `handleConfirm`.
  */
 export interface MetaCapiClientSignals {
   /** IP do visitante — `CF-Connecting-IP` (ou 1ª entrada de

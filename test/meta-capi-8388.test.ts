@@ -177,6 +177,15 @@ describe("#8388 item 3 — helpers puros de match quality", () => {
     assert.equal(signals.fbc, "fb.1.222.CLICK");
   });
 
+  it("cookie _fbc malformado NÃO bloqueia o fallback pro click_id (descarta o lixo, mantém o sinal bom)", () => {
+    const headers = new Headers({ Cookie: "_fbc=lixo" });
+    const signals = extractMetaCapiClientSignals(headers, {
+      clickId: "fbclid:CLICK",
+      fbcCreationTimeMs: 333,
+    });
+    assert.equal(signals.fbc, "fb.1.333.CLICK");
+  });
+
   it("cookie _fbp/_fbc malformado é DESCARTADO (lixo do cliente não vai pra Meta)", () => {
     const headers = new Headers({ Cookie: "_fbp=lixo; _fbc=tambem-lixo" });
     const signals = extractMetaCapiClientSignals(headers);
