@@ -120,7 +120,7 @@ mesma coisa como arquivo pronto pra upload, sem precisar copiar/colar.
           {
             "type": "template",
             "key": "html",
-            "value": "<script>\n(function () {\n  if (typeof fbq === 'function') {\n    fbq('track', 'CompleteRegistration', { content_name: 'newsletter_signup', status: true });\n  } else if (!window.__diaria_fbq_missing_warned) {\n    window.__diaria_fbq_missing_warned = true;\n    console.warn('[diar.ia.br GTM] fbq nao encontrado ao tentar disparar CompleteRegistration - o Meta Pixel base carrega fora do GTM (injecao nativa da Beehiiv); confirme no Preview que ele ja esta presente quando o gatilho de cadastro dispara.');\n  }\n})();\n</script>"
+            "value": "<script>\n(function () {\n  if (typeof fbq === 'function') {\n    fbq('track', 'CompleteRegistration', { content_name: 'newsletter_signup', status: true, value: 1, currency: 'BRL' });\n  } else if (!window.__diaria_fbq_missing_warned) {\n    window.__diaria_fbq_missing_warned = true;\n    console.warn('[diar.ia.br GTM] fbq nao encontrado ao tentar disparar CompleteRegistration - o Meta Pixel base carrega fora do GTM (injecao nativa da Beehiiv); confirme no Preview que ele ja esta presente quando o gatilho de cadastro dispara.');\n  }\n})();\n</script>"
           },
           { "type": "boolean", "key": "supportDocumentWrite", "value": "false" }
         ],
@@ -128,7 +128,7 @@ mesma coisa como arquivo pronto pra upload, sem precisar copiar/colar.
         "tagFiringOption": "ONCE_PER_EVENT",
         "monitoringMetadata": { "type": "map" },
         "consentSettings": { "consentStatus": "notSet" },
-        "notes": "#5546 — evento de cadastro para o dataset Meta 1285191740325112. Hoje o dataset so recebe PageView; este tag adiciona um evento padrao real. Nao cria a Custom Conversion no Events Manager (acao fora do GTM, ver doc)."
+        "notes": "#5546 — evento de cadastro para o dataset Meta 1285191740325112. Hoje o dataset so recebe PageView; este tag adiciona um evento padrao real. Nao cria a Custom Conversion no Events Manager (acao fora do GTM, ver doc). #8388 — value/currency simbolicos (1 BRL) para a recomendacao de currency data do Events Manager; o MESMO par sai pela Conversions API (META_CAPI_COMPLETE_REGISTRATION_VALUE/_CURRENCY em scripts/lib/shared/meta-capi.ts), travado por test/meta-capi-8388.test.ts."
       },
       {
         "accountId": "000000000",
@@ -217,6 +217,18 @@ A parte cara do #5500 é decidir os nomes de evento e a estrutura do gatilho —
   de vendas). `CompleteRegistration` é o evento padrão da Meta com semântica
   mais próxima de "cadastro concluído" e tem suporte completo de
   otimização/relatório no Events Manager.
+- **`value: 1` + `currency: 'BRL'` no payload do pixel (#8388, 19/09/2026).**
+  O Events Manager levantou "Send higher quality currency data for better
+  performance optimization" (High priority) porque nem o pixel nem a
+  Conversions API mandavam valor — sem valor, a Meta não otimiza por valor.
+  Decisão do editor: valor simbólico CONSTANTE agora (refinar pra valor
+  modelado por coorte depois do #7918). **O número precisa ser o MESMO nos
+  dois caminhos**: a fonte única é
+  `META_CAPI_COMPLETE_REGISTRATION_VALUE`/`_CURRENCY` em
+  `scripts/lib/shared/meta-capi.ts`, e `test/meta-capi-8388.test.ts` lê o
+  snippet `fbq(...)` de `docs/gtm-signup-container-export.json` pra travar a
+  igualdade. Mudar o valor aqui sem mudar a constante (ou vice-versa) quebra
+  o teste de propósito.
 - **Goal Microsoft UET: "Newsletter Signup"** (custom event, categoria
   `signup`, ação `newsletter_signup`) — mesmo rótulo humano já usado pela
   conversão do LinkedIn, para manter os 3 painéis legíveis lado a lado.

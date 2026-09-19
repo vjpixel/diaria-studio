@@ -53,7 +53,7 @@ import { json } from "./index";
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
 import { ARQUIVO_INLINE_UTM, DIARIA_APEX_SOURCE, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2, #8244
-import { sendCompleteRegistrationEvent, logMetaCapiSendResult } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776
+import { sendCompleteRegistrationEvent, logMetaCapiSendResult, extractMetaCapiClientSignals } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 // #7723: consome a maquinaria COMPARTILHADA (scripts/lib/shared/kit-doi.ts),
 // a mesma de `cursos` e `reativar`. Antes o poll tinha copias locais de
@@ -1012,9 +1012,14 @@ export async function handleJogarSubscribe(
     // vs. meta_error/network_error vs. sent) NO MEIO do mesmo caminho
     // fire-and-forget — não muda o tipo nem o timing do que `waitUntil`/
     // `await` abaixo já faziam.
+    // #8388 item 3: sinais de match quality que este handler já tinha em
+    // mãos e não mandava (IP/UA dos headers, `_fbp`/`_fbc` do cookie
+    // first-party, `fbc` derivado do `click_id` do #8003). Extração é pura
+    // e nunca lança — campo ausente é OMITIDO, nunca string vazia.
+    const clientSignals = extractMetaCapiClientSignals(request.headers, { clickId: origin.clickId });
     const sendEvent = logMetaCapiSendResult(
       sendCompleteRegistrationEvent(
-        { email: v.email, eventSourceUrl: request.url },
+        { email: v.email, eventSourceUrl: request.url, clientSignals },
         { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
       ),
       "poll",

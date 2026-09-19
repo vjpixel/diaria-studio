@@ -27,7 +27,7 @@
           {
             "type": "template",
             "key": "html",
-            "value": "<script>\n(function () {\n  if (typeof fbq === 'function') {\n    fbq('track', 'CompleteRegistration', { content_name: 'newsletter_signup', status: true });\n  } else if (!window.__diaria_fbq_missing_warned) {\n    window.__diaria_fbq_missing_warned = true;\n    console.warn('[diar.ia.br GTM] fbq nao encontrado ao tentar disparar CompleteRegistration - o Meta Pixel base carrega fora do GTM (injecao nativa da Beehiiv); confirme no Preview que ele ja esta presente quando o gatilho de cadastro dispara.');\n  }\n})();\n</script>"
+            "value": "<script>\n(function () {\n  if (typeof fbq === 'function') {\n    fbq('track', 'CompleteRegistration', { content_name: 'newsletter_signup', status: true, value: 1, currency: 'BRL' });\n  } else if (!window.__diaria_fbq_missing_warned) {\n    window.__diaria_fbq_missing_warned = true;\n    console.warn('[diar.ia.br GTM] fbq nao encontrado ao tentar disparar CompleteRegistration - o Meta Pixel base carrega fora do GTM (injecao nativa da Beehiiv); confirme no Preview que ele ja esta presente quando o gatilho de cadastro dispara.');\n  }\n})();\n</script>"
           },
           { "type": "boolean", "key": "supportDocumentWrite", "value": "false" }
         ],
@@ -35,7 +35,7 @@
         "tagFiringOption": "ONCE_PER_EVENT",
         "monitoringMetadata": { "type": "map" },
         "consentSettings": { "consentStatus": "notSet" },
-        "notes": "#5546 — evento de cadastro para o dataset Meta 1285191740325112. Hoje o dataset so recebe PageView; este tag adiciona um evento padrao real. Nao cria a Custom Conversion no Events Manager (acao fora do GTM, ver doc)."
+        "notes": "#5546 — evento de cadastro para o dataset Meta 1285191740325112. Hoje o dataset so recebe PageView; este tag adiciona um evento padrao real. Nao cria a Custom Conversion no Events Manager (acao fora do GTM, ver doc). #8388 — value/currency simbolicos (1 BRL) para a recomendacao de currency data do Events Manager; o MESMO par sai pela Conversions API (META_CAPI_COMPLETE_REGISTRATION_VALUE/_CURRENCY em scripts/lib/shared/meta-capi.ts), travado por test/meta-capi-8388.test.ts."
       },
       {
         "accountId": "000000000",
