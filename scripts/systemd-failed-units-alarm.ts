@@ -383,7 +383,7 @@ async function main(): Promise<void> {
   });
 
   const anyIssueSucceeded = findingOutcomes.some((o) => o.action !== "failed");
-  if (shouldPersistAlarmedState(anyIssueSucceeded, result.qualifying.length, result.emailSent)) {
+  if (shouldPersistAlarmedState({ anyIssueSucceeded, qualifyingCount: result.qualifying.length, emailSent: result.emailSent })) {
     saveState(markSystemdFailedUnitsAlarmed(evaluation.failedUnits), STATE_PATH);
   } else {
     console.error(`${LOG_PREFIX} estado NÃO gravado (retry na próxima execução) — ${anyIssueSucceeded ? "push falhou" : "gh falhou pra todos os achados desta execução"}.`);

@@ -606,7 +606,11 @@ async function main(): Promise<void> {
       // `saveState`; `notifyEditorForOutcomes` nunca lanca, entao a decisao
       // virou explicita via `shouldPersistAlarmedState`.
       const anyIssueSucceeded = findingOutcomes.some((o) => o.action !== "failed");
-      driftAlarmReachedEditor = shouldPersistAlarmedState(anyIssueSucceeded, result.qualifying.length, result.emailSent);
+      driftAlarmReachedEditor = shouldPersistAlarmedState({
+        anyIssueSucceeded,
+        qualifyingCount: result.qualifying.length,
+        emailSent: result.emailSent,
+      });
       if (driftAlarmReachedEditor) {
         console.log(
           result.emailSent
@@ -658,9 +662,12 @@ async function main(): Promise<void> {
   // execucao); `lastCheckedAt`/estado da serie de API avancam normalmente.
   const nextFingerprint = resolveNextAlarmedFingerprint({
     previousFingerprint: state.lastAlarmedFingerprint,
-    pending,
-    computedFingerprint: pending ? computeDriftFingerprint(results) : null,
     alarmReachedEditor: driftAlarmReachedEditor,
+    // União discriminada: `computedFingerprint` só EXISTE quando há drift
+    // pendente (achado do review type-design da PR #8406) — o par
+    // `{pending: true, computedFingerprint: null}` deixou de ser
+    // representável, e era ele que zeraria o cursor em silêncio.
+    ...(pending ? ({ pending: true, computedFingerprint: computeDriftFingerprint(results) } as const) : ({ pending: false } as const)),
   });
   saveState(advanceState(nextFingerprint, now, nextApiErrorState), STATE_PATH);
 }

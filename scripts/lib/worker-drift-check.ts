@@ -512,15 +512,34 @@ export function shouldAlarm(state: WorkerDriftAlarmState, results: readonly Work
  * (`scripts/lib/editor-notify.ts`) e é `true` também quando nenhum alarme
  * foi TENTADO nesta execução (nada a preservar) ou quando a política
  * suprimiu o e-mail de propósito — só é `false` em falha de infra real.
+ *
+ * A entrada é uma UNIÃO DISCRIMINADA por `pending` (achado do review
+ * type-design da PR #8406): `computedFingerprint` só existe no ramo
+ * `pending: true`. Com dois campos independentes, o par
+ * `{pending: true, computedFingerprint: null}` type-checava e devolvia
+ * `null` — "nenhum drift alarmado" —, zerando o cursor em silêncio e
+ * fazendo o drift nunca mais re-alarmar: exatamente a classe de bug que
+ * esta função existe pra fechar, entrando pela porta dos fundos da própria
+ * assinatura.
  */
-export function resolveNextAlarmedFingerprint(opts: {
+export type NextAlarmedFingerprintInput = {
   previousFingerprint: string | null;
-  pending: boolean;
-  computedFingerprint: string | null;
   alarmReachedEditor: boolean;
-}): string | null {
-  if (!opts.alarmReachedEditor) return opts.previousFingerprint;
-  return opts.pending ? opts.computedFingerprint : null;
+} & (
+  | {
+      /** Há drift pendente — o fingerprint do conjunto atual é obrigatório. */
+      pending: true;
+      computedFingerprint: string;
+    }
+  | {
+      /** Sem drift pendente — não existe fingerprint a computar. */
+      pending: false;
+    }
+);
+
+export function resolveNextAlarmedFingerprint(input: NextAlarmedFingerprintInput): string | null {
+  if (!input.alarmReachedEditor) return input.previousFingerprint;
+  return input.pending ? input.computedFingerprint : null;
 }
 
 /**

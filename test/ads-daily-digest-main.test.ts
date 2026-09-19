@@ -95,8 +95,23 @@ describe("#8262 P1 (achado 1) — ads-daily-digest main (I/O): seção de aviso 
       writeFileSync(join(dir, "clicks-2608.csv"), CLICKS_HEADER + `${braco},2026-09-01,1000,,,,,,,,\n`);
 
       const { registered, registerReportFn } = reportCollector();
-      await main([], baseDeps(dir, { registerReportFn }));
+      // #7960: o `notifyEditor({severity: "info"})` é o que mantém o digest
+      // visível em `data/run-log.jsonl` (`/diaria-log`) agora que ele não
+      // e-mailia mais. Sem esta asserção, uma regressão que simplesmente
+      // apagasse a chamada passaria em todos os testes deste arquivo.
+      const notified: Array<{ check: string; severity: string; fingerprint: string }> = [];
+      await main(
+        [],
+        baseDeps(dir, {
+          registerReportFn,
+          notify: (async (finding) => {
+            notified.push({ check: finding.check, severity: finding.severity, fingerprint: finding.fingerprint });
+            return { severity: finding.severity, emailPolicy: "legacy", emailSent: false };
+          }) as AdsDailyDigestDeps["notify"],
+        }),
+      );
 
+      assert.deepEqual(notified, [{ check: "ads-daily-digest", severity: "info", fingerprint: "2026-08-31" }]);
       assert.equal(registered.length, 1);
       assert.equal(registered[0].input.kind, "ads-digest");
       assert.equal(registered[0].input.sessionId, "2026-08-31", "sessionId é o periodDate (dia anterior)");
@@ -112,6 +127,23 @@ describe("#8262 P1 (achado 1) — ads-daily-digest main (I/O): seção de aviso 
       await main([], baseDeps(dir, { registerReportFn }));
       assert.equal(registered.length, 1);
       assert.doesNotMatch(registered[0].body, /avisos de gasto/);
+    });
+  });
+
+  it("--to (flag do canal de e-mail, removida no #7960) aborta em vez de ser ignorada em silêncio", async () => {
+    await withTmpDir(async (dir) => {
+      writeFileSync(join(dir, "spend.csv"), "canal,mes,moeda,valor,fonte\n");
+      const { registered, registerReportFn } = reportCollector();
+      const previousExitCode = process.exitCode;
+      try {
+        await main(["--to", "outro@exemplo.com"], baseDeps(dir, { registerReportFn }));
+        // Aceitar e ignorar deixaria um runbook/task antiga achando que
+        // mandou o digest pra outro endereço — daí o abort ser duro.
+        assert.equal(process.exitCode, 2);
+        assert.deepEqual(registered, [], "nada é registrado quando a invocação está errada");
+      } finally {
+        process.exitCode = previousExitCode;
+      }
     });
   });
 

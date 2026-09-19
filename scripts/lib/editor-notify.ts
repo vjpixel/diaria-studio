@@ -266,15 +266,33 @@ export function shouldEmailForIssueOutcome(
  * `qualifyingCount`/`emailSent` vêm direto de `NotifyEditorForOutcomesResult`
  * (`result.qualifying.length`/`result.emailSent`). Pra `notifyEditor`
  * (1 achado só), `NotifyEditorResult` não expõe contagem — use
- * `notifyEditorResultReachedEditor` abaixo, que deriva os 3 argumentos.
+ * `notifyEditorResultReachedEditor` abaixo, que deriva os 3 campos.
+ *
+ * **Objeto nomeado, nunca 3 parâmetros posicionais** (achado do review
+ * type-design da PR #8406): `anyIssueSucceeded` e `emailSent` são ambos
+ * `boolean` e NÃO são intercambiáveis — eles divergem exatamente no caso
+ * de supressão deliberada pela política (`anyIssueSucceeded: true`,
+ * `emailSent: false`, `qualifyingCount: 0`). Trocados de posição, a
+ * resposta desse caso inverteria em silêncio e o alarme passaria a
+ * re-notificar a cada execução para sempre — a MESMA classe de bug que
+ * esta função existe pra impedir, reintroduzida pela forma da própria
+ * função. Com campos nomeados, a troca vira erro de compilação.
  */
-export function shouldPersistAlarmedState(
-  anyIssueSucceeded: boolean,
-  qualifyingCount: number,
-  emailSent: boolean,
-): boolean {
-  const pushGenuinelyFailed = qualifyingCount > 0 && !emailSent;
-  return anyIssueSucceeded && !pushGenuinelyFailed;
+export interface AlarmedStatePersistInput {
+  /** `true` se ALGUM achado desta execução foi tratado com sucesso pelo
+   * `gh` (`outcome.action !== "failed"`). */
+  anyIssueSucceeded: boolean;
+  /** Quantos outcomes qualificaram pro e-mail — `result.qualifying.length`
+   * de `NotifyEditorForOutcomesResult`. `0` significa "nenhum e-mail era
+   * devido", NUNCA "o e-mail falhou". */
+  qualifyingCount: number;
+  /** `result.emailSent`. */
+  emailSent: boolean;
+}
+
+export function shouldPersistAlarmedState(input: AlarmedStatePersistInput): boolean {
+  const pushGenuinelyFailed = input.qualifyingCount > 0 && !input.emailSent;
+  return input.anyIssueSucceeded && !pushGenuinelyFailed;
 }
 
 /**
@@ -289,8 +307,21 @@ export function shouldPersistAlarmedState(
  */
 export function notifyEditorResultReachedEditor(result: NotifyEditorResult): boolean {
   if (!result.issue) return false;
-  const emailWasDue = result.emailSent || result.emailError !== undefined;
-  return shouldPersistAlarmedState(result.issue.action !== "failed", emailWasDue ? 1 : 0, result.emailSent);
+  // `emailError` é AUTORITATIVO sobre `emailSent` (achado do review
+  // type-design da PR #8406): `NotifyEditorResult` é uma interface flat, e
+  // o par `{emailSent: true, emailError: "..."}` — que `notifyEditor` nunca
+  // produz, mas o TIPO permite (um dublê de teste, ou um refactor futuro
+  // que passe a preencher `emailError` antes da tentativa) — seria lido
+  // pelo caminho otimista e mascararia uma falha real. Falhar pro lado do
+  // RETRY é sempre a leitura segura aqui: no pior caso o editor recebe o
+  // alarme 2x; no melhor, não o perde.
+  const pushFailed = result.emailError !== undefined;
+  const emailWasDue = result.emailSent || pushFailed;
+  return shouldPersistAlarmedState({
+    anyIssueSucceeded: result.issue.action !== "failed",
+    qualifyingCount: emailWasDue ? 1 : 0,
+    emailSent: result.emailSent && !pushFailed,
+  });
 }
 
 /**

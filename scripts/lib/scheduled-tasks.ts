@@ -2245,27 +2245,28 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Ads-Daily-Digest",
     description:
-      "e-mail diario SEMPRE enviado com o gasto em ads do dia anterior por canal, o acumulado do teste 2608 " +
-      "(se em andamento) e leitores adquiridos por canal -- elimina a ambiguidade entre 'sem gasto' e 'task " +
-      "falhou', #7487",
+      "relatorio diario do Studio (/relatorios, kind ads-digest) SEMPRE gerado com o gasto em ads do dia " +
+      "anterior por canal, o acumulado do teste 2608 (se em andamento) e leitores adquiridos por canal -- " +
+      "elimina a ambiguidade entre 'sem gasto' e 'task falhou'. Era e-mail diario ate o #7960 (item 4 da " +
+      "#7957), #7487",
     steps: [{ key: "digest", script: "scripts/ads-daily-digest.ts" }],
     logPath: "aquisicao/.ads-daily-digest.log",
     // 10:55 BRT -- depois de Diaria-Google-Ads-Spend-Ingest (09:50, le o
     // resultado desta ingestao) e de Diaria-Ads-Spend-Ingest-Alarm (10:05,
-    // alarme de DEFEITO na ingestao -- este digest e sempre-envia, papel
+    // alarme de DEFEITO na ingestao -- este digest SEMPRE sai, papel
     // diferente). Slot livre (ver grep de `hour: 10, minute:` neste
     // arquivo: 0,0,5,10,15,20,25,30,35,40,45,50,50 ocupados -- :55 sobra).
     //
     // Fail-soft por design: sem spend.csv (junction data/ nao montada) ou
-    // em modo cloud, aborta graciosamente sem enviar e-mail (mesmo padrao
-    // de ads-test-watch.ts) -- nunca tenta mandar um digest sobre dado
-    // ausente.
+    // em modo cloud, aborta graciosamente sem registrar relatorio (mesmo
+    // padrao de ads-test-watch.ts) -- nunca tenta produzir um digest sobre
+    // dado ausente.
     schedule: { kind: "daily", hour: 10, minute: 55 },
     guard: {
       requiredFile: "aquisicao/spend.csv",
       abortMessage:
         "spend.csv nao encontrado (data/aquisicao/spend.csv) -- provavel junction data/ nao montada ainda; " +
-        "abortando por seguranca, sem enviar digest sobre dado ausente.",
+        "abortando por seguranca, sem produzir digest sobre dado ausente.",
     },
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro) -- armar via

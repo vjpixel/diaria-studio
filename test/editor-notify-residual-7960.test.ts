@@ -23,7 +23,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
@@ -135,7 +135,6 @@ describe("#7960 worker-drift-check — cursor de drift não avança quando o ala
       resolveNextAlarmedFingerprint({
         previousFingerprint: "drift-antigo",
         pending: false,
-        computedFingerprint: null,
         alarmReachedEditor: true,
       }),
       null,
@@ -145,7 +144,7 @@ describe("#7960 worker-drift-check — cursor de drift não avança quando o ala
   it("gh falhou pra TODOS os achados → também conta como 'não chegou' (nenhuma issue, nenhum e-mail)", () => {
     // `shouldPersistAlarmedState` é a fonte de `alarmReachedEditor` no
     // script — reusada, nunca reimplementada (achado do review da #8363).
-    const alarmReachedEditor = shouldPersistAlarmedState(false, 0, false);
+    const alarmReachedEditor = shouldPersistAlarmedState({ anyIssueSucceeded: false, qualifyingCount: 0, emailSent: false });
     assert.equal(alarmReachedEditor, false);
     assert.equal(
       resolveNextAlarmedFingerprint({
@@ -162,7 +161,7 @@ describe("#7960 worker-drift-check — cursor de drift não avança quando o ala
     // Supressão deliberada não é falha de infra: a issue existe, o editor
     // tem onde ver. Confundir os dois faria o alarme re-notificar pra sempre
     // sob `urgent_only`.
-    assert.equal(shouldPersistAlarmedState(true, 0, false), true);
+    assert.equal(shouldPersistAlarmedState({ anyIssueSucceeded: true, qualifyingCount: 0, emailSent: false }), true);
   });
 });
 
@@ -257,10 +256,8 @@ describe("#7960 item 4 — ads-daily-digest registra relatório em vez de e-mail
     assert.equal(isReportKind("ads-digest"), true);
   });
 
-  it("nenhum caminho do script importa sendGmailMessage (guard do #7957 item 2, reforçado aqui)", async () => {
-    const src = await import("node:fs").then((fs) =>
-      fs.readFileSync(new URL("../scripts/ads-daily-digest.ts", import.meta.url), "utf8"),
-    );
+  it("nenhum caminho do script importa sendGmailMessage (guard do #7957 item 2, reforçado aqui)", () => {
+    const src = readFileSync(new URL("../scripts/ads-daily-digest.ts", import.meta.url), "utf8");
     assert.equal(src.includes("sendGmailMessage"), false);
     assert.match(src, /registerReport/);
   });
@@ -270,13 +267,13 @@ describe("#7960 item 4 — ads-daily-digest registra relatório em vez de e-mail
 // 3. Item 5 — watchdog / halt banner / gate do Studio / hook do contínuo
 // ───────────────────────────────────────────────────────────────────────────
 
-describe("#7960 item 5 — overnight-watchdog: 1 issue por rodada, não e-mail recorrente", () => {
+describe("#7960 item 5 — overnight-watchdog: 1 e-mail ENTREGUE por rodada, não recorrente", () => {
   const SUBJECT = "[diar.ia.br overnight] STALL detectado — rodada 260919";
 
-  it("1ª detecção da rodada (issue criada) → e-mail sai sob legacy", async () => {
+  it("1ª detecção da rodada (issue criada, nada entregue ainda) → e-mail sai e reporta entrega", async () => {
     await withTmpDir(async (dir) => {
       const sent: string[] = [];
-      await sendStallAlert(dir, "overnight", "260919", SUBJECT, "corpo", {
+      const reached = await sendStallAlert(dir, "overnight", "260919", SUBJECT, "corpo", false, {
         platformConfigPath: writePolicy(dir, "legacy"),
         ghRun: ghRunCreating(9001),
         sendPush: async (msg) => {
@@ -286,16 +283,15 @@ describe("#7960 item 5 — overnight-watchdog: 1 issue por rodada, não e-mail r
         log: () => {},
       });
       assert.deepEqual(sent, [SUBJECT]);
+      assert.equal(reached, true, "o caller usa isto pra gravar `plan.stall_alert_delivered`");
     });
   });
 
-  it("detecção SEGUINTE da MESMA rodada (issue reusada) → nenhum e-mail novo", async () => {
-    // O ponto do item 5: sem `legacyResendIntent: "dedupe-new-occurrences-only"`
-    // o default `"resend-every-run"` reemitiria e-mail a cada detecção,
-    // que é exatamente o "e-mail recorrente" que esta issue elimina.
+  it("detecção SEGUINTE com o alerta JÁ entregue (issue reusada) → nenhum e-mail novo", async () => {
+    // O ponto do item 5: 1 e-mail por rodada, não um a cada detecção.
     await withTmpDir(async (dir) => {
       const sent: string[] = [];
-      await sendStallAlert(dir, "overnight", "260919", SUBJECT, "corpo", {
+      await sendStallAlert(dir, "overnight", "260919", SUBJECT, "corpo", true, {
         platformConfigPath: writePolicy(dir, "legacy"),
         ghRun: ghRunReusing(9001),
         sendPush: async (msg) => {
@@ -304,18 +300,65 @@ describe("#7960 item 5 — overnight-watchdog: 1 issue por rodada, não e-mail r
         },
         log: () => {},
       });
-      assert.deepEqual(sent, [], "issue reusada não deve reemitir e-mail");
+      assert.deepEqual(sent, [], "alerta já entregue nesta rodada não deve reemitir e-mail");
     });
   });
 
-  it("nunca lança, nem quando o gh falha (fail-soft TOTAL — watchdog não pode morrer)", async () => {
+  it("push falhou → reporta NÃO-entrega, e a detecção seguinte TENTA de novo mesmo com a issue reusada", async () => {
+    // O achado do silent-failure-hunter: gatear o resend por `issue.action`
+    // conflaria "issue reusada" com "e-mail entregue". Se o 1º e-mail
+    // falhasse de verdade, a rodada ficaria muda pro resto da vida dela —
+    // justo a rodada que travou.
     await withTmpDir(async (dir) => {
-      await sendStallAlert(dir, "overnight", "260919", SUBJECT, "corpo", {
+      const reached = await sendStallAlert(dir, "overnight", "260919", SUBJECT, "corpo", false, {
+        platformConfigPath: writePolicy(dir, "legacy"),
+        ghRun: ghRunCreating(9001),
+        sendPush: async () => ({ ok: false, error: "rede fora" }),
+        log: () => {},
+      });
+      assert.equal(reached, false, "push falho NÃO pode marcar a rodada como notificada");
+    });
+
+    await withTmpDir(async (dir) => {
+      const sent: string[] = [];
+      // `alreadyDeliveredThisRound: false` porque o marcador não avançou
+      // acima — e agora a issue está REUSADA. Tem que tentar de novo.
+      await sendStallAlert(dir, "overnight", "260919", SUBJECT, "corpo", false, {
+        platformConfigPath: writePolicy(dir, "legacy"),
+        ghRun: ghRunReusing(9001),
+        sendPush: async (msg) => {
+          sent.push(msg.subject);
+          return { ok: true };
+        },
+        log: () => {},
+      });
+      assert.deepEqual(sent, [SUBJECT], "com o alerta ainda não entregue, issue reusada DEVE retentar o e-mail");
+    });
+  });
+
+  it("sob urgent_only a issue é o canal: nenhum e-mail, mas CONTA como entregue", async () => {
+    await withTmpDir(async (dir) => {
+      const reached = await sendStallAlert(dir, "overnight", "260919", SUBJECT, "corpo", false, {
+        platformConfigPath: writePolicy(dir, "urgent_only"),
+        ghRun: ghRunCreating(9001),
+        sendPush: async () => {
+          throw new Error("severity 'acao' nunca e-mailia sob urgent_only");
+        },
+        log: () => {},
+      });
+      assert.equal(reached, true, "supressão deliberada pela política não é falha de infra");
+    });
+  });
+
+  it("gh falhou → NÃO-entrega, e nunca lança (fail-soft TOTAL — watchdog não pode morrer)", async () => {
+    await withTmpDir(async (dir) => {
+      const reached = await sendStallAlert(dir, "overnight", "260919", SUBJECT, "corpo", false, {
         platformConfigPath: writePolicy(dir, "legacy"),
         ghRun: (): GhSpawnResult => ({ status: 1, stdout: "", stderr: "gh: offline" }),
         sendPush: async () => ({ ok: true }),
         log: () => {},
       });
+      assert.equal(reached, false);
     });
   });
 });
@@ -436,5 +479,71 @@ describe("#7960 item 5 — hook do contínuo respeita email_policy", () => {
         throw new Error("nenhum fetch deveria acontecer sob urgent_only");
       });
     });
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Guard de WIRING: worker-drift-check.ts (achado P2 do pr-test-analyzer)
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("#7960 worker-drift-check — o wiring de main() usa as decisões, não um literal", () => {
+  // `main()` de `scripts/worker-drift-check.ts` é privada e só roda sob o
+  // guard `isMainModule` — exercitá-la exigiria `CLOUDFLARE_*` ao vivo e
+  // chamadas reais a `gh`/Gmail, que a regra 1 de
+  // `context/overnight-dispatch-rules.md` proíbe. Sem este guard, as 3
+  // decisões puras acima ficariam cobertas isoladamente enquanto o CALL
+  // SITE poderia contorná-las (hardcodar `alarmReachedEditor: true`, ou
+  // esquecer de threadar a variável) sem nenhum teste reclamar — o padrão
+  // "asserção sobre helper puro que o call site pode burlar".
+  //
+  // Scan estático do fonte, mesmo estilo de `test/editor-notify-boundary.test.ts`
+  // (regex sobre texto, nunca execução): trava o WIRING, não a implementação.
+  const src = (): string => readFileSync(new URL("../scripts/worker-drift-check.ts", import.meta.url), "utf8");
+
+  it("`driftAlarmReachedEditor` vem de `shouldPersistAlarmedState`, nunca de um literal", () => {
+    assert.match(
+      src(),
+      /driftAlarmReachedEditor = shouldPersistAlarmedState\(\{/,
+      "a decisão de persistir o cursor precisa vir do helper compartilhado (reusar, nunca reimplementar)",
+    );
+  });
+
+  it("`resolveNextAlarmedFingerprint` recebe a variável, não `true`", () => {
+    assert.match(
+      src(),
+      /alarmReachedEditor: driftAlarmReachedEditor/,
+      "hardcodar `alarmReachedEditor: true` faria o cursor avançar com o alarme perdido — o bug que esta fatia corrige",
+    );
+    assert.doesNotMatch(src(), /alarmReachedEditor: true/);
+  });
+
+  it("o cursor gravado é o resolvido, não `computeDriftFingerprint` cru", () => {
+    assert.match(src(), /const nextFingerprint = resolveNextAlarmedFingerprint\(/);
+    assert.match(src(), /saveState\(advanceState\(nextFingerprint,/);
+  });
+
+  it("a série de falha da API só é marcada como avisada via `notifyEditorResultReachedEditor`", () => {
+    assert.match(
+      src(),
+      /if \(notifyEditorResultReachedEditor\(apiResult\)\) \{\s*\n\s*nextApiErrorState\.lastApiErrorAlarmedAt/,
+      "marcar a série sem checar se algo chegou ao editor a silenciaria PARA SEMPRE (shouldAlarmApiError só rearma após um sucesso)",
+    );
+  });
+});
+
+describe("#7960 — `emailError` é autoritativo sobre `emailSent` (review type-design)", () => {
+  it("o par contraditório {emailSent: true, emailError} falha pro lado do RETRY", () => {
+    // `notifyEditor` nunca produz esse par, mas a interface flat
+    // `NotifyEditorResult` permite — um dublê de teste ou um refactor que
+    // preencha `emailError` antes da tentativa cairia no caminho otimista
+    // e mascararia uma falha real de envio.
+    const contraditorio: NotifyEditorResult = {
+      severity: "acao",
+      emailPolicy: "legacy",
+      emailSent: true,
+      emailError: "rede fora",
+      issue: { issueNumber: 1, url: "u", action: "created" },
+    };
+    assert.equal(notifyEditorResultReachedEditor(contraditorio), false);
   });
 });

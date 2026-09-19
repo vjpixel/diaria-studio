@@ -122,6 +122,19 @@ const VALID_KINDS: ReportKind[] = [
   "ads-digest",
 ];
 
+/**
+ * Guard de COMPILAÇÃO (achado do review type-design da PR #8406): membro
+ * novo em `ReportKind` que não for espelhado em `VALID_KINDS` quebra o
+ * build aqui, em vez de virar um kind que `isReportKind()` rejeita em
+ * runtime — e que `registerReport` então descarta em silêncio, sumindo com
+ * o relatório. O mapa exige uma entrada por membro da união; o `void`
+ * existe só pra o valor não ficar aparentemente morto.
+ */
+const _KIND_EXHAUSTIVENESS: Record<ReportKind, true> = Object.fromEntries(
+  VALID_KINDS.map((k) => [k, true]),
+) as Record<ReportKind, true>;
+void _KIND_EXHAUSTIVENESS;
+
 export function isReportKind(value: string): value is ReportKind {
   return (VALID_KINDS as string[]).includes(value);
 }
