@@ -1015,6 +1015,13 @@ async function runOneMode(
     validateScheduledTime(scheduledAt);
   } catch (e: any) {
     console.error(`ERRO: scheduled_at "${scheduledAt}" inválido para o post semanal: ${e.message}`);
+    // #8385 fleet review P1: --images-only NUNCA toca em
+    // 06-weekly-published.json (nem em sucesso, nem em falha) — só resolve
+    // imagem, não despacha pra canal nenhum. Sem este guard, os 4
+    // tagAndAppend abaixo gravariam status:"failed" pra Instagram/Facebook/
+    // Threads/LinkedIn mesmo numa invocação que nunca tentou publicar em
+    // nenhum deles.
+    if (imagesOnly) return false;
     if (!skipInstagram) {
       tagAndAppend({
         platform: "instagram",
@@ -1140,6 +1147,11 @@ async function runOneMode(
           : `ERRO ${destaqueKey}: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
               `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads + LinkedIn), não publica parcial.`,
     );
+    // #8385 fleet review P1: mesmo guard do bloco de scheduled_at acima —
+    // --images-only nunca escreve em 06-weekly-published.json, e uma falha
+    // de resolução de imagem é uma falha REAL (retorna false, não true) pro
+    // caller ter sinal mecânico via exit code.
+    if (imagesOnly) return false;
     if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
@@ -1169,6 +1181,8 @@ async function runOneMode(
         `carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads + LinkedIn), não publica parcial.`,
     );
     const reason = `flat_card_generation_failed:${e.message}`;
+    // #8385 fleet review P1: mesmo guard dos 2 blocos acima.
+    if (imagesOnly) return false;
     if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });

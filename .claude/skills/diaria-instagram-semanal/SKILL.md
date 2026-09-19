@@ -368,8 +368,9 @@ script resolve/gera a MESMA pipeline de imagem que `--schedule` usaria
 (capa recomposta, 1 card 4:5 recomposto por item no tamanho único da
 rodada, CTA — inclusive geração sob demanda de item de RADAR, #4513, se for
 o caso) e imprime 1 objeto JSON no stdout —
-`{cover, cta, items: [{index, title, url, editionDate, imageUrl}],
-carouselImageUrls}` — sem despachar pra nenhum canal e sem tocar em
+`{saturday, mode, carouselKey, scheduledAt, cover, cta, items:
+[{index, title, url, editionDate, imageUrl}], carouselImageUrls}` — sem
+despachar pra nenhum canal e sem tocar em
 `06-weekly-published.json`. Idempotente pelo mesmo cache que `--schedule`
 usa: se as imagens já foram resolvidas antes (rodada anterior ou
 `--schedule` já rodou), não regenera nem gasta de novo.
