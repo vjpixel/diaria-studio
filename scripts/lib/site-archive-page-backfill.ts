@@ -264,9 +264,12 @@ function extractDeclaredCoverUrl(html: string): string | undefined {
  * `image`, ou a página não declara capa nenhuma. JSON ilegível também é
  * no-op (nunca visto — o node é sempre escrito por nós — mas quebrar o
  * `<head>` de 270 páginas por um parse falho seria pior que deixar uma sem
- * `image`).
+ * `image`) — esse caso, ao contrário dos outros 4, AVISA em stderr: os
+ * demais são "não precisava", este é "precisava e não deu", e sem o aviso
+ * os dois colapsariam na mesma linha de resumo ("0 páginas alteradas"),
+ * escondendo um node de fato corrompido (achado do fleet review desta PR).
  */
-function backfillJsonLdImage(html: string): { html: string; changed: boolean } {
+function backfillJsonLdImage(html: string, slug?: string): { html: string; changed: boolean } {
   const heroImageUrl = extractDeclaredCoverUrl(html);
   if (!heroImageUrl) return { html, changed: false };
   const m = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
@@ -276,7 +279,12 @@ function backfillJsonLdImage(html: string): { html: string; changed: boolean } {
     // `buildArchiveNewsArticleJsonLd` escapa `<` como `\u003c` na serialização;
     // `JSON.parse` desfaz isso sozinho, então o texto cru serve direto.
     node = JSON.parse(m[1]) as Record<string, unknown>;
-  } catch {
+  } catch (e) {
+    process.stderr.write(
+      `[archive-backfill] aviso: JSON-LD ilegível em ${slug ?? "(slug desconhecido)"} ` +
+        `(${(e as Error).message}) — página fica sem \`image\` no NewsArticle. ` +
+        `Node corrompido também quebra a validação de structured data; conferir à mão.\n`,
+    );
     return { html, changed: false };
   }
   if (node["@type"] !== "NewsArticle" || node.image !== undefined) return { html, changed: false };
@@ -318,7 +326,7 @@ export function backfillArchivePageOnDisk(html: string, ctx: BackfillContext): B
   // passo vira no-op pelo guard de `image` presente — sem dupla injeção.
   const robotsResult = backfillRobotsMeta(out);
   out = robotsResult.html;
-  const jsonLdResult = backfillJsonLdImage(out);
+  const jsonLdResult = backfillJsonLdImage(out, ctx.slug);
   out = jsonLdResult.html;
 
   return {

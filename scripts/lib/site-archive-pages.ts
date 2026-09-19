@@ -955,10 +955,30 @@ export function addSitemapEntry(
   // A entrada pode vir com `news` montado num `now` anterior (ex: o processo
   // subiu ontem): re-checa a janela com o `now` desta chamada em vez de
   // confiar no que o chamador trouxe.
-  const news = entry.news && isNewsEntryFresh(entry.news, now) ? entry.news : undefined;
+  let news = entry.news && isNewsEntryFresh(entry.news, now) ? entry.news : undefined;
+  // Achado do fleet review desta PR: `ensureNewsNamespace` é um `.replace()`
+  // sobre `<urlset ...>`, e num XML que não casa esse shape (arquivo
+  // truncado por escrita parcial, editado à mão, vindo de outro gerador) ele
+  // devolveria a string intacta em SILÊNCIO — e o bloco `<news:news>` sairia
+  // com prefixo não declarado, que faz o Google descartar o sitemap INTEIRO,
+  // não só o bloco. Aqui a falha degrada pro comportamento de antes do
+  // #8390: a `<url>` entra sem bloco news, com aviso nomeando a causa.
+  let xmlBase = existingXml;
+  if (news) {
+    const ns = ensureNewsNamespace(existingXml);
+    if (ns.ok) {
+      xmlBase = ns.xml;
+    } else {
+      process.stderr.write(
+        `[site-archive-pages] aviso: sitemap sem tag <urlset ...> reconhecível — ` +
+          `xmlns:news não pôde ser declarado, então ${entry.loc} entra SEM bloco <news:news> ` +
+          `(emitir o bloco sem o namespace invalidaria o sitemap inteiro pro Google).\n`,
+      );
+      news = undefined;
+    }
+  }
   const insertion = `  <url>\n    <loc>${escXml(entry.loc)}</loc>${lastmodLine}${news ? renderNewsBlock(news) : ''}\n  </url>\n`;
-  const withNamespace = news ? ensureNewsNamespace(existingXml) : existingXml;
-  return withNamespace.replace('</urlset>', insertion + '</urlset>');
+  return xmlBase.replace('</urlset>', insertion + '</urlset>');
 }
 
 function isNewsEntryFresh(news: SitemapNewsEntry, now: number): boolean {
@@ -984,11 +1004,17 @@ function renderNewsBlock(news: SitemapNewsEntry): string {
 /**
  * Declara `xmlns:news` no `<urlset>` se ainda não estiver lá. Sem isso o XML
  * com bloco `<news:news>` é malformado (prefixo não declarado) e o parser do
- * Google descarta o sitemap INTEIRO — não só o bloco news.
+ * Google descarta o sitemap INTEIRO — não só o bloco.
+ *
+ * Devolve `ok: false` quando não há tag `<urlset ...>` onde declarar (XML
+ * truncado, editado à mão, de outro gerador) em vez de devolver a string
+ * intacta como se tivesse declarado — o chamador PRECISA distinguir os dois
+ * casos, senão emite o bloco news sem namespace e derruba o sitemap todo.
  */
-function ensureNewsNamespace(xml: string): string {
-  if (xml.includes("xmlns:news=")) return xml;
-  return xml.replace(/<urlset(\s[^>]*)?>/i, (full) => `${full.slice(0, -1)}${NEWS_XMLNS_ATTR}>`);
+function ensureNewsNamespace(xml: string): { xml: string; ok: boolean } {
+  if (xml.includes("xmlns:news=")) return { xml, ok: true };
+  const next = xml.replace(/<urlset(\s[^>]*)?>/i, (full) => `${full.slice(0, -1)}${NEWS_XMLNS_ATTR}>`);
+  return { xml: next, ok: next !== xml };
 }
 
 /**

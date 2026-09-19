@@ -213,6 +213,37 @@ describe("#8390 item 3 — <news:news> no sitemap, com janela de 48h", () => {
     assert.ok(!podado.includes("<news:news>"));
   });
 
+  it("escapa XML no <news:title> — headline com & e < não quebra o sitemap", () => {
+    const post = makePost({ title: "Google & OpenAI <disputam> a mesma vaga" });
+    const xml = buildSitemapXml(sitemapEntriesForPosts([post], { now: NOW }));
+    assert.match(xml, /<news:title>Google &amp; OpenAI &lt;disputam&gt; a mesma vaga<\/news:title>/);
+    // E o XML segue parseável — um & cru aqui derrubaria o sitemap inteiro.
+    assert.equal(parseSitemap(xml).length, 1);
+  });
+
+  it("2 edições frescas no mesmo urlset: 2 blocos news, 1 só declaração de namespace", () => {
+    const xml = buildSitemapXml(
+      sitemapEntriesForPosts(
+        [makePost({ slug: "fresca-a" }), makePost({ slug: "fresca-b", publish_date: FRESH_EPOCH_S - 3600 })],
+        { now: NOW },
+      ),
+    );
+    assert.equal(xml.match(/<news:news>/g)?.length, 2);
+    assert.equal(xml.match(/xmlns:news=/g)?.length, 1);
+  });
+
+  it("sitemap sem <urlset ...> reconhecível NÃO ganha bloco news órfão (namespace indeclarável)", () => {
+    // XML truncado/editado à mão: só a tag de fechamento. Emitir <news:news>
+    // aqui faria o Google descartar o sitemap INTEIRO por prefixo não
+    // declarado — a degradação certa é entrar sem o bloco.
+    const quebrado = '<?xml version="1.0" encoding="UTF-8"?>\n</urlset>\n';
+    const out = addSitemapEntry(quebrado, sitemapEntryFromPost(makePost(), { now: NOW }), { now: NOW });
+    assert.ok(!out.includes("<news:news>"), "bloco news emitido sem namespace declarado");
+    assert.ok(!out.includes("xmlns:news"));
+    // A entrada normal entra do mesmo jeito — a degradação é só do bloco news.
+    assert.match(out, /<loc>https:\/\/diar\.ia\.br\/p\/edicao-de-teste<\/loc>/);
+  });
+
   it("o XML com bloco news continua parseável pelos consumidores do sitemap", () => {
     const xml = buildSitemapXml([
       ...sitemapEntriesForPosts([makePost()], { now: NOW }),
