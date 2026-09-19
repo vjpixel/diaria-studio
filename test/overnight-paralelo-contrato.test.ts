@@ -43,6 +43,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { OVERNIGHT_WAVE_CAP } from "../scripts/lib/overnight-waves.ts";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -62,7 +63,7 @@ describe("#6299 — o overnight declara paralelismo, com teto", () => {
     );
   });
 
-  it("declara teto de concorrência explícito, e menor que o do develop", () => {
+  it("declara teto de concorrência explícito, e NÃO maior que o do develop", () => {
     // Ler os DOIS tetos e comparar de verdade. A versão anterior deste teste
     // só casava a string "Teto de concorrência: 3" no overnight e afirmava na
     // mensagem que 3 < 6 sem nunca ter lido o 6 — se o develop baixasse pra 2,
@@ -89,11 +90,28 @@ describe("#6299 — o overnight declara paralelismo, com teto", () => {
 
     const o = Number(overnightCap[1]);
     const d = Number(developCap[1]);
+    // #8486 (19/09/2026, decisão do editor): overnight subiu de 3 pra 6 e
+    // igualou o develop. A relação que este teste defendia era `o < d`; agora é
+    // `o <= d` — o overnight nunca pode ficar MAIS folgado que a sessão
+    // supervisionada. O número em si passa a ser travado contra o código
+    // (OVERNIGHT_WAVE_CAP, que o script de registro usa como enforcement) pra
+    // prosa e constante não divergirem em silêncio.
     assert.ok(
-      o < d,
-      `o teto do overnight (${o}) deixou de ser menor que o do develop (${d}). ` +
-        "A relação é a decisão, não o número: o overnight roda DESASSISTIDO, então degrada queimando menos trabalho antes de alguém olhar.",
+      o <= d,
+      `o teto do overnight (${o}) passou o do develop (${d}) — o overnight roda desassistido e não pode ser mais folgado que a sessão supervisionada.`,
     );
+    assert.equal(
+      o,
+      OVERNIGHT_WAVE_CAP,
+      "a prosa do SKILL.md e OVERNIGHT_WAVE_CAP (scripts/lib/overnight-waves.ts) divergiram — mudar os dois juntos",
+    );
+  });
+
+  it("o develop não guarda o teto velho do overnight (achado do review da #8492)", () => {
+    const d = read(DEVELOP);
+    assert.doesNotMatch(d, /teto menor: overnight, 3/, "item 6 do develop ainda diz que o overnight tem teto 3");
+    assert.doesNotMatch(d, /somar até 9 worktrees/, "item 6 do develop ainda diz 9 worktrees (6+6 = 12 desde o #8486)");
+    assert.doesNotMatch(read(OVERNIGHT), /até 3 desses ciclos/, "a Fase 1 do overnight ainda diz 3 ciclos em voo");
   });
 
   it("reusa a análise de cluster do develop em vez de reimplementar", () => {
