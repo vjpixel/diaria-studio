@@ -94,6 +94,7 @@ import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoPost, brevoGet, brevoGetList, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
+import { withBrevoTransient5xxRetry } from "./lib/brevo-transient-retry.ts"; // #5653
 import { pollProcessUntilTerminal, type PollOptions } from "./lib/brevo-process-poll.ts"; // #4577
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceWavesDir, clariceSegmentsDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961 / #2916
@@ -482,7 +483,7 @@ export function validateProcessId(raw: unknown): number | string {
 /** Cliente real, fino sobre `brevoPost`/`brevoGet`/`brevoGetList` (retry-on-429/5xx
  *  já embutido nelas — ver brevo-client.ts). Só usado por `main()` — testes
  *  injetam um fake que implementa o mesmo `ImportRunClient`. */
-export function makeRealImportRunClient(apiKey: string): ImportRunClient {
+export function makeRealImportRunClient(apiKey: string, retryDelaysMs?: readonly number[]): ImportRunClient {
   return {
     async createList(name, folderId) {
       const list = (await brevoPost(apiKey, "/contacts/lists", { name, folderId })) as { id?: number };
@@ -492,12 +493,14 @@ export function makeRealImportRunClient(apiKey: string): ImportRunClient {
       return { id: list.id };
     },
     async importCsv(listId, csv) {
-      const imp = (await brevoPost(apiKey, "/contacts/import", {
+      // #5653: 5xx pontual da Brevo aqui derrubava o run diário inteiro; o import
+      // é upsert numa lista recém-criada, então repetir é seguro.
+      const imp = (await withBrevoTransient5xxRetry(() => brevoPost(apiKey, "/contacts/import", {
         fileBody: csv,
         listIds: [listId],
         updateExistingContacts: true,
         emptyContactsAttributes: false,
-      })) as { processId?: unknown };
+      }), { delaysMs: retryDelaysMs })) as { processId?: unknown };
       return { processId: validateProcessId(imp.processId) };
     },
     async pollProcess(processId) {

@@ -1065,6 +1065,23 @@ describe("makeRealImportRunClient().importCsv (#4577 item 1 — validação real
     }
   });
 
+  it("#5653: 500 pontual em /contacts/import é retentado e resolve (fiação real)", async () => {
+    const orig = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => (++calls === 1 ? jsonRes(500, {}) : jsonRes(200, { processId: 4242 }))) as typeof fetch;
+    const origWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const client = makeRealImportRunClient("fake-key", [0, 0]);
+      const { processId } = await client.importCsv(99, "EMAIL\na@x.com\n");
+      assert.equal(processId, 4242);
+      assert.equal(calls, 2);
+    } finally {
+      globalThis.fetch = orig;
+      console.warn = origWarn;
+    }
+  });
+
   it("POST /contacts/import com processId válido → resolve com ele", async () => {
     const orig = globalThis.fetch;
     globalThis.fetch = (async () => jsonRes(200, { processId: 4242 })) as typeof fetch;
