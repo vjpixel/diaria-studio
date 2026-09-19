@@ -220,6 +220,70 @@ export async function refreshGoogleAdsAccessToken(
 }
 
 /**
+ * POST autenticado na Google Ads REST API com o retry de `login-customer-id`
+ * do #5237 — compartilhado por `googleAds:search` (GAQL) e por
+ * `generateKeywordIdeas` (Keyword Planner, #8366), pra ninguém montar headers
+ * à mão e cair na mesma armadilha da MCC. Nunca lança.
+ */
+export async function postGoogleAdsWithLoginRetry(
+  fetchImpl: FetchLike,
+  auth: Pick<GoogleAdsAuthConfig, "developerToken" | "loginCustomerId" | "customerId">,
+  accessToken: string,
+  url: string,
+  body: string,
+): Promise<{ res: Response; text: string } | { networkError: string }> {
+  const customerId = auth.customerId.replace(/[^0-9]/g, "");
+  const configuredLoginCustomerId = auth.loginCustomerId.replace(/[^0-9]/g, "");
+
+  const post = async (loginCustomerId: string): Promise<{ res: Response; text: string } | { networkError: string }> => {
+    let res: Response;
+    try {
+      res = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "developer-token": auth.developerToken,
+          "login-customer-id": loginCustomerId,
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+    } catch (e) {
+      return { networkError: `falha de rede na chamada ${url.split("/").pop()}: ${e instanceof Error ? e.message : e}` };
+    }
+    return { res, text: await res.text() };
+  };
+
+  let attempt = await post(configuredLoginCustomerId);
+  if ("networkError" in attempt) return attempt;
+
+  // Achado ao vivo 19/08/2026, mesmo dia da aprovação do Basic Access
+  // (#5237): com `login-customer-id` = MCC configurada
+  // (`GOOGLE_ADS_LOGIN_CUSTOMER_ID`), a conta de anunciante devolve 403
+  // `USER_PERMISSION_DENIED` — mas a MESMA query, na MESMA conta, com
+  // `login-customer-id` = a própria conta anunciante (`customerId`), devolve
+  // 200. `listAccessibleCustomers` também 200 pros dois IDs. Ou seja: o
+  // usuário OAuth tem acesso direto à conta de anúncio, mas não através da
+  // hierarquia da MCC configurada — sintoma de vínculo MCC↔conta incompleto
+  // no lado do Google Ads (aceitar convite / vínculo de gerenciamento), não
+  // de credencial errada nem de Basic Access ainda pendente. Retry único com
+  // a própria conta como login-customer-id resolve sem exigir reconfiguração
+  // — só dispara quando o 1º corpo bate USER_PERMISSION_DENIED E o login
+  // configurado difere da conta-alvo, então nunca mascara outra classe de
+  // 403 (ex: DEVELOPER_TOKEN_NOT_APPROVED, que continua indo pro fallback
+  // normal sem retry).
+  if (
+    attempt.res.status === 403 &&
+    attempt.text.includes("USER_PERMISSION_DENIED") &&
+    configuredLoginCustomerId !== customerId
+  ) {
+    const retry = await post(customerId);
+    if (!("networkError" in retry)) attempt = retry;
+  }
+  return attempt;
+}
+
+/**
  * Busca as linhas GAQL de custo diário da conta. Nunca lança — mesma
  * disciplina fail-soft de `refreshGoogleAdsAccessToken`. Todo HTTP não-2xx
  * (inclusive `DEVELOPER_TOKEN_NOT_APPROVED`, estado esperado hoje, ver
@@ -247,54 +311,10 @@ export async function fetchGoogleAdsSpendRows<T extends GaqlSpendApiRow = GaqlSp
 ): Promise<{ rows: T[] } | { error: string; failureClass?: GoogleAdsFailureClass }> {
   const apiVersion = auth.apiVersion ?? DEFAULT_API_VERSION;
   const customerId = auth.customerId.replace(/[^0-9]/g, "");
-  const configuredLoginCustomerId = auth.loginCustomerId.replace(/[^0-9]/g, "");
   const url = `https://googleads.googleapis.com/${apiVersion}/customers/${customerId}/googleAds:search`;
 
-  const search = async (loginCustomerId: string): Promise<{ res: Response; text: string } | { networkError: string }> => {
-    let res: Response;
-    try {
-      res = await fetchImpl(url, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "developer-token": auth.developerToken,
-          "login-customer-id": loginCustomerId,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ query: gaqlQuery }),
-      });
-    } catch (e) {
-      return { networkError: `falha de rede na chamada googleAds:search: ${e instanceof Error ? e.message : e}` };
-    }
-    return { res, text: await res.text() };
-  };
-
-  let attempt = await search(configuredLoginCustomerId);
+  const attempt = await postGoogleAdsWithLoginRetry(fetchImpl, auth, accessToken, url, JSON.stringify({ query: gaqlQuery }));
   if ("networkError" in attempt) return { error: attempt.networkError };
-
-  // Achado ao vivo 19/08/2026, mesmo dia da aprovação do Basic Access
-  // (#5237): com `login-customer-id` = MCC configurada
-  // (`GOOGLE_ADS_LOGIN_CUSTOMER_ID`), a conta de anunciante devolve 403
-  // `USER_PERMISSION_DENIED` — mas a MESMA query, na MESMA conta, com
-  // `login-customer-id` = a própria conta anunciante (`customerId`), devolve
-  // 200. `listAccessibleCustomers` também 200 pros dois IDs. Ou seja: o
-  // usuário OAuth tem acesso direto à conta de anúncio, mas não através da
-  // hierarquia da MCC configurada — sintoma de vínculo MCC↔conta incompleto
-  // no lado do Google Ads (aceitar convite / vínculo de gerenciamento), não
-  // de credencial errada nem de Basic Access ainda pendente. Retry único com
-  // a própria conta como login-customer-id resolve sem exigir reconfiguração
-  // — só dispara quando o 1º corpo bate USER_PERMISSION_DENIED E o login
-  // configurado difere da conta-alvo, então nunca mascara outra classe de
-  // 403 (ex: DEVELOPER_TOKEN_NOT_APPROVED, que continua indo pro fallback
-  // normal sem retry).
-  if (
-    attempt.res.status === 403 &&
-    attempt.text.includes("USER_PERMISSION_DENIED") &&
-    configuredLoginCustomerId !== customerId
-  ) {
-    const retry = await search(customerId);
-    if (!("networkError" in retry)) attempt = retry;
-  }
 
   const { res, text } = attempt;
   if (!res.ok) {
