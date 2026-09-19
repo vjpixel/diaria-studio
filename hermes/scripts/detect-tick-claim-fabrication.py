@@ -156,7 +156,7 @@ _ISSUE_REF = re.compile(r"#(\d+)\b")
 # Palavras que sinalizam "isto é um claim declarado", usadas pra restringir
 # a busca de #NNNN a linhas plausivelmente sobre reivindicação (evita casar
 # qualquer menção solta de "#123" em qualquer contexto).
-_CLAIM_KEYWORDS = re.compile(r"reivindic|claim", re.IGNORECASE)
+_CLAIM_KEYWORDS = re.compile(r"reivindic|reivindiq|claim", re.IGNORECASE)
 
 # **#8377 (2026-09-18).** O detector lia QUALQUER #NNNN em uma linha que
 # mencionava "reivindic"/"claim", independentemente de se tratar de um
@@ -195,8 +195,25 @@ _CLAIM_KEYWORDS = re.compile(r"reivindic|claim", re.IGNORECASE)
 # cobre "#8356 está reivindicada pelo mesmo tick" (dist ~11) e
 # "reivindicada #300" (adjacente), e descarta o #8356 a 52 chars do
 # keyword no relatório real do tick 15:54.
-_CLAIM_PROXIMITY = 40
-_CLAUSE_SPLIT = re.compile(r";|\. (?=[A-Z#])")
+#
+# **#8377 (revisão, falsos negativos).** A janela fixa de 40 chars descartava
+# claims REAIS em listas longas ("#8301, #8302, ..., #8306") e títulos longos
+# ("- #8400 corrigir o parser ... (reivindicada)."), e o split por `;`
+# separava o número do keyword ("Claims: #100; #101"). A associação agora é
+# ESTRUTURAL, não por distância fixa: o keyword se liga à LISTA de refs
+# (`_REF_LIST`: #N separados por `,` `/` `;` `&` `e` `ou`) mais próxima —
+# só uma, a de menor distância, então "Após #8356, ... : #8355 está
+# reivindicada" continua ligando só #8355 — mais a lista que ABRE o item
+# ("- #8400 título longo (reivindicada)", até `_LEADING_MAX_GAP` chars).
+# `;` só separa cláusulas quando NÃO está entre dois refs.
+_LEADING_MAX_GAP = 160
+_CLAUSE_SPLIT = re.compile(r"\. (?=[A-Z#])")
+_REF_SEMI = re.compile(r"(#\d+)\s*;\s*(?=#\d)")
+_REF_LIST = re.compile(
+    r"#\d+\b(?:(?:\s*,\s*e\s+|\s*[,/;&]\s*|\s+(?:e|ou)\s+)#\d+\b)*",
+    re.IGNORECASE,
+)
+_LEADING_LIST = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?(?=#\d)")
 _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 _OTHERS_CLAIM = re.compile(
     r"#(\d+)\b[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+"
@@ -342,29 +359,59 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
     refs: dict[int, bool] = {}
     for line in report_text.splitlines():
         line_released = bool(_RELEASE_SIGNAL.search(line))
-        for segment in _CLAUSE_SPLIT.split(line):
-            kw = _CLAIM_KEYWORDS.search(segment)
-            if not kw:
+        # `;` entre dois refs é separador de LISTA, não de cláusula.
+        norm = _REF_SEMI.sub(lambda m: m.group(1) + ",", line)
+        # `;` restante separa cláusulas; `. ` + maiúscula/# também.
+        segments = [
+            seg
+            for part in norm.split(";")
+            for seg in _CLAUSE_SPLIT.split(part)
+        ]
+        for idx, segment in enumerate(segments):
+            kws = list(_CLAIM_KEYWORDS.finditer(segment))
+            if not kws:
                 continue
-            # Cada exclusion regex captura o #NNNN que JUSTIFICOU a
-            # exclusão (o coberto, o PR, o claim de outro ator). Ela é
-            # aplicada SÓ a esse número — um claim próprio no mesmo segmento
-            # ("#7807 reivindicada, trabalho coberto por #7808") não é
-            # afetado pela cobertura de #7808. Aplicar o conjunto inteiro
-            # a todos os refs do segmento era o bug do #8377 (achado na
-            # revisão da PR, 1ª objeção).
+            lists = list(_REF_LIST.finditer(segment))
+            attached: list[re.Match] = []
+            if lists:
+                lead = _LEADING_LIST.match(segment)
+                for kw in kws:
+                    if lead and lists[0].start() == lead.end() and (
+                        kw.start() - lists[0].end() <= _LEADING_MAX_GAP
+                    ):
+                        attached.append(lists[0])
+                    before = [l for l in lists if l.end() <= kw.start()]
+                    after = [l for l in lists if l.start() >= kw.end()]
+                    cand = []
+                    db = kw.start() - before[-1].end() if before else None
+                    da = after[0].start() - kw.end() if after else None
+                    if db is not None and (da is None or db <= da):
+                        cand.append(before[-1])
+                    if da is not None and (db is None or da <= db):
+                        cand.append(after[0])
+                    attached.extend(cand)
+            elif idx > 0:
+                # "- #N: descrição. Claim registrada." — o keyword abre a
+                # cláusula seguinte; liga à lista que ABRE a anterior.
+                prev = segments[idx - 1]
+                lead = _LEADING_LIST.match(prev)
+                if lead:
+                    m0 = _REF_LIST.match(prev, lead.end())
+                    if m0:
+                        attached.append(m0)
+                        segment = prev + ". " + segment
+            if not attached:
+                continue
+            # Exclusões aplicadas SÓ ao número que as justificou (#8377).
             pr_ref_n = {int(n) for n in _PR_REF.findall(segment)}
             others_n = {int(n) for n in _OTHERS_CLAIM.findall(segment)}
             covered_n = {int(n) for n in _COVERED_BY.findall(segment)}
-            for m in _ISSUE_REF.finditer(segment):
-                n = int(m.group(1))
-                if n in pr_ref_n or n in others_n or n in covered_n:
-                    continue
-                # Proximidade: o #NNNN precisa estar junto ao keyword
-                # (#8377 parte 2).
-                if abs(m.start() - kw.start()) > _CLAIM_PROXIMITY:
-                    continue
-                refs[n] = refs.get(n, False) or line_released
+            for lm in attached:
+                for n_s in _ISSUE_REF.findall(lm.group(0)):
+                    n = int(n_s)
+                    if n in pr_ref_n or n in others_n or n in covered_n:
+                        continue
+                    refs[n] = refs.get(n, False) or line_released
     return refs
 
 
