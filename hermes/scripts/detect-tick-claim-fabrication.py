@@ -217,7 +217,7 @@ _LEADING_LIST = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?(?=#\d)")
 _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 _OTHERS_CLAIM = re.compile(
     r"(?P<refs>" + _REF_LIST.pattern + r")"
-    r"\s*reivindicad\w*\s+(?:por|pelo|pelas)\s+"
+    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+"
     r"(?:outr[oa]|outros|outras|overnight|terceir[oa])\b",
     re.IGNORECASE,
 )
