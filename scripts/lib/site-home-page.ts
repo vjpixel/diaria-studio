@@ -440,6 +440,43 @@ export function brtDateString(now: Date = new Date()): string {
 }
 
 /**
+ * Paths ESTÁTICOS conhecidos do sitemap do apex — as superfícies que
+ * legitimamente aparecem no `sitemap.xml` sem serem edição, e cuja ausência
+ * do feed da home é o caminho esperado (`/clarice` desde o #8339,
+ * `/archive` + `/archive/{n}` desde o #8353).
+ *
+ * Allowlist e não heurística de propósito (ver o comentário no ponto de uso,
+ * em `buildHomeFeed`): o default pra path DESCONHECIDO é `console.warn`, de
+ * modo que um shape novo de URL de edição — ou uma entrada genuinamente
+ * quebrada — nunca seja rebaixado a "esperado" em silêncio. Superfície
+ * estática nova entra aqui explicitamente.
+ */
+export const KNOWN_STATIC_SITEMAP_PATHS: readonly (string | RegExp)[] = [
+  "/",
+  "/clarice",
+  "/apoiar",
+  "/assinar",
+  "/archive",
+  /^\/archive\/[0-9]+$/,
+];
+
+/** `true` se `loc` é uma das superfícies estáticas conhecidas (`KNOWN_STATIC_SITEMAP_PATHS`). */
+export function isKnownStaticSitemapPath(loc: string): boolean {
+  let pathname: string;
+  try {
+    pathname = new URL(loc).pathname;
+  } catch {
+    pathname = loc;
+  }
+  // `html_handling = "drop-trailing-slash"` serve tudo sem barra final; a
+  // raiz ("/") é a única exceção e não pode ser normalizada pra "".
+  const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+  return KNOWN_STATIC_SITEMAP_PATHS.some((p) =>
+    typeof p === "string" ? p === normalized : p.test(normalized),
+  );
+}
+
+/**
  * Monta a lista de edições reais (mais recente primeiro) a partir do
  * `sitemap.xml` já commitado + um reader de página injetado (produção lê
  * `workers/site/public/p/{slug}/index.html`; teste injeta fixtures em
@@ -542,14 +579,22 @@ export function buildHomeFeed(
       // #8353: o sitemap do apex tem entradas estáticas legítimas que não
       // são edição (`/clarice` desde o #8339, `/archive*` desde esta issue)
       // — pra elas o skip é o caminho ESPERADO, e um warn por entrada a
-      // cada geração viraria ruído que treina a ignorar o warn real. Só
-      // uma URL que se PARECE com edição (`/p/...`) e ainda assim não
-      // rendeu slug é regressão de shape, e essa continua sendo warn.
-      const looksLikeEdition = entry.loc.includes("/p/");
-      const log = looksLikeEdition ? console.warn : console.log;
+      // cada geração viraria ruído que treina a ignorar o warn real.
+      //
+      // O critério é uma ALLOWLIST do que sabemos ser estático, nunca uma
+      // heurística sobre o prefixo de edição (finding 4 do self-review da
+      // PR #8399): `loc.includes("/p/")` só acertava enquanto a URL de
+      // edição fosse `/p/{slug}` — no dia em que ela virasse `/edicao/…`,
+      // uma entrada genuinamente quebrada passaria a ser rebaixada a
+      // "estática, esperado", e o silêncio aconteceria justo quando algo
+      // quebrou. Com a allowlist a falha é na direção segura: path
+      // desconhecido é sempre warn, e acrescentar uma superfície estática
+      // nova é uma linha em `KNOWN_STATIC_SITEMAP_PATHS`.
+      const isStatic = isKnownStaticSitemapPath(entry.loc);
+      const log = isStatic ? console.log : console.warn;
       log(
         `site-home-page: sitemap entry sem slug reconhecível: ${entry.loc}` +
-          (looksLikeEdition ? "" : " (entrada estática, fora do feed — esperado)"),
+          (isStatic ? " (entrada estática, fora do feed — esperado)" : ""),
       );
       continue;
     }

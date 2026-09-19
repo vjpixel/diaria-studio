@@ -50,12 +50,14 @@
  */
 
 import { escHtml } from "./html-escape.ts";
-import { renderAnalyticsHead } from "./shared/seo-meta.ts";
+import { renderAnalyticsHead, renderSeoMeta } from "./shared/seo-meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
+import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
 import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 import { ARCHIVE_BASE_URL } from "./site-archive-pages.ts";
 import {
   buildHomeFeed,
+  extractHeroImage,
   formatDateLong,
   type BuildHomeFeedOptions,
   type HomeFeedEntry,
@@ -150,6 +152,37 @@ export function monthLabel(iso: string | null): string | null {
   return `${months[m - 1]} de ${y}`;
 }
 
+/**
+ * Capa de compartilhamento do índice (#8353, finding 2 do self-review da
+ * PR #8399): a capa da edição MAIS RECENTE do acervo — mesma escolha que o
+ * `og:image` da raiz de `arquivo.diar.ia.br` já faz desde o #5131 (a capa
+ * mais viva disponível, sem asset de marca novo pra manter).
+ *
+ * A MESMA imagem vai nas N páginas do índice de propósito: as 9 páginas são
+ * uma superfície só (o acervo), e uma capa por página faria o card de
+ * `/archive/7` mudar toda vez que uma edição entrasse e empurrasse a
+ * paginação.
+ *
+ * `null` (edição sem `<img class="hero">`, página ausente) omite
+ * `og:image`/`twitter:image` e mantém `twitter:card=summary` — exatamente o
+ * que `renderSeoMeta` faz sem `image`, nunca uma tag com URL vazia.
+ *
+ * Devolve sempre URL ABSOLUTA: a capa vive no próprio Worker e o `<img>` da
+ * página a referencia como path relativo (`/img/…`, #7011), mas unfurler
+ * (Slack, WhatsApp, X) não resolve `og:image` relativo — seria o mesmo card
+ * sem imagem que este fix existe pra tirar.
+ */
+export function resolveArchiveIndexCover(
+  entries: HomeFeedEntry[],
+  readPageHtml: (slug: string) => string | null,
+): string | null {
+  const newest = entries[0];
+  if (!newest) return null;
+  const src = extractHeroImage(readPageHtml(newest.slug) ?? "");
+  if (!src) return null;
+  return src.startsWith("/") ? `${ARCHIVE_BASE_URL}${src}` : src;
+}
+
 function renderEntry(entry: HomeFeedEntry): string {
   const date = formatDateLong(entry.date);
   const dateHtml = entry.date && date ? `<time datetime="${escHtml(entry.date)}">${escHtml(date)}</time>` : "";
@@ -224,10 +257,17 @@ export interface BuildArchiveIndexHtmlOptions {
   totalPages: number;
   /** Total de edições no acervo inteiro (todas as páginas) — só pro subtítulo. */
   totalEditions: number;
+  /**
+   * URL absoluta da capa de compartilhamento (`resolveArchiveIndexCover`).
+   * Ausente/`null`: `og:image`/`twitter:image` omitidos e
+   * `twitter:card=summary`, igual a qualquer caller de `renderSeoMeta` sem
+   * `image`.
+   */
+  coverImage?: string | null;
 }
 
 export function buildArchiveIndexHtml(opts: BuildArchiveIndexHtmlOptions): string {
-  const { entries, page, totalPages, totalEditions } = opts;
+  const { entries, page, totalPages, totalEditions, coverImage } = opts;
   if (!Number.isInteger(page) || page < 1 || page > Math.max(1, totalPages)) {
     throw new Error(`buildArchiveIndexHtml: página ${page} fora do range 1..${totalPages}`);
   }
@@ -246,6 +286,20 @@ export function buildArchiveIndexHtml(opts: BuildArchiveIndexHtmlOptions): strin
   const canonical = archiveIndexUrl(page);
   const relPrev = page > 1 ? `<link rel="prev" href="${archiveIndexUrl(page - 1)}">\n` : "";
   const relNext = page < totalPages ? `<link rel="next" href="${archiveIndexUrl(page + 1)}">\n` : "";
+  // #8353 (finding 2 do self-review da PR #8399): o `<head>` montado à mão
+  // aqui declarava og:type/title/description/url e NENHUM
+  // `og:image`/`twitter:card` — compartilhar `/archive` rendia card sem
+  // imagem, ao contrário de `/p/{slug}` (#8352). Passa a sair do MESMO
+  // `renderSeoMeta` das outras superfícies, que também traz canonical,
+  // favicon e o bloco twitter:* completo.
+  const seoMeta = renderSeoMeta({
+    title,
+    description,
+    url: canonical,
+    image: coverImage
+      ? { url: coverImage, width: COVER_IMAGE_WIDTH, height: COVER_IMAGE_HEIGHT }
+      : undefined,
+  });
 
   return `<!--
   workers/site/public/${archiveIndexFilePath(page)} (#8353 item 2)
@@ -263,14 +317,7 @@ export function buildArchiveIndexHtml(opts: BuildArchiveIndexHtmlOptions): strin
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escHtml(title)}</title>
-<meta name="description" content="${escHtml(description)}">
-<link rel="canonical" href="${canonical}">
-${relPrev}${relNext}<meta property="og:type" content="website">
-<meta property="og:site_name" content="diar.ia.br">
-<meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="${escHtml(title)}">
-<meta property="og:description" content="${escHtml(description)}">
-<meta property="og:url" content="${canonical}">
+${relPrev}${relNext}${seoMeta}
 <style>
 :root {
   --teal: ${COLORS.brand};

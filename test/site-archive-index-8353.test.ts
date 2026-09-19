@@ -16,7 +16,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,8 +31,14 @@ import {
   buildArchiveIndexFeed,
   buildArchiveIndexHtml,
   monthLabel,
+  resolveArchiveIndexCover,
 } from "../scripts/lib/site-archive-index.ts";
-import type { HomeFeedEntry } from "../scripts/lib/site-home-page.ts";
+import {
+  buildHomeFeed,
+  isKnownStaticSitemapPath,
+  type HomeFeedEntry,
+} from "../scripts/lib/site-home-page.ts";
+import { findStaleIndexPages, main as genArchiveIndexMain } from "../scripts/gen-archive-index.ts";
 import { matchArchiveSlug } from "../workers/site/src/index.ts";
 import { parseSitemap } from "../scripts/lib/fetch-sitemap.ts";
 
@@ -302,5 +309,222 @@ describe("artefato commitado — /archive não é mais 404 (#8353 item 2)", () =
   it("a home linka o índice (não só 6 das 270 edições)", () => {
     const home = readFileSync(join(PUBLIC_DIR, "index.html"), "utf8");
     assert.match(home, /href="\/archive"/);
+  });
+});
+
+/**
+ * Findings 1, 2 e 4 do self-review da PR #8399.
+ */
+describe("poda × sitemap nunca divergem (#8353, finding 1 da PR #8399)", () => {
+  function fixture(editions: number): { dir: string; sitemap: string; pagesDir: string } {
+    const dir = mkdtempSync(join(tmpdir(), "archive-index-8353-"));
+    const pagesDir = join(dir, "p");
+    const urls: string[] = [];
+    for (let i = 0; i < editions; i++) {
+      const slug = `edicao-${String(i).padStart(3, "0")}`;
+      mkdirSync(join(pagesDir, slug), { recursive: true });
+      writeFileSync(
+        join(pagesDir, slug, "index.html"),
+        `<html><head><title>${slug}</title><meta name="dek" content="dek ${slug}"></head><body></body></html>`,
+        "utf8",
+      );
+      urls.push(
+        `  <url>\n    <loc>https://diar.ia.br/p/${slug}</loc>\n    <lastmod>2025-01-${String(i + 1).padStart(2, "0")}</lastmod>\n  </url>`,
+      );
+    }
+    const sitemap = join(dir, "sitemap.xml");
+    writeFileSync(
+      sitemap,
+      `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join("\n")}\n</urlset>\n`,
+      "utf8",
+    );
+    return { dir, sitemap, pagesDir };
+  }
+
+  /** Roda `gen-archive-index.ts main()` contra o fixture, capturando os warns. */
+  function run(fx: { dir: string; sitemap: string; pagesDir: string }, extra: string[]): string[] {
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    const origLog = console.log;
+    console.warn = (...args: unknown[]) => void warns.push(args.join(" "));
+    console.log = () => {};
+    try {
+      const code = genArchiveIndexMain([
+        "--sitemap",
+        fx.sitemap,
+        "--pages-dir",
+        fx.pagesDir,
+        "--out-dir",
+        fx.dir,
+        ...extra,
+      ]);
+      assert.equal(code, 0, "gen-archive-index devia ter saído 0 no fixture");
+    } finally {
+      console.warn = origWarn;
+      console.log = origLog;
+    }
+    return warns;
+  }
+
+  it("--no-sitemap NÃO poda (a <loc> ficaria apontando pra 404) e avisa quais páginas ficaram órfãs", () => {
+    const fx = fixture(6);
+    try {
+      // 6 edições, 2 por página → 3 páginas, com as entradas no sitemap.
+      run(fx, ["--page-size", "2"]);
+      assert.ok(existsSync(join(fx.dir, "archive", "3", "index.html")), "/archive/3 devia existir");
+      const withPages = readFileSync(fx.sitemap, "utf8");
+      assert.ok(withPages.includes("<loc>https://diar.ia.br/archive/3</loc>"), "sitemap devia ter /archive/3");
+
+      // Agora 6 por página → 1 página só. Com --no-sitemap, /archive/2 e
+      // /archive/3 PERMANECEM em disco: podá-las sem poder tirar a <loc>
+      // é exatamente a URL 404 declarada que o finding 1 aponta.
+      const warns = run(fx, ["--page-size", "6", "--no-sitemap"]);
+      assert.equal(readFileSync(fx.sitemap, "utf8"), withPages, "--no-sitemap não pode reescrever o sitemap");
+      for (const n of ["2", "3"]) {
+        assert.ok(
+          existsSync(join(fx.dir, "archive", n, "index.html")),
+          `/archive/${n} sumiu do disco com --no-sitemap, mas a <loc> continua no sitemap → 404 declarado`,
+        );
+      }
+      assert.ok(
+        warns.some((w) => w.includes("--no-sitemap") && w.includes("/archive/2") && w.includes("/archive/3")),
+        `esperado warn nomeando as páginas órfãs mantidas; warns: ${JSON.stringify(warns)}`,
+      );
+    } finally {
+      rmSync(fx.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem a flag, poda e limpeza do sitemap acontecem na MESMA execução", () => {
+    const fx = fixture(6);
+    try {
+      run(fx, ["--page-size", "2"]);
+      run(fx, ["--page-size", "6"]);
+      const xml = readFileSync(fx.sitemap, "utf8");
+      for (const n of ["2", "3"]) {
+        assert.equal(existsSync(join(fx.dir, "archive", n)), false, `/archive/${n} devia ter sido podada`);
+        assert.ok(
+          !xml.includes(`<loc>https://diar.ia.br/archive/${n}</loc>`),
+          `<loc> de /archive/${n} continuou no sitemap depois da poda`,
+        );
+      }
+      assert.ok(xml.includes("<loc>https://diar.ia.br/archive</loc>"), "/archive não podia sair do sitemap");
+    } finally {
+      rmSync(fx.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("findStaleIndexPages nunca considera index.html nem diretório não-numerado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "archive-stale-8353-"));
+    try {
+      const archiveDir = join(dir, "archive");
+      mkdirSync(join(archiveDir, "2"), { recursive: true });
+      mkdirSync(join(archiveDir, "7"), { recursive: true });
+      mkdirSync(join(archiveDir, "tema"), { recursive: true });
+      writeFileSync(join(archiveDir, "index.html"), "<html></html>", "utf8");
+      assert.deepEqual(findStaleIndexPages(archiveDir, 3), ["7"]);
+      assert.ok(existsSync(join(archiveDir, "index.html")));
+      assert.ok(existsSync(join(archiveDir, "tema")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("og:image/twitter:card no índice (#8353, finding 2 da PR #8399)", () => {
+  const entries = [entry("mais-recente", "2026-09-18"), entry("anterior", "2026-09-17")];
+
+  it("com capa: og:image absoluto + twitter:card=summary_large_image", () => {
+    const html = buildArchiveIndexHtml({
+      entries,
+      page: 1,
+      totalPages: 2,
+      totalEditions: 40,
+      coverImage: "https://diar.ia.br/img/capa.jpg",
+    });
+    assert.match(html, /<meta property="og:image" content="https:\/\/diar\.ia\.br\/img\/capa\.jpg">/);
+    assert.match(html, /<meta name="twitter:image" content="https:\/\/diar\.ia\.br\/img\/capa\.jpg">/);
+    assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
+    // O bloco veio do renderSeoMeta compartilhado — canonical e favicon juntos.
+    assert.match(html, /<link rel="canonical" href="https:\/\/diar\.ia\.br\/archive">/);
+    assert.match(html, /<link rel="icon" href="data:image\/svg\+xml/);
+  });
+
+  it("sem capa: nenhuma tag de imagem vazia, twitter:card=summary", () => {
+    const html = buildArchiveIndexHtml({ entries, page: 1, totalPages: 1, totalEditions: 2 });
+    assert.ok(!html.includes("og:image"), "og:image não devia existir sem capa");
+    assert.match(html, /<meta name="twitter:card" content="summary">/);
+  });
+
+  it("resolveArchiveIndexCover absolutiza o /img/ relativo da edição mais recente", () => {
+    const cover = resolveArchiveIndexCover(entries, (slug) =>
+      slug === "mais-recente"
+        ? '<html><body><img class="hero" src="/img/img-260918-04-d1-2x1.jpg"></body></html>'
+        : null,
+    );
+    assert.equal(cover, "https://diar.ia.br/img/img-260918-04-d1-2x1.jpg");
+  });
+
+  it("edição mais recente sem hero → null (card só-texto, nunca URL vazia)", () => {
+    assert.equal(resolveArchiveIndexCover(entries, () => "<html><body></body></html>"), null);
+    assert.equal(resolveArchiveIndexCover([], () => null), null);
+  });
+
+  it("as páginas commitadas trazem og:image e twitter:card", () => {
+    const html = readFileSync(join(PUBLIC_DIR, "archive", "index.html"), "utf8");
+    assert.match(html, /<meta property="og:image" content="https:\/\/diar\.ia\.br\//);
+    assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
+  });
+});
+
+describe("entrada estática do sitemap é allowlist, não heurística (#8353, finding 4 da PR #8399)", () => {
+  function feedWarns(loc: string): { warns: string[]; logs: string[] } {
+    const warns: string[] = [];
+    const logs: string[] = [];
+    const origWarn = console.warn;
+    const origLog = console.log;
+    console.warn = (...a: unknown[]) => void warns.push(a.join(" "));
+    console.log = (...a: unknown[]) => void logs.push(a.join(" "));
+    try {
+      buildHomeFeed(`<?xml version="1.0"?><urlset><url><loc>${loc}</loc></url></urlset>`, () => null, 10, {
+        todayBrt: "2026-09-19",
+      });
+    } finally {
+      console.warn = origWarn;
+      console.log = origLog;
+    }
+    return { warns, logs };
+  }
+
+  it("path estático conhecido é console.log (não polui a geração diária)", () => {
+    for (const loc of ["https://diar.ia.br/clarice", "https://diar.ia.br/archive", "https://diar.ia.br/archive/7"]) {
+      const { warns, logs } = feedWarns(loc);
+      assert.deepEqual(warns, [], `${loc} não devia gerar warn`);
+      assert.ok(
+        logs.some((l) => l.includes(loc)),
+        `${loc} devia ser logado como esperado`,
+      );
+    }
+  });
+
+  it("shape novo de URL de edição continua WARN — é o silêncio perigoso do finding 4", () => {
+    // Se a edição virasse /edicao/{slug}, a heurística antiga (`includes("/p/")`)
+    // rebaixaria esta entrada quebrada a "estática, esperado".
+    const { warns } = feedWarns("https://diar.ia.br/edicao/260918-titulo");
+    assert.equal(warns.length, 1, `esperado warn pra shape desconhecido; warns: ${JSON.stringify(warns)}`);
+    assert.ok(!warns[0].includes("esperado"));
+  });
+
+  it("URL de edição com shape quebrado (/p/ sem slug) continua WARN", () => {
+    const { warns } = feedWarns("https://diar.ia.br/p/");
+    assert.equal(warns.length, 1);
+  });
+
+  it("isKnownStaticSitemapPath tolera barra final e ignora path desconhecido", () => {
+    assert.equal(isKnownStaticSitemapPath("https://diar.ia.br/archive/"), true);
+    assert.equal(isKnownStaticSitemapPath("https://diar.ia.br/"), true);
+    assert.equal(isKnownStaticSitemapPath("https://diar.ia.br/archive/12"), true);
+    assert.equal(isKnownStaticSitemapPath("https://diar.ia.br/archive/tema/ia"), false);
+    assert.equal(isKnownStaticSitemapPath("https://diar.ia.br/qualquer-coisa"), false);
   });
 });

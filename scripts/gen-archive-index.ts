@@ -17,6 +17,15 @@
  * `/archive/9` continuaria no ar servindo uma lista órfã, fora da
  * paginação e do sitemap).
  *
+ * **Poda e sitemap andam juntos — `--no-sitemap` desliga as DUAS.** A
+ * entrada `<loc>` de uma página podada só sai do `sitemap.xml` na mesma
+ * execução que a apagou; se a poda rodasse com `--no-sitemap` (o modo do
+ * `regen-home.yml` diário), a página sumiria do disco e a `<loc>` dela
+ * continuaria declarada ao buscador — URL anunciada respondendo 404, pior
+ * que a página órfã que a poda existe pra evitar. Com `--no-sitemap` o
+ * script só AVISA quais páginas ficariam órfãs; quem poda é a execução
+ * seguinte sem a flag, que limpa as duas pontas de uma vez.
+ *
  * Acrescenta as entradas `/archive*` ao `sitemap.xml` quando faltarem
  * (`addSitemapEntry`, aditivo e idempotente — mesmo helper de
  * `publish-edition-site-page.ts --sitemap`). Sem `<lastmod>`: um índice não
@@ -40,6 +49,7 @@ import {
   archiveIndexUrl,
   buildArchiveIndexFeed,
   buildArchiveIndexHtml,
+  resolveArchiveIndexCover,
 } from "./lib/site-archive-index.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -48,23 +58,37 @@ const DEFAULT_PAGES_DIR = resolve(ROOT, "workers", "site", "public", "p");
 const DEFAULT_OUT_DIR = resolve(ROOT, "workers", "site", "public");
 
 /**
- * Apaga `archive/{n}/` de páginas que não existem mais (ver "Idempotente"
- * na docstring do módulo). Nunca toca `archive/index.html` nem qualquer
+ * Lista (sem apagar) os `archive/{n}/` que não fazem mais parte da
+ * paginação atual. Nunca considera `archive/index.html` nem qualquer
  * diretório cujo nome não seja um inteiro — o que houver de não-numerado
  * dentro de `archive/` não é deste gerador e não é dele pra apagar.
  */
-export function pruneStaleIndexPages(archiveDir: string, totalPages: number): string[] {
+export function findStaleIndexPages(archiveDir: string, totalPages: number): string[] {
   if (!existsSync(archiveDir)) return [];
-  const removed: string[] = [];
+  const stale: string[] = [];
   for (const entry of readdirSync(archiveDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     if (!/^[0-9]+$/.test(entry.name)) continue;
     const n = Number(entry.name);
     if (n >= 2 && n <= totalPages) continue;
-    rmSync(join(archiveDir, entry.name), { recursive: true, force: true });
-    removed.push(entry.name);
+    stale.push(entry.name);
   }
-  return removed;
+  return stale;
+}
+
+/**
+ * Apaga `archive/{n}/` de páginas que não existem mais (ver "Idempotente"
+ * na docstring do módulo).
+ *
+ * **Só pode ser chamada quando o sitemap for reescrito na mesma execução**
+ * — ver a nota "poda e sitemap andam juntos" na docstring do módulo. A
+ * limpeza da `<loc>` correspondente vive em `main`, logo depois; separar
+ * as duas é exatamente o que produziria a URL 404 declarada ao buscador.
+ */
+export function pruneStaleIndexPages(archiveDir: string, totalPages: number): string[] {
+  const stale = findStaleIndexPages(archiveDir, totalPages);
+  for (const name of stale) rmSync(join(archiveDir, name), { recursive: true, force: true });
+  return stale;
 }
 
 export function main(argv = process.argv.slice(2)): number {
@@ -103,22 +127,50 @@ export function main(argv = process.argv.slice(2)): number {
   }
 
   const totalPages = archiveIndexPageCount(entries.length, pageSize);
+  // Capa de compartilhamento: a mesma nas N páginas (ver
+  // `resolveArchiveIndexCover`). `null` → sem og:image, twitter:card=summary.
+  const coverImage = resolveArchiveIndexCover(entries, readPageHtml);
+  if (!coverImage) {
+    console.warn(
+      `gen-archive-index: edição mais recente ("${entries[0].slug}") sem <img class="hero"> — ` +
+        `índice sai sem og:image/twitter:image (card de compartilhamento só-texto)`,
+    );
+  }
   for (let page = 1; page <= totalPages; page++) {
     const html = buildArchiveIndexHtml({
       entries: archiveIndexPageEntries(entries, page, pageSize),
       page,
       totalPages,
       totalEditions: entries.length,
+      coverImage,
     });
     const outPath = join(outDir, archiveIndexFilePath(page));
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, html, "utf8");
   }
 
-  const removed = pruneStaleIndexPages(join(outDir, "archive"), totalPages);
-  for (const name of removed) console.log(`gen-archive-index: removida página órfã /archive/${name}`);
+  // Poda e limpeza de sitemap são UMA operação só (ver docstring do módulo):
+  // com `--no-sitemap` a poda não acontece, porque apagar a página sem poder
+  // tirar a `<loc>` deixaria o buscador com uma URL declarada respondendo
+  // 404 — estado pior que a página órfã que a poda existe pra evitar.
+  const archiveDir = join(outDir, "archive");
+  const skipSitemap = flags.has("no-sitemap");
+  let removed: string[] = [];
+  if (skipSitemap) {
+    const stale = findStaleIndexPages(archiveDir, totalPages);
+    if (stale.length > 0) {
+      console.warn(
+        `gen-archive-index: --no-sitemap — mantendo ${stale.length} página(s) órfã(s) ` +
+          `(${stale.map((n) => `/archive/${n}`).join(", ")}): podar sem limpar o sitemap deixaria ` +
+          `<loc> apontando pra 404. Rode sem --no-sitemap pra podar e limpar de uma vez.`,
+      );
+    }
+  } else {
+    removed = pruneStaleIndexPages(archiveDir, totalPages);
+    for (const name of removed) console.log(`gen-archive-index: removida página órfã /archive/${name}`);
+  }
 
-  if (!flags.has("no-sitemap")) {
+  if (!skipSitemap) {
     let xml = sitemapXml;
     const added: string[] = [];
     for (let page = 1; page <= totalPages; page++) {
