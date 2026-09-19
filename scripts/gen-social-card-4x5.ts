@@ -236,8 +236,17 @@ export function buildCardSvg(
  * `buildOverlaySvg` usam pra wrap/tamanho — mantidas em sync aqui de
  * propósito, mesma lição do #5330 (não duplicar em cópia separada).
  */
-export const OVERLAY_CHARS_PER_LINE_DIVISOR = 38;
-export const OVERLAY_WIDTH_FIT_RATIO = 0.66;
+export const OVERLAY_CHARS_PER_LINE_DIVISOR = 29;
+export const OVERLAY_WIDTH_FIT_RATIO = 0.58;
+
+/**
+ * Parâmetros do carrossel SEMANAL (#8480): quebra mais cedo e razão de largura
+ * mais conservadora, porque o rasterizador cai numa serif mais larga que Georgia
+ * quando ela não está instalada e título longo cortava a 62px (achado 260919).
+ * Só o semanal passa isto; o card diário segue nas constantes acima.
+ */
+export const WEEKLY_OVERLAY_WRAP = { divisor: 38, ratio: 0.66 } as const;
+export type OverlayWrap = { readonly divisor: number; readonly ratio: number };
 
 /**
  * Pure: fórmula de tamanho de fonte do overlay de notícia — wrap via
@@ -270,10 +279,14 @@ export const OVERLAY_WIDTH_FIT_RATIO = 0.66;
  * se algum dia regredir lá, é aqui que ajustar — não bifurcar o peso por
  * chamador.
  */
-export function overlayFittingFontSize(title: string, availableWidth: number): number {
-  const lines = wrapTitle(title, Math.floor(availableWidth / OVERLAY_CHARS_PER_LINE_DIVISOR));
+export function overlayFittingFontSize(
+  title: string,
+  availableWidth: number,
+  wrap: OverlayWrap = { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO },
+): number {
+  const lines = wrapTitle(title, Math.floor(availableWidth / wrap.divisor));
   const longest = Math.max(...lines.map((l) => l.length));
-  return Math.max(DAILY_CAROUSEL_BODY_SIZE, Math.min(88, Math.floor(availableWidth / (longest * OVERLAY_WIDTH_FIT_RATIO))));
+  return Math.max(DAILY_CAROUSEL_BODY_SIZE, Math.min(88, Math.floor(availableWidth / (longest * wrap.ratio))));
 }
 
 export function buildOverlaySvg(
@@ -295,11 +308,13 @@ export function buildOverlaySvg(
    * mudança nenhuma.
    */
   kicker = "",
+  /** Quebra/razão do carrossel semanal (#8480); omitido = card diário, inalterado. */
+  wrap?: OverlayWrap,
 ): string {
   const { w: CW, h: CH } = dims;
   const available = CW - PAD * 2;
-  const lines = wrapTitle(title, Math.floor(available / OVERLAY_CHARS_PER_LINE_DIVISOR));
-  const size = fontSizeOverride ?? overlayFittingFontSize(title, available);
+  const lines = wrapTitle(title, Math.floor(available / (wrap?.divisor ?? OVERLAY_CHARS_PER_LINE_DIVISOR)));
+  const size = fontSizeOverride ?? overlayFittingFontSize(title, available, wrap);
   const lineGap = Math.round(size * 1.18);
   // Ancorado na BASE: o bloco cresce pra cima conforme o número de linhas, então
   // a distância até o rodapé é constante.
@@ -409,7 +424,7 @@ export async function generateCard(
    * carrossel semanal SEM sobrescrever o card já publicado no feed diário
    * (mesma arte-base, arquivo de saída diferente).
    */
-  opts: { fontSizeOverride?: number; outPath?: string } = {},
+  opts: { fontSizeOverride?: number; outPath?: string; wrap?: OverlayWrap } = {},
 ): Promise<string | null> {
   // Fonte por LAYOUT — os dois recortam em direções opostas:
   //
@@ -444,7 +459,7 @@ export async function generateCard(
     const full = await sharp(src).resize(dims.w, dims.h, { fit: "cover", position: "top" }).toBuffer();
     const outOverlay = opts.outPath ?? resolve(editionDir, `04-${destaque}-${ratio}.jpg`);
     await sharp(full)
-      .composite([{ input: Buffer.from(buildOverlaySvg(title, dateLabel, dims, opts.fontSizeOverride, cover?.kicker ?? "")), top: 0, left: 0 }])
+      .composite([{ input: Buffer.from(buildOverlaySvg(title, dateLabel, dims, opts.fontSizeOverride, cover?.kicker ?? "", opts.wrap)), top: 0, left: 0 }])
       .jpeg({ quality: 88 })
       .toFile(outOverlay);
     return outOverlay;

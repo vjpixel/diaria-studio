@@ -23,6 +23,7 @@ import {
   buildCardSvg,
   buildOverlaySvg,
   overlayFittingFontSize,
+  WEEKLY_OVERLAY_WRAP,
   computeCarouselTitleFontSize,
   editionDateLabel,
   RATIOS,
@@ -210,7 +211,7 @@ describe("computeCarouselTitleFontSize (#5852 — fonte compartilhada entre card
   it("devolve o MENOR overlayFittingFontSize do conjunto", () => {
     const titles = ["IA", "Google lança Gemini 3.6 e 3.5 Flash com contexto expandido e preço menor"];
     const available = 1080 - 72 * 2;
-    const expected = Math.min(...titles.map((t) => overlayFittingFontSize(t, available)));
+    const expected = Math.min(...titles.map((t) => overlayFittingFontSize(t, available, WEEKLY_OVERLAY_WRAP)));
     assert.equal(computeCarouselTitleFontSize(titles), expected);
   });
 

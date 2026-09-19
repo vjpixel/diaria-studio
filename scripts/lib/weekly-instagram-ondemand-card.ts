@@ -51,7 +51,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateCard } from "../gen-social-card-4x5.ts";
+import { generateCard, WEEKLY_OVERLAY_WRAP } from "../gen-social-card-4x5.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
 import { cloudflareKvKey } from "../upload-images-public.ts";
@@ -184,7 +184,7 @@ export const defaultSectionCardGenerator: SectionCardGenerator = async ({ item, 
     { stdio: "inherit", cwd: ROOT },
   );
 
-  const cardPath = await generateCard(editionDir, destaqueId, item.title, item.category, "4x5", "overlay", { fontSizeOverride });
+  const cardPath = await generateCard(editionDir, destaqueId, item.title, item.category, "4x5", "overlay", { fontSizeOverride, wrap: WEEKLY_OVERLAY_WRAP });
   if (!cardPath) {
     throw new Error(
       `geração da arte 4x5 nativa não produziu ${destaqueId} em ${editionDir} — image-generate.ts deveria ter criado 04-${destaqueId}-4x5-nativo.jpg`,

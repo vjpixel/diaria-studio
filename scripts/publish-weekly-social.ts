@@ -241,6 +241,19 @@ export function computeWeeklyScheduledAt(opts: {
   return `${dateStr}T${h.padStart(2, "0")}:${m}:00${offsetStr}`;
 }
 
+/** Pure: parse de `--allow-own-editions` ("260914,260915") — separa válidos (AAMMDD) de inválidos. */
+export function parseAllowOwnEditions(raw: string | undefined): { editions: string[]; invalid: string[] } {
+  const parts = (raw ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  return { editions: parts.filter((x) => /^\d{6}$/.test(x)), invalid: parts.filter((x) => !/^\d{6}$/.test(x)) };
+}
+
+/** Pure, não muta: devolve cópia com `excluded=false` nos D1 das edições permitidas. */
+export function applyOwnEditionAllowance(ranked: InstagramRankedCandidate[], editions: string[]): InstagramRankedCandidate[] {
+  if (editions.length === 0) return ranked;
+  const allow = new Set(editions);
+  return ranked.map((c) => (c.kind === "destaque" && c.destaqueNumber === 1 && allow.has(c.editionDate) ? { ...c, excluded: false } : c));
+}
+
 const MESES_ABREV = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
 
 /** Pure: `["260810", ..., "260814"]` → `"10–14 ago"` (rodapé do card capa/CTA). */
@@ -736,14 +749,31 @@ async function runOneMode(
   // clique — dado de clique não entra na conta, então nem carrega os
   // warnings/gates de completude de clique abaixo (só fazem sentido pra
   // "clicked").
-  // `--allow-own-editions 260914,...` (editor, 260919): destaque de uma edição
-  // onde o D1 é conteúdo próprio (ex: lançamento do editor) entra no highlights
+  // `--allow-own-editions 260914,...` (editor, 260919): D1 de edição cujo
+  // destaque é conteúdo próprio (ex: lançamento do editor) entra no highlights
   // apesar da exclusão comercial/própria. Só afeta o modo highlights.
-  const allowOwn = new Set((process.argv.find((a, i, arr) => arr[i - 1] === "--allow-own-editions") ?? "").split(",").filter(Boolean));
-  if (mode === "highlights" && allowOwn.size > 0) {
-    for (const c of ranked) if (c.kind === "destaque" && c.destaqueNumber === 1 && allowOwn.has(c.editionDate)) c.excluded = false;
+  const allowOwnRaw = values["allow-own-editions"];
+  if (flags.has("allow-own-editions") && !allowOwnRaw) {
+    console.error('ERRO: --allow-own-editions foi passado sem valor (ex: "--allow-own-editions 260914"). Omita a flag pra não usá-la.');
+    return false;
   }
-  const selection = mode === "highlights" ? selectInstagramHighlights(ranked) : selectInstagramWeekly(ranked, WEEKLY_EXPECTED_ITEMS);
+  if (allowOwnRaw && mode !== "highlights") {
+    console.log(`[publish-weekly-social] --allow-own-editions ignorado no modo ${mode} (só vale em highlights).`);
+  }
+  const allowOwn = parseAllowOwnEditions(allowOwnRaw);
+  if (allowOwn.invalid.length > 0) {
+    console.error(`ERRO: --allow-own-editions inválido: ${allowOwn.invalid.join(", ")} (esperado AAMMDD separados por vírgula).`);
+    return false;
+  }
+  const rankedForSelection = mode === "highlights" ? applyOwnEditionAllowance(ranked, allowOwn.editions) : ranked;
+  if (mode === "highlights") {
+    for (const ed of allowOwn.editions) {
+      if (!rankedForSelection.some((c) => c.kind === "destaque" && c.destaqueNumber === 1 && c.editionDate === ed)) {
+        console.warn(`[publish-weekly-social] AVISO: --allow-own-editions ${ed} não casa nenhum D1 da janela.`);
+      }
+    }
+  }
+  const selection = mode === "highlights" ? selectInstagramHighlights(rankedForSelection) : selectInstagramWeekly(ranked, WEEKLY_EXPECTED_ITEMS);
   let items = selection.selected;
   let selectionWarnings = selection.warnings;
 

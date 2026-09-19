@@ -42,7 +42,7 @@ describe("buildFlatCardSvg (pure)", () => {
     // o card todo, assim não sente falta de não ter imagem" (pedido do editor).
     const svg = buildFlatCardSvg({ kicker: "resumo semanal", title: "Os destaques da semana", footer: "diar.ia.br" });
     const size = firstTitleFontSize(svg);
-    assert.ok(size >= 80, `esperava título grande (>=80), veio ${size}`);
+    assert.equal(size, 84, `teto do auto-size da capa/CTA é 84px, veio ${size}`);
   });
 
   it("título mais longo resulta em tamanho MENOR (auto-size decrescente pra continuar cabendo)", () => {

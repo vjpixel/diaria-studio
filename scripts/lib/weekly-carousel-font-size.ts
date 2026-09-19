@@ -16,7 +16,7 @@
  * forçado pro tamanho comum.
  */
 
-import { overlayFittingFontSize } from "../gen-social-card-4x5.ts";
+import { overlayFittingFontSize, WEEKLY_OVERLAY_WRAP } from "../gen-social-card-4x5.ts";
 
 const W = 1080;
 const PAD = 72; // Idêntico a gen-social-card-4x5.ts/weekly-flat-card.ts.
@@ -32,5 +32,5 @@ export function computeCarouselTitleFontSize(titles: string[]): number {
     throw new Error("computeCarouselTitleFontSize: titles vazio — precisa de pelo menos 1 título");
   }
   const available = W - PAD * 2;
-  return Math.min(...titles.map((t) => overlayFittingFontSize(t, available)));
+  return Math.min(...titles.map((t) => overlayFittingFontSize(t, available, WEEKLY_OVERLAY_WRAP)));
 }
