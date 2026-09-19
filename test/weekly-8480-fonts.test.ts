@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { parseAllowOwnEditions, applyOwnEditionAllowance } from "../scripts/publish-weekly-social.ts";
+import { computeCarouselTitleFontSize } from "../scripts/lib/weekly-carousel-font-size.ts";
 import { sectionCardCacheKey } from "../scripts/lib/weekly-instagram-ondemand-card.ts";
-import { buildOverlaySvg, overlayFittingFontSize, WEEKLY_OVERLAY_WRAP } from "../scripts/gen-social-card-4x5.ts";
+import { buildOverlaySvg, overlayFittingFontSize, WEEKLY_OVERLAY_WRAP, OVERLAY_CHARS_PER_LINE_DIVISOR, OVERLAY_WIDTH_FIT_RATIO } from "../scripts/gen-social-card-4x5.ts";
 import type { InstagramRankedCandidate } from "../scripts/lib/weekly-instagram-select.ts";
 
 const cand = (editionDate: string, n: number, excluded: boolean) =>
@@ -49,6 +50,14 @@ describe("overlay: wrap semanal não altera o card diário (#8480)", () => {
     assert.ok(weekly < daily, `semanal ${weekly} deveria ser < diário ${daily}`);
   });
   it("overlayFittingFontSize sem wrap segue igual ao default diário", () => {
-    assert.equal(overlayFittingFontSize(title, 936), overlayFittingFontSize(title, 936, { divisor: 29, ratio: 0.58 }));
+    assert.equal(overlayFittingFontSize(title, 936), overlayFittingFontSize(title, 936, { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO }));
+  });
+});
+
+describe("computeCarouselTitleFontSize: tamanho e wrap de render precisam casar (#8480)", () => {
+  const titles = ["DeepSeek quase iguala GPT-6 Astra por 1,4% do custo", "IA"];
+  it("sem wrap (carrossel diário) = fórmula diária; com wrap semanal = fórmula semanal", () => {
+    assert.equal(computeCarouselTitleFontSize(titles), Math.min(...titles.map((t) => overlayFittingFontSize(t, 936))));
+    assert.equal(computeCarouselTitleFontSize(titles, WEEKLY_OVERLAY_WRAP), Math.min(...titles.map((t) => overlayFittingFontSize(t, 936, WEEKLY_OVERLAY_WRAP))));
   });
 });

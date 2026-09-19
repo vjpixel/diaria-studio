@@ -175,6 +175,7 @@ import {
 import { resolveOrGenerateFlatCardUrl, type FlatCardGenerator } from "./lib/weekly-flat-card.ts";
 import { resolveOrGenerateNewsCardUrl, type NewsCardGenerator } from "./lib/weekly-carousel-news-card.ts";
 import { computeCarouselTitleFontSize } from "./lib/weekly-carousel-font-size.ts";
+import { WEEKLY_OVERLAY_WRAP } from "./gen-social-card-4x5.ts";
 import { formatInstagramWeekly, formatFacebookWeekly, formatThreadsWeekly, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
 import { postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
@@ -1141,7 +1142,7 @@ async function runOneMode(
     carouselFontSize = parsed;
     console.log(`[publish-weekly-social] --force-font-size ${carouselFontSize} — ignorando cálculo automático (computeCarouselTitleFontSize).`);
   } else {
-    carouselFontSize = computeCarouselTitleFontSize(items.map((i) => i.title));
+    carouselFontSize = computeCarouselTitleFontSize(items.map((i) => i.title), WEEKLY_OVERLAY_WRAP);
   }
 
   // Carrossel: 1 imagem por item selecionado (#4146/#4483) — ver

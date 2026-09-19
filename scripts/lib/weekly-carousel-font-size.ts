@@ -16,7 +16,7 @@
  * forçado pro tamanho comum.
  */
 
-import { overlayFittingFontSize, WEEKLY_OVERLAY_WRAP } from "../gen-social-card-4x5.ts";
+import { overlayFittingFontSize, type OverlayWrap } from "../gen-social-card-4x5.ts";
 
 const W = 1080;
 const PAD = 72; // Idêntico a gen-social-card-4x5.ts/weekly-flat-card.ts.
@@ -27,10 +27,10 @@ const PAD = 72; // Idêntico a gen-social-card-4x5.ts/weekly-flat-card.ts.
  * inteiro). Lança se `titles` estiver vazio (contrato — sempre chamado com
  * pelo menos capa+CTA, nunca lista vazia por construção do caller).
  */
-export function computeCarouselTitleFontSize(titles: string[]): number {
+export function computeCarouselTitleFontSize(titles: string[], wrap?: OverlayWrap): number {
   if (titles.length === 0) {
     throw new Error("computeCarouselTitleFontSize: titles vazio — precisa de pelo menos 1 título");
   }
   const available = W - PAD * 2;
-  return Math.min(...titles.map((t) => overlayFittingFontSize(t, available, WEEKLY_OVERLAY_WRAP)));
+  return Math.min(...titles.map((t) => overlayFittingFontSize(t, available, wrap)));
 }

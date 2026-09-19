@@ -86,7 +86,7 @@ function stableUrlKeyBase(raw: string): string {
 export function sectionCardCacheKey(section: "radar" | "use_melhor", url: string, fontSize?: number): string {
   const hash = createHash("md5").update(stableUrlKeyBase(url)).digest("hex").slice(0, 10);
   // fontSize na chave: card gerado em outro tamanho (edição diária, rodada anterior) não pode ser reusado no carrossel, que exige tamanho único.
-  return fontSize ? `${section}_${hash}_4x5_fs${fontSize}` : `${section}_${hash}_4x5`;
+  return fontSize != null ? `${section}_${hash}_4x5_fs${fontSize}` : `${section}_${hash}_4x5`;
 }
 
 /**
