@@ -188,13 +188,23 @@ describe("workers/site/public — robots.txt + sitemap.xml (guard de regressão,
    * teste (#6359), que assumia até então que só `/p/` existia ali.
    */
   const KNOWN_STATIC_SITEMAP_PATHS = new Set(["https://diar.ia.br/clarice"]);
+  /**
+   * #8353 item 2: o índice paginado do acervo (`/archive`, `/archive/{n}`)
+   * entra no sitemap com uma entrada POR PÁGINA — o nº de páginas cresce com
+   * o acervo (a cada `ARCHIVE_INDEX_PAGE_SIZE` edições), então a allowlist
+   * é um shape fixo em vez de N literais que precisariam ser editados aqui a
+   * cada ~30 edições. Continua estrita: `/archive/foo` ou `/archive/2/3` não
+   * casam e seguem reprovando.
+   */
+  const ARCHIVE_INDEX_LOC = /^https:\/\/diar\.ia\.br\/archive(\/[1-9][0-9]*)?$/;
+  const isKnownStatic = (loc: string) => KNOWN_STATIC_SITEMAP_PATHS.has(loc) || ARCHIVE_INDEX_LOC.test(loc);
 
   it("sitemap.xml existe e é XML válido com ao menos 1 <loc> de /p/{slug}", () => {
     assert.ok(existsSync(sitemapPath), `${sitemapPath} ausente`);
     const xml = readFileSync(sitemapPath, "utf8");
     const entries = parseSitemap(xml);
     assert.ok(entries.length > 0, "sitemap.xml não tem nenhuma <url>");
-    const pEntries = entries.filter((e) => !KNOWN_STATIC_SITEMAP_PATHS.has(e.loc));
+    const pEntries = entries.filter((e) => !isKnownStatic(e.loc));
     assert.ok(pEntries.length > 0, "sitemap.xml não tem nenhuma entrada /p/{slug} (só estáticas?)");
     assert.ok(
       pEntries.every((e) => /^https:\/\/diar\.ia\.br\/p\/[^/]+$/.test(e.loc)),
@@ -204,7 +214,7 @@ describe("workers/site/public — robots.txt + sitemap.xml (guard de regressão,
     // continua reprovando — o objetivo da allowlist é nomear exceções
     // conhecidas, nunca abrir a asserção pra qualquer formato.
     const unknownEntries = entries.filter(
-      (e) => !/^https:\/\/diar\.ia\.br\/p\/[^/]+$/.test(e.loc) && !KNOWN_STATIC_SITEMAP_PATHS.has(e.loc),
+      (e) => !/^https:\/\/diar\.ia\.br\/p\/[^/]+$/.test(e.loc) && !isKnownStatic(e.loc),
     );
     assert.deepEqual(
       unknownEntries.map((e) => e.loc),

@@ -194,7 +194,13 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
     <div class="wrap">
       <div class="logo"><span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span class="dot">br</span></div>
       <div class="nav-links">
-        <a href="https://arquivo.diar.ia.br/">Edições</a>
+        <!-- #8353 item 2: aponta pro índice do PRÓPRIO apex (/archive,
+             9 páginas cobrindo as 270 edições) e não mais pro host
+             arquivo.diar.ia.br — link interno no mesmo domínio é o que dá
+             caminho de rastreio às páginas /p/{slug} (40 estavam órfãs).
+             O acervo por TEMA segue em arquivo.diar.ia.br, linkado na
+             seção "Por tema" e no rodapé desta mesma página. -->
+        <a href="/archive">Edições</a>
         <a href="https://especial.diar.ia.br/">Especiais</a>
         <a href="https://livros.diar.ia.br/">Livros</a>
         <a href="https://cursos.diar.ia.br/">Cursos</a>
@@ -346,7 +352,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
     <div class="wrap">
       <div class="archive-head">
         <h2>Edições anteriores</h2>
-        <a href="https://arquivo.diar.ia.br/">Ver arquivo completo →</a>
+        <a href="/archive">Ver todas as edições →</a>
       </div>
       <hr class="rule">
       <div class="archive-grid">

@@ -97,16 +97,36 @@ jobs:
       - name: Regenerar index.html
         run: npx tsx scripts/gen-home-page.ts
 
-      - name: Detectar mudança na home
+      # #8353 item 2: o índice do acervo (`/archive`, `/archive/{n}`) lê as
+      # MESMAS duas fontes da home (sitemap + páginas de edição) e aplica o
+      # MESMO corte de data futura (#7686) — então ele ficaria atrasado
+      # exatamente nos mesmos dias em que a home ficava, e a correção é a
+      # mesma: regenerar aqui, às 06:00 BRT, com o relógio já no dia da
+      # edição.
+      #
+      # `--no-sitemap` de propósito: este job publica só o que gerou, e o
+      # `sitemap.xml` é disputado com o PR da edição do Stage 6
+      # (`publish-edition-site-page.ts --sitemap`, que roda à noite) —
+      # escrever nele daqui poria dois PRs automáticos editando o mesmo
+      # arquivo. A entrada que importa (`/archive`, página 1) já está no
+      # sitemap, e dela a paginação linka todas as demais; uma página NOVA
+      # (a cada ~30 edições) entra no sitemap na próxima execução local de
+      # `npx tsx scripts/gen-archive-index.ts` (sem a flag). Nenhum 404
+      # nasce disso: a página existe em disco, só não tem entrada própria
+      # no XML.
+      - name: Regenerar índice do acervo (/archive)
+        run: npx tsx scripts/gen-archive-index.ts --no-sitemap
+
+      - name: Detectar mudança na home/índice
         id: diff
         run: |
-          if git diff --quiet -- workers/site/public/index.html; then
+          if git diff --quiet -- workers/site/public/index.html workers/site/public/archive; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Home já está atualizada — nada a fazer."
+            echo "Home e índice do acervo já estão atualizados — nada a fazer."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Home mudou:"
-            git diff --stat -- workers/site/public/index.html
+            echo "Mudou:"
+            git diff --stat -- workers/site/public/index.html workers/site/public/archive
           fi
 
       - name: Testar artefatos do site antes do merge
@@ -139,6 +159,7 @@ jobs:
           test/site-home-signup-submit-6979.test.ts
           test/site-home-signup-utm-prefill-7360.test.ts
           test/regression-7517-hub-gemini-slug.test.ts
+          test/site-archive-index-8353.test.ts
 
       - name: Commitar, abrir PR e mergear
         if: steps.diff.outputs.changed == 'true'
@@ -158,10 +179,11 @@ jobs:
           git checkout -B "$BRANCH"
           # Pathspec explícito, nunca `git add -A`: o runner pode ter
           # subproduto de `npm ci`/build no working tree, e esta unidade
-          # publica UM arquivo.
-          git add -- workers/site/public/index.html
+          # publica só o que ela mesma gera: a home e o índice do acervo
+          # (`workers/site/public/archive/`, #8353).
+          git add -- workers/site/public/index.html workers/site/public/archive
           git commit -m "chore(#7686): regenera home das 06:00 BRT" \
-                     -m "Regeneração automática de workers/site/public/index.html para incluir a edição cuja data de envio chegou. Gerado por .github/workflows/regen-home.yml."
+                     -m "Regeneração automática de workers/site/public/index.html e do índice do acervo (workers/site/public/archive/, #8353) para incluir a edição cuja data de envio chegou. Gerado por .github/workflows/regen-home.yml."
           git push --force origin "$BRANCH"
 
           # `gh pr create` falha se já houver PR aberto pra esta branch (2ª

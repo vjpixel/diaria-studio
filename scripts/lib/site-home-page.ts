@@ -185,6 +185,21 @@ export interface BuildHomeFeedOptions {
    * que algum caller possa esquecer de atualizar.
    */
   todayBrt?: string;
+  /**
+   * `true` pula a extração da capa (`extractHeroImage`) e o warn "sem
+   * `<img class=\"hero\">`" que vem com ela — `image` sai sempre `null`.
+   *
+   * Existe pro índice do acervo (#8353 item 2, `site-archive-index.ts`),
+   * que consome o feed INTEIRO (~270 entradas) e renderiza uma lista
+   * textual sem capa: sem esta opção, gerar o índice cuspiria ~195 warns
+   * (a maioria das páginas do acervo importado não tem `img.hero`) que não
+   * são sintoma de nada ali, treinando a ignorar o warn real da HOME — onde
+   * capa ausente de fato muda o layout do card.
+   *
+   * Default (`undefined`/`false`) preserva o comportamento da home byte a
+   * byte: extrai a capa e avisa quando falta.
+   */
+  omitImages?: boolean;
 }
 
 /**
@@ -425,6 +440,43 @@ export function brtDateString(now: Date = new Date()): string {
 }
 
 /**
+ * Paths ESTÁTICOS conhecidos do sitemap do apex — as superfícies que
+ * legitimamente aparecem no `sitemap.xml` sem serem edição, e cuja ausência
+ * do feed da home é o caminho esperado (`/clarice` desde o #8339,
+ * `/archive` + `/archive/{n}` desde o #8353).
+ *
+ * Allowlist e não heurística de propósito (ver o comentário no ponto de uso,
+ * em `buildHomeFeed`): o default pra path DESCONHECIDO é `console.warn`, de
+ * modo que um shape novo de URL de edição — ou uma entrada genuinamente
+ * quebrada — nunca seja rebaixado a "esperado" em silêncio. Superfície
+ * estática nova entra aqui explicitamente.
+ */
+export const KNOWN_STATIC_SITEMAP_PATHS: readonly (string | RegExp)[] = [
+  "/",
+  "/clarice",
+  "/apoiar",
+  "/assinar",
+  "/archive",
+  /^\/archive\/[0-9]+$/,
+];
+
+/** `true` se `loc` é uma das superfícies estáticas conhecidas (`KNOWN_STATIC_SITEMAP_PATHS`). */
+export function isKnownStaticSitemapPath(loc: string): boolean {
+  let pathname: string;
+  try {
+    pathname = new URL(loc).pathname;
+  } catch {
+    pathname = loc;
+  }
+  // `html_handling = "drop-trailing-slash"` serve tudo sem barra final; a
+  // raiz ("/") é a única exceção e não pode ser normalizada pra "".
+  const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+  return KNOWN_STATIC_SITEMAP_PATHS.some((p) =>
+    typeof p === "string" ? p === normalized : p.test(normalized),
+  );
+}
+
+/**
  * Monta a lista de edições reais (mais recente primeiro) a partir do
  * `sitemap.xml` já commitado + um reader de página injetado (produção lê
  * `workers/site/public/p/{slug}/index.html`; teste injeta fixtures em
@@ -524,7 +576,26 @@ export function buildHomeFeed(
     if (feed.length >= limit) break;
     const slug = slugFromCanonicalUrl(entry.loc);
     if (!slug) {
-      console.warn(`site-home-page: sitemap entry sem slug reconhecível: ${entry.loc}`);
+      // #8353: o sitemap do apex tem entradas estáticas legítimas que não
+      // são edição (`/clarice` desde o #8339, `/archive*` desde esta issue)
+      // — pra elas o skip é o caminho ESPERADO, e um warn por entrada a
+      // cada geração viraria ruído que treina a ignorar o warn real.
+      //
+      // O critério é uma ALLOWLIST do que sabemos ser estático, nunca uma
+      // heurística sobre o prefixo de edição (finding 4 do self-review da
+      // PR #8399): `loc.includes("/p/")` só acertava enquanto a URL de
+      // edição fosse `/p/{slug}` — no dia em que ela virasse `/edicao/…`,
+      // uma entrada genuinamente quebrada passaria a ser rebaixada a
+      // "estática, esperado", e o silêncio aconteceria justo quando algo
+      // quebrou. Com a allowlist a falha é na direção segura: path
+      // desconhecido é sempre warn, e acrescentar uma superfície estática
+      // nova é uma linha em `KNOWN_STATIC_SITEMAP_PATHS`.
+      const isStatic = isKnownStaticSitemapPath(entry.loc);
+      const log = isStatic ? console.log : console.warn;
+      log(
+        `site-home-page: sitemap entry sem slug reconhecível: ${entry.loc}` +
+          (isStatic ? " (entrada estática, fora do feed — esperado)" : ""),
+      );
       continue;
     }
     const html = readPageHtml(slug);
@@ -544,9 +615,11 @@ export function buildHomeFeed(
     // card. "" (página gerada antes do #7921, sem a tag ainda) degrada pra
     // linha fina vazia — nunca pula a entrada nem mostra "undefined".
     const description = extractPageDek(html);
-    const image = extractHeroImage(html);
+    // #8353: `omitImages` (índice do acervo) nem extrai nem avisa — ver
+    // `BuildHomeFeedOptions.omitImages`.
+    const image = opts.omitImages ? null : extractHeroImage(html);
     if (image) warnIfEiaHostNotRewritten(slug, image);
-    if (!image) {
+    if (!image && !opts.omitImages) {
       // Nunca pula a entrada por isso (diferente do <title> vazio acima) —
       // só loga: a home renderiza a edição sem capa, layout só-texto (#6978).
       console.warn(`site-home-page: sem <img class="hero"> pra slug "${slug}" — entrada do feed sem capa`);
@@ -569,7 +642,9 @@ export function buildHomeFeed(
  * deve confiar nisso silenciosamente — degrada pra `""` em vez de vazar
  * `undefined` pro HTML.
  */
-function formatDateLong(iso: string | null): string {
+// Exportada (#8353) — o índice do acervo (`site-archive-index.ts`) mostra a
+// data de cada edição com exatamente o mesmo formato dos cards da home.
+export function formatDateLong(iso: string | null): string {
   if (!iso) return "";
   const [y, m, d] = iso.split("-").map(Number);
   if (!y || !m || !d) return "";
@@ -1182,7 +1257,13 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
     <div class="wrap">
       <div class="logo">${renderWordmark()}</div>
       <div class="nav-links">
-        <a href="https://arquivo.diar.ia.br/">Edições</a>
+        <!-- #8353 item 2: aponta pro índice do PRÓPRIO apex (/archive,
+             9 páginas cobrindo as 270 edições) e não mais pro host
+             arquivo.diar.ia.br — link interno no mesmo domínio é o que dá
+             caminho de rastreio às páginas /p/{slug} (40 estavam órfãs).
+             O acervo por TEMA segue em arquivo.diar.ia.br, linkado na
+             seção "Por tema" e no rodapé desta mesma página. -->
+        <a href="/archive">Edições</a>
         <a href="https://especial.diar.ia.br/">Especiais</a>
         <a href="https://livros.diar.ia.br/">Livros</a>
         <a href="https://cursos.diar.ia.br/">Cursos</a>
@@ -1305,7 +1386,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
     <div class="wrap">
       <div class="archive-head">
         <h2>Edições anteriores</h2>
-        <a href="https://arquivo.diar.ia.br/">Ver arquivo completo →</a>
+        <a href="/archive">Ver todas as edições →</a>
       </div>
       <hr class="rule">
       <div class="archive-grid">
