@@ -185,6 +185,21 @@ export interface BuildHomeFeedOptions {
    * que algum caller possa esquecer de atualizar.
    */
   todayBrt?: string;
+  /**
+   * `true` pula a extração da capa (`extractHeroImage`) e o warn "sem
+   * `<img class=\"hero\">`" que vem com ela — `image` sai sempre `null`.
+   *
+   * Existe pro índice do acervo (#8353 item 2, `site-archive-index.ts`),
+   * que consome o feed INTEIRO (~270 entradas) e renderiza uma lista
+   * textual sem capa: sem esta opção, gerar o índice cuspiria ~195 warns
+   * (a maioria das páginas do acervo importado não tem `img.hero`) que não
+   * são sintoma de nada ali, treinando a ignorar o warn real da HOME — onde
+   * capa ausente de fato muda o layout do card.
+   *
+   * Default (`undefined`/`false`) preserva o comportamento da home byte a
+   * byte: extrai a capa e avisa quando falta.
+   */
+  omitImages?: boolean;
 }
 
 /**
@@ -524,7 +539,18 @@ export function buildHomeFeed(
     if (feed.length >= limit) break;
     const slug = slugFromCanonicalUrl(entry.loc);
     if (!slug) {
-      console.warn(`site-home-page: sitemap entry sem slug reconhecível: ${entry.loc}`);
+      // #8353: o sitemap do apex tem entradas estáticas legítimas que não
+      // são edição (`/clarice` desde o #8339, `/archive*` desde esta issue)
+      // — pra elas o skip é o caminho ESPERADO, e um warn por entrada a
+      // cada geração viraria ruído que treina a ignorar o warn real. Só
+      // uma URL que se PARECE com edição (`/p/...`) e ainda assim não
+      // rendeu slug é regressão de shape, e essa continua sendo warn.
+      const looksLikeEdition = entry.loc.includes("/p/");
+      const log = looksLikeEdition ? console.warn : console.log;
+      log(
+        `site-home-page: sitemap entry sem slug reconhecível: ${entry.loc}` +
+          (looksLikeEdition ? "" : " (entrada estática, fora do feed — esperado)"),
+      );
       continue;
     }
     const html = readPageHtml(slug);
@@ -544,9 +570,11 @@ export function buildHomeFeed(
     // card. "" (página gerada antes do #7921, sem a tag ainda) degrada pra
     // linha fina vazia — nunca pula a entrada nem mostra "undefined".
     const description = extractPageDek(html);
-    const image = extractHeroImage(html);
+    // #8353: `omitImages` (índice do acervo) nem extrai nem avisa — ver
+    // `BuildHomeFeedOptions.omitImages`.
+    const image = opts.omitImages ? null : extractHeroImage(html);
     if (image) warnIfEiaHostNotRewritten(slug, image);
-    if (!image) {
+    if (!image && !opts.omitImages) {
       // Nunca pula a entrada por isso (diferente do <title> vazio acima) —
       // só loga: a home renderiza a edição sem capa, layout só-texto (#6978).
       console.warn(`site-home-page: sem <img class="hero"> pra slug "${slug}" — entrada do feed sem capa`);
@@ -569,7 +597,9 @@ export function buildHomeFeed(
  * deve confiar nisso silenciosamente — degrada pra `""` em vez de vazar
  * `undefined` pro HTML.
  */
-function formatDateLong(iso: string | null): string {
+// Exportada (#8353) — o índice do acervo (`site-archive-index.ts`) mostra a
+// data de cada edição com exatamente o mesmo formato dos cards da home.
+export function formatDateLong(iso: string | null): string {
   if (!iso) return "";
   const [y, m, d] = iso.split("-").map(Number);
   if (!y || !m || !d) return "";
@@ -1182,7 +1212,13 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
     <div class="wrap">
       <div class="logo">${renderWordmark()}</div>
       <div class="nav-links">
-        <a href="https://arquivo.diar.ia.br/">Edições</a>
+        <!-- #8353 item 2: aponta pro índice do PRÓPRIO apex (/archive,
+             9 páginas cobrindo as 270 edições) e não mais pro host
+             arquivo.diar.ia.br — link interno no mesmo domínio é o que dá
+             caminho de rastreio às páginas /p/{slug} (40 estavam órfãs).
+             O acervo por TEMA segue em arquivo.diar.ia.br, linkado na
+             seção "Por tema" e no rodapé desta mesma página. -->
+        <a href="/archive">Edições</a>
         <a href="https://especial.diar.ia.br/">Especiais</a>
         <a href="https://livros.diar.ia.br/">Livros</a>
         <a href="https://cursos.diar.ia.br/">Cursos</a>
@@ -1305,7 +1341,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
     <div class="wrap">
       <div class="archive-head">
         <h2>Edições anteriores</h2>
-        <a href="https://arquivo.diar.ia.br/">Ver arquivo completo →</a>
+        <a href="/archive">Ver todas as edições →</a>
       </div>
       <hr class="rule">
       <div class="archive-grid">
