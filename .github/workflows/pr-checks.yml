@@ -37,6 +37,12 @@ concurrency:
   group: pr-checks-${{ github.ref }}
   cancel-in-progress: true
 
+# #8483: evita baixar o Chrome do puppeteer em `npm ci` — nenhum job
+# deste workflow usa o browser real (scripts que precisam dele, como
+# capture-livros-promo.ts/verify-accessibility.ts, rodam fora do CI).
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "true"
+
 jobs:
   unused-code-check:
     name: Unused code check (knip, #1008)
