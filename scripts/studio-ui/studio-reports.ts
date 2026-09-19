@@ -107,9 +107,21 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 // É `severity: "info"` no vocabulário do portão `notifyEditor` — nunca
 // acionável; o que exige ação continua nos alarmes condicionais dedicados
 // (`ads-test-watch.ts`, `ads-kill-switch-alarm.ts`).
-export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac" | "calibration" | "agent-eval" | "ads-digest";
-
-const VALID_KINDS: ReportKind[] = [
+/**
+ * Lista canônica dos kinds — **fonte única**. O tipo `ReportKind` é DERIVADO
+ * dela (`(typeof VALID_KINDS)[number]`), e não o contrário: por construção
+ * não existe membro da união que não esteja aqui, então o modo de falha que
+ * o guard anterior dizia cobrir (kind na união, ausente na lista →
+ * `isReportKind()` rejeita em runtime → `registerReport` descarta o
+ * relatório em silêncio) deixou de ser representável (#8409).
+ *
+ * O guard anterior NÃO cobria isso: era um `Record<ReportKind, true>`
+ * montado com `Object.fromEntries(...) as Record<ReportKind, true>`, e o
+ * `as` é asserção, não verificação estrutural — compilava com qualquer
+ * conteúdo. Ver `test/report-kind-exhaustiveness-8409.test.ts`, que compila
+ * os dois padrões lado a lado com `tsc` e prova a diferença.
+ */
+const VALID_KINDS = [
   "edicao",
   "overnight",
   "develop",
@@ -120,23 +132,12 @@ const VALID_KINDS: ReportKind[] = [
   "calibration",
   "agent-eval",
   "ads-digest",
-];
+] as const;
 
-/**
- * Guard de COMPILAÇÃO (achado do review type-design da PR #8406): membro
- * novo em `ReportKind` que não for espelhado em `VALID_KINDS` quebra o
- * build aqui, em vez de virar um kind que `isReportKind()` rejeita em
- * runtime — e que `registerReport` então descarta em silêncio, sumindo com
- * o relatório. O mapa exige uma entrada por membro da união; o `void`
- * existe só pra o valor não ficar aparentemente morto.
- */
-const _KIND_EXHAUSTIVENESS: Record<ReportKind, true> = Object.fromEntries(
-  VALID_KINDS.map((k) => [k, true]),
-) as Record<ReportKind, true>;
-void _KIND_EXHAUSTIVENESS;
+export type ReportKind = (typeof VALID_KINDS)[number];
 
 export function isReportKind(value: string): value is ReportKind {
-  return (VALID_KINDS as string[]).includes(value);
+  return (VALID_KINDS as readonly string[]).includes(value);
 }
 
 const REPORTS_DIR = "data/reports";
