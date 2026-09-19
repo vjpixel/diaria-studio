@@ -472,6 +472,65 @@ except Exception:
     print('#$prnum  (status indisponível)')
 "
 }
+
+# #8442 (26/09/2026): o gate de merge autônomo
+# (`continuo-pr-review.sh`, via `scripts/lib/continuo-merge-gate.ts`) só
+# MERGE PRs que já têm review independente com `verdict=approve` — e só
+# decide sobre UMA PR por vez (merge-lock cross-sessão, `MERGE_LOCK_MAX_RETRIES=3`
+# em #6934). Uma PR vermelha ou sem dono declarado NUNCA é corrigida por
+# este observador: ela fica na fila até o editor (ou o pickup do overnight,
+# #6823) decidir. O que o observador TEM como dado prático é o VEREDITO
+# gravado na PR (`gh pr view <N> --json comments` pro marcador
+# `<!-- continuo-review: ... verdict=... head=... -->`, lido por
+# `scripts/lib/pr-review-authenticity.ts`), não o estado dos checks.
+#
+# O #7832 já adicionou a coluna "primeiro check falho por PR" (acima) —
+# separa PR VERMELHA (problema de conteúdo, o gate está certo em não decidir)
+# de PR VERDE esperando merger (problema de gate/coordenação). Esta coluna
+# complementa: para cada PR, o veredito do review mais recente, ou
+# "(sem review)" quando nenhuma revisão independente foi encontrada. É o
+# dado que decide se a PR está à espera do merger (#6926) ou se o gate
+# já rejeitou/escalou e o author precisa agir (#7567: reject/escalate
+# ganham label e comentário, mas NUNCA fecham a PR sozinhos).
+#
+# Fail-soft por PR, mesma disciplina do `pr_first_failed_check`: `gh pr view`
+# falhando numa PR vira "(status indisponível)" só naquela linha — nunca
+# derruba o alarme inteiro. Só chamado quando o alarme já vai disparar
+# (dentro do `if` de limiar abaixo) — no máximo ~10 chamadas extras por
+# alarme dado o limiar de contagem, bem abaixo de qualquer rate limit do `gh`.
+pr_review_verdict() {
+  local prnum="$1"
+  local json
+  json=$(gh pr view "$prnum" --json comments 2>/dev/null)
+  if [ $? -ne 0 ] || [ -z "$json" ]; then
+    echo "#$prnum  (status indisponível)"
+    return
+  fi
+  printf '%s' "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    comments = data.get('comments') or []
+    verdict = None
+    for c in comments:
+        body = c.get('body') or ''
+        if 'continuo-review:' in body:
+            for part in body.splitlines():
+                if 'verdict=' in part:
+                    # Extrai o valor após 'verdict=' até o próximo espaço/` head=`
+                    # ou fim de linha — mesmo formato que
+                    # `scripts/lib/pr-review-authenticity.ts` reconhece.
+                    v = part.split('verdict=', 1)[1].split()[0].rstrip('>').strip()
+                    if v in ('approve', 'reject'):
+                        verdict = v
+    if verdict:
+        print('#$prnum  veredito=' + verdict)
+    else:
+        print('#$prnum  (sem review)')
+except Exception:
+    print('#$prnum  (status indisponível)')
+"
+}
 QUEUE_COUNT_THRESHOLD=5
 QUEUE_AGE_H_THRESHOLD=12
 QUEUE_JSON=$(gh pr list --state open --json number,headRefName,createdAt 2>/dev/null)
@@ -517,6 +576,11 @@ except Exception:
         [ -z "$QN" ] && continue
         QUEUE_CHECK_LINES="${QUEUE_CHECK_LINES}$(pr_first_failed_check "$QN")"$'\n'
       done <<< "$QUEUE_NUMBERS"
+      QUEUE_VERDICT_LINES=""
+      while IFS= read -r QN; do
+        [ -z "$QN" ] && continue
+        QUEUE_VERDICT_LINES="${QUEUE_VERDICT_LINES}$(pr_review_verdict "$QN")"$'\n'
+      done <<< "$QUEUE_NUMBERS"
       file_issue "[watch-continuo] fila de PRs sem merge" \
         "[watch-continuo] fila de PRs sem merge: $QUEUE_COUNT abertas, mais velha há ${QUEUE_OLDEST_H}h" \
         "bug,P1" \
@@ -526,6 +590,11 @@ Primeiro check que falhou por PR (\`gh pr view <N> --json statusCheckRollup\`, #
 
 \`\`\`
 ${QUEUE_CHECK_LINES}\`\`\`
+
+Veredito do review mais recente por PR (\`gh pr view <N> --json comments\`, #8442): o gate de merge autônomo de \`continuo-pr-review.sh\` (#6926) só MERGE PRs com \`verdict=approve\` — e só uma por vez (merge-lock, #6934). PRs vermelhas ou sem dono declarado NUNCA são corrigidas por este observador; ficam na fila até o editor ou o pickup do overnight (#6823) decidirem. \`veredito=reject\`/escalate (#7567) significa que o gate já rejeitou/escalou e o author precisa agir; \`(sem review)\` significa que o gate ainda não decidiu.
+
+\`\`\`
+${QUEUE_VERDICT_LINES}\`\`\`
 
 Mesma classe do incidente 04-05/09/2026 (#7446): 8 PRs abertas, nenhuma avançando sozinha — reject sem estado terminal, escalate sem dono com agendador, CI vermelho em PR \`continuo/*\` sem fixer, branch fora de \`continuo/*\` sem merger. Checar \`gh pr list --state open\` e, por PR, por que o gate não decidiu (\`gh pr view <N> --json comments\` pro histórico de \`continuo-pr-review.sh\`, \`gh pr checks <N>\` pro CI)."
     else
