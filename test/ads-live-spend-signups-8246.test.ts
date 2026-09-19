@@ -46,10 +46,18 @@ describe("#8246 — ads-live-spend-signups: formatadores e force de env", () => 
   // contradizendo o filtro que `fetchKitSignupsByChannel` aplica desde o
   // #8349. O rótulo errado convidava justamente o erro que o #8349 quis
   // evitar: descartar à mão o que o código já descartou, inflando o CAC num
-  // braço de baixo volume. Este teste casa o rótulo com o COMPORTAMENTO real
-  // do filtro — se `isEditorTestSignupEmail` deixar de excluir, ele quebra.
+  // braço de baixo volume. Este teste casa o rótulo com o COMPORTAMENTO do
+  // filtro — se `isEditorTestSignupEmail` deixar de excluir, ele quebra. O
+  // elo seguinte da corrente (que `fetchKitSignupsByChannel` de fato CHAMA
+  // esse predicado) é coberto pelo teste `#8349: cadastro de teste do editor
+  // ... nunca conta como aquisição paga real` em
+  // `test/ads-campaign-economics-fetch.test.ts` — os dois juntos travam o
+  // rótulo na ponta e a exclusão na fonte.
   it("formatSignupsTable declara a exclusão do e-mail de teste, e o filtro de fato exclui (#8433)", () => {
-    const out = formatSignupsTable("Google Ads (teste 2608)", []);
+    const out = formatSignupsTable("Google Ads (teste 2608)", [
+      { date: "2026-09-06", cadastros: 2 },
+      { date: "2026-09-07", cadastros: 1 },
+    ]);
     assert.match(out, /e-mail de teste do editor já excluído, #8349/);
     assert.doesNotMatch(out, /contagem bruta/);
     assert.doesNotMatch(out, /sem excluir/);
