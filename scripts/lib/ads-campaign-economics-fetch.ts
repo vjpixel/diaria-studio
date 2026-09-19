@@ -427,7 +427,7 @@ export interface KitSignupsFetchResult {
  * sem plus-address) — a issue não cita esse endereço como fonte de
  * contaminação, e incluí-lo seria inventar exclusão sem evidência. @pure
  */
-function isEditorTestSignupEmail(email: string): boolean {
+export function isEditorTestSignupEmail(email: string): boolean {
   const normalized = email.trim().toLowerCase();
   return isEditorTestEmail(normalized) || normalized === EDITOR_WORKSPACE_EMAIL.toLowerCase();
 }

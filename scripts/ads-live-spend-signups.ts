@@ -95,12 +95,13 @@ export function formatSpendTable(canal: string, rows: readonly { date: string; g
   return lines.join("\n");
 }
 
-/** Formata a tabela dia/cadastros-acumulados de um canal (Kit, contagem
- *  bruta — ver aviso de teste-email na docstring do módulo). @pure */
+/** Formata a tabela dia/cadastros-acumulados de um canal (Kit; o e-mail de
+ *  teste do editor JÁ vem excluído da fonte, #8349 — ver docstring do
+ *  módulo: não subtrair de novo à mão). @pure */
 export function formatSignupsTable(canal: string, rows: readonly { date: string; cadastros: number }[]): string {
   const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
   let acc = 0;
-  const lines = [`\n${canal} — cadastros Kit (contagem bruta, sem excluir e-mail de teste)\ndata        cadastros  acumulado`];
+  const lines = [`\n${canal} — cadastros Kit (e-mail de teste do editor já excluído, #8349)\ndata        cadastros  acumulado`];
   for (const r of sorted) {
     acc += r.cadastros;
     lines.push(`${r.date}  ${String(r.cadastros).padStart(9)}  ${String(acc).padStart(9)}`);
