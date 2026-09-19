@@ -222,6 +222,56 @@ describe("lookup do assinante enxerga inactive (hotfix #8235)", () => {
   });
 });
 
+describe("confirmou_via (#8438) — sinal MEDÍVEL do clique no botão", () => {
+  const envComField = () => env({ KIT_CONFIRMOU_VIA_FIELD: "confirmou_via" });
+
+  it("token válido + KIT_CONFIRMOU_VIA_FIELD configurado → POST leva confirmou_via=brevo-reativar", async () => {
+    const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
+    await capture(() => activateSubscriptionKit(envComField(), "a@x.com", kit.fetchImpl, true));
+    const post = upsertPost(kit.calls)!;
+    assert.equal(post.body!.fields?.confirmou_via, "brevo-reativar");
+    assert.equal(kit.get()!.fields.confirmou_via, "brevo-reativar");
+  });
+
+  it("token válido + KIT_CONFIRMOU_VIA_FIELD AUSENTE → POST não leva confirmou_via (degrade gracioso)", async () => {
+    const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
+    await capture(() => activateSubscriptionKit(env(), "a@x.com", kit.fetchImpl, true));
+    const post = upsertPost(kit.calls)!;
+    assert.equal(post.body!.fields?.confirmou_via, undefined, "sem a var, o field nunca é escrito");
+    assert.equal(kit.get()!.fields.confirmou_via, undefined);
+  });
+
+  it("caminho DOI (sem token) NUNCA escreve confirmou_via, mesmo com a var configurada", async () => {
+    // #8438: no DOI o clique de fato AINDA não aconteceu (o e-mail de
+    // confirmação só chega depois) — escrever o field aí seria um falso
+    // positivo no evaluate (o contato seria contado como "botão" sem ter
+    // clicado de verdade).
+    const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
+    await capture(() => activateSubscriptionKit(envComField(), "a@x.com", kit.fetchImpl, false));
+    const post = upsertPost(kit.calls)!;
+    assert.equal(post.body!.fields?.confirmou_via, undefined);
+    assert.equal(kit.get()!.fields.confirmou_via, undefined);
+  });
+
+  it("cadastro novo + token válido → confirmou_via é gravado junto com a UTM", async () => {
+    const kit = fakeKit({ existing: null });
+    await capture(() => activateSubscriptionKit(envComField(), "a@x.com", kit.fetchImpl, true));
+    const post = upsertPost(kit.calls)!;
+    assert.equal(post.body!.fields?.confirmou_via, "brevo-reativar");
+    assert.equal(post.body!.fields?.utm_source, BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source);
+  });
+
+  it("confirmou_via é ORTEGONAL à origem: entra por google-ads e o field é gravado mesmo assim", async () => {
+    // #8438: a UTM de reativação NÃO carimba utm_source já preenchido
+    // (#8235), então o clique era indistinguível — mas o field sim.
+    const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
+    await capture(() => activateSubscriptionKit(envComField(), "a@x.com", kit.fetchImpl, true));
+    const post = upsertPost(kit.calls)!;
+    assert.equal(post.body!.fields?.confirmou_via, "brevo-reativar");
+    assert.equal(kit.get()!.fields.utm_source, "google-ads", "origem é preservada");
+  });
+});
+
 describe("filterKitOrigemFields (#8235)", () => {
   it("vazio/null/espaços contam como ausente; leitura null → nada", () => {
     const desired = { a: "1", b: "2", c: "3", d: "4" };

@@ -342,6 +342,7 @@ import {
 import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; // #4530
 import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #6699 — fonte única do prefixo `kit:`
 import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B
+import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./lib/shared/reativar-confirmou-via.ts"; // #8438
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail } from "./lib/kit-subscribers.ts"; // #6339, #6340 item 4, #7382
@@ -1675,10 +1676,21 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 );
                 kitAutoConfirmSkipped++;
               } else {
+                let confirmouVia: string | undefined; // #8438
                 try {
                   const kitSubscriber = await getSubscriberById(kitParseResult.id, { apiKey: kitApiKey });
                   kitConfirmed = kitSubscriber.state === "active";
                   kitSubscriberCreatedAt = kitSubscriber.created_at ?? null; // #6705
+                  // #8438 — lê o custom field `confirmou_via` escrito pelo worker
+                  // `reativar` no instante do clique com token (#8194) e passa pra
+                  // `applySelfConfirmed` como `via`: quando for
+                  // `REATIVAR_CONFIRMOU_VIA_VALUE`, o `resolution_reason` vira
+                  // `self_confirmed_kit_botao` — a confirmação é MEDÍVEL mesmo
+                  // quando a origem de aquisição já estava preenchida (a UTM
+                  // de reativação só carimba campos VAZIOS, #8235). Campo
+                  // ausente (DOI, ou worker sem `KIT_CONFIRMOU_VIA_FIELD`) →
+                  // `via` undefined → comportamento de hoje preservado.
+                  confirmouVia = kitSubscriber.fields?.[REATIVAR_CONFIRMOU_VIA_FIELD_NAME];
                 } catch (e) {
                   log(`warn: falha ao checar status Kit de ${contact.email} (subscriber id ${kitParseResult.id}): ${(e as Error).message}`);
                   failed++;
@@ -1712,7 +1724,13 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
               log(`${contact.email}: falha ao registrar instrumentação #6705 (não bloqueia a promoção) — ${(logErr as Error).message}`);
             }
             await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
-            store = applySelfConfirmed(store, contact.email);
+            // #8438 — `confirmou_via` (lido acima no GET singular do Kit) é o
+            // único sinal MEDÍVEL de "clicou no botão de confirmar" pra quem
+            // entrou por origem já preenchida. Passado como `via` pra
+            // `applySelfConfirmed`, que refinamento o `resolution_reason` pra
+            // `self_confirmed_kit_botao` quando for
+            // `REATIVAR_CONFIRMOU_VIA_VALUE`; ausente → comportamento de hoje.
+            store = applySelfConfirmed(store, contact.email, undefined, confirmouVia);
           }
           continue;
         }
