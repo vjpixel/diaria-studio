@@ -25,6 +25,10 @@
  *   npx tsx scripts/check-continuo-session-registration.ts \
  *     --sidecar-dir /path/to/tick-sidecars --sessions-dir /path/to/data/sessions \
  *     --now-iso 2026-09-10T06:00:00.000Z --json
+ *   npx tsx scripts/check-continuo-session-registration.ts \
+ *     --lifecycle-log-path /path/to/data/session-lifecycle.jsonl --json
+ *     # (#8378) sem a flag, default é o irmão de --sessions-dir —
+ *     # {sessions-dir}/../session-lifecycle.jsonl
  *
  * Exit code é SEMPRE 0 — mesma disciplina de `check-continuo-auth-stall.ts`:
  * este script só correlaciona e reporta `status`; quem decide alarmar (e
@@ -51,11 +55,15 @@ import {
   type SessionRegistrationCheckResult,
   type TickWindow,
 } from "./lib/continuo-session-registration-check.ts";
+import { parseSessionLifecycleLog } from "./lib/session-lifecycle-report.ts";
 
 /** Repo root a partir deste arquivo (`scripts/` -> repo root). */
 const DIARIA_STUDIO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 export const DEFAULT_SIDECAR_DIR = resolve(DIARIA_STUDIO_ROOT, "data", "continuo", "tick-sidecars");
 export const DEFAULT_SESSIONS_DIR = resolve(DIARIA_STUDIO_ROOT, "data", "sessions");
+/** Nome fixo do log — sempre irmão de `data/sessions/`, nunca configurável
+ *  isoladamente (deriva de `sessionsDir` por padrão, ver `runCheck`). */
+const LIFECYCLE_LOG_FILENAME = "session-lifecycle.jsonl";
 
 /** Lê `data/continuo/tick-sidecars/*.json` e devolve as janelas de tick.
  *  Fail-soft por arquivo: um sidecar corrompido é ignorado (nunca derruba a
@@ -129,6 +137,45 @@ function readContinuoSessionWindows(sessionsDir: string): { windows: RegisteredS
   return { windows, errors };
 }
 
+/** Lê `data/session-lifecycle.jsonl` (#6624) e reconstrói as janelas das
+ *  sessões `kind=continuo` que já terminaram — `endSession` apaga o arquivo
+ *  real de `data/sessions/` (`rmSync`) no fim limpo, então essas janelas
+ *  NUNCA aparecem em `readContinuoSessionWindows` acima; sem esta 2ª fonte,
+ *  todo tick bem-sucedido cujo tick.protocolo chamou `end` some do
+ *  correlacionador entre o fim do tick e a próxima rodada desta checagem
+ *  (#8378 — "17 de 17 sem sessão" era majoritariamente isso, não falha real
+ *  de registro).
+ *
+ *  Eventos de `event="ended"` e `event="gc-removed-without-end"` contam
+ *  igualmente aqui: os dois provam que o registro EXISTIU com esse
+ *  `startedAt`/`lastHeartbeat` — a diferença entre os dois (encerrou limpo
+ *  vs. GC removeu por staleness) é irrelevante pra "o `register` rodou?",
+ *  a única pergunta desta checagem.
+ *
+ *  Arquivo ausente/ilegível → lista vazia, nunca erro: o log é evidência
+ *  ADICIONAL, opcional por natureza (instrumentação do #6624, não a fonte
+ *  primária de verdade sobre sessões ainda vivas). */
+function readContinuoLifecycleWindows(lifecycleLogPath: string): RegisteredSessionWindow[] {
+  if (!existsSync(lifecycleLogPath)) return [];
+  let content: string;
+  try {
+    content = readFileSync(lifecycleLogPath, "utf8");
+  } catch {
+    return [];
+  }
+  const windows: RegisteredSessionWindow[] = [];
+  for (const event of parseSessionLifecycleLog(content)) {
+    if (event.kind !== "continuo") continue;
+    if (typeof event.startedAt !== "string" || !event.startedAt) continue;
+    windows.push({
+      sessionId: event.sessionId,
+      startedAt: event.startedAt,
+      lastHeartbeat: typeof event.lastHeartbeat === "string" ? event.lastHeartbeat : null,
+    });
+  }
+  return windows;
+}
+
 export interface SessionRegistrationCliResult extends SessionRegistrationCheckResult {
   readonly readErrors: readonly string[];
 }
@@ -137,12 +184,19 @@ export function runCheck(
   sidecarDir: string,
   sessionsDir: string,
   nowIso: string,
-  opts: { lookbackHours?: number; bufferMinutes?: number } = {},
+  opts: { lookbackHours?: number; bufferMinutes?: number; lifecycleLogPath?: string } = {},
 ): SessionRegistrationCliResult {
   const sidecarExisted = existsSync(sidecarDir);
   const sessionsExisted = existsSync(sessionsDir);
   const { windows: ticks, errors: tickErrors } = readTickWindows(sidecarDir);
-  const { windows: sessions, errors: sessionErrors } = readContinuoSessionWindows(sessionsDir);
+  const { windows: liveSessions, errors: sessionErrors } = readContinuoSessionWindows(sessionsDir);
+  // Deriva o path do log de ciclo de vida como irmão de `sessionsDir` por
+  // padrão (produção: data/sessions/ + data/session-lifecycle.jsonl) —
+  // sempre sobrescrevível via `opts.lifecycleLogPath`/`--lifecycle-log-path`
+  // pra isolar teste sem depender da convenção de diretório.
+  const lifecycleLogPath = opts.lifecycleLogPath ?? resolve(sessionsDir, "..", LIFECYCLE_LOG_FILENAME);
+  const lifecycleSessions = readContinuoLifecycleWindows(lifecycleLogPath);
+  const sessions = [...liveSessions, ...lifecycleSessions];
   const readErrors = [...tickErrors, ...sessionErrors];
 
   // Diretório de sidecars ausente: normal em checkout fresco/máquina sem
@@ -182,9 +236,10 @@ function main(): void {
   const nowIso = values["now-iso"] ?? new Date().toISOString();
   const lookbackHours = values["lookback-hours"] ? Number(values["lookback-hours"]) : undefined;
   const bufferMinutes = values["buffer-minutes"] ? Number(values["buffer-minutes"]) : undefined;
+  const lifecycleLogPath = values["lifecycle-log-path"];
   const asJson = flags.has("json");
 
-  const result = runCheck(sidecarDir, sessionsDir, nowIso, { lookbackHours, bufferMinutes });
+  const result = runCheck(sidecarDir, sessionsDir, nowIso, { lookbackHours, bufferMinutes, lifecycleLogPath });
 
   if (asJson) {
     console.log(JSON.stringify(result));

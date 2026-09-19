@@ -40,6 +40,30 @@
  * gap explicitamente (item 2 da proposta da issue #7890), em vez de deixar
  * o detector de fabricação correlacionar errado em silêncio (o modo de
  * falha que causou o #7641).
+ *
+ * ## #8378 — `data/sessions/*.json` sozinho SUBESTIMA registro
+ *
+ * `endSession` (`session-registry.ts`) apaga o arquivo real (`rmSync`) no
+ * fim limpo de toda sessão — inclusive `kind=continuo`, que o protocolo do
+ * tick instrui a encerrar ao final (SKILL.md, "AO FIM DO TICK"). Este
+ * checker roda de fora, hora em hora (`watch-continuo-health.sh`), de forma
+ * NÃO sincronizada com o ciclo de vida do tick (~5-8min) — pra qualquer
+ * tick que registrou, funcionou e terminou limpo, o arquivo em
+ * `data/sessions/` já não existe mais quando a checagem roda. Ler só
+ * `data/sessions/` faz o checker alarmar sobre TODO tick bem-sucedido,
+ * indistinguível do caso real (registro que nunca aconteceu) — foi
+ * exatamente o "17 de 17" da issue #8378.
+ *
+ * A correção usa o mesmo mecanismo já existente para "sessões coordenadoras
+ * terminam sem `end`?" (#6624): `endSession`/`garbageCollectSessions`
+ * gravam um evento DURÁVEL em `data/session-lifecycle.jsonl` — que
+ * sobrevive à remoção do arquivo em `data/sessions/`, ao contrário dele.
+ * `readContinuoLifecycleWindows` (no CLI) lê esse log e reconstrói as
+ * janelas `[startedAt, lastHeartbeat]` das sessões `kind=continuo` que já
+ * terminaram, e o CLI as soma às janelas AINDA VIVAS lidas de
+ * `data/sessions/` antes de chamar `evaluateSessionRegistration` — nenhuma
+ * mudança no miolo puro deste arquivo, que já aceitava `RegisteredSessionWindow[]`
+ * de qualquer origem.
  */
 
 /** Janela de um tick, extraída de um sidecar já capturado (#7814). */
