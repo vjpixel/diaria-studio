@@ -40,9 +40,8 @@ import {
   countWeekUsage,
   explorationWeekOfEdition,
   loadExplorationConfig,
-  readExplorationState,
   recordExplorationDecision,
-  writeExplorationState,
+  withExplorationStateLock,
   clearExploracaoFlags,
   EXPLORATION_STATE_RELATIVE_PATH,
   type ExplorationFinalistLike,
@@ -270,49 +269,62 @@ export function applyExplorationQuotaBackstop(
   };
 
   const statePath = deps.statePath ?? resolve(rootDir, EXPLORATION_STATE_RELATIVE_PATH);
-  const read = readExplorationState(statePath);
-  if (read.corrupted) {
-    // Contador perdido ≠ contador zerado. Seguir com estado vazio daria à
-    // semana N slots extras em silêncio — exatamente o cap editorial que a
-    // #8370 existe pra respeitar. E não sobrescrever: o arquivo pode ser
-    // recuperável (conflito de sync do OneDrive), e regravá-lo aqui apagaria
-    // o registro das outras edições da semana junto.
-    log(
-      `[assemble-scored] cota de exploração PULADA: ${statePath} existe mas não deu pra ler ` +
-        `(${read.error ?? "erro desconhecido"}) — o contador semanal está perdido, então esta edição ` +
-        "não marca exploração nem regrava o arquivo. Restaure/apague o arquivo à mão (#8370).",
-    );
-    return withoutFlags();
-  }
-  const state = read.state;
-  // A própria edição sai da conta: re-rodar o Stage 1 dela (resume) tem que
-  // reproduzir a mesma decisão, não ler a si mesma como consumo alheio.
-  const weekUsageBefore = countWeekUsage(state, week, edition);
+  const decidedAt = (deps.now ?? new Date()).toISOString();
 
-  const result = applyExplorationQuota(assembled.highlights, finalists as ExplorationFinalistLike[], {
-    config,
-    week,
-    weekUsageBefore,
-    affinityOf,
-    // Título placeholder nunca vira destaque (#4102) — a cota não é brecha.
-    isEligibleCandidate: (f) => !isPlaceholderHighlightTitle(f.article?.title as string | undefined),
+  // Ler → decidir → gravar acontece TUDO dentro do mesmo lock (#8407). Antes,
+  // a leitura ficava fora dele e duas execuções da mesma semana ISO com `data/`
+  // compartilhado via OneDrive podiam apagar o registro uma da outra. A decisão
+  // em si é pura/em memória (nenhum I/O de rede), então segurar o lock por ela
+  // é barato perto da janela que fecha.
+  const outcome = withExplorationStateLock(statePath, (read) => {
+    if (read.corrupted) {
+      // Contador perdido ≠ contador zerado. Seguir com estado vazio daria à
+      // semana N slots extras em silêncio — exatamente o cap editorial que a
+      // #8370 existe pra respeitar. E não sobrescrever (`next: null`): o
+      // arquivo pode ser recuperável (conflito de sync do OneDrive), e
+      // regravá-lo aqui apagaria o registro das outras edições da semana junto.
+      log(
+        `[assemble-scored] cota de exploração PULADA: ${statePath} existe mas não deu pra ler ` +
+          `(${read.error ?? "erro desconhecido"}) — o contador semanal está perdido, então esta edição ` +
+          "não marca exploração nem regrava o arquivo. Restaure/apague o arquivo à mão (#8370).",
+      );
+      return { next: null, value: null };
+    }
+
+    const state = read.state;
+    // A própria edição sai da conta: re-rodar o Stage 1 dela (resume) tem que
+    // reproduzir a mesma decisão, não ler a si mesma como consumo alheio.
+    const weekUsageBefore = countWeekUsage(state, week, edition);
+
+    const result = applyExplorationQuota(assembled.highlights, finalists as ExplorationFinalistLike[], {
+      config,
+      week,
+      weekUsageBefore,
+      affinityOf,
+      // Título placeholder nunca vira destaque (#4102) — a cota não é brecha.
+      isEligibleCandidate: (f) => !isPlaceholderHighlightTitle(f.article?.title as string | undefined),
+    });
+
+    const nextState = recordExplorationDecision(
+      state,
+      edition,
+      result.promotion
+        ? {
+            week,
+            exploracao: true,
+            url: result.promotion.promoted_url,
+            origin: result.promotion.origin,
+            decided_at: decidedAt,
+          }
+        : { week, exploracao: false, decided_at: decidedAt },
+    );
+    return { next: nextState, value: { result, weekUsageBefore } };
   });
 
-  const decidedAt = (deps.now ?? new Date()).toISOString();
-  const nextState = recordExplorationDecision(
-    state,
-    edition,
-    result.promotion
-      ? {
-          week,
-          exploracao: true,
-          url: result.promotion.promoted_url,
-          origin: result.promotion.origin,
-          decided_at: decidedAt,
-        }
-      : { week, exploracao: false, decided_at: decidedAt },
-  );
-  if (!writeExplorationState(statePath, nextState)) {
+  if (outcome.value === null) return withoutFlags();
+  const { result, weekUsageBefore } = outcome.value;
+
+  if (!outcome.persisted) {
     log(
       `[assemble-scored] cota de exploração: estado NÃO persistido (${statePath} — data/ ausente neste ` +
         "checkout); a decisão desta edição vale, mas não conta pra semana (#8370)",
