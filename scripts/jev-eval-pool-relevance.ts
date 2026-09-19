@@ -26,7 +26,7 @@
  * (verificado ao vivo, 260919) — não soma candidato extra.
  *
  * Uso:
- *   npx tsx scripts/jev-eval-pool-relevance.ts [--threshold-pct 30] [--runs 3] [--root /path/pro/checkout/com/data] [--limit 80]
+ *   npx tsx scripts/jev-eval-pool-relevance.ts [--threshold-pct 30] [--runs 3] [--root /path/pro/checkout/com/data] [--limit 80] [--editions 260427,260622]
  *
  * `--root` existe porque este harness pode rodar de um worktree sem a
  * junction `data/` do OneDrive montada — aponte pro checkout que tem
@@ -40,7 +40,6 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getIntArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { askJevBatch, type JevNoulAnswer } from "./lib/jev.ts";
-import { mcnemarTest } from "./lib/mcnemar.ts";
 import { POOL_RELEVANCE_8418_ABOUT_AI, POOL_RELEVANCE_8418_AUDIENCE_FIT } from "./lib/jev-questions.ts";
 
 const SELF_ROOT = resolve(import.meta.dirname, "..");
@@ -81,8 +80,16 @@ export function collectPoolRelevanceCandidates(rootDir: string, editionsFilter?:
   const skipped: string[] = [];
   if (!existsSync(editionsRoot)) return { candidates, skipped };
 
+  // Ordem determinística (AAMMDD crescente) pro dedup "1ª ocorrência vence" —
+  // `enumerateEditionDirs` devolve um `Map` cuja ordem de iteração vem de
+  // `readdirSync` (ordem de sistema de arquivos, não garantida
+  // cronológica/alfabética); sem este sort, qual edição "vence" o dedup
+  // dependeria do SO/filesystem, não da intenção declarada no comentário
+  // acima (review finding P3, PR #8474).
+  const editionsSorted = [...enumerateEditionDirs(editionsRoot)].sort(([a], [b]) => a.localeCompare(b));
+
   const seen = new Set<string>();
-  for (const [edition, dir] of enumerateEditionDirs(editionsRoot)) {
+  for (const [edition, dir] of editionsSorted) {
     if (editionsFilter && !editionsFilter.includes(edition)) continue;
     const pc = join(dir, "_internal", "01-categorized.json");
     const pa = join(dir, "_internal", "01-approved.json");
@@ -212,15 +219,12 @@ export function renderReport(
     lines.push("");
   }
 
-  // McNemar contra o mecanismo "atual" (que não filtra nada hoje — todo
-  // candidato categorizado entra no pool). Reportado por completude: com o
-  // mecanismo atual sempre "correto" no sentido de nunca filtrar (não há
-  // como um mecanismo que nunca age errar por comissão), a comparação
-  // pareada relevante é o próprio falso-positivo grave acima, não McNemar —
-  // McNemar exige que os DOIS lados tenham um "acerto"/"erro" bem definido,
-  // e "mecanismo atual" aqui não tem opinião a comparar. Omitido de
-  // propósito (mcnemar.ts segue disponível pra medições choice/score).
-  void mcnemarTest;
+  // Nota: McNemar (scripts/lib/mcnemar.ts) NÃO se aplica aqui de propósito —
+  // ele compara dois classificadores que cada um tem "acerto"/"erro" bem
+  // definido contra um rótulo. O "mecanismo atual" desta medição nunca
+  // filtra nada (todo candidato categorizado entra no pool), então não tem
+  // opinião pareável contra a de Jev — a comparação pareada relevante é o
+  // falso-positivo grave já reportado acima, não um teste de discordância.
 
   return lines.join("\n");
 }
@@ -239,8 +243,10 @@ async function main() {
   const runs = getIntArg(argv, "runs", { min: 1 }) ?? 1;
   const limit = getIntArg(argv, "limit", { min: 1 });
   const cacheDirArg = getStringArg(argv, "cache-dir");
+  const editionsArg = getStringArg(argv, "editions");
+  const editionsFilter = editionsArg ? editionsArg.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
 
-  const { candidates: allCandidates, skipped } = collectPoolRelevanceCandidates(rootDir);
+  const { candidates: allCandidates, skipped } = collectPoolRelevanceCandidates(rootDir, editionsFilter);
   if (skipped.length > 0) {
     console.warn(`${skipped.length} edição(ões) ilegível(is), fora do pool:`);
     for (const s of skipped) console.warn(`  ${s}`);
