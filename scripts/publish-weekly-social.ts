@@ -570,6 +570,16 @@ export async function main(
       process.exit(1);
       return;
     }
+    // #8385: mesmo motivo do --manifest-only acima — --images-only imprime 1
+    // objeto JSON puro no stdout, "both" emitiria 2 em sequência quebrando o
+    // parse do caller. Rode cada modo separadamente.
+    if (flags.has("images-only")) {
+      console.error(
+        "ERRO: --images-only não é compatível com --mode both (emitiria 2 JSONs em sequência). Rode cada modo separadamente (--mode clicked --images-only / --mode highlights --images-only).",
+      );
+      process.exit(1);
+      return;
+    }
     console.log(
       '[publish-weekly-social] --mode both — rodando "highlights" e "clicked" em sequência (falha em um não impede o outro).',
     );
@@ -630,6 +640,17 @@ async function runOneMode(
     dayOffset = parsed;
   }
   const doSchedule = flags.has("schedule");
+  // #8385: resolve/gera as imagens do carrossel (mesma pipeline de
+  // `--schedule`) e imprime as URLs em JSON — sem despachar pra nenhum
+  // canal. Incompatível com `--schedule` (a resolução de imagem já faz
+  // parte desse fluxo).
+  const imagesOnly = flags.has("images-only");
+  if (imagesOnly && doSchedule) {
+    console.error(
+      "ERRO: --images-only não é compatível com --schedule (a resolução de imagem já acontece dentro do fluxo de --schedule; --images-only existe pra resolvê-la SEM despachar pros canais).",
+    );
+    return false;
+  }
   const skipExisting = !flags.has("no-skip-existing");
   const forceIncompleteWeek = flags.has("force-incomplete-week"); // herdado do #4101 finding 6
   // #4511 fleet review ALTO: confirmação explícita pra prosseguir com dado
@@ -925,7 +946,7 @@ async function runOneMode(
   const carouselKey = `${saturday}-${mode}`;
   const destaqueKey = `weekly-${mode}`;
 
-  if (!doSchedule) {
+  if (!doSchedule && !imagesOnly) {
     console.log(`\n[publish-weekly-social] PREVIEW (--schedule ausente — nenhuma chamada de rede feita).`);
     console.log(`Agendamento planejado: ${scheduledAt}\n`);
     console.log(`── instagram (${mode}) ──\n${caption}\n`);
@@ -949,7 +970,10 @@ async function runOneMode(
   let skipFacebook = false;
   let skipThreads = false;
   let skipLinkedIn = false;
-  if (skipExisting) {
+  // #8385: --images-only nunca lê/escreve `06-weekly-published.json` (não
+  // despacha, não tem status de canal pra pular) — skip-existing não se
+  // aplica: mesmo já agendado, o editor ainda pode querer ver o carrossel.
+  if (skipExisting && !imagesOnly) {
     const published = readSocialPublished(publishedPath);
     const existingIg = published.posts.find(
       (p) => p.platform === "instagram" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
@@ -991,6 +1015,13 @@ async function runOneMode(
     validateScheduledTime(scheduledAt);
   } catch (e: any) {
     console.error(`ERRO: scheduled_at "${scheduledAt}" inválido para o post semanal: ${e.message}`);
+    // #8385 fleet review P1: --images-only NUNCA toca em
+    // 06-weekly-published.json (nem em sucesso, nem em falha) — só resolve
+    // imagem, não despacha pra canal nenhum. Sem este guard, os 4
+    // tagAndAppend abaixo gravariam status:"failed" pra Instagram/Facebook/
+    // Threads/LinkedIn mesmo numa invocação que nunca tentou publicar em
+    // nenhum deles.
+    if (imagesOnly) return false;
     if (!skipInstagram) {
       tagAndAppend({
         platform: "instagram",
@@ -1116,6 +1147,11 @@ async function runOneMode(
           : `ERRO ${destaqueKey}: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
               `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads + LinkedIn), não publica parcial.`,
     );
+    // #8385 fleet review P1: mesmo guard do bloco de scheduled_at acima —
+    // --images-only nunca escreve em 06-weekly-published.json, e uma falha
+    // de resolução de imagem é uma falha REAL (retorna false, não true) pro
+    // caller ter sinal mecânico via exit code.
+    if (imagesOnly) return false;
     if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
@@ -1145,6 +1181,8 @@ async function runOneMode(
         `carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads + LinkedIn), não publica parcial.`,
     );
     const reason = `flat_card_generation_failed:${e.message}`;
+    // #8385 fleet review P1: mesmo guard dos 2 blocos acima.
+    if (imagesOnly) return false;
     if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
@@ -1179,6 +1217,36 @@ async function runOneMode(
     );
   } catch (e) {
     console.error(`AVISO: não consegui gravar 06-carousel-urls.json (${(e as Error).message}) — publicação segue normal.`);
+  }
+
+  // #8385: imagens resolvidas — para aqui, sem despachar pra nenhum canal e
+  // sem tocar em `06-weekly-published.json`. 1 objeto JSON puro no stdout
+  // (mesmo contrato de `--manifest-only`, pra caller fazer JSON.parse
+  // direto): ordem = capa, item 1..N na ordem de publicação, CTA.
+  if (imagesOnly) {
+    console.log(
+      JSON.stringify(
+        {
+          saturday,
+          mode,
+          carouselKey,
+          scheduledAt,
+          cover: coverUrl,
+          cta: ctaUrl,
+          items: items.map((item, i) => ({
+            index: i + 1,
+            title: item.title,
+            url: item.url,
+            editionDate: item.editionDate,
+            imageUrl: resolvedImages.urls[i],
+          })),
+          carouselImageUrls,
+        },
+        null,
+        2,
+      ),
+    );
+    return true;
   }
 
   // ── Instagram (#4146/#4483/#5330) ──
