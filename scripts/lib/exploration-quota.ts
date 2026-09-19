@@ -290,12 +290,26 @@ export function readExplorationState(path: string): ExplorationStateRead {
 }
 
 /**
- * Persiste o estado, atomicamente (tmp + rename, via `writeFileAtomic`) e sob
- * lock de arquivo — o mesmo par que `social-published-store.ts` usa, e pelo
- * mesmo motivo: `data/` é compartilhado entre máquinas/worktrees, então um
- * `writeFileSync` cru pode ser lido pela metade (produzindo exatamente a
- * corrupção que `readExplorationState` acima sinaliza) e dois processos em
- * read-modify-write podem perder a decisão um do outro.
+ * Serializa o estado com as edições em ordem de chave — diff estável no
+ * arquivo versionado à mão pelo editor.
+ */
+function serializeExplorationState(state: ExplorationState): string {
+  const ordered: Record<string, ExplorationRecord> = {};
+  for (const key of Object.keys(state.editions).sort()) ordered[key] = state.editions[key];
+  return JSON.stringify({ editions: ordered }, null, 2) + "\n";
+}
+
+/**
+ * Persiste o estado atomicamente (tmp + rename, via `writeFileAtomic`) sob
+ * lock de arquivo.
+ *
+ * **O lock aqui cobre só a ESCRITA** — ele impede que um leitor concorrente
+ * veja o arquivo pela metade (a corrupção que `readExplorationState` acima
+ * sinaliza), e nada mais. Ele **não** protege um ciclo read-modify-write:
+ * quem leu o arquivo fora do lock, decidiu sobre aquele snapshot e chama isto
+ * depois sobrescreve qualquer decisão gravada nesse intervalo — foi o defeito
+ * da #8407. Pra read-modify-write use `withExplorationStateLock` abaixo, que
+ * relê de dentro da seção crítica.
  *
  * Devolve `false` (sem lançar) quando o diretório que hospedaria o arquivo
  * não existe — em produção o path é `data/…`, ausente em worktree isolado/
@@ -306,12 +320,75 @@ export function readExplorationState(path: string): ExplorationStateRead {
 export function writeExplorationState(path: string, state: ExplorationState): boolean {
   const dir = dirname(path);
   if (!existsSync(dir)) return false;
-  const ordered: Record<string, ExplorationRecord> = {};
-  for (const key of Object.keys(state.editions).sort()) ordered[key] = state.editions[key];
   withFileLock(`${path}.lock`, () => {
-    writeFileAtomic(path, JSON.stringify({ editions: ordered }, null, 2) + "\n");
+    writeFileAtomic(path, serializeExplorationState(state));
   });
   return true;
+}
+
+/** O que o mutador de `withExplorationStateLock` devolve. */
+export interface ExplorationMutation<T> {
+  /**
+   * Estado a persistir. `null` significa **não tocar no arquivo** — usado
+   * quando o read veio `corrupted` (regravar apagaria o registro das outras
+   * edições da semana; o arquivo pode ser recuperável, #8398).
+   */
+  next: ExplorationState | null;
+  /** Valor que o chamador quer de volta (o resultado da decisão, tipicamente). */
+  value: T;
+}
+
+export interface ExplorationStateLockResult<T> {
+  value: T;
+  /** `true` só quando o arquivo foi de fato regravado. */
+  persisted: boolean;
+  /**
+   * Por que não persistiu: `no-data-dir` = diretório ausente (worktree
+   * isolado/clone fresco, #5227); `mutator-declined` = o mutador devolveu
+   * `next: null` (tipicamente estado corrompido).
+   */
+  reason?: "no-data-dir" | "mutator-declined";
+}
+
+/**
+ * Read-modify-write **inteiro** sob o mesmo lock (#8407): adquire o lock, lê
+ * o arquivo MAIS RECENTE de dentro da seção crítica, passa essa leitura ao
+ * `mutate`, e grava o estado que ele devolver — tudo antes de liberar.
+ *
+ * É o padrão que `scripts/lib/file-lock.ts` documenta no seu "uso típico", e
+ * a razão de ele existir aqui: compor `readExplorationState` +
+ * `writeExplorationState` como duas chamadas separadas deixa uma janela entre
+ * as duas em que outro processo pode gravar, e a gravação seguinte apaga a
+ * dele em silêncio — a semana perde o registro de uma edição e `countWeekUsage`
+ * subestima o consumo. Dois processos na mesma semana ISO com `data/`
+ * compartilhado via OneDrive (overnight num worktree + retry de
+ * `/diaria-1-pesquisa` noutra sessão) é o cenário real.
+ *
+ * Duas degradações preservadas, ambas sem lançar:
+ *
+ * - **`data/` ausente** (worktree isolado/clone fresco): não há o que travar
+ *   nem onde gravar, então `mutate` roda **fora** do lock sobre um estado
+ *   vazio — a decisão da edição ainda vale pra sessão, só não conta pra
+ *   semana. (Tentar travar aqui lançaria `ENOENT` desde a #6952, que deixou
+ *   `acquireLock` propagar tudo que não seja `EEXIST`.)
+ * - **arquivo corrompido**: `mutate` recebe `read.corrupted === true` e pode
+ *   devolver `next: null` pra não regravar nada.
+ */
+export function withExplorationStateLock<T>(
+  path: string,
+  mutate: (read: ExplorationStateRead) => ExplorationMutation<T>,
+): ExplorationStateLockResult<T> {
+  if (!existsSync(dirname(path))) {
+    const { value } = mutate(readExplorationState(path));
+    return { value, persisted: false, reason: "no-data-dir" };
+  }
+  return withFileLock(`${path}.lock`, (): ExplorationStateLockResult<T> => {
+    const read = readExplorationState(path);
+    const { next, value } = mutate(read);
+    if (next === null) return { value, persisted: false, reason: "mutator-declined" };
+    writeFileAtomic(path, serializeExplorationState(next));
+    return { value, persisted: true };
+  });
 }
 
 // ─── Seleção (pura) ────────────────────────────────────────────────────────
