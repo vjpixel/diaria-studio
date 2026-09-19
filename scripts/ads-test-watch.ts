@@ -38,7 +38,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, getStringArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { sendGmailMessage, type GmailSendResult } from "./lib/gmail-send.ts";
+import { notifyEditor, type NotifyEditorFinding, type NotifyEditorResult } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { addDays } from "./lib/ads-test-schedule.ts";
@@ -105,7 +105,14 @@ export interface AdsTestWatchDeps {
   plannedD0: string | null;
   plannedDailyBudgetBRL: number;
   now: () => Date;
-  sendEmail: (to: string, subject: string, body: string) => Promise<GmailSendResult>;
+  /** #7960 — portão único de notificação (`scripts/lib/editor-notify.ts`),
+   *  não mais `sendGmailMessage` direto. Todos os 6 achados desta task são
+   *  severidade `"urgente"` (mesma classificação do #7957 pra esta task —
+   *  dinheiro/CAC/religamento de canal em risco); a decisão de mandar
+   *  e-mail (vs. só abrir/atualizar a issue) fica com o portão
+   *  (`email_policy`), nunca com este script. Injetável só pra teste —
+   *  produção sempre `notifyEditor` real. */
+  notify: (finding: NotifyEditorFinding) => Promise<NotifyEditorResult>;
   /** Roda `build-origem-map.ts` (sempre ANTES de `runCacReport`, #7.2) —
    *  retorna `ok:false` se o script sinalizar falha via `process.exitCode`. */
   runBuildOrigemMap: () => boolean;
@@ -176,6 +183,7 @@ async function realFetchAutoSpend(): Promise<Map<string, Map<string, number>>> {
 }
 
 function defaultDeps(argv: string[]): AdsTestWatchDeps {
+  const toOverride = getArg(argv, "to");
   return {
     runStatePath: getArg(argv, "run-state-path") || DEFAULT_RUN_STATE_PATH,
     watchStatePath: getArg(argv, "watch-state-path") || DEFAULT_WATCH_STATE_PATH,
@@ -188,7 +196,7 @@ function defaultDeps(argv: string[]): AdsTestWatchDeps {
     // scripts/lib/cli-args.ts, guard #4573).
     plannedDailyBudgetBRL: getIntArg(argv, "planned-daily-budget", { min: 1 }) ?? DEFAULT_PLANNED_DAILY_BUDGET_BRL,
     now: () => new Date(),
-    sendEmail: sendGmailMessage,
+    notify: (finding) => notifyEditor(finding, { cwd: ROOT, emailTo: toOverride || undefined, platformConfigPath: PLATFORM_CONFIG_PATH }),
     runBuildOrigemMap: realBuildOrigemMap,
     runCacReport: realCacReport,
     isSnapshotUsable: (root, date) => isSubscribersSnapshotUsable(root, date),
@@ -255,18 +263,33 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
     `${LOG_PREFIX} ${nowDateStr} runState=${runState ? runState.d0 : "ausente"} plan=${JSON.stringify(plan)}`,
   );
 
-  const emails: Array<{ subject: string; body: string }> = [];
+  const findings: NotifyEditorFinding[] = [];
   let nextWatchState = watchState;
 
   if (plan.alarmMissingD0Overdue && deps.plannedD0) {
-    emails.push(buildMissingD0OverdueEmail(deps.plannedD0, nowDateStr));
+    const { subject, body } = buildMissingD0OverdueEmail(deps.plannedD0, nowDateStr);
+    findings.push({
+      check: "ads-test-watch-d0-overdue",
+      fingerprint: `d0-overdue:${deps.plannedD0}`,
+      severity: "urgente",
+      subject,
+      body,
+    });
   }
 
   if ((plan.checkClicksCoverage || plan.checkDeathConditions) && runState) {
     const csvContent = existsSync(deps.clicksCsvPath) ? readFileSync(deps.clicksCsvPath, "utf8") : "";
     if (!csvContent.trim()) {
       if (plan.checkClicksCoverage) {
-        emails.push(buildMissingClicksCoverageEmail(runState.bracos, addDays(nowDateStr, -1)));
+        const yesterday = addDays(nowDateStr, -1);
+        const { subject, body } = buildMissingClicksCoverageEmail(runState.bracos, yesterday);
+        findings.push({
+          check: "ads-test-watch-missing-clicks",
+          fingerprint: `missing-clicks:${yesterday}:${[...runState.bracos].sort().join(",")}`,
+          severity: "urgente",
+          subject,
+          body,
+        });
       }
     } else {
       try {
@@ -276,7 +299,16 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
         if (plan.checkClicksCoverage) {
           const yesterday = addDays(nowDateStr, -1);
           const missing = findMissingClicksBracosForDate(rows, runState.bracos, yesterday);
-          if (missing.length > 0) emails.push(buildMissingClicksCoverageEmail(missing, yesterday));
+          if (missing.length > 0) {
+            const { subject, body } = buildMissingClicksCoverageEmail(missing, yesterday);
+            findings.push({
+              check: "ads-test-watch-missing-clicks",
+              fingerprint: `missing-clicks:${yesterday}:${[...missing].sort().join(",")}`,
+              severity: "urgente",
+              subject,
+              body,
+            });
+          }
         }
         if (plan.checkDeathConditions) {
           const runStateExt = runState as unknown as AdsTestRunStateWithPause;
@@ -298,7 +330,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
           }
           const evalRows = [...rows, ...resolvedRows];
 
-          const findings = evaluateSpendOverageDeathCondition(
+          const deathFindings = evaluateSpendOverageDeathCondition(
             evalRows,
             runState.bracos,
             runState.d0,
@@ -306,7 +338,16 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
             deps.plannedDailyBudgetBRL,
             { pauseIntervals, budgetScheduleByBraco },
           );
-          if (findings.length > 0) emails.push(buildDeathConditionEmail(findings));
+          if (deathFindings.length > 0) {
+            const { subject, body } = buildDeathConditionEmail(deathFindings);
+            findings.push({
+              check: "ads-test-watch-death-condition",
+              fingerprint: `death-condition:${deathFindings.map((f) => f.braco).sort().join(",")}`,
+              severity: "urgente",
+              subject,
+              body,
+            });
+          }
 
           // Aviso + projeção (#8240 item 4) — NUNCA e-mail próprio, só
           // console/`--dry-run` aqui; `ads-daily-digest.ts` é quem os
@@ -343,13 +384,26 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
         nextWatchState = markReligarBrevoTriggered(nextWatchState, now.toISOString());
       }
     }
-    emails.push({ subject, body });
+    findings.push({
+      check: "ads-test-watch-religar-brevo",
+      fingerprint: `religar-brevo:${runState.religar_brevo}`,
+      severity: "urgente",
+      subject,
+      body,
+    });
   }
 
   if (plan.runApuracao && runState) {
     const usability = deps.isSnapshotUsable(deps.backupRoot, runState.apuracao_snapshot);
     if (!usability.usable) {
-      emails.push(buildApuracaoSnapshotUnusableEmail(runState.apuracao_snapshot, usability.reason ?? "motivo desconhecido"));
+      const { subject, body } = buildApuracaoSnapshotUnusableEmail(runState.apuracao_snapshot, usability.reason ?? "motivo desconhecido");
+      findings.push({
+        check: "ads-test-watch-apuracao-unusable",
+        fingerprint: `apuracao-unusable:${runState.apuracao_snapshot}`,
+        severity: "urgente",
+        subject,
+        body,
+      });
       console.error(`${LOG_PREFIX} apuração NÃO rodou — snapshot ${runState.apuracao_snapshot} inutilizável: ${usability.reason}`);
     } else if (!isDryRun) {
       // SEMPRE build-origem-map.ts imediatamente antes de cac-report.ts (§7.2) —
@@ -365,26 +419,42 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
           const reportPath = `data/aquisicao/cac-reports/${reportId("cac", runState.apuracao_snapshot)}.md`;
           const reportUrl = `/relatorios/${reportId("cac", runState.apuracao_snapshot)}`;
           nextWatchState = markApuracaoCompleted(nextWatchState, now.toISOString(), reportPath);
-          emails.push(buildApuracaoSuccessEmail(runState.apuracao_snapshot, reportUrl));
+          const { subject, body } = buildApuracaoSuccessEmail(runState.apuracao_snapshot, reportUrl);
+          findings.push({
+            check: "ads-test-watch-apuracao-success",
+            fingerprint: `apuracao-success:${runState.apuracao_snapshot}`,
+            severity: "urgente",
+            subject,
+            body,
+          });
           console.log(`${LOG_PREFIX} apuração congelada gerada: ${reportPath}`);
         }
       }
     }
   }
 
-  if (emails.length === 0) {
+  if (findings.length === 0) {
     console.log(`${LOG_PREFIX} nada a alarmar/agir hoje.`);
     return;
   }
 
   const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  for (const { subject, body } of emails) {
+  for (const finding of findings) {
     if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+      console.log(
+        `${LOG_PREFIX} --dry-run: notificaria o editor (severidade ${finding.severity}) pra ${to}:\n--- subject ---\n${finding.subject}\n--- body ---\n${finding.body}`,
+      );
       continue;
     }
-    await deps.sendEmail(to, subject, body);
-    console.log(`${LOG_PREFIX} e-mail enviado pra ${to}: "${subject}"`);
+    const result = await deps.notify(finding);
+    if (result.emailSent) {
+      console.log(`${LOG_PREFIX} e-mail enviado pra ${to}: "${finding.subject}"`);
+    } else {
+      console.log(
+        `${LOG_PREFIX} achado registrado (issue #${result.issue?.issueNumber ?? "?"}, action=${result.issue?.action ?? "n/a"}) — ` +
+          `e-mail não enviado nesta execução (política ${result.emailPolicy}).`,
+      );
+    }
   }
 
   if (!isDryRun && nextWatchState !== watchState) {

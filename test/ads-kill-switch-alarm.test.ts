@@ -1,13 +1,21 @@
 /**
- * test/ads-kill-switch-alarm.test.ts (#5239)
+ * test/ads-kill-switch-alarm.test.ts (#5239, DI migrada pro portão
+ * notifyEditor em #7960)
  *
  * I/O de `scripts/ads-kill-switch-alarm.ts::main` — todas as dependências
- * reais (e-mail, executor de pausa, gravação do log de eventos) são
- * INJETADAS via `AdsKillSwitchAlarmDeps`, então este teste NUNCA toca rede
- * nem `data/` real. Cobre o critério de pronto da issue: alarme sempre que
- * há achado (pausado ou não), pausa só com as DUAS travas (toggle +
- * `--execute-pause`), `--dry-run` nunca escreve nada, e o executor default
- * nunca é chamado sem a dupla trava.
+ * reais (notificação ao editor, executor de pausa, gravação do log de
+ * eventos) são INJETADAS via `AdsKillSwitchAlarmDeps`, então este teste
+ * NUNCA toca rede, `gh` nem `data/` real. `notify` substitui o antigo
+ * `sendEmail` (que chamava `sendGmailMessage` direto) — a decisão de
+ * mandar e-mail (vs. só abrir/atualizar issue) agora é do PORTÃO
+ * (`scripts/lib/editor-notify.ts`), testado à parte em
+ * `test/editor-notify.test.ts`; aqui só verificamos que `main` invoca
+ * `notify` com o finding certo, na hora certa (respeitando os fail-softs e
+ * `--dry-run`), e reage corretamente ao `NotifyEditorResult` devolvido.
+ * Cobre o critério de pronto da issue: alarme sempre que há achado (pausado
+ * ou não), pausa só com as DUAS travas (toggle + `--execute-pause`),
+ * `--dry-run` nunca escreve nada, e o executor default nunca é chamado sem
+ * a dupla trava.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -17,8 +25,21 @@ import { join } from "node:path";
 import { main, type AdsKillSwitchAlarmDeps } from "../scripts/ads-kill-switch-alarm.ts";
 import { buildAdsTestRunState } from "../scripts/lib/ads-test-run-state.ts";
 import { notWiredPauseExecutor, DEFAULT_KILL_SWITCH_GUARDRAILS } from "../scripts/lib/ads-kill-switch.ts";
+import type { NotifyEditorFinding, NotifyEditorResult } from "../scripts/lib/editor-notify.ts";
 
 const HEADER = "canal,data_apuracao,gasto_acumulado,leitores_acumulado\n";
+
+/** `NotifyEditorResult` "de sucesso, e-mail enviado" — o formato que a
+ *  maioria dos testes injeta como resposta padrão do `notify` mockado. */
+function fakeNotifyResult(overrides: Partial<NotifyEditorResult> = {}): NotifyEditorResult {
+  return {
+    severity: "urgente",
+    emailPolicy: "legacy",
+    issue: { action: "created", issueNumber: 1, url: "https://github.com/x/y/issues/1" },
+    emailSent: true,
+    ...overrides,
+  };
+}
 
 async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "ads-kill-switch-alarm-"));
@@ -38,7 +59,7 @@ function baseDeps(dir: string, overrides: Partial<AdsKillSwitchAlarmDeps> = {}):
     now: () => new Date("2026-09-05T06:30:00.000Z"),
     isKillSwitchEnabled: () => false,
     pauseExecutor: notWiredPauseExecutor,
-    sendEmail: async () => ({ id: "fake" }) as never,
+    notify: async () => fakeNotifyResult(),
     appendPauseEvent: () => {},
     execMode: () => "local",
     ...overrides,
@@ -59,45 +80,45 @@ function writeDegradedFixture(dir: string, runState: ReturnType<typeof buildAdsT
 }
 
 describe("#5239 — ads-kill-switch-alarm main (I/O): sem dado ainda → fail-soft, nada de I/O", () => {
-  it("sem run-state.json → não lê CSV, não manda e-mail", async () => {
+  it("sem run-state.json → não notifica o editor", async () => {
     await withTmpDir(async (dir) => {
-      const sentEmails: unknown[] = [];
-      await main([], baseDeps(dir, { sendEmail: async () => (sentEmails.push(1), { id: "x" }) as never }));
-      assert.equal(sentEmails.length, 0);
+      const notifyCalls: NotifyEditorFinding[] = [];
+      await main([], baseDeps(dir, { notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()) }));
+      assert.equal(notifyCalls.length, 0);
     });
   });
 
-  it("run-state existe, clicks-2608.csv ausente → não manda e-mail", async () => {
+  it("run-state existe, clicks-2608.csv ausente → não notifica o editor", async () => {
     await withTmpDir(async (dir) => {
       const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
       writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
-      const sentEmails: unknown[] = [];
-      await main([], baseDeps(dir, { sendEmail: async () => (sentEmails.push(1), { id: "x" }) as never }));
-      assert.equal(sentEmails.length, 0);
+      const notifyCalls: NotifyEditorFinding[] = [];
+      await main([], baseDeps(dir, { notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()) }));
+      assert.equal(notifyCalls.length, 0);
     });
   });
 
   it("modo cloud (execMode) → aborta graciosamente, nunca tenta ler nada", async () => {
     await withTmpDir(async (dir) => {
-      const sentEmails: unknown[] = [];
+      const notifyCalls: NotifyEditorFinding[] = [];
       await main(
         [],
         baseDeps(dir, {
           execMode: () => "cloud",
-          sendEmail: async () => (sentEmails.push(1), { id: "x" }) as never,
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
         }),
       );
-      assert.equal(sentEmails.length, 0);
+      assert.equal(notifyCalls.length, 0);
     });
   });
 });
 
 describe("#5239 — ads-kill-switch-alarm main (I/O): alarme sempre, tenha pausado ou não", () => {
-  it("degradação detectada, kill switch DESLIGADO (default) → manda e-mail, NUNCA chama o executor de pausa", async () => {
+  it("degradação detectada, kill switch DESLIGADO (default) → notifica o editor (severidade urgente), NUNCA chama o executor de pausa", async () => {
     await withTmpDir(async (dir) => {
       const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
       writeDegradedFixture(dir, runState);
-      const sentEmails: Array<{ subject: string; body: string }> = [];
+      const notifyCalls: NotifyEditorFinding[] = [];
       const pauseCalls: string[] = [];
       const loggedEvents: unknown[] = [];
 
@@ -110,15 +131,18 @@ describe("#5239 — ads-kill-switch-alarm main (I/O): alarme sempre, tenha pausa
             return { ok: false, detail: "não deveria ter sido chamado" };
           },
           appendPauseEvent: (event) => loggedEvents.push(event),
-          sendEmail: async (_to, subject, body) => {
-            sentEmails.push({ subject, body });
-            return { id: "x" } as never;
+          notify: async (f) => {
+            notifyCalls.push(f);
+            return fakeNotifyResult();
           },
         }),
       );
 
-      assert.equal(sentEmails.length, 1, "alarme por e-mail sempre que há achado — checklist #5239");
-      assert.match(sentEmails[0].subject, /degradação detectada/);
+      assert.equal(notifyCalls.length, 1, "notifica o editor sempre que há achado — checklist #5239");
+      assert.equal(notifyCalls[0].severity, "urgente");
+      assert.equal(notifyCalls[0].check, "ads-kill-switch");
+      assert.ok(notifyCalls[0].fingerprint.includes(runState.bracos[0]));
+      assert.match(notifyCalls[0].subject, /degradação detectada/);
       assert.equal(pauseCalls.length, 0, "kill switch desligado NUNCA chama o executor, mesmo achado disparado");
       assert.equal(loggedEvents.length, 1, "registra o evento de PAUSA PULADA — log auditável mesmo sem executar");
       assert.equal((loggedEvents[0] as { executionAttempted: boolean }).executionAttempted, false);
@@ -175,7 +199,7 @@ describe("#5239 — ads-kill-switch-alarm main (I/O): alarme sempre, tenha pausa
     });
   });
 
-  it("sem degradação (custos parelhos) → nenhum e-mail, nenhum evento de pausa", async () => {
+  it("sem degradação (custos parelhos) → nenhuma notificação, nenhum evento de pausa", async () => {
     await withTmpDir(async (dir) => {
       const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
       writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
@@ -185,31 +209,48 @@ describe("#5239 — ads-kill-switch-alarm main (I/O): alarme sempre, tenha pausa
         `${runState.bracos[1]},2026-09-04,420,20\n` +
         `${runState.bracos[2]},2026-09-04,440,20\n`;
       writeFileSync(join(dir, "clicks-2608.csv"), csv);
-      const sentEmails: unknown[] = [];
+      const notifyCalls: unknown[] = [];
       const loggedEvents: unknown[] = [];
 
       await main(
         [],
         baseDeps(dir, {
-          sendEmail: async () => (sentEmails.push(1), { id: "x" }) as never,
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
           appendPauseEvent: (event) => loggedEvents.push(event),
         }),
       );
 
-      assert.equal(sentEmails.length, 0);
+      assert.equal(notifyCalls.length, 0);
       assert.equal(loggedEvents.length, 0);
+    });
+  });
+
+  it("portão devolve emailSent=false (política suprimiu o e-mail) → main não trata como erro, só loga a issue", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeDegradedFixture(dir, runState);
+
+      // Não deve lançar nem sinalizar exitCode de erro quando o portão
+      // decide não mandar e-mail (ex: urgent_only + issue reused).
+      await main(
+        [],
+        baseDeps(dir, {
+          notify: async () => fakeNotifyResult({ emailSent: false, issue: { action: "reused", issueNumber: 3, url: "x" } }),
+        }),
+      );
+      assert.notEqual(process.exitCode, 1);
     });
   });
 });
 
-describe("#5239 — ads-kill-switch-alarm main (I/O): --dry-run nunca grava nem envia nada", () => {
-  it("degradação detectada + kill switch ligado + --execute-pause + --dry-run → NÃO chama executor, NÃO grava log, NÃO manda e-mail", async () => {
+describe("#5239 — ads-kill-switch-alarm main (I/O): --dry-run nunca grava nem notifica", () => {
+  it("degradação detectada + kill switch ligado + --execute-pause + --dry-run → NÃO chama executor, NÃO grava log, NÃO notifica o editor", async () => {
     await withTmpDir(async (dir) => {
       const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
       writeDegradedFixture(dir, runState);
       const pauseCalls: string[] = [];
       const loggedEvents: unknown[] = [];
-      const sentEmails: unknown[] = [];
+      const notifyCalls: unknown[] = [];
 
       await main(
         ["--dry-run", "--execute-pause"],
@@ -220,13 +261,13 @@ describe("#5239 — ads-kill-switch-alarm main (I/O): --dry-run nunca grava nem 
             return { ok: false, detail: "x" };
           },
           appendPauseEvent: (event) => loggedEvents.push(event),
-          sendEmail: async () => (sentEmails.push(1), { id: "x" }) as never,
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
         }),
       );
 
       assert.equal(pauseCalls.length, 0, "--dry-run nunca chama o executor de verdade");
       assert.equal(loggedEvents.length, 0, "--dry-run nunca grava o log de eventos");
-      assert.equal(sentEmails.length, 0, "--dry-run nunca envia e-mail de verdade");
+      assert.equal(notifyCalls.length, 0, "--dry-run nunca notifica o editor de verdade");
     });
   });
 });
@@ -242,11 +283,11 @@ describe("#5239 — ads-kill-switch-alarm main (I/O): guardrails de entrada resp
         `${runState.bracos[1]},2026-09-04,400,20\n` +
         `${runState.bracos[2]},2026-09-04,440,20\n`;
       writeFileSync(join(dir, "clicks-2608.csv"), csv);
-      const sentEmails: unknown[] = [];
+      const notifyCalls: unknown[] = [];
 
-      await main([], baseDeps(dir, { sendEmail: async () => (sentEmails.push(1), { id: "x" }) as never }));
+      await main([], baseDeps(dir, { notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()) }));
 
-      assert.equal(sentEmails.length, 0, "janela de assentamento (minDaysSinceD0) protege contra falso-positivo de custo inicial");
+      assert.equal(notifyCalls.length, 0, "janela de assentamento (minDaysSinceD0) protege contra falso-positivo de custo inicial");
     });
   });
 
@@ -260,17 +301,17 @@ describe("#5239 — ads-kill-switch-alarm main (I/O): guardrails de entrada resp
         `${runState.bracos[1]},2026-09-02,400,20\n` +
         `${runState.bracos[2]},2026-09-02,440,20\n`;
       writeFileSync(join(dir, "clicks-2608.csv"), csv);
-      const sentEmails: unknown[] = [];
+      const notifyCalls: unknown[] = [];
 
       await main(
         ["--as-of-date", "2026-09-02"],
         baseDeps(dir, {
           now: () => new Date("2026-09-10T06:30:00.000Z"), // "ontem" seria 09-09, sem dado — --as-of-date corrige
-          sendEmail: async () => (sentEmails.push(1), { id: "x" }) as never,
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
         }),
       );
 
-      assert.equal(sentEmails.length, 1);
+      assert.equal(notifyCalls.length, 1);
     });
   });
 });
@@ -318,7 +359,7 @@ describe("#5239 — ads-kill-switch-alarm main (I/O): appendPauseEvent REAL grav
         now: () => new Date("2026-09-05T06:30:00.000Z"),
         isKillSwitchEnabled: () => true,
         pauseExecutor: notWiredPauseExecutor,
-        sendEmail: async () => ({ id: "fake" }) as never,
+        notify: async () => fakeNotifyResult(),
         execMode: () => "local",
         // appendPauseEvent OMITIDO de propósito — usa realAppendPauseEvent.
       });

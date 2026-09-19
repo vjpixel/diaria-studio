@@ -1,11 +1,17 @@
 /**
- * test/ads-test-watch-main.test.ts (#5845)
+ * test/ads-test-watch-main.test.ts (#5845, DI migrada pro portão
+ * notifyEditor em #7960)
  *
  * I/O de `scripts/ads-test-watch.ts::main` — todas as dependências reais
- * (e-mail, gh, build-origem-map/cac-report, checagem de snapshot) são
- * INJETADAS via `AdsTestWatchDeps`, então este teste nunca toca rede,
- * `gh`, nem `data/` real. Cobre o critério de pronto: "apuração roda os 2
- * comandos na ordem e recusa snapshot inutilizável".
+ * (notificação ao editor, gh, build-origem-map/cac-report, checagem de
+ * snapshot) são INJETADAS via `AdsTestWatchDeps`, então este teste nunca
+ * toca rede, `gh`, nem `data/` real. `notify` substitui o antigo
+ * `sendEmail` (que chamava `sendGmailMessage` direto) — a decisão de
+ * mandar e-mail (vs. só abrir/atualizar issue) agora é do PORTÃO
+ * (`scripts/lib/editor-notify.ts`), testado à parte; aqui só verificamos
+ * que `main` invoca `notify` com o finding certo, na hora certa. Cobre o
+ * critério de pronto: "apuração roda os 2 comandos na ordem e recusa
+ * snapshot inutilizável".
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +20,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main, DEFAULT_PLANNED_D0, type AdsTestWatchDeps } from "../scripts/ads-test-watch.ts";
 import { buildAdsTestRunState } from "../scripts/lib/ads-test-run-state.ts";
+import type { NotifyEditorFinding, NotifyEditorResult } from "../scripts/lib/editor-notify.ts";
+
+function fakeNotifyResult(overrides: Partial<NotifyEditorResult> = {}): NotifyEditorResult {
+  return {
+    severity: "urgente",
+    emailPolicy: "legacy",
+    issue: { action: "created", issueNumber: 1, url: "https://github.com/x/y/issues/1" },
+    emailSent: true,
+    ...overrides,
+  };
+}
 
 async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "ads-test-watch-"));
@@ -34,7 +51,7 @@ function baseDeps(dir: string, overrides: Partial<AdsTestWatchDeps> = {}): Parti
     plannedD0: DEFAULT_PLANNED_D0,
     plannedDailyBudgetBRL: 100,
     now: () => new Date("2026-08-26T06:30:00.000Z"),
-    sendEmail: async () => ({ id: "fake" }) as never,
+    notify: async () => fakeNotifyResult(),
     runBuildOrigemMap: () => {
       calls.push("origem");
       return true;
@@ -62,7 +79,7 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
         join(dir, "watch-state.json"),
         JSON.stringify({ religarBrevoTriggeredAt: "2026-09-16T06:30:00.000Z", apuracaoCompletedAt: null, apuracaoReportPath: null }),
       );
-      const sentEmails: Array<{ subject: string; body: string }> = [];
+      const notifyCalls: NotifyEditorFinding[] = [];
       const origemCalls: string[] = [];
       const cacCalls: string[] = [];
 
@@ -79,17 +96,15 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
             cacCalls.push("cac");
             return true;
           },
-          sendEmail: async (_to, subject, body) => {
-            sentEmails.push({ subject, body });
-            return { id: "x" } as never;
-          },
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
         }),
       );
 
       assert.equal(origemCalls.length, 0, "build-origem-map NUNCA deve rodar sobre snapshot inutilizável");
       assert.equal(cacCalls.length, 0, "cac-report NUNCA deve rodar sobre snapshot inutilizável");
-      assert.equal(sentEmails.length, 1);
-      assert.match(sentEmails[0].subject, /NÃO rodou/);
+      assert.equal(notifyCalls.length, 1);
+      assert.equal(notifyCalls[0].severity, "urgente");
+      assert.match(notifyCalls[0].subject, /NÃO rodou/);
       const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
       assert.equal(watchState.apuracaoCompletedAt, null, "watch-state não deve marcar apuração como completa");
     });
@@ -104,7 +119,7 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
         JSON.stringify({ religarBrevoTriggeredAt: "2026-09-16T06:30:00.000Z", apuracaoCompletedAt: null, apuracaoReportPath: null }),
       );
       const callOrder: string[] = [];
-      const sentEmails: Array<{ subject: string }> = [];
+      const notifyCalls: NotifyEditorFinding[] = [];
 
       await main(
         [],
@@ -118,16 +133,13 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
             callOrder.push("cac");
             return true;
           },
-          sendEmail: async (_to, subject) => {
-            sentEmails.push({ subject });
-            return { id: "x" } as never;
-          },
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
         }),
       );
 
       assert.deepEqual(callOrder, ["origem", "cac"], "build-origem-map SEMPRE imediatamente antes de cac-report (§7.2)");
-      assert.equal(sentEmails.length, 1);
-      assert.match(sentEmails[0].subject, /apuração congelada rodou/);
+      assert.equal(notifyCalls.length, 1);
+      assert.match(notifyCalls[0].subject, /apuração congelada rodou/);
 
       const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
       assert.ok(watchState.apuracaoCompletedAt);
@@ -210,7 +222,7 @@ describe("#8262 P1 (achado 2) — ads-test-watch main (I/O): fetchAutoSpend/reso
       writeFileSync(join(dir, "clicks-2608.csv"), csv);
 
       const fetchCalls: string[] = [];
-      const sentEmails: Array<{ subject: string; body: string }> = [];
+      const notifyCalls: NotifyEditorFinding[] = [];
 
       await main(
         [],
@@ -225,22 +237,19 @@ describe("#8262 P1 (achado 2) — ads-test-watch main (I/O): fetchAutoSpend/reso
             ]);
             return new Map([[braco, perDay]]);
           },
-          sendEmail: async (_to, subject, body) => {
-            sentEmails.push({ subject, body });
-            return { id: "x" } as never;
-          },
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
         }),
       );
 
       assert.equal(fetchCalls.length, 1, "deps.fetchAutoSpend() deveria ter sido chamado exatamente 1x");
-      const deathEmail = sentEmails.find((e) => /condição de morte disparada/.test(e.subject));
-      assert.ok(deathEmail, "o gasto complementado pela fonte automática deveria disparar a condição de morte");
-      assert.match(deathEmail!.body, new RegExp(braco.replace(/[()]/g, "\\$&")));
-      assert.match(deathEmail!.body, /R\$ 2200[.,]00/, "gasto acumulado deveria ser 100 (CSV) + 700×3 (automático) = 2200");
+      const deathFinding = notifyCalls.find((f) => /condição de morte disparada/.test(f.subject));
+      assert.ok(deathFinding, "o gasto complementado pela fonte automática deveria disparar a condição de morte");
+      assert.match(deathFinding!.body, new RegExp(braco.replace(/[()]/g, "\\$&")));
+      assert.match(deathFinding!.body, /R\$ 2200[.,]00/, "gasto acumulado deveria ser 100 (CSV) + 700×3 (automático) = 2200");
     });
   });
 
-  it("#8240 item 4 — aviso (1,25x-2x) e projeção vão pro console (buildSpendWatchDigestSection), NUNCA um e-mail próprio", async () => {
+  it("#8240 item 4 — aviso (1,25x-2x) e projeção vão pro console (buildSpendWatchDigestSection), NUNCA notificação própria", async () => {
     await withTmpDir(async (dir) => {
       const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
       writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
@@ -251,7 +260,7 @@ describe("#8262 P1 (achado 2) — ads-test-watch main (I/O): fetchAutoSpend/reso
       const csv = header + runState.bracos.map((b) => `${b},2026-09-01,1400,,,,,,,,\n`).join("");
       writeFileSync(join(dir, "clicks-2608.csv"), csv);
 
-      const sentEmails: Array<{ subject: string }> = [];
+      const notifyCalls: NotifyEditorFinding[] = [];
       const logged: string[] = [];
       const originalLog = console.log;
       console.log = (...args: unknown[]) => {
@@ -263,10 +272,7 @@ describe("#8262 P1 (achado 2) — ads-test-watch main (I/O): fetchAutoSpend/reso
           baseDeps(dir, {
             now: () => new Date("2026-09-02T06:30:00.000Z"),
             fetchAutoSpend: async () => new Map(),
-            sendEmail: async (_to, subject) => {
-              sentEmails.push({ subject });
-              return { id: "x" } as never;
-            },
+            notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
           }),
         );
       } finally {
@@ -274,12 +280,12 @@ describe("#8262 P1 (achado 2) — ads-test-watch main (I/O): fetchAutoSpend/reso
       }
 
       assert.ok(
-        !sentEmails.some((e) => /morte|aviso/i.test(e.subject)),
-        "aviso/projeção NUNCA deveriam gerar e-mail próprio (#8240 item 4)",
+        !notifyCalls.some((f) => /morte|aviso/i.test(f.subject)),
+        "aviso/projeção NUNCA deveriam gerar notificação própria (#8240 item 4)",
       );
       assert.ok(
         logged.some((l) => l.includes("avisos de gasto")),
-        "a seção de aviso deveria aparecer no console (buildSpendWatchDigestSection), mesmo sem e-mail",
+        "a seção de aviso deveria aparecer no console (buildSpendWatchDigestSection), mesmo sem notificação",
       );
       assert.ok(logged.some((l) => l.includes(braco)), "console deveria nomear o braço no aviso");
     });
@@ -289,20 +295,17 @@ describe("#8262 P1 (achado 2) — ads-test-watch main (I/O): fetchAutoSpend/reso
 describe("#5845 — ads-test-watch main (I/O): D0 ausente/reconciliação/guard de data/", () => {
   it("sem run-state.json, D0 planejado já passou → alarma, sem tentar ler clicks-2608.csv", async () => {
     await withTmpDir(async (dir) => {
-      const sentEmails: Array<{ subject: string }> = [];
+      const notifyCalls: NotifyEditorFinding[] = [];
       await main(
         [],
         baseDeps(dir, {
           plannedD0: "2026-08-01",
           now: () => new Date("2026-08-05T06:30:00.000Z"),
-          sendEmail: async (_to, subject) => {
-            sentEmails.push({ subject });
-            return { id: "x" } as never;
-          },
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
         }),
       );
-      assert.equal(sentEmails.length, 1);
-      assert.match(sentEmails[0].subject, /D0 planejado/);
+      assert.equal(notifyCalls.length, 1);
+      assert.match(notifyCalls[0].subject, /D0 planejado/);
     });
   });
 
@@ -316,22 +319,50 @@ describe("#5845 — ads-test-watch main (I/O): D0 ausente/reconciliação/guard 
         `${runState.bracos[0]},2026-08-27,150,,,,,,,,\n` +
         `${runState.bracos[1]},2026-08-27,10,,,,,,,,\n`; // falta o 3º braço
       writeFileSync(join(dir, "clicks-2608.csv"), csv);
-      const sentEmails: Array<{ subject: string; body: string }> = [];
+      const notifyCalls: NotifyEditorFinding[] = [];
 
       await main(
         [],
         baseDeps(dir, {
           now: () => new Date("2026-08-28T06:30:00.000Z"), // checa ontem = 2026-08-27
-          sendEmail: async (_to, subject, body) => {
-            sentEmails.push({ subject, body });
-            return { id: "x" } as never;
-          },
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
         }),
       );
 
-      const coverageEmail = sentEmails.find((e) => /reconciliação de gasto faltando/.test(e.subject));
-      assert.ok(coverageEmail, "deveria alarmar cobertura faltante");
-      assert.match(coverageEmail!.body, new RegExp(runState.bracos[2].replace(/[()]/g, "\\$&")));
+      const coverageFinding = notifyCalls.find((f) => /reconciliação de gasto faltando/.test(f.subject));
+      assert.ok(coverageFinding, "deveria alarmar cobertura faltante");
+      assert.match(coverageFinding!.body, new RegExp(runState.bracos[2].replace(/[()]/g, "\\$&")));
+    });
+  });
+});
+
+describe("#7960 — ads-test-watch main (I/O): --dry-run nunca notifica o editor", () => {
+  it("D0 vencido + --dry-run → NÃO chama notify, watch-state intacto", async () => {
+    await withTmpDir(async (dir) => {
+      const notifyCalls: unknown[] = [];
+      await main(
+        ["--dry-run"],
+        baseDeps(dir, {
+          plannedD0: "2026-08-01",
+          now: () => new Date("2026-08-05T06:30:00.000Z"),
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
+        }),
+      );
+      assert.equal(notifyCalls.length, 0, "--dry-run nunca notifica o editor de verdade");
+    });
+  });
+
+  it("portão devolve emailSent=false (política suprimiu o e-mail) → main não trata como erro", async () => {
+    await withTmpDir(async (dir) => {
+      await main(
+        [],
+        baseDeps(dir, {
+          plannedD0: "2026-08-01",
+          now: () => new Date("2026-08-05T06:30:00.000Z"),
+          notify: async () => fakeNotifyResult({ emailSent: false, issue: { action: "reused", issueNumber: 3, url: "x" } }),
+        }),
+      );
+      assert.notEqual(process.exitCode, 1);
     });
   });
 });
