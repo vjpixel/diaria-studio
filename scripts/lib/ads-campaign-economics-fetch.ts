@@ -47,6 +47,19 @@ import type { ChannelDailyMetric, ChannelDailySignup } from "./ads-campaign-econ
 import { isEditorTestEmail } from "./google-ads-enhanced-conversions.ts";
 import { EDITOR_WORKSPACE_EMAIL } from "./editor-copy.ts";
 
+/** `ChannelDailyMetric` + `campaignId` (#8256, achado do type-design-analyzer
+ *  na PR #8450) — reusar `ChannelDailyMetric` puro deixaria `campaignId`
+ *  disponível só no rótulo `canal` (string livre, ex: "Microsoft Ads
+ *  (campanha 123)"), forçando quem consome a fazer parsing de string pra
+ *  recuperar o id. Com o campo próprio, o id de campanha sobrevive como
+ *  dado estruturado (chave estável mesmo se o rótulo mudar) e o tipo deixa
+ *  de ser estruturalmente idêntico a `ChannelDailyMetric` — o compilador
+ *  ajuda a não confundir/concatenar `metrics` (total do canal) com
+ *  `campaignBreakdown` (por campanha) por engano. */
+export interface ChannelCampaignDailyMetric extends ChannelDailyMetric {
+  campaignId: string;
+}
+
 export interface ChannelFetchResult {
   metrics: ChannelDailyMetric[];
   fetchedAt: string | null;
@@ -58,7 +71,7 @@ export interface ChannelFetchResult {
    *  ausente/`undefined` em qualquer outro canal (Google/Meta), nunca um
    *  array vazio fingindo "sem campanha" quando a informação simplesmente
    *  não foi coletada. */
-  campaignBreakdown?: ChannelDailyMetric[];
+  campaignBreakdown?: ChannelCampaignDailyMetric[];
 }
 
 // ---------------------------------------------------------------------------
@@ -258,8 +271,9 @@ export async function fetchMicrosoftAdsChannelMetrics(
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, acc]) => ({ canal, date, ...acc }));
 
-  const campaignBreakdown: ChannelDailyMetric[] = byCampaign.map(({ canal: campaignCanal, date, gastoBrl, cliques, impressoes }) => ({
+  const campaignBreakdown: ChannelCampaignDailyMetric[] = byCampaign.map(({ canal: campaignCanal, campaignId, date, gastoBrl, cliques, impressoes }) => ({
     canal: campaignCanal,
+    campaignId,
     date,
     gastoBrl,
     cliques,
@@ -604,7 +618,15 @@ export async function fetchKitSignupsByChannel(
     const lastSep = key.lastIndexOf("|");
     const date = key.slice(lastSep + 1);
     const rest = key.slice(0, lastSep);
-    const midSep = rest.lastIndexOf("|");
+    // `indexOf` (PRIMEIRA ocorrência), não `lastIndexOf` — achado do
+    // silent-failure-hunter na PR #8450: `utmCampaign` é dado de visitante
+    // (utm_campaign de query string pública, sub.fields.utm_campaign do
+    // Kit), nunca sanitizado contra `|` literal. `canal` vem de
+    // `utmSourceToCanal[...]`, um literal fixo e conhecido que nunca
+    // contém `|` — por isso ele é sempre o segmento da ESQUERDA, e cortar
+    // na 1ª ocorrência (em vez da última) nunca corta dentro dele, mesmo
+    // que `utmCampaign` carregue um `|` no meio.
+    const midSep = rest.indexOf("|");
     return { canal: rest.slice(0, midSep), utmCampaign: rest.slice(midSep + 1), date, cadastros };
   });
   return { signups, signupsByCampaign, fetchedAt: new Date().toISOString(), error: null };
@@ -624,7 +646,7 @@ export interface CampaignEconomicsSourcesResult {
    *  — `[]` quando a fonte Microsoft falhou/não rodou (ver `sources["Microsoft Ads"]`
    *  pro erro). Nunca faz parte de `metrics` acima, que segue sendo o total
    *  do braço, inalterado. */
-  microsoftCampaignBreakdown: ChannelDailyMetric[];
+  microsoftCampaignBreakdown: ChannelCampaignDailyMetric[];
   /** Quebra ADICIONAL dos cadastros do Kit por `utm_campaign` dentro de
    *  cada canal (#8256) — mesma disciplina de `microsoftCampaignBreakdown`:
    *  nunca substitui `signups`, `[]` quando o Kit falhou/não rodou. */

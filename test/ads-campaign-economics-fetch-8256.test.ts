@@ -231,6 +231,35 @@ describe("#8256 — fetchKitSignupsByChannel: signupsByCampaign (utm_campaign)",
     assert.deepEqual(result.signupsByCampaign, []);
     assert.ok(result.error);
   });
+
+  it("utm_campaign com '|' literal (dado de visitante, nunca sanitizado) não corrompe o canal decodificado (achado do silent-failure-hunter, PR #8450)", async () => {
+    const result = await withMockFetch(
+      (async () =>
+        jsonResponse(200, {
+          subscribers: [
+            {
+              id: 1,
+              email_address: "a@b.com",
+              state: "active",
+              created_at: "2026-09-05T10:00:00.000Z",
+              // utm_campaign com pipe embutido — poderia vir de query string
+              // pública mal-formada/adversarial. O canal (à esquerda da
+              // chave composta) precisa continuar batendo exatamente com
+              // MICROSOFT_ADS_TESTE_CANAL mesmo assim.
+              fields: { utm_source: "microsoft-ads", utm_campaign: "ads-microsoft-2608|injected" },
+            },
+          ],
+          pagination: emptyPagination,
+        })) as typeof fetch,
+      () => fetchKitSignupsByChannel(TEST_CONFIG),
+    );
+
+    assert.equal(result.error, null);
+    assert.equal(result.signupsByCampaign.length, 1);
+    assert.equal(result.signupsByCampaign[0].canal, MICROSOFT_ADS_TESTE_CANAL, "canal não pode ser corrompido por '|' dentro de utm_campaign");
+    assert.equal(result.signupsByCampaign[0].utmCampaign, "ads-microsoft-2608|injected");
+    assert.equal(result.signupsByCampaign[0].date, "2026-09-05");
+  });
 });
 
 describe("#8256 — fetchCampaignEconomicsSources: propaga os campos novos", () => {
