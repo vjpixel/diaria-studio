@@ -8,18 +8,20 @@
  * parsing de resposta, só que para QUALQUER pergunta, não só o desempate
  * `bucket` do categorizador.
  *
- * Contrato confirmado contra a API real (#8219, 17/09/2026) — mas só para o
- * tipo `choice` com 1 pergunta por request. Os tipos `score` e `noul` seguem
- * o MESMO shape de envelope (mesmo endpoint, mesma auth, `questions`/`answers`
- * como mapa por id) por analogia direta com `choice` — a issue #8412 descreve
- * os 3 tipos e a issue #8413 pede que o harness os suporte estruturalmente
- * antes de qualquer medição real os exercitar (medições 1/3/4/5/7 do epic
- * usam `noul`/`score` e são quem primeiro vai confirmar o shape exato deles
- * contra a API — mesmo processo de verificação pontual do #8219, não
- * repetido aqui). Enquanto isso, `parseJevAnswer` é permissivo o bastante
- * pra aceitar qualquer chave de resposta plausível (`probability`/`prob`,
- * `score`/`value`) e MANTÉM fail-soft: resposta com shape inesperado lança,
- * o chamador decide (mesmo padrão de `parseTypeSafeAnswer`).
+ * Contrato confirmado contra a API real pros 3 tipos: `choice` no #8219
+ * (17/09/2026); `noul` no #8414 (19/09/2026) — chave real é `noul`, não
+ * `probability`/`prob` (ver `parseJevAnswers`, caso "noul"); `score` no
+ * #8415 (19/09/2026) — e essa confirmação corrigiu uma suposição errada do
+ * #8413: o request de `score` NÃO usa `min`/`max` numéricos, exige
+ * `criteria: string[]` (níveis ordenados, do mais baixo ao mais alto — mesma
+ * ideia de `choice`, só que como array ordenado em vez de objeto
+ * `{opção: descrição}`). A resposta devolve `score` como valor CONTÍNUO (o
+ * índice esperado sobre `criteria`, ponderado pelas `probabilities` de cada
+ * nível — não necessariamente um inteiro). `parseJevAnswer` é permissivo o
+ * bastante pra aceitar qualquer chave de resposta plausível
+ * (`noul`/`probability`/`prob`, `score`/`value`) e MANTÉM fail-soft: resposta
+ * com shape inesperado lança, o chamador decide (mesmo padrão de
+ * `parseTypeSafeAnswer`).
  *
  *   POST https://api.typesafe.ai/v1/systemone
  *   Authorization: Bearer <TYPESAFE_API_KEY>
@@ -28,7 +30,7 @@
  *     "state": { ...campos livres, ex: title/url/summary },
  *     "questions": {
  *       "<id>": { "type": "choice", "instructions", "criteria": { "<opção>": "<descrição>" } }
- *              | { "type": "score", "instructions", "min", "max" }
+ *              | { "type": "score", "instructions", "criteria": ["<nível 0>", "<nível 1>", ...] }
  *              | { "type": "noul", "instructions" }
  *     }
  *   }
@@ -99,8 +101,16 @@ export interface JevScoreQuestion {
   id: string;
   type: "score";
   instructions: string;
-  min: number;
-  max: number;
+  /**
+   * Níveis ordenados, do mais baixo ao mais alto (#8415, 19/09/2026 — contrato
+   * real confirmado contra a API: `criteria` é OBRIGATÓRIO, uma lista ordenada
+   * de descrições — NÃO um par `{opção: descrição}` como em `choice`, e NÃO
+   * `min`/`max` numéricos como o #8413 assumia por analogia). A resposta
+   * (`JevScoreAnswer.score`) é um valor CONTÍNUO — o índice esperado sobre
+   * `criteria` ponderado pelas `probabilities` de cada nível (ex: 3 níveis →
+   * `score` pode sair 1.16, não necessariamente um dos índices inteiros).
+   */
+  criteria: string[];
 }
 
 /** "Noul" — probabilidade 0-1 de uma afirmação ser verdadeira (#8412). */
@@ -287,7 +297,10 @@ function questionToWire(q: JevQuestion): Record<string, unknown> {
     case "choice":
       return { type: "choice", instructions: q.instructions, criteria: q.criteria };
     case "score":
-      return { type: "score", instructions: q.instructions, min: q.min, max: q.max };
+      // #8415: `criteria` (lista ordenada) é o campo real exigido pela API —
+      // `min`/`max` NÃO são enviados no wire (confirmado 422 sem `criteria`;
+      // confirmado 200 sem `min`/`max`, só com `criteria`).
+      return { type: "score", instructions: q.instructions, criteria: q.criteria };
     case "noul":
       return { type: "noul", instructions: q.instructions };
   }
