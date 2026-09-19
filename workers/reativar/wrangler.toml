@@ -103,6 +103,15 @@ KIT_UTM_MEDIUM_FIELD = "utm_medium"
 KIT_UTM_CAMPAIGN_FIELD = "utm_campaign"
 KIT_REFERRING_SITE_FIELD = "referring_site"
 
+# #8438 — nome do custom field Kit (`confirmou_via`) onde o worker grava
+# "brevo-reativar" SEMPRE que o clique chega com token válido (#8194) — o
+# único sinal MEDÍVEL de "clicou no botão" pra quem entrou por
+# google-ads/clarice/diaria-apex (a UTM de reativação só carimba campos
+# VAZIOS, #8235). VAR, não secret (mesmo tratamento dos demais
+# KIT_*_FIELD acima). Custom field já existe na conta Kit de produção
+# (criado 26/09/2026, ver scripts/lib/shared/reativar-confirmou-via.ts).
+KIT_CONFIRMOU_VIA_FIELD = "confirmou_via"
+
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
 # worker, poll e cursos já verificados ao vivo, reativar é o 3º e último).
 # env.SUBSCRIBE_BACKEND === "kit" em workers/reativar/src/index.ts — reativação

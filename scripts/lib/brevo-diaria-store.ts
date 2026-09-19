@@ -32,6 +32,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BrevoDiariaAction } from "./shared/brevo-diaria-score.ts";
 import { ORIGIN_PREFIX } from "./shared/brevo-diaria-origin.ts"; // #6699 — fonte única do prefixo `kit:`
+import { REATIVAR_CONFIRMOU_VIA_VALUE } from "./shared/reativar-confirmou-via.ts"; // #8438
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const DEFAULT_STORE_PATH = resolve(ROOT, "data/brevo-diaria/contacts.json");
@@ -96,6 +97,15 @@ export interface BrevoDiariaContact {
    * diferentes e ambos interessam pra reconstruir a timeline real do
    * contato. */
   reconciled_at?: string;
+  /** #8438 — quando o clique no botão da reativação chegou com token assinado
+   * válido (#8194), o worker `reativar` grava `confirmou_via` no Kit
+   * INDEPENDENTE de origem (a UTM de reativação só carimba campos vazios,
+   * #8235 — quem entrou por google-ads/clarice/diaria-apex nunca deixa
+   * rastro de clique). Lido pelo `evaluate-brevo-diaria.ts` Passo 1 pra
+   * refinamento do `resolution_reason` (`self_confirmed_kit_botao`). Ausente
+   * = clique não teve token (DOI) ou o field não está configurado no worker —
+   * mesmo comportamento de hoje. */
+  confirmou_via?: string;
   /** Motivo da supressão/promoção/descadastro — auditoria (#4266 self-review:
    * nunca silenciar POR QUE um contato saiu do fluxo). `native_unsubscribe_beehiiv_404`
    * (#4633) é uma variante do descadastro nativo: a propagação pra Beehiiv
@@ -126,6 +136,15 @@ export interface BrevoDiariaContact {
      * com prefixo `kit:`), nunca tocou a Beehiiv — a trilha de auditoria deve
      * registrar `self_confirmed_kit` pra distinguir. */
     | "self_confirmed_kit"
+    /** #8438 — refinamento de `self_confirmed_kit`: o clique no botão da
+     * reativação chegou com token assinado válido (#8194), então a
+     * confirmação é MEDÍVEL mesmo quando a origem de aquisição já estava
+     * preenchida (a UTM de reativação não carimba quem tem origem, #8235).
+     * Distinto de `self_confirmed_kit` (auto-confirmação detectada pelo
+     * `GET /v4/subscribers/{id}` sem sinal de clique direto) — é o caso
+     * em que o worker `reativar` escreveu `confirmou_via = "brevo-reativar"`
+     * no instante do clique. */
+    | "self_confirmed_kit_botao"
     | "native_unsubscribe"
     | "native_unsubscribe_beehiiv_404"
     /** #6340 item 4 fix B — descadastro nativo genuíno (`userUnsubscription`)
@@ -274,11 +293,22 @@ export function applyEvaluation(
  * periódica (`evaluate-brevo-diaria.ts`) checa o status Beehiiv atual de
  * cada contato `in_brevo` e usa esta função quando encontra `status=active`
  * (já confirmado no Beehiiv por iniciativa própria).
+ *
+ * #8438 — `via` OPCIONAL: quando o `evaluate-brevo-diaria.ts` Passo 1 lê o
+ * custom field `confirmou_via` do Kit (escrito pelo worker `reativar` no
+ * instante do clique com token, ver `reativar-confirmou-via.ts`) e passa
+ * `"brevo-reativar"`, o `resolution_reason` é refinado pra
+ * `self_confirmed_kit_botao` — a confirmação é MEDÍVEL mesmo quando a origem
+ * de aquisição já estava preenchida (a UTM de reativação não carimba quem
+ * tem origem, #8235). Sem `via` (ou com outro valor), comportamento de
+ * hoje: `self_confirmed_kit`/`self_confirmed_beehiiv`. Preserva a
+ * compatibilidade com todos os callers existentes, que não passam `via`.
  */
 export function applySelfConfirmed(
   store: BrevoDiariaStore,
   email: string,
   now: string = new Date().toISOString(),
+  via?: string,
 ): BrevoDiariaStore {
   const norm = normalizeEmail(email);
   return {
@@ -288,11 +318,16 @@ export function applySelfConfirmed(
       // scripts/lib/shared/brevo-diaria-origin.ts) em vez do literal "kit:"
       // hardcoded: era a 3ª definição independente do mesmo prefixo no repo.
       const isKitOrigin = c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT);
+      const isButtonConfirm = isKitOrigin && via === REATIVAR_CONFIRMOU_VIA_VALUE;
       return {
         ...c,
         status: "promoted_beehiiv",
         promoted_at: now,
-        resolution_reason: isKitOrigin ? "self_confirmed_kit" : "self_confirmed_beehiiv",
+        resolution_reason: isButtonConfirm
+          ? "self_confirmed_kit_botao"
+          : isKitOrigin
+            ? "self_confirmed_kit"
+            : "self_confirmed_beehiiv",
       };
     }),
   };
