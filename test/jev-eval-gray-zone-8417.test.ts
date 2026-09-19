@@ -26,7 +26,7 @@ afterEach(() => {
 function pairFixture(feature: typeof DEDUP_GRAYZONE_8417_FEATURE, id: string, hiddenGuess: string, stratum: string) {
   return {
     ...feature,
-    collectPool: () => ({
+    collectPool: (_rootDir: string) => ({
       pool: [
         {
           id,
