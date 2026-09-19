@@ -1150,39 +1150,8 @@ export const ADS_DASHBOARD_PERFORMANCE_COLUMNS = ["TimePeriod", "Impressions", "
  */
 export const ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN = ["TimePeriod", "CampaignId", "Impressions", "Clicks", "Spend"] as const;
 
-/** Normaliza `MicrosoftAdsPerformanceReportRow[]` (de `fetchMicrosoftAdsPerformanceRows`,
- *  #7539) pro shape canônico `ChannelDailyMetric` que `ads-campaign-economics.ts`
- *  (#7536) consome — mesma disciplina de descarte silencioso só por `TimePeriod`
- *  irreconhecível (nunca inventa dia) que `aggregateMicrosoftAdsSpendByMonthWithDiscards`
- *  já usa; `Impressions`/`Clicks` ausentes/malformados viram `0` (nunca
- *  `NaN` propagado pro acumulado). @pure */
-export function normalizeMicrosoftAdsPerformanceRows(
-  rows: MicrosoftAdsPerformanceReportRow[],
-  canal: string,
-): Array<{ canal: string; date: string; gastoBrl: number; cliques: number; impressoes: number }> {
-  const out: Array<{ canal: string; date: string; gastoBrl: number; cliques: number; impressoes: number }> = [];
-  const toNum = (v: string | number | undefined): number => {
-    if (v === undefined) return 0;
-    const n = typeof v === "string" ? Number(v) : v;
-    return Number.isFinite(n) ? n : 0;
-  };
-  for (const row of rows) {
-    if (!row.TimePeriod) continue;
-    const date = normalizeMicrosoftDate(row.TimePeriod);
-    if (!date) continue;
-    out.push({
-      canal,
-      date,
-      gastoBrl: Math.round(toNum(row.Spend) * 100) / 100,
-      cliques: toNum(row.Clicks),
-      impressoes: toNum(row.Impressions),
-    });
-  }
-  return out;
-}
-
 /**
- * Variante de `normalizeMicrosoftAdsPerformanceRows` que preserva a
+ * Normaliza `MicrosoftAdsPerformanceReportRow[]` preservando a
  * granularidade por campanha em vez de assumir 1 linha por dia (#8256) —
  * consome as linhas da MESMA chamada de `ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN`,
  * agrupando por `CampaignId` em vez de somar tudo. `campaignIdToCanal`

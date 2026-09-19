@@ -239,12 +239,13 @@ export async function fetchMicrosoftAdsChannelMetrics(
 
   const byCampaign = normalizeMicrosoftAdsPerformanceRowsByCampaign(perfResult.rows, MICROSOFT_ADS_2608_CAMPAIGN_ID_TO_CANAL);
 
-  // Reconstitui o total da conta somando as linhas por campanha/dia — nunca
-  // reusa `normalizeMicrosoftAdsPerformanceRows` sobre `perfResult.rows`
-  // direto: com `CampaignId` no header, aquela função ainda produziria 1
-  // linha por CAMPANHA (ela não agrupa), então "usar a função de sempre"
-  // silenciosamente pararia de agregar — a soma explícita abaixo é o que
-  // preserva o total inalterado (#8256, "com o total do braço inalterado").
+  // Reconstitui o total da conta somando as linhas por campanha/dia — com
+  // `CampaignId` no header, `normalizeMicrosoftAdsPerformanceRowsByCampaign`
+  // produz 1 linha por CAMPANHA (não agrupa), então a soma explícita abaixo
+  // é o que preserva o total inalterado (#8256, "com o total do braço
+  // inalterado"). A antiga `normalizeMicrosoftAdsPerformanceRows`
+  // (1 linha por dia, sem campanha) foi removida por não ter mais chamador
+  // depois desta migração — só a variante por campanha segue em uso.
   const totalByDate = new Map<string, { gastoBrl: number; cliques: number; impressoes: number }>();
   for (const row of byCampaign) {
     const acc = totalByDate.get(row.date) ?? { gastoBrl: 0, cliques: 0, impressoes: 0 };
@@ -331,9 +332,8 @@ function toMetaAdsDateRange(now: Date, lookbackDays: number): { since: string; u
 
 /** Normaliza `MetaAdsInsightsApiRow[]` (bruto, 1 linha por dia) pro shape
  *  canônico `ChannelDailyMetric` — linha sem `date_start` reconhecível é
- *  descartada (mesma disciplina de `normalizeGoogleAdsPerformanceRows`/
- *  `normalizeMicrosoftAdsPerformanceRows`: nunca contamina com 0
- *  silencioso). @pure */
+ *  descartada (mesma disciplina de `normalizeGoogleAdsPerformanceRows`:
+ *  nunca contamina com 0 silencioso). @pure */
 export function normalizeMetaAdsInsightsRows(rows: MetaAdsInsightsApiRow[], canal: string): ChannelDailyMetric[] {
   const out: ChannelDailyMetric[] = [];
   for (const row of rows) {

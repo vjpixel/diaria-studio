@@ -68,7 +68,8 @@ import type { AdsTestRunStateRevisao } from "./ads-test-run-state.ts";
 // ---------------------------------------------------------------------------
 
 /** 1 linha de performance de UM canal em UM dia — já convertida pros
- *  adaptadores (`normalizeGoogleAdsPerformanceRows`/`normalizeMicrosoftAdsPerformanceRows`). */
+ *  adaptadores (`normalizeGoogleAdsPerformanceRows`/soma de
+ *  `normalizeMicrosoftAdsPerformanceRowsByCampaign`, #8256). */
 export interface ChannelDailyMetric {
   canal: string;
   /** `YYYY-MM-DD`. */

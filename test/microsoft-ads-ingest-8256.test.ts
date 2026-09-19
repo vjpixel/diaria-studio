@@ -82,7 +82,7 @@ describe("#8256 — normalizeMicrosoftAdsPerformanceRowsByCampaign (pure)", () =
     assert.equal(totalByDate.get("2026-09-06"), 13);
   });
 
-  it("TimePeriod irreconhecível é descartado, nunca inventa dia (mesma disciplina de normalizeMicrosoftAdsPerformanceRows)", () => {
+  it("TimePeriod irreconhecível é descartado, nunca inventa dia", () => {
     const rows: MicrosoftAdsPerformanceReportRow[] = [{ TimePeriod: "não-é-uma-data", CampaignId: "571543153", Spend: "10.00" }];
     const out = normalizeMicrosoftAdsPerformanceRowsByCampaign(rows, CAMPAIGN_MAP);
     assert.deepEqual(out, []);
