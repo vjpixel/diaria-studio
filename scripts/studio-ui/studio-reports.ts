@@ -101,7 +101,13 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 // overnight/develop (sessão autenticada claude.ai, #5608), nunca no runner
 // do GitHub Actions (`scripts/check-agent-eval-required.ts` só DECIDE se
 // precisa, nunca EXECUTA — ver docstring dos dois).
-export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac" | "calibration" | "agent-eval";
+// #7960 (item 4 da #7957): "ads-digest" — digest DIÁRIO de gasto em ads
+// (`scripts/ads-daily-digest.ts`), que até então saía por e-mail todo dia.
+// `sessionId` = `periodDate` (`YYYY-MM-DD`, o dia coberto pelo digest).
+// É `severity: "info"` no vocabulário do portão `notifyEditor` — nunca
+// acionável; o que exige ação continua nos alarmes condicionais dedicados
+// (`ads-test-watch.ts`, `ads-kill-switch-alarm.ts`).
+export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac" | "calibration" | "agent-eval" | "ads-digest";
 
 const VALID_KINDS: ReportKind[] = [
   "edicao",
@@ -113,7 +119,21 @@ const VALID_KINDS: ReportKind[] = [
   "cac",
   "calibration",
   "agent-eval",
+  "ads-digest",
 ];
+
+/**
+ * Guard de COMPILAÇÃO (achado do review type-design da PR #8406): membro
+ * novo em `ReportKind` que não for espelhado em `VALID_KINDS` quebra o
+ * build aqui, em vez de virar um kind que `isReportKind()` rejeita em
+ * runtime — e que `registerReport` então descarta em silêncio, sumindo com
+ * o relatório. O mapa exige uma entrada por membro da união; o `void`
+ * existe só pra o valor não ficar aparentemente morto.
+ */
+const _KIND_EXHAUSTIVENESS: Record<ReportKind, true> = Object.fromEntries(
+  VALID_KINDS.map((k) => [k, true]),
+) as Record<ReportKind, true>;
+void _KIND_EXHAUSTIVENESS;
 
 export function isReportKind(value: string): value is ReportKind {
   return (VALID_KINDS as string[]).includes(value);

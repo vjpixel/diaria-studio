@@ -124,7 +124,8 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { listActiveSessions } from "./lib/session-registry.ts";
 import { readPhase as readOvernightSessionMarkerPhase } from "./overnight-session-marker.ts";
 import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
-import { PUSH_IO_TIMEOUT_MS, sendPushNotification } from "./lib/push-notify.ts";
+import { PUSH_IO_TIMEOUT_MS } from "./lib/push-notify.ts";
+import { notifyEditor, notifyEditorResultReachedEditor, type NotifyEditorDeps } from "./lib/editor-notify.ts";
 import {
   CI_WAIT_TIMEOUT_MIN,
   OVERNIGHT_STALL_THRESHOLD_MIN,
@@ -143,6 +144,18 @@ export interface StallEvent {
 export interface PlanJson {
   started_at: string;
   stall_events: StallEvent[];
+  /**
+   * #7960 — `true` depois que o alerta de STALL desta rodada de fato
+   * CHEGOU ao editor (e-mail entregue, ou suprimido deliberadamente pela
+   * política `email_policy`). Distinto de `stall_events`, que é um
+   * marcador de RATE-LIMIT (gravado antes da tentativa, ver a nota no
+   * passo (a) de `runWatchdogForKind`), nunca de entrega.
+   *
+   * Ausente em plan.json de rodada anterior a este campo — tratado como
+   * `false`, então o 1º alerta pós-upgrade ainda notifica (fail-safe na
+   * direção de avisar, nunca de silenciar).
+   */
+  stall_alert_delivered?: boolean;
   [key: string]: unknown;
 }
 
@@ -674,11 +687,80 @@ export async function fetchRecentMergeActivity(
 // dele; a lógica em si não é mais duplicada aqui.
 export const WATCHDOG_IO_TIMEOUT_MS = PUSH_IO_TIMEOUT_MS;
 
-async function sendPushAlert(subject: string, body: string): Promise<void> {
-  const result = await sendPushNotification({ subject, body });
-  if (!result.ok && !result.skipped) {
-    process.stderr.write(`[watchdog] Notificação push falhou: ${result.error}\n`);
+/**
+ * #7960 (item 5 da #7957) — o alerta de STALL passou a atravessar o portão
+ * `notifyEditor` (`severity: "acao"`) em vez de chamar `sendPushNotification`
+ * direto: abre/reusa **1 issue por rodada** (o `fingerprint` é
+ * `{kind}:{aammdd}`, constante dentro da rodada) em vez de só mandar um
+ * e-mail que se repete a cada stall detectado.
+ *
+ * ─── Por que `alreadyDeliveredThisRound`, e não `legacyResendIntent` fixo ──
+ *
+ * O objetivo do item 5 é "1 e-mail por rodada em vez de recorrente", o que
+ * pede `legacyResendIntent: "dedupe-new-occurrences-only"` (issue
+ * `"reused"` não re-emite e-mail). Mas fixar esse intent conflaria duas
+ * coisas diferentes, e o review desta PR pegou a diferença: **`issue.action`
+ * descreve o que aconteceu com a ISSUE, nunca se o E-MAIL chegou.** Se o
+ * e-mail da 1ª detecção falhar de verdade (rede, quota, credencial
+ * expirada), toda detecção seguinte da mesma rodada veria `"reused"` e
+ * NUNCA mais tentaria e-mail — o canal ficaria mudo justamente na rodada
+ * que travou, que é o pior momento possível pra perder o aviso.
+ *
+ * Então quem decide é a ENTREGA, não a issue: enquanto o alerta desta
+ * rodada não chegou ao editor, o intent é `"resend-every-run"` (cada
+ * detecção tenta de novo); depois que chegou, passa a
+ * `"dedupe-new-occurrences-only"` e a rodada fica com 1 e-mail só, como o
+ * item 5 quer. O flag vive em `plan.stall_alert_delivered` e é gravado
+ * pelo caller DEPOIS desta função retornar — mesma disciplina de
+ * `shouldPersistAlarmedState` nos outros remetentes desta fatia ("nada
+ * chegou ao editor → o estado não persiste").
+ *
+ * Retorna `true` quando o alerta de fato chegou — e-mail entregue, OU
+ * suprimido de propósito pela política (`urgent_only` nunca e-mailia
+ * `"acao"`: ali a ISSUE é o canal, e ela existe). `false` só em falha de
+ * infra real (gh falhou, ou push falhou).
+ *
+ * A dedup por JANELA que já existia (`isDeduped` sobre `plan.stall_events`)
+ * continua intocada e roda ANTES disto — camadas independentes: uma corta
+ * re-detecções próximas no tempo, a outra decide o e-mail.
+ *
+ * O halt banner no terminal (passo (c) de `runWatchdogForKind`) e o evento
+ * no run-log (passo (b)) NÃO mudaram — o canal síncrono do #738 segue
+ * exatamente como era.
+ */
+export async function sendStallAlert(
+  rootDir: string,
+  kind: WatchableKind,
+  aammdd: string,
+  subject: string,
+  body: string,
+  alreadyDeliveredThisRound = false,
+  notifyDeps: NotifyEditorDeps = {},
+): Promise<boolean> {
+  const result = await notifyEditor(
+    {
+      check: "overnight-watchdog-stall",
+      fingerprint: `${kind}:${aammdd}`,
+      severity: "acao",
+      subject,
+      body,
+      labels: ["bug"],
+      priority: "P1",
+      family: "estado",
+      legacyResendIntent: alreadyDeliveredThisRound ? "dedupe-new-occurrences-only" : "resend-every-run",
+    },
+    { cwd: rootDir, rootDir, ...notifyDeps },
+  );
+  if (result.issue?.action === "failed") {
+    process.stderr.write(`[watchdog] Issue de stall não criada/reusada: ${result.issue.error}\n`);
   }
+  if (result.emailError) {
+    process.stderr.write(`[watchdog] Notificação push falhou: ${result.emailError}\n`);
+  }
+  // `notifyEditorResultReachedEditor` trata supressão DELIBERADA pela
+  // política como "chegou" (sob `urgent_only` a issue É o canal de `acao`)
+  // e falha de infra como "não chegou" — ver a docstring dele.
+  return notifyEditorResultReachedEditor(result);
 }
 
 /**
@@ -1121,6 +1203,16 @@ async function runWatchdogForKind(
   };
 
   // (a) Append stall_events no plan.json
+  //
+  // #7960 (achado do review): este append acontece ANTES da notificação do
+  // passo (d), então `stall_events` é um marcador de RATE-LIMIT ("já
+  // detectei este stall há pouco"), NUNCA de entrega — se a notificação
+  // falhar inteira, `isDeduped` ainda suprime a próxima detecção dentro da
+  // janela. É um atraso LIMITADO e deliberado (a janela é no máximo metade
+  // do limiar de stall), não perda: passada a janela, a detecção seguinte
+  // re-tenta, e agora re-tenta o E-MAIL também, porque
+  // `stall_alert_delivered` (o marcador de entrega de verdade) não terá
+  // avançado. Ver o passo (d).
   // #3353: writeFileAtomic (write-to-temp + fsync + rename) em vez de
   // writeFileSync cru — este módulo era, ele próprio, uma fonte adicional da
   // race de truncamento que afeta os leitores de plan.json (esta função e
@@ -1138,15 +1230,40 @@ async function runWatchdogForKind(
   // (c) Renderiza halt banner
   renderHaltBanner(ROOT, kind, aammdd, elapsedMin, thresholdMin);
 
-  // (d) Push por e-mail (#5341, fail-soft TOTAL)
-  await sendPushAlert(
+  // (d) Notificação ao editor (#5341; via portão `notifyEditor` desde #7960
+  // — 1 issue por rodada + no máximo 1 e-mail ENTREGUE por rodada,
+  // fail-soft TOTAL)
+  const alreadyDelivered = plan.stall_alert_delivered === true;
+  const reachedEditor = await sendStallAlert(
+    ROOT,
+    kind,
+    aammdd,
     `[diar.ia.br ${kind}] STALL detectado — rodada ${aammdd}`,
     [
       `Rodada ${aammdd} sem atividade há ${elapsedMin} min (limiar: ${thresholdMin} min).`,
       `Fonte: ${lastSource}.`,
       `Verifique a sessão ${kind} e responda 'retry' pra retomar ou 'abort' pra encerrar.`,
     ].join("\n"),
+    alreadyDelivered,
   );
+
+  // #7960 — só agora o marcador de ENTREGA é gravado: se nada chegou ao
+  // editor, `stall_alert_delivered` fica como estava e a próxima detecção
+  // desta rodada tenta o e-mail de novo (`resend-every-run`), em vez de
+  // ficar muda pro resto da rodada porque a issue já existia. Mesma
+  // disciplina de `shouldPersistAlarmedState` nos outros remetentes desta
+  // fatia. Gravação separada da do passo (a) de propósito — aquela é o
+  // rate-limit, esta é a entrega.
+  if (reachedEditor && !alreadyDelivered) {
+    plan.stall_alert_delivered = true;
+    try {
+      writeFileAtomic(planPath, JSON.stringify(plan, null, 2) + "\n");
+    } catch {
+      // Fail-soft: no pior caso o editor recebe o alerta 2x nesta rodada —
+      // preferível a perdê-lo.
+      process.stderr.write(`[watchdog] Erro ao gravar stall_alert_delivered em plan.json.\n`);
+    }
+  }
 
   console.log(
     `[watchdog] Stall registrado: rodada ${aammdd} (${kind}) — ${elapsedMin} min sem atividade.`,

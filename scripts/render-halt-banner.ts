@@ -31,6 +31,21 @@
  * falhar, o dedup degrada pra "sempre notifica" — nunca impede o banner de
  * imprimir.
  *
+ * #7960 (item 5 da #7957): "halt banner fica só no terminal" — mas a
+ * transição é pelo MESMO switch reversível de todo o resto da migração
+ * (`platform.config.json` -> `notifications.email_policy`,
+ * `scripts/lib/editor-notify.ts`), não por remoção de código. Sob
+ * `"legacy"` (a política vigente enquanto a migração não fecha) o e-mail
+ * sai exatamente como antes; sob `"urgent_only"` este script vira
+ * terminal-only, junto com todos os outros remetentes já migrados.
+ *
+ * Este script não passa pelo portão `notifyEditor` em si porque um halt não
+ * é um achado com fingerprint durável: é um evento síncrono de UMA sessão,
+ * sem issue a abrir nem ciclo a fechar (abrir issue por halt encheria o
+ * backlog de eventos transitórios). O que ele consome do portão é só a
+ * POLÍTICA — a decisão de SE o editor recebe e-mail — mantendo o canal de
+ * baixo nível (`sendPushNotification`) e a dedup por janela que já tinha.
+ *
  * #7215: `--no-push` suprime SÓ a notificação (o banner continua saindo no
  * stdout). Serve ao caller que já notificou o editor pelo próprio canal e,
  * ao invocar este script, geraria um SEGUNDO e-mail sobre o mesmo evento —
@@ -57,6 +72,7 @@ import {
   markNotified,
   type DedupRecord,
 } from "./lib/push-notify.ts";
+import { resolveEmailPolicy, type EmailPolicy } from "./lib/editor-notify.ts";
 
 const RED_BG_WHITE_FG = "\x1b[41m\x1b[97m";
 const RESET = "\x1b[0m";
@@ -138,6 +154,9 @@ function writeHaltDedupRecord(rootDir: string, record: DedupRecord): void {
 export interface NotifyHaltOptions {
   rootDir?: string;
   nowMs?: number;
+  /** #7960 — override da política lida de `platform.config.json` (testes).
+   * Produção resolve de `{rootDir}/platform.config.json`. */
+  emailPolicy?: EmailPolicy;
   /** `sendPushNotification` injetável (testes) — evita bater na rede
    * real/depender de credenciais presentes no ambiente de CI. */
   notifyFn?: (msg: {
@@ -159,6 +178,12 @@ export async function notifyHaltViaPush(
   const rootDir = env.rootDir ?? process.cwd();
   const nowMs = env.nowMs ?? Date.now();
   const notifyFn = env.notifyFn ?? sendPushNotification;
+
+  // #7960 (item 5) — sob `urgent_only` o halt fica SÓ no terminal. Checado
+  // antes do dedup de propósito: não marcar como notificado o que nunca foi
+  // enviado mantém o registro honesto se a política voltar pra `legacy`.
+  const emailPolicy = env.emailPolicy ?? resolveEmailPolicy(`${rootDir}/platform.config.json`);
+  if (emailPolicy === "urgent_only") return;
 
   const key = `${opts.stage}|${opts.reason}|${opts.action}`;
   const record = readHaltDedupRecord(rootDir);

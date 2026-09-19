@@ -59,12 +59,32 @@
  * permissão de LEITURA em Workers Scripts). Requer `data/.credentials.json`
  * com o scope `gmail.send` pro alarme (mesmo requisito dos scripts irmãos).
  * Diferente de `check-brevo-diaria-guardrail.ts` — aqui o estado de
- * idempotência EXISTE só pra gatear o e-mail (não tem valor operacional
- * independente), então uma falha no ENVIO propaga (sem try/catch, mesmo
- * padrão de `apoios-diff-alarm.ts`) e aborta ANTES de persistir o cursor —
- * a próxima execução da task tenta alarmar de novo, em vez de marcar
- * silenciosamente esse drift como "já avisado" sem o editor ter recebido
- * nada.
+ * idempotência EXISTE só pra gatear a notificação (não tem valor operacional
+ * independente), então uma notificação que NÃO chega ao editor NÃO avança o
+ * cursor — a próxima execução da task tenta alarmar de novo, em vez de
+ * marcar silenciosamente esse drift como "já avisado" sem o editor ter
+ * recebido nada.
+ *
+ * ─── #7960 (fatia 6): os 2 fluxos passam pelo portão `notifyEditor` ────────
+ *
+ * Este arquivo foi o último da ALLOWLIST de `test/editor-notify-boundary.test.ts`
+ * justamente por ter DOIS caminhos de notificação distintos:
+ *
+ *   1. **Drift** (issue-based) — `applyAlarmReconciliation` segue INTOCADO;
+ *      só o e-mail passou a ser decidido por `notifyEditorForOutcomes`
+ *      (`severity: "acao"`, `legacyResendIntent: "resend-every-run"` —
+ *      `shouldAlarm` já é o gate de dedup, externo ao portão).
+ *   2. **Falha SUSTENTADA da Cloudflare API** (#4746) — não tinha
+ *      `AlarmFinding` nem issue; passou a abrir issue via `notifyEditor`
+ *      (`severity: "acao"`, fingerprint constante, 1 issue reusada/reaberta
+ *      por série) em vez de só e-mailar.
+ *
+ * A armadilha comum aos dois, e o motivo de `shouldPersistAlarmedState`/
+ * `notifyEditorResultReachedEditor` (`scripts/lib/editor-notify.ts`):
+ * `sendGmailMessage` LANÇAVA em falha e abortava `main()` antes do
+ * `saveState`, então o retry era garantido por acidente do fluxo de
+ * controle. O portão nunca lança — a decisão de persistir o cursor virou
+ * explícita.
  *
  * Fail-soft: se a consulta à Cloudflare API falhar (credencial ausente, API
  * indisponível), TODOS os workers entram no relatório como `status: "error"`
@@ -87,7 +107,12 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
+import {
+  notifyEditor,
+  notifyEditorForOutcomes,
+  shouldPersistAlarmedState,
+  notifyEditorResultReachedEditor,
+} from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
   parseWranglerTomlName,
@@ -96,6 +121,7 @@ import {
   evaluateAllWorkerDrift,
   hasPendingDrift,
   computeDriftFingerprint,
+  resolveNextAlarmedFingerprint,
   shouldAlarm,
   shouldAdvanceState,
   advanceState,
@@ -117,6 +143,7 @@ import {
   saveAlarmIssuesState,
   saveState,
   type AlarmFinding,
+  type AlarmFindingOutcome,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
 
@@ -451,19 +478,53 @@ async function main(): Promise<void> {
   const sendApiErrorAlarm = shouldAlarmApiError(nextApiErrorState, metadataError, now);
   if (sendApiErrorAlarm) {
     const { subject, body } = buildApiErrorAlarmEmail(metadataError!, nextApiErrorState.firstApiErrorAt!, now);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
+      const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
       console.log(
-        `${LOG_PREFIX} --dry-run: enviaria e-mail (falha sustentada da API) pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`,
+        `${LOG_PREFIX} --dry-run: notificaria (falha sustentada da API) ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`,
       );
     } else {
-      // Mesmo racional do alarme de drift abaixo: sem try/catch — se o envio
-      // falhar, `lastApiErrorAlarmedAt` NÃO avança (não seta aqui embaixo) e
-      // a próxima execução tenta alarmar de novo, em vez de marcar esta série
-      // como "já avisada" sem o editor ter recebido nada.
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme (falha sustentada da API) enviado pra ${to}.`);
-      nextApiErrorState.lastApiErrorAlarmedAt = now.toISOString();
+      // #7960 (fatia 6): este era o 2o fluxo de e-mail do arquivo e o motivo
+      // de `worker-drift-check.ts` ter ficado por ultimo na ALLOWLIST — ele
+      // NUNCA passou por `ensureAlarmIssue`/`applyAlarmReconciliation` (sem
+      // `AlarmFinding`, sem issue), entao nao havia outcome pra alimentar
+      // `notifyEditorForOutcomes`. Migrado como os ~10 alarmes "sem issue
+      // hoje" da 1a fatia: passa a ABRIR issue via `notifyEditor`
+      // (`severity: "acao"` — e cegueira de checagem, nao envio/dinheiro em
+      // risco), com `fingerprint` CONSTANTE de proposito: uma serie nova de
+      // falha reusa/reabre a MESMA issue em vez de abrir uma por serie. A
+      // idempotencia de QUANDO notificar continua sendo a desta funcao
+      // (`shouldAlarmApiError` — 1x por serie, ver #4746); a issue so torna o
+      // achado visivel fora do e-mail.
+      const apiResult = await notifyEditor(
+        {
+          check: "worker-drift-api-error",
+          fingerprint: "cloudflare-workers-api-sustained-failure",
+          severity: "acao",
+          subject,
+          body,
+          labels: ["bug"],
+          priority: "P2",
+          family: "estado",
+        },
+        { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, rootDir: ROOT, emailTo: toOverride },
+      );
+      // `notifyEditor` NUNCA lanca (fail-soft por desenho), ao contrario do
+      // `sendGmailMessage` que estava aqui — avancar `lastApiErrorAlarmedAt`
+      // incondicionalmente encerraria a serie como "ja avisada" mesmo sem
+      // nada ter chegado ao editor, e esta serie NUNCA mais alarmaria
+      // (`shouldAlarmApiError` so volta a disparar depois de um sucesso
+      // resetar `firstApiErrorAt`). Ver `notifyEditorResultReachedEditor`.
+      if (notifyEditorResultReachedEditor(apiResult)) {
+        nextApiErrorState.lastApiErrorAlarmedAt = now.toISOString();
+        console.log(`${LOG_PREFIX} alarme (falha sustentada da API) notificado — issue ${apiResult.issue?.url ?? "-"}.`);
+      } else {
+        console.error(
+          `${LOG_PREFIX} alarme (falha sustentada da API) NAO chegou ao editor ` +
+            `(${apiResult.issue?.action === "failed" ? `gh falhou: ${apiResult.issue.error}` : `push falhou: ${apiResult.emailError}`}) — ` +
+            "serie NAO marcada como avisada, retry na proxima execucao.",
+        );
+      }
     }
   }
 
@@ -475,6 +536,9 @@ async function main(): Promise<void> {
   const alarmFindings = driftedResults.map(toAlarmFinding);
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
+  // #7960 (fatia 6) — alimenta `notifyEditorForOutcomes` no bloco de alarme
+  // abaixo; `[]` no dry-run (nenhuma reconciliacao roda).
+  let findingOutcomes: AlarmFindingOutcome[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -483,10 +547,11 @@ async function main(): Promise<void> {
         `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
     );
   } else {
-    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+    const { nextState, findingOutcomes: outcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
+    findingOutcomes = outcomes;
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     issueRefs = new Map(
       findingOutcomes.map((o) => [
@@ -503,23 +568,62 @@ async function main(): Promise<void> {
     }
   }
 
+  // #7960 (fatia 6) — `true` quando NENHUM alarme de drift foi tentado nesta
+  // execucao (nada a preservar) ou quando o tentado de fato chegou ao editor.
+  // `false` so quando um alarme foi tentado e se perdeu — ai o cursor
+  // `lastAlarmedFingerprint` NAO avanca (ver o `saveState` no fim de main()).
+  let driftAlarmReachedEditor = true;
+
   if (shouldAlarm(state, results)) {
     const { subject, body } = buildWorkerDriftAlarmEmail(results, now, issueRefs);
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+      const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+      console.log(`${LOG_PREFIX} --dry-run: notificaria ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
+      // #7960 (fatia 6): `shouldAlarm` (fingerprint do CONJUNTO de drifts vs.
+      // `state.lastAlarmedFingerprint`) continua sendo o gate de dedup — e
+      // ele, externo ao portao, que decide SE notificar. Por isso
+      // `legacyResendIntent: "resend-every-run"` (todo outcome nao-`failed`
+      // qualifica): mesma escolha de `systemd-failed-units-alarm.ts` na
+      // fatia 5 — quando existe gate custom de dedup fora do portao, o
+      // portao nao deve dedupar de novo, senao um conjunto genuinamente novo
+      // cuja issue saiu como `"reused"` seria silenciado.
+      const result = await notifyEditorForOutcomes(findingOutcomes, "acao", () => ({ subject, body }), {
+        cwd: ROOT,
+        platformConfigPath: PLATFORM_CONFIG_PATH,
+        emailTo: toOverride,
+        legacyResendIntent: "resend-every-run",
+      });
+
       // Diferente de check-brevo-diaria-guardrail.ts (onde o ESTADO tem valor
       // operacional independente do e-mail — pausa um rollout — e por isso
       // persiste antes do envio best-effort), aqui `lastAlarmedFingerprint`
-      // EXISTE só pra gatear este e-mail. Se o envio falhar e o cursor
-      // avançasse mesmo assim, esse drift nunca mais seria reportado (a
-      // checagem seguinte veria o mesmo fingerprint "já alarmado" e ficaria
-      // muda) — deixar a exceção propagar (sem try/catch, mesmo padrão de
-      // `apoios-diff-alarm.ts`) aborta ANTES do `saveState` abaixo, então a
-      // próxima execução da task (6h depois) tenta alarmar de novo.
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+      // EXISTE so pra gatear esta notificacao. Se ela se perder e o cursor
+      // avancasse mesmo assim, esse drift nunca mais seria reportado (a
+      // checagem seguinte veria o mesmo fingerprint "ja alarmado" e ficaria
+      // muda). Ate o #7960 isso era garantido por ACIDENTE do fluxo de
+      // controle — `sendGmailMessage` lancava e abortava `main()` antes do
+      // `saveState`; `notifyEditorForOutcomes` nunca lanca, entao a decisao
+      // virou explicita via `shouldPersistAlarmedState`.
+      const anyIssueSucceeded = findingOutcomes.some((o) => o.action !== "failed");
+      driftAlarmReachedEditor = shouldPersistAlarmedState({
+        anyIssueSucceeded,
+        qualifyingCount: result.qualifying.length,
+        emailSent: result.emailSent,
+      });
+      if (driftAlarmReachedEditor) {
+        console.log(
+          result.emailSent
+            ? `${LOG_PREFIX} e-mail de alarme enviado.`
+            : `${LOG_PREFIX} politica '${result.emailPolicy}': issue registrada, nenhum e-mail necessario.`,
+        );
+      } else {
+        console.error(
+          `${LOG_PREFIX} alarme de drift NAO chegou ao editor ` +
+            `(${anyIssueSucceeded ? `push falhou: ${result.emailError}` : "gh falhou pra todos os achados"}) — ` +
+            "cursor NAO avancado, retry na proxima execucao.",
+        );
+      }
     }
   } else {
     console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem drift pendente, ou o mesmo drift já foi alarmado antes).`);
@@ -553,7 +657,18 @@ async function main(): Promise<void> {
     return;
   }
 
-  const nextFingerprint = pending ? computeDriftFingerprint(results) : null;
+  // #7960 (fatia 6) — quando o alarme desta execucao se perdeu, preserva o
+  // `lastAlarmedFingerprint` ANTERIOR (o drift volta a alarmar na proxima
+  // execucao); `lastCheckedAt`/estado da serie de API avancam normalmente.
+  const nextFingerprint = resolveNextAlarmedFingerprint({
+    previousFingerprint: state.lastAlarmedFingerprint,
+    alarmReachedEditor: driftAlarmReachedEditor,
+    // União discriminada: `computedFingerprint` só EXISTE quando há drift
+    // pendente (achado do review type-design da PR #8406) — o par
+    // `{pending: true, computedFingerprint: null}` deixou de ser
+    // representável, e era ele que zeraria o cursor em silêncio.
+    ...(pending ? ({ pending: true, computedFingerprint: computeDriftFingerprint(results) } as const) : ({ pending: false } as const)),
+  });
   saveState(advanceState(nextFingerprint, now, nextApiErrorState), STATE_PATH);
 }
 

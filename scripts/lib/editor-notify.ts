@@ -244,6 +244,87 @@ export function shouldEmailForIssueOutcome(
 }
 
 /**
+ * Pura — `true` quando um remetente que mantém CURSOR DE IDEMPOTÊNCIA
+ * próprio (state file com `lastAlarmed*`) deve persistir o cursor depois de
+ * notificar. Extraída em #7960 (achado do review da PR #8363, fatia 5) e
+ * promovida de `scripts/systemd-failed-units-alarm.ts` pra cá na fatia 6,
+ * quando `worker-drift-check.ts` precisou EXATAMENTE da mesma decisão — a
+ * armadilha é da MIGRAÇÃO inteira, não de um script.
+ *
+ * O risco: `sendGmailMessage` **lançava** em falha de envio, abortando
+ * `main()` ANTES da gravação do cursor — o retry na execução seguinte era
+ * garantido por acidente do fluxo de controle. `notifyEditor`/
+ * `notifyEditorForOutcomes` **nunca lançam** (fail-soft por desenho), então
+ * gravar incondicionalmente depois deles congela o cursor mesmo quando NADA
+ * chegou ao editor, e o alarme se perde.
+ *
+ * Só persiste quando pelo menos 1 achado foi tratado com sucesso pelo `gh`
+ * (`anyIssueSucceeded`) E o push não falhou genuinamente — "não falhou"
+ * inclui a supressão DELIBERADA pela política (`qualifyingCount === 0`,
+ * nenhum e-mail era devido), nunca uma falha de infra.
+ *
+ * `qualifyingCount`/`emailSent` vêm direto de `NotifyEditorForOutcomesResult`
+ * (`result.qualifying.length`/`result.emailSent`). Pra `notifyEditor`
+ * (1 achado só), `NotifyEditorResult` não expõe contagem — use
+ * `notifyEditorResultReachedEditor` abaixo, que deriva os 3 campos.
+ *
+ * **Objeto nomeado, nunca 3 parâmetros posicionais** (achado do review
+ * type-design da PR #8406): `anyIssueSucceeded` e `emailSent` são ambos
+ * `boolean` e NÃO são intercambiáveis — eles divergem exatamente no caso
+ * de supressão deliberada pela política (`anyIssueSucceeded: true`,
+ * `emailSent: false`, `qualifyingCount: 0`). Trocados de posição, a
+ * resposta desse caso inverteria em silêncio e o alarme passaria a
+ * re-notificar a cada execução para sempre — a MESMA classe de bug que
+ * esta função existe pra impedir, reintroduzida pela forma da própria
+ * função. Com campos nomeados, a troca vira erro de compilação.
+ */
+export interface AlarmedStatePersistInput {
+  /** `true` se ALGUM achado desta execução foi tratado com sucesso pelo
+   * `gh` (`outcome.action !== "failed"`). */
+  anyIssueSucceeded: boolean;
+  /** Quantos outcomes qualificaram pro e-mail — `result.qualifying.length`
+   * de `NotifyEditorForOutcomesResult`. `0` significa "nenhum e-mail era
+   * devido", NUNCA "o e-mail falhou". */
+  qualifyingCount: number;
+  /** `result.emailSent`. */
+  emailSent: boolean;
+}
+
+export function shouldPersistAlarmedState(input: AlarmedStatePersistInput): boolean {
+  const pushGenuinelyFailed = input.qualifyingCount > 0 && !input.emailSent;
+  return input.anyIssueSucceeded && !pushGenuinelyFailed;
+}
+
+/**
+ * Pura — o equivalente de `shouldPersistAlarmedState` para o resultado de
+ * `notifyEditor` (1 achado, não uma lista de outcomes). `NotifyEditorResult`
+ * não carrega `qualifying`, mas carrega o sinal equivalente: um e-mail foi
+ * DEVIDO nesta chamada sse `emailSent` (saiu) ou `emailError` (tentou e
+ * falhou); sem nenhum dos dois, a política suprimiu o envio de propósito.
+ *
+ * `severity: "info"`/`"silencio"` nunca produzem `issue` — retorna `false`
+ * (não há cursor de alarme a avançar nesses caminhos).
+ */
+export function notifyEditorResultReachedEditor(result: NotifyEditorResult): boolean {
+  if (!result.issue) return false;
+  // `emailError` é AUTORITATIVO sobre `emailSent` (achado do review
+  // type-design da PR #8406): `NotifyEditorResult` é uma interface flat, e
+  // o par `{emailSent: true, emailError: "..."}` — que `notifyEditor` nunca
+  // produz, mas o TIPO permite (um dublê de teste, ou um refactor futuro
+  // que passe a preencher `emailError` antes da tentativa) — seria lido
+  // pelo caminho otimista e mascararia uma falha real. Falhar pro lado do
+  // RETRY é sempre a leitura segura aqui: no pior caso o editor recebe o
+  // alarme 2x; no melhor, não o perde.
+  const pushFailed = result.emailError !== undefined;
+  const emailWasDue = result.emailSent || pushFailed;
+  return shouldPersistAlarmedState({
+    anyIssueSucceeded: result.issue.action !== "failed",
+    qualifyingCount: emailWasDue ? 1 : 0,
+    emailSent: result.emailSent && !pushFailed,
+  });
+}
+
+/**
  * Portão único de notificação ao editor (#7957). Ver docstring do módulo
  * pra semântica completa das 4 severidades e do rollout switch.
  */

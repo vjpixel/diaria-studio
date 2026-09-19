@@ -51,6 +51,16 @@
  * `scripts/lib/push-notify.ts` + a própria `render-halt-banner.ts` — ver
  * os dois pro mecanismo completo.
  *
+ * **#7960 (item 5 da #7957): o e-mail de gate pendente respeita
+ * `notifications.email_policy`** (`platform.config.json`, ver
+ * `scripts/lib/editor-notify.ts`). Sob `"legacy"` — a política vigente
+ * enquanto a migração não fecha — nada muda; sob `"urgent_only"` este
+ * watcher para de e-mailar, como todo remetente já migrado. O deep-link e o
+ * estado do gate continuam visíveis no Studio, que é a superfície-alvo.
+ * Este módulo não passa pelo portão `notifyEditor` em si porque gate
+ * pendente não é achado com issue a abrir — o que ele consome do portão é
+ * a POLÍTICA, não o mecanismo de issue.
+ *
  * CI vermelho persistente (aceite #4 da issue): não há hoje um sinal
  * agregado e claro disso no Studio (a fatia mais próxima, `studio-issues.ts`/
  * `/api/issues`, expõe status de CI por PR, mas "persistente" exigiria
@@ -72,6 +82,7 @@ import {
   type PushNotifyResult,
 } from "../lib/push-notify.ts";
 import { resolve } from "node:path";
+import { resolveEmailPolicy, type EmailPolicy } from "../lib/editor-notify.ts";
 import { buildStudioState, type StudioState } from "./studio-state.ts";
 
 // Re-exportado por conveniência — `formatHaltNotifyMessage` mora em
@@ -162,6 +173,9 @@ export interface PushNotifyTickOptions {
    * ainda precisa retornar `{ok:true}` pra exercitar o caminho de dedup. */
   notifyFn?: (msg: PushMessage, opts?: SendPushNotificationOptions) => Promise<PushNotifyResult>;
   baseUrl?: string;
+  /** #7960 — override da política lida de `{rootDir}/platform.config.json`
+   * (testes). */
+  emailPolicy?: EmailPolicy;
 }
 
 /**
@@ -194,6 +208,14 @@ export async function runPushNotifyTick(
   // cada tick até um envio realmente bem sucedido (mesma semântica de
   // `notifyHaltViaPush` em render-halt-banner.ts, que também só persiste
   // dedup em `result.ok`).
+  // #7960 (item 5) — sob `urgent_only`, nenhum e-mail sai. `toClear` acima
+  // JÁ rodou de propósito (o store precisa continuar refletindo quais gates
+  // ainda estão pendentes, senão voltar pra `legacy` re-notificaria gates
+  // antigos em bloco); só o envio é suprimido, e as chaves não entram no
+  // dedup — um gate que nunca foi notificado não pode contar como notificado.
+  const emailPolicy = opts.emailPolicy ?? resolveEmailPolicy(resolve(rootDir, "platform.config.json"));
+  if (emailPolicy === "urgent_only") return [];
+
   const notified: string[] = [];
   for (const key of plan.toNotify) {
     const editionGate = state.gatesPending.find(

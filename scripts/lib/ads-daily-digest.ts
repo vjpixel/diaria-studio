@@ -367,7 +367,12 @@ export function buildAdsDailyDigestEmail(input: AdsDailyDigestEmailInput): { sub
   }
 
   lines.push("");
-  lines.push("(Este e-mail é sempre enviado, mesmo sem gasto — issue #7487, elimina ambiguidade com falha da task.)");
+  // #7960: o destino deixou de ser e-mail e virou relatório do Studio
+  // (`/relatorios`, kind `ads-digest`) — este rodapé é lido pelo editor NO
+  // relatório, então chamá-lo de "e-mail" descreveria um canal que não
+  // existe mais. A garantia que a frase comunica (SEMPRE sai, mesmo sem
+  // gasto) é a mesma; só o canal mudou.
+  lines.push("(Este relatório é sempre gerado, mesmo sem gasto — issues #7487/#7960, elimina ambiguidade com falha da task.)");
 
   return { subject, body: lines.join("\n") };
 }

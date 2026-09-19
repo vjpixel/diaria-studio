@@ -23,6 +23,7 @@ import {
   findActiveContinuoSession,
   summarizePendingQuestion,
   resolveEditorEmailInline,
+  resolveEmailPolicyInline,
   buildNotifyMessage,
   ensureAccessToken,
   sendNotification,
@@ -427,6 +428,57 @@ describe("sendNotification (#5293 fleet review achado 4, canal Gmail #5341)", ()
       assert.equal(sentTo, "editor@example.com");
     } finally {
       cleanupCreds();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// #7960 (item 5 da #7957) — o hook respeita `notifications.email_policy`
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("#7960 — hook do contínuo respeita email_policy", () => {
+  /** `platform.config.json` mínimo com a política dada. */
+  function writePolicy(dir: string, policy: string): void {
+    writeFileSync(join(dir, "platform.config.json"), JSON.stringify({ notifications: { email_policy: policy } }), "utf8");
+  }
+
+  it("resolveEmailPolicyInline concorda com resolveEmailPolicy do portão (as duas não podem divergir)", () => {
+    // A leitura é DUPLICADA aqui (self-contained, ver o topo do hook) — sem
+    // este teste, o hook e `scripts/lib/editor-notify.ts` divergiriam em
+    // silêncio e o rollout da política deixaria este canal pra trás.
+    const dir = tmp();
+    try {
+      writePolicy(dir, "urgent_only");
+      assert.equal(resolveEmailPolicyInline(dir), "urgent_only");
+      writePolicy(dir, "legacy");
+      assert.equal(resolveEmailPolicyInline(dir), "legacy");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fail-soft NA DIREÇÃO DE NOTIFICAR: config ausente ou corrompido → 'legacy'", () => {
+    // Um config ilegível nunca pode silenciar o hook que existe justamente
+    // pra o editor não perder um AskUserQuestion bloqueante.
+    const dir = tmp();
+    try {
+      assert.equal(resolveEmailPolicyInline(dir), "legacy");
+      writeFileSync(join(dir, "platform.config.json"), "{ nao é json", "utf8");
+      assert.equal(resolveEmailPolicyInline(dir), "legacy");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("urgent_only → sendNotification não faz NENHUM fetch (nem refresh de token)", () => {
+    const dir = tmp();
+    try {
+      writePolicy(dir, "urgent_only");
+      return sendNotification({ subject: "s", body: "b" }, dir, () => {
+        throw new Error("nenhum fetch deveria acontecer sob urgent_only");
+      });
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });

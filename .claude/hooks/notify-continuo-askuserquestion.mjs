@@ -32,6 +32,17 @@
 // (`resolveEditorEmail`-equivalente: lê `platform.config.json` diretamente,
 // ou usa o default `vjpixel@gmail.com`).
 //
+// #7960 (item 5 da #7957): o envio respeita `notifications.email_policy`
+// (`platform.config.json`, ver `scripts/lib/editor-notify.ts` pro portão
+// canônico). Sob `"legacy"` — a política vigente enquanto a migração não
+// fecha — nada muda; sob `"urgent_only"` este hook para de e-mailar, junto
+// com todos os outros remetentes já migrados. A leitura da política é
+// DUPLICADA aqui (`resolveEmailPolicyInline`) pelo mesmo motivo
+// "Self-contained" abaixo que já duplica `resolveEditorEmail` — um import
+// estático de `.ts` derrubaria o hook num Node sem type-stripping nativo.
+// Conferida por `test/notify-continuo-askuserquestion.test.ts` contra a
+// implementação real, pra as duas não divergirem em silêncio.
+//
 // **NUNCA bloqueia.** Ao contrário do hook irmão
 // (`block-askuserquestion-overnight-autonomous.mjs`), este hook é OBSERVAÇÃO
 // pura — não emite `permissionDecision` em nenhum caminho, então o
@@ -178,6 +189,23 @@ export function resolveEditorEmailInline(repoRoot) {
   }
 }
 
+/** #7960 — equivalente self-contained de `resolveEmailPolicy`
+ * (`scripts/lib/editor-notify.ts`): `"urgent_only"` só quando
+ * `platform.config.json` diz exatamente isso; tudo mais (arquivo ausente,
+ * JSON corrompido, chave ausente) cai em `"legacy"`, que preserva o
+ * comportamento atual. Fail-soft na direção de NOTIFICAR — um config
+ * ilegível nunca pode silenciar a notificação que este hook existe pra dar. */
+export function resolveEmailPolicyInline(repoRoot) {
+  try {
+    const path = join(repoRoot, "platform.config.json");
+    if (!existsSync(path)) return "legacy";
+    const cfg = JSON.parse(readFileSync(path, "utf8"));
+    return cfg?.notifications?.email_policy === "urgent_only" ? "urgent_only" : "legacy";
+  } catch {
+    return "legacy";
+  }
+}
+
 export function buildNotifyMessage(sessionId, questionSummary) {
   const lines = [`Sessão ${sessionId} (/diaria-continuo) está esperando resposta no terminal.`];
   if (questionSummary) lines.push(`Pergunta: ${questionSummary}`);
@@ -258,6 +286,9 @@ export async function ensureAccessToken(creds, fetchFn = fetch, nowMs = Date.now
  * mitigar.
  */
 export async function sendNotification(message, repoRoot, fetchFn = fetch) {
+  // #7960 (item 5) — checado ANTES de qualquer I/O: sob `urgent_only` nem
+  // credencial é lida, nem token é renovado.
+  if (resolveEmailPolicyInline(repoRoot) === "urgent_only") return;
   const creds = loadCredentials(repoRoot);
   if (!creds) return; // sem credenciais configuradas — no-op silencioso
   const accessToken = await ensureAccessToken(creds, fetchFn);
