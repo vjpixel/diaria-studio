@@ -1,3 +1,1908 @@
 {
-  "map": {}
+  "map": {
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/static_assets/gradient_avatar_4.png": {
+      "key": "img-archive-1e1c26db775b12a0.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/268210b0-e758-437c-8ad8-b0aabaed001d/BelayLogo.png": {
+      "key": "img-archive-bbdda7f829a1d92e.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/2ba27ac7-1e63-4977-9c16-808f29b0b7d8/Black_pill__1_.png": {
+      "key": "img-archive-7ddc474ba57be1df.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/4577a5fb-ef2f-4a28-85ed-e1200926fe3a/deel..png": {
+      "key": "img-archive-57d6dff0e16ca55d.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/4da7c419-66a7-4e83-a82b-2aef0cfc99ac/RokuAdsManagerlogo.png": {
+      "key": "img-archive-9b23966242d300b8.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/7343e809-3621-4ab5-b646-b5255edce216/Gladly_Logo_RBG__1_.png": {
+      "key": "img-archive-cffba9c52a04f021.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/79c34f48-55a6-4be3-9d73-baf8b63d7b0b/AG1_AG1_Green__1_.png": {
+      "key": "img-archive-5bb5ca00ceff8e12.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/8716a714-8793-4f4e-a7a5-01ed1eac59b7/Image_from_Google_User.jpg": {
+      "key": "img-archive-1ad2b059fd2b75c2.jpg",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/a278a956-cc97-4cc8-adea-50237bb96d1c/HQLogo_Color.png": {
+      "key": "img-archive-2fed187e52e974a7.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/d35da3a8-baba-4b86-bec3-3659c425e481/Fin_Logo_Lockup_Black.png": {
+      "key": "img-archive-7d7422b0c7e06f86.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/d5fb3106-d3d0-44d7-89a6-4a934a732e53/TheCodeSuperhuman.png": {
+      "key": "img-archive-0db0d6d33f2ffda2.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/ee0453be-5281-4eb8-b951-15bb02208819/Attio_black_long.png": {
+      "key": "img-archive-3d442991499ae3b5.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/ef070f40-654d-4437-914e-64f28586ece2/Bright_Data.png": {
+      "key": "img-archive-e36fde05bc3c817b.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/ad_network/advertiser/logo/fb346edc-3086-4180-9f35-38f6f4ac5efe/1440_Primary_Brandmark_RBG_Black.png": {
+      "key": "img-archive-d0154f1fdb9c8e52.png",
+      "alt": "Logotipo do anunciante"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/00b63eaf-36c5-4bdf-9c0b-328746cdec72/Gemini_Generated_Image_jntnezjntnezjntn.png?t=1769541919": {
+      "key": "img-archive-8943803836c4ee36.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/01e29763-0188-4d21-913f-c9c0173d79e5/Gemini_Generated_Image.png?t=1769550116": {
+      "key": "img-archive-331671a32be187a7.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0211c92f-9330-4c78-9a30-e2a3d86c8e5a/image.png?t=1764620421": {
+      "key": "img-archive-a77c5fd2a432b806.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/02499931-d5a2-47c4-85ed-bb45fbc30edf/260216_Phnom_Bakheng_A.jpg?t=1771290511": {
+      "key": "img-archive-c3ab32e3b615bd67.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/02555d55-3a86-4680-89ef-552fa13bff8d/imagem_2025-12-28_174240219.png?t=1766954590": {
+      "key": "img-archive-bc4d9eea9313d978.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/02b4cd24-f9c2-4b17-a35b-a94c269e7a96/260224_airbus_B.jpg?t=1771953935": {
+      "key": "img-archive-4bacbb319b2c3e89.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/031405c7-8380-426c-848e-4cc8269ace14/imagem_2025-12-09_140456470.png?t=1765299849": {
+      "key": "img-archive-8071543dadd4b078.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/03d78f38-6c83-4608-b08b-ea127fe2a507/260210_Restaurant_Gemini.jpg?t=1770684110": {
+      "key": "img-archive-74d65c9a8dceb7f5.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/04afe011-e993-45fc-8b81-3f77d841d7c0/imagem_2025-12-07_204215547.png?t=1765150889": {
+      "key": "img-archive-41d1d3d0f145e6f0.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/04c35c06-1e85-476e-81f1-345b70425efb/260210_Restaurant_Amigos_de_Acapulco.jpg?t=1770684119": {
+      "key": "img-archive-279713f042797c1f.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/054cbe0a-7d63-4edf-8bd0-9d7206b5f572/image__9_.png?t=1769789523": {
+      "key": "img-archive-f0a88210086de26c.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/05c050d2-d4e2-4fd5-ba08-7a9fcc818fe4/260414_A.jpg?t=1776118273": {
+      "key": "img-archive-4fd486afe95efb5d.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/063c2248-9071-4c4e-be12-a3e7d09e2222/251007_OpenAI_Dev_Day.png?t=1759854480": {
+      "key": "img-archive-277a0afdec551f01.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/068d4c2d-9b5e-43dc-bc1e-5a6e5f32ac37/260327_B.jpg?t=1774644728": {
+      "key": "img-archive-8a3293c0845ffd27.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/068d4c2d-9b5e-43dc-bc1e-5a6e5f32ac37/260327_B.jpg?t=1774645263": {
+      "key": "img-archive-85c7fe91e0cf5534.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/06a46650-1973-4c96-a1db-18077cef03e8/imagem_2025-12-27_180215632.png?t=1766869284": {
+      "key": "img-archive-dd5c9ef6f303c604.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/078e3f57-53a4-46c5-a96f-b41d9a17c8b7/260319_B.jpg?t=1773973049": {
+      "key": "img-archive-de21ef7a909a557a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/08abdaab-c075-423d-a1cb-6fa98a0353e3/1440-BehindAPaywall-1x1.jpg?t=1753799556": {
+      "key": "img-archive-c4d668338be312bb.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/095360a4-2039-42bb-bbd4-3301b8a40667/260324_cover.jpg?t=1774400563": {
+      "key": "img-archive-96d0dcbc5a2a1fad.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/09b0fdfb-dc03-4d57-8cac-49b4f4e41bfb/image.png?t=1756950076": {
+      "key": "img-archive-f0234bf69314b746.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/09f67582-94e0-4740-9e05-de471c3f04f1/04-d1-2x1.jpg?t=1777246192": {
+      "key": "img-archive-f9eebba0eba26a6e.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0a5b03af-d870-4694-9ef9-eca2d80438b8/260223_SAGE_B.jpg?t=1771800761": {
+      "key": "img-archive-725a0ee7ec893945.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0aa9ac51-a640-4927-909a-1419d28496e1/250926_dev.png?t=1758836669": {
+      "key": "img-archive-ad8b449b59c843fe.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0b40677e-e569-42df-b497-ba72664f4450/1__1_.png?t=1764002945": {
+      "key": "img-archive-6bf41d178aa8a0fb.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0b5d6ff4-c6be-45c6-9791-ada71dadaa42/imagem_2025-11-10_115725516.png?t=1762786618": {
+      "key": "img-archive-6244533e0cd10538.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0b8963fa-ec31-40f4-9bff-f2ca6eb68796/251014_MIT.png?t=1760467497": {
+      "key": "img-archive-dc7380f697ce6d25.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0bd0141f-c945-4e52-9afc-8fc2aa993f08/imagem_2026-01-13_191211149.png?t=1768342269": {
+      "key": "img-archive-2d3fd809c495441b.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0c3d1b1d-8e00-4905-8939-5c55419dec26/01-eia-B.jpg?t=1777866537": {
+      "key": "img-archive-912c94dc11cb80e8.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0d99856c-bf8a-41f6-936b-00454c26c447/04-d1-2x1.jpg?t=1777354671": {
+      "key": "img-archive-47220770138a7998.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0d9fe2d8-8047-479f-80ba-78ebf12544b1/BeeHive_-_PRIMARY_AD_1__5_Traits_AI_Can_t_Replace___Why_They_Matter_More_Than_Ever-2__1_.png?t=1767913649": {
+      "key": "img-archive-52d92eedc8e8f7d5.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0fe5da2b-d5a1-4d3a-a410-ae94cc1d835b/_4_musk-irritado.png?t=1756948129": {
+      "key": "img-archive-79a16f33a50459f5.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/0ff955fd-8c4c-4146-aca2-9db79d370efa/imagem_2025-12-24_123443907.png?t=1766590432": {
+      "key": "img-archive-3ac7a077c98de54c.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/104af792-80f2-41c9-888f-56fad36d053e/imagem_2026-01-09_174140507.png?t=1767991238": {
+      "key": "img-archive-2631e00696ad9e0d.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/104e6dbc-e12f-4e14-9d80-ddf0005d64d8/imagem_2026-01-23_174101161.png?t=1769200859": {
+      "key": "img-archive-0238827cfa067f05.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/10845111-99a9-4beb-ac20-7df29c29020b/Pooh-Ernest-Howard-Shepard.jpg.jpg?t=1764886593": {
+      "key": "img-archive-43ebaad670f10f85.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1154bc13-9335-49aa-b2e7-9d79ad126d04/CRITTERZ_Blu_ExcuseMe.gif?t=1757431798": {
+      "key": "img-archive-59c91896b5ebcc0a.gif",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/11b5faef-6aeb-4f89-bcc1-ff5cd075bd46/Colors_of_Bishwa_Ijtema.jpg?t=1769101400": {
+      "key": "img-archive-8cdeed48d68f8aa8.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/125787f4-f17d-4ccf-9831-f57638679ddb/passaro1_34.jpg?t=1765585098": {
+      "key": "img-archive-57f16b6a1c835293.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/12d11e1e-75c1-4fbc-b78a-eec60ed360d2/250925_virus.png?t=1758806932": {
+      "key": "img-archive-54d7b6f374f9e7c6.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/13107de4-ceff-4b74-86f7-2ff856aa0edb/260317_B.jpg?t=1773797271": {
+      "key": "img-archive-a8463f3f32c2b884.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/153a9ff1-80dd-4a01-b6b7-e9fe2caef2e6/unnamed.png?t=1761146630": {
+      "key": "img-archive-381bee1e90c7a2e8.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/153de69d-f901-4ba9-8605-2b8f8fbcf4b7/01-eai-B.jpg?t=1777512815": {
+      "key": "img-archive-d0e2b2519905d640.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/153de69d-f901-4ba9-8605-2b8f8fbcf4b7/01-eai-B.jpg?t=1777513135": {
+      "key": "img-archive-6a1eeb51bf6a2955.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1574c2e4-17c6-4520-8b7e-bf5760459132/01-eia-A.jpg?t=1777866528": {
+      "key": "img-archive-33c4a390408cef0f.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1693c9ea-b3ec-411a-82e4-019c026ef253/Offer_1_Modern_2_1200x628__1_.png?t=1750102350": {
+      "key": "img-archive-b02fc5dffb4c0703.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/170ce36b-7077-4f83-9f31-75732e07827b/260317_A.jpg?t=1773797265": {
+      "key": "img-archive-611e19264a5f9cf1.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1768efc1-09e7-4295-a7ed-18d93a39f70f/Gemini_Generated_Image_xpvwgdxpvwgdxpvw.png?t=1769998245": {
+      "key": "img-archive-c9af5fde92123128.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/18a45d6b-1698-4933-9aa7-2af1d4b7e7d6/1200x600__11_.png?t=1767917172": {
+      "key": "img-archive-19df33fc1ca62561.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/192f2b89-d589-4cef-925a-fabb9195bff4/imagem_2025-12-10_174050533.png?t=1765399204": {
+      "key": "img-archive-a04783a7ca704ce1.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/192f2b89-d589-4cef-925a-fabb9195bff4/imagem_2025-12-10_174050533.png?t=1765399223": {
+      "key": "img-archive-9e6a3afa259fee75.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/19c37d90-d91c-4a0e-8086-ebe66277e7f2/2.png?t=1764002978": {
+      "key": "img-archive-998b5b823da5beda.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/19f4d771-7473-4fab-91fe-6b7b3d4948d0/260330_cover.jpg?t=1774907991": {
+      "key": "img-archive-528454510c579dbd.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/19fa5a4a-509d-4d01-a807-aa51910ed93b/image.png?t=1756947049": {
+      "key": "img-archive-8d201130c3f13273.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1a26e3f4-9ea4-48fe-b500-a6b749a20182/260406_A.jpg?t=1775505027": {
+      "key": "img-archive-0d8479edc8934b23.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1a51f924-195d-4a82-912f-e7274ef237ff/251009_bolha.png?t=1760042320": {
+      "key": "img-archive-c6e92638c561c5d4.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1acef3af-3f40-4673-a569-aedbf564452e/imagem_2025-11-27_185158972.png?t=1764280276": {
+      "key": "img-archive-4ad1dd0059b0099f.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1ad45067-2727-4ce7-9b85-919bf3081590/imagem_2025-12-07_205111987.png?t=1765151428": {
+      "key": "img-archive-a1bd2a7b57244810.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1b2a205d-3faf-4cd2-a0a6-046f497c70e8/260220_zebras_A.jpg?t=1771627681": {
+      "key": "img-archive-47bb2151bb731527.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1b781a43-2b4b-4bdd-a313-939d9dbc8af0/imagem_2026-01-22_172330700.png?t=1769113409": {
+      "key": "img-archive-16e230f64e2ad826.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1c2921b1-f614-42f8-9974-7b30cc3a1cf0/CNN_Creative_Refresh_4A.jpg?t=1768433145": {
+      "key": "img-archive-c87c468f1d22abff.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1d9d92db-7785-4bce-a025-6d869f1651e3/260216_Phnom_Bakheng_B.jpg?t=1771290501": {
+      "key": "img-archive-74e93ad7f20160c3.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1e89e8fa-8d3e-4dba-8c09-3fb1674df6d6/primary-smart-brevity-hub.jpg?t=1764120523": {
+      "key": "img-archive-c6e7f2ca7cffff44.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1ea121e9-986e-47f9-b21f-bf7eb2d5f3d9/imagem_2026-01-16_164603902.png?t=1768592766": {
+      "key": "img-archive-bbb03c431cf1bd63.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1f30a273-abe3-4a15-9599-27dc75c89257/mickey.jpg?t=1765835283": {
+      "key": "img-archive-3cb07568ba04625c.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1fc6b4ff-bd89-452b-ad62-8edd8664422b/260408_B.jpg?t=1775692724": {
+      "key": "img-archive-d78790d031ebc043.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/1ff70722-604e-49cc-85a2-2dda97cf20bf/imagem_2025-12-16_170630496.png?t=1765915540": {
+      "key": "img-archive-3ec7ca0d8c6a4ffb.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/204c71c0-5497-47a4-be6b-298e06a16d88/260325_cover.jpg?t=1774480544": {
+      "key": "img-archive-6626856b71e3c01e.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/20a2d42c-01f0-46e7-8955-092efaf01e20/imagem_2026-01-13_172642267.png?t=1768335941": {
+      "key": "img-archive-e04d935100d8e626.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/20d2a6cd-831f-4e2e-9bbf-71d7d701e455/250101_sora_2.png?t=1759341748": {
+      "key": "img-archive-e361420423e03f90.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/236d61d9-7886-489d-bdbb-5dada0cf833e/imagem_2025-12-01_153648959.png?t=1764614164": {
+      "key": "img-archive-1ddc86fc16016c48.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/254d84be-56b8-4782-903f-388f91e97d40/01-eia-B.jpg?t=1778193080": {
+      "key": "img-archive-b3d346247325067f.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2580706a-5faa-4bd8-86de-de4fdf897210/imagem_2025-11-19_115355252.png?t=1763563997": {
+      "key": "img-archive-4cd02b707a2f158e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/26237a2d-b09c-4f1f-9d8f-7bb55503e5b2/eleicoes2026.png?t=1767797908": {
+      "key": "img-archive-a0dde0c57a4122f2.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/262d3ca6-337f-4754-b4b5-3c65383d56d1/01-eai-A.jpg?t=1777512804": {
+      "key": "img-archive-e4d6c47e75ea3733.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/27b3b331-ea39-4f4e-a76e-e0a366cc32d3/251024_edge.jpg?t=1761309884": {
+      "key": "img-archive-942d97355cf68203.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/284d6fac-6397-4039-ad83-b3dc2ff5b923/260417_B.jpg?t=1776554862": {
+      "key": "img-archive-756e8131d9332976.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/28e81f91-5938-4b0e-9c43-368f2299073d/Beehiiv2.png?t=1763672073": {
+      "key": "img-archive-83867b4da9899fa0.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2925f84f-5bd3-4b95-8ee2-47206b16c7e9/image__17_.png?t=1761591033": {
+      "key": "img-archive-a37cacbcd6d65be7.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2927e10a-adba-4ad4-96b7-ba063872bf8f/260219_ski_B.jpg?t=1771451998": {
+      "key": "img-archive-2f9a3d4e6c09e460.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/29377436-7089-4318-b932-d53e1fe52f97/imagem_2025-12-09_231111184.png?t=1765332624": {
+      "key": "img-archive-de2d8f541b025813.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/29a8b8e0-edaf-49c0-85d7-1135982e3ffd/imagem_2026-01-19_174341973.png?t=1768855421": {
+      "key": "img-archive-98dedc9dce2ea63a.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2a4504f8-56d4-4b8b-a314-06d1356d872b/imagem_2025-12-03_111940981.png?t=1764771536": {
+      "key": "img-archive-4adda0b795aecfda.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2ae42b48-206e-455a-a390-f7b7bc087faa/01-eia-B.jpg?t=1778045225": {
+      "key": "img-archive-a68df48828d02964.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2b7bde15-3f51-4044-a95d-790142fba273/comet.png?t=1760485130": {
+      "key": "img-archive-f3762035ac53e4dc.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2d525f00-53ba-46ac-9b05-18dddbb90f19/260415_A.jpg?t=1776303811": {
+      "key": "img-archive-68ac7ba9d0e6f857.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2d525f00-53ba-46ac-9b05-18dddbb90f19/260415_A.jpg?t=1776303812": {
+      "key": "img-archive-4d43e1bd699616c5.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2ddb9d35-8f1c-45ed-9bf8-6e91e86b8f12/PrimaryAdGuide.gif?t=1762381240": {
+      "key": "img-archive-1335f1d9ce292356.gif",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2e298630-547d-4396-888d-95f69f2e87bc/BCI-test.png?t=1756863469": {
+      "key": "img-archive-6e01569fe1457e20.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2e641b44-5db9-4feb-9691-f3c7ae23d298/Gemini_Generated_Image.jpg?t=1770601178": {
+      "key": "img-archive-254a76529a7bae8b.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2edc7016-151c-4412-b59d-e00adfd834c6/Gemini_Generated_Image_ejib0sejib0sejib_crop.png?t=1769990299": {
+      "key": "img-archive-9b5e30f223755868.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2f2bd220-6c43-4550-aa55-f3de9fe739e7/260227_cover.jpg?t=1772229996": {
+      "key": "img-archive-905cd56608b1b073.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/2fb8be90-9981-4d19-89f4-35019ba322ab/imagem_2025-12-18_212736540.png?t=1766104007": {
+      "key": "img-archive-93af9e33a6bb2c2e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/30e306b8-f4a3-4283-9fe5-214e2b8894a8/stockholmA.png?t=1767798130": {
+      "key": "img-archive-82eb9be96085b7ed.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/31216585-fdae-4301-94a3-63434eb1170f/SoberanIA.png?t=1765585585": {
+      "key": "img-archive-9481a26f24138262.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/31561957-f730-4301-8d01-09c0049abe4e/imagem_2026-01-26_141856919.png?t=1769447933": {
+      "key": "img-archive-a84b498245c64145.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/32cda317-7f88-43d7-8db1-5b6ffdf33f5c/Affiliate_3.0_Gif-Levanta__2_.gif?t=1764717518": {
+      "key": "img-archive-7e8e21f4d9178eab.gif",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/333a00e5-7e11-4e82-b3a9-824593023075/Gemini_Generated_Image_sew749sew749sew7.png?t=1767818275": {
+      "key": "img-archive-44a6078d04845fd7.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/342557a9-5de4-4e73-a97a-6ef2d839d703/passaro2_34.png?t=1765585095": {
+      "key": "img-archive-9c781bca50bb1954.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/345495d7-e4c0-44e4-8012-93ca93e1f61c/imagem_2026-01-20_175349692.png?t=1768942429": {
+      "key": "img-archive-7a6489f58fd4ff38.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/34587c95-244f-49b0-a18d-91299034124e/1200x600__5_.png?t=1767916741": {
+      "key": "img-archive-8b68b5c7c5d096c5.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/345acd6d-7a17-4042-be04-eccb6827b9d1/imagem_2025-12-05_184620176.png?t=1764971135": {
+      "key": "img-archive-91c7e3f2b050c9c2.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/34a1d156-67f8-4ae4-9e71-8211898d9e79/imagem_2025-12-01_160441084.png?t=1764615847": {
+      "key": "img-archive-da74b0431f253844.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/34c4b83c-849f-40d7-a5dc-c0e01b6b3cdb/Beehiiv2__2_.png?t=1763672258": {
+      "key": "img-archive-63addf7dc5db9c51.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/34dc26c1-552c-4baa-9f84-628997afadc5/260324_A.jpg?t=1774400618": {
+      "key": "img-archive-43180d019089ddf6.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/36480ce3-e039-478c-b9d4-7be1ff553e6c/251013_IA_terapia.png?t=1760397919": {
+      "key": "img-archive-f04dad054a66ff3a.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/37cf73d1-c437-4717-adc4-c16f8e9618f2/Gemini_Generated_Image_ojvqqojvqqojvqqo.png?t=1767964894": {
+      "key": "img-archive-107fe5a8d06fc938.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/37ea82b7-d2a8-42c6-96be-d71da5bdca50/251010_pesquisa_.png?t=1760110433": {
+      "key": "img-archive-b401f957b07329a7.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/39c7cf43-be22-4ca4-beb5-d2468f684929/imagem_2025-12-11_194614150.png?t=1765493127": {
+      "key": "img-archive-8f1bf4a3160874d8.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/39d2271c-d9f5-4bf2-b340-5a8aa9217452/hamster1_169.png?t=1765837405": {
+      "key": "img-archive-50b300ffc0124afc.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/39e1d63e-9565-4258-a799-6ac62decdbf0/imagem_2025-12-27_172803357.png?t=1766867231": {
+      "key": "img-archive-177e30ce3354095e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/3a100209-0b00-4b13-8926-fed6f5f24dcb/imagem_2025-12-03_112015620.png?t=1764771570": {
+      "key": "img-archive-d960015246e4d5d1.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/3b97d8da-21aa-4606-80c4-edfeead372e4/_6_anthropic.jpg?t=1756915203": {
+      "key": "img-archive-82dbad2c5d88ec38.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/3bf86778-84d9-4901-aa5c-12dcc6a73072/hamster2_169.jpg?t=1765837424": {
+      "key": "img-archive-2c1d92af6d6e227f.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/3c14dfeb-a04d-497b-9fc4-2974f553c471/01-eai-real.jpg?t=1776981291": {
+      "key": "img-archive-db352e7bc7374629.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/3d07933c-56f3-4e33-8801-be4127e06d2c/ChatGPT_V1.jpg?t=1744399039": {
+      "key": "img-archive-f0d05c83b57e46b9.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/3ec45315-b4fe-491a-a74c-3588bff0ea03/imagem_2025-12-21_201114821.png?t=1766358624": {
+      "key": "img-archive-d038f509b736bf0e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/3ec6f4f6-708f-4535-9986-ba1e14d775a7/imagem_2025-11-13_134311684.png?t=1763052153": {
+      "key": "img-archive-29a8a99c852733e9.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/3f287f48-90a6-4055-871c-c76bf6d169a1/01-eia-A.jpg?t=1778193072": {
+      "key": "img-archive-0f7fa4ba72907e76.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/3f6a2f80-37e8-49ba-ab9b-2ce138cbb13a/Gemini_Generated_Image_6ynr1p6ynr1p6ynr.png?t=1767562211": {
+      "key": "img-archive-1e2e18ac2b00477d.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/3f7586b3-e08b-4cee-b310-7fe31a581be0/imagem_2026-01-14_185558516.png?t=1768427760": {
+      "key": "img-archive-0b7caf2c6eb46858.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/41d3b2c9-faa2-47e4-be0d-0db5489acaf7/260326_A.jpg?t=1774565608": {
+      "key": "img-archive-0905eb267e6b056a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/42549498-7cd9-4ad5-86b3-d5d32efa77dd/04-d1-2x1.jpg?t=1777962014": {
+      "key": "img-archive-6ea5553ff91709eb.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/427a605e-f075-463a-ac50-52f99310660d/01-eia-B.jpg?t=1778136057": {
+      "key": "img-archive-520b5153bbc706dd.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/42858a77-b911-479a-b866-38161e152ed7/image__3_.png?t=1767652011": {
+      "key": "img-archive-3c6e5f5c2545f1ba.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/42ccf83d-6a6d-4565-a5ce-a10f1050bae3/260316_cegonha_B.jpg?t=1773706642": {
+      "key": "img-archive-adeabaf1d4c4d0cb.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/42ccf83d-6a6d-4565-a5ce-a10f1050bae3/260316_cegonha_B.jpg?t=1773706643": {
+      "key": "img-archive-8870e57e31e8c994.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/436fba09-6795-4229-acdf-b37088534afd/260210_cover.jpg?t=1770684033": {
+      "key": "img-archive-a58c6d1a0823aec6.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/43ec3202-9638-48be-a882-0d1e9e59ebbc/secondary-open-house.gif?t=1764120566": {
+      "key": "img-archive-ac2b6762ec2a0092.gif",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/443fdef5-9b99-4f25-9761-98b6ced3e3a5/05.png?t=1768321676": {
+      "key": "img-archive-f9bf20d10323dd62.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/44908369-e9cb-4c7c-b1f9-678a7c86f094/260313_drift_A.jpg?t=1773440220": {
+      "key": "img-archive-8e79bcf06063100e.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/454666e8-5151-430a-95ac-a654d932419b/_5_India_OpenAI_data_center.png?t=1756946845": {
+      "key": "img-archive-c1fde785d8ec43cb.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/45bd3acf-265c-42d8-b538-10a7d90e01b3/260216_cover.jpg?t=1771291690": {
+      "key": "img-archive-2e7d92457c65dc0a.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/467ac88c-2121-445f-9117-a8ae8ecd5215/CNN_Creative_Refresh_4B.jpg?t=1768433225": {
+      "key": "img-archive-36adad5baea02fa5.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/469c15d4-b00b-4376-8279-2b891f0cbcc9/image__10_.png?t=1760655851": {
+      "key": "img-archive-c502749e5e4ce970.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/46e903f9-7b52-4e64-a04c-afe492ffec87/04-eai-ia.jpg?t=1776826900": {
+      "key": "img-archive-cd5191935775a786.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/46e903f9-7b52-4e64-a04c-afe492ffec87/04-eai-ia.jpg?t=1776827514": {
+      "key": "img-archive-cbe3f6cd9d8aaf4a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/47ec8da5-3dc3-4364-aa88-8d0c5df4e20b/B.png?t=1755714522": {
+      "key": "img-archive-cdcd2b4c1199b8ac.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/488bf790-d6e3-44d9-b847-d49d8b0e1862/260302_cover.jpg?t=1772489076": {
+      "key": "img-archive-fe2acb8565dbd635.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/49463f3b-0c9f-4db8-aaf0-26f8c7f6fcc5/260325_B.jpg?t=1774478993": {
+      "key": "img-archive-8eb266f29853cefc.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/49844db0-0588-4a09-aa42-b4a91d478152/260415_A.jpg?t=1776223965": {
+      "key": "img-archive-1529e0bd3014d510.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4998cefc-8785-4b77-b8a0-f1aa6eddd52e/imagem_2025-12-21_201146759.png?t=1766358656": {
+      "key": "img-archive-cbe1654d58f4e910.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4a556f2f-063a-4b33-a3d6-6babded615ed/260410_cover.jpg?t=1775857240": {
+      "key": "img-archive-7352f288527dfe09.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4ae55fc5-f989-4dd1-b273-f25727ba8d06/imagem_2025-12-11_193537090.png?t=1765492489": {
+      "key": "img-archive-8181db5855d8f8ef.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4b051de2-8d7b-44ee-8dd3-4f0e906dd413/imagem_2026-01-15_174728189.png?t=1768510052": {
+      "key": "img-archive-4a200c36c8d6a265.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4b230bd4-f0a7-420a-933e-d9aa557fbe85/01-eai-real.jpg?t=1777245592": {
+      "key": "img-archive-16a8c9cce605ce0a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4b5c3e54-3090-43aa-8a0d-478697ad4db9/260410_A.jpg?t=1775855885": {
+      "key": "img-archive-627f31b6c98812ab.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4b791b75-1da7-4620-a1cb-a67bfe90b0da/image__24_.png?t=1762458124": {
+      "key": "img-archive-bf32fd60d9e63a3c.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4c94f192-80ab-4490-a962-f8b19309430e/image__5_.png?t=1760019729": {
+      "key": "img-archive-b10a49b791d251d7.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4d52b3b0-0249-4ead-83a4-8fe6057f90da/01-eia-A.jpg?t=1777962388": {
+      "key": "img-archive-a1443abe68cea256.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4e097fdf-1218-49af-aadb-df9b28976c81/Igreja.jpg?t=1770164090": {
+      "key": "img-archive-ba2a7967b53604bb.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4eeb9b05-0dc4-421f-b6e2-55a9453f3375/260224_airbus_A.jpg?t=1771953946": {
+      "key": "img-archive-5e81fb975ae7be92.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4f39a4af-4aa5-413b-9abd-62d28e784ae9/primary-smart-brevity-hub.jpg?t=1764120547": {
+      "key": "img-archive-55c1a363cb04e3e2.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4f6d2a79-5989-47e2-a6ae-3fab4a957ad2/imagem_2025-12-16_225807866.png?t=1765936639": {
+      "key": "img-archive-eb2da2e7ba46b0ec.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/4fd1b870-a7a3-4af9-952d-c217eb8f95f4/imagem_2026-01-09_174022989.png?t=1767991161": {
+      "key": "img-archive-aa47e0686eafb727.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/50199200-6286-4cb3-8e25-4bc11d36beec/salesforce.png?t=1756862729": {
+      "key": "img-archive-b546614f08b082af.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/50de77ea-3af3-4ff0-a6cd-100fcb6166ae/imagem_2025-12-09_231030874.png?t=1765332584": {
+      "key": "img-archive-8101d69e99e4ee27.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/5193d195-551c-482d-a4be-53167548ae66/ChatGPT_Image_18_de_dez._de_2025__11_43_49.png?t=1766114384": {
+      "key": "img-archive-916212e6b622f8a0.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/5261795b-850b-4f52-9f06-9560d8c9477e/260319_A.jpg?t=1773973041": {
+      "key": "img-archive-53af46a430f0fe0a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/532a1143-126a-404f-95a8-0f33c798237d/SecondaryAdD2E.gif?t=1762381315": {
+      "key": "img-archive-b3ef6172351e85b0.gif",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/53f224ad-32ae-4d9a-b517-27256a655653/260327_A.jpg?t=1774644716": {
+      "key": "img-archive-4cbeeb0c9fc593bd.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/540613ed-2e47-45dc-a92c-cf532a40aaa2/260226_Falzarego_B.jpg?t=1772153462": {
+      "key": "img-archive-de980ca5c156d1b9.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/542c4c1b-2e9c-4725-9d13-b029070eb780/imagem_2026-01-13_191139220.png?t=1768342237": {
+      "key": "img-archive-36f626356ce96255.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/545a4684-6225-4c1e-b212-08fea1371001/260220_zebras_B.jpg?t=1771627695": {
+      "key": "img-archive-1f99048d84d8fc85.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/5492cd06-4e92-448f-b3ee-452948b58bb5/banner_1.png?t=1762463863": {
+      "key": "img-archive-d22ea3aa949294ea.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/54ea7495-c4d1-4d12-887c-a31ec8d751cb/imagem_2025-12-28_173043729.png?t=1766953793": {
+      "key": "img-archive-112477f9b4b4b25a.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/552aa80b-28ff-470e-bc40-61f6f8c6bbad/260310_bell_A.jpg?t=1773180399": {
+      "key": "img-archive-368688a357dbf33f.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/55ccdf83-c9d0-4bf7-bf0d-b41b0091e8c0/260327_cover.jpg?t=1774645439": {
+      "key": "img-archive-89abb7937d38d41d.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/55faaca5-f0e8-4cf7-925f-9311884d62a4/image.png?t=1756949866": {
+      "key": "img-archive-d2d58b09fe440c38.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/567f7052-6b3a-43d2-8e0f-aab32918ef0f/image__19_.png?t=1761760092": {
+      "key": "img-archive-371389922e7efe27.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/56e2a130-f390-4395-b9b3-a8b71bb22dd2/AdQuick_Newsletter_Hero_2025_2.png?t=1738376710": {
+      "key": "img-archive-f3854b080384d296.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/580f249c-f6b0-4c72-8244-2cbcfd833e75/image__21_.png?t=1762130832": {
+      "key": "img-archive-e36d6960aeaa820a.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/58a92e27-7426-46c3-9800-10d541470366/image__5_.png?t=1767820268": {
+      "key": "img-archive-722e32a11dc7d603.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/594d2e36-0410-4279-8dfc-7e2eae39a491/imagem_2026-01-14_185640202.png?t=1768427801": {
+      "key": "img-archive-eeb556a36611f655.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/5a9174b1-308b-4600-8958-d20cd0582db9/imagem_2026-01-22_172403466.png?t=1769113442": {
+      "key": "img-archive-4bde2b34349f473e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/5b860494-6408-4835-adb1-af3e88bf0c1d/260323_cover_3.jpg?t=1774307969": {
+      "key": "img-archive-2f9a52f7300491aa.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/5c0bf579-91db-489d-826f-275fa99a3d4e/A.png?t=1755714468": {
+      "key": "img-archive-8b2c26080033c23a.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/5d931a6e-5e3e-4873-b090-009ee512f727/imagem_2026-01-15_180124940.png?t=1768510887": {
+      "key": "img-archive-e6e0cdf7db21619d.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/5f5a1385-19d2-4ab0-aa7e-93e6fff56da7/260313_cover.jpg?t=1773439090": {
+      "key": "img-archive-88a5c52908974a74.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/60db657a-60d8-4b0b-9986-3cbf77a06e39/imagem_2026-01-19_174324452.png?t=1768855404": {
+      "key": "img-archive-5720a3df5cadc2bc.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/61379a97-199e-447b-9fc8-9b92a6c771a2/01-eai-A.jpg?t=1777355007": {
+      "key": "img-archive-81e17f13add5e063.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/61f92ee4-e4be-4a65-ac87-c4fbcfafccfd/BeeHive---Secondary-AD-3_-5-Traits-AI-Can_t-Replace-_-Why-They-Matter-More-Than-Ever.gif?t=1767913758": {
+      "key": "img-archive-97b13fd95b9b516b.gif",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/6298d8d1-24ad-4981-8cf9-8a956f143ca4/Sonam_Bajwa_in_2026.jpg?t=1767371741": {
+      "key": "img-archive-cce49bbbf1b70914.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/631e5ee5-87ad-47a2-b30d-172b549fc6bd/250917_com%C3%A9rcio_global.png?t=1758131933": {
+      "key": "img-archive-6d032d14a226b4f2.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/637a1ac7-1828-4e4b-8b50-26fad72ff07b/Gemini_Generated_v2.jpg?t=1769101389": {
+      "key": "img-archive-ebc02a12f926a54b.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/63f20e3a-391e-443f-b0e8-5e14e6d240eb/Diella.png?t=1757691909": {
+      "key": "img-archive-d6a18ed07d8a504e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/64ddae6d-f015-4ebf-b995-35bcf26dfaf4/Screenshot_2025-09-05_103407.png?t=1757080976": {
+      "key": "img-archive-0877704632fd7109.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/64dde96e-7aa0-4736-8805-17075f59987e/260309_cover.jpg?t=1773102147": {
+      "key": "img-archive-4f9d9a8f1ab4f1f4.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/65a13bee-11db-4d34-b1d5-bdcdc2a94cd3/imagem_2025-11-14_152224047.png?t=1763144505": {
+      "key": "img-archive-cc96b5e5b606b35a.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/660a69b0-1bb5-46a5-b155-235f158da416/260415_d1.jpg?t=1776306280": {
+      "key": "img-archive-7b3f0e6efc2e6836.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/662678b1-0523-4946-bba7-d60c41c46bac/imagem_2026-01-14_184111390.png?t=1768426810": {
+      "key": "img-archive-c6683062958140d4.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/67300775-7738-44d1-a246-dd3e5c0d1713/The_Morning_Paper_for_AI___ML_Engineers_V2__1_.jpg?t=1759254145": {
+      "key": "img-archive-6acbe7c1afa8ae03.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/6741caad-29ad-4709-98bb-77ccd43f124d/image__1_.png?t=1767562822": {
+      "key": "img-archive-fa79a630c12c354c.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/68dc6f2f-74f8-48ea-9bd5-5c91e0b81cde/260406_B.jpg?t=1775505020": {
+      "key": "img-archive-b9c7f147ae5fb461.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/68dc6f2f-74f8-48ea-9bd5-5c91e0b81cde/260406_B.jpg?t=1775505353": {
+      "key": "img-archive-4ed1c1c43585cbca.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/69f6735c-391c-4453-a7d1-2e9630a6afda/260211_Edison_in_his_NJ_laboratory_1901.jpg?t=1770859808": {
+      "key": "img-archive-a13bec648c092889.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/6a7a5723-2261-4b69-aa6a-b99e77edb3c5/260216_Analytical_Engine.jpg?t=1771101744": {
+      "key": "img-archive-dfe428983705bd1d.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/6b1556ba-62e6-4019-892d-21330f0bdcc5/260223_SAGE_A.jpg?t=1771800754": {
+      "key": "img-archive-40564a323673a797.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/6b53b129-0600-480a-8170-29f880882845/imagem_2026-01-23_174031584.png?t=1769200829": {
+      "key": "img-archive-ac37210b85c81249.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/6d1c1f0e-e9a7-4421-ab47-8ea1001a2ccf/2026.png?t=1767371401": {
+      "key": "img-archive-12fe4bc0f404356d.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/6d3ccbe6-2fdd-4158-9b57-fcd630893da0/leo3.jpg?t=1764351787": {
+      "key": "img-archive-008ab7a2d4bda731.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/6e64f40b-f5a3-4cb0-b8f1-9903ac1ccddf/260324_B.jpg?t=1774400609": {
+      "key": "img-archive-9dc786d8cdd23f98.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/6fb2c21f-1f51-4167-9179-1c334d7e102f/260311_canguru_A.jpg?t=1773274442": {
+      "key": "img-archive-18da97f37c8d774c.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7007fbc2-e9e7-4771-8f65-5d21da916d81/251003_comet.png?t=1759510166": {
+      "key": "img-archive-fc9fd357bd351b11.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7015c569-5013-4932-9f5c-b847dbce3414/imagem_2025-11-26_145626671.png?t=1764179745": {
+      "key": "img-archive-31c34fc2331fbc1e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/70403a1c-bd46-486a-b321-ad90a2fe3a1f/250923_nvidia_2.png?t=1758627747": {
+      "key": "img-archive-2931abb1b31e2ba0.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/70a0910a-b99c-4269-8dad-305edca7745f/googleai.gif?t=1757431837": {
+      "key": "img-archive-9f28bba1a009c548.gif",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/70a57719-9265-4dec-be0b-877ce66e2f56/image__7_.png?t=1760456218": {
+      "key": "img-archive-a772d2453c8710c2.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/71900ea4-bf70-40b5-a229-de21942dc0ba/260320_B.jpg?t=1774052965": {
+      "key": "img-archive-03ff2bce62cfb08f.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/71900ea4-bf70-40b5-a229-de21942dc0ba/260320_B.jpg?t=1774052966": {
+      "key": "img-archive-cd122793d8a0dac5.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7264244e-2cdc-4972-a9da-2c5b2a7329a5/image__16_.png?t=1761235581": {
+      "key": "img-archive-08954593b18f2694.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/727696f3-2eb0-42ee-bbc6-e5765c5f0f85/image__22_.png?t=1762270075": {
+      "key": "img-archive-d2cab58006ae588e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/72aad697-747d-426e-a29c-16f8b8916b41/260415_B.jpg?t=1776223973": {
+      "key": "img-archive-4b54ac3dd6808113.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7476074c-d820-45d0-a168-6aa8df9ce892/260224_cover.jpg?t=1771953154": {
+      "key": "img-archive-5616176be49096a0.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7518b827-55af-437b-8af5-c2f26ddcd770/Museo_de_Historia_Natural.jpg?t=1769550217": {
+      "key": "img-archive-e5e392172ea8ff3b.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/759f857a-b2d1-47dc-baa4-3ded648f94ff/imagem_2025-11-24_111635521.png?t=1763993754": {
+      "key": "img-archive-d679c2e6dc7eb7b5.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7659699a-f718-40fb-bcd2-948c9658b0f9/imagem_2025-12-07_204055555.png?t=1765150809": {
+      "key": "img-archive-27c15e40dbb3ab4f.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/766208ae-a915-42c1-96ab-e9c30166e70f/220212_AVIDAC_gemini.jpg?t=1770948647": {
+      "key": "img-archive-d66d55fbaf01e1dd.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/76b56182-ac9b-4765-b940-67b09924053c/260312_pinheiro_B.jpg?t=1773356897": {
+      "key": "img-archive-281b6714f4cd65c9.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/770d902d-eeee-4a53-b5ec-236c45979e8c/04-d1-2x1.jpg?t=1777866376": {
+      "key": "img-archive-ed594244e64ae8dd.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7742f782-003e-48a7-baf2-4c0809a458d5/260310_bell_B.jpg?t=1773180389": {
+      "key": "img-archive-4ff517f1494cd618.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/78526e6f-e499-457b-a0cb-3333f1dcba40/image__2_.png?t=1767652003": {
+      "key": "img-archive-f15443fc9c8d1d14.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/786abf40-64c4-4148-a631-4e050b50f210/20250919_Galaxy-AI-Summit-2025.png?t=1758298936": {
+      "key": "img-archive-ad0f3a224ffd1c60.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7877aaa4-4297-4792-8aa1-12353be0e909/imagem_2025-12-04_190215661.png?t=1764885691": {
+      "key": "img-archive-9fba528c31b2fe27.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/78dfbaa0-e3f6-4142-8b4a-fbbdad57a888/image__6_.png?t=1769647692": {
+      "key": "img-archive-7d79fc6d9d75eba1.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7a5b38c9-e4e3-49ef-b480-5fcc76bbca23/lobster.jpg?t=1770150636": {
+      "key": "img-archive-ae76ece9a9b4d005.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7b75a775-93d4-4ce0-acde-2300eb9821b2/01-eai-ia.jpg?t=1777245566": {
+      "key": "img-archive-e54e49a055323fa0.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7be6f963-b50d-4f30-b3ac-fd3bcd890c55/260216_Analytical_Engine_Gemini.jpg?t=1771101733": {
+      "key": "img-archive-44b4f538840be0bc.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7c540aa2-f42a-4572-9231-e7879cb8f778/imagem_2025-12-01_153618951.png?t=1764614134": {
+      "key": "img-archive-17882a16d6941428.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7c8a5221-0318-41bb-b907-ca93523a792a/imagem_2025-12-24_123328244.png?t=1766590355": {
+      "key": "img-archive-0177ba4c3de2c94f.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7cc68a5d-5c03-43e5-94e6-aa52d6c88e47/01-eai-B.jpg?t=1777421101": {
+      "key": "img-archive-4738ad37a5c2a2d7.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7cc68a5d-5c03-43e5-94e6-aa52d6c88e47/01-eai-B.jpg?t=1777421275": {
+      "key": "img-archive-029295ffec6e2c6a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7d98b7f1-7ef2-45fb-921a-95fb75ad81e0/250916_cinema_1.1.png?t=1758045934": {
+      "key": "img-archive-2839762102e73c13.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7daf2b81-d953-4c7b-90a3-8691c7844b8f/Gemini_Generated_Image_wd3fxpwd3fxpwd3f.png?t=1769647841": {
+      "key": "img-archive-df5f1a97d39ea29f.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7e68d505-1966-4efd-b3bd-0d7fac679471/Apollo14_-_Gemini.jpg?t=1770601219": {
+      "key": "img-archive-d0ddd5b3bb416aec.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7ee1d04f-2cf6-4757-b65c-9e0905bcd54f/260413_B.jpg?t=1776048148": {
+      "key": "img-archive-fcdb0331654b264a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/7f929d3d-1f24-4595-a5b4-1e6d03b865bf/1200x600__13_.png?t=1767980294": {
+      "key": "img-archive-e49d86708c1558db.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/80239e3d-72ed-4e8d-9662-ba7cb37e6bfc/image__18_.png?t=1761686874": {
+      "key": "img-archive-5099e558e91e1c2b.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/80677ad1-2c54-4aaf-abf8-fcde83432244/04-d1-2x1.jpg?t=1777079620": {
+      "key": "img-archive-caad8169a1efde08.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/80c9bf0d-b6e5-4e1d-b0a2-5dc3d3aee62e/new_banner_beehiiv.png?t=1764717549": {
+      "key": "img-archive-39ec1af67dd8a8e0.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/8164848a-37f9-4352-a88d-d2f310dd7c31/imagem_2025-12-17_192315744.png?t=1766010146": {
+      "key": "img-archive-db44b6df8f528de8.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/81e02335-9386-4055-acdc-83d4b536737e/imagem_2026-01-16_162939659.png?t=1768591781": {
+      "key": "img-archive-54bd53eb2a3003ab.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/83483c7d-2e4d-4ec4-9a05-c9ad4f08ad28/260320_A.jpg?t=1774052959": {
+      "key": "img-archive-2eaeaf9d728e86f6.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/83ea09a3-3c5b-42eb-8af4-611cda358996/gemini_chatgpt.png?t=1766786614": {
+      "key": "img-archive-e6986f463fe20702.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/842b2eba-9889-48ce-afeb-8db98b8787f2/250916-Meta_Connect.jpg?t=1758128843": {
+      "key": "img-archive-b7bde8bf29fb988d.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/844b2970-be50-4a10-ab43-cdd6da788a27/01-eia-A.jpg?t=1778045209": {
+      "key": "img-archive-74d311d40e74d374.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/84af5810-d81f-492e-9227-f79a82363193/260417_A.jpg?t=1776554853": {
+      "key": "img-archive-a3ec9842b178656d.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/84e52d7d-db07-4e30-b7a5-c5d56b0e56b3/imagem_2026-01-26_132312022.png?t=1769444588": {
+      "key": "img-archive-e2a2af6acb7170e5.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/85b08ca1-59d5-40c9-9227-a93ba6791988/260415_d1.jpg?t=1776227393": {
+      "key": "img-archive-06c90cd98e05000e.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/85ff25f1-7cf0-4389-8261-3f89fc467385/250922_IAs_mentem.png?t=1758547991": {
+      "key": "img-archive-c6ec4c4406e769ba.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/8804a35a-3505-4099-bbe9-c257914548cb/260408_cover.jpg?t=1775696028": {
+      "key": "img-archive-e42385c5a1d8385d.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/892384fa-974f-47e1-b746-4619ba32caef/imagem_2026-01-15_180206226.png?t=1768510929": {
+      "key": "img-archive-48a25c9b134c50d5.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/89b2bf50-70f7-45b3-bff4-fa122cfa8ee3/260312_pinheiro_A.jpg?t=1773356890": {
+      "key": "img-archive-8d0e861cabd0bf7e.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/89b2bf50-70f7-45b3-bff4-fa122cfa8ee3/260312_pinheiro_A.jpg?t=1773357303": {
+      "key": "img-archive-d34341d90fe49cf2.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/8b252eed-c841-4aa9-974e-ed5eec6691b2/imagem_2025-12-16_170225306.png?t=1765915295": {
+      "key": "img-archive-225cf6f6e3ed2307.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/8c455c36-15aa-4163-ad3c-2cd46caf3ce4/imagem_2025-12-16_230027712.png?t=1765936780": {
+      "key": "img-archive-8bf9f5a6e6b4a05b.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/8df71afe-ab9f-4b90-8d0c-c133f32aa7b3/260326_cove.jpg?t=1774577687": {
+      "key": "img-archive-ec2d6af22aec363a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/8f12f076-6aa5-46b6-b0a1-bf0de0f9cf13/250904_chatgpt.jpg?t=1756993522": {
+      "key": "img-archive-5bbd4dd9c64a75f2.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/8f220f92-5e01-49f6-81d9-599649a20d66/260313_drift_B.jpg?t=1773440232": {
+      "key": "img-archive-29c8a8e0b9d691b4.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/903e47e8-5a79-4ae4-9b12-ee62afb190f3/image__15_.png?t=1761153963": {
+      "key": "img-archive-5d8d80df6ff6baff.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9059e672-557a-4a07-9111-6e3c1f3d10e0/imagem_2025-12-03_111222223.png?t=1764771098": {
+      "key": "img-archive-87745133152b5b46.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9108f44a-d7fd-4abb-b7aa-5d5b336a5eae/image__8_.png?t=1769788132": {
+      "key": "img-archive-73cf39537a63a2ad.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/92a94e34-208f-445b-af80-43ab097b9ac6/260311_cover.jpg?t=1773275340": {
+      "key": "img-archive-9ac7e11b85fdba44.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/92ce0dd3-d907-4de8-a31a-03f0326a6b68/250919-_competi%C3%A7%C3%A3o_de_programa%C3%A7%C3%A3o.png?t=1758298862": {
+      "key": "img-archive-8edede54c0643ec2.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/93010a4a-925a-42e7-ae3a-75da2f03c4c4/260225_rio_B.jpg?t=1772065949": {
+      "key": "img-archive-152760dfe7d567bb.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/935af632-df8c-4750-9e17-e8be8a9be929/imagem_2025-11-17_202552293.png?t=1763421914": {
+      "key": "img-archive-e788f4f2db3411f9.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/93866551-3a43-420d-8c26-04faf3a2ef23/250930_instant_checkout.png?t=1759257865": {
+      "key": "img-archive-1da4bbff95c520a9.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/95e5e053-e215-4cfc-967d-83adc723d391/imagem_2026-01-12_185427248.png?t=1768254806": {
+      "key": "img-archive-89a4dee3eda9c92a.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9603f898-caee-42b7-ba15-127d7b882131/260312_cover.jpg?t=1773361964": {
+      "key": "img-archive-679d05df55d73e87.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/96866975-644d-4f28-a33d-5ec9fff36b92/260213_cover.jpg?t=1771016107": {
+      "key": "img-archive-681e1e26e26db805.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9704c320-d2a4-4578-9929-94ab044b370b/imagem_2025-12-09_151305558.png?t=1765303939": {
+      "key": "img-archive-50f9bd3d26c9506f.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/981a23b3-fdda-4376-b8d7-4b93eea4f1af/imagem_2025-11-11_181733124.png?t=1762895816": {
+      "key": "img-archive-207897cc58f5d868.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/98b70fc3-70c1-483b-b925-858d6446bc87/260219_cover.jpg?t=1771518533": {
+      "key": "img-archive-21bb7b535d0e35ca.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/99184d73-16bf-40d7-beef-3f1c7ce1c6e7/Open_AI_o1.png?t=1757691865": {
+      "key": "img-archive-3cbf8c09acfcd0ac.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9999265b-846d-49af-8482-16d8a38bbe48/TSE.jpg?t=1770163878": {
+      "key": "img-archive-e6bd11457f17f3ff.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9a588d2a-b6a2-4446-b776-09aa02acd9ea/2503-SOV25-report-email__1_.png?t=1762289280": {
+      "key": "img-archive-37cf75725ee5c091.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9a7d7cf8-92a8-4a27-81ed-c3a3792ef9ed/250904_apple_siri.jpg?t=1756993588": {
+      "key": "img-archive-cdc0d532e3484aae.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9a9b6ff0-316d-46ff-b497-e879051b8e13/imagem_2025-12-02_144250920.png?t=1764697327": {
+      "key": "img-archive-4dc5938a566055ca.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9b59e075-5006-458a-8dfc-c77bc09d66ae/260904_B.jpg?t=1775768326": {
+      "key": "img-archive-38a7403fbadcbe85.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9c85edb2-354f-4a0b-a27a-5121facf1315/240923_alibaba.png?t=1758670207": {
+      "key": "img-archive-51904f28240a728b.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9d0c283b-c9fe-4dc4-b829-2c1bd3efa198/image__9_.png?t=1764098107": {
+      "key": "img-archive-5e6e93e2da45c3e9.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9d14f9b3-59cf-494d-ae3d-aa5c7aea3bfc/imagem.png?t=1767371884": {
+      "key": "img-archive-4cf08256cc9fe892.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9dd6f36e-02ab-4238-aaa9-fc311482a95d/otimismo_brasileirp.png?t=1757610574": {
+      "key": "img-archive-d2e89ea056b6cc73.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9e22f169-9eb0-47d3-a9d4-615ce458c495/250916-_China.png?t=1758044235": {
+      "key": "img-archive-e49d291d51f8028f.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9e74acdd-28c2-4158-8981-2d3c2be3d2a1/imagem_2026-01-20_172343340.png?t=1768940623": {
+      "key": "img-archive-566c84a7e8fcf741.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9f2bc309-418d-487b-ac38-bbbe1739f861/image.png?t=1757519589": {
+      "key": "img-archive-6790cf328459ec8b.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/9f500bb4-baea-4635-9dc0-99096c5a2b26/beehiiv.png?t=1750705249": {
+      "key": "img-archive-96a005ac41226ecf.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a15346a7-b9a1-4213-83b8-93791f7042b3/Get_curated_tech_news__top_research_papers___resources_in_2_short_weekly_emails_-_V6.jpg?t=1759254210": {
+      "key": "img-archive-f1c4f4ea8fb9ffea.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a2cc128e-e560-4a71-824b-40b1a00daefb/CNN_Creative_Refresh_5B__2___1_.jpg?t=1768433080": {
+      "key": "img-archive-d1a0e9dc308c7564.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a44ca032-ca3e-44d6-83db-095dde3c3d35/imagem_2025-12-22_193157482.png?t=1766442666": {
+      "key": "img-archive-2b234b0fb39d78ca.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a4b50820-8ee7-4e1b-b845-3b1cacc5be15/1200x600__7_.png?t=1767984139": {
+      "key": "img-archive-3e1eb24b22032cb5.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a58e02fb-be02-494b-b0ce-90b6ab8a0fbd/imagem_2026-01-09_164442812.png?t=1767987821": {
+      "key": "img-archive-8612ccffb8b001d0.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a5b4d5e2-0afd-4827-8fed-120031342369/260420_A.jpg?t=1776651631": {
+      "key": "img-archive-ade328132daba050.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a5b70227-7c52-46d9-9425-bded36da4bfc/image__14_.png?t=1761065253": {
+      "key": "img-archive-eb1a366dd6ccf13c.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a658a901-cb59-4dd1-bc11-ea23a62abf4b/image__10_.png?t=1769789533": {
+      "key": "img-archive-8025d8e73e5219ef.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a73704a6-533e-4706-a89c-c8bb0e5b4be6/imagem_2025-12-09_151324309.png?t=1765303958": {
+      "key": "img-archive-f45ae48a93301b92.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a819bdcd-8d21-450a-ae7b-a27bdf3195ee/01-eai-A.jpg?t=1777421092": {
+      "key": "img-archive-f6cd5f4379ac08b8.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a8bed5db-1cb2-4a41-812f-8f8231f08800/imagem_2026-01-16_164657023.png?t=1768592819": {
+      "key": "img-archive-984c2b1e66619926.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/a9067c8a-9d09-43c2-88b0-7fd90ba3ba5e/Brasil_Grok.png?t=1769097432": {
+      "key": "img-archive-d69dfac46f6c1cdd.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/aa22ceb8-34c8-4672-8979-b87ce54f1772/gemini2.png?t=1766787060": {
+      "key": "img-archive-6ea8393b3685ab16.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/aa7c52e6-08b6-4849-85c7-256247219d6b/Beehiiv_Ad_Network_Campaign__-__Sign_up_newsletter__1200x600_Q4_-_Secondary.jpg?t=1765410317": {
+      "key": "img-archive-8dccce30abb29241.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/aae037f6-b703-4676-8d18-3cee18735d90/imagem_2025-12-16_230052012.png?t=1765936804": {
+      "key": "img-archive-f1dec6a425438feb.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ab1cf5b2-b44b-4a32-83f2-9aacedb1432f/01-eai-ia.jpg?t=1776981277": {
+      "key": "img-archive-f9c40759b9e6df73.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/abe0659d-a6e2-497d-91d6-879ff0b6f1ae/260227_Lorch_B.jpg?t=1772229574": {
+      "key": "img-archive-3185909fe3768a52.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ad6dad19-823b-4cbf-b16b-2ae5eb2055f0/imagem_2025-12-17_174924074.png?t=1766004513": {
+      "key": "img-archive-bf79089bb8055b9c.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ad93ab35-658a-4207-bb70-3f62c75fa2f4/person2025.png?t=1765836732": {
+      "key": "img-archive-d71e82f3c59dee73.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ada1b168-53e3-4df1-a305-be9ea85fc99e/260330_B.jpg?t=1774908257": {
+      "key": "img-archive-cdfdef88417dcc4e.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/adf4d01f-c7d5-4946-a9b0-8e8b1036209d/Leopard.jpg?t=1770315356": {
+      "key": "img-archive-8c03f95ee7aa680d.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ae3742af-c9da-43b1-8bce-d4429eb621f8/Laptop_in_the_Kitchen_in_New_Orleans.jpg?t=1766786994": {
+      "key": "img-archive-400be4d0e2b8a732.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ae9bb9f2-a24b-43ad-a240-489a0ab4fcf1/Screenshot_2026-02-06_154108.png?t=1770404939": {
+      "key": "img-archive-110ba8c598181761.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/aedcb788-16c7-463f-ad09-01c46930137a/260225_cover.jpg?t=1772065925": {
+      "key": "img-archive-413b20d6a3b35c09.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/afe94c3a-7913-4522-a7fa-e2bbe5bbb7b1/Screenshot_2025-12-16_193851.png?t=1765924769": {
+      "key": "img-archive-3054385afaca37fb.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b035e3db-3199-41ce-bfae-fec5bfb1d5e7/260326_B.jpg?t=1774565616": {
+      "key": "img-archive-db013339549d3abe.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b0951b29-abd6-479e-8f89-718a7843407a/260226_Falzarego_BA.jpg?t=1772153452": {
+      "key": "img-archive-4b4682da2e67aece.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b0c48422-1f01-41fb-830a-d079ff80436d/01-eai-real.jpg?t=1777079387": {
+      "key": "img-archive-55cf04a326522a32.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b115d21c-69d5-46f9-ae38-fc26d244fed7/260317_coover.jpg?t=1773797407": {
+      "key": "img-archive-73dc94491afe4590.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b1350027-739b-4833-a372-819618b8396a/260410_B.jpg?t=1775855891": {
+      "key": "img-archive-2846f5c328c01328.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b1350027-739b-4833-a372-819618b8396a/260410_B.jpg?t=1775855915": {
+      "key": "img-archive-0b1c2943521f4b1e.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b14abe95-76b9-48a1-a847-be11c6211390/Beehiiv_Ad_Network_Campaign__-__Sign_up_newsletter__1200x600_Q4_-_Secondary.jpg?t=1764720576": {
+      "key": "img-archive-7fb1dcba257d96ce.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b1994e90-7f4c-4399-865d-73a4bef95f35/2nd_Banner__1_.png?t=1759440349": {
+      "key": "img-archive-f035d22897502f5d.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b19f5baf-b3d6-4bc5-b764-7757807c6b91/%C3%81rea_Recreativa_de_Arenas_Negras_01.jpg?t=1767964903": {
+      "key": "img-archive-e5c51f952733ccb6.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b228df27-37b7-4ab3-8ee6-14b7a55acb02/imagem_2025-12-18_212818331.png?t=1766104048": {
+      "key": "img-archive-fcc4693deb6793f1.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b2e05d39-f82e-42a2-b723-4a73e2300729/260211_Gemini_Edson.jpg?t=1770859800": {
+      "key": "img-archive-e2d7a511b80c1ffb.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b2e37b5a-4799-44e6-9a26-ec86ff40eba8/image__1_.png?t=1760035120": {
+      "key": "img-archive-bf2ea0c6a82793ad.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b34995ab-57fd-438f-93e3-8ec0c7b5effe/260408_A.jpg?t=1775692710": {
+      "key": "img-archive-37b0887320c49dc9.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b387fee0-6474-4f65-a4d3-17e67b40bf7d/View_west_along_Duomo_roof__Milan.jpg?t=1770405377": {
+      "key": "img-archive-dea68df545242a15.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b4e5fabf-af54-417f-b2e6-66487d25f691/260417_d1.jpg?t=1776554544": {
+      "key": "img-archive-d40aa086c491fe76.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b55fb2ec-84c0-428f-a786-acac8f5f456b/251002_tilly.png?t=1759414032": {
+      "key": "img-archive-a3361df5fd551ef9.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b5813407-68a2-4ed7-bb5c-116469800148/imagem_2025-12-16_171024398.png?t=1765915775": {
+      "key": "img-archive-e8080af23827c341.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b58b7d59-4398-4a5b-935a-d3b1b9973446/230216_cover_.jpg?t=1771102715": {
+      "key": "img-archive-c055d3e23c30f6b4.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b62eefdb-8d2e-43ba-b28b-1d41272f7628/260302_Sachsenheim_B.jpg?t=1772489533": {
+      "key": "img-archive-b146f80d3a23e8b7.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b6be9b62-4143-4e52-a36c-186a43054270/260223_cover.jpg?t=1771799403": {
+      "key": "img-archive-8bbdfbfcbeceedc9.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b6dd1059-1ec1-4b1a-bcbd-4b551a495dc7/04-d1-2x1.jpg?t=1776936209": {
+      "key": "img-archive-9f2b739b6db657da.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b6e5a2f2-d2ac-4426-aa9f-0bcee0cf71c8/imagem_2025-11-17_121958179.png?t=1763392761": {
+      "key": "img-archive-d50a7b1550b26d9e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b6eacb3f-936b-4a36-8b0a-53116b555e51/260325_A.jpg?t=1774478984": {
+      "key": "img-archive-a574bf41f7f17208.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b74b9a6d-9343-42d0-a1be-746ebbd2bf7e/04-d1-2x1.jpg?t=1778197242": {
+      "key": "img-archive-027ae3264d0fd85a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b854cc85-4e55-4990-a218-2c860241661a/260330_A.jpg?t=1774908249": {
+      "key": "img-archive-2c8be63abcc6d853.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b855053f-330d-405b-ac61-133e606e0791/05-d2-2x1.jpg?t=1776827755": {
+      "key": "img-archive-8ce9953e6afd502c.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b91e469e-1d52-4dcc-8cae-046a88b41cd3/04-d1-2x1.jpg?t=1778552427": {
+      "key": "img-archive-09cd87b948f55bbc.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b9c09eb7-7826-495b-a8e6-3f6fd4cfc4fa/imagem_2025-12-17_174955224.png?t=1766004544": {
+      "key": "img-archive-b29cf2db51d374fa.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b9d4b123-3af4-4bc9-9b3e-f9896c5a3dfd/BeeHive---Secondary--Future_of_Financial_Leadership.gif?t=1767913802": {
+      "key": "img-archive-8ee11b4f6fed3bd9.gif",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/b9f47580-e5e0-41a5-b078-342133e906c0/260213_ENIAC.jpg?t=1771016358": {
+      "key": "img-archive-b1c754ff83a5de8e.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ba7626da-0518-4b4c-b2f4-7a8379e57a87/260413_cover.jpg?t=1776048219": {
+      "key": "img-archive-f3499a3f9c53f86b.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/baf8662b-cb45-4c44-925c-c5744673217e/01-eai-ia.jpg?t=1777245584": {
+      "key": "img-archive-0acc1f9ff1816cd2.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/bb1b245b-ec46-4ce9-9e82-b0bc5dd73614/260225_rio_A.jpg?t=1772065943": {
+      "key": "img-archive-4eb698cc2fe6ed35.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/bb444e64-ffe2-484d-be7c-e7381d0c65e7/imagem_2025-12-05_184420226.png?t=1764971015": {
+      "key": "img-archive-64e598fb91ae6f93.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/bc1b5f0a-13b0-47ae-a913-fad7079fc36c/260220_cover.jpg?t=1771633054": {
+      "key": "img-archive-6b505d207b32a85f.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/bc3f79bc-48cf-40e7-901c-9f2af33b154d/imagem_2025-12-21_200725143.png?t=1766358395": {
+      "key": "img-archive-ec864c154109b808.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c0218dbc-48a8-4e5c-9c14-fd2f3686242c/04-eai-real.jpg?t=1776827070": {
+      "key": "img-archive-6911c48890317705.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c0ac6bfe-43fa-4b32-bdaa-bee5366aecbc/260904_A.jpg?t=1775768316": {
+      "key": "img-archive-3ffa6f6eac9cd530.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c0ac6bfe-43fa-4b32-bdaa-bee5366aecbc/260904_A.jpg?t=1775768353": {
+      "key": "img-archive-9886b1f17383693a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c0c986da-31c9-42bb-9e43-26816216d6bd/image__13_.png?t=1760991949": {
+      "key": "img-archive-43cfb03e58e49883.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c128227d-28c5-4a15-bb63-578a8947536f/04-d1-2x1.jpg?t=1777512835": {
+      "key": "img-archive-3aa27ee97b41c9e9.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c135b699-4246-4a5c-95ed-c67fbbc6c19a/image__23_.png?t=1762366983": {
+      "key": "img-archive-1356d2f44d3f784e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c1595997-df47-43fd-bd28-e36b932ad013/Leo2.png?t=1764351461": {
+      "key": "img-archive-c59520b803aea295.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c162af0a-6590-401a-abc0-764004828fce/moltbook.jpg?t=1770150021": {
+      "key": "img-archive-649a4e75fe467ac2.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c1726940-a380-44a0-80e7-24906b4989e1/260226_cover.jpg?t=1772159266": {
+      "key": "img-archive-1950ad1cd29e0b65.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c1b487e2-6575-4115-94ef-7c01603f7c80/Gemini_Generated_Image_dcci9pdcci9pdcci__1_.png?t=1759116947": {
+      "key": "img-archive-e510ce4a13ac31ee.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c2b6f500-a4e9-48e3-9a6b-a2437c5f23db/imagem_2025-11-20_194659078.png?t=1763678781": {
+      "key": "img-archive-8d510c67a3c38cb5.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c3b3bee6-9330-4cd5-ac70-6fe619b3b46c/04-d1-2x1.jpg?t=1777422747": {
+      "key": "img-archive-596a50f56c17b98d.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c41745dd-1cb8-4793-bf1a-6a28c4ab43d6/SecondaryAdGuide.jpg?t=1762381334": {
+      "key": "img-archive-1c14795847d9c0dd.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c41b7a3e-ef38-4aec-8250-a9ef0316ed8b/260212_cover.jpg?t=1770948292": {
+      "key": "img-archive-ca0a6df009817fb1.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c4c4676a-0d8e-4b43-8212-38b0714877a2/220212_AVIDAC.jpg?t=1770948658": {
+      "key": "img-archive-2d78ff6d7fa9af8d.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c56b312c-d94d-4e1f-b2e3-acc16151e71a/menor_menor.jpg?t=1769133461": {
+      "key": "img-archive-cd5eef55084e3843.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c58e6bb9-0d78-4674-8a91-9e87209722ee/260302_Sachsenheim_A.jpg?t=1772489523": {
+      "key": "img-archive-90af3ce5d22936a4.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c6328168-b6fe-42b2-aadf-a510597502b1/beehiiv_2.png?t=1750705265": {
+      "key": "img-archive-2a8d4838b22156c6.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c638d6fa-e269-427d-b4c4-ebc369e9ccac/imagem_2025-12-18_212249779.png?t=1766103720": {
+      "key": "img-archive-7c6275b0bed7af33.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c7121a9d-c973-46b5-a4c2-2bf982f083ec/imagem_2025-11-12_141830142.png?t=1762967874": {
+      "key": "img-archive-ffb2d2e6534c11e2.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c7866b91-d9b5-4cb5-972b-ab89a5281227/imagem_2025-12-09_154005839.png?t=1765305560": {
+      "key": "img-archive-c90041312ce9ff90.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c7fb5c27-594e-41e1-b838-94ff67f1f26f/260227_Lorch_A.jpg?t=1772229566": {
+      "key": "img-archive-4c89353ee36988d1.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c819acb8-eebb-4483-82e0-e64045baa421/01-eia-B.jpg?t=1777962398": {
+      "key": "img-archive-c8d21f908fbec516.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c825a0d3-d49a-403b-810e-64adf9bc0a64/imagem_2025-11-14_190656002.png?t=1763158063": {
+      "key": "img-archive-ebc8115b6c8ea973.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c82ebaee-b720-44a6-b9a3-9832d1e4d734/_6_brasil.jpeg?t=1756915012": {
+      "key": "img-archive-d919af3637299eb1.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c88360ed-6c2a-49da-9a84-f6e6be6ea844/image__25_.png?t=1762536294": {
+      "key": "img-archive-b509b017e9809e33.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c8b3e211-8077-426a-890e-aea6ad29b5cc/image__8_.png?t=1764178584": {
+      "key": "img-archive-9d942ea8025c8ea7.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c8bfa12c-56b2-469a-9a72-bda5bde3c2e2/imagem_2025-11-25_124625541.png?t=1764085544": {
+      "key": "img-archive-dff227104ab709d9.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/c9b92841-d124-4eb8-9e61-1c60fc4730d1/MakeMoneyAI_V2.png?t=1744398996": {
+      "key": "img-archive-aaa796bf10e0ce5c.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cabe3540-9b6f-46e7-bd8f-9fff22ffdbe4/260316_cegonha_A.jpg?t=1773706648": {
+      "key": "img-archive-423d31266b217aaf.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/caf32167-1c75-4ec1-9fc2-8c879a7de299/Fischerkirche__Born_a._Dar%C3%9F__SW_view.jpg?t=1770164100": {
+      "key": "img-archive-82dc53ff582d901e.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cb6126e2-fa88-4ce0-832b-73f4deaa80d0/imagem_2025-11-28_160544608.png?t=1764356702": {
+      "key": "img-archive-cc103d2857515a12.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cb930a17-2541-4565-9a09-1429b462d79d/01-eia-A.jpg?t=1778136048": {
+      "key": "img-archive-0a0ede44b8b6010f.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cd672d00-1555-4e22-bf59-5ef63ab10f1d/imagem_2026-01-23_173719003.png?t=1769200637": {
+      "key": "img-archive-287492f014334370.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cd741ff2-9954-4a59-b115-0e559e9d7cbf/image__8_.png?t=1760540418": {
+      "key": "img-archive-bd5cde2d771f27c9.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cd8b5807-7cb0-460a-90a4-d7bdc6112a48/pooh_original.png?t=1764886837": {
+      "key": "img-archive-027663212c4fe710.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ce7818f8-28b9-4b03-a602-51dcfd0a238a/image__11_.png?t=1760716981": {
+      "key": "img-archive-54d433a8d9b17eb7.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ce7d9d0f-078a-4734-870b-e6c802d6f2c8/260213_ENIAC_Gemini.jpg?t=1771016347": {
+      "key": "img-archive-194210cf70d47e53.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ce86c643-ea22-44aa-9d83-3c1a01484989/04-d1-2x1.jpg?t=1778046868": {
+      "key": "img-archive-43ba0dff0a1fec22.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cef29929-5513-470a-b87c-9a720481dbbb/05_4__1_.png?t=1758502690": {
+      "key": "img-archive-068706f43ccb5cd0.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cf0a791b-d35c-4d59-84df-eebc7a8d5328/image.png?t=1756950224": {
+      "key": "img-archive-318b59f64bd16516.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cf53a0ea-9977-4cbc-9efe-fef827226518/imagem_2025-11-21_095236307.png?t=1763729518": {
+      "key": "img-archive-e7b31227f7368985.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cf7df205-ab12-4406-af85-dd5e893c1c17/01-eai-B.jpg?t=1777355017": {
+      "key": "img-archive-632201a37dca446a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/cf8b8c40-9a2c-4296-9477-ea97b6b1efb2/251031_nvidia_2.png?t=1761950698": {
+      "key": "img-archive-4aae1a4eb1ab6ae7.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d0e5acfd-e11c-40cf-967f-a1c920fcb9c8/Vasabron_Vasa_bridge_Stockholm_2016_01.jpg?t=1767798154": {
+      "key": "img-archive-a4bf4138841b592d.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d0f3fdb1-b027-4f0b-af43-6e1ade9b44c7/BRANDLIFT_1200x600_beehiiv.png?t=1766516080": {
+      "key": "img-archive-64071c6acdfb6390.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d1c37e79-61e4-4c28-98ca-ce64e8e48cc1/image.png?t=1756946664": {
+      "key": "img-archive-794223135dee8fc1.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d26b2f35-93a0-4e05-bc58-68b570961def/04-d1-2x1.jpg?t=1778135916": {
+      "key": "img-archive-c5e46e0a809950d2.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d2d62e33-962f-46cf-94c8-0c7c5ba4707b/imagem_2026-01-12_163351481.png?t=1768246370": {
+      "key": "img-archive-ace2b275e68dccb1.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d3026595-6a18-4cb4-9542-004835c5e9c5/imagem_2025-12-27_180110775.png?t=1766869218": {
+      "key": "img-archive-004a5493fe934aea.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d3d5a6e5-5ec3-46c9-a8c8-a3071600de4e/1200x600__3_.png?t=1767916832": {
+      "key": "img-archive-6d025ed2ce7c73ab.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d4ec1fab-ecfb-4527-9abb-ce1bba00f922/ChatGPT_Image_17_de_dez._de_2025__19_55_26.png?t=1766012671": {
+      "key": "img-archive-aa76cb10beba0574.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d51c7a32-0f5b-4842-b629-1034aa957bf2/Gemini_Generated_Image_s2pp5qs2pp5qs2pp.png?t=1770404430": {
+      "key": "img-archive-debb8f837940d2ac.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d55ab01b-03eb-4af0-9a5f-7007aa74a6c5/image.png?t=1756948345": {
+      "key": "img-archive-0a21ff1b8ee60680.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d5a37e67-a504-4d18-b72f-50df0f12ad9b/260415_B.jpg?t=1776303827": {
+      "key": "img-archive-4c95e572d0c49920.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d5bbb70a-5811-400b-874f-076be3fe2ff6/260211_cover.jpg?t=1770859325": {
+      "key": "img-archive-d14796f51967c996.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d693afb7-5ae6-4236-905c-825569e589a4/imagem_2025-12-22_212903616.png?t=1766449692": {
+      "key": "img-archive-e1e00bc08f636356.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d8477e6f-412f-475b-b905-08f1619af105/imagem_2025-12-05_190554136.png?t=1764972309": {
+      "key": "img-archive-adfa99c616578728.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d87f97f4-bb82-406e-805e-37dee9b4e8c8/Beehiv_Newsletter_Creative__Hero_Image___2_.png?t=1761834728": {
+      "key": "img-archive-e01427043c094f59.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d91d679a-b79e-47fc-8989-13e3567d1aa8/260414_d1.jpg?t=1776120715": {
+      "key": "img-archive-fa2de91bb7a0fa5f.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d9343450-7a41-47a1-822d-72b2ca4a6738/image.png?t=1756949182": {
+      "key": "img-archive-ca5c53d1de2b85da.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d972051a-4839-4835-b347-f3856ec073c8/260219_ski_A.jpg?t=1771452019": {
+      "key": "img-archive-92618c9c210e3672.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/d9b027fc-58a8-45c8-b19b-f8db3c137032/Gemini_Generated_Image_2oi6p12oi6p12oi6.png?t=1767646505": {
+      "key": "img-archive-bc5346e408fc452e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/da6ba140-4b40-4175-8f39-b72ac684778d/imagem_2025-12-22_212932066.png?t=1766449718": {
+      "key": "img-archive-13b80f0c99bcddfb.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/da94810a-b2bc-4e2e-add2-9d4c3338f866/260414_B.jpg?t=1776118282": {
+      "key": "img-archive-b566042d66d3b18c.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/dc2cf3c1-794c-49ae-82fd-13a78af175a2/imagem_2025-12-02_141157782.png?t=1764695473": {
+      "key": "img-archive-78c87efa18de7e52.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/dc6d802e-658b-4f2d-8362-72b0d8d3808e/Southern_Rock_Lobster__Mermaids_kitchen_imported_from_iNaturalist_photo_224703231.jpg?t=1770150379": {
+      "key": "img-archive-ebfd7246e622c396.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/dcc709e7-640a-4245-bb62-6bd1670947d3/openai_linkedin.png?t=1757081571": {
+      "key": "img-archive-e3e21b42559c8b26.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/df3ba32e-d0f9-4fdf-af80-c0b72080353e/Leopard__Panthera_pardus_pardus__young_female_Kruger_2.jpg?t=1770315423": {
+      "key": "img-archive-90d9d1550b3eab80.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/dfd56d78-a3ee-4b0d-b23d-a732f87c8649/imagem_2026-01-20_175324652.png?t=1768942404": {
+      "key": "img-archive-f319d31b44b86bba.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e233024d-aa07-4ca5-9d30-e27b6e816120/251006_PASTA.png?t=1759764800": {
+      "key": "img-archive-73a713a89000314a.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e2bd8405-f323-44b4-a551-722d454202ee/260319_cover.jpg?t=1773975156": {
+      "key": "img-archive-99799d23fc76733e.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e304d9f1-2750-442a-97d0-30d73b44086e/1200x600_Beehiiv_02__1___1_.png?t=1766528067": {
+      "key": "img-archive-a677b3c0a06c5641.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e3583134-f256-4534-a2c1-ad15803d4cdc/260310_cover.jpg?t=1773179987": {
+      "key": "img-archive-9e91c477498f39dd.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e4d045a6-f14a-473e-97d6-c9dbe857b543/251013_empregos.png?t=1760399786": {
+      "key": "img-archive-2bc64d0baf563de7.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e4e80936-cd62-4dc0-b013-6bfad9d709b9/image.png?t=1767562788": {
+      "key": "img-archive-7a7b2a8054bb5148.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e54e5c5e-ad05-4db2-981e-aecd72cfc60f/imagem_2025-12-02_141749403.png?t=1764695825": {
+      "key": "img-archive-059099fc6fba2ed8.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e56eb9d2-f41b-4222-96e7-839a2bd93f10/openai.png?t=1757359777": {
+      "key": "img-archive-9770e92784e2a82d.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e5a116fd-3064-4a6e-a6ed-e71d761e4981/Catacumbas__Par%C3%ADs__Francia__2022-11-01__DD_111-113_HDR_crop_1600.jpg?t=1769990327": {
+      "key": "img-archive-7ddf12fd0fbcca74.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e6bd4d1d-821d-4ab6-a23c-ae903389d0bd/imagem_2026-01-08_220147887.png?t=1767920446": {
+      "key": "img-archive-ff99efba7b02529c.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e7f3893f-ab35-49ec-9d46-e09a73092fe1/OperariosAi.png?t=1757968843": {
+      "key": "img-archive-ba00ae8253f0f10f.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/e92c586f-8b7e-424b-a143-5cdcf1295712/Beehive-6.jpg?t=1758900121": {
+      "key": "img-archive-2b43bcb5e454e016.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/eadcd493-fc24-4d58-8217-cf8458a696cf/250918_ray_ban_meta_display.png?t=1758234034": {
+      "key": "img-archive-7334f97479852ba1.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ed30df9b-40c6-43d0-b870-69a55ff03c00/image__7_.png?t=1769647801": {
+      "key": "img-archive-7550185af1ef1e25.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ed4e1218-a21a-4d27-9d44-860acf7e3114/260406_cover.jpg?t=1775503284": {
+      "key": "img-archive-6a1250f111f11b10.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/eea5d77b-bba2-4c4c-8cf0-30c3911ca602/260413_A.jpg?t=1776048137": {
+      "key": "img-archive-034a620ebfe9d5ce.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ef440a70-4b08-42c1-b145-fecf4e5241fa/imagem_2026-01-12_185403435.png?t=1768254782": {
+      "key": "img-archive-9db09a0785d11e6e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f0045be0-c30e-4bbd-a35d-b7431448aa43/primary-smart-brevity-hub.jpg?t=1764120496": {
+      "key": "img-archive-6fbb707da8c7a11a.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f03c16c3-48ee-4a18-9cbf-962ecbb173be/image.png?t=1757519557": {
+      "key": "img-archive-d79a0a09fd0a57c4.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f0d7561b-ab45-45e3-a634-e2ebfc6fe8e9/image__4_.png?t=1767820234": {
+      "key": "img-archive-818e263e744a3aea.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f2b94c8c-8e22-488b-99eb-49460702595a/The__1_Tech_newsletter_for_AI___ML_Engineers_-_V4.jpg?t=1759254182": {
+      "key": "img-archive-a5451c43171f73b4.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f2f193cb-4b11-4077-b574-6ceb4c997661/imagem_2025-12-09_230645837.png?t=1765332359": {
+      "key": "img-archive-4e8372b7b436c5fc.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f31f941e-c0ca-43a9-9bfa-fe94b4c58e50/260316_cover.jpg?t=1773706620": {
+      "key": "img-archive-ec159280d24127a9.jpg",
+      "alt": "Capa da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f412e3ef-b8c2-4114-b372-5dc529b267ca/image__6_.png?t=1760455831": {
+      "key": "img-archive-6c4cc71491f00b89.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f500ff8b-ad33-498b-9a0e-23145c13acd2/Bolha_-_OpenAi_-_final.png?t=1757968874": {
+      "key": "img-archive-b5e93c944a419aab.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f54d4ec5-6f5b-44d3-b8bb-419c7ad92d6c/260311_canguru_B.jpg?t=1773274434": {
+      "key": "img-archive-4344b04d6594d8c5.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f54d4ec5-6f5b-44d3-b8bb-419c7ad92d6c/260311_canguru_B.jpg?t=1773274495": {
+      "key": "img-archive-7ada7453aa46fb11.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f6cc35f7-3b5a-4748-a7f9-22b4364540f2/250904_midoo_ai.png?t=1756993647": {
+      "key": "img-archive-88ae4898b20033ed.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f759a509-1a9c-4459-ab1c-21e8d296789d/01-eai-ia.jpg?t=1777079407": {
+      "key": "img-archive-3ea3f8cfd84bab86.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f788d293-aa12-4d56-bb3a-5ce144d8f88e/250925_onu.png?t=1758806966": {
+      "key": "img-archive-aff9a024a1f7ab89.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f7b9b12f-5f47-47f6-afb0-c11f80f774ea/Beehiiv_Ad_Network_Campaign_-__CX_Retail__1200x600_product.jpg?t=1763570749": {
+      "key": "img-archive-f6c3b9ad6ffd8a24.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f890aabe-b299-496e-8f57-6359345f7295/Catedral.jpg?t=1770405366": {
+      "key": "img-archive-82a596c07fbc50a1.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f952f0d2-d586-42d5-9728-ab48d8a74ac8/imagem_2025-12-24_122445824.png?t=1766589834": {
+      "key": "img-archive-603f0f5c16f3eb9e.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f9787985-36ae-4f8b-aa70-9b8894969948/ciborgue_dinheiro.png?t=1757081148": {
+      "key": "img-archive-78d636ab1cddee56.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f97ea09e-9a47-4faa-acdc-bd12e88e5bc5/Apollo14_-_Landung.jpg?t=1770601228": {
+      "key": "img-archive-0b2a2929114b2b39.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f9ac066b-291d-4167-b755-8b333a315a51/imagem_2025-12-28_173109227.png?t=1766953817": {
+      "key": "img-archive-58538fe32a9847c2.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/f9b2d94a-b281-435d-b48d-3a59c7d11924/imagem_2026-01-26_141930310.png?t=1769447965": {
+      "key": "img-archive-7e02c7409318e6a5.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/fa8e6234-fecc-4cea-8060-9ca693c7221b/imagem_2026-01-19_174100852.png?t=1768855261": {
+      "key": "img-archive-746943cf09310604.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/fad407ab-6df4-4a6a-b8ff-e92ce15ac3f8/image__20_.png?t=1761844890": {
+      "key": "img-archive-914281d233d6ebba.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/fae177a4-b348-456d-bae7-308857e089d8/260309_moto_A.jpg?t=1773103070": {
+      "key": "img-archive-28642688b0f5a924.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/fb714a1d-0c1a-409b-8ded-0df669fa6172/Ad_2__Beehiiv_.jpg?t=1759953514": {
+      "key": "img-archive-ad8785724e662bb9.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/fc964dba-6573-40dc-bcc7-d49fda385950/image__4_.png?t=1759933071": {
+      "key": "img-archive-67f35f13575c1526.png",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ffb0538f-99ac-4c55-b53a-1544c05254f5/Gemini_Generated_Image_91na6k91na6k91na.jpg?t=1770315014": {
+      "key": "img-archive-13a87911ee8f6176.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/asset/file/ffe604bd-9b99-4a06-a88e-e7ac5f6396ae/260309_moto_B.jpg?t=1773103062": {
+      "key": "img-archive-018df2c91a79adad.jpg",
+      "alt": "Imagem da edição diar.ia.br"
+    },
+    "https://media.beehiiv.com/cdn-cgi/image/fit=scale-down,format=auto,onerror=redirect,quality=80/uploads/user/profile_picture/4ed7b045-1047-4c72-b90d-f4666dd08af0/thumb_profile.jpeg": {
+      "key": "img-archive-74f32fca313af68b.jpg",
+      "alt": "Foto de perfil do autor da diar.ia.br"
+    }
+  }
 }
