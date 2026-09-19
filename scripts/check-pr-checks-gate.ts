@@ -45,9 +45,21 @@
  *                             "error" genérico é payload ruim ou ambiente corrompido — a mensagem
  *                             plausível do pacote claude-code é fácil demais de ler como resultado
  *                             real do gate. Ver `scripts/lib/detect-claude-binary-error.ts`.
+ *   6 = gh_incompatible_flags (#8425 — o `gh` instalado não suporta uma flag/campo `--json` usado
+ *                             nesta chamada ("unknown flag: --json" / "Unknown JSON field"). Também
+ *                             NÃO é um veredito sobre o PR — é incompatibilidade PERMANENTE de versão
+ *                             do binário `gh`, nunca transitória: retentar o mesmo comando falha do
+ *                             mesmo jeito na 2ª, 10ª ou 100ª tentativa. Dedicado e distinto de
+ *                             `error`(3) de propósito: `error` genérico já tem uma via de recuperação
+ *                             pensada pra falha TRANSITÓRIA (`scripts/lib/wait-pr-checks.sh`, retry até
+ *                             `MAX_ERROR_STREAK`) — misturar os dois faria um laço de espera gastar
+ *                             minutos retentando um comando que nunca vai funcionar naquela máquina,
+ *                             em vez de abortar ALTO na 1ª ocorrência. Ver
+ *                             `scripts/lib/detect-gh-json-flag-incompatibility.ts`.
  *
  * @see scripts/lib/pr-checks-gate.ts
  * @see scripts/lib/detect-claude-binary-error.ts (#7189 — detecção reusável por outros check-*.ts)
+ * @see scripts/lib/detect-gh-json-flag-incompatibility.ts (#8425 — idem, pra incompatibilidade de `gh`)
  * @see .claude/skills/diaria-overnight/SKILL.md (condição 1 do gate — #2210/#2222)
  * @see .claude/skills/diaria-develop/SKILL.md (GATE 2)
  */
@@ -56,6 +68,7 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { evaluatePrChecksGate, type PrChecksGateResult } from "./lib/pr-checks-gate.ts";
 import { CLAUDE_BINARY_ERROR_SIGNATURE, findClaudeBinaryErrorSignature } from "./lib/detect-claude-binary-error.ts";
+import { findGhJsonFlagIncompatibilitySignature } from "./lib/detect-gh-json-flag-incompatibility.ts";
 
 /**
  * #7189: veredito dedicado quando o subprocesso `gh pr view` devolveu (em
@@ -72,7 +85,19 @@ export interface ClaudeBinaryErrorGateResult {
   reason: string;
 }
 
-export type CliGateResult = PrChecksGateResult | ClaudeBinaryErrorGateResult;
+/**
+ * #8425: veredito dedicado quando o `gh` instalado não suporta a
+ * flag/campo `--json` usado nesta chamada — mesmo shape dos outros dois
+ * pelo mesmo motivo (impressão/`EXIT_CODES` uniformes).
+ */
+export interface GhIncompatibleFlagsGateResult {
+  verdict: "gh_incompatible_flags";
+  failingChecks: [];
+  pendingChecks: [];
+  reason: string;
+}
+
+export type CliGateResult = PrChecksGateResult | ClaudeBinaryErrorGateResult | GhIncompatibleFlagsGateResult;
 
 /** Só os campos deste arquivo de fato consome do retorno de `spawnSync` —
  * shape mínimo, não o `SpawnSyncReturns<string>` completo do Node, pra que
@@ -116,6 +141,13 @@ function extractHeadCommittedAt(commits: unknown): string | null {
  * campo capturado, nada no resto do payload (exit code incluído: o
  * `cli-wrapper.cjs` do pacote pode sair com qualquer status) pode ser lido
  * como veredito real sobre o PR.
+ *
+ * #8425: a checagem de incompatibilidade de flag `--json` do `gh` roda logo
+ * em seguida, também ANTES de `result.error`/`status`/parse — pelo mesmo
+ * motivo: se o `gh` reportou "unknown flag: --json"/"Unknown JSON field",
+ * isso nunca pode virar `verdict: "error"` genérico (que o chamador de
+ * espera trataria como falha TRANSITÓRIA, retentável) nem, pior, ser
+ * mascarado por um `status`/JSON qualquer que sobre no mesmo output.
  */
 export function resolveGateResult(result: GhPrViewSpawnOutcome): CliGateResult {
   const envErrorSource = findClaudeBinaryErrorSignature({
@@ -134,6 +166,25 @@ export function resolveGateResult(result: GhPrViewSpawnOutcome): CliGateResult {
         "— é falha de instalação/binário nativo do CLI claude (ver scripts/lib/claude-binary-layout.ts " +
         "pra diagnosticar a causa). Não tratar como check reprovado nem como 0 achados; corrigir o " +
         "install e reexecutar.",
+    };
+  }
+
+  const ghFlagErrorSource = findGhJsonFlagIncompatibilitySignature({
+    stdout: result.stdout,
+    stderr: result.stderr,
+    "mensagem de erro do spawn": result.error?.message,
+  });
+  if (ghFlagErrorSource) {
+    return {
+      verdict: "gh_incompatible_flags",
+      failingChecks: [],
+      pendingChecks: [],
+      reason:
+        `gh incompatível — assinatura de flag/campo "--json" não suportado detectada em ` +
+        `${ghFlagErrorSource} do subprocesso \`gh pr view\` (#8425, mesma classe do #6225). Isto NÃO é ` +
+        "um veredito sobre o PR, e NÃO é transitório — o mesmo comando falha do mesmo jeito em toda " +
+        "tentativa nesta instalação de `gh`. Nunca retentar esperando resolver sozinho; atualizar o " +
+        "`gh` ou trocar o comando por um que não use essa flag/campo.",
     };
   }
 
@@ -210,6 +261,7 @@ const EXIT_CODES: Record<CliGateResult["verdict"], number> = {
   error: 3,
   blocked_by_conflict: 4,
   claude_binary_error: 5,
+  gh_incompatible_flags: 6,
 };
 
 if (isMainModule(import.meta.url)) {

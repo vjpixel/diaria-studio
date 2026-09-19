@@ -36,6 +36,10 @@ describe("selectCiFixCandidate (#7446 item 3)", () => {
     assert.equal(selectCiFixCandidate([pr({ number: 7429, ciVerdict: "blocked_by_conflict" })]), null);
   });
 
+  it("PR com CI gh_incompatible_flags → não é candidata (#8425 — incompatibilidade de versão do gh, não veredito real sobre o código)", () => {
+    assert.equal(selectCiFixCandidate([pr({ number: 7429, ciVerdict: "gh_incompatible_flags" })]), null);
+  });
+
   it("PR já com o label de tentativa → não é candidata de novo (cap de 1 tentativa)", () => {
     assert.equal(selectCiFixCandidate([pr({ number: 7429, labels: [CI_FIX_ATTEMPTED_LABEL] })]), null);
   });

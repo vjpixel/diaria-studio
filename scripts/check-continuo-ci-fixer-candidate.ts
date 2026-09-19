@@ -78,6 +78,7 @@ const VERDICT_BY_EXIT_CODE: Record<number, CiVerdict> = {
   3: "error",
   4: "blocked_by_conflict",
   5: "claude_binary_error",
+  6: "gh_incompatible_flags",
 };
 
 function fetchCiVerdict(prNumber: number): CiVerdict {

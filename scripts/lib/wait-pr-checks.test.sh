@@ -93,6 +93,40 @@ else
   FAILED=1
 fi
 
+# ── 7. rc=6 (gh_incompatible_flags) aborta NA 1ª OCORRÊNCIA, nunca retenta ──
+# Regressão específica do #8425: uma incompatibilidade de versão do `gh`
+# ("unknown flag: --json") é PERMANENTE, não transitória como o rc=3 acima —
+# retentar (mesmo com teto) mascararia "nunca vai funcionar" como "espera
+# mais um pouco". A contagem de chamadas prova que não houve NENHUM retry —
+# gravada em arquivo (não variável) porque `$(wait_pr_checks ...)` roda a
+# função inteira numa SUBSHELL de substituição de comando: uma variável
+# setada dentro dela nunca é visível no shell de teste depois que a
+# substituição termina.
+CALL_COUNT_FILE7="$(mktemp)"
+echo 0 > "$CALL_COUNT_FILE7"
+check_pr_checks_once() {
+  echo "$(( $(cat "$CALL_COUNT_FILE7") + 1 ))" > "$CALL_COUNT_FILE7"
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] PR #7: verdict=gh_incompatible_flags — gh incompatível — assinatura de flag/campo \"--json\" não suportado detectada em stderr"
+  return 6
+}
+OUT7=$(wait_pr_checks "7" 60 1 2>&1)
+RC7=$?
+assert_eq "gh_incompatible_flags (rc=6) -> exit 6, nunca 0/1/timeout" "6" "$RC7"
+assert_eq "aborta na 1ª tentativa, sem nenhum retry" "1" "$(cat "$CALL_COUNT_FILE7")"
+rm -f "$CALL_COUNT_FILE7"
+if echo "$OUT7" | grep -q "INCOMPATIBILIDADE DE gh.*#8425"; then
+  echo "ok: mensagem de incompatibilidade nomeada presente (cita #8425)"
+else
+  echo "FAIL: mensagem de incompatibilidade esperada não encontrada — obtido: $OUT7"
+  FAILED=1
+fi
+if echo "$OUT7" | grep -q "gh_incompatible_flags"; then
+  echo "ok: motivo do gate (LAST_GATE_OUTPUT) propagado na mensagem de abort"
+else
+  echo "FAIL: motivo do gate ausente na mensagem de abort — obtido: $OUT7"
+  FAILED=1
+fi
+
 # ── 4. uso inválido do entrypoint (PR ausente) -> exit 2 ────────────────────
 OUT4=$(bash "$DIR/wait-pr-checks.sh" 2>&1)
 RC4=$?
