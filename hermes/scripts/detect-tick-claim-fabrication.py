@@ -371,12 +371,19 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
             kw = _CLAIM_KEYWORDS.search(segment)
             if not kw:
                 continue
-            pr_refs = {int(n) for n in _PR_REF.findall(segment)}
-            others = {int(n) for n in _OTHERS_CLAIM.findall(segment)}
-            covered = {int(n) for n in _COVERED_BY.findall(segment)}
+            # Cada exclusion regex captura o #NNNN que JUSTIFICOU a
+            # exclusão (o coberto, o PR, o claim de outro ator). Ela é
+            # aplicada SÓ a esse número — um claim próprio no mesmo segmento
+            # ("#7807 reivindicada, trabalho coberto por #7808") não é
+            # afetado pela cobertura de #7808. Aplicar o conjunto inteiro
+            # a todos os refs do segmento era o bug do #8377 (achado na
+            # revisão da PR, 1ª objeção).
+            pr_ref_n = {int(n) for n in _PR_REF.findall(segment)}
+            others_n = {int(n) for n in _OTHERS_CLAIM.findall(segment)}
+            covered_n = {int(n) for n in _COVERED_BY.findall(segment)}
             for m in _ISSUE_REF.finditer(segment):
                 n = int(m.group(1))
-                if n in pr_refs or n in others or n in covered:
+                if n in pr_ref_n or n in others_n or n in covered_n:
                     continue
                 # Proximidade: o #NNNN precisa estar junto ao keyword
                 # (#8377 parte 2).

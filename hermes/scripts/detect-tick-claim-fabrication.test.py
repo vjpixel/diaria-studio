@@ -161,6 +161,28 @@ def test_regressao_7807_coberto_por_7808():
     print("regressão #7807 coberto por #7808: cobertura excluída — OK")
 
 
+# Regressão da correção de #8377 (achado na revisão da PR #8381, 1ª
+# objeção): cada regex de exclusão captura SÓ o #NNNN que a justificou, e
+# é aplicada a esse número. Antes, o conjunto de todos os #NNNN
+# capturados era aplicado a cada ref do segmento, então um claim PRÓPRIO
+# no mesmo segmento que uma cobertura de outro issue era derrubado junto
+# ("#7807 reivindicada, trabalho coberto por #7808" -> #7807 sumia).
+def test_regressao_exclusao_por_ref_nao_bloqueia_claim_proprio():
+    import importlib.util, sys, os
+    here = os.path.dirname(os.path.abspath(__file__))
+    mod = importlib.util.module_from_spec(
+        importlib.util.spec_from_file_location(
+            "detect_tick_claim_fabrication",
+            os.path.join(here, "detect-tick-claim-fabrication.py")))
+    sys.modules["detect_tick_claim_fabrication"] = mod
+    mod.__loader__.exec_module(mod)
+    linha = "#7807 foi reivindicada ontem, mas o trabalho estava coberto por #7808."
+    refs = mod.extract_claimed_issue_refs(linha)
+    assert 7807 in refs, f"claim próprio #7807 derrubado pela cobertura de #7808: {refs}"
+    assert 7808 not in refs, f"#7808 (cobertura) indevidamente como claim: {refs}"
+    print("regressão: exclusão por ref preserva claim próprio no mesmo segmento — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -498,6 +520,7 @@ def main() -> int:
         # ------------------------------------------------------------------
         test_regressao_8377_falsos_positivos_claim()
         test_regressao_7807_coberto_por_7808()
+        test_regressao_exclusao_por_ref_nao_bloqueia_claim_proprio()
 
         if FAILED:
             print(f"\n{FAILED} assercao(es) falharam")
