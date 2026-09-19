@@ -343,6 +343,8 @@ describe("applyExplorationQuotaBackstop (#8370 Peça 2)", () => {
         state = recordExplorationDecision(state, edition, {
           week: "2026-W38",
           exploracao: true,
+          url: `https://exogeno/${edition}`,
+          origin: "promoted",
           decided_at: "2026-09-17T00:00:00.000Z",
         });
       }

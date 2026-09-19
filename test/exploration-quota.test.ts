@@ -265,6 +265,8 @@ describe("cota semanal", () => {
       s = recordExplorationDecision(s, edition, {
         week: explorationWeekOfEdition(edition)!,
         exploracao: true,
+        url: `https://exogeno/${edition}`,
+        origin: "promoted",
         decided_at: "2026-09-19T00:00:00.000Z",
       });
     }
@@ -277,6 +279,8 @@ describe("cota semanal", () => {
     s = recordExplorationDecision(s, "260919", {
       week: "2026-W38",
       exploracao: true,
+      url: "https://exogeno",
+      origin: "promoted",
       decided_at: "2026-09-19T00:00:00.000Z",
     });
     // Sem excluir a si mesma, o resume leria 1/4 já gasto e decidiria diferente.
@@ -286,6 +290,8 @@ describe("cota semanal", () => {
     s = recordExplorationDecision(s, "260919", {
       week: "2026-W38",
       exploracao: true,
+      url: "https://exogeno",
+      origin: "promoted",
       decided_at: "2026-09-19T01:00:00.000Z",
     });
     assert.equal(Object.keys(s.editions).length, 1);
@@ -423,6 +429,8 @@ describe("contrato com measure-editorial-concentration (Peça 3)", () => {
     const state = recordExplorationDecision(emptyExplorationState(), "260101", {
       week: explorationWeekOfEdition("260101")!,
       exploracao: true,
+      url: "https://exogeno",
+      origin: "promoted",
       decided_at: "2026-01-01T00:00:00.000Z",
     });
     assert.equal(explorationFlagsBySlug(state, lastmodBySlug).size, 0);
