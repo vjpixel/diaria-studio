@@ -27,7 +27,7 @@
  * Uso:
  *   npx tsx scripts/migrate-archive-beehiiv-images.ts [--dir workers/site/public/p] [--dry-run] [--limit N]
  */
-import { readdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -223,11 +223,18 @@ async function main() {
 
   const uploadImpl: MigrationUpload = async (bytes, key) => {
     // uploadImageToWorkerKV lê de ARQUIVO (assinatura legada, #1119) — grava
-    // um temp file de vida curta em vez de reescrever o helper compartilhado
-    // só pra este caller aceitar bytes em memória.
-    const tmpPath = join(mkdtempSync(join(tmpdir(), "diaria-archive-img-")), "bytes.bin");
-    writeFileSync(tmpPath, Buffer.from(bytes));
-    await uploadImageToWorkerKV(tmpPath, key, { kvNamespaceId: kvNamespaceId!, workerUrl: ARCHIVE_BASE_URL });
+    // um temp dir de vida curta em vez de reescrever o helper compartilhado
+    // só pra este caller aceitar bytes em memória. Removido no `finally` —
+    // ~630 imagens rodando sem cleanup deixaria ~630 diretórios órfãos em
+    // /tmp (achado do self-review desta PR).
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-archive-img-"));
+    try {
+      const tmpPath = join(tmpDir, "bytes.bin");
+      writeFileSync(tmpPath, Buffer.from(bytes));
+      await uploadImageToWorkerKV(tmpPath, key, { kvNamespaceId: kvNamespaceId!, workerUrl: ARCHIVE_BASE_URL });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   };
 
   const result = await runArchiveImageMigration({
