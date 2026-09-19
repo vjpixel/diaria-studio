@@ -736,6 +736,13 @@ async function runOneMode(
   // clique — dado de clique não entra na conta, então nem carrega os
   // warnings/gates de completude de clique abaixo (só fazem sentido pra
   // "clicked").
+  // `--allow-own-editions 260914,...` (editor, 260919): destaque de uma edição
+  // onde o D1 é conteúdo próprio (ex: lançamento do editor) entra no highlights
+  // apesar da exclusão comercial/própria. Só afeta o modo highlights.
+  const allowOwn = new Set((process.argv.find((a, i, arr) => arr[i - 1] === "--allow-own-editions") ?? "").split(",").filter(Boolean));
+  if (mode === "highlights" && allowOwn.size > 0) {
+    for (const c of ranked) if (c.kind === "destaque" && c.destaqueNumber === 1 && allowOwn.has(c.editionDate)) c.excluded = false;
+  }
   const selection = mode === "highlights" ? selectInstagramHighlights(ranked) : selectInstagramWeekly(ranked, WEEKLY_EXPECTED_ITEMS);
   let items = selection.selected;
   let selectionWarnings = selection.warnings;

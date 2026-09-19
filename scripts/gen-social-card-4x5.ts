@@ -236,8 +236,8 @@ export function buildCardSvg(
  * `buildOverlaySvg` usam pra wrap/tamanho — mantidas em sync aqui de
  * propósito, mesma lição do #5330 (não duplicar em cópia separada).
  */
-export const OVERLAY_CHARS_PER_LINE_DIVISOR = 29;
-export const OVERLAY_WIDTH_FIT_RATIO = 0.58;
+export const OVERLAY_CHARS_PER_LINE_DIVISOR = 38;
+export const OVERLAY_WIDTH_FIT_RATIO = 0.66;
 
 /**
  * Pure: fórmula de tamanho de fonte do overlay de notícia — wrap via

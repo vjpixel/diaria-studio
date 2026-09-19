@@ -83,9 +83,10 @@ function stableUrlKeyBase(raw: string): string {
  * Pure: chave de cache do card sob demanda pra um item de seção — determinística
  * por seção+URL, então re-execuções acham o mesmo card já gerado/uploadado.
  */
-export function sectionCardCacheKey(section: "radar" | "use_melhor", url: string): string {
+export function sectionCardCacheKey(section: "radar" | "use_melhor", url: string, fontSize?: number): string {
   const hash = createHash("md5").update(stableUrlKeyBase(url)).digest("hex").slice(0, 10);
-  return `${section}_${hash}_4x5`;
+  // fontSize na chave: card gerado em outro tamanho (edição diária, rodada anterior) não pode ser reusado no carrossel, que exige tamanho único.
+  return fontSize ? `${section}_${hash}_4x5_fs${fontSize}` : `${section}_${hash}_4x5`;
 }
 
 /**
@@ -230,7 +231,7 @@ export async function resolveOrGenerateSectionCardUrl(
       error: `item sem section (kind=${item.kind}) — resolveOrGenerateSectionCardUrl só serve pra RADAR/USE MELHOR`,
     };
   }
-  const cacheKey = sectionCardCacheKey(item.section, item.url);
+  const cacheKey = sectionCardCacheKey(item.section, item.url, fontSizeOverride);
   const cached = readSectionCardUrl(editionDir, cacheKey);
   if (cached.corruptError) {
     return { url: null, generated: false, error: `06-public-images.json corrompido: ${cached.corruptError}` };

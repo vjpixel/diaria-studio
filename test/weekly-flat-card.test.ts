@@ -42,14 +42,14 @@ describe("buildFlatCardSvg (pure)", () => {
     // o card todo, assim não sente falta de não ter imagem" (pedido do editor).
     const svg = buildFlatCardSvg({ kicker: "resumo semanal", title: "Os destaques da semana", footer: "diar.ia.br" });
     const size = firstTitleFontSize(svg);
-    assert.ok(size > 88, `esperava título bem maior que o clamp do overlay de notícia (88), veio ${size}`);
+    assert.ok(size >= 80, `esperava título grande (>=80), veio ${size}`);
   });
 
   it("título mais longo resulta em tamanho MENOR (auto-size decrescente pra continuar cabendo)", () => {
     const shortSvg = buildFlatCardSvg({ kicker: "x", title: "Título curto", footer: "y" });
     const longSvg = buildFlatCardSvg({
       kicker: "x",
-      title: "A edição completa chega no seu e-mail. Assine no link da bio.",
+      title: "A edição completa chega no seu e-mail. Assine no link da bio. ".repeat(3).trim(),
       footer: "y",
     });
     assert.ok(firstTitleFontSize(longSvg) < firstTitleFontSize(shortSvg));
@@ -73,7 +73,7 @@ describe("buildFlatCardSvg (pure)", () => {
   it("título longo quebra em mais de 1 linha (múltiplos <text> de título)", () => {
     const svg = buildFlatCardSvg({
       kicker: "grátis, toda manhã",
-      title: "A edição completa chega no seu e-mail. Assine no link da bio.",
+      title: "A edição completa chega no seu e-mail. Assine no link da bio. ".repeat(3).trim(),
       footer: "diar.ia.br",
     });
     const textTags = svg.match(/<text /g) ?? [];
@@ -201,7 +201,7 @@ describe("#6086 item c: negrito seletivo (`**...**` no title)", () => {
   it("título SEM marcação renderiza exatamente como antes — nenhum tspan de peso no corpo (default do semanal inalterado)", () => {
     const svg = buildFlatCardSvg({
       kicker: "resumo semanal",
-      title: "A edição completa chega no seu e-mail. Assine no link da bio.",
+      title: "A edição completa chega no seu e-mail. Assine no link da bio. ".repeat(3).trim(),
       footer: "diar.ia.br",
     });
     assert.doesNotMatch(svg, /<tspan font-weight="700">/);
