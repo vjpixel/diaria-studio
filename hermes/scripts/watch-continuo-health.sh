@@ -937,7 +937,7 @@ try:
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
   file_issue "[watch-continuo] review obsoleto sem resolução" \
-    "[watch-continuo] PR com review obsoleto sem resolução (fix do #8445 não está agindo)" \
+    "[watch-continuo] review obsoleto sem resolução (fix do #8445 não está agindo)" \
     "bug,P1" \
     "Detectado por watch-continuo-health.sh via scripts/check-continuo-stale-review-health.ts (#8445) — PR(s) cujo review independente cobre um SHA anterior ao HEAD atual e que o merger do contínuo não resolveu:
 

@@ -93,3 +93,11 @@ describe("#8445 — a verificação automática está LIGADA (não depende de al
     assert.match(watch.slice(sec, end), /indeterminate" \]; then\s*\n\s*echo "\[watch\] review obsoleto: indeterminado[^"]*não alarma/);
   });
 });
+
+describe("#8445 — dedup da seção 14 (guard #6771: marcador precisa ser substring do título)", () => {
+  it("o marcador do file_issue da seção 14 está contido no título criado pela MESMA chamada", () => {
+    const m = watch.match(/file_issue "(\[watch-continuo\] review obsoleto sem resolução)" \\s*\n\s*"([^"]+)"/);
+    assert.ok(m, "chamada file_issue da seção 14 não encontrada");
+    assert.ok(m![2].includes(m![1]), `marcador "${m![1]}" ausente do título "${m![2]}" — have_issue nunca acharia a issue criada e o watch duplicaria a cada corrida`);
+  });
+});
