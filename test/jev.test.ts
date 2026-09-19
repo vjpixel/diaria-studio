@@ -101,6 +101,12 @@ describe("parseJevAnswers", () => {
     const answers = parseJevAnswers({ answers: { harm: { type: "noul", noul: 0.82 } } }, [NOUL_Q]);
     assert.deepEqual(answers[0], { id: "harm", type: "noul", probability: 0.82, confidence: 1 });
   });
+
+  it("`noul` tem precedência sobre `probability`/`prob` quando os dois vêm presentes (#8416 — reprodução independente do contrato do #8414, mesma medição de confirmação)", () => {
+    const raw = { answers: { harm: { type: "noul", noul: 0.71, probability: 0.2 } } };
+    const [a] = parseJevAnswers(raw, [NOUL_Q]);
+    assert.equal((a as { probability: number }).probability, 0.71);
+  });
 });
 
 describe("hashJevQuestions", () => {
