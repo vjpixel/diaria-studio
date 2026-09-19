@@ -148,8 +148,12 @@ export interface NotifyEditorDeps {
   /** `sendPushNotification` injetável (testes) — evita bater na rede/Gmail
    * real. Default a implementação de produção de `push-notify.ts`. */
   sendPush?: (message: PushMessage, opts: { to?: string; platformConfigPath?: string }) => Promise<{ ok: boolean; error?: string }>;
-  /** `logEvent` injetável (testes) — default grava em `data/run-log.jsonl`. */
-  log?: (event: RunLogEvent, rootDir: string) => void;
+  /** `logEvent` injetável (testes) — default grava em `data/run-log.jsonl`.
+   * Retorno `boolean | void` (#8453): produção (`logEvent` real) devolve
+   * `boolean` (sucesso da escrita); mocks de teste que não devolvem nada
+   * continuam válidos (`void`) — `notifyEditor` só populariza `logWriteOk`
+   * no resultado quando o retorno é de fato `boolean`. */
+  log?: (event: RunLogEvent, rootDir: string) => boolean | void;
   /** Destinatário do e-mail — default resolvido por `sendPushNotification`
    * via `resolveEditorEmail`. */
   emailTo?: string;
@@ -165,6 +169,20 @@ export interface NotifyEditorResult {
   issue?: AlarmIssueResult;
   emailSent: boolean;
   emailError?: string;
+  /**
+   * Presente só quando `severity` é `"info"`/`"silencio"` (#8453) — reflete
+   * se `logEvent` (via `deps.log`) conseguiu escrever em
+   * `data/run-log.jsonl`. `logEvent` NUNCA lança (contrato "logging nunca
+   * mascara o erro original", `worker-drift-check.ts:503-506`) — antes deste
+   * campo, nenhum caller de `notifyEditor` com essas severidades conseguia
+   * distinguir "notificação gravada com sucesso" de "escrita falhou em
+   * silêncio" (permissão, disco cheio, lock do OneDrive). Risco documentado
+   * como zero na #8453 porque hoje todo caller de produção do caminho
+   * `"info"` de `registerReport` fixa `notify: false` — este campo é o
+   * sinal que um caller futuro (`notify: true`) poderia checar.
+   * `undefined` quando `deps.log` injetado (testes) não devolve `boolean`.
+   */
+  logWriteOk?: boolean;
 }
 
 function defaultPlatformConfigPath(cwd: string): string {
@@ -340,7 +358,7 @@ export async function notifyEditor(
   const sendPush = deps.sendPush ?? sendPushNotification;
 
   if (finding.severity === "info" || finding.severity === "silencio") {
-    log(
+    const logResult = log(
       {
         edition: null,
         stage: null,
@@ -351,7 +369,11 @@ export async function notifyEditor(
       },
       rootDir,
     );
-    return { severity: finding.severity, emailPolicy, emailSent: false };
+    // #8453 — só populariza quando o `log` injetado de fato devolve boolean
+    // (produção); mocks de teste que retornam `void` deixam o campo
+    // `undefined` em vez de mentir `false`.
+    const logWriteOk = typeof logResult === "boolean" ? logResult : undefined;
+    return { severity: finding.severity, emailPolicy, emailSent: false, logWriteOk };
   }
 
   // "acao" | "urgente" -> garante a issue.

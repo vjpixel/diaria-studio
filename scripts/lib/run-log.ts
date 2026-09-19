@@ -9,6 +9,14 @@
  * Falhas de logging NUNCA sobem — princípio: logging não pode mascarar erro
  * original. Falha silenciosa é OK; auto-reporter só registra o que conseguiu
  * gravar.
+ *
+ * `logEvent` (#8453) devolve `boolean` (sucesso da escrita) em vez de `void`
+ * — NUNCA lança, mas agora expõe um sinal que o caller pode checar se quiser
+ * (ex: `notifyEditor` propaga isso como `logWriteOk` pro caminho
+ * `info`/`silencio`, que antes não tinha NENHUMA forma de distinguir
+ * "gravado" de "escrita falhou em silêncio" — achado #8453/PR #8452).
+ * Callers que ignoram o retorno (a maioria, hoje) continuam funcionando
+ * sem mudança nenhuma.
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -69,17 +77,21 @@ export function buildLogEvent(event: RunLogEvent, now: Date = new Date()): Persi
 
 /**
  * Append um evento estruturado em `data/run-log.jsonl`. Falha silenciosamente
- * — logging nunca pode mascarar o erro original do caller.
+ * — logging nunca pode mascarar o erro original do caller — mas devolve
+ * `boolean` (`true` = escreveu, `false` = falhou) em vez de `void` (#8453),
+ * pra quem quiser checar sem precisar que `logEvent` lance.
  *
  * `rootDir` default é cwd; injete em tests pra apontar pra tmpdir.
  */
-export function logEvent(event: RunLogEvent, rootDir: string = process.cwd()): void {
+export function logEvent(event: RunLogEvent, rootDir: string = process.cwd()): boolean {
   try {
     const persisted = buildLogEvent(event);
     const logPath = resolveRunLogPath(rootDir);
     mkdirSync(dirname(logPath), { recursive: true });
     appendFileSync(logPath, JSON.stringify(persisted) + "\n", "utf8");
+    return true;
   } catch {
     // swallow — logging must never mask the original error
+    return false;
   }
 }
