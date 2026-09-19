@@ -73,6 +73,36 @@
  * autoritativo sem ser. Só `--no-store-leitores` omite a seção por completo;
  * `--store-db <path>` sobrepõe o caminho do DB (default
  * `data/diaria-subscribers/diaria-subscribers.db`).
+ *
+ * ## `--fonte store|beehiiv` (#8238) — fonte da COORTE do funil principal
+ *
+ * Default `beehiiv` (comportamento inalterado): o funil principal (tabela do
+ * topo, ranking, "Funil por canal") lê a coorte do snapshot local
+ * `data/beehiiv-backup/`. Canal cujo cadastro nasce no Kit e nunca passa pela
+ * Beehiiv (os 3 braços "(teste 2608)" — `publishing.newsletter.backend =
+ * "kit"`, ver `CHANNEL_KEY_SPECS`) aparece com 0 cadastros nesta fonte,
+ * mesmo tendo cadastros reais — não porque o canal não converteu, mas porque
+ * a fonte nunca viu esses assinantes (achado #8238).
+ *
+ * `--fonte store` troca a coorte inteira pelo store unificado
+ * (`data/diaria-subscribers/diaria-subscribers.db`, Kit + Beehiiv + Brevo
+ * diária já ingeridos) via `buildCacCompatibleSubscribersFromStore`
+ * (`scripts/lib/leitor-store.ts`, construído originalmente pro #8210 Bug 2 —
+ * reusado aqui, não duplicado). Requer `--snapshot AAAA-MM-DD` explícito
+ * (rótulo/corte do relatório — não existe "snapshot mais recente" no store,
+ * que é mutável) e não tem snapshot ANTERIOR conhecido, então a linha "vs.
+ * base" (sinal de degradação) não é calculada neste modo. Reproduzir a
+ * mesma leitura mais tarde ainda depende do store não ter mudado — congelar
+ * um corte determinístico por timestamp de evento (truncar `event.ts` no
+ * corte) é escopo remanescente do #8238, não implementado aqui.
+ *
+ * **Detecção fail-soft, mesmo em `--fonte beehiiv`:** quando a fonte é
+ * `beehiiv`, o relatório roda uma checagem adicional (`detectTeste2608BeehiivStoreMismatch`)
+ * comparando, só para os canais "(teste 2608)", os cadastros do snapshot
+ * Beehiiv contra o store — se o Beehiiv mostra 0 e o store mostra > 0, isso
+ * vira um aviso explícito no relatório (nunca silencioso) recomendando
+ * `--fonte store`. Store ausente/ilegível é fail-soft (a checagem só some,
+ * nunca derruba o relatório principal).
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -94,6 +124,8 @@ import {
   computeMonthBudgetUsage,
   MONTHLY_BUDGET_FLOOR_BRL,
   CHANNEL_GROUP_KEYS,
+  CHANNEL_KEY_SPECS,
+  subscribersForChannel,
   type CacReport,
   type CacRow,
   type OrigemEntryFields,
@@ -109,7 +141,11 @@ import { fetchAndAggregateKit, formatCountsTable, type UtmCountResult } from "./
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { DEFAULT_DB_PATH as DEFAULT_STORE_DB_PATH, openDiariaSubscribersDbSafe } from "./lib/diaria-subscribers-db.ts";
-import { summarizeStoreLeitoresCanonicalDedup, type StoreLeitorSummary } from "./lib/leitor-store.ts";
+import {
+  summarizeStoreLeitoresCanonicalDedup,
+  buildCacCompatibleSubscribersFromStore,
+  type StoreLeitorSummary,
+} from "./lib/leitor-store.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data", "beehiiv-backup");
@@ -202,6 +238,56 @@ export function loadStoreLeitorSection(
   }
 }
 
+/**
+ * Checagem fail-soft (#8238): quando a coorte do funil principal vem do
+ * snapshot Beehiiv (`--fonte beehiiv`, o default), compara — só pros canais
+ * "(teste 2608)" de `CHANNEL_KEY_SPECS` — os cadastros que o Beehiiv viu
+ * contra os que o store unificado (Kit + Beehiiv + Brevo diária) tem pro
+ * MESMO canal. Beehiiv em 0 com store > 0 é o sintoma exato do #8238
+ * (cadastro nasceu no Kit, nunca passou pela Beehiiv) — vira aviso explícito
+ * no relatório em vez de deixar "0 cadastros" passar sem contexto.
+ *
+ * Nunca lança: store ausente/ilegível ou qualquer erro de leitura faz a
+ * checagem devolver `[]` silenciosamente — é um EXTRA sobre o relatório
+ * principal (que já rodou com a fonte escolhida via `--fonte`), nunca um
+ * motivo pra derrubá-lo. `openDb` injetável pro mesmo padrão de
+ * `loadStoreLeitorSection`. @pure o suficiente pra teste (I/O isolado em
+ * `openDb`).
+ */
+export function detectTeste2608BeehiivStoreMismatch(
+  report: CacReport,
+  storeDbPath: string = DEFAULT_STORE_DB_PATH,
+  openDb: (path: string) => DatabaseSync | null = openDiariaSubscribersDbSafe,
+): string[] {
+  let db: DatabaseSync | null = null;
+  try {
+    db = openDb(storeDbPath);
+    if (!db) return [];
+    const storeSubs = buildCacCompatibleSubscribersFromStore(db);
+    const testeCanais = [...new Set(CHANNEL_KEY_SPECS.filter((s) => s.canal.includes("(teste 2608)")).map((s) => s.canal))];
+    const warnings: string[] = [];
+    for (const canal of testeCanais) {
+      const beehiivRow = report.rows.find(
+        (r): r is Extract<CacRow, { kind: "measured" }> => r.kind === "measured" && r.canal === canal,
+      );
+      const beehiivCadastros = beehiivRow?.cadastros ?? 0;
+      if (beehiivCadastros > 0) continue;
+      const storeCount = subscribersForChannel(storeSubs, canal).length;
+      if (storeCount > 0) {
+        warnings.push(
+          `${canal}: Beehiiv mostra ${beehiivCadastros} cadastro(s), store unificado tem ${storeCount}.`,
+        );
+      }
+    }
+    return warnings;
+  } catch (e) {
+    console.error(`[cac-report] aviso: checagem beehiiv-vs-store (#8238) falhou (fail-soft): ${(e as Error).message}`);
+    return [];
+  } finally {
+    db?.close();
+  }
+}
+
 export function loadPreparedSubscribers(
   root: string,
   date: string,
@@ -249,6 +335,12 @@ export interface CacReportCliArgs {
   /** `--store-db <path>` (#7393): sobrepõe o caminho do store unificado
    *  (default `data/diaria-subscribers/diaria-subscribers.db`). */
   storeDbPath: string;
+  /** `--fonte store|beehiiv` (#8238): fonte da coorte do FUNIL PRINCIPAL
+   *  (tabela/ranking/funil-por-canal) — não confundir com as seções
+   *  informativas "Kit"/"Leitores via store unificado" acima, que sempre
+   *  rodam independente disto. Default `"beehiiv"` (comportamento
+   *  inalterado). Ver docstring do módulo. */
+  fonte: string;
 }
 
 export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
@@ -265,7 +357,39 @@ export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
     kit: !hasFlag(argv, "no-kit"),
     storeLeitores: !hasFlag(argv, "no-store-leitores"),
     storeDbPath: getStringArg(argv, "store-db") ?? DEFAULT_STORE_DB_PATH,
+    fonte: getStringArg(argv, "fonte") ?? "beehiiv",
   };
+}
+
+/** Valores aceitos por `--fonte` (#8238). @pure */
+export const CAC_REPORT_FONTES = ["beehiiv", "store"] as const;
+export type CacReportFonte = (typeof CAC_REPORT_FONTES)[number];
+
+/** @pure */
+export function isValidCacReportFonte(fonte: string): fonte is CacReportFonte {
+  return (CAC_REPORT_FONTES as readonly string[]).includes(fonte);
+}
+
+/**
+ * Id do relatório congelado (`data/aquisicao/cac-reports/{id}.md`,
+ * `registerReport` `sessionId`) — fonte ÚNICA da regra, consumida tanto por
+ * `main()` (que escreve o arquivo) quanto por `scripts/ads-test-watch.ts`
+ * (que precisa saber, ANTES de rodar, qual path o relatório vai ocupar pra
+ * montar o e-mail de sucesso). `--fonte store` ganha sufixo `--store`
+ * (#8238) — sem isso, `--fonte store --snapshot D` sobrescreveria em
+ * silêncio um relatório `--fonte beehiiv` já registrado com o mesmo rótulo
+ * de data; janela (`--desde`/`--ate`) mantém o sufixo `--w...` de sempre
+ * (#5495), aplicado sempre DEPOIS do sufixo de fonte. @pure
+ */
+export function cacReportSnapshotId(
+  snapshotDate: string,
+  fonte: CacReportFonte,
+  desde: string | null = null,
+  ate: string | null = null,
+): string {
+  const fonteSuffix = fonte === "store" ? "--store" : "";
+  const windowSuffix = desde || ate ? `--w${desde ?? "x"}_${ate ?? "x"}` : "";
+  return `${snapshotDate}${fonteSuffix}${windowSuffix}`;
 }
 
 /** Resolve `--desde`/`--ate` crus (strings AAAA-MM-DD) numa `CohortWindow`
@@ -307,9 +431,20 @@ function amostraQualifier(row: Extract<CacRow, { kind: "measured" }>): string {
 export interface CacReportProvenance {
   /** ISO — momento em que ESTE relatório foi apurado (não o do snapshot). */
   apuradoEm?: string;
-  /** Data do snapshot Beehiiv usado (`YYYY-MM-DD`). */
+  /** Data/rótulo do snapshot usado (`YYYY-MM-DD`) — no modo `--fonte store`
+   *  é o `--snapshot` passado na CLI (rótulo/corte), não um snapshot Beehiiv
+   *  de verdade (#8238). */
   snapshotDate?: string;
+  /** `"beehiiv"` (default) ou `"store"` (#8238) — fonte da coorte do funil
+   *  principal. `undefined` só em chamadas antigas de teste que não passam
+   *  provenance completo; tratado como `"beehiiv"` pra rótulo. */
+  fonte?: CacReportFonteLabel;
 }
+
+/** Só pra rótulo no markdown — não reimporta o tipo de `parseCacReportArgs`
+ *  pra manter este módulo de formatação independente de como a CLI valida
+ *  o valor. @pure */
+export type CacReportFonteLabel = "beehiiv" | "store";
 
 /** @pure */
 export function formatCacReportMarkdown(
@@ -318,11 +453,27 @@ export function formatCacReportMarkdown(
   provenance: CacReportProvenance = {},
   kitSection?: CacReportKitSection,
   storeSection?: CacReportStoreSection,
+  mismatchWarnings: readonly string[] = [],
 ): string {
   const lines: string[] = [];
   lines.push(`# Custo por leitor por canal`, "");
   if (provenance.apuradoEm) lines.push(`Apurado em: ${provenance.apuradoEm}.`);
-  if (provenance.snapshotDate) lines.push(`Snapshot Beehiiv usado: ${provenance.snapshotDate}.`);
+  lines.push(`Fonte da coorte: ${provenance.fonte ?? "beehiiv"}.`);
+  if (provenance.snapshotDate) {
+    lines.push(
+      provenance.fonte === "store"
+        ? `Rótulo/corte (store unificado): ${provenance.snapshotDate}.`
+        : `Snapshot Beehiiv usado: ${provenance.snapshotDate}.`,
+    );
+  }
+  if (mismatchWarnings.length > 0) {
+    lines.push("");
+    lines.push(
+      "⚠ Possível coorte na fonte errada (#8238) — canal(is) do teste 2608 com 0 cadastros no snapshot Beehiiv " +
+        "mas cadastros REAIS no store unificado (nasceram no Kit). Considere rodar com `--fonte store`:",
+    );
+    for (const w of mismatchWarnings) lines.push(`  - ${w}`);
+  }
   if (report.window) {
     const sinceLabel = report.window.since != null ? new Date(report.window.since * 1000).toISOString().slice(0, 10) : "(sem borda inferior)";
     const untilLabel =
@@ -515,9 +666,27 @@ function reportSpendErrorsToLines(errors: SpendRowError[]): string[] {
  * `--root`). Default `ROOT` (raiz real do projeto); testes injetam um
  * tmpdir aqui pra nunca escrever/registrar contra `data/reports/index.jsonl`
  * de verdade.
+ *
+ * Retorna o `CacReport` computado (ou `null` num caminho de erro/exit
+ * antecipado) — adicionado em #8238 pra permitir que callers como
+ * `scripts/ads-test-watch.ts` inspecionem o resultado (ex: guard de
+ * cadastros zerados nos 3 braços) sem reparsear o markdown/arquivo
+ * registrado. Chamadores existentes que ignoravam o retorno (`void`)
+ * continuam funcionando sem alteração.
  */
-export async function main(argv: string[] = process.argv.slice(2), rootDir: string = ROOT, now: () => Date = () => new Date()): Promise<void> {
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  rootDir: string = ROOT,
+  now: () => Date = () => new Date(),
+): Promise<CacReport | null> {
   const args = parseCacReportArgs(argv);
+
+  if (!isValidCacReportFonte(args.fonte)) {
+    console.error(`[cac-report] --fonte inválido: "${args.fonte}" (esperado um de: ${CAC_REPORT_FONTES.join(", ")}).`);
+    process.exitCode = 1;
+    return null;
+  }
+  const fonte = args.fonte;
 
   let window: CohortWindow | null;
   try {
@@ -525,7 +694,7 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
   } catch (e) {
     console.error((e as Error).message);
     process.exitCode = 1;
-    return;
+    return null;
   }
 
   let spendResult: { rows: SpendRow[]; errors: SpendRowError[] };
@@ -534,38 +703,82 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
   } catch (e) {
     console.error((e as Error).message);
     process.exitCode = 1;
-    return;
+    return null;
   }
   for (const line of reportSpendErrorsToLines(spendResult.errors)) console.error(line);
   if (spendResult.rows.length === 0) {
     console.error(`[cac-report] spend.csv não tem nenhuma linha válida — nada para reportar.`);
     process.exitCode = 1;
-    return;
-  }
-
-  const dates = listSnapshotDates(args.backupRoot);
-  const snapshotDate = args.snapshotDate ?? latestSnapshotDate(args.backupRoot);
-  if (!snapshotDate) {
-    console.error(`[cac-report] nenhum snapshot encontrado em ${args.backupRoot}.`);
-    process.exitCode = 1;
-    return;
+    return null;
   }
 
   const { index: origemIndex, applied: originApplied } = loadOrigemIndex(args.origemPath);
-  const { subs, internalFiltered } = loadPreparedSubscribers(args.backupRoot, snapshotDate, origemIndex);
-  if (subs.length === 0) {
-    console.error(`[cac-report] snapshot ${snapshotDate} não tem subscribers legíveis em ${args.backupRoot}.`);
-    process.exitCode = 1;
-    return;
-  }
 
-  // Snapshot anterior (pro sinal de degradação) — o segundo mais recente
-  // ANTES de `snapshotDate` na lista ordenada ascendente, quando existir.
-  const idx = dates.indexOf(snapshotDate);
-  const previousDate = idx > 0 ? dates[idx - 1] : null;
-  const previousSubs = previousDate
-    ? loadPreparedSubscribers(args.backupRoot, previousDate, origemIndex).subs
-    : undefined;
+  let snapshotDate: string;
+  let subs: BeehiivBackupSubscriber[];
+  let internalFiltered: number;
+  let previousSubs: BeehiivBackupSubscriber[] | undefined;
+  // Só populado no ramo `beehiiv` (sinal de degradação vs. o snapshot
+  // anterior) — `null` em `--fonte store`, onde não existe "anterior".
+  let previousDate: string | null = null;
+
+  if (fonte === "store") {
+    // #8238: coorte inteira vem do store unificado (Kit + Beehiiv + Brevo
+    // diária) — necessário pros canais "(teste 2608)", cujo cadastro nasce
+    // no Kit e nunca aparece no snapshot Beehiiv. Sem "mais recente" nesta
+    // fonte (o store é mutável, não datado em diretórios) — `--snapshot` é
+    // obrigatório como rótulo/corte do relatório.
+    if (!args.snapshotDate) {
+      console.error(`[cac-report] --snapshot AAAA-MM-DD é obrigatório com --fonte store (rótulo/corte do relatório, #8238).`);
+      process.exitCode = 1;
+      return null;
+    }
+    snapshotDate = args.snapshotDate;
+    const db = openDiariaSubscribersDbSafe(args.storeDbPath);
+    if (!db) {
+      console.error(`[cac-report] store não encontrado/ilegível em ${args.storeDbPath} (--fonte store).`);
+      process.exitCode = 1;
+      return null;
+    }
+    let rawStoreSubs: BeehiivBackupSubscriber[];
+    try {
+      rawStoreSubs = buildCacCompatibleSubscribersFromStore(db);
+    } finally {
+      db.close();
+    }
+    const overridden = applyOrigemOverride(rawStoreSubs, origemIndex);
+    const filtered = filterInternalAndTestSubscribers(overridden);
+    subs = filtered.kept;
+    internalFiltered = filtered.removedCount;
+    previousSubs = undefined; // sem snapshot anterior nesta fonte — sem sinal de degradação.
+    if (subs.length === 0) {
+      console.error(`[cac-report] store ${args.storeDbPath} não tem subscribers legíveis (--fonte store).`);
+      process.exitCode = 1;
+      return null;
+    }
+  } else {
+    const dates = listSnapshotDates(args.backupRoot);
+    const resolvedSnapshotDate = args.snapshotDate ?? latestSnapshotDate(args.backupRoot);
+    if (!resolvedSnapshotDate) {
+      console.error(`[cac-report] nenhum snapshot encontrado em ${args.backupRoot}.`);
+      process.exitCode = 1;
+      return null;
+    }
+    snapshotDate = resolvedSnapshotDate;
+    const prepared = loadPreparedSubscribers(args.backupRoot, snapshotDate, origemIndex);
+    subs = prepared.subs;
+    internalFiltered = prepared.internalFiltered;
+    if (subs.length === 0) {
+      console.error(`[cac-report] snapshot ${snapshotDate} não tem subscribers legíveis em ${args.backupRoot}.`);
+      process.exitCode = 1;
+      return null;
+    }
+    // Snapshot anterior (pro sinal de degradação) — o segundo mais recente
+    // ANTES de `snapshotDate` na lista ordenada ascendente, quando existir.
+    const idx = dates.indexOf(snapshotDate);
+    previousDate = idx > 0 ? dates[idx - 1] : null;
+    previousSubs = previousDate ? loadPreparedSubscribers(args.backupRoot, previousDate, origemIndex).subs : undefined;
+  }
 
   let report: CacReport;
   try {
@@ -573,12 +786,17 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
   } catch (e) {
     console.error((e as Error).message);
     process.exitCode = 1;
-    return;
+    return null;
   }
   const monthKey = snapshotDate.slice(0, 7); // "YYYY-MM-DD" -> "YYYY-MM"
   const budget = computeMonthBudgetUsage(spendResult.rows, monthKey, MONTHLY_BUDGET_FLOOR_BRL);
   const apuradoEm = now().toISOString();
-  const provenance = { apuradoEm, snapshotDate };
+  const provenance: CacReportProvenance = { apuradoEm, snapshotDate, fonte };
+
+  // #8238: fail-soft, só quando a fonte É o snapshot Beehiiv — compara os
+  // canais "(teste 2608)" contra o store pra detectar coorte perdida (ver
+  // docstring do módulo e de `detectTeste2608BeehiivStoreMismatch`).
+  const mismatchWarnings: string[] = fonte === "beehiiv" ? detectTeste2608BeehiivStoreMismatch(report, args.storeDbPath) : [];
 
   // #7359: seção informativa "Cadastros no Kit por UTM" — opt-out via
   // --no-kit; fail-soft por conta própria (loadKitUtmSection nunca lança).
@@ -594,13 +812,15 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
     : undefined;
 
   if (args.json) {
-    console.log(JSON.stringify({ snapshotDate, previousDate, report, budget, apuradoEm, kitSection, storeSection }, null, 2));
+    console.log(
+      JSON.stringify({ snapshotDate, previousDate, report, budget, apuradoEm, fonte, mismatchWarnings, kitSection, storeSection }, null, 2),
+    );
   } else {
-    console.log(formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection));
+    console.log(formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection, mismatchWarnings));
   }
 
   if (args.register) {
-    const markdown = formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection);
+    const markdown = formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection, mismatchWarnings);
     const dir = resolve(rootDir, "data", "aquisicao", "cac-reports");
     mkdirSync(dir, { recursive: true });
     // Id inclui a janela quando --desde/--ate foi passado (#5495 — "duas
@@ -610,8 +830,10 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
     // existentes. Com janela, o sufixo garante que rodar o relatório com
     // duas janelas diferentes no mesmo dia produz dois arquivos/registros
     // distintos em vez de um sobrescrever o outro silenciosamente.
-    const windowSuffix = args.desde || args.ate ? `--w${args.desde ?? "x"}_${args.ate ?? "x"}` : "";
-    const id = `${snapshotDate}${windowSuffix}`;
+    // #8238: `--fonte store` ganha sufixo próprio — sem isso, rodar
+    // `--fonte store --snapshot 2026-09-17` sobrescreveria em silêncio um
+    // relatório `--fonte beehiiv` já registrado com o mesmo rótulo de data.
+    const id = cacReportSnapshotId(snapshotDate, fonte, args.desde, args.ate);
     const relPath = `data/aquisicao/cac-reports/${id}.md`;
     writeFileSync(resolve(rootDir, relPath), markdown, "utf8");
     const result = registerReport(rootDir, {
@@ -639,6 +861,8 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
     );
     process.exitCode = 1;
   }
+
+  return report;
 }
 
 if (isMainModule(import.meta.url)) {

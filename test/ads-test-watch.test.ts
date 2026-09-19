@@ -21,8 +21,12 @@ import {
   projectBudgetCrossing,
   resolveArmSpend,
   buildSpendWatchDigestSection,
+  detectZeroCadastrosAcrossArms,
+  detectZeroCadastrosAcrossArmsFromReport,
+  buildApuracaoZeroCadastrosEmail,
   type AdsTestWatchState,
 } from "../scripts/lib/ads-test-watch.ts";
+import type { CacRow, CacReport } from "../scripts/lib/cac.ts";
 import { buildAdsTestRunState, ADS_TEST_2608_BRACOS } from "../scripts/lib/ads-test-run-state.ts";
 import { addDays } from "../scripts/lib/ads-test-schedule.ts";
 import { plannedBudgetBRL } from "../scripts/lib/ads-test-pause-window.ts";
@@ -557,5 +561,99 @@ describe("#7577 — parseClicksCsv: coluna 'cadastros_acumulado'", () => {
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(errors.length, 0);
     assert.equal(rows[0].cadastrosAcumulado, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8238 — guard de cadastros zerados: nunca congelar uma apuração cuja
+// coorte veio da fonte errada (ex: cac-report.ts ainda lendo o snapshot
+// Beehiiv pra um teste cujo cadastro nasce no Kit).
+// ---------------------------------------------------------------------------
+
+function measuredRow(overrides: Partial<CacMeasuredRowLike> = {}): CacRow {
+  return {
+    kind: "measured",
+    canal: "Google Ads (teste 2608)",
+    spend: { canal: "Google Ads (teste 2608)", mes: "2026-09", moeda: "BRL", valor: 500.57, fonte: "teste" },
+    cadastros: 0,
+    ativos: 0,
+    leitores: 0,
+    pending: 0,
+    inativos: 0,
+    invalid: 0,
+    outrosStatus: 0,
+    custoPorLeitor: null,
+    aberturaAgregada: null,
+    amostraConsiderada: 0,
+    amostraInstavel: false,
+    amostraVazia: true,
+    amostraPequena: false,
+    aberturaAgregadaAnterior: null,
+    degradado: null,
+    window: null,
+    excludedMissingCreated: 0,
+    ...overrides,
+  } as CacRow;
+}
+
+// Só os campos que os testes abaixo variam — o resto vem do default de
+// `measuredRow` acima. Evita repetir as ~18 propriedades de `CacMeasuredRow`
+// em cada `it()` (a maioria delas é irrelevante pro guard, que só lê
+// `kind`/`canal`/`cadastros`).
+type CacMeasuredRowLike = { canal: string; cadastros: number };
+
+describe("#8238 — detectZeroCadastrosAcrossArms / detectZeroCadastrosAcrossArmsFromReport", () => {
+  it("todos os 3 braços com cadastros > 0 -> lista vazia (nada a alarmar)", () => {
+    const rows: CacRow[] = ADS_TEST_2608_BRACOS.map((canal, i) => measuredRow({ canal, cadastros: i + 10 }));
+    assert.deepEqual(detectZeroCadastrosAcrossArms(rows, ADS_TEST_2608_BRACOS), []);
+  });
+
+  it("1 braço com 0 cadastros, os outros 2 com dado real -> só o zerado aparece (sinal parcial, não o guard de TODOS)", () => {
+    const rows: CacRow[] = [
+      measuredRow({ canal: ADS_TEST_2608_BRACOS[0], cadastros: 0 }),
+      measuredRow({ canal: ADS_TEST_2608_BRACOS[1], cadastros: 80 }),
+      measuredRow({ canal: ADS_TEST_2608_BRACOS[2], cadastros: 2 }),
+    ];
+    assert.deepEqual(detectZeroCadastrosAcrossArms(rows, ADS_TEST_2608_BRACOS), [ADS_TEST_2608_BRACOS[0]]);
+  });
+
+  it("os 3 braços com 0 cadastros -> os 3 aparecem (o cenário exato do #8238: fonte errada)", () => {
+    const rows: CacRow[] = ADS_TEST_2608_BRACOS.map((canal) => measuredRow({ canal, cadastros: 0 }));
+    assert.deepEqual(detectZeroCadastrosAcrossArms(rows, ADS_TEST_2608_BRACOS), [...ADS_TEST_2608_BRACOS]);
+  });
+
+  it("braço que nem aparece em `rows` (canal desconhecido/sem spend) conta como 0, mesmo sinal de zerado", () => {
+    const rows: CacRow[] = [measuredRow({ canal: ADS_TEST_2608_BRACOS[0], cadastros: 5 })];
+    assert.deepEqual(
+      detectZeroCadastrosAcrossArms(rows, ADS_TEST_2608_BRACOS),
+      [ADS_TEST_2608_BRACOS[1], ADS_TEST_2608_BRACOS[2]],
+    );
+  });
+
+  it("linha boost-estimate (sem `cadastros`) nunca conta como dado — braço com só uma linha boost segue zerado", () => {
+    const boostRow: CacRow = {
+      kind: "boost-estimate",
+      canal: ADS_TEST_2608_BRACOS[0],
+      spend: { canal: ADS_TEST_2608_BRACOS[0], mes: "2026-09", moeda: "BRL", valor: 100, fonte: "teste" },
+      range: { custoPorLeitorMin: 1, custoPorLeitorMax: 2, leitoresMin: 1, leitoresMax: 2, ativosMin: 1, ativosMax: 2 },
+      note: "estimado",
+    };
+    assert.deepEqual(detectZeroCadastrosAcrossArms([boostRow], [ADS_TEST_2608_BRACOS[0]]), [ADS_TEST_2608_BRACOS[0]]);
+  });
+
+  it("detectZeroCadastrosAcrossArmsFromReport lê `report.rows` (mesma regra, via o objeto CacReport inteiro)", () => {
+    const rows: CacRow[] = ADS_TEST_2608_BRACOS.map((canal) => measuredRow({ canal, cadastros: 0 }));
+    const fakeReport = { rows } as CacReport;
+    assert.deepEqual(detectZeroCadastrosAcrossArmsFromReport(fakeReport, ADS_TEST_2608_BRACOS), [...ADS_TEST_2608_BRACOS]);
+  });
+});
+
+describe("#8238 — buildApuracaoZeroCadastrosEmail", () => {
+  it("assunto e corpo citam a data, os braços zerados e nunca soam como sucesso", () => {
+    const { subject, body } = buildApuracaoZeroCadastrosEmail("2026-10-25", [...ADS_TEST_2608_BRACOS]);
+    assert.match(subject, /0 cadastros/);
+    assert.match(subject, /NÃO congelada/);
+    for (const braco of ADS_TEST_2608_BRACOS) assert.match(body, new RegExp(braco.replace(/[()]/g, "\\$&")));
+    assert.doesNotMatch(body, /apuração congelada rodou/i);
   });
 });

@@ -46,6 +46,7 @@ import Papa from "papaparse";
 import { addDays, daysBetween, type DateOnlyString } from "./ads-test-schedule.ts";
 import type { AdsTestRunState } from "./ads-test-run-state.ts";
 import { plannedBudgetBRL, type AdsTestBudgetPeriod, type AdsTestPauseInterval } from "./ads-test-pause-window.ts";
+import type { CacReport, CacRow } from "./cac.ts";
 
 // ---------------------------------------------------------------------------
 // Plano diário
@@ -664,6 +665,63 @@ export function buildApuracaoSuccessEmail(snapshotDate: DateOnlyString, reportUr
       `Relatório: ${reportUrl}`,
       "",
       "build-origem-map.ts rodou imediatamente antes de cac-report.ts, como exige a §7.2.",
+    ].join("\n"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Guard de cadastros zerados (#8238) — nunca congelar um relatório com 0
+// cadastros nos 3 braços como se fosse "concluído": é o sintoma exato de
+// `cac-report.ts` ter lido a coorte da fonte errada (snapshot Beehiiv, que
+// nunca viu cadastros nascidos no Kit).
+// ---------------------------------------------------------------------------
+
+/** Cadastros medidos por canal — só linhas `measured` de `CacReport.rows`
+ *  têm o campo `cadastros`; qualquer outro tipo (`boost-estimate`) ou canal
+ *  ausente do relatório conta como 0 (sinal igualmente ruim: nem apareceu).
+ *  @pure */
+function cadastrosPorCanal(rows: readonly CacRow[]): Map<string, number> {
+  const byCanal = new Map<string, number>();
+  for (const row of rows) {
+    if (row.kind === "measured") byCanal.set(row.canal, row.cadastros);
+  }
+  return byCanal;
+}
+
+/**
+ * Devolve os `bracos` (nomes de canal EXATOS, ver `ADS_TEST_2608_BRACOS`)
+ * cujo `cadastros` no relatório é 0 (ou o canal nem aparece em `rows` —
+ * mesmo sinal, tratado igual). Usada pelo caller (`scripts/ads-test-watch.ts`)
+ * pra decidir se TODOS os braços zeraram — sinal de fonte de dados errada
+ * (#8238) — antes de marcar a apuração como concluída. @pure
+ */
+export function detectZeroCadastrosAcrossArms(rows: readonly CacRow[], bracos: readonly string[]): string[] {
+  const byCanal = cadastrosPorCanal(rows);
+  return bracos.filter((braco) => (byCanal.get(braco) ?? 0) === 0);
+}
+
+/** Mesmo que `detectZeroCadastrosAcrossArms`, mas recebendo o `CacReport`
+ *  inteiro — conveniência pro caller que já tem o objeto retornado por
+ *  `cac-report.ts::main()` em mãos. @pure */
+export function detectZeroCadastrosAcrossArmsFromReport(report: CacReport, bracos: readonly string[]): string[] {
+  return detectZeroCadastrosAcrossArms(report.rows, bracos);
+}
+
+export function buildApuracaoZeroCadastrosEmail(
+  snapshotDate: DateOnlyString,
+  zeroArmBracos: readonly string[],
+): { subject: string; body: string } {
+  return {
+    subject: `🚨 Teste 2608: apuração de ${snapshotDate} deu 0 cadastros em TODOS os braços — NÃO congelada`,
+    body: [
+      `Alarme automático do Diaria-Ads-Test-Watch (#8238).`,
+      "",
+      `A apuração pré-registrada (${snapshotDate}) rodou, mas os ${zeroArmBracos.length} braço(s) do teste`,
+      `(${zeroArmBracos.join(", ")}) saíram com 0 cadastros — sinal de fonte de dados errada`,
+      "(ex: cac-report.ts leu só o snapshot Beehiiv, mas o cadastro real nasceu no Kit e nunca passou por lá).",
+      "",
+      "A apuração NÃO foi marcada como concluída — este alarme repete todo dia até os cadastros aparecerem",
+      'ou até você investigar manualmente (checar "--fonte store" em cac-report.ts, #8238).',
     ].join("\n"),
   };
 }
