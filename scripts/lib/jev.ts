@@ -252,9 +252,15 @@ export function parseJevAnswers(raw: unknown, questions: JevQuestion[]): JevAnsw
         return { id: q.id, type: "score", score, confidence: toConfidence(rec.confidence) } satisfies JevScoreAnswer;
       }
       case "noul": {
-        const probability = toNumber(rec.probability ?? rec.prob);
+        // Contrato real confirmado ao vivo (#8414, 19/09/2026): a chave é
+        // `noul`, não `probability`/`prob` como a analogia com `choice`/
+        // `score` sugeria antes de qualquer medição real usar o tipo —
+        // `{"type":"noul","noul":0.82}`. Mantém `probability`/`prob` como
+        // fallback tolerante (não sabemos se o vendor usa nomes diferentes
+        // por versão de modelo) — `noul` é só o primeiro confirmado.
+        const probability = toNumber(rec.noul ?? rec.probability ?? rec.prob);
         if (probability === null) {
-          throw new Error(`[jev] \`answers.${q.id}.probability\` ausente ou não é número`);
+          throw new Error(`[jev] \`answers.${q.id}.noul\` ausente ou não é número`);
         }
         return {
           id: q.id,
