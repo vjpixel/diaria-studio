@@ -18,8 +18,11 @@
  * Generaliza o que o #2131 fez para UMA categoria ("não subponderar
  * Segurança"): reserva **N slots por SEMANA** (não por edição) para itens com
  * sinal exógeno — `affinity < EXPLORATION_AFFINITY_MAX` mas score-base
- * competitivo (dentro de `scoreGapPts` do destaque mais fraco do dia). O item
- * escolhido sai marcado `exploracao: true`.
+ * competitivo (dentro de `scoreGapPts` do destaque mais fraco do dia), **e que
+ * não seja big-tech** (piso de `isBigTechItem` — afinidade baixa sozinha não
+ * distingue "nunca mostrado" de "mostrado todo dia"; ver a docstring dessa
+ * função pro achado medido que a motivou). O item escolhido sai marcado
+ * `exploracao: true`.
  *
  * **N = 4/semana** é decisão do editor registrada na #8370 (briefing da
  * rodada overnight 260918c: "N = 3-4 destaques/semana", opção mais agressiva
@@ -51,8 +54,11 @@
  * de dado nova é necessária dos dois lados.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { writeFileAtomic } from "./atomic-write.ts";
+import { withFileLock } from "./file-lock.ts";
+import { classifyItem } from "./editorial-concentration.ts"; // #8370 Peça 3 — mesma lista de termos
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
@@ -84,12 +90,18 @@ export const EXPLORATION_DEFAULT_SCORE_GAP_PTS = 8;
  */
 export const EXPLORATION_DESTAQUE_SLOTS = 3;
 
+/**
+ * **Não existe teto configurável por edição, de propósito.** `applyExplorationQuota`
+ * marca no MÁXIMO 1 destaque por edição, por construção (toda decisão retorna
+ * assim que encontra o item) — um `max_per_edition: 2` em config não faria
+ * nada, e um knob que não faz nada é pior que knob nenhum. Quem quiser mais
+ * exploração sobe `slots_per_week`: a cota é semanal, é essa a unidade que o
+ * editor decidiu.
+ */
 export interface ExplorationConfig {
   enabled: boolean;
   /** N da cota semanal. */
   slotsPerWeek: number;
-  /** Teto de promoções por edição (1 = no máximo 1 destaque exógeno/dia). */
-  maxPerEdition: number;
   affinityMax: number;
   scoreGapPts: number;
 }
@@ -97,7 +109,6 @@ export interface ExplorationConfig {
 export const EXPLORATION_CONFIG_DEFAULTS: ExplorationConfig = {
   enabled: true,
   slotsPerWeek: EXPLORATION_DEFAULT_SLOTS_PER_WEEK,
-  maxPerEdition: 1,
   affinityMax: EXPLORATION_AFFINITY_MAX,
   scoreGapPts: EXPLORATION_DEFAULT_SCORE_GAP_PTS,
 };
@@ -113,7 +124,6 @@ export function resolveExplorationConfig(raw: unknown): ExplorationConfig {
   return {
     enabled: o.enabled === undefined ? EXPLORATION_CONFIG_DEFAULTS.enabled : o.enabled === true,
     slotsPerWeek: positiveNumber(o.slots_per_week, EXPLORATION_CONFIG_DEFAULTS.slotsPerWeek),
-    maxPerEdition: positiveNumber(o.max_per_edition, EXPLORATION_CONFIG_DEFAULTS.maxPerEdition),
     affinityMax: positiveNumber(o.affinity_max, EXPLORATION_CONFIG_DEFAULTS.affinityMax),
     scoreGapPts: positiveNumber(o.score_gap_pts, EXPLORATION_CONFIG_DEFAULTS.scoreGapPts),
   };
@@ -122,15 +132,24 @@ export function resolveExplorationConfig(raw: unknown): ExplorationConfig {
 /**
  * Lê a config do `platform.config.json`. Fail-soft: config ausente/ilegível
  * cai nos defaults (a cota é correção de viés editorial, não gate — nunca
- * derruba o Stage 1 por causa de um JSON).
+ * derruba o Stage 1 por causa de um JSON) — mas **avisando**: cair no default
+ * em silêncio faria um `slots_per_week` editado à mão e quebrado parecer
+ * respeitado.
  */
-export function loadExplorationConfig(rootDir: string): ExplorationConfig {
+export function loadExplorationConfig(
+  rootDir: string,
+  log: (msg: string) => void = (msg) => console.error(msg),
+): ExplorationConfig {
   const path = resolve(rootDir, "platform.config.json");
   if (!existsSync(path)) return { ...EXPLORATION_CONFIG_DEFAULTS };
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     return resolveExplorationConfig(parsed.editorial_exploration);
-  } catch {
+  } catch (err) {
+    log(
+      `[exploration-quota] platform.config.json ilegível (${(err as Error).message}) — ` +
+        `usando defaults da cota (slots_per_week=${EXPLORATION_CONFIG_DEFAULTS.slotsPerWeek}) (#8370)`,
+    );
     return { ...EXPLORATION_CONFIG_DEFAULTS };
   }
 }
@@ -179,17 +198,26 @@ export function explorationWeekOfEdition(edition: string): string | null {
 
 // ─── Estado ────────────────────────────────────────────────────────────────
 
-export interface ExplorationRecord {
-  /** Chave ISO da semana (`"2026-W38"`) — o balde da cota. */
-  week: string;
-  /** `true` quando esta edição consumiu um slot de exploração. */
-  exploracao: boolean;
-  /** URL do destaque marcado (ausente quando `exploracao: false`). */
-  url?: string;
-  /** Como o slot foi consumido — swap do pool ou item já selecionado por mérito. */
-  origin?: "promoted" | "already-selected";
-  decided_at: string;
-}
+export type ExplorationOrigin = "promoted" | "already-selected";
+
+/**
+ * União discriminada de propósito: `url`/`origin` existem **se e somente se**
+ * a edição consumiu um slot. Um `{ exploracao: false, url: "..." }` — ou um
+ * `exploracao: true` sem URL — seria um registro que o join da Peça 3 conta
+ * como exploração sem conseguir dizer qual destaque foi, e nada além da
+ * disciplina do call site impediria isso se o tipo fosse um record plano.
+ */
+export type ExplorationRecord =
+  | { week: string; exploracao: false; decided_at: string }
+  | {
+      week: string;
+      exploracao: true;
+      /** URL do destaque marcado. */
+      url: string;
+      /** Como o slot foi consumido — swap do pool ou item já selecionado por mérito. */
+      origin: ExplorationOrigin;
+      decided_at: string;
+    };
 
 export interface ExplorationState {
   editions: Record<string, ExplorationRecord>;
@@ -229,33 +257,60 @@ export function recordExplorationDecision(
   return { ...state, editions: { ...state.editions, [edition]: record } };
 }
 
-/** Fail-soft: arquivo ausente/corrompido → estado vazio, nunca lança. */
-export function readExplorationState(path: string): ExplorationState {
-  if (!existsSync(path)) return emptyExplorationState();
+export interface ExplorationStateRead {
+  state: ExplorationState;
+  /**
+   * `true` quando o arquivo EXISTE mas não deu pra ler — distinto de "ainda
+   * não existe". A diferença importa: arquivo ausente significa cota zerada
+   * de verdade; arquivo corrompido significa **contador perdido**, e tratar
+   * os dois como estado vazio faria a semana ganhar N slots extras em
+   * silêncio (`data/` sincroniza por OneDrive entre 3 máquinas, e conflito
+   * de sync durante escrita é incidente registrado no projeto).
+   */
+  corrupted: boolean;
+  error?: string;
+}
+
+/** Fail-soft: nunca lança. Corrupção é sinalizada, não engolida. */
+export function readExplorationState(path: string): ExplorationStateRead {
+  if (!existsSync(path)) return { state: emptyExplorationState(), corrupted: false };
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ExplorationState>;
-    if (!parsed || typeof parsed !== "object" || !parsed.editions) return emptyExplorationState();
-    return { editions: parsed.editions };
-  } catch {
-    return emptyExplorationState();
+    if (!parsed || typeof parsed !== "object" || !parsed.editions) {
+      return {
+        state: emptyExplorationState(),
+        corrupted: true,
+        error: "JSON válido mas sem a chave `editions`",
+      };
+    }
+    return { state: { editions: parsed.editions }, corrupted: false };
+  } catch (err) {
+    return { state: emptyExplorationState(), corrupted: true, error: (err as Error).message };
   }
 }
 
 /**
- * Persiste o estado. Devolve `false` (sem lançar) quando o diretório que
- * hospedaria o arquivo não existe — em produção o path é `data/…`, ausente em
- * worktree isolado/clone fresco; mesma degradação graciosa de
- * `snippet-loader.ts` (#5227). Não cria `data/` do nada de propósito: um
- * `data/` fabricado por um worktree seria um diretório órfão fora do
- * OneDrive, indistinguível do real.
+ * Persiste o estado, atomicamente (tmp + rename, via `writeFileAtomic`) e sob
+ * lock de arquivo — o mesmo par que `social-published-store.ts` usa, e pelo
+ * mesmo motivo: `data/` é compartilhado entre máquinas/worktrees, então um
+ * `writeFileSync` cru pode ser lido pela metade (produzindo exatamente a
+ * corrupção que `readExplorationState` acima sinaliza) e dois processos em
+ * read-modify-write podem perder a decisão um do outro.
+ *
+ * Devolve `false` (sem lançar) quando o diretório que hospedaria o arquivo
+ * não existe — em produção o path é `data/…`, ausente em worktree isolado/
+ * clone fresco; mesma degradação graciosa de `snippet-loader.ts` (#5227).
+ * Não cria `data/` do nada de propósito: um `data/` fabricado por um worktree
+ * seria um diretório órfão fora do OneDrive, indistinguível do real.
  */
 export function writeExplorationState(path: string, state: ExplorationState): boolean {
   const dir = dirname(path);
   if (!existsSync(dir)) return false;
-  mkdirSync(dir, { recursive: true });
   const ordered: Record<string, ExplorationRecord> = {};
   for (const key of Object.keys(state.editions).sort()) ordered[key] = state.editions[key];
-  writeFileSync(path, JSON.stringify({ editions: ordered }, null, 2) + "\n", "utf8");
+  withFileLock(`${path}.lock`, () => {
+    writeFileAtomic(path, JSON.stringify({ editions: ordered }, null, 2) + "\n");
+  });
   return true;
 }
 
@@ -318,21 +373,81 @@ function urlOf(h: { url?: string; article?: { url?: string } | undefined }): str
 }
 
 /**
- * Marca/promove no máximo 1 destaque de exploração por edição, respeitando a
- * cota semanal. Pura — não muta os argumentos, não toca em disco.
+ * Piso do teste de exogeneidade: um item cujo título/resumo fala de big-tech
+ * não é "conteúdo que não estávamos considerando", por afinidade nenhuma.
+ *
+ * **Por que este piso existe (achado do review desta PR, medido contra o
+ * `data/` real):** `annotateAudienceAffinity` (#2063) nasceu pra outra
+ * pergunta — casar tutorial com o stack declarado do leitor — e pontua por
+ * match literal de nome de categoria/ferramenta no texto. Na prática
+ * `"OpenAI apresenta o Sora 3"` e `"Google atualiza o Gemini"` dão afinidade
+ * **0**, exatamente como `"Anatel abre consulta sobre IA"`, enquanto
+ * `"Anthropic levanta rodada bilionária"` dá 0,23 por casar "treinamento"/
+ * "infraestrutura" de raspão. Ou seja: afinidade baixa **não** é sinônimo de
+ * assunto sub-representado, e sem este piso a cota gastaria seus 4 slots
+ * semanais promovendo mais big-tech — o oposto do que a #8370 pede.
+ *
+ * O piso é NEGATIVO de propósito ("não é big-tech"), nunca um teste positivo
+ * de novidade: a lista de termos é a MESMA de `editorial-concentration.ts`
+ * (Peça 3), então o que a série mede como concentração é o que a cota se
+ * recusa a chamar de exploração. O sinal positivo — "veio de query de
+ * demanda" — é a Peça 1 (#8366) e ainda não existe; até lá a cota é
+ * deliberadamente conservadora: prefere não gastar o slot a gastá-lo errado.
+ */
+function isBigTechItem(item: {
+  article?: (Record<string, unknown> & { title?: string }) | undefined;
+}): boolean {
+  const article = item.article ?? {};
+  const text = [article.title, article.summary].filter((v) => typeof v === "string").join(" ");
+  return text.length > 0 && classifyItem(text).bigTech;
+}
+
+/**
+ * Tira o `exploracao` que veio de fora (marca do `scorer-select`), pra que
+ * quem marca seja sempre esta função. Devolve o MESMO array quando não há
+ * nada a limpar — o caso normal não paga cópia.
+ */
+export function clearExploracaoFlags<H extends ExplorationHighlightLike>(highlights: H[]): H[] {
+  if (!highlights.some((h) => h.exploracao !== undefined)) return highlights;
+  return highlights.map((h) => {
+    if (h.exploracao === undefined) return h;
+    const { exploracao: _dropped, ...rest } = h;
+    return rest as H;
+  });
+}
+
+/**
+ * Marca no máximo 1 destaque de exploração por edição, respeitando a cota
+ * semanal. Pura — não muta os argumentos, não toca em disco.
+ *
+ * **O `exploracao` do output é sempre desta função, nunca herdado.**
+ * `scorer-select.md` instrui o agent a marcar o campo quando ele mesmo
+ * escolhe o item exógeno, e essa marca é bem-vinda como SINAL (decisão 2
+ * abaixo a honra, preferindo-a ao teste mecânico de afinidade) — mas ela é
+ * limpa de todos os outros highlights antes de qualquer coisa. Sem isso, uma
+ * marca do agent em item de afinidade alta sobreviveria intacta enquanto a
+ * decisão 3 marcava um segundo item, e a edição sairia com DOIS destaques
+ * `exploracao: true` contra 1 slot debitado — a cota semanal viraria ficção e
+ * a série da Peça 3 contaria errado.
+ *
+ * Guards de saída (no-op, antes de qualquer decisão): `enabled: false`, zero
+ * highlights, ou cota da semana esgotada. Nos três a marca do agent também é
+ * limpa: exploração não debitada não pode aparecer no output.
  *
  * Ordem das decisões:
  *
- * 1. Cota da semana esgotada (ou `enabled: false`) → no-op.
- * 2. Algum dos `EXPLORATION_DESTAQUE_SLOTS` primeiros highlights JÁ tem
- *    afinidade abaixo do teto → marca esse (`origin: "already-selected"`) e
- *    consome o slot, sem trocar nada. O pool entregou exploração por mérito
- *    próprio; forçar uma troca por cima disso mexeria na edição à toa e
- *    inflaria a série da Peça 3 com exploração que não custou nada.
- * 3. Senão, promove o melhor finalista exógeno e competitivo, trocando o
+ * 1. Algum dos `EXPLORATION_DESTAQUE_SLOTS` primeiros highlights JÁ é
+ *    exploração — marcado pelo agent, ou com afinidade abaixo do teto → marca
+ *    esse (`origin: "already-selected"`) e consome o slot, sem trocar nada. O
+ *    pool entregou exploração por mérito próprio; forçar uma troca por cima
+ *    disso mexeria na edição à toa e inflaria a série da Peça 3 com
+ *    exploração que não custou nada.
+ * 2. Senão, promove o melhor finalista exógeno e competitivo, trocando o
  *    destaque de MENOR score entre os 3 primeiros — nunca o primeiro slot
  *    (mesma regra de `ensureNegativeImpactHighlight`: a correção de viés
- *    jamais derruba o melhor candidato do dia).
+ *    jamais derruba o melhor candidato do dia). Empate de score entre D2 e D3
+ *    demove o de menor índice (D2), por ser a ordem editorial que o
+ *    `scorer-select` já classificou como a mais forte das duas.
  *
  * `affinityOf` devolvendo `null` para tudo (sem `data/`) faz a função virar
  * no-op com `skipped` preenchido — nunca inventa exploração sem sinal.
@@ -343,42 +458,59 @@ export function applyExplorationQuota<H extends ExplorationHighlightLike>(
   opts: ExplorationQuotaOptions,
 ): ExplorationQuotaResult<H> {
   const { config, week, weekUsageBefore, affinityOf } = opts;
-  if (!config.enabled) return { highlights, skipped: "cota desabilitada em platform.config.json" };
-  if (config.maxPerEdition <= 0) return { highlights, skipped: "max_per_edition = 0" };
-  if (highlights.length === 0) return { highlights, skipped: "sem highlights" };
+  // Marca vinda do agent: lida como sinal (decisão 1), mas nunca propagada
+  // sem ser debitada — ver docstring.
+  const cleared = clearExploracaoFlags(highlights);
+  if (!config.enabled) {
+    return { highlights: cleared, skipped: "cota desabilitada em platform.config.json" };
+  }
+  if (highlights.length === 0) return { highlights: cleared, skipped: "sem highlights" };
   if (weekUsageBefore >= config.slotsPerWeek) {
     return {
-      highlights,
+      highlights: cleared,
       skipped: `cota semanal esgotada (${weekUsageBefore}/${config.slotsPerWeek} em ${week})`,
     };
   }
 
   const zoneEnd = Math.min(EXPLORATION_DESTAQUE_SLOTS, highlights.length);
-  const isExogenous = (affinity: number | null): boolean =>
-    affinity !== null && affinity < config.affinityMax;
+  const isExogenous = (item: {
+    url?: string;
+    article?: (Record<string, unknown> & { url?: string; title?: string }) | undefined;
+  }): boolean => {
+    const affinity = affinityOf(item);
+    if (affinity === null || affinity >= config.affinityMax) return false;
+    return !isBigTechItem(item);
+  };
 
-  // (2) Já há exploração entre os destaques do dia?
-  for (let i = 0; i < zoneEnd; i++) {
-    if (!isExogenous(affinityOf(highlights[i]))) continue;
-    const url = urlOf(highlights[i]) ?? "(desconhecida)";
-    const next = highlights.slice();
-    next[i] = { ...highlights[i], exploracao: true };
+  // (1) Já há exploração entre os destaques do dia — por marca do agent ou
+  // por afinidade? A marca do agent vem primeiro: é julgamento editorial
+  // sobre um item que o teste mecânico pode não pegar.
+  const zoneIdx = [...Array(zoneEnd).keys()];
+  const agentMarked = zoneIdx.find((i) => highlights[i].exploracao === true);
+  const byAffinity = zoneIdx.find((i) => isExogenous(highlights[i]));
+  const alreadyExploration = agentMarked ?? byAffinity;
+
+  if (alreadyExploration !== undefined) {
+    const next = cleared.slice();
+    next[alreadyExploration] = { ...next[alreadyExploration], exploracao: true };
     return {
       highlights: next,
       promotion: {
-        promoted_url: url,
+        promoted_url: urlOf(highlights[alreadyExploration]) ?? "(desconhecida)",
         origin: "already-selected",
         week,
         week_usage_before: weekUsageBefore,
         slots_per_week: config.slotsPerWeek,
         reason:
-          `destaque já selecionado por mérito tem afinidade < ${config.affinityMax} (sinal exógeno) — ` +
-          "marcado exploracao:true sem troca (#8370 Peça 2)",
+          agentMarked !== undefined
+            ? "destaque já marcado exploracao:true pelo scorer-select — slot debitado sem troca (#8370 Peça 2)"
+            : `destaque já selecionado por mérito tem afinidade < ${config.affinityMax} (sinal exógeno) — ` +
+              "marcado exploracao:true sem troca (#8370 Peça 2)",
       },
     };
   }
 
-  // (3) Promover do pool.
+  // (2) Promover do pool.
   const highlightUrls = new Set(
     highlights.map(urlOf).filter((u): u is string => typeof u === "string"),
   );
@@ -392,12 +524,12 @@ export function applyExplorationQuota<H extends ExplorationHighlightLike>(
     // USE MELHOR nunca vira destaque (#3436) — a cota não é brecha pra isso.
     .filter((f) => f.bucket !== "use_melhor")
     .filter((f) => f.score >= cutoff)
-    .filter((f) => isExogenous(affinityOf(f)))
+    .filter((f) => isExogenous(f))
     .filter(eligible)
     .sort((a, b) => b.score - a.score)[0];
 
   if (!candidate) {
-    return { highlights, skipped: "nenhum finalista exógeno com score-base competitivo" };
+    return { highlights: cleared, skipped: "nenhum finalista exógeno com score-base competitivo" };
   }
 
   // Nunca demove o primeiro slot (D1 do dia).
@@ -407,11 +539,11 @@ export function applyExplorationQuota<H extends ExplorationHighlightLike>(
     if (demoteIdx === -1 || cur < (highlights[demoteIdx].score ?? -Infinity)) demoteIdx = i;
   }
   if (demoteIdx === -1) {
-    return { highlights, skipped: "só há 1 destaque — a cota nunca derruba o D1" };
+    return { highlights: cleared, skipped: "só há 1 destaque — a cota nunca derruba o D1" };
   }
 
   const demoted = highlights[demoteIdx];
-  const next = highlights.slice();
+  const next = cleared.slice();
   next[demoteIdx] = {
     ...demoted,
     score: candidate.score,

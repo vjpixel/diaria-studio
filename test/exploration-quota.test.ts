@@ -150,6 +150,24 @@ describe("elegibilidade de exploração", () => {
     assert.deepEqual(result.highlights, baseHighlights());
   });
 
+  it("big-tech com afinidade 0 NÃO é exploração (achado do review: 'OpenAI apresenta o Sora 3' dá affinity 0)", () => {
+    const bigTech = finalist("https://exogeno", 80, "lancamento", "OpenAI apresenta o Sora 3");
+    const result = applyExplorationQuota(baseHighlights(), [bigTech], BASE_OPTS);
+    assert.equal(result.promotion, undefined, "afinidade baixa não pode bastar pra chamar big-tech de exploração");
+    assert.match(result.skipped ?? "", /nenhum finalista exógeno/);
+  });
+
+  it("destaque big-tech já selecionado não consome slot por afinidade baixa", () => {
+    const highlights = baseHighlights();
+    highlights[2] = {
+      score: 84,
+      bucket: "lancamento",
+      article: { url: "https://exogeno", title: "Google atualiza o Gemini" },
+    };
+    const result = applyExplorationQuota(highlights, [], BASE_OPTS);
+    assert.equal(result.promotion, undefined);
+  });
+
   it("marca sem trocar quando o pool já entregou exploração por mérito", () => {
     const highlights = baseHighlights();
     highlights[2] = { score: 84, bucket: "radar", article: { url: "https://exogeno", title: "E" } };
@@ -157,6 +175,53 @@ describe("elegibilidade de exploração", () => {
     assert.equal(result.promotion?.origin, "already-selected");
     assert.equal(result.promotion?.demoted_url, undefined);
     assert.equal(result.highlights[2].exploracao, true);
+  });
+
+  it("marca do scorer-select é honrada e debita o slot, sem marcar um segundo item", () => {
+    const highlights = baseHighlights();
+    // Afinidade ALTA (0.4) — o teste mecânico não pegaria; o julgamento do
+    // agent é o único sinal de que este item é exploração.
+    highlights[1] = { ...highlights[1], exploracao: true };
+    const result = applyExplorationQuota(highlights, [finalist("https://exogeno", 80)], BASE_OPTS);
+
+    assert.equal(result.promotion?.origin, "already-selected");
+    assert.equal(result.promotion?.promoted_url, "https://b");
+    assert.equal(
+      result.highlights.filter((h) => h.exploracao === true).length,
+      1,
+      "1 slot debitado tem que significar no máximo 1 destaque marcado",
+    );
+    // E o pool NÃO foi promovido por cima da marca do agent.
+    assert.ok(!result.highlights.some((h) => h.article?.url === "https://exogeno"));
+  });
+
+  it("marca do agent é LIMPA quando a cota não debita slot (semana cheia)", () => {
+    const highlights = baseHighlights();
+    highlights[1] = { ...highlights[1], exploracao: true };
+    const result = applyExplorationQuota(highlights, [], {
+      ...BASE_OPTS,
+      weekUsageBefore: EXPLORATION_DEFAULT_SLOTS_PER_WEEK,
+    });
+    assert.equal(result.promotion, undefined);
+    assert.equal(
+      result.highlights.filter((h) => h.exploracao === true).length,
+      0,
+      "exploração não debitada não pode sobreviver no output — a Peça 3 contaria um slot fantasma",
+    );
+  });
+
+  it("empate de score entre D2 e D3 demove o D2 (menor índice)", () => {
+    const highlights = baseHighlights();
+    highlights[1] = { ...highlights[1], score: 84 }; // empata com o D3
+    const result = applyExplorationQuota(highlights, [finalist("https://exogeno", 80)], BASE_OPTS);
+    assert.equal(result.promotion?.demoted_url, "https://b");
+  });
+
+  it("edição de 1 destaque só: a cota nunca derruba o D1", () => {
+    const only = [baseHighlights()[0]];
+    const result = applyExplorationQuota(only, [finalist("https://exogeno", 90)], BASE_OPTS);
+    assert.equal(result.promotion, undefined);
+    assert.match(result.skipped ?? "", /nunca derruba o D1/);
   });
 
   it("só olha os 3 primeiros slots — exploração no 5º não conta como cota cumprida", () => {
@@ -250,12 +315,15 @@ describe("config", () => {
     assert.equal(r.promotion, undefined);
   });
 
-  it("enabled:false desliga a cota; config ausente/ilegível cai nos defaults", () => {
-    const off = applyExplorationQuota(baseHighlights(), [finalist("https://exogeno", 80)], {
+  it("enabled:false desliga a cota (e limpa a marca do agent); config ausente/ilegível cai nos defaults", () => {
+    const marked = baseHighlights();
+    marked[1] = { ...marked[1], exploracao: true };
+    const off = applyExplorationQuota(marked, [finalist("https://exogeno", 80)], {
       ...BASE_OPTS,
       config: resolveExplorationConfig({ enabled: false }),
     });
     assert.equal(off.promotion, undefined);
+    assert.equal(off.highlights.filter((h) => h.exploracao === true).length, 0);
     assert.deepEqual(resolveExplorationConfig(undefined), EXPLORATION_CONFIG_DEFAULTS);
     assert.deepEqual(resolveExplorationConfig({ slots_per_week: "quatro" }), EXPLORATION_CONFIG_DEFAULTS);
   });
@@ -268,7 +336,9 @@ describe("estado em disco", () => {
     const dir = mkdtempSync(resolve(tmpdir(), "exploration-quota-"));
     try {
       const path = resolve(dir, "exploration-quota.json");
-      assert.deepEqual(readExplorationState(path), emptyExplorationState());
+      // Arquivo ausente: estado vazio, e NÃO corrompido — a distinção é o que
+      // impede a semana de ganhar slots extras por um arquivo ilegível.
+      assert.deepEqual(readExplorationState(path), { state: emptyExplorationState(), corrupted: false });
 
       const state = recordExplorationDecision(emptyExplorationState(), "260919", {
         week: "2026-W38",
@@ -278,10 +348,18 @@ describe("estado em disco", () => {
         decided_at: "2026-09-19T00:00:00.000Z",
       });
       assert.equal(writeExplorationState(path, state), true);
-      assert.deepEqual(readExplorationState(path), state);
+      assert.deepEqual(readExplorationState(path).state, state);
+      assert.equal(readExplorationState(path).corrupted, false);
 
       writeFileSync(path, "{ não é json", "utf8");
-      assert.deepEqual(readExplorationState(path), emptyExplorationState());
+      const corrupt = readExplorationState(path);
+      assert.deepEqual(corrupt.state, emptyExplorationState());
+      assert.equal(corrupt.corrupted, true, "arquivo ilegível tem que ser sinalizado, não engolido");
+      assert.ok(corrupt.error);
+
+      // JSON válido mas sem `editions` também é corrupção, não estado novo.
+      writeFileSync(path, '{"outra":1}', "utf8");
+      assert.equal(readExplorationState(path).corrupted, true);
 
       // Diretório inexistente (data/ ausente) → false, nunca lança.
       assert.equal(writeExplorationState(resolve(dir, "sem-data", "x.json"), state), false);

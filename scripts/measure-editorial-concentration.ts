@@ -119,8 +119,14 @@ export async function main(): Promise<void> {
   // faz o join edição→slug pela data editorial do próprio sitemap. Sem
   // `data/` (worktree, clone fresco) o estado sai vazio e a coluna volta a
   // degradar pra `null`, como antes desta peça. CTR real segue sem fonte.
-  const explorationState = readExplorationState(resolve(ROOT, EXPLORATION_STATE_RELATIVE_PATH));
-  const exploracaoFlags = explorationFlagsBySlug(explorationState, lastmodBySlug);
+  const explorationRead = readExplorationState(resolve(ROOT, EXPLORATION_STATE_RELATIVE_PATH));
+  if (explorationRead.corrupted) {
+    console.warn(
+      `[aviso] data/exploration-quota.json existe mas não deu pra ler (${explorationRead.error ?? "erro desconhecido"}) — ` +
+        "a coluna % exploração sai n/d, o que aqui significa DADO PERDIDO, não ausência de exploração (#8370).",
+    );
+  }
+  const exploracaoFlags = explorationFlagsBySlug(explorationRead.state, lastmodBySlug);
   const rows = aggregateByMonth(pages, lastmodBySlug, exploracaoFlags, new Map());
 
   if (flags.has("json")) {

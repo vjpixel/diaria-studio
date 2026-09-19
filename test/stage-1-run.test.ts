@@ -933,6 +933,25 @@ describe("runStage1 --phase post-select-render", () => {
     });
   }
 
+  // #8370 Peça 2: sem `--edition`, assemble-scored não consegue dizer em que
+  // SEMANA debitar o slot da cota de exploração e pula a cota inteira com um
+  // aviso. Um typo no nome da flag só apareceria numa rodada real de Stage 1.
+  it("passa --edition pro assemble-scored (cota semanal de exploração, #8370)", async () => {
+    return withTmpRoot("stage-1-run-p4-edition-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", { highlights: [], runners_up: [] });
+      const { exec, calls } = makeFakeExec(happyHandlers());
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then(() => {
+        const assembleCall = calls.find((c) => c.script.endsWith("assemble-scored.ts"));
+        assert.ok(assembleCall, "assemble-scored deve ter sido chamado");
+        const idx = assembleCall!.args.indexOf("--edition");
+        assert.ok(idx >= 0, "assemble-scored precisa receber --edition");
+        assert.equal(assembleCall!.args[idx + 1], "260423");
+      });
+    });
+  });
+
   it("caminho chunked (--selection-json): assemble + finalize + render, code 0", async () => {
     return withTmpRoot("stage-1-run-p4-sel-", (root, editionDir) => {
       seedScored(root, editionDir);

@@ -146,10 +146,9 @@
   "editorial_exploration": {
     "enabled": true,
     "slots_per_week": 4,
-    "max_per_edition": 1,
     "affinity_max": 0.1,
     "score_gap_pts": 8,
-    "note": "#8370 Peça 2 — cota SEMANAL de exploração no scorer (epsilon-greedy manual). N = 3-4 destaques/semana é decisão do editor registrada na #8370 (briefing overnight 260918c); 4 é a ponta agressiva que ele escolheu, revisável pra baixo se o CTR de exploração cair abaixo do resto na série da Peça 3 (scripts/measure-editorial-concentration.ts). affinity_max = teto de audience_affinity que caracteriza sinal exógeno; score_gap_pts = quantos pontos abaixo do destaque mais fraco do dia um candidato ainda conta como competitivo. Mecanismo: scripts/lib/exploration-quota.ts + backstop em scripts/assemble-scored.ts."
+    "note": "#8370 Peça 2 — cota SEMANAL de exploração no scorer (epsilon-greedy manual). N = 3-4 destaques/semana é decisão do editor registrada na #8370 (briefing overnight 260918c); 4 é a ponta agressiva que ele escolheu, revisável pra baixo se o CTR de exploração cair abaixo do resto na série da Peça 3 (scripts/measure-editorial-concentration.ts). A cota marca no máximo 1 destaque por edição (por construção — não há knob por edição, quem quiser mais sobe slots_per_week). affinity_max = teto de audience_affinity que caracteriza sinal exógeno; score_gap_pts = quantos pontos abaixo do destaque mais fraco do dia um candidato ainda conta como competitivo. Mecanismo: scripts/lib/exploration-quota.ts + backstop em scripts/assemble-scored.ts."
   },
   "semantic_tiebreaker": {
     "enabled": true,

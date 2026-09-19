@@ -12,7 +12,7 @@ import {
   type AssembledOutput,
 } from "../scripts/assemble-scored.ts";
 import type { FinalistLike } from "../scripts/lib/negative-impact-promotion.ts";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type { AudienceSignals } from "../scripts/lib/audience-affinity.ts";
@@ -329,7 +329,7 @@ describe("applyExplorationQuotaBackstop (#8370 Peça 2)", () => {
       // D1 intacto: a cota nunca derruba o melhor candidato do dia.
       assert.equal(out.highlights[0].article?.url, "https://a");
 
-      const state = readExplorationState(statePath);
+      const state = readExplorationState(statePath).state;
       assert.equal(state.editions["260919"].exploracao, true);
       assert.equal(state.editions["260919"].week, "2026-W38");
     });
@@ -357,7 +357,7 @@ describe("applyExplorationQuotaBackstop (#8370 Peça 2)", () => {
       assert.equal(out.exploracao_promoted, undefined);
       assert.equal(out.highlights.filter((h) => h.exploracao === true).length, 0);
       // A edição é registrada como sem exploração — "medido e deu zero".
-      assert.equal(readExplorationState(statePath).editions["260919"].exploracao, false);
+      assert.equal(readExplorationState(statePath).state.editions["260919"].exploracao, false);
     });
   });
 
@@ -370,7 +370,7 @@ describe("applyExplorationQuotaBackstop (#8370 Peça 2)", () => {
         log: () => {},
       });
       assert.equal(out.exploracao_promoted, undefined);
-      assert.deepEqual(readExplorationState(statePath), emptyExplorationState());
+      assert.deepEqual(readExplorationState(statePath).state, emptyExplorationState());
     });
   });
 
@@ -385,7 +385,59 @@ describe("applyExplorationQuotaBackstop (#8370 Peça 2)", () => {
       });
       assert.equal(out.exploracao_promoted, undefined);
       assert.match(logs.join("\n"), /não é um AAMMDD válido/);
-      assert.deepEqual(readExplorationState(statePath), emptyExplorationState());
+      assert.deepEqual(readExplorationState(statePath).state, emptyExplorationState());
+    });
+  });
+
+  it("título placeholder (#4102) não vira exploração — wiring real de isPlaceholderHighlightTitle", () => {
+    withTmpDir((dir) => {
+      const statePath = resolve(dir, "exploration-quota.json");
+      const placeholder: FinalistLike[] = [
+        {
+          url: "https://exogeno",
+          score: 80,
+          bucket: "noticias",
+          article: { url: "https://exogeno", title: '(newsletter:"Lenny\'s Newsletter")' },
+        },
+      ];
+      const out = applyExplorationQuotaBackstop(assembledFixture(), placeholder, "260919", {
+        signals,
+        statePath,
+        log: () => {},
+      });
+      assert.equal(out.exploracao_promoted, undefined);
+      assert.equal(readExplorationState(statePath).state.editions["260919"].exploracao, false);
+    });
+  });
+
+  it("estado corrompido não vira cota zerada: pula a edição e NÃO regrava o arquivo", () => {
+    withTmpDir((dir) => {
+      const statePath = resolve(dir, "exploration-quota.json");
+      writeFileSync(statePath, "{ arquivo pela metade", "utf8");
+      const logs: string[] = [];
+      const out = applyExplorationQuotaBackstop(assembledFixture(), exogenousFinalists, "260919", {
+        signals,
+        statePath,
+        log: (m) => logs.push(m),
+      });
+      assert.equal(out.exploracao_promoted, undefined);
+      assert.match(logs.join("\n"), /contador semanal está perdido/);
+      // Arquivo intocado — regravar apagaria o registro das outras edições.
+      assert.equal(readFileSync(statePath, "utf8"), "{ arquivo pela metade");
+    });
+  });
+
+  it("marca do scorer-select não debitada é limpa do output (nunca exploração fantasma)", () => {
+    withTmpDir((dir) => {
+      const statePath = resolve(dir, "exploration-quota.json");
+      const marked = assembledFixture();
+      marked.highlights[1] = { ...marked.highlights[1], exploracao: true };
+      const out = applyExplorationQuotaBackstop(marked, [], "260919", {
+        signals: { ctrByCategory: new Map(), avgCtr: 0, surveyTools: new Set(), source: "none", loaded: false },
+        statePath,
+        log: () => {},
+      });
+      assert.equal(out.highlights.filter((h) => h.exploracao === true).length, 0);
     });
   });
 
