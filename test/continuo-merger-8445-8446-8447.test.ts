@@ -38,7 +38,17 @@ describe("#8445 — PR com review de SHA antigo é re-revisada, não empurrada p
   });
 
   it("o caminho de review real não tem filtro de label que anule o re-review de PR já escalada/rejeitada", () => {
-    const realReview = review.slice(review.indexOf("# AUTH_RC 1 (self_review) ou 2 (no_review)"));
+    // A fatia termina no fim do laço `for PR` (marcador do bloco de entrega),
+    // não no fim do arquivo: o que este guard proíbe é um filtro por label
+    // DENTRO do caminho de review. O bloco de entrega que vem depois do laço
+    // só monta a mensagem do Telegram, e cita os nomes dos labels pra o
+    // editor achar a PR — citar não é filtrar, e sem este limite o guard
+    // reprovaria a própria menção (achado ao vivo, 19/09/2026).
+    const start = review.indexOf("# AUTH_RC 1 (self_review) ou 2 (no_review)");
+    const end = review.indexOf("# Entrega SÓ QUANDO HÁ PROBLEMA");
+    assert.ok(start > 0, "âncora de início do caminho de review real não encontrada");
+    assert.ok(end > start, "âncora de fim (bloco de entrega) não encontrada depois do início");
+    const realReview = review.slice(start, end);
     assert.doesNotMatch(realReview, /continuo-escalado|continuo-rejeitado/, "um filtro por label reintroduziria o deadlock");
   });
 });
@@ -47,7 +57,11 @@ describe("#8446 — escalada reincidente vira sinal, não repetição muda", () 
   it("'já sinalizada' incrementa o contador de reincidentes e guarda a PR", () => {
     assert.match(
       review,
-      /escalate \(já sinalizada\)"\s*\n\s*ESCALATED_RECURRING=\$\(\(ESCALATED_RECURRING \+ 1\)\)\s*\n\s*ESCALATED_RECURRING_PRS="\$ESCALATED_RECURRING_PRS #\$pr"/,
+      // `( >&2)?`: a linha de log virou stderr quando a entrega do cron passou
+      // a só falar havendo problema (19/09/2026). O invariante deste guard é a
+      // ADJACÊNCIA — log da reincidência e incremento do contador andam juntos
+      // —, não o canal em que o log sai.
+      /escalate \(já sinalizada\)"( >&2)?\s*\n\s*ESCALATED_RECURRING=\$\(\(ESCALATED_RECURRING \+ 1\)\)\s*\n\s*ESCALATED_RECURRING_PRS="\$ESCALATED_RECURRING_PRS #\$pr"/,
     );
   });
 
