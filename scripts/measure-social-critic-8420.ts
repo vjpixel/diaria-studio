@@ -1,6 +1,8 @@
 /**
  * measure-social-critic-8420.ts — medição 7b do epic #8412 (issue #8420)
  *
+ * @one-off-validity: expira=2026-10-19 pergunta="social-critic via Sonnet holístico bate/supera Jev (1 noul por padrão da skill humanizador) na detecção de tiques de texto gerado por IA?"
+ *
  * Mede se o Jev (1 `noul` por padrão da skill `humanizador`) bateria ou
  * superaria o `social-critic` (Sonnet, holístico) na detecção de tiques de
  * texto gerado por IA em parágrafos de `03-social.md`.

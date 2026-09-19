@@ -1,6 +1,8 @@
 /**
  * measure-title-picker-8420.ts — medição 7a do epic #8412 (issue #8420)
  *
+ * @one-off-validity: expira=2026-10-19 pergunta="title-picker via Sonnet bate/supera Jev (choice entre 3 títulos) na escolha do título que sobrevive até 02-reviewed.md?"
+ *
  * Mede se o Jev (tipo `choice`) bateria ou superaria o mecanismo atual
  * (`title-picker`, Sonnet) na escolha de 1 entre 3 opções de título por
  * destaque. Ao contrário das medições 1/4 (#8414/#8417), o gabarito aqui NÃO
