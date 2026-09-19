@@ -37,7 +37,12 @@ const CHOICE_Q: JevQuestion = {
   criteria: { x: "descrição x", y: "descrição y" },
 };
 
-const SCORE_Q: JevQuestion = { id: "sev", type: "score", instructions: "gravidade 0-10", min: 0, max: 10 };
+const SCORE_Q: JevQuestion = {
+  id: "sev",
+  type: "score",
+  instructions: "gravidade",
+  criteria: ["baixa", "média", "alta"],
+};
 const NOUL_Q: JevQuestion = { id: "harm", type: "noul", instructions: "isto causa dano real?" };
 
 function okResponse(body: unknown): Response {
@@ -152,6 +157,19 @@ describe("cache em disco", () => {
 describe("askJev — transporte", () => {
   it("nunca chama a rede real (todos os testes injetam fetchImpl) — sanity check do próprio arquivo", () => {
     assert.equal(typeof fetch, "function"); // fetch global existe mas não é usado sem opts.fetchImpl explícito nestes testes
+  });
+
+  it("wire de score envia `criteria` (lista ordenada), nunca `min`/`max` (#8415 — contrato confirmado contra a API real)", async () => {
+    let sentBody: Record<string, unknown> | null = null;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      sentBody = JSON.parse(init.body as string);
+      return okResponse({ answers: { sev: { type: "score", score: 1.4, confidence: 0.6 } } });
+    }) as unknown as typeof fetch;
+    await askJev({ url: "https://x.com" }, [SCORE_Q], { apiKey: "k", fetchImpl });
+    const wireQuestion = (sentBody as any).questions.sev;
+    assert.deepEqual(wireQuestion, { type: "score", instructions: "gravidade", criteria: ["baixa", "média", "alta"] });
+    assert.equal("min" in wireQuestion, false);
+    assert.equal("max" in wireQuestion, false);
   });
 
   it("cacheKey default vem de state.url", async () => {
