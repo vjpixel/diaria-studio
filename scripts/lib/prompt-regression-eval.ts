@@ -77,7 +77,7 @@ import { checkCarouselTextOverflow } from "./invariant-checks/stage-4.ts";
 import { checkBannedLexicon } from "./lint-checks/banned-lexicon.ts";
 import { checkTitleLengths, MAX_TITLE_LENGTH } from "./lint-checks/title-length.ts";
 import { runStage2LintReport } from "../lint-newsletter-md.ts";
-import { callClaudeCli, type ClaudeCliCallOptions } from "./claude-cli-subprocess.ts";
+import { callClaudeCli, ClaudeCliError, preview, type ClaudeCliCallOptions } from "./claude-cli-subprocess.ts";
 
 export const PROMPT_EVAL_AGENTS = ["writer-destaque", "social-writer"] as const;
 export type PromptEvalAgent = (typeof PROMPT_EVAL_AGENTS)[number];
@@ -576,7 +576,28 @@ export function runAgentRepetitions(opts: RunAgentRepetitionsOptions): AgentRunO
     }
 
     const prompt = buildAgentReplayPrompt(opts.agentBody, opts.agent, opts.input);
-    const raw = callFn(prompt, { cwd: opts.cwd, model: opts.model ?? "sonnet", outputFormat: "json" });
+    let raw: string;
+    try {
+      raw = callFn(prompt, { cwd: opts.cwd, model: opts.model ?? "sonnet", outputFormat: "json" });
+    } catch (err) {
+      // #8405: o erro do subprocesso `claude` tem o stderr/stdout/status
+      // enterrados em `error.message` (`Command failed: <cmd + argv>`).
+      // Reencapsulamos como ClaudeCliError (scripts/lib/claude-cli-subprocess.ts)
+      // e imprimimos os campos legíveis AQUI, no contexto do agente/repetição,
+      // pra que o diagnóstico chegue no log em vez de morrer no `catch` de
+      // quem chamou `runAgentRepetitions` (que imprimia só `error.message`,
+      // ecoando ~30KB de prompt e deixando o stderr invisível).
+      if (err instanceof ClaudeCliError) {
+        console.error(
+          `[prompt-regression-eval] ${opts.agent} repetição ${i}: claude CLI falhou (status ${err.status ?? "sinal"}):\n` +
+            `  stderr: ${preview(err.stderr)}\n` +
+            `  stdout: ${preview(err.stdout)}\n` +
+            `  command: ${err.command}`,
+        );
+        throw err;
+      }
+      throw err;
+    }
     const usage = parseClaudeCliJsonResult(raw);
 
     const producedOutput = existsSync(opts.producedFileAbsPath);

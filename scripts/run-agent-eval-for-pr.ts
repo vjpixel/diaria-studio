@@ -103,6 +103,7 @@ import { runPromptRegressionEval, DEFAULT_REPETITIONS, DEFAULT_BASELINE_REF, typ
 import { readCostArtifactFromDisk } from "./lib/edition-cost.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
 import { AGENT_EVAL_LABEL } from "./check-agent-eval-required.ts";
+import { ClaudeCliError, preview } from "./lib/claude-cli-subprocess.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DEFAULT_NUM_EDITIONS = 3;
@@ -614,6 +615,23 @@ async function main(): Promise<void> {
 
 if (isMainModule(import.meta.url)) {
   main().catch((err) => {
+    // #8405: quando o erro vem do subprocesso `claude` (ClaudeCliError),
+    // imprimimos status/stdout/stderr — que é onde está a causa real
+    // (ex: `--max-turns` esgotado, `maxBuffer` estourado, cwd sem
+    // permissão). Antes, só `error.message` era impresso, ecoando ~30KB
+    // de prompt e deixando o stderr invisível — a única saída visível era
+    // o eco do prompt, sem nenhuma pista.
+    if (err instanceof ClaudeCliError) {
+      // #8405: stderr/stdout podem ser grandes (resposta JSON 1MB+, stderr do CLI).
+      // Truncamos e apontam pros campos inteiros no erro — nunca ecoamos o
+      // prompt (o `command` já veio substituído pelo `ClaudeCliError`).
+      console.error(
+        `[#8144] claude CLI falhou (status ${err.status ?? "sinal"}):\n` +
+          `  stderr: ${preview(err.stderr)}\n` +
+          `  stdout: ${preview(err.stdout)}\n` +
+          `  command: ${err.command}`,
+      );
+    }
     console.error("[#8144] erro inesperado:", err instanceof Error ? err.message : err);
     process.exit(1);
   });
