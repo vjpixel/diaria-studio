@@ -158,6 +158,57 @@ _ISSUE_REF = re.compile(r"#(\d+)\b")
 # qualquer menção solta de "#123" em qualquer contexto).
 _CLAIM_KEYWORDS = re.compile(r"reivindic|claim", re.IGNORECASE)
 
+# **#8377 (2026-09-18).** O detector lia QUALQUER #NNNN em uma linha que
+# mencionava "reivindic"/"claim", independentemente de se tratar de um
+# claim DECLARADO por este coordenador. No relatório do tick 15:54, a linha
+# "Após #8356, não havia outra unidade primária livre: #8355 está
+# reivindicada pelo Overnight; #8354 tem colisão documentada com a PR #8358;
+# #8353/#8352/#8351/#8350/#8349/#8344/#8336 foram barradas pelo gate de
+# coerência; #8341 foi fechada" continha "reivindicada" (só pra #8355, e
+# ainda assim attribuída a OUTRA sessão), mas o detector marcou todos os 10
+# #NNNN da linha como `fabrication_suspected` — 12 dos 13 alertas foram
+# falsos positivos. A raiz é que "reivindicada" é um verbo que aparece em
+# narrativa de backlog, não só em declaração de claim próprio.
+#
+# Três filtros, aplicados em `extract_claimed_issue_refs`:
+#   1. **Segmento por cláusula** — o claim keyword e o #NNNN devem estar no
+#      MESMO segmento, separado por `;` ou `. ` seguido de maiúscula/#.
+#      Impede que um #NNNN distante no mesmo parágrafo seja capturado.
+#   2. **PR #NNNN não é issue** — "colisão documentada com a PR #8358" é
+#      referência a pull request, não a claim de issue.
+#   3. **Claim attribuído a outro ator** — "#8355 está reivindicada pelo
+#      Overnight" descreve quem DETÉM o claim, não o coordenador do tick
+#      declarando-o. Só exclui quando o actor é explicitamente outro
+#      (outro/outros/outra/outraz/overnight/terceiro) — "reivindicada pelo
+#      mesmo tick" (#8356, linha 5 do relatório real) é claim PRÓPRIO.
+#   4. **Cobertura de outro issue** — "#7807: o trabalho já estava coberto
+#      por #7808" (caso de teste #7996) é cobertura, não claim.
+# **#8377 (2026-09-18), parte 2.** A segmento por cláusula sozinho não
+# basta: em "Após #8356, não havia outra unidade primária livre: #8355
+# está reivindicada pelo Overnight", o #8356 está no MESMO segmento que
+# "reivindicada" (a keyword se refere a #8355, attribuída a outro ator) —
+# e o segmento filter não o exclui. O que difere um claim real de uma
+# referência narrativa que divide cláusula com um keyword é a
+# PROXIMIDADE: no claim real o #NNNN está junto ao verbo
+# ("#8356 está reivindicada", "reivindicada #300"); na narrativa ele
+# aparece longe ("Após #8356, ... reivindicada"). Janela de 40 chars —
+# cobre "#8356 está reivindicada pelo mesmo tick" (dist ~11) e
+# "reivindicada #300" (adjacente), e descarta o #8356 a 52 chars do
+# keyword no relatório real do tick 15:54.
+_CLAIM_PROXIMITY = 40
+_CLAUSE_SPLIT = re.compile(r";|\. (?=[A-Z#])")
+_PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
+_OTHERS_CLAIM = re.compile(
+    r"#(\d+)\b[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+"
+    r"(?:outr[oa]|outros|outras|overnight|terceir[oa])\b",
+    re.IGNORECASE,
+)
+_COVERED_BY = re.compile(
+    r"(?:cobert\w*|mantid\w*|retid\w*|segurad\w*)\s+"
+    r"(?:por|pelo|pelas)?\s*#(\d+)\b",
+    re.IGNORECASE,
+)
+
 # Sinaliza que a MESMA linha também documenta a liberação do claim
 # ("Claim liberada", "liberou a claim") — ver docstring do módulo, seção
 # (c), "Exceção — claim liberado no mesmo tick" (#7996). `unclaimIssue`
@@ -260,26 +311,60 @@ def extract_alleged_count(report_text: str) -> int | None:
 
 
 def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
-    """Extrai números de issue (#NNNN) citados em linhas que mencionam
-    "reivindicad"/"claim" — restringe a busca a contexto plausível de claim
-    declarado, em vez de casar QUALQUER #NNNN solto no relatório (uma
-    referência em '### Trabalhado' sem palavra de claim não entra aqui).
+    """Extrai números de issue (#NNNN) cujo claim este coordenador DECLARA
+    no relatório — restringe a busca a contexto plausível de claim
+    declarado, em vez de casar QUALQUER #NNNN solto em uma linha que
+    mencione "reivindicad"/"claim" (ver `_CLAIM_KEYWORDS`).
 
-    Devolve `{issue: released}` — `released=True` quando a MESMA linha
+    Um #NNNN conta como claim declarado somente quando:
+      1. está no MESMO segmento cláusula que o keyword (segmentos separados
+         por `;` ou `. ` seguido de maiúscula/#) — evita capturar um
+         #NNNN distante no mesmo parágrafo;
+      2. não é uma referência a `PR #NNNN` (pull request, não issue);
+      3. não está em uma cláusula do tipo "#X está reivindicada por Y" —
+         aí o claim é de OUTRO ator (ex: "pelo Overnight"), não deste
+         coordenador.
+
+    Devolve `{issue: released}` — `released=True` quando a MESMA LINHA
     também sinaliza liberação do claim (`_RELEASE_SIGNAL`, ex: "Claim
-    liberada"). Ver `check_claimed_issues` e a seção (c) do docstring do
-    módulo para o porquê disso importar (#7996): `unclaimIssue` apaga a
-    entrada do session-registry ao liberar, então ausência de um claim
-    liberado não é evidência de fabricação. Se o mesmo número aparecer em
-    mais de uma linha, `released` vira `True` assim que QUALQUER uma delas
-    sinalizar liberação (OR, nunca perde o sinal)."""
+    liberada"). O sinal de liberação é avaliado por LINHA (não por
+    segmento cláusula): o verbo de liberação pode legítimamente aparecer
+    em um clause distante do #NNNN na mesma linha — ex: "#8356 está
+    reivindicada pelo mesmo tick; liberação completa" (o `;` separa os dois
+    segmentos) ou "#7807: ... Claim liberada." (separados por `.`). Avaliar
+    por segmento orfanearia o sinal e converteria um claim liberado (ausente
+    do registro por design do `unclaimIssue`, #6453) em
+    `fabrication_suspected` — falso positivo na direção que este detector
+    deve evitar (#7996). Ver `check_claimed_issues` e a seção (c) do
+    docstring do módulo para o porquê disso importar. Se o mesmo número
+    aparecer em mais de uma linha, `released` vira `True` assim que
+    QUALQUER uma delas sinalizar liberação (OR, nunca perde o sinal)."""
     refs: dict[int, bool] = {}
     for line in report_text.splitlines():
-        if _CLAIM_KEYWORDS.search(line):
-            released = bool(_RELEASE_SIGNAL.search(line))
-            for m in _ISSUE_REF.finditer(line):
+        line_released = bool(_RELEASE_SIGNAL.search(line))
+        for segment in _CLAUSE_SPLIT.split(line):
+            kw = _CLAIM_KEYWORDS.search(segment)
+            if not kw:
+                continue
+            # Cada exclusion regex captura o #NNNN que JUSTIFICOU a
+            # exclusão (o coberto, o PR, o claim de outro ator). Ela é
+            # aplicada SÓ a esse número — um claim próprio no mesmo segmento
+            # ("#7807 reivindicada, trabalho coberto por #7808") não é
+            # afetado pela cobertura de #7808. Aplicar o conjunto inteiro
+            # a todos os refs do segmento era o bug do #8377 (achado na
+            # revisão da PR, 1ª objeção).
+            pr_ref_n = {int(n) for n in _PR_REF.findall(segment)}
+            others_n = {int(n) for n in _OTHERS_CLAIM.findall(segment)}
+            covered_n = {int(n) for n in _COVERED_BY.findall(segment)}
+            for m in _ISSUE_REF.finditer(segment):
                 n = int(m.group(1))
-                refs[n] = refs.get(n, False) or released
+                if n in pr_ref_n or n in others_n or n in covered_n:
+                    continue
+                # Proximidade: o #NNNN precisa estar junto ao keyword
+                # (#8377 parte 2).
+                if abs(m.start() - kw.start()) > _CLAIM_PROXIMITY:
+                    continue
+                refs[n] = refs.get(n, False) or line_released
     return refs
 
 
