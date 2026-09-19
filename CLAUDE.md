@@ -70,6 +70,16 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 ## Princípios operacionais invariáveis
 
+- **Achado vira ISSUE, não implementação (19/09/2026).** Pedido direto do editor: *"prefiro separar os processos em 2 etapas: (1) criar issue e (2) resolver isso. esta segunda etapa só deve ser executada quando eu pedir explicitamente."* Encontrar um problema — em qualquer contexto, inclusive no meio de outra tarefa — termina em **issue aberta com prioridade e para ali**. Não abre worktree, não escreve código, não abre PR.
+
+  **Pergunta de viabilidade não é autorização.** "É possível ajustar isso?", "dá pra fazer X?", "por que isso acontece?" pedem **diagnóstico + issue**, nunca implementação — é justamente a forma em que o editor explora antes de decidir, e executar ali tira dele o ponto de decisão sobre *se* aquilo deve ser feito e com que prioridade. (Incidente que motivou: pergunta sobre a verbosidade das mensagens do Hermes respondida com 3 scripts alterados e a PR #8454 aberta, nada pedido.)
+
+  **Plan mode não é exceção** — aprovar um plano autoriza **aquele plano**. Plano de investigação não se estende ao que a investigação revelar; achado novo durante o plano vira issue.
+
+  **Só executa com pedido explícito nesta conversa** ("implementa", "ataca a #N", "resolve isso") — ou dentro de fluxo que já É de execução por definição: `/diaria-overnight`, `/diaria-continuo`, `/diaria-develop`, `/diaria-edicao` e demais skills de pipeline, onde o próprio ato de invocar a skill é o pedido. **Na dúvida entre "pediu pra consertar" e "perguntou sobre", é issue**: o custo de uma issue a mais é trivial, o de um PR não pedido não é.
+
+  **Relação com os princípios vizinhos:** não revoga "Perguntar é exceção" abaixo (que trata de DETALHES de um trabalho em curso — ali o default segue sendo agir e registrar a premissa) nem "Atacar todas as issues que dá pra atacar autonomamente" (que descreve as rodadas autônomas, já cobertas pela exceção acima), nem o auto-merge do #5251 — aquele governa o que fazer com uma PR **que já existe legitimamente**; este governa se ela chega a existir. A fronteira nova é anterior às três: o que autoriza o trabalho a existir.
+
 - **Perguntar é exceção (#5321, 15/08/2026).** Pedido direto do editor: "faça menos perguntas — confio em você." Até esta data a regra existia caso a caso (Regra 1 do overnight, "nunca perguntar se deve criar issue" abaixo, o auto-merge do #5251, `attack_order` do #4498) — sempre conquistada depois de um incidente de fricção repetida. A partir daqui é política geral, vale pra **toda** superfície nova (skill, gate, agent prompt, sessão interativa) sem precisar de incidente próprio pra ser aplicada: **agir com premissa declarada é o padrão; perguntar é a exceção que precisa se justificar.**
 
   Só pare para perguntar quando **pelo menos um** destes critérios for verdadeiro:
