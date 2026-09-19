@@ -1,10 +1,10 @@
 ---
-name: diaria-instagram-semanal
-description: DOIS carrosséis semanais (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330; expandido pra Facebook E Threads pelo #5348; LinkedIn wired pelo #8052) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Publica em Instagram, Facebook, Threads E LinkedIn automaticamente, mesmo agendamento, sem flag/canal separado (#5348/#8052) — ver seção "#5348 — expansão pra Facebook e Threads" abaixo pro detalhe de cada canal (Threads exige polling obrigatório de status; LinkedIn reusa o MESMO texto do Facebook, sem formatter próprio, ver #8052). Nunca vira edição no Beehiiv, nunca dispara e-mail (o recap semanal NEWSLETTER-NATIVO do LinkedIn é `/diaria-linkedin-semanal`, #4456, produto/cadência diferentes — este carrossel é um post social adicional). `--mode both` (#5349) roda os 2 modos numa única invocação — e é o default quando `--mode` é omitido (#5903, uso semanal normal; `clicked` isolado é só back-compat do script chamado direto). Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--mode clicked|highlights|both] [--schedule] [--no-gates]`.
+name: diaria-retro-semanal
+description: DOIS carrosséis semanais (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330; expandido pra Facebook E Threads pelo #5348; LinkedIn wired pelo #8052) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Publica em Instagram, Facebook, Threads E LinkedIn automaticamente, mesmo agendamento, sem flag/canal separado (#5348/#8052) — ver seção "#5348 — expansão pra Facebook e Threads" abaixo pro detalhe de cada canal (Threads exige polling obrigatório de status; LinkedIn reusa o MESMO texto do Facebook, sem formatter próprio, ver #8052). Nunca vira edição no Beehiiv, nunca dispara e-mail (o recap semanal NEWSLETTER-NATIVO do LinkedIn é `/diaria-linkedin-semanal`, #4456, produto/cadência diferentes — este carrossel é um post social adicional). `--mode both` (#5349) roda os 2 modos numa única invocação — e é o default quando `--mode` é omitido (#5903, uso semanal normal; `clicked` isolado é só back-compat do script chamado direto). Uso — `/diaria-retro-semanal [AAMMDD-do-sabado] [--mode clicked|highlights|both] [--schedule] [--no-gates]`.
 disable-model-invocation: true
 ---
 
-# /diaria-instagram-semanal
+# /diaria-retro-semanal
 
 Monta e agenda DOIS carrosséis semanais de recapitulação do Instagram — issue
 #4101, redesenhado pelo #4483, e desdobrado em dois carrosséis distintos pelo
@@ -151,7 +151,7 @@ atual:
   "Default `clicked`" pro `--mode` omitido — correto SÓ para quem chama
   `scripts/publish-weekly-social.ts` DIRETO (back-compat de invocações de
   antes do #5330, o script preserva esse default), mas ambíguo pra quem
-  invoca a SKILL (`/diaria-instagram-semanal`, sem args — o uso normal
+  invoca a SKILL (`/diaria-retro-semanal`, sem args — o uso normal
   semanal), que seguia o default do script e publicava só metade do
   trabalho da semana sem nenhum aviso. `both` (#5349) roda os 2 modos numa
   única invocação, cada um reportando sucesso/falha independente; o
@@ -351,7 +351,7 @@ visual formatado. Este passo NUNCA é opcional — roda sempre, mesmo com
 `--no-gates` (o gate que ele antecede pode ser pulado; a publicação da
 prévia, não). Só o TOP-LEVEL do Claude Code tem acesso à ferramenta
 `Artifact` — este passo pressupõe que quem executa é a sessão top-level (o
-caso normal de `/diaria-instagram-semanal` invocada diretamente).
+caso normal de `/diaria-retro-semanal` invocada diretamente).
 
 **Passo 2a — resolver as imagens de verdade (#8385, obrigatório antes de
 publicar o Artifact).** Antes do #8385, este passo mostrava só a CAPTION em
@@ -584,14 +584,18 @@ imediato, falha parcial não publica) e
 `test/format-weekly-social.test.ts` (`formatThreadsWeekly`, UTM próprio,
 limite de 500 chars).
 
-**A skill NÃO foi renomeada** apesar de deixar de ser Instagram-only — o
-nome `diaria-instagram-semanal` continua refletindo o produto PRINCIPAL
-(seleção/carrossel são todos desenhados em torno do feed do Instagram;
-Facebook/Threads são réplicas automáticas do mesmo material). Renomear
-tocaria múltiplas referências cruzadas (`diaria-linkedin-semanal/SKILL.md`,
-`weekly-social-click-rank.ts`, `format-weekly-social.ts`) sem ganho
-funcional — decisão de escopo do #5348, mantida mesmo com os 4 canais
-completos (#8052).
+**Renomeada de `diaria-instagram-semanal` para `diaria-retro-semanal`
+(260919, pedido do editor)** — depois dos #5348/#8052 o carrossel deixou de
+ser Instagram-only (publica em Instagram, Facebook, Threads e LinkedIn), e o
+nome antigo não refletia mais o escopo real. Substitui a justificativa
+anterior de MANTER o nome Instagram-only (#5348, "decisão de escopo,
+mantida mesmo com os 4 canais completos") — o editor decidiu que o ganho de
+clareza no nome supera o custo de atualizar as referências cruzadas
+(`diaria-linkedin-semanal/SKILL.md`, `weekly-social-click-rank.ts`,
+`format-weekly-social.ts`, `weekly-linkedin-clicks.ts`,
+`shared/click-window-resolution.ts`, `kit-sync.ts`,
+`context/instagram-benchmarks-5815.md`,
+`test/click-window-resolution.test.ts`), todas atualizadas nesta mudança.
 
 ## Casos de borda
 
