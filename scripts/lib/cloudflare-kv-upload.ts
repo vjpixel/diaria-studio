@@ -277,6 +277,58 @@ export async function putTextToWorkerKV(
 }
 
 /**
+ * #8371: lista as keys de um namespace KV que casam um `prefix`, paginando
+ * até o fim — a votação de tema usa isto pra enumerar `tema:vote:{ciclo}:*`
+ * na apuração (`voto-tema-stats.ts`/`voto-tema-close.ts`; o WORKER em si usa
+ * `KVNamespace.list` nativo, não esta função — esta é só o lado Node/API
+ * REST, pro script que roda fora do runtime do Worker). Mesmo padrão de
+ * paginação por cursor de `fetchTagMembers`/`listAllKitSubscribers`.
+ */
+export async function listWorkerKVKeys(
+  prefix: string,
+  cfg: CloudflareKVConfig,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  const accountId = cfg.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
+  const token = cfg.token ?? process.env.CLOUDFLARE_WORKERS_TOKEN;
+
+  if (!accountId || !token) {
+    throw new Error(
+      "listWorkerKVKeys: CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_WORKERS_TOKEN não definidos. Passar via cfg ou env.",
+    );
+  }
+  if (!cfg.kvNamespaceId) {
+    throw new Error("listWorkerKVKeys: cfg.kvNamespaceId obrigatório");
+  }
+
+  const out: string[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const qs = new URLSearchParams({ prefix });
+    if (cursor) qs.set("cursor", cursor);
+    const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${cfg.kvNamespaceId}/keys?${qs.toString()}`;
+    const res = await fetchImpl(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Cloudflare KV list de prefixo '${prefix}' falhou (${res.status}): ${body.slice(0, 300)}`);
+    }
+    const data = (await res.json()) as {
+      result?: { name: string }[];
+      result_info?: { cursor?: string };
+    };
+    for (const k of data.result ?? []) out.push(k.name);
+    const nextCursor = data.result_info?.cursor;
+    if (!nextCursor) break;
+    cursor = nextCursor;
+  }
+  return out;
+}
+
+/**
  * #4186 (gap dormente P3): contraparte de EXCLUSÃO fetch-based, mesmo padrão
  * de `getTextFromWorkerKV`/`putTextToWorkerKV` acima. Necessária porque
  * `tryAcquireRefreshLock`/`releaseRefreshLock` (brevo-api.ts) chamam

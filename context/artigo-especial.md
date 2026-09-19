@@ -1,8 +1,15 @@
 # Artigo Especial — Playbook
 
 > Superfície de referência para o artigo especial mensal da diar.ia.br
-> (`especial.diar.ia.br/{ano}/{slug}`), gerado pela Etapa 2 do
-> `/diaria-mensal` via `writer-monthly`.
+> (`especial.diar.ia.br/{ano}/{slug}`). **Correção (#8371, 19/09/2026):**
+> ao contrário do que esta seção afirmava antes, o artigo NÃO é gerado pela
+> Etapa 2 do `/diaria-mensal` — `writer-monthly` não tem uma única menção a
+> "especial". O artigo é HTML escrito à mão, um arquivo por edição, em
+> `workers/artigos/articles-src/{slug}.html` (deployado via `cd
+> workers/artigos && npx wrangler deploy`). O tema é proposto pelo editor —
+> desde a #8371, com voto dos apoiadores Mantenedor/Patrono (ver
+> `.claude/skills/diaria-voto-tema/SKILL.md`) — nunca escrito pelo pipeline
+> automatizado.
 
 ## 1. Objetivo
 

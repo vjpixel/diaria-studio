@@ -24,7 +24,12 @@
  * Shim MÍNIMO — só a superfície de fato usada pelos call sites importados
  * aqui (confirmado por grep em ambos os workers: `.get`/`.put`/`.delete`
  * — `.delete` adicionado em #3644 (`releaseRefreshLock`, brevo-dashboard);
- * nenhum `.list`/`.getWithMetadata`). NÃO substitui
+ * `.list` adicionado em #8371 (`test/artigo-especial-gate.test.ts` agora
+ * importa `workers/artigos/src/index.ts`, cujo `Env` ganhou o binding `POLL`
+ * — a votação de tema pagina o prefixo `tema:vote:{ciclo}:` via
+ * `KVNamespace.list`, mesma exposição transitiva do #3563/#7030 acima;
+ * shape mínimo, só `keys`/`list_complete`/`cursor`, o que
+ * `workers/artigos/src/voto-tema.ts` de fato lê). NÃO substitui
  * `@cloudflare/workers-types` (cada worker mantém a dependência real no
  * próprio `tsconfig.json`/`node_modules`, usada pelo deploy via `wrangler`) —
  * só o suficiente para o `tsc` da raiz não quebrar ao seguir os imports.
@@ -55,6 +60,11 @@ interface KVNamespace {
     options?: KVNamespacePutOptions,
   ): Promise<void>;
   delete(key: string): Promise<void>;
+  list(options?: { prefix?: string; cursor?: string; limit?: number }): Promise<{
+    keys: { name: string }[];
+    list_complete: boolean;
+    cursor?: string;
+  }>;
 }
 
 interface CacheStorage {
