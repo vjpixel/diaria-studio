@@ -229,7 +229,7 @@ describe("confirmou_via (#8438) — sinal MEDÍVEL do clique no botão", () => {
     const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
     await capture(() => activateSubscriptionKit(envComField(), "a@x.com", kit.fetchImpl, true));
     const post = upsertPost(kit.calls)!;
-    assert.equal(post.body!.fields?.confirmou_via, "brevo-reativar");
+    assert.equal((post.body!.fields as Record<string, unknown> | undefined)?.confirmou_via, "brevo-reativar");
     assert.equal(kit.get()!.fields.confirmou_via, "brevo-reativar");
   });
 
@@ -237,7 +237,7 @@ describe("confirmou_via (#8438) — sinal MEDÍVEL do clique no botão", () => {
     const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
     await capture(() => activateSubscriptionKit(env(), "a@x.com", kit.fetchImpl, true));
     const post = upsertPost(kit.calls)!;
-    assert.equal(post.body!.fields?.confirmou_via, undefined, "sem a var, o field nunca é escrito");
+    assert.equal((post.body!.fields as Record<string, unknown> | undefined)?.confirmou_via, undefined, "sem a var, o field nunca é escrito");
     assert.equal(kit.get()!.fields.confirmou_via, undefined);
   });
 
@@ -249,7 +249,7 @@ describe("confirmou_via (#8438) — sinal MEDÍVEL do clique no botão", () => {
     const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
     await capture(() => activateSubscriptionKit(envComField(), "a@x.com", kit.fetchImpl, false));
     const post = upsertPost(kit.calls)!;
-    assert.equal(post.body!.fields?.confirmou_via, undefined);
+    assert.equal((post.body!.fields as Record<string, unknown> | undefined)?.confirmou_via, undefined);
     assert.equal(kit.get()!.fields.confirmou_via, undefined);
   });
 
@@ -257,8 +257,8 @@ describe("confirmou_via (#8438) — sinal MEDÍVEL do clique no botão", () => {
     const kit = fakeKit({ existing: null });
     await capture(() => activateSubscriptionKit(envComField(), "a@x.com", kit.fetchImpl, true));
     const post = upsertPost(kit.calls)!;
-    assert.equal(post.body!.fields?.confirmou_via, "brevo-reativar");
-    assert.equal(post.body!.fields?.utm_source, BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source);
+    assert.equal((post.body!.fields as Record<string, unknown> | undefined)?.confirmou_via, "brevo-reativar");
+    assert.equal((post.body!.fields as Record<string, unknown> | undefined)?.utm_source, BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source);
   });
 
   it("confirmou_via é ORTEGONAL à origem: entra por google-ads e o field é gravado mesmo assim", async () => {
@@ -267,7 +267,7 @@ describe("confirmou_via (#8438) — sinal MEDÍVEL do clique no botão", () => {
     const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
     await capture(() => activateSubscriptionKit(envComField(), "a@x.com", kit.fetchImpl, true));
     const post = upsertPost(kit.calls)!;
-    assert.equal(post.body!.fields?.confirmou_via, "brevo-reativar");
+    assert.equal((post.body!.fields as Record<string, unknown> | undefined)?.confirmou_via, "brevo-reativar");
     assert.equal(kit.get()!.fields.utm_source, "google-ads", "origem é preservada");
   });
 });
