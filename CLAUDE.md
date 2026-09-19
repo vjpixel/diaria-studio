@@ -24,7 +24,7 @@ O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4:
    - `/diaria-inbox` — drena manualmente o Gmail pra ver submissões antes de iniciar a edição.
    - `/diaria-log [edition] [level]` — lê `data/run-log.jsonl`; use quando algo der errado e quiser que eu investigue. Ex: `/diaria-log 260418 error`.
    - `/diaria-source-health [fonte]` — visão geral ou auditoria individual da saúde das fontes (successes, failures, timeouts, duração, últimas execuções). `data/sources/{slug}.jsonl` é o log append-only por fonte.
-**Fim do dia:** `/diaria-overnight [--dry-run]` — fora do fluxo de edição. Varre as issues abertas, faz briefing interativo com o editor antes dele sair, e resolve a fila autonomamente até esgotá-la (PR → CI → auto-merge; **desde o #6299 as unidades são despachadas em ONDA, teto 3 worktrees concorrentes — só o MERGE segue serial**). Ao final, code-review consolidado do diff da noite + registro do relatório na superfície de Relatórios do Studio (`/relatorios`, #3714) + resumo no terminal (#2021).
+**Fim do dia:** `/diaria-overnight [--dry-run]` — fora do fluxo de edição. Varre as issues abertas, faz briefing interativo com o editor antes dele sair, e resolve a fila autonomamente até esgotá-la (PR → CI → auto-merge; **desde o #6299 as unidades são despachadas em ONDA, teto 6 worktrees concorrentes (#8486, era 3) — só o MERGE segue serial**). Ao final, code-review consolidado do diff da noite + registro do relatório na superfície de Relatórios do Studio (`/relatorios`, #3714) + resumo no terminal (#2021).
 
 **Registro operacional completo de todas as tasks agendadas (watchdogs,
 syncs, alarmes, precomputes — horários, estado de armamento por máquina,
