@@ -483,7 +483,7 @@ export function validateProcessId(raw: unknown): number | string {
 /** Cliente real, fino sobre `brevoPost`/`brevoGet`/`brevoGetList` (retry-on-429/5xx
  *  já embutido nelas — ver brevo-client.ts). Só usado por `main()` — testes
  *  injetam um fake que implementa o mesmo `ImportRunClient`. */
-export function makeRealImportRunClient(apiKey: string): ImportRunClient {
+export function makeRealImportRunClient(apiKey: string, retryDelaysMs?: readonly number[]): ImportRunClient {
   return {
     async createList(name, folderId) {
       const list = (await brevoPost(apiKey, "/contacts/lists", { name, folderId })) as { id?: number };
@@ -500,7 +500,7 @@ export function makeRealImportRunClient(apiKey: string): ImportRunClient {
         listIds: [listId],
         updateExistingContacts: true,
         emptyContactsAttributes: false,
-      }))) as { processId?: unknown };
+      }), { delaysMs: retryDelaysMs })) as { processId?: unknown };
       return { processId: validateProcessId(imp.processId) };
     },
     async pollProcess(processId) {
