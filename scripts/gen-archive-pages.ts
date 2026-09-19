@@ -21,13 +21,24 @@
  * `meta_default_description`, `preview_text`) que só existem nesse
  * vocabulário. `loadKitArchivePosts` é um caminho ADICIONAL, gated por
  * `publishing.newsletter.read_backend` (`resolveNewsletterBackend`,
- * `newsletter-read-source.ts`) — hoje esse valor é `"beehiiv"` (nenhuma
- * edição real publicada no Kit ainda, ver #6362), então esta função devolve
- * `[]` e o comportamento deste script fica idêntico ao de antes do #6184.
- * Quando `read_backend` virar `"kit"` (depois de haver histórico real
- * `public: true`), broadcasts Kit passam a virar página de acervo também,
- * usando o mesmo `generateArchivePages` de sempre — sem terceiro caminho de
- * leitura, ver `kitUnifiedPostToArchivePost` em `lib/site-archive-pages.ts`.
+ * `newsletter-read-source.ts`). **Correção #8359 (19/09/2026): este trecho
+ * dizia "hoje esse valor é 'beehiiv'" — ficou desatualizado quando o #8142
+ * (16/09/2026) virou `read_backend` pra `"kit"`.** O gate já está ABERTO
+ * hoje — o motivo de `loadKitArchivePosts` ainda devolver `[]` na prática
+ * não é mais a flag, é `data/kit-cache/broadcasts/` estar vazio até alguém
+ * rodar `kit-sync.ts` com `KIT_API_KEY` de verdade (o escritor existe desde
+ * #7570, mas nenhuma rodada real o populou ainda — ver `edition-cache-reader.ts`).
+ * Quando esse cache existir, broadcasts Kit passam a virar página de acervo
+ * automaticamente na PRÓXIMA regeneração, usando o mesmo `generateArchivePages`
+ * de sempre — sem terceiro caminho de leitura, ver `kitUnifiedPostToArchivePost`
+ * em `lib/site-archive-pages.ts`. Até lá, as edições publicadas pelo Kit
+ * (ex: as 11 do #8359) só ganham a página via `publish-edition-site-page.ts`
+ * (Stage 6, uma de cada vez) e ficam paradas na versão de `buildArchivePageHtml`
+ * vigente no dia em que cada uma foi publicada — não recebem retroativamente
+ * feature nova nenhuma até essa regeneração em lote acontecer. `scripts/
+ * backfill-archive-page-links-seo.ts` (#8352/#8353/#8354/#8359) é o
+ * paliativo criado PARA essas 11 páginas específicas, operando sobre o HTML
+ * já publicado em disco em vez de regenerar do zero — ver docstring dele.
  *
  * Uso:
  *   npx tsx scripts/gen-archive-pages.ts [--posts-dir data/beehiiv-cache/posts] [--out workers/site/public/p] [--sitemap workers/site/public/sitemap.xml] [--allow-prune]
@@ -63,6 +74,7 @@ import {
   type ArchivePost,
   selectPublishedPosts,
   buildArchivePageHtml,
+  derivePageTitle,
   buildSitemapXml,
   sitemapEntriesForPosts,
   kitUnifiedPostToArchivePost,
@@ -227,6 +239,30 @@ export function generateArchivePages(
   }
   mkdirSync(outDir, { recursive: true });
 
+  // #8353 item 1 — prev/next por data. Calculado sobre os posts que TÊM
+  // conteúdo e não são slug duplicado (mesmo critério de skip do loop
+  // abaixo, computado ANTES pra saber a posição de cada post entre os que
+  // de fato viram página) — não sobre `published` bruto, que incluiria post
+  // sem `content.free.web`/duplicado como vizinho, gerando link pra uma
+  // página que nunca existe. Limitação aceita conscientemente: um post que
+  // só falha DEPOIS, ao montar o HTML (`UnresolvedMergeTagError`, só
+  // detectável dentro do `buildArchivePageHtml` de cada post), ainda entra
+  // aqui como candidato — nesse caso raro, o vizinho dele carrega um link
+  // que aponta pra uma página que não foi escrita nesta rodada. Mesma classe
+  // de degradação "por post" que o guard de merge tag já aceita pro resto
+  // do lote (ver comentário no `catch` abaixo).
+  const neighborCandidates: ArchivePost[] = [];
+  {
+    const seenForNeighbors = new Set<string>();
+    for (const p of published) {
+      if (!p.content?.free?.web || seenForNeighbors.has(p.slug)) continue;
+      seenForNeighbors.add(p.slug);
+      neighborCandidates.push(p);
+    }
+  }
+  const neighborIndexBySlug = new Map<string, number>();
+  neighborCandidates.forEach((p, i) => neighborIndexBySlug.set(p.slug, i));
+
   // Slug já escrito nesta rodada — detecta colisão em vez de deixar o 2º
   // post sobrescrever o `index.html` do 1º em silêncio (last-write-wins).
   // Achado ao vivo no cache real: um `new-post` duplicado (ver comentário de
@@ -242,9 +278,16 @@ export function generateArchivePages(
       skipped.push({ slug: post.slug, reason: "slug duplicado — outro post já escreveu esta página nesta rodada" });
       continue;
     }
+    const neighborIdx = neighborIndexBySlug.get(post.slug);
+    const prevPost = neighborIdx !== undefined ? neighborCandidates[neighborIdx + 1] : undefined; // mais antigo
+    const nextPost = neighborIdx !== undefined && neighborIdx > 0 ? neighborCandidates[neighborIdx - 1] : undefined; // mais novo
+    const neighbors = {
+      prev: prevPost ? { slug: prevPost.slug, title: derivePageTitle(prevPost) } : undefined,
+      next: nextPost ? { slug: nextPost.slug, title: derivePageTitle(nextPost) } : undefined,
+    };
     let html: string;
     try {
-      html = buildArchivePageHtml(post);
+      html = buildArchivePageHtml(post, { neighbors });
     } catch (err) {
       // Degradação POR POST — só para merge tag desconhecida (#6256). Este é
       // o caso vizinho ao de `loadPosts` acima, mas com o veredito OPOSTO de
