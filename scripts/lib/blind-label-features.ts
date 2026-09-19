@@ -134,7 +134,12 @@ export const NEGATIVE_IMPACT_8414_FEATURE: FeatureDef = {
           if (!a?.url || !a?.title) continue;
           if (seen.has(a.url)) continue;
           seen.add(a.url);
-          const tagged = a.negative_impact === true;
+          // Checa AS DUAS localizações (flat e `.article` aninhado), nunca só a
+          // resolvida por `a` acima — mesmo padrão de `hasNegativeImpactTag`
+          // (`negative-impact-promotion.ts`): a cópia do artigo dentro de um
+          // highlight pode ser lossy em relação ao finalist original (#4838),
+          // então a tag pode sobreviver numa localização e não na outra.
+          const tagged = raw?.negative_impact === true || raw?.article?.negative_impact === true;
           const hiddenGuess = tagged ? "dano_real" : "nao_dano";
           pool.push({
             id: a.url,
