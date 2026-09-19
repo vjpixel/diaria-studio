@@ -56,9 +56,9 @@ function baseDeps(dir: string, overrides: Partial<AdsTestWatchDeps> = {}): Parti
       calls.push("origem");
       return true;
     },
-    runCacReport: () => {
+    runCacReport: async () => {
       calls.push("cac");
-      return true;
+      return { ok: true, zeroCadastrosArms: [] };
     },
     isSnapshotUsable: () => ({ usable: true, reason: null }),
     commentOnReligarBrevoIssue: () => ({ status: 0, stdout: "", stderr: "" }),
@@ -92,9 +92,9 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
             origemCalls.push("origem");
             return true;
           },
-          runCacReport: () => {
+          runCacReport: async () => {
             cacCalls.push("cac");
-            return true;
+            return { ok: true, zeroCadastrosArms: [] };
           },
           notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
         }),
@@ -129,9 +129,9 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
             callOrder.push("origem");
             return true;
           },
-          runCacReport: () => {
+          runCacReport: async () => {
             callOrder.push("cac");
-            return true;
+            return { ok: true, zeroCadastrosArms: [] };
           },
           notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
         }),
@@ -143,7 +143,110 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
 
       const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
       assert.ok(watchState.apuracaoCompletedAt);
-      assert.equal(watchState.apuracaoReportPath, `data/aquisicao/cac-reports/cac-${runState.apuracao_snapshot}.md`);
+      // #8238: realCacReport sempre roda com --fonte store — o id do
+      // relatório carrega o sufixo "--store" (cacReportSnapshotId).
+      assert.equal(watchState.apuracaoReportPath, `data/aquisicao/cac-reports/cac-${runState.apuracao_snapshot}--store.md`);
+    });
+  });
+
+  it("#8238 — TODOS os braços com 0 cadastros → NÃO marca completa, alarma em vez de 'sucesso' (fonte de dados provavelmente errada)", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      writeFileSync(
+        join(dir, "watch-state.json"),
+        JSON.stringify({ religarBrevoTriggeredAt: "2026-09-16T06:30:00.000Z", apuracaoCompletedAt: null, apuracaoReportPath: null }),
+      );
+      const notifyCalls: NotifyEditorFinding[] = [];
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.apuracao_snapshot + "T06:30:00.000Z"),
+          runBuildOrigemMap: () => true,
+          // Simula exatamente o defeito do #8238: cac-report.ts "rodou com
+          // sucesso" (ok: true) mas os 3 braços saíram com 0 cadastros —
+          // sinal de coorte na fonte errada, não de teste sem tração.
+          runCacReport: async (_snapshotDate, bracos) => ({ ok: true, zeroCadastrosArms: bracos }),
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
+        }),
+      );
+
+      assert.equal(notifyCalls.length, 1, "deveria alarmar 1x (zero-cadastros), nunca o e-mail de sucesso");
+      assert.match(notifyCalls[0].subject, /0 cadastros/);
+      assert.match(notifyCalls[0].subject, /NÃO congelada/);
+      assert.doesNotMatch(notifyCalls[0].subject, /apuração congelada rodou/);
+
+      const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
+      assert.equal(watchState.apuracaoCompletedAt, null, "guard de zero-cadastros nunca marca a apuração como concluída");
+      assert.equal(watchState.apuracaoReportPath, null);
+    });
+  });
+
+  it("#8238 — só 1 dos 3 braços com 0 cadastros (sinal parcial, não os 3) → segue o caminho de SUCESSO normal", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      writeFileSync(
+        join(dir, "watch-state.json"),
+        JSON.stringify({ religarBrevoTriggeredAt: "2026-09-16T06:30:00.000Z", apuracaoCompletedAt: null, apuracaoReportPath: null }),
+      );
+      const notifyCalls: NotifyEditorFinding[] = [];
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.apuracao_snapshot + "T06:30:00.000Z"),
+          runBuildOrigemMap: () => true,
+          runCacReport: async (_snapshotDate, bracos) => ({ ok: true, zeroCadastrosArms: [bracos[0]] }),
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
+        }),
+      );
+
+      assert.equal(notifyCalls.length, 1);
+      assert.match(notifyCalls[0].subject, /apuração congelada rodou/, "guard só dispara com TODOS os braços zerados");
+
+      const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
+      assert.ok(watchState.apuracaoCompletedAt);
+    });
+  });
+
+  it("#8238 — main() AGUARDA runCacReport (bug do await faltante): resolver a Promise depois de main() já ter decidido não teria efeito nenhum se o await estivesse ausente", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      writeFileSync(
+        join(dir, "watch-state.json"),
+        JSON.stringify({ religarBrevoTriggeredAt: "2026-09-16T06:30:00.000Z", apuracaoCompletedAt: null, apuracaoReportPath: null }),
+      );
+      const notifyCalls: NotifyEditorFinding[] = [];
+      let resolveCac: (v: { ok: boolean; zeroCadastrosArms: readonly string[] }) => void;
+      const cacPromise = new Promise<{ ok: boolean; zeroCadastrosArms: readonly string[] }>((resolve) => {
+        resolveCac = resolve;
+      });
+
+      const mainPromise = main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.apuracao_snapshot + "T06:30:00.000Z"),
+          runBuildOrigemMap: () => true,
+          // Resolve só depois de um `setTimeout` — se `main()` não desse
+          // `await` nesta chamada (o bug original), ele já teria decidido
+          // "sucesso" com um valor `undefined`/incompleto antes daqui.
+          runCacReport: () =>
+            new Promise((resolve) => {
+              setTimeout(() => resolve({ ok: true, zeroCadastrosArms: [] }), 10);
+            }),
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
+        }),
+      );
+
+      await mainPromise;
+
+      assert.equal(notifyCalls.length, 1, "main() deveria ter esperado a Promise de runCacReport resolver antes de agir");
+      assert.match(notifyCalls[0].subject, /apuração congelada rodou/);
+      const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
+      assert.ok(watchState.apuracaoCompletedAt, "apuração completa só é marcada depois do await resolver");
     });
   });
 
@@ -169,9 +272,9 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
             callOrder.push("origem");
             return true;
           },
-          runCacReport: () => {
+          runCacReport: async () => {
             callOrder.push("cac");
-            return true;
+            return { ok: true, zeroCadastrosArms: [] };
           },
         }),
       );
@@ -392,9 +495,9 @@ describe("#8432 — cursor de idempotência não avança quando notifyEditor fal
             callOrder.push("origem");
             return true;
           },
-          runCacReport: () => {
+          runCacReport: async () => {
             callOrder.push("cac");
-            return true;
+            return { ok: true, zeroCadastrosArms: [] };
           },
           notify: async () => fakeNotifyResult({ issue: { issueNumber: null, url: null, action: "failed", error: "gh indisponível" }, emailSent: false }),
         }),

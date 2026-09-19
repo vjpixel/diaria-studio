@@ -46,7 +46,7 @@ import { assertValidRunState, type AdsTestRunState } from "./lib/ads-test-run-st
 import { isSubscribersSnapshotUsable } from "./lib/beehiiv-backup-snapshots.ts";
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { main as buildOrigemMapMain } from "./build-origem-map.ts";
-import { main as cacReportMain } from "./cac-report.ts";
+import { main as cacReportMain, cacReportSnapshotId } from "./cac-report.ts";
 import { reportId } from "./studio-ui/studio-reports.ts";
 import {
   planAdsTestWatchActions,
@@ -66,6 +66,8 @@ import {
   buildReligarBrevoDueEmail,
   buildApuracaoSnapshotUnusableEmail,
   buildApuracaoSuccessEmail,
+  buildApuracaoZeroCadastrosEmail,
+  detectZeroCadastrosAcrossArmsFromReport,
   DEFAULT_PLANNED_DAILY_BUDGET_BRL,
   DEFAULT_NOMINAL_ARM_BUDGET_BRL,
   type AdsTestWatchState,
@@ -116,8 +118,18 @@ export interface AdsTestWatchDeps {
   /** Roda `build-origem-map.ts` (sempre ANTES de `runCacReport`, #7.2) —
    *  retorna `ok:false` se o script sinalizar falha via `process.exitCode`. */
   runBuildOrigemMap: () => boolean;
-  /** Roda `cac-report.ts --snapshot {date}` — mesma convenção de retorno. */
-  runCacReport: (snapshotDate: string) => boolean;
+  /** Roda `cac-report.ts --snapshot {date} --fonte store` (#8238 — a coorte
+   *  do teste 2608 nasce no Kit, nunca no snapshot Beehiiv) e AGUARDA o
+   *  resultado (`cacReportMain` é async — bug corrigido no #8238: antes
+   *  disto o `await` faltava e o sucesso era decidido antes do relatório
+   *  existir de fato). `zeroCadastrosArms` vem de
+   *  `detectZeroCadastrosAcrossArmsFromReport` sobre o `CacReport` que
+   *  `cac-report.ts::main()` agora retorna — `[]` quando `ok:false` (não dá
+   *  pra avaliar cadastros de um relatório que não rodou). */
+  runCacReport: (
+    snapshotDate: string,
+    bracos: readonly string[],
+  ) => Promise<{ ok: boolean; zeroCadastrosArms: readonly string[] }>;
   isSnapshotUsable: (root: string, date: string) => { usable: boolean; reason: string | null };
   commentOnReligarBrevoIssue: (body: string) => GhSpawnResult;
   /** Injetável só pra teste (evita depender do junction `data/` real do
@@ -142,13 +154,25 @@ function realBuildOrigemMap(): boolean {
   return !failed;
 }
 
-function realCacReport(snapshotDate: string): boolean {
+/**
+ * #8238: `cacReportMain` é `async` — este wrapper agora `await`a a Promise
+ * ANTES de decidir sucesso (o bug original: `cacReportMain([...])` era
+ * chamado sem `await`, então `failed` era lido antes do relatório existir
+ * de fato, e uma rejeição pós-`await` interno virava rejeição não tratada).
+ * `--fonte store` (#8238): a coorte do teste 2608 nasce no Kit, nunca no
+ * snapshot Beehiiv — ver docstring de `AdsTestWatchDeps.runCacReport`.
+ */
+async function realCacReport(
+  snapshotDate: string,
+  bracos: readonly string[],
+): Promise<{ ok: boolean; zeroCadastrosArms: readonly string[] }> {
   const priorExitCode = process.exitCode;
   process.exitCode = undefined;
-  cacReportMain(["--snapshot", snapshotDate]);
+  const report = await cacReportMain(["--snapshot", snapshotDate, "--fonte", "store"]);
   const failed = process.exitCode !== undefined && process.exitCode !== 0;
   process.exitCode = priorExitCode;
-  return !failed;
+  if (failed || !report) return { ok: !failed, zeroCadastrosArms: [] };
+  return { ok: true, zeroCadastrosArms: detectZeroCadastrosAcrossArmsFromReport(report, bracos) };
 }
 
 /**
@@ -424,12 +448,34 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
       if (!origemOk) {
         console.error(`${LOG_PREFIX} build-origem-map.ts falhou — apuração abortada, cac-report.ts NÃO rodou.`);
       } else {
-        const cacOk = deps.runCacReport(runState.apuracao_snapshot);
-        if (!cacOk) {
+        const cacResult = await deps.runCacReport(runState.apuracao_snapshot, runState.bracos);
+        if (!cacResult.ok) {
           console.error(`${LOG_PREFIX} cac-report.ts falhou para snapshot ${runState.apuracao_snapshot}.`);
+        } else if (cacResult.zeroCadastrosArms.length === runState.bracos.length) {
+          // #8238: TODOS os braços zeraram — sinal forte de fonte de dados
+          // errada (ex: cac-report.ts ainda lendo o snapshot Beehiiv em vez
+          // do store). NUNCA marcar como concluída silenciosamente — alarme
+          // que se repete todo dia, mesma disciplina do snapshot inutilizável
+          // acima, até o dado aparecer ou o editor investigar.
+          const { subject, body } = buildApuracaoZeroCadastrosEmail(runState.apuracao_snapshot, cacResult.zeroCadastrosArms);
+          findings.push({
+            check: "ads-test-watch-apuracao-zero-cadastros",
+            fingerprint: `apuracao-zero-cadastros:${runState.apuracao_snapshot}`,
+            severity: "urgente",
+            subject,
+            body,
+          });
+          console.error(
+            `${LOG_PREFIX} apuração gerou 0 cadastros nos ${runState.bracos.length} braços (${cacResult.zeroCadastrosArms.join(", ")}) — ` +
+              `fonte de dados provavelmente errada; NÃO marcando como concluída (#8238).`,
+          );
         } else {
-          const reportPath = `data/aquisicao/cac-reports/${reportId("cac", runState.apuracao_snapshot)}.md`;
-          const reportUrl = `/relatorios/${reportId("cac", runState.apuracao_snapshot)}`;
+          // #8238: `realCacReport` sempre roda com `--fonte store` — o id
+          // (e portanto o path) leva o sufixo `--store` (`cacReportSnapshotId`,
+          // fonte única compartilhada com `cac-report.ts::main()`).
+          const snapshotId = cacReportSnapshotId(runState.apuracao_snapshot, "store");
+          const reportPath = `data/aquisicao/cac-reports/${reportId("cac", snapshotId)}.md`;
+          const reportUrl = `/relatorios/${reportId("cac", snapshotId)}`;
           pendingApuracaoState = markApuracaoCompleted(watchState, now.toISOString(), reportPath);
           const { subject, body } = buildApuracaoSuccessEmail(runState.apuracao_snapshot, reportUrl);
           findings.push({
