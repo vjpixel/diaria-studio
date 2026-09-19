@@ -27,12 +27,14 @@ Três checagens, cada uma opera sobre uma ponta de estado real e é
 FAIL-SOFT/graduada — uma checagem indeterminada não derruba as outras:
 
   (a) RELATÓRIO — `data/continuo/last-tick-report.md` existe e tem mtime
-      dentro da janela do tick mais recente. A janela é derivada do registro
-      de sessão mais recente com `kind=continuo` em `data/sessions/` (campo
-      `startedAt`/`lastHeartbeat`) quando disponível; sem sessão registrada,
-      cai no argumento `--tick-window-min` (default 45min — mesmo valor que
+      dentro da janela do tick. A janela do tick é derivada do próprio
+      relatório (mtime ± `tick-window-min`, default 45min — mesmo valor que
       `watch-continuo-health.sh` checagem #3 já usa como "tick é de 30min +
-      folga"). Sessão ATIVA e recente sem relatório fresco = suspeita forte
+      folga"), e a sessão `kind=continuo` é correlacionada por
+      **sobreposição de janela** (`correlate_continuo_session`) contra
+      essa janela — nunca a sessão mais recente de outro tick. Sem sessão
+      cuja janela se sobreponha, cai em "sem sessão pra correlacionar".
+      Sessão correlacionada e recente sem relatório fresco = suspeita forte
       (é exatamente o cenário reproduzido no #7537: sessão rodou, relatório
       nunca foi escrito).
 
@@ -53,11 +55,9 @@ FAIL-SOFT/graduada — uma checagem indeterminada não derruba as outras:
           real de 611 bytes às 09:51:26 UTC — no mesmo segundo do mtime do
           alarme — mas aquele tick nunca registrou
           `data/sessions/continuo-*.json` para si mesmo (provavelmente por
-          ter terminado cedo após falhas de credencial no início). O
-          relatório não era obsoleto — a sessão "mais recente" escolhida
-          por `latest_continuo_session` simplesmente não era a que o
-          escreveu. Sem outro registro de sessão pra correlacionar, não dá
-          pra confirmar NEM descartar fabricação só pelo mtime →
+          ter terminado cedo após falhas de credencial no início). Com a
+          correlação por sobreposição, esse tick agora não herda a sessão
+          de outro tick (o que era o bug do #7641) e entra em
           `indeterminate` (cannot-verify), nunca fabricação presumida por
           default nem "ok" silencioso.
 
@@ -220,31 +220,6 @@ def _parse_iso(value: str | None) -> dt.datetime | None:
         return None
 
 
-def latest_continuo_session(sessions_dir: Path) -> dict | None:
-    """Lê `data/sessions/continuo-*.json` e devolve o registro com
-    `lastHeartbeat` (ou `startedAt`) mais recente. None se o diretório não
-    existir ou nenhum registro `kind=continuo` for encontrado — fail-soft,
-    o caller trata como "sem sessão pra correlacionar", não como erro."""
-    if not sessions_dir.is_dir():
-        return None
-    best: dict | None = None
-    best_ts: dt.datetime | None = None
-    for f in sessions_dir.glob("continuo-*.json"):
-        try:
-            record = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if record.get("kind") != "continuo":
-            continue
-        ts = _parse_iso(record.get("lastHeartbeat")) or _parse_iso(record.get("startedAt"))
-        if ts is None:
-            continue
-        if best_ts is None or ts > best_ts:
-            best_ts = ts
-            best = record
-    return best
-
-
 def all_continuo_claimed_issues(sessions_dir: Path) -> set[int]:
     """União de `claimed_issues` de TODOS os registros `continuo-*.json`
     (vivos ou não — um claim de um tick anterior ainda conta como "o
@@ -316,7 +291,10 @@ def check_report_freshness(
 ) -> dict:
     """Checagem (a): relatório existe e tem mtime dentro da janela do tick.
 
-    Janela: se há sessão `continuo` registrada, usa
+    A sessão passada já foi correlacionada por SOBREPOSIÇÃO DE JANELA
+    (`correlate_continuo_session`, no `run`) contra a janela do tick
+    atual — nunca a sessão mais recente de outro tick. Janela: se há
+    sessão `continuo` registrada, usa
     [startedAt - buffer, lastHeartbeat + buffer] (buffer = tick_window_min);
     senão, usa [now - tick_window_min, now].
     """
@@ -411,12 +389,12 @@ def check_report_freshness(
     # POSTERIOR (write_file de verdade, confirmado no log do Hermes daquela
     # ocorrencia) — nunca por reaproveitamento de arquivo velho, que
     # preservaria um mtime antigo, nao um mais novo. O que isso demonstra é
-    # que a sessao "mais recente" escolhida por `latest_continuo_session`
-    # nao é necessariamente a que escreveu o relatorio: um tick pode
-    # concluir (inclusive escrever o relatorio) sem nunca registrar
-    # `data/sessions/continuo-*.json` para si mesmo (ex: tick curto que
-    # falha cedo em credencial e só faz o minimo). Sem outra sessao
-    # registrada pra correlacionar a esse mtime mais novo, nao dá pra
+    # que a sessao correlacionada por `correlate_continuo_session` (janela
+    # do proprio relatorio ± buffer) nao é necessariamente a que escreveu
+    # o relatorio: um tick pode concluir (inclusive escrever o relatorio)
+    # sem nunca registrar `data/sessions/continuo-*.json` para si mesmo (ex:
+    # tick curto que falha cedo em credencial e só faz o minimo). Sem outra
+    # sessao registrada pra correlacionar a esse mtime mais novo, nao dá pra
     # provar NEM refutar fabricacao — cannot-verify, nunca "ok" silencioso
     # nem fabricacao presumida por default.
     return {
@@ -555,6 +533,59 @@ def check_claimed_issues(
     }
 
 
+def correlate_continuo_session(
+    sessions_dir: Path,
+    tick_window_start: dt.datetime,
+    tick_window_end: dt.datetime,
+    buffer_minutes: int = DEFAULT_TICK_WINDOW_MIN,
+) -> dict | None:
+    """Escolhe a sessão `kind=continuo` cuja janela [startedAt,
+    lastHeartbeat] se sobrepõe à janela do tick cujo relatório estamos
+    checando.
+
+    Diferente de `latest_continuo_session` (que pega a MAIS RECENTE de
+    QUALQUER tick — a fonte do #7641), a correlação aqui é por
+    **sobreposição de janela**: só uma sessão que de fato rodou dentro
+    do tick atual (ou perto o suficiente pra ser dela) pode ser usada
+    pra ancorar `check_report_freshness`. Um tick que NUNCA registrou
+    `data/sessions/continuo-*.json` para si (ex: terminou cedo após
+    falha de credencial — o caso real do #7641) não herda a sessão de
+    um tick anterior, que é exatamente o que causou a correlação errada
+    em silêncio.
+
+    Mesmo primitivo de `scripts/lib/continuo-session-registration-check.ts`
+    (#7890, `windowsOverlap`): janela do tick expandida por
+    `bufferMinutes` de cada lado vs. [startedAt, lastHeartbeat] da
+    sessão; qualquer timestamp ilegível descarta a sessão (conservador,
+    nunca afirma sobreposição sobre dado corrompido).
+
+    Devolve None (não erro) quando o diretório não existe, não há
+    registro `kind=continuo` ou nenhuma sessão se sobrepuser — o caller
+    trata como "sem sessão pra correlacionar", e `check_report_freshness`
+    já lida com isso de forma fail-soft.
+    """
+    if not sessions_dir.is_dir():
+        return None
+    buffer = dt.timedelta(minutes=buffer_minutes)
+    tick_start = tick_window_start - buffer
+    tick_end = tick_window_end + buffer
+    for f in sorted(sessions_dir.glob("continuo-*.json")):
+        try:
+            record = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if record.get("kind") != "continuo":
+            continue
+        started = _parse_iso(record.get("startedAt"))
+        heartbeat = _parse_iso(record.get("lastHeartbeat")) or started
+        if started is None or heartbeat is None:
+            continue
+        # Sobreposição de [tick_start, tick_end] x [started, heartbeat]
+        if tick_start <= heartbeat and started <= tick_end:
+            return record
+    return None
+
+
 def run(
     repo: Path,
     report_path: Path,
@@ -563,8 +594,23 @@ def run(
     now: dt.datetime,
     open_issues_json: Path | None,
 ) -> dict:
-    session = latest_continuo_session(sessions_dir)
+    # Janela do tick atual: ancorada no relatório quando existe (o mtime
+    # é o único sinal de "quando este tick escreveu") ou em `now` quando
+    # o relatório nunca foi escrito. A correlação de sessão é por
+    # sobreposição dessa janela — ver `correlate_continuo_session`.
     report_exists = report_path.exists()
+    if report_exists:
+        mtime = dt.datetime.fromtimestamp(
+            report_path.stat().st_mtime, tz=dt.timezone.utc
+        )
+        tick_window_start = mtime - dt.timedelta(minutes=tick_window_min)
+        tick_window_end = mtime + dt.timedelta(minutes=tick_window_min)
+    else:
+        tick_window_start = now - dt.timedelta(minutes=tick_window_min)
+        tick_window_end = now
+    session = correlate_continuo_session(
+        sessions_dir, tick_window_start, tick_window_end
+    )
     report_text = report_path.read_text(encoding="utf-8", errors="replace") if report_exists else None
 
     open_issue_count = resolve_open_issue_count(open_issues_json)
