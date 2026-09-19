@@ -75,3 +75,48 @@ describe("#8451 review — exit code e teto de re-review (custo)", () => {
     assert.equal(consumeReReviewAttempt({ "1@x": "lixo" as unknown as number }, 1, "x").allowed, true);
   });
 });
+
+import { evaluateStaleReviewHealth, MERGER_SILENT_HOURS, attemptsFilePath } from "../scripts/lib/continuo-review-staleness.ts";
+
+describe("#8445 — verificação automática (invariante, não sintoma)", () => {
+  const NOW = "2026-09-19T20:00:00Z";
+  const hoursAgo = (h: number) => new Date(Date.parse(NOW) - h * 3_600_000).toISOString();
+  const stale = (pr: number, over: Partial<{ headCommittedAt: string | null; current: string | null; reviewed: string | null }> = {}) => ({
+    pr,
+    headRefName: `continuo/x-${pr}`,
+    currentHeadSha: over.current === undefined ? "B" : over.current,
+    reviewedHeadSha: over.reviewed === undefined ? "A" : over.reviewed,
+    headCommittedAt: over.headCommittedAt === undefined ? hoursAgo(10) : over.headCommittedAt,
+  });
+
+  it("merger-nao-tenta: stale, 0 tentativas e HEAD antigo — é o estado exato de #8381/#8367 hoje", () => {
+    const f = evaluateStaleReviewHealth([stale(8381)], {}, NOW);
+    assert.equal(f.length, 1);
+    assert.equal(f[0].kind, "merger-nao-tenta");
+  });
+
+  it("re-review-esgotado: o merger tentou o teto e o SHA segue sem review válido", () => {
+    const f = evaluateStaleReviewHealth([stale(8381)], { "8381@B": MAX_RE_REVIEW_ATTEMPTS }, NOW);
+    assert.equal(f[0]?.kind, "re-review-esgotado");
+  });
+
+  it("NÃO alarma: HEAD recente (o merger ainda não teve tick), tentativa em curso, fresh ou unknown", () => {
+    assert.deepEqual(evaluateStaleReviewHealth([stale(1, { headCommittedAt: hoursAgo(MERGER_SILENT_HOURS - 1) })], {}, NOW), []);
+    assert.deepEqual(evaluateStaleReviewHealth([stale(1)], { "1@B": 1 }, NOW), [], "1 tentativa < teto = em curso, não falha");
+    assert.deepEqual(evaluateStaleReviewHealth([stale(1, { reviewed: "B" })], {}, NOW), [], "fresh");
+    assert.deepEqual(evaluateStaleReviewHealth([stale(1, { reviewed: null })], {}, NOW), [], "marcador legado = unknown, nunca stale");
+  });
+
+  it("sem idade legível do HEAD não afirma merger-nao-tenta (mas o esgotado independe de idade)", () => {
+    assert.deepEqual(evaluateStaleReviewHealth([stale(1, { headCommittedAt: null })], {}, NOW), []);
+    assert.equal(evaluateStaleReviewHealth([stale(1, { headCommittedAt: null })], { "1@B": 2 }, NOW)[0]?.kind, "re-review-esgotado");
+  });
+
+  it("cota é por SHA: tentativas de um SHA antigo não contam pro atual", () => {
+    assert.equal(evaluateStaleReviewHealth([stale(1)], { "1@OUTRO": 2 }, NOW)[0]?.kind, "merger-nao-tenta");
+  });
+
+  it("caminho do estado é o mesmo pro merger e pro detector (sem depender de cwd)", () => {
+    assert.match(attemptsFilePath("/repo/"), /^\/repo\/data\/continuo\/re-review-attempts\.json$/);
+  });
+});

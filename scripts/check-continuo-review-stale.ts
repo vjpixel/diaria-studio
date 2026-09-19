@@ -20,13 +20,17 @@ import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  attemptsFilePath,
   consumeReReviewAttempt,
   evaluateReviewStaleness,
   STALE_EXIT_CODE,
   type ReReviewAttempts,
 } from "./lib/continuo-review-staleness.ts";
 import { extractIndependentReviewHeadSha } from "./lib/pr-review-authenticity.ts";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function main(): void {
   const { values } = parseArgs(process.argv.slice(2));
@@ -59,7 +63,9 @@ function main(): void {
   }
   // stale: só re-revisa se ainda há tentativa pra este PR+SHA, e só se conseguir
   // GRAVAR o consumo — sem persistência não há teto, e sem teto o laço de custo volta.
-  const attemptsFile = resolve(values["attempts-file"] ?? "data/continuo/re-review-attempts.json");
+  // mesma resolução (relativa ao REPO, nunca ao cwd) do detector check-continuo-stale-review-health.ts —
+  // se divergissem, o detector leria um arquivo diferente do que o merger grava.
+  const attemptsFile = resolve(values["attempts-file"] ?? attemptsFilePath(REPO_ROOT));
   let state: ReReviewAttempts = {};
   try {
     if (existsSync(attemptsFile)) state = JSON.parse(readFileSync(attemptsFile, "utf8")) as ReReviewAttempts;
