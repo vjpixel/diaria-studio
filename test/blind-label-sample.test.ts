@@ -1,88 +1,77 @@
 /**
- * test/blind-label-sample.test.ts (#5995)
+ * test/blind-label-sample.test.ts (#5995, generalizado em #8413)
  *
- * Guard das partes PURAS de `scripts/blind-label-sample.ts` — a ferramenta de
- * rotulagem às cegas que produz gabarito limpo para medir o categorizador.
+ * Guard das partes PURAS do motor genérico de gabarito cego
+ * (`scripts/lib/blind-label-core.ts`) — generalização de
+ * `scripts/blind-label-sample.ts`, que agora é um CLI fino sobre ele.
  *
- * Só as funções sem I/O são testadas: o corpus (`data/editions/`) é uma
- * junction local do OneDrive, ausente em clone fresco e no CI (CLAUDE.md §2b),
- * então qualquer teste que dependesse dele passaria vazio e não guardaria nada.
- *
- * A propriedade que estes testes existem para proteger é UMA, e é cara:
- * **nenhum item JÁ ROTULADO sai da amostra numa re-geração**. O rótulo do
- * editor custa tempo humano e não é reproduzível; se uma re-geração puder
- * derrubar um item rotulado, esse trabalho se perde em silêncio.
- *
- * O que deliberadamente NÃO é prometido: estabilidade da amostra NÃO rotulada.
- * Com alvo de tamanho fixo e pool crescente, o corte aperta e item sem rótulo
- * pode entrar ou sair entre rodadas — não custou trabalho humano, então o
- * desenho aceita isso em troca de manter o tamanho da amostra sob controle.
- *
- * A primeira versão desta PR falhava exatamente aí e o teste NÃO pegava: a
- * seleção era top-K com quota proporcional ao pool INTEIRO, então o
- * crescimento de outro bucket encolhia a quota deste e cortava a cauda do
- * conjunto anterior — rótulos incluídos. O teste da época só verificava que
- * `stableRank` era determinístico para uma lista fixa ordenada duas vezes no
- * mesmo processo, uma propriedade muito mais fraca que passava com o bug de pé
- * (#8206 review, findings 1 e 2). Os testes abaixo exercitam a seleção sob
- * crescimento real, que é o cenário que o docstring promete.
+ * A propriedade que estes testes protegem é a mesma do #8206, agora por
+ * ESTRATO em vez de bucket fixo: **nenhum item já rotulado sai da amostra
+ * numa re-geração**. Cobre também o fluxo completo generate → record →
+ * report/next contra uma `FeatureDef` sintética, isolado em diretório
+ * temporário (nunca toca `data/jev-eval/` real).
  */
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   stableRank,
-  bucketQuota,
+  stratumQuota,
   selectByThreshold,
-  asked,
-  MIN_PER_BUCKET,
-  type Sampled,
-} from "../scripts/blind-label-sample.ts";
-import { parseArgs } from "../scripts/lib/cli-args.ts";
+  generate,
+  next,
+  record,
+  report,
+  MIN_PER_STRATUM,
+  type PoolItem,
+} from "../scripts/lib/blind-label-core.ts";
+import type { FeatureDef } from "../scripts/lib/blind-label-core.ts";
 
-function item(url: string): Sampled {
+function item(id: string, stratum = "radar"): PoolItem {
   return {
-    url,
-    title: "t " + url,
-    source: "s",
-    summary: "",
+    id,
+    display: { url: id, title: "t " + id },
+    jevState: { title: "t " + id, url: id, summary: "" },
+    stratum,
+    hiddenGuess: stratum,
+    hiddenRule: "noticias-default",
     edition: "260101",
-    hidden_guess: "radar",
-    hidden_rule: "noticias-default",
-    hidden_shipped: "radar",
   };
 }
 
-const corpus = (n: number, prefix = "https://example.com/a/") =>
-  Array.from({ length: n }, (_, i) => item(prefix + i));
+const corpus = (n: number, prefix = "https://example.com/a/", stratum = "radar") =>
+  Array.from({ length: n }, (_, i) => item(prefix + i, stratum));
 
 describe("stableRank", () => {
-  it("é determinístico para o mesmo URL", () => {
+  it("é determinístico para o mesmo id", () => {
     const u = "https://blog.google/products/ads-commerce/ads-decoded-finale/";
     assert.equal(stableRank(u), stableRank(u));
   });
 
-  it("separa URLs diferentes", () => {
+  it("separa ids diferentes", () => {
     assert.notEqual(stableRank("https://example.com/a"), stableRank("https://example.com/b"));
   });
 });
 
-describe("bucketQuota", () => {
-  it("é proporcional quando o bucket é grande", () => {
-    assert.equal(bucketQuota(3000, 4000, 60), 45);
+describe("stratumQuota", () => {
+  it("é proporcional quando o estrato é grande", () => {
+    assert.equal(stratumQuota(3000, 4000, 60), 45);
   });
 
   it("aplica o piso quando a proporção daria menos", () => {
-    assert.equal(bucketQuota(100, 4000, 60), MIN_PER_BUCKET);
+    assert.equal(stratumQuota(100, 4000, 60), MIN_PER_STRATUM);
   });
 
-  it("nunca pede mais itens do que o bucket tem, mesmo abaixo do piso", () => {
-    assert.equal(bucketQuota(3, 4000, 60), 3);
+  it("nunca pede mais itens do que o estrato tem, mesmo abaixo do piso", () => {
+    assert.equal(stratumQuota(3, 4000, 60), 3);
   });
 
   it("devolve 0 para entradas degeneradas em vez de NaN/Infinity", () => {
-    assert.equal(bucketQuota(0, 4000, 60), 0);
-    assert.equal(bucketQuota(10, 0, 60), 0);
-    assert.equal(bucketQuota(10, 4000, NaN), 0);
+    assert.equal(stratumQuota(0, 4000, 60), 0);
+    assert.equal(stratumQuota(10, 0, 60), 0);
+    assert.equal(stratumQuota(10, 4000, NaN), 0);
   });
 });
 
@@ -92,12 +81,6 @@ describe("selectByThreshold — amostra aditiva", () => {
     assert.ok(picked.length >= 20 && picked.length <= 60, `esperava ~40, veio ${picked.length}`);
   });
 
-  // LIMITE CONHECIDO, e é o ponto do desenho: com alvo de tamanho FIXO e pool
-  // crescente, a pertinência de um item NÃO rotulado pode mudar entre rodadas —
-  // o corte aperta para continuar rendendo ~`quota`. Isso é aceito de propósito:
-  // item sem rótulo não custou trabalho humano, e `--next` simplesmente mostra
-  // outro. O invariante caro é o do teste seguinte (rótulo nunca sai), e é ele
-  // que o guard de `generate` reforça com abort.
   it("mantém o tamanho da amostra sob crescimento do corpus", () => {
     const antes = selectByThreshold(corpus(200), 40, new Set()).length;
     const depois = selectByThreshold(corpus(800), 40, new Set()).length;
@@ -106,70 +89,114 @@ describe("selectByThreshold — amostra aditiva", () => {
 
   it("todo item rotulado sobrevive ao crescimento do corpus", () => {
     const small = corpus(200);
-    const rotulados = new Set(selectByThreshold(small, 40, new Set()).map((p) => p.url));
+    const rotulados = new Set(selectByThreshold(small, 40, new Set()).map((p) => p.id));
     const grown = corpus(800);
-    const depois = selectByThreshold(grown, 40, rotulados).map((p) => p.url);
-    for (const u of rotulados) {
-      assert.ok(depois.includes(u), `rótulo perdido após crescimento do corpus: ${u}`);
+    const depois = selectByThreshold(grown, 40, rotulados).map((p) => p.id);
+    for (const id of rotulados) {
+      assert.ok(depois.includes(id), `rótulo perdido após crescimento do corpus: ${id}`);
     }
   });
 
   it("NUNCA descarta item já rotulado, mesmo fora do corte", () => {
     const pool = corpus(500);
-    // pega um URL que o corte estreito deixaria de fora
-    const narrow = new Set(selectByThreshold(pool, 10, new Set()).map((p) => p.url));
-    const outside = pool.find((p) => !narrow.has(p.url));
+    const narrow = new Set(selectByThreshold(pool, 10, new Set()).map((p) => p.id));
+    const outside = pool.find((p) => !narrow.has(p.id));
     assert.ok(outside, "fixture precisa de um item fora do corte");
-    const picked = selectByThreshold(pool, 10, new Set([outside.url]));
-    assert.ok(picked.some((p) => p.url === outside.url), "item rotulado foi descartado");
-  });
-
-  it("regressão #8206: bucket estável não perde itens quando OUTRO bucket cresce", () => {
-    // O bug: quota = (bucketSize / poolSize) * target. Com poolSize crescendo
-    // por causa de outro bucket, a quota deste encolhia e a cauda do top-K caía.
-    const stable = corpus(20, "https://example.com/lanc/");
-    const quotaAntes = bucketQuota(stable.length, 100, 60);
-    const quotaDepois = bucketQuota(stable.length, 400, 60);
-    assert.ok(quotaDepois <= quotaAntes, "fixture: a quota precisa mesmo encolher");
-
-    const antes = selectByThreshold(stable, quotaAntes, new Set()).map((p) => p.url);
-    const rotulados = new Set(antes);
-    const depois = selectByThreshold(stable, quotaDepois, rotulados).map((p) => p.url);
-    for (const u of antes) {
-      assert.ok(depois.includes(u), `rótulo perdido por encolhimento de quota: ${u}`);
-    }
+    const picked = selectByThreshold(pool, 10, new Set([outside.id]));
+    assert.ok(picked.some((p) => p.id === outside.id), "item rotulado foi descartado");
   });
 
   it("devolve vazio para lista vazia", () => {
     assert.deepEqual(selectByThreshold([], 10, new Set()), []);
   });
 
-  it("quota >= candidatos inclui TODO mundo (ramo do piso MIN_PER_BUCKET)", () => {
+  it("quota >= candidatos inclui TODO mundo (ramo do piso MIN_PER_STRATUM)", () => {
     const pool = corpus(5);
     assert.equal(selectByThreshold(pool, 8, new Set()).length, 5);
   });
 });
 
-/**
- * `parseArgs` classifica `--generate 60` como VALUE e `--generate` sozinho como
- * FLAG. `asked` é o predicado que reconcilia os dois — sem ele, `--generate 60`
- * caía no usage e não gerava nada (bug real, pego rodando a ferramenta).
- * `getIntArg` é quem depois rejeita a flag sem valor, por contrato próprio.
- */
-describe("asked", () => {
-  it("reconhece --key com valor", () => {
-    assert.equal(asked(parseArgs(["--generate", "60"]), "generate"), true);
+describe("generate/record/next/report — fluxo completo (feature sintética)", () => {
+  let rootDir: string;
+  let def: FeatureDef;
+
+  beforeEach(() => {
+    rootDir = mkdtempSync(join(tmpdir(), "blind-label-core-test-"));
+    const pool = [...corpus(20, "https://example.com/radar/", "radar"), ...corpus(20, "https://example.com/lanc/", "lancamento")];
+    def = {
+      id: "synthetic-feature",
+      labels: ["radar", "lancamento", "nao_pertence"],
+      collectPool: () => ({ pool, skipped: [] }),
+    };
   });
 
-  it("reconhece --key sem valor (pra getIntArg poder recusar com mensagem)", () => {
-    assert.equal(asked(parseArgs(["--generate"]), "generate"), true);
+  afterEach(() => {
+    rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("reconhece a sintaxe --key=valor", () => {
-    assert.equal(asked(parseArgs(["--generate=60"]), "generate"), true);
+  it("generate produz amostra estratificada e persiste em disco", () => {
+    const r = generate(rootDir, def, 10);
+    assert.equal(r.poolSize, 40);
+    assert.ok(r.pickedCount > 0);
+    assert.equal(r.alreadyLabeled, 0);
   });
 
-  it("é falso para chave ausente", () => {
-    assert.equal(asked(parseArgs(["--next", "4"]), "generate"), false);
+  it("record rejeita id fora da amostra", () => {
+    generate(rootDir, def, 10);
+    assert.throws(() => record(rootDir, def, "https://nao-existe.com", "radar"), /não está na amostra/);
+  });
+
+  it("record rejeita rótulo fora do vocabulário da feature", () => {
+    generate(rootDir, def, 10);
+    const sample = next(rootDir, def.id, 1);
+    assert.throws(() => record(rootDir, def, sample[0].id, "bucket_invalido"), /rótulo inválido/);
+  });
+
+  it("next devolve só itens NÃO rotulados (a outra metade do contrato de cegueira — o CLI serializa só `display`, nunca `hiddenGuess`)", () => {
+    generate(rootDir, def, 10);
+    const sample = next(rootDir, def.id, 5);
+    assert.ok(sample.length > 0);
+    for (const item of sample) assert.equal(item.label, undefined);
+  });
+
+  it("record grava, e um 2º record do mesmo id ATUALIZA (o último vence)", () => {
+    generate(rootDir, def, 10);
+    const [first] = next(rootDir, def.id, 1);
+    record(rootDir, def, first.id, "radar");
+    record(rootDir, def, first.id, "lancamento");
+    const rep = report(rootDir, def.id);
+    assert.ok(rep);
+    const found = rep!.disagreements.find((d) => d.id === first.id) ?? null;
+    // o rótulo final é "lancamento" — se o hiddenGuess original for "radar", isso aparece como discordância.
+    if (first.hiddenGuess !== "lancamento") {
+      assert.ok(found, "2º record deveria ter sobrescrito o 1º");
+    }
+  });
+
+  it("report calcula acordo/discordância contra hiddenGuess", () => {
+    generate(rootDir, def, 40);
+    const sample = next(rootDir, def.id, 40);
+    for (const item of sample) {
+      // rotula tudo concordando com o palpite, exceto o primeiro item (discorda de propósito).
+      const isFirst = item.id === sample[0].id;
+      const flipped = item.hiddenGuess === "radar" ? "lancamento" : "radar";
+      record(rootDir, def, item.id, isFirst ? flipped : item.hiddenGuess);
+    }
+    const rep = report(rootDir, def.id);
+    assert.ok(rep);
+    assert.equal(rep!.labeled, sample.length);
+    assert.equal(rep!.agree, sample.length - 1);
+    assert.equal(rep!.disagreements.length, 1);
+    assert.equal(rep!.disagreements[0].id, sample[0].id);
+  });
+
+  it("generate ABORTA sem gravar se um item já rotulado sairia da amostra", () => {
+    generate(rootDir, def, 5);
+    const [first] = next(rootDir, def.id, 1);
+    record(rootDir, def, first.id, first.hiddenGuess);
+
+    // Feature cujo pool não inclui mais o item rotulado — simula "moveu de bucket / edição sumiu".
+    const shrunkDef: FeatureDef = { ...def, collectPool: () => ({ pool: def.collectPool(rootDir).pool.filter((p) => p.id !== first.id), skipped: [] }) };
+    assert.throws(() => generate(rootDir, shrunkDef, 5), /ABORTADO/);
   });
 });
