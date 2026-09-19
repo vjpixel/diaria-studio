@@ -339,6 +339,47 @@ describe("summarizeChecks (#3562, entrega 2)", () => {
   it("falha vence pendência quando ambos presentes", () => {
     assert.equal(summarizeChecks([{ status: "IN_PROGRESS" }, { conclusion: "FAILURE", status: "COMPLETED" }]), "red");
   });
+
+  describe("CANCELLED isolado de red (#8484)", () => {
+    it("cenário exato da #8435 — todos os checks CANCELLED, nenhum FAILURE -> 'stale', nunca 'red'", () => {
+      const result = summarizeChecks([
+        { status: "COMPLETED", conclusion: "CANCELLED" },
+        { status: "COMPLETED", conclusion: "CANCELLED" },
+        { status: "COMPLETED", conclusion: "CANCELLED" },
+      ]);
+      assert.equal(result, "stale");
+      assert.notEqual(result, "red");
+    });
+
+    it("1 CANCELLED isolado (sem outros checks) -> 'stale'", () => {
+      assert.equal(summarizeChecks([{ status: "COMPLETED", conclusion: "CANCELLED" }]), "stale");
+    });
+
+    it("FAILURE real + CANCELLED misturados -> 'red' vence (falha de verdade não fica escondida)", () => {
+      assert.equal(
+        summarizeChecks([
+          { status: "COMPLETED", conclusion: "CANCELLED" },
+          { status: "COMPLETED", conclusion: "FAILURE" },
+        ]),
+        "red",
+      );
+    });
+
+    it("TIMED_OUT e ACTION_REQUIRED continuam 'red' (assimetria proposital com CANCELLED)", () => {
+      assert.equal(summarizeChecks([{ status: "COMPLETED", conclusion: "TIMED_OUT" }]), "red");
+      assert.equal(summarizeChecks([{ status: "COMPLETED", conclusion: "ACTION_REQUIRED" }]), "red");
+    });
+
+    it("CANCELLED + check ainda pendente -> 'stale' (terminal conhecido vence não-terminal)", () => {
+      assert.equal(
+        summarizeChecks([
+          { status: "COMPLETED", conclusion: "CANCELLED" },
+          { status: "IN_PROGRESS", conclusion: null },
+        ]),
+        "stale",
+      );
+    });
+  });
 });
 
 describe("parsePrs — ciState + reviewDecision (#3562, entrega 2)", () => {
