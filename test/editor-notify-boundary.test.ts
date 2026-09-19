@@ -44,33 +44,16 @@ const NEVER_DEBT = new Set(["scripts/lib/gmail-send.ts", "scripts/lib/push-notif
 /** Dívida conhecida — ver docstring acima. Ordenada, 1 por linha, pra diff
  * pequeno a cada remoção. */
 const ALLOWLIST: string[] = [
-  // #7960 (6ª fatia): `ads-daily-digest.ts` SAIU daqui — virou relatório do
-  // Studio (`registerReport({kind: "ads-digest"})` + `notifyEditor` com
-  // `severity: "info"`), que é o item 4 da #7957. Ficam
-  // `ads-kill-switch-alarm.ts` e `ads-test-watch.ts` (severidade "urgente",
-  // mas injetam `sendEmail`/`GmailSendResult` via DI própria com cobertura
-  // de teste extensa em cima desse shape exato — migrar exige trocar a forma
-  // do dep e reescrever os testes correspondentes, deixado pra uma unidade
-  // dedicada).
-  "scripts/ads-kill-switch-alarm.ts",
-  "scripts/ads-test-watch.ts",
-
-  // #7960: TODOS os ~25 scripts que usam `planAlarmReconciliation`/
+  // #7960: TODOS os scripts que usavam `planAlarmReconciliation`/
   // `applyAlarmReconciliation` (`scripts/lib/alarm-issues.ts`) já migraram
-  // (fatias #7965/#7973/#8251/#8285/#8297/#8363 e a 6ª, #8xxx). A abordagem
-  // que os destravou, registrada aqui pra quem for migrar um caso análogo
-  // no futuro: NUNCA chamar `notifyEditor()` nesses scripts (chamaria
-  // `ensureAlarmIssue` uma 2ª VEZ pro mesmo achado, podendo reabrir uma
-  // issue que a reconciliação acabou de FECHAR, ou disputar o mesmo
-  // fingerprint com resultado divergente). Em vez disso: manter
-  // `applyAlarmReconciliation` INTOCADO e decidir só o E-MAIL a partir do
-  // `AlarmFindingOutcome[]` via `notifyEditorForOutcomes(outcomes, severity,
-  // buildMessage, deps)` (`scripts/lib/editor-notify.ts`), com
-  // `legacyResendIntent` decidido lendo o gate de e-mail antigo de CADA
-  // script — nunca por padrão de nome.
-  //
-  // 2 armadilhas que o review pegou ao longo das fatias, ambas invisíveis no
-  // diff e mudas no CI:
+  // (fatias #7965/#7973/#8251/#8285/#8297/#8363), assim como os 2 que
+  // chamavam `sendGmailMessage` direto sem nenhum mecanismo de issue
+  // (`ads-kill-switch-alarm.ts`/`ads-test-watch.ts`, 7ª fatia — severidade
+  // "urgente", `notify: (finding) => Promise<NotifyEditorResult>` injetável
+  // igual ao `sendEmail` que substituiu, fingerprint derivado do CONJUNTO de
+  // achados de cada execução, nunca da data isolada). Duas armadilhas que o
+  // review pegou ao longo das fatias, ambas invisíveis no diff e mudas no
+  // CI, registradas aqui pra quem migrar um caso análogo no futuro:
   //   1. **Fingerprint estático** congela a issue no conteúdo da 1ª execução
   //      (fatia 1) — derivar do CONJUNTO de achados quando a semântica for
   //      essa.
@@ -80,6 +63,11 @@ const ALLOWLIST: string[] = [
   //      fluxo de controle; `notifyEditor*` nunca lança. Decisão extraída
   //      em `shouldPersistAlarmedState`/`notifyEditorResultReachedEditor`
   //      (`scripts/lib/editor-notify.ts`) — REUSAR, nunca reimplementar.
+  //   Scripts que usavam `planAlarmReconciliation` reusam
+  //   `notifyEditorForOutcomes(outcomes, severity, buildMessage, deps)`
+  //   em vez de `notifyEditor()` direto (que chamaria `ensureAlarmIssue`
+  //   uma 2ª vez pro mesmo achado) — `legacyResendIntent` decidido lendo o
+  //   gate de e-mail antigo de CADA script, nunca por padrão de nome.
 
   // #7960 (item 4 da #7957): implementação de baixo nível de
   // `dispatchReportEmail`/`buildReportEmail` — o canal de e-mail que

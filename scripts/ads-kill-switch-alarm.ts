@@ -47,7 +47,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
-import { sendGmailMessage, type GmailSendResult } from "./lib/gmail-send.ts";
+import { notifyEditor, type NotifyEditorFinding, type NotifyEditorResult } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { addDays } from "./lib/ads-test-schedule.ts";
@@ -83,7 +83,13 @@ export interface AdsKillSwitchAlarmDeps {
    *  2 travas obrigatórias antes de qualquer tentativa de pausa. */
   isKillSwitchEnabled: () => boolean;
   pauseExecutor: PauseExecutor;
-  sendEmail: (to: string, subject: string, body: string) => Promise<GmailSendResult>;
+  /** #7960 — portão único de notificação (`scripts/lib/editor-notify.ts`),
+   *  não mais `sendGmailMessage` direto. Severidade sempre `"urgente"`
+   *  (kill-switch/morte de braço, dinheiro em risco) — a decisão de
+   *  mandar e-mail ou só abrir/atualizar a issue fica com o portão
+   *  (`email_policy`), nunca com este script. Injetável só pra teste —
+   *  produção sempre `notifyEditor` real. */
+  notify: (finding: NotifyEditorFinding) => Promise<NotifyEditorResult>;
   appendPauseEvent: (event: PauseEvent, path: string) => void;
   /** Injetável só pra teste — em produção sempre `detectExecMode`. */
   execMode: () => "local" | "cloud";
@@ -95,6 +101,7 @@ function realAppendPauseEvent(event: PauseEvent, path: string): void {
 }
 
 function defaultDeps(argv: string[]): AdsKillSwitchAlarmDeps {
+  const toOverride = getArg(argv, "to");
   return {
     runStatePath: getArg(argv, "run-state-path") || DEFAULT_RUN_STATE_PATH,
     clicksCsvPath: getArg(argv, "clicks-csv-path") || DEFAULT_CLICKS_CSV_PATH,
@@ -103,7 +110,7 @@ function defaultDeps(argv: string[]): AdsKillSwitchAlarmDeps {
     now: () => new Date(),
     isKillSwitchEnabled: () => isAdsKillSwitchEnabled(ROOT),
     pauseExecutor: notWiredPauseExecutor,
-    sendEmail: sendGmailMessage,
+    notify: (finding) => notifyEditor(finding, { cwd: ROOT, emailTo: toOverride || undefined, platformConfigPath: PLATFORM_CONFIG_PATH }),
     appendPauseEvent: realAppendPauseEvent,
     execMode: () => detectExecMode({ projectRoot: ROOT }),
   };
@@ -214,16 +221,34 @@ export async function main(
     deps.appendPauseEvent(event, deps.pauseEventsLogPath);
   }
 
-  // Alarme por e-mail SEMPRE que houver achado — independente de pausa ter
-  // sido tentada, pulada, ou bem/mal sucedida (checklist da issue #5239).
+  // Alarme SEMPRE que houver achado — independente de pausa ter sido
+  // tentada, pulada, ou bem/mal sucedida (checklist da issue #5239). #7960:
+  // via o portão notifyEditor (severidade "urgente"), não mais e-mail
+  // direto — o portão decide sozinho se manda e-mail (issue recém-criada
+  // sob `email_policy: "urgent_only"`) ou só garante a issue.
   const { subject, body } = buildKillSwitchAlarmEmail(evaluations, pauseExecutionEnabled);
   const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
   if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+    console.log(`${LOG_PREFIX} --dry-run: notificaria o editor (severidade urgente) pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     return;
   }
-  await deps.sendEmail(to, subject, body);
-  console.log(`${LOG_PREFIX} e-mail enviado pra ${to}: "${subject}"`);
+  // Fingerprint derivado do CONJUNTO de braços atualmente degradados — não
+  // da data (#7960, armadilha #1 registrada na ALLOWLIST de
+  // test/editor-notify-boundary.test.ts): muda quando a composição do
+  // achado muda, fica estável enquanto o mesmo conjunto de braços segue
+  // degradado, permitindo a issue ser reaproveitada em vez de recriada a
+  // cada execução.
+  const fingerprint = `ads-kill-switch:${triggered.map((e) => e.braco).sort().join(",")}`;
+  const finding: NotifyEditorFinding = { check: "ads-kill-switch", fingerprint, severity: "urgente", subject, body };
+  const result = await deps.notify(finding);
+  if (result.emailSent) {
+    console.log(`${LOG_PREFIX} e-mail enviado pra ${to}: "${subject}"`);
+  } else {
+    console.log(
+      `${LOG_PREFIX} achado registrado (issue #${result.issue?.issueNumber ?? "?"}, action=${result.issue?.action ?? "n/a"}) — ` +
+        `e-mail não enviado nesta execução (política ${result.emailPolicy}).`,
+    );
+  }
 }
 
 if (isMainModule(import.meta.url)) {
