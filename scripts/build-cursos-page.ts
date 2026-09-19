@@ -17,12 +17,18 @@
  *   npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html
  *   npx tsx scripts/build-cursos-page.ts --check       # só valida
  *
- * #4641: a prosa GEO (H1/H2 + FAQ, em `renderGeoIntro`/`buildCursosFaq`) passou
- * por Humanizador + `mcp__clarice__correct_text` em 260807 — mesmo padrão do
- * Stage 2 da diária (Skill("humanizador", ...) seguido de correct_text,
- * aplicando sugestões exceto o que quebra marca/identificador ou hardcoda um
- * valor hoje dinâmico). Não roda automaticamente a cada build (o seed muda por
- * curadoria manual, não diariamente) — ao reescrever essa prosa de forma
+ * #4641/#8470: a prosa GEO (H1/H2 + FAQ, em `renderGeoIntro`/`buildCursosFaq`)
+ * passou por Humanizador + `mcp__clarice__correct_text` em 260807 e de novo
+ * em 260919 (#8470: FAQ 8→7 perguntas + 3 filtros que sumiam no teaser) —
+ * mesmo padrão do Stage 2 da diária (Skill("humanizador", ...) seguido de
+ * correct_text, aplicando sugestões exceto o que quebra marca/identificador
+ * ou hardcoda um valor hoje dinâmico). Em 260919 o Humanizador não achou
+ * padrão de IA a corrigir (prosa já curta/factual, sem gerúndio em cascata,
+ * travessão ou vocabulário inflado); `mcp__clarice__correct_text` retornou
+ * HTTP 401 no momento da rodada — não bloqueou o merge (não é MCP de stage
+ * de pipeline, #738 não se aplica aqui), mas repetir o passe na próxima
+ * reescrita substancial. Não roda automaticamente a cada build (o seed muda
+ * por curadoria manual, não diariamente) — ao reescrever essa prosa de forma
  * substancial no futuro, repetir os dois passes antes de commitar, e bump
  * `GEO_CONTENT_DATE` abaixo. As PERGUNTAS do FAQ (e o H2, que espelha a
  * pergunta principal) ficam fora do escopo do Humanizador de propósito — são
@@ -87,7 +93,7 @@ const PAGE_DESCRIPTION =
  * render fresco; "hoje" nunca bate com o commit de ontem). Bump manual
  * quando o conteúdo GEO (intro/FAQ) for reescrito de forma substancial —
  * não a cada atualização rotineira do seed de cursos. */
-const GEO_CONTENT_DATE = "2026-08-07"; // #4641: prosa GEO (intro + FAQ) revisada por Humanizador + Clarice
+const GEO_CONTENT_DATE = "2026-09-19"; // #8470: FAQ 8→7 perguntas + H2 desduplicado, revisado por Humanizador + Clarice
 
 // #1936/#1935: DS canônico (vjpixel/diaria-design via lib/shared/design-tokens.ts).
 // Era ad-hoc (Newsreader + paleta #F5F1E8/#FFFDF8/#1A1A1A divergente do canvas
@@ -269,10 +275,30 @@ export function buildCursosFaq(courses: Course[]): GeoFaqItem[] {
   const comCertificado = courses.filter((c) => c.certificate).length;
   const ptBr = courses.filter((c) => c.language === "pt-br").length;
   const en = total - ptBr;
+  const ptBrFree = courses.filter((c) => c.language === "pt-br" && c.cost === "free").length;
   const iniciante = courses.filter((c) => c.level === "iniciante").length;
-  const plataformas = distinctPlatforms(courses).length;
   const open = openCourseCount(total);
+  const curto = courses.filter((c) => durationBin(c.duration_hours) === "curto").length;
+  const medio = courses.filter((c) => durationBin(c.duration_hours) === "medio").length;
+  const longo = courses.filter((c) => durationBin(c.duration_hours) === "longo").length;
+  const semCodigo = courses.filter((c) => c.format === "video" || c.format === "texto").length;
+  const handsOn = total - semCodigo;
 
+  // #8470 (comentário Parte F + decisão do editor, 19/09/2026): 8 → 7
+  // perguntas. Removidas 4 sem demanda real de busca (quantas plataformas,
+  // como desbloquear, links levam à origem, lista é atualizada — as 4
+  // saíram TAMBÉM do JSON-LD, mesma fonte alimenta os dois). #4 reescrita
+  // (deixa de ser anafórica: "Esses cursos..." não funciona quando o par é
+  // extraído isolado da página). #1 mantida como pergunta (a duplicação com
+  // o H2 da intro foi resolvida mudando o H2, não a pergunta — ver
+  // `renderGeoIntro`). 3 adicionadas, todas numéricas/agregadas — nenhuma
+  // nomeia curso/plataforma (sobrevivem ao anti-leak,
+  // `test/cursos-teaser-leak.test.ts`): a query monitorada por
+  // `GEO_QUESTIONS` (0/29 citações medidas em 19/09/2026,
+  // `scripts/lib/geo-citation-monitor.ts`), "quanto tempo leva" (bin de
+  // duração, dado que só a diar.ia.br tem) e "preciso saber programar"
+  // (cruza formato × pré-requisito).
+  //
   // #4641: respostas revisadas por Humanizador + Clarice (mcp__clarice__correct_text) —
   // travessão de conector/definição removido (regra #20 do humanizador), gerúndio em
   // cascata evitado, contrações formalizadas conforme sugestão da Clarice. As
@@ -285,52 +311,61 @@ export function buildCursosFaq(courses: Course[]): GeoFaqItem[] {
       answer: `Esta curadoria reúne ${total} cursos sobre inteligência artificial, dos quais ${free} têm acesso gratuito ou auditoria livre. ${comCertificado} deles emitem certificado sem custo ao concluir. ${open} ficam abertos diretamente na página, e o restante é desbloqueado para assinantes da diar.ia.br.`,
     },
     {
+      question: "Onde encontro cursos gratuitos de inteligência artificial em português?",
+      answer: `Aqui: a curadoria da diar.ia.br reúne ${ptBr} cursos em português, dos quais ${ptBrFree} têm acesso gratuito ou auditoria livre. Todos ficam organizados por nível, formato e plataforma nesta página.`,
+    },
+    {
       question: "Tem curso de inteligência artificial em português?",
       answer: `Sim, ${ptBr} dos ${total} cursos da lista são em português, cobrindo desde fundamentos de IA até IA generativa e ética. Os outros ${en} estão em inglês, geralmente cursos mais técnicos.`,
     },
     {
-      question: "Quantas plataformas de cursos de IA a diar.ia.br já curou?",
-      answer: `A curadoria já cobre ${plataformas} plataformas diferentes, de universidades a empresas de tecnologia. Cada card de curso indica a plataforma de origem antes do link, sendo possível filtrar por ela na página.`,
-    },
-    {
-      question: "Esses cursos de IA dão certificado?",
-      answer: `${comCertificado} dos ${total} cursos da lista emitem certificado sem custo ao concluir. Procure o selo específico no card do curso, ou utilize o filtro de "Certificado" na página.`,
+      question: "Tem curso de IA gratuito com certificado?",
+      answer: `Sim, ${comCertificado} dos ${total} cursos da lista emitem certificado sem custo ao concluir. Procure o selo específico no card do curso, ou utilize o filtro de "Certificado" na página.`,
     },
     {
       question: "Tem curso de IA pra iniciante, sem experiência técnica?",
       answer: `Sim, ${iniciante} dos ${total} cursos são classificados como nível iniciante, sem pré-requisito de programação. Use o filtro de "Nível" para visualizar apenas esses títulos.`,
     },
     {
-      question: "Como faço pra desbloquear todos os cursos da lista?",
-      answer:
-        "Uma parte do catálogo está disponível sem cadastro; o restante é liberado para assinantes ativos da diar.ia.br (verificação automática por e-mail) ou para quem se cadastra pelo banner no topo da página.",
+      question: "Quanto tempo leva pra fazer um curso de IA?",
+      answer: `Depende do curso: ${curto} são curtos (menos de 5 horas), ${medio} têm duração média (5 a 20 horas) e ${longo} são mais longos (acima de 20 horas). Use o filtro de "Duração" para escolher pelo tempo que você tem disponível.`,
     },
     {
-      question: "Os links dos cursos levam direto pra plataforma de origem?",
-      answer:
-        "Sim, todos os links direcionam para o curso na plataforma original que oferece o conteúdo. A diar.ia.br não hospeda arquivos, apenas faz a curadoria e organização.",
-    },
-    {
-      question: "Essa lista de cursos de IA é atualizada?",
-      answer:
-        "Sim, a curadoria é mantida manualmente pelo editor da diar.ia.br e cresce sem periodicidade fixa. A melhor forma de acompanhar as novidades é assinar a newsletter diária.",
+      question: "Preciso saber programar pra estudar inteligência artificial?",
+      answer: `Não necessariamente: ${semCodigo} dos cursos são em vídeo ou texto, sem exigir escrever código, e ${handsOn} são hands-on, com exercícios práticos de programação. Use o filtro de "Formato" para escolher o estilo que combina com você.`,
     },
   ];
+}
+
+/** pt-BR "a, b e c" — join simples, sem lib externa (lista curta e fixa, ≤5 itens). */
+function joinPtBr(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} e ${items[items.length - 1]}`;
 }
 
 /** Parágrafo introdutório (issue #4558 item 1: responde a pergunta principal
  * por inteiro nos primeiros ~200 palavras, sem enrolação) + H2 em formato de
  * pergunta literal (item 2). Fica no header, antes dos filtros. Mesma
  * disciplina de `buildCursosFaq`: só contagens agregadas, nunca nome de
- * plataforma/tema específico (poderia ser exclusivo de um curso gated). */
-function renderGeoIntro(courses: Course[]): string {
+ * plataforma/tema específico (poderia ser exclusivo de um curso gated).
+ *
+ * #8470 Parte C: a prosa NUNCA deve assumir que um filtro existe —
+ * `availableFilterLabels` já vem do caller filtrada pelo mesmo critério ≥2
+ * valores distintos de `renderFilter`, em vez de hardcodar a lista de 5. O H2
+ * mudou de texto (#8470 comentário Parte F, item "Q1 desduplicada") pra não
+ * repetir literalmente a pergunta 1 do FAQ logo abaixo. */
+function renderGeoIntro(courses: Course[], availableFilterLabels: string[]): string {
   const total = courses.length;
   const free = courses.filter((c) => c.cost === "free").length;
   const comCertificado = courses.filter((c) => c.certificate).length;
   const plataformas = distinctPlatforms(courses).length;
+  const filtrosSentence =
+    availableFilterLabels.length > 0
+      ? `Filtre por ${joinPtBr(availableFilterLabels)} logo abaixo, ou role até o final`
+      : "Role até o final";
   return `    <div class="geo-intro-wrap">
-      <h2 class="geo-h2">Quais são os melhores cursos gratuitos de inteligência artificial?</h2>
-      <p class="geo-intro">Esta página reúne ${total} cursos sobre inteligência artificial de ${plataformas} plataformas diferentes: ${free} deles com acesso gratuito ou auditoria livre, e ${comCertificado} com certificado sem custo ao concluir. A curadoria abrange desde fundamentos de IA e IA generativa até especializações técnicas, em português e inglês. Filtre por idioma, nível, formato, duração e plataforma logo abaixo, ou role até o final para as perguntas frequentes com os números completos da curadoria.</p>
+      <h2 class="geo-h2">O que você encontra na curadoria de cursos de IA da diar.ia.br?</h2>
+      <p class="geo-intro">Esta página reúne ${total} cursos sobre inteligência artificial de ${plataformas} plataformas diferentes: ${free} deles com acesso gratuito ou auditoria livre, e ${comCertificado} com certificado sem custo ao concluir. A curadoria abrange desde fundamentos de IA e IA generativa até especializações técnicas, em português e inglês. ${filtrosSentence} para as perguntas frequentes com os números completos da curadoria.</p>
 ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(GEO_CONTENT_DATE)}`)}
     </div>`;
 }
@@ -381,6 +416,49 @@ function renderFilter(id: string, label: string, opts: Array<{ value: string; la
       </label>`;
 }
 
+/** Opções de faceta de ENUM FECHADO (idioma, nível, custo, formato, duração,
+ * certificado) — nunca plataforma/tema, que podem ser exclusivos de um curso
+ * gated. #8470: derivadas do CATÁLOGO COMPLETO, não do recorte visível do
+ * teaser — um valor de enum já está hardcoded no código-fonte (LEVEL_LABEL,
+ * FORMAT_LABEL etc.), então listar que ele existe não vaza nada sobre QUAIS
+ * cursos gated o têm (mesma disciplina de `buildCursosFaq`: só agregado,
+ * nunca curso individual). Antes do #8470 essas 6 opções eram derivadas de
+ * `visible` dentro de `renderPageBody` — como o teaser mostra só ~20% do
+ * catálogo, uma composição pouco diversa nesse recorte fazia até 4 dos 8
+ * dropdowns sumirem (regra de `renderFilter`: <2 valores distintos = "" ),
+ * mesmo quando o catálogo completo tinha variedade real. */
+export interface FacetOpts {
+  lang: Array<{ value: string; label: string }>;
+  level: Array<{ value: string; label: string }>;
+  cost: Array<{ value: string; label: string }>;
+  format: Array<{ value: string; label: string }>;
+  duration: Array<{ value: string; label: string }>;
+  cert: Array<{ value: string; label: string }>;
+}
+
+function computeFacetOpts(courses: Course[]): FacetOpts {
+  const distinct = <T extends string>(vals: T[]) => [...new Set(vals)];
+  return {
+    lang: distinct(courses.map((c) => c.language)).map((v) => ({ value: v, label: LANG_LABEL[v] })),
+    level: (["iniciante", "intermediario", "avancado"] as Level[])
+      .filter((l) => courses.some((c) => c.level === l))
+      .map((v) => ({ value: v, label: LEVEL_LABEL[v] })),
+    cost: (["free", "paid", "subscription"] as Cost[])
+      .filter((x) => courses.some((c) => c.cost === x))
+      .map((v) => ({ value: v, label: COST_LABEL[v] })),
+    format: (["video", "texto", "hands-on"] as Format[])
+      .filter((f) => courses.some((c) => c.format === f))
+      .map((v) => ({ value: v, label: FORMAT_LABEL[v] })),
+    duration: (["curto", "medio", "longo"] as DurationBin[])
+      .filter((d) => courses.some((c) => durationBin(c.duration_hours) === d))
+      .map((v) => ({ value: v, label: DURATION_LABEL[v] })),
+    cert: [
+      { value: "sim", label: "Com certificado" },
+      { value: "nao", label: "Sem certificado" },
+    ].filter((o) => courses.some((c) => (c.certificate ? "sim" : "nao") === o.value)),
+  };
+}
+
 /**
  * Renderiza a página completa no design editorial diar.ia.br. Pure — recebe os
  * cursos, devolve HTML 100% self-contained (Georgia é system font — sem fonte externa).
@@ -403,11 +481,25 @@ export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "fu
   // ainda existe) e passadas como STRING/array já pronto pra
   // `renderPageBody` — o boundary de "curso individual nunca atravessa"
   // continua intacto, só o agregado atravessa.
-  const geoIntroHtml = renderGeoIntro(courses);
-  const geoFaq = buildCursosFaq(courses);
   const openIds = new Set((mode === "teaser" ? selectOpenCourses(courses) : courses).map((c) => c.id));
   const visible = courses.filter((c) => openIds.has(c.id));
-  return renderPageBody(visible, courses.length - visible.length, mode, geoIntroHtml, geoFaq);
+  // #8470: opções de faceta de ENUM (idioma/nível/custo/formato/duração/cert)
+  // vêm do CATÁLOGO COMPLETO, não de `visible` — ver `computeFacetOpts`.
+  const facetOpts = computeFacetOpts(courses);
+  // #8470 Parte C: a prosa GEO só cita um filtro que de fato renderiza — mesmo
+  // critério ≥2 valores distintos de `renderFilter`. Plataforma usa `visible`
+  // (o mesmo recorte que alimenta o dropdown de fato); os outros 4 usam
+  // `facetOpts` (catálogo completo).
+  const availableFilterLabels = [
+    facetOpts.lang.length >= 2 && "idioma",
+    facetOpts.level.length >= 2 && "nível",
+    facetOpts.format.length >= 2 && "formato",
+    facetOpts.duration.length >= 2 && "duração",
+    distinctPlatforms(visible).length >= 2 && "plataforma",
+  ].filter((v): v is string => typeof v === "string");
+  const geoIntroHtml = renderGeoIntro(courses, availableFilterLabels);
+  const geoFaq = buildCursosFaq(courses);
+  return renderPageBody(visible, courses.length - visible.length, mode, geoIntroHtml, geoFaq, facetOpts);
 }
 
 /**
@@ -415,7 +507,12 @@ export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "fu
  * (ver `renderCursosPage`). `hiddenCount` é a única informação NUMÉRICA
  * sobre os fechados que atravessa a fronteira; `geoIntroHtml`/`geoFaq` são
  * agregados GEO já renderizados/computados no caller (ver nota acima) —
- * strings/estruturas prontas, nunca objetos `Course` individuais.
+ * strings/estruturas prontas, nunca objetos `Course` individuais. `facetOpts`
+ * (#8470) é a 2ª exceção deliberada do mesmo tipo: as 6 opções de ENUM
+ * FECHADO (idioma/nível/custo/formato/duração/certificado), computadas no
+ * caller a partir do catálogo completo — plataforma e tema continuam
+ * derivados de `visible` aqui dentro, porque esses dois podem ser exclusivos
+ * de um curso gated (mesma fronteira anti-leak de sempre).
  */
 function renderPageBody(
   visible: Course[],
@@ -423,6 +520,7 @@ function renderPageBody(
   mode: CursosRenderMode,
   geoIntroHtml: string,
   geoFaq: GeoFaqItem[],
+  facetOpts: FacetOpts,
 ): string {
   const cards = visible.map(renderCard).join("\n");
   // #4052: banner de gate — só no modo teaser, e só quando há pelo menos 1
@@ -445,26 +543,27 @@ function renderPageBody(
 `
       : "";
 
-  // Dropdowns dinâmicos: só renderiza os que têm ≥2 valores distintos.
-  const distinct = <T extends string>(vals: T[]) => [...new Set(vals)];
-  const langOpts = distinct(visible.map((c) => c.language)).map((v) => ({ value: v, label: LANG_LABEL[v] }));
-  const levelOpts = (["iniciante", "intermediario", "avancado"] as Level[])
-    .filter((l) => visible.some((c) => c.level === l))
-    .map((v) => ({ value: v, label: LEVEL_LABEL[v] }));
-  const costOpts = (["free", "paid", "subscription"] as Cost[])
-    .filter((x) => visible.some((c) => c.cost === x))
-    .map((v) => ({ value: v, label: COST_LABEL[v] }));
-  const formatOpts = (["video", "texto", "hands-on"] as Format[])
-    .filter((f) => visible.some((c) => c.format === f))
-    .map((v) => ({ value: v, label: FORMAT_LABEL[v] }));
-  const durOpts = (["curto", "medio", "longo"] as DurationBin[])
-    .filter((d) => visible.some((c) => durationBin(c.duration_hours) === d))
-    .map((v) => ({ value: v, label: DURATION_LABEL[v] }));
+  // #8470 (decisão do editor, 19/09/2026): com as opções de faceta vindo do
+  // catálogo completo, um filtro (ex: Nível → Avançado) pode zerar a lista
+  // de cursos ABERTOS no teaser mesmo quando o catálogo completo tem cursos
+  // com esse valor. Estado vazio vira gancho de conversão em vez de dead
+  // end — nunca marca a <option> como "(só para assinantes)" (decisão
+  // descartada: vazaria em que dimensões existe conteúdo gated, mais do que
+  // o banner de topo já diz). No modo `full` (pós-gate) o comportamento é
+  // idêntico a antes — não há filtro que zere sem realmente não haver curso.
+  const emptyMessageHtml =
+    mode === "teaser" && hiddenCount > 0
+      ? `Nenhum dos cursos abertos bate com esses filtros. O catálogo completo tem ${
+          visible.length + hiddenCount
+        } cursos. <a href="/gate">Assine para ver todos →</a>`
+      : "Nenhum curso com esses filtros.";
+
+  // #8470: as 6 opções de enum fechado vêm do CATÁLOGO COMPLETO (`facetOpts`,
+  // computado no caller) — só plataforma/tema seguem derivados de `visible`,
+  // porque só esses dois podem ser exclusivos de um curso gated.
+  const { lang: langOpts, level: levelOpts, cost: costOpts, format: formatOpts, duration: durOpts, cert: certOpts } =
+    facetOpts;
   const platOpts = distinctPlatforms(visible).map((p) => ({ value: slugify(p), label: p }));
-  const certOpts = [
-    { value: "sim", label: "Com certificado" },
-    { value: "nao", label: "Sem certificado" },
-  ].filter((o) => visible.some((c) => (c.certificate ? "sim" : "nao") === o.value));
   const themeOpts = distinctThemes(visible).map((t) => ({ value: slugify(t), label: t }));
   // review #1891: mapa COMPLETO slug→label (todos os temas) embutido no script.
   // Sem ele, rebuildThemes lia o label das <option> ATUAIS — que encolhem a cada
@@ -534,6 +633,10 @@ ${renderCuradoriaFiltersBaseStyles()}
 ${renderCuradoriaGridCardStyles()}
   .platform { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.04em; color: var(--ink); margin: 6px 0 0; }
   .badge--cert { border-color: var(--ink); color: var(--ink); }
+  /* #8470: estado vazio do teaser (filtro sem match) vira gancho de
+     assinatura em vez de dead end — link precisa do mesmo tratamento visual
+     dos outros CTAs de texto da página. */
+  .empty a { color: var(--teal); font-weight: 700; text-decoration: underline; }
 
   /* #4052: banner de gate (teaser). Não existe estilo de "card bloqueado" —
      curso gated não é renderizado, só contabilizado no banner. */
@@ -584,7 +687,7 @@ ${filters}
     <div class="wrap">
       <div class="grid" id="grid">
 ${cards}
-        <p class="empty" id="empty" style="display:none">Nenhum curso com esses filtros.</p>
+        <p class="empty" id="empty" style="display:none">${emptyMessageHtml}</p>
       </div>
 ${renderGeoFaqSection(geoFaq, { sectionId: "faq-cursos" })}
     </div>
