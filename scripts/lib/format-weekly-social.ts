@@ -7,7 +7,7 @@
  * os principais destaques da semana — ver `weekly-instagram-select.ts`).
  *
  * **#4483 removeu LinkedIn/Facebook/Threads/Twitter-X deste arquivo** — a
- * skill `/diaria-instagram-semanal` (renomeada de `/diaria-semanal`) passou
+ * skill `/diaria-retro-semanal` (renomeada de `/diaria-semanal`) passou
  * a publicar exclusivamente no Instagram (o recap semanal do LinkedIn segue
  * coberto por `/diaria-linkedin-semanal`, #4456, fora de escopo aqui). As
  * funções `formatLinkedInWeekly`/`formatFacebookWeekly`/
