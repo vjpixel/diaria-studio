@@ -697,6 +697,100 @@ describe("main(): dispatch mockado", () => {
     });
   });
 
+  describe("#8385: --images-only (resolve as imagens do carrossel sem despachar pra nenhum canal)", () => {
+    it("resolve capa + itens + CTA em JSON, sem escrever 06-weekly-published.json nem chamar o Worker queue", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+
+      const dirA = setupEdition(editionsRoot, "271220", [
+        { n: 1, title: "D1 pouco clicado", url: "https://exemplo.com/d1-baixo" },
+        { n: 2, title: "D2 muito clicado", url: "https://exemplo.com/d2-alto" },
+      ]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+      addImageFixture(dirA, 2, "https://cdn.example.com/271220-d2.jpg");
+
+      writeCachePost(dataRoot, "post_1220", {
+        id: "post_1220",
+        title: "Edição 271220",
+        status: "confirmed",
+        publish_date: epochFor("271220"),
+        stats: {
+          email: { clicks: 10, unique_opens: 100 },
+          clicks: [
+            { url: "https://exemplo.com/d1-baixo", base_url: "https://exemplo.com/d1-baixo", email: { unique_verified_clicks: 2 } },
+            { url: "https://exemplo.com/d2-alto", base_url: "https://exemplo.com/d2-alto", email: { unique_verified_clicks: 8 } },
+          ],
+        },
+      });
+
+      // Nenhum intercept registrado pra "/queue" — se o script chegasse a
+      // despachar pra algum canal, o MockAgent (disableNetConnect) lançaria.
+      // O teste passar sem registrar nenhum intercept É a prova de que
+      // --images-only nunca chama o Worker.
+      //
+      // O caminho normal (sem --manifest-only) imprime narrativa (seleção,
+      // warnings) ANTES do JSON final — diferente do atalho de
+      // --manifest-only, que sai cedo com 1 console.log só. Captura por
+      // CHAMADA (não concatenado numa string só) e pega a ÚLTIMA — é o
+      // console.log(JSON.stringify(...)) do bloco --images-only.
+      const calls: string[] = [];
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => {
+        calls.push(args.map(String).join(" "));
+      };
+      try {
+        await main(
+          ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--images-only", "--force-incomplete-week"],
+          { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+        );
+      } finally {
+        console.log = originalLog;
+      }
+
+      const parsed = JSON.parse(calls[calls.length - 1]);
+      assert.equal(parsed.mode, "clicked");
+      assert.equal(parsed.saturday, saturdayStr);
+      // D2 (8%) vence D1 (2%) — mesma ordem que o dispatch real usaria.
+      assert.equal(parsed.items.length, 2);
+      assert.equal(parsed.items[0].title, "D2 muito clicado");
+      assert.equal(parsed.items[1].title, "D1 pouco clicado");
+      assert.equal(parsed.carouselImageUrls.length, 4);
+      assert.match(parsed.cover, /\/flat\/img-unknown-weekly-.*-clicked-cover-4x5\.jpg$/);
+      assert.match(parsed.cta, /\/flat\/img-unknown-weekly-.*-clicked-cta-4x5\.jpg$/);
+      assert.match(parsed.items[0].imageUrl, /\/news\/img-unknown-weekly-271225-clicked-271220-d2-\d+-4x5\.jpg$/);
+
+      assert.equal(existsSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json")), false);
+    });
+
+    it("rejeita --schedule junto (a resolução de imagem já é parte desse fluxo)", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      await expectMockedExit(
+        () =>
+          main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--images-only", "--schedule"], {
+            dataRoot,
+            flatCardGenerator: fakeFlatCardGenerator,
+            newsCardGenerator: fakeNewsCardGenerator,
+          }),
+        1,
+      );
+    });
+
+    it("rejeita --mode both junto (emitiria 2 JSONs em sequência)", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      await expectMockedExit(
+        () =>
+          main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--images-only", "--mode", "both"], {
+            dataRoot,
+            flatCardGenerator: fakeFlatCardGenerator,
+            newsCardGenerator: fakeNewsCardGenerator,
+          }),
+        1,
+      );
+    });
+  });
+
   describe("seleção por clique cruzando o cache Beehiiv", () => {
     it("D2 de uma edição vence D1 de outra por taxa — carrossel usa a imagem PRÓPRIA de cada item selecionado", async () => {
       const saturday = new Date(2027, 11, 25);

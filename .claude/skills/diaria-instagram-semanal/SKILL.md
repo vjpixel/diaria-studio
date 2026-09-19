@@ -353,16 +353,49 @@ prévia, não). Só o TOP-LEVEL do Claude Code tem acesso à ferramenta
 `Artifact` — este passo pressupõe que quem executa é a sessão top-level (o
 caso normal de `/diaria-instagram-semanal` invocada diretamente).
 
-Publique via `Artifact`, imediatamente após o Passo 2 e ANTES do Passo 3:
+**Passo 2a — resolver as imagens de verdade (#8385, obrigatório antes de
+publicar o Artifact).** Antes do #8385, este passo mostrava só a CAPTION em
+texto — o carrossel de imagens (o que de fato aparece no feed) só existia
+depois de publicado. Pra cada modo efetivamente rodado, rode:
+
+```bash
+npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode {clicked|highlights} --images-only
+```
+
+Sem `--schedule` e sem `--images-only` compostos com `--mode both` (rode os
+2 modos separados se `--mode` foi omitido — mesmo padrão do Passo 2). O
+script resolve/gera a MESMA pipeline de imagem que `--schedule` usaria
+(capa recomposta, 1 card 4:5 recomposto por item no tamanho único da
+rodada, CTA — inclusive geração sob demanda de item de RADAR, #4513, se for
+o caso) e imprime 1 objeto JSON no stdout —
+`{cover, cta, items: [{index, title, url, editionDate, imageUrl}],
+carouselImageUrls}` — sem despachar pra nenhum canal e sem tocar em
+`06-weekly-published.json`. Idempotente pelo mesmo cache que `--schedule`
+usa: se as imagens já foram resolvidas antes (rodada anterior ou
+`--schedule` já rodou), não regenera nem gasta de novo.
+
+Baixe as `carouselImageUrls` de cada modo pro scratchpad (`curl` ou
+equivalente) — são as imagens REAIS que vão publicar, na ordem exata do
+carrossel (capa → itens → CTA).
+
+Publique via `Artifact`, imediatamente após o Passo 2a e ANTES do Passo 3:
 
 1. **Conteúdo:** para cada modo efetivamente rodado nesta invocação — os
-   DOIS lado a lado em colunas/seções separadas quando `--mode` foi omitido
-   (`both`, default, #5903), ou só o modo único quando `--mode
-   clicked`/`--mode highlights` foi passado explícito — a caption dos 3
-   canais (Instagram, Facebook, Threads) já formatada pelo Passo 2,
-   apresentada de forma legível (tipografia real, quebras de linha
-   preservadas, itens numerados) — nunca HTML cru despejado, e nunca texto
-   novo/reescrito: é uma RENDERIZAÇÃO do que o Passo 2 já produziu.
+   DOIS lado a lado em seções separadas quando `--mode` foi omitido (`both`,
+   default, #5903), ou só o modo único quando `--mode clicked`/`--mode
+   highlights` foi passado explícito:
+   - **O carrossel de imagens de verdade** (#8385) — os slides do Passo 2a
+     na ordem real de publicação (capa → 1 card por item selecionado → CTA),
+     publicados como `files` do Artifact (imagens locais baixadas no Passo
+     2a — CDN externo não carrega dentro do Artifact) e renderizados como
+     `<img>` de verdade, não como descrição em texto. É o que dá pro editor
+     avaliar tamanho de fonte, corte, card capa/CTA — o que a caption em
+     texto nunca mostrou.
+   - A caption dos 4 canais (Instagram, Facebook, Threads, LinkedIn) já
+     formatada pelo Passo 2, apresentada de forma legível (tipografia real,
+     quebras de linha preservadas, itens numerados) — nunca HTML cru
+     despejado, e nunca texto novo/reescrito: é uma RENDERIZAÇÃO do que o
+     Passo 2 já produziu.
 2. **Junto de cada modo:** os itens selecionados (taxa de clique + título +
    edição de origem no modo `clicked`; os 5 D1 em ordem cronológica no modo
    `highlights`), os warnings pendentes que o Passo 2 relatou (empates,
@@ -376,8 +409,14 @@ Publique via `Artifact`, imediatamente após o Passo 2 e ANTES do Passo 3:
    gate humano do Passo 3 é o ponto de confirmação, não este preview em si.
 
 Publicada a prévia, apresente o link ao editor ANTES do Passo 3 — é o ponto
-em que ele revisa caption + seleção em skim visual, em vez de aprovar
-direto a partir do texto impresso no terminal pelo Passo 2.
+em que ele revisa o carrossel de imagens + caption + seleção em skim
+visual, em vez de aprovar direto a partir do texto impresso no terminal
+pelo Passo 2.
+
+Se a resolução de imagem do Passo 2a falhar (mesmos motivos de falha do
+Passo 4 — arte-base ausente, geração sob demanda falhando), trate como o
+caso de borda "Item selecionado sem imagem gerada" abaixo — não prossiga
+pro Artifact/gate com um carrossel incompleto.
 
 ## Passo 3 — Gate humano (pulado com `--no-gates`)
 
