@@ -244,15 +244,23 @@ export interface Apuracao {
 export function apurar(ballot: Pick<BallotTema, "opcoes">, votos: readonly VotoRegistrado[]): Apuracao {
   const contagem = new Map<number, number>();
   for (const o of ballot.opcoes) contagem.set(o.n, 0);
+  // Voto sob um `n` que NÃO existe na cédula atual não entra em lugar nenhum
+  // — nem num bucket de `opcoes`, nem em `total`. Acontece quando um ciclo é
+  // reaberto com `voto-tema-open.ts --force` sob um conjunto de opções
+  // diferente (a numeração muda) com votos antigos ainda no KV: contá-los em
+  // `total` mas em nenhuma opção faria as barras de porcentagem do placar
+  // deixarem de somar 100%. `total` é sempre a soma dos buckets.
+  let total = 0;
   for (const v of votos) {
-    if (contagem.has(v.opcao)) contagem.set(v.opcao, (contagem.get(v.opcao) ?? 0) + 1);
+    if (!contagem.has(v.opcao)) continue;
+    contagem.set(v.opcao, (contagem.get(v.opcao) ?? 0) + 1);
+    total++;
   }
   const opcoes: ApuracaoOpcao[] = ballot.opcoes.map((o) => ({
     n: o.n,
     titulo: o.titulo,
     votos: contagem.get(o.n) ?? 0,
   }));
-  const total = votos.length;
   const max = opcoes.reduce((m, o) => Math.max(m, o.votos), 0);
   const top = max > 0 ? opcoes.filter((o) => o.votos === max).map((o) => o.n) : [];
   const empate = top.length > 1;

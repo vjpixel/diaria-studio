@@ -43,6 +43,8 @@ import {
   handleVotoPost,
   type VotoTemaEnv,
 } from "../workers/artigos/src/voto-tema.ts";
+import { selectPendentesElegiveis } from "../scripts/voto-tema-lembrete.ts";
+import { ballotWriteFailureMessage } from "../scripts/voto-tema-open.ts";
 
 // ── fixtures ────────────────────────────────────────────────────────────
 
@@ -332,5 +334,90 @@ describe("handlers — voto só é gravado por POST, nunca por GET (#8371)", () 
     const { env } = await envWithBallot([]);
     const res = await handleVotacaoPlacar(new Request("https://x/votacao/9999"), env, "9999");
     assert.equal(res.status, 404);
+  });
+});
+
+// ── findings do self-review da PR #8394 ─────────────────────────────────
+
+describe("apurar — voto órfão de --force com cédula de outro shape (#8394)", () => {
+  it("voto sob `n` ausente da cédula não entra em total nem em opção", async () => {
+    const ballot = await buildBallot([]);
+    // Cenário concreto: ciclo reaberto com `voto-tema-open.ts --push --force`
+    // sob uma cédula nova (opções 1..3) com votos antigos do ciclo anterior
+    // ainda no KV sob n=7/n=9 — numeração que não existe mais.
+    const apuracao = apurar(ballot, [
+      { opcao: 1, ts: "t1" },
+      { opcao: 7, ts: "t2" },
+      { opcao: 9, ts: "t3" },
+      { opcao: 2, ts: "t4" },
+    ]);
+    assert.equal(apuracao.total, 2, "total conta só os votos que casam uma opção da cédula");
+    const soma = apuracao.opcoes.reduce((acc, o) => acc + o.votos, 0);
+    assert.equal(soma, apuracao.total, "barras de porcentagem somam 100% do total");
+    assert.equal(apuracao.vencedor, null);
+    assert.equal(apuracao.empate, true);
+  });
+
+  it("todos os votos órfãos = placar vazio, não 'total > 0 sem vencedor'", async () => {
+    const ballot = await buildBallot([]);
+    const apuracao = apurar(ballot, [
+      { opcao: 42, ts: "t1" },
+      { opcao: 43, ts: "t2" },
+    ]);
+    assert.equal(apuracao.total, 0);
+    assert.equal(apuracao.empate, false);
+    assert.equal(apuracao.vencedor, null);
+    assert.deepEqual(
+      apuracao.opcoes.map((o) => o.votos),
+      [0, 0, 0],
+    );
+  });
+});
+
+describe("selectPendentesElegiveis — lembrete nunca vai pra quem tomaria 403 (#8394)", () => {
+  it("membro que entrou na tag depois da abertura fica fora dos pendentes", async () => {
+    // `ballot.eleitores` congela a@ e b@ na abertura; c@ virou Mantenedor
+    // depois e já aparece em `fetchTagMembers`, mas um clique dele no link
+    // de voto bateria 403 em `autorizarEleitor`.
+    const eleitoresHashes = await Promise.all(["a@example.com", "b@example.com"].map((e) => eleitorHash(e)));
+    const { pendentes, foraDoEleitorado } = await selectPendentesElegiveis(
+      ["a@example.com", "b@example.com", "c@example.com"],
+      ["b@example.com"],
+      eleitoresHashes,
+    );
+    assert.deepEqual(pendentes, ["a@example.com"]);
+    assert.deepEqual(foraDoEleitorado, ["c@example.com"], "operador precisa saber quem ficou de fora");
+  });
+
+  it("normaliza e-mail antes de casar com o hash congelado", async () => {
+    const eleitoresHashes = [await eleitorHash("a@example.com")];
+    const { pendentes, foraDoEleitorado } = await selectPendentesElegiveis(["  A@Example.COM "], [], eleitoresHashes);
+    assert.deepEqual(pendentes, ["a@example.com"]);
+    assert.deepEqual(foraDoEleitorado, []);
+  });
+
+  it("quem já votou nunca entra em pendentes nem em foraDoEleitorado", async () => {
+    const eleitoresHashes = await Promise.all(["a@example.com", "b@example.com"].map((e) => eleitorHash(e)));
+    const { pendentes, foraDoEleitorado } = await selectPendentesElegiveis(
+      ["a@example.com", "b@example.com"],
+      ["a@example.com", "b@example.com"],
+      eleitoresHashes,
+    );
+    assert.deepEqual(pendentes, []);
+    assert.deepEqual(foraDoEleitorado, []);
+  });
+});
+
+describe("ballotWriteFailureMessage — erro pós-patch diz o que já aconteceu (#8394)", () => {
+  it("nomeia os patches já aplicados, a key que falta e desaconselha ação manual", () => {
+    const msg = ballotWriteFailureMessage("2610", 7, 9, "KV PUT 500");
+    assert.match(msg, /KV PUT 500/);
+    assert.match(msg, /JÁ ACONTECERAM/);
+    assert.match(msg, /7\/9/, "diz quantos custom fields já foram patchados");
+    assert.match(msg, /voto_token/);
+    assert.match(msg, /polltoken:\*/);
+    assert.ok(msg.includes(ballotKey("2610")), "nomeia a key da cédula que falta");
+    assert.match(msg, /NÃO repatche o Kit manualmente/);
+    assert.match(msg, /--push --force/, "aponta a reexecução segura");
   });
 });

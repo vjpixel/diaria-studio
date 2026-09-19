@@ -21,7 +21,7 @@ import { resolveKitConfig } from "./lib/kit-config.ts";
 import { createTag, findTagIdByName, tagSubscriber } from "./lib/kit-broadcasts.ts";
 import { fetchTagMembers } from "./lib/kit-apoio-tag-sync.ts";
 import { listWorkerKVKeys } from "./lib/cloudflare-kv-upload.ts";
-import { parseCicloVotacao, voteKeyPrefix } from "../workers/artigos/src/voto-tema-core.ts";
+import { eleitorHash, parseCicloVotacao, voteKeyPrefix } from "../workers/artigos/src/voto-tema-core.ts";
 import {
   VOTO_TEMA_TAG_SYNC_COMMAND,
   VotoTemaGuardError,
@@ -53,6 +53,38 @@ export function selectPendentes(eleitoradoEmails: readonly string[], votantesEma
   return eleitoradoEmails.map((e) => e.trim().toLowerCase()).filter((e) => !votou.has(e));
 }
 
+export interface PendentesResolution {
+  /** Quem ainda não votou E está no eleitorado congelado da cédula — só
+   *  estes podem ser lembrados. */
+  pendentes: string[];
+  /** Quem está na tag HOJE mas não estava no eleitorado no momento da
+   *  abertura (ex: virou Mantenedor depois). Um clique dessa pessoa no link
+   *  de voto bateria 403 em `autorizarEleitor`, então ela NÃO é tagueada —
+   *  mas o operador precisa saber que ela existe. */
+  foraDoEleitorado: string[];
+}
+
+/**
+ * Filtra os pendentes pelo eleitorado CONGELADO na cédula (`ballot.eleitores`,
+ * hashes sha256 gravados na abertura). A membresia da tag é dinâmica; o
+ * eleitorado não é. Mandar lembrete pra quem entrou na tag depois da abertura
+ * é convidar pra um 403 — daí o filtro, e daí a lista `foraDoEleitorado`
+ * devolvida junto (o aviso é do operador, não um erro que derruba a rodada).
+ */
+export async function selectPendentesElegiveis(
+  eleitoradoEmails: readonly string[],
+  votantesEmails: readonly string[],
+  eleitoresHashes: readonly string[],
+): Promise<PendentesResolution> {
+  const congelados = new Set(eleitoresHashes);
+  const pendentes: string[] = [];
+  const foraDoEleitorado: string[] = [];
+  for (const email of selectPendentes(eleitoradoEmails, votantesEmails)) {
+    (congelados.has(await eleitorHash(email)) ? pendentes : foraDoEleitorado).push(email);
+  }
+  return { pendentes, foraDoEleitorado };
+}
+
 export async function run(options: RunOptions): Promise<void> {
   const { ciclo: rawCiclo, dryRun, log } = options;
   const ciclo = parseCicloVotacao(rawCiclo);
@@ -78,11 +110,21 @@ export async function run(options: RunOptions): Promise<void> {
 
   const voteKeys = await listWorkerKVKeys(voteKeyPrefix(ciclo), kvConfig);
   const votantesEmails = voteKeys.map((k) => emailFromVoteKey(ciclo, k));
-  const pendentes = selectPendentes(
+  const { pendentes, foraDoEleitorado } = await selectPendentesElegiveis(
     eleitorado.map((m) => m.email),
     votantesEmails,
+    ballot.eleitores,
   );
   log(`eleitorado: ${eleitorado.length} · já votaram: ${votantesEmails.length} · pendentes: ${pendentes.length}`);
+  if (foraDoEleitorado.length > 0) {
+    log(
+      `AVISO: ${foraDoEleitorado.length} membro(s) da tag NÃO estão no eleitorado congelado da cédula do ciclo ` +
+        `${ciclo} (entraram na tag depois da abertura): ${foraDoEleitorado.join(", ")}. NÃO recebem lembrete — um ` +
+        "clique deles no link de voto daria 403. Para incluí-los, reabra o ciclo com " +
+        "'npx tsx scripts/voto-tema-open.ts --ciclo " + ciclo + " --push --force' (recalcula tokens de TODOS, " +
+        "invalidando os links já enviados).",
+    );
+  }
 
   if (dryRun) {
     log(`[DRY RUN] tag "${VOTO_TEMA_PENDENTE_TAG}" seria aplicada a ${pendentes.length} apoiador(es): ${pendentes.join(", ") || "(nenhum)"}`);

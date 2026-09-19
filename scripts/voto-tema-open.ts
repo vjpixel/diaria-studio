@@ -42,7 +42,7 @@ import { fetchTagMembers } from "./lib/kit-apoio-tag-sync.ts";
 import { updateSubscriberFields } from "./lib/kit-subscribers.ts";
 import { computePollToken, pollTokenKvKey } from "./lib/shared/poll-token.ts";
 import { putTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
-import { parseCicloVotacao, validarCedula, eleitorHash, type BallotTema, type CandidatoTema } from "../workers/artigos/src/voto-tema-core.ts";
+import { ballotKey, parseCicloVotacao, validarCedula, eleitorHash, type BallotTema, type CandidatoTema } from "../workers/artigos/src/voto-tema-core.ts";
 import {
   VOTO_TEMA_TAG_SYNC_COMMAND,
   VotoTemaGuardError,
@@ -56,6 +56,29 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[voto-tema-open]";
 const KIT_VOTO_TOKEN_FIELD = "voto_token";
+
+/**
+ * Mensagem do erro que sobe quando a cédula falha ao ser gravada DEPOIS que os
+ * custom fields já foram patchados no Kit e as entradas reversas `polltoken:*`
+ * já foram gravadas no KV. Mesmo padrão de `persistSuffix` em
+ * `publish-artigo-especial-kit.ts`: quem lê o stack trace precisa saber o que
+ * JÁ ACONTECEU (e portanto não deve ser refeito à mão) vs o que falta.
+ * @pure
+ */
+export function ballotWriteFailureMessage(
+  ciclo: string,
+  patched: number,
+  total: number,
+  reason: string,
+): string {
+  return (
+    `a cédula do ciclo ${ciclo} NÃO foi gravada no KV (${reason}). JÁ ACONTECERAM, e não precisam ser refeitos ` +
+    `à mão: ${patched}/${total} custom field(s) "${KIT_VOTO_TOKEN_FIELD}" patchados no Kit e as entradas ` +
+    `reversas polltoken:* correspondentes gravadas no KV. FALTA só a cédula (${ballotKey(ciclo)}) — reexecutar ` +
+    "este script com --push --force é seguro e idempotente (recalcula os mesmos tokens para os mesmos " +
+    "e-mails); NÃO repatche o Kit manualmente."
+  );
+}
 
 export function ballotInputPath(dataDir: string, ciclo: string): string {
   return resolve(dataDir, "artigo-especial", "votacao", ciclo, "ballot.json");
@@ -170,7 +193,11 @@ export async function run(options: RunOptions): Promise<void> {
     eleitores: eleitoresHashes,
     aberta_em: new Date().toISOString(),
   };
-  await writeBallotToKv(ciclo, ballot, kvConfig);
+  try {
+    await writeBallotToKv(ciclo, ballot, kvConfig);
+  } catch (e) {
+    throw new Error(ballotWriteFailureMessage(ciclo, patched, members.length, (e as Error).message));
+  }
 
   log(
     `cédula gravada (ciclo ${ciclo}): ${patched}/${members.length} eleitor(es) com token pronto` +
