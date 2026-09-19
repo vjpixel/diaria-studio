@@ -107,6 +107,13 @@ describe("#6299 — o overnight declara paralelismo, com teto", () => {
     );
   });
 
+  it("o develop não guarda o teto velho do overnight (achado do review da #8492)", () => {
+    const d = read(DEVELOP);
+    assert.doesNotMatch(d, /teto menor: overnight, 3/, "item 6 do develop ainda diz que o overnight tem teto 3");
+    assert.doesNotMatch(d, /somar até 9 worktrees/, "item 6 do develop ainda diz 9 worktrees (6+6 = 12 desde o #8486)");
+    assert.doesNotMatch(read(OVERNIGHT), /até 3 desses ciclos/, "a Fase 1 do overnight ainda diz 3 ciclos em voo");
+  });
+
   it("reusa a análise de cluster do develop em vez de reimplementar", () => {
     const s = read(OVERNIGHT);
     assert.match(s, /an[áa]lise de cluster/i);
