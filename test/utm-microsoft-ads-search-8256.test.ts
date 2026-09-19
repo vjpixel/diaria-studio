@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { EXTERNAL_UTM_SURFACES } from "../scripts/lib/shared/utm-registry.ts";
 import { CHANNEL_KEY_SPECS } from "../scripts/lib/shared/channel-key-specs.ts";
 import { classifyAcquisition } from "../scripts/lib/metrics/acquisition-class.ts";
+import { computeDrift } from "../scripts/studio-ui/studio-utms.ts";
 
 describe("#8256 — Microsoft Ads (teste 2608): PMax e Search separadas por utm_campaign, mesmo utm_source", () => {
   it("as 2 superfícies estão registradas, com campaign distinto e mesmo source", () => {
@@ -54,5 +55,55 @@ describe("#8256 — Microsoft Ads (teste 2608): PMax e Search separadas por utm_
     const created = Math.floor(Date.parse("2026-09-10T12:00:00Z") / 1000);
     const cls = classifyAcquisition({ utm_source: "microsoft-ads", utm_medium: "cpc", created });
     assert.equal(cls, "pago");
+  });
+});
+
+/**
+ * Addendum (19/09/2026): a campanha Search 571615527 foi PAUSADA no painel
+ * (R$ 656,34 / 77 cliques / zero cadastros, atribuição verificada intacta
+ * antes da pausa), e o registry passou a declarar `status: "aposentado"`.
+ *
+ * O bloco acima trava `source`/`campaign`/agregação por braço, mas NADA
+ * travava o `status` nem a consequência dele — apontado no review da PR
+ * #8473. Sem isto, voltar o campo a `ativo` sem despausar a campanha
+ * ressuscita em silêncio um `sem_conversao` ("link quebrado, posição morta,
+ * ou UTM dropado") toda rodada — que é exatamente a hipótese que a
+ * verificação ao vivo descartou.
+ */
+describe("#8256 — Search pausada: status `aposentado` e supressão do drift falso", () => {
+  it("a superfície da Search está declarada como `aposentado` (campanha pausada)", () => {
+    const search = EXTERNAL_UTM_SURFACES.find((s) => s.id === "ads-microsoft-2608-search");
+    assert.ok(search, "ads-microsoft-2608-search ausente de EXTERNAL_UTM_SURFACES");
+    assert.equal(
+      search!.status,
+      "aposentado",
+      "campanha pausada em 19/09/2026 — voltar a `ativo` só quando ela for despausada no painel",
+    );
+  });
+
+  it("a PMax irmã segue `ativo` — a pausa foi só da Search", () => {
+    const pmax = EXTERNAL_UTM_SURFACES.find((s) => s.id === "ads-microsoft-2608");
+    assert.equal(pmax!.status, "ativo");
+  });
+
+  it("computeDrift NÃO acusa sem_conversao pra Search com zero cadastros", () => {
+    const search = EXTERNAL_UTM_SURFACES.find((s) => s.id === "ads-microsoft-2608-search")!;
+    const findings = computeDrift([], {}, { externals: [search], campaignCounts: {} });
+    assert.deepEqual(
+      findings.filter((f) => f.key === "ads-microsoft-2608-search"),
+      [],
+      "superfície aposentada com zero conversão é o estado declarado, não drift",
+    );
+  });
+
+  it("a MESMA superfície marcada `ativo` acusaria — prova que é o status que suprime", () => {
+    const search = EXTERNAL_UTM_SURFACES.find((s) => s.id === "ads-microsoft-2608-search")!;
+    const comoAtivo = { ...search, status: "ativo" as const };
+    const findings = computeDrift([], {}, { externals: [comoAtivo], campaignCounts: {} });
+    assert.equal(
+      findings.filter((f) => f.key === "ads-microsoft-2608-search").length,
+      1,
+      "sem o `aposentado`, o drift falso volta — este é o custo que a mudança de status evita",
+    );
   });
 });
