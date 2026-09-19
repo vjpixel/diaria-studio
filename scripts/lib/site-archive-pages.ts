@@ -30,6 +30,7 @@ import { stripArchiveHero } from "./strip-duplicate-hero.ts";
 import { GEO_AUTHOR, type GeoAuthor } from "./shared/geo-faq.ts";
 import { renderSeoMeta } from "./shared/seo-meta.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
+import { loadArchiveImageMigrationMap, rewriteMigratedBeehiivImages } from "./archive-image-migration.ts"; // #8364
 
 export interface ArchivePost {
   slug: string;
@@ -288,6 +289,28 @@ export function rewriteLegacyImageHost(html: string): string {
 }
 
 /**
+ * #8364: `poll.diaria.workers.dev/img/` — host `workers.dev` de trabalho do
+ * Worker `poll`, hoje servindo EXATAMENTE os mesmos bytes que
+ * `diar.ia.br/img/{key}` (mesmo KV `POLL`, mesma key — `workers/site/
+ * wrangler.toml` declara o mesmo namespace id). Hostname DIFERENTE do
+ * `diar-ia-poll.diaria.workers.dev` que `rewriteLegacyImageHost`/
+ * `LEGACY_IMG_HOST_RE` acima já cobrem (2 workers `workers.dev` legados
+ * distintos, medidos separadamente na issue) — não é o mesmo bug, mas o
+ * mesmo remédio: troca cega de host, sempre segura, porque a key não muda.
+ *
+ * Escopo estreito de propósito: só `/img/`. As outras rotas do MESMO host
+ * (`/vote`, `/jogar`, `/leaderboard` — link do jogo É IA?, não imagem)
+ * ficam de fora — `workers/site` não serve essas rotas, reescrevê-las
+ * quebraria o link (ver `test/gen-archive-pages.test.ts`, "preserva o
+ * domínio original").
+ */
+const LEGACY_POLL_WORKERS_DEV_IMG_RE = /https:\/\/poll\.diaria\.workers\.dev\/img\//g;
+
+export function rewriteLegacyPollWorkersDevImageHost(html: string): string {
+  return html.replace(LEGACY_POLL_WORKERS_DEV_IMG_RE, `${ARCHIVE_BASE_URL}/img/`);
+}
+
+/**
  * #8351: 2 boxes de rodapé (livros/cursos) do HTML capturado da Beehiiv
  * apontam pra paths que só existiam no host legado — `diaria.beehiiv.com`
  * só redireciona `/p/{slug}`, qualquer outro path é 404 genuíno (medido ao
@@ -519,6 +542,18 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   // muda, `handleImage` (workers/poll/src/index.ts) serve as duas origens
   // a partir do mesmo namespace.
   html = rewriteLegacyImageHost(html);
+
+  // #8364: 2º host `workers.dev` legado de imagem, distinto do acima (ver
+  // docstring de `rewriteLegacyPollWorkersDevImageHost`) — mesmo remédio.
+  html = rewriteLegacyPollWorkersDevImageHost(html);
+
+  // #8364: `<img>` do corpo/avatar que ainda apontam pra `media.beehiiv.com`
+  // (terceiro, em migração de saída) são reescritos pro KV próprio SÓ
+  // quando já migrados (`archive-image-migration.json` tem os bytes reais
+  // no KV `POLL` — ver docstring do módulo). Mapa vazio (estado até alguém
+  // rodar `migrate-archive-beehiiv-images.ts` com credenciais Cloudflare
+  // reais) é um no-op puro: nenhuma URL não-migrada é tocada.
+  html = rewriteMigratedBeehiivImages(html, loadArchiveImageMigrationMap().map, ARCHIVE_BASE_URL);
 
   // #8351 — 98 páginas citam os boxes de rodapé de livros/cursos apontando
   // pro host legado (`diaria.beehiiv.com/livros-sobre-ia`,
