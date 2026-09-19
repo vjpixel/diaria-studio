@@ -172,6 +172,25 @@ sem saber se a janela ainda está em andamento.
 
 ## Regras
 
+- **Ajuste em voo nas campanhas é PERMITIDO — é o modo de operação, não
+  transgressão (#8396).** O regime vigente do teste é refinamento
+  iterativo: o editor mexe nas 3 contas ao longo da janela e a comparação
+  é o CAC da janela móvel. O §3.4 do `00-PROTOCOLO.md` ("congelamento
+  operacional"), que proibia isso, foi SUBSTITUÍDO pela emenda que fecha
+  aquele documento — **nunca cite o §3.4 como vigente**, nem recomende ao
+  editor deixar de aplicar um refinamento por causa dele. A redação
+  canônica do regime vem pronta no campo `regime` do
+  `ads-rolling-cac.ts --json` (Passo 1): reproduza aquilo, não uma
+  paráfrase de memória. O que continua obrigatório é o REGISTRO: toda
+  edição em voo entra em `data/aquisicao/teste-2608/edicoes.jsonl` via
+  `npx tsx scripts/ads-registrar-edicao.ts` ANTES de ser feita — sem essa
+  linha, `diasAposUltimaEdicao` mente.
+- **Ao comparar braços, dizer `diasAposUltimaEdicao` de cada um.** O campo
+  já vem em `resultados[]` do Passo 1 e hoje não é narrado. Um braço
+  recém-editado tende a piorar antes de melhorar (a fase de aprendizado
+  reinicia), então uma janela de 3 dias que cruza uma edição **não é
+  estado estável** — o número vale, a leitura muda. Sem esse dado ao lado
+  do CAC, a comparação parece pareada quando não é.
 - Zero cálculo de data/orçamento/pausa em prosa nesta skill — só leitura
   do `--json` das CLIs acima.
 - **Nunca EXECUTAR nada que publique/pause campanha** — as CLIs deste

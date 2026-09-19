@@ -22,6 +22,9 @@
  * de janela que antes vivia em PROSA no SKILL.md local da task
  * `relatorio-diario-teste-2608`, fora do repo e sem teste.
  *
+ * Desde #8396, toda saída (texto e `--json`, campo `regime`) abre declarando o
+ * REGIME vigente — ver `REGIME_VIGENTE` abaixo para o porquê.
+ *
  * Uso:
  *   npx tsx scripts/ads-rolling-cac.ts
  *   npx tsx scripts/ads-rolling-cac.ts --ate 2026-09-06 --dias 3
@@ -56,6 +59,24 @@ import { DEFAULT_PLANNED_DAILY_BUDGET_BRL } from "./lib/ads-test-watch.ts";
 const CLICKS_CSV = "data/aquisicao/clicks-2608.csv";
 const EDICOES_JSONL = "data/aquisicao/teste-2608/edicoes.jsonl";
 const RUN_STATE = "data/aquisicao/teste-2608/run-state.json";
+
+/**
+ * Regime de operação vigente do teste 2608, impresso NO TOPO de toda leitura
+ * (texto e `--json`) desde #8396.
+ *
+ * Por que a regra viaja junto com o número: o §3.4 do `00-PROTOCOLO.md`
+ * ("congelamento operacional durante os 15 dias") foi SUBSTITUÍDO pela Emenda
+ * 07/09/2026, mas quem lê o protocolo por seção (`grep 3.4`) chega à regra
+ * morta — a emenda fica ~900 linhas depois. Isso já fez um agente responder
+ * "não aplique, o protocolo congela edição durante a janela" quando o regime
+ * vigente é o oposto. O protocolo foi corrigido, mas a correção só ajuda quem
+ * abre o protocolo; esta linha alcança quem só roda o script diário.
+ *
+ * O texto cita a emenda de propósito — é por ele que o teste de regressão
+ * ancora (`test/ads-rolling-cac-regime.test.ts`).
+ */
+export const REGIME_VIGENTE =
+  "Regime vigente: refinamento iterativo (Emenda 07/09) — edição em voo permitida, registrar em `edicoes.jsonl`";
 
 /**
  * Quantos dias fechados isolados entram na tabela, além da janela.
@@ -288,10 +309,17 @@ export function main(argv = process.argv.slice(2)): number {
     // reconstruir um julgamento a partir de saída ad-hoc.
     const comparacaoPossivel = resultados.filter((r) => r.comparavel).length >= 2;
     const comDiarios = resultados.map((r) => ({ ...r, diarios: diarios.get(r.canal) ?? [] }));
-    console.log(JSON.stringify({ ate, dias, comparacaoPossivel, resultados: comDiarios, contextoJanela }, null, 2));
+    console.log(
+      JSON.stringify(
+        { regime: REGIME_VIGENTE, ate, dias, comparacaoPossivel, resultados: comDiarios, contextoJanela },
+        null,
+        2,
+      ),
+    );
     return 0;
   }
 
+  console.log(`${REGIME_VIGENTE}\n`);
   console.log(`Janela móvel de ${dias} dias (BRT), até ${ate} — último dia fechado.\n`);
   if (contextoJanela.d0 === null) {
     console.log(`Contexto da janela: ${runStatePath} sem \`d0\`/\`fim_janela\` conhecidos — não é possível dizer se a janela terminou.\n`);
