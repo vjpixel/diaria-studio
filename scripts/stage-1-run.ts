@@ -167,6 +167,7 @@ import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getHowToDiscoveryQueries } from "./lib/use-melhor-curation.ts";
 import { getNegativeImpactDiscoveryQueries } from "./lib/negative-impact-curation.ts";
+import { loadSearchDemandIdeas, pickSearchDemandDiscoveryQueries } from "./lib/search-demand-curation.ts"; // #8370 Peça 1
 
 // Mesma disciplina do #4983 — carregar .env ANTES de qualquer outro código.
 loadProjectEnv();
@@ -855,10 +856,14 @@ async function runPreResearch(deps: Stage1RunDeps, opts: Stage1RunOptions, repor
     const editionNum = Number(opts.edition);
     const howToQueries = getHowToDiscoveryQueries(editionNum, 2);
     const negativeImpactQueries = getNegativeImpactDiscoveryQueries(editionNum, 1);
+    // #8370 Peça 1: mesmo sinal de demanda de busca do Path A (fetch-websearch-batch.ts)
+    // — Path B (fallback sem BRAVE_API_KEY) não pode ficar sem ele. Fail-soft:
+    // sem pull mensal ainda rodado, é [].
+    const demandQueries = pickSearchDemandDiscoveryQueries(loadSearchDemandIdeas(deps.rootDir), editionNum, 2);
     const manifest = {
       sourcesKept: blocklistJson?.kept ?? [],
       sourcesSkipped: blocklistJson?.skipped ?? [],
-      discoveryQueriesDeterministic: [...howToQueries, ...negativeImpactQueries, ...inboxTopics],
+      discoveryQueriesDeterministic: [...howToQueries, ...negativeImpactQueries, ...demandQueries, ...inboxTopics],
       note: "Além destas, o orchestrator deve compor ~5 queries PT + ~5 EN temáticas genéricas (julgamento, sem pool fixo — ver delegatedSteps).",
     };
     const manifestPath = internalPath(editionDir, "stage-1-path-b-manifest.json");
