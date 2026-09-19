@@ -171,7 +171,7 @@ export type GoogleAdsIngestResult =
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const DEFAULT_API_VERSION = "v25";
+export const DEFAULT_API_VERSION = "v25";
 
 /**
  * Renova o access token via refresh token. Nunca lança — falha de rede,
@@ -231,6 +231,7 @@ export async function postGoogleAdsWithLoginRetry(
   accessToken: string,
   url: string,
   body: string,
+  label: string = url.split("/").pop() ?? url,
 ): Promise<{ res: Response; text: string } | { networkError: string }> {
   const customerId = auth.customerId.replace(/[^0-9]/g, "");
   const configuredLoginCustomerId = auth.loginCustomerId.replace(/[^0-9]/g, "");
@@ -249,7 +250,7 @@ export async function postGoogleAdsWithLoginRetry(
         body,
       });
     } catch (e) {
-      return { networkError: `falha de rede na chamada ${url.split("/").pop()}: ${e instanceof Error ? e.message : e}` };
+      return { networkError: `falha de rede na chamada ${label}: ${e instanceof Error ? e.message : e}` };
     }
     return { res, text: await res.text() };
   };

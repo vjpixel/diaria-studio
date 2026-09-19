@@ -10,7 +10,8 @@
  *
  * `--terms` (lista separada por vírgula) sobrescreve o CSV de sementes — testar
  * hipótese nova não exige commit (#8356). Sem `--terms`, usa `seed/keywords.csv`
- * (mesmas sementes do `bing-pull.ts --mode keywords`). Máx. 20 termos por rodada.
+ * (mesmas sementes do `bing-pull.ts --mode keywords`). A API aceita 20 sementes
+ * por chamada; mais que isso é dividido em lotes e as ideias são unidas.
  *
  * Env: GOOGLE_ADS_{CLIENT_ID,CLIENT_SECRET,REFRESH_TOKEN,DEVELOPER_TOKEN,
  * LOGIN_CUSTOMER_ID,CUSTOMER_ID} (as mesmas do `google-ads-ingest-spend.ts`).
@@ -24,11 +25,12 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { refreshGoogleAdsAccessToken, type GoogleAdsAuthConfig } from "./lib/google-ads-ingest.ts";
 import {
   fetchKeywordIdeas,
-  filterRelevantIdeas,
-  flagContaminatedSeeds,
+  partitionIdeas,
   renderKeywordReport,
   sortIdeas,
-  KEYWORD_PLANNER_MAX_SEEDS,
+  chunkSeeds,
+  dedupeIdeas,
+  type KeywordIdea,
 } from "./lib/google-keyword-planner.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -55,16 +57,16 @@ export function parseTermsArg(arg: string): string[] {
 }
 
 async function main(argv: string[]): Promise<number> {
-  const { values } = parseArgs(argv);
+  const { values, flags } = parseArgs(argv);
+  if (flags.has("terms") || values.terms === "") {
+    console.error("[google-keyword-pull] --terms exige um valor (lista separada por vírgula)");
+    return 2;
+  }
   const seeds = values.terms
     ? parseTermsArg(values.terms)
     : parseSeedsCsv(readFileSync(resolve(ROOT, values["seeds-file"] ?? "seed/keywords.csv"), "utf8"));
   if (seeds.length === 0) {
     console.error("[google-keyword-pull] nenhum termo (--terms vazio ou CSV sem linhas)");
-    return 2;
-  }
-  if (seeds.length > KEYWORD_PLANNER_MAX_SEEDS) {
-    console.error(`[google-keyword-pull] ${seeds.length} termos; máximo ${KEYWORD_PLANNER_MAX_SEEDS} por rodada`);
     return 2;
   }
 
@@ -88,20 +90,21 @@ async function main(argv: string[]): Promise<number> {
     console.error(`[google-keyword-pull] ${token.error}`);
     return 1;
   }
-  const result = await fetchKeywordIdeas(fetch, auth, token.accessToken, seeds);
-  if (!result.ok) {
-    console.error(`[google-keyword-pull] ${result.error}`);
-    return 1;
+  const allIdeas: KeywordIdea[] = [];
+  const raws: unknown[] = [];
+  for (const batch of chunkSeeds(seeds)) {
+    const result = await fetchKeywordIdeas(fetch, auth, token.accessToken, batch);
+    if (!result.ok) {
+      console.error(`[google-keyword-pull] ${result.error}`);
+      return 1;
+    }
+    allIdeas.push(...result.ideas);
+    raws.push(result.raw);
   }
+  const ideas = dedupeIdeas(allIdeas);
 
   const date = new Date().toISOString().slice(0, 10);
-  const filtered = filterRelevantIdeas(result.ideas, seeds);
-  const contaminated = flagContaminatedSeeds(result.ideas, seeds);
-  // Semente contaminada (volume de marca) sai da tabela de demanda — fica só
-  // na seção de aviso do .md e em `contaminated_seeds` no JSON.
-  const contaminatedSet = new Set(contaminated.map((c) => c.seed.toLowerCase()));
-  const kept = filtered.kept.filter((i) => !contaminatedSet.has(i.keyword.toLowerCase()));
-  const discarded = [...filtered.discarded, ...filtered.kept.filter((i) => contaminatedSet.has(i.keyword.toLowerCase()))];
+  const { kept, discarded, contaminated } = partitionIdeas(ideas, seeds);
   const jsonPath = resolve(ROOT, values.out ?? `data/seo/google-keywords-${date}.json`);
   const mdPath = resolve(ROOT, values["report-out"] ?? `data/seo/google-keywords-${date}.md`);
   for (const p of [jsonPath, mdPath]) mkdirSync(dirname(p), { recursive: true });
@@ -109,7 +112,7 @@ async function main(argv: string[]): Promise<number> {
   writeFileSync(
     jsonPath,
     JSON.stringify(
-      { pulled_at: new Date().toISOString(), seeds, kept: sortIdeas(kept), discarded, contaminated_seeds: contaminated, raw: result.raw },
+      { pulled_at: new Date().toISOString(), seeds, kept: sortIdeas(kept), discarded, contaminated_seeds: contaminated, raw: raws },
       null,
       2,
     ),
@@ -120,6 +123,11 @@ async function main(argv: string[]): Promise<number> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main(process.argv.slice(2)).then((c) => process.exit(c));
+  main(process.argv.slice(2))
+    .then((c) => process.exit(c))
+    .catch((e) => {
+      console.error(`[google-keyword-pull] ${e instanceof Error ? e.message : e}`);
+      process.exit(1);
+    });
 }
 export { main };

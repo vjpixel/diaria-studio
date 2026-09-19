@@ -24,12 +24,12 @@
  */
 
 import {
+  DEFAULT_API_VERSION,
   postGoogleAdsWithLoginRetry,
   type FetchLike,
   type GoogleAdsAuthConfig,
 } from "./google-ads-ingest.ts";
 
-const DEFAULT_API_VERSION = "v25";
 /** `languageConstants/1014` = português; `geoTargetConstants/2076` = Brasil. */
 export const KEYWORD_PLANNER_LANGUAGE = "languageConstants/1014";
 export const KEYWORD_PLANNER_GEO = "geoTargetConstants/2076";
@@ -153,6 +153,23 @@ export function flagContaminatedSeeds(ideas: KeywordIdea[], seeds: string[]): Se
   return out;
 }
 
+/** Composição usada pelo CLI: aplica o filtro de relevância e tira da tabela de
+ *  demanda a semente de marca contaminada (ela vira só aviso + `discarded`). */
+export function partitionIdeas(ideas: KeywordIdea[], seeds: string[]): {
+  kept: KeywordIdea[];
+  discarded: KeywordIdea[];
+  contaminated: SeedContamination[];
+} {
+  const filtered = filterRelevantIdeas(ideas, seeds);
+  const contaminated = flagContaminatedSeeds(ideas, seeds);
+  const bad = new Set(contaminated.map((c) => norm(c.seed)));
+  return {
+    kept: filtered.kept.filter((i) => !bad.has(norm(i.keyword))),
+    discarded: [...filtered.discarded, ...filtered.kept.filter((i) => bad.has(norm(i.keyword)))],
+    contaminated,
+  };
+}
+
 const COMPETITION_RANK: Record<string, number> = { LOW: 0, MEDIUM: 1, HIGH: 2 };
 
 /** Ordena por volume desc e, em empate, competição asc (mais fácil primeiro). */
@@ -187,7 +204,8 @@ export function renderKeywordReport(args: {
   }
   lines.push("## Ideias relevantes", "", "| volume/mês | competição | índice | lance BRL | termo |", "|---:|---|---:|---|---|");
   for (const i of sortIdeas(args.kept)) {
-    const bid = i.lowBidBrl === null && i.highBidBrl === null ? "—" : `${(i.lowBidBrl ?? 0).toFixed(2)}–${(i.highBidBrl ?? 0).toFixed(2)}`;
+    const money = (n: number | null) => (n === null ? "—" : n.toFixed(2));
+    const bid = i.lowBidBrl === null && i.highBidBrl === null ? "—" : `${money(i.lowBidBrl)}–${money(i.highBidBrl)}`;
     lines.push(`| ${fmt(i.avgMonthlySearches)} | ${i.competition} | ${i.competitionIndex ?? "—"} | ${bid} | ${i.keyword} |`);
   }
   lines.push("", `Descartadas por não terem marcador de IA (ruído de marca/vizinhança): ${args.discarded.length}. Lista completa no JSON.`, "");
@@ -198,6 +216,24 @@ export type KeywordPlannerResult =
   | { ok: true; raw: unknown; ideas: KeywordIdea[] }
   | { ok: false; error: string };
 
+/** Divide as sementes em lotes de no máximo `KEYWORD_PLANNER_MAX_SEEDS`. */
+export function chunkSeeds(seeds: string[]): string[][] {
+  const out: string[][] = [];
+  for (let i = 0; i < seeds.length; i += KEYWORD_PLANNER_MAX_SEEDS) out.push(seeds.slice(i, i + KEYWORD_PLANNER_MAX_SEEDS));
+  return out;
+}
+
+/** Junta ideias de vários lotes, mantendo a 1ª ocorrência de cada termo. */
+export function dedupeIdeas(ideas: KeywordIdea[]): KeywordIdea[] {
+  const seen = new Set<string>();
+  return ideas.filter((i) => {
+    const k = norm(i.keyword);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 /** Chama `generateKeywordIdeas`. Nunca lança. */
 export async function fetchKeywordIdeas(
   fetchImpl: FetchLike,
@@ -207,7 +243,7 @@ export async function fetchKeywordIdeas(
 ): Promise<KeywordPlannerResult> {
   const customerId = auth.customerId.replace(/[^0-9]/g, "");
   const url = `https://googleads.googleapis.com/${auth.apiVersion ?? DEFAULT_API_VERSION}/customers/${customerId}:generateKeywordIdeas`;
-  const attempt = await postGoogleAdsWithLoginRetry(fetchImpl, auth, accessToken, url, JSON.stringify(buildKeywordIdeasBody(seeds)));
+  const attempt = await postGoogleAdsWithLoginRetry(fetchImpl, auth, accessToken, url, JSON.stringify(buildKeywordIdeasBody(seeds)), "generateKeywordIdeas");
   if ("networkError" in attempt) return { ok: false, error: attempt.networkError };
   const { res, text } = attempt;
   if (!res.ok) return { ok: false, error: `generateKeywordIdeas respondeu HTTP ${res.status}: ${text.slice(0, 600)}` };
@@ -217,5 +253,9 @@ export async function fetchKeywordIdeas(
   } catch {
     return { ok: false, error: `generateKeywordIdeas respondeu corpo não-JSON (HTTP ${res.status})` };
   }
-  return { ok: true, raw, ideas: parseKeywordIdeas(raw) };
+  const ideas = parseKeywordIdeas(raw);
+  // 200 sem nenhuma ideia é resposta anômala (schema mudou / payload de erro
+  // com 200): falhar alto em vez de gravar relatório vazio e parecer saudável.
+  if (ideas.length === 0) return { ok: false, error: `generateKeywordIdeas respondeu 200 sem ideias: ${text.slice(0, 300)}` };
+  return { ok: true, raw, ideas };
 }

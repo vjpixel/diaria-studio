@@ -12,6 +12,9 @@ import {
   sortIdeas,
   fetchKeywordIdeas,
   renderKeywordReport,
+  chunkSeeds,
+  dedupeIdeas,
+  partitionIdeas,
 } from "../scripts/lib/google-keyword-planner.ts";
 import { parseSeedsCsv, parseTermsArg } from "../scripts/google-keyword-pull.ts";
 import type { FetchLike, GoogleAdsAuthConfig } from "../scripts/lib/google-ads-ingest.ts";
@@ -91,6 +94,51 @@ describe("#8366 — ordenação e relatório", () => {
       contaminated: [{ seed: "gemini", volume: 1, discardedNeighbours: ["gemini dj"] }],
     });
     assert.ok(md2.includes("contaminado") && md2.includes("gemini dj"));
+  });
+});
+
+describe("#8366 — composição do CLI e bordas", () => {
+  it("partitionIdeas: gemini contaminado sai da tabela e vai pra discarded", () => {
+    const { kept, discarded, contaminated } = partitionIdeas(parseKeywordIdeas(PAYLOAD), ["gemini", "deepfake"]);
+    assert.ok(!kept.some((i) => i.keyword === "gemini"));
+    assert.ok(discarded.some((i) => i.keyword === "gemini"));
+    assert.ok(kept.some((i) => i.keyword === "deepfake"));
+    assert.equal(contaminated.length, 1);
+  });
+
+  it("lance com um lado ausente renderiza — no lado ausente, não 0.00", () => {
+    const md = renderKeywordReport({
+      date: "d", seeds: ["x"], discarded: [], contaminated: [],
+      kept: [{ keyword: "k", avgMonthlySearches: 5, competition: "LOW", competitionIndex: 1, lowBidBrl: null, highBidBrl: 2 }],
+    });
+    assert.ok(md.includes("—–2.00") && !md.includes("0.00"));
+  });
+
+  it("200 sem ideias vira erro; envia o mesmo corpo e headers no retry", async () => {
+    const r = await fetchKeywordIdeas(async () => new Response('{"results":[]}', { status: 200 }), AUTH, "t", ["x"]);
+    assert.ok(!r.ok && r.error.includes("sem ideias"));
+    const bodies: string[] = [];
+    await fetchKeywordIdeas(async (_u, init) => {
+      bodies.push(String(init!.body));
+      const h = init!.headers as Record<string, string>;
+      assert.equal(h.Authorization, "Bearer tok");
+      assert.equal(h["developer-token"], "d");
+      return bodies.length === 1 ? new Response("USER_PERMISSION_DENIED", { status: 403 }) : new Response(JSON.stringify(PAYLOAD), { status: 200 });
+    }, AUTH, "tok", ["deepfake"]);
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0], bodies[1]);
+    assert.equal(bodies[0], JSON.stringify(buildKeywordIdeasBody(["deepfake"])));
+  });
+});
+
+describe("#8366 — lotes de sementes", () => {
+  it("divide em lotes de 20 e une ideias sem duplicar termo", () => {
+    const seeds = Array.from({ length: 45 }, (_, i) => `t${i}`);
+    assert.deepEqual(chunkSeeds(seeds).map((c) => c.length), [20, 20, 5]);
+    const mk = (keyword: string, v: number) => ({
+      keyword, avgMonthlySearches: v, competition: "LOW", competitionIndex: 1, lowBidBrl: null, highBidBrl: null,
+    });
+    assert.deepEqual(dedupeIdeas([mk("A b", 1), mk("a B", 2), mk("c", 3)]).map((i) => i.avgMonthlySearches), [1, 3]);
   });
 });
 
