@@ -22,6 +22,7 @@ import { join } from "node:path";
 import {
   DEFAULT_KIT_SUBSCRIBER_ALARM_THRESHOLD_PCT,
   evaluateKitSubscriberLimitAlarm,
+  kitSubscriberLimitSeverity,
   emptyKitSubscriberLimitAlarmState,
   shouldAlarmKitSubscriberLimit,
   advanceKitSubscriberLimitAlarmState,
@@ -217,5 +218,23 @@ describe("toAlarmFindings (scripts/kit-subscriber-limit-alarm.ts)", () => {
     const findings10000 = toAlarmFindings(evaluateKitSubscriberLimitAlarm(900, 10000));
     assert.equal(findings1000.length, 1);
     assert.equal(findings10000.length, 0);
+  });
+});
+
+describe("severidade do portão notifyEditor (#8439)", () => {
+  const evalAt = (active: number, limit: number) => evaluateKitSubscriberLimitAlarm(active, limit);
+
+  it('85-99% do teto é "acao" — aviso prévio, a issue basta', () => {
+    assert.equal(kitSubscriberLimitSeverity(evalAt(900, 1000)), "acao");
+    assert.equal(kitSubscriberLimitSeverity(evalAt(999, 1000)), "acao");
+  });
+
+  it('teto atingido/ultrapassado é "urgente" — sob email_policy urgent_only, "acao" nunca e-mailia e o bloqueio de cadastro passaria em silêncio', () => {
+    assert.equal(kitSubscriberLimitSeverity(evalAt(1000, 1000)), "urgente");
+    assert.equal(kitSubscriberLimitSeverity(evalAt(1200, 1000)), "urgente");
+  });
+
+  it('teto desconhecido (subscriber_limit <= 0) nunca escala pra "urgente"', () => {
+    assert.equal(kitSubscriberLimitSeverity(evalAt(5000, 0)), "acao");
   });
 });
