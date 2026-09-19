@@ -35,9 +35,16 @@
 export const CI_FIX_ATTEMPTED_LABEL = "continuo-ci-fix-tentado";
 
 /** Mesmo vocabulário de veredito de `scripts/lib/pr-checks-gate.ts`
- * (`evaluatePrChecksGate`) + `claude_binary_error` de
- * `scripts/check-pr-checks-gate.ts` — reusado, não reinventado. */
-export type CiVerdict = "pass" | "fail" | "pending" | "error" | "blocked_by_conflict" | "claude_binary_error";
+ * (`evaluatePrChecksGate`) + `claude_binary_error`/`gh_incompatible_flags`
+ * (#8425) de `scripts/check-pr-checks-gate.ts` — reusado, não reinventado. */
+export type CiVerdict =
+  | "pass"
+  | "fail"
+  | "pending"
+  | "error"
+  | "blocked_by_conflict"
+  | "claude_binary_error"
+  | "gh_incompatible_flags";
 
 export interface CiFixCandidatePr {
   number: number;
@@ -49,10 +56,11 @@ export interface CiFixCandidatePr {
 /**
  * Escolhe a PR `continuo/*` mais antiga (menor `number` — primeira aberta)
  * com CI genuinamente reprovado (`ciVerdict === "fail"`, nunca
- * `pending`/`error`/`blocked_by_conflict`/`claude_binary_error` — nenhum
- * desses é "sei que está quebrado", só "não sei ainda" ou "não é um
- * veredito real sobre o código") e que ainda não recebeu 1 tentativa de
- * conserto (`CI_FIX_ATTEMPTED_LABEL` ausente). `null` quando não há
+ * `pending`/`error`/`blocked_by_conflict`/`claude_binary_error`/
+ * `gh_incompatible_flags` — nenhum desses é "sei que está quebrado", só
+ * "não sei ainda" ou "não é um veredito real sobre o código") e que ainda
+ * não recebeu 1 tentativa de conserto (`CI_FIX_ATTEMPTED_LABEL` ausente).
+ * `null` quando não há
  * candidata — o chamador segue normalmente para reivindicar issue nova.
  */
 export function selectCiFixCandidate(prs: CiFixCandidatePr[]): number | null {

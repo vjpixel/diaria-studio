@@ -110,6 +110,16 @@ describe("findGhPrChecksJsonLoopViolations — regressão do achado #8425", () =
     const src = readFileSync(join(ROOT, "scripts", "lib", "wait-pr-checks.sh"), "utf8");
     assert.equal(findGhPrChecksJsonLoopViolations(src, "shell").length, 0);
   });
+
+  it("mesma citação, mas dentro de um bloco ```bash CERCADO num SKILL.md (não um .sh real) => também não flagra — simetria de comentário entre markdown e shell", () => {
+    // Achado de review da PR #8425: a 1ª versão só removia linhas de
+    // comentário puro em arquivos .sh, deixando um bloco ```bash de
+    // Markdown vulnerável ao mesmo falso-positivo que a docstring do
+    // módulo promete evitar.
+    const md =
+      "## Histórico\n\n```bash\n# achado ao vivo: um laço `until gh pr checks $PR --json bucket; do sleep 30; done` travou 5h\necho \"nunca faça isso — use scripts/lib/wait-pr-checks.sh\"\n```\n";
+    assert.equal(findGhPrChecksJsonLoopViolations(md, "markdown").length, 0);
+  });
 });
 
 /** Lista recursiva de arquivos sob `dir` cujo nome bate `predicate`, ou

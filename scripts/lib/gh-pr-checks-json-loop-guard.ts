@@ -86,7 +86,7 @@ export function findGhPrChecksJsonLoopInScannedUnit(text: string): GhLoopViolati
  *  (ver docstring do módulo, item 1). */
 export function extractFencedCodeBlocks(markdown: string): string[] {
   const blocks: string[] = [];
-  for (const m of markdown.matchAll(/```[a-zA-Z]*\r?\n([\s\S]*?)```/g)) {
+  for (const m of markdown.matchAll(/```[a-zA-Z]*[ \t]*\r?\n([\s\S]*?)```/g)) {
     blocks.push(m[1]);
   }
   return blocks;
@@ -106,12 +106,22 @@ export function stripShellCommentOnlyLines(shellSource: string): string {
 
 /** Varre um `.md` (fenced code blocks) ou `.sh` (arquivo inteiro, sem
  *  comentários puros) e devolve toda violação encontrada. `kind` decide
- *  qual extração aplicar. */
+ *  qual extração aplicar.
+ *
+ *  Linhas de comentário shell puras (`#`) são removidas de AMBOS os casos
+ *  — não só do `.sh` — porque um bloco cercado de Markdown frequentemente
+ *  É bash (ex: um `SKILL.md` explicando um comando com `# nota` inline), e
+ *  a mesma citação documental que `stripShellCommentOnlyLines` já protege
+ *  em arquivos `.sh` reais (ver docstring do módulo, item 2) apareceria
+ *  igual dentro de um ```bash ... ``` — sem essa simetria, o guard
+ *  reprovaria um exemplo didático citando o padrão ruim como AVISO dentro
+ *  de um bloco cercado, quando a mesma citação num `.sh` já é permitida. */
 export function findGhPrChecksJsonLoopViolations(
   content: string,
   kind: "markdown" | "shell",
 ): GhLoopViolation[] {
-  const units = kind === "markdown" ? extractFencedCodeBlocks(content) : [stripShellCommentOnlyLines(content)];
+  const rawUnits = kind === "markdown" ? extractFencedCodeBlocks(content) : [content];
+  const units = rawUnits.map(stripShellCommentOnlyLines);
   const out: GhLoopViolation[] = [];
   for (const unit of units) {
     out.push(...findGhPrChecksJsonLoopInScannedUnit(unit));
