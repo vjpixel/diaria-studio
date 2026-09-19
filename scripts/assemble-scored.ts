@@ -269,7 +269,6 @@ export function applyExplorationQuotaBackstop(
   };
 
   const statePath = deps.statePath ?? resolve(rootDir, EXPLORATION_STATE_RELATIVE_PATH);
-  const decidedAt = (deps.now ?? new Date()).toISOString();
 
   // Ler → decidir → gravar acontece TUDO dentro do mesmo lock (#8407). Antes,
   // a leitura ficava fora dele e duas execuções da mesma semana ISO com `data/`
@@ -290,6 +289,11 @@ export function applyExplorationQuotaBackstop(
       );
       return { next: null, value: null };
     }
+
+    // Carimbado DENTRO da seção crítica: sob contenção, o `decided_at` tem
+    // que ser a hora em que a decisão foi tomada sobre o estado lido, não a
+    // hora em que este processo começou a esperar o lock.
+    const decidedAt = (deps.now ?? new Date()).toISOString();
 
     const state = read.state;
     // A própria edição sai da conta: re-rodar o Stage 1 dela (resume) tem que
@@ -324,7 +328,10 @@ export function applyExplorationQuotaBackstop(
   if (outcome.value === null) return withoutFlags();
   const { result, weekUsageBefore } = outcome.value;
 
-  if (!outcome.persisted) {
+  // `reason` explícito, não `!persisted`: o caso `mutator-declined` (estado
+  // corrompido) já saiu acima, mas ler o campo evita que uma mudança futura no
+  // mutador faça este log culpar `data/` por uma recusa de escrita.
+  if (outcome.reason === "no-data-dir") {
     log(
       `[assemble-scored] cota de exploração: estado NÃO persistido (${statePath} — data/ ausente neste ` +
         "checkout); a decisão desta edição vale, mas não conta pra semana (#8370)",
