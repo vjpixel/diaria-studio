@@ -32,6 +32,20 @@ Cobre:
   9. Issue citada como reivindicada e presente no session-registry -> ok.
   10. Relatorio sem nenhuma mencao de reivindicacao/claim -> not_applicable.
   11. main() exit codes agregados (0/2/3) via subprocesso real.
+  14. #8521 — issue reivindicada ausente do session-registry (endSession
+      apagou o registro inteiro) MAS com evento "ended" REAL
+      (data/session-lifecycle.jsonl) sobrepondo a janela -> indeterminate,
+      nunca fabrication_suspected (reproduz #8515). 14b: mesmo relatorio
+      SEM esse evento -> continua fabrication_suspected (#7537 nao
+      regride). 14c: evento de OUTRO tick nao correlaciona.
+  15. Regressão end-to-end (`run()`) do relatório real do tick de 15:36
+      UTC de 20/09/2026 que motivou o #8521 — 3 issues citadas em
+      contexto de negação ("não foram reivindicadas") + 1 claim real com
+      PR aberta cuja sessão já terminou -> overall nunca
+      fabrication_suspected.
+  16. `test_regressao_8521_negacao_nao_e_claim` — "não"/"nunca foi(ram)
+      reivindicada(s)" não é lido como claim; claim real na linha seguinte
+      não é afetado.
 
 Uso: python3 hermes/scripts/detect-tick-claim-fabrication.test.py
 """
@@ -96,6 +110,27 @@ def _write_report(report_path: Path, text: str, mtime: datetime | None = None) -
         ts = mtime.timestamp()
         import os
         os.utime(report_path, (ts, ts))
+
+
+def _write_lifecycle_event(
+    lifecycle_log_path: Path, session_id: str, started: datetime, heartbeat: datetime,
+    kind: str = "continuo", event: str = "ended",
+) -> None:
+    """#8521: simula uma linha de `data/session-lifecycle.jsonl` como
+    `endSession` (`scripts/lib/session-registry.ts`) escreve — append-only,
+    sobrevive à remoção do registro `data/sessions/continuo-*.json`."""
+    lifecycle_log_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "event": event,
+        "kind": kind,
+        "machineTag": "300",
+        "sessionId": session_id,
+        "ts": _iso(heartbeat),
+        "startedAt": _iso(started),
+        "lastHeartbeat": _iso(heartbeat),
+    }
+    with lifecycle_log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
 
 
 def _open_issues_file(td: Path, count: int) -> Path:
@@ -221,6 +256,40 @@ def test_regressao_8463_falsos_positivos_lista_atribuida_outro_ator():
     assert 7809 not in refs3, f"#7809 indevido: {refs3}"
     assert 7807 not in refs3, f"#7807 (cobertura) indevido: {refs3}"
     print("regressão #8463: lista atribuída a outro ator + item que abre linha -> OK")
+
+
+def test_regressao_8521_negacao_nao_e_claim():
+    """#8521: relatório real do tick 15:36 UTC de 20/09/2026 — "#8518, #8517
+    e #8516 foram lidas frescas via REST (...) e barradas pelo
+    check-continuo-coherence (...); não foram reivindicadas." O detector
+    antigo linkava a lista de refs do segmento anterior ao keyword
+    "reivindicadas" em "não foram reivindicadas" (mesmo mecanismo que
+    reconhece "- #500: descrição. Claim registrada.") e produzia 3 falsos
+    fabrication_suspected para issues explicitamente NÃO reivindicadas."""
+    mod = _load_module()
+    linha = (
+        "#8518, #8517 e #8516 foram lidas frescas via REST (o caminho gh "
+        "issue view --comments falhou pelo mesmo motivo) e barradas pelo "
+        "check-continuo-coherence por sobreposição com paths/módulos "
+        "tocados em PRs ou merges recentes; não foram reivindicadas."
+    )
+    refs = mod.extract_claimed_issue_refs(linha)
+    for n in (8516, 8517, 8518):
+        assert n not in refs, f"#{n} (negado 'não foram reivindicadas') indevido: {refs}"
+    # Variante "nunca foi reivindicada" (singular) — mesmo marcador de negação.
+    linha_nunca = "- #9001: investigada, mas nunca foi reivindicada."
+    refs_nunca = mod.extract_claimed_issue_refs(linha_nunca)
+    assert 9001 not in refs_nunca, f"#9001 ('nunca foi reivindicada') indevido: {refs_nunca}"
+    # Controle: claim genuíno na MESMA janela textual do relatório real
+    # (linha seguinte, #8515) continua reconhecido — a negação não pode
+    # apagar claims legítimos em outras linhas/segmentos.
+    linha_claim_real = (
+        "#8515 foi lida fresca via REST, admitida pelo coherence gate e "
+        "reivindicada com o session-id deste tick."
+    )
+    refs_real = mod.extract_claimed_issue_refs(linha_claim_real)
+    assert 8515 in refs_real, f"claim real #8515 nao deveria ser afetado pela negacao: {refs_real}"
+    print("regressão #8521: 'não/nunca foi(ram) reivindicada(s)' não vira claim — OK")
 
 
 def main() -> int:
@@ -594,6 +663,104 @@ def main() -> int:
         )
 
         # ------------------------------------------------------------------
+        # 14. #8521 — issue citada como reivindicada, ausente do
+        # session-registry (endSession já apagou o registro inteiro), MAS
+        # um evento "ended" REAL (data/session-lifecycle.jsonl) sobrepõe a
+        # janela do tick -> indeterminate (cannot-verify), NUNCA
+        # fabrication_suspected. Reproduz #8515: reivindicada, PR #8520
+        # aberta de verdade, claim nunca liberada (trabalho em andamento),
+        # sessão terminou o protocolo e seu registro sumiu.
+        # ------------------------------------------------------------------
+        repo14 = td / "repo14"
+        lifecycle14 = repo14 / "data" / "session-lifecycle.jsonl"
+        tick_start14 = now - timedelta(minutes=20)
+        tick_end14 = now - timedelta(minutes=1)
+        _write_lifecycle_event(lifecycle14, "hermes-cron-20260920T151606Z", tick_start14, tick_end14)
+        report_text_14 = (
+            "## Tick 15:36\n### Trabalhado\n"
+            "#8515 foi lida fresca via REST, admitida pelo coherence gate e "
+            "reivindicada com o session-id deste tick. Delegação implementou "
+            "o fix e abriu a PR #8520; verificação independente confirmou "
+            "OPEN, MERGEABLE. Não mergeei.\n"
+        )
+        claimed_empty: set[int] = set()
+        ended14 = mod.ended_continuo_session_in_window(lifecycle14, tick_start14 - timedelta(minutes=45), tick_end14 + timedelta(minutes=45))
+        assert_true("14. ended_continuo_session_in_window acha o evento na janela", ended14 is not None)
+        check14 = mod.check_claimed_issues(
+            report_text_14, claimed_empty, True, ended_session_in_window=True,
+        )
+        assert_true(
+            "14. #8515 ausente do registro MAS com sessao 'ended' real na janela -> indeterminate",
+            check14["status"] == "indeterminate",
+        )
+
+        # ------------------------------------------------------------------
+        # 14b. Controle: MESMO relatório do teste 14, mas SEM evento
+        # "ended" correlacionado (default `ended_session_in_window=False`,
+        # retrocompatível) -> continua fabrication_suspected. O #7537
+        # original não pode regredir por esta mudança.
+        # ------------------------------------------------------------------
+        check14b = mod.check_claimed_issues(report_text_14, claimed_empty, True)
+        assert_true(
+            "14b. mesmo relatorio SEM sessao 'ended' correlacionada -> continua fabrication_suspected",
+            check14b["status"] == "fabrication_suspected",
+        )
+
+        # ------------------------------------------------------------------
+        # 14c. `ended_continuo_session_in_window` não correlaciona um
+        # evento de OUTRO tick (janela não se sobrepõe) — mesma disciplina
+        # de `correlate_continuo_session` (#7641/#8378).
+        # ------------------------------------------------------------------
+        outro_tick_start = now - timedelta(hours=5)
+        outro_tick_end = now - timedelta(hours=4, minutes=40)
+        ended14c = mod.ended_continuo_session_in_window(lifecycle14, outro_tick_start, outro_tick_end)
+        assert_true("14c. evento de OUTRO tick nao correlaciona -> None", ended14c is None)
+
+        # ------------------------------------------------------------------
+        # 15. Regressão end-to-end via `run()` — relatório real (trimmed)
+        # do tick de 15:36 UTC de 20/09/2026 que motivou o #8521: 3 issues
+        # citadas em contexto de negação ("não foram reivindicadas") + 1
+        # claim real (#8515, com PR aberta) cuja sessão já terminou o
+        # protocolo. Overall NÃO pode ser fabrication_suspected.
+        # ------------------------------------------------------------------
+        repo15 = td / "repo15"
+        report15 = repo15 / "data" / "continuo" / "last-tick-report.md"
+        sessions15 = repo15 / "data" / "sessions"  # existe mas vazio -> endSession já rodou
+        sessions15.mkdir(parents=True, exist_ok=True)
+        lifecycle15 = repo15 / "data" / "session-lifecycle.jsonl"
+        report_mtime15 = now
+        tick_start15 = report_mtime15 - timedelta(minutes=20)
+        tick_end15 = report_mtime15 - timedelta(minutes=1)
+        _write_lifecycle_event(lifecycle15, "hermes-cron-20260920T151606Z", tick_start15, tick_end15)
+        report_text_full15 = (
+            "## Tick 15:36 UTC\n### Trabalhado\n"
+            "- Classificação determinística final: 62 issues abertas — 5 overnight, "
+            "22 fora-de-rodada, 17 bloqueada, 15 agendada, 2 epica e 1 develop.\n"
+            "- #8518, #8517 e #8516 foram lidas frescas via REST (o caminho gh issue "
+            "view --comments falhou pelo mesmo motivo) e barradas pelo "
+            "check-continuo-coherence por sobreposição com paths/módulos tocados em "
+            "PRs ou merges recentes; não foram reivindicadas.\n"
+            "- #8515 foi lida fresca via REST, admitida pelo coherence gate e "
+            "reivindicada com o session-id deste tick. Delegação implementou o fix e "
+            "abriu a PR #8520; verificação independente confirmou OPEN, MERGEABLE. "
+            "Não mergeei.\n"
+            "- O registro do tick foi encerrado com session-registry.ts end --kind "
+            "continuo --session-id hermes-cron-20260920T151606Z.\n"
+        )
+        _write_report(report15, report_text_full15, mtime=report_mtime15)
+        open_issues_62 = _open_issues_file(td, 62)
+        result15 = mod.run(repo15, report15, sessions15, 45, now, open_issues_62, lifecycle_log_path=lifecycle15)
+        assert_true(
+            "15. regressão #8521 end-to-end: overall NUNCA fabrication_suspected",
+            result15["status"] != "fabrication_suspected",
+        )
+        claimed_check15 = next(c for c in result15["checks"] if c["check"] == "claimed_issues")
+        assert_true(
+            "15. checagem claimed_issues fica indeterminate (nao ok nem fabricacao)",
+            claimed_check15["status"] == "indeterminate",
+        )
+
+        # ------------------------------------------------------------------
         # 13. Regressão #8377 (falsos positivos de claim) + #7996
         # (cobertura não é claim) — funções autônomas que não eram
         # chamadas pelo runner (review da PR #8381, 3ª objeção: o teste
@@ -606,6 +773,7 @@ def main() -> int:
         test_adversarial_falsos_negativos_extraem_todos()
         test_controle_claim_proprio_ausente_do_registro_e_fabricacao()
         test_regressao_8463_falsos_positivos_lista_atribuida_outro_ator()
+        test_regressao_8521_negacao_nao_e_claim()
 
         if FAILED:
             print(f"\n{FAILED} assercao(es) falharam")
