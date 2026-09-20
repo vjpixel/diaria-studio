@@ -1858,8 +1858,11 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // rodadas jogadas, #4253 item 3 + checagem de sessão), ver rationale em jogar.ts.
     if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env, request);
     // #5167 item 7: destino do double opt-in da Beehiiv/Kit. #7737: 301 pro
-    // apex (diar.ia.br/confirmado, Worker `site`) — a página real não mora
-    // mais aqui, só o redirect (ver docstring de confirmado.ts).
+    // apex (Worker `site`) — a página real não mora mais aqui, só o
+    // redirect (ver docstring de confirmado.ts). #8554: o apex renomeou
+    // `/confirmado` → `/confirmada`; esta rota (`eia.diar.ia.br/confirmado`)
+    // permanece com o path antigo (link já entregue em e-mails), só o
+    // DESTINO do 301 muda — encadeia com o 301 próprio do apex.
     if (path === "/confirmado" && request.method === "GET") return handleConfirmadoRedirect(request.url);
     // #3519: arquivo de pares passados (índice) — mesmo racional acima:
     // `env` cru, lê `correct:{edition}` compartilhado, não `bEnv`.

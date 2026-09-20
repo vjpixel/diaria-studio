@@ -10,7 +10,7 @@
  * prefixadas `dnav-` pra nunca colidir com o CSS próprio de cada página) —
  * decisão deliberada: as superfícies que consomem este módulo têm sistemas
  * de CSS heterogêneos (a home tem um stylesheet grande com tokens `var(--…)`
- * próprios; `/assinar`, `/apoiar`, `/clarice`, `/archive`, `/confirmado` têm
+ * próprios; `/assinar`, `/apoiar`, `/clarice`, `/archive`, `/confirmada` têm
  * cada uma o seu `<style>` menor; as páginas `/p/{slug}` são HTML bruto
  * derivado do e-mail, sem folha de estilo compartilhada nenhuma). Um
  * componente com estilo embutido funciona identicamente em qualquer uma sem
@@ -130,7 +130,7 @@ export interface RenderSiteNavOptions {
   ariaLabel?: string;
   /** `true`: a página hospedeira já declara `--teal`/`--ink`/`--paper`/
    *  `--rule` no PRÓPRIO `:root` (home, `/assinar`, `/apoiar`, `/clarice`,
-   *  `/archive`, `/confirmado` — todas convergem nesses 4 nomes) — a nav usa
+   *  `/archive`, `/confirmada` — todas convergem nesses 4 nomes) — a nav usa
    *  `var(--x)` puro, sem literal hex, pra não duplicar o token (guard
    *  `test/site-home-design-tokens-6986.test.ts`: nenhum hex canônico fora
    *  de `:root`). `false` (default): a página não declara esses tokens (as

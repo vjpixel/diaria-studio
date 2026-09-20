@@ -1793,6 +1793,110 @@ describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem s
     }
   });
 
+  // REGRESSÃO (#8549): "npm test sai exit code 1 com 'fail 0' — o rodapé do
+  // log mente por STREAM, não por bug de contagem". Achado ao vivo (PRs
+  // #8545/#8546, overnight 260920b): o `RESUMO AGREGADO` (com o fail count
+  // e o batch culpado CORRETOS) já era escrito minutos antes do fim real do
+  // log — só que em `process.stderr`, uma stream/fd DISTINTA de
+  // `process.stdout` (onde todo o ruído dos workers concorrentes vai via
+  // `emit()`/`pipeWorkerStream`). Sem ordenação garantida entre 2 streams
+  // independentes, um consumidor externo (log do CI) via o sumário CRU de
+  // QUALQUER batch que por acaso fosse o último a drenar seu `stdout`
+  // (quase sempre `fail 0`, a maioria dos batches passa) DEPOIS do
+  // `RESUMO AGREGADO` correto — dando a falsa impressão de "0 falhas,
+  // exit 1 inexplicável". O exit code sempre esteve certo; só a ÚLTIMA
+  // LINHA VISÍVEL enganava.
+  //
+  // Este teste reusa o fixture do teste de drenagem do #7430 logo acima
+  // (delayedScript que manda IPC IMEDIATO mas só escreve no stdout depois
+  // de um delay) — mas em vez de só confirmar que o marcador tardio foi
+  // drenado, confirma que a linha final (`RESUMO AGREGADO`) sai na MESMA
+  // stream (`stdout`) que o marcador, e nessa ordem: marcador ANTES,
+  // agregado DEPOIS. Antes do fix (#8549), o agregado ia pra `process.
+  // stderr` — capturado num balde separado, sem relação de ordem alguma com
+  // o `stdout` mockado aqui. **Escopo do que este teste PROVA vs. não
+  // prova**: a garantia estrutural (mesma stream ⇒ FIFO garantido pelo
+  // Node) é o que elimina a classe do bug — não uma reprodução do timing
+  // exato de buffer/flush assíncrono do SO sob carga real de CI (múltiplos
+  // workers concorrentes disputando o mesmo pipe), que é impraticável de
+  // reproduzir de forma determinística num teste rápido (a própria issue
+  // #8549 autoriza essa limitação quando genuinamente não reproduzível).
+  it("REGRESSÃO (#8549): RESUMO AGREGADO sai em stdout (mesma stream dos workers), nunca em stderr — nunca aparece 'antes' de output tardio ainda em trânsito", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "run-tests-parallel-it-stream-order-"));
+    try {
+      // Mesmo fixture do teste de drenagem do #7430: manda o resultado via
+      // IPC de imediato, escreve no stdout só 150ms depois. Aqui o
+      // `exitCode: 1`/`totalFail: 1` simula o cenário real da issue — um
+      // batch com falha genuína, cujo diagnóstico correto (`RESUMO
+      // AGREGADO ... fail 1`) não pode ficar "escondido" atrás de output
+      // tardio de outro worker saudável.
+      const delayedScript = join(dir, "delayed-drain-worker.mjs");
+      writeFileSync(
+        delayedScript,
+        [
+          "process.send({ exitCode: 1, completedFiles: 1, totalPass: 0, totalFail: 1, failedBatches: ['grupo-fake'] });",
+          "setTimeout(() => {",
+          '  process.stdout.write("TRAILING_MARKER_AFTER_MESSAGE\\n");',
+          "  process.exit(0);",
+          "}, 150);",
+        ].join("\n"),
+      );
+      const okTest = `import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("ok", () => { assert.equal(1, 1); });\n`;
+      const fileA = join(dir, "a.test.ts");
+      const fileB = join(dir, "b.test.ts");
+      writeFileSync(fileA, okTest);
+      writeFileSync(fileB, okTest);
+
+      const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+      const originalStderrWrite = process.stderr.write.bind(process.stderr);
+      // Ordem de chegada preservada NUM SÓ array, com o rótulo da stream —
+      // é essa ordem combinada que um log de CI real também produz (ambas
+      // as streams intercaladas por ordem de chegada).
+      const captured: Array<{ stream: "stdout" | "stderr"; text: string }> = [];
+      process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+        captured.push({ stream: "stdout", text: String(chunk) });
+        return (originalStdoutWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+      }) as typeof process.stdout.write;
+      process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+        captured.push({ stream: "stderr", text: String(chunk) });
+        return (originalStderrWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+      }) as typeof process.stderr.write;
+
+      let exit: number;
+      try {
+        exit = await runTestBatchesParallel({
+          files: [fileA, fileB],
+          batchSize: 1,
+          workerCount: 2,
+          scriptPath: delayedScript,
+          batchTimeoutMs: TRIVIAL_FIXTURE_BATCH_TIMEOUT_MS,
+          bisectBudgetMs: 0,
+        });
+      } finally {
+        process.stdout.write = originalStdoutWrite;
+        process.stderr.write = originalStderrWrite;
+      }
+
+      assert.equal(exit, 1, "os 2 workers reportaram falha (fake) — precisa propagar como exit 1");
+
+      const markerIndex = captured.findIndex((c) => c.text.includes("TRAILING_MARKER_AFTER_MESSAGE"));
+      const aggregateIndex = captured.findIndex((c) => c.text.includes("RESUMO AGREGADO"));
+      assert.ok(markerIndex >= 0, `marcador tardio precisa ter sido capturado — capturado: ${JSON.stringify(captured)}`);
+      assert.ok(aggregateIndex >= 0, `RESUMO AGREGADO precisa ter sido escrito — capturado: ${JSON.stringify(captured)}`);
+      assert.equal(
+        captured[aggregateIndex]!.stream,
+        "stdout",
+        "RESUMO AGREGADO precisa sair em stdout — nunca stderr (#8549): é a MESMA stream que carrega o ruído dos workers, a única forma de garantir ordem FIFO relativa a ele",
+      );
+      assert.ok(
+        aggregateIndex > markerIndex,
+        `RESUMO AGREGADO (índice ${aggregateIndex}) precisa aparecer DEPOIS do output tardio do worker (índice ${markerIndex}) — senão o rodapé do log volta a mentir por ordem (#8549). Capturado: ${JSON.stringify(captured)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // Teste direto de `cleanChildEnv` (achado do review, P3: só era exercitada
   // indiretamente pelos 2 testes de integração real acima — uma regressão
   // aqui apareceria como "exit code errado" sem nomear a causa real).
