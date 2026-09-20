@@ -25,6 +25,50 @@
 /** Teto de unidades concorrentes numa onda do overnight (era 3 até #8486). */
 export const OVERNIGHT_WAVE_CAP = 6;
 
+/**
+ * Janela de dedup de onda (#8496 item 3). Re-executar `record-overnight-wave.ts`
+ * pra a MESMA onda — cenário real: compaction de contexto faz o coordenador
+ * perder o registro de já ter chamado o script e repetir a chamada — infla
+ * `unit_count`/`cap_hit` na leitura agregada sem que uma 2ª onda tenha de fato
+ * sido despachada. 30min cobre folgadamente o tempo entre "onda composta" e
+ * "onda despachada" (que é quando o script roda) sem confundir com uma onda
+ * seguinte genuinamente nova que por acaso reusa o mesmo conjunto de issues
+ * (cenário raro — reprocessar issue já concluída — e mesmo esse exigiria as
+ * DUAS coisas: mesmo conjunto de issues E dentro de 30min).
+ */
+export const OVERNIGHT_WAVE_DEDUP_WINDOW_MS = 30 * 60 * 1000;
+
+/** Pure: conjunto (ordenado) de todas as issues de uma onda, achatando as unidades. */
+function waveIssueSet(record: Pick<OvernightWaveRecord, "units">): number[] {
+  return [...new Set(record.units.flatMap((u) => u.issues))].sort((a, b) => a - b);
+}
+
+/**
+ * Pure: procura em `existing` uma onda com o MESMO conjunto de issues que
+ * `candidate`, gravada dentro de `windowMs` do timestamp de `candidate`
+ * (nas duas direções — a onda existente pode ser ligeiramente mais nova ou
+ * mais velha que o candidato, dependendo de qual `now` cada chamada recebeu).
+ * Retorna a onda duplicada encontrada, ou `null`. Nunca lança.
+ */
+export function findDuplicateWave(
+  existing: OvernightWaveRecord[],
+  candidate: Pick<OvernightWaveRecord, "units" | "composed_at">,
+  windowMs: number = OVERNIGHT_WAVE_DEDUP_WINDOW_MS,
+): OvernightWaveRecord | null {
+  const candidateSet = waveIssueSet(candidate);
+  if (candidateSet.length === 0) return null;
+  const candidateKey = candidateSet.join(",");
+  const candidateTime = Date.parse(candidate.composed_at);
+  if (Number.isNaN(candidateTime)) return null;
+  for (const w of existing) {
+    if (waveIssueSet(w).join(",") !== candidateKey) continue;
+    const t = Date.parse(w.composed_at);
+    if (Number.isNaN(t)) continue;
+    if (Math.abs(t - candidateTime) <= windowMs) return w;
+  }
+  return null;
+}
+
 export interface OvernightWaveUnit {
   issues: number[];
 }

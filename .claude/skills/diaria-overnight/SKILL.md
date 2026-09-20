@@ -659,6 +659,11 @@ Triagem dos findings:
        --plan data/overnight/{AAMMDD}/plan.json
      ```
      O script lê o campo `timeline` de cada issue no `plan.json` e imprime a tabela markdown `unidade | início | fim | duração | fix-iterations` + total da rodada + unidade mais lenta. Degrada graciosamente: issues sem campo `timeline` (rodadas anteriores ao #2099 ou unidades interrompidas) aparecem na tabela com `—` nos campos de horário e duração — a tabela nunca quebra. Esta seção é a fonte primária de observabilidade de tempo; `plan.json` é a fonte do relatório (pós-compaction o run-log pode ser grande),
+   - **Ondas da rodada (#8496)** — resumo da PRÓPRIA rodada a partir de `plan.waves[]` (#8486/#8492), pra o A/B do teto 3→6 não depender de ninguém agregar isso à mão depois:
+     ```bash
+     npx tsx scripts/report-overnight-waves.ts --dir data/overnight --since {AAMMDD}
+     ```
+     Colar a saída (distribuição de `unit_count`, fração de ondas com `cap_hit`, `pr→merge` p90 segmentado por `cap_hit`) nesta seção. Rodada sem nenhuma onda (`plan.waves` ausente/vazio — pré-#8486, ou nenhuma unidade despachada) → o próprio script já imprime essa nota, colar como está. Não é o gate do A/B em si — é só o dado da noite; a leitura agregada de N rondas (pra decidir manter 6 ou voltar a 3) é `npx tsx scripts/report-overnight-waves.ts --since 260920` (corte na 1ª rodada com `waves`) rodado à parte, quando o editor pedir a comparação.
    - estado final da fila (`gh issue list` fresco).
 2. Salvar em `data/overnight/{AAMMDD}/report.md` (AAMMDD do `plan.json`, não recomputado).
 3. **Registrar o relatório na superfície de Relatórios do Studio (#3714, decisão do editor 260720 — substitui o antigo draft de Gmail, não soma a ele):**

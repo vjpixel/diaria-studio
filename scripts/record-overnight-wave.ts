@@ -11,15 +11,18 @@
  * pelo teto (default 0; valor não-numérico ou flag sem valor = exit 2, nunca
  * `cap_hit` falso-negativo silencioso).
  *
- * Exit: 0 = gravado; 1 = onda inválida (acima do teto, issue repetida,
- * unidade malformada); 2 = uso inválido / plan.json ausente ou ilegível.
+ * Exit: 0 = gravado (ou onda duplicada detectada — no-op idempotente, #8496
+ * item 3: mesmo conjunto de issues já registrado em `plan.waves` dentro de
+ * `OVERNIGHT_WAVE_DEDUP_WINDOW_MS` — ver `scripts/lib/overnight-waves.ts`);
+ * 1 = onda inválida (acima do teto, issue repetida, unidade malformada);
+ * 2 = uso inválido / plan.json ausente ou ilegível.
  * Escrita atômica (`writeFileAtomic`) — `plan.json` é a única fonte confiável
  * do briefing após compaction, nunca pode ficar truncado.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { appendWave, buildWaveRecord, checkOvernightWaves } from "./lib/overnight-waves.ts";
+import { appendWave, buildWaveRecord, checkOvernightWaves, findDuplicateWave } from "./lib/overnight-waves.ts";
 
 const INT = /^\d+$/;
 
@@ -72,6 +75,18 @@ if (isMainModule(import.meta.url)) {
   } catch (e) {
     console.error(`[record-overnight-wave] ${(e as Error).message}`);
     process.exit(1);
+  }
+
+  // #8496 item 3: dedup — re-executar o script pra a MESMA onda (compaction de
+  // contexto faz o coordenador esquecer que já registrou) não pode inflar a
+  // contagem que a leitura agregada (`report-overnight-waves.ts`) usa.
+  const existingWaves = Array.isArray(plan.waves) ? (plan.waves as import("./lib/overnight-waves.ts").OvernightWaveRecord[]) : [];
+  const dup = findDuplicateWave(existingWaves, record);
+  if (dup) {
+    console.log(
+      `[record-overnight-wave] onda idêntica já registrada em ${dup.composed_at} (dentro da janela de dedup) — nada gravado, no-op idempotente`,
+    );
+    process.exit(0);
   }
 
   const next = appendWave(plan, record);
