@@ -17,7 +17,7 @@ import {
   handleConfirm,
   checkNativeUnsubscribePending,
   unlinkReativarFromBrevoList,
-  renderSuccessPage,
+  CONFIRMADO_REDIRECT_URL,
   renderMissingEmailPage,
   renderInvalidEmailPage,
   renderErrorPage,
@@ -263,7 +263,7 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
     assert.deepEqual(calls.map((c) => c.method), ["GET"], "nunca chega no DELETE/POST com estado desconhecido");
   });
 
-  it('handleConfirm fim-a-fim: status:"validating" → retry → "active" → página de sucesso', async () => {
+  it('handleConfirm fim-a-fim: status:"validating" → retry → "active" → redirect pra /confirmado (#8539)', async () => {
     const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       if (method === "POST") return jsonRes(201, { data: { status: "validating" } });
@@ -272,8 +272,8 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
     const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const res = await handleConfirm(url, env, fetchImpl, async () => {});
-    assert.equal(res.status, 200);
-    assert.equal(await res.text(), renderSuccessPage());
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("Location"), CONFIRMADO_REDIRECT_URL);
   });
 
   it("corpo do CREATE sem data.status (ou não-JSON) → ok:true, beehiivStatus:null (nunca lança)", async () => {
@@ -566,8 +566,8 @@ describe("unlinkReativarFromBrevoList — desvincula da lista Brevo no clique (#
       BREVO_DIARIA_LIST_ID: "7",
     };
     const res = await handleConfirm(url, env, fetchImpl);
-    assert.equal(res.status, 200);
-    assert.equal(await res.text(), renderSuccessPage());
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("Location"), CONFIRMADO_REDIRECT_URL);
     assert.equal(unlinkPutCalled, true, "o unlink (PUT) deveria ter sido tentado no caminho de sucesso");
   });
 
@@ -623,8 +623,8 @@ describe("handleConfirm — fim-a-fim (#4476 item 3)", () => {
     const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const res = await handleConfirm(url, env, fetchImpl);
-    assert.equal(res.status, 200);
-    assert.equal(await res.text(), renderSuccessPage());
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("Location"), CONFIRMADO_REDIRECT_URL);
   });
 
   it('#4476 achado do teste ao vivo: POST 2xx mas status:"invalid" → 200 com página "ainda não confirmado" (NUNCA a página de sucesso)', async () => {
@@ -657,12 +657,8 @@ describe("handleConfirm — fim-a-fim (#4476 item 3)", () => {
 });
 
 describe("páginas HTML — conteúdo mínimo esperado (#4476 item 3)", () => {
-  it("renderSuccessPage menciona confirmação", () => {
-    assert.ok(renderSuccessPage().includes("confirmado"));
-  });
-
   it("todas as páginas são HTML válido com <title> e charset", () => {
-    for (const html of [renderSuccessPage(), renderMissingEmailPage(), renderInvalidEmailPage(), renderErrorPage(), renderNotConfirmedPage()]) {
+    for (const html of [renderMissingEmailPage(), renderInvalidEmailPage(), renderErrorPage(), renderNotConfirmedPage()]) {
       assert.ok(html.includes("<!doctype html>"));
       assert.ok(html.includes('charset="utf-8"'));
       assert.ok(html.includes("<title>"));

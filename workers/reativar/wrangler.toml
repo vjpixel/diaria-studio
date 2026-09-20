@@ -118,20 +118,14 @@ KIT_CONFIRMOU_VIA_FIELD = "confirmou_via"
 # passa a ir pro Kit em vez da Beehiiv.
 SUBSCRIBE_BACKEND = "kit"
 
-# KIT_RECOMMENDATIONS_EMBED_URL — OPCIONAL (#7524, lado OUTGOING do Kit
-# Creator Network, follow-up do #6674). Ausente = tela de confirmação
-# (renderSuccessPage) sem o widget, comportamento de hoje. NÃO setar sem
-# antes confirmar com o editor se existe uma URL de embed real distinta da
-# página hospedada `https://diariabr.kit.com/profile/recommendations`
-# (docs/kit-creator-network.md) — o MCP `kit` não expõe esse campo
-# (`get_creator_profile` só devolve `profile_url`), e o valor citado na
-# issue original (`.../recommendations`, sem `/profile/`) não bateu com o
-# confirmado no doc. AÇÃO PENDENTE DO EDITOR — mesmo padrão dos
-# #4320/#4382/#4490/#4534 acima:
-#   cd workers/reativar && npx wrangler secret put KIT_RECOMMENDATIONS_EMBED_URL
-# (secret, não var — mesmo tratamento de qualquer URL externa que aponte pra
-# uma conta específica, diferente dos KIT_*_FIELD acima, que são só nomes de
-# campo).
+# KIT_RECOMMENDATIONS_EMBED_URL — REMOVIDO no #8539. Era o widget outgoing do
+# Kit Creator Network (#7524) embutido na tela de confirmação deste worker.
+# Desde o #8539 o sucesso REDIRECIONA pra https://diar.ia.br/confirmado (que
+# carrega o GTM e por isso pode medir a conversão), então esta tela não existe
+# mais e o secret não tinha onde renderizar. Nunca chegou a ser configurado em
+# produção (`wrangler secret list` em 20/09/2026 não o lista) e a própria
+# #7524 deixou a URL de embed como NÃO CONFIRMADA, então a remoção não muda
+# nada que rodava. Pra re-hospedar o widget na página nova, ver #8561.
 
 # #6318 — paridade com poll/cursos. A ausência deste bloco deixou o worker
 # `reativar` SEM NENHUM log retido: quando a atribuição sumiu no switchover,
