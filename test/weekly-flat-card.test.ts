@@ -445,6 +445,13 @@ describe("#8480 (260919): capa/CTA sempre 84px (WEEKLY_FLAT_CARD_LAYOUT), nunca 
     }
   });
 
+  it("#8515 regressão — overflow horizontal no fixed 84px detectado (21 chars @ 84px vazam com 0.52); com 0.62 aciona abort", async () => {
+    const { measureFlatCardBody, WEEKLY_FLAT_CARD_LAYOUT } = await import("../scripts/lib/weekly-flat-card.ts");
+    const title = "A".repeat(21); // linha cheia de 21 chars a 84px => ~1094px > 936
+    const m = measureFlatCardBody(title, WEEKLY_FLAT_CARD_LAYOUT); // fixed 84px
+    assert.equal(m.overflows, true, "linha de 21 chars a 84px deve acusar overflow (largura)" );
+  });
+
   it("layout default (sem 6º argumento) continua fill — comportamento pré-#8480 intocado pra chamador que não passa layout", async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), "diaria-flatcard-"));
     try {

@@ -337,11 +337,13 @@ function layoutCardBody(
     ({ size, lines } = fillingFontSize(title, availableWidth, availableHeight));
   } else {
     size = layout.size;
-    const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (size * CHAR_WIDTH_RATIO)));
+    const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (size * FILL_CHAR_WIDTH_RATIO)));
     lines = wrapBody(title, maxCharsPerLine);
   }
   const blockHeight = lines.length * Math.round(size * 1.18);
-  return { size, lines, blockHeight, availableHeight, overflows: blockHeight > availableHeight };
+  // Regressão #8515: overflow horizontal no fixed (capa/CTA semanal 84px); guard só media altura
+  const overflowsWidth = lines.some((ln) => ln.text.length * size * FILL_CHAR_WIDTH_RATIO > availableWidth);
+  return { size, lines, blockHeight, availableHeight, overflows: blockHeight > availableHeight || overflowsWidth };
 }
 
 export function measureFlatCardBody(
