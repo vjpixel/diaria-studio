@@ -1,9 +1,12 @@
 /**
- * test/ads-registrar-edicao.test.ts (#8241 item 4)
+ * test/ads-registrar-edicao.test.ts (#8241 item 4, #8531)
  *
  * `validateRegistrarEdicaoInput` — a CLI que grava linhas novas em
  * `edicoes.jsonl` no schema unificado nunca deixa passar uma linha sem
- * `ts`/`braco`/`tipo`/`efeito`/`origem` (critério de aceite #8241).
+ * `ts`/`braco`/`tipo`/`efeito`/`origem` (critério de aceite #8241), nem uma
+ * linha com `tipo` de texto livre fora do conjunto fechado de
+ * `TIPO_TO_EFEITO` — nem com `--efeito` explícito (#8531: era esse
+ * escape-hatch que produzia tipo de texto livre no arquivo).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -36,13 +39,37 @@ describe("#8241 item 4 — validateRegistrarEdicaoInput", () => {
   it("recusa tipo não catalogado sem --efeito explícito", () => {
     const r = validateRegistrarEdicaoInput({ braco: "todos", tipo: "nunca-visto", origem: "editor", extra: {} }, NOW);
     assert.equal(r.ok, false);
-    if (!r.ok) assert.ok(r.errors.some((e) => e.includes("efeito")));
+    if (!r.ok) assert.ok(r.errors.some((e) => e.includes("conjunto fechado")));
   });
 
-  it("aceita tipo não catalogado COM --efeito explícito", () => {
+  it("#8531: recusa tipo não catalogado MESMO COM --efeito explícito — nenhum escape-hatch de texto livre", () => {
     const r = validateRegistrarEdicaoInput({ braco: "todos", tipo: "nunca-visto", origem: "editor", efeito: "mudanca", extra: {} }, NOW);
-    assert.equal(r.ok, true);
-    if (r.ok) assert.equal(r.line.efeito, "mudanca");
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.ok(r.errors.some((e) => e.includes("conjunto fechado") && e.includes("#8531")));
+  });
+
+  it("#8531: recusa --efeito que não bate com o efeito catalogado do tipo", () => {
+    const r = validateRegistrarEdicaoInput(
+      { braco: "todos", tipo: "pausa-total-anuncios", origem: "editor", efeito: "mudanca", extra: {} },
+      NOW,
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.ok(r.errors.some((e) => e.includes("não bate com o efeito catalogado")));
+  });
+
+  it("#8531: os 5 tipos de texto livre da issue estão catalogados com o efeito correto", () => {
+    const casos: Array<[string, string]> = [
+      ["teto-gasto-conta-meta", "registro"],
+      ["tasks-locais-neo-realinhadas", "registro"],
+      ["decisao-teto-orcamento", "registro"],
+      ["decisao-teto-orcamento-executada", "mudanca"],
+      ["achado-poluicao-ambiente-google-client-id", "registro"],
+    ];
+    for (const [tipo, efeitoEsperado] of casos) {
+      const r = validateRegistrarEdicaoInput({ braco: "todos", tipo, origem: "editor", extra: {} }, NOW);
+      assert.equal(r.ok, true, `tipo "${tipo}" deveria ser aceito`);
+      if (r.ok) assert.equal(r.line.efeito, efeitoEsperado, `tipo "${tipo}" deveria derivar efeito "${efeitoEsperado}"`);
+    }
   });
 
   it("auto-deriva efeito de um tipo catalogado (pausa-total-anuncios -> pausa)", () => {

@@ -18,11 +18,15 @@
  *     --origem editor --motivo "..." --edicao "..."
  *   npx tsx scripts/ads-registrar-edicao.ts --braco todos --tipo pausa-total-anuncios --origem editor --efeito pausa --motivo "..."
  *
- * `--efeito` é OPCIONAL quando `--tipo` já está em `TIPO_TO_EFEITO`
- * (`scripts/lib/ads-rolling-window.ts`) — auto-derivado. `--tipo` fora
- * dessa tabela EXIGE `--efeito` explícito (nunca assume "mudanca" em
- * silêncio na escrita — diferente da LEITURA, que assume por fail-soft;
- * aqui é o operador quem está gravando o dado, e cabe a ele declarar).
+ * `--tipo` precisa estar no conjunto FECHADO de `TIPO_TO_EFEITO`
+ * (`scripts/lib/ads-rolling-window.ts`, #8531) — `--efeito` é OPCIONAL e
+ * sempre AUTO-DERIVADO da tabela quando omitido; se passado, precisa bater
+ * com o valor catalogado (senão a gravação é recusada). `--tipo` fora da
+ * tabela é SEMPRE recusado, mesmo com `--efeito` explícito — não há mais
+ * escape-hatch de texto livre (era assim até o #8241; foi exatamente esse
+ * escape-hatch que produziu os 5 tipos de texto livre gravados em
+ * 09-17/09/2026 que motivaram a #8531). Tipo novo entra só via PR que
+ * adiciona uma entrada em `TIPO_TO_EFEITO`, nunca via flag da CLI.
  * Campos extras livres (`--motivo`, `--edicao`, `--issue`, etc.) entram na
  * linha como estão — nenhuma allowlist de campo extra.
  *
@@ -33,7 +37,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { TIPO_TO_EFEITO, EDICAO_EFEITOS, type EdicaoEfeito } from "./lib/ads-rolling-window.ts";
+import { TIPO_TO_EFEITO, EDICAO_EFEITOS, isTipoValido, type EdicaoEfeito } from "./lib/ads-rolling-window.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_EDICOES_JSONL_PATH = resolve(ROOT, "data/aquisicao/teste-2608/edicoes.jsonl");
@@ -61,7 +65,9 @@ export type RegistrarEdicaoValidation =
 /**
  * Valida um candidato de linha nova — recusa (sem gravar nada) se faltar
  * `ts`, `braco`, `tipo`, `efeito` ou `origem` (critério de aceite #8241),
- * ou se `efeito`/`origem` não forem um dos valores conhecidos.
+ * se `efeito`/`origem` não forem um dos valores conhecidos, ou se `tipo`
+ * não estiver no conjunto FECHADO de `TIPO_TO_EFEITO` (#8531 — nenhum
+ * `tipo` de texto livre passa, mesmo com `--efeito` explícito).
  *
  * @pure
  */
@@ -78,12 +84,18 @@ export function validateRegistrarEdicaoInput(input: RegistrarEdicaoInput, nowIso
   if (!origem) errors.push("--origem é obrigatório.");
   else if (!ORIGENS.includes(origem)) errors.push(`--origem "${origem}" inválido — use um de: ${ORIGENS.join(", ")}.`);
 
-  if (!efeito && tipo) {
+  if (tipo && !isTipoValido(tipo)) {
+    errors.push(
+      `--tipo "${tipo}" não está no conjunto fechado de tipos válidos (TIPO_TO_EFEITO em ads-rolling-window.ts). ` +
+        `Tipo novo exige um PR adicionando uma entrada na tabela, não um valor de texto livre na CLI (#8531). ` +
+        `Válidos: ${Object.keys(TIPO_TO_EFEITO).join(", ")}.`,
+    );
+  } else if (tipo) {
     const derivado = TIPO_TO_EFEITO[tipo];
-    if (derivado) {
+    if (!efeito) {
       efeito = derivado;
-    } else {
-      errors.push(`--efeito é obrigatório: tipo "${tipo}" não está catalogado em TIPO_TO_EFEITO (ads-rolling-window.ts).`);
+    } else if (efeito !== derivado) {
+      errors.push(`--efeito "${efeito}" não bate com o efeito catalogado para "${tipo}" ("${derivado}") — omita --efeito para auto-derivar, ou corrija.`);
     }
   }
   if (efeito && !EDICAO_EFEITOS.includes(efeito)) {
