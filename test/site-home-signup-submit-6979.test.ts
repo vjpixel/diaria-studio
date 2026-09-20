@@ -153,7 +153,7 @@ describe("signupFormScript — transições de status/disabled por status HTTP (
   it("200 ok: empurra o evento signedUp pro dataLayer com o e-mail cadastrado", async () => {
     const win: any = {
       location: { search: "" },
-      fetch: () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) }),
+      fetch: () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true, event_id: "evt-8572" }) }),
       AbortController: typeof AbortController === "function" ? AbortController : undefined,
     };
     const bundle = makeForm({ email: "leitor@example.com" });
@@ -162,7 +162,11 @@ describe("signupFormScript — transições de status/disabled por status HTTP (
     bundle.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await flush();
     assert.ok(Array.isArray(win.dataLayer), "dataLayer deveria existir após o sucesso");
-    assert.deepEqual(win.dataLayer, [{ event: "signedUp", eventProps: { email: "leitor@example.com" } }]);
+    assert.deepEqual(win.dataLayer, [
+      // #8572: o event_id devolvido pelo handler viaja junto — é ele que a tag
+      // do Meta usa pra deduplicar contra a CAPI.
+      { event: "signedUp", eventProps: { email: "leitor@example.com", event_id: "evt-8572" } },
+    ]);
   });
 
   it("200 mas body.ok !== true: NÃO empurra o evento de conversão (não foi sucesso de verdade)", async () => {
