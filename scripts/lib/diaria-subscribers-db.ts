@@ -156,6 +156,18 @@ export function isPlatform(value: unknown): value is Platform {
  * literal pra derivar métricas (ver comentário da coluna `subtype` acima) —
  * um tipo novo nunca colide com esse cálculo, um `subtype` genérico correria
  * risco de ser mal-interpretado como refinamento de `bounce`.
+ *
+ * `"confirm"` (#8552): confirmação de double opt-in — a pessoa nasceu
+ * `inactive` (Kit) e depois confirmou o cadastro. Tipo NOVO, mesma razão de
+ * `contest_reply`/`poll_vote` acima (ação deliberada, não telemetria de
+ * plataforma) — faltava desde a #7176 (`doi-confirmacao-dia` documentava a
+ * ausência como dependência dura, nunca gravada). Ver
+ * `scripts/lib/subscriber-state-snapshot.ts` pro mecanismo que hoje deriva
+ * confirmação por comparação de snapshots diários (o Kit não expõe um
+ * webhook/evento de confirmação nativo) — nenhum ingestor grava `confirm`
+ * neste `event` ainda; o tipo existe primeiro pra desbloquear os
+ * consumidores que já esperam por ele (`isEventType`, o registry de
+ * métricas), a gravação em si é passo seguinte, fora do escopo desta fatia.
  */
 export const EVENT_TYPES = [
   "sent",
@@ -168,6 +180,7 @@ export const EVENT_TYPES = [
   "complaint",
   "contest_reply",
   "poll_vote",
+  "confirm",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

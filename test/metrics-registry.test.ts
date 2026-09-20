@@ -22,6 +22,7 @@ import {
   type AcquisitionMetricDeps,
   type AcquisitionRecordInput,
   type DoiOrfaosDeps,
+  type DoiConfirmacaoDiaDeps,
   type BaseAtivaDeps,
   type LeitorV1Deps,
   type Ga4TrafficMetricDeps,
@@ -399,14 +400,53 @@ describe("cadastros-indeterminados-dia — razão", () => {
   });
 });
 
-describe("doi-confirmacao-dia — sempre indeterminado nesta fatia (#7176)", () => {
-  it("nunca calcula uma taxa — dependência dura declarada de F2", async () => {
+describe("doi-confirmacao-dia — cohort via snapshot diário (#8552)", () => {
+  it("sem cohort resolvida -> indeterminado com o motivo default", async () => {
     const def = getMetric("doi-confirmacao-dia")!;
-    const deps: MetricDeps = {};
+    const deps: DoiConfirmacaoDiaDeps = {};
     const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
     assert.equal(r.valor, null);
     assert.equal(r.qualidade, "indeterminado");
-    assert.match(r.motivo ?? "", /confirm/);
+    assert.match(r.motivo ?? "", /safra de confirmação DOI não resolvida/);
+  });
+
+  it("sem cohort resolvida mas com motivoIndeterminado explícito -> usa o motivo do chamador", async () => {
+    const def = getMetric("doi-confirmacao-dia")!;
+    const deps: DoiConfirmacaoDiaDeps = { motivoIndeterminado: "menos de 2 snapshots diários disponíveis (1)" };
+    const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
+    assert.equal(r.qualidade, "indeterminado");
+    assert.equal(r.motivo, "menos de 2 snapshots diários disponíveis (1)");
+  });
+
+  it("cohort abaixo do piso n=5 -> indeterminado, nunca renderiza", async () => {
+    const def = getMetric("doi-confirmacao-dia")!;
+    const deps: DoiConfirmacaoDiaDeps = {
+      cohort: [
+        { id: 1, confirmed: true },
+        { id: 2, confirmed: false },
+      ],
+    };
+    const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
+    assert.equal(r.valor, null);
+    assert.equal(r.qualidade, "indeterminado");
+    assert.match(r.motivo ?? "", /n=5/);
+  });
+
+  it("cohort com n>=5 -> calcula a razão confirmados/total, exato", async () => {
+    const def = getMetric("doi-confirmacao-dia")!;
+    const deps: DoiConfirmacaoDiaDeps = {
+      cohort: [
+        { id: 1, confirmed: true },
+        { id: 2, confirmed: true },
+        { id: 3, confirmed: false },
+        { id: 4, confirmed: false },
+        { id: 5, confirmed: false },
+      ],
+    };
+    const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
+    assert.equal(r.qualidade, "exato");
+    assert.equal(r.valor, 2 / 5);
+    assert.equal(r.motivo, null);
   });
 });
 
