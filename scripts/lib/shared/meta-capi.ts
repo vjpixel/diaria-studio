@@ -302,8 +302,23 @@ export interface MetaCapiUserData {
   fbc?: string;
 }
 
+/**
+ * #8551: `event_name` deixou de ser fixo em `"CompleteRegistration"`.
+ *
+ * `"Reactivation"` é o evento (customizado, não-padrão da Meta) que
+ * `workers/reativar/src/index.ts` passa a disparar no clique de
+ * confirmação — distinto de propósito de `"CompleteRegistration"`, que
+ * continua sendo o evento de OTIMIZAÇÃO do conjunto de anúncios "BR ·
+ * conversao · sem teto" e é disparado só no SUBMIT do form de cadastro
+ * (`workers/poll`, `workers/cursos`). Misturar os dois sob o mesmo nome
+ * fazia o conjunto aprender de reativações — que chegam meses depois do
+ * cadastro original, muitas vezes sem `fbc`/click id válido — como se
+ * fossem cadastros novos vindos de anúncio.
+ */
+export type MetaCapiEventName = "CompleteRegistration" | "Reactivation";
+
 export interface MetaCapiCompleteRegistrationEvent {
-  event_name: "CompleteRegistration";
+  event_name: MetaCapiEventName;
   event_time: number;
   event_source_url: string;
   action_source: MetaCapiActionSource;
@@ -335,6 +350,10 @@ export interface BuildCompleteRegistrationEventInput {
    * nenhum de onde tirá-los. Campo vazio/`undefined` é OMITIDO do
    * `user_data`, nunca vira string vazia. */
   clientSignals?: MetaCapiClientSignals;
+  /** #8551: `"CompleteRegistration"` (default — cadastro/submit do form) ou
+   * `"Reactivation"` (`workers/reativar`, confirmação de reativação — nunca
+   * deve entrar no evento de otimização do conjunto de anúncios). */
+  eventName?: MetaCapiEventName;
 }
 
 /** Monta o evento `CompleteRegistration` pronto pra `sendMetaCapiEvent` —
@@ -358,7 +377,7 @@ export async function buildCompleteRegistrationEvent(
   if (signals?.fbp) userData.fbp = signals.fbp;
   if (signals?.fbc) userData.fbc = signals.fbc;
   return {
-    event_name: "CompleteRegistration",
+    event_name: input.eventName ?? "CompleteRegistration",
     event_time: eventTime,
     event_source_url: input.eventSourceUrl,
     action_source: input.actionSource ?? "website",
