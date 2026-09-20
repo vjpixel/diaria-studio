@@ -51,6 +51,7 @@ import { resolveKitConfig } from "../lib/kit-config.ts";
 import {
   fetchCampaignEconomicsSources,
   META_ADS_TESTE_CANAL,
+  MICROSOFT_ADS_TESTE_CANAL,
   type CampaignEconomicsSourcesResult,
 } from "../lib/ads-campaign-economics-fetch.ts";
 import {
@@ -376,6 +377,24 @@ const SOURCE_TO_TESTE_2608_CANAL: Readonly<Record<string, string>> = {
   "Meta Ads": META_ADS_TESTE_CANAL,
 };
 
+/** Canais fora do gráfico "Custo/cadastro acumulado por canal" por ESCALA
+ *  (#8475 Parte A, ligado no #8533) — nunca por estarem descontinuados: os 3
+ *  braços do teste 2608 seguem no ar, e o canal excluído continua nos tiles
+ *  do topo e na tabela "Canais".
+ *
+ *  O eixo Y é compartilhado entre os canais (decisão original do #7536:
+ *  comparar canais no mesmo eixo). O Microsoft Ads acumula custo/cadastro uma
+ *  ordem de grandeza acima dos outros (R$ 721 contra dezenas de reais de
+ *  Google/Meta em 19/09), então a linha dele sozinha define o topo e esmaga
+ *  Google e Meta numa faixa rente ao zero — justamente a comparação que o
+ *  gráfico existe pra permitir.
+ *
+ *  Reusa `MICROSOFT_ADS_TESTE_CANAL` em vez do literal: `excludeChannels`
+ *  casa por string exata, então um nome fora de sincronia com o que o
+ *  fetcher produz não excluiria nada E não daria erro — o modo de falha
+ *  silencioso que o #8533 justamente documentou. */
+const CANAIS_FORA_DO_GRAFICO_POR_ESCALA: readonly string[] = [MICROSOFT_ADS_TESTE_CANAL];
+
 /** Último gasto reconciliado à mão por canal, lido de `spend.csv` — só
  *  usado como FALLBACK quando a fonte ao vivo daquele canal falhou (nunca
  *  sobrepõe dado ao vivo real, inclusive zero real). `asOfDate` é a data de
@@ -567,7 +586,10 @@ export async function buildAdsCampaignEconomics(
     testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, null, todayIso);
   }
 
-  const cumulative = buildCumulativeSeries(sourcesResult.metrics, sourcesResult.signups, dateRange, { pauseIntervals });
+  const cumulative = buildCumulativeSeries(sourcesResult.metrics, sourcesResult.signups, dateRange, {
+    pauseIntervals,
+    excludeChannels: CANAIS_FORA_DO_GRAFICO_POR_ESCALA,
+  });
 
   // #8210 Bug 3c: gasto desconhecido nunca vira 0 — canal cuja fonte ao vivo
   // falhou (`sourcesResult.sources[fonte].error`) cai pro último gasto
