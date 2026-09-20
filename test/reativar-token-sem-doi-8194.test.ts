@@ -185,27 +185,33 @@ describe("handleConfirm — token decide entre ativar direto e DOI (#8194)", () 
   it("token válido → active, sem DOI", async () => {
     const t = await computeReativarToken(SECRET, "a@x.com");
     const { res, kit } = await confirm(`email=a%40x.com&t=${t}`);
-    assert.equal(res.status, 200);
+    // #8539: confirmação real virou 303 pra /confirmado (antes era 200 + HTML).
+    assert.equal(res.status, 303);
     assert.equal(kit.getState(), "active");
     assert.ok(!kit.calls.some((c) => c.url.includes("/forms/9897918/")));
   });
 
   it("t vazio (contato sem token) → fluxo DOI de sempre", async () => {
-    const { kit } = await confirm("email=a%40x.com&t=");
+    const { res, kit } = await confirm("email=a%40x.com&t=");
     assert.equal(kit.getState(), "inactive");
     assert.ok(kit.calls.some((c) => c.url.includes("/forms/9897918/subscribers/42")));
+    // #8539: sem confirmação real não pode redirecionar — o destino mede
+    // conversão de anúncio.
+    assert.equal(res.headers.get("Location"), null);
   });
 
   it("token de OUTRO e-mail (link forjado) → DOI, nunca ativa", async () => {
     const t = await computeReativarToken(SECRET, "outro@x.com");
-    const { kit } = await confirm(`email=a%40x.com&t=${t}`);
+    const { res, kit } = await confirm(`email=a%40x.com&t=${t}`);
     assert.equal(kit.getState(), "inactive");
+    assert.equal(res.headers.get("Location"), null, "#8539: link forjado nunca pode contar conversão");
   });
 
   it("worker sem REATIVAR_SECRET → token ignorado, DOI", async () => {
     const t = await computeReativarToken(SECRET, "a@x.com");
-    const { kit } = await confirm(`email=a%40x.com&t=${t}`, { REATIVAR_SECRET: undefined });
+    const { res, kit } = await confirm(`email=a%40x.com&t=${t}`, { REATIVAR_SECRET: undefined });
     assert.equal(kit.getState(), "inactive");
+    assert.equal(res.headers.get("Location"), null); // #8539
   });
 });
 

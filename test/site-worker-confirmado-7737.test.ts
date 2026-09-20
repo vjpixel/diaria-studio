@@ -40,6 +40,28 @@ describe("GET /confirmado (#7737) — router do Worker site", () => {
     assert.equal(assetCalls.length, 0, "/confirmado é resolvido ANTES do asset lookup, mesmo padrão de /img/{key}");
   });
 
+  // #8539 — o router passou a LER `?via=` e repassar pra `handleConfirmadoPage`.
+  // Sem estes dois, um erro de digitação no nome do parâmetro (ou a perda do
+  // repasse) passaria batido: toda a cobertura de `?via=` chama o render
+  // direto, sem atravessar o router que produção de fato exercita.
+  it("?via=brevo chega no render — copy de retomada, não de primeira edição", async () => {
+    const { env } = fakeEnv();
+    const res = await worker.fetch(new Request("https://diar.ia.br/confirmado?via=brevo"), env);
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /A diária continua chegando/);
+    assert.doesNotMatch(body, /Sua primeira edição chega/);
+  });
+
+  it("sem ?via= (e com via desconhecido) serve a copy padrão", async () => {
+    const { env } = fakeEnv();
+    for (const url of ["https://diar.ia.br/confirmado", "https://diar.ia.br/confirmado?via=sei-la"]) {
+      const res = await worker.fetch(new Request(url), env);
+      assert.equal(res.status, 200);
+      assert.match(await res.text(), /Sua primeira edição chega/);
+    }
+  });
+
   it("canonical da página aponta pro próprio apex", async () => {
     const { env } = fakeEnv();
     const res = await worker.fetch(new Request("https://diar.ia.br/confirmado"), env);

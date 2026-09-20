@@ -57,7 +57,7 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
       get: () => jsonRes(200, { subscribers: [{ id: 1, email_address: "a@b.com", state: "active" }] }),
     });
     const r = await activateSubscriptionKit(kitEnv(), "a@b.com", fetchImpl);
-    assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active" });
+    assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active", alreadyActive: true });
     assert.equal(calls.filter((c) => c.method === "POST").length, 0);
   });
 
@@ -69,7 +69,7 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
     try {
       const env = kitEnv({ KIT_ORIGEM_CADASTRO_FIELD: "origem_cadastro" });
       const r = await activateSubscriptionKit(env, "a@b.com", fetchImpl);
-      assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active" });
+      assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active", alreadyActive: true });
       assert.equal(warnMock.mock.callCount(), 1);
       const logged = JSON.parse(String(warnMock.mock.calls[0].arguments[0]));
       assert.equal(logged.event, "reativar_kit_marker_not_backfilled");
@@ -263,11 +263,11 @@ describe("handleConfirm — seleção de backend via env.SUBSCRIBE_BACKEND (#604
     const env: Env = { BEEHIIV_API_KEY: "bk", BEEHIIV_PUBLICATION_ID: "pub" };
     const url = new URL("https://reativar.test/?email=a@b.com");
     const res = await handleConfirm(url, env, fetchImpl);
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 303); // #8539
     assert.ok(calls.some((c) => c.url.includes("beehiiv.com") || c.url.includes("api.beehiiv")), "deveria ter tocado a Beehiiv");
   });
 
-  it('SUBSCRIBE_BACKEND: "kit" → chama o Kit, não a Beehiiv, e devolve a página de sucesso', async () => {
+  it('SUBSCRIBE_BACKEND: "kit" → chama o Kit, não a Beehiiv, e confirma com sucesso', async () => {
     const { fetchImpl, calls } = routedFetch({
       get: () => jsonRes(200, { subscribers: [] }),
       post: () => jsonRes(201, { subscriber: { state: "active" } }),
@@ -275,9 +275,11 @@ describe("handleConfirm — seleção de backend via env.SUBSCRIBE_BACKEND (#604
     const env = kitEnv();
     const url = new URL("https://reativar.test/?email=a@b.com");
     const res = await handleConfirm(url, env, fetchImpl);
-    assert.equal(res.status, 200);
-    const html = await res.text();
-    assert.match(html, /[Cc]onfirmad|[Ss]ucesso|ativad/, "deveria renderizar a página de sucesso");
+    // #8539: em vez de renderizar a página de sucesso, redireciona pra
+    // /confirmado — o que este teste protege é a SELEÇÃO de backend (só Kit
+    // foi tocado), não o corpo da resposta.
+    assert.equal(res.status, 303);
+    assert.match(res.headers.get("Location") ?? "", /\/confirmado\?via=brevo$/);
     assert.ok(calls.every((c) => c.url.startsWith("https://kit.test")));
   });
 

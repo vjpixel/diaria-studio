@@ -101,6 +101,29 @@ redirect to" do form 9897918 no painel do Kit ainda aponta pra
 `https://diar.ia.br/confirmado` (ação de painel, fora do escopo de código
 do #7737).
 
+### O segundo caminho de confirmação também termina aqui (#8539)
+
+Quem não confirma em 72h continua recebendo a diária pela Brevo (segmento
+Pending), e aquele e-mail traz o botão "Confirmar minha inscrição" apontando
+pro Worker `reativar`. Até o #8539 esse caminho terminava numa página HTML
+servida pelo próprio worker, **sem GTM e sem tag de conversão nenhuma** — ou
+seja, qualquer medição ancorada em `/confirmado` era cega pra ele.
+
+Desde o #8539 o worker responde **303 para `https://diar.ia.br/confirmado?via=brevo`**
+quando (e só quando) a ativação de fato virou `active`. Os desfechos que NÃO
+são confirmação — DOI ainda pendente (`inactive`), 2xx sem ativação real,
+e-mail ausente, token inválido — continuam com página própria e nunca
+redirecionam: disparar a conversão sem confirmação é o único erro deste fluxo
+que não dá pra corrigir depois.
+
+O `?via=brevo` faz duas coisas: troca a linha de expectativa de entrega (esse
+público já recebe a diária, então "sua primeira edição chega" seria falso) e
+distingue os dois caminhos em analytics sem depender só do custom field
+`confirmou_via` (#8438). **Cuidado ao configurar a tag de conversão:** a
+condição de URL precisa casar o path ignorando query string — se casar
+`Page URL` por igualdade exata, o `?via=brevo` apaga a conversão em vez de
+diagnosticá-la.
+
 ## Marca no corpo
 
 O plaintext da Beehiiv trazia `**diar**.**ia****.br**` — artefato da

@@ -38,6 +38,34 @@ import { renderSiteNav } from "./site-nav.ts"; // #8497: menu global
 /** URL pública canônica desta página — apex, desde #7737 (era `eia.diar.ia.br/confirmado`). */
 export const PAGE_URL = "https://diar.ia.br/confirmado";
 
+/**
+ * #8539 — valor de `?via=` com que o worker `reativar` redireciona pra cá
+ * depois de confirmar pelo botão do e-mail da Brevo.
+ *
+ * Existe por dois motivos, nessa ordem de importância:
+ *
+ *  1. **Copy.** O público desse caminho é o segmento Pending, que JÁ recebe a
+ *     diária pela Brevo — prometer "sua primeira edição chega" seria falso
+ *     justamente pra quem está confirmando uma assinatura que já entrega.
+ *  2. **Diagnóstico.** Distingue os dois caminhos de confirmação em analytics
+ *     sem depender só do custom field `confirmou_via` no Kit (#8438). Sem PII:
+ *     é um rótulo de origem, não um identificador.
+ *
+ * Valor desconhecido (ou ausente) cai no texto padrão — nunca é erro.
+ */
+export const VIA_BREVO = "brevo";
+
+/**
+ * Origem da confirmação. Union FROUXA de propósito (`string & {}` mantém a
+ * compatibilidade estrutural com `string`): esta é uma fronteira de entrada
+ * externa — o valor vem de `searchParams.get("via")` e pode ser qualquer
+ * coisa. Estreitar para `"brevo"` faria o compilador recusar exatamente o
+ * caso que a função existe para tratar com elegância. O ganho do alias é
+ * nomear o único valor reconhecido, que antes vivia só num `===` e num
+ * comentário.
+ */
+export type ConfirmadoVia = typeof VIA_BREVO | (string & {});
+
 const PAGE_TITLE = "Assinatura confirmada — diar.ia.br";
 const PAGE_DESCRIPTION = "Sua assinatura da newsletter diar.ia.br está confirmada.";
 
@@ -58,8 +86,26 @@ function renderConfirmadoStyles(): string {
   .confirmado-portas p { font-size: 14px; line-height: 1.5; color: var(--ink); opacity: 0.75; margin: 4px 0 0; }`;
 }
 
-/** Puro — sem I/O, sem env. Testável direto. */
-export function renderConfirmadoPage(): string {
+/**
+ * Linha de expectativa de entrega — varia com a origem da confirmação (#8539).
+ *
+ * @pure
+ */
+function renderTimingLine(via?: ConfirmadoVia): string {
+  // `trim()` pela mesma disciplina de `parseEmailParam` no worker `reativar`:
+  // espaço acidental na query não deveria trocar a copy em silêncio.
+  return via?.trim() === VIA_BREVO
+    ? "A diária continua chegando numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam."
+    : "Sua primeira edição chega numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam.";
+}
+
+/**
+ * Puro — sem I/O, sem env. Testável direto.
+ *
+ * @param via origem da confirmação (`?via=`), ver {@link VIA_BREVO}. Valor
+ *   ausente ou desconhecido rende a página padrão.
+ */
+export function renderConfirmadoPage(via?: ConfirmadoVia): string {
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -91,7 +137,7 @@ ${renderCuradoriaFooterStyles()}
   <main>
     <div class="wrap">
       <p class="confirmado-lede">Pronto — você já está na lista. Obrigado por confirmar.</p>
-      <p class="confirmado-timing">Sua primeira edição chega numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam.</p>
+      <p class="confirmado-timing">${renderTimingLine(via)}</p>
       <div class="confirmado-portas">
         <h2>Enquanto isso</h2>
         <ul>
@@ -121,9 +167,19 @@ ${renderCuradoriaFooterStyles()}
 `;
 }
 
-/** Embrulha `renderConfirmadoPage()` numa `Response` — sem KV, sem env. */
-export function handleConfirmadoPage(): Response {
-  return new Response(renderConfirmadoPage(), {
+/**
+ * Embrulha `renderConfirmadoPage()` numa `Response` — sem KV, sem env.
+ *
+ * @param via origem da confirmação (`?via=`), lida pelo call site a partir da
+ *   query string. Ver {@link VIA_BREVO}. O `Cache-Control` público segue
+ *   correto porque a Cloudflare inclui a query string na chave de cache POR
+ *   PADRÃO — as duas variantes viram entradas distintas. Isso é default de
+ *   zona, não invariante deste repo: uma Cache Rule que normalize ou descarte
+ *   query string neste path serviria uma variante no lugar da outra, e nada
+ *   aqui detectaria.
+ */
+export function handleConfirmadoPage(via?: ConfirmadoVia): Response {
+  return new Response(renderConfirmadoPage(via), {
     status: 200,
     headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "public, max-age=3600" },
   });

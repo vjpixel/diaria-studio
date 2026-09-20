@@ -210,7 +210,10 @@ export default {
     // 404 desnecessário. Só GET, mesmo critério do dispatch em
     // workers/poll/src/index.ts (que agora só redireciona pra cá).
     if (request.method === "GET" && reqUrl.pathname === "/confirmado") {
-      return handleConfirmadoPage();
+      // #8539: `?via=` distingue os dois caminhos de confirmação (e-mail do
+      // Kit vs. botão da Brevo) — só muda uma linha de copy, nunca gateia o
+      // acesso à página. Ausente/desconhecido = página padrão.
+      return handleConfirmadoPage(reqUrl.searchParams.get("via") ?? undefined);
     }
 
     // #8355: arquivo de chave do IndexNow — mesmo padrão de

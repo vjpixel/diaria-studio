@@ -288,14 +288,15 @@ describe("#5504 — wiring: workers/reativar/src/index.ts (handleConfirm)", () =
   it("sem META_CAPI_ACCESS_TOKEN → ativação normal, NENHUMA chamada pro Graph API da Meta", async () => {
     const { fn, metaCalls } = reativarFetch({});
     const res = await handleConfirm(url(), reativarEnv(), fn);
-    assert.equal(res.status, 200);
+    // #8539: sucesso virou 303 pra /confirmado — ver test/reativar-redirect-confirmado-8539.test.ts
+    assert.equal(res.status, 303);
     assert.equal(metaCalls.length, 0);
   });
 
-  it("com META_CAPI_ACCESS_TOKEN e ativação confirmada (active) → dispara CompleteRegistration", async () => {
+  it("com META_CAPI_ACCESS_TOKEN e ativação confirmada (active) → dispara 1 evento pra Meta", async () => {
     const { fn, metaCalls } = reativarFetch({});
     const res = await handleConfirm(url(), reativarEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), fn);
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 303); // #8539
     assert.equal(metaCalls.length, 1);
   });
 
@@ -303,25 +304,29 @@ describe("#5504 — wiring: workers/reativar/src/index.ts (handleConfirm)", () =
   // (evento de OTIMIZAÇÃO do conjunto de anúncios, disparado no SUBMIT do
   // form por workers/poll e workers/cursos). O clique de confirmação de
   // reativação é `"Reactivation"`, um evento distinto.
+  //
+  // #8539: o desfecho de sucesso virou 303 pra /confirmado — o evento
+  // continua sendo o mesmo, só a resposta mudou.
   it("REGRESSÃO (#8551): dispara Reactivation, NUNCA CompleteRegistration", async () => {
     const { fn, metaCalls, metaBodies } = reativarFetch({});
     const res = await handleConfirm(url(), reativarEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), fn);
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 303);
     assert.equal(metaCalls.length, 1);
     assert.equal(metaBodies.length, 1);
     assert.equal(metaBodies[0].data[0].event_name, "Reactivation");
     assert.notEqual(metaBodies[0].data[0].event_name, "CompleteRegistration");
   });
 
-  it("falha de rede da Meta nunca muda a página de sucesso servida pro usuário", async () => {
+  it("falha de rede da Meta nunca muda o desfecho de sucesso servido pro usuário", async () => {
     const { fn } = reativarFetch({ metaBehavior: "network_error" });
     const res = await handleConfirm(url(), reativarEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), fn);
-    assert.equal(res.status, 200);
-    const html = await res.text();
-    assert.match(html, /confirma/i);
+    // #8539: o desfecho de sucesso é o redirect; o que este teste protege é que
+    // a falha da Meta não o altera — não o HTML, que deixou de existir aqui.
+    assert.equal(res.status, 303);
+    assert.match(res.headers.get("Location") ?? "", /\/confirmado\?via=brevo$/);
   });
 
-  it("REGRESSÃO (hotfix pós-merge): com ctx.waitUntil, a página de sucesso retorna ANTES da Meta lenta resolver", async () => {
+  it("REGRESSÃO (hotfix pós-merge): com ctx.waitUntil, a resposta de sucesso retorna ANTES da Meta lenta resolver", async () => {
     const metaCalls: string[] = [];
     const fn = (async (u: string | URL, init?: RequestInit) => {
       const s = String(u);
@@ -339,7 +344,7 @@ describe("#5504 — wiring: workers/reativar/src/index.ts (handleConfirm)", () =
     const start = Date.now();
     const res = await handleConfirm(url(), reativarEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), fn, undefined, ctx);
     const elapsedMs = Date.now() - start;
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 303); // #8539
     assert.ok(elapsedMs < 400, `resposta demorou ${elapsedMs}ms — deveria retornar antes da Meta (500ms) resolver`);
     assert.equal(waited.length, 1);
     await waited[0];

@@ -143,6 +143,7 @@ import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signu
 import { resolveKitCreateState, vincularKitDoiForm, extrairSubscriberId, mensagemSubscriberIdAusente } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
 import { verifyReativarToken } from "../../../scripts/lib/shared/reativar-token.ts"; // #8194
 import { REATIVAR_CONFIRMOU_VIA_VALUE } from "../../../scripts/lib/shared/reativar-confirmou-via.ts"; // #8438
+import { PAGE_URL as CONFIRMADO_PAGE_URL, VIA_BREVO } from "../../../scripts/lib/shared/confirmado-page.ts"; // #8539
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -250,24 +251,6 @@ export interface Env {
    * (`self_confirmed_kit`/`self_confirmed_beehiiv`). Mesmo degrade gracioso
    * dos demais `KIT_*_FIELD`. */
   KIT_CONFIRMOU_VIA_FIELD?: string;
-  /**
-   * #7524 (lado OUTGOING do Kit Creator Network, follow-up do #6674) —
-   * URL do widget de recomendações da Kit (`https://{subdomínio}.kit.com/profile/recommendations`,
-   * ver `docs/kit-creator-network.md`) embutida via `<iframe>` na tela de
-   * confirmação (`renderSuccessPage`), SÓ quando `useKit` (o widget é
-   * específico do Creator Network da Kit — não faz sentido no caminho
-   * Beehiiv). **VALOR NÃO CONFIRMADO como embed real** — a Kit não expõe
-   * (MCP `kit` checado ao vivo: `get_creator_profile` só devolve
-   * `profile_url`, sem campo de embed dedicado) nenhum
-   * `embedded_recommendations_url` distinto da página hospedada
-   * `/profile/recommendations`; o valor citado no corpo da issue #7524
-   * (`https://diariabr.kit.com/recommendations`, sem `/profile/`) não bateu
-   * com o confirmado em `docs/kit-creator-network.md`. Ausente (default) =
-   * comportamento de hoje, sem widget — placeholder configurável até o
-   * editor confirmar a URL de embed real (se existir) antes de armar em
-   * produção. Ver seção 6 de `docs/beehiiv-vs-kit-migration.md`.
-   */
-  KIT_RECOMMENDATIONS_EMBED_URL?: string;
 }
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
@@ -392,6 +375,25 @@ export interface ActivateResult {
    * mesmo quando a subscription não fica `active`, ex: `status:"invalid"`).
    */
   beehiivStatus?: string | null;
+  /**
+   * #8539 — `true` quando o assinante **já estava `active` antes deste
+   * request**, e portanto ESTE clique não confirmou nada.
+   *
+   * Existe porque `beehiivStatus: "active"` sozinho não distingue duas
+   * coisas que agora têm consequências diferentes:
+   *
+   *  - a ativação ACONTECEU neste request (confirmação real), e
+   *  - o assinante já estava ativo — clique repetido, ou promovido antes por
+   *    um caminho que não é clique nenhum (`scripts/evaluate-brevo-diaria.ts`
+   *    promove por score de abertura, sem depender de clique).
+   *
+   * Enquanto o desfecho de sucesso era uma página HTML sem tag, a diferença
+   * era inócua. Desde que o sucesso redireciona pra uma página que mede
+   * conversão, tratar os dois igual faria o segundo caso disparar uma
+   * conversão de anúncio por uma confirmação que não houve — e conversão
+   * contada não tem desfazer. Só `alreadyActive !== true` redireciona.
+   */
+  alreadyActive?: boolean;
 }
 
 /**
@@ -487,7 +489,10 @@ export async function activateSubscription(
   }
 
   if (existing?.status === "active") {
-    return { ok: true, status: 200, beehiivStatus: "active" };
+    // #8539: `alreadyActive` — este request não confirmou nada (ver docstring
+    // do campo em `ActivateResult`). Sem isso o redirect de sucesso dispararia
+    // conversão pra clique repetido.
+    return { ok: true, status: 200, beehiivStatus: "active", alreadyActive: true };
   }
 
   // 1.5) guard de descadastro nativo pendente (#4538 item B) — SÓ checado
@@ -754,7 +759,8 @@ export async function activateSubscriptionKit(
       if (env.KIT_ORIGEM_CADASTRO_FIELD) {
         console.warn(JSON.stringify({ event: "reativar_kit_marker_not_backfilled", reason: "already_active" }));
       }
-      return { ok: true, status: 200, beehiivStatus: "active" };
+      // #8539: ver docstring de `alreadyActive` em `ActivateResult`.
+      return { ok: true, status: 200, beehiivStatus: "active", alreadyActive: true };
     }
   } catch (e) {
     console.error(JSON.stringify({ event: "reativar_kit_fetch_failed", step: "get", error: String(e) }));
@@ -1099,30 +1105,19 @@ a{color:#0a5}
 }
 
 /**
- * #7524 — bloco opcional do widget Kit Creator Network (lado OUTGOING),
- * embutido só quando `embedUrl` está configurado (ver docstring de
- * `KIT_RECOMMENDATIONS_EMBED_URL` no `Env`). `<iframe>` simples — a Kit não
- * documenta um script de embed dedicado pra esta página; se um dia expuser
- * um, este bloco troca de `<iframe>` pra o snippet oficial sem afetar o
- * call site (`renderSuccessPage`/`handleConfirm`).
+ * #8539 — desfecho de um clique em quem JÁ estava `active` antes do request:
+ * clique repetido, ou alguém que `scripts/evaluate-brevo-diaria.ts` já havia
+ * promovido por score de abertura, sem clique nenhum.
+ *
+ * Página própria, e NÃO o redirect de sucesso, porque a página de destino
+ * mede conversão de anúncio: mandar este caso pra lá contaria uma confirmação
+ * que não aconteceu neste clique. Para a pessoa o resultado é o mesmo (está
+ * inscrita) e o texto diz isso sem prometer nada novo.
  */
-function renderKitRecommendationsBlock(embedUrl: string): string {
-  // Escapa o atributo mesmo o valor vindo de secret (não de request): um
-  // typo com `"`/`<` no `wrangler secret put` quebraria o HTML em silêncio.
-  const src = embedUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
-  return `<div style="margin-top:32px"><iframe src="${src}" width="100%" height="480" style="border:none" title="Outras newsletters recomendadas"></iframe></div>`;
-}
-
-export function renderSuccessPage(embedUrl?: string): string {
-  // #6048 (achado ao vivo, rollout do worker cursos): esta página é
-  // compartilhada pelos dois backends (activateSubscription/Beehiiv e
-  // activateSubscriptionKit) — nomear "Beehiiv" aqui ficaria errado assim
-  // que SUBSCRIBE_BACKEND virar "kit" neste worker, e o nome do provedor
-  // não importa pro leitor de qualquer forma. Copy vendor-neutro.
-  const kitBlock = embedUrl ? renderKitRecommendationsBlock(embedUrl) : "";
+export function renderJaConfirmadoPage(): string {
   return page(
-    "Cadastro confirmado",
-    `<h1>Cadastro confirmado!</h1><p>Você vai voltar a receber a diária a partir da próxima edição.</p><p><a href="https://diar.ia.br">Voltar pra diar.ia.br</a></p>${kitBlock}`,
+    "Inscrição já confirmada",
+    `<h1>Tudo certo por aqui</h1><p>Sua inscrição já estava confirmada — não precisa fazer mais nada. A diária continua chegando de segunda a sexta.</p><p><a href="https://diar.ia.br">Voltar pra diar.ia.br</a></p>`,
   );
 }
 
@@ -1253,6 +1248,48 @@ function htmlResponse(html: string, status: number): Response {
   });
 }
 
+/**
+ * #8539 — destino do redirect de SUCESSO: a página de confirmação do apex,
+ * com `?via=brevo`.
+ *
+ * Fonte única da URL: `PAGE_URL` de `scripts/lib/shared/confirmado-page.ts`,
+ * o mesmo constante que `workers/poll/src/confirmado.ts` usa — nunca uma
+ * string literal aqui, senão o rename da #8554 deixa este worker apontando
+ * pro endereço velho e a confirmação passa a depender do 301.
+ */
+export const CONFIRMADO_REDIRECT_URL = (() => {
+  // `URL`/`searchParams` e não concatenação: hoje `PAGE_URL` não tem query
+  // string, mas se um dia tiver, `${...}?via=` produziria `?a=b?via=brevo`
+  // em silêncio. O objeto fecha essa classe de erro de uma vez.
+  const u = new URL(CONFIRMADO_PAGE_URL);
+  u.searchParams.set("via", VIA_BREVO);
+  return u.toString();
+})();
+
+/**
+ * Redirect 303 pra página de confirmação instrumentada (#8539).
+ *
+ * **303 e não 302**: o método do request original é GET e o 303 diz
+ * explicitamente "faça GET no destino", sem a ambiguidade histórica do 302.
+ *
+ * `no-store` porque a confirmação não é idempotente do ponto de vista de
+ * medição: um redirect cacheado pelo navegador ou por um intermediário faria
+ * o clique seguinte pular o worker inteiro — a pessoa veria a página de
+ * sucesso sem que a ativação tivesse acontecido, que é exatamente o
+ * fail-safe que `renderNotConfirmedPage`/`renderConfirmacaoEnviadaPage`
+ * existem pra preservar.
+ */
+function confirmadoRedirectResponse(): Response {
+  return new Response(null, {
+    status: 303,
+    headers: {
+      ...CORS_HEADERS,
+      Location: CONFIRMADO_REDIRECT_URL,
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+    },
+  });
+}
+
 export async function handleConfirm(
   url: URL,
   env: Env,
@@ -1351,11 +1388,32 @@ export async function handleConfirm(
     } else {
       await sendEvent;
     }
-    // #7524: widget Kit Creator Network (outgoing) só faz sentido no
-    // caminho Kit — `useKit` já resolvido acima, `KIT_RECOMMENDATIONS_EMBED_URL`
-    // ausente (default) mantém a página idêntica ao comportamento pré-#7524.
-    const embedUrl = useKit ? env.KIT_RECOMMENDATIONS_EMBED_URL : undefined;
-    return htmlResponse(renderSuccessPage(embedUrl), 200);
+    // #8539: em vez de servir a página inline, redireciona pra página de
+    // confirmação do apex — que carrega o GTM (`renderAnalyticsHead`) e por
+    // isso é onde a conversão de CONFIRMAÇÃO pode ser medida. Antes disso,
+    // quem confirmava por aqui era invisível pras plataformas de anúncio,
+    // porque `page()` deste worker nunca carregou tag nenhuma.
+    //
+    // O redirect acontece DEPOIS do `unlinkReativarFromBrevoList` (await
+    // acima) e DEPOIS de agendar o CAPI — o `ctx.waitUntil()` mantém o envio
+    // vivo além da resposta, então redirecionar não o cancela.
+    //
+    // Só este ramo redireciona — ver o invariante completo na docstring de
+    // `confirmadoRedirectResponse`. Todos os demais desfechos continuam com
+    // página própria: `renderConfirmacaoEnviadaPage` (`inactive`, o desfecho
+    // normal do DOI), `renderNotConfirmedPage` (2xx sem ativação real),
+    // `renderNativeUnsubscribePage`, `renderMissingEmailPage`,
+    // `renderInvalidEmailPage` e `renderErrorPage`.
+    //
+    // E `active` sozinho não basta: quem JÁ estava ativo antes deste request
+    // (clique repetido, ou promovido por score em
+    // `scripts/evaluate-brevo-diaria.ts` sem clique nenhum) não confirmou
+    // nada AGORA, e mandá-lo pra página instrumentada contaria uma conversão
+    // por um evento que não houve. Ver `alreadyActive` em `ActivateResult`.
+    if (result.alreadyActive) {
+      return htmlResponse(renderJaConfirmadoPage(), 200);
+    }
+    return confirmadoRedirectResponse();
   }
   return htmlResponse(renderNotConfirmedPage(), 200);
 }
