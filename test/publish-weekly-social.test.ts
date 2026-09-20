@@ -1883,7 +1883,7 @@ describe("main(): dispatch mockado", () => {
       // `{ mode: "fill" }`, que era o default pré-#8480).
       assert.equal(receivedLayouts.length, 2);
       for (const layout of receivedLayouts) {
-        assert.deepEqual(layout, { mode: "fixed", size: 84 });
+        assert.deepEqual(layout, { mode: "fixed", size: 84, charWidthRatio: 0.62 });
       }
     });
 
