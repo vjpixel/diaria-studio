@@ -26,6 +26,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { isJevFeatureOn } from "./jev-profile.ts";
 import { resolve } from "node:path";
 import { askJevBatch, type JevChoiceAnswer, type JevNoulAnswer } from "./jev.ts";
 import { ACTOR_BRAZIL_8416_ACTOR, ACTOR_BRAZIL_8416_BRAZIL } from "./jev-questions.ts";
@@ -71,7 +72,7 @@ export function readJevFeaturesConfig(configPath: string): JevFeaturesConfig {
  */
 export function isActorBrazilEnabled(configPath: string): boolean {
   if (process.env.JEV_FORCE_ACTOR_BRAZIL === "1") return true;
-  return readJevFeaturesConfig(configPath).actor_brazil === true;
+  return isJevFeatureOn(readJevFeaturesConfig(configPath).actor_brazil);
 }
 
 // ---------------------------------------------------------------------------
