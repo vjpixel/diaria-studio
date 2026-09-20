@@ -23,6 +23,7 @@ import {
   buildOverlaySvg,
   overlayFittingFontSize,
   overlayTitleOverflows,
+  overlayWrapLines,
   computeCarouselTitleFontSize,
   editionDateLabel,
   RATIOS,
@@ -358,6 +359,26 @@ describe("overlayTitleOverflows (#8480, 260919 — cards internos do carrossel s
     const title = "Um título de notícia consideravelmente mais longo que o normal pra este teste de largura";
     assert.equal(overlayTitleOverflows(title, 88), true);
     assert.equal(overlayTitleOverflows(title, 40), false);
+  });
+});
+
+describe("título diário de 32 chars quebra em 2 linhas que cabem (#8589)", () => {
+  const AVAIL = RATIOS["4x5"].w - 2 * 60;
+  it("'Claude ajudou a invadir a OpenAI' gera 2 linhas e não estoura a 62px", () => {
+    const t = "Claude ajudou a invadir a OpenAI";
+    assert.equal(t.length, 32);
+    const { lines, fits } = overlayWrapLines(t, AVAIL);
+    assert.equal(fits, true);
+    assert.equal(lines.length, 2);
+    assert.equal(overlayTitleOverflows(t, DAILY_CAROUSEL_BODY_SIZE), false);
+    assert.equal(buildOverlaySvg(t).match(/<text [^>]*font-weight="700"/g)?.length, 2);
+  });
+  it("título que já quebrava em 2 linhas fica igual", () => {
+    const t = "Freelancers que usam IA ganham mais";
+    assert.deepEqual(overlayWrapLines(t, AVAIL).lines, wrapTitle(t, Math.floor(AVAIL / 29)));
+  });
+  it("título sem quebra que caiba falha com mensagem clara no card diário", () => {
+    assert.throws(() => buildOverlaySvg("Superconstitucionalissimamente inconstitucionalizavelmente"), /reescreva/);
   });
 });
 

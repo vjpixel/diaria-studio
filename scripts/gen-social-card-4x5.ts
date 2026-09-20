@@ -211,6 +211,27 @@ export const WEEKLY_OVERLAY_WRAP = { divisor: 38, ratio: 0.66 } as const;
 export type OverlayWrap = { readonly divisor: number; readonly ratio: number };
 
 /**
+ * Quebra de título do overlay (#8589). Card semanal (`wrap` explícito): inalterado.
+ * Card diário: a regra de quebra (divisor 29, ~33 chars) deixa passar título de
+ * 1 linha que estoura a largura no piso de 62px (~26 chars). Se a quebra normal
+ * estoura, tenta o limite que cabe a 62px (balanceando em 2+ linhas); se nem
+ * assim cabe, retorna `fits: false` (política #6078: reescrever, nunca cortar).
+ */
+export function overlayWrapLines(
+  title: string,
+  availableWidth: number,
+  wrap?: OverlayWrap,
+): { lines: string[]; fits: boolean } {
+  const w = wrap ?? { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO };
+  const lines = wrapTitle(title, Math.floor(availableWidth / w.divisor));
+  if (wrap) return { lines, fits: true };
+  const fitsAt = (ls: string[]) => ls.every((l) => l.length * DAILY_CAROUSEL_BODY_SIZE * w.ratio <= availableWidth);
+  if (fitsAt(lines)) return { lines, fits: true };
+  const tight = wrapTitle(title, Math.floor(availableWidth / (DAILY_CAROUSEL_BODY_SIZE * w.ratio)));
+  return tight.length <= 2 && fitsAt(tight) ? { lines: tight, fits: true } : { lines, fits: false };
+}
+
+/**
  * Pure: fórmula de tamanho de fonte do overlay de notícia — wrap via
  * `wrapTitle` (divisor `OVERLAY_CHARS_PER_LINE_DIVISOR`), tamanho
  * `available/(longest*OVERLAY_WIDTH_FIT_RATIO)` clamped
@@ -245,7 +266,7 @@ export function overlayFittingFontSize(
   availableWidth: number,
   wrap: OverlayWrap = { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO },
 ): number {
-  const lines = wrapTitle(title, Math.floor(availableWidth / wrap.divisor));
+  const { lines } = overlayWrapLines(title, availableWidth, wrap === WEEKLY_OVERLAY_WRAP ? wrap : undefined);
   const longest = Math.max(...lines.map((l) => l.length));
   return Math.max(DAILY_CAROUSEL_BODY_SIZE, Math.min(88, Math.floor(availableWidth / (longest * wrap.ratio))));
 }
@@ -280,7 +301,7 @@ export function overlayTitleOverflows(
   availableWidth: number = W - PAD * 2,
   wrap: OverlayWrap = { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO },
 ): boolean {
-  const lines = wrapTitle(title, Math.floor(availableWidth / wrap.divisor));
+  const lines = overlayWrapLines(title, availableWidth, wrap === WEEKLY_OVERLAY_WRAP ? wrap : undefined).lines;
   return lines.some((line) => line.length * fontSize * wrap.ratio > availableWidth);
 }
 
@@ -308,7 +329,13 @@ export function buildOverlaySvg(
 ): string {
   const { w: CW, h: CH } = dims;
   const available = CW - PAD * 2;
-  const lines = wrapTitle(title, Math.floor(available / (wrap?.divisor ?? OVERLAY_CHARS_PER_LINE_DIVISOR)));
+  const wrapped = overlayWrapLines(title, available, wrap);
+  if (!wrapped.fits && fontSizeOverride === undefined) {
+    throw new Error(
+      `Título não cabe no card a ${DAILY_CAROUSEL_BODY_SIZE}px em nenhuma quebra: "${title}" — reescreva o título (mais curto), não é cortado (#8589/#6078).`,
+    );
+  }
+  const lines = wrapped.lines;
   const size = fontSizeOverride ?? overlayFittingFontSize(title, available, wrap);
   const lineGap = Math.round(size * 1.18);
   // Ancorado na BASE: o bloco cresce pra cima conforme o número de linhas, então
