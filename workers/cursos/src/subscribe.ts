@@ -17,7 +17,12 @@ import { json } from "./index";
 import { checkKvRateLimit } from "../../../scripts/lib/shared/rate-limit.ts";
 import { CURSOS_GATE_INLINE_UTM } from "../../../scripts/lib/shared/utm-registry.ts"; // #4295 fold-in do drift (literais locais antes)
 import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
-import { sendCompleteRegistrationEvent, logMetaCapiSendResult, extractMetaCapiClientSignals } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388
+import {
+  sendCompleteRegistrationEvent,
+  logMetaCapiSendResult,
+  extractMetaCapiClientSignals,
+  resolveCompleteRegistrationDedup,
+} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1), #8553
 import { resolveKitCreateState, vincularKitDoiForm, extrairSubscriberId, mensagemSubscriberIdAusente } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
@@ -508,9 +513,15 @@ export async function handleGateSubscribe(
   // `click_id` do #8003. Extração pura, nunca lança; campo ausente é
   // OMITIDO, nunca string vazia.
   const clientSignals = extractMetaCapiClientSignals(request.headers, { clickId: origin.clickId });
+  // #8572: mesmo par dedup do worker `poll` — resolvido uma vez, usado nos
+  // dois lados (CAPI via `eventTimeSeconds`, browser via `event_id` no corpo
+  // da resposta). Ver o comentário equivalente em `workers/poll/src/subscribe.ts`.
+  const dedup = env.META_CAPI_ACCESS_TOKEN
+    ? await resolveCompleteRegistrationDedup(v.email).catch(() => null)
+    : null;
   const sendEvent = logMetaCapiSendResult(
     sendCompleteRegistrationEvent(
-      { email: v.email, eventSourceUrl: request.url, clientSignals },
+      { email: v.email, eventSourceUrl: request.url, eventTimeSeconds: dedup?.eventTimeSeconds, clientSignals },
       { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
     ),
     "cursos",
@@ -521,5 +532,5 @@ export async function handleGateSubscribe(
     await sendEvent;
   }
 
-  return json({ ok: true }, 200, env, { "Set-Cookie": setCookie });
+  return json(dedup ? { ok: true, event_id: dedup.eventId } : { ok: true }, 200, env, { "Set-Cookie": setCookie });
 }

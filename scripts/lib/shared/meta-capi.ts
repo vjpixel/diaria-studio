@@ -121,6 +121,53 @@ export async function computeCompleteRegistrationEventId(
 }
 
 /**
+ * #8572 — o par (`event_id`, `event_time`) que os DOIS lados da dedup
+ * precisam compartilhar.
+ *
+ * O `event_id` determinístico existe desde o #5504 justamente pra permitir
+ * que um pixel client-side dedupasse contra a CAPI (ver docstring do
+ * módulo), mas o lado do browser nunca recebeu o id: `pushSignupConversionEventJs`
+ * empurrava só o e-mail pro `dataLayer`, e a tag do Meta no GTM não tinha
+ * de onde ler um. Medido em 20/09/2026: a Meta contava 2,4x os cadastros
+ * reais, com as duas séries (`WEB_ONLY` e `SERVER_ONLY`) somando no
+ * dataset — sem chave compartilhada, não existe dedup.
+ *
+ * Calcular o hash NO BROWSER (SHA-256 via `crypto.subtle`, mesma fórmula)
+ * foi descartado: duplicaria a fórmula em dois lugares e uma divergência
+ * silenciosa entre elas quebraria a dedup de novo, sem sinal nenhum. Em vez
+ * disso o handler do cadastro — que já vai disparar a CAPI — resolve o par
+ * AQUI, devolve `eventId` no corpo da resposta e o browser só repassa.
+ *
+ * **Invariante que este tipo existe pra proteger:** quem consome `eventId`
+ * PRECISA repassar `eventTimeSeconds` a `sendCompleteRegistrationEvent`. O
+ * id é derivado do DIA UTC do `event_time`; deixar o builder calcular o
+ * seu próprio `Date.now()` faz os dois lados divergirem na virada do dia
+ * UTC (21:00 BRT) — a janela em que a dedup silenciosamente pararia de
+ * funcionar todo dia.
+ */
+export interface CompleteRegistrationDedup {
+  /** Vai pro `eventID` do `fbq` no browser, via `dataLayer`. */
+  eventId: string;
+  /** PRECISA ser repassado a `sendCompleteRegistrationEvent` — ver acima. */
+  eventTimeSeconds: number;
+}
+
+/**
+ * Resolve o par dedup de um cadastro. Default de `eventTimeSeconds`: agora,
+ * idêntico ao default de `buildCompleteRegistrationEvent` — mas o ponto é
+ * justamente FIXAR o valor uma vez e passá-lo adiante, nunca deixar os dois
+ * lados chamarem `Date.now()` por conta própria.
+ *
+ * @pure exceto pelo hash assíncrono (Web Crypto).
+ */
+export async function resolveCompleteRegistrationDedup(
+  email: string,
+  eventTimeSeconds: number = Math.floor(Date.now() / 1000),
+): Promise<CompleteRegistrationDedup> {
+  return { eventId: await computeCompleteRegistrationEventId(email, eventTimeSeconds), eventTimeSeconds };
+}
+
+/**
  * #8388 item 1 — `custom_data.value`/`custom_data.currency` do
  * `CompleteRegistration`.
  *

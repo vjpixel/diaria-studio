@@ -75,6 +75,34 @@ export function renderAnalyticsHead(): string {
 export const SIGNUP_CONVERSION_EVENT_NAME = "signedUp";
 
 /**
+ * #8572 — chave, dentro de `eventProps`, que carrega o `event_id` da Meta
+ * CAPI pro `dataLayer`.
+ *
+ * É o NOME DO CONTRATO com o GTM: a variável de camada de dados que a tag
+ * do Meta Pixel lê no campo "Event ID" precisa ser exatamente
+ * `eventProps.event_id`. Trocar esta string sem repontar a variável no
+ * painel quebra a dedup em silêncio — a tag volta a disparar sem `eventID`
+ * e a Meta reconta o cadastro que a CAPI já mandou (foi esse exato estado
+ * que a #8572 mediu: 2,4x).
+ *
+ * `event_id` (snake_case) e não `eventId`: é o nome do campo na CAPI, e a
+ * variável do GTM fica legível ao lado do payload server-side na hora de
+ * conferir os dois no Events Manager.
+ *
+ * **Superfície que isto amplia, de propósito:** o valor é o SHA-256 de
+ * (e-mail normalizado, dia UTC) e, a partir do #8572, deixa de circular só
+ * server→Meta e passa a viver no `window.dataLayer` — legível por QUALQUER
+ * tag do container, não só a do Meta. O que limita o dano: (a) é um hash
+ * distinto do `em` que vai pra Meta (`sha256(email)` puro), e a fórmula com
+ * prefixo não permite derivar um do outro; (b) o servidor só o devolve pro
+ * e-mail que o próprio chamador submeteu, então não há lookup de e-mail
+ * alheio. Ainda assim é um identificador estável por (pessoa, dia) exposto
+ * a terceiros do container — se um dia entrar um vendor não confiável no
+ * `GTM-TC8C65ZN`, este é um dos campos a reavaliar.
+ */
+export const SIGNUP_CONVERSION_EVENT_ID_KEY = "event_id";
+
+/**
  * Snippet JS que empurra o evento de conversão pro `dataLayer` no SUCESSO
  * (200 + `ok`) de um cadastro (#7358) — o gatilho vivo das tags de conversão
  * (Google Ads/Meta/Microsoft) era Form Submission por RegEx dos Form IDs do
@@ -96,9 +124,25 @@ export const SIGNUP_CONVERSION_EVENT_NAME = "signedUp";
  * terceiro hostil) nunca vaze pro `.catch()` genérico do form — que foi
  * escrito só pra erro de rede — e faça o usuário ver "Erro de conexão" com o
  * cadastro já tendo sido feito com sucesso no servidor.
+ *
+ * `eventIdExpr` (#8572) é outra expressão JS, resolvida no mesmo escopo, que
+ * dá o `event_id` que o handler do cadastro acabou de usar no evento
+ * server-side (ele vem no corpo da resposta 200 — `r.body.event_id` /
+ * `r.data.event_id`). É o que permite a Meta deduplicar o pixel contra a
+ * CAPI; sem ele a Meta conta o MESMO cadastro duas vezes, medido em
+ * 20/09/2026 como 2,4x os cadastros reais. **Obrigatório de propósito**: o
+ * compilador é o único guard que impede um form novo de nascer sem ele —
+ * um `event_id` faltando não quebra nada visível, só volta a inflar o
+ * painel em silêncio. Valor `undefined` (CAPI não configurada, resposta sem
+ * o campo) é degradação limpa — mas não porque a chave suma: isto é um
+ * objeto-literal JS, não um `JSON.stringify`, então `event_id: undefined`
+ * CONTINUA no objeto. O que resolve é o outro lado: uma variável de camada
+ * de dados do GTM apontada pra uma chave de valor `undefined` se comporta
+ * como não-setada, o campo Event ID fica vazio e a tag dispara sem
+ * `eventID`, exatamente como antes desta issue.
  */
-export function pushSignupConversionEventJs(emailExpr: string): string {
-  return `try { window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: ${JSON.stringify(SIGNUP_CONVERSION_EVENT_NAME)}, eventProps: { email: ${emailExpr} } }); } catch (e) {}`;
+export function pushSignupConversionEventJs(emailExpr: string, eventIdExpr: string): string {
+  return `try { window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: ${JSON.stringify(SIGNUP_CONVERSION_EVENT_NAME)}, eventProps: { email: ${emailExpr}, ${SIGNUP_CONVERSION_EVENT_ID_KEY}: ${eventIdExpr} } }); } catch (e) {}`;
 }
 
 export interface SeoMetaOptions {

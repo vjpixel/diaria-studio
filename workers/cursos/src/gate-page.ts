@@ -138,7 +138,7 @@ ${renderAnalyticsHead()}
           // #7358: evento de conversão pro GTM — só aqui, no sucesso do
           // CADASTRO (/gate/subscribe), nunca no ramo 'verify' acima
           // (assinante já ativo confirmando e-mail não é conversão nova).
-          ${pushSignupConversionEventJs("email")}
+          ${pushSignupConversionEventJs("email", "r.data.event_id")}
           setMsg('Assinatura confirmada! Redirecionando…', 'ok'); window.location.href = '/'; return;
         }
         if (r.status === 429) { setMsg('Muitas tentativas. Tente novamente em alguns minutos.', 'error'); return; }

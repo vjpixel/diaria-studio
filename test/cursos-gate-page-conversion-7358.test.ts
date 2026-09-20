@@ -119,9 +119,12 @@ describe("gate-page.ts — evento de conversão só no CADASTRO, nunca na VERIFI
         // 1ª submissão: /gate/verify não encontra assinatura ativa.
         return Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: false }) });
       }
-      // 2ª submissão: /gate/subscribe, já em modo cadastro.
+      // 2ª submissão: /gate/subscribe, já em modo cadastro. O `event_id` é o
+      // que o handler devolve depois de mandar o evento pra CAPI (#8572) —
+      // sem ele no `dataLayer`, a tag do Meta dispara sem `eventID` e a Meta
+      // reconta o cadastro que a CAPI já contou.
       assert.equal(body.optin, true);
-      return Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) });
+      return Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true, event_id: "evt-abc" }) });
     });
     email.value = "novo@example.com";
     submit();
@@ -133,7 +136,9 @@ describe("gate-page.ts — evento de conversão só no CADASTRO, nunca na VERIFI
     await flush();
     assert.equal(call, 2);
     assert.ok(Array.isArray(win.dataLayer));
-    assert.deepEqual(win.dataLayer, [{ event: "signedUp", eventProps: { email: "novo@example.com" } }]);
+    assert.deepEqual(win.dataLayer, [
+      { event: "signedUp", eventProps: { email: "novo@example.com", event_id: "evt-abc" } },
+    ]);
   });
 
   it("modo subscribe sem optin marcado: NÃO chama /gate/subscribe nem empurra dataLayer", async () => {
