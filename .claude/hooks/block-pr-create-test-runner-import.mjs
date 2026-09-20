@@ -35,7 +35,8 @@
 //   - repo git não resolvido → fail-OPEN (nada pra checar).
 //   - `test/` ausente do repo/worktree (nunca deveria acontecer, mas
 //     `readdirSync` lançando não pode travar `gh pr create` legítimo) →
-//     fail-OPEN, logado.
+//     fail-OPEN (sem log dedicado — cenário sem sinal de erro real, ao
+//     contrário do `tsc` ausente do guard de typecheck).
 //   - checagem rodou e achou violação → fail-CLOSED, mensagem nomeando
 //     arquivo(s) + correção — mesmo texto do guard de CI (#7807).
 //   - checagem rodou limpa → segue o fluxo normal de permissão.
@@ -45,7 +46,8 @@
 // bloquear.
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   isGhPrCreateCommand,
@@ -109,7 +111,7 @@ if (
       const command = payload.tool_input?.command;
       if (!isGhPrCreateCommand(command)) return;
 
-      const hookDir = new URL(".", import.meta.url).pathname;
+      const hookDir = dirname(fileURLToPath(import.meta.url));
       const cwd = resolveGitRoot(resolveRepoRootCandidates(payload.cwd, hookDir, command));
       if (cwd === null) return; // fail-open: nenhum candidato é repo git
 
