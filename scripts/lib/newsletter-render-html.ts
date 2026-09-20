@@ -979,7 +979,9 @@ export function renderIntroCallout(
     // #8119: box de recomendação de leitura usa SEMPRE o rótulo fixo — nunca
     // o texto literal do snippet (linha de título variável, ou o parágrafo
     // do livro quando a linha está ausente e vira `paras[0]` por acidente).
-    const title = bookRecommendation.isBookRecommendation
+    const title = bookRecommendation.isBookRecommendation && !bookRecommendation.explicitTitleLine
+      ? paras[0]
+      : bookRecommendation.isBookRecommendation
       ? BOOK_RECOMMENDATION_TITLE
       : ceremony
       ? stripCeremonyMarker(paras[0])
