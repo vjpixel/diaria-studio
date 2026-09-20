@@ -37,7 +37,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { TIPO_TO_EFEITO, EDICAO_EFEITOS, isTipoValido, type EdicaoEfeito } from "./lib/ads-rolling-window.ts";
+import { TIPO_TO_EFEITO, EDICAO_EFEITOS, isTipoValido, TIPOS_VALIDOS, type EdicaoEfeito } from "./lib/ads-rolling-window.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_EDICOES_JSONL_PATH = resolve(ROOT, "data/aquisicao/teste-2608/edicoes.jsonl");
@@ -88,7 +88,7 @@ export function validateRegistrarEdicaoInput(input: RegistrarEdicaoInput, nowIso
     errors.push(
       `--tipo "${tipo}" não está no conjunto fechado de tipos válidos (TIPO_TO_EFEITO em ads-rolling-window.ts). ` +
         `Tipo novo exige um PR adicionando uma entrada na tabela, não um valor de texto livre na CLI (#8531). ` +
-        `Válidos: ${Object.keys(TIPO_TO_EFEITO).join(", ")}.`,
+        `Válidos: ${TIPOS_VALIDOS.join(", ")}.`,
     );
   } else if (tipo) {
     const derivado = TIPO_TO_EFEITO[tipo];
