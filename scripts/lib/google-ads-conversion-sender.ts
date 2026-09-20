@@ -118,28 +118,53 @@ export async function sendConversionPayload(opts: {
 /**
  * Extrai os índices (0-based, na ordem de `payload.conversions`) das
  * conversões que o Google recusou dentro de um `partialFailureError`.
- * Devolve `null` quando há `partialFailureError` mas os índices não puderam
- * ser lidos (quem chama deve tratar como "falha total, nada confirmado");
- * `[]` quando NÃO há erro parcial. Best-effort sobre o formato REST
- * (`details[].errors[].location.fieldPathElements[0].index`). @pure
+ * `[]` quando NÃO há erro parcial. `null` quando há `partialFailureError` mas
+ * os índices não puderam ser lidos — inclusive se QUALQUER erro vier sem
+ * índice (falha mista = tratar como falha total, nada confirmado). @pure
  */
 export function extractPartialFailureIndexes(response: unknown): number[] | null {
   const r = response as { partialFailureError?: unknown } | null;
   if (!r || typeof r !== "object" || !r.partialFailureError) return [];
   const err = r.partialFailureError as { details?: unknown };
   const indexes = new Set<number>();
+  let unindexed = false;
+  const details = Array.isArray(err.details) ? err.details : [];
+  for (const d of details) {
+    const errors = (d as { errors?: unknown })?.errors;
+    if (!Array.isArray(errors)) {
+      unindexed = true;
+      continue;
+    }
+    for (const e of errors) {
+      const elements = (e as { location?: { fieldPathElements?: unknown } })?.location?.fieldPathElements;
+      const first = Array.isArray(elements)
+        ? (elements.find((el) => (el as { fieldName?: string })?.fieldName === "conversions") as { index?: unknown } | undefined)
+        : undefined;
+      if (first && typeof first.index === "number") indexes.add(first.index);
+      else unindexed = true;
+    }
+  }
+  if (unindexed || indexes.size === 0) return null;
+  return [...indexes].sort((a, b) => a - b);
+}
+
+/** Mensagens legíveis do `partialFailureError` (message + errorCode), pro
+ *  resumo/log. Nunca lança. @pure */
+export function extractPartialFailureMessages(response: unknown): string[] {
+  const r = response as { partialFailureError?: { message?: unknown; details?: unknown } } | null;
+  const err = r?.partialFailureError;
+  if (!err) return [];
+  const out = new Set<string>();
+  if (typeof err.message === "string" && err.message) out.add(err.message);
   const details = Array.isArray(err.details) ? err.details : [];
   for (const d of details) {
     const errors = (d as { errors?: unknown })?.errors;
     if (!Array.isArray(errors)) continue;
     for (const e of errors) {
-      const elements = (e as { location?: { fieldPathElements?: unknown } })?.location?.fieldPathElements;
-      if (!Array.isArray(elements)) continue;
-      const first = elements.find((el) => (el as { fieldName?: string })?.fieldName === "conversions") as
-        | { index?: unknown }
-        | undefined;
-      if (first && typeof first.index === "number") indexes.add(first.index);
+      const x = e as { message?: unknown; errorCode?: unknown };
+      const code = x.errorCode ? JSON.stringify(x.errorCode) : "";
+      out.add([typeof x.message === "string" ? x.message : "", code].filter(Boolean).join(" "));
     }
   }
-  return indexes.size > 0 ? [...indexes].sort((a, b) => a - b) : null;
+  return [...out].filter(Boolean).slice(0, 10);
 }

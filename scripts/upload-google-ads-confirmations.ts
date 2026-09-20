@@ -12,9 +12,9 @@
  *
  * Criar (ou reativar) a ação de conversão de CONFIRMAÇÃO no Google Ads:
  * tipo `UPLOAD_CLICKS`, categoria `SIGNUP`, SECUNDÁRIA (`primary_for_goal =
- * false`), distinta da `7754941100` (cadastro). A `7762768203` ("Assinatura
- * Confirmada (upload ECL - #7770)") existe `REMOVED` — recriar ou reativar.
- * O id resultante vai em `--conversion-action-id` ou em
+ * false`), distinta da ação de CADASTRO. Existiu uma de confirmação
+ * ("Assinatura Confirmada (upload ECL - #7770)") hoje `REMOVED` — recriar ou
+ * reativar. O id resultante vai em `--conversion-action-id` ou em
  * `GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID` (Doppler). Sem default.
  *
  * ## Segurança
@@ -28,6 +28,10 @@
  * `scripts/subscriber-state-snapshot.ts` dentro do lookback (default 7 dias,
  * `--lookback-days`). Sem base o script FALHA (exit 1) em vez de assumir
  * "ninguém confirmou".
+ *
+ * Exit code: 0 = rodada limpa (inclui dry-run e "nada a enviar"); 1 = qualquer
+ * erro, snapshot base ausente/vazio/suspeito, índice ilegível, ou
+ * `failed > 0` / `error` no resumo (recusa do Google ou falha de envio).
  *
  * Uso:
  *   npx tsx scripts/upload-google-ads-confirmations.ts --conversion-action-id 123 --customer-id 2369219639
@@ -55,7 +59,9 @@ import {
 import { resolveActionResourceName, sendConversionPayload } from "./lib/google-ads-conversion-sender.ts";
 import {
   DEFAULT_LOOKBACK_DAYS,
+  assessBaseSnapshot,
   pickBaseSnapshotDate,
+  type ConfirmationRosterEntry,
   runConfirmationBatch,
 } from "./lib/google-ads-confirmation-batch.ts";
 
@@ -69,7 +75,16 @@ function todayBrtDayKey(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 }
 
-export async function main(argv: string[] = process.argv.slice(2), fetchFn: typeof fetch = fetch): Promise<number> {
+async function defaultListRoster(): Promise<ConfirmationRosterEntry[]> {
+  const config = loadKitConfig(LOG_PREFIX);
+  return listAllKitSubscribers(config, { status: "all" });
+}
+
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  fetchFn: typeof fetch = fetch,
+  listRoster: () => Promise<ConfirmationRosterEntry[]> = defaultListRoster,
+): Promise<number> {
   loadProjectEnv(ROOT);
 
   const send = hasFlag(argv, "send") && !hasFlag(argv, "dry-run");
@@ -92,7 +107,7 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   } else if (send) {
     console.error(
       `${LOG_PREFIX} ✖ --send exige --conversion-action-id (ou GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID): a ação de ` +
-        "CONFIRMAÇÃO (UPLOAD_CLICKS, secundária) ainda precisa ser criada pelo editor — NÃO reusar a de cadastro (7754941100).",
+        "CONFIRMAÇÃO (UPLOAD_CLICKS, secundária) ainda precisa ser criada pelo editor — NÃO reusar a ação de cadastro.",
     );
     return 1;
   } else {
@@ -111,22 +126,34 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   const baseSnapshot = readSubscriberStateSnapshotFile(snapshotRoot, baseDate);
   console.error(`${LOG_PREFIX} base = snapshot ${baseDate} (${baseSnapshot.length} linha(s)).`);
 
-  const config = loadKitConfig(LOG_PREFIX);
-  const roster = await listAllKitSubscribers(config, { status: "all" });
+  const roster = await listRoster();
   console.error(`${LOG_PREFIX} roster Kit: ${roster.length} assinante(s).`);
 
-  const summary = await runConfirmationBatch({
-    roster,
-    baseSnapshot,
-    indexPath,
-    conversionActionResourceName,
-    dryRun,
-    sendFn: (payload) => sendConversionPayload({ fetchFn, env: process.env, customerId, payload }),
-  });
+  const baseProblem = assessBaseSnapshot(baseSnapshot.length, roster.length);
+  if (baseProblem) {
+    console.error(`${LOG_PREFIX} ✖ ${baseProblem} (${baseDate}) — abortando em vez de assumir "ninguém confirmou".`);
+    return 1;
+  }
+
+  let summary;
+  try {
+    summary = await runConfirmationBatch({
+      roster,
+      baseSnapshot,
+      baseDate,
+      indexPath,
+      conversionActionResourceName,
+      dryRun,
+      sendFn: (payload) => sendConversionPayload({ fetchFn, env: process.env, customerId, payload }),
+    });
+  } catch (e) {
+    console.error(`${LOG_PREFIX} ✖ ${e instanceof Error ? e.message : e}`);
+    return 1;
+  }
 
   console.log(JSON.stringify(summary, null, 2));
   if (dryRun) console.error(`${LOG_PREFIX} DRY-RUN — nada foi enviado. Rode com --send para enviar.`);
-  return summary.error && summary.sent === 0 && summary.toSend > 0 ? 1 : 0;
+  return summary.failed > 0 || summary.error ? 1 : 0;
 }
 
 if (isMainModule(import.meta.url)) {
