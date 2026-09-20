@@ -226,8 +226,7 @@ export type OverlayWrap = { readonly divisor: number; readonly ratio: number };
  * palavras, wrap em 1 linha) caía nesse piso, violando a regra editorial "a
  * fonte do título deve ser sempre igual ou maior que a fonte do texto".
  * Título ≤52 chars (regra editorial de destaque) sempre cabe em 1-2 linhas
- * a 62px+ — `buildOverlaySvg` (não `buildCardSvg`, que é layout "band"
- * separado, não usado pela capa diária) ancora o bloco de título na BASE do
+ * a 62px+ — `buildOverlaySvg` ancora o bloco de título na BASE do
  * card (`baseY = CH - 150`) e cresce PRA CIMA conforme o número de linhas,
  * sem um clamp de altura — a imagem inteira dá espaço de sobra. O risco real
  * de overflow do piso é de LARGURA, não altura: coberto pelo teste de
