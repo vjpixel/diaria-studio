@@ -17,7 +17,27 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { main } from "../scripts/run-edition-stages.ts";
-import { JEV_PROFILE_ENV } from "../scripts/lib/jev-profile.ts";
+import { JEV_PROFILE_ENV, jevBArmGuardWarning } from "../scripts/lib/jev-profile.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
+
+describe("#8564: guard braço B (jevBArmGuardWarning)", () => {
+  it("cobre sem marcador / artefato ausente / profile_env errado / ok", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-jev-guard-"));
+    try {
+      assert.equal(jevBArmGuardWarning(dir), null, "sem marcador → sem aviso");
+      mkdirSync(join(dir, "_internal"));
+      writeFileSync(join(dir, "_internal", ".jev-profile.json"), "{}");
+      assert.match(jevBArmGuardWarning(dir) ?? "", /NÃO vale como braço B/);
+      const art = join(dir, "_internal", "dedup-grayzone-jev.json");
+      writeFileSync(art, JSON.stringify({ profile_env: null }));
+      assert.match(jevBArmGuardWarning(dir) ?? "", /NÃO vale como braço B/);
+      writeFileSync(art, JSON.stringify({ profile_env: "all" }));
+      assert.equal(jevBArmGuardWarning(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 /** 1ª chamada (pré-spawn) = "faltando" (deixa o laço spawnar); 2ª (pós-spawn) = "ok" (satisfaz a pós-condição sem I/O real de disco). */
 function fakeAssertSentinelFn(): () => { ok: true } | { ok: false; reason: "sentinel_missing" } {

@@ -14,6 +14,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 export const JEV_PROFILE_ENV = "DIARIA_JEV_PROFILE";
 
@@ -73,4 +74,29 @@ export function effectiveJevFeatures(
 ): JevFeatureName[] {
   const flags = readJevFeatureFlags(configPath);
   return JEV_FEATURE_NAMES.filter((n) => isJevFeatureOn(flags[n], env));
+}
+
+/**
+ * #8564 guard: a edição tem marcador B (`_internal/.jev-profile.json`) mas o
+ * dedup da zona cinzenta não rodou com o perfil (`_internal/dedup-grayzone-jev.json`
+ * ausente/ilegível ou `profile_env` != "all")? Devolve o aviso ou `null`.
+ * Nunca lança.
+ */
+export function jevBArmGuardWarning(editionDir: string): string | null {
+  const internal = join(editionDir, "_internal");
+  if (!existsSync(join(internal, ".jev-profile.json"))) return null;
+  const banner = "Edição NÃO vale como braço B do A/B";
+  const artifact = join(internal, "dedup-grayzone-jev.json");
+  if (!existsSync(artifact)) {
+    return `${banner}: marcador .jev-profile.json presente mas _internal/dedup-grayzone-jev.json não foi gerado (DIARIA_JEV_PROFILE=all não chegou ao Stage 1).`;
+  }
+  try {
+    const a = JSON.parse(readFileSync(artifact, "utf8")) as { profile_env?: unknown } | null;
+    if (a?.profile_env !== "all") {
+      return `${banner}: dedup-grayzone-jev.json registra profile_env=${JSON.stringify(a?.profile_env ?? null)} (esperado "all").`;
+    }
+  } catch {
+    return `${banner}: dedup-grayzone-jev.json ilegível — não dá pra confirmar o perfil.`;
+  }
+  return null;
 }

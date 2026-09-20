@@ -60,7 +60,7 @@ import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { resolveClaudeBin } from "./lib/resolve-claude-bin.ts";
 import { claudeCliEnv } from "./overnight/run-scheduled-edicao.ts";
-import { JEV_PROFILE_ENV } from "./lib/jev-profile.ts";
+import { JEV_PROFILE_ENV, jevBArmGuardWarning } from "./lib/jev-profile.ts";
 import {
   STAGE_PLAN,
   runEditionStages,
@@ -195,6 +195,13 @@ export function main(
     // stdout do processo `claude` filho dentro de `runEditionStages`.
     onProgress: stderr,
   });
+
+  // #8564 guard: aviso (nunca bloqueia) quando o marcador B existe mas o
+  // dedup da zona cinzenta não rodou com o perfil. stderr mantém o --json limpo.
+  if (plan.some((s) => s.stage === 1)) {
+    const warn = jevBArmGuardWarning(editionDir);
+    if (warn) stderr(`AVISO: ${warn}`);
+  }
 
   if (flags.has("json")) {
     stdout(JSON.stringify(result, null, 2));
