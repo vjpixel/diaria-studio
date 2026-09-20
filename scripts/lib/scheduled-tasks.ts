@@ -1404,6 +1404,33 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5494",
   },
   {
+    name: "Diaria-Meta-Capi-Batch-Send",
+    description:
+      "batch semanal de CompleteRegistration (Meta CAPI) para cadastros feitos direto na home Beehiiv (fora dos " +
+      "3 workers de formulario), a partir do snapshot do Diaria-Beehiiv-Backup -- fecha a lacuna operacional " +
+      "achada na #8577 (script existia sem nenhum ponto de invocacao ate aqui)",
+    steps: [{ key: "batch", script: "scripts/meta-capi-batch-send.ts" }],
+    logPath: "beehiiv-backup/.meta-capi-batch.log",
+    // Domingo 04:15 BRT -- depois do Diaria-Beehiiv-Backup-Staleness-Alarm
+    // (04:00, acima) e do Diaria-Seo-Weekly (04:10), consumindo o MESMO
+    // snapshot semanal que os dois ja leem (Diaria-Beehiiv-Backup, 03:00) --
+    // folga suficiente pro backup (~13 paginas) e a checagem de staleness
+    // terminarem antes de este rodar sobre o snapshot mais recente. Slot
+    // livre (ver grep de `kind: "weekly"` neste arquivo).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 4, minute: 15 },
+    // Sem guard -- o proprio script e fail-soft por desenho (ver docstring
+    // do arquivo): sem snapshot algum, loga e devolve summary zerado, exit
+    // 0; sem META_CAPI_ACCESS_TOKEN configurado, cada envio individual
+    // volta "not_configured" (nunca lanca) -- diferente dos guards
+    // `requiredFile` acima, nao ha estado local pra corromper gravando por
+    // cima de dado real quando `data/` ainda nao montou.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
+    // e acao POSTERIOR do editor.
+    issue: "#8577",
+  },
+  {
     name: "Diaria-Kit-Roster-Ingest",
     description:
       "captura diaria do roster completo do Kit (status=all) no store unificado do #6464 -- popula a dimensao " +
