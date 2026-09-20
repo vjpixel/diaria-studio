@@ -90,16 +90,19 @@ Gmail (#6504).
 |---|---|---|
 | Remetente | `diaria` em `mail.beehiiv.com` | `oi` em `news.diar.ia.br` (o sender já verificado da conta) |
 | Link do botão | `diaria.beehiiv.com/opt_in?opt_in_token=…` | token do Kit, inserido pelo editor de conteúdo do form |
-| Redirect pós-confirmação | `https://eia.diar.ia.br/confirmado` (`opt_in_redirect_url`, medido nas settings da Beehiiv em 09/09/2026) | default é `https://app.kit.com/confirm-subscription` — **reapontar para `https://diar.ia.br/confirmado`** |
+| Redirect pós-confirmação | `https://eia.diar.ia.br/confirmado` (`opt_in_redirect_url`, medido nas settings da Beehiiv em 09/09/2026) | default é `https://app.kit.com/confirm-subscription` — **reapontar para `https://diar.ia.br/confirmada`** |
 
-A página `/confirmado` foi criada no #5167 e continua no ar — desde o #7737
-(decisão do editor) ela é servida no APEX (`diar.ia.br/confirmado`, Worker
-`site`), não mais em `eia.diar.ia.br` (que agora só faz 301 pra lá — link
-antigo continua funcionando). **Pendente:** o campo "After confirming
-redirect to" do form 9897918 no painel do Kit ainda aponta pra
-`eia.diar.ia.br/confirmado` — atualizar manualmente para
-`https://diar.ia.br/confirmado` (ação de painel, fora do escopo de código
-do #7737).
+A página (originalmente `/confirmado`, renomeada `/confirmada` em #8554 —
+concordância de gênero com "assinatura confirmada") foi criada no #5167 e
+continua no ar — desde o #7737 (decisão do editor) ela é servida no APEX
+(`diar.ia.br/confirmada`, Worker `site`), não mais em `eia.diar.ia.br` (que
+agora só faz 301 pra lá — link antigo continua funcionando, e o apex
+também 301a `/confirmado` → `/confirmada` desde o #8554, então a cadeia
+completa funciona mesmo sem tocar em nada externo). **Pendente:** o campo
+"After confirming redirect to" do form 9897918 no painel do Kit ainda
+aponta pra `eia.diar.ia.br/confirmado` — atualizar manualmente para
+`https://diar.ia.br/confirmada` (ação de painel, fora do escopo de código
+do #7737/#8554).
 
 ### O segundo caminho de confirmação também termina aqui (#8539)
 
@@ -107,10 +110,11 @@ Quem não confirma em 72h continua recebendo a diária pela Brevo (segmento
 Pending), e aquele e-mail traz o botão "Confirmar minha inscrição" apontando
 pro Worker `reativar`. Até o #8539 esse caminho terminava numa página HTML
 servida pelo próprio worker, **sem GTM e sem tag de conversão nenhuma** — ou
-seja, qualquer medição ancorada em `/confirmado` era cega pra ele.
+seja, qualquer medição ancorada em `/confirmada` era cega pra ele.
 
-Desde o #8539 o worker responde **303 para `https://diar.ia.br/confirmado?via=brevo`**
-quando (e só quando) a ativação de fato virou `active`. Os desfechos que NÃO
+Desde o #8539 o worker responde **303 para `https://diar.ia.br/confirmada?via=brevo`**
+(path renomeado em #8554) quando (e só quando) a ativação de fato virou
+`active`. Os desfechos que NÃO
 são confirmação — DOI ainda pendente (`inactive`), 2xx sem ativação real,
 e-mail ausente, token inválido — continuam com página própria e nunca
 redirecionam: disparar a conversão sem confirmação é o único erro deste fluxo

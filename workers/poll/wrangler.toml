@@ -140,10 +140,12 @@ KIT_ORIGEM_CLICKID_FIELD = "origem_click_id"
 # DOUBLE_OPT_IN_FLAG.enabledForWorkers, optin-flag-6340.ts), e o vínculo de
 # `vincularKitDoiForm` dispara o e-mail de confirmação — copy em português,
 # botão teal #00A0A0, remetente oi@news.diar.ia.br, redirect pós-confirmação
-# em https://diar.ia.br/confirmado (apex desde #7737 — era
-# https://eia.diar.ia.br/confirmado, que agora só faz 301 pra lá; campo
-# "After confirming redirect to" do form no painel do Kit ainda PENDENTE de
-# atualização manual, ver docs/kit-doi-confirmation-copy.md). Copy canônica:
+# em https://diar.ia.br/confirmada (apex, renomeado de `/confirmado` em
+# #8554 — antes disso, desde #7737, era https://diar.ia.br/confirmado; e
+# antes do #7737, https://eia.diar.ia.br/confirmado, que agora só faz 301
+# pra lá; campo "After confirming redirect to" do form no painel do Kit
+# ainda PENDENTE de atualização manual pro path novo, ver
+# docs/kit-doi-confirmation-copy.md). Copy canônica:
 # docs/kit-doi-confirmation-copy.md.
 #
 # ⚠️ NÃO voltar pra 9839463 ("Newsletter site"): é form de SISTEMA

@@ -7,7 +7,7 @@
  * GraphQL Analytics API está disponível pra este token — ANTES de construir
  * `scripts/pull-cf-analytics.ts` (que dependeria dele pra medir tráfego web
  * dos Workers de curadoria: `arquivo`, os hubs, `livros`, `artigos`,
- * `cursos`, `/confirmado`).
+ * `cursos`, `/confirmada`).
  *
  * ## Por que sondar antes de construir
  *

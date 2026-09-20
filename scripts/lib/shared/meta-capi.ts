@@ -12,8 +12,8 @@
  * `workers/poll/src/subscribe.ts`, `workers/cursos/src/subscribe.ts`,
  * `workers/reativar/src/index.ts` — e (b) batch server-side a partir do
  * snapshot Beehiiv (`scripts/meta-capi-batch-send.ts`). O ponto (c)
- * (`/confirmado`) fica fora de escopo, marcado como "opcional depois" na
- * issue.
+ * (`/confirmada`, renomeado de `/confirmado` em #8554) fica fora de escopo,
+ * marcado como "opcional depois" na issue.
  *
  * ## Fronteira `lib/shared/` (#2747)
  *

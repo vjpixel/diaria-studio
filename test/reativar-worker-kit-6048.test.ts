@@ -276,10 +276,10 @@ describe("handleConfirm — seleção de backend via env.SUBSCRIBE_BACKEND (#604
     const url = new URL("https://reativar.test/?email=a@b.com");
     const res = await handleConfirm(url, env, fetchImpl);
     // #8539: em vez de renderizar a página de sucesso, redireciona pra
-    // /confirmado — o que este teste protege é a SELEÇÃO de backend (só Kit
-    // foi tocado), não o corpo da resposta.
+    // /confirmada (#8554) — o que este teste protege é a SELEÇÃO de backend
+    // (só Kit foi tocado), não o corpo da resposta.
     assert.equal(res.status, 303);
-    assert.match(res.headers.get("Location") ?? "", /\/confirmado\?via=brevo$/);
+    assert.match(res.headers.get("Location") ?? "", /\/confirmada\?via=brevo$/);
     assert.ok(calls.every((c) => c.url.startsWith("https://kit.test")));
   });
 

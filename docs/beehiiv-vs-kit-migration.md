@@ -145,7 +145,7 @@ incoming gerando assinante real, outgoing com gap conhecido nos 3 workers de cad
 
 > **REVOGADO no #8539 (20/09/2026).** O worker `reativar` deixou de renderizar
 > essa tela: no sucesso da confirmação ele **redireciona** para
-> `https://diar.ia.br/confirmado?via=brevo`, que carrega o GTM e por isso pode
+> `https://diar.ia.br/confirmada?via=brevo` (path renomeado em #8554), que carrega o GTM e por isso pode
 > medir a conversão de confirmação. `renderSuccessPage`,
 > `renderKitRecommendationsBlock` e `Env.KIT_RECOMMENDATIONS_EMBED_URL` foram
 > **removidos** — o widget ficou sem superfície. Não havia nada armado a

@@ -263,7 +263,7 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
     assert.deepEqual(calls.map((c) => c.method), ["GET"], "nunca chega no DELETE/POST com estado desconhecido");
   });
 
-  it('handleConfirm fim-a-fim: status:"validating" → retry → "active" → redirect pra /confirmado (#8539)', async () => {
+  it('handleConfirm fim-a-fim: status:"validating" → retry → "active" → redirect pra /confirmada (#8539/#8554)', async () => {
     const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       if (method === "POST") return jsonRes(201, { data: { status: "validating" } });
@@ -615,7 +615,7 @@ describe("handleConfirm — fim-a-fim (#4476 item 3)", () => {
     assert.equal(await res.text(), renderInvalidEmailPage());
   });
 
-  it("ativação bem-sucedida (GET 404 → cria → beehiivStatus:active) → 303 pra /confirmado (#8539)", async () => {
+  it("ativação bem-sucedida (GET 404 → cria → beehiivStatus:active) → 303 pra /confirmada (#8539/#8554)", async () => {
     const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
       if (init?.method === "POST") return jsonRes(200, { data: { status: "active" } });
       return new Response(null, { status: 404 });

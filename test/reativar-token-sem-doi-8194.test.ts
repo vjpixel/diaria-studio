@@ -185,7 +185,7 @@ describe("handleConfirm — token decide entre ativar direto e DOI (#8194)", () 
   it("token válido → active, sem DOI", async () => {
     const t = await computeReativarToken(SECRET, "a@x.com");
     const { res, kit } = await confirm(`email=a%40x.com&t=${t}`);
-    // #8539: confirmação real virou 303 pra /confirmado (antes era 200 + HTML).
+    // #8539: confirmação real virou 303 pra /confirmada (#8554; antes era 200 + HTML).
     assert.equal(res.status, 303);
     assert.equal(kit.getState(), "active");
     assert.ok(!kit.calls.some((c) => c.url.includes("/forms/9897918/")));
