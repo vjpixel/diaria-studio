@@ -181,9 +181,24 @@ async function main(): Promise<void> {
       // sucesso marcamos como alarmado (#7960: migrado pro portão
       // notifyEditor — severidade "acao", issue sem e-mail sob
       // `email_policy: "urgent_only"`).
+      // #8507 dedup: busca issue aberta pelo fingerprint atual
+      // (cobre estado perdido / reset entre execuções + repetição do fp).
+      let cachedEntry: { issueNumber: number; url: string } | undefined;
+      const fp = npmVersionDriftFindingKey(evaluation);
+      if (fp) {
+        try {
+          const { execFileSync } = await import("node:child_process");
+          const out = execFileSync(
+            "gh", ["issue", "list", "--search", `npm-version-drift-alarm ${fp}`, "--state", "open", "--json", "number,url", "--limit", "1"],
+            { cwd: ROOT, encoding: "utf8", maxBuffer: 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] },
+          );
+          const arr = JSON.parse(out.toString()) as { number: number; url: string }[];
+          if (arr && arr[0]) cachedEntry = { issueNumber: arr[0].number, url: arr[0].url };
+        } catch (_) { /* silent — deixa criar nova se busca falhar */ }
+      }
       const notifyResult = await notifyEditor(
-        { check: "npm-version-drift-alarm", fingerprint: npmVersionDriftFindingKey(evaluation), severity: "acao", subject, body },
-        { cwd: ROOT, emailTo: toOverride },
+        { check: "npm-version-drift-alarm", fingerprint: fp, severity: "acao", subject, body },
+        { cwd: ROOT, emailTo: toOverride, cachedEntry },
       );
       if (notifyResult.issue?.action === "failed") {
         throw new Error(`ensureAlarmIssue falhou: ${notifyResult.issue.error}`);
