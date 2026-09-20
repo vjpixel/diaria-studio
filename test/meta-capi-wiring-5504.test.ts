@@ -300,6 +300,36 @@ describe("#5504 — wiring: workers/reativar/src/index.ts (handleConfirm)", () =
     assert.equal(metaCalls.length, 1);
   });
 
+  // #8569: regressão — `alreadyActive` (assinante que já estava `active`
+  // ANTES deste request: clique repetido, ou promovido por score sem
+  // clique) NUNCA pode disparar o evento CAPI. `event_id` do CAPI é
+  // derivado de email+dia UTC, não do estado da assinatura, então um
+  // clique repetido em outro dia gerava um `event_id` novo e a Meta contava
+  // como conversão real — poluindo o conjunto de anúncios. O redirect
+  // client-side (pixel/GTM) já respeitava `alreadyActive` desde o #8539
+  // (`renderJaConfirmadoPage` em vez de `confirmadoRedirectResponse`); o
+  // canal server-side (CAPI) ficou de fora até este fix.
+  it("REGRESSÃO (#8569): alreadyActive:true + META_CAPI_ACCESS_TOKEN setado → NENHUMA chamada ao Graph API da Meta", async () => {
+    const metaCalls: string[] = [];
+    const fn = (async (u: string | URL, init?: RequestInit) => {
+      const s = String(u);
+      if (s.includes("graph.facebook.com")) {
+        metaCalls.push(s);
+        return new Response(JSON.stringify({ events_received: 1 }), { status: 200 });
+      }
+      const method = init?.method ?? "GET";
+      // GET já devolve `active` — mesmo roteiro do teste de idempotência em
+      // activateSubscription (test/reativar-worker-4476.test.ts): assinante
+      // já estava active ANTES deste request, então `alreadyActive: true`.
+      if (method === "GET") return new Response(JSON.stringify({ data: { id: "sub_1", status: "active" } }), { status: 200 });
+      return new Response(null, { status: 204 }); // DELETE/POST não deveriam rolar
+    }) as typeof fetch;
+    const res = await handleConfirm(url(), reativarEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), fn);
+    // #8539: alreadyActive não redireciona — página própria "já confirmado".
+    assert.equal(res.status, 200);
+    assert.equal(metaCalls.length, 0);
+  });
+
   // #8551: regressão — o `reativar` NUNCA pode disparar `CompleteRegistration`
   // (evento de OTIMIZAÇÃO do conjunto de anúncios, disparado no SUBMIT do
   // form por workers/poll e workers/cursos). O clique de confirmação de

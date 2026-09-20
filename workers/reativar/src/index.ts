@@ -1358,8 +1358,36 @@ export async function handleConfirm(
     // está de fato confirmada — best-effort, nunca bloqueia a página de
     // sucesso (ver docstring de `unlinkReativarFromBrevoList`).
     await unlinkReativarFromBrevoList(env, parsed.email, fetchImpl);
+    // #8539: em vez de servir a página inline, redireciona pra página de
+    // confirmação do apex — que carrega o GTM (`renderAnalyticsHead`) e por
+    // isso é onde a conversão de CONFIRMAÇÃO pode ser medida. Antes disso,
+    // quem confirmava por aqui era invisível pras plataformas de anúncio,
+    // porque `page()` deste worker nunca carregou tag nenhuma.
+    //
+    // Só este ramo redireciona — ver o invariante completo na docstring de
+    // `confirmadoRedirectResponse`. Todos os demais desfechos continuam com
+    // página própria: `renderConfirmacaoEnviadaPage` (`inactive`, o desfecho
+    // normal do DOI), `renderNotConfirmedPage` (2xx sem ativação real),
+    // `renderNativeUnsubscribePage`, `renderMissingEmailPage`,
+    // `renderInvalidEmailPage` e `renderErrorPage`.
+    //
+    // E `active` sozinho não basta: quem JÁ estava ativo antes deste request
+    // (clique repetido, ou promovido por score em
+    // `scripts/evaluate-brevo-diaria.ts` sem clique nenhum) não confirmou
+    // nada AGORA, e mandá-lo pra página instrumentada contaria uma conversão
+    // por um evento que não houve. Ver `alreadyActive` em `ActivateResult`.
+    //
+    // #8569: pelo mesmo motivo, o evento CAPI server-side (abaixo) só pode
+    // disparar no ramo NÃO-alreadyActive — antes desta correção ele disparava
+    // incondicionalmente e poluía o conjunto de anúncios com conversões que
+    // não aconteceram (event_id é derivado de email+dia, não do estado da
+    // assinatura, então um clique repetido em outro dia gerava evento novo).
+    if (result.alreadyActive) {
+      return htmlResponse(renderJaConfirmadoPage(), 200);
+    }
     // #5504/hotfix pós-merge: evento pra Meta Conversions API — fire-and-
-    // forget best-effort, DEPOIS da confirmação `active`. Fail-soft: sem
+    // forget best-effort, DEPOIS da confirmação `active` NOVA (ver #8569
+    // acima — nunca para quem já estava active). Fail-soft: sem
     // META_CAPI_ACCESS_TOKEN é no-op; qualquer erro nunca chega aqui (ver
     // scripts/lib/shared/meta-capi.ts). `ctx.waitUntil()` adia o envio pra
     // depois da resposta ao usuário — o `await` direto (achado do review
@@ -1388,31 +1416,9 @@ export async function handleConfirm(
     } else {
       await sendEvent;
     }
-    // #8539: em vez de servir a página inline, redireciona pra página de
-    // confirmação do apex — que carrega o GTM (`renderAnalyticsHead`) e por
-    // isso é onde a conversão de CONFIRMAÇÃO pode ser medida. Antes disso,
-    // quem confirmava por aqui era invisível pras plataformas de anúncio,
-    // porque `page()` deste worker nunca carregou tag nenhuma.
-    //
     // O redirect acontece DEPOIS do `unlinkReativarFromBrevoList` (await
     // acima) e DEPOIS de agendar o CAPI — o `ctx.waitUntil()` mantém o envio
     // vivo além da resposta, então redirecionar não o cancela.
-    //
-    // Só este ramo redireciona — ver o invariante completo na docstring de
-    // `confirmadoRedirectResponse`. Todos os demais desfechos continuam com
-    // página própria: `renderConfirmacaoEnviadaPage` (`inactive`, o desfecho
-    // normal do DOI), `renderNotConfirmedPage` (2xx sem ativação real),
-    // `renderNativeUnsubscribePage`, `renderMissingEmailPage`,
-    // `renderInvalidEmailPage` e `renderErrorPage`.
-    //
-    // E `active` sozinho não basta: quem JÁ estava ativo antes deste request
-    // (clique repetido, ou promovido por score em
-    // `scripts/evaluate-brevo-diaria.ts` sem clique nenhum) não confirmou
-    // nada AGORA, e mandá-lo pra página instrumentada contaria uma conversão
-    // por um evento que não houve. Ver `alreadyActive` em `ActivateResult`.
-    if (result.alreadyActive) {
-      return htmlResponse(renderJaConfirmadoPage(), 200);
-    }
     return confirmadoRedirectResponse();
   }
   return htmlResponse(renderNotConfirmedPage(), 200);
