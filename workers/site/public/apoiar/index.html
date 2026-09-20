@@ -62,6 +62,43 @@ h2 { font-size: 22px; font-weight: 500; letter-spacing: -0.01em; margin: 0 0 16p
 <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-TC8C65ZN');</script>
 </head>
 <body>
+  <style>
+.dnav { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; border-bottom: 1px solid var(--rule); background: var(--paper); }
+.dnav-wrap { max-width: 1100px; margin: 0 auto; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.dnav-links { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--ink); }
+.dnav-links a { color: var(--ink); text-decoration: none; }
+.dnav-links a:hover { color: var(--teal); text-decoration: underline; text-underline-offset: 3px; }
+.dnav-links a.dnav-active { color: var(--teal); font-weight: 600; }
+.nav-cta a, .nav-cta span { display: inline-block; padding: 8px 16px; border-radius: 999px; font-size: 13px; font-weight: 500; }
+.nav-cta a { background: var(--ink); color: var(--paper); text-decoration: none; }
+.nav-cta a:hover { background: var(--teal); }
+.nav-cta span[aria-current] { background: var(--rule); color: var(--ink); }
+@media (max-width: 560px) {
+  .dnav-wrap { flex-wrap: nowrap; }
+  .dnav-links { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+  .dnav-links a { white-space: nowrap; }
+}
+</style>
+<nav class="dnav" id="nav" data-site-nav="global" aria-label="Navegação principal">
+  <div class="dnav-wrap">
+    <div class="dnav-links">
+      <a href="/archive">Edições</a>
+        <a href="https://especial.diar.ia.br?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Especiais</a>
+        <a href="https://livros.diar.ia.br?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Livros</a>
+        <a href="https://cursos.diar.ia.br?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Cursos</a>
+        <a href="https://eia.diar.ia.br/leaderboard?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">É IA?</a>
+        <a href="/apoiar" class="dnav-active" aria-current="page">Apoiar</a>
+    </div>
+    <div class="nav-cta">
+      <!-- #8497 (extraído do nav da home, decisão original #6978 itens 2/3):
+           sem "Entrar" — projeto não tem login/conta própria, área de
+           assinante é sempre um magic link por e-mail, não um destino
+           genérico clicável aqui. Sem busca — redundante com "Edições"
+           (índice /archive) e o acervo por tema em arquivo.diar.ia.br. -->
+      <a href="/assinar">Assinar</a>
+    </div>
+  </div>
+</nav>
   <main class="wrap">
     <h1>Apoiar a <span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span class="dot">br</span></h1>
     <p class="lede">A edição diária é e sempre será gratuita. Quem quiser apoiar a curadoria financia o trabalho e ganha benefícios extras — nunca o contrário.</p>

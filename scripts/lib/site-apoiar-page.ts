@@ -59,6 +59,7 @@ import { escHtml } from "./html-escape.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { renderAnalyticsHead } from "./shared/seo-meta.ts";
 import { DIARIA_ESPECIAL_URL } from "./canonical-urls.ts";
+import { renderSiteNav } from "./shared/site-nav.ts"; // #8497: menu global
 import {
   REWARD_TIER_AMIGO_MIN,
   REWARD_TIER_APOIADOR_MIN,
@@ -210,6 +211,7 @@ h2 { font-size: 22px; font-weight: 500; letter-spacing: -0.01em; margin: 0 0 16p
 ${renderAnalyticsHead()}
 </head>
 <body>
+  ${renderSiteNav({ active: "apoiar", inheritHostTokens: true })}
   <main class="wrap">
     <h1>Apoiar a ${renderWordmark()}</h1>
     <p class="lede">A edição diária é e sempre será gratuita. Quem quiser apoiar a curadoria financia o trabalho e ganha benefícios extras — nunca o contrário.</p>

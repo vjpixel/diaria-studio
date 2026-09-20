@@ -51,6 +51,7 @@ import {
 } from "../scripts/lib/site-archive-pages.ts";
 import { generateArchivePages, loadPosts, loadKitArchivePosts } from "../scripts/gen-archive-pages.ts";
 import type { UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
+import { SITE_NAV_MARKER } from "../scripts/lib/shared/site-nav.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -526,16 +527,30 @@ describe("buildArchivePageHtml com opts.neighbors (#8353 item 1)", () => {
     assert.doesNotMatch(html, /archive-nav/);
   });
 
-  it("com neighbors.prev/next, injeta o nav logo após <body ...>", () => {
+  it("com neighbors.prev/next, injeta o nav no topo do <body> (#8497: ANTES do menu global, ver teste seguinte)", () => {
     const html = buildArchivePageHtml(makePost(), {
       neighbors: {
         prev: { slug: "anterior", title: "Edição anterior" },
         next: { slug: "seguinte", title: "Edição seguinte" },
       },
     });
-    assert.match(html, /<body[^>]*><nav class="archive-nav"/);
+    assert.match(html, /class="archive-nav"/);
     assert.match(html, /href="https:\/\/diar\.ia\.br\/p\/anterior"/);
     assert.match(html, /href="https:\/\/diar\.ia\.br\/p\/seguinte"/);
+  });
+
+  it("#8497: o menu global vai ANTES da nav prev/next, logo após <body ...>", () => {
+    const html = buildArchivePageHtml(makePost(), {
+      neighbors: {
+        prev: { slug: "anterior", title: "Edição anterior" },
+        next: { slug: "seguinte", title: "Edição seguinte" },
+      },
+    });
+    assert.match(html, new RegExp(`<body[^>]*>[\\s\\S]*?${SITE_NAV_MARKER.replace(/"/g, '\\"')}`));
+    const siteNavIndex = html.indexOf(SITE_NAV_MARKER);
+    const archiveNavIndex = html.indexOf('class="archive-nav"');
+    assert.ok(siteNavIndex >= 0 && archiveNavIndex >= 0, "faltou um dos dois <nav>");
+    assert.ok(siteNavIndex < archiveNavIndex, "o menu global deveria vir ANTES da nav prev/next");
   });
 });
 

@@ -55,6 +55,7 @@ import { COLORS } from "./shared/design-tokens.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
 import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 import { ARCHIVE_BASE_URL } from "./site-archive-pages.ts";
+import { renderSiteNav } from "./shared/site-nav.ts"; // #8497: menu global
 import {
   buildHomeFeed,
   extractHeroImage,
@@ -365,6 +366,7 @@ h1 { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(28px, 6vw,
 ${renderAnalyticsHead()}
 </head>
 <body>
+  ${renderSiteNav({ active: "edicoes", inheritHostTokens: true })}
   <main class="wrap">
     <p class="top"><a href="/">← diar<span class="dot">.</span>ia<span class="dot">.</span>br</a></p>
     <h1>Todas as edições</h1>

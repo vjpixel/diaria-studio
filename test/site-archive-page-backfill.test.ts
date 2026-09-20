@@ -26,6 +26,7 @@ import {
   ARCHIVE_NAV_MARKER,
 } from "../scripts/lib/site-archive-page-backfill.ts";
 import { parseSitemapPageEntries, lastmodToUnixSeconds, runBackfill } from "../scripts/backfill-archive-page-links-seo.ts";
+import { renderSiteNav, SITE_NAV_MARKER } from "../scripts/lib/shared/site-nav.ts";
 
 /** Mimetiza o HTML real das 11 páginas Kit legadas (medido ao vivo, #8354) —
  * <head> com title/description/dek/canonical mas sem OG/h1/JSON-LD. */
@@ -161,7 +162,7 @@ describe("backfillArchivePageOnDisk — página legada estilo Kit (#8352/#8354/#
     assert.equal(twice.html, once.html);
   });
 
-  it("falha fechada (não altera nada além do robots) se faltar description ou canonical — nunca visto no corpus real, mas não deve piorar", () => {
+  it("falha fechada (não altera nada além do robots + #8497 nav) se faltar description ou canonical — nunca visto no corpus real, mas não deve piorar", () => {
     const broken = `<!doctype html><html><head><title>Só título</title></head><body></body></html>`;
     const result = backfillArchivePageOnDisk(broken, { slug: "x" });
     assert.equal(result.addedSeo, false);
@@ -172,9 +173,13 @@ describe("backfillArchivePageOnDisk — página legada estilo Kit (#8352/#8354/#
     // do BLOCO DE SEO, que segue não sendo escrito.
     assert.equal(result.addedRobots, true);
     assert.equal(result.addedJsonLdImage, false); // sem JSON-LD nem capa nesta página
+    // #8497: o menu global é INDEPENDENTE do bloco de SEO — toda página
+    // ganha nav, mesmo a que falhou fechado no SEO por faltar description/canonical.
+    assert.equal(result.addedSiteNav, true);
+    const expected = broken.replace("</title>", '</title><meta name="robots" content="max-image-preview:large">');
     assert.equal(
       result.html,
-      broken.replace("</title>", '</title><meta name="robots" content="max-image-preview:large">'),
+      expected.replace(/<body[^>]*>/i, (full) => `${full}\n${renderSiteNav({ active: "edicoes" })}`),
     );
   });
 });
