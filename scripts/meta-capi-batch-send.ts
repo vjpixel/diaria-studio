@@ -72,7 +72,9 @@ import {
 } from "./lib/beehiiv-backup-snapshots.ts";
 import {
   sendCompleteRegistrationEvent,
+  sendReactivationEvent,
   computeCompleteRegistrationEventId,
+  computeReactivationEventId,
   META_CAPI_DEFAULT_DATASET_ID,
   type MetaCapiSendResult,
 } from "./lib/shared/meta-capi.ts";

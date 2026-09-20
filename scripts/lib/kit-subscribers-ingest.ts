@@ -277,6 +277,85 @@ export interface KitRosterIngestResult {
  * `coerceAttributeValue` — string vazia/`null`/`undefined` viram "atributo
  * ausente" (entry omitida), nunca gravados como resposta em branco.
  */
+/**
+ * #8543 — detecta CONFIRMAÇÕES (transição `inactive`→`active`) em um roster
+ * do Kit contra o estado anterior, e devolve os eventos `confirm` prontos
+ * pra `recordEvent`.
+ *
+ * ## Por que um snapshot de estado anterior, e não o Kit
+ *
+ * O Kit não preserva o estado de criação na `subscription`: um assinante
+ * `active` hoje pode ter nascido `active` (cadastro direto) ou nascido
+ * `inactive` e confirmado depois (double opt-in). A única maneira de
+ * distinguir é comparar o estado de AGORA com o de na última rodada — e o
+ * estado anterior tem que ser mantido por nós. #8552 desenha esse snapshot
+ * (`data/kit-subscribers-state/{YYYY-MM-DD}.jsonl` de `(id, state,
+ * created_at)`) pra servir a #8543, #8548 e a própria #8552.
+ *
+ * Esta função é o CONSUMIDOR do snapshot — pura, sem I/O, testável com
+ * `DatabaseSync :memory:` e listas de e-mail já resolvidas, mesmo padrão de
+ * `ingestKitRoster` acima. O snapshot em si é gerado pelo CLI
+ * `scripts/kit-subscribers-ingest-kit.ts` (única camada com I/O deste par).
+ *
+ * ## O que conta como confirmação
+ *
+ * Apenas `inactive → active`. Outras transições NÃO são confirmações:
+ *   - `cancelled`/`bounced`/`complained` → `active`: é REATIVAÇÃO (clique no
+ *     botão "Confirmar" da Brevo, #8438), não o primeiro opt-in. O evento
+ *     Meta pra isso é `Reactivation` (#8551), e o worker `reativar` já o
+ *     dispara no instante do clique — não pertence a este import.
+ *   - `active → inactive`: cadastro recém-criado que nunca confirmou
+ *     (double opt-in pendente) — o oposto de uma confirmação.
+ *   - `active → active`, `inactive → inactive`: nenhuma transição.
+ *
+ * ## Chave natural
+ *
+ * `${email}:confirm:${confirmedAt}` — o `confirmedAt` é o `created_at` do
+ * snapshot onde a transição foi detectada (o Kit não expõe timestamp de
+ * transição). Junto com `INSERT OR IGNORE` em `recordEvent`, garante que
+ * re-rodar o mesmo snapshot nunca duplica o evento — mesmo padrão do
+ * `subscribe` em `ingestKitRoster`, que usa `${email}:subscribe:${created_at}`.
+ *
+ * ## Idempotência
+ *
+ * `recordEvent` já é idempotente pela chave natural. Esta função NUNCA
+ * escreve no DB — o chamador (CLI) chama `recordEvent` pra cada item do
+ * retorno, e o snapshot do #8552 é o que impede que uma rodada que pule
+ * o snapshot re-detecte a mesma transição.
+ *
+ * @pure — mesmos invariantes de `ingestKitRoster`: nenhuma exceção, nenhuma
+ *   mutação, `coerceAttributeValue` já trata shape inesperado.
+ */
+export interface KitConfirmation {
+  subscriberId: number;
+  platform: "kit";
+  externalEventId: string;
+  ts: string;
+}
+
+export function detectKitConfirmations(
+  current: readonly KitSubscriberSummary[],
+  previous: readonly Map<number, KitSubscriberSummary>,
+  now: string = new Date().toISOString(),
+): KitConfirmation[] {
+  const out: KitConfirmation[] = [];
+  for (const sub of current) {
+    const prev = previous.get(sub.id);
+    if (!prev) continue; // cadastro novo — não há estado anterior pra comparar
+    if (prev.state === "inactive" && sub.state === "active") {
+      const email = sub.email_address.trim().toLowerCase();
+      const confirmedAt = sub.created_at ?? now;
+      out.push({
+        subscriberId: sub.id,
+        platform: "kit",
+        externalEventId: `${email}:confirm:${confirmedAt}`,
+        ts: confirmedAt,
+      });
+    }
+  }
+  return out;
+}
+
 export function extractKitFieldAttributes(
   sub: Pick<KitSubscriberSummary, "fields">,
 ): Array<{ key: string; value: string }> {

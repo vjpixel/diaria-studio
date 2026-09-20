@@ -121,6 +121,39 @@ export async function computeCompleteRegistrationEventId(
 }
 
 /**
+ * #8543 — `event_id` da CONFIRMAÇÃO (reaativação), espelho de
+ * `computeCompleteRegistrationEventId` com prefixo distinto.
+ *
+ * Mesma fórmula (e-mail normalizado + dia UTC do `event_time`), mas
+ * `capi:reactivation:` em vez de `capi:completeregistration:`. Por quê um
+ * prefixo separado quando o `event_name` já diferencia os dois eventos?
+ *
+ * A Meta deduplica server-side × client-side pela CHAVE (`event_name`,
+ * `event_id`) — nomes diferentes nunca colidem. O prefixo é defensiva, não
+ * decisão: uma confirmação que acontece no MESMO dia do cadastro (comum —
+ * cadastro de manhã, clique no e-mail de reativação de tarde) geraria o
+ * mesmo `event_id` que o cadastro se usássemos a mesma fórmula, e um caller
+ * que passasse o `created` do cadastro em vez do horário real da confirmação
+ * veria os dois sinais fundos sob um id sem que o tipo quebrasse (o campo é
+ * `eventTimeSeconds`, não tem como o TS impedir que seja o errado). Prefixo
+ * diferente torna isso physicalmente impossível de silenciosamente fundir.
+ *
+ * `eventTimeSeconds` aqui é o horário da CONFIRMAÇÃO (quem chama este
+ * import é responsável por passá-lo — ver #8552 pro como obtê-lo), não o
+ * do cadastro.
+ *
+ * @pure — same Web Crypto + no I/O discipline as `computeCompleteRegistrationEventId`.
+ */
+export async function computeReactivationEventId(
+  email: string,
+  eventTimeSeconds: number,
+): Promise<string> {
+  const normalized = normalizeEmailForMeta(email);
+  const day = new Date(eventTimeSeconds * 1000).toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+  return sha256Hex(`capi:reactivation:${normalized}:${day}`);
+}
+
+/**
  * #8388 item 1 — `custom_data.value`/`custom_data.currency` do
  * `CompleteRegistration`.
  *
@@ -471,6 +504,39 @@ export async function sendCompleteRegistrationEvent(
     // Qualquer exceção inesperada (ex: Web Crypto indisponível num runtime
     // atípico) também vira no-op fail-soft — telemetria de anúncio nunca
     // pode propagar uma exceção pro caller do cadastro.
+    return { ok: false, status: 502, reason: "network_error" };
+  }
+}
+
+/**
+ * #8543 — wrapper fail-soft pro evento de CONFIRMAÇÃO (`Reactivation`),
+ * espelho de `sendCompleteRegistrationEvent` com o `event_id` da reativação.
+ *
+ * Diferença crucial em relação ao cadastro: o `eventTimeSeconds` do
+ * `Reactivation` é o horário da CONFIRMAÇÃO, que só se sabe no momento em
+ * que o clique chega (`workers/reativar`, #8551) ou quando um import
+ * offline o recupera (#8552). O cadastro passa o `created` do snapshot
+ * Beehiiv; a confirmação NUNCA passa o `created` do cadastro — fazer isso
+ * seria o erro que o prefixo de `event_id` acima existe pra impedir.
+ *
+ * Sem `accessToken`, no-op silencioso — mesmo contrato fail-soft de
+ * `sendCompleteRegistrationEvent`: telemetria de anúncio nunca pode
+ * derrubar ou atrasar uma confirmação real.
+ */
+export async function sendReactivationEvent(
+  input: BuildCompleteRegistrationEventInput,
+  options: SendMetaCapiEventOptions,
+): Promise<MetaCapiSendResult> {
+  if (!options.accessToken) return { ok: false, status: 503, reason: "not_configured" };
+  try {
+    const event = await buildCompleteRegistrationEvent({
+      ...input,
+      eventName: "Reactivation",
+      eventTimeSeconds: input.eventTimeSeconds ?? Math.floor(Date.now() / 1000),
+    });
+    const eventId = await computeReactivationEventId(input.email, event.event_time);
+    return await sendMetaCapiEvent({ ...event, event_id: eventId }, options);
+  } catch {
     return { ok: false, status: 502, reason: "network_error" };
   }
 }

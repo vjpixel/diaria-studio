@@ -180,6 +180,28 @@ export const EVENT_TYPES = [
   "complaint",
   "contest_reply",
   "poll_vote",
+<<<<<<< Updated upstream
+=======
+  /**
+   * #8543 — CONFIRMAÇÃO de cadastro (quem virou `active` depois de ter
+   * nascido `inactive`/`cancelled`/`bounced`/`complained`). Distinto de
+   * `subscribe` (que é o submit do form, o cadastro em si) porque a #8387
+   * quer que a conversão accounte a confirmação, não o cadastro — e o
+   * `Reactivation` da Meta CAPI é o evento que leva esse sinal.
+   *
+   * `subscribe` já é gravado em `ingestKitRoster` com a CHAVE natural
+   * `${email}:subscribe:${created_at}` — o `created_at` do cadastro. Um
+   * `confirm` gravado no mesmo dia pro mesmo e-mail gera um `externalEventId`
+   * distinto (`${email}:confirm:${confirmedAt}`), então os dois nunca
+   * colidem no `INSERT OR IGNORE`, e o `doi-confirmacao-dia` (#8552) pode
+   * compute-los separadamente sem ambiguidade.
+   *
+   * O `ts` do `confirm` é o horário da confirmação — o que o import da
+   * #8552 recupera. O Kit não expõe esse timestamp (só o estado atual), então
+   * quem grava este evento é o snapshot do #8552, que deteta a transição
+   * `inactive`→`active` e usa o `created_at` do snapshot como `ts`.
+   */
+>>>>>>> Stashed changes
   "confirm",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
