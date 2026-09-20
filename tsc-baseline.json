@@ -1,5 +1,7 @@
 {
   "test/5995-regression-guard.test.ts::TS2345": 2,
+  "test/8475-ads-followers-chart.test.ts::TS7006": 7,
+  "test/8475-ads-followers-chart.test.ts::TS7016": 1,
   "test/_helpers/make-mock-do-state.ts::TS2304": 3,
   "test/_helpers/make-tracked-kv.ts::TS2322": 1,
   "test/ads-chart.test.ts::TS7006": 3,

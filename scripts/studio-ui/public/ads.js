@@ -7,6 +7,7 @@
 // fora do Studio, ver `scripts/seed-spend-csv.ts`/CLAUDE.md).
 
 import { clampToContainer, formatDdMm as fmtDdMm, nearestDateIndex, skippedPausedLabel, tooltipRowsForIndex } from "./ads-chart.js";
+import { buildFollowersChartModel } from "./ads-followers-chart.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -581,55 +582,21 @@ function renderFollowersChart(followers) {
   const elChart = document.getElementById("followers-chart-container");
   if (!elChart) return;
   elChart.innerHTML = "";
-  if (!followers) { elChart.hidden = true; return; }
-  const ig = followers.instagram || { points: [] };
-  const fb = followers.facebook || { points: [] };
-  const byDate = new Map();
-  for (const p of ig.points) byDate.set(p.date, { ...(byDate.get(p.date) || {}), igDelta: p.delta });
-  for (const p of fb.points) byDate.set(p.date, { ...(byDate.get(p.date) || {}), fbDelta: p.delta });
-  const dates = [...byDate.keys()].sort();
-  if (dates.length === 0) { elChart.hidden = true; return; }
+  // #8534 — a geometria (barras, baseline, escala simétrica) é decidida em
+  // buildFollowersChartModel (ads-followers-chart.js), função pura testável
+  // isoladamente; aqui só resta montar a marcação SVG a partir do modelo.
+  const model = buildFollowersChartModel(followers);
+  if (!model) { elChart.hidden = true; return; }
   elChart.hidden = false;
 
-  const W = 720, H = 240, M = { top: 24, right: 24, bottom: 32, left: 36 };
-  const pw = W - M.left - M.right, ph = H - M.top - M.bottom;
-
-  // Determinar min/max para escala simétrica quando houver negativo
-  let minV = Infinity, maxV = -Infinity;
-  for (const d of dates) {
-    const row = byDate.get(d);
-    if (row == null) continue;
-    if (row.igDelta != null) { minV = Math.min(minV, row.igDelta); maxV = Math.max(maxV, row.igDelta); }
-    if (row.fbDelta != null) { minV = Math.min(minV, row.fbDelta); maxV = Math.max(maxV, row.fbDelta); }
-  }
-  if (!isFinite(minV)) minV = 0; if (!isFinite(maxV)) maxV = 0;
-  const hasNeg = minV < 0;
-  const symM = hasNeg ? Math.max(Math.abs(minV), Math.abs(maxV)) : Math.max(0, maxV);
-  const scaleY = (v) => ph - ((v + (hasNeg ? symM : 0)) / (hasNeg ? 2 * symM : Math.max(1, symM))) * ph;
-  const zeroY = hasNeg ? scaleY(0) : ph;
-
-  const groupW = pw / Math.max(1, dates.length);
-  const barW = Math.max(2, groupW * 0.35);
+  const { W, H, margin: M, plotHeight: ph, dates, hasNeg, symM, zeroY, groupW } = model;
 
   let bars = "";
   // Linha de baseline zero sempre desenhada
-  bars += `<line x1="${M.left}" y1="${M.top + zeroY}" x2="${W - M.right}" y2="${M.top + zeroY}" stroke="#888" stroke-width="1" stroke-dasharray="3,2"/>`;
-  for (let idx = 0; idx < dates.length; idx++) {
-    const date = dates[idx];
-    const cx = M.left + idx * groupW + groupW / 2;
-    const row = byDate.get(date) || {};
-    // Instagram
-    if (row.igDelta != null) {
-      const h = Math.abs(scaleY(row.igDelta) - zeroY);
-      const y = row.igDelta >= 0 ? M.top + zeroY - h : M.top + zeroY;
-      bars += `<rect x="${cx - barW}" y="${y}" width="${barW}" height="${h}" fill="#1a6" rx="2"/>`;
-    }
-    // Facebook
-    if (row.fbDelta != null) {
-      const h = Math.abs(scaleY(row.fbDelta) - zeroY);
-      const y = row.fbDelta >= 0 ? M.top + zeroY - h : M.top + zeroY;
-      bars += `<rect x="${cx}" y="${y}" width="${barW}" height="${h}" fill="#b55" rx="2"/>`;
-    }
+  bars += `<line x1="${M.left}" y1="${zeroY}" x2="${W - M.right}" y2="${zeroY}" stroke="#888" stroke-width="1" stroke-dasharray="3,2"/>`;
+  for (const bar of model.bars) {
+    const fill = bar.channel === "instagram" ? "#1a6" : "#b55";
+    bars += `<rect x="${bar.x}" y="${bar.y}" width="${bar.width}" height="${bar.height}" fill="${fill}" rx="2"/>`;
   }
 
   // Eixos + ticks
@@ -641,7 +608,7 @@ function renderFollowersChart(followers) {
     }
   }
   // Tick Y: 0 sempre + min/max quando simétrico
-  let yTicks = `<text x="${M.left - 6}" y="${M.top + zeroY + 3}" font-size="10" fill="#333" text-anchor="end">0</text>`;
+  let yTicks = `<text x="${M.left - 6}" y="${zeroY + 3}" font-size="10" fill="#333" text-anchor="end">0</text>`;
   if (hasNeg) {
     yTicks += `<text x="${M.left - 6}" y="${M.top + 10}" font-size="10" fill="#333" text-anchor="end">+${Math.round(symM)}</text>`;
     yTicks += `<text x="${M.left - 6}" y="${M.top + ph - 4}" font-size="10" fill="#333" text-anchor="end">−${Math.round(symM)}</text>`;
