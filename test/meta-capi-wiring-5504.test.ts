@@ -288,7 +288,7 @@ describe("#5504 — wiring: workers/reativar/src/index.ts (handleConfirm)", () =
   it("sem META_CAPI_ACCESS_TOKEN → ativação normal, NENHUMA chamada pro Graph API da Meta", async () => {
     const { fn, metaCalls } = reativarFetch({});
     const res = await handleConfirm(url(), reativarEnv(), fn);
-    // #8539: sucesso virou 303 pra /confirmado — ver test/reativar-redirect-confirmado-8539.test.ts
+    // #8539: sucesso virou 303 pra /confirmada (#8554) — ver test/reativar-redirect-confirmado-8539.test.ts
     assert.equal(res.status, 303);
     assert.equal(metaCalls.length, 0);
   });
@@ -335,8 +335,8 @@ describe("#5504 — wiring: workers/reativar/src/index.ts (handleConfirm)", () =
   // form por workers/poll e workers/cursos). O clique de confirmação de
   // reativação é `"Reactivation"`, um evento distinto.
   //
-  // #8539: o desfecho de sucesso virou 303 pra /confirmado — o evento
-  // continua sendo o mesmo, só a resposta mudou.
+  // #8539: o desfecho de sucesso virou 303 pra /confirmada (#8554) — o
+  // evento continua sendo o mesmo, só a resposta mudou.
   it("REGRESSÃO (#8551): dispara Reactivation, NUNCA CompleteRegistration", async () => {
     const { fn, metaCalls, metaBodies } = reativarFetch({});
     const res = await handleConfirm(url(), reativarEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), fn);
@@ -353,7 +353,7 @@ describe("#5504 — wiring: workers/reativar/src/index.ts (handleConfirm)", () =
     // #8539: o desfecho de sucesso é o redirect; o que este teste protege é que
     // a falha da Meta não o altera — não o HTML, que deixou de existir aqui.
     assert.equal(res.status, 303);
-    assert.match(res.headers.get("Location") ?? "", /\/confirmado\?via=brevo$/);
+    assert.match(res.headers.get("Location") ?? "", /\/confirmada\?via=brevo$/);
   });
 
   it("REGRESSÃO (hotfix pós-merge): com ctx.waitUntil, a resposta de sucesso retorna ANTES da Meta lenta resolver", async () => {

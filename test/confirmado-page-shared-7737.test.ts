@@ -1,11 +1,16 @@
 /**
- * test/confirmado-page-shared-7737.test.ts (#7737)
+ * test/confirmado-page-shared-7737.test.ts (#7737; rename #8554)
  *
  * Regressão (#633) pra `scripts/lib/shared/confirmado-page.ts` — o render
  * puro da página de confirmação do double opt-in, extraído de
  * `workers/poll/src/confirmado.ts` quando a página passou a ser servida no
  * apex (`diar.ia.br/confirmado`, Worker `site`) em vez de
  * `eia.diar.ia.br/confirmado` (Worker `poll`, que agora só faz 301).
+ *
+ * #8554 (20/09/2026): path renomeado `/confirmado` → `/confirmada`
+ * (concordância de gênero) — `PAGE_URL` abaixo aponta pro path novo; o path
+ * antigo passa a 301 no Worker `site` (cobertura em
+ * `test/site-worker-confirmado-7737.test.ts`).
  *
  * Substitui a cobertura de conteúdo que antes vivia em
  * `test/poll-confirmado-5167.test.ts` (esse arquivo agora cobre só o
@@ -18,9 +23,9 @@ import assert from "node:assert/strict";
 import { renderConfirmadoPage, handleConfirmadoPage, PAGE_URL } from "../scripts/lib/shared/confirmado-page.ts";
 import { GTM_CONTAINER_ID } from "../scripts/lib/shared/seo-meta.ts";
 
-describe("renderConfirmadoPage (#7737) — unit", () => {
-  it("PAGE_URL é diar.ia.br/confirmado (apex — antes era eia.diar.ia.br)", () => {
-    assert.equal(PAGE_URL, "https://diar.ia.br/confirmado");
+describe("renderConfirmadoPage (#7737, rename #8554) — unit", () => {
+  it("PAGE_URL é diar.ia.br/confirmada (apex — antes era eia.diar.ia.br/confirmado, depois diar.ia.br/confirmado)", () => {
+    assert.equal(PAGE_URL, "https://diar.ia.br/confirmada");
   });
 
   it("confirma o cadastro e diz quando a 1ª edição chega", () => {
@@ -52,7 +57,7 @@ describe("renderConfirmadoPage (#7737) — unit", () => {
   it("<title> e canonical batem com PAGE_URL (apex)", () => {
     const html = renderConfirmadoPage();
     assert.match(html, /<title>Assinatura confirmada — diar\.ia\.br<\/title>/);
-    assert.match(html, /<link rel="canonical" href="https:\/\/diar\.ia\.br\/confirmado">/);
+    assert.match(html, /<link rel="canonical" href="https:\/\/diar\.ia\.br\/confirmada">/);
   });
 });
 
@@ -66,7 +71,7 @@ describe("renderConfirmadoPage (#5499 item 5) — instrumentação GTM/GA4/pixel
     assert.match(head, new RegExp(`['"]${GTM_CONTAINER_ID}['"]`), `container ID (${GTM_CONTAINER_ID}) ausente do <head>`);
   });
 
-  it("não referencia gclid/fbclid/msclkid/li_fat_id (#5499 item 7 — não se aplica a /confirmado, ver docstring do módulo)", () => {
+  it("não referencia gclid/fbclid/msclkid/li_fat_id (#5499 item 7 — não se aplica a /confirmada, ver docstring do módulo)", () => {
     const html = renderConfirmadoPage();
     assert.doesNotMatch(html, /gclid|fbclid|msclkid|li_fat_id/i);
   });

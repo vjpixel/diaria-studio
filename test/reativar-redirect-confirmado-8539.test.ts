@@ -71,7 +71,7 @@ describe("#8539 — destino do redirect", () => {
 });
 
 describe("#8539 — só a confirmação REAL redireciona", () => {
-  it('Kit: assinante vira "active" → 303 pra /confirmado?via=brevo', async () => {
+  it('Kit: assinante vira "active" → 303 pra /confirmada?via=brevo (#8554)', async () => {
     const fetchImpl = routedFetch({
       get: () => jsonRes(200, { subscribers: [] }),
       post: () => jsonRes(201, { subscriber: { state: "active" } }),

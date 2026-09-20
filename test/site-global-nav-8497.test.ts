@@ -159,9 +159,9 @@ describe("guard mecânico — nav presente em CADA superfície tocada pelo #8497
     assert.ok(html.includes(SITE_NAV_MARKER), "/clarice sem menu global");
   });
 
-  it("/confirmado (shared/confirmado-page.ts)", () => {
+  it("/confirmada (shared/confirmado-page.ts, renomeado de /confirmado em #8554)", () => {
     const html = renderConfirmadoPage();
-    assert.ok(html.includes(SITE_NAV_MARKER), "/confirmado sem menu global");
+    assert.ok(html.includes(SITE_NAV_MARKER), "/confirmada sem menu global");
   });
 
   it("/archive (site-archive-index.ts) — 'Edições' ativo", () => {

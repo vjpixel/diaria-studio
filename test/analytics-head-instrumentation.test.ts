@@ -32,7 +32,8 @@ import { buildArchiveHtml } from "../workers/arquivo/src/render-archive.ts";
 import { renderGatePage } from "../workers/cursos/src/gate-page.ts";
 // #7737: renderConfirmadoPage mudou de workers/poll/src/confirmado.ts
 // (agora só um 301 pro apex) pra scripts/lib/shared/confirmado-page.ts —
-// consumida pelo Worker `site` (diar.ia.br/confirmado).
+// consumida pelo Worker `site` (diar.ia.br/confirmada, renomeado de
+// /confirmado em #8554).
 import { renderConfirmadoPage } from "../scripts/lib/shared/confirmado-page.ts";
 import { renderJogarPageHtml, renderJogarSequencePageHtml, renderJogarArchiveHtml, renderJogarQuizPageHtml } from "../workers/poll/src/jogar.ts";
 import { renderSharePageHtml, renderQuizSharePageHtml } from "../workers/poll/src/share.ts";
