@@ -270,6 +270,34 @@ describe("confirmou_via (#8438) — sinal MEDÍVEL do clique no botão", () => {
     assert.equal((post.body!.fields as Record<string, unknown> | undefined)?.confirmou_via, "brevo-reativar");
     assert.equal(kit.get()!.fields.utm_source, "google-ads", "origem é preservada");
   });
+
+  for (const modo of ["500", "throw", "sem-fields"] as const) {
+    it(`#8518 — GET singular falha (${modo}) NÃO deve descartar confirmou_via junto com os campos de origem`, async () => {
+      // Achado do #8518: antes do fix, confirmou_via entrava em `desired` e
+      // passava por `filterKitOrigemFields`, que descarta TUDO quando
+      // `current === null` (leitura falhou) — a medição do clique (#8438) se
+      // perdia junto com a preservação de origem, sem log distinguível.
+      const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } }, singularGet: modo });
+      const { result, warns } = await capture(() => activateSubscriptionKit(envComField(), "a@x.com", kit.fetchImpl, true));
+      assert.equal(result.ok, true);
+      assert.equal(result.beehiivStatus, "active");
+      const post = upsertPost(kit.calls)!;
+      assert.equal(
+        (post.body!.fields as Record<string, unknown> | undefined)?.confirmou_via,
+        "brevo-reativar",
+        "confirmou_via deve ir no POST mesmo com a leitura de origem falhando",
+      );
+      assert.equal(kit.get()!.fields.confirmou_via, "brevo-reativar");
+      // origem continua protegida — o fix não reabre o #8235.
+      assert.equal(kit.get()!.fields.utm_source, "google-ads");
+      const log = warns.find((l) => l.event === "reativar_kit_origem_preservada");
+      assert.equal(log?.motivo, "leitura_falhou");
+      assert.ok(
+        !(log?.campos as string[] | undefined)?.includes("confirmou_via"),
+        "confirmou_via não é campo de origem — não deve aparecer no log de preservação",
+      );
+    });
+  }
 });
 
 describe("filterKitOrigemFields (#8235)", () => {

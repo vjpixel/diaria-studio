@@ -803,8 +803,17 @@ export async function activateSubscriptionKit(
   // clicou no botão de fato, então não há o que medir — e escrever o field
   // ali seria um falso positivo (o evaluate veria "botão" pra quem só
   // recebeu o e-mail de DOI e ainda não clicou).
+  // #8518: `confirmou_via` é ORTOGONAL à origem (ver comentário acima) —
+  // precisa ficar FORA de `desired` antes de passar por
+  // `filterKitOrigemFields`, senão uma falha de leitura do GET singular
+  // (`current === null`, fail-closed) descarta TODOS os campos de `desired`
+  // indiscriminadamente, `confirmou_via` incluído, e a perda de medição sai
+  // logada como `reativar_kit_origem_preservada` — rótulo que só faz
+  // sentido pra campo de origem. Extraído aqui e mesclado de volta em
+  // `fields` depois do filtro, incondicional ao resultado da leitura.
+  let confirmouViaField: Record<string, string> = {};
   if (confirmedByToken && env.KIT_CONFIRMOU_VIA_FIELD) {
-    desired[env.KIT_CONFIRMOU_VIA_FIELD] = REATIVAR_CONFIRMOU_VIA_VALUE;
+    confirmouViaField = { [env.KIT_CONFIRMOU_VIA_FIELD]: REATIVAR_CONFIRMOU_VIA_VALUE };
   }
 
   // #8235: assinante que já existe → lê os campos atuais pelo GET SINGULAR
@@ -831,6 +840,13 @@ export async function activateSubscriptionKit(
         }),
       );
     }
+  }
+
+  // #8518: mescla `confirmou_via` de volta em `fields` DEPOIS do filtro de
+  // origem, incondicional ao resultado de `readKitSubscriberFields` — é o
+  // único jeito de honrar o "independente de origem" que motivou o #8438.
+  if (Object.keys(confirmouViaField).length > 0) {
+    fields = { ...fields, ...confirmouViaField };
   }
 
   // #7723: double opt-in também aqui — e neste worker ele não é só
