@@ -9,10 +9,20 @@ Nada aqui foi importado nem publicado — nenhuma ação real rodou contra o GTM
 Meta, Google Ads ou Microsoft Advertising nesta sessão (`develop`, label
 `windows`, fora do alcance do overnight).
 
-Arquivo companheiro: **`docs/gtm-signup-container-export.json`** — é esse
-arquivo que se sobe no importador do GTM (o JSON abaixo, neste documento, é a
-mesma coisa, só que embutida pra leitura; não precisa copiar/colar, o `.json`
-já está pronto pra upload).
+Arquivo companheiro: **`docs/gtm-signup-container-import-proposal.json`**
+(renomeado de `gtm-signup-container-export.json` no #8578, 20/09/2026 — o
+nome antigo sugeria que era um export do container ao vivo; é uma PROPOSTA
+de import, nunca importada nem publicada) — é esse arquivo que se sobe no
+importador do GTM (o JSON abaixo, neste documento, é a mesma coisa, só que
+embutida pra leitura; não precisa copiar/colar, o `.json` já está pronto pra
+upload).
+
+**⚠️ Este arquivo não reflete o container publicado.** O `GTM-TC8C65ZN` ao
+vivo usa o template oficial do Meta Pixel (`__cvt_5RM3Q`), não a tag Custom
+HTML com `fbq(...)` que este arquivo descreve — achado medido em 20/09/2026
+(#8578), que também atrasou o diagnóstico da #8572 (campo `vtp_eventId` só
+existe no template oficial). `test/meta-capi-8388.test.ts` audita esta
+PROPOSTA versionada, nunca o container ao vivo.
 
 ---
 
@@ -71,7 +81,7 @@ real, silencioso até alguém notar a conversão do LinkedIn zerar.
 **Passo a passo:**
 
 1. GTM → Admin → **Import Container**.
-2. Escolher `docs/gtm-signup-container-export.json`.
+2. Escolher `docs/gtm-signup-container-import-proposal.json`.
 3. Workspace: **criar um workspace novo** (ex: "5546 — cadastro Meta+UET"),
    não o workspace `Default`, para poder revisar o diff antes de publicar.
 4. Modo de importação: **Merge**.
@@ -85,7 +95,7 @@ real, silencioso até alguém notar a conversão do LinkedIn zerar.
 
 ---
 
-## O JSON completo (idêntico a `docs/gtm-signup-container-export.json`)
+## O JSON completo (idêntico a `docs/gtm-signup-container-import-proposal.json`)
 
 Embutido aqui para este documento ser autossuficiente; o `.json` ao lado é a
 mesma coisa como arquivo pronto pra upload, sem precisar copiar/colar.
@@ -226,7 +236,7 @@ A parte cara do #5500 é decidir os nomes de evento e a estrutura do gatilho —
   dois caminhos**: a fonte única é
   `META_CAPI_COMPLETE_REGISTRATION_VALUE`/`_CURRENCY` em
   `scripts/lib/shared/meta-capi.ts`, e `test/meta-capi-8388.test.ts` lê o
-  snippet `fbq(...)` de `docs/gtm-signup-container-export.json` pra travar a
+  snippet `fbq(...)` de `docs/gtm-signup-container-import-proposal.json` pra travar a
   igualdade. Mudar o valor aqui sem mudar a constante (ou vice-versa) quebra
   o teste de propósito.
 - **Goal Microsoft UET: "Newsletter Signup"** (custom event, categoria

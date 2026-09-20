@@ -137,10 +137,14 @@ export async function computeCompleteRegistrationEventId(
  * DOIS caminhos**: valor divergente entre pixel e CAPI estraga justamente
  * a comparação que o `event_id` determinístico acima existe pra permitir.
  * Por isso estas duas constantes são a fonte única, e
- * `test/meta-capi-8388.test.ts` lê o snippet `fbq(...)` do export do
- * container GTM (`docs/gtm-signup-container-export.json`) pra travar a
- * igualdade — o pixel não é código executado por este repo, mas o valor
- * dele é versionado aqui e portanto auditável.
+ * `test/meta-capi-8388.test.ts` lê o snippet `fbq(...)` da PROPOSTA de
+ * import do container GTM (`docs/gtm-signup-container-import-proposal.json`)
+ * pra travar a igualdade — o pixel não é código executado por este repo, mas
+ * o valor dele é versionado aqui e portanto auditável. **Isto audita a
+ * proposta versionada, não o container ao vivo no GTM** — o container
+ * publicado (`GTM-TC8C65ZN`) usa o template oficial do Meta Pixel
+ * (`__cvt_5RM3Q`), não a tag Custom HTML deste arquivo; os campos podem
+ * divergir (#8578).
  */
 export const META_CAPI_COMPLETE_REGISTRATION_VALUE = 1;
 export const META_CAPI_COMPLETE_REGISTRATION_CURRENCY = "BRL";
