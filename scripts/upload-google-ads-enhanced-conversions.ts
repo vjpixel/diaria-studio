@@ -110,24 +110,16 @@ import { extname } from "node:path";
 import Papa from "papaparse";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { refreshGoogleAdsAccessToken, type GoogleAdsAuthConfig } from "./lib/google-ads-ingest.ts";
 import {
   validateSignupRecords,
   buildUploadClickConversionsPayload,
-  resolveConversionActionResourceName,
   parseSignupCsv,
   parseSignupJson,
-  uploadClickConversions,
   type SignupRecordInput,
 } from "./lib/google-ads-enhanced-conversions.ts";
-
-const REQUIRED_SEND_ENV_VARS = [
-  "GOOGLE_ADS_CLIENT_ID",
-  "GOOGLE_ADS_CLIENT_SECRET",
-  "GOOGLE_ADS_REFRESH_TOKEN",
-  "GOOGLE_ADS_DEVELOPER_TOKEN",
-  "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
-] as const;
+// #8555: o envio (auth + token + POST) vive em módulo próprio, compartilhado
+// com o lote de confirmação (`upload-google-ads-confirmations.ts`).
+import { resolveActionResourceName, sendConversionPayload } from "./lib/google-ads-conversion-sender.ts";
 
 /** Lê e parseia o arquivo de input pela extensão (`.csv` ou `.json`).
  *  Lança com mensagem clara pra extensão não reconhecida. */
@@ -144,22 +136,6 @@ export function loadSignupRecords(inputPath: string, content: string): SignupRec
     return records;
   }
   throw new Error(`extensão de arquivo não reconhecida (esperado .csv ou .json): ${inputPath}`);
-}
-
-function authConfigFromEnv(customerId: string): { auth: GoogleAdsAuthConfig } | { missing: string[] } {
-  const missing = REQUIRED_SEND_ENV_VARS.filter((name) => !process.env[name]);
-  if (missing.length > 0) return { missing };
-  return {
-    auth: {
-      clientId: process.env.GOOGLE_ADS_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_ADS_CLIENT_SECRET!,
-      refreshToken: process.env.GOOGLE_ADS_REFRESH_TOKEN!,
-      developerToken: process.env.GOOGLE_ADS_DEVELOPER_TOKEN!,
-      loginCustomerId: process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID!,
-      customerId,
-      apiVersion: process.env.GOOGLE_ADS_API_VERSION,
-    },
-  };
 }
 
 export async function main(argv: string[] = process.argv.slice(2), fetchFn: typeof fetch = fetch): Promise<number> {
@@ -232,20 +208,12 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   }
 
   const customerId = customerIdFlag ?? process.env.GOOGLE_ADS_CUSTOMER_ID;
-  let conversionActionResourceName: string;
-  if (conversionActionId.startsWith("customers/")) {
-    conversionActionResourceName = conversionActionId;
-  } else {
-    if (!customerId) {
-      console.error(
-        "[upload-google-ads-enhanced-conversions] ✖ --conversion-action-id não é um resource name completo " +
-          "e nem --customer-id nem GOOGLE_ADS_CUSTOMER_ID estão definidos — não dá pra montar " +
-          "'customers/{id}/conversionActions/{id}'.",
-      );
-      return 1;
-    }
-    conversionActionResourceName = resolveConversionActionResourceName(customerId, conversionActionId);
+  const resolvedAction = resolveActionResourceName(conversionActionId, customerId);
+  if (!resolvedAction.ok) {
+    console.error(`[upload-google-ads-enhanced-conversions] ✖ ${resolvedAction.error}`);
+    return 1;
   }
+  const conversionActionResourceName = resolvedAction.resourceName;
 
   const payload = buildUploadClickConversionsPayload(validation.conversions, { conversionActionResourceName });
 
@@ -256,33 +224,12 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
     return 0;
   }
 
-  if (!customerId) {
-    console.error(
-      "[upload-google-ads-enhanced-conversions] ✖ --send requer --customer-id ou GOOGLE_ADS_CUSTOMER_ID no ambiente " +
-        "(usado no header login-customer-id/no path da chamada).",
-    );
+  const sendResult = await sendConversionPayload({ fetchFn, env: process.env, customerId, payload });
+  if (!sendResult.ok) {
+    console.error(`[upload-google-ads-enhanced-conversions] ✖ ${sendResult.error}`);
     return 1;
   }
-
-  const configResult = authConfigFromEnv(customerId);
-  if ("missing" in configResult) {
-    console.error(
-      `[upload-google-ads-enhanced-conversions] ✖ --send requer as variáveis de ambiente ausentes: ${configResult.missing.join(", ")}.`,
-    );
-    return 1;
-  }
-
-  const tokenResult = await refreshGoogleAdsAccessToken(fetchFn, configResult.auth);
-  if ("error" in tokenResult) {
-    console.error(`[upload-google-ads-enhanced-conversions] ✖ falha ao renovar access token: ${tokenResult.error}`);
-    return 1;
-  }
-
-  const uploadResult = await uploadClickConversions(fetchFn, configResult.auth, tokenResult.accessToken, payload);
-  if (!uploadResult.ok) {
-    console.error(`[upload-google-ads-enhanced-conversions] ✖ upload falhou: ${uploadResult.error}`);
-    return 1;
-  }
+  const uploadResult = sendResult;
 
   console.log(`[upload-google-ads-enhanced-conversions] ✔ ${validation.conversions.length} conversão(ões) enviada(s).`);
   console.log(JSON.stringify(uploadResult.response, null, 2));
