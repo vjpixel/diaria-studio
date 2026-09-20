@@ -131,6 +131,37 @@ describe("edition-stage-runner — contrato de saída (#5744)", () => {
     assert.ok(!tail.includes("linha 0"), "não deveria preservar o começo inteiro");
     assert.equal(tail.split(" | ").length, FAILURE_TAIL_LINES);
   });
+
+  // #8560 (finding do review da PR #8563): `err.stdout` no caminho de
+  // EXCEÇÃO também é `--output-format json` desde a troca de text→json —
+  // sem passar por `resultTextOrRaw`, o `failureTail` viraria o objeto JSON
+  // inteiro numa linha só, em vez do texto de resposta legível.
+  it("stdout de FALHA no caminho de exceção (err.stdout) que é JSON --output-format json: failureTail usa o campo result, não o blob JSON inteiro", () => {
+    W = sentinelWorld(0);
+    const jsonStdout = JSON.stringify({
+      total_cost_usd: 0.05,
+      usage: { input_tokens: 1, output_tokens: 1 },
+      result: "texto de resposta legível — isto é o que deveria aparecer no failureTail",
+    });
+    const execFn = (() => {
+      const err = new Error("boom") as Error & { status?: number; stdout?: string };
+      err.status = 4;
+      err.stdout = jsonStdout;
+      throw err;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    const result = runEditionStages(makeOpts({ execFn }));
+
+    const tail = result.outcomes.find((o) => o.status === "failed")?.failureTail ?? "";
+    assert.ok(
+      tail.includes("texto de resposta legível"),
+      "deveria extrair o campo result, não o JSON bruto",
+    );
+    assert.ok(
+      !tail.includes('"total_cost_usd"'),
+      "não deveria vazar a estrutura JSON crua (chaves internas) no failureTail",
+    );
+  });
 });
 
 describe("edition-stage-runner — guard de publicação", () => {

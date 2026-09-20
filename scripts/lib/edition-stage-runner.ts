@@ -491,6 +491,14 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
               new Date().toISOString(),
             );
             saveDoc(editionDir, updated);
+          } else {
+            // `doc.rows` só cobre STAGES 0-6 (ver makeInitialDoc em
+            // update-stage-status.ts) — um `stage` fora desse conjunto não
+            // tem onde persistir. Não deveria acontecer (STAGE_PLAN só
+            // contém 1-4), mas silenciar aqui seria o mesmo buraco que o
+            // #8560 existe pra fechar: usage capturado com sucesso e
+            // descartado sem rastro (finding do review da PR #8563).
+            onProgress(`Stage ${stage}: usage capturado mas doc.rows não tem esse stage — nada persistido`);
           }
         } else {
           onProgress(`Stage ${stage}: stdout --output-format json não parseou — cost_usd/tokens ficam vazios pro stage`);
@@ -508,7 +516,14 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       break;
     } catch (e) {
       const err = e as { status?: number; stdout?: string; stderr?: string; message?: string };
-      const combined = [err.stdout, err.stderr, err.message].filter(Boolean).join("\n");
+      // #8560 (finding do review da PR #8563): `err.stdout` também é
+      // `--output-format json` no caminho de exceção (exit != 0) — sem
+      // `resultTextOrRaw`, o blob JSON inteiro entraria em `combined` como
+      // se fosse texto humano, o mesmo problema que o branch de pós-condição
+      // acima já corrige. `err.stderr`/`err.message` não são JSON (vêm do
+      // shell/execFileSync), não passam por esta extração.
+      const stdoutForDiagnostics = err.stdout ? resultTextOrRaw(err.stdout) : err.stdout;
+      const combined = [stdoutForDiagnostics, err.stderr, err.message].filter(Boolean).join("\n");
       // #6045: mesmo tratamento no caminho de exceção — retry único quando a
       // assinatura background-wait está presente.
       if (looksLikeBackgroundWaitExit(combined) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
