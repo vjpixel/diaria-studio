@@ -909,6 +909,31 @@ function detectBookRecommendation(
   return { isBookRecommendation: false, explicitTitleLine: false };
 }
 
+/**
+ * #8575: o kicker externo (`categoria` do snippet, ou o default) JÁ é o rótulo
+ * "Recomendação de Leitura" — então o box de livro não pode repeti-lo por
+ * dentro (título sintetizado por `renderIntroCallout` OU a linha de título
+ * explícita "Recomendação de leitura" que vem do markdown pós-stitch).
+ * A #8199/#8216 só cobria `titulo: false` no header do snippet; o caminho
+ * real (box vindo de 02-reviewed.md, sem essa flag) continuava duplicando.
+ * Decide pelo CONTEÚDO + rótulo do kicker, sem depender de flag: devolve o
+ * box sem a linha de título explícita e `plain: true` (nenhum título
+ * sintetizado). Rótulo diferente, ou box que não é de livro: box intacto e
+ * `plain: null` (não interfere).
+ */
+export function dedupeBookKickerTitle(
+  box: string,
+  kickerLabel: string,
+): { box: string; plain: true | null } {
+  if (kickerLabel.trim().toLowerCase() !== BOOK_RECOMMENDATION_TITLE.toLowerCase()) {
+    return { box, plain: null };
+  }
+  const paras = box.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const det = detectBookRecommendation(paras);
+  if (!det.isBookRecommendation) return { box, plain: null };
+  return { box: (det.explicitTitleLine ? paras.slice(1) : paras).join("\n\n"), plain: true };
+}
+
 export function renderIntroCallout(
   text: string,
   titleStyle: "serif" | "body" = "serif",
@@ -2714,9 +2739,11 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       const label = assignedBox.categoria
         || (isAgradecimentoBox(assignedBox.content) ? "Agradecimento" : "Divulgação");
       parts.push(renderDivulgacaoSeparator(label));
+      // #8575: kicker já diz "Recomendação de Leitura" → sem 2º rótulo no box.
+      const dedup = dedupeBookKickerTitle(assignedBox.content, label);
       parts.push(
         renderBoxDivulgacao(
-          assignedBox.content,
+          dedup.box,
           assignedBox.image,
           assignedBox.bold,
           assignedBox.imageExplicit,
@@ -2727,7 +2754,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
           // parágrafo em prosa corrida, não título de divulgação. Substitui
           // a detecção por regex de copy (`isConviteAmigoBox`, aposentada):
           // trocar a copy do box não derruba mais a detecção.
-          assignedBox.noTitulo,
+          dedup.plain ?? assignedBox.noTitulo,
         ),
       );
     }
