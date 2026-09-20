@@ -174,52 +174,14 @@ export function stripKickerEmoji(category: string): string {
   return category.replace(/[^\p{L}\p{N}\s?!.-]/gu, "").trim();
 }
 
-export function buildCardSvg(
-  title: string,
-  _category: string,
-  dateLabel = "",
-  dims: { w: number; h: number; textH: number } = { w: W, h: H, textH: TEXT_H },
-): string {
-  const { w: CW, h: CH, textH: CTEXT } = dims;
-  const CIMG = CH - CTEXT;
-  const available = CW - PAD * 2;
-  const maxChars = Math.floor(available / 26);
-  const lines = wrapTitle(title, maxChars);
-  // Clamp por número de linhas E por largura da linha mais longa: título curto
-  // não vira outdoor, título longo não estoura a faixa.
-  const longest = Math.max(...lines.map((l) => l.length));
-  const widthBased = Math.floor(available / (longest * 0.52));
-  const heightBased = Math.floor((CTEXT - 150) / (lines.length * 1.25));
-  const size = Math.max(40, Math.min(82, widthBased, heightBased));
-  const lineGap = Math.round(size * 1.2);
-  // Título ancorado no TOPO da faixa (não centralizado no espaço restante):
-  // centralizar deixava um vão morto acima com título de 1 linha e empurrava o
-  // texto pra perto do rodapé com 3 linhas. Ancorado, a base é sempre a mesma.
-  const startY = CIMG + 92 + size * 0.78;
-
-  const titleLines = lines
-    .map(
-      (line, i) => `<text x="${PAD}" y="${startY + i * lineGap}" font-family="${FONTS.serif}" font-size="${size}" font-weight="400" fill="${COLORS.ink}">${esc(line)}</text>`,
-    )
-    .join("\n  ");
-
-  // Filete teal de largura total na junção imagem/faixa: dá acabamento ao corte
-  // seco e reaproveita a cor de marca que antes ancorava o kicker (removido).
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${CW}" height="${CH}" viewBox="0 0 ${CW} ${CH}">
-  <rect x="0" y="${CIMG}" width="${CW}" height="${CTEXT}" fill="${COLORS.paper}"/>
-  <rect x="0" y="${CIMG}" width="${CW}" height="8" fill="${COLORS.brand}"/>
-  ${titleLines}
-  <text x="${PAD}" y="${CH - 62}" font-family="${FONTS.serif}" font-size="34" fill="${COLORS.ink}">diar<tspan fill="${COLORS.brand}">.</tspan>ia<tspan fill="${COLORS.brand}">.</tspan><tspan fill="${COLORS.brand}">br</tspan></text>
-  ${dateLabel ? `<text x="${CW - PAD}" y="${CH - 62}" text-anchor="end" font-family="${FONT_SANS}" font-size="24" font-weight="500" letter-spacing="1" fill="#8a8580">${esc(dateLabel)}</text>` : ""}
-</svg>`;
-}
-
 /**
- * Layout OVERLAY: imagem ocupa o card inteiro, título sobreposto na base sobre
- * um gradiente escuro. Diferente do layout padrão (faixa de papel separada),
- * aqui o contraste é responsabilidade do gradiente — texto claro direto sobre
- * pintura a óleo, sem véu, fica ilegível em qualquer região clara.
+ * Único layout do card 4:5 hoje (#8499 — o layout "band", faixa de papel
+ * separada embaixo, foi removido por não ter consumidor: nenhuma chamada real
+ * usava `--layout band`, só o teste unitário do `buildCardSvg` que o
+ * implementava). Imagem ocupa o card inteiro, título sobreposto na base sobre
+ * um gradiente escuro — o contraste é responsabilidade do gradiente, já que
+ * texto claro direto sobre pintura a óleo, sem véu, fica ilegível em qualquer
+ * região clara.
  *
  * O gradiente vai de transparente (60% da altura) a quase opaco na base: cobre
  * a área do texto sem apagar a imagem inteira.
@@ -264,8 +226,7 @@ export type OverlayWrap = { readonly divisor: number; readonly ratio: number };
  * palavras, wrap em 1 linha) caía nesse piso, violando a regra editorial "a
  * fonte do título deve ser sempre igual ou maior que a fonte do texto".
  * Título ≤52 chars (regra editorial de destaque) sempre cabe em 1-2 linhas
- * a 62px+ — `buildOverlaySvg` (não `buildCardSvg`, que é layout "band"
- * separado, não usado pela capa diária) ancora o bloco de título na BASE do
+ * a 62px+ — `buildOverlaySvg` ancora o bloco de título na BASE do
  * card (`baseY = CH - 150`) e cresce PRA CIMA conforme o número de linhas,
  * sem um clamp de altura — a imagem inteira dá espaço de sobra. O risco real
  * de overflow do piso é de LARGURA, não altura: coberto pelo teste de
@@ -430,46 +391,33 @@ export function readCoverOverride(
   };
 }
 
-export type CardRatio = "4x5" | "9x16";
-
 /**
- * Dimensões por proporção. 9:16 = Stories (ocupa a tela inteira). Exportado
- * (#4090 item 5) pra teste direto — antes só era exercitado indiretamente via
- * dims arbitrários passados a `buildCardSvg`/`buildOverlaySvg`, o que não
- * pegaria um valor errado aqui se `generateCard` continuasse construindo os
- * dims manualmente em vez de ler deste record.
+ * Único valor desde #8499 (era `"4x5" | "9x16"` — 9:16/Stories nunca teve
+ * consumidor real, só o teste unitário de `RATIOS["9x16"]`; Stories têm
+ * gerador próprio, `gen-story-card.ts`, que não importa deste arquivo).
+ * Mantido como tipo/record em vez de inlinar as dims em `generateCard` pra
+ * preservar o teste direto de dimensões (#4090 item 5).
  */
+export type CardRatio = "4x5";
+
 export const RATIOS: Record<CardRatio, { w: number; h: number; textH: number }> = {
   "4x5": { w: 1080, h: 1350, textH: 470 },
-  "9x16": { w: 1080, h: 1920, textH: 620 },
 };
 
 export async function generateCard(
   editionDir: string,
   destaque: string,
   title: string,
-  category: string,
+  _category: string,
   ratio: CardRatio = "4x5",
-  layout: "band" | "overlay" = "overlay",
   /**
-   * `fontSizeOverride` (#5330): repassado a `buildOverlaySvg` — só afeta
-   * `layout: "overlay"`. `outPath`: grava fora do caminho padrão
-   * `04-{destaque}-{ratio}.jpg`, pra recompor o título com tamanho fixo pro
-   * carrossel semanal SEM sobrescrever o card já publicado no feed diário
-   * (mesma arte-base, arquivo de saída diferente).
+   * `fontSizeOverride` (#5330): repassado a `buildOverlaySvg`. `outPath`:
+   * grava fora do caminho padrão `04-{destaque}-{ratio}.jpg`, pra recompor
+   * o título com tamanho fixo pro carrossel semanal SEM sobrescrever o card
+   * já publicado no feed diário (mesma arte-base, arquivo de saída diferente).
    */
   opts: { fontSizeOverride?: number; outPath?: string; wrap?: OverlayWrap } = {},
 ): Promise<string | null> {
-  // Fonte por LAYOUT — os dois recortam em direções opostas:
-  //
-  //   band    → área de imagem 1080×880 (~1,23:1), mais LARGA que a master
-  //             (1,19:1): derivar da master cortaria altura e decepa a figura.
-  //             O 2:1 já é o recorte horizontal certo; daqui só sai margem lateral.
-  //   overlay → área de imagem 1080×1350 (0,8:1), retrato: precisa da altura que
-  //             o 2:1 descartou. Da master sai só margem lateral; do 2:1 comeria
-  //             60% da largura (era o que decepava os sujeitos na 260727).
-  //
-  // Fallback pro 2:1 em edição sem master (geradas antes dela existir).
   // Ordem de preferência da fonte (decisão editorial 260727 — gerar duas vezes):
   //   1. 4:5 NATIVO — arte composta pro card, entra sem recorte nenhum;
   //   2. master 6:5 — recorte lateral (tentativa de arte única pros dois formatos);
@@ -488,29 +436,14 @@ export async function generateCard(
   // diferentes, a data dele mentiria). A diária não tem esse arquivo e segue igual.
   const cover = readCoverOverride(editionDir, destaque);
   const dateLabel = cover ? "" : editionDateLabel(editionDir);
-  if (layout === "overlay") {
-    // Imagem ocupa o card INTEIRO; o texto vem por cima, sobre o gradiente.
-    const full = await sharp(src).resize(dims.w, dims.h, { fit: "cover", position: "top" }).toBuffer();
-    const outOverlay = opts.outPath ?? resolve(editionDir, `04-${destaque}-${ratio}.jpg`);
-    await sharp(full)
-      .composite([{ input: Buffer.from(buildOverlaySvg(title, dateLabel, dims, opts.fontSizeOverride, cover?.kicker ?? "", opts.wrap)), top: 0, left: 0 }])
-      .jpeg({ quality: 88 })
-      .toFile(outOverlay);
-    return outOverlay;
-  }
-  const imgH = dims.h - dims.textH;
-  // "top": o corte vertical descarta a BASE — que o prompt já reserva como área
-  // calma pro texto — em vez de centralizar e comer a cabeça da figura.
-  const top = await sharp(src).resize(dims.w, imgH, { fit: "cover", position: "top" }).toBuffer();
-  const out = resolve(editionDir, `04-${destaque}-${ratio}-band.jpg`);
-  await sharp({ create: { width: dims.w, height: dims.h, channels: 3, background: COLORS.paper } })
-    .composite([
-      { input: top, top: 0, left: 0 },
-      { input: Buffer.from(buildCardSvg(title, category, dateLabel, dims)), top: 0, left: 0 },
-    ])
+  // Imagem ocupa o card INTEIRO; o texto vem por cima, sobre o gradiente.
+  const full = await sharp(src).resize(dims.w, dims.h, { fit: "cover", position: "top" }).toBuffer();
+  const outOverlay = opts.outPath ?? resolve(editionDir, `04-${destaque}-${ratio}.jpg`);
+  await sharp(full)
+    .composite([{ input: Buffer.from(buildOverlaySvg(title, dateLabel, dims, opts.fontSizeOverride, cover?.kicker ?? "", opts.wrap)), top: 0, left: 0 }])
     .jpeg({ quality: 88 })
-    .toFile(out);
-  return out;
+    .toFile(outOverlay);
+  return outOverlay;
 }
 
 async function main(): Promise<void> {
@@ -524,8 +457,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const only = args.values.destaque ?? null;
-  const ratio = (args.values.ratio ?? "4x5") as CardRatio;
-  const layout = (args.values.layout ?? "overlay") as "band" | "overlay";
   const mdPath = resolve(editionDir, "02-reviewed.md");
   if (!existsSync(mdPath)) {
     console.error(`02-reviewed.md ausente em ${editionDir}`);
@@ -547,7 +478,7 @@ async function main(): Promise<void> {
     if (only && only !== key) continue;
     const d = destaques[i] as { title?: string; category?: string };
     const out = await generateCard(
-      editionDir, key, d.title ?? "", d.category ?? "", ratio, layout,
+      editionDir, key, d.title ?? "", d.category ?? "", "4x5",
       { fontSizeOverride: sharedFontSize },
     );
     if (out) generated.push(out);

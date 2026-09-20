@@ -91,7 +91,7 @@ export type NewsCardGenerator = (input: NewsCardRecomposeInput & { outPath: stri
 export const defaultNewsCardGenerator: NewsCardGenerator = async ({ editionDir, destaque, title, category, fontSize, outPath, kvKey }) => {
   await assertBrandSerifAvailable("weekly-carousel-news-card");
 
-  const cardPath = await generateCard(editionDir, destaque, title, category, "4x5", "overlay", { fontSizeOverride: fontSize, outPath, wrap: WEEKLY_OVERLAY_WRAP });
+  const cardPath = await generateCard(editionDir, destaque, title, category, "4x5", { fontSizeOverride: fontSize, outPath, wrap: WEEKLY_OVERLAY_WRAP });
   if (!cardPath) {
     throw new Error(`arte-base de ${destaque} ausente em ${editionDir} (nem -4x5-nativo.jpg, nem -master.jpg, nem -2x1.jpg)`);
   }

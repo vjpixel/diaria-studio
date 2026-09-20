@@ -378,7 +378,7 @@ const WORDMARK = "diar.ia.br";
 /**
  * Pure: markup colorido do wordmark `diar.ia.br` sozinho — `diar`/`ia` em
  * ink (texto padrão, sem `fill` explícito), os 2 pontos e o `br` em
- * `COLORS.brand` (teal), igual ao wordmark de `buildOverlaySvg`/`buildCardSvg`
+ * `COLORS.brand` (teal), igual ao wordmark de `buildOverlaySvg`
  * (gen-social-card-4x5.ts). Extraído de `footerMarkup` (#7672) pra ser a
  * ÚNICA fonte da colorização — antes `handleOnlyMarkup` reimplementava o
  * wordmark sem essa regra e o `@diar.ia.br` do modo compacto saía com a
@@ -392,7 +392,7 @@ function wordmarkMarkup(): string {
  * Pure: monta o `<text>` do rodapé — se `footer` TERMINA com o wordmark
  * `diar.ia.br` (caso de `buildFlatCardTexts`: capa leva "{range} · diar.ia.br",
  * CTA leva só "diar.ia.br"), os pontos e o "br" saem em `COLORS.brand`
- * (teal), igual ao wordmark usado em `buildOverlaySvg`/`buildCardSvg`
+ * (teal), igual ao wordmark usado em `buildOverlaySvg`
  * (gen-social-card-4x5.ts) — achado ao vivo (#5330, review do editor): o
  * rodapé estava saindo inteiro em ink sólido, sem a cor de marca que os
  * cards de notícia já usam pro mesmo texto. Footer que não termina com o

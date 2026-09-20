@@ -20,7 +20,6 @@ import { join } from "node:path";
 import {
   wrapTitle,
   stripKickerEmoji,
-  buildCardSvg,
   buildOverlaySvg,
   overlayFittingFontSize,
   overlayTitleOverflows,
@@ -164,31 +163,6 @@ describe("stripKickerEmoji (#4114)", () => {
   });
 });
 
-describe("buildCardSvg — clamp de font-size (#4114)", () => {
-  const sizeOf = (svg: string): number => {
-    const m = svg.match(/font-size="(\d+)"[^>]*font-weight="400"/);
-    return m ? Number(m[1]) : NaN;
-  };
-
-  it("título curto não vira outdoor (teto de 82)", () => {
-    assert.ok(sizeOf(buildCardSvg("IA", "")) <= 82);
-  });
-
-  it("título longo não afunda abaixo do piso de legibilidade (40)", () => {
-    const longo =
-      "Estudo mostra que 88% das empresas usam inteligência artificial mas a maioria de forma superficial e sem retorno mensurável";
-    assert.ok(sizeOf(buildCardSvg(longo, "")) >= 40);
-  });
-
-  it("quanto mais longo o título, menor (ou igual) a fonte — nunca maior", () => {
-    const curto = sizeOf(buildCardSvg("Google lança Gemini", ""));
-    const longo = sizeOf(
-      buildCardSvg("Google lança Gemini 3.6 e 3.5 Flash com contexto expandido e preço menor", ""),
-    );
-    assert.ok(longo <= curto, `fonte cresceu com título maior: ${curto} → ${longo}`);
-  });
-});
-
 describe("overlayFittingFontSize (#5330 fleet review — extraída de buildOverlaySvg pra reuso sem duplicar a fórmula)", () => {
   it("mesmo tamanho que buildOverlaySvg computaria internamente pro mesmo título/largura", () => {
     const title = "Google lança Gemini 3.6";
@@ -235,19 +209,13 @@ describe("computeCarouselTitleFontSize (#5852 — fonte compartilhada entre card
   });
 });
 
-describe("buildCardSvg / buildOverlaySvg — SVG bem-formado (#4114)", () => {
+describe("buildOverlaySvg — SVG bem-formado (#4114)", () => {
   it("escapa & < > \" do título — SVG quebrado não renderiza imagem nenhuma", () => {
-    const svg = buildCardSvg('Google & "IA" <script>alert(1)</script>', "");
+    const svg = buildOverlaySvg('Google & "IA" <script>alert(1)</script>', "");
     assert.match(svg, /&amp;/);
     assert.match(svg, /&lt;script&gt;/);
     assert.ok(!/<script>/.test(svg), "tag crua não pode sobreviver dentro do <text>");
     assert.match(svg, /&quot;/);
-  });
-
-  it("respeita as dimensões pedidas (o 9:16 do story reusa o mesmo builder)", () => {
-    const svg = buildCardSvg("Título", "", "", { w: 1080, h: 1920, textH: 520 });
-    assert.match(svg, /width="1080" height="1920"/);
-    assert.match(svg, /viewBox="0 0 1080 1920"/);
   });
 
   it("o overlay cobre a base com gradiente e mantém o texto dentro do card", () => {
@@ -280,39 +248,23 @@ describe("buildCardSvg / buildOverlaySvg — SVG bem-formado (#4114)", () => {
   });
 
   it("dateLabel vazio não deixa <text> órfão", () => {
-    const semData = buildCardSvg("Título", "", "");
-    const comData = buildCardSvg("Título", "", "27 JUL");
+    const semData = buildOverlaySvg("Título", "");
+    const comData = buildOverlaySvg("Título", "27 JUL");
     assert.ok(comData.includes("27 JUL"));
     assert.equal((semData.match(/text-anchor="end"/g) || []).length, 0);
   });
 });
 
-describe("RATIOS — dimensões por ratio (#4090 item 5)", () => {
+describe("RATIOS — dimensões do 4:5 (#4090 item 5; único ratio desde #8499)", () => {
   it("4:5 é 1080x1350 com faixa de texto 470", () => {
     assert.deepEqual(RATIOS["4x5"], { w: 1080, h: 1350, textH: 470 });
   });
 
-  it("9:16 (Stories) é 1080x1920 com faixa de texto 620", () => {
-    assert.deepEqual(RATIOS["9x16"], { w: 1080, h: 1920, textH: 620 });
-  });
-
-  it("9:16 é mais alto que 4:5 na mesma largura (Stories ocupa mais tela)", () => {
-    assert.equal(RATIOS["4x5"].w, RATIOS["9x16"].w);
-    assert.ok(RATIOS["9x16"].h > RATIOS["4x5"].h);
-  });
-
-  it("buildCardSvg com os dims reais de 4:5 produz SVG com essas dimensões exatas", () => {
-    const { w, h, textH } = RATIOS["4x5"];
-    const svg = buildCardSvg("Título de teste", "", "27 JUL 2026", { w, h, textH });
+  it("buildOverlaySvg com os dims reais de 4:5 produz SVG com essas dimensões exatas", () => {
+    const { w, h } = RATIOS["4x5"];
+    const svg = buildOverlaySvg("Título de teste", "27 JUL 2026", { w, h });
     assert.match(svg, /width="1080" height="1350"/);
     assert.match(svg, /viewBox="0 0 1080 1350"/);
-  });
-
-  it("buildOverlaySvg com os dims reais de 9:16 produz SVG com essas dimensões exatas", () => {
-    const { w, h } = RATIOS["9x16"];
-    const svg = buildOverlaySvg("Título de teste", "27 JUL 2026", { w, h });
-    assert.match(svg, /width="1080" height="1920"/);
-    assert.match(svg, /viewBox="0 0 1080 1920"/);
   });
 });
 
