@@ -49,15 +49,20 @@
  *
  * ## Guard de seed blacklisted/inexistente (#8436)
  *
- * ANTES de qualquer outra checagem, valida via `GET /v3/contacts/{email}`
- * que `brevo_diaria.test_email` e os `EDITOR_SEED_EMAILS`
+ * DEPOIS do alarme de conta suspensa (#6146) acima — nunca antes (#8516,
+ * 20/09/2026) — valida via `GET /v3/contacts/{email}` que
+ * `brevo_diaria.test_email` e os `EDITOR_SEED_EMAILS`
  * (`scripts/lib/editor-copy.ts`) não estão `emailBlacklisted` nem ausentes
  * da conta — falha ALTO (`exit(2)`, inclusive em `--dry-run`) se algum
  * estiver. Achado ao vivo (17/09/2026): o `test_email` configurado ficou
  * `emailBlacklisted: true`, quebrando `sendTest` e apagando em silêncio a
  * sonda de inbox placement do Gmail pessoal (ver #8436). A decisão de fundo
  * (trocar o seed vs remover o blacklist) fica com o editor — este guard só
- * recusa prosseguir sem alguém decidir.
+ * recusa prosseguir sem alguém decidir. **#8516:** o `exit(2)` deste guard
+ * ficava ANTES do alarme de conta suspensa, e com o seed já blacklisted em
+ * produção (o próprio estado que #8436 documenta), o alarme de maior blast
+ * radius nunca rodava enquanto a decisão do editor ficasse pendente — o
+ * guard foi reordenado para depois, preservando o `exit(2)`.
  *
  * ## Latch — não despausa sozinho
  *
@@ -364,11 +369,30 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // #8436: ANTES de qualquer outra checagem — seed blacklisted/inexistente
-  // quebra o caminho de teste (`--send-test`) e a sonda de inbox placement
-  // em silêncio, sem nenhum sinal hoje. Falha ALTO (não warning), inclusive
-  // em --dry-run: é uma precondição de config/conta, não uma decisão de
-  // persistência que o --dry-run deva pular.
+  // #6146: ANTES da avaliação de entregabilidade, e independente dela — o
+  // fluxo abaixo tem early-returns (`evaluation === null`) que pulariam esta
+  // checagem se ela viesse depois. #8516: também colocado ANTES do guard de
+  // seed blacklisted (#8436) abaixo — este é o alarme de maior blast radius
+  // (conta inteira suspensa) e não pode ficar mascarado atrás de um
+  // `exit(2)` de precondição de seed enquanto a decisão editorial do #8436
+  // (trocar o seed vs. remover o blacklist) estiver pendente.
+  await handleSuspendedCampaigns({
+    fetchSuspended: () => fetchSuspendedCampaigns(apiKey!, log),
+    readState: () => readRolloutGuardrailState(undefined, log),
+    writeState: (st) => writeRolloutGuardrailState(st),
+    alarm: (fresh, all) => alarmSuspendedCampaigns(fresh, all, log),
+    isDryRun,
+    log,
+  });
+
+  // #8436: seed blacklisted/inexistente quebra o caminho de teste
+  // (`--send-test`) e a sonda de inbox placement em silêncio, sem nenhum
+  // sinal hoje. Falha ALTO (não warning), inclusive em --dry-run: é uma
+  // precondição de config/conta, não uma decisão de persistência que o
+  // --dry-run deva pular. #8516: posicionado DEPOIS da checagem de conta
+  // suspensa acima (nunca antes) — do contrário, enquanto o seed estiver
+  // blacklisted (estado real de produção, #8436), o `exit(2)` abaixo
+  // impediria o alarme de conta suspensa de rodar a cada execução.
   const seedEmails = Array.from(new Set([brevoDiaria!.test_email, ...EDITOR_SEED_EMAILS].filter((e): e is string => !!e)));
   const seedResults = await checkSeedEmailsBlacklisted(seedEmails, (email) =>
     brevoGet(apiKey!, `/contacts/${encodeURIComponent(email)}`),
@@ -384,18 +408,6 @@ async function main(): Promise<void> {
     );
     process.exit(2);
   }
-
-  // #6146: ANTES da avaliação de entregabilidade, e independente dela — o
-  // fluxo abaixo tem early-returns (`evaluation === null`) que pulariam esta
-  // checagem se ela viesse depois.
-  await handleSuspendedCampaigns({
-    fetchSuspended: () => fetchSuspendedCampaigns(apiKey!, log),
-    readState: () => readRolloutGuardrailState(undefined, log),
-    writeState: (st) => writeRolloutGuardrailState(st),
-    alarm: (fresh, all) => alarmSuspendedCampaigns(fresh, all, log),
-    isDryRun,
-    log,
-  });
 
   const campaignList = await fetchSentCampaigns(apiKey!);
   const stats: CampaignGuardrailInput[] = [];
