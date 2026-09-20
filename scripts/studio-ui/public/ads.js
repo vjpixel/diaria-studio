@@ -551,6 +551,17 @@ function renderCampaignChart(cumulative) {
       .join(", ")}</span>`;
   }
 
+  // #8475 Parte A / #8533 — canal tirado do gráfico porque a escala dele
+  // esmaga os outros no eixo compartilhado. Precisa APARECER: sumir em
+  // silêncio troca uma leitura falsa (Google/Meta rente ao zero) por outra
+  // (um canal do teste que simplesmente não está ali), que é o mesmo
+  // critério que o #8307 aplicou aos dias pausados logo abaixo.
+  if (cumulative.omittedScale && cumulative.omittedScale.length > 0) {
+    el.campaignChartLegend.innerHTML += `<span class="hint">Fora do gráfico (escala): ${cumulative.omittedScale
+      .map((c) => escapeHtml(shortChannelLabel(c)))
+      .join(", ")} — ver tabela</span>`;
+  }
+
   // #8307 — o eixo X pula os dias sem veiculação, e isso precisa aparecer:
   // comprimir o tempo em silêncio trocaria uma leitura falsa (trecho reto
   // que parece estabilidade) por outra (dias que somem sem explicação).
