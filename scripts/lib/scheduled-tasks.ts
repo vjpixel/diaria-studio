@@ -2218,6 +2218,24 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#6960",
   },
   {
+    name: "Diaria-Stale-Red-Pr-Alarm",
+    description:
+      "alarme de PR aberta com CI vermelho ha mais de N horas sem commit novo, sem dono ativo (#8530)",
+    steps: [{ key: "check", script: "scripts/stale-red-pr-alarm.ts" }],
+    logPath: "stale-red-pr-alarm/.alarm.log",
+    // A cada 2h -- suficiente pra pegar uma PR que ficou vermelha e
+    // esquecida dentro do limiar default (3h) sem custo de rodar a cada
+    // hora; nao ha estado local pra corromper entre execucoes (o script
+    // reavalia o conjunto completo de PRs abertas a cada run, mesmo
+    // desenho de on-hold-vencimento-alarm.ts).
+    schedule: { kind: "interval", hours: 2 },
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5845/#5908/#5754/#6130/#6189/#6960 acima) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
+    // e acao POSTERIOR de uma sessao supervisionada.
+    issue: "#8530",
+  },
+  {
     name: "Diaria-Openrouter-Billing-Leak-Alarm",
     description: "alarme diario de modelo pago nao pedido faturado no gateway OpenRouter (#6716 escopo 3)",
     steps: [{ key: "check", script: "scripts/openrouter-billing-leak-check.ts" }],
