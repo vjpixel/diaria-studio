@@ -101,7 +101,7 @@ describe("advanceNpmVersionDriftState — cursor driftSince (#6960)", () => {
   it("checagem resolveu (disco == upstream) -> driftSince reseta pra null, fingerprint some", () => {
     const prev: NpmVersionDriftAlarmState = {
       driftSince: "2026-08-01T00:00:00.000Z",
-      lastAlarmedFingerprint: "2.1.251->2.1.257",
+      lastAlarmedFingerprint: "2.1.251",
       lastCheckedAt: "2026-08-01T00:00:00.000Z",
     };
     const next = advanceNpmVersionDriftState(prev, check({ diskVersion: "2.1.257" }), new Date());
@@ -116,10 +116,10 @@ describe("npmVersionDriftFindingKey / shouldAlarmNpmVersionDrift — idempotênc
     assert.equal(npmVersionDriftFindingKey(evaluation), "");
   });
 
-  it("fingerprint é o par disco->upstream quando drift-stale", () => {
+  it("fingerprint é só o diskVersion quando drift-stale (#8507 — upstream não entra na chave)", () => {
     const now = new Date("2026-09-10T00:00:00Z");
     const evaluation = evaluateNpmVersionDrift(check(), "2026-09-01T00:00:00.000Z", now, 7);
-    assert.equal(npmVersionDriftFindingKey(evaluation), "2.1.251->2.1.257");
+    assert.equal(npmVersionDriftFindingKey(evaluation), "2.1.251");
   });
 
   it("shouldAlarm: false quando ainda não é stale", () => {
@@ -138,31 +138,44 @@ describe("npmVersionDriftFindingKey / shouldAlarmNpmVersionDrift — idempotênc
     assert.equal(shouldAlarmNpmVersionDrift(state, check(), now, 7), true);
   });
 
-  it("shouldAlarm: false quando o MESMO par já foi alarmado (não repete e-mail)", () => {
+  it("shouldAlarm: false quando o MESMO disco já foi alarmado (não repete e-mail)", () => {
     const state: NpmVersionDriftAlarmState = {
       driftSince: "2026-08-01T00:00:00.000Z",
-      lastAlarmedFingerprint: "2.1.251->2.1.257",
+      lastAlarmedFingerprint: "2.1.251",
       lastCheckedAt: "2026-08-01T00:00:00.000Z",
     };
     const now = new Date("2026-09-01T00:00:00Z");
     assert.equal(shouldAlarmNpmVersionDrift(state, check(), now, 7), false);
   });
 
-  it("shouldAlarm: true de novo quando o UPSTREAM avança (par muda) mesmo com driftSince antigo mantido", () => {
+  it("regressão #8507: shouldAlarm continua false quando só o UPSTREAM avança (disco intacto) — antes reabria alarme/issue a cada release do npm", () => {
     const state: NpmVersionDriftAlarmState = {
       driftSince: "2026-08-01T00:00:00.000Z",
-      lastAlarmedFingerprint: "2.1.251->2.1.257",
+      lastAlarmedFingerprint: "2.1.251",
       lastCheckedAt: "2026-08-01T00:00:00.000Z",
     };
     const now = new Date("2026-09-01T00:00:00Z");
-    assert.equal(shouldAlarmNpmVersionDrift(state, check({ upstreamVersion: "2.1.263" }), now, 7), true);
+    // Mesmo disco (2.1.251), upstream avançou de 2.1.257 -> 2.1.263 (release
+    // diário típico do Claude Code) — dedup não deve considerar isso um
+    // achado novo, senão cada dia sem atualizar vira uma issue nova.
+    assert.equal(shouldAlarmNpmVersionDrift(state, check({ upstreamVersion: "2.1.263" }), now, 7), false);
   });
 
-  it("markNpmVersionDriftAlarmed grava o fingerprint atual", () => {
+  it("shouldAlarm: true de novo quando o DISCO muda pra outra versão defasada (ex: update parcial que ainda não alcançou upstream)", () => {
+    const state: NpmVersionDriftAlarmState = {
+      driftSince: "2026-08-01T00:00:00.000Z",
+      lastAlarmedFingerprint: "2.1.251",
+      lastCheckedAt: "2026-08-01T00:00:00.000Z",
+    };
+    const now = new Date("2026-09-01T00:00:00Z");
+    assert.equal(shouldAlarmNpmVersionDrift(state, check({ diskVersion: "2.1.255" }), now, 7), true);
+  });
+
+  it("markNpmVersionDriftAlarmed grava o fingerprint atual (só diskVersion)", () => {
     const now = new Date("2026-09-10T00:00:00Z");
     const evaluation = evaluateNpmVersionDrift(check(), "2026-09-01T00:00:00.000Z", now, 7);
     const marked = markNpmVersionDriftAlarmed(emptyNpmVersionDriftAlarmState(), evaluation);
-    assert.equal(marked.lastAlarmedFingerprint, "2.1.251->2.1.257");
+    assert.equal(marked.lastAlarmedFingerprint, "2.1.251");
   });
 });
 

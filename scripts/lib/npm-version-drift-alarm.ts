@@ -120,11 +120,26 @@ export function emptyNpmVersionDriftAlarmState(): NpmVersionDriftAlarmState {
   return { driftSince: null, lastAlarmedFingerprint: null, lastCheckedAt: null };
 }
 
-/** Pura — fingerprint do par (disco, upstream) em drift. Vazio quando
- * `status !== "drift-stale"`. */
+/**
+ * Pura — fingerprint da instância de drift. Vazio quando `status !==
+ * "drift-stale"`.
+ *
+ * Chaveado SÓ pelo `diskVersion` (#8507) — antes incluía `upstreamVersion`
+ * no par (`disco->upstream`), o que quebrava a dedup de `ensureAlarmIssue`
+ * (`scripts/lib/alarm-issues.ts`): o npm publica o Claude Code quase todo
+ * dia, então o upstream avança diariamente enquanto o disco permanece
+ * parado (exatamente o cenário "esquecemos de atualizar" que este alarme
+ * existe pra nomear) — cada dia gerava um fingerprint NOVO, e
+ * `ensureAlarmIssue` tratava isso como um achado nunca visto, abrindo uma
+ * issue nova em vez de reusar/comentar a já aberta (#8227, #8331, #8431 —
+ * 3 issues pra 1 único incidente de drift, em 3 dias seguidos). O disco é
+ * o eixo que importa pra "já alarmamos essa instância de esquecimento?" —
+ * o upstream continua citado no e-mail/corpo da issue (informativo), só
+ * não faz mais parte da chave de dedup.
+ */
 export function npmVersionDriftFindingKey(evaluation: NpmVersionDriftEvaluation): string {
   if (!isNpmVersionDriftPending(evaluation)) return "";
-  return `${evaluation.diskVersion}->${evaluation.upstreamVersion}`;
+  return evaluation.diskVersion;
 }
 
 /**
