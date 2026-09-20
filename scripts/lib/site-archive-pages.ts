@@ -31,6 +31,7 @@ import { GEO_AUTHOR, type GeoAuthor } from "./shared/geo-faq.ts";
 import { renderSeoMeta } from "./shared/seo-meta.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
 import { loadArchiveImageMigrationMap, rewriteMigratedBeehiivImages } from "./archive-image-migration.ts"; // #8364
+import { injectSiteNavAfterBodyOpen } from "./shared/site-nav.ts"; // #8497: menu global
 
 export interface ArchivePost {
   slug: string;
@@ -637,6 +638,12 @@ export function buildArchivePageHtml(post: ArchivePost, opts: BuildArchivePageHt
   if (neighborNavHtml) {
     html = html.replace(/<body[^>]*>/i, (full) => `${full}${neighborNavHtml}`);
   }
+
+  // #8497: menu global — FORA da tabela de e-mail, no topo do <body>, ACIMA
+  // da nav prev/next acima (que já está injetada nesse ponto — inserir
+  // depois dela empurra o menu global pra cima dela, na ordem que a issue
+  // pede). "Edições" fica ativo em toda página /p/{slug} (item 5 da issue).
+  html = injectSiteNavAfterBodyOpen(html, { active: "edicoes" });
 
   // Precisa haver <html ...> pra injetar lang + (no fallback abaixo) head —
   // sem essa tag, um .replace() vira no-op silencioso e a página sai sem

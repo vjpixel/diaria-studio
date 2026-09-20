@@ -43,13 +43,11 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .rule { height: 1px; background: var(--ink); opacity: 0.18; border: 0; margin: 0; }
 .rule--thick { height: 2px; opacity: 1; }
 
-/* Nav */
-.nav { padding: 18px 0; border-bottom: 1px solid var(--rule); }
-.nav .wrap { display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+/* Logo (nav em si é o componente compartilhado renderSiteNav, #8497 — CSS
+   embutido no próprio helper, não duplicado aqui) */
+.logo-bar { padding: 18px 0; }
 .logo { font-family: 'Geist', sans-serif; font-weight: 600; font-size: 20px; letter-spacing: -0.02em; }
 .logo .dot { color: var(--teal); }
-.nav-links { display: flex; gap: 22px; font-size: 13px; color: var(--ink-soft); flex-wrap: wrap; }
-.nav-cta { display: flex; gap: 10px; align-items: center; }
 .btn { display: inline-block; padding: 9px 18px; border-radius: 999px; font-size: 13px; font-weight: 500; }
 .btn-ink { background: var(--ink); color: var(--paper); }
 .btn-outline { border: 1px solid var(--rule); color: var(--ink); }
@@ -182,7 +180,6 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 @media (max-width: 860px) {
   .masthead-grid, .specials-grid, .faqs .wrap, .footer-top, .feature-grid { grid-template-columns: 1fr; }
   .archive-grid { grid-template-columns: repeat(2, 1fr); }
-  .nav-links { order: 3; width: 100%; }
 }
 @media (max-width: 560px) {
   .archive-grid { grid-template-columns: 1fr; }
@@ -190,56 +187,54 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 </style>
 </head>
 <body>
-  <nav class="nav" id="nav">
-    <div class="wrap">
-      <div class="logo"><span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span class="dot">br</span></div>
-      <div class="nav-links">
-        <!-- #8353 item 2: aponta pro índice do PRÓPRIO apex (/archive,
-             9 páginas cobrindo as 270 edições) e não mais pro host
-             arquivo.diar.ia.br — link interno no mesmo domínio é o que dá
-             caminho de rastreio às páginas /p/{slug} (40 estavam órfãs).
-             O acervo por TEMA segue em arquivo.diar.ia.br, linkado na
-             seção "Por tema" e no rodapé desta mesma página. -->
-        <a href="/archive">Edições</a>
-        <a href="https://especial.diar.ia.br/">Especiais</a>
-        <a href="https://livros.diar.ia.br/">Livros</a>
-        <a href="https://cursos.diar.ia.br/">Cursos</a>
-        <a href="https://eia.diar.ia.br/leaderboard">É IA?</a>
-        <!-- #7915: link secundário pra /apoiar — "Assinar" (grátis) segue
-             sendo o ÚNICO botão/CTA primário da nav (.nav-cta abaixo); este
-             é um link de texto entre os demais, mesmo peso visual de
-             "Edições"/"Especiais". -->
+  <!-- #8497: menu global compartilhado (scripts/lib/shared/site-nav.ts) —
+       antes disso este bloco era markup PRÓPRIO da home (único lugar do
+       site com nav), com os mesmos 6 itens + CTA "Assinar" escritos à mão
+       (histórico: #8353 item 2 — "Edições" aponta pro índice do PRÓPRIO
+       apex; #7915 — "Apoiar" como link secundário, "Assinar" como único
+       CTA primário; #6978 itens 2/3 — decisão de NÃO ter "Entrar"/busca,
+       ver rationale no PR original #6995/#6978, preservado no histórico do
+       módulo compartilhado). A logo (renderWordmark()) fica FORA do
+       componente compartilhado — só a home a repete junto da nav; as
+       demais páginas têm cabeçalho próprio. -->
+  <div class="logo-bar"><div class="wrap"><div class="logo"><span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span class="dot">br</span></div></div></div>
+  <style>
+.dnav { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; border-bottom: 1px solid var(--rule); background: var(--paper); }
+.dnav-wrap { max-width: 1100px; margin: 0 auto; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.dnav-links { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--ink); }
+.dnav-links a { color: var(--ink); text-decoration: none; }
+.dnav-links a:hover { color: var(--teal); text-decoration: underline; text-underline-offset: 3px; }
+.dnav-links a.dnav-active { color: var(--teal); font-weight: 600; }
+.nav-cta a, .nav-cta span { display: inline-block; padding: 8px 16px; border-radius: 999px; font-size: 13px; font-weight: 500; }
+.nav-cta a { background: var(--ink); color: var(--paper); text-decoration: none; }
+.nav-cta a:hover { background: var(--teal); }
+.nav-cta span[aria-current] { background: var(--rule); color: var(--ink); }
+@media (max-width: 560px) {
+  .dnav-wrap { flex-wrap: nowrap; }
+  .dnav-links { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+  .dnav-links a { white-space: nowrap; }
+}
+</style>
+<nav class="dnav" id="nav" data-site-nav="global" aria-label="Navegação principal">
+  <div class="dnav-wrap">
+    <div class="dnav-links">
+      <a href="/archive">Edições</a>
+        <a href="https://especial.diar.ia.br?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Especiais</a>
+        <a href="https://livros.diar.ia.br?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Livros</a>
+        <a href="https://cursos.diar.ia.br?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Cursos</a>
+        <a href="https://eia.diar.ia.br/leaderboard?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">É IA?</a>
         <a href="/apoiar">Apoiar</a>
-      </div>
-      <div class="nav-cta">
-        <!-- #6978 itens 2/3 — "Entrar" e busca não vieram no port da home
-             Beehiiv (item 1, a capa da edição em destaque, já foi
-             implementado — #6995). Decisão registrada aqui, não
-             implementação adiada:
-
-             "Entrar": este projeto não tem login/conta própria (nenhum
-             backend de sessão de assinante existe) e não há destino
-             GENÉRICO possível — a área de assinante da Beehiiv/Brevo é
-             sempre um link com token específico do destinatário (magic
-             link por e-mail), nunca uma URL que sirva qualquer visitante
-             que clique aqui. O caminho equivalente já existe e já funciona:
-             o rodapé de toda edição por e-mail carrega o link de
-             gerenciar/cancelar a assinatura, contextualizado ao
-             destinatário — é ali que o assinante "entra" hoje.
-
-             Busca: redundante com os dois caminhos de descoberta que a
-             home já tem — "Edições anteriores" (link "Ver arquivo
-             completo" pra arquivo.diar.ia.br, #archive) e "Por tema"
-             (#6411, #topics). Nem arquivo.diar.ia.br tem busca full-text
-             hoje — não existe índice de busca em nenhum Worker do repo —
-             então implementar bem exigiria infra nova (índice + manutenção
-             contínua conforme o acervo cresce), desproporcional a uma
-             issue de "port de elemento visual". Revisitar se "Por tema"
-             deixar de bastar conforme o acervo cresce. -->
-        <a class="btn btn-ink" href="/assinar">Assinar</a>
-      </div>
     </div>
-  </nav>
+    <div class="nav-cta">
+      <!-- #8497 (extraído do nav da home, decisão original #6978 itens 2/3):
+           sem "Entrar" — projeto não tem login/conta própria, área de
+           assinante é sempre um magic link por e-mail, não um destino
+           genérico clicável aqui. Sem busca — redundante com "Edições"
+           (índice /archive) e o acervo por tema em arquivo.diar.ia.br. -->
+      <a href="/assinar">Assinar</a>
+    </div>
+  </div>
+</nav>
 
   <header class="masthead" id="masthead">
     <div class="wrap">

@@ -33,6 +33,7 @@ import {
 } from "./curadoria-page.ts";
 import { renderSeoMeta, renderAnalyticsHead } from "./seo-meta.ts"; // #5498: container GTM
 import { DIARIA_LIVROS_URL, DIARIA_ARQUIVO_URL, DIARIA_CURSOS_URL, DIARIA_EIA_URL } from "../canonical-urls.ts";
+import { renderSiteNav } from "./site-nav.ts"; // #8497: menu global
 
 /** URL pública canônica desta página — apex, desde #7737 (era `eia.diar.ia.br/confirmado`). */
 export const PAGE_URL = "https://diar.ia.br/confirmado";
@@ -79,6 +80,7 @@ ${renderCuradoriaFooterStyles()}
 </style>
 </head>
 <body>
+  ${renderSiteNav({ inheritHostTokens: true })}
   <header>
     <div class="wrap">
       <p class="eyebrow">diar.ia.br</p>

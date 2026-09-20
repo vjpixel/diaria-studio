@@ -53,6 +53,7 @@ import {
 import { renderSeoMeta } from "./shared/seo-meta.ts";
 import { escHtml } from "./html-escape.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
+import { injectSiteNavAfterBodyOpen, SITE_NAV_MARKER } from "./shared/site-nav.ts"; // #8497: menu global
 
 /** Marcador de "já passou pelo bloco de SEO atual" — presente em toda página
  * que já saiu de `renderSeoMeta({ type: "article", ... })` (#8352). */
@@ -88,6 +89,8 @@ export interface BackfillResult {
   addedRobots: boolean;
   /** #8390 — `image` acrescentado ao JSON-LD `NewsArticle` já presente. */
   addedJsonLdImage: boolean;
+  /** #8497 — menu global (`renderSiteNav`) injetado no topo do `<body>`. */
+  addedSiteNav: boolean;
 }
 
 /**
@@ -223,6 +226,19 @@ function backfillNav(html: string, ctx: BackfillContext): { html: string; change
 }
 
 /**
+ * #8497 — injeta o menu global (`renderSiteNav`) no topo do `<body>`,
+ * ACIMA da nav prev/next do #8353 já injetada por `backfillNav` — mesma
+ * ordem que `buildArchivePageHtml` (gerador do zero) produz. Guardado por
+ * `SITE_NAV_MARKER`, checado pelo caller (`backfillArchivePageOnDisk`)
+ * antes de chamar esta função, mesmo padrão dos demais backfills deste
+ * módulo.
+ */
+function backfillSiteNav(html: string): { html: string; changed: boolean } {
+  const out = injectSiteNavAfterBodyOpen(html, { active: "edicoes" });
+  return { html: out, changed: out !== html };
+}
+
+/**
  * #8390 — injeta `<meta name="robots" content="max-image-preview:large">`
  * logo depois do `</title>`, a mesma posição em que `buildArchivePageHtml`
  * o emite pra página gerada do zero (as duas superfícies produzem `<head>`
@@ -329,13 +345,21 @@ export function backfillArchivePageOnDisk(html: string, ctx: BackfillContext): B
   const jsonLdResult = backfillJsonLdImage(out, ctx.slug);
   out = jsonLdResult.html;
 
+  let addedSiteNav = false;
+  if (!out.includes(SITE_NAV_MARKER)) {
+    const siteNavResult = backfillSiteNav(out);
+    out = siteNavResult.html;
+    addedSiteNav = siteNavResult.changed;
+  }
+
   return {
     html: out,
-    changed: addedSeo || addedNav || robotsResult.changed || jsonLdResult.changed,
+    changed: addedSeo || addedNav || robotsResult.changed || jsonLdResult.changed || addedSiteNav,
     addedSeo,
     addedNav,
     addedRobots: robotsResult.changed,
     addedJsonLdImage: jsonLdResult.changed,
+    addedSiteNav,
   };
 }
 

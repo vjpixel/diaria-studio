@@ -109,6 +109,7 @@ export interface BackfillRunResult {
   robotsChanged: number;
   /** #8390 — páginas cujo JSON-LD ganhou `image`. */
   jsonLdImageChanged: number;
+  siteNavChanged: number;
 }
 
 /**
@@ -151,6 +152,7 @@ export function runBackfill(
   let navChanged = 0;
   let robotsChanged = 0;
   let jsonLdImageChanged = 0;
+  let siteNavChanged = 0;
 
   for (let i = 0; i < order.length; i++) {
     const { slug, lastmod } = order[i];
@@ -182,6 +184,7 @@ export function runBackfill(
       if (result.addedNav) navChanged++;
       if (result.addedRobots) robotsChanged++;
       if (result.addedJsonLdImage) jsonLdImageChanged++;
+      if (result.addedSiteNav) siteNavChanged++;
       if (!opts.dryRun) writePage(p, result.html);
     }
   }
@@ -195,6 +198,7 @@ export function runBackfill(
     navChanged,
     robotsChanged,
     jsonLdImageChanged,
+    siteNavChanged,
   };
 }
 
@@ -212,7 +216,7 @@ async function main() {
   console.log(
     `backfill-archive-page-links-seo: ${result.changed}/${result.pagesFound} páginas alteradas ` +
       `(${result.seoChanged} SEO, ${result.navChanged} nav, ${result.robotsChanged} robots, ` +
-        `${result.jsonLdImageChanged} JSON-LD image) de ${result.totalInSitemap} no sitemap` +
+        `${result.jsonLdImageChanged} JSON-LD image, ${result.siteNavChanged} menu global) de ${result.totalInSitemap} no sitemap` +
       `${dryRun ? " [dry-run]" : ""}`,
   );
   if (result.pagesMissing.length > 0) {

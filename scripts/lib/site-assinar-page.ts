@@ -33,6 +33,7 @@ import { escHtml } from "./html-escape.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "./site-home-page.ts"; // #6981: reusa o mesmo timeout do form da home (#6979) — dois números diferentes sem motivo seria dívida
 import { renderAnalyticsHead, pushSignupConversionEventJs } from "./shared/seo-meta.ts"; // #7358: /assinar não tinha GTM nenhum — cadastro feito aqui nunca disparava qualquer conversão
+import { renderSiteNav } from "./shared/site-nav.ts"; // #8497: menu global — /assinar é o destino do CTA "Assinar", então o CTA não se auto-linka aqui (ver renderSiteNav({active:"assinar"}))
 
 /**
  * Mesmo padrão de `renderWordmark()` em `site-home-page.ts` (#7010): consome
@@ -142,6 +143,7 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
 ${renderAnalyticsHead()}
 </head>
 <body>
+  ${renderSiteNav({ active: "assinar", inheritHostTokens: true })}
   <main class="wrap">
     <h1>${renderWordmark()}</h1>
     <p class="lede">5 minutos diários pra se manter atualizado e usar IA <em>melhor</em>. Seg–Sex, direto no seu e-mail.</p>

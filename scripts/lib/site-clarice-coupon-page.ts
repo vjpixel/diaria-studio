@@ -56,6 +56,7 @@
 import { escHtml } from "./html-escape.ts";
 import { renderAnalyticsHead } from "./shared/seo-meta.ts";
 import { DIARIA_CLARICE_PRECOS_URL } from "./canonical-urls.ts";
+import { renderSiteNav } from "./shared/site-nav.ts"; // #8497: menu global
 
 /**
  * URL de destino de TODO CTA desta página que aponta pra Clarice —
@@ -186,6 +187,7 @@ h2 { font-size: 21px; font-weight: 500; letter-spacing: -0.01em; margin: 40px 0 
 ${renderAnalyticsHead()}
 </head>
 <body>
+  ${renderSiteNav({ inheritHostTokens: true })}
   <main class="wrap">
     <h1>Cupom Clarice: até 50% de desconto</h1>
     <p class="lede">A diar.ia.br é parceira da <a href="${ctaUrl}">Clarice</a>, um assistente de escrita em português que revisa, corrige e aprimora textos com IA. Abaixo, os 2 cupons oficiais de desconto pra quem assina pela nossa indicação.</p>
