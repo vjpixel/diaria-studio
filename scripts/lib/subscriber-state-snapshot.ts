@@ -57,6 +57,17 @@ export interface SubscriberStateRecord {
   state: string;
   /** ISO 8601 — imutável no Kit, seguro ler de qualquer snapshot. */
   created_at: string;
+  /** #8552 (relatório de confirmação) — custom field `confirmou_via`
+   *  (`REATIVAR_CONFIRMOU_VIA_FIELD_NAME`, #8438), OPCIONAL: ausente em
+   *  snapshots antigos e em quem nunca clicou no botão da reativação.
+   *  Exceção deliberada à regra "só os 3 campos" acima: o field é escrito
+   *  UMA vez, no instante da confirmação, e nunca reescrito — o lag de
+   *  `fields` no endpoint de lista só atrasa o aparecimento, e o relatório
+   *  lê o valor mais recente entre todos os snapshots. */
+  confirmou_via?: string;
+  /** #8552 — custom field `origem_cadastro` (canal de entrada), OPCIONAL,
+   *  mesma disciplina de `confirmou_via`. */
+  origem?: string;
 }
 
 export function snapshotRootDefault(dataRoot: string): string {
@@ -107,7 +118,10 @@ export function parseSubscriberStateJsonl(content: string): SubscriberStateRecor
         typeof parsed.state === "string" &&
         typeof parsed.created_at === "string"
       ) {
-        out.push({ id: parsed.id, state: parsed.state, created_at: parsed.created_at });
+        const rec: SubscriberStateRecord = { id: parsed.id, state: parsed.state, created_at: parsed.created_at };
+        if (typeof parsed.confirmou_via === "string" && parsed.confirmou_via) rec.confirmou_via = parsed.confirmou_via;
+        if (typeof parsed.origem === "string" && parsed.origem) rec.origem = parsed.origem;
+        out.push(rec);
       }
     } catch {
       continue; // linha corrompida — skip, resto do arquivo sobrevive

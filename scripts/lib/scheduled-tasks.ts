@@ -338,6 +338,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4064, #4131 finding 1, #6563, #6695",
   },
   {
+    name: "Diaria-Subscriber-State-Snapshot",
+    description: "snapshot diario (id, state, created_at, confirmou_via, origem) do roster Kit em data/subscriber-state-snapshots/kit/ -- insumo de doi-confirmacao-dia e do relatorio de confirmacao (#8552)",
+    steps: [{ key: "snapshot", script: "scripts/subscriber-state-snapshot.ts" }],
+    logPath: "subscriber-state-snapshots/.snapshot.log",
+    // Diaria 23:55 BRT -- o snapshot e datado pelo dia BRT de execucao e o
+    // estado de CRIACAO (inactive) de quem se cadastrou no dia D so e
+    // observavel no snapshot do proprio D (`buildDoiConfirmationCohort`);
+    // rodar no fim do dia captura todos os cadastros de D antes da virada.
+    // Hora 23 livre no registro (checado por grep). O script so LE o Kit
+    // (listAllKitSubscribers) e escreve so em data/ local.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`) e
+    // acao POSTERIOR do editor. Armar so numa maquina (data/ e junction).
+    schedule: { kind: "daily", hour: 23, minute: 55 },
+    issue: "#8552",
+  },
+  {
     name: "Diaria-Audience-Profile-Staleness-Alarm",
     description: "escala o guard de arquivamento duplicado do #4366 (context/audience-profile.md regenerando idêntico ao anterior) de linha muda em run-log.jsonl pra issue GitHub por ocorrência (#8148)",
     steps: [{ key: "alarm", script: "scripts/audience-profile-staleness-alarm.ts" }],

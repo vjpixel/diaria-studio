@@ -34,6 +34,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadKitConfig } from "./lib/kit-config.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
+import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./lib/shared/reativar-confirmou-via.ts";
+import { KIT_ORIGEM_CADASTRO_FIELD_NAME } from "./lib/shared/kit-signup-origin.ts";
 import {
   snapshotRootDefault,
   snapshotJsonlPath,
@@ -74,11 +76,15 @@ async function main(): Promise<void> {
 
   console.error(`${LOG_PREFIX} listando roster Kit completo (status=all)...`);
   const subscribers = await listAllKitSubscribers(config, { status: "all" });
-  const records: SubscriberStateRecord[] = subscribers.map((s) => ({
-    id: s.id,
-    state: s.state,
-    created_at: s.created_at,
-  }));
+  const records: SubscriberStateRecord[] = subscribers.map((s) => {
+    const rec: SubscriberStateRecord = { id: s.id, state: s.state, created_at: s.created_at };
+    // #8552 — insumos do relatório de confirmação (só quando preenchidos).
+    const via = s.fields?.[REATIVAR_CONFIRMOU_VIA_FIELD_NAME];
+    const origem = s.fields?.[KIT_ORIGEM_CADASTRO_FIELD_NAME];
+    if (via) rec.confirmou_via = via;
+    if (origem) rec.origem = origem;
+    return rec;
+  });
   console.error(`${LOG_PREFIX} ${records.length} assinante(s) no roster.`);
 
   const existingDates = listSubscriberStateSnapshotDates(root).filter((d) => d < date);
