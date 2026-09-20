@@ -5,11 +5,15 @@
  * (a 3ª — "Connect to chat activity" — é "Ignore" no painel, ação de UI):
  *
  * 1. **Currency/value.** `custom_data.value`/`custom_data.currency` presentes
- *    no evento da CAPI E no snippet `fbq(...)` do pixel, com o MESMO par.
- *    O pixel não é código executado por este repo (vive no GTM), mas o valor
- *    dele é versionado em `docs/gtm-signup-container-export.json` — então a
- *    igualdade é auditável aqui, que é o ponto: valor divergente entre os
- *    dois caminhos estraga justamente a comparação pixel × CAPI.
+ *    no evento da CAPI E no snippet `fbq(...)` da PROPOSTA de import do pixel
+ *    (`docs/gtm-signup-container-import-proposal.json`), com o MESMO par.
+ *    O pixel não é código executado por este repo (vive no GTM) — este teste
+ *    audita a PROPOSTA versionada de import, NÃO o container ao vivo no GTM
+ *    (`GTM-TC8C65ZN`). O container publicado usa o template oficial do Meta
+ *    Pixel (`__cvt_5RM3Q`), não a tag Custom HTML que este arquivo descreve —
+ *    ver #8578. Os campos podem divergir entre a proposta e o que está no ar;
+ *    esta checagem só garante consistência interna do arquivo versionado
+ *    contra a constante TS, não confirma o que a Meta recebe de fato.
  * 2. **Match quality.** `client_ip_address`/`client_user_agent`/`fbp`/`fbc`
  *    populados quando o request traz os headers, e AUSENTES (chave fora do
  *    objeto, nunca `""`) quando não traz — string vazia conta pra Meta como
@@ -92,8 +96,8 @@ describe("#8388 item 1 — custom_data.value/currency", () => {
     assert.equal(event.custom_data.currency, META_CAPI_COMPLETE_REGISTRATION_CURRENCY);
   });
 
-  it("o snippet do PIXEL (export do container GTM) manda o MESMO par — dedup pixel × CAPI depende disso", () => {
-    const raw = readFileSync(new URL("../docs/gtm-signup-container-export.json", import.meta.url), "utf8");
+  it("o snippet do PIXEL (PROPOSTA de import do container GTM, não o container ao vivo — #8578) manda o MESMO par — dedup pixel × CAPI depende disso", () => {
+    const raw = readFileSync(new URL("../docs/gtm-signup-container-import-proposal.json", import.meta.url), "utf8");
     const container = JSON.parse(raw) as {
       containerVersion: { tag: { name: string; parameter: { key: string; value: string }[] }[] };
     };

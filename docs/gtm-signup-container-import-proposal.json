@@ -1,4 +1,5 @@
 {
+  "_aviso_8578": "PROPOSTA DE IMPORT, NÃO EXPORT DO CONTAINER PUBLICADO (#8578, 20/09/2026). Renomeado de gtm-signup-container-export.json — o nome antigo sugeria (errado) que isto refletia o que está no ar. O container real publicado (GTM-TC8C65ZN) usa o TEMPLATE OFICIAL do Meta Pixel (__cvt_5RM3Q, tag_id 16, vtp_standardEventName/vtp_pixelId/vtp_objectPropertyList/vtp_advancedMatching) — não a tag Custom HTML com fbq(...) à mão que este arquivo descreve. Os valores (value/currency) coincidiam na medição de 20/09/2026, mas os CAMPOS podem divergir (ex.: vtp_eventId só existe no template oficial, achado que atrasou o diagnóstico da #8572). test/meta-capi-8388.test.ts audita ESTE arquivo (a proposta versionada), nunca o container ao vivo — ver #8578 para o achado completo e a proposta de task de drift que compararia contra o gtm.js publicado.",
   "exportFormatVersion": 2,
   "exportTime": "2026-08-17T00:00:00Z",
   "containerVersion": {
