@@ -88,6 +88,17 @@ export const SIGNUP_CONVERSION_EVENT_NAME = "signedUp";
  * `event_id` (snake_case) e não `eventId`: é o nome do campo na CAPI, e a
  * variável do GTM fica legível ao lado do payload server-side na hora de
  * conferir os dois no Events Manager.
+ *
+ * **Superfície que isto amplia, de propósito:** o valor é o SHA-256 de
+ * (e-mail normalizado, dia UTC) e, a partir do #8572, deixa de circular só
+ * server→Meta e passa a viver no `window.dataLayer` — legível por QUALQUER
+ * tag do container, não só a do Meta. O que limita o dano: (a) é um hash
+ * distinto do `em` que vai pra Meta (`sha256(email)` puro), e a fórmula com
+ * prefixo não permite derivar um do outro; (b) o servidor só o devolve pro
+ * e-mail que o próprio chamador submeteu, então não há lookup de e-mail
+ * alheio. Ainda assim é um identificador estável por (pessoa, dia) exposto
+ * a terceiros do container — se um dia entrar um vendor não confiável no
+ * `GTM-TC8C65ZN`, este é um dos campos a reavaliar.
  */
 export const SIGNUP_CONVERSION_EVENT_ID_KEY = "event_id";
 
@@ -123,9 +134,12 @@ export const SIGNUP_CONVERSION_EVENT_ID_KEY = "event_id";
  * compilador é o único guard que impede um form novo de nascer sem ele —
  * um `event_id` faltando não quebra nada visível, só volta a inflar o
  * painel em silêncio. Valor `undefined` (CAPI não configurada, resposta sem
- * o campo) é degradação limpa: a chave sai do `push`, a variável do GTM
- * fica vazia e a tag dispara sem `eventID`, exatamente como antes desta
- * issue.
+ * o campo) é degradação limpa — mas não porque a chave suma: isto é um
+ * objeto-literal JS, não um `JSON.stringify`, então `event_id: undefined`
+ * CONTINUA no objeto. O que resolve é o outro lado: uma variável de camada
+ * de dados do GTM apontada pra uma chave de valor `undefined` se comporta
+ * como não-setada, o campo Event ID fica vazio e a tag dispara sem
+ * `eventID`, exatamente como antes desta issue.
  */
 export function pushSignupConversionEventJs(emailExpr: string, eventIdExpr: string): string {
   return `try { window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: ${JSON.stringify(SIGNUP_CONVERSION_EVENT_NAME)}, eventProps: { email: ${emailExpr}, ${SIGNUP_CONVERSION_EVENT_ID_KEY}: ${eventIdExpr} } }); } catch (e) {}`;

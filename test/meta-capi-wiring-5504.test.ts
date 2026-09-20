@@ -48,12 +48,21 @@ function fakeExecutionContext(): { ctx: ExecutionContext; waited: Promise<unknow
 /** Resolve a promise da chamada Graph API só depois de `resolveDelayMs` —
  * simula a Meta respondendo devagar (o cenário que o `await` bloqueante
  * degradava em até `META_CAPI_FETCH_TIMEOUT_MS`, ver meta-capi.ts). */
-function delayedFetch(resolveDelayMs: number, beehiivOk = true): { fn: typeof fetch; metaCallCount: () => number } {
+function delayedFetch(
+  resolveDelayMs: number,
+  beehiivOk = true,
+): { fn: typeof fetch; metaCallCount: () => number; sentEventIds: () => string[] } {
   let metaCalls = 0;
-  const fn = (async (url: string | URL) => {
+  // #8572: guarda o `event_id` de cada evento enviado — sem isso o teste de
+  // timing abaixo só conseguiria conferir o FORMATO do id que volta pro
+  // browser, nunca a igualdade com o que foi pra Meta.
+  const sentEventIds: string[] = [];
+  const fn = (async (url: string | URL, init?: RequestInit) => {
     const u = String(url);
     if (u.includes("graph.facebook.com")) {
       metaCalls += 1;
+      const body = init?.body ? (JSON.parse(init.body as string) as { data: { event_id: string }[] }) : { data: [] };
+      for (const e of body.data) sentEventIds.push(e.event_id);
       await new Promise((r) => setTimeout(r, resolveDelayMs));
       return new Response(JSON.stringify({ events_received: 1 }), { status: 200 });
     }
@@ -62,7 +71,15 @@ function delayedFetch(resolveDelayMs: number, beehiivOk = true): { fn: typeof fe
       { status: beehiivOk ? 201 : 500 },
     );
   }) as typeof fetch;
-  return { fn, metaCallCount: () => metaCalls };
+  return { fn, metaCallCount: () => metaCalls, sentEventIds: () => sentEventIds };
+}
+
+/** `event_id` do único evento capturado por `routedFetch` — a comparação que
+ * a #8572 existe pra garantir: o id do corpo da resposta tem que ser o MESMO
+ * que saiu pro Graph API, inclusive nos caminhos em que a Meta falha. */
+function sentEventId(metaCalls: { body: Record<string, unknown> }[]): string {
+  assert.equal(metaCalls.length, 1, "esperava exatamente 1 chamada ao Graph API");
+  return (metaCalls[0].body.data as { event_id: string }[])[0].event_id;
 }
 
 /** Roteia por URL — Beehiiv (api.beehiiv.com / *.test/v2) responde sucesso
@@ -134,23 +151,32 @@ describe("#5504 — wiring: workers/poll/src/subscribe.ts (handleJogarSubscribe)
   });
 
   it("falha da Meta (401) NUNCA muda a resposta 200 do cadastro (cadastro já confirmado na Beehiiv antes)", async () => {
-    const { fn } = routedFetch({ metaBehavior: "http_error" });
+    const { fn, metaCalls } = routedFetch({ metaBehavior: "http_error" });
     const res = await handleJogarSubscribe(req(), pollEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), { fetchImpl: fn } as PollSubscribeDeps);
     assert.equal(res.status, 200);
     // #8572: com o token configurado o corpo passou a carregar o `event_id`
-    // do evento que o handler mandou (ou TENTOU mandar) — é ele que o pixel
-    // repassa pra Meta deduplicar. Uma falha da Meta não muda isso: o id
-    // continua saindo, e nenhum outro campo aparece.
-    assert.deepEqual(Object.keys(await res.clone().json() as object).sort(), ["event_id", "ok"]);
-    assert.deepEqual((await res.json() as { ok: boolean }).ok, true);
+    // do evento que o handler mandou — é ele que o pixel repassa pra Meta
+    // deduplicar. Uma recusa da Meta não muda nada disso: o corpo tem
+    // exatamente estas 2 chaves, e o id é o MESMO que saiu no payload. É o
+    // caminho de falha que mais importa conferir — se um dia o id do corpo
+    // passar a ser recalculado em vez de reusado, é aqui que divergiria
+    // primeiro.
+    const body = (await res.json()) as { ok: boolean; event_id?: string };
+    assert.deepEqual(Object.keys(body).sort(), ["event_id", "ok"]);
+    assert.equal(body.ok, true);
+    assert.equal(body.event_id, sentEventId(metaCalls));
   });
 
   it("rede da Meta caindo (fetch lança) NUNCA propaga — resposta 200 normal", async () => {
-    const { fn } = routedFetch({ metaBehavior: "network_error" });
+    const { fn, metaCalls } = routedFetch({ metaBehavior: "network_error" });
     const res = await handleJogarSubscribe(req(), pollEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), { fetchImpl: fn } as PollSubscribeDeps);
     assert.equal(res.status, 200);
-    assert.deepEqual(Object.keys(await res.clone().json() as object).sort(), ["event_id", "ok"]);
-    assert.deepEqual((await res.json() as { ok: boolean }).ok, true);
+    const body = (await res.json()) as { ok: boolean; event_id?: string };
+    assert.deepEqual(Object.keys(body).sort(), ["event_id", "ok"]);
+    assert.equal(body.ok, true);
+    // `routedFetch` registra o payload ANTES de lançar, então a igualdade é
+    // conferível mesmo com a rede caindo.
+    assert.equal(body.event_id, sentEventId(metaCalls));
   });
 
   it("cadastro que FALHA na Beehiiv nunca sequer chega a chamar a Meta", async () => {
@@ -161,7 +187,7 @@ describe("#5504 — wiring: workers/poll/src/subscribe.ts (handleJogarSubscribe)
   });
 
   it("REGRESSÃO (hotfix pós-merge): com ctx.waitUntil, a resposta 200 retorna ANTES da Meta lenta resolver — chamada é adiada, não aguardada", async () => {
-    const { fn, metaCallCount } = delayedFetch(500); // Meta "lenta": 500ms pra responder
+    const { fn, metaCallCount, sentEventIds } = delayedFetch(500); // Meta "lenta": 500ms pra responder
     const { ctx, waited } = fakeExecutionContext();
     const start = Date.now();
     const res = await handleJogarSubscribe(
@@ -176,8 +202,9 @@ describe("#5504 — wiring: workers/poll/src/subscribe.ts (handleJogarSubscribe)
     // acontece ANTES da resposta de propósito, então o assert de tempo abaixo
     // também protege contra alguém mover esse cálculo pra trás de uma chamada
     // de rede.
-    assert.deepEqual(Object.keys(await res.clone().json() as object).sort(), ["event_id", "ok"]);
-    assert.deepEqual((await res.json() as { ok: boolean }).ok, true);
+    const body = (await res.json()) as { ok: boolean; event_id?: string };
+    assert.deepEqual(Object.keys(body).sort(), ["event_id", "ok"]);
+    assert.equal(body.ok, true);
     // A resposta não esperou os 500ms da Meta — se o `await` bloqueante do
     // bug voltasse, este assert falharia (elapsed ficaria >= 500ms).
     assert.ok(elapsedMs < 400, `resposta demorou ${elapsedMs}ms — deveria retornar antes da Meta (500ms) resolver`);
@@ -190,6 +217,11 @@ describe("#5504 — wiring: workers/poll/src/subscribe.ts (handleJogarSubscribe)
     assert.equal(waited.length, 1);
     await waited[0];
     assert.equal(metaCallCount(), 1);
+    // #8572: e o id que a resposta já tinha entregue ao browser lá em cima é
+    // o MESMO que o evento adiado acabou de mandar. A ordem importa — o corpo
+    // saiu ANTES do envio, então só aqui dá pra fechar a igualdade, e é ela
+    // que garante que o adiamento por `waitUntil` não quebra a dedup.
+    assert.deepEqual(sentEventIds(), [body.event_id]);
   });
 
   it("sem ctx real (fallback síncrono) a chamada à Meta segue sendo aguardada — comportamento pré-#3983/#5504 preservado", async () => {

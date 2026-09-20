@@ -1037,6 +1037,19 @@ export async function handleJogarSubscribe(
     // está de fato configurada: sem token não existe evento server-side pra
     // deduplicar, e a resposta continua idêntica à de antes do #5504 — o
     // aceite "sem token, nada muda" daquela issue segue valendo.
+    //
+    // O id que volta é o do evento que o handler MANDOU — não o de um envio
+    // CONFIRMADO: o disparo abaixo é `waitUntil`, resolve depois da resposta,
+    // e uma recusa da Meta não desfaz o id já entregue ao browser. Isso é o
+    // desfecho certo (o pixel vira o único sinal daquele cadastro e conta 1,
+    // em vez de nenhum), mas a leitura "o id prova que a CAPI recebeu" seria
+    // falsa.
+    //
+    // O `.catch(() => null)` é a mesma disciplina fail-soft do módulo:
+    // telemetria de anúncio nunca derruba um cadastro real. Não tem teste
+    // próprio porque só dispara se `crypto.subtle` sumir do runtime — e aí
+    // `sendCompleteRegistrationEvent` falha pelo mesmo motivo, então os dois
+    // lados somem juntos e não há divergência a cobrir.
     const dedup = env.META_CAPI_ACCESS_TOKEN
       ? await resolveCompleteRegistrationDedup(v.email).catch(() => null)
       : null;
