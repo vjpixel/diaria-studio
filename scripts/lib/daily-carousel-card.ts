@@ -489,7 +489,14 @@ export function findOverflowingCarouselSlides(
         // os delimitadores `**` (que não ocupam largura no card).
         chars: stripInlineBold(texts[slot].title).length,
         lines: m.lines.length,
-        excessPx: m.blockHeight - m.availableHeight,
+        // #8515: `overflows` agora cobre largura também — um parágrafo que
+        // transborda SÓ na largura (linha única com palavra longa) teria
+        // `blockHeight - availableHeight <= 0` aqui, e reportar um número
+        // negativo como "quanto passou" confunde o editor na estimativa do
+        // corte. O excesso de altura é o que interessa pro corte vertical;
+        // o horizontal é visível no `lines`/`chars` e no fato de ter
+        // acusado overflow. Nunca negativo.
+        excessPx: Math.max(0, m.blockHeight - m.availableHeight),
       });
     }
   }

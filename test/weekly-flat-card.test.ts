@@ -250,8 +250,16 @@ describe("#6086 item c: negrito seletivo (`**...**` no title)", () => {
     // fixed 62px pra ter o trecho inteiro numa linha e asserção exata.
     const FIXED = { mode: "fixed" as const, size: 62 };
     const svg = buildFlatCardSvg({ kicker: "x", title: "Capa **com destaque** da semana", footer: "diar.ia.br" }, FIXED);
-    assert.match(svg, /Capa <tspan font-weight="700">com destaque<\/tspan> da semana/);
+    // #8515: 0.62 encolhe maxCharsPerLine a 62px de 29 pra 18, então
+    // "Capa com destaque da semana" (28 chars visíveis) quebra em 2 linhas —
+    // o trecho bold não cabe inteiro numa linha. O que este teste protege é
+    // que o trecho bold SAÍSSE em um `<tspan font-weight="700">` e que os
+    // delimitadores `**` NUNCA vazem pro SVG (a quebra de linha é do wrap, não
+    // da marcação).
+    assert.match(svg, /<tspan font-weight="700">com destaque<\/tspan>/, "trecho bold vira tspan");
     assert.doesNotMatch(svg, /\*\*/);
+    assert.match(svg, /Capa /, "o 'Capa' vem antes do trecho bold na primeira linha");
+    assert.match(svg, /semana/, "o 'semana' vem depois, na segunda linha");
   });
 
   it("#6751-render-fix: **bold** colado direto em pontuação (sem espaço) não ganha espaço fantasma nem órfã em linha própria", () => {
@@ -265,7 +273,13 @@ describe("#6086 item c: negrito seletivo (`**...**` no title)", () => {
     assert.doesNotMatch(svgColon, /bold<\/tspan> :/);
 
     const svgPeriod = buildFlatCardSvg({ kicker: "x", title: "Frase com **destaque no fim**.", footer: "y" }, FIXED);
-    assert.match(svgPeriod, /<tspan font-weight="700">destaque no fim<\/tspan>\./);
+    // #8515: com a razão conservadora 0.62 (era 0.52), maxCharsPerLine a 62px
+    // cai de 24... era 29 — "Frase com destaque no fim." (28 chars visíveis)
+    // agora quebra em 2 linhas, então o trecho bold "destaque no fim" não
+    // cabe inteiro numa linha. O que o #6751 protege é a PONTUAÇÃO (o ".".
+    // vem colado no "fim", sem espaço fantasma) — não o fato de o trecho
+    // bold caber em 1 linha. A asserção abaixo é só do que interessa.
+    assert.match(svgPeriod, /<tspan font-weight="700">fim<\/tspan>\./, "o 'fim' é bold e o '.' vem direto, sem espaço fantasma");
     assert.doesNotMatch(svgPeriod, /fim<\/tspan> \./);
 
     // Mesmo padrão preservado no texto VISÍVEL (measureFlatCardBody) — a
@@ -411,6 +425,59 @@ describe("#8480 (260919): capa/CTA sempre 84px (WEEKLY_FLAT_CARD_LAYOUT), nunca 
         WEEKLY_FLAT_CARD_LAYOUT,
       );
       assert.deepEqual(receivedLayout, WEEKLY_FLAT_CARD_LAYOUT);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * (#8515) Transbordo HORIZONTAL — a dimensão que o #8485 documentou e que o
+   * #8480 re-introduziu ao trocar a capa/CTA semanal pra `fixed` 84px com a
+   * razão antiga 0.52. `overflows` era só altura, então um título cuja linha
+   * cheia estourava a largura do card passava direto pelo abort e saía em
+   * arte pública com a linha vazando pra direita.
+   */
+  it("#8515: linha de 21 chars a 84px (com a razão antiga 0.52 caberia) AGORA acusa overflow — largura é checada junto com a altura", () => {
+    // Cenário concreto do report: availableWidth = 1080 - 72*2 = 936,
+    // maxCharsPerLine = floor(936 / (84 * 0.62)) = 18 (era 21 com 0.52).
+    // Uma linha de 21 chars a 84px estima 21*84*0.62 = 1094px > 936.
+    const title = "palavra ".repeat(6).trim(); // 35 chars, quebra em 2 linhas
+    // Com a razão antiga cada linha caberia em 21 chars (2 linhas de ~17 chars
+    // cada, nenhuma estourando a largura) — o guard de altura não ia pegar.
+    // Com 0.62, maxCharsPerLine = 18 e cada linha de ~17 chars estima
+    // 17*84*0.62 = 885px < 936 — então o overflow TEM que vir da linha cheia,
+    // não do bloco. Força uma linha de exatamente 21 chars:
+    const fullLine = "0123456789012345678901"; // 21 chars, nenhuma espaço — wrap
+    // não quebra palavra, então fica 1 linha inteira de 21 chars.
+    const measured = measureFlatCardBody(fullLine, WEEKLY_FLAT_CARD_LAYOUT);
+    assert.equal(measured.lines.length, 1, "linha sem espaço não quebra — 1 linha de 21 chars");
+    assert.equal(measured.overflows, true, "21 chars a 84px com 0.62 estima 1094px > 936: deve acusar overflow (largura)");
+    // E o abort de resolveOrGenerateFlatCardUrl de fato pega esse caso —
+    // o generator nunca é chamado pra um título que transborda na largura.
+  });
+
+  it("#8515: resolveOrGenerateFlatCardUrl ABORTA um título que transborda SÓ na largura (nunca chama o generator)", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "diaria-flatcard-"));
+    try {
+      let calls = 0;
+      const generator: FlatCardGenerator = async () => {
+        calls++;
+        return { url: "https://cdn.example.com/x" };
+      };
+      // 21 chars sem espaço, 84px — transborda na largura, não na altura.
+      await assert.rejects(
+        () =>
+          resolveOrGenerateFlatCardUrl(
+            dataRoot,
+            "260919-wide",
+            "cover",
+            { kicker: "Grátis, toda manhã", title: "0123456789012345678901", footer: "diar.ia.br" },
+            generator,
+            WEEKLY_FLAT_CARD_LAYOUT,
+          ),
+        /não cabe em 84px/,
+      );
+      assert.equal(calls, 0, "o generator nunca é chamado pra transbordo de largura");
     } finally {
       rmSync(dataRoot, { recursive: true, force: true });
     }

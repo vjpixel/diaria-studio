@@ -61,6 +61,23 @@ const CHAR_WIDTH_RATIO = 0.52;
 /** Razão conservadora só do auto-size `fill` (capa/CTA semanais): o rasterizador cai em serif mais larga que Georgia quando ela não está instalada, e 0.52 deixava linha vazar do card (achado ao vivo 260919). */
 const FILL_CHAR_WIDTH_RATIO = 0.62;
 
+/**
+ * Razão conservadora do caminho `fixed` (capa/CTA do carrossel SEMANAL, 84px,
+ * e corpo do carrossel DIÁRIO, 62px) — a MESMA medição do `fill` (#8485):
+ * o rasterizador cai na serif mais larga que Georgia quando ela não está
+ * instalada, e 0.52 subestima a largura real em ~19%.
+ *
+ * Por que é um só valor e não por-consumidor (#8515): os dois caminhos
+ * renderizam o MESMO glifo (`FONTS.serif` Georgia, `buildFlatCardSvg`) pelo
+ * MESMO rasterizador (`sharp`), então a largura real da linha é a mesma
+ * função do tamanho da fonte — o que muda é só o tamanho. A razão é uma
+ * propriedade do renderer+fonte, não do consumidor. Se um dia o carrossel
+ * diário mudar pra uma fonte sem serif (ex: body em Geist), aí sim a razão
+ * vira por-consumidor; até lá, compartilhar não é um risco, é o oposto de
+ * bifurcar uma constante que já divergia em silêncio (#6078).
+ */
+const FIXED_CHAR_WIDTH_RATIO = 0.62;
+
 /** Geometria vertical do bloco de texto — o mesmo em `fill` e em `fixed`. */
 const KICKER_Y = 168;
 const BAR_Y = KICKER_Y + 30;
@@ -82,7 +99,23 @@ export interface InlineBoldSegment {
   bold: boolean;
 }
 
-/** Largura média de caractere BOLD como fração do corpo da fonte (aproximação, mesmo regime de `CHAR_WIDTH_RATIO`). Bold é ~7% mais largo que regular. */
+/**
+ * Largura de um caractere BOLD como fração do corpo da fonte —物理事实,
+ * medida no regime do #8485: Georgia bold é ~7% mais largo que Georgia
+ * regular, e ambos são ~0.52 do tamanho da fonte quando a Georgia está
+ * instalada. `CHAR_WIDTH_RATIO` (0.52) é a âncora aqui: o bold é
+ * `CHAR_WIDTH_RATIO * 1.07`, independente de qual razão o CAMINHO escolheu
+ * pra limitar a largura.
+ *
+ * (#8515) O detalhe que tornou isso worth extracting: `wordWidth` dividia por
+ * `CHAR_WIDTH_RATIO` e `maxCharsPerLine` era calculado com a razão do caminho
+ * — quando o #8485 trocou o `fill` pra 0.62 e o #8480 trocou o `fixed` pra
+ * 0.62, o `maxCharsPerLine` encolheu 19% mas o peso do bold permaneceu em
+ * 1.07 (ancorado em 0.52), então um título todo em bold que cabia em 1 linha
+ * com 0.52 passou a quebrar em 2 com 0.62 — um falso overflow que forçava
+ * reescrita de texto que cabia. O peso do bold é relativo à razão DO CAMINHO,
+ * não à constante 0.52.
+ */
 const BOLD_CHAR_WIDTH_RATIO = CHAR_WIDTH_RATIO * 1.07;
 
 /** Pure: divide `title` em segmentos plain/bold a partir da marcação `**...**`. Texto sem `**` volta 1 segmento plain (passthrough). */
@@ -148,12 +181,19 @@ function wordsWithWeight(title: string): WeightedWord[] {
   return words;
 }
 
-/** Largura estimada da palavra em "caracteres regulares" (bold pesa mais). */
-function wordWidth(w: WeightedWord): number {
-  return w.text.length * (w.bold ? BOLD_CHAR_WIDTH_RATIO / CHAR_WIDTH_RATIO : 1);
+/**
+ * Largura estimada da palavra em "caracteres regulares" — a unidade em que
+ * `maxCharsPerLine` é expresso. `ratio` é a razão do CAMINHO que chamou o
+ * wrap (0.52 na heurística antiga, 0.62 no `fill` e no `fixed` pós-#8485):
+ * o peso do bold é relativo a ESSA razão, não à constante 0.52. Ver
+ * `BOLD_CHAR_WIDTH_RATIO` — o bug que motivou esse parâmetro foi um título
+ * todo em bold que cabia em 1 linha com 0.52 e quebrava em 2 com 0.62.
+ */
+function wordWidth(w: WeightedWord, ratio: number): number {
+  return w.text.length * (w.bold ? (BOLD_CHAR_WIDTH_RATIO / CHAR_WIDTH_RATIO) * (ratio / CHAR_WIDTH_RATIO) : 1);
 }
 
-function greedyWrapWeighted(words: WeightedWord[], maxCharsPerLine: number): WeightedWord[][] {
+function greedyWrapWeighted(words: WeightedWord[], maxCharsPerLine: number, ratio: number): WeightedWord[][] {
   const lines: WeightedWord[][] = [];
   let cur: WeightedWord[] = [];
   let curWidth = 0;
@@ -269,6 +309,17 @@ export const WEEKLY_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fixed", size: WE
  * um parágrafo passar do limite, a gente reescreve ele para o texto ficar
  * menor"*).
  *
+ * `overflows` cobre as DUAS dimensões (#8515): altura (o bloco de linhas
+ * passou do espaço entre a régua e o rodapé) e largura (alguma linha, mesmo
+ * quebrada no `maxCharsPerLine`, estoura a largura útil). Antes só altura
+ * era checada, e o abort de `resolveOrGenerateFlatCardUrl` era cego pra
+ * transbordo horizontal — exatamente a classe de falha que o #8485 documentou
+ * ("o rasterizador cai em serif mais larga que Georgia") e que o #8480
+ * re-introduziu ao trocar a capa/CTA semanal pra `fixed` 84px com a razão
+ * antiga 0.52. O caminho de notícia faz o mesmo com a largura
+ * (`overlayTitleOverflows`, `line.length * fontSize * wrap.ratio`); o flat
+ * card sem foto agora faz o mesmo com as duas.
+ *
  * Em `fixed` ele dispara no tamanho configurado. Em `fill` é raro mas
  * POSSÍVEL: `fillingFontSize` desce até `TITLE_SIZE_MIN` tentando caber e, se
  * nem no mínimo couber, devolve o mínimo assim mesmo — medido, um texto de
@@ -285,7 +336,7 @@ export interface FlatCardLine {
 /** Linha "espaçadora" — sem conteúdo, consome 1 `lineGap` de altura pra abrir respiro entre parágrafos (#6136 item 2). */
 const BLANK_LINE: FlatCardLine = { words: [], text: "" };
 
-function wrapSingleParagraph(title: string, maxCharsPerLine: number): FlatCardLine[] {
+function wrapSingleParagraph(title: string, maxCharsPerLine: number, ratio: number): FlatCardLine[] {
   const hasMarkup = title.includes("**");
   if (!hasMarkup) {
     // Sem marcação: caminho original intocado (wrapTitle + balanceamento) —
@@ -296,7 +347,7 @@ function wrapSingleParagraph(title: string, maxCharsPerLine: number): FlatCardLi
   // contagem, bold ~7% mais largo). O balanceamento do #4575 não se aplica
   // aqui (opera sobre strings cegas a peso); parágrafos longos do carrossel
   // diário (>24 palavras) já caem no guloso hoje, então é o mesmo regime.
-  return greedyWrapWeighted(wordsWithWeight(title), maxCharsPerLine).map((words) => ({
+  return greedyWrapWeighted(wordsWithWeight(title), maxCharsPerLine, ratio).map((words) => ({
     words,
     text: words.reduce((acc, w, i) => acc + (i === 0 || w.attached ? "" : " ") + w.text, ""),
   }));
@@ -310,11 +361,11 @@ function wrapSingleParagraph(title: string, maxCharsPerLine: number): FlatCardLi
  * blocos. Título sem `\n\n` (todo chamador pré-#6136) cai direto no caminho
  * de 1 parágrafo — comportamento intocado.
  */
-function wrapBody(title: string, maxCharsPerLine: number): FlatCardLine[] {
+function wrapBody(title: string, maxCharsPerLine: number, ratio: number): FlatCardLine[] {
   const paragraphs = title.split(/\n\s*\n/).map((p) => p.trim());
-  if (paragraphs.length <= 1) return wrapSingleParagraph(title, maxCharsPerLine);
+  if (paragraphs.length <= 1) return wrapSingleParagraph(title, maxCharsPerLine, ratio);
   return paragraphs.reduce<FlatCardLine[]>((acc, p, i) => {
-    const group = wrapSingleParagraph(p, maxCharsPerLine);
+    const group = wrapSingleParagraph(p, maxCharsPerLine, ratio);
     return i === 0 ? group : [...acc, BLANK_LINE, ...group];
   }, []);
 }
@@ -337,11 +388,27 @@ function layoutCardBody(
     ({ size, lines } = fillingFontSize(title, availableWidth, availableHeight));
   } else {
     size = layout.size;
-    const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (size * CHAR_WIDTH_RATIO)));
-    lines = wrapBody(title, maxCharsPerLine);
+    // #8515: `fixed` usa a MESMA razão conservadora do `fill` (0.62, medida ao
+    // vivo pelo #8485) — o 0.52 antigo subestima a largura real da serif em
+    // ~19% e deixava linha vazar do card. O caminho `fill` já corrigiu isso
+    // em #8485; o #8480 trocou a capa/CTA semanal pra `fixed` e trouxe de
+    // volta o bug exatamente no caminho que o #8485 não havia tocado.
+    const ratio = FIXED_CHAR_WIDTH_RATIO;
+    const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (size * ratio)));
+    lines = wrapBody(title, maxCharsPerLine, ratio);
   }
   const blockHeight = lines.length * Math.round(size * 1.18);
-  return { size, lines, blockHeight, availableHeight, overflows: blockHeight > availableHeight };
+  // #8515: `overflows` era SÓ altura, então o abort de
+  // `resolveOrGenerateFlatCardUrl` (que consome este campo) era cego pra
+  // transbordo horizontal — exatamente a classe de falha que o #8485
+  // documentou e que o #8480 re-introduziu. O caminho de notícia
+  // (`overlayTitleOverflows` em gen-social-card-4x5.ts) já checa largura
+  // (`line.length * fontSize * wrap.ratio > availableWidth`); o flat card
+  // sem foto fazia o mesmo com a altura e se omitia a largura.
+  const widthOverflows = lines.some(
+    (l) => l.text.length * size * FIXED_CHAR_WIDTH_RATIO > availableWidth,
+  );
+  return { size, lines, blockHeight, availableHeight, overflows: blockHeight > availableHeight || widthOverflows };
 }
 
 export function measureFlatCardBody(
