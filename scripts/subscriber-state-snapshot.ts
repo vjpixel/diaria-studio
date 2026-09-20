@@ -3,7 +3,8 @@
  * scripts/subscriber-state-snapshot.ts (#8552)
  *
  * Camada de I/O sobre `scripts/lib/subscriber-state-snapshot.ts` (miolo
- * puro) — grava o snapshot diário `(id, state, created_at)` do roster Kit
+ * puro) — grava o snapshot diário `(id, state, created_at)` (+ `confirmou_via`
+ * e `origem`, opcionais, lidos de `fields`) do roster Kit
  * completo (`status: "all"`) em
  * `data/subscriber-state-snapshots/kit/{AAAA-MM-DD}/subscribers.jsonl`, e
  * imprime um resumo das transições de estado desde o snapshot anterior
@@ -38,6 +39,8 @@ import {
   snapshotRootDefault,
   snapshotJsonlPath,
   serializeSubscriberStateRecords,
+  toSubscriberStateRecord,
+  summarizeFieldCoverage,
   listSubscriberStateSnapshotDates,
   readSubscriberStateSnapshotFile,
   diffSubscriberStateSnapshots,
@@ -74,12 +77,17 @@ async function main(): Promise<void> {
 
   console.error(`${LOG_PREFIX} listando roster Kit completo (status=all)...`);
   const subscribers = await listAllKitSubscribers(config, { status: "all" });
-  const records: SubscriberStateRecord[] = subscribers.map((s) => ({
-    id: s.id,
-    state: s.state,
-    created_at: s.created_at,
-  }));
+  const records: SubscriberStateRecord[] = subscribers.map(toSubscriberStateRecord);
   console.error(`${LOG_PREFIX} ${records.length} assinante(s) no roster.`);
+  const cov = summarizeFieldCoverage(subscribers, records);
+  console.error(
+    `${LOG_PREFIX} cobertura: fields presente em ${cov.comFields}/${cov.total}, origem ${cov.comOrigem}, confirmou_via ${cov.comConfirmouVia}.`,
+  );
+  if (cov.total > 0 && cov.comFields === 0) {
+    console.error(
+      `${LOG_PREFIX} AVISO: 'fields' ausente em TODOS os assinantes da lista — origem/confirmou_via ficarão vazios neste snapshot (relatório por canal/via degrada).`,
+    );
+  }
 
   const existingDates = listSubscriberStateSnapshotDates(root).filter((d) => d < date);
   const previousDate = existingDates.length > 0 ? existingDates[existingDates.length - 1] : null;
