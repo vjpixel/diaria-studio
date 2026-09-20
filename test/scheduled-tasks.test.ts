@@ -1092,6 +1092,43 @@ describe("#8245 — Diaria-Meta-Ads-Spend-Ingest registrada, diária, systemd-on
   });
 });
 
+describe("#8573 — Diaria-Google-Ads-Confirmations-Upload registrada, diária, systemd-only, NÃO armada", () => {
+  it("está presente no registro, com o step apontando pro script correto com --send, diária às 07:20", () => {
+    const t = getScheduledTaskByName("Diaria-Google-Ads-Confirmations-Upload");
+    assert.ok(t, "Diaria-Google-Ads-Confirmations-Upload ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/upload-google-ads-confirmations.ts"],
+    );
+    assert.deepEqual(t!.steps[0].args, ["--send"]);
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 7, minute: 20 });
+    assert.equal(t!.issue, "#8573, #8555, #8567");
+  });
+
+  it("horário de 07:20 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Google-Ads-Confirmations-Upload" && t.schedule.hour === 7 && t.schedule.minute === 20,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Google-Ads-Confirmations-Upload")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+
+  it("sem guard modelado — o próprio script já aborta com exit 1 quando falta snapshot", () => {
+    const t = getScheduledTaskByName("Diaria-Google-Ads-Confirmations-Upload")!;
+    assert.equal(t.guard, undefined);
+  });
+});
+
 describe("#5754/#6267 — Diaria-Hub-Pages-Build registrada, semanal, systemd-only, DESLIGADA DE PROPÓSITO", () => {
   it("está presente no registro, com o step apontando pro build-hub-page.ts com --all --check-facts, domingo 08:05", () => {
     const t = getScheduledTaskByName("Diaria-Hub-Pages-Build");
