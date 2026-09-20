@@ -283,7 +283,7 @@ export async function checkSeedEmailsBlacklisted(
  * endereços que o editor declarou em `brevo_diaria.seed_deliberately_blacklisted`.
  * O blacklist do Gmail pessoal na conta da diária é deliberado (o editor já
  * recebe a edição pelo Kit) — sem essa isenção o guard ficaria em `exit(2)`
- * pra sempre. Comparação case-insensitive; a isenção é EXPLÍCITA e por
+ * pra sempre. Consequência aceita: a sonda de inbox placement desse endereço fica cega. Comparação case-insensitive (trim); a isenção é EXPLÍCITA e por
  * endereço, nunca "ignora blacklist em geral". */
 export function resolveSeedEmailsToCheck(
   testEmail: string | undefined,

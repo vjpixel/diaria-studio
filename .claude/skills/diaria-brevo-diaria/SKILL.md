@@ -307,7 +307,7 @@ agenda (ainda não existe flag `--schedule-at`/`--send-now` em
 
   Dispara `POST /emailCampaigns/{id}/sendTest` DEPOIS de criar o rascunho, pro
   destinatário default (`brevo_diaria.test_email` em `platform.config.json` —
-  hoje `vjpixel@gmail.com`). Pra outro destinatário, acrescente
+  hoje `pixel@memelab.com.br` (#8436)). Pra outro destinatário, acrescente
   `--send-test-to <email>` (sobrepõe o default). Sem nenhum dos dois
   configurados, o script recusa ANTES de qualquer chamada de rede — nunca
   dispara `sendTest` sem destinatário resolvido. O envio de teste fica

@@ -102,4 +102,15 @@ test("resolveSeedEmailsToCheck — sem isenção declarada, todos os seeds conti
 test("resolveSeedEmailsToCheck — isenção é por endereço: outro seed blacklisted continua acusado", () => {
   const r = resolveSeedEmailsToCheck("a@x.com", ["b@x.com"], ["b@x.com"]);
   assert.deepEqual(r.toCheck, ["a@x.com"]);
+  assert.deepEqual(r.exempt, ["b@x.com"]);
+});
+
+test("config real: test_email não é isento e o Gmail pessoal está isento (#8436)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { EDITOR_SEED_EMAILS } = await import("../scripts/lib/editor-copy.ts");
+  const cfg = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8")).brevo_diaria;
+  const r = resolveSeedEmailsToCheck(cfg.test_email, EDITOR_SEED_EMAILS, cfg.seed_deliberately_blacklisted);
+  assert.ok(r.toCheck.includes(cfg.test_email), "test_email deve continuar checado");
+  assert.ok(!r.toCheck.some((e) => e.toLowerCase() === "vjpixel@gmail.com"));
+  assert.ok(r.exempt.some((e) => e.toLowerCase() === "vjpixel@gmail.com"));
 });
