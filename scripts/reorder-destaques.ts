@@ -97,7 +97,7 @@ import {
   insertOrUpdateTituloSubtitulo,
 } from "./insert-titulo-subtitulo.ts"; // #3980
 import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // #3982
-import { hashFromApprovedFile } from "./lib/social-source-hash.ts"; // #6062
+import { hashFromApprovedFile, writeSocialSourceHash } from "./lib/social-source-hash.ts"; // #6062, #8596
 import {
   readCarouselSourceHashes,
   writeCarouselSourceHashes,
@@ -811,11 +811,7 @@ export function refreshSocialSourceHash(
 
   const hashPath = resolve(internalDir, ".social-source-hash.json");
   if (!dryRun) {
-    writeFileSync(
-      hashPath,
-      JSON.stringify({ hash, generated_at: new Date().toISOString() }, null, 2) + "\n",
-      "utf8",
-    );
+    writeSocialSourceHash(internalDir, hash);
   }
   return { path: hashPath, hash };
 }

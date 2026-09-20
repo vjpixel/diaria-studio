@@ -30,7 +30,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 export interface HighlightForHash {
   url?: string;
@@ -67,4 +68,19 @@ export function hashFromApprovedFile(approvedPath: string): string {
   const data = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson;
   const highlights = Array.isArray(data.highlights) ? data.highlights : [];
   return hashHighlights(highlights);
+}
+
+/**
+ * (#8596) Grava `_internal/.social-source-hash.json` no formato
+ * `{ hash, generated_at }`. Compartilhado por `reorder-destaques.ts` e pelo
+ * CLI `refresh-social-hash.ts`. Retorna o path gravado.
+ */
+export function writeSocialSourceHash(internalDir: string, hash: string): string {
+  const hashPath = resolve(internalDir, ".social-source-hash.json");
+  writeFileSync(
+    hashPath,
+    JSON.stringify({ hash, generated_at: new Date().toISOString() }, null, 2) + "\n",
+    "utf8",
+  );
+  return hashPath;
 }
