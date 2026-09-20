@@ -33,15 +33,35 @@ export function isJevFeatureOn(
   return configFlag === true || isJevProfileAll(env);
 }
 
-/** Lê `jev.features` cru do config. Fail-soft: ausente/quebrado → `{}`. */
+const warned = new Set<string>();
+/** Avisa 1x por path quando o config existe mas não parseia (fail-soft). */
+export function warnConfigUnparseable(configPath: string): void {
+  if (warned.has(configPath)) return;
+  warned.add(configPath);
+  console.warn(`[jev] platform.config.json ilegível (${configPath}) — features Jev tratadas como off`);
+}
+
+/**
+ * Shadow efetivo: `DIARIA_JEV_PROFILE=all` força `false` (o Jev decide —
+ * decisão do editor, #8421); senão `jev.shadow` do config, default `true`.
+ */
+export function effectiveJevShadow(
+  configShadow: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (isJevProfileAll(env)) return false;
+  return configShadow !== false;
+}
+
+/** Lê `jev.features` cru do config. Fail-soft: ausente/quebrado/`null` → `{}`. */
 export function readJevFeatureFlags(configPath: string): Record<string, unknown> {
   if (!existsSync(configPath)) return {};
   try {
-    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
-      jev?: { features?: Record<string, unknown> };
-    };
-    return cfg.jev?.features ?? {};
+    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as { jev?: { features?: unknown } } | null;
+    const f = cfg?.jev?.features;
+    return typeof f === "object" && f !== null ? (f as Record<string, unknown>) : {};
   } catch {
+    warnConfigUnparseable(configPath);
     return {};
   }
 }

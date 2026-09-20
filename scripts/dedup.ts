@@ -810,9 +810,11 @@ async function main() {
       message: `dedup zona cinzenta: ${grayZoneRecords.length} veredito(s) Jev, ${grayZoneRecords.filter((r) => r.jevSame !== r.heuristicSame).length} divergente(s) da heurística (#8505)`,
       details: { ...grayZone.stats, records: grayZoneRecords },
     }, logRootDir);
-    if (outPath && grayZoneRecords.length > 0) {
+    if (outPath) {
       try {
-        writeFileSync(join(dirname(outPath), "dedup-grayzone-jev.json"), JSON.stringify(grayZoneRecords, null, 2), "utf8");
+        // #8421: envelope com o env/shadow efetivos (o A/B confere que o braço B decidiu de fato).
+        const artifact = { profile_env: process.env.DIARIA_JEV_PROFILE ?? null, shadow: grayZone.mode !== "active", records: grayZoneRecords };
+        writeFileSync(join(dirname(outPath), "dedup-grayzone-jev.json"), JSON.stringify(artifact, null, 2), "utf8");
       } catch (err) {
         // best-effort — nunca trava o dedup, mas a perda do artefato fica auditável.
         logEvent({
