@@ -952,7 +952,7 @@ export function signupFormScript(): string {
             if (r.status === 200 && r.body && r.body.ok) {
               // #7358: evento de conversão pro GTM — só no sucesso REAL do
               // cadastro, com o e-mail já validado acima.
-              ${pushSignupConversionEventJs("email")}
+              ${pushSignupConversionEventJs("email", "r.body.event_id")}
               form.reset();
               setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
               // #6979 achado 4: mesmo tratamento de sucesso de /assinar —

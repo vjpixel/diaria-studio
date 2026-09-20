@@ -36,12 +36,69 @@ já está pronto pra upload).
    `dxY1CIb1v9EbEKmt_aJC` = ação `7418673798 Assinatura Confirmada`
    (`ENABLED`, categoria `SIGNUP`, primária para a meta).
 
+3. **A tag do Meta Pixel não é mais o Custom HTML deste doc — é o template
+   oficial.** Medido no container publicado em 20/09/2026 (#8572): a tag
+   viva é `__cvt_5RM3Q` (`tag_id` 16), com
+   `vtp_standardEventName: "CompleteRegistration"`,
+   `vtp_pixelId: "1285191740325112"`, advanced matching de `em` e
+   `value: 1` / `currency: 'BRL'` em `vtp_objectPropertyList`. O snippet
+   `fbq('track', ...)` versionado em
+   `docs/gtm-signup-container-export.json` (e lido por
+   `test/meta-capi-8388.test.ts`) descreve a PROPOSTA de import, não o que
+   está no ar — os valores batem, a forma não.
+
 Confiar no texto abaixo para diagnosticar o container ao vivo levou a um
 diagnóstico errado no #7523. **Antes de usar este doc como fonte sobre o
 estado atual, conferir o container** — ou o rótulo contra
 `conversion_action.tag_snippets` via GAQL, que é o cruzamento que fechou o
 caso. O material de *procedimento* (modos de import, Plano B, checklist de
 verificação) continua válido.
+
+Forma barata de conferir o container ao vivo sem abrir o painel — ele é
+público, é o mesmo JS que o navegador do visitante baixa:
+
+```bash
+curl -sS -A "Mozilla/5.0" "https://www.googletagmanager.com/gtm.js?id=GTM-TC8C65ZN" | grep -o 'vtp_[a-zA-Z]*eventId[^,]*'
+```
+
+## Ação de painel PENDENTE (#8572) — campo Event ID na tag do Meta Pixel
+
+**Sem este passo a dedup pixel × CAPI não existe, e a Meta conta cada
+cadastro DUAS vezes.** Foi o que a #8572 mediu em 20/09/2026: 2,4x os
+cadastros reais (CPA de R$ 1,55–1,87 no painel contra R$ 3,71–4,53 real),
+estável em 3 dias, com as séries `WEB_ONLY` e `SERVER_ONLY` do dataset
+somando em vez de colapsar.
+
+O código já faz a parte dele desde o #8572: o handler do cadastro resolve o
+`event_id` que vai pra CAPI, devolve no corpo da resposta 200, e a página
+empurra pro `dataLayer` em `eventProps.event_id`. Falta a tag LER isso.
+
+1. **Criar a variável** (Variables → User-Defined → New → Data Layer Variable):
+   - Nome: `DLV - eventProps.event_id`
+   - Data Layer Variable Name: `eventProps.event_id` — **exatamente isto**,
+     é o contrato travado em `SIGNUP_CONVERSION_EVENT_ID_KEY`
+     (`scripts/lib/shared/seo-meta.ts`)
+   - Version: 2; deixar "Set Default Value" **desmarcado** (ausente tem que
+     virar vazio, nunca uma string literal — um default fixo faria TODOS os
+     cadastros compartilharem o mesmo id e a Meta colapsaria conversões
+     distintas numa só, um erro pior que o de hoje)
+2. **Apontar a tag**: Tags → a tag do Meta Pixel do evento de cadastro
+   (`CompleteRegistration`) → **Event ID** → `{{DLV - eventProps.event_id}}`.
+   Não mexer em mais nada da tag: `value`/`currency` precisam continuar
+   iguais aos da CAPI (`test/meta-capi-8388.test.ts` trava essa igualdade).
+3. **Conferir no Preview antes de publicar**: fazer um cadastro real em
+   `diar.ia.br/assinar` com o Preview ligado e checar, no evento `signedUp`,
+   que o `dataLayer` traz `eventProps.event_id` com 64 caracteres hex e que
+   a tag disparou com esse `eventID` (aba Variables da tag). GTM Preview é a
+   fonte de verdade aqui — a aba de rede/automação engana.
+4. **Depois de publicar**, confirmar no Events Manager → `CompleteRegistration`
+   → painel de deduplicação: a cobertura de `event_id` no lado browser tem que
+   sair de ~0% pra ~100%, e a contagem diária cair pra perto dos cadastros
+   reais do Kit.
+
+**Se o passo 1 ou 2 for feito errado, nada quebra visivelmente** — a tag
+volta a disparar sem `eventID` e o painel infla de novo em silêncio. O único
+sinal é a divergência painel × Kit voltar a subir.
 
 ## ⚠️ O aviso mais importante deste documento: importar em **Merge**, nunca **Overwrite**
 

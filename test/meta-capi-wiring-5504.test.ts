@@ -137,14 +137,20 @@ describe("#5504 — wiring: workers/poll/src/subscribe.ts (handleJogarSubscribe)
     const { fn } = routedFetch({ metaBehavior: "http_error" });
     const res = await handleJogarSubscribe(req(), pollEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), { fetchImpl: fn } as PollSubscribeDeps);
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { ok: true });
+    // #8572: com o token configurado o corpo passou a carregar o `event_id`
+    // do evento que o handler mandou (ou TENTOU mandar) — é ele que o pixel
+    // repassa pra Meta deduplicar. Uma falha da Meta não muda isso: o id
+    // continua saindo, e nenhum outro campo aparece.
+    assert.deepEqual(Object.keys(await res.clone().json() as object).sort(), ["event_id", "ok"]);
+    assert.deepEqual((await res.json() as { ok: boolean }).ok, true);
   });
 
   it("rede da Meta caindo (fetch lança) NUNCA propaga — resposta 200 normal", async () => {
     const { fn } = routedFetch({ metaBehavior: "network_error" });
     const res = await handleJogarSubscribe(req(), pollEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), { fetchImpl: fn } as PollSubscribeDeps);
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { ok: true });
+    assert.deepEqual(Object.keys(await res.clone().json() as object).sort(), ["event_id", "ok"]);
+    assert.deepEqual((await res.json() as { ok: boolean }).ok, true);
   });
 
   it("cadastro que FALHA na Beehiiv nunca sequer chega a chamar a Meta", async () => {
@@ -166,7 +172,12 @@ describe("#5504 — wiring: workers/poll/src/subscribe.ts (handleJogarSubscribe)
     );
     const elapsedMs = Date.now() - start;
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { ok: true });
+    // #8572: o corpo ganhou `event_id` — o hash é local (Web Crypto, sub-ms) e
+    // acontece ANTES da resposta de propósito, então o assert de tempo abaixo
+    // também protege contra alguém mover esse cálculo pra trás de uma chamada
+    // de rede.
+    assert.deepEqual(Object.keys(await res.clone().json() as object).sort(), ["event_id", "ok"]);
+    assert.deepEqual((await res.json() as { ok: boolean }).ok, true);
     // A resposta não esperou os 500ms da Meta — se o `await` bloqueante do
     // bug voltasse, este assert falharia (elapsed ficaria >= 500ms).
     assert.ok(elapsedMs < 400, `resposta demorou ${elapsedMs}ms — deveria retornar antes da Meta (500ms) resolver`);

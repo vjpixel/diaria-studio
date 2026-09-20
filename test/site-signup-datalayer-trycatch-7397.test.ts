@@ -35,7 +35,9 @@ import { pushSignupConversionEventJs } from "../scripts/lib/shared/seo-meta.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const EXPECTED_SNIPPET = pushSignupConversionEventJs("email");
+// #8572: as 2 páginas do apex leem o `event_id` do corpo da resposta como
+// `r.body.event_id` (o gate de cursos usa `r.data`, e não é coberto aqui).
+const EXPECTED_SNIPPET = pushSignupConversionEventJs("email", "r.body.event_id");
 
 /** `dataLayer.push` de `signedUp` fora de um `try { … }` — o bug do #7397. */
 const BARE_PUSH_PATTERN =
