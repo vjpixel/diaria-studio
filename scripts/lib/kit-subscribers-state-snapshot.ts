@@ -36,10 +36,6 @@ export interface KitSubscriberStateSnapshot {
   state: string;
   createdAt: string;
 }
-  id: number;
-  state: string;
-  createdAt: string;
-}
 
 /** Nome do arquivo de snapshot por dia: `YYYY-MM-DD`. */
 export function snapshotFileName(date: string): string {

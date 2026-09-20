@@ -334,8 +334,8 @@ export interface KitConfirmation {
 }
 
 export function detectKitConfirmations(
-  current: readonly KitSubscriberSummary[],
-  previous: readonly Map<number, KitSubscriberSummary>,
+  current: KitSubscriberSummary[],
+  previous: Map<number, KitSubscriberSummary>,
   now: string = new Date().toISOString(),
 ): KitConfirmation[] {
   const out: KitConfirmation[] = [];

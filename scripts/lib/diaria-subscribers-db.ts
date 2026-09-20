@@ -180,8 +180,6 @@ export const EVENT_TYPES = [
   "complaint",
   "contest_reply",
   "poll_vote",
-<<<<<<< Updated upstream
-=======
   /**
    * #8543 — CONFIRMAÇÃO de cadastro (quem virou `active` depois de ter
    * nascido `inactive`/`cancelled`/`bounced`/`complained`). Distinto de
@@ -201,7 +199,6 @@ export const EVENT_TYPES = [
    * quem grava este evento é o snapshot do #8552, que deteta a transição
    * `inactive`→`active` e usa o `created_at` do snapshot como `ts`.
    */
->>>>>>> Stashed changes
   "confirm",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
