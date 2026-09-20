@@ -379,7 +379,7 @@ describe("resolveOrGenerateFlatCardUrl (cache + geração sob demanda)", () => {
 describe("#8480 (260919): capa/CTA sempre 84px (WEEKLY_FLAT_CARD_LAYOUT), nunca auto-size", () => {
   it("WEEKLY_FLAT_CARD_SIZE é 84 e WEEKLY_FLAT_CARD_LAYOUT é fixed nesse tamanho", () => {
     assert.equal(WEEKLY_FLAT_CARD_SIZE, 84);
-    assert.deepEqual(WEEKLY_FLAT_CARD_LAYOUT, { mode: "fixed", size: 84 });
+    assert.deepEqual(WEEKLY_FLAT_CARD_LAYOUT, { mode: "fixed", size: 84, charWidthRatio: 0.62 });
   });
 
   it("título curto que ANTES encolheria bem abaixo de 84 (fill escala com o texto) sai em 84px fixo com WEEKLY_FLAT_CARD_LAYOUT", () => {
