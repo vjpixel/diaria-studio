@@ -2492,7 +2492,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // esperado ausente" que justifique abortar a run inteira antes de
     // tentar.
     //
-    // ARMADA no `300` (#8537, 20/09/2026). O `enabled: false` original
+    // ARMA-ELEGIVEL desde o #8537 (20/09/2026) -- `enabled: true` aqui NAO
+    // e a mesma coisa que "armada no `300`", e o registro reserva essa
+    // frase pra estado verificado ao vivo (units presentes, timer
+    // enabled+active). O que esta flag faz e tornar a task VISIVEL pro
+    // `setup-systemd-timers.ts` e pro `Diaria-Remediate-Never-Armed-Tasks`
+    // (diario 18:15 BRT, armado no `300` desde 16/09), que auto-arma
+    // qualquer task `neverArmed` por decisao explicita do editor na #8153
+    // ("auto-armar tudo"). O arme real, portanto, nao e acao manual do
+    // editor: acontece sozinho no 1o 18:15 depois que o merge chegar na
+    // checkout compartilhada.
+    //
+    // O `enabled: false` original
     // registrava uma limitacao da SESSAO que escreveu o codigo (worktree
     // isolado de subagente overnight, proibido de chamar a Graph API ao
     // vivo pelo guard de publicacao/plataforma do CLAUDE.md) -- nunca uma
@@ -2656,7 +2667,7 @@ if (isMainModule(import.meta.url)) {
     const desarmadas = rows.filter((r) => !r.armed).length;
     console.log(
       `(${rows.length} tasks no registro — nome, schedule, scripts, logPath, killSwitch, issue, armada/DESARMADA` +
-        `${desarmadas > 0 ? `; ${desarmadas} DESARMADA(s) — não viram unit systemd` : ""})`,
+        `${desarmadas > 0 ? `; ${desarmadas} ${desarmadas === 1 ? "DESARMADA" : "DESARMADAS"} — não viram unit systemd` : ""})`,
     );
   }
 }
