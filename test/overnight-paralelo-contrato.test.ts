@@ -249,6 +249,23 @@ describe("#6299 — active_worktrees deixou de ser cosmético", () => {
     );
   });
 
+  it("a Fase 0 (registro da sessão) não contradiz os call sites da Fase 1/2 (achado do review da #8500)", () => {
+    // O 1º draft do #8495 corrigiu o item 6 (Paralelismo) mas deixou intacta
+    // uma frase categórica na Fase 0, bem mais cedo no arquivo: "Esta skill
+    // nunca chama session-registry.ts heartbeat". Verdadeira antes do #8495
+    // (o heartbeat só existia pra manter lastHeartbeat fresco, papel do
+    // beacon hook, #6327) — falsa depois, já que os dois call sites de
+    // active-worktrees CHAMAM heartbeat de verdade. Um leitor que bate na
+    // Fase 0 primeiro sai convencido de que heartbeat nunca é invocado por
+    // esta skill, e só descobre o contrário 50+ linhas depois.
+    const s = read(DEVELOP);
+    assert.doesNotMatch(
+      s,
+      /Esta skill nunca chama `session-registry\.ts heartbeat`/,
+      "a Fase 0 voltou a afirmar categoricamente que esta skill nunca chama heartbeat — falso desde o #8495, que introduziu os 2 call sites de --active-worktrees",
+    );
+  });
+
   it("o DEVELOP também não afirma que o overnight não chama — contradição CRUZADA", () => {
     // O 1º fix desta issue corrigiu só o lado overnight e deixou o item 6
     // espelhado do develop dizendo "nenhum call site desta skill (nem do
