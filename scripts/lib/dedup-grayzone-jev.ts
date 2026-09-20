@@ -40,6 +40,7 @@ import { jaccardSimilarity, tokenizeForJaccard } from "./title-similarity.ts";
 import { askJevBatch, type JevBatchItem, type JevBatchResult, type JevNoulAnswer } from "./jev.ts";
 import { DEDUP_GRAYZONE_8417 } from "./jev-questions.ts";
 import { logEvent } from "./run-log.ts";
+import { effectiveJevShadow, isJevFeatureOn, warnConfigUnparseable } from "./jev-profile.ts";
 
 // ---------------------------------------------------------------------------
 // Constantes nomeadas
@@ -63,20 +64,27 @@ export const GRAYZONE_MAX_PAIRS = 300;
 export type DedupGrayzoneMode = "off" | "shadow" | "active";
 
 /**
- * Lê `jev.features.dedup_grayzone` + `jev.shadow`. Fail-soft: arquivo ausente,
- * JSON quebrado ou chave ausente → "off" (config quebrado nunca liga rede).
+ * Lê `jev.features.dedup_grayzone` + `jev.shadow`. Flag efetiva = config OU
+ * `DIARIA_JEV_PROFILE=all` (jev-profile.ts); shadow efetivo = `false` com
+ * env=all (o perfil Jev DECIDE, decisão do editor #8421), senão `jev.shadow`
+ * do config (default true).
+ *
+ * Fail-soft: sem o env, arquivo ausente/quebrado/chave ausente → "off"
+ * (config quebrado nunca liga rede; quebrado avisa 1x). COM env=all, config
+ * ausente/quebrado liga mesmo assim, em "active".
  */
 export function readDedupGrayzoneMode(configPath: string): DedupGrayzoneMode {
-  if (!existsSync(configPath)) return "off";
-  try {
-    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
-      jev?: { shadow?: boolean; features?: { dedup_grayzone?: boolean } };
-    };
-    if (cfg.jev?.features?.dedup_grayzone !== true) return "off";
-    return cfg.jev.shadow === false ? "active" : "shadow";
-  } catch {
-    return "off";
+  let cfg: { jev?: { shadow?: boolean; features?: { dedup_grayzone?: boolean } } } = {};
+  if (existsSync(configPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
+      if (typeof parsed === "object" && parsed !== null) cfg = parsed as typeof cfg;
+    } catch {
+      warnConfigUnparseable(configPath);
+    }
   }
+  if (!isJevFeatureOn(cfg.jev?.features?.dedup_grayzone)) return "off";
+  return effectiveJevShadow(cfg.jev?.shadow) ? "shadow" : "active";
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +135,8 @@ export interface GrayZoneStats {
 }
 
 export interface GrayZoneResolver {
+  /** Modo efetivo com que o resolver foi criado (registrado no artefato, #8421). */
+  mode?: DedupGrayzoneMode;
   stats?: GrayZoneStats;
   decide(candidateTitle: string, pastTitle: string, jaccard: number, heuristicSame: boolean): GrayZoneDecision;
   records(): GrayZoneRecord[];
@@ -156,6 +166,7 @@ export function createGrayZoneResolver(opts: {
   const minConfidence = opts.minConfidence ?? GRAYZONE_MIN_CONFIDENCE;
   const log: GrayZoneRecord[] = [];
   return {
+    mode: opts.mode,
     decide(candidateTitle, pastTitle, jaccard, heuristicSame) {
       const fallback: GrayZoneDecision = { same: heuristicSame, viaJev: false };
       if (opts.mode === "off" || !inGrayZone(jaccard)) return fallback;

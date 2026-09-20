@@ -12,6 +12,7 @@ O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4:
 
 **Para cada nova edição:**
 1. `/diaria-edicao AAMMDD [--no-gates]` — roda as Etapas 1-4 em sequência (Pesquisa até o gate de Revisão). O próprio orchestrator regenera `data/past-editions.md` (Stage 0) e drena o inbox editorial (`diariaeditor@gmail.com`, Stage 1) automaticamente. Com `--no-gates`, auto-aprova os gates humanos das Etapas 1-4. **Desde #6171, a sessão termina no fim do Stage 4** — Etapas 5 e 6 (#7983) rodam como `/diaria-5-publicacao` numa sessão nova (a mensagem pós-gate imprime o comando exato), pra manter o contexto acumulado da revisão fora do dispatch de publicação.
+   - Perfil Jev (braço B do A/B, #8421): `/diaria-edicao-jev AAMMDD` = mesmas Etapas 1-4 com `DIARIA_JEV_PROFILE=all` (flag efetiva em `scripts/lib/jev-profile.ts`; força `jev.shadow:false` — o braço B decide de fato; faixa 0,70-0,85 do dedup não calibrada); relatório: `scripts/jev-ab-report.ts --editions ...`.
 2. Alternativamente, rodar etapas isoladas:
    - **Etapa 1** (pesquisa): `/diaria-1-pesquisa` (também refresca dedup + drena inbox).
    - **Etapa 2** (escrita): `/diaria-2-escrita [newsletter|social]` (newsletter + social em paralelo a partir de `01-approved.json`).
