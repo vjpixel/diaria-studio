@@ -2492,13 +2492,20 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // esperado ausente" que justifique abortar a run inteira antes de
     // tentar.
     //
-    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado de subagente
-    // overnight -- guard de publicacao/plataforma do CLAUDE.md proibe
-    // EXECUTAR chamada ao vivo contra Instagram/Facebook nesta sessao,
-    // #8260) -- armar via `scripts/setup-systemd-timers.ts` na checkout
-    // compartilhada (`300`) e acao POSTERIOR do editor, junto com o 1o
-    // fetch real.
-    enabled: false,
+    // ARMADA no `300` (#8537, 20/09/2026). O `enabled: false` original
+    // registrava uma limitacao da SESSAO que escreveu o codigo (worktree
+    // isolado de subagente overnight, proibido de chamar a Graph API ao
+    // vivo pelo guard de publicacao/plataforma do CLAUDE.md) -- nunca uma
+    // decisao editorial de manter a coleta desligada. O passo "posterior
+    // do editor" nunca aconteceu e nada sinalizava isso: task com
+    // `enabled: false` nao vira unit, nao aparece em `list-timers`, nao
+    // gera log e nao dispara alarme, entao o painel `/ads` ficou com
+    // `followers: null` por 3 dias sem nenhum sinal (#8537).
+    //
+    // `followers_count` e um total instantaneo, sem backfill -- cada dia
+    // sem coleta e um ponto de serie que nao volta. Por isso a flag sai
+    // agora, e nao depois da Fase 2 da #8260.
+    enabled: true,
     issue: "#8260",
   },
 ];
@@ -2575,6 +2582,14 @@ export interface ScheduledTaskRow {
   logPath: string;
   killSwitch: string;
   issue: string;
+  /** `false` quando a task tem `enabled: false` no registro (#8537). Task
+   *  desarmada NUNCA vira unit systemd (`setup-systemd-timers.ts` filtra
+   *  por `enabled !== false`), então não aparece em `systemctl list-timers`,
+   *  não gera log e não dispara alarme. Antes desta coluna ela aparecia em
+   *  `--list`/`--json` idêntica a uma armada, e foi assim que a
+   *  `Diaria-Social-Followers-Collect` ficou dormente por 3 dias sem sinal
+   *  nenhum — o painel `/ads` só mostrava `followers: null`. */
+  armed: boolean;
 }
 
 /** Formata `ScheduledTaskSchedule` como string humana curta (não é o
@@ -2614,6 +2629,7 @@ export function listScheduledTaskRows(tasks: ScheduledTaskDefinition[] = SCHEDUL
     logPath: t.logPath,
     killSwitch: t.guard ? t.guard.requiredFile : "-",
     issue: t.issue,
+    armed: t.enabled !== false,
   }));
 }
 
@@ -2622,7 +2638,7 @@ export function listScheduledTaskRows(tasks: ScheduledTaskDefinition[] = SCHEDUL
  * `SCHEDULED_TASKS.length` linhas" (#5408) simples de verificar em teste. */
 export function renderScheduledTasksTable(rows: ScheduledTaskRow[] = listScheduledTaskRows()): string {
   return rows
-    .map((r) => [r.name, r.schedule, r.scripts, r.logPath, r.killSwitch, r.issue].join("\t"))
+    .map((r) => [r.name, r.schedule, r.scripts, r.logPath, r.killSwitch, r.issue, r.armed ? "armada" : "DESARMADA"].join("\t"))
     .join("\n");
 }
 
@@ -2637,6 +2653,10 @@ if (isMainModule(import.meta.url)) {
     console.log(renderScheduledTasksTable(rows));
   } else {
     console.log("Uso: npx tsx scripts/lib/scheduled-tasks.ts --list [--json]");
-    console.log(`(${rows.length} tasks no registro — nome, schedule, scripts, logPath, killSwitch, issue)`);
+    const desarmadas = rows.filter((r) => !r.armed).length;
+    console.log(
+      `(${rows.length} tasks no registro — nome, schedule, scripts, logPath, killSwitch, issue, armada/DESARMADA` +
+        `${desarmadas > 0 ? `; ${desarmadas} DESARMADA(s) — não viram unit systemd` : ""})`,
+    );
   }
 }
