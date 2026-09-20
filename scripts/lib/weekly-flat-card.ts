@@ -55,11 +55,30 @@ const TITLE_SIZE_STEP = 2;
  * Extraída pra constante no #6078: era literal 0.52 dentro de
  * `fillingFontSize` e precisou ser compartilhada com o caminho de tamanho
  * fixo, senão os dois divergiam em silêncio.
+ *
+ * **Consumidores atuais (#8529 — travados por teste em `weekly-flat-card.test.ts`,
+ * describe "#8529"):**
+ * - Carrossel DIÁRIO (`DAILY_CAROUSEL_LAYOUT`, `daily-carousel-card.ts`, 62px)
+ *   — não declara `charWidthRatio`, cai neste default (0.52).
+ * - Qualquer `fixed` layout que não declare `charWidthRatio` explicitamente.
+ *
+ * Mudar este valor afeta TODOS os consumidores acima ao mesmo tempo. Se a
+ * intenção é mudar só um consumidor (ex: só o semanal), declare
+ * `charWidthRatio` no `FlatCardLayout` desse consumidor (ver
+ * `WEEKLY_FLAT_CARD_LAYOUT` abaixo, #8515) em vez de tocar aqui — foi
+ * exatamente o oposto disso que causou a regressão do #8529 (PR #8520 mudou
+ * `FILL_CHAR_WIDTH_RATIO`, usada também no caminho `fixed` antes do #8515,
+ * e quebrou o wrap do carrossel diário sem tocar em nenhum consumidor dele).
+ *
+ * Exportada (só pra teste, #8529) pra que o teste-âncora derive o
+ * `maxCharsPerLine` esperado a partir do valor real, em vez de repetir o
+ * número calculado em comentário — uma recalibração legítima do valor abaixo
+ * atualiza o teste sozinha; uma recalibração acidental (ex: #8529) acusa.
  */
-const CHAR_WIDTH_RATIO = 0.52;
+export const CHAR_WIDTH_RATIO = 0.52;
 
-/** Razão conservadora só do auto-size `fill` (capa/CTA semanais): o rasterizador cai em serif mais larga que Georgia quando ela não está instalada, e 0.52 deixava linha vazar do card (achado ao vivo 260919). */
-const FILL_CHAR_WIDTH_RATIO = 0.62;
+/** Razão conservadora só do auto-size `fill` (capa/CTA semanais): o rasterizador cai em serif mais larga que Georgia quando ela não está instalada, e 0.52 deixava linha vazar do card (achado ao vivo 260919). Exportada (só pra teste, #8529) pelo mesmo motivo de `CHAR_WIDTH_RATIO`. */
+export const FILL_CHAR_WIDTH_RATIO = 0.62;
 
 /** Geometria vertical do bloco de texto — o mesmo em `fill` e em `fixed`. */
 const KICKER_Y = 168;

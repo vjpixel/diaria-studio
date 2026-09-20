@@ -60,6 +60,7 @@ import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { resolveClaudeBin } from "./lib/resolve-claude-bin.ts";
 import { claudeCliEnv } from "./overnight/run-scheduled-edicao.ts";
+import { JEV_PROFILE_ENV } from "./lib/jev-profile.ts";
 import {
   STAGE_PLAN,
   runEditionStages,
@@ -144,7 +145,16 @@ export function main(
   // isolamento de env a subprocesso já usado no projeto (ver princípio
   // "NUNCA trocar a conta claude.ai pela API" no CLAUDE.md). Sem esta flag,
   // `env` segue idêntico ao comportamento pré-#8504.
-  const jevEnv = flags.has("diaria-edicao-jev") ? { ...env, JEV_FORCE_ACTOR_BRAZIL: "1" } : env;
+  //
+  // #8564: `JEV_FORCE_ACTOR_BRAZIL` sozinho ligava só `actor_brazil` — o
+  // perfil completo do braço B (`.claude/skills/diaria-edicao-jev/SKILL.md`)
+  // exige TODAS as `jev.features.*` ligadas (`dedup_grayzone` incluída), o
+  // que só acontece via `DIARIA_JEV_PROFILE=all` (`isJevFeatureOn`,
+  // `jev-profile.ts`). Sem propagar essa var também, `dedup_grayzone` nunca
+  // rodava no Stage 1 spawnado por este CLI — achado ao vivo, edição 260921.
+  const jevEnv = flags.has("diaria-edicao-jev")
+    ? { ...env, JEV_FORCE_ACTOR_BRAZIL: "1", [JEV_PROFILE_ENV]: "all" }
+    : env;
 
   let plan: EditionStage[];
   try {
