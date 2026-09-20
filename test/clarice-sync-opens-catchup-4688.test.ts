@@ -478,11 +478,16 @@ test("runOpensCatchup: exporta campanhas em paralelo (bounded por deps.concurren
     concurrency: CONCURRENCY,
   };
 
-  const t0 = Date.now();
   const result = await runOpensCatchup(deps);
-  const elapsedMs = Date.now() - t0;
 
   assert.equal(result.campaignsFailed, 0);
+  // #8547: a 3ª asserção original media wall-clock (`elapsedMs < N *
+  // DELAY_MS`) pra provar "não é sequencial de novo" — redundante com as
+  // duas abaixo (que já travam a mesma propriedade sem depender de relógio)
+  // e sujeita a flake sob CI carregado (jitter do scheduler estourava o
+  // teto mesmo em diffs que não tocam Clarice). `maxInFlight > 1` sozinho já
+  // falha se a regressão do #4688/#5401 voltar (sequencial ⇒ maxInFlight
+  // === 1); `maxInFlight <= CONCURRENCY` prova que o teto é respeitado.
   assert.ok(
     maxInFlight > 1,
     `esperava >1 export em voo simultaneamente (concurrency=${CONCURRENCY}), pico observado: ${maxInFlight}`,
@@ -490,14 +495,6 @@ test("runOpensCatchup: exporta campanhas em paralelo (bounded por deps.concurren
   assert.ok(
     maxInFlight <= CONCURRENCY,
     `nunca mais que deps.concurrency=${CONCURRENCY} exports simultâneos, pico observado: ${maxInFlight}`,
-  );
-  // Sequencial custaria N*DELAY_MS (~240ms); paralelo com concurrency=2 custa
-  // ~ceil(N/CONCURRENCY)*DELAY_MS (~120ms). Margem generosa contra jitter do
-  // scheduler do Node/CI, mas longe o bastante do sequencial pra travar a
-  // regressão real (era 100% sequencial antes do fix).
-  assert.ok(
-    elapsedMs < N * DELAY_MS,
-    `esperava < ${N * DELAY_MS}ms (paralelo), levou ${elapsedMs}ms (parece sequencial de novo)`,
   );
 });
 
