@@ -51,7 +51,7 @@ Para cada item de `pairs`, na ordem:
 
 ### Em ambos os casos, se `warn`
 
-Preencher `motivo` (1 frase, específica — cite o que foi perdido/cortado/soterrado) e, quando possível, `sugestao` (ação concreta: "regenerar com sujeito mais centralizado", "usar o próprio 2:1 no lugar do quadrado neste canal", "trocar layout do card 4:5 de overlay pra band (`--layout band`) pra tirar o texto de cima da imagem", etc.). Não preencher `sugestao` se não houver uma ação óbvia.
+Preencher `motivo` (1 frase, específica — cite o que foi perdido/cortado/soterrado) e, quando possível, `sugestao` (ação concreta: "regenerar com sujeito mais centralizado", "usar o próprio 2:1 no lugar do quadrado neste canal", "regenerar a imagem-fonte deixando a base calma, sem sujeito importante na área que o gradiente do card 4:5 cobre", etc.). Não preencher `sugestao` se não houver uma ação óbvia.
 
 ## Output
 
@@ -79,7 +79,7 @@ Gravar em `{out_path}`:
       "ratio": "4x5",
       "status": "warn",
       "motivo": "O gradiente + título do card 4:5 cobrem o rosto do personagem central, que fica na base da composição.",
-      "sugestao": "Trocar layout do card 4:5 de overlay pra band (--layout band) pra tirar o texto de cima da imagem."
+      "sugestao": "Regenerar a imagem-fonte deixando a base calma, sem o rosto do personagem na área que o gradiente do card 4:5 cobre."
     }
   ]
 }
