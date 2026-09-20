@@ -192,6 +192,52 @@ export const POOL_RELEVANCE_8418_AUDIENCE_FIT: JevQuestionSpec = {
 };
 
 /**
+ * Medição 3 do epic #8412 (#8416) — ator (Choice) + relevância Brasil (Noul),
+ * ambos avaliados no MESMO request (mesmo padrão de #8418: duas specs,
+ * `[a.question, b.question]` numa única chamada `askJev`). Texto EXATO usado
+ * na medição (veredito publicado no #8416, comentário de 20/09/2026): adotar
+ * (Brasil, McNemar p<0,01 em 3 rodadas) / adotar-com-ressalva (ator — 6-way é
+ * capacidade nova, binário big-tech não foi significativo em n=64). Issue de
+ * implementação: #8504 (`jev.features.actor_brazil`).
+ */
+export const ACTOR_BRAZIL_8416_ACTOR: JevQuestionSpec = {
+  id: "actor-brazil-8416-actor",
+  issue: "#8416",
+  expectedState: ["title", "url", "summary"],
+  expectedOutcome:
+    "adotar com ressalva — sinal ADITIVO de diversidade pra highlight-theme-check (#8370), não substituto do regex binário big-tech (McNemar não significativo em n=64)",
+  question: {
+    id: "actor",
+    type: "choice",
+    instructions:
+      "Qual ator é o protagonista principal deste artigo sobre inteligência artificial?",
+    criteria: {
+      big_tech_lab: "OpenAI, Google, Anthropic, Meta, Microsoft, Nvidia, xAI ou Apple.",
+      startup: "Empresa de IA menor/independente, fora das big-tech labs acima.",
+      academia: "Universidade, instituto de pesquisa ou publicação acadêmica.",
+      governo_regulador: "Governo, agência reguladora, tribunal ou órgão público.",
+      empresa_usuaria: "Empresa de outro setor USANDO IA de terceiros (não é quem cria o modelo).",
+      outro: "Nenhuma das opções acima se aplica claramente.",
+    },
+  },
+};
+
+export const ACTOR_BRAZIL_8416_BRAZIL: JevQuestionSpec = {
+  id: "actor-brazil-8416-brazil",
+  issue: "#8416",
+  expectedState: ["title", "url", "summary"],
+  expectedOutcome:
+    "adotar — 98,4%-100% de acurácia contra `detectBrazil()` (82,8%), McNemar p<0,01 em 3 rodadas, significativo e reproduzível",
+  question: {
+    id: "brazil",
+    type: "noul",
+    instructions:
+      "O assunto principal envolve o Brasil — ator, mercado, regulação ou público " +
+      "brasileiro — e não apenas foi publicado por um veículo brasileiro.",
+  },
+};
+
+/**
  * Registro por id — cada medição futura adiciona sua entrada aqui (#8414+).
  * `jev-eval.ts --feature X` resolve a pergunta por este mapa.
  */
@@ -202,6 +248,8 @@ export const JEV_QUESTION_REGISTRY: Record<string, JevQuestionSpec> = {
   [HIGHLIGHT_THEMES_GRAYZONE_8417.id]: HIGHLIGHT_THEMES_GRAYZONE_8417,
   [POOL_RELEVANCE_8418_ABOUT_AI.id]: POOL_RELEVANCE_8418_ABOUT_AI,
   [POOL_RELEVANCE_8418_AUDIENCE_FIT.id]: POOL_RELEVANCE_8418_AUDIENCE_FIT,
+  [ACTOR_BRAZIL_8416_ACTOR.id]: ACTOR_BRAZIL_8416_ACTOR,
+  [ACTOR_BRAZIL_8416_BRAZIL.id]: ACTOR_BRAZIL_8416_BRAZIL,
 };
 
 export function getJevQuestionSpec(id: string): JevQuestionSpec | undefined {

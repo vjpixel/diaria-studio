@@ -14,6 +14,7 @@ Executa as Etapas 1-4 da diar.ia.br (Pesquisa → Escrita → Imagens → Revis�
 - `--window N` (ou `--window-days N`, opcional) = janela de publicação em dias (inteiro ≥ 1). Quando presente, usar `window_days = N` direto, **sem perguntar**. Ausente → assumir o default (4 dias) silenciosamente, **sem gate** (#1751).
 - `--no-gates` (opcional) = pular TODOS os gates, inclusive o gate de revisão do Stage 4 e a confirmação interativa do Stage 5. Auto-aprova tudo. Social scheduling e demais comportamentos permanecem normais.
 - `--skip {canal[,canal...]}` (opcional, CSV) = **desde #6171, `/diaria-5-publicacao` roda numa sessão separada (ver "Fronteira de contexto pós-gate 4") — este comando não repassa `--skip` automaticamente.** Se passado aqui, a mensagem de próximo passo pós-gate 4 já inclui `--skip {lista}` no comando `/diaria-5-publicacao` sugerido (não precisa lembrar de repetir manualmente, só confirmar o comando impresso antes de rodar). Canais suportados: `newsletter`, `linkedin`, `facebook`, `instagram`, `threads`, `twitter`, `brevo` (#5772 — canal Brevo diária, segmento Pending/reativação). Sem `--skip`, o comportamento default do Stage 5 (#1326) se aplica — tudo automático. Ver `--skip` também documentado direto em `/diaria-5-publicacao` (mesma flag, mesmo efeito).
+- `--diaria-edicao-jev` (opcional) = perfil de teste em produção do `jev.features.actor_brazil` (#8504, implementação a partir do veredito adotar de #8416). Liga a flag SÓ para esta invocação, sem alterar o `platform.config.json` committed (que segue `false`/default) — exportar `JEV_FORCE_ACTOR_BRAZIL=1` no ambiente do subprocesso do Stage 1 (`run-edition-stages.ts`), nunca `export` persistente no shell da sessão. Efeito: `annotate-actor-brazil.ts` (softStep §1u-quat) grava `actor`/`actor_p`/`brazil_p` em `01-categorized.json` (shadow mode — não altera `category`/bucket já atribuídos por `categorize.ts`). Sem esta flag, comportamento idêntico ao pré-#8504 (fail-soft, ver `scripts/lib/jev-actor-brazil.ts`).
 
 ## Pré-requisitos
 
@@ -127,7 +128,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator -
 **Rodar em BACKGROUND** (`run_in_background: true` no tool Bash):
 
 ```bash
-npx tsx scripts/run-edition-stages.ts --edition $1 --through 3{ --session-supervised se --no-gates NÃO foi passado à invocação ORIGINAL de /diaria-edicao}
+npx tsx scripts/run-edition-stages.ts --edition $1 --through 3{ --session-supervised se --no-gates NÃO foi passado à invocação ORIGINAL de /diaria-edicao}{ --diaria-edicao-jev se --diaria-edicao-jev foi passado à invocação ORIGINAL de /diaria-edicao}
 ```
 
 Este comando roda os Stages 1, 2 e 3 **cada um num processo `claude` próprio**. Sessão nova nasce com contexto limpo, o que é o efeito de um `/clear` entre stages — algo que esta sessão não consegue fazer em si mesma (`/clear` é comando de usuário).

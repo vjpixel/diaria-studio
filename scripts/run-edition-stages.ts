@@ -131,9 +131,20 @@ export function main(
   const { values, flags } = parseArgsLib(argv);
   const aammdd = values["edition"];
   if (!aammdd || !AAMMDD_RE.test(aammdd)) {
-    stderr("Uso: npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json] [--session-supervised]");
+    stderr(
+      "Uso: npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json] [--session-supervised] [--diaria-edicao-jev]",
+    );
     return 2;
   }
+
+  // #8504 item 5 — perfil de teste em produção de `jev.features.actor_brazil`
+  // (implementação a partir do veredito adotar de #8416). Escopado ao
+  // ambiente do subprocesso `claude` spawnado por stage (`env` abaixo),
+  // NUNCA `export` persistente no shell da sessão-mãe — mesmo padrão de
+  // isolamento de env a subprocesso já usado no projeto (ver princípio
+  // "NUNCA trocar a conta claude.ai pela API" no CLAUDE.md). Sem esta flag,
+  // `env` segue idêntico ao comportamento pré-#8504.
+  const jevEnv = flags.has("diaria-edicao-jev") ? { ...env, JEV_FORCE_ACTOR_BRAZIL: "1" } : env;
 
   let plan: EditionStage[];
   try {
@@ -163,7 +174,7 @@ export function main(
     editionDir,
     repoRootAbs,
     resolveClaudeBin: resolveClaudeBinFn,
-    env,
+    env: jevEnv,
     plan,
     execFn,
     sessionSupervised: flags.has("session-supervised"),

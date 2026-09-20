@@ -1321,6 +1321,11 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
   // --- §1u-ter dedup evergreen ---
   step(deps, report, "dedup-evergreen-buckets (1u-ter)", "scripts/dedup-evergreen-buckets.ts", ["--in", categorizedPath, "--out", categorizedPath, "--past-editions", "data/past-editions.md"]);
 
+  // --- §1u-quat anotação actor/brazil via Jev (#8504, shadow mode, atrás de
+  // jev.features.actor_brazil — default OFF, sempre softStep: flag
+  // desligada/key ausente/API fora nunca bloqueiam o Stage 1) ---
+  softStep(deps, report, "annotate-actor-brazil (1u-quat)", "scripts/annotate-actor-brazil.ts", ["--in", categorizedPath, "--edition", opts.edition]);
+
   // --- §1v renderizar MD ---
   const mdPath = `${editionDir}/01-categorized.md`;
   step(deps, report, "render-categorized-md (1v)", "scripts/render-categorized-md.ts", ["--in", categorizedPath, "--out", mdPath, "--edition", opts.edition, "--source-health", "data/source-health.json"]);

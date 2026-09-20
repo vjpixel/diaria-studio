@@ -565,6 +565,40 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
       "sem a flag no argv, nenhum prompt deveria carregá-la — comportamento desassistido (runner agendado) preservado",
     );
   });
+
+  it("#8504: --diaria-edicao-jev exporta JEV_FORCE_ACTOR_BRAZIL=1 pro subprocesso; ausente por default", () => {
+    const envsSeen: NodeJS.ProcessEnv[] = [];
+    const execFn = ((_cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+      envsSeen.push(opts.env ?? {});
+      const prompt = args[args.length - 1];
+      const m = prompt.match(/diaria-(\d)-/);
+      if (m) W.complete(Number(m[1]));
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    W = sentinelWorld(0);
+    const withFlag = makeDeps({ execFn, env: { SAFE: "1" } as NodeJS.ProcessEnv });
+    cliMain(["--edition", "260820", "--through", "3", "--diaria-edicao-jev"], withFlag.deps);
+    assert.ok(envsSeen.length > 0, "deveria ter spawnado ao menos 1 stage");
+    assert.ok(
+      envsSeen.every((e) => e.JEV_FORCE_ACTOR_BRAZIL === "1"),
+      "com --diaria-edicao-jev, TODO subprocesso spawnado deveria receber JEV_FORCE_ACTOR_BRAZIL=1",
+    );
+    assert.ok(
+      envsSeen.every((e) => e.SAFE === "1"),
+      "o env override é aditivo — não deveria descartar o resto do env original",
+    );
+
+    envsSeen.length = 0;
+    W = sentinelWorld(0);
+    const withoutFlag = makeDeps({ execFn, env: { SAFE: "1" } as NodeJS.ProcessEnv });
+    cliMain(["--edition", "260820", "--through", "3"], withoutFlag.deps);
+    assert.ok(envsSeen.length > 0);
+    assert.ok(
+      envsSeen.every((e) => e.JEV_FORCE_ACTOR_BRAZIL === undefined),
+      "sem a flag, nenhum subprocesso deveria receber JEV_FORCE_ACTOR_BRAZIL — comportamento pré-#8504 preservado",
+    );
+  });
 });
 
 describe("wiring da skill /diaria-edicao (#5744)", () => {
