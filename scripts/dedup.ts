@@ -803,17 +803,26 @@ async function main() {
   if (grayZone) {
     console.error(`dedup zona cinzenta (#8505): ${grayZoneRecords.length} par(es) com veredito Jev registrado(s)`);
     logEvent({
-      edition: null,
+      edition: currentAammdd ?? null,
       stage: 1,
       agent: "dedup-grayzone-jev",
       level: "info",
       message: `dedup zona cinzenta: ${grayZoneRecords.length} veredito(s) Jev, ${grayZoneRecords.filter((r) => r.jevSame !== r.heuristicSame).length} divergente(s) da heurística (#8505)`,
-      details: { records: grayZoneRecords },
+      details: { ...grayZone.stats, records: grayZoneRecords },
     }, logRootDir);
     if (outPath && grayZoneRecords.length > 0) {
       try {
         writeFileSync(join(dirname(outPath), "dedup-grayzone-jev.json"), JSON.stringify(grayZoneRecords, null, 2), "utf8");
-      } catch { /* artefato é best-effort — nunca trava o dedup */ }
+      } catch (err) {
+        // best-effort — nunca trava o dedup, mas a perda do artefato fica auditável.
+        logEvent({
+          edition: currentAammdd ?? null,
+          stage: 1,
+          agent: "dedup-grayzone-jev",
+          level: "warn",
+          message: `falha gravando dedup-grayzone-jev.json (#8505): ${err instanceof Error ? err.message : String(err)}`,
+        }, logRootDir);
+      }
     }
   }
 

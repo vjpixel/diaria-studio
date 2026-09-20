@@ -172,6 +172,86 @@ describe("prefetch — cliente injetado, fail-soft", () => {
   });
 });
 
+describe("prefetch — falha parcial e respostas malformadas (fleet review #8508)", () => {
+  const pairs = collectGrayZonePairs(arts([Z_SAME, Z_DIFF, FAR, HIGH]), [PAST]).pairs;
+  const good = (id: string) => ({ id, answers: [{ id: "same_story", type: "noul", probability: 0.8, confidence: 0.9 }] });
+
+  it("errors.size>0: preserva os vereditos bons dos demais pares", async () => {
+    const ask = asAsk(async (items: { id: string }[]) => ({
+      results: [good(items[0].id)],
+      errors: new Map([[items[1].id, new Error("HTTP 500")]]),
+    }));
+    const dir = mkdtempSync(join(tmpdir(), "gz-"));
+    try {
+      const v = await prefetchGrayZoneVerdicts(pairs, { apiKey: "k", askBatchImpl: ask, rootDir: dir });
+      assert.equal(v.size, 1);
+      assert.match(readFileSync(join(dir, "data", "run-log.jsonl"), "utf8"), /1\/2 par/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("1 resposta malformada não descarta as boas; warn com contagem e exemplo", async () => {
+    const ask = asAsk(async (items: { id: string }[]) => ({
+      results: [
+        good(items[0].id),
+        { id: items[1].id, answers: [{ id: "same_story", type: "noul", probability: Number.NaN, confidence: 0.9 }] },
+      ],
+      errors: new Map(),
+    }));
+    const dir = mkdtempSync(join(tmpdir(), "gz-"));
+    try {
+      const v = await prefetchGrayZoneVerdicts(pairs, { apiKey: "k", askBatchImpl: ask, rootDir: dir });
+      assert.equal(v.size, 1);
+      const log = readFileSync(join(dir, "data", "run-log.jsonl"), "utf8");
+      assert.match(log, /1 resposta\(s\) malformada\(s\)/);
+      assert.match(log, /Exemplo/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("answers ausente num item não lança nem afeta os demais", async () => {
+    const ask = asAsk(async (items: { id: string }[]) => ({
+      results: [good(items[0].id), { id: items[1].id }],
+      errors: new Map(),
+    }));
+    const v = await prefetchGrayZoneVerdicts(pairs, { apiKey: "k", askBatchImpl: ask, rootDir: tmpdir() });
+    assert.equal(v.size, 1);
+  });
+
+  it("buildGrayZoneResolver expõe stats de pares", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gz-"));
+    try {
+      writeFileSync(join(dir, "platform.config.json"), JSON.stringify({ jev: { features: { dedup_grayzone: true } } }));
+      const ask = asAsk(async (items: { id: string }[]) => ({ results: [good(items[0].id)], errors: new Map() }));
+      const r = await buildGrayZoneResolver(arts([Z_SAME, Z_DIFF, FAR, HIGH]), [PAST], { rootDir: dir, apiKey: "k", askBatchImpl: ask });
+      assert.deepEqual(r?.stats, { pairsInZone: 2, pairsConsulted: 2, pairsWithVerdict: 1, truncated: 0 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("platform.config.json real (#8505)", () => {
+  it("commitado com a flag OFF; ligar sem tocar shadow resulta em shadow, nunca active", () => {
+    const real = join(import.meta.dirname, "..", "platform.config.json");
+    assert.equal(readDedupGrayzoneMode(real), "off");
+    const cfg = JSON.parse(readFileSync(real, "utf8"));
+    assert.equal(cfg.jev.features.dedup_grayzone, false);
+    assert.equal(cfg.jev.shadow, true);
+    const dir = mkdtempSync(join(tmpdir(), "gz-"));
+    try {
+      cfg.jev.features.dedup_grayzone = true;
+      const p = join(dir, "c.json");
+      writeFileSync(p, JSON.stringify(cfg));
+      assert.equal(readDedupGrayzoneMode(p), "shadow");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("readDedupGrayzoneMode", () => {
   it("off / shadow (default) / active", () => {
     const dir = mkdtempSync(join(tmpdir(), "gz-"));
