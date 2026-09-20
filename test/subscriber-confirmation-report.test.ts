@@ -348,7 +348,8 @@ describe("review #8566 — censura, ambíguos por grupo, created_at inválido", 
 });
 
 describe("toSubscriberStateRecord / summarizeFieldCoverage (#8552 review)", () => {
-  const base = { id: 1, state: "active", created_at: at("2026-09-01") };
+  type KitSub = Parameters<typeof toSubscriberStateRecord>[0];
+  const base: KitSub = { id: 1, state: "active", created_at: at("2026-09-01") };
   it("fields presente, ausente e vazio", () => {
     assert.deepEqual(toSubscriberStateRecord({ ...base, fields: { confirmou_via: "brevo-reativar", origem_cadastro: "kit-nativo" } }), {
       ...base,
@@ -359,10 +360,10 @@ describe("toSubscriberStateRecord / summarizeFieldCoverage (#8552 review)", () =
     assert.deepEqual(toSubscriberStateRecord({ ...base, fields: { confirmou_via: "", origem_cadastro: "" } }), base);
   });
   it("cobertura: fields ausente em todos é detectável (comFields === 0)", () => {
-    const subs = [base, { ...base, id: 2 }];
+    const subs: KitSub[] = [base, { ...base, id: 2 }];
     const cov = summarizeFieldCoverage(subs, subs.map(toSubscriberStateRecord));
     assert.deepEqual(cov, { total: 2, comFields: 0, comOrigem: 0, comConfirmouVia: 0 });
-    const subs2 = [{ ...base, fields: { origem_cadastro: "x" } }, { ...base, id: 2, fields: {} }];
+    const subs2: KitSub[] = [{ ...base, fields: { origem_cadastro: "x" } }, { ...base, id: 2, fields: {} }];
     assert.deepEqual(summarizeFieldCoverage(subs2, subs2.map(toSubscriberStateRecord)), {
       total: 2,
       comFields: 2,
