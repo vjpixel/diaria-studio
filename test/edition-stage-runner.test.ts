@@ -785,3 +785,107 @@ describe("edition-stage-runner — #6088: mcpPermissionWarnings", () => {
     rmSync(tmpRepo, { recursive: true, force: true });
   });
 });
+
+// ── #8560: cost_usd/tokens_in/tokens_out via --output-format json ──
+//
+// Causa raiz confirmada (ver docstring de scripts/lib/cli-usage-json.ts):
+// `--no-session-persistence` (linha acima do prompt no spawn) garante que
+// NENHUM transcript local é escrito para stage nenhum deste laço — a
+// hipótese original da issue ("faltava passar --session-id") não fecha o
+// buraco, porque não há arquivo a achar com id nenhum. A correção real é
+// extrair usage direto do stdout `--output-format json` do próprio processo,
+// sem depender de `~/.claude/projects/` nenhum.
+describe("edition-stage-runner — #8560: captura de usage via --output-format json", () => {
+  const CLI_JSON_STDOUT = JSON.stringify({
+    total_cost_usd: 0.2783928,
+    usage: {
+      input_tokens: 2,
+      cache_creation_input_tokens: 68420,
+      cache_read_input_tokens: 18544,
+      output_tokens: 4,
+    },
+    modelUsage: {
+      "claude-sonnet-5": { inputTokens: 2, outputTokens: 4, costUSD: 0.2774328 },
+      "claude-haiku-4-5-20251001": { inputTokens: 900, outputTokens: 12, costUSD: 0.00096 },
+    },
+    result: "ok",
+  });
+
+  it("stage OK com stdout --output-format json grava cost_usd/tokens_in/tokens_out/models em stage-status.json, session_filter cli_json", async () => {
+    const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmpRepo = mkdtempSync(join(tmpdir(), "8560-"));
+    const editionDir = join(tmpRepo, "editions", AAMMDD);
+    mkdirSync(editionDir, { recursive: true });
+
+    const world = sentinelWorld(0);
+    const result = runEditionStages({
+      aammdd: AAMMDD,
+      editionDir,
+      repoRootAbs: tmpRepo,
+      resolveClaudeBin: () => "echo",
+      env: {},
+      plan: STAGE_PLAN.slice(0, 1), // só stage 1
+      execFn: ((_cmd: string, _args: string[]) => {
+        world.complete(1);
+        return CLI_JSON_STDOUT;
+      }) as unknown as typeof import("node:child_process").execFileSync,
+      assertSentinelFn: world.assertFn,
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(
+      result.outcomes.map((o) => o.status),
+      ["ok"],
+    );
+
+    const doc = JSON.parse(readFileSync(join(editionDir, "_internal", "stage-status.json"), "utf8"));
+    const row = doc.rows.find((r: { stage: number }) => r.stage === 1);
+    assert.ok(row, "stage 1 precisa existir no doc inicial");
+    // input_tokens + cache_creation + cache_read = 2 + 68420 + 18544
+    assert.equal(row.tokens_in, 86966);
+    assert.equal(row.tokens_out, 4);
+    assert.equal(row.cost_usd, 0.2783928);
+    assert.deepEqual(row.models, ["haiku-4-5", "sonnet-5"]);
+    assert.equal(row.session_filter, "cli_json");
+
+    rmSync(tmpRepo, { recursive: true, force: true });
+  });
+
+  it("stdout que não é JSON válido (ou não carrega total_cost_usd/usage): stage segue OK, cost_usd/tokens ficam ausentes (fail-soft)", async () => {
+    const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmpRepo = mkdtempSync(join(tmpdir(), "8560b-"));
+    const editionDir = join(tmpRepo, "editions", AAMMDD);
+    mkdirSync(editionDir, { recursive: true });
+
+    const world = sentinelWorld(0);
+    const progress: string[] = [];
+    const result = runEditionStages({
+      aammdd: AAMMDD,
+      editionDir,
+      repoRootAbs: tmpRepo,
+      resolveClaudeBin: () => "echo",
+      env: {},
+      plan: STAGE_PLAN.slice(0, 1),
+      execFn: ((_cmd: string, _args: string[]) => {
+        world.complete(1);
+        return "não é json nenhum, resposta em texto puro";
+      }) as unknown as typeof import("node:child_process").execFileSync,
+      assertSentinelFn: world.assertFn,
+      onProgress: (m) => progress.push(m),
+    });
+
+    assert.equal(result.exitCode, 0, "stdout não-JSON nunca falha o stage — só a captura de usage é pulada");
+    assert.deepEqual(
+      result.outcomes.map((o) => o.status),
+      ["ok"],
+    );
+    assert.ok(
+      progress.some((m) => m.includes("stdout --output-format json não parseou")),
+      "fail-soft precisa ser VISÍVEL (mesma disciplina de capture-stage-usage.ts), não um buraco silencioso",
+    );
+
+    rmSync(tmpRepo, { recursive: true, force: true });
+  });
+});

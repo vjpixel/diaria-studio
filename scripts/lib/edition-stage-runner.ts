@@ -39,6 +39,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { assertSentinel as assertSentinelImpl, type AssertResult } from "./pipeline-state.ts";
 import { resolveRunLogPath } from "./run-log.ts";
+import { parseCliJsonUsage, resultTextOrRaw } from "./cli-usage-json.ts";
+import { loadDoc, saveDoc, applyUpdate } from "../update-stage-status.ts";
 
 /** Um stage do pipeline e a skill que o executa. */
 export interface EditionStage {
@@ -393,7 +395,16 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           "--max-turns",
           MAX_TURNS,
           "--output-format",
-          "text",
+          // json, não text (#8560): o objeto único que `--output-format
+          // json` devolve carrega `total_cost_usd`/`usage`/`modelUsage` —
+          // usage REAL medido pelo próprio CLI, capturado logo abaixo por
+          // `parseCliJsonUsage`. Ver `scripts/lib/cli-usage-json.ts` pro
+          // porquê disto substituir a captura via transcript local
+          // (`capture-stage-usage.ts`) para todo stage spawnado por este
+          // laço: `--no-session-persistence` (linha abaixo) garante que
+          // NENHUM transcript é escrito, então aquele caminho nunca teria
+          // dado a capturar aqui, com ou sem `--session-id` explícito.
+          "json",
           "--no-session-persistence",
           prompt,
         ],
@@ -407,7 +418,9 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       // O stdout do sucesso é DESCARTADO no caminho feliz, e é o ponto
       // central do #5744: devolvê-lo recriaria na sessão-mãe o contexto que
       // o laço evita. Só é reaproveitado (truncado) abaixo, quando a
-      // pós-condição falha.
+      // pós-condição falha — e, desde o #8560, pra extrair usage/custo via
+      // `parseCliJsonUsage` antes de ser descartado (nunca reaproveitado
+      // como texto de resposta).
 
       // PÓS-CONDIÇÃO (achado P0 do review da PR #5753). Sair com código 0 não
       // prova que o stage fez o trabalho — prova só que o processo terminou
@@ -428,10 +441,15 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
         // sintoma background-wait. Com o sintoma presente e retry restante,
         // NÃO declara falha ainda — repete o stage.
         const stdoutText = typeof stdout === "string" ? stdout : "";
-        if (looksLikeBackgroundWaitExit(stdoutText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
+        // #8560: `stdoutText` agora é `--output-format json` — extrai o
+        // texto de resposta (`result`) antes de checar/resumir, senão os
+        // dois passam a operar sobre o objeto JSON inteiro como se fosse
+        // texto humano (substring ainda funciona, mas com ruído estrutural).
+        const diagnosticText = resultTextOrRaw(stdoutText);
+        if (looksLikeBackgroundWaitExit(diagnosticText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
           continue;
         }
-        const tail = summarizeFailure(stdoutText);
+        const tail = summarizeFailure(diagnosticText);
         exitCode = 1;
         failedStage = stage;
         stageOutcome = {
@@ -443,6 +461,46 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail} | últimas linhas de stdout: ${tail}`,
         };
         break;
+      }
+
+      // #8560: captura usage/custo REAL direto do JSON de resposta do CLI —
+      // ver `scripts/lib/cli-usage-json.ts` pro porquê disto substituir a
+      // captura via transcript local para stages spawnados por este laço.
+      // Fail-soft de propósito (nunca lança, nunca bloqueia o stage: um
+      // stdout que não parseia, ou uma falha de IO ao gravar
+      // `stage-status.json`, só deixa `cost_usd`/`tokens_in`/`tokens_out`
+      // vazios pra aquele stage — mesma degradação silenciosa-mas-visível
+      // que `capture-stage-usage.ts` já pratica pro caminho antigo).
+      try {
+        const usage = parseCliJsonUsage(typeof stdout === "string" ? stdout : "");
+        if (usage) {
+          const doc = loadDoc(editionDir, aammdd);
+          const row = doc.rows.find((r) => r.stage === stage);
+          if (row) {
+            const updated = applyUpdate(
+              doc,
+              {
+                stage,
+                status: row.status,
+                cost_usd: usage.costUsd,
+                tokens_in: usage.tokensIn,
+                tokens_out: usage.tokensOut,
+                models: usage.models,
+                session_filter: "cli_json",
+              },
+              new Date().toISOString(),
+            );
+            saveDoc(editionDir, updated);
+          }
+        } else {
+          onProgress(`Stage ${stage}: stdout --output-format json não parseou — cost_usd/tokens ficam vazios pro stage`);
+        }
+      } catch (usageErr) {
+        onProgress(
+          `Stage ${stage}: falha ao gravar usage do CLI JSON em stage-status.json — ${
+            usageErr instanceof Error ? usageErr.message : String(usageErr)
+          }`,
+        );
       }
 
       outcomes.push({ stage, skill, status: "ok", exitCode: 0, durationMs: nowMs() - startedAt });

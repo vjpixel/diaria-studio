@@ -68,8 +68,19 @@ export interface StageRow {
    * dispatch de `Agent()` nesta janela, nunca zero (até o #7084 significava
    * "harness não registra custo de subagente"; desde o #7084 o dado é
    * capturado quando existe — ver `scripts/lib/session-transcript.ts`).
+   *
+   * `cli_json` (#8560) — origem DIFERENTE das outras duas: não vem do
+   * transcript local (`~/.claude/projects/`), vem do próprio stdout
+   * `--output-format json` do processo `claude --print` que rodou o stage.
+   * Usado pelos Stages spawnados isolados por
+   * `scripts/lib/edition-stage-runner.ts` (1-4), onde `--no-session-persistence`
+   * garante que NENHUM transcript é escrito — `session_filter: "cli_json"`
+   * nunca é contaminação (não há sessão concorrente a excluir; é a medição
+   * exata daquele processo isolado), por isso não participa dos sinais de
+   * `checkTranscriptContamination` (`scripts/lib/control-edition-guard.ts`)
+   * do mesmo jeito que `"all_sessions"` participa.
    */
-  session_filter?: "current_session" | "all_sessions";
+  session_filter?: "current_session" | "all_sessions" | "cli_json";
   /**
    * Motivo do fallback pra `all_sessions` (#6170) — `"no_session_id"` (env
    * var ausente no ponto de chamada) ou `"session_file_not_found"` (arquivo
@@ -267,7 +278,7 @@ export interface UpdateOpts {
   tokens_in?: number;
   tokens_out?: number;
   models?: string[];
-  session_filter?: "current_session" | "all_sessions"; // #5413
+  session_filter?: "current_session" | "all_sessions" | "cli_json"; // #5413, cli_json #8560
   session_filter_reason?: SessionFilterReason; // #6170
   sessions_excluded?: number;
   subagent_tokens_in?: number | null;
