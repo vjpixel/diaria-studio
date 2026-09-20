@@ -276,6 +276,54 @@
  * mesmo agregado de TODOS os workers antes de imprimir — sem isso, o
  * problema de origem continuaria, só que multiplicado por worker em vez de
  * por batch sequencial.
+ *
+ * ## #8549 — o `RESUMO AGREGADO` do #7337 ainda podia mentir, por STREAM
+ *
+ * O #7337 (acima) resolveu "só o sumário do último BATCH fica visível" —
+ * mas deixou passar uma 2ª forma do mesmo engano, achada ao vivo em duas
+ * PRs distintas (#8545, #8546, overnight 260920b, sempre `fail 0`/`exit 1`
+ * no rodapé, com o nome do "último teste" mudando a cada run): o
+ * `RESUMO AGREGADO` do caminho PARALELO (`runTestBatchesParallel`) ia pra
+ * `process.stderr`, enquanto TODO o ruído de cada batch — incluindo o
+ * sumário CRU `ℹ tests/suites/pass/fail` que o `node:test` imprime sozinho
+ * ao fim de cada batch, via `emit()` em `processChunkedBatches` — vai pra
+ * `process.stdout`. `stdout` e `stderr` são streams/fds INDEPENDENTES, sem
+ * ordenação garantida entre si quando um consumidor externo (log do GH
+ * Actions, terminal) as intercala por ordem de CHEGADA. Investigado ao vivo
+ * via `gh api .../actions/jobs/{id}/logs` do run que reprovou o #8545: o
+ * `RESUMO AGREGADO` correto (`fail 1`, nomeando o batch culpado) já estava
+ * no log ~20 mil linhas e ~0,8s ANTES do fim real — só que `stdout`, com
+ * volume MUITO maior (dezenas de workers concorrentes escrevendo o output
+ * verboso de milhares de testes), ainda tinha bytes em trânsito bem depois
+ * de `stderr` (quase sem tráfego) já ter drenado. O ÚLTIMO bloco visível no
+ * log acabava sendo o sumário CRU de QUALQUER batch que por acaso fosse o
+ * último a terminar de drenar seu `stdout` — quase sempre um batch SAUDÁVEL
+ * (`fail 0`, a maioria passa), porque não há relação nenhuma entre "qual
+ * batch tem o resultado certo" e "qual batch termina de imprimir por
+ * último" quando workers concorrem pelo mesmo pipe. Isso também explica por
+ * que "o teste que aparece por último muda a cada run" (comentário do
+ * editor na issue): é literalmente aleatório, depende de qual worker vence
+ * a corrida de I/O daquela execução — nunca foi sobre QUAL teste, porque
+ * não há teste nenhum "vazando" nada.
+ *
+ * O exit code SEMPRE esteve certo (o #7337 já garantia isso via
+ * `finalizeExitCode`); só a última linha VISÍVEL enganava, por estar na
+ * stream errada. Fix: a linha final de `runTestBatchesParallel` (e o
+ * argumento de stream que `finalizeExitCode` usa nesse caminho) passou de
+ * `process.stderr` pra `process.stdout` — a MESMA stream que carrega todo
+ * o ruído dos workers. Isso não é só "trocar de canal por estética": streams
+ * `Writable` do Node enfileiram escritas em ordem FIFO estrita, e
+ * `runWorker` só resolve a Promise no evento `'close'` (#7430) — que só
+ * dispara depois que TODA escrita daquele worker no `stdout` compartilhado
+ * já foi ENFILEIRADA (mesmo que ainda não fisicamente drenada pro SO).
+ * Como `Promise.all` espera todos os workers fecharem antes da linha final
+ * ser escrita, escrevê-la na MESMA stream garante — por construção, não por
+ * timing — que ela sai depois de tudo mais. Ver o teste "REGRESSÃO (#8549)"
+ * em `test/run-tests.test.ts`, que reusa o fixture de drenagem do #7430
+ * pra provar a propriedade estrutural (mesma stream ⇒ ordem correta); a
+ * reprodução do timing exato sob carga real de CI (múltiplos workers
+ * disputando o mesmo pipe do SO) não é praticável num teste rápido — risco
+ * aceito e documentado, não fingido como coberto.
  */
 import { spawnSync, fork, type ChildProcess, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -1656,8 +1704,39 @@ export async function runTestBatchesParallel(opts: RunTestBatchesParallelOptions
     const totalPass = results.reduce((sum, r) => sum + r.totalPass, 0);
     const totalFail = results.reduce((sum, r) => sum + r.totalFail, 0);
     const failedBatches = results.flatMap((r) => r.failedBatches);
-    process.stderr.write(`\n${formatAggregateSummary({ totalPass, totalFail, failedBatches }, batches.length)}\n`);
-    return finalizeExitCode(exitCode, completedFiles, files.length, process.stderr);
+    // #8549: escrito em `process.stdout` — NUNCA `process.stderr` — de
+    // propósito. `stdout` e `stderr` são streams/fds INDEPENDENTES sem
+    // ordenação garantida entre si quando um consumidor externo (log do CI,
+    // terminal) intercala os dois. Todo o ruído dos workers (o output cru de
+    // cada batch, via `emit()` em `processChunkedBatches`) já vai pra
+    // `stdout` (herdado/encanado por `pipeWorkerStream`); se a linha final
+    // fosse pra `stderr` (como era antes deste fix), ela podia aparecer no
+    // log MUITO antes de todo o backlog de `stdout` terminar de drenar —
+    // `stderr` quase não tem tráfego (só diagnósticos ocasionais) e drena
+    // quase instantaneamente, enquanto `stdout` carrega o volume pesado de
+    // TODOS os workers concorrentes e pode ficar em trânsito por
+    // centenas de ms a mais. Resultado medido ao vivo (issue #8549, PR
+    // #8545/#8546): o rodapé do log mostrava o sumário CRU de qualquer
+    // batch que por acaso fosse o último a terminar de drenar seu PRÓPRIO
+    // `stdout` — quase sempre `fail 0` (a maioria dos batches passa) —
+    // MESMO quando o `RESUMO AGREGADO` correto (fail > 0, nomeando o batch
+    // que falhou) já tinha sido escrito minutos antes, só que numa stream
+    // diferente que chegou ao log antes do resto do `stdout` terminar de
+    // chegar. O `exit code` sempre esteve certo; só a ÚLTIMA LINHA VISÍVEL
+    // mentia por estar na stream errada.
+    //
+    // A correção: escrever a linha final na MESMA stream (`stdout`) que
+    // todo o ruído dos workers usa. Streams `Writable` do Node processam a
+    // fila de escritas em ordem FIFO estrita — como `Promise.all` só
+    // resolve depois que TODO worker fechou (`runWorker` resolve em
+    // `'close'`, nunca antes — #7430), e `'close'` só dispara depois que
+    // TODAS as chamadas `write()` daquele worker pro `stdout` compartilhado
+    // já foram emitidas (mesmo que ainda não tenham sido fisicamente
+    // drenadas pro SO), a chamada abaixo é necessariamente ENFILEIRADA
+    // depois de toda escrita de todo worker na MESMA stream — garantindo
+    // que os bytes finais saiam por último, sem depender de timing/OS.
+    process.stdout.write(`\n${formatAggregateSummary({ totalPass, totalFail, failedBatches }, batches.length)}\n`);
+    return finalizeExitCode(exitCode, completedFiles, files.length, process.stdout);
   } finally {
     // Review #6909 (P2, confiança alta): sem o try/catch PRÓPRIO aqui, uma
     // exceção de `rmSync` (Windows EBUSY/EPERM, glitch de FS) dentro do
