@@ -13,6 +13,7 @@
  *   npx tsx scripts/subscriber-confirmation-report.ts [--root <path>] [--since AAAA-MM-DD] [--until AAAA-MM-DD] [--format text|json]
  */
 
+import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
@@ -40,7 +41,12 @@ function main(): void {
     process.exitCode = 2;
     return;
   }
-  const report = buildConfirmationReport(loadAllSubscriberStateSnapshots(root), { since, until });
+  if (!existsSync(root)) {
+    console.error(`--root não existe: ${root}`);
+    process.exitCode = 2;
+    return;
+  }
+  const report =buildConfirmationReport(loadAllSubscriberStateSnapshots(root), { since, until });
   process.stdout.write(format === "json" ? JSON.stringify(report, null, 2) + "\n" : renderConfirmationReportText(report));
 }
 

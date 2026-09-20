@@ -40,18 +40,20 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./shared/reativar-confirmou-via.ts";
+import { KIT_ORIGEM_CADASTRO_FIELD_NAME } from "./shared/kit-signup-origin.ts";
 
 /** Nome de diretório de snapshot: `YYYY-MM-DD` — mesmo regex de
  *  `beehiiv-backup-snapshots.ts`. */
 const SNAPSHOT_DIR_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Subconjunto mínimo do Kit subscriber que este domínio precisa —
- *  deliberadamente SÓ os 3 campos que a issue #8552 pede (`(id, state,
- *  created_at)`), nunca `fields`/`attribution`: o endpoint de LISTA do Kit
- *  serve `fields` defasado por um tempo após um `PATCH` (ver docstring de
- *  `listAllKitSubscribers`, `kit-subscribers.ts`) — como este snapshot não
- *  depende de custom field nenhum, essa armadilha de medição citada na
- *  issue não se aplica aqui. */
+/** Subconjunto mínimo do Kit subscriber que este domínio precisa: os 3
+ *  campos obrigatórios da issue #8552 (`(id, state, created_at)`, que NÃO
+ *  dependem de custom field e portanto escapam da armadilha de `fields`
+ *  defasado do endpoint de LISTA, ver `listAllKitSubscribers`) mais 2
+ *  opcionais lidos de `fields` (`confirmou_via`, `origem`), usados só pelo
+ *  relatório de confirmação — esses SIM sofrem o lag de `fields` e por isso
+ *  o relatório lê o valor mais recente entre snapshots. Nunca `attribution`. */
 export interface SubscriberStateRecord {
   id: number;
   state: string;
@@ -59,15 +61,51 @@ export interface SubscriberStateRecord {
   created_at: string;
   /** #8552 (relatório de confirmação) — custom field `confirmou_via`
    *  (`REATIVAR_CONFIRMOU_VIA_FIELD_NAME`, #8438), OPCIONAL: ausente em
-   *  snapshots antigos e em quem nunca clicou no botão da reativação.
-   *  Exceção deliberada à regra "só os 3 campos" acima: o field é escrito
-   *  UMA vez, no instante da confirmação, e nunca reescrito — o lag de
-   *  `fields` no endpoint de lista só atrasa o aparecimento, e o relatório
-   *  lê o valor mais recente entre todos os snapshots. */
+   *  snapshots antigos e em quem nunca clicou no botão da reativação. O
+   *  field é escrito UMA vez, no instante da confirmação — o lag de
+   *  `fields` no endpoint de lista só atrasa o aparecimento. */
   confirmou_via?: string;
   /** #8552 — custom field `origem_cadastro` (canal de entrada), OPCIONAL,
    *  mesma disciplina de `confirmou_via`. */
   origem?: string;
+}
+
+/** Mapeia um subscriber do Kit pro record do snapshot (#8552). `fields`
+ *  ausente/vazio ou campos vazios → só os 3 obrigatórios. Puro. */
+export function toSubscriberStateRecord(s: {
+  id: number;
+  state: string;
+  created_at: string;
+  fields?: Record<string, string>;
+}): SubscriberStateRecord {
+  const rec: SubscriberStateRecord = { id: s.id, state: s.state, created_at: s.created_at };
+  const via = s.fields?.[REATIVAR_CONFIRMOU_VIA_FIELD_NAME];
+  const origem = s.fields?.[KIT_ORIGEM_CADASTRO_FIELD_NAME];
+  if (via) rec.confirmou_via = via;
+  if (origem) rec.origem = origem;
+  return rec;
+}
+
+export interface SnapshotFieldCoverage {
+  total: number;
+  /** Subscribers com `fields` presente na resposta da lista. */
+  comFields: number;
+  comOrigem: number;
+  comConfirmouVia: number;
+}
+
+/** Cobertura dos campos opcionais no roster — pra logar e detectar `fields`
+ *  ausente em todos (resposta da lista sem custom fields). Puro. */
+export function summarizeFieldCoverage(
+  subs: readonly { fields?: Record<string, string> }[],
+  records: readonly SubscriberStateRecord[],
+): SnapshotFieldCoverage {
+  return {
+    total: records.length,
+    comFields: subs.filter((s) => s.fields !== undefined).length,
+    comOrigem: records.filter((r) => r.origem).length,
+    comConfirmouVia: records.filter((r) => r.confirmou_via).length,
+  };
 }
 
 export function snapshotRootDefault(dataRoot: string): string {

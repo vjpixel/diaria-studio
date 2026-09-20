@@ -343,10 +343,11 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "snapshot", script: "scripts/subscriber-state-snapshot.ts" }],
     logPath: "subscriber-state-snapshots/.snapshot.log",
     // Diaria 23:55 BRT -- o snapshot e datado pelo dia BRT de execucao e o
-    // estado de CRIACAO (inactive) de quem se cadastrou no dia D so e
-    // observavel no snapshot do proprio D (`buildDoiConfirmationCohort`);
+    // estado de CRIACAO (inactive) de quem se cadastrou no dia D e melhor
+    // observado no snapshot do proprio D (`buildDoiConfirmationCohort` o
+    // exige; o relatorio de confirmacao aceita D ou D+1);
     // rodar no fim do dia captura todos os cadastros de D antes da virada.
-    // Hora 23 livre no registro (checado por grep). O script so LE o Kit
+    // O script so LE o Kit
     // (listAllKitSubscribers) e escreve so em data/ local.
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado) -- armar via
     // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`) e

@@ -8,15 +8,37 @@
  * (`loadAllSubscriberStateSnapshots`, `subscriber-state-snapshot.ts`); zero
  * I/O, zero rede.
  *
- * ## Definição de coorte (mesma de `buildDoiConfirmationCohort`)
+ * ## Definição de coorte (PARENTE de `buildDoiConfirmationCohort`, não igual)
+ *
+ * Diferenças em relação a `buildDoiConfirmationCohort`: (1) o nascimento é
+ * o 1º snapshot em que o id aparece, aceito em D OU D+1 (lá exige o
+ * snapshot do próprio D); (2) "confirmado" = QUALQUER snapshot posterior
+ * `active` até a janela pedida (lá é o estado no 1º snapshot >= D+48h), então
+ * quem confirma e depois muda de estado ainda conta como confirmado aqui.
  *
  * Coorte de cadastro do dia D = assinantes cujo `created_at` cai em D (BRT)
  * e cujo PRIMEIRO snapshot em que aparecem (dentro de D ou D+1) os mostra
  * `inactive` — a única forma de saber "nasceu inactive". Quem já aparece
  * `active` no primeiro snapshot é AMBÍGUO (nasceu ativo por single opt-in,
  * ou confirmou antes do snapshot tirado no fim do dia) e fica FORA da taxa,
- * contado à parte em `ambiguos` — nunca somado como confirmado nem como não
- * confirmado.
+ * contado à parte em `ambiguos_active` (por grupo, ao lado de cada taxa) —
+ * nunca somado como confirmado nem como não confirmado. Quem já aparece em
+ * outro estado (bounced/cancelled/complained…) vai pra `ambiguos_outros`,
+ * sem a leitura de "single opt-in".
+ *
+ * ## `por_confirmou_via` NÃO é taxa
+ *
+ * `confirmou_via` só é preenchido DEPOIS da confirmação: o grupo Brevo contém
+ * só confirmados (taxa ~100% por construção) e o grupo Kit mistura não
+ * confirmados com confirmados sem via. Por isso este agrupamento reporta só
+ * a distribuição de tempo até confirmar dentro dos confirmados
+ * (`ViaStats`), nunca taxa.
+ *
+ * ## Tempo até confirmar é censurado à direita
+ *
+ * Só entram no tempo até confirmar (p50/p90/buckets) membros cuja janela de
+ * 30d já maturou; senão, coortes recentes só contribuiriam com confirmações
+ * rápidas e enviesariam a distribuição pra baixo.
  *
  * ## Limites de resolução (honestos, não escondidos)
  *
@@ -80,7 +102,10 @@ export interface WindowStats {
 }
 
 export interface TimeToConfirmStats {
+  /** Confirmados entre os membros com janela de 30d já madura. */
   confirmados: number;
+  /** Membros com 30d maturado (base da distribuição). */
+  base_maduros_30d: number;
   buckets: Record<string, number>;
   p50_dias: number | null;
   p90_dias: number | null;
@@ -89,9 +114,23 @@ export interface TimeToConfirmStats {
 export interface GroupStats {
   /** Tamanho da coorte (inactive no nascimento). */
   n: number;
+  /** Ambíguos `active` no 1º snapshot deste grupo — fora das taxas abaixo;
+   *  24h/7d são, na prática, "confirmou APÓS o dia do cadastro". */
+  ambiguos_active: number;
   janelas: Record<ConfirmationWindowKey, WindowStats>;
   tempo_ate_confirmar: TimeToConfirmStats;
 }
+
+/** Grupo por `confirmou_via`: SEM taxa (ver docstring do topo). */
+export interface ViaStats {
+  /** Confirmados no grupo (todos, maduros ou não). */
+  confirmados: number;
+  tempo_ate_confirmar: TimeToConfirmStats;
+  nota: string;
+}
+
+const VIA_NOTE =
+  "NÃO é taxa: confirmou_via só é gravado após a confirmação (viés de seleção); só distribuição de tempo entre confirmados";
 
 export interface ConfirmationReport {
   /** Data do snapshot mais recente — o "agora" da maturação. */
@@ -99,13 +138,17 @@ export interface ConfirmationReport {
   snapshots: number;
   /** Membros ambíguos (1º snapshot já `active`) — fora de toda taxa. */
   ambiguos: number;
+  /** Idem, mas com 1º snapshot em estado não-active/não-inactive. */
+  ambiguos_outros: number;
+  /** `created_at` inválido/ausente — fora de tudo, com aviso. */
+  created_at_invalido: number;
   /** Ids cujo `created_at` não caiu no intervalo pedido / sem snapshot de
    *  nascimento utilizável — fora de tudo. */
   fora_de_escopo: number;
   total: GroupStats;
   por_coorte: Record<string, GroupStats>;
   por_canal: Record<string, GroupStats>;
-  por_confirmou_via: Record<string, GroupStats>;
+  por_confirmou_via: Record<string, ViaStats>;
   avisos: string[];
 }
 
@@ -150,7 +193,28 @@ function percentile(sortedAsc: number[], p: number): number | null {
   return sortedAsc[Math.max(0, idx)];
 }
 
-function computeGroupStats(members: readonly Member[], asOf: string): GroupStats {
+function timeToConfirm(members: readonly Member[], asOf: string): TimeToConfirmStats {
+  const maduros = members.filter((m) => addDays(m.cohortDay, 30) <= asOf);
+  const days = maduros
+    .map((m) => m.daysToConfirm)
+    .filter((d): d is number => d !== null)
+    .sort((a, b) => a - b);
+  const buckets: Record<string, number> = {};
+  for (const b of TIME_TO_CONFIRM_BUCKETS) buckets[b.key] = 0;
+  for (const d of days) {
+    const b = TIME_TO_CONFIRM_BUCKETS.find((x) => d >= x.min && d <= x.max);
+    if (b) buckets[b.key]++;
+  }
+  return {
+    confirmados: days.length,
+    base_maduros_30d: maduros.length,
+    buckets,
+    p50_dias: percentile(days, 0.5),
+    p90_dias: percentile(days, 0.9),
+  };
+}
+
+function computeGroupStats(members: readonly Member[], asOf: string, ambiguosActive = 0): GroupStats {
   const janelas = {} as Record<ConfirmationWindowKey, WindowStats>;
   for (const w of CONFIRMATION_WINDOWS) {
     if (w.days === null) {
@@ -166,26 +230,7 @@ function computeGroupStats(members: readonly Member[], asOf: string): GroupStats
     }
     janelas[w.key] = { resolvivel: true, maduros, confirmados, taxa: maduros > 0 ? confirmados / maduros : null };
   }
-  const days = members
-    .map((m) => m.daysToConfirm)
-    .filter((d): d is number => d !== null)
-    .sort((a, b) => a - b);
-  const buckets: Record<string, number> = {};
-  for (const b of TIME_TO_CONFIRM_BUCKETS) buckets[b.key] = 0;
-  for (const d of days) {
-    const b = TIME_TO_CONFIRM_BUCKETS.find((x) => d >= x.min && d <= x.max);
-    if (b) buckets[b.key]++;
-  }
-  return {
-    n: members.length,
-    janelas,
-    tempo_ate_confirmar: {
-      confirmados: days.length,
-      buckets,
-      p50_dias: percentile(days, 0.5),
-      p90_dias: percentile(days, 0.9),
-    },
-  };
+  return { n: members.length, ambiguos_active: ambiguosActive, janelas, tempo_ate_confirmar: timeToConfirm(members, asOf) };
 }
 
 function groupBy(members: readonly Member[], keyOf: (m: Member) => string): Map<string, Member[]> {
@@ -199,9 +244,29 @@ function groupBy(members: readonly Member[], keyOf: (m: Member) => string): Map<
   return out;
 }
 
-function statsMap(groups: Map<string, Member[]>, asOf: string): Record<string, GroupStats> {
+function statsMap(
+  groups: Map<string, Member[]>,
+  asOf: string,
+  amb: Map<string, number>,
+): Record<string, GroupStats> {
   const out: Record<string, GroupStats> = {};
-  for (const k of [...groups.keys()].sort()) out[k] = computeGroupStats(groups.get(k)!, asOf);
+  const keys = new Set([...groups.keys(), ...amb.keys()]);
+  for (const k of [...keys].sort()) out[k] = computeGroupStats(groups.get(k) ?? [], asOf, amb.get(k) ?? 0);
+  return out;
+}
+
+function viaStatsMap(groups: Map<string, Member[]>, asOf: string): Record<string, ViaStats> {
+  const out: Record<string, ViaStats> = {};
+  for (const k of [...groups.keys()].sort()) {
+    const confirmed = groups.get(k)!.filter((m) => m.daysToConfirm !== null);
+    out[k] = { confirmados: confirmed.length, tempo_ate_confirmar: timeToConfirm(confirmed, asOf), nota: VIA_NOTE };
+  }
+  return out;
+}
+
+function countBy(items: readonly { key: string }[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const i of items) out.set(i.key, (out.get(i.key) ?? 0) + 1);
   return out;
 }
 
@@ -230,6 +295,8 @@ export function buildConfirmationReport(
       as_of: null,
       snapshots: 0,
       ambiguos: 0,
+      ambiguos_outros: 0,
+      created_at_invalido: 0,
       fora_de_escopo: 0,
       total: computeGroupStats([], "0000-00-00"),
       por_coorte: {},
@@ -258,12 +325,18 @@ export function buildConfirmationReport(
     }
   }
 
-  let ambiguos = 0;
+  let ambiguosOutros = 0;
   let foraDeEscopo = 0;
+  let invalido = 0;
   const members: Member[] = [];
+  const ambActive: Array<{ dia: string; canal: string }> = [];
   for (const [id, t] of tracks) {
     const cohortDay = brtDay(t.created_at);
-    if (!cohortDay || (opts.since && cohortDay < opts.since) || (opts.until && cohortDay > opts.until)) {
+    if (!cohortDay) {
+      invalido++;
+      continue;
+    }
+    if ((opts.since && cohortDay < opts.since) || (opts.until && cohortDay > opts.until)) {
       foraDeEscopo++;
       continue;
     }
@@ -274,8 +347,12 @@ export function buildConfirmationReport(
       foraDeEscopo++;
       continue;
     }
+    if (t.firstState === "active") {
+      ambActive.push({ dia: cohortDay, canal: t.origem ?? CANAL_UNKNOWN_LABEL });
+      continue;
+    }
     if (t.firstState !== "inactive") {
-      ambiguos++;
+      ambiguosOutros++;
       continue;
     }
     members.push({
@@ -287,21 +364,32 @@ export function buildConfirmationReport(
     });
   }
 
-  if (ambiguos > 0) {
+  if (ambActive.length > 0) {
     avisos.push(
-      `${ambiguos} assinante(s) já aparecem active no 1º snapshot (single opt-in ou confirmaram antes da captura) — fora das taxas; a taxa medida é o piso dos confirmadores tardios`,
+      `${ambActive.length} assinante(s) já aparecem active no 1º snapshot (single opt-in ou confirmaram antes da captura) — fora das taxas; 24h/7d medem só "confirmou APÓS o dia do cadastro", piso dos confirmadores`,
     );
   }
+  if (ambiguosOutros > 0) {
+    avisos.push(
+      `${ambiguosOutros} assinante(s) já aparecem em estado não-active/não-inactive (bounced/cancelled/complained…) no 1º snapshot — fora das taxas, sem leitura de single opt-in`,
+    );
+  }
+  if (invalido > 0) avisos.push(`${invalido} assinante(s) com created_at inválido/ausente ignorados`);
+  avisos.push(
+    "tempo até confirmar considera só coortes com 30d maturados (censura à direita); 'por confirmou_via' não é taxa",
+  );
 
   return {
     as_of: asOf,
     snapshots: dates.length,
-    ambiguos,
+    ambiguos: ambActive.length,
+    ambiguos_outros: ambiguosOutros,
+    created_at_invalido: invalido,
     fora_de_escopo: foraDeEscopo,
-    total: computeGroupStats(members, asOf),
-    por_coorte: statsMap(groupBy(members, (m) => m.cohortDay), asOf),
-    por_canal: statsMap(groupBy(members, (m) => m.canal), asOf),
-    por_confirmou_via: statsMap(groupBy(members, (m) => m.via), asOf),
+    total: computeGroupStats(members, asOf, ambActive.length),
+    por_coorte: statsMap(groupBy(members, (m) => m.cohortDay), asOf, countBy(ambActive.map((a) => ({ key: a.dia })))),
+    por_canal: statsMap(groupBy(members, (m) => m.canal), asOf, countBy(ambActive.map((a) => ({ key: a.canal })))),
+    por_confirmou_via: viaStatsMap(groupBy(members, (m) => m.via), asOf),
     avisos,
   };
 }
@@ -317,9 +405,18 @@ function renderGroupLine(label: string, g: GroupStats): string {
   const t = g.tempo_ate_confirmar;
   const dist = TIME_TO_CONFIRM_BUCKETS.map((b) => `${b.key}:${t.buckets[b.key]}`).join(" ");
   return (
-    `${label.padEnd(34)} n=${String(g.n).padEnd(5)} 1h ${fmtRate(j["1h"])} | ` +
+    `${label.padEnd(34)} n=${String(g.n).padEnd(5)} amb=${String(g.ambiguos_active).padEnd(4)} 1h ${fmtRate(j["1h"])} | ` +
     `24h ${fmtRate(j["24h"]).padEnd(16)} | 7d ${fmtRate(j["7d"]).padEnd(16)} | 30d ${fmtRate(j["30d"]).padEnd(16)} | ` +
-    `tempo p50=${t.p50_dias ?? "—"}d p90=${t.p90_dias ?? "—"}d [${dist}]`
+    `tempo(30d maduros, base=${t.base_maduros_30d}) p50=${t.p50_dias ?? "—"}d p90=${t.p90_dias ?? "—"}d [${dist}]`
+  );
+}
+
+function renderViaLine(label: string, g: ViaStats): string {
+  const t = g.tempo_ate_confirmar;
+  const dist = TIME_TO_CONFIRM_BUCKETS.map((b) => `${b.key}:${t.buckets[b.key]}`).join(" ");
+  return (
+    `${label.padEnd(34)} confirmados=${String(g.confirmados).padEnd(5)} (sem taxa) ` +
+    `tempo(30d maduros, base=${t.base_maduros_30d}) p50=${t.p50_dias ?? "—"}d p90=${t.p90_dias ?? "—"}d [${dist}]`
   );
 }
 
@@ -327,15 +424,18 @@ function renderGroupLine(label: string, g: GroupStats): string {
 export function renderConfirmationReportText(report: ConfirmationReport): string {
   const lines: string[] = [];
   lines.push(`Confirmação de assinantes (DOI) — snapshots: ${report.snapshots}, as_of: ${report.as_of ?? "n/d"}`);
-  lines.push(`Ambíguos (1º snapshot já active): ${report.ambiguos} | fora de escopo: ${report.fora_de_escopo}`);
+  lines.push(`Ambíguos active: ${report.ambiguos} | outros estados: ${report.ambiguos_outros} | created_at inválido: ${report.created_at_invalido} | fora de escopo: ${report.fora_de_escopo}`);
   lines.push("");
   lines.push("TOTAL");
   lines.push(renderGroupLine("todos", report.total));
   const sections: Array<[string, Record<string, GroupStats>]> = [
-    ["POR CONFIRMOU_VIA (Kit vs Brevo, #8438)", report.por_confirmou_via],
     ["POR CANAL (origem_cadastro)", report.por_canal],
     ["POR COORTE DE CADASTRO (dia BRT)", report.por_coorte],
   ];
+  lines.push("");
+  lines.push("POR CONFIRMOU_VIA (Kit vs Brevo, #8438) — NÃO é taxa: só tempo até confirmar entre confirmados");
+  for (const [k, g] of Object.entries(report.por_confirmou_via)) lines.push(renderViaLine(k, g));
+  if (Object.keys(report.por_confirmou_via).length === 0) lines.push("(vazio)");
   for (const [title, groups] of sections) {
     lines.push("");
     lines.push(title);

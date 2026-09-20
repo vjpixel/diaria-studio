@@ -16,6 +16,8 @@ import {
   parseSubscriberStateJsonl,
   serializeSubscriberStateRecords,
   snapshotJsonlPath,
+  toSubscriberStateRecord,
+  summarizeFieldCoverage,
   type SubscriberStateRecord,
 } from "../scripts/lib/subscriber-state-snapshot.ts";
 import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
@@ -110,6 +112,7 @@ describe("buildConfirmationReport — ambíguos e fora de escopo", () => {
     assert.equal(r.total.n, 1);
     assert.equal(r.ambiguos, 1);
     assert.ok(r.avisos.some((a) => /active no 1º snapshot/.test(a)));
+    assert.equal(r.total.ambiguos_active, 1);
   });
 
   it("assinante anterior ao 1º snapshot da série fica fora de escopo (estado de criação inobservável)", () => {
@@ -179,10 +182,14 @@ describe("buildConfirmationReport — separação por confirmou_via e canal", ()
     ]);
     const r = buildConfirmationReport(s);
     assert.deepEqual(Object.keys(r.por_confirmou_via).sort(), [CONFIRMOU_VIA_NONE_LABEL, "Brevo (botão reativar)"].sort());
-    assert.equal(r.por_confirmou_via["Brevo (botão reativar)"].n, 1);
-    assert.equal(r.por_confirmou_via["Brevo (botão reativar)"].janelas["24h"].taxa, 1);
-    assert.equal(r.por_confirmou_via[CONFIRMOU_VIA_NONE_LABEL].n, 3);
-    assert.equal(r.por_confirmou_via[CONFIRMOU_VIA_NONE_LABEL].janelas["24h"].taxa, 1 / 3);
+    const brevo = r.por_confirmou_via["Brevo (botão reativar)"];
+    const kit = r.por_confirmou_via[CONFIRMOU_VIA_NONE_LABEL];
+    assert.equal(brevo.confirmados, 1);
+    assert.equal(kit.confirmados, 1);
+    // #8552 review: viés de seleção — nunca taxa por confirmou_via.
+    assert.equal("janelas" in brevo, false);
+    assert.equal("taxa" in brevo, false);
+    assert.match(brevo.nota, /NÃO é taxa/);
     assert.equal(r.por_canal["google-ads"].n, 2);
     assert.equal(r.por_canal["kit-nativo"].n, 1);
     assert.equal(r.por_canal[CANAL_UNKNOWN_LABEL].n, 1);
@@ -265,6 +272,11 @@ describe("CLI scripts/subscriber-confirmation-report.ts", () => {
     assert.equal(out.total.janelas["24h"].taxa, 1);
   });
 
+  it("--root inexistente: exit 2", () => {
+    const res = run(["--root", resolve(tmpdir(), "nao-existe-conf-report-xyz")]);
+    assert.equal(res.status, 2);
+  });
+
   it("--root vazio: sai 0 com aviso; data inválida: exit 2", () => {
     const root = mkdtempSync(resolve(tmpdir(), "conf-report-empty-"));
     const ok = run(["--root", root]);
@@ -272,5 +284,90 @@ describe("CLI scripts/subscriber-confirmation-report.ts", () => {
     assert.match(ok.stdout, /nenhum snapshot/);
     const bad = run(["--root", root, "--since", "ontem"]);
     assert.equal(bad.status, 2);
+  });
+});
+
+describe("review #8566 — censura, ambíguos por grupo, created_at inválido", () => {
+  const rec = (id: number, state: string, day: string, extra: Partial<SubscriberStateRecord> = {}): SubscriberStateRecord => ({
+    id,
+    state,
+    created_at: at(day),
+    ...extra,
+  });
+
+  it("tempo até confirmar ignora coortes sem 30d maturados (censura à direita)", () => {
+    // coorte 09-01 (madura em 10-01) confirma em 20d; coorte 09-25 confirma em 1d mas não maturou.
+    const s = snap([
+      ["2026-09-01", [rec(1, "inactive", "2026-09-01")]],
+      ["2026-09-21", [rec(1, "active", "2026-09-01")]],
+      ["2026-09-25", [rec(1, "active", "2026-09-01"), rec(2, "inactive", "2026-09-25")]],
+      ["2026-09-26", [rec(1, "active", "2026-09-01"), rec(2, "active", "2026-09-25")]],
+      ["2026-10-01", [rec(1, "active", "2026-09-01"), rec(2, "active", "2026-09-25")]],
+    ]);
+    const t = buildConfirmationReport(s).total.tempo_ate_confirmar;
+    assert.equal(t.base_maduros_30d, 1);
+    assert.equal(t.confirmados, 1);
+    assert.equal(t.p50_dias, 20);
+    assert.deepEqual(t.buckets, { "1d": 0, "2d": 0, "3-7d": 0, "8-30d": 1, ">30d": 0 });
+  });
+
+  it("ambíguos active aparecem por grupo (canal/coorte) e bounced/cancelled vão pra ambiguos_outros", () => {
+    const s = snap([
+      ["2026-09-01", [
+        rec(1, "inactive", "2026-09-01", { origem: "google-ads" }),
+        rec(2, "active", "2026-09-01", { origem: "google-ads" }),
+        rec(3, "bounced", "2026-09-01"),
+        rec(4, "cancelled", "2026-09-01"),
+      ]],
+      ["2026-09-03", [
+        rec(1, "active", "2026-09-01", { origem: "google-ads" }),
+        rec(2, "active", "2026-09-01", { origem: "google-ads" }),
+        rec(3, "bounced", "2026-09-01"),
+        rec(4, "cancelled", "2026-09-01"),
+      ]],
+    ]);
+    const r = buildConfirmationReport(s);
+    assert.equal(r.ambiguos, 1);
+    assert.equal(r.ambiguos_outros, 2);
+    assert.equal(r.por_canal["google-ads"].ambiguos_active, 1);
+    assert.equal(r.por_coorte["2026-09-01"].ambiguos_active, 1);
+    assert.ok(r.avisos.some((a) => /bounced\/cancelled\/complained/.test(a)));
+    assert.match(renderConfirmationReportText(r), /amb=1/);
+  });
+
+  it("created_at inválido gera aviso e contador, não some mudo", () => {
+    const s = snap([
+      ["2026-09-01", [{ id: 1, state: "inactive", created_at: "lixo" }]],
+      ["2026-09-02", [{ id: 1, state: "active", created_at: "lixo" }]],
+    ]);
+    const r = buildConfirmationReport(s);
+    assert.equal(r.created_at_invalido, 1);
+    assert.equal(r.fora_de_escopo, 0);
+    assert.ok(r.avisos.some((a) => /created_at inválido/.test(a)));
+  });
+});
+
+describe("toSubscriberStateRecord / summarizeFieldCoverage (#8552 review)", () => {
+  const base = { id: 1, state: "active", created_at: at("2026-09-01") };
+  it("fields presente, ausente e vazio", () => {
+    assert.deepEqual(toSubscriberStateRecord({ ...base, fields: { confirmou_via: "brevo-reativar", origem_cadastro: "kit-nativo" } }), {
+      ...base,
+      confirmou_via: "brevo-reativar",
+      origem: "kit-nativo",
+    });
+    assert.deepEqual(toSubscriberStateRecord(base), base);
+    assert.deepEqual(toSubscriberStateRecord({ ...base, fields: { confirmou_via: "", origem_cadastro: "" } }), base);
+  });
+  it("cobertura: fields ausente em todos é detectável (comFields === 0)", () => {
+    const subs = [base, { ...base, id: 2 }];
+    const cov = summarizeFieldCoverage(subs, subs.map(toSubscriberStateRecord));
+    assert.deepEqual(cov, { total: 2, comFields: 0, comOrigem: 0, comConfirmouVia: 0 });
+    const subs2 = [{ ...base, fields: { origem_cadastro: "x" } }, { ...base, id: 2, fields: {} }];
+    assert.deepEqual(summarizeFieldCoverage(subs2, subs2.map(toSubscriberStateRecord)), {
+      total: 2,
+      comFields: 2,
+      comOrigem: 1,
+      comConfirmouVia: 0,
+    });
   });
 });
