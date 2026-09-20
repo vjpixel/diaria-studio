@@ -275,7 +275,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
  * imports existentes (`test/poll-subscribe-apex-utm-6427.test.ts` e afins).
  */
 export { CLIENT_UTM_SOURCE_ALLOWED_PREFIXES, isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
-import { isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
+import { isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
 
 /** #4530 Parte B: `magic-link.ts` reusa o triplo UTM de `"jogar-identify"`
  * (mesmo funil de opt-in do form de identidade), mas é um CALL SITE distinto
@@ -989,10 +989,17 @@ export async function handleJogarSubscribe(
   // #6427: `v.source === "apex"` é o único caminho onde estes 3 campos têm
   // efeito (ver docstring de `resolveSubscribeUtm`) — passá-los sempre é
   // inofensivo pros demais `source`, que os ignoram.
-  const utm = resolveSubscribeUtm(v.source, { source: v.utmSource, medium: v.utmMedium, campaign: v.utmCampaign });
+  const utmResolved = resolveSubscribeUtm(v.source, { source: v.utmSource, medium: v.utmMedium, campaign: v.utmCampaign });
   // #8003: sinal de origem cru do cliente — nunca varia por `source`, ver
   // docstring de `SubscribeOrigin`.
   const origin: SubscribeOrigin = { referrer: v.referrer, clickId: v.clickId };
+  // #8553: click_id (prova de clique de ads) sobrepõe origemPaga quando o
+  // utm_source do cliente ficou vazio/divergente — ver docstring de
+  // `resolveOrigemPagaWithClickIdFallback`.
+  const utm: SubscribeUtm = {
+    ...utmResolved,
+    origemPaga: resolveOrigemPagaWithClickIdFallback(utmResolved.origemPaga, origin.clickId),
+  };
   // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
   // de `subscribeViaConfiguredBackend` acima sobre por que um 6º handler
   // desguardado deixou de ser possível.
