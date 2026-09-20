@@ -375,6 +375,25 @@ export interface ActivateResult {
    * mesmo quando a subscription não fica `active`, ex: `status:"invalid"`).
    */
   beehiivStatus?: string | null;
+  /**
+   * #8539 — `true` quando o assinante **já estava `active` antes deste
+   * request**, e portanto ESTE clique não confirmou nada.
+   *
+   * Existe porque `beehiivStatus: "active"` sozinho não distingue duas
+   * coisas que agora têm consequências diferentes:
+   *
+   *  - a ativação ACONTECEU neste request (confirmação real), e
+   *  - o assinante já estava ativo — clique repetido, ou promovido antes por
+   *    um caminho que não é clique nenhum (`scripts/evaluate-brevo-diaria.ts`
+   *    promove por score de abertura, sem depender de clique).
+   *
+   * Enquanto o desfecho de sucesso era uma página HTML sem tag, a diferença
+   * era inócua. Desde que o sucesso redireciona pra uma página que mede
+   * conversão, tratar os dois igual faria o segundo caso disparar uma
+   * conversão de anúncio por uma confirmação que não houve — e conversão
+   * contada não tem desfazer. Só `alreadyActive !== true` redireciona.
+   */
+  alreadyActive?: boolean;
 }
 
 /**
@@ -470,7 +489,10 @@ export async function activateSubscription(
   }
 
   if (existing?.status === "active") {
-    return { ok: true, status: 200, beehiivStatus: "active" };
+    // #8539: `alreadyActive` — este request não confirmou nada (ver docstring
+    // do campo em `ActivateResult`). Sem isso o redirect de sucesso dispararia
+    // conversão pra clique repetido.
+    return { ok: true, status: 200, beehiivStatus: "active", alreadyActive: true };
   }
 
   // 1.5) guard de descadastro nativo pendente (#4538 item B) — SÓ checado
@@ -737,7 +759,8 @@ export async function activateSubscriptionKit(
       if (env.KIT_ORIGEM_CADASTRO_FIELD) {
         console.warn(JSON.stringify({ event: "reativar_kit_marker_not_backfilled", reason: "already_active" }));
       }
-      return { ok: true, status: 200, beehiivStatus: "active" };
+      // #8539: ver docstring de `alreadyActive` em `ActivateResult`.
+      return { ok: true, status: 200, beehiivStatus: "active", alreadyActive: true };
     }
   } catch (e) {
     console.error(JSON.stringify({ event: "reativar_kit_fetch_failed", step: "get", error: String(e) }));
@@ -1081,6 +1104,23 @@ a{color:#0a5}
 <body>${body}</body></html>`;
 }
 
+/**
+ * #8539 — desfecho de um clique em quem JÁ estava `active` antes do request:
+ * clique repetido, ou alguém que `scripts/evaluate-brevo-diaria.ts` já havia
+ * promovido por score de abertura, sem clique nenhum.
+ *
+ * Página própria, e NÃO o redirect de sucesso, porque a página de destino
+ * mede conversão de anúncio: mandar este caso pra lá contaria uma confirmação
+ * que não aconteceu neste clique. Para a pessoa o resultado é o mesmo (está
+ * inscrita) e o texto diz isso sem prometer nada novo.
+ */
+export function renderJaConfirmadoPage(): string {
+  return page(
+    "Inscrição já confirmada",
+    `<h1>Tudo certo por aqui</h1><p>Sua inscrição já estava confirmada — não precisa fazer mais nada. A diária continua chegando de segunda a sexta.</p><p><a href="https://diar.ia.br">Voltar pra diar.ia.br</a></p>`,
+  );
+}
+
 export function renderMissingEmailPage(): string {
   return page(
     "Link inválido",
@@ -1217,7 +1257,14 @@ function htmlResponse(html: string, status: number): Response {
  * string literal aqui, senão o rename da #8554 deixa este worker apontando
  * pro endereço velho e a confirmação passa a depender do 301.
  */
-export const CONFIRMADO_REDIRECT_URL = `${CONFIRMADO_PAGE_URL}?via=${VIA_BREVO}`;
+export const CONFIRMADO_REDIRECT_URL = (() => {
+  // `URL`/`searchParams` e não concatenação: hoje `PAGE_URL` não tem query
+  // string, mas se um dia tiver, `${...}?via=` produziria `?a=b?via=brevo`
+  // em silêncio. O objeto fecha essa classe de erro de uma vez.
+  const u = new URL(CONFIRMADO_PAGE_URL);
+  u.searchParams.set("via", VIA_BREVO);
+  return u.toString();
+})();
 
 /**
  * Redirect 303 pra página de confirmação instrumentada (#8539).
@@ -1342,10 +1389,21 @@ export async function handleConfirm(
     // acima) e DEPOIS de agendar o CAPI — o `ctx.waitUntil()` mantém o envio
     // vivo além da resposta, então redirecionar não o cancela.
     //
-    // Só este ramo redireciona. `renderConfirmacaoEnviadaPage` (`inactive`,
-    // o desfecho normal do DOI) e `renderNotConfirmedPage` continuam com
-    // página própria: disparar a conversão sem confirmação real é o único
-    // erro que não dá pra corrigir depois.
+    // Só este ramo redireciona — ver o invariante completo na docstring de
+    // `confirmadoRedirectResponse`. Todos os demais desfechos continuam com
+    // página própria: `renderConfirmacaoEnviadaPage` (`inactive`, o desfecho
+    // normal do DOI), `renderNotConfirmedPage` (2xx sem ativação real),
+    // `renderNativeUnsubscribePage`, `renderMissingEmailPage`,
+    // `renderInvalidEmailPage` e `renderErrorPage`.
+    //
+    // E `active` sozinho não basta: quem JÁ estava ativo antes deste request
+    // (clique repetido, ou promovido por score em
+    // `scripts/evaluate-brevo-diaria.ts` sem clique nenhum) não confirmou
+    // nada AGORA, e mandá-lo pra página instrumentada contaria uma conversão
+    // por um evento que não houve. Ver `alreadyActive` em `ActivateResult`.
+    if (result.alreadyActive) {
+      return htmlResponse(renderJaConfirmadoPage(), 200);
+    }
     return confirmadoRedirectResponse();
   }
   return htmlResponse(renderNotConfirmedPage(), 200);

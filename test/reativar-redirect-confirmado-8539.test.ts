@@ -138,6 +138,56 @@ describe("#8539 — só a confirmação REAL redireciona", () => {
     assert.equal(res.status, 503);
     assert.equal(res.headers.get("Location"), null);
   });
+
+  // Achado do review desta PR (silent-failure-hunter, P1). `beehiivStatus:
+  // "active"` sozinho não prova que ESTE clique confirmou: cobre também quem
+  // já estava ativo. Enquanto o sucesso era HTML sem tag isso era inócuo;
+  // com o redirect, contaria conversão por confirmação que não houve.
+  for (const [nome, env, fetchImpl] of [
+    [
+      "Kit",
+      { ...KIT_ENV },
+      routedFetch({
+        get: () => jsonRes(200, { subscribers: [{ id: 7, state: "active", email_address: "a@b.com" }] }),
+        post: () => {
+          throw new Error("não deveria criar/atualizar quem já está active");
+        },
+      }),
+    ],
+    [
+      "Beehiiv",
+      { BEEHIIV_API_KEY: "bk", BEEHIIV_PUBLICATION_ID: "pub" },
+      routedFetch({
+        get: () => jsonRes(200, { data: { id: "s1", status: "active" } }),
+        post: () => {
+          throw new Error("não deveria criar/atualizar quem já está active");
+        },
+      }),
+    ],
+  ] as [string, Env, typeof fetch][]) {
+    it(`${nome}: assinante JÁ estava active → 200 HTML, NUNCA redirect (este clique não confirmou nada)`, async () => {
+      const res = await handleConfirm(new URL("https://reativar.test/?email=a@b.com"), env, fetchImpl);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("Location"), null, "clique repetido não pode contar conversão");
+      assert.match(await res.text(), /já estava confirmada/i);
+    });
+  }
+
+  // Estados terminais: o clique no botão nunca ressuscita quem saiu (#8194/
+  // #8269), e por isso também nunca pode contar conversão.
+  for (const terminal of ["cancelled", "complained", "bounced"]) {
+    it(`Kit: estado terminal "${terminal}" → NUNCA redirect`, async () => {
+      const fetchImpl = routedFetch({
+        get: () => jsonRes(200, { subscribers: [{ id: 9, state: terminal, email_address: "a@b.com" }] }),
+        post: () => {
+          throw new Error(`não deveria tocar quem está ${terminal}`);
+        },
+      });
+      const res = await handleConfirm(new URL("https://reativar.test/?email=a@b.com"), KIT_ENV, fetchImpl);
+      assert.equal(res.headers.get("Location"), null);
+      assert.notEqual(res.status, 303);
+    });
+  }
 });
 
 describe("#8539 — copy da página de destino varia com ?via=", () => {

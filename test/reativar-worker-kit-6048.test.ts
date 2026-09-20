@@ -57,7 +57,7 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
       get: () => jsonRes(200, { subscribers: [{ id: 1, email_address: "a@b.com", state: "active" }] }),
     });
     const r = await activateSubscriptionKit(kitEnv(), "a@b.com", fetchImpl);
-    assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active" });
+    assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active", alreadyActive: true });
     assert.equal(calls.filter((c) => c.method === "POST").length, 0);
   });
 
@@ -69,7 +69,7 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
     try {
       const env = kitEnv({ KIT_ORIGEM_CADASTRO_FIELD: "origem_cadastro" });
       const r = await activateSubscriptionKit(env, "a@b.com", fetchImpl);
-      assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active" });
+      assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active", alreadyActive: true });
       assert.equal(warnMock.mock.callCount(), 1);
       const logged = JSON.parse(String(warnMock.mock.calls[0].arguments[0]));
       assert.equal(logged.event, "reativar_kit_marker_not_backfilled");

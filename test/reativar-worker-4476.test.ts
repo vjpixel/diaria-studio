@@ -150,7 +150,7 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
     const { fetchImpl, calls } = routedFetch({ get: () => jsonRes(200, { data: { id: "sub_1", status: "active" } }) });
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const result = await activateSubscription(env, "a@b.com", fetchImpl);
-    assert.deepEqual(result, { ok: true, status: 200, beehiivStatus: "active" });
+    assert.deepEqual(result, { ok: true, status: 200, beehiivStatus: "active", alreadyActive: true });
     assert.deepEqual(calls.map((c) => c.method), ["GET"]);
   });
 
@@ -436,7 +436,7 @@ describe("activateSubscription — guard de descadastro nativo pendente (#4538 i
     }) as typeof fetch;
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1", BREVO_DIARIA_API_KEY: "brevo_key" };
     const result = await activateSubscription(env, "a@b.com", fetchImpl);
-    assert.deepEqual(result, { ok: true, status: 200, beehiivStatus: "active" });
+    assert.deepEqual(result, { ok: true, status: 200, beehiivStatus: "active", alreadyActive: true });
     assert.equal(brevoCalled, false, "já active — nem precisa checar o guard");
   });
 
@@ -615,7 +615,7 @@ describe("handleConfirm — fim-a-fim (#4476 item 3)", () => {
     assert.equal(await res.text(), renderInvalidEmailPage());
   });
 
-  it("ativação bem-sucedida (GET 404 → cria → beehiivStatus:active) → 200, página de sucesso", async () => {
+  it("ativação bem-sucedida (GET 404 → cria → beehiivStatus:active) → 303 pra /confirmado (#8539)", async () => {
     const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
       if (init?.method === "POST") return jsonRes(200, { data: { status: "active" } });
       return new Response(null, { status: 404 });

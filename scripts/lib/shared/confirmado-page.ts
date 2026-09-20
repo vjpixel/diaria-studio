@@ -55,6 +55,17 @@ export const PAGE_URL = "https://diar.ia.br/confirmado";
  */
 export const VIA_BREVO = "brevo";
 
+/**
+ * Origem da confirmação. Union FROUXA de propósito (`string & {}` mantém a
+ * compatibilidade estrutural com `string`): esta é uma fronteira de entrada
+ * externa — o valor vem de `searchParams.get("via")` e pode ser qualquer
+ * coisa. Estreitar para `"brevo"` faria o compilador recusar exatamente o
+ * caso que a função existe para tratar com elegância. O ganho do alias é
+ * nomear o único valor reconhecido, que antes vivia só num `===` e num
+ * comentário.
+ */
+export type ConfirmadoVia = typeof VIA_BREVO | (string & {});
+
 const PAGE_TITLE = "Assinatura confirmada — diar.ia.br";
 const PAGE_DESCRIPTION = "Sua assinatura da newsletter diar.ia.br está confirmada.";
 
@@ -80,8 +91,10 @@ function renderConfirmadoStyles(): string {
  *
  * @pure
  */
-function renderTimingLine(via?: string): string {
-  return via === VIA_BREVO
+function renderTimingLine(via?: ConfirmadoVia): string {
+  // `trim()` pela mesma disciplina de `parseEmailParam` no worker `reativar`:
+  // espaço acidental na query não deveria trocar a copy em silêncio.
+  return via?.trim() === VIA_BREVO
     ? "A diária continua chegando numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam."
     : "Sua primeira edição chega numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam.";
 }
@@ -92,7 +105,7 @@ function renderTimingLine(via?: string): string {
  * @param via origem da confirmação (`?via=`), ver {@link VIA_BREVO}. Valor
  *   ausente ou desconhecido rende a página padrão.
  */
-export function renderConfirmadoPage(via?: string): string {
+export function renderConfirmadoPage(via?: ConfirmadoVia): string {
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -158,11 +171,14 @@ ${renderCuradoriaFooterStyles()}
  * Embrulha `renderConfirmadoPage()` numa `Response` — sem KV, sem env.
  *
  * @param via origem da confirmação (`?via=`), lida pelo call site a partir da
- *   query string. Ver {@link VIA_BREVO}. O `Cache-Control` público continua
- *   correto porque a Cloudflare inclui a query string na chave de cache — as
- *   duas variantes são entradas distintas, não uma servindo pela outra.
+ *   query string. Ver {@link VIA_BREVO}. O `Cache-Control` público segue
+ *   correto porque a Cloudflare inclui a query string na chave de cache POR
+ *   PADRÃO — as duas variantes viram entradas distintas. Isso é default de
+ *   zona, não invariante deste repo: uma Cache Rule que normalize ou descarte
+ *   query string neste path serviria uma variante no lugar da outra, e nada
+ *   aqui detectaria.
  */
-export function handleConfirmadoPage(via?: string): Response {
+export function handleConfirmadoPage(via?: ConfirmadoVia): Response {
   return new Response(renderConfirmadoPage(via), {
     status: 200,
     headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "public, max-age=3600" },
