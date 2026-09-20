@@ -10,11 +10,19 @@
 # caso medido (20/09 05:07, PR #8510), uma URL nua e nada mais.
 #
 # Método: análise estática do fonte, não execução — rodar o script de
-# verdade exigiria rede (gh, git fetch, `claude -p`) e uma PR real. O que
-# se verifica é a propriedade que causou o bug: TODA invocação de `gh` que
-# escreve em stdout, fora do bloco final de entrega, precisa redirecionar.
-# Um `grep` por "existe >&2 no arquivo" não serviria (#6859: o teste
-# passaria com o redirect numa linha morta) — aqui casa-se linha a linha.
+# verdade exigiria rede (gh, git fetch, `claude -p`) e uma PR real. Um
+# `grep` por "existe >&2 no arquivo" não serviria (#6859: o teste passaria
+# com o redirect numa linha morta) — aqui casa-se linha a linha.
+#
+# ALCANCE REAL desta checagem, para não prometer mais do que entrega
+# (achado do review da PR #8542): pega toda linha ACIMA do guard que
+# invoque `gh` em posição de comando — início de linha, depois de `if`/
+# `elif`/`while`/`then`/`else`/`do`, ou depois de `&&`/`||`/`;`. NÃO pega
+# um `gh` cuja saída seja atribuída em duas etapas
+# (`out=$(gh ...)` numa linha, `echo "$out"` noutra): ali a linha que
+# vaza não contém a string `gh`, e nenhuma análise estática de uma linha
+# só resolveria isso. Essa forma continua sendo responsabilidade de quem
+# revisa o diff.
 #
 # Uso: bash hermes/scripts/continuo-pr-review-stdout-gate.test.sh
 set -uo pipefail
@@ -30,27 +38,63 @@ ok()   { echo "ok: $1"; }
 
 # Linha do guard de entrega — tudo ACIMA dela é laço de trabalho e não pode
 # escrever em stdout; o bloco abaixo é a entrega gated e pode.
-GATE_LINE=$(grep -n 'if \[ "\$NOTIFY" -eq 0 \]' "$SCRIPT" | head -1 | cut -d: -f1)
-if [ -z "$GATE_LINE" ]; then
+GATE_MATCHES=$(grep -cE '^[[:space:]]*if \[ "\$NOTIFY" -eq 0 \]' "$SCRIPT")
+if [ "$GATE_MATCHES" -eq 0 ]; then
   fail "guard NOTIFY sumiu do script — o invariante do #8454 não existe mais"
   exit 1
 fi
+# Mais de um match é ambíguo: `head -1` pegaria o primeiro e encolheria a
+# região checada em silêncio, escondendo um vazamento entre os dois.
+# Melhor falhar alto e obrigar a atualizar este teste.
+if [ "$GATE_MATCHES" -ne 1 ]; then
+  fail "guard NOTIFY casou $GATE_MATCHES vezes — ambíguo; ajuste o padrão deste teste"
+  exit 1
+fi
+GATE_LINE=$(grep -nE '^[[:space:]]*if \[ "\$NOTIFY" -eq 0 \]' "$SCRIPT" | cut -d: -f1)
 ok "guard NOTIFY presente (linha $GATE_LINE)"
 
 # Toda chamada de `gh` ACIMA do guard precisa: redirecionar pra stderr
 # (>&2), ser capturada em variável ($(...)), ou ir pra /dev/null. O que não
 # pode é escrever solto em stdout.
+#
+# O padrão cobre `gh` em posição de comando, não só no início da linha:
+# `if gh ...`, `foo && gh ...`, `do gh ...` vazariam igual e antes passavam
+# batido (achado do review da #8542).
+# `gh` precisa estar em POSIÇÃO DE COMANDO. Testar o regex contra a linha
+# crua dá falso positivo em `gh` dentro de string (ex: a mensagem
+# "gate autorizou merge mas gh pr merge falhou" passada pro
+# log_infra_error). Então cada linha é primeiro DESPIDA dos trechos entre
+# aspas, e o casamento roda sobre o que sobra — que é código de verdade.
+GH_CALL_RE='(^|[[:space:]]|\||&|;)gh[[:space:]]'
+strip_quoted() { printf '%s' "$1" | sed -e "s/\"[^\"]*\"/QQ/g" -e "s/'[^']*'/QQ/g"; }
+
 VAZAMENTOS=0
 while IFS= read -r entry; do
   lineno=${entry%%:*}
   line=${entry#*:}
   [ "$lineno" -lt "$GATE_LINE" ] || continue
+  # linha de comentário puro não executa nada
+  trimmed=${line#"${line%%[![:space:]]*}"}
+  case "$trimmed" in '#'*) continue ;; esac
+  # o `gh` casou só dentro de aspas? então é texto, não invocação
+  if ! printf '%s' "$(strip_quoted "$line")" | grep -qE "$GH_CALL_RE"; then
+    continue
+  fi
+  # `| tee` volta pro stdout real — pipe sozinho NÃO é prova de consumo
+  # (achado do review da #8542).
+  case "$line" in
+    *'| tee'*|*'|tee'*)
+      fail "linha $lineno canaliza pra tee e volta pro stdout antes do guard (#8532):$line"
+      VAZAMENTOS=$((VAZAMENTOS + 1))
+      continue
+      ;;
+  esac
   case "$line" in
     *'>&2'*|*'$('*|*'/dev/null'*|*'|'*) continue ;;
   esac
   fail "linha $lineno escreve em stdout antes do guard NOTIFY (#8532):$line"
   VAZAMENTOS=$((VAZAMENTOS + 1))
-done < <(grep -nE '^[[:space:]]*gh ' "$SCRIPT")
+done < <(grep -nE "$GH_CALL_RE" "$SCRIPT")
 
 [ "$VAZAMENTOS" -eq 0 ] && ok "nenhuma chamada gh escreve em stdout antes do guard"
 
