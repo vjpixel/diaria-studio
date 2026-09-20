@@ -298,6 +298,36 @@ describe("confirmou_via (#8438) — sinal MEDÍVEL do clique no botão", () => {
       );
     });
   }
+
+  it("#8518 — sem NENHUM KIT_UTM_*_FIELD/KIT_REFERRING_SITE_FIELD/KIT_ORIGEM_CADASTRO_FIELD configurado (desired vazio) → confirmou_via ainda vai no POST, sem GET singular", async () => {
+    // Achado do review do #8518: quando `desired` fica vazio (nenhum campo de
+    // origem configurado), o bloco do filtro é pulado inteiro (a condição é
+    // `existsAlready && Object.keys(desired).length > 0`) — precisa confirmar
+    // que o merge incondicional de `confirmouViaField` em `fields` continua
+    // funcionando nesse caminho, e que nenhum GET singular é disparado à toa.
+    const kit = fakeKit({ existing: { state: "inactive", fields: { ...ORIGEM_PAGA } } });
+    const envSoConfirmouVia: Env = {
+      SUBSCRIBE_BACKEND: "kit",
+      KIT_API_KEY: "k",
+      KIT_API_URL: "https://kit.test/v4",
+      KIT_DOI_FORM_ID: "9897918",
+      KIT_ACTIVATE_FORM_ID: "9839463",
+      KIT_CONFIRMOU_VIA_FIELD: "confirmou_via",
+    };
+    await capture(() => activateSubscriptionKit(envSoConfirmouVia, "a@x.com", kit.fetchImpl, true));
+    const post = upsertPost(kit.calls)!;
+    assert.equal("fields" in post.body!, true, "desired vazio não deveria impedir o POST de levar fields");
+    assert.equal((post.body!.fields as Record<string, unknown> | undefined)?.confirmou_via, "brevo-reativar");
+    assert.equal(kit.get()!.fields.confirmou_via, "brevo-reativar");
+    // A leitura do GET singular que ainda acontece aqui é a de
+    // promoteKitWithToken (checagem de estado final pós-token, #8194) — não
+    // a de preservação de origem, que fica de fato pulada porque `desired`
+    // (antes de mesclar confirmou_via) está vazio.
+    const getsAntesDoPost = kit.calls.filter(
+      (c, i) => i < kit.calls.findIndex((cc) => cc.method === "POST") && c.method === "GET" && c.url.endsWith("/subscribers/42"),
+    );
+    assert.equal(getsAntesDoPost.length, 0, "sem campo de origem configurado, o GET singular de preservação de origem é pulado");
+  });
 });
 
 describe("filterKitOrigemFields (#8235)", () => {
