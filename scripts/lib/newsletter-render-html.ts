@@ -1002,12 +1002,12 @@ export function renderIntroCallout(
     // disclosure de comissão/afiliado) seguem como corpo ABAIXO do botão (#2996
     // — antes só o ÚLTIMO parágrafo virava pill, quebrando o botão quando havia
     // texto de disclosure depois dele).
-    // #8119: quando o título foi SINTETIZADO (linha ausente do snippet),
-    // `paras[0]` é o próprio parágrafo do livro — corpo, não título — e por
-    // isso não é descartado como seria no caso de linha explícita.
+    // #8119 (atualizado 260920): quando o título foi SINTETIZADO, `paras[0]`
+    // vira o título fixo (consumido por `title`); portanto `bodyParas` = `slice(1)`
+    // — o parágrafo do livro passa a corpo, não título, e não é duplicado.
     let bodyParas = bookRecommendation.isBookRecommendation && !bookRecommendation.explicitTitleLine
-      ? paras.slice(0)
-      : paras.slice(1);
+      ? paras.slice(1)
+      : paras.slice(1);  // #8119: paras[0] é título em ambos os casos; não duplica
     let afterCtaParas: string[] = [];
     let ctaButtonHtml = "";
     if (sponsored || forceCtaPill) {
