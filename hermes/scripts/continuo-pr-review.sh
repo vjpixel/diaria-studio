@@ -411,10 +411,17 @@ try_merge_gate() {
       # entre "gate leu o HEAD" e "gh pr merge de fato roda" (#6932, P2;
       # TOCTOU que existiria mesmo com o gate correto, se algo empurrasse
       # um commit nesse meio-tempo).
+      # `>&2` pelo mesmo motivo do `gh pr comment` (#8532): `gh pr merge`
+      # imprime "✓ Squashed and merged pull request #N" em STDOUT. Merge
+      # BEM-SUCEDIDO nao aciona `NOTIFY` (nao e problema, e o caminho
+      # feliz), entao sem o redirect um tick que so mergeia entregava essa
+      # linha no Telegram por fora do guard -- exatamente o ruido de
+      # rotina que o #8454 tirou. A contagem de mergeadas segue saindo no
+      # resumo quando houver algo a relatar.
       if [ -n "$REVIEWED_HEAD_SHA" ]; then
-        gh pr merge "$pr" --squash --match-head-commit "$REVIEWED_HEAD_SHA"
+        gh pr merge "$pr" --squash --match-head-commit "$REVIEWED_HEAD_SHA" >&2
       else
-        gh pr merge "$pr" --squash
+        gh pr merge "$pr" --squash >&2
       fi
       MERGE_RC=$?
       set -e
@@ -597,7 +604,16 @@ try_merge_gate() {
         echo "[continuo-pr-review] PR #$pr: motivo de rejeição idêntico ao último comentário — não duplicando (#7446 item 1)" >&2
       else
         set +e
-        gh pr comment "$pr" --body "$REJECT_BODY"
+        # `>&2` OBRIGATORIO (#8532): `gh pr comment` imprime a URL do
+        # comentario criado em STDOUT, e neste script stdout e o que o
+        # Hermes entrega no Telegram. Sem o redirect a URL saia aqui, no
+        # meio do laco de PRs, muito antes do guard `NOTIFY` la embaixo --
+        # entao um tick que o script decidiu manter SILENCIOSO entregava
+        # uma mensagem contendo so uma URL nua, sem nem dizer se era
+        # aprovacao, rejeicao ou escalada (medido ao vivo 20/09 05:07, PR
+        # #8510). Era a UNICA chamada do arquivo sem redirecionamento: todo
+        # o resto do output informativo daqui ja vai pra stderr.
+        gh pr comment "$pr" --body "$REJECT_BODY" >&2
         COMMENT_RC=$?
         set -e
         if [ "$COMMENT_RC" -ne 0 ]; then
