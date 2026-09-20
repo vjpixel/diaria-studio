@@ -408,6 +408,55 @@ export function extractHighlightCandidates(
 }
 
 // ---------------------------------------------------------------------------
+// #8504 — eixo "ator" pra diversidade (aditivo, shadow mode de
+// jev.features.actor_brazil, #8416 "veredito ator: adotar com ressalva")
+// ---------------------------------------------------------------------------
+
+export interface ActorDiversityReport {
+  /** Quantos destaques candidatos têm `actor` anotado (fora dos sem anotação). */
+  annotated: number;
+  /** Total de destaques candidatos considerados (anotados ou não). */
+  total: number;
+  /** Contagem por categoria de ator entre os anotados. */
+  counts: Record<string, number>;
+  /** Ator mais frequente entre os anotados (empate: primeiro por ordem de inserção). */
+  dominant: string | null;
+}
+
+/**
+ * Lê `actor` (Choice 6-way de #8416/#8504, shadow mode de
+ * `jev.features.actor_brazil`) dos destaques candidatos, quando presente.
+ * Puramente INFORMATIVO — nunca bloqueia o gate nem produz warning, ao
+ * contrário do resto deste script. Veredito da medição #8416: o binário
+ * big-tech vs. regex do #8370 não foi estatisticamente significativo em
+ * n=64 (McNemar p=0,29-0,45), então este eixo é tratado como sinal ADITIVO
+ * de diversidade — nunca como substituto do regex #8370 já em produção.
+ * `annotated: 0` (nenhum destaque tem `actor` — caso normal com a flag
+ * desligada) é reportado como `dominant: null`, não como erro.
+ */
+export function extractActorDiversity(categorizedPath: string): ActorDiversityReport {
+  const empty: ActorDiversityReport = { annotated: 0, total: 0, counts: {}, dominant: null };
+  if (!existsSync(categorizedPath)) return empty;
+  let data: CategorizedJson;
+  try {
+    data = JSON.parse(readFileSync(categorizedPath, "utf8")) as CategorizedJson;
+  } catch {
+    return empty;
+  }
+  const highlights = data.highlights ?? [];
+  const counts: Record<string, number> = {};
+  let annotated = 0;
+  for (const h of highlights) {
+    const actor = (h.article as { actor?: unknown } | undefined)?.actor ?? (h as { actor?: unknown }).actor;
+    if (typeof actor !== "string" || actor.length === 0) continue;
+    annotated++;
+    counts[actor] = (counts[actor] ?? 0) + 1;
+  }
+  const dominant = annotated === 0 ? null : Object.keys(counts).reduce((a, b) => (counts[a] >= counts[b] ? a : b));
+  return { annotated, total: highlights.length, counts, dominant };
+}
+
+// ---------------------------------------------------------------------------
 // Core matching logic (highlights)
 // ---------------------------------------------------------------------------
 
@@ -1398,6 +1447,11 @@ async function main(): Promise<void> {
     );
   }
 
+  // #8504: eixo "ator" pra diversidade — puramente informativo, shadow mode
+  // de jev.features.actor_brazil. `annotated: 0` (flag desligada, caso
+  // normal hoje) não gera nenhum log — só entra no JSON combinado.
+  const actorDiversity = extractActorDiversity(categorizedPath);
+
   // Combina os resultados num único JSON (backward-compatible: novos campos adicionados)
   const combined = {
     warnings: highlightResult.warnings,
@@ -1412,6 +1466,8 @@ async function main(): Promise<void> {
     secondary_window_requested: secondaryResult.secondary_window_requested,
     full_body_editions_with_data: fullBodyResult.full_body_editions_with_data,
     full_body_window_requested: fullBodyResult.full_body_window_requested,
+    // #8504: sinal ADITIVO de diversidade de ator — nunca bloqueante.
+    actor_diversity: actorDiversity,
   };
 
   const json = JSON.stringify(combined, null, 2);

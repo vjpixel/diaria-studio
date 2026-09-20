@@ -155,6 +155,49 @@ export function detectBrazil(args: {
   return { is_brazil: signals.length > 0, signals };
 }
 
+/**
+ * Limiar de decisão sobre `brazil_p` (probabilidade Jev, #8416) — calibrado
+ * na medição do #8416 (`noul >= 0.5`), mesmo ponto de corte usado na
+ * comparação de acurácia contra `detectBrazil()`.
+ */
+export const JEV_BRAZIL_THRESHOLD = 0.5;
+
+/**
+ * #8504 (implementação a partir do veredito ADOTAR de #8416) — resolve o
+ * sinal de Brasil usando `brazil_p` (probabilidade Jev, shadow mode de
+ * `jev.features.actor_brazil`) quando presente, com FALLBACK pro
+ * `detectBrazil()` atual (regex/host/category) quando ausente. NÃO
+ * substitui `detectBrazil()` em si (método comum #8412: shadow antes de
+ * trocar) — só decide qual dos dois sinais vence quando ambos existem pro
+ * MESMO item.
+ *
+ * Limitação conhecida (honesta, não escondida): `brazil_p` é gravado por
+ * `annotate-actor-brazil.ts` em `_internal/01-categorized.json` durante o
+ * Stage 1 da edição — um artefato interno que não sobrevive até o texto
+ * publicado que `parsePost`/`parseLocalEdition` leem aqui (raw-post
+ * baixado da Beehiiv, ou `02-reviewed.md` local). Sem um elo que carregue
+ * esse campo até o post publicado (fora de escopo desta issue — mudaria
+ * `stitch-newsletter.ts`/o formato publicado), `brazil_p` chega sempre
+ * `undefined` nestas duas chamadas em produção HOJE, e o resultado é
+ * idêntico a chamar `detectBrazil()` direto. A função existe pronta pro
+ * dia em que esse elo for implementado (issue própria, se justificar).
+ */
+export function resolveBrazilSignal(args: {
+  category: string;
+  url: string;
+  title: string;
+  body: string;
+  brazil_p?: number;
+}): { is_brazil: boolean; signals: string[] } {
+  if (typeof args.brazil_p === "number") {
+    return {
+      is_brazil: args.brazil_p >= JEV_BRAZIL_THRESHOLD,
+      signals: [`jev:brazil_p=${args.brazil_p.toFixed(2)}`],
+    };
+  }
+  return detectBrazil(args);
+}
+
 // ── Raw post discovery ─────────────────────────────────────────────
 
 interface RawPostFile {
@@ -250,7 +293,7 @@ export function parsePost(file: RawPostFile, raw: string, warnings: string[]): M
       .trim();
     const why = whyRaw.trim();
 
-    const brazil = detectBrazil({ category, url, title, body });
+    const brazil = resolveBrazilSignal({ category, url, title, body });
 
     destaques.push({
       edition: file.edition,
@@ -357,7 +400,7 @@ export function parseLocalEdition(edition: string, md: string): MonthlyDestaque[
       .trim();
     const why = whyRaw.trim();
 
-    const brazil = detectBrazil({ category, url: link.url, title: link.title, body });
+    const brazil = resolveBrazilSignal({ category, url: link.url, title: link.title, body });
 
     destaques.push({
       edition,

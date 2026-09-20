@@ -610,6 +610,14 @@ npx tsx scripts/filter-evergreen.ts --categorized {EDITION_DIR}/_internal/tmp-ca
 ```
 In-place. Stdout: `{ removed, kept }`. Logar info.
 
+### 1u-quat. Anotação actor/brazil via Jev (#8504, shadow mode)
+
+Script `scripts/annotate-actor-brazil.ts` — softStep sempre exit 0, atrás de
+`jev.features.actor_brazil` (default OFF; perfil `--diaria-edicao-jev` liga
+via `JEV_FORCE_ACTOR_BRAZIL=1` no ambiente do subprocesso). Grava
+`actor`/`actor_p`/`brazil_p` por artigo em `01-categorized.json` — sinal
+ADITIVO, nunca altera `category`/bucket. Ver `scripts/lib/jev-actor-brazil.ts`.
+
 ### 1v. Render MD (categorized + approved)
 
 ```bash
