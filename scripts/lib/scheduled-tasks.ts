@@ -1818,6 +1818,61 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#8245",
   },
   {
+    // #8573 — o PR #8567 (REFS #8555) entregou
+    // `scripts/upload-google-ads-confirmations.ts` (detecta confirmações DOI
+    // novas no Kit contra o snapshot diário de `Diaria-Subscriber-State-Snapshot`
+    // acima, e sobe pro Google Ads como Enhanced Conversion for Leads numa
+    // ação de conversão de CONFIRMAÇÃO — `UPLOAD_CLICKS`, secundária) sem
+    // task registrada, então o lote nunca rodava sozinho.
+    //
+    // `--send` aqui (não `--dry-run`) é INTENCIONAL — é o que fecha o loop
+    // pedido pela issue (#8573 item 3: "é isso que fecha o loop"), não uma
+    // violação do guard de publicação do #738/dispatch-rules item 1: esta
+    // task não é `scripts/publish-*`/`clarice-schedule-sends`/`clarice-
+    // import-*`/`close-poll` nem toca Beehiiv/LinkedIn/Facebook/Brevo — é
+    // upload de conversão pro Google Ads, o mesmo tipo de escrita que
+    // `Diaria-Kit-Doi-Confirmation-...`-like batches já fazem rotineiramente
+    // fora do guard de publicação de newsletter/social.
+    //
+    // Pré-requisito (ação do editor, NÃO coberta por esta task): criar/
+    // reativar a ação de conversão de CONFIRMAÇÃO no Google Ads
+    // (`UPLOAD_CLICKS`, `SIGNUP`, secundária) e configurar
+    // `GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID` (Doppler) — ver
+    // docstring do próprio script. Sem isso, `--send` sai com exit 1 (erro
+    // explícito, "--send exige --conversion-action-id...") — não é
+    // fail-soft por design como os `*-Spend-Ingest` acima (que toleram
+    // credencial ausente com exit 0); até o pré-requisito ser feito, esta
+    // task aparece como falha real no monitoramento de units systemd, sinal
+    // que é o comportamento esperado, não um defeito desta unidade.
+    //
+    // Sem `guard` modelado: o próprio script já aborta com exit 1 e mensagem
+    // clara quando não há snapshot de `subscriber-state-snapshot.ts` dentro
+    // da janela de lookback (default 7 dias) — um `ScheduledTaskGuard`
+    // (`requiredFile` fixo) não serviria bem aqui porque o snapshot mais
+    // recente muda de nome por data a cada dia.
+    //
+    // Horário 07:20 BRT — fora do cluster de pico da pipeline editorial
+    // (09:00-12:45, ver comentário de `Diaria-Kv-Image-Binding-Smoke` e
+    // `Diaria-Social-Followers-Collect` acima pro mesmo raciocínio de
+    // "detectar/agir fora do horário de pico"). Slot livre entre
+    // `Diaria-Social-Followers-Collect` (07:10) e `Diaria-Clarice-Sync`
+    // (08:30) — ver grep de `hour: 7, minute:`/`hour: 8, minute:` neste
+    // arquivo antes de mexer no horário. Roda bem depois de
+    // `Diaria-Subscriber-State-Snapshot` (23:55 do dia anterior), então
+    // sempre encontra o snapshot mais recente já gravado.
+    //
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado de subagente
+    // overnight, mesma disciplina do resto do registro) — armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (300) é
+    // ação POSTERIOR do editor.
+    name: "Diaria-Google-Ads-Confirmations-Upload",
+    description: "lote diario que sobe confirmacoes DOI do Kit pro Google Ads como Enhanced Conversion for Leads (--send)",
+    steps: [{ key: "upload", script: "scripts/upload-google-ads-confirmations.ts", args: ["--send"] }],
+    logPath: "google-ads/.confirmations-upload.log",
+    schedule: { kind: "daily", hour: 7, minute: 20 },
+    issue: "#8573, #8555, #8567",
+  },
+  {
     // #5878 — Campaign Management API v13 (SOAP) capta motivos editoriais de
     // assets rejeitados. Diferente da Reporting API (Google Ads Spend Ingest
     // acima, #5704), esta é uma chamada SINCRONA (GetAssetGroupsEditorialReasons
