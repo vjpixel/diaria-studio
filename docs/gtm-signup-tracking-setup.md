@@ -61,7 +61,23 @@ público, é o mesmo JS que o navegador do visitante baixa:
 curl -sS -A "Mozilla/5.0" "https://www.googletagmanager.com/gtm.js?id=GTM-TC8C65ZN" | grep -o 'vtp_[a-zA-Z]*eventId[^,]*'
 ```
 
-## Ação de painel PENDENTE (#8572) — campo Event ID na tag do Meta Pixel
+## Ação de painel FEITA em 20/09/2026 (#8572) — campo Event ID na tag do Meta Pixel
+
+> **Estado: publicada na versão 19 do container**, 20/09/2026 19:31 BRT
+> (`#8572 - Event ID no pixel Meta (dedup contra a CAPI)`). O passo a passo
+> abaixo fica como registro do que foi feito e de como refazer se a tag for
+> recriada.
+>
+> **Verificado no `gtm.js` publicado, não no painel** — a tag `__cvt_5RM3Q`
+> (`tag_id` 16) agora traz `vtp_eventId: ["macro", 2]`, e o macro 2 é
+> `{"function":"__v","vtp_dataLayerVersion":2,"vtp_setDefaultValue":false,"vtp_name":"eventProps.event_id"}`.
+> Os três detalhes que importam estão no artefato: versão 2, `setDefaultValue`
+> FALSO e o nome exato. Repetir a conferência com o `curl` da seção anterior.
+>
+> Não dá pra fazer por API com as credenciais do projeto: o refresh token tem
+> só os escopos `adwords` e `datamanager`, e a Tag Manager API responde 403
+> (`insufficient authentication scopes`). É painel, ou um novo consentimento
+> OAuth com escopo `tagmanager.edit.containers`.
 
 **Sem este passo a dedup pixel × CAPI não existe, e a Meta conta cada
 cadastro DUAS vezes.** Foi o que a #8572 mediu em 20/09/2026: 2,4x os
@@ -69,9 +85,15 @@ cadastros reais (CPA de R$ 1,55–1,87 no painel contra R$ 3,71–4,53 real),
 estável em 3 dias, com as séries `WEB_ONLY` e `SERVER_ONLY` do dataset
 somando em vez de colapsar.
 
-O código já faz a parte dele desde o #8572: o handler do cadastro resolve o
+O código faz a parte dele desde o #8572: o handler do cadastro resolve o
 `event_id` que vai pra CAPI, devolve no corpo da resposta 200, e a página
-empurra pro `dataLayer` em `eventProps.event_id`. Falta a tag LER isso.
+empurra pro `dataLayer` em `eventProps.event_id`. A tag lê dali.
+
+**A ordem entre os dois lados não importa, e não houve janela de regressão:**
+a variável foi publicada antes do deploy do código, e uma variável de camada
+de dados não resolvida deixa o campo Event ID vazio — o template do Meta só
+passa `{eventID: ...}` pro `fbq` quando o campo tem valor, então até o deploy
+a tag dispara exatamente como antes.
 
 1. **Criar a variável** (Variables → User-Defined → New → Data Layer Variable):
    - Nome: `DLV - eventProps.event_id`
@@ -94,7 +116,9 @@ empurra pro `dataLayer` em `eventProps.event_id`. Falta a tag LER isso.
 4. **Depois de publicar**, confirmar no Events Manager → `CompleteRegistration`
    → painel de deduplicação: a cobertura de `event_id` no lado browser tem que
    sair de ~0% pra ~100%, e a contagem diária cair pra perto dos cadastros
-   reais do Kit.
+   reais do Kit. **Esta conferência só faz sentido depois que a PR #8579
+   estiver em produção** — antes disso a variável resolve vazia de propósito,
+   e a cobertura continua em 0% sem que isso indique erro de configuração.
 
 **Se o passo 1 ou 2 for feito errado, nada quebra visivelmente** — a tag
 volta a disparar sem `eventID` e o painel infla de novo em silêncio. O único
