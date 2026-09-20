@@ -243,7 +243,7 @@ export interface FlatCardText {
  * fazia 4 slides do mesmo post saírem com 4 métricas diferentes. O semanal
  * segue em `fill` — não estava em discussão.
  */
-export type FlatCardLayout = { mode: "fill" } | { mode: "fixed"; size: number };
+export type FlatCardLayout = { mode: "fill" } | { mode: "fixed"; size: number; charWidthRatio?: number };
 
 export const DEFAULT_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fill" };
 
@@ -257,7 +257,11 @@ export const DEFAULT_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fill" };
  * → `overflows`), em vez de deixar um card cortado sair em silêncio.
  */
 export const WEEKLY_FLAT_CARD_SIZE = 84;
-export const WEEKLY_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fixed", size: WEEKLY_FLAT_CARD_SIZE };
+// #8515: o preenchimento do card 84px é mais largo — 0.62, não o 0.52 do
+// carrossel diário (62px). O `charWidthRatio` aqui é o que torna o #8515
+// regressão real: com 0.52, 21 chars a 84px (~1094px) vazam pro lado de
+// além do card de 936px de largura disponível.
+export const WEEKLY_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fixed", size: WEEKLY_FLAT_CARD_SIZE, charWidthRatio: FILL_CHAR_WIDTH_RATIO };
 
 /**
  * Pure: resolve tamanho de fonte, linhas quebradas e se o bloco TRANSBORDA o
@@ -331,18 +335,26 @@ function layoutCardBody(
   const availableWidth = W - PAD * 2;
   const availableHeight = TITLE_BOTTOM - TITLE_TOP;
 
+  // #8515: a razão de largura de caractere é por CONSUMER, não global — o
+  // preenchimento do card 84px (semanal) é mais largo que o do carrossel
+  // diário 62px, que já cabia com `CHAR_WIDTH_RATIO` (0.52). Aplicar 0.62 no
+  // caminho fixo compartilhado quebrava o wrap do daily com marcação (testes
+  // de #6086/#6751). Cada `fixed` layout declara a sua; o default 0.52 é o
+  // regime pré-#8480, intocado.
+  const ratio = layout.mode === "fixed" ? (layout.charWidthRatio ?? CHAR_WIDTH_RATIO) : FILL_CHAR_WIDTH_RATIO;
+
   let size: number;
   let lines: FlatCardLine[];
   if (layout.mode === "fill") {
     ({ size, lines } = fillingFontSize(title, availableWidth, availableHeight));
   } else {
     size = layout.size;
-    const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (size * FILL_CHAR_WIDTH_RATIO)));
+    const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (size * ratio)));
     lines = wrapBody(title, maxCharsPerLine);
   }
   const blockHeight = lines.length * Math.round(size * 1.18);
   // Regressão #8515: overflow horizontal no fixed (capa/CTA semanal 84px); guard só media altura
-  const overflowsWidth = lines.some((ln) => ln.text.length * size * FILL_CHAR_WIDTH_RATIO > availableWidth);
+  const overflowsWidth = lines.some((ln) => ln.text.length * size * ratio > availableWidth);
   return { size, lines, blockHeight, availableHeight, overflows: blockHeight > availableHeight || overflowsWidth };
 }
 
