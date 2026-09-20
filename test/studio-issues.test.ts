@@ -379,6 +379,60 @@ describe("summarizeChecks (#3562, entrega 2)", () => {
         "stale",
       );
     });
+
+    describe("agrupamento por check antes da precedência (#8527)", () => {
+      it("rollup real da #8519 — mesmo `name` tem CANCELLED e SUCCESS -> 'green', nunca 'stale'", () => {
+        // 2 disparos de pull_request a 1s (15:15:54 e 15:15:55); `concurrency`
+        // cancelou o 1º em favor do 2º, que passou — os 6 checks reais da PR.
+        const result = summarizeChecks([
+          { name: "Editorial sign-off required", status: "COMPLETED", conclusion: "SUCCESS" },
+          { name: "Agent eval gate", status: "COMPLETED", conclusion: "SUCCESS" },
+          { name: "PR Checks", status: "COMPLETED", conclusion: "SUCCESS" },
+          { name: "Editorial sign-off required", status: "COMPLETED", conclusion: "CANCELLED" },
+          { name: "PR Checks", status: "COMPLETED", conclusion: "CANCELLED" },
+          { name: "Agent eval gate", status: "COMPLETED", conclusion: "CANCELLED" },
+        ]);
+        assert.equal(result, "green");
+      });
+
+      it("CANCELLED sem gêmeo concluído (mesmo com `name`) -> continua 'stale' (#8484 preservado)", () => {
+        assert.equal(
+          summarizeChecks([{ name: "PR Checks", status: "COMPLETED", conclusion: "CANCELLED" }]),
+          "stale",
+        );
+      });
+
+      it("`context` (StatusContext) agrupa igual a `name` (CheckRun)", () => {
+        assert.equal(
+          summarizeChecks([
+            { context: "ci/legacy", state: "SUCCESS" },
+            { context: "ci/legacy", status: "COMPLETED", conclusion: "CANCELLED" },
+          ]),
+          "green",
+        );
+      });
+
+      it("FAILURE real de OUTRO check convivendo com CANCELLED+SUCCESS resolvido -> continua 'red' (precedência intocada)", () => {
+        assert.equal(
+          summarizeChecks([
+            { name: "PR Checks", status: "COMPLETED", conclusion: "SUCCESS" },
+            { name: "PR Checks", status: "COMPLETED", conclusion: "CANCELLED" },
+            { name: "Agent eval gate", status: "COMPLETED", conclusion: "FAILURE" },
+          ]),
+          "red",
+        );
+      });
+
+      it("itens sem `name`/`context` nunca se fundem entre si — 2 CANCELLED soltos continuam 'stale'", () => {
+        assert.equal(
+          summarizeChecks([
+            { status: "COMPLETED", conclusion: "CANCELLED" },
+            { status: "COMPLETED", conclusion: "CANCELLED" },
+          ]),
+          "stale",
+        );
+      });
+    });
   });
 });
 

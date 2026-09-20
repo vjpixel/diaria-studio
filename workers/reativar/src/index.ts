@@ -1358,18 +1358,27 @@ export async function handleConfirm(
     // está de fato confirmada — best-effort, nunca bloqueia a página de
     // sucesso (ver docstring de `unlinkReativarFromBrevoList`).
     await unlinkReativarFromBrevoList(env, parsed.email, fetchImpl);
-    // #5504/hotfix pós-merge: CompleteRegistration pra Meta Conversions API
-    // — fire-and-forget best-effort, DEPOIS da confirmação `active`.
-    // Fail-soft: sem META_CAPI_ACCESS_TOKEN é no-op; qualquer erro nunca
-    // chega aqui (ver scripts/lib/shared/meta-capi.ts). `ctx.waitUntil()`
-    // adia o envio pra depois da resposta ao usuário — o `await` direto
-    // (achado do review pós-merge #5504) atrasava a resposta em até
+    // #5504/hotfix pós-merge: evento pra Meta Conversions API — fire-and-
+    // forget best-effort, DEPOIS da confirmação `active`. Fail-soft: sem
+    // META_CAPI_ACCESS_TOKEN é no-op; qualquer erro nunca chega aqui (ver
+    // scripts/lib/shared/meta-capi.ts). `ctx.waitUntil()` adia o envio pra
+    // depois da resposta ao usuário — o `await` direto (achado do review
+    // pós-merge #5504) atrasava a resposta em até
     // `META_CAPI_FETCH_TIMEOUT_MS` (8s) sempre que a Meta respondia lento.
     // #7776: log estruturado no meio do mesmo caminho fire-and-forget — ver
     // docstring de `logMetaCapiSendResult` (meta-capi.ts).
+    // #8551: `eventName: "Reactivation"` — NUNCA `"CompleteRegistration"`
+    // aqui. Este clique acontece meses depois do cadastro original, a
+    // partir de um e-mail de reativação da Brevo, sem `fbc`/click id
+    // confiável — disparar `CompleteRegistration` (o evento de OTIMIZAÇÃO
+    // do conjunto "BR · conversao · sem teto") a partir daqui poluiria o
+    // aprendizado do conjunto com conversões que não vieram de anúncio.
+    // `workers/poll`/`workers/cursos` continuam com o default
+    // `"CompleteRegistration"` — eles disparam no SUBMIT do form, o evento
+    // real que o conjunto otimiza.
     const sendEvent = logMetaCapiSendResult(
       sendCompleteRegistrationEvent(
-        { email: parsed.email, eventSourceUrl: url.toString() },
+        { email: parsed.email, eventSourceUrl: url.toString(), eventName: "Reactivation" },
         { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
       ),
       "reativar",

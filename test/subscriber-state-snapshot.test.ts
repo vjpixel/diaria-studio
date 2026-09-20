@@ -1,0 +1,243 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve, join } from "node:path";
+import {
+  snapshotRootDefault,
+  snapshotDirPath,
+  snapshotJsonlPath,
+  serializeSubscriberStateRecord,
+  serializeSubscriberStateRecords,
+  parseSubscriberStateJsonl,
+  listSubscriberStateSnapshotDates,
+  readSubscriberStateSnapshotFile,
+  loadAllSubscriberStateSnapshots,
+  diffSubscriberStateSnapshots,
+  newlyActiveSince,
+  buildDoiConfirmationCohort,
+  type SubscriberStateRecord,
+} from "../scripts/lib/subscriber-state-snapshot.ts";
+
+function tmpDir(): string {
+  return mkdtempSync(resolve(tmpdir(), "subscriber-state-snapshot-test-"));
+}
+
+// ---------------------------------------------------------------------------
+// Paths / (de)serialização
+// ---------------------------------------------------------------------------
+
+describe("paths + (de)serialização", () => {
+  it("snapshotRootDefault/dirPath/jsonlPath montam o caminho esperado", () => {
+    const root = snapshotRootDefault("/data");
+    assert.equal(root, join("/data", "subscriber-state-snapshots", "kit"));
+    assert.equal(snapshotDirPath(root, "2026-09-20"), join(root, "2026-09-20"));
+    assert.equal(snapshotJsonlPath(root, "2026-09-20"), join(root, "2026-09-20", "subscribers.jsonl"));
+  });
+
+  it("serializa e reparseia uma lista de records sem perda", () => {
+    const records: SubscriberStateRecord[] = [
+      { id: 1, state: "active", created_at: "2026-09-18T10:00:00.000Z" },
+      { id: 2, state: "inactive", created_at: "2026-09-19T22:00:00.000Z" },
+    ];
+    const raw = serializeSubscriberStateRecords(records);
+    assert.deepEqual(parseSubscriberStateJsonl(raw), records);
+  });
+
+  it("1 record isolado serializa com \\n final", () => {
+    const line = serializeSubscriberStateRecord({ id: 1, state: "active", created_at: "2026-09-18T10:00:00.000Z" });
+    assert.ok(line.endsWith("\n"));
+  });
+
+  it("linhas vazias e corrompidas são ignoradas, nunca lançam", () => {
+    const raw = [
+      JSON.stringify({ id: 1, state: "active", created_at: "2026-09-18T10:00:00.000Z" }),
+      "",
+      "{not valid json",
+      JSON.stringify({ id: 2 }), // faltam campos — descartada
+    ].join("\n");
+    const parsed = parseSubscriberStateJsonl(raw);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].id, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Leitura de disco (listSubscriberStateSnapshotDates, readSubscriberStateSnapshotFile)
+// ---------------------------------------------------------------------------
+
+describe("leitura de disco", () => {
+  it("root ausente devolve [] / [] fail-soft", () => {
+    const root = join(tmpDir(), "nao-existe");
+    assert.deepEqual(listSubscriberStateSnapshotDates(root), []);
+    assert.deepEqual(readSubscriberStateSnapshotFile(root, "2026-09-20"), []);
+  });
+
+  it("lista datas em ordem ascendente e lê um snapshot gravado", () => {
+    const root = join(tmpDir(), "kit");
+    for (const date of ["2026-09-20", "2026-09-18", "2026-09-19"]) {
+      const dir = snapshotDirPath(root, date);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        snapshotJsonlPath(root, date),
+        serializeSubscriberStateRecords([{ id: 1, state: "active", created_at: "2026-09-18T00:00:00.000Z" }]),
+      );
+    }
+    assert.deepEqual(listSubscriberStateSnapshotDates(root), ["2026-09-18", "2026-09-19", "2026-09-20"]);
+    const records = readSubscriberStateSnapshotFile(root, "2026-09-19");
+    assert.equal(records.length, 1);
+    assert.equal(records[0].id, 1);
+  });
+
+  it("loadAllSubscriberStateSnapshots carrega todas as datas (ou só as pedidas)", () => {
+    const root = join(tmpDir(), "kit");
+    for (const date of ["2026-09-18", "2026-09-19"]) {
+      mkdirSync(snapshotDirPath(root, date), { recursive: true });
+      writeFileSync(
+        snapshotJsonlPath(root, date),
+        serializeSubscriberStateRecords([{ id: 1, state: "active", created_at: "2026-09-18T00:00:00.000Z" }]),
+      );
+    }
+    const all = loadAllSubscriberStateSnapshots(root);
+    assert.deepEqual([...all.keys()].sort(), ["2026-09-18", "2026-09-19"]);
+    const only18 = loadAllSubscriberStateSnapshots(root, ["2026-09-18"]);
+    assert.deepEqual([...only18.keys()], ["2026-09-18"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// diffSubscriberStateSnapshots / newlyActiveSince — a regressão do #8552
+// (destrava o escopo 1 da #8543: "quem virou active desde a última rodada")
+// ---------------------------------------------------------------------------
+
+describe("diffSubscriberStateSnapshots", () => {
+  it("detecta transição de estado entre 2 snapshots", () => {
+    const prev: SubscriberStateRecord[] = [
+      { id: 1, state: "inactive", created_at: "2026-09-18T00:00:00.000Z" },
+      { id: 2, state: "active", created_at: "2026-09-17T00:00:00.000Z" },
+    ];
+    const curr: SubscriberStateRecord[] = [
+      { id: 1, state: "active", created_at: "2026-09-18T00:00:00.000Z" }, // confirmou
+      { id: 2, state: "active", created_at: "2026-09-17T00:00:00.000Z" }, // sem mudança
+      { id: 3, state: "active", created_at: "2026-09-20T00:00:00.000Z" }, // novo, já nasceu active
+    ];
+    const transitions = diffSubscriberStateSnapshots(prev, curr);
+    assert.deepEqual(
+      transitions.map((t) => [t.id, t.from, t.to]),
+      [
+        [1, "inactive", "active"],
+        [3, null, "active"],
+      ],
+    );
+  });
+
+  it("id que sumiu de curr não gera transição (Kit não expõe delete)", () => {
+    const prev: SubscriberStateRecord[] = [{ id: 1, state: "active", created_at: "2026-09-18T00:00:00.000Z" }];
+    const curr: SubscriberStateRecord[] = [];
+    assert.deepEqual(diffSubscriberStateSnapshots(prev, curr), []);
+  });
+
+  it("newlyActiveSince cobre from=inactive→active E from=null (novo já active)", () => {
+    const prev: SubscriberStateRecord[] = [{ id: 1, state: "inactive", created_at: "2026-09-18T00:00:00.000Z" }];
+    const curr: SubscriberStateRecord[] = [
+      { id: 1, state: "active", created_at: "2026-09-18T00:00:00.000Z" },
+      { id: 2, state: "active", created_at: "2026-09-20T00:00:00.000Z" },
+      { id: 3, state: "cancelled", created_at: "2026-09-15T00:00:00.000Z" },
+    ];
+    const transitions = diffSubscriberStateSnapshots(prev, curr);
+    const newlyActive = newlyActiveSince(transitions);
+    assert.deepEqual(newlyActive.map((t) => t.id).sort(), [1, 2]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildDoiConfirmationCohort — insumo de doi-confirmacao-dia (#8552)
+// ---------------------------------------------------------------------------
+
+describe("buildDoiConfirmationCohort", () => {
+  it("menos de 2 snapshots -> indeterminado", () => {
+    const snapshots = new Map<string, SubscriberStateRecord[]>([
+      ["2026-09-18", [{ id: 1, state: "inactive", created_at: "2026-09-18T10:00:00.000Z" }]],
+    ]);
+    const result = buildDoiConfirmationCohort(snapshots, "2026-09-18");
+    assert.deepEqual(result.cohort, []);
+    assert.match(result.motivoIndeterminado ?? "", /menos de 2 snapshots/);
+  });
+
+  it("sem snapshot do próprio dia da safra -> indeterminado (estado de criação perdido)", () => {
+    const snapshots = new Map<string, SubscriberStateRecord[]>([
+      ["2026-09-17", [{ id: 1, state: "active", created_at: "2026-09-10T10:00:00.000Z" }]],
+      ["2026-09-20", [{ id: 1, state: "active", created_at: "2026-09-10T10:00:00.000Z" }]],
+    ]);
+    const result = buildDoiConfirmationCohort(snapshots, "2026-09-18");
+    assert.deepEqual(result.cohort, []);
+    assert.match(result.motivoIndeterminado ?? "", /sem snapshot do próprio dia/);
+  });
+
+  it("nenhum inactive criado no dia -> indeterminado", () => {
+    const snapshots = new Map<string, SubscriberStateRecord[]>([
+      ["2026-09-18", [{ id: 1, state: "active", created_at: "2026-09-18T10:00:00.000Z" }]],
+      ["2026-09-20", [{ id: 1, state: "active", created_at: "2026-09-18T10:00:00.000Z" }]],
+    ]);
+    const result = buildDoiConfirmationCohort(snapshots, "2026-09-18");
+    assert.deepEqual(result.cohort, []);
+    assert.match(result.motivoIndeterminado ?? "", /nenhum assinante inactive/);
+  });
+
+  it("safra ainda não maturou 48h -> indeterminado", () => {
+    const snapshots = new Map<string, SubscriberStateRecord[]>([
+      ["2026-09-18", [{ id: 1, state: "inactive", created_at: "2026-09-18T10:00:00.000Z" }]],
+      // 2026-09-19 é só +1 dia — maturação de 48h só fecha em 2026-09-20 BRT.
+      ["2026-09-19", [{ id: 1, state: "active", created_at: "2026-09-18T10:00:00.000Z" }]],
+    ]);
+    const result = buildDoiConfirmationCohort(snapshots, "2026-09-18");
+    assert.deepEqual(result.cohort, []);
+    assert.match(result.motivoIndeterminado ?? "", /ainda não maturou/);
+  });
+
+  it("safra madura -> calcula confirmados/total", () => {
+    const snapshots = new Map<string, SubscriberStateRecord[]>([
+      [
+        "2026-09-18",
+        [
+          { id: 1, state: "inactive", created_at: "2026-09-18T10:00:00.000Z" },
+          { id: 2, state: "inactive", created_at: "2026-09-18T11:00:00.000Z" },
+          { id: 3, state: "inactive", created_at: "2026-09-18T12:00:00.000Z" },
+          // criado em outro dia — nunca entra na safra de 18/09
+          { id: 4, state: "inactive", created_at: "2026-09-17T12:00:00.000Z" },
+          // já nasceu active — nunca entra na safra (não é confirmação)
+          { id: 5, state: "active", created_at: "2026-09-18T13:00:00.000Z" },
+        ],
+      ],
+      [
+        // 48h depois de 2026-09-18 00:00 BRT = 2026-09-20 00:00 BRT
+        "2026-09-20",
+        [
+          { id: 1, state: "active", created_at: "2026-09-18T10:00:00.000Z" }, // confirmou
+          { id: 2, state: "inactive", created_at: "2026-09-18T11:00:00.000Z" }, // não confirmou
+          // id 3 nem reaparece — tratado como não confirmado (fail-soft)
+        ],
+      ],
+    ]);
+    const result = buildDoiConfirmationCohort(snapshots, "2026-09-18");
+    assert.equal(result.motivoIndeterminado, undefined);
+    assert.deepEqual(
+      result.cohort.sort((a, b) => a.id - b.id),
+      [
+        { id: 1, confirmed: true },
+        { id: 2, confirmed: false },
+        { id: 3, confirmed: false },
+      ],
+    );
+  });
+
+  it("usa o PRIMEIRO snapshot >= maturationDateKey, mesmo se houver vários posteriores", () => {
+    const snapshots = new Map<string, SubscriberStateRecord[]>([
+      ["2026-09-18", [{ id: 1, state: "inactive", created_at: "2026-09-18T10:00:00.000Z" }]],
+      ["2026-09-20", [{ id: 1, state: "active", created_at: "2026-09-18T10:00:00.000Z" }]],
+      ["2026-09-25", [{ id: 1, state: "inactive", created_at: "2026-09-18T10:00:00.000Z" }]], // ruído posterior
+    ]);
+    const result = buildDoiConfirmationCohort(snapshots, "2026-09-18", 48);
+    assert.deepEqual(result.cohort, [{ id: 1, confirmed: true }]);
+  });
+});

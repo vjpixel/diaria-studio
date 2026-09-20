@@ -178,7 +178,18 @@ export const EDICAO_EFEITOS: readonly EdicaoEfeito[] = ["mudanca", "pausa", "ret
 
 /** Exportada pra `scripts/ads-registrar-edicao.ts` (#8241 item 4) auto-derivar
  *  `efeito` de um `tipo` já catalogado, em vez de exigir o operador
- *  declarar os dois em toda linha nova. */
+ *  declarar os dois em toda linha nova.
+ *
+ * **Desde #8531 esta tabela É o conjunto FECHADO de tipos válidos** — não só
+ * um atalho de auto-derivação. `ads-registrar-edicao.ts` recusa qualquer
+ * `--tipo` fora destas chaves na GRAVAÇÃO (nenhum escape-hatch via
+ * `--efeito` explícito, que o #8241 original permitia); a LEITURA
+ * (`normalizeEdicaoRegistro`) continua fail-soft de propósito — uma linha
+ * histórica já gravada com um `tipo` que não está mais (ou nunca esteve)
+ * catalogado não pode retroativamente virar erro de parse. Tipo novo entra
+ * SÓ via edição deste arquivo (PR), nunca via flag da CLI — é exatamente o
+ * texto-livre em `--tipo`/`--efeito` sem revisão que produziu os 5 tipos
+ * de texto livre gravados em 09-17/09/2026 que motivaram a #8531. */
 export const TIPO_TO_EFEITO: Readonly<Record<string, EdicaoEfeito>> = {
   "edicao-em-voo": "mudanca",
   investigacao: "registro",
@@ -197,7 +208,33 @@ export const TIPO_TO_EFEITO: Readonly<Record<string, EdicaoEfeito>> = {
   // CAMPO de metadado (data de término já executada), não é uma edição de
   // segmentação/orçamento/criativo da campanha em voo.
   "correcao-data-termino-executada": "registro",
+  // #8531 — os 5 tipos de texto livre gravados em 09-17/09/2026 (achado da
+  // issue), migrados pro conjunto fechado com o efeito correto:
+  //
+  // "registro" (não altera a campanha em voo, só documenta):
+  "teto-gasto-conta-meta": "registro",
+  "tasks-locais-neo-realinhadas": "registro",
+  "decisao-teto-orcamento": "registro",
+  "achado-poluicao-ambiente-google-client-id": "registro",
+  // "mudanca" (a decisão foi de fato EXECUTADA — mexeu no orçamento da
+  // campanha em voo, deve reiniciar `diasAposUltimaEdicao` como qualquer
+  // outra edição):
+  "decisao-teto-orcamento-executada": "mudanca",
 };
+
+/** Conjunto FECHADO de `tipo` válidos para `edicoes.jsonl` (#8531) — as
+ *  chaves de {@link TIPO_TO_EFEITO}. União de tipo literal + array runtime,
+ *  pro mesmo símbolo servir tanto de guarda em tempo de compilação quanto
+ *  de checagem em `ads-registrar-edicao.ts` (que roda sobre string vinda de
+ *  `argv`, sem tipo estático). */
+export type EdicaoTipo = keyof typeof TIPO_TO_EFEITO;
+
+export const TIPOS_VALIDOS: readonly EdicaoTipo[] = Object.keys(TIPO_TO_EFEITO) as EdicaoTipo[];
+
+/** `true` quando `tipo` está no conjunto fechado de {@link TIPOS_VALIDOS}. */
+export function isTipoValido(tipo: string): tipo is EdicaoTipo {
+  return Object.prototype.hasOwnProperty.call(TIPO_TO_EFEITO, tipo);
+}
 
 export interface NormalizedEdicaoRegistro {
   /** `"todos"` quando a linha não declara `braco` (schema novo, #8241). */

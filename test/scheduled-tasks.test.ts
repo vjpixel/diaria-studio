@@ -1641,7 +1641,7 @@ describe("#8153 — Diaria-Remediate-Never-Armed-Tasks registrada, diária, syst
   });
 });
 
-describe("#8260 — Diaria-Social-Followers-Collect registrada, diária, systemd-only, NÃO armada", () => {
+describe("#8260 — Diaria-Social-Followers-Collect registrada, diária, systemd-only, ARMADA desde o #8537", () => {
   it("está presente no registro, com o step apontando pro script correto, diária às 07:10", () => {
     const t = getScheduledTaskByName("Diaria-Social-Followers-Collect");
     assert.ok(t, "Diaria-Social-Followers-Collect ausente de SCHEDULED_TASKS");
@@ -1653,10 +1653,19 @@ describe("#8260 — Diaria-Social-Followers-Collect registrada, diária, systemd
     assert.equal(t!.issue, "#8260");
   });
 
-  it("declarada mas NÃO armada — guard de publicação/plataforma proíbe execução ao vivo nesta sessão", () => {
+  // #8537: este teste afirmava `enabled === false`, travando como invariante
+  // o que era só a limitação da sessão que escreveu o #8260 (worktree de
+  // subagente overnight, proibido de chamar a Graph API ao vivo). A coleta
+  // ficou 3 dias sem rodar e o painel /ads sem dado; o teste concordava com
+  // o estado defasado em vez de acusá-lo. Agora afirma o oposto.
+  it("ARMADA — sai de listDisabledScheduledTaskNames e gera unit (#8537)", () => {
     const t = getScheduledTaskByName("Diaria-Social-Followers-Collect")!;
-    assert.equal(t.enabled, false);
-    assert.ok(listDisabledScheduledTaskNames().includes("Diaria-Social-Followers-Collect"));
+    assert.notEqual(
+      t.enabled,
+      false,
+      "voltou a enabled:false — não vira unit systemd e o painel /ads volta a followers:null (#8537)",
+    );
+    assert.ok(!listDisabledScheduledTaskNames().includes("Diaria-Social-Followers-Collect"));
   });
 
   it("horário de 07:10 não colide com nenhuma outra daily do registro", () => {

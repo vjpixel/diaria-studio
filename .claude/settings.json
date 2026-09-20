@@ -143,6 +143,14 @@
           {
             "type": "command",
             "command": "node",
+            "timeout": 30,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-pr-create-test-runner-import.mjs"
+            ]
+          },
+          {
+            "type": "command",
+            "command": "node",
             "timeout": 10,
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-unsafe-shared-checkout-ops.mjs"

@@ -268,10 +268,12 @@ describe("#5504 — wiring: workers/reativar/src/index.ts (handleConfirm)", () =
    * Beehiiv precisa distinguir GET de POST; a Meta é roteada por host. */
   function reativarFetch(opts: { metaBehavior?: "ok" | "network_error" }) {
     const metaCalls: string[] = [];
+    const metaBodies: Array<{ data: Array<{ event_name: string }> }> = [];
     const fn = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
       if (u.includes("graph.facebook.com")) {
         metaCalls.push(u);
+        if (init?.body) metaBodies.push(JSON.parse(String(init.body)));
         if (opts.metaBehavior === "network_error") throw new Error("meta down");
         return new Response(JSON.stringify({ events_received: 1 }), { status: 200 });
       }
@@ -280,7 +282,7 @@ describe("#5504 — wiring: workers/reativar/src/index.ts (handleConfirm)", () =
       if (method === "POST") return new Response(JSON.stringify({ data: { id: "s1", status: "active" } }), { status: 201 });
       return new Response(null, { status: 204 }); // DELETE (não deveria rolar, GET já foi 404)
     }) as typeof fetch;
-    return { fn, metaCalls };
+    return { fn, metaCalls, metaBodies };
   }
 
   it("sem META_CAPI_ACCESS_TOKEN → ativação normal, NENHUMA chamada pro Graph API da Meta", async () => {
@@ -291,11 +293,28 @@ describe("#5504 — wiring: workers/reativar/src/index.ts (handleConfirm)", () =
     assert.equal(metaCalls.length, 0);
   });
 
-  it("com META_CAPI_ACCESS_TOKEN e ativação confirmada (active) → dispara CompleteRegistration", async () => {
+  it("com META_CAPI_ACCESS_TOKEN e ativação confirmada (active) → dispara 1 evento pra Meta", async () => {
     const { fn, metaCalls } = reativarFetch({});
     const res = await handleConfirm(url(), reativarEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), fn);
     assert.equal(res.status, 303); // #8539
     assert.equal(metaCalls.length, 1);
+  });
+
+  // #8551: regressão — o `reativar` NUNCA pode disparar `CompleteRegistration`
+  // (evento de OTIMIZAÇÃO do conjunto de anúncios, disparado no SUBMIT do
+  // form por workers/poll e workers/cursos). O clique de confirmação de
+  // reativação é `"Reactivation"`, um evento distinto.
+  //
+  // #8539: o desfecho de sucesso virou 303 pra /confirmado — o evento
+  // continua sendo o mesmo, só a resposta mudou.
+  it("REGRESSÃO (#8551): dispara Reactivation, NUNCA CompleteRegistration", async () => {
+    const { fn, metaCalls, metaBodies } = reativarFetch({});
+    const res = await handleConfirm(url(), reativarEnv({ META_CAPI_ACCESS_TOKEN: "tok" }), fn);
+    assert.equal(res.status, 303);
+    assert.equal(metaCalls.length, 1);
+    assert.equal(metaBodies.length, 1);
+    assert.equal(metaBodies[0].data[0].event_name, "Reactivation");
+    assert.notEqual(metaBodies[0].data[0].event_name, "CompleteRegistration");
   });
 
   it("falha de rede da Meta nunca muda o desfecho de sucesso servido pro usuário", async () => {

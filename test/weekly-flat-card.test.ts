@@ -379,7 +379,7 @@ describe("resolveOrGenerateFlatCardUrl (cache + geração sob demanda)", () => {
 describe("#8480 (260919): capa/CTA sempre 84px (WEEKLY_FLAT_CARD_LAYOUT), nunca auto-size", () => {
   it("WEEKLY_FLAT_CARD_SIZE é 84 e WEEKLY_FLAT_CARD_LAYOUT é fixed nesse tamanho", () => {
     assert.equal(WEEKLY_FLAT_CARD_SIZE, 84);
-    assert.deepEqual(WEEKLY_FLAT_CARD_LAYOUT, { mode: "fixed", size: 84 });
+    assert.deepEqual(WEEKLY_FLAT_CARD_LAYOUT, { mode: "fixed", size: 84, charWidthRatio: 0.62 });
   });
 
   it("título curto que ANTES encolheria bem abaixo de 84 (fill escala com o texto) sai em 84px fixo com WEEKLY_FLAT_CARD_LAYOUT", () => {
@@ -443,6 +443,13 @@ describe("#8480 (260919): capa/CTA sempre 84px (WEEKLY_FLAT_CARD_LAYOUT), nunca 
     } finally {
       rmSync(dataRoot, { recursive: true, force: true });
     }
+  });
+
+  it("#8515 regressão — overflow horizontal no fixed 84px detectado (21 chars @ 84px vazam com 0.52); com 0.62 aciona abort", async () => {
+    const { measureFlatCardBody, WEEKLY_FLAT_CARD_LAYOUT } = await import("../scripts/lib/weekly-flat-card.ts");
+    const title = "A".repeat(21); // linha cheia de 21 chars a 84px => ~1094px > 936
+    const m = measureFlatCardBody(title, WEEKLY_FLAT_CARD_LAYOUT); // fixed 84px
+    assert.equal(m.overflows, true, "linha de 21 chars a 84px deve acusar overflow (largura)" );
   });
 
   it("layout default (sem 6º argumento) continua fill — comportamento pré-#8480 intocado pra chamador que não passa layout", async () => {

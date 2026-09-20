@@ -432,11 +432,16 @@ export function attachClaims(
 export type CiState = "green" | "red" | "stale" | "pending" | "none";
 
 /** Shape variável — `gh` normaliza StatusContext (`state`) e CheckRun
- * (`status`/`conclusion`) no mesmo array de `statusCheckRollup`. */
+ * (`status`/`conclusion`) no mesmo array de `statusCheckRollup`. `name`
+ * (CheckRun) e `context` (StatusContext) identificam qual check GERA cada
+ * item — usados só pra agrupar execuções repetidas do MESMO check (#8527),
+ * nunca pela precedência red/stale/pending/green em si. */
 interface RawCheckRollupItem {
   state?: string; // StatusContext: SUCCESS | FAILURE | ERROR | PENDING | EXPECTED
   status?: string; // CheckRun: QUEUED | IN_PROGRESS | COMPLETED | ...
   conclusion?: string | null; // CheckRun: SUCCESS | FAILURE | CANCELLED | TIMED_OUT | ACTION_REQUIRED | NEUTRAL | SKIPPED | STALE
+  name?: string; // CheckRun
+  context?: string; // StatusContext
 }
 
 const FAILURE_STATES = new Set(["FAILURE", "ERROR"]);
@@ -450,6 +455,72 @@ const FAILURE_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED"])
 /** Conclusion conhecida e distinta de falha — ver docstring de `CiState`. */
 const STALE_CONCLUSIONS = new Set(["CANCELLED"]);
 
+/** Chave de agrupamento de um item do rollup: qual CHECK (não qual
+ * EXECUÇÃO) ele representa. `name` (CheckRun) e `context` (StatusContext)
+ * nunca coexistem no mesmo item — cobre os dois shapes que `gh` mistura no
+ * rollup. `undefined` quando o item não carrega nenhuma das duas (shape
+ * inesperado) — tratado como singleton no agrupamento, nunca fundido com
+ * outro item por engano. */
+function checkRollupItemKey(raw: RawCheckRollupItem): string | undefined {
+  if (raw.name) return `name:${raw.name}`;
+  if (raw.context) return `context:${raw.context}`;
+  return undefined;
+}
+
+/** Um item "resolve" o grupo do seu check (#8527) quando representa uma
+ * execução que chegou a um veredito diferente de `CANCELLED` — CheckRun
+ * `COMPLETED` com qualquer `conclusion`, ou StatusContext num `state`
+ * terminal (`SUCCESS`/`FAILURE`/`ERROR`). Um `CANCELLED` nunca resolve seu
+ * próprio grupo. */
+function resolvesCheckGroup(raw: RawCheckRollupItem): boolean {
+  const { state, status, conclusion } = raw;
+  if (conclusion && STALE_CONCLUSIONS.has(conclusion)) return false;
+  if (status === "COMPLETED" && conclusion) return true;
+  if (state === "SUCCESS" || (state && FAILURE_STATES.has(state))) return true;
+  return false;
+}
+
+/**
+ * Remove `CANCELLED` redundante do rollup ANTES da precedência red/stale/
+ * pending/green (#8527): dois disparos do MESMO check (`concurrency`
+ * cancelando o run anterior em favor de um novo) deixam um `CANCELLED` e um
+ * `SUCCESS`/outro veredito terminal com o mesmo `name`/`context` no mesmo
+ * rollup — sem agrupamento, o `CANCELLED` isolado bastava pra classificar a
+ * PR inteira como `stale` mesmo com o check já resolvido. Só descarta o
+ * `CANCELLED` quando outro item do MESMO grupo já `resolvesCheckGroup` —
+ * grupo só com `CANCELLED` (sem gêmeo concluído) preserva o comportamento
+ * `stale` do #8484 intacto. Itens sem chave de agrupamento (`name`/`context`
+ * ausentes) nunca são fundidos entre si — passam direto, preservando o
+ * caminho conservador de `summarizeChecks` pra shape inesperado. Pura.
+ */
+function dedupeStaleCheckRuns(rollup: readonly RawCheckRollupItem[]): RawCheckRollupItem[] {
+  const groups = new Map<string, RawCheckRollupItem[]>();
+  const singletons: RawCheckRollupItem[] = [];
+  for (const raw of rollup) {
+    if (!raw || typeof raw !== "object") {
+      singletons.push(raw);
+      continue;
+    }
+    const key = checkRollupItemKey(raw);
+    if (key === undefined) {
+      singletons.push(raw);
+      continue;
+    }
+    const group = groups.get(key);
+    if (group) group.push(raw);
+    else groups.set(key, [raw]);
+  }
+  const result = [...singletons];
+  for (const group of groups.values()) {
+    const isResolved = group.some(resolvesCheckGroup);
+    for (const raw of group) {
+      const isRedundantCancelled = isResolved && raw.conclusion && STALE_CONCLUSIONS.has(raw.conclusion);
+      if (!isRedundantCancelled) result.push(raw);
+    }
+  }
+  return result;
+}
+
 /**
  * Resume `statusCheckRollup` (array bruto, shape variável) num único
  * `CiState`. Conservador: qualquer check não reconhecido (shape inesperado)
@@ -457,16 +528,22 @@ const STALE_CONCLUSIONS = new Set(["CANCELLED"]);
  * confiança que afirmar "tudo verde" errado (#573 é sobre validar estado
  * externo antes de relayar; mesmo espírito aqui, read-only). Pura.
  *
+ * Antes da precedência: agrupa por check (`dedupeStaleCheckRuns`, #8527) —
+ * um `CANCELLED` só conta como `stale` se NENHUMA execução daquele mesmo
+ * check tiver concluído (ex: 2 disparos de `pull_request` a 1s de distância,
+ * `concurrency` cancela o 1º em favor do 2º, que passa — ver #8527).
+ *
  * Precedência quando a PR tem mistura de conclusions (#8484): `red` > `stale`
  * > `pending` > `green` — 1 `FAILURE` real entre vários `CANCELLED` nunca
  * fica escondido atrás do rótulo mais brando.
  */
 export function summarizeChecks(rollup: unknown): CiState {
   if (!Array.isArray(rollup) || rollup.length === 0) return "none";
+  const deduped = dedupeStaleCheckRuns(rollup as RawCheckRollupItem[]);
   let sawFailure = false;
   let sawStale = false;
   let sawPending = false;
-  for (const raw of rollup as RawCheckRollupItem[]) {
+  for (const raw of deduped) {
     if (!raw || typeof raw !== "object") {
       sawPending = true;
       continue;
