@@ -47,7 +47,7 @@
 
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   isGhPrCreateCommand,
@@ -65,7 +65,13 @@ export async function runTestRunnerImportCheck(repoRoot, importGuardModule) {
   if (!existsSync(testDir)) return null;
   const { checkTestRunnerImports } =
     importGuardModule ??
-    (await import(`${join(repoRoot, "scripts", "lib", "test-runner-import-guard.ts")}?t=${Date.now()}`));
+    // pathToFileURL (não uma string de path crua): um path absoluto do
+    // Windows ("C:\...") não é resolvido pelo loader ESM sem virar
+    // file:// primeiro — mesma armadilha que `dirname(fileURLToPath(...))`
+    // evita do lado da leitura, aqui do lado da escrita do specifier.
+    (await import(
+      `${pathToFileURL(join(repoRoot, "scripts", "lib", "test-runner-import-guard.ts")).href}?t=${Date.now()}`
+    ));
   return checkTestRunnerImports(testDir, repoRoot);
 }
 
