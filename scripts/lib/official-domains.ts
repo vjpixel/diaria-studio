@@ -249,6 +249,18 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     detection_keywords: /\b(replicate)\b/i,
   },
   {
+    // #8576: Bonsai 2 27B (2026-09-17) — anúncio oficial no próprio blog da
+    // PrismML (prismml.com/news/bonsai-2-27b). A empresa/lab não constava
+    // do registro, então o item caía em `invalid_url` na LANÇAMENTOS e o
+    // editor teve que movê-lo pro RADAR (#7401: allowlist incompleta, não
+    // classificação errada). Qualquer URL no host é lançamento — o site é
+    // de tamanho pequeno e 100% de product/news (não há /careers/, /pricing/
+    // de e-commerce como em openai.com/anthropic.com), então any-path.
+    company: "PrismML",
+    domains: ["prismml.com"],
+    detection_keywords: /\b(prismml|bonsai)\b/i,
+  },
+  {
     company: "RunwayML",
     domains: ["runwayml.com"],
     detection_keywords: /\b(runway|runwayml)\b/i,

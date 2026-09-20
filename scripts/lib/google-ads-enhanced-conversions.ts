@@ -170,6 +170,9 @@ export interface SignupRecordInput {
   gclid?: string;
   wbraid?: string;
   gbraid?: string;
+  /** `order_id` opcional (#8555) — chave de dedup do lado do Google
+   *  (segunda rede de segurança além do índice local de quem chama). */
+  orderId?: string;
 }
 
 export interface ValidatedConversion {
@@ -184,6 +187,8 @@ export interface ValidatedConversion {
   gclid?: string;
   wbraid?: string;
   gbraid?: string;
+  /** `order_id` (#8555) — repassado de `SignupRecordInput`. */
+  orderId?: string;
 }
 
 export interface SkippedRecord {
@@ -245,6 +250,7 @@ export function validateSignupRecords(
     gclid?: string;
     wbraid?: string;
     gbraid?: string;
+    orderId?: string;
   }> = [];
 
   records.forEach((record, idx) => {
@@ -279,6 +285,7 @@ export function validateSignupRecords(
       gclid: record.gclid?.trim() || undefined,
       wbraid: record.wbraid?.trim() || undefined,
       gbraid: record.gbraid?.trim() || undefined,
+      orderId: record.orderId?.trim() || undefined,
     });
   });
 
@@ -311,6 +318,7 @@ export function validateSignupRecords(
     gclid: c.gclid,
     wbraid: c.wbraid,
     gbraid: c.gbraid,
+    orderId: c.orderId,
   }));
 
   return {
@@ -348,6 +356,8 @@ export interface ClickConversionPayload {
   gclid?: string;
   wbraid?: string;
   gbraid?: string;
+  /** `order_id` (#8555) — só presente quando o registro trouxe um. */
+  orderId?: string;
 }
 
 export interface UploadClickConversionsPayload {
@@ -416,6 +426,7 @@ export function buildUploadClickConversionsPayload(
       if (c.gclid) entry.gclid = c.gclid;
       if (c.wbraid) entry.wbraid = c.wbraid;
       if (c.gbraid) entry.gbraid = c.gbraid;
+      if (c.orderId) entry.orderId = c.orderId;
       return entry;
     }),
     partialFailure: true,

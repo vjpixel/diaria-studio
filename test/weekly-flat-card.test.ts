@@ -21,9 +21,15 @@ import {
   resolveOrGenerateFlatCardUrl,
   WEEKLY_FLAT_CARD_LAYOUT,
   WEEKLY_FLAT_CARD_SIZE,
+  CHAR_WIDTH_RATIO,
+  FILL_CHAR_WIDTH_RATIO,
   type FlatCardGenerator,
 } from "../scripts/lib/weekly-flat-card.ts";
+import { DAILY_CAROUSEL_LAYOUT, DAILY_CAROUSEL_BODY_SIZE } from "../scripts/lib/daily-carousel-card.ts";
 import { COLORS } from "../scripts/lib/shared/design-tokens.ts";
+
+/** Largura disponível do bloco de texto (W - PAD*2) — espelha o cálculo interno de `layoutCardBody`, só pra derivar `maxCharsPerLine` esperado nos testes-âncora do #8529 sem repetir números mágicos. */
+const AVAILABLE_WIDTH = 1080 - 72 * 2;
 
 /** Extrai o 1º `font-size="N"` de um SVG cujo fill é a cor de título (ink) — helper de teste. */
 function firstTitleFontSize(svg: string): number {
@@ -215,14 +221,16 @@ describe("#6086 item c: negrito seletivo (`**...**` no title)", () => {
   });
 
   it("QUEBRA DE LINHA conta só o texto VISÍVEL — delimitadores `**` não entram na largura (o caso que quebra)", () => {
-    // Em fixed 62px, maxCharsPerLine = floor(936 / (62 * 0.52)) = 29.
+    // maxCharsPerLine derivado de CHAR_WIDTH_RATIO (não hardcoded em comentário, #8529) — hoje 29.
+    const maxCharsPerLine = Math.floor(AVAILABLE_WIDTH / (62 * CHAR_WIDTH_RATIO));
     const DAILY = { mode: "fixed" as const, size: 62 };
     const plainWord = "palavra"; // 7 chars
     const boldContent = `${plainWord} `.repeat(3).trim(); // 21 chars visíveis
     const title = `**${boldContent}**`; // 25 chars CRUS — contagem ingênua estouraria 29 com mais uma palavra
-    // Visível = 21 chars + " " + 6 = cabe numa linha só se os delimitadores forem ignorados.
-    // Um título equivalente SEM marcação de mesmo comprimento cru (29) também caberia;
-    // o ponto é: a versão marcada NÃO pode quebrar em 2 linhas só porque tem `**`.
+    // Visível = 21 chars, dentro de maxCharsPerLine (derivado acima); o texto CRU (25 chars com
+    // delimitadores) só estouraria se a contagem fosse ingênua — o ponto é: a versão marcada
+    // NÃO pode quebrar em 2 linhas só porque tem `**`.
+    assert.ok(boldContent.length <= maxCharsPerLine, `pré-condição do teste: texto visível (${boldContent.length}) precisa caber em maxCharsPerLine (${maxCharsPerLine})`);
     const { lines } = measureFlatCardBody(title, DAILY);
     assert.equal(lines.length, 1, `esperava 1 linha (texto visível cabe), veio ${lines.length}: ${JSON.stringify(lines)}`);
     assert.equal(lines[0], boldContent);
@@ -379,7 +387,7 @@ describe("resolveOrGenerateFlatCardUrl (cache + geração sob demanda)", () => {
 describe("#8480 (260919): capa/CTA sempre 84px (WEEKLY_FLAT_CARD_LAYOUT), nunca auto-size", () => {
   it("WEEKLY_FLAT_CARD_SIZE é 84 e WEEKLY_FLAT_CARD_LAYOUT é fixed nesse tamanho", () => {
     assert.equal(WEEKLY_FLAT_CARD_SIZE, 84);
-    assert.deepEqual(WEEKLY_FLAT_CARD_LAYOUT, { mode: "fixed", size: 84 });
+    assert.deepEqual(WEEKLY_FLAT_CARD_LAYOUT, { mode: "fixed", size: 84, charWidthRatio: 0.62 });
   });
 
   it("título curto que ANTES encolheria bem abaixo de 84 (fill escala com o texto) sai em 84px fixo com WEEKLY_FLAT_CARD_LAYOUT", () => {
@@ -445,6 +453,13 @@ describe("#8480 (260919): capa/CTA sempre 84px (WEEKLY_FLAT_CARD_LAYOUT), nunca 
     }
   });
 
+  it("#8515 regressão — overflow horizontal no fixed 84px detectado (21 chars @ 84px vazam com 0.52); com 0.62 aciona abort", async () => {
+    const { measureFlatCardBody, WEEKLY_FLAT_CARD_LAYOUT } = await import("../scripts/lib/weekly-flat-card.ts");
+    const title = "A".repeat(21); // linha cheia de 21 chars a 84px => ~1094px > 936
+    const m = measureFlatCardBody(title, WEEKLY_FLAT_CARD_LAYOUT); // fixed 84px
+    assert.equal(m.overflows, true, "linha de 21 chars a 84px deve acusar overflow (largura)" );
+  });
+
   it("layout default (sem 6º argumento) continua fill — comportamento pré-#8480 intocado pra chamador que não passa layout", async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), "diaria-flatcard-"));
     try {
@@ -458,5 +473,46 @@ describe("#8480 (260919): capa/CTA sempre 84px (WEEKLY_FLAT_CARD_LAYOUT), nunca 
     } finally {
       rmSync(dataRoot, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * #8529: trava a razão de largura de caractere efetiva POR CONSUMIDOR do
+ * caminho `fixed` de `layoutCardBody` — pra que uma mudança futura em
+ * `CHAR_WIDTH_RATIO`/`FILL_CHAR_WIDTH_RATIO` (ou no `charWidthRatio` de um
+ * `FlatCardLayout` específico) que afete um consumidor errado quebre AQUI,
+ * nomeando qual consumidor foi afetado — em vez de só derrubar asserções de
+ * wrap aparentemente sem relação (foi exatamente esse o sintoma do #8529: a
+ * PR #8520 mudou `FILL_CHAR_WIDTH_RATIO` pensando só na capa/CTA semanal e
+ * quebrou 3 testes do carrossel DIÁRIO sem tocar em nada dele).
+ */
+describe("#8529: razão de largura de caractere por consumidor (não pode divergir em silêncio)", () => {
+  it("carrossel DIÁRIO (DAILY_CAROUSEL_LAYOUT, daily-carousel-card.ts, 62px) usa CHAR_WIDTH_RATIO (0.52) — não declara charWidthRatio próprio", () => {
+    assert.equal(DAILY_CAROUSEL_LAYOUT.mode, "fixed");
+    assert.equal((DAILY_CAROUSEL_LAYOUT as { charWidthRatio?: number }).charWidthRatio, undefined, "DAILY_CAROUSEL_LAYOUT não declara charWidthRatio — deve cair no default CHAR_WIDTH_RATIO");
+    assert.equal(DAILY_CAROUSEL_BODY_SIZE, 62);
+
+    const maxCharsPerLine = Math.floor(AVAILABLE_WIDTH / (DAILY_CAROUSEL_BODY_SIZE * CHAR_WIDTH_RATIO));
+    // Palavra repetida até quase o limite derivado — se o daily estivesse
+    // usando FILL_CHAR_WIDTH_RATIO (0.62) por engano, maxCharsPerLine cairia
+    // e este texto quebraria em 2 linhas em vez de 1.
+    const title = "palavra ".repeat(Math.floor(maxCharsPerLine / 8)).trim();
+    const { lines } = measureFlatCardBody(title, DAILY_CAROUSEL_LAYOUT);
+    assert.equal(lines.length, 1, `título de ${title.length} chars deveria caber em 1 linha com CHAR_WIDTH_RATIO (0.52); veio ${lines.length} linha(s) — sinal de que o daily está usando a razão errada`);
+  });
+
+  it("capa/CTA SEMANAL (WEEKLY_FLAT_CARD_LAYOUT, 84px) declara charWidthRatio=FILL_CHAR_WIDTH_RATIO (0.62) — nunca o 0.52 do diário", () => {
+    assert.deepEqual(WEEKLY_FLAT_CARD_LAYOUT, { mode: "fixed", size: WEEKLY_FLAT_CARD_SIZE, charWidthRatio: FILL_CHAR_WIDTH_RATIO });
+    assert.equal(FILL_CHAR_WIDTH_RATIO, 0.62);
+    assert.equal(CHAR_WIDTH_RATIO, 0.52);
+    assert.notEqual(FILL_CHAR_WIDTH_RATIO, CHAR_WIDTH_RATIO, "as 2 razões precisam continuar distintas — é essa distinção que #8515/#8529 protegem");
+  });
+
+  it("default do fixed sem charWidthRatio declarado é sempre CHAR_WIDTH_RATIO (0.52), nunca FILL_CHAR_WIDTH_RATIO", () => {
+    const fixedNoRatio = { mode: "fixed" as const, size: 62 };
+    const maxCharsWithDefault = Math.floor(AVAILABLE_WIDTH / (62 * CHAR_WIDTH_RATIO));
+    const title = "palavra ".repeat(Math.floor(maxCharsWithDefault / 8)).trim();
+    const { lines } = measureFlatCardBody(title, fixedNoRatio);
+    assert.equal(lines.length, 1, "layout fixed sem charWidthRatio deveria usar o default 0.52 (CHAR_WIDTH_RATIO), não 0.62");
   });
 });

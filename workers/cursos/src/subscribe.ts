@@ -19,7 +19,7 @@ import { CURSOS_GATE_INLINE_UTM } from "../../../scripts/lib/shared/utm-registry
 import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
 import { sendCompleteRegistrationEvent, logMetaCapiSendResult, extractMetaCapiClientSignals } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
-import { isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1)
+import { isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1), #8553
 import { resolveKitCreateState, vincularKitDoiForm, extrairSubscriberId, mensagemSubscriberIdAusente } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
 import { issueSessionCookie } from "./cookie.ts";
 
@@ -434,7 +434,7 @@ export async function handleGateSubscribe(
   // #7535 (Camada 1): resolve o canal pago do cliente contra a mesma
   // allowlist do worker `poll` — nunca sobrescreve o triplo UTM fixo
   // (CURSOS_UTM_SOURCE/MEDIUM/CAMPAIGN acima), só alimenta origem_paga.
-  const origemPaga = isAllowedClientUtmSource(parsed.utmSource) ? parsed.utmSource.trim() : "";
+  const origemPagaCliente = isAllowedClientUtmSource(parsed.utmSource) ? parsed.utmSource.trim() : "";
   // #8003: sinal de origem cru do cliente — nunca varia por lógica de
   // negócio, mesmo corte de defesa em profundidade que `validateSubscribeInput`
   // já aplica pra outros campos (o cliente já corta em SUBSCRIBE_CLIENT_ORIGIN_MAX,
@@ -443,6 +443,10 @@ export async function handleGateSubscribe(
     referrer: (parsed.referrer || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
     clickId: (parsed.clickId || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
   };
+  // #8553: click_id (prova de clique de ads) sobrepõe origemPaga quando o
+  // utm_source do cliente ficou vazio/divergente — ver docstring de
+  // `resolveOrigemPagaWithClickIdFallback`.
+  const origemPaga = resolveOrigemPagaWithClickIdFallback(origemPagaCliente, origin.clickId);
 
   // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
   // de `subscribeViaConfiguredBackend` acima.

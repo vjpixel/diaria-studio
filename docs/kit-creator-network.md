@@ -169,6 +169,17 @@ A decisão 2 está implementada **para uma fatia do funil, não para ele inteiro
 recomendações ao resto exigiria rotear mais cadastro pelo form nativo — mudança de funil,
 decisão à parte, fora do escopo do que foi perguntado ao editor.
 
+> **REVOGADO no #8539 (20/09/2026).** O worker `reativar` deixou de renderizar
+> essa tela: no sucesso da confirmação ele **redireciona** para
+> `https://diar.ia.br/confirmada?via=brevo` (path renomeado em #8554), que carrega o GTM e por isso pode
+> medir a conversão de confirmação. `renderSuccessPage`,
+> `renderKitRecommendationsBlock` e `Env.KIT_RECOMMENDATIONS_EMBED_URL` foram
+> **removidos** — o widget ficou sem superfície. Não havia nada armado a
+> perder (o secret nunca esteve configurado em produção). **Não rode o
+> `wrangler secret put` descrito abaixo: nenhum código lê essa var.** O
+> parágrafo seguinte fica como registro histórico do que o #7524 construiu.
+> Re-hospedar o widget na página nova, ou aposentá-lo de vez, é a **#8561**.
+
 **#7524 (06/09/2026) — mecanismo pra fechar parte do gap acima, sem rotear cadastro pelo
 form nativo.** Dos 3 workers de cadastro (`poll`, `cursos`, `reativar` — nomes de worker, não
 os subdomínios da tabela acima), só `reativar` de fato renderiza uma **tela de confirmação

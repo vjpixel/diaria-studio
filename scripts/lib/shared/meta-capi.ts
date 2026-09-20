@@ -12,8 +12,8 @@
  * `workers/poll/src/subscribe.ts`, `workers/cursos/src/subscribe.ts`,
  * `workers/reativar/src/index.ts` — e (b) batch server-side a partir do
  * snapshot Beehiiv (`scripts/meta-capi-batch-send.ts`). O ponto (c)
- * (`/confirmado`) fica fora de escopo, marcado como "opcional depois" na
- * issue.
+ * (`/confirmada`, renomeado de `/confirmado` em #8554) fica fora de escopo,
+ * marcado como "opcional depois" na issue.
  *
  * ## Fronteira `lib/shared/` (#2747)
  *
@@ -137,10 +137,14 @@ export async function computeCompleteRegistrationEventId(
  * DOIS caminhos**: valor divergente entre pixel e CAPI estraga justamente
  * a comparação que o `event_id` determinístico acima existe pra permitir.
  * Por isso estas duas constantes são a fonte única, e
- * `test/meta-capi-8388.test.ts` lê o snippet `fbq(...)` do export do
- * container GTM (`docs/gtm-signup-container-export.json`) pra travar a
- * igualdade — o pixel não é código executado por este repo, mas o valor
- * dele é versionado aqui e portanto auditável.
+ * `test/meta-capi-8388.test.ts` lê o snippet `fbq(...)` da PROPOSTA de
+ * import do container GTM (`docs/gtm-signup-container-import-proposal.json`)
+ * pra travar a igualdade — o pixel não é código executado por este repo, mas
+ * o valor dele é versionado aqui e portanto auditável. **Isto audita a
+ * proposta versionada, não o container ao vivo no GTM** — o container
+ * publicado (`GTM-TC8C65ZN`) usa o template oficial do Meta Pixel
+ * (`__cvt_5RM3Q`), não a tag Custom HTML deste arquivo; os campos podem
+ * divergir (#8578).
  */
 export const META_CAPI_COMPLETE_REGISTRATION_VALUE = 1;
 export const META_CAPI_COMPLETE_REGISTRATION_CURRENCY = "BRL";
@@ -302,8 +306,23 @@ export interface MetaCapiUserData {
   fbc?: string;
 }
 
+/**
+ * #8551: `event_name` deixou de ser fixo em `"CompleteRegistration"`.
+ *
+ * `"Reactivation"` é o evento (customizado, não-padrão da Meta) que
+ * `workers/reativar/src/index.ts` passa a disparar no clique de
+ * confirmação — distinto de propósito de `"CompleteRegistration"`, que
+ * continua sendo o evento de OTIMIZAÇÃO do conjunto de anúncios "BR ·
+ * conversao · sem teto" e é disparado só no SUBMIT do form de cadastro
+ * (`workers/poll`, `workers/cursos`). Misturar os dois sob o mesmo nome
+ * fazia o conjunto aprender de reativações — que chegam meses depois do
+ * cadastro original, muitas vezes sem `fbc`/click id válido — como se
+ * fossem cadastros novos vindos de anúncio.
+ */
+export type MetaCapiEventName = "CompleteRegistration" | "Reactivation";
+
 export interface MetaCapiCompleteRegistrationEvent {
-  event_name: "CompleteRegistration";
+  event_name: MetaCapiEventName;
   event_time: number;
   event_source_url: string;
   action_source: MetaCapiActionSource;
@@ -335,6 +354,10 @@ export interface BuildCompleteRegistrationEventInput {
    * nenhum de onde tirá-los. Campo vazio/`undefined` é OMITIDO do
    * `user_data`, nunca vira string vazia. */
   clientSignals?: MetaCapiClientSignals;
+  /** #8551: `"CompleteRegistration"` (default — cadastro/submit do form) ou
+   * `"Reactivation"` (`workers/reativar`, confirmação de reativação — nunca
+   * deve entrar no evento de otimização do conjunto de anúncios). */
+  eventName?: MetaCapiEventName;
 }
 
 /** Monta o evento `CompleteRegistration` pronto pra `sendMetaCapiEvent` —
@@ -358,7 +381,7 @@ export async function buildCompleteRegistrationEvent(
   if (signals?.fbp) userData.fbp = signals.fbp;
   if (signals?.fbc) userData.fbc = signals.fbc;
   return {
-    event_name: "CompleteRegistration",
+    event_name: input.eventName ?? "CompleteRegistration",
     event_time: eventTime,
     event_source_url: input.eventSourceUrl,
     action_source: input.actionSource ?? "website",

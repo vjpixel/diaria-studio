@@ -1,14 +1,18 @@
 /**
- * test/poll-confirmado-5167.test.ts (#5167 item 7; redirect desde #7737)
+ * test/poll-confirmado-5167.test.ts (#5167 item 7; redirect desde #7737; rename #8554)
  *
  * Regressão (#633) pra `GET /confirmado` no Worker `poll`
  * (`eia.diar.ia.br/confirmado`) — destino histórico do double opt-in da
  * Beehiiv/Kit. Desde #7737 (decisão do editor) a página REAL mora no apex
- * (`diar.ia.br/confirmado`, Worker `site` — cobertura em
- * `test/site-worker-confirmado-7737.test.ts`; render puro em
- * `test/confirmado-page-shared-7737.test.ts`) — esta rota agora só devolve
- * 301 pra lá, mas continua no ar (link já entregue em e-mails de
- * confirmação e gravado em `opt_in_redirect_url` da Beehiiv).
+ * (Worker `site` — cobertura em `test/site-worker-confirmado-7737.test.ts`;
+ * render puro em `test/confirmado-page-shared-7737.test.ts`) — esta rota
+ * agora só devolve 301 pra lá, mas continua no ar (link já entregue em
+ * e-mails de confirmação e gravado em `opt_in_redirect_url` da Beehiiv).
+ *
+ * #8554 (20/09/2026): o path de destino no apex renomeou `/confirmado` →
+ * `/confirmada` — `CONFIRMADO_REDIRECT_URL` deriva de `PAGE_URL`
+ * (`confirmado-page.ts`), então o destino do 301 acompanha automaticamente;
+ * o path DESTA rota (`eia.diar.ia.br/confirmado`) não muda, só o alvo.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -49,17 +53,17 @@ function makeEnv(): Env {
   };
 }
 
-describe("CONFIRMADO_REDIRECT_URL (#7737)", () => {
-  it("aponta pro apex — diar.ia.br/confirmado", () => {
-    assert.equal(CONFIRMADO_REDIRECT_URL, "https://diar.ia.br/confirmado");
+describe("CONFIRMADO_REDIRECT_URL (#7737, rename #8554)", () => {
+  it("aponta pro apex — diar.ia.br/confirmada", () => {
+    assert.equal(CONFIRMADO_REDIRECT_URL, "https://diar.ia.br/confirmada");
   });
 });
 
-describe("handleConfirmadoRedirect (#7737) — Response", () => {
+describe("handleConfirmadoRedirect (#7737, rename #8554) — Response", () => {
   it("301 permanente pro apex", () => {
     const res = handleConfirmadoRedirect();
     assert.equal(res.status, 301);
-    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmada");
   });
 });
 
@@ -71,38 +75,38 @@ describe("handleConfirmadoRedirect (#7799) — preserva a query string", () => {
     assert.equal(res.status, 301);
     assert.equal(
       res.headers.get("Location"),
-      "https://diar.ia.br/confirmado?utm_source=kit&utm_campaign=doi",
+      "https://diar.ia.br/confirmada?utm_source=kit&utm_campaign=doi",
     );
   });
 
   it("sem query, destino segue seco (não inventa '?')", () => {
     const res = handleConfirmadoRedirect("https://eia.diar.ia.br/confirmado");
-    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmada");
   });
 
   it("chamada sem argumento continua funcionando (compatibilidade)", () => {
     const res = handleConfirmadoRedirect();
-    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmada");
   });
 
   it("URL inválida cai no destino seco em vez de lançar — nunca derruba a confirmação", () => {
     const res = handleConfirmadoRedirect("nao-e-url");
     assert.equal(res.status, 301);
-    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmada");
   });
 
   it("o PATH da origem é ignorado — só a query viaja (destino é fixo por desenho)", () => {
     const res = handleConfirmadoRedirect("https://eia.diar.ia.br/confirmado/extra?a=1");
-    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado?a=1");
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmada?a=1");
   });
 });
 
-describe("GET /confirmado (#5167 item 7, redirect desde #7737) — router", () => {
+describe("GET /confirmado (#5167 item 7, redirect desde #7737, destino renomeado #8554) — router", () => {
   it("301 pro apex sem exigir nenhum secret (rota pública)", async () => {
     const env = makeEnv();
     const res = await worker.fetch(new Request("https://eia.diar.ia.br/confirmado"), env);
     assert.equal(res.status, 301);
-    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmada");
   });
 
   it("#7799: o router repassa a query real da request pro redirect", async () => {
@@ -114,7 +118,7 @@ describe("GET /confirmado (#5167 item 7, redirect desde #7737) — router", () =
     assert.equal(res.status, 301);
     assert.equal(
       res.headers.get("Location"),
-      "https://diar.ia.br/confirmado?utm_source=kit&utm_medium=email",
+      "https://diar.ia.br/confirmada?utm_source=kit&utm_medium=email",
     );
   });
 

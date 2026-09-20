@@ -17,15 +17,18 @@
  *     `scripts/lib/metrics/acquisition-store-deps.ts` (o mesmo par usado por
  *     `scripts/metrics-cli.ts`, #7295), 1 chamada de `computar()` por dia da
  *     janela.
- *   - `doi-confirmacao-dia` — sempre `indeterminado` nesta fatia do épico
- *     (dependência dura declarada em `registry.ts`); `computar()` é chamado
- *     mesmo assim (deps vazio, ela ignora) só pra manter a série presente —
- *     nunca gera achado de queda (sem valor numérico) nem de frescor
- *     (frescor nunca fica não-nulo, ver `evaluateFrescorFromResult`). Por
- *     ser SEMPRE "avaliável" independente de qualquer insumo local (nunca
- *     falha), ela NUNCA conta pro denominador de `registry-mudo` (achado do
- *     review desta fatia, #7378 — contá-la desarmaria esse sinal pra
- *     sempre; ver `avaliadasComInsumoReal` em `main()`).
+ *   - `doi-confirmacao-dia` (#8552) — calcula uma taxa real quando houver ≥2
+ *     snapshots diários do Kit sob `data/subscriber-state-snapshots/kit/`
+ *     (`scripts/subscriber-state-snapshot.ts` grava; nenhuma task agendada
+ *     dispara isso automaticamente ainda — ver limitação no PR #8552) que
+ *     cubram a safra do dia + a maturação de 48h (`buildDoiConfirmationCohort`,
+ *     `scripts/lib/subscriber-state-snapshot.ts`). Sem snapshots (ou dia
+ *     ainda imaturo), continua `indeterminado` — `computar()` é chamado
+ *     mesmo assim (mesma disciplina de sempre gerar a série pra completude).
+ *     `avaliadasComInsumoReal` só ganha esta métrica quando ao menos 1 dia
+ *     da janela resolveu uma cohort real (achado do review da fatia
+ *     original, #7378 — contá-la incondicionalmente desarmaria
+ *     `registry-mudo` pra sempre; ver `main()`).
  *   - `base-ativa`/`leitor-v1` — Beehiiv via snapshots locais de
  *     `data/beehiiv-backup/` (`scripts/lib/beehiiv-backup-snapshots.ts`,
  *     leitura pura de arquivo, NUNCA API Beehiiv ao vivo — guard de
@@ -96,6 +99,12 @@ import {
 import { evaluateMeta, type Meta, type MedicaoDia as MetaMedicaoDia } from "./lib/metrics/metas.ts";
 import { loadMetas, validateMetas, DEFAULT_METAS_PATH } from "./lib/metrics/metas-store.ts";
 import { listSnapshotDates, readSnapshotSubscribers } from "./lib/beehiiv-backup-snapshots.ts";
+import {
+  snapshotRootDefault,
+  listSubscriberStateSnapshotDates,
+  loadAllSubscriberStateSnapshots,
+  buildDoiConfirmationCohort,
+} from "./lib/subscriber-state-snapshot.ts";
 import { LEITOR_V1_THRESHOLDS, MISSING_STATS_WARN_FRACTION, summarizeLeitores } from "./lib/leitor.ts";
 import {
   METRICS_HEALTH_THRESHOLDS,
@@ -456,19 +465,33 @@ async function main(): Promise<void> {
     db.close();
   }
 
-  // ── doi-confirmacao-dia — sempre indeterminado nesta fatia, série
-  //    presente só pra completude (nunca gera achado, ver docstring). ──
+  // ── doi-confirmacao-dia (#8552) — calcula taxa real quando houver ≥2
+  //    snapshots diários do Kit cobrindo a safra + maturação de 48h; sem
+  //    isso, indeterminado (mesmo comportamento de antes desta fatia). ──
   {
     const def = getMetric("doi-confirmacao-dia");
     if (def) {
+      const snapshotRoot = snapshotRootDefault(DATA_DIR);
+      const snapshotDates = listSubscriberStateSnapshotDates(snapshotRoot);
+      const snapshotsByDate = loadAllSubscriberStateSnapshots(snapshotRoot, snapshotDates);
+      let doiTemInsumoReal = false;
       const medicoes: MedicaoDia[] = [];
       for (const dia of dias) {
         const janela: Janela = { de: dia, ate: dia, granularidade: "dia", fuso: "BRT" };
-        const resultado = await def.computar({ janela, deps: {} });
+        const { cohort, motivoIndeterminado } = buildDoiConfirmationCohort(snapshotsByDate, dia);
+        if (cohort.length > 0) doiTemInsumoReal = true;
+        const resultado = await def.computar({ janela, deps: { cohort, motivoIndeterminado } });
         medicoes.push({ chave: dia, resultado });
       }
       seriesById.set("doi-confirmacao-dia", medicoes);
       avaliadasIds.add("doi-confirmacao-dia");
+      // #7378: só entra no denominador de `registry-mudo` quando de fato
+      // houve snapshot local resolvendo uma safra — mesma disciplina do
+      // comentário original (métrica "sempre avaliável" não pode desarmar o
+      // sinal de "nenhum insumo local disponível" pra sempre). Agora que
+      // `doi-confirmacao-dia` PODE depender de insumo real (o snapshot),
+      // ela entra em `avaliadasComInsumoReal` só quando esse insumo existiu.
+      if (doiTemInsumoReal) avaliadasComInsumoReal.add("doi-confirmacao-dia");
     }
   }
 

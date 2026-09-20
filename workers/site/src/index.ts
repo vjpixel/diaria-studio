@@ -165,7 +165,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // #8062: mesmo par de blocos fail-soft de workers/arquivo/src/index.ts —
     // log de Referer de assistente + contador de fetch por bot nomeado.
-    // ANTES de qualquer outra lógica (asset lookup, /img, /confirmado): a
+    // ANTES de qualquer outra lógica (asset lookup, /img, /confirmada): a
     // request casa ou não casa independente do que o resto do handler faz
     // com ela, e um try/catch isolado nunca deve atrasar a resposta real.
     try {
@@ -195,7 +195,7 @@ export default {
     // sempre e termina no 404 do asset (mesmo critério do dispatch de
     // `/img/*` em workers/poll/src/index.ts).
     // reqUrl: parse único reusado pelos dispatches abaixo que precisam do
-    // pathname ANTES do asset lookup (/img/{key} e /confirmado) — nome não
+    // pathname ANTES do asset lookup (/img/{key} e /confirmada) — nome não
     // é mais "imageUrl" desde que o 2º dispatch (#7737) passou a usá-lo.
     const reqUrl = new URL(request.url);
     if (request.method === "GET" || request.method === "HEAD") {
@@ -205,12 +205,31 @@ export default {
       }
     }
 
-    // #7737: /confirmado — sem arquivo em public/, mesmo racional do
-    // /img/{key} acima: resolvido ANTES do asset lookup pra não gastar um
-    // 404 desnecessário. Só GET, mesmo critério do dispatch em
-    // workers/poll/src/index.ts (que agora só redireciona pra cá).
+    // #7737: /confirmada (renomeado de /confirmado em #8554) — sem arquivo
+    // em public/, mesmo racional do /img/{key} acima: resolvido ANTES do
+    // asset lookup pra não gastar um 404 desnecessário. Só GET, mesmo
+    // critério do dispatch em workers/poll/src/index.ts (que agora só
+    // redireciona pra cá).
+    if (request.method === "GET" && reqUrl.pathname === "/confirmada") {
+      // #8539: `?via=` distingue os dois caminhos de confirmação (e-mail do
+      // Kit vs. botão da Brevo) — só muda uma linha de copy, nunca gateia o
+      // acesso à página. Ausente/desconhecido = página padrão.
+      return handleConfirmadoPage(reqUrl.searchParams.get("via") ?? undefined);
+    }
+
+    // #8554: /confirmado (path antigo, pré-rename) — 301 PERMANENTE pro
+    // path novo, preservando query string. Nunca pode virar 404: há e-mails
+    // de confirmação do Kit já entregues apontando pro endereço antigo, e o
+    // "After confirming redirect to" do form Kit `9897918` também aponta
+    // pra cá até o editor atualizar manualmente no painel (ver PR body).
+    // `Response.redirect` é seguro aqui — diferente do redirect interno de
+    // `workers/poll` (ver docstring de `handleConfirmadoRedirect`), este
+    // Worker já usa `Response.redirect` em outros dois pontos abaixo, sem
+    // mutação de headers pós-resposta que o invalide.
     if (request.method === "GET" && reqUrl.pathname === "/confirmado") {
-      return handleConfirmadoPage();
+      const target = new URL("/confirmada", reqUrl);
+      target.search = reqUrl.search;
+      return Response.redirect(target.toString(), 301);
     }
 
     // #8355: arquivo de chave do IndexNow — mesmo padrão de
@@ -230,7 +249,7 @@ export default {
 
     // #7915: /apoiar/ir — sem arquivo em public/ (é uma ROTA, não uma
     // página), resolvido ANTES do asset lookup pelo mesmo motivo do
-    // /confirmado acima. Incrementa o contador de CLIQUE (nunca pagamento
+    // /confirmada acima. Incrementa o contador de CLIQUE (nunca pagamento
     // confirmado — isso continua vindo do apoia.se/Stripe) e redireciona
     // (302) pro apoia.se, preservando query string (UTM) igual ao fallback
     // do #6429 logo abaixo. Fail-soft: falha no KV nunca impede o redirect.
@@ -268,8 +287,8 @@ export default {
     // #8355: só pra páginas do acervo (`/p/{slug}`) servidas com sucesso —
     // ver docstring de `withArchiveCacheValidators` acima pro racional
     // completo (ETag/Last-Modified/304). Passos anteriores (`/img/{key}`,
-    // `/confirmado`, `/apoiar/*`) já retornaram antes de chegar aqui, então
-    // esta checagem nunca compete com eles.
+    // `/confirmada`, `/confirmado` (301), `/apoiar/*`) já retornaram antes
+    // de chegar aqui, então esta checagem nunca compete com eles.
     if (response.status === 200 && (request.method === "GET" || request.method === "HEAD")) {
       const okSlug = matchArchiveSlug(reqUrl.pathname);
       if (okSlug) return withArchiveCacheValidators(request, response, env);

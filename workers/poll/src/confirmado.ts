@@ -11,7 +11,8 @@
  *
  * **#7737 (decisão do editor, comentário `decisao-editor` na issue): a
  * página real de confirmação passa a ser servida no APEX**
- * (`diar.ia.br/confirmado`, Worker `site` — #467), não mais aqui. Esta rota
+ * (`diar.ia.br/confirmada` desde o rename #8554 — era `/confirmado`; Worker
+ * `site` — #467), não mais aqui. Esta rota
  * PERMANECE no ar — não pode virar 404 — porque o link já está gravado em
  * `opt_in_redirect_url` da Beehiiv e em e-mails de confirmação JÁ
  * ENTREGUES a assinantes; um 404 aqui quebraria confirmações pendentes

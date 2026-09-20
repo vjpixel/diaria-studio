@@ -73,7 +73,11 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     }
   });
 
-  it("monta os args exatos --print/--permission-mode acceptEdits/--max-turns/--output-format text/--no-session-persistence/prompt, mesmo padrão de edition-stage-runner.ts", () => {
+  it("monta os args exatos --print/--permission-mode acceptEdits/--max-turns/--output-format text (default)/--no-session-persistence/prompt", () => {
+    // Nota (#8560): `edition-stage-runner.ts` passou a usar `--output-format
+    // json` (não mais `text`) para capturar usage real do próprio stdout —
+    // este teste cobre só o default de `callClaudeCli`, que continua `text`
+    // salvo `opts.outputFormat` explícito (ver teste seguinte).
     const capturedCalls: unknown[][] = [];
     const execFn = ((bin: string, args: string[], opts: unknown) => {
       capturedCalls.push([bin, args, opts]);

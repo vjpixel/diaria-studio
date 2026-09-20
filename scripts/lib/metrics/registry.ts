@@ -50,13 +50,15 @@
  * `abertura-1a-edicao`, `primeiro-clique-14d` (#7183 — ativação de latência
  * curta por safra de cadastro, ver `ativacao-coorte.ts`).
  *
- * `doi-confirmacao-dia` devolve SEMPRE `indeterminado` nesta fatia — os 3
- * acréscimos de que ela depende (`EVENT_TYPES` ganhar `"confirm"`, o estado
- * de CRIAÇÃO preservado em `subscription`, a participação no form
- * `KIT_DOI_FORM_ID` capturada) não existem ainda em `EVENT_TYPES`
- * (`scripts/lib/diaria-subscribers-db.ts`) nem em F2 — declarado como
- * dependência dura da própria issue #7176, não uma lacuna desta
- * implementação.
+ * `doi-confirmacao-dia` (#8552) calcula uma taxa real quando o CHAMADOR
+ * resolve `DoiConfirmacaoDiaDeps.cohort` a partir de ≥2 snapshots diários do
+ * Kit (`scripts/lib/subscriber-state-snapshot.ts`,
+ * `buildDoiConfirmationCohort`) — sem cohort resolvido (snapshots
+ * insuficientes, ou o dia ainda não maturou 48h), continua `indeterminado`,
+ * mesmo comportamento de antes desta fatia. Uma limitação segue aberta,
+ * declarada na própria issue: a cohort ainda não cruza com participação no
+ * form `KIT_DOI_FORM_ID` (3º insumo da #8552) — ver docstring de
+ * `buildDoiConfirmationCohort`.
  *
  * ## Fronteira `scripts/lib/` (#2747)
  *
@@ -524,33 +526,75 @@ const cadastrosIndeterminadosDiaDef: MetricDef<AcquisitionMetricDeps> = {
 };
 
 // ---------------------------------------------------------------------------
-// doi-confirmacao-dia — SEMPRE indeterminado nesta fatia (dependência dura)
+// doi-confirmacao-dia — cohort de confirmação via snapshot diário (#8552)
 // ---------------------------------------------------------------------------
 
-const doiConfirmacaoDiaDef: MetricDef<MetricDeps> = {
+/** Mínimo de membros na safra pra a métrica renderizar — mesma regra
+ *  descrita na `definicao` ("nunca renderiza com n<5"), evita que 1-2
+ *  cadastros isolados produzam uma "taxa" de 0% ou 100% enganosa. */
+const DOI_CONFIRMACAO_MIN_N = 5;
+
+/** Membro resolvido da safra do dia — o CHAMADOR (`check-metrics-health.ts`,
+ *  via `buildDoiConfirmationCohort` em `subscriber-state-snapshot.ts`)
+ *  resolve isto comparando snapshots diários; este módulo continua SEM I/O,
+ *  só recebe o resultado já pronto. */
+export interface DoiConfirmacaoCohortMember {
+  id: number;
+  confirmed: boolean;
+}
+
+export interface DoiConfirmacaoDiaDeps extends MetricDeps {
+  /** Ausente/vazio quando a safra do dia não pôde ser resolvida (menos de 2
+   *  snapshots, safra ainda imatura, etc.) — a métrica cai pra
+   *  `indeterminado` usando `motivoIndeterminado` como motivo. Presente e
+   *  não-vazio: a métrica calcula a taxa real. */
+  cohort?: DoiConfirmacaoCohortMember[];
+  /** Obrigatório sempre que `cohort` está ausente/vazio — mesmo contrato de
+   *  `MetricResult.motivo`. */
+  motivoIndeterminado?: string;
+}
+
+const doiConfirmacaoDiaDef: MetricDef<DoiConfirmacaoDiaDeps> = {
   id: "doi-confirmacao-dia",
   nome: "Taxa de confirmação do double opt-in",
   produto: "diaria",
   etapa: "ativacao",
   definicao:
-    "razão: quantos da safra de D (created com state inactive vinculado ao form KIT_DOI_FORM_ID) " +
-    "registraram confirmação até a maturação de 48h ÷ tamanho da safra (denominador = safra do dia D, " +
-    "fixado na criação, nunca encolhe). Nunca renderiza com n<5.",
+    "razão: quantos da safra de D (created com state inactive no snapshot diário de D) " +
+    "registraram confirmação (state=active) até a maturação de 48h ÷ tamanho da safra (denominador = safra " +
+    "do dia D, fixado no snapshot de criação, nunca encolhe). Nunca renderiza com n<5.",
   unidade: "razao",
   direcao: "maior-melhor",
-  fonte: "listAllFormSubscribers(KIT_DOI_FORM_ID) cruzado com subscription.entered_at + evento de confirmação",
+  fonte:
+    "scripts/subscriber-state-snapshot.ts (snapshot diário id/state/created_at do Kit) — " +
+    "buildDoiConfirmationCohort compara o snapshot do dia D com o snapshot de maturação (D+48h)",
   decomposicoes: [],
   async computar(args) {
     validarDecomposicao(doiConfirmacaoDiaDef, args.decomposicao);
-    // Dependência dura declarada em #7176: EVENT_TYPES ainda não tem
-    // "confirm", subscription não preserva o estado de CRIAÇÃO (status é
-    // sobrescrito por ON CONFLICT DO UPDATE), e F2 não captura participação
-    // no form KIT_DOI_FORM_ID. Os 3 acréscimos são de F2, não desta fatia —
-    // enquanto não existirem, esta métrica nunca calcula uma taxa.
-    return indeterminado(
-      args.janela,
-      "F2 ainda não grava confirmação de DOI (EVENT_TYPES sem 'confirm', subscription não preserva estado de criação, participação no form KIT_DOI_FORM_ID não capturada)",
-    );
+    const { cohort, motivoIndeterminado } = args.deps;
+    // #8552: ainda não cruza com participação no form KIT_DOI_FORM_ID (3º
+    // insumo da issue, "caminho de confirmação" via `confirmou_via`) — ver
+    // limitação documentada na docstring de `buildDoiConfirmationCohort`
+    // (`subscriber-state-snapshot.ts`). Sem `cohort` resolvido (snapshots
+    // insuficientes, ou chamador não wireou esta métrica ainda), segue
+    // `indeterminado` — mesmo comportamento de antes desta fatia, só que com
+    // o motivo específico que o chamador resolveu, em vez de um texto fixo
+    // dizendo "F2 nunca grava confirmação".
+    if (!cohort || cohort.length === 0) {
+      return indeterminado(
+        args.janela,
+        motivoIndeterminado ??
+          "safra de confirmação DOI não resolvida (sem snapshots suficientes — ver scripts/subscriber-state-snapshot.ts)",
+      );
+    }
+    if (cohort.length < DOI_CONFIRMACAO_MIN_N) {
+      return indeterminado(
+        args.janela,
+        `safra de ${cohort.length} assinante(s) — abaixo do piso de n=${DOI_CONFIRMACAO_MIN_N}, nunca renderiza`,
+      );
+    }
+    const confirmados = cohort.filter((m) => m.confirmed).length;
+    return exato(confirmados / cohort.length, args.janela, null);
   },
 };
 

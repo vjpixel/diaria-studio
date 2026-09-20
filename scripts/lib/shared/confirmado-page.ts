@@ -4,9 +4,11 @@
  * Render puro (sem I/O, sem env) da página de confirmação do double opt-in
  * da Beehiiv/Kit — extraído de `workers/poll/src/confirmado.ts`, onde toda a
  * história desta página (por que ela existe, as 4 "portas" de curadoria, a
- * instrumentação GTM, e por que `gclid`/`fbclid`/`msclkid`/`li_fat_id` não
- * se aplicam aqui) segue documentada — não repetida neste arquivo pra não
- * duplicar a fonte da verdade. O CTA pro survey de interesses (#5167,
+ * instrumentação GTM) segue documentada — não repetida neste arquivo pra
+ * não duplicar a fonte da verdade. O racional de por que
+ * `gclid`/`fbclid`/`msclkid`/`li_fat_id` não se aplicam aqui MORA NESTE
+ * ARQUIVO (bloco `#8387` abaixo) — não em `confirmado.ts`, que só linka
+ * pra cá. O CTA pro survey de interesses (#5167,
  * estilizado como botão em #5800) foi removido em #7855 — pedido direto do
  * editor; o formulário (`https://diar.ia.br/forms/f7528798-…`) continua
  * existindo, só deixou de ser chamado por esta página.
@@ -24,6 +26,38 @@
  * isso o render puro mora aqui, em `scripts/lib/shared/`, e cada Worker
  * (`site` para a página real, `poll` só pro redirect) importa o que precisa
  * daqui em vez de duplicar/importar do bundle um do outro.
+ *
+ * **#8554 (20/09/2026) — rename `/confirmado` → `/confirmada` no apex.**
+ * Concordância de gênero com o que a página confirma (a inscrição, a
+ * assinatura) — `/confirmado` era herança do endereço antigo
+ * (`eia.diar.ia.br/confirmado`) e não concordava com nada nesta página; a
+ * própria ação de conversão do Google Ads já se chama "Assinatura
+ * Confirmada" (#7523). `PAGE_URL` abaixo passa a apontar pra
+ * `diar.ia.br/confirmada`. **`/confirmado` no apex NUNCA vira 404**: pelo
+ * mesmo motivo do parágrafo acima (e-mails de confirmação já entregues, o
+ * "After confirming redirect to" do form Kit `9897918`), o Worker `site`
+ * responde 301 em `/confirmado` pro `/confirmada` novo (ver
+ * `workers/site/src/index.ts`) — a cadeia completa fica
+ * `eia.diar.ia.br/confirmado` → 301 → `diar.ia.br/confirmado` → 301 →
+ * `diar.ia.br/confirmada`, os dois saltos preservando query string.
+ *
+ * **#8387 — racional de por que `gclid`/`fbclid`/`msclkid`/`li_fat_id` não
+ * se aplicam a esta página (fonte única, recuperado do histórico #5499/
+ * #5540 — as duas docstrings desta função e da de `workers/poll/src/
+ * confirmado.ts` se apontavam uma pra outra em círculo, sem que nenhuma
+ * trouxesse o texto de fato; não repetir esta nota lá, só linkar aqui):**
+ * esta página não pode capturar esses parâmetros porque (a) o clique que a
+ * alcança é o de confirmação DENTRO DO E-MAIL (item 9 do #5167), nunca um
+ * clique direto de anúncio — sessão/dispositivo desconectados da navegação
+ * original que carregava o `gclid`/`fbclid`/`msclkid` original, muitas vezes
+ * horas depois; (b) `opt_in_redirect_url` é uma string FIXA gravada no
+ * painel da Beehiiv, sem suporte a passthrough dinâmico de query string —
+ * não há parâmetro pra capturar nem allowlist a aplicar aqui. O desenho
+ * anti-spoofing server-side de `workers/poll/src/subscribe.ts`
+ * (`resolveSubscribeUtm` + `SUBSCRIBE_UTM_BY_SOURCE`) é o precedente certo
+ * pra esse tipo de captura — só se aplicaria a um step diferente (o
+ * `/quase-la` do item 2 da #5499, disparado no SUBMIT, nunca construído),
+ * nunca a esta página de confirmação.
  */
 import {
   renderCuradoriaRootStyles,
@@ -35,8 +69,38 @@ import { renderSeoMeta, renderAnalyticsHead } from "./seo-meta.ts"; // #5498: co
 import { DIARIA_LIVROS_URL, DIARIA_ARQUIVO_URL, DIARIA_CURSOS_URL, DIARIA_EIA_URL } from "../canonical-urls.ts";
 import { renderSiteNav } from "./site-nav.ts"; // #8497: menu global
 
-/** URL pública canônica desta página — apex, desde #7737 (era `eia.diar.ia.br/confirmado`). */
-export const PAGE_URL = "https://diar.ia.br/confirmado";
+/** URL pública canônica desta página — apex, desde #7737 (era
+ * `eia.diar.ia.br/confirmado`); path renomeado `/confirmado` → `/confirmada`
+ * em #8554 (concordância de gênero com "assinatura confirmada"). */
+export const PAGE_URL = "https://diar.ia.br/confirmada";
+
+/**
+ * #8539 — valor de `?via=` com que o worker `reativar` redireciona pra cá
+ * depois de confirmar pelo botão do e-mail da Brevo.
+ *
+ * Existe por dois motivos, nessa ordem de importância:
+ *
+ *  1. **Copy.** O público desse caminho é o segmento Pending, que JÁ recebe a
+ *     diária pela Brevo — prometer "sua primeira edição chega" seria falso
+ *     justamente pra quem está confirmando uma assinatura que já entrega.
+ *  2. **Diagnóstico.** Distingue os dois caminhos de confirmação em analytics
+ *     sem depender só do custom field `confirmou_via` no Kit (#8438). Sem PII:
+ *     é um rótulo de origem, não um identificador.
+ *
+ * Valor desconhecido (ou ausente) cai no texto padrão — nunca é erro.
+ */
+export const VIA_BREVO = "brevo";
+
+/**
+ * Origem da confirmação. Union FROUXA de propósito (`string & {}` mantém a
+ * compatibilidade estrutural com `string`): esta é uma fronteira de entrada
+ * externa — o valor vem de `searchParams.get("via")` e pode ser qualquer
+ * coisa. Estreitar para `"brevo"` faria o compilador recusar exatamente o
+ * caso que a função existe para tratar com elegância. O ganho do alias é
+ * nomear o único valor reconhecido, que antes vivia só num `===` e num
+ * comentário.
+ */
+export type ConfirmadoVia = typeof VIA_BREVO | (string & {});
 
 const PAGE_TITLE = "Assinatura confirmada — diar.ia.br";
 const PAGE_DESCRIPTION = "Sua assinatura da newsletter diar.ia.br está confirmada.";
@@ -58,8 +122,26 @@ function renderConfirmadoStyles(): string {
   .confirmado-portas p { font-size: 14px; line-height: 1.5; color: var(--ink); opacity: 0.75; margin: 4px 0 0; }`;
 }
 
-/** Puro — sem I/O, sem env. Testável direto. */
-export function renderConfirmadoPage(): string {
+/**
+ * Linha de expectativa de entrega — varia com a origem da confirmação (#8539).
+ *
+ * @pure
+ */
+function renderTimingLine(via?: ConfirmadoVia): string {
+  // `trim()` pela mesma disciplina de `parseEmailParam` no worker `reativar`:
+  // espaço acidental na query não deveria trocar a copy em silêncio.
+  return via?.trim() === VIA_BREVO
+    ? "A diária continua chegando numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam."
+    : "Sua primeira edição chega numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam.";
+}
+
+/**
+ * Puro — sem I/O, sem env. Testável direto.
+ *
+ * @param via origem da confirmação (`?via=`), ver {@link VIA_BREVO}. Valor
+ *   ausente ou desconhecido rende a página padrão.
+ */
+export function renderConfirmadoPage(via?: ConfirmadoVia): string {
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -91,7 +173,7 @@ ${renderCuradoriaFooterStyles()}
   <main>
     <div class="wrap">
       <p class="confirmado-lede">Pronto — você já está na lista. Obrigado por confirmar.</p>
-      <p class="confirmado-timing">Sua primeira edição chega numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam.</p>
+      <p class="confirmado-timing">${renderTimingLine(via)}</p>
       <div class="confirmado-portas">
         <h2>Enquanto isso</h2>
         <ul>
@@ -121,9 +203,19 @@ ${renderCuradoriaFooterStyles()}
 `;
 }
 
-/** Embrulha `renderConfirmadoPage()` numa `Response` — sem KV, sem env. */
-export function handleConfirmadoPage(): Response {
-  return new Response(renderConfirmadoPage(), {
+/**
+ * Embrulha `renderConfirmadoPage()` numa `Response` — sem KV, sem env.
+ *
+ * @param via origem da confirmação (`?via=`), lida pelo call site a partir da
+ *   query string. Ver {@link VIA_BREVO}. O `Cache-Control` público segue
+ *   correto porque a Cloudflare inclui a query string na chave de cache POR
+ *   PADRÃO — as duas variantes viram entradas distintas. Isso é default de
+ *   zona, não invariante deste repo: uma Cache Rule que normalize ou descarte
+ *   query string neste path serviria uma variante no lugar da outra, e nada
+ *   aqui detectaria.
+ */
+export function handleConfirmadoPage(via?: ConfirmadoVia): Response {
+  return new Response(renderConfirmadoPage(via), {
     status: 200,
     headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "public, max-age=3600" },
   });

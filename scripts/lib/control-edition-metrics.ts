@@ -88,8 +88,8 @@ export interface StageControlMetrics {
    * sem alteração de `stage-status.json`. */
   subagent_tokens_in: number | null;
   subagent_tokens_out: number | null;
-  /** Procedência de `tokens_in`/`tokens_out` (persistidos por #5413). */
-  token_session_filter: "current_session" | "all_sessions" | null;
+  /** Procedência de `tokens_in`/`tokens_out` (persistidos por #5413; `cli_json` #8560). */
+  token_session_filter: "current_session" | "all_sessions" | "cli_json" | null;
   token_sessions_excluded: number | null;
   parse_errors: number | null;
 }

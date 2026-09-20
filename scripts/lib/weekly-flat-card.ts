@@ -55,11 +55,30 @@ const TITLE_SIZE_STEP = 2;
  * Extraída pra constante no #6078: era literal 0.52 dentro de
  * `fillingFontSize` e precisou ser compartilhada com o caminho de tamanho
  * fixo, senão os dois divergiam em silêncio.
+ *
+ * **Consumidores atuais (#8529 — travados por teste em `weekly-flat-card.test.ts`,
+ * describe "#8529"):**
+ * - Carrossel DIÁRIO (`DAILY_CAROUSEL_LAYOUT`, `daily-carousel-card.ts`, 62px)
+ *   — não declara `charWidthRatio`, cai neste default (0.52).
+ * - Qualquer `fixed` layout que não declare `charWidthRatio` explicitamente.
+ *
+ * Mudar este valor afeta TODOS os consumidores acima ao mesmo tempo. Se a
+ * intenção é mudar só um consumidor (ex: só o semanal), declare
+ * `charWidthRatio` no `FlatCardLayout` desse consumidor (ver
+ * `WEEKLY_FLAT_CARD_LAYOUT` abaixo, #8515) em vez de tocar aqui — foi
+ * exatamente o oposto disso que causou a regressão do #8529 (PR #8520 mudou
+ * `FILL_CHAR_WIDTH_RATIO`, usada também no caminho `fixed` antes do #8515,
+ * e quebrou o wrap do carrossel diário sem tocar em nenhum consumidor dele).
+ *
+ * Exportada (só pra teste, #8529) pra que o teste-âncora derive o
+ * `maxCharsPerLine` esperado a partir do valor real, em vez de repetir o
+ * número calculado em comentário — uma recalibração legítima do valor abaixo
+ * atualiza o teste sozinha; uma recalibração acidental (ex: #8529) acusa.
  */
-const CHAR_WIDTH_RATIO = 0.52;
+export const CHAR_WIDTH_RATIO = 0.52;
 
-/** Razão conservadora só do auto-size `fill` (capa/CTA semanais): o rasterizador cai em serif mais larga que Georgia quando ela não está instalada, e 0.52 deixava linha vazar do card (achado ao vivo 260919). */
-const FILL_CHAR_WIDTH_RATIO = 0.62;
+/** Razão conservadora só do auto-size `fill` (capa/CTA semanais): o rasterizador cai em serif mais larga que Georgia quando ela não está instalada, e 0.52 deixava linha vazar do card (achado ao vivo 260919). Exportada (só pra teste, #8529) pelo mesmo motivo de `CHAR_WIDTH_RATIO`. */
+export const FILL_CHAR_WIDTH_RATIO = 0.62;
 
 /** Geometria vertical do bloco de texto — o mesmo em `fill` e em `fixed`. */
 const KICKER_Y = 168;
@@ -243,7 +262,7 @@ export interface FlatCardText {
  * fazia 4 slides do mesmo post saírem com 4 métricas diferentes. O semanal
  * segue em `fill` — não estava em discussão.
  */
-export type FlatCardLayout = { mode: "fill" } | { mode: "fixed"; size: number };
+export type FlatCardLayout = { mode: "fill" } | { mode: "fixed"; size: number; charWidthRatio?: number };
 
 export const DEFAULT_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fill" };
 
@@ -257,7 +276,11 @@ export const DEFAULT_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fill" };
  * → `overflows`), em vez de deixar um card cortado sair em silêncio.
  */
 export const WEEKLY_FLAT_CARD_SIZE = 84;
-export const WEEKLY_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fixed", size: WEEKLY_FLAT_CARD_SIZE };
+// #8515: o preenchimento do card 84px é mais largo — 0.62, não o 0.52 do
+// carrossel diário (62px). O `charWidthRatio` aqui é o que torna o #8515
+// regressão real: com 0.52, 21 chars a 84px (~1094px) vazam pro lado de
+// além do card de 936px de largura disponível.
+export const WEEKLY_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fixed", size: WEEKLY_FLAT_CARD_SIZE, charWidthRatio: FILL_CHAR_WIDTH_RATIO };
 
 /**
  * Pure: resolve tamanho de fonte, linhas quebradas e se o bloco TRANSBORDA o
@@ -331,17 +354,27 @@ function layoutCardBody(
   const availableWidth = W - PAD * 2;
   const availableHeight = TITLE_BOTTOM - TITLE_TOP;
 
+  // #8515: a razão de largura de caractere é por CONSUMER, não global — o
+  // preenchimento do card 84px (semanal) é mais largo que o do carrossel
+  // diário 62px, que já cabia com `CHAR_WIDTH_RATIO` (0.52). Aplicar 0.62 no
+  // caminho fixo compartilhado quebrava o wrap do daily com marcação (testes
+  // de #6086/#6751). Cada `fixed` layout declara a sua; o default 0.52 é o
+  // regime pré-#8480, intocado.
+  const ratio = layout.mode === "fixed" ? (layout.charWidthRatio ?? CHAR_WIDTH_RATIO) : FILL_CHAR_WIDTH_RATIO;
+
   let size: number;
   let lines: FlatCardLine[];
   if (layout.mode === "fill") {
     ({ size, lines } = fillingFontSize(title, availableWidth, availableHeight));
   } else {
     size = layout.size;
-    const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (size * CHAR_WIDTH_RATIO)));
+    const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (size * ratio)));
     lines = wrapBody(title, maxCharsPerLine);
   }
   const blockHeight = lines.length * Math.round(size * 1.18);
-  return { size, lines, blockHeight, availableHeight, overflows: blockHeight > availableHeight };
+  // Regressão #8515: overflow horizontal no fixed (capa/CTA semanal 84px); guard só media altura
+  const overflowsWidth = lines.some((ln) => ln.text.length * size * ratio > availableWidth);
+  return { size, lines, blockHeight, availableHeight, overflows: blockHeight > availableHeight || overflowsWidth };
 }
 
 export function measureFlatCardBody(
