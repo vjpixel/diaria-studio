@@ -55,6 +55,13 @@ describe("official-domains registry (#566)", () => {
     it("corrige drift #6613 — z.ai (Z.ai/GLM) agora presente", () => {
       assert.ok(domains.has("z.ai"), "z.ai deve estar em lancamentoDomains após #6613");
     });
+
+    it("corrige drift #8576 — prismml.com agora presente", () => {
+      assert.ok(
+        domains.has("prismml.com"),
+        "prismml.com deve estar em lancamentoDomains após #8576 (Bonsai 2 27B)",
+      );
+    });
   });
 
   describe("lancamentoPatterns()", () => {
@@ -240,5 +247,38 @@ describe("Z.ai no gate de LANÇAMENTOS (#6613)", () => {
     // parecido não pode passar de carona.
     assert.equal(isOfficialLancamentoUrl("https://techcrunch.com/glm-5-3-flash"), false);
     assert.equal(isOfficialLancamentoUrl("https://not-z.ai/blog/glm"), false);
+  });
+});
+
+/**
+ * Regressão do gate da edição 260921 (#8576).
+ *
+ * Mesma arquitetura do bloco Z.ai (#6613): o `lancamentoDomains()` acima
+ * cobre a estrutura, mas o bug real é no GATE — `validate-lancamentos.ts`
+ * chama `isOfficialLancamentoUrl` pra decidir se um LANÇAMENTOS tem link
+ * oficial (#160). Um teste só sobre `lancamentoDomains().has("prismml.com")`
+ * passa mesmo que alguém remova `domains: ["prismml.com"]`, então bate-se
+ * direto na função que o gate consulta.
+ */
+describe("PrismML no gate de LANÇAMENTOS (#8576)", () => {
+  it("prismml.com está entre os domínios oficiais de lançamento", () => {
+    assert.ok(lancamentoDomains().has("prismml.com"));
+  });
+
+  it("isOfficialLancamentoUrl aceita o anúncio real do Bonsai 2 27B", () => {
+    assert.equal(
+      isOfficialLancamentoUrl("https://prismml.com/news/bonsai-2-27b"),
+      true,
+    );
+  });
+
+  it("não vira allowlist ampla demais: cobertura de imprensa de terceiro segue NÃO-oficial", () => {
+    // O ponto do #160 é que só o link OFICIAL vira LANÇAMENTO. Um domínio
+    // parecido não pode passar de carona.
+    assert.equal(
+      isOfficialLancamentoUrl("https://techcrunch.com/bonsai-2-27b"),
+      false,
+    );
+    assert.equal(isOfficialLancamentoUrl("https://not-prismml.com/news/bonsai"), false);
   });
 });
