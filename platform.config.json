@@ -154,6 +154,13 @@
     "enabled": true,
     "note": "#8211 — classificador semântico externo (TypeSafe, modelo jev-latest) como tie-breaker SÓ do fallback do categorizador (lancamento-default/noticias-default, 77% do corpus, único ponto com erro medido na #5995 — as regras fortes não erraram uma vez). Composto com #160 (isOfficialLancamentoUrl): veredito lancamento só vale em URL de domínio oficial. Default LIGADO (decisão do editor, 17/09/2026) — fail-soft obrigatório: TYPESAFE_API_KEY ausente ou API indisponível cai no comportamento de hoje sem travar o Stage 1, log em data/run-log.jsonl. Contrato da API confirmado contra produção em #8219 (17/09/2026) — ver o topo de scripts/lib/semantic-tiebreaker.ts pro shape. Desligar (enabled:false) é a saída rápida se o classificador degradar ou o vendor sumir."
   },
+  "jev": {
+    "shadow": true,
+    "features": {
+      "dedup_grayzone": false
+    },
+    "note": "#8505 (epic #8412) — features do classificador Jev (TypeSafe System One) atrás de flag, todas default false. dedup_grayzone: pares cuja similaridade Jaccard de título cai na zona cinzenta [0.35, 0.85) do Pass 1c de scripts/dedup.ts consultam o Jev (pergunta noul 'mesmo fato/anúncio?', DEDUP_GRAYZONE_8417); fora da zona o dedup segue determinístico. shadow (default true): com a flag ligada o Jev é consultado e a decisão gravada ao lado da heurística (data/editions/{AAMMDD}/_internal/dedup-grayzone-jev.json + run-log) SEM alterar o resultado; shadow:false = o Jev decide na zona quando confidence >= 0.7 (senão a heurística). Fail-soft: TYPESAFE_API_KEY ausente/API fora/erro → comportamento de hoje, warn em data/run-log.jsonl. Lógica: scripts/lib/dedup-grayzone-jev.ts."
+  },
   "experiment_d3_radar": {
     "enabled": false,
     "note": "#4846 — experimento de randomização 1:1 por edição: braço A (controle) mantém o 3º destaque como D3, braço B move o mesmo item pro 1º slot do RADAR (edição sai com 2 destaques). Roda no Stage 1, pós-gate humano, via scripts/experiment-d3-radar.ts — seed determinístico por edição, registrado em _internal/.experiment-d3.json. Default DESLIGADO: esta unidade implementa só o mecanismo (randomização + registro); ativar em produção é decisão separada do editor (ver docs/experiments/d3-radar-4846.md, pré-registro obrigatório antes da 1ª edição randomizada, e o pré-requisito #4841 — link-layout.json/published-links.json — já mergeado)."
