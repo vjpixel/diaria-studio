@@ -1829,10 +1829,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // pedido pela issue (#8573 item 3: "é isso que fecha o loop"), não uma
     // violação do guard de publicação do #738/dispatch-rules item 1: esta
     // task não é `scripts/publish-*`/`clarice-schedule-sends`/`clarice-
-    // import-*`/`close-poll` nem toca Beehiiv/LinkedIn/Facebook/Brevo — é
-    // upload de conversão pro Google Ads, o mesmo tipo de escrita que
-    // `Diaria-Kit-Doi-Confirmation-...`-like batches já fazem rotineiramente
-    // fora do guard de publicação de newsletter/social.
+    // import-*`/`close-poll` nem toca Beehiiv/LinkedIn/Facebook/Brevo — o
+    // guard de publicação (item 1 de context/overnight-dispatch-rules.md)
+    // é escopado a esses canais editoriais; upload de conversão pro Google
+    // Ads é uma superfície de aquisição paga distinta, fora desse escopo.
     //
     // Pré-requisito (ação do editor, NÃO coberta por esta task): criar/
     // reativar a ação de conversão de CONFIRMAÇÃO no Google Ads
