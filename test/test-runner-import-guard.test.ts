@@ -30,6 +30,15 @@
  * diagnóstico — e enquanto isso a PR fica na fila (foi o achado do #7807,
  * 8 de 8 PRs abertas vermelhas, nenhuma esperando merger).
  *
+ * ## #8526 — camada rápida movida pra ANTES de `gh pr create`
+ *
+ * Este teste continua como rede de CI (a suíte inteira roda de qualquer
+ * forma antes do merge), mas a lógica de detecção em si foi extraída para
+ * `scripts/lib/test-runner-import-guard.ts` e é reusada por
+ * `.claude/hooks/block-pr-create-test-runner-import.mjs`, que bloqueia
+ * `gh pr create` em segundos em vez de esperar ~6min de CI. Ver
+ * `test/block-pr-create-test-runner-import.test.ts` para o hook.
+ *
  * ## Escopo deliberado
  *
  * Só olha `test/**\/*.test.ts`. Não valida ordem de import, não exige
@@ -38,118 +47,37 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve, relative, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { listarArquivosDeTeste, checkTestRunnerImports } from "../scripts/lib/test-runner-import-guard.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TEST_DIR = join(ROOT, "test");
 
-/** Runners que este repo NÃO usa. Importar qualquer um deles é erro de
- *  ambiente, não escolha — `node:test` é o runner único (ver `npm test` →
- *  `scripts/run-tests.ts`). */
-const RUNNERS_PROIBIDOS = ["vitest", "jest", "@jest/globals", "mocha", "ava"];
-
-function listarTestes(dir: string, acc: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) {
-      listarTestes(full, acc);
-    } else if (entry.endsWith(".test.ts")) {
-      acc.push(full);
-    }
-  }
-  return acc;
-}
-
-/**
- * Escapa metacaracteres de regex — `@jest/globals` tem `/`, e um `.` num nome
- * futuro casaria qualquer caractere. (A 1ª versão usava
- * `replace("/", "\\/")`, que escapa só a PRIMEIRA ocorrência — achado P4 do
- * review da PR #7808.)
- */
-function escaparRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-}
-
-/**
- * Analisa LINHA A LINHA, em posição de statement, em vez de remover
- * comentários do arquivo inteiro.
- *
- * A 1ª versão fazia `src.replace(/\/\*[\s\S]*?\*\//g, " ")` pra que a própria
- * docstring deste arquivo (que CITA `describe(`) não contasse como uso. O
- * review da PR #7808 mostrou que isso cria um **falso NEGATIVO** — o pior
- * defeito possível num guard, porque some justamente com o que ele existe pra
- * pegar: um template literal contendo uma sequência parecida com `/*`,
- * seguido mais adiante no MESMO arquivo por um JSDoc real, faz a regex comer
- * tudo entre os dois — inclusive um `import ... from "vitest"` legítimo no
- * meio. O revisor reproduziu, e confirmou que o padrão (`/*` dentro de
- * string) já existe em arquivos reais do repo.
- *
- * Ancorar em posição de statement resolve os dois lados de uma vez: linha de
- * comentário começa com `*` ou `//`, e menção dentro de string não começa a
- * linha com `import`. Sem regex de comentário, sem esse modo de falha.
- */
-function linhasDeCodigo(src: string): string[] {
-  return src.split("\n").filter((l) => {
-    const t = l.trimStart();
-    return t !== "" && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*");
-  });
-}
-
 describe("guard: todo teste usa node:test como runner (#7807)", () => {
-  const arquivos = listarTestes(TEST_DIR);
+  const arquivos = listarArquivosDeTeste(TEST_DIR);
+  const resultado = checkTestRunnerImports(TEST_DIR, ROOT);
 
   it("descobriu arquivos de teste — se falhar, o parser quebrou antes do guard valer", () => {
     assert.ok(arquivos.length > 100, `esperava centenas de testes, achei ${arquivos.length}`);
   });
 
   it("nenhum arquivo de teste importa runner que não seja node:test", () => {
-    const infratores: string[] = [];
-    for (const arquivo of arquivos) {
-      const linhas = linhasDeCodigo(readFileSync(arquivo, "utf8"));
-      for (const runner of RUNNERS_PROIBIDOS) {
-        const alvo = escaparRegex(runner);
-        // Só posição de statement: `import ... from "runner"` ou
-        // `require("runner")`. Uma STRING que apenas contenha o texto
-        // `from "vitest"` (um teste SOBRE este guard, uma fixture de mensagem
-        // de erro) deixa de ser acusada — falso positivo P3 do review.
-        const re = new RegExp(
-          `^\\s*import\\b[^;]*from\\s*["']${alvo}["']|require\\(\\s*["']${alvo}["']`,
-        );
-        if (linhas.some((l) => re.test(l))) {
-          infratores.push(`${relative(ROOT, arquivo)} → ${runner}`);
-        }
-      }
-    }
     assert.deepEqual(
-      infratores,
+      resultado.runnerProibido,
       [],
-      `arquivo(s) de teste importando runner proibido: ${infratores.join(", ")} — ` +
+      `arquivo(s) de teste importando runner proibido: ${resultado.runnerProibido.join(", ")} — ` +
         `este repo roda node:test (ver scripts/run-tests.ts). Troque por ` +
         `import { describe, it } from "node:test" + import assert from "node:assert/strict".`,
     );
   });
 
   it("todo arquivo que usa describe()/it() importa esses símbolos de node:test", () => {
-    const infratores: string[] = [];
-    for (const arquivo of arquivos) {
-      const src = readFileSync(arquivo, "utf8");
-      // `import ... from "node:test"` OU `await import("node:test")` — o
-      // dinâmico é uso legítimo do runner certo e era acusado pela 1ª versão
-      // (falso positivo P3 do review).
-      const importaDoNodeTest =
-        /from\s*["']node:test["']/.test(src) || /import\(\s*["']node:test["']/.test(src);
-      if (importaDoNodeTest) continue;
-      // Uso em posição de statement — linha de docstring (` * describe(`) não
-      // conta, e por isso este arquivo não se acusa.
-      const usa = linhasDeCodigo(src).some((l) => /^\s*(describe|it)\s*\(/.test(l));
-      if (usa) infratores.push(relative(ROOT, arquivo));
-    }
     assert.deepEqual(
-      infratores,
+      resultado.importAusenteNodeTest,
       [],
-      `arquivo(s) usando describe()/it() sem importar de node:test: ${infratores.join(", ")} — ` +
+      `arquivo(s) usando describe()/it() sem importar de node:test: ${resultado.importAusenteNodeTest.join(", ")} — ` +
         `é o TS2304/TS2582 que derrubou a PR #7771. Adicione ` +
         `import { describe, it } from "node:test".`,
     );
