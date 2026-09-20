@@ -81,14 +81,16 @@
  * `formatLinkedInWeekly` só pra omitir a URL.
  *
  * `--force-font-size N` (override manual, ad-hoc — #7571): substitui
- * `computeCarouselTitleFontSize` (o menor tamanho que caiba os 5 títulos
- * DESTA rodada) por um valor fixo. Cada modo/rodada calcula seu próprio
- * tamanho de forma independente — não há garantia de que `highlights` e
- * `clicked` fechem no mesmo valor na mesma semana, e quando divergem muito
- * fica visualmente discrepante (achado real, semana 260831-260904: 72px vs
- * 52-54px). Sem validação de "cabe garantido" — título que não couber no
- * valor forçado ainda renderiza (pode ficar apertado), nunca lança. Ver
- * issue #7571 pro fix definitivo (piso fixo + guard de rejeição).
+ * `WEEKLY_CAROUSEL_NEWS_CARD_SIZE` (#8480, 260919 — piso fixo de 62px pra
+ * TODOS os cards internos, sucede `computeCarouselTitleFontSize`, que
+ * calculava o menor tamanho que coubesse os 5 títulos DESTA rodada e
+ * oscilava 62-88 conforme o conjunto — achado real, semana 260831-260904:
+ * 72px vs 52-54px entre `highlights`/`clicked` da MESMA semana) por um valor
+ * fixo. Título que não couber no valor forçado ainda transborda o guard de
+ * overflow (`overlayTitleOverflows`, abaixo) e ABORTA — não renderiza
+ * cortado; só o piso automático (62) tem garantia editorial de sempre caber
+ * (título de D1/D2/D3 é ≤52 chars por regra), então um valor forçado maior é
+ * responsabilidade de quem passou a flag.
  *
  * `--force-urls` (override manual, ad-hoc — #5903 sessão 260821): lista de
  * URLs separadas por vírgula, na ordem desejada do carrossel, substituindo a
@@ -172,10 +174,10 @@ import {
   defaultSectionCardGenerator,
   type SectionCardGenerator,
 } from "./lib/weekly-instagram-ondemand-card.ts";
-import { resolveOrGenerateFlatCardUrl, type FlatCardGenerator } from "./lib/weekly-flat-card.ts";
+import { resolveOrGenerateFlatCardUrl, WEEKLY_FLAT_CARD_LAYOUT, type FlatCardGenerator } from "./lib/weekly-flat-card.ts";
 import { resolveOrGenerateNewsCardUrl, type NewsCardGenerator } from "./lib/weekly-carousel-news-card.ts";
-import { computeCarouselTitleFontSize } from "./lib/weekly-carousel-font-size.ts";
-import { WEEKLY_OVERLAY_WRAP } from "./gen-social-card-4x5.ts";
+import { WEEKLY_CAROUSEL_NEWS_CARD_SIZE } from "./lib/weekly-carousel-font-size.ts";
+import { WEEKLY_OVERLAY_WRAP, overlayTitleOverflows } from "./gen-social-card-4x5.ts";
 import { formatInstagramWeekly, formatFacebookWeekly, formatThreadsWeekly, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
 import { postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
@@ -1105,21 +1107,18 @@ async function runOneMode(
 
   // #5330: capa/CTA (texto) calculado ANTES da resolução de imagem. O
   // tamanho de fonte único (abaixo) padroniza só os 5 títulos de NOTÍCIA
-  // entre si — capa/CTA usam auto-size próprio (`buildFlatCardSvg`,
-  // preenche o card, não precisa bater com o tamanho das notícias: são um
+  // entre si — capa/CTA usam o tamanho FIXO próprio de
+  // `WEEKLY_FLAT_CARD_LAYOUT` (84px, #8480 — antes era auto-size via
+  // `fillingFontSize`), não precisa bater com o tamanho das notícias: são um
   // tipo de slide visualmente diferente de propósito, decisão do editor
   // 260815 2ª rodada).
   const flatTexts = buildFlatCardTexts(mode, contentWindow);
-  // #7571: `--force-font-size <n>` sobrescreve o cálculo automático (menor
-  // tamanho que caiba TODOS os títulos DESTA rodada) — ad-hoc pra padronizar
-  // manualmente com o tamanho de outro modo/rodada (ex: `highlights` fechou
-  // em 72px, `clicked` fechou em 52-54px na mesma semana — visualmente
-  // discrepante, mas cada um é o resultado CORRETO do próprio cálculo).
-  // Título que não couber no tamanho forçado ainda passa pelo mesmo
-  // `wrapBody`/overflow do renderer — pode ficar visualmente apertado, mas
-  // nunca lança. Sem validação de "cabe garantido": é override manual,
-  // quem passa decide o risco. Ver issue #7571 pro fix definitivo (piso
-  // fixo automático + guard de rejeição, mesmo padrão do carrossel diário).
+  // #7571/#8480: `--force-font-size <n>` sobrescreve o piso fixo
+  // (`WEEKLY_CAROUSEL_NEWS_CARD_SIZE`, 62px) — ad-hoc pra padronizar
+  // manualmente com o tamanho de outro modo/rodada, ou testar um valor
+  // maior. Título que não couber no tamanho forçado é pego pelo mesmo guard
+  // de overflow (`overlayTitleOverflows`, abaixo) que se aplica ao piso
+  // automático — aborta, nunca renderiza cortado.
   // Mesmo guard de `--force-urls` acima (#5905 fleet review ALTO):
   // `parseArgs` põe uma flag sem valor (ou seguida de outra `--flag`) em
   // `flags`, não em `values` — sem isto, `--force-font-size` sozinho
@@ -1140,9 +1139,38 @@ async function runOneMode(
       return false;
     }
     carouselFontSize = parsed;
-    console.log(`[publish-weekly-social] --force-font-size ${carouselFontSize} — ignorando cálculo automático (computeCarouselTitleFontSize).`);
+    console.log(`[publish-weekly-social] --force-font-size ${carouselFontSize} — ignorando o piso fixo (WEEKLY_CAROUSEL_NEWS_CARD_SIZE).`);
   } else {
-    carouselFontSize = computeCarouselTitleFontSize(items.map((i) => i.title), WEEKLY_OVERLAY_WRAP);
+    carouselFontSize = WEEKLY_CAROUSEL_NEWS_CARD_SIZE;
+  }
+
+  // #8480 (260919): cards internos SEMPRE no mesmo tamanho — sem overflow
+  // detectável, um título que não coubesse sairia cortado em silêncio
+  // (mesma classe de falha que o carrossel diário já corrige, #6078).
+  // Título de D1/D2/D3 é ≤52 chars por regra editorial e sempre cabe no
+  // piso automático (62px) — RADAR/USE MELHOR, sem esse teto, é o caso real
+  // que pode transbordar; `--force-font-size` maior que o piso também passa
+  // por este guard. `WEEKLY_OVERLAY_WRAP` (#8485) precisa ser o MESMO wrap
+  // que `weekly-carousel-news-card.ts`/`weekly-instagram-ondemand-card.ts`
+  // passam pro render real — usar o wrap DIÁRIO aqui (default de
+  // `overlayTitleOverflows`) sub/superestimaria o overflow e divergiria do
+  // que sai na tela.
+  const overflowingTitles = items.filter((i) => overlayTitleOverflows(i.title, carouselFontSize, undefined, WEEKLY_OVERLAY_WRAP)).map((i) => i.title);
+  if (overflowingTitles.length > 0) {
+    const reason = `overlay_title_overflow_${carouselFontSize}px:${overflowingTitles.length}`;
+    console.error(
+      `ERRO ${destaqueKey}: ${overflowingTitles.length} título(s) não cabem no card de notícia em ${carouselFontSize}px:\n` +
+        overflowingTitles.map((t) => `  · "${t}"`).join("\n") +
+        `\n\nFix: REESCREVER/encurtar o(s) título(s) acima e rodar de novo. O tamanho da fonte é fixo de propósito ` +
+        `(#8480) — encolher só este card traria de volta a variação de métrica entre os cards do mesmo carrossel. ` +
+        `Carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook + Threads + LinkedIn), não publica parcial.`,
+    );
+    if (imagesOnly) return false;
+    if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    if (!skipLinkedIn) tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    return true;
   }
 
   // Carrossel: 1 imagem por item selecionado (#4146/#4483) — ver
@@ -1203,16 +1231,18 @@ async function runOneMode(
   // renderiza + faz upload agora (nunca custa API paga — é composição local,
   // só o upload pro KV é rede). #5330 fleet review (test-coverage): falha
   // aqui (fonte de marca ausente, platform.config.json sem kv_namespace_id,
-  // erro de rede no upload) precisa do MESMO bookkeeping de falha que
-  // `resolveWeeklyImageUrls` acima — sem isso, a exceção propagava sem
-  // gravar status:"failed", e um re-run bem-intencionado não tinha como
-  // saber que a tentativa anterior não chegou a publicar nada. #5348: cache
-  // compartilhado (`carouselKey`) — o mesmo capa/CTA serve os 2 canais.
+  // erro de rede no upload, OU — #8480 — texto que não coubesse em
+  // `WEEKLY_FLAT_CARD_LAYOUT` fixo, 84px) precisa do MESMO bookkeeping de
+  // falha que `resolveWeeklyImageUrls` acima — sem isso, a exceção
+  // propagava sem gravar status:"failed", e um re-run bem-intencionado não
+  // tinha como saber que a tentativa anterior não chegou a publicar nada.
+  // #5348: cache compartilhado (`carouselKey`) — o mesmo capa/CTA serve os
+  // 2 canais.
   let coverUrl: string;
   let ctaUrl: string;
   try {
-    coverUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cover", flatTexts.cover, opts.flatCardGenerator);
-    ctaUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cta", flatTexts.cta, opts.flatCardGenerator);
+    coverUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cover", flatTexts.cover, opts.flatCardGenerator, WEEKLY_FLAT_CARD_LAYOUT);
+    ctaUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cta", flatTexts.cta, opts.flatCardGenerator, WEEKLY_FLAT_CARD_LAYOUT);
   } catch (e: any) {
     console.error(
       `ERRO ${destaqueKey}: geração do card sem foto (capa/CTA) falhou: ${e.message} — ` +

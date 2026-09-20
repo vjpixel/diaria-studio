@@ -248,6 +248,18 @@ export type FlatCardLayout = { mode: "fill" } | { mode: "fixed"; size: number };
 export const DEFAULT_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fill" };
 
 /**
+ * Tamanho FIXO da capa/CTA (sem foto) do carrossel SEMANAL (#8480, 260919) —
+ * decisão do editor: parar de auto-crescer (`fill`, teto `TITLE_SIZE_MAX`)
+ * até preencher o card e usar sempre o mesmo tamanho, igual ao corpo fixo do
+ * carrossel diário — texto que não coubesse a 84px é REESCRITO, nunca
+ * encolhido (mesma política do #6078). `resolveOrGenerateFlatCardUrl` aborta
+ * ANTES de renderizar se o texto transborda a este tamanho (`measureFlatCardBody`
+ * → `overflows`), em vez de deixar um card cortado sair em silêncio.
+ */
+export const WEEKLY_FLAT_CARD_SIZE = 84;
+export const WEEKLY_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fixed", size: WEEKLY_FLAT_CARD_SIZE };
+
+/**
  * Pure: resolve tamanho de fonte, linhas quebradas e se o bloco TRANSBORDA o
  * espaço disponível, para um dado layout.
  *
@@ -535,6 +547,8 @@ export interface FlatCardGeneratorInput {
   text: FlatCardText;
   outPath: string;
   kvKey: string;
+  /** #8480: layout a renderizar — `resolveOrGenerateFlatCardUrl` sempre passa o mesmo layout que já checou por overflow. Ausente cai pro default (`fill`), mesmo comportamento pré-#8480. */
+  layout?: FlatCardLayout;
 }
 
 /**
@@ -546,9 +560,9 @@ export interface FlatCardGeneratorInput {
 export type FlatCardGenerator = (input: FlatCardGeneratorInput) => Promise<{ url: string }>;
 
 /** Implementação REAL — NUNCA invocada em teste (mesma classe de restrição de `defaultSectionCardGenerator`). */
-export const defaultFlatCardGenerator: FlatCardGenerator = async ({ text, outPath, kvKey }) => {
+export const defaultFlatCardGenerator: FlatCardGenerator = async ({ text, outPath, kvKey, layout }) => {
   await assertBrandSerifAvailable("weekly-flat-card");
-  await renderFlatCard(text, outPath);
+  await renderFlatCard(text, outPath, layout ?? DEFAULT_FLAT_CARD_LAYOUT);
 
   const platformCfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const kvNamespaceId = platformCfg?.poll?.kv_namespace_id;
@@ -562,10 +576,17 @@ export const defaultFlatCardGenerator: FlatCardGenerator = async ({ text, outPat
 
 /**
  * Resolve a URL pública do card capa/CTA de um carrossel semanal: cache hit
- * retorna direto (nunca re-renderiza/re-upload); cache miss chama `generator`
- * (default `defaultFlatCardGenerator`) + grava no cache. `key` identifica o
- * carrossel (`{saturday}-{mode}`) — cover/CTA de "destaques" e "mais
- * clicados" nunca colidem.
+ * retorna direto (nunca re-renderiza/re-upload); cache miss checa overflow
+ * (`measureFlatCardBody`) e ABORTA se `text.title` não couber em `layout`
+ * ANTES de chamar `generator` — #8480: com `layout` fixo (ex:
+ * `WEEKLY_FLAT_CARD_LAYOUT`, 84px), o texto não encolhe mais sozinho pra
+ * caber, e a política do editor é REESCREVER, nunca renderizar cortado
+ * (mesmo padrão de `findOverflowingCarouselSlides`/`gen-carousel-cards.ts`
+ * pro carrossel diário). Sem overflow, chama `generator` (default
+ * `defaultFlatCardGenerator`) + grava no cache. `key` identifica o carrossel
+ * (`{saturday}-{mode}`) — cover/CTA de "destaques" e "mais clicados" nunca
+ * colidem. `layout` default `fill` preserva o comportamento pré-#8480 pra
+ * qualquer chamador que não passe um layout explícito.
  */
 export async function resolveOrGenerateFlatCardUrl(
   dataRoot: string,
@@ -573,9 +594,22 @@ export async function resolveOrGenerateFlatCardUrl(
   slot: FlatCardSlot,
   text: FlatCardText,
   generator: FlatCardGenerator = defaultFlatCardGenerator,
+  layout: FlatCardLayout = DEFAULT_FLAT_CARD_LAYOUT,
 ): Promise<string> {
   const cached = readFlatCardUrl(dataRoot, key, slot);
   if (cached) return cached;
+
+  if (layout.mode === "fixed") {
+    const measured = measureFlatCardBody(text.title, layout);
+    if (measured.overflows) {
+      throw new Error(
+        `card sem foto (${slot}) não cabe em ${layout.size}px: "${text.title}" gera ${measured.lines.length} linha(s), ` +
+          `${measured.blockHeight - measured.availableHeight}px além do espaço disponível. ` +
+          `Fix: REESCREVER o texto pra ficar mais curto e rodar de novo — o tamanho da fonte é fixo de propósito (#8480), ` +
+          `encolher só este card traria de volta a variação de métrica entre capa/CTA/notícia do mesmo carrossel.`,
+      );
+    }
+  }
 
   const outDir = resolve(dataRoot, "weekly", key, "_internal");
   mkdirSync(outDir, { recursive: true });
@@ -592,7 +626,7 @@ export async function resolveOrGenerateFlatCardUrl(
   // clicados" do mesmo sábado.
   const kvKey = cloudflareKvKey(key, `weekly-${key}-${slot}-4x5.jpg`);
 
-  const { url } = await generator({ text, outPath, kvKey });
+  const { url } = await generator({ text, outPath, kvKey, layout });
   writeFlatCardUrl(dataRoot, key, slot, url);
   return url;
 }

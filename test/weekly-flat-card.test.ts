@@ -15,7 +15,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildFlatCardSvg, measureFlatCardBody, resolveOrGenerateFlatCardUrl, type FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
+import {
+  buildFlatCardSvg,
+  measureFlatCardBody,
+  resolveOrGenerateFlatCardUrl,
+  WEEKLY_FLAT_CARD_LAYOUT,
+  WEEKLY_FLAT_CARD_SIZE,
+  type FlatCardGenerator,
+} from "../scripts/lib/weekly-flat-card.ts";
 import { COLORS } from "../scripts/lib/shared/design-tokens.ts";
 
 /** Extrai o 1º `font-size="N"` de um SVG cujo fill é a cor de título (ink) — helper de teste. */
@@ -363,6 +370,91 @@ describe("resolveOrGenerateFlatCardUrl (cache + geração sob demanda)", () => {
       );
       const urlClicked = await resolveOrGenerateFlatCardUrl(dataRoot, "260815-clicked", "cover", { kicker: "a", title: "b", footer: "c" }, generator);
       assert.notEqual(urlHighlights, urlClicked);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#8480 (260919): capa/CTA sempre 84px (WEEKLY_FLAT_CARD_LAYOUT), nunca auto-size", () => {
+  it("WEEKLY_FLAT_CARD_SIZE é 84 e WEEKLY_FLAT_CARD_LAYOUT é fixed nesse tamanho", () => {
+    assert.equal(WEEKLY_FLAT_CARD_SIZE, 84);
+    assert.deepEqual(WEEKLY_FLAT_CARD_LAYOUT, { mode: "fixed", size: 84 });
+  });
+
+  it("título curto que ANTES encolheria bem abaixo de 84 (fill escala com o texto) sai em 84px fixo com WEEKLY_FLAT_CARD_LAYOUT", () => {
+    // Texto propositalmente longo o bastante pra, em `fill`, cair pra um
+    // tamanho bem menor que 84 (a auto-size cresce SÓ até caber) — servindo
+    // de contraste direto: mesmo texto, dois layouts, dois tamanhos.
+    const title =
+      "Os principais destaques de inteligência artificial da semana, resumidos pra você não perder absolutamente nada do que aconteceu nos últimos dias em tecnologia";
+    const fillSize = measureFlatCardBody(title).size;
+    const fixedSize = measureFlatCardBody(title, WEEKLY_FLAT_CARD_LAYOUT).size;
+    assert.equal(fixedSize, 84);
+    assert.ok(fillSize < 84, `esperava que o fill encolhesse abaixo de 84 pra este título longo (veio ${fillSize})`);
+  });
+
+  it("cache MISS com WEEKLY_FLAT_CARD_LAYOUT: generator renderiza sempre a 84px (texto curto não infla nem encolhe)", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "diaria-flatcard-"));
+    try {
+      let receivedLayout: unknown;
+      const generator: FlatCardGenerator = async ({ kvKey, layout }) => {
+        receivedLayout = layout;
+        return { url: `https://cdn.example.com/${kvKey}` };
+      };
+      await resolveOrGenerateFlatCardUrl(
+        dataRoot,
+        "260919-highlights",
+        "cover",
+        { kicker: "Resumo semanal", title: "IA", footer: "diar.ia.br" },
+        generator,
+        WEEKLY_FLAT_CARD_LAYOUT,
+      );
+      assert.deepEqual(receivedLayout, WEEKLY_FLAT_CARD_LAYOUT);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("texto que NÃO cabe em 84px ABORTA (lança) em vez de encolher — nunca chama o generator", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "diaria-flatcard-"));
+    try {
+      let calls = 0;
+      const generator: FlatCardGenerator = async ({ kvKey }) => {
+        calls++;
+        return { url: `https://cdn.example.com/${kvKey}` };
+      };
+      // Repetição de uma frase longa o bastante pra estourar o bloco
+      // disponível mesmo quebrada em várias linhas a 84px.
+      const overflowingTitle = "Um título editorial bem mais longo do que qualquer card sem foto deveria carregar. ".repeat(6).trim();
+      await assert.rejects(
+        () =>
+          resolveOrGenerateFlatCardUrl(
+            dataRoot,
+            "260919-highlights",
+            "cta",
+            { kicker: "Grátis, toda manhã", title: overflowingTitle, footer: "diar.ia.br" },
+            generator,
+            WEEKLY_FLAT_CARD_LAYOUT,
+          ),
+        /não cabe em 84px/,
+      );
+      assert.equal(calls, 0, "o generator nunca deveria ser chamado pra um texto que transborda");
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("layout default (sem 6º argumento) continua fill — comportamento pré-#8480 intocado pra chamador que não passa layout", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "diaria-flatcard-"));
+    try {
+      let receivedLayout: unknown;
+      const generator: FlatCardGenerator = async ({ kvKey, layout }) => {
+        receivedLayout = layout;
+        return { url: `https://cdn.example.com/${kvKey}` };
+      };
+      await resolveOrGenerateFlatCardUrl(dataRoot, "260919-highlights", "cover", { kicker: "a", title: "b", footer: "c" }, generator);
+      assert.deepEqual(receivedLayout, { mode: "fill" }, "sem layout explícito, resolveOrGenerateFlatCardUrl usa DEFAULT_FLAT_CARD_LAYOUT (fill)");
     } finally {
       rmSync(dataRoot, { recursive: true, force: true });
     }

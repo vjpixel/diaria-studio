@@ -23,6 +23,7 @@ import {
   buildCardSvg,
   buildOverlaySvg,
   overlayFittingFontSize,
+  overlayTitleOverflows,
   computeCarouselTitleFontSize,
   editionDateLabel,
   RATIOS,
@@ -386,6 +387,25 @@ describe("call-site do Stage 3 (#4114 — o achado do code-review)", () => {
         `${f} deveria chamar selectSocialCardImageFile em vez de duplicar a checagem existsSync inline`,
       );
     }
+  });
+});
+
+describe("overlayTitleOverflows (#8480, 260919 — cards internos do carrossel semanal sempre 62px)", () => {
+  it("título curto de destaque (≤52 chars, regra editorial) NUNCA transborda no piso fixo (62px)", () => {
+    assert.equal(overlayTitleOverflows("Freelancers que usam IA ganham mais", DAILY_CAROUSEL_BODY_SIZE), false);
+    assert.equal(overlayTitleOverflows("IA", DAILY_CAROUSEL_BODY_SIZE), false);
+  });
+
+  it("título absurdamente longo (fora do teto de 52 chars — caso RADAR/USE MELHOR) transborda no piso fixo", () => {
+    const long =
+      "Um título de notícia bem mais longo do que qualquer destaque D1/D2/D3 jamais teria, porque RADAR e USE MELHOR não têm teto de 52 caracteres";
+    assert.equal(overlayTitleOverflows(long, DAILY_CAROUSEL_BODY_SIZE), true);
+  });
+
+  it("o MESMO título que transborda a um tamanho forçado grande cabe a um tamanho menor", () => {
+    const title = "Um título de notícia consideravelmente mais longo que o normal pra este teste de largura";
+    assert.equal(overlayTitleOverflows(title, 88), true);
+    assert.equal(overlayTitleOverflows(title, 40), false);
   });
 });
 
