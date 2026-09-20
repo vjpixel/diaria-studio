@@ -105,6 +105,7 @@ import {
   selectUnalarmedSuspended,
   checkSeedEmailsBlacklisted,
   describeSeedBlacklistFailures,
+  resolveSeedEmailsToCheck,
   type CampaignGuardrailInput,
   type RolloutGuardrailState,
 } from "./lib/brevo-diaria-guardrail.ts";
@@ -115,6 +116,9 @@ const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 interface BrevoDiariaConfig {
   api_key_env: string;
   test_email?: string;
+  /** #8436: seeds cujo blacklist na conta Brevo da diária é deliberado (ex: Gmail
+   * pessoal — o editor já recebe pelo Kit). Isentos da checagem do guard. */
+  seed_deliberately_blacklisted?: string[];
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
@@ -393,17 +397,32 @@ async function main(): Promise<void> {
   // suspensa acima (nunca antes) — do contrário, enquanto o seed estiver
   // blacklisted (estado real de produção, #8436), o `exit(2)` abaixo
   // impediria o alarme de conta suspensa de rodar a cada execução.
-  const seedEmails = Array.from(new Set([brevoDiaria!.test_email, ...EDITOR_SEED_EMAILS].filter((e): e is string => !!e)));
-  const seedResults = await checkSeedEmailsBlacklisted(seedEmails, (email) =>
+  const { toCheck: seedEmails, exempt: exemptSeeds } = resolveSeedEmailsToCheck(
+    brevoDiaria!.test_email,
+    EDITOR_SEED_EMAILS,
+    Array.isArray(brevoDiaria!.seed_deliberately_blacklisted)
+      ? brevoDiaria!.seed_deliberately_blacklisted.filter((e): e is string => typeof e === "string")
+      : [],
+  );
+  if (exemptSeeds.length > 0) {
+    log(`seed(s) isento(s) de blacklist por decisão do editor (#8436): ${exemptSeeds.join(", ")} — consequência aceita: a sonda de inbox placement desse(s) endereço(s) fica cega na conta da diária`);
+  }
+  // Review #8565: seed isento continua consultado — só o estado "blacklisted"
+  // é tolerado; contato ausente (404) ou erro seguem acusando.
+  const allSeedResults = await checkSeedEmailsBlacklisted([...seedEmails, ...exemptSeeds], (email) =>
     brevoGet(apiKey!, `/contacts/${encodeURIComponent(email)}`),
+  );
+  const exemptLower = new Set(exemptSeeds.map((e) => e.trim().toLowerCase()));
+  const seedResults = allSeedResults.filter(
+    (r) => !(exemptLower.has(r.email.trim().toLowerCase()) && r.status === "blacklisted"),
   );
   const seedFailures = describeSeedBlacklistFailures(seedResults);
   if (seedFailures.length > 0) {
     log("ERRO: seed(s) de teste/QA indisponíveis na conta Brevo da diária (#8436):");
     for (const f of seedFailures) log(`  - ${f}`);
     log(
-      "Decisão pendente com o editor (#8436): trocar o seed afetado em platform.config.json → " +
-        "brevo_diaria.test_email/scripts/lib/editor-copy.ts, OU remover o blacklist na Brevo se não foi deliberado. " +
+      "Seed indisponível (#8436): trocar o seed afetado em platform.config.json → " +
+        "brevo_diaria.test_email/scripts/lib/editor-copy.ts, OU remover o blacklist na Brevo, OU declarar o endereço em brevo_diaria.seed_deliberately_blacklisted se o blacklist for deliberado. " +
         "Este script não decide isso sozinho — só recusa prosseguir com um seed cego.",
     );
     process.exit(2);

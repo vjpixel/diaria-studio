@@ -278,6 +278,26 @@ export async function checkSeedEmailsBlacklisted(
   return out;
 }
 
+/** Pura (#8436, decisão do editor 20/09/2026) — lista de seeds a conferir no
+ * guard: `test_email` + `EDITOR_SEED_EMAILS`, sem duplicatas, MENOS os
+ * endereços que o editor declarou em `brevo_diaria.seed_deliberately_blacklisted`.
+ * O blacklist do Gmail pessoal na conta da diária é deliberado (o editor já
+ * recebe a edição pelo Kit) — sem essa isenção o guard ficaria em `exit(2)`
+ * pra sempre. Consequência aceita: a sonda de inbox placement desse endereço fica cega. Comparação case-insensitive (trim); a isenção é EXPLÍCITA e por
+ * endereço, nunca "ignora blacklist em geral". */
+export function resolveSeedEmailsToCheck(
+  testEmail: string | undefined,
+  editorSeeds: readonly string[],
+  deliberatelyBlacklisted: readonly string[] = [],
+): { toCheck: string[]; exempt: string[] } {
+  const exemptSet = new Set(deliberatelyBlacklisted.map((e) => e.trim().toLowerCase()));
+  const all = Array.from(new Set([testEmail, ...editorSeeds].filter((e): e is string => !!e)));
+  return {
+    toCheck: all.filter((e) => !exemptSet.has(e.trim().toLowerCase())),
+    exempt: all.filter((e) => exemptSet.has(e.trim().toLowerCase())),
+  };
+}
+
 /** Pura — mensagens legíveis só pros seeds com problema (`status !== "ok"`),
  * nomeando o email e o problema — vazio se todos ok. */
 export function describeSeedBlacklistFailures(results: readonly SeedBlacklistCheckResult[]): string[] {
