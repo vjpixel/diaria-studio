@@ -105,6 +105,7 @@ import {
   selectUnalarmedSuspended,
   checkSeedEmailsBlacklisted,
   describeSeedBlacklistFailures,
+  resolveSeedEmailsToCheck,
   type CampaignGuardrailInput,
   type RolloutGuardrailState,
 } from "./lib/brevo-diaria-guardrail.ts";
@@ -115,6 +116,9 @@ const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 interface BrevoDiariaConfig {
   api_key_env: string;
   test_email?: string;
+  /** #8436: seeds cujo blacklist na conta Brevo da diária é deliberado (ex: Gmail
+   * pessoal — o editor já recebe pelo Kit). Isentos da checagem do guard. */
+  seed_deliberately_blacklisted?: string[];
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
@@ -393,7 +397,14 @@ async function main(): Promise<void> {
   // suspensa acima (nunca antes) — do contrário, enquanto o seed estiver
   // blacklisted (estado real de produção, #8436), o `exit(2)` abaixo
   // impediria o alarme de conta suspensa de rodar a cada execução.
-  const seedEmails = Array.from(new Set([brevoDiaria!.test_email, ...EDITOR_SEED_EMAILS].filter((e): e is string => !!e)));
+  const { toCheck: seedEmails, exempt: exemptSeeds } = resolveSeedEmailsToCheck(
+    brevoDiaria!.test_email,
+    EDITOR_SEED_EMAILS,
+    brevoDiaria!.seed_deliberately_blacklisted,
+  );
+  if (exemptSeeds.length > 0) {
+    log(`seed(s) isento(s) da checagem de blacklist por decisão do editor (#8436): ${exemptSeeds.join(", ")}`);
+  }
   const seedResults = await checkSeedEmailsBlacklisted(seedEmails, (email) =>
     brevoGet(apiKey!, `/contacts/${encodeURIComponent(email)}`),
   );

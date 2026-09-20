@@ -22,6 +22,7 @@ import {
   classifySeedContactStatus,
   checkSeedEmailsBlacklisted,
   describeSeedBlacklistFailures,
+  resolveSeedEmailsToCheck,
   type SeedBlacklistCheckResult,
 } from "../scripts/lib/brevo-diaria-guardrail.ts";
 
@@ -80,4 +81,25 @@ test("describeSeedBlacklistFailures — seed ausente da conta (404) também é f
   assert.equal(failures.length, 1);
   assert.match(failures[0], /sumiu@example\.com/);
   assert.match(failures[0], /não existe como contato/);
+});
+
+test("resolveSeedEmailsToCheck — isenta o seed deliberadamente blacklisted (case-insensitive) e deduplica", () => {
+  const r = resolveSeedEmailsToCheck(
+    "pixel@memelab.com.br",
+    ["VJPixel@gmail.com", "pixel@memelab.com.br"],
+    ["vjpixel@gmail.com"],
+  );
+  assert.deepEqual(r.toCheck, ["pixel@memelab.com.br"]);
+  assert.deepEqual(r.exempt, ["VJPixel@gmail.com"]);
+});
+
+test("resolveSeedEmailsToCheck — sem isenção declarada, todos os seeds continuam checados", () => {
+  const r = resolveSeedEmailsToCheck("a@x.com", ["b@x.com"]);
+  assert.deepEqual(r.toCheck, ["a@x.com", "b@x.com"]);
+  assert.deepEqual(r.exempt, []);
+});
+
+test("resolveSeedEmailsToCheck — isenção é por endereço: outro seed blacklisted continua acusado", () => {
+  const r = resolveSeedEmailsToCheck("a@x.com", ["b@x.com"], ["b@x.com"]);
+  assert.deepEqual(r.toCheck, ["a@x.com"]);
 });
