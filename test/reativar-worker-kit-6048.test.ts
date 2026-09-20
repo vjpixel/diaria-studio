@@ -263,11 +263,14 @@ describe("handleConfirm — seleção de backend via env.SUBSCRIBE_BACKEND (#604
     const env: Env = { BEEHIIV_API_KEY: "bk", BEEHIIV_PUBLICATION_ID: "pub" };
     const url = new URL("https://reativar.test/?email=a@b.com");
     const res = await handleConfirm(url, env, fetchImpl);
-    assert.equal(res.status, 200);
+    // #8539: sucesso real agora é um redirect (303) pra /confirmada, não
+    // mais uma página HTML própria renderizada em 200 — ver
+    // test/reativar-worker-4476.test.ts pro contrato completo do redirect.
+    assert.equal(res.status, 303);
     assert.ok(calls.some((c) => c.url.includes("beehiiv.com") || c.url.includes("api.beehiiv")), "deveria ter tocado a Beehiiv");
   });
 
-  it('SUBSCRIBE_BACKEND: "kit" → chama o Kit, não a Beehiiv, e devolve a página de sucesso', async () => {
+  it('SUBSCRIBE_BACKEND: "kit" → chama o Kit, não a Beehiiv, e redireciona pra /confirmada (#8539)', async () => {
     const { fetchImpl, calls } = routedFetch({
       get: () => jsonRes(200, { subscribers: [] }),
       post: () => jsonRes(201, { subscriber: { state: "active" } }),
@@ -275,9 +278,8 @@ describe("handleConfirm — seleção de backend via env.SUBSCRIBE_BACKEND (#604
     const env = kitEnv();
     const url = new URL("https://reativar.test/?email=a@b.com");
     const res = await handleConfirm(url, env, fetchImpl);
-    assert.equal(res.status, 200);
-    const html = await res.text();
-    assert.match(html, /[Cc]onfirmad|[Ss]ucesso|ativad/, "deveria renderizar a página de sucesso");
+    assert.equal(res.status, 303);
+    assert.match(res.headers.get("Location") ?? "", /\/confirmada(\?|$)/, "deveria redirecionar pra /confirmada");
     assert.ok(calls.every((c) => c.url.startsWith("https://kit.test")));
   });
 

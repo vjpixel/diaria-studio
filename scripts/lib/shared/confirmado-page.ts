@@ -1,5 +1,6 @@
 /**
- * scripts/lib/shared/confirmado-page.ts (#7737)
+ * scripts/lib/shared/confirmado-page.ts (#7737, renomeada `/confirmado` →
+ * `/confirmada` no #8539)
  *
  * Render puro (sem I/O, sem env) da página de confirmação do double opt-in
  * da Beehiiv/Kit — extraído de `workers/poll/src/confirmado.ts`, onde toda a
@@ -19,6 +20,22 @@
  * gravado em e-mails de confirmação JÁ ENTREGUES e em `opt_in_redirect_url`
  * da Beehiiv.
  *
+ * **#8539 — rota vira `/confirmada`, `/confirmado` passa a ser um 301
+ * (nunca removido, mesmo racional acima: link já entregue).** Motivo:
+ * `workers/reativar/src/index.ts` (botão "Confirmar minha inscrição" do
+ * e-mail Pending da Brevo) tinha SEU PRÓPRIO desfecho de sucesso — página
+ * HTML inline, sem GTM, invisível pra qualquer medição de conversão ancorada
+ * em `/confirmado`. Desde o #8539, o clique confirmado do `reativar`
+ * REDIRECIONA (302/303) pra cá (`/confirmada?via=brevo`) em vez de renderizar
+ * a própria página — os dois caminhos de confirmação (Kit DOI direto e
+ * Brevo/reativar) convergem nesta MESMA página/instrumentação. Copy
+ * neutra de propósito (não fala em "primeira edição" nem promete data de
+ * retomada) porque atende os dois públicos: cadastro novo (nunca recebeu) e
+ * reativação (já recebia, ficou Pending). `embedUrl` (widget Kit Creator
+ * Network, `renderKitRecommendationsBlock`) é o mesmo bloco que antes só
+ * aparecia na página própria do `reativar` — movido pra cá pelos dois
+ * caminhos convergirem no mesmo desfecho.
+ *
  * Dois Workers = dois bundles Cloudflare separados, sem import cross-worker
  * por convenção (ver docstring de `workers/cursos/src/subscribe.ts`) — por
  * isso o render puro mora aqui, em `scripts/lib/shared/`, e cada Worker
@@ -34,9 +51,13 @@ import {
 import { renderSeoMeta, renderAnalyticsHead } from "./seo-meta.ts"; // #5498: container GTM
 import { DIARIA_LIVROS_URL, DIARIA_ARQUIVO_URL, DIARIA_CURSOS_URL, DIARIA_EIA_URL } from "../canonical-urls.ts";
 import { renderSiteNav } from "./site-nav.ts"; // #8497: menu global
+import { renderKitRecommendationsBlock } from "./kit-recommendations-block.ts"; // #8539, movido de workers/reativar
 
-/** URL pública canônica desta página — apex, desde #7737 (era `eia.diar.ia.br/confirmado`). */
-export const PAGE_URL = "https://diar.ia.br/confirmado";
+/** URL pública canônica desta página — apex, `/confirmada` desde #8539
+ *  (era `/confirmado`, que segue no ar como 301 pra cá — ver
+ *  `workers/site/src/index.ts`; e antes disso `eia.diar.ia.br/confirmado`,
+ *  #7737). */
+export const PAGE_URL = "https://diar.ia.br/confirmada";
 
 const PAGE_TITLE = "Assinatura confirmada — diar.ia.br";
 const PAGE_DESCRIPTION = "Sua assinatura da newsletter diar.ia.br está confirmada.";
@@ -58,8 +79,16 @@ function renderConfirmadoStyles(): string {
   .confirmado-portas p { font-size: 14px; line-height: 1.5; color: var(--ink); opacity: 0.75; margin: 4px 0 0; }`;
 }
 
-/** Puro — sem I/O, sem env. Testável direto. */
-export function renderConfirmadoPage(): string {
+/**
+ * Puro — sem I/O, sem env. Testável direto.
+ *
+ * `embedUrl` (opcional, #8539): widget Kit Creator Network
+ * (`renderKitRecommendationsBlock`) — mesmo bloco que antes só aparecia na
+ * página própria do `reativar` (#7524). Ausente (default) = sem o bloco,
+ * comportamento de hoje.
+ */
+export function renderConfirmadaPage(embedUrl?: string): string {
+  const kitBlock = embedUrl ? renderKitRecommendationsBlock(embedUrl) : "";
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -90,8 +119,8 @@ ${renderCuradoriaFooterStyles()}
   </header>
   <main>
     <div class="wrap">
-      <p class="confirmado-lede">Pronto — você já está na lista. Obrigado por confirmar.</p>
-      <p class="confirmado-timing">Sua primeira edição chega numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam.</p>
+      <p class="confirmado-lede">Pronto — sua assinatura está confirmada. Obrigado por confirmar.</p>
+      <p class="confirmado-timing">As próximas edições chegam numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam.</p>
       <div class="confirmado-portas">
         <h2>Enquanto isso</h2>
         <ul>
@@ -113,6 +142,7 @@ ${renderCuradoriaFooterStyles()}
           </li>
         </ul>
       </div>
+      ${kitBlock}
     </div>
   </main>
   ${renderCuradoriaFooter("diar.ia.br — assinatura confirmada")}
@@ -121,9 +151,9 @@ ${renderCuradoriaFooterStyles()}
 `;
 }
 
-/** Embrulha `renderConfirmadoPage()` numa `Response` — sem KV, sem env. */
-export function handleConfirmadoPage(): Response {
-  return new Response(renderConfirmadoPage(), {
+/** Embrulha `renderConfirmadaPage()` numa `Response` — sem KV, sem env. */
+export function handleConfirmadaPage(embedUrl?: string): Response {
+  return new Response(renderConfirmadaPage(embedUrl), {
     status: 200,
     headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "public, max-age=3600" },
   });

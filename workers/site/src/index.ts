@@ -52,8 +52,9 @@ import { imageKeyFromPath, serveKvImage, type KvImageStore } from "../../../scri
 // #7737: página de confirmação do double opt-in, movida de
 // eia.diar.ia.br/confirmado (Worker `poll`, que agora só faz 301 pra cá) —
 // render puro em scripts/lib/shared/, sem import cross-worker (ver
-// docstring do módulo).
-import { handleConfirmadoPage } from "../../../scripts/lib/shared/confirmado-page.ts";
+// docstring do módulo). #8539: rota renomeada pra /confirmada — /confirmado
+// vira 301 pra cá, nunca 404 (link já entregue em e-mails/opt_in_redirect_url).
+import { handleConfirmadaPage } from "../../../scripts/lib/shared/confirmado-page.ts";
 // #8062: mesma instrumentação de bot de IA / Referer de assistente que
 // workers/arquivo/src/index.ts já tem — este Worker (apex diar.ia.br) era o
 // único dos 4 sem NENHUM contador, apesar de ser a superfície com mais URLs
@@ -97,6 +98,19 @@ export interface Env {
    *  Serve `GET /{INDEXNOW_KEY}.txt` — é assim que o Bing confirma que quem
    *  pinga é dono do host. Ausente = nenhuma rota nova (fallback normal). */
   INDEXNOW_KEY?: string;
+  /**
+   * #8539 — widget Kit Creator Network (lado OUTGOING, #7524), embutido via
+   * `<iframe>` em `/confirmada` quando presente. Movido do worker `reativar`
+   * (que renderizava sua própria tela de sucesso) pra cá — desde o #8539 os
+   * dois caminhos de confirmação (Kit DOI direto e Brevo/reativar) convergem
+   * nesta MESMA página, então o widget só precisa existir aqui. **VALOR NÃO
+   * CONFIRMADO como embed real** — mesma ressalva de
+   * `workers/reativar/src/index.ts` (a Kit não expõe um
+   * `embedded_recommendations_url` distinto da página hospedada
+   * `/profile/recommendations`; ver `docs/kit-creator-network.md`). Ausente
+   * (default) = sem o widget, comportamento de hoje.
+   */
+  KIT_RECOMMENDATIONS_EMBED_URL?: string;
 }
 
 /** Casa `/p/{slug}` (com ou sem barra final — `html_handling` já resolve a
@@ -165,7 +179,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // #8062: mesmo par de blocos fail-soft de workers/arquivo/src/index.ts —
     // log de Referer de assistente + contador de fetch por bot nomeado.
-    // ANTES de qualquer outra lógica (asset lookup, /img, /confirmado): a
+    // ANTES de qualquer outra lógica (asset lookup, /img, /confirmada): a
     // request casa ou não casa independente do que o resto do handler faz
     // com ela, e um try/catch isolado nunca deve atrasar a resposta real.
     try {
@@ -195,7 +209,7 @@ export default {
     // sempre e termina no 404 do asset (mesmo critério do dispatch de
     // `/img/*` em workers/poll/src/index.ts).
     // reqUrl: parse único reusado pelos dispatches abaixo que precisam do
-    // pathname ANTES do asset lookup (/img/{key} e /confirmado) — nome não
+    // pathname ANTES do asset lookup (/img/{key} e /confirmada) — nome não
     // é mais "imageUrl" desde que o 2º dispatch (#7737) passou a usá-lo.
     const reqUrl = new URL(request.url);
     if (request.method === "GET" || request.method === "HEAD") {
@@ -205,12 +219,25 @@ export default {
       }
     }
 
-    // #7737: /confirmado — sem arquivo em public/, mesmo racional do
-    // /img/{key} acima: resolvido ANTES do asset lookup pra não gastar um
-    // 404 desnecessário. Só GET, mesmo critério do dispatch em
-    // workers/poll/src/index.ts (que agora só redireciona pra cá).
+    // #7737: /confirmada (renomeada de /confirmado no #8539) — sem arquivo
+    // em public/, mesmo racional do /img/{key} acima: resolvido ANTES do
+    // asset lookup pra não gastar um 404 desnecessário. Só GET, mesmo
+    // critério do dispatch em workers/poll/src/index.ts (que agora só
+    // redireciona pra cá).
+    if (request.method === "GET" && reqUrl.pathname === "/confirmada") {
+      return handleConfirmadaPage(env.KIT_RECOMMENDATIONS_EMBED_URL);
+    }
+
+    // #8539: /confirmado (nome antigo) — 301 permanente pra /confirmada,
+    // NUNCA removido. O "After confirming redirect to" do form de DOI do
+    // Kit ainda aponta pro nome antigo até o editor trocar manualmente no
+    // painel (docs/kit-doi-confirmation-copy.md) — um 404 aqui quebraria
+    // confirmações pendentes. Preserva a query string (UTM) igual ao
+    // redirect de eia.diar.ia.br/confirmado (workers/poll/src/confirmado.ts).
     if (request.method === "GET" && reqUrl.pathname === "/confirmado") {
-      return handleConfirmadoPage();
+      const target = new URL("/confirmada", reqUrl.origin);
+      target.search = reqUrl.search;
+      return Response.redirect(target.toString(), 301);
     }
 
     // #8355: arquivo de chave do IndexNow — mesmo padrão de
@@ -230,7 +257,7 @@ export default {
 
     // #7915: /apoiar/ir — sem arquivo em public/ (é uma ROTA, não uma
     // página), resolvido ANTES do asset lookup pelo mesmo motivo do
-    // /confirmado acima. Incrementa o contador de CLIQUE (nunca pagamento
+    // /confirmada acima. Incrementa o contador de CLIQUE (nunca pagamento
     // confirmado — isso continua vindo do apoia.se/Stripe) e redireciona
     // (302) pro apoia.se, preservando query string (UTM) igual ao fallback
     // do #6429 logo abaixo. Fail-soft: falha no KV nunca impede o redirect.
@@ -268,7 +295,7 @@ export default {
     // #8355: só pra páginas do acervo (`/p/{slug}`) servidas com sucesso —
     // ver docstring de `withArchiveCacheValidators` acima pro racional
     // completo (ETag/Last-Modified/304). Passos anteriores (`/img/{key}`,
-    // `/confirmado`, `/apoiar/*`) já retornaram antes de chegar aqui, então
+    // `/confirmada`, `/apoiar/*`) já retornaram antes de chegar aqui, então
     // esta checagem nunca compete com eles.
     if (response.status === 200 && (request.method === "GET" || request.method === "HEAD")) {
       const okSlug = matchArchiveSlug(reqUrl.pathname);

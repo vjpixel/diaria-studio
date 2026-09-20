@@ -59,6 +59,22 @@ compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
+# #8539: KIT_RECOMMENDATIONS_EMBED_URL — OPCIONAL (#7524, lado OUTGOING do
+# Kit Creator Network, follow-up do #6674), movida pra cá de
+# `workers/reativar/wrangler.toml` — os dois caminhos de confirmação (Kit
+# DOI direto e Brevo/reativar) convergem em `/confirmada`, servida por este
+# Worker, então o widget só precisa existir aqui. Ausente = página de
+# confirmação sem o widget, comportamento de hoje. NÃO setar sem antes
+# confirmar com o editor se existe uma URL de embed real distinta da página
+# hospedada `https://diariabr.kit.com/profile/recommendations`
+# (docs/kit-creator-network.md) — o MCP `kit` não expõe esse campo
+# (`get_creator_profile` só devolve `profile_url`), e o valor citado na
+# issue original do #7524 (`.../recommendations`, sem `/profile/`) não bateu
+# com o confirmado no doc. AÇÃO PENDENTE DO EDITOR:
+#   cd workers/site && npx wrangler secret put KIT_RECOMMENDATIONS_EMBED_URL
+# (secret, não var — mesmo tratamento de qualquer URL externa que aponte pra
+# uma conta específica).
+
 [assets]
 directory = "./public"
 binding = "ASSETS"

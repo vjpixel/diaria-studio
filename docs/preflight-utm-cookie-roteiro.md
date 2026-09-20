@@ -113,9 +113,11 @@ passo 7, que não é sinal real sobre o teste de produção.
    mora em `scripts/lib/shared/confirmado-page.ts`, servida pelo Worker
    `site` no apex — `workers/poll/src/confirmado.ts` hoje só devolve um 301
    pro apex, para não quebrar o link antigo já entregue em e-mails de
-   confirmação; se o painel Incentive do Kit ainda aponta pro endereço
-   antigo, ótimo — o redirect cobre isso e GTM/cookies testam igual; se não,
-   ajustar este passo com a URL real observada).
+   confirmação; **desde #8539 a rota do apex é `/confirmada`** — era
+   `/confirmado`, que também virou 301 pra `/confirmada` no mesmo apex; se o
+   painel Incentive do Kit ainda aponta pro endereço antigo, ótimo — a
+   cadeia de 301 cobre isso e GTM/cookies testam igual; se não, ajustar este
+   passo com a URL real observada).
    Comparar com o que foi anotado no passo 2: os mesmos `_fbc`/`_fbp`/`_ga`
    deveriam aparecer aqui também, com o mesmo `domain` `.diar.ia.br`. Se
    sumiram, ou se o `domain` anotado no passo 2 era `diar.ia.br` restrito

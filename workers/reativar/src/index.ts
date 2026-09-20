@@ -143,6 +143,7 @@ import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signu
 import { resolveKitCreateState, vincularKitDoiForm, extrairSubscriberId, mensagemSubscriberIdAusente } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
 import { verifyReativarToken } from "../../../scripts/lib/shared/reativar-token.ts"; // #8194
 import { REATIVAR_CONFIRMOU_VIA_VALUE } from "../../../scripts/lib/shared/reativar-confirmou-via.ts"; // #8438
+import { PAGE_URL as CONFIRMADA_PAGE_URL } from "../../../scripts/lib/shared/confirmado-page.ts"; // #8539
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -250,24 +251,11 @@ export interface Env {
    * (`self_confirmed_kit`/`self_confirmed_beehiiv`). Mesmo degrade gracioso
    * dos demais `KIT_*_FIELD`. */
   KIT_CONFIRMOU_VIA_FIELD?: string;
-  /**
-   * #7524 (lado OUTGOING do Kit Creator Network, follow-up do #6674) —
-   * URL do widget de recomendações da Kit (`https://{subdomínio}.kit.com/profile/recommendations`,
-   * ver `docs/kit-creator-network.md`) embutida via `<iframe>` na tela de
-   * confirmação (`renderSuccessPage`), SÓ quando `useKit` (o widget é
-   * específico do Creator Network da Kit — não faz sentido no caminho
-   * Beehiiv). **VALOR NÃO CONFIRMADO como embed real** — a Kit não expõe
-   * (MCP `kit` checado ao vivo: `get_creator_profile` só devolve
-   * `profile_url`, sem campo de embed dedicado) nenhum
-   * `embedded_recommendations_url` distinto da página hospedada
-   * `/profile/recommendations`; o valor citado no corpo da issue #7524
-   * (`https://diariabr.kit.com/recommendations`, sem `/profile/`) não bateu
-   * com o confirmado em `docs/kit-creator-network.md`. Ausente (default) =
-   * comportamento de hoje, sem widget — placeholder configurável até o
-   * editor confirmar a URL de embed real (se existir) antes de armar em
-   * produção. Ver seção 6 de `docs/beehiiv-vs-kit-migration.md`.
-   */
-  KIT_RECOMMENDATIONS_EMBED_URL?: string;
+  // #8539: `KIT_RECOMMENDATIONS_EMBED_URL` (widget Kit Creator Network,
+  // #7524) foi REMOVIDO daqui e movido pro Env do Worker `site`
+  // (`workers/site/src/index.ts`) — o clique confirmado deste worker agora
+  // REDIRECIONA pra `/confirmada` em vez de renderizar sua própria tela de
+  // sucesso, então o widget só precisa existir no destino do redirect.
 }
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
@@ -1098,33 +1086,12 @@ a{color:#0a5}
 <body>${body}</body></html>`;
 }
 
-/**
- * #7524 — bloco opcional do widget Kit Creator Network (lado OUTGOING),
- * embutido só quando `embedUrl` está configurado (ver docstring de
- * `KIT_RECOMMENDATIONS_EMBED_URL` no `Env`). `<iframe>` simples — a Kit não
- * documenta um script de embed dedicado pra esta página; se um dia expuser
- * um, este bloco troca de `<iframe>` pra o snippet oficial sem afetar o
- * call site (`renderSuccessPage`/`handleConfirm`).
- */
-function renderKitRecommendationsBlock(embedUrl: string): string {
-  // Escapa o atributo mesmo o valor vindo de secret (não de request): um
-  // typo com `"`/`<` no `wrangler secret put` quebraria o HTML em silêncio.
-  const src = embedUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
-  return `<div style="margin-top:32px"><iframe src="${src}" width="100%" height="480" style="border:none" title="Outras newsletters recomendadas"></iframe></div>`;
-}
-
-export function renderSuccessPage(embedUrl?: string): string {
-  // #6048 (achado ao vivo, rollout do worker cursos): esta página é
-  // compartilhada pelos dois backends (activateSubscription/Beehiiv e
-  // activateSubscriptionKit) — nomear "Beehiiv" aqui ficaria errado assim
-  // que SUBSCRIBE_BACKEND virar "kit" neste worker, e o nome do provedor
-  // não importa pro leitor de qualquer forma. Copy vendor-neutro.
-  const kitBlock = embedUrl ? renderKitRecommendationsBlock(embedUrl) : "";
-  return page(
-    "Cadastro confirmado",
-    `<h1>Cadastro confirmado!</h1><p>Você vai voltar a receber a diária a partir da próxima edição.</p><p><a href="https://diar.ia.br">Voltar pra diar.ia.br</a></p>${kitBlock}`,
-  );
-}
+// #8539: `renderSuccessPage`/`renderKitRecommendationsBlock` (#7524) foram
+// REMOVIDAS daqui — o clique confirmado deixou de renderizar sua própria
+// tela de sucesso e passou a REDIRECIONAR (302) pra `/confirmada`
+// (`scripts/lib/shared/confirmado-page.ts`, Worker `site`), que já carrega o
+// widget de recomendações Kit quando configurado. Ver `handleConfirm` abaixo
+// e o docstring do módulo, seção "#8539".
 
 export function renderMissingEmailPage(): string {
   return page(
@@ -1253,6 +1220,32 @@ function htmlResponse(html: string, status: number): Response {
   });
 }
 
+/**
+ * #8539 — desfecho de SUCESSO real (`beehiivStatus === "active"`): 303 pra
+ * `/confirmada` (`CONFIRMADA_PAGE_URL`, fonte única em
+ * `scripts/lib/shared/confirmado-page.ts`) em vez da página HTML inline que
+ * este worker renderizava antes (`renderSuccessPage`, removida). `?via=brevo`
+ * é só diagnóstico de origem — distingue este caminho do clique direto no
+ * e-mail de confirmação do Kit sem depender só do custom field
+ * `confirmou_via` (#8438). 303 (não 302): a navegação que chega aqui é
+ * sempre GET, mas 303 é semanticamente "veja o resultado em outro recurso"
+ * — o código de status correto pra um redirect pós-ação que nunca deveria
+ * ser re-executado num refresh/back (mesmo racional de POST-redirect-GET,
+ * ainda que o método aqui já seja GET).
+ *
+ * **Fail-safe (self-review #8539): esta função só é chamada no branch
+ * `beehiivStatus === "active"` de `handleConfirm` — nunca no caminho de
+ * falha/token-inválido/ainda-não-confirmado.** Não redireciona baseado em
+ * `result.ok`/status HTTP 2xx sozinho (a mesma lição do #4476: 2xx não é
+ * garantia de `active`).
+ */
+function redirectToConfirmadaSuccess(): Response {
+  return new Response(null, {
+    status: 303,
+    headers: { ...CORS_HEADERS, Location: `${CONFIRMADA_PAGE_URL}?via=brevo`, "Cache-Control": "no-store, no-cache, must-revalidate" },
+  });
+}
+
 export async function handleConfirm(
   url: URL,
   env: Env,
@@ -1342,11 +1335,10 @@ export async function handleConfirm(
     } else {
       await sendEvent;
     }
-    // #7524: widget Kit Creator Network (outgoing) só faz sentido no
-    // caminho Kit — `useKit` já resolvido acima, `KIT_RECOMMENDATIONS_EMBED_URL`
-    // ausente (default) mantém a página idêntica ao comportamento pré-#7524.
-    const embedUrl = useKit ? env.KIT_RECOMMENDATIONS_EMBED_URL : undefined;
-    return htmlResponse(renderSuccessPage(embedUrl), 200);
+    // #8539: sucesso real → redireciona pra /confirmada (widget Kit Creator
+    // Network, se configurado, mora lá agora — ver docstring de
+    // `redirectToConfirmadaSuccess`).
+    return redirectToConfirmadaSuccess();
   }
   return htmlResponse(renderNotConfirmedPage(), 200);
 }

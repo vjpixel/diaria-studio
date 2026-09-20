@@ -37,7 +37,7 @@ import { buildApoiarHtml } from "../scripts/lib/site-apoiar-page.ts";
 import { buildAssinarHtml } from "../scripts/lib/site-assinar-page.ts";
 import { buildClariceCouponHtml } from "../scripts/lib/site-clarice-coupon-page.ts";
 import { buildArchiveIndexHtml } from "../scripts/lib/site-archive-index.ts";
-import { renderConfirmadoPage } from "../scripts/lib/shared/confirmado-page.ts";
+import { renderConfirmadaPage } from "../scripts/lib/shared/confirmado-page.ts"; // #8539: renomeada de renderConfirmadoPage
 import { buildArchivePageHtml, type ArchivePost } from "../scripts/lib/site-archive-pages.ts";
 
 describe("renderSiteNav — miolo puro (#8497)", () => {
@@ -159,9 +159,9 @@ describe("guard mecânico — nav presente em CADA superfície tocada pelo #8497
     assert.ok(html.includes(SITE_NAV_MARKER), "/clarice sem menu global");
   });
 
-  it("/confirmado (shared/confirmado-page.ts)", () => {
-    const html = renderConfirmadoPage();
-    assert.ok(html.includes(SITE_NAV_MARKER), "/confirmado sem menu global");
+  it("/confirmada (shared/confirmado-page.ts, renomeada de /confirmado no #8539)", () => {
+    const html = renderConfirmadaPage();
+    assert.ok(html.includes(SITE_NAV_MARKER), "/confirmada sem menu global");
   });
 
   it("/archive (site-archive-index.ts) — 'Edições' ativo", () => {

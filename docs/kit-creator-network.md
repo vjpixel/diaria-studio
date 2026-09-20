@@ -171,19 +171,25 @@ decisão à parte, fora do escopo do que foi perguntado ao editor.
 
 **#7524 (06/09/2026) — mecanismo pra fechar parte do gap acima, sem rotear cadastro pelo
 form nativo.** Dos 3 workers de cadastro (`poll`, `cursos`, `reativar` — nomes de worker, não
-os subdomínios da tabela acima), só `reativar` de fato renderiza uma **tela de confirmação
-por navegação de página inteira** (`GET /?email=X` → `renderSuccessPage`, no clique do link
-de confirmação enviado por Brevo/e-mail de reativação). `poll` (`POST /jogar/subscribe`) e
+os subdomínios da tabela acima), só `reativar` renderizava uma **tela de confirmação por
+navegação de página inteira** (`GET /?email=X` → `renderSuccessPage`, no clique do link de
+confirmação enviado por Brevo/e-mail de reativação). `poll` (`POST /jogar/subscribe`) e
 `cursos` (`POST /gate/subscribe`) são API pura consumida por JS inline — mostram uma mensagem
 de status e resetam o form, sem navegar pra lugar nenhum; não há tela onde embutir um widget.
-`renderSuccessPage` ganhou um `<iframe>` opcional (`Env.KIT_RECOMMENDATIONS_EMBED_URL`, só
-quando `SUBSCRIBE_BACKEND === "kit"`) — **placeholder configurável, não armado**: o MCP `kit`
-não expõe nenhum campo de embed distinto da página hospedada `/profile/recommendations`
-acima (checado ao vivo via `get_creator_profile`), e o valor citado no corpo original da
-issue (`.../recommendations`, sem `/profile/`) não bate com o confirmado nesta página. Editor
-decide se aponta o iframe pra própria página hospedada ou se existe um embed dedicado antes
-de `wrangler secret put KIT_RECOMMENDATIONS_EMBED_URL` em produção. Ver também seção 6 de
-`docs/beehiiv-vs-kit-migration.md`.
+
+**#8539 (20/09/2026) — `renderSuccessPage` foi removida.** O clique confirmado do `reativar`
+deixou de renderizar sua própria tela e passou a REDIRECIONAR (303) pra `/confirmada`
+(`scripts/lib/shared/confirmado-page.ts`, Worker `site`) — os dois caminhos de confirmação
+(Kit DOI direto e Brevo/reativar) convergem nessa MESMA página agora. O `<iframe>` opcional
+(`renderKitRecommendationsBlock`) moveu junto: `Env.KIT_RECOMMENDATIONS_EMBED_URL` agora vive
+no `wrangler.toml`/Env do Worker `site`, não mais no `reativar`. Continua **placeholder
+configurável, não armado**: o MCP `kit` não expõe nenhum campo de embed distinto da página
+hospedada `/profile/recommendations` acima (checado ao vivo via `get_creator_profile`), e o
+valor citado no corpo original da issue #7524 (`.../recommendations`, sem `/profile/`) não
+bate com o confirmado nesta página. Editor decide se aponta o iframe pra própria página
+hospedada ou se existe um embed dedicado antes de
+`cd workers/site && npx wrangler secret put KIT_RECOMMENDATIONS_EMBED_URL` em produção. Ver
+também seção 6 de `docs/beehiiv-vs-kit-migration.md`.
 
 ### `enabled_forms_count` continua 0 — e isso não significa "ninguém vê"
 

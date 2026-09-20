@@ -144,20 +144,25 @@ incoming gerando assinante real, outgoing com gap conhecido nos 3 workers de cad
 (#7524).
 
 **#7524 (06/09/2026) — mecanismo do gap fechado PARCIALMENTE.** Dos 3 workers, só
-`workers/reativar` renderiza uma tela de confirmação por navegação de página inteira
+`workers/reativar` renderizava uma tela de confirmação por navegação de página inteira
 (`GET /?email=X` → `renderSuccessPage`); `workers/poll` (`POST /jogar/subscribe`) e
 `workers/cursos` (`POST /gate/subscribe`) são API pura consumida por JS inline (mensagem de
 status + reset do form, sem tela própria) — o widget não tem onde embutir nesses dois.
-`renderSuccessPage` ganhou um parâmetro `embedUrl` opcional que, quando setado via
-`Env.KIT_RECOMMENDATIONS_EMBED_URL` **e** o backend for Kit (`SUBSCRIBE_BACKEND === "kit"`),
-embute um `<iframe>` do widget de recomendações logo abaixo da confirmação. **Valor NÃO
-confirmado como embed real** — checado ao vivo via MCP `kit` (`get_creator_profile` só
-devolve `profile_url`, sem campo de embed dedicado); o valor citado no corpo original da
-issue (`https://diariabr.kit.com/recommendations`) não bate com o confirmado em
-`docs/kit-creator-network.md` (`https://diariabr.kit.com/profile/recommendations`, a página
-hospedada). Var ausente por padrão — placeholder configurável (`wrangler secret put
-KIT_RECOMMENDATIONS_EMBED_URL`) até o editor confirmar se existe uma URL de embed distinta
-da página hospedada, ou decidir usar a própria página hospedada como `src` do iframe.
+
+**#8539 (20/09/2026) — `renderSuccessPage` foi REMOVIDA.** O `reativar` deixou de renderizar
+sua própria tela de sucesso e passou a redirecionar (303) pra `/confirmada`
+(`scripts/lib/shared/confirmado-page.ts`, Worker `site`, rota renomeada de `/confirmado`) — os
+dois caminhos de confirmação (Kit DOI direto e Brevo/reativar) convergem nessa MESMA página. O
+`<iframe>` opcional moveu junto: `Env.KIT_RECOMMENDATIONS_EMBED_URL` agora vive no Env do
+Worker `site` (não mais no `reativar`), e `renderConfirmadaPage` (era `renderSuccessPage`)
+recebe o `embedUrl` como parâmetro. **Valor NÃO confirmado como embed real** — checado ao vivo
+via MCP `kit` (`get_creator_profile` só devolve `profile_url`, sem campo de embed dedicado); o
+valor citado no corpo original da issue (`https://diariabr.kit.com/recommendations`) não bate
+com o confirmado em `docs/kit-creator-network.md`
+(`https://diariabr.kit.com/profile/recommendations`, a página hospedada). Var ausente por
+padrão — placeholder configurável (`cd workers/site && npx wrangler secret put
+KIT_RECOMMENDATIONS_EMBED_URL`) até o editor confirmar se existe uma URL de embed distinta da
+página hospedada, ou decidir usar a própria página hospedada como `src` do iframe.
 
 ### Refs
 

@@ -19,6 +19,13 @@
  * mais a página em si (que agora mora em `scripts/lib/shared/confirmado-page.ts`,
  * consumida pelo Worker `site`).
  *
+ * **#8539: o destino no apex virou `/confirmada`** (era `/confirmado` —
+ * `workers/site/src/index.ts` agora serve `/confirmada` e faz 301 de
+ * `/confirmado` pra lá). Esta rota (`eia.diar.ia.br/confirmado`) não muda de
+ * comportamento — ela lê `CONFIRMADO_REDIRECT_URL`, que é sempre
+ * `PAGE_URL` de `confirmado-page.ts`, então o destino do 301 acompanha
+ * automaticamente sem precisar tocar este arquivo.
+ *
  * Não repetir aqui o racional completo de por que esta página existe (as
  * 4 "portas" de curadoria, GTM/#5499, por que `gclid`/`fbclid`/`msclkid`/
  * `li_fat_id` não se aplicam) — ele vive na docstring de

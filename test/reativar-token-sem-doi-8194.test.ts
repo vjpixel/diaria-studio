@@ -185,7 +185,9 @@ describe("handleConfirm — token decide entre ativar direto e DOI (#8194)", () 
   it("token válido → active, sem DOI", async () => {
     const t = await computeReativarToken(SECRET, "a@x.com");
     const { res, kit } = await confirm(`email=a%40x.com&t=${t}`);
-    assert.equal(res.status, 200);
+    // #8539: sucesso real agora é um redirect (303) pra /confirmada, não
+    // mais uma página HTML própria em 200.
+    assert.equal(res.status, 303);
     assert.equal(kit.getState(), "active");
     assert.ok(!kit.calls.some((c) => c.url.includes("/forms/9897918/")));
   });

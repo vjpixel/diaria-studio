@@ -17,7 +17,6 @@ import {
   handleConfirm,
   checkNativeUnsubscribePending,
   unlinkReativarFromBrevoList,
-  renderSuccessPage,
   renderMissingEmailPage,
   renderInvalidEmailPage,
   renderErrorPage,
@@ -26,6 +25,14 @@ import {
   type Env,
 } from "../workers/reativar/src/index.ts";
 import { BREVO_DIARIA_REATIVAR_CLIQUE_UTM } from "../scripts/lib/shared/utm-registry.ts";
+import { PAGE_URL as CONFIRMADA_PAGE_URL } from "../scripts/lib/shared/confirmado-page.ts";
+
+/** #8539 — sucesso real (`beehiivStatus:"active"`) agora é um 303 pra
+ *  `/confirmada?via=brevo`, não mais uma página HTML inline. */
+function assertRedirectToConfirmadaSuccess(res: Response): void {
+  assert.equal(res.status, 303);
+  assert.equal(res.headers.get("Location"), `${CONFIRMADA_PAGE_URL}?via=brevo`);
+}
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -263,7 +270,7 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
     assert.deepEqual(calls.map((c) => c.method), ["GET"], "nunca chega no DELETE/POST com estado desconhecido");
   });
 
-  it('handleConfirm fim-a-fim: status:"validating" → retry → "active" → página de sucesso', async () => {
+  it('handleConfirm fim-a-fim: status:"validating" → retry → "active" → redireciona pra /confirmada (#8539)', async () => {
     const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       if (method === "POST") return jsonRes(201, { data: { status: "validating" } });
@@ -272,8 +279,7 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
     const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const res = await handleConfirm(url, env, fetchImpl, async () => {});
-    assert.equal(res.status, 200);
-    assert.equal(await res.text(), renderSuccessPage());
+    assertRedirectToConfirmadaSuccess(res);
   });
 
   it("corpo do CREATE sem data.status (ou não-JSON) → ok:true, beehiivStatus:null (nunca lança)", async () => {
@@ -566,8 +572,7 @@ describe("unlinkReativarFromBrevoList — desvincula da lista Brevo no clique (#
       BREVO_DIARIA_LIST_ID: "7",
     };
     const res = await handleConfirm(url, env, fetchImpl);
-    assert.equal(res.status, 200);
-    assert.equal(await res.text(), renderSuccessPage());
+    assertRedirectToConfirmadaSuccess(res);
     assert.equal(unlinkPutCalled, true, "o unlink (PUT) deveria ter sido tentado no caminho de sucesso");
   });
 
@@ -615,7 +620,7 @@ describe("handleConfirm — fim-a-fim (#4476 item 3)", () => {
     assert.equal(await res.text(), renderInvalidEmailPage());
   });
 
-  it("ativação bem-sucedida (GET 404 → cria → beehiivStatus:active) → 200, página de sucesso", async () => {
+  it("ativação bem-sucedida (GET 404 → cria → beehiivStatus:active) → redireciona pra /confirmada (#8539)", async () => {
     const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
       if (init?.method === "POST") return jsonRes(200, { data: { status: "active" } });
       return new Response(null, { status: 404 });
@@ -623,8 +628,22 @@ describe("handleConfirm — fim-a-fim (#4476 item 3)", () => {
     const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const res = await handleConfirm(url, env, fetchImpl);
-    assert.equal(res.status, 200);
-    assert.equal(await res.text(), renderSuccessPage());
+    assertRedirectToConfirmadaSuccess(res);
+  });
+
+  it("ativação bem-sucedida — fail-safe (#8539 self-review): NUNCA redireciona pra /confirmada quando NÃO confirmado (beehiivStatus 'invalid'/'validating'/ausente)", async () => {
+    for (const status of ["invalid", "validating", null]) {
+      const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+        if (init?.method === "POST") return jsonRes(200, { data: status === null ? {} : { status } });
+        return new Response(null, { status: 404 });
+      }) as typeof fetch;
+      const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
+      const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+      // sleepImpl no-op: só "validating" chega a chamar isso (1 retry curto),
+      // sem isto o teste esperaria de verdade CONFIRM_RETRY_DELAY_MS.
+      const res = await handleConfirm(url, env, fetchImpl, async () => {});
+      assert.equal(res.headers.get("Location"), null, `beehiivStatus:${status} nunca deveria redirecionar pra /confirmada`);
+    }
   });
 
   it('#4476 achado do teste ao vivo: POST 2xx mas status:"invalid" → 200 com página "ainda não confirmado" (NUNCA a página de sucesso)', async () => {
@@ -657,12 +676,12 @@ describe("handleConfirm — fim-a-fim (#4476 item 3)", () => {
 });
 
 describe("páginas HTML — conteúdo mínimo esperado (#4476 item 3)", () => {
-  it("renderSuccessPage menciona confirmação", () => {
-    assert.ok(renderSuccessPage().includes("confirmado"));
-  });
+  // #8539: renderSuccessPage foi removida — sucesso agora é um redirect pra
+  // /confirmada (scripts/lib/shared/confirmado-page.ts), coberto por
+  // test/confirmado-page-shared-7737.test.ts.
 
-  it("todas as páginas são HTML válido com <title> e charset", () => {
-    for (const html of [renderSuccessPage(), renderMissingEmailPage(), renderInvalidEmailPage(), renderErrorPage(), renderNotConfirmedPage()]) {
+  it("todas as páginas ainda renderizadas por este worker são HTML válido com <title> e charset", () => {
+    for (const html of [renderMissingEmailPage(), renderInvalidEmailPage(), renderErrorPage(), renderNotConfirmedPage()]) {
       assert.ok(html.includes("<!doctype html>"));
       assert.ok(html.includes('charset="utf-8"'));
       assert.ok(html.includes("<title>"));

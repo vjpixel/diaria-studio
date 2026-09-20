@@ -1,5 +1,11 @@
 # Instrumentação de conversão do teste de 3 canais — estado final (#5500)
 
+**Nota (#8539, 20/09/2026):** as menções a `/confirmado` neste documento são
+registro histórico de medições feitas quando essa era a rota real. Desde o
+#8539 a rota renomeou pra `/confirmada` (`/confirmado` virou 301 pra lá,
+nunca 404) — não editado retroativamente abaixo pra preservar o registro tal
+como medido; leia `/confirmado` como `/confirmada` ao verificar de novo hoje.
+
 Documenta o estado **já publicado e verificado ao vivo** do container GTM
 `GTM-TC8C65ZN`, depois que as tags novas (Meta, Microsoft UET) foram
 importadas e publicadas via `docs/gtm-signup-tracking-setup.md` (material de
