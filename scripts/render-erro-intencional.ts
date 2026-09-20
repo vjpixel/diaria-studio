@@ -403,8 +403,8 @@ export function findPreviousIntentionalErrorFromMd(
  * lookbehind/lookahead encadeados.
  */
 export function boldQuotedStrings(text: string): string {
-  const SENTINEL_DBL = "DBL";
-  const SENTINEL_SGL = "SGL";
+  const SENTINEL_DBL = "\x01DBL\x01";
+  const SENTINEL_SGL = "\x01SGL\x01";
   const dblTokens: string[] = [];
   const sglTokens: string[] = [];
 

@@ -858,7 +858,7 @@ export interface DuplicateChannelSpendWarning {
 export function detectDuplicateChannelSpend(spendRows: SpendRow[]): DuplicateChannelSpendWarning[] {
   const byKey = new Map<string, Set<string>>();
   for (const row of spendRows) {
-    const key = `${row.mes} ${baseChannelName(row.canal)}`;
+    const key = `${row.mes}\0${baseChannelName(row.canal)}`;
     let set = byKey.get(key);
     if (!set) {
       set = new Set();
@@ -869,7 +869,7 @@ export function detectDuplicateChannelSpend(spendRows: SpendRow[]): DuplicateCha
   const out: DuplicateChannelSpendWarning[] = [];
   for (const [key, canais] of byKey) {
     if (canais.size < 2) continue;
-    const [monthKey, baseChannel] = key.split(" ");
+    const [monthKey, baseChannel] = key.split("\0");
     out.push({ monthKey, baseChannel, canais: [...canais].sort() });
   }
   return out.sort((a, b) => a.monthKey.localeCompare(b.monthKey) || a.baseChannel.localeCompare(b.baseChannel));

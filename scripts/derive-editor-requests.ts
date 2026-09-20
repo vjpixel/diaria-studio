@@ -1177,7 +1177,7 @@ function readStage1DerivedMarker(editionDir: string): Stage1DerivedMarker | null
 function computeStage1ContentHash(catPath: string, apprPath: string): string {
   const catRaw = readFileSync(catPath, "utf8");
   const apprRaw = readFileSync(apprPath, "utf8");
-  return createHash("sha256").update(catRaw).update(" ").update(apprRaw).digest("hex");
+  return createHash("sha256").update(catRaw).update("\0").update(apprRaw).digest("hex");
 }
 
 function writeStage1DerivedMarker(editionDir: string, count: number, contentHash: string): void {
