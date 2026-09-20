@@ -196,6 +196,33 @@ def test_controle_claim_proprio_ausente_do_registro_e_fabricacao():
     print("controle: claim proprio ausente do registro -> fabrication_suspected — OK")
 
 
+def test_regressao_8463_falsos_positivos_lista_atribuida_outro_ator():
+    """#8463: lista de refs antes de 'reivindicada pelo Overnight' só capturava
+    último #N; agora captura todos (ex: #8355/#8354). Não deve incluir item
+    que abre a linha se não há claim próprio com liberação no mesmo tick."""
+    mod = _load_module()
+    # (P3) #8355 ficou bloqueada porque #8354 foi reivindicada pelo Overnight
+    linha = "#8355 ficou bloqueada porque #8354 foi reivindicada pelo Overnight"
+    refs = mod.extract_claimed_issue_refs(linha)
+    assert 8354 not in refs, f"#8354 (outro ator) indevido como claim: {refs}"
+    # #8355 abre a linha e está bloqueada por outro; sem claim próprio -> não entra
+    assert 8355 not in refs, f"#8355 (item que abre linha) indevido: {refs}"
+    # Caso com lista completa de outro: "#8355/#8354 reivindicadas pelo Overnight"
+    linha2 = "#8355/#8354 reivindicadas pelo Overnight"
+    refs2 = mod.extract_claimed_issue_refs(linha2)
+    # Ambos são excluídos pelo _OTHERS_CLAIM (outro ator) — nenhum claim próprio
+    for n in (8355, 8354):
+        assert n not in refs2, f"#{{n}} (lista outro ator) indevido: {{refs2}}"
+    # Caso #7807 / #7808 / #7809 (lista abre + item reivindicado)
+    linha3 = "#7807 coberto por #7808, #7809 reivindicada pelo Overnight"
+    refs3 = mod.extract_claimed_issue_refs(linha3)
+    # #7808/#7809 são outros (reivindicados pelo Overnight); #7807 é cobertura, não claim
+    assert 7808 not in refs3, f"#7808 indevido: {refs3}"
+    assert 7809 not in refs3, f"#7809 indevido: {refs3}"
+    assert 7807 not in refs3, f"#7807 (cobertura) indevido: {refs3}"
+    print("regressão #8463: lista atribuída a outro ator + item que abre linha -> OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -578,6 +605,7 @@ def main() -> int:
         test_regressao_exclusao_por_ref_nao_bloqueia_claim_proprio()
         test_adversarial_falsos_negativos_extraem_todos()
         test_controle_claim_proprio_ausente_do_registro_e_fabricacao()
+        test_regressao_8463_falsos_positivos_lista_atribuida_outro_ator()
 
         if FAILED:
             print(f"\n{FAILED} assercao(es) falharam")

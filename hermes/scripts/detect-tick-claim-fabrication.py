@@ -216,7 +216,8 @@ _REF_LIST = re.compile(
 _LEADING_LIST = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?(?=#\d)")
 _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 _OTHERS_CLAIM = re.compile(
-    r"#(\d+)\b[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+"
+    r"(?P<refs>" + _REF_LIST.pattern + r")"
+    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+"
     r"(?:outr[oa]|outros|outras|overnight|terceir[oa])\b",
     re.IGNORECASE,
 )
@@ -376,12 +377,22 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
             if lists:
                 lead = _LEADING_LIST.match(segment)
                 for kw in kws:
-                    if lead and lists[0].start() == lead.end() and (
-                        kw.start() - lists[0].end() <= _LEADING_MAX_GAP
-                    ):
-                        attached.append(lists[0])
                     before = [l for l in lists if l.end() <= kw.start()]
                     after = [l for l in lists if l.start() >= kw.end()]
+                    # Leading-list só se aplica quando é a MESMA lista que o
+                    # heurístico de distância (abaixo) já escolheria — nunca
+                    # uma lista DIFERENTE só porque abre a linha. #8463:
+                    # "#8355 ficou bloqueada porque #8354 foi reivindicada
+                    # pelo Overnight" tem #8355 abrindo a linha, mas quem
+                    # "reivindicada" de fato reclama é #8354 (mais perto,
+                    # já excluído por `_OTHERS_CLAIM` abaixo) — sem esta
+                    # checagem, #8355 entrava como claim próprio fabricado
+                    # só por ser a 1ª lista da linha, mesmo não sendo a que
+                    # o keyword se refere.
+                    if lead and lists[0].start() == lead.end() and (
+                        kw.start() - lists[0].end() <= _LEADING_MAX_GAP
+                    ) and (not before or before[-1] is lists[0]):
+                        attached.append(lists[0])
                     cand = []
                     db = kw.start() - before[-1].end() if before else None
                     da = after[0].start() - kw.end() if after else None
@@ -404,7 +415,11 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
                 continue
             # Exclusões aplicadas SÓ ao número que as justificou (#8377).
             pr_ref_n = {int(n) for n in _PR_REF.findall(segment)}
-            others_n = {int(n) for n in _OTHERS_CLAIM.findall(segment)}
+            others_n = set()
+            for om in _OTHERS_CLAIM.finditer(segment):
+                refs_text = om.group("refs")
+                for n_s in _ISSUE_REF.findall(refs_text):
+                    others_n.add(int(n_s))
             covered_n = {int(n) for n in _COVERED_BY.findall(segment)}
             for lm in attached:
                 for n_s in _ISSUE_REF.findall(lm.group(0)):
