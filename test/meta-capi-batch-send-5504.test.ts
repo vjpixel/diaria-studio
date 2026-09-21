@@ -21,6 +21,7 @@ import {
   runCapiBatch,
   DEFAULT_WINDOW_DAYS,
   CAPI_BATCH_EVENT_SOURCE_URL,
+  REALTIME_HANDLER_REFERRING_SITES,
   type CapiSentIndex,
 } from "../scripts/meta-capi-batch-send.ts";
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
@@ -87,6 +88,56 @@ describe("#5504 — selectCapiCandidates (pure)", () => {
     const old = sub({ created: NOW - 20 * 24 * 60 * 60 });
     assert.equal(selectCapiCandidates([old], { windowDays: 7, nowSeconds: NOW }).length, 0);
     assert.equal(selectCapiCandidates([old], { windowDays: 30, nowSeconds: NOW }).length, 1);
+  });
+});
+
+describe("#8577 — selectCapiCandidates exclui quem já passou por um handler em tempo real", () => {
+  it("exclui subscriber cujo referring_site é um marcador conhecido do worker poll (eia-jogar-inline)", () => {
+    const result = selectCapiCandidates([sub({ referring_site: "eia-jogar-inline" })], {
+      windowDays: DEFAULT_WINDOW_DAYS,
+      nowSeconds: NOW,
+    });
+    assert.equal(result.length, 0);
+  });
+
+  it("exclui subscriber cujo referring_site é o marcador do worker cursos (cursos-gate-inline)", () => {
+    const result = selectCapiCandidates([sub({ referring_site: "cursos-gate-inline" })], {
+      windowDays: DEFAULT_WINDOW_DAYS,
+      nowSeconds: NOW,
+    });
+    assert.equal(result.length, 0);
+  });
+
+  it("exclui TODOS os marcadores conhecidos de REALTIME_HANDLER_REFERRING_SITES", () => {
+    for (const referringSite of REALTIME_HANDLER_REFERRING_SITES) {
+      const result = selectCapiCandidates([sub({ referring_site: referringSite })], {
+        windowDays: DEFAULT_WINDOW_DAYS,
+        nowSeconds: NOW,
+      });
+      assert.equal(result.length, 0, `esperava excluir referring_site=${referringSite}`);
+    }
+  });
+
+  it("inclui subscriber com referring_site vazio (cadastro nativo da Beehiiv — o gap real que o batch cobre)", () => {
+    const result = selectCapiCandidates([sub({ referring_site: "" })], {
+      windowDays: DEFAULT_WINDOW_DAYS,
+      nowSeconds: NOW,
+    });
+    assert.equal(result.length, 1);
+  });
+
+  it("inclui subscriber com referring_site desconhecido (não é nenhum dos 2 handlers)", () => {
+    const result = selectCapiCandidates([sub({ referring_site: "algum-outro-referrer" })], {
+      windowDays: DEFAULT_WINDOW_DAYS,
+      nowSeconds: NOW,
+    });
+    assert.equal(result.length, 1);
+  });
+
+  it("referring_site não-string (shape inesperado) não quebra o filtro e não exclui", () => {
+    const malformed = sub({ referring_site: undefined as unknown as string });
+    const result = selectCapiCandidates([malformed], { windowDays: DEFAULT_WINDOW_DAYS, nowSeconds: NOW });
+    assert.equal(result.length, 1);
   });
 });
 

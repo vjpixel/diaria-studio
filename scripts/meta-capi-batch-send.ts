@@ -10,6 +10,16 @@
  * cobrem: cadastro feito na home hospedada na Beehiiv, fora dos nossos
  * Workers.
  *
+ * **#8577 (achado ao vivo 20/09/2026): até aqui `selectCapiCandidates` NÃO
+ * filtrava por origem** — selecionava todo subscriber `active` na janela,
+ * inclusive quem já tinha passado por um dos 2 handlers que mandam
+ * `CompleteRegistration` (`workers/poll`/`workers/cursos`), reenviando o
+ * MESMO cadastro semana após semana e inflando o volume SERVER_ONLY na
+ * Conversions API pra ~2x o volume BROWSER_ONLY real (`event_id`
+ * determinístico absorve a maioria como duplicata do lado da Meta, mas cada
+ * reenvio ainda é 1 chamada de rede e 1 evento RECEBIDO na API). Corrigido
+ * filtrando por `referring_site` — ver `REALTIME_HANDLER_REFERRING_SITES`.
+ *
  * ## Limitação de janela — a Conversions API só aceita evento cujo
  * `event_time` esteja dentro de ~7 dias do momento do envio (doc oficial da
  * Meta). O snapshot semanal (`Diaria-Beehiiv-Backup`, domingo 03:00) roda
@@ -85,6 +95,60 @@ export const DEFAULT_WINDOW_DAYS = 7;
  * cobre exatamente essa origem, ver docstring do módulo). */
 export const CAPI_BATCH_EVENT_SOURCE_URL = "https://diar.ia.br/";
 
+/**
+ * #8577: marcadores de `referring_site` gravados pelos 2 dos 3 handlers de
+ * formulário (item (a) do escopo) que mandam `CompleteRegistration` —
+ * `workers/poll/src/subscribe.ts` e `workers/cursos/src/subscribe.ts`
+ * (`workers/reativar/src/index.ts` manda `Reactivation`, não
+ * `CompleteRegistration`, desde #8551 — fora do escopo deste filtro) —
+ * sempre que o cadastro JÁ passou por um deles em tempo real. Até aqui
+ * `selectCapiCandidates` selecionava TODO
+ * subscriber `active` na janela, sem olhar a origem — inclusive quem já
+ * tinha recebido um `CompleteRegistration` do handler em tempo real,
+ * contradizendo a própria docstring do módulo ("cobre o gap que os 3
+ * handlers NÃO cobrem"). Medido ao vivo em 20/09/2026
+ * (`ads_get_dataset_stats`, dataset `1285191740325112`): 100% do volume
+ * SERVER_ONLY de `CompleteRegistration` na semana carregava
+ * `event_source_url = CAPI_BATCH_EVENT_SOURCE_URL` (nenhum evento com a URL
+ * de um dos 2 handlers em tempo real apareceu), numa proporção
+ * consistentemente ~2x o volume BROWSER — o batch reprocessando a MESMA
+ * população que os handlers já cobriram, semana após semana, é a explicação
+ * mecânica mais direta. O `event_id` determinístico (mesmo dia UTC) absorve
+ * a maior parte como duplicata do lado da Meta, mas cada reenvio ainda conta
+ * como evento RECEBIDO na Conversions API (a métrica que este filtro reduz)
+ * e ainda gasta uma chamada de rede.
+ *
+ * Lista construída lendo os literais gravados em `referring_site` pelos 2
+ * módulos citados (`workers/reativar` manda `Reactivation`, não
+ * `CompleteRegistration` desde #8551 — fora do escopo deste filtro). Não
+ * importado diretamente dos workers (cruzaria a fronteira `scripts/` →
+ * `workers/`, fora do padrão do repo) — se um novo `referringSite` for
+ * adicionado a um desses handlers, esta lista precisa acompanhar (mesma
+ * disciplina de sincronia manual documentada em `ORCHESTRATOR_FILES`,
+ * `context/overnight-dispatch-rules.md` #4).
+ *
+ * NÃO cobre `subscribeToKit`/Kit — a mesma lacuna de origem afeta o backend
+ * Kit igualmente, mas os markers são os mesmos (`referring_site` é
+ * independente do backend de destino, ver `subscribeViaConfiguredBackend`).
+ */
+export const REALTIME_HANDLER_REFERRING_SITES: ReadonlySet<string> = new Set([
+  // workers/poll/src/subscribe.ts — SUBSCRIBE_UTM_BY_SOURCE + overrides
+  "eia-jogar-inline",
+  "livros-inline-hero",
+  "livros-inline-footer",
+  "vote-clarice-inline",
+  "jogar-gate-inline",
+  "jogar-identify-inline",
+  "jogar-postweb-gate",
+  "arquivo-inline",
+  "hub-inline",
+  "apex-subscribe-page",
+  "jogar-identify-magic-link",
+  "vote-clarice-set-name",
+  // workers/cursos/src/subscribe.ts
+  "cursos-gate-inline",
+]);
+
 // ---------------------------------------------------------------------------
 // Seleção de candidatos (pure)
 // ---------------------------------------------------------------------------
@@ -110,7 +174,11 @@ export function selectCapiCandidates(
   return subscribers.filter((s) => {
     if (s.status !== "active") return false;
     if (typeof s.created !== "number" || !Number.isFinite(s.created)) return false;
-    return s.created >= cutoff && s.created <= opts.nowSeconds;
+    if (s.created < cutoff || s.created > opts.nowSeconds) return false;
+    // #8577: exclui quem já recebeu `CompleteRegistration` em tempo real de
+    // um dos 3 handlers — ver docstring de `REALTIME_HANDLER_REFERRING_SITES`.
+    if (typeof s.referring_site === "string" && REALTIME_HANDLER_REFERRING_SITES.has(s.referring_site)) return false;
+    return true;
   });
 }
 
