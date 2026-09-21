@@ -5,8 +5,8 @@
  * como Enhanced Conversion for Leads — o par Google do `reativar`/CAPI da
  * Meta (#8551), sem o defeito de misturar cadastro e confirmação: a ação de
  * destino é uma `UPLOAD_CLICKS` SEPARADA da de cadastro, passada por id
- * explícito (`--conversion-action-id`, com `GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID`
- * de `scheduled-tasks.ts` como valor da task diária) — este módulo não tem default,
+ * explícito (`--conversion-action-id`; a task diária o passa a partir da constante TS
+ * `GOOGLE_ADS_CONFIRMATION_ACTION_ID` de `scheduled-tasks.ts`) — este módulo não tem default,
  * e o script recusa a ação primária de cadastro por id.
  *
  * ## Como detecta "confirmação nova"

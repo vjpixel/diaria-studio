@@ -30,7 +30,7 @@ import {
   type SendPayloadResult,
 } from "../scripts/lib/google-ads-conversion-sender.ts";
 import { hashEmailForEnhancedConversions } from "../scripts/lib/google-ads-enhanced-conversions.ts";
-import { main as confirmMain } from "../scripts/upload-google-ads-confirmations.ts";
+import { main as confirmMain, actionIdOf } from "../scripts/upload-google-ads-confirmations.ts";
 import type { SubscriberStateRecord } from "../scripts/lib/subscriber-state-snapshot.ts";
 
 const ACTION = "customers/2369219639/conversionActions/555";
@@ -523,6 +523,16 @@ describe("#8555 — CLI main()", () => {
     assert.equal(r.code, 1);
     assert.equal(r.calls, 0);
     assert.ok(r.lines.some((l) => l.includes("ação de CADASTRO") && l.includes("recusada")));
+  });
+
+  it("actionIdOf: EXATO, nunca por sufixo — id maior terminando na primária não é a primária", () => {
+    assert.equal(actionIdOf("7418673798"), "7418673798");
+    assert.equal(actionIdOf(" 7418673798 "), "7418673798");
+    assert.equal(actionIdOf("customers/2369219639/conversionActions/7418673798"), "7418673798");
+    assert.equal(actionIdOf("997418673798"), "997418673798");
+    assert.equal(actionIdOf("customers/2369219639/conversionActions/997418673798"), "997418673798");
+    assert.equal(actionIdOf("abc7418673798"), null);
+    assert.equal(actionIdOf(""), null);
   });
 
   it("controle: uma ação SECUNDÁRIA qualquer NÃO é recusada pelo guard (dry-run sai 0)", async () => {

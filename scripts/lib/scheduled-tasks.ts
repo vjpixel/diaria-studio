@@ -194,7 +194,7 @@ export const GSC_URL_INSPECTION_DAILY_QUOTA = 2000;
  * e `GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID` nunca chegou a existir em
  * lugar nenhum — ver o comentário da task pro histórico.
  */
-export const GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID = "7762768203";
+export const GOOGLE_ADS_CONFIRMATION_ACTION_ID = "7762768203";
 
 /**
  * Conta do Google Ads dona da ação acima. Fixada JUNTO do id da ação porque o
@@ -1941,7 +1941,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         script: "scripts/upload-google-ads-confirmations.ts",
         args: [
           "--conversion-action-id",
-          GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID,
+          GOOGLE_ADS_CONFIRMATION_ACTION_ID,
           "--customer-id",
           GOOGLE_ADS_CONFIRMATION_CUSTOMER_ID,
           "--send",
