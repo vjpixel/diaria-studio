@@ -604,7 +604,13 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     const git: GitRunner = (args) => {
       calls.push(args);
       const cmd = args[0];
-      if (overrides[cmd]) return overrides[cmd]!(args);
+      // Chave pode ser o comando (`status`), os 2 primeiros tokens
+      // (`status --porcelain`) ou a linha inteira (`worktree add --detach`) —
+      // o último caso é pro testes que precisam discriminar subcomandos do
+      // mesmo `git` (ex: `worktree add` vs `worktree remove`). Sempre caímos
+      // no default de baixo quando nenhum override casar.
+      const ov = overrides[cmd] ?? overrides[args.slice(0, 2).join(" ")] ?? overrides[args.join(" ")];
+      if (ov) return ov!(args);
       if (cmd === "rev-parse") {
         if (args[1] === "--abbrev-ref") return "master\n";
         // `rev-parse HEAD origin/master`: mesmo commit por padrão — guard passa.
@@ -1398,5 +1404,171 @@ describe("#6202 wrapFragmentAsDocument", () => {
     // Duplicar aqui criaria duas convenções de <head> divergindo com o
     // tempo, justamente entre a edição nova e as 253 antigas.
     assert.doesNotMatch(wrapFragmentAsDocument("<p>oi</p>"), /<head/i);
+  });
+});
+
+describe("#8636 worktree de publicacao — regressao do bug", () => {
+  function makeLock(acquireResults: boolean[] = []) {
+    const calls: string[][] = [];
+    let acquireCall = 0;
+    const lock: any = (args: string[]) => {
+      calls.push(args);
+      if (args[0] === "merge-lock-acquire") {
+        const ok = acquireCall < acquireResults.length ? acquireResults[acquireCall] : true;
+        acquireCall++;
+        return { ok, stdout: ok ? "ok\n" : "", stderr: ok ? "" : "denied (held by another session)\n" };
+      }
+      return { ok: true, stdout: "ok\n", stderr: "" };
+    };
+    return { lock, calls };
+  }
+  /** Replicado do #6202 para escopo local (não herda do describe pai). */
+  function makeGit(overrides: Partial<Record<string, string | ((args: string[]) => string)>> = {}) {
+    const calls: string[][] = [];
+    const git: GitRunner = (args) => {
+      calls.push(args);
+      const cmd = args[0];
+      // Chave pode ser o comando (`status`), os 2 primeiros tokens
+      // (`status --porcelain`) ou a linha inteira (`worktree add --detach`) —
+      // o último caso é pro testes que precisam discriminar subcomandos do
+      // mesmo `git` (ex: `worktree add` vs `worktree remove`). Sempre cai no
+      // default de baixo quando nenhum override casar. Valores podem vir
+      // como string (resposta fixa) ou função (computada a partir dos args).
+      const ov = overrides[cmd] ?? overrides[args.slice(0, 2).join(" ")] ?? overrides[args.join(" ")];
+      if (ov) return typeof ov === "function" ? ov(args) : ov;
+      if (cmd === "rev-parse") {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        return "deadbeef\ndeadbeef\n";
+      }
+      if (cmd === "status") return "";
+      if (cmd === "diff") return "";
+      return "";
+    };
+    return { git, calls };
+  }
+  function makeGh(overrides: Partial<Record<string, string | ((args: string[]) => string)>> = {}) {
+    const calls: string[][] = [];
+    const gh: GhRunner = (args) => {
+      calls.push(args);
+      const cmd = args.slice(0, 2).join(" ");
+      // Mesmo esquema de chaves do `makeGit`: 2 primeiros tokens por padrão,
+      // linha inteira como fallback pro testes que precisam de precisão
+      // (ex: `pr merge` vs `pr list`).
+      const ov = overrides[cmd] ?? overrides[args.join(" ")];
+      if (ov) return typeof ov === "function" ? ov(args) : ov;
+      if (cmd === "pr list") return "[]";
+      if (cmd === "pr create") return "https://github.com/vjpixel/diaria-studio/pull/9999\n";
+      return "";
+    };
+    return { gh, calls };
+  }
+  it("checkout em branch de trabalho com HEAD != origin/master NAO bloqueia quando worktreeDir esta definido", () => {
+    const git = makeGit({
+      "rev-parse --abbrev-ref HEAD": "fix/8555-foo\n",
+      "rev-parse HEAD origin/master": "aaa111bbb222\nccc333ddd444\n",
+      "status --porcelain": " M workers/site/public/p/260921/index.html\n",
+      "diff --cached --name-only": "",
+    });
+    const gh = makeGh();
+    const { lock } = makeLock([true]);
+    // #8636: o worktree é um parâmetro de `commitAndPushSitePage`, não um
+    // campo de `PublishPageDeps` — os runners entram por posição, e o
+    // `makeDeps` aqui só serve pro fluxo `publishEditionSitePage` (que é
+    // o outro caminho, não o destes testes de regressão do #8636).
+    const result = commitAndPushSitePage(
+      "/repo",
+      "260921",
+      git.git,
+      undefined,
+      gh.gh,
+      lock,
+      makeSleep().sleep,
+      "/tmp/wt-8636",
+    );
+    assert.equal(result.committed, true);
+    assert.equal(result.pushed, true);
+    assert.ok(result.prCreated);
+    const calls = git.calls.map((c) => c.join(" "));
+    assert.ok(calls.some((c) => c.startsWith("worktree add --detach")), "worktree add --detach rodou");
+    assert.ok(calls.some((c) => c.startsWith("worktree remove")), "worktree remove rodou no cleanup");
+    assert.ok(!calls.some((c) => c === "checkout master"), "nao voltou para master no checkout compartilhado");
+  });
+
+  it("#8636: worktree add falha propaga como erro", () => {
+    const git = makeGit({
+      "worktree add --detach /tmp/wt-fail origin/master": () => {
+        throw new Error("worktree add failed: already checked out");
+      },
+    });
+    const { lock } = makeLock([true]);
+    assert.throws(
+      () => commitAndPushSitePage("/repo", "260921", git.git, undefined, makeGh().gh, lock, makeSleep().sleep, "/tmp/wt-fail"),
+      /worktree add failed/,
+    );
+  });
+
+  it("#8636: worktree remove em falha e fail-soft — nao derruba o resultado", () => {
+    const git = makeGit({
+      "status --porcelain": " M workers/site/public/p/260921/index.html\n",
+      "worktree remove --force /tmp/wt-remove-fail": () => {
+        throw new Error("worktree remove failed");
+      },
+    });
+    const gh = makeGh();
+    const { lock } = makeLock([true]);
+    const result = commitAndPushSitePage(
+      "/repo",
+      "260921",
+      git.git,
+      undefined,
+      gh.gh,
+      lock,
+      makeSleep().sleep,
+      "/tmp/wt-remove-fail",
+    );
+    assert.equal(result.committed, true);
+    assert.equal(result.pushed, true);
+  });
+
+  it("#8636: ordem de comandos no worktree — add, checkout, add, status, diff, commit, push, remove", () => {
+    const git = makeGit({ "status --porcelain": " M workers/site/public/p/260921/index.html\n" });
+    const { lock } = makeLock([true]);
+    commitAndPushSitePage("/repo", "260921", git.git, undefined, makeGh().gh, lock, makeSleep().sleep, "/tmp/wt-order");
+    const calls = git.calls.map((c) => c.join(" "));
+    const addIdx = calls.findIndex((c) => c.startsWith("worktree add --detach"));
+    const checkoutIdx = calls.findIndex((c) => c.startsWith("checkout -B"));
+    const addStagedIdx = calls.findIndex((c) => c.startsWith("add -- "));
+    const statusIdx = calls.findIndex((c) => c.startsWith("status --porcelain"));
+    const diffIdx = calls.findIndex((c) => c.startsWith("diff --cached --name-only"));
+    const commitIdx = calls.findIndex((c) => c.startsWith("commit"));
+    const pushIdx = calls.findIndex((c) => c.startsWith("push"));
+    const removeIdx = calls.findIndex((c) => c.startsWith("worktree remove"));
+    assert.ok(addIdx >= 0);
+    assert.ok(checkoutIdx > addIdx);
+    assert.ok(addStagedIdx > checkoutIdx);
+    assert.ok(statusIdx > addStagedIdx);
+    assert.ok(diffIdx > statusIdx);
+    assert.ok(commitIdx > diffIdx);
+    assert.ok(pushIdx > commitIdx);
+    assert.ok(removeIdx > pushIdx);
+  });
+
+  it("#8636: productionDeps com worktreeDir passa worktreeDir pro commitAndPush", () => {
+    const git = makeGit({ "status --porcelain": " M workers/site/public/p/260921/index.html\n" });
+    const { lock } = makeLock([true]);
+    const gh = makeGh();
+    const deps = productionDeps(undefined, git.git, gh.gh, lock, makeSleep().sleep, "/tmp/wt-prod");
+    // `productionDeps` devolve um `PublishPageDeps` — o `publish` dele chama
+    // `commitAndPushSitePage` com o mesmo `worktreeDir` que recebeu. O
+    // `commitAndPushSitePage` é chamado DENTRO do `publish`, então o
+    // worktree add roda via o mesmo `git` injetado (que é o que
+    // `productionDeps` capturou em closure). Verificamos o efeito no
+    // `git.calls` do makeGit original, sem precisar de `deps.git` (que
+    // não existe no tipo — o #8636 NUNCA colocou runners em PublishPageDeps;
+    // o worktree é um parâmetro de `productionDeps`, e o `publish` repassa
+    // via closure, não via campo do deps).
+    deps.publish("260921");
+    const calls = git.calls.map((c) => c.join(" "));
+    assert.ok(calls.some((c) => c.startsWith("worktree add --detach")), "productionDeps repassou worktreeDir");
   });
 });
