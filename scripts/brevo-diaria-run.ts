@@ -79,11 +79,19 @@
  * Exit codes:
  *   0 — sucesso (preflight concluído sem mutação / apply concluído sem falhas
  *       nos passos 1-3; falha no pool Kit do Passo 3b também sai 0, com
- *       aviso no `summary` — ver "Pool Kit inactive" acima)
+ *       aviso no `summary` — ver "Pool Kit inactive" acima; #8686: falha/skip
+ *       por contato INDIVIDUAL no Passo 1 — evaluate-brevo-diaria retornando
+ *       `PARTIAL_FAILURE_EXIT_CODE` — também sai 0, com aviso no `summary`,
+ *       ver `stepEvaluate()`)
  *   1 — erro duro (sub-script dos passos 1-3 falhou, args inválidos,
  *       exceção inesperada) — nesses passos a sequência de `apply` PARA no
  *       primeiro que falhar, nunca continua pros seguintes (mutação parcial
- *       é pior que mutação nenhuma).
+ *       é pior que mutação nenhuma). **Exceção (#8686):** o Passo 1
+ *       (`evaluate-brevo-diaria.ts`) saindo com `PARTIAL_FAILURE_EXIT_CODE`
+ *       (falha/skip só em contato(s) individual(is), store já escrito
+ *       normalmente) NÃO conta como erro duro — vira aviso e a sequência
+ *       continua; só um exit code diferente desse (1 fatal, 2 precondição
+ *       ausente, ou qualquer outro) aborta a sequência inteira.
  *
  * Uso:
  *   npx tsx scripts/brevo-diaria-run.ts --preflight
@@ -99,6 +107,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { MV_COST_GUARD_THRESHOLD } from "./verify-pending-emails-mv.ts"; // #8192
+import { PARTIAL_FAILURE_EXIT_CODE } from "./evaluate-brevo-diaria.ts"; // #8686
 import { loadProjectEnv } from "./lib/env-loader.ts";
 
 // Mesma disciplina do #4983 (clarice-novos-run.ts) — carregar .env ANTES de
@@ -266,6 +275,49 @@ function step(
   return result;
 }
 
+/**
+ * Variante de `step()` específica pro Passo 1 (`evaluate-brevo-diaria.ts`,
+ * #8686) — a ÚNICA chamada desta sequência que distingue exit codes em vez
+ * de tratar "não-zero" como um bloco só. `PARTIAL_FAILURE_EXIT_CODE` (3)
+ * sinaliza que a avaliação RODOU até o fim e (se `--push`) já escreveu o
+ * store — só N contato(s) individual(is) tiveram falha/skip, o mesmo
+ * fail-soft que o próprio `evaluate-brevo-diaria.ts` já pratica por
+ * contato (ver "Falha por contato não aborta o run" no cabeçalho dele).
+ * Esse código vira AVISO (registrado em `warnings`, mesmo padrão fail-soft
+ * de `softStep`/#8192) e a sequência CONTINUA pros Passos seguintes —
+ * nunca `BrevoDiariaAbort`. Qualquer outro código não-zero (`1` fatal,
+ * `2` precondição ausente, ou qualquer coisa inesperada) segue exatamente
+ * o comportamento de `step()`: aborta a sequência inteira, porque nesses
+ * casos não há garantia de que o store tenha sido escrito.
+ *
+ * Achado que motivou (edição 260922): 4 promoções não confirmadas
+ * (`evaluate-brevo-diaria.ts` exit 1, à época indistinguível de erro
+ * fatal) abortavam a sequência de `--apply` inteira nos Passos 2-4 e, na
+ * cadeia de `brevo-diaria-stage5-dispatch.ts`, deixavam a edição sem
+ * rascunho Brevo — sucesso parcial (69 contatos avaliados corretamente,
+ * store atualizado) tratado como falha total.
+ */
+function stepEvaluate(deps: BrevoDiariaRunDeps, log: StepLog[], warnings: string[], label: string, args: string[]): void {
+  process.stderr.write(`▶ ${label}\n`);
+  const result = deps.exec("scripts/evaluate-brevo-diaria.ts", args);
+  if (result.stderr.trim()) process.stderr.write(result.stderr.trim() + "\n");
+  const stderrTail = result.stderr.trim().split("\n").slice(-8).join("\n");
+  log.push({ label, script: "scripts/evaluate-brevo-diaria.ts", args, code: result.code, stderrTail });
+  if (result.code === 0) return;
+  if (result.code === PARTIAL_FAILURE_EXIT_CODE) {
+    const warning =
+      `⚠️ ${label}: falha/skip em contato(s) individual(is) (exit ${PARTIAL_FAILURE_EXIT_CODE}, #8686) — store ` +
+      "atualizado normalmente (quando --push), sequência prossegue; ver stderr do passo pro detalhe por contato: " +
+      (stderrTail.split("\n").slice(-3).join(" | ") || "(sem stderr)");
+    process.stderr.write(warning + "\n");
+    warnings.push(warning);
+    return;
+  }
+  throw new BrevoDiariaAbort(
+    `❌ ${label} falhou (exit ${result.code}): ${stderrTail.split("\n").slice(-4).join(" | ") || "(sem stderr)"}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Orquestração principal — pura o suficiente pra ser testada com `exec`
 // injetado, sem spawn real nem rede.
@@ -324,7 +376,7 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
     const opts = parseBrevoDiariaRunArgs(argv);
 
     if (opts.mode === "preflight") {
-      step(deps, steps, "Passo 1 — evaluate-brevo-diaria (dry-run)", "scripts/evaluate-brevo-diaria.ts", []);
+      stepEvaluate(deps, steps, warnings, "Passo 1 — evaluate-brevo-diaria (dry-run)", []);
       step(deps, steps, "Passo 2 — refresh-pending-pool (dry-run)", "scripts/refresh-pending-pool.ts", []);
       step(deps, steps, "Passo 3 — sync-pending-to-brevo (dry-run)", "scripts/sync-pending-to-brevo.ts", []);
       softStep(deps, steps, warnings, "Passo 3b — sync-kit-inactive-to-brevo (dry-run)", "scripts/sync-kit-inactive-to-brevo.ts", []);
@@ -342,7 +394,7 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
     }
 
     // --- apply: ordem FIXA do Passo 4, mutação real ---
-    step(deps, steps, "Passo 1 — evaluate-brevo-diaria --push", "scripts/evaluate-brevo-diaria.ts", ["--push"]);
+    stepEvaluate(deps, steps, warnings, "Passo 1 — evaluate-brevo-diaria --push", ["--push"]);
     step(deps, steps, "Passo 2 — refresh-pending-pool --push", "scripts/refresh-pending-pool.ts", ["--push"]);
     step(deps, steps, "Passo 2 — score-pending-origin", "scripts/score-pending-origin.ts", []);
     step(

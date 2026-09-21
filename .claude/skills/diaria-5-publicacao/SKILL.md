@@ -69,6 +69,21 @@ Crítico: este é o stage **publicador** (newsletter + todos os canais sociais +
 - `DIARIA_LINKEDIN_CRON_URL`/`DIARIA_LINKEDIN_CRON_TOKEN` pro Worker (LinkedIn/Instagram/Threads); `INSTAGRAM_ACCESS_TOKEN`/`INSTAGRAM_BUSINESS_ACCOUNT_ID` e `THREADS_ACCESS_TOKEN`/`THREADS_USER_ID` como secrets do Worker (ausência = skip gracioso desses 2 canais, não bloqueia os demais)
 - MCP `claude_ai_Buffer` conectado pra X/Twitter
 
+## Passo -3 — Sincronizar código com origin/master (#2686, #8684)
+
+**Sempre a primeira coisa que esta skill faz.** Desde #6171, Etapa 5/6 roda numa sessão **NOVA** — que nunca passa pelo Passo 0 de `/diaria-edicao` (o único lugar que hoje chama `sync-code.ts`, #2686). Entre o fim do Stage 4 (sessão anterior) e o começo desta sessão, rodadas overnight/develop/continuo concorrentes seguem mergeando PRs em `origin/master` — às vezes por horas. Sem este passo, esta sessão roda com o código que já estava em disco no checkout compartilhado no momento em que a sessão começou, que pode preceder correções já mergeadas (achado ao vivo, #8684: `publish-edition-site-page.ts --edition-dir data/editions/2609/260922 ...` saiu com `exit 3` — "checkout não está sincronizado com origin/master" — porque o checkout ainda não tinha puxado o commit que tornou esse próprio guard obsoleto pro caminho default, ver #8636).
+
+Mesma invocação e mesmo timeout do Passo 0 de `/diaria-edicao` (ver `.claude/skills/diaria-edicao/SKILL.md`):
+
+```bash
+npx tsx scripts/sync-code.ts
+```
+(Bash tool: `timeout: 570000`)
+
+**Fail-soft, igual ao Passo 0 da diária**: qualquer falha (offline, divergência, conflito de stash) vira warning — nunca bloqueia esta skill. Parsear o JSON do stdout (`outcome`, `branch_before`, `warnings`) e logar via `log-event.ts` com `--informational` (mesmos níveis da tabela do Passo 0 de `/diaria-edicao` — info pros 3 outcomes de sucesso, warn pros demais).
+
+**Por que aqui e não só dentro de `publish-edition-site-page.ts`:** o `--worktree-dir` default do script (#8636) já isola o COMMIT/PUSH de um checkout divergente, e o script agora também tenta um `git fetch origin master` best-effort antes de criar esse worktree (#8684) — mas nenhum dos dois cobre o CÓDIGO do próprio script estar desatualizado no disco: `npx tsx` executa o que já está no checkout no momento da chamada, não o que está em `origin/master`. Só sincronizar a SESSÃO (este passo) antes de rodar qualquer script garante que toda a Etapa 5/6 — não só este script — rode com a versão mais recente do pipeline.
+
 ## Passo -2 — Pre-flight CORS check (#1132 P2.4)
 
 ```bash

@@ -20,6 +20,7 @@ import {
   type StepResult,
   type ExecFn,
 } from "../scripts/brevo-diaria-run.ts";
+import { PARTIAL_FAILURE_EXIT_CODE } from "../scripts/evaluate-brevo-diaria.ts"; // #8686
 
 function makeFakeExec(handlers: Record<string, StepResult | ((args: string[]) => StepResult)>): {
   exec: ExecFn;
@@ -282,5 +283,68 @@ describe("runBrevoDiaria — pool Kit inactive ≥72h (#8192)", () => {
     const result = runBrevoDiaria([], deps(exec));
     assert.equal(result.code, 0);
     assert.match(result.summary, /AVISOS: .*Kit 503/);
+  });
+});
+
+describe("runBrevoDiaria — Passo 1 evaluate-brevo-diaria com PARTIAL_FAILURE_EXIT_CODE (#8686)", () => {
+  const EVALUATE = "scripts/evaluate-brevo-diaria.ts";
+
+  it("apply: exit PARTIAL_FAILURE_EXIT_CODE no Passo 1 é fail-soft — sequência inteira roda, code 0, aviso registrado", () => {
+    const handlers: Record<string, StepResult> = Object.fromEntries(APPLY_SCRIPTS.map((s) => [s, ok()]));
+    handlers[EVALUATE] = {
+      code: PARTIAL_FAILURE_EXIT_CODE,
+      stdout: "",
+      stderr: "[evaluate-brevo-diaria] resumo: 4 promovido(s) por taxa de abertura, 4 falha(s), 69 mantido(s).",
+    };
+    const { exec, calls } = makeFakeExec(handlers);
+    const result = runBrevoDiaria(["--apply"], deps(exec));
+
+    assert.equal(result.code, 0, "sucesso parcial em contato(s) individual(is) não pode abortar o apply inteiro");
+    assert.equal(result.mode, "apply");
+    assert.deepEqual(
+      calls.map((c) => c.script),
+      APPLY_SCRIPTS,
+      "Passos 2-4 (refresh, score, verify-mv, sync-pending-to-brevo, pool Kit) devem rodar mesmo com o Passo 1 parcialmente falho",
+    );
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /evaluate-brevo-diaria --push/);
+    assert.match(result.warnings[0], new RegExp(`exit ${PARTIAL_FAILURE_EXIT_CODE}`));
+    assert.match(result.summary, /AVISOS: /);
+  });
+
+  it("preflight: exit PARTIAL_FAILURE_EXIT_CODE no dry-run do Passo 1 também é fail-soft", () => {
+    const handlers: Record<string, StepResult> = Object.fromEntries(PREFLIGHT_SCRIPTS.map((s) => [s, ok()]));
+    handlers[EVALUATE] = { code: PARTIAL_FAILURE_EXIT_CODE, stdout: "", stderr: "2 falha(s) de leitura." };
+    const { exec, calls } = makeFakeExec(handlers);
+    const result = runBrevoDiaria([], deps(exec));
+
+    assert.equal(result.code, 0);
+    assert.deepEqual(
+      calls.map((c) => c.script),
+      PREFLIGHT_SCRIPTS,
+    );
+    assert.equal(result.warnings.length, 1);
+  });
+
+  it("apply: exit(1) FATAL no Passo 1 continua abortando a sequência inteira (não vira soft-fail)", () => {
+    const { exec, calls } = makeFakeExec({
+      [EVALUATE]: { code: 1, stdout: "", stderr: "[evaluate-brevo-diaria] erro fatal: TypeError inesperado" },
+    });
+    const result = runBrevoDiaria(["--apply"], deps(exec));
+
+    assert.equal(result.code, 1);
+    assert.equal(calls.length, 1, "Passos 2-4 não devem rodar após erro fatal genuíno no Passo 1");
+    assert.match(result.summary, /evaluate-brevo-diaria --push.*falhou \(exit 1\)/);
+  });
+
+  it("apply: exit(2) de precondição/config ausente no Passo 1 continua abortando a sequência inteira", () => {
+    const { exec, calls } = makeFakeExec({
+      [EVALUATE]: { code: 2, stdout: "", stderr: "ERRO: brevo_diaria não configurado." },
+    });
+    const result = runBrevoDiaria(["--apply"], deps(exec));
+
+    assert.equal(result.code, 1);
+    assert.equal(calls.length, 1);
+    assert.match(result.summary, /evaluate-brevo-diaria --push.*falhou \(exit 2\)/);
   });
 });

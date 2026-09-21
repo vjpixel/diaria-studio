@@ -244,3 +244,67 @@ describe("runStage5BrevoDispatch — args passados aos sub-scripts (#5772)", () 
     assert.deepEqual(publishCall!.args, [EDITION_DIR, "--i-reviewed-the-copy"]);
   });
 });
+
+describe("runStage5BrevoDispatch — Passo 1 evaluate-brevo-diaria parcialmente falho não aborta o rascunho Brevo (#8686)", () => {
+  // Pina o SINTOMA exato reportado na issue #8686 no nível ONDE ele foi
+  // observado (`runStage5BrevoDispatch`), não só nas camadas de baixo
+  // (`evaluate-brevo-diaria.ts`/`brevo-diaria-run.ts`, já cobertas em
+  // `test/evaluate-brevo-diaria-exit-code-8686.test.ts`/
+  // `test/brevo-diaria-run.test.ts`). Antes do fix do #8686,
+  // `brevo-diaria-run.ts --apply` abortava a sequência inteira quando o
+  // Passo 1 tinha falha/skip por contato individual — `applyResult.code`
+  // chegava não-zero a este dispatcher, que retornava `status: "failed"`
+  // sem nunca chamar `publish-daily-brevo.ts`, deixando a edição sem
+  // rascunho Brevo. Depois do fix, `brevo-diaria-run.ts` reporta esse
+  // caso como `code: 0` + `warnings` não-vazio (mesmo padrão do pool Kit
+  // inactive, #8192) — este teste garante que o dispatcher continua o
+  // fluxo normal (chama `publish-daily-brevo.ts`, retorna `"ok"`) em vez
+  // de reintroduzir a regressão se `brevo-diaria-run.ts` voltar a tratar
+  // isso como falha no futuro.
+  const PARTIAL_FAILURE_WARNING =
+    "⚠️ Passo 1 — evaluate-brevo-diaria --push: falha/skip em contato(s) individual(is) (exit 3, #8686) — store " +
+    "atualizado normalmente (quando --push), sequência prossegue; ver stderr do passo pro detalhe por contato: " +
+    "4 falha(s).";
+
+  it("brevo-diaria-run --apply com code:0 + warnings (fail-soft do #8686) → dispatch continua e cria o rascunho Brevo normalmente", () => {
+    const calls: Array<{ script: string; args: string[] }> = [];
+    const deps = makeDeps({
+      calls,
+      exec: (script, args) => {
+        calls.push({ script, args });
+        if (script === "scripts/brevo-diaria-run.ts") {
+          // Simula exatamente o JSON que `runBrevoDiaria`/CLI imprime
+          // quando o Passo 1 sai PARTIAL_FAILURE_EXIT_CODE (#8686): `code:
+          // 0` (a sequência inteira, incluindo Passos 2-4, rodou até o
+          // fim), `warnings` não-vazio.
+          return ok(
+            JSON.stringify({
+              code: 0,
+              mode: "apply",
+              summary: `apply concluído — 7 passo(s) rodado(s) na ordem fixa do Passo 4 (sem --max-add, sem teto). AVISOS: ${PARTIAL_FAILURE_WARNING}`,
+              steps: [{ label: "Passo 1 — evaluate-brevo-diaria --push", code: 3 }],
+              warnings: [PARTIAL_FAILURE_WARNING],
+            }),
+          );
+        }
+        return ok();
+      },
+      readPublished: (() => {
+        let n = 0;
+        return () => (++n === 1 ? null : { campaign_id: 314 });
+      })(),
+    });
+
+    const result = runStage5BrevoDispatch(EDITION_DIR, deps);
+
+    assert.equal(result.status, "ok", "sucesso parcial em contato(s) individual(is) não pode virar status:failed no dispatch");
+    if (result.status === "ok") {
+      assert.equal(result.campaignId, 314);
+      assert.deepEqual(result.warnings, [PARTIAL_FAILURE_WARNING]);
+    }
+    assert.ok(
+      calls.some((c) => c.script === "scripts/publish-daily-brevo.ts"),
+      "publish-daily-brevo.ts precisa ser invocado mesmo com falha/skip parcial no Passo 1 — é exatamente o rascunho que a issue #8686 relatou como nunca criado",
+    );
+  });
+});

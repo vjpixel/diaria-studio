@@ -1,0 +1,1 @@
+{"issue":"#8667","url":"https://news.un.org/en/story/2026/09/1168380","title":"UN panel calls for stronger safeguards as AI agents advance","reason":"#2986 gate (non-AI-relevant) fixed by ai-relevance regex expansion (agents? + \\bai\\b)","timestamp":"2026-09-21T18:49:34Z","stage":"categorize","gate":"#2986"}

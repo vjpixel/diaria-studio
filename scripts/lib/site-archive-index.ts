@@ -185,6 +185,42 @@ export function resolveArchiveIndexCover(
   return src.startsWith("/") ? `${ARCHIVE_BASE_URL}${src}` : src;
 }
 
+/**
+ * Consistência do índice paginado contra o sitemap (#8353 item 2, revisado
+ * pelo #8688). Desde o #8221, o Stage 6 publica `/p/{slug}` + a entrada no
+ * `sitemap.xml` na VÉSPERA do envio; a linha correspondente no índice só
+ * chega no `regen-home.yml` das 06:00 BRT — que é exatamente o
+ * `buildArchiveIndexFeed` filtrando data editorial > hoje (mesmo corte do
+ * #7686). Sem este filtro, `test/site-archive-index-8353.test.ts` reprovava
+ * TODA edição no ciclo entre a publicação da véspera e o regen do dia
+ * seguinte (caso real: PR #8685, edição 260922).
+ *
+ * `editionLocs` é a lista bruta de `<url><loc>` do sitemap (inclui a edição
+ * de amanhã). `resolveDate` e `linkedCount` são injetados pelo chamador —
+ * produção/teste de artefato lê do disco; o teste de regressão injeta um
+ * mapa em memória. Edição com data editorial > `todayBrt` é excluída do
+ * cálculo de "faltando" (ainda não é esperada no índice) mas seguiria
+ * contando pra "duplicada" se por acaso aparecesse — não deveria acontecer,
+ * mas não é este guard que teria que decidir isso.
+ */
+export function checkArchiveIndexLinkConsistency(
+  editionLocs: string[],
+  resolveDate: (loc: string) => string | null,
+  linkedCount: (loc: string) => number,
+  todayBrt: string,
+): { missing: string[]; duplicated: string[] } {
+  const missing: string[] = [];
+  const duplicated: string[] = [];
+  for (const loc of editionLocs) {
+    const date = resolveDate(loc);
+    const isFuture = Boolean(date && date > todayBrt);
+    const count = linkedCount(loc);
+    if (count > 1) duplicated.push(loc);
+    else if (count === 0 && !isFuture) missing.push(loc);
+  }
+  return { missing, duplicated };
+}
+
 function renderEntry(entry: HomeFeedEntry): string {
   const date = formatDateLong(entry.date);
   const dateHtml = entry.date && date ? `<time datetime="${escHtml(entry.date)}">${escHtml(date)}</time>` : "";
