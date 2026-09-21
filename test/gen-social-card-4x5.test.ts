@@ -222,7 +222,7 @@ describe("buildOverlaySvg — SVG bem-formado (#4114)", () => {
 
   it("o overlay cobre a base com gradiente e mantém o texto dentro do card", () => {
     const H = 1350;
-    const svg = buildOverlaySvg("Título de teste do card", "", { w: 1080, h: H, textH: 470 });
+    const svg = buildOverlaySvg("Título de teste do card", "", { w: 1080, h: H });
     assert.match(svg, /linearGradient/);
     for (const y of [...svg.matchAll(/<text[^>]*y="([\d.]+)"/g)].map((m) => Number(m[1]))) {
       assert.ok(y > 0 && y < H, `linha de texto fora do card: y=${y}`);
