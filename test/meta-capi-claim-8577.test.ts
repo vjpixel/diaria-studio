@@ -30,3 +30,15 @@ describe("claimCompleteRegistrationSend (#8577)", () => {
     assert.equal(await claimCompleteRegistrationSend(broken as never, "x"), true);
   });
 });
+
+import { releaseClaimOnSendFailure } from "../scripts/lib/shared/meta-capi.ts";
+describe("releaseClaimOnSendFailure (#8577)", () => {
+  it("falha libera o claim; sucesso mantém", async () => {
+    const kv = { m: new Map([["capi:cr:a", "1"], ["capi:cr:b", "1"]]),
+      get: async () => null, put: async () => {},
+      delete: async function (k: string) { (this as any).m.delete(k); } };
+    await releaseClaimOnSendFailure(Promise.resolve({ ok: false, status: 500, reason: "meta_error" }), kv as never, "a");
+    await releaseClaimOnSendFailure(Promise.resolve({ ok: true, status: 200 }), kv as never, "b");
+    assert.deepEqual([...kv.m.keys()], ["capi:cr:b"]);
+  });
+});

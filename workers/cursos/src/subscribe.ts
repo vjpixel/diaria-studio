@@ -23,6 +23,7 @@ import {
   extractMetaCapiClientSignals,
   resolveCompleteRegistrationDedup,
   claimCompleteRegistrationSend,
+  releaseClaimOnSendFailure,
 } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1), #8553
@@ -522,13 +523,13 @@ export async function handleGateSubscribe(
     : null;
   // #8577: reenvio do mesmo cadastro (resubmissão/outro host) não chama a Meta de novo.
   const shouldSend = await claimCompleteRegistrationSend(env.CURSOS_SUBSCRIBERS, dedup?.eventId);
-  const sendEvent = !shouldSend ? Promise.resolve() : logMetaCapiSendResult(
+  const sendEvent = !shouldSend ? Promise.resolve() : releaseClaimOnSendFailure(logMetaCapiSendResult(
     sendCompleteRegistrationEvent(
       { email: v.email, eventSourceUrl: request.url, eventTimeSeconds: dedup?.eventTimeSeconds, clientSignals },
       { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
     ),
     "cursos",
-  );
+  ), env.CURSOS_SUBSCRIBERS, dedup?.eventId);
   if (ctx && typeof ctx.waitUntil === "function") {
     ctx.waitUntil(sendEvent);
   } else {

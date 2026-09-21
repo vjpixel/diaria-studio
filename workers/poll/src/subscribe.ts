@@ -59,6 +59,7 @@ import {
   extractMetaCapiClientSignals,
   resolveCompleteRegistrationDedup,
   claimCompleteRegistrationSend,
+  releaseClaimOnSendFailure,
 } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 // #7723: consome a maquinaria COMPARTILHADA (scripts/lib/shared/kit-doi.ts),
@@ -1056,13 +1057,13 @@ export async function handleJogarSubscribe(
       : null;
     // #8577: reenvio do mesmo cadastro (resubmissão/outro host) não chama a Meta de novo.
     const shouldSend = await claimCompleteRegistrationSend(env.POLL, dedup?.eventId);
-    const sendEvent = !shouldSend ? Promise.resolve() : logMetaCapiSendResult(
+    const sendEvent = !shouldSend ? Promise.resolve() : releaseClaimOnSendFailure(logMetaCapiSendResult(
       sendCompleteRegistrationEvent(
         { email: v.email, eventSourceUrl: request.url, eventTimeSeconds: dedup?.eventTimeSeconds, clientSignals },
         { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
       ),
       "poll",
-    );
+    ), env.POLL, dedup?.eventId);
     if (ctx && typeof ctx.waitUntil === "function") {
       ctx.waitUntil(sendEvent);
     } else {

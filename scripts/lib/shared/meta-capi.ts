@@ -199,8 +199,14 @@ export const META_CAPI_SEND_CLAIM_TTL_SEC = 24 * 60 * 60;
  * Get-then-put não é atômico; uma corrida simultânea ainda deixa passar 2
  * envios, que a dedup por `event_id` da Meta absorve como antes.
  */
+export interface MetaCapiClaimKv {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
 export async function claimCompleteRegistrationSend(
-  kv: Pick<KVNamespace, "get" | "put"> | undefined,
+  kv: MetaCapiClaimKv | undefined,
   eventId: string | undefined,
 ): Promise<boolean> {
   if (!kv || !eventId) return true;
@@ -212,6 +218,22 @@ export async function claimCompleteRegistrationSend(
   } catch {
     return true;
   }
+}
+
+/**
+ * #8577: se o envio NÃO chegou à Meta, devolve o claim — senão o reenvio do
+ * cadastro (que antes recuperava a conversão) ficaria bloqueado por 24h.
+ * Nunca lança.
+ */
+export function releaseClaimOnSendFailure(
+  send: Promise<MetaCapiSendResult>,
+  kv: MetaCapiClaimKv | undefined,
+  eventId: string | undefined,
+): Promise<MetaCapiSendResult> {
+  return send.then(async (result) => {
+    if (!result.ok && kv && eventId) await kv.delete(`capi:cr:${eventId}`).catch(() => {});
+    return result;
+  });
 }
 
 /**
