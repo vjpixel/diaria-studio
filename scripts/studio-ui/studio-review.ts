@@ -85,6 +85,7 @@ import {
   checkTitleTrailingPeriod,
   checkNoTrailingEllipsis,
   checkMidSentenceEllipsis,
+  checkRadarSummaryMatchesTitle, // #8594
   checkTitleMentionsIA,
   checkNoUntranslatedSummary,
   checkVideoLinksAreYoutube,
@@ -698,6 +699,7 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
     runCheck("title-trailing-period", "Título sem ponto final (warn)", false, () => checkTitleTrailingPeriod(md)),
     runCheck("no-trailing-ellipsis", "Descrição sem reticências finais (warn)", false, () => checkNoTrailingEllipsis(md)),
     runCheck("mid-sentence-ellipsis", "Descrição sem reticências no meio (warn)", false, () => checkMidSentenceEllipsis(md)),
+    runCheck("radar-summary-matches-title", "Descrição tem relação com o título/URL (warn)", false, () => checkRadarSummaryMatchesTitle(md)),
     runCheck("title-mentions-ia", "Título de destaque sem 'IA'/'inteligência artificial' evitável (warn, #4825)", false, () => checkTitleMentionsIA(md)),
   ];
 

@@ -180,7 +180,7 @@ describe("runStage4LintReport (#5416)", () => {
     rmSync(editionDir, { recursive: true, force: true });
   });
 
-  it("19 checks presentes (18 do MD + agradecimento-hardcoded, #8200 adicionou destaque-category-noticias)", () => {
+  it("20 checks presentes (19 do MD + agradecimento-hardcoded, #8200 adicionou destaque-category-noticias, #8594 radar-summary-matches-title)", () => {
     const editionDir = makeEditionDir();
     const report = runStage4LintReport(editionDir, PROJECT_ROOT);
     const ids = report.checks.map((c) => c.id).sort();
@@ -193,6 +193,7 @@ describe("runStage4LintReport (#5416)", () => {
       "no-untranslated-summary",
       "no-xml-artifacts",
       "orphan-box-in-gap",
+      "radar-summary-matches-title",
       "secondary-item-coherence",
       "secondary-items-have-summary",
       "section-links-resolve",
@@ -425,9 +426,9 @@ describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malfor
     assert.ok(trailingPeriod, "title-trailing-period deveria continuar presente");
     assert.deepEqual(trailingPeriod.result, checkTitleTrailingPeriod(buildMd()));
 
-    // Todos os 19 checks continuam presentes — nenhum foi engolido (#7260
+    // Todos os 20 checks continuam presentes — nenhum foi engolido (#7260
     // adicionou banned-lexicon, #8200 adicionou destaque-category-noticias).
-    assert.equal(out.checks.length, 19);
+    assert.equal(out.checks.length, 20);
 
     rmSync(dir, { recursive: true, force: true });
   });

@@ -25,13 +25,15 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { request } from "undici";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #2140, #2664, #2672
 import { sanitizeTrailingEllipsis } from "./lib/sanitize-description-ellipsis.ts"; // #2881
 import { sanitizeDescriptionBoilerplate } from "./lib/sanitize-description-boilerplate.ts"; // #3196
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { shouldDiscardSummary } from "./lib/summary-matches-title.ts"; // #8594
+import { logEvent } from "./lib/run-log.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,6 +65,10 @@ export interface EnrichOutcome {
 export interface EnrichStats {
   cache_hits: number;
   cache_misses: number;
+  /** #8594: URLs cujo summary foi descartado por não ter relação com título/URL. */
+  summary_discarded?: string[];
+  /** #8594: subset de summary_discarded cujo original foi restaurado (refetch não preencheu). */
+  summary_restored?: string[];
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -349,6 +355,23 @@ export async function enrichArticles(
   const stats: EnrichStats = { cache_hits: 0, cache_misses: 0 };
   const out = articles.map((a) => ({ ...a }));
 
+  // #8594: summary de OUTRA matéria (digest " · ", resumo trocado) nunca deve
+  // chegar ao gate. Só fonte regular (inbox é curadoria do editor). Descartar
+  // deixa o summary vazio → needsEnrichment → refetch (og:description) ou
+  // `secondary-items-have-summary` no Stage 4.
+  for (const a of out) {
+    if (isInboxArticle(a) || !(a.summary ?? "").trim()) continue;
+    const d = shouldDiscardSummary(
+      { title: a.title, url: a.url, summary: a.summary },
+      out.map((o) => ({ title: o.title, url: o.url })),
+    );
+    if (d.discard) {
+      a.summary_rejected = a.summary; // original guardado: restaurado se o refetch falhar
+      a.summary = "";
+      (stats.summary_discarded ??= []).push(a.url);
+    }
+  }
+
   const targets = out
     .map((a, i) => ({ idx: i, article: a }))
     .filter(({ article }) => needsEnrichment(article));
@@ -532,6 +555,17 @@ export async function enrichArticles(
   // outcome duplicado.
   // GATE DE ORIGEM: títulos editoriais (inbox / editor_submitted / recuperados
   // de submitted_subject) NUNCA são normalizados.
+  // #8594: refetch não preencheu → restaura o original (nunca deixa item vazio
+  // por causa do guard; o lint warn-only segue avisando o editor).
+  for (const a of out) {
+    if (typeof a.summary_rejected !== "string") continue;
+    if (!(a.summary ?? "").trim()) {
+      a.summary = a.summary_rejected;
+      (stats.summary_restored ??= []).push(a.url);
+      delete a.summary_rejected;
+    }
+  }
+
   const targetIdxSet = new Set(targets.map((t) => t.idx));
   for (let i = 0; i < out.length; i++) {
     const article = out[i];
@@ -621,6 +655,30 @@ async function main(): Promise<void> {
 
   writeFileSync(path, JSON.stringify(writeBack(enriched), null, 2), "utf8");
 
+  // #8594: edição vem de --edition ou do path (data/editions/[AAMM/]AAMMDD/...).
+  const flagEdition = parseArgs(process.argv.slice(2)).values.edition;
+  const edition =
+    (flagEdition && /^\d{6}$/.test(flagEdition) ? flagEdition : null) ??
+    path.replace(/\\/g, "/").match(/\/editions\/(?:\d{4}\/)?(\d{6})(?:\/|$)/)?.[1] ??
+    null;
+  const restored = new Set(stats.summary_restored ?? []);
+  for (const url of stats.summary_discarded ?? []) {
+    logEvent({
+      edition,
+      stage: 1,
+      agent: "enrich-inbox-articles",
+      level: "warn",
+      message: `summary descartado (troca de matéria): ${url}${restored.has(url) ? " — restaurado (refetch não preencheu)" : ""}`,
+      details: { url, reason: "summary_title_mismatch", restored: restored.has(url), issue: 8594 },
+    });
+  }
+  // #8594: estatísticas do guard num sidecar enriched.json ao lado da entrada.
+  writeFileSync(
+    resolve(dirname(path), "enriched.json"),
+    JSON.stringify({ edition, summary_discarded: stats.summary_discarded ?? [], summary_restored: stats.summary_restored ?? [] }, null, 2),
+    "utf8",
+  );
+
   const enrichedCount = outcomes.filter((o) => o.enriched).length;
   const failed = outcomes.filter((o) => !o.enriched).length;
 
@@ -641,6 +699,8 @@ async function main(): Promise<void> {
         failed,
         cache_hits: stats.cache_hits,
         cache_misses: stats.cache_misses,
+        summary_discarded: stats.summary_discarded ?? [],
+        summary_restored: stats.summary_restored ?? [],
         outcomes,
       },
       null,
