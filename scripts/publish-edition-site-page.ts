@@ -1135,6 +1135,25 @@ export function commitAndPushSitePage(
       }
     }
 
+    // #8645 REGRESSÃO (achado ao vivo, 21/09/2026, integração com #8636 no
+    // merge dos dois): o `git commit -- <pathspec>` mais abaixo usava
+    // `pathsToStage` inteiro, sem filtrar os paths que o guard logo acima
+    // pulou por não existirem. `git commit -- <path>` (diferente de `git
+    // add`, que só reclama se NADA casar) exige que TODO pathspec passado
+    // exista (staged OU no working tree) — antes do #8645 os dois
+    // `optionalPaths` (sitemap.xml/index.html) já eram sempre paths
+    // TRACKED de edições anteriores, então mesmo "ausentes por falha do
+    // updateSitemapAndHome" o `git commit --` nunca via um pathspec
+    // genuinamente inexistente. `archive/` quebra essa premissa: numa
+    // publicação genuinamente nova (ou no teste `#8636-worktree-real-git`,
+    // que simula um repo sem histórico de acervo) o diretório pode nunca
+    // ter existido — `git commit -- workers/site/public/archive` lança
+    // `pathspec ... did not match any file(s) known to git`, revertendo o
+    // que seria um publish bem-sucedido. Correção: montar `stagedPathspecs`
+    // só com os paths que de fato passaram pelo guard (mesmo critério do
+    // loop de `git add`), e usar essa lista — nunca `pathsToStage` bruto —
+    // tanto no `git status` quanto no `git commit`.
+    const stagedPathspecs: string[] = [];
     for (const p of pathsToStage) {
       // #6454 self-review: sitemap.xml/index.html (`optionalPaths`) podem
       // não existir em disco se `updateSitemapAndHome` tiver falhado antes
@@ -1153,9 +1172,10 @@ export function commitAndPushSitePage(
         continue;
       }
       git(["add", "--", p], gitCwd);
+      stagedPathspecs.push(p);
     }
 
-    const status = git(["status", "--porcelain", "--", ...pathsToStage], gitCwd);
+    const status = git(["status", "--porcelain", "--", ...stagedPathspecs], gitCwd);
     committed = status.trim().length > 0;
 
     if (committed) {
@@ -1164,7 +1184,7 @@ export function commitAndPushSitePage(
         .map((l) => l.trim())
         .filter(Boolean);
       const outsidePathspec = stagedFiles.filter(
-        (f) => !pathsToStage.includes(f) && !pathsToStage.some((p) => f.startsWith(p + "/")),
+        (f) => !stagedPathspecs.includes(f) && !stagedPathspecs.some((p) => f.startsWith(p + "/")),
       );
       if (outsidePathspec.length > 0) {
         throw new Error(
@@ -1182,7 +1202,7 @@ export function commitAndPushSitePage(
           "-m",
           `chore(site): publica página da edição /p/${slug}\n\nRefs #6202, #6598`,
           "--",
-          ...pathsToStage,
+          ...stagedPathspecs,
         ],
         gitCwd,
       );

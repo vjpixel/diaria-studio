@@ -688,45 +688,72 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
   });
 
   it("REGRESSÃO #7717: commit com sitemap+home (múltiplos paths) usa um único '--', não um por path", () => {
-    // #6454 passa sitemapRelPath — pathsToStage vira [página, sitemap, home],
-    // 3 entradas. O bug original (`pathsToStage.map(p => ["--", p]).flat()`)
+    // #6454 passa sitemapRelPath — pathsToStage vira [página, sitemap, home,
+    // archive]. O bug original (`pathsToStage.map(p => ["--", p]).flat()`)
     // produzia `-- pagina -- sitemap -- home`: git aceita só o 1º "--" como
     // separador e trata os demais como pathspec literal (arquivo chamado
     // "--"), falhando com "pathspec '--' did not match any file(s)". Este
     // teste só falharia com >=2 paths — por isso o teste single-path acima
     // ("commit é escopado ao pathspec da página") não pegou a regressão.
-    const { git, calls } = makeGit({
-      status: () => " M workers/site/public/p/abc/index.html\n",
-      diff: () =>
-        "workers/site/public/p/abc/index.html\nworkers/site/public/sitemap.xml\nworkers/site/public/index.html\n",
-    });
-    const { gh } = makeGh();
-    commitAndPushSitePage(
-      "/repo",
-      "abc",
-      git,
-      "workers/site/public/sitemap.xml",
-      gh,
-      makeLock().lock,
-      makeSleep().sleep,
-    );
-    const commitCall = calls.find((c) => c[0] === "commit")!;
-    const dashDashIndex = commitCall.indexOf("--");
-    assert.notEqual(dashDashIndex, -1, "commit deve conter um separador '--'");
-    assert.equal(
-      commitCall.indexOf("--", dashDashIndex + 1),
-      -1,
-      "commit não deve conter um segundo '--' — cada path após o único separador",
-    );
-    assert.deepEqual(commitCall.slice(dashDashIndex), [
-      "--",
-      "workers/site/public/p/abc",
-      "workers/site/public/sitemap.xml",
-      "workers/site/public/index.html",
-      // #8645: archive/ (índice paginado regenerado por
-      // backfillAndReindexArchive) entra no mesmo pathspec de sitemap/home.
-      "workers/site/public/archive",
-    ]);
+    //
+    // #8645 REGRESSÃO (21/09/2026): usa rootDir REAL (não "/repo" fake) com
+    // os 4 paths (página, sitemap.xml, index.html, archive/) de fato
+    // escritos em disco — `existsSync` dentro de `commitAndPushSitePage` é
+    // sempre o real, nunca mockado, então "/repo" fazia os 3 `optionalPaths`
+    // (sitemap/home/archive) ficarem `existsSync === false` e SEREM PULADOS
+    // do `git add`; o `git commit --` (agora corretamente escopado só ao que
+    // foi de fato staged, ver correção de 21/09) deixaria de incluí-los —
+    // exatamente o inverso do que este teste queria verificar (formatação de
+    // `--` com MÚLTIPLOS paths presentes). Rootdir real fecha essa lacuna.
+    const dir = mkdtempSync(join(tmpdir(), "diaria-site-page-6202-7717-"));
+    try {
+      mkdirSync(join(dir, "workers/site/public/p/abc"), { recursive: true });
+      writeFileSync(join(dir, "workers/site/public/p/abc/index.html"), "<p>página</p>");
+      writeFileSync(join(dir, "workers/site/public/sitemap.xml"), "<urlset></urlset>");
+      writeFileSync(join(dir, "workers/site/public/index.html"), "<p>home</p>");
+      mkdirSync(join(dir, "workers/site/public/archive"), { recursive: true });
+      writeFileSync(join(dir, "workers/site/public/archive/index.html"), "<p>archive</p>");
+
+      const { git, calls } = makeGit({
+        status: () => " M workers/site/public/p/abc/index.html\n",
+        diff: () =>
+          [
+            "workers/site/public/p/abc/index.html",
+            "workers/site/public/sitemap.xml",
+            "workers/site/public/index.html",
+            "workers/site/public/archive/index.html",
+          ].join("\n"),
+      });
+      const { gh } = makeGh();
+      commitAndPushSitePage(
+        dir,
+        "abc",
+        git,
+        "workers/site/public/sitemap.xml",
+        gh,
+        makeLock().lock,
+        makeSleep().sleep,
+      );
+      const commitCall = calls.find((c) => c[0] === "commit")!;
+      const dashDashIndex = commitCall.indexOf("--");
+      assert.notEqual(dashDashIndex, -1, "commit deve conter um separador '--'");
+      assert.equal(
+        commitCall.indexOf("--", dashDashIndex + 1),
+        -1,
+        "commit não deve conter um segundo '--' — cada path após o único separador",
+      );
+      assert.deepEqual(commitCall.slice(dashDashIndex), [
+        "--",
+        "workers/site/public/p/abc",
+        "workers/site/public/sitemap.xml",
+        "workers/site/public/index.html",
+        // #8645: archive/ (índice paginado regenerado por
+        // backfillAndReindexArchive) entra no mesmo pathspec de sitemap/home.
+        "workers/site/public/archive",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("REGRESSÃO P1-A: staged alheio fora do pathspec ⇒ lança, NÃO commita (checkout compartilhado, #5156)", () => {

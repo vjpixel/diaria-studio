@@ -58,11 +58,15 @@ function makeGitFakes(stagedPaths: string[][]) {
     }
     if (args[0] === "status") return " M workers/site/public/p/edicao-nova-do-dia/index.html\n";
     if (args[0] === "diff") {
-      return [
-        "workers/site/public/p/edicao-nova-do-dia/index.html",
-        SITEMAP_REL,
-        homePageRelPathFromSitemap(SITEMAP_REL),
-      ].join("\n");
+      // Espelha o que foi de fato staged via `git add` (`stagedPaths`), não
+      // uma lista fixa — real `git diff --cached --name-only` só lista o que
+      // está staged. Um path pulado pelo guard de `existsSync` (#8645
+      // REGRESSÃO, 21/09/2026: `archive/` legitimamente ausente numa
+      // publicação nova expôs que o `git commit --` usava `pathsToStage`
+      // bruto em vez do subconjunto realmente staged) nunca é passado a
+      // `git add`, então nunca aparece aqui — mock precisa refletir isso
+      // pra não acusar falso "arquivo staged fora do pathspec".
+      return stagedPaths.flat().join("\n");
     }
     return "";
   };
