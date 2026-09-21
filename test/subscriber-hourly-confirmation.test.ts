@@ -1,5 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { buildReportOutput, loadHourlyObservations } from "../scripts/subscriber-confirmation-report.ts";
 import {
   buildHourlyConfirmationReport,
   hourlyObservationFileName,
@@ -42,7 +46,7 @@ describe("hourly confirmation (#8552 b)", () => {
       { id: 3, state: "active", created_at: created(0) },
     ];
     const obs: HourlyObservation[] = [
-      { at: at(0.5), records: mk(() => "inactive").map((r) => (r.id === 3 ? r : r)) },
+      { at: at(0.5), records: mk(() => "inactive") },
       { at: at(1.5), records: mk(() => "inactive") },
       { at: at(2.5), records: mk((k) => (k === "a" ? "active" : "inactive")) },
       { at: at(7), records: mk((k) => (k === "a" ? "active" : "inactive")) },
@@ -72,5 +76,38 @@ describe("hourly confirmation (#8552 b)", () => {
     assert.equal(r.membros, 0);
     assert.equal(r.fora_de_escopo, 1);
     assert.match(buildHourlyConfirmationReport([]).avisos[0], /nenhuma observação/);
+  });
+});
+
+describe("piso horário e CLI do relatório (#8552 b)", () => {
+  it("confirmação entre a última obs <= W e o limite NÃO conta (piso, sem viés pra cima)", () => {
+    // ativa só na obs de +1.5h; janela 1h => última obs <= 1h é a de +0.5h (inactive).
+    const r = buildHourlyConfirmationReport([
+      { at: at(0.5), records: [{ id: 1, state: "inactive", created_at: created(0) }] },
+      { at: at(1.5), records: [{ id: 1, state: "active", created_at: created(0) }] },
+    ]);
+    const w1 = r.janelas.find((w) => w.horas === 1)!;
+    assert.equal(w1.maduros, 1);
+    assert.equal(w1.confirmados, 0);
+    assert.match(r.avisos.join(" "), /PISO/);
+  });
+
+  it("buildReportOutput lê kit-recent/*.jsonl e renderiza a seção horária (text e json)", () => {
+    const base = mkdtempSync(resolve(tmpdir(), "hourly-cli-"));
+    const daily = resolve(base, "kit");
+    const recent = resolve(base, "kit-recent");
+    mkdirSync(daily, { recursive: true });
+    mkdirSync(recent, { recursive: true });
+    const line = (state: string) => JSON.stringify({ id: 1, state, created_at: created(0) }) + String.fromCharCode(10);
+    writeFileSync(resolve(recent, hourlyObservationFileName(at(0.5))), line("inactive"));
+    writeFileSync(resolve(recent, hourlyObservationFileName(at(2.5))), line("active"));
+    writeFileSync(resolve(recent, "lixo.txt"), "x");
+    assert.equal(loadHourlyObservations(recent).length, 2);
+    const text = buildReportOutput(daily, recent, { format: "text" });
+    assert.match(text, /Confirmação em horas/);
+    assert.match(text, /observações: 2, membros: 1/);
+    const json = JSON.parse(buildReportOutput(daily, recent, { format: "json" }));
+    assert.equal(json.horario.membros, 1);
+    assert.equal(loadHourlyObservations(resolve(base, "nao-existe")).length, 0);
   });
 });

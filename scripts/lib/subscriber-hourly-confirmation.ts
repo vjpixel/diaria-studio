@@ -16,10 +16,9 @@
  * feita até `MAX_FIRST_SEEN_LAG_HOURS` depois do `created_at` (senão o estado
  * de nascimento não é observável — pode ter confirmado antes). Uma janela de
  * W horas é "madura" pro membro quando existe observação em `created_at + W`
- * ou depois; "confirmado na janela" = o membro já estava `active` na 1ª
- * observação ≥ `created_at + W`. Como a observação é horária, isso é um
- * LIMITE SUPERIOR com folga de até 1 intervalo de polling: "confirmou em até
- * W h (+ ≤1 h de resolução)". Nunca é um número inventado; sem observações
+ * ou depois; "confirmado na janela" = o membro já estava `active` na ÚLTIMA
+ * observação ≤ `created_at + W`. Como a observação é horária, isso é um PISO
+ * (subestima em até 1 intervalo de polling): nunca superestima a taxa. Nunca é um número inventado; sem observações
  * maduras, `taxa: null`.
  *
  * @pure — recebe observações já carregadas.
@@ -133,13 +132,14 @@ export function buildHourlyConfirmationReport(
     if (firstActive) horasConfirmar.push((firstActive.at - t.created) / HOUR_MS);
     for (const w of janelas) {
       const limite = t.created + w.horas * HOUR_MS;
-      // 1ª observação em/após o fim da janela: se já era active nela (ou antes), confirmou na janela.
-      const ref = t.series.find((s) => s.at >= limite);
-      // Sem observação em/após o fim da janela: ainda não maturou (ou o id saiu do lookback) — não conta.
-      if (!ref) continue;
+      // Piso (nunca superestima): "confirmado" so se ja estava active na
+      // ULTIMA observacao em/antes do fim da janela. Subestima em ate 1
+      // intervalo de polling. Madura so quando existe observacao >= limite.
+      if (!t.series.some((x) => x.at >= limite)) continue;
+      const ate = [...t.series].reverse().find((x) => x.at <= limite);
+      if (!ate) continue;
       w.maduros++;
-      const activeBy = firstActive !== undefined && firstActive.at <= ref.at;
-      if (activeBy) w.confirmados++;
+      if (ate.state === "active") w.confirmados++;
     }
   }
   for (const w of janelas) w.taxa = w.maduros > 0 ? w.confirmados / w.maduros : null;
@@ -147,7 +147,7 @@ export function buildHourlyConfirmationReport(
   if (foraDeEscopo > 0) {
     avisos.push(`${foraDeEscopo} assinante(s) já active na 1ª observação ou vistos tarde demais (>${MAX_FIRST_SEEN_LAG_HOURS}h após created_at) — fora das taxas`);
   }
-  avisos.push("resolução = 1 intervalo de polling: 'em até W h' é limite superior com folga de até ~1h");
+  avisos.push("taxas horárias são PISO: só contam quem já estava active na última observação <= W h (subestima até ~1 intervalo); horas até confirmar é limite superior (até a 1ª observação active)");
   return {
     observacoes: obs.length,
     membros,

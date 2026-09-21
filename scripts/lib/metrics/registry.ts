@@ -552,6 +552,8 @@ export interface DoiConfirmacaoDiaDeps extends MetricDeps {
   /** Obrigatório sempre que `cohort` está ausente/vazio — mesmo contrato de
    *  `MetricResult.motivo`. */
   motivoIndeterminado?: string;
+  /** #8552: safra sem filtro do form DOI (inclui órfãos) — taxa vira piso. */
+  semFiltroDoi?: boolean;
 }
 
 const doiConfirmacaoDiaDef: MetricDef<DoiConfirmacaoDiaDeps> = {
@@ -571,7 +573,7 @@ const doiConfirmacaoDiaDef: MetricDef<DoiConfirmacaoDiaDeps> = {
   decomposicoes: [],
   async computar(args) {
     validarDecomposicao(doiConfirmacaoDiaDef, args.decomposicao);
-    const { cohort, motivoIndeterminado } = args.deps;
+    const { cohort, motivoIndeterminado, semFiltroDoi } = args.deps;
     // #8552 (a): quando o snapshot do dia carrega `doi_form` (participação em
     // KIT_DOI_FORM_ID), `buildDoiConfirmationCohort` já restringe a safra a
     // quem estava vinculado ao form; sem esse dado (snapshots antigos) a safra
@@ -592,6 +594,14 @@ const doiConfirmacaoDiaDef: MetricDef<DoiConfirmacaoDiaDeps> = {
       );
     }
     const confirmados = cohort.filter((m) => m.confirmed).length;
+    if (semFiltroDoi) {
+      return piso(
+        confirmados / cohort.length,
+        args.janela,
+        null,
+        "sem-filtro-doi: snapshot do dia sem participação no form DOI — a safra inclui quem nunca foi vinculado (órfãos), então a taxa é um piso",
+      );
+    }
     return exato(confirmados / cohort.length, args.janela, null);
   },
 };

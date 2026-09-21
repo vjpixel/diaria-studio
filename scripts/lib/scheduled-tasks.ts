@@ -362,8 +362,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     logPath: "subscriber-state-snapshots/.recent.log",
     // Horaria: so cadastros recentes (poucas dezenas de linhas, 1 chamada
     // paginada + 1 ao form DOI, so LEITURA no Kit) -- muito abaixo do rate
-    // limit. DECLARADA, NAO ARMADA -- armar no 300 via
+    // limit. DECLARADA com enabled:false -- armar no 300 via
     // `scripts/setup-systemd-timers.ts` (mesma maquina da task diaria acima).
+    // enabled:false DE PROPOSITO: sem isso o Remediate-Never-Armed-Tasks
+    // (#8153) a auto-arma no dia seguinte ao merge, em qualquer maquina, e
+    // sem KIT_API_KEY falharia toda hora; data/ e junction OneDrive (escrita
+    // concorrente se armada em 2 maquinas). Armar manualmente so no 300.
+    enabled: false,
     schedule: { kind: "interval", hours: 1 },
     issue: "#8552",
   },

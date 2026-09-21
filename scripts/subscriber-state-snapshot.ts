@@ -22,13 +22,16 @@
  *              gravado com dado errado (o arquivo do dia é sobrescrito).
  *   --root     diretório raiz dos snapshots (default: data/subscriber-state-snapshots/kit).
  *   --dry-run  lista o roster e imprime o resumo, mas NÃO grava nada em disco.
+ *   --out-root diretório das observações do modo --recent (default: data/subscriber-state-snapshots/kit-recent).
  *   --recent   modo HORÁRIO (#8552 b): só os assinantes criados nas últimas
  *              48h (`created_after` = 3 dias atrás, filtro fino no cliente),
  *              gravados em data/subscriber-state-snapshots/kit-recent/
  *              {AAAA-MM-DDTHHMMZ}.jsonl — insumo da taxa de confirmação em
  *              1h/6h/24h (`scripts/lib/subscriber-hourly-confirmation.ts`).
  *
- * Cruzamento com o form DOI (#8552 a): se `platform.config.json` →
+ * (O modo --recent NÃO lê o form DOI: status=all do form pode devolver a base
+ * inteira a cada hora, e a análise horária não usa `doi_form`.)
+ * Cruzamento com o form DOI (#8552 a), só no snapshot DIÁRIO: se `platform.config.json` →
  * `kit.doiFormId` existe, o snapshot marca `doi_form: true` em quem está
  * vinculado ao form (`GET /v4/forms/{id}/subscribers?status=all`, só leitura);
  * falha nessa leitura degrada (snapshot sai sem a marca), nunca aborta.
@@ -122,8 +125,9 @@ async function runRecent(config: ReturnType<typeof loadKitConfig>, isDryRun: boo
     after = page.pagination.end_cursor;
   }
   const records = filterRecent(all, now, RECENT_LOOKBACK_HOURS);
-  const formIds = await doiFormIds(config);
-  const out = formIds ? markDoiFormMembership(records, formIds) : records;
+  // Sem leitura do form aqui (custo): status=all do form pode ser a base
+  // inteira a cada hora; a analise horaria nao usa doi_form.
+  const out = records;
   const root = rootArg || resolve(DATA_DIR, "subscriber-state-snapshots", "kit-recent");
   const file = resolve(root, hourlyObservationFileName(now));
   if (!isDryRun) {
@@ -145,13 +149,14 @@ async function main(): Promise<void> {
 
   const config = loadKitConfig(LOG_PREFIX);
   if (hasFlag(argv, "recent")) {
-    await runRecent(config, isDryRun, getArg(argv, "root"));
+    await runRecent(config, isDryRun, getArg(argv, "out-root"));
     return;
   }
 
   console.error(`${LOG_PREFIX} listando roster Kit completo (status=all)...`);
   const subscribers = await listAllKitSubscribers(config, { status: "all" });
   const formIds = await doiFormIds(config);
+  const doiStatus = formIds ? { ok: true, count: formIds.size } : { ok: false };
   const base: SubscriberStateRecord[] = subscribers.map(toSubscriberStateRecord);
   const records = formIds ? markDoiFormMembership(base, formIds) : base;
   console.error(`${LOG_PREFIX} ${records.length} assinante(s) no roster.`);
@@ -175,6 +180,7 @@ async function main(): Promise<void> {
     const dirPath = dirname(snapshotJsonlPath(root, date));
     mkdirSync(dirPath, { recursive: true });
     writeFileAtomic(snapshotJsonlPath(root, date), serializeSubscriberStateRecords(records));
+    writeFileAtomic(resolve(dirPath, "doi-form-status.json"), JSON.stringify(doiStatus) + "\n");
     console.error(`${LOG_PREFIX} snapshot de ${date} gravado (${records.length} linha(s)) em ${snapshotJsonlPath(root, date)}`);
   } else {
     console.error(`${LOG_PREFIX} --dry-run: snapshot NÃO gravado.`);

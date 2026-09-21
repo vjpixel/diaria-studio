@@ -298,6 +298,9 @@ export interface DoiConfirmationCohortResult {
   /** Presente sempre que `cohort` está vazio — motivo elegível pra virar o
    *  `motivo` de um `MetricResult.qualidade === 'indeterminado'`. */
   motivoIndeterminado?: string;
+  /** `true` quando a safra foi montada SEM o filtro do form DOI (snapshot do
+   *  dia sem `doi_form`) — inclui órfãos, a taxa é um PISO. */
+  semFiltroDoi?: boolean;
 }
 
 /**
@@ -367,5 +370,5 @@ export function buildDoiConfirmationCohort(
     id,
     confirmed: maturedById.get(id)?.state === "active",
   }));
-  return { cohort };
+  return { cohort, ...(formCoverage ? {} : { semFiltroDoi: true }) };
 }

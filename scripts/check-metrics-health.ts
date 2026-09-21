@@ -478,9 +478,9 @@ async function main(): Promise<void> {
       const medicoes: MedicaoDia[] = [];
       for (const dia of dias) {
         const janela: Janela = { de: dia, ate: dia, granularidade: "dia", fuso: "BRT" };
-        const { cohort, motivoIndeterminado } = buildDoiConfirmationCohort(snapshotsByDate, dia);
+        const { cohort, motivoIndeterminado, semFiltroDoi } = buildDoiConfirmationCohort(snapshotsByDate, dia);
         if (cohort.length > 0) doiTemInsumoReal = true;
-        const resultado = await def.computar({ janela, deps: { cohort, motivoIndeterminado } });
+        const resultado = await def.computar({ janela, deps: { cohort, motivoIndeterminado, semFiltroDoi } });
         medicoes.push({ chave: dia, resultado });
       }
       seriesById.set("doi-confirmacao-dia", medicoes);

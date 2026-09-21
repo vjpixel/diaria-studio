@@ -280,6 +280,35 @@ describe("doi_form (#8552 a)", () => {
     assert.equal(r.cohort.length, 2);
   });
 
+  it("dia misto: dia com cobertura do form filtra; dia sem cobertura marca semFiltroDoi", () => {
+    const d1 = "2026-09-18";
+    const d2 = "2026-09-19";
+    const mk2 = (id: number, day: string, doi?: boolean): SubscriberStateRecord => ({
+      id, state: "inactive", created_at: `${day}T10:00:00.000Z`, ...(doi ? { doi_form: true } : {}),
+    });
+    const snaps = new Map<string, SubscriberStateRecord[]>([
+      [d1, [mk2(1, d1, true), mk2(2, d1)]],
+      [d2, [mk2(3, d2), mk2(4, d2)]], // leitura do form falhou neste dia
+      ["2026-09-21", [mk2(1, d1, true), mk2(3, d2), mk2(4, d2)]],
+    ]);
+    const a = buildDoiConfirmationCohort(snaps, d1);
+    assert.equal(a.cohort.length, 1);
+    assert.equal(a.semFiltroDoi, undefined);
+    const b = buildDoiConfirmationCohort(snaps, d2);
+    assert.equal(b.cohort.length, 2);
+    assert.equal(b.semFiltroDoi, true);
+  });
+
+  it("métrica com semFiltroDoi vira piso (motivo sem-filtro-doi), nunca exato", async () => {
+    const { getMetric } = await import("../scripts/lib/metrics/registry.ts");
+    const def = getMetric("doi-confirmacao-dia")!;
+    const janela = { de: "2026-09-18", ate: "2026-09-18", granularidade: "dia", fuso: "BRT" } as const;
+    const cohort = [1, 2, 3, 4, 5].map((id) => ({ id, confirmed: id <= 2 }));
+    const res = await def.computar({ janela, deps: { cohort, semFiltroDoi: true } });
+    assert.equal(res.qualidade, "piso");
+    assert.match(res.motivo ?? "", /sem-filtro-doi/);
+  });
+
   it("(c) com snapshots suficientes a métrica deixa de ser indeterminado", async () => {
     const { getMetric } = await import("../scripts/lib/metrics/registry.ts");
     const ids = [1, 2, 3, 4, 5, 6];
