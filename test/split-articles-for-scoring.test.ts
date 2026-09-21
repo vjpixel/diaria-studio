@@ -275,7 +275,18 @@ describe("#2287 — split-articles-for-scoring limpa scoring-chunks/ antes de es
 });
 
 describe("#5665 — split propaga primary_source ao payload do scorer", () => {
-  it("marca host primário e não herda classificação do path mais específico", () => {
+  it("marca host primário (#8631: blog.google/intl/pt-br não tem mais fonte mais específica no seed real, herda o primary do host)", () => {
+    // Cenário original (#5665) usava 'Blog do Google Brasil (IA)' como fonte
+    // mais específica não-primária sob blog.google/intl/pt-br, pra provar que
+    // um path mais específico NÃO herda o primary_source do host. Essa fonte
+    // foi removida do seed em #8631 (discovery falhando 3x) e nenhum outro
+    // par host-only/path-específico existe hoje na planilha real (ver
+    // comentário equivalente em test/categorize-provenance.test.ts sobre
+    // "use-melhor-specificity"). Sem override mais específico, blog.google/intl/pt-br
+    // volta a herdar o primary_source do host 'Google' — comportamento correto
+    // do fallback, não uma regressão. A supressão de herança quando HÁ um
+    // override mais específico continua coberta com fixtures sintéticas em
+    // test/audience-affinity.test.ts ("annotatePrimarySourceAllBuckets").
     const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-5665-"));
     const chunksDir = join(tmpBase, "scoring-chunks");
     const categorizedPath = join(tmpBase, "categorized.json");
@@ -292,7 +303,7 @@ describe("#5665 — split propaga primary_source ao payload do scorer", () => {
       const global = articles.find((article) => article.url === "https://blog.google/products/gemini");
       const brasil = articles.find((article) => article.url === "https://blog.google/intl/pt-br/novidades/tecnologia/ia");
       assert.deepEqual(global?.audience_affinity?.matched, ["primary_source:true"]);
-      assert.equal(brasil?.audience_affinity, undefined);
+      assert.deepEqual(brasil?.audience_affinity?.matched, ["primary_source:true"], "sem fonte mais específica no seed (#8631), herda o primary do host");
     } finally {
       rmSync(tmpBase, { recursive: true, force: true });
     }

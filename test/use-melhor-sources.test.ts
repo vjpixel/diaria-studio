@@ -122,7 +122,7 @@ describe("loadAllSourcePrefixMap (#2176)", () => {
     }
   });
 
-  it("cenário real blog.google: existe entrada use_melhor=false (Google Primária) e use_melhor=true (Blog Brasil)", () => {
+  it("cenário real blog.google: Blog do Google Brasil removido conforme #8631; só Google Primária permanece", () => {
     const allEntries = loadAllSourcePrefixMap();
     const googlePrimaria = allEntries.find(
       (e) => e.prefix === "blog.google" && !e.useMelhor,
@@ -131,11 +131,7 @@ describe("loadAllSourcePrefixMap (#2176)", () => {
       (e) => e.prefix.startsWith("blog.google/intl/pt-br") && e.useMelhor,
     );
     assert.ok(googlePrimaria, "Google Primária (blog.google host-only, não use_melhor) deve estar no mapa");
-    assert.ok(blogBrasil, "Blog do Google Brasil (blog.google/intl/pt-br/..., use_melhor) deve estar no mapa");
-    // Blog Brasil deve vir ANTES no array (prefixo mais longo)
-    const idxBrasil = allEntries.indexOf(blogBrasil!);
-    const idxPrimaria = allEntries.indexOf(googlePrimaria!);
-    assert.ok(idxBrasil < idxPrimaria, "Blog Brasil (mais específico) deve vir antes de Google Primária no array ordenado");
+    assert.strictEqual(blogBrasil, undefined, "Blog do Google Brasil removido intencionalmente (#8631) — não deve estar no mapa");
   });
 });
 
@@ -232,15 +228,15 @@ describe("resolveUseMelhorBySpecificity (#2176)", () => {
     // Ambas retornam false (use_melhor=false) — determinístico
   });
 
-  it("seed real: URL em blog.google/intl/pt-br → use_melhor=true com mapa real", () => {
-    // Usa o mapa REAL carregado do sources.csv — o cenário da issue #2176
+  it("seed real: URL em blog.google/intl/pt-br → use_melhor=false após remoção Blog Brasil (#8631)", () => {
+    // Usa o mapa REAL carregado do sources.csv — com Blog do Google Brasil removido (#8631)
     const realEntries = loadAllSourcePrefixMap();
     const ptBrUrl = "https://blog.google/intl/pt-br/novidades/tecnologia/google-ia-update/";
     const result = resolveUseMelhorBySpecificity(ptBrUrl, realEntries);
     assert.equal(
       result,
-      true,
-      "URL em blog.google/intl/pt-br/novidades/tecnologia deve resolver como use_melhor=true (Blog Brasil mais específico que Google Primária)",
+      false,
+      "Após remoção do Blog Brasil (#8631), URL pt-br sem prefixo específico resolve como Google Primária (use_melhor=false)",
     );
   });
 
