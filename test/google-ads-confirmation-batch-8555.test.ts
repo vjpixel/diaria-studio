@@ -99,6 +99,15 @@ describe("#8555 — detecção de confirmações", () => {
     assert.equal(candidates.length, 0);
   });
 
+  it("#8616 item 5: candidato carrega clickId cru (origem_click_id), independente do prefixo — o lote da Meta reusa esta detecção", () => {
+    const { candidates: withFb } = selectConfirmationCandidates([sub(1, { fields: { origem_click_id: "fbclid:ABC" } })], [base(1)], BASE_DATE);
+    assert.equal(withFb[0].clickId, "fbclid:ABC");
+    const { candidates: withGc } = selectConfirmationCandidates([sub(2, { fields: { origem_click_id: "gclid:XYZ" } })], [base(2)], BASE_DATE);
+    assert.equal(withGc[0].clickId, "gclid:XYZ");
+    const { candidates: none } = selectConfirmationCandidates([sub(3)], [base(3)], BASE_DATE);
+    assert.equal(none[0].clickId, undefined);
+  });
+
   it("extractGclid só aceita o prefixo gclid:", () => {
     assert.equal(extractGclid({ origem_click_id: "gclid:ABC" }), "ABC");
     assert.equal(extractGclid({ origem_click_id: "fbclid:XYZ" }), undefined);

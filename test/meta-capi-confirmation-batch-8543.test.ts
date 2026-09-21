@@ -4,7 +4,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,7 +22,9 @@ import {
   computeCompleteRegistrationEventId,
   computeConfirmationEventId,
   hashEmailForMeta,
+  type MetaCapiSendResult,
 } from "../scripts/lib/shared/meta-capi.ts";
+import { main as metaConfirmMain } from "../scripts/meta-capi-confirmations-send.ts";
 
 const NOW = new Date("2026-09-20T15:00:00Z");
 const BASE_DATE = "2026-09-18";
@@ -200,6 +202,141 @@ describe("#8543 Meta — idempotência e janela", () => {
       assert.equal(loadMetaConfirmationIndex(join(dir, "idx.json"))["kit-1"].status, "skipped-failed-permanent");
       writeFileSync(join(dir, "idx.json"), "{corrompido");
       await assert.rejects(() => runMetaConfirmationBatch(d), /ilegível/);
+    }));
+});
+
+describe("#8616 item 5 — cobertura adicional pós-review #8610", () => {
+  it("retry de failed fora do snapshot base: reenvia mesmo sem ser detectado de novo", () =>
+    withTmp(async (dir) => {
+      const idxPath = join(dir, "idx.json");
+      // id 1 já é `active` na base (não seria detectado de novo por
+      // `selectConfirmationCandidates`) mas está indexado como `failed` de
+      // uma rodada anterior — precisa continuar elegível a retry.
+      writeFileSync(
+        idxPath,
+        JSON.stringify({ "kit-1": { status: "failed", at: "2026-09-19T00:00:00.000Z", path: "kit-email", attempts: 1 } }),
+      );
+      const { fetchImpl, calls } = mockFetch(200);
+      const s = await runMetaConfirmationBatch(
+        deps(dir, { roster: [sub(1)], baseSnapshot: [base(1, "active")], indexPath: idxPath, fetchImpl }),
+      );
+      assert.equal(s.detected, 1, "o retry entra em `detected` mesmo sem ser candidato novo");
+      assert.equal(s.sent, 1);
+      assert.equal(calls.length, 1);
+      assert.equal(loadMetaConfirmationIndex(idxPath)["kit-1"].status, "sent");
+    }));
+
+  it("network_error: conta failed mas NÃO grava tentativa no índice (reprocessa livre na próxima)", () =>
+    withTmp(async (dir) => {
+      const sendFn = async (): Promise<MetaCapiSendResult> => ({ ok: false, status: 502, reason: "network_error" });
+      const s = await runMetaConfirmationBatch(deps(dir, { roster: [sub(1)], baseSnapshot: [base(1)], sendFn }));
+      assert.equal(s.failed, 1);
+      assert.deepEqual(s.failedIds, [1]);
+      assert.equal(existsSync(join(dir, "idx.json")), false, "erro de rede não deve tocar o índice");
+    }));
+
+  it("not_configured: não conta como failed nem toca o índice", () =>
+    withTmp(async (dir) => {
+      const sendFn = async (): Promise<MetaCapiSendResult> => ({ ok: false, status: 503, reason: "not_configured" });
+      const s = await runMetaConfirmationBatch(deps(dir, { roster: [sub(1)], baseSnapshot: [base(1)], sendFn }));
+      assert.equal(s.notConfigured, 1);
+      assert.equal(s.failed, 0);
+      assert.equal(existsSync(join(dir, "idx.json")), false);
+    }));
+
+  it("--limit corta o envio, mantendo o restante pendente pra próxima rodada", () =>
+    withTmp(async (dir) => {
+      const { fetchImpl, calls } = mockFetch();
+      const roster = [sub(1), sub(2)];
+      const snap = [base(1), base(2)];
+      const s = await runMetaConfirmationBatch(deps(dir, { roster, baseSnapshot: snap, fetchImpl, limit: 1 }));
+      assert.equal(s.toSend, 1);
+      assert.equal(s.sent, 1);
+      assert.equal(calls.length, 1);
+      const idx = loadMetaConfirmationIndex(join(dir, "idx.json"));
+      assert.equal(Object.keys(idx).length, 1, "só o enviado entra no índice — o outro segue pendente");
+    }));
+
+  it("fbclid malformado: classificado como meta, mas sobe sem fbc (conta em withoutClickId)", () =>
+    withTmp(async (dir) => {
+      const { fetchImpl, calls } = mockFetch();
+      const s = await runMetaConfirmationBatch(
+        deps(dir, { roster: [sub(1, { fields: { origem_click_id: "fbclid:tem espaço!" } })], baseSnapshot: [base(1)], fetchImpl }),
+      );
+      assert.equal(s.sent, 1);
+      assert.equal(s.withFbc, 0);
+      assert.equal(s.withoutClickId, 1);
+      assert.equal(calls[0].body.data[0].user_data.fbc, undefined);
+    }));
+});
+
+describe("#8616 item 1 — CLI main(): --send sem token não pode sair exit 0 em silêncio", () => {
+  function snapshotDir(root: string, date: string): string {
+    const dir = join(root, date);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+  const yesterday = () => new Date(Date.now() - 24 * 3600 * 1000).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+
+  it("sem snapshot base: exit 1", () =>
+    withTmp(async (dir) => {
+      const code = await metaConfirmMain(["--snapshot-root", dir, "--index", join(dir, "i.json")], async () => [sub(1) as any]);
+      assert.equal(code, 1);
+    }));
+
+  it("--send sem META_CAPI_ACCESS_TOKEN: dry-run efetivo tratado como falha (exit 1)", () =>
+    withTmp(async (dir) => {
+      writeFileSync(join(snapshotDir(dir, yesterday()), "subscribers.jsonl"), JSON.stringify(base(1)) + "\n");
+      const prev = process.env.META_CAPI_ACCESS_TOKEN;
+      delete process.env.META_CAPI_ACCESS_TOKEN;
+      try {
+        const code = await metaConfirmMain(
+          ["--send", "--snapshot-root", dir, "--index", join(dir, "i.json")],
+          async () => [sub(1) as any],
+        );
+        assert.equal(code, 1);
+        assert.equal(existsSync(join(dir, "i.json")), false, "efetivo dry-run não deve tocar o índice");
+      } finally {
+        if (prev !== undefined) process.env.META_CAPI_ACCESS_TOKEN = prev;
+      }
+    }));
+
+  it("--send --dry-run juntos: continua sendo dry-run explícito, exit 0", () =>
+    withTmp(async (dir) => {
+      writeFileSync(join(snapshotDir(dir, yesterday()), "subscribers.jsonl"), JSON.stringify(base(1)) + "\n");
+      const prev = process.env.META_CAPI_ACCESS_TOKEN;
+      process.env.META_CAPI_ACCESS_TOKEN = "tok";
+      try {
+        const code = await metaConfirmMain(
+          ["--send", "--dry-run", "--snapshot-root", dir, "--index", join(dir, "i.json")],
+          async () => [sub(1) as any],
+        );
+        assert.equal(code, 0);
+        assert.equal(existsSync(join(dir, "i.json")), false);
+      } finally {
+        if (prev !== undefined) process.env.META_CAPI_ACCESS_TOKEN = prev;
+        else delete process.env.META_CAPI_ACCESS_TOKEN;
+      }
+    }));
+
+  it("--send com token: dry-run efetivo não se aplica, resumo real e exit conforme falhas", () =>
+    withTmp(async (dir) => {
+      writeFileSync(join(snapshotDir(dir, yesterday()), "subscribers.jsonl"), JSON.stringify(base(1)) + "\n");
+      const prev = process.env.META_CAPI_ACCESS_TOKEN;
+      process.env.META_CAPI_ACCESS_TOKEN = "tok";
+      try {
+        const sendFn = async (): Promise<MetaCapiSendResult> => ({ ok: true, status: 200 });
+        const code = await metaConfirmMain(
+          ["--send", "--snapshot-root", dir, "--index", join(dir, "i.json")],
+          async () => [sub(1) as any],
+          sendFn,
+        );
+        assert.equal(code, 0);
+        assert.equal(loadMetaConfirmationIndex(join(dir, "i.json"))["kit-1"].status, "sent");
+      } finally {
+        if (prev !== undefined) process.env.META_CAPI_ACCESS_TOKEN = prev;
+        else delete process.env.META_CAPI_ACCESS_TOKEN;
+      }
     }));
 });
 

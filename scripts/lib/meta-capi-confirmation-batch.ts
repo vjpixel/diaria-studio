@@ -70,6 +70,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
 import {
+  KIT_CLICK_ID_FIELD_NAME,
   selectConfirmationCandidates,
   type ConfirmationCandidate,
   type ConfirmationPath,
@@ -252,7 +253,7 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
         email: (s.email_address ?? "").trim(),
         createdAt: s.created_at,
         path: e.path,
-        clickId: (s.fields?.origem_click_id ?? "").trim() || undefined,
+        clickId: (s.fields?.[KIT_CLICK_ID_FIELD_NAME] ?? "").trim() || undefined,
         ambiguous: false,
       });
     }
@@ -284,11 +285,13 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
     notConfigured: 0,
   };
 
-  let dirty = false;
+  // #8616 item 2: grava o índice a cada entrada (não só no fim do lote) — um
+  // kill no meio do processamento não deixa entradas já resolvidas sem
+  // registro, o que reenviaria com `event_time` novo na próxima rodada.
   const record = (c: ConfirmationCandidate, entry: Omit<MetaConfirmationIndexEntry, "at" | "path">): void => {
     if (effectiveDryRun) return;
     index[metaIndexKey(c.id)] = { at: nowIso, path: c.path, ...entry };
-    dirty = true;
+    saveMetaConfirmationIndex(deps.indexPath, index);
   };
 
   if (skippedNoBase > 0) {
@@ -377,7 +380,6 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
       summary.failedIds.push(cand.id);
     }
   }
-  if (dirty) saveMetaConfirmationIndex(deps.indexPath, index);
   log(`resumo: ${summary.sent} enviados, ${summary.failed} falharam, ${summary.outOfWindow} fora da janela.`);
   return summary;
 }
