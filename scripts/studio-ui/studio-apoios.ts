@@ -516,8 +516,8 @@ export type RewardGroup = "amigo" | "apoiador" | "mantenedor" | "patrono";
  * (não há nível acima).
  *
  * Valores em `../lib/reward-tier-thresholds.ts` (extraídos de propósito pra
- * `scripts/lib/`, #8137 follow-up) — a página `/apoiar`
- * (`scripts/lib/site-apoiar-page.ts`) precisa dos mesmos números e
+ * `scripts/lib/`, #8137 follow-up) — o gate do Artigo Especial
+ * (`scripts/lib/shared/artigo-especial-gate-cta.ts`) precisa dos mesmos números e
  * `scripts/lib/**` não pode importar de `scripts/studio-ui/**`
  * (`test/lib-boundary.test.ts` regra 4). `computeRewardGroup` continua
  * declarado AQUI, sem mudar de módulo — só as 4 constantes viraram import;

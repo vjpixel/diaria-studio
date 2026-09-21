@@ -6,7 +6,7 @@ description: Votação do tema do próximo Artigo Especial pelos apoiadores Mant
 # /diaria-voto-tema
 
 Fecha a recompensa "voto no tema do próximo Artigo Especial" já vendida no
-tier Mantenedor (`scripts/lib/site-apoiar-page.ts:131`) e nunca implementada
+tier Mantenedor (descrita na antiga página `/apoiar`, removida no #8498; a campanha do Apoia.se é a fonte) e nunca implementada
 antes da #8371 — até aqui o editor coletava votos por e-mail (BCC +
 resposta), com 1-2 votos em 5-10 destinatários nas duas rodadas que
 existiram.

@@ -4,7 +4,7 @@
  * Miolo puro do índice PAGINADO do acervo no apex — `diar.ia.br/archive`,
  * `/archive/2`, … — gerado por `scripts/gen-archive-index.ts` como static
  * assets do Worker `workers/site` (mesmo padrão de `/p/{slug}`, `/clarice`,
- * `/apoiar`: HTML commitado, nenhum handler novo em `src/index.ts`).
+ * `/assinar`: HTML commitado, nenhum handler novo em `src/index.ts`).
  *
  * ## Por que esta superfície existe, se `arquivo.diar.ia.br` já lista tudo
  *

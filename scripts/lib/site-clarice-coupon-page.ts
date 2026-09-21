@@ -3,7 +3,7 @@
  *
  * Gera `workers/site/public/clarice/index.html` — página estática dedicada
  * ao cupom de desconto da parceria com a Clarice (assistente de revisão de
- * texto em português). Mesmo padrão estrutural de `site-apoiar-page.ts`
+ * texto em português). Mesmo padrão estrutural do antigo `site-apoiar-page.ts` (removido no #8498)
  * (#7915) / `site-assinar-page.ts` (#7015): conteúdo estático, sem dado de
  * request/edição, um único template literal, gerado por
  * `scripts/gen-clarice-coupon-page.ts`.

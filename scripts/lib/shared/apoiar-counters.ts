@@ -1,10 +1,11 @@
 /**
  * scripts/lib/shared/apoiar-counters.ts (#7915)
  *
- * Instrumentação MÍNIMA (log-based, não é dashboard) da página `/apoiar`
- * (`workers/site/public/apoiar/index.html`, gerada por `site-apoiar-page.ts`):
- * conta VISUALIZAÇÃO da oferta e CLIQUE pra apoiar, separadamente — nenhum
- * dos dois é receita. A confirmação de pagamento em si continua vindo da
+ * Instrumentação MÍNIMA (log-based, não é dashboard) do redirect
+ * `/apoiar/ir` → Apoia.se: conta CLIQUE pra apoiar — não é receita. (A página
+ * `/apoiar` e o contador de VISUALIZAÇÃO dela saíram no #8498; as chaves
+ * `counter:apoiar:view:*` ficaram ÓRFÃS no KV — não são mais escritas nem lidas.)
+ * `/apoiar` (301 legado) conta em `counter:apoiar:legacy:*`, separado do menu. A confirmação de pagamento em si continua vindo da
  * fonte de apoio (apoia.se/Stripe) por fora deste repo; a atribuição por
  * coorte (visualização/clique → 1º apoio confirmado) é escopo da issue
  * companheira #7916, não deste módulo.
@@ -22,15 +23,16 @@
  * pro mesmo id de namespace.
  */
 
-/** Chave do contador de VISUALIZAÇÃO — 1 chave cumulativa por dia. */
-export function apoiarViewCounterKey(day: string): string {
-  return `counter:apoiar:view:${day}`;
-}
-
 /** Chave do contador de CLIQUE pra apoiar (`/apoiar/ir` → apoia.se) — 1 chave
- * cumulativa por dia, nunca compartilha namespace com a de visualização. */
+ * cumulativa por dia. */
 export function apoiarClickCounterKey(day: string): string {
   return `counter:apoiar:click:${day}`;
+}
+
+/** Chave do contador do 301 LEGADO (`/apoiar` → apoia.se) — separado do menu
+ * (`/apoiar/ir`) pra links antigos/indexados não inflarem o sinal de intenção. */
+export function apoiarLegacyCounterKey(day: string): string {
+  return `counter:apoiar:legacy:${day}`;
 }
 
 /**

@@ -65,11 +65,16 @@ import {
   aiFetchReferrerCounterKey,
   incrementAiFetchCounter,
 } from "../../../scripts/lib/shared/ai-fetch-counters.ts";
-// #7915: instrumentação (view + click) da página /apoiar — ver docstring de
-// apoiar-counters.ts. Nenhum dos dois contadores é pagamento confirmado; a
-// confirmação continua vindo do apoia.se/Stripe fora deste repo.
-import { apoiarViewCounterKey, apoiarClickCounterKey, incrementApoiarCounter } from "../../../scripts/lib/shared/apoiar-counters.ts";
+// #7915/#8498: instrumentação de CLIQUE do redirect /apoiar/ir — ver docstring
+// de apoiar-counters.ts. O contador não é pagamento confirmado; a confirmação
+// continua vindo do apoia.se/Stripe fora deste repo.
+import { apoiarClickCounterKey, apoiarLegacyCounterKey, incrementApoiarCounter } from "../../../scripts/lib/shared/apoiar-counters.ts";
 import { DIARIA_APOIASE_URL } from "../../../scripts/lib/canonical-urls.ts";
+import {
+  APOIAR_REDIRECT_UTM_SOURCE,
+  APOIAR_REDIRECT_UTM_MEDIUM,
+  APOIAR_REDIRECT_UTM_CAMPAIGN,
+} from "../../../scripts/lib/shared/utm-registry.ts";
 // #8355: ETag fraco + Last-Modified + 304 condicional pras páginas do
 // acervo (`/p/{slug}`) — mesmo padrão já em produção em
 // workers/arquivo/src/index.ts (#4909/#5134), extraído pra scripts/lib/shared/
@@ -129,6 +134,31 @@ export function matchArchiveSlug(pathname: string): string | null {
 export function extractDatePublishedFromArchivePage(html: string): string | undefined {
   const match = html.match(/"@type"\s*:\s*"NewsArticle"[^}]*"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})"/);
   return match ? match[1] : undefined;
+}
+
+/**
+ * #8498: destino do redirect de apoio — `apoia.se/diaria` + query string do
+ * request + UTM do menu (`utm-registry.ts`, emissor `site-apoiar-redirect`).
+ * Só preenche o que o request não trouxe: UTM explícito do chamador vence.
+ */
+function buildApoiarTarget(reqUrl: URL): string {
+  const target = new URL(DIARIA_APOIASE_URL);
+  target.search = reqUrl.search;
+  const defaults: Record<string, string> = {
+    utm_source: APOIAR_REDIRECT_UTM_SOURCE,
+    utm_medium: APOIAR_REDIRECT_UTM_MEDIUM,
+    utm_campaign: APOIAR_REDIRECT_UTM_CAMPAIGN,
+  };
+  for (const [k, v] of Object.entries(defaults)) {
+    if (!target.searchParams.has(k)) target.searchParams.set(k, v);
+  }
+  return target.toString();
+}
+
+/** Conta o clique do dia; `incrementApoiarCounter` já é fail-soft (nunca lança). */
+async function countApoiarClick(env: Env, keyFn: (day: string) => string = apoiarClickCounterKey): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10);
+  await incrementApoiarCounter(env.CURSOS_SUBSCRIBERS, keyFn(day));
 }
 
 /**
@@ -247,39 +277,29 @@ export default {
       }
     }
 
-    // #7915: /apoiar/ir — sem arquivo em public/ (é uma ROTA, não uma
+    // #7915/#8498: /apoiar/ir — sem arquivo em public/ (é uma ROTA, não uma
     // página), resolvido ANTES do asset lookup pelo mesmo motivo do
-    // /confirmada acima. Incrementa o contador de CLIQUE (nunca pagamento
-    // confirmado — isso continua vindo do apoia.se/Stripe) e redireciona
-    // (302) pro apoia.se, preservando query string (UTM) igual ao fallback
-    // do #6429 logo abaixo. Fail-soft: falha no KV nunca impede o redirect.
+    // /confirmada acima. É o destino do item "Apoiar" do menu e do rodapé.
+    // Incrementa o contador de CLIQUE (nunca pagamento confirmado — isso
+    // continua vindo do apoia.se/Stripe) e redireciona (302) pro apoia.se,
+    // preservando a query string do request e acrescentando o UTM do menu
+    // (só os parâmetros ausentes — UTM explícito do chamador vence).
+    // Fail-soft: falha no KV nunca impede o redirect.
     if (request.method === "GET" && reqUrl.pathname === "/apoiar/ir") {
-      try {
-        const day = new Date().toISOString().slice(0, 10);
-        await incrementApoiarCounter(env.CURSOS_SUBSCRIBERS, apoiarClickCounterKey(day));
-      } catch {
-        // mesma disciplina fail-soft dos blocos de contador acima.
-      }
-      const target = new URL(DIARIA_APOIASE_URL);
-      target.search = reqUrl.search;
-      return Response.redirect(target.toString(), 302);
+      await countApoiarClick(env);
+      return Response.redirect(buildApoiarTarget(reqUrl), 302);
     }
 
-    // #7915: VISUALIZAÇÃO da própria página /apoiar — conta e deixa cair no
-    // asset lookup normal (não retorna aqui; quem serve o HTML é o
-    // env.ASSETS de sempre). Só a forma canônica sem barra: html_handling =
-    // "drop-trailing-slash" (wrangler.toml) resolve a variante "/apoiar/" no
-    // PRÓPRIO env.ASSETS.fetch logo abaixo (não antes deste bloco — este
-    // Worker roda primeiro, run_worker_first=true), então essa requisição
-    // nunca bate aqui com barra — contar só "/apoiar" não sub-conta a visita
-    // (comment-analyzer, #8137: comentário anterior sugeria a ordem errada).
-    if (request.method === "GET" && reqUrl.pathname === "/apoiar") {
-      try {
-        const day = new Date().toISOString().slice(0, 10);
-        await incrementApoiarCounter(env.CURSOS_SUBSCRIBERS, apoiarViewCounterKey(day));
-      } catch {
-        // mesma disciplina fail-soft dos blocos de contador acima.
-      }
+    // #8498: /apoiar — a página foi removida (a campanha do Apoia.se é a fonte
+    // única). 301 PERMANENTE pro destino em vez de 404: o path pode estar
+    // indexado/linkado por fora (nunca esteve no sitemap.xml). Conta em chave
+    // SEPARADA (`counter:apoiar:legacy:*`) pra não misturar com o clique do
+    // menu — por ser 301, o navegador cacheia e visitas repetidas não passam
+    // pelo Worker, então é um piso, não a contagem exata. Cobre também a variante com barra
+    // (html_handling = "drop-trailing-slash" só age DEPOIS deste bloco).
+    if (request.method === "GET" && (reqUrl.pathname === "/apoiar" || reqUrl.pathname === "/apoiar/")) {
+      await countApoiarClick(env, apoiarLegacyCounterKey);
+      return Response.redirect(buildApoiarTarget(reqUrl), 301);
     }
 
     const response = await env.ASSETS.fetch(request);

@@ -3,7 +3,7 @@
  *
  * A #8155 extraiu os 4 limiares de nível de recompensa pra
  * `scripts/lib/reward-tier-thresholds.ts` e consertou o drift-risk em
- * `studio-apoios.ts`/`site-apoiar-page.ts` — mas o fleet review da própria
+ * `studio-apoios.ts`/`site-apoiar-page.ts` (este removido no #8498) — mas o fleet review da própria
  * PR (`type-design-analyzer`) achou a MESMA classe de risco intocada em
  * duas outras superfícies: `scripts/lib/shared/artigo-especial-gate-cta.ts`
  * (CTA do teaser dos Artigos Especiais) e `workers/artigos/src/gate-page.ts`
@@ -11,7 +11,7 @@
  * sem NENHUM import de `reward-tier-thresholds.ts`.
  *
  * Mesmo padrão de `test/retrospectiva-copy-limiar-7690.test.ts` e
- * `test/site-apoiar-page-7915.test.ts`: deriva o valor esperado direto do
+ * `test/site-apoiar-page-7915.test.ts` (removido no #8498): deriva o valor esperado direto do
  * módulo compartilhado, nunca transcreve o número — mexer no limiar sem
  * mexer na copy quebra aqui.
  */

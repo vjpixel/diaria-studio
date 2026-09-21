@@ -9,14 +9,14 @@
  *
  * O limiar citado no texto ("a partir de R$X/mês") é DERIVADO de
  * `REWARD_TIER_APOIADOR_MIN` (`scripts/lib/reward-tier-thresholds.ts`) —
- * mesma fonte que `artigo-especial-gate-cta.ts` e a página `/apoiar`
+ * mesma fonte que `artigo-especial-gate-cta.ts` (a antiga página `/apoiar` saiu no #8498)
  * (achado do fleet review da #8155, `type-design-analyzer`: este arquivo
  * hardcodava "R$10/mês" como string solta, sem link mecânico com o limiar
  * real).
  */
 import { REWARD_TIER_APOIADOR_MIN } from "../../../scripts/lib/reward-tier-thresholds.ts";
 
-/** `10` → `"R$10/mês"` — mesmo formato de `formatValorMensal` em `site-apoiar-page.ts`. */
+/** `10` → `"R$10/mês"` — mesmo formato do `formatValorMensal` de `artigo-especial-gate-cta.ts` (o `site-apoiar-page.ts` original saiu no #8498). */
 function formatValorMensal(min: number): string {
   return `R$${min}/mês`;
 }

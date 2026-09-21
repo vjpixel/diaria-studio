@@ -12,7 +12,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { apoiarViewCounterKey, apoiarClickCounterKey, incrementApoiarCounter } from "../scripts/lib/shared/apoiar-counters.ts";
+import { apoiarClickCounterKey, incrementApoiarCounter } from "../scripts/lib/shared/apoiar-counters.ts";
 
 function makeMapKV(initial: Record<string, string> = {}): KVNamespace {
   const store = new Map(Object.entries(initial));
@@ -27,19 +27,16 @@ function makeMapKV(initial: Record<string, string> = {}): KVNamespace {
   } as unknown as KVNamespace;
 }
 
-describe("apoiarViewCounterKey / apoiarClickCounterKey", () => {
-  test("prefixos distintos pro mesmo dia — nunca colidem", () => {
-    const day = "2026-09-15";
-    assert.notEqual(apoiarViewCounterKey(day), apoiarClickCounterKey(day));
-    assert.equal(apoiarViewCounterKey(day), "counter:apoiar:view:2026-09-15");
-    assert.equal(apoiarClickCounterKey(day), "counter:apoiar:click:2026-09-15");
+describe("apoiarClickCounterKey", () => {
+  test("formato estável — 1 chave cumulativa por dia (#8498: a chave de view saiu)", () => {
+    assert.equal(apoiarClickCounterKey("2026-09-15"), "counter:apoiar:click:2026-09-15");
   });
 });
 
 describe("incrementApoiarCounter", () => {
   test("chave ausente → cria com valor '1'", async () => {
     const kv = makeMapKV();
-    const key = apoiarViewCounterKey("2026-09-15");
+    const key = apoiarClickCounterKey("2026-09-15");
     await incrementApoiarCounter(kv, key);
     assert.equal(await kv.get(key), "1");
   });
@@ -52,14 +49,14 @@ describe("incrementApoiarCounter", () => {
   });
 
   test("valor corrompido (não-numérico) no KV → trata como 0, não lança", async () => {
-    const key = apoiarViewCounterKey("2026-09-15");
+    const key = apoiarClickCounterKey("2026-09-15");
     const kv = makeMapKV({ [key]: "lixo" });
     await incrementApoiarCounter(kv, key);
     assert.equal(await kv.get(key), "1");
   });
 
   test("kv undefined (binding ausente) → NO-OP silencioso, não lança", async () => {
-    await assert.doesNotReject(incrementApoiarCounter(undefined, apoiarViewCounterKey("2026-09-15")));
+    await assert.doesNotReject(incrementApoiarCounter(undefined, apoiarClickCounterKey("2026-09-15")));
   });
 
   test("KV.get lançando exceção → fail-soft, nunca propaga (exercita o try/catch real, não só o guard de kv ausente)", async () => {
@@ -70,7 +67,7 @@ describe("incrementApoiarCounter", () => {
       put: async () => {},
       delete: async () => {},
     } as unknown as KVNamespace;
-    await assert.doesNotReject(incrementApoiarCounter(explodingKv, apoiarViewCounterKey("2026-09-15")));
+    await assert.doesNotReject(incrementApoiarCounter(explodingKv, apoiarClickCounterKey("2026-09-15")));
   });
 
   test("KV.put lançando exceção → fail-soft, nunca propaga", async () => {
@@ -81,17 +78,17 @@ describe("incrementApoiarCounter", () => {
       },
       delete: async () => {},
     } as unknown as KVNamespace;
-    await assert.doesNotReject(incrementApoiarCounter(explodingKv, apoiarViewCounterKey("2026-09-15")));
+    await assert.doesNotReject(incrementApoiarCounter(explodingKv, apoiarClickCounterKey("2026-09-15")));
   });
 
-  test("view e click não se cruzam sob incrementos repetidos", async () => {
+  test("dias distintos não se cruzam sob incrementos repetidos", async () => {
     const kv = makeMapKV();
-    const keyView = apoiarViewCounterKey("2026-09-15");
-    const keyClick = apoiarClickCounterKey("2026-09-15");
-    await incrementApoiarCounter(kv, keyView);
-    await incrementApoiarCounter(kv, keyView);
-    await incrementApoiarCounter(kv, keyClick);
-    assert.equal(await kv.get(keyView), "2");
-    assert.equal(await kv.get(keyClick), "1");
+    const day1 = apoiarClickCounterKey("2026-09-15");
+    const day2 = apoiarClickCounterKey("2026-09-16");
+    await incrementApoiarCounter(kv, day1);
+    await incrementApoiarCounter(kv, day1);
+    await incrementApoiarCounter(kv, day2);
+    assert.equal(await kv.get(day1), "2");
+    assert.equal(await kv.get(day2), "1");
   });
 });
