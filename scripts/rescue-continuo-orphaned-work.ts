@@ -24,13 +24,21 @@
  * Códigos de saída:
  *   0 — outcome "clean" (nada a recuperar) OU "rescued" com sucesso
  *       (push OK quando pedido, ou --push omitido).
- *   1 — outcome "rescue_failed" OU "rescued" com --push que falhou. Este
- *       script FALHA ALTO de propósito nesses casos (#7130, direção 2 da
- *       issue: "um tick que produziu diff e não fez nem uma coisa nem outra
- *       deveria falhar alto, não terminar em silêncio reportando sucesso")
- *       — quem chama este CLI (o Passo 0 do loop do contínuo) deve tratar
- *       exit 1 como bloqueio a investigar manualmente, nunca como warning a
- *       ignorar e seguir em frente.
+ *   1 — outcome "rescue_failed", "conflict_markers_found" (#8639, ver abaixo)
+ *       OU "rescued" com --push que falhou. Este script FALHA ALTO de
+ *       propósito nesses casos (#7130, direção 2 da issue: "um tick que
+ *       produziu diff e não fez nem uma coisa nem outra deveria falhar alto,
+ *       não terminar em silêncio reportando sucesso") — quem chama este CLI
+ *       (o Passo 0 do loop do contínuo) deve tratar exit 1 como bloqueio a
+ *       investigar manualmente, nunca como warning a ignorar e seguir em
+ *       frente.
+ *
+ * #8639: se a árvore suja carregar arquivo(s) com marcador de conflito de
+ * merge literal (`<<<<<<<`/`>>>>>>>`, provável sobra de um `git stash pop`
+ * conflitante do `sync-code.ts`/`git-sync.ts` — #6668), o resgate ABORTA
+ * antes de criar branch/commit — nunca commita marcador de conflito em
+ * silêncio (incidente de origem: commit 3d54dcf20, rescue automático que
+ * versionou merge markers em `scripts/lib/diaria-subscribers-db.ts`).
  *
  * GUARD DE PUBLICAÇÃO: este script só mexe em `git` (branch/commit/push) —
  * nunca toca Beehiiv/LinkedIn/Facebook/Brevo/Kit. `git push`/`gh pr create`
@@ -320,6 +328,16 @@ function main(): void {
 
   if (result.outcome === "rescue_failed") {
     process.stderr.write(`\n⚠ RESCUE FALHOU — trabalho órfão pode continuar sujo no checkout compartilhado.\n`);
+    process.stderr.write(result.message + "\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (result.outcome === "conflict_markers_found") {
+    process.stderr.write(
+      `\n⚠ RESGATE ABORTADO (#8639) — marcador(es) de conflito de merge literal no checkout compartilhado, ` +
+        `nunca commitados em silêncio.\n`,
+    );
     process.stderr.write(result.message + "\n");
     process.exitCode = 1;
     return;

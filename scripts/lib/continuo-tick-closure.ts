@@ -93,7 +93,78 @@ export function planRescueBranch(nowIso: string, discriminator: string = randomD
 export type RescueOutcome =
   | { outcome: "clean"; message: string }
   | { outcome: "rescued"; branch: string; message: string; checkoutBackFailed: boolean }
-  | { outcome: "rescue_failed"; message: string };
+  | { outcome: "rescue_failed"; message: string }
+  | { outcome: "conflict_markers_found"; message: string; files: string[] };
+
+/**
+ * Extrai (puro, sem I/O) os caminhos de arquivo únicos de um stdout de
+ * `git grep -n` (formato `path:line:conteúdo`) — usado por
+ * `detectConflictMarkers` para reportar QUAIS arquivos carregam marcador de
+ * conflito, sem depender de reprocessar o grep. Corta na primeira ocorrência
+ * de `:` — path com `:` literal no nome (raro, praticamente inédito neste
+ * repo) sairia truncado, aceito como limitação desta rede de segurança
+ * (#8639): o objetivo é nomear o(s) arquivo(s) suspeitos pra investigação
+ * manual, não parsear `git grep` de forma bulletproof contra qualquer nome
+ * de arquivo adversarial.
+ */
+export function parseConflictMarkerFiles(grepStdout: string): string[] {
+  const files = new Set<string>();
+  for (const line of grepStdout.split("\n")) {
+    if (!line.trim()) continue;
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    files.add(line.slice(0, idx));
+  }
+  return [...files].sort();
+}
+
+/**
+ * #8639: detecta marcador de conflito de merge LITERAL (`<<<<<<<`/`>>>>>>>`
+ * no início de linha) em qualquer arquivo da árvore suja — tracked
+ * modificado OU untracked (`--untracked`, sem o quê um placeholder novo com
+ * marcador escaparia). Rede de segurança independente da causa raiz exata:
+ * o incidente de origem (#8639, commit 3d54dcf20) veio de um `git stash pop`
+ * conflitante deixando `<<<<<<< Updated upstream` / `>>>>>>> Stashed
+ * changes` em `scripts/lib/diaria-subscribers-db.ts` — mas esta checagem
+ * pega QUALQUER origem de marcador (stash pop, merge malsucedido, cherry-
+ * pick, edição manual acidental), não só aquele caminho específico.
+ *
+ * Usa só `<<<<<<<`/`>>>>>>>` como sinal (nunca `=======` sozinho) — um
+ * `=======` isolado é comum em markdown (sublinhado de título nível 1
+ * setext) e sozinho daria falso positivo; exigir as DUAS âncoras do
+ * conflito no mesmo arquivo é o mesmo critério que `git-sync.ts` (#6668)
+ * já usa via `findUnmergedPaths`/status porcelain, só que aqui é detecção
+ * por CONTEÚDO (necessária porque, neste ponto, `git status --porcelain`
+ * já não distingue mais "arquivo com marcador" de "arquivo modificado
+ * normal" — o `stash pop` conflitante já terminou, os arquivos já estão
+ * `M`/`??` como qualquer outra mudança).
+ *
+ * Fail-open na ausência de sinal, mesmo espírito de `findUnmergedPaths`
+ * (`git-sync.ts`, #6668): se o `git grep` falhar por qualquer motivo que
+ * não seja "sem match" (status 0 = achou, 1 = não achou — convenção padrão
+ * de grep), trata como "nenhum marcador confirmado" e deixa o rescue
+ * prosseguir — o objetivo desta rede de segurança é pegar o caso concreto
+ * medido no #8639, não travar o rescue inteiro por uma falha não-relacionada
+ * do próprio `git grep`.
+ */
+export function detectConflictMarkers(spawn: SpawnFn): { found: boolean; files: string[] } {
+  const res = spawn("git", [
+    "grep",
+    "-I",
+    "-n",
+    "-e",
+    "^<<<<<<< ",
+    "-e",
+    "^>>>>>>> ",
+    "--untracked",
+    "--",
+    ".",
+  ]);
+  if (res.status !== 0) {
+    return { found: false, files: [] };
+  }
+  return { found: true, files: parseConflictMarkerFiles(res.stdout) };
+}
 
 /**
  * Verifica o checkout compartilhado e, se sujo, recupera o trabalho numa
@@ -162,6 +233,29 @@ export function rescueOrphanedWork(
     }
     if (!hasUncommittedWork(statusRes.stdout)) {
       return { outcome: "clean", message: "checkout compartilhado limpo — nada a recuperar." };
+    }
+
+    // #8639: antes de mover QUALQUER coisa pra uma branch de rescue, garante
+    // que nenhum arquivo sujo carrega marcador de conflito de merge literal
+    // — sinal de um `git stash pop` conflitante (git-sync.ts, #6668) que a
+    // árvore ainda não teve chance de resolver. Rodar ANTES do
+    // `git checkout -b`: se achar marcador, aborta sem criar branch nenhuma
+    // e sem tocar em mais nada — a árvore fica exatamente como estava, pra
+    // investigação/resolução manual, em vez de herdar uma decisão de merge
+    // às cegas dentro de um commit automático.
+    const conflictCheck = detectConflictMarkers(spawn);
+    if (conflictCheck.found) {
+      return {
+        outcome: "conflict_markers_found",
+        files: conflictCheck.files,
+        message:
+          `RESGATE ABORTADO (#8639): ${conflictCheck.files.length} arquivo(s) na árvore suja carregam ` +
+          `marcador(es) de conflito de merge literal (<<<<<<< / >>>>>>>) — provável sobra de um ` +
+          `'git stash pop' conflitante (git-sync.ts, #6668) que a árvore ainda não teve chance de resolver. ` +
+          `Commitar isso às cegas puxaria marcadores de conflito pro histórico do repo (incidente de origem: ` +
+          `commit 3d54dcf20, #8639). Resolver manualmente antes de rodar o rescue de novo: ` +
+          `${conflictCheck.files.join(", ")}.`,
+      };
     }
 
     const plan = planRescueBranch(nowIso);

@@ -19,6 +19,8 @@ import {
   pushRescueBranch,
   planMasterCommitRescueBranch,
   rescueOrphanedMasterCommits,
+  detectConflictMarkers,
+  parseConflictMarkerFiles,
   type SpawnFn,
   type SpawnResult,
   type SyncLock,
@@ -117,9 +119,10 @@ describe("rescueOrphanedWork", () => {
     assert.deepEqual(calls[0], ["git", "status", "--porcelain"]);
   });
 
-  it("árvore suja → checkout -b, add -A, commit, checkout master, na ordem certa", () => {
+  it("árvore suja → grep de conflito, checkout -b, add -A, commit, checkout master, na ordem certa", () => {
     const { spawn, calls } = makeFakeSpawn({
       "git status": [ok(" M scripts/foo.ts\n")],
+      "git grep": [fail()], // #8639: status 1 = sem marcador de conflito encontrado
       "git checkout": [ok(), ok()], // -b {branch}, depois master
       "git add": [ok()],
       "git commit": [ok()],
@@ -131,22 +134,24 @@ describe("rescueOrphanedWork", () => {
     assert.equal(result.checkoutBackFailed, false);
 
     assert.deepEqual(calls[0], ["git", "status", "--porcelain"]);
-    assert.deepEqual(calls[1], ["git", "checkout", "-b", result.branch]);
-    assert.deepEqual(calls[2], ["git", "add", "-A"]);
-    assert.deepEqual(calls[3][0], "git");
-    assert.deepEqual(calls[3][1], "commit");
-    assert.deepEqual(calls[3][2], "-m");
-    assert.deepEqual(calls[4], ["git", "checkout", "master"]);
+    assert.equal(calls[1][1], "grep");
+    assert.deepEqual(calls[2], ["git", "checkout", "-b", result.branch]);
+    assert.deepEqual(calls[3], ["git", "add", "-A"]);
+    assert.deepEqual(calls[4][0], "git");
+    assert.deepEqual(calls[4][1], "commit");
+    assert.deepEqual(calls[4][2], "-m");
+    assert.deepEqual(calls[5], ["git", "checkout", "master"]);
   });
 
   it("checkout -b falha → rescue_failed, nunca tenta add/commit (trabalho continua sujo, nunca meio-movido)", () => {
     const { spawn, calls } = makeFakeSpawn({
       "git status": [ok(" M scripts/foo.ts\n")],
+      "git grep": [fail()],
       "git checkout": [fail("já existe uma branch com esse nome")],
     });
     const result = rescueOrphanedWork(spawn, "2026-09-02T10:00:00.000Z", NOOP_LOCK);
     assert.equal(result.outcome, "rescue_failed");
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     assert.equal(calls.some((c) => c[1] === "add"), false);
     assert.equal(calls.some((c) => c[1] === "commit"), false);
   });
@@ -154,6 +159,7 @@ describe("rescueOrphanedWork", () => {
   it("git add falha após checkout -b → rescue_failed, nunca commita parcial", () => {
     const { spawn, calls } = makeFakeSpawn({
       "git status": [ok(" M scripts/foo.ts\n")],
+      "git grep": [fail()],
       "git checkout": [ok()],
       "git add": [fail("disco cheio")],
     });
@@ -165,6 +171,7 @@ describe("rescueOrphanedWork", () => {
   it("git commit falha → rescue_failed, nunca tenta voltar pra master (evita perder o staged)", () => {
     const { spawn, calls } = makeFakeSpawn({
       "git status": [ok(" M scripts/foo.ts\n")],
+      "git grep": [fail()],
       "git checkout": [ok()],
       "git add": [ok()],
       "git commit": [fail("nothing to commit — impossível aqui, mas simula falha genérica")],
@@ -177,6 +184,7 @@ describe("rescueOrphanedWork", () => {
   it("checkout master pós-commit falha → ainda 'rescued' (trabalho SEGURO, commitado), sinaliza checkoutBackFailed", () => {
     const { spawn } = makeFakeSpawn({
       "git status": [ok(" M scripts/foo.ts\n")],
+      "git grep": [fail()],
       "git checkout": [ok(), fail("conflito ao voltar")],
       "git add": [ok()],
       "git commit": [ok()],
@@ -237,6 +245,7 @@ describe("rescueOrphanedWork", () => {
   it("#7130 review finding 1 — lock adquirido → release() chamado mesmo quando um passo git falha no meio", () => {
     const { spawn } = makeFakeSpawn({
       "git status": [ok(" M scripts/foo.ts\n")],
+      "git grep": [fail()],
       "git checkout": [fail("já existe uma branch com esse nome")],
     });
     let released = false;
@@ -250,6 +259,129 @@ describe("rescueOrphanedWork", () => {
     const result = rescueOrphanedWork(spawn, "2026-09-02T10:00:00.000Z", trackedLock);
     assert.equal(result.outcome, "rescue_failed");
     assert.equal(released, true);
+  });
+
+  // -------------------------------------------------------------------------
+  // #8639 — regressão para "rescue commitou merge markers em silêncio".
+  // Fixture: commit 3d54dcf20 (rescue automático real, 20/09/2026) deixou
+  // `<<<<<<< Updated upstream` / `>>>>>>> Stashed changes` versionados em
+  // scripts/lib/diaria-subscribers-db.ts — provável sobra de um `git stash
+  // pop` conflitante (git-sync.ts, #6668) que a árvore ainda não tinha
+  // resolvido quando o rescue rodou. A rede de segurança: detectar o
+  // marcador ANTES de checkout -b/add/commit e abortar, nunca versionar o
+  // conflito.
+  // -------------------------------------------------------------------------
+
+  it("#8639 REPRODUÇÃO: árvore suja com marcador de conflito → conflict_markers_found, NUNCA cria branch/add/commit", () => {
+    const conflictedGrepOutput =
+      "scripts/lib/diaria-subscribers-db.ts:183:<<<<<<< Updated upstream\n" +
+      "scripts/lib/diaria-subscribers-db.ts:205:>>>>>>> Stashed changes\n";
+    const { spawn, calls } = makeFakeSpawn({
+      "git status": [ok(" M scripts/lib/diaria-subscribers-db.ts\n?? scripts/kit-confirmacao-import.ts\n")],
+      "git grep": [ok(conflictedGrepOutput)], // status 0 = achou marcador
+      "git checkout": [ok(), ok()],
+      "git add": [ok()],
+      "git commit": [ok()],
+    });
+    const result = rescueOrphanedWork(spawn, "2026-09-20T20:28:59.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "conflict_markers_found");
+    if (result.outcome !== "conflict_markers_found") throw new Error("unreachable");
+    assert.deepEqual(result.files, ["scripts/lib/diaria-subscribers-db.ts"]);
+    assert.match(result.message, /#8639/);
+    assert.match(result.message, /diaria-subscribers-db\.ts/);
+
+    // Nunca chega a checkout -b/add/commit — a árvore fica intocada.
+    assert.deepEqual(calls[0], ["git", "status", "--porcelain"]);
+    assert.equal(calls[1][1], "grep");
+    assert.equal(calls.length, 2);
+    assert.equal(calls.some((c) => c[1] === "checkout"), false);
+    assert.equal(calls.some((c) => c[1] === "add"), false);
+    assert.equal(calls.some((c) => c[1] === "commit"), false);
+  });
+
+  it("#8639: árvore suja SEM marcador de conflito → segue normalmente pra 'rescued' (guard não é falso-positivo)", () => {
+    const { spawn } = makeFakeSpawn({
+      "git status": [ok(" M scripts/foo.ts\n")],
+      "git grep": [fail()], // status 1 = sem marcador
+      "git checkout": [ok(), ok()],
+      "git add": [ok()],
+      "git commit": [ok()],
+    });
+    const result = rescueOrphanedWork(spawn, "2026-09-02T10:00:00.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "rescued");
+  });
+
+  it("#8639: lock adquirido → release() chamado mesmo com outcome conflict_markers_found", () => {
+    const conflictedGrepOutput = "arquivo-com-conflito.ts:1:<<<<<<< HEAD\narquivo-com-conflito.ts:5:>>>>>>> branch\n";
+    const { spawn } = makeFakeSpawn({
+      "git status": [ok(" M arquivo-com-conflito.ts\n")],
+      "git grep": [ok(conflictedGrepOutput)],
+    });
+    let released = false;
+    const trackedLock: SyncLock = {
+      path: "/fake/.diaria-sync.lock",
+      acquire: () => true,
+      release: () => {
+        released = true;
+      },
+    };
+    const result = rescueOrphanedWork(spawn, "2026-09-02T10:00:00.000Z", trackedLock);
+    assert.equal(result.outcome, "conflict_markers_found");
+    assert.equal(released, true);
+  });
+});
+
+describe("detectConflictMarkers (#8639)", () => {
+  function makeSimpleSpawn(response: SpawnResult): SpawnFn {
+    return () => response;
+  }
+
+  it("git grep status 0 (achou match) → found:true com arquivos parseados", () => {
+    const spawn = makeSimpleSpawn(ok("a.ts:1:<<<<<<< HEAD\na.ts:3:>>>>>>> branch\nb.ts:1:<<<<<<< HEAD\n"));
+    const result = detectConflictMarkers(spawn);
+    assert.equal(result.found, true);
+    assert.deepEqual(result.files, ["a.ts", "b.ts"]);
+  });
+
+  it("git grep status 1 (sem match) → found:false", () => {
+    const spawn = makeSimpleSpawn(fail());
+    const result = detectConflictMarkers(spawn);
+    assert.equal(result.found, false);
+    assert.deepEqual(result.files, []);
+  });
+
+  it("git grep falha por outro motivo (ex: não é repo) → fail-open, found:false (não trava o rescue por um erro não-relacionado)", () => {
+    const spawn = makeSimpleSpawn({ status: 128, stdout: "", stderr: "fatal: not a git repository" });
+    const result = detectConflictMarkers(spawn);
+    assert.equal(result.found, false);
+  });
+
+  it("chama git grep com --untracked (pega placeholder novo, não só tracked modificado)", () => {
+    const calls: string[][] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      calls.push([cmd, ...args]);
+      return fail();
+    };
+    detectConflictMarkers(spawn);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].includes("--untracked"));
+    assert.ok(calls[0].includes("^<<<<<<< "));
+    assert.ok(calls[0].includes("^>>>>>>> "));
+  });
+});
+
+describe("parseConflictMarkerFiles (#8639)", () => {
+  it("extrai arquivos únicos, ordenados, de stdout no formato path:line:conteúdo", () => {
+    const stdout = "b.ts:5:>>>>>>> branch\na.ts:1:<<<<<<< HEAD\na.ts:3:>>>>>>> branch\n";
+    assert.deepEqual(parseConflictMarkerFiles(stdout), ["a.ts", "b.ts"]);
+  });
+
+  it("stdout vazio → lista vazia", () => {
+    assert.deepEqual(parseConflictMarkerFiles(""), []);
+  });
+
+  it("ignora linhas em branco", () => {
+    assert.deepEqual(parseConflictMarkerFiles("\n\na.ts:1:<<<<<<< HEAD\n\n"), ["a.ts"]);
   });
 });
 
