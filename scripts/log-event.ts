@@ -23,8 +23,9 @@
  * Formato: 1 linha JSON por evento. Append-only.
  */
 
-import { appendFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { appendFileWithRetry } from "./lib/source-runs.ts";
 
 type Level = "info" | "warn" | "error";
 
@@ -110,6 +111,14 @@ const event: LogEvent = {
 
 const logPath = getLogPath();
 mkdirSync(dirname(logPath), { recursive: true });
-appendFileSync(logPath, JSON.stringify(event) + "\n", "utf8");
+// #8634: retry curto com backoff (3x) no append — OneDrive Files On-Demand
+// pode retornar UNKNOWN (errno=-4094)/EPERM/EBUSY/EACCES quando o sync agent
+// tem o arquivo locked. Se persistir, degrada pra warn no stderr sem lançar
+// (log nunca deve derrutar o stage).
+try {
+  appendFileWithRetry(logPath, JSON.stringify(event) + "\n");
+} catch (err) {
+  console.warn(`[log-event] falha persistente ao gravar em ${logPath}: ${err instanceof Error ? err.message : String(err)} — evento perdido (não bloqueia stage)`);
+}
 
 console.log(`logged ${level} → ${logPath}`);
