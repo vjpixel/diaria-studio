@@ -211,6 +211,27 @@ export const WEEKLY_OVERLAY_WRAP = { divisor: 38, ratio: 0.66 } as const;
 export type OverlayWrap = { readonly divisor: number; readonly ratio: number };
 
 /**
+ * Quebra de título do overlay (#8589). Card semanal (`wrap` explícito): inalterado.
+ * Card diário: a regra de quebra (divisor 29, ~33 chars) deixa passar título de
+ * 1 linha que estoura a largura no piso de 62px (~26 chars). Se a quebra normal
+ * estoura, tenta o limite que cabe a 62px (balanceando em até 3 linhas); se nem
+ * assim cabe, retorna `fits: false` (política #6078: reescrever, nunca cortar).
+ */
+export function overlayWrapLines(
+  title: string,
+  availableWidth: number,
+  wrap?: OverlayWrap,
+): { lines: string[]; fits: boolean } {
+  const w = wrap ?? { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO };
+  const lines = wrapTitle(title, Math.floor(availableWidth / w.divisor));
+  if (wrap) return { lines, fits: true };
+  const fitsAt = (ls: string[]) => ls.every((l) => l.length * DAILY_CAROUSEL_BODY_SIZE * w.ratio <= availableWidth);
+  if (fitsAt(lines)) return { lines, fits: true };
+  const tight = wrapTitle(title, Math.floor(availableWidth / (DAILY_CAROUSEL_BODY_SIZE * w.ratio)));
+  return tight.length <= 3 && fitsAt(tight) ? { lines: tight, fits: true } : { lines, fits: false };
+}
+
+/**
  * Pure: fórmula de tamanho de fonte do overlay de notícia — wrap via
  * `wrapTitle` (divisor `OVERLAY_CHARS_PER_LINE_DIVISOR`), tamanho
  * `available/(longest*OVERLAY_WIDTH_FIT_RATIO)` clamped
@@ -243,11 +264,11 @@ export type OverlayWrap = { readonly divisor: number; readonly ratio: number };
 export function overlayFittingFontSize(
   title: string,
   availableWidth: number,
-  wrap: OverlayWrap = { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO },
+  wrap?: OverlayWrap,
 ): number {
-  const lines = wrapTitle(title, Math.floor(availableWidth / wrap.divisor));
+  const { lines } = overlayWrapLines(title, availableWidth, wrap);
   const longest = Math.max(...lines.map((l) => l.length));
-  return Math.max(DAILY_CAROUSEL_BODY_SIZE, Math.min(88, Math.floor(availableWidth / (longest * wrap.ratio))));
+  return Math.max(DAILY_CAROUSEL_BODY_SIZE, Math.min(88, Math.floor(availableWidth / (longest * (wrap?.ratio ?? OVERLAY_WIDTH_FIT_RATIO)))));
 }
 
 /**
@@ -278,10 +299,12 @@ export function overlayTitleOverflows(
   title: string,
   fontSize: number,
   availableWidth: number = W - PAD * 2,
-  wrap: OverlayWrap = { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO },
+  wrap?: OverlayWrap,
 ): boolean {
-  const lines = wrapTitle(title, Math.floor(availableWidth / wrap.divisor));
-  return lines.some((line) => line.length * fontSize * wrap.ratio > availableWidth);
+  const wrapped = overlayWrapLines(title, availableWidth, wrap);
+  if (!wrapped.fits) return true;
+  const ratio = wrap?.ratio ?? OVERLAY_WIDTH_FIT_RATIO;
+  return wrapped.lines.some((line) => line.length * fontSize * ratio > availableWidth);
 }
 
 export function buildOverlaySvg(
@@ -308,7 +331,13 @@ export function buildOverlaySvg(
 ): string {
   const { w: CW, h: CH } = dims;
   const available = CW - PAD * 2;
-  const lines = wrapTitle(title, Math.floor(available / (wrap?.divisor ?? OVERLAY_CHARS_PER_LINE_DIVISOR)));
+  const wrapped = overlayWrapLines(title, available, wrap);
+  if (!wrapped.fits) {
+    throw new Error(
+      `Título não cabe no card a ${DAILY_CAROUSEL_BODY_SIZE}px em nenhuma quebra: "${title}" — reescreva o título (mais curto), não é cortado (#8589/#6078).`,
+    );
+  }
+  const lines = wrapped.lines;
   const size = fontSizeOverride ?? overlayFittingFontSize(title, available, wrap);
   const lineGap = Math.round(size * 1.18);
   // Ancorado na BASE: o bloco cresce pra cima conforme o número de linhas, então
@@ -477,6 +506,10 @@ async function main(): Promise<void> {
     const key = `d${i + 1}`;
     if (only && only !== key) continue;
     const d = destaques[i] as { title?: string; category?: string };
+    if (!overlayWrapLines(d.title ?? "", W - PAD * 2).fits) {
+      console.error(`[gen-social-card-4x5] ${key}: título não cabe a ${DAILY_CAROUSEL_BODY_SIZE}px em 1-3 linhas — reescreva: "${d.title}" (#8589)`);
+      process.exit(1);
+    }
     const out = await generateCard(
       editionDir, key, d.title ?? "", d.category ?? "", "4x5",
       { fontSizeOverride: sharedFontSize },
