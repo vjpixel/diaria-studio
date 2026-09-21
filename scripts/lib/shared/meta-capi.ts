@@ -183,6 +183,59 @@ export async function resolveCompleteRegistrationDedup(
   return { eventId: await computeCompleteRegistrationEventId(email, eventTimeSeconds), eventTimeSeconds };
 }
 
+/** TTL do claim de envio — cobre um dia UTC inteiro (o `event_id` já muda na virada). */
+export const META_CAPI_SEND_CLAIM_TTL_SEC = 24 * 60 * 60;
+
+/**
+ * #8577 — reivindica o ENVIO server-side de um cadastro, uma vez por
+ * `event_id` (e-mail normalizado + dia UTC). A CAPI mandava ~2,3 eventos por
+ * cadastro real (resubmissão do form e reentrada por outro host devolvem `ok`
+ * pra quem já existe); só o `event_id` determinístico fazia a Meta absorver
+ * os extras, e ele falha na virada do dia UTC. Com o claim, o reenvio nem sai.
+ *
+ * Retorna `true` quando ESTE chamador deve enviar. A chave usa o `event_id`
+ * (hash), nunca o e-mail. **Fail-open**: KV ausente ou com erro devolve `true`
+ * — perder a otimização é aceitável, perder um evento de conversão não é.
+ * Get-then-put não é atômico; uma corrida simultânea ainda deixa passar 2
+ * envios, que a dedup por `event_id` da Meta absorve como antes.
+ */
+export interface MetaCapiClaimKv {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
+export async function claimCompleteRegistrationSend(
+  kv: MetaCapiClaimKv | undefined,
+  eventId: string | undefined,
+): Promise<boolean> {
+  if (!kv || !eventId) return true;
+  const key = `capi:cr:${eventId}`;
+  try {
+    if (await kv.get(key)) return false;
+    await kv.put(key, "1", { expirationTtl: META_CAPI_SEND_CLAIM_TTL_SEC });
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * #8577: se o envio NÃO chegou à Meta, devolve o claim — senão o reenvio do
+ * cadastro (que antes recuperava a conversão) ficaria bloqueado por 24h.
+ * Nunca lança.
+ */
+export function releaseClaimOnSendFailure(
+  send: Promise<MetaCapiSendResult>,
+  kv: MetaCapiClaimKv | undefined,
+  eventId: string | undefined,
+): Promise<MetaCapiSendResult> {
+  return send.then(async (result) => {
+    if (!result.ok && kv && eventId) await kv.delete(`capi:cr:${eventId}`).catch(() => {});
+    return result;
+  });
+}
+
 /**
  * #8388 item 1 — `custom_data.value`/`custom_data.currency` do
  * `CompleteRegistration`.
