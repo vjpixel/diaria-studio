@@ -125,23 +125,17 @@ export function extractObjectPropertyListValue(gtmJsText: string, propertyName: 
 export function evaluateGtmDrift(gtmJsText: string, expected: GtmExpectedConfig): GtmCheckResult[] {
   const results: GtmCheckResult[] = [];
 
-  const pixelIdFound = gtmJsText.includes(expected.pixelId);
-  results.push({
-    check: "pixel-id",
-    status: pixelIdFound ? "match" : "not-found",
-    message: pixelIdFound
-      ? `pixel/dataset ID ${expected.pixelId} presente no gtm.js`
-      : `pixel/dataset ID ${expected.pixelId} NÃO encontrado no gtm.js — pode ser mudança de container ou de formato de compilação`,
-  });
+  // #8613 review, achado alta confiança/P2: extrair o valor REAL de
+  // `vtp_pixelId`/`vtp_standardEventName` e comparar (em vez de só checar
+  // presença via `.includes`) — senão um pixel ID/evento genuinamente
+  // TROCADO no container vira `"not-found"` (não-acionável) em vez de
+  // `"mismatch"` (drift real), justo o cenário mais grave que este check
+  // deveria pegar (raiz do #8572: campo divergente que ninguém detectava).
+  const pixelId = extractQuotedValueAfterKey(gtmJsText, "vtp_pixelId");
+  results.push(evaluateScalarField("pixel-id", pixelId, expected.pixelId));
 
-  const eventNameFound = gtmJsText.includes(expected.eventName);
-  results.push({
-    check: "event-name",
-    status: eventNameFound ? "match" : "not-found",
-    message: eventNameFound
-      ? `evento ${expected.eventName} presente no gtm.js`
-      : `evento ${expected.eventName} NÃO encontrado no gtm.js`,
-  });
+  const eventName = extractQuotedValueAfterKey(gtmJsText, "vtp_standardEventName");
+  results.push(evaluateScalarField("event-name", eventName, expected.eventName));
 
   const value = extractObjectPropertyListValue(gtmJsText, "value");
   results.push(evaluateScalarField("value", value, expected.value));
@@ -161,21 +155,28 @@ export function evaluateGtmDrift(gtmJsText: string, expected: GtmExpectedConfig)
   return results;
 }
 
-function evaluateScalarField(check: "value" | "currency", found: string | null, expected: string): GtmCheckResult {
+/** Compara `found` (valor real extraído do `gtm.js`, `null` quando o
+ * marcador não foi localizado) contra `expected`. Usado tanto por
+ * `value`/`currency` (via `extractObjectPropertyListValue`) quanto por
+ * `pixel-id`/`event-name` (via `extractQuotedValueAfterKey` sobre
+ * `vtp_pixelId`/`vtp_standardEventName`) — os 4 eixos escalares deste
+ * módulo, todos capazes de produzir `"mismatch"` genuíno. @pure */
+function evaluateScalarField(check: GtmCheckAxis, found: string | null, expected: string): GtmCheckResult {
+  const label = check === "pixel-id" ? "pixel/dataset ID" : check === "event-name" ? "evento" : check;
   if (found === null) {
     return {
       check,
       status: "not-found",
-      message: `campo ${check} do objectPropertyList não encontrado no gtm.js`,
+      message: `${label} NÃO encontrado no gtm.js — pode ser mudança de container ou de formato de compilação`,
     };
   }
   if (found === expected) {
-    return { check, status: "match", message: `${check}=${found} confere com o esperado (${expected})` };
+    return { check, status: "match", message: `${label}=${found} confere com o esperado (${expected})` };
   }
   return {
     check,
     status: "mismatch",
-    message: `${check} no gtm.js é "${found}", esperado "${expected}" — divergência real entre o container publicado e o que este repo espera`,
+    message: `${label} no gtm.js é "${found}", esperado "${expected}" — divergência real entre o container publicado e o que este repo espera`,
   };
 }
 

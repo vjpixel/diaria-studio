@@ -123,8 +123,23 @@ describe("#8585 — evaluateGtmDrift: divergências reais (mismatch)", () => {
     assert.equal(value?.status, "mismatch");
   });
 
-  it("pixel ID diferente vira not-found (o texto simplesmente não contém o ID esperado)", () => {
+  it("pixel ID genuinamente trocado vira mismatch (não not-found) — regressão do achado de review #8613: extrai e compara o valor real de vtp_pixelId em vez de só checar presença", () => {
     const results = evaluateGtmDrift(buildFixtureGtmJs({ pixelId: "9999999999999" }), EXPECTED);
+    const pixelId = results.find((r) => r.check === "pixel-id");
+    assert.equal(pixelId?.status, "mismatch");
+    assert.match(pixelId!.message, /9999999999999/);
+    assert.equal(hasGtmDrift([pixelId!]), true);
+  });
+
+  it("evento genuinamente trocado vira mismatch (não not-found)", () => {
+    const results = evaluateGtmDrift(buildFixtureGtmJs({ eventName: "Lead" }), EXPECTED);
+    const eventName = results.find((r) => r.check === "event-name");
+    assert.equal(eventName?.status, "mismatch");
+  });
+
+  it("vtp_pixelId ausente do gtm.js (não trocado, AUSENTE) vira not-found", () => {
+    const noPixelKey = buildFixtureGtmJs().replace(/"vtp_pixelId":"[^"]*",/, "");
+    const results = evaluateGtmDrift(noPixelKey, EXPECTED);
     assert.equal(results.find((r) => r.check === "pixel-id")?.status, "not-found");
   });
 
