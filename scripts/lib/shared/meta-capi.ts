@@ -656,9 +656,16 @@ export function buildMetaCapiLogEvent(
   worker: string,
   eventSourceUrl?: string,
 ): MetaCapiLogEvent {
-  if (result.ok) return { event: "meta_capi_sent", worker, status: result.status, eventSourceUrl };
-  if (result.reason === "not_configured") return { event: "meta_capi_not_configured", worker, eventSourceUrl };
-  return { event: "meta_capi_send_failed", worker, status: result.status, reason: result.reason, eventSourceUrl };
+  if (result.ok) {
+    const event = { event: "meta_capi_sent" as const, worker, status: result.status };
+    return eventSourceUrl === undefined ? event : { ...event, eventSourceUrl };
+  }
+  if (result.reason === "not_configured") {
+    const event = { event: "meta_capi_not_configured" as const, worker };
+    return eventSourceUrl === undefined ? event : { ...event, eventSourceUrl };
+  }
+  const event = { event: "meta_capi_send_failed" as const, worker, status: result.status, reason: result.reason };
+  return eventSourceUrl === undefined ? event : { ...event, eventSourceUrl };
 }
 
 /**
