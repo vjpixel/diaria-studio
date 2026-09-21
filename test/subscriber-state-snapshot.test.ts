@@ -299,6 +299,32 @@ describe("doi_form (#8552 a)", () => {
     assert.equal(b.semFiltroDoi, true);
   });
 
+  it("doi-form-status distingue leitura falha (piso) de form ok sem ninguém do dia (safra vazia, motivo próprio)", () => {
+    const d = "2026-09-18";
+    const day = [{ id: 1, state: "inactive", created_at: `${d}T10:00:00.000Z` }];
+    const matured = [{ id: 1, state: "active", created_at: `${d}T10:00:00.000Z` }];
+    const snaps = new Map<string, SubscriberStateRecord[]>([[d, day], ["2026-09-20", matured]]);
+    const falhou = buildDoiConfirmationCohort(snaps, d, 48, new Map([[d, { ok: false }]]));
+    assert.equal(falhou.semFiltroDoi, true);
+    assert.equal(falhou.cohort.length, 1);
+    const okSemNinguem = buildDoiConfirmationCohort(snaps, d, 48, new Map([[d, { ok: true }]]));
+    assert.equal(okSemNinguem.semFiltroDoi, undefined);
+    assert.equal(okSemNinguem.cohort.length, 0);
+    assert.match(okSemNinguem.motivoIndeterminado ?? "", /vinculado ao form DOI/);
+  });
+
+  it("readDoiFormStatus/loadDoiFormStatuses leem o arquivo; ausente/corrompido = sem entrada", async () => {
+    const { readDoiFormStatus, loadDoiFormStatuses } = await import("../scripts/lib/subscriber-state-snapshot.ts");
+    const root = tmpDir();
+    mkdirSync(join(root, "2026-09-18"), { recursive: true });
+    mkdirSync(join(root, "2026-09-19"), { recursive: true });
+    writeFileSync(join(root, "2026-09-18", "doi-form-status.json"), JSON.stringify({ ok: false }));
+    writeFileSync(join(root, "2026-09-19", "doi-form-status.json"), "{lixo");
+    assert.deepEqual(readDoiFormStatus(root, "2026-09-18"), { ok: false });
+    assert.equal(readDoiFormStatus(root, "2026-09-19"), null);
+    assert.equal(loadDoiFormStatuses(root, ["2026-09-18", "2026-09-19", "2026-09-20"]).size, 1);
+  });
+
   it("métrica com semFiltroDoi vira piso (motivo sem-filtro-doi), nunca exato", async () => {
     const { getMetric } = await import("../scripts/lib/metrics/registry.ts");
     const def = getMetric("doi-confirmacao-dia")!;

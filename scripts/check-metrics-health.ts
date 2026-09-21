@@ -104,6 +104,7 @@ import {
   listSubscriberStateSnapshotDates,
   loadAllSubscriberStateSnapshots,
   buildDoiConfirmationCohort,
+  loadDoiFormStatuses,
 } from "./lib/subscriber-state-snapshot.ts";
 import { LEITOR_V1_THRESHOLDS, MISSING_STATS_WARN_FRACTION, summarizeLeitores } from "./lib/leitor.ts";
 import {
@@ -474,11 +475,12 @@ async function main(): Promise<void> {
       const snapshotRoot = snapshotRootDefault(DATA_DIR);
       const snapshotDates = listSubscriberStateSnapshotDates(snapshotRoot);
       const snapshotsByDate = loadAllSubscriberStateSnapshots(snapshotRoot, snapshotDates);
+      const doiStatuses = loadDoiFormStatuses(snapshotRoot, snapshotDates);
       let doiTemInsumoReal = false;
       const medicoes: MedicaoDia[] = [];
       for (const dia of dias) {
         const janela: Janela = { de: dia, ate: dia, granularidade: "dia", fuso: "BRT" };
-        const { cohort, motivoIndeterminado, semFiltroDoi } = buildDoiConfirmationCohort(snapshotsByDate, dia);
+        const { cohort, motivoIndeterminado, semFiltroDoi } = buildDoiConfirmationCohort(snapshotsByDate, dia, 48, doiStatuses);
         if (cohort.length > 0) doiTemInsumoReal = true;
         const resultado = await def.computar({ janela, deps: { cohort, motivoIndeterminado, semFiltroDoi } });
         medicoes.push({ chave: dia, resultado });

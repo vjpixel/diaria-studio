@@ -39,7 +39,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./shared/reativar-confirmou-via.ts";
 import { KIT_ORIGEM_CADASTRO_FIELD_NAME } from "./shared/kit-signup-origin.ts";
 
@@ -283,6 +283,26 @@ function addHoursToDateKey(dateKey: string, hours: number): string {
   return shifted.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 }
 
+/** Lê `{date}/doi-form-status.json` (ausente/corrompido = sem entrada). */
+export function readDoiFormStatus(root: string, date: string): { ok: boolean } | null {
+  try {
+    const p = join(dirname(snapshotJsonlPath(root, date)), "doi-form-status.json");
+    const parsed = JSON.parse(readFileSync(p, "utf8")) as { ok?: unknown };
+    return typeof parsed.ok === "boolean" ? { ok: parsed.ok } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function loadDoiFormStatuses(root: string, dates: readonly string[]): Map<string, { ok: boolean }> {
+  const out = new Map<string, { ok: boolean }>();
+  for (const d of dates) {
+    const st = readDoiFormStatus(root, d);
+    if (st) out.set(d, st);
+  }
+  return out;
+}
+
 export interface DoiConfirmationCohortMember {
   id: number;
   /** `true` quando o snapshot de maturação encontrou este id com
@@ -326,6 +346,7 @@ export function buildDoiConfirmationCohort(
   snapshotsByDate: ReadonlyMap<string, readonly SubscriberStateRecord[]>,
   cohortDate: string,
   maturationHours = 48,
+  doiStatusByDate?: ReadonlyMap<string, { ok: boolean }>,
 ): DoiConfirmationCohortResult {
   const dates = [...snapshotsByDate.keys()].sort();
   if (dates.length < 2) {
@@ -348,12 +369,17 @@ export function buildDoiConfirmationCohort(
   // recebeu o e-mail e não teve chance de confirmar; ele é perda de ativação
   // por defeito, medida à parte, não desinteresse. Sem cobertura (snapshot
   // antigo ou form não configurado), mantém "todo inactive criado no dia".
-  const formCoverage = dayRecords.some((r) => r.doi_form === true);
+  // `doi-form-status.json` (gravado pelo CLI diário) distingue "leitura do
+  // form falhou" (ok:false -> sem filtro, piso) de "form lido ok mas ninguém
+  // do dia vinculado" (ok:true -> filtra; safra vazia, motivo próprio). Sem
+  // status (snapshot antigo), cai na heurística por `doi_form` presente.
+  const status = doiStatusByDate?.get(cohortDate);
+  const formCoverage = status ? status.ok : dayRecords.some((r) => r.doi_form === true);
   const cohortIds = (formCoverage ? bornInactive.filter((r) => r.doi_form === true) : bornInactive).map((r) => r.id);
   if (cohortIds.length === 0) {
     return {
       cohort: [],
-      motivoIndeterminado: `nenhum assinante inactive criado em ${cohortDate} no snapshot desse dia`,
+      motivoIndeterminado: `nenhum assinante inactive criado em ${cohortDate}${formCoverage ? " e vinculado ao form DOI" : ""} no snapshot desse dia`,
     };
   }
   const maturationDateKey = addHoursToDateKey(cohortDate, maturationHours);
