@@ -582,7 +582,7 @@ async function main(): Promise<number> {
   if (configured.length === 0) {
     const msg =
       "[geo-citation-monitor] nenhum provider configurado — nenhuma medição foi feita. " +
-      "Configure ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY (ver .env.example) e rode de novo.";
+      "Configure ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY/PERPLEXITY_API_KEY (ver .env.example) e rode de novo.";
     if (strict) {
       console.error(`ERRO: ${msg}`);
       return 2;

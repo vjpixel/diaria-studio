@@ -42,6 +42,7 @@ import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   DEFAULT_GEO_CITATIONS_LOG_PATH,
   GEO_PROVIDERS,
+  expectedAlarmProviderIds,
   latestRoundProviders,
   type GeoProviderId,
 } from "./lib/geo-citation-monitor.ts";
@@ -145,7 +146,7 @@ export function toStalenessFinding(agg: { isStale: boolean; stalePanels: { panel
     "",
     "Verifique se a task `Diaria-Geo-Citation-Monitor` (domingos 07:00) segue registrada e rodando",
     "(Get-ScheduledTask -TaskName 'Diaria-Geo-Citation-Monitor' | Get-ScheduledTaskInfo) e se ao menos",
-    "um provider (ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY) segue configurado.",
+    "um provider (ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY/PERPLEXITY_API_KEY) segue configurado.",
     "",
     "Esta issue é criada automaticamente pelo alarme (#5339) e será",
     "comentada/fechada sozinha quando o achado deixar de reproduzir por",
@@ -321,7 +322,8 @@ async function main(): Promise<void> {
   // de 1 rodada quanto uma persistente há semanas com a mesma checagem.
   // Computado ANTES do bloco de staleness abaixo (#5339) pra poder
   // reconciliar as issues dos dois achados numa única passada.
-  const configuredProviderIds = GEO_PROVIDERS.map((p) => p.id);
+  // #8342: providers `optional` (Perplexity) sem key não são incidente.
+  const configuredProviderIds = expectedAlarmProviderIds(GEO_PROVIDERS);
   const perPanelProviders = MONITORED_PANELS.map((panel) => {
     const records = readPanelProviderRecords(HISTORY_PATH, panel);
     const latest = latestRoundProviders(records);
