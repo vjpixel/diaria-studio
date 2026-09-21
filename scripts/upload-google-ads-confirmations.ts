@@ -8,14 +8,20 @@
  * `scripts/lib/google-ads-confirmation-batch.ts` (ver a docstring de lá pra
  * critério de detecção, gclid/hash, janela de 90 dias e idempotência).
  *
- * ## Pré-requisito (ação do editor, NÃO feita por este script)
+ * ## Ação de destino
  *
- * Criar (ou reativar) a ação de conversão de CONFIRMAÇÃO no Google Ads:
- * tipo `UPLOAD_CLICKS`, categoria `SIGNUP`, SECUNDÁRIA (`primary_for_goal =
- * false`), distinta da ação de CADASTRO. Existiu uma de confirmação
- * ("Assinatura Confirmada (upload ECL - #7770)") hoje `REMOVED` — recriar ou
- * reativar. O id resultante vai em `--conversion-action-id` ou em
- * `GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID` (Doppler). Sem default.
+ * Tipo `UPLOAD_CLICKS`, categoria `SIGNUP`, SECUNDÁRIA (`primary_for_goal =
+ * false`), distinta da ação de CADASTRO. Desde 20/09/2026 é a `7762768203`
+ * ("Assinatura Confirmada (upload ECL - #7770)"), reativada de `REMOVED` —
+ * o id vive na CONSTANTE TS `GOOGLE_ADS_CONFIRMATION_ACTION_ID`, exportada de
+ * `scripts/lib/scheduled-tasks.ts`, e a task diária o passa em
+ * `--conversion-action-id`. Este script não tem default.
+ *
+ * O argumento vence a variável de AMBIENTE `GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID`
+ * (fallback pra execução manual); se as duas existirem e divergirem, avisa em
+ * stderr em vez de escolher em silêncio. A ação de CADASTRO
+ * (`PRIMARY_SIGNUP_ACTION_ID`) é RECUSADA por id: subir confirmação nela
+ * contaria o mesmo assinante duas vezes na única meta primária.
  *
  * ## Segurança
  *
@@ -68,6 +74,19 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[google-ads-confirmations]";
 const DEFAULT_INDEX_PATH = resolve(ROOT, "data/google-ads/_confirmation-conversions-sent.json");
+/** Ação de CADASTRO `7418673798` "Assinatura Confirmada" — a ÚNICA primária. Nunca destino do lote. */
+export const PRIMARY_SIGNUP_ACTION_ID = "7418673798";
+/**
+ * Id numérico da ação, de `123` ou de `customers/X/conversionActions/123` — EXATO, nunca por
+ * sufixo (um id maior que termine em `7418673798` não pode ser lido como a primária). Qualquer
+ * outra forma devolve `null`, e o `resolveActionResourceName` a valida/recusa adiante.
+ */
+export function actionIdOf(raw: string): string | null {
+  const v = raw.trim();
+  if (/^\d+$/.test(v)) return v;
+  return /^customers\/\d+\/conversionActions\/(\d+)$/.exec(v)?.[1] ?? null;
+}
+
 /** Placeholder só usado em dry-run sem id de ação (nunca chega à API). */
 const DRY_RUN_PLACEHOLDER_ACTION = "customers/0/conversionActions/PENDENTE-CRIAR-ACAO-DE-CONFIRMACAO";
 
@@ -93,8 +112,24 @@ export async function main(
   const snapshotRoot = getStringArg(argv, "snapshot-root") ?? snapshotRootDefault(resolve(ROOT, "data"));
   const indexPath = getStringArg(argv, "index") ?? DEFAULT_INDEX_PATH;
   const customerId = getStringArg(argv, "customer-id") ?? process.env.GOOGLE_ADS_CUSTOMER_ID;
-  const actionId =
-    getStringArg(argv, "conversion-action-id") ?? process.env.GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID;
+  const actionArg = getStringArg(argv, "conversion-action-id");
+  const actionEnv = process.env.GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID;
+  const actionId = actionArg ?? actionEnv;
+  if (actionArg && actionEnv && actionArg.trim() !== actionEnv.trim()) {
+    console.error(
+      `${LOG_PREFIX} ⚠ --conversion-action-id (${actionArg}) diverge de GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID ` +
+        `(${actionEnv}) — usando o ARGUMENTO. Se a env é a intenção, remova o argumento da task.`,
+    );
+  }
+  // A ação de CADASTRO é a única primária: confirmação nela = assinante contado duas vezes
+  // no smart bidding (o mesmo erro que a #8572 pagou do lado da Meta). Recusa por id, não só por teste.
+  if (actionId && actionIdOf(actionId) === PRIMARY_SIGNUP_ACTION_ID) {
+    console.error(
+      `${LOG_PREFIX} ✖ ${PRIMARY_SIGNUP_ACTION_ID} é a ação de CADASTRO (única primária) — recusada como destino da ` +
+        "confirmação. Use a ação de confirmação SECUNDÁRIA.",
+    );
+    return 1;
+  }
 
   let conversionActionResourceName = DRY_RUN_PLACEHOLDER_ACTION;
   if (actionId) {
@@ -107,7 +142,7 @@ export async function main(
   } else if (send) {
     console.error(
       `${LOG_PREFIX} ✖ --send exige --conversion-action-id (ou GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID): a ação de ` +
-        "CONFIRMAÇÃO (UPLOAD_CLICKS, secundária) ainda precisa ser criada pelo editor — NÃO reusar a ação de cadastro.",
+        "CONFIRMAÇÃO (UPLOAD_CLICKS, secundária; hoje a 7762768203) — NUNCA a ação de cadastro.",
     );
     return 1;
   } else {
