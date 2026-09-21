@@ -282,3 +282,19 @@ describe("PrismML no gate de LANÇAMENTOS (#8576)", () => {
     assert.equal(isOfficialLancamentoUrl("https://not-prismml.com/news/bonsai"), false);
   });
 });
+
+describe("Qwen no GitHub é lançamento oficial (260922)", () => {
+  it("repo da org QwenLM conta; outras orgs e github.com raiz não", () => {
+    assert.equal(isOfficialLancamentoUrl("https://github.com/QwenLM/Qwen-Image-2.1"), true);
+    assert.equal(isOfficialLancamentoUrl("https://github.com/someone/qwen-fork"), false);
+    assert.equal(isOfficialLancamentoUrl("https://github.com/"), false);
+    // fronteiras (review #8674)
+    assert.equal(isOfficialLancamentoUrl("https://github.com/qwenlm/qwen"), true, "case-insensitive");
+    assert.equal(isOfficialLancamentoUrl("https://github.com/QwenLM/Qwen-Image-2.1/"), true, "barra final");
+    assert.equal(isOfficialLancamentoUrl("https://github.com/QwenLM-fork/x"), false);
+    assert.equal(isOfficialLancamentoUrl("https://github.com/QwenLM"), false, "perfil da org");
+    assert.equal(isOfficialLancamentoUrl("https://github.com/QwenLM/Qwen/issues/123"), false);
+    assert.equal(isOfficialLancamentoUrl("https://github.com/QwenLM/Qwen/pull/9"), false);
+    assert.equal(isOfficialLancamentoUrl("https://github.com/QwenLM/Qwen/blob/main/README.md"), false);
+  });
+});
