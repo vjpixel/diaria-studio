@@ -1030,6 +1030,7 @@ export async function handleJogarSubscribe(
         { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
       ),
       "poll",
+      request.url,
     );
     if (ctx && typeof ctx.waitUntil === "function") {
       ctx.waitUntil(sendEvent);
