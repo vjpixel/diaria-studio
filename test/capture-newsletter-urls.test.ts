@@ -21,6 +21,8 @@ import type {
   CapturedCursor,
 } from "../scripts/capture-newsletter-urls.ts";
 
+import { extractUrls } from "../scripts/lib/url-utils.ts";
+
 const TMP_DIR = resolve(import.meta.dirname, ".tmp-capture-newsletter-test");
 
 function tmpFile(name: string): string {
@@ -541,6 +543,15 @@ describe("#7662 — loadAlwaysConsiderConfig: nunca degrada em silêncio", () =>
     assert.equal(configWarnings.length, 1);
     assert.ok(configWarnings[0].includes("email@newsletter.7min.ai"));
     assert.ok(configWarnings[0].includes("senders[]"));
+  });
+
+  it("regressão #8668: links após 8000 chars preservados (corpo completo extraído)", () => {
+    // Corpo > 8000 com URL só no final — deve ser extraída mesmo truncado
+    const prefix = "A".repeat(7990) + " ";
+    const link = "https://example.com/artigo-8668-truncado";
+    const body = prefix + link + " mais texto";
+    const urls = extractUrls(body);
+    assert.ok(urls.includes(link), "link depois do corte 8000 deve ser preservado no extraído");
   });
 
   it("config bem-formada e consistente não gera warning", () => {
