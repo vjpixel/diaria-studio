@@ -28,14 +28,20 @@ export interface DomainLimitCandidate {
   score: number | undefined;
   /** Protegido: nunca removido (destaques), mas conta pro limite. */
   protected: boolean;
+  /** Menor = mais prioritário (buckets). Só depois vem o score. Destaques: -1. */
+  priority: number;
   /** Ordem original (desempate estável e identificador do candidato). */
   order: number;
 }
 
 /**
  * Dado o conjunto de candidatos, devolve os `order` a REMOVER por domínio que
- * excede `max`. Protegidos ocupam vaga primeiro; os demais competem por score
- * desc (empate: ordem original).
+ * excede `max`. Protegidos ocupam vaga primeiro; os demais competem por
+ * prioridade de bucket, depois score desc (sem score = 0), depois ordem original.
+ *
+ * Diferença deliberada vs `validateDomainDiversity`: aqui hosts de rótulo único
+ * (`localhost`, fixtures) são ignorados — o Stage 2 é mais permissivo; o gate do
+ * Stage 4 continua sendo a palavra final.
  * @pure
  */
 export function selectDomainExcess(
@@ -59,12 +65,15 @@ export function selectDomainExcess(
     const slots = Math.max(0, max - prot);
     const movable = list
       .filter((c) => !c.protected)
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.order - b.order);
+      .sort(
+        (a, b) =>
+          a.priority - b.priority || (b.score ?? 0) - (a.score ?? 0) || a.order - b.order,
+      );
     for (const c of movable.slice(slots)) {
       removals.push({
         order: c.order,
         domain,
-        reason: `${domain} excede ${max} URLs/edição (#5735); ${list.length} candidatas, ${prot} em destaque`,
+        reason: `${domain} excede ${max} URLs/edição (#8593); ${list.length} candidatas, ${prot} em destaque`,
       });
     }
   }

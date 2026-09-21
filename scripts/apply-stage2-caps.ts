@@ -65,15 +65,18 @@ function main(): void {
       `[apply-stage2-caps] removido ${r.bucket}: ${r.url} (score ${r.score ?? "?"}) — ${r.reason}`,
     );
   }
+  for (const w of report.domain_limit.warnings) {
+    console.error(`[apply-stage2-caps] ⚠️ ${w}`);
+  }
   if (report.domain_limit.removed.length > 0) {
-    const m = inPath.match(/editions[\\/](\d{6})[\\/]/);
+    const m = inPath.match(/(\d{6})[\\/]_internal[\\/]/);
     logEvent({
       edition: m ? m[1] : null,
       stage: 2,
       agent: "apply-stage2-caps",
       level: "warn",
       message: `limite de ${report.domain_limit.max} URLs por domínio (#8593): ${report.domain_limit.removed.length} item(ns) removido(s) das seções secundárias`,
-      details: report.domain_limit.removed,
+      details: { removed: report.domain_limit.removed, warnings: report.domain_limit.warnings },
     });
   }
 

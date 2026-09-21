@@ -1020,7 +1020,7 @@ describe("applyStage2Caps — 2+2 split wired (#2345 CRITICAL)", () => {
     audience_affinity: { matched: ["academy:true"] },
   });
   const makeDevAdvancedItem = (i: number) => ({
-    url: `https://blog.langchain.dev/langgraph-${i}`,
+    url: `https://langgraph-${i}.dev/x`,
     title: `LangGraph multi-agent deployment pipeline ${i}`,
   });
 
@@ -1202,9 +1202,9 @@ describe("applyStage2Caps — warn reason split vs cap (#2353)", () => {
         use_melhor: [
           { url: "https://canaltech.com.br/ia/c1", title: "Como usar ChatGPT para produtividade passo a passo 1", audience_affinity: { matched: ["howto_br:true"] } },
           { url: "https://canaltech.com.br/ia/c2", title: "Como usar ChatGPT para produtividade passo a passo 2", audience_affinity: { matched: ["howto_br:true"] } },
-          { url: "https://canaltech.com.br/ia/c3", title: "Como usar ChatGPT para produtividade passo a passo 3", audience_affinity: { matched: ["howto_br:true"] } },
+          { url: "https://tecmundo.com.br/ia/c3", title: "Como usar ChatGPT para produtividade passo a passo 3", audience_affinity: { matched: ["howto_br:true"] } },
           { url: "https://learn.deeplearning.ai/course-1", title: "Prompt Engineering for Developers getting started", audience_affinity: { matched: ["academy:true"] } },
-          { url: "https://learn.deeplearning.ai/course-2", title: "Python for beginners api key quickstart", audience_affinity: { matched: ["academy:true"] } },
+          { url: "https://coursera.org/course-2", title: "Python for beginners api key quickstart", audience_affinity: { matched: ["academy:true"] } },
         ],
         runners_up: [],
       };
@@ -1231,7 +1231,7 @@ describe("applyStage2Caps — warn reason split vs cap (#2353)", () => {
         lancamento: [],
         radar: [],
         use_melhor: Array.from({ length: 8 }, (_, i) => ({
-          url: `https://blog.langchain.dev/langgraph-${i}`,
+          url: `https://langgraph-${i}.dev/x`,
           title: `LangGraph multi-agent deployment pipeline ${i}`,
         })),
         runners_up: [],
@@ -1263,7 +1263,7 @@ describe("applyStage2Caps — report.use_melhor.composition (#2353)", () => {
         { url: "https://canaltech.com.br/ia/c1", title: "Como usar ChatGPT para produtividade passo a passo 1", audience_affinity: { matched: ["howto_br:true"] } },
         { url: "https://canaltech.com.br/ia/c2", title: "Como usar ChatGPT para produtividade passo a passo 2", audience_affinity: { matched: ["howto_br:true"] } },
         { url: "https://learn.deeplearning.ai/course-1", title: "Prompt Engineering for Developers 1", audience_affinity: { matched: ["academy:true"] } },
-        { url: "https://learn.deeplearning.ai/course-2", title: "Prompt Engineering for Developers 2", audience_affinity: { matched: ["academy:true"] } },
+        { url: "https://coursera.org/course-2", title: "Prompt Engineering for Developers 2", audience_affinity: { matched: ["academy:true"] } },
       ],
       runners_up: [],
     };
@@ -1279,7 +1279,7 @@ describe("applyStage2Caps — report.use_melhor.composition (#2353)", () => {
       lancamento: [],
       radar: [],
       use_melhor: Array.from({ length: 3 }, (_, i) => ({
-        url: `https://blog.langchain.dev/langgraph-${i}`,
+        url: `https://langgraph-${i}.dev/x`,
         title: `LangGraph multi-agent deployment pipeline ${i}`,
       })),
       runners_up: [],

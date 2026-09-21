@@ -9,13 +9,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { applyStage2Caps } from "../scripts/lib/apply-stage2-caps.ts";
+import { applyStage2Caps, type ApprovedJson, type ScoredHighlight } from "../scripts/lib/apply-stage2-caps.ts";
 import { validateDomainDiversity } from "../scripts/validate-domain-diversity.ts";
 
 const art = (url: string, score: number) => ({ url, title: `t ${score}`, score });
 const hl = (url: string, score: number) => ({ rank: 1, score, article: { url, title: "d" } });
 
-function fixture(highlights: unknown[]) {
+function fixture(highlights: ScoredHighlight[]): ApprovedJson {
   return {
     highlights,
     runners_up: [],
@@ -92,6 +92,118 @@ describe("limite de domínio no Stage 2 (#8593)", () => {
     const ev = JSON.parse(readFileSync(log, "utf8").trim().split("\n")[0]);
     assert.equal(ev.level, "warn");
     assert.equal(ev.edition, "260921");
-    assert.equal(ev.details.length, 4);
+    assert.equal(ev.details.removed.length, 4);
+  });
+});
+
+describe("limite de domínio no Stage 2 — cobertura ampliada (#8593)", () => {
+  const allUrls = (a: ApprovedJson): string[] => [
+    ...(a.highlights ?? []).map((h) => String((h.article?.url ?? h.url) ?? "")),
+    ...(a.lancamento ?? []).map((x) => String(x.url)),
+    ...(a.radar ?? []).map((x) => String(x.url)),
+    ...(a.use_melhor ?? []).map((x) => String(x.url)),
+    ...(a.video ?? []).map((x) => String(x.url)),
+  ];
+  const three = () => [hl("https://a.com/1", 99), hl("https://b.com/1", 98), hl("https://c.com/1", 97)];
+
+  it("prioridade de bucket: LANÇAMENTO nunca perde pra RADAR do mesmo domínio", () => {
+    const { approved } = applyStage2Caps({
+      highlights: three(),
+      lancamento: [art("https://openai.com/l1", 10), art("https://openai.com/l2", 5)],
+      radar: [art("https://openai.com/r1", 99), art("https://blog.openai.com/r2", 98)],
+    });
+    assert.deepEqual((approved.lancamento ?? []).map((x) => x.url), ["https://openai.com/l1", "https://openai.com/l2"]);
+    assert.equal((approved.radar ?? []).length, 0);
+  });
+
+  it("USE MELHOR e VÍDEO entram na contagem; USE MELHOR > VÍDEO > RADAR", () => {
+    const { approved, report } = applyStage2Caps({
+      highlights: three(),
+      use_melhor: [art("https://youtube.com/u1", 50)],
+      video: [art("https://youtube.com/v1", 90), art("https://youtube.com/v2", 95)],
+      radar: [art("https://youtube.com/r1", 99)],
+    });
+    assert.equal((approved.use_melhor ?? []).length, 1);
+    assert.deepEqual((approved.video ?? []).map((x) => x.url), ["https://youtube.com/v2"]);
+    assert.equal((approved.radar ?? []).length, 0);
+    assert.equal(report.domain_limit.removed.length, 2);
+  });
+
+  it("itens sem score valem 0 e desempatam pela ordem original", () => {
+    const { approved } = applyStage2Caps({
+      highlights: three(),
+      radar: [{ url: "https://x.com/1" }, { url: "https://x.com/2" }, { url: "https://x.com/3" }, art("https://x.com/4", 1)],
+    });
+    assert.deepEqual((approved.radar ?? []).map((x) => x.url).sort(), ["https://x.com/1", "https://x.com/4"]);
+  });
+
+  it("TLD .com.br: subdomínios contam como o mesmo domínio registrável", () => {
+    const { approved } = applyStage2Caps({
+      highlights: three(),
+      radar: [art("https://www.uol.com.br/1", 10), art("https://tecnologia.uol.com.br/2", 20), art("https://uol.com.br/3", 30)],
+    });
+    assert.deepEqual((approved.radar ?? []).map((x) => x.url).sort(), ["https://tecnologia.uol.com.br/2", "https://uol.com.br/3"]);
+  });
+
+  it("limite roda antes do slice dos caps: sobra preenche o cap", () => {
+    const { approved, report } = applyStage2Caps({
+      highlights: three(),
+      radar: [
+        art("https://x.com/1", 90), art("https://x.com/2", 89), art("https://x.com/3", 88),
+        art("https://y.com/1", 10), art("https://z.com/1", 9), art("https://w.com/1", 8),
+        art("https://v.com/1", 7), art("https://u.com/1", 6), art("https://t.com/1", 5), art("https://s.com/1", 4),
+      ],
+    });
+    assert.equal(report.caps.radar, 9);
+    assert.equal((approved.radar ?? []).length, 9); // 10 - 1 excedente, cap 9
+    assert.ok(!report.domain_limit.warnings.some((w) => w.includes("RADAR")));
+  });
+
+  it("avisa quando RADAR/USE MELHOR ficam abaixo do piso", () => {
+    const { report } = applyStage2Caps(fixture(three()));
+    assert.ok(report.domain_limit.warnings.some((w) => w.includes("RADAR abaixo do piso")));
+    assert.ok(report.domain_limit.warnings.some((w) => w.includes("USE MELHOR abaixo do piso")));
+  });
+
+  it("runner-up de domínio já no limite não é promovido a USE MELHOR", () => {
+    const { approved } = applyStage2Caps({
+      highlights: three(),
+      lancamento: [art("https://tut.com/l1", 50), art("https://tut.com/l2", 40)],
+      runners_up: [
+        { url: "https://tut.com/ru", bucket: "use_melhor", score: 80 },
+        { url: "https://ok.com/ru", bucket: "use_melhor", score: 70 },
+      ],
+    });
+    assert.deepEqual((approved.use_melhor ?? []).map((x) => x.url), ["https://ok.com/ru"]);
+  });
+
+  it("edição inteira passa no validateDomainDiversity", () => {
+    const { approved } = applyStage2Caps({
+      highlights: [hl("https://exame.com/d", 99), hl("https://b.com/1", 98), hl("https://c.com/1", 97)],
+      lancamento: [art("https://exame.com/l", 60), art("https://openai.com/1", 50)],
+      use_melhor: [art("https://canaltech.com.br/u", 70)],
+      video: [art("https://canaltech.com.br/v", 60), art("https://canaltech.com.br/v2", 50)],
+      radar: fixture([]).radar,
+    });
+    assert.equal(validateDomainDiversity(allUrls(approved).map((u) => `[x](${u})`).join("\n")).ok, true);
+  });
+
+  it("CLI: layout aninhado data/editions/2609/260921/_internal resolve edition", () => {
+    const root = mkdtempSync(join(tmpdir(), "dl8593n-"));
+    const dir = join(root, "data", "editions", "2609", "260921", "_internal");
+    mkdirSync(dir, { recursive: true });
+    const inP = join(dir, "01-approved.json");
+    const outP = join(dir, "01-approved-capped.json");
+    writeFileSync(inP, JSON.stringify(fixture(three())));
+    const loader = pathToFileURL(resolve("node_modules/tsx/dist/loader.mjs")).href;
+    const r = spawnSync(
+      process.execPath,
+      ["--import", loader, resolve("scripts/apply-stage2-caps.ts"), "--in", inP, "--out", outP],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    const ev = JSON.parse(readFileSync(join(root, "data", "run-log.jsonl"), "utf8").trim().split("\n")[0]);
+    assert.equal(ev.edition, "260921");
+    assert.equal(ev.details.removed.length, 4);
   });
 });
