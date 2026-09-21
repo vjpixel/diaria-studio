@@ -9,6 +9,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   isUseMelhorSource,
   isPrimarySource,
@@ -136,6 +139,14 @@ describe("loadAllSourcePrefixMap (#2176)", () => {
     const idxBrasil = allEntries.indexOf(blogBrasil!);
     const idxPrimaria = allEntries.indexOf(googlePrimaria!);
     assert.ok(idxBrasil < idxPrimaria, "Blog Brasil (mais específico) deve vir antes de Google Primária no array ordenado");
+  });
+});
+
+describe("regressão PR #8651: Blog do Google Brasil (IA) não removido por rescue de contínuo", () => {
+  it("linha do seed/sources.csv está presente após rescue automático", () => {
+    const csv = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "..", "seed", "sources.csv"), "utf8");
+    assert.ok(csv.includes("Blog do Google Brasil (IA)"), "Blog do Google Brasil (IA) deve estar em seed/sources.csv (regressão #8651)");
+    assert.ok(csv.includes("blog.google/intl/pt-br/novidades/tecnologia/"), "URL específica da fonte deve estar presente");
   });
 });
 
