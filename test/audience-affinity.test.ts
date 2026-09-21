@@ -279,7 +279,6 @@ describe("annotateUseMelhorBucket", () => {
 
 describe("annotatePrimarySourceAllBuckets (#5665)", () => {
   const entries = [
-    { prefix: "blog.google/intl/pt-br", useMelhor: true, primary: false, index: 1 },
     { prefix: "blog.google", useMelhor: false, primary: true, index: 0 },
     { prefix: "example.com", useMelhor: false, primary: false, index: 2 },
   ];
@@ -295,7 +294,7 @@ describe("annotatePrimarySourceAllBuckets (#5665)", () => {
     const count = annotatePrimarySourceAllBuckets(categorized, entries);
     assert.equal(count, 1);
     assert.deepEqual(categorized.lancamento[0].audience_affinity?.matched, ["primary_source:true"]);
-    assert.equal(categorized.lancamento[1].audience_affinity, undefined, "path mais específico não-primário não herda o host");
+    assert.equal(categorized.lancamento[1].audience_affinity, undefined, "pt-br removido (#8631); apenas Google Primária (host-only) permanece");
     assert.equal(categorized.lancamento[2].audience_affinity, undefined);
   });
 

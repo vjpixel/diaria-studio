@@ -652,23 +652,23 @@ describe("categorize() — #2176 path-mais-específico-vence no empate de host",
       url: "https://blog.google/intl/pt-br/novidades/tecnologia/google-gemini-atualizado/",
       title: "Como usar o Gemini 2.0 no Google Workspace — guia passo a passo",
     };
-    // DEVE ir para tutorial → use_melhor bucket (via path-specificity: Blog do Google Brasil vence Google Primária)
+    // Após remoção Blog do Google Brasil (#8631), pt-br resolve como Google Primária (use_melhor=0) → lancamento
     assert.equal(
       categorize(art),
-      "tutorial",
-      "URL em blog.google/intl/pt-br/novidades/tecnologia → path mais específico (Blog Brasil use_melhor=1) vence host-only (Google use_melhor=0)",
+      "lancamento",
+      "URL em blog.google/intl/pt-br/novidades/tecnologia → fonte removida; resolve como Google Primária (lancamento)",
     );
   });
 
-  it("#2176: categorizeArticles coloca o artigo em use_melhor, não radar", () => {
+  it("#2176: após remoção Blog Brasil (#8631), artigo pt-br fica em lancamento (Google Primária)", () => {
     const art: Article = {
       url: "https://blog.google/intl/pt-br/novidades/tecnologia/ia-ferramentas-2026/",
       title: "5 ferramentas de IA do Google pra usar hoje",
     };
     const { use_melhor, radar, lancamento } = categorizeArticles([art]);
-    assert.equal(use_melhor.length, 1, "artigo deve estar em use_melhor");
+    assert.equal(use_melhor.length, 0, "fonte removida → não em use_melhor");
     assert.equal(radar.length, 0, "artigo NÃO deve estar em radar");
-    assert.equal(lancamento.length, 0, "artigo NÃO deve estar em lancamento");
+    assert.equal(lancamento.length, 1, "artigo deve estar em lancamento (Google Primária)");
   });
 
   it("#2176: atribuição é DETERMINÍSTICA — mesmo resultado independente da ordem de chamada", () => {
@@ -680,7 +680,7 @@ describe("categorize() — #2176 path-mais-específico-vence no empate de host",
     const r3 = categorize(art);
     assert.equal(r1, r2, "categorize deve ser determinístico (r1 == r2)");
     assert.equal(r2, r3, "categorize deve ser determinístico (r2 == r3)");
-    assert.equal(r1, "tutorial", "resultado deve ser tutorial");
+    assert.equal(r1, "lancamento", "resultado deve ser lancamento após remoção (#8631)");
   });
 
   it("#2176: URL em blog.google fora do /intl/pt-br/ → lancamento (Google Primária, use_melhor=0)", () => {

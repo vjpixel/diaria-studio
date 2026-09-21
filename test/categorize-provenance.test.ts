@@ -89,9 +89,7 @@ const RULE_TRIGGERS: Record<CategorizationRule, Article> = {
     title: "Building agents with the Anthropic Cookbook",
   },
   "use-melhor-specificity": {
-    // "Blog do Google Brasil (IA)" é fonte use_melhor=1 no seed com prefixo
-    // /intl/pt-br/novidades/tecnologia/ — mais específico que "Google
-    // Primária" (host-only, use_melhor=0) para esse path (#2176).
+    // "Blog do Google Brasil (IA)" REMOVIDO (#8631); URL pt-br agora resolve como Google Primária (use_melhor=0).
     url: "https://blog.google/intl/pt-br/novidades/tecnologia/google-gemini-atualizado/",
     title: "Como usar o Gemini 2.0 no Google Workspace — guia passo a passo",
   },
