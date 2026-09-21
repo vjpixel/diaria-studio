@@ -43,11 +43,10 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractUrlsWithLines } from "./validate-domains.ts";
-import { extractHostname, registrableDomain } from "./lib/registrable-domain.ts";
-import { isNonEditorialHost } from "./lib/ctr-utils.ts";
+import { editorialDomain, DEFAULT_MAX_PER_DOMAIN } from "./lib/domain-diversity.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 
-export const DEFAULT_MAX_PER_DOMAIN = 2;
+export { DEFAULT_MAX_PER_DOMAIN };
 
 export interface DomainDiversityViolation {
   domain: string;
@@ -78,9 +77,7 @@ export function validateDomainDiversity(
   const byDomain = new Map<string, Array<{ url: string; line: number }>>();
 
   for (const entry of urls) {
-    const hostname = extractHostname(entry.url);
-    if (hostname && isNonEditorialHost(hostname)) continue;
-    const domain = registrableDomain(entry.url);
+    const domain = editorialDomain(entry.url); // não-editorial (#5813) ou inválida → null
     if (!domain) continue;
     const list = byDomain.get(domain) ?? [];
     list.push(entry);

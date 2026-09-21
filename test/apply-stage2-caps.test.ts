@@ -630,8 +630,8 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
     const approved = {
       highlights: [
         { url: "https://anthropic.com/news/claude-sb", bucket: "lancamento" },
-        { url: "https://example.com/d1" },
-        { url: "https://example.com/d3" },
+        { url: "https://d1-ex.com/x" },
+        { url: "https://d3-ex.com/x" },
       ],
       lancamento: [
         { url: "https://anthropic.com/news/claude-sb" }, // overlap
@@ -654,14 +654,14 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
     const radarArray = [
       { url: "https://x.com/p1", title: "p1" },
       ...Array.from({ length: 10 }, (_, i) => ({
-        url: `https://example.com/n${i}`,
+        url: `https://n${i}-ex.com/x`,
         title: `News ${i}`,
       })),
     ];
     const approved = {
       highlights: [
-        { url: "https://example.com/n0", bucket: "radar" },
-        { url: "https://example.com/n1", bucket: "radar" },
+        { url: "https://n0-ex.com/x", bucket: "radar" },
+        { url: "https://n1-ex.com/x", bucket: "radar" },
         { url: "https://other.com/lanc", bucket: "lancamento" },
       ],
       lancamento: [{ url: "https://x.com/l1" }],
@@ -673,38 +673,38 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
     assert.equal(capped.radar?.length, 8);
     // Confirma que n0 e n1 nao estao no output
     const outputUrls = (capped.radar ?? []).map((n) => n.url);
-    assert.ok(!outputUrls.includes("https://example.com/n0"));
-    assert.ok(!outputUrls.includes("https://example.com/n1"));
+    assert.ok(!outputUrls.includes("https://n0-ex.com/x"));
+    assert.ok(!outputUrls.includes("https://n1-ex.com/x"));
   });
 
   it("URLs com tracking params canonicalizadas batem (utm_source ignorado)", () => {
     const approved = {
       highlights: [
-        { url: "https://example.com/news?utm_source=newsletter" },
+        { url: "https://news-ex.com/x?utm_source=newsletter" },
       ],
       radar: [
-        { url: "https://example.com/news" }, // mesma URL sem utm — overlap
-        { url: "https://example.com/other" },
+        { url: "https://news-ex.com/x" }, // mesma URL sem utm — overlap
+        { url: "https://other-ex.com/x" },
       ],
     };
     const { approved: capped, report } = applyStage2Caps(approved);
     assert.equal(report.removed_overlap.radar, 1, "canonicalize remove utm");
     assert.equal(capped.radar?.length, 1);
-    assert.equal(capped.radar?.[0].url, "https://example.com/other");
+    assert.equal(capped.radar?.[0].url, "https://other-ex.com/x");
   });
 
   it("sem overlap → buckets intactos, removed_overlap zerado", () => {
     const approved = {
       highlights: [
-        { url: "https://example.com/dest1" },
-        { url: "https://example.com/dest2" },
-        { url: "https://example.com/dest3" },
+        { url: "https://dest1-ex.com/x" },
+        { url: "https://dest2-ex.com/x" },
+        { url: "https://dest3-ex.com/x" },
       ],
-      lancamento: [{ url: "https://example.com/l1" }],
+      lancamento: [{ url: "https://l1-ex.com/x" }],
       radar: [
-        { url: "https://example.com/p1" },
-        { url: "https://example.com/n1" },
-        { url: "https://example.com/n2" },
+        { url: "https://p1-ex.com/x" },
+        { url: "https://n1-ex.com/x" },
+        { url: "https://n2-ex.com/x" },
       ],
     };
     const { approved: capped, report } = applyStage2Caps(approved);
@@ -717,8 +717,8 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
   it("highlights vazio → buckets intactos", () => {
     const approved = {
       highlights: [],
-      lancamento: [{ url: "https://example.com/l1" }],
-      radar: Array.from({ length: 5 }, (_, i) => ({ url: `https://example.com/n${i}` })),
+      lancamento: [{ url: "https://l1-ex.com/x" }],
+      radar: Array.from({ length: 5 }, (_, i) => ({ url: `https://n${i}-ex.com/x` })),
     };
     const { approved: capped, report } = applyStage2Caps(approved);
     assert.equal(report.removed_overlap.lancamento, 0);

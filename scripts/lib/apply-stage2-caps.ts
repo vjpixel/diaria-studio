@@ -29,6 +29,7 @@
  */
 
 import { canonicalize } from "./url-utils.ts";
+import { selectDomainExcess, DEFAULT_MAX_PER_DOMAIN, type DomainLimitCandidate } from "./domain-diversity.ts";
 import { selectUseMelhorSplit, rootDomain, classifyAudienceClass } from "./use-melhor-curation.ts";
 
 export interface StageArticle {
@@ -155,7 +156,18 @@ export function capRadar(
   );
 }
 
+export interface DomainLimitRemoval {
+  bucket: "lancamento" | "radar" | "use_melhor" | "video";
+  url: string;
+  title?: string;
+  score?: number;
+  domain: string;
+  reason: string;
+}
+
 export interface CapReport {
+  /** #8593: itens removidos das seções secundárias por excederem 2 URLs/domínio. */
+  domain_limit: { max: number; removed: DomainLimitRemoval[] };
   before: { lancamento: number; radar: number };
   after: { lancamento: number; radar: number };
   caps: { lancamento: number; radar: number };
@@ -419,16 +431,29 @@ export function applyStage2Caps(
     else umComposition.dev_avancado++;
   }
 
-  const out: ApprovedJson = {
-    ...approved,
+  // #8593: limite de 2 URLs por domínio registrável já no Stage 2 (destaques +
+  // RADAR + USE MELHOR + LANÇAMENTOS + VÍDEOS). Destaques nunca saem; nas
+  // seções secundárias ficam os de maior score.
+  const secondary: Record<DomainLimitRemoval["bucket"], StageArticle[]> = {
     lancamento: lDeduped.kept.slice(0, lFinal),
     radar: rDeduped.kept.slice(0, rFinal),
     use_melhor: umFinal,
+    video: [...(approved.video ?? [])],
+  };
+  const domainRemoved = enforceDomainLimit(approved.highlights ?? [], secondary);
+
+  const out: ApprovedJson = {
+    ...approved,
+    lancamento: secondary.lancamento,
+    radar: secondary.radar,
+    use_melhor: secondary.use_melhor,
+    ...(approved.video !== undefined ? { video: secondary.video } : {}),
   };
 
   return {
     approved: out,
     report: {
+      domain_limit: { max: DEFAULT_MAX_PER_DOMAIN, removed: domainRemoved },
       before: {
         lancamento: lOriginal,
         radar: rOriginal,
@@ -457,6 +482,44 @@ export function applyStage2Caps(
       },
     },
   };
+}
+
+/**
+ * #8593: aplica o limite por domínio nas seções secundárias, substituindo os
+ * arrays de `secondary` (cópias locais, sem mutar o input). Devolve o que foi
+ * removido pra o caller logar (nunca em silêncio).
+ */
+function enforceDomainLimit(
+  highlights: ScoredHighlight[],
+  secondary: Record<DomainLimitRemoval["bucket"], StageArticle[]>,
+): DomainLimitRemoval[] {
+  const candidates: DomainLimitCandidate[] = [];
+  const where: Array<{ bucket: DomainLimitRemoval["bucket"]; item: StageArticle } | null> = [];
+  for (const h of highlights) {
+    candidates.push({ url: highlightUrl(h), score: h.score, protected: true, order: candidates.length });
+    where.push(null);
+  }
+  for (const bucket of ["lancamento", "radar", "use_melhor", "video"] as const) {
+    for (const item of secondary[bucket]) {
+      candidates.push({ url: item.url, score: item.score, protected: false, order: candidates.length });
+      where.push({ bucket, item });
+    }
+  }
+  const removed: DomainLimitRemoval[] = [];
+  for (const e of selectDomainExcess(candidates, DEFAULT_MAX_PER_DOMAIN)) {
+    const w = where[e.order];
+    if (!w) continue;
+    secondary[w.bucket] = secondary[w.bucket].filter((x) => x !== w.item);
+    removed.push({
+      bucket: w.bucket,
+      url: w.item.url ?? "",
+      title: w.item.title,
+      score: w.item.score,
+      domain: e.domain,
+      reason: e.reason,
+    });
+  }
+  return removed;
 }
 
 /**
