@@ -60,6 +60,59 @@ describe("deriveTouchSamples (#7982)", () => {
   });
 });
 
+describe("deriveTouchSamples — bordas (#7982 review)", () => {
+  it("painel Studio não conta como sim", () => {
+    const s = deriveTouchSamples([
+      ev("1", "2026-09-01T10:00:00Z", P),
+      ev("1", "2026-09-01T10:05:00Z", "gate revisao response: sim (via painel Studio, decided_at=x)"),
+    ]);
+    assert.deepEqual(s, []);
+  });
+  it("fora de ordem, timestamp inválido e stage != 4", () => {
+    const s = deriveTouchSamples([
+      ev("1", "2026-09-01T10:05:00Z", "gate revisao response: sim"),
+      ev("1", "lixo", P),
+      { ...ev("1", "2026-09-01T09:00:00Z", P), stage: 5 },
+      ev("1", "2026-09-01T10:00:00Z", P),
+    ]);
+    assert.deepEqual(s, [{ edition: "1", editMinutes: 0, signoffMinutes: 5 }]);
+  });
+  it("várias edições, ordenadas", () => {
+    const s = deriveTouchSamples([
+      ev("b", "2026-09-01T10:00:00Z", P),
+      ev("b", "2026-09-01T10:01:00Z", "gate revisao response: sim"),
+      ev("a", "2026-09-01T10:00:00Z", P),
+      ev("a", "2026-09-01T10:02:00Z", "gate revisao response: sim"),
+    ]);
+    assert.deepEqual(s.map((x) => x.edition), ["a", "b"]);
+  });
+  it("vários sim: vale o último", () => {
+    const s = deriveTouchSamples([
+      ev("1", "2026-09-01T10:00:00Z", P),
+      ev("1", "2026-09-01T10:02:00Z", "gate revisao response: sim"),
+      ev("1", "2026-09-01T10:03:00Z", P),
+      ev("1", "2026-09-01T10:10:00Z", "gate revisao response: sim"),
+    ]);
+    assert.deepEqual(s, [{ edition: "1", editMinutes: 3, signoffMinutes: 7 }]);
+  });
+  it("abortar depois do sim descarta", () => {
+    const s = deriveTouchSamples([
+      ev("1", "2026-09-01T10:00:00Z", P),
+      ev("1", "2026-09-01T10:02:00Z", "gate revisao response: sim"),
+      ev("1", "2026-09-01T10:03:00Z", "gate revisao response: abortar"),
+    ]);
+    assert.deepEqual(s, []);
+  });
+  it("cap por intervalo (--max-gap-min)", () => {
+    const evs = [
+      ev("1", "2026-09-01T10:00:00Z", P),
+      ev("1", "2026-09-01T18:00:00Z", "gate revisao response: sim"),
+    ];
+    assert.deepEqual(deriveTouchSamples(evs), [{ edition: "1", editMinutes: 0, signoffMinutes: 120 }]);
+    assert.deepEqual(deriveTouchSamples(evs, 30), [{ edition: "1", editMinutes: 0, signoffMinutes: 30 }]);
+  });
+});
+
 describe("CLI derive-touch-minutes", () => {
   it("dry-run não grava; --write grava sem duplicar", () => {
     const root = mkdtempSync(join(tmpdir(), "touch-"));
@@ -79,6 +132,9 @@ describe("CLI derive-touch-minutes", () => {
       const dry = run();
       assert.equal(dry.status, 0, dry.stderr);
       assert.equal(existsSync(out), false);
+      assert.equal(run("--edition", "999999", "--write").status, 0);
+      assert.equal(existsSync(out), false);
+      assert.equal(run("--max-gap-min", "0").status, 2);
       assert.equal(run("--write").status, 0);
       assert.equal(run("--write").status, 0);
       const lines = readFileSync(out, "utf8").trim().split("\n");
