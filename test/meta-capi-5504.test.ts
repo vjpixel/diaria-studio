@@ -354,3 +354,19 @@ describe("#7776 — logMetaCapiSendResult (log estruturado encaixado no caminho 
     assert.deepEqual(parsed, { event: "meta_capi_sent", worker: "poll", status: 200 });
   });
 });
+
+describe("#8647 — eventSourceUrl instrumentation (safe, independent)", () => {
+  it("buildMetaCapiLogEvent inclui eventSourceUrl quando fornecido", () => {
+    const ev = buildMetaCapiLogEvent({ ok: true, status: 200 }, "poll", "https://diar.ia.br/");
+    assert.equal(ev.event, "meta_capi_sent");
+    assert.equal((ev as any).eventSourceUrl, "https://diar.ia.br/");
+  });
+  it("buildMetaCapiLogEvent omite eventSourceUrl quando ausente (não quebra)", () => {
+    const ev = buildMetaCapiLogEvent({ ok: false, status: 503, reason: "not_configured" }, "cursos");
+    assert.equal((ev as any).eventSourceUrl, undefined);
+  });
+  it("logMetaCapiSendResult propaga eventSourceUrl", async () => {
+    const result = await logMetaCapiSendResult(Promise.resolve({ ok: true, status: 200 }), "poll", "https://eia.diar.ia.br/");
+    assert.equal(result.ok, true);
+  });
+});

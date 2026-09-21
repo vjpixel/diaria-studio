@@ -12,8 +12,8 @@
  * `workers/poll/src/subscribe.ts`, `workers/cursos/src/subscribe.ts`,
  * `workers/reativar/src/index.ts` — e (b) batch server-side a partir do
  * snapshot Beehiiv (`scripts/meta-capi-batch-send.ts`). O ponto (c)
- * (`/confirmado`) fica fora de escopo, marcado como "opcional depois" na
- * issue.
+ * (`/confirmada`, renomeado de `/confirmado` em #8554) fica fora de escopo,
+ * marcado como "opcional depois" na issue.
  *
  * ## Fronteira `lib/shared/` (#2747)
  *
@@ -120,37 +120,120 @@ export async function computeCompleteRegistrationEventId(
   return sha256Hex(`capi:completeregistration:${normalized}:${day}`);
 }
 
+/** #8543 — nome do evento custom da CONFIRMAÇÃO do e-mail. Distinto de
+ * `CompleteRegistration` de propósito: o cadastro é o evento que hoje otimiza o
+ * conjunto "BR · conversao · sem teto"; a confirmação entra como sinal
+ * SECUNDÁRIO, sem participar da otimização até a decisão da fase 3 da #8543. */
+export const META_CAPI_CONFIRMATION_EVENT_NAME = "SubscriptionConfirmed";
+
 /**
- * #8543 — `event_id` da CONFIRMAÇÃO (reaativação), espelho de
- * `computeCompleteRegistrationEventId` com prefixo distinto.
- *
- * Mesma fórmula (e-mail normalizado + dia UTC do `event_time`), mas
- * `capi:reactivation:` em vez de `capi:completeregistration:`. Por quê um
- * prefixo separado quando o `event_name` já diferencia os dois eventos?
- *
- * A Meta deduplica server-side × client-side pela CHAVE (`event_name`,
- * `event_id`) — nomes diferentes nunca colidem. O prefixo é defensiva, não
- * decisão: uma confirmação que acontece no MESMO dia do cadastro (comum —
- * cadastro de manhã, clique no e-mail de reativação de tarde) geraria o
- * mesmo `event_id` que o cadastro se usássemos a mesma fórmula, e um caller
- * que passasse o `created` do cadastro em vez do horário real da confirmação
- * veria os dois sinais fundos sob um id sem que o tipo quebrasse (o campo é
- * `eventTimeSeconds`, não tem como o TS impedir que seja o errado). Prefixo
- * diferente torna isso physicalmente impossível de silenciosamente fundir.
- *
- * `eventTimeSeconds` aqui é o horário da CONFIRMAÇÃO (quem chama este
- * import é responsável por passá-lo — ver #8552 pro como obtê-lo), não o
- * do cadastro.
- *
- * @pure — same Web Crypto + no I/O discipline as `computeCompleteRegistrationEventId`.
+ * #8543 — `event_id` determinístico da CONFIRMAÇÃO de um assinante do Kit.
+ * Derivado do id do Kit (não do e-mail nem do dia): uma confirmação por
+ * assinante, mesmo id em qualquer reenvio, e nunca colide com o id do cadastro
+ * (prefixo próprio). Sem PII na entrada.
  */
-export async function computeReactivationEventId(
+export async function computeConfirmationEventId(kitSubscriberId: number): Promise<string> {
+  return sha256Hex(`capi:subscriptionconfirmed:kit:${kitSubscriberId}`);
+}
+
+/**
+ * #8572 — o par (`event_id`, `event_time`) que os DOIS lados da dedup
+ * precisam compartilhar.
+ *
+ * O `event_id` determinístico existe desde o #5504 justamente pra permitir
+ * que um pixel client-side dedupasse contra a CAPI (ver docstring do
+ * módulo), mas o lado do browser nunca recebeu o id: `pushSignupConversionEventJs`
+ * empurrava só o e-mail pro `dataLayer`, e a tag do Meta no GTM não tinha
+ * de onde ler um. Medido em 20/09/2026: a Meta contava 2,4x os cadastros
+ * reais, com as duas séries (`WEB_ONLY` e `SERVER_ONLY`) somando no
+ * dataset — sem chave compartilhada, não existe dedup.
+ *
+ * Calcular o hash NO BROWSER (SHA-256 via `crypto.subtle`, mesma fórmula)
+ * foi descartado: duplicaria a fórmula em dois lugares e uma divergência
+ * silenciosa entre elas quebraria a dedup de novo, sem sinal nenhum. Em vez
+ * disso o handler do cadastro — que já vai disparar a CAPI — resolve o par
+ * AQUI, devolve `eventId` no corpo da resposta e o browser só repassa.
+ *
+ * **Invariante que este tipo existe pra proteger:** quem consome `eventId`
+ * PRECISA repassar `eventTimeSeconds` a `sendCompleteRegistrationEvent`. O
+ * id é derivado do DIA UTC do `event_time`; deixar o builder calcular o
+ * seu próprio `Date.now()` faz os dois lados divergirem na virada do dia
+ * UTC (21:00 BRT) — a janela em que a dedup silenciosamente pararia de
+ * funcionar todo dia.
+ */
+export interface CompleteRegistrationDedup {
+  /** Vai pro `eventID` do `fbq` no browser, via `dataLayer`. */
+  eventId: string;
+  /** PRECISA ser repassado a `sendCompleteRegistrationEvent` — ver acima. */
+  eventTimeSeconds: number;
+}
+
+/**
+ * Resolve o par dedup de um cadastro. Default de `eventTimeSeconds`: agora,
+ * idêntico ao default de `buildCompleteRegistrationEvent` — mas o ponto é
+ * justamente FIXAR o valor uma vez e passá-lo adiante, nunca deixar os dois
+ * lados chamarem `Date.now()` por conta própria.
+ *
+ * @pure exceto pelo hash assíncrono (Web Crypto).
+ */
+export async function resolveCompleteRegistrationDedup(
   email: string,
-  eventTimeSeconds: number,
-): Promise<string> {
-  const normalized = normalizeEmailForMeta(email);
-  const day = new Date(eventTimeSeconds * 1000).toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
-  return sha256Hex(`capi:reactivation:${normalized}:${day}`);
+  eventTimeSeconds: number = Math.floor(Date.now() / 1000),
+): Promise<CompleteRegistrationDedup> {
+  return { eventId: await computeCompleteRegistrationEventId(email, eventTimeSeconds), eventTimeSeconds };
+}
+
+/** TTL do claim de envio — cobre um dia UTC inteiro (o `event_id` já muda na virada). */
+export const META_CAPI_SEND_CLAIM_TTL_SEC = 24 * 60 * 60;
+
+/**
+ * #8577 — reivindica o ENVIO server-side de um cadastro, uma vez por
+ * `event_id` (e-mail normalizado + dia UTC). A CAPI mandava ~2,3 eventos por
+ * cadastro real (resubmissão do form e reentrada por outro host devolvem `ok`
+ * pra quem já existe); só o `event_id` determinístico fazia a Meta absorver
+ * os extras, e ele falha na virada do dia UTC. Com o claim, o reenvio nem sai.
+ *
+ * Retorna `true` quando ESTE chamador deve enviar. A chave usa o `event_id`
+ * (hash), nunca o e-mail. **Fail-open**: KV ausente ou com erro devolve `true`
+ * — perder a otimização é aceitável, perder um evento de conversão não é.
+ * Get-then-put não é atômico; uma corrida simultânea ainda deixa passar 2
+ * envios, que a dedup por `event_id` da Meta absorve como antes.
+ */
+export interface MetaCapiClaimKv {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
+export async function claimCompleteRegistrationSend(
+  kv: MetaCapiClaimKv | undefined,
+  eventId: string | undefined,
+): Promise<boolean> {
+  if (!kv || !eventId) return true;
+  const key = `capi:cr:${eventId}`;
+  try {
+    if (await kv.get(key)) return false;
+    await kv.put(key, "1", { expirationTtl: META_CAPI_SEND_CLAIM_TTL_SEC });
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * #8577: se o envio NÃO chegou à Meta, devolve o claim — senão o reenvio do
+ * cadastro (que antes recuperava a conversão) ficaria bloqueado por 24h.
+ * Nunca lança.
+ */
+export function releaseClaimOnSendFailure(
+  send: Promise<MetaCapiSendResult>,
+  kv: MetaCapiClaimKv | undefined,
+  eventId: string | undefined,
+): Promise<MetaCapiSendResult> {
+  return send.then(async (result) => {
+    if (!result.ok && kv && eventId) await kv.delete(`capi:cr:${eventId}`).catch(() => {});
+    return result;
+  });
 }
 
 /**
@@ -170,10 +253,14 @@ export async function computeReactivationEventId(
  * DOIS caminhos**: valor divergente entre pixel e CAPI estraga justamente
  * a comparação que o `event_id` determinístico acima existe pra permitir.
  * Por isso estas duas constantes são a fonte única, e
- * `test/meta-capi-8388.test.ts` lê o snippet `fbq(...)` do export do
- * container GTM (`docs/gtm-signup-container-export.json`) pra travar a
- * igualdade — o pixel não é código executado por este repo, mas o valor
- * dele é versionado aqui e portanto auditável.
+ * `test/meta-capi-8388.test.ts` lê o snippet `fbq(...)` da PROPOSTA de
+ * import do container GTM (`docs/gtm-signup-container-import-proposal.json`)
+ * pra travar a igualdade — o pixel não é código executado por este repo, mas
+ * o valor dele é versionado aqui e portanto auditável. **Isto audita a
+ * proposta versionada, não o container ao vivo no GTM** — o container
+ * publicado (`GTM-TC8C65ZN`) usa o template oficial do Meta Pixel
+ * (`__cvt_5RM3Q`), não a tag Custom HTML deste arquivo; os campos podem
+ * divergir (#8578).
  */
 export const META_CAPI_COMPLETE_REGISTRATION_VALUE = 1;
 export const META_CAPI_COMPLETE_REGISTRATION_CURRENCY = "BRL";
@@ -348,10 +435,21 @@ export interface MetaCapiUserData {
  * cadastro original, muitas vezes sem `fbc`/click id válido — como se
  * fossem cadastros novos vindos de anúncio.
  */
-export type MetaCapiEventName = "CompleteRegistration" | "Reactivation";
+export type MetaCapiEventName = "CompleteRegistration" | "Reactivation" | "SubscriptionConfirmed";
+
+/**
+ * #8543/#8616 item 4: o lote de confirmações aceita o nome por PARÂMETRO
+ * (`--event-name`, validado em runtime por `assertConfirmationEventName` em
+ * `scripts/lib/meta-capi-confirmation-batch.ts`, nunca "CompleteRegistration").
+ * Widen isolado só pro campo que precisa disso (`BuildCompleteRegistrationEventInput.eventName`)
+ * — `MetaCapiEventName` em si permanece união FECHADA, então os 3 workers que
+ * passam o nome como literal (`workers/reativar`, `scripts/gtm-drift-check.ts`)
+ * continuam com o checador de tipo pegando um typo de nome.
+ */
+export type MetaCapiConfirmationEventName = MetaCapiEventName | (string & {});
 
 export interface MetaCapiCompleteRegistrationEvent {
-  event_name: MetaCapiEventName;
+  event_name: MetaCapiConfirmationEventName;
   event_time: number;
   event_source_url: string;
   action_source: MetaCapiActionSource;
@@ -385,8 +483,14 @@ export interface BuildCompleteRegistrationEventInput {
   clientSignals?: MetaCapiClientSignals;
   /** #8551: `"CompleteRegistration"` (default — cadastro/submit do form) ou
    * `"Reactivation"` (`workers/reativar`, confirmação de reativação — nunca
-   * deve entrar no evento de otimização do conjunto de anúncios). */
-  eventName?: MetaCapiEventName;
+   * deve entrar no evento de otimização do conjunto de anúncios). #8543/#8616
+   * item 4: também aceita o nome parametrizável, validado em runtime, do
+   * lote de confirmações (`MetaCapiConfirmationEventName`). */
+  eventName?: MetaCapiConfirmationEventName;
+  /** #8543: `event_id` explícito — usado por eventos que NÃO são o cadastro
+   * (ex.: `SubscriptionConfirmed`, id derivado do id do Kit, não do e-mail+dia).
+   * Ausente = o id determinístico do `CompleteRegistration`, como sempre. */
+  eventId?: string;
 }
 
 /** Monta o evento `CompleteRegistration` pronto pra `sendMetaCapiEvent` —
@@ -398,7 +502,7 @@ export async function buildCompleteRegistrationEvent(
   const eventTime = input.eventTimeSeconds ?? Math.floor(Date.now() / 1000);
   const [em, eventId] = await Promise.all([
     hashEmailForMeta(input.email),
-    computeCompleteRegistrationEventId(input.email, eventTime),
+    input.eventId ? Promise.resolve(input.eventId) : computeCompleteRegistrationEventId(input.email, eventTime),
   ]);
   const userData: MetaCapiUserData = { em: [em] };
   // #8388: só entra a chave que TEM valor — `client_ip_address: ""` seria
@@ -504,39 +608,6 @@ export async function sendCompleteRegistrationEvent(
     // Qualquer exceção inesperada (ex: Web Crypto indisponível num runtime
     // atípico) também vira no-op fail-soft — telemetria de anúncio nunca
     // pode propagar uma exceção pro caller do cadastro.
-    return { ok: false, status: 502, reason: "network_error" };
-  }
-}
-
-/**
- * #8543 — wrapper fail-soft pro evento de CONFIRMAÇÃO (`Reactivation`),
- * espelho de `sendCompleteRegistrationEvent` com o `event_id` da reativação.
- *
- * Diferença crucial em relação ao cadastro: o `eventTimeSeconds` do
- * `Reactivation` é o horário da CONFIRMAÇÃO, que só se sabe no momento em
- * que o clique chega (`workers/reativar`, #8551) ou quando um import
- * offline o recupera (#8552). O cadastro passa o `created` do snapshot
- * Beehiiv; a confirmação NUNCA passa o `created` do cadastro — fazer isso
- * seria o erro que o prefixo de `event_id` acima existe pra impedir.
- *
- * Sem `accessToken`, no-op silencioso — mesmo contrato fail-soft de
- * `sendCompleteRegistrationEvent`: telemetria de anúncio nunca pode
- * derrubar ou atrasar uma confirmação real.
- */
-export async function sendReactivationEvent(
-  input: BuildCompleteRegistrationEventInput,
-  options: SendMetaCapiEventOptions,
-): Promise<MetaCapiSendResult> {
-  if (!options.accessToken) return { ok: false, status: 503, reason: "not_configured" };
-  try {
-    const event = await buildCompleteRegistrationEvent({
-      ...input,
-      eventName: "Reactivation",
-      eventTimeSeconds: input.eventTimeSeconds ?? Math.floor(Date.now() / 1000),
-    });
-    const eventId = await computeReactivationEventId(input.email, event.event_time);
-    return await sendMetaCapiEvent({ ...event, event_id: eventId }, options);
-  } catch {
     return { ok: false, status: 502, reason: "network_error" };
   }
 }

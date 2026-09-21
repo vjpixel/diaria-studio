@@ -53,7 +53,14 @@ import { json } from "./index";
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
 import { ARQUIVO_INLINE_UTM, DIARIA_APEX_SOURCE, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2, #8244
-import { sendCompleteRegistrationEvent, logMetaCapiSendResult, extractMetaCapiClientSignals } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388
+import {
+  sendCompleteRegistrationEvent,
+  logMetaCapiSendResult,
+  extractMetaCapiClientSignals,
+  resolveCompleteRegistrationDedup,
+  claimCompleteRegistrationSend,
+  releaseClaimOnSendFailure,
+} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 // #7723: consome a maquinaria COMPARTILHADA (scripts/lib/shared/kit-doi.ts),
 // a mesma de `cursos` e `reativar`. Antes o poll tinha copias locais de
@@ -1024,20 +1031,46 @@ export async function handleJogarSubscribe(
     // first-party, `fbc` derivado do `click_id` do #8003). Extração é pura
     // e nunca lança — campo ausente é OMITIDO, nunca string vazia.
     const clientSignals = extractMetaCapiClientSignals(request.headers, { clickId: origin.clickId });
-    const sendEvent = logMetaCapiSendResult(
+    // #8572: o par (`event_id`, `event_time`) é resolvido UMA vez aqui e usado
+    // nos DOIS lados — vai pra CAPI abaixo via `eventTimeSeconds` (é dele que
+    // o builder deriva o id) e volta pro browser no corpo da resposta, pra tag
+    // do Meta no GTM disparar com o MESMO `eventID`. Sem isso a Meta conta o
+    // mesmo cadastro duas vezes (2,4x medido em 20/09/2026). Só quando a CAPI
+    // está de fato configurada: sem token não existe evento server-side pra
+    // deduplicar, e a resposta continua idêntica à de antes do #5504 — o
+    // aceite "sem token, nada muda" daquela issue segue valendo.
+    //
+    // O id que volta é o do evento que o handler MANDOU — não o de um envio
+    // CONFIRMADO: o disparo abaixo é `waitUntil`, resolve depois da resposta,
+    // e uma recusa da Meta não desfaz o id já entregue ao browser. Isso é o
+    // desfecho certo (o pixel vira o único sinal daquele cadastro e conta 1,
+    // em vez de nenhum), mas a leitura "o id prova que a CAPI recebeu" seria
+    // falsa.
+    //
+    // O `.catch(() => null)` é a mesma disciplina fail-soft do módulo:
+    // telemetria de anúncio nunca derruba um cadastro real. Não tem teste
+    // próprio porque só dispara se `crypto.subtle` sumir do runtime — e aí
+    // `sendCompleteRegistrationEvent` falha pelo mesmo motivo, então os dois
+    // lados somem juntos e não há divergência a cobrir.
+    const dedup = env.META_CAPI_ACCESS_TOKEN
+      ? await resolveCompleteRegistrationDedup(v.email).catch(() => null)
+      : null;
+    // #8577: reenvio do mesmo cadastro (resubmissão/outro host) não chama a Meta de novo.
+    const shouldSend = await claimCompleteRegistrationSend(env.POLL, dedup?.eventId);
+    const sendEvent = !shouldSend ? Promise.resolve() : releaseClaimOnSendFailure(logMetaCapiSendResult(
       sendCompleteRegistrationEvent(
-        { email: v.email, eventSourceUrl: request.url, clientSignals },
+        { email: v.email, eventSourceUrl: request.url, eventTimeSeconds: dedup?.eventTimeSeconds, clientSignals },
         { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
       ),
       "poll",
       request.url,
-    );
+    ), env.POLL, dedup?.eventId);
     if (ctx && typeof ctx.waitUntil === "function") {
       ctx.waitUntil(sendEvent);
     } else {
       await sendEvent;
     }
-    return json({ ok: true }, 200, env);
+    return json(dedup ? { ok: true, event_id: dedup.eventId } : { ok: true }, 200, env);
   }
   if (result.reason === "not_configured") {
     return json({ ok: false, error: "subscribe_unavailable" }, 503, env);
