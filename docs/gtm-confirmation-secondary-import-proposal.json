@@ -1,0 +1,125 @@
+{
+  "_aviso_8387": "PROPOSTA DE IMPORT (Merge, nao Overwrite), NAO EXPORT do container publicado GTM-TC8C65ZN — mesma ressalva do #8578. Etapa 1 do #8387: 2a acao de conversao por PAGEVIEW de /confirmada, SECUNDARIA/observacao nas 4 plataformas. Nenhuma meta primaria muda antes de 27/09/2026 (fim do teste 2608). Os IDs REPLACE_* saem dos paineis (criar a acao SECUNDARIA la primeiro). Runbook e criterios: docs/ads-confirmation-secondary-actions.md. NAO publicar sem Preview.",
+  "exportFormatVersion": 2,
+  "exportTime": "2026-09-20T00:00:00Z",
+  "containerVersion": {
+    "path": "accounts/000000000/containers/00000000/versions/0",
+    "accountId": "000000000",
+    "containerId": "00000000",
+    "containerVersionId": "0",
+    "container": {
+      "path": "accounts/000000000/containers/00000000",
+      "accountId": "000000000",
+      "containerId": "00000000",
+      "name": "diar.ia.br — Confirmacao secundaria (import parcial, #8387)",
+      "publicId": "GTM-TC8C65ZN",
+      "usageContext": ["WEB"],
+      "fingerprint": "0",
+      "tagManagerUrl": "https://tagmanager.google.com/#/container/accounts/000000000/containers/00000000/workspaces?apiLink=container"
+    },
+    "tag": [
+      {
+        "accountId": "000000000",
+        "containerId": "00000000",
+        "tagId": "11",
+        "name": "Google Ads - Confirmacao pageview (SECUNDARIA)",
+        "type": "awct",
+        "parameter": [
+          { "type": "template", "key": "conversionId", "value": "17790097065" },
+          { "type": "template", "key": "conversionLabel", "value": "REPLACE_LABEL_ACAO_SECUNDARIA_CONFIRMACAO_PAGEVIEW" },
+          { "type": "boolean", "key": "rdp", "value": "false" }
+        ],
+        "firingTriggerId": ["11"],
+        "tagFiringOption": "ONCE_PER_EVENT",
+        "monitoringMetadata": { "type": "map" },
+        "consentSettings": { "consentStatus": "notSet" },
+        "notes": "#8387 — NAO reusar o rotulo dxY1CIb1v9EbEKmt_aJC (acao de cadastro 7418673798, primaria). Criar antes uma acao NOVA (Goals > Conversions > Website) com 'Incluir em Conversoes' DESMARCADO (secundaria) e contagem 'Uma' por clique. Distinta da acao UPLOAD_CLICKS do #8555 (import offline): as duas coexistem para a comparacao da fase 2."
+      },
+      {
+        "accountId": "000000000",
+        "containerId": "00000000",
+        "tagId": "12",
+        "name": "Meta Pixel - SubscriptionConfirmed (custom, observacao)",
+        "type": "html",
+        "parameter": [
+          {
+            "type": "template",
+            "key": "html",
+            "value": "<script>\n(function () {\n  var k = '__diaria_confirmed_fired';\n  try { if (sessionStorage.getItem(k)) return; sessionStorage.setItem(k, '1'); } catch (e) {}\n  if (typeof fbq === 'function') {\n    fbq('trackCustom', 'SubscriptionConfirmed', { content_name: 'newsletter_confirmed' });\n  } else if (!window.__diaria_fbq_missing_warned_conf) {\n    window.__diaria_fbq_missing_warned_conf = true;\n    console.warn('[diar.ia.br GTM] fbq ausente em /confirmada - o Pixel base precisa estar carregado nesta pagina (#5543).');\n  }\n})();\n</script>"
+          },
+          { "type": "boolean", "key": "supportDocumentWrite", "value": "false" }
+        ],
+        "firingTriggerId": ["11"],
+        "tagFiringOption": "ONCE_PER_EVENT",
+        "monitoringMetadata": { "type": "map" },
+        "consentSettings": { "consentStatus": "notSet" },
+        "notes": "#8387 — evento CUSTOM de proposito: nao usar CompleteRegistration (evento de otimizacao do conjunto 'BR · conversao · sem teto'; misturar poluiria o sinal, licao do #8551). Nao cria conversao otimizavel: so aparece no Events Manager para observacao. Guard de sessionStorage evita 2 disparos por recarga (as plataformas nao deduplicam pageview por pessoa)."
+      },
+      {
+        "accountId": "000000000",
+        "containerId": "00000000",
+        "tagId": "13",
+        "name": "Microsoft UET - Confirmacao (newsletter_confirmed)",
+        "type": "html",
+        "parameter": [
+          {
+            "type": "template",
+            "key": "html",
+            "value": "<script>\n(function () {\n  var k = '__diaria_confirmed_uet_fired';\n  try { if (sessionStorage.getItem(k)) return; sessionStorage.setItem(k, '1'); } catch (e) {}\n  window.uetq = window.uetq || [];\n  window.uetq.push('event', 'newsletter_confirmed', { event_category: 'confirmation', event_label: 'newsletter' });\n})();\n</script>"
+          },
+          { "type": "boolean", "key": "supportDocumentWrite", "value": "false" }
+        ],
+        "firingTriggerId": ["11"],
+        "tagFiringOption": "ONCE_PER_EVENT",
+        "monitoringMetadata": { "type": "map" },
+        "consentSettings": { "consentStatus": "notSet" },
+        "notes": "#8387 — a base UET ja carrega em /confirmada (medido no #5500); esta tag so empurra o evento. Criar o goal de evento 'newsletter_confirmed' no Microsoft Advertising sem vincula-lo a otimizacao. Microsoft tem 1 cadastro no teste inteiro: baixa prioridade."
+      },
+      {
+        "accountId": "000000000",
+        "containerId": "00000000",
+        "tagId": "14",
+        "name": "LinkedIn Insight - Confirmacao pageview",
+        "type": "html",
+        "parameter": [
+          {
+            "type": "template",
+            "key": "html",
+            "value": "<script>\n(function () {\n  var k = '__diaria_confirmed_li_fired';\n  try { if (sessionStorage.getItem(k)) return; sessionStorage.setItem(k, '1'); } catch (e) {}\n  if (typeof window.lintrk === 'function') {\n    window.lintrk('track', { conversion_id: REPLACE_LINKEDIN_CONVERSION_ID_CONFIRMACAO });\n  }\n})();\n</script>"
+          },
+          { "type": "boolean", "key": "supportDocumentWrite", "value": "false" }
+        ],
+        "firingTriggerId": ["11"],
+        "tagFiringOption": "ONCE_PER_EVENT",
+        "monitoringMetadata": { "type": "map" },
+        "consentSettings": { "consentStatus": "notSet" },
+        "notes": "#8387 — SUBSTITUIR REPLACE_LINKEDIN_CONVERSION_ID_CONFIRMACAO (numero) pelo id de uma conversao NOVA no Campaign Manager (tipo evento/'Other', sem uso em lance). Sem substituir, o snippet e JS invalido e o Preview acusa: proposital, impede publicar por engano."
+      }
+    ],
+    "trigger": [
+      {
+        "accountId": "000000000",
+        "containerId": "00000000",
+        "triggerId": "11",
+        "name": "PV - Assinatura Confirmada (/confirmada)",
+        "type": "pageview",
+        "filter": [
+          {
+            "type": "matchRegex",
+            "parameter": [
+              { "type": "template", "key": "arg0", "value": "{{Page Path}}" },
+              { "type": "template", "key": "arg1", "value": "^/confirmada/?$" }
+            ]
+          }
+        ],
+        "notes": "#8387 — casa o PATH ignorando query string: o redirect do worker reativar acrescenta ?via=brevo (#8539) e um match de Page URL por igualdade apagaria a conversao. O antigo /confirmado (301) nao entra: o 301 preserva a query e o browser chega em /confirmada, contado uma vez."
+      }
+    ],
+    "variable": [],
+    "builtInVariable": [
+      { "accountId": "000000000", "containerId": "00000000", "type": "PAGE_PATH", "name": "Page Path" }
+    ],
+    "fingerprint": "0",
+    "tagManagerUrl": "https://tagmanager.google.com/#/container/accounts/000000000/containers/00000000/workspaces?apiLink=container"
+  }
+}
