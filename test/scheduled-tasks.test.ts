@@ -23,6 +23,7 @@ import {
   formatScheduleHuman,
   getScheduledTaskByName,
   GSC_URL_INSPECTION_DAILY_QUOTA,
+  GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID,
   listDisabledScheduledTaskNames,
   listScheduledTaskNames,
   listScheduledTaskRows,
@@ -1100,7 +1101,20 @@ describe("#8573 — Diaria-Google-Ads-Confirmations-Upload registrada, diária, 
       t!.steps.map((s) => s.script),
       ["scripts/upload-google-ads-confirmations.ts"],
     );
-    assert.deepEqual(t!.steps[0].args, ["--send"]);
+    // #8555: o id da ação de destino passou a vir INLINE. A env var que a
+    // declaração original pressupunha (`GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID`)
+    // nunca existiu — nem no `.env`, nem no Doppler —, e `--send` sai com
+    // exit 1 sem o id, então a task falharia às 07:20 todo dia.
+    assert.deepEqual(t!.steps[0].args, [
+      "--conversion-action-id",
+      GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID,
+      "--send",
+    ]);
+    // Trava o valor: subir confirmação na ação de CADASTRO (7418673798, a
+    // única primária) contaria o mesmo assinante duas vezes — a classe de
+    // erro que a #8572 pagou do lado da Meta.
+    assert.equal(GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID, "7762768203");
+    assert.notEqual(GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID, "7418673798");
     assert.deepEqual(t!.schedule, { kind: "daily", hour: 7, minute: 20 });
     assert.equal(t!.issue, "#8573, #8555, #8567");
   });

@@ -173,6 +173,29 @@ export interface ScheduledTaskDefinition {
  * que soma os dois valores contra esta constante). */
 export const GSC_URL_INSPECTION_DAILY_QUOTA = 2000;
 
+/**
+ * Ação de conversão de CONFIRMAÇÃO do Google Ads — destino do lote diário
+ * `Diaria-Google-Ads-Confirmations-Upload` (#8555/#8573).
+ *
+ * `7762768203` = "Assinatura Confirmada (upload ECL - #7770)",
+ * tipo `UPLOAD_CLICKS`, categoria `SIGNUP`, **`primary_for_goal = false`**.
+ * Reativada de `REMOVED` pra `ENABLED` em 20/09/2026, confirmada por
+ * releitura da API (`edicoes.jsonl`).
+ *
+ * **Secundária de propósito.** A ação de destino do lote precisa ser
+ * distinta da de CADASTRO (`7418673798`, a única primária) — subir
+ * confirmação na ação de cadastro contaria o mesmo assinante duas vezes,
+ * que é a classe de erro que a #8572 acabou de pagar do lado da Meta.
+ * Promovê-la a primária é decisão separada (#8387) e depende de 2-3 semanas
+ * de dado desta ação.
+ *
+ * Constante em vez de env var: não é segredo (id de ação de conversão,
+ * citado em `docs/` e no docstring de `upload-google-ads-confirmations.ts`),
+ * e `GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID` nunca chegou a existir em
+ * lugar nenhum — ver o comentário da task pro histórico.
+ */
+export const GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID = "7762768203";
+
 export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Apoios-Diff-Alarm",
@@ -1861,16 +1884,25 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // é escopado a esses canais editoriais; upload de conversão pro Google
     // Ads é uma superfície de aquisição paga distinta, fora desse escopo.
     //
-    // Pré-requisito (ação do editor, NÃO coberta por esta task): criar/
-    // reativar a ação de conversão de CONFIRMAÇÃO no Google Ads
-    // (`UPLOAD_CLICKS`, `SIGNUP`, secundária) e configurar
-    // `GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID` (Doppler) — ver
-    // docstring do próprio script. Sem isso, `--send` sai com exit 1 (erro
-    // explícito, "--send exige --conversion-action-id...") — não é
-    // fail-soft por design como os `*-Spend-Ingest` acima (que toleram
-    // credencial ausente com exit 0); até o pré-requisito ser feito, esta
-    // task aparece como falha real no monitoramento de units systemd, sinal
-    // que é o comportamento esperado, não um defeito desta unidade.
+    // Pré-requisito RESOLVIDO em 20/09/2026, e por isso o id vem INLINE nos
+    // args em vez de `GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID`: a ação
+    // `7762768203` "Assinatura Confirmada (upload ECL - #7770)"
+    // (`UPLOAD_CLICKS`, `SIGNUP`) foi reativada de `REMOVED` pra `ENABLED`
+    // com `primary_for_goal=false`, confirmada por releitura da API e
+    // registrada em `edicoes.jsonl` (#8555/#8387). **SECUNDÁRIA de
+    // propósito** — só observa, não entra no smart bidding; promovê-la a
+    // primária é decisão separada (#8387) e depende de 2-3 semanas de dado
+    // desta ação.
+    //
+    // A variável de Doppler **nunca chegou a existir** (medido em 20/09:
+    // ausente do `.env` E de `doppler secrets get`). Como `--send` sai com
+    // exit 1 sem o id — e NÃO é fail-soft como os `*-Spend-Ingest` acima,
+    // que toleram credencial ausente com exit 0 —, mantê-la como
+    // pré-requisito faria esta unit falhar às 07:20 todo dia até alguém
+    // notar. O id não é segredo (aparece em docs/ e no docstring do script),
+    // então versioná-lo aqui troca uma pré-condição invisível por uma linha
+    // auditável em diff: mudar a ação de destino vira revisão de PR em vez
+    // de edição silenciosa de Doppler.
     //
     // Sem `guard` modelado: o próprio script já aborta com exit 1 e mensagem
     // clara quando não há snapshot de `subscriber-state-snapshot.ts` dentro
@@ -1894,7 +1926,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // ação POSTERIOR do editor.
     name: "Diaria-Google-Ads-Confirmations-Upload",
     description: "lote diario que sobe confirmacoes DOI do Kit pro Google Ads como Enhanced Conversion for Leads (--send)",
-    steps: [{ key: "upload", script: "scripts/upload-google-ads-confirmations.ts", args: ["--send"] }],
+    steps: [
+      {
+        key: "upload",
+        script: "scripts/upload-google-ads-confirmations.ts",
+        args: ["--conversion-action-id", GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID, "--send"],
+      },
+    ],
     logPath: "google-ads/.confirmations-upload.log",
     schedule: { kind: "daily", hour: 7, minute: 20 },
     issue: "#8573, #8555, #8567",
