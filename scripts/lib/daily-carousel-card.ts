@@ -193,7 +193,10 @@ export const DAILY_CAROUSEL_MICRO_CTA = "Segue pra não perder amanhã";
  * pequena, no topo, cor de marca — não compete visualmente com o texto
  * principal (mesma classe de risco que a issue pede pra evitar).
  */
-export const DAILY_CAROUSEL_CTA_KICKER = "Assine grátis, direto no seu e-mail";
+export const DAILY_CAROUSEL_CTA_KICKER = "";
+// 260922 (editor): sem faixa. O CTA do último slide passou a ser "siga @diar.ia.br
+// e comente 'quero'" (INSTAGRAM_CTA_LINE) — "Assine grátis, direto no seu
+// e-mail" contradiria a chamada. String vazia = o slide só mostra a barra de marca.
 
 /**
  * (#6136 item 2) Pure: divide um bloco de texto em 2 sub-blocos, separados
