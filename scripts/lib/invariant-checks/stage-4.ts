@@ -295,7 +295,9 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
           `Highlights mudaram após social.md ser gerado (hash: ${cachedHash} → ${currentHash}). ` +
           `Editor reestruturou destaques pós-Stage 2. Re-dispatch o agent ` +
           `social-writer (#3991) + re-run merge-social-md.ts E re-push pro Drive ` +
-          `(drive-sync --mode push --files 03-social.md) antes de publicar — senão o Drive fica stale (#1828).`,
+          `(drive-sync --mode push --files 03-social.md) antes de publicar — senão o Drive fica stale (#1828). ` +
+          `Se o 03-social.md JÁ foi corrigido, basta recarimbar: ` +
+          `npx tsx scripts/refresh-social-hash.ts --edition-dir <dir> (#8596).`,
         source_issue: "#1413",
         severity: "error",
         file: socialPath,
