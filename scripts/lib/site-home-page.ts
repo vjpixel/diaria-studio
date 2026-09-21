@@ -519,6 +519,24 @@ export function isKnownStaticSitemapPath(loc: string): boolean {
  * `reconcile-site-sitemap.ts`) produz exatamente o mesmo feed — regressão
  * travada em `test/site-home-hero-permutation-8360.test.ts`.
  */
+/**
+ * Data editorial de uma entrada do sitemap: `<lastmod>` quando houver, senão
+ * a data da PRÓPRIA PÁGINA (`extractPageDate`). Extraída de `buildHomeFeed`
+ * (#8688) pra ser reusável por quem precisa saber "esta edição já devia
+ * estar visível hoje?" sem montar o feed inteiro — ex:
+ * `test/site-archive-index-8353.test.ts`, que compara a data editorial de
+ * cada edição do sitemap contra `todayBrt` pra não reprovar uma edição
+ * publicada na véspera (#8221) e ainda sem linha no índice.
+ */
+export function resolveEditorialDate(
+  entry: SitemapEntry,
+  readPageHtml: (slug: string) => string | null,
+): string | null {
+  if (entry.lastmod) return entry.lastmod;
+  const slug = slugFromCanonicalUrl(entry.loc);
+  return slug ? extractPageDate(readPageHtml(slug) ?? "") : null;
+}
+
 export function buildHomeFeed(
   sitemapXml: string,
   readPageHtml: (slug: string) => string | null,
@@ -528,13 +546,8 @@ export function buildHomeFeed(
   // #7686: "hoje" em BRT. Injetável só pra teste — produção sempre usa o
   // relógio real; nenhum caller de produção passa `todayBrt`.
   const todayBrt = opts.todayBrt ?? brtDateString();
-  const editorialDate = (entry: SitemapEntry): string | null => {
-    if (entry.lastmod) return entry.lastmod;
-    const slug = slugFromCanonicalUrl(entry.loc);
-    return slug ? extractPageDate(readPageHtml(slug) ?? "") : null;
-  };
   const entries = [...parseSitemap(sitemapXml)]
-    .map((entry) => ({ entry, date: editorialDate(entry) }))
+    .map((entry) => ({ entry, date: resolveEditorialDate(entry, readPageHtml) }))
     .sort((a, b) => {
       const aMs = a.date ? Date.parse(a.date) : Number.NEGATIVE_INFINITY;
       const bMs = b.date ? Date.parse(b.date) : Number.NEGATIVE_INFINITY;

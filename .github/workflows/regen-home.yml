@@ -110,6 +110,14 @@ jobs:
       # mesma: regenerar aqui, às 06:00 BRT, com o relógio já no dia da
       # edição.
       #
+      # #8688: entre o Stage 6 da noite anterior (que já publicou o `<loc>`
+      # da edição no sitemap, #8221) e ESTE job das 06:00, a edição fica
+      # deliberadamente sem linha no índice — é este passo que a reconcilia,
+      # não um bug. `test/site-archive-index-8353.test.ts` já sabe ignorar
+      # essa janela (`checkArchiveIndexLinkConsistency` ignora "faltando"
+      # para data editorial > hoje); só reprova de verdade se uma edição
+      # PASSADA continuar sem link depois deste job ter rodado.
+      #
       # `--no-sitemap` de propósito: este job publica só o que gerou, e o
       # `sitemap.xml` é disputado com o PR da edição do Stage 6
       # (`publish-edition-site-page.ts --sitemap`, que roda à noite) —
