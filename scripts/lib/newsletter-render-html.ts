@@ -909,6 +909,43 @@ function detectBookRecommendation(
   return { isBookRecommendation: false, explicitTitleLine: false };
 }
 
+/**
+ * #8575 (regressão do #8199, fechado pelo #8216 — cobriu só `titulo: false`
+ * explícito no header do snippet, e só num dos dois branches internos que
+ * sintetizam título — ver os comentários #8575 dentro de `renderIntroCallout`
+ * pro bug de fato corrigido ali). Bug remanescente, do lado do CALL-SITE:
+ * quando um box de divulgação chega ao render com `categoria` (kicker
+ * EXTERNO, `renderDivulgacaoSeparator`) igual ao rótulo fixo "Recomendação de
+ * Leitura", mas o `plainFirstParagraph`/`titulo:false` do PRÓPRIO snippet não
+ * chega até aqui (caminho `02-reviewed.md` pós-stitch sem frontmatter — a
+ * hipótese não confirmada da issue), o box ainda pode trazer uma linha de
+ * título EXPLÍCITA ("Recomendação de leitura" isolada em `paras[0]`) — texto
+ * AUTORADO de verdade no snippet-fonte, não sintetizado por
+ * `renderIntroCallout` (por isso não pode ser suprimido internamente sem
+ * quebrar o caso legítimo de um box sem kicker que TEM essa linha por
+ * escolha do editor — ver `render-box-divulgacao.test.ts`, describe #8199).
+ * `renderIntroCallout`/`detectBookRecommendation` não sabem se um kicker
+ * externo vai repetir esse texto — só o call-site (`renderHTML`) tem os dois
+ * dados (kicker + box). Quando o rótulo do kicker já é exatamente esse:
+ * remove a linha de título explícita (duplicada com o kicker, se houver) e
+ * força `plainFirstParagraph=true` (suficiente pra suprimir a síntese do
+ * rótulo fixo no caso sem linha — corrigido separadamente em
+ * `renderIntroCallout` pro #8575, ver comentário lá).
+ */
+export function dedupeBookKickerTitle(
+  box: string,
+  kickerLabel: string,
+): { box: string; forcePlain: boolean } {
+  if (kickerLabel.trim().toLowerCase() !== BOOK_RECOMMENDATION_TITLE.toLowerCase()) {
+    return { box, forcePlain: false };
+  }
+  const paras = box.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const detected = detectBookRecommendation(paras);
+  if (!detected.isBookRecommendation) return { box, forcePlain: false };
+  const dedupedParas = detected.explicitTitleLine ? paras.slice(1) : paras;
+  return { box: dedupedParas.join("\n\n"), forcePlain: true };
+}
+
 export function renderIntroCallout(
   text: string,
   titleStyle: "serif" | "body" = "serif",
@@ -979,7 +1016,21 @@ export function renderIntroCallout(
     // #8119: box de recomendação de leitura usa SEMPRE o rótulo fixo — nunca
     // o texto literal do snippet (linha de título variável, ou o parágrafo
     // do livro quando a linha está ausente e vira `paras[0]` por acidente).
-    const title = bookRecommendation.isBookRecommendation
+    //
+    // #8575: este branch (sponsored/forceCtaPill/ceremony, ou livro que não
+    // entrou no branch acima) sintetizava `BOOK_RECOMMENDATION_TITLE` de novo
+    // MESMO com `plainFirstParagraph=true` — a chegada aqui em vez do branch
+    // de cima (ex: link de afiliado com `?tag=`/`?via=` → `sponsored=true`,
+    // que EXCLUI incondicionalmente o branch de cima) não devia trazer de
+    // volta a síntese que `plainFirstParagraph` deveria suprimir. Caso real
+    // da 260921: kicker externo "Recomendação de Leitura" + este título
+    // sintetizado no MESMO texto = duplicado, apesar de `titulo: false`
+    // (`plainFirstParagraph`) estar declarado no snippet. Sem título nenhum
+    // sintetizado quando ambos são verdadeiros — kicker já rotula o box.
+    const suppressBookTitle = bookRecommendation.isBookRecommendation && plainFirstParagraph;
+    const title = suppressBookTitle
+      ? ""
+      : bookRecommendation.isBookRecommendation
       ? BOOK_RECOMMENDATION_TITLE
       : ceremony
       ? stripCeremonyMarker(paras[0])
@@ -987,7 +1038,9 @@ export function renderIntroCallout(
     // #260701 review: estilo do header body-size (título + sub-cabeçalho) num só
     // lugar — evita divergência silenciosa entre os 2 usos (cf. lbStyle em renderEIA).
     const bodyHeadingStyle = `font-family:${FONT_HEADING};font-weight:600;font-size:16px;line-height:1.4;color:${TEXT_COLOR};`;
-    const titleHtml = agradecimento || plainFirstParagraph
+    const titleHtml = suppressBookTitle
+      ? ""
+      : agradecimento || plainFirstParagraph
       ? renderBoxParagraph(title, "0")
       : titleStyle === "body"
       ? `<p style="margin:0 0 10px;${bodyHeadingStyle}">${processInlineLinks(title)}</p>`
@@ -1076,8 +1129,9 @@ export function renderIntroCallout(
         return renderBoxParagraph(p, `${mt} 0 0`);
       })
       .join("\n      ");
-    // #finding-3: bodyHtml vazio não deve deixar whitespace no inner.
-    inner = bodyHtml ? `${titleHtml}\n      ${bodyHtml}` : titleHtml;
+    // #finding-3: bodyHtml/titleHtml vazio não deve deixar whitespace órfão
+    // no inner (#8575: titleHtml pode ser "" quando `suppressBookTitle`).
+    inner = titleHtml && bodyHtml ? `${titleHtml}\n      ${bodyHtml}` : titleHtml || bodyHtml;
 
     if (ctaButtonHtml) {
       // #2996: parágrafos DEPOIS do CTA (ex: disclosure de comissão) renderizam
@@ -2596,16 +2650,19 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     const label0 = content.boxDivulgacao0Categoria
       || (isAgradecimentoBox(content.boxDivulgacao0) ? "Agradecimento" : "Divulgação");
     parts.push(renderDivulgacaoSeparator(label0));
+    // #8575: kicker "Recomendação de Leitura" já rotula o box — sem isso, um
+    // box de livro no slot 0 sintetizaria o MESMO rótulo de novo por dentro.
+    const dedup0 = dedupeBookKickerTitle(content.boxDivulgacao0, label0);
     parts.push(
       renderBoxDivulgacao(
-        content.boxDivulgacao0,
+        dedup0.box,
         content.boxDivulgacao0Image ?? null,
         content.boxDivulgacao0Bold ?? true,
         content.boxDivulgacaoImageExplicit?.[0] ?? false,
         content.boxDivulgacaoImagePortrait?.[0] ?? false,
         content.boxDivulgacaoImageAlt?.[0] ?? null,
         // #5882: titulo:false declarado no header do snippet deste slot.
-        content.boxDivulgacaoNoTitulo?.[0] ?? false,
+        dedup0.forcePlain || (content.boxDivulgacaoNoTitulo?.[0] ?? false),
       ),
     );
   }
@@ -2714,9 +2771,13 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       const label = assignedBox.categoria
         || (isAgradecimentoBox(assignedBox.content) ? "Agradecimento" : "Divulgação");
       parts.push(renderDivulgacaoSeparator(label));
+      // #8575: kicker "Recomendação de Leitura" já rotula o box — sem isso,
+      // um box de livro caído numa lacuna D1/D2/D3 sintetizava o MESMO
+      // rótulo de novo por dentro (caso real da 260921, regressão do #8199).
+      const dedup = dedupeBookKickerTitle(assignedBox.content, label);
       parts.push(
         renderBoxDivulgacao(
-          assignedBox.content,
+          dedup.box,
           assignedBox.image,
           assignedBox.bold,
           assignedBox.imageExplicit,
@@ -2727,7 +2788,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
           // parágrafo em prosa corrida, não título de divulgação. Substitui
           // a detecção por regex de copy (`isConviteAmigoBox`, aposentada):
           // trocar a copy do box não derruba mais a detecção.
-          assignedBox.noTitulo,
+          dedup.forcePlain || assignedBox.noTitulo,
         ),
       );
     }
