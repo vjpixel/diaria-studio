@@ -111,23 +111,35 @@ export function removeLinkSafely(linkPath: string): { removed: boolean; error?: 
   }
 }
 
+/** Escapa caracteres especiais de regex — usado só por `commandReferencesPath`
+ * pra montar o boundary check abaixo com o path do worktree como literal. */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * #8661: `true` quando `proc.cmd` (cmdline completo, ver
- * `scripts/lib/list-processes.ts`) contém `worktreePath` como substring —
- * a checagem que `removeWorktreeSafe` roda ANTES de
+ * `scripts/lib/list-processes.ts`) contém `worktreePath`, com boundary
+ * depois do path — a checagem que `removeWorktreeSafe` roda ANTES de
  * `git worktree remove --force`, pra não deixar um processo (tipicamente
  * `node --test-isolation=process`, mas a checagem não é restrita a esse
  * padrão — QUALQUER processo com o path na cmdline conta) sobreviver à
  * remoção como um neto órfão `PPID=1` (mecanismo completo: issue #8661).
- * Substring simples de propósito: cmdline real observado ao vivo tem o
- * worktree como prefixo de vários argumentos (`--require
- * {worktree}/node_modules/.../preflight.cjs`, `--import
- * {worktree}/node_modules/.../loader.mjs`), então normalizar por
- * tokenização perderia casos onde o path aparece embutido num argumento
- * maior (ex: `--experimental-loader={worktree}/...`).
+ *
+ * **Boundary depois do path** (achado do fleet review da PR #8692,
+ * médio): substring PURO faria `agent-1` casar dentro de `agent-10` — dois
+ * worktrees legítimos e distintos onde um é prefixo textual do outro. O
+ * caractere IMEDIATAMENTE após o match precisa ser algo que não continua
+ * um nome de diretório (`/`, `\`, espaço, `=`, aspas, ou fim da string) —
+ * nunca um caractere alfanumérico/`-`/`_`. Continua substring (não
+ * tokenização) pelo mesmo motivo de antes: cmdline real observado ao vivo
+ * tem o worktree embutido num argumento maior (`--experimental-loader=
+ * {worktree}/...`), então exigir um TOKEN inteiro perderia esses casos —
+ * só o fim do path precisa ser delimitado, o início não.
  */
 export function commandReferencesPath(cmd: string, worktreePath: string): boolean {
-  return cmd.includes(worktreePath);
+  const boundaryRe = new RegExp(`${escapeRegExp(worktreePath)}(?![A-Za-z0-9_-])`);
+  return boundaryRe.test(cmd);
 }
 
 /**

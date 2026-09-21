@@ -26,6 +26,16 @@
  * varredura genérica de "processo com path inexistente na cmdline", é
  * restrita ao padrão exato deste vazamento (evita falso positivo em
  * qualquer outro processo node de vida longa da máquina).
+ *
+ * **Também exige `ppid === 1`** (achado do fleet review da PR #8692,
+ * type-design-analyzer): `PPID=1` é o próprio sinal definidor de órfão
+ * descrito acima ("reparentado pro init") — sem essa checagem, um processo
+ * `--test-isolation=process` genuinamente VIVO, ainda filho de um `node
+ * --test` normal, cujo cmdline por acaso referencia um path
+ * MOMENTANEAMENTE ausente (race entre rename/recriação de worktree, ou o
+ * próprio `removeWorktreeSafe` no meio de uma checagem concorrente) seria
+ * morto por engano via SIGKILL. `existsFn` sozinho nunca é suficiente pra
+ * confirmar órfandade — só a combinação com `ppid === 1` é.
  */
 import { existsSync } from "node:fs";
 import type { ProcessInfo } from "./list-processes.ts";
@@ -77,10 +87,12 @@ export interface OrphanedTestProcess {
 
 /**
  * Varre `processes` (snapshot já coletado — nunca chama `ps` aqui, ver
- * `scripts/lib/list-processes.ts` pra isso) e devolve os que batem o
- * padrão `looksLikeIsolatedTestProcess` E têm pelo menos um path token
- * ausente do disco. `existsFn` é injetável só pra teste determinístico —
- * default é o `fs.existsSync` real.
+ * `scripts/lib/list-processes.ts` pra isso) e devolve os que batem TODOS os
+ * 3 sinais do vazamento: `looksLikeIsolatedTestProcess`, `ppid === 1`
+ * (reparentado pro init — o sinal definidor de órfão, ver docstring de
+ * `looksLikeIsolatedTestProcess` acima) e pelo menos um path token ausente
+ * do disco. `existsFn` é injetável só pra teste determinístico — default é
+ * o `fs.existsSync` real.
  */
 export function findOrphanedTestProcesses(
   processes: readonly ProcessInfo[],
@@ -88,6 +100,7 @@ export function findOrphanedTestProcesses(
 ): OrphanedTestProcess[] {
   const found: OrphanedTestProcess[] = [];
   for (const proc of processes) {
+    if (proc.ppid !== 1) continue;
     if (!looksLikeIsolatedTestProcess(proc.cmd)) continue;
     const missingPath = extractPathTokens(proc.cmd).find((token) => !existsFn(token));
     if (missingPath !== undefined) {
@@ -95,4 +108,34 @@ export function findOrphanedTestProcesses(
     }
   }
   return found;
+}
+
+/**
+ * Reverificação de identidade IMEDIATAMENTE antes de matar um PID (#8661,
+ * achado do fleet review da PR #8692, silent-failure-hunter — CRÍTICO):
+ * entre o snapshot que produziu `orphan` (via `listAllProcesses()`) e o
+ * momento do `kill`, o processo original pode ter morrido e o SO reciclado
+ * o PID pra um processo novo, completamente não-relacionado.
+ * `process.kill(pid, "SIGKILL")` nesse cenário mata o processo ERRADO —
+ * com sucesso, sem exceção, sem qualquer sinal de que algo deu errado.
+ *
+ * `current` deve vir de uma releitura FRESCA do PID feita agora (ver
+ * `readProcessNow` em `scripts/lib/list-processes.ts`), nunca do snapshot
+ * antigo. `false` (nunca mata) quando: o PID já não existe mais
+ * (`current === null` — o processo morreu sozinho, nada a matar), o
+ * processo atual não é mais `ppid === 1` + `--test-isolation=process`
+ * (deixou de bater o padrão — pode ter sido reparentado de volta, ou o PID
+ * foi reciclado), ou o cmdline atual não referencia mais o mesmo
+ * `expectedMissingPath` que motivou a detecção (evidência mais forte de
+ * reuso de PID: um processo genuinamente órfão do MESMO worktree removido
+ * continua citando o mesmo path).
+ */
+export function stillMatchesOrphanSignature(
+  current: ProcessInfo | null,
+  expectedMissingPath: string,
+): boolean {
+  if (current === null) return false;
+  if (current.ppid !== 1) return false;
+  if (!looksLikeIsolatedTestProcess(current.cmd)) return false;
+  return current.cmd.includes(expectedMissingPath);
 }

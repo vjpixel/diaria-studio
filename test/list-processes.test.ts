@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parsePsOutput, listAllProcesses } from "../scripts/lib/list-processes.ts";
+import { parsePsOutput, listAllProcesses, readProcessNow } from "../scripts/lib/list-processes.ts";
 
 test("parsePsOutput: extrai pid/ppid/cmd de cada linha bem-formada", () => {
   const raw = [
@@ -65,4 +65,42 @@ test("listAllProcesses: em linux, chama `ps -eo pid=,ppid=,args=` e faz o parsin
   assert.deepEqual(calls, [["ps", ["-eo", "pid=,ppid=,args="]]]);
   assert.equal(result.length, 1);
   assert.equal(result[0].pid, 999);
+});
+
+// ── readProcessNow (#8661 — releitura pontual pra reverificação anti-race) ──
+
+test("readProcessNow: parseia ppid/cmd de `ps -p <pid> -o ppid=,args=` e devolve com o pid pedido", () => {
+  const calls: unknown[] = [];
+  const result = readProcessNow(4242, {
+    platform: "linux",
+    execFileSync: ((cmd: string, args: string[]) => {
+      calls.push([cmd, args]);
+      return "1 node --test-isolation=process --test test/x.test.ts\n";
+    }) as unknown as typeof import("node:child_process").execFileSync,
+  });
+  assert.deepEqual(calls, [["ps", ["-p", "4242", "-o", "ppid=,args="]]]);
+  assert.deepEqual(result, { pid: 4242, ppid: 1, cmd: "node --test-isolation=process --test test/x.test.ts" });
+});
+
+test("readProcessNow: null quando o PID não existe mais (ps -p sai não-zero)", () => {
+  const result = readProcessNow(4242, {
+    platform: "linux",
+    execFileSync: (() => {
+      throw new Error("ps -p: no such process");
+    }) as unknown as typeof import("node:child_process").execFileSync,
+  });
+  assert.equal(result, null);
+});
+
+test("readProcessNow: null em win32, nunca chama execFileSync", () => {
+  let called = false;
+  const result = readProcessNow(4242, {
+    platform: "win32",
+    execFileSync: (() => {
+      called = true;
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync,
+  });
+  assert.equal(result, null);
+  assert.equal(called, false);
 });

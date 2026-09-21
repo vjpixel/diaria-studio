@@ -25,10 +25,10 @@
 import { execFileSync } from "node:child_process";
 
 export interface ProcessInfo {
-  pid: number;
-  ppid: number;
+  readonly pid: number;
+  readonly ppid: number;
   /** Cmdline completo (`args=` do `ps` — argv concatenado, não só o nome do binário). */
-  cmd: string;
+  readonly cmd: string;
 }
 
 export interface ListProcessesOps {
@@ -80,4 +80,40 @@ export function listAllProcesses(ops: ListProcessesOps = defaultOps): ProcessInf
     maxBuffer: 16 * 1024 * 1024,
   });
   return parsePsOutput(raw);
+}
+
+/**
+ * Relê PPID/cmdline de UM PID específico, agora — `null` se o PID não
+ * existe mais (já morreu; `ps -p` sai não-zero sem stdout) ou em plataforma
+ * não suportada. Existe pra reverificação imediatamente antes de um kill
+ * (#8661, achado do fleet review da PR #8692): entre o snapshot de
+ * `listAllProcesses()` e o momento do `kill`, o processo original pode ter
+ * morrido e o SO reciclado o PID pra um processo novo, completamente
+ * não-relacionado — `process.kill(pid, "SIGKILL")` nesse caso mata o
+ * processo ERRADO, com sucesso, sem exceção, sem qualquer sinal de que
+ * algo deu errado. Quem chama isto deve comparar o resultado (PPID e
+ * cmdline) contra o que motivou o kill ANTES de executá-lo — nunca confiar
+ * cegamente no snapshot antigo.
+ */
+export function readProcessNow(pid: number, ops: ListProcessesOps = defaultOps): ProcessInfo | null {
+  if (ops.platform === "win32") return null;
+  try {
+    // `-o ppid=,args=` (2 campos, sem `pid=` — já sabemos qual é) —
+    // formato PROPOSITALMENTE diferente do `-eo pid=,ppid=,args=` de
+    // `listAllProcesses`, então faz o próprio parsing em vez de reusar
+    // `parsePsOutput` (que espera 3 campos, PID primeiro).
+    const raw = ops.execFileSync("ps", ["-p", String(pid), "-o", "ppid=,args="], {
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const match = trimmed.match(/^(\d+)\s+([\s\S]*)$/);
+    if (!match) return null;
+    const ppid = Number(match[1]);
+    if (!Number.isFinite(ppid)) return null;
+    return { pid, ppid, cmd: match[2] };
+  } catch {
+    return null; // `ps -p` sai não-zero quando o PID não existe mais
+  }
 }

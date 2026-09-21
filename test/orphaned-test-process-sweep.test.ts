@@ -16,6 +16,7 @@ import {
   extractPathTokens,
   looksLikeIsolatedTestProcess,
   findOrphanedTestProcesses,
+  stillMatchesOrphanSignature,
 } from "../scripts/lib/orphaned-test-process-sweep.ts";
 import type { ProcessInfo } from "../scripts/lib/list-processes.ts";
 
@@ -122,4 +123,67 @@ test("findOrphanedTestProcesses: nunca casa processo comum (sem --test-isolation
 
 test("findOrphanedTestProcesses: [] em lista vazia", () => {
   assert.deepEqual(findOrphanedTestProcesses([], () => false), []);
+});
+
+test("findOrphanedTestProcesses: nunca casa processo --test-isolation=process com path ausente MAS ppid !== 1 (ainda filho de um processo vivo)", () => {
+  // #8661 (fleet review PR #8692, type-design-analyzer): PPID=1 é o sinal
+  // definidor de órfão (reparentado pro init). Sem essa checagem, um
+  // processo genuinamente vivo — ainda filho de um `node --test` normal —
+  // cujo cmdline por acaso referencia um path momentaneamente ausente
+  // (race de rename/recriação de worktree) seria matado por engano.
+  const removedWorktree = "/home/x/.claude/worktrees/agent-nao-tao-removido-assim";
+  const processes: ProcessInfo[] = [
+    {
+      pid: 777,
+      ppid: 54321, // ainda filho de um processo vivo — NÃO reparentado pro init
+      cmd: `node --experimental-addon-modules --test-isolation=process --import=${removedWorktree}/node_modules/tsx/loader.mjs test/x.test.ts`,
+    },
+  ];
+  const existsFn = (p: string) => !p.startsWith(removedWorktree);
+
+  assert.deepEqual(
+    findOrphanedTestProcesses(processes, existsFn),
+    [],
+    "ppid !== 1 nunca é órfão, mesmo batendo os outros 2 sinais (--test-isolation=process + path ausente)",
+  );
+});
+
+// ── stillMatchesOrphanSignature (#8661 — reverificação anti-race de PID reuse) ──
+
+test("stillMatchesOrphanSignature: false quando o processo já não existe mais (current === null)", () => {
+  assert.equal(stillMatchesOrphanSignature(null, "/a/b/c"), false);
+});
+
+test("stillMatchesOrphanSignature: false quando o PID foi reciclado — cmdline atual não bate o padrão", () => {
+  // Cenário do achado CRÍTICO: o PID original morreu, o SO reciclou pra um
+  // processo completamente não-relacionado (aqui, um systemd unit comum).
+  const reused: ProcessInfo = { pid: 999, ppid: 1, cmd: "/usr/lib/systemd/systemd-something --daemon" };
+  assert.equal(stillMatchesOrphanSignature(reused, "/home/x/.claude/worktrees/agent-old"), false);
+});
+
+test("stillMatchesOrphanSignature: false quando o PID foi reciclado pra um processo com ppid !== 1", () => {
+  const reused: ProcessInfo = {
+    pid: 999,
+    ppid: 4242, // já não é mais órfão — reciclado pra filho de outro processo vivo
+    cmd: "node --test-isolation=process --import=/home/x/.claude/worktrees/agent-old/loader.mjs test/x.test.ts",
+  };
+  assert.equal(stillMatchesOrphanSignature(reused, "/home/x/.claude/worktrees/agent-old"), false);
+});
+
+test("stillMatchesOrphanSignature: false quando o cmdline atual não referencia mais o mesmo path esperado", () => {
+  const reused: ProcessInfo = {
+    pid: 999,
+    ppid: 1,
+    cmd: "node --test-isolation=process --import=/home/x/OUTRO/worktree/completamente-diferente/loader.mjs test/y.test.ts",
+  };
+  assert.equal(stillMatchesOrphanSignature(reused, "/home/x/.claude/worktrees/agent-old"), false);
+});
+
+test("stillMatchesOrphanSignature: true quando o processo ainda bate os 3 sinais (mesmo PID, ainda órfão de verdade)", () => {
+  const stillOrphaned: ProcessInfo = {
+    pid: 999,
+    ppid: 1,
+    cmd: "node --experimental-addon-modules --test-isolation=process --import=/home/x/.claude/worktrees/agent-old/node_modules/tsx/loader.mjs test/x.test.ts",
+  };
+  assert.equal(stillMatchesOrphanSignature(stillOrphaned, "/home/x/.claude/worktrees/agent-old"), true);
 });
