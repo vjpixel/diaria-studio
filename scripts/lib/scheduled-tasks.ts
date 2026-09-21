@@ -2584,6 +2584,35 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7776",
   },
   {
+    name: "Diaria-Gtm-Drift-Check",
+    description:
+      "compara o container GTM PUBLICADO (GTM-TC8C65ZN) contra a proposta de import versionada + " +
+      "META_CAPI_COMPLETE_REGISTRATION_VALUE/_CURRENCY -- test/meta-capi-8388.test.ts so audita a proposta, " +
+      "nunca o container ao vivo, e essa lacuna ja custou tempo de diagnostico real na #8572, #8585",
+    steps: [{ key: "check", script: "scripts/gtm-drift-check.ts" }],
+    logPath: "gtm-drift-check/.drift-check.log",
+    // Diaria 20:20 -- logo depois de Diaria-Meta-Capi-Staleness-Alarm (20:05,
+    // acima), mesmo cluster tematico (Meta CAPI/pixel); slot livre (nenhuma
+    // outra task usa hour: 20, minute: 20 -- checado via grep antes de
+    // escolher, #5408). Diaria e nao intervalo mais curto pelo mesmo
+    // raciocinio de home-meta-check.ts: o conserto (ajustar a tag no painel
+    // do GTM) e acao manual do editor, entao detectar de madrugada nao
+    // conserta nada de madrugada -- 1x/dia e suficiente pra aparecer no
+    // e-mail de alarme antes do editor comecar o dia.
+    schedule: { kind: "daily", hour: 20, minute: 20 },
+    // Sem guard -- o script e fail-soft por design: falha de rede no fetch
+    // do gtm.js publico vira log + exit 1, nunca alarme falso (ver
+    // docstring do script). Eixo "not-found" (campo nao localizado no
+    // gtm.js minificado) tambem nunca vira drift acionavel por si so -- ver
+    // docstring de scripts/lib/gtm-drift-check.ts.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado de subagente
+    // overnight, mesma disciplina do resto do registro -- regra #738/#3453
+    // proibe qualquer chamada de rede real nesta sessao, mesmo GET publico
+    // de leitura) -- armar via `scripts/setup-systemd-timers.ts` na
+    // checkout compartilhada (`300`) e acao POSTERIOR do editor.
+    issue: "#8585",
+  },
+  {
     name: "Diaria-Revert-Calibration-Orphan-Check",
     description:
       "varre PRs abertas em branches revert/calibration-* (scripts/revert-calibration.ts) e alarma " +
