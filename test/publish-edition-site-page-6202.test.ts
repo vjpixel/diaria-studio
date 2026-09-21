@@ -1400,3 +1400,154 @@ describe("#6202 wrapFragmentAsDocument", () => {
     assert.doesNotMatch(wrapFragmentAsDocument("<p>oi</p>"), /<head/i);
   });
 });
+
+describe("#8636 worktree de publicacao — regressao do bug", () => {
+  function makeLock(acquireResults: boolean[] = []) {
+    const calls: string[][] = [];
+    let acquireCall = 0;
+    const lock: any = (args: string[]) => {
+      calls.push(args);
+      if (args[0] === "merge-lock-acquire") {
+        const ok = acquireCall < acquireResults.length ? acquireResults[acquireCall] : true;
+        acquireCall++;
+        return { ok, stdout: ok ? "ok\n" : "", stderr: ok ? "" : "denied (held by another session)\n" };
+      }
+      return { ok: true, stdout: "ok\n", stderr: "" };
+    };
+    return { lock, calls };
+  }
+  /** Replicado do #6202 para escopo local (não herda do describe pai). */
+  function makeGit(overrides: Partial<Record<string, (args: string[]) => string>> = {}) {
+    const calls: string[][] = [];
+    const git: any = (args: string[]) => {
+      calls.push(args);
+      const cmd = args[0];
+      if (overrides[cmd]) return overrides[cmd]!(args);
+      if (cmd === "rev-parse") {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        return "deadbeef\ndeadbeef\n";
+      }
+      if (cmd === "status") return "";
+      if (cmd === "diff") return "";
+      return "";
+    };
+    return { git, calls };
+  }
+  function makeGh(overrides: Partial<Record<string, (args: string[]) => string>> = {}) {
+    const calls: string[][] = [];
+    const gh: any = (args: string[]) => {
+      calls.push(args);
+      const cmd = args.slice(0, 2).join(" ");
+      if (overrides[cmd]) return overrides[cmd]!(args);
+      if (cmd === "pr list") return "[]";
+      if (cmd === "pr create") return "https://github.com/vjpixel/diaria-studio/pull/9999\n";
+      return "";
+    };
+    return { gh, calls };
+  }
+  it("checkout em branch de trabalho com HEAD != origin/master NAO bloqueia quando worktreeDir esta definido", () => {
+    const git = makeGit({
+      "rev-parse --abbrev-ref HEAD": "fix/8555-foo\n",
+      "rev-parse HEAD origin/master": "aaa111bbb222\nccc333ddd444\n",
+      "status --porcelain": "",
+      "diff --cached --name-only": "",
+    });
+    const gh = makeGh();
+    const lock = makeLock([true]);
+    const deps = makeDeps({ git, gh, lock });
+    const result = commitAndPushSitePage(
+      "/repo",
+      "260921",
+      git,
+      undefined,
+      gh,
+      lock,
+      makeSleep(),
+      "/tmp/wt-8636",
+    );
+    assert.equal(result.committed, true);
+    assert.equal(result.pushed, true);
+    assert.ok(result.prCreated);
+    const calls = git.calls.map((c) => c.join(" "));
+    assert.ok(calls.some((c) => c.startsWith("worktree add --detach")), "worktree add --detach rodou");
+    assert.ok(calls.some((c) => c.startsWith("worktree remove")), "worktree remove rodou no cleanup");
+    assert.ok(!calls.some((c) => c.includes("checkout master") || c.includes("checkout ")), "nao voltou para branch original no checkout compartilhado");
+  });
+
+  it("#8636: worktree add falha propaga como erro", () => {
+    const git = makeGit({
+      "worktree add --detach": () => {
+        throw new Error("worktree add failed: already checked out");
+      },
+    });
+    const lock = makeLock([true]);
+    assert.throws(
+      () => commitAndPushSitePage("/repo", "260921", git, undefined, makeGh(), lock, makeSleep(), "/tmp/wt-fail"),
+      /worktree add failed/,
+    );
+  });
+
+  it("#8636: worktree remove em falha e fail-soft — nao derruba o resultado", () => {
+    const git = makeGit({
+      "worktree remove --force": () => {
+        throw new Error("worktree remove failed");
+      },
+    });
+    const gh = makeGh();
+    const lock = makeLock([true]);
+    const result = commitAndPushSitePage(
+      "/repo",
+      "260921",
+      git,
+      undefined,
+      gh,
+      lock,
+      makeSleep(),
+      "/tmp/wt-remove-fail",
+    );
+    assert.equal(result.committed, true);
+    assert.equal(result.pushed, true);
+  });
+
+  it("#8636: ordem de comandos no worktree — add, checkout, add, status, diff, commit, push, remove", () => {
+    const git = makeGit();
+    const lock = makeLock([true]);
+    commitAndPushSitePage("/repo", "260921", git, undefined, makeGh(), lock, makeSleep(), "/tmp/wt-order");
+    const calls = git.calls.map((c) => c.join(" "));
+    const addIdx = calls.findIndex((c) => c.startsWith("worktree add --detach"));
+    const checkoutIdx = calls.findIndex((c) => c.startsWith("checkout -B"));
+    const addStagedIdx = calls.findIndex((c) => c === "add -A .");
+    const statusIdx = calls.findIndex((c) => c.startsWith("status --porcelain"));
+    const diffIdx = calls.findIndex((c) => c.startsWith("diff --cached --name-only"));
+    const commitIdx = calls.findIndex((c) => c.startsWith("commit"));
+    const pushIdx = calls.findIndex((c) => c.startsWith("push"));
+    const removeIdx = calls.findIndex((c) => c.startsWith("worktree remove"));
+    assert.ok(addIdx >= 0);
+    assert.ok(checkoutIdx > addIdx);
+    assert.ok(addStagedIdx > checkoutIdx);
+    assert.ok(statusIdx > addStagedIdx);
+    assert.ok(diffIdx > statusIdx);
+    assert.ok(commitIdx > diffIdx);
+    assert.ok(pushIdx > commitIdx);
+    assert.ok(removeIdx > pushIdx);
+  });
+
+  it("#8636: productionDeps com worktreeDir passa worktreeDir pro commitAndPush", () => {
+    const git = makeGit();
+    const lock = makeLock([true]);
+    const deps = productionDeps(undefined, undefined, git, undefined, makeGh(), lock, makeSleep(), "/tmp/wt-prod");
+    const result = commitAndPushSitePage(
+      "/repo",
+      "260921",
+      deps.git,
+      undefined,
+      deps.gh,
+      deps.lock,
+      deps.sleep,
+      "/tmp/wt-prod",
+    );
+    assert.equal(result.committed, true);
+    const calls = git.calls.map((c) => c.join(" "));
+    assert.ok(calls.some((c) => c.startsWith("worktree add --detach")), "productionDeps repassou worktreeDir");
+  });
+});

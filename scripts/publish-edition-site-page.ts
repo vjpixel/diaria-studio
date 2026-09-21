@@ -52,7 +52,43 @@
  * trata como warning. É a mesma disciplina do canal Brevo (#5772) e do canal
  * Kit (#6126).
  *
- * ## Mecanismo de publicação: branch dedicada + PR, nunca push direto em `master` (#6598)
+ * ## #8636 (260921): o passo roda num worktree temporário, nunca no checkout compartilhado
+*
+* **O bug.** O guard do #7287 recusava o passo quando o checkout compartilhado
+* estava em branch de trabalho (`HEAD != origin/master`) — e o passo roda no
+* mesmo checkout onde outras sessões (overnight, develop, outro `continuo`)
+* trocam de branch o tempo todo. Resultado: code 3, a página ficava só em
+* disco, o gate mostrava um aviso, e o orchestrador tinha que rodar o passo
+* de novo depois de sincronizar. O guard está **certo** — o problema é que o
+* passo não deveria depender do estado do checkout compartilhado.
+*
+* **A correção.** `--worktree-dir <path>` (ou, por default, um temp em
+* `tmpdir()`) faz o script criar um `git worktree add --detach` a partir de
+* `origin/master` e rodar TODO o commit/push DENTRO do worktree (cwd =
+* `worktreeDir`). O worktree nasce em `origin/master`, então "nascer de um
+* master conhecido" é satisfeito por construção — o guard do #7287 é pulado
+* (não verificado), e não há `checkout` de volta porque o checkout
+* compartilhado nunca foi tocado. O worktree é removido no `finally`
+* (`git worktree remove --force`, fail-soft) e `main` tem fallback de
+* `rmSync` + `git worktree prune`.
+*
+* **O que muda e o que não muda.** `writePage` e `updateSitemapAndHome`
+* continuam escrevendo em `rootDir` (o checkout compartilhado) — o worktree
+* é um clone completo de `origin/master`, então a mesma árvore em
+* `workers/site/public/p/` já existe nele; o `git add` no worktree enxerga a
+* página escrita em `rootDir`. O merge lock cross-sessão (#6626) continua
+* valendo no caminho do worktree também — ele serializa o `gh pr create`,
+* que é a única parte mesmo assim compartilhada. O caminho legado (sem
+* `--worktree-dir`) é preservado byte a byte: os testes existentes de
+* `commitAndPushSitePage` não mudam.
+*
+* **Quando usar.** Default do `main` (sem `--skip-publish` e sem
+* `--worktree-dir` explícito) é SEMPRE o worktree — o checkout compartilhado
+* nunca mais é o cwd do commit/push. `--skip-publish` (testes, ou rodada
+* só-escrita) pula o worktree: a página fica em `rootDir`, sem git. Testes
+* que precisam de um worktree já existente passam `--worktree-dir`.
+*
+* ## Mecanismo de publicação: branch dedicada + PR, nunca push direto em `master` (#6598)
  *
  * **Histórico (#6202): este script fazia `git push` DIRETO em `master`.**
  * Em 260828 (#6598) uma regra de proteção de branch (`GH013`, ruleset
@@ -154,10 +190,11 @@
  * alimentam — ver #6454 original). Falha nesta etapa é fail-soft: a
  * publicação da página em si nunca é bloqueada por um problema aqui.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, dirname, join, basename } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
@@ -825,6 +862,20 @@ export function waitAndMergeSitePagePr(
  * mesmo checkout compartilhado podia observar/operar na branch errada
  * durante essa janela (achado do review consolidado da rodada 260828f).
  * `lock`/`sleep` injetados — mesmo padrão de `git`/`gh` acima.
+ *
+ * **#8636 (260921): caminho isolado por `git worktree`.** Quando
+ * `worktreeDir` é passado, esta função NUNCA toca o checkout compartilhado:
+ * todas as chamadas de `git` roda com `cwd = worktreeDir` (um worktree
+ * temporário que `main` criou a partir de `origin/master` em `--detach`),
+ * o guard do #7287 é pulado (o worktree NASCE em `origin/master`, então
+ * "nascer de um master conhecido" é satisfeito por construção — e o guard
+ * era exatamente o que bloqueava o passo quando outra sessão tinha o
+ * checkout em branch de trabalho, o caso real do #8636), e o `finally`
+ * descarta o worktree (`git worktree remove --force`, fail-soft) em vez de
+ * fazer `checkout` de volta. O merge lock continua valendo no caminho do
+ * worktree também — ele serializa o `gh pr create` cross-sessão, que é a
+ * única parte mesmo assim compartilhada. O caminho legado (sem
+ * `worktreeDir`) é preservado byte a byte.
  */
 export function commitAndPushSitePage(
   rootDir: string,
@@ -834,25 +885,30 @@ export function commitAndPushSitePage(
   gh: GhRunner = defaultGhRunner,
   lock: LockRunner = defaultLockRunner,
   sleep: SleepFn = defaultSleep,
+  worktreeDir?: string,
 ): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean } {
-  const originalBranch = git(["rev-parse", "--abbrev-ref", "HEAD"], rootDir).trim();
-  // #7287: 1 chamada, 2 revs — `git rev-parse` imprime um SHA por linha, na
-  // ordem dos argumentos. Guard compara COMMIT (o invariante real — "nasce
-  // de um master conhecido"), não o NOME da branch local (ver docblock).
-  const [headCommit, originMasterCommit] = git(["rev-parse", "HEAD", "origin/master"], rootDir)
-    .trim()
-    .split("\n")
-    .map((l) => l.trim());
-  if (!headCommit || !originMasterCommit || headCommit !== originMasterCommit) {
-    throw new Error(
-      `checkout não está sincronizado com origin/master (HEAD ${headCommit || "?"}, origin/master ` +
-        `${originMasterCommit || "?"}, branch local '${originalBranch}') — commit/push abortado antes de ` +
-        `tocar qualquer arquivo. A branch de publicação de página precisa nascer de um master conhecido; ` +
-        `commitar a partir de um checkout divergente produziria uma página divergente do master real. ` +
-        `Provável sessão concorrente com o checkout desatualizado ou em branch de trabalho — ` +
-        `\`git fetch origin && git pull\` (ou usar um worktree em ${originMasterCommit || "origin/master"}) ` +
-        `resolve (#5156, #6202/#6598, #7287).`,
-    );
+  // #8636: no caminho legado, salva o branch original pra voltar depois.
+  let originalBranch = "";
+  if (!worktreeDir) {
+    originalBranch = git(["rev-parse", "--abbrev-ref", "HEAD"], rootDir).trim();
+    // #7287: 1 chamada, 2 revs — `git rev-parse` imprime um SHA por linha, na
+    // ordem dos argumentos. Guard compara COMMIT (o invariante real — "nasce
+    // de um master conhecido"), não o NOME da branch local (ver docblock).
+    const [headCommit, originMasterCommit] = git(["rev-parse", "HEAD", "origin/master"], rootDir)
+      .trim()
+      .split("\n")
+      .map((l) => l.trim());
+    if (!headCommit || !originMasterCommit || headCommit !== originMasterCommit) {
+      throw new Error(
+        `checkout não está sincronizado com origin/master (HEAD ${headCommit || "?"}, origin/master ` +
+          `${originMasterCommit || "?"}, branch local '${originalBranch}') — commit/push abortado antes de ` +
+          `tocar qualquer arquivo. A branch de publicação de página precisa nascer de um master conhecido; ` +
+          `commitar a partir de um checkout divergente produziria uma página divergente do master real. ` +
+          `Provável sessão concorrente com o checkout desatualizado ou em branch de trabalho — ` +
+          `\`git fetch origin && git pull\` (ou passar --worktree-dir pra este script, #8636) ` +
+          `resolve (#5156, #6202/#6598, #7287).`,
+      );
+    }
   }
 
   const branchName = sitePublishBranch(slug);
@@ -886,11 +942,33 @@ export function commitAndPushSitePage(
   const lockSessionId = `site-publish-${randomUUID()}`;
   acquireSitePublishLock(rootDir, lockSessionId, lock, sleep);
 
+  // #8636: `gitCwd` é o cwd de TODAS as operações git de commit/push — no
+  // caminho legado é `rootDir` (o checkout compartilhado, como antes); no
+  // caminho do worktree é `worktreeDir` (um clone isolado de origin/master).
+  // O `rootDir` continua sendo o cwd do lock, do `gh` (o PR é global, não
+  // depende do worktree) e do `existsSync` de `optionalPaths` (a fonte da
+  // verdade do que foi escrito em disco pelo `writePage`).
+  const gitCwd = worktreeDir ?? rootDir;
+
   try {
+    // #8636: caminho isolado por worktree. `main` cria um worktree temporário
+    // a partir de `origin/master` em `--detach` ANTES de chamar esta função e
+    // passa o path em `worktreeDir`; aqui só usamos ele como `cwd` de toda a
+    // operação. `--detach` (não `-b`) porque um `site-publish/{slug}` já
+    // existente no repositório (rodada interrompida) tornaria o `-b` um
+    // `checkout -b` em branch já existente — o `--detach` pula isso: o
+    // worktree nasce sem branch, e o `checkout -B` abaixo cria a branch de
+    // publicação de qualquer estado. O worktree é descartado no `finally`.
+    if (worktreeDir) {
+      git(["worktree", "add", "--detach", worktreeDir, "origin/master"], rootDir);
+    }
+
     // -B (não -b): sempre recria a branch a partir do master atual, mesmo se
     // uma chamada anterior a deixou pra trás localmente — elimina qualquer
     // estado acumulado entre chamadas (idempotência, ver docstring do módulo).
-    git(["checkout", "-B", branchName], rootDir);
+    // No worktree, o "master atual" é o `origin/master` que o worktree nasceu
+    // (o #7287 é satisfeito por construção, não por verificação).
+    git(["checkout", "-B", branchName], worktreeDir ?? rootDir);
 
     for (const p of pathsToStage) {
       // #6454 self-review: sitemap.xml/index.html (`optionalPaths`) podem
@@ -900,17 +978,26 @@ export function commitAndPushSitePage(
       // sucesso, é reportada como falha de publicação. `relPageDir` nunca
       // passa por este guard — é sempre staged incondicionalmente, como
       // antes (é a própria página, `writePage` já rodou por definição).
+      // #8636: a página em si já foi escrita em `rootDir` (pelo `writePage`
+      // de `productionDeps`), mas no caminho do worktree o `git add` roda
+      // DENTRO do worktree — e o worktree é um clone completo de
+      // `origin/master`, então `workers/site/public/p/{slug}/index.html`
+      // JÁ está lá (o worktree herdou o árvore, e o `writePage` escreve no
+      // mesmo path relativo em `rootDir`, que é o checkout principal). O
+      // `existsSync` aqui continua resolvendo em `rootDir` (a fonte da
+      // verdade do que foi escrito), não no worktree — é o que decide se o
+      // sitemap/home entram no commit.
       if (optionalPaths.has(p) && !existsSync(resolve(rootDir, p))) {
         continue;
       }
-      git(["add", "--", p], rootDir);
+      git(["add", "--", p], gitCwd);
     }
 
-    const status = git(["status", "--porcelain", "--", ...pathsToStage], rootDir);
+    const status = git(["status", "--porcelain", "--", ...pathsToStage], gitCwd);
     committed = status.trim().length > 0;
 
     if (committed) {
-      const stagedFiles = git(["diff", "--cached", "--name-only"], rootDir)
+      const stagedFiles = git(["diff", "--cached", "--name-only"], gitCwd)
         .split("\n")
         .map((l) => l.trim())
         .filter(Boolean);
@@ -920,8 +1007,11 @@ export function commitAndPushSitePage(
       if (outsidePathspec.length > 0) {
         throw new Error(
           `git add deixou ${outsidePathspec.length} arquivo(s) alheio(s) staged fora do ` +
-            `pathspec — provável mudança concorrente no mesmo checkout compartilhado (#5156, #6202 review ` +
-            `problema P1-A). Commit abortado, nada foi commitado: ${outsidePathspec.join(", ")}`,
+            `pathspec — provável mudança concorrente no mesmo checkout (#5156, #6202 review ` +
+            `problema P1-A). No caminho do worktree (#8636) isso é impossível por construção ` +
+            `(o worktree é clone isolado de origin/master, sem sessão concorrente nele), ` +
+            `mas o guard continua valendo no caminho legado. Commit abortado, nada foi commitado: ` +
+            `${outsidePathspec.join(", ")}`,
         );
       }
       git(
@@ -932,7 +1022,7 @@ export function commitAndPushSitePage(
           "--",
           ...pathsToStage,
         ],
-        rootDir,
+        gitCwd,
       );
     }
 
@@ -940,7 +1030,7 @@ export function commitAndPushSitePage(
     // — push, e (mais adiante) gh pr list/create — pra janela protegida não
     // exceder o TTL de 2min dimensionado pra uma operação bem mais curta.
     renewSitePublishLock(rootDir, lockSessionId, lock);
-    git(["push", "--force-with-lease", "-u", "origin", branchName], rootDir);
+    git(["push", "--force-with-lease", "-u", "origin", branchName], gitCwd);
     pushed = true;
 
     renewSitePublishLock(rootDir, lockSessionId, lock);
@@ -996,27 +1086,51 @@ export function commitAndPushSitePage(
       prNumber = parsePrNumberFromUrl(prUrl);
     }
   } finally {
-    // Sempre volta pro branch original, mesmo em erro — o checkout
-    // compartilhado nunca fica preso numa branch de publicação de página.
-    // #6703 achado 3: o `checkout` de volta em si pode lançar (conflito,
-    // I/O, branch original removida por outra sessão) — sem este try/catch,
-    // essa exceção pulava DIRETO pro topo do `finally`, e
-    // `releaseSitePublishLock` NUNCA rodava (o lock só sairia pelo TTL) E o
-    // checkout compartilhado ficava preso em `site-publish/{slug}`. O
-    // release precisa rodar independente do checkout de volta ter lançado
-    // ou não — por isso vira um `catch` que só loga, nunca relança (não
-    // pode mascarar o erro real que já estava em curso e propagando por
-    // cima deste `finally`).
-    try {
-      git(["checkout", originalBranch], rootDir);
-    } catch (e) {
-      process.stderr.write(
-        `[site-page] aviso: checkout de volta para '${originalBranch}' falhou (${(e as Error).message}) — ` +
-          `checkout compartilhado pode ter ficado preso em '${branchName}'.\n`,
-      );
+    // #8636: no caminho do worktree, o checkout compartilhado NUNCA foi
+    // tocado (todas as chamadas de `git` rodaram com `cwd = worktreeDir`) —
+    // o que sobra é descartar o worktree temporário. O `checkout` de volta
+    // pro branch original era o risco do #6703 (checkout compartilhado
+    // preso em `site-publish/{slug}`); no worktree não há esse risco, e o
+    // `git worktree remove --force` é fail-soft: se falhar (já removido,
+    // path desaparecido, permissão), loga e segue — o worktree é temp,
+    // `main` tem fallback de `rmSync` + `git worktree prune`, e o custo de
+    // deixar um worktree órfão é um `git worktree list` mais longo, nunca
+    // um checkout corrompido.
+    if (worktreeDir) {
+      try {
+        git(["worktree", "remove", "--force", worktreeDir], rootDir);
+      } catch (e) {
+        process.stderr.write(
+          `[site-page] aviso: remoção do worktree temporário '${worktreeDir}' falhou (${(e as Error).message}) — ` +
+            `use 'git worktree prune' ou remova manualmente (#8636).\n`,
+        );
+      }
+    } else {
+      // Sempre volta pro branch original, mesmo em erro — o checkout
+      // compartilhado nunca fica preso numa branch de publicação de página.
+      // #6703 achado 3: o `checkout` de volta em si pode lançar (conflito,
+      // I/O, branch original removida por outra sessão) — sem este try/catch,
+      // essa exceção pulava DIRETO pro topo do `finally`, e
+      // `releaseSitePublishLock` NUNCA rodava (o lock só sairia pelo TTL) E o
+      // checkout compartilhado ficava preso em `site-publish/{slug}`. O
+      // release precisa rodar independente do checkout de volta ter lançado
+      // ou não — por isso vira um `catch` que só loga, nunca relança (não
+      // pode mascarar o erro real que já estava em curso e propagando por
+      // cima deste `finally`).
+      try {
+        git(["checkout", originalBranch], rootDir);
+      } catch (e) {
+        process.stderr.write(
+          `[site-page] aviso: checkout de volta para '${originalBranch}' falhou (${(e as Error).message}) — ` +
+            `checkout compartilhado pode ter ficado preso em '${branchName}'.\n`,
+        );
+      }
     }
-    // #6626: libera o lock só DEPOIS da tentativa de checkout de volta — a
-    // janela protegida cobre a troca inteira, não só metade dela.
+    // #6626: libera o lock só DEPOIS da tentativa de checkout de volta (ou, no
+    // caminho do worktree, da remoção do worktree) — a janela protegida cobre
+    // a troca inteira, não só metade dela. No worktree, o lock continua
+    // valendo porque o `gh pr create` cross-sessão é a única parte mesmo
+    // assim compartilhada.
     releaseSitePublishLock(rootDir, lockSessionId, lock);
   }
 
@@ -1042,9 +1156,18 @@ export function productionDeps(
   gh: GhRunner = defaultGhRunner,
   lock: LockRunner = defaultLockRunner,
   sleep: SleepFn = defaultSleep,
+  worktreeDir?: string,
 ): PublishPageDeps {
   return {
     readEditionInputs,
+    // #8636: `writePage` escreve SEMPRE em `rootDir` (o checkout compartilhado,
+    // onde o orchestrator lê os artefatos). No caminho do worktree, o
+    // worktree é um clone completo de `origin/master` — a mesma árvore em
+    // `workers/site/public/p/` — então a página escrita em `rootDir` já
+    // existe no worktree em `gitCwd` (o `git add` lá a enxerga). Não
+    // duplicamos o write: escrever em `rootDir` é suficiente, e manter a
+    // fonte da verdade em um único lugar evita o worktree ficando desalinhado
+    // do checkout principal em caso de falha de `git worktree add`.
     writePage: (slug, html) => {
       const dir = join(resolve(rootDir, "workers", "site", "public", "p"), slug);
       mkdirSync(dir, { recursive: true });
@@ -1105,6 +1228,7 @@ export function productionDeps(
         gh,
         lock,
         sleep,
+        worktreeDir,
       );
       // #8158 (revoga #6598): só tenta mergear quando há um PR de verdade
       // pra checar — `prNumber` ausente (gh pr create/list não devolveu URL
@@ -1310,7 +1434,7 @@ export async function main(): Promise<void> {
   const editionDir = getArg(argv, "edition-dir");
   if (!editionDir) {
     console.error(
-      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>]",
+      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>]",
     );
     process.exitCode = 1;
     return;
@@ -1331,15 +1455,55 @@ export async function main(): Promise<void> {
     return;
   }
   const editionDirAbs = resolve(ROOT, editionDir);
+  // #8636: worktree temporário. Cria ANTES de chamar publishEditionSitePage
+  // (que chama productionDeps → commitAndPushSitePage) e passa o path em
+  // `worktreeDir`. `--skip-publish` não precisa de worktree (não roda git,
+  // a página fica só em `rootDir`); nem `--worktree-dir` explícito (testes
+  // injetam um path já existente). Fallback de limpeza: se o worktree não
+  // for removido pelo `finally` de `commitAndPushSitePage` (ex: crash antes
+  // do finally), `main` own cleanup cobre — `rmSync` + `git worktree prune`.
+  const explicitWorktreeDir = getStringArg(argv, "worktree-dir");
+  let worktreeDir: string | undefined;
+  if (!hasFlag(argv, "skip-publish") && !explicitWorktreeDir) {
+    worktreeDir = mkdtempSync(join(tmpdir(), "diaria-site-page-wt-"));
+  }
   let result: PublishPageResult;
   try {
-    result = publishEditionSitePage(editionDirAbs, productionDeps(), {
-      skipPublish: hasFlag(argv, "skip-publish"),
-      slug,
-      sitemap: getArg(argv, "sitemap"),
-    });
+    result = publishEditionSitePage(
+      editionDirAbs,
+      productionDeps(undefined, undefined, undefined, undefined, undefined, worktreeDir ?? explicitWorktreeDir),
+      {
+        skipPublish: hasFlag(argv, "skip-publish"),
+        slug,
+        sitemap: getArg(argv, "sitemap"),
+      },
+    );
   } catch (e) {
     result = { code: 3, reason: `erro inesperado: ${(e as Error).message}` };
+  } finally {
+    // #8636: cleanup own. `commitAndPushSitePage` já remove o worktree no
+    // `finally` dele (fail-soft) — este trecho só é reached quando o worktree
+    // NÃO foi criado por `commitAndPushSitePage` (ex: `--skip-publish`, ou
+    // `publishEditionSitePage` retornou code 2/4/5 antes de chamar
+    // `deps.publish`), ou quando a remoção dele falhou. `force: true` cobre
+    // worktree já removido; o `git worktree prune` é o fallback de registry
+    // (entries órfãos de worktrees que sumiram sem `git worktree remove`).
+    if (worktreeDir) {
+      try {
+        rmSync(worktreeDir, { recursive: true, force: true });
+      } catch {
+        // fail-soft — ver docstring do `finally` de `commitAndPushSitePage`.
+      }
+      try {
+        // `shell: true` porque `execSync` não aceita array de args (a
+        // assinatura é `(command: string, options?)`); o mesmo `git worktree
+        // prune` que o `git` injetado em `commitAndPushSitePage` rodaria se o
+        // `finally` dele não tiver limpado o worktree.
+        execSync("git worktree prune", { cwd: ROOT, shell: "bash", stdio: "ignore" });
+      } catch {
+        // fail-soft: `git worktree prune` é higiene, nunca bloqueio.
+      }
+    }
   }
   // #7283: grava sempre que chegou até aqui com um `editionDirAbs` resolvido
   // (ou seja, depois dos 2 early-return de erro de USO acima — `--edition-dir`
