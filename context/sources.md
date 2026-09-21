@@ -1,6 +1,6 @@
 # Fontes cadastradas — diar.ia.br
 
-**Total:** 50 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 52 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -147,6 +147,16 @@
 - Site query: `site:venturebeat.com`
 - RSS: https://venturebeat.com/category/ai/feed/
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
+
+### The Verge (AI)
+- URL: https://www.theverge.com/ai-artificial-intelligence
+- Site query: `site:theverge.com`
+- RSS: https://www.theverge.com/rss/ai-artificial-intelligence/index.xml
+
+### Wired (AI)
+- URL: https://www.wired.com/tag/artificial-intelligence/
+- Site query: `site:wired.com`
+- RSS: https://www.wired.com/feed/tag/ai/latest/rss
 
 ## Pesquisa
 
