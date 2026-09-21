@@ -76,9 +76,15 @@ function significantTokens(text: string): Set<string> {
   for (const w of rawWords(text)) {
     const f = fold(w).replace(/[.\-]+$/g, "");
     if (!f) continue;
+    if (/^\d{1,4}$/.test(f)) continue; // ano/id curto não é evidência (#8594)
     const isNum = /\d/.test(f);
     if (!isNum && (f.length < 4 || STOPWORDS.has(f) || GENERIC.has(f))) continue;
     out.add(f);
+    if (f.includes("-")) {
+      for (const part of f.split("-")) {
+        if (part.length >= 4 && !STOPWORDS.has(part) && !GENERIC.has(part) && !/^\d+$/.test(part)) out.add(part);
+      }
+    }
   }
   return out;
 }
@@ -92,7 +98,8 @@ function urlWords(url: string): { slug: string; host: string } {
         ? parts[parts.length - 3]
         : parts[Math.max(0, parts.length - 2)];
     const lastSeg = decodeURIComponent(u.pathname.split("/").filter(Boolean).pop() ?? "");
-    return { slug: lastSeg.replace(/[-_]+/g, " "), host: host ?? "" };
+    const noExt = lastSeg.replace(/\.(?:g?html?|php|aspx?|amp)$/i, "");
+    return { slug: noExt.replace(/[-_]+/g, " "), host: host ?? "" };
   } catch {
     return { slug: "", host: "" };
   }
@@ -104,11 +111,12 @@ function titleEntities(title: string): Set<string> {
   const words = rawWords(title);
   words.forEach((w, i) => {
     const f = fold(w);
-    if (f.length < 2 || STOPWORDS.has(f)) return;
+    if (f.length < 2 || STOPWORDS.has(f) || f === "ia" || f === "ai") return; // "IA" é o tema do produto, não entidade
     const hasDigit = /\d/.test(w);
     const allCaps = w.length >= 2 && w === w.toUpperCase() && /\p{L}/u.test(w);
     const capMid = i > 0 && /^\p{Lu}/u.test(w) && f.length >= 3;
-    if (hasDigit || allCaps || capMid) out.add(f);
+    const camel = /\p{Ll}\p{Lu}/u.test(w); // OpenAI, xAI, iPhone
+    if ((hasDigit && !/^\d{1,4}$/.test(w)) || allCaps || capMid || camel) out.add(f);
   });
   return out;
 }
@@ -119,12 +127,17 @@ function tokensOverlap(a: Set<string>, bText: string): string[] {
   const bFolded = fold(bText);
   const shared: string[] = [];
   for (const t of a) {
-    if (bTokens.has(t) || bStems.has(stem(t)) || (t.length >= 4 && bFolded.includes(t))) shared.push(t);
+    if (t.length < 4) {
+      // sigla/nome curto (AWS, CNN, GPT, xAI): palavra inteira, com fronteira
+      const esc = t.replace(/[^\p{L}\p{N}]/gu, (c) => "\\" + c);
+      const re = new RegExp("(?<![\\p{L}\\p{N}])" + esc + "(?![\\p{L}\\p{N}])", "u");
+      if (re.test(bFolded)) shared.push(t);
+    } else if (bTokens.has(t) || bStems.has(stem(t)) || bFolded.includes(t)) shared.push(t);
   }
   return shared;
 }
 
-const SEP = " · ";
+const SEP_RE = /\s[·|–]\s/;
 const MIN_SEGMENT_CHARS = 20;
 
 function matchText(
@@ -139,10 +152,13 @@ function matchText(
 
   const shared = tokensOverlap(refTokens, text);
   const entities = titleEntities(title);
-  if (host.length >= 4) entities.add(fold(host));
-  const sharedEntities = tokensOverlap(entities, text);
-  const all = [...new Set([...shared, ...sharedEntities])];
-  return { ok: shared.length >= 2 || sharedEntities.length >= 1, shared: all, enough: true };
+  // menção só ao veículo/host ("Segundo a Exame") não é evidência (#8594)
+  const h = fold(host);
+  const notHost = (t: string) => t !== h;
+  const sharedNoHost = shared.filter(notHost);
+  const sharedEntities = tokensOverlap(entities, text).filter(notHost);
+  const all = [...new Set([...sharedNoHost, ...sharedEntities])];
+  return { ok: sharedNoHost.length >= 2 || sharedEntities.length >= 1, shared: all, enough: true };
 }
 
 export function summaryMatchesArticle(input: SummaryMatchInput): SummaryMatchResult {
@@ -151,7 +167,7 @@ export function summaryMatchesArticle(input: SummaryMatchInput): SummaryMatchRes
   const url = (input.url ?? "").trim();
   if (!summary) return { ok: true, reason: "no-summary", shared: [] };
 
-  const parts = summary.split(SEP).map((s) => s.trim());
+  const parts = summary.split(SEP_RE).map((s) => s.trim());
   const longParts = parts.filter((s) => s.length >= MIN_SEGMENT_CHARS);
   if (parts.length >= 3 && longParts.length >= 2) {
     // digest de várias matérias: o primeiro trecho precisa casar sozinho
@@ -167,4 +183,39 @@ export function summaryMatchesArticle(input: SummaryMatchInput): SummaryMatchRes
   return r.ok
     ? { ok: true, reason: "ok", shared: r.shared }
     : { ok: false, reason: "no-overlap", shared: [] };
+}
+
+export type DiscardReason = "multi-story-digest" | "matches-other-article";
+
+export interface DiscardDecision {
+  discard: boolean;
+  reason?: DiscardReason;
+  /** URL do outro artigo do lote com que o summary casa (matches-other-article). */
+  otherUrl?: string;
+}
+
+/**
+ * Decide se o summary deve ser DESCARTADO (#8594). Só com evidência POSITIVA
+ * de troca: (a) digest multi-matéria cujo 1º trecho não casa com o item, ou
+ * (b) summary sem relação com o próprio item mas que casa claramente com
+ * OUTRO título/URL do mesmo lote. `no-overlap` simples NUNCA descarta —
+ * paráfrase legítima ("A empresa apresentou um novo modelo…") não tem
+ * sobreposição léxica; isso só vira warn no lint.
+ */
+export function shouldDiscardSummary(
+  article: SummaryMatchInput,
+  batch: SummaryMatchInput[] = [],
+): DiscardDecision {
+  const own = summaryMatchesArticle(article);
+  if (own.ok) return { discard: false };
+  if (own.reason === "multi-story-digest") return { discard: true, reason: "multi-story-digest" };
+  const summary = (article.summary ?? "").trim();
+  for (const other of batch) {
+    if (!other.url || other.url === article.url) continue;
+    const m = matchText((other.title ?? "").trim(), other.url, summary);
+    if (m.enough && m.ok && m.shared.length >= 2) {
+      return { discard: true, reason: "matches-other-article", otherUrl: other.url };
+    }
+  }
+  return { discard: false };
 }

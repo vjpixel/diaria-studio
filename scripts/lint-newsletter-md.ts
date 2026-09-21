@@ -90,6 +90,7 @@ import {
   type NoTrailingEllipsisReport,
 } from "./lib/lint-checks/no-trailing-ellipsis.ts"; // #2881
 import { checkRadarSummaryMatchesTitle } from "./lib/lint-checks/radar-summary-matches-title.ts"; // #8594
+export { checkRadarSummaryMatchesTitle } from "./lib/lint-checks/radar-summary-matches-title.ts"; // #8594
 import {
   checkMidSentenceEllipsis,
   type MidSentenceEllipsisError,
