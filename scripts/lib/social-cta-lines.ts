@@ -71,9 +71,15 @@ export function buildFacebookCtaUrl(): string {
 export const FACEBOOK_CTA_LINE =
   `Receba notícias de IA todo dia por e-mail, assine grátis em ${buildFacebookCtaUrl()}.`;
 
-/** Instagram: "link na bio" + follow (#3486, preservado). Sem URL crua — IG não linka no corpo. */
+/**
+ * Instagram (decisão do editor, 260922): a legenda é SÓ esta chamada — seguir
+ * o perfil e comentar "quero" pra receber o link da edição do dia. Nenhum
+ * texto editorial, hashtag ou linha de engajamento vai junto (ver
+ * `injectChannelLine`). Mesma copy do último card do carrossel
+ * (`daily-carousel-card.ts`). Sem URL crua — IG não linka no corpo.
+ */
 export const INSTAGRAM_CTA_LINE =
-  "Edição completa no link da bio. Segue @diar.ia.br pra não perder a próxima.";
+  "Quer receber o link da edição do dia? Siga @diar.ia.br e comente “quero” neste post.";
 
 /**
  * LinkedIn: `null` por decisão de preservar #595/#3627 — ver JSDoc do módulo
@@ -222,8 +228,11 @@ export function splitBodyAndTags(text: string): SplitBodyAndTags {
  * Unicode que uma regex ingênua aqui duplicaria de forma mais estreita.
  */
 export function injectChannelLine(genericText: string, channel: SocialChannel): string {
-  const { body, tags } = splitBodyAndTags(genericText);
   const ctaLine = CHANNEL_CTA_LINES[channel];
+  // Instagram: legenda = SÓ a chamada de seguir + comentar "quero" (decisão do
+  // editor, 260922). Corpo, engajamento e hashtags ficam de fora.
+  if (channel === "instagram" && ctaLine) return ctaLine;
+  const { body, tags } = splitBodyAndTags(genericText);
   // #6005 Parte A: linha de engajamento vem DEPOIS da linha de canal —
   // ordem final: {corpo} \n\n {CTA de canal} \n\n {engajamento} \n\n {tags}.
   const engagementLine = CHANNEL_ENGAGEMENT_LINES[channel];

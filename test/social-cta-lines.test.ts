@@ -104,8 +104,8 @@ describe("CHANNEL_CTA_LINES / constantes (#3991)", () => {
     assert.doesNotThrow(() => new URL(urlPart));
   });
 
-  it("Instagram mantém 'link na bio' + follow (#3486 preservado)", () => {
-    assert.equal(INSTAGRAM_CTA_LINE, "Edição completa no link da bio. Segue @diar.ia.br pra não perder a próxima.");
+  it("Instagram: chamada de seguir + comentar 'quero' (260922, substitui 'link na bio')", () => {
+    assert.equal(INSTAGRAM_CTA_LINE, "Quer receber o link da edição do dia? Siga @diar.ia.br e comente “quero” neste post.");
     assert.equal(CHANNEL_CTA_LINES.instagram, INSTAGRAM_CTA_LINE);
   });
 
@@ -124,13 +124,9 @@ describe("injectChannelLine (#3991)", () => {
     assert.equal(lines[2], "#IA #Agentes");
   });
 
-  it("Instagram: injeta 'link na bio' + linha de engajamento (#6005) ENTRE corpo e tags", () => {
+  it("Instagram: legenda = SÓ a chamada; corpo, engajamento e hashtags ficam de fora (260922)", () => {
     const out = injectChannelLine("Fato interessante sobre IA.\n\n#IA #Agentes", "instagram");
-    const lines = out.split("\n\n");
-    assert.equal(lines[0], "Fato interessante sobre IA.");
-    assert.equal(lines[1], INSTAGRAM_CTA_LINE);
-    assert.equal(lines[2], INSTAGRAM_ENGAGEMENT_LINE);
-    assert.equal(lines[3], "#IA #Agentes");
+    assert.equal(out, INSTAGRAM_CTA_LINE);
   });
 
   it("#6005 Parte A: linha de engajamento é NÃO-interrogativa (#1762) e só existe no Instagram", () => {
@@ -165,14 +161,16 @@ describe("injectChannelLine (#3991)", () => {
     const fb = injectChannelLine(generic, "facebook");
     const ig = injectChannelLine(generic, "instagram");
 
-    // Todos preservam o corpo editorial idêntico.
-    for (const out of [li, fb, ig]) {
+    // LinkedIn e Facebook preservam o corpo editorial idêntico; o Instagram
+    // publica só a chamada (260922).
+    for (const out of [li, fb]) {
       assert.ok(out.includes("Mesmo fato, mesmo corpo, todos os canais."));
       assert.ok(out.includes("#InteligenciaArtificial"));
     }
+    assert.equal(ig, INSTAGRAM_CTA_LINE);
     // Só FB e IG carregam CTA — LinkedIn não.
     assert.ok(!li.includes("diar.ia.br") && !li.includes("bio"));
     assert.ok(fb.includes("diar.ia.br") && fb.includes("utm_source=facebook"));
-    assert.ok(ig.includes("link da bio"));
+    assert.ok(ig.includes("comente") && ig.includes("quero"));
   });
 });

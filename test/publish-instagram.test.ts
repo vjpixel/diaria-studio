@@ -146,19 +146,16 @@ describe("extractPostText (instagram)", () => {
 describe("extractPostText/extractDestaquesFromSocialMd (instagram) — formato novo # Social (#3991)", () => {
   const SOCIAL_MD = "# Social\n\n## d1\n\nTexto genérico d1.\n\n#IA\n\n## d2\n\nTexto genérico d2.\n";
 
-  it("extrai d1 de # Social e injeta a linha 'link na bio' ENTRE corpo e tags", () => {
+  it("Instagram: legenda é SÓ a chamada de seguir + comentar 'quero' — sem texto editorial, hashtag nem engajamento (260922)", () => {
     const t = extractPostText(SOCIAL_MD, "d1");
-    assert.equal(
-      t,
-      "Texto genérico d1.\n\nEdição completa no link da bio. Segue @diar.ia.br pra não perder a próxima.\n\nManda pra alguém que ainda subestima isso.\n\n#IA",
-    );
+    assert.equal(t, INSTAGRAM_CTA_LINE);
+    assert.ok(t.includes("comente") && t.includes("quero") && t.includes("@diar.ia.br"));
+    assert.ok(!t.includes("Texto genérico d1.") && !t.includes("#IA"));
   });
 
-  it("extrai d2 sem vazar d1, CTA injetada mesmo sem hashtags", () => {
+  it("d2 também sai só com a chamada (sem vazar d1)", () => {
     const t = extractPostText(SOCIAL_MD, "d2");
-    assert.ok(t.includes("Texto genérico d2."));
-    assert.ok(!t.includes("Texto genérico d1."));
-    assert.ok(t.includes("link da bio"));
+    assert.equal(t, INSTAGRAM_CTA_LINE);
   });
 
   it("extractDestaquesFromSocialMd lê # Social quando presente", () => {
@@ -169,7 +166,8 @@ describe("extractPostText/extractDestaquesFromSocialMd (instagram) — formato n
   it("# Social tem precedência sobre # Instagram/# Facebook legado quando presentes", () => {
     const mixed = "# Social\n\n## d1\n\nTexto novo d1.\n\n# Instagram\n\n## d1\n\nTexto legado d1.\n";
     const t = extractPostText(mixed, "d1");
-    assert.ok(t.includes("Texto novo d1."));
+    // Caminho # Social vence o legado (que traria texto), e a legenda é só a chamada.
+    assert.equal(t, INSTAGRAM_CTA_LINE);
     assert.ok(!t.includes("Texto legado d1."));
   });
 
@@ -177,7 +175,7 @@ describe("extractPostText/extractDestaquesFromSocialMd (instagram) — formato n
     const md = "# Social\n\n## d1\n\n**Por que isso importa:** frase qualquer.\n";
     const t = extractPostText(md, "d1");
     assert.ok(!t.includes("**"), `não deveria sobrar '**', veio: ${JSON.stringify(t)}`);
-    assert.ok(t.includes("Por que isso importa: frase qualquer."));
+    assert.equal(t, INSTAGRAM_CTA_LINE);
   });
 });
 
@@ -198,7 +196,7 @@ describe("regressão #4309: '## eia'/'## post_pixel' vazando pro post do Instagr
 
   it("extrai d3 (último destaque) sem vazar '## eia'/'## post_pixel' nem os placeholders", () => {
     const t = extractPostText(SOCIAL_MD_REAL_SHAPE, "d3");
-    assert.ok(t.includes("Texto d3 exclusivo."));
+    assert.equal(t, INSTAGRAM_CTA_LINE); // legenda é só a chamada; nada do d3 nem de seções irmãs
     assert.ok(!t.includes("## eia"));
     assert.ok(!t.includes("Texto do É IA?"));
     assert.ok(!t.includes("01-eia-A.jpg"));
@@ -209,8 +207,8 @@ describe("regressão #4309: '## eia'/'## post_pixel' vazando pro post do Instagr
   });
 
   it("extrai d1/d2 normalmente na forma real (3 destaques + eia + post_pixel)", () => {
-    assert.ok(extractPostText(SOCIAL_MD_REAL_SHAPE, "d1").includes("Texto d1."));
-    assert.ok(extractPostText(SOCIAL_MD_REAL_SHAPE, "d2").includes("Texto d2."));
+    assert.equal(extractPostText(SOCIAL_MD_REAL_SHAPE, "d1"), INSTAGRAM_CTA_LINE);
+    assert.equal(extractPostText(SOCIAL_MD_REAL_SHAPE, "d2"), INSTAGRAM_CTA_LINE);
   });
 });
 
