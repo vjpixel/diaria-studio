@@ -73,14 +73,22 @@
 * `rmSync` + `git worktree prune`.
 *
 * **O que muda e o que não muda.** `writePage` e `updateSitemapAndHome`
-* continuam escrevendo em `rootDir` (o checkout compartilhado) — o worktree
-* é um clone completo de `origin/master`, então a mesma árvore em
-* `workers/site/public/p/` já existe nele; o `git add` no worktree enxerga a
-* página escrita em `rootDir`. O merge lock cross-sessão (#6626) continua
-* valendo no caminho do worktree também — ele serializa o `gh pr create`,
-* que é a única parte mesmo assim compartilhada. O caminho legado (sem
-* `--worktree-dir`) é preservado byte a byte: os testes existentes de
-* `commitAndPushSitePage` não mudam.
+* continuam escrevendo em `rootDir` (o checkout compartilhado) — mas o
+* worktree **não** enxerga esse conteúdo sozinho: o comando de worktree faz
+* um checkout físico a partir de um REF (reflete só o que já está COMMITADO
+* em `origin/master`), nunca arquivos untracked de outro working tree.
+* Página nova (slug nunca commitado) e sitemap/home atualizados (rastreados,
+* mas com conteúdo novo só em `rootDir`) ficam invisíveis pro worktree por
+* padrão — foi exatamente essa suposição errada que causou a regressão P0
+* do #8636 (reaberta 21/09/2026, reproduzida com git real). **Correção**:
+* logo após o checkout dedicado dentro do worktree, `commitAndPushSitePage`
+* copia (`cpSync`) de `rootDir` pro `worktreeDir` cada path que vai ser
+* staged (`relPageDir` sempre; `optionalPaths` só os que existirem) — só
+* então o add/status/commit do worktree enxergam o conteúdo certo. O merge
+* lock cross-sessão (#6626) continua valendo no caminho do worktree também —
+* ele serializa a abertura do PR, que é a única parte mesmo assim
+* compartilhada. O caminho legado (sem `--worktree-dir`) é preservado byte a
+* byte: os testes existentes de `commitAndPushSitePage` não mudam.
 *
 * **Quando usar.** Default do `main` (sem `--skip-publish` e sem
 * `--worktree-dir` explícito) é SEMPRE o worktree — o checkout compartilhado
@@ -190,7 +198,7 @@
  * alimentam — ver #6454 original). Falha nesta etapa é fail-soft: a
  * publicação da página em si nunca é bloqueada por um problema aqui.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync, cpSync } from "node:fs";
 import { resolve, dirname, join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -970,6 +978,46 @@ export function commitAndPushSitePage(
     // (o #7287 é satisfeito por construção, não por verificação).
     git(["checkout", "-B", branchName], worktreeDir ?? rootDir);
 
+    // #8636 REGRESSÃO (achado 21/09/2026, reabertura P0): a suposição
+    // original de que "o worktree é um clone completo de origin/master,
+    // então a página já está lá" é FALSA para conteúdo recém-escrito.
+    // `git worktree add` faz um checkout físico a partir de um REF — reflete
+    // só o que já está COMMITADO naquele ref, nunca arquivos untracked de
+    // outro working tree. Como `relPageDir` é sempre um slug NOVO (nunca
+    // commitado em `origin/master`), o worktree simplesmente não o tem: um
+    // `git add` incondicional nele lançava `pathspec did not match any
+    // files` — reproduzido com git real, 3x independentes (ver PR/issue
+    // #8636). `sitemapRelPath`/`homeRelPath` (`optionalPaths`) são piores
+    // ainda: COMO já existem em `origin/master` (arquivos rastreados), o
+    // `git add` não lançava — silenciosamente staged o conteúdo VELHO que o
+    // worktree herdou do ref, não o conteúdo atualizado que
+    // `updateSitemapAndHome` acabou de escrever em `rootDir`.
+    //
+    // Correção (opção A da issue): antes de `git add`, copiar do `rootDir`
+    // (onde `writePage`/`updateSitemapAndHome` sempre escrevem, worktree ou
+    // não) pro `worktreeDir` os MESMOS paths que serão staged — sempre
+    // `relPageDir` (a página é staged incondicionalmente, então precisa
+    // existir), e cada `optionalPaths` que de fato exista em `rootDir` (os
+    // que não existirem seguem pulados pelo guard de `existsSync` logo
+    // abaixo, igual antes). Depois da cópia, o `git add`/`status`/`commit`
+    // dentro do worktree enxergam o conteúdo certo — commitando exatamente o
+    // que foi escrito nesta chamada, nunca o herdado de `origin/master`.
+    // Rejeitada a opção B (escrever direto no worktree): exigiria que
+    // `writePage`/`updateSitemapAndHome`/o backfill do acervo (#8645/#8664)
+    // conhecessem `worktreeDir` — mas o worktree só existe DEPOIS que `main`
+    // já decidiu usá-lo, e essas funções rodam antes de `commitAndPushSitePage`
+    // ser chamada (ver `publishEditionSitePage`); inverter essa ordem
+    // tocaria mais call sites pra um ganho que não paga o risco.
+    if (worktreeDir) {
+      for (const p of pathsToStage) {
+        const src = resolve(rootDir, p);
+        if (!existsSync(src)) continue; // optionalPaths ausente — mesmo guard de sempre, ver abaixo
+        const dest = resolve(worktreeDir, p);
+        mkdirSync(dirname(dest), { recursive: true });
+        cpSync(src, dest, { recursive: true });
+      }
+    }
+
     for (const p of pathsToStage) {
       // #6454 self-review: sitemap.xml/index.html (`optionalPaths`) podem
       // não existir em disco se `updateSitemapAndHome` tiver falhado antes
@@ -978,15 +1026,12 @@ export function commitAndPushSitePage(
       // sucesso, é reportada como falha de publicação. `relPageDir` nunca
       // passa por este guard — é sempre staged incondicionalmente, como
       // antes (é a própria página, `writePage` já rodou por definição).
-      // #8636: a página em si já foi escrita em `rootDir` (pelo `writePage`
-      // de `productionDeps`), mas no caminho do worktree o `git add` roda
-      // DENTRO do worktree — e o worktree é um clone completo de
-      // `origin/master`, então `workers/site/public/p/{slug}/index.html`
-      // JÁ está lá (o worktree herdou o árvore, e o `writePage` escreve no
-      // mesmo path relativo em `rootDir`, que é o checkout principal). O
-      // `existsSync` aqui continua resolvendo em `rootDir` (a fonte da
-      // verdade do que foi escrito), não no worktree — é o que decide se o
-      // sitemap/home entram no commit.
+      // #8636 (corrigido 21/09/2026): a existência é sempre checada em
+      // `rootDir` (a fonte da verdade do que foi escrito) — no caminho do
+      // worktree, o bloco de cópia acima já replicou pro `worktreeDir`
+      // qualquer path que exista em `rootDir`, então o `git add` abaixo
+      // (que roda em `gitCwd`) sempre encontra o que este guard deixar
+      // passar.
       if (optionalPaths.has(p) && !existsSync(resolve(rootDir, p))) {
         continue;
       }
