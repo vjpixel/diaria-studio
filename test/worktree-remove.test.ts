@@ -23,7 +23,10 @@ import {
   isHuskDirectory,
   findWorktreeHusks,
   resolveWorktreeRemoval,
+  commandReferencesPath,
+  findLiveProcessesInPath,
 } from "../scripts/lib/worktree-remove.ts";
+import type { ProcessInfo } from "../scripts/lib/list-processes.ts";
 
 function mktmp(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -272,4 +275,42 @@ test("resolveWorktreeRemoval: git ok + diretório já sumiu -> ok true sem tocar
   assert.equal(result.ok, true);
 
   rmSync(base, { recursive: true, force: true });
+});
+
+// ── commandReferencesPath / findLiveProcessesInPath (#8661) ──
+
+test("commandReferencesPath: true quando o path aparece como substring da cmdline, mesmo embutido num argumento maior", () => {
+  const worktree = "/home/x/.claude/worktrees/agent-abc123";
+  assert.equal(commandReferencesPath(`node --require ${worktree}/node_modules/tsx/preflight.cjs --test`, worktree), true);
+  assert.equal(
+    commandReferencesPath(`node --experimental-loader=${worktree}/loader.mjs script.js`, worktree),
+    true,
+    "path embutido no meio de um argumento maior (--flag=path) também conta",
+  );
+  assert.equal(commandReferencesPath("node --test test/x.test.ts", worktree), false);
+  assert.equal(
+    commandReferencesPath("node /home/x/.claude/worktrees/agent-OUTRO/script.js", worktree),
+    false,
+    "worktree parecido mas distinto nunca casa",
+  );
+});
+
+test("findLiveProcessesInPath: filtra o snapshot injetado pelo path — nunca chama listAllProcesses() de verdade quando um snapshot é passado", () => {
+  const worktree = "/home/x/.claude/worktrees/agent-target";
+  const processes: ProcessInfo[] = [
+    { pid: 100, ppid: 1, cmd: `node --require ${worktree}/node_modules/tsx/preflight.cjs --test test/a.test.ts` },
+    { pid: 200, ppid: 1, cmd: "node --test test/b.test.ts" },
+    { pid: 300, ppid: 1, cmd: `node --import ${worktree}/node_modules/tsx/loader.mjs server.js` },
+  ];
+
+  const found = findLiveProcessesInPath(worktree, processes);
+  assert.deepEqual(
+    found.map((p) => p.pid),
+    [100, 300],
+  );
+});
+
+test("findLiveProcessesInPath: [] quando nenhum processo do snapshot referencia o path", () => {
+  const processes: ProcessInfo[] = [{ pid: 1, ppid: 0, cmd: "node --test test/unrelated.test.ts" }];
+  assert.deepEqual(findLiveProcessesInPath("/home/x/.claude/worktrees/agent-target", processes), []);
 });

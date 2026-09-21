@@ -28,8 +28,13 @@ import {
   filterOutDirtyWorktrees,
   isWorktreeDirtySafe,
   ORPHAN_STALE_THRESHOLD_MS,
+  removeWorktreeSafe,
 } from "../scripts/cleanup-merged-worktrees.ts";
 import type { SessionRecord } from "../scripts/lib/session-registry.ts";
+import type { ProcessInfo } from "../scripts/lib/list-processes.ts";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // ── parseWorktreePorcelain ──
 
@@ -886,4 +891,90 @@ test("#7317 review — worktree cujo diretório sumiu não fica preso no guard d
   const { kept, skipped } = filterOutDirtyWorktrees(entries, isWorktreeDirtySafe);
   assert.deepEqual(kept.map((e) => e.path), [inexistente], "continua removível");
   assert.deepEqual(skipped, []);
+});
+
+// ── removeWorktreeSafe: guard de processo vivo (#8661) ──
+//
+// Regressão (#633) do item 2/3 da issue #8661: um teste (ou qualquer outro
+// processo) ainda rodando dentro do worktree no momento da limpeza pós-merge
+// não deve mais virar um neto órfão PPID=1 vazando RSS — `removeWorktreeSafe`
+// checa processo vivo ANTES de `git worktree remove --force`, e pula a
+// remoção deste ciclo se achar algum.
+
+test("#8661 — removeWorktreeSafe: worktree NÃO é removido quando há processo vivo referenciando o path (fixture)", () => {
+  const base = mkdtempSync(join(tmpdir(), "diaria-8661-live-proc-"));
+  const worktreePath = join(base, "worktree-com-teste-rodando");
+  // Fixture: simula um processo `--test-isolation=process` ainda vivo,
+  // apontando pro worktree — não precisa existir de verdade no disco pra
+  // este teste (a checagem de processo é sobre a CMDLINE, não sobre o FS).
+  const liveProcesses: ProcessInfo[] = [
+    {
+      pid: 999999,
+      ppid: 1,
+      cmd: `node --experimental-addon-modules --test-isolation=process --import=${worktreePath}/node_modules/tsx/loader.mjs --test test/session-registry.test.ts`,
+    },
+  ];
+
+  const result = removeWorktreeSafe(worktreePath, base, liveProcesses);
+
+  assert.equal(result.ok, false, "remoção precisa ser recusada com processo vivo");
+  assert.match(result.error ?? "", /processo\(s\) vivo\(s\)/, "erro precisa nomear a causa — processo vivo, não falha de git");
+  assert.match(result.error ?? "", /999999/, "erro precisa citar o PID pra permitir investigação manual");
+  assert.match(result.error ?? "", /#8661/, "erro precisa referenciar a issue de origem");
+
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#8661 — removeWorktreeSafe: SEM processo vivo, segue pro git normalmente (path inexistente falha por outro motivo, nunca por 'processo vivo')", () => {
+  const base = mkdtempSync(join(tmpdir(), "diaria-8661-no-proc-"));
+  const worktreePath = join(base, "nao-existe-nem-e-worktree-de-verdade");
+
+  // [] explícito: nenhum processo vivo — o guard novo não deve interferir
+  // aqui. O `git worktree remove --force` vai falhar por conta própria
+  // (path não é um worktree registrado), mas o ponto do teste é: a falha
+  // não pode ser rotulada como "processo vivo" quando não há nenhum.
+  const result = removeWorktreeSafe(worktreePath, base, []);
+
+  assert.equal(result.ok, false, "path não é worktree de verdade — falha esperada, só não pelo motivo do guard novo");
+  assert.doesNotMatch(
+    result.error ?? "",
+    /processo\(s\) vivo\(s\)/,
+    "sem processo vivo, o motivo da falha tem que vir do git, nunca do guard do #8661",
+  );
+
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#8661 — removeWorktreeSafe: múltiplos processos vivos aparecem todos no erro", () => {
+  const base = mkdtempSync(join(tmpdir(), "diaria-8661-multi-proc-"));
+  const worktreePath = join(base, "worktree-com-2-testes-rodando");
+  const liveProcesses: ProcessInfo[] = [
+    { pid: 111, ppid: 1, cmd: `node --test-isolation=process --test ${worktreePath}/test/a.test.ts` },
+    { pid: 222, ppid: 1, cmd: `node --test-isolation=process --test ${worktreePath}/test/b.test.ts` },
+  ];
+
+  const result = removeWorktreeSafe(worktreePath, base, liveProcesses);
+
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /111/);
+  assert.match(result.error ?? "", /222/);
+  assert.match(result.error ?? "", /^2 processo\(s\) vivo\(s\)/);
+
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#8661 — removeWorktreeSafe: processo vivo de OUTRO worktree não bloqueia este", () => {
+  const base = mkdtempSync(join(tmpdir(), "diaria-8661-outro-worktree-"));
+  const worktreePath = join(base, "este-worktree");
+  const liveProcesses: ProcessInfo[] = [
+    { pid: 333, ppid: 1, cmd: "node --test-isolation=process --test /outro/worktree/completamente/diferente/test/x.test.ts" },
+  ];
+
+  const result = removeWorktreeSafe(worktreePath, base, liveProcesses);
+
+  // Sem processo referenciando ESTE path, o guard não pode bloquear —
+  // segue pro git (que falha por outro motivo, path não é worktree real).
+  assert.doesNotMatch(result.error ?? "", /processo\(s\) vivo\(s\)/);
+
+  rmSync(base, { recursive: true, force: true });
 });

@@ -185,7 +185,8 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { listActiveSessions, type SessionRecord } from "./lib/session-registry.ts";
-import { removeWorktreeDirSafely, findWorktreeHusks, resolveWorktreeRemoval } from "./lib/worktree-remove.ts"; // #8209
+import { removeWorktreeDirSafely, findWorktreeHusks, resolveWorktreeRemoval, findLiveProcessesInPath } from "./lib/worktree-remove.ts"; // #8209, #8661
+import { listAllProcesses, type ProcessInfo } from "./lib/list-processes.ts"; // #8661
 // #7044 + #7048: a extração pro módulo compartilhado vale pro guard PURO
 // (`shouldSkipForSharedSession`, re-exportado abaixo e reusado por
 // `scripts/branch-cleanup.ts`), mas NÃO pro `listActiveSessionsSafe` — o #7048
@@ -578,8 +579,37 @@ export function getWorktreeMtimeMsSafe(path: string): number | null {
  * ou motivo alheio à junction, e forçar limpeza via FS nesse caso mudaria o
  * contrato de falha pré-existente da função sem necessidade: o caso real da
  * issue é sempre git bem-sucedido + diretório remanescente.
+ *
+ * **#8661**: ANTES de chamar `git worktree remove` de qualquer forma, checa
+ * se algum processo vivo ainda referencia `path` na cmdline
+ * (`findLiveProcessesInPath`, `scripts/lib/worktree-remove.ts`). Se sim,
+ * **pula a remoção deste ciclo** — nunca mata o processo aqui (mata-lo é
+ * trabalho do sweep dedicado, `scripts/orphaned-test-process-sweep.ts`, que
+ * decide isso especificamente pro padrão `--test-isolation=process`; este
+ * ponto de checagem é genérico e mais conservador: qualquer processo vivo
+ * já basta pra adiar). Sem isso, um teste ainda rodando dentro do worktree
+ * no momento exato da limpeza pós-merge perde o diretório debaixo de si e
+ * vira um neto órfão `PPID=1` vazando RSS pra sempre (mecanismo raiz da
+ * issue). `liveProcesses` é injetável só pra teste determinístico — default
+ * é a checagem real da máquina via `findLiveProcessesInPath` (que por sua
+ * vez usa `listAllProcesses()`, `[]` em plataforma não suportada — mesmo
+ * comportamento de antes do #8661 nesse caso, nunca bloqueia a remoção só
+ * por não saber checar).
  */
-export function removeWorktreeSafe(path: string, cwd: string): { ok: boolean; error?: string } {
+export function removeWorktreeSafe(
+  path: string,
+  cwd: string,
+  liveProcesses?: readonly ProcessInfo[],
+): { ok: boolean; error?: string } {
+  const livePids = findLiveProcessesInPath(path, liveProcesses);
+  if (livePids.length > 0) {
+    const detail = livePids.map((p) => `PID ${p.pid} (${p.cmd.slice(0, 120)})`).join("; ");
+    return {
+      ok: false,
+      error: `${livePids.length} processo(s) vivo(s) ainda referenciam este worktree — pulando remoção neste ciclo (retry no próximo, #8661): ${detail}`,
+    };
+  }
+
   let gitError: string | undefined;
   try {
     const result = spawnSync("git", ["worktree", "remove", "--force", path], {
@@ -1005,6 +1035,14 @@ function main(): void {
 
     let removed = 0;
     let failed = 0;
+    // #8661: um snapshot só de `ps` reusado por TODA a iteração — cada
+    // `removeWorktreeSafe` filtra este mesmo snapshot pelo path dele, em vez
+    // de rodar `ps` de novo por worktree (o snapshot representar um instante
+    // um pouco anterior ao de cada remoção individual é aceitável: o pior
+    // caso é um FALSO NEGATIVO raríssimo — processo que nasceu depois do
+    // snapshot — não um falso positivo, e a rede de segurança pra esse
+    // residual é o sweep dedicado, `scripts/orphaned-test-process-sweep.ts`).
+    const liveProcessSnapshot: ProcessInfo[] = dryRun ? [] : listAllProcesses();
     for (const entry of toRemove) {
       const reason = mergedRemoval.includes(entry)
         ? "branch mergeada"
@@ -1015,7 +1053,7 @@ function main(): void {
         console.log(`[cleanup-merged-worktrees] (dry-run) removeria: ${entry.path} (branch ${entry.branch}, motivo: ${reason})`);
         continue;
       }
-      const result = removeWorktreeSafe(entry.path, repoRoot);
+      const result = removeWorktreeSafe(entry.path, repoRoot, liveProcessSnapshot);
       if (result.ok) {
         removed++;
         console.log(`[cleanup-merged-worktrees] removido: ${entry.path} (branch ${entry.branch}, motivo: ${reason})`);

@@ -47,6 +47,7 @@
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync, unlinkSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { isMainModule } from "./cli-args.ts";
+import { listAllProcesses, type ProcessInfo } from "./list-processes.ts";
 
 /** `true` só quando `path` existe e é um symlink (Linux/macOS) ou junction (Windows) — nunca segue o alvo. */
 export function isSymlinkOrJunction(path: string): boolean {
@@ -108,6 +109,43 @@ export function removeLinkSafely(linkPath: string): { removed: boolean; error?: 
       return { removed: false, error: (e2 as Error).message };
     }
   }
+}
+
+/**
+ * #8661: `true` quando `proc.cmd` (cmdline completo, ver
+ * `scripts/lib/list-processes.ts`) contém `worktreePath` como substring —
+ * a checagem que `removeWorktreeSafe` roda ANTES de
+ * `git worktree remove --force`, pra não deixar um processo (tipicamente
+ * `node --test-isolation=process`, mas a checagem não é restrita a esse
+ * padrão — QUALQUER processo com o path na cmdline conta) sobreviver à
+ * remoção como um neto órfão `PPID=1` (mecanismo completo: issue #8661).
+ * Substring simples de propósito: cmdline real observado ao vivo tem o
+ * worktree como prefixo de vários argumentos (`--require
+ * {worktree}/node_modules/.../preflight.cjs`, `--import
+ * {worktree}/node_modules/.../loader.mjs`), então normalizar por
+ * tokenização perderia casos onde o path aparece embutido num argumento
+ * maior (ex: `--experimental-loader={worktree}/...`).
+ */
+export function commandReferencesPath(cmd: string, worktreePath: string): boolean {
+  return cmd.includes(worktreePath);
+}
+
+/**
+ * #8661: processos vivos (do snapshot `processes`, default a máquina real
+ * via `listAllProcesses()`) cujo cmdline referencia `worktreePath` — usado
+ * por `removeWorktreeSafe` (`scripts/cleanup-merged-worktrees.ts`) pra
+ * decidir se é seguro chamar `git worktree remove --force` agora, ou se é
+ * melhor pular esta remoção neste ciclo (o processo ainda pode terminar
+ * sozinho; a próxima rodada de limpeza tenta de novo). `[]` sempre que a
+ * plataforma não é suportada por `listAllProcesses` (Windows — ver
+ * docstring de lá) ou quando genuinamente não há processo vivo apontando
+ * pro path.
+ */
+export function findLiveProcessesInPath(
+  worktreePath: string,
+  processes: readonly ProcessInfo[] = listAllProcesses(),
+): ProcessInfo[] {
+  return processes.filter((proc) => commandReferencesPath(proc.cmd, worktreePath));
 }
 
 export interface RemoveWorktreeDirResult {
