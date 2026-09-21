@@ -143,8 +143,8 @@ devolve as fontes num campo à parte; só o texto nunca acharia `diar.ia.br`).
 
 ## Captura de usage e teto de custo (#4904)
 
-**Os 3 providers rodam de verdade SÓ na máquina cujo `.env` tem as 3 keys
-(`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`) — isso não é um
+**Os providers rodam de verdade SÓ na máquina cujo `.env` tem as keys
+(`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`, e opcionalmente `PERPLEXITY_API_KEY`, que o alarme de provider ausente não espera — #8342) — isso não é um
 fato fixo por data, é estado por máquina (#5316).** O editor criou a org
 Anthropic em console.anthropic.com, comprou US$5 de crédito, gerou a key e
 configurou um teto de gasto mensal de US$10 na própria org (independente

@@ -385,6 +385,9 @@ export interface GeoProviderDef {
   label: string;
   /** Nome da env var com a API key. */
   envKey: string;
+  /** Provider OPCIONAL (#8342): não ter a key é estado normal, então o alarme
+   * de provider ausente (#5316) não o espera. Os 3 originais são esperados. */
+  optional?: boolean;
   /** Model ID default — sobrescrevível via env var `{ENVKEY}_MODEL` no CLI (ver main()). */
   defaultModel: string;
   /** Monta a URL + `RequestInit` pra este provider. Pure. */
@@ -1027,6 +1030,7 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     id: "perplexity",
     label: "Perplexity",
     envKey: "PERPLEXITY_API_KEY",
+    optional: true,
     // #8342: `sonar` (o mais barato da família com busca): US$1/1M in + US$1/1M
     // out + US$5/1.000 requisições (contexto low).
     defaultModel: "sonar",
@@ -1101,6 +1105,12 @@ function estimateNonAnthropicCostUsd(model: string, inputTokens: number | undefi
   const input = inputTokens ?? 0;
   const output = outputTokens ?? 0;
   return (input / 1_000_000) * pricing.inputPer1M + (output / 1_000_000) * pricing.outputPer1M + (pricing.requestFeeUsd ?? 0);
+}
+
+/** Pure (#8342): ids que o alarme de provider ausente (#5316) espera ver em
+ * toda rodada — exclui os `optional` (sem key = estado normal, não incidente). */
+export function expectedAlarmProviderIds(providers: readonly GeoProviderDef[] = GEO_PROVIDERS): GeoProviderId[] {
+  return providers.filter((p) => !p.optional).map((p) => p.id);
 }
 
 export interface CitationDetection {
@@ -1233,12 +1243,11 @@ export type QueryProviderResult =
  * no fallback textual (regex sobre o texto cru) antes de desistir e
  * devolver `"http"`.
  */
-export function classifyHttp429ErrorKind(bodyText: string): "http" | "quota" {
-  // Perplexity (#8342): crédito esgotado NÃO vem como 429 (a doc lista
-  // 401/402 pra "insufficient credits"; 429 é só rate limit) — ver
-  // `classifyPaymentStatusErrorKind`. Aqui só a mensagem textual, caso um 429
-  // traga o mesmo texto.
-  if (/insufficient[\s_-]*(credits?|quota|balance)/i.test(bodyText)) return "quota";
+export function classifyHttp429ErrorKind(bodyText: string, providerId?: GeoProviderId): "http" | "quota" {
+  // Perplexity (#8342): mensagem textual de crédito, só pra esse provider —
+  // o comportamento dos outros 3 não muda. (Crédito zerado costuma vir como
+  // 401/402, ver `classifyPaymentStatusErrorKind`.)
+  if (providerId === "perplexity" && /insufficient[\s_-]*(credits?|quota|balance)/i.test(bodyText)) return "quota";
   let parsed: { error?: { code?: unknown; status?: unknown; message?: unknown } } | undefined;
   try {
     parsed = JSON.parse(bodyText);
@@ -1319,8 +1328,8 @@ export async function queryProvider(
     // classificação depende de ver inteiro.
     const kind: "http" | "quota" =
       res.status === 429
-        ? classifyHttp429ErrorKind(body)
-        : res.status === 401 || res.status === 402
+        ? classifyHttp429ErrorKind(body, provider.id)
+        : provider.id === "perplexity" && (res.status === 401 || res.status === 402)
           ? classifyPaymentStatusErrorKind(res.status, body)
           : "http";
     return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 300)}`, errorKind: kind, httpStatus: res.status };
@@ -1395,7 +1404,14 @@ export function buildUsageRecordFields(
   model: string,
   tsForCost: string,
 ): Pick<GeoCitationRecord, "inputTokens" | "outputTokens" | "searchCount" | "estimatedCostUsd"> {
-  if (!usage) return {};
+  if (!usage) {
+    // #8342: a taxa por requisição é cobrada mesmo sem usage legível.
+    if (providerId !== "anthropic") {
+      const cost = estimateNonAnthropicCostUsd(model, 0, 0);
+      if (cost !== undefined && cost > 0) return { estimatedCostUsd: cost };
+    }
+    return {};
+  }
   const out: Pick<GeoCitationRecord, "inputTokens" | "outputTokens" | "searchCount" | "estimatedCostUsd"> = {};
   if (usage.inputTokens !== undefined) out.inputTokens = usage.inputTokens;
   if (usage.outputTokens !== undefined) out.outputTokens = usage.outputTokens;
@@ -1773,9 +1789,9 @@ export function detectHighErrorRateProviders(
  * já classificado como `"http"` é seguro e idempotente.
  */
 export function deriveEffectiveErrorKind(
-  record: Pick<GeoCitationRecord, "errorKind" | "httpStatus" | "error">,
+  record: Pick<GeoCitationRecord, "errorKind" | "httpStatus" | "error"> & { provider?: GeoProviderId },
 ): GeoCitationRecord["errorKind"] {
-  if (record.errorKind === "http" && (record.httpStatus === 401 || record.httpStatus === 402) && typeof record.error === "string") {
+  if (record.errorKind === "http" && record.provider === "perplexity" && (record.httpStatus === 401 || record.httpStatus === 402) && typeof record.error === "string") {
     return classifyPaymentStatusErrorKind(record.httpStatus, record.error.replace(/^HTTP \d+:\s?/, ""));
   }
   if (record.errorKind === "http" && record.httpStatus === 429 && typeof record.error === "string") {
@@ -1791,7 +1807,7 @@ export function deriveEffectiveErrorKind(
     // `queryProvider` já passa pra `classifyHttp429ErrorKind` no caminho de
     // escrita (nunca com o prefixo).
     const body = record.error.replace(/^HTTP \d+:\s?/, "");
-    return classifyHttp429ErrorKind(body);
+    return classifyHttp429ErrorKind(body, record.provider);
   }
   return record.errorKind;
 }

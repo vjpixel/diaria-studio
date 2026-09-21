@@ -15,7 +15,9 @@ import {
   deriveEffectiveErrorKind,
   queryProvider,
   runGeoCitationMonitor,
+  expectedAlarmProviderIds,
 } from "../scripts/lib/geo-citation-monitor.ts";
+import { computeMissingProviders } from "../scripts/lib/geo-citation-staleness-alarm.ts";
 
 const perplexity = GEO_PROVIDERS.find((p) => p.id === "perplexity")!;
 
@@ -111,8 +113,10 @@ describe("queryProvider com perplexity (#8342)", () => {
 
   it("HTTP 401 de key inválida continua http; 401 com mensagem de crédito é quota", async () => {
     const bad = await queryProvider(perplexity, "q", "k", "sonar", async () => new Response("Unauthorized", { status: 401 }));
+    assert.equal(bad.ok, false);
     if (!bad.ok) assert.equal(bad.errorKind, "http");
     const credit = await queryProvider(perplexity, "q", "k", "sonar", async () => new Response("Insufficient credits", { status: 401 }));
+    assert.equal(credit.ok, false);
     if (!credit.ok) assert.equal(credit.errorKind, "quota");
   });
 
@@ -128,7 +132,28 @@ describe("classifyPaymentStatusErrorKind / deriveEffectiveErrorKind (#8342)", ()
     assert.equal(classifyPaymentStatusErrorKind(500, "credit"), "http");
   });
   it("reclassifica registro histórico 402 gravado como http", () => {
-    assert.equal(deriveEffectiveErrorKind({ errorKind: "http", httpStatus: 402, error: "HTTP 402: x" }), "quota");
+    assert.equal(deriveEffectiveErrorKind({ provider: "perplexity", errorKind: "http", httpStatus: 402, error: "HTTP 402: x" }), "quota");
+    assert.equal(deriveEffectiveErrorKind({ provider: "openai", errorKind: "http", httpStatus: 402, error: "HTTP 402: x" }), "http");
+  });
+});
+
+describe("alarme de provider ausente (#5316) x perplexity opcional (#8342)", () => {
+  it("conjunto esperado exclui perplexity e mantém os 3 originais (derivado de GEO_PROVIDERS)", () => {
+    const expected = expectedAlarmProviderIds(GEO_PROVIDERS);
+    assert.ok(!expected.includes("perplexity"));
+    for (const p of GEO_PROVIDERS.filter((x) => !x.optional)) assert.ok(expected.includes(p.id));
+  });
+  it("rodada sem perplexity não gera provider ausente", () => {
+    const round = ["anthropic", "openai", "google"];
+    assert.deepEqual(computeMissingProviders(round, expectedAlarmProviderIds(GEO_PROVIDERS)), []);
+  });
+});
+
+describe("custo sem usage (#8342)", () => {
+  it("sonar sem usage ainda emite a taxa por requisição", () => {
+    const f = buildUsageRecordFields("perplexity", undefined, "sonar", "2026-09-20T00:00:00Z");
+    assert.ok(Math.abs(f.estimatedCostUsd! - 0.005) < 1e-9);
+    assert.deepEqual(buildUsageRecordFields("openai", undefined, "gpt-5-mini", "2026-09-20T00:00:00Z"), {});
   });
 });
 
