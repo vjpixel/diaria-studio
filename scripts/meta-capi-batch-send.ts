@@ -96,10 +96,13 @@ export const DEFAULT_WINDOW_DAYS = 7;
 export const CAPI_BATCH_EVENT_SOURCE_URL = "https://diar.ia.br/";
 
 /**
- * #8577: marcadores de `referring_site` gravados pelos 3 handlers de
- * formulário (item (a) do escopo — `workers/poll/src/subscribe.ts`,
- * `workers/cursos/src/subscribe.ts`) sempre que o cadastro JÁ passou por um
- * deles em tempo real. Até aqui `selectCapiCandidates` selecionava TODO
+ * #8577: marcadores de `referring_site` gravados pelos 2 dos 3 handlers de
+ * formulário (item (a) do escopo) que mandam `CompleteRegistration` —
+ * `workers/poll/src/subscribe.ts` e `workers/cursos/src/subscribe.ts`
+ * (`workers/reativar/src/index.ts` manda `Reactivation`, não
+ * `CompleteRegistration`, desde #8551 — fora do escopo deste filtro) —
+ * sempre que o cadastro JÁ passou por um deles em tempo real. Até aqui
+ * `selectCapiCandidates` selecionava TODO
  * subscriber `active` na janela, sem olhar a origem — inclusive quem já
  * tinha recebido um `CompleteRegistration` do handler em tempo real,
  * contradizendo a própria docstring do módulo ("cobre o gap que os 3
@@ -107,7 +110,7 @@ export const CAPI_BATCH_EVENT_SOURCE_URL = "https://diar.ia.br/";
  * (`ads_get_dataset_stats`, dataset `1285191740325112`): 100% do volume
  * SERVER_ONLY de `CompleteRegistration` na semana carregava
  * `event_source_url = CAPI_BATCH_EVENT_SOURCE_URL` (nenhum evento com a URL
- * de um dos 3 handlers em tempo real apareceu), numa proporção
+ * de um dos 2 handlers em tempo real apareceu), numa proporção
  * consistentemente ~2x o volume BROWSER — o batch reprocessando a MESMA
  * população que os handlers já cobriram, semana após semana, é a explicação
  * mecânica mais direta. O `event_id` determinístico (mesmo dia UTC) absorve
