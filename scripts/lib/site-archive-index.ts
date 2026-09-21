@@ -55,6 +55,7 @@ import { COLORS } from "./shared/design-tokens.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
 import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 import { ARCHIVE_BASE_URL } from "./site-archive-pages.ts";
+import { SITE_FEED_URL } from "./site-feed.ts";
 import { renderSiteNav } from "./shared/site-nav.ts"; // #8497: menu global
 import {
   buildHomeFeed,
@@ -297,6 +298,7 @@ export function buildArchiveIndexHtml(opts: BuildArchiveIndexHtmlOptions): strin
     title,
     description,
     url: canonical,
+    feed: { url: SITE_FEED_URL }, // #8333
     image: coverImage
       ? { url: coverImage, width: COVER_IMAGE_WIDTH, height: COVER_IMAGE_HEIGHT }
       : undefined,

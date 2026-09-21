@@ -123,16 +123,21 @@ jobs:
       - name: Regenerar índice do acervo (/archive)
         run: npx tsx scripts/gen-archive-index.ts --no-sitemap
 
+      # #8333: feed RSS das edições (`/feed.xml`) — mesma fonte e mesmo corte de
+      # data futura da home e do índice, então regenera junto.
+      - name: Regenerar feed RSS (/feed.xml)
+        run: npx tsx scripts/gen-feed.ts
+
       - name: Detectar mudança na home/índice
         id: diff
         run: |
-          if git diff --quiet -- workers/site/public/index.html workers/site/public/archive; then
+          if git diff --quiet -- workers/site/public/index.html workers/site/public/archive workers/site/public/feed.xml; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "Home e índice do acervo já estão atualizados — nada a fazer."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "Mudou:"
-            git diff --stat -- workers/site/public/index.html workers/site/public/archive
+            git diff --stat -- workers/site/public/index.html workers/site/public/archive workers/site/public/feed.xml
           fi
 
       - name: Testar artefatos do site antes do merge
@@ -166,6 +171,7 @@ jobs:
           test/site-home-signup-utm-prefill-7360.test.ts
           test/regression-7517-hub-gemini-slug.test.ts
           test/site-archive-index-8353.test.ts
+          test/site-feed-8333.test.ts
 
       - name: Commitar, abrir PR e mergear
         if: steps.diff.outputs.changed == 'true'
@@ -187,7 +193,7 @@ jobs:
           # subproduto de `npm ci`/build no working tree, e esta unidade
           # publica só o que ela mesma gera: a home e o índice do acervo
           # (`workers/site/public/archive/`, #8353).
-          git add -- workers/site/public/index.html workers/site/public/archive
+          git add -- workers/site/public/index.html workers/site/public/archive workers/site/public/feed.xml
           git commit -m "chore(#7686): regenera home das 06:00 BRT" \
                      -m "Regeneração automática de workers/site/public/index.html e do índice do acervo (workers/site/public/archive/, #8353) para incluir a edição cuja data de envio chegou. Gerado por .github/workflows/regen-home.yml."
           git push --force origin "$BRANCH"
