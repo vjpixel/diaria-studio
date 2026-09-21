@@ -12,7 +12,11 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderBoxDivulgacao } from "../scripts/lib/newsletter-render-html.ts";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { renderBoxDivulgacao, renderIntroCallout, renderHTML, dedupeBookKickerTitle } from "../scripts/lib/newsletter-render-html.ts";
+import { extractContent } from "../scripts/lib/newsletter-parse.ts";
 
 describe("renderBoxDivulgacao — dispatcher por estrutura (#2978/#3475)", () => {
   it("último parágrafo só-link → formato carrinho (pill CTA)", () => {
@@ -421,5 +425,167 @@ Vale a leitura completa.`;
   it("ramo forceImage horizontal (portrait=false): plainFirstParagraph já era suprimido por `!portrait` — continua suprimido", () => {
     const html = renderBoxDivulgacao(boxSemCtaOnly, "https://cdn.example.com/header.jpg", true, true, false, null, false);
     assert.doesNotMatch(html, /font-size:26px/, "imagem horizontal forçada já suprimia título independente de plainFirstParagraph — regressão de comportamento histórico");
+  });
+});
+
+/**
+ * #8575 (regressão do #8199, fechado pelo #8216) — box "Recomendação de
+ * Leitura" duplicando o rótulo: kicker externo (`categoria` do snippet,
+ * `renderDivulgacaoSeparator`, 12px caixa-alta) + o mesmo rótulo sintetizado
+ * de novo DENTRO do box (`BOOK_RECOMMENDATION_TITLE`, #8119).
+ *
+ * Duas causas raiz distintas:
+ *
+ * 1. **Dentro de `renderIntroCallout` (branch "sponsored"/`forceCtaPill`/
+ *    `ceremony`, marcado `#8575` no código-fonte).** Quando o box tem a
+ *    FORMA de patrocinado (`isSponsoredCallout` — qualquer link com
+ *    `?via=`/`?tag=`, o caso comum de link de afiliado Amazon num box de
+ *    livro!), o branch "plain" do #8199/#8216 (que respeita
+ *    `plainFirstParagraph`) NUNCA é alcançado (`!sponsored` é AND
+ *    obrigatório na condição) — e o branch else-if sintetizava
+ *    `BOOK_RECOMMENDATION_TITLE` incondicionalmente, ignorando
+ *    `plainFirstParagraph` por completo (só usava a flag pra escolher o
+ *    ESTILO do texto sintetizado, nunca se ele deveria existir). Esse é o
+ *    caminho real da 260921: link de afiliado com `?tag=` marca o box como
+ *    patrocinado, e mesmo com `titulo: false` no snippet o rótulo saía
+ *    sintetizado de novo (kicker 12px + parágrafo 16px "Recomendação de
+ *    Leitura" + parágrafo do livro logo abaixo — a evidência exata da
+ *    issue). Fix: suprimir a síntese por completo (não só rebaixar o
+ *    estilo) quando `isBookRecommendation && plainFirstParagraph`,
+ *    independente de por qual branch o box chegou.
+ * 2. **No CALL-SITE (`renderHTML`, não dentro de `renderIntroCallout`).**
+ *    Quando o box tem uma linha de título EXPLÍCITA ("Recomendação de
+ *    leitura" isolada em `paras[0]`) — texto AUTORADO de verdade no
+ *    snippet-fonte, não sintetizado — ela sobrevive intacta como 1º
+ *    parágrafo de corpo em QUALQUER branch (nenhum dos dois processa/
+ *    descarta essa linha por padrão, e não pode: um box sem kicker externo
+ *    que tenha essa linha por escolha do editor precisa preservá-la — ver
+ *    describe #8199 acima). Só o call-site sabe que o KICKER externo vai
+ *    repetir o mesmo texto — por isso `dedupeBookKickerTitle` remove essa
+ *    linha (quando o rótulo do kicker bate) ANTES de passar o box pra
+ *    `renderBoxDivulgacao`, e força `plainFirstParagraph=true` (que também
+ *    resolve o caso 1 acima quando não há linha explícita nenhuma).
+ */
+describe("#8575 — box de livro com kicker 'Recomendação de Leitura' não duplica o rótulo", () => {
+  // Nota: `?tag=diaria-20` (afiliado Amazon) marca `isSponsoredCallout=true`
+  // — o caminho REAL da 260921 (achado ao investigar: um livro com link de
+  // afiliado nunca alcança o branch "plain" de `renderIntroCallout`, matando
+  // a garantia do #8216 sozinha). Frase termina em "." — exigido por
+  // `isBookRecommendationParagraph` pra ser reconhecida como parágrafo de
+  // livro.
+  const bookSponsored = `[**Inteligência Artificial — do Zero a Superpoderes**](https://amazon.com.br/dp/B0DB9VVG22?tag=diaria-20), de Martha Gabriel.
+
+(GEN Atlas, 2ª edição, 168 páginas, 4,7★/73 avaliações). Link de associado — ASIN B0DB9VVG22.`;
+  // Variante sem afiliado — não-patrocinado, exercita o branch "plain" de
+  // `renderIntroCallout` (o único caminho onde o #8199/#8216 já funcionava
+  // parcialmente — mas só quando `dedupeBookKickerTitle` já removeu a linha
+  // de título explícita, ver call-site abaixo).
+  const bookNotSponsored = `[**2041: Como a IA Vai Mudar Sua Vida**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.
+
+Estou terminando agora e gosto da estrutura: cada capítulo abre com um conto.`;
+
+  const count = (html: string, needle: string) =>
+    (html.match(new RegExp(needle, "g")) ?? []).length;
+
+  it("dedupeBookKickerTitle: kicker igual ao rótulo do livro → forcePlain=true, sem linha pra remover (já não tem)", () => {
+    const dedup = dedupeBookKickerTitle(bookSponsored, "Recomendação de Leitura");
+    assert.equal(dedup.forcePlain, true);
+    assert.equal(dedup.box, bookSponsored);
+  });
+
+  it("dedupeBookKickerTitle: kicker igual + linha de título explícita → remove a linha duplicada", () => {
+    const withTitleLine = `Recomendação de leitura\n\n${bookSponsored}`;
+    const dedup = dedupeBookKickerTitle(withTitleLine, "Recomendação de Leitura");
+    assert.equal(dedup.forcePlain, true);
+    assert.equal(dedup.box, bookSponsored, "linha de título explícita (duplicada com o kicker) removida");
+  });
+
+  it("dedupeBookKickerTitle: kicker DIFERENTE (ex: 'Divulgação') não mexe no box", () => {
+    const dedup = dedupeBookKickerTitle(bookSponsored, "Divulgação");
+    assert.equal(dedup.forcePlain, false);
+    assert.equal(dedup.box, bookSponsored);
+  });
+
+  it("dedupeBookKickerTitle: kicker igual mas conteúdo NÃO é livro → não mexe no box", () => {
+    const notABook = "Olá! Eu sou o Pixel, editor dessa newsletter.\n\nConsidere apoiar se puder.";
+    const dedup = dedupeBookKickerTitle(notABook, "Recomendação de Leitura");
+    assert.equal(dedup.forcePlain, false);
+    assert.equal(dedup.box, notABook);
+  });
+
+  it("caminho SPONSORED (link de afiliado, ?tag=) + linha de título explícita: dedup + forcePlain elimina os dois pontos de duplicação", () => {
+    const withTitleLine = `Recomendação de leitura\n\n${bookSponsored}`;
+    const dedup = dedupeBookKickerTitle(withTitleLine, "Recomendação de Leitura");
+    const html = renderBoxDivulgacao(dedup.box, null, true, false, false, null, dedup.forcePlain);
+    assert.equal(count(html, "Recomendação de Leitura"), 0, "rótulo não pode ser sintetizado nem sobreviver dentro do box");
+    assert.equal(count(html, "Inteligência Artificial — do Zero a Superpoderes"), 1, "título do livro aparece 1x, como corpo");
+  });
+
+  it("caminho SPONSORED sem linha de título explícita: idem, sem duplicar", () => {
+    const dedup = dedupeBookKickerTitle(bookSponsored, "Recomendação de Leitura");
+    const html = renderBoxDivulgacao(dedup.box, null, true, false, false, null, dedup.forcePlain);
+    assert.equal(count(html, "Recomendação de Leitura"), 0);
+    assert.equal(count(html, "Inteligência Artificial — do Zero a Superpoderes"), 1);
+  });
+
+  it("caminho NÃO-sponsored (branch 'plain' de renderIntroCallout) + linha de título explícita: dedup remove a linha ANTES de chegar no render — não sobrevive como parágrafo de corpo", () => {
+    const withTitleLine = `Recomendação de leitura\n\n${bookNotSponsored}`;
+    const dedup = dedupeBookKickerTitle(withTitleLine, "Recomendação de Leitura");
+    assert.equal(dedup.forcePlain, true);
+    const html = renderIntroCallout(dedup.box, "serif", false, true, dedup.forcePlain);
+    assert.equal(count(html, "Recomendação de Leitura"), 0, "linha de título explícita, já removida pelo dedup, não pode reaparecer");
+    assert.match(html, /2041: Como a IA Vai Mudar Sua Vida/);
+  });
+
+  it("sanity: SEM dedup (chamada direta, ex: renderConviteAmigo, sem kicker), linha de título explícita É preservada — comportamento #8199 documentado acima", () => {
+    const withTitleLine = `Recomendação de Leitura\n\n${bookNotSponsored}`;
+    const html = renderIntroCallout(withTitleLine, "serif", false, true, true);
+    assert.match(html, /Recomendação de Leitura/, "sem dedup, texto AUTORADO no snippet não é removido — só o rótulo SINTETIZADO seria suprimido");
+  });
+
+  it("sanity: SEM kicker externo, SEM linha explícita, o rótulo fixo continua sintetizado — #8119 preservado", () => {
+    const html = renderIntroCallout(bookNotSponsored, "serif", false, true, false);
+    assert.match(html, /Recomendação de Leitura/, "sem kicker externo, o título sintetizado é a única fonte do rótulo — #8119");
+  });
+
+  // Caminho ponta-a-ponta real: markdown pós-stitch (`02-reviewed.md`),
+  // categoria do slot 1 setada como o kicker "Recomendação de Leitura" (como
+  // o `categoria:` do snippet chegaria via `resolveBoxDivulgacaoCategoriaForSlot`)
+  // — reproduz a 260921 (issue #8575), incluindo o link de afiliado que torna
+  // o box "sponsored".
+  const EIA = "**É IA?**\n\nFoto teste. [Autor](https://example.com/a) / CC.\n\nResultado: 40%.\n";
+  function destaque(n: number): string {
+    return `**DESTAQUE ${n} | 🚀 LANÇAMENTO**\n\n**[Título D${n}](https://example.com/d${n})**\n\nCorpo ${n}.\n\nPor que isso importa:\n\nWhy ${n}.\n`;
+  }
+  function buildReviewed(box1: string): string {
+    return `Intro da edição.\n\n---\n\n${destaque(1)}\n---\n\n${box1}\n\n---\n\n${destaque(2)}\n---\n\n${destaque(3)}\n---\n\n${EIA}\n---\n\n**📡 RADAR**\n\n**[Item](https://example.com/r1)**\nResumo.\n`;
+  }
+  function renderEditionWithBox(box1: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "ed-8575-"));
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), buildReviewed(box1), "utf8");
+      writeFileSync(join(dir, "01-eia.md"), EIA, "utf8");
+      const content = extractContent(dir);
+      assert.ok(content.boxDivulgacao1, "box de livro extraído do slot 1 (gap D1/D2)");
+      // Simula a categoria vinda do snippet (`categoria: Recomendação de
+      // Leitura`) SEM `titulo: false` propagado — a hipótese não confirmada
+      // da issue: o frontmatter do snippet não chega no caminho 02-reviewed.md.
+      content.boxDivulgacao1Categoria = "Recomendação de Leitura";
+      return renderHTML(content);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("pipeline completo (extractContent → renderHTML), box com link de afiliado: 1 única ocorrência do rótulo (o kicker)", () => {
+    const html = renderEditionWithBox(bookSponsored);
+    assert.equal(count(html, "Recomendação de Leitura"), 1, "rótulo deveria aparecer só como kicker externo");
+    assert.match(html, /Inteligência Artificial/);
+  });
+
+  it("pipeline completo com linha de título explícita: idem, 1 única ocorrência", () => {
+    const html = renderEditionWithBox(`Recomendação de leitura\n\n${bookSponsored}`);
+    assert.equal(count(html, "Recomendação de Leitura"), 1, "rótulo deveria aparecer só como kicker externo");
+    assert.match(html, /Inteligência Artificial/);
   });
 });
