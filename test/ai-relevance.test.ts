@@ -4,6 +4,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "fs";
 import {
   AI_RELEVANT_TERMS,
   AI_RELEVANT_URL_SLUG,
@@ -324,4 +325,25 @@ describe("isArticleAIRelevant — fixtures #901 (regression)", () => {
       false,
     );
   });
+});
+
+// #8667 regression: matéria UN sobre "AI agents" não pode ser descartada
+// pelo gate #2986 depois da expansão de regex (agents? + \bai\b)
+it("#8667 UN panel calls for stronger safeguards as AI agents advance → on-topic", () => {
+  assert.equal(
+    isArticleAIRelevant({
+      url: "https://news.un.org/en/story/2026/09/1168380",
+      title: "UN panel calls for stronger safeguards as AI agents advance",
+    }),
+    true,
+  );
+});
+
+// Auditability: descarte de #2986 deve ser registrável (artefato _internal/)
+it("#8667 audit artifact _internal/dropped_non_ai.jsonl exists and references #8667 URL", () => {
+  // fs already imported at top
+  assert.ok(fs.existsSync("_internal/dropped_non_ai.jsonl"), "audit artifact missing");
+  const content = fs.readFileSync("_internal/dropped_non_ai.jsonl", "utf8");
+  assert.ok(content.includes("1168380"), "audit artifact must reference issue URL");
+
 });
