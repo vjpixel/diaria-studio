@@ -275,22 +275,22 @@ describe("#5504 — sendCompleteRegistrationEvent (wrapper fail-soft ponta-a-pon
 describe("#7776 — buildMetaCapiLogEvent (distingue not_configured de configurado-e-falhou)", () => {
   it("ok:true → meta_capi_sent, com status", () => {
     const ev = buildMetaCapiLogEvent({ ok: true, status: 200 }, "poll");
-    assert.deepEqual(ev, { event: "meta_capi_sent", worker: "poll", status: 200 });
+    assert.deepEqual(ev, { event: "meta_capi_sent", worker: "poll", status: 200, eventSourceUrl: undefined });
   });
 
   it("reason:not_configured → meta_capi_not_configured, SEM status (distinto de erro real)", () => {
     const ev = buildMetaCapiLogEvent({ ok: false, status: 503, reason: "not_configured" }, "cursos");
-    assert.deepEqual(ev, { event: "meta_capi_not_configured", worker: "cursos" });
+    assert.deepEqual(ev, { event: "meta_capi_not_configured", worker: "cursos", eventSourceUrl: undefined });
   });
 
   it("reason:meta_error → meta_capi_send_failed com reason preservado (token PRESENTE, mas a Meta rejeitou)", () => {
     const ev = buildMetaCapiLogEvent({ ok: false, status: 401, reason: "meta_error" }, "reativar");
-    assert.deepEqual(ev, { event: "meta_capi_send_failed", worker: "reativar", status: 401, reason: "meta_error" });
+    assert.deepEqual(ev, { event: "meta_capi_send_failed", worker: "reativar", status: 401, reason: "meta_error", eventSourceUrl: undefined });
   });
 
   it("reason:network_error → meta_capi_send_failed", () => {
     const ev = buildMetaCapiLogEvent({ ok: false, status: 502, reason: "network_error" }, "poll");
-    assert.deepEqual(ev, { event: "meta_capi_send_failed", worker: "poll", status: 502, reason: "network_error" });
+    assert.deepEqual(ev, { event: "meta_capi_send_failed", worker: "poll", status: 502, reason: "network_error", eventSourceUrl: undefined });
   });
 
   it("nunca inclui e-mail/PII — só worker + desfecho", () => {
