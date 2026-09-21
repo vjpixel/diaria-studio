@@ -141,6 +141,29 @@ describe("#8577 — selectCapiCandidates exclui quem já passou por um handler e
   });
 });
 
+describe("#8657 — regressão do #cf1769079: jogar-identify-magic-link e vote-clarice-set-name NUNCA passam por um handler em tempo real", () => {
+  it("inclui subscriber com referring_site = jogar-identify-magic-link (magic-link.ts chama subscribeViaConfiguredBackend direto, nunca handleJogarSubscribe — nenhum CompleteRegistration em tempo real é enviado)", () => {
+    const result = selectCapiCandidates([sub({ referring_site: "jogar-identify-magic-link" })], {
+      windowDays: DEFAULT_WINDOW_DAYS,
+      nowSeconds: NOW,
+    });
+    assert.equal(result.length, 1);
+  });
+
+  it("inclui subscriber com referring_site = vote-clarice-set-name (index.ts::handleSetName chama subscribeViaConfiguredBackend direto, nunca handleJogarSubscribe — nenhum CompleteRegistration em tempo real é enviado)", () => {
+    const result = selectCapiCandidates([sub({ referring_site: "vote-clarice-set-name" })], {
+      windowDays: DEFAULT_WINDOW_DAYS,
+      nowSeconds: NOW,
+    });
+    assert.equal(result.length, 1);
+  });
+
+  it("os 2 marcadores acima NÃO estão em REALTIME_HANDLER_REFERRING_SITES", () => {
+    assert.equal(REALTIME_HANDLER_REFERRING_SITES.has("jogar-identify-magic-link"), false);
+    assert.equal(REALTIME_HANDLER_REFERRING_SITES.has("vote-clarice-set-name"), false);
+  });
+});
+
 describe("#5504 — índice de idempotência (loadCapiSentIndex / saveCapiSentIndex)", () => {
   let dir: string;
   beforeEach(() => {
