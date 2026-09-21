@@ -486,6 +486,76 @@ describe("#8555 — CLI main()", () => {
     });
   });
 
+  // ATENÇÃO ao montar estes testes: sem snapshot válido o script sai 1 ANTES de olhar a ação, e um
+  // `assert.equal(code, 1)` passaria mesmo com o guard desligado (medido: 39/39 verdes sem o guard).
+  // Por isso o snapshot existe, o dry-run SEM o guard sairia 0, e o que se afirma é a MENSAGEM do guard.
+  async function runRefusingPrimary(actionArg: string, extra: string[]) {
+    return withTmp(async (dir) => {
+      const snapDir = join(dir, yesterday());
+      mkdirSync(snapDir, { recursive: true });
+      writeFileSync(join(snapDir, "subscribers.jsonl"), JSON.stringify(base(1)) + "\n");
+      const f = noFetch();
+      const err = mock.method(console, "error", () => {});
+      try {
+        const code = await confirmMain(
+          ["--conversion-action-id", actionArg, "--customer-id", "2369219639", "--snapshot-root", dir, "--index", join(dir, "i.json"), ...extra],
+          f as unknown as typeof fetch,
+          async () => [sub(1)],
+        );
+        return { code, calls: f.mock.callCount(), lines: err.mock.calls.map((c) => String(c.arguments[0])) };
+      } finally {
+        err.mock.restore();
+      }
+    });
+  }
+
+  it("recusa a ação de CADASTRO 7418673798 como destino — em --send e em dry-run (#8555)", async () => {
+    for (const extra of [["--send"], []]) {
+      const r = await runRefusingPrimary("7418673798", extra);
+      assert.equal(r.code, 1, `deveria recusar (extra=${JSON.stringify(extra)})`);
+      assert.equal(r.calls, 0);
+      assert.ok(r.lines.some((l) => l.includes("ação de CADASTRO") && l.includes("recusada")), `mensagem do guard ausente: ${r.lines.join(" | ")}`);
+    }
+  });
+
+  it("recusa a primária também quando vem como resource name completo", async () => {
+    const r = await runRefusingPrimary("customers/2369219639/conversionActions/7418673798", ["--send"]);
+    assert.equal(r.code, 1);
+    assert.equal(r.calls, 0);
+    assert.ok(r.lines.some((l) => l.includes("ação de CADASTRO") && l.includes("recusada")));
+  });
+
+  it("controle: uma ação SECUNDÁRIA qualquer NÃO é recusada pelo guard (dry-run sai 0)", async () => {
+    const r = await runRefusingPrimary("7762768203", []);
+    assert.equal(r.code, 0);
+    assert.ok(!r.lines.some((l) => l.includes("recusada")));
+  });
+
+  it("argumento e env divergentes: usa o argumento e AVISA em stderr (não escolhe em silêncio)", async () => {
+    await withTmp(async (dir) => {
+      const snapDir = join(dir, yesterday());
+      mkdirSync(snapDir, { recursive: true });
+      writeFileSync(join(snapDir, "subscribers.jsonl"), JSON.stringify(base(1)) + "\n");
+      const saved = process.env.GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID;
+      process.env.GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID = "111";
+      const err = mock.method(console, "error", () => {});
+      try {
+        const code = await confirmMain(
+          ["--conversion-action-id", "555", "--customer-id", "2369219639", "--snapshot-root", dir, "--index", join(dir, "i.json")],
+          noFetch() as unknown as typeof fetch,
+          async () => [sub(1)],
+        );
+        assert.equal(code, 0);
+        const lines = err.mock.calls.map((c) => String(c.arguments[0]));
+        assert.ok(lines.some((l) => l.includes("diverge de GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID") && l.includes("555") && l.includes("111")));
+      } finally {
+        err.mock.restore();
+        if (saved === undefined) delete process.env.GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID;
+        else process.env.GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID = saved;
+      }
+    });
+  });
+
   it("--send --dry-run juntos = dry-run: exit 0, sem rede, sem índice", async () => {
     await withTmp(async (dir) => {
       const snapDir = join(dir, yesterday());

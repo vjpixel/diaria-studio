@@ -189,12 +189,21 @@ export const GSC_URL_INSPECTION_DAILY_QUOTA = 2000;
  * Promovê-la a primária é decisão separada (#8387) e depende de 2-3 semanas
  * de dado desta ação.
  *
- * Constante em vez de env var: não é segredo (id de ação de conversão,
- * citado em `docs/` e no docstring de `upload-google-ads-confirmations.ts`),
+ * Constante em vez de env var: não é segredo (id de ação de conversão, não
+ * credencial; está no registro em `docs/scheduled-tasks-registry.md`),
  * e `GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID` nunca chegou a existir em
  * lugar nenhum — ver o comentário da task pro histórico.
  */
 export const GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID = "7762768203";
+
+/**
+ * Conta do Google Ads dona da ação acima. Fixada JUNTO do id da ação porque o
+ * par só faz sentido inteiro: `7762768203` só existe na conta `2369219639`, e
+ * o script resolveria `customers/{GOOGLE_ADS_CUSTOMER_ID}/conversionActions/{id}`
+ * — com a env apontando pra outra conta o resource name sairia consistente e
+ * errado, e o único sinal seria um NOT_FOUND diário do Google.
+ */
+export const GOOGLE_ADS_CONFIRMATION_CUSTOMER_ID = "2369219639";
 
 export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
@@ -1899,7 +1908,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // exit 1 sem o id — e NÃO é fail-soft como os `*-Spend-Ingest` acima,
     // que toleram credencial ausente com exit 0 —, mantê-la como
     // pré-requisito faria esta unit falhar às 07:20 todo dia até alguém
-    // notar. O id não é segredo (aparece em docs/ e no docstring do script),
+    // notar. O id não é segredo (é identificador de ação de conversão, não credencial),
     // então versioná-lo aqui troca uma pré-condição invisível por uma linha
     // auditável em diff: mudar a ação de destino vira revisão de PR em vez
     // de edição silenciosa de Doppler.
@@ -1930,7 +1939,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       {
         key: "upload",
         script: "scripts/upload-google-ads-confirmations.ts",
-        args: ["--conversion-action-id", GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID, "--send"],
+        args: [
+          "--conversion-action-id",
+          GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID,
+          "--customer-id",
+          GOOGLE_ADS_CONFIRMATION_CUSTOMER_ID,
+          "--send",
+        ],
       },
     ],
     logPath: "google-ads/.confirmations-upload.log",

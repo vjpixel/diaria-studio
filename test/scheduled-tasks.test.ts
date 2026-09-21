@@ -24,6 +24,7 @@ import {
   getScheduledTaskByName,
   GSC_URL_INSPECTION_DAILY_QUOTA,
   GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID,
+  GOOGLE_ADS_CONFIRMATION_CUSTOMER_ID,
   listDisabledScheduledTaskNames,
   listScheduledTaskNames,
   listScheduledTaskRows,
@@ -1108,8 +1109,12 @@ describe("#8573 — Diaria-Google-Ads-Confirmations-Upload registrada, diária, 
     assert.deepEqual(t!.steps[0].args, [
       "--conversion-action-id",
       GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID,
+      "--customer-id",
+      GOOGLE_ADS_CONFIRMATION_CUSTOMER_ID,
       "--send",
     ]);
+    // A conta é fixada junto da ação: o id só existe nela.
+    assert.equal(GOOGLE_ADS_CONFIRMATION_CUSTOMER_ID, "2369219639");
     // Trava o valor: subir confirmação na ação de CADASTRO (7418673798, a
     // única primária) contaria o mesmo assinante duas vezes — a classe de
     // erro que a #8572 pagou do lado da Meta.
