@@ -311,6 +311,27 @@ describe("rescueOrphanedWork", () => {
     assert.equal(result.outcome, "rescued");
   });
 
+  it("#8639 correção: git grep falha por erro real (status 128, não é repo) → rescue_failed, NUNCA prossegue como 'sem marcador' pra checkout -b/add/commit", () => {
+    const { spawn, calls } = makeFakeSpawn({
+      "git status": [ok(" M scripts/foo.ts\n")],
+      "git grep": [{ status: 128, stdout: "", stderr: "fatal: not a git repository" }],
+      "git checkout": [ok(), ok()],
+      "git add": [ok()],
+      "git commit": [ok()],
+    });
+    const result = rescueOrphanedWork(spawn, "2026-09-20T20:28:59.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "rescue_failed");
+    if (result.outcome !== "rescue_failed") throw new Error("unreachable");
+    assert.match(result.message, /grep/i);
+    assert.match(result.message, /not a git repository/);
+
+    // Nunca chega a checkout -b/add/commit — erro real do grep bloqueia o rescue inteiro,
+    // exatamente como qualquer outra falha de comando git nesta função (status/checkout/add/commit).
+    assert.equal(calls.some((c) => c[1] === "checkout"), false);
+    assert.equal(calls.some((c) => c[1] === "add"), false);
+    assert.equal(calls.some((c) => c[1] === "commit"), false);
+  });
+
   it("#8639: lock adquirido → release() chamado mesmo com outcome conflict_markers_found", () => {
     const conflictedGrepOutput = "arquivo-com-conflito.ts:1:<<<<<<< HEAD\narquivo-com-conflito.ts:5:>>>>>>> branch\n";
     const { spawn } = makeFakeSpawn({
@@ -336,24 +357,31 @@ describe("detectConflictMarkers (#8639)", () => {
     return () => response;
   }
 
-  it("git grep status 0 (achou match) → found:true com arquivos parseados", () => {
+  it("git grep status 0 (achou match) → outcome:found com arquivos parseados", () => {
     const spawn = makeSimpleSpawn(ok("a.ts:1:<<<<<<< HEAD\na.ts:3:>>>>>>> branch\nb.ts:1:<<<<<<< HEAD\n"));
     const result = detectConflictMarkers(spawn);
-    assert.equal(result.found, true);
-    assert.deepEqual(result.files, ["a.ts", "b.ts"]);
+    assert.equal(result.outcome, "found");
+    assert.deepEqual(result.outcome === "found" ? result.files : null, ["a.ts", "b.ts"]);
   });
 
-  it("git grep status 1 (sem match) → found:false", () => {
+  it("git grep status 1 (sem match) → outcome:clean, único caso genuinamente limpo", () => {
     const spawn = makeSimpleSpawn(fail());
     const result = detectConflictMarkers(spawn);
-    assert.equal(result.found, false);
-    assert.deepEqual(result.files, []);
+    assert.equal(result.outcome, "clean");
   });
 
-  it("git grep falha por outro motivo (ex: não é repo) → fail-open, found:false (não trava o rescue por um erro não-relacionado)", () => {
+  it("git grep falha por outro motivo (ex: não é repo, status 128) → outcome:grep_failed, NUNCA clean (#8639 correção)", () => {
     const spawn = makeSimpleSpawn({ status: 128, stdout: "", stderr: "fatal: not a git repository" });
     const result = detectConflictMarkers(spawn);
-    assert.equal(result.found, false);
+    assert.equal(result.outcome, "grep_failed");
+    assert.ok(result.outcome === "grep_failed" && /not a git repository/.test(result.message));
+  });
+
+  it("git grep morto por timeout (status: null) → outcome:grep_failed, nunca clean", () => {
+    const spawn = makeSimpleSpawn({ status: null, stdout: "", stderr: "" });
+    const result = detectConflictMarkers(spawn);
+    assert.equal(result.outcome, "grep_failed");
+    assert.ok(result.outcome === "grep_failed" && /timeout/.test(result.message));
   });
 
   it("chama git grep com --untracked (pega placeholder novo, não só tracked modificado)", () => {

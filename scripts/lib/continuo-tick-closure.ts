@@ -139,15 +139,25 @@ export function parseConflictMarkerFiles(grepStdout: string): string[] {
  * normal" — o `stash pop` conflitante já terminou, os arquivos já estão
  * `M`/`??` como qualquer outra mudança).
  *
- * Fail-open na ausência de sinal, mesmo espírito de `findUnmergedPaths`
- * (`git-sync.ts`, #6668): se o `git grep` falhar por qualquer motivo que
- * não seja "sem match" (status 0 = achou, 1 = não achou — convenção padrão
- * de grep), trata como "nenhum marcador confirmado" e deixa o rescue
- * prosseguir — o objetivo desta rede de segurança é pegar o caso concreto
- * medido no #8639, não travar o rescue inteiro por uma falha não-relacionada
- * do próprio `git grep`.
+ * `git grep` tem 3 classes de exit code, distinguidas aqui como
+ * `git-sync.ts` (#5302) já distingue `fetch_timeout`/`fetch_failed` no
+ * `git fetch`: `status === 0` (achou match) → `"found"`; `status === 1`
+ * (convenção padrão de grep para "nenhum match", único caso genuinamente
+ * limpo) → `"clean"`; qualquer outro status (2+, ou `null` — processo morto
+ * por timeout do `spawnSync`) → `"grep_failed"`, um ERRO real do próprio
+ * comando (sintaxe inválida, `fatal: not a git repository`, timeout,
+ * permissão) que NUNCA deve ser lido como "sem marcador" — fail-open nesse
+ * caso desarmaria esta rede de segurança em silêncio, exatamente a classe
+ * de silent failure que o #8639 existe para eliminar. O chamador
+ * (`rescueOrphanedWork`) trata `"grep_failed"` como `rescue_failed`
+ * (fail loud), nunca como "prossiga sem marcador".
  */
-export function detectConflictMarkers(spawn: SpawnFn): { found: boolean; files: string[] } {
+export type ConflictMarkerCheck =
+  | { outcome: "clean" }
+  | { outcome: "found"; files: string[] }
+  | { outcome: "grep_failed"; message: string };
+
+export function detectConflictMarkers(spawn: SpawnFn): ConflictMarkerCheck {
   const res = spawn("git", [
     "grep",
     "-I",
@@ -160,10 +170,19 @@ export function detectConflictMarkers(spawn: SpawnFn): { found: boolean; files: 
     "--",
     ".",
   ]);
-  if (res.status !== 0) {
-    return { found: false, files: [] };
+  if (res.status === 0) {
+    return { outcome: "found", files: parseConflictMarkerFiles(res.stdout) };
   }
-  return { found: true, files: parseConflictMarkerFiles(res.stdout) };
+  if (res.status === 1) {
+    return { outcome: "clean" };
+  }
+  const isTimeout = res.status === null;
+  const message = isTimeout
+    ? `git grep (detecção de marcador de conflito, #8639) foi encerrado por timeout — resultado ` +
+      `desconhecido, NÃO tratar como "sem marcador".`
+    : `git grep (detecção de marcador de conflito, #8639) falhou com exit ${res.status} — erro real do ` +
+      `comando (ex: 'fatal: not a git repository'), NÃO "sem marcador". Stderr: ${res.stderr.trim() || "(vazio)"}`;
+  return { outcome: "grep_failed", message };
 }
 
 /**
@@ -244,7 +263,17 @@ export function rescueOrphanedWork(
     // investigação/resolução manual, em vez de herdar uma decisão de merge
     // às cegas dentro de um commit automático.
     const conflictCheck = detectConflictMarkers(spawn);
-    if (conflictCheck.found) {
+    if (conflictCheck.outcome === "grep_failed") {
+      return {
+        outcome: "rescue_failed",
+        message:
+          `git grep (detecção de marcador de conflito, #8639) falhou por erro real, não por "sem match" — ` +
+          `${conflictCheck.message} Trabalho AINDA sujo no checkout compartilhado, sem recuperação. Nunca ` +
+          `prossegue como "sem marcador" nesse caso (fail-open silencioso é justo o bug que este guard existe ` +
+          `para eliminar) — investigar manualmente antes de tentar o rescue de novo.`,
+      };
+    }
+    if (conflictCheck.outcome === "found") {
       return {
         outcome: "conflict_markers_found",
         files: conflictCheck.files,
