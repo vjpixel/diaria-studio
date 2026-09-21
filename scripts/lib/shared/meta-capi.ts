@@ -120,6 +120,22 @@ export async function computeCompleteRegistrationEventId(
   return sha256Hex(`capi:completeregistration:${normalized}:${day}`);
 }
 
+/** #8543 — nome do evento custom da CONFIRMAÇÃO do e-mail. Distinto de
+ * `CompleteRegistration` de propósito: o cadastro é o evento que hoje otimiza o
+ * conjunto "BR · conversao · sem teto"; a confirmação entra como sinal
+ * SECUNDÁRIO, sem participar da otimização até a decisão da fase 3 da #8543. */
+export const META_CAPI_CONFIRMATION_EVENT_NAME = "SubscriptionConfirmed";
+
+/**
+ * #8543 — `event_id` determinístico da CONFIRMAÇÃO de um assinante do Kit.
+ * Derivado do id do Kit (não do e-mail nem do dia): uma confirmação por
+ * assinante, mesmo id em qualquer reenvio, e nunca colide com o id do cadastro
+ * (prefixo próprio). Sem PII na entrada.
+ */
+export async function computeConfirmationEventId(kitSubscriberId: number): Promise<string> {
+  return sha256Hex(`capi:subscriptionconfirmed:kit:${kitSubscriberId}`);
+}
+
 /**
  * #8572 — o par (`event_id`, `event_time`) que os DOIS lados da dedup
  * precisam compartilhar.
@@ -366,7 +382,13 @@ export interface MetaCapiUserData {
  * cadastro original, muitas vezes sem `fbc`/click id válido — como se
  * fossem cadastros novos vindos de anúncio.
  */
-export type MetaCapiEventName = "CompleteRegistration" | "Reactivation";
+export type MetaCapiEventName =
+  | "CompleteRegistration"
+  | "Reactivation"
+  | "SubscriptionConfirmed"
+  // #8543: o lote de confirmações aceita o nome por parâmetro (validado em
+  // `scripts/lib/meta-capi-confirmation-batch.ts`, nunca "CompleteRegistration").
+  | (string & {});
 
 export interface MetaCapiCompleteRegistrationEvent {
   event_name: MetaCapiEventName;
@@ -405,6 +427,10 @@ export interface BuildCompleteRegistrationEventInput {
    * `"Reactivation"` (`workers/reativar`, confirmação de reativação — nunca
    * deve entrar no evento de otimização do conjunto de anúncios). */
   eventName?: MetaCapiEventName;
+  /** #8543: `event_id` explícito — usado por eventos que NÃO são o cadastro
+   * (ex.: `SubscriptionConfirmed`, id derivado do id do Kit, não do e-mail+dia).
+   * Ausente = o id determinístico do `CompleteRegistration`, como sempre. */
+  eventId?: string;
 }
 
 /** Monta o evento `CompleteRegistration` pronto pra `sendMetaCapiEvent` —
@@ -416,7 +442,7 @@ export async function buildCompleteRegistrationEvent(
   const eventTime = input.eventTimeSeconds ?? Math.floor(Date.now() / 1000);
   const [em, eventId] = await Promise.all([
     hashEmailForMeta(input.email),
-    computeCompleteRegistrationEventId(input.email, eventTime),
+    input.eventId ? Promise.resolve(input.eventId) : computeCompleteRegistrationEventId(input.email, eventTime),
   ]);
   const userData: MetaCapiUserData = { em: [em] };
   // #8388: só entra a chave que TEM valor — `client_ip_address: ""` seria

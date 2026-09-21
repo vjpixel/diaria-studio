@@ -110,6 +110,9 @@ export interface ConfirmationCandidate {
   createdAt: string;
   path: ConfirmationPath;
   gclid?: string;
+  /** #8543: valor CRU de `origem_click_id` (`gclid:`/`fbclid:`/`msclkid:` + id),
+   * pra o lote da Meta reusar esta mesma detecção sem duplicá-la. */
+  clickId?: string;
   /** `true` = sem estado anterior na base (cadastrou depois dela). */
   ambiguous: boolean;
 }
@@ -216,6 +219,7 @@ export function selectConfirmationCandidates(
       createdAt: s.created_at,
       path: viaBotao ? "brevo-botao" : "kit-email",
       gclid: extractGclid(s.fields),
+      clickId: (s.fields?.[KIT_CLICK_ID_FIELD_NAME] ?? "").trim() || undefined,
       ambiguous: !base,
     });
   }
