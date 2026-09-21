@@ -39,7 +39,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { rescueOrphanedWork, pushRescueBranch, defaultSpawn, type RescueOutcome } from "./lib/continuo-tick-closure.ts";
+import {
+  rescueOrphanedWork,
+  rescueOrphanedMasterCommits,
+  pushRescueBranch,
+  defaultSpawn,
+  type RescueOutcome,
+  type MasterCommitRescueOutcome,
+} from "./lib/continuo-tick-closure.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import type { GitSpawnFn as SpawnFn, SpawnResult } from "./lib/spawn-types.ts";
 
@@ -232,6 +239,69 @@ export function tryOpenPr(
   };
 }
 
+/** #8588: roda `rescueOrphanedMasterCommits` — só chamada depois que
+ * `rescueOrphanedWork` (dirty tree) já deixou o checkout compartilhado numa
+ * árvore limpa; nunca decide sozinha se essa pré-condição vale (ver
+ * docstring de `rescueOrphanedMasterCommits`). Não retorna nada — escreve
+ * `process.exitCode`/stderr diretamente, mesmo padrão de `main()`. `push`
+ * publica a branch de rescue de commits em master e tenta abrir PR, mesma
+ * disciplina de `--push` para o rescue de árvore suja (best-effort, nunca
+ * descarta o resgate local já feito). */
+function runMasterCommitRescue(push: boolean): void {
+  const masterResult: MasterCommitRescueOutcome = rescueOrphanedMasterCommits(defaultSpawn);
+  console.log(JSON.stringify(masterResult, null, 2));
+
+  if (masterResult.outcome === "clean" || masterResult.outcome === "not-applicable") {
+    return; // nada a fazer — exitCode já é 0 (ou já foi decidido por quem chamou antes)
+  }
+
+  if (masterResult.outcome === "fetch_failed") {
+    // Fail-soft de propósito (ver docstring) — não sabemos se master está
+    // à frente de origin/master sem um fetch fresco; não bloquear o tick
+    // por isso, só deixar visível.
+    process.stderr.write(`\n⚠ ${masterResult.message}\n`);
+    return;
+  }
+
+  if (masterResult.outcome === "rescue_failed") {
+    process.stderr.write(
+      `\n⚠ RESGATE DE COMMIT(S) EM MASTER FALHOU (#8588) — master local pode continuar à frente de ` +
+        `origin/master sem PR nenhuma por trás.\n`,
+    );
+    process.stderr.write(masterResult.message + "\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  // outcome === "rescued"
+  process.stderr.write(`\n✔ Commit(s) órfão(s) em master recuperado(s) (#8588): branch ${masterResult.branch}\n`);
+  process.stderr.write(masterResult.message + "\n");
+
+  if (masterResult.resetFailed) {
+    process.stderr.write(
+      `\n⚠ master local AINDA carrega o(s) commit(s) duplicado(s) — 'git reset --hard origin/master' falhou. ` +
+        `Resolver manualmente antes de qualquer outra sessão continuar.\n`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!push) return;
+
+  const pushResult = pushRescueBranch(defaultSpawn, masterResult.branch);
+  console.log(JSON.stringify({ push: pushResult }, null, 2));
+  if (!pushResult.ok) {
+    process.stderr.write(pushResult.message + "\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  const prResult = tryOpenPr(masterResult.branch);
+  console.log(JSON.stringify({ pr: prResult }, null, 2));
+  // Mesma disciplina do rescue de árvore suja: `gh pr create` falhando não
+  // vira exit 1 — o push já publicou o trabalho no remoto.
+}
+
 function main(): void {
   const { push } = parseArgs(process.argv.slice(2));
 
@@ -239,7 +309,12 @@ function main(): void {
   console.log(JSON.stringify(result, null, 2));
 
   if (result.outcome === "clean") {
-    process.exitCode = 0;
+    // #8588: árvore já estava limpa — ainda assim pode haver commit(s)
+    // órfão(s) já feitos direto em master antes desta chamada (o bug que
+    // #8588 mediu: o guard de árvore suja nunca detectaria isso sozinho,
+    // porque o commit já não deixa nada "sujo" para trás).
+    runMasterCommitRescue(push);
+    process.exitCode = process.exitCode ?? 0;
     return;
   }
 
@@ -262,7 +337,8 @@ function main(): void {
   }
 
   if (!push) {
-    process.exitCode = 0;
+    runMasterCommitRescue(push);
+    process.exitCode = process.exitCode ?? 0;
     return;
   }
 
@@ -289,7 +365,8 @@ function main(): void {
       `(#7446 item 5, teto de 1). Branch ${result.branch} publicada em origin, sem PR própria; triagem manual pode ` +
       `mergear/rebasear o conteúdo dela na PR existente se fizer sentido consolidar.`;
     console.log(JSON.stringify({ pr: { ok: true, skipped: true, message } }, null, 2));
-    process.exitCode = 0;
+    runMasterCommitRescue(push);
+    process.exitCode = process.exitCode ?? 0;
     return;
   }
 
@@ -297,7 +374,8 @@ function main(): void {
   console.log(JSON.stringify({ pr: prResult }, null, 2));
   // `gh pr create` falhando não vira exit 1 — o push já publicou o trabalho
   // no remoto, que é a garantia real; o PR é conveniência de triagem.
-  process.exitCode = 0;
+  runMasterCommitRescue(push);
+  process.exitCode = process.exitCode ?? 0;
 }
 
 // Guard (#7340, achado ao vivo durante a implementação desta própria issue):

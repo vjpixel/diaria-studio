@@ -231,3 +231,184 @@ export function pushRescueBranch(spawn: SpawnFn, branch: string): PushOutcome {
   }
   return { ok: true, message: `branch ${branch} publicada em origin.` };
 }
+
+// ---------------------------------------------------------------------------
+// #8588 — guard irmão de `rescueOrphanedWork`: commit(s) DIRETO em `master`
+// no checkout compartilhado, sem branch própria.
+// ---------------------------------------------------------------------------
+//
+// `rescueOrphanedWork` acima só detecta árvore SUJA (working tree com
+// mudanças não commitadas). A rodada overnight 260921 (#8588) mediu uma
+// falha IRMÃ: uma sessão `continuo` chegou a COMMITAR de verdade — 2 vezes —
+// direto em `master` no checkout compartilhado (nunca criou/trocou pra uma
+// branch `continuo/fix-*` própria antes do commit), deixando `master` local
+// à frente de `origin/master` sem PR nenhuma por trás.
+//
+// Por que isto é sempre anômalo neste repo (nunca falso-positivo esperado):
+// TODO merge legítimo acontece via `gh pr merge --squash` no GitHub — o
+// checkout LOCAL só recebe esses commits de volta via `sync-code.ts`/`git
+// pull` a partir de `origin/master`. Não existe fluxo no repo (auditado:
+// `scripts/publish-edition-site-page.ts` e `scripts/lib/memory-sync.ts` são
+// os únicos outros `git commit` em `scripts/`, e os dois usam uma branch
+// PRÓPRIA — `checkout -B`/outro repositório — nunca `master` local) que
+// produza um commit local em `master` ainda não presente em
+// `origin/master`. Se isso acontece, é sempre a classe de bug do #8588:
+// alguma sessão commitou sem ter saído de `master`.
+//
+// Mecanismo (mesma forma de `rescueOrphanedWork`): quando o HEAD atual é
+// `master`, a árvore está limpa (pré-condição do chamador — este guard não
+// decide entre "sujo" e "commit órfão", só constata "há algo a mais em
+// `master` que não devia estar aqui" depois que a árvore já está limpa) e
+// `origin/master..HEAD` não está vazio, os commits excedentes são movidos
+// pra uma branch `continuo/rescue-master-*` dedicada (preservando o
+// trabalho, mesmo padrão de `planRescueBranch`) e `master` local é resetado
+// de volta pra `origin/master` — nunca DESCARTA um commit, só o realoca pra
+// uma branch que pode virar PR pra triagem manual.
+
+/** Nome de branch de rescue ESPECÍFICO pra este guard (`continuo/rescue-
+ * master-*`, nunca `continuo/rescue-*` sem sufixo) — deliberadamente
+ * distinguível de `planRescueBranch` (árvore suja) na listagem de branches/
+ * PRs, porque a origem do achado é diferente (commit já existia vs. diff
+ * nunca commitado) e a triagem humana se beneficia de saber qual caso é.
+ * Mesmo discriminador (`<pid>-<hex>`) pela mesma razão de colisão de
+ * segundo documentada em `planRescueBranch`. */
+export function planMasterCommitRescueBranch(
+  nowIso: string,
+  discriminator: string = randomDiscriminator(),
+): RescueBranchPlan {
+  const stamp = nowIso.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const branchName = `continuo/rescue-master-${stamp}-${discriminator}`;
+  const commitMessage =
+    `chore(#8588): recupera commit(s) órfão(s) achados direto em master\n\n` +
+    `Gerado por 'git branch' automático de rescueOrphanedMasterCommits() — o checkout ` +
+    `compartilhado tinha commit(s) locais em master à frente de origin/master, fora do ` +
+    `fluxo normal (todo merge legítimo é squash via PR no GitHub, nunca commit local ` +
+    `direto). NÃO mergear sem revisão humana — a origem exata (qual issue, qual tick) é ` +
+    `desconhecida por construção; ver #8588.`;
+  return { branchName, commitMessage };
+}
+
+export type MasterCommitRescueOutcome =
+  | { outcome: "clean"; message: string }
+  | { outcome: "not-applicable"; message: string }
+  | { outcome: "rescued"; branch: string; commitShas: string[]; message: string; resetFailed: boolean }
+  | { outcome: "rescue_failed"; message: string }
+  | { outcome: "fetch_failed"; message: string };
+
+/**
+ * Detecta e recupera commits locais em `master` que nunca foram publicados
+ * via PR — a classe de bug medida ao vivo no #8588 (sessão `continuo`
+ * commitando direto em `master` no checkout compartilhado, 2x na mesma
+ * rodada, sem branch própria).
+ *
+ * PRÉ-CONDIÇÃO do chamador (mesmo padrão de `rescueOrphanedWork`, ver o
+ * comentário "PREMISSA DE QUANDO ISTO RODA" acima): chamar isto DEPOIS de
+ * `rescueOrphanedWork` já ter deixado a árvore limpa (outcome "clean" ou
+ * "rescued" com `checkoutBackFailed: false`) — este guard verifica a
+ * limpeza da árvore como defesa extra (nunca confia cegamente no chamador),
+ * mas não SABE distinguir "árvore suja de um tick em andamento" de "árvore
+ * suja de um tick morto": essa distinção já é resolvida por quem chama
+ * `rescueOrphanedWork` primeiro.
+ *
+ * `outcome: "not-applicable"` quando o HEAD atual não é `master` — este
+ * guard é especificamente sobre o branch protegido; um commit numa branch
+ * `continuo/fix-*` normal (ainda sem PR aberto) é fluxo de trabalho comum,
+ * não uma anomalia, e é coberto por outro mecanismo (`check-branch-issue-
+ * consistency.ts`), não por este.
+ */
+export function rescueOrphanedMasterCommits(
+  spawn: SpawnFn,
+  nowIso: string = new Date().toISOString(),
+  lock: SyncLock = createFileLock(undefined, spawn),
+): MasterCommitRescueOutcome {
+  if (!lock.acquire()) {
+    return {
+      outcome: "rescue_failed",
+      message:
+        `lock '${lock.path}' já está em uso por outro processo — outra sessão continuo-like pode estar ` +
+        `reentrando no mesmo checkout compartilhado agora. Recuperação de commit(s) órfão(s) em master ` +
+        `ADIADA (mesma disciplina de rescueOrphanedWork, #8588): nunca corre branch→reset concorrente com ` +
+        `outro processo. master permanece intocado — tentar novamente no próximo tick.`,
+    };
+  }
+
+  try {
+    const branchRes = spawn("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
+    if (branchRes.status !== 0) {
+      return { outcome: "rescue_failed", message: `git rev-parse --abbrev-ref HEAD falhou: ${branchRes.stderr.trim()}` };
+    }
+    const currentBranch = branchRes.stdout.trim();
+    if (currentBranch !== "master") {
+      return {
+        outcome: "not-applicable",
+        message: `HEAD atual é '${currentBranch}', não 'master' — fora de escopo deste guard (#8588).`,
+      };
+    }
+
+    const statusRes = spawn("git", ["status", "--porcelain"]);
+    if (statusRes.status !== 0) {
+      return { outcome: "rescue_failed", message: `git status --porcelain falhou: ${statusRes.stderr.trim()}` };
+    }
+    if (hasUncommittedWork(statusRes.stdout)) {
+      return {
+        outcome: "rescue_failed",
+        message:
+          `árvore suja em master — pré-condição violada (este guard espera rodar DEPOIS de ` +
+          `rescueOrphanedWork já ter limpado a árvore). Não avançando: rode rescueOrphanedWork primeiro.`,
+      };
+    }
+
+    const fetchRes = spawn("git", ["fetch", "origin", "master"]);
+    if (fetchRes.status !== 0) {
+      return {
+        outcome: "fetch_failed",
+        message:
+          `git fetch origin master falhou (${fetchRes.stderr.trim()}) — não dá pra comparar master local contra ` +
+          `origin/master com segurança (a ref local pode estar velha). Fail-soft: nada foi tocado, tentar de ` +
+          `novo no próximo tick.`,
+      };
+    }
+
+    const revListRes = spawn("git", ["rev-list", "origin/master..HEAD"]);
+    if (revListRes.status !== 0) {
+      return { outcome: "rescue_failed", message: `git rev-list origin/master..HEAD falhou: ${revListRes.stderr.trim()}` };
+    }
+    const commitShas = revListRes.stdout
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (commitShas.length === 0) {
+      return { outcome: "clean", message: "master local já está em paridade com origin/master — nada a recuperar." };
+    }
+
+    const plan = planMasterCommitRescueBranch(nowIso);
+    const branchCreateRes = spawn("git", ["branch", plan.branchName]);
+    if (branchCreateRes.status !== 0) {
+      return {
+        outcome: "rescue_failed",
+        message:
+          `git branch ${plan.branchName} falhou (${branchCreateRes.stderr.trim()}) — commit(s) ainda em master ` +
+          `local, sem recuperação. master NÃO foi resetado (a branch de rescue precisa existir primeiro).`,
+      };
+    }
+
+    const resetRes = spawn("git", ["reset", "--hard", "origin/master"]);
+    const resetFailed = resetRes.status !== 0;
+
+    return {
+      outcome: "rescued",
+      branch: plan.branchName,
+      commitShas,
+      resetFailed,
+      message: resetFailed
+        ? `Commit(s) preservado(s) em ${plan.branchName} (${commitShas.length} commit(s)), MAS 'git reset --hard ` +
+          `origin/master' falhou (${resetRes.stderr.trim()}) — master local AINDA carrega os commits duplicados. ` +
+          `Resolver manualmente antes de qualquer outra sessão continuar.`
+        : `Commit(s) órfão(s) em master (${commitShas.length}) recuperado(s) em ${plan.branchName}; master local ` +
+          `resetado pra paridade com origin/master. Push + 'gh pr create' seguem necessários (ou rode o CLI com ` +
+          `--push) para o trabalho virar PR triável em vez de só uma branch local.`,
+    };
+  } finally {
+    lock.release();
+  }
+}

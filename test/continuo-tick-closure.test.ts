@@ -17,6 +17,8 @@ import {
   planRescueBranch,
   rescueOrphanedWork,
   pushRescueBranch,
+  planMasterCommitRescueBranch,
+  rescueOrphanedMasterCommits,
   type SpawnFn,
   type SpawnResult,
   type SyncLock,
@@ -263,5 +265,154 @@ describe("pushRescueBranch", () => {
     const result = pushRescueBranch(spawn, "continuo/rescue-20260902-100000Z");
     assert.equal(result.ok, false);
     assert.match(result.message, /só existe local/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8588 — commit(s) direto em master no checkout compartilhado (irmão do
+// guard de árvore suja acima). Regressão para a rodada overnight 260921: uma
+// sessão continuo commitou 2x direto em master, sem branch própria, enquanto
+// já existia PR aberta pra mesma issue.
+// ---------------------------------------------------------------------------
+
+describe("planMasterCommitRescueBranch (#8588)", () => {
+  it("gera nome de branch distinguível do rescue de árvore suja (prefixo rescue-master-)", () => {
+    const plan = planMasterCommitRescueBranch("2026-09-21T23:20:00.000Z", "12345-abcd");
+    assert.match(plan.branchName, /^continuo\/rescue-master-20260921T232000Z-12345-abcd$/);
+    assert.match(plan.commitMessage, /#8588/);
+  });
+});
+
+describe("rescueOrphanedMasterCommits (#8588)", () => {
+  it("HEAD não é master → not-applicable, nenhum outro comando git roda", () => {
+    const { spawn, calls } = makeFakeSpawn({
+      "git rev-parse": [ok("continuo/fix-123-slug\n")],
+    });
+    const result = rescueOrphanedMasterCommits(spawn, "2026-09-21T23:20:00.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "not-applicable");
+    assert.equal(calls.length, 1);
+  });
+
+  it("master limpo e em paridade com origin/master → clean", () => {
+    const { spawn } = makeFakeSpawn({
+      "git rev-parse": [ok("master\n")],
+      "git status": [ok("")],
+      "git fetch": [ok()],
+      "git rev-list": [ok("")],
+    });
+    const result = rescueOrphanedMasterCommits(spawn, "2026-09-21T23:20:00.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "clean");
+  });
+
+  it("árvore suja em master → rescue_failed (pré-condição violada, quem chama devia ter rodado rescueOrphanedWork antes)", () => {
+    const { spawn, calls } = makeFakeSpawn({
+      "git rev-parse": [ok("master\n")],
+      "git status": [ok(" M scripts/foo.ts\n")],
+    });
+    const result = rescueOrphanedMasterCommits(spawn, "2026-09-21T23:20:00.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "rescue_failed");
+    assert.match(result.message, /árvore suja/);
+    // Nunca chega a fetch/rev-list/branch/reset com a árvore suja.
+    assert.equal(calls.some((c) => c[1] === "fetch"), false);
+  });
+
+  it("git fetch falha → fetch_failed, fail-soft (nunca mexe em master)", () => {
+    const { spawn, calls } = makeFakeSpawn({
+      "git rev-parse": [ok("master\n")],
+      "git status": [ok("")],
+      "git fetch": [fail("could not resolve host")],
+    });
+    const result = rescueOrphanedMasterCommits(spawn, "2026-09-21T23:20:00.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "fetch_failed");
+    assert.equal(calls.some((c) => c[1] === "rev-list"), false);
+    assert.equal(calls.some((c) => c[1] === "branch"), false);
+    assert.equal(calls.some((c) => c[1] === "reset"), false);
+  });
+
+  it("REPRODUÇÃO #8588: master local com 2 commits à frente de origin/master → rescued, branch dedicada + reset pra origin/master", () => {
+    const sha1 = "3657b320d1234567890abcdef1234567890abcd";
+    const sha2 = "1075491ce1234567890abcdef1234567890abcd";
+    const { spawn, calls } = makeFakeSpawn({
+      "git rev-parse": [ok("master\n")],
+      "git status": [ok("")],
+      "git fetch": [ok()],
+      "git rev-list": [ok(`${sha2}\n${sha1}\n`)],
+      "git branch": [ok()],
+      "git reset": [ok()],
+    });
+    const result = rescueOrphanedMasterCommits(spawn, "2026-09-21T23:20:00.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "rescued");
+    if (result.outcome !== "rescued") return;
+    assert.deepEqual(result.commitShas, [sha2, sha1]);
+    assert.equal(result.resetFailed, false);
+    assert.match(result.branch, /^continuo\/rescue-master-/);
+    // branch criada ANTES do reset — nunca reseta master sem antes ter
+    // preservado os commits numa branch (mesma ordem de segurança do rescue
+    // de árvore suja: checkout -b sempre antes de mexer no estado).
+    const branchIdx = calls.findIndex((c) => c[1] === "branch");
+    const resetIdx = calls.findIndex((c) => c[1] === "reset");
+    assert.ok(branchIdx >= 0 && resetIdx >= 0 && branchIdx < resetIdx);
+  });
+
+  it("git branch falha → rescue_failed, master NUNCA é resetado sem a branch de segurança existir primeiro", () => {
+    const { spawn, calls } = makeFakeSpawn({
+      "git rev-parse": [ok("master\n")],
+      "git status": [ok("")],
+      "git fetch": [ok()],
+      "git rev-list": [ok("abc123\n")],
+      "git branch": [fail("já existe uma branch com esse nome")],
+    });
+    const result = rescueOrphanedMasterCommits(spawn, "2026-09-21T23:20:00.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "rescue_failed");
+    assert.equal(calls.some((c) => c[1] === "reset"), false);
+  });
+
+  it("git reset --hard falha → rescued com resetFailed:true (commits preservados, master ainda duplicado)", () => {
+    const { spawn } = makeFakeSpawn({
+      "git rev-parse": [ok("master\n")],
+      "git status": [ok("")],
+      "git fetch": [ok()],
+      "git rev-list": [ok("abc123\n")],
+      "git branch": [ok()],
+      "git reset": [fail("local changes would be overwritten")],
+    });
+    const result = rescueOrphanedMasterCommits(spawn, "2026-09-21T23:20:00.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "rescued");
+    if (result.outcome !== "rescued") return;
+    assert.equal(result.resetFailed, true);
+    assert.match(result.message, /AINDA carrega/);
+  });
+
+  it("lock ocupado → rescue_failed, nenhum comando git roda", () => {
+    const { spawn, calls } = makeFakeSpawn({});
+    const busyLock: SyncLock = {
+      path: "/fake/.diaria-sync.lock",
+      acquire: () => false,
+      release: () => {},
+    };
+    const result = rescueOrphanedMasterCommits(spawn, "2026-09-21T23:20:00.000Z", busyLock);
+    assert.equal(result.outcome, "rescue_failed");
+    assert.equal(calls.length, 0);
+  });
+
+  it("lock é sempre liberado, mesmo em outcome rescued", () => {
+    const { spawn } = makeFakeSpawn({
+      "git rev-parse": [ok("master\n")],
+      "git status": [ok("")],
+      "git fetch": [ok()],
+      "git rev-list": [ok("abc123\n")],
+      "git branch": [ok()],
+      "git reset": [ok()],
+    });
+    let released = false;
+    const trackedLock: SyncLock = {
+      path: "/fake/.diaria-sync.lock",
+      acquire: () => true,
+      release: () => {
+        released = true;
+      },
+    };
+    rescueOrphanedMasterCommits(spawn, "2026-09-21T23:20:00.000Z", trackedLock);
+    assert.equal(released, true);
   });
 });
