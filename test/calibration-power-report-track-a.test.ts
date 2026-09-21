@@ -85,6 +85,34 @@ describe("buildTrackAPowerReport (#7980)", () => {
     }
   });
 
+  it("#7980: janelas cobrem só a era observável da feature — 60 edições anteriores ao bônus existir não diluem as 3 janelas", () => {
+    const dir = mkdtempSync(join(tmpdir(), "power-report-a-era-"));
+    try {
+      // 60 edições "pré-instrumentação": o bônus nunca aparece (n_true=0 sempre).
+      for (let e = 0; e < 60; e++) {
+        const ed = String(260600 + e);
+        writeTrackAEdition(dir, ed, [
+          { url: `https://x.com/${ed}-a`, primary_source: false, approved: true },
+          { url: `https://x.com/${ed}-b`, primary_source: false, approved: false },
+        ]);
+      }
+      // 30 edições com o bônus e efeito forte/consistente.
+      for (let e = 0; e < 30; e++) {
+        const ed = String(260700 + e);
+        writeTrackAEdition(dir, ed, [
+          { url: `https://x.com/${ed}-a`, primary_source: true, approved: true },
+          { url: `https://x.com/${ed}-b`, primary_source: false, approved: false },
+        ]);
+      }
+      const f = buildTrackAPowerReport(dir).features.find((x) => x.feature === "primary_source")!;
+      // Sem o corte de era, as janelas 1-2 (60 edições) seriam sempre n/d e só 1 janela votaria.
+      assert.equal(f.window_diffs.filter((d) => d !== null).length, 3, "as 3 janelas da era observável têm sinal");
+      assert.equal(f.passes_window_bar, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("#8254: academy/howto_br/howto_br_source NUNCA aparecem no relatório — são estruturalmente inatingíveis pro Track A (só computadas no bucket use_melhor, que nunca vira destaque), diferente de uma feature que só está acumulando dado", () => {
     // Mesmo corpus forte do teste acima — mas os 3 bônus só se aplicam a candidatos
     // do bucket use_melhor via annotateUseMelhorBucket (scripts/lib/audience-affinity.ts),
