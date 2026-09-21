@@ -116,7 +116,9 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
    commit, sem PR, árvore de trabalho deixada suja em `master` no checkout
    compartilhado (#6952: 498 linhas nunca commitadas, sessão anterior
    reportou "concluído"). `cd /home/vjpixel/diaria-studio && npx tsx
-   scripts/rescue-continuo-orphaned-work.ts --push`. `outcome: "clean"`
+   scripts/rescue-continuo-orphaned-work.ts --push`. Desde #8588, o mesmo
+   comando também resgata commit(s) feito(s) direto em `master` (sem árvore
+   suja) — mesma semântica de exit code. `outcome: "clean"`
    (exit 0, caso comum) → segue pro item 1 abaixo. `outcome: "rescued"`
    (exit 0 com `--push` OK) → trabalho órfão de um tick anterior morto foi
    commitado numa branch dedicada (`continuo/rescue-{timestamp}`) e, quando
