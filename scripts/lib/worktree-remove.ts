@@ -47,6 +47,7 @@
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync, unlinkSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { isMainModule } from "./cli-args.ts";
+import { listAllProcesses, type ProcessInfo } from "./list-processes.ts";
 
 /** `true` só quando `path` existe e é um symlink (Linux/macOS) ou junction (Windows) — nunca segue o alvo. */
 export function isSymlinkOrJunction(path: string): boolean {
@@ -108,6 +109,55 @@ export function removeLinkSafely(linkPath: string): { removed: boolean; error?: 
       return { removed: false, error: (e2 as Error).message };
     }
   }
+}
+
+/** Escapa caracteres especiais de regex — usado só por `commandReferencesPath`
+ * pra montar o boundary check abaixo com o path do worktree como literal. */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * #8661: `true` quando `proc.cmd` (cmdline completo, ver
+ * `scripts/lib/list-processes.ts`) contém `worktreePath`, com boundary
+ * depois do path — a checagem que `removeWorktreeSafe` roda ANTES de
+ * `git worktree remove --force`, pra não deixar um processo (tipicamente
+ * `node --test-isolation=process`, mas a checagem não é restrita a esse
+ * padrão — QUALQUER processo com o path na cmdline conta) sobreviver à
+ * remoção como um neto órfão `PPID=1` (mecanismo completo: issue #8661).
+ *
+ * **Boundary depois do path** (achado do fleet review da PR #8692,
+ * médio): substring PURO faria `agent-1` casar dentro de `agent-10` — dois
+ * worktrees legítimos e distintos onde um é prefixo textual do outro. O
+ * caractere IMEDIATAMENTE após o match precisa ser algo que não continua
+ * um nome de diretório (`/`, `\`, espaço, `=`, aspas, ou fim da string) —
+ * nunca um caractere alfanumérico/`-`/`_`. Continua substring (não
+ * tokenização) pelo mesmo motivo de antes: cmdline real observado ao vivo
+ * tem o worktree embutido num argumento maior (`--experimental-loader=
+ * {worktree}/...`), então exigir um TOKEN inteiro perderia esses casos —
+ * só o fim do path precisa ser delimitado, o início não.
+ */
+export function commandReferencesPath(cmd: string, worktreePath: string): boolean {
+  const boundaryRe = new RegExp(`${escapeRegExp(worktreePath)}(?![A-Za-z0-9_-])`);
+  return boundaryRe.test(cmd);
+}
+
+/**
+ * #8661: processos vivos (do snapshot `processes`, default a máquina real
+ * via `listAllProcesses()`) cujo cmdline referencia `worktreePath` — usado
+ * por `removeWorktreeSafe` (`scripts/cleanup-merged-worktrees.ts`) pra
+ * decidir se é seguro chamar `git worktree remove --force` agora, ou se é
+ * melhor pular esta remoção neste ciclo (o processo ainda pode terminar
+ * sozinho; a próxima rodada de limpeza tenta de novo). `[]` sempre que a
+ * plataforma não é suportada por `listAllProcesses` (Windows — ver
+ * docstring de lá) ou quando genuinamente não há processo vivo apontando
+ * pro path.
+ */
+export function findLiveProcessesInPath(
+  worktreePath: string,
+  processes: readonly ProcessInfo[] = listAllProcesses(),
+): ProcessInfo[] {
+  return processes.filter((proc) => commandReferencesPath(proc.cmd, worktreePath));
 }
 
 export interface RemoveWorktreeDirResult {
