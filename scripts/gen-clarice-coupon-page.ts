@@ -3,7 +3,7 @@
  *
  * Gera `workers/site/public/clarice/index.html` a partir de
  * `scripts/lib/site-clarice-coupon-page.ts` — mesmo padrão de
- * `gen-apoiar-page.ts` (#7915). Página inteiramente estática (sem dado de
+ * o antigo `gen-apoiar-page.ts` (#7915, removido no #8498). Página inteiramente estática (sem dado de
  * request/edição), então sem flags além de `--out`.
  *
  * Uso:

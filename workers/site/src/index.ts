@@ -68,7 +68,7 @@ import {
 // #7915/#8498: instrumentação de CLIQUE do redirect /apoiar/ir — ver docstring
 // de apoiar-counters.ts. O contador não é pagamento confirmado; a confirmação
 // continua vindo do apoia.se/Stripe fora deste repo.
-import { apoiarClickCounterKey, incrementApoiarCounter } from "../../../scripts/lib/shared/apoiar-counters.ts";
+import { apoiarClickCounterKey, apoiarLegacyCounterKey, incrementApoiarCounter } from "../../../scripts/lib/shared/apoiar-counters.ts";
 import { DIARIA_APOIASE_URL } from "../../../scripts/lib/canonical-urls.ts";
 import {
   APOIAR_REDIRECT_UTM_SOURCE,
@@ -155,14 +155,10 @@ function buildApoiarTarget(reqUrl: URL): string {
   return target.toString();
 }
 
-/** Conta o clique do dia; fail-soft — falha no KV nunca impede o redirect. */
-async function countApoiarClick(env: Env): Promise<void> {
-  try {
-    const day = new Date().toISOString().slice(0, 10);
-    await incrementApoiarCounter(env.CURSOS_SUBSCRIBERS, apoiarClickCounterKey(day));
-  } catch {
-    // mesma disciplina fail-soft dos demais contadores deste Worker.
-  }
+/** Conta o clique do dia; `incrementApoiarCounter` já é fail-soft (nunca lança). */
+async function countApoiarClick(env: Env, keyFn: (day: string) => string = apoiarClickCounterKey): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10);
+  await incrementApoiarCounter(env.CURSOS_SUBSCRIBERS, keyFn(day));
 }
 
 /**
@@ -295,14 +291,14 @@ export default {
     }
 
     // #8498: /apoiar — a página foi removida (a campanha do Apoia.se é a fonte
-    // única). 301 PERMANENTE pro destino em vez de 404: o path já saiu no
-    // sitemap.xml e pode estar indexado/linkado. Conta o clique igual ao
-    // /apoiar/ir (quem chega aqui está a caminho do Apoia.se) — ressalva: por
-    // ser 301, o navegador cacheia e visitas repetidas não passam pelo Worker,
-    // então é um piso, não a contagem exata. Cobre também a variante com barra
+    // única). 301 PERMANENTE pro destino em vez de 404: o path pode estar
+    // indexado/linkado por fora (nunca esteve no sitemap.xml). Conta em chave
+    // SEPARADA (`counter:apoiar:legacy:*`) pra não misturar com o clique do
+    // menu — por ser 301, o navegador cacheia e visitas repetidas não passam
+    // pelo Worker, então é um piso, não a contagem exata. Cobre também a variante com barra
     // (html_handling = "drop-trailing-slash" só age DEPOIS deste bloco).
     if (request.method === "GET" && (reqUrl.pathname === "/apoiar" || reqUrl.pathname === "/apoiar/")) {
-      await countApoiarClick(env);
+      await countApoiarClick(env, apoiarLegacyCounterKey);
       return Response.redirect(buildApoiarTarget(reqUrl), 301);
     }
 

@@ -5,7 +5,7 @@
  * de `scripts/studio-ui/studio-apoios.ts` (`computeRewardGroup`, #3844)
  * porque `scripts/lib/**` não pode importar de `scripts/studio-ui/**`
  * (`test/lib-boundary.test.ts` regra 4, #5899) e a página `/apoiar`
- * (`site-apoiar-page.ts`, #7915) precisava dos mesmos valores pra exibir
+ * (`site-apoiar-page.ts`, #7915, removida no #8498) precisava dos mesmos valores pra exibir
  * preço por nível. A página foi REMOVIDA no #8498 (a campanha do Apoia.se é a
  * fonte única); o módulo FICA porque o gate do Artigo Especial
  * (`artigo-especial-gate-cta.ts`, `workers/artigos/src/gate-page.ts`) e o

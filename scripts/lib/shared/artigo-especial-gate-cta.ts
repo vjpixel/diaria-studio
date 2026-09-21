@@ -40,7 +40,7 @@ import { REWARD_TIER_APOIADOR_MIN } from "../reward-tier-thresholds.ts";
 
 export const GATE_CTA_ID = "especial-gate-cta";
 
-/** `10` → `"R$10/mês"` — mesmo formato de `formatValorMensal` em `site-apoiar-page.ts`. */
+/** `10` → `"R$10/mês"` — mesmo formato do `formatValorMensal` de `site-apoiar-page.ts` (módulo removido no #8498). */
 function formatValorMensal(min: number): string {
   return `R$${min}/mês`;
 }

@@ -15,10 +15,14 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { KNOWN_STATIC_SITEMAP_PATHS } from "../scripts/lib/site-home-page.ts";
 
 import worker from "../workers/site/src/index.ts";
 import type { Env } from "../workers/site/src/index.ts";
-import { apoiarClickCounterKey } from "../scripts/lib/shared/apoiar-counters.ts";
+import { apoiarClickCounterKey, apoiarLegacyCounterKey } from "../scripts/lib/shared/apoiar-counters.ts";
 import { DIARIA_APOIASE_URL } from "../scripts/lib/canonical-urls.ts";
 import {
   APOIAR_REDIRECT_UTM_SOURCE,
@@ -105,9 +109,27 @@ describe("GET /apoiar (#8498) — página removida, 301 permanente pro Apoia.se"
       assert.equal(res.headers.get("Location"), DEFAULT_TARGET);
       assert.equal(assetCalls.length, 0);
       const day = new Date().toISOString().slice(0, 10);
-      assert.equal(puts[apoiarClickCounterKey(day)], "1");
+      assert.equal(puts[apoiarLegacyCounterKey(day)], "1", "301 legado conta em chave separada");
+      assert.equal(puts[apoiarClickCounterKey(day)], undefined, "nunca mistura com o clique do menu");
     });
   }
+
+  it("/apoiar/ com UTM completo + query já presentes: nada é sobrescrito, query preservada", async () => {
+    const { env } = fakeEnv(undefined);
+    const res = await worker.fetch(
+      new Request("https://diar.ia.br/apoiar/?utm_source=a&utm_medium=b&utm_campaign=c&x=1"),
+      env,
+    );
+    const q = new URL(res.headers.get("Location") ?? "").searchParams;
+    assert.deepEqual([q.get("utm_source"), q.get("utm_medium"), q.get("utm_campaign"), q.get("x")], ["a", "b", "c", "1"]);
+  });
+
+  it("/apoiar/ir com só utm_medium/utm_campaign explícitos: source cai no default", async () => {
+    const { env } = fakeEnv(undefined);
+    const res = await worker.fetch(new Request("https://diar.ia.br/apoiar/ir?utm_medium=b&utm_campaign=c"), env);
+    const q = new URL(res.headers.get("Location") ?? "").searchParams;
+    assert.deepEqual([q.get("utm_source"), q.get("utm_medium"), q.get("utm_campaign")], [APOIAR_REDIRECT_UTM_SOURCE, "b", "c"]);
+  });
 
   it("preserva a query string no 301", async () => {
     const { env } = fakeEnv(undefined);
@@ -129,5 +151,24 @@ describe("GET /apoiar (#8498) — página removida, 301 permanente pro Apoia.se"
     const res = await worker.fetch(new Request("https://diar.ia.br/apoiar-outra-coisa"), env);
     assert.equal(res.status, 200);
     assert.equal(assetCalls.length, 1);
+  });
+});
+
+describe("página /apoiar removida (#8498) — nada a resgatar do sitemap nem do disco", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+  it("/apoiar e /apoiar/ ausentes de KNOWN_STATIC_SITEMAP_PATHS", () => {
+    for (const p of ["/apoiar", "/apoiar/"]) {
+      assert.ok(!KNOWN_STATIC_SITEMAP_PATHS.includes(p), `${p} ainda em KNOWN_STATIC_SITEMAP_PATHS`);
+    }
+  });
+
+  it("sitemap.xml commitado não lista /apoiar", () => {
+    const xml = readFileSync(resolve(root, "workers/site/public/sitemap.xml"), "utf8");
+    assert.doesNotMatch(xml, /diar\.ia\.br\/apoiar/);
+  });
+
+  it("workers/site/public/apoiar/ não existe", () => {
+    assert.equal(existsSync(resolve(root, "workers/site/public/apoiar")), false);
   });
 });

@@ -83,8 +83,8 @@ const STATUS_LABEL = {
 // dos 4 níveis (ver .reward-group-pending em apoios.css).
 // Os valores R$ abaixo são literais de propósito — apoios.js é servido cru
 // (sem build step) e não pode `import` scripts/lib/reward-tier-thresholds.ts,
-// a fonte canônica dos 4 limiares (extraída em #8155 pra scripts/lib/
-// artigo-especial-gate-cta.ts, que ESSE sim importa por rodar em Node). Mudar
+// a fonte canônica dos 4 limiares (extraída em #8155; consumida em Node por
+// scripts/lib/shared/artigo-especial-gate-cta.ts). Mudar
 // REWARD_TIER_*_MIN sem atualizar estas strings desincroniza este painel —
 // test/apoios-js-reward-label-drift.test.ts falha nesse caso.
 const REWARD_GROUP_ORDER = ["patrono", "mantenedor", "apoiador", "amigo", "nao_pagou_ainda"];
