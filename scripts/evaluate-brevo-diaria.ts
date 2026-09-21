@@ -224,11 +224,40 @@
  * run é persistido mesmo quando outro contato falha no meio. Falha (de
  * qualquer classe: checagem de estado Brevo, checagem de status Beehiiv,
  * promoção, supressão, ou verificação pós-escrita não confirmada) sempre
- * incrementa `failed` e o processo sai com `exit(1)` ao final — nunca
- * silenciosamente reportado como sucesso (#738). Falha no passo 0 (estado
- * Brevo) faz o contato pular pra próxima rodada inteiro (`continue` sem
- * avaliar auto-confirmação/score com dado incompleto) — mais seguro que
- * decidir com informação parcial.
+ * incrementa `failed` — nunca silenciosamente reportado como sucesso
+ * (#738). Falha no passo 0 (estado Brevo) faz o contato pular pra próxima
+ * rodada inteiro (`continue` sem avaliar auto-confirmação/score com dado
+ * incompleto) — mais seguro que decidir com informação parcial.
+ *
+ * ### Exit code de falha por contato — `PARTIAL_FAILURE_EXIT_CODE` (#8686)
+ *
+ * Até esta issue, `failed > 0`/`kitAutoConfirmSkipped > 0` faziam `main()`
+ * sair com `exit(1)` — o MESMO código de um erro FATAL/inesperado
+ * (`main().catch()`, exceção não tratada antes do `writeStore()`).
+ * `brevo-diaria-run.ts` (Passo 1 de `--apply`) tratava qualquer `exit`
+ * não-zero como "o passo não rodou, aborta a sequência inteira" — sem
+ * diferenciar "escrita não confirmada em 4 de 73 contatos, store gravado
+ * normalmente com os outros 69" de "o script nunca terminou de rodar".
+ * Resultado ao vivo (edição 260922): 4 promoções não confirmadas
+ * bastaram pra abortar os Passos 2-4 (pool Pending, rampa) e, na cadeia
+ * de `brevo-diaria-stage5-dispatch.ts`, pra nunca criar o rascunho Brevo
+ * da edição inteira (fail-soft virando fail-hard).
+ *
+ * `resolveEvaluateExitCode` (pura) decide o exit code deste caso a partir
+ * do `RunEvaluationResult`: `PARTIAL_FAILURE_EXIT_CODE` (3), nunca `1`,
+ * quando a avaliação RODOU até o fim (`writeStore()` já aconteceu, se
+ * `--push`) mas teve falha/skip por contato — distinto de `exit(1)`
+ * (fatal, nunca terminou) e de `exit(2)` (precondição/config ausente,
+ * nunca começou a avaliar nenhum contato). `brevo-diaria-run.ts` trata
+ * especificamente `PARTIAL_FAILURE_EXIT_CODE` como aviso não-fatal
+ * (loga e CONTINUA os Passos 2-4, mesmo padrão fail-soft já usado pro
+ * pool Kit inactive, #8192) — qualquer outro código não-zero continua
+ * abortando a sequência inteira, porque nesses casos não há garantia de
+ * que o store tenha sido escrito. A task agendada standalone
+ * (`Diaria-Brevo-Diaria-Evaluate`, roda `--push` direto, fora do
+ * `brevo-diaria-run.ts`) continua tratando QUALQUER exit não-zero —
+ * `3` incluso — como falha da rodada pro alarme de cron (nunca perde o
+ * sinal de "N contato(s) precisam de atenção").
  *
  * ## Reconciliação de órfãos (#4579)
  *
@@ -1355,6 +1384,34 @@ export interface RunEvaluationResult {
 }
 
 /**
+ * #8686 — exit code de `main()` quando a avaliação RODOU até o fim
+ * (`writeStore()` já aconteceu, se `--push`) mas `failed`/
+ * `kitAutoConfirmSkipped` são >0 pra ≥1 contato individual. Distinto de
+ * `exit(1)` (erro FATAL/inesperado — `main().catch()`, nunca chegou a
+ * `writeStore()`) e de `exit(2)` (precondição/config ausente, nunca
+ * começou a avaliar nenhum contato) — ver "### Exit code de falha por
+ * contato" no cabeçalho do módulo pro racional completo e o incidente que
+ * motivou (edição 260922: 4 promoções não confirmadas abortaram a
+ * sequência inteira de `--apply`, deixando a edição sem rascunho Brevo).
+ * `brevo-diaria-run.ts` (Passo 1) trata especificamente este código como
+ * aviso não-fatal; qualquer outro exit não-zero continua sendo tratado
+ * como abort duro por ele.
+ */
+export const PARTIAL_FAILURE_EXIT_CODE = 3;
+
+/**
+ * Pura (#8686) — decide o exit code de `main()` a partir do resultado de
+ * `runEvaluation()`. `0` quando nenhum contato teve falha/skip; caso
+ * contrário `PARTIAL_FAILURE_EXIT_CODE` (nunca `1` — ver docstring da
+ * constante acima pro porquê da distinção). Recebe só os 2 campos que
+ * importam pra esta decisão (não o `RunEvaluationResult` inteiro) pra
+ * ficar trivial de testar sem construir um resultado completo.
+ */
+export function resolveEvaluateExitCode(result: Pick<RunEvaluationResult, "failed" | "kitAutoConfirmSkipped">): number {
+  return result.failed > 0 || result.kitAutoConfirmSkipped > 0 ? PARTIAL_FAILURE_EXIT_CODE : 0;
+}
+
+/**
  * Roda a avaliação sobre a lista de contatos `in_brevo` já dada (sem I/O de
  * env/config/disco — isso é responsabilidade do `main()`). Falha por contato
  * NUNCA aborta a função inteira: cada contato roda no próprio try/catch,
@@ -2057,12 +2114,18 @@ async function main(): Promise<void> {
     // não-zero no MESMO caminho de `failed > 0`: não é falha transitória de
     // contato, é "algo não pôde ser confirmado por falta de credencial", e
     // precisa aparecer em cron (ver docstring de `kitAutoConfirmSkipped`).
-    if (result.failed > 0 || result.kitAutoConfirmSkipped > 0) process.exitCode = 1;
+    // #8686: `PARTIAL_FAILURE_EXIT_CODE` (3), NUNCA `1` — ver docstring de
+    // `resolveEvaluateExitCode` pro porquê da distinção.
+    process.exitCode = resolveEvaluateExitCode(result);
     return;
   }
   writeStore(result.store, DEFAULT_STORE_PATH);
   log("push concluído — store atualizado.");
-  if (result.failed > 0 || result.kitAutoConfirmSkipped > 0) process.exitCode = 1;
+  // #8686: idem — `writeStore()` já rodou, então falha/skip por contato
+  // aqui NUNCA significa "o push falhou" (o store já reflete o progresso
+  // real desta rodada); `resolveEvaluateExitCode` sinaliza isso com
+  // `PARTIAL_FAILURE_EXIT_CODE`, distinto do `exit(1)` fatal.
+  process.exitCode = resolveEvaluateExitCode(result);
 }
 
 if (isMainModule(import.meta.url)) {
