@@ -2776,7 +2776,11 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // NAO ARMADA por esta unidade (auto-armada depois pelo remediate #8153, ver task trimestral acima).
     name: "Diaria-Calibration-Touch-Minutes-Monthly",
     description: "relatorio mensal de minutos de toque editorial antes/depois de cada fase de calibracao",
-    steps: [{ key: "touch", script: "scripts/calibration-touch-minutes-report.ts", args: ["--write"] }],
+    steps: [
+      // #7982: deriva os minutos de toque do run-log (append-only, sem duplicar edicao) antes de reportar.
+      { key: "derive", script: "scripts/derive-touch-minutes.ts", args: ["--write"] },
+      { key: "touch", script: "scripts/calibration-touch-minutes-report.ts", args: ["--write"] },
+    ],
     logPath: "calibration-audit/.touch-minutes.log",
     schedule: { kind: "monthly", day: 3, hour: 9, minute: 45 },
     issue: "#7982",

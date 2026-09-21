@@ -6,8 +6,8 @@
  * rollback se o total não caiu em N meses (default 3, `--months`). Só lê;
  * nunca reverte (decisão é do editor).
  *
- * Entradas (arquivos versionados/sincronizados em `data/`, mantidos pelo editor
- * — não existe medição automática de "minutos de toque" hoje, ver PR #7982):
+ * Entradas (arquivos versionados/sincronizados em `data/`, `phases.json` mantido pelo editor;
+ * `touch-minutes.jsonl` derivado do run-log por `scripts/derive-touch-minutes.ts`, #7982):
  *  - `data/calibration/phases.json`: `[{ "name": "Fase 5", "activatedAt": "2026-09-01" }]`
  *  - `data/calibration/touch-minutes.jsonl`: uma linha por edição,
  *    `{"edition":"260901","editMinutes":22,"signoffMinutes":6}`
