@@ -404,65 +404,6 @@ def all_continuo_claimed_issues(sessions_dir: Path) -> set[int]:
     return claimed
 
 
-def ended_continuo_session_in_window(
-    lifecycle_log_path: Path,
-    window_start: dt.datetime,
-    window_end: dt.datetime,
-) -> dict | None:
-    """#8521: `endSession` (`scripts/lib/session-registry.ts`) roda `rmSync`
-    no arquivo `data/sessions/continuo-*.json` INTEIRO ao fim de um tick que
-    completa o protocolo — não só zera `claimed_issues` como `unclaimIssue`
-    (caso (c) do docstring do módulo). Uma issue reivindicada e ainda
-    not-yet-unclaimed nesse momento (trabalho real em andamento, ex: PR
-    aberta aguardando CI/review) fica estruturalmente ausente de
-    `all_continuo_claimed_issues` assim que o detector rodar depois do fim
-    do tick — o caso comum, já que o watchdog roda minutos depois, não
-    durante.
-
-    `data/session-lifecycle.jsonl` (append-only, nunca reescrito,
-    `logSessionLifecycleEvent`) registra um evento `"ended"` com
-    `sessionId`/`startedAt`/`lastHeartbeat` mesmo depois do registro em
-    `data/sessions/` sumir. Esse evento só pode existir se
-    `session-registry.ts end` de fato RODOU (comando real, não texto livre
-    do modelo) — não reabre a janela que o #7537 explora, onde a sessão
-    nunca chegava a "ended" de verdade (ficava viva/travada no registro).
-
-    Devolve o 1º evento `kind=continuo`/`event=ended` cuja janela
-    `[startedAt, lastHeartbeat]` se sobrepõe a `[window_start, window_end]`
-    (mesma semântica de `correlate_continuo_session`), ou `None` — arquivo
-    ausente, JSON malformado por linha (ignorada, nunca derruba as demais),
-    ou nenhuma sobreposição. Fail-soft: nunca lança."""
-    if not lifecycle_log_path.exists():
-        return None
-    try:
-        raw = lifecycle_log_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    first: dict | None = None
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event.get("event") != "ended" or event.get("kind") != "continuo":
-            continue
-        started = _parse_iso(event.get("startedAt"))
-        heartbeat = _parse_iso(event.get("lastHeartbeat")) or started
-        if started is None or heartbeat is None:
-            continue
-        if window_start <= heartbeat and started <= window_end:
-            # #8521: prefere um evento que carregue o snapshot
-            # `claimed_issues`; senao devolve o 1o sobreposto (legado).
-            if isinstance(event.get("claimed_issues_ever"), list):
-                return event
-            if first is None:
-                first = event
-    return first
-
-
 def extract_alleged_count(report_text: str) -> int | None:
     """Extrai a 1ª alegação numérica de contagem de issues do relatório.
     Best-effort (ver limitação no docstring do módulo) — None quando o
@@ -815,21 +756,6 @@ def _snapshot_from_events(events: list[dict]) -> set[int] | None:
     return union
 
 
-def _snapshot_from_event(event: dict | None) -> set[int] | None:
-    """#8521: `claimed_issues` do evento 'ended', ou None quando o evento
-    e legado (sem o campo) ou ausente — o chamador cai no comportamento
-    anterior (indeterminate)."""
-    if not event or not isinstance(event.get("claimed_issues_ever"), list):
-        return None
-    out: set[int] = set()
-    for n in event["claimed_issues"]:
-        try:
-            out.add(int(n))
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
 def check_claimed_issues(
     report_text: str | None,
     claimed_in_registry: set[int],
@@ -842,7 +768,7 @@ def check_claimed_issues(
 
     `ended_session_in_window` (#8521, default `False` — parâmetro
     retrocompatível, testes existentes que chamam sem ele preservam o
-    comportamento antigo): `True` quando `ended_continuo_session_in_window`
+    comportamento antigo): `True` quando `ended_continuo_events_in_window`
     achou um evento `"ended"` REAL (`data/session-lifecycle.jsonl`) cuja
     janela se sobrepõe à do tick sendo checado. Ver docstring do módulo,
     seção (c), "Falso positivo #8521" — `endSession` apaga o registro
@@ -1054,7 +980,7 @@ def run(
     # #8521: correlaciona por SOBREPOSIÇÃO DE JANELA contra o log
     # append-only de lifecycle, mesmo primitivo de `correlate_continuo_session`
     # mas contra um log que sobrevive ao `rmSync` de `endSession` (ver
-    # `ended_continuo_session_in_window`).
+    # `ended_continuo_events_in_window`).
     resolved_lifecycle_log = (
         lifecycle_log_path if lifecycle_log_path is not None
         else repo / LIFECYCLE_LOG_REL_PATH
@@ -1062,14 +988,13 @@ def run(
     ended_events = ended_continuo_events_in_window(
         resolved_lifecycle_log, tick_window_start, tick_window_end
     )
-    ended_session = ended_events[0] if ended_events else None
 
     checks = [
         check_report_freshness(report_path, session, tick_window_min, now),
         check_classification_count(report_text, open_issue_count),
         check_claimed_issues(
             report_text, claimed_in_registry, sessions_dir.is_dir(),
-            ended_session_in_window=ended_session is not None,
+            ended_session_in_window=bool(ended_events),
             ended_claimed_snapshot=_snapshot_from_events(ended_events),
         ),
     ]

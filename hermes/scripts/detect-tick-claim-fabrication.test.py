@@ -690,8 +690,8 @@ def main() -> int:
             "OPEN, MERGEABLE. Não mergeei.\n"
         )
         claimed_empty: set[int] = set()
-        ended14 = mod.ended_continuo_session_in_window(lifecycle14, tick_start14 - timedelta(minutes=45), tick_end14 + timedelta(minutes=45))
-        assert_true("14. ended_continuo_session_in_window acha o evento na janela", ended14 is not None)
+        ended14 = mod.ended_continuo_events_in_window(lifecycle14, tick_start14 - timedelta(minutes=45), tick_end14 + timedelta(minutes=45))
+        assert_true("14. ended_continuo_events_in_window acha o evento na janela", len(ended14) == 1)
         check14 = mod.check_claimed_issues(
             report_text_14, claimed_empty, True, ended_session_in_window=True,
         )
@@ -719,8 +719,8 @@ def main() -> int:
         # ------------------------------------------------------------------
         outro_tick_start = now - timedelta(hours=5)
         outro_tick_end = now - timedelta(hours=4, minutes=40)
-        ended14c = mod.ended_continuo_session_in_window(lifecycle14, outro_tick_start, outro_tick_end)
-        assert_true("14c. evento de OUTRO tick nao correlaciona -> None", ended14c is None)
+        ended14c = mod.ended_continuo_events_in_window(lifecycle14, outro_tick_start, outro_tick_end)
+        assert_true("14c. evento de OUTRO tick nao correlaciona -> []", ended14c == [])
 
         # ------------------------------------------------------------------
         # 15. Regressão end-to-end via `run()` — relatório real (trimmed)

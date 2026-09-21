@@ -2502,6 +2502,11 @@ export function mergeSessionRecords(
     ...(mergedGrant ? { merge_grant: mergedGrant } : {}),
     claimed_issues: [...claimedUnion].sort((a, b) => a - b),
     claimed_issues_at: claimedAtUnion,
+    // #8521: histórico de claims também é UNIÃO das cópias (conflito do
+    // OneDrive) — senão uma cópia vencedora sem o campo apagaria o histórico.
+    ...(records.some((r) => r.claimed_issues_ever)
+      ? { claimed_issues_ever: [...new Set(records.flatMap((r) => r.claimed_issues_ever ?? []))].sort((a, b) => a - b) }
+      : {}),
   };
 }
 
@@ -2688,6 +2693,7 @@ function dedupeBySessionId(records: readonly SessionRecord[]): SessionRecord[] {
       ...base,
       claimed_issues: claimsUnion.claimed_issues,
       claimed_issues_at: claimsUnion.claimed_issues_at,
+      ...(claimsUnion.claimed_issues_ever ? { claimed_issues_ever: claimsUnion.claimed_issues_ever } : {}),
     });
   }
   return out;

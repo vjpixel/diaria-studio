@@ -528,6 +528,18 @@ describe("instrumentação de ciclo de vida (#6624)", () => {
     assert.deepEqual(ev.claimed_issues_ever, [8400, 8515]);
   });
 
+  it("#8521: GC 'gc-removed-without-end' também grava claimed_issues_ever", () => {
+    const root = freshRoot();
+    const veryOld = new Date(Date.parse("2026-08-28T12:00:00.000Z") - GC_CONSERVATIVE_MAX_AGE_MS - 1000).toISOString();
+    registerSession(root, "develop", "sess-8521gc", { tag: "outra-maquina", startedAt: veryOld });
+    claimIssue(root, "develop", "sess-8521gc", 700, "outra-maquina", veryOld);
+    claimIssue(root, "develop", "sess-8521gc", 701, "outra-maquina", veryOld);
+    garbageCollectSessions(root, { now: Date.parse("2026-08-28T12:00:00.000Z"), isPidAlive: () => false });
+    const ev = readLifecycleEvents(root).find((e) => e.event === "gc-removed-without-end")!;
+    assert.deepEqual(ev.claimed_issues, [700, 701]);
+    assert.deepEqual(ev.claimed_issues_ever, [700, 701]);
+  });
+
   it("endSession de sessão INTERACTIVE não grava nada — só coordenadora é instrumentada", () => {
     const root = freshRoot();
     registerSession(root, "interactive", "sess-6624b", { tag: "host-a" });
