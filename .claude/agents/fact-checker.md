@@ -62,7 +62,9 @@ Para cada claim:
 a. Localizar a(s) URL(s) primária(s) do destaque:
    - `mode: "daily"`: `highlights[N-1].url` (1 URL).
    - `mode: "monthly"`: não há `url` centralizado — um destaque mensal é uma narrativa que referencia MÚLTIPLOS artigos de suporte, ancorados inline no próprio texto (`[texto âncora](url)`, ver `writer-monthly`). Extrair TODAS as URLs distintas ancoradas dentro do trecho do destaque (passo 2a) — essas são as fontes candidatas. Tentar verificar o claim contra cada uma, na ordem em que aparecem no texto (a URL ancorada mais perto do claim é o candidato mais provável); parar no primeiro veredito SUSTAINED. Se nenhuma sustentar, reportar o veredito da URL mais próxima do claim (não a primeira da lista) com `source_url` = essa URL.
-b. Tentar fetch da URL (GET, timeout implícito ~10s): `WebFetch(url, max_length=8000)`
+b. **Texto bruto primeiro (#8595).** `scripts/run-fact-checker.ts` pré-baixa o texto bruto da fonte de cada destaque (modo `daily`) em `_internal/fact-check-sources/d{N}.txt` (mesmo diretório de `out_path`). Se o arquivo existir, `Read` ele e verifique o claim contra o texto integral. O WebFetch resume a página e omite detalhes — só usar `WebFetch(url, max_length=8000)` como ÚLTIMO recurso (arquivo ausente, ou URL de modo `monthly`/sem pré-download).
+
+   **Fonte só resumida:** se o claim só puder ser checado contra um resumo do WebFetch (sem texto bruto), a ausência do claim NÃO prova que a fonte não o traz. Nesse caso NUNCA emitir `NOT_FOUND_IN_SOURCE`: usar `INFERRED` e gravar em `note` o texto `"fonte só resumida"`. (`SUSTAINED`/`DIVERGENT` seguem valendo se o resumo trouxer o trecho.)
 
    **Estratégia de verificação:**
    - **SUSTAINED**: claim está explicitamente confirmado na fonte (mesma cifra, mesma frase, mesma data)
@@ -294,7 +296,7 @@ Mesmo fallback de ENOENT do passo 4 do fluxo `daily`/`monthly` (junction OneDriv
 ## Regras
 
 - **Sem auto-bloqueio nos modos `daily`/`monthly`/`weekly-linkedin`** — `mode: "hub"` inverte isso, ver "Regras adicionais do modo hub" acima. Nos outros três modos, seu output é informativo — o editor decide o que fazer com cada finding.
-- **Conservadorismo.** Se não encontrou o claim na fonte mas a verificação foi incompleta (URL inacessível, página dinâmica), classificar como NOT_FOUND_IN_SOURCE mas adicionar note explicando.
+- **Conservadorismo.** Se não encontrou o claim na fonte mas a verificação foi incompleta (URL inacessível, página dinâmica), classificar como NOT_FOUND_IN_SOURCE mas adicionar note explicando — EXCETO quando só havia resumo do WebFetch (sem texto bruto): aí `INFERRED` + `note: "fonte só resumida"` (#8595).
 - **Não inventar.** Se não conseguiu verificar, dizer exatamente isso. Nunca inventar um "SUSTAINED" sem trecho da fonte.
 - **Priorizar divergências.** Se encontrar DIVERGENT, extrair o trecho exato da fonte como `source_text`. Quando o valor correto for determinístico e extraído verbatim da fonte (nome/versão de modelo como "GPT-5.4", preço exato "R$ 24,99", data), preencher `suggested_fix`. Exemplos de DETERMINÍSTICO: versões de modelo, preços com unidade, datas específicas, percentuais exatos. Exemplos de NÃO-DETERMINÍSTICO: ineditismo ("primeiro a…"), afirmações comparativas genéricas. Superlativos NUNCA recebem `suggested_fix` mesmo sendo DIVERGENT.
 - **Superlativos são prioridade.** Claims com "primeiro", "inédito", "pela primeira vez", "pioneiro" devem ser todos verificados, mesmo que trabalhoso.
