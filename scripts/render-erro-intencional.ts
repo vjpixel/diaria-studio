@@ -679,9 +679,13 @@ export function composeRevealText(
  * linha existente e a preserva; quando ausente, insere um placeholder pra
  * lembrar o autor de preencher antes de publicar.
  */
+export const HEADLESS_DEFAULT_NARRATIVE_LINE =
+  "Nessa edição também tem um erro plantado, ache e responda pra concorrer.";
+
 export function renderSection(
   reveal: string | null,
   currentDeclaration: string | null = null,
+  opts: { headlessDefault?: boolean } = {},
 ): string {
   const lines: string[] = [];
   lines.push(SECTION_HEADER);
@@ -694,6 +698,11 @@ export function renderSection(
   lines.push("");
   if (currentDeclaration && currentDeclaration.trim()) {
     lines.push(currentDeclaration.trim());
+  } else if (opts.headlessDefault) {
+    // #8592: modo auto-approve/headless — narrativa genérica segura (sem vírgula
+    // após "edição", logo não é lida como declaração específica nem como
+    // placeholder). O erro em si é proposto no gate 4, nunca inventado aqui.
+    lines.push(HEADLESS_DEFAULT_NARRATIVE_LINE);
   } else {
     lines.push("Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.");
   }
@@ -716,7 +725,7 @@ export function renderSection(
 export function insertOrUpdateSection(
   md: string,
   reveal: string | null,
-  opts: { preserveExistingReveal?: boolean } = {},
+  opts: { preserveExistingReveal?: boolean; headlessDefault?: boolean } = {},
 ): { md: string; action: "inserted" | "updated" | "no_change" } {
   // #1079: preserva linhas "Na última edição, …" e "Nessa edição, …" do MD da
   // edição corrente se já existirem (autor pode ter editado wording à mão).
@@ -754,7 +763,10 @@ export function insertOrUpdateSection(
     ? `Na última edição, ${existingRevealMatch[1].trim()}.`
     : reveal;
 
-  const block = renderSection(finalReveal, currentDeclaration);
+  // #8592: em headless, se o default já está no MD (rerun), preserva — idempotente.
+  const block = renderSection(finalReveal, currentDeclaration, {
+    headlessDefault: opts.headlessDefault,
+  });
   const headerEsc = SECTION_HEADER.replace(/\*/g, "\\*");
 
   // Existing section detection (header + body sem dependência de --- explícitos)
@@ -1052,8 +1064,12 @@ function main(): void {
   // #1279: --preserve-existing-reveal opt-in; default = fresh reveal sobrescreve
   // existente pra evitar bug de stale text herdado de edições anteriores.
   const preserveExistingReveal = process.argv.includes("--preserve-existing-reveal");
+  // #8592: --auto-approve = Stage 2 headless (--no-gates) grava a narrativa
+  // padrão em vez do placeholder. NÃO planta erro no texto.
+  const headlessDefault = process.argv.includes("--auto-approve");
   const { md: updated, action } = insertOrUpdateSection(md, reveal, {
     preserveExistingReveal,
+    headlessDefault,
   });
 
   if (action !== "no_change") {

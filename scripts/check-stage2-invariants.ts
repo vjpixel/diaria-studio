@@ -186,6 +186,35 @@ export function checkIntentionalErrorFrontmatter(editionDir: string): CheckResul
 }
 
 /**
+ * Pure (#8592): em modo headless (`--no-gates`), detecta que os 5 campos
+ * estruturais de `_internal/intentional-error.json` seguem `{PREENCHER}`.
+ * Retorna `{ ok: false, label }` com a ação. Usado como AVISO (não bloqueia o
+ * Stage 2): o candidato é proposto e plantado no gate 4, com filtro #3808.
+ */
+export function checkIntentionalErrorPendingHeadless(editionDir: string): CheckResult {
+  const jsonPath = intentionalErrorJsonPath(editionDir);
+  if (!existsSync(jsonPath)) return { ok: true, label: "json_missing: outro check captura isso" };
+  let rec: Record<string, unknown>;
+  try {
+    rec = JSON.parse(readFileSync(jsonPath, "utf8")) as Record<string, unknown>;
+  } catch {
+    return { ok: true, label: "json_invalid: outro check captura isso" };
+  }
+  const fields = ["description", "location", "category", "correct_value", "wrong_value"];
+  const pending = fields.filter((f) => {
+    const v = rec[f];
+    return typeof v !== "string" || v.trim() === "" || /^\{PREENCHER/i.test(v.trim());
+  });
+  if (pending.length < fields.length) return { ok: true };
+  return {
+    ok: false,
+    label:
+      "intentional_error_pending_headless: os 5 campos de _internal/intentional-error.json seguem {PREENCHER} " +
+      "(Stage 2 headless não planta erro) — proponha e plante um erro em 1 clique no gate 4",
+  };
+}
+
+/**
  * Pure (#6139): valida que `intentional-error.json.reveal` — quando o editor
  * já o preencheu nesta MESMA edição — será RECONHECIDO pelo renderer da
  * EDIÇÃO SEGUINTE como o parágrafo de reveal do bloco ERRO INTENCIONAL.
@@ -454,13 +483,15 @@ interface AggregateResult {
     reveal_temporal_prefix: CheckResult;
     urls_accessible: CheckResult;
   };
+  /** #8592: avisos não-bloqueantes (só presente com `opts.headless`). */
+  warnings?: string[];
 }
 
 // #4730: async — checkUrlsAccessible pode re-verificar URLs needs_reverify
 // via rede (verify-accessibility.ts real, ou opts.reverify injetado em teste).
 export async function checkStage2Invariants(
   editionDir: string,
-  opts: { cachePath?: string; reverify?: (url: string) => Promise<{ verdict: string }> } = {},
+  opts: { headless?: boolean; cachePath?: string; reverify?: (url: string) => Promise<{ verdict: string }> } = {},
 ): Promise<AggregateResult> {
   const internalDir = join(editionDir, "_internal");
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -471,7 +502,13 @@ export async function checkStage2Invariants(
   const intentional_error_frontmatter = checkIntentionalErrorFrontmatter(editionDir);
   const reveal_temporal_prefix = checkRevealTemporalPrefix(editionDir);
   const urls_accessible = await checkUrlsAccessible(editionDir, cachePath, { reverify: opts.reverify });
+  const warnings: string[] = [];
+  if (opts.headless) {
+    const pending = checkIntentionalErrorPendingHeadless(editionDir);
+    if (!pending.ok && pending.label) warnings.push(pending.label);
+  }
   return {
+    ...(opts.headless ? { warnings } : {}),
     ok:
       humanizador.ok &&
       clarice.ok &&
@@ -514,8 +551,10 @@ async function main(): Promise<void> {
         `${ellipsisAutofix.entries.length} item(ns) avaliado(s), changed=${ellipsisAutofix.changed}`,
     );
   }
-  const result = await checkStage2Invariants(editionDir);
+  const headless = process.argv.includes("--headless");
+  const result = await checkStage2Invariants(editionDir, { headless });
   console.log(JSON.stringify(result, null, 2));
+  for (const w of result.warnings ?? []) console.error(`[check-stage2-invariants] WARN — ${w}`);
   if (!result.ok) {
     const failed: string[] = [];
     if (!result.checks.humanizador.ok) failed.push(`humanizador: ${result.checks.humanizador.label}`);
