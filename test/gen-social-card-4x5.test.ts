@@ -24,6 +24,7 @@ import {
   overlayFittingFontSize,
   overlayTitleOverflows,
   overlayWrapLines,
+  WEEKLY_OVERLAY_WRAP,
   computeCarouselTitleFontSize,
   editionDateLabel,
   RATIOS,
@@ -221,7 +222,7 @@ describe("buildOverlaySvg — SVG bem-formado (#4114)", () => {
 
   it("o overlay cobre a base com gradiente e mantém o texto dentro do card", () => {
     const H = 1350;
-    const svg = buildOverlaySvg("Título de teste do card", "", "", { w: 1080, h: H, textH: 470 });
+    const svg = buildOverlaySvg("Título de teste do card", "", { w: 1080, h: H, textH: 470 });
     assert.match(svg, /linearGradient/);
     for (const y of [...svg.matchAll(/<text[^>]*y="([\d.]+)"/g)].map((m) => Number(m[1]))) {
       assert.ok(y > 0 && y < H, `linha de texto fora do card: y=${y}`);
@@ -376,6 +377,22 @@ describe("título diário de 32 chars quebra em 2 linhas que cabem (#8589)", () 
   it("título que já quebrava em 2 linhas fica igual", () => {
     const t = "Freelancers que usam IA ganham mais";
     assert.deepEqual(overlayWrapLines(t, AVAIL).lines, wrapTitle(t, Math.floor(AVAIL / 29)));
+  });
+  it("título realista de 46-52 chars cabe (até 3 linhas) ou falha; nunca fica cortado", () => {
+    const t = "OpenAI fecha acordo bilionário com governo dos EUA";
+    const r = overlayWrapLines(t, AVAIL);
+    assert.equal(r.fits, true);
+    assert.ok(r.lines.every((l) => l.length * DAILY_CAROUSEL_BODY_SIZE * 0.58 <= AVAIL));
+    assert.equal(overlayTitleOverflows(t, DAILY_CAROUSEL_BODY_SIZE), false);
+  });
+  it("caminho main() (fontSizeOverride definido) também falha com título que não cabe", () => {
+    assert.throws(() => buildOverlaySvg("Superconstitucionalissimamente inconstitucionalizavelmente", "", undefined, 70), /reescreva/);
+  });
+  it("semanal (wrap explícito) inalterado, fits:true mesmo com título longo de RADAR", () => {
+    const t = "Um título de notícia bem mais longo do que qualquer destaque D1/D2/D3 jamais teria, porque RADAR";
+    const r = overlayWrapLines(t, 936, WEEKLY_OVERLAY_WRAP);
+    assert.deepEqual(r.lines, wrapTitle(t, Math.floor(936 / 38)));
+    assert.equal(r.fits, true);
   });
   it("título sem quebra que caiba falha com mensagem clara no card diário", () => {
     assert.throws(() => buildOverlaySvg("Superconstitucionalissimamente inconstitucionalizavelmente"), /reescreva/);

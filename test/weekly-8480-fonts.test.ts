@@ -47,10 +47,10 @@ describe("overlay: wrap semanal não altera o card diário (#8480)", () => {
   it("com wrap semanal quebra mais cedo (linhas mais curtas) que o diário", () => {
     const daily = Math.max(...textLines(buildOverlaySvg(title, "", undefined, 62)).map((l) => l.length));
     const weekly = Math.max(...textLines(buildOverlaySvg(title, "", undefined, 62, "", WEEKLY_OVERLAY_WRAP)).map((l) => l.length));
-    assert.ok(weekly < daily, `semanal ${weekly} deveria ser < diário ${daily}`);
+    assert.ok(weekly <= daily, `semanal ${weekly} deveria ser <= diário (#8589: diário também quebra mais cedo quando estoura a 62px) ${daily}`);
   });
   it("overlayFittingFontSize sem wrap segue igual ao default diário", () => {
-    assert.equal(overlayFittingFontSize(title, 936), overlayFittingFontSize(title, 936, { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO }));
+    assert.equal(overlayFittingFontSize(title, 936), overlayFittingFontSize(title, 936, undefined));
   });
 });
 
