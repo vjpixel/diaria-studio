@@ -20,7 +20,7 @@ const { data } = Papa.parse<{ Nome: string; URL: string }>(
 );
 
 function nome(r: { Nome?: string }): string {
-  return r.Named ?? "";
+  return r.Nome ?? "";
 }
 
 describe("#8631 discovery falha fonte tutorial", () => {
