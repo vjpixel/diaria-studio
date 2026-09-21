@@ -640,20 +640,32 @@ export async function sendCompleteRegistrationEvent(
  * ausência já passou de aceitável, não este log.
  */
 export type MetaCapiLogEvent =
-  | { event: "meta_capi_not_configured"; worker: string }
-  | { event: "meta_capi_sent"; worker: string; status: number }
+  | { event: "meta_capi_not_configured"; worker: string; eventSourceUrl?: string }
+  | { event: "meta_capi_sent"; worker: string; status: number; eventSourceUrl?: string }
   | {
       event: "meta_capi_send_failed";
       worker: string;
       status: number;
       reason: "meta_error" | "network_error";
+      eventSourceUrl?: string;
     };
 
 /** @pure */
-export function buildMetaCapiLogEvent(result: MetaCapiSendResult, worker: string): MetaCapiLogEvent {
-  if (result.ok) return { event: "meta_capi_sent", worker, status: result.status };
-  if (result.reason === "not_configured") return { event: "meta_capi_not_configured", worker };
-  return { event: "meta_capi_send_failed", worker, status: result.status, reason: result.reason };
+export function buildMetaCapiLogEvent(
+  result: MetaCapiSendResult,
+  worker: string,
+  eventSourceUrl?: string,
+): MetaCapiLogEvent {
+  if (result.ok) {
+    const event = { event: "meta_capi_sent" as const, worker, status: result.status };
+    return eventSourceUrl === undefined ? event : { ...event, eventSourceUrl };
+  }
+  if (result.reason === "not_configured") {
+    const event = { event: "meta_capi_not_configured" as const, worker };
+    return eventSourceUrl === undefined ? event : { ...event, eventSourceUrl };
+  }
+  const event = { event: "meta_capi_send_failed" as const, worker, status: result.status, reason: result.reason };
+  return eventSourceUrl === undefined ? event : { ...event, eventSourceUrl };
 }
 
 /**
@@ -670,9 +682,10 @@ export function buildMetaCapiLogEvent(result: MetaCapiSendResult, worker: string
 export function logMetaCapiSendResult(
   sendEvent: Promise<MetaCapiSendResult>,
   worker: string,
+  eventSourceUrl?: string,
 ): Promise<MetaCapiSendResult> {
   return sendEvent.then((result) => {
-    const logEvent = buildMetaCapiLogEvent(result, worker);
+    const logEvent = buildMetaCapiLogEvent(result, worker, eventSourceUrl);
     if (logEvent.event === "meta_capi_send_failed") {
       console.error(JSON.stringify(logEvent));
     } else {

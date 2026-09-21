@@ -293,6 +293,16 @@ describe("#7776 — buildMetaCapiLogEvent (distingue not_configured de configura
     assert.deepEqual(ev, { event: "meta_capi_send_failed", worker: "poll", status: 502, reason: "network_error" });
   });
 
+
+  it("eventSourceUrl opcional repassado em todos os casos (#8647)", () => {
+    assert.deepEqual(buildMetaCapiLogEvent({ ok: true, status: 200 }, "poll", "https://diar.ia.br/"), { event: "meta_capi_sent", worker: "poll", status: 200, eventSourceUrl: "https://diar.ia.br/" });
+    assert.deepEqual(buildMetaCapiLogEvent({ ok: false, status: 503, reason: "not_configured" }, "cursos", "https://eia.diar.ia.br/"), { event: "meta_capi_not_configured", worker: "cursos", eventSourceUrl: "https://eia.diar.ia.br/" });
+    assert.deepEqual(buildMetaCapiLogEvent({ ok: false, status: 401, reason: "meta_error" }, "reativar", "https://diar.ia.br/"), { event: "meta_capi_send_failed", worker: "reativar", status: 401, reason: "meta_error", eventSourceUrl: "https://diar.ia.br/" });
+  });
+  it("eventSourceUrl ausente segue funcionando (#8647) — sem regressão de dedup/claim", () => {
+    const ev = buildMetaCapiLogEvent({ ok: true, status: 200 }, "poll");
+    assert.equal(ev.eventSourceUrl, undefined);
+  });
   it("nunca inclui e-mail/PII — só worker + desfecho", () => {
     const ev = buildMetaCapiLogEvent({ ok: true, status: 200 }, "poll");
     assert.ok(!JSON.stringify(ev).includes("@"));
