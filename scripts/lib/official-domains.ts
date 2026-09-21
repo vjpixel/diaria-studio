@@ -233,6 +233,10 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   {
     company: "Qwen / Alibaba",
     domains: ["qwenlm.github.io"],
+    // Repositório oficial da org no GitHub (ex: github.com/QwenLM/Qwen-Image-2.1,
+    // 260922): lançamentos de modelo saem aqui. Restrito à org — github.com
+    // inteiro NÃO é oficial.
+    path_patterns: [/^github\.com\/qwenlm\//i],
     detection_keywords: /\b(qwen|alibaba)\b/i,
   },
   {
