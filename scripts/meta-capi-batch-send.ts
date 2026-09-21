@@ -20,7 +20,6 @@
  * reenvio ainda é 1 chamada de rede e 1 evento RECEBIDO na API). Corrigido
  * filtrando por `referring_site` — ver `REALTIME_HANDLER_REFERRING_SITES`.
  *
-
  * ## Limitação de janela — a Conversions API só aceita evento cujo
  * `event_time` esteja dentro de ~7 dias do momento do envio (doc oficial da
  * Meta). O snapshot semanal (`Diaria-Beehiiv-Backup`, domingo 03:00) roda
