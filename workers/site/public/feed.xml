@@ -1,0 +1,361 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>diar.ia.br — notícias de IA todo dia, em português</title>
+    <link>https://diar.ia.br/</link>
+    <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
+    <language>pt-BR</language>
+    <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
+    <lastBuildDate>Fri, 18 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>OpenAI cria regra para revelar erros da própria IA</title>
+      <link>https://diar.ia.br/p/openai-cria-regra-para-revelar-erros-da-propria-ia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/openai-cria-regra-para-revelar-erros-da-propria-ia</guid>
+      <pubDate>Fri, 18 Sep 2026 09:00:00 GMT</pubDate>
+      <description>iFood manda robô cuidar do seu restaurante | Google DeepMind lança instituto para pensar a AGI</description>
+    </item>
+    <item>
+      <title>Funcionários leem suas conversas no ChatGPT</title>
+      <link>https://diar.ia.br/p/funcionarios-leem-suas-conversas-no-chatgpt</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/funcionarios-leem-suas-conversas-no-chatgpt</guid>
+      <pubDate>Thu, 17 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Claude funde chat e Cowork num só produto | Startup de ex-OpenAI cria modelo que não alucina</description>
+    </item>
+    <item>
+      <title>DeepSeek quase iguala GPT-6 Astra por 1,4% do custo</title>
+      <link>https://diar.ia.br/p/deepseek-quase-iguala-gpt-6-astra-por-1-4-do-custo</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/deepseek-quase-iguala-gpt-6-astra-por-1-4-do-custo</guid>
+      <pubDate>Wed, 16 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Bastam 10 segundos para clonar sua voz | Seu time programa com IA sem rede de segurança</description>
+    </item>
+    <item>
+      <title>CEOs propõem regras próprias pra frear a IA</title>
+      <link>https://diar.ia.br/p/ceos-propoem-regras-proprias-pra-frear-a-ia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/ceos-propoem-regras-proprias-pra-frear-a-ia</guid>
+      <pubDate>Tue, 15 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Sua empresa já pode rodar agentes da OpenAI | Freelancers que usam IA ganham mais</description>
+    </item>
+    <item>
+      <title>IA cruza mais de 3000 páginas do caso Master</title>
+      <link>https://diar.ia.br/p/ia-cruza-mais-de-3000-paginas-do-caso-master</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/ia-cruza-mais-de-3000-paginas-do-caso-master</guid>
+      <pubDate>Mon, 14 Sep 2026 09:00:00 GMT</pubDate>
+      <description>CEO da Anthropic propõe desacelerar a IA | NYT flagra Grok criando fotos de abuso infantil</description>
+    </item>
+    <item>
+      <title>10 mil agentes da OpenAI resolvem enigma de 90 anos</title>
+      <link>https://diar.ia.br/p/10-mil-agentes-da-openai-resolvem-enigma-de-90-anos</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/10-mil-agentes-da-openai-resolvem-enigma-de-90-anos</guid>
+      <pubDate>Fri, 11 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Claude ajudou espião russo a escapar de antivírus | Claude tentou infectar código mesmo sabendo do risco</description>
+    </item>
+    <item>
+      <title>Pesquisador da Anthropic teme fim da humanidade</title>
+      <link>https://diar.ia.br/p/pesquisador-da-anthropic-teme-fim-da-humanidade</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/pesquisador-da-anthropic-teme-fim-da-humanidade</guid>
+      <pubDate>Thu, 10 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Meta lança Muse, seu novo agente pessoal | Siri finalmente aprende a falar português</description>
+    </item>
+    <item>
+      <title>Bots da OpenAI invadem site alemão</title>
+      <link>https://diar.ia.br/p/bots-da-openai-invadem-site-alemao</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/bots-da-openai-invadem-site-alemao</guid>
+      <pubDate>Wed, 09 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Dominar IA, não pessoas, agora te promove | Seu rabisco vira imagem pronta no ChatGPT</description>
+    </item>
+    <item>
+      <title>Nvidia diz que a AGI chegou, cientistas duvidam</title>
+      <link>https://diar.ia.br/p/nvidia-diz-que-a-agi-chegou-cientistas-duvidam</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/nvidia-diz-que-a-agi-chegou-cientistas-duvidam</guid>
+      <pubDate>Tue, 08 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Google lança Gemma 4 para codar sozinho | Seu ChatGPT ficou 47% mais rápido - e mais perigoso</description>
+    </item>
+    <item>
+      <title>NVIDIA agora controla onde você baixa modelos</title>
+      <link>https://diar.ia.br/p/nvidia-agora-controla-onde-voce-baixa-modelos</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/nvidia-agora-controla-onde-voce-baixa-modelos</guid>
+      <pubDate>Fri, 04 Sep 2026 09:00:00 GMT</pubDate>
+      <description>GPT-6 Astra: modelo mais capaz vira arma crítica | Brasil lidera pressa por IA, mas ensino atrasa</description>
+    </item>
+    <item>
+      <title>Google lança dois modelos Gemini de uma vez</title>
+      <link>https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez</guid>
+      <pubDate>Thu, 03 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Anthropic lança Fable e Mythos 5.1 | OpenAI diz que Astra cruzou limite crítico</description>
+    </item>
+    <item>
+      <title>Banco da Inglaterra teme colapso econômico global</title>
+      <link>https://diar.ia.br/p/banco-da-inglaterra-teme-colapso-economico-global</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/banco-da-inglaterra-teme-colapso-economico-global</guid>
+      <pubDate>Wed, 02 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Google Antigravity resolve problemas de matemática | Plataformas passam a sinalizar conteúdo de IA</description>
+    </item>
+    <item>
+      <title>Gates propõe empregos só para humanos</title>
+      <link>https://diar.ia.br/p/gates-propoe-empregos-so-para-humanos</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/gates-propoe-empregos-so-para-humanos</guid>
+      <pubDate>Tue, 01 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Seu suporte de TI pode sumir como o da Cielo | Grok foi treinado com abuso infantil, diz processo</description>
+    </item>
+    <item>
+      <title>Claude e Codex instalaram código sem dono</title>
+      <link>https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono</guid>
+      <pubDate>Mon, 31 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Extensão do Claude chega a todo plano pago | Nvidia pode comprar a Hugging Face por US$ 12,9 bi</description>
+    </item>
+    <item>
+      <title>Tem 22 a 25 anos? A IA já pode afetar seu emprego</title>
+      <link>https://diar.ia.br/p/tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego</guid>
+      <pubDate>Fri, 28 Aug 2026 09:00:00 GMT</pubDate>
+      <description>OpenAI amplia presença oficial no Brasil | GLM-5.3-Flash: modelo aberto chega perto do Opus</description>
+    </item>
+    <item>
+      <title>Seu chatbot pode ter lido propaganda israelense</title>
+      <link>https://diar.ia.br/p/seu-chatbot-pode-ter-lido-propaganda-israelense</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/seu-chatbot-pode-ter-lido-propaganda-israelense</guid>
+      <pubDate>Thu, 27 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Agora o ChatGPT faz login nos seus sites | OpenAI lança chip Jalapeño para rivalizar Nvidia</description>
+    </item>
+    <item>
+      <title>Empresas recontratam quem demitiu por IA</title>
+      <link>https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia</guid>
+      <pubDate>Wed, 26 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Infraestrutura trava 1 em cada 3 startups de IA | Google mira escritórios de advocacia com Gemini</description>
+    </item>
+    <item>
+      <title>Brasil investe R$ 2,3 bi em infraestrutura de IA</title>
+      <link>https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia</guid>
+      <pubDate>Tue, 25 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Grátis, poderoso e sem dono: o mistério Ox Alpha | SoftBank capta US$ 6,3 bi para apostar na OpenAI</description>
+    </item>
+    <item>
+      <title>Roteiristas pagos para treinar quem os substitui</title>
+      <link>https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui</guid>
+      <pubDate>Mon, 24 Aug 2026 09:00:00 GMT</pubDate>
+      <description>O estudo que fura o hype do uso no trabalho | Google lança simulado do Enem no Gemini</description>
+    </item>
+    <item>
+      <title>Marca d&apos;água do Claude cai em horas</title>
+      <link>https://diar.ia.br/p/marca-d-agua-do-claude-cai-em-horas</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/marca-d-agua-do-claude-cai-em-horas</guid>
+      <pubDate>Fri, 21 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Sua empresa é dado de treino alheio | ATS: o filtro que decide seu currículo</description>
+    </item>
+    <item>
+      <title>OpenAI pausa treinamento após invasão crítica</title>
+      <link>https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica</guid>
+      <pubDate>Thu, 20 Aug 2026 09:00:00 GMT</pubDate>
+      <description>OpenAI chega ao Brasil com foco em empresas | Promessa de menos trabalho esbarra em 90h</description>
+    </item>
+    <item>
+      <title>TSE exige aviso em propaganda eleitoral com IA</title>
+      <link>https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia</guid>
+      <pubDate>Wed, 19 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Grupo hacker usou Claude em 8 invasões | ChatGPT for Teens chega com proteções extras</description>
+    </item>
+    <item>
+      <title>Anthropic: só curar câncer convence público</title>
+      <link>https://diar.ia.br/p/anthropic-so-curar-cancer-convence-publico</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/anthropic-so-curar-cancer-convence-publico</guid>
+      <pubDate>Tue, 18 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Oito agentes autônomos mapearam Taiwan sozinhos | Excel perde função COPILOT em setembro</description>
+    </item>
+    <item>
+      <title>Reglab estima R$986 bi extra no PIB até 2030</title>
+      <link>https://diar.ia.br/p/reglab-estima-r-986-bi-extra-no-pib-ate-2030</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/reglab-estima-r-986-bi-extra-no-pib-ate-2030</guid>
+      <pubDate>Mon, 17 Aug 2026 09:00:00 GMT</pubDate>
+      <description>ChatGPT, Claude e Gemini vazavam raciocínio | 810 conversas revelam padrão de risco mental</description>
+    </item>
+    <item>
+      <title>Claude Cowork chega ao painel do Chrome</title>
+      <link>https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome</guid>
+      <pubDate>Fri, 14 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Gemini 3.7 Flash chega 3 semanas após o 3.6 | GPT-5.6 Sol roda 14× mais rápido na OpenAI</description>
+    </item>
+    <item>
+      <title>Amodei previu colapso do emprego. Não veio</title>
+      <link>https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio</guid>
+      <pubDate>Thu, 13 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Marca d&apos;água do Claude falha no mundo real | Claude avança em problema da hipótese de Riemann</description>
+    </item>
+    <item>
+      <title>Assistente pessoal ataca sistema sem ser solicitado</title>
+      <link>https://diar.ia.br/p/assistente-pessoal-ataca-sistema-sem-ser-solicitado</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/assistente-pessoal-ataca-sistema-sem-ser-solicitado</guid>
+      <pubDate>Wed, 12 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Meta lança Muse Glimmer, modelo de 30B aberto | Sessões do Claude Code agora se falam</description>
+    </item>
+    <item>
+      <title>Medicina teme formar médicos sem raciocínio</title>
+      <link>https://diar.ia.br/p/medicina-teme-formar-medicos-sem-raciocinio</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/medicina-teme-formar-medicos-sem-raciocinio</guid>
+      <pubDate>Tue, 11 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Entrevistas de emprego ganham avatar sintético | OpenAI freia modelo por risco cibernético</description>
+    </item>
+    <item>
+      <title>IA de Stanford cria vírus funcional em lab</title>
+      <link>https://diar.ia.br/p/ia-de-stanford-cria-virus-funcional-em-lab</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/ia-de-stanford-cria-virus-funcional-em-lab</guid>
+      <pubDate>Mon, 10 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Meta é a terceira empresa de IA a relatar invasão | RH: candidatos burlam triagem com prompts</description>
+    </item>
+    <item>
+      <title>Meta lucrou com anúncios de abuso infantil por IA</title>
+      <link>https://diar.ia.br/p/meta-lucrou-com-anuncios-de-abuso-infantil-por-ia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/meta-lucrou-com-anuncios-de-abuso-infantil-por-ia</guid>
+      <pubDate>Fri, 07 Aug 2026 09:00:00 GMT</pubDate>
+      <description>ChatGPT libera mensagens ilimitadas no gratuito | O que acontece quando você conversa com uma IA</description>
+    </item>
+    <item>
+      <title>Modelo da Anthropic finge ser humano em teste</title>
+      <link>https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste</guid>
+      <pubDate>Thu, 06 Aug 2026 09:00:00 GMT</pubDate>
+      <description>IA do Chrome consome 20 GB sem aviso prévio | Correção nas ações de IA reacende debate</description>
+    </item>
+    <item>
+      <title>IA por trás de +50% dos cibercrimes africanos</title>
+      <link>https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos</guid>
+      <pubDate>Wed, 05 Aug 2026 09:00:00 GMT</pubDate>
+      <description>OpenAI testa anúncios no Brasil | Aeroportos automatizam tarifas com câmeras com IA</description>
+    </item>
+    <item>
+      <title>Hacker chinês usa DeepSeek em ataques autônomos</title>
+      <link>https://diar.ia.br/p/hacker-chines-usa-deepseek-em-ataques-autonomos</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/hacker-chines-usa-deepseek-em-ataques-autonomos</guid>
+      <pubDate>Tue, 04 Aug 2026 09:00:00 GMT</pubDate>
+      <description>Mercado de IA abre espaço além do código | UE exige aviso quando você fala com IA</description>
+    </item>
+    <item>
+      <title>Claude hackeou 3 empresas sem ninguém notar</title>
+      <link>https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar</guid>
+      <pubDate>Mon, 03 Aug 2026 09:00:00 GMT</pubDate>
+      <description>BuzzFeed demite 1/3 da equipe após aposta em IA | Deepfake de Roberto Carlos vira golpe de R$1,8 bi</description>
+    </item>
+    <item>
+      <title>Claude expõe bugs mais rápido que Microsoft corrige</title>
+      <link>https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige</guid>
+      <pubDate>Fri, 31 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Samsung tem primeiro prejuízo em celulares por IA | xAI processa Minnesota por lei antinudes</description>
+    </item>
+    <item>
+      <title>Repositório de IA sem freio para nudes ilegais</title>
+      <link>https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais</guid>
+      <pubDate>Thu, 30 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Gemini lê comentários e edita o Docs por você | Agente da OpenAI invadiu mais plataformas</description>
+    </item>
+    <item>
+      <title>1.134 funcionários da IA pedem freio ao setor</title>
+      <link>https://diar.ia.br/p/1-134-funcion-rios-da-ia-pedem-freio-ao-setor</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/1-134-funcion-rios-da-ia-pedem-freio-ao-setor</guid>
+      <pubDate>Wed, 29 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Starbucks desliga IA de estoque após falhas | IA do Google já domina 43% das buscas nos EUA</description>
+    </item>
+    <item>
+      <title>Itaú lança IA nativa para 300 mil clientes</title>
+      <link>https://diar.ia.br/p/itau-lanca-ia-nativa-para-300-mil-clientes</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/itau-lanca-ia-nativa-para-300-mil-clientes</guid>
+      <pubDate>Tue, 28 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Professor flagra 90% da turma colando com IA | Modelos chineses ganham espaço</description>
+    </item>
+    <item>
+      <title>Anthropic lança o Claude Opus 5</title>
+      <link>https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5</guid>
+      <pubDate>Mon, 27 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Todas as melhores IAs vão precisar de aval dos EUA? | Modelos superam humanos em viés ao contratar</description>
+    </item>
+    <item>
+      <title>Reddit e jornais cogitam banir o Google</title>
+      <link>https://diar.ia.br/p/reddit-e-jornais-cogitam-banir-o-google</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/reddit-e-jornais-cogitam-banir-o-google</guid>
+      <pubDate>Fri, 24 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Clientes preferem IA, empresas cortam vagas | OpenAI conecta prontuário médico ao ChatGPT</description>
+    </item>
+    <item>
+      <title>IA agiu sozinha e hackeou startup, revela OpenAI</title>
+      <link>https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai</guid>
+      <pubDate>Thu, 23 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Fundador do Nubank entra para o conselho da OpenAI | AMD fecha acordo bilionário com Anthropic</description>
+    </item>
+    <item>
+      <title>Google lança trio Gemini 3.6 e 3.5 Flash</title>
+      <link>https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash</guid>
+      <pubDate>Wed, 22 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Rede de hotéis vende 47% via chatbot no WhatsApp | OpenAI lança ChatGPT para pequenos negócios</description>
+    </item>
+    <item>
+      <title>10 startups do Brasil miram US$ 100 mi em 2026</title>
+      <link>https://diar.ia.br/p/10-startups-do-brasil-miram-us-100-mi-em-2026</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/10-startups-do-brasil-miram-us-100-mi-em-2026</guid>
+      <pubDate>Tue, 21 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Kimi K3 chega mais barato que os rivais | Apple grava atendimentos do Genius Bar com IA</description>
+    </item>
+    <item>
+      <title>UE obriga Google a abrir dados para rivais</title>
+      <link>https://diar.ia.br/p/ue-obriga-google-a-abrir-dados-para-rivais</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/ue-obriga-google-a-abrir-dados-para-rivais</guid>
+      <pubDate>Mon, 20 Jul 2026 09:00:00 GMT</pubDate>
+      <description>OpenAI propõe placar de ROI para IA | Kimi K3: o maior modelo aberto já lançado</description>
+    </item>
+    <item>
+      <title>GPT-5.6 Sol apaga arquivos sem permissão</title>
+      <link>https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao</guid>
+      <pubDate>Fri, 17 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Altman, Hassabis e Amodei pedem regulação | NotebookLM vira Gemini Notebook</description>
+    </item>
+    <item>
+      <title>IBM admite atraso em IA e ação despenca 25%</title>
+      <link>https://diar.ia.br/p/ibm-admite-atraso-em-ia-e-acao-despenca-25</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/ibm-admite-atraso-em-ia-e-acao-despenca-25</guid>
+      <pubDate>Thu, 16 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Meta é acusada de demitir doentes com IA | Google libera IA em entrevistas técnicas</description>
+    </item>
+    <item>
+      <title>Terroristas driblam chatbots para montar armas</title>
+      <link>https://diar.ia.br/p/terroristas-driblam-chatbots-para-montar-armas</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/terroristas-driblam-chatbots-para-montar-armas</guid>
+      <pubDate>Wed, 15 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Matrículas em cursos de IA generativa sobem 617% | OCDE: emprego recorde, mas jovem não entra</description>
+    </item>
+    <item>
+      <title>IA do Google detecta câncer raro no SUS</title>
+      <link>https://diar.ia.br/p/ia-do-google-detecta-c-ncer-raro-no-sus</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/ia-do-google-detecta-c-ncer-raro-no-sus</guid>
+      <pubDate>Tue, 14 Jul 2026 09:00:00 GMT</pubDate>
+      <description>Nobel e Anthropic alertam sobre risco da IA | Fraude com deepfake sobe 126% e mira fintechs</description>
+    </item>
+    <item>
+      <title>Os empregos mais blindados contra a IA</title>
+      <link>https://diar.ia.br/p/os-empregos-mais-blindados-contra-a-ia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/os-empregos-mais-blindados-contra-a-ia</guid>
+      <pubDate>Mon, 13 Jul 2026 09:00:00 GMT</pubDate>
+      <description>BB troca menus por conversa no app e WhatsApp | Microsoft troca OpenAI e Anthropic por IA própria</description>
+    </item>
+    <item>
+      <title>A diar.ia.br normalmente te conta o dia... hoje, ela conta o mês</title>
+      <link>https://diar.ia.br/p/a-diar-ia-br-normalmente-te-conta-o-dia-hoje-ela-conta-o-mes</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/a-diar-ia-br-normalmente-te-conta-o-dia-hoje-ela-conta-o-mes</guid>
+      <pubDate>Sun, 12 Jul 2026 09:00:00 GMT</pubDate>
+      <description>A diar.ia.br normalmente te conta o dia... hoje, ela conta o mês</description>
+    </item>
+  </channel>
+</rss>

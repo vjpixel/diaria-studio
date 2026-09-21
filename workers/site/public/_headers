@@ -1,0 +1,7 @@
+# #8333: feed RSS das edições. O static asset sairia como application/xml;
+# RSS tem media type próprio e leitores/validadores preferem ele. ETag e
+# 304 condicional já vêm do serving de static assets — só fixamos o tipo e
+# um cache curto (o feed muda 1x/dia, com o `regen-home`).
+/feed.xml
+  Content-Type: application/rss+xml; charset=utf-8
+  Cache-Control: public, max-age=3600
