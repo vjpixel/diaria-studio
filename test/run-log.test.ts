@@ -192,6 +192,134 @@ describe("logEvent (#612) — append append-only ao JSONL", () => {
     assert.equal(result, false);
   });
 
+  // ------------------------------------------------------------------
+  // #8634 — regressão pro falha de append em `data/run-log.jsonl` (OneDrive
+  // Files On-Demand, errno=-4094 / UNKNOWN). O bug: `appendFileSync` lançava
+  // `Error: UNKNOWN: unknown error, write`, o log do evento se perdia e o
+  // script saía com stack trace, derrubando o stage. O fix: retry curto com
+  // backoff (3x) no append e, se persistir, degrada pra warn no stderr sem
+  // lançar — log nunca deve derrubar o stage.
+  //
+  // Os testes usam `appendFn` injetado (não mockam `node:fs`, que é
+  // read-only) pra simular os erros transientes do OneDrive sem depender de
+  // falhas de I/O reais no tmpdir.
+  // ------------------------------------------------------------------
+
+  it("#8634: retry em UNKNOWN errno=-4094 (OneDrive) — escreve na 2a tentativa", () => {
+    let attempt = 0;
+    const result = logEvent(
+      { edition: null, stage: null, agent: null, level: "info", message: "x" },
+      tmpRoot,
+      (p, d) => {
+        // #8634: simula `appendFileWithRetry` com retry interno — 1a falha
+        // UNKNOWN errno=-4094 (OneDrive Files On-Demand), 2a escreve.
+        attempt++;
+        if (attempt < 2) {
+          const err = new Error("UNKNOWN: unknown error, write") as NodeJS.ErrnoException;
+          err.code = "UNKNOWN";
+          err.errno = -4094;
+          throw err;
+        }
+        appendFileSync(p, d, "utf8");
+      },
+    );
+    assert.equal(result, true, "deveria ter escrito após retry");
+    assert.equal(attempt, 2);
+    const content = readFileSync(join(tmpRoot, "data", "run-log.jsonl"), "utf8");
+    assert.equal(content.trim().split("\n").length, 1);
+  });
+
+  it("#8634: retry em EBUSY/EPERM/EACCES — escreve após retry", () => {
+    for (const code of ["EBUSY", "EPERM", "EACCES"]) {
+      const tmp = mkdtempSync(join(tmpdir(), "run-log-8634-"));
+      try {
+        mkdirSync(join(tmp, "data"), { recursive: true });
+        let attempt = 0;
+        const result = logEvent(
+          { edition: null, stage: null, agent: null, level: "info", message: "x" },
+          tmp,
+          (p, d) => {
+            attempt++;
+            if (attempt < 2) {
+              const err = new Error(code) as NodeJS.ErrnoException;
+              err.code = code;
+              throw err;
+            }
+            appendFileSync(p, d, "utf8");
+          },
+        );
+        assert.equal(result, true, `${code}: deveria ter escrito após retry`);
+        assert.equal(attempt, 2);
+      } finally {
+        try { rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
+      }
+    }
+  });
+
+  it("#8634: erro permanente (ENOENT) é propagado — logEvent devolve false, sem lançar", () => {
+    let attempt = 0;
+    let result: boolean | undefined;
+    assert.doesNotThrow(() => {
+      result = logEvent(
+        { edition: null, stage: null, agent: null, level: "info", message: "x" },
+        tmpRoot,
+        (p, d) => {
+          attempt++;
+          const err = new Error("ENOENT") as NodeJS.ErrnoException;
+          err.code = "ENOENT";
+          throw err;
+        },
+      );
+    });
+    assert.equal(result, false, "falha permanente → false, não true");
+    assert.equal(attempt, 1, "ENOENT é permanente, não deve retry");
+  });
+
+  it("#8634: falha persistente de append NUNCA derruba o caller — logEvent devolve false", () => {
+    let attempt = 0;
+    let result: boolean | undefined;
+    assert.doesNotThrow(() => {
+      result = logEvent(
+        { edition: null, stage: null, agent: null, level: "info", message: "x" },
+        tmpRoot,
+        (p, d) => {
+          attempt++;
+          // Simula `appendFileWithRetry` exaustão: 3 tentativas do backoff
+          // [0, 200, 500, 1500]ms, todas UNKNOWN errno=-4094.
+          const err = new Error("UNKNOWN: unknown error, write") as NodeJS.ErrnoException;
+          err.code = "UNKNOWN";
+          err.errno = -4094;
+          throw err;
+        },
+      );
+    });
+    assert.equal(result, false, "após esgotar o retry, degrada pra false (não true)");
+    assert.equal(attempt, 3, "3 tentativas do backoff [0, 200, 500, 1500]ms");
+  });
+
+  it("#8634: default (sem injeção) usa appendFileWithRetry — retry real no appendFileSync", () => {
+    // Prova que o caminho padrão de logEvent chama appendFileWithRetry (que
+    // faz o retry interno) e não appendFileSync direto. Sem isso, um caller
+    // que passa appendFn custom não herda o retry.
+    const tmp = mkdtempSync(join(tmpdir(), "run-log-8634-default-"));
+    try {
+      mkdirSync(join(tmp, "data"), { recursive: true });
+      // appendFileSync real contra um DIRETÓRIO no caminho do log → EISDIR,
+      // que NÃO é transiente → appendFileWithRetry propaga em 1 tentativa.
+      fs.mkdirSync(join(tmp, "data", "run-log.jsonl"), { recursive: true });
+      let result: boolean | undefined;
+      assert.doesNotThrow(() => {
+        result = logEvent(
+          { edition: null, stage: null, agent: null, level: "info", message: "x" },
+          tmp,
+        );
+      });
+      assert.equal(result, false, "EISDIR não é transiente → false, sem retry");
+    } finally {
+      try { rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
   it("event tem todos os campos esperados (#612 schema)", () => {
     logEvent({
       edition: "260506",
