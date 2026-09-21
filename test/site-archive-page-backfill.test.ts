@@ -445,3 +445,107 @@ describe("runBackfill (tmpdir real — existsSync não é injetável, então usa
     }
   });
 });
+
+/**
+ * Mimetiza uma página FRESH do caminho Kit (`publish-edition-site-page.ts`,
+ * Stage 6, #8645) ANTES do backfill: `buildArchivePageHtml` já escreveu SEO
+ * completo (og:type presente) e JSON-LD `NewsArticle`, mas SEM `image`
+ * (`buildEditionArchivePost` nunca seta `thumbnail_url`) — e o corpo TEM o
+ * `<img class="hero">` (vem de `newsletter-final.html`). Sem nav ainda.
+ */
+function freshKitPageMissingImageFixture(canonical: string, heroUrl: string): string {
+  return (
+    `<!doctype html>\n<html lang="pt-BR"><head><meta charset="utf-8">` +
+    `<title>Legada</title>` +
+    `<meta name="robots" content="max-image-preview:large">` +
+    `<meta name="description" content="Descrição da legada">` +
+    `<link rel="canonical" href="${canonical}">` +
+    `<meta property="og:type" content="article">` +
+    `<script type="application/ld+json">{"@type":"NewsArticle","headline":"Legada","url":"${canonical}"}</script></head>\n` +
+    `<body><img class="hero" src="${heroUrl}" alt=""><h1>Legada</h1><p>Corpo com hero.</p></body></html>`
+  );
+}
+
+describe("runBackfill — opts.onlySlug (#8645, publish de 1 página só)", () => {
+  it("processa só o slug pedido — resultado igual ao do lote pra essa página, sem tocar as demais em disco", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "archive-backfill-onlyslug-"));
+    try {
+      const pagesDir = join(tmp, "p");
+      mkdirSync(join(pagesDir, "nova"), { recursive: true });
+      mkdirSync(join(pagesDir, "legada"), { recursive: true });
+      const novaOriginal = alreadyEnrichedPageFixture();
+      writeFileSync(join(pagesDir, "nova", "index.html"), novaOriginal, "utf8");
+      const heroUrl = "https://eia.diar.ia.br/img/img-260921-04-d1-2x1-abc.jpg";
+      writeFileSync(
+        join(pagesDir, "legada", "index.html"),
+        freshKitPageMissingImageFixture("https://diar.ia.br/p/legada", heroUrl),
+        "utf8",
+      );
+      const sitemapXml =
+        `<urlset>` +
+        `<url><loc>https://diar.ia.br/p/nova</loc><lastmod>2026-09-11</lastmod></url>` +
+        `<url><loc>https://diar.ia.br/p/legada</loc><lastmod>2026-09-05</lastmod></url>` +
+        `</urlset>`;
+
+      const result = runBackfill(pagesDir, sitemapXml, { onlySlug: "legada" });
+
+      // pagesFound/pagesMissing refletem só o slug pedido, não o lote inteiro.
+      assert.equal(result.pagesFound, 1);
+      assert.deepEqual(result.pagesMissing, []);
+      assert.equal(result.totalInSitemap, 2, "totalInSitemap segue contando o sitemap inteiro");
+      assert.equal(result.changed, 1);
+      assert.equal(result.seoChanged, 0, "SEO_MARKER já presente — backfillSeo não roda de novo");
+      assert.equal(result.navChanged, 1);
+      assert.equal(result.jsonLdImageChanged, 1, "legada ganha image no JSON-LD a partir do hero do corpo");
+
+      // "nova" não foi tocada em disco — onlySlug não escreve vizinhos.
+      assert.equal(readFileSync(join(pagesDir, "nova", "index.html"), "utf8"), novaOriginal);
+
+      const legada = readFileSync(join(pagesDir, "legada", "index.html"), "utf8");
+      const jsonLdMatch = legada.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+      assert.ok(jsonLdMatch, "JSON-LD sumiu depois do backfill");
+      const node = JSON.parse(jsonLdMatch![1]);
+      assert.equal(node.image?.url, heroUrl);
+      assert.match(legada, /href="https:\/\/diar\.ia\.br\/p\/nova" rel="next"/, "vizinho ainda resolvido via título lido do disco");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("idempotente rodando só pra 1 página: 2ª chamada não altera nada (mesmo requisito da issue #8645)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "archive-backfill-onlyslug-idem-"));
+    try {
+      const pagesDir = join(tmp, "p");
+      mkdirSync(join(pagesDir, "a"), { recursive: true });
+      writeFileSync(join(pagesDir, "a", "index.html"), legacyKitPageFixture({ canonical: "https://diar.ia.br/p/a" }), "utf8");
+      const sitemapXml = `<urlset><url><loc>https://diar.ia.br/p/a</loc><lastmod>2026-09-05</lastmod></url></urlset>`;
+
+      const first = runBackfill(pagesDir, sitemapXml, { onlySlug: "a" });
+      assert.equal(first.changed, 1);
+      const afterFirst = readFileSync(join(pagesDir, "a", "index.html"), "utf8");
+
+      const second = runBackfill(pagesDir, sitemapXml, { onlySlug: "a" });
+      assert.equal(second.changed, 0, "2ª chamada com onlySlug não deveria alterar nada");
+      assert.equal(readFileSync(join(pagesDir, "a", "index.html"), "utf8"), afterFirst, "conteúdo idêntico entre as 2 chamadas");
+      // Nunca duplica o node JSON-LD nem a meta og:type.
+      assert.equal((afterFirst.match(/application\/ld\+json/g) || []).length, 1);
+      assert.equal((afterFirst.match(/property="og:type"/g) || []).length, 1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("slug pedido ainda não está no sitemap ⇒ no-op sem erro (corrida com o passo que escreve o sitemap)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "archive-backfill-onlyslug-missing-"));
+    try {
+      const pagesDir = join(tmp, "p");
+      const sitemapXml = `<urlset></urlset>`;
+      const result = runBackfill(pagesDir, sitemapXml, { onlySlug: "ainda-nao-existe" });
+      assert.equal(result.changed, 0);
+      assert.equal(result.pagesFound, 0);
+      assert.deepEqual(result.pagesMissing, ["ainda-nao-existe"]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

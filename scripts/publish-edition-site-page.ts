@@ -103,6 +103,47 @@
 * só-escrita) pula o worktree: a página fica em `rootDir`, sem git. Testes
 * que precisam de um worktree já existente passam `--worktree-dir`.
 *
+* ## #8645 (260921): backfill de SEO + reindexação do acervo NO PRÓPRIO publish
+*
+* **Os 2 gaps.** (a) `buildEditionArchivePost` (`edition-site-page.ts`) nunca
+* seta `thumbnail_url` — sem ele, `buildArchivePageHtml` nunca preenche
+* `image` no JSON-LD `NewsArticle` (og:image/twitter:image também ficam
+* ausentes, mas nenhum teste de CI cobre isso hoje — só o `image` do
+* JSON-LD, `test/discover-news-requisitos-8390.test.ts`). (b)
+* `archive/{n}/index.html` (o índice paginado) só é regenerado por
+* `gen-archive-index.ts`, chamado hoje só pelo cron diário
+* `regen-home.yml` — sem isso, a edição nova nunca aparece linkada em
+* nenhuma página do índice (`test/site-archive-index-8353.test.ts`).
+*
+* **A correção.** `backfillAndReindexArchive` (`PublishPageDeps`) roda
+* DEPOIS de `updateSitemapAndHome` (precisa do `sitemap.xml` já com a
+* entrada desta edição) e ANTES do commit único: (1)
+* `runBackfill(..., { onlySlug: slug })` — o MESMO backfill que
+* `backfill-archive-page-links-seo.ts` já usava em lote (#8352/#8353/
+* #8359/#8390), agora restrito a 1 slug (ver docstring de `runBackfill`
+* pra por que — rodar as ~270 páginas do acervo a cada publicação diária
+* seria I/O desperdiçado); (2) `gen-archive-index.ts` `main()` importado e
+* chamado em processo (nunca subprocesso) contra o MESMO sitemap/pages-dir
+* já atualizados — regenera o índice inteiro (barato, ~9 páginas com
+* `ARCHIVE_INDEX_PAGE_SIZE=30`), incluindo a poda de páginas órfãs e a
+* limpeza do sitemap na MESMA execução (sem `--no-sitemap` — este publish
+* já É o commit que vai levar essa mudança, ao contrário do cron diário).
+* Ambos fail-soft: uma falha aqui vira aviso em stderr, nunca reverte a
+* publicação da página em si.
+*
+* **Caveat herdado do worktree do #8636.** Assim como `updateSitemapAndHome`
+* já fazia antes desta issue, `backfillAndReindexArchive` escreve em
+* `rootDir` (o checkout onde este script roda), não em `worktreeDir` — e o
+* `git add` do commit roda DENTRO do worktree (um clone `--detach` de
+* `origin/master`, ver seção #8636 acima). Path já TRACKED em
+* `origin/master` (`sitemap.xml`, `archive/`) existe no worktree, então
+* `git add` não lança — mas o CONTEÚDO staged é o que já estava no
+* worktree, não necessariamente o que acabou de ser escrito em `rootDir`
+* fora dele. Este módulo não tenta resolver essa divergência (fora do
+* escopo do #8645) — documentado aqui pra quem for investigar um commit de
+* site-page cujo `archive/`/`sitemap.xml` não reflita a escrita local mais
+* recente.
+*
 * ## Mecanismo de publicação: branch dedicada + PR, nunca push direto em `master` (#6598)
  *
  * **Histórico (#6202): este script fazia `git push` DIRETO em `master`.**
@@ -223,6 +264,11 @@ import {
 import { buildEditionArchivePost, type EditionPageInputs } from "./lib/edition-site-page.ts";
 import { buildHomeFeed, buildIndexHtml, ARCHIVE_CARD_LIMIT } from "./lib/site-home-page.ts";
 import { evaluatePrChecksGate } from "./lib/pr-checks-gate.ts";
+// #8645: backfill de SEO (image no JSON-LD a partir do hero) restrito a 1
+// slug + regeneração do índice paginado do acervo — ambos rodam como parte
+// deste próprio publish, ANTES do commit único (ver `backfillAndReindexArchive`).
+import { runBackfill } from "./backfill-archive-page-links-seo.ts";
+import { main as genArchiveIndexMain } from "./gen-archive-index.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SITE_PAGES_DIR = resolve(ROOT, "workers", "site", "public", "p");
@@ -333,6 +379,23 @@ export interface PublishPageDeps {
    * exercitam esse caminho.
    */
   updateSitemapAndHome?(post: ArchivePost, sitemapRelPath: string): { sitemapChanged: boolean };
+  /**
+   * #8645: roda DEPOIS de `updateSitemapAndHome` (precisa do `sitemap.xml`
+   * já refletindo a entrada desta edição) e ANTES do commit único — fecha
+   * os 2 gaps documentados na issue: (a) backfill de SEO restrito a este
+   * slug (`image` no JSON-LD `NewsArticle`, a partir do `<img class="hero">`
+   * do próprio corpo — `buildEditionArchivePost` nunca seta `thumbnail_url`,
+   * então `buildArchivePageHtml` sozinho nunca preenche isso pra edição
+   * nova) e (b) regeneração do índice paginado do acervo (`archive/{n}`),
+   * senão a edição nova nunca aparece linkada em nenhuma página dele.
+   * Fail-soft no CALLER (`publishEditionSitePage`) — uma falha aqui não
+   * pode reverter a publicação da página em si, que já aconteceu. Optional
+   * pra não quebrar deps de teste que não exercitam esse caminho.
+   */
+  backfillAndReindexArchive?(
+    slug: string,
+    sitemapRelPath: string,
+  ): { seoImageAdded: boolean; archiveIndexRegenerated: boolean };
   /** Commit + push. Nunca é `wrangler deploy` — ver docstring do módulo. */
   publish(slug: string, sitemapRelPath?: string): PublishResult;
   log(line: string): void;
@@ -501,6 +564,20 @@ export function homePageRelPathFromSitemap(sitemapRelPath: string): string {
   const lastSlash = sitemapRelPath.lastIndexOf("/");
   const dir = lastSlash === -1 ? "" : sitemapRelPath.slice(0, lastSlash + 1);
   return `${dir}index.html`;
+}
+
+/**
+ * #8645: `archive/` (o índice paginado do acervo — `gen-archive-index.ts`)
+ * mora sempre no MESMO diretório de `sitemap.xml`, mesma convenção de
+ * `homePageRelPathFromSitemap` logo acima. Devolve o diretório inteiro (não
+ * um arquivo) — `commitAndPushSitePage` faz `git add` num pathspec de
+ * diretório, que cobre novas páginas do índice E remoções (poda de páginas
+ * órfãs, ver `gen-archive-index.ts`).
+ */
+export function archiveIndexRelDirFromSitemap(sitemapRelPath: string): string {
+  const lastSlash = sitemapRelPath.lastIndexOf("/");
+  const dir = lastSlash === -1 ? "" : sitemapRelPath.slice(0, lastSlash + 1);
+  return `${dir}archive`;
 }
 
 /**
@@ -939,12 +1016,19 @@ export function commitAndPushSitePage(
   // parte (`optionalPaths`) porque, ao contrário de `relPageDir`, podem não
   // existir em disco se `updateSitemapAndHome` tiver falhado antes de
   // escrevê-los (ver guard de `existsSync` no loop de `git add` abaixo).
+  // #8645: `archive/` (índice paginado regenerado por
+  // `backfillAndReindexArchive`, também ANTES desta função) entra na mesma
+  // lista — é um DIRETÓRIO, então `git add -- <dir>` cobre tanto páginas
+  // novas/modificadas quanto páginas podadas (removidas) por
+  // `gen-archive-index.ts` num único pathspec.
   const optionalPaths = new Set<string>();
   if (sitemapRelPath) {
     const homeRelPath = homePageRelPathFromSitemap(sitemapRelPath);
-    pathsToStage.push(sitemapRelPath, homeRelPath);
+    const archiveRelDir = archiveIndexRelDirFromSitemap(sitemapRelPath);
+    pathsToStage.push(sitemapRelPath, homeRelPath, archiveRelDir);
     optionalPaths.add(sitemapRelPath);
     optionalPaths.add(homeRelPath);
+    optionalPaths.add(archiveRelDir);
   }
 
   let committed = false;
@@ -1303,6 +1387,62 @@ export function productionDeps(
 
       return { sitemapChanged };
     },
+    // #8645: roda DEPOIS de `updateSitemapAndHome` (o sitemap já reflete a
+    // entrada desta edição) e ANTES do commit único — ver docstring do
+    // campo em `PublishPageDeps` pros 2 gaps que isto fecha.
+    backfillAndReindexArchive: (slug, sitemapRelPath) => {
+      const sitemapAbsPath = resolve(rootDir, sitemapRelPath);
+      const pagesDirAbs = resolve(rootDir, "workers", "site", "public", "p");
+      const outDirAbs = resolve(rootDir, dirname(sitemapRelPath));
+
+      let seoImageAdded = false;
+      try {
+        const sitemapXml = readFileSync(sitemapAbsPath, "utf8");
+        // `onlySlug` (#8645): restringe o backfill a ESTA página — rodar o
+        // lote inteiro (~270 páginas) a cada publicação seria I/O
+        // desperdiçado, ver docstring de `runBackfill`.
+        const result = runBackfill(pagesDirAbs, sitemapXml, { onlySlug: slug });
+        seoImageAdded = result.jsonLdImageChanged > 0;
+      } catch (e) {
+        process.stderr.write(
+          `[site-page] aviso: backfill de SEO (#8645) falhou pra /p/${slug} (${(e as Error).message}) — ` +
+            "página segue publicada, mas pode faltar `image` no JSON-LD.\n",
+        );
+      }
+
+      let archiveIndexRegenerated = false;
+      try {
+        // Regenera o índice paginado inteiro (`archive/{n}`) a partir do
+        // MESMO sitemap.xml/pages-dir já atualizados acima — barato (~9
+        // páginas com `ARCHIVE_INDEX_PAGE_SIZE=30`), mesmo custo que o cron
+        // `regen-home.yml` diário já paga. Sem `--no-sitemap`: poda de
+        // páginas órfãs e limpeza do sitemap acontecem na MESMA execução
+        // (ver docstring de `gen-archive-index.ts`) — este publish já É o
+        // commit que vai levar essa mudança.
+        const code = genArchiveIndexMain([
+          "--sitemap",
+          sitemapAbsPath,
+          "--pages-dir",
+          pagesDirAbs,
+          "--out-dir",
+          outDirAbs,
+        ]);
+        archiveIndexRegenerated = code === 0;
+        if (code !== 0) {
+          process.stderr.write(
+            `[site-page] aviso: gen-archive-index (#8645) saiu com code ${code} — índice paginado do acervo ` +
+              "pode estar sem a página nova.\n",
+          );
+        }
+      } catch (e) {
+        process.stderr.write(
+          `[site-page] aviso: gen-archive-index (#8645) falhou (${(e as Error).message}) — índice paginado ` +
+            "do acervo pode estar sem a página nova.\n",
+        );
+      }
+
+      return { seoImageAdded, archiveIndexRegenerated };
+    },
     publish: (slug, sitemapPath?: string) => {
       const { pushed, prUrl, prNumber, prCreated } = commitAndPushSitePage(
         rootDir,
@@ -1409,6 +1549,29 @@ export function publishEditionSitePage(
       deps.log(
         `aviso: atualização de sitemap.xml/home falhou (${(e as Error).message}) — página do acervo segue publicada normalmente.`,
       );
+    }
+
+    // #8645: precisa do `sitemap.xml` já atualizado acima (a entrada desta
+    // edição precisa estar lá pro backfill resolver vizinhos e pro índice
+    // paginado incluir a página nova) — por isso roda DEPOIS, mas ainda
+    // ANTES do commit único (a mesma disciplina de "escrita local antes de
+    // publicar" do bloco acima). Fail-soft: nunca pode reverter a
+    // publicação da página em si, que já aconteceu.
+    if (deps.backfillAndReindexArchive) {
+      try {
+        const { seoImageAdded, archiveIndexRegenerated } = deps.backfillAndReindexArchive(
+          built.post.slug,
+          sitemapRelPath,
+        );
+        deps.log(
+          `backfill/reindex do acervo (#8645): ${seoImageAdded ? "image adicionada ao JSON-LD" : "JSON-LD já tinha image (ou página sem hero)"}; ` +
+            `${archiveIndexRegenerated ? "índice paginado regenerado" : "índice paginado NÃO regenerado (ver aviso acima)"}`,
+        );
+      } catch (e) {
+        deps.log(
+          `aviso: backfill/reindex do acervo (#8645) falhou (${(e as Error).message}) — página do acervo segue publicada normalmente.`,
+        );
+      }
     }
   }
 
