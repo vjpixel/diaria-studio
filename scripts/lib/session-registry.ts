@@ -370,6 +370,12 @@ export interface SessionRecord {
    * "idade desconhecida", nunca como "acabou de reivindicar".
    */
   claimed_issues_at?: Record<string, string>;
+  /** #8521 — HISTÓRICO: união de toda issue que esta sessão já reivindicou,
+   * inclusive as depois liberadas por `unclaimIssue` (que só mexe em
+   * `claimed_issues`/`claimed_issues_at`). Só cresce. Copiado pro evento de
+   * lifecycle no `end` pro detector de fabricação distinguir "claim
+   * liberada" de "claim nunca feita". Ausente em registros anteriores. */
+  claimed_issues_ever?: number[];
   /** Branch atual do checkout ONDE O HOOK MORA (#6168 Parte A) — nunca a
    * branch de um worktree que a sessão só visitou via `cd` numa chamada de
    * Bash. Lido de `.git/HEAD` pelo beacon — sem subprocesso. É o campo que
@@ -1886,6 +1892,38 @@ export interface SessionLifecycleEvent {
    * mudança (log histórico, nunca reescrito). */
   startedAt?: string | null;
   lastHeartbeat?: string | null;
+  /** #8521 — snapshot das issues reivindicadas pela sessão no momento da
+   * remoção (`record.claimed_issues`). Permite ao detector de fabricação do
+   * contínuo (`hermes/scripts/detect-tick-claim-fabrication.py`) comparar as
+   * issues ALEGADAS no relatório com as claims REALMENTE registradas mesmo
+   * depois que `endSession` apagou o arquivo da sessão (caso: coordenador
+   * roda `end` de verdade mas fabrica uma claim específica). Ausente só em
+   * eventos gravados antes desta mudança (retrocompatível: o detector cai no
+   * comportamento antigo); `[]` = a sessão terminou sem nenhuma claim. */
+  claimed_issues?: number[];
+  /** #8521 — HISTÓRICO de claims da sessão (`claimed_issues_ever` do record ∪
+   * claims finais), inclusive liberadas antes do `end`. É o que o detector usa
+   * pra decidir "claim nunca feita"; `claimed_issues` (estado final) sozinho
+   * daria falso positivo pra claim liberada por unclaim. Ausente em eventos
+   * legados (=> detector: indeterminate). Limitação transitória: sessão
+   * registrada antes desta mudança que liberou uma claim antes do deploy não
+   * a tem no histórico. */
+  claimed_issues_ever?: number[];
+}
+
+/** #8521 — cópia ordenada/deduplicada de `claimed_issues` pro evento de
+ * lifecycle; tolera campo ausente ou com lixo (nunca lança). */
+function snapshotClaimedIssues(record: SessionRecord): number[] {
+  const raw = Array.isArray(record.claimed_issues) ? record.claimed_issues : [];
+  return [...new Set(raw.filter((n): n is number => Number.isInteger(n)))].sort((a, b) => a - b);
+}
+
+/** #8521 — histórico de claims (ever ∪ finais). */
+function snapshotClaimedIssuesEver(record: SessionRecord): number[] {
+  const ever = Array.isArray(record.claimed_issues_ever) ? record.claimed_issues_ever : [];
+  return [...new Set([...ever, ...snapshotClaimedIssues(record)].filter((n): n is number => Number.isInteger(n)))].sort(
+    (a, b) => a - b,
+  );
 }
 
 function sessionLifecycleLogPath(repoRoot: string): string {
@@ -2049,6 +2087,8 @@ export function endSession(
       ageMs: Number.isFinite(startedMs) ? now - startedMs : undefined,
       startedAt: outcome.record.startedAt ?? null,
       lastHeartbeat: outcome.record.lastHeartbeat ?? null,
+      claimed_issues: snapshotClaimedIssues(outcome.record),
+      claimed_issues_ever: snapshotClaimedIssuesEver(outcome.record),
     });
   }
   return outcome.removed;
@@ -2462,6 +2502,11 @@ export function mergeSessionRecords(
     ...(mergedGrant ? { merge_grant: mergedGrant } : {}),
     claimed_issues: [...claimedUnion].sort((a, b) => a - b),
     claimed_issues_at: claimedAtUnion,
+    // #8521: histórico de claims também é UNIÃO das cópias (conflito do
+    // OneDrive) — senão uma cópia vencedora sem o campo apagaria o histórico.
+    ...(records.some((r) => r.claimed_issues_ever)
+      ? { claimed_issues_ever: [...new Set(records.flatMap((r) => r.claimed_issues_ever ?? []))].sort((a, b) => a - b) }
+      : {}),
   };
 }
 
@@ -2648,6 +2693,7 @@ function dedupeBySessionId(records: readonly SessionRecord[]): SessionRecord[] {
       ...base,
       claimed_issues: claimsUnion.claimed_issues,
       claimed_issues_at: claimsUnion.claimed_issues_at,
+      ...(claimsUnion.claimed_issues_ever ? { claimed_issues_ever: claimsUnion.claimed_issues_ever } : {}),
     });
   }
   return out;
@@ -2826,6 +2872,7 @@ export function claimIssueCheckAndSet(
         ...current,
         claimed_issues: [...claimed].sort((a, b) => a - b),
         claimed_issues_at: claimedAt,
+        claimed_issues_ever: [...new Set([...(current.claimed_issues_ever ?? []), issueNumber])].sort((a, b) => a - b),
         lastHeartbeat: now,
       };
     },
@@ -4417,6 +4464,8 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
         ageMs: Number.isFinite(startedMs) ? now - startedMs : undefined,
         startedAt: lifecycleRecord.startedAt ?? null,
         lastHeartbeat: lifecycleRecord.lastHeartbeat ?? null,
+        claimed_issues: snapshotClaimedIssues(lifecycleRecord),
+        claimed_issues_ever: snapshotClaimedIssuesEver(lifecycleRecord),
       });
     }
   }
@@ -4710,6 +4759,7 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
             ...current,
             claimed_issues: [...set].sort((a, b) => a - b),
             claimed_issues_at: at,
+            claimed_issues_ever: [...new Set([...(current.claimed_issues_ever ?? []), ...fresh.addedIssues])].sort((a, b) => a - b),
           };
         },
         // `verify` checa PERTINÊNCIA das issues que este reconcile veio

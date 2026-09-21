@@ -1331,6 +1331,25 @@ describe("#6952 — consume hook escreve sob o lock compartilhado", () => {
 
 // ─── #7462 — consumedAt só conta quando está no ARQUIVO REAL ──────────────
 //
+describe("mergeSessionRecords une claimed_issues_ever (#8521)", () => {
+  const base = { kind: "continuo" as const, machineTag: "300", sessionId: "s", startedAt: "2026-08-01T00:00:00.000Z" };
+  it("une o histórico de todas as cópias, mesmo quando a vencedora não o tem", () => {
+    const merged = mergeSessionRecords([
+      { ...base, lastHeartbeat: "2026-08-01T02:00:00.000Z", claimed_issues: [1] },
+      { ...base, lastHeartbeat: "2026-08-01T01:00:00.000Z", claimed_issues: [], claimed_issues_ever: [1, 9] },
+      { ...base, lastHeartbeat: "2026-08-01T00:30:00.000Z", claimed_issues: [], claimed_issues_ever: [5] },
+    ]);
+    assert.deepEqual(merged.claimed_issues_ever, [1, 5, 9]);
+  });
+  it("sem nenhuma cópia com histórico, não inventa o campo", () => {
+    const merged = mergeSessionRecords([
+      { ...base, lastHeartbeat: "2026-08-01T02:00:00.000Z" },
+      { ...base, lastHeartbeat: "2026-08-01T01:00:00.000Z" },
+    ]);
+    assert.equal("claimed_issues_ever" in merged, false);
+  });
+});
+
 // O #6952 fez `mergeSessionRecords` UNIR o `merge_grant` entre o arquivo real
 // e as cópias `-safeBackup-*` do OneDrive, e a 2ª metade propagou
 // `consumedAt` de QUALQUER cópia. Resultado: uma concessão que nunca foi

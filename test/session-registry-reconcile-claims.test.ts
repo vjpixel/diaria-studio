@@ -233,6 +233,8 @@ describe("planClaimReconciliation / reconcileClaims (#6581)", () => {
     const appliedGroup = applied.find((e) => e.realPath === realPath);
     assert.equal(appliedGroup!.action, "reconciled");
     assert.deepEqual((readRealRecord(root, realPath).claimed_issues ?? []).sort((a, b) => a - b), [100, 200, 300]);
+    // #8521: o reconcile alimenta o histórico de claims
+    assert.deepEqual(readRealRecord(root, realPath).claimed_issues_ever, [100, 200, 300]);
   });
 
   it("nunca remove uma claim que só existe no arquivo real (direção fail-safe)", () => {

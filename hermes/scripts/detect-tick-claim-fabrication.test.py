@@ -115,6 +115,8 @@ def _write_report(report_path: Path, text: str, mtime: datetime | None = None) -
 def _write_lifecycle_event(
     lifecycle_log_path: Path, session_id: str, started: datetime, heartbeat: datetime,
     kind: str = "continuo", event: str = "ended",
+    claimed_issues: list | None = None,
+    claimed_issues_ever: list | None = None,
 ) -> None:
     """#8521: simula uma linha de `data/session-lifecycle.jsonl` como
     `endSession` (`scripts/lib/session-registry.ts`) escreve — append-only,
@@ -129,6 +131,10 @@ def _write_lifecycle_event(
         "startedAt": _iso(started),
         "lastHeartbeat": _iso(heartbeat),
     }
+    if claimed_issues is not None:
+        entry["claimed_issues"] = claimed_issues
+    if claimed_issues_ever is not None:
+        entry["claimed_issues_ever"] = claimed_issues_ever
     with lifecycle_log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
@@ -684,8 +690,8 @@ def main() -> int:
             "OPEN, MERGEABLE. Não mergeei.\n"
         )
         claimed_empty: set[int] = set()
-        ended14 = mod.ended_continuo_session_in_window(lifecycle14, tick_start14 - timedelta(minutes=45), tick_end14 + timedelta(minutes=45))
-        assert_true("14. ended_continuo_session_in_window acha o evento na janela", ended14 is not None)
+        ended14 = mod.ended_continuo_events_in_window(lifecycle14, tick_start14 - timedelta(minutes=45), tick_end14 + timedelta(minutes=45))
+        assert_true("14. ended_continuo_events_in_window acha o evento na janela", len(ended14) == 1)
         check14 = mod.check_claimed_issues(
             report_text_14, claimed_empty, True, ended_session_in_window=True,
         )
@@ -713,8 +719,8 @@ def main() -> int:
         # ------------------------------------------------------------------
         outro_tick_start = now - timedelta(hours=5)
         outro_tick_end = now - timedelta(hours=4, minutes=40)
-        ended14c = mod.ended_continuo_session_in_window(lifecycle14, outro_tick_start, outro_tick_end)
-        assert_true("14c. evento de OUTRO tick nao correlaciona -> None", ended14c is None)
+        ended14c = mod.ended_continuo_events_in_window(lifecycle14, outro_tick_start, outro_tick_end)
+        assert_true("14c. evento de OUTRO tick nao correlaciona -> []", ended14c == [])
 
         # ------------------------------------------------------------------
         # 15. Regressão end-to-end via `run()` — relatório real (trimmed)
@@ -774,6 +780,42 @@ def main() -> int:
         test_controle_claim_proprio_ausente_do_registro_e_fabricacao()
         test_regressao_8463_falsos_positivos_lista_atribuida_outro_ator()
         test_regressao_8521_negacao_nao_e_claim()
+
+        # ------------------------------------------------------------------
+        # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.
+        # Cada caso escreve o log de lifecycle, roda o detector real
+        # (ended_continuo_events_in_window + _snapshot_from_events) e checa.
+        # ------------------------------------------------------------------
+        def _run16(label, events, want):
+            lc = td / f"lc{label}" / "data" / "session-lifecycle.jsonl"
+            for sid, kw in events:
+                _write_lifecycle_event(lc, sid, tick_start14, tick_end14, **kw)
+            evs = mod.ended_continuo_events_in_window(
+                lc, tick_start14 - timedelta(minutes=45), tick_end14 + timedelta(minutes=45))
+            chk = mod.check_claimed_issues(
+                report_text_14, set(), True,
+                ended_session_in_window=bool(evs),
+                ended_claimed_snapshot=mod._snapshot_from_events(evs),
+            )
+            assert_true(f"{label} -> {want} (got {chk['status']})", chk["status"] == want)
+
+        # snapshot contem #8515 -> ok
+        _run16("16a-contem", [("s1", dict(claimed_issues=[8515], claimed_issues_ever=[8515]))], "ok")
+        # ausente do snapshot e do historico, end real -> fabricacao
+        _run16("16b-ausente", [("s1", dict(claimed_issues=[8000], claimed_issues_ever=[8000]))], "fabrication_suspected")
+        # evento legado (sem campo) -> indeterminate
+        _run16("16c-legado", [("s1", {})], "indeterminate")
+        # claim + unclaim antes do end: estado final vazio, historico tem -> NAO fabricacao
+        _run16("16d-unclaim", [("s1", dict(claimed_issues=[], claimed_issues_ever=[8515]))], "ok")
+        # duas sessoes sobrepostas: uniao dos historicos cobre a claim
+        _run16("16e-duas-uniao", [("s1", dict(claimed_issues=[], claimed_issues_ever=[])),
+                                  ("s2", dict(claimed_issues=[8515], claimed_issues_ever=[8515]))], "ok")
+        # duas sessoes, uma legada -> nao afirma fabricacao
+        _run16("16f-duas-uma-legada", [("s1", dict(claimed_issues=[], claimed_issues_ever=[])),
+                                       ("s2", {})], "indeterminate")
+        # duas sessoes completas, claim em nenhuma -> fabricacao
+        _run16("16g-duas-nenhuma", [("s1", dict(claimed_issues=[], claimed_issues_ever=[7000])),
+                                    ("s2", dict(claimed_issues=[], claimed_issues_ever=[]))], "fabrication_suspected")
 
         if FAILED:
             print(f"\n{FAILED} assercao(es) falharam")
