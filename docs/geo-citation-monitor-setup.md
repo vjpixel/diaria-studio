@@ -110,6 +110,37 @@ de raciocínio + busca ainda não foi medida ao vivo. Série do provider
 `openai` não é homogênea antes/depois desta data (o `model` fica gravado em
 cada registro). As tabelas abaixo são da época do `gpt-4.1`.
 
+## Perplexity como 4º provider (#8342)
+
+Provider `perplexity` (`PERPLEXITY_API_KEY`, modelo `sonar`, endpoint
+`POST https://api.perplexity.ai/chat/completions`, contexto de busca `low`).
+Sem a key é pulado em silêncio, como os demais. A checagem de citação lê
+`message.content` **e** as URLs de `citations`/`search_results` (a Perplexity
+devolve as fontes num campo à parte; só o texto nunca acharia `diar.ia.br`).
+
+- **Custo (doc oficial, 20/09/2026):** sonar = US$1/1M input + US$1/1M output +
+  US$5/1.000 requisições (contexto low; US$12/1.000 no high). Por rodada
+  (24 perguntas, ~2k tokens de input e ~1k de saída por resposta): 24 x
+  US$0,005 = US$0,12 de taxa + ~US$0,07 de tokens = **~US$0,19/rodada**, ~US$0,8/mês
+  a 4,33 rodadas, ~US$10/ano. Escala linear no número de perguntas (painel
+  `acervo`/#8334 entra na conta). O custo estimado gravado inclui a taxa por
+  requisição (única entrada da tabela com taxa).
+- **Crédito esgotado não é 429:** a doc lista 401/402 pra "insufficient
+  credits". 402 (e 401 com mensagem de crédito/saldo) viram `errorKind: "quota"`
+  (`classifyPaymentStatusErrorKind`), pra não repetir o silêncio do #8061;
+  registros históricos 401/402 são reclassificados na leitura.
+- **Série não homogênea:** antes/depois da entrada do 4º provider a série do
+  painel muda de composição. `provider`/`model` ficam gravados em cada
+  registro; leituras agregadas devem separar por provider (mesma disciplina
+  do #8064).
+- **Atenção:** a doc anuncia "Sonar Chat Completions is now Agent API", com
+  suporte de migração até 27/09/2026. Se o endpoint sair do ar, migrar.
+- **1ª medição** (com a key no `.env`/Doppler):
+  `npx tsx scripts/geo-citation-monitor.ts --panel geral --max-monthly-usd 5`
+  (ver `--help`; `--dry-run` antes confirma que o provider aparece como
+  configurado). O shape da resposta não foi verificado ao vivo; conferir
+  `inputTokens`/`estimatedCostUsd` no `history.jsonl` e recalibrar o timeout (60s).
+
 ## Captura de usage e teto de custo (#4904)
 
 **Os 3 providers rodam de verdade SÓ na máquina cujo `.env` tem as 3 keys

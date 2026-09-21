@@ -352,7 +352,7 @@ export const GEO_ENTITY_QUESTIONS: readonly string[] = [
 /** Domínio checado nas respostas (sem protocolo/path — substring match). */
 export const GEO_TARGET_DOMAIN = "diar.ia.br";
 
-export type GeoProviderId = "anthropic" | "openai" | "google";
+export type GeoProviderId = "anthropic" | "openai" | "google" | "perplexity";
 
 /**
  * Usage bruto de UMA chamada, extraído da resposta (#4904). Todos os campos
@@ -859,6 +859,84 @@ function googleExtractUsage(json: unknown): GeoProviderUsage | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Perplexity — Chat Completions (`sonar`, busca web embutida no modelo) — #8342.
+// Shape conferido na doc oficial em 20/09/2026 (docs.perplexity.ai
+// /api-reference/chat-completions-post): `choices[0].message.content`,
+// `citations` (URLs das fontes), `search_results` ([{title,url}]),
+// `usage.{prompt_tokens,completion_tokens}`, `choices[0].finish_reason`
+// ("stop" | "length"). NÃO verificado com chamada real (sem key ainda).
+// Aviso: a doc anuncia que "Sonar Chat Completions is now Agent API" com
+// suporte de migração até 27/09/2026 — se o endpoint sair do ar, migrar.
+// ---------------------------------------------------------------------------
+
+function perplexityRequest(question: string, apiKey: string, model: string) {
+  return {
+    url: "https://api.perplexity.ai/chat/completions",
+    init: {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: question }],
+        // Explícito (não o default) porque a taxa por requisição depende do
+        // tamanho do contexto: low = US$5/1.000 (ver GEO_NON_ANTHROPIC_TOKEN_PRICING).
+        web_search_options: { search_context_size: "low" },
+      }),
+    } satisfies RequestInit,
+  };
+}
+
+/** `finish_reason: "length"` = estourou o teto de saída (texto truncado) —
+ * mesma classe do #5305/#5310: sem isto, virava "não citado" silencioso. */
+function perplexityCheckProviderError(json: unknown): string | undefined {
+  const choices = (json as { choices?: unknown })?.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return undefined;
+  const finishReason = (choices[0] as { finish_reason?: unknown })?.finish_reason;
+  if (typeof finishReason === "string" && finishReason !== "stop") {
+    return `choices[0].finish_reason: ${finishReason} (resposta truncada antes de terminar)`;
+  }
+  return undefined;
+}
+
+/**
+ * Texto da resposta + URLs de `citations`/`search_results`. As URLs entram de
+ * propósito: a Perplexity devolve as fontes num campo à parte (o texto traz só
+ * marcadores [1], [2]), então checar só `message.content` nunca acharia
+ * `diar.ia.br` mesmo quando ela é uma das fontes citadas.
+ */
+function perplexityExtractText(json: unknown): string {
+  const obj = json as { choices?: unknown; citations?: unknown; search_results?: unknown };
+  const parts: string[] = [];
+  if (Array.isArray(obj?.choices) && obj.choices.length > 0) {
+    const content = (obj.choices[0] as { message?: { content?: unknown } })?.message?.content;
+    if (typeof content === "string") parts.push(content);
+  }
+  if (Array.isArray(obj?.citations)) {
+    for (const c of obj.citations as unknown[]) if (typeof c === "string") parts.push(c);
+  }
+  if (Array.isArray(obj?.search_results)) {
+    for (const r of obj.search_results as unknown[]) {
+      const url = (r as { url?: unknown })?.url;
+      if (typeof url === "string") parts.push(url);
+    }
+  }
+  return parts.join("\n");
+}
+
+function perplexityExtractUsage(json: unknown): GeoProviderUsage | undefined {
+  const usage = (json as { usage?: unknown })?.usage;
+  if (!usage || typeof usage !== "object") return undefined;
+  const u = usage as Record<string, unknown>;
+  const inputTokens = typeof u.prompt_tokens === "number" ? u.prompt_tokens : undefined;
+  const outputTokens = typeof u.completion_tokens === "number" ? u.completion_tokens : undefined;
+  if (inputTokens === undefined && outputTokens === undefined) return undefined;
+  return { inputTokens, outputTokens };
+}
+
+// ---------------------------------------------------------------------------
 
 /** Timeout DEFAULT por chamada de provider (usado pelo Google; OpenAI tem
  * `OPENAI_GEO_TIMEOUT_MS` próprio desde #8064) —
@@ -945,6 +1023,21 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     // Mesmo raciocínio do OpenAI acima.
     timeoutMs: GEO_PROVIDER_TIMEOUT_MS,
   },
+  {
+    id: "perplexity",
+    label: "Perplexity",
+    envKey: "PERPLEXITY_API_KEY",
+    // #8342: `sonar` (o mais barato da família com busca): US$1/1M in + US$1/1M
+    // out + US$5/1.000 requisições (contexto low).
+    defaultModel: "sonar",
+    buildRequest: perplexityRequest,
+    extractText: perplexityExtractText,
+    extractUsage: perplexityExtractUsage,
+    checkProviderError: perplexityCheckProviderError,
+    // Busca + resposta numa chamada só, sem cadeia de raciocínio: mesma ordem
+    // de grandeza do Google. Não medido ao vivo — recalibrar na 1ª rodada real.
+    timeoutMs: 60_000,
+  },
 ];
 
 /**
@@ -987,10 +1080,15 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
  * via `{ENVKEY}_MODEL` (ver `main()`) pra um model fora desta tabela cai em
  * `undefined`, nunca um preço inventado por aproximação de nome.
  */
-const GEO_NON_ANTHROPIC_TOKEN_PRICING: Readonly<Record<string, { inputPer1M: number; outputPer1M: number }>> = {
+const GEO_NON_ANTHROPIC_TOKEN_PRICING: Readonly<Record<string, { inputPer1M: number; outputPer1M: number; requestFeeUsd?: number }>> = {
   "gpt-4.1": { inputPer1M: 2.0, outputPer1M: 8.0 },
   "gpt-5-mini": { inputPer1M: 0.25, outputPer1M: 2.0 },
   "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5 },
+  // #8342 (docs.perplexity.ai/getting-started/pricing, 20/09/2026): sonar =
+  // US$1/1M in + US$1/1M out + taxa de US$5/1.000 requisições (contexto low,
+  // o que `perplexityRequest` pede). Única entrada com taxa por requisição
+  // incluída — no caso dela a taxa é o item MAIOR da conta (~60%).
+  sonar: { inputPer1M: 1.0, outputPer1M: 1.0, requestFeeUsd: 0.005 },
 };
 
 /** Pure. `undefined` quando o model não está na tabela — nunca um preço
@@ -1002,7 +1100,7 @@ function estimateNonAnthropicCostUsd(model: string, inputTokens: number | undefi
   if (!pricing) return undefined;
   const input = inputTokens ?? 0;
   const output = outputTokens ?? 0;
-  return (input / 1_000_000) * pricing.inputPer1M + (output / 1_000_000) * pricing.outputPer1M;
+  return (input / 1_000_000) * pricing.inputPer1M + (output / 1_000_000) * pricing.outputPer1M + (pricing.requestFeeUsd ?? 0);
 }
 
 export interface CitationDetection {
@@ -1136,6 +1234,11 @@ export type QueryProviderResult =
  * devolver `"http"`.
  */
 export function classifyHttp429ErrorKind(bodyText: string): "http" | "quota" {
+  // Perplexity (#8342): crédito esgotado NÃO vem como 429 (a doc lista
+  // 401/402 pra "insufficient credits"; 429 é só rate limit) — ver
+  // `classifyPaymentStatusErrorKind`. Aqui só a mensagem textual, caso um 429
+  // traga o mesmo texto.
+  if (/insufficient[\s_-]*(credits?|quota|balance)/i.test(bodyText)) return "quota";
   let parsed: { error?: { code?: unknown; status?: unknown; message?: unknown } } | undefined;
   try {
     parsed = JSON.parse(bodyText);
@@ -1158,6 +1261,21 @@ export function classifyHttp429ErrorKind(bodyText: string): "http" | "quota" {
   if (status === "RESOURCE_EXHAUSTED" && /perday/i.test(bodyText.replace(/[\s_-]+/g, ""))) {
     return "quota";
   }
+  return "http";
+}
+
+/**
+ * Pure (#8342): classifica um HTTP 401/402 como cota/crédito esgotado. A
+ * Perplexity sinaliza crédito zerado com 402 (ou 401 com mensagem de crédito),
+ * não 429 — sem este ramo o erro voltaria como `"http"` genérico e passaria
+ * semanas parecendo saudável (o silêncio do #8061). 402 (Payment Required) é
+ * sempre cota; 401 só quando o corpo fala de crédito/saldo (senão é key
+ * inválida, que continua `"http"` — também exige ação do editor, mas é outro
+ * diagnóstico).
+ */
+export function classifyPaymentStatusErrorKind(status: number, bodyText: string): "http" | "quota" {
+  if (status === 402) return "quota";
+  if (status === 401 && /credit|balance|quota/i.test(bodyText)) return "quota";
   return "http";
 }
 
@@ -1199,7 +1317,12 @@ export async function queryProvider(
     // cota/crédito esgotado permanente) — classifica ANTES de truncar o
     // corpo pro log, pra não perder o `error.code`/`quotaId` que a
     // classificação depende de ver inteiro.
-    const kind: "http" | "quota" = res.status === 429 ? classifyHttp429ErrorKind(body) : "http";
+    const kind: "http" | "quota" =
+      res.status === 429
+        ? classifyHttp429ErrorKind(body)
+        : res.status === 401 || res.status === 402
+          ? classifyPaymentStatusErrorKind(res.status, body)
+          : "http";
     return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 300)}`, errorKind: kind, httpStatus: res.status };
   }
   let json: unknown;
@@ -1652,6 +1775,9 @@ export function detectHighErrorRateProviders(
 export function deriveEffectiveErrorKind(
   record: Pick<GeoCitationRecord, "errorKind" | "httpStatus" | "error">,
 ): GeoCitationRecord["errorKind"] {
+  if (record.errorKind === "http" && (record.httpStatus === 401 || record.httpStatus === 402) && typeof record.error === "string") {
+    return classifyPaymentStatusErrorKind(record.httpStatus, record.error.replace(/^HTTP \d+:\s?/, ""));
+  }
   if (record.errorKind === "http" && record.httpStatus === 429 && typeof record.error === "string") {
     // `record.error` tem o formato "HTTP 429: <body>" (ver `queryProvider`)
     // — passar a string INTEIRA pra `classifyHttp429ErrorKind` faz o
