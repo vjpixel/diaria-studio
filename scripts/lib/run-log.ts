@@ -19,7 +19,7 @@
  * sem mudança nenhuma.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { appendFileWithRetry } from "./source-runs.ts";
 

@@ -23,7 +23,7 @@
  * Formato: 1 linha JSON por evento. Append-only.
  */
 
-import { appendFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { appendFileWithRetry } from "./lib/source-runs.ts";
 
