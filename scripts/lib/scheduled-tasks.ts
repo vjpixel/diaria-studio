@@ -356,6 +356,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#8552",
   },
   {
+    name: "Diaria-Subscriber-State-Snapshot-Recent",
+    description: "observacao HORARIA dos cadastros Kit das ultimas 48h (id, state, created_at; sem doi_form, o modo --recent nao le o form DOI) em data/subscriber-state-snapshots/kit-recent/ -- unico jeito de medir a taxa de confirmacao DOI em 1h/6h/24h, ja que o Kit nao expoe o instante da confirmacao (#8552 b)",
+    steps: [{ key: "recent", script: "scripts/subscriber-state-snapshot.ts", args: ["--recent"] }],
+    logPath: "subscriber-state-snapshots/.recent.log",
+    // Horaria: so cadastros recentes (poucas dezenas de linhas, 1 chamada
+    // paginada, sem ler o form DOI, so LEITURA no Kit) -- muito abaixo do rate
+    // limit. DECLARADA com enabled:false -- armar no 300 via
+    // `scripts/setup-systemd-timers.ts` (mesma maquina da task diaria acima).
+    // enabled:false DE PROPOSITO: sem isso o Remediate-Never-Armed-Tasks
+    // (#8153) a auto-arma no dia seguinte ao merge, em qualquer maquina, e
+    // sem KIT_API_KEY falharia toda hora; data/ e junction OneDrive (escrita
+    // concorrente se armada em 2 maquinas). Armar manualmente so no 300.
+    enabled: false,
+    schedule: { kind: "interval", hours: 1 },
+    issue: "#8552",
+  },
+  {
     name: "Diaria-Audience-Profile-Staleness-Alarm",
     description: "escala o guard de arquivamento duplicado do #4366 (context/audience-profile.md regenerando idêntico ao anterior) de linha muda em run-log.jsonl pra issue GitHub por ocorrência (#8148)",
     steps: [{ key: "alarm", script: "scripts/audience-profile-staleness-alarm.ts" }],

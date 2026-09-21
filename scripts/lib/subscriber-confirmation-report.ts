@@ -80,7 +80,7 @@ export const TIME_TO_CONFIRM_BUCKETS = [
 ] as const;
 
 const NO_1H_REASON =
-  "snapshots são diários — o instante da confirmação só é conhecido com resolução de dia; janela de 1h não é resolvível";
+  "snapshots diários têm resolução de dia; a janela de 1h vem da observação horária (subscriber-state-snapshot.ts --recent, seção 'Confirmação em horas')";
 
 /** Rótulos legíveis de `confirmou_via` (#8438). Valor ausente = caminho DOI
  *  nativo do Kit (ninguém clicou no botão da reativação com token válido). */

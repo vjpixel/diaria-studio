@@ -241,3 +241,110 @@ describe("buildDoiConfirmationCohort", () => {
     assert.deepEqual(result.cohort, [{ id: 1, confirmed: true }]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #8552 (a) — cruzamento com o form DOI
+// ---------------------------------------------------------------------------
+
+import { markDoiFormMembership } from "../scripts/lib/subscriber-state-snapshot.ts";
+
+describe("doi_form (#8552 a)", () => {
+  it("markDoiFormMembership marca só os ids do form e sobrevive ao roundtrip JSONL", () => {
+    const recs: SubscriberStateRecord[] = [
+      { id: 1, state: "inactive", created_at: "2026-09-18T10:00:00.000Z" },
+      { id: 2, state: "inactive", created_at: "2026-09-18T11:00:00.000Z" },
+    ];
+    const marked = markDoiFormMembership(recs, new Set([2]));
+    assert.equal(marked[0].doi_form, undefined);
+    assert.equal(marked[1].doi_form, true);
+    const back = parseSubscriberStateJsonl(serializeSubscriberStateRecords(marked));
+    assert.equal(back[1].doi_form, true);
+    assert.equal(back[0].doi_form, undefined);
+  });
+
+  const mk = (id: number, state: string, doi?: boolean): SubscriberStateRecord => ({
+    id, state, created_at: "2026-09-18T10:00:00.000Z", ...(doi ? { doi_form: true } : {}),
+  });
+
+  it("com cobertura do form no snapshot do dia, a safra exclui órfãos (nunca vinculados)", () => {
+    const day = [mk(1, "inactive", true), mk(2, "inactive", true), mk(3, "inactive")]; // 3 = órfão
+    const matured = [mk(1, "active", true), mk(2, "inactive", true), mk(3, "inactive")];
+    const r = buildDoiConfirmationCohort(new Map([["2026-09-18", day], ["2026-09-20", matured]]), "2026-09-18");
+    assert.deepEqual(r.cohort, [{ id: 1, confirmed: true }, { id: 2, confirmed: false }]);
+  });
+
+  it("sem cobertura (snapshot antigo), mantém todo inactive criado no dia", () => {
+    const day = [mk(1, "inactive"), mk(3, "inactive")];
+    const matured = [mk(1, "active"), mk(3, "inactive")];
+    const r = buildDoiConfirmationCohort(new Map([["2026-09-18", day], ["2026-09-20", matured]]), "2026-09-18");
+    assert.equal(r.cohort.length, 2);
+  });
+
+  it("dia misto: dia com cobertura do form filtra; dia sem cobertura marca semFiltroDoi", () => {
+    const d1 = "2026-09-18";
+    const d2 = "2026-09-19";
+    const mk2 = (id: number, day: string, doi?: boolean): SubscriberStateRecord => ({
+      id, state: "inactive", created_at: `${day}T10:00:00.000Z`, ...(doi ? { doi_form: true } : {}),
+    });
+    const snaps = new Map<string, SubscriberStateRecord[]>([
+      [d1, [mk2(1, d1, true), mk2(2, d1)]],
+      [d2, [mk2(3, d2), mk2(4, d2)]], // leitura do form falhou neste dia
+      ["2026-09-21", [mk2(1, d1, true), mk2(3, d2), mk2(4, d2)]],
+    ]);
+    const a = buildDoiConfirmationCohort(snaps, d1);
+    assert.equal(a.cohort.length, 1);
+    assert.equal(a.semFiltroDoi, undefined);
+    const b = buildDoiConfirmationCohort(snaps, d2);
+    assert.equal(b.cohort.length, 2);
+    assert.equal(b.semFiltroDoi, true);
+  });
+
+  it("doi-form-status distingue leitura falha (piso) de form ok sem ninguém do dia (safra vazia, motivo próprio)", () => {
+    const d = "2026-09-18";
+    const day = [{ id: 1, state: "inactive", created_at: `${d}T10:00:00.000Z` }];
+    const matured = [{ id: 1, state: "active", created_at: `${d}T10:00:00.000Z` }];
+    const snaps = new Map<string, SubscriberStateRecord[]>([[d, day], ["2026-09-20", matured]]);
+    const falhou = buildDoiConfirmationCohort(snaps, d, 48, new Map([[d, { ok: false }]]));
+    assert.equal(falhou.semFiltroDoi, true);
+    assert.equal(falhou.cohort.length, 1);
+    const okSemNinguem = buildDoiConfirmationCohort(snaps, d, 48, new Map([[d, { ok: true }]]));
+    assert.equal(okSemNinguem.semFiltroDoi, undefined);
+    assert.equal(okSemNinguem.cohort.length, 0);
+    assert.match(okSemNinguem.motivoIndeterminado ?? "", /vinculado ao form DOI/);
+  });
+
+  it("readDoiFormStatus/loadDoiFormStatuses leem o arquivo; ausente/corrompido = sem entrada", async () => {
+    const { readDoiFormStatus, loadDoiFormStatuses } = await import("../scripts/lib/subscriber-state-snapshot.ts");
+    const root = tmpDir();
+    mkdirSync(join(root, "2026-09-18"), { recursive: true });
+    mkdirSync(join(root, "2026-09-19"), { recursive: true });
+    writeFileSync(join(root, "2026-09-18", "doi-form-status.json"), JSON.stringify({ ok: false }));
+    writeFileSync(join(root, "2026-09-19", "doi-form-status.json"), "{lixo");
+    assert.deepEqual(readDoiFormStatus(root, "2026-09-18"), { ok: false });
+    assert.equal(readDoiFormStatus(root, "2026-09-19"), null);
+    assert.equal(loadDoiFormStatuses(root, ["2026-09-18", "2026-09-19", "2026-09-20"]).size, 1);
+  });
+
+  it("métrica com semFiltroDoi vira piso (motivo sem-filtro-doi), nunca exato", async () => {
+    const { getMetric } = await import("../scripts/lib/metrics/registry.ts");
+    const def = getMetric("doi-confirmacao-dia")!;
+    const janela = { de: "2026-09-18", ate: "2026-09-18", granularidade: "dia", fuso: "BRT" } as const;
+    const cohort = [1, 2, 3, 4, 5].map((id) => ({ id, confirmed: id <= 2 }));
+    const res = await def.computar({ janela, deps: { cohort, semFiltroDoi: true } });
+    assert.equal(res.qualidade, "piso");
+    assert.match(res.motivo ?? "", /sem-filtro-doi/);
+  });
+
+  it("(c) com snapshots suficientes a métrica deixa de ser indeterminado", async () => {
+    const { getMetric } = await import("../scripts/lib/metrics/registry.ts");
+    const ids = [1, 2, 3, 4, 5, 6];
+    const day = ids.map((i) => mk(i, "inactive", true));
+    const matured = ids.map((i) => mk(i, i <= 3 ? "active" : "inactive", true));
+    const { cohort } = buildDoiConfirmationCohort(new Map([["2026-09-18", day], ["2026-09-20", matured]]), "2026-09-18");
+    const def = getMetric("doi-confirmacao-dia")!;
+    const janela = { de: "2026-09-18", ate: "2026-09-18", granularidade: "dia", fuso: "BRT" } as const;
+    const res = await def.computar({ janela, deps: { cohort } });
+    assert.notEqual(res.qualidade, "indeterminado");
+    assert.equal(res.valor, 0.5);
+  });
+});
