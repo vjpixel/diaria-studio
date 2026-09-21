@@ -115,6 +115,7 @@ def _write_report(report_path: Path, text: str, mtime: datetime | None = None) -
 def _write_lifecycle_event(
     lifecycle_log_path: Path, session_id: str, started: datetime, heartbeat: datetime,
     kind: str = "continuo", event: str = "ended",
+    claimed_issues: list | None = None,
 ) -> None:
     """#8521: simula uma linha de `data/session-lifecycle.jsonl` como
     `endSession` (`scripts/lib/session-registry.ts`) escreve — append-only,
@@ -129,6 +130,8 @@ def _write_lifecycle_event(
         "startedAt": _iso(started),
         "lastHeartbeat": _iso(heartbeat),
     }
+    if claimed_issues is not None:
+        entry["claimed_issues"] = claimed_issues
     with lifecycle_log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 

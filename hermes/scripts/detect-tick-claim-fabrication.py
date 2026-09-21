@@ -155,10 +155,11 @@ FAIL-SOFT/graduada — uma checagem indeterminada não derruba as outras:
          documentada e não resolvida aqui:** se um coordenador rodasse
          `end` de verdade mas fabricasse uma claim específica que nunca
          passou por `claimIssueCheckAndSet`, este sinal sozinho não
-         distingue os dois casos — cobrir isso exigiria gravar
-         `claimed_issues` no próprio evento de lifecycle (mudança em
-         `scripts/lib/session-registry.ts`, fora do escopo deste
-         detector; ver #8521 pra decisão de produto sobre isso).
+         distingue os dois casos. **Resolvido (#8521 residuo):**
+         `endSession` agora grava `claimed_issues` (snapshot) no evento
+         'ended'; quando presente, `check_claimed_issues` compara o alegado
+         com o snapshot (ausente -> fabrication_suspected, presente -> ok).
+         Eventos legados sem o campo caem no indeterminate acima.
 
 Uso:
     python3 detect-tick-claim-fabrication.py [--repo PATH]
@@ -434,6 +435,7 @@ def ended_continuo_session_in_window(
         raw = lifecycle_log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
+    first: dict | None = None
     for line in raw.splitlines():
         line = line.strip()
         if not line:
@@ -449,8 +451,13 @@ def ended_continuo_session_in_window(
         if started is None or heartbeat is None:
             continue
         if window_start <= heartbeat and started <= window_end:
-            return event
-    return None
+            # #8521: prefere um evento que carregue o snapshot
+            # `claimed_issues`; senao devolve o 1o sobreposto (legado).
+            if isinstance(event.get("claimed_issues"), list):
+                return event
+            if first is None:
+                first = event
+    return first
 
 
 def extract_alleged_count(report_text: str) -> int | None:
@@ -755,11 +762,27 @@ def check_classification_count(
     }
 
 
+def _snapshot_from_event(event: dict | None) -> set[int] | None:
+    """#8521: `claimed_issues` do evento 'ended', ou None quando o evento
+    e legado (sem o campo) ou ausente — o chamador cai no comportamento
+    anterior (indeterminate)."""
+    if not event or not isinstance(event.get("claimed_issues"), list):
+        return None
+    out: set[int] = set()
+    for n in event["claimed_issues"]:
+        try:
+            out.add(int(n))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def check_claimed_issues(
     report_text: str | None,
     claimed_in_registry: set[int],
     sessions_dir_exists: bool,
     ended_session_in_window: bool = False,
+    ended_claimed_snapshot: set[int] | None = None,
 ) -> dict:
     """Checagem (c): issues citadas como reivindicadas no relatório
     aparecem de fato em algum `claimed_issues` do session-registry.
@@ -812,6 +835,32 @@ def check_claimed_issues(
     # fabrication_suspected — e o caso real do #7537.
     missing_released = sorted(n for n in missing if alleged_claims[n])
     missing_held = sorted(n for n in missing if not alleged_claims[n])
+    if missing_held and ended_session_in_window and ended_claimed_snapshot is not None:
+        # #8521 (residuo): o evento 'ended' carrega o snapshot de
+        # `claimed_issues` da sessao (gravado por `endSession`). Issue
+        # alegada como reivindicada que consta no snapshot -> claim real.
+        # Que NAO consta -> `end` rodou de verdade mas a claim nunca passou
+        # por `claimIssueCheckAndSet` = fabricacao especifica.
+        fabricated = sorted(n for n in missing_held if n not in ended_claimed_snapshot)
+        if fabricated:
+            return {
+                "check": "claimed_issues",
+                "status": "fabrication_suspected",
+                "details": (
+                    f"issue(s) {fabricated} citada(s) como reivindicada(s) no relatorio mas "
+                    "ausentes tanto de `data/sessions/continuo-*.json` quanto do snapshot "
+                    "`claimed_issues` do evento 'ended' real (data/session-lifecycle.jsonl) — "
+                    "`end` rodou, mas o mecanismo de claim nunca rodou para esse(s) numero(s)."
+                ),
+            }
+        return {
+            "check": "claimed_issues",
+            "status": "ok",
+            "details": (
+                f"issue(s) {missing_held} ausentes do registro vivo mas presentes no snapshot "
+                "`claimed_issues` do evento 'ended' real da sessao — claim verificada."
+            ),
+        }
     if missing_held:
         if ended_session_in_window:
             # #8521: um evento "ended" REAL (log append-only, só existe se
@@ -966,6 +1015,7 @@ def run(
         check_claimed_issues(
             report_text, claimed_in_registry, sessions_dir.is_dir(),
             ended_session_in_window=ended_session is not None,
+            ended_claimed_snapshot=_snapshot_from_event(ended_session),
         ),
     ]
 

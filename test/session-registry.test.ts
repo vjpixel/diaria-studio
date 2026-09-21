@@ -501,6 +501,20 @@ describe("instrumentação de ciclo de vida (#6624)", () => {
     assert.ok(typeof events[0]!.ageMs === "number" && (events[0]!.ageMs as number) > 0);
   });
 
+  it("#8521: evento 'ended' carrega snapshot claimed_issues (ordenado, dedup) e [] sem claims", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "sess-8521a", { tag: "host-a", startedAt: "2026-09-20T10:00:00.000Z" });
+    claimIssue(root, "continuo", "sess-8521a", 8515, "host-a");
+    claimIssue(root, "continuo", "sess-8521a", 8400, "host-a");
+    endSession(root, "continuo", "sess-8521a", "host-a");
+    registerSession(root, "continuo", "sess-8521b", { tag: "host-a", startedAt: "2026-09-20T11:00:00.000Z" });
+    endSession(root, "continuo", "sess-8521b", "host-a");
+
+    const events = readLifecycleEvents(root);
+    assert.deepEqual(events[0]!.claimed_issues, [8400, 8515]);
+    assert.deepEqual(events[1]!.claimed_issues, []);
+  });
+
   it("endSession de sessão INTERACTIVE não grava nada — só coordenadora é instrumentada", () => {
     const root = freshRoot();
     registerSession(root, "interactive", "sess-6624b", { tag: "host-a" });

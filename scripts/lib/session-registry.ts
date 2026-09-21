@@ -1886,6 +1886,22 @@ export interface SessionLifecycleEvent {
    * mudança (log histórico, nunca reescrito). */
   startedAt?: string | null;
   lastHeartbeat?: string | null;
+  /** #8521 — snapshot das issues reivindicadas pela sessão no momento da
+   * remoção (`record.claimed_issues`). Permite ao detector de fabricação do
+   * contínuo (`hermes/scripts/detect-tick-claim-fabrication.py`) comparar as
+   * issues ALEGADAS no relatório com as claims REALMENTE registradas mesmo
+   * depois que `endSession` apagou o arquivo da sessão (caso: coordenador
+   * roda `end` de verdade mas fabrica uma claim específica). Ausente só em
+   * eventos gravados antes desta mudança (retrocompatível: o detector cai no
+   * comportamento antigo); `[]` = a sessão terminou sem nenhuma claim. */
+  claimed_issues?: number[];
+}
+
+/** #8521 — cópia ordenada/deduplicada de `claimed_issues` pro evento de
+ * lifecycle; tolera campo ausente ou com lixo (nunca lança). */
+function snapshotClaimedIssues(record: SessionRecord): number[] {
+  const raw = Array.isArray(record.claimed_issues) ? record.claimed_issues : [];
+  return [...new Set(raw.filter((n): n is number => Number.isInteger(n)))].sort((a, b) => a - b);
 }
 
 function sessionLifecycleLogPath(repoRoot: string): string {
@@ -2049,6 +2065,7 @@ export function endSession(
       ageMs: Number.isFinite(startedMs) ? now - startedMs : undefined,
       startedAt: outcome.record.startedAt ?? null,
       lastHeartbeat: outcome.record.lastHeartbeat ?? null,
+      claimed_issues: snapshotClaimedIssues(outcome.record),
     });
   }
   return outcome.removed;
@@ -4417,6 +4434,7 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
         ageMs: Number.isFinite(startedMs) ? now - startedMs : undefined,
         startedAt: lifecycleRecord.startedAt ?? null,
         lastHeartbeat: lifecycleRecord.lastHeartbeat ?? null,
+        claimed_issues: snapshotClaimedIssues(lifecycleRecord),
       });
     }
   }
