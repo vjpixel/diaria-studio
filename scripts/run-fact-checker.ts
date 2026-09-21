@@ -25,7 +25,7 @@
  * comportamento é idêntico ao de antes do #4361 (sempre exit 0 neste modo).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { fetchSourceText } from "./fetch-source-text.ts";
@@ -395,20 +395,37 @@ export async function prefetchHighlightSources(
   const highlights = (approved as { highlights?: Array<{ url?: string }> } | null)?.highlights ?? [];
   const dir = join(internalDir, "fact-check-sources");
   const out: PrefetchedSource[] = [];
+  const manifest: ManifestEntry[] = [];
+  mkdirSync(dir, { recursive: true });
+  // Remove resíduo de outra rodada: o agente nunca deve ler fonte velha.
+  for (const n of [1, 2, 3]) rmSync(join(dir, `d${n}.txt`), { force: true });
+  rmSync(join(dir, "manifest.json"), { force: true });
   for (let i = 0; i < Math.min(highlights.length, 3); i++) {
     const url = highlights[i]?.url;
     if (!url) continue;
+    const fetched_at = new Date().toISOString();
     const r = await fetchSourceText(url, fetchImpl);
     if (r.ok) {
-      mkdirSync(dir, { recursive: true });
       const path = join(dir, `d${i + 1}.txt`);
       writeFileSync(path, r.text, "utf8");
       out.push({ destaque: i + 1, url, path });
+      manifest.push({ destaque: i + 1, url, status: "ok", erro: null, bytes: r.bytes, fetched_at });
     } else {
       out.push({ destaque: i + 1, url, error: r.message });
+      manifest.push({ destaque: i + 1, url, status: r.kind === "blocked" ? "blocked" : "error", erro: r.message, bytes: 0, fetched_at });
     }
   }
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
   return out;
+}
+
+export interface ManifestEntry {
+  destaque: number;
+  url: string;
+  status: "ok" | "blocked" | "error";
+  erro: string | null;
+  bytes: number;
+  fetched_at: string;
 }
 
 function extractEditionId(editionDir: string): string {
