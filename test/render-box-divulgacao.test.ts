@@ -12,7 +12,11 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderBoxDivulgacao } from "../scripts/lib/newsletter-render-html.ts";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { renderBoxDivulgacao, renderHTML } from "../scripts/lib/newsletter-render-html.ts";
+import { extractContent } from "../scripts/lib/newsletter-parse.ts";
 
 describe("renderBoxDivulgacao — dispatcher por estrutura (#2978/#3475)", () => {
   it("último parágrafo só-link → formato carrinho (pill CTA)", () => {
@@ -421,5 +425,48 @@ Vale a leitura completa.`;
   it("ramo forceImage horizontal (portrait=false): plainFirstParagraph já era suprimido por `!portrait` — continua suprimido", () => {
     const html = renderBoxDivulgacao(boxSemCtaOnly, "https://cdn.example.com/header.jpg", true, true, false, null, false);
     assert.doesNotMatch(html, /font-size:26px/, "imagem horizontal forçada já suprimia título independente de plainFirstParagraph — regressão de comportamento histórico");
+  });
+});
+
+// #8575: caminho REAL — box de livro vindo de 02-reviewed.md pós-stitch (sem
+// frontmatter de snippet, `titulo:false` ausente) + kicker "Recomendação de
+// Leitura" (categoria do snippet). Antes: rótulo 2x (kicker + <p> interno).
+describe("#8575 — box de livro não repete o rótulo do kicker", () => {
+  const EIA = "**É IA?**\n\nFoto. [Autor](https://example.com/a) / CC.\n\nResultado: 40%.\n";
+  const d = (n: number) =>
+    `**DESTAQUE ${n} | 🚀 LANÇAMENTO**\n\n**[Título D${n}](https://example.com/d${n})**\n\nCorpo ${n}.\n\nPor que isso importa:\n\nWhy ${n}.\n`;
+  const BOOK = "[**Livro X**](https://amazon.com.br/x), de Fulano.\n\nGostei muito do livro.";
+
+  function render(box: string): string {
+    const md = `Intro.\n\n---\n\n${d(1)}\n---\n\n${box}\n\n---\n\n${d(2)}\n---\n\n${d(3)}\n---\n\n${EIA}\n---\n\n**📡 RADAR**\n\n**[R](https://example.com/r)**\nResumo.\n`;
+    const dir = mkdtempSync(join(tmpdir(), "ed-8575-"));
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
+      writeFileSync(join(dir, "01-eia.md"), EIA, "utf8");
+      const c = extractContent(dir);
+      assert.ok(c.boxDivulgacao1, "box extraído do markdown");
+      c.boxDivulgacao1Categoria = "Recomendação de Leitura"; // categoria do snippet
+      c.boxDivulgacaoNoTitulo = {}; // sem titulo:false
+      return renderHTML(c);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  const count = (h: string) => (h.match(/Recomendação de Leitura/gi) ?? []).length;
+
+  it("livro sem linha de título → 1 única ocorrência (kicker)", () => {
+    const h = render(BOOK);
+    assert.equal(count(h), 1);
+    assert.match(h, /Livro X/);
+  });
+
+  it("livro com linha de título explícita → 1 única ocorrência, corpo preservado", () => {
+    const h = render(`📖 Recomendação de leitura\n\n${BOOK}`);
+    assert.equal(count(h), 1);
+    assert.match(h, /Gostei muito do livro/);
+  });
+
+  it("sem kicker de livro (renderBoxDivulgacao direto) mantém o título sintetizado", () => {
+    assert.equal(count(renderBoxDivulgacao(BOOK)), 1);
   });
 });
