@@ -239,7 +239,16 @@ function analyzeTrackAFeature(editions: TrackAEditionRows[], feature: TrackACand
 
   // Gate de janelas (#7980, específico do Track A — Track B não tem isto
   // como gate duro, só reporta 1 corte early/late).
-  const windows = splitIntoWindows(editions);
+  // As janelas só cobrem a ERA OBSERVÁVEL da feature: da 1ª edição em que
+  // ela aparece como `true` em diante. Antes disso o bônus não era
+  // registrado em `bonuses_applied` (hands_on só aparece a partir de
+  // 260812, primary_source de 260824, coverage_bonus de 260727 — 20-40 das
+  // 109 edições do corpus), então cortar o corpus INTEIRO em 3 fatias
+  // deixava as janelas 1-2 estruturalmente sem evento `true` (sempre n/d) e
+  // o gate de ≥2 janelas consistentes inatingível por mais dado que
+  // chegasse (#7980).
+  const firstTrueIdx = editions.findIndex((ed) => ed.events.some((ev) => featureValueForEvent(ev, feature)));
+  const windows = splitIntoWindows(firstTrueIdx > 0 ? editions.slice(firstTrueIdx) : editions);
   // `diff` vira `null` (excluído do voto de sinal) quando qualquer um dos
   // 2 lados da janela tem menos que MIN_WINDOW_EVENTS_PER_SIDE eventos —
   // não só quando um lado está genuinamente vazio (mitigação P2, #7980).
