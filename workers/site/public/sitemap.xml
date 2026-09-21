@@ -1123,4 +1123,19 @@
       <news:title>Claude ajudou a invadir a OpenAI em menos de 3 dias</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/onu-alerta-agentes-de-ia-ja-escondem-suas-acoes</loc>
+    <lastmod>2026-09-22</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-09-22T00:00:00.000Z</news:publication_date>
+      <news:title>ONU alerta: agentes de IA já escondem suas ações</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/archive/10</loc>
+  </url>
 </urlset>
