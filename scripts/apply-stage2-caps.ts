@@ -29,6 +29,7 @@ import {
   readCaptureFailedFromMarker,
   renderCaptureFailedLine,
 } from "./lib/inbox-stats.ts";
+import { logEvent } from "./lib/run-log.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 interface CoverageLike {
@@ -56,6 +57,28 @@ function main(): void {
 
   const approved = JSON.parse(readFileSync(inPath, "utf8")) as ApprovedJson;
   const { approved: capped, report } = applyStage2Caps(approved);
+
+  // #8593: nunca em silêncio — cada item removido pelo limite de domínio vai
+  // pro stderr e pro run-log (warn). A coverage.line abaixo já recontará o total.
+  for (const r of report.domain_limit.removed) {
+    console.error(
+      `[apply-stage2-caps] removido ${r.bucket}: ${r.url} (score ${r.score ?? "?"}) — ${r.reason}`,
+    );
+  }
+  for (const w of report.domain_limit.warnings) {
+    console.error(`[apply-stage2-caps] ⚠️ ${w}`);
+  }
+  if (report.domain_limit.removed.length > 0) {
+    const m = inPath.match(/(\d{6})[\\/]_internal[\\/]/);
+    logEvent({
+      edition: m ? m[1] : null,
+      stage: 2,
+      agent: "apply-stage2-caps",
+      level: "warn",
+      message: `limite de ${report.domain_limit.max} URLs por domínio (#8593): ${report.domain_limit.removed.length} item(ns) removido(s) das seções secundárias`,
+      details: { removed: report.domain_limit.removed, warnings: report.domain_limit.warnings },
+    });
+  }
 
   // #906 — recalcular coverage.line com o `selected` real pós-caps. Sem
   // isso, o writer copia coverage.line literal e a intro fica com "30

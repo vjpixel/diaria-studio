@@ -29,6 +29,7 @@
  */
 
 import { canonicalize } from "./url-utils.ts";
+import { selectDomainExcess, editorialDomain, DEFAULT_MAX_PER_DOMAIN, type DomainLimitCandidate } from "./domain-diversity.ts";
 import { selectUseMelhorSplit, rootDomain, classifyAudienceClass } from "./use-melhor-curation.ts";
 
 export interface StageArticle {
@@ -155,7 +156,18 @@ export function capRadar(
   );
 }
 
+export interface DomainLimitRemoval {
+  bucket: "lancamento" | "radar" | "use_melhor" | "video";
+  url: string;
+  title?: string;
+  score?: number;
+  domain: string;
+  reason: string;
+}
+
 export interface CapReport {
+  /** #8593: itens removidos das seções secundárias por excederem 2 URLs/domínio. */
+  domain_limit: { max: number; removed: DomainLimitRemoval[]; warnings: string[] };
   before: { lancamento: number; radar: number };
   after: { lancamento: number; radar: number };
   caps: { lancamento: number; radar: number };
@@ -350,6 +362,29 @@ export function applyStage2Caps(
   }
   const lDeduped = dedupAgainstHighlights(approved.lancamento, highlightUrlsCanon);
   const rDeduped = dedupAgainstHighlights(approved.radar, highlightUrlsCanon);
+  const umBefore = approved.use_melhor?.length ?? 0;
+  const umDeduped = dedupAgainstHighlights(approved.use_melhor, highlightUrlsCanon);
+
+  // #8593: limite de 2 URLs por domínio registrável ANTES dos caps/promoção —
+  // o pool `kept` de cada bucket já sai sem o excedente, então os caps (lançamento
+  // 5, radar dinâmico, use_melhor 2..4) preenchem os slots com quem sobrou em vez
+  // de deixar a seção abaixo do piso. Destaques nunca saem e ocupam vaga.
+  const pool: Record<DomainLimitRemoval["bucket"], StageArticle[]> = {
+    lancamento: lDeduped.kept,
+    radar: rDeduped.kept,
+    use_melhor: umDeduped.kept,
+    video: [...(approved.video ?? [])],
+  };
+  const domainRemoved = enforceDomainLimit(approved.highlights ?? [], pool);
+  lDeduped.kept = pool.lancamento;
+  rDeduped.kept = pool.radar;
+  umDeduped.kept = pool.use_melhor;
+  // Runners-up só podem ser promovidos a USE MELHOR se o domínio ainda tiver vaga.
+  const runnersUpEligible = filterRunnersUpByDomainRoom(
+    approved.runners_up,
+    approved.highlights ?? [],
+    pool,
+  );
 
   const lCap = STAGE_2_CAP_LANCAMENTOS;
   const lFinal = Math.min(lDeduped.kept.length, lCap);
@@ -360,11 +395,9 @@ export function applyStage2Caps(
   // dedup vs highlights[] (#1240 — igual lançamento/radar): um tutorial promovido
   // a destaque NÃO pode render 2× (no destaque + na seção). Sem esse dedup o
   // bucket escapava o #1240 e duplicava o item.
-  const umBefore = approved.use_melhor?.length ?? 0;
-  const umDeduped = dedupAgainstHighlights(approved.use_melhor, highlightUrlsCanon);
   const um = promoteUseMelhorToMinimum(
     umDeduped.kept,
-    approved.runners_up,
+    runnersUpEligible,
     highlightUrlsCanon,
     STAGE_2_MIN_USE_MELHOR,
   );
@@ -424,11 +457,28 @@ export function applyStage2Caps(
     lancamento: lDeduped.kept.slice(0, lFinal),
     radar: rDeduped.kept.slice(0, rFinal),
     use_melhor: umFinal,
+    ...(approved.video !== undefined ? { video: pool.video } : {}),
   };
+
+  // #8593: avisa quando o limite de domínio deixou RADAR/USE MELHOR abaixo do piso.
+  const domainWarnings: string[] = [];
+  if (domainRemoved.length > 0) {
+    if (rFinal < STAGE_2_MIN_RADAR) {
+      domainWarnings.push(
+        `RADAR abaixo do piso após limite de domínio (#8593): ${rFinal}/${STAGE_2_MIN_RADAR}`,
+      );
+    }
+    if (umFinal.length < STAGE_2_MIN_USE_MELHOR) {
+      domainWarnings.push(
+        `USE MELHOR abaixo do piso após limite de domínio (#8593): ${umFinal.length}/${STAGE_2_MIN_USE_MELHOR}`,
+      );
+    }
+  }
 
   return {
     approved: out,
     report: {
+      domain_limit: { max: DEFAULT_MAX_PER_DOMAIN, removed: domainRemoved, warnings: domainWarnings },
       before: {
         lancamento: lOriginal,
         radar: rOriginal,
@@ -457,6 +507,86 @@ export function applyStage2Caps(
       },
     },
   };
+}
+
+/**
+ * Prioridade entre buckets quando o MESMO domínio estoura o limite (#8593):
+ * LANÇAMENTOS (link oficial) > USE MELHOR > VÍDEO > RADAR. Só depois, dentro do
+ * bucket de menor prioridade, vale o score — score de buckets diferentes não é
+ * comparável, então nunca corta LANÇAMENTO a favor de RADAR do mesmo domínio.
+ */
+const BUCKET_PRIORITY: Record<DomainLimitRemoval["bucket"], number> = {
+  lancamento: 0,
+  use_melhor: 1,
+  video: 2,
+  radar: 3,
+};
+const POOL_BUCKETS = ["lancamento", "use_melhor", "video", "radar"] as const;
+
+/**
+ * #8593: aplica o limite por domínio nos pools dos buckets, substituindo os
+ * arrays de `pool`. Devolve o que foi removido pra o caller logar (nunca em silêncio).
+ */
+function enforceDomainLimit(
+  highlights: ScoredHighlight[],
+  pool: Record<DomainLimitRemoval["bucket"], StageArticle[]>,
+): DomainLimitRemoval[] {
+  const candidates: DomainLimitCandidate[] = [];
+  const where: Array<{ bucket: DomainLimitRemoval["bucket"]; item: StageArticle } | null> = [];
+  for (const h of highlights) {
+    candidates.push({ url: highlightUrl(h), score: h.score, protected: true, priority: -1, order: candidates.length });
+    where.push(null);
+  }
+  for (const bucket of POOL_BUCKETS) {
+    for (const item of pool[bucket]) {
+      candidates.push({
+        url: item.url,
+        score: item.score,
+        protected: false,
+        priority: BUCKET_PRIORITY[bucket],
+        order: candidates.length,
+      });
+      where.push({ bucket, item });
+    }
+  }
+  const removed: DomainLimitRemoval[] = [];
+  const drop = new Set<StageArticle>();
+  for (const e of selectDomainExcess(candidates, DEFAULT_MAX_PER_DOMAIN)) {
+    const w = where[e.order];
+    if (!w) continue;
+    drop.add(w.item);
+    removed.push({
+      bucket: w.bucket,
+      url: w.item.url ?? "",
+      title: w.item.title,
+      score: w.item.score,
+      domain: e.domain,
+      reason: e.reason,
+    });
+  }
+  for (const bucket of POOL_BUCKETS) pool[bucket] = pool[bucket].filter((x) => !drop.has(x));
+  return removed;
+}
+
+/** #8593: descarta runners-up cujo domínio já está no limite após o enforce. */
+function filterRunnersUpByDomainRoom(
+  runnersUp: ScoredRunnerUp[] | undefined,
+  highlights: ScoredHighlight[],
+  pool: Record<DomainLimitRemoval["bucket"], StageArticle[]>,
+): ScoredRunnerUp[] | undefined {
+  if (!runnersUp) return runnersUp;
+  const counts = new Map<string, number>();
+  const bump = (u: string | undefined) => {
+    const d = u ? editorialDomain(u) : null;
+    if (d) counts.set(d, (counts.get(d) ?? 0) + 1);
+  };
+  for (const h of highlights) bump(highlightUrl(h));
+  for (const b of POOL_BUCKETS) for (const a of pool[b]) bump(a.url);
+  return runnersUp.filter((r) => {
+    const u = highlightUrl(r);
+    const d = u ? editorialDomain(u) : null;
+    return !d || !d.includes(".") || (counts.get(d) ?? 0) < DEFAULT_MAX_PER_DOMAIN;
+  });
 }
 
 /**
