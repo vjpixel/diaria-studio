@@ -723,6 +723,9 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       "workers/site/public/p/abc",
       "workers/site/public/sitemap.xml",
       "workers/site/public/index.html",
+      // #8645: archive/ (índice paginado regenerado por
+      // backfillAndReindexArchive) entra no mesmo pathspec de sitemap/home.
+      "workers/site/public/archive",
     ]);
   });
 
@@ -1570,5 +1573,164 @@ describe("#8636 worktree de publicacao — regressao do bug", () => {
     deps.publish("260921");
     const calls = git.calls.map((c) => c.join(" "));
     assert.ok(calls.some((c) => c.startsWith("worktree add --detach")), "productionDeps repassou worktreeDir");
+  });
+});
+
+describe("#8645 backfillAndReindexArchive — image no JSON-LD + índice paginado, dentro do próprio publish", () => {
+  /**
+   * Causa raiz #8645: `publish-edition-site-page.ts` escrevia só a página +
+   * 1 linha do sitemap — 2 checagens que rodam sobre TODO o acervo
+   * (`test/discover-news-requisitos-8390.test.ts`, `image` no JSON-LD;
+   * `test/site-archive-index-8353.test.ts`, link no índice paginado) nunca
+   * eram satisfeitas pra edição nova, porque os 2 passos que fecham esses
+   * gaps (backfill de SEO restrito a 1 slug + `gen-archive-index.ts`) nunca
+   * rodavam como parte do publish. Decisão do editor registrada na issue:
+   * fechar o gap NA ORIGEM — `publish-edition-site-page.ts` passa a rodar
+   * os dois antes do commit único.
+   *
+   * Este teste roda `publishEditionSitePage` com `productionDeps` REAL
+   * (fs de verdade, `--skip-publish` pra não depender de git/gh) e verifica
+   * o estado final em disco: (a) `image`/JSON-LD da página nova aponta pro
+   * hero do próprio corpo; (b) o índice paginado do acervo (`archive/`)
+   * linka a página nova, sem perder a antiga.
+   */
+  it("publish de 1 página nova: JSON-LD ganha image do hero + índice paginado passa a linkar a página nova", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "diaria-site-page-8645-root-"));
+    const editionDir = mkdtempSync(join(tmpdir(), "diaria-site-page-8645-edition-"));
+    try {
+      const oldSlug = "edicao-anterior-8645";
+      const newSlug = "edicao-nova-8645";
+      const heroUrl = "https://eia.diar.ia.br/img/img-260921-04-d1-2x1-abc.jpg";
+
+      // Acervo pré-existente: 1 página antiga + o sitemap que a lista —
+      // simula o estado real de `workers/site/public/` antes deste publish.
+      mkdirSync(join(rootDir, "workers", "site", "public", "p", oldSlug), { recursive: true });
+      writeFileSync(
+        join(rootDir, "workers", "site", "public", "p", oldSlug, "index.html"),
+        "<!doctype html><html><head><title>Edição anterior</title>" +
+          '<meta name="description" content="dek antiga"><link rel="canonical" href="https://diar.ia.br/p/' +
+          oldSlug +
+          '"></head><body><p>corpo antigo</p></body></html>',
+        "utf8",
+      );
+      writeFileSync(
+        join(rootDir, "workers", "site", "public", "sitemap.xml"),
+        [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+          "  <url>",
+          `    <loc>https://diar.ia.br/p/${oldSlug}</loc>`,
+          "    <lastmod>2026-09-19</lastmod>",
+          "  </url>",
+          "</urlset>",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      // Fixture da edição NOVA — mesmo formato real de `_internal/
+      // newsletter-final.html` (#6202): corpo com o hero 2:1 do D1, que
+      // `renderHeroImageInner` já emite como `<img class="hero" ...>`.
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(editionDir, "_internal", "newsletter-final.html"),
+        `<img class="hero" src="${heroUrl}" alt="capa"/><p>corpo da edição nova</p>`,
+        "utf8",
+      );
+      writeFileSync(
+        join(editionDir, "02-reviewed.md"),
+        ["TÍTULO", "Edição nova 8645", "", "SUBTÍTULO", "Subtítulo novo"].join("\n"),
+        "utf8",
+      );
+      // `deriveFallbackPublishedAtIso` (caminho `--slug`) tenta primeiro
+      // `newsletter-kit-published.json`, senão o basename (AAMMDD) do
+      // diretório da edição — que aqui é um `mkdtempSync` com sufixo
+      // aleatório, não bate o padrão. Sem uma data resolvida, `publish_date`
+      // fica `null` e `buildArchiveNewsArticleJsonLd` OMITE o JSON-LD por
+      // completo (mesmo fail-soft de sempre) — este arquivo garante a data,
+      // o que é o caso real (Stage 6 sempre tem `scheduled_at`).
+      writeFileSync(
+        join(editionDir, "_internal", "newsletter-kit-published.json"),
+        JSON.stringify({ scheduled_at: "2026-09-21T09:00:00.000Z" }),
+        "utf8",
+      );
+
+      const deps = productionDeps(rootDir);
+      const result = publishEditionSitePage(editionDir, deps, {
+        slug: newSlug,
+        sitemap: "workers/site/public/sitemap.xml",
+        skipPublish: true, // git/gh fora de escopo deste teste
+      });
+      assert.equal(result.code, 0, JSON.stringify(result));
+
+      // (a) image no JSON-LD NewsArticle da página NOVA, a partir do hero.
+      const newPageHtml = readFileSync(
+        join(rootDir, "workers", "site", "public", "p", newSlug, "index.html"),
+        "utf8",
+      );
+      const jsonLdMatch = newPageHtml.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+      assert.ok(jsonLdMatch, "página nova sem JSON-LD NewsArticle");
+      const node = JSON.parse(jsonLdMatch![1]);
+      assert.equal(node["@type"], "NewsArticle");
+      assert.equal(node.image?.url, heroUrl, 'image do JSON-LD não veio do <img class="hero"> do corpo');
+
+      // (b) índice paginado do acervo linka a página NOVA — sem perder a
+      // antiga (a edição publicada não substitui, acrescenta).
+      const indexHtml = readFileSync(join(rootDir, "workers", "site", "public", "archive", "index.html"), "utf8");
+      assert.match(indexHtml, new RegExp(`href="https://diar\\.ia\\.br/p/${newSlug}"`));
+      assert.match(indexHtml, new RegExp(`href="https://diar\\.ia\\.br/p/${oldSlug}"`));
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+      rmSync(editionDir, { recursive: true, force: true });
+    }
+  });
+
+  it("idempotente: rodar o backfill/reindex 2x pra mesma página não duplica nada", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "diaria-site-page-8645-idem-"));
+    try {
+      const slug = "edicao-idem-8645";
+      const heroUrl = "https://eia.diar.ia.br/img/img-260921-04-d1-2x1-xyz.jpg";
+      const sitemapRelPath = "workers/site/public/sitemap.xml";
+      mkdirSync(join(rootDir, "workers", "site", "public", "p", slug), { recursive: true });
+      writeFileSync(
+        join(rootDir, "workers", "site", "public", "p", slug, "index.html"),
+        "<!doctype html><html><head><title>Edição idempotente</title>" +
+          '<meta name="description" content="dek"><link rel="canonical" href="https://diar.ia.br/p/' +
+          slug +
+          '"><meta property="og:type" content="article">' +
+          '<script type="application/ld+json">{"@type":"NewsArticle","headline":"x"}</script>' +
+          `</head><body><img class="hero" src="${heroUrl}" alt=""><p>corpo</p></body></html>`,
+        "utf8",
+      );
+      writeFileSync(
+        join(rootDir, sitemapRelPath),
+        [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+          `  <url><loc>https://diar.ia.br/p/${slug}</loc><lastmod>2026-09-21</lastmod></url>`,
+          "</urlset>",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const deps = productionDeps(rootDir);
+      assert.ok(deps.backfillAndReindexArchive, "productionDeps deveria expor backfillAndReindexArchive");
+
+      const first = deps.backfillAndReindexArchive!(slug, sitemapRelPath);
+      assert.equal(first.seoImageAdded, true);
+      assert.equal(first.archiveIndexRegenerated, true);
+      const afterFirst = readFileSync(join(rootDir, "workers", "site", "public", "p", slug, "index.html"), "utf8");
+
+      const second = deps.backfillAndReindexArchive!(slug, sitemapRelPath);
+      assert.equal(second.seoImageAdded, false, "image já presente — 2ª chamada não reporta mudança");
+      assert.equal(second.archiveIndexRegenerated, true, "regeneração do índice segue idempotente (sempre bem-sucedida)");
+
+      const afterSecond = readFileSync(join(rootDir, "workers", "site", "public", "p", slug, "index.html"), "utf8");
+      assert.equal(afterSecond, afterFirst, "conteúdo da página idêntico entre as 2 chamadas");
+      assert.equal((afterSecond.match(/application\/ld\+json/g) || []).length, 1, "JSON-LD não duplicou");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
   });
 });

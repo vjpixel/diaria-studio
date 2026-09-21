@@ -119,11 +119,28 @@ export interface BackfillRunResult {
  * puro porque ESCREVE (a menos que `dryRun`); a extração pura de sitemap/
  * título/vizinhos vive nas funções exportadas acima e em
  * `site-archive-page-backfill.ts`, testáveis sem tocar disco.
+ *
+ * `opts.onlySlug` (#8645): restringe o processamento a UM slug — usado por
+ * `publish-edition-site-page.ts` (Stage 6) pra rodar o backfill como parte
+ * do próprio publish de página. Rodar o LOTE inteiro a cada edição
+ * publicada seria I/O desperdiçado (~270 leituras de arquivo por
+ * publicação diária, a esmagadora maioria já convergida pelos marcadores
+ * de idempotência) — `onlySlug` lê/escreve só a página alvo, mais as 2
+ * vizinhas imediatas na ordem do sitemap (só o `<title>`, pro link de nav).
+ * `pagesFound`/`pagesMissing` no resultado refletem só o slug pedido nesse
+ * modo. **Sem `onlySlug`, o comportamento é BYTE-A-BYTE o mesmo de antes
+ * desta mudança** — mesma ordem de iteração, mesmo `pagesMissing`/
+ * `titleBySlug` — os testes de lote (#8353/#8359) não podem regredir.
  */
 export function runBackfill(
   pagesDir: string,
   sitemapXml: string,
-  opts: { dryRun?: boolean; readPage?: (path: string) => string; writePage?: (path: string, html: string) => void } = {},
+  opts: {
+    dryRun?: boolean;
+    readPage?: (path: string) => string;
+    writePage?: (path: string, html: string) => void;
+    onlySlug?: string;
+  } = {},
 ): BackfillRunResult {
   const readPage = opts.readPage ?? ((p: string) => readFileSync(p, "utf8"));
   const writePage = opts.writePage ?? ((p: string, html: string) => writeFileSync(p, html, "utf8"));
@@ -131,12 +148,56 @@ export function runBackfill(
   const order = parseSitemapPageEntries(sitemapXml);
   const pagePath = (slug: string) => join(pagesDir, slug, "index.html");
 
+  const onlySlug = opts.onlySlug;
+  const targetIndices: number[] =
+    onlySlug === undefined
+      ? order.map((_, i) => i)
+      : order.reduce<number[]>((acc, e, i) => (e.slug === onlySlug ? [...acc, i] : acc), []);
+
+  if (onlySlug !== undefined && targetIndices.length === 0) {
+    // Slug pedido não está (ainda) no sitemap — nada a fazer, sem erro
+    // (mesma degradação silenciosa que uma corrida com o passo que escreve
+    // o sitemap já toleraria).
+    return {
+      totalInSitemap: order.length,
+      pagesFound: 0,
+      pagesMissing: [onlySlug],
+      changed: 0,
+      seoChanged: 0,
+      navChanged: 0,
+      robotsChanged: 0,
+      jsonLdImageChanged: 0,
+      siteNavChanged: 0,
+    };
+  }
+
+  // Slugs cujo TÍTULO é necessário: os alvos + os vizinhos imediatos de
+  // cada um (pro link de nav). Modo lote (sem `onlySlug`): isso é
+  // EXATAMENTE `order` inteiro, na MESMA ordem — comportamento intocado.
+  const titleSlugsInOrder: string[] =
+    onlySlug === undefined
+      ? order.map((e) => e.slug)
+      : (() => {
+          const seen = new Set<string>();
+          const list: string[] = [];
+          for (const i of targetIndices) {
+            for (const idx of [i, i - 1, i + 1]) {
+              const e = order[idx];
+              if (e && !seen.has(e.slug)) {
+                seen.add(e.slug);
+                list.push(e.slug);
+              }
+            }
+          }
+          return list;
+        })();
+
   // Pré-carrega título de cada página que EXISTE — precisa do texto do
   // vizinho pro link (`ArchiveNeighbor.title`), não só do slug.
   const titleBySlug = new Map<string, string>();
   const pagesFoundSlugs = new Set<string>();
   const pagesMissing: string[] = [];
-  for (const { slug } of order) {
+  for (const slug of titleSlugsInOrder) {
     const p = pagePath(slug);
     if (!existsSync(p)) {
       pagesMissing.push(slug);
@@ -154,7 +215,7 @@ export function runBackfill(
   let jsonLdImageChanged = 0;
   let siteNavChanged = 0;
 
-  for (let i = 0; i < order.length; i++) {
+  for (const i of targetIndices) {
     const { slug, lastmod } = order[i];
     if (!pagesFoundSlugs.has(slug)) continue;
     const p = pagePath(slug);
@@ -191,8 +252,8 @@ export function runBackfill(
 
   return {
     totalInSitemap: order.length,
-    pagesFound: pagesFoundSlugs.size,
-    pagesMissing,
+    pagesFound: onlySlug === undefined ? pagesFoundSlugs.size : pagesFoundSlugs.has(onlySlug) ? 1 : 0,
+    pagesMissing: onlySlug === undefined ? pagesMissing : pagesMissing.filter((s) => s === onlySlug),
     changed,
     seoChanged,
     navChanged,
