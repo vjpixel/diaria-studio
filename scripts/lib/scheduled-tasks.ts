@@ -1900,6 +1900,22 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#8573, #8555, #8567",
   },
   {
+    // #8543 (lado Meta) — par do Google acima: sobe a confirmacao DOI do Kit pra
+    // Meta CAPI como evento SECUNDARIO `SubscriptionConfirmed` (nunca
+    // `CompleteRegistration`). Horario 07:25 BRT: 5min depois do upload do Google
+    // (07:20, mesmo snapshot base da noite anterior), antes do Clarice-Sync
+    // (08:30). DECLARADA, NAO ARMADA -- armar via scripts/setup-systemd-timers.ts
+    // na checkout compartilhada (300) e acao POSTERIOR do editor. Sem
+    // META_CAPI_ACCESS_TOKEN o --send vira dry-run efetivo (nada enviado).
+    name: "Diaria-Meta-Capi-Confirmations-Send",
+    description:
+      "lote diario que sobe confirmacoes DOI do Kit pra Meta Conversions API como evento secundario SubscriptionConfirmed (--send)",
+    steps: [{ key: "send", script: "scripts/meta-capi-confirmations-send.ts", args: ["--send"] }],
+    logPath: "meta-capi/.confirmations-send.log",
+    schedule: { kind: "daily", hour: 7, minute: 25 },
+    issue: "#8543",
+  },
+  {
     // #5878 — Campaign Management API v13 (SOAP) capta motivos editoriais de
     // assets rejeitados. Diferente da Reporting API (Google Ads Spend Ingest
     // acima, #5704), esta é uma chamada SINCRONA (GetAssetGroupsEditorialReasons
