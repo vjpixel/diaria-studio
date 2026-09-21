@@ -13,15 +13,16 @@ const c = JSON.parse(
   readFileSync(new URL("../docs/gtm-confirmation-secondary-import-proposal.json", import.meta.url), "utf8"),
 ).containerVersion as {
   tag: Tag[];
-  trigger: { triggerId: string; type: string; filter: { parameter: Param[] }[] }[];
+  trigger: { triggerId: string; type: string; filter: { type: string; parameter: Param[] }[] }[];
 };
 const html = (t: Tag) => t.parameter.find((p) => p.key === "html")?.value ?? "";
 
 describe("#8387 proposta GTM — confirmação secundária", () => {
-  it("trigger é pageview por PATH (ignora ?via=brevo) e casa o PAGE_URL real", () => {
+  it("trigger pageview filtra Page Path por matchRegex e casa o PAGE_URL real", () => {
     assert.equal(c.trigger.length, 1);
     const trig = c.trigger[0];
     assert.equal(trig.type, "pageview");
+    assert.equal(trig.filter[0].type, "matchRegex");
     const re = new RegExp(trig.filter[0].parameter.find((p) => p.key === "arg1")!.value);
     const path = new URL(PAGE_URL).pathname;
     assert.ok(re.test(path), `regex não casa ${path}`);
@@ -35,6 +36,21 @@ describe("#8387 proposta GTM — confirmação secundária", () => {
     for (const t of c.tag) assert.deepEqual(t.firingTriggerId, [c.trigger[0].triggerId], t.name);
   });
 
+  it("Meta e LinkedIn só gravam o guard DEPOIS de fbq/lintrk rodarem (pixel tardio não queima o guard)", () => {
+    for (const [prefix, call] of [["Meta", "fbq("], ["LinkedIn", "lintrk("]] as const) {
+      const h = html(c.tag.find((t) => t.name.startsWith(prefix))!);
+      assert.ok(h.indexOf(call) !== -1 && h.indexOf("setItem") > h.indexOf(call), prefix);
+    }
+  });
+
+  it("placeholders REPLACE_ são um conjunto conhecido e o arquivo substituído não deixa nenhum (produção sem REPLACE_)", () => {
+    const raw = readFileSync(new URL("../docs/gtm-confirmation-secondary-import-proposal.json", import.meta.url), "utf8");
+    const found = [...new Set(raw.match(/REPLACE_[A-Z_]+/g) ?? [])].sort();
+    assert.deepEqual(found, ["REPLACE_LABEL_ACAO_SECUNDARIA_CONFIRMACAO_PAGEVIEW", "REPLACE_LINKEDIN_CONVERSION_ID_CONFIRMACAO"]);
+    const filled = raw.replace(/REPLACE_LABEL_ACAO_SECUNDARIA_CONFIRMACAO_PAGEVIEW/g, "abc").replace(/REPLACE_LINKEDIN_CONVERSION_ID_CONFIRMACAO/g, "123");
+    assert.ok(!filled.includes("REPLACE_"));
+  });
+
   it("Meta usa evento CUSTOM, nunca CompleteRegistration (#8551)", () => {
     const meta = c.tag.find((t) => t.name.startsWith("Meta"))!;
     assert.match(html(meta), /fbq\('trackCustom',\s*'SubscriptionConfirmed'/);
@@ -46,6 +62,7 @@ describe("#8387 proposta GTM — confirmação secundária", () => {
     const label = g.parameter.find((p) => p.key === "conversionLabel")!.value;
     assert.notEqual(label, "dxY1CIb1v9EbEKmt_aJC");
     assert.match(label, /^REPLACE_/);
+    assert.equal(g.parameter.find((p) => p.key === "conversionId")!.value, "17790097065");
   });
 
   it("tags HTML têm guard de sessão contra dupla contagem por recarga", () => {
@@ -54,7 +71,7 @@ describe("#8387 proposta GTM — confirmação secundária", () => {
     for (const t of htmlTags) assert.match(html(t), /sessionStorage/, t.name);
   });
 
-  it("LinkedIn mantém placeholder que impede publicar sem o id real", () => {
+  it("LinkedIn tem o placeholder do id (JS válido, falha só em runtime — protegido pelo teste de REPLACE_)", () => {
     const li = c.tag.find((t) => t.name.startsWith("LinkedIn"))!;
     assert.match(html(li), /REPLACE_LINKEDIN_CONVERSION_ID_CONFIRMACAO/);
   });
