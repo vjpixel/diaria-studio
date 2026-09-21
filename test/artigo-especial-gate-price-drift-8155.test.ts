@@ -11,7 +11,7 @@
  * sem NENHUM import de `reward-tier-thresholds.ts`.
  *
  * Mesmo padrão de `test/retrospectiva-copy-limiar-7690.test.ts` e
- * `test/site-apoiar-page-7915.test.ts`: deriva o valor esperado direto do
+ * `test/site-apoiar-page-7915.test.ts` (removido no #8498): deriva o valor esperado direto do
  * módulo compartilhado, nunca transcreve o número — mexer no limiar sem
  * mexer na copy quebra aqui.
  */

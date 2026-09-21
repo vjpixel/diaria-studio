@@ -238,6 +238,19 @@ export function buildArtigoEspecialEmailCampaign(ano: string, slug: string): str
 }
 
 /**
+ * UTM do redirect `diar.ia.br/apoiar/ir` → `apoia.se/diaria` (#8498). O item
+ * "Apoiar" do menu global e o rodapé apontam pra `/apoiar/ir` (não pra URL
+ * crua do Apoia.se) pra manter o contador de clique do #7915 e pra que o
+ * Apoia.se distinga apoio vindo do menu de apoio vindo do gate de Artigo
+ * Especial (`apoia.se/diaria` cru). O Worker `workers/site` só ACRESCENTA estes
+ * 3 parâmetros quando o request não os traz (UTM explícito do chamador vence).
+ * `/apoiar` (301 permanente, path antigo) usa os mesmos valores.
+ */
+export const APOIAR_REDIRECT_UTM_SOURCE = "diaria";
+export const APOIAR_REDIRECT_UTM_MEDIUM = "site";
+export const APOIAR_REDIRECT_UTM_CAMPAIGN = "apoiar";
+
+/**
  * `utm_source`/`utm_medium` da Retrospectiva do Mês (`retrospectiva.diar.ia.br/AAMM`,
  * gate de apoio Mantenedor R$25+, #7715). Link de saída = CTA "Apoiar a diar.ia.br"
  * (apoia.se) no bloco de conversão do trecho e no paywall seco — os dois pontos
@@ -866,6 +879,20 @@ export interface UtmEmitter {
  * entre este arquivo e os valores realmente exportados pelos emissores.
  */
 export const UTM_EMITTERS: readonly UtmEmitter[] = [
+  {
+    id: "site-apoiar-redirect",
+    label: "Menu/rodapé 'Apoiar' do site → Apoia.se (redirect /apoiar/ir)",
+    source: APOIAR_REDIRECT_UTM_SOURCE,
+    medium: APOIAR_REDIRECT_UTM_MEDIUM,
+    campaignPattern: APOIAR_REDIRECT_UTM_CAMPAIGN,
+    originFile: "workers/site/src/index.ts",
+    description:
+      "Item 'Apoiar' do menu global e do rodapé (diar.ia.br) — passa por /apoiar/ir, que " +
+      "conta o clique (#7915) e redireciona pro Apoia.se com este UTM (#8498). Também " +
+      "cobre o path antigo /apoiar (301). Distingue apoio vindo do site de apoio vindo do " +
+      "gate de Artigo Especial/Retrospectiva.",
+    status: "ativo",
+  },
   {
     id: "mensal-clarice",
     label: "Digest mensal (Clarice)",

@@ -10,7 +10,7 @@
  * prefixadas `dnav-` pra nunca colidir com o CSS próprio de cada página) —
  * decisão deliberada: as superfícies que consomem este módulo têm sistemas
  * de CSS heterogêneos (a home tem um stylesheet grande com tokens `var(--…)`
- * próprios; `/assinar`, `/apoiar`, `/clarice`, `/archive`, `/confirmada` têm
+ * próprios; `/assinar`, `/clarice`, `/archive`, `/confirmada` têm
  * cada uma o seu `<style>` menor; as páginas `/p/{slug}` são HTML bruto
  * derivado do e-mail, sem folha de estilo compartilhada nenhuma). Um
  * componente com estilo embutido funciona identicamente em qualquer uma sem
@@ -21,7 +21,7 @@
  * tokens como custom properties CSS.
  *
  * Fica em `lib/shared/` (não em `lib/diaria/`) — consumido pela home, pelo
- * acervo `/p/{slug}`, pelo índice `/archive`, por `/assinar`, `/apoiar`,
+ * acervo `/p/{slug}`, pelo índice `/archive`, por `/assinar`,
  * `/clarice`, todos gerados por scripts que também vivem fora de
  * `lib/diaria/` (ver `test/lib-boundary.test.ts`).
  */
@@ -82,25 +82,25 @@ function crossHostUrl(base: string, path = ""): string {
  * `/aniversarioAAAA`) tem seu PRÓPRIO gate (cadastro grátis ou apoio
  * Mantenedor R$25+ conforme o formato do path) — nunca um destino único e
  * sempre-acessível. Um nav item pra conteúdo às vezes gateado também
- * colidiria com `test/site-apoiar-page-7915.test.ts` ("amostra pública é
- * link só pro hub de Artigos Especiais, nunca conteúdo atrás do gate") —
- * `/apoiar` explicitamente NÃO deveria linkar pra `retrospectiva.diar.ia.br`.
+ * teria de passar por decisão editorial sobre o gate (a página `/apoiar`,
+ * removida no #8498, evitava linkar pra `retrospectiva.diar.ia.br` pelo mesmo motivo).
  * Implementar o item corretamente exige uma página-índice pública nova em
  * `retrospectiva.diar.ia.br` (ou decisão editorial equivalente) — fora do
  * escopo mecânico desta PR.
  */
 const NAV_ITEM_DEFS: readonly SiteNavItemDef[] = [
-  // RELATIVOS (`/archive`, `/apoiar`) — todo consumidor desta nav é servido
+  // RELATIVOS (`/archive`, `/apoiar/ir`) — todo consumidor desta nav é servido
   // pelo MESMO apex (`diar.ia.br`), preservando o contrato que
-  // `test/site-home-apoiar-link-7915.test.ts` já trava (`<a href="/apoiar">`
-  // literal, nav + rodapé). Só os itens CROSS-HOST abaixo precisam de URL
+  // `test/site-home-apoiar-link-7915.test.ts` já trava (`<a href="/apoiar/ir">`
+  // literal, nav + rodapé). `/apoiar/ir` (#8498) é o redirect instrumentado do
+  // Worker → apoia.se/diaria (contador de clique + UTM); a página `/apoiar` não existe mais. Só os itens CROSS-HOST abaixo precisam de URL
   // absoluta (#8497 item 9).
   { key: "edicoes", label: "Edições", href: "/archive", crossHost: false },
   { key: "especiais", label: "Especiais", href: crossHostUrl(DIARIA_ESPECIAL_URL), crossHost: true },
   { key: "livros", label: "Livros", href: crossHostUrl(DIARIA_LIVROS_URL), crossHost: true },
   { key: "cursos", label: "Cursos", href: crossHostUrl(DIARIA_CURSOS_URL), crossHost: true },
   { key: "eia", label: "É IA?", href: crossHostUrl(DIARIA_EIA_URL, "/leaderboard"), crossHost: true },
-  { key: "apoiar", label: "Apoiar", href: "/apoiar", crossHost: false },
+  { key: "apoiar", label: "Apoiar", href: "/apoiar/ir", crossHost: false },
 ];
 
 /** URL do CTA `Assinar` — único botão/CTA primário da nav (#7915), mantido
@@ -129,7 +129,7 @@ export interface RenderSiteNavOptions {
    *  precisam de rótulo distinto pra não serem ambíguas num leitor de tela). */
   ariaLabel?: string;
   /** `true`: a página hospedeira já declara `--teal`/`--ink`/`--paper`/
-   *  `--rule` no PRÓPRIO `:root` (home, `/assinar`, `/apoiar`, `/clarice`,
+   *  `--rule` no PRÓPRIO `:root` (home, `/assinar`, `/clarice`,
    *  `/archive`, `/confirmada` — todas convergem nesses 4 nomes) — a nav usa
    *  `var(--x)` puro, sem literal hex, pra não duplicar o token (guard
    *  `test/site-home-design-tokens-6986.test.ts`: nenhum hex canônico fora

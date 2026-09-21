@@ -1,7 +1,12 @@
 /**
- * test/site-home-apoiar-link-7915.test.ts (#7915)
+ * test/site-home-apoiar-link-7915.test.ts (#7915, reescrito no #8498)
  *
- * Trava o link secundário `/apoiar` na nav e no rodapé da home, no mesmo
+ * #8498: a página `/apoiar` foi removida; nav e rodapé apontam pra
+ * `/apoiar/ir` (redirect instrumentado do Worker → apoia.se/diaria, UTM
+ * `diaria/site/apoiar`). Um `href="/apoiar"` residual aqui seria um 301 sem
+ * intenção — o teste acusa.
+ *
+ * Trava o link secundário `/apoiar/ir` na nav e no rodapé da home, no mesmo
  * molde de `test/site-home-hub-links-6411.test.ts` — testa o HTML GERADO
  * (`buildIndexHtml`) e o `index.html` COMMITTED (o que de fato vai pro ar
  * em `workers/site/public/`, deploy automático em push), pra um refactor
@@ -32,27 +37,33 @@ const FEATURE = {
 };
 
 function assertHasApoiarLink(html: string) {
-  assert.match(html, /<a href="\/apoiar">Apoiar<\/a>/, "link /apoiar ausente");
+  assert.match(html, /<a href="\/apoiar\/ir">Apoiar<\/a>/, "link /apoiar/ir ausente");
   // A nav-cta (CTA primário) precisa continuar sendo "Assinar" — /apoiar é
   // sempre um link secundário, nunca o botão principal.
   const navCtaMatch = html.match(/<div class="nav-cta">[\s\S]*?<\/div>/);
   assert.ok(navCtaMatch, "bloco .nav-cta não encontrado");
-  assert.doesNotMatch(navCtaMatch![0], /\/apoiar/, "/apoiar não pode estar dentro do CTA primário (.nav-cta)");
+  assert.doesNotMatch(navCtaMatch![0], /\/apoiar/, "/apoiar/ir não pode estar dentro do CTA primário (.nav-cta)");
 }
 
-describe("home — link secundário /apoiar (#7915)", () => {
-  it("o HTML gerado tem o link /apoiar na nav e no rodapé", () => {
+describe("home — link secundário /apoiar/ir (#7915/#8498)", () => {
+  it("nenhum link cru /apoiar (página removida) — só /apoiar/ir", () => {
+    const html = buildIndexHtml({ feature: FEATURE, archive: [] });
+    assert.doesNotMatch(html, /href="\/apoiar"/);
+    assert.doesNotMatch(html, /href="https:\/\/apoia\.se\/diaria"/, "menu aponta pro redirect instrumentado, não pra URL crua");
+  });
+
+  it("o HTML gerado tem o link /apoiar/ir na nav e no rodapé", () => {
     const html = buildIndexHtml({ feature: FEATURE, archive: [] });
     // 2 ocorrências: 1 na nav, 1 no rodapé.
-    const matches = html.match(/<a href="\/apoiar">Apoiar<\/a>/g) ?? [];
-    assert.equal(matches.length, 2, `esperava 2 ocorrências do link /apoiar (nav + rodapé), achei ${matches.length}`);
+    const matches = html.match(/<a href="\/apoiar\/ir">Apoiar<\/a>/g) ?? [];
+    assert.equal(matches.length, 2, `esperava 2 ocorrências do link /apoiar/ir (nav + rodapé), achei ${matches.length}`);
     assertHasApoiarLink(html);
   });
 
-  it("o index.html COMMITTED tem o mesmo link /apoiar", () => {
+  it("o index.html COMMITTED tem o mesmo link /apoiar/ir", () => {
     const html = readFileSync(INDEX_PATH, "utf8");
-    const matches = html.match(/<a href="\/apoiar">Apoiar<\/a>/g) ?? [];
-    assert.equal(matches.length, 2, `esperava 2 ocorrências do link /apoiar (nav + rodapé) no arquivo committed, achei ${matches.length}`);
+    const matches = html.match(/<a href="\/apoiar\/ir">Apoiar<\/a>/g) ?? [];
+    assert.equal(matches.length, 2, `esperava 2 ocorrências do link /apoiar/ir (nav + rodapé) no arquivo committed, achei ${matches.length}`);
     assertHasApoiarLink(html);
   });
 

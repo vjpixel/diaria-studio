@@ -33,7 +33,6 @@ import {
   NAV_ASSINAR_URL,
 } from "../scripts/lib/shared/site-nav.ts";
 import { buildIndexHtml } from "../scripts/lib/site-home-page.ts";
-import { buildApoiarHtml } from "../scripts/lib/site-apoiar-page.ts";
 import { buildAssinarHtml } from "../scripts/lib/site-assinar-page.ts";
 import { buildClariceCouponHtml } from "../scripts/lib/site-clarice-coupon-page.ts";
 import { buildArchiveIndexHtml } from "../scripts/lib/site-archive-index.ts";
@@ -52,7 +51,7 @@ describe("renderSiteNav — miolo puro (#8497)", () => {
 
   it("item `active` ganha aria-current=page", () => {
     const html = renderSiteNav({ active: "apoiar" });
-    assert.match(html, /<a href="\/apoiar" class="dnav-active" aria-current="page">Apoiar<\/a>/);
+    assert.match(html, /<a href="\/apoiar\/ir" class="dnav-active" aria-current="page">Apoiar<\/a>/);
   });
 
   it("nenhum item ativo por default — nenhum aria-current na lista de links", () => {
@@ -89,7 +88,7 @@ describe("renderSiteNav — miolo puro (#8497)", () => {
   it("links internos (Edições, Apoiar, Assinar) são relativos — sem UTM, mesmo host", () => {
     const html = renderSiteNav();
     assert.match(html, /<a href="\/archive"[^>]*>Edições<\/a>/);
-    assert.match(html, /<a href="\/apoiar">Apoiar<\/a>/);
+    assert.match(html, /<a href="\/apoiar\/ir">Apoiar<\/a>/);
   });
 
   it("inheritHostTokens:true usa var(--x) puro, sem hex embutido (evita duplicar `design-tokens.ts` fora de :root)", () => {
@@ -140,12 +139,6 @@ describe("guard mecânico — nav presente em CADA superfície tocada pelo #8497
   it("home (site-home-page.ts)", () => {
     const html = buildIndexHtml({ feature: null, archive: [] });
     assert.ok(html.includes(SITE_NAV_MARKER), "home sem menu global");
-  });
-
-  it("/apoiar (site-apoiar-page.ts) — item ativo", () => {
-    const html = buildApoiarHtml();
-    assert.ok(html.includes(SITE_NAV_MARKER), "/apoiar sem menu global");
-    assert.match(html, /<a href="\/apoiar" class="dnav-active" aria-current="page">Apoiar<\/a>/);
   });
 
   it("/assinar (site-assinar-page.ts) — CTA não se auto-linka", () => {

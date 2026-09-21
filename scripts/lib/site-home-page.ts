@@ -455,7 +455,6 @@ export function brtDateString(now: Date = new Date()): string {
 export const KNOWN_STATIC_SITEMAP_PATHS: readonly (string | RegExp)[] = [
   "/",
   "/clarice",
-  "/apoiar",
   "/assinar",
   "/archive",
   /^\/archive\/[0-9]+$/,
@@ -1396,7 +1395,7 @@ ${faqItems}
       <hr class="rule">
       <div class="footer-bottom">
         <span>&copy; ${new Date().getUTCFullYear()} diar.ia.br · São Paulo, Brasil</span>
-        <span><a href="https://eia.diar.ia.br/leaderboard">É IA?</a><a href="https://arquivo.diar.ia.br/">Arquivo</a><a href="https://especial.diar.ia.br/">Especial</a><a href="/apoiar">Apoiar</a><a href="https://arquivo.diar.ia.br/privacidade">Privacidade</a></span>
+        <span><a href="https://eia.diar.ia.br/leaderboard">É IA?</a><a href="https://arquivo.diar.ia.br/">Arquivo</a><a href="https://especial.diar.ia.br/">Especial</a><a href="/apoiar/ir">Apoiar</a><a href="https://arquivo.diar.ia.br/privacidade">Privacidade</a></span>
       </div>
     </div>
   </footer>
