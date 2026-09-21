@@ -24,7 +24,6 @@ export interface ViralInput {
   published_at?: string;
   score_base: number;
   category?: string;
-  cluster_sources_count?: number;
 }
 
 export interface ViralContext {
@@ -47,7 +46,9 @@ const CONFLICT_OR_HARM =
   /\b(hack\w*|invad\w*|invas\w*|breach\w*|leak\w*|vazament\w*|lawsuit|sued|processo|ban(ned|s)?|block(ed|s)?|bloque\w*|demiss\w*|layoff\w*|kill switch|loss of control|perda de controle|jailbreak\w*|deepfake\w*)\b/i;
 const MONEY_OR_SCALE = /\b(ipo|trilh\w+|trillion|bilh\w+|billion)\b|\$\s?\d+(\.\d+)?\s?(b|bn|billion|bilh)/i;
 const POLICY_OR_GEOPOLITICS =
-  /\b(regula\w*|regulation|law|lei|guerra|war|military|militar\w*|china|onu|united nations|safeguards?|slowdown|freio)\b|\bUN\b/;
+  /\b(regula\w*|regulation|law|lei|guerra|war|military|militar\w*|china|onu|united nations|safeguards?|slowdown|freio)\b/i;
+/** Sigla "UN" só casa em maiúsculas (senão pega "un" de outras línguas). */
+const UN_ACRONYM = /\bUN\b/;
 
 /** URL sem query/fragmento, para casar contra corpos de newsletter. */
 export function urlKey(url: string): string {
@@ -77,18 +78,19 @@ export function computeViralBonus(a: ViralInput, ctx: ViralContext): ViralResult
   let hooks = 0;
   if (CONFLICT_OR_HARM.test(text)) hooks += 4;
   if (MONEY_OR_SCALE.test(text)) hooks += 3;
-  if (POLICY_OR_GEOPOLITICS.test(text)) hooks += 3;
+  if (POLICY_OR_GEOPOLITICS.test(text) || UN_ACRONYM.test(text)) hooks += 3;
   hooks = Math.min(hooks, 8);
   if (hooks) {
     bonus += hooks;
     signals.push(`hooks:+${hooks}`);
   }
 
-  // 3. Cobertura cruzada: em quantas newsletters do inbox o link aparece +
-  //    fontes agrupadas no mesmo cluster (teto +6).
+  // 3. Cobertura cruzada: em quantas newsletters do inbox o link aparece (teto +6).
+  //    Fontes agrupadas no cluster NÃO entram aqui: `merge-scored-chunks.ts` já
+  //    soma `coverageBonus` por elas (contar de novo seria premiar 2x).
   const key = urlKey(a.url);
   const mentions = ctx.newsletterBodies.filter((b) => b.includes(key)).length;
-  const cross = Math.min(mentions * 3 + (a.cluster_sources_count ?? 0) * 2, 6);
+  const cross = Math.min(mentions * 3, 6);
   if (cross) {
     bonus += cross;
     signals.push(`cross_coverage:+${cross}`);

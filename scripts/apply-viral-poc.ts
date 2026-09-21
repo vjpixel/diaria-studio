@@ -27,10 +27,14 @@ interface ScoredRow {
 
 export function applyViral(
   chunkInput: { categorized: Record<string, Record<string, unknown>[]> },
-  scored: { scored: ScoredRow[] },
+  scoredFile: { scored?: ScoredRow[]; all_scored?: ScoredRow[] },
   newsletterBodies: string[],
   now: string,
 ) {
+  // `merge-scored-chunks.ts` lê `all_scored ?? scored` — aplicar no mesmo campo.
+  const rows = scoredFile.all_scored ?? scoredFile.scored;
+  if (!rows) throw new Error("scored-chunk sem `all_scored` nem `scored`");
+  const scored = { scored: rows };
   const byUrl = new Map<string, Record<string, unknown>>();
   for (const arr of Object.values(chunkInput.categorized)) {
     for (const a of arr) byUrl.set(String(a.url), a);
@@ -49,7 +53,6 @@ export function applyViral(
         published_at: art.published_at as string | undefined,
         score_base: base,
         category: art.category as string | undefined,
-        cluster_sources_count: Array.isArray(art.cluster_sources) ? art.cluster_sources.length : 0,
       },
       { newsletterBodies, now },
     );
@@ -61,6 +64,15 @@ export function applyViral(
     audit.push({ url: row.url, title: art.title, score_before: before, bonus, signals });
   }
   return audit;
+}
+
+/** Par `entrada|pontuado`. `|` não aparece em path Windows (`:` aparece: `C:\`). */
+export function parsePair(pair: string): [string, string] {
+  const parts = pair.split("|");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error(`par inválido "${pair}" — use scoring-chunk-N.json|scored-chunk-N.json`);
+  }
+  return [parts[0], parts[1]];
 }
 
 function main() {
@@ -77,8 +89,7 @@ function main() {
     : [];
   const all: ReturnType<typeof applyViral> = [];
   for (const p of pairs) {
-    const sep = p.lastIndexOf(":");
-    const [inPath, scoredPath] = [p.slice(0, sep), p.slice(sep + 1)];
+    const [inPath, scoredPath] = parsePair(p);
     const chunk = JSON.parse(readFileSync(inPath, "utf8"));
     const scored = JSON.parse(readFileSync(scoredPath, "utf8"));
     all.push(...applyViral(chunk, scored, bodies, now));

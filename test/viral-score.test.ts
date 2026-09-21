@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { computeViralBonus, urlKey, VIRAL_BONUS_CAP, VIRAL_MIN_BASE_SCORE } from "../scripts/lib/viral-score.ts";
-import { applyViral } from "../scripts/apply-viral-poc.ts";
+import { applyViral, parsePair } from "../scripts/apply-viral-poc.ts";
 
 const NOW = "2026-09-21T18:00:00Z";
 const ctx = { newsletterBodies: [] as string[], now: NOW };
@@ -37,7 +37,6 @@ describe("computeViralBonus (POC #viral)", () => {
         title: "Trump hack IPO trillion China law",
         score_base: 80,
         published_at: "2026-09-21T17:00:00Z",
-        cluster_sources_count: 5,
       },
       { newsletterBodies: ["x.com/a", "x.com/a", "x.com/a"], now: NOW },
     );
@@ -71,5 +70,38 @@ describe("applyViral", () => {
     applyViral(chunk, s, [], NOW);
     assert.equal(s.scored[0].score, once);
     assert.equal(s.scored[0].bonuses_applied!.filter((b) => b.startsWith("viral:")).length, 1);
+  });
+});
+
+describe("regressões do review (#8673)", () => {
+  it("política/geopolítica casa com inicial maiúscula (título)", () => {
+    const r = computeViralBonus({ url: "https://x.com/a", title: "China Warns On Regulation", score_base: 60 }, ctx);
+    assert.ok(r.signals.some((s) => s.startsWith("hooks:")));
+  });
+
+  it("sigla UN casa; 'un' minúsculo não", () => {
+    const yes = computeViralBonus({ url: "https://x.com/a", title: "UN panel", score_base: 60 }, ctx);
+    const no = computeViralBonus({ url: "https://x.com/a", title: "un panel neutro", score_base: 60 }, ctx);
+    assert.ok(yes.signals.some((s) => s.startsWith("hooks:")));
+    assert.equal(no.signals.length, 0);
+  });
+
+  it("cluster_sources não é contado de novo (merge já dá coverageBonus)", () => {
+    const r = computeViralBonus({ url: "https://x.com/a", title: "neutro", score_base: 60 }, ctx);
+    assert.ok(!r.signals.some((s) => s.startsWith("cross_coverage")));
+  });
+
+  it("parsePair aceita path absoluto do Windows e recusa par malformado", () => {
+    assert.deepEqual(parsePair(String.raw`C:ain.json|C:ascored.json`), [String.raw`C:ain.json`, String.raw`C:ascored.json`]);
+    assert.throws(() => parsePair("so-um-caminho"));
+    assert.throws(() => parsePair("a|b|c"));
+  });
+
+  it("applyViral usa all_scored quando presente e falha claro sem nenhum", () => {
+    const chunk = { categorized: { radar: [{ url: "https://x.com/a", title: "Trump hack", category: "noticias" }] } };
+    const file = { all_scored: [{ url: "https://x.com/a", score: 60, score_base: 60 }] };
+    applyViral(chunk, file, [], NOW);
+    assert.ok(file.all_scored[0].score > 60);
+    assert.throws(() => applyViral(chunk, {}, [], NOW), /all_scored/);
   });
 });
