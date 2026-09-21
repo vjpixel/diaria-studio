@@ -125,6 +125,11 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 // É `severity: "info"` no vocabulário do portão `notifyEditor` — nunca
 // acionável; o que exige ação continua nos alarmes condicionais dedicados
 // (`ads-test-watch.ts`, `ads-kill-switch-alarm.ts`).
+// #7982: "calibration-audit" — auditoria contínua da autocalibração: relatório
+// TRIMESTRAL de crescimento de allowlists e relatório MENSAL de minutos de toque
+// por fase (`scripts/calibration-allowlist-growth-report.ts`,
+// `scripts/calibration-touch-minutes-report.ts`). `sessionId` = `allowlist-YYYY-Qn`
+// ou `touch-YYYY-MM`. Somente leitura, sem e-mail.
 /**
  * Lista canônica dos kinds — **fonte única**. O tipo `ReportKind` é DERIVADO
  * dela (`(typeof VALID_KINDS)[number]`), e não o contrário: por construção
@@ -150,6 +155,7 @@ const VALID_KINDS = [
   "calibration",
   "agent-eval",
   "ads-digest",
+  "calibration-audit",
 ] as const;
 
 export type ReportKind = (typeof VALID_KINDS)[number];

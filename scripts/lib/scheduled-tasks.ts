@@ -2682,6 +2682,35 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     enabled: true,
     issue: "#8260",
   },
+  {
+    // #7982 — auditoria TRIMESTRAL de crescimento de allowlists (git log dos
+    // arquivos de allowlist + latencia dos PRs de calibracao), publicada na
+    // superficie de Relatorios do Studio (kind calibration-audit, sem e-mail).
+    // O schema so tem monthly, entao a task roda todo mes e o proprio script
+    // (--quarter-only) sai 0 fora de jan/abr/jul/out. Somente leitura: nunca
+    // reverte allowlist, o editor re-ratifica. NAO ARMADA por esta unidade, mas
+    // Diaria-Remediate-Never-Armed-Tasks (#8153, decisao do editor: auto-armar
+    // tudo) a arma sozinha no dia seguinte ao merge -- aceitavel: somente
+    // leitura. Pra impedir, enabled: false.
+    name: "Diaria-Calibration-Allowlist-Audit-Quarterly",
+    description: "auditoria trimestral do crescimento cumulativo das allowlists de dominio/calibracao (relatorio para re-ratificacao)",
+    steps: [{ key: "audit", script: "scripts/calibration-allowlist-growth-report.ts", args: ["--quarter-only", "--write"] }],
+    logPath: "calibration-audit/.allowlist-audit.log",
+    schedule: { kind: "monthly", day: 3, hour: 9, minute: 40 },
+    issue: "#7982",
+  },
+  {
+    // #7982 — comparacao MENSAL de minutos de toque editorial por fase, com
+    // sinalizacao de fase sem queda em N meses (default 3). Somente leitura;
+    // sem entradas em data/calibration/ o script sai 0 sem reportar. DECLARADA,
+    // NAO ARMADA por esta unidade (auto-armada depois pelo remediate #8153, ver task trimestral acima).
+    name: "Diaria-Calibration-Touch-Minutes-Monthly",
+    description: "relatorio mensal de minutos de toque editorial antes/depois de cada fase de calibracao",
+    steps: [{ key: "touch", script: "scripts/calibration-touch-minutes-report.ts", args: ["--write"] }],
+    logPath: "calibration-audit/.touch-minutes.log",
+    schedule: { kind: "monthly", day: 3, hour: 9, minute: 45 },
+    issue: "#7982",
+  },
 ];
 
 /**
