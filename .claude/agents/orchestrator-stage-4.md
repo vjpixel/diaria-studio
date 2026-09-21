@@ -536,6 +536,8 @@ npx tsx scripts/lib/stage4-capture-state.ts --edition-dir {EDITION_DIR} --read
 ```
 Extrair `whatsappUrl` e `metaDescriptionSuggestion` do JSON retornado. Se `whatsappUrl` vier `null` (nunca computado — §4c.1b não rodou), mostrar `⚠️ URL do WhatsApp indisponível`. Se `metaDescriptionSuggestion` vier `null`, mostrar `⚠️ sugestão indisponível` (mesmo texto que já vale pra string vazia — os dois casos renderizam igual no gate, só a causa muda).
 
+**Marcador de apresentação do gate (#7982, minutos de toque) — fail-soft, nunca bloqueia.** Logo antes de CADA apresentação do resumo (a 1ª e cada re-apresentação após `ajustar`), rodar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message "gate revisao: apresentado"`. Junto com o `gate revisao response: ...` abaixo, é o que `scripts/derive-touch-minutes.ts` usa pra derivar minutos de edição/sign-off por edição. Erro do comando = ignorar e seguir.
+
 Apresentar ao editor numa visualização limpa:
 
 ```
@@ -737,6 +739,7 @@ Acionada pelos passos 3 e 4 acima sempre que título, imagem ou social de um des
    npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info \
      --message "gate revisao: ajustar inline aplicado ({descrição curta})"
    ```
+   **Em seguida, OBRIGATORIAMENTE (fail-soft, #7982), no MESMO passo — não deixar pra depois:** `npx tsx scripts/log-stage4-adjust-timing.ts --edition {AAMMDD} --requested-at {requested_at} --edited-at {edited_at} --preview-served-at {preview_served_at} --calls {tool_calls} --description "{descrição curta}"` (timestamps capturados conforme "Instrumentação de timing por ajuste" no topo de §4d.1). Ficou só como prosa no topo e por isso nenhum ajuste real foi medido; erro/exit 2 = ignorar, nunca bloqueia o gate.
 
 6. **Re-humanizar SCOPED e gravar sentinel se `03-social.md` foi tocado (#2279/#2290/#2373, re-humanização scoped #3446):** qualquer ajuste que altere `03-social.md` (reorder de destaques, edição de post social inline) dispara re-humanização — mas **só das seções de fato alteradas**, não do arquivo inteiro. Re-humanizar tudo a cada ajuste era o 2º maior ofensor de tokens do pipeline (~600 linhas de prompt do humanizador por invocação completa × 2-4 ajustes/edição, #3379).
 
@@ -811,7 +814,7 @@ Acionada pelos passos 3 e 4 acima sempre que título, imagem ou social de um des
       ```
    **6.9** — Re-renderizar (`render-social-html.ts`, §4b step 3) e re-servir localmente (mesmo padrão stop-old → `embed-images-base64.ts` → `serve-preview.ts --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url` de §4c.6c, **incluindo o re-publish do Artifact `{social_artifact_url}`, #6003**) antes de voltar ao gate. O arquivo republicado é sempre o `03-social.md` COMPLETO (seções scoped-humanizadas + seções intactas) — o preview reflete o estado atual inteiro em ambos os fluxos.
 
-7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes. Se `03-social.md` foi tocado neste ajuste E `social_critic_pass.enabled === true` (§4c.6d), re-rodar o critic pass sobre o estado atual antes de re-apresentar (mesmos passos de §4c.6d: dispatch do agente `social-critic` + `--input-json`, sobrescrevendo `_internal/social-critic.json`) — o achado de uma rodada anterior pode não valer mais (texto mudou) e um tique novo pode ter entrado justamente por este ajuste.
+7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — **antes de re-apresentar, logar de novo o marcador `gate revisao: apresentado` (ver "Marcador de apresentação do gate" em §4d, #7982)** — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes. Se `03-social.md` foi tocado neste ajuste E `social_critic_pass.enabled === true` (§4c.6d), re-rodar o critic pass sobre o estado atual antes de re-apresentar (mesmos passos de §4c.6d: dispatch do agente `social-critic` + `--input-json`, sobrescrevendo `_internal/social-critic.json`) — o achado de uma rodada anterior pode não valer mais (texto mudou) e um tique novo pode ter entrado justamente por este ajuste.
 
 **Distinção `editar` vs `ajustar`:**
 - `editar`: edição fora do fluxo de chat (local ou via Studio) — adequado para revisões longas, múltiplas seções, ou quando o editor não está no terminal.

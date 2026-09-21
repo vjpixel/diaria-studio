@@ -93,7 +93,12 @@ describe("#7982 tasks agendadas declaradas", () => {
     ] as const) {
       const t = getScheduledTaskByName(n);
       assert.ok(t, n);
-      assert.equal(t!.steps[0].script, script);
+      // A task de toque tem 2 steps (#7982): derive ANTES do report.
+      const scripts = t!.steps.map((st) => st.script);
+      assert.equal(scripts[scripts.length - 1], script);
+      if (n.includes("Touch-Minutes")) {
+        assert.deepEqual(scripts, ["scripts/derive-touch-minutes.ts", script]);
+      }
       assert.equal(t!.schedule.kind, "monthly");
       const clash = SCHEDULED_TASKS.filter(
         (o) => o.name !== n && JSON.stringify(o.schedule) === JSON.stringify(t!.schedule),
