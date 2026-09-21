@@ -56,6 +56,21 @@ export function parseTouchJsonl(text: string): { samples: TouchSample[]; skipped
   return { samples, skipped };
 }
 
+/** Valida phases.json; devolve mensagem de erro ou a lista. */
+export function validatePhases(raw: unknown): { phases: CalibrationPhase[] } | { error: string } {
+  if (!Array.isArray(raw)) return { error: "phases.json deve ser um array de { name, activatedAt }" };
+  const phases: CalibrationPhase[] = [];
+  for (const [i, p] of raw.entries()) {
+    const o = p as Partial<CalibrationPhase> | null;
+    if (!o || typeof o.name !== "string" || !o.name) return { error: `phases.json[${i}]: name ausente` };
+    if (typeof o.activatedAt !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(o.activatedAt) || Number.isNaN(Date.parse(`${o.activatedAt}T00:00:00Z`))) {
+      return { error: `phases.json[${i}] (${o.name}): activatedAt deve ser YYYY-MM-DD válido` };
+    }
+    phases.push({ name: o.name, activatedAt: o.activatedAt });
+  }
+  return { phases };
+}
+
 async function main(): Promise<void> {
   const { values, flags } = parseArgs(process.argv.slice(2));
   const months = values["months"] ? Number(values["months"]) : DEFAULT_STALL_MONTHS;
@@ -71,7 +86,19 @@ async function main(): Promise<void> {
     );
     process.exit(0);
   }
-  const phases = JSON.parse(readFileSync(phasesPath, "utf-8")) as CalibrationPhase[];
+  let rawPhases: unknown;
+  try {
+    rawPhases = JSON.parse(readFileSync(phasesPath, "utf-8"));
+  } catch (e) {
+    console.error(`[calibration-touch-minutes-report] phases.json ilegível: ${(e as Error).message}`);
+    process.exit(2);
+  }
+  const v = validatePhases(rawPhases);
+  if ("error" in v) {
+    console.error(`[calibration-touch-minutes-report] ${v.error}`);
+    process.exit(2);
+  }
+  const phases = v.phases;
   const { samples, skipped } = parseTouchJsonl(readFileSync(touchPath, "utf-8"));
   const now = new Date();
   const results = computeTouchByPhase(samples, phases, { months, now });

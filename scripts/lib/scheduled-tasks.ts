@@ -2659,9 +2659,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // superficie de Relatorios do Studio (kind calibration-audit, sem e-mail).
     // O schema so tem monthly, entao a task roda todo mes e o proprio script
     // (--quarter-only) sai 0 fora de jan/abr/jul/out. Somente leitura: nunca
-    // reverte allowlist, o editor re-ratifica. DECLARADA, NAO ARMADA -- armar
-    // via scripts/setup-systemd-timers.ts na checkout compartilhada (300) e
-    // acao POSTERIOR do editor.
+    // reverte allowlist, o editor re-ratifica. NAO ARMADA por esta unidade, mas
+    // Diaria-Remediate-Never-Armed-Tasks (#8153, decisao do editor: auto-armar
+    // tudo) a arma sozinha no dia seguinte ao merge -- aceitavel: somente
+    // leitura. Pra impedir, enabled: false.
     name: "Diaria-Calibration-Allowlist-Audit-Quarterly",
     description: "auditoria trimestral do crescimento cumulativo das allowlists de dominio/calibracao (relatorio para re-ratificacao)",
     steps: [{ key: "audit", script: "scripts/calibration-allowlist-growth-report.ts", args: ["--quarter-only", "--write"] }],
@@ -2673,7 +2674,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // #7982 — comparacao MENSAL de minutos de toque editorial por fase, com
     // sinalizacao de fase sem queda em N meses (default 3). Somente leitura;
     // sem entradas em data/calibration/ o script sai 0 sem reportar. DECLARADA,
-    // NAO ARMADA (mesma disciplina da task trimestral acima).
+    // NAO ARMADA por esta unidade (auto-armada depois pelo remediate #8153, ver task trimestral acima).
     name: "Diaria-Calibration-Touch-Minutes-Monthly",
     description: "relatorio mensal de minutos de toque editorial antes/depois de cada fase de calibracao",
     steps: [{ key: "touch", script: "scripts/calibration-touch-minutes-report.ts", args: ["--write"] }],

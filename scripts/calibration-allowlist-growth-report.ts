@@ -119,7 +119,7 @@ async function main(): Promise<void> {
   const md =
     renderAllowlistGrowthMarkdown(growth, { since, until }) +
     "\n" +
-    renderLatencyMarkdown(summarizeCalibrationPrLatency(readCalibrationEntries()));
+    renderLatencyMarkdown(summarizeCalibrationPrLatency(readCalibrationEntries(), { since, until }));
 
   if (!flags.has("write")) {
     process.stdout.write(md + "\n[dry-run] nada gravado nem registrado (use --write).\n");

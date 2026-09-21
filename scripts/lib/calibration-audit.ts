@@ -68,7 +68,7 @@ export function parseGitNumstatLog(text: string): AllowlistCommit[] {
 
 /** Conta literais de string com forma de hostname/host+path (proxy do tamanho da allowlist). */
 export function countDomainLiterals(content: string): number {
-  const re = /"[a-z0-9][a-z0-9-]*(\.[a-z0-9-]+)+(\/[^"\s]*)?"/gi;
+  const re = /["'][a-z0-9][a-z0-9-]*(\.[a-z0-9-]+)+(\/[^"'\s]*)?["']/gi;
   return (content.match(re) ?? []).length;
 }
 
@@ -110,7 +110,7 @@ export function summarizeAllowlistGrowth(
   });
   return {
     perFile,
-    totalCommits: new Set(commits.map((c) => c.sha)).size,
+    totalCommits: new Set(commits.filter((c) => files.includes(c.file)).map((c) => c.sha)).size,
     netLines: perFile.reduce((s, f) => s + f.linesAdded - f.linesRemoved, 0),
   };
 }
@@ -186,10 +186,13 @@ export function editionToDate(edition: string): Date | null {
 }
 
 function addMonths(d: Date, n: number): Date {
-  const r = new Date(d.getTime());
-  r.setUTCMonth(r.getUTCMonth() + n);
+  const day = d.getUTCDate();
+  const r = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1));
+  const last = new Date(Date.UTC(r.getUTCFullYear(), r.getUTCMonth() + 1, 0)).getUTCDate();
+  r.setUTCDate(Math.min(day, last));
   return r;
 }
+export { addMonths };
 
 /**
  * Compara, por fase, os N meses ANTES da ativação com os N meses DEPOIS
@@ -291,12 +294,21 @@ export interface CalibrationLatencyRow {
   estimatedReviewMinutes: number | null;
 }
 
-export function summarizeCalibrationPrLatency(entries: readonly CalibrationReportEntry[]): {
+export function summarizeCalibrationPrLatency(
+  entries: readonly CalibrationReportEntry[],
+  period?: { since: string; until: string },
+): {
   rows: CalibrationLatencyRow[];
   missingFields: string[];
   medianLatencyHours: number | null;
 } {
-  const cal = entries.filter((e) => e.kind === "calibration");
+  const lo = period ? Date.parse(`${period.since}T00:00:00Z`) : -Infinity;
+  const hi = period ? Date.parse(`${period.until}T00:00:00Z`) : Infinity;
+  const cal = entries.filter((e) => {
+    if (e.kind !== "calibration") return false;
+    const t = Date.parse(e.createdAt);
+    return Number.isFinite(t) && t >= lo && t < hi;
+  });
   const rows = cal.map((e) => {
     const c = Date.parse(e.createdAt);
     const d = e.decisionAt ? Date.parse(e.decisionAt) : NaN;
@@ -322,8 +334,13 @@ export function summarizeCalibrationPrLatency(entries: readonly CalibrationRepor
 }
 
 export function renderLatencyMarkdown(s: ReturnType<typeof summarizeCalibrationPrLatency>): string {
-  const lines = ["## PRs de calibração — latência e revisão", ""];
-  if (s.rows.length === 0) return lines.concat(["- Nenhum PR de calibração registrado.", ""]).join("\n");
+  const lines = [
+    "## PRs de calibração — latência e revisão",
+    "",
+    "Nota: `decisionAt`/`estimatedReviewMinutes` ainda NÃO têm produtor (nenhum script os grava em `data/reports/index.jsonl`); valores `n/d` são esperados até isso existir.",
+    "",
+  ];
+  if (s.rows.length === 0) return lines.concat(["- Nenhum PR de calibração registrado no período.", ""]).join("\n");
   lines.push("| PR | Latência decisão (h) | Revisão estimada (min) |", "|---|---|---|");
   for (const r of s.rows) {
     lines.push(

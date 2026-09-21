@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -9,7 +10,8 @@ import {
   summarizeCalibrationPrLatency,
 } from "../scripts/lib/calibration-audit.ts";
 import { previousQuarter } from "../scripts/calibration-allowlist-growth-report.ts";
-import { parseTouchJsonl } from "../scripts/calibration-touch-minutes-report.ts";
+import { addMonths } from "../scripts/lib/calibration-audit.ts";
+import { parseTouchJsonl, validatePhases } from "../scripts/calibration-touch-minutes-report.ts";
 import { getScheduledTaskByName, SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 
 describe("#7982 allowlist growth", () => {
@@ -98,5 +100,39 @@ describe("#7982 tasks agendadas declaradas", () => {
       );
       assert.deepEqual(clash, []);
     }
+  });
+});
+
+describe("#7982 review fixes", () => {
+  const mk = (edition: string, total: number) => ({ edition, editMinutes: total - 5, signoffMinutes: 5 });
+  it("empate de média => sinalizada", () => {
+    const s = [...["251201", "251215", "260110"].map((e) => mk(e, 40)), ...["260305", "260405", "260505"].map((e) => mk(e, 40))];
+    const [r] = computeTouchByPhase(s, [{ name: "F", activatedAt: "2026-03-01" }], { months: 3, now: new Date("2026-09-20") });
+    assert.equal(r.verdict, "sinalizada");
+  });
+  it("latência filtra por createdAt em [since, until)", () => {
+    const e = (id: string, createdAt: string) => ({ id, kind: "calibration", sessionId: id, createdAt });
+    const s = summarizeCalibrationPrLatency([e("1", "2026-06-30T23:00:00Z"), e("2", "2026-07-01T00:00:00Z"), e("3", "2026-10-01T00:00:00Z")], { since: "2026-07-01", until: "2026-10-01" });
+    assert.deepEqual(s.rows.map((r) => r.pr), ["2"]);
+  });
+  it("validatePhases rejeita não-array e activatedAt inválido", () => {
+    assert.ok("error" in validatePhases({}));
+    assert.ok("error" in validatePhases([{ name: "F", activatedAt: "2026-13-45" }]));
+    assert.ok("error" in validatePhases([{ name: "F", activatedAt: "01/03/2026" }]));
+    assert.ok("phases" in validatePhases([{ name: "F", activatedAt: "2026-03-01" }]));
+  });
+  it("--months inválido sai 2", () => {
+    const r = spawnSync(process.execPath, ["--import", "tsx", "scripts/calibration-touch-minutes-report.ts", "--months", "0"], { encoding: "utf-8" });
+    assert.equal(r.status, 2);
+  });
+  it("addMonths não transborda mês", () => {
+    assert.equal(addMonths(new Date("2026-03-31T00:00:00Z"), -1).toISOString().slice(0, 10), "2026-02-28");
+    assert.equal(addMonths(new Date("2024-03-31T00:00:00Z"), -1).toISOString().slice(0, 10), "2024-02-29");
+    assert.equal(addMonths(new Date("2026-11-30T00:00:00Z"), 3).toISOString().slice(0, 10), "2027-02-28");
+  });
+  it("countDomainLiterals: aspas simples, host/path; other.ts ignorado", () => {
+    assert.equal(countDomainLiterals("['openai.com', 'blog.google/products']"), 2);
+    const commits = parseGitNumstatLog("@@a|2026-07-01T00:00:00Z|x\n1\t0\tscripts/lib/other.ts\n");
+    assert.equal(summarizeAllowlistGrowth(commits, ["scripts/lib/official-domains.ts"]).totalCommits, 0);
   });
 });
