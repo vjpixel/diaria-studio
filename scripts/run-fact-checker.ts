@@ -25,9 +25,10 @@
  * comportamento é idêntico ao de antes do #4361 (sempre exit 0 neste modo).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { fetchSourceText } from "./fetch-source-text.ts";
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -371,6 +372,62 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
 // CLI
 // ---------------------------------------------------------------------------
 
+export interface PrefetchedSource {
+  destaque: number;
+  url: string;
+  /** Path do texto bruto; ausente se o download falhou. */
+  path?: string;
+  /** Motivo da falha (ex.: "HTTP 451: fonte bloqueada; tente equivalente"). */
+  error?: string;
+}
+
+/**
+ * (#8595) Pré-baixa o texto BRUTO das URLs dos destaques para
+ * `{internalDir}/fact-check-sources/d{N}.txt`, para o fact-checker ler via Read
+ * (o WebFetch resume a página e omite detalhes → falso NOT_FOUND).
+ * Fail-soft: falha de um destaque vira `error`, nunca aborta.
+ */
+export async function prefetchHighlightSources(
+  approved: unknown,
+  internalDir: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<PrefetchedSource[]> {
+  const highlights = (approved as { highlights?: Array<{ url?: string }> } | null)?.highlights ?? [];
+  const dir = join(internalDir, "fact-check-sources");
+  const out: PrefetchedSource[] = [];
+  const manifest: ManifestEntry[] = [];
+  mkdirSync(dir, { recursive: true });
+  // Remove resíduo de outra rodada: o agente nunca deve ler fonte velha.
+  for (const n of [1, 2, 3]) rmSync(join(dir, `d${n}.txt`), { force: true });
+  rmSync(join(dir, "manifest.json"), { force: true });
+  for (let i = 0; i < Math.min(highlights.length, 3); i++) {
+    const url = highlights[i]?.url;
+    if (!url) continue;
+    const fetched_at = new Date().toISOString();
+    const r = await fetchSourceText(url, fetchImpl);
+    if (r.ok) {
+      const path = join(dir, `d${i + 1}.txt`);
+      writeFileSync(path, r.text, "utf8");
+      out.push({ destaque: i + 1, url, path });
+      manifest.push({ destaque: i + 1, url, status: "ok", erro: null, bytes: r.bytes, fetched_at });
+    } else {
+      out.push({ destaque: i + 1, url, error: r.message });
+      manifest.push({ destaque: i + 1, url, status: r.kind === "blocked" ? "blocked" : "error", erro: r.message, bytes: 0, fetched_at });
+    }
+  }
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+  return out;
+}
+
+export interface ManifestEntry {
+  destaque: number;
+  url: string;
+  status: "ok" | "blocked" | "error";
+  erro: string | null;
+  bytes: number;
+  fetched_at: string;
+}
+
 function extractEditionId(editionDir: string): string {
   // Extrai AAMMDD do path (ex: data/editions/260622/ → 260622)
   const parts = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/);
@@ -493,6 +550,18 @@ async function main(): Promise<void> {
   console.log(`  Social:     ${socialPath}`);
   console.log(`  Approved:   ${approvedPath}`);
   console.log(`  Output:     ${outPath}`);
+  try {
+    const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as unknown;
+    const sources = await prefetchHighlightSources(approved, internalDir);
+    console.log("  Fontes brutas pré-baixadas (#8595 — ler via Read antes de WebFetch):");
+    for (const s of sources) {
+      console.log(
+        s.path ? `    D${s.destaque}: ${s.path}` : `    D${s.destaque}: (indisponível) ${s.error} — ${s.url}`,
+      );
+    }
+  } catch (e) {
+    console.log(`  Fontes brutas: pré-download falhou (${(e as Error).message}); usar WebFetch.`);
+  }
   console.log("");
   console.log(
     "  O orchestrator deve despachar o subagente fact-checker com os parâmetros acima.",
