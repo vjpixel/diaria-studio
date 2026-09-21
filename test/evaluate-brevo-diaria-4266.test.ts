@@ -1556,7 +1556,11 @@ describe("evaluate-brevo-diaria.ts exit semantics (#4651, mesma classe do #4638/
   // abertos. Fix: process.exitCode nos dois branches pós-await (dry-run com
   // failed>0, que já tinha um `return` logo depois; --push com failed>0, que
   // já era a última instrução de main()) e no catch handler do
-  // isMainModule(). Os guards pré-await (brevo_diaria/list_id ausente, API
+  // isMainModule(). Desde #8686, os dois branches pós-await não atribuem
+  // mais o literal `1` — chamam `resolveEvaluateExitCode(result)` (que
+  // devolve `PARTIAL_FAILURE_EXIT_CODE`, nunca `1`, quando failed/
+  // kitAutoConfirmSkipped>0 — ver test/evaluate-brevo-diaria-exit-code-8686.test.ts).
+  // Os guards pré-await (brevo_diaria/list_id ausente, API
   // key ausente pro --push) ficam como process.exit(2) de propósito —
   // nenhum fetch rodou ainda nesses pontos.
   const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "evaluate-brevo-diaria.ts");
@@ -1571,16 +1575,26 @@ describe("evaluate-brevo-diaria.ts exit semantics (#4651, mesma classe do #4638/
     return { mainBody: mainMatch[0], catchBody: catchMatch[0] };
   }
 
-  it("branches pós-await (exit 1 — dry-run e --push com failed>0) usam process.exitCode, não process.exit (#4651)", () => {
+  it("branches pós-await (dry-run e --push, falha/skip por contato) usam process.exitCode, não process.exit (#4651, #8686)", () => {
     const { mainBody } = readMainAndCatchBodies();
     assert.equal(
       /process\.exit\(1\)/.test(mainBody),
       false,
       "process.exit(1) não deveria mais existir em main() — usar process.exitCode (#4651 Windows crash)",
     );
+    assert.equal(
+      /process\.exitCode = 1\b/.test(mainBody),
+      false,
+      "#8686: os branches pós-await não atribuem mais o literal 1 (código de erro FATAL) pra falha/skip por " +
+        "contato — usar resolveEvaluateExitCode(result), que devolve PARTIAL_FAILURE_EXIT_CODE",
+    );
     // Duas ocorrências esperadas: branch dry-run e branch --push.
-    const matches = mainBody.match(/process\.exitCode = 1/g) ?? [];
-    assert.equal(matches.length, 2, `esperava 2 ocorrências de process.exitCode = 1 (dry-run + --push), achei ${matches.length}`);
+    const matches = mainBody.match(/process\.exitCode = resolveEvaluateExitCode\(result\)/g) ?? [];
+    assert.equal(
+      matches.length,
+      2,
+      `esperava 2 ocorrências de process.exitCode = resolveEvaluateExitCode(result) (dry-run + --push), achei ${matches.length}`,
+    );
   });
 
   it("guards pré-await (exit 2 — brevo_diaria/list_id, API key) continuam com process.exit — sem risco libuv (#4651)", () => {
