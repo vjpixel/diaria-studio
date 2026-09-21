@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
   <url>
     <loc>https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez</loc>
     <lastmod>2026-09-03</lastmod>
@@ -1110,5 +1110,17 @@
   </url>
   <url>
     <loc>https://diar.ia.br/archive/9</loc>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias</loc>
+    <lastmod>2026-09-21</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-09-21T00:00:00.000Z</news:publication_date>
+      <news:title>Claude ajudou a invadir a OpenAI em menos de 3 dias</news:title>
+    </news:news>
   </url>
 </urlset>
