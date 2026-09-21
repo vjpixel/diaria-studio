@@ -84,11 +84,18 @@
 * logo após o checkout dedicado dentro do worktree, `commitAndPushSitePage`
 * copia (`cpSync`) de `rootDir` pro `worktreeDir` cada path que vai ser
 * staged (`relPageDir` sempre; `optionalPaths` só os que existirem) — só
-* então o add/status/commit do worktree enxergam o conteúdo certo. O merge
-* lock cross-sessão (#6626) continua valendo no caminho do worktree também —
-* ele serializa a abertura do PR, que é a única parte mesmo assim
-* compartilhada. O caminho legado (sem `--worktree-dir`) é preservado byte a
-* byte: os testes existentes de `commitAndPushSitePage` não mudam.
+* então o add/status/commit do worktree enxergam o conteúdo certo. **Ressalva
+* para paths que são DIRETÓRIOS** (ex: o acervo de #8645/#8664, quando essa
+* branch mergear): `cpSync` recursivo é aditivo — não remove do worktree um
+* arquivo que foi PODADO em `rootDir` (o worktree herdou esse arquivo do
+* mesmo jeito de `origin/master`, então nunca é tocado). Pra esses paths, o
+* bloco de cópia limpa `dest` por completo (`rmSync` recursivo) antes do
+* `cpSync`, deixando `dest` byte-a-byte igual a `src` — nunca um merge
+* aditivo dos dois. O merge lock cross-sessão (#6626) continua valendo no
+* caminho do worktree também — ele serializa a abertura do PR, que é a única
+* parte mesmo assim compartilhada. O caminho legado (sem `--worktree-dir`) é
+* preservado byte a byte: os testes existentes de `commitAndPushSitePage`
+* não mudam.
 *
 * **Quando usar.** Default do `main` (sem `--skip-publish` e sem
 * `--worktree-dir` explícito) é SEMPRE o worktree — o checkout compartilhado
@@ -198,7 +205,7 @@
  * alimentam — ver #6454 original). Falha nesta etapa é fail-soft: a
  * publicação da página em si nunca é bloqueada por um problema aqui.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync, cpSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync, cpSync, statSync } from "node:fs";
 import { resolve, dirname, join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -1011,9 +1018,35 @@ export function commitAndPushSitePage(
     if (worktreeDir) {
       for (const p of pathsToStage) {
         const src = resolve(rootDir, p);
-        if (!existsSync(src)) continue; // optionalPaths ausente — mesmo guard de sempre, ver abaixo
+        // Guard genérico ao loop (cobre relPageDir também, ainda que na
+        // prática nunca dispare pra ele — a página sempre existe em rootDir
+        // por definição): sem ele, um optionalPaths ausente (ex:
+        // sitemap.xml se updateSitemapAndHome falhou antes de escrevê-lo)
+        // lançaria em `statSync` abaixo.
+        if (!existsSync(src)) continue;
         const dest = resolve(worktreeDir, p);
         mkdirSync(dirname(dest), { recursive: true });
+        // #8636 REGRESSÃO 2 (achado no fleet review da PR, 21/09/2026):
+        // cpSync com recursive:true é ADITIVO — copia o que existe/mudou em
+        // `src`, mas nunca remove de `dest` um arquivo que deixou de existir
+        // em `src`. Inofensivo para os paths de arquivo único (a página,
+        // sitemap.xml, index.html — sempre reescritos do zero pelo caller).
+        // Mas um path que seja um DIRETÓRIO em pathsToStage/optionalPaths
+        // (ex: o acervo de #8645/#8664) pode ter arquivos PODADOS em rootDir
+        // (gen-archive-index.ts remove páginas órfãs) — o worktree nasceu
+        // com esse diretório idêntico ao HEAD de origin/master, então o
+        // arquivo removido em rootDir nunca é tocado pelo cpSync (não é
+        // criação nem alteração) e sobrevive intacto no worktree: `git add`
+        // não vê remoção nenhuma, e a poda nunca chega ao commit —
+        // silencioso, sem exceção, sucesso aparente. Correção: para um `src`
+        // que é diretório, limpar `dest` por completo (rmSync recursivo)
+        // ANTES do cpSync, de modo que `dest` fique byte-a-byte igual a
+        // `src` (nunca um merge aditivo dos dois). Para um `src` que é
+        // arquivo, o cpSync sozinho já basta — sobrescreve o arquivo inteiro,
+        // sem resíduo possível.
+        if (statSync(src).isDirectory()) {
+          rmSync(dest, { recursive: true, force: true });
+        }
         cpSync(src, dest, { recursive: true });
       }
     }
@@ -1205,14 +1238,20 @@ export function productionDeps(
 ): PublishPageDeps {
   return {
     readEditionInputs,
-    // #8636: `writePage` escreve SEMPRE em `rootDir` (o checkout compartilhado,
-    // onde o orchestrator lê os artefatos). No caminho do worktree, o
-    // worktree é um clone completo de `origin/master` — a mesma árvore em
-    // `workers/site/public/p/` — então a página escrita em `rootDir` já
-    // existe no worktree em `gitCwd` (o `git add` lá a enxerga). Não
-    // duplicamos o write: escrever em `rootDir` é suficiente, e manter a
-    // fonte da verdade em um único lugar evita o worktree ficando desalinhado
-    // do checkout principal em caso de falha de `git worktree add`.
+    // #8636 (comentário atualizado 21/09/2026, pós-regressão): `writePage`
+    // escreve SEMPRE em `rootDir` (o checkout compartilhado, onde o
+    // orchestrator lê os artefatos) — isso não muda. O que mudou é a
+    // suposição sobre o worktree: ele NÃO é um espelho automático do que
+    // acabou de ser escrito aqui. `git worktree add` faz checkout físico a
+    // partir de um ref (`origin/master`) e só reflete o que já está
+    // COMMITADO lá — conteúdo untracked escrito em `rootDir` por esta
+    // chamada (a página é sempre um slug novo) não aparece no worktree por
+    // conta própria. No caminho do worktree, é `commitAndPushSitePage` quem
+    // copia (`cpSync`, ou `rmSync`+`cpSync` para diretórios — ver comentário
+    // no bloco de cópia) o conteúdo de `rootDir` pro `worktreeDir` antes do
+    // `git add`, não este `writePage`. Manter o write só em `rootDir` (nunca
+    // duplicado aqui) continua correto — só a explicação de por que o
+    // worktree o enxerga mudou.
     writePage: (slug, html) => {
       const dir = join(resolve(rootDir, "workers", "site", "public", "p"), slug);
       mkdirSync(dir, { recursive: true });

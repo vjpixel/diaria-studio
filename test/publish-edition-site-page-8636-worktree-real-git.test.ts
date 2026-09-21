@@ -223,4 +223,75 @@ describe("#8636 (regressão P0, 21/09/2026) — worktree default enxerga conteú
     const content = git(["show", `${branchName}:workers/site/public/p/${slug}/index.html`], rootDir);
     assert.equal(content, "LEGACY_PAGE\n");
   });
+
+  it("REGRESSÃO 2 (achado no fleet review pré-merge, 21/09/2026): arquivo PODADO de um path-diretório em pathsToStage não sobrevive no commit final via worktree", () => {
+    // `cpSync(src, dest, { recursive: true })` sozinho é ADITIVO — copia o
+    // que existe/mudou em `src`, mas nunca remove de `dest` um arquivo que
+    // deixou de existir em `src`. Pra um path de ARQUIVO único (sitemap.xml,
+    // index.html — sempre reescritos do zero) isso é inofensivo. Mas
+    // `relPageDir` (`workers/site/public/p/{slug}`) É um diretório — e uma
+    // republicação do MESMO slug que remove um arquivo dentro dele (ex:
+    // pruning de um asset stale da página, mesmo mecanismo que
+    // `gen-archive-index.ts` faz pro acervo em #8645/#8664, ainda não
+    // mergeado) reproduz exatamente o cenário do achado: o worktree nasce
+    // com o diretório ainda IGUAL ao HEAD de `origin/master` (2 arquivos), o
+    // `rootDir` tem o arquivo removido, e sem a correção (rmSync do dest
+    // antes do cpSync pra paths que são diretório) o `git add` nunca veria a
+    // remoção — o arquivo podado sobreviveria intacto no commit final.
+    const { rootDir } = setupRealRepo();
+    const slug = "pagina-existente-com-poda-8636";
+    const relPageDir = `workers/site/public/p/${slug}`;
+
+    // 1ª publicação (commitada em origin/master): a página nasce com 2
+    // arquivos — o index.html de sempre + um asset extra dentro do mesmo
+    // diretório (ex: uma variante de página/imagem inline referenciada).
+    const pageDir = join(rootDir, "workers", "site", "public", "p", slug);
+    mkdirSync(pageDir, { recursive: true });
+    writeFileSync(join(pageDir, "index.html"), "OLD_PAGE_CONTENT\n", "utf8");
+    writeFileSync(join(pageDir, "stale-asset.html"), "STALE_ASSET_TO_BE_PRUNED\n", "utf8");
+    git(["add", "-A"], rootDir);
+    git(["commit", "-m", "publica pagina com asset que sera podado depois"], rootDir);
+    git(["push", "origin", "master"], rootDir);
+
+    // 2ª publicação (o cenário sob teste): `writePage`/o backfill reescrevem
+    // index.html com conteúdo novo e REMOVEM `stale-asset.html` de `rootDir`
+    // — simula a poda de um arquivo órfão dentro do path-diretório staged.
+    // O worktree que `commitAndPushSitePage` vai criar nasce de
+    // `origin/master`, que AINDA tem os 2 arquivos da 1ª publicação — é
+    // exatamente a divergência rootDir(podado) vs. worktree(herdado) que
+    // causa o bug sem a correção.
+    writeFileSync(join(pageDir, "index.html"), "NEW_PAGE_CONTENT\n", "utf8");
+    rmSync(join(pageDir, "stale-asset.html"));
+
+    const worktreeDir = mkdtempSync(join(tmpdir(), "diaria-8636-wt-prune-"));
+    cleanupDirs.push(worktreeDir);
+    rmSync(worktreeDir, { recursive: true, force: true });
+
+    const result = commitAndPushSitePage(rootDir, slug, git, undefined, makeGh(), noopLock, noopSleep, worktreeDir);
+
+    assert.equal(result.committed, true, "commit deveria ter acontecido (conteúdo novo do index.html)");
+    assert.equal(result.pushed, true, "push deveria ter confirmado");
+
+    const branchName = `site-publish/${slug}`;
+    git(["fetch", "origin"], rootDir);
+
+    // O conteúdo novo do index.html chegou.
+    const pageContent = git(["show", `origin/${branchName}:${relPageDir}/index.html`], rootDir);
+    assert.equal(pageContent, "NEW_PAGE_CONTENT\n", "index.html commitado deve ter o conteúdo novo");
+
+    // A prova do fix: `stale-asset.html` NÃO deve existir no commit final —
+    // nem via `git show` (que lançaria "path does not exist" se de fato
+    // ausente) nem na árvore completa via `git ls-tree -r`.
+    assert.throws(
+      () => git(["show", `origin/${branchName}:${relPageDir}/stale-asset.html`], rootDir),
+      /does not exist|exists on disk, but not in/,
+      "stale-asset.html deveria ter sido PODADO do commit final, não sobrevivido herdado do worktree",
+    );
+
+    const fullTree = git(["ls-tree", "-r", `origin/${branchName}`], rootDir);
+    assert.ok(
+      !fullTree.includes("stale-asset.html"),
+      `árvore completa do commit não deveria conter stale-asset.html. árvore:\n${fullTree}`,
+    );
+  });
 });
