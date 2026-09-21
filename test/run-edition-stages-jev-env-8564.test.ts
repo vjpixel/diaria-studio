@@ -20,6 +20,71 @@ import { main } from "../scripts/run-edition-stages.ts";
 import { JEV_PROFILE_ENV, jevBArmGuardWarning } from "../scripts/lib/jev-profile.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 
+function guardDir(marker: object | "bad" = { written_at: "2026-09-21T00:00:00.000Z" }, art?: string) {
+  const dir = mkdtempSync(join(tmpdir(), "diaria-jev-guard-"));
+  mkdirSync(join(dir, "_internal"));
+  writeFileSync(join(dir, "_internal", ".jev-profile.json"), marker === "bad" ? "{" : JSON.stringify(marker));
+  if (art !== undefined) writeFileSync(join(dir, "_internal", "dedup-grayzone-jev.json"), art);
+  return dir;
+}
+
+describe("#8564: guard braço B — casos adicionais", () => {
+  it("artefato ausente lista as causas possíveis sem afirmar uma só", () => {
+    const dir = guardDir();
+    try {
+      const w = jevBArmGuardWarning(dir) ?? "";
+      assert.match(w, /off no config/);
+      assert.match(w, /fail-soft/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it("JSON ilegível", () => {
+    const dir = guardDir(undefined, "{oops");
+    try {
+      assert.match(jevBArmGuardWarning(dir) ?? "", /ilegível/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it("profile_env diferente de all e não nulo", () => {
+    const dir = guardDir(undefined, JSON.stringify({ profile_env: "none" }));
+    try {
+      assert.match(jevBArmGuardWarning(dir) ?? "", /"none"/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it("artefato anterior ao marcador", () => {
+    const dir = guardDir({ written_at: "2099-01-01T00:00:00.000Z" }, JSON.stringify({ profile_env: "all" }));
+    try {
+      assert.match(jevBArmGuardWarning(dir) ?? "", /anterior ao marcador/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it("artefato posterior ao marcador e profile_env=all → sem aviso", () => {
+    const dir = guardDir({ written_at: "2000-01-01T00:00:00.000Z" }, JSON.stringify({ profile_env: "all" }));
+    try {
+      assert.equal(jevBArmGuardWarning(dir), null);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it("main(): aviso vai pro stderr injetado, stdout do --json fica parseável", () => {
+    const repoRootAbs = mkdtempSync(join(tmpdir(), "diaria-run-edition-stages-"));
+    try {
+      const ed = join(repoRootAbs, "data", "editions", "260921");
+      mkdirSync(join(ed, "_internal"), { recursive: true });
+      writeFileSync(join(ed, "_internal", ".jev-profile.json"), JSON.stringify({ written_at: "2026-09-21T00:00:00.000Z" }));
+      const out: string[] = [];
+      const err: string[] = [];
+      main(["--edition", "260921", "--through", "1", "--diaria-edicao-jev", "--json"], {
+        execFn: fakeExecFn([]),
+        resolveClaudeBinFn: () => "claude",
+        assertSentinelFn: fakeAssertSentinelFn(),
+        env: {},
+        stdout: (l) => out.push(l),
+        stderr: (l) => err.push(l),
+        repoRootAbs,
+      });
+      assert.ok(err.some((l) => /NÃO vale como braço B/.test(l)), "aviso no stderr");
+      assert.doesNotThrow(() => JSON.parse(out.join("\n")));
+      assert.ok(!out.join("\n").includes("NÃO vale"));
+    } finally { rmSync(repoRootAbs, { recursive: true, force: true }); }
+  });
+});
+
 describe("#8564: guard braço B (jevBArmGuardWarning)", () => {
   it("cobre sem marcador / artefato ausente / profile_env errado / ok", () => {
     const dir = mkdtempSync(join(tmpdir(), "diaria-jev-guard-"));

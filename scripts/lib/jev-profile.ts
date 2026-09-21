@@ -13,7 +13,7 @@
  * `JEV_FEATURE_NAMES` e consome `isJevFeatureOn`.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 export const JEV_PROFILE_ENV = "DIARIA_JEV_PROFILE";
@@ -88,7 +88,16 @@ export function jevBArmGuardWarning(editionDir: string): string | null {
   const banner = "Edição NÃO vale como braço B do A/B";
   const artifact = join(internal, "dedup-grayzone-jev.json");
   if (!existsSync(artifact)) {
-    return `${banner}: marcador .jev-profile.json presente mas _internal/dedup-grayzone-jev.json não foi gerado (DIARIA_JEV_PROFILE=all não chegou ao Stage 1).`;
+    return `${banner}: marcador .jev-profile.json presente mas _internal/dedup-grayzone-jev.json não foi gerado. Causas possíveis: DIARIA_JEV_PROFILE=all não chegou ao Stage 1; modo dedup_grayzone off no config; resolver falhou (fail-soft).`;
+  }
+  try {
+    const marker = JSON.parse(readFileSync(join(internal, ".jev-profile.json"), "utf8")) as { written_at?: unknown } | null;
+    const writtenAt = typeof marker?.written_at === "string" ? Date.parse(marker.written_at) : NaN;
+    if (!Number.isNaN(writtenAt) && statSync(artifact).mtimeMs < writtenAt) {
+      return `${banner}: dedup-grayzone-jev.json é anterior ao marcador .jev-profile.json (retomada sem o perfil?).`;
+    }
+  } catch {
+    // marcador ilegível: segue só com a checagem do artefato
   }
   try {
     const a = JSON.parse(readFileSync(artifact, "utf8")) as { profile_env?: unknown } | null;
