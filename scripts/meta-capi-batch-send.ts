@@ -127,6 +127,21 @@ export const CAPI_BATCH_EVENT_SOURCE_URL = "https://diar.ia.br/";
  * disciplina de sincronia manual documentada em `ORCHESTRATOR_FILES`,
  * `context/overnight-dispatch-rules.md` #4).
  *
+ * **Só entra aqui um `referring_site` que passa DE FATO por
+ * `handleJogarSubscribe`/`handleGateSubscribe` (o único ponto que chama
+ * `sendCompleteRegistrationEvent`) — nunca todo `referring_site` gravado
+ * pelo worker.** #8657 (regressão do commit `cf1769079`, achada 21/09/2026):
+ * `"jogar-identify-magic-link"` (`workers/poll/src/magic-link.ts`, linha do
+ * `subscribeViaConfiguredBackend`) e `"vote-clarice-set-name"`
+ * (`workers/poll/src/index.ts::handleSetName`) chamam
+ * `subscribeViaConfiguredBackend` DIRETO, sem passar por
+ * `handleJogarSubscribe` — nenhum dos dois nunca envia
+ * `CompleteRegistration` em tempo real. Tê-los nesta lista fazia
+ * `selectCapiCandidates` excluí-los também do batch semanal, deixando
+ * cadastros vindos desses 2 caminhos sem NENHUM `CompleteRegistration` (nem
+ * tempo real, nem batch) — removidos daqui pra voltarem a ser cobertos pelo
+ * batch, que é justamente o gap que este script existe pra fechar.
+ *
  * NÃO cobre `subscribeToKit`/Kit — a mesma lacuna de origem afeta o backend
  * Kit igualmente, mas os markers são os mesmos (`referring_site` é
  * independente do backend de destino, ver `subscribeViaConfiguredBackend`).
@@ -143,8 +158,6 @@ export const REALTIME_HANDLER_REFERRING_SITES: ReadonlySet<string> = new Set([
   "arquivo-inline",
   "hub-inline",
   "apex-subscribe-page",
-  "jogar-identify-magic-link",
-  "vote-clarice-set-name",
   // workers/cursos/src/subscribe.ts
   "cursos-gate-inline",
 ]);
