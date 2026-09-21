@@ -110,6 +110,15 @@ export async function main(
   }
   console.log(JSON.stringify(summary, null, 2));
   if (dryRun) console.error(`${LOG_PREFIX} DRY-RUN — nada foi enviado. Rode com --send para enviar.`);
+  // #8616 item 1: `--send` sem token não pode "passar" em exit 0 — a task
+  // agendada rodaria todo dia sem enviar nada e sem nenhum alarme disparar.
+  if (!dryRun && summary.effectiveDryRun) {
+    console.error(
+      `${LOG_PREFIX} ✖ --send pedido mas META_CAPI_ACCESS_TOKEN ausente — rodou em dry-run efetivo, nada foi enviado. ` +
+        "Tratando como falha (exit 1) para não mascarar isso numa task agendada.",
+    );
+    return 1;
+  }
   return summary.failed > 0 ? 1 : 0;
 }
 

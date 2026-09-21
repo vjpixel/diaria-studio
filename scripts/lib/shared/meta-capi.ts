@@ -382,16 +382,21 @@ export interface MetaCapiUserData {
  * cadastro original, muitas vezes sem `fbc`/click id válido — como se
  * fossem cadastros novos vindos de anúncio.
  */
-export type MetaCapiEventName =
-  | "CompleteRegistration"
-  | "Reactivation"
-  | "SubscriptionConfirmed"
-  // #8543: o lote de confirmações aceita o nome por parâmetro (validado em
-  // `scripts/lib/meta-capi-confirmation-batch.ts`, nunca "CompleteRegistration").
-  | (string & {});
+export type MetaCapiEventName = "CompleteRegistration" | "Reactivation" | "SubscriptionConfirmed";
+
+/**
+ * #8543/#8616 item 4: o lote de confirmações aceita o nome por PARÂMETRO
+ * (`--event-name`, validado em runtime por `assertConfirmationEventName` em
+ * `scripts/lib/meta-capi-confirmation-batch.ts`, nunca "CompleteRegistration").
+ * Widen isolado só pro campo que precisa disso (`BuildCompleteRegistrationEventInput.eventName`)
+ * — `MetaCapiEventName` em si permanece união FECHADA, então os 3 workers que
+ * passam o nome como literal (`workers/reativar`, `scripts/gtm-drift-check.ts`)
+ * continuam com o checador de tipo pegando um typo de nome.
+ */
+export type MetaCapiConfirmationEventName = MetaCapiEventName | (string & {});
 
 export interface MetaCapiCompleteRegistrationEvent {
-  event_name: MetaCapiEventName;
+  event_name: MetaCapiConfirmationEventName;
   event_time: number;
   event_source_url: string;
   action_source: MetaCapiActionSource;
@@ -425,8 +430,10 @@ export interface BuildCompleteRegistrationEventInput {
   clientSignals?: MetaCapiClientSignals;
   /** #8551: `"CompleteRegistration"` (default — cadastro/submit do form) ou
    * `"Reactivation"` (`workers/reativar`, confirmação de reativação — nunca
-   * deve entrar no evento de otimização do conjunto de anúncios). */
-  eventName?: MetaCapiEventName;
+   * deve entrar no evento de otimização do conjunto de anúncios). #8543/#8616
+   * item 4: também aceita o nome parametrizável, validado em runtime, do
+   * lote de confirmações (`MetaCapiConfirmationEventName`). */
+  eventName?: MetaCapiConfirmationEventName;
   /** #8543: `event_id` explícito — usado por eventos que NÃO são o cadastro
    * (ex.: `SubscriptionConfirmed`, id derivado do id do Kit, não do e-mail+dia).
    * Ausente = o id determinístico do `CompleteRegistration`, como sempre. */
