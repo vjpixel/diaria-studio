@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Fri, 18 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Mon, 21 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Claude ajudou a invadir a OpenAI em menos de 3 dias</title>
+      <link>https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias</guid>
+      <pubDate>Mon, 21 Sep 2026 09:00:00 GMT</pubDate>
+      <description>IA quase levou os EUA a interceptar navio chinês | Gemini invadiu três empresas reais em um teste</description>
+    </item>
     <item>
       <title>OpenAI cria regra para revelar erros da própria IA</title>
       <link>https://diar.ia.br/p/openai-cria-regra-para-revelar-erros-da-propria-ia</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/os-empregos-mais-blindados-contra-a-ia</guid>
       <pubDate>Mon, 13 Jul 2026 09:00:00 GMT</pubDate>
       <description>BB troca menus por conversa no app e WhatsApp | Microsoft troca OpenAI e Anthropic por IA própria</description>
-    </item>
-    <item>
-      <title>A diar.ia.br normalmente te conta o dia... hoje, ela conta o mês</title>
-      <link>https://diar.ia.br/p/a-diar-ia-br-normalmente-te-conta-o-dia-hoje-ela-conta-o-mes</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/a-diar-ia-br-normalmente-te-conta-o-dia-hoje-ela-conta-o-mes</guid>
-      <pubDate>Sun, 12 Jul 2026 09:00:00 GMT</pubDate>
-      <description>A diar.ia.br normalmente te conta o dia... hoje, ela conta o mês</description>
     </item>
   </channel>
 </rss>
