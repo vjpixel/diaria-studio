@@ -639,36 +639,38 @@ describe("#2309 item 3: 1-word-company case study NÃO é tutorial", () => {
 
 describe("categorize() — #2176 path-mais-específico-vence no empate de host", () => {
   /**
-   * Cenário REAL da issue:
-   *   - 'Google' (Primária, use_melhor=0): URL base = blog.google → source-query: site:blog.google
-   *   - 'Blog do Google Brasil (IA)' (Tutoriais, use_melhor=1): URL base = blog.google/intl/pt-br/novidades/tecnologia
-   *
-   * Um artigo em blog.google/intl/pt-br/novidades/tecnologia/X pode ser encontrado pelo
-   * source-researcher da 'Google' (site:blog.google cobre TODA a árvore, incluindo /intl/pt-br/).
-   * A atribuição correta é: Blog do Google Brasil (path mais específico) → use_melhor → tutorial.
+   * Cenário histórico da issue #2176 — 'Google' (Primária, use_melhor=0) vs
+   * 'Blog do Google Brasil (IA)' (Tutoriais, use_melhor=1, prefixo
+   * blog.google/intl/pt-br/novidades/tecnologia) — foi removido do seed em
+   * #8631 (discovery falhando 3x). Isso NÃO muda a categorização de URLs
+   * pt-br com sinal de tutorial no título: sem a entrada específica no seed,
+   * `_useMelhorBySpecificity` deixa de disparar, mas `isTutorialByKeyword`
+   * ("guia passo a passo") ainda classifica como tutorial — só a REGRA
+   * registrada muda (de "use-melhor-specificity" para "tutorial-keyword"),
+   * não o resultado. Sem título com sinal de tutorial, o mesmo path cai no
+   * fluxo padrão de noticias/radar (Google não tem verbo de lançamento aqui).
    */
-  it("#2176: URL em blog.google/intl/pt-br/novidades/tecnologia → tutorial (não noticias/radar)", () => {
+  it("#2176: URL em blog.google/intl/pt-br/novidades/tecnologia com título de tutorial → tutorial (via keyword, não mais via seed)", () => {
     const art: Article = {
       url: "https://blog.google/intl/pt-br/novidades/tecnologia/google-gemini-atualizado/",
       title: "Como usar o Gemini 2.0 no Google Workspace — guia passo a passo",
     };
-    // Após remoção Blog do Google Brasil (#8631), pt-br resolve como Google Primária (use_melhor=0) → lancamento
     assert.equal(
       categorize(art),
-      "lancamento",
-      "URL em blog.google/intl/pt-br/novidades/tecnologia → fonte removida; resolve como Google Primária (lancamento)",
+      "tutorial",
+      "título com 'guia passo a passo' aciona isTutorialByKeyword independente do seed (#8631: fonte específica removida)",
     );
   });
 
-  it("#2176: após remoção Blog Brasil (#8631), artigo pt-br fica em lancamento (Google Primária)", () => {
+  it("#2176: após remoção Blog Brasil (#8631), artigo pt-br SEM sinal de tutorial no título cai em radar (noticias, sem verbo de lançamento)", () => {
     const art: Article = {
       url: "https://blog.google/intl/pt-br/novidades/tecnologia/ia-ferramentas-2026/",
       title: "5 ferramentas de IA do Google pra usar hoje",
     };
     const { use_melhor, radar, lancamento } = categorizeArticles([art]);
-    assert.equal(use_melhor.length, 0, "fonte removida → não em use_melhor");
-    assert.equal(radar.length, 0, "artigo NÃO deve estar em radar");
-    assert.equal(lancamento.length, 1, "artigo deve estar em lancamento (Google Primária)");
+    assert.equal(use_melhor.length, 0, "fonte específica removida → não entra mais em use_melhor via seed");
+    assert.equal(radar.length, 1, "sem sinal de tutorial/lançamento no título → noticias → radar");
+    assert.equal(lancamento.length, 0, "título não tem verbo de anúncio → não é lancamento");
   });
 
   it("#2176: atribuição é DETERMINÍSTICA — mesmo resultado independente da ordem de chamada", () => {
@@ -680,7 +682,7 @@ describe("categorize() — #2176 path-mais-específico-vence no empate de host",
     const r3 = categorize(art);
     assert.equal(r1, r2, "categorize deve ser determinístico (r1 == r2)");
     assert.equal(r2, r3, "categorize deve ser determinístico (r2 == r3)");
-    assert.equal(r1, "lancamento", "resultado deve ser lancamento após remoção (#8631)");
+    assert.equal(r1, "noticias", "sem título e sem fonte específica no seed (#8631) → nenhum sinal de tutorial/lançamento");
   });
 
   it("#2176: URL em blog.google fora do /intl/pt-br/ → lancamento (Google Primária, use_melhor=0)", () => {

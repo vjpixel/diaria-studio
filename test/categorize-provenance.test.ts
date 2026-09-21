@@ -77,7 +77,21 @@ describe("categorize() — delegação estrutural para categorizeWithRule() (gua
 // Todos os 41 branches se mostraram alcançáveis — nenhum achado de branch
 // morto nesta rodada (2 casos exigiram gatilho propositalmente artificial,
 // anotados abaixo: pesquisa-pattern-offtopic e lancamento-non-launch-path).
-const RULE_TRIGGERS: Record<CategorizationRule, Article> = {
+//
+// #8631 (21/09/2026): "use-melhor-specificity" ficou de fora do Record —
+// exceção explícita, não esquecimento. A ÚNICA fonte no seed com par
+// host-only (use_melhor=0) + path-mais-específico (use_melhor=1) no mesmo
+// host era 'Google'/'Blog do Google Brasil (IA)' (blog.google vs
+// blog.google/intl/pt-br/...); a segunda foi removida por discovery
+// falhando 3x consecutivas (#8631), e nenhum outro par do gênero existe
+// hoje no CSV (seed/sources.csv não tem coluna "ativo" separada de
+// "usado pro categorizer" — presença na planilha aciona as duas coisas
+// juntas, então não dá pra manter só o sinal de categorização sem
+// reativar a fonte quebrada pro discovery). O branch em si (
+// `resolveUseMelhorBySpecificity`) continua coberto com fixtures
+// sintéticas em test/use-melhor-sources.test.ts — só este teste de
+// INTEGRAÇÃO via seed real perdeu o gatilho orgânico.
+const RULE_TRIGGERS: Record<Exclude<CategorizationRule, "use-melhor-specificity">, Article> = {
   "video-url": { url: "https://www.youtube.com/watch?v=abc123", title: "Como usar IA" },
   "course-page": { url: "https://example.com/cursos/ia-generativa-para-iniciantes" },
   "tutorial-domain": {
@@ -87,11 +101,6 @@ const RULE_TRIGGERS: Record<CategorizationRule, Article> = {
   "tutorial-pattern": {
     url: "https://github.com/anthropics/anthropic-cookbook/blob/main/skills/x.ipynb",
     title: "Building agents with the Anthropic Cookbook",
-  },
-  "use-melhor-specificity": {
-    // "Blog do Google Brasil (IA)" REMOVIDO (#8631); URL pt-br agora resolve como Google Primária (use_melhor=0).
-    url: "https://blog.google/intl/pt-br/novidades/tecnologia/google-gemini-atualizado/",
-    title: "Como usar o Gemini 2.0 no Google Workspace — guia passo a passo",
   },
   "pesquisa-domain-offtopic": {
     url: "https://arxiv.org/abs/2501.00001",
@@ -287,15 +296,20 @@ const RULE_TRIGGERS: Record<CategorizationRule, Article> = {
 };
 
 describe("categorizeWithRule() — 1 gatilho verificado por regra (cobertura completa, #6647)", () => {
-  for (const [expectedRule, article] of Object.entries(RULE_TRIGGERS) as Array<[CategorizationRule, Article]>) {
+  for (const [expectedRule, article] of Object.entries(RULE_TRIGGERS) as Array<
+    [Exclude<CategorizationRule, "use-melhor-specificity">, Article]
+  >) {
     it(`"${article.url}" → rule "${expectedRule}"`, () => {
       const result = categorizeWithRule(article);
       assert.equal(result.rule, expectedRule, `esperava rule="${expectedRule}", obteve "${result.rule}"`);
     });
   }
 
-  it("cobre exatamente os 41 rule ids conhecidos (nenhum a mais, nenhum a menos)", () => {
-    assert.equal(Object.keys(RULE_TRIGGERS).length, 41);
+  // 40, não 41: "use-melhor-specificity" ficou sem gatilho orgânico via seed
+  // real após #8631 remover a única fonte que criava o par host-only vs
+  // path-mais-específico — ver comentário acima de RULE_TRIGGERS.
+  it("cobre exatamente os 40 rule ids testáveis via seed real (nenhum a mais, nenhum a menos; #8631 exclui use-melhor-specificity)", () => {
+    assert.equal(Object.keys(RULE_TRIGGERS).length, 40);
   });
 });
 
