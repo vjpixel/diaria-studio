@@ -95,6 +95,10 @@ set -euo pipefail
 # binário antes do postinstall terminar).
 export DISABLE_AUTOUPDATER=1
 
+# #8588: marcador lido por .claude/hooks/block-continuo-master-commit.mjs — a sessão
+# delegada do continuo nunca commita direto em master. Vive só neste processo.
+export DIARIA_SESSION_KIND=continuo
+
 # Preflight (#6875, extraído pro lib compartilhado no #6879): falha do
 # binário precisa ser nomeada, não enigmática.
 # shellcheck source=./lib/claude-binary-preflight.sh
