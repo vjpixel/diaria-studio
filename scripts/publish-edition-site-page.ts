@@ -103,6 +103,35 @@
 * só-escrita) pula o worktree: a página fica em `rootDir`, sem git. Testes
 * que precisam de um worktree já existente passam `--worktree-dir`.
 *
+* ## #8684 (260921): checkout desincronizado ainda podia acontecer via CÓDIGO
+* velho no disco, não só via `origin/master` velho
+*
+* **O bug.** Edição 260922, Stage 6: `publish-edition-site-page.ts` saiu com
+* `exit 3` — "checkout não está sincronizado com origin/master" (o guard
+* legado do #7287, ver `commitAndPushSitePage`). O worktree default do
+* #8636 já existia em `master` nesse momento, mas o checkout que rodou o
+* script ainda não tinha puxado esse commit: a sessão de Stage 5/6 (#6171,
+* sempre NOVA) nunca roda `sync-code.ts` (isso só acontece no Passo 0 de
+* `/diaria-edicao`), então o script que de fato executou era a versão SEM
+* worktree default — caiu no caminho legado (`!worktreeDir`) e bateu no
+* guard que o #8636 existe justamente para tornar irrelevante.
+*
+* **2 correções, em camadas diferentes (nenhuma sozinha bastava).** (1)
+* Sessão: `.claude/skills/diaria-5-publicacao/SKILL.md` ganhou um passo de
+* sync-code no início, espelhando o Passo 0 de `/diaria-edicao` — garante
+* que o CÓDIGO em disco (não só o conteúdo publicado) esteja atualizado
+* antes de qualquer script deste stage rodar; sem isso, uma correção futura
+* no PRÓPRIO `publish-edition-site-page.ts` teria o mesmo problema recursivo
+* que o #8636 teve aqui. (2) Script: `commitAndPushSitePage` agora tenta
+* `git fetch origin master` (best-effort, fail-soft) imediatamente antes do
+* `git worktree add --detach <tmp> origin/master` — o worktree nasce do ref
+* LOCAL de `origin/master`, que `git worktree add` sozinho nunca atualiza;
+* sem um fetch fresco nesta mesma chamada, o worktree podia nascer de um
+* `origin/master` desatualizado por horas (mesmo já rodando código pós-#8636
+* correto) sempre que a sessão ficar muito tempo entre o sync inicial (1) e
+* este passo — falha de fetch nunca lança, só avisa em stderr e segue com o
+* ref já cacheado (nunca pior que o comportamento pré-#8684).
+*
 * ## #8645 (260921): backfill de SEO + reindexação do acervo NO PRÓPRIO publish
 *
 * **Os 2 gaps.** (a) `buildEditionArchivePost` (`edition-site-page.ts`) nunca
@@ -1058,7 +1087,27 @@ export function commitAndPushSitePage(
     // `checkout -b` em branch já existente — o `--detach` pula isso: o
     // worktree nasce sem branch, e o `checkout -B` abaixo cria a branch de
     // publicação de qualquer estado. O worktree é descartado no `finally`.
+    //
+    // #8684: `git fetch origin master` ANTES do `worktree add` — best-effort,
+    // fail-soft. O worktree nasce do ref LOCAL `origin/master` (`git
+    // worktree add` não faz rede sozinho); sem um fetch recente nesta mesma
+    // chamada, esse ref pode estar tão desatualizado quanto o pior caso do
+    // guard legado do #7287 (que este caminho pula por construção) — a
+    // única diferença seria não LANÇAR, mas ainda assim publicar uma página
+    // a partir de um master conhecido só POR NOME, não de fato o mais
+    // recente. Não lançar em falha de fetch (offline, rede instável): o
+    // pior caso é idêntico ao comportamento pré-#8684 (usa o ref já
+    // cacheado), nunca pior — mesma disciplina fail-soft do resto do
+    // módulo (#6202, ver docstring).
     if (worktreeDir) {
+      try {
+        git(["fetch", "origin", "master"], rootDir);
+      } catch (e) {
+        process.stderr.write(
+          `[site-page] aviso: 'git fetch origin master' falhou (${(e as Error).message}) — seguindo com o ` +
+            `ref local de origin/master, que pode estar desatualizado (#8684).\n`,
+        );
+      }
       git(["worktree", "add", "--detach", worktreeDir, "origin/master"], rootDir);
     }
 
