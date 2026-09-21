@@ -30,12 +30,15 @@ import {
   archiveIndexUrl,
   buildArchiveIndexFeed,
   buildArchiveIndexHtml,
+  checkArchiveIndexLinkConsistency,
   monthLabel,
   resolveArchiveIndexCover,
 } from "../scripts/lib/site-archive-index.ts";
 import {
+  brtDateString,
   buildHomeFeed,
   isKnownStaticSitemapPath,
+  resolveEditorialDate,
   type HomeFeedEntry,
 } from "../scripts/lib/site-home-page.ts";
 import { findStaleIndexPages, main as genArchiveIndexMain } from "../scripts/gen-archive-index.ts";
@@ -277,6 +280,17 @@ describe("artefato commitado — /archive não é mais 404 (#8353 item 2)", () =
     assert.deepEqual(broken, [], "entrada /archive* no sitemap sem arquivo correspondente");
   });
 
+  /**
+   * #8688: desde o #8221 o Stage 6 publica a página `/p/{slug}` e a entrada
+   * no sitemap na VÉSPERA do envio; a linha correspondente no índice só
+   * chega no regen das 06:00 BRT (`regen-home.yml`). Uma edição com data
+   * editorial > hoje presente no sitemap mas ainda sem link no índice é o
+   * estado ESPERADO nesse intervalo, não uma edição órfã — `resolveDate` +
+   * `checkArchiveIndexLinkConsistency` reproduzem o mesmo corte `todayBrt`
+   * do #7686 (home/índice só com edição já enviada) pra não confundir os
+   * dois casos. Regressão coberta explicitamente no describe abaixo
+   * ("cada edição sitemap × índice, corte de data futura").
+   */
   it("cada edição do sitemap é linkada por exatamente 1 página do índice", () => {
     const linked = new Map<string, number>();
     const total = archiveIndexPageCount(editionLocs.length, ARCHIVE_INDEX_PAGE_SIZE);
@@ -286,9 +300,28 @@ describe("artefato commitado — /archive não é mais 404 (#8353 item 2)", () =
         if (html.includes(`href="${loc}"`)) linked.set(loc, (linked.get(loc) ?? 0) + 1);
       }
     }
-    const missing = editionLocs.filter((loc) => !linked.has(loc));
-    assert.deepEqual(missing, [], "edição sem link em nenhuma página do índice — continuaria órfã");
-    const duplicated = [...linked.entries()].filter(([, n]) => n > 1).map(([loc]) => loc);
+    const readPageHtml = (slug: string): string | null => {
+      const path = join(PUBLIC_DIR, "p", slug, "index.html");
+      return existsSync(path) ? readFileSync(path, "utf8") : null;
+    };
+    const sitemapEntries = parseSitemap(sitemapXml);
+    const resolveDate = (loc: string): string | null => {
+      const entry = sitemapEntries.find((e) => e.loc === loc);
+      return entry ? resolveEditorialDate(entry, readPageHtml) : null;
+    };
+    const { missing, duplicated } = checkArchiveIndexLinkConsistency(
+      editionLocs,
+      resolveDate,
+      (loc) => linked.get(loc) ?? 0,
+      brtDateString(),
+    );
+    assert.deepEqual(
+      missing,
+      [],
+      "edição sem link em nenhuma página do índice — continuaria órfã (edições com data editorial " +
+        "futura, publicadas na véspera pelo Stage 6 #8221, são ignoradas aqui até o regen das 06:00 " +
+        "BRT reconciliar, #8688)",
+    );
     assert.deepEqual(duplicated, [], "edição linkada em mais de uma página do índice");
   });
 
@@ -309,6 +342,78 @@ describe("artefato commitado — /archive não é mais 404 (#8353 item 2)", () =
   it("a home linka o índice (não só 6 das 270 edições)", () => {
     const home = readFileSync(join(PUBLIC_DIR, "index.html"), "utf8");
     assert.match(home, /href="\/archive"/);
+  });
+});
+
+/**
+ * #8688 — decisão do editor: manter o filtro #7686 (home/índice só com
+ * edição já enviada) e ajustar o teste #8353 pra ignorar edições cuja data
+ * editorial (BRT) é posterior a hoje. A entrada no sitemap na véspera
+ * (#8221) é aceita; a linha do índice chega no regen das 06:00 BRT.
+ *
+ * Os 2 casos explícitos pedidos no comentário da decisão:
+ *   (a) edição FUTURA presente no sitemap sem link no índice → não reprova;
+ *   (b) edição PASSADA sem link no índice → continua reprovando (o
+ *       comportamento que o #8353 original existia pra travar).
+ */
+describe("checkArchiveIndexLinkConsistency — corte de data futura (#8688)", () => {
+  const TODAY = "2026-09-21";
+  const past = "https://diar.ia.br/p/edicao-passada";
+  const future = "https://diar.ia.br/p/edicao-futura";
+  const dates: Record<string, string> = {
+    [past]: "2026-09-18",
+    [future]: "2026-09-22",
+  };
+  const resolveDate = (loc: string) => dates[loc] ?? null;
+
+  it("edição futura no sitemap sem link no índice não reprova (#8688)", () => {
+    const { missing, duplicated } = checkArchiveIndexLinkConsistency(
+      [future],
+      resolveDate,
+      () => 0, // nenhuma página do índice ainda linka a edição de amanhã.
+      TODAY,
+    );
+    assert.deepEqual(missing, []);
+    assert.deepEqual(duplicated, []);
+  });
+
+  it("edição passada sem link no índice continua reprovando", () => {
+    const { missing, duplicated } = checkArchiveIndexLinkConsistency(
+      [past],
+      resolveDate,
+      () => 0, // órfã de verdade — nenhum regen linkou ainda.
+      TODAY,
+    );
+    assert.deepEqual(missing, [past]);
+    assert.deepEqual(duplicated, []);
+  });
+
+  it("as duas juntas: só a passada aparece como faltando", () => {
+    const { missing, duplicated } = checkArchiveIndexLinkConsistency(
+      [past, future],
+      resolveDate,
+      () => 0,
+      TODAY,
+    );
+    assert.deepEqual(missing, [past]);
+    assert.deepEqual(duplicated, []);
+  });
+
+  it("edição passada linkada normalmente não reprova nem duplica", () => {
+    const { missing, duplicated } = checkArchiveIndexLinkConsistency([past], resolveDate, () => 1, TODAY);
+    assert.deepEqual(missing, []);
+    assert.deepEqual(duplicated, []);
+  });
+
+  it("edição linkada em mais de 1 página continua reprovando (duplicated), mesmo se futura", () => {
+    const { missing, duplicated } = checkArchiveIndexLinkConsistency([future], resolveDate, () => 2, TODAY);
+    assert.deepEqual(missing, []);
+    assert.deepEqual(duplicated, [future]);
+  });
+
+  it("sem data (entrada sem lastmod e sem data na página) é tratada como devida, nunca futura", () => {
+    const { missing } = checkArchiveIndexLinkConsistency(["https://diar.ia.br/p/sem-data"], () => null, () => 0, TODAY);
+    assert.deepEqual(missing, ["https://diar.ia.br/p/sem-data"]);
   });
 });
 
