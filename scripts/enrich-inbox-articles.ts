@@ -32,6 +32,8 @@ import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #2140, 
 import { sanitizeTrailingEllipsis } from "./lib/sanitize-description-ellipsis.ts"; // #2881
 import { sanitizeDescriptionBoilerplate } from "./lib/sanitize-description-boilerplate.ts"; // #3196
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { summaryMatchesArticle } from "./lib/summary-matches-title.ts"; // #8594
+import { logEvent } from "./lib/run-log.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,6 +65,8 @@ export interface EnrichOutcome {
 export interface EnrichStats {
   cache_hits: number;
   cache_misses: number;
+  /** #8594: URLs cujo summary foi descartado por não ter relação com título/URL. */
+  summary_discarded?: string[];
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -349,6 +353,19 @@ export async function enrichArticles(
   const stats: EnrichStats = { cache_hits: 0, cache_misses: 0 };
   const out = articles.map((a) => ({ ...a }));
 
+  // #8594: summary de OUTRA matéria (digest " · ", resumo trocado) nunca deve
+  // chegar ao gate. Só fonte regular (inbox é curadoria do editor). Descartar
+  // deixa o summary vazio → needsEnrichment → refetch (og:description) ou
+  // `secondary-items-have-summary` no Stage 4.
+  for (const a of out) {
+    if (isInboxArticle(a) || !(a.summary ?? "").trim()) continue;
+    const m = summaryMatchesArticle({ title: a.title, url: a.url, summary: a.summary });
+    if (!m.ok) {
+      a.summary = "";
+      (stats.summary_discarded ??= []).push(a.url);
+    }
+  }
+
   const targets = out
     .map((a, i) => ({ idx: i, article: a }))
     .filter(({ article }) => needsEnrichment(article));
@@ -620,6 +637,17 @@ async function main(): Promise<void> {
   );
 
   writeFileSync(path, JSON.stringify(writeBack(enriched), null, 2), "utf8");
+
+  for (const url of stats.summary_discarded ?? []) {
+    logEvent({
+      edition: null,
+      stage: 1,
+      agent: "enrich-inbox-articles",
+      level: "warn",
+      message: `summary descartado (sem relação com título/URL): ${url}`,
+      details: { url, reason: "summary_title_mismatch", issue: 8594 },
+    });
+  }
 
   const enrichedCount = outcomes.filter((o) => o.enriched).length;
   const failed = outcomes.filter((o) => !o.enriched).length;

@@ -89,6 +89,7 @@ import {
   type NoTrailingEllipsisError,
   type NoTrailingEllipsisReport,
 } from "./lib/lint-checks/no-trailing-ellipsis.ts"; // #2881
+import { checkRadarSummaryMatchesTitle } from "./lib/lint-checks/radar-summary-matches-title.ts"; // #8594
 import {
   checkMidSentenceEllipsis,
   type MidSentenceEllipsisError,
@@ -572,6 +573,12 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
       checkNoTrailingEllipsis(md),
     );
 
+    // #8594: descrição de item secundário sem relação com título/URL
+    // (resumo de outra matéria). WARN-ONLY — heurística léxica.
+    runCheckSafely(push, "radar-summary-matches-title", "#8594", "warn-only", () =>
+      checkRadarSummaryMatchesTitle(md),
+    );
+
     runCheckSafely(push, "mid-sentence-ellipsis", "#3196", "warn-only", () =>
       checkMidSentenceEllipsis(md),
     );
@@ -765,6 +772,7 @@ import { runCli as run_titleTrailingPeriod } from "./lib/lint-checks/cli/title-t
 import { runCli as run_titleMentionsIa } from "./lib/lint-checks/cli/title-mentions-ia.ts";
 import { runCli as run_titleClickbaitVulgar } from "./lib/lint-checks/cli/title-clickbait-vulgar.ts";
 import { runCli as run_noTrailingEllipsis } from "./lib/lint-checks/cli/no-trailing-ellipsis.ts";
+import { runCli as run_radarSummaryMatchesTitle } from "./lib/lint-checks/cli/radar-summary-matches-title.ts"; // #8594
 import { runCli as run_midSentenceEllipsis } from "./lib/lint-checks/cli/mid-sentence-ellipsis.ts";
 import { runCli as run_noUntranslatedSummary } from "./lib/lint-checks/cli/no-untranslated-summary.ts";
 import { runCli as run_videoLinksAreYoutube } from "./lib/lint-checks/cli/video-links-are-youtube.ts";
@@ -809,6 +817,7 @@ const CHECK_HANDLERS: Record<string, (args: Record<string, string>, root: string
   "title-mentions-ia": run_titleMentionsIa,
   "title-clickbait-vulgar": run_titleClickbaitVulgar,
   "no-trailing-ellipsis": run_noTrailingEllipsis,
+  "radar-summary-matches-title": run_radarSummaryMatchesTitle, // #8594
   "mid-sentence-ellipsis": run_midSentenceEllipsis,
   "no-untranslated-summary": run_noUntranslatedSummary,
   "video-links-are-youtube": run_videoLinksAreYoutube,
