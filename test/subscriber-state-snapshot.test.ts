@@ -241,3 +241,55 @@ describe("buildDoiConfirmationCohort", () => {
     assert.deepEqual(result.cohort, [{ id: 1, confirmed: true }]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #8552 (a) — cruzamento com o form DOI
+// ---------------------------------------------------------------------------
+
+import { markDoiFormMembership } from "../scripts/lib/subscriber-state-snapshot.ts";
+
+describe("doi_form (#8552 a)", () => {
+  it("markDoiFormMembership marca só os ids do form e sobrevive ao roundtrip JSONL", () => {
+    const recs: SubscriberStateRecord[] = [
+      { id: 1, state: "inactive", created_at: "2026-09-18T10:00:00.000Z" },
+      { id: 2, state: "inactive", created_at: "2026-09-18T11:00:00.000Z" },
+    ];
+    const marked = markDoiFormMembership(recs, new Set([2]));
+    assert.equal(marked[0].doi_form, undefined);
+    assert.equal(marked[1].doi_form, true);
+    const back = parseSubscriberStateJsonl(serializeSubscriberStateRecords(marked));
+    assert.equal(back[1].doi_form, true);
+    assert.equal(back[0].doi_form, undefined);
+  });
+
+  const mk = (id: number, state: string, doi?: boolean): SubscriberStateRecord => ({
+    id, state, created_at: "2026-09-18T10:00:00.000Z", ...(doi ? { doi_form: true } : {}),
+  });
+
+  it("com cobertura do form no snapshot do dia, a safra exclui órfãos (nunca vinculados)", () => {
+    const day = [mk(1, "inactive", true), mk(2, "inactive", true), mk(3, "inactive")]; // 3 = órfão
+    const matured = [mk(1, "active", true), mk(2, "inactive", true), mk(3, "inactive")];
+    const r = buildDoiConfirmationCohort(new Map([["2026-09-18", day], ["2026-09-20", matured]]), "2026-09-18");
+    assert.deepEqual(r.cohort, [{ id: 1, confirmed: true }, { id: 2, confirmed: false }]);
+  });
+
+  it("sem cobertura (snapshot antigo), mantém todo inactive criado no dia", () => {
+    const day = [mk(1, "inactive"), mk(3, "inactive")];
+    const matured = [mk(1, "active"), mk(3, "inactive")];
+    const r = buildDoiConfirmationCohort(new Map([["2026-09-18", day], ["2026-09-20", matured]]), "2026-09-18");
+    assert.equal(r.cohort.length, 2);
+  });
+
+  it("(c) com snapshots suficientes a métrica deixa de ser indeterminado", async () => {
+    const { getMetric } = await import("../scripts/lib/metrics/registry.ts");
+    const ids = [1, 2, 3, 4, 5, 6];
+    const day = ids.map((i) => mk(i, "inactive", true));
+    const matured = ids.map((i) => mk(i, i <= 3 ? "active" : "inactive", true));
+    const { cohort } = buildDoiConfirmationCohort(new Map([["2026-09-18", day], ["2026-09-20", matured]]), "2026-09-18");
+    const def = getMetric("doi-confirmacao-dia")!;
+    const janela = { de: "2026-09-18", ate: "2026-09-18", granularidade: "dia", fuso: "BRT" } as const;
+    const res = await def.computar({ janela, deps: { cohort } });
+    assert.notEqual(res.qualidade, "indeterminado");
+    assert.equal(res.valor, 0.5);
+  });
+});

@@ -356,6 +356,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#8552",
   },
   {
+    name: "Diaria-Subscriber-State-Snapshot-Recent",
+    description: "observacao HORARIA dos cadastros Kit das ultimas 48h (id, state, created_at, doi_form) em data/subscriber-state-snapshots/kit-recent/ -- unico jeito de medir a taxa de confirmacao DOI em 1h/6h/24h, ja que o Kit nao expoe o instante da confirmacao (#8552 b)",
+    steps: [{ key: "recent", script: "scripts/subscriber-state-snapshot.ts", args: ["--recent"] }],
+    logPath: "subscriber-state-snapshots/.recent.log",
+    // Horaria: so cadastros recentes (poucas dezenas de linhas, 1 chamada
+    // paginada + 1 ao form DOI, so LEITURA no Kit) -- muito abaixo do rate
+    // limit. DECLARADA, NAO ARMADA -- armar no 300 via
+    // `scripts/setup-systemd-timers.ts` (mesma maquina da task diaria acima).
+    schedule: { kind: "interval", hours: 1 },
+    issue: "#8552",
+  },
+  {
     name: "Diaria-Audience-Profile-Staleness-Alarm",
     description: "escala o guard de arquivamento duplicado do #4366 (context/audience-profile.md regenerando idêntico ao anterior) de linha muda em run-log.jsonl pra issue GitHub por ocorrência (#8148)",
     steps: [{ key: "alarm", script: "scripts/audience-profile-staleness-alarm.ts" }],

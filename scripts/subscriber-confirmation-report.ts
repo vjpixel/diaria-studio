@@ -10,14 +10,22 @@
  * docstring de `scripts/lib/subscriber-confirmation-report.ts`.
  *
  * Uso:
- *   npx tsx scripts/subscriber-confirmation-report.ts [--root <path>] [--since AAAA-MM-DD] [--until AAAA-MM-DD] [--format text|json]
+ *   npx tsx scripts/subscriber-confirmation-report.ts [--root <path>] [--since AAAA-MM-DD] [--until AAAA-MM-DD] [--recent-root <path>] [--format text|json]
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { loadAllSubscriberStateSnapshots, snapshotRootDefault } from "./lib/subscriber-state-snapshot.ts";
+import { readFileSync } from "node:fs";
+import {
+  buildHourlyConfirmationReport,
+  renderHourlyConfirmationText,
+  parseHourlyObservationFileName,
+  type HourlyObservation,
+} from "./lib/subscriber-hourly-confirmation.ts";
+import { parseSubscriberStateJsonl } from "./lib/subscriber-state-snapshot.ts";
 import { buildConfirmationReport, renderConfirmationReportText } from "./lib/subscriber-confirmation-report.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

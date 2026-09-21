@@ -572,14 +572,12 @@ const doiConfirmacaoDiaDef: MetricDef<DoiConfirmacaoDiaDeps> = {
   async computar(args) {
     validarDecomposicao(doiConfirmacaoDiaDef, args.decomposicao);
     const { cohort, motivoIndeterminado } = args.deps;
-    // #8552: ainda não cruza com participação no form KIT_DOI_FORM_ID (3º
-    // insumo da issue, "caminho de confirmação" via `confirmou_via`) — ver
-    // limitação documentada na docstring de `buildDoiConfirmationCohort`
-    // (`subscriber-state-snapshot.ts`). Sem `cohort` resolvido (snapshots
-    // insuficientes, ou chamador não wireou esta métrica ainda), segue
-    // `indeterminado` — mesmo comportamento de antes desta fatia, só que com
-    // o motivo específico que o chamador resolveu, em vez de um texto fixo
-    // dizendo "F2 nunca grava confirmação".
+    // #8552 (a): quando o snapshot do dia carrega `doi_form` (participação em
+    // KIT_DOI_FORM_ID), `buildDoiConfirmationCohort` já restringe a safra a
+    // quem estava vinculado ao form; sem esse dado (snapshots antigos) a safra
+    // é "todo inactive criado no dia". Sem `cohort` resolvido (snapshots
+    // insuficientes — a safra de D precisa do snapshot de D e de um snapshot
+    // >= D+48h), segue `indeterminado` com o motivo específico do chamador.
     if (!cohort || cohort.length === 0) {
       return indeterminado(
         args.janela,
