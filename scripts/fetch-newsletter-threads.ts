@@ -43,6 +43,7 @@ import {
 // (mesma variante já consolidada em capture-newsletter-urls.ts).
 import { stripHtml as stripHtmlForBody } from "./lib/strip-html.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { extractUrls } from "./lib/url-utils.ts";
 export { stripHtmlForBody };
 
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
@@ -60,6 +61,7 @@ export interface CapturedThread {
   subject: string;
   date: string; // ISO date string
   body: string; // plain text, truncated to BODY_LIMIT
+  urls_extraidas?: string[]; // preservados do corpo completo (#8668)
 }
 
 export interface FetchSummary {
@@ -235,6 +237,9 @@ export async function fetchThread(
     body = extractHtmlPart(msg.payload as GmailMessagePart);
   }
 
+  // #8668: extrair URLs do corpo COMPLETO antes do truncamento
+  const urls_completo = extractUrls(body);
+
   // Truncate to limit — token-reduction core
   const truncated = body.length > bodyLimit ? body.slice(0, bodyLimit) : body;
 
@@ -246,6 +251,7 @@ export async function fetchThread(
     subject,
     date,
     body: truncated,
+    urls_extraidas: urls_completo.length > 0 ? urls_completo : undefined,
   };
 }
 
