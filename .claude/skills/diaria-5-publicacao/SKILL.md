@@ -76,7 +76,7 @@ Crítico: este é o stage **publicador** (newsletter + todos os canais sociais +
 Mesma invocação e mesmo timeout do Passo 0 de `/diaria-edicao` (ver `.claude/skills/diaria-edicao/SKILL.md`):
 
 ```bash
-npx tsx scripts/sync-code.ts
+npx tsx scripts/sync-code.ts --edition {AAMMDD}
 ```
 (Bash tool: `timeout: 570000`)
 
