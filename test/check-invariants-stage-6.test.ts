@@ -51,7 +51,10 @@ describe("STAGE_6_RULES registry (#4574)", () => {
     assert.ok(ids.includes("step-6-sentinel-exists"));
     assert.ok(ids.includes("site-page-published"));
     assert.ok(ids.includes("site-sitemap-no-orphans"));
-    assert.equal(ids.length, 7, `esperava 7 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
+    // #8690: sync-code-ran é registrada em stage 6 também (Passo -3 é a
+    // primeira coisa das skills Stage 5 e 6 — ver comment em stage-6.ts).
+    assert.ok(ids.includes("sync-code-ran"));
+    assert.equal(ids.length, 8, `esperava 8 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
   });
 
   it("contém a entry site-page-published, stage 6, source_issue #7578 (GATE-BLOCKING desde a decisão do editor de 07/09/2026)", () => {
