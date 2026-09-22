@@ -1057,8 +1057,8 @@ describe("regression #8703 — call-site + redundancy", () => {
     assert.notEqual(arg.secret, undefined);
   });
   it("call sites dos playbooks contêm --secret (não expõem valor)", () => {
-    const stage5 = readFileSync("/home/vjpixel/worktree-8697-fix/.claude/agents/orchestrator-stage-5.md", "utf8");
-    const beehiiv = readFileSync("/home/vjpixel/worktree-8697-fix/context/publishers/beehiiv-playbook.md", "utf8");
+    const stage5 = readFileSync("../../.claude/agents/orchestrator-stage-5.md", "utf8");
+    const beehiiv = readFileSync("../../context/publishers/beehiiv-playbook.md", "utf8");
     assert.ok(stage5.includes("--secret \"$ADMIN_SECRET\""), "stage-5 falta --secret");
     assert.ok(beehiiv.includes("--secret \"$ADMIN_SECRET\""), "beehiiv falta --secret");
   });
