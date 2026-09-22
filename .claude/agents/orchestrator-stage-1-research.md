@@ -579,36 +579,13 @@ npx tsx scripts/finalize-stage1.ts \
 ```
 Output: `{ highlights, runners_up, lancamento, radar, use_melhor, video, clusters }`. Ler como `categorized` daqui em diante.
 
-### 1t. Avisos de mínimo por seção (warn-only)
+### 1t / 1u / 1u-bis / 1u-ter. Mínimos, strip verifier, dedup intra, evergreen (fase única)
 
+Todas estas etapas vivem no mesmo phase determinístico; os scripts isolados (`check-min-sections.ts`, `strip-verifier.ts`, `dedupe-intra-edition.ts`, `filter-evergreen.ts`) foram removidos do repo — segui-los à mão produz `ERR_MODULE_NOT_FOUND`. Executar uma única chamada:
 ```bash
-npx tsx scripts/check-min-sections.ts --categorized {EDITION_DIR}/_internal/tmp-finalized.json
+npx tsx scripts/stage-1-run.ts --phase post-select-render --edition {AAMMDD}
 ```
-Stdout: array de strings (ex: `["⚠️ Apenas 2 lançamento(s) — mínimo esperado: 3"]`). Logar cada um como warn. **Nunca bloqueia** — só informa pro editor no gate.
-
-### 1u. Shape final + strip do campo `verifier`
-
-Script `strip-verifier.ts` remove o campo `verifier` (interno do scorer) de todos os artigos recursivamente:
-```bash
-npx tsx scripts/strip-verifier.ts --in {EDITION_DIR}/_internal/tmp-finalized.json --out {EDITION_DIR}/_internal/tmp-categorized.json
-```
-Output em `_internal/tmp-categorized.json` — **este é o arquivo que o gate lê** (não o `tmp-finalized.json` com verifier). `render-categorized-md.ts` usa este.
-
-### 1u-bis. Dedup intra-edição (#2013)
-
-Script `dedupe-intra-edition.ts` remove duplicatas dentro da edição atual (mesmo story, URLs diferentes) — complementa o dedup principal (1l) que é cross-edição:
-```bash
-npx tsx scripts/dedupe-intra-edition.ts --categorized {EDITION_DIR}/_internal/tmp-categorized.json --out {EDITION_DIR}/_internal/tmp-categorized.json
-```
-In-place. Stdout: `{ removed, kept }`. Logar info.
-
-### 1u-ter. Evergreen filter (#3409)
-
-Script `filter-evergreen.ts` remove artigos evergreen da edição atual (não são notícias do dia):
-```bash
-npx tsx scripts/filter-evergreen.ts --categorized {EDITION_DIR}/_internal/tmp-categorized.json --out {EDITION_DIR}/_internal/tmp-categorized.json
-```
-In-place. Stdout: `{ removed, kept }`. Logar info.
+Isso executa, em sequência: sumarização de mínimos (1t, warn-only), remoção do campo `verifier` (1u, produz `tmp-categorized.json` — arquivo que o gate lê), dedup intra-edição (1u-bis) e filtro evergreen (1u-ter). Nenhum passo bloqueia; saídas são logadas como info/warn.
 
 ### 1u-quat. Anotação actor/brazil via Jev (#8504, shadow mode)
 
