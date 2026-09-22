@@ -11,11 +11,22 @@
  * bloqueiam a edição. O status é impresso em JSON para o orchestrator logar.
  *
  * Uso:
- *   npx tsx scripts/sync-code.ts
+ *   npx tsx scripts/sync-code.ts [--edition AAMMDD]
  *
  * Saída (stdout):
  *   JSON com campos outcome, message, branch_before, warnings, proceed,
  *   up_to_date, commits_behind (#6090).
+ *
+ * #8690: com `--edition AAMMDD`, escreve `_internal/.marker-sync-code-ran.json`
+ * no `_internal/` da edição com `{outcome, up_to_date, commits_behind,
+ * branch_before}`. É o registro determinístico que os invariantes de Stage 5/6
+ * (`sync-code-ran`) checam — sem ele, o Passo -3 de
+ * `.claude/skills/diaria-5-publicacao/SKILL.md` continua sendo só prosa: o
+ * orchestrator pode pular `sync-code.ts` e nenhuma regra mecânica percebe.
+ * O marker é escrito APENAS em outcomes de sucesso real (`synced`,
+ * `synced_stashed`, `already_up_to_date`) — falhas de sync (offline, divergência,
+ * conflito de stash) NÃO escrevem, e o invariante acusa como error, igual aos
+ * demais sentinels (`inject-inbox-urls`, `.close-poll-done.json`).
  *
  * #6090: quando `commits_behind > 0`, imprime um BANNER visível no stderr —
  * a edição continua (fail-soft), mas o defasamento deixa de ser uma linha
@@ -33,6 +44,22 @@
  */
 
 import { syncCode } from "./lib/git-sync.ts";
+import { writeMarker } from "./lib/pipeline-state.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts";
+import { getArg, hasFlag } from "./lib/cli-args.ts";
+import { resolve } from "node:path";
+
+// #8690: `--edition AAMMDD` → escreve o marker que os invariantes de Stage 5/6
+// checam. Sem a flag, comportamento idêntico ao antes (sem marker) — roda no
+// Passo 0 de `/diaria-edicao`, onde o invariant não se aplica (edição ainda
+// não existe).
+const edition = getArg(process.argv, "edition");
+if (edition && !/^\d{6}$/.test(edition)) {
+  process.stderr.write(
+    `[sync-code] --edition "${edition}" inválido — esperado AAMMDD (6 dígitos). ` +
+      `Marker NÃO será escrito.\n`,
+  );
+}
 
 const result = syncCode();
 
@@ -136,6 +163,34 @@ if (result.outcome === "worktree_refused") {
       `   sentido no checkout compartilhado. Se isto rodou por engano a partir do worktree de\n` +
       `   OUTRA sessão, é um bug de cwd em quem chamou este script, não deste.\n\n`,
   );
+}
+
+// #8690: marker de execução do Passo -3. Só em outcomes de sucesso real —
+// falhas de sync (offline, divergência, conflito de stash) deixam o marker
+// de fora, e o invariante `sync-code-ran` acusa como error (igual aos demais
+// sentinels: ausência de sentinel = "não rodou", nunca "rodou e falhou").
+// O editionDir é `data/editions/{AAMMDD}` (layout NESTED, #2795) — o marker
+// vai em `{editionDir}/_internal/.marker-sync-code-ran.json`.
+if (edition && (result.outcome === "synced" || result.outcome === "synced_stashed" || result.outcome === "already_up_to_date")) {
+  try {
+    const editionDir = resolveEditionDir(resolve("data/editions"), edition);
+    writeMarker(editionDir, "sync-code-ran", {
+      outcome: result.outcome,
+      up_to_date: result.up_to_date,
+      commits_behind: result.commits_behind,
+      branch_before: result.branch_before,
+      written_by: "sync-code.ts",
+      source_issue: "#8690",
+    });
+  } catch (e) {
+    // fail-soft: marker quebrado NUNCA altera o exit code do sync (0, sempre)
+    process.stderr.write(
+      `[sync-code] falha ao escrever marker sync-code-ran para edicao ${edition}: ` +
+        `${(e as Error).message} — o invariante de Stage 5/6 vai acusar error ` +
+        `(sync-code-ran ausente), que e o comportamento correto: o marker nao ` +
+        `foi gravado, entao nao ha prova de que o sync rodou.\n`,
+    );
+  }
 }
 
 // Sempre exit 0 — fail-soft (#2686: falha de sync nunca bloqueia a edição)
