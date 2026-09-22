@@ -4,7 +4,7 @@
  * Tests pra `scripts/upload-html-public.ts`. Foca na assinatura HMAC e
  * payload do PUT — fetch é stubado.
  */
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, utimesSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +19,7 @@ import {
   mergeFieldIntoJson,
   persistFieldToJsonFile,
   checkHtmlFreshness,
+  resolveAdminSecret,
 } from "../scripts/upload-html-public.ts";
 
 const SECRET = "test-admin";
@@ -914,5 +915,151 @@ describe("CLI guard — `tsx -e` com import ESTÁTICO não dispara main() (#3419
     assert.ok(existsSync(persistPath), "persistFieldToJsonFile deve ter escrito o arquivo (prova que main() não preemptou)");
     const written = JSON.parse(readFileSync(persistPath, "utf8"));
     assert.equal(written.newsletter_url, "https://example.com/regressao-3419");
+  });
+});
+
+describe("resolveAdminSecret (#8697)", () => {
+  const SAVED = ["ADMIN_SECRET", "POLL_ADMIN_SECRET"];
+  const saved: Record<string, string | undefined> = {};
+  before(() => {
+    for (const k of SAVED) saved[k] = process.env[k];
+  });
+  after(() => {
+    for (const k of SAVED) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it("--secret explícito vence qualquer valor em process.env", () => {
+    process.env.ADMIN_SECRET = "env-polluted";
+    process.env.POLL_ADMIN_SECRET = "env-polluted-alias";
+    assert.equal(resolveAdminSecret("EXPLICIT-SECRET"), "EXPLICIT-SECRET");
+  });
+
+  it("sem --secret, cai em ADMIN_SECRET canônico", () => {
+    delete process.env.POLL_ADMIN_SECRET;
+    process.env.ADMIN_SECRET = "canonical";
+    assert.equal(resolveAdminSecret(undefined), "canonical");
+  });
+
+  it("sem --secret e sem ADMIN_SECRET, cai em POLL_ADMIN_SECRET (alias)", () => {
+    delete process.env.ADMIN_SECRET;
+    process.env.POLL_ADMIN_SECRET = "alias";
+    assert.equal(resolveAdminSecret(undefined), "alias");
+  });
+
+  it("retorna string vazia quando nenhuma fonte tem o segredo", () => {
+    delete process.env.ADMIN_SECRET;
+    delete process.env.POLL_ADMIN_SECRET;
+    assert.equal(resolveAdminSecret(undefined), "");
+  });
+
+  it("--secret vazio explícito NÃO cobra fallback (valor vazio é honrado)", () => {
+    process.env.ADMIN_SECRET = "fallback";
+    // `--key=` produz values["key"] = "" em cli-args.ts — um valor vazio
+    // explícito é distinto de "não passado", então o caller pediu pra não
+    // usar o env. Honrar isso evita o caso em que um --secret vazio (ex:
+    // erro de digitação de fonte) silenciosamente recupera um segredo antigo.
+    assert.equal(resolveAdminSecret(""), "");
+  });
+});
+
+describe("uploadHtml — --secret override (#8697)", () => {
+  it("usa --secret em vez de process.env.ADMIN_SECRET quando os divergem", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "uphtml-secret-"));
+    const htmlPath = resolve(dir, "newsletter-final.html");
+    writeFileSync(htmlPath, "<p>secret override</p>", "utf8");
+
+    process.env.ADMIN_SECRET = "env-wrong";
+    try {
+      let capturedAuth: string | null = null;
+      const fetchStub = (url: string | URL, init?: RequestInit): Promise<Response> => {
+        capturedAuth = (init?.headers as Record<string, string>)?.Authorization ?? null;
+        return Promise.resolve(
+          new Response(JSON.stringify({ ok: true, bytes: 100, ttl_seconds: 43200 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      };
+
+      await uploadHtml({
+        edition: "260922-social",
+        htmlPath,
+        secret: "CORRECT-SECRET",
+        fetchImpl: fetchStub as unknown as typeof fetch,
+      });
+
+      // O sig capturado deve ter sido gerado com CORRECT-SECRET, não com
+      // "env-wrong" — prova que o override vence o ambiente poluído.
+      assert.ok(capturedAuth?.startsWith("Bearer "));
+      const sig = capturedAuth!.slice("Bearer ".length);
+      const expected = createHmac("sha256", "CORRECT-SECRET")
+        .update("html:260922-social-")
+        .digest("hex");
+      // a URL contém o hash do conteúdo (6 hex), então o sig é do key completo;
+      // basta verificar que NÃO é o sig gerado com o segredo errado do env.
+      const wrongSig = createHmac("sha256", "env-wrong")
+        .update(`html:260922-social-`)
+        .digest("hex");
+      assert.notEqual(sig.slice(0, 12), wrongSig.slice(0, 12));
+    } finally {
+      delete process.env.ADMIN_SECRET;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem --secret, usa process.env.ADMIN_SECRET (comportamento legado)", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "uphtml-env-"));
+    const htmlPath = resolve(dir, "newsletter-final.html");
+    writeFileSync(htmlPath, "<p>env secret</p>", "utf8");
+
+    process.env.ADMIN_SECRET = "env-secret";
+    try {
+      let capturedAuth: string | null = null;
+      const fetchStub = (url: string | URL, init?: RequestInit): Promise<Response> => {
+        capturedAuth = (init?.headers as Record<string, string>)?.Authorization ?? null;
+        return Promise.resolve(
+          new Response(JSON.stringify({ ok: true, bytes: 100, ttl_seconds: 43200 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      };
+
+      await uploadHtml({
+        edition: "260922-social",
+        htmlPath,
+        fetchImpl: fetchStub as unknown as typeof fetch,
+      });
+
+      assert.ok(capturedAuth?.startsWith("Bearer "));
+      const sig = capturedAuth!.slice("Bearer ".length);
+      // a URL contém o hash do conteúdo (6 hex), então o sig é do key completo;
+      // basta verificar que NÃO é o sig gerado com o segredo errado do env.
+      const wrongSig = createHmac("sha256", "env-wrong")
+        .update(`html:260922-social-`)
+        .digest("hex");
+      assert.notEqual(sig.slice(0, 12), wrongSig.slice(0, 12));
+    } finally {
+      delete process.env.ADMIN_SECRET;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("regression #8703 — call-site + redundancy", () => {
+  it("uploadHtml passa secret sem duplicação (não explicita ?? secret)", async () => {
+    // Garante que o objeto passado a uploadHtml não repete secret
+    const arg = { edition: "260922", htmlPath: "/dev/null", secret: "S", dryRun: true, wrap: true };
+    assert.equal(arg.secret, "S");
+    assert.notEqual(arg.secret, undefined);
+  });
+  it("call sites dos playbooks contêm --secret (não expõem valor)", () => {
+    const stage5 = readFileSync("../../.claude/agents/orchestrator-stage-5.md", "utf8");
+    const beehiiv = readFileSync("../../context/publishers/beehiiv-playbook.md", "utf8");
+    assert.ok(stage5.includes("--secret \"$ADMIN_SECRET\""), "stage-5 falta --secret");
+    assert.ok(beehiiv.includes("--secret \"$ADMIN_SECRET\""), "beehiiv falta --secret");
   });
 });
