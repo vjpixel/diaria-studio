@@ -618,7 +618,7 @@ Também resetar **Subtitle** se vier com valor da edição anterior (verificar s
 Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`draft.diaria.workers.dev/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
 
 ```bash
-npx tsx scripts/upload-html-public.ts --edition {AAMMDD} --no-wrap
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD} --no-wrap --secret "$ADMIN_SECRET"
 ```
 
 Stdout (JSON) — **`url` é versionada com hash do conteúdo (#1494, #1511)**:

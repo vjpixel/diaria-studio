@@ -495,7 +495,7 @@ async function main(): Promise<void> {
   const result = await uploadHtml({
     edition,
     htmlPath,
-    secret: explicitSecret ?? secret,
+    secret,
     dryRun,
     wrap: !noWrap,
     reviewedMdPath,

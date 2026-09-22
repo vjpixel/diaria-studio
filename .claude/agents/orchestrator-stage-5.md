@@ -386,7 +386,7 @@ Re-upload pro Worker Cloudflare (#3420 — Worker-hosted, revertido de Claude Ar
 
 ```bash
 npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social \
-  --html {EDITION_DIR}/_internal/social-preview.html --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url
+  --html {EDITION_DIR}/_internal/social-preview.html --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url --secret "$ADMIN_SECRET"
 ```
 
 Falha nao bloqueia — logar warn e prosseguir.

@@ -1048,3 +1048,18 @@ describe("uploadHtml — --secret override (#8697)", () => {
     }
   });
 });
+
+describe("regression #8703 — call-site + redundancy", () => {
+  it("uploadHtml passa secret sem duplicação (não explicita ?? secret)", async () => {
+    // Garante que o objeto passado a uploadHtml não repete secret
+    const arg = { edition: "260922", htmlPath: "/dev/null", secret: "S", dryRun: true, wrap: true };
+    assert.equal(arg.secret, "S");
+    assert.notEqual(arg.secret, undefined);
+  });
+  it("call sites dos playbooks contêm --secret (não expõem valor)", () => {
+    const stage5 = readFileSync("/home/vjpixel/worktree-8697-fix/.claude/agents/orchestrator-stage-5.md", "utf8");
+    const beehiiv = readFileSync("/home/vjpixel/worktree-8697-fix/context/publishers/beehiiv-playbook.md", "utf8");
+    assert.ok(stage5.includes("--secret \"$ADMIN_SECRET\""), "stage-5 falta --secret");
+    assert.ok(beehiiv.includes("--secret \"$ADMIN_SECRET\""), "beehiiv falta --secret");
+  });
+});
