@@ -233,7 +233,7 @@ export function extractEditorUrls(blocks: InboxBlock[]): SyntheticInboxArticle[]
       seen.add(key);
 
       const article: SyntheticInboxArticle = {
-        url,
+        url: canonicalize(url),
         source: "inbox",
         title: "(inbox)",
         flag: "editor_submitted",
@@ -363,7 +363,7 @@ export function extractNewsletterUrls(blocks: InboxBlock[]): SyntheticInboxArtic
       seen.add(key);
 
       articles.push({
-        url,
+        url: canonicalize(url),
         source: `inbox_newsletter:${senderLabel}`,
         title: `(newsletter:${senderLabel})`,
         flag: "newsletter_extracted",
