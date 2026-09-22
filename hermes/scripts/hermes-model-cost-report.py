@@ -149,7 +149,7 @@ PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
     "z-ai/glm-5.3-flash": {
         "prompt": 0.00000015,            # $0,15/M — preco de lista, promo caiu
         "completion": 0.0000005,         # $0,50/M — preco de lista, promo caiu
-        "input_cache_read": 0.00000003,  # $0,03/M — 90% do mix do tick (#6712)
+        "input_cache_read": 0.000000050,  # $0,05/M — preço vigente 2026-09-22 (promo expirou 09/09, #8716) — 90% do mix
     },
 }
 
