@@ -993,8 +993,10 @@ describe("uploadHtml — --secret override (#8697)", () => {
 
       // O sig capturado deve ter sido gerado com CORRECT-SECRET, não com
       // "env-wrong" — prova que o override vence o ambiente poluído.
-      assert.ok(capturedAuth?.startsWith("Bearer "));
-      const sig = capturedAuth!.slice("Bearer ".length);
+      if (capturedAuth === null) throw new Error("capturedAuth null");
+      const authString: string = capturedAuth;
+      assert.ok(authString.startsWith("Bearer "));
+      const sig = authString.slice("Bearer ".length);
       const expected = createHmac("sha256", "CORRECT-SECRET")
         .update("html:260922-social-")
         .digest("hex");
@@ -1034,8 +1036,10 @@ describe("uploadHtml — --secret override (#8697)", () => {
         fetchImpl: fetchStub as unknown as typeof fetch,
       });
 
-      assert.ok(capturedAuth?.startsWith("Bearer "));
-      const sig = capturedAuth!.slice("Bearer ".length);
+      if (capturedAuth === null) throw new Error("capturedAuth null");
+      const authString: string = capturedAuth;
+      assert.ok(authString.startsWith("Bearer "));
+      const sig = authString.slice("Bearer ".length);
       // a URL contém o hash do conteúdo (6 hex), então o sig é do key completo;
       // basta verificar que NÃO é o sig gerado com o segredo errado do env.
       const wrongSig = createHmac("sha256", "env-wrong")
