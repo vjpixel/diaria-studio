@@ -75,6 +75,22 @@ describe("collectHubSources (#4558 Parte A)", () => {
     assert.match(warnings[0], /claude-faz-algo-patronos/);
   });
 
+  it("filtra broadcasts de teste com título prefixado por [teste] — regression #8699", () => {
+    // Kit envia broadcasts de teste com título começando por "[teste]".
+    // Estes chegam com status "confirmed" e podem casar keyword patterns,
+    // poluindo o relatório "slugs resolvíveis". A função deve ignorá-los.
+    const posts: RawCachedPost[] = [
+      { slug: "teste-claude", title: "[teste] Claude faz algo — preview", status: "confirmed", publish_date: 1753000000 },
+      { slug: "claude-real", title: "Claude faz algo real", status: "confirmed", publish_date: 1753000200 },
+    ];
+    const { rows, warnings } = collectHubSources(posts, PATTERN);
+    assert.equal(rows.length, 1, "broadcast de teste [teste] não devia entrar no hub");
+    assert.equal(rows[0].editionSlug, "claude-real", "só a edição real deve aparecer");
+    // O drop do [teste] é silencioso — diferente do filtro de slug (teste-*),
+    // que emite warning, o filtro por título [teste] apenas pula (não são
+    // edições reais, só broadcasts de preview/envio do Kit).
+  });
+
   it("uma edição publicada nos DOIS ESPs (canal Kit paralelo, #6114) entra uma vez só", () => {
     // Mesmo slug, mesmo dia, duas origens — a camada unificada devolve as
     // duas corretamente (são dois envios reais); a página de hub não pode
