@@ -500,6 +500,13 @@ def main() -> int:
         and mod.price_check_exit_code(f_cache) == 3,
     )
 
+    # #8716: o baseline de produção acompanha o preço vigente do modelo pago;
+    # se voltar ao preço promocional, o alerta diário fica mascarado.
+    assert_true(
+        "#8716: baseline vigente do glm-5.3-flash usa input_cache_read=0.000000050",
+        mod.PAID_PRICE_BASELINE["z-ai/glm-5.3-flash"]["input_cache_read"] == 0.000000050,
+    )
+
     if FAILED:
         print(f"\n{FAILED} asserção(ões) falharam")
         return 1
