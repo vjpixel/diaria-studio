@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
 import { loadDoc } from "../../update-stage-status.ts";
+import { readMarker } from "../pipeline-state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -361,6 +362,89 @@ function checkStep4Sentinel(editionDir: string): InvariantViolation[] {
         source_issue: "#780",
         severity: "error",
         file: path,
+      },
+    ];
+  }
+  return [];
+}
+
+/**
+ * #8690: `_internal/.marker-sync-code-ran.json` deve existir — prova de que o
+ * Passo -3 de `.claude/skills/diaria-5-publicacao/SKILL.md`
+ * (`npx tsx scripts/sync-code.ts --edition {AAMMDD}`) rodou e completou com um
+ * outcome de sucesso (`synced` | `synced_stashed` | `already_up_to_date`).
+ *
+ * Antes deste fix, o Passo -3 era só prosa: o orchestrator podia pular
+ * `sync-code.ts` (ou rodá-lo sem `--edition`) e nenhuma regra mecânica
+ * percebia — a sessão de Stage 5/6 (que nunca passa pelo Passo 0 de
+ * `/diaria-edicao`, #6171) podia rodar com código desatualizado, silenciosa-
+ * mente, como aconteceu no #8684 (edição 260922 saiu com `exit 3` porque o
+ * checkout não tinha puxado o commit do #8636).
+ *
+ * O marker é escrito por `scripts/sync-code.ts` APENAS em outcomes de sucesso.
+ * Falhas de sync (offline, divergência, conflito de stash) NÃO escrevem — e
+ * este invariante acusa como error, igual aos demais sentinels
+ * (`inject-inbox-urls`, `.close-poll-done.json`): ausência de sentinel =
+ * "não rodou", nunca "rodou e falhou". O fail-soft do sync (exit 0) continua
+ * intacto — o que bloqueia é o GATE de invariantes em §5a/§6g, não o sync.
+ *
+ * `postDispatchOnly: false` (padrão) — roda em `--phase pre-dispatch` (§5a,
+ * antes de qualquer publicação) e também em §5i/§6g (pós-dispatch). É o
+ * unico ponto em que o Passo -3 pode ser verificado: é a PRIMEIRA coisa da
+ * skill, então em pre-dispatch o marker já deveria existir.
+ */
+function checkSyncCodeRan(editionDir: string): InvariantViolation[] {
+  const marker = readMarker(editionDir, "sync-code-ran");
+  if (marker === null) {
+    const path = resolve(editionDir, "_internal", ".marker-sync-code-ran.json");
+    return [
+      {
+        rule: "sync-code-ran",
+        message:
+          "_internal/.marker-sync-code-ran.json ausente — Passo -3 de " +
+          ".claude/skills/diaria-5-publicacao/SKILL.md (npx tsx scripts/sync-code.ts " +
+          "--edition {AAMMDD}) NAO rodou ou rodou sem --edition (o marker " +
+          "so e escrito com a flag). Stage 5/6 roda em sessao NOVA (#6171), que " +
+          "nunca passa pelo Passo 0 de /diaria-edicao — sem este passo, a sessao " +
+          "roda com o codigo que ja estava em disco (#8690).",
+        source_issue: "#8690",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+  const details = marker.details as
+    | { outcome?: string; up_to_date?: boolean; commits_behind?: number; branch_before?: string }
+    | undefined;
+  const outcome = details?.outcome;
+  const validOutcomes = ["synced", "synced_stashed", "already_up_to_date"];
+  if (outcome === undefined) {
+    return [
+      {
+        rule: "sync-code-ran-shape",
+        message:
+          `marker sync-code-ran existe mas sem campo 'outcome' no details: ` +
+          `${JSON.stringify(details)} — marker malformado, não prova execução.`,
+        source_issue: "#8690",
+        severity: "error",
+        file: resolve(editionDir, "_internal", ".marker-sync-code-ran.json"),
+      },
+    ];
+  }
+  if (!validOutcomes.includes(outcome)) {
+    return [
+      {
+        rule: "sync-code-ran-outcome",
+        message:
+          `marker sync-code-ran tem outcome="${outcome}", que NÃO é um outcome de ` +
+          `sucesso (esperado um de ${validOutcomes.join(", ")}) — o sync falhou ` +
+          `(#2686 fail-soft: falha de sync NÃO escreve o marker). O marker em si ` +
+          `existe, mas não comprova que o checkout foi sincronizado. Verifique ` +
+          `o stderr do sync-code.ts para o banner correspondente (#6090/#6668/` +
+          `#6800/#7740/#7336) e rode novamente se precisar.`,
+        source_issue: "#8690",
+        severity: "error",
+        file: resolve(editionDir, "_internal", ".marker-sync-code-ran.json"),
       },
     ];
   }
@@ -1116,6 +1200,19 @@ function checkKitDiariaExclusiveAudienceDispatched(
 }
 
 export const STAGE_5_RULES: InvariantRule[] = [
+  {
+    // #8690: Passo -3 (sync-code.ts) é a PRIMEIRA coisa que esta skill faz
+    // (`.claude/skills/diaria-5-publicacao/SKILL.md` Passo -3), antes de
+    // qualquer publicação — então roda em `--phase pre-dispatch` (§5a) SEM
+    // `postDispatchOnly`. A flag `--edition {AAMMDD}` é o que faz o marker
+    // existir; sem ela, o sync roda mas não grava nada e o invariante acusa.
+    id: "sync-code-ran",
+    description:
+      "_internal/.marker-sync-code-ran.json escrito por sync-code.ts --edition (#8690)",
+    source_issue: "#8690",
+    stage: 5,
+    run: checkSyncCodeRan,
+  },
   {
     id: "step-4-sentinel-exists",
     description: "_internal/.step-4-done.json escrito (#780)",
