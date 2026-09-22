@@ -8,7 +8,7 @@
  */
 
 // Parametros de tracking removidos na canonicalizacao
-const TRACKING_PARAM_PREFIXES = ["utm_"];
+const TRACKING_PARAM_PREFIXES = ["utm_", "mc_"];
 // #4148: "_bhlid" e o link-id que o Beehiiv injeta em TODO link de um post
 // publicado (rastreio de clique por assinante). past-editions.md e alimentado
 // a partir do conteudo JA PUBLICADO (via Beehiiv MCP, ver refresh-past-editions.ts),
@@ -19,7 +19,10 @@ const TRACKING_PARAM_PREFIXES = ["utm_"];
 // real do incidente 260727 (eugeneyan.com/writing/cybersecurity-evals repetiu
 // 12 dias depois) — a categorizacao estava correta (foi pra use_melhor), o elo
 // que faltou foi este.
-const TRACKING_PARAMS_EXACT = new Set(["ref", "ref_src", "_bhlid"]);
+// #8680: adiciona fbclid, gclid (Facebook/Google click IDs) e mc_ (MailChimp
+// tracking) — URLs de newsletters do inbox carregam estes params e poluem o
+// pool/dedup sem contribuir em nada.
+const TRACKING_PARAMS_EXACT = new Set(["ref", "ref_src", "_bhlid", "fbclid", "gclid"]);
 
 /**
  * Remove tracking params, hash e normaliza pathname (trailing slash).

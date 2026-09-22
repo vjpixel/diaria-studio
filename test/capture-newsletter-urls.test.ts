@@ -183,7 +183,7 @@ describe("processThreads — core logic", () => {
     assert.equal(articles.length, 1);
     assert.equal(
       articles[0].url,
-      "https://platform.claude.com/prompting-claude-opus-5?utm_source=diaria&_bhlid=abc123",
+      "https://platform.claude.com/prompting-claude-opus-5",
     );
     assert.ok(!articles[0].url.endsWith(")_==_"), `sufixo de lixo vazou: ${articles[0].url}`);
   });

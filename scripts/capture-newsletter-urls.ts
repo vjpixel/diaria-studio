@@ -213,7 +213,7 @@ export function processThreads(
       seen.add(key);
 
       articles.push({
-        url,
+        url: canonicalize(url),
         source: `inbox_newsletter:${senderLabel}`,
         title: `(newsletter:${senderLabel})`,
         flag: "newsletter_extracted",
