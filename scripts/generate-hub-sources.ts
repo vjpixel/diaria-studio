@@ -551,6 +551,11 @@ export function collectHubSources(
 
   for (const post of posts) {
     if (post.status !== "confirmed") continue;
+    // #8699: broadcasts de teste do Kit com título prefixado por "[teste]"
+    // enganam a detecção de hub edição — mesmo sem slug, casam keyword patterns
+    // e poluem o relatório "slugs resolvíveis". Pular sem warning (não são
+    // edições reais, e sem slug não tem como gerar entrada de hub válida).
+    if (post.title?.startsWith("[teste]")) continue;
     const destaques = [post.title, ...(post.subtitle ? post.subtitle.split("|").map((s) => s.trim()) : [])].filter(
       (s): s is string => Boolean(s),
     );
