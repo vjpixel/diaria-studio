@@ -26,6 +26,15 @@
  *   ADMIN_SECRET ou POLL_ADMIN_SECRET — HMAC pra autenticar o PUT
  *   DRAFT_WORKER_URL (default: https://draft.diaria.workers.dev)
  *
+ * #8697: `--secret <value>` sobrescreve o env. loadProjectEnv() carrega `.env`
+ * com override:false, então uma ADMIN_SECRET já presente no ambiente da sessão
+ * (ex: variável injetada por outra máquina/sync de config, ou um `doppler run`
+ * que sobrou no shell) GANHA sobre o `.env` e o script assina com o segredo
+ * errado → Worker retorna 403 "invalid signature". O env é fail-soft (aviso em
+ * stderr via warnOnEnvDivergence, nunca aborta), então o único caminho seguro
+ * de garantir o segredo certo é passá-lo explicitamente. Produção passa
+ * `--secret` lido de uma fonte única (Doppler) no Stage 5 §5f-ter.
+ *
  * Output stdout (JSON):
  *   {
  *     "edition": "260514",
@@ -68,6 +77,34 @@ export interface UploadHtmlResult {
 export function buildDraftUrl(workerBaseUrl: string, edition: string): string {
   const base = workerBaseUrl.replace(/\/+$/, "");
   return `${base}/${encodeURIComponent(edition)}`;
+}
+
+/**
+ * #8697: resolve o ADMIN_SECRET para assinar o PUT pro Worker.
+ *
+ * Ordem de precedência (todas fail-soft, a última não-null vence):
+ *   1. `--secret <value>` (explícito na CLI) — único caminho que GARANTE o
+ *      segredo certo, independente de poluição no ambiente da sessão.
+ *   2. `process.env.ADMIN_SECRET` (canonical).
+ *   3. `process.env.POLL_ADMIN_SECRET` (alias usado em alguns ambientes).
+ *
+ * `loadProjectEnv()` carrega `.env` com `override:false`, então um valor já
+ * em `process.env` (injetado por outra máquina, sync de config, ou um
+ * `doppler run` que sobrou no shell) GANHA sobre o `.env`. O env-loader
+ * avisa em stderr via `warnOnEnvDivergence`, mas nunca aborta — e um aviso no
+ * stderr é facilmente perdido quando o script é chamado por um orchestrator
+ * que captura stdout. Resultado: o script assinava com o segredo errado e o
+ * Worker devolvia 403 "invalid signature" sem que nada no repo sinalizasse que
+ * a causa era um segredo divergente, não um Worker morto.
+ *
+ * Testado ao vivo (#8697): com ADMIN_SECRET local em `.env`, PUT de 30 bytes
+ * retorna 200; com a mesma variável poluída no `process.env` por um valor
+ * qualquer, retorna 403 — reproducível, e o único sinal é o status HTTP.
+ *
+ * @param explicit  Valor passado em `--secret` (undefined se não houver).
+ */
+export function resolveAdminSecret(explicit?: string): string {
+  return explicit ?? process.env.ADMIN_SECRET ?? process.env.POLL_ADMIN_SECRET ?? "";
 }
 
 /**
@@ -282,7 +319,15 @@ ${body}
 export async function uploadHtml(args: {
   edition: string;
   htmlPath: string;
-  secret: string;
+  /**
+   * #8697: segredo ADMIN_SECRET explícito (via `--secret`). Quando fornecido,
+   * o caller assume a responsabilidade de ter lido o valor de uma fonte
+   * única — evita o problema de `loadProjectEnv()` com override:false, onde
+   * uma variável já em `process.env` (outra máquina/sync) ganha sobre `.env`.
+   * Omitido → resolveAdminSecret() cai no fallback de env (com o aviso
+   * documentado).
+   */
+  secret?: string;
   workerUrl?: string;
   dryRun?: boolean;
   fetchImpl?: typeof fetch;
@@ -355,7 +400,12 @@ export async function uploadHtml(args: {
     };
   }
 
-  const sig = htmlPutSig(args.secret, versionedEdition);
+  // #8697: `secret` é opcional — quando o caller não passou um valor explícito
+  // (ex: chamada legada que só passa `edition`/`htmlPath`), resolve pelo
+  // ambiente como fallback. Um `--secret` explícito vence tudo (o caller assume
+  // a responsabilidade de ter o segredo certo, ver docstring de resolveAdminSecret).
+  const secret = args.secret ?? resolveAdminSecret();
+  const sig = htmlPutSig(secret, versionedEdition);
   const fetchFn = args.fetchImpl ?? fetch;
   const res = await fetchFn(url, {
     method: "PUT",
@@ -391,17 +441,21 @@ async function main(): Promise<void> {
   // social: --persist-to .../05-social-preview.json --field social_preview_url.
   const persistTo = values["persist-to"];
   const persistField = values["field"] ?? "url";
+  // #8697: --secret sobrescreve o env. Produção lê o valor de uma fonte única
+  // (Doppler) e passa explicitamente — loadProjectEnv() com override:false
+  // deixava uma ADMIN_SECRET já em process.env (outra máquina/sync de config)
+  // ganhar sobre o .env, e o script assinava com o segredo errado → Worker 403.
+  const explicitSecret = values["secret"];
 
   if (!edition) {
     console.error(
       "Uso: upload-html-public.ts --edition AAMMDD [--dry-run] [--no-wrap] [--html <path>] " +
-        "[--persist-to <json> --field <nome>]",
+        "[--persist-to <json> --field <nome>] [--secret <value>]",
     );
     process.exit(2);
   }
 
-  const secret =
-    process.env.ADMIN_SECRET ?? process.env.POLL_ADMIN_SECRET ?? "";
+  const secret = resolveAdminSecret(explicitSecret);
   if (!secret && !dryRun) {
     console.error("[upload-html-public] ADMIN_SECRET ausente no env — abortando");
     process.exit(1);
@@ -441,7 +495,7 @@ async function main(): Promise<void> {
   const result = await uploadHtml({
     edition,
     htmlPath,
-    secret,
+    secret: explicitSecret ?? secret,
     dryRun,
     wrap: !noWrap,
     reviewedMdPath,

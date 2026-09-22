@@ -393,7 +393,7 @@ function checkStep4Sentinel(editionDir: string): InvariantViolation[] {
  * unico ponto em que o Passo -3 pode ser verificado: é a PRIMEIRA coisa da
  * skill, então em pre-dispatch o marker já deveria existir.
  */
-function checkSyncCodeRan(editionDir: string): InvariantViolation[] {
+export function checkSyncCodeRan(editionDir: string): InvariantViolation[] {
   const marker = readMarker(editionDir, "sync-code-ran");
   if (marker === null) {
     const path = resolve(editionDir, "_internal", ".marker-sync-code-ran.json");
