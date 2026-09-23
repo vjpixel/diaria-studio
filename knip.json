@@ -29,6 +29,8 @@
     }
   },
   "ignoreExportsUsedInFile": true,
+  "ignoredDependencies": ["wrangler"],
+  "ignoredBinaries": ["wrangler"],
   // test/systemd-units.test.ts (#4807) faz shell-out condicional pro parser
   // real do systemd (`systemd-analyze calendar`) pra validar o OnCalendar=
   // gerado -- binário do sistema (Linux), nunca uma dependência npm; o teste
