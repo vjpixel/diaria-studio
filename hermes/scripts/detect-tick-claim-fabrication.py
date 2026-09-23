@@ -678,22 +678,35 @@ def check_report_freshness(
 def check_classification_count(
     report_text: str | None,
     open_issue_count: int | None,
-    session_correlated: bool = True,
+    session_correlated: bool,
 ) -> dict:
     """Checagem (b): contagem de issues classificadas alegada vs real.
 
-    `session_correlated` (#8739, default `True` — parâmetro retrocompatível,
-    testes existentes que chamam sem ele preservam o comportamento antigo):
-    `True` quando `correlate_continuo_session` (checagem (a), no `run()`)
-    achou uma sessão `continuo` (viva) cuja janela se sobrepõe à do tick
-    sendo checado. Quando `False` e o veredito seria `fabrication_suspected`,
-    downgrade pra `indeterminate` — sem sessão pra ancorar, o relatório
-    avaliado pode ser um leftover STALE de um tick anterior/falho, cujo
-    conteúdo é sobre atividade não-relacionada e vai divergir da contagem
-    REAL de hoje por definição, não por fabricação (achado #8739: tick que
-    falhou cedo, ex. HTTP 429, antes de qualquer sessão registrar; o
-    relatório antigo ainda em disco foi avaliado contra o estado de hoje e
-    produziu fabrication_suspected — mesma disciplina de check_report_freshness,
+    `session_correlated` (#8739, **obrigatório** desde o review da PR
+    #8745/#8739 — a `True` implícita por default já causou o bug original
+    e um parâmetro sem default força todo call site a decidir
+    explicitamente, em vez de herdar silenciosamente um valor errado):
+    `True` quando HOUVE alguma sessão `continuo` correlacionando com a
+    janela deste tick — viva (`correlate_continuo_session`, checagem (a))
+    OU encerrada (`ended_continuo_events_in_window`, log de lifecycle,
+    #8521). No `run()`, é `session is not None or bool(ended_events)` —
+    nunca só `session is not None` sozinho, senão um tick que reivindicou
+    e terminou o protocolo normalmente (`endSession` apagou o registro
+    vivo, mas o evento "ended" real sobrepõe a janela) mascararia uma
+    contagem REALMENTE fabricada como indeterminate (achado do review da
+    PR #8745: `check_classification_count` não tinha acesso a
+    `ended_events`, então uma sessão só "ended" — sem uma viva — fazia
+    `session_correlated=False` incondicionalmente, escondendo o cenário
+    original do #7537). Quando `False` (nem sessão viva, nem encerrada,
+    correlacionam) e o veredito seria `fabrication_suspected`, downgrade
+    pra `indeterminate` — sem NENHUM sinal de que uma sessão rodou nesta
+    janela, o relatório avaliado pode ser um leftover STALE de um tick
+    anterior/falho, cujo conteúdo é sobre atividade não-relacionada e vai
+    divergir da contagem REAL de hoje por definição, não por fabricação
+    (achado #8739: tick que falhou cedo, ex. HTTP 429, antes de qualquer
+    sessão registrar-se OU terminar o protocolo; o relatório antigo ainda
+    em disco foi avaliado contra o estado de hoje e produziu
+    fabrication_suspected — mesma disciplina de check_report_freshness,
     que já faz esse downgrade pra este mesmo cenário)."""
     if report_text is None:
         return {
@@ -809,12 +822,29 @@ def check_claimed_issues(
     report_text: str | None,
     claimed_in_registry: set[int],
     sessions_dir_exists: bool,
+    session_correlated: bool,
     ended_session_in_window: bool = False,
     ended_claimed_snapshot: set[int] | None = None,
-    session_correlated: bool = True,
 ) -> dict:
     """Checagem (c): issues citadas como reivindicadas no relatório
     aparecem de fato em algum `claimed_issues` do session-registry.
+
+    `session_correlated` (#8739, **obrigatório** desde o review da PR
+    #8745/#8739 — sem default, todo call site decide explicitamente, em
+    vez de herdar silenciosamente `True`): `True` quando HOUVE alguma
+    sessão `continuo` correlacionando com a janela deste tick — viva
+    (`session`, via `correlate_continuo_session`) OU encerrada
+    (`ended_continuo_events_in_window`, #8521). No `run()`, é `session is
+    not None or bool(ended_events)`. Cobre o caso que `ended_session_in_window`
+    sozinho NÃO cobre: nem uma sessão viva nem um evento `"ended"`
+    correlacionam — nenhum sinal de que ALGUMA sessão rodou nesta janela.
+    Aí o relatório sendo comparado pode ser um leftover STALE (tick que
+    falhou cedo, nunca chegou a registrar sessão nem a terminar o
+    protocolo) — a ausência da issue citada não pode ser lida como
+    "mecanismo de claim nunca rodou", porque o relatório inteiro pode não
+    ser deste tick. Só se aplica quando `ended_session_in_window` também é
+    `False` — uma sessão `ended` real já tem seu próprio downgrade
+    (indeterminate) acima, mais específico, e vence esta checagem.
 
     `ended_session_in_window` (#8521, default `False` — parâmetro
     retrocompatível, testes existentes que chamam sem ele preservam o
@@ -825,21 +855,7 @@ def check_claimed_issues(
     INTEIRO (não só `claimed_issues`, diferente de `unclaimIssue`), então
     uma claim real e ainda ativa no fim de um tick que terminou o protocolo
     normalmente fica ausente de `claimed_in_registry` por desenho, não por
-    fabricação.
-
-    `session_correlated` (#8739, default `True` — mesmo parâmetro
-    retrocompatível de `check_classification_count`): `True` quando uma
-    sessão `continuo` VIVA (`session`, via `correlate_continuo_session`)
-    correlaciona com a janela deste tick. Cobre o caso que
-    `ended_session_in_window` NÃO cobre: nem uma sessão viva nem um evento
-    `"ended"` correlacionam — nenhum sinal de que ALGUMA sessão rodou nesta
-    janela. Aí o relatório sendo comparado pode ser um leftover STALE (tick
-    que falhou cedo, nunca chegou a registrar sessão nem a terminar o
-    protocolo) — a ausência da issue citada não pode ser lida como
-    "mecanismo de claim nunca rodou", porque o relatório inteiro pode não
-    ser deste tick. Só se aplica quando `ended_session_in_window` também é
-    `False` — uma sessão `ended` real já tem seu próprio downgrade
-    (indeterminate) acima, mais específico."""
+    fabricação."""
     if report_text is None:
         return {
             "check": "claimed_issues",
@@ -1077,22 +1093,32 @@ def run(
         resolved_lifecycle_log, tick_window_start, tick_window_end
     )
 
-    # #8739: nenhuma sessao continuo VIVA correlaciona com a janela deste
-    # tick -> as checagens (b) e (c) tambem precisam saber disso, nao so a
-    # (a) (check_report_freshness). Ver docstring de check_classification_count
-    # e check_claimed_issues.
-    session_correlated = session is not None
+    # #8739 (revisado no review da PR #8745): "alguma sessao correlacionou
+    # com esta janela" precisa contar TANTO sessao viva (`session`) QUANTO
+    # sessao encerrada (`ended_events`, #8521) — nao so `session is not
+    # None` sozinho. Um tick que reivindicou uma issue e terminou o
+    # protocolo normalmente (`endSession` apagou o registro vivo, mas o
+    # log de lifecycle tem o evento "ended" real sobrepondo a janela) tem
+    # `session is None`, mas HOUVE sessao real nesta janela — achado real
+    # (#7537) nao pode virar indeterminate so porque a sessao que produziu
+    # o relatorio real ja terminou o protocolo antes do detector rodar.
+    # Nome deliberadamente DIFERENTE do parametro `session_correlated` das
+    # checagens (b)/(c) e da chave `session_correlated` do dict de retorno
+    # (que e sessionId-ou-None, semantica distinta) — evita a confusao de
+    # duas coisas com o mesmo nome dentro desta funcao (achado do review
+    # da PR #8745).
+    any_session_in_window = session is not None or bool(ended_events)
 
     checks = [
         check_report_freshness(report_path, session, tick_window_min, now),
         check_classification_count(
-            report_text, open_issue_count, session_correlated=session_correlated,
+            report_text, open_issue_count, session_correlated=any_session_in_window,
         ),
         check_claimed_issues(
             report_text, claimed_in_registry, sessions_dir.is_dir(),
+            session_correlated=any_session_in_window,
             ended_session_in_window=bool(ended_events),
             ended_claimed_snapshot=_snapshot_from_events(ended_events),
-            session_correlated=session_correlated,
         ),
     ]
 
