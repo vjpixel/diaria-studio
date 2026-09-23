@@ -125,7 +125,7 @@ Se alguma chamada de gh issue create FALHOU, conte em issues_falharam e liste o 
 OUT_FILE="$STATE_DIR/last-daily-review-output.txt"
 echo "$PROMPT" | timeout 5400 claude -p \
   --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh pr list:*)" \
-  --model opus --effort low | tee "$OUT_FILE" >&2
+  --model opus --effort high | tee "$OUT_FILE" >&2
 
 # #6987/#6989 (01/09/2026): `command grep` — neste ambiente `grep` é uma
 # função de shell que shella pro binário `claude`; se ele quebrar, todo
