@@ -33,6 +33,10 @@ import {
   parseArgs,
   refreshSocialSourceHash,
   reindexCarouselSourceHashes,
+  reorderFactCheckManifest,
+  reorderFactCheckSources,
+  reorderCropReviewJson,
+  invalidatePublicImagesForReorder,
   type RenameFileDeps,
 } from "../scripts/reorder-destaques.ts";
 import { hashFromApprovedFile } from "../scripts/lib/social-source-hash.ts";
@@ -1792,5 +1796,303 @@ describe("reindexCarouselSourceHashes — entradas órfãs (#6068)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("reorderFactCheckManifest (#8679, unidade)", () => {
+  it("swap D1<->D2: URL/entrada segue o destaque, campo `destaque` reflete a posição NOVA", () => {
+    const entries = [
+      { destaque: 1, url: "https://d1.example", status: "ok", erro: null, bytes: 100, fetched_at: "t1" },
+      { destaque: 2, url: "https://d2.example", status: "ok", erro: null, bytes: 200, fetched_at: "t2" },
+      { destaque: 3, url: "https://d3.example", status: "ok", erro: null, bytes: 300, fetched_at: "t3" },
+    ];
+    const { changed, entries: out } = reorderFactCheckManifest(entries, [2, 1, 3]);
+    assert.equal(changed, true);
+    const arr = out as Array<{ destaque: number; url: string }>;
+    assert.equal(arr[0].destaque, 1);
+    assert.equal(arr[0].url, "https://d2.example", "posição 1 agora tem o conteúdo do antigo D2");
+    assert.equal(arr[1].destaque, 2);
+    assert.equal(arr[1].url, "https://d1.example");
+    assert.equal(arr[2].destaque, 3);
+    assert.equal(arr[2].url, "https://d3.example");
+  });
+
+  it("ordem canônica → changed=false", () => {
+    const entries = [
+      { destaque: 1, url: "https://a" },
+      { destaque: 2, url: "https://b" },
+    ];
+    const { changed } = reorderFactCheckManifest(entries, [1, 2]);
+    assert.equal(changed, false);
+  });
+
+  it("não-array (ausente/malformado) → no-op", () => {
+    assert.equal(reorderFactCheckManifest(undefined, [2, 1, 3]).changed, false);
+    assert.equal(reorderFactCheckManifest({}, [2, 1, 3]).changed, false);
+  });
+});
+
+describe("reorderFactCheckSources (#8679): manifest.json + d{N}.txt", () => {
+  it("swap D1<->D2 remapeia manifest.json E renomeia d1.txt<->d2.txt", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-factcheck-"));
+    try {
+      const internalDir = join(dir, "_internal");
+      const fcDir = join(internalDir, "fact-check-sources");
+      mkdirSync(fcDir, { recursive: true });
+      writeFileSync(
+        join(fcDir, "manifest.json"),
+        JSON.stringify([
+          { destaque: 1, url: "https://d1.example", status: "ok", erro: null, bytes: 10, fetched_at: "t" },
+          { destaque: 2, url: "https://d2.example", status: "ok", erro: null, bytes: 20, fetched_at: "t" },
+          { destaque: 3, url: "https://d3.example", status: "ok", erro: null, bytes: 30, fetched_at: "t" },
+        ]),
+        "utf8",
+      );
+      writeFileSync(join(fcDir, "d1.txt"), "texto do D1 original", "utf8");
+      writeFileSync(join(fcDir, "d2.txt"), "texto do D2 original", "utf8");
+      writeFileSync(join(fcDir, "d3.txt"), "texto do D3 original", "utf8");
+
+      const result = reorderFactCheckSources(internalDir, [2, 1, 3], false);
+      assert.equal(result.modified.length, 1);
+      assert.equal(result.renamed.length, 2);
+
+      const manifest = JSON.parse(readFileSync(join(fcDir, "manifest.json"), "utf8")) as Array<{
+        destaque: number;
+        url: string;
+      }>;
+      assert.equal(manifest[0].url, "https://d2.example");
+      assert.equal(manifest[1].url, "https://d1.example");
+
+      assert.equal(readFileSync(join(fcDir, "d1.txt"), "utf8"), "texto do D2 original");
+      assert.equal(readFileSync(join(fcDir, "d2.txt"), "utf8"), "texto do D1 original");
+      assert.equal(readFileSync(join(fcDir, "d3.txt"), "utf8"), "texto do D3 original");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--dry-run não escreve nada no disco", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-factcheck-dry-"));
+    try {
+      const internalDir = join(dir, "_internal");
+      const fcDir = join(internalDir, "fact-check-sources");
+      mkdirSync(fcDir, { recursive: true });
+      writeFileSync(
+        join(fcDir, "manifest.json"),
+        JSON.stringify([
+          { destaque: 1, url: "https://d1.example" },
+          { destaque: 2, url: "https://d2.example" },
+        ]),
+        "utf8",
+      );
+      writeFileSync(join(fcDir, "d1.txt"), "d1", "utf8");
+      writeFileSync(join(fcDir, "d2.txt"), "d2", "utf8");
+
+      reorderFactCheckSources(internalDir, [2, 1], true);
+
+      const manifest = JSON.parse(readFileSync(join(fcDir, "manifest.json"), "utf8")) as Array<{
+        destaque: number;
+      }>;
+      assert.equal(manifest[0].destaque, 1, "dry-run não altera o manifest em disco");
+      assert.equal(readFileSync(join(fcDir, "d1.txt"), "utf8"), "d1");
+      assert.equal(readFileSync(join(fcDir, "d2.txt"), "utf8"), "d2");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("diretório fact-check-sources ausente → no-op silencioso, sem lançar", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-factcheck-absent-"));
+    try {
+      const internalDir = join(dir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      const result = reorderFactCheckSources(internalDir, [2, 1, 3], false);
+      assert.deepEqual(result.modified, []);
+      assert.deepEqual(result.renamed, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("reorderCropReviewJson (#8679, unidade)", () => {
+  it("swap D1<->D2 remapeia results[].destaque preservando ratio/status", () => {
+    const data = {
+      edition: "260922",
+      checked_at: "t",
+      results: [
+        { destaque: "d1", ratio: "1x1", status: "ok" },
+        { destaque: "d1", ratio: "4x5", status: "ok" },
+        { destaque: "d2", ratio: "1x1", status: "warn" },
+        { destaque: "d2", ratio: "4x5", status: "ok" },
+        { destaque: "d3", ratio: "1x1", status: "ok" },
+      ],
+      summary: { total: 5, ok: 4, warn: 1 },
+    };
+    const { changed, data: out } = reorderCropReviewJson(data, [2, 1, 3]);
+    assert.equal(changed, true);
+    const results = (out as { results: Array<{ destaque: string; ratio: string; status: string }> }).results;
+    const d1Entries = results.filter((r) => r.destaque === "d1");
+    // posição 1 (novo D1) tem o conteúdo do D2 antigo — o warn segue com ele.
+    assert.ok(d1Entries.some((r) => r.ratio === "1x1" && r.status === "warn"));
+    const d2Entries = results.filter((r) => r.destaque === "d2");
+    assert.ok(d2Entries.every((r) => r.status === "ok"));
+    // summary preservado intacto (não recalculado aqui).
+    assert.deepEqual((out as { summary: unknown }).summary, data.summary);
+  });
+
+  it("ordem canônica → changed=false", () => {
+    const data = {
+      results: [
+        { destaque: "d1", ratio: "1x1", status: "ok" },
+        { destaque: "d2", ratio: "1x1", status: "ok" },
+      ],
+    };
+    assert.equal(reorderCropReviewJson(data, [1, 2]).changed, false);
+  });
+
+  it("sem results[] reconhecível → no-op", () => {
+    assert.equal(reorderCropReviewJson({}, [2, 1, 3]).changed, false);
+    assert.equal(reorderCropReviewJson(undefined, [2, 1, 3]).changed, false);
+  });
+});
+
+describe("invalidatePublicImagesForReorder (#8679, unidade)", () => {
+  it("swap D1<->D2 remove cover + d2_2x1 + d{1,2}_4x5 + carrossel de d1/d2, preserva d3", () => {
+    const data = {
+      images: {
+        cover: { filename: "04-d1-2x1.jpg" },
+        d2_2x1: { filename: "04-d2-2x1.jpg" },
+        d3_2x1: { filename: "04-d3-2x1.jpg" },
+        d1_4x5: { filename: "04-d1-4x5.jpg" },
+        d2_4x5: { filename: "04-d2-4x5.jpg" },
+        d3_4x5: { filename: "04-d3-4x5.jpg" },
+        d1_carousel_p1: { filename: "x" },
+        d2_carousel_cta: { filename: "y" },
+        d3_carousel_p1: { filename: "z" },
+        eia_a: { filename: "01-eia-A.jpg" },
+        livros_promo: { filename: "04-livros-promo.jpg" },
+      },
+    };
+    const { changed, removedKeys, data: out } = invalidatePublicImagesForReorder(data, [2, 1, 3]);
+    assert.equal(changed, true);
+    const images = (out as { images: Record<string, unknown> }).images;
+    for (const k of ["cover", "d2_2x1", "d1_4x5", "d2_4x5", "d1_carousel_p1", "d2_carousel_cta"]) {
+      assert.equal(k in images, false, `${k} deveria ter sido removida`);
+    }
+    // D3 é ponto fixo — nada relacionado a ele muda.
+    for (const k of ["d3_2x1", "d3_4x5", "d3_carousel_p1"]) {
+      assert.equal(k in images, true, `${k} (D3, não afetado) deveria sobreviver`);
+    }
+    // Chaves não-destaque (eia, livros) nunca são tocadas.
+    assert.equal("eia_a" in images, true);
+    assert.equal("livros_promo" in images, true);
+    assert.deepEqual(new Set(removedKeys), new Set(["cover", "d2_2x1", "d1_4x5", "d2_4x5", "d1_carousel_p1", "d2_carousel_cta"]));
+  });
+
+  it("ordem canônica → changed=false, nenhuma chave removida", () => {
+    const data = { images: { cover: {}, d2_2x1: {} } };
+    const { changed, removedKeys } = invalidatePublicImagesForReorder(data, [1, 2, 3]);
+    assert.equal(changed, false);
+    assert.deepEqual(removedKeys, []);
+  });
+
+  it("sem images{} reconhecível → no-op", () => {
+    assert.equal(invalidatePublicImagesForReorder({}, [2, 1, 3]).changed, false);
+    assert.equal(invalidatePublicImagesForReorder(undefined, [2, 1, 3]).changed, false);
+  });
+});
+
+describe("reorder-destaques CLI (#8679): manifest, crop-review e public-images end-to-end", () => {
+  it("swap D1<->D2 via CLI atualiza os 3 arquivos e avisa sobre re-upload", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const internalDir = join(dir, "_internal");
+      const fcDir = join(internalDir, "fact-check-sources");
+      mkdirSync(fcDir, { recursive: true });
+      writeFileSync(
+        join(fcDir, "manifest.json"),
+        JSON.stringify([
+          { destaque: 1, url: "https://d1.example", status: "ok", erro: null, bytes: 1, fetched_at: "t" },
+          { destaque: 2, url: "https://d2.example", status: "ok", erro: null, bytes: 1, fetched_at: "t" },
+          { destaque: 3, url: "https://d3.example", status: "ok", erro: null, bytes: 1, fetched_at: "t" },
+        ]),
+        "utf8",
+      );
+      writeFileSync(join(fcDir, "d1.txt"), "texto D1", "utf8");
+      writeFileSync(join(fcDir, "d2.txt"), "texto D2", "utf8");
+      writeFileSync(join(fcDir, "d3.txt"), "texto D3", "utf8");
+
+      writeFileSync(
+        join(internalDir, "04-crop-review.json"),
+        JSON.stringify({
+          results: [
+            { destaque: "d1", ratio: "1x1", status: "ok" },
+            { destaque: "d2", ratio: "1x1", status: "warn" },
+          ],
+        }),
+        "utf8",
+      );
+
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({
+          images: {
+            cover: { filename: "04-d1-2x1.jpg" },
+            d2_2x1: { filename: "04-d2-2x1.jpg" },
+            d3_2x1: { filename: "04-d3-2x1.jpg" },
+          },
+        }),
+        "utf8",
+      );
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+      ]);
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      assert.match(result.stderr, /upload-images-public\.ts/, "avisa sobre re-upload");
+
+      const manifest = JSON.parse(readFileSync(join(fcDir, "manifest.json"), "utf8")) as Array<{
+        url: string;
+      }>;
+      assert.equal(manifest[0].url, "https://d2.example");
+
+      const cropReview = JSON.parse(readFileSync(join(internalDir, "04-crop-review.json"), "utf8")) as {
+        results: Array<{ destaque: string; status: string }>;
+      };
+      assert.ok(cropReview.results.some((r) => r.destaque === "d1" && r.status === "warn"));
+
+      const publicImages = JSON.parse(readFileSync(join(dir, "06-public-images.json"), "utf8")) as {
+        images: Record<string, unknown>;
+      };
+      assert.equal("cover" in publicImages.images, false);
+      assert.equal("d2_2x1" in publicImages.images, false);
+      assert.equal("d3_2x1" in publicImages.images, true, "D3 ponto fixo sobrevive");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("orchestrator-stage-4.md / diaria-4-revisao SKILL.md citam reorder-destaques.ts (#8679)", () => {
+  const projectRoot = join(import.meta.dirname, "..");
+
+  it("§4d.1 passo 4 do playbook Stage 4 cita scripts/reorder-destaques.ts", () => {
+    const playbookPath = join(projectRoot, ".claude/agents/orchestrator-stage-4.md");
+    const content = readFileSync(playbookPath, "utf8");
+    assert.match(
+      content,
+      /reorder-destaques\.ts/,
+      "playbook do Stage 4 precisa citar reorder-destaques.ts como o caminho pra reordenar/trocar destaques (#8679) — " +
+        "sem isso a sessão renomeia arquivos manualmente dentro de data/ (OneDrive), risco documentado na issue.",
+    );
+  });
+
+  it("a skill /diaria-4-revisao também cita scripts/reorder-destaques.ts", () => {
+    const skillPath = join(projectRoot, ".claude/skills/diaria-4-revisao/SKILL.md");
+    const content = readFileSync(skillPath, "utf8");
+    assert.match(content, /reorder-destaques\.ts/);
   });
 });
