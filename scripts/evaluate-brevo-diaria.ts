@@ -1352,6 +1352,17 @@ export interface RunEvaluationResult {
    * pré-dispatch #6485 — "o Kit já assumiu o envio pra esse e-mail").
    */
   skippedActiveOnKit: number;
+  /**
+   * #8724 — email + motivo de cada incremento de `failed`, na ordem em que
+   * ocorreram. Existe porque o `warn:`/`FALHA em` de cada contato já é
+   * logado individualmente (via `log()`), mas esse log pode ficar fora da
+   * janela de tail que `brevo-diaria-run.ts`/`brevo-diaria-stage5-dispatch.ts`
+   * capturam do stderr (8/4 últimas linhas) quando o run tem muitos
+   * contatos — 2 falhas em 109 contatos ficam soterradas por logs
+   * posteriores. `main()` imprime este array inteiro logo após o resumo,
+   * garantindo que sobreviva ao corte de tail mesmo com muitos contatos.
+   */
+  failedContacts: { email: string; reason: string }[];
 }
 
 /**
@@ -1385,6 +1396,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let suppressed = 0;
   let kept = 0;
   let failed = 0;
+  const failedContacts: { email: string; reason: string }[] = []; // #8724
   let kitAutoConfirmSkipped = 0;
   let skippedActiveOnKit = 0; // #7382
 
@@ -1432,6 +1444,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         } catch (e) {
           log(`warn: falha ao checar estado Brevo de ${contact.email}: ${(e as Error).message}`);
           failed++;
+          failedContacts.push({ email: contact.email, reason: `falha ao checar estado Brevo: ${(e as Error).message}` });
           // Sem estado confiável — não decide com dado incompleto, tenta de
           // novo na próxima rodada. Não passa pra auto-confirmação/score.
           continue;
@@ -1456,6 +1469,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                   `("${contact.beehiiv_subscription_id}") — não é possível decidir o Passo 0 (#6340 item 4 fix B).`,
               );
               failed++;
+              failedContacts.push({ email: contact.email, reason: "beehiiv_subscription_id Kit malformado (Passo 0)" });
               continue;
             case "kit-valid":
               if (!kitApiKey) {
@@ -1473,6 +1487,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
               } catch (e) {
                 log(`warn: falha ao checar status Kit de ${contact.email} no Passo 0 (#6340 item 4 fix B): ${(e as Error).message}`);
                 failed++;
+                failedContacts.push({ email: contact.email, reason: `falha ao checar status Kit (Passo 0): ${(e as Error).message}` });
                 continue;
               }
               break;
@@ -1531,6 +1546,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           });
           if (statusCheckFailed) {
             failed++;
+            failedContacts.push({ email: contact.email, reason: "falha ao checar status Beehiiv (Passo 0)" });
             // Sem status Beehiiv confiável — não decide com dado incompleto
             // (mesmo racional do catch acima), tenta de novo na próxima rodada.
             continue;
@@ -1584,6 +1600,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 }
                 if (!beehiivConfirmed) {
                   failed++;
+                  failedContacts.push({ email: contact.email, reason: "propagação de descadastro não confirmada na Beehiiv" });
                   log(
                     `warn: ${contact.email} — propagação do descadastro pra Beehiiv NÃO confirmada (releitura não ` +
                       `mostrou "inactive") — mantendo in_brevo no store (fail-safe: o descadastro já feito na Brevo ` +
@@ -1655,6 +1672,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                   "de auto-confirmação Kit nesta rodada (#6340 item 4).",
               );
               failed++;
+              failedContacts.push({ email: contact.email, reason: "beehiiv_subscription_id Kit malformado (Passo 1)" });
               break;
             case "kit-valid":
               if (!kitApiKey) {
@@ -1694,6 +1712,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 } catch (e) {
                   log(`warn: falha ao checar status Kit de ${contact.email} (subscriber id ${kitParseResult.id}): ${(e as Error).message}`);
                   failed++;
+                  failedContacts.push({ email: contact.email, reason: `falha ao checar status Kit (Passo 1): ${(e as Error).message}` });
                 }
               }
               break;
@@ -1749,7 +1768,10 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             statusCheckFailed = true;
             return undefined;
           });
-          if (statusCheckFailed) failed++;
+          if (statusCheckFailed) {
+            failed++;
+            failedContacts.push({ email: contact.email, reason: "falha ao checar status Beehiiv (Passo 1)" });
+          }
         }
 
         // #6339, ESCOPO NÃO COBERTO: diferente da promoção por score logo
@@ -1863,6 +1885,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
               }) — mantendo in_brevo (fail-safe, nunca promove sem saber se já está ativo no Kit).`,
             );
             failed++;
+            failedContacts.push({ email: contact.email, reason: "checagem Kit indisponível antes de promover pra Beehiiv (#7382)" });
             store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
             continue;
           }
@@ -1873,6 +1896,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           const backendLabel = newsletterBackend === "kit" ? "ativo no Kit" : "\"pending\" na Beehiiv";
           log(`warn: ${contact.email} continua não confirmado como ${backendLabel} após promoção — mantendo in_brevo (fail-safe).`);
           failed++;
+          failedContacts.push({ email: contact.email, reason: `promoção não confirmada (${backendLabel})` });
           store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
         }
@@ -1890,6 +1914,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         if (!suppressConfirmed) {
           log(`warn: ${contact.email} supressão/desvinculação não confirmada na Brevo — mantendo in_brevo (fail-safe).`);
           failed++;
+          failedContacts.push({ email: contact.email, reason: "supressão/desvinculação não confirmada na Brevo" });
           store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
         }
@@ -1903,6 +1928,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // `store` (contatos processados com sucesso antes deste) persiste no
       // `writeStore()` final, mesmo padrão de `sync-pending-to-brevo.ts`.
       failed++;
+      failedContacts.push({ email: contact.email, reason: (e as Error).message });
       log(`FALHA em ${contact.email}: ${(e as Error).message}`);
     }
   }
@@ -1919,6 +1945,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     failed,
     kitAutoConfirmSkipped,
     skippedActiveOnKit,
+    failedContacts,
   };
 }
 
@@ -2042,6 +2069,17 @@ async function main(): Promise<void> {
       `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A), ` +
       `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382).`,
   );
+  // #8724 — impresso por ÚLTIMO (depois do resumo), de propósito: com muitos
+  // contatos, o warn individual de cada falha pode ficar fora da janela de
+  // tail que `brevo-diaria-run.ts` (`step()`, últimas 8 linhas de stderr) e
+  // `brevo-diaria-stage5-dispatch.ts` (`tailReason()`, últimas 4) capturam
+  // quando este passo aborta — sem isto, "2 falha(s)" aparece no resumo sem
+  // nenhum e-mail/motivo correlacionável no output truncado que o caller vê.
+  if (result.failedContacts.length > 0) {
+    log(
+      `detalhe das falhas: ${result.failedContacts.map((f) => `${f.email} [${f.reason}]`).join(" | ")}`,
+    );
+  }
 
   // Windows fix (#4651, mesma classe do #4638/#1401): tanto o branch
   // dry-run quanto o --push chegam aqui só depois de `await runEvaluation`
