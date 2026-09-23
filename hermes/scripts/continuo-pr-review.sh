@@ -2,7 +2,7 @@
 # continuo-pr-review.sh (#6865, autoridade de merge desde #6926, escopo
 # ampliado a qualquer branch no #7446 item 4)
 #
-# Review Sonnet (assinatura claude.ai) de TODA PR aberta no repo, exceto
+# Review Opus 5.5 (assinatura claude.ai) de TODA PR aberta no repo, exceto
 # `bot/*` (ver `PR_NUMBERS` abaixo — #7446 item 4), uma por iteração do loop
 # (ver `for PR in $PR_NUMBERS`, ~linha 446) — não o diff acumulado do dia
 # (esse é `opus-daily-diff-review.sh`, irmão deste script). Roda em cron
@@ -45,7 +45,7 @@
 # revisor externo precisa existir separado do tick (#6865). Este
 # script fecha esse gap SEM trocar o modelo do review profundo diário por
 # um mais barato — dois papéis distintos (decisão do editor): revisão
-# rápida e superficial, PR por PR (Sonnet) vs. varredura
+# rápida e superficial, PR por PR (Opus 5.5) vs. varredura
 # funda do dia inteiro com visão de interação-entre-PRs (Opus, 1x/dia).
 # O contraste entre os dois scripts é ESCOPO (uma PR isolada por iteração,
 # mas todas as PRs abertas por execução vs. diff acumulado do dia inteiro)
@@ -818,7 +818,7 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   # pro log (stderr), só 1 linha de veredito no stdout.
   echo "$PROMPT" | timeout 1800 claude -p \
     --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)" \
-    --model sonnet --effort low 1>&2
+    --model opus --effort low 1>&2
   CLAUDE_RC=$?
   set -e
   echo "[continuo-pr-review] PR #$PR: revisada — veredito/comentário na PR no GitHub" >&2
