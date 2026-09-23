@@ -80,6 +80,19 @@ PAID_ALLOWLIST = {
     "z-ai/glm-5.3-flash",       # piso pago da lane + visao
     "openai-codex/gpt-5.6-luna",
     "gpt-5.6-luna",
+    # #8738 (23/09/2026): version bump do mesmo modelo "Luna" do
+    # orquestrador acima — gpt-5.6-luna virou gpt-6-luna em 23/09/2026
+    # (confirmado no state.db: session_model_usage de 2026-09-22 grava
+    # model='gpt-5.6-luna', de 2026-09-23 grava model='gpt-6-luna', mesmo
+    # billing_provider IN ('openai-codex','main'), mesmo custo real/
+    # estimado $0 nas duas formas). Sem a entrada nova o id bumpado cai
+    # fora da allowlist e vira falso-positivo "PAGO FORA DA ALLOWLIST"
+    # todo dia — mesma classe de drift do PR #7648 que motivou as 2
+    # entradas gpt-5.6-luna acima. As entradas antigas NAO sao removidas:
+    # mesmo trade-off ja aceito pro z-ai/glm-5.3-flash acima (trafego
+    # historico/ainda-nao-migrado pode referenciar o id velho).
+    "openai-codex/gpt-6-luna",
+    "gpt-6-luna",
     # #7649 (08/09/2026): elo final de assinatura claude.ai de
     # claude-delegate.sh (depois do glm-5.3-flash, quando os 3 :free E o
     # pago falham). Sentinela "sonnet" gravada literalmente como `model` na
@@ -108,7 +121,17 @@ CONTINUO_JOB_ID = "5d791ef6fc2c"
 # dependendo do provider/rota) — casar so a forma nua deixava a forma
 # prefixada cair silenciosamente em other_calls, sem aparecer em nenhum
 # percentual, corrompendo justo a linha de base que esta issue quer coletar.
-CONTINUO_PRIMARY_MODEL_IDS = {"gpt-5.6-luna", "openai-codex/gpt-5.6-luna"}
+# #8738 (23/09/2026): mesmo version bump do PAID_ALLOWLIST acima
+# (gpt-5.6-luna -> gpt-6-luna) — sem as 2 formas novas aqui, chamadas do
+# job continuo com o id bumpado cairiam silenciosamente em "outros",
+# mascarando degradacao pro fallback local (o proposito deste conjunto).
+# Formas antigas MANTIDAS, mesmo trade-off do PAID_ALLOWLIST acima.
+CONTINUO_PRIMARY_MODEL_IDS = {
+    "gpt-5.6-luna",
+    "openai-codex/gpt-5.6-luna",
+    "gpt-6-luna",
+    "openai-codex/gpt-6-luna",
+}
 CONTINUO_LOCAL_FALLBACK_HINT = "qwen"
 CONTINUO_PAID_FALLBACK_MODEL = "deepseek/deepseek-v4-flash"
 
@@ -162,7 +185,18 @@ PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
 # catalogo cairia em "nao encontrei" e seria indistinguivel de um id digitado
 # errado no baseline. Com ela, o relatorio diz "nao verificavel por esta
 # fonte" — que e a verdade, e nunca "preco ok".
-PAID_MODELS_NOT_ON_OPENROUTER = {"openai-codex/gpt-5.6-luna", "gpt-5.6-luna", "sonnet"}
+#
+# #8738 (23/09/2026): gpt-6-luna/openai-codex/gpt-6-luna entram pela mesma
+# razao que as formas gpt-5.6-luna acima — mesma rota openai-codex, mesmo
+# id ausente do catalogo da OpenRouter, exigido pelo invariante do #6818
+# (todo item do PAID_ALLOWLIST precisa de baseline OU desta lista).
+PAID_MODELS_NOT_ON_OPENROUTER = {
+    "openai-codex/gpt-5.6-luna",
+    "gpt-5.6-luna",
+    "openai-codex/gpt-6-luna",
+    "gpt-6-luna",
+    "sonnet",
+}
 
 OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
 
