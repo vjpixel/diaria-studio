@@ -63,6 +63,11 @@ const KNOWN_TS_ONLY_MODELS: ReadonlySet<string> = new Set([
   // não precisou dele. Se aparecer lá também, adicionar a `PAID_ALLOWLIST`
   // do Python e então REMOVER esta linha (a entrada deixa de ser TS-only).
   "openai/gpt-5.6-luna",
+  // #8738 (23/09/2026): mesmo raciocínio acima, pro version bump
+  // gpt-5.6-luna -> gpt-6-luna — o Python ainda não viu o id prefixado
+  // "openai/gpt-6-luna" em session_model_usage, só as formas
+  // "gpt-6-luna"/"openai-codex/gpt-6-luna" (já em PAID_ALLOWLIST).
+  "openai/gpt-6-luna",
 ]);
 
 /**

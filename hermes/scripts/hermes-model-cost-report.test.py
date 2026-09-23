@@ -337,8 +337,8 @@ def main() -> int:
     f_prod = mod.detect_price_changes(igual, baseline=BASE)
     assert_true(
         "#6818: execução diária com preço inalterado sai exit 0, apesar dos modelos fora da OpenRouter"
-        " (2 do gpt-5.6-luna + 'sonnet' do elo de assinatura, #7649)",
-        mod.price_check_exit_code(f_prod) == 0 and len(f_prod["out_of_scope"]) == 3,
+        " (2 do gpt-5.6-luna + 2 do gpt-6-luna, #8738 + 'sonnet' do elo de assinatura, #7649)",
+        mod.price_check_exit_code(f_prod) == 0 and len(f_prod["out_of_scope"]) == 5,
     )
 
     # 7. Preço não-numérico NUNCA vira 0.0 — 0.0 leria como "de graça" e
@@ -505,6 +505,54 @@ def main() -> int:
     assert_true(
         "#8716: baseline vigente do glm-5.3-flash usa input_cache_read=0.000000050",
         mod.PAID_PRICE_BASELINE["z-ai/glm-5.3-flash"]["input_cache_read"] == 0.000000050,
+    )
+
+    # --- #8738 (23/09/2026): version bump gpt-5.6-luna -> gpt-6-luna ---
+    #
+    # Mesma classe de drift do #7649/PR #7648: o id do modelo "Luna" do
+    # orquestrador mudou de versão (gpt-5.6-luna -> gpt-6-luna) sem a
+    # allowlist acompanhar, e as 2 linhas cobradas $0/$0 (nas 2 formas,
+    # nua e prefixada com openai-codex/) viraram falso "PAGO FORA DA
+    # ALLOWLIST" no relatório. As formas ANTIGAS não foram removidas —
+    # continuam cobertas por testes anteriores neste arquivo.
+    assert_true(
+        "#8738: _is_leak('gpt-6-luna', 'openai-codex') -> False (forma nua, mesmo com provider billable)",
+        mod._is_leak("gpt-6-luna", "openai-codex") is False,
+    )
+    assert_true(
+        "#8738: _is_leak('openai-codex/gpt-6-luna', 'openai-codex') -> False (forma prefixada)",
+        mod._is_leak("openai-codex/gpt-6-luna", "openai-codex") is False,
+    )
+    assert_true(
+        "#8738: _is_leak('gpt-6-luna', 'main') -> False (billing_provider 'main' observado no state.db real)",
+        mod._is_leak("gpt-6-luna", "main") is False,
+    )
+    assert_true(
+        "#8738: gpt-6-luna (as 2 formas) está em PAID_MODELS_NOT_ON_OPENROUTER, exigido pelo invariante do #6818",
+        {"gpt-6-luna", "openai-codex/gpt-6-luna"} <= set(mod.PAID_MODELS_NOT_ON_OPENROUTER),
+    )
+    assert_true(
+        "#8738: gpt-6-luna (as 2 formas) está em CONTINUO_PRIMARY_MODEL_IDS, senão o tick-composition "
+        "classifica chamadas do modelo bumpado como 'outros' em vez de primário",
+        {"gpt-6-luna", "openai-codex/gpt-6-luna"} <= set(mod.CONTINUO_PRIMARY_MODEL_IDS),
+    )
+    # Controle negativo (mesma disciplina do #7649/PR #7648): sem as 2 formas
+    # em PAID_MODELS_NOT_ON_OPENROUTER, o invariante do #6818 (PAID_ALLOWLIST
+    # <= coberto) QUEBRA — prova que o teste discrimina de verdade.
+    coberto_sem_gpt6_luna = (
+        (set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER))
+        - {"gpt-6-luna", "openai-codex/gpt-6-luna"}
+    )
+    assert_true(
+        "#8738 controle negativo: sem gpt-6-luna em PAID_MODELS_NOT_ON_OPENROUTER, o invariante do #6818 QUEBRA",
+        not (set(mod.PAID_ALLOWLIST) <= coberto_sem_gpt6_luna),
+    )
+    # E o invariante do #6818 (seção 9 acima) continua valendo com as
+    # entradas novas somadas — não é uma duplicata da asserção da seção 9,
+    # é a prova de que ESTA adição específica não quebrou o invariante geral.
+    assert_true(
+        "#8738: invariante do #6818 (PAID_ALLOWLIST <= baseline ∪ not_on_openrouter) segue valendo com gpt-6-luna",
+        set(mod.PAID_ALLOWLIST) <= (set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER)),
     )
 
     if FAILED:
