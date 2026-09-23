@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import {
   syncCode,
   measureSyncState,
+  countStaleAutostashes,
   defaultSpawn,
   createFileLock,
   resolveSharedLockPath,
@@ -556,10 +557,16 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
    * 14 commits atrás de origin/master em silêncio antes de alguém notar.
    */
   it("git status --porcelain já mostra UU (nenhum stash tentado ainda) -> preexisting_unmerged_state, ERROR, fail-soft", () => {
-    let stashCalled = false;
+    let mutatingStashCalled = false;
     const spawn: SpawnFn = (cmd, args) => {
       const key = [cmd, ...args].join(" ");
-      if (key.startsWith("git stash")) stashCalled = true;
+      // #8719: `git stash push`/`git stash pop` (as operações que MUDAM o
+      // índice/working tree, e que de fato recusariam rodar nesse estado)
+      // são o que este teste protege contra — não `git stash list`, que
+      // desde #8719 `syncCode()` sempre roda no fim (via
+      // `countStaleAutostashes()`, medição AFTER-the-fact, read-only, mesma
+      // categoria de `measureSyncState()`/#6090) independente do outcome.
+      if (key.startsWith("git stash push") || key === "git stash pop") mutatingStashCalled = true;
       return makeSpawn({
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
@@ -573,7 +580,11 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
     assert.match(r.message, /ERROR/);
     assert.match(r.message, /ABSORVENTE/i);
     assert.match(r.message, /track-quality-report\.ts/);
-    assert.equal(stashCalled, false, "não deve tentar git stash quando o índice já está unmerged — o comando recusaria de qualquer forma");
+    assert.equal(
+      mutatingStashCalled,
+      false,
+      "não deve tentar git stash push/pop quando o índice já está unmerged — o comando recusaria de qualquer forma",
+    );
   });
 
   it("estado unmerged com 1 único caminho (AA, não UU) também é detectado", () => {
@@ -1942,5 +1953,131 @@ describe("git-sync — #6090: up_to_date/commits_behind medidos via rev-list, nu
       up_to_date: false,
       commits_behind: 7,
     });
+  });
+});
+
+// ── #8719: alarme de contagem de autostashes acumulados ────────────────────
+describe("git-sync — #8719: countStaleAutostashes() / stale_autostash_count", () => {
+  it("git stash list com 0 linhas casando GIT_SYNC_STASH_MESSAGE → conta 0", () => {
+    const spawn = makeSpawn({ "git stash list": ok("") });
+    assert.equal(countStaleAutostashes(spawn), 0);
+  });
+
+  it("git stash list vazio (sem nenhum stash) → conta 0", () => {
+    // Comando não mapeado cai no fallback ok("") de makeSpawn — mesmo shape
+    // de "nenhum stash na pilha".
+    assert.equal(countStaleAutostashes(makeSpawn({})), 0);
+  });
+
+  it("git stash list com N linhas casando a mensagem, misturadas com entradas de outra mensagem → conta só N", () => {
+    const spawn = makeSpawn({
+      "git stash list": ok(
+        [
+          `stash@{0}: On master: ${GIT_SYNC_STASH_MESSAGE}`,
+          `stash@{1}: WIP on master: a1b2c3d ajuste manual do editor`, // stash MANUAL — não deve contar
+          `stash@{2}: On master: ${GIT_SYNC_STASH_MESSAGE}`,
+          `stash@{3}: On overnight/fix-x: 9f8e7d6 outro autostash de sessão diferente`, // mensagem default do git — não é deste módulo
+          `stash@{4}: On master: ${GIT_SYNC_STASH_MESSAGE}`,
+        ].join("\n"),
+      ),
+    });
+    assert.equal(
+      countStaleAutostashes(spawn),
+      3,
+      "deve contar só as 3 linhas com a mensagem identificável deste módulo, ignorando as 2 entradas não-relacionadas",
+    );
+  });
+
+  it("git stash falhando (exit != 0) → -1 (não foi possível medir, mesma convenção de commits_behind)", () => {
+    const spawn = makeSpawn({ "git stash list": fail("fatal: not a git repository", 1) });
+    assert.equal(countStaleAutostashes(spawn), -1);
+  });
+
+  /**
+   * #8719: o banner de pileup em `scripts/sync-code.ts` dispara quando
+   * `stale_autostash_count >= STALE_AUTOSTASH_ALARM_THRESHOLD` (limiar de
+   * alarme = 3, ver docstring da constante em sync-code.ts). `sync-code.ts` é
+   * um script CLI (efeito colateral em stderr, sem função exportada testável
+   * isoladamente) — mesmo padrão dos banners `commits_behind`/
+   * `stash_pop_conflict` já existentes ali, nenhum dos quais tem teste de CLI
+   * dedicado nesta suíte. O que É testável e cobre a mesma regressão (o
+   * banner NUNCA dispara se o CAMPO que ele lê estiver errado no limite) é a
+   * fronteira exata do valor que `countStaleAutostashes()` produz — abaixo do
+   * limiar vs. exatamente no limiar.
+   */
+  it("boundary: 2 stashes (abaixo do limiar de alarme 3) → count 2, banner NÃO dispararia", () => {
+    const spawn = makeSpawn({
+      "git stash list": ok(
+        [`stash@{0}: On master: ${GIT_SYNC_STASH_MESSAGE}`, `stash@{1}: On master: ${GIT_SYNC_STASH_MESSAGE}`].join(
+          "\n",
+        ),
+      ),
+    });
+    const count = countStaleAutostashes(spawn);
+    assert.equal(count, 2);
+    assert.ok(count < 3, "abaixo do limiar de alarme (3) — o banner de pileup não deveria disparar");
+  });
+
+  it("boundary: exatamente 3 stashes (no limiar de alarme) → count 3, banner dispararia", () => {
+    const spawn = makeSpawn({
+      "git stash list": ok(
+        [
+          `stash@{0}: On master: ${GIT_SYNC_STASH_MESSAGE}`,
+          `stash@{1}: On master: ${GIT_SYNC_STASH_MESSAGE}`,
+          `stash@{2}: On master: ${GIT_SYNC_STASH_MESSAGE}`,
+        ].join("\n"),
+      ),
+    });
+    const count = countStaleAutostashes(spawn);
+    assert.equal(count, 3);
+    assert.ok(count >= 3, "no limiar de alarme (3) — o banner de pileup deveria disparar");
+  });
+
+  it("wiring: syncCode() bem-sucedido carrega stale_autostash_count medido via 'git stash list'", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(""),
+      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+      "git stash list": ok(
+        [`stash@{0}: On master: ${GIT_SYNC_STASH_MESSAGE}`, `stash@{1}: On master: ${GIT_SYNC_STASH_MESSAGE}`].join(
+          "\n",
+        ),
+      ),
+    });
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.equal(r.outcome, "synced");
+    assert.equal(r.stale_autostash_count, 2);
+  });
+
+  it("wiring: outcome 'sync_in_progress' (lock já adquirido) → stale_autostash_count:-1, ZERO comandos git", () => {
+    const alreadyHeldLock: SyncLock = {
+      path: "/fake/.diaria-sync.lock",
+      acquire: () => false,
+      release: () => {
+        throw new Error("release() nunca deveria ser chamado por quem não adquiriu o lock");
+      },
+    };
+    const gitCommandsRun: string[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      gitCommandsRun.push([cmd, ...args].join(" "));
+      return ok("");
+    };
+    const r = syncCode(spawn, alreadyHeldLock, MAIN_CHECKOUT);
+    assert.equal(r.outcome, "sync_in_progress");
+    assert.equal(r.stale_autostash_count, -1);
+    assert.equal(gitCommandsRun.length, 0);
+  });
+
+  it("wiring: outcome 'worktree_refused' → stale_autostash_count:-1, ZERO comandos git", () => {
+    const gitCommandsRun: string[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      gitCommandsRun.push([cmd, ...args].join(" "));
+      return ok("");
+    };
+    const r = syncCode(spawn, NOOP_LOCK, "/home/editor/diaria-studio/.claude/worktrees/agent-x");
+    assert.equal(r.outcome, "worktree_refused");
+    assert.equal(r.stale_autostash_count, -1);
+    assert.equal(gitCommandsRun.length, 0);
   });
 });
