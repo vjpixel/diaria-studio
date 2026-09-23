@@ -1361,6 +1361,12 @@ export interface RunEvaluationResult {
    * contatos — 2 falhas em 109 contatos ficam soterradas por logs
    * posteriores. `main()` imprime este array inteiro logo após o resumo,
    * garantindo que sobreviva ao corte de tail mesmo com muitos contatos.
+   * Não é 1 entrada por CONTATO, é 1 entrada por INCREMENTO — nos pontos
+   * sem `continue` logo após o `failed++` (ex: checagem indisponível no
+   * Passo 0/1 que segue pra avaliação normal), o mesmo e-mail pode aparecer
+   * 2x se uma 2ª falha ocorrer depois, no Passo 2, pro mesmo contato — mesmo
+   * comportamento pré-existente do contador `failed` em si, só que agora
+   * visível por e-mail em vez de só na soma.
    */
   failedContacts: { email: string; reason: string }[];
 }
@@ -2069,12 +2075,15 @@ async function main(): Promise<void> {
       `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A), ` +
       `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382).`,
   );
-  // #8724 — impresso por ÚLTIMO (depois do resumo), de propósito: com muitos
-  // contatos, o warn individual de cada falha pode ficar fora da janela de
-  // tail que `brevo-diaria-run.ts` (`step()`, últimas 8 linhas de stderr) e
+  // #8724 — impresso logo após o resumo, DE PROPÓSITO perto do fim do run
+  // (só "dry-run"/"push concluído" seguem depois): com muitos contatos, o
+  // warn individual de cada falha pode ficar fora da janela de tail que
+  // `brevo-diaria-run.ts` (`step()`, últimas 8 linhas de stderr) e
   // `brevo-diaria-stage5-dispatch.ts` (`tailReason()`, últimas 4) capturam
   // quando este passo aborta — sem isto, "2 falha(s)" aparece no resumo sem
   // nenhum e-mail/motivo correlacionável no output truncado que o caller vê.
+  // Se um novo log() for adicionado DEPOIS deste bloco, mover pra manter a
+  // proximidade com o fim do run (senão o corte de tail volta a valer).
   if (result.failedContacts.length > 0) {
     log(
       `detalhe das falhas: ${result.failedContacts.map((f) => `${f.email} [${f.reason}]`).join(" | ")}`,

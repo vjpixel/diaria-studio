@@ -81,6 +81,47 @@ describe("runEvaluation — failedContacts correlaciona email + motivo (#8724)",
     }
   });
 
+  it("2 falhas entre vários contatos OK (mesma forma do incidente real: 2 de 109) — failed === failedContacts.length, ambos e-mails presentes", async () => {
+    const failingEmails = new Set(["falha-1@b.com", "falha-2@b.com"]);
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      for (const email of failingEmails) {
+        if (u.includes(`/contacts/${encodeURIComponent(email)}`)) {
+          throw new Error(`falha simulada pra ${email}`);
+        }
+      }
+      return jsonRes(200, { emailBlacklisted: false, statistics: {} });
+    }) as typeof fetch;
+
+    try {
+      const contacts = [
+        contact("ok-1@b.com"),
+        contact("falha-1@b.com"),
+        contact("ok-2@b.com"),
+        contact("ok-3@b.com"),
+        contact("falha-2@b.com"),
+        contact("ok-4@b.com"),
+      ];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+
+      assert.equal(result.failed, 2);
+      assert.equal(result.failedContacts.length, result.failed, "1 entrada por incremento, sem desync entre o contador e o array");
+      const failedEmails = result.failedContacts.map((f) => f.email).sort();
+      assert.deepEqual(failedEmails, ["falha-1@b.com", "falha-2@b.com"]);
+    } finally {
+      restore();
+    }
+  });
+
   it("nenhuma falha → failedContacts vazio", async () => {
     globalThis.fetch = (async () => jsonRes(200, { emailBlacklisted: false, statistics: {} })) as typeof fetch;
     try {
