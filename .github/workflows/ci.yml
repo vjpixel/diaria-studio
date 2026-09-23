@@ -62,6 +62,10 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # Limita processos Node concorrentes; o default por CPU + 4 workers
+      # causava spawn/OOM intermitente no npm test (#8702/#8703/#8705).
+      RUN_TESTS_MAX_PROCS: 4
     steps:
       # fetch-depth: 0 (#6413) — worker-drift-check-script.test.ts precisa de
       # origin/master resolvível localmente (getLastCommitAt/resolveProductionRef
