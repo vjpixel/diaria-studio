@@ -24,6 +24,18 @@
  * pro Drive/Cloudflare (editor roda upload-images-public manualmente após
  * checagem visual).
  *
+ * (#8679, 260922) Também cobre 3 arquivos que o reorder deixava
+ * inconsistentes sem aviso:
+ *   - `_internal/fact-check-sources/manifest.json` + `_internal/fact-check-
+ *     sources/d{N}.txt` — remapeados por posição (`reorderFactCheckSources`).
+ *   - `_internal/04-crop-review.json` — `results[].destaque` remapeado
+ *     (`reorderCropReviewJson`).
+ *   - `06-public-images.json` — chaves (`cover`, `d{N}_2x1`, `d{N}_4x5`,
+ *     `d{N}_carousel_{p1,p2,p3,cta}`) das posições afetadas são REMOVIDAS
+ *     (`invalidatePublicImagesForReorder`), com warning pedindo re-upload —
+ *     as URLs públicas continuam apontando pra arte antiga até o editor
+ *     rodar `upload-images-public.ts` de novo.
+ *
  * Uso:
  *   # D2 vira D1, D1 vira D2, D3 stay:
  *   npx tsx scripts/reorder-destaques.ts --edition 260529 --new-order 2,1,3
@@ -102,6 +114,7 @@ import {
   readCarouselSourceHashes,
   writeCarouselSourceHashes,
   carouselSourceHashPath,
+  CAROUSEL_SLIDE_SLOTS,
   type CarouselSourceHashes,
   type DailyDestaqueId,
 } from "./lib/daily-carousel-card.ts"; // #6068
@@ -876,6 +889,217 @@ export function reindexCarouselSourceHashes(
   return { path: carouselSourceHashPath(editionDir), hashes: reindexed };
 }
 
+/**
+ * (#8679) Remapeia `_internal/fact-check-sources/manifest.json` conforme
+ * `newOrder` e move os arquivos de texto pré-baixados `d{N}.txt` que
+ * acompanham cada entrada (ver `prefetchHighlightSources` em
+ * `run-fact-checker.ts`).
+ *
+ * Achado real (edição 260922, #8679): depois de um swap manual D1↔D2, o
+ * manifest continuou com `destaque: 1` apontando pra URL do D1 antigo — o
+ * fact-checker precisou usar a URL do highlight (já reordenado em
+ * `01-approved.json`) como referência em vez de confiar no manifest.
+ *
+ * Cada entrada do array tem campo `destaque` (1-indexed) — a entrada que
+ * hoje está em `destaque: newOrder[i]` passa a ser `destaque: i+1`, e o
+ * array é reordenado na mesma ordem (posição 0 = D1 novo, etc). O texto
+ * pré-baixado (`d{N}.txt`) segue a mesma permutação via
+ * `stageAndWriteVerified` — mesmo mecanismo anti-corrida do OneDrive usado
+ * pelas imagens/prompts.
+ *
+ * Ausente (edição sem fact-check pré-baixado, ou já rodou Stage 5) → no-op
+ * silencioso, mesmo padrão de `refreshSocialSourceHash`.
+ */
+export function reorderFactCheckManifest(
+  entries: unknown,
+  newOrder: number[],
+): { changed: boolean; entries: unknown } {
+  if (!Array.isArray(entries)) return { changed: false, entries };
+  const byDestaque = new Map<number, Record<string, unknown>>();
+  for (const e of entries) {
+    if (e && typeof e === "object" && typeof (e as { destaque?: unknown }).destaque === "number") {
+      const destaque = (e as { destaque: number }).destaque;
+      // Fail-soft, mas AVISADO (review #8679): manifest com `destaque`
+      // duplicado é malformado — sem o warn, a 2ª entrada sobrescreveria a
+      // 1ª em silêncio (last-write-wins do Map), inconsistente com o
+      // fail-soft "preserva em vez de descartar" usado pras entradas fora
+      // do range logo abaixo.
+      if (byDestaque.has(destaque)) {
+        console.warn(
+          `WARN: reorder-destaques — fact-check-sources/manifest.json tem mais de uma entrada com ` +
+            `destaque: ${destaque}; mantendo a última, descartando a anterior.`,
+        );
+      }
+      byDestaque.set(destaque, e as Record<string, unknown>);
+    }
+  }
+  if (byDestaque.size === 0) return { changed: false, entries };
+
+  const reordered: Record<string, unknown>[] = [];
+  let changed = false;
+  for (let i = 0; i < newOrder.length; i++) {
+    const original = byDestaque.get(newOrder[i]);
+    if (original === undefined) continue;
+    const newPos = i + 1;
+    if (original.destaque !== newPos) changed = true;
+    reordered.push({ ...original, destaque: newPos });
+  }
+  // Entradas fora do range de newOrder (não deveria acontecer numa edição
+  // consistente, mas fail-soft: preserva em vez de descartar em silêncio).
+  for (const [destaque, entry] of byDestaque) {
+    if (destaque > newOrder.length) reordered.push(entry);
+  }
+
+  return { changed, entries: reordered };
+}
+
+export function reorderFactCheckSources(
+  internalDir: string,
+  newOrder: number[],
+  dryRun: boolean,
+  deps: RenameFileDeps = defaultRenameFileDeps,
+): { modified: string[]; renamed: Array<{ from: string; to: string }> } {
+  const dir = resolve(internalDir, "fact-check-sources");
+  const modified: string[] = [];
+  let renamed: Array<{ from: string; to: string }> = [];
+
+  const manifestPath = join(dir, "manifest.json");
+  if (existsSync(manifestPath)) {
+    let entries: unknown;
+    try {
+      entries = JSON.parse(readFileSync(manifestPath, "utf8"));
+    } catch (e) {
+      console.warn(
+        `WARN: reorder-destaques — fact-check-sources/manifest.json ilegível (${e}), pulando.`,
+      );
+      entries = undefined;
+    }
+    if (entries !== undefined) {
+      const result = reorderFactCheckManifest(entries, newOrder);
+      if (result.changed) {
+        if (!dryRun) {
+          writeFileSync(manifestPath, JSON.stringify(result.entries, null, 2) + "\n", "utf8");
+        }
+        modified.push(manifestPath);
+      }
+    }
+  }
+
+  // d{N}.txt — mesmo mecanismo staging+verify das imagens/prompts, já que
+  // este diretório também mora dentro do `data/` sincronizado pelo OneDrive.
+  const pending: PendingFileRename[] = [];
+  for (let i = 0; i < newOrder.length; i++) {
+    const from = `d${newOrder[i]}.txt`;
+    const to = `d${i + 1}.txt`;
+    if (from === to) continue;
+    if (existsSync(join(dir, from))) pending.push({ originalName: from, finalName: to });
+  }
+  if (pending.length > 0) {
+    if (!dryRun) {
+      renamed = stageAndWriteVerified(dir, pending, deps);
+    } else {
+      renamed = pending.map((p) => ({ from: p.originalName, to: p.finalName }));
+    }
+  }
+
+  return { modified, renamed };
+}
+
+/**
+ * (#8679) Remapeia `_internal/04-crop-review.json` — `results[].destaque`
+ * é `"d1"`/`"d2"`/`"d3"` (string, não número, ao contrário do manifest de
+ * fact-check acima). O resto de cada entrada (`ratio`, `status`) segue o
+ * destaque, já que o crop review descreve o CONTEÚDO, e o conteúdo se
+ * moveu junto com a posição.
+ *
+ * Ausente ou sem `results[]` reconhecível → no-op.
+ */
+export function reorderCropReviewJson(
+  data: unknown,
+  newOrder: number[],
+): { changed: boolean; data: unknown } {
+  if (!data || typeof data !== "object" || !Array.isArray((data as { results?: unknown }).results)) {
+    return { changed: false, data };
+  }
+  const results = (data as { results: Array<Record<string, unknown>> }).results;
+  const byDestaque = new Map<string, Array<Record<string, unknown>>>();
+  for (const r of results) {
+    const key = typeof r.destaque === "string" ? r.destaque : null;
+    if (key === null) continue;
+    if (!byDestaque.has(key)) byDestaque.set(key, []);
+    byDestaque.get(key)!.push(r);
+  }
+  if (byDestaque.size === 0) return { changed: false, data };
+
+  const reorderedResults: Record<string, unknown>[] = [];
+  let changed = false;
+  for (let i = 0; i < newOrder.length; i++) {
+    const oldKey = `d${newOrder[i]}`;
+    const newKey = `d${i + 1}`;
+    const entries = byDestaque.get(oldKey);
+    if (!entries) continue;
+    for (const e of entries) {
+      if (e.destaque !== newKey) changed = true;
+      reorderedResults.push({ ...e, destaque: newKey });
+    }
+  }
+  // Chaves fora do range de destaques desta edição — preserva, fail-soft.
+  for (const [key, entries] of byDestaque) {
+    const pos = Number(key.slice(1));
+    if (!Number.isFinite(pos) || pos > newOrder.length) reorderedResults.push(...entries);
+  }
+
+  if (!changed) return { changed: false, data };
+  return { changed: true, data: { ...(data as object), results: reorderedResults } };
+}
+
+/**
+ * (#8679) Invalida (remove) as chaves de `06-public-images.json` afetadas
+ * pelo reorder — a arte apontada por essas URLs públicas continua sendo a
+ * ANTIGA até o editor re-rodar `upload-images-public.ts`. Nunca re-upload
+ * automático aqui (mesmo racional do resto do script: reorder não sobe
+ * pro Drive/Cloudflare sozinho).
+ *
+ * Uma posição é "afetada" quando seu conteúdo mudou — ou seja, qualquer
+ * `i` onde `newOrder[i] !== i+1` (ponto fixo de uma permutação = posição
+ * cujo conteúdo NÃO mudou, cobre corretamente ciclos de 2 e de 3).
+ *
+ * Chaves por posição (ver `upload-images-public.ts`): `cover` é especial —
+ * é o hero 2:1 do D1 (nunca `d1_2x1`); D2/D3 usam `d{N}_2x1`. `d{N}_4x5` e
+ * `d{N}_carousel_{p1,p2,p3,cta}` (`CAROUSEL_SLIDE_SLOTS`) existem pra
+ * qualquer posição.
+ */
+export function invalidatePublicImagesForReorder(
+  data: unknown,
+  newOrder: number[],
+): { changed: boolean; removedKeys: string[]; data: unknown } {
+  const rawImages = (data && typeof data === "object" ? (data as { images?: unknown }).images : undefined);
+  if (!rawImages || typeof rawImages !== "object" || Array.isArray(rawImages)) {
+    return { changed: false, removedKeys: [], data };
+  }
+  const images = { ...(rawImages as Record<string, unknown>) };
+  const removedKeys: string[] = [];
+
+  for (let i = 0; i < newOrder.length; i++) {
+    const pos = i + 1;
+    if (newOrder[i] === pos) continue; // ponto fixo — conteúdo não mudou.
+    const keys = [
+      pos === 1 ? "cover" : `d${pos}_2x1`,
+      `d${pos}_4x5`,
+      ...CAROUSEL_SLIDE_SLOTS.map((slot) => `d${pos}_carousel_${slot}`),
+    ];
+    for (const key of keys) {
+      if (key in images) {
+        delete images[key];
+        removedKeys.push(key);
+      }
+    }
+  }
+
+  if (removedKeys.length === 0) return { changed: false, removedKeys: [], data };
+  return { changed: true, removedKeys, data: { ...(data as object), images } };
+}
+
 function processJsonFile(
   path: string,
   newOrder: number[],
@@ -919,6 +1143,12 @@ function main(): void {
   }
 
   const modified: FilesModified = { rewritten: [], renamed: [] };
+  // (#8679, review finding #1) Avisos não-fatais que precisam sobreviver no
+  // relatório JSON final — nunca só `console.warn`/`console.error`, senão um
+  // caller que só lê stdout estruturado (ex: um orchestrator futuro) nunca
+  // aprende que algo precisou de atenção (mesmo racional de max_chars_warnings
+  // abaixo, generalizado pros 3 passos novos deste PR).
+  const warnings: string[] = [];
 
   // 1. Image files + 2. Prompts — RENOMEADOS ANTES de qualquer escrita de
   // texto (#5087 self-review finding do #5085 reordena esta seção pra cá,
@@ -1035,6 +1265,117 @@ function main(): void {
   const carouselReindex = reindexCarouselSourceHashes(editionDir, args.newOrder, args.dryRun);
   if (carouselReindex) modified.rewritten.push(carouselReindex.path);
 
+  // 5. fact-check-sources/manifest.json + d{N}.txt (#8679).
+  //
+  // (#8679, review finding #1 — P1) `reorderFactCheckSources` internamente
+  // chama `stageAndWriteVerified` pro rename de `d{N}.txt` — a MESMA
+  // primitiva de imagens/prompts do passo 1/2 acima, que pode LANÇAR em
+  // conflito de sync do OneDrive (ver docstring de `stageAndWriteVerified`).
+  // Ao contrário do passo 1/2 (que roda ANTES de qualquer escrita de texto,
+  // justamente pra que um abort ali deixe o disco no estado PRÉ-reorder),
+  // este passo roda DEPOIS que `01-approved*.json`/`02-reviewed.md`/
+  // `03-social.md`/os carimbos já foram reescritos — um throw não-capturado
+  // aqui propagaria até o `catch` de topo de `main()`, que só imprime
+  // "Fatal:" e sai(2) SEM nunca chegar ao `console.log(JSON.stringify(...))`
+  // final: o operador ficaria com um stack trace cru, sem saber quais dos
+  // passos 1-4c já tinham sido gravados com sucesso. Fact-check-sources é
+  // secundário ao conteúdo publicável (a newsletter não deixa de ser
+  // publicável sem ele) — por isso, ao contrário do passo 1/2, uma falha
+  // aqui vira WARNING no relatório final em vez de abortar o processo
+  // inteiro deixando um estado parcial invisível.
+  try {
+    const factCheckResult = reorderFactCheckSources(internalDir, args.newOrder, args.dryRun);
+    modified.rewritten.push(...factCheckResult.modified);
+    modified.renamed.push(...factCheckResult.renamed);
+  } catch (e) {
+    const msg =
+      `fact-check-sources/ pode ter ficado PARCIALMENTE reordenado (manifest.json e/ou d{N}.txt) — ` +
+      `${(e as Error).message ?? e}. Os passos 1-4c (imagens, JSONs, 02-reviewed.md, 03-social.md) já ` +
+      `foram concluídos normalmente; revise fact-check-sources/ manualmente antes do gate.`;
+    console.error(`⚠️  reorder-destaques — passo 5 (fact-check-sources): ${msg}`);
+    warnings.push(msg);
+  }
+
+  // 6. _internal/04-crop-review.json (#8679).
+  const cropReviewPath = resolve(internalDir, "04-crop-review.json");
+  if (existsSync(cropReviewPath)) {
+    let cropRaw: string | undefined;
+    try {
+      cropRaw = readFileSync(cropReviewPath, "utf8");
+    } catch (e) {
+      const msg = `04-crop-review.json não pôde ser lido (${(e as Error).message ?? e}), pulando.`;
+      console.warn(`WARN: reorder-destaques — ${msg}`);
+      warnings.push(msg);
+    }
+    if (cropRaw !== undefined) {
+      let cropData: unknown;
+      try {
+        cropData = JSON.parse(cropRaw);
+      } catch (e) {
+        const msg = `04-crop-review.json tem JSON malformado (${(e as Error).message ?? e}), pulando.`;
+        console.warn(`WARN: reorder-destaques — ${msg}`);
+        warnings.push(msg);
+        cropData = undefined;
+      }
+      if (cropData !== undefined) {
+        const cropResult = reorderCropReviewJson(cropData, args.newOrder);
+        if (cropResult.changed) {
+          if (!args.dryRun) {
+            writeFileSync(cropReviewPath, JSON.stringify(cropResult.data, null, 2) + "\n", "utf8");
+          }
+          modified.rewritten.push(cropReviewPath);
+        }
+      }
+    }
+  }
+
+  // 7. 06-public-images.json (#8679) — invalida (remove) chaves das posições
+  // afetadas em vez de tentar remapear URL: a arte publicada em cada URL
+  // não muda de conteúdo sozinha, então a chave errada precisa desaparecer
+  // (forçando re-upload) em vez de apontar pra arte de outra posição.
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  if (existsSync(publicImagesPath)) {
+    let publicImagesRaw: string | undefined;
+    try {
+      publicImagesRaw = readFileSync(publicImagesPath, "utf8");
+    } catch (e) {
+      const msg = `06-public-images.json não pôde ser lido (${(e as Error).message ?? e}), pulando.`;
+      console.warn(`WARN: reorder-destaques — ${msg}`);
+      warnings.push(msg);
+    }
+    if (publicImagesRaw !== undefined) {
+      let publicImagesData: unknown;
+      try {
+        publicImagesData = JSON.parse(publicImagesRaw);
+      } catch (e) {
+        const msg = `06-public-images.json tem JSON malformado (${(e as Error).message ?? e}), pulando.`;
+        console.warn(`WARN: reorder-destaques — ${msg}`);
+        warnings.push(msg);
+        publicImagesData = undefined;
+      }
+      if (publicImagesData !== undefined) {
+        const publicImagesResult = invalidatePublicImagesForReorder(publicImagesData, args.newOrder);
+        if (publicImagesResult.changed) {
+          if (!args.dryRun) {
+            writeFileSync(
+              publicImagesPath,
+              JSON.stringify(publicImagesResult.data, null, 2) + "\n",
+              "utf8",
+            );
+          }
+          modified.rewritten.push(publicImagesPath);
+          const reuploadMsg =
+            `06-public-images.json: removidas ${publicImagesResult.removedKeys.length} chave(s) das ` +
+            `posições afetadas pelo reorder (${publicImagesResult.removedKeys.join(", ")}) — as URLs ` +
+            `públicas antigas ainda apontam pra arte pré-reorder. Rode upload-images-public.ts ` +
+            `novamente antes de publicar/agendar.`;
+          console.error(`⚠️  ${reuploadMsg}`);
+          warnings.push(reuploadMsg);
+        }
+      }
+    }
+  }
+
   // #3982: validação PÓS-reorder do limite de chars por slot (janela única
   // 900–1000 desde #6061; antes era D1=1200,
   // D2/D3=1000 — scripts/lib/lint-checks/destaque-chars.ts, mesmo rubrico de
@@ -1063,6 +1404,7 @@ function main(): void {
         dry_run: args.dryRun,
         modified,
         max_chars_warnings: maxCharsWarnings,
+        warnings,
       },
       null,
       2,

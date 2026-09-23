@@ -53,6 +53,8 @@ Coleta destaques (D1/D2/D3 com títulos e URLs), verifica acessibilidade, roda l
 
 Respostas aceitas: `sim` (aprovar), `editar` (halt para edição local/Studio, re-rodar), `ajustar` (edição inline no chat, volta ao gate), `abortar` (encerrar sem sentinel).
 
+**Reordenação/swap de destaques dentro do `ajustar` usa SEMPRE `npx tsx scripts/reorder-destaques.ts` — nunca rename manual de `04-d{N}-*` em `data/` (#8679).** Ver `.claude/agents/orchestrator-stage-4.md` §4d.1 passo 4 para o fluxo completo (post_pixel, ratio de imagem) e o porquê: `data/` sincroniza por OneDrive, e um rename manual em rodízio pode ser silenciosamente descartado pelo provedor de sync minutos depois.
+
 Com `--no-gates` (ou `auto_approve = true`): pular o gate, ir direto ao sentinel.
 
 ### Etapa 4d. Escrever sentinel de conclusão
