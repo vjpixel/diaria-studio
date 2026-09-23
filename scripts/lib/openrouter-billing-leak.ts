@@ -89,6 +89,12 @@ export const EXPECTED_PAID_MODELS: ReadonlySet<string> = new Set([
   "gpt-5.6-luna",
   "openai-codex/gpt-5.6-luna",
   "openai/gpt-5.6-luna", // mesma família sob o id prefixado do gateway
+  // #8738 (23/09/2026): version bump gpt-5.6-luna -> gpt-6-luna. Entradas
+  // antigas MANTIDAS (trafego historico/ainda-nao-migrado pode referenciar
+  // o id velho) — mesmo tratamento das 3 formas acima, mesmo modelo.
+  "gpt-6-luna",
+  "openai-codex/gpt-6-luna",
+  "openai/gpt-6-luna",
   //
   // "sonnet" (elo de assinatura claude.ai, #7649) NÃO entra aqui, de
   // propósito — ao contrário de "gpt-5.6-luna" acima. Ver
