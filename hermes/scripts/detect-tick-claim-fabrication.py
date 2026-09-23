@@ -164,6 +164,25 @@ FAIL-SOFT/graduada — uma checagem indeterminada não derruba as outras:
          da uniao -> fabrication_suspected, dentro -> ok. Qualquer evento
          legado (sem o campo) -> indeterminate.
 
+**Falso positivo #8739 (23/09/2026): checagens (b)/(c) nao herdavam a
+correlacao de sessao da checagem (a).** Tick que falha cedo (ex: HTTP 429
+no coordenador, falha de conexao no fallback, antes de qualquer sessao
+`continuo` se registrar) deixa `data/continuo/last-tick-report.md` de um
+tick anterior BEM-SUCEDIDO intocado no disco. A checagem (a) ja reconhecia
+isso — sem sessao pra correlacionar (`session is None`), mtime fora da
+janela vira `indeterminate`, nunca fabricacao presumida. Mas (b) e (c)
+comparavam o CONTEUDO desse relatorio stale contra o estado de HOJE (gh
+issue list, session-registry) incondicionalmente, produzindo
+`fabrication_suspected` garantido sempre que o relatorio antigo fala de
+atividade nao-relacionada (caso real: tick `cron_5d791ef6fc2c_20260923_004012`
+— (a) indeterminate corretamente, mas (b) alegou n=33 vs 102 issues reais,
+e (c) alegou #8703/#8705/#8723 reivindicadas — ambos ruido do relatorio
+stale, nao fabricacao). Ambas agora recebem `session_correlated` (`session
+is not None`, calculado no `run()`) e fazem o MESMO downgrade pra
+`indeterminate` quando `False` e o veredito seria fabricacao — nunca
+mudam o veredito quando ha sessao correlacionada (retrocompativel via
+default `True`). Ver `check_classification_count` e `check_claimed_issues`.
+
 Uso:
     python3 detect-tick-claim-fabrication.py [--repo PATH]
         [--report-path PATH] [--sessions-dir PATH]
@@ -659,8 +678,23 @@ def check_report_freshness(
 def check_classification_count(
     report_text: str | None,
     open_issue_count: int | None,
+    session_correlated: bool = True,
 ) -> dict:
-    """Checagem (b): contagem de issues classificadas alegada vs real."""
+    """Checagem (b): contagem de issues classificadas alegada vs real.
+
+    `session_correlated` (#8739, default `True` — parâmetro retrocompatível,
+    testes existentes que chamam sem ele preservam o comportamento antigo):
+    `True` quando `correlate_continuo_session` (checagem (a), no `run()`)
+    achou uma sessão `continuo` (viva) cuja janela se sobrepõe à do tick
+    sendo checado. Quando `False` e o veredito seria `fabrication_suspected`,
+    downgrade pra `indeterminate` — sem sessão pra ancorar, o relatório
+    avaliado pode ser um leftover STALE de um tick anterior/falho, cujo
+    conteúdo é sobre atividade não-relacionada e vai divergir da contagem
+    REAL de hoje por definição, não por fabricação (achado #8739: tick que
+    falhou cedo, ex. HTTP 429, antes de qualquer sessão registrar; o
+    relatório antigo ainda em disco foi avaliado contra o estado de hoje e
+    produziu fabrication_suspected — mesma disciplina de check_report_freshness,
+    que já faz esse downgrade pra este mesmo cenário)."""
     if report_text is None:
         return {
             "check": "classification_count",
@@ -693,6 +727,21 @@ def check_classification_count(
             "check": "classification_count",
             "status": "ok",
             "details": f"alegado n={alleged} bate com real={open_issue_count} (tolerancia {tolerance}).",
+        }
+    if not session_correlated:
+        return {
+            "check": "classification_count",
+            "status": "indeterminate",
+            "details": (
+                f"relatorio alega n={alleged} issues classificadas vs "
+                f"{open_issue_count} issues abertas (gh issue list) — divergencia "
+                f"acima da tolerancia ({tolerance}), MAS nenhuma sessao continuo "
+                "(viva ou encerrada) correlaciona com a janela deste tick "
+                "(ver checagem report_freshness) — o relatorio pode ser um "
+                "leftover STALE de um tick anterior/falho, cujo conteudo nao "
+                "pode ser atribuido a atividade real desta janela (#8739). "
+                "cannot-verify, nao fabricacao presumida."
+            ),
         }
     return {
         "check": "classification_count",
@@ -762,6 +811,7 @@ def check_claimed_issues(
     sessions_dir_exists: bool,
     ended_session_in_window: bool = False,
     ended_claimed_snapshot: set[int] | None = None,
+    session_correlated: bool = True,
 ) -> dict:
     """Checagem (c): issues citadas como reivindicadas no relatório
     aparecem de fato em algum `claimed_issues` do session-registry.
@@ -775,7 +825,21 @@ def check_claimed_issues(
     INTEIRO (não só `claimed_issues`, diferente de `unclaimIssue`), então
     uma claim real e ainda ativa no fim de um tick que terminou o protocolo
     normalmente fica ausente de `claimed_in_registry` por desenho, não por
-    fabricação."""
+    fabricação.
+
+    `session_correlated` (#8739, default `True` — mesmo parâmetro
+    retrocompatível de `check_classification_count`): `True` quando uma
+    sessão `continuo` VIVA (`session`, via `correlate_continuo_session`)
+    correlaciona com a janela deste tick. Cobre o caso que
+    `ended_session_in_window` NÃO cobre: nem uma sessão viva nem um evento
+    `"ended"` correlacionam — nenhum sinal de que ALGUMA sessão rodou nesta
+    janela. Aí o relatório sendo comparado pode ser um leftover STALE (tick
+    que falhou cedo, nunca chegou a registrar sessão nem a terminar o
+    protocolo) — a ausência da issue citada não pode ser lida como
+    "mecanismo de claim nunca rodou", porque o relatório inteiro pode não
+    ser deste tick. Só se aplica quando `ended_session_in_window` também é
+    `False` — uma sessão `ended` real já tem seu próprio downgrade
+    (indeterminate) acima, mais específico."""
     if report_text is None:
         return {
             "check": "claimed_issues",
@@ -867,6 +931,30 @@ def check_claimed_issues(
                     + (f" issue(s) {missing_released} tambem ausentes mas com liberacao "
                        "documentada na mesma linha."
                        if missing_released else "")
+                ),
+            }
+        if not session_correlated:
+            # #8739: nem uma sessao continuo VIVA nem um evento "ended" real
+            # correlacionam com a janela deste tick — nenhum sinal de que
+            # ALGUMA sessao rodou aqui. O relatorio avaliado pode ser um
+            # leftover STALE (tick que falhou cedo, ex. HTTP 429, antes de
+            # qualquer sessao registrar-se ou terminar o protocolo); a
+            # ausencia da issue citada nao pode ser atribuida a "o mecanismo
+            # de claim nunca rodou PARA ESTE TICK" quando nao ha evidencia
+            # de que este tick produziu o relatorio sendo lido. Mesma
+            # disciplina do downgrade de check_report_freshness.
+            return {
+                "check": "claimed_issues",
+                "status": "indeterminate",
+                "details": (
+                    f"issue(s) {missing_held} citada(s) como reivindicada(s) no relatorio mas "
+                    "ausente(s) de todo registro `data/sessions/continuo-*.json` — MAS nenhuma "
+                    "sessao continuo (viva ou encerrada) correlaciona com a janela deste tick "
+                    "(ver checagem report_freshness) — o relatorio pode ser um leftover STALE "
+                    "de um tick anterior/falho, cujo conteudo nao pode ser atribuido a atividade "
+                    "real desta janela (#8739). cannot-verify, nao fabricacao presumida."
+                    + (f" issue(s) {missing_released} tambem ausentes mas com liberacao "
+                       "documentada na mesma linha." if missing_released else "")
                 ),
             }
         return {
@@ -989,13 +1077,22 @@ def run(
         resolved_lifecycle_log, tick_window_start, tick_window_end
     )
 
+    # #8739: nenhuma sessao continuo VIVA correlaciona com a janela deste
+    # tick -> as checagens (b) e (c) tambem precisam saber disso, nao so a
+    # (a) (check_report_freshness). Ver docstring de check_classification_count
+    # e check_claimed_issues.
+    session_correlated = session is not None
+
     checks = [
         check_report_freshness(report_path, session, tick_window_min, now),
-        check_classification_count(report_text, open_issue_count),
+        check_classification_count(
+            report_text, open_issue_count, session_correlated=session_correlated,
+        ),
         check_claimed_issues(
             report_text, claimed_in_registry, sessions_dir.is_dir(),
             ended_session_in_window=bool(ended_events),
             ended_claimed_snapshot=_snapshot_from_events(ended_events),
+            session_correlated=session_correlated,
         ),
     ]
 

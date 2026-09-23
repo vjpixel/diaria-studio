@@ -46,6 +46,16 @@ Cobre:
   16. `test_regressao_8521_negacao_nao_e_claim` — "não"/"nunca foi(ram)
       reivindicada(s)" não é lido como claim; claim real na linha seguinte
       não é afetado.
+  17. #8739 — regressão end-to-end (`run()`): relatório STALE (mtime fora
+      da janela, de um tick anterior bem-sucedido) com conteúdo que diverge
+      da contagem real de issues E cita uma issue como reivindicada, SEM
+      nenhuma sessão `continuo` (viva ou "ended") correlacionando com a
+      janela do tick atual -> overall NUNCA fabrication_suspected (deve
+      ser indeterminate); classification_count e claimed_issues ficam
+      especificamente indeterminate, não fabrication_suspected. Reproduz o
+      tick `cron_5d791ef6fc2c_20260923_004012` (2026-09-23): tick falhou
+      cedo (HTTP 429), nenhuma sessão jamais se registrou, o relatório
+      stale de um tick anterior foi avaliado contra o estado de hoje.
 
 Uso: python3 hermes/scripts/detect-tick-claim-fabrication.test.py
 """
@@ -816,6 +826,61 @@ def main() -> int:
         # duas sessoes completas, claim em nenhuma -> fabricacao
         _run16("16g-duas-nenhuma", [("s1", dict(claimed_issues=[], claimed_issues_ever=[7000])),
                                     ("s2", dict(claimed_issues=[], claimed_issues_ever=[]))], "fabrication_suspected")
+
+        # ------------------------------------------------------------------
+        # 17. #8739 — tick que falha cedo (ex: HTTP 429), NUNCA registra
+        # sessao continuo (nem viva, nem "ended" no lifecycle log). O
+        # relatorio STALE de um tick anterior BEM-SUCEDIDO continua em
+        # disco, e seu conteudo diverge do estado de HOJE (contagem de
+        # issues, claims). Reproduz o tick
+        # cron_5d791ef6fc2c_20260923_004012 (2026-09-23): (a) ja acertava
+        # (indeterminate, sem sessao pra ancorar) mas (b)/(c) avaliavam o
+        # relatorio stale contra ground-truth de hoje e produziam
+        # fabrication_suspected — falso positivo, nao evidencia real.
+        # ------------------------------------------------------------------
+        repo17 = td / "repo17"
+        report17 = repo17 / "data" / "continuo" / "last-tick-report.md"
+        sessions17 = repo17 / "data" / "sessions"
+        sessions17.mkdir(parents=True, exist_ok=True)  # existe, mas VAZIO
+        stale_mtime17 = now - timedelta(hours=6)  # bem fora da janela de 45min
+        _write_report(
+            report17,
+            (
+                "## Tick de ha 6h (stale)\n### Trabalhado\n"
+                "classificacao executada com n=33 issues\n"
+                "reivindicada #999, ainda em andamento.\n"
+            ),
+            mtime=stale_mtime17,
+        )
+        # SEM sessao continuo escrita (correlate_continuo_session -> None)
+        # SEM evento de lifecycle escrito (ended_continuo_events_in_window -> [])
+        open_issues_102 = _open_issues_file(td, 102)
+        result17 = mod.run(repo17, report17, sessions17, 45, now, open_issues_102)
+        assert_true(
+            "17. #8739 tick falhou cedo, relatorio stale sem sessao alguma "
+            "correlacionando -> overall NUNCA fabrication_suspected",
+            result17["status"] != "fabrication_suspected",
+        )
+        assert_true(
+            "17. overall = indeterminate (nao 'ok' silencioso)",
+            result17["status"] == "indeterminate",
+        )
+        cc17 = next(c for c in result17["checks"] if c["check"] == "classification_count")
+        assert_true(
+            "17. classification_count fica indeterminate (n=33 vs real=102, "
+            "mas sem sessao correlacionada)",
+            cc17["status"] == "indeterminate",
+        )
+        ci17 = next(c for c in result17["checks"] if c["check"] == "claimed_issues")
+        assert_true(
+            "17. claimed_issues fica indeterminate (#999 ausente do registro, "
+            "mas sem sessao correlacionada)",
+            ci17["status"] == "indeterminate",
+        )
+        assert_true(
+            "17. session_correlated e None (nenhuma sessao viva correlaciona)",
+            result17["session_correlated"] is None,
+        )
 
         if FAILED:
             print(f"\n{FAILED} assercao(es) falharam")
