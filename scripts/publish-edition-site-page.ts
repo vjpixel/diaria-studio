@@ -1411,9 +1411,10 @@ export function productionDeps(
       writeFileSync(join(dir, "index.html"), html, "utf8");
     },
     updateSitemapAndHome: (post, sitemapRelPath) => {
-      const sitemapAbsPath = resolve(rootDir, sitemapRelPath);
-      const homeAbsPath = resolve(rootDir, homePageRelPathFromSitemap(sitemapRelPath));
-      const pagesDir = resolve(rootDir, "workers", "site", "public", "p");
+      const baseDir = worktreeDir ?? rootDir;
+      const sitemapAbsPath = resolve(baseDir, sitemapRelPath);
+      const homeAbsPath = resolve(baseDir, homePageRelPathFromSitemap(sitemapRelPath));
+      const pagesDir = resolve(baseDir, "workers", "site", "public", "p");
 
       let existingXml: string;
       try {
@@ -1460,9 +1461,10 @@ export function productionDeps(
     // entrada desta edição) e ANTES do commit único — ver docstring do
     // campo em `PublishPageDeps` pros 2 gaps que isto fecha.
     backfillAndReindexArchive: (slug, sitemapRelPath) => {
-      const sitemapAbsPath = resolve(rootDir, sitemapRelPath);
-      const pagesDirAbs = resolve(rootDir, "workers", "site", "public", "p");
-      const outDirAbs = resolve(rootDir, dirname(sitemapRelPath));
+      const baseDir = worktreeDir ?? rootDir;
+      const sitemapAbsPath = resolve(baseDir, sitemapRelPath);
+      const pagesDirAbs = resolve(baseDir, "workers", "site", "public", "p");
+      const outDirAbs = resolve(baseDir, dirname(sitemapRelPath));
 
       let seoImageAdded = false;
       try {
