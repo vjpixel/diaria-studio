@@ -46,6 +46,22 @@ Cobre:
   16. `test_regressao_8521_negacao_nao_e_claim` — "não"/"nunca foi(ram)
       reivindicada(s)" não é lido como claim; claim real na linha seguinte
       não é afetado.
+  17. #8739 — regressão end-to-end (`run()`): relatório STALE (mtime fora
+      da janela, de um tick anterior bem-sucedido) com conteúdo que diverge
+      da contagem real de issues E cita uma issue como reivindicada, SEM
+      nenhuma sessão `continuo` (viva ou "ended") correlacionando com a
+      janela do tick atual -> overall NUNCA fabrication_suspected (deve
+      ser indeterminate); classification_count e claimed_issues ficam
+      especificamente indeterminate, não fabrication_suspected. Reproduz o
+      tick `cron_5d791ef6fc2c_20260923_004012` (2026-09-23): tick falhou
+      cedo (HTTP 429), nenhuma sessão jamais se registrou, o relatório
+      stale de um tick anterior foi avaliado contra o estado de hoje.
+  18. Review da PR #8745 (P1) — sessao "ended" real (sem registro vivo,
+      `endSession` ja apagou) sobrepondo a janela + contagem REALMENTE
+      divergente (n=4 vs 41, padrao do #7537) -> overall e
+      classification_count continuam fabrication_suspected. Garante que
+      `any_session_in_window` (viva OU encerrada) nao mascara uma
+      fabricacao real so porque a sessao ja terminou o protocolo.
 
 Uso: python3 hermes/scripts/detect-tick-claim-fabrication.test.py
 """
@@ -232,7 +248,7 @@ def test_adversarial_falsos_negativos_extraem_todos():
 def test_controle_claim_proprio_ausente_do_registro_e_fabricacao():
     mod = _load_module()
     texto = "Issues reivindicadas neste tick: #8301, #8302, #8303, #8304, #8305, #8306."
-    check = mod.check_claimed_issues(texto, {8301, 8302, 8303}, True)
+    check = mod.check_claimed_issues(texto, {8301, 8302, 8303}, True, session_correlated=True)
     assert check["status"] == "fabrication_suspected", check
     print("controle: claim proprio ausente do registro -> fabrication_suspected — OK")
 
@@ -484,7 +500,7 @@ def main() -> int:
         # ------------------------------------------------------------------
         # 7. Relatorio sem alegacao numerica reconhecivel -> not_applicable
         # ------------------------------------------------------------------
-        cc = mod.check_classification_count("## Tick 12:00\n### Trabalhado\nnada de especial.\n", 41)
+        cc = mod.check_classification_count("## Tick 12:00\n### Trabalhado\nnada de especial.\n", 41, session_correlated=True)
         assert_true(
             "7. relatorio sem alegacao numerica -> classification_count not_applicable",
             cc["status"] == "not_applicable",
@@ -498,7 +514,7 @@ def main() -> int:
         _write_session(sessions8, "tick-g", now - timedelta(minutes=5), now, claimed_issues=[100])
         report_text_8 = "## Tick 12:00\n### Trabalhado\nreivindicada #200, ainda em andamento.\n"
         claimed8 = mod.all_continuo_claimed_issues(sessions8)
-        check8 = mod.check_claimed_issues(report_text_8, claimed8, sessions8.is_dir())
+        check8 = mod.check_claimed_issues(report_text_8, claimed8, sessions8.is_dir(), session_correlated=True)
         assert_true(
             "8. issue #200 citada como reivindicada mas SO #100 esta no registro -> fabrication_suspected",
             check8["status"] == "fabrication_suspected",
@@ -508,7 +524,7 @@ def main() -> int:
         # 9. Issue citada como reivindicada E presente no registro -> ok
         # ------------------------------------------------------------------
         report_text_9 = "## Tick 12:00\n### Trabalhado\nreivindicada #100, ainda em andamento.\n"
-        check9 = mod.check_claimed_issues(report_text_9, claimed8, sessions8.is_dir())
+        check9 = mod.check_claimed_issues(report_text_9, claimed8, sessions8.is_dir(), session_correlated=True)
         assert_true(
             "9. issue #100 citada como reivindicada E presente no registro -> ok",
             check9["status"] == "ok",
@@ -519,7 +535,7 @@ def main() -> int:
         # ------------------------------------------------------------------
         check10 = mod.check_claimed_issues(
             "## Tick 12:00\n### Trabalhado\nlinha qualquer sem #refs de claim.\n",
-            claimed8, sessions8.is_dir(),
+            claimed8, sessions8.is_dir(), session_correlated=True,
         )
         assert_true(
             "10. relatorio sem mencao de reivindicacao/claim -> not_applicable",
@@ -615,7 +631,7 @@ def main() -> int:
             "a PR #7827 foi fechada com explicacao; a claim foi liberada.\n"
         )
         claimed_from_test8 = mod.all_continuo_claimed_issues(sessions8)  # {100} -- reusa dir do teste 8; NAO vazio (review PR #8014, achado 4)
-        check12 = mod.check_claimed_issues(report_text_12, claimed_from_test8, sessions8.is_dir())
+        check12 = mod.check_claimed_issues(report_text_12, claimed_from_test8, sessions8.is_dir(), session_correlated=True)
         assert_true(
             "12. claim liberado no mesmo tick, ausente do registro -> indeterminate (nao fabricacao)",
             check12["status"] == "indeterminate",
@@ -627,7 +643,7 @@ def main() -> int:
         # real do #7537 nao pode regredir).
         # ------------------------------------------------------------------
         report_text_12b = "## Tick 12:00\n### Trabalhado\nreivindicada #300, ainda em andamento.\n"
-        check12b = mod.check_claimed_issues(report_text_12b, claimed_from_test8, sessions8.is_dir())
+        check12b = mod.check_claimed_issues(report_text_12b, claimed_from_test8, sessions8.is_dir(), session_correlated=True)
         assert_true(
             "12b. claim SEM liberacao e ausente do registro -> continua fabrication_suspected",
             check12b["status"] == "fabrication_suspected",
@@ -643,7 +659,7 @@ def main() -> int:
             "- #7807: Claim liberada.\n"
             "- reivindicada #300, ainda em andamento.\n"
         )
-        check12c = mod.check_claimed_issues(report_text_12c, claimed_from_test8, sessions8.is_dir())
+        check12c = mod.check_claimed_issues(report_text_12c, claimed_from_test8, sessions8.is_dir(), session_correlated=True)
         assert_true(
             "12c. mistura liberada+retida ausentes -> fabrication_suspected domina",
             check12c["status"] == "fabrication_suspected",
@@ -662,7 +678,7 @@ def main() -> int:
             "## Tick 20:00\n### Trabalhado\n"
             "- o coordenador deliberou reivindicar #400 e seguiu em frente.\n"
         )
-        check12d = mod.check_claimed_issues(report_text_12d, claimed_from_test8, sessions8.is_dir())
+        check12d = mod.check_claimed_issues(report_text_12d, claimed_from_test8, sessions8.is_dir(), session_correlated=True)
         assert_true(
             "12d. 'deliberou' (verbo comum) NAO e falso sinal de liberacao -> continua fabrication_suspected",
             check12d["status"] == "fabrication_suspected",
@@ -693,7 +709,8 @@ def main() -> int:
         ended14 = mod.ended_continuo_events_in_window(lifecycle14, tick_start14 - timedelta(minutes=45), tick_end14 + timedelta(minutes=45))
         assert_true("14. ended_continuo_events_in_window acha o evento na janela", len(ended14) == 1)
         check14 = mod.check_claimed_issues(
-            report_text_14, claimed_empty, True, ended_session_in_window=True,
+            report_text_14, claimed_empty, True, session_correlated=True,
+            ended_session_in_window=True,
         )
         assert_true(
             "14. #8515 ausente do registro MAS com sessao 'ended' real na janela -> indeterminate",
@@ -706,7 +723,7 @@ def main() -> int:
         # retrocompatível) -> continua fabrication_suspected. O #7537
         # original não pode regredir por esta mudança.
         # ------------------------------------------------------------------
-        check14b = mod.check_claimed_issues(report_text_14, claimed_empty, True)
+        check14b = mod.check_claimed_issues(report_text_14, claimed_empty, True, session_correlated=True)
         assert_true(
             "14b. mesmo relatorio SEM sessao 'ended' correlacionada -> continua fabrication_suspected",
             check14b["status"] == "fabrication_suspected",
@@ -793,7 +810,7 @@ def main() -> int:
             evs = mod.ended_continuo_events_in_window(
                 lc, tick_start14 - timedelta(minutes=45), tick_end14 + timedelta(minutes=45))
             chk = mod.check_claimed_issues(
-                report_text_14, set(), True,
+                report_text_14, set(), True, session_correlated=True,
                 ended_session_in_window=bool(evs),
                 ended_claimed_snapshot=mod._snapshot_from_events(evs),
             )
@@ -816,6 +833,105 @@ def main() -> int:
         # duas sessoes completas, claim em nenhuma -> fabricacao
         _run16("16g-duas-nenhuma", [("s1", dict(claimed_issues=[], claimed_issues_ever=[7000])),
                                     ("s2", dict(claimed_issues=[], claimed_issues_ever=[]))], "fabrication_suspected")
+
+        # ------------------------------------------------------------------
+        # 17. #8739 — tick que falha cedo (ex: HTTP 429), NUNCA registra
+        # sessao continuo (nem viva, nem "ended" no lifecycle log). O
+        # relatorio STALE de um tick anterior BEM-SUCEDIDO continua em
+        # disco, e seu conteudo diverge do estado de HOJE (contagem de
+        # issues, claims). Reproduz o tick
+        # cron_5d791ef6fc2c_20260923_004012 (2026-09-23): (a) ja acertava
+        # (indeterminate, sem sessao pra ancorar) mas (b)/(c) avaliavam o
+        # relatorio stale contra ground-truth de hoje e produziam
+        # fabrication_suspected — falso positivo, nao evidencia real.
+        # ------------------------------------------------------------------
+        repo17 = td / "repo17"
+        report17 = repo17 / "data" / "continuo" / "last-tick-report.md"
+        sessions17 = repo17 / "data" / "sessions"
+        sessions17.mkdir(parents=True, exist_ok=True)  # existe, mas VAZIO
+        stale_mtime17 = now - timedelta(hours=6)  # bem fora da janela de 45min
+        _write_report(
+            report17,
+            (
+                "## Tick de ha 6h (stale)\n### Trabalhado\n"
+                "classificacao executada com n=33 issues\n"
+                "reivindicada #999, ainda em andamento.\n"
+            ),
+            mtime=stale_mtime17,
+        )
+        # SEM sessao continuo escrita (correlate_continuo_session -> None)
+        # SEM evento de lifecycle escrito (ended_continuo_events_in_window -> [])
+        open_issues_102 = _open_issues_file(td, 102)
+        result17 = mod.run(repo17, report17, sessions17, 45, now, open_issues_102)
+        assert_true(
+            "17. #8739 tick falhou cedo, relatorio stale sem sessao alguma "
+            "correlacionando -> overall NUNCA fabrication_suspected",
+            result17["status"] != "fabrication_suspected",
+        )
+        assert_true(
+            "17. overall = indeterminate (nao 'ok' silencioso)",
+            result17["status"] == "indeterminate",
+        )
+        cc17 = next(c for c in result17["checks"] if c["check"] == "classification_count")
+        assert_true(
+            "17. classification_count fica indeterminate (n=33 vs real=102, "
+            "mas sem sessao correlacionada)",
+            cc17["status"] == "indeterminate",
+        )
+        ci17 = next(c for c in result17["checks"] if c["check"] == "claimed_issues")
+        assert_true(
+            "17. claimed_issues fica indeterminate (#999 ausente do registro, "
+            "mas sem sessao correlacionada)",
+            ci17["status"] == "indeterminate",
+        )
+        assert_true(
+            "17. session_correlated e None (nenhuma sessao viva correlaciona)",
+            result17["session_correlated"] is None,
+        )
+
+        # ------------------------------------------------------------------
+        # 18. Review da PR #8745 (P1, silent-failure-hunter) — tick que
+        # reivindicou e terminou o protocolo NORMALMENTE (`endSession`
+        # apagou o registro VIVO, mas o log de lifecycle tem um evento
+        # "ended" REAL sobrepondo a janela) e cuja contagem alegada
+        # REALMENTE diverge (n=4 vs 41, o padrao do #7537) precisa
+        # continuar `fabrication_suspected` — `session is not None`
+        # sozinho (sem `ended_events`) escondia esse caso, tratando-o como
+        # se fosse o mesmo leftover STALE do #8739 (nenhuma sessao rodou).
+        # Aqui HOUVE sessao real (evidenciada pelo log append-only, que so
+        # existe se `session-registry.ts end` de fato rodou) — a fabricacao
+        # de contagem nao pode escapar so porque o registro vivo sumiu.
+        # ------------------------------------------------------------------
+        repo18 = td / "repo18"
+        report18 = repo18 / "data" / "continuo" / "last-tick-report.md"
+        sessions18 = repo18 / "data" / "sessions"
+        sessions18.mkdir(parents=True, exist_ok=True)  # existe, mas VAZIO (endSession apagou)
+        lifecycle18 = repo18 / "data" / "session-lifecycle.jsonl"
+        report_mtime18 = now - timedelta(minutes=10)
+        tick_start18 = report_mtime18 - timedelta(minutes=5)
+        tick_end18 = report_mtime18 + timedelta(minutes=1)
+        _write_lifecycle_event(lifecycle18, "hermes-cron-fabricacao-real", tick_start18, tick_end18)
+        _write_report(
+            report18,
+            "## Tick 12:00\n### Trabalhado\nclassificacao executada com n=4 issues\n",
+            mtime=report_mtime18,
+        )
+        open_issues_41_b = _open_issues_file(td, 41)
+        result18 = mod.run(
+            repo18, report18, sessions18, 45, now, open_issues_41_b,
+            lifecycle_log_path=lifecycle18,
+        )
+        assert_true(
+            "18. sessao 'ended' real (sem registro vivo) + contagem REALMENTE "
+            "divergente (n=4 vs 41) -> overall continua fabrication_suspected",
+            result18["status"] == "fabrication_suspected",
+        )
+        cc18 = next(c for c in result18["checks"] if c["check"] == "classification_count")
+        assert_true(
+            "18. classification_count continua fabrication_suspected (nao "
+            "mascarada pela ausencia de sessao VIVA)",
+            cc18["status"] == "fabrication_suspected",
+        )
 
         if FAILED:
             print(f"\n{FAILED} assercao(es) falharam")
