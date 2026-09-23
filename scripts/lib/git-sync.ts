@@ -115,6 +115,19 @@
  *
  * Idempotente: re-rodar não tem efeito colateral se já atualizado.
  *
+ * #8719: `countStaleAutostashes()` (com o campo `stale_autostash_count` no
+ * resultado) implementa o alarme de contagem que a docstring de
+ * `GIT_SYNC_STASH_MESSAGE` (#7740, acima) já antecipava — a issue flagrou 6
+ * autostashes idênticos deste módulo acumulados silenciosamente em
+ * `git stash list`, cada um já sinalizado individualmente por um banner de
+ * `sync-code.ts` na sua própria rodada, mas sem nenhuma contagem agregada
+ * detectando o pileup ao longo do tempo. Escopo desta correção é só tornar o
+ * pileup VISÍVEL (banner) — investigar a causa raiz de "Permission denied"
+ * no stash, por que arquivos ficam dirty entre sessões, ou decidir o que
+ * fazer com stashes já acumulados seguem fora de escopo por decisão
+ * explícita da própria issue (#8719: "não implementar sem decisão do
+ * editor").
+ *
  * @see .claude/skills/diaria-edicao/SKILL.md — invocado no Passo 0.
  */
 
@@ -242,6 +255,20 @@ export interface GitSyncResult {
    * específico). `null` em todo outcome que não preserva stash.
    */
   preserved_stash: { ref: string | null; message: string } | null;
+  /**
+   * #8719: quantos autostashes DESTE módulo (`GIT_SYNC_STASH_MESSAGE`) estão
+   * parados em `git stash list` no momento em que este `syncCode()` terminou
+   * — medido AFTER-the-fact, mesma disciplina de `commits_behind` (#6090).
+   * Diferente de `preserved_stash` (que só aponta o stash desta CHAMADA,
+   * quando não recuperado), este campo é uma contagem AGREGADA de todos os
+   * autostashes acumulados ao longo do tempo — é o que permite ao consumidor
+   * (`sync-code.ts`) detectar pileup silencioso (a issue #8719 flagrou 6
+   * idênticos, invisíveis porque cada ocorrência só emitia seu próprio
+   * warning isolado, nunca uma contagem agregada). `-1` = não foi possível
+   * medir (`git stash list` falhou) — mesma convenção de "não medido" que
+   * `commits_behind: -1`.
+   */
+  stale_autostash_count: number;
 }
 
 /**
@@ -257,6 +284,36 @@ export function measureSyncState(spawn: SpawnFn): { up_to_date: boolean; commits
   }
   const count = Number.parseInt(res.stdout.trim(), 10);
   return { up_to_date: count === 0, commits_behind: count };
+}
+
+/**
+ * #8719: conta quantos autostashes DESTE módulo estão parados em `git stash
+ * list` neste exato momento — o alarme de contagem que a docstring de
+ * `GIT_SYNC_STASH_MESSAGE` (ver #7740 acima) já antecipava mas nunca foi
+ * implementado. A issue #8719 flagrou 6 stashes idênticos acumulados (outcome
+ * `stash_partial_failure_unrecovered` recorrendo silenciosamente rodada após
+ * rodada, sem que ninguém notasse o pileup) — sem esta contagem, cada
+ * ocorrência individual já emitia um banner (#7740), mas nada agregava
+ * quantas dessas já tinham se empilhado.
+ *
+ * Mede com um único comando barato e local (`git stash list` — não toca
+ * rede, não modifica nada) e conta as linhas que contêm
+ * `GIT_SYNC_STASH_MESSAGE` — a mesma mensagem identificável que TODO `git
+ * stash push` deste módulo grava, isolando confiavelmente os autostashes
+ * deste módulo de qualquer `git stash` manual de sessão interativa.
+ *
+ * Fail-soft: exit não-zero (git indisponível, não é um repositório, etc.) →
+ * `-1` — mesma convenção de "não foi possível medir" que `measureSyncState()`
+ * já usa em `commits_behind`. Nunca lança.
+ */
+export function countStaleAutostashes(spawn: SpawnFn): number {
+  const res = spawn("git", ["stash", "list"]);
+  if (res.status !== 0) {
+    return -1;
+  }
+  return res.stdout
+    .split("\n")
+    .filter((line) => line.includes(GIT_SYNC_STASH_MESSAGE)).length;
 }
 
 /**
@@ -376,8 +433,14 @@ export interface LockFs {
  * referência estruturada de volta pra ele, só a mensagem identificável
  * gravada no próprio stash via `GIT_SYNC_STASH_MESSAGE`). Mesma categoria de
  * spawn rápido (`git rev-parse`), reflete automaticamente em `LOCK_STALE_MS`.
+ *
+ * #8719: o pior caso ganhou o 13º spawn — `countStaleAutostashes()` roda
+ * `git stash list` DEPOIS da tentativa inteira (mesmo ponto de
+ * `measureSyncState()`, #6090 acima), ainda sob o lock. Mesma categoria de
+ * spawn rápido (`git stash list` — só lista, não modifica nada), reflete
+ * automaticamente em `LOCK_STALE_MS`.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 12;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 13;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -914,6 +977,7 @@ export function syncCode(
       up_to_date: false,
       commits_behind: -1,
       preserved_stash: null,
+      stale_autostash_count: -1,
     };
   }
 
@@ -932,18 +996,24 @@ export function syncCode(
       `se o outro sync ainda não terminou).`;
     // #6090: NESTE caminho NÃO medimos — o invariante do #3423 é que nenhum
     // comando git roda quando o lock está com outro processo (testado). Estado
-    // fica desconhecido (-1/false), conservador.
-    return { outcome: "sync_in_progress", message: msg, branch_before: "unknown", warnings: [msg], proceed: true, up_to_date: false, commits_behind: -1, preserved_stash: null };
+    // fica desconhecido (-1/false), conservador. #8719: mesma lógica se aplica
+    // à contagem de autostashes — nenhum comando git rodou, então -1.
+    return { outcome: "sync_in_progress", message: msg, branch_before: "unknown", warnings: [msg], proceed: true, up_to_date: false, commits_behind: -1, preserved_stash: null, stale_autostash_count: -1 };
   }
 
   try {
     const result = syncCodeLocked(spawn);
     // #6090: estado de sincronização é SEMPRE medido after-the-fact via
     // `git rev-list --count`, em TODOS os outcomes — nunca inferido deles.
-    // Anotação explícita `GitSyncResult`: se um campo futuro colidir entre
-    // `result` e a medição, o compilador acusa em vez do spread vencer
-    // silenciosamente (review independente PR #6094).
-    const out: GitSyncResult = { ...result, ...measureSyncState(spawn) };
+    // #8719: mesma disciplina para `stale_autostash_count` via
+    // `countStaleAutostashes()`. Anotação explícita `GitSyncResult`: se um
+    // campo futuro colidir entre `result` e a medição, o compilador acusa em
+    // vez do spread vencer silenciosamente (review independente PR #6094).
+    const out: GitSyncResult = {
+      ...result,
+      ...measureSyncState(spawn),
+      stale_autostash_count: countStaleAutostashes(spawn),
+    };
     return out;
   } finally {
     effectiveLock.release();
@@ -955,9 +1025,13 @@ export function syncCode(
  * chamador (`syncCode`). Extraído para função própria só para manter o
  * `try/finally` do lock enxuto — não é exportado nem chamado diretamente.
  * #6090: os campos `up_to_date`/`commits_behind` são anexados pelo chamador
- * (`syncCode`) via `measureSyncState()` após a tentativa inteira.
+ * (`syncCode`) via `measureSyncState()` após a tentativa inteira. #8719:
+ * mesma coisa para `stale_autostash_count`, anexado via
+ * `countStaleAutostashes()`.
  */
-function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "commits_behind"> {
+function syncCodeLocked(
+  spawn: SpawnFn,
+): Omit<GitSyncResult, "up_to_date" | "commits_behind" | "stale_autostash_count"> {
   const warnings: string[] = [];
 
   // ── 1. Branch atual ────────────────────────────────────────────────────────

@@ -30,9 +30,30 @@
  * pipeline (isso é escopo do orchestrator/stage, CLAUDE.md "Sync de código
  * no início de cada edição"), só garante que o sinal não fique perdido no
  * meio do JSON.
+ *
+ * #8719: quando `result.stale_autostash_count >= STALE_AUTOSTASH_ALARM_THRESHOLD`,
+ * imprime um banner de PILEUP — sinaliza que autostashes deste módulo
+ * (`GIT_SYNC_STASH_MESSAGE`) se acumularam em `git stash list` ao longo de
+ * várias rodadas, não só nesta. A issue #8719 flagrou 6 acumulados
+ * silenciosamente; cada ocorrência individual já tinha seu próprio banner
+ * (#7740, ver `preserved_stash` abaixo), mas nada agregava a contagem — este
+ * é o alarme de contagem que a docstring de `GIT_SYNC_STASH_MESSAGE` em
+ * `scripts/lib/git-sync.ts` já antecipava. Este script só torna o pileup
+ * VISÍVEL (fail-soft, exit 0 sempre) — não decide o que fazer com os
+ * stashes acumulados nem investiga a causa raiz; ambos ficam fora de
+ * escopo por decisão explícita da própria issue #8719.
  */
 
-import { syncCode } from "./lib/git-sync.ts";
+import { GIT_SYNC_STASH_MESSAGE, syncCode } from "./lib/git-sync.ts";
+
+/**
+ * #8719: a partir de quantos autostashes acumulados (`GIT_SYNC_STASH_MESSAGE`
+ * em `git stash list`) o pileup vira alarme visível. 3, não 1-2 — 1 ou 2
+ * stashes preservados podem ser transitórios (uma sessão ainda não voltou pra
+ * resolver o pop conflitante de agora há pouco); 3+ é o sinal de que ninguém
+ * está limpando, o padrão que a issue #8719 mediu ao vivo (6 acumulados).
+ */
+const STALE_AUTOSTASH_ALARM_THRESHOLD = 3;
 
 const result = syncCode();
 
@@ -135,6 +156,23 @@ if (result.outcome === "worktree_refused") {
       `   checkout principal. Nenhum comando git foi executado (#7336) — sync de código só faz\n` +
       `   sentido no checkout compartilhado. Se isto rodou por engano a partir do worktree de\n` +
       `   OUTRA sessão, é um bug de cwd em quem chamou este script, não deste.\n\n`,
+  );
+}
+
+// #8719: banner de PILEUP — vários autostashes deste módulo acumulados em
+// `git stash list` ao longo de várias rodadas (não só esta). Fail-soft
+// (exit 0 abaixo, inalterado) — este script só torna o pileup visível, não
+// decide o que fazer com os stashes acumulados nem investiga a causa raiz
+// (fora de escopo por decisão explícita da própria issue #8719).
+if (result.stale_autostash_count >= STALE_AUTOSTASH_ALARM_THRESHOLD) {
+  process.stderr.write(
+    `\n📚 PILEUP DE AUTOSTASH — ${result.stale_autostash_count} stashes de sync-code.ts acumulados em ` +
+      `'git stash list' (limiar de alarme: ${STALE_AUTOSTASH_ALARM_THRESHOLD}+; incidente que motivou o ` +
+      `alarme, #8719, mediu 6).\n` +
+      `   A edição vai continuar (fail-soft) — este script só sinaliza o pileup, não decide o que fazer\n` +
+      `   com ele. Investigue e limpe manualmente (revise CADA um antes de descartar — pode haver\n` +
+      `   trabalho legítimo não-relacionado a este sync ali dentro):\n` +
+      `   git stash list | grep -F '${GIT_SYNC_STASH_MESSAGE}'\n\n`,
   );
 }
 
