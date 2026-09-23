@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Tue, 22 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Wed, 23 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Claude Opus 5.5 chega dias após alerta de Amodei</title>
+      <link>https://diar.ia.br/p/claude-opus-5-5-chega-dias-apos-alerta-de-amodei</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/claude-opus-5-5-chega-dias-apos-alerta-de-amodei</guid>
+      <pubDate>Wed, 23 Sep 2026 09:00:00 GMT</pubDate>
+      <description>GPT-6 Sol e Luna: por que a OpenAI acelerou? | xAI lança Grok 4.7 e corta preço pela metade</description>
+    </item>
     <item>
       <title>ONU alerta: agentes de IA já escondem suas ações</title>
       <link>https://diar.ia.br/p/onu-alerta-agentes-de-ia-ja-escondem-suas-acoes</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/terroristas-driblam-chatbots-para-montar-armas</guid>
       <pubDate>Wed, 15 Jul 2026 09:00:00 GMT</pubDate>
       <description>Matrículas em cursos de IA generativa sobem 617% | OCDE: emprego recorde, mas jovem não entra</description>
-    </item>
-    <item>
-      <title>IA do Google detecta câncer raro no SUS</title>
-      <link>https://diar.ia.br/p/ia-do-google-detecta-c-ncer-raro-no-sus</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/ia-do-google-detecta-c-ncer-raro-no-sus</guid>
-      <pubDate>Tue, 14 Jul 2026 09:00:00 GMT</pubDate>
-      <description>Nobel e Anthropic alertam sobre risco da IA | Fraude com deepfake sobe 126% e mira fintechs</description>
     </item>
   </channel>
 </rss>
