@@ -109,6 +109,14 @@ describe("runEvaluation — newsletterBackend ramifica a promoção (#6339)", ()
       const url = String(u);
       if (url.includes("api.kit.com")) {
         kitUrls.push(`${init?.method ?? "GET"} ${url}`);
+        if (url.includes("email_address=")) {
+          // #8728 — lookup por e-mail (`getKitSubscriberByEmail`, ANTES do
+          // POST) usa o endpoint de LISTA, que devolve `subscribers[]`, não
+          // `subscriber` singular. Vazio aqui = "não existe ainda" (o
+          // comportamento pré-#8728 preservado: decideKitPromotionAction
+          // devolve "promote").
+          return jsonRes(200, { subscribers: [] });
+        }
         // Mesma resposta serve tanto o POST (create) quanto o GET
         // (releitura) — o teste só precisa confirmar `state: "active"`.
         return jsonRes(200, { subscriber: { id: 777, email_address: "promo@b.com", state: "active", created_at: "x" } });

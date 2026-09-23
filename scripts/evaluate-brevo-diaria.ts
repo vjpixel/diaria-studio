@@ -893,14 +893,31 @@ export async function verifyPromotedToBeehiiv(
  *
  * Mecânica, mais simples que o par Beehiiv: `POST /v4/subscribers` do Kit é
  * idempotente por e-mail e `state: "active"` bypassa qualquer fluxo de
- * confirmação (achado ao vivo #6048, ver `kit-subscribers.ts`) — não existe
- * aqui o equivalente do DELETE+CREATE nem do estado transitório
- * `"validating"` da Beehiiv. Ainda assim, `verifyPromotedToKit` releê via
- * `GET /v4/subscribers/{id}` em vez de confiar no corpo da resposta do
- * POST — mesma disciplina do par Beehiiv e do restante do módulo (nunca
- * confiar só no status da mutação, ver as "armadilhas" documentadas em
- * `kit-client.ts`), mesmo que o #6048 sugira que, pra este endpoint
- * específico, a resposta do POST já seria confiável.
+ * confirmação **só pra contato NOVO ou já `active`** (achado ao vivo #6048,
+ * ver `kit-subscribers.ts`) — não existe aqui o equivalente do DELETE+CREATE
+ * nem do estado transitório `"validating"` da Beehiiv. Ainda assim,
+ * `verifyPromotedToKit` releê via `GET /v4/subscribers/{id}` em vez de
+ * confiar no corpo da resposta do POST — mesma disciplina do par Beehiiv e
+ * do restante do módulo (nunca confiar só no status da mutação, ver as
+ * "armadilhas" documentadas em `kit-client.ts`), mesmo que o #6048 sugira
+ * que, pra este endpoint específico, a resposta do POST já seria confiável.
+ *
+ * **Correção #8728 (23/09/2026) — a afirmação acima ("bypassa qualquer
+ * fluxo de confirmação") é FALSA pra um contato que já existe no Kit como
+ * `inactive` (ou `cancelled`/`bounced`/`complained`).** Confirmado ao vivo:
+ * `POST /v4/subscribers` com `state: "active"` devolve 200 mas a API
+ * IGNORA o campo `state` quando o contato já existe em qualquer estado
+ * não-`active` — o estado real não muda, e `verifyPromotedToKit` nunca
+ * confirma. Reativar um `inactive` no Kit exige passar pelo mecanismo real
+ * (form de sistema de double opt-in), nunca um PATCH/POST direto do campo
+ * `state` — forçar isso por outro caminho (ex: vincular a um form de
+ * sistema programaticamente) reativaria indiscriminadamente contatos que
+ * genuinamente se descadastraram, violando o consentimento deles (decisão
+ * do editor: fora de escopo, ver `decideKitPromotionAction` abaixo). O
+ * caller (`runEvaluation`) agora consulta `getKitSubscriberByEmail` ANTES
+ * deste POST e usa `decideKitPromotionAction` pra decidir se chama esta
+ * função ou só espera a auto-confirmação (Passo 1, já existente) resolver
+ * quando a pessoa confirmar o double opt-in por conta própria.
  */
 export async function promoteKitSubscription(email: string, apiKey: string): Promise<{ id: number }> {
   // #6425 Parte B: regressão do switchover — este POST saía sem `fields`,
@@ -933,6 +950,40 @@ export async function promoteKitSubscription(email: string, apiKey: string): Pro
 export async function verifyPromotedToKit(id: number, apiKey: string): Promise<boolean> {
   const subscriber = await getSubscriberById(id, { apiKey });
   return subscriber.state === "active";
+}
+
+/**
+ * decideKitPromotionAction (#8728)
+ *
+ * Pura — decide se `promoteKitSubscription` deve ser chamada pra um contato,
+ * a partir do estado ATUAL dele no Kit (`null` = não existe ainda). Existe
+ * porque `POST /v4/subscribers?state=active` só funciona como "reativação"
+ * pra um contato que NÃO existe ainda ou que já está `active` — pra
+ * qualquer outro estado (`inactive`, `cancelled`, `bounced`, `complained`)
+ * a API aceita o POST (200) mas ignora o campo `state`, deixando
+ * `verifyPromotedToKit` falhar pra sempre (ver docstring de
+ * `promoteKitSubscription` acima pro achado ao vivo completo, #8728).
+ *
+ * `"await_self_confirmation"` — **decisão deliberada de NÃO forçar
+ * reativação.** `inactive` no Kit é ambíguo: cobre tanto "nunca confirmou o
+ * double opt-in" quanto "confirmou e depois se descadastrou". Não existe
+ * forma de diferenciar os dois só pelo `state` — e forçar a reativação (via
+ * form de sistema ou qualquer outro mecanismo) reabriria a inscrição de
+ * quem genuinamente saiu, sem o consentimento dele. Por isso o caller nunca
+ * tenta reativar por aqui: mantém o contato `in_brevo` e deixa o Passo 1 de
+ * auto-confirmação (já existente, roteado por origem — ver #6340 item 4)
+ * resolver sozinho quando/se a pessoa confirmar o double opt-in do Kit por
+ * conta própria.
+ *
+ * `"promote"` — contato inexistente (`null`) ou já `active`: comportamento
+ * de sempre, preservado (um contato já `active` promovido de novo é só o
+ * POST idempotente confirmando o que já era verdade).
+ */
+export type KitPromotionAction = "promote" | "await_self_confirmation";
+
+export function decideKitPromotionAction(existing: { state: string } | null): KitPromotionAction {
+  if (existing !== null && existing.state !== "active") return "await_self_confirmation";
+  return "promote";
 }
 
 /**
@@ -1382,6 +1433,20 @@ export interface RunEvaluationResult {
    */
   skippedActiveOnKit: number;
   /**
+   * #8728 — quantos contatos seriam promovidos pro Kit (threshold de
+   * score, `newsletterBackend === "kit"`) mas já existem lá em estado
+   * NÃO-`active` (`inactive`/`cancelled`/`bounced`/`complained`) — a
+   * promoção por API foi PULADA (nunca reativa por consentimento, ver
+   * `decideKitPromotionAction`) e o contato PERMANECE `in_brevo`, aguardando
+   * a auto-confirmação (Passo 1) resolver se/quando a pessoa confirmar o
+   * double opt-in por conta própria. Contador SEPARADO de `failed` de
+   * propósito: não é uma falha transitória de API nem dado corrompido — é
+   * um estado esperado que `brevo-diaria-stage5-dispatch.ts` NUNCA deve
+   * tratar como bloqueio do dispatch (era exatamente esse o bug: 2
+   * contatos `inactive` no Kit travando a rodada inteira, ver #8728).
+   */
+  awaitingKitConfirmation: number;
+  /**
    * #8724 — email + motivo de cada incremento de `failed`, na ordem em que
    * ocorreram. Existe porque o `warn:`/`FALHA em` de cada contato já é
    * logado individualmente (via `log()`), mas esse log pode ficar fora da
@@ -1462,6 +1527,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   const failedContacts: { email: string; reason: string }[] = []; // #8724
   let kitAutoConfirmSkipped = 0;
   let skippedActiveOnKit = 0; // #7382
+  let awaitingKitConfirmation = 0; // #8728
 
   for (const contact of contacts) {
     try {
@@ -1911,6 +1977,34 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           if (!kitApiKey) {
             throw new Error(`newsletterBackend === "kit" mas kitApiKey ausente — necessário pra promover ${contact.email} (#6339).`);
           }
+          // #8728 — antes de promover, checar se o contato já existe no Kit
+          // em estado NÃO-`active`: promover sem essa checagem é exatamente
+          // o bug (POST com state=active aceito com 200 mas ignorado pra
+          // quem já está inactive/cancelled/bounced/complained — releitura
+          // nunca confirma, e o `failed` resultante bloqueava o dispatch da
+          // edição inteira). Ver docstring de `decideKitPromotionAction`.
+          let existingKitSubscriber: Awaited<ReturnType<typeof getKitSubscriberByEmail>>;
+          try {
+            existingKitSubscriber = await getKitSubscriberByEmail(contact.email, { apiKey: kitApiKey });
+          } catch (e) {
+            log(`warn: falha ao checar estado Kit de ${contact.email} antes de promover (#8728): ${(e as Error).message}`);
+            failed++;
+            failedContacts.push({ email: contact.email, reason: `falha ao checar estado Kit antes de promover: ${(e as Error).message}` });
+            store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+            continue;
+          }
+          const kitPromotionAction = decideKitPromotionAction(
+            existingKitSubscriber ? { state: existingKitSubscriber.state } : null,
+          );
+          if (kitPromotionAction === "await_self_confirmation") {
+            log(
+              `${contact.email}: já existe no Kit como '${existingKitSubscriber!.state}' — promoção por API não reativa ` +
+                "(aguarda auto-confirmação; #8728).",
+            );
+            awaitingKitConfirmation++;
+            store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+            continue;
+          }
           const { id } = await promoteKitSubscription(contact.email, kitApiKey);
           confirmed = await verifyPromotedToKit(id, kitApiKey);
         } else {
@@ -2008,6 +2102,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     failed,
     kitAutoConfirmSkipped,
     skippedActiveOnKit,
+    awaitingKitConfirmation,
     failedContacts,
   };
 }
@@ -2130,7 +2225,8 @@ async function main(): Promise<void> {
       `${result.promoted} promovido(s) por taxa de abertura, ${result.suppressed} suprimido(s), ` +
       `${result.kept} mantido(s), ${result.failed} falha(s), ` +
       `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A), ` +
-      `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382).`,
+      `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382), ` +
+      `${result.awaitingKitConfirmation} aguardando auto-confirmação no Kit (já inactive/cancelled/bounced/complained, #8728).`,
   );
   // #8724 — impresso logo após o resumo, DE PROPÓSITO perto do fim do run
   // (só "dry-run"/"push concluído" seguem depois): com muitos contatos, o
