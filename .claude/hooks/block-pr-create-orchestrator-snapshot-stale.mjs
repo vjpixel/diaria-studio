@@ -14,7 +14,7 @@
 //
 // Mecanismo: intercepta `gh pr create` (mesmo ponto de extensão de
 // `pr-create-review.mjs`/`block-pr-create-tsc-failure.mjs`), roda só o
-// teste do snapshot (`--test-name-pattern "snapshot hash"`) no repo/worktree
+// teste do snapshot (`--test-name-pattern "snapshot.hash"`) no repo/worktree
 // de onde o comando está saindo, e nega a criação da PR se ele falhar —
 // reusando o teste real (não reimplementando o hash aqui) pra nunca divergir
 // da lógica que o CI de fato roda.
@@ -53,7 +53,7 @@ export const SNAPSHOT_PR_GUARD_BYPASS_ENV = "DIARIA_ALLOW_PR_WITH_STALE_ORCHESTR
 
 /**
  * Roda só o teste do snapshot do orchestrator (`orchestrator-prompt.test.ts`,
- * filtro `--test-name-pattern "snapshot hash"`) em `cwd` via `spawnFn`
+ * filtro `--test-name-pattern "snapshot.hash"`) em `cwd` via `spawnFn`
  * injetável (produção: `spawnSync`; teste: fake sem processo real).
  *
  * Devolve `{ infra, ok, output }` — mesmo shape/contrato de `runTypecheck`
@@ -69,7 +69,16 @@ export const SNAPSHOT_PR_GUARD_BYPASS_ENV = "DIARIA_ALLOW_PR_WITH_STALE_ORCHESTR
 export function runOrchestratorSnapshotCheck(cwd, spawnFn = spawnSync) {
   const result = spawnFn(
     "npx",
-    ["tsx", "--test", "--test-name-pattern", "snapshot hash", "test/orchestrator-prompt.test.ts"],
+    // "snapshot.hash" (não "snapshot hash"): --test-name-pattern compila pra
+    // RegExp, e `.` casa o espaço — evita passar um argumento com espaço sob
+    // spawnSync com shell:true, que NÃO escapa/aspa args automaticamente
+    // (Node emite DEP0190 exatamente por isso). Um argumento com espaço vira
+    // 2 tokens de shell separados ("snapshot" + "hash" solto), e "hash"
+    // solto é lido por `node --test` como outro glob de arquivo — reproduzido
+    // ao vivo: a chamada varre 6 testes em 3 suites (inclui #3947/#3953, que
+    // só têm "snapshot" no nome) em vez do 1 teste pretendido. Achado do
+    // review da própria PR que introduziu este hook (#8732).
+    ["tsx", "--test", "--test-name-pattern", "snapshot.hash", "test/orchestrator-prompt.test.ts"],
     {
       cwd,
       encoding: "utf8",

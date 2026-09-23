@@ -59,10 +59,35 @@ describe("runOrchestratorSnapshotCheck (#8732)", () => {
   it("invoca npx tsx --test com o filtro correto de nome de teste", () => {
     const fakeSpawn = (cmd: string, args: string[]) => {
       assert.equal(cmd, "npx");
-      assert.deepEqual(args, ["tsx", "--test", "--test-name-pattern", "snapshot hash", "test/orchestrator-prompt.test.ts"]);
+      assert.deepEqual(args, ["tsx", "--test", "--test-name-pattern", "snapshot.hash", "test/orchestrator-prompt.test.ts"]);
       return { status: 0, stdout: "", stderr: "", error: null };
     };
     runOrchestratorSnapshotCheck("/wt", fakeSpawn as never);
+  });
+
+  // Achado do review da PR que introduziu este hook (#8732, P1): o fake
+  // spawn acima recebe args como array e não exercita a concatenação real
+  // de `spawnSync(..., { shell: true })` — que NÃO escapa/aspa args
+  // automaticamente (DEP0190). Um filtro com ESPAÇO ("snapshot hash") vira
+  // 2 tokens de shell, e o token solto ("hash") é lido por `node --test`
+  // como outro glob de arquivo — a chamada varria 6 testes em vez de 1
+  // (reproduzido ao vivo durante o review). Um smoke test com spawnSync
+  // REAL não funciona aqui — `node --test` detecta a chamada recursiva
+  // (Node emite "run() is being called recursively" e pula silenciosamente
+  // qualquer processo `node --test` filho disparado de dentro de outro),
+  // então o teste que importa é este: nenhum argumento pode conter espaço,
+  // que é exatamente a condição que faz `shell:true` produzir 2 tokens em
+  // vez de 1.
+  it("REGRESSÃO (#8732): nenhum argumento passado ao spawnFn contém espaço (spawnSync com shell:true não escapa/aspa, DEP0190)", () => {
+    const capturedArgs: string[] = [];
+    const fakeSpawn = (_cmd: string, args: string[]) => {
+      capturedArgs.push(...args);
+      return { status: 0, stdout: "", stderr: "", error: null };
+    };
+    runOrchestratorSnapshotCheck("/wt", fakeSpawn as never);
+    for (const arg of capturedArgs) {
+      assert.doesNotMatch(arg, /\s/, `argumento "${arg}" contém espaço — sob shell:true viraria 2+ tokens de shell`);
+    }
   });
 });
 
