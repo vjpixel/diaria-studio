@@ -35,6 +35,7 @@ import {
   resolveArchiveIndexCover,
   resolveLastArchiveRegenTimestamp,
   resolvePagePublishedAt,
+  isAfter,
 } from "../scripts/lib/site-archive-index.ts";
 import {
   brtDateString,
@@ -465,6 +466,84 @@ describe("checkArchiveIndexLinkConsistency — publicação same-day após o reg
   it("lastRegenAt null (regen nunca resolvido) nunca isenta ninguém por publishedAt — só o corte de data vale", () => {
     const { missing } = checkArchiveIndexLinkConsistency([sameDayLate], resolveDate, () => 0, TODAY, null, resolvePublishedAt);
     assert.deepEqual(missing, [sameDayLate], "sem lastRegenAt confiável, cai no corte de data puro — não é futura, então reprova");
+  });
+
+  // Achado do review (#8734, P2): commits reais deste repo misturam offset
+  // de timezone (Z de CI/bot vs -03:00 de commit local) — comparação
+  // lexicográfica de string dava ordem cronológica ERRADA entre offsets
+  // diferentes.
+  it("REGRESSÃO (#8734): offsets de timezone mistos (Z vs -03:00) comparam pelo instante real, não pela string", () => {
+    const mixedLoc = "https://diar.ia.br/p/publicada-offset-misto";
+    const mixedDates: Record<string, string> = { [mixedLoc]: TODAY };
+    const mixedResolveDate = (loc: string) => mixedDates[loc] ?? null;
+    // 05:00 UTC = 02:00 BRT — ANTES do regen (09:00 UTC = 06:00 BRT).
+    // Comparação de STRING erraria: "...T05:00:00Z" < "...T09:00:00-03:00"
+    // por dígito, quando "0" (5h) < "9" (9h) já dá a ordem certa aqui — o
+    // caso que a comparação de string erra de fato é o inverso.
+    const publishedBeforeRegenUtc = "2026-09-23T05:00:00Z";
+    const lastRegenLocalOffset = "2026-09-23T06:00:00-03:00"; // = 09:00 UTC, DEPOIS de 05:00 UTC
+    const { missing } = checkArchiveIndexLinkConsistency(
+      [mixedLoc],
+      mixedResolveDate,
+      () => 0,
+      TODAY,
+      lastRegenLocalOffset,
+      () => publishedBeforeRegenUtc,
+    );
+    assert.deepEqual(missing, [mixedLoc], "publicada ANTES do regen (mesmo em offset diferente) deveria reprovar — o regen já deveria ter linkado");
+  });
+
+  it("REGRESSÃO (#8734): contra-exemplo que a comparação de STRING erra na direção oposta", () => {
+    const mixedLoc = "https://diar.ia.br/p/publicada-offset-misto-2";
+    const mixedDates: Record<string, string> = { [mixedLoc]: TODAY };
+    const mixedResolveDate = (loc: string) => mixedDates[loc] ?? null;
+    // Regen às 09:00 UTC. Página publicada 10:30 BRT = 13:30 UTC, DEPOIS do
+    // regen — deveria ser isenta. Comparação de STRING: "...T10:30:00-03:00"
+    // (dígito '1' na posição da hora) < "...T09:00:00Z" (dígito '0') seria
+    // FALSO por string (perde), mas 13:30 UTC > 09:00 UTC é VERDADEIRO por
+    // instante real — a comparação antiga (string) marcaria erroneamente
+    // como "já deveria estar linkada" (reprova), quando na verdade ainda
+    // está dentro da janela esperada de espera (não deveria reprovar).
+    const lastRegenUtc = "2026-09-23T09:00:00Z";
+    const publishedAfterRegenLocalOffset = "2026-09-23T10:30:00-03:00";
+    const { missing } = checkArchiveIndexLinkConsistency(
+      [mixedLoc],
+      mixedResolveDate,
+      () => 0,
+      TODAY,
+      lastRegenUtc,
+      () => publishedAfterRegenLocalOffset,
+    );
+    assert.deepEqual(missing, [], "publicada DEPOIS do regen (instante real) não deveria reprovar, apesar da string comparar 'menor'");
+  });
+});
+
+describe("isAfter (#8734) — comparação de timestamp por instante real, não por string", () => {
+  it("true quando a é cronologicamente depois de b, mesmo offset", () => {
+    assert.equal(isAfter("2026-09-23T10:00:00-03:00", "2026-09-23T09:00:00-03:00"), true);
+  });
+
+  it("false quando a é antes de b, mesmo offset", () => {
+    assert.equal(isAfter("2026-09-23T08:00:00-03:00", "2026-09-23T09:00:00-03:00"), false);
+  });
+
+  it("compara corretamente entre offsets DIFERENTES (Z vs -03:00) — o achado do review", () => {
+    // 10:30 BRT (-03:00) = 13:30 UTC, DEPOIS de 09:00 UTC — mas
+    // lexicograficamente "10" < "09" na leitura ingênua de string por causa
+    // do offset diferente confundir a posição.
+    assert.equal(isAfter("2026-09-23T10:30:00-03:00", "2026-09-23T09:00:00Z"), true);
+  });
+
+  it("false quando qualquer um dos dois é null", () => {
+    assert.equal(isAfter(null, "2026-09-23T09:00:00Z"), false);
+    assert.equal(isAfter("2026-09-23T09:00:00Z", null), false);
+    assert.equal(isAfter(null, null), false);
+  });
+
+  it("false quando qualquer um dos dois é malformado (Date.parse retorna NaN) — nunca lança", () => {
+    assert.equal(isAfter("não-é-data", "2026-09-23T09:00:00Z"), false);
+    assert.equal(isAfter("2026-09-23T09:00:00Z", "não-é-data"), false);
+    assert.doesNotThrow(() => isAfter("lixo", "lixo"));
   });
 });
 

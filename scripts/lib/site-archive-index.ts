@@ -232,7 +232,7 @@ function defaultRunGit(args: string[], cwd: string): { status: number | null; st
  * conteúdo, não sobre quando o arquivo chegou em `master`). É este segundo
  * sinal que `checkArchiveIndexLinkConsistency` usa contra
  * `resolveLastArchiveRegenTimestamp` — comparar por data editorial sozinho
- * não distingue "publicada ontem, dated amanhã" (#8688) de "publicada hoje
+ * não distingue "publicada ontem, datada amanhã" (#8688) de "publicada hoje
  * às 14h, depois do regen das 06:00" (#8734): as duas têm data editorial ≤
  * hoje ou > hoje dependendo do caso, mas as DUAS ficam genuinamente sem
  * link até o próximo regen — o commit timestamp da própria página é a
@@ -320,12 +320,38 @@ export function checkArchiveIndexLinkConsistency(
     const date = resolveDate(loc);
     const isFuture = Boolean(date && date > todayBrt);
     const publishedAt = resolvePublishedAt(loc);
-    const isPendingRegen = Boolean(lastRegenAt && publishedAt && publishedAt > lastRegenAt);
+    const isPendingRegen = isAfter(publishedAt, lastRegenAt);
     const count = linkedCount(loc);
     if (count > 1) duplicated.push(loc);
     else if (count === 0 && !isFuture && !isPendingRegen) missing.push(loc);
   }
   return { missing, duplicated };
+}
+
+/**
+ * `true` se o timestamp ISO 8601 `a` for cronologicamente POSTERIOR a `b`.
+ *
+ * #8734 (achado do review, P2): commits reais deste repo misturam offset de
+ * timezone (`Z` de CI/bot vs `-03:00` de commit local) — comparação
+ * lexicográfica de string (`a > b`) dá ordem cronológica ERRADA entre
+ * offsets diferentes (ex: "2026-09-23T05:00:00Z" é 05:00 UTC = 02:00 BRT,
+ * mas string-compare com "2026-09-23T09:00:00-03:00" — 09:00 BRT = 12:00
+ * UTC, 3h DEPOIS — erroneamente marcaria o primeiro como "depois" só pelo
+ * dígito "0" vencer "9" na 12ª posição). `Date.parse` normaliza os dois pro
+ * mesmo instante absoluto (epoch ms) antes de comparar — único jeito
+ * correto de comparar timestamps com offset misto.
+ *
+ * `null`/timestamp malformado (`NaN` do `Date.parse`) em qualquer lado →
+ * `false` (nunca marca como "depois" sem certeza) — mesmo espírito de
+ * fail-soft do resto deste módulo: sem dado confiável, `checkArchiveIndexLinkConsistency`
+ * cai no corte de data puro do #8688 pra aquela entrada.
+ */
+export function isAfter(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return false;
+  return ta > tb;
 }
 
 function renderEntry(entry: HomeFeedEntry): string {
