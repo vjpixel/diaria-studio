@@ -257,15 +257,21 @@ describe("runEvaluation — promoção pra Beehiiv checa o Kit antes de escrever
     }
   });
 
-  it('newsletterBackend="kit" → caminho INALTERADO (checagem cross-plataforma só se aplica quando o destino da escrita é a Beehiiv), ZERO chamada api.kit.com pra checagem de estado ANTES de promover (só a escrita real)', async () => {
+  it('newsletterBackend="kit" → caminho INALTERADO em relação ao guard cross-plataforma do #7382 (esse guard só se aplica quando o destino da escrita é a Beehiiv); desde #8728 o backend Kit tem seu PRÓPRIO pré-check (`decideKitPromotionAction`) — contato inexistente no Kit → promove normalmente', async () => {
     let kitSubscriberCalls = 0;
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
       if (u.includes("api.beehiiv.com")) {
         throw new Error(`fetch Beehiiv NUNCA deveria rodar com newsletterBackend="kit": ${u}`);
       }
-      if (u.includes("api.kit.com/v4/subscribers") && !init?.method) {
+      if (u.includes("api.kit.com/v4/subscribers") && u.includes("email_address=")) {
+        // #8728 — lookup por e-mail (`getKitSubscriberByEmail`) ANTES do
+        // POST: contato ainda não existe no Kit → decideKitPromotionAction
+        // devolve "promote" (comportamento pré-#8728 preservado).
         kitSubscriberCalls++;
+        return jsonRes(200, { subscribers: [] });
+      }
+      if (u.includes("api.kit.com/v4/subscribers") && !init?.method) {
         return jsonRes(201, { subscriber: { id: 99, email_address: "kit-backend@b.com", state: "active", created_at: "2026-08-01T00:00:00.000Z" } });
       }
       if (u.includes("api.kit.com")) {
