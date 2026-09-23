@@ -49,6 +49,7 @@
  *     #7686 que a home usa — o Stage 6 publica a página na noite anterior).
  */
 
+import { spawnSync } from "node:child_process";
 import { escHtml } from "./html-escape.ts";
 import { renderAnalyticsHead, renderSeoMeta } from "./shared/seo-meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
@@ -186,37 +187,143 @@ export function resolveArchiveIndexCover(
 }
 
 /**
+ * Timestamp (ISO 8601) do último commit que tocou o índice do acervo
+ * (`workers/site/public/archive`) — proxy determinístico de "quando o
+ * `regen-home.yml` das 06:00 BRT rodou pela última vez", sem precisar ler
+ * nenhum artefato novo (o commit em si já é o registro).
+ *
+ * #8734: o corte original do #8688 (`isFuture = date > todayBrt`, ver
+ * `checkArchiveIndexLinkConsistency` abaixo) só isenta edição com data
+ * editorial ESTRITAMENTE futura — cobre o caso do Stage 6 (publica na
+ * véspera, data = amanhã). Não cobre uma página publicada HOJE, com data
+ * editorial de hoje, DEPOIS que o regen de hoje já rodou (ex: um `chore(site):
+ * publica página...` avulso, fora do ciclo noturno do Stage 6) — essa
+ * página fica órfã até o regen do dia SEGUINTE, e nesse intervalo
+ * `checkArchiveIndexLinkConsistency` reprovava (caso real: PR #8685 então
+ * PR #8705, mesmo padrão, edições diferentes). Comparar o `lastmod` da
+ * página contra o timestamp do último regen (em vez de contra "hoje")
+ * cobre os dois casos com o mesmo mecanismo — não importa se a data
+ * editorial é ontem, hoje ou amanhã, só importa se a página existia
+ * quando o índice foi gerado pela última vez.
+ *
+ * Retorna `null` se o `git log` não resolver nada (path nunca commitado,
+ * repo raso sem histórico, ou o comando falhar) — chamador trata `null`
+ * como "sem baseline conhecida", nunca como "regen nunca rodou".
+ */
+export function resolveLastArchiveRegenTimestamp(
+  cwd: string,
+  runGit: (args: string[], cwd: string) => { status: number | null; stdout: string } = defaultRunGit,
+): string | null {
+  const result = runGit(["log", "-1", "--format=%cI", "--", "workers/site/public/archive"], cwd);
+  if (result.status !== 0) return null;
+  const trimmed = result.stdout.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+function defaultRunGit(args: string[], cwd: string): { status: number | null; stdout: string } {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  return { status: result.status, stdout: result.stdout ?? "" };
+}
+
+/**
+ * Timestamp (ISO 8601) do commit que introduziu `workers/site/public/p/{slug}/index.html`
+ * — quando a página de uma edição foi de fato publicada no repo, distinto
+ * da data EDITORIAL (`resolveDate`/`resolveEditorialDate`, que é sobre o
+ * conteúdo, não sobre quando o arquivo chegou em `master`). É este segundo
+ * sinal que `checkArchiveIndexLinkConsistency` usa contra
+ * `resolveLastArchiveRegenTimestamp` — comparar por data editorial sozinho
+ * não distingue "publicada ontem, dated amanhã" (#8688) de "publicada hoje
+ * às 14h, depois do regen das 06:00" (#8734): as duas têm data editorial ≤
+ * hoje ou > hoje dependendo do caso, mas as DUAS ficam genuinamente sem
+ * link até o próximo regen — o commit timestamp da própria página é a
+ * única fonte que sabe disso com certeza, sem depender de qual convenção de
+ * data o publicador de plantão seguiu.
+ *
+ * `--first-parent`: usa o histórico de `master` (squash-merge é 1 commit
+ * por PR nesta convenção — ver "Coordenação única de merges" no
+ * CLAUDE.md), evita resolver um commit de branch de feature que nunca
+ * chegou a master via um merge não-first-parent incomum.
+ *
+ * `loc` no formato `https://.../p/{slug}` — slug extraído do último
+ * segmento do path. Retorna `null` se a URL não tiver esse formato, se o
+ * arquivo nunca foi commitado, ou se o `git log` falhar (repo raso,
+ * `.git` ausente) — chamador trata `null` como "sem sinal", nunca como
+ * "publicada agora mesmo".
+ */
+export function resolvePagePublishedAt(
+  loc: string,
+  cwd: string,
+  runGit: (args: string[], cwd: string) => { status: number | null; stdout: string } = defaultRunGit,
+): string | null {
+  let slug: string;
+  try {
+    const url = new URL(loc);
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (segments.length < 2 || segments[0] !== "p") return null;
+    slug = segments[1];
+  } catch {
+    return null;
+  }
+  if (!slug) return null;
+  const result = runGit(
+    ["log", "-1", "--first-parent", "--format=%cI", "--", `workers/site/public/p/${slug}/index.html`],
+    cwd,
+  );
+  if (result.status !== 0) return null;
+  const trimmed = result.stdout.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/**
  * Consistência do índice paginado contra o sitemap (#8353 item 2, revisado
- * pelo #8688). Desde o #8221, o Stage 6 publica `/p/{slug}` + a entrada no
- * `sitemap.xml` na VÉSPERA do envio; a linha correspondente no índice só
- * chega no `regen-home.yml` das 06:00 BRT — que é exatamente o
- * `buildArchiveIndexFeed` filtrando data editorial > hoje (mesmo corte do
- * #7686). Sem este filtro, `test/site-archive-index-8353.test.ts` reprovava
- * TODA edição no ciclo entre a publicação da véspera e o regen do dia
- * seguinte (caso real: PR #8685, edição 260922).
+ * pelo #8688, refinado pelo #8734). Desde o #8221, o Stage 6 publica
+ * `/p/{slug}` + a entrada no `sitemap.xml` na VÉSPERA do envio; a linha
+ * correspondente no índice só chega no `regen-home.yml` das 06:00 BRT — que
+ * é exatamente o `buildArchiveIndexFeed` filtrando data editorial > hoje
+ * (mesmo corte do #7686). Sem este filtro, `test/site-archive-index-8353.test.ts`
+ * reprovava TODA edição no ciclo entre a publicação da véspera e o regen do
+ * dia seguinte (caso real: PR #8685, edição 260922).
+ *
+ * #8734: o corte de data sozinho não cobria uma página publicada no MESMO
+ * dia, depois do regen de hoje já ter rodado (caso real seguinte: PR #8705,
+ * edição diferente, mesmo padrão) — `lastRegenAt` complementa o corte de
+ * data comparando o `lastmod` da página contra quando o índice foi gerado
+ * pela última vez, cobrindo qualquer publicação same-day fora do ciclo do
+ * Stage 6, não só a antecipação de amanhã.
  *
  * `editionLocs` é a lista bruta de `<url><loc>` do sitemap (inclui a edição
  * de amanhã). `resolveDate` e `linkedCount` são injetados pelo chamador —
  * produção/teste de artefato lê do disco; o teste de regressão injeta um
- * mapa em memória. Edição com data editorial > `todayBrt` é excluída do
- * cálculo de "faltando" (ainda não é esperada no índice) mas seguiria
- * contando pra "duplicada" se por acaso aparecesse — não deveria acontecer,
- * mas não é este guard que teria que decidir isso.
+ * mapa em memória. `lastRegenAt` é opcional (`null` quando não resolvível —
+ * ver `resolveLastArchiveRegenTimestamp` — degrada para o corte de data
+ * puro do #8688, nunca lança). Edição com data editorial > `todayBrt` OU
+ * `lastmod` > `lastRegenAt` é excluída do cálculo de "faltando" (ainda não
+ * é esperada no índice) mas seguiria contando pra "duplicada" se por acaso
+ * aparecesse — não deveria acontecer, mas não é este guard que teria que
+ * decidir isso.
  */
 export function checkArchiveIndexLinkConsistency(
   editionLocs: string[],
   resolveDate: (loc: string) => string | null,
   linkedCount: (loc: string) => number,
   todayBrt: string,
+  // #8734: opcionais — produção passa os dois (resolveLastArchiveRegenTimestamp
+  // + git commit time por página); omitir os dois faz degradar pro corte
+  // puro de data do #8688 (compatível com os testes de regressão que ainda
+  // só simulam a data editorial).
+  lastRegenAt: string | null = null,
+  resolvePublishedAt: (loc: string) => string | null = () => null,
 ): { missing: string[]; duplicated: string[] } {
   const missing: string[] = [];
   const duplicated: string[] = [];
   for (const loc of editionLocs) {
     const date = resolveDate(loc);
     const isFuture = Boolean(date && date > todayBrt);
+    const publishedAt = resolvePublishedAt(loc);
+    const isPendingRegen = Boolean(lastRegenAt && publishedAt && publishedAt > lastRegenAt);
     const count = linkedCount(loc);
     if (count > 1) duplicated.push(loc);
-    else if (count === 0 && !isFuture) missing.push(loc);
+    else if (count === 0 && !isFuture && !isPendingRegen) missing.push(loc);
   }
   return { missing, duplicated };
 }

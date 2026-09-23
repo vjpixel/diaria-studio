@@ -33,6 +33,8 @@ import {
   checkArchiveIndexLinkConsistency,
   monthLabel,
   resolveArchiveIndexCover,
+  resolveLastArchiveRegenTimestamp,
+  resolvePagePublishedAt,
 } from "../scripts/lib/site-archive-index.ts";
 import {
   brtDateString,
@@ -309,18 +311,21 @@ describe("artefato commitado — /archive não é mais 404 (#8353 item 2)", () =
       const entry = sitemapEntries.find((e) => e.loc === loc);
       return entry ? resolveEditorialDate(entry, readPageHtml) : null;
     };
+    const lastRegenAt = resolveLastArchiveRegenTimestamp(ROOT);
     const { missing, duplicated } = checkArchiveIndexLinkConsistency(
       editionLocs,
       resolveDate,
       (loc) => linked.get(loc) ?? 0,
       brtDateString(),
+      lastRegenAt,
+      (loc) => resolvePagePublishedAt(loc, ROOT),
     );
     assert.deepEqual(
       missing,
       [],
       "edição sem link em nenhuma página do índice — continuaria órfã (edições com data editorial " +
-        "futura, publicadas na véspera pelo Stage 6 #8221, são ignoradas aqui até o regen das 06:00 " +
-        "BRT reconciliar, #8688)",
+        "futura, publicadas na véspera pelo Stage 6 #8221, ou publicadas HOJE depois do regen das 06:00 " +
+        "BRT já ter rodado, são ignoradas aqui até o PRÓXIMO regen reconciliar, #8688/#8734)",
     );
     assert.deepEqual(duplicated, [], "edição linkada em mais de uma página do índice");
   });
@@ -414,6 +419,119 @@ describe("checkArchiveIndexLinkConsistency — corte de data futura (#8688)", ()
   it("sem data (entrada sem lastmod e sem data na página) é tratada como devida, nunca futura", () => {
     const { missing } = checkArchiveIndexLinkConsistency(["https://diar.ia.br/p/sem-data"], () => null, () => 0, TODAY);
     assert.deepEqual(missing, ["https://diar.ia.br/p/sem-data"]);
+  });
+});
+
+/**
+ * #8734: caso real PR #8705 — página publicada HOJE (data editorial = hoje,
+ * não futura, então o corte do #8688 sozinho NÃO a isenta), mas DEPOIS que o
+ * regen das 06:00 BRT de hoje já rodou. `lastRegenAt` + `resolvePublishedAt`
+ * cobrem esse caso comparando o commit timestamp da página contra o do
+ * último regen, independente da data editorial.
+ */
+describe("checkArchiveIndexLinkConsistency — publicação same-day após o regen (#8734)", () => {
+  const TODAY = "2026-09-23";
+  const sameDayLate = "https://diar.ia.br/p/publicada-hoje-tarde";
+  const sameDayEarly = "https://diar.ia.br/p/publicada-hoje-antes-do-regen";
+  const pastNoResolver = "https://diar.ia.br/p/passada-sem-resolver";
+  const dates: Record<string, string> = {
+    [sameDayLate]: TODAY,
+    [sameDayEarly]: TODAY,
+    [pastNoResolver]: "2026-09-18",
+  };
+  const resolveDate = (loc: string) => dates[loc] ?? null;
+  const lastRegenAt = "2026-09-23T09:12:00Z"; // 06:12 BRT
+  const publishedAt: Record<string, string> = {
+    [sameDayLate]: "2026-09-23T15:30:00Z", // depois do regen — ainda não reconciliada
+    [sameDayEarly]: "2026-09-23T05:00:00Z", // antes do regen — já deveria estar linkada
+  };
+  const resolvePublishedAt = (loc: string) => publishedAt[loc] ?? null;
+
+  it("publicada hoje DEPOIS do regen não reprova, mesmo com data editorial = hoje (não futura)", () => {
+    const { missing } = checkArchiveIndexLinkConsistency([sameDayLate], resolveDate, () => 0, TODAY, lastRegenAt, resolvePublishedAt);
+    assert.deepEqual(missing, []);
+  });
+
+  it("publicada hoje ANTES do regen e ainda sem link continua reprovando — o regen já deveria ter pegado", () => {
+    const { missing } = checkArchiveIndexLinkConsistency([sameDayEarly], resolveDate, () => 0, TODAY, lastRegenAt, resolvePublishedAt);
+    assert.deepEqual(missing, [sameDayEarly]);
+  });
+
+  it("sem resolvePublishedAt (parâmetro omitido) degrada pro corte de data puro do #8688 — compatibilidade retroativa", () => {
+    const { missing } = checkArchiveIndexLinkConsistency([pastNoResolver], resolveDate, () => 0, TODAY);
+    assert.deepEqual(missing, [pastNoResolver]);
+  });
+
+  it("lastRegenAt null (regen nunca resolvido) nunca isenta ninguém por publishedAt — só o corte de data vale", () => {
+    const { missing } = checkArchiveIndexLinkConsistency([sameDayLate], resolveDate, () => 0, TODAY, null, resolvePublishedAt);
+    assert.deepEqual(missing, [sameDayLate], "sem lastRegenAt confiável, cai no corte de data puro — não é futura, então reprova");
+  });
+});
+
+describe("resolveLastArchiveRegenTimestamp (#8734)", () => {
+  it("devolve o stdout do git log quando o comando resolve com sucesso", () => {
+    const fakeGit = (args: string[]) => {
+      assert.deepEqual(args, ["log", "-1", "--format=%cI", "--", "workers/site/public/archive"]);
+      return { status: 0, stdout: "2026-09-23T09:12:00-03:00\n" };
+    };
+    assert.equal(resolveLastArchiveRegenTimestamp("/repo", fakeGit), "2026-09-23T09:12:00-03:00");
+  });
+
+  it("null quando o git log falha (status != 0)", () => {
+    const fakeGit = () => ({ status: 1, stdout: "" });
+    assert.equal(resolveLastArchiveRegenTimestamp("/repo", fakeGit), null);
+  });
+
+  it("null quando o stdout vem vazio (path nunca commitado)", () => {
+    const fakeGit = () => ({ status: 0, stdout: "\n" });
+    assert.equal(resolveLastArchiveRegenTimestamp("/repo", fakeGit), null);
+  });
+
+  it("resolve de verdade contra o repo real (sem mock) — path existe e tem histórico", () => {
+    const result = resolveLastArchiveRegenTimestamp(ROOT);
+    assert.notEqual(result, null, "workers/site/public/archive deveria ter pelo menos 1 commit no repo real");
+  });
+});
+
+describe("resolvePagePublishedAt (#8734)", () => {
+  it("extrai o slug de https://.../p/{slug} e roda git log só pro arquivo daquela página", () => {
+    const fakeGit = (args: string[]) => {
+      assert.deepEqual(args, [
+        "log",
+        "-1",
+        "--first-parent",
+        "--format=%cI",
+        "--",
+        "workers/site/public/p/minha-edicao/index.html",
+      ]);
+      return { status: 0, stdout: "2026-09-23T15:30:00-03:00\n" };
+    };
+    assert.equal(
+      resolvePagePublishedAt("https://diar.ia.br/p/minha-edicao", "/repo", fakeGit),
+      "2026-09-23T15:30:00-03:00",
+    );
+  });
+
+  it("null para URL sem /p/{slug} (ex: /archive, /assinar)", () => {
+    const fakeGit = () => ({ status: 0, stdout: "should-not-be-called\n" });
+    assert.equal(resolvePagePublishedAt("https://diar.ia.br/archive", "/repo", fakeGit), null);
+    assert.equal(resolvePagePublishedAt("https://diar.ia.br/assinar", "/repo", fakeGit), null);
+  });
+
+  it("null para URL malformada (nunca lança)", () => {
+    const fakeGit = () => ({ status: 0, stdout: "x\n" });
+    assert.doesNotThrow(() => resolvePagePublishedAt("não-é-uma-url", "/repo", fakeGit));
+    assert.equal(resolvePagePublishedAt("não-é-uma-url", "/repo", fakeGit), null);
+  });
+
+  it("null quando o git log falha ou o path nunca foi commitado", () => {
+    const fakeGit = () => ({ status: 1, stdout: "" });
+    assert.equal(resolvePagePublishedAt("https://diar.ia.br/p/nunca-existiu", "/repo", fakeGit), null);
+  });
+
+  it("resolve de verdade contra o repo real (sem mock) — página existente no disco", () => {
+    const result = resolvePagePublishedAt("https://diar.ia.br/p/claude-opus-5-5-chega-dias-apos-alerta-de-amodei", ROOT);
+    assert.notEqual(result, null, "página publicada hoje deveria ter timestamp de commit resolvível");
   });
 });
 
