@@ -918,7 +918,19 @@ export function reorderFactCheckManifest(
   const byDestaque = new Map<number, Record<string, unknown>>();
   for (const e of entries) {
     if (e && typeof e === "object" && typeof (e as { destaque?: unknown }).destaque === "number") {
-      byDestaque.set((e as { destaque: number }).destaque, e as Record<string, unknown>);
+      const destaque = (e as { destaque: number }).destaque;
+      // Fail-soft, mas AVISADO (review #8679): manifest com `destaque`
+      // duplicado é malformado — sem o warn, a 2ª entrada sobrescreveria a
+      // 1ª em silêncio (last-write-wins do Map), inconsistente com o
+      // fail-soft "preserva em vez de descartar" usado pras entradas fora
+      // do range logo abaixo.
+      if (byDestaque.has(destaque)) {
+        console.warn(
+          `WARN: reorder-destaques — fact-check-sources/manifest.json tem mais de uma entrada com ` +
+            `destaque: ${destaque}; mantendo a última, descartando a anterior.`,
+        );
+      }
+      byDestaque.set(destaque, e as Record<string, unknown>);
     }
   }
   if (byDestaque.size === 0) return { changed: false, entries };
@@ -1061,10 +1073,11 @@ export function invalidatePublicImagesForReorder(
   data: unknown,
   newOrder: number[],
 ): { changed: boolean; removedKeys: string[]; data: unknown } {
-  if (!data || typeof data !== "object" || !(data as { images?: unknown }).images) {
+  const rawImages = (data && typeof data === "object" ? (data as { images?: unknown }).images : undefined);
+  if (!rawImages || typeof rawImages !== "object" || Array.isArray(rawImages)) {
     return { changed: false, removedKeys: [], data };
   }
-  const images = { ...((data as { images: Record<string, unknown> }).images) };
+  const images = { ...(rawImages as Record<string, unknown>) };
   const removedKeys: string[] = [];
 
   for (let i = 0; i < newOrder.length; i++) {
@@ -1130,6 +1143,12 @@ function main(): void {
   }
 
   const modified: FilesModified = { rewritten: [], renamed: [] };
+  // (#8679, review finding #1) Avisos não-fatais que precisam sobreviver no
+  // relatório JSON final — nunca só `console.warn`/`console.error`, senão um
+  // caller que só lê stdout estruturado (ex: um orchestrator futuro) nunca
+  // aprende que algo precisou de atenção (mesmo racional de max_chars_warnings
+  // abaixo, generalizado pros 3 passos novos deste PR).
+  const warnings: string[] = [];
 
   // 1. Image files + 2. Prompts — RENOMEADOS ANTES de qualquer escrita de
   // texto (#5087 self-review finding do #5085 reordena esta seção pra cá,
@@ -1247,27 +1266,65 @@ function main(): void {
   if (carouselReindex) modified.rewritten.push(carouselReindex.path);
 
   // 5. fact-check-sources/manifest.json + d{N}.txt (#8679).
-  const factCheckResult = reorderFactCheckSources(internalDir, args.newOrder, args.dryRun);
-  modified.rewritten.push(...factCheckResult.modified);
-  modified.renamed.push(...factCheckResult.renamed);
+  //
+  // (#8679, review finding #1 — P1) `reorderFactCheckSources` internamente
+  // chama `stageAndWriteVerified` pro rename de `d{N}.txt` — a MESMA
+  // primitiva de imagens/prompts do passo 1/2 acima, que pode LANÇAR em
+  // conflito de sync do OneDrive (ver docstring de `stageAndWriteVerified`).
+  // Ao contrário do passo 1/2 (que roda ANTES de qualquer escrita de texto,
+  // justamente pra que um abort ali deixe o disco no estado PRÉ-reorder),
+  // este passo roda DEPOIS que `01-approved*.json`/`02-reviewed.md`/
+  // `03-social.md`/os carimbos já foram reescritos — um throw não-capturado
+  // aqui propagaria até o `catch` de topo de `main()`, que só imprime
+  // "Fatal:" e sai(2) SEM nunca chegar ao `console.log(JSON.stringify(...))`
+  // final: o operador ficaria com um stack trace cru, sem saber quais dos
+  // passos 1-4c já tinham sido gravados com sucesso. Fact-check-sources é
+  // secundário ao conteúdo publicável (a newsletter não deixa de ser
+  // publicável sem ele) — por isso, ao contrário do passo 1/2, uma falha
+  // aqui vira WARNING no relatório final em vez de abortar o processo
+  // inteiro deixando um estado parcial invisível.
+  try {
+    const factCheckResult = reorderFactCheckSources(internalDir, args.newOrder, args.dryRun);
+    modified.rewritten.push(...factCheckResult.modified);
+    modified.renamed.push(...factCheckResult.renamed);
+  } catch (e) {
+    const msg =
+      `fact-check-sources/ pode ter ficado PARCIALMENTE reordenado (manifest.json e/ou d{N}.txt) — ` +
+      `${(e as Error).message ?? e}. Os passos 1-4c (imagens, JSONs, 02-reviewed.md, 03-social.md) já ` +
+      `foram concluídos normalmente; revise fact-check-sources/ manualmente antes do gate.`;
+    console.error(`⚠️  reorder-destaques — passo 5 (fact-check-sources): ${msg}`);
+    warnings.push(msg);
+  }
 
   // 6. _internal/04-crop-review.json (#8679).
   const cropReviewPath = resolve(internalDir, "04-crop-review.json");
   if (existsSync(cropReviewPath)) {
-    let cropData: unknown;
+    let cropRaw: string | undefined;
     try {
-      cropData = JSON.parse(readFileSync(cropReviewPath, "utf8"));
+      cropRaw = readFileSync(cropReviewPath, "utf8");
     } catch (e) {
-      console.warn(`WARN: reorder-destaques — 04-crop-review.json ilegível (${e}), pulando.`);
-      cropData = undefined;
+      const msg = `04-crop-review.json não pôde ser lido (${(e as Error).message ?? e}), pulando.`;
+      console.warn(`WARN: reorder-destaques — ${msg}`);
+      warnings.push(msg);
     }
-    if (cropData !== undefined) {
-      const cropResult = reorderCropReviewJson(cropData, args.newOrder);
-      if (cropResult.changed) {
-        if (!args.dryRun) {
-          writeFileSync(cropReviewPath, JSON.stringify(cropResult.data, null, 2) + "\n", "utf8");
+    if (cropRaw !== undefined) {
+      let cropData: unknown;
+      try {
+        cropData = JSON.parse(cropRaw);
+      } catch (e) {
+        const msg = `04-crop-review.json tem JSON malformado (${(e as Error).message ?? e}), pulando.`;
+        console.warn(`WARN: reorder-destaques — ${msg}`);
+        warnings.push(msg);
+        cropData = undefined;
+      }
+      if (cropData !== undefined) {
+        const cropResult = reorderCropReviewJson(cropData, args.newOrder);
+        if (cropResult.changed) {
+          if (!args.dryRun) {
+            writeFileSync(cropReviewPath, JSON.stringify(cropResult.data, null, 2) + "\n", "utf8");
+          }
+          modified.rewritten.push(cropReviewPath);
         }
-        modified.rewritten.push(cropReviewPath);
       }
     }
   }
@@ -1278,30 +1335,43 @@ function main(): void {
   // (forçando re-upload) em vez de apontar pra arte de outra posição.
   const publicImagesPath = resolve(editionDir, "06-public-images.json");
   if (existsSync(publicImagesPath)) {
-    let publicImagesData: unknown;
+    let publicImagesRaw: string | undefined;
     try {
-      publicImagesData = JSON.parse(readFileSync(publicImagesPath, "utf8"));
+      publicImagesRaw = readFileSync(publicImagesPath, "utf8");
     } catch (e) {
-      console.warn(`WARN: reorder-destaques — 06-public-images.json ilegível (${e}), pulando.`);
-      publicImagesData = undefined;
+      const msg = `06-public-images.json não pôde ser lido (${(e as Error).message ?? e}), pulando.`;
+      console.warn(`WARN: reorder-destaques — ${msg}`);
+      warnings.push(msg);
     }
-    if (publicImagesData !== undefined) {
-      const publicImagesResult = invalidatePublicImagesForReorder(publicImagesData, args.newOrder);
-      if (publicImagesResult.changed) {
-        if (!args.dryRun) {
-          writeFileSync(
-            publicImagesPath,
-            JSON.stringify(publicImagesResult.data, null, 2) + "\n",
-            "utf8",
-          );
+    if (publicImagesRaw !== undefined) {
+      let publicImagesData: unknown;
+      try {
+        publicImagesData = JSON.parse(publicImagesRaw);
+      } catch (e) {
+        const msg = `06-public-images.json tem JSON malformado (${(e as Error).message ?? e}), pulando.`;
+        console.warn(`WARN: reorder-destaques — ${msg}`);
+        warnings.push(msg);
+        publicImagesData = undefined;
+      }
+      if (publicImagesData !== undefined) {
+        const publicImagesResult = invalidatePublicImagesForReorder(publicImagesData, args.newOrder);
+        if (publicImagesResult.changed) {
+          if (!args.dryRun) {
+            writeFileSync(
+              publicImagesPath,
+              JSON.stringify(publicImagesResult.data, null, 2) + "\n",
+              "utf8",
+            );
+          }
+          modified.rewritten.push(publicImagesPath);
+          const reuploadMsg =
+            `06-public-images.json: removidas ${publicImagesResult.removedKeys.length} chave(s) das ` +
+            `posições afetadas pelo reorder (${publicImagesResult.removedKeys.join(", ")}) — as URLs ` +
+            `públicas antigas ainda apontam pra arte pré-reorder. Rode upload-images-public.ts ` +
+            `novamente antes de publicar/agendar.`;
+          console.error(`⚠️  ${reuploadMsg}`);
+          warnings.push(reuploadMsg);
         }
-        modified.rewritten.push(publicImagesPath);
-        console.error(
-          `⚠️  06-public-images.json: removidas ${publicImagesResult.removedKeys.length} ` +
-            `chave(s) das posições afetadas pelo reorder (${publicImagesResult.removedKeys.join(", ")}) — ` +
-            `as URLs públicas antigas ainda apontam pra arte pré-reorder. Rode ` +
-            `upload-images-public.ts novamente antes de publicar/agendar.`,
-        );
       }
     }
   }
@@ -1334,6 +1404,7 @@ function main(): void {
         dry_run: args.dryRun,
         modified,
         max_chars_warnings: maxCharsWarnings,
+        warnings,
       },
       null,
       2,

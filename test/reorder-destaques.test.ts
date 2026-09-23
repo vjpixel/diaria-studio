@@ -1830,6 +1830,53 @@ describe("reorderFactCheckManifest (#8679, unidade)", () => {
     assert.equal(reorderFactCheckManifest(undefined, [2, 1, 3]).changed, false);
     assert.equal(reorderFactCheckManifest({}, [2, 1, 3]).changed, false);
   });
+
+  it("3-cycle [3,1,2]: cada posição pega o conteúdo do destaque anterior no ciclo (review gap #8679)", () => {
+    const entries = [
+      { destaque: 1, url: "https://d1.example" },
+      { destaque: 2, url: "https://d2.example" },
+      { destaque: 3, url: "https://d3.example" },
+    ];
+    const { changed, entries: out } = reorderFactCheckManifest(entries, [3, 1, 2]);
+    assert.equal(changed, true);
+    const arr = out as Array<{ destaque: number; url: string }>;
+    assert.equal(arr[0].url, "https://d3.example", "posição 1 recebe o antigo D3");
+    assert.equal(arr[1].url, "https://d1.example", "posição 2 recebe o antigo D1");
+    assert.equal(arr[2].url, "https://d2.example", "posição 3 recebe o antigo D2");
+  });
+
+  it("edição de 2 destaques: entrada d3 órfã (sobrevivente de demoção 3→2) é preservada, não descartada", () => {
+    const entries = [
+      { destaque: 1, url: "https://d1.example" },
+      { destaque: 2, url: "https://d2.example" },
+      { destaque: 3, url: "https://d3-orfao.example" },
+    ];
+    const { entries: out } = reorderFactCheckManifest(entries, [2, 1]);
+    const arr = out as Array<{ destaque: number; url: string }>;
+    assert.equal(arr.length, 3, "a entrada órfã não é descartada, só não participa da permutação");
+    assert.ok(arr.some((e) => e.destaque === 3 && e.url === "https://d3-orfao.example"));
+    assert.equal(arr[0].url, "https://d2.example");
+    assert.equal(arr[1].url, "https://d1.example");
+  });
+
+  it("`destaque` duplicado: mantém a última entrada e avisa (review #8679 finding #1)", () => {
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    try {
+      const entries = [
+        { destaque: 1, url: "https://primeira.example" },
+        { destaque: 1, url: "https://segunda.example" },
+        { destaque: 2, url: "https://d2.example" },
+      ];
+      const { entries: out } = reorderFactCheckManifest(entries, [1, 2]);
+      const arr = out as Array<{ destaque: number; url: string }>;
+      assert.equal(arr[0].url, "https://segunda.example", "última entrada com destaque duplicado vence");
+      assert.ok(warnings.some((w) => /duplicad|mais de uma entrada/i.test(w)), "avisa sobre a duplicata");
+    } finally {
+      console.warn = origWarn;
+    }
+  });
 });
 
 describe("reorderFactCheckSources (#8679): manifest.json + d{N}.txt", () => {
@@ -1955,6 +2002,38 @@ describe("reorderCropReviewJson (#8679, unidade)", () => {
     assert.equal(reorderCropReviewJson({}, [2, 1, 3]).changed, false);
     assert.equal(reorderCropReviewJson(undefined, [2, 1, 3]).changed, false);
   });
+
+  it("3-cycle [3,1,2] remapeia todas as 3 posições (review gap #8679)", () => {
+    const data = {
+      results: [
+        { destaque: "d1", ratio: "1x1", status: "A" },
+        { destaque: "d2", ratio: "1x1", status: "B" },
+        { destaque: "d3", ratio: "1x1", status: "C" },
+      ],
+    };
+    const { changed, data: out } = reorderCropReviewJson(data, [3, 1, 2]);
+    assert.equal(changed, true);
+    const results = (out as { results: Array<{ destaque: string; status: string }> }).results;
+    assert.ok(results.some((r) => r.destaque === "d1" && r.status === "C"));
+    assert.ok(results.some((r) => r.destaque === "d2" && r.status === "A"));
+    assert.ok(results.some((r) => r.destaque === "d3" && r.status === "B"));
+  });
+
+  it("edição de 2 destaques: entradas d3 órfãs (demoção 3→2) são preservadas", () => {
+    const data = {
+      results: [
+        { destaque: "d1", ratio: "1x1", status: "ok" },
+        { destaque: "d2", ratio: "1x1", status: "ok" },
+        { destaque: "d3", ratio: "1x1", status: "orfao" },
+      ],
+    };
+    const { data: out } = reorderCropReviewJson(data, [2, 1]);
+    const results = (out as { results: Array<{ destaque: string; status: string }> }).results;
+    assert.ok(
+      results.some((r) => r.destaque === "d3" && r.status === "orfao"),
+      "entrada órfã não é descartada",
+    );
+  });
 });
 
 describe("invalidatePublicImagesForReorder (#8679, unidade)", () => {
@@ -2000,6 +2079,32 @@ describe("invalidatePublicImagesForReorder (#8679, unidade)", () => {
   it("sem images{} reconhecível → no-op", () => {
     assert.equal(invalidatePublicImagesForReorder({}, [2, 1, 3]).changed, false);
     assert.equal(invalidatePublicImagesForReorder(undefined, [2, 1, 3]).changed, false);
+  });
+
+  it("images não-objeto (array/string) → no-op, nunca espalha índices no lugar de chaves (review #8679 finding #2)", () => {
+    assert.equal(invalidatePublicImagesForReorder({ images: ["a", "b"] }, [2, 1, 3]).changed, false);
+    assert.equal(invalidatePublicImagesForReorder({ images: "corrupted" }, [2, 1, 3]).changed, false);
+  });
+
+  it("3-cycle [3,1,2]: zero pontos fixos, todas as chaves das 3 posições são removidas (review gap #8679)", () => {
+    const data = {
+      images: {
+        cover: {},
+        d2_2x1: {},
+        d3_2x1: {},
+        d1_4x5: {},
+        d2_4x5: {},
+        d3_4x5: {},
+        eia_a: {},
+      },
+    };
+    const { changed, removedKeys } = invalidatePublicImagesForReorder(data, [3, 1, 2]);
+    assert.equal(changed, true);
+    assert.deepEqual(
+      new Set(removedKeys),
+      new Set(["cover", "d2_2x1", "d3_2x1", "d1_4x5", "d2_4x5", "d3_4x5"]),
+      "num 3-cycle sem pontos fixos, as 3 posições são todas afetadas",
+    );
   });
 });
 
