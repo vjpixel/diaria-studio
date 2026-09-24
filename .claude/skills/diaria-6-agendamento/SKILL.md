@@ -20,6 +20,18 @@ Desde a fusão 5+6, o caminho normal é `/diaria-5-publicacao` continuar direto 
 
 Critico: este e o stage que **agenda** a newsletter no Beehiiv; rodar na edicao errada causa agendamento de conteudo incorreto.
 
+## Passo -1 — Sincronizar código com origin/master (#2686, #8684, #8786)
+
+**Sempre a primeira coisa que esta skill faz — só quando invocada de forma STANDALONE (porta de retomada acima), nunca quando `/diaria-5-publicacao` já encadeou pra cá na mesma sessão** (nesse caso o Passo -3 dela já rodou nesta sessão, ver `.claude/skills/diaria-5-publicacao/SKILL.md`; rodar de novo aqui seria redundante, não incorreto — mas evite o `npx tsx` repetido). Esta é justamente a porta que `/diaria-5-publicacao` **não** cobre: a sessão que retoma horas/dias depois (editor saiu e voltou, sessão anterior morreu antes do gate) nunca passou pelo Passo -3 — o achado do #8786 (`publish-edition-site-page.ts` saindo com `exit 3` — "checkout não está sincronizado com origin/master" — mesmo já existindo o fix de #8636/#8684 em `origin/master`) veio exatamente de uma sessão `/diaria-6-agendamento` standalone rodando código defasado no disco.
+
+```bash
+EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
+npx tsx scripts/sync-code.ts --edition-dir "$EDITION_DIR"
+```
+(Bash tool: `timeout: 570000` — mesmo motivo/valor do Passo -3 de `/diaria-5-publicacao` e do Passo 0 de `/diaria-edicao`.)
+
+`--edition-dir` grava `_internal/05-sync-code.json`; o invariant `sync-code-ran` (agora também registrado no Stage 6, não só no Stage 5) avisa (warning) quando o marker falta ou o checkout ficou defasado. **Fail-soft, igual aos demais pontos de sync**: qualquer falha (offline, divergência, conflito de stash) vira warning — nunca bloqueia esta skill.
+
 ## Pre-requisitos
 
 - Etapas 1-5 completas: `_internal/.step-5-done.json` + `_internal/05-published.json` com `draft_url`.

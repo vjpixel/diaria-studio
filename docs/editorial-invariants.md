@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 96 invariants.
+**Total**: 97 invariants.
 
 ## Static (estrutura do repo)
 
@@ -140,6 +140,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `site-sitemap-no-orphans` | toda página em workers/site/public/p/ tem entrada no sitemap.xml — sem isso a página é invisível no buscador E no arquivo (#7578) | #7578 |
 | `step-5-sentinel-exists` | _internal/.step-5-done.json escrito pelo Stage 5 (#1694) | #1694 |
 | `step-6-sentinel-exists` | _internal/.step-6-done.json escrito pelo pipeline-sentinel (#1694) | #1694 |
+| `sync-code-ran` | marker de sync-code.ts presente e em dia — /diaria-6-agendamento standalone (retomada, #7983) nunca passa pelo Passo -3 de /diaria-5-publicacao quando o editor não a encadeou; sem isso §6b-site pode rodar com código defasado e reproduzir o exit 3 do #8786/#8684 mesmo já tendo o fix de #8636 em origin/master. | #8786 |
 | `whatsapp-slug-guard-ok` | _internal/whatsapp-slug-check.json presente com ok:true (#4570, backstop #4574) | #4574 |
 
 ---

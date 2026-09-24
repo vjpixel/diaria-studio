@@ -14,6 +14,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { findOrphanSlugs, listPageSlugs, slugsInSitemap } from "../site-sitemap-orphans.ts";
+import { checkSyncCodeMarker } from "../sync-code-marker.ts"; // #8786
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -462,6 +463,16 @@ export const STAGE_6_RULES: InvariantRule[] = [
     source_issue: "#7578",
     stage: 6,
     run: checkSiteSitemapNoOrphans,
+  },
+  {
+    id: "sync-code-ran",
+    description:
+      "marker de sync-code.ts presente e em dia — /diaria-6-agendamento standalone (retomada, #7983) nunca passa pelo " +
+      "Passo -3 de /diaria-5-publicacao quando o editor não a encadeou; sem isso §6b-site pode rodar com código " +
+      "defasado e reproduzir o exit 3 do #8786/#8684 mesmo já tendo o fix de #8636 em origin/master.",
+    source_issue: "#8786",
+    stage: 6,
+    run: checkSyncCodeMarker,
   },
 ];
 
