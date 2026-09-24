@@ -90,6 +90,11 @@ export interface BrevoDiariaContact {
   bounced_at?: string;
   /** ISO — quando status virou converted_to_kit (#6485). */
   converted_to_kit_at?: string;
+  /** #8753 — ISO da 1ª rodada em que a promoção caiu em
+   * `await_self_confirmation` (#8728: contato já não-`active` no Kit). Não é
+   * limpo enquanto o contato segue `in_brevo`; só é lido pra contatos
+   * `in_brevo` (ver `findStaleAwaitingKitConfirmation`). */
+  awaiting_kit_confirmation_since?: string;
   /** ISO — quando `resolution_reason` foi CORRIGIDO por
    * `applySuppressionReconciliation` (#5077), distinto de `suppressed_at`
    * (quando a supressão original aconteceu). Preserva as duas datas: "quando
@@ -468,3 +473,47 @@ export function applySuppressionReconciliation(
     }),
   };
 }
+
+/**
+ * #8753 — dias sem auto-confirmação no Kit a partir dos quais o contato
+ * aguardando (#8728) é reportado. Tirá-lo da fila Brevo depois do prazo é
+ * decisão de produto (quem descadastrou do Kit provavelmente não quer a
+ * Brevo) — este módulo só torna o caso visível.
+ */
+export const AWAITING_KIT_CONFIRMATION_STALE_DAYS = 7;
+
+/** #8753 — grava `awaiting_kit_confirmation_since` só na 1ª vez (idempotente). */
+export function markAwaitingKitConfirmation(
+  store: BrevoDiariaStore,
+  email: string,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    ...store,
+    contacts: store.contacts.map((c) =>
+      c.email === norm && c.status === "in_brevo" && !c.awaiting_kit_confirmation_since
+        ? { ...c, awaiting_kit_confirmation_since: now }
+        : c,
+    ),
+  };
+}
+
+/** #8753 — contatos `in_brevo` aguardando confirmação no Kit há mais de `days`. */
+export function findStaleAwaitingKitConfirmation(
+  store: BrevoDiariaStore,
+  now: string = new Date().toISOString(),
+  days: number = AWAITING_KIT_CONFIRMATION_STALE_DAYS,
+): { email: string; since: string; days: number }[] {
+  const nowMs = Date.parse(now);
+  const out: { email: string; since: string; days: number }[] = [];
+  for (const c of store.contacts) {
+    if (c.status !== "in_brevo" || !c.awaiting_kit_confirmation_since) continue;
+    const sinceMs = Date.parse(c.awaiting_kit_confirmation_since);
+    if (!Number.isFinite(sinceMs)) continue;
+    const elapsed = (nowMs - sinceMs) / 86_400_000;
+    if (elapsed > days) out.push({ email: c.email, since: c.awaiting_kit_confirmation_since, days: Math.floor(elapsed) });
+  }
+  return out;
+}
+

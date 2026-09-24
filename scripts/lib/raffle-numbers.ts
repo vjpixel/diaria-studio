@@ -185,6 +185,24 @@ function significantWords(s: string): string[] {
  * Sem `correct_value` declarado: cai só no overlap de description/location
  * (sinal mais fraco, mas ainda exige pelo menos 1 termo em comum).
  */
+/**
+ * (#8751) Token de `correctValue` que identifica o erro sozinho: >=4 chars e
+ * com caixa mista não-inicial (ChatGPT, OpenAI, iPhone) ou letras+dígitos
+ * (GPT5, Llama4). Match por palavra inteira na reply já
+ * normalizada.
+ */
+function hasDistinctiveCorrectMatch(correctValue: string | undefined | null, bodyNorm: string): boolean {
+  if (!correctValue) return false;
+  const tokens = correctValue.split(/[^\p{L}\p{N}]+/u).filter((t) => t.length >= 4);
+  return tokens.some((t) => {
+    const mixedCase = /\p{Lu}/u.test(t.slice(1)) && /\p{Ll}/u.test(t);
+    const alnum = /\p{L}/u.test(t) && /\p{N}/u.test(t);
+    if (!mixedCase && !alnum) return false;
+    const norm = normalizeText(t);
+    return new RegExp(`(^|[^a-z0-9])${norm}([^a-z0-9]|$)`).test(bodyNorm);
+  });
+}
+
 export function matchesIntentionalError(
   replyBody: string,
   error: IntentionalErrorForMatch,
@@ -203,6 +221,14 @@ export function matchesIntentionalError(
   const hasCorrectMatch =
     correctWords.length === 0 || correctWords.some((w) => bodyNorm.includes(w));
   const hasDescMatch = descWords.length === 0 || descWords.some((w) => bodyNorm.includes(w));
+
+  // #8751: resposta terse ("ChatGPT, e não ChatGTP") só cita a palavra
+  // corrigida, sem repetir o contexto descritivo. Quando o correct_value tem
+  // um token DISTINTIVO (nome de marca/produto: caixa mista tipo "ChatGPT"/
+  // "OpenAI", ou letras+dígitos tipo "GPT5") e ele aparece como palavra
+  // inteira na reply, isso já basta — a chance de match espúrio é baixa.
+  // Número puro ("22") ou palavra comum seguem exigindo o contexto.
+  if (hasDistinctiveCorrectMatch(error.correct_value, bodyNorm)) return true;
 
   // Exige sinal real de cada conjunto que existir — quando um conjunto está
   // vazio (ex: sem correct_value), o flag correspondente já é `true` por

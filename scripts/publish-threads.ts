@@ -119,7 +119,11 @@ export function extractDestaquesFromSocialMd(socialMd: string): string[] {
  * — nunca lança nem cai pra outra seção (#4294, mesmo contrato de
  * `extractCurtoText` em `prep-twitter-posts.ts` #3994).
  */
-export function extractPostText(socialMd: string, destaque: string): string | null {
+export function extractPostText(
+  socialMd: string,
+  destaque: string,
+  editionUrl: string | null = null,
+): string | null {
   // Normalizar CRLF → LF
   const normalized = socialMd.replace(/\r\n/g, "\n");
 
@@ -131,7 +135,12 @@ export function extractPostText(socialMd: string, destaque: string): string | nu
   // bug ativado em publish-instagram.ts/publish-facebook.ts).
   const dText = extractDestaqueBlock(section, destaque);
   if (dText === null) return null;
-  const text = dText.trim();
+  // #8758: `social-curto` escreve `{edition_url}` literal por design; ele só
+  // some do 03-social.md se `resolve-edition-url.ts --validate-social` rodou.
+  // Substituir aqui (a partir de _internal/05-edition-url.txt) ANTES do guard —
+  // senão o guard trata o estado esperado como erro e bloqueia todo o canal.
+  // Sem editionUrl, o placeholder segue sendo recusado (genuinamente não resolvido).
+  const text = editionUrl ? dText.trim().replaceAll("{edition_url}", editionUrl) : dText.trim();
   assertNoScaffolding(text, `destaque '${destaque}' (threads)`);
   // #6862: Threads não renderiza markdown — ver docstring de
   // lib/strip-markdown-emphasis.ts (nunca fazer isso na fonte).
@@ -562,6 +571,10 @@ async function main() {
   const skippedNoCurto: Array<{ destaque: string; reason: string }> = [];
   // #4294 — guard não-fatal de edition_url ausente no texto (ver loop abaixo).
   const editionUrlFile = resolve(editionDir, "_internal", "05-edition-url.txt");
+  // #8758: lido 1x — usado pra resolver `{edition_url}` antes do guard de scaffolding.
+  const resolvedEditionUrl = existsSync(editionUrlFile)
+    ? readFileSync(editionUrlFile, "utf8").trim() || null
+    : null;
 
   const tagAndAppend = (entry: PostEntry): void => {
     if (isTest) entry.is_test = true;
@@ -601,7 +614,7 @@ async function main() {
     // mesmo padrão de status:"failed" já usado no resto deste arquivo.
     let text: string | null;
     try {
-      text = extractPostText(socialMd, d);
+      text = extractPostText(socialMd, d, resolvedEditionUrl);
     } catch (e: any) {
       console.error(`ERROR extracting text for threads/${d}: ${e.message}`);
       const entry: PostEntry = {

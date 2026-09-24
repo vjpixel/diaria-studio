@@ -80,9 +80,6 @@ describe("sources RSS fixes (#1266)", () => {
     // #8110: sitemap.xml não é RSS (nunca foi, confirmado 403 em qualquer
     // /rss.xml ou /feed alternativo) — RSS limpa, WebSearch site: continua ativa.
     "Perplexity Research",
-    // #8110: feed passou a servir HTML (página do blog) em vez de XML —
-    // Google descontinuou/mudou o formato do feed pt-br.
-    "Blog do Google Brasil (IA)",
   ];
 
   for (const name of SOURCES_WITHOUT_RSS) {
@@ -92,6 +89,14 @@ describe("sources RSS fixes (#1266)", () => {
       assert.equal(s!.rss, undefined, `${name} não deve ter RSS — era ${s!.rss ?? '<none>'}`);
     });
   }
+
+  it("Blog do Google Brasil (IA) removida — fonte desativada (#8631; RSS já morto desde #8110)", () => {
+    assert.equal(
+      byName.get("Blog do Google Brasil (IA)"),
+      undefined,
+      "desativada em seed/sources.csv (#8631) — context/sources.md regenerado não pode mais anunciá-la (#8711)",
+    );
+  });
 
   it("Agent Pulse removida — aggregator blocklisted (#1637-39)", () => {
     assert.equal(

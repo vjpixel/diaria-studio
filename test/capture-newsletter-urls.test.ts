@@ -571,3 +571,23 @@ describe("#7662 — loadAlwaysConsiderConfig: nunca degrada em silêncio", () =>
     assert.deepEqual(configWarnings, []);
   });
 });
+
+describe("regressão #8710: urls_extraidas chega em processThreads (ponta a ponta)", () => {
+  it("link só no fim do corpo completo (fora do body truncado) vira artigo", () => {
+    const tail = "https://deepmind.google/discover/blog/artigo-8710-no-fim";
+    const thread = makeThread({
+      thread_id: "t-8710",
+      body: "Intro truncada em BODY_LIMIT, sem o link final. https://openai.com/blog/gpt-5",
+      urls_extraidas: ["https://openai.com/blog/gpt-5", tail],
+    });
+    const { articles, result } = processThreads([thread], { processed_thread_ids: [] });
+    assert.ok(articles.some((a) => a.url.includes("artigo-8710-no-fim")), JSON.stringify(articles.map((a) => a.url)));
+    // dedup: a URL presente nos dois lados conta uma vez só
+    assert.equal(result.urls_extracted, 2);
+  });
+
+  it("sem urls_extraidas (JSON antigo), comportamento igual ao de antes", () => {
+    const { result } = processThreads([makeThread()], { processed_thread_ids: [] });
+    assert.ok(result.urls_extracted >= 2);
+  });
+});

@@ -527,6 +527,10 @@ export function isKnownStaticSitemapPath(loc: string): boolean {
  * `test/site-archive-index-8353.test.ts`, que compara a data editorial de
  * cada edição do sitemap contra `todayBrt` pra não reprovar uma edição
  * publicada na véspera (#8221) e ainda sem linha no índice.
+ *
+ * #8696: fora de `buildHomeFeed`, o único consumidor é teste (assim como
+ * `checkArchiveIndexLinkConsistency`) — é suporte de teste por desenho, não
+ * código morto; `gen-archive-index.ts` não chama nenhum dos dois.
  */
 export function resolveEditorialDate(
   entry: SitemapEntry,
@@ -535,6 +539,18 @@ export function resolveEditorialDate(
   if (entry.lastmod) return entry.lastmod;
   const slug = slugFromCanonicalUrl(entry.loc);
   return slug ? extractPageDate(readPageHtml(slug) ?? "") : null;
+}
+
+/**
+ * "Esta data editorial ainda não é devida hoje?" — predicado único do corte de
+ * edição futura (#8696). Usado por `buildHomeFeed` e por
+ * `checkArchiveIndexLinkConsistency` (`site-archive-index.ts`): se a regra de
+ * corte mudar (graça, `>=`, fuso), home e índice mudam juntos. Data ausente →
+ * `false` (não dá pra julgar o que não tem data; o default é mostrar).
+ * Comparação lexicográfica: os dois lados são `YYYY-MM-DD`.
+ */
+export function isFutureEditorialDate(date: string | null, todayBrt: string): boolean {
+  return Boolean(date && date > todayBrt);
 }
 
 export function buildHomeFeed(
@@ -577,7 +593,7 @@ export function buildHomeFeed(
     // conta como "ainda não saiu". Entrada sem data nenhuma passa — não dá
     // pra julgar o que não tem data, e o default seguro aqui é mostrar (a
     // alternativa esconderia acervo antigo em silêncio).
-    if (date && date > todayBrt) {
+    if (isFutureEditorialDate(date, todayBrt)) {
       // console.log e não console.warn: este skip é o caminho ESPERADO toda
       // noite de Stage 6, não um sintoma. Um warn diário aqui viraria ruído
       // e treinaria a ignorar os warns reais logo abaixo.

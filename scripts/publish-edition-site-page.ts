@@ -160,18 +160,13 @@
 * Ambos fail-soft: uma falha aqui vira aviso em stderr, nunca reverte a
 * publicação da página em si.
 *
-* **Caveat herdado do worktree do #8636.** Assim como `updateSitemapAndHome`
-* já fazia antes desta issue, `backfillAndReindexArchive` escreve em
-* `rootDir` (o checkout onde este script roda), não em `worktreeDir` — e o
-* `git add` do commit roda DENTRO do worktree (um clone `--detach` de
-* `origin/master`, ver seção #8636 acima). Path já TRACKED em
-* `origin/master` (`sitemap.xml`, `archive/`) existe no worktree, então
-* `git add` não lança — mas o CONTEÚDO staged é o que já estava no
-* worktree, não necessariamente o que acabou de ser escrito em `rootDir`
-* fora dele. Este módulo não tenta resolver essa divergência (fora do
-* escopo do #8645) — documentado aqui pra quem for investigar um commit de
-* site-page cujo `archive/`/`sitemap.xml` não reflita a escrita local mais
-* recente.
+* **Worktree do #8636 (resolvido, #8665).** `backfillAndReindexArchive`
+* escreve em `rootDir`, não em `worktreeDir` — e o `git add` roda DENTRO do
+* worktree. Isso NÃO commita conteúdo velho: `commitAndPushSitePage` copia
+* de `rootDir` pro worktree cada path de `pathsToStage` (inclusive
+* `archive/`, com `rmSync` antes do `cpSync` pra que página podada também
+* saia) antes do `git add`. Travado com git real em
+* `test/publish-edition-site-page-8636-worktree-real-git.test.ts` (#8665).
 *
 * ## Mecanismo de publicação: branch dedicada + PR, nunca push direto em `master` (#6598)
  *
@@ -394,6 +389,12 @@ export interface PublishResult {
    */
   merged?: boolean;
   mergeReason?: string;
+  /**
+   * #8689: `true` quando o `git fetch origin master` best-effort (#8684)
+   * falhou e o worktree nasceu do ref local, possivelmente desatualizado.
+   * Ausente/`false` = fetch ok (ou caminho legado, sem fetch).
+   */
+  fetchStale?: boolean;
 }
 
 export interface PublishPageDeps {
@@ -431,7 +432,17 @@ export interface PublishPageDeps {
 }
 
 export type PublishPageResult =
-  | { code: 0; slug: string; bytes: number; published: boolean; prUrl?: string; merged?: boolean; mergeReason?: string }
+  | {
+      code: 0;
+      slug: string;
+      bytes: number;
+      published: boolean;
+      prUrl?: string;
+      merged?: boolean;
+      mergeReason?: string;
+      /** #8689: ver `PublishResult.fetchStale`. */
+      fetchStale?: boolean;
+    }
   | { code: 2; reason: string }
   | { code: 3; reason: string }
   | { code: 4; reason: string }
@@ -1007,7 +1018,7 @@ export function commitAndPushSitePage(
   lock: LockRunner = defaultLockRunner,
   sleep: SleepFn = defaultSleep,
   worktreeDir?: string,
-): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean } {
+): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean; fetchStale: boolean } {
   // #8636: no caminho legado, salva o branch original pra voltar depois.
   let originalBranch = "";
   if (!worktreeDir) {
@@ -1065,6 +1076,8 @@ export function commitAndPushSitePage(
   let prUrl: string | undefined;
   let prNumber: number | undefined;
   let prCreated = false;
+  // #8689: sinal estruturado da falha do fetch best-effort (antes só stderr).
+  let fetchStale = false;
 
   // #6626: id local a esta chamada — ver docblock de `acquireSitePublishLock`.
   const lockSessionId = `site-publish-${randomUUID()}`;
@@ -1103,6 +1116,7 @@ export function commitAndPushSitePage(
       try {
         git(["fetch", "origin", "master"], rootDir);
       } catch (e) {
+        fetchStale = true;
         process.stderr.write(
           `[site-page] aviso: 'git fetch origin master' falhou (${(e as Error).message}) — seguindo com o ` +
             `ref local de origin/master, que pode estar desatualizado (#8684).\n`,
@@ -1365,7 +1379,7 @@ export function commitAndPushSitePage(
     releaseSitePublishLock(rootDir, lockSessionId, lock);
   }
 
-  return { committed, pushed, prUrl, prNumber, prCreated };
+  return { committed, pushed, prUrl, prNumber, prCreated, fetchStale };
 }
 
 /**
@@ -1513,7 +1527,7 @@ export function productionDeps(
       return { seoImageAdded, archiveIndexRegenerated };
     },
     publish: (slug, sitemapPath?: string) => {
-      const { pushed, prUrl, prNumber, prCreated } = commitAndPushSitePage(
+      const { pushed, prUrl, prNumber, prCreated, fetchStale } = commitAndPushSitePage(
         rootDir,
         slug,
         git,
@@ -1527,10 +1541,10 @@ export function productionDeps(
       // pra checar — `prNumber` ausente (gh pr create/list não devolveu URL
       // parseável) não é motivo pra lançar aqui, é motivo pra não tentar.
       if (prNumber === undefined) {
-        return { pushed, prUrl, prNumber, prCreated, merged: false, mergeReason: "sem prNumber — nada a mergear" };
+        return { pushed, prUrl, prNumber, prCreated, merged: false, mergeReason: "sem prNumber — nada a mergear", fetchStale };
       }
       const { merged, reason: mergeReason } = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep);
-      return { pushed, prUrl, prNumber, prCreated, merged, mergeReason };
+      return { pushed, prUrl, prNumber, prCreated, merged, mergeReason, fetchStale };
     },
     log: (line) => process.stderr.write(`[site-page] ${line}\n`),
   };
@@ -1693,10 +1707,17 @@ export function publishEditionSitePage(
       // booleano em `_internal/site-page-published.json`. Quem auditar esse
       // arquivo depois não conseguia distinguir os motivos.
       mergeReason: publishResult.mergeReason,
+      ...(publishResult.fetchStale ? { fetchStale: true } : {}),
     };
   }
   deps.log(`git commit/push rodou sem lançar mas não confirmou push — /p/${built.post.slug} não tem branch pushada ainda`);
-  return { code: 0, slug: built.post.slug, bytes: html.length, published: false };
+  return {
+    code: 0,
+    slug: built.post.slug,
+    bytes: html.length,
+    published: false,
+    ...(publishResult.fetchStale ? { fetchStale: true } : {}),
+  };
 }
 
 /**
@@ -1732,6 +1753,8 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
     // distinção pra só alarmar no 2º caso.
     merged: "merged" in result ? result.merged : undefined,
     mergeReason: "mergeReason" in result ? result.mergeReason : undefined,
+    // #8689: worktree nasceu de um origin/master possivelmente desatualizado.
+    fetchStale: "fetchStale" in result ? result.fetchStale : undefined,
     checked_at: new Date().toISOString(),
   };
   try {

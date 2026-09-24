@@ -35,10 +35,10 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commitAndPushSitePage } from "../scripts/publish-edition-site-page.ts";
+import { commitAndPushSitePage, writeSitePageState } from "../scripts/publish-edition-site-page.ts";
 import type { GitRunner, GhRunner, LockRunner, SleepFn } from "../scripts/publish-edition-site-page.ts";
 
 function realGit(args: string[], cwd: string): string {
@@ -214,10 +214,25 @@ describe("#8684 — commitAndPushSitePage refetcha origin/master antes de criar 
     assert.equal(fetchAttempted, true, "o fetch deveria ter sido tentado");
     assert.equal(result.committed, true, "commit deveria ter acontecido mesmo com fetch falhando");
     assert.equal(result.pushed, true, "push deveria ter confirmado mesmo com fetch falhando");
+    // #8689: a falha deixa sinal estruturado, não só stderr.
+    assert.equal(result.fetchStale, true, "fetchStale deve sinalizar o worktree possivelmente desatualizado");
 
     const branchName = `site-publish/${slug}`;
     realGit(["fetch", "origin"], rootDir);
     const pageContent = realGit(["show", `origin/${branchName}:workers/site/public/p/${slug}/index.html`], rootDir);
     assert.equal(pageContent, "PAGE_DESPITE_FETCH_FAILURE\n");
+  });
+});
+
+describe("#8689 — fetchStale persiste em _internal/site-page-published.json", () => {
+  it("writeSitePageState grava fetchStale quando o resultado o traz, e omite quando não", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-8689-state-"));
+    cleanupDirs.push(dir);
+    writeSitePageState(dir, { code: 0, slug: "s", bytes: 1, published: true, fetchStale: true });
+    const state = JSON.parse(readFileSync(join(dir, "_internal", "site-page-published.json"), "utf8"));
+    assert.equal(state.fetchStale, true);
+    writeSitePageState(dir, { code: 0, slug: "s", bytes: 1, published: true });
+    const state2 = JSON.parse(readFileSync(join(dir, "_internal", "site-page-published.json"), "utf8"));
+    assert.equal(state2.fetchStale, undefined);
   });
 });

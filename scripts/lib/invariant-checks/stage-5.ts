@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { checkSyncCodeMarker } from "../sync-code-marker.ts"; // #8690
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
 import { loadDoc } from "../../update-stage-status.ts";
 
@@ -1116,6 +1117,13 @@ function checkKitDiariaExclusiveAudienceDispatched(
 }
 
 export const STAGE_5_RULES: InvariantRule[] = [
+  {
+    id: "sync-code-ran",
+    description: "Passo -3 (sync-code.ts --edition-dir) rodou e o código não ficou defasado (#8690)",
+    source_issue: "#8690",
+    stage: 5,
+    run: checkSyncCodeMarker,
+  },
   {
     id: "step-4-sentinel-exists",
     description: "_internal/.step-4-done.json escrito (#780)",

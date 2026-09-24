@@ -46,6 +46,7 @@ import { dirname, resolve } from "node:path";
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1671
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { isOfficialLancamentoUrl } from "./lib/launch-heuristics.ts"; // #8722
 
 export interface Article {
   url: string;
@@ -413,13 +414,27 @@ export async function clusterArticlesWithEmbeddings(
 }
 
 /**
- * Dentro de cada cluster, rankeia por: fonte cadastrada > discovered,
- * score maior > menor, ordem original como desempate.
+ * Dentro de cada cluster, rankeia por: submissão do editor > domínio oficial
+ * (#8722) > fonte cadastrada > discovered, score maior > menor, ordem
+ * original como desempate.
+ *
+ * #8722: o `top_url` é o único membro que segue pro scoring. Sem os dois
+ * primeiros critérios, o link oficial (`anthropic.com/...`, inclusive
+ * submetido pelo editor) perdia pra cobertura de imprensa do mesmo cluster —
+ * e a regra "LANÇAMENTOS só com link oficial" nem tinha candidato oficial
+ * pra aplicar. A submissão do editor vem antes do oficial porque é escolha
+ * explícita dele.
  */
 export function rankWithinCluster(members: Article[]): Article[] {
+  const tier = (a: Article): number => {
+    if (a.flag === "editor_submitted") return 0;
+    if (isOfficialLancamentoUrl(a.url)) return 1;
+    return 2;
+  };
   return [...members]
-    .map((a, originalIndex) => ({ a, originalIndex }))
+    .map((a, originalIndex) => ({ a, originalIndex, t: tier(a) }))
     .sort((x, y) => {
+      if (x.t !== y.t) return x.t - y.t;
       const xDisc = x.a.discovered_source ? 1 : 0;
       const yDisc = y.a.discovered_source ? 1 : 0;
       if (xDisc !== yDisc) return xDisc - yDisc;

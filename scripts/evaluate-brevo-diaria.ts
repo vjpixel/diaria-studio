@@ -363,6 +363,9 @@ import {
   applyNativeUnsubscribe,
   applyBrevoDiariaBounced,
   applyConvertedToKit, // #7382 — contato já ativo no Kit no momento da promoção pra Beehiiv
+  markAwaitingKitConfirmation, // #8753
+  findStaleAwaitingKitConfirmation, // #8753
+  AWAITING_KIT_CONFIRMATION_STALE_DAYS, // #8753
   normalizeEmail,
   DEFAULT_STORE_PATH,
   type BrevoDiariaContact,
@@ -1447,6 +1450,13 @@ export interface RunEvaluationResult {
    */
   awaitingKitConfirmation: number;
   /**
+   * #8753 — contatos `in_brevo` aguardando auto-confirmação no Kit há mais de
+   * `AWAITING_KIT_CONFIRMATION_STALE_DAYS`. Sem isto, quem nunca confirma
+   * (ex: `inactive` por descadastro no Kit) segue recebendo pela Brevo sem
+   * sinal nenhum. Só reporta — tirar da fila é decisão de produto.
+   */
+  staleAwaitingKitConfirmation: { email: string; since: string; days: number }[];
+  /**
    * #8724 — email + motivo de cada incremento de `failed`, na ordem em que
    * ocorreram. Existe porque o `warn:`/`FALHA em` de cada contato já é
    * logado individualmente (via `log()`), mas esse log pode ficar fora da
@@ -2003,6 +2013,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             );
             awaitingKitConfirmation++;
             store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+            store = markAwaitingKitConfirmation(store, contact.email); // #8753
             continue;
           }
           const { id } = await promoteKitSubscription(contact.email, kitApiKey);
@@ -2103,6 +2114,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     kitAutoConfirmSkipped,
     skippedActiveOnKit,
     awaitingKitConfirmation,
+    staleAwaitingKitConfirmation: findStaleAwaitingKitConfirmation(store), // #8753
     failedContacts,
   };
 }
@@ -2237,6 +2249,14 @@ async function main(): Promise<void> {
   // nenhum e-mail/motivo correlacionável no output truncado que o caller vê.
   // Se um novo log() for adicionado DEPOIS deste bloco, mover pra manter a
   // proximidade com o fim do run (senão o corte de tail volta a valer).
+  // #8753 — mesmo motivo de proximidade com o fim do run que o bloco abaixo.
+  if (result.staleAwaitingKitConfirmation.length > 0) {
+    log(
+      `warn: ${result.staleAwaitingKitConfirmation.length} contato(s) aguardando auto-confirmação no Kit há mais de ` +
+        `${AWAITING_KIT_CONFIRMATION_STALE_DAYS} dias e seguem recebendo pela Brevo (#8753): ` +
+        result.staleAwaitingKitConfirmation.map((c) => `${c.email} [desde ${c.since.slice(0, 10)}, ${c.days}d]`).join(" | "),
+    );
+  }
   if (result.failedContacts.length > 0) {
     log(
       `detalhe das falhas: ${result.failedContacts.map((f) => `${f.email} [${f.reason}]`).join(" | ")}`,

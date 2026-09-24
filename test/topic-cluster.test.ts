@@ -171,6 +171,22 @@ describe("rankWithinCluster", () => {
     assert.equal(ranked[0].url, "https://a.com/1");
   });
 
+  it("#8722: domínio oficial vira top_url mesmo atrás de imprensa cadastrada com score maior", () => {
+    const members: Article[] = [
+      { url: "https://venturebeat.com/ai/anthropic-releases-claude-opus-5-5", title: "VB", score: 90 },
+      { url: "https://www.anthropic.com/news/claude-opus-5-5", title: "Anthropic", discovered_source: true, score: 60 },
+    ];
+    assert.equal(rankWithinCluster(members)[0].url, "https://www.anthropic.com/news/claude-opus-5-5");
+  });
+
+  it("#8722: submissão do editor vence tudo, inclusive o oficial", () => {
+    const members: Article[] = [
+      { url: "https://www.anthropic.com/news/claude-opus-5-5", title: "Anthropic", score: 95 },
+      { url: "https://exame.com/x", title: "Exame", flag: "editor_submitted", score: 10 },
+    ];
+    assert.equal(rankWithinCluster(members)[0].url, "https://exame.com/x");
+  });
+
   it("discovered com score altíssimo ainda perde pra cadastrada", () => {
     const members: Article[] = [
       { url: "https://a.com/1", title: "A", discovered_source: true, score: 99 },

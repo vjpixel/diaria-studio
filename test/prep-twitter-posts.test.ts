@@ -145,6 +145,35 @@ describe("regressão #4309 (defesa em profundidade — hoje latente em '# Curto'
   });
 });
 
+describe("#8758: {edition_url} literal (03-social.md não reescrito) é resolvido antes do guard", () => {
+  const MD = "# Curto\n\n## d1\nPost d1. Leia: {edition_url}\n";
+  const URL = "https://diaria.beehiiv.com/p/edicao-teste";
+
+  it("extractCurtoText com editionUrl substitui o placeholder e não lança", () => {
+    const t = extractCurtoText(MD, "d1", URL);
+    assert.equal(t, `Post d1. Leia: ${URL}`);
+  });
+
+  it("extractCurtoText sem editionUrl segue recusando o placeholder (genuinamente não resolvido)", () => {
+    assert.throws(() => extractCurtoText(MD, "d1"), /edition_url/);
+  });
+
+  it("prepTwitterPosts lê _internal/05-edition-url.txt e publica o destaque em vez de pular", () => {
+    const dir = makeEditionDir("diaria-twitter-prep-8758-", MD);
+    try {
+      writeFileSync(join(dir, "_internal", "05-edition-url.txt"), URL + "\n", "utf8");
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      assert.equal(result.skipped.find((s) => s.destaque === "d1"), undefined, JSON.stringify(result.skipped));
+      const d1 = result.posts.find((p) => p.destaque === "d1");
+      assert.ok(d1, "d1 deve sair pronto pra postar");
+      assert.ok(!d1!.text.includes("{edition_url}"));
+      assert.ok(d1!.text.includes("diaria.beehiiv.com/p/edicao-teste"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("regressão #4309 finding 1 (self-review #2038): guard não derruba o prepTwitterPosts() inteiro", () => {
   // Antes do fix: extractCurtoText podia lançar via assertNoScaffolding, e o
   // call site em prepTwitterPosts() não tinha try/catch — um throw em

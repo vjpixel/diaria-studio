@@ -76,9 +76,11 @@ Crítico: este é o stage **publicador** (newsletter + todos os canais sociais +
 Mesma invocação e mesmo timeout do Passo 0 de `/diaria-edicao` (ver `.claude/skills/diaria-edicao/SKILL.md`):
 
 ```bash
-npx tsx scripts/sync-code.ts
+npx tsx scripts/sync-code.ts --edition-dir {EDITION_DIR}
 ```
 (Bash tool: `timeout: 570000`)
+
+`--edition-dir` grava `_internal/05-sync-code.json`; o invariant `sync-code-ran` do Stage 5 avisa (warning) quando o marker falta ou o checkout ficou defasado (#8690) — o passo deixa de depender só desta prosa.
 
 **Fail-soft, igual ao Passo 0 da diária**: qualquer falha (offline, divergência, conflito de stash) vira warning — nunca bloqueia esta skill. Parsear o JSON do stdout (`outcome`, `branch_before`, `warnings`) e logar via `log-event.ts` com `--informational` (mesmos níveis da tabela do Passo 0 de `/diaria-edicao` — info pros 3 outcomes de sucesso, warn pros demais).
 

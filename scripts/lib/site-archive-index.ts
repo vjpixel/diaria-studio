@@ -62,6 +62,7 @@ import {
   buildHomeFeed,
   extractHeroImage,
   formatDateLong,
+  isFutureEditorialDate,
   type BuildHomeFeedOptions,
   type HomeFeedEntry,
 } from "./site-home-page.ts";
@@ -318,7 +319,7 @@ export function checkArchiveIndexLinkConsistency(
   const duplicated: string[] = [];
   for (const loc of editionLocs) {
     const date = resolveDate(loc);
-    const isFuture = Boolean(date && date > todayBrt);
+    const isFuture = isFutureEditorialDate(date, todayBrt); // #8696: mesmo predicado da home
     const publishedAt = resolvePublishedAt(loc);
     const isPendingRegen = isAfter(publishedAt, lastRegenAt);
     const count = linkedCount(loc);
