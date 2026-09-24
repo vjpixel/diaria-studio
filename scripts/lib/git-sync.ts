@@ -34,44 +34,46 @@
  *      ali (zero spawn extra no caminho comum); a de ANTES do checkout
  *      roda um spawn dedicado, só quando branch != master (ver
  *      MAX_SEQUENTIAL_GIT_SPAWNS).
- *   3. Se working tree suja → stash → merge --ff-only origin/master → stash pop
- *      (reversível). Se stash falhar E nenhum stash tiver sido criado → warn +
- *      retorna sem tocar o tree ("stash_failed"). Se stash pop falhar (conflito
- *      de merge) → warn + stash preservado.
- *   3d. #6668: um `stash pop` que CONFLITA pode deixar marcadores de conflito
- *      literais (`<<<<<<<`/`=======`/`>>>>>>>`) dentro de um arquivo VERSIONADO
- *      — diferente do caso comum de "pop falhou" (3 acima), que é tratado como
- *      fail-soft porque o pior caso é "stash preservado, tree como antes do
- *      stash". Aqui o arquivo em disco fica sintaticamente quebrado E ainda
- *      referenciado por `refs/stash`, e outra sessão lendo esse arquivo o
- *      trataria como íntegro (incidente #6668: checkout compartilhado com
- *      `SKILL.md` em `UU`, sem merge/rebase em curso — assinatura de
- *      `stash pop` conflitante). Detectado via `findUnmergedPaths()` — checa
- *      `git status --porcelain` por linhas com código de conflito (`UU`,
- *      `AA`, `AU`, `UA`, `DU`, `UD`, `DD`) logo após o pop, INDEPENDENTE do
- *      exit code do pop (defensivo — um pop com exit 0 mas unmerged não
- *      deveria acontecer, mas o guard não confia só no exit code). Outcome
- *      distinto `"stash_pop_conflict"` (não `"stash_pop_failed"`) — ainda
- *      fail-soft (`proceed: true`, nunca bloqueia a edição — CLAUDE.md
- *      "Sync de código no início de cada edição" continua valendo), mas com
- *      mensagem ERROR (não WARN) para que o consumidor (CLI, task-runner,
- *      orchestrator) saiba que este warning é mais sério que um "pop falhou"
- *      comum. **Hoje isso é só uma distinção de TEXTO** — nenhum consumidor
- *      ramifica comportamento nela ainda: `scripts/sync-code.ts` imprime um
- *      2º banner no stderr pra este outcome específico, mas segue com
- *      `process.exit(0)` incondicional igual a qualquer outro outcome
- *      fail-soft; este módulo em si nunca chama `render-halt-banner.ts`.
- *      Endurecer esse caminho (ex: halt banner de verdade, retry bloqueante)
- *      fica para quem quiser mudar esse comportamento fail-soft depois, com
- *      decisão explícita — não é o que este outcome faz por si só hoje.
+ *   3. #8719 (decisão do editor, 24/09/2026): se working tree suja, tenta
+ *      `merge --ff-only origin/master` DIRETO primeiro, ANTES de qualquer
+ *      stash — a maioria das mudanças locais (config solta, WIP não
+ *      conflitante) não colide com o que vem de origin/master, então o ff
+ *      direto já resolve sem nunca tocar em stash. Só recorre a stash
+ *      quando esse ff direto RECUSA (a sujeira local realmente colide com o
+ *      merge, ou a árvore está genuinamente divergente demais pro git
+ *      decidir sozinho — as duas causas são indistinguíveis a partir do
+ *      exit code, então o código trata ambas igual: protege via stash e
+ *      tenta de novo). Se o stash em si falhar e nenhum tiver sido criado →
+ *      warn + retorna sem tocar o tree ("stash_failed").
+ *   3d. #8719: **NUNCA `git stash pop` automático.** Decisão explícita do
+ *      editor (briefing 24/09/2026) — o pop automático que este módulo fazia
+ *      até aqui já causou um checkout preso ~20h em `UU` numa rodada real
+ *      (conflito do pop com um branch `continuo/rescue-master-*` em curso).
+ *      Quando um stash É criado (porque o ff direto recusou), o fluxo tenta
+ *      o ff-only DE NOVO sob proteção do stash, mas em NENHUM dos dois
+ *      desfechos (ff sucede ou falha depois do stash) o stash é despopado
+ *      automaticamente — ele fica preservado (mensagem identificável
+ *      `GIT_SYNC_STASH_MESSAGE`, `preserved_stash` estruturado no
+ *      resultado) e o checkout fica LIMPO em master (working tree igual ao
+ *      índice, sem as mudanças do stash reaplicadas). Outcomes:
+ *      `"synced_stash_preserved"` (ff sob stash teve sucesso — código
+ *      atualizado, mudanças locais preservadas só no stash) e `"ff_failed"`
+ *      com `preserved_stash` preenchido (ff sob stash TAMBÉM falhou —
+ *      divergência genuína, checkout limpo em master mas defasado, mudanças
+ *      locais preservadas no stash). Em ambos os casos o consumidor
+ *      (`sync-code.ts`) já renderiza o banner de "stash preservado" — ver
+ *      `preserved_stash` no `GitSyncResult`. Este mecanismo substitui o
+ *      auto-pop (com o detector de conflito de pop do #6668, ver histórico
+ *      abaixo) que existia antes desta decisão.
  *   3a. #3411: `git stash --include-untracked` não é atômico — cria o(s) commit(s)
  *      de stash e SÓ DEPOIS remove os arquivos não-rastreados (clean-equivalente).
  *      Se essa remoção falhar parcialmente (ex: Permission denied), o comando sai
  *      não-zero MESMO com o stash já criado — "working tree não tocada" seria
  *      falso nesse caso. Detectado comparando `refs/stash` antes/depois; se um
- *      stash foi criado apesar do exit não-zero, tenta `git stash pop` automático
- *      ("stash_partial_failure" se recuperar; "stash_partial_failure_unrecovered"
- *      com stash preservado se o pop também falhar — nunca faz `git stash drop`).
+ *      stash foi criado apesar do exit não-zero, o stash é preservado
+ *      ("stash_partial_failure_unrecovered") — nunca faz `git stash drop`, e
+ *      desde #8719 também nunca tenta `git stash pop` automático de
+ *      "recuperação" (era o comportamento até esta decisão).
  *   3b. #3423: a detecção do 3a comparando `refs/stash` antes/depois é uma TOCTOU
  *      race quando 2 chamadas de `syncCode()` rodam concorrentemente contra o
  *      MESMO checkout — `refs/stash` é uma ref escalar única por repositório
@@ -103,11 +105,10 @@
  *            `resolveSharedLockPath()`.
  *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
- *   5. Falha de fetch OU ff_failed OU stash_pop_failed OU stash_pop_conflict
- *      (#6668 — ver 3d acima) OU stash_partial_failure (ou sua variante
+ *   5. Falha de fetch OU ff_failed OU stash_partial_failure (ou sua variante
  *      _unrecovered) OU sync_in_progress NÃO bloqueiam a edição — retornam
- *      status de warn (ou ERROR, no caso de stash_pop_conflict) e a skill
- *      continua.
+ *      status de warn (ou ERROR, no caso de preexisting_unmerged_state) e a
+ *      skill continua.
  *
  * Nota: usa `git merge --ff-only origin/master` (não `git pull`) após o fetch
  * explícito do passo 2 — evita um segundo fetch implícito (rede = única
@@ -166,22 +167,29 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", 
 
 /** Status da operação de sync. */
 export type GitSyncOutcome =
-  | "synced"              // pull --ff-only bem-sucedido em tree limpa
-  | "synced_stashed"      // stash → pull --ff-only → stash pop OK
+  | "synced"              // pull --ff-only bem-sucedido (tree limpa, OU tree suja mas o ff direto
+                           // já resolveu sem precisar de stash — #8719)
+  | "synced_stash_preserved" // #8719: tree suja, ff direto recusou, stash criado, ff SOB stash teve
+                           // sucesso — código atualizado, mas o stash NUNCA é despopado
+                           // automaticamente (decisão do editor, 24/09/2026); mudanças locais ficam
+                           // só no stash, recuperação é manual (`preserved_stash` no resultado)
   | "already_up_to_date"  // já na versão mais recente (tree limpa ou suja)
   | "fetch_failed"        // git fetch falhou com erro real (offline / auth / status !== 0 e != null) — warn, segue
   | "fetch_timeout"       // #5302: git fetch origin foi morto pelo timeout do spawnSync (status === null) —
                            // diferente de erro real; refs remotos podem já ter sido atualizados localmente
                            // antes do kill — warn, segue
-  | "ff_failed"           // pull --ff-only falhou (divergência) — warn, segue
+  | "ff_failed"           // pull --ff-only falhou (divergência) — warn, segue. #8719: quando isto
+                           // ocorre DEPOIS de um stash ter sido criado (o ff sob stash também
+                           // falhou), `preserved_stash` vem preenchido — mesmo sem pop nenhum ter
+                           // sido tentado, o stash criado nunca é descartado
   | "stash_failed"        // stash falhou E nenhum stash foi criado — tree não tocada — warn, segue
-  | "stash_partial_failure"             // stash saiu não-zero MAS criou um stash (#3411); recuperado via pop automático — warn, segue
-  | "stash_partial_failure_unrecovered" // idem, mas o pop automático TAMBÉM falhou — stash preservado p/ investigação manual — warn, segue
-  | "stash_pop_failed"    // pull OK mas stash pop teve conflito — warn, stash preservado
-  | "stash_pop_conflict"  // #6668: stash pop deixou arquivo(s) VERSIONADO(S) com marcador de conflito
-                           // literal no disco (unmerged, ver findUnmergedPaths()) — mais sério que
-                           // stash_pop_failed (arquivo sintaticamente quebrado, não só "pop não terminou"),
-                           // mas AINDA fail-soft (proceed: true) — warn ERROR, segue
+  | "stash_partial_failure"             // #3411; LEGADO/inalcançável desde #8719 — stash saiu não-zero MAS criou
+                                         // um stash, e este módulo tentava recuperar via pop automático. Mantido
+                                         // no union só por compatibilidade de consumidores que já checam por ele;
+                                         // syncCodeLocked() nunca mais produz este outcome (ver "..._unrecovered"
+                                         // abaixo, que agora cobre TODO stash parcialmente falho, recuperado ou não)
+  | "stash_partial_failure_unrecovered" // #3411/#8719: stash saiu não-zero MAS criou um stash — preservado p/
+                                         // investigação manual (nunca mais tenta pop automático) — warn, segue
   | "checkout_failed"     // não estava em master e checkout master falhou — warn, segue
   | "sync_in_progress"    // #3423: outro syncCode() já está rodando neste checkout — warn, segue sem tocar git
   | "worktree_refused"    // #7336: REPO_ROOT resolve dentro de um worktree de agente
@@ -241,18 +249,23 @@ export interface GitSyncResult {
    */
   commits_behind: number;
   /**
-   * #7740: preenchido só quando este `syncCode()` termina com um stash NÃO
-   * recuperado (o `pop` falhou ou conflitou — outcomes `stash_pop_failed`,
-   * `stash_pop_conflict`, `stash_partial_failure_unrecovered`, e o caso
-   * `ff_failed` que ocorre no MESMO ponto do código que `stash_pop_failed`
-   * quando o merge --ff-only TAMBÉM falhou) — o SHA do stash (`refs/stash` no
-   * momento em que foi criado, pode ser `null` se o próprio `rev-parse` de
-   * captura falhar) e a mensagem identificável usada, para que o CONSUMIDOR
-   * (task-runner, sync-code.ts, orchestrator) tenha um dado ESTRUTURADO para
-   * reportar/logar em vez de só texto solto dentro de `warnings` — fecha o
-   * "reportar" do vazamento da #7740 (o stash em si já fica identificável via
-   * `GIT_SYNC_STASH_MESSAGE`, isto aqui é o ponteiro pronto pra esse stash
-   * específico). `null` em todo outcome que não preserva stash.
+   * #7740: preenchido sempre que este `syncCode()` termina com um stash NÃO
+   * despopado — desde #8719 (24/09/2026, decisão do editor) isto é TODO
+   * stash que este módulo cria: nunca mais chama `git stash pop`
+   * automático. Outcomes que preenchem este campo: `synced_stash_preserved`
+   * (ff sob stash teve sucesso), `ff_failed` no caso em que ocorre DEPOIS de
+   * um stash ter sido criado (ff sob stash também falhou), e
+   * `stash_partial_failure_unrecovered` (o próprio `git stash push` saiu
+   * não-zero mas criou um stash). O SHA do stash (`refs/stash` no momento em
+   * que foi criado, pode ser `null` se o próprio `rev-parse` de captura
+   * falhar) e a mensagem identificável usada ficam aqui, para que o
+   * CONSUMIDOR (task-runner, sync-code.ts, orchestrator) tenha um dado
+   * ESTRUTURADO para reportar/logar em vez de só texto solto dentro de
+   * `warnings` — fecha o "reportar" do vazamento da #7740 (o stash em si já
+   * fica identificável via `GIT_SYNC_STASH_MESSAGE`, isto aqui é o ponteiro
+   * pronto pra esse stash específico). `null` em todo outcome que não
+   * preserva stash (inclusive `synced`/`already_up_to_date` quando o ff
+   * DIRETO, sem stash algum, já resolveu — #8719).
    */
   preserved_stash: { ref: string | null; message: string } | null;
   /**
@@ -388,59 +401,37 @@ export interface LockFs {
 /**
  * Comandos git sequenciais que `syncCodeLocked()` pode rodar numa única
  * chamada, contados explicitamente (não estimados) no caminho MAIS LONGO
- * (dirty tree, branch != master): rev-parse HEAD(1) + checkout master(1,
- * condicional) + fetch(1) + status(1) + rev-parse verify refs/stash ANTES(1)
- * + stash --include-untracked(1) + merge --ff-only(1) + stash pop(1) = 8.
+ * (dirty tree, branch != master, ff direto recusa e precisa de stash): 1.
+ * rev-parse HEAD, 2. status --porcelain (unmerged pré-existente, condicional
+ * a branch != master), 3. checkout master (condicional), 4. fetch, 5. status
+ * --porcelain (dirty check), 6. merge --ff-only DIRETO (#8719 — tentado
+ * ANTES de qualquer stash), 7. rev-parse --verify refs/stash ANTES do stash
+ * (#3411), 8. stash --include-untracked, 9. rev-parse refs/stash (captura o
+ * ref recém-criado, #7740), 10. merge --ff-only SOB stash (retry), 11.
+ * rev-list --count (measureSyncState, #6090), 12. stash list
+ * (countStaleAutostashes, #8719) = 12.
  *
  * `LOCK_STALE_MS` abaixo deriva desse número em vez de um valor redondo
  * chutado — #3430 gap 1 encontrou o valor antigo (10min fixo) matematicamente
- * MENOR que 8 × `GIT_TIMEOUT_MS` (16min no pior caso teórico).
+ * MENOR que o pior caso teórico.
  *
- * #5302: dos 8 spawns, exatamente 1 é o `git fetch origin` do passo 3, que
+ * #5302: dos 12 spawns, exatamente 1 é o `git fetch origin` do passo 4, que
  * desde #5302 usa `GIT_FETCH_TIMEOUT_MS` (maior que `GIT_TIMEOUT_MS`) em vez
- * do timeout genérico — `LOCK_STALE_MS` abaixo reflete isso (7 ×
- * `GIT_TIMEOUT_MS` + 1 × `GIT_FETCH_TIMEOUT_MS`, não mais 8 ×
- * `GIT_TIMEOUT_MS` uniforme).
+ * do timeout genérico — `LOCK_STALE_MS` abaixo reflete isso (11 ×
+ * `GIT_TIMEOUT_MS` + 1 × `GIT_FETCH_TIMEOUT_MS`, não 12 × `GIT_TIMEOUT_MS`
+ * uniforme).
  *
- * #6090: o pior caso ganhou o 9º spawn — `measureSyncState()` roda
- * `git rev-list --count HEAD..origin/master` DEPOIS da tentativa inteira,
- * mas AINDA sob o lock (o spread acontece antes do `finally { release() }`),
- * então entra na contagem que dimensiona `LOCK_STALE_MS`.
- *
- * #6668: o pior caso ganhou o 10º spawn — `findUnmergedPaths()` roda
- * `git status --porcelain` logo após `git stash pop` (dentro do ramo
- * `stashedSomething`), pra detectar conflito deixado no disco. A fórmula de
- * `LOCK_STALE_MS` abaixo já é derivada de `MAX_SEQUENTIAL_GIT_SPAWNS` (não
- * um número solto redundante), então vira automaticamente 9 ×
- * `GIT_TIMEOUT_MS` + 1 × `GIT_FETCH_TIMEOUT_MS` — o novo spawn é rápido por
- * natureza (`git status`), mesma categoria dos outros 8 não-fetch.
- *
- * #6800 (review, PR #6918): o pior caso ganhou o 11º spawn — a checagem de
- * unmerged PRÉ-EXISTENTE roda `git status --porcelain` ANTES da tentativa
- * de `git checkout master` (só quando `branch != master`, o próprio caminho
- * do pior caso documentado abaixo), porque `git checkout` também recusa
- * rodar com o índice unmerged — sem isso, o caso combinado (branch !=
- * master + unmerged pré-existente) caía no `checkout_failed` genérico em
- * vez do outcome específico que este fix introduz. Mesma categoria de
- * spawn rápido (`git status`), reflete automaticamente em `LOCK_STALE_MS`.
- *
- * #7740: o pior caso ganhou o 12º spawn — `rev-parse refs/stash` roda logo
- * APÓS `git stash push` (dentro do ramo `stashedSomething`, ANTES do
- * `git stash pop`), pra capturar o SHA do stash recém-criado enquanto ainda
- * é o topo garantido da pilha — necessário para popular `preserved_stash` do
- * resultado quando o pop que segue falha/conflita (o vazamento que a #7740
- * corrige: sem esse ponteiro, um stash preservado por conflito fica sem
- * referência estruturada de volta pra ele, só a mensagem identificável
- * gravada no próprio stash via `GIT_SYNC_STASH_MESSAGE`). Mesma categoria de
- * spawn rápido (`git rev-parse`), reflete automaticamente em `LOCK_STALE_MS`.
- *
- * #8719: o pior caso ganhou o 13º spawn — `countStaleAutostashes()` roda
- * `git stash list` DEPOIS da tentativa inteira (mesmo ponto de
- * `measureSyncState()`, #6090 acima), ainda sob o lock. Mesma categoria de
- * spawn rápido (`git stash list` — só lista, não modifica nada), reflete
- * automaticamente em `LOCK_STALE_MS`.
+ * #8719 (24/09/2026, decisão do editor): a contagem CAIU de 13 para 12 nesta
+ * mudança — removeu o `git stash pop` automático e o `git status --porcelain`
+ * pós-pop de detecção de conflito (#6668, agora inalcançável — este módulo
+ * nunca mais chama `stash pop` sozinho) e adicionou 1 spawn novo: o `merge
+ * --ff-only` DIRETO tentado ANTES de qualquer stash (passo 6 acima) — 2
+ * removidos, 1 adicionado, líquido -1. Histórico da evolução anterior (8 → 13
+ * spawns, #6090/#6668/#6800/#7740) preservado no changelog do PR que
+ * introduziu esta mudança; não repetido aqui linha a linha para não inflar
+ * este comentário a cada revisão futura do pior caso.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 13;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 12;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -863,33 +854,14 @@ export function parseUnmergedPaths(porcelainStdout: string): string[] {
     .map((line) => line.slice(3).trim());
 }
 
-/**
- * Lista os caminhos (relativos ao repo) que `git status --porcelain` reporta
- * como unmerged agora mesmo — usado depois de um `git stash pop` para
- * detectar conflito deixado no disco (#6668), independente do exit code do
- * `stash pop` em si (defensivo — ver comentário no ponto de uso).
- *
- * Fail-soft: se o próprio `git status` falhar, retorna `[]` (não assume
- * conflito por ausência de sinal — o resto do módulo já trata falha de
- * `git status` como "tratar como dirty", que não se aplica aqui). Review
- * consolidado do #6668 apontou que esse fail-soft era SILENCIOSO — a checagem
- * de unmerged falhando de novo cai de volta a confiar só no exit code do
- * pop, exatamente o furo que esta issue existe pra fechar. `warnings` agora é
- * injetável (opcional) pra registrar esse caso específico sem propagar
- * exceção nem mudar o tipo de retorno.
- */
-function findUnmergedPaths(spawn: SpawnFn, warnings?: string[]): string[] {
-  const res = spawn("git", ["status", "--porcelain"]);
-  if (res.status !== 0) {
-    warnings?.push(
-      `[git-sync] WARN: git status --porcelain (checagem de unmerged pós-stash-pop, #6668) falhou ` +
-        `(exit ${res.status}) — não foi possível confirmar se o stash pop deixou arquivo em conflito no ` +
-        `disco. Caindo de volta a confiar só no exit code do pop. Stderr: ${res.stderr.trim() || "(vazio)"}`,
-    );
-    return [];
-  }
-  return parseUnmergedPaths(res.stdout);
-}
+// #8719 (24/09/2026): `findUnmergedPaths()` (a versão com spawn de
+// `git status --porcelain` pós-`stash pop`, #6668) foi removida — este
+// módulo nunca mais chama `git stash pop` automaticamente, então a checagem
+// de conflito PÓS-pop que ela existia para fazer ficou inalcançável. O núcleo
+// puro `parseUnmergedPaths()` acima continua em uso pela checagem de estado
+// ABSORVENTE PRÉ-EXISTENTE (#6800, ver `syncCodeLocked`), que é anterior a
+// qualquer stash/pop desta chamada e não depende de pop nenhum ter
+// acontecido.
 
 /**
  * Detecta se `repoRoot` resolve para dentro de um worktree de agente (#7336).
@@ -1195,7 +1167,33 @@ function syncCodeLocked(
   }
 
   if (isDirty) {
-    // ── 5a. Dirty tree: stash → merge --ff-only → stash pop ────────────────
+    // ── 5a. Dirty tree: ff-only DIRETO primeiro, stash só se recusar ───────
+    // #8719 (decisão do editor, 24/09/2026): tenta o merge --ff-only ANTES de
+    // qualquer stash. A maioria das mudanças locais soltas (config editada,
+    // WIP não conflitante) não colide com o que vem de origin/master — nesse
+    // caso o ff direto já resolve e NENHUM stash é criado, eliminando a
+    // superfície de conflito de pop por completo pro caso comum. Só recorre a
+    // stash quando este ff direto recusa (git recusa mover HEAD com mudanças
+    // locais que colidiriam, ou divergência genuína — as duas causas não são
+    // distinguíveis só pelo exit code, então tratamos ambas igual: protege via
+    // stash e tenta de novo).
+    const directFfRes = spawn("git", ["merge", "--ff-only", "origin/master"]);
+    if (directFfRes.status === 0) {
+      const upToDate = isAlreadyUpToDate(directFfRes.stdout);
+      return {
+        outcome: upToDate ? "already_up_to_date" : "synced",
+        message: upToDate
+          ? "[git-sync] Código já estava atualizado (tree suja preservada, sem necessidade de stash — #8719)."
+          : "[git-sync] Código sincronizado com origin/master (tree suja preservada, sem necessidade de stash — #8719).",
+        branch_before: branchBefore,
+        warnings,
+        proceed: true,
+        preserved_stash: null,
+      };
+    }
+
+    // ff direto recusou — protege via stash e tenta de novo.
+    //
     // #3411: captura o estado de `refs/stash` ANTES de rodar o stash. Motivo:
     // `git stash --include-untracked` NÃO é atômico — ele (1) cria o(s) commit(s)
     // de stash (index + working-tree + untracked-files) e SÓ DEPOIS (2) remove os
@@ -1226,44 +1224,19 @@ function syncCodeLocked(
 
       if (stashWasCreatedDespiteFailure) {
         // O stash existe e é válido (o commit foi criado no passo 1 antes da
-        // falha no passo 2) — tentar recuperar automaticamente via pop, reusando
-        // a mesma lógica de tratamento de conflito do caminho de sucesso.
-        const popRes = spawn("git", ["stash", "pop"]);
-        if (popRes.status === 0) {
-          const msg =
-            `[git-sync] WARN: git stash --include-untracked saiu com erro (exit ${stashRes.status}) — ` +
-            `provável falha parcial ao remover arquivos não-rastreados (ex: Permission denied em diretório ` +
-            `com handle aberto por outro processo) — MAS um stash FOI criado (${stashRefAfter}) apesar do ` +
-            `exit não-zero. Sync ignorado (nenhum merge tentado nesta rodada) — stash recuperado ` +
-            `automaticamente via 'git stash pop' com sucesso, working tree restaurada. ` +
-            `Stderr original do stash: ${stashRes.stderr.trim() || "(vazio)"}`;
-          warnings.push(msg);
-          return {
-            outcome: "stash_partial_failure",
-            message: msg,
-            branch_before: branchBefore,
-            warnings,
-            proceed: true,
-            // #7740: recuperado automaticamente pelo pop acima — nada preservado.
-            preserved_stash: null,
-          };
-        }
-
-        // Pop também falhou (conflito ou outro erro) — NÃO descartar o stash;
-        // preservado para investigação manual. Outcome DISTINTO de
-        // "stash_pop_failed" (que implica pull/merge bem-sucedido) — aqui nenhum
-        // merge foi sequer tentado, então reusar aquele outcome enganaria
-        // qualquer consumidor que assume "pull OK" a partir dele. Warning
-        // explicitamente mais urgente (prefixo ERROR), porque a causa raiz
-        // envolve possível remoção não-recuperável de arquivos não-rastreados.
+        // falha no passo 2) — MAS #8719 (decisão do editor, 24/09/2026): nunca
+        // `git stash pop` automático, nem mesmo aqui como "recuperação". O
+        // stash fica preservado incondicionalmente; recuperação é manual.
+        // Antes deste fix, este ramo tentava um `git stash pop` de
+        // "recuperação" e só preservava se ELE TAMBÉM falhasse — outcome
+        // único agora, sem sub-caso de pop bem-sucedido.
         const msg =
           `[git-sync] ERROR: git stash --include-untracked saiu com erro (exit ${stashRes.status}) E criou ` +
           `um stash (${stashRefAfter}) apesar disso — possível remoção NÃO-RECUPERÁVEL de arquivos não-` +
-          `rastreados (#3411). A recuperação automática via 'git stash pop' TAMBÉM falhou (conflito ou ` +
-          `outro erro) — stash NÃO foi descartado, preservado para investigação manual: ` +
-          `'git stash show -p ${stashRefAfter}' ou 'git stash apply ${stashRefAfter}'. Identificável por ` +
-          `mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'. ` +
-          `Stderr stash: ${stashRes.stderr.trim() || "(vazio)"} | Stderr pop: ${popRes.stderr.trim() || "(vazio)"}`;
+          `rastreados (#3411). Stash preservado (NUNCA despopado automaticamente — #8719, decisão do ` +
+          `editor de 24/09/2026): 'git stash show -p ${stashRefAfter}' ou 'git stash apply ${stashRefAfter}'. ` +
+          `Identificável por mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'. ` +
+          `Stderr stash: ${stashRes.stderr.trim() || "(vazio)"}`;
         warnings.push(msg);
         return {
           outcome: "stash_partial_failure_unrecovered",
@@ -1271,9 +1244,6 @@ function syncCodeLocked(
           branch_before: branchBefore,
           warnings,
           proceed: true,
-          // #7740: stash NÃO recuperado — reportar ref+mensagem estruturados em
-          // vez de deixar só texto solto dentro de `warnings` (o vazamento que a
-          // issue descreve: "ninguém sabe" que este stash ficou pendurado).
           preserved_stash: { ref: stashRefAfter, message: GIT_SYNC_STASH_MESSAGE },
         };
       }
@@ -1288,145 +1258,101 @@ function syncCodeLocked(
 
     // Detecção locale-robusta de "nada foi guardado" (#2686 review — EN + PT-BR).
     // Dentro do branch isDirty, o esperado é que algo tenha sido guardado; só
-    // pulamos o pop quando o git explicitamente diz que não havia nada (evita
-    // `stash pop` numa pilha vazia, que falharia espuriamente).
+    // tratamos como "nada stashado" quando o git explicitamente diz que não
+    // havia nada (working tree "dirty" só porque `git status` falhou acima —
+    // ver comentário do dirty check).
     const stashedNothing =
       /no local changes to save/i.test(stashRes.stdout) ||
       /n(ã|a)o h(á|a) (mudan|altera)/i.test(stashRes.stdout);
     const stashedSomething = !stashedNothing;
 
-    // ff-only via merge do ref já buscado no passo 3 — evita o re-fetch implícito
-    // do `git pull` (segunda superfície de falha de rede) (#2686 review — angle H/I).
+    // #7740: captura o SHA do stash recém-criado — vai pro `preserved_stash`
+    // do resultado em QUALQUER desfecho abaixo (#8719: nunca há pop, então o
+    // stash — quando algo foi de fato guardado — está SEMPRE preservado a
+    // partir daqui, nunca só condicionalmente como antes).
+    const createdStashRef = stashedSomething
+      ? (() => {
+          const r = spawn("git", ["rev-parse", "refs/stash"]);
+          return r.status === 0 ? r.stdout.trim() : null;
+        })()
+      : null;
+
+    // ff-only sob proteção do stash, via merge do ref já buscado no passo 3 —
+    // evita o re-fetch implícito do `git pull` (#2686 review — angle H/I).
     const pullRes = spawn("git", ["merge", "--ff-only", "origin/master"]);
 
-    // ── restaurar stash sempre (mesmo se o merge falhou) ──────────────────
-    if (stashedSomething) {
-      // #7740: captura o SHA do stash recém-criado ANTES do pop — se o pop
-      // falhar/conflitar abaixo, este é o ponteiro estruturado que vai pro
-      // `preserved_stash` do resultado (a mensagem identificável em si já
-      // está gravada no próprio stash via `-m GIT_SYNC_STASH_MESSAGE` acima).
-      const createdStashRefRes = spawn("git", ["rev-parse", "refs/stash"]);
-      const createdStashRef = createdStashRefRes.status === 0 ? createdStashRefRes.stdout.trim() : null;
-
-      const popRes = spawn("git", ["stash", "pop"]);
-
-      // #6668: checar ANTES de decidir o outcome, e INDEPENDENTE do exit code
-      // do pop (defensivo — um pop com exit 0 mas unmerged não deveria
-      // acontecer, mas este guard não confia só no exit code, que é
-      // exatamente o furo que o incidente #6668 expôs). Um pop que deixa
-      // arquivo(s) VERSIONADO(S) em estado unmerged é mais sério que "pop
-      // falhou" genérico: o arquivo fica sintaticamente quebrado no disco
-      // (marcadores <<<<<<</=======/>>>>>>> literais) E ainda referenciado
-      // por refs/stash — outra sessão lendo esse arquivo o trataria como
-      // íntegro. Outcome distinto ("stash_pop_conflict"), mensagem ERROR (não
-      // WARN) — ainda fail-soft (proceed: true), nunca bloqueia a edição.
-      //
-      // #6668 review consolidado: a distinção ERROR/WARN aqui é só de TEXTO —
-      // nenhum consumidor (`sync-code.ts`, orchestrator) ramifica comportamento
-      // por ela hoje; ambos seguem com `process.exit(0)`/fail-soft incondicional
-      // (ver `scripts/sync-code.ts`, que hoje só imprime um banner extra no
-      // stderr pra este outcome). Endurecer isso (ex: halt banner de verdade)
-      // seria mudar o comportamento fail-soft documentado no CLAUDE.md — fica
-      // para quem for endurecer esse caminho depois, com decisão explícita.
-      const unmergedPaths = findUnmergedPaths(spawn, warnings);
-      if (unmergedPaths.length > 0) {
-        const ffFailed = pullRes.status !== 0;
-        // #6668 review consolidado: só afirmar "stash preservado" quando o pop
-        // de fato falhou — um pop com exit 0 (o ramo defensivo, não observado
-        // na prática) já teria dropado o stash normalmente por semântica padrão
-        // do git, então a orientação "não fazer stash drop" seria enganosa
-        // nesse sub-caso.
-        const stashStateNote =
-          popRes.status !== 0
-            ? " Stash preservado (NÃO fazer 'git stash drop') — resolva manualmente ('git status', 'git diff') antes de descartar."
-            : " Pop retornou exit 0 (caso defensivo, não deveria deixar unmerged) — estado do stash em refs/stash não confirmado por este guard; cheque 'git stash list' antes de qualquer ação.";
+    // #8719 (decisão do editor, 24/09/2026): NUNCA `git stash pop` automático
+    // — nem quando o ff sob stash teve sucesso. O stash fica preservado
+    // (mensagem identificável `GIT_SYNC_STASH_MESSAGE`), o checkout fica
+    // LIMPO em master (working tree == índice, sem as mudanças do stash
+    // reaplicadas) e o consumidor (`sync-code.ts`) já renderiza um banner
+    // pedindo recuperação manual sempre que `preserved_stash` não é `null`.
+    if (!stashedSomething) {
+      // Nada foi de fato guardado (working tree só "dirty" por `git status`
+      // ter falhado acima) — não há stash pra preservar, comportamento igual
+      // ao de tree limpa a partir daqui.
+      if (pullRes.status !== 0) {
         const msg =
-          `[git-sync] ERROR: git stash pop deixou ${unmergedPaths.length} arquivo(s) VERSIONADO(S) ` +
-          `com conflito NÃO-RESOLVIDO (marcadores <<<<<<</=======/>>>>>>> literais no disco): ` +
-          `${unmergedPaths.join(", ")}. Diferente de um 'pop falhou' comum — o(s) arquivo(s) ficaram ` +
-          `sintaticamente quebrados; outra sessão lendo esse(s) arquivo(s) pode tratá-los como íntegros ` +
-          `(#6668).${stashStateNote}` +
-          (ffFailed
-            ? ` ff (merge --ff-only) também falhou (divergência) — stderr: ${pullRes.stderr.trim() || "(vazio)"}.`
-            : "") +
-          ` Stderr pop: ${popRes.stderr.trim() || "(vazio)"} Identificável por mensagem em 'git stash list' ` +
-          `(#7740): '${GIT_SYNC_STASH_MESSAGE}'.`;
+          `[git-sync] WARN: ff (merge --ff-only origin/master) falhou (divergência?). ` +
+          `Working tree não tocada (nada foi stashado). Edição continua com código local. ` +
+          `Stderr: ${pullRes.stderr.trim() || "(vazio)"}`;
         warnings.push(msg);
-        return {
-          outcome: "stash_pop_conflict",
-          message: msg,
-          branch_before: branchBefore,
-          warnings,
-          proceed: true,
-          // #7740 (achado P2/alta do review da PR #7791): só afirmar que há
-          // stash preservado quando o pop de fato FALHOU. No sub-caso
-          // defensivo (`popRes.status === 0` com unmerged no disco), o pop
-          // bem-sucedido já dropou o stash pela semântica padrão do git —
-          // apontar um ref aqui manda o operador atrás de um stash que não
-          // existe mais. É a mesma distinção que `stashStateNote` logo acima
-          // já fazia na prosa; o campo estruturado estava contradizendo o
-          // texto ao lado dele.
-          preserved_stash:
-            popRes.status !== 0 ? { ref: createdStashRef, message: GIT_SYNC_STASH_MESSAGE } : null,
-        };
+        return { outcome: "ff_failed", message: msg, branch_before: branchBefore, warnings, proceed: true, preserved_stash: null };
       }
-
-      if (popRes.status !== 0) {
-        // merge pode ter trazido mudanças conflitantes com o stash.
-        // Se o merge TAMBÉM falhou, incluir o stderr dele — senão a mensagem
-        // apontaria só pro conflito de stash e esconderia a divergência (#2686
-        // review — angles A/B/G/J/C).
-        const ffFailed = pullRes.status !== 0;
-        const msg = ffFailed
-          ? `[git-sync] WARN: ff (merge --ff-only) falhou (divergência) E git stash pop teve conflito. ` +
-            `Stash preservado — use 'git stash show'. Identificável por mensagem em 'git stash list' ` +
-            `(#7740): '${GIT_SYNC_STASH_MESSAGE}'. ` +
-            `Stderr ff: ${pullRes.stderr.trim() || "(vazio)"} | Stderr pop: ${popRes.stderr.trim() || "(vazio)"}`
-          : `[git-sync] WARN: git stash pop teve conflito. Stash preservado — ` +
-            `use 'git stash show' para ver. Identificável por mensagem em 'git stash list' (#7740): ` +
-            `'${GIT_SYNC_STASH_MESSAGE}'. Stderr: ${popRes.stderr.trim() || "(vazio)"}`;
-        warnings.push(msg);
-        const outcome = ffFailed ? "ff_failed" : "stash_pop_failed";
-        return {
-          outcome,
-          message: msg,
-          branch_before: branchBefore,
-          warnings,
-          proceed: true,
-          // #7740: pop falhou → stash preservado (git não dropa em conflito).
-          preserved_stash: { ref: createdStashRef, message: GIT_SYNC_STASH_MESSAGE },
-        };
-      }
+      const upToDate = isAlreadyUpToDate(pullRes.stdout);
+      return {
+        outcome: upToDate ? "already_up_to_date" : "synced",
+        message: upToDate
+          ? "[git-sync] Código já estava atualizado."
+          : "[git-sync] Código sincronizado com origin/master (nada foi stashado — stash não tinha mudanças a guardar).",
+        branch_before: branchBefore,
+        warnings,
+        proceed: true,
+        preserved_stash: null,
+      };
     }
 
     if (pullRes.status !== 0) {
+      // ff sob stash TAMBÉM falhou — divergência genuína (não era só sujeira
+      // local colidindo). Stash preservado mesmo assim; checkout limpo em
+      // master, porém defasado.
       const msg =
-        `[git-sync] WARN: ff (merge --ff-only origin/master) falhou (divergência?). ` +
-        `Working tree restaurada. Edição continua com código local. ` +
+        `[git-sync] WARN: ff (merge --ff-only origin/master) falhou mesmo sob stash (divergência). ` +
+        `Stash preservado (NUNCA despopado automaticamente — #8719, decisão do editor de 24/09/2026). ` +
+        `Checkout segue LIMPO em master, porém defasado de origin/master. Recupere manualmente: ` +
+        `'git stash show -p ${createdStashRef ?? "<ref, ver git stash list>"}' quando decidir como prosseguir. ` +
+        `Identificável por mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'. ` +
         `Stderr: ${pullRes.stderr.trim() || "(vazio)"}`;
       warnings.push(msg);
-      return { outcome: "ff_failed", message: msg, branch_before: branchBefore, warnings, proceed: true, preserved_stash: null };
+      return {
+        outcome: "ff_failed",
+        message: msg,
+        branch_before: branchBefore,
+        warnings,
+        proceed: true,
+        preserved_stash: { ref: createdStashRef, message: GIT_SYNC_STASH_MESSAGE },
+      };
     }
 
+    // ff sob stash teve sucesso — código sincronizado, stash preservado (não
+    // despopado). `upToDate` aqui só ocorreria se origin/master não tivesse
+    // avançado desde o fetch (raro neste ramo — chegamos aqui porque o ff
+    // DIRETO, antes do stash, já tinha recusado) — tratado por completude.
     const upToDate = isAlreadyUpToDate(pullRes.stdout);
-    // #2716 item 5c: outcome "synced_stashed" só é correto quando algo de fato foi
-    // stashado E despopado (stashedSomething). Quando `git stash` não tinha nada pra
-    // guardar (working tree "dirty" só por `git status` ter falhado — ver comentário
-    // acima do dirty check — ou por já estar em sync com o índice), `stashedSomething`
-    // é false e o outcome deve refletir "synced" puro (nada foi stashado/restaurado),
-    // senão o log confunde diagnóstico futuro (parece que houve stash quando não houve).
-    const outcome = upToDate ? "already_up_to_date" : stashedSomething ? "synced_stashed" : "synced";
+    const msg =
+      `[git-sync] WARN: código sincronizado com origin/master, stash preservado (NUNCA despopado ` +
+      `automaticamente — #8719, decisão do editor de 24/09/2026). Mudanças locais ficam só no stash; ` +
+      `checkout limpo em master. Recupere manualmente quando decidir como prosseguir: ` +
+      `'git stash show -p ${createdStashRef ?? "<ref, ver git stash list>"}' / 'git stash pop'. ` +
+      `Identificável por mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'.`;
+    warnings.push(msg);
     return {
-      outcome,
-      message: upToDate
-        ? "[git-sync] Código já estava atualizado (dirty tree restaurada)."
-        : stashedSomething
-          ? "[git-sync] Código sincronizado com origin/master (dirty tree restaurada via stash)."
-          : "[git-sync] Código sincronizado com origin/master (nada foi stashado — stash não tinha mudanças a guardar).",
+      outcome: upToDate ? "already_up_to_date" : "synced_stash_preserved",
+      message: msg,
       branch_before: branchBefore,
       warnings,
       proceed: true,
-      preserved_stash: null,
+      preserved_stash: { ref: createdStashRef, message: GIT_SYNC_STASH_MESSAGE },
     };
   } else {
     // ── 5b. Clean tree: merge --ff-only direto ────────────────────────────

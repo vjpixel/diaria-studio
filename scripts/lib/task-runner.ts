@@ -311,7 +311,12 @@ export function runScheduledTask(
     // então `break`) os 3 outcomes terminais de sucesso; qualquer outro
     // outcome (falha, mesmo sem exceção) é tratado como tentativa falha e
     // entra no mesmo backoff.
-    const SYNC_SUCCESS_OUTCOMES = new Set<GitSyncOutcome>(["synced", "synced_stashed", "already_up_to_date"]);
+    // #8719: "synced_stashed" (stash → pull → pop automático) não existe mais
+    // — substituído por "synced_stash_preserved" (código sincronizado, stash
+    // preservado sem pop automático, decisão do editor 24/09/2026). Ainda
+    // conta como SUCESSO de sync aqui: o código FOI atualizado; o stash
+    // preservado é assunto de recuperação manual, não motivo pra retentar.
+    const SYNC_SUCCESS_OUTCOMES = new Set<GitSyncOutcome>(["synced", "synced_stash_preserved", "already_up_to_date"]);
     let syncResult: GitSyncResult | null = null;
     let syncAttempt = 0;
     const SYNC_MAX_ATTEMPTS = 3;

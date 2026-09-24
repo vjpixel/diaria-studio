@@ -11,9 +11,12 @@
  * outra sessão lendo esse arquivo o trataria como íntegro (incidente #6668:
  * `hermes/skills/hermes-diaria-continuo/SKILL.md` ficou em `UU` com
  * `<<<<<<< Updated upstream` / `>>>>>>> Stashed changes` por horas no
- * checkout compartilhado). `scripts/lib/git-sync.ts` (#6668 item 2) agora
- * detecta esse caso NA HORA do sync (`stash_pop_conflict`) — este teste é a
- * 2ª linha de defesa, mais barata e mais ampla: pega a classe inteira
+ * checkout compartilhado). `scripts/lib/git-sync.ts` (#6668 item 2) detectava
+ * esse caso NA HORA do sync (`stash_pop_conflict`) até o #8719 (24/09/2026)
+ * remover o `git stash pop` automático desse módulo por completo (decisão
+ * do editor) — sem pop automático, essa classe específica de origem não
+ * ocorre mais ali, mas este teste continua como 2ª linha de defesa, mais
+ * barata e mais ampla: pega a classe inteira
  * (qualquer origem de marcador deixado — não só stash pop; ex: um merge/
  * rebase abortado incorretamente, um cherry-pick com conflito não resolvido
  * e commitado por engano) em QUALQUER `.md` rastreado, rodando em CI a cada
