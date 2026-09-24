@@ -1,9 +1,10 @@
 /**
- * test/stage4-cascade-status-cli.test.ts (#8123 Fatia 4)
+ * test/stage4-cascade-status-cli.test.ts (#8123 Fatia 4; multi-highlight #8783)
  *
  * Testes de CLI (subprocess) do wrapper `scripts/stage4-cascade-status.ts`:
  * --start/--mark/--status/--clear/--apply-badge, exit codes, e o arquivo
- * `_internal/stage4-cascade-status.json` gravado no disco.
+ * `_internal/stage4-cascade-status.json` gravado no disco — agora um MAPA
+ * `{ [highlight]: entry }` em vez de um único objeto (#8783).
  */
 
 import { describe, it } from "node:test";
@@ -50,7 +51,7 @@ describe("stage4-cascade-status.ts CLI", () => {
     });
   });
 
-  it("--start grava o arquivo e --status reporta pending:true (exit 1)", () => {
+  it("--start grava o arquivo (mapa por highlight) e --status reporta pending:true (exit 1)", () => {
     withEditionDir((dir) => {
       const start = runCli([
         "--edition-dir",
@@ -67,8 +68,7 @@ describe("stage4-cascade-status.ts CLI", () => {
       const written = JSON.parse(
         readFileSync(join(dir, "_internal", "stage4-cascade-status.json"), "utf8"),
       );
-      assert.equal(written.highlight, "d1");
-      assert.deepEqual(written.pieces, { image: "pending", carousel: "pending", social: "pending" });
+      assert.deepEqual(written.d1.pieces, { image: "pending", carousel: "pending", social: "pending" });
 
       const status = runCli(["--edition-dir", dir, "--status"]);
       assert.equal(status.status, 1); // informativo — algo pendente
@@ -96,7 +96,7 @@ describe("stage4-cascade-status.ts CLI", () => {
     });
   });
 
-  it("--clear remove o arquivo", () => {
+  it("--clear remove o arquivo inteiro quando sem --highlight", () => {
     withEditionDir((dir) => {
       runCli(["--edition-dir", dir, "--start", "--highlight", "d1", "--pieces", "image"]);
       const cleared = runCli(["--edition-dir", dir, "--clear"]);
@@ -125,6 +125,88 @@ describe("stage4-cascade-status.ts CLI", () => {
       const htmlWithoutBadge = readFileSync(htmlPath, "utf8");
       assert.doesNotMatch(htmlWithoutBadge, /regenerando em segundo plano/);
       assert.match(htmlWithoutBadge, /<h1>D1<\/h1>/);
+    });
+  });
+
+  describe("múltiplos highlights concorrentes (#8783 regressão — reprodução exata da issue)", () => {
+    it("--start --highlight d1 seguido de --start --highlight d2 mantém AMBOS rastreados (não sobrescreve)", () => {
+      withEditionDir((dir) => {
+        runCli(["--edition-dir", dir, "--start", "--highlight", "d1", "--pieces", "image"]);
+        runCli(["--edition-dir", dir, "--start", "--highlight", "d2", "--pieces", "image"]);
+
+        const written = JSON.parse(
+          readFileSync(join(dir, "_internal", "stage4-cascade-status.json"), "utf8"),
+        );
+        // Com o bug pré-#8783, "d1" teria sumido do arquivo aqui.
+        assert.deepEqual(Object.keys(written).sort(), ["d1", "d2"]);
+        assert.deepEqual(written.d1.pieces, { image: "pending" });
+        assert.deepEqual(written.d2.pieces, { image: "pending" });
+      });
+    });
+
+    it("3 --start sequenciais (D1, D2, D3 — reshuffle completo) mantêm os 3 rastreados; --mark de um não afeta os outros", () => {
+      withEditionDir((dir) => {
+        runCli(["--edition-dir", dir, "--start", "--highlight", "d1", "--pieces", "image"]);
+        runCli(["--edition-dir", dir, "--start", "--highlight", "d2", "--pieces", "image"]);
+        runCli(["--edition-dir", dir, "--start", "--highlight", "d3", "--pieces", "image,carousel,social"]);
+
+        const afterStart = JSON.parse(
+          readFileSync(join(dir, "_internal", "stage4-cascade-status.json"), "utf8"),
+        );
+        assert.deepEqual(Object.keys(afterStart).sort(), ["d1", "d2", "d3"]);
+
+        // --status ainda enxerga os 3 como pendentes.
+        const status1 = runCli(["--edition-dir", dir, "--status"]);
+        assert.equal(status1.status, 1);
+
+        // Resolver só d1 não libera o gate — d2/d3 seguem pendentes.
+        runCli(["--edition-dir", dir, "--mark", "--highlight", "d1", "--piece", "image", "--state", "done"]);
+        const status2 = runCli(["--edition-dir", dir, "--status"]);
+        assert.equal(status2.status, 1);
+        const parsed2 = JSON.parse(status2.stdout);
+        assert.equal(parsed2.status.d1.pieces.image, "done");
+        assert.equal(parsed2.status.d2.pieces.image, "pending");
+
+        // Resolver os 3 libera o gate.
+        runCli(["--edition-dir", dir, "--mark", "--highlight", "d2", "--piece", "image", "--state", "done"]);
+        runCli(["--edition-dir", dir, "--mark", "--highlight", "d3", "--piece", "image", "--state", "done"]);
+        runCli(["--edition-dir", dir, "--mark", "--highlight", "d3", "--piece", "carousel", "--state", "done"]);
+        runCli(["--edition-dir", dir, "--mark", "--highlight", "d3", "--piece", "social", "--state", "done"]);
+        const status3 = runCli(["--edition-dir", dir, "--status"]);
+        assert.equal(status3.status, 0);
+        assert.equal(JSON.parse(status3.stdout).pending, false);
+      });
+    });
+
+    it("--clear --highlight d1 remove só a entrada de d1, preservando d2", () => {
+      withEditionDir((dir) => {
+        runCli(["--edition-dir", dir, "--start", "--highlight", "d1", "--pieces", "image"]);
+        runCli(["--edition-dir", dir, "--start", "--highlight", "d2", "--pieces", "image"]);
+
+        const cleared = runCli(["--edition-dir", dir, "--clear", "--highlight", "d1"]);
+        assert.equal(cleared.status, 0);
+        assert.equal(JSON.parse(cleared.stdout).highlight, "d1");
+
+        const written = JSON.parse(
+          readFileSync(join(dir, "_internal", "stage4-cascade-status.json"), "utf8"),
+        );
+        assert.deepEqual(Object.keys(written), ["d2"]);
+      });
+    });
+
+    it("badge do --apply-badge agrega highlights distintos numa única injeção", () => {
+      withEditionDir((dir) => {
+        const htmlPath = join(dir, "preview.html");
+        writeFileSync(htmlPath, "<html><body><h1>Newsletter</h1></body></html>", "utf8");
+
+        runCli(["--edition-dir", dir, "--start", "--highlight", "d1", "--pieces", "image"]);
+        runCli(["--edition-dir", dir, "--start", "--highlight", "d2", "--pieces", "social"]);
+        runCli(["--edition-dir", dir, "--apply-badge", "--html", htmlPath]);
+
+        const html = readFileSync(htmlPath, "utf8");
+        assert.match(html, /D1: imagem/);
+        assert.match(html, /D2: texto social/);
+      });
     });
   });
 });

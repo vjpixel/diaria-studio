@@ -1,5 +1,6 @@
 /**
- * stage4-cascade-status.ts (#8123 Fatia 4 — cascatas com preview progressivo)
+ * stage4-cascade-status.ts (#8123 Fatia 4 — cascatas com preview progressivo;
+ * multi-highlight #8783)
  *
  * CLI fino sobre `scripts/lib/stage4-cascade-status.ts` (miolo puro) —
  * chamado pelo orchestrator em `.claude/agents/orchestrator-stage-4.md`
@@ -8,9 +9,19 @@
  * o preview de TEXTO (que já é servido antes de qualquer chamada deste
  * script — ver §4d.1a).
  *
+ * **Estado por-DESTAQUE (#8783).** O JSON de estado suporta múltiplos
+ * highlights com cascata concorrente — `--start --highlight d1` seguido de
+ * `--start --highlight d2` mantém as DUAS entradas rastreadas (o 2º
+ * `--start` só sobrescreve `d2`, nunca `d1`). `--mark`/`--status` sempre
+ * exigem `--highlight` pra apontar a entrada certa; `--clear` aceita
+ * `--highlight` opcional (sem ele, limpa TODAS as entradas — cascata da
+ * edição inteira resolvida).
+ *
  * Uso:
  *   # ao aplicar a edição que dispara a cascata (título mudou, ou reorder
- *   # que troca quem ocupa o slot D1 — image ratio 2:1 vs 1:1):
+ *   # que troca quem ocupa o slot D1 — image ratio 2:1 vs 1:1). Reestruturar
+ *   # vários destaques na mesma rodada de "ajustar" chama --start uma vez
+ *   # por destaque afetado — cada chamada mantém as entradas das anteriores:
  *   npx tsx scripts/stage4-cascade-status.ts --edition-dir <dir> --start \
  *     --highlight d1 --pieces image,carousel,social --reason "título alterado"
  *
@@ -20,17 +31,23 @@
  *     --highlight d1 --piece image --state done   # ou --state error
  *
  *   # consulta informativa — pro badge injector e pro gate saberem se ainda
- *   # há algo pendente antes de aceitar "sim" (nunca bloqueia sozinho: o
- *   # orchestrator decide o que fazer com o exit code):
+ *   # há algo pendente em QUALQUER destaque antes de aceitar "sim" (nunca
+ *   # bloqueia sozinho: o orchestrator decide o que fazer com o exit code):
  *   npx tsx scripts/stage4-cascade-status.ts --edition-dir <dir> --status
  *
- *   # cascata totalmente resolvida — remove o estado (o badge para de
- *   # aparecer na próxima re-renderização, mesmo sem chamar --apply-badge):
+ *   # cascata de UM destaque totalmente resolvida — remove só aquela
+ *   # entrada, preservando outras ainda em curso:
+ *   npx tsx scripts/stage4-cascade-status.ts --edition-dir <dir> --clear --highlight d1
+ *
+ *   # todas as cascatas da edição resolvidas — remove o estado inteiro (o
+ *   # badge para de aparecer na próxima re-renderização, mesmo sem chamar
+ *   # --apply-badge):
  *   npx tsx scripts/stage4-cascade-status.ts --edition-dir <dir> --clear
  *
- *   # injeta (ou remove, se nada estiver pendente) o banner "regenerando"
- *   # no HTML de preview já renderizado — chamado logo antes de cada
- *   # `serve-preview.ts` re-serve enquanto a cascata está ativa:
+ *   # injeta (ou remove, se nada estiver pendente em nenhum destaque) o
+ *   # banner "regenerando" no HTML de preview já renderizado — chamado logo
+ *   # antes de cada `serve-preview.ts` re-serve enquanto alguma cascata
+ *   # está ativa:
  *   npx tsx scripts/stage4-cascade-status.ts --edition-dir <dir> --apply-badge --html <path.html>
  *
  * Estado em `{edition-dir}/_internal/stage4-cascade-status.json`.
@@ -39,8 +56,9 @@
  *   --start/--mark/--clear/--apply-badge: 0 sempre que a operação em si não
  *     falhar por uso inválido (2); o CONTEÚDO da cascata nunca vira erro de
  *     processo — este script é infraestrutura de UX, não gate.
- *   --status: 0 = nada pendente (ou nenhuma cascata); 1 = há peça(s)
- *     pendente(s) — informativo, o caller decide o que fazer.
+ *   --status: 0 = nada pendente em nenhum destaque (ou nenhuma cascata); 1 =
+ *     há peça(s) pendente(s) em algum destaque — informativo, o caller
+ *     decide o que fazer.
  *   uso inválido (flag obrigatória ausente): 2.
  */
 
@@ -91,8 +109,8 @@ function main(): void {
       process.exit(2);
     }
     const reason = getArg(argv, "reason") || "ajuste no Stage 4";
-    const status = startCascade(statusPath, { highlight, reason, pieces });
-    console.log(JSON.stringify(status, null, 2));
+    const state = startCascade(statusPath, { highlight, reason, pieces });
+    console.log(JSON.stringify(state, null, 2));
     return;
   }
 
@@ -108,14 +126,15 @@ function main(): void {
       console.error(`--piece inválido (válidos: ${VALID_PIECES.join(", ")})`);
       process.exit(2);
     }
-    const status = markPiece(statusPath, highlight, piece as CascadePieceName, state);
-    console.log(JSON.stringify(status));
+    const result = markPiece(statusPath, highlight, piece as CascadePieceName, state);
+    console.log(JSON.stringify(result));
     return;
   }
 
   if (hasFlag(argv, "clear")) {
-    clearCascadeStatus(statusPath);
-    console.log(JSON.stringify({ cleared: true }));
+    const highlight = getArg(argv, "highlight") || undefined;
+    clearCascadeStatus(statusPath, highlight);
+    console.log(JSON.stringify({ cleared: true, highlight: highlight ?? "all" }));
     return;
   }
 
@@ -134,7 +153,7 @@ function main(): void {
     return;
   }
 
-  // Default (também `--status` explícito): só reporta o estado atual.
+  // Default (também `--status` explícito): só reporta o estado atual (todos os destaques).
   const status = readCascadeStatus(statusPath);
   const pending = isCascadePending(status);
   console.log(JSON.stringify({ active: status !== null, pending, status }, null, 2));
