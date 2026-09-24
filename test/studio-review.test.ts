@@ -803,6 +803,90 @@ describe("buildSocialPreviewHtml (#3663)", () => {
     assert.equal(preview.ok, true);
     assert.match(preview.html, /<html/i);
   });
+
+  // #8681: o preview do Studio deve mostrar a legenda REAL do Instagram quando
+  // há `_internal/instagram-test.json` com `caption` — o mesmo override que
+  // `publish-instagram.ts` usa na publicação. Sem o override, o comportamento
+  // de sempre (texto do 03-social.md) é mantido.
+  it("com override caption, o preview do Instagram exibe a legenda real (não o texto do 03-social.md)", () => {
+    const socialMd = [
+      "# Instagram",
+      "",
+      "## d1",
+      "",
+      "Texto original do post D1 que NÃO deve aparecer no preview.",
+      "",
+      "#InteligenciaArtificial",
+      "",
+    ].join("\n");
+    writeFileSync(resolve(editionDir, "03-social.md"), socialMd, "utf8");
+    writeFileSync(
+      resolve(editionDir, "_internal", "instagram-test.json"),
+      JSON.stringify({
+        caption: "Quer receber o link da edição do dia? Siga @diar.ia.br e comente “quero” deste post. #diar.ia.br",
+      }),
+      "utf8",
+    );
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /Quer receber o link da edição do dia\? Siga @diar\.ia\.br e comente/);
+    assert.match(preview.html, /#diar\.ia\.br/);
+    // O texto original do 03-social.md foi substituído — não deve sobreviver.
+    assert.doesNotMatch(preview.html, /Texto original do post D1/);
+  });
+
+  it("sem override, o preview do Instagram mantém o comportamento de sempre (texto do 03-social.md)", () => {
+    const socialMd = [
+      "# Instagram",
+      "",
+      "## d1",
+      "",
+      "Texto do post D1 sem override.",
+      "",
+      "#InteligenciaArtificial",
+      "",
+    ].join("\n");
+    writeFileSync(resolve(editionDir, "03-social.md"), socialMd, "utf8");
+    // Sem o arquivo de override: o preview exibe o texto real, sem injectar nada.
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /Texto do post D1 sem override\./);
+  });
+
+  it("override com caption só no Instagram não toca os posts de outras plataformas", () => {
+    const socialMd = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "Texto do LinkedIn D1.",
+      "",
+      "# Facebook",
+      "",
+      "## d1",
+      "",
+      "Texto do Facebook D1.",
+      "",
+      "# Instagram",
+      "",
+      "## d1",
+      "",
+      "Texto do Instagram D1.",
+      "",
+    ].join("\n");
+    writeFileSync(resolve(editionDir, "03-social.md"), socialMd, "utf8");
+    writeFileSync(
+      resolve(editionDir, "_internal", "instagram-test.json"),
+      JSON.stringify({ caption: "Legenda de teste do Instagram." }),
+      "utf8",
+    );
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /Legenda de teste do Instagram\./);
+    // LinkedIn e Facebook não são afetados pelo override.
+    assert.match(preview.html, /Texto do LinkedIn D1\./);
+    assert.match(preview.html, /Texto do Facebook D1\./);
+  });
 });
 
 describe("resolveReviewImagePath (#3559 — achado 260716)", () => {

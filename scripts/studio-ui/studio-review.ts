@@ -958,7 +958,7 @@ export function buildSocialPreviewHtml(
     const platforms = parsePlatforms(md);
     const imageMap = aammdd ? buildLocalSocialImageMap(editionDir, aammdd) : {};
     const postPixelImageNum = readPostPixelImageNum(editionDir);
-    const html = buildSocialHtml(platforms, imageMap, postPixelImageNum);
+    const html = buildSocialHtml(platforms, imageMap, postPixelImageNum, editionDir);
     return { ok: true, html };
   } catch (e) {
     const message = (e as Error).message;
