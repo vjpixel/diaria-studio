@@ -1146,4 +1146,16 @@
       <news:title>Claude descobre novo sistema enzimático</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/agente-rebelde-invade-sistema-de-governo</loc>
+    <lastmod>2026-09-25</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-09-25T00:00:00.000Z</news:publication_date>
+      <news:title>Agente rebelde invade sistema de governo</news:title>
+    </news:news>
+  </url>
 </urlset>
