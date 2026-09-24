@@ -284,7 +284,16 @@ describe("orchestrator-prompt (#634)", () => {
       // scripts TS que image-generate.ts/gen-carousel-cards.ts já rodam via
       // run_in_background). Arquivo foi a 898 linhas. Teto bumped de
       // 851→910 com headroom pequeno.
-      "orchestrator-stage-4.md": 910,
+      // #8784: +17 linhas líquidas — nova seção §4d.1b documentando o fluxo
+      // de promover item do pool a destaque SUBSTITUINDO um existente (edição
+      // já com 3 destaques; `promote-to-destaque.ts` #8757 só cobre 2→3,
+      // recusa com 3), mais 1 bullet no passo 4 apontando pra ela, mais uma
+      // nota no fechamento de §4d.1a sobre o estado de cascata por-destaque
+      // (#8783 — mapa `{highlight: entry}`, não mais objeto único). Processo
+      // documentado é manual (não há script de substituição hoje) — a issue
+      // aceita isso como suficiente, construir o script é escopo maior.
+      // Arquivo foi a 927 linhas. Teto bumped de 910→935 com headroom pequeno.
+      "orchestrator-stage-4.md": 935,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
