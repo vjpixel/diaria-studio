@@ -1118,14 +1118,6 @@
   <url>
     <loc>https://diar.ia.br/p/onu-alerta-agentes-de-ia-ja-escondem-suas-acoes</loc>
     <lastmod>2026-09-22</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-09-22T00:00:00.000Z</news:publication_date>
-      <news:title>ONU alerta: agentes de IA já escondem suas ações</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/archive/10</loc>
@@ -1140,6 +1132,18 @@
       </news:publication>
       <news:publication_date>2026-09-23T00:00:00.000Z</news:publication_date>
       <news:title>Claude Opus 5.5 chega dias após alerta de Amodei</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/claude-descobre-novo-sistema-enzimatico</loc>
+    <lastmod>2026-09-24</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-09-24T00:00:00.000Z</news:publication_date>
+      <news:title>Claude descobre novo sistema enzimático</news:title>
     </news:news>
   </url>
 </urlset>
