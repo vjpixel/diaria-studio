@@ -382,10 +382,71 @@ export interface PrefetchedSource {
 }
 
 /**
- * (#8595) Pré-baixa o texto BRUTO das URLs dos destaques para
+ * (#8782) Lê `manifest.json` já existente em `{dir}`, se houver.
+ * Retorna `null` se ausente ou ilegível (JSON malformado, shape inesperado) —
+ * fail-soft: tratado como "sem cache" pelo caller, nunca lança.
+ */
+export function readExistingManifest(dir: string): ManifestEntry[] | null {
+  const p = join(dir, "manifest.json");
+  if (!existsSync(p)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(p, "utf8")) as unknown;
+    if (!Array.isArray(raw)) return null;
+    return raw as ManifestEntry[];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * (#8782) Compara as URLs REGISTRADAS no manifest (última vez que as fontes
+ * foram baixadas) contra as URLs ATUAIS dos destaques (extraídas de
+ * `01-approved.json` pelo caller). Retorna `true` só quando o cache é
+ * seguro de reusar: mesmo número de destaques, mesma URL por posição (`d{N}`),
+ * e toda entrada com `status: "ok"` (uma entrada `blocked`/`error` nunca é
+ * reusada — o próximo run deve tentar de novo, já que a falha pode ter sido
+ * transitória).
+ *
+ * Puro — não toca o filesystem. Espelha o estilo de `checkInputHtmlFreshness`
+ * em `substitute-image-urls.ts` (#2316): função de decisão isolada e testável,
+ * caller decide o que fazer com o resultado.
+ *
+ * Caso real que motivou (#8782): um `ajustar` no gate trocou D1/D2/D3 por
+ * completo (promoção de itens do RADAR) sem que `fact-check-sources/`
+ * refletisse os destaques novos — comparar URL a URL antes de decidir reusar
+ * o cache é o que impede servir ao fact-checker o texto bruto da história
+ * ERRADA.
+ */
+export function manifestMatchesCurrentUrls(
+  manifest: ManifestEntry[] | null,
+  currentUrls: Array<string | undefined>,
+): boolean {
+  if (!manifest) return false;
+  // Ignora slots vazios (edição de 2 destaques) na comparação de tamanho.
+  const expected = currentUrls.filter((u): u is string => Boolean(u));
+  if (manifest.length !== expected.length) return false;
+  for (let i = 0; i < expected.length; i++) {
+    const entry = manifest[i];
+    if (!entry || entry.destaque !== i + 1) return false;
+    if (entry.url !== expected[i]) return false;
+    if (entry.status !== "ok") return false;
+  }
+  return true;
+}
+
+/**
+ * (#8595, #8782) Pré-baixa o texto BRUTO das URLs dos destaques para
  * `{internalDir}/fact-check-sources/d{N}.txt`, para o fact-checker ler via Read
  * (o WebFetch resume a página e omite detalhes → falso NOT_FOUND).
  * Fail-soft: falha de um destaque vira `error`, nunca aborta.
+ *
+ * (#8782) Antes de refazer o download, compara as URLs atuais contra o
+ * `manifest.json` já existente (`manifestMatchesCurrentUrls`) — se baterem
+ * URL a URL e todo status anterior for `"ok"`, REUSA o cache (nenhuma rede,
+ * nenhum `rm`). Qualquer divergência (URL trocada, contagem diferente,
+ * manifest ausente/ilegível, ou entrada não-`ok`) força refetch completo —
+ * nunca serve ao fact-checker texto bruto de uma URL que não é mais a do
+ * destaque atual.
  */
 export async function prefetchHighlightSources(
   approved: unknown,
@@ -397,7 +458,25 @@ export async function prefetchHighlightSources(
   const out: PrefetchedSource[] = [];
   const manifest: ManifestEntry[] = [];
   mkdirSync(dir, { recursive: true });
-  // Remove resíduo de outra rodada: o agente nunca deve ler fonte velha.
+
+  const currentUrls = Array.from({ length: Math.min(highlights.length, 3) }, (_, i) => highlights[i]?.url);
+  const existingManifest = readExistingManifest(dir);
+  const cacheFresh =
+    manifestMatchesCurrentUrls(existingManifest, currentUrls) &&
+    // Cinto e suspensório: manifest pode bater mas o .txt ter sido apagado
+    // manualmente (ou nunca escrito) — nesse caso não há o que reusar.
+    existingManifest!.every((entry) => existsSync(join(dir, `d${entry.destaque}.txt`)));
+  if (cacheFresh) {
+    // Cache fresco: reusa os d{N}.txt já em disco, sem tocar rede nem rm.
+    return existingManifest!.map((entry) => ({
+      destaque: entry.destaque,
+      url: entry.url,
+      path: join(dir, `d${entry.destaque}.txt`),
+    }));
+  }
+
+  // Cache ausente/divergente/com falha anterior: invalida tudo e refaz do zero.
+  // Nunca mistura entradas velhas com novas — o agente nunca deve ler fonte velha.
   for (const n of [1, 2, 3]) rmSync(join(dir, `d${n}.txt`), { force: true });
   rmSync(join(dir, "manifest.json"), { force: true });
   for (let i = 0; i < Math.min(highlights.length, 3); i++) {
