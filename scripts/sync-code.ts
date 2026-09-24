@@ -11,7 +11,11 @@
  * bloqueiam a edição. O status é impresso em JSON para o orchestrator logar.
  *
  * Uso:
- *   npx tsx scripts/sync-code.ts
+ *   npx tsx scripts/sync-code.ts [--edition-dir <dir>]
+ *
+ * #8690: com `--edition-dir`, grava `_internal/05-sync-code.json` (ver
+ * `scripts/lib/sync-code-marker.ts`) — o invariant `sync-code-ran` do Stage 5
+ * acusa quando o Passo -3 de /diaria-5-publicacao não rodou.
  *
  * Saída (stdout):
  *   JSON com campos outcome, message, branch_before, warnings, proceed,
@@ -45,6 +49,7 @@
  */
 
 import { GIT_SYNC_STASH_MESSAGE, syncCode } from "./lib/git-sync.ts";
+import { writeSyncCodeMarker } from "./lib/sync-code-marker.ts";
 
 /**
  * #8719: a partir de quantos autostashes acumulados (`GIT_SYNC_STASH_MESSAGE`
@@ -59,6 +64,22 @@ const result = syncCode();
 
 // Sempre imprime JSON do resultado para o orchestrator logar
 console.log(JSON.stringify(result, null, 2));
+
+// #8690: marker por edição (fail-soft — falha de escrita só avisa).
+const editionDirIdx = process.argv.indexOf("--edition-dir");
+const editionDir = editionDirIdx !== -1 ? process.argv[editionDirIdx + 1] : undefined;
+if (editionDir) {
+  try {
+    writeSyncCodeMarker(editionDir, {
+      ran_at: new Date().toISOString(),
+      outcome: result.outcome,
+      commits_behind: result.commits_behind,
+      up_to_date: result.up_to_date,
+    });
+  } catch (e) {
+    process.stderr.write(`aviso (#8690): falha ao gravar marker de sync-code em ${editionDir}: ${(e as Error).message}\n`);
+  }
+}
 
 // Warnings humanos no stderr (sem duplicar o JSON)
 if (result.warnings.length > 0) {
