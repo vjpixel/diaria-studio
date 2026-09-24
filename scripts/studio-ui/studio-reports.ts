@@ -191,6 +191,16 @@ export interface ReportRegistryInput {
   htmlPath: string;
   /** ISO timestamp — default `now()` no momento do registro. */
   createdAt?: string;
+  /**
+   * #7982 item 3 — timestamp da decisão do editor sobre um PR de calibração
+   * (`kind: "calibration"`; hoje `mergedAt` da PR, gravado por
+   * `scripts/record-calibration-pr-decisions.ts`). Ausente até esse produtor
+   * rodar; `renderLatencyMarkdown` mostra `n/d` enquanto isso.
+   */
+  decisionAt?: string;
+  /** #7982 item 3 — minutos entre `createdAt` e `decisionAt` (proxy de tempo
+   * de revisão), calculado pelo mesmo produtor acima. */
+  estimatedReviewMinutes?: number;
 }
 
 export interface ReportEntry extends ReportRegistryInput {

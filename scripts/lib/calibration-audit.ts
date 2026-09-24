@@ -333,11 +333,63 @@ export function summarizeCalibrationPrLatency(
   return { rows, missingFields, medianLatencyHours };
 }
 
+// ─── Produtor de decisionAt/estimatedReviewMinutes ─────────────────────────
+
+/** Estado mínimo de uma PR, o bastante pra decidir se ela já tem uma decisão registrável. */
+export interface CalibrationPrState {
+  merged: boolean;
+  /** ISO timestamp do merge; presente sse `merged`. */
+  mergedAt: string | null;
+}
+
+export interface CalibrationDecisionUpdate {
+  sessionId: string;
+  decisionAt: string;
+  estimatedReviewMinutes: number;
+}
+
+/**
+ * Deriva, PURAMENTE, as entradas "calibration" que ganham `decisionAt`/
+ * `estimatedReviewMinutes` a partir do estado real de cada PR (#7982,
+ * item 3 — hoje sempre `n/d` em `renderLatencyMarkdown` por falta de
+ * produtor). `decisionAt` = timestamp de merge da PR; `estimatedReviewMinutes`
+ * = minutos entre `createdAt` do registro e o merge — proxy de "quanto tempo
+ * a PR ficou esperando decisão do editor".
+ *
+ * "Primeira decisão vence" — entrada que já tem `decisionAt` NUNCA é
+ * recalculada (mesma convenção append-only/dedup de `derive-touch-minutes.ts`:
+ * a decisão já registrada é histórico, não algo que um re-scan deveria
+ * sobrescrever). PR não encontrada em `prStates`, ainda não mergeada, ou
+ * `mergedAt` anterior a `createdAt` (relógio/dado inconsistente) → sem update
+ * pra essa entrada (nunca inventa um valor).
+ */
+export function computeCalibrationDecisionUpdates(
+  entries: readonly CalibrationReportEntry[],
+  prStates: ReadonlyMap<string, CalibrationPrState>,
+): CalibrationDecisionUpdate[] {
+  const out: CalibrationDecisionUpdate[] = [];
+  for (const e of entries) {
+    if (e.kind !== "calibration") continue;
+    if (e.decisionAt) continue;
+    const st = prStates.get(e.sessionId);
+    if (!st || !st.merged || !st.mergedAt) continue;
+    const created = Date.parse(e.createdAt);
+    const merged = Date.parse(st.mergedAt);
+    if (!Number.isFinite(created) || !Number.isFinite(merged) || merged < created) continue;
+    out.push({
+      sessionId: e.sessionId,
+      decisionAt: st.mergedAt,
+      estimatedReviewMinutes: Math.round((merged - created) / 60000),
+    });
+  }
+  return out;
+}
+
 export function renderLatencyMarkdown(s: ReturnType<typeof summarizeCalibrationPrLatency>): string {
   const lines = [
     "## PRs de calibração — latência e revisão",
     "",
-    "Nota: `decisionAt`/`estimatedReviewMinutes` ainda NÃO têm produtor (nenhum script os grava em `data/reports/index.jsonl`); valores `n/d` são esperados até isso existir.",
+    "Nota: `decisionAt`/`estimatedReviewMinutes` são gravados por `scripts/record-calibration-pr-decisions.ts` (#7982) só depois que a PR de calibração MERGEIA; `n/d` continua esperado pra PR ainda aberta ou pra quem rodou antes desse produtor existir.",
     "",
   ];
   if (s.rows.length === 0) return lines.concat(["- Nenhum PR de calibração registrado no período.", ""]).join("\n");

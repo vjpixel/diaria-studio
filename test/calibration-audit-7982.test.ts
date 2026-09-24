@@ -2,12 +2,14 @@ import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  computeCalibrationDecisionUpdates,
   computeTouchByPhase,
   countDomainLiterals,
   flagStalledPhases,
   parseGitNumstatLog,
   summarizeAllowlistGrowth,
   summarizeCalibrationPrLatency,
+  type CalibrationPrState,
 } from "../scripts/lib/calibration-audit.ts";
 import { previousQuarter } from "../scripts/calibration-allowlist-growth-report.ts";
 import { addMonths } from "../scripts/lib/calibration-audit.ts";
@@ -82,6 +84,33 @@ describe("#7982 latência de PRs de calibração", () => {
     assert.equal(s.rows.length, 2);
     assert.equal(s.medianLatencyHours, 10);
     assert.deepEqual(s.missingFields, ["2"]);
+  });
+});
+
+describe("#7982 produtor de decisionAt/estimatedReviewMinutes", () => {
+  const entries = [
+    { id: "calibration-1", kind: "calibration" as const, sessionId: "1", createdAt: "2026-09-01T00:00:00Z" },
+    { id: "calibration-2", kind: "calibration" as const, sessionId: "2", createdAt: "2026-09-02T00:00:00Z" },
+    { id: "calibration-3", kind: "calibration" as const, sessionId: "3", createdAt: "2026-09-03T00:00:00Z", decisionAt: "2026-09-03T01:00:00Z" },
+  ];
+  it("gera update só para PR mergeada, calcula minutos entre createdAt e mergedAt", () => {
+    const prStates = new Map<string, CalibrationPrState>([
+      ["1", { merged: true, mergedAt: "2026-09-01T02:00:00Z" }],
+      ["2", { merged: false, mergedAt: null }],
+    ]);
+    const updates = computeCalibrationDecisionUpdates(entries, prStates);
+    assert.deepEqual(updates, [{ sessionId: "1", decisionAt: "2026-09-01T02:00:00Z", estimatedReviewMinutes: 120 }]);
+  });
+  it("entrada com decisionAt já gravado nunca é recalculada, mesmo se prStates tiver dado novo", () => {
+    const prStates = new Map<string, CalibrationPrState>([["3", { merged: true, mergedAt: "2026-09-05T00:00:00Z" }]]);
+    assert.deepEqual(computeCalibrationDecisionUpdates(entries, prStates), []);
+  });
+  it("PR não encontrada em prStates: sem update", () => {
+    assert.deepEqual(computeCalibrationDecisionUpdates(entries, new Map()), []);
+  });
+  it("mergedAt anterior a createdAt (dado inconsistente): sem update", () => {
+    const prStates = new Map<string, CalibrationPrState>([["1", { merged: true, mergedAt: "2026-08-01T00:00:00Z" }]]);
+    assert.deepEqual(computeCalibrationDecisionUpdates(entries, prStates), []);
   });
 });
 
