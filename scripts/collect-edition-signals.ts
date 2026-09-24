@@ -511,6 +511,23 @@ interface SourceHealthFile {
   sources?: Record<string, SourceHealthEntry>;
 }
 
+/** #8769: janela além da qual o streak de uma query `discovery:*` é tratado como congelado. */
+export const DISCOVERY_STALE_DAYS = 14;
+
+const DISCOVERY_STREAK_ACTION =
+  "Query de discovery (montada em runtime, fora de seed/sources.csv — não há o que desativar no CSV). Checar primeiro a cota/erro da API de busca (ex.: 402 usage limit afeta TODA a discovery da janela, não uma query); só se o erro for específico desta query, reformular o tema.";
+
+function isStaleOutcome(
+  last: { timestamp?: string } | undefined,
+  now: Date,
+  staleDays: number,
+): boolean {
+  if (!last?.timestamp) return false; // sem timestamp → não dá pra afirmar que congelou
+  const t = Date.parse(last.timestamp);
+  if (Number.isNaN(t)) return false;
+  return now.getTime() - t > staleDays * 86_400_000;
+}
+
 /**
  * Dois sinais distintos a partir do source-health (#1576):
  *
@@ -529,9 +546,12 @@ export function signalsFromSourceHealth(
   minStreak = 3,
   dryThreshold = 6,
   activeSources?: Set<string>,
+  now: Date = new Date(),
+  discoveryStaleDays = DISCOVERY_STALE_DAYS,
 ): Signal[] {
   const out: Signal[] = [];
   for (const [source, entry] of Object.entries(health.sources ?? {})) {
+    const isDiscovery = source.startsWith("discovery:");
     // #1637/#1638/#1639: não sinalizar fontes que já foram REMOVIDAS de
     // seed/sources.csv — o histórico de falhas em source-health.json persiste
     // e geraria issues "nunca produziu artigos" toda edição mesmo após a
@@ -541,12 +561,19 @@ export function signalsFromSourceHealth(
     if (
       activeSources &&
       !activeSources.has(source) &&
-      !source.startsWith("discovery:")
+      !isDiscovery
     ) {
       continue;
     }
     const recent = entry.recent_outcomes ?? [];
     if (recent.length === 0) continue;
+    // #8769: queries de discovery são montadas em runtime, sem pool fixo —
+    // uma query que não roda mais fica com o streak congelado e seria
+    // re-sinalizada em toda edição. Último outcome mais velho que a janela →
+    // a query saiu de circulação, não há o que investigar/desativar.
+    if (isDiscovery && isStaleOutcome(recent[recent.length - 1], now, discoveryStaleDays)) {
+      continue;
+    }
     const reversed = recent.slice().reverse();
 
     // --- Falhas duras consecutivas (fetch quebrado) ---
@@ -565,7 +592,9 @@ export function signalsFromSourceHealth(
           consecutive_failures: hardStreak,
           last_outcomes: recent.slice(-Math.min(5, recent.length)),
         },
-        suggested_action: `Considere desativar ${source} temporariamente em seed/sources.csv até investigar.`,
+        suggested_action: isDiscovery
+          ? DISCOVERY_STREAK_ACTION
+          : `Considere desativar ${source} temporariamente em seed/sources.csv até investigar.`,
       });
       continue; // já sinalizado como quebrado; não duplicar como "dry"
     }
@@ -593,7 +622,9 @@ export function signalsFromSourceHealth(
           lifetime_successes: lifetimeSuccesses,
           last_outcomes: recent.slice(-Math.min(5, recent.length)),
         },
-        suggested_action: `${source} nunca produziu artigos — feed/URL provavelmente errada ou fonte descontinuada. Verifique a URL em seed/sources.csv ou desative.`,
+        suggested_action: isDiscovery
+          ? `${source} nunca produziu artigos — query de discovery (montada em runtime, fora de seed/sources.csv): reformular o tema ou aceitar como tema sem cobertura.`
+          : `${source} nunca produziu artigos — feed/URL provavelmente errada ou fonte descontinuada. Verifique a URL em seed/sources.csv ou desative.`,
       });
     }
   }
