@@ -571,6 +571,18 @@ describe("updateIntentionalErrorLocationJson (#1585, migrado pra JSON #3222)", (
   });
 });
 
+describe("reorderSocialMd preserva a linha em branco após o header (#8757)", () => {
+  it("LF: `## dN` seguido de linha em branco continua seguido de linha em branco", () => {
+    const md = "# Social\n\n## d1\n\ns1\n\n## d2\n\ns2\n";
+    assert.equal(reorderSocialMd(md, [2, 1]), "# Social\n\n## d2\n\ns1\n\n## d1\n\ns2\n");
+  });
+
+  it("CRLF: renumera sem engolir a linha em branco nem o \\r", () => {
+    const md = "# Social\r\n\r\n## d1\r\n\r\ns1\r\n\r\n## d2\r\n\r\ns2\r\n";
+    assert.equal(reorderSocialMd(md, [2, 1]), "# Social\r\n\r\n## d2\r\n\r\ns1\r\n\r\n## d1\r\n\r\ns2\r\n");
+  });
+});
+
 describe("reorderSocialMd (#1585)", () => {
   it("swap D1↔D2 em ambas plataformas LinkedIn + Facebook", () => {
     const md = `# LinkedIn

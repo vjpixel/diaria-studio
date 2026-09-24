@@ -9,6 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "../extract-destaques.js";
+import { readSnippetFile } from "./shared/snippet-loader.ts"; // #8756 — casamento por conteúdo em box-selection.json
 import { parseBoxHeaderField, isRuntimeExcluded, readBoxTituloFlag } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet; isRuntimeExcluded #4504 — invariant de runtime:false no render path; readBoxTituloFlag #5882 — titulo:false declarado
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./inline-link.ts"; // #599, #1581
 import { buildPrevResultLine, readPrevPollStats } from "../eia-compose.ts"; // #1707 fallback
@@ -1856,12 +1857,74 @@ export function readBoxDivulgacaoCategoriaForFile(
  * `box-selection.json`). `null` (arquivo ausente, malformado, ou sem entry
  * pro slot) sinaliza ao caller pra cair no fallback do config estático.
  */
-function readBoxSelectionFileForSlot(editionDir: string, slot: 1 | 2 | 3): string | null {
+/**
+ * #8756: normaliza texto de box pra comparação por conteúdo — minúsculas, sem
+ * acento, só letras/dígitos separados por 1 espaço (markdown, emoji e
+ * pontuação somem dos dois lados).
+ */
+export function normalizeBoxTextForMatch(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * #8756: assinatura de um snippet = os primeiros ~50 chars normalizados da 1ª
+ * linha com conteúdo real (≥12 chars normalizados). `null` quando o snippet
+ * não tem linha útil — nesse caso ele nunca casa por conteúdo.
+ */
+export function boxSnippetSignature(body: string): string | null {
+  for (const line of body.split(/\r?\n/)) {
+    const norm = normalizeBoxTextForMatch(line);
+    if (norm.length >= 12) return norm.slice(0, 50).trim();
+  }
+  return null;
+}
+
+/**
+ * #8756: entre as entries de `box-selection.json`, a ÚNICA cujo snippet
+ * aparece no texto do box renderizado. `null` com 0 ou ≥2 matches (ambíguo
+ * — o caller cai no lookup por número de slot, comportamento pré-#8756).
+ */
+export function matchBoxSelectionFileByContent(
+  entries: Array<{ file?: unknown }>,
+  boxText: string,
+  readBody: (file: string) => string | null,
+): string | null {
+  const hay = normalizeBoxTextForMatch(boxText);
+  if (!hay) return null;
+  const matches = new Set<string>();
+  for (const e of entries) {
+    if (typeof e?.file !== "string" || !e.file) continue;
+    const body = readBody(e.file);
+    const sig = body ? boxSnippetSignature(body) : null;
+    if (sig && hay.includes(sig)) matches.add(e.file);
+  }
+  return matches.size === 1 ? [...matches][0] : null;
+}
+
+function readBoxSelectionFileForSlot(
+  editionDir: string,
+  slot: 1 | 2 | 3,
+  boxText?: string | null,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): string | null {
   const path = resolve(editionDir, "_internal", "box-selection.json");
   if (!existsSync(path)) return null;
   try {
     const data = JSON.parse(readFileSync(path, "utf8"));
     if (!Array.isArray(data)) return null;
+    // #8756: o `slot` do JSON é a posição no momento da seleção (Stage 2).
+    // Se o editor mover os boxes à mão no `02-reviewed.md` (Stage 4), o
+    // número deixa de bater com a posição real — casar pelo CONTEÚDO do box
+    // que de fato está no slot vence o número, quando o match é único.
+    if (boxText) {
+      const byContent = matchBoxSelectionFileByContent(data, boxText, (f) => readSnippetFile(f, rootDir));
+      if (byContent) return byContent;
+    }
     const entry = data.find(
       (r) => r && typeof r === "object" && (r as { slot?: unknown }).slot === slot,
     ) as { file?: unknown } | undefined;
@@ -1890,8 +1953,9 @@ function resolveBoxDivulgacaoCategoriaForSlot(
   slot: 1 | 2 | 3,
   editionDir: string,
   rootDir: string = REPO_ROOT_FROM_MODULE,
+  boxText?: string | null, // #8756
 ): string | null {
-  const selectedFile = readBoxSelectionFileForSlot(editionDir, slot);
+  const selectedFile = readBoxSelectionFileForSlot(editionDir, slot, boxText, rootDir);
   return selectedFile
     ? readBoxDivulgacaoCategoriaForFile(selectedFile, rootDir)
     : readBoxDivulgacaoCategoriaForSlot(slot, rootDir);
@@ -1901,8 +1965,9 @@ function resolveBoxDivulgacaoAltForSlot(
   slot: 1 | 2 | 3,
   editionDir: string,
   rootDir: string = REPO_ROOT_FROM_MODULE,
+  boxText?: string | null, // #8756
 ): string | null {
-  const selectedFile = readBoxSelectionFileForSlot(editionDir, slot);
+  const selectedFile = readBoxSelectionFileForSlot(editionDir, slot, boxText, rootDir);
   return selectedFile
     ? readBoxDivulgacaoAltForFile(selectedFile, rootDir)
     : readBoxDivulgacaoAltForSlot(slot, rootDir);
@@ -1912,8 +1977,9 @@ function resolveBoxDivulgacaoNoTituloForSlot(
   slot: 1 | 2 | 3,
   editionDir: string,
   rootDir: string = REPO_ROOT_FROM_MODULE,
+  boxText?: string | null, // #8756
 ): boolean {
-  const selectedFile = readBoxSelectionFileForSlot(editionDir, slot);
+  const selectedFile = readBoxSelectionFileForSlot(editionDir, slot, boxText, rootDir);
   return selectedFile
     ? readBoxDivulgacaoNoTituloForFile(selectedFile, rootDir)
     : readBoxDivulgacaoNoTituloForSlot(slot, rootDir);
@@ -2210,7 +2276,7 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   // — mesmo fix que #5457 já tinha aplicado só ao invariant check de Stage 4
   // (aviso), nunca ao render real do e-mail.
   const boxDivulgacao1Categoria = boxDivulgacao1
-    ? resolveBoxDivulgacaoCategoriaForSlot(1, editionDir)
+    ? resolveBoxDivulgacaoCategoriaForSlot(1, editionDir, undefined, boxDivulgacao1)
     : null;
   const boxDivulgacao2 = extractBoxDivulgacao2(reviewedText);
   // #2978-slot2-parity: mesmo tratamento do slot 1 — a imagem livros_promo só
@@ -2218,7 +2284,7 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   const boxDivulgacao2Image = readBoxDivulgacao2Image(editionDir, boxDivulgacao2);
   const boxDivulgacao2Bold = isBoxDivulgacao2Bold(reviewedText);
   const boxDivulgacao2Categoria = boxDivulgacao2
-    ? resolveBoxDivulgacaoCategoriaForSlot(2, editionDir)
+    ? resolveBoxDivulgacaoCategoriaForSlot(2, editionDir, undefined, boxDivulgacao2)
     : null;
   // #3476: box de divulgação slot 3 — região pós-último-destaque (D3 em
   // edições de 3, D2 em edições de 2), antes de USE MELHOR/É IA?.
@@ -2226,7 +2292,7 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   const boxDivulgacao3Image = readBoxDivulgacao3Image(editionDir, boxDivulgacao3);
   const boxDivulgacao3Bold = isBoxDivulgacao3Bold(reviewedText);
   const boxDivulgacao3Categoria = boxDivulgacao3
-    ? resolveBoxDivulgacaoCategoriaForSlot(3, editionDir)
+    ? resolveBoxDivulgacaoCategoriaForSlot(3, editionDir, undefined, boxDivulgacao3)
     : null;
   const boxDivulgacaoImageExplicit = {
     0: readBoxSlotImage(editionDir, 0) !== null,
@@ -2236,9 +2302,9 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   };
   const boxDivulgacaoImageAlt = {
     0: readBoxDivulgacaoAltForSlot(0),
-    1: resolveBoxDivulgacaoAltForSlot(1, editionDir),
-    2: resolveBoxDivulgacaoAltForSlot(2, editionDir),
-    3: resolveBoxDivulgacaoAltForSlot(3, editionDir),
+    1: resolveBoxDivulgacaoAltForSlot(1, editionDir, undefined, boxDivulgacao1),
+    2: resolveBoxDivulgacaoAltForSlot(2, editionDir, undefined, boxDivulgacao2),
+    3: resolveBoxDivulgacaoAltForSlot(3, editionDir, undefined, boxDivulgacao3),
   };
   // #5882: mesmo padrão de boxDivulgacaoImageAlt — lido do disco pra TODO
   // slot, independente de o slot ter box no reviewed.md (mesmo tratamento de
@@ -2247,9 +2313,9 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   // boxDivulgacao1Categoria).
   const boxDivulgacaoNoTitulo = {
     0: readBoxDivulgacaoNoTituloForSlot(0),
-    1: resolveBoxDivulgacaoNoTituloForSlot(1, editionDir),
-    2: resolveBoxDivulgacaoNoTituloForSlot(2, editionDir),
-    3: resolveBoxDivulgacaoNoTituloForSlot(3, editionDir),
+    1: resolveBoxDivulgacaoNoTituloForSlot(1, editionDir, undefined, boxDivulgacao1),
+    2: resolveBoxDivulgacaoNoTituloForSlot(2, editionDir, undefined, boxDivulgacao2),
+    3: resolveBoxDivulgacaoNoTituloForSlot(3, editionDir, undefined, boxDivulgacao3),
   };
   const boxDivulgacaoImagePortrait = {
     0: boxDivulgacaoImageExplicit[0] && isBoxSlotImagePortrait(editionDir, 0),

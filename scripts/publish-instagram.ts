@@ -67,6 +67,7 @@ import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #600
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
 import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #6862 — Instagram não renderiza markdown
 import { injectChannelLine, INSTAGRAM_CTA_LINE } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish; #4309 — proteger o CTA no truncamento
+import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681 — override de teste por edição
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
 import {
@@ -534,8 +535,16 @@ async function main() {
   const results: PostEntry[] = [];
   let skippedCount = 0;
 
+  // #8681: override de TESTE por edição (_internal/instagram-test.json). Lança
+  // se malformado — instrução editorial explícita não é ignorada em silêncio.
+  const testOverride = readInstagramTestOverride(editionDir);
+  if (testOverride?.caption) {
+    console.warn(`[publish-instagram] #8681: legenda de TESTE de _internal/instagram-test.json — substitui a gerada em todos os destaques.`);
+  }
+
   const tagAndAppend = (entry: PostEntry): void => {
     if (isTest) entry.is_test = true;
+    if (testOverride) entry.instagram_test_override = true; // #8681 — registra que o post é teste
     appendSocialPosts(publishedPath, [entry]);
   };
 
@@ -561,7 +570,9 @@ async function main() {
     // Extrair caption
     let caption: string;
     try {
-      const raw = extractPostText(socialMd, d);
+      const raw = testOverride?.caption
+        ? stripMarkdownEmphasis(testOverride.caption) // #8681
+        : extractPostText(socialMd, d);
       caption = truncateCaption(raw);
     } catch (e: any) {
       console.error(`ERROR extracting text for instagram/${d}: ${e.message}`);

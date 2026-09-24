@@ -25,6 +25,7 @@ import {
   DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET, // #6078
 } from "../daily-carousel-card.ts"; // #6064
 import { md5OfFile } from "../shared/file-md5.ts"; // #6068
+import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride } from "../instagram-test-override.ts"; // #8681
 
 import { lintIntroCount } from "../newsletter-count.ts";
 import {
@@ -44,7 +45,9 @@ import {
   readBoxDivulgacaoAltForFile, // #5457
   readBoxDivulgacaoRuntimeExcludedForSlot, // #4504
   pickErroIntencionalReveal, // #6734 — MESMA função que o renderer/check-stage2-invariants usam
+  matchBoxSelectionFileByContent, // #8756 — mesmo casamento por conteúdo do render
 } from "../newsletter-parse.ts";
+import { readSnippetFile } from "../shared/snippet-loader.ts"; // #8756
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import { detectRemovedApprovedItems } from "../lint-checks/approved-item-removal.ts"; // #8121
 import {
@@ -1493,7 +1496,7 @@ function checkBoxDivulgacaoAltMissing(
 
     // #5457: slot 0 nunca tem entry em box-selection.json (fora da rotação
     // automática) — só 1/2/3 consultam o arquivo antes do fallback estático.
-    const selectedFile = n === 0 ? undefined : readBoxSelectionFileForSlot(editionDir, n);
+    const selectedFile = n === 0 ? undefined : readBoxSelectionFileForSlot(editionDir, n, boxText, rootDir);
     let alt: string | null;
     let usedFile: string | null;
     if (selectedFile) {
@@ -1537,12 +1540,25 @@ function checkBoxDivulgacaoAltMissing(
  * malformado, ou sem entry pro slot) sinaliza ao caller pra cair no fallback
  * do config estático — mesmo fail-soft do resto do módulo.
  */
-function readBoxSelectionFileForSlot(editionDir: string, slot: 1 | 2 | 3): string | null {
+function readBoxSelectionFileForSlot(
+  editionDir: string,
+  slot: 1 | 2 | 3,
+  boxText?: string | null,
+  rootDir?: string,
+): string | null {
   const path = resolve(editionDir, "_internal", "box-selection.json");
   if (!existsSync(path)) return null;
   try {
     const data = JSON.parse(readFileSync(path, "utf8"));
     if (!Array.isArray(data)) return null;
+    // #8756: MESMO critério do render (`newsletter-parse.ts`) — o box que está
+    // de fato no slot, identificado pelo conteúdo, vence o número gravado no
+    // Stage 2. Sem isso, depois de o editor mover boxes à mão, este aviso
+    // citaria o snippet ERRADO.
+    if (boxText) {
+      const byContent = matchBoxSelectionFileByContent(data, boxText, (f) => readSnippetFile(f, rootDir));
+      if (byContent) return byContent;
+    }
     const entry = data.find(
       (r) => r && typeof r === "object" && (r as { slot?: unknown }).slot === slot,
     ) as { file?: unknown } | undefined;
@@ -1680,6 +1696,21 @@ function checkCard4x5UploadMismatch(editionDir: string): InvariantViolation[] {
  * dá pra afirmar divergência — vira warning, nunca erro: bloquear o gate por
  * "não sei" seria pior que avisar.
  */
+/**
+ * #8681: override de teste do slide CTA (`_internal/instagram-test.json`),
+ * lido sem lançar — o invariant reporta o arquivo malformado em vez de
+ * derrubar o `check-invariants` inteiro. O override entra no carimbo
+ * (`hashCarouselSlideTexts`) igual ao `gen-carousel-cards.ts`, senão toda
+ * edição com override acusaria arte "stale" à toa.
+ */
+function readCtaOverrideSafe(editionDir: string): { ctaOverride: CarouselCtaOverride | null; error: string | null } {
+  try {
+    return { ctaOverride: readInstagramTestOverride(editionDir)?.cta_slide ?? null, error: null };
+  } catch (e) {
+    return { ctaOverride: null, error: (e as Error).message };
+  }
+}
+
 function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
   const socialPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialPath)) return [];
@@ -1714,6 +1745,9 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
 
   const stored = readCarouselSourceHashes(editionDir);
   const violations: InvariantViolation[] = [];
+  // #8681: JSON malformado é reportado por `carousel-text-overflow` (que roda
+  // nos Stages 2 E 4 — pega mais cedo); aqui só se usa o override válido.
+  const { ctaOverride } = readCtaOverrideSafe(editionDir);
 
   for (const d of slots) {
     if (!slidesOnDiskDe(d)) continue; // destaque sem carrossel — publica single-image, nada a cruzar
@@ -1721,7 +1755,7 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
     const dText = extractDestaqueBlock(section, d);
     if (!dText) continue; // sem bloco não há o que comparar (o gen já pulou este destaque)
 
-    const atual = hashCarouselSlideTexts(dText.trim());
+    const atual = hashCarouselSlideTexts(dText.trim(), ctaOverride);
     const carimbo = stored[d];
 
     if (!carimbo) {
@@ -1784,12 +1818,25 @@ function checkCarouselTextOverflow(editionDir: string): InvariantViolation[] {
   const destaqueCount = readDestaqueCount(editionDir);
   const slots = destaqueCount === 2 ? (["d1", "d2"] as const) : (["d1", "d2", "d3"] as const);
   const violations: InvariantViolation[] = [];
+  // #8681: lido 1x; malformado vira violação AQUI (este check roda nos
+  // Stages 2 e 4 — o `instagram-test.json` quebrado é pego no Stage 2, não
+  // só no gate). Nunca ignorado em silêncio.
+  const { ctaOverride, error: overrideError } = readCtaOverrideSafe(editionDir);
+  if (overrideError) {
+    violations.push({
+      rule: "carousel-text-overflow",
+      message: `${overrideError} — corrigir ou remover o arquivo antes de gerar/publicar o carrossel.`,
+      source_issue: "#8681",
+      severity: "error",
+      file: instagramTestOverridePath(editionDir),
+    });
+  }
 
   for (const d of slots) {
     const dText = extractDestaqueBlock(section, d);
     if (!dText) continue;
 
-    const overflowing = findOverflowingCarouselSlides(dText.trim());
+    const overflowing = findOverflowingCarouselSlides(dText.trim(), ctaOverride);
     if (overflowing.length === 0) continue;
 
     const detalhe = overflowing.map((o) => `${o.slot} (${o.chars} chars, ${o.excessPx}px além)`).join("; ");
