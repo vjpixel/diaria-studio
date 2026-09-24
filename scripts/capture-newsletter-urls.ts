@@ -60,7 +60,10 @@ export interface CapturedThread {
   sender: string;
   subject: string;
   date: string; // ISO date string
-  body: string; // plain text or HTML body
+  body: string; // plain text or HTML body (pode vir truncado em BODY_LIMIT)
+  // #8668/#8710: URLs do corpo COMPLETO, extraídas antes do truncamento por
+  // fetch-newsletter-threads.ts. Unidas às do body abaixo.
+  urls_extraidas?: string[];
 }
 
 export interface CapturedCursor {
@@ -148,7 +151,9 @@ export function processThreads(
     // Extract text from body (handle HTML)
     const isHtml = /<[a-z][\s\S]*>/i.test(thread.body);
     const plainText = isHtml ? stripHtml(thread.body) : thread.body;
-    const urls = extractUrls(plainText);
+    // #8710: o body chega truncado — links do fim de newsletters longas só
+    // existem em urls_extraidas. União com dedup, ordem do body primeiro.
+    const urls = [...new Set([...extractUrls(plainText), ...(thread.urls_extraidas ?? [])])];
     totalUrls += urls.length;
 
     // Derive sender metadata for filtering
