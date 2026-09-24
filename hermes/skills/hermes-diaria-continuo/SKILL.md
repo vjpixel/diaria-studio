@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.16
+version: 0.5.17
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -150,35 +150,26 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 2. Guard de colisão editorial: `npx tsx scripts/lib/find-current-edition.ts
    --stage 2` (e stages relevantes). Edição em curso → registrar pausa, não
    despachar trabalho técnico concorrente neste tick.
-3. `session-registry.ts` heartbeat/registro se aplicável, **sempre com
-   `--kind continuo`** — fora do harness não inventar `--session-id`.
-   **Nunca `--kind overnight`, mesmo esta skill sendo derivada do overnight**
-   (é justamente essa derivação que torna o erro fácil de cometer — achado
-   ao vivo 28/08/2026, #6483: `register`/`heartbeat` desta skill gravou
-   `"kind":"overnight"` em `data/sessions/`, sumindo da trilha "Contínuo" da
-   Triagem do Studio e poluindo a trilha "Overnight" com uma entrada que não
-   é overnight de verdade — usar SEMPRE o MESMO `--kind continuo` em
-   `register`/`heartbeat`/`claim-issue`, nunca alternar).
-   **`--session-id` é POR TICK, nunca por job (#6443, 28/08/2026)** — gerar
-   UMA VEZ aqui, no início deste tick, e reusar o MESMO valor em TODOS os
-   comandos `session-registry.ts` deste tick (`register`/`heartbeat`/
-   `claim-issue`); nunca regerar no meio do tick, nunca reusar entre
-   ticks: `SESSION_ID="hermes-cron-5d791ef6fc2c-$(date -u +%Y%m%dT%H%M%SZ)"`.
-   Era um id estável do job cron (`hermes-cron-5d791ef6fc2c` sem sufixo) — o
-   heartbeat de CADA tick renovava a MESMA entrada do registro, que por isso
-   nunca ficava `stale`, e um claim órfão de um tick que não abriu PR nunca
-   expirava sozinho (#6443). Com o sufixo por tick, a entrada do tick
-   ANTERIOR simplesmente para de receber heartbeat quando o tick seguinte
-   começa (mesmo sem chamar `end`) — `SOFT_STALE_MS` (90min,
-   `isIssueClaimedByOther` em `session-registry.ts`, #5474) trata essa
-   entrada como stale e deixa de bloquear `claim-issue`/`is-claimed` pra
-   qualquer outra sessão, sem depender de nada além do que já existe.
-   (`claim-staleness.ts`/#6436 é uma camada DIFERENTE e complementar — TTL
-   por idade da claim em si, `claimed_issues_at`, sem PR aberto — consumida
-   por `check-block-staleness.ts`; não é o mecanismo que este fix aciona.)
-   Exemplo completo — `npx tsx
-   scripts/lib/session-registry.ts register --kind continuo --session-id
-   "$SESSION_ID"`.
+3. **`SESSION_ID` — desde #8740, LER o registro do wrapper primeiro, nunca
+   registrar de novo aqui.** `hermes/scripts/register-continuo-tick.sh`
+   roda ANTES deste tick (deploy pendente fora deste repo — ver docstring
+   do script e `hermes/README.md`) e já chamou `session-registry.ts
+   register --kind continuo`, gravando o id em
+   `${TMPDIR:-/tmp}/hermes-continuo-current-session-id`:
+   ```bash
+   SESSION_ID="$(cat "${TMPDIR:-/tmp}/hermes-continuo-current-session-id" 2>/dev/null || true)"
+   ```
+   **Fallback** (arquivo ausente — wrapper não rodou/não deployado):
+   gerar e registrar como sempre —
+   `SESSION_ID="hermes-cron-5d791ef6fc2c-$(date -u +%Y%m%dT%H%M%SZ)"`, depois
+   `npx tsx scripts/lib/session-registry.ts register --kind continuo
+   --session-id "$SESSION_ID"`. **Nunca `--kind overnight`** (achado
+   28/08/2026, #6483 — sempre `continuo` em `register`/`heartbeat`/
+   `claim-issue`). **`--session-id` é POR TICK, nunca por job (#6443)** —
+   lido do wrapper ou gerado no fallback, reusar o MESMO valor em TODOS os
+   comandos deste tick, nunca entre ticks (era fixo por job antes do
+   #6443; ver histórico lá). `claim-staleness.ts`/#6436 é camada
+   complementar, não o mecanismo deste fix.
 
 ### 2. Classificar — SEM LLM, executando o código real
 
