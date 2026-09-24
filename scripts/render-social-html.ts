@@ -30,6 +30,7 @@ import {
   CURTO_CHANNELS,
   formatChannelLabels,
 } from "./lib/social-cta-lines.ts"; // #4091: fonte única de verdade dos canais
+import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681 preview override
 
 export interface ImageMap {
   [key: string]: {
@@ -398,7 +399,24 @@ export function renderDestaqueGroup(group: DestaqueGroup, color: string): string
   </div>`;
 }
 
-export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, postPixelImageNum = "1"): string {
+export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, postPixelImageNum = "1", editionDir?: string): string {
+  // #8681: preview do Studio mostra legenda real do Instagram quando há override
+  if (editionDir) {
+    try {
+      const override = readInstagramTestOverride(editionDir);
+      if (override?.caption) {
+        for (const p of platforms) {
+          if (p.name.toLowerCase().includes("instagram")) {
+            for (const post of p.posts) {
+              post.main = override.caption;
+            }
+          }
+        }
+      }
+    } catch {
+      // fail-soft: preview sem override é aceitável; erro de override já é adversário em publish
+    }
+  }
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
