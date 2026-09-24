@@ -160,18 +160,13 @@
 * Ambos fail-soft: uma falha aqui vira aviso em stderr, nunca reverte a
 * publicação da página em si.
 *
-* **Caveat herdado do worktree do #8636.** Assim como `updateSitemapAndHome`
-* já fazia antes desta issue, `backfillAndReindexArchive` escreve em
-* `rootDir` (o checkout onde este script roda), não em `worktreeDir` — e o
-* `git add` do commit roda DENTRO do worktree (um clone `--detach` de
-* `origin/master`, ver seção #8636 acima). Path já TRACKED em
-* `origin/master` (`sitemap.xml`, `archive/`) existe no worktree, então
-* `git add` não lança — mas o CONTEÚDO staged é o que já estava no
-* worktree, não necessariamente o que acabou de ser escrito em `rootDir`
-* fora dele. Este módulo não tenta resolver essa divergência (fora do
-* escopo do #8645) — documentado aqui pra quem for investigar um commit de
-* site-page cujo `archive/`/`sitemap.xml` não reflita a escrita local mais
-* recente.
+* **Worktree do #8636 (resolvido, #8665).** `backfillAndReindexArchive`
+* escreve em `rootDir`, não em `worktreeDir` — e o `git add` roda DENTRO do
+* worktree. Isso NÃO commita conteúdo velho: `commitAndPushSitePage` copia
+* de `rootDir` pro worktree cada path de `pathsToStage` (inclusive
+* `archive/`, com `rmSync` antes do `cpSync` pra que página podada também
+* saia) antes do `git add`. Travado com git real em
+* `test/publish-edition-site-page-8636-worktree-real-git.test.ts` (#8665).
 *
 * ## Mecanismo de publicação: branch dedicada + PR, nunca push direto em `master` (#6598)
  *

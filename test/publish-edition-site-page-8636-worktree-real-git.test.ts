@@ -295,3 +295,45 @@ describe("#8636 (regressão P0, 21/09/2026) — worktree default enxerga conteú
     );
   });
 });
+
+describe("#8665 — archive/ (backfillAndReindexArchive, #8645) chega ao commit com o conteúdo de rootDir, com git real", () => {
+  it("página nova, página alterada e página podada do acervo refletem rootDir, não o origin/master herdado pelo worktree", () => {
+    const { rootDir } = setupRealRepo();
+    const sitemapRelPath = "workers/site/public/sitemap.xml";
+    const archiveDir = join(rootDir, "workers", "site", "public", "archive");
+
+    // origin/master já tem um acervo com 2 páginas.
+    mkdirSync(join(archiveDir, "2"), { recursive: true });
+    writeFileSync(join(archiveDir, "index.html"), "OLD_ARCHIVE_1\n", "utf8");
+    writeFileSync(join(archiveDir, "2", "index.html"), "OLD_ARCHIVE_2\n", "utf8");
+    git(["add", "-A"], rootDir);
+    git(["commit", "-m", "acervo inicial"], rootDir);
+    git(["push", "origin", "master"], rootDir);
+
+    // Simula `backfillAndReindexArchive` escrevendo em rootDir: página 1
+    // alterada, página 2 podada, página 3 nova.
+    const slug = "pagina-8665-acervo";
+    const pageDir = join(rootDir, "workers", "site", "public", "p", slug);
+    mkdirSync(pageDir, { recursive: true });
+    writeFileSync(join(pageDir, "index.html"), "PAGE\n", "utf8");
+    writeFileSync(join(archiveDir, "index.html"), "NEW_ARCHIVE_1\n", "utf8");
+    rmSync(join(archiveDir, "2"), { recursive: true });
+    mkdirSync(join(archiveDir, "3"), { recursive: true });
+    writeFileSync(join(archiveDir, "3", "index.html"), "NEW_ARCHIVE_3\n", "utf8");
+
+    const worktreeDir = mkdtempSync(join(tmpdir(), "diaria-8665-wt-"));
+    cleanupDirs.push(worktreeDir);
+    rmSync(worktreeDir, { recursive: true, force: true });
+
+    const result = commitAndPushSitePage(rootDir, slug, git, sitemapRelPath, makeGh(), noopLock, noopSleep, worktreeDir);
+    assert.equal(result.committed, true);
+    assert.equal(result.pushed, true);
+
+    const ref = `origin/site-publish/${slug}`;
+    git(["fetch", "origin"], rootDir);
+    assert.equal(git(["show", `${ref}:workers/site/public/archive/index.html`], rootDir), "NEW_ARCHIVE_1\n");
+    assert.equal(git(["show", `${ref}:workers/site/public/archive/3/index.html`], rootDir), "NEW_ARCHIVE_3\n");
+    const tree = git(["ls-tree", "-r", "--name-only", ref], rootDir);
+    assert.ok(!tree.includes("archive/2/index.html"), `página podada não deveria sobreviver:\n${tree}`);
+  });
+});
