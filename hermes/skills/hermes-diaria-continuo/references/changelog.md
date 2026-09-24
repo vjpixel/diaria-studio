@@ -13,6 +13,23 @@ corrente no frontmatter (`version:`) e o comportamento ATUAL/operacional;
 este arquivo é o "porquê" de cada mudança — para quem investiga uma decisão
 passada, não para quem está rodando um tick.
 
+- 0.5.17 (24/09/2026): #8740 — registro de sessão (`session-registry.ts
+  register --kind continuo`, passo 1.3) deixa de depender só do modelo
+  lembrar no meio da skill. `hermes/scripts/register-continuo-tick.sh`
+  (novo, deploy manual pro cron fora deste repo, mesma disciplina de stub
+  de `hermes/README.md`) registra ANTES do tick, deterministicamente, e
+  grava o `SESSION_ID` em `${TMPDIR:-/tmp}/hermes-continuo-current-
+  session-id`. O passo 1.3 agora LÊ esse arquivo primeiro e só cai no
+  registro manual de sempre como fallback fail-soft (arquivo ausente —
+  wrapper não deployado/não rodou/falhou). Motivado por `check-continuo-
+  session-registration.ts` (#7890) ter pego 1/18 ticks recentes sem
+  nenhuma sessão `kind=continuo` registrada — diagnóstico (#8740): tick
+  `cron_5d791ef6fc2c_20260923_004012` bateu rate-limit (HTTP 429) antes de
+  chegar no passo 1.3. Decisão do editor: "wrapper no cron registra a
+  sessão ... antes de invocar o modelo" (delegada no briefing overnight
+  260924, adiada uma vez antes em #7890 por tocar o contrato do wrapper
+  genérico `claude-delegate.sh` — este fix fica deliberadamente FORA
+  dele, num script dedicado ao contínuo).
 - 0.5.15 (04/09/2026): #6817 residual — as 2 raízes novas da allowlist
   (`hermes-agent`, `dot-hermes`) ativadas (`enabled: true`, decisão do
   editor 04/09: "implementar como especificado. Sem redução de escopo"),

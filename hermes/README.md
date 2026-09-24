@@ -130,6 +130,22 @@ STUB
 done
 ```
 
+## Registro de sessão do tick, deterministicamente (#8740, 24/09/2026)
+
+`hermes/scripts/register-continuo-tick.sh` — script NOVO, ainda **sem**
+deploy no `300` — registra `session-registry.ts register --kind continuo`
+ANTES do tick do job `5d791ef6fc2c` (agente), em vez de depender do passo
+1.3 da skill (que só roda se o tick sobreviver até lá — não rodou no tick
+`cron_5d791ef6fc2c_20260923_004012`, que bateu rate-limit antes, #8740).
+Diferente dos scripts `no_agent: true` da tabela acima, `5d791ef6fc2c` **é**
+um job de agente (carrega a skill via prompt) — este script não substitui
+o job, é um passo a rodar ANTES dele; como amarrar isso na config do cron
+do Hermes (`jobs.json`, `pre_hook`/job irmão dedicado, ou o mecanismo que
+`hermes cron` de fato suportar) é ação manual fora deste repo, pendente.
+Até lá, o passo 1.3 da skill segue com o fallback de sempre (gerar e
+registrar o `SESSION_ID` na hora) — ver `SKILL.md` §1.3 e a docstring do
+script.
+
 Cuidado: `hermes cron --script`/`monitor_script` referencia o nome do
 STUB sob `~/.hermes/scripts/` — não renomear os arquivos (nem o stub, nem
 o alvo no repo) sem atualizar os jobs em paralelo
