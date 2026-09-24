@@ -348,3 +348,39 @@ describe("allocateRaffleNumber (#2724)", () => {
     assert.equal(second.entries.length, 2);
   });
 });
+
+describe("matchesIntentionalError (#8751) — resposta terse com a palavra corrigida", () => {
+  const ERR = {
+    category: "factual",
+    location: "destaque 2, parágrafo 1",
+    description: "ChatGPT Work grafado como ChatGTP Work",
+    correct_value: "ChatGPT",
+  };
+
+  it("caso real Jone 260923: só cita a palavra certa, sem contexto descritivo → acerto", () => {
+    const body = "Bom dia, ChatGPT Work, e não ChatGTP Work Gratidão, Jone";
+    // description tem "chatgpt"/"work" — tirar pra reproduzir o cenário que falhava
+    assert.equal(
+      matchesIntentionalError(body, { ...ERR, description: "nome do produto da OpenAI trocado", location: "destaque sol luna" }),
+      true,
+    );
+  });
+
+  it("token distintivo só como substring de outra palavra não conta", () => {
+    assert.equal(
+      matchesIntentionalError("adorei o chatgptzinho", { ...ERR, description: "sol luna", location: "parágrafo" }),
+      false,
+    );
+  });
+
+  it("correct_value numérico puro segue exigindo o contexto", () => {
+    const e = { description: "valor do investimento em bilhões", location: "destaque 1", correct_value: "22" };
+    assert.equal(matchesIntentionalError("o certo é 22", e), false);
+    assert.equal(matchesIntentionalError("o investimento certo é 22", e), true);
+  });
+
+  it("palavra comum (sem caixa mista nem dígito) segue exigindo o contexto", () => {
+    const e = { description: "capital do país errada", location: "radar", correct_value: "Brasília" };
+    assert.equal(matchesIntentionalError("é Brasília", e), false);
+  });
+});
