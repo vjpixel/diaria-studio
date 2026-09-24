@@ -13,6 +13,9 @@
  * "vermelho confirmado" — só `"fail"` do gate.
  */
 import { describe, it } from "node:test";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import type { PrCheckNode } from "../scripts/lib/pr-checks-gate.ts";
 import {
@@ -23,6 +26,9 @@ import {
   buildStaleRedPrAlarmEmail,
   latestCommitDate,
   type StaleRedPrListEntry,
+  STALE_RED_PR_ALARM_FINGERPRINT,
+  needsSetUpdateComment,
+  staleRedPrSetMarker,
 } from "../scripts/lib/stale-red-pr-alarm.ts";
 
 const NOW = new Date("2026-09-20T18:00:00Z");
@@ -179,5 +185,21 @@ describe("shouldAlarmStaleRedPrs / staleRedPrFindingSetKey / buildStaleRedPrAlar
     assert.match(subject, /1 PR\(s\)/);
     assert.match(body, /#8510/);
     assert.match(body, /test/);
+  });
+});
+
+describe("#8767 — issue única do alarme (fingerprint fixo + comentário por conjunto)", () => {
+  it("fingerprint é fixo, não derivado do conjunto", () => {
+    assert.equal(STALE_RED_PR_ALARM_FINGERPRINT, "open-red-prs");
+    const cli = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../scripts/stale-red-pr-alarm.ts"), "utf8");
+    assert.match(cli, /fingerprint: STALE_RED_PR_ALARM_FINGERPRINT/);
+    assert.doesNotMatch(cli, /const fingerprint = staleRedPrFindingSetKey/);
+  });
+
+  it("comenta só quando o conjunto ainda não foi reportado na issue", () => {
+    const key = "8703:test,8705:test";
+    assert.equal(needsSetUpdateComment(["corpo sem marcador"], key), true);
+    assert.equal(needsSetUpdateComment(["x", `update\n${staleRedPrSetMarker(key)}`], key), false);
+    assert.equal(needsSetUpdateComment([staleRedPrSetMarker("8703:test")], key), true);
   });
 });
