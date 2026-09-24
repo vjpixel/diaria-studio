@@ -196,6 +196,119 @@ describe("derive-editor-requests.ts (#5731)", () => {
     }
   });
 
+  // --- #8694: lead-rewrite vs destaque-swap dentro de 02-reviewed.md ---
+
+  it("reescrita de lead do MESMO artigo (URL idêntica) continua lead-rewrite, não destaque-swap (#8694)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-lead-rewrite-"));
+    try {
+      const editionDir = join(dir, "260811");
+      mkdirSync(editionDir, { recursive: true });
+      const build = (why: string) =>
+        [
+          "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+          "**[Título fixo do artigo](https://example.com/mesmo-artigo)**",
+          `Por que isso importa: ${why}`,
+          "https://example.com/mesmo-artigo",
+          "",
+        ].join("\n");
+
+      writeFileSync(join(editionDir, "02-reviewed.md"), build("motivo original, curto."), "utf8");
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      // Editor reescreve só o "Por que isso importa" — título e URL ficam
+      // exatamente os mesmos (mesmo artigo, mesma escolha editorial).
+      writeFileSync(
+        join(editionDir, "02-reviewed.md"),
+        build("motivo reescrito pelo editor, bem mais longo e específico que o original."),
+        "utf8",
+      );
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const entries = readEntries(editionDir);
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].request_type, "lead-rewrite");
+      assert.equal(entries[0].target, "d1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("troca do destaque por outro artigo (URL e título mudam pra host/path diferente) vira destaque-swap, não lead-rewrite (#8694)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-destaque-swap-reviewed-"));
+    try {
+      const editionDir = join(dir, "260811");
+      mkdirSync(editionDir, { recursive: true });
+      const buildOld = () =>
+        [
+          "**DESTAQUE 2 | 🔬 NOTÍCIAS**",
+          "**[WhatsApp vai copiar o Telegram no seu iPhone?](https://canaltech.com.br/whatsapp-telegram)**",
+          "Por que isso importa: recurso muda como você conversa no grupo.",
+          "https://canaltech.com.br/whatsapp-telegram",
+          "",
+        ].join("\n");
+      const buildNew = () =>
+        [
+          "**DESTAQUE 2 | 🔬 NOTÍCIAS**",
+          "**[GPT-6 Sol e Luna: por que a OpenAI acelerou?](https://openai.com/blog/gpt-6-sol-luna)**",
+          "Por que isso importa: a corrida entre labs mudou de ritmo.",
+          "https://openai.com/blog/gpt-6-sol-luna",
+          "",
+        ].join("\n");
+
+      writeFileSync(join(editionDir, "02-reviewed.md"), buildOld(), "utf8");
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      // Editor troca o destaque inteiro por outro artigo (host e path diferentes).
+      writeFileSync(join(editionDir, "02-reviewed.md"), buildNew(), "utf8");
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const entries = readEntries(editionDir);
+      assert.equal(entries.length, 1, JSON.stringify(entries));
+      assert.equal(entries[0].request_type, "destaque-swap");
+      assert.equal(entries[0].target, "d2");
+      assert.notEqual(entries[0].request_type, "lead-rewrite");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("link-swap dentro do MESMO artigo (query/tracking diferente, host+path iguais) NÃO vira destaque-swap (#8694)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-link-swap-same-article-"));
+    try {
+      const editionDir = join(dir, "260811");
+      mkdirSync(editionDir, { recursive: true });
+      const build = (url: string) =>
+        [
+          "**DESTAQUE 3 | 🚀 LANÇAMENTO**",
+          `**[Título fixo](${url})**`,
+          "Por que isso importa: motivo estável.",
+          url,
+          "",
+        ].join("\n");
+
+      writeFileSync(join(editionDir, "02-reviewed.md"), build("https://example.com/artigo?utm_source=old"), "utf8");
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      // Mesma URL (host+path), só query/tracking mudou — link corrigido pro
+      // mesmo artigo, não uma troca de história.
+      writeFileSync(join(editionDir, "02-reviewed.md"), build("https://example.com/artigo?utm_source=new"), "utf8");
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const entries = readEntries(editionDir);
+      assert.equal(entries.length, 1, JSON.stringify(entries));
+      assert.equal(entries[0].request_type, "link-swap");
+      assert.notEqual(entries[0].request_type, "destaque-swap");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("diff na seção É IA? de 02-reviewed.md dispara eia-choice (#7974 Fix 1)", () => {
     // Bug original: extractSections normalizava "É IA?" pra uma chave com
     // acento/pontuação (ex: "é-ia?"), mas a comparação testava contra a
