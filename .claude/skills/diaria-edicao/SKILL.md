@@ -48,13 +48,13 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator \
 
 | outcome | `--level` | ação |
 |---|---|---|
-| `synced` / `synced_stashed` / `already_up_to_date` | `info` | ✅ prosseguir normalmente |
+| `synced` / `already_up_to_date` | `info` | ✅ prosseguir normalmente |
+| `synced_stash_preserved` (#8719) | `warn` | ⚠️ código sincronizado, MAS um stash foi criado (ff direto recusou por sujeira local) e ficou preservado (NUNCA despopado automaticamente) — avisar editor com a mensagem (cita o hash do stash) e prosseguir |
 | `fetch_failed` | `warn` | ⚠️ avisar editor ("offline, erro de rede ou credencial — edição continua com código local") e prosseguir |
 | `fetch_timeout` (#5302) | `warn` | ⚠️ `git fetch origin` foi morto pelo timeout (não necessariamente offline — fetch grande, refs remotos podem já estar atualizados localmente); avisar editor e prosseguir |
-| `ff_failed` | `warn` | ⚠️ avisar editor ("código divergiu de origin — edição continua com cópia local; considere resolver manualmente") e prosseguir |
-| `stash_failed` / `stash_pop_failed` | `warn` | ⚠️ avisar editor com a mensagem de warning do resultado e prosseguir |
-| `stash_partial_failure` (#3411) | `warn` | ⚠️ stash saiu com erro mas CRIOU um stash apesar disso (ex: falha parcial ao limpar untracked) — recuperado automaticamente via pop; avisar editor com a mensagem e prosseguir |
-| `stash_partial_failure_unrecovered` (#3411) | `warn` | 🛑 idem, mas o pop automático TAMBÉM falhou — stash preservado (nunca descartado), avisar editor com URGÊNCIA (mensagem cita o hash do stash para investigação manual) e prosseguir |
+| `ff_failed` | `warn` | ⚠️ avisar editor ("código divergiu de origin — edição continua com cópia local; considere resolver manualmente"); se `preserved_stash` estiver preenchido, um stash também ficou preservado (ff falhou mesmo sob stash) — citar isso também; prosseguir |
+| `stash_failed` | `warn` | ⚠️ avisar editor com a mensagem de warning do resultado e prosseguir |
+| `stash_partial_failure_unrecovered` (#3411/#8719) | `warn` | 🛑 stash saiu com erro mas CRIOU um stash apesar disso (ex: falha parcial ao limpar untracked) — preservado (NUNCA despopado automaticamente desde #8719), avisar editor com URGÊNCIA (mensagem cita o hash do stash para investigação manual) e prosseguir |
 | `checkout_failed` | `warn` | ⚠️ avisar editor ("estava em outra branch e não foi possível voltar para master") e prosseguir |
 | `sync_in_progress` (#3423) | `warn` | ⚠️ outro `syncCode()` já está rodando neste checkout (lock ativo) — sync desta rodada foi pulado para evitar popar o stash de um processo concorrente; avisar editor ("código pode estar levemente desatualizado, outra sincronização em andamento") e prosseguir |
 

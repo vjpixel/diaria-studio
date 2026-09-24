@@ -6,13 +6,18 @@
  * Cenários cobertos:
  *   - pull --ff-only sucede em tree limpa → outcome "synced"
  *   - tree limpa, já atualizado → "already_up_to_date"
- *   - tree suja → stash → pull → pop → "synced_stashed"
- *   - tree suja, já atualizado → stash → pull → pop → "already_up_to_date"
- *   - dirty tree, stash pop falhou → "stash_pop_failed" (stash preservado)
- *   - dirty tree, stash falhou → "stash_failed" (tree não tocada)
- *   - #6668: dirty tree, stash pop deixa arquivo UU (marcador de conflito
- *     literal no disco) → "stash_pop_conflict" — distinto de "stash_pop_failed",
- *     mensagem ERROR, independente do exit code do pop
+ *   - #8719 (24/09/2026, decisão do editor): tree suja, ff-only DIRETO (antes
+ *     de qualquer stash) já resolve → "synced"/"already_up_to_date", SEM
+ *     criar nenhum stash
+ *   - #8719: tree suja, ff direto recusa, stash protege, ff SOB stash sucede
+ *     → "synced_stash_preserved" — stash NUNCA é despopado automaticamente
+ *   - #8719: idem, mas ff SOB stash também falha (divergência genuína) →
+ *     "ff_failed" com `preserved_stash` preenchido (stash preservado mesmo
+ *     assim)
+ *   - dirty tree, stash falhou (nada criado) → "stash_failed" (tree não tocada)
+ *   - #6668 (histórico): a checagem de conflito deixado por `git stash pop`
+ *     ficou inalcançável desde #8719 — este módulo nunca mais chama
+ *     `git stash pop` automático
  *   - fetch falhou (offline) → "fetch_failed", proceed=true (fail-soft)
  *   - pull --ff-only falhou (divergência) → "ff_failed", proceed=true
  *   - branch != master → checkout master primeiro
@@ -105,6 +110,33 @@ const STASH_PUSH_KEY = `git stash push --include-untracked -m ${GIT_SYNC_STASH_M
 function makeSpawn(responses: Record<string, SpawnResult>): SpawnFn {
   return (cmd: string, args: string[]) => {
     const key = [cmd, ...args].join(" ");
+    return responses[key] ?? ok("");
+  };
+}
+
+/**
+ * #8719: variante de `makeSpawn()` para comandos que `syncCodeLocked()` pode
+ * chamar MAIS DE UMA VEZ dentro de uma única `syncCode()`, com respostas
+ * DIFERENTES por chamada — o caso novo desde #8719 é `git merge --ff-only
+ * origin/master`, chamado até 2×: 1ª tentativa DIRETA (antes de qualquer
+ * stash), 2ª tentativa SOB stash (só quando a 1ª recusa). `makeSpawn()` usa
+ * um mapa estático por chave "cmd args" e não distingue essas 2 chamadas.
+ *
+ * `sequenced` mapeia uma chave pra um ARRAY de respostas consumidas em
+ * ordem; a última é repetida se a chave for chamada mais vezes que o array
+ * tem entradas. Chaves fora de `sequenced` continuam vindo do mapa estático
+ * `responses` (comportamento de `makeSpawn()` de sempre).
+ */
+function makeSequencedSpawn(responses: Record<string, SpawnResult>, sequenced: Record<string, SpawnResult[]>): SpawnFn {
+  const counters: Record<string, number> = {};
+  return (cmd: string, args: string[]) => {
+    const key = [cmd, ...args].join(" ");
+    const seq = sequenced[key];
+    if (seq) {
+      const i = counters[key] ?? 0;
+      counters[key] = i + 1;
+      return seq[Math.min(i, seq.length - 1)];
+    }
     return responses[key] ?? ok("");
   };
 }
@@ -220,101 +252,117 @@ describe("git-sync — cenários de sucesso", () => {
     assert.equal(r.proceed, true);
   });
 
-  it("tree suja, stash → pull → pop sucedido → 'synced_stashed'", () => {
-    const spawn = makeSpawn({
-      "git rev-parse --abbrev-ref HEAD": ok("master"),
-      "git fetch origin": ok(""),
-      "git status --porcelain": ok(" M .claude/settings.json\n M seed/lancamentos-tool-allowlist.txt"),
-      [STASH_PUSH_KEY]: ok("Saved working directory..."),
-      "git merge --ff-only origin/master": ok("Fast-forward\n 3 files changed"),
-      "git stash pop": ok("On branch master..."),
-    });
+  it("#8719: tree suja, ff DIRETO já resolve (sujeira local não conflita) → 'synced', SEM nenhum stash", () => {
+    // Decisão do editor (24/09/2026): tenta ff-only ANTES de qualquer stash —
+    // a maioria das mudanças locais soltas não colide com origin/master.
+    const stashCalled: boolean[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === STASH_PUSH_KEY) stashCalled.push(true);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M .claude/settings.json\n M seed/lancamentos-tool-allowlist.txt"),
+        "git merge --ff-only origin/master": ok("Fast-forward\n 3 files changed"),
+      })(cmd, args);
+    };
 
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    assert.equal(r.outcome, "synced_stashed");
+    assert.equal(r.outcome, "synced");
     assert.equal(r.proceed, true);
-    assert.match(r.message, /stash/);
+    assert.equal(r.preserved_stash, null);
+    assert.equal(stashCalled.length, 0, "ff direto resolveu — nenhum stash deveria ter sido criado");
   });
 
-  it("tree suja, já atualizado após stash → 'already_up_to_date'", () => {
-    const spawn = makeSpawn({
-      "git rev-parse --abbrev-ref HEAD": ok("master"),
-      "git fetch origin": ok(""),
-      "git status --porcelain": ok(" M .claude/settings.local.json"),
-      [STASH_PUSH_KEY]: ok("Saved working directory..."),
-      "git merge --ff-only origin/master": ok("Already up to date."),
-      "git stash pop": ok(""),
-    });
+  it("#8719: tree suja, ff DIRETO já resolve e já estava atualizado → 'already_up_to_date', SEM stash", () => {
+    const stashCalled: boolean[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === STASH_PUSH_KEY) stashCalled.push(true);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M .claude/settings.local.json"),
+        "git merge --ff-only origin/master": ok("Already up to date."),
+      })(cmd, args);
+    };
 
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "already_up_to_date");
     assert.equal(r.proceed, true);
+    assert.equal(stashCalled.length, 0);
+  });
+
+  it("#8719: tree suja, ff DIRETO recusa (sujeira colide), stash protege, ff SOB stash sucede → 'synced_stash_preserved', stash NUNCA despopado", () => {
+    const popCalled: boolean[] = [];
+    const seqSpawn = makeSequencedSpawn(
+      {
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M .claude/settings.json\n M seed/lancamentos-tool-allowlist.txt"),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
+        "git rev-parse refs/stash": ok("abc1234\n"),
+      },
+      {
+        // 1ª chamada (ff DIRETO, antes do stash) recusa; 2ª (SOB stash) sucede.
+        "git merge --ff-only origin/master": [
+          fail("error: Your local changes to the following files would be overwritten by merge"),
+          ok("Fast-forward\n 3 files changed"),
+        ],
+      },
+    );
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git stash pop") popCalled.push(true);
+      return seqSpawn(cmd, args);
+    };
+
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.equal(r.outcome, "synced_stash_preserved");
+    assert.equal(r.proceed, true);
+    assert.equal(popCalled.length, 0, "#8719: nunca despopa automaticamente");
+    assert.deepEqual(r.preserved_stash, { ref: "abc1234", message: GIT_SYNC_STASH_MESSAGE });
+    assert.match(r.message, /stash/i);
   });
 });
 
 describe("git-sync — dirty tree edge cases", () => {
-  it("stash pop falhou (conflito) → 'stash_pop_failed', proceed=true", () => {
-    const spawn = makeSpawn({
-      "git rev-parse --abbrev-ref HEAD": ok("master"),
-      "git fetch origin": ok(""),
-      "git status --porcelain": ok(" M .claude/settings.json"),
-      [STASH_PUSH_KEY]: ok("Saved working directory..."),
-      "git rev-parse refs/stash": ok("abc1234\n"),
-      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
-      "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
-    });
+  it("#8719: ff DIRETO recusa, stash protege, ff SOB stash TAMBÉM falha (divergência genuína) → 'ff_failed', stash preservado (nunca popado)", () => {
+    const popCalled: boolean[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git stash pop") popCalled.push(true);
+      return makeSequencedSpawn(
+        {
+          "git rev-parse --abbrev-ref HEAD": ok("master"),
+          "git fetch origin": ok(""),
+          "git status --porcelain": ok(" M .claude/settings.json"),
+          [STASH_PUSH_KEY]: ok("Saved working directory..."),
+          "git rev-parse refs/stash": ok("abc1234\n"),
+        },
+        {
+          "git merge --ff-only origin/master": [
+            fail("error: Your local changes to the following files would be overwritten by merge"),
+            fail("fatal: Not possible to fast-forward, aborting."),
+          ],
+        },
+      )(cmd, args);
+    };
 
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    assert.equal(r.outcome, "stash_pop_failed");
+    assert.equal(r.outcome, "ff_failed");
     assert.equal(r.proceed, true);
-    assert.ok(r.warnings.some((w) => /stash pop/i.test(w)));
-  });
-
-  it("#7740: stash pop falhou → stash NÃO fica órfão silenciosamente — preserved_stash reporta ref+mensagem identificável", () => {
-    const spawn = makeSpawn({
-      "git rev-parse --abbrev-ref HEAD": ok("master"),
-      "git fetch origin": ok(""),
-      "git status --porcelain": ok(" M .claude/settings.json"),
-      [STASH_PUSH_KEY]: ok("Saved working directory..."),
-      "git rev-parse refs/stash": ok("abc1234\n"),
-      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
-      "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
-    });
-
-    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    assert.equal(r.outcome, "stash_pop_failed");
-    // #7740: dado ESTRUTURADO do stash preservado, não só texto solto em warnings.
+    assert.equal(popCalled.length, 0, "#8719: nunca despopa, mesmo quando o ff sob stash também falha");
     assert.deepEqual(r.preserved_stash, { ref: "abc1234", message: GIT_SYNC_STASH_MESSAGE });
-    // A mensagem do próprio comando de criação já é a mensagem identificável —
-    // não a mensagem default do git ("WIP on <branch>: ...", indistinguível de
-    // um stash manual de sessão interativa, a raiz do vazamento da #7740).
-    assert.ok(
-      r.warnings.some((w) => w.includes(GIT_SYNC_STASH_MESSAGE)),
-      "warning deve citar a mensagem identificável do stash preservado",
-    );
+    assert.match(r.message, /stash/i);
   });
 
-  it("#7740: stash pop popou com sucesso (caso comum) → preserved_stash é null, nenhum stash órfão", () => {
+  it("stash falhou (ff direto também recusou) → 'stash_failed', tree não tocada, proceed=true", () => {
     const spawn = makeSpawn({
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.json"),
-      [STASH_PUSH_KEY]: ok("Saved working directory..."),
-      "git rev-parse refs/stash": ok("abc1234\n"),
-      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
-      "git stash pop": ok("Dropped refs/stash@{0}"),
-    });
-
-    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    assert.equal(r.outcome, "synced_stashed");
-    assert.equal(r.preserved_stash, null);
-  });
-
-  it("stash falhou → 'stash_failed', tree não tocada, proceed=true", () => {
-    const spawn = makeSpawn({
-      "git rev-parse --abbrev-ref HEAD": ok("master"),
-      "git fetch origin": ok(""),
-      "git status --porcelain": ok(" M .claude/settings.json"),
+      "git merge --ff-only origin/master": fail("error: Your local changes to the following files would be overwritten by merge"),
       [STASH_PUSH_KEY]: fail("error: cannot stash"),
     });
 
@@ -324,210 +372,120 @@ describe("git-sync — dirty tree edge cases", () => {
     assert.ok(r.warnings.some((w) => /stash/i.test(w)));
   });
 
-  it("'No local changes to save' → não tenta stash pop", () => {
-    // git stash pode retornar exit 0 com essa mensagem se não há nada pra stash
+  it("#8719: 'No local changes to save' (ff direto recusou mas stash não tinha nada) → 'already_up_to_date', sem preserved_stash, nunca chama pop", () => {
+    // git stash pode retornar exit 0 com essa mensagem se não há nada pra
+    // guardar — cenário raro (ff direto recusou por outro motivo, mas a tree
+    // "suja" só era falso-positivo do dirty check), tratado por completude.
     const popCalled: boolean[] = [];
-    const spawn: SpawnFn = (cmd, args) => {
-      const key = [cmd, ...args].join(" ");
-      if (key === "git stash pop") popCalled.push(true);
-      return makeSpawn({
+    const seqSpawn = makeSequencedSpawn(
+      {
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M .claude/settings.json"),
         [STASH_PUSH_KEY]: ok("No local changes to save"),
-        "git merge --ff-only origin/master": ok("Already up to date."),
-      })(cmd, args);
-    };
-
-    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    // nada foi stashado → pop não deve ter sido chamado
-    assert.equal(popCalled.length, 0, "stash pop não deve ser chamado quando nada foi stashado");
-    assert.equal(r.outcome, "already_up_to_date");
-  });
-
-  it("#2716 item 5c: 'No local changes to save' + merge traz mudanças → 'synced' (NÃO 'synced_stashed')", () => {
-    // Regressão: antes do fix, o outcome era hardcoded para "synced_stashed" sempre
-    // que a tree era tratada como dirty, mesmo quando `git stash` não guardou nada
-    // (stashedSomething=false). O outcome enganava o diagnóstico — parecia que houve
-    // stash/pop quando nunca houve. Cenário: status --porcelain falhou (força dirty
-    // por segurança), stash não tinha nada pra guardar, merge trouxe mudanças reais.
-    const popCalled: boolean[] = [];
+      },
+      {
+        "git merge --ff-only origin/master": [
+          fail("error: Your local changes to the following files would be overwritten by merge"),
+          ok("Already up to date."),
+        ],
+      },
+    );
     const spawn: SpawnFn = (cmd, args) => {
       const key = [cmd, ...args].join(" ");
       if (key === "git stash pop") popCalled.push(true);
-      return makeSpawn({
+      return seqSpawn(cmd, args);
+    };
+
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.equal(popCalled.length, 0, "stash pop nunca é chamado (#8719) — nem quando nada foi stashado");
+    assert.equal(r.outcome, "already_up_to_date");
+    assert.equal(r.preserved_stash, null, "nada foi de fato guardado — nada a preservar");
+  });
+
+  it("#2716 item 5c / #8719: 'No local changes to save' + merge sob stash traz mudanças → 'synced' (NÃO 'synced_stash_preserved')", () => {
+    // Regressão: o outcome não pode afirmar que houve stash/preservação
+    // quando `git stash` explicitamente não guardou nada (stashedSomething=false).
+    // Cenário: status --porcelain falhou (força dirty por segurança), ff direto
+    // recusa (força entrada no ramo de stash), stash não tinha nada pra
+    // guardar, ff sob stash traz mudanças reais.
+    const popCalled: boolean[] = [];
+    const seqSpawn = makeSequencedSpawn(
+      {
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": fail("fatal: unable to read index"), // força dirty
         [STASH_PUSH_KEY]: ok("No local changes to save"),
-        "git merge --ff-only origin/master": ok("Fast-forward\n 2 files changed"),
-      })(cmd, args);
+      },
+      {
+        "git merge --ff-only origin/master": [
+          fail("error: Your local changes to the following files would be overwritten by merge"),
+          ok("Fast-forward\n 2 files changed"),
+        ],
+      },
+    );
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git stash pop") popCalled.push(true);
+      return seqSpawn(cmd, args);
     };
 
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(popCalled.length, 0, "stash pop não deve ser chamado quando nada foi stashado");
-    assert.equal(r.outcome, "synced", "outcome deve ser 'synced' (não 'synced_stashed') quando nada foi de fato stashado");
+    assert.equal(
+      r.outcome,
+      "synced",
+      "outcome deve ser 'synced' (não 'synced_stash_preserved') quando nada foi de fato stashado",
+    );
+    assert.equal(r.preserved_stash, null);
     assert.equal(r.proceed, true);
   });
 });
 
-describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco", () => {
+describe("git-sync — #6668 (histórico) / #8719: nunca há 'git stash pop', logo nunca há conflito de pop", () => {
   /**
-   * Reprodução real (#6668, checkout compartilhado 28/08 ~23:00): `SKILL.md`
-   * ficou em `UU` com marcadores `<<<<<<< Updated upstream` / `>>>>>>>
-   * Stashed changes` literais, SEM merge/rebase em curso — assinatura de um
-   * `git stash pop` que conflitou. O fail-soft genérico ("pop falhou, warn,
-   * segue") não distinguia esse caso de qualquer outro warning — outra
-   * sessão lendo o arquivo o trataria como íntegro.
-   *
-   * `makeSpawn()` usa um mapa estático por chave "cmd args" — não dá pra
-   * responder diferente pra 2 chamadas com a MESMA chave (aqui,
-   * "git status --porcelain" é chamado 2×: o dirty check ANTES do stash, e a
-   * checagem nova de unmerged DEPOIS do pop). Os testes abaixo usam um
-   * spawn customizado com contador pra diferenciar as 2 chamadas.
+   * #6668 detectava conflito deixado no disco por um `git stash pop`
+   * automático (checkout compartilhado 28/08 ~23:00, `SKILL.md` ficou em
+   * `UU` com marcadores literais sem merge/rebase em curso). #8719
+   * (24/09/2026, decisão do editor) removeu esse `git stash pop` automático
+   * por completo — sem pop, essa classe de conflito não pode mais se
+   * originar AQUI (a 2ª linha de defesa repo-wide independente,
+   * `test/no-versioned-conflict-markers.test.ts`, continua cobrindo outras
+   * origens). Os testes antigos deste describe testavam um código-caminho
+   * que não existe mais (mock de "git stash pop" respondendo conflito, que
+   * nunca é sequer chamado hoje); substituídos por um único teste que
+   * confirma o invariante novo diretamente.
    */
-  it("stash pop falha (conflito) E deixa arquivo UU → 'stash_pop_conflict' (NÃO 'stash_pop_failed')", () => {
-    let statusCalls = 0;
-    const spawn: SpawnFn = (cmd, args) => {
-      const key = [cmd, ...args].join(" ");
-      if (key === "git status --porcelain") {
-        statusCalls++;
-        // 1ª chamada = dirty check (antes do stash); 2ª = pós-pop (unmerged).
-        return statusCalls === 1 ? ok(" M hermes/skills/hermes-diaria-continuo/SKILL.md") : ok("UU hermes/skills/hermes-diaria-continuo/SKILL.md");
-      }
-      return makeSpawn({
+  it("mesmo com um mock de 'git stash pop' pronto pra responder conflito, ele NUNCA é chamado", () => {
+    const popCalled: boolean[] = [];
+    const seqSpawn = makeSequencedSpawn(
+      {
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M hermes/skills/hermes-diaria-continuo/SKILL.md"),
         [STASH_PUSH_KEY]: ok("Saved working directory..."),
-        "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+        "git rev-parse refs/stash": ok("abc1234\n"),
+        // Se este módulo chamasse "git stash pop" (não chama mais), este
+        // mock simularia exatamente o conflito real do incidente #6668.
         "git stash pop": fail("CONFLICT (content): Merge conflict in hermes/skills/hermes-diaria-continuo/SKILL.md"),
-      })(cmd, args);
-    };
-
-    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    assert.equal(r.outcome, "stash_pop_conflict");
-    assert.equal(r.proceed, true, "ainda fail-soft — nunca bloqueia a edição");
-    assert.match(r.message, /ERROR/, "mensagem deve ser ERROR, mais forte que o WARN genérico");
-    assert.match(r.message, /SKILL\.md/, "mensagem deve nomear o arquivo em conflito");
-    assert.ok(r.warnings.some((w) => /stash_pop_conflict|UU|unmerged|conflito n[aã]o/i.test(w) || /ERROR/.test(w)));
-    // #7740: mesmo com marcador de conflito no disco (#6668), o stash em si não
-    // fica órfão sem ninguém saber — reportado estruturado.
-    assert.equal(r.preserved_stash?.message, GIT_SYNC_STASH_MESSAGE);
-  });
-
-  it("stash pop retorna exit 0 MAS deixa arquivo UU (defensivo) → ainda 'stash_pop_conflict'", () => {
-    // Não deveria acontecer na prática (um pop limpo não deixa unmerged),
-    // mas o guard não confia só no exit code — é exatamente esse tipo de
-    // suposição que o incidente #6668 expôs como furo.
-    let statusCalls = 0;
-    const spawn: SpawnFn = (cmd, args) => {
-      const key = [cmd, ...args].join(" ");
-      if (key === "git status --porcelain") {
-        statusCalls++;
-        return statusCalls === 1 ? ok(" M arquivo.txt") : ok("UU arquivo.txt");
-      }
-      return makeSpawn({
-        "git rev-parse --abbrev-ref HEAD": ok("master"),
-        "git fetch origin": ok(""),
-        [STASH_PUSH_KEY]: ok("Saved working directory..."),
-        "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
-        "git stash pop": ok("On branch master..."), // exit 0, apesar disso
-      })(cmd, args);
-    };
-
-    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    assert.equal(r.outcome, "stash_pop_conflict");
-    assert.equal(r.proceed, true);
-    // #6668 review consolidado: no ramo defensivo (pop exit 0), NÃO afirmar
-    // "stash preservado" — um pop bem-sucedido já teria dropado o stash por
-    // semântica padrão do git; a mensagem antiga estaria errada aqui.
-    assert.doesNotMatch(r.message, /Stash preservado \(N[ÃA]O fazer/);
-    // #7740 (achado P2/alta do review da PR #7791): o campo ESTRUTURADO
-    // precisa concordar com a prosa acima. A 1ª versão preenchia
-    // `preserved_stash` incondicionalmente neste ramo — apontando o operador
-    // (e o banner do sync-code.ts) para um stash que o pop bem-sucedido já
-    // dropou. O teste existente só olhava `r.message`, por isso não pegou.
-    assert.equal(
-      r.preserved_stash,
-      null,
-      "pop exit 0 já dropou o stash — preserved_stash não pode afirmar que existe",
+      },
+      {
+        "git merge --ff-only origin/master": [
+          fail("error: Your local changes to the following files would be overwritten by merge"),
+          ok("Fast-forward\n 1 file changed"),
+        ],
+      },
     );
-  });
-
-  it("ff também falhou (divergência) E pop deixou UU → 'stash_pop_conflict' (não 'ff_failed')", () => {
-    // O outcome mais específico (arquivo corrompido no disco) tem prioridade
-    // sobre "ff_failed" — a divergência sozinha não corrompe nada; o arquivo
-    // com marcador literal é o problema mais urgente dos dois.
-    let statusCalls = 0;
     const spawn: SpawnFn = (cmd, args) => {
       const key = [cmd, ...args].join(" ");
-      if (key === "git status --porcelain") {
-        statusCalls++;
-        return statusCalls === 1 ? ok(" M arquivo.txt") : ok("UU arquivo.txt");
-      }
-      return makeSpawn({
-        "git rev-parse --abbrev-ref HEAD": ok("master"),
-        "git fetch origin": ok(""),
-        [STASH_PUSH_KEY]: ok("Saved working directory..."),
-        "git merge --ff-only origin/master": fail("fatal: Not possible to fast-forward, aborting."),
-        "git stash pop": fail("CONFLICT (content): Merge conflict in arquivo.txt"),
-      })(cmd, args);
+      if (key === "git stash pop") popCalled.push(true);
+      return seqSpawn(cmd, args);
     };
 
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    assert.equal(r.outcome, "stash_pop_conflict");
-    assert.match(r.message, /ff.*falhou|divergência/i);
-  });
-
-  it("review consolidado #6668: git status --porcelain pós-pop FALHA → warning explícito (não silêncio), cai de volta pro exit code do pop", () => {
-    // A checagem de unmerged em si pode falhar (índice corrompido, permissão).
-    // Antes desta correção, `findUnmergedPaths` engolia isso em silêncio —
-    // exatamente o furo que o #6668 original expôs (confiar só no exit code
-    // sem trilha nenhuma de warning quando a checagem não roda).
-    let statusCalls = 0;
-    const spawn: SpawnFn = (cmd, args) => {
-      const key = [cmd, ...args].join(" ");
-      if (key === "git status --porcelain") {
-        statusCalls++;
-        // 1ª chamada (dirty check) OK; 2ª chamada (pós-pop, #6668) falha.
-        return statusCalls === 1 ? ok(" M arquivo.txt") : fail("fatal: unable to read index file", 1);
-      }
-      return makeSpawn({
-        "git rev-parse --abbrev-ref HEAD": ok("master"),
-        "git fetch origin": ok(""),
-        [STASH_PUSH_KEY]: ok("Saved working directory..."),
-        "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
-        "git stash pop": fail("CONFLICT (content): Merge conflict in arquivo.txt"),
-      })(cmd, args);
-    };
-
-    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    // Sem conseguir confirmar unmerged, cai de volta pro outcome derivado do
-    // exit code do pop (comportamento pré-#6668, preservado como fallback).
-    assert.equal(r.outcome, "stash_pop_failed");
-    assert.ok(
-      r.warnings.some((w) => /status --porcelain.*falhou|não foi possível confirmar/i.test(w)),
-      "deve haver um warning explícito avisando que a checagem de unmerged não pôde rodar — " +
-        `warnings recebidos: ${JSON.stringify(r.warnings)}`,
-    );
-  });
-
-  it("stash pop sem UU (caso comum, já coberto acima) não regride — 'synced_stashed' continua saindo", () => {
-    // git status --porcelain responde a MESMA coisa (sem UU) nas 2 chamadas
-    // (dirty check + pós-pop) — confirma que a checagem nova não interfere
-    // no caminho feliz já coberto no describe "cenários de sucesso".
-    const spawn = makeSpawn({
-      "git rev-parse --abbrev-ref HEAD": ok("master"),
-      "git fetch origin": ok(""),
-      "git status --porcelain": ok(" M .claude/settings.json"),
-      [STASH_PUSH_KEY]: ok("Saved working directory..."),
-      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
-      "git stash pop": ok("On branch master..."),
-    });
-
-    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    assert.equal(r.outcome, "synced_stashed");
-    assert.equal(r.proceed, true);
+    assert.equal(popCalled.length, 0, "#8719: git stash pop nunca é chamado por este módulo");
+    assert.equal(r.outcome, "synced_stash_preserved");
+    assert.deepEqual(r.preserved_stash, { ref: "abc1234", message: GIT_SYNC_STASH_MESSAGE });
   });
 });
 
@@ -599,28 +557,42 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
   });
 
   it("status --porcelain SEM unmerged (só mudança comum) não regride — segue pro caminho normal de stash", () => {
-    const spawn = makeSpawn({
-      "git rev-parse --abbrev-ref HEAD": ok("master"),
-      "git fetch origin": ok(""),
-      "git status --porcelain": ok(" M arquivo-normal.txt"),
-      [STASH_PUSH_KEY]: ok("Saved working directory..."),
-      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
-      "git stash pop": ok("On branch master..."),
-    });
+    const spawn = makeSequencedSpawn(
+      {
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M arquivo-normal.txt"),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
+        "git rev-parse refs/stash": ok("abc1234\n"),
+      },
+      {
+        "git merge --ff-only origin/master": [
+          fail("error: Your local changes to the following files would be overwritten by merge"),
+          ok("Fast-forward\n 1 file changed"),
+        ],
+      },
+    );
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.notEqual(r.outcome, "preexisting_unmerged_state");
-    assert.equal(r.outcome, "synced_stashed");
+    assert.equal(r.outcome, "synced_stash_preserved");
   });
 
   it("se git status --porcelain FALHA (status != 0), a checagem de pré-existência não dispara falso-positivo — cai no caminho 'dirty por segurança' já existente", () => {
-    const spawn = makeSpawn({
-      "git rev-parse --abbrev-ref HEAD": ok("master"),
-      "git fetch origin": ok(""),
-      "git status --porcelain": fail("fatal: unable to read index file", 1),
-      [STASH_PUSH_KEY]: ok("Saved working directory..."),
-      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
-      "git stash pop": ok("On branch master..."),
-    });
+    const spawn = makeSequencedSpawn(
+      {
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": fail("fatal: unable to read index file", 1),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
+        "git rev-parse refs/stash": ok("abc1234\n"),
+      },
+      {
+        "git merge --ff-only origin/master": [
+          fail("error: Your local changes to the following files would be overwritten by merge"),
+          ok("Fast-forward\n 1 file changed"),
+        ],
+      },
+    );
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.notEqual(r.outcome, "preexisting_unmerged_state");
   });
@@ -646,18 +618,25 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
   });
 
   it("branch != master SEM unmerged pré-existente não regride — checkout master roda normalmente", () => {
-    const spawn = makeSpawn({
-      "git rev-parse --abbrev-ref HEAD": ok("overnight/fix-x"),
-      "git status --porcelain": ok(" M arquivo-normal.txt"),
-      "git checkout master": ok("Switched to branch 'master'"),
-      "git fetch origin": ok(""),
-      [STASH_PUSH_KEY]: ok("Saved working directory..."),
-      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
-      "git stash pop": ok("On branch master..."),
-    });
+    const spawn = makeSequencedSpawn(
+      {
+        "git rev-parse --abbrev-ref HEAD": ok("overnight/fix-x"),
+        "git status --porcelain": ok(" M arquivo-normal.txt"),
+        "git checkout master": ok("Switched to branch 'master'"),
+        "git fetch origin": ok(""),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
+        "git rev-parse refs/stash": ok("abc1234\n"),
+      },
+      {
+        "git merge --ff-only origin/master": [
+          fail("error: Your local changes to the following files would be overwritten by merge"),
+          ok("Fast-forward\n 1 file changed"),
+        ],
+      },
+    );
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.notEqual(r.outcome, "preexisting_unmerged_state");
-    assert.equal(r.outcome, "synced_stashed");
+    assert.equal(r.outcome, "synced_stash_preserved");
   });
 });
 
@@ -686,7 +665,12 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
     };
   }
 
-  it("stash saiu não-zero mas CRIOU stash (refs/stash mudou) + pop recupera → 'stash_partial_failure'", () => {
+  it("#8719: stash saiu não-zero mas CRIOU stash (refs/stash mudou) → 'stash_partial_failure_unrecovered' SEMPRE, NUNCA tenta pop de recuperação", () => {
+    // Antes do #8719, este ramo tentava um `git stash pop` de "recuperação
+    // automática" e só preservava o stash se ELE TAMBÉM falhasse
+    // ("stash_partial_failure" quando recuperava). Decisão do editor
+    // (24/09/2026): nunca `git stash pop` automático, nem aqui — outcome
+    // único agora, incondicional.
     const popCalled: boolean[] = [];
     const stashRefSpawn = makeStashRefSequence([
       fail("fatal: ambiguous argument 'refs/stash': unknown revision", 128), // antes: nenhum stash existia
@@ -700,20 +684,22 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M arquivo.txt"),
+        // ff DIRETO (antes do stash) recusa — necessário pra chegar no
+        // ramo de stash nesta versão do fluxo (#8719).
+        "git merge --ff-only origin/master": fail("error: Your local changes to the following files would be overwritten by merge"),
         [STASH_PUSH_KEY]: fail(
           "warning: failed to remove some/untracked/dir: Permission denied",
           1,
         ),
-        "git stash pop": ok("On branch master...\nDropped refs/stash@{0}"),
       })(cmd, args);
     };
 
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    assert.equal(r.outcome, "stash_partial_failure");
+    assert.equal(r.outcome, "stash_partial_failure_unrecovered");
     assert.equal(r.proceed, true);
-    assert.equal(popCalled.length, 1, "pop deve ser tentado automaticamente quando um stash foi detectado");
+    assert.equal(popCalled.length, 0, "#8719: nunca tenta pop, nem como 'recuperação' deste caso");
     assert.match(r.message, /a1b2c3d4/, "mensagem deve citar o hash do stash pra investigação");
-    assert.match(r.message, /pop/i);
+    assert.match(r.message, /preservado/i);
     assert.doesNotMatch(
       r.message,
       /working tree não tocada/i,
@@ -721,7 +707,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
     );
   });
 
-  it("stash saiu não-zero mas CRIOU stash + pop TAMBÉM falha → 'stash_partial_failure_unrecovered', stash preservado (sem drop)", () => {
+  it("stash saiu não-zero mas CRIOU stash → 'stash_partial_failure_unrecovered', stash preservado (sem drop)", () => {
     const dropCalled: boolean[] = [];
     const stashRefSpawn = makeStashRefSequence([
       fail("fatal: ambiguous argument 'refs/stash': unknown revision", 128),
@@ -735,18 +721,18 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M arquivo.txt"),
+        "git merge --ff-only origin/master": fail("error: Your local changes to the following files would be overwritten by merge"),
         [STASH_PUSH_KEY]: fail(
           "warning: failed to remove some/untracked/dir: Permission denied",
           1,
         ),
-        "git stash pop": fail("CONFLICT (content): Merge conflict in arquivo.txt"),
       })(cmd, args);
     };
 
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "stash_partial_failure_unrecovered");
     assert.equal(r.proceed, true);
-    assert.equal(dropCalled.length, 0, "stash NUNCA deve ser descartado (git stash drop) quando o pop falha");
+    assert.equal(dropCalled.length, 0, "stash NUNCA deve ser descartado (git stash drop)");
     assert.match(r.message, /deadbeef01/, "mensagem deve citar o hash do stash preservado");
     assert.match(r.message, /investiga(ç|c)[aã]o manual|preservado/i);
   });
@@ -762,6 +748,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M arquivo.txt"),
+        "git merge --ff-only origin/master": fail("error: Your local changes to the following files would be overwritten by merge"),
         // refs/stash falha (nunca existiu) tanto antes quanto depois — mesmo resultado
         "git rev-parse --verify refs/stash": fail(
           "fatal: ambiguous argument 'refs/stash': unknown revision",
@@ -791,6 +778,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M arquivo.txt"),
+        "git merge --ff-only origin/master": fail("error: Your local changes to the following files would be overwritten by merge"),
         // mesmo hash antes E depois — nenhum stash NOVO foi criado
         "git rev-parse --verify refs/stash": ok("existing-stash-hash-999"),
         [STASH_PUSH_KEY]: fail("error: cannot stash"),
@@ -921,23 +909,33 @@ describe("git-sync — cenários de falha fail-soft", () => {
 describe("git-sync — robustez de detecção (locale + status)", () => {
   it("git status falhou → tratado como dirty (protege via stash), proceed=true", () => {
     // #2686 review (angles A/B): se status falha, NÃO assumir tree limpa —
-    // isso pularia a proteção do stash.
+    // isso pularia a proteção do stash. #8719: o ff DIRETO ainda é tentado
+    // primeiro mesmo neste caminho — precisa recusar pra provar que o stash
+    // de fato entra em ação.
     const stashCalled: boolean[] = [];
-    const spawn: SpawnFn = (cmd, args) => {
-      const key = [cmd, ...args].join(" ");
-      if (key === STASH_PUSH_KEY) stashCalled.push(true);
-      return makeSpawn({
+    const seqSpawn = makeSequencedSpawn(
+      {
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": fail("fatal: unable to read index"),
         [STASH_PUSH_KEY]: ok("Saved working directory..."),
-        "git merge --ff-only origin/master": ok("Already up to date."),
-        "git stash pop": ok(""),
-      })(cmd, args);
+        "git rev-parse refs/stash": ok("abc1234\n"),
+      },
+      {
+        "git merge --ff-only origin/master": [
+          fail("error: Your local changes to the following files would be overwritten by merge"),
+          ok("Already up to date."),
+        ],
+      },
+    );
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === STASH_PUSH_KEY) stashCalled.push(true);
+      return seqSpawn(cmd, args);
     };
 
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
-    assert.equal(stashCalled.length, 1, "status-fail deve forçar o caminho com stash");
+    assert.equal(stashCalled.length, 1, "status-fail deve forçar o caminho com stash (após o ff direto recusar)");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /status falhou/i.test(w)));
   });
@@ -1828,36 +1826,43 @@ describe("git-sync — #3435 finding 2: wiring do lock default de syncCode() nun
 });
 
 describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a contagem REAL de spawn(...) em syncCodeLocked()", () => {
-  it("pior caso documentado (branch != master, dirty tree, stash/merge/pop bem-sucedidos) roda EXATAMENTE MAX_SEQUENTIAL_GIT_SPAWNS spawns", () => {
-    // Regressão-alvo: um 9º spawn futuro em syncCodeLocked() sem atualizar
+  it("pior caso documentado (branch != master, dirty tree, ff direto recusa, stash protege, ff sob stash sucede) roda EXATAMENTE MAX_SEQUENTIAL_GIT_SPAWNS spawns", () => {
+    // Regressão-alvo: um spawn novo futuro em syncCodeLocked() sem atualizar
     // MAX_SEQUENTIAL_GIT_SPAWNS sub-dimensionaria LOCK_STALE_MS silenciosamente
-    // de novo (a mesma classe de bug do #3430 gap 1, mas dessa vez indetectável
-    // até agora — a contagem de 8 era só um comentário, nunca verificada).
-    // Cenário: exatamente o caminho descrito no comentário de
-    // MAX_SEQUENTIAL_GIT_SPAWNS — rev-parse HEAD(1) + checkout master(1) +
-    // fetch(1) + status(1) + rev-parse verify refs/stash ANTES(1) +
-    // stash --include-untracked(1) + merge --ff-only(1) + stash pop(1) = 8.
+    // de novo (a mesma classe de bug do #3430 gap 1). #8719 (24/09/2026):
+    // pior caso mudou — ff DIRETO (antes de qualquer stash) recusa, só então
+    // stash protege e ff é tentado de novo SOB stash; nunca há pop (ver
+    // comentário de MAX_SEQUENTIAL_GIT_SPAWNS em scripts/lib/git-sync.ts pra
+    // contagem passo a passo).
     let spawnCallCount = 0;
-    const spawn: SpawnFn = (cmd, args) => {
-      spawnCallCount++;
-      return makeSpawn({
+    const seqSpawn = makeSequencedSpawn(
+      {
         "git rev-parse --abbrev-ref HEAD": ok("overnight/fix-x"),
         "git checkout master": ok("Switched to branch 'master'"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M arquivo.txt"),
         "git rev-parse --verify refs/stash": ok(""),
         [STASH_PUSH_KEY]: ok("Saved working directory..."),
-        "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
-        "git stash pop": ok("On branch master..."),
-      })(cmd, args);
+        "git rev-parse refs/stash": ok("abc1234\n"),
+      },
+      {
+        "git merge --ff-only origin/master": [
+          fail("error: Your local changes to the following files would be overwritten by merge"),
+          ok("Fast-forward\n 1 file changed"),
+        ],
+      },
+    );
+    const spawn: SpawnFn = (cmd, args) => {
+      spawnCallCount++;
+      return seqSpawn(cmd, args);
     };
 
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
 
     assert.equal(
       r.outcome,
-      "synced_stashed",
-      "pré-condição: precisa ser exatamente o caminho dirty+branch-switch+stash+merge+pop bem-sucedido documentado em MAX_SEQUENTIAL_GIT_SPAWNS",
+      "synced_stash_preserved",
+      "pré-condição: precisa ser exatamente o caminho dirty+branch-switch+ff-direto-recusa+stash+ff-sob-stash documentado em MAX_SEQUENTIAL_GIT_SPAWNS",
     );
     assert.equal(
       spawnCallCount,

@@ -27,13 +27,14 @@
  * editor (incidente 260825: pipeline inteiro rodou com código antigo sob 3×
  * "sucesso" porque o warning era prosa ignorable).
  *
- * #6668: quando `outcome === "stash_pop_conflict"`, imprime um 2º BANNER
- * (mais forte — checkout ficou com arquivo(s) VERSIONADO(S) com marcador de
- * conflito literal no disco, mais sério que um `stash_pop_failed` comum).
- * Ainda fail-soft (exit 0) — este script não decide sozinho parar a
- * pipeline (isso é escopo do orchestrator/stage, CLAUDE.md "Sync de código
- * no início de cada edição"), só garante que o sinal não fique perdido no
- * meio do JSON.
+ * #8719 (24/09/2026, decisão do editor): `scripts/lib/git-sync.ts` nunca mais
+ * faz `git stash pop` automático — quando um stash é criado, ele fica
+ * SEMPRE preservado (`result.preserved_stash`), nunca reaplicado sozinho, e
+ * o checkout termina limpo em master. O banner "STASH PRESERVADO" mais
+ * abaixo (guardado por `result.preserved_stash`) cobre esse aviso pra
+ * qualquer outcome que preserve stash. (O banner específico de "conflito de
+ * stash pop deixado no disco", #6668, existia só enquanto este módulo ainda
+ * tentava pop automático — removido junto com esse mecanismo.)
  *
  * #8719: quando `result.stale_autostash_count >= STALE_AUTOSTASH_ALARM_THRESHOLD`,
  * imprime um banner de PILEUP — sinaliza que autostashes deste módulo
@@ -101,20 +102,12 @@ if (result.commits_behind > 0) {
   );
 }
 
-// #6668: banner mais forte pro caso de stash pop ter deixado arquivo(s)
-// VERSIONADO(S) com conflito não-resolvido no disco (mais sério que um
-// stash_pop_failed comum — ver docstring de GitSyncOutcome.stash_pop_conflict
-// em scripts/lib/git-sync.ts). Ainda fail-soft (exit 0 abaixo, inalterado).
-if (result.outcome === "stash_pop_conflict") {
-  process.stderr.write(
-    `\n🛑 CONFLITO DE STASH POP DEIXADO NO DISCO — arquivo(s) versionado(s) com marcadores\n` +
-      `   de conflito literais (<<<<<<</=======/>>>>>>>). O checkout fica sintaticamente\n` +
-      `   quebrado e OUTRA SESSÃO pode ler esse arquivo como se estivesse íntegro.\n` +
-      `   A edição vai continuar (fail-soft), mas isto NÃO é um "pop falhou" comum —\n` +
-      `   resolva manualmente antes que outra sessão leia o arquivo quebrado:\n` +
-      `   git status --porcelain | grep -E '^(DD|AU|UD|UA|DU|AA|UU)' ; git diff ; resolva os marcadores ; git add.\n\n`,
-  );
-}
+// #8719 (24/09/2026): o banner de "conflito de stash pop deixado no disco"
+// (#6668, outcome "stash_pop_conflict") foi removido — este script nunca
+// mais chama `git stash pop` automático, então esse outcome não existe mais
+// (ver scripts/lib/git-sync.ts). O banner "STASH PRESERVADO" logo abaixo
+// (`result.preserved_stash`) cobre o caso atual: qualquer stash que este
+// sync cria fica preservado e sinalizado, nunca despopado sozinho.
 
 // #6800: banner mais forte ainda — este outcome é um ESTADO ABSORVENTE, não
 // um warning transitório. Sem intervenção manual, TODA chamada futura de
@@ -136,12 +129,12 @@ if (result.outcome === "preexisting_unmerged_state") {
   );
 }
 
-// #7740: banner — um stash deste sync ficou preservado (pop falhou ou
-// conflitou) sem ser recuperado automaticamente. Cobre os outcomes que os
-// banners #6668/#6800 acima NÃO cobrem (`stash_pop_failed`, `ff_failed` com
-// pop também falho, `stash_partial_failure_unrecovered`) — o vazamento que a
-// #7740 descreve era exatamente este: o stash ficava pra trás sem nenhum
-// sinal legível apontando de volta pra ele. O stash em si já é identificável
+// #7740: banner — um stash deste sync ficou preservado sem ser despopado
+// automaticamente. Cobre os outcomes que os banners #6800 acima NÃO cobrem
+// (#8719: `synced_stash_preserved`, `ff_failed` com stash criado,
+// `stash_partial_failure_unrecovered`) — o vazamento que a #7740 descreve
+// era exatamente este: o stash ficava pra trás sem nenhum sinal legível
+// apontando de volta pra ele. O stash em si já é identificável
 // em `git stash list` pela mensagem (ver `GIT_SYNC_STASH_MESSAGE`, gravada no
 // próprio stash desde este fix) — o banner só garante que o operador VEJA
 // isso agora, não precise descobrir via análise forense depois (como a #7740

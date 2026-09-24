@@ -650,14 +650,16 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
     const logPathOverride = join(workDir, "sync-warn-final.log");
 
     const mockSyncResult: GitSyncResult = {
-      outcome: "synced_stashed",
-      message: "stash+pull+pop",
+      // #8719: "synced_stashed" não existe mais (nunca há pop automático) —
+      // "synced_stash_preserved" é o outcome equivalente hoje.
+      outcome: "synced_stash_preserved",
+      message: "stash+pull, stash preservado (sem pop automático)",
       branch_before: "master",
       warnings: ["aviso 1", "aviso 2"],
       proceed: true,
       up_to_date: false,
       commits_behind: 3,
-      preserved_stash: null,
+      preserved_stash: { ref: "abc123", message: "diaria-git-sync-autostash" },
       stale_autostash_count: -1,
     };
 
@@ -671,7 +673,7 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
 
     assert.equal(result.code, 0);
     const content = readFileSync(logPathOverride, "utf8");
-    assert.match(content, /\[git-sync\] outcome=synced_stashed/);
+    assert.match(content, /\[git-sync\] outcome=synced_stash_preserved/);
     assert.match(content, /\[git-sync\] WARN: aviso 1/);
     assert.match(content, /\[git-sync\] WARN: aviso 2/);
   });
