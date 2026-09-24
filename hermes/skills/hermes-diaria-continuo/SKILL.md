@@ -341,15 +341,11 @@ ainda. Se houver candidata:
    não muda nada aqui — o label já está aplicado, o cap já fechou.
 3. Seguir o tick normalmente (reivindicar issue nova se sobrar budget).
 
-`checked: -1` (`gh pr list` falhou) = "nenhuma candidata", fail-soft. PR que
-recebeu a tentativa e segue vermelha ganha estado terminal pelo resolvedor
-de PRs travadas (#8767, `scripts/continuo-resolve-stuck-prs.ts`, rodado por
-`continuo-pr-review.sh` antes do review): parada há 6h+ e atrás do master →
-master trazido pra branch 1x (descarta falha do base, sem gastar o cap);
-segue vermelha → PR fechada e a issue volta à fila com comentário. O mesmo
-resolvedor fecha PR cuja issue já foi fechada pelo master (superseded), PR
-com 3+ reviews `verdict=reject` e PR em conflito parada. Antes do #8767 a
-escalada não tinha quem agisse e as PRs ficavam paradas por dias.
+`checked: -1` (`gh pr list` falhou) = "nenhuma candidata", fail-soft. PR
+vermelha tem estado terminal via `continuo-resolve-stuck-prs.ts` (#8767,
+no `continuo-pr-review.sh`): atrás do master → update-branch 1x; ainda
+vermelha, superseded, 3+ `reject` ou conflito parado → PR fechada, issue
+de volta à fila.
 
 ### 3c. Antes de reivindicar issue nova: teto de PRs `continuo/*` (#7746)
 
