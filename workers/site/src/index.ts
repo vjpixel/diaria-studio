@@ -262,35 +262,15 @@ export default {
       return Response.redirect(target.toString(), 301);
     }
 
-    // #8563: /evento/agente-ia — proxy REVERSO (não redirect) pra página do
-    // workshop "Crie seu primeiro agente de IA sem programar", hospedada em
-    // agente.vjpixel.chatgpt.site. Pedido do editor: esconder o domínio
-    // chatgpt.site do link divulgado (newsletter/social) — um `Response.redirect`
-    // (como /confirmado, /apoiar/ir acima) trocaria a URL na barra de endereço
-    // pro domínio real assim que o navegador seguisse o 30x; buscando o
-    // conteúdo aqui e devolvendo como resposta DESTE Worker, a barra de
-    // endereço nunca sai de diar.ia.br. Sem arquivo em public/ — resolvido
-    // ANTES do asset lookup, mesmo padrão de /confirmada acima. Cache-Control
-    // nunca do upstream (evita cachear uma versão velha da página de vendas)
-    // — sempre no-store, força buscar de novo a cada visita.
-    //
-    // Risco aceito, não mitigado nesta unidade: se a página de origem referenciar
-    // assets (CSS/JS/imagem) por URL RELATIVA, eles resolvem contra
-    // diar.ia.br/evento/agente-ia em vez do host real e quebram — só funciona
-    // sem ressalva se a página usar URLs absolutas (comum em builders tipo
-    // chatgpt.site). Conferir visualmente após o deploy.
-    if (request.method === "GET" && (reqUrl.pathname === "/evento/agente-ia" || reqUrl.pathname === "/evento/agente-ia/")) {
-      const upstream = await fetch("https://agente.vjpixel.chatgpt.site/", {
-        headers: { "User-Agent": request.headers.get("User-Agent") ?? "" },
-      });
-      const headers = new Headers(upstream.headers);
-      headers.delete("content-security-policy");
-      headers.delete("x-frame-options");
-      headers.delete("content-encoding"); // undici já descomprimiu o body
-      headers.delete("content-length");
-      headers.set("cache-control", "no-store");
-      return new Response(upstream.body, { status: upstream.status, headers });
-    }
+    // #8563: /evento/agente-ia — hospedado como asset ESTÁTICO em
+    // public/evento/agente-ia/ (cópia real dos arquivos da página do workshop,
+    // #8563 follow-up). Substituiu o proxy reverso desta mesma issue — o
+    // editor forneceu os arquivos originais, então servir direto via
+    // `env.ASSETS` (nenhum código de rota aqui) esconde o domínio
+    // chatgpt.site com menos risco que um proxy (sem dependência de rede
+    // externa, sem o problema de asset relativo resolvendo contra o host
+    // errado). Nenhuma rota especial necessária — cai no `env.ASSETS.fetch`
+    // padrão como qualquer outra página do site.
 
     // #8355: arquivo de chave do IndexNow — mesmo padrão de
     // workers/cursos/workers/livros (#5703), que generalizou o que nasceu

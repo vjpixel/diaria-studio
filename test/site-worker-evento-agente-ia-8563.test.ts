@@ -1,91 +1,64 @@
 /**
  * test/site-worker-evento-agente-ia-8563.test.ts (#8563)
  *
- * `GET /evento/agente-ia` no Worker `site` (`diar.ia.br/evento/agente-ia`) —
- * proxy REVERSO (fetch + devolve como resposta deste Worker) pra
- * `https://agente.vjpixel.chatgpt.site/`, pedido do editor pra esconder o
- * domínio chatgpt.site do link divulgado. Diferente de `/confirmado`/
- * `/apoiar/ir` (que usam `Response.redirect`), aqui a barra de endereço do
- * navegador NUNCA sai de diar.ia.br — por isso o teste intercepta
- * `globalThis.fetch` (o Worker chama fetch pro upstream) em vez de checar um
- * header `Location`.
+ * `diar.ia.br/evento/agente-ia` — página do workshop "Crie seu primeiro
+ * agente de IA sem programar", esconde o domínio real (chatgpt.site) do
+ * link divulgado. Hospedada como asset ESTÁTICO em
+ * `workers/site/public/evento/agente-ia/` (arquivos originais fornecidos
+ * pelo editor) — sem código de rota no Worker, cai no `env.ASSETS.fetch`
+ * padrão (mesmo path de qualquer página do site, `html_handling =
+ * drop-trailing-slash` já resolve `/evento/agente-ia` → `index.html`, mesmo
+ * padrão de `/p/{slug}`). Substituiu uma 1ª versão em proxy reverso
+ * (fetch ao vivo pro chatgpt.site) do mesmo commit — arquivos reais do
+ * editor tornaram o proxy desnecessário e removem o risco de asset relativo
+ * quebrado.
+ *
+ * Este teste cobre só os arquivos COMMITTED (guard de regressão, mesmo
+ * padrão de `site-worker-routes-6359.test.ts`) — o roteamento em si
+ * (`env.ASSETS.fetch`/`html_handling`) já é coberto pelos testes existentes
+ * do fallback do acervo.
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, existsSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import worker from "../workers/site/src/index.ts";
-import type { Env } from "../workers/site/src/index.ts";
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia");
 
-function fakeEnv(): { env: Env; assetCalls: Request[] } {
-  const assetCalls: Request[] = [];
-  const env: Env = {
-    ASSETS: {
-      fetch: async (req: Request) => {
-        assetCalls.push(req);
-        return new Response("not found", { status: 404 });
-      },
-    },
-    POLL: { get: async () => null },
-  };
-  return { env, assetCalls };
-}
-
-describe("GET /evento/agente-ia (#8563) — proxy reverso pro workshop", () => {
-  const originalFetch = globalThis.fetch;
-  let upstreamCalls: string[] = [];
-
-  beforeEach(() => {
-    upstreamCalls = [];
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      upstreamCalls.push(typeof input === "string" ? input : input.toString());
-      return new Response("<html><body>workshop</body></html>", {
-        status: 200,
-        headers: {
-          "content-type": "text/html; charset=utf-8",
-          "x-frame-options": "DENY",
-          "content-security-policy": "default-src 'self'",
-        },
-      });
-    }) as typeof fetch;
+describe("public/evento/agente-ia — página do workshop (#8563)", () => {
+  it("index.html existe e referencia os assets locais só por caminho RELATIVO", () => {
+    const p = resolve(PAGE_DIR, "index.html");
+    assert.ok(existsSync(p), "index.html ausente em public/evento/agente-ia/");
+    const html = readFileSync(p, "utf8");
+    // Nenhum href/src pra chatgpt.site (o ponto inteiro é esconder esse domínio).
+    assert.doesNotMatch(html, /chatgpt\.site/i);
+    assert.match(html, /href="styles\.css"/);
+    assert.match(html, /src="config\.js"/);
+    assert.match(html, /src="script\.js"/);
   });
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
+  it("config.js declara EVENT_CHECKOUT_URL como HTTPS (contrato que script.js espera)", () => {
+    const p = resolve(PAGE_DIR, "config.js");
+    assert.ok(existsSync(p), "config.js ausente");
+    const js = readFileSync(p, "utf8");
+    assert.match(js, /window\.EVENT_CHECKOUT_URL\s*=\s*"https:\/\//);
   });
 
-  it("200, corpo do upstream, nunca chega no ASSETS", async () => {
-    const { env, assetCalls } = fakeEnv();
-    const res = await worker.fetch(new Request("https://diar.ia.br/evento/agente-ia"), env);
-    assert.equal(res.status, 200);
-    assert.equal(await res.text(), "<html><body>workshop</body></html>");
-    assert.equal(assetCalls.length, 0, "/evento/agente-ia é resolvido ANTES do asset lookup");
-    assert.deepEqual(upstreamCalls, ["https://agente.vjpixel.chatgpt.site/"]);
+  it("styles.css e script.js existem", () => {
+    assert.ok(existsSync(resolve(PAGE_DIR, "styles.css")));
+    assert.ok(existsSync(resolve(PAGE_DIR, "script.js")));
   });
 
-  it("também casa com barra final", async () => {
-    const { env } = fakeEnv();
-    const res = await worker.fetch(new Request("https://diar.ia.br/evento/agente-ia/"), env);
-    assert.equal(res.status, 200);
-  });
-
-  it("nunca cacheia (no-store), mesmo se o upstream mandar outro cache-control", async () => {
-    const { env } = fakeEnv();
-    const res = await worker.fetch(new Request("https://diar.ia.br/evento/agente-ia"), env);
-    assert.equal(res.headers.get("cache-control"), "no-store");
-  });
-
-  it("remove headers do upstream que vazariam a origem real ou quebrariam o proxy", async () => {
-    const { env } = fakeEnv();
-    const res = await worker.fetch(new Request("https://diar.ia.br/evento/agente-ia"), env);
-    assert.equal(res.headers.get("x-frame-options"), null);
-    assert.equal(res.headers.get("content-security-policy"), null);
-  });
-
-  it("só GET — POST cai no fluxo normal do asset lookup, nunca chama o upstream", async () => {
-    const { env, assetCalls } = fakeEnv();
-    const res = await worker.fetch(new Request("https://diar.ia.br/evento/agente-ia", { method: "POST" }), env);
-    assert.equal(res.status, 404);
-    assert.equal(assetCalls.length, 1);
-    assert.equal(upstreamCalls.length, 0);
+  it("todas as imagens referenciadas em styles.css/index.html (assets/*.png) existem em disco", () => {
+    const html = readFileSync(resolve(PAGE_DIR, "index.html"), "utf8");
+    const css = readFileSync(resolve(PAGE_DIR, "styles.css"), "utf8");
+    const refs = new Set<string>();
+    for (const m of (html + css).matchAll(/assets\/[a-z0-9_-]+\.png/gi)) refs.add(m[0]);
+    assert.ok(refs.size > 0, "nenhuma referência assets/*.png encontrada — regex desatualizada?");
+    for (const ref of refs) {
+      assert.ok(existsSync(resolve(PAGE_DIR, ref)), `asset referenciado ausente: ${ref}`);
+    }
   });
 });
