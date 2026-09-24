@@ -94,6 +94,37 @@ function normalizeSectionKey(raw: string): string {
 const EIA_SECTION_KEY = normalizeSectionKey("É IA?");
 
 /**
+ * #8694: decide se duas linhas de URL do markdown do destaque apontam para
+ * ARTIGOS diferentes (troca de destaque) ou pro mesmo artigo com URL
+ * levemente diferente (tracking param trocado, redirect, protocolo — mero
+ * `link-swap`). Compara host + pathname canonicalizados (via
+ * `canonicalizeUrl`, que já normaliza tracking/whitespace) — query string e
+ * hash NUNCA entram na comparação, de propósito: são exatamente o tipo de
+ * diferença que não muda de QUAL artigo se trata. Extrai a 1ª URL de cada
+ * linha (a linha pode ter markdown ao redor); se qualquer lado não parsear
+ * como URL válida, assume "mesmo artigo" (fail-safe pro comportamento
+ * anterior — `link-swap`, nunca `destaque-swap` por engano de parsing).
+ */
+function isDifferentArticleUrl(oldLine: string, newLine: string): boolean {
+  const extractUrl = (line: string): string | null => {
+    const match = line.match(/https?:\/\/\S+/);
+    return match ? match[0].replace(/[)\].,;]+$/, "") : null;
+  };
+  const oldUrl = extractUrl(oldLine);
+  const newUrl = extractUrl(newLine);
+  if (!oldUrl || !newUrl) return false;
+  try {
+    const oldParsed = new URL(canonicalizeUrl(oldUrl));
+    const newParsed = new URL(canonicalizeUrl(newUrl));
+    const oldKey = `${oldParsed.hostname.replace(/^www\./, "")}${oldParsed.pathname.replace(/\/+$/, "")}`;
+    const newKey = `${newParsed.hostname.replace(/^www\./, "")}${newParsed.pathname.replace(/\/+$/, "")}`;
+    return oldKey !== newKey;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Classifica diferenças no 02-reviewed.md (newsletter)
  */
 function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
@@ -190,7 +221,8 @@ function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
     // Verificar se título mudou (linha do título do destaque - primeira linha após header que começa com ** e tem link)
     const oldTitleLine = oldLines.find(l => l.trim().startsWith("**[") && l.includes("]("));
     const newTitleLine = newLines.find(l => l.trim().startsWith("**[") && l.includes("]("));
-    if (oldTitleLine && newTitleLine && oldTitleLine !== newTitleLine) {
+    const titleChanged = !!(oldTitleLine && newTitleLine && oldTitleLine !== newTitleLine);
+    if (titleChanged) {
       requestType = "title-choice";
     }
 
@@ -204,7 +236,8 @@ function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
     // Verificar se URL mudou
     const oldUrlLine = oldLines.find(l => l.trim().startsWith("http"));
     const newUrlLine = newLines.find(l => l.trim().startsWith("http"));
-    if (oldUrlLine && newUrlLine && oldUrlLine !== newUrlLine) {
+    const urlChanged = !!(oldUrlLine && newUrlLine && oldUrlLine !== newUrlLine);
+    if (urlChanged) {
       requestType = "link-swap";
     }
 
@@ -215,6 +248,24 @@ function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
       requestType = "length-cut";
     } else if (newLen > oldLen * 1.3) {
       requestType = "lead-rewrite";
+    }
+
+    // #8694: distinguir "editor reescreveu o lead/1º parágrafo de um destaque
+    // MANTIDO" de "editor trocou o destaque inteiro por outro artigo" —
+    // o classificador anterior colapsava as duas em "lead-rewrite" sempre
+    // que a seção `destaque-N` mudava (`requestType = "lead-rewrite"` era o
+    // default na linha ~165), contaminando a contagem de recorrência que
+    // motivou esta issue (3 dos 4 episódios relatados eram na verdade troca
+    // de artigo no gate, não reescrita de texto do mesmo artigo — ver
+    // investigação nos comentários da #8694). Sinal: URL muda para um
+    // artigo DIFERENTE (host ou path diferentes, ignorando query/tracking
+    // via `canonicalizeUrl`) — troca de tracking param/URL espelho do MESMO
+    // artigo não conta como swap, só como `link-swap` (comportamento já
+    // existente acima). `destaque-swap` vence qualquer classificação
+    // anterior desta seção: uma vez confirmado que é outro artigo, "lead
+    // reescrito"/"título trocado" deixam de fazer sentido como rótulo.
+    if (urlChanged && isDifferentArticleUrl(oldUrlLine!, newUrlLine!)) {
+      requestType = "destaque-swap";
     }
 
     // Verificar se destaque foi removido (swap/cut)
