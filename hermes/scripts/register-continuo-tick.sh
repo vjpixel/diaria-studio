@@ -34,10 +34,11 @@
 #
 # Fail-soft (#8740, pedido explícito): falha no registro LOGA e NÃO impede
 # o tick — o objetivo é reduzir a taxa de ticks sem registro, não introduzir
-# um novo ponto único de falha que trava o contínuo inteiro. Por isso este
-# script NUNCA propaga `set -e` pro comando de registro em si: captura rc,
-# loga em caso de erro, e sempre sai 0 (a chamada em si não deve derrubar o
-# cron nem o tick que vem depois).
+# um novo ponto único de falha que trava o contínuo inteiro. Por isso o
+# script não usa `set -e` (só `set -uo pipefail`): o comando de registro é
+# capturado explicitamente num `if OUT=$(...)` — rc não-zero cai no `else`
+# (loga o erro), nunca aborta o script — e ele sempre sai 0 no final (a
+# chamada em si não deve derrubar o cron nem o tick que vem depois).
 #
 # Uso:
 #   hermes/scripts/register-continuo-tick.sh [JOB_ID]
@@ -79,7 +80,13 @@ if OUT=$(npx tsx scripts/lib/session-registry.ts register --kind continuo --sess
   # precisa do MAIS RECENTE) — mesmo raciocínio de
   # `claude-openrouter-last-failure.log` (#6666 item 1) citado em
   # `claude-delegate.sh`.
-  if ! echo "$SESSION_ID" > "$SESSION_ID_FILE" 2>/dev/null; then
+  # `2>/dev/null` num bloco (`{ ...; }`), não na linha do `echo`: quando o
+  # PRÓPRIO redirecionamento `>` falha em abrir (ex: diretório pai
+  # ausente), bash imprime o erro ANTES de aplicar `2>/dev/null` se ele
+  # estivesse só na linha do `echo` — o bloco garante que o stderr da
+  # falha de abertura também seja suprimido, não só o de um `echo` que
+  # nem chega a rodar.
+  if ! { echo "$SESSION_ID" > "$SESSION_ID_FILE"; } 2>/dev/null; then
     echo "[register-continuo-tick] AVISO: registro OK mas não consegui gravar $SESSION_ID_FILE — o tick vai precisar regenerar o SESSION_ID (fallback do passo 1.3)" >&2
   fi
 else

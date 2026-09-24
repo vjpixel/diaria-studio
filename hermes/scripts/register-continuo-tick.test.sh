@@ -57,7 +57,7 @@ cat > "$WORKDIR/bin/npx" <<EOF
 echo "\$*" >> "$NPX_CALL_LOG"
 rc=\$(cat "$NPX_RC_FILE")
 if [ "\$rc" = "0" ]; then
-  echo "session-registry: registered data/sessions/continuo-fake-\$4.json"
+  echo "session-registry: registered data/sessions/continuo-fake-\$7.json"
 else
   echo "boom: registro falhou de propósito" >&2
 fi
@@ -153,6 +153,31 @@ if [ -f "$SID_FILE_3B" ]; then
   FAILED=1
 else
   echo "ok: arquivo com id antigo, tick atual falha — arquivo foi limpo, nada sobrevive disfarçado de atual"
+fi
+
+# ── Caso 3c (#8740 review, finding #4): register tem SUCESSO mas a
+#    ESCRITA do arquivo estável falha (ex: path sem permissão/diretório
+#    inexistente) — deve continuar fail-soft (exit 0, SESSION_ID impresso),
+#    nunca abortar por causa só da escrita do arquivo ──
+echo 0 > "$NPX_RC_FILE"
+: > "$NPX_CALL_LOG"
+SID_FILE_3C="$WORKDIR/sem-permissao/session-id-3c"  # diretório pai não existe -> echo > falha
+OUT3C=$(PATH="$WORKDIR/bin:$PATH" \
+  REPO_ROOT_OVERRIDE="$WORKDIR/repo" \
+  SESSION_ID_FILE_OVERRIDE="$SID_FILE_3C" \
+  SESSION_TS_OVERRIDE="20260924T160000Z" \
+  "$SCRIPT" "test-job-id")
+RC3C=$?
+
+assert_eq "register OK, escrita do arquivo falha — exit code continua 0" "0" "$RC3C"
+assert_eq "register OK, escrita do arquivo falha — SESSION_ID ainda impresso" "hermes-cron-test-job-id-20260924T160000Z" "$OUT3C"
+CALL3C="$(cat "$NPX_CALL_LOG")"
+assert_contains "register OK, escrita do arquivo falha — register foi chamado mesmo assim" "$CALL3C" "register"
+if [ -e "$SID_FILE_3C" ]; then
+  echo "FAIL: register OK, escrita do arquivo falha — arquivo não deveria existir (diretório pai ausente)"
+  FAILED=1
+else
+  echo "ok: register OK, escrita do arquivo falha — arquivo de fato não foi criado (falha real, não falso positivo)"
 fi
 
 # ── Caso 4: default de JOB_ID (sem argumento nem env) ──
