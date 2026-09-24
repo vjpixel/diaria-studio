@@ -10,7 +10,12 @@ import { join } from "node:path";
 import {
   htmlToText, fetchSourceText, blockedMessage, isForbiddenHost, validateUrl,
 } from "../scripts/fetch-source-text.ts";
-import { prefetchHighlightSources } from "../scripts/run-fact-checker.ts";
+import {
+  prefetchHighlightSources,
+  manifestMatchesCurrentUrls,
+  readExistingManifest,
+  type ManifestEntry,
+} from "../scripts/run-fact-checker.ts";
 
 const HTML = `<!doctype html><html><head><title>T</title><style>p{color:red}</style>
 <script>var x = "preço R$ 99";</script></head><body><!-- c --><nav>MENU</nav>
@@ -146,6 +151,230 @@ describe("prefetchHighlightSources", () => {
       assert.ok(m[0].bytes > 0 && m[0].fetched_at && m[0].url === "https://a.test/1");
       assert.equal(m[1].status, "blocked");
       assert.match(m[1].erro, /451/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #8782: regressão — URLs de destaque mudadas (ex: "ajustar" no gate promove
+  // itens do RADAR trocando D1/D2/D3) DEVEM invalidar o cache e refazer o
+  // fetch, nunca servir ao fact-checker o texto bruto da história ERRADA.
+  it("#8782 — manifest com URLs ANTIGAS + destaques com URLs NOVAS invalida o cache e refaz o fetch", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fcs-stale-"));
+    try {
+      const srcDir = join(dir, "fact-check-sources");
+      mkdirSync(srcDir, { recursive: true });
+      // Estado "pós-Stage 4 antigo": manifest + d{N}.txt de uma rodada anterior,
+      // cujas URLs não são mais as dos destaques atuais.
+      writeFileSync(join(srcDir, "d1.txt"), "TEXTO DA HISTÓRIA ERRADA (destaque antigo)", "utf8");
+      const staleManifest: ManifestEntry[] = [
+        {
+          destaque: 1,
+          url: "https://old.test/destaque-antigo",
+          status: "ok",
+          erro: null,
+          bytes: 42,
+          fetched_at: "2026-09-20T10:00:00.000Z",
+        },
+      ];
+      writeFileSync(join(srcDir, "manifest.json"), JSON.stringify(staleManifest, null, 2), "utf8");
+
+      let fetchCalls = 0;
+      const f = (async () => {
+        fetchCalls++;
+        return new Response("TEXTO DA HISTÓRIA CERTA (destaque novo)", {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        });
+      }) as unknown as typeof fetch;
+
+      // 01-approved.json já reflete o destaque NOVO (editor já ajustou no gate).
+      const res = await prefetchHighlightSources(
+        { highlights: [{ url: "https://new.test/destaque-novo" }] },
+        dir,
+        f,
+      );
+
+      assert.equal(fetchCalls, 1, "URL divergente deve disparar refetch de verdade, não reusar o cache");
+      assert.equal(res.length, 1);
+      assert.equal(res[0].url, "https://new.test/destaque-novo");
+      assert.match(readFileSync(res[0].path!, "utf8"), /HISTÓRIA CERTA/);
+      assert.doesNotMatch(readFileSync(res[0].path!, "utf8"), /HISTÓRIA ERRADA/);
+
+      const m = JSON.parse(readFileSync(join(srcDir, "manifest.json"), "utf8"));
+      assert.equal(m.length, 1);
+      assert.equal(m[0].url, "https://new.test/destaque-novo", "manifest deve ser regravado com a URL nova");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#8782 — manifest com as MESMAS URLs (status ok) reusa o cache sem tocar rede", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fcs-fresh-"));
+    try {
+      const srcDir = join(dir, "fact-check-sources");
+      mkdirSync(srcDir, { recursive: true });
+      writeFileSync(join(srcDir, "d1.txt"), "TEXTO JÁ BAIXADO", "utf8");
+      const freshManifest: ManifestEntry[] = [
+        {
+          destaque: 1,
+          url: "https://same.test/destaque",
+          status: "ok",
+          erro: null,
+          bytes: 100,
+          fetched_at: "2026-09-24T10:00:00.000Z",
+        },
+      ];
+      writeFileSync(join(srcDir, "manifest.json"), JSON.stringify(freshManifest, null, 2), "utf8");
+
+      let fetchCalls = 0;
+      const f = (async () => {
+        fetchCalls++;
+        return new Response("NUNCA DEVERIA CHEGAR AQUI", { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const res = await prefetchHighlightSources(
+        { highlights: [{ url: "https://same.test/destaque" }] },
+        dir,
+        f,
+      );
+
+      assert.equal(fetchCalls, 0, "URL igual + status ok não deve refazer o fetch");
+      assert.equal(res.length, 1);
+      assert.equal(res[0].path, join(srcDir, "d1.txt"));
+      assert.equal(readFileSync(res[0].path!, "utf8"), "TEXTO JÁ BAIXADO", "conteúdo em disco preservado, não sobrescrito");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#8782 — manifest com URL igual mas .txt ausente do disco não reusa (refaz o fetch)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fcs-missingfile-"));
+    try {
+      const srcDir = join(dir, "fact-check-sources");
+      mkdirSync(srcDir, { recursive: true });
+      // manifest existe, mas d1.txt nunca foi escrito (ou foi apagado à mão).
+      const manifestOnly: ManifestEntry[] = [
+        {
+          destaque: 1,
+          url: "https://same.test/destaque",
+          status: "ok",
+          erro: null,
+          bytes: 100,
+          fetched_at: "2026-09-24T10:00:00.000Z",
+        },
+      ];
+      writeFileSync(join(srcDir, "manifest.json"), JSON.stringify(manifestOnly, null, 2), "utf8");
+
+      let fetchCalls = 0;
+      const f = (async () => {
+        fetchCalls++;
+        return new Response("REFETCHED", { status: 200, headers: { "content-type": "text/plain" } });
+      }) as unknown as typeof fetch;
+
+      const res = await prefetchHighlightSources(
+        { highlights: [{ url: "https://same.test/destaque" }] },
+        dir,
+        f,
+      );
+
+      assert.equal(fetchCalls, 1, "manifest sem o .txt correspondente não é cache válido");
+      assert.equal(readFileSync(res[0].path!, "utf8"), "REFETCHED");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#8782 — manifest com status blocked/error nunca é reusado, mesmo com URL igual", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fcs-retry-"));
+    try {
+      const srcDir = join(dir, "fact-check-sources");
+      mkdirSync(srcDir, { recursive: true });
+      const blockedManifest: ManifestEntry[] = [
+        {
+          destaque: 1,
+          url: "https://same.test/destaque",
+          status: "blocked",
+          erro: "HTTP 429",
+          bytes: 0,
+          fetched_at: "2026-09-24T10:00:00.000Z",
+        },
+      ];
+      writeFileSync(join(srcDir, "manifest.json"), JSON.stringify(blockedManifest, null, 2), "utf8");
+
+      let fetchCalls = 0;
+      const f = (async () => {
+        fetchCalls++;
+        return new Response("AGORA DISPONÍVEL", { status: 200, headers: { "content-type": "text/plain" } });
+      }) as unknown as typeof fetch;
+
+      const res = await prefetchHighlightSources(
+        { highlights: [{ url: "https://same.test/destaque" }] },
+        dir,
+        f,
+      );
+
+      assert.equal(fetchCalls, 1, "entrada blocked/error deve ser tentada de novo, nunca 'cacheada' como falha permanente");
+      assert.equal(readFileSync(res[0].path!, "utf8"), "AGORA DISPONÍVEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("manifestMatchesCurrentUrls / readExistingManifest (#8782)", () => {
+  it("manifest ausente → não bate (força refetch)", () => {
+    assert.equal(manifestMatchesCurrentUrls(null, ["https://a.test/1"]), false);
+  });
+
+  it("mesma URL, mesma posição, status ok → bate", () => {
+    const m: ManifestEntry[] = [
+      { destaque: 1, url: "https://a.test/1", status: "ok", erro: null, bytes: 1, fetched_at: "x" },
+      { destaque: 2, url: "https://a.test/2", status: "ok", erro: null, bytes: 1, fetched_at: "x" },
+    ];
+    assert.equal(manifestMatchesCurrentUrls(m, ["https://a.test/1", "https://a.test/2"]), true);
+  });
+
+  it("URL divergente numa posição → não bate", () => {
+    const m: ManifestEntry[] = [
+      { destaque: 1, url: "https://a.test/1", status: "ok", erro: null, bytes: 1, fetched_at: "x" },
+    ];
+    assert.equal(manifestMatchesCurrentUrls(m, ["https://a.test/OUTRA"]), false);
+  });
+
+  it("contagem de destaques diferente (2→3 ou 3→2) → não bate", () => {
+    const m: ManifestEntry[] = [
+      { destaque: 1, url: "https://a.test/1", status: "ok", erro: null, bytes: 1, fetched_at: "x" },
+      { destaque: 2, url: "https://a.test/2", status: "ok", erro: null, bytes: 1, fetched_at: "x" },
+    ];
+    assert.equal(manifestMatchesCurrentUrls(m, ["https://a.test/1"]), false);
+    assert.equal(
+      manifestMatchesCurrentUrls(m, ["https://a.test/1", "https://a.test/2", "https://a.test/3"]),
+      false,
+    );
+  });
+
+  it("status não-ok (blocked/error) → não bate, mesmo com URL igual", () => {
+    const m: ManifestEntry[] = [
+      { destaque: 1, url: "https://a.test/1", status: "error", erro: "boom", bytes: 0, fetched_at: "x" },
+    ];
+    assert.equal(manifestMatchesCurrentUrls(m, ["https://a.test/1"]), false);
+  });
+
+  it("readExistingManifest: diretório sem manifest.json → null", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fcs-readmanifest-"));
+    try {
+      assert.equal(readExistingManifest(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("readExistingManifest: JSON malformado → null (fail-soft)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fcs-readmanifest-bad-"));
+    try {
+      writeFileSync(join(dir, "manifest.json"), "{ isso não é um array", "utf8");
+      assert.equal(readExistingManifest(dir), null);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
