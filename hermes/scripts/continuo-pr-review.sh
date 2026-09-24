@@ -891,7 +891,7 @@ NOTIFY=0
 [ "$ESCALATED_RECURRING" -gt 0 ] 2>/dev/null && NOTIFY=1
 [ "$((FAILED + INFRA_ERRORS))" -gt 0 ] 2>/dev/null && NOTIFY=1
 # #8767: PR fechada pelo resolvedor é decisão terminal — o editor fica sabendo.
-[ "$STUCK_CLOSED" -gt 0 ] 2>/dev/null && NOTIFY=1
+[ "${STUCK_CLOSED:-0}" -gt 0 ] 2>/dev/null && NOTIFY=1
 
 # `bloqueadas-por-lock` só aparece quando NÃO-zero: o docblock de
 # LOCK_BLOCKED chama esse contador de "sinal agregado de isto aconteceu N
@@ -913,8 +913,8 @@ echo "$SUMMARY"
 if [ "$ESCALATED_NEW" -gt 0 ]; then
   echo "[continuo-pr-review] $ESCALATED_NEW PR(s) escalada(s) agora — precisam de revisão humana (label continuo-escalado)"
 fi
-if [ "$STUCK_CLOSED" -gt 0 ] || [ "$STUCK_UPDATED" -gt 0 ]; then
-  echo "[continuo-pr-review] resolvedor de PRs travadas (#8767): $STUCK_CLOSED fechada(s), $STUCK_UPDATED com master trazido pra branch — detalhes nos comentários de cada PR"
+if [ "${STUCK_CLOSED:-0}" -gt 0 ] || [ "${STUCK_UPDATED:-0}" -gt 0 ]; then
+  echo "[continuo-pr-review] resolvedor de PRs travadas (#8767): ${STUCK_CLOSED:-0} fechada(s), ${STUCK_UPDATED:-0} com master trazido pra branch — detalhes nos comentários de cada PR"
 fi
 if [ "$REJECTED_NEW" -gt 0 ]; then
   echo "[continuo-pr-review] $REJECTED_NEW PR(s) rejeitada(s) agora — consertar ou fechar (label continuo-rejeitado)"

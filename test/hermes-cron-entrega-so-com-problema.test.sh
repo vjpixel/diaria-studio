@@ -121,6 +121,20 @@ assert_true \
   "pr-review: git pull do merge não vaza 'Fast-forward'/'files changed' pro stdout" \
   "$(grep -qE '^[[:space:]]*git pull --ff-only >&2' "$PRREV" && echo 1 || echo 0)"
 
+# #8767: PR fechada pelo resolvedor de PRs travadas é notificada; o bloco de
+# entrega não pode quebrar sob `set -u` quando STUCK_* não vier definido.
+OUT=$(bash -c "
+  set -euo pipefail
+  REVIEWED=0 MERGED=0 ESCALATED=0 REJECTED=0 ESCALATED_NEW=0 REJECTED_NEW=0
+  ESCALATED_RECURRING=0 ESCALATED_RECURRING_PRS='' FAILED=0 INFRA_ERRORS=0 LOCK_BLOCKED=0
+  INFRA_ERROR_SUMMARY='' INFRA_ERROR_LOG='$TMPDIR/infra.jsonl'
+  STUCK_CLOSED=2 STUCK_UPDATED=1
+  source '$BLOCK'
+" 2>/dev/null)
+assert_true \
+  "pr-review: resolvedor que fechou PR entrega a linha no stdout (#8767)" \
+  "$(echo "$OUT" | grep -q 'resolvedor de PRs travadas (#8767): 2 fechada' && echo 1 || echo 0)"
+
 # ── watch-continuo-health.sh ────────────────────────────────────────────────
 assert_true \
   "watch: nenhuma linha de rotina '[watch] ...' volta pro stdout (vão pro \$WATCH_LOG)" \
