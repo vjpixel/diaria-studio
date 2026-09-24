@@ -25,6 +25,13 @@
         "GOOGLE_ADS_CUSTOMER_ID": "${GOOGLE_ADS_CUSTOMER_ID}",
         "GOOGLE_APPLICATION_CREDENTIALS": "${GOOGLE_APPLICATION_CREDENTIALS}"
       }
+    },
+    "doppler": {
+      "command": "npx",
+      "args": ["-y", "@dopplerhq/mcp-server", "--read-only"],
+      "env": {
+        "DOPPLER_TOKEN": "${DOPPLER_MCP_TOKEN}"
+      }
     }
   }
 }
