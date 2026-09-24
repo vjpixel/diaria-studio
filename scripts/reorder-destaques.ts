@@ -677,12 +677,14 @@ export function reorderSocialMd(md: string, newOrder: number[]): string {
   // Replace each `## d{N}` header — usar token temporário pra evitar conflito
   // entre passes (## d1 → ## d2 → ## d1 oscilação).
   let temp = result;
-  temp = temp.replace(/^##\s+d(\d)\s*$/gim, (full, oldNStr) => {
+  // `[ \t]*(?=\r?$)`, não `\s*$` (#8757): `\s*` com a flag `m` consumia o `\n` seguinte e
+  // apagava a linha em branco depois do header; o lookahead preserva CRLF.
+  temp = temp.replace(/^##\s+d(\d)[ \t]*(?=\r?$)/gim, (full, oldNStr) => {
     const oldN = parseInt(oldNStr, 10);
     const newN = oldToNew.get(oldN);
     return newN ? `## TEMP_D${newN}` : full;
   });
-  result = temp.replace(/^##\s+TEMP_D(\d)\s*$/gim, "## d$1");
+  result = temp.replace(/^##\s+TEMP_D(\d)[ \t]*(?=\r?$)/gim, "## d$1");
   return result;
 }
 
