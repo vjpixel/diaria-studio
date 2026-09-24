@@ -29,6 +29,7 @@ import {
   buildIssueRequeueComment,
   countRejectReviews,
   decideStuckPrAction,
+  EXECUTION_BLOCK_LABEL,
   extractLinkedIssues,
   UPDATE_BRANCH_MARKER,
   type StuckPrAction,
@@ -185,18 +186,27 @@ function main(): void {
 
   const actions: { pr: number; kind: string; ok: boolean }[] = [];
   for (const raw of prs.filter((p) => p.headRefName.startsWith("continuo/"))) {
-    const input = gatherInput(raw);
-    if (!input) {
-      console.error(`${LOG} PR #${raw.number}: leitura incompleta — pulando`);
-      continue;
+    // Draft/`bloqueio-execucao` são skip de qualquer jeito
+    // (`decideStuckPrAction`) — sai antes do I/O caro de `gatherInput`.
+    if (raw.isDraft || raw.labels.some((l) => l.name === EXECUTION_BLOCK_LABEL)) continue;
+    // try/catch POR PR: uma exceção numa PR não pode engolir as ações já
+    // feitas nas anteriores (PR já fechada precisa chegar ao resumo do tick).
+    try {
+      const input = gatherInput(raw);
+      if (!input) {
+        console.error(`${LOG} PR #${raw.number}: leitura incompleta — pulando`);
+        continue;
+      }
+      const action = decideStuckPrAction(input);
+      if (action.kind === "skip") {
+        console.error(`${LOG} PR #${raw.number}: skip (${action.reason})`);
+        continue;
+      }
+      console.error(`${LOG} PR #${raw.number}: ${action.kind}${dryRun ? " (dry-run)" : ""}`);
+      actions.push({ pr: raw.number, kind: action.kind, ok: dryRun ? true : apply(input, action) });
+    } catch (e) {
+      console.error(`${LOG} PR #${raw.number}: erro — pulando: ${(e as Error).message}`);
     }
-    const action = decideStuckPrAction(input);
-    if (action.kind === "skip") {
-      console.error(`${LOG} PR #${raw.number}: skip (${action.reason})`);
-      continue;
-    }
-    console.error(`${LOG} PR #${raw.number}: ${action.kind}${dryRun ? " (dry-run)" : ""}`);
-    actions.push({ pr: raw.number, kind: action.kind, ok: dryRun ? true : apply(input, action) });
   }
   console.log(JSON.stringify({ checked: prs.length, actions }));
 }

@@ -182,7 +182,11 @@ async function main(): Promise<void> {
     throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
   }
   const issueNumber = result.issue?.issueNumber;
-  if (issueNumber && result.issue?.action === "reused") commentIfSetChanged(issueNumber, setKey, body);
+  // "reopened" também: o comentário de reabertura de `ensureAlarmIssue` é
+  // genérico e não lista as PRs.
+  if (issueNumber && (result.issue?.action === "reused" || result.issue?.action === "reopened")) {
+    commentIfSetChanged(issueNumber, setKey, body);
+  }
   console.log(`${LOG_PREFIX} alarme registrado (issue #${issueNumber ?? "?"}, ${findings.length} achado(s)).`);
 }
 
