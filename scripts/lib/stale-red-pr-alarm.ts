@@ -159,7 +159,9 @@ export function shouldAlarmStaleRedPrs(findings: readonly StaleRedPrFinding[]): 
 }
 
 /**
- * Fingerprint DERIVADO do conjunto de achados (mesmo padrão de
+ * Chave do conjunto de achados. Desde #8767 NÃO é mais o fingerprint da
+ * issue (ver `STALE_RED_PR_ALARM_FINGERPRINT`) — só decide se o conjunto
+ * mudou e merece comentário na issue única. Histórico: fingerprint DERIVADO do conjunto de achados (mesmo padrão de
  * `on-hold-vencimento-alarm.ts`) — não uma string fixa. Uma issue de alarme
  * único e estático reusaria a MESMA issue pra sempre, mesmo quando o
  * conjunto de PRs paradas mudar (uma resolvida, outra nova entrando em
@@ -197,4 +199,28 @@ export function buildStaleRedPrAlarmEmail(
     "Ação: retomar a implementação (fix + push) ou fechar a PR se o escopo mudou.",
   ].join("\n");
   return { subject, body };
+}
+
+/**
+ * #8767 — fingerprint FIXO da issue do alarme. Até aqui o fingerprint era o
+ * próprio conjunto (`staleRedPrFindingSetKey`), e todo conjunto novo abria
+ * issue nova sem fechar a anterior: 8 issues abertas em 3 dias (#8671,
+ * #8704, #8708, #8721, #8727, #8729, #8742, #8761) pro MESMO estado da fila.
+ * Agora é 1 issue enquanto houver PR parada; a mudança de conjunto vira
+ * comentário nela (`staleRedPrSetMarker`), e a issue fecha quando a lista
+ * esvazia.
+ */
+export const STALE_RED_PR_ALARM_FINGERPRINT = "open-red-prs";
+
+/** Marcador do conjunto já reportado — presente no corpo da issue (criação)
+ * ou num comentário (atualização). */
+export function staleRedPrSetMarker(setKey: string): string {
+  return `<!-- stale-red-set: ${setKey} -->`;
+}
+
+/** `true` quando nenhum texto da issue (corpo + comentários) já reporta este
+ * conjunto — aí vale comentar a atualização. Pura. */
+export function needsSetUpdateComment(issueTexts: readonly string[], setKey: string): boolean {
+  const marker = staleRedPrSetMarker(setKey);
+  return !issueTexts.some((t) => t.includes(marker));
 }

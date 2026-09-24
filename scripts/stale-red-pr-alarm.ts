@@ -31,16 +31,18 @@
  * Sem estado/idempotência LOCAL — mesmo desenho de
  * `on-hold-vencimento-alarm.ts`: o alarme reavalia o conjunto completo de
  * PRs paradas a cada execução; a dedup vive no GitHub via
- * `notifyEditor`/`ensureAlarmIssue`, cujo fingerprint é derivado do
- * CONJUNTO de achados (`staleRedPrFindingSetKey`) — o mesmo conjunto reusa
- * a issue aberta (sem e-mail repetido sob `urgent_only`), um conjunto novo
- * abre/atualiza.
+ * `notifyEditor`/`ensureAlarmIssue` com fingerprint FIXO
+ * (`STALE_RED_PR_ALARM_FINGERPRINT`, #8767) — 1 issue enquanto houver PR
+ * parada; conjunto novo (`staleRedPrFindingSetKey`) vira comentário nela, e
+ * a issue fecha quando a lista esvazia. Antes o fingerprint ERA o conjunto,
+ * e cada conjunto novo abria issue nova sem fechar a anterior.
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
+import { findExistingAlarmIssue } from "./lib/alarm-issues.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import {
   selectStaleRedPrCandidates,
@@ -48,6 +50,9 @@ import {
   shouldAlarmStaleRedPrs,
   staleRedPrFindingSetKey,
   buildStaleRedPrAlarmEmail,
+  needsSetUpdateComment,
+  staleRedPrSetMarker,
+  STALE_RED_PR_ALARM_FINGERPRINT,
   type StaleRedPrBasicEntry,
   type StaleRedPrListEntry,
   type PrCommitEntry,
@@ -155,25 +160,64 @@ async function main(): Promise<void> {
 
   if (!shouldAlarmStaleRedPrs(findings)) {
     console.log(`${LOG_PREFIX} nenhum achado — nenhuma PR aberta está vermelha e parada além do limiar.`);
+    if (!isDryRun) closeResolvedAlarmIssue();
     return;
   }
 
-  const { subject, body } = buildStaleRedPrAlarmEmail(findings, thresholdHours, now);
+  const { subject, body: rawBody } = buildStaleRedPrAlarmEmail(findings, thresholdHours, now);
+  const setKey = staleRedPrFindingSetKey(findings);
+  const body = `${rawBody}\n\n${staleRedPrSetMarker(setKey)}`;
   if (isDryRun) {
     console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     return;
   }
 
-  const fingerprint = staleRedPrFindingSetKey(findings);
+  // #8767: fingerprint FIXO — 1 issue enquanto houver PR parada; mudança de
+  // conjunto vira comentário (abaixo), nunca issue nova.
   const result = await notifyEditor(
-    { check: "stale-red-pr-alarm", fingerprint, severity: "acao", subject, body },
+    { check: ALARM_CHECK, fingerprint: STALE_RED_PR_ALARM_FINGERPRINT, severity: "acao", subject, body },
     { cwd: ROOT, emailTo: toOverride },
   );
   if (result.issue?.action === "failed") {
     throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
   }
-  console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, ${findings.length} achado(s)).`);
+  const issueNumber = result.issue?.issueNumber;
+  // "reopened" também: o comentário de reabertura de `ensureAlarmIssue` é
+  // genérico e não lista as PRs.
+  if (issueNumber && (result.issue?.action === "reused" || result.issue?.action === "reopened")) {
+    commentIfSetChanged(issueNumber, setKey, body);
+  }
+  console.log(`${LOG_PREFIX} alarme registrado (issue #${issueNumber ?? "?"}, ${findings.length} achado(s)).`);
 }
+
+const ALARM_CHECK = "stale-red-pr-alarm";
+
+/** Comenta o conjunto atual na issue reusada só se ele ainda não foi
+ * reportado lá (corpo ou comentário) — mesmo conjunto = silêncio. */
+function commentIfSetChanged(issueNumber: number, setKey: string, body: string): void {
+  const res = spawnGhSync(["issue", "view", String(issueNumber), "--json", "body,comments"], ROOT);
+  if (res.status !== 0) return; // fail-soft: sem leitura, não comenta às cegas
+  let texts: string[];
+  try {
+    const parsed = JSON.parse(res.stdout) as { body?: string; comments?: { body: string }[] };
+    texts = [parsed.body ?? "", ...(parsed.comments ?? []).map((c) => c.body)];
+  } catch {
+    return;
+  }
+  if (!needsSetUpdateComment(texts, setKey)) return;
+  spawnGhSync(["issue", "comment", String(issueNumber), "--body", `Conjunto de PRs paradas mudou:\n\n${body}`], ROOT);
+}
+
+/** Lista vazia → fecha a issue única aberta, se houver. */
+function closeResolvedAlarmIssue(): void {
+  const existing = findExistingAlarmIssue(ALARM_CHECK, STALE_RED_PR_ALARM_FINGERPRINT, ROOT);
+  if (!existing || existing.state !== "OPEN") return;
+  spawnGhSync(
+    ["issue", "close", String(existing.issueNumber), "--comment", "Nenhuma PR aberta está vermelha e parada — alarme resolvido.", "--reason", "completed"],
+    ROOT,
+  );
+}
+
 
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {

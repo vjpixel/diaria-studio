@@ -204,6 +204,25 @@ SESSION_ID="continuo-review-$(date -u +%s)-$$"
 MERGE_LOCK_MAX_RETRIES=3
 MERGE_LOCK_RETRY_DELAY_S=20
 
+# #8767: antes de revisar, dá estado terminal às PRs `continuo/*` travadas
+# (issue já fechada pelo master, teto de rejects, conflito parado, CI
+# vermelho depois do CI-fix) — sem isto elas ficavam escaladas pra ninguém.
+# Lógica em `scripts/lib/continuo-stuck-pr.ts`. Fail-soft: falha do
+# resolvedor nunca impede o review.
+set +e
+STUCK_JSON=$(npx tsx scripts/continuo-resolve-stuck-prs.ts)
+STUCK_RC=$?
+set -e
+STUCK_CLOSED=0
+STUCK_UPDATED=0
+if [ "$STUCK_RC" -eq 0 ]; then
+  STUCK_CLOSED=$(printf '%s' "$STUCK_JSON" | jq '[.actions[]? | select(.ok and (.kind | startswith("close_")))] | length' 2>/dev/null || echo 0)
+  STUCK_UPDATED=$(printf '%s' "$STUCK_JSON" | jq '[.actions[]? | select(.ok and .kind == "update_branch")] | length' 2>/dev/null || echo 0)
+  echo "[continuo-pr-review] resolvedor de PRs travadas: $STUCK_JSON" >&2
+else
+  echo "[continuo-pr-review] resolvedor de PRs travadas falhou (rc=$STUCK_RC) — seguindo pro review (fail-soft)" >&2
+fi
+
 # #7446 item 4: qualquer branch, exceto `bot/*` (regen automático, workflow
 # próprio — ver docstring do topo do arquivo).
 PR_NUMBERS=$(gh pr list --state open --json number,headRefName \
@@ -211,6 +230,9 @@ PR_NUMBERS=$(gh pr list --state open --json number,headRefName \
 
 if [ -z "$PR_NUMBERS" ]; then
   echo "[continuo-pr-review] nenhuma PR elegível aberta (exceto bot/*) — noop" >&2
+  if [ "$STUCK_CLOSED" -gt 0 ] 2>/dev/null; then
+    echo "[continuo-pr-review] resolvedor de PRs travadas (#8767): $STUCK_CLOSED fechada(s) — detalhes nos comentários de cada PR"
+  fi
   exit 0
 fi
 
@@ -763,6 +785,9 @@ for PR in $PR_NUMBERS; do
   fi
 
   IFS=$'\t' read -r BASE_SHA HEAD_SHA PR_TITLE <<< "$API_OUT"
+  # #8766: BASE_SHA é o tip ATUAL do master, não o merge-base — o diff do
+  # prompt abaixo tem de ser three-dot (`...`), senão PR com base defasada
+  # aparece revertendo tudo que entrou no master depois do fork.
 
   # (editor: sem "revisando" — só resultado)
 
@@ -792,7 +817,7 @@ for PR in $PR_NUMBERS; do
   MARKER_PREFIX="<!-- continuo-review: run=${RUN_ID} at=${AT} verdict="
   MARKER_SUFFIX=" head=${HEAD_SHA} -->"
 
-  PROMPT="Você é o review externo do contínuo do diaria-studio — uma sessão SEPARADA da que abriu esta PR (a delegação do contínuo não tem ferramenta Agent, #6712; você tem assinatura claude.ai e está revisando de verdade). Revise a PR #$PR (\`$PR_TITLE\`), diff \`git diff $BASE_SHA..$HEAD_SHA\`, commits \`git log --oneline $BASE_SHA..$HEAD_SHA\`.
+  PROMPT="Você é o review externo do contínuo do diaria-studio — uma sessão SEPARADA da que abriu esta PR (a delegação do contínuo não tem ferramenta Agent, #6712; você tem assinatura claude.ai e está revisando de verdade). Revise a PR #$PR (\`$PR_TITLE\`), diff \`git diff $BASE_SHA...$HEAD_SHA\` (TRÊS pontos — contra o merge-base, igual ao \`gh pr diff $PR\`), commits \`git log --oneline $BASE_SHA..$HEAD_SHA\`. Nunca use \`git diff $BASE_SHA..$HEAD_SHA\` (dois pontos): se a branch forkou antes de commits que já entraram no master, esse diff mostra o INVERSO deles e parece que a PR reverte fixes que ela nunca tocou (#8766).
 
 Procure, nesta ordem de prioridade:
 1. Bugs de correção (lógica errada, edge case quebrado, regressão de comportamento).
@@ -865,6 +890,8 @@ NOTIFY=0
 [ "$REJECTED_NEW" -gt 0 ] 2>/dev/null && NOTIFY=1
 [ "$ESCALATED_RECURRING" -gt 0 ] 2>/dev/null && NOTIFY=1
 [ "$((FAILED + INFRA_ERRORS))" -gt 0 ] 2>/dev/null && NOTIFY=1
+# #8767: PR fechada pelo resolvedor é decisão terminal — o editor fica sabendo.
+[ "${STUCK_CLOSED:-0}" -gt 0 ] 2>/dev/null && NOTIFY=1
 
 # `bloqueadas-por-lock` só aparece quando NÃO-zero: o docblock de
 # LOCK_BLOCKED chama esse contador de "sinal agregado de isto aconteceu N
@@ -885,6 +912,9 @@ fi
 echo "$SUMMARY"
 if [ "$ESCALATED_NEW" -gt 0 ]; then
   echo "[continuo-pr-review] $ESCALATED_NEW PR(s) escalada(s) agora — precisam de revisão humana (label continuo-escalado)"
+fi
+if [ "${STUCK_CLOSED:-0}" -gt 0 ] || [ "${STUCK_UPDATED:-0}" -gt 0 ]; then
+  echo "[continuo-pr-review] resolvedor de PRs travadas (#8767): ${STUCK_CLOSED:-0} fechada(s), ${STUCK_UPDATED:-0} com master trazido pra branch — detalhes nos comentários de cada PR"
 fi
 if [ "$REJECTED_NEW" -gt 0 ]; then
   echo "[continuo-pr-review] $REJECTED_NEW PR(s) rejeitada(s) agora — consertar ou fechar (label continuo-rejeitado)"
