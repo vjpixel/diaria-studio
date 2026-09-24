@@ -57,6 +57,16 @@ TS="${SESSION_TS_OVERRIDE:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 SESSION_ID="hermes-cron-${JOB_ID}-${TS}"
 
+# #8740 review (finding média/P1): limpar o arquivo estável LOGO NO INÍCIO,
+# antes de qualquer tentativa de cd/register — nunca deixar o SESSION_ID de
+# um tick anterior "disfarçado" de atual quando ESTE tick falha. Sem isso,
+# um tick que falha ANTES de registrar herdava silenciosamente o
+# SESSION_ID do último tick bem-sucedido (possivelmente horas atrás),
+# reintroduzindo pela porta dos fundos o bug do #6443 (heartbeat renovando
+# indefinidamente uma entrada errada, mascarando staleness) — só que agora
+# por falha silenciosa do wrapper, não por reuso de id fixo por job.
+rm -f "$SESSION_ID_FILE" 2>/dev/null || true
+
 if ! cd "$REPO_ROOT" 2>/dev/null; then
   echo "[register-continuo-tick] AVISO: não consegui entrar em $REPO_ROOT — registro pulado (fail-soft), tick segue" >&2
   echo "$SESSION_ID"

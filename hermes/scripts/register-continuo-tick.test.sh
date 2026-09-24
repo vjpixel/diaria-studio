@@ -130,6 +130,31 @@ else
   echo "ok: cd falha — npx nunca foi chamado"
 fi
 
+# ── Caso 3b (#8740 review): arquivo já tem SESSION_ID de um tick ANTERIOR
+#    e ESTE tick falha (register ou cd) — o arquivo velho não pode
+#    sobreviver disfarçado de atual (reintroduziria o bug do #6443 por
+#    falha silenciosa do wrapper, não por reuso de id fixo) ──
+SID_FILE_3B="$WORKDIR/session-id-3b"
+echo "hermes-cron-test-job-id-TICK-ANTIGO" > "$SID_FILE_3B"
+
+echo 1 > "$NPX_RC_FILE"
+: > "$NPX_CALL_LOG"
+OUT3B=$(PATH="$WORKDIR/bin:$PATH" \
+  REPO_ROOT_OVERRIDE="$WORKDIR/repo" \
+  SESSION_ID_FILE_OVERRIDE="$SID_FILE_3B" \
+  SESSION_TS_OVERRIDE="20260924T150000Z" \
+  "$SCRIPT" "test-job-id")
+RC3B=$?
+
+assert_eq "arquivo com id antigo, tick atual falha — exit code continua 0" "0" "$RC3B"
+assert_eq "arquivo com id antigo, tick atual falha — SESSION_ID NOVO impresso" "hermes-cron-test-job-id-20260924T150000Z" "$OUT3B"
+if [ -f "$SID_FILE_3B" ]; then
+  echo "FAIL: arquivo com id antigo, tick atual falha — o SESSION_ID do tick anterior deveria ter sido limpo (não sobrar disfarçado de atual)"
+  FAILED=1
+else
+  echo "ok: arquivo com id antigo, tick atual falha — arquivo foi limpo, nada sobrevive disfarçado de atual"
+fi
+
 # ── Caso 4: default de JOB_ID (sem argumento nem env) ──
 : > "$NPX_RC_FILE"; echo 0 > "$NPX_RC_FILE"
 : > "$NPX_CALL_LOG"
