@@ -371,3 +371,35 @@ describe("STAGE_4_RULES registry (#4086)", () => {
     assert.equal(entry!.source_issue, "#4086");
   });
 });
+
+describe("checkBoxDivulgacaoAltMissing casa box-selection.json pelo CONTEÚDO do box (#8756)", () => {
+  /**
+   * Editor moveu os boxes à mão no Stage 4: o JSON diz slot:1 → snippet SEM
+   * alt, mas o box que está de fato no slot 1 é o do snippet COM alt (gravado
+   * como slot:2). O aviso precisa seguir o mesmo critério do render — sem
+   * isso citaria o arquivo errado.
+   */
+  it("box no slot 1 é o snippet COM alt (gravado como slot:2) → sem warning", () => {
+    const dir = makeEdition(LIVROS_MD, {
+      livros_promo: { cloudflare_url: "https://img.example/livros.jpg" },
+    });
+    const root = makeRoot("outro-sem-alt.md", "<!--\nnome: Outro\n-->\n\nTexto de outro box qualquer, sem relação.");
+    writeFileSync(
+      join(root, "data", "snippets", "livros-com-alt.md"),
+      "<!--\nnome: Livros\nalt: Capas dos livros da curadoria\n-->\n\n**📚 Nossa curadoria de livros sobre IA ganhou página nova. [Confira a nova página](https://livros.diar.ia.br).**",
+    );
+    writeFileSync(
+      resolve(dir, "_internal", "box-selection.json"),
+      JSON.stringify([
+        { slot: 1, file: "outro-sem-alt.md" },
+        { slot: 2, file: "livros-com-alt.md" },
+      ]),
+    );
+    try {
+      assert.deepEqual(checkBoxDivulgacaoAltMissing(dir, root), []);
+    } finally {
+      rmSync(dir, { recursive: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

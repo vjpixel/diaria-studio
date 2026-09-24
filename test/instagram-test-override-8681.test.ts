@@ -20,7 +20,7 @@ import {
   readCarouselSourceHashes,
   DAILY_CAROUSEL_CTA_KICKER,
 } from "../scripts/lib/daily-carousel-card.ts";
-import { checkCarouselCardsStale } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { checkCarouselCardsStale, checkCarouselTextOverflow } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { genCarouselCards } from "../scripts/gen-carousel-cards.ts";
 
 const TEXTO = ["Primeiro parágrafo.", "Segundo parágrafo.", "Terceiro parágrafo."].join("\n\n");
@@ -96,13 +96,15 @@ describe("slide CTA com override (#8681)", () => {
     }
   });
 
-  it("override malformado vira violação no invariant em vez de derrubar o check", () => {
+  it("override malformado vira violação (1x) em carousel-text-overflow — que roda nos Stages 2 e 4 — sem derrubar o check", () => {
     const dir = makeEdition();
     try {
       for (const slot of CAROUSEL_SLIDE_SLOTS) writeFileSync(join(dir, carouselSlideFilename("d1", slot)), "jpg");
       writeFileSync(instagramTestOverridePath(dir), "{nope");
-      const v = checkCarouselCardsStale(dir);
-      assert.ok(v.some((x) => x.source_issue === "#8681" && x.severity === "error"));
+      const v = checkCarouselTextOverflow(dir);
+      assert.equal(v.filter((x) => x.source_issue === "#8681" && x.severity === "error").length, 1);
+      // sem duplicar no stale (que só roda no Stage 4)
+      assert.equal(checkCarouselCardsStale(dir).filter((x) => x.source_issue === "#8681").length, 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
