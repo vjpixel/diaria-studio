@@ -4,11 +4,11 @@
  * sobre chunks já pontuados, ANTES do `merge-scored-chunks.ts`.
  *
  * Uso:
- *   npx tsx scripts/apply-viral-poc.ts --pairs "in0.json:scored0.json,in1.json:scored1.json" \
+ *   npx tsx scripts/apply-viral-poc.ts --pairs "in0.json|scored0.json,in1.json|scored1.json" \
  *     --newsletters _internal/captured-newsletters.json --now 2026-09-21T18:00:00Z \
  *     [--audit-out _internal/viral-poc-audit.json]
  *
- * Cada par é `scoring-chunk-N.json:scored-chunk-N.json`. Reescreve o scored-chunk
+ * Cada par é `scoring-chunk-N.json|scored-chunk-N.json` (`|`, não `:` — #8713). Reescreve o scored-chunk
  * somando o bônus a `score` e gravando `viral:+N` em `bonuses_applied`
  * (invariante `score == score_base + Σ bonuses`). Idempotente: remove um
  * `viral:*` anterior antes de reaplicar.
@@ -81,7 +81,7 @@ function main() {
   const nlPath = String(args.newsletters ?? "");
   const now = String(args.now ?? new Date().toISOString());
   if (!pairs.length) {
-    console.error("uso: --pairs in:scored[,in:scored] --newsletters captured-newsletters.json [--now ISO] [--audit-out f]");
+    console.error('uso: --pairs "in|scored[,in|scored]" --newsletters captured-newsletters.json [--now ISO] [--audit-out f]');
     process.exit(1);
   }
   const bodies: string[] = nlPath
