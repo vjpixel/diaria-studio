@@ -74,20 +74,26 @@ export type StuckPrAction =
   | { kind: "close_ci_red" };
 
 const CLOSING_KEYWORD_RE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|fecha)\s*:?\s+#(\d+)/gi;
-const TITLE_ISSUE_RE = /^[a-z]+\(#(\d+)\)/i;
+/** Casa o grupo entre parênteses logo após o prefixo do título (`fix(#A, #B): ...`,
+ * `chore(#A, #B, #C): ...`) — o grupo em si pode conter 1+ issues separadas por
+ * vírgula (#8773: título multi-issue como `fix(#8766, #8767)`). */
+const TITLE_ISSUE_GROUP_RE = /^[a-z]+\(([^)]*)\)/i;
+const TITLE_ISSUE_NUMBER_RE = /#(\d+)/g;
 const NEGATED_CLOSE_RE = /N[ÃA]O\s+CLOSES/i;
 
 /**
- * Issues que a PR declara fechar: `fix(#N): ...` no título + palavras-chave
- * de fechamento no corpo (`Closes #N`, `Fecha #N`, ...). "REFS #N, NÃO
- * CLOSES" (PR de rescue, #7130) nunca conta — por isso a checagem negativa
- * antes. Pura, ordenada, sem duplicatas.
+ * Issues que a PR declara fechar: `fix(#N)`/`fix(#A, #B, ...)` no título +
+ * palavras-chave de fechamento no corpo (`Closes #N`, `Fecha #N`, ...).
+ * "REFS #N, NÃO CLOSES" (PR de rescue, #7130) nunca conta — por isso a
+ * checagem negativa antes. Pura, ordenada, sem duplicatas.
  */
 export function extractLinkedIssues(title: string, body: string): number[] {
   const found = new Set<number>();
   if (!NEGATED_CLOSE_RE.test(body)) {
-    const t = TITLE_ISSUE_RE.exec(title.trim());
-    if (t) found.add(Number(t[1]));
+    const group = TITLE_ISSUE_GROUP_RE.exec(title.trim());
+    if (group) {
+      for (const m of group[1].matchAll(TITLE_ISSUE_NUMBER_RE)) found.add(Number(m[1]));
+    }
     for (const m of body.matchAll(CLOSING_KEYWORD_RE)) found.add(Number(m[1]));
   }
   return [...found].sort((a, b) => a - b);

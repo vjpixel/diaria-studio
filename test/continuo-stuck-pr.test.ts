@@ -53,6 +53,13 @@ describe("extractLinkedIssues", () => {
   it("menção solta (#N sem palavra-chave) não conta", () => {
     assert.deepEqual(extractLinkedIssues("chore: algo", "ver #123 e #456"), []);
   });
+  it("#8773: título multi-issue fix(#A, #B) extrai TODAS as issues do grupo", () => {
+    assert.deepEqual(extractLinkedIssues("fix(#8766, #8767): review do contínuo", "Closes #8766"), [8766, 8767]);
+    assert.deepEqual(
+      extractLinkedIssues("chore(#8758, #8759, #8760): lote de fixes", "sem palavra-chave no corpo"),
+      [8758, 8759, 8760],
+    );
+  });
 });
 
 describe("countRejectReviews", () => {
@@ -83,6 +90,13 @@ describe("decideStuckPrAction", () => {
     const a = decideStuckPrAction(
       pr({ linkedIssues: [{ number: 1, state: "CLOSED" }, { number: 2, state: "OPEN" }] }),
     );
+    assert.notEqual(a.kind, "close_superseded");
+  });
+
+  it("#8773: título fix(#A, #B) com só #A fechada — linkedIssues completo (via extractLinkedIssues) não é superseded", () => {
+    const linked = extractLinkedIssues("fix(#8766, #8767): review do contínuo", "Closes #8766");
+    const linkedIssues = linked.map((n) => ({ number: n, state: n === 8766 ? ("CLOSED" as const) : ("OPEN" as const) }));
+    const a = decideStuckPrAction(pr({ linkedIssues }));
     assert.notEqual(a.kind, "close_superseded");
   });
 
