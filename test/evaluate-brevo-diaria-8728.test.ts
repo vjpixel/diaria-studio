@@ -125,6 +125,8 @@ describe("runEvaluation — promoção pro Kit checa o estado ANTES do POST (#87
       assert.equal(result.failedContacts.length, 0);
       const stored = findContact(result.store, "colorao1948@gmail.com");
       assert.equal(stored!.status, "in_brevo", "permanece in_brevo, aguardando auto-confirmação (Passo 1) resolver por conta própria");
+      // #8753: o início da espera fica registrado no store (base do alarme).
+      assert.ok(stored!.awaiting_kit_confirmation_since, "awaiting_kit_confirmation_since deve ser gravado");
     } finally {
       restore();
     }
