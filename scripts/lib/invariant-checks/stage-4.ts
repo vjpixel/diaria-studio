@@ -25,6 +25,7 @@ import {
   DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET, // #6078
 } from "../daily-carousel-card.ts"; // #6064
 import { md5OfFile } from "../shared/file-md5.ts"; // #6068
+import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride } from "../instagram-test-override.ts"; // #8681
 
 import { lintIntroCount } from "../newsletter-count.ts";
 import {
@@ -1680,6 +1681,21 @@ function checkCard4x5UploadMismatch(editionDir: string): InvariantViolation[] {
  * dá pra afirmar divergência — vira warning, nunca erro: bloquear o gate por
  * "não sei" seria pior que avisar.
  */
+/**
+ * #8681: override de teste do slide CTA (`_internal/instagram-test.json`),
+ * lido sem lançar — o invariant reporta o arquivo malformado em vez de
+ * derrubar o `check-invariants` inteiro. O override entra no carimbo
+ * (`hashCarouselSlideTexts`) igual ao `gen-carousel-cards.ts`, senão toda
+ * edição com override acusaria arte "stale" à toa.
+ */
+function readCtaOverrideSafe(editionDir: string): { ctaOverride: CarouselCtaOverride | null; error: string | null } {
+  try {
+    return { ctaOverride: readInstagramTestOverride(editionDir)?.cta_slide ?? null, error: null };
+  } catch (e) {
+    return { ctaOverride: null, error: (e as Error).message };
+  }
+}
+
 function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
   const socialPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialPath)) return [];
@@ -1714,6 +1730,16 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
 
   const stored = readCarouselSourceHashes(editionDir);
   const violations: InvariantViolation[] = [];
+  const { ctaOverride, error: overrideError } = readCtaOverrideSafe(editionDir);
+  if (overrideError) {
+    violations.push({
+      rule: "carousel-cards-stale",
+      message: `${overrideError} — corrigir ou remover o arquivo antes de gerar/publicar o carrossel.`,
+      source_issue: "#8681",
+      severity: "error",
+      file: instagramTestOverridePath(editionDir),
+    });
+  }
 
   for (const d of slots) {
     if (!slidesOnDiskDe(d)) continue; // destaque sem carrossel — publica single-image, nada a cruzar
@@ -1721,7 +1747,7 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
     const dText = extractDestaqueBlock(section, d);
     if (!dText) continue; // sem bloco não há o que comparar (o gen já pulou este destaque)
 
-    const atual = hashCarouselSlideTexts(dText.trim());
+    const atual = hashCarouselSlideTexts(dText.trim(), ctaOverride);
     const carimbo = stored[d];
 
     if (!carimbo) {
@@ -1789,7 +1815,7 @@ function checkCarouselTextOverflow(editionDir: string): InvariantViolation[] {
     const dText = extractDestaqueBlock(section, d);
     if (!dText) continue;
 
-    const overflowing = findOverflowingCarouselSlides(dText.trim());
+    const overflowing = findOverflowingCarouselSlides(dText.trim(), readCtaOverrideSafe(editionDir).ctaOverride);
     if (overflowing.length === 0) continue;
 
     const detalhe = overflowing.map((o) => `${o.slot} (${o.chars} chars, ${o.excessPx}px além)`).join("; ");

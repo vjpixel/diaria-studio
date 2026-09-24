@@ -48,6 +48,7 @@ import {
   type FlatCardLayout,
 } from "./weekly-flat-card.ts";
 import { INSTAGRAM_CTA_LINE, splitBodyAndTags } from "./social-cta-lines.ts";
+import type { CarouselCtaOverride } from "./instagram-test-override.ts"; // #8681
 import { acquireLock, releaseLock } from "./file-lock.ts";
 
 /**
@@ -266,7 +267,11 @@ export function splitParagraphIntoTwoBlocks(text: string): string {
  * dividir). `paragraphCount` no kicker ("02 / 03") dá orientação de posição
  * no carrossel — o mesmo padrão "1 batida por slide" dos benchmarks.
  */
-export function buildCarouselSlideTexts(genericText: string): Record<CarouselSlideSlot, FlatCardText> {
+export function buildCarouselSlideTexts(
+  genericText: string,
+  /** #8681: override de TESTE do slide CTA por edição (`_internal/instagram-test.json`). */
+  ctaOverride?: CarouselCtaOverride | null,
+): Record<CarouselSlideSlot, FlatCardText> {
   const { body } = splitBodyAndTags(genericText);
   const paragraphs = splitIntoParagraphCards(body, 3);
   // Preenche até 3 com string vazia só na borda degenerada (texto vazio) —
@@ -298,8 +303,8 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
     // cru, e as 2 frases de INSTAGRAM_CTA_LINE saíam coladas num bloco só,
     // com o wrap quebrando a 2ª frase no meio sem respiro nenhum entre elas.
     cta: {
-      kicker: DAILY_CAROUSEL_CTA_KICKER,
-      title: splitParagraphIntoTwoBlocks(INSTAGRAM_CTA_LINE),
+      kicker: ctaOverride?.kicker ?? DAILY_CAROUSEL_CTA_KICKER,
+      title: splitParagraphIntoTwoBlocks(ctaOverride?.title ?? INSTAGRAM_CTA_LINE),
       footer: "diar.ia.br",
     },
   };
@@ -327,8 +332,10 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
  * SÓ o negrito muda o hash e regenera a arte — exatamente o que se quer,
  * mesma classe do layoutTag abaixo.
  */
-export function hashCarouselSlideTexts(genericText: string): string {
-  const texts = buildCarouselSlideTexts(genericText);
+export function hashCarouselSlideTexts(genericText: string, ctaOverride?: CarouselCtaOverride | null): string {
+  // #8681: o override entra via o texto RENDERIZADO do slide cta — mudar o
+  // override muda o carimbo e regera a arte, sem caminho paralelo.
+  const texts = buildCarouselSlideTexts(genericText, ctaOverride);
   const canonical = CAROUSEL_SLIDE_SLOTS.map(
     // #6086: handle/microCta entram no rasterizado (rodapé) mas não em
     // `body`/`title` — precisam estar no carimbo, senão a introdução dos
@@ -449,8 +456,9 @@ export function carouselSlideFilename(destaque: string, slot: CarouselSlideSlot)
 export async function renderCarouselSlides(
   genericText: string,
   outPaths: Record<CarouselSlideSlot, string>,
+  ctaOverride?: CarouselCtaOverride | null, // #8681
 ): Promise<Record<CarouselSlideSlot, string>> {
-  const texts = buildCarouselSlideTexts(genericText);
+  const texts = buildCarouselSlideTexts(genericText, ctaOverride);
   const result = {} as Record<CarouselSlideSlot, string>;
   for (const slot of CAROUSEL_SLIDE_SLOTS) {
     result[slot] = await renderFlatCard(texts[slot], outPaths[slot], DAILY_CAROUSEL_LAYOUT);
@@ -477,8 +485,9 @@ export async function renderCarouselSlides(
  */
 export function findOverflowingCarouselSlides(
   genericText: string,
+  ctaOverride?: CarouselCtaOverride | null, // #8681
 ): { slot: CarouselSlideSlot; chars: number; lines: number; excessPx: number }[] {
-  const texts = buildCarouselSlideTexts(genericText);
+  const texts = buildCarouselSlideTexts(genericText, ctaOverride);
   const out: { slot: CarouselSlideSlot; chars: number; lines: number; excessPx: number }[] = [];
   for (const slot of CAROUSEL_SLIDE_SLOTS) {
     const m = measureFlatCardBody(texts[slot].title, DAILY_CAROUSEL_LAYOUT);

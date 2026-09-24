@@ -44,6 +44,7 @@ import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 import { extractSection, extractDestaqueBlock } from "./lib/extract-section.ts";
 import { readCoverOverride } from "./gen-social-card-4x5.ts";
+import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681
 import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
@@ -91,6 +92,8 @@ export async function genCarouselCards(
   const skipped: { destaque: string; reason: string }[] = [];
   const refreshed: string[] = [];
   const storedHashes = readCarouselSourceHashes(editionDir);
+  // #8681: override de teste do slide CTA (lança se o JSON estiver malformado).
+  const ctaOverride = readInstagramTestOverride(editionDir)?.cta_slide ?? null;
   const hashes: CarouselSourceHashes = {};
 
   // #6078 item 2 — PRÉ-PASSADA de overflow, antes de renderizar qualquer
@@ -107,7 +110,7 @@ export async function genCarouselCards(
   for (const d of destaques) {
     const dText = slideSourceText(editionDir, d, section ? extractDestaqueBlock(section, d) : null);
     if (!dText) continue; // reportado como `skipped` no loop principal abaixo
-    const slides = findOverflowingCarouselSlides(dText.trim());
+    const slides = findOverflowingCarouselSlides(dText.trim(), ctaOverride);
     if (slides.length > 0) transbordam.push({ destaque: d, slides });
   }
   if (transbordam.length > 0) {
@@ -144,7 +147,7 @@ export async function genCarouselCards(
     // #6064 item 1: idempotência por CONTEÚDO, não por existência de arquivo.
     // Texto igual ao do carimbo → pula; texto editado depois (Studio, Stage 4)
     // → regera, senão a arte publicada fica com o texto pré-edição.
-    const hash = hashCarouselSlideTexts(dText.trim());
+    const hash = hashCarouselSlideTexts(dText.trim(), ctaOverride);
     hashes[d] = hash;
     const allSlidesExist = CAROUSEL_SLIDE_SLOTS.every((slot) => existsSync(outPaths[slot]));
     if (!shouldRenderCarouselSlides({ allSlidesExist, storedHash: storedHashes[d], currentHash: hash, force: opts.force })) {
@@ -153,7 +156,7 @@ export async function genCarouselCards(
     }
     if (allSlidesExist && storedHashes[d] !== hash) refreshed.push(d);
 
-    const rendered = await render(dText.trim(), outPaths);
+    const rendered = await render(dText.trim(), outPaths, ctaOverride);
     generated.push(...CAROUSEL_SLIDE_SLOTS.map((slot) => rendered[slot]));
     // #6068: carimbo gravado LOGO APÓS cada render bem-sucedido, não num
     // único write no fim. `renderCarouselSlides` escreve os 4 slots em
