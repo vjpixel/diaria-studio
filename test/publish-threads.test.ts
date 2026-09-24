@@ -182,6 +182,43 @@ describe("regressão #4309 (defesa em profundidade — hoje latente em '# Curto'
   });
 });
 
+describe("#8758: {edition_url} literal (03-social.md não reescrito) é resolvido antes do guard", () => {
+  const MD = "# Curto\n\n## d1\nPost d1. Leia: {edition_url}\n";
+  const URL = "https://diaria.beehiiv.com/p/edicao-teste";
+  const SCRIPT = resolve(__ROOT, "scripts/publish-threads.ts");
+
+  it("extractPostText com editionUrl substitui o placeholder e não lança", () => {
+    assert.equal(extractPostText(MD, "d1", URL), `Post d1. Leia: ${URL}`);
+  });
+
+  it("extractPostText sem editionUrl segue recusando o placeholder", () => {
+    assert.throws(() => extractPostText(MD, "d1"), /edition_url/);
+  });
+
+  it("main() com _internal/05-edition-url.txt segue pro dry-run em vez de 'failed'", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-8758-"));
+    try {
+      mkdirSync(join(tmpDir, "_internal"), { recursive: true });
+      writeFileSync(join(tmpDir, "03-social.md"), MD, "utf8");
+      writeFileSync(join(tmpDir, "_internal", "05-edition-url.txt"), URL + "\n", "utf8");
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition-dir", tmpDir, "--dry-run", "--log-root-dir", tmpDir],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          env: { ...process.env, THREADS_USER_ID: "fake_8758", THREADS_ACCESS_TOKEN: "fake_8758" },
+        },
+      );
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.match(r.stdout, /DRY-RUN threads\/d1/);
+      assert.doesNotMatch(r.stderr, /ERROR extracting text/);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("regressão #4309 finding 2 (self-review #2038): guard não derruba o main() inteiro", () => {
   // Antes do fix: extractPostText podia lançar via assertNoScaffolding, e o
   // call site em main() (dentro do for-loop) não tinha try/catch — um throw

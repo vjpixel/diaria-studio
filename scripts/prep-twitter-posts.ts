@@ -146,7 +146,11 @@ export function extractDestaquesFromCurto(socialMd: string): string[] {
  * Retorna `null` se a seção `# Curto` ou o destaque dentro dela não existir
  * — nunca lança nem cai pra outra seção (#3994: sem fallback).
  */
-export function extractCurtoText(socialMd: string, destaque: string): string | null {
+export function extractCurtoText(
+  socialMd: string,
+  destaque: string,
+  editionUrl: string | null = null,
+): string | null {
   const normalized = socialMd.replace(/\r\n/g, "\n");
   const section = extractSection(normalized, "Curto");
   if (section === null) return null;
@@ -156,7 +160,10 @@ export function extractCurtoText(socialMd: string, destaque: string): string | n
   // bug ativado em publish-instagram.ts/publish-facebook.ts).
   const dText = extractDestaqueBlock(section, destaque);
   if (dText === null) return null;
-  const text = dText.trim();
+  // #8758: mesmo caso de publish-threads.ts — `{edition_url}` literal é o estado
+  // esperado quando `resolve-edition-url.ts --validate-social` não reescreveu o
+  // 03-social.md; resolver antes do guard. Sem editionUrl, segue recusado.
+  const text = editionUrl ? dText.trim().replaceAll("{edition_url}", editionUrl) : dText.trim();
   assertNoScaffolding(text, `destaque '${destaque}' (twitter/curto)`);
   return text;
 }
@@ -357,7 +364,7 @@ export function prepTwitterPosts(
     // em publish-facebook.ts/publish-instagram.ts.
     let text: string | null;
     try {
-      text = extractCurtoText(socialMd, d);
+      text = extractCurtoText(socialMd, d, editionUrl);
     } catch (e: any) {
       skipped.push({ destaque: d, reason: `erro extraindo texto: ${e.message}` });
       continue;
