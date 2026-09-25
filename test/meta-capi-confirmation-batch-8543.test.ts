@@ -277,6 +277,8 @@ describe("#8616 item 1 — CLI main(): --send sem token não pode sair exit 0 em
     return dir;
   }
   const yesterday = () => new Date(Date.now() - 24 * 3600 * 1000).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  // relativo a Date.now() — data fixa passada envelhece pra fora da janela de META_CONFIRMATION_DEFAULT_WINDOW_DAYS (#8806)
+  const withinWindow = () => new Date(Date.now() - 24 * 3600 * 1000).toISOString();
 
   it("sem snapshot base: exit 1", () =>
     withTmp(async (dir) => {
@@ -328,7 +330,7 @@ describe("#8616 item 1 — CLI main(): --send sem token não pode sair exit 0 em
         const sendFn = async (): Promise<MetaCapiSendResult> => ({ ok: true, status: 200 });
         const code = await metaConfirmMain(
           ["--send", "--snapshot-root", dir, "--index", join(dir, "i.json")],
-          async () => [sub(1) as any],
+          async () => [sub(1, { created_at: withinWindow() }) as any],
           sendFn,
         );
         assert.equal(code, 0);
