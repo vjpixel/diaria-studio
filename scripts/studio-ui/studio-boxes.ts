@@ -1232,6 +1232,63 @@ export function createBox(rootDir: string, slug: string, content: string): Creat
   }
 }
 
+// ── duplicar caixa (#8822) ──────────────────────────────────────────────────
+
+/** Deriva o slug da cópia: `{base}-copia.md`, incrementando `-copia-2.md`,
+ * `-copia-3.md`... se já existir (viva OU arquivada — mesmo critério de
+ * colisão de `createBox`). Nunca colide silenciosamente. */
+export function deriveDuplicateSlug(rootDir: string, slug: string): string {
+  const base = slug.replace(/\.md$/, "");
+  const taken = (candidate: string): boolean =>
+    existsSync(boxFilePath(rootDir, candidate)) || existsSync(archivedBoxFilePath(rootDir, candidate));
+  let candidate = `${base}-copia.md`;
+  let n = 2;
+  while (taken(candidate)) {
+    candidate = `${base}-copia-${n}.md`;
+    n++;
+  }
+  return candidate;
+}
+
+export interface DuplicateBoxResult {
+  ok: boolean;
+  error?: string;
+  /** Slug da caixa ORIGEM (o que o client pediu pra duplicar). */
+  slug: string;
+  /** Slug da cópia recém-criada — só presente quando `ok`. */
+  newSlug?: string;
+  modifiedAt?: string | null;
+  /** `true` quando o slug de origem é inválido ou não existe — 404. */
+  notFound?: boolean;
+}
+
+/** Duplica uma caixa (#8822 — botão "Duplicar" do painel Caixas): lê a caixa
+ * origem via `readBox`, deriva um slug novo livre via `deriveDuplicateSlug`,
+ * e cria a cópia com o MESMO conteúdo (`categoria`/`notas`/`conteudo`
+ * idênticos) exceto o `nome`, que ganha o sufixo " (cópia)" — a partir do
+ * `nome:` explícito se houver, senão do nome de exibição derivado
+ * (`resolveBoxDisplayName`, mesmo fallback da lista). A cópia nasce SEM
+ * atribuição de slot (`createBox` nunca atribui slot, igual à criação
+ * manual) — não herda `boxes_divulgacao`/`boxes_divulgacao_patronos`.
+ * Fail-soft: nunca lança. */
+export function duplicateBox(rootDir: string, slug: string): DuplicateBoxResult {
+  const source = readBox(rootDir, slug);
+  if (!source.ok) {
+    return { ok: false, error: source.error ?? `caixa não encontrada: ${slug}`, slug, notFound: true };
+  }
+  const newSlug = deriveDuplicateSlug(rootDir, slug);
+  const baseNome = source.nome && source.nome.trim() ? source.nome : resolveBoxDisplayName(source.content, source.slug);
+  const newContent = buildBoxContent(
+    { nome: `${baseNome} (cópia)`, categoria: source.categoria ?? "", notas: source.notas ?? "" },
+    source.conteudo ?? "",
+  );
+  const created = createBox(rootDir, newSlug, newContent);
+  if (!created.ok) {
+    return { ok: false, error: created.error ?? "falha ao criar a cópia", slug };
+  }
+  return { ok: true, slug, newSlug, modifiedAt: created.modifiedAt };
+}
+
 // ── arquivar / restaurar / listar arquivadas (#3928) ───────────────────────
 
 export interface ArchiveBoxResult {

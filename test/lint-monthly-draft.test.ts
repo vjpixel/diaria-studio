@@ -273,6 +273,28 @@ function draftWithClariceLivrosMalformedBold(): string {
     .replace("**LIVROS**", "**LIVROS");
 }
 
+/**
+ * Mesmo draft base, mas com um box "**DIVULGAÇÃO**" puro (formato do box da
+ * imersão, context/templates/newsletter-monthly.md) inserido entre D1 e
+ * CLARICE — DIVULGAÇÃO. Cenário do #8824: negrito ASSIMÉTRICO (perde o `**`
+ * de fechamento) — o mesmo padrão real de export do Drive que motivou o
+ * #2818 pra CLARICE/LIVROS.
+ */
+function draftWithDivulgacaoBoxMalformedBold(): string {
+  return draftWithClariceLivrosBold().replace(
+    "**CLARICE — DIVULGAÇÃO**",
+    ["**DIVULGAÇÃO", "", "Crie seu agente de IA sem programar.", "", "---", "", "**CLARICE — DIVULGAÇÃO**"].join("\n"),
+  );
+}
+
+/** Mesmo box, mas com negrito bem formado (`**DIVULGAÇÃO**`) — caso feliz. */
+function draftWithDivulgacaoBoxBold(): string {
+  return draftWithClariceLivrosBold().replace(
+    "**CLARICE — DIVULGAÇÃO**",
+    ["**DIVULGAÇÃO**", "", "Crie seu agente de IA sem programar.", "", "---", "", "**CLARICE — DIVULGAÇÃO**"].join("\n"),
+  );
+}
+
 // ─── checkSectionIntegrity ──────────────────────────────────────────────────
 
 describe("checkSectionIntegrity (#2794)", () => {
@@ -380,6 +402,26 @@ describe("checkOptionalSectionIntegrity (#2818 self-review finding 1)", () => {
     assert.equal(r.ok, false);
     assert.ok(r.missing.includes("CLARICE —"), `missing deveria incluir "CLARICE —": ${r.missing.join(", ")}`);
     assert.ok(r.missing.includes("LIVROS"), `missing deveria incluir "LIVROS": ${r.missing.join(", ")}`);
+  });
+
+  // #8824: OPTIONAL_SECTION_CHECKS não cobria o label puro "DIVULGAÇÃO"
+  // (box da imersão, distinto de "CLARICE — DIVULGAÇÃO") — negrito
+  // assimétrico ou writer sem `**` caía em prosa sem o lint acusar.
+  it("DIVULGAÇÃO em negrito bem formado: reconhecido, nada em missing", () => {
+    const r = checkOptionalSectionIntegrity(draftWithDivulgacaoBoxBold());
+    assert.equal(r.ok, true, `missing: ${r.missing.join(", ")}`);
+    assert.ok(!r.missing.includes("DIVULGAÇÃO"));
+  });
+
+  it("DIVULGAÇÃO com negrito MALFORMADO (só abre **, regressão #8824): guardrail acusa a perda de reconhecimento", () => {
+    const r = checkOptionalSectionIntegrity(draftWithDivulgacaoBoxMalformedBold());
+    assert.equal(r.ok, false);
+    assert.ok(r.missing.includes("DIVULGAÇÃO"), `missing deveria incluir "DIVULGAÇÃO": ${r.missing.join(", ")}`);
+  });
+
+  it("DIVULGAÇÃO e CLARICE — DIVULGAÇÃO coexistem no mesmo draft sem colidir", () => {
+    const r = checkOptionalSectionIntegrity(draftWithDivulgacaoBoxBold());
+    assert.ok(!r.missing.includes("CLARICE —"), `CLARICE — não deveria estar em missing: ${r.missing.join(", ")}`);
   });
 
   it("draft sem NENHUM label opcional (CLARICE/LIVROS/PREVIEW/REMETENTE ausentes): não é falha — nenhum deles é obrigatório", () => {

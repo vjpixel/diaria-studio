@@ -9,7 +9,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { listBoxes, readBox, saveBox, createBox, archiveBox, unarchiveBox, listArchivedBoxes, buildBoxContent, buildBoxContentWithNome, replaceBoxContentTitle, readBoxSlotsState, saveBoxSlots, readParaEncerrarState, saveParaEncerrar } from "../studio-boxes.ts";
+import { listBoxes, readBox, saveBox, createBox, duplicateBox, archiveBox, unarchiveBox, listArchivedBoxes, buildBoxContent, buildBoxContentWithNome, replaceBoxContentTitle, readBoxSlotsState, saveBoxSlots, readParaEncerrarState, saveParaEncerrar } from "../studio-boxes.ts";
 import { sendJson, readRequestBody } from "../http-utils.ts";
 
 const BOXES_MAX_BODY_BYTES = 500_000;
@@ -115,6 +115,15 @@ export async function handleApiBoxCreate(
     nome.trim() || categoria.trim() ? buildBoxContent({ nome, categoria, notas: "" }, content) : content;
   const result = createBox(rootDir, slug, finalContent);
   const status = result.ok ? 201 : result.exists ? 409 : 400;
+  sendJson(res, status, result);
+}
+
+/** `POST /api/boxes/:slug/duplicate` — duplica uma caixa (#8822). Sem body —
+ * o slug novo é derivado (`{slug}-copia.md`, deduplicado) e o `Nome` ganha o
+ * sufixo " (cópia)" automaticamente; ver `duplicateBox` (studio-boxes.ts). */
+export function handleApiBoxDuplicate(rootDir: string, slug: string, res: ServerResponse): void {
+  const result = duplicateBox(rootDir, slug);
+  const status = result.ok ? 201 : result.notFound ? 404 : 400;
   sendJson(res, status, result);
 }
 

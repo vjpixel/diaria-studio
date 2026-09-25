@@ -384,6 +384,7 @@ import {
   handleApiBoxGet,
   handleApiBoxSave,
   handleApiBoxCreate,
+  handleApiBoxDuplicate,
   handleApiBoxArchive,
   handleApiBoxUnarchive,
   handleApiArchivedBoxesList,
@@ -1547,6 +1548,13 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiBoxCreate(rootDir, req, res).catch((e) =>
           sendJson(res, 500, { error: (e as Error).message }),
         );
+        return;
+      }
+      // #8822: duplicar caixa — POST /api/boxes/:slug/duplicate. Mesmo
+      // sufixo-não-colide-com-save do archive/unarchive logo abaixo.
+      const boxDuplicateMatch = urlPath.match(/^\/api\/boxes\/([^/]+)\/duplicate$/);
+      if (req.method === "POST" && boxDuplicateMatch) {
+        handleApiBoxDuplicate(rootDir, decodeURIComponent(boxDuplicateMatch[1]), res);
         return;
       }
       // #3928: arquivar / restaurar caixa — POST /api/boxes/:slug/(archive|

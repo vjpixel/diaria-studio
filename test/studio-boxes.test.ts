@@ -46,6 +46,8 @@ import {
   saveBox,
   boxFilePath,
   createBox,
+  duplicateBox,
+  deriveDuplicateSlug,
   archiveBox,
   unarchiveBox,
   listArchivedBoxes,
@@ -485,6 +487,86 @@ describe("createBox (#3928, pure)", () => {
     assert.equal(createBox(root, "README.md", "x").invalidSlug, true);
     assert.equal(createBox(root, "Foo.md", "x").invalidSlug, true);
     assert.equal(createBox(root, "../fora.md", "x").invalidSlug, true);
+  });
+});
+
+describe("duplicateBox / deriveDuplicateSlug (#8822, pure)", () => {
+  let root: string;
+
+  before(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-duplicate-"));
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "data", "snippets", "origem.md"),
+      "<!--\nnome: Divulgação original\ncategoria: Evento\n-->\n\n# Título da caixa\n\nConteúdo original.",
+    );
+    writeFileSync(join(root, "data", "snippets", "sem-nome.md"), "# Só título\n\nSem campo nome: no header.");
+  });
+
+  after(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("cria a cópia em data/snippets/{slug}-copia.md com o MESMO conteúdo exceto o Nome", () => {
+    const result = duplicateBox(root, "origem.md");
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.newSlug, "origem-copia.md");
+    const copyContent = readFileSync(boxFilePath(root, "origem-copia.md"), "utf8");
+    assert.match(copyContent, /nome: Divulgação original \(cópia\)/);
+    assert.match(copyContent, /categoria: Evento/);
+    assert.match(copyContent, /# Título da caixa/);
+    assert.match(copyContent, /Conteúdo original\./);
+    // origem preservada intacta
+    assert.match(readFileSync(boxFilePath(root, "origem.md"), "utf8"), /nome: Divulgação original\n/);
+  });
+
+  it("caixa sem 'nome:' explícito: usa o título derivado como base do (cópia)", () => {
+    const result = duplicateBox(root, "sem-nome.md");
+    assert.equal(result.ok, true, result.error);
+    assert.ok(result.newSlug, "result.newSlug deveria estar presente quando ok:true");
+    const copyContent = readFileSync(boxFilePath(root, result.newSlug), "utf8");
+    assert.match(copyContent, /nome: Só título \(cópia\)/);
+  });
+
+  it("slug colidindo com cópia já existente dedup pra -copia-2.md, -copia-3.md...", () => {
+    writeFileSync(join(root, "data", "snippets", "dedup-source.md"), "# Dedup\n\nConteúdo.");
+    const first = duplicateBox(root, "dedup-source.md");
+    assert.equal(first.ok, true, first.error);
+    assert.equal(first.newSlug, "dedup-source-copia.md");
+    const second = duplicateBox(root, "dedup-source.md");
+    assert.equal(second.ok, true, second.error);
+    assert.equal(second.newSlug, "dedup-source-copia-2.md");
+    const third = duplicateBox(root, "dedup-source.md");
+    assert.equal(third.ok, true, third.error);
+    assert.equal(third.newSlug, "dedup-source-copia-3.md");
+  });
+
+  it("a cópia não aparece em nenhum slot — não herda atribuição (mesmo comportamento de createBox)", () => {
+    const result = duplicateBox(root, "origem.md");
+    assert.equal(result.ok, true);
+    const listed = listBoxes(root).find((b) => b.slug === result.newSlug);
+    assert.ok(listed, "cópia deveria aparecer na listagem");
+    assert.equal(listed.slot, null);
+    assert.equal(listed.slotPatronos, null);
+  });
+
+  it("slug de origem inexistente -> notFound:true, nada é criado", () => {
+    const result = duplicateBox(root, "nao-existe.md");
+    assert.equal(result.ok, false);
+    assert.equal(result.notFound, true);
+  });
+
+  it("slug de origem inválido -> notFound:true (readBox já recusa)", () => {
+    const result = duplicateBox(root, "../fora.md");
+    assert.equal(result.ok, false);
+    assert.equal(result.notFound, true);
+  });
+
+  it("deriveDuplicateSlug pula slug já ocupado por uma caixa ARQUIVADA também", () => {
+    mkdirSync(join(root, "data", "snippets", "_arquivo"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "_arquivo", "isolada-copia.md"), "# Arquivada");
+    writeFileSync(join(root, "data", "snippets", "isolada.md"), "# Isolada\n\nConteúdo.");
+    assert.equal(deriveDuplicateSlug(root, "isolada.md"), "isolada-copia-2.md");
   });
 });
 
@@ -1906,6 +1988,30 @@ describe("POST /api/boxes (create) + archive/unarchive + GET /api/boxes/archived
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.ok(Array.isArray(body.boxes));
+  });
+
+  // #8822: POST /api/boxes/:slug/duplicate
+  it("POST /api/boxes/:slug/duplicate cria a cópia -> 201, newSlug derivado, aparece em /api/boxes fora de slot", async () => {
+    const res = await post("/api/boxes/com-slot.md/duplicate");
+    assert.equal(res.status, 201);
+    const body = await res.json();
+    assert.equal(body.newSlug, "com-slot-copia.md");
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    const copy = list.boxes.find((b: { slug: string }) => b.slug === "com-slot-copia.md");
+    assert.ok(copy, "cópia deveria aparecer em /api/boxes");
+    assert.equal(copy.slot, null, "cópia não deveria herdar o slot do original");
+  });
+
+  it("POST /api/boxes/:slug/duplicate em inexistente -> 404, nada é criado", async () => {
+    const res = await post("/api/boxes/nao-existe.md/duplicate");
+    assert.equal(res.status, 404);
+  });
+
+  it("POST /api/boxes/:slug/duplicate não colide com o save (.../:slug$) nem com archive/unarchive", async () => {
+    // sanity: a rota /duplicate é reconhecida ANTES do fallback de save por
+    // slug — se colidisse, isto devolveria 400/404 do handler de save.
+    const res = await post("/api/boxes/com-slot.md/duplicate");
+    assert.equal(res.status, 201);
   });
 });
 
