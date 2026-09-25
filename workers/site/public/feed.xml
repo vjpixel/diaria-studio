@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Thu, 24 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Fri, 25 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Agente rebelde invade sistema de governo</title>
+      <link>https://diar.ia.br/p/agente-rebelde-invade-sistema-de-governo</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/agente-rebelde-invade-sistema-de-governo</guid>
+      <pubDate>Fri, 25 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Google dá rosto ao Gemini em tempo real | Empiricus abre sua fábrica de agentes autônomos</description>
+    </item>
     <item>
       <title>Claude descobre novo sistema enzimático</title>
       <link>https://diar.ia.br/p/claude-descobre-novo-sistema-enzimatico</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao</guid>
       <pubDate>Fri, 17 Jul 2026 09:00:00 GMT</pubDate>
       <description>Altman, Hassabis e Amodei pedem regulação | NotebookLM vira Gemini Notebook</description>
-    </item>
-    <item>
-      <title>IBM admite atraso em IA e ação despenca 25%</title>
-      <link>https://diar.ia.br/p/ibm-admite-atraso-em-ia-e-acao-despenca-25</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/ibm-admite-atraso-em-ia-e-acao-despenca-25</guid>
-      <pubDate>Thu, 16 Jul 2026 09:00:00 GMT</pubDate>
-      <description>Meta é acusada de demitir doentes com IA | Google libera IA em entrevistas técnicas</description>
     </item>
   </channel>
 </rss>
