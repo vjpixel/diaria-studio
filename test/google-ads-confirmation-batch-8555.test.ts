@@ -489,7 +489,17 @@ describe("#8555 — CLI main()", () => {
       const saved = process.env.GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID;
       delete process.env.GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID;
       try {
-        const code = await confirmMain(["--send", "--snapshot-root", dir], f as unknown as typeof fetch, async () => [sub(1)]);
+        // #8837: envLoader no-op — nunca deixa o teste depender de o `.env` real da máquina
+        // não conter a credencial. O default de main() (loadProjectEnv) reporia a var acima
+        // a partir do `.env` do root efetivo, fazendo o teste passar por acidente numa
+        // máquina com a credencial configurada em vez de exercitar a falha real.
+        const noopEnvLoader = () => {};
+        const code = await confirmMain(
+          ["--send", "--snapshot-root", dir],
+          f as unknown as typeof fetch,
+          async () => [sub(1)],
+          noopEnvLoader,
+        );
         assert.equal(code, 1);
         assert.equal(f.mock.callCount(), 0);
       } finally {
@@ -507,10 +517,13 @@ describe("#8555 — CLI main()", () => {
       const saved = process.env.GOOGLE_ADS_CUSTOMER_ID;
       delete process.env.GOOGLE_ADS_CUSTOMER_ID;
       try {
+        // #8837: mesmo motivo do teste acima — envLoader no-op pra não depender do `.env` real.
+        const noopEnvLoader = () => {};
         const code = await confirmMain(
           ["--send", "--conversion-action-id", "555", "--snapshot-root", dir],
           f as unknown as typeof fetch,
           async () => [sub(1)],
+          noopEnvLoader,
         );
         assert.equal(code, 1);
         assert.equal(f.mock.callCount(), 0);

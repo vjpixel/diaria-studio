@@ -121,8 +121,14 @@ export async function main(
   argv: string[] = process.argv.slice(2),
   fetchFn: typeof fetch = fetch,
   listRoster: () => Promise<ConfirmationRosterEntry[]> = defaultListRoster,
+  // #8837: injetável pra testes isolarem process.env do `.env` real da máquina
+  // (sem isso, `delete process.env.GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID`/
+  // `GOOGLE_ADS_CUSTOMER_ID` seguido de `loadProjectEnv` repõe a var de um `.env`
+  // que contenha a credencial, e o teste de "--send sem id/customer-id" passa por
+  // acidente em vez de exercitar o caminho de falha — mesmo padrão do #8829/#8836).
+  envLoader: (root: string) => void = loadProjectEnv,
 ): Promise<number> {
-  loadProjectEnv(ROOT);
+  envLoader(ROOT);
 
   const send = hasFlag(argv, "send") && !hasFlag(argv, "dry-run");
   const dryRun = !send;
