@@ -25,7 +25,8 @@ import {
   DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET, // #6078
 } from "../daily-carousel-card.ts"; // #6064
 import { md5OfFile } from "../shared/file-md5.ts"; // #6068
-import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride } from "../instagram-test-override.ts"; // #8681
+import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride, type InstagramTestOverride } from "../instagram-test-override.ts"; // #8681
+import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
 
 import { lintIntroCount } from "../newsletter-count.ts";
 import {
@@ -1860,6 +1861,53 @@ function checkCarouselTextOverflow(editionDir: string): InvariantViolation[] {
 }
 
 /**
+ * (#8681) Guard contra a "promessa" — decisão do editor: o repo não tem
+ * nenhum mecanismo que responda a comentários do Instagram, então um
+ * override de teste (`_internal/instagram-test.json`) que promete entregar
+ * link/edição/material a quem comentar fica sem cumprimento. Checa
+ * `caption` e `cta_slide.title`/`cta_slide.kicker` do override — nunca o
+ * texto normal do `03-social.md` (ele não passa por este mecanismo de
+ * override, e a legenda de produção não tem histórico desse padrão).
+ *
+ * Bloqueia o gate (error) — mesma severidade do `carousel-text-overflow`
+ * pra JSON malformado: instrução editorial explícita não é ignorada em
+ * silêncio, e a mesma checagem roda de novo em `publish-instagram.ts` antes
+ * de publicar (defesa em profundidade — o gate pode ser ignorado).
+ */
+function checkInstagramCommentDeliveryPromise(editionDir: string): InvariantViolation[] {
+  const path = instagramTestOverridePath(editionDir);
+  if (!existsSync(path)) return [];
+
+  let override: InstagramTestOverride | null;
+  try {
+    override = readInstagramTestOverride(editionDir);
+  } catch {
+    return []; // JSON malformado já é reportado por carousel-text-overflow
+  }
+  if (!override) return [];
+
+  const violations: InvariantViolation[] = [];
+  const candidates: Array<{ label: string; text: string | undefined }> = [
+    { label: "caption", text: override.caption },
+    { label: "cta_slide.title", text: override.cta_slide?.title },
+    { label: "cta_slide.kicker", text: override.cta_slide?.kicker },
+  ];
+
+  for (const { label, text } of candidates) {
+    const result = detectCommentDeliveryPromise(text);
+    if (!result.promise) continue;
+    violations.push({
+      rule: "instagram-comment-delivery-promise",
+      message: commentDeliveryPromiseMessage(`_internal/instagram-test.json (${label})`, result.match),
+      source_issue: "#8681",
+      severity: "error",
+      file: path,
+    });
+  }
+  return violations;
+}
+
+/**
  * (#6740) Contraparte de `carousel-cards-stale`/`carousel-upload-incomplete`/
  * `carousel-upload-stale` pro caso que nenhum dos três cobre: os três só
  * comparam DIVERGÊNCIA entre estados que já existem (`if (!slidesOnDiskDe(d))
@@ -2679,6 +2727,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkCarouselTextOverflow,
   },
   {
+    id: "instagram-comment-delivery-promise",
+    description: "override de teste do Instagram (_internal/instagram-test.json) promete entregar link/edição/material a quem comentar — o repo não responde comentários (#8681)",
+    source_issue: "#8681",
+    stage: 4,
+    run: checkInstagramCommentDeliveryPromise,
+  },
+  {
     id: "box-divulgacao-runtime-excluded",
     description: "slot de boxes_divulgacao aponta pra snippet runtime:false — injetaria conteúdo de doc/referência verbatim (#4504)",
     source_issue: "#4504",
@@ -2754,6 +2809,7 @@ export {
   checkCarouselUploadIncomplete,
   checkCarouselUploadStale,
   checkCarouselTextOverflow,
+  checkInstagramCommentDeliveryPromise,
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,
   checkKitFixtureAudit,

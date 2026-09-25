@@ -68,6 +68,7 @@ import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib
 import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #6862 — Instagram não renderiza markdown
 import { injectChannelLine, INSTAGRAM_CTA_LINE } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish; #4309 — proteger o CTA no truncamento
 import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681 — override de teste por edição
+import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "./lib/comment-delivery-promise.ts"; // #8681 — guard contra promessa de entrega via comentário
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
 import {
@@ -540,6 +541,26 @@ async function main() {
   const testOverride = readInstagramTestOverride(editionDir);
   if (testOverride?.caption) {
     console.warn(`[publish-instagram] #8681: legenda de TESTE de _internal/instagram-test.json — substitui a gerada em todos os destaques.`);
+  }
+
+  // #8681: guard contra a promessa — nunca publicar (nem em teste) uma
+  // legenda/CTA que peça comentário em troca de uma entrega (link/edição/
+  // material) que o projeto não tem como cumprir. Defesa em profundidade:
+  // o mesmo check já roda no invariante do Stage 4 (pode ser ignorado no
+  // gate), então recusa aqui, na hora de publicar de fato — erro duro, nunca
+  // publica em silêncio.
+  if (testOverride) {
+    const candidates: Array<{ label: string; text: string | undefined }> = [
+      { label: "caption", text: testOverride.caption },
+      { label: "cta_slide.title", text: testOverride.cta_slide?.title },
+      { label: "cta_slide.kicker", text: testOverride.cta_slide?.kicker },
+    ];
+    for (const { label, text } of candidates) {
+      const result = detectCommentDeliveryPromise(text);
+      if (result.promise) {
+        throw new Error(commentDeliveryPromiseMessage(`_internal/instagram-test.json (${label})`, result.match));
+      }
+    }
   }
 
   const tagAndAppend = (entry: PostEntry): void => {
