@@ -26,8 +26,14 @@ import {
 } from "../scripts/lib/shared/meta-capi.ts";
 import { main as metaConfirmMain } from "../scripts/meta-capi-confirmations-send.ts";
 
-const NOW = new Date("2026-09-20T15:00:00Z");
-const BASE_DATE = "2026-09-18";
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Ancorado em Date.now(), nunca em literal (#8806) — sub()/base() default sempre
+// dentro da janela de 7 dias (META_CONFIRMATION_DEFAULT_WINDOW_DAYS), qualquer
+// que seja a data real em que a suíte rodar.
+const NOW = new Date(Date.now());
+const BASE_DATE_MS = NOW.getTime() - 2 * DAY_MS;
+const BASE_DATE = new Date(BASE_DATE_MS).toISOString().slice(0, 10);
+const DEFAULT_CREATED_AT = new Date(BASE_DATE_MS).toISOString();
 
 function withTmp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "meta-confirm-8543-"));
@@ -35,9 +41,9 @@ function withTmp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 }
 
 function sub(id: number, over: Partial<ConfirmationRosterEntry> = {}): ConfirmationRosterEntry {
-  return { id, email_address: `leitor${id}@example.com`, state: "active", created_at: "2026-09-18T12:00:00Z", ...over };
+  return { id, email_address: `leitor${id}@example.com`, state: "active", created_at: DEFAULT_CREATED_AT, ...over };
 }
-const base = (id: number, state = "inactive"): SubscriberStateRecord => ({ id, state, created_at: "2026-09-18T12:00:00Z" });
+const base = (id: number, state = "inactive"): SubscriberStateRecord => ({ id, state, created_at: DEFAULT_CREATED_AT });
 
 interface Call {
   body: { data: Array<Record<string, any>> };
@@ -88,7 +94,7 @@ describe("#8543 Meta — event_name da confirmação", () => {
       assert.equal(ev.event_id, await computeConfirmationEventId(1));
       assert.notEqual(ev.event_id, await computeCompleteRegistrationEventId("leitor1@example.com", ev.event_time));
       assert.deepEqual(ev.user_data.em, [await hashEmailForMeta("leitor1@example.com")]);
-      assert.equal(ev.user_data.fbc, `fb.1.${Date.parse("2026-09-18T12:00:00Z")}.ABC123`);
+      assert.equal(ev.user_data.fbc, `fb.1.${Date.parse(DEFAULT_CREATED_AT)}.ABC123`);
       assert.ok(!JSON.stringify(calls[0].body).includes("leitor1@example.com"));
     }));
 
@@ -159,7 +165,7 @@ describe("#8543 Meta — idempotência e janela", () => {
   it("fora do prazo (cadastro > 7 dias) é registrado e pulado, não some em silêncio", () =>
     withTmp(async (dir) => {
       const { fetchImpl, calls } = mockFetch();
-      const old = sub(1, { created_at: "2026-09-10T12:00:00Z" });
+      const old = sub(1, { created_at: new Date(NOW.getTime() - 10 * DAY_MS).toISOString() });
       const s = await runMetaConfirmationBatch(deps(dir, { roster: [old], baseSnapshot: [base(1)], fetchImpl }));
       assert.equal(calls.length, 0);
       assert.equal(s.outOfWindow, 1);
@@ -173,7 +179,7 @@ describe("#8543 Meta — idempotência e janela", () => {
   it("dry-run e ausência de token não enviam nem tocam o índice", () =>
     withTmp(async (dir) => {
       const { fetchImpl, calls } = mockFetch();
-      const roster = [sub(1), sub(2, { created_at: "2026-09-01T00:00:00Z" })];
+      const roster = [sub(1), sub(2, { created_at: new Date(NOW.getTime() - 20 * DAY_MS).toISOString() })];
       const snap = [base(1), base(2)];
       const a = await runMetaConfirmationBatch(deps(dir, { roster, baseSnapshot: snap, fetchImpl, dryRun: true }));
       assert.equal(a.effectiveDryRun, true);
