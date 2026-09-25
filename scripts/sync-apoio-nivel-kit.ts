@@ -88,6 +88,7 @@ import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
+import { loadApoioOverrides, applyApoioOverrides } from "./lib/apoio-overrides.ts";
 import {
   buildApoiosData,
   readPastMonthSnapshots,
@@ -249,7 +250,19 @@ async function main(): Promise<void> {
     );
   }
 
-  const desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
+  let desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
+
+  // #8820: override manual (context/apoio-overrides.json) vence o valor
+  // derivado do apoia.se — mesmo ponto de aplicação (antes do diff) do
+  // sync Beehiiv, ver docblock de lib/apoio-overrides.ts.
+  const overrides = loadApoioOverrides(ROOT);
+  if (overrides.length > 0) {
+    desired = applyApoioOverrides(desired, overrides);
+    process.stderr.write(
+      `${LOG_PREFIX} ${overrides.length} override(s) manual(is) aplicado(s) de context/apoio-overrides.json: ` +
+        `${overrides.map((o) => `${o.email}→${o.nivel}`).join(", ")}\n`,
+    );
+  }
 
   process.stderr.write(`${LOG_PREFIX} buscando estado atual no Kit…\n`);
   const current = await fetchCurrentKitState(kitConfig);
