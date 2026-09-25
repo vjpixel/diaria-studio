@@ -2801,6 +2801,44 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "monthly", day: 3, hour: 9, minute: 45 },
     issue: "#7982",
   },
+  {
+    // #8828 — EDQUOT em 25/09/2026 derrubou todo comando Bash de toda
+    // sessão de Claude Code na máquina 300 porque o /tmp (tmpfs 15GB)
+    // estourou a cota, sem nenhuma task cuidando disso até agora. Cobre só
+    // a fatia de /tmp que é deste projeto (/tmp/claude-{uid}/<projeto>/
+    // <sessionId>/, ver docstring de cleanup-tmp-300.ts) — guard de idade
+    // (2 dias) + consulta a session-registry.ts pra nunca apagar sessão
+    // ativa. 03:20 BRT: janela de madrugada, fora do cluster matinal de
+    // checks/alarmes (09:00-11:15) e das janelas quentes (envio 19:00,
+    // Diaria-Overnight-Watchdog 18:00-09:00) -- checado via `--list` antes
+    // de escolher (#5408); só weeklies de Sunday 03:00/03:30 usam esse
+    // horário (linhas acima), sem colisão com nenhuma daily.
+    name: "Diaria-Tmp-Cleanup",
+    description: "GC diario dos diretorios de sessao do Claude Code em /tmp (e .output de tasks em background) que sobraram alem do guard de idade e nao constam mais ativos no session-registry",
+    steps: [{ key: "cleanup", script: "scripts/cleanup-tmp-300.ts" }],
+    logPath: "tmp-cleanup/.cleanup.log",
+    schedule: { kind: "daily", hour: 3, minute: 20 },
+    issue: "#8828",
+  },
+  {
+    // #8828 — rede de seguranca do EDQUOT de 25/09/2026: Diaria-Tmp-Cleanup
+    // (acima) so limpa a fatia de /tmp que e deste projeto; o resto do
+    // consumo real (cache SSR do wrangler/esbuild, clones de isolamento de
+    // worktree do harness, caches de ferramenta) fica fora do alcance de
+    // qualquer script deste repo. Este alarme cobre /tmp inteiro via
+    // statfsSync, pra avisar o editor ANTES do proximo estouro de cota, nao
+    // depois. Interval 6h (nao daily) -- 15GB de tmpfs pode encher num
+    // intervalo de horas dependendo de quanto wrangler/worktree rodou no
+    // dia, e uma checagem so-matinal so descobriria no dia seguinte, mesmo
+    // racional de Diaria-Clarice-Guardrail-Alarm/Diaria-Brevo-Diaria-Guardrail
+    // (interval 4h, linhas acima).
+    name: "Diaria-Tmp-Disk-Alarm",
+    description: "alarma quando a ocupacao de /tmp cruza 80% (statfsSync) -- rede de seguranca contra o EDQUOT que derrubou toda sessao de Claude Code na maquina 300 em 25/09/2026",
+    steps: [{ key: "check", script: "scripts/tmp-disk-alarm.ts" }],
+    logPath: "tmp-disk-alarm/.alarm-check.log",
+    schedule: { kind: "interval", hours: 6 },
+    issue: "#8828",
+  },
 ];
 
 /**
