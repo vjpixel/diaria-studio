@@ -237,6 +237,7 @@ describe("DIVULGAÇÃO com imagem no topo (box da imersão 10/10)", () => {
   it("imagem vira <img> no topo, sem <h3>, parágrafo preservado", () => {
     const { html } = draftToEmail(draft, "Teste", "2608");
     assert.ok(html.includes('<img src="https://eia.diar.ia.br/img/x.jpg"'), "imagem no topo");
+    assert.ok(html.includes('alt="Crie seu agente de IA"'), "alt vem do markdown");
     assert.ok(!/<h3[^>]*>[^<]*Sábado/.test(html), "parágrafo não vira título");
     assert.ok(/<p[^>]*>Sábado, 10\/10/.test(html), "parágrafo renderizado");
     assert.ok(!html.includes("!["), "markdown de imagem não vaza");

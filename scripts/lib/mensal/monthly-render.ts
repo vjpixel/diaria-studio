@@ -755,7 +755,7 @@ export function renderLaboratorio(chunk: string): string {
  *   1. Item lista ...
  *   → CTA: [link](url)
  */
-export function renderClariceBox(chunk: string, headerLabelText: string, imageUrl?: string, noSubtitle = false): string {
+export function renderClariceBox(chunk: string, headerLabelText: string, imageUrl?: string, noSubtitle = false, imageAlt?: string): string {
   const lines = chunk.split("\n");
   // Skip header (o rótulo de seção) + blank lines.
   let i = 1;
@@ -804,7 +804,7 @@ export function renderClariceBox(chunk: string, headerLabelText: string, imageUr
   // #editor: imagem no topo do box (full-bleed, cantos superiores arredondados),
   // como o box de curadoria de livros da diária (renderMidCallout).
   const imageRow = imageUrl
-    ? `<tr><td style="padding:0;line-height:0;font-size:0;"><img src="${escHtml(imageUrl)}" width="100%" alt="${escHtml(subtitle || headerLabelText)}" style="display:block;width:100%;height:auto;border:0;border-radius:12px 12px 0 0;" /></td></tr>`
+    ? `<tr><td style="padding:0;line-height:0;font-size:0;"><img src="${escHtml(imageUrl)}" width="100%" alt="${escHtml(imageAlt || subtitle || headerLabelText)}" style="display:block;width:100%;height:auto;border:0;border-radius:12px 12px 0 0;" /></td></tr>`
     : "";
   return [
     renderKicker(headerLabelText),
@@ -827,10 +827,10 @@ export function renderDivulgacaoBox(chunk: string): string {
   const lines = chunk.split("\n");
   let i = 1;
   while (i < lines.length && !lines[i].trim()) i++;
-  const img = i < lines.length ? lines[i].trim().match(/^!\[[^\]]*\]\(([^)\s]+)\)$/) : null;
+  const img = i < lines.length ? lines[i].trim().match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/) : null;
   if (!img) return renderClariceBox(chunk, "Divulgação");
   const rest = [lines[0], ...lines.slice(i + 1)].join("\n");
-  return renderClariceBox(rest, "Divulgação", img[1], true);
+  return renderClariceBox(rest, "Divulgação", img[2], true, img[1].trim() || undefined);
 }
 
 /**
