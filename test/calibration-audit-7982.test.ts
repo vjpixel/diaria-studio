@@ -127,6 +127,11 @@ describe("#7982 tasks agendadas declaradas", () => {
       assert.equal(scripts[scripts.length - 1], script);
       if (n.includes("Touch-Minutes")) {
         assert.deepEqual(scripts, ["scripts/derive-touch-minutes.ts", script]);
+      } else {
+        // #7982: o produtor de decisionAt roda ANTES do relatório trimestral — sem
+        // ele a seção de latência sai sempre n/d.
+        assert.deepEqual(scripts, ["scripts/record-calibration-pr-decisions.ts", script]);
+        assert.deepEqual(t!.steps[0].args, ["--write"]);
       }
       assert.equal(t!.schedule.kind, "monthly");
       const clash = SCHEDULED_TASKS.filter(
