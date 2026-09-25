@@ -62,7 +62,7 @@ O fio condutor:
 
 **DIVULGAÇÃO**
 
-![Seu agente de IA trabalha enquanto você almoça](https://eia.diar.ia.br/img/img-260831-04-agente-promo-v2.jpg)
+![Seu agente de IA trabalha enquanto você almoça](https://eia.diar.ia.br/img/img-260831-04-agente-promo-v3.jpg)
 
 Crie seu agente de IA sem programar
 
