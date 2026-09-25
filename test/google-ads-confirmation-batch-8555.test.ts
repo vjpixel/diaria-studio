@@ -1,8 +1,8 @@
 /**
- * Testes (#8555): lote de confirmação DOI -> Google Ads (ECL).
+ * Testes (#8555): lote de confirmação DOI -> Google Ads (ECL via Data Manager API).
  *
- * Nenhum teste toca a Google Ads API: `sendFn`/`fetch` são sempre mocks e o
- * índice de idempotência vive num diretório temporário.
+ * Nenhum teste toca a Google Ads/Data Manager API: `sendFn`/`fetch` são
+ * sempre mocks e o índice de idempotência vive num diretório temporário.
  */
 import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
@@ -20,20 +20,19 @@ import {
   assessBaseSnapshot,
   toBrtIso,
   indexKey,
+  MAX_FAILED_ATTEMPTS,
   type ConfirmationRosterEntry,
 } from "../scripts/lib/google-ads-confirmation-batch.ts";
 import {
-  extractPartialFailureIndexes,
-  sendConversionPayload,
   authConfigFromEnv,
-  resolveActionResourceName,
-  type SendPayloadResult,
-} from "../scripts/lib/google-ads-conversion-sender.ts";
+  sendDataManagerIngest,
+  type DataManagerEvent,
+  type DataManagerIngestResult,
+} from "../scripts/lib/google-data-manager-sender.ts";
 import { hashEmailForEnhancedConversions } from "../scripts/lib/google-ads-enhanced-conversions.ts";
 import { main as confirmMain, actionIdOf } from "../scripts/upload-google-ads-confirmations.ts";
 import type { SubscriberStateRecord } from "../scripts/lib/subscriber-state-snapshot.ts";
 
-const ACTION = "customers/2369219639/conversionActions/555";
 const NOW = new Date("2026-09-20T15:00:00Z");
 const BASE_DATE = "2026-09-18";
 
@@ -62,8 +61,13 @@ function sub(id: number, over: Partial<ConfirmationRosterEntry> = {}): Confirmat
 }
 const base = (id: number, state = "inactive"): SubscriberStateRecord => ({ id, state, created_at: "2026-09-18T12:00:00Z" });
 
-const okSend = () =>
-  mock.fn(async (): Promise<SendPayloadResult> => ({ ok: true, response: {} }));
+const okSend = () => mock.fn(async (_events: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({ ok: true, requestId: "req-1", response: {} }));
+/** Falha com resposta HTTP REAL do Google (não-2xx) — conta tentativa (`countsAsAttempt: true`). */
+const failSend = (error = "HTTP 500") =>
+  mock.fn(async (_events: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({ ok: false, stage: "ingest", error, countsAsAttempt: true }));
+/** Falha de TRANSPORTE (rede, env/token ausente, 2xx anômalo) — nunca conta tentativa. */
+const transportFailSend = (error = "falha de rede") =>
+  mock.fn(async (_events: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({ ok: false, stage: "ingest", error, countsAsAttempt: false }));
 
 describe("#8555 — detecção de confirmações", () => {
   it("inactive na base + active hoje = confirmação; já active na base não é", () => {
@@ -134,25 +138,26 @@ describe("#8555 — detecção de confirmações", () => {
   });
 });
 
-describe("#8555 — regressão do lote", () => {
+describe("#8555 — regressão do lote (Data Manager API)", () => {
   it("confirmação SEM gclid SOBE, via hash de e-mail", async () => {
     await withTmp(async (dir) => {
       const sendFn = okSend();
       const summary = await runConfirmationBatch({
         roster: [sub(1)], baseSnapshot: [base(1)], indexPath: join(dir, "idx.json"),
-        baseDate: BASE_DATE, conversionActionResourceName: ACTION, dryRun: false, sendFn, now: NOW, log: () => {},
+        baseDate: BASE_DATE, dryRun: false, sendFn, now: NOW, log: () => {},
       });
       assert.equal(sendFn.mock.callCount(), 1);
-      const payload = (sendFn.mock.calls[0].arguments as unknown as [{ conversions: Array<Record<string, unknown>> }])[0];
-      assert.equal(payload.conversions.length, 1);
-      const conv = payload.conversions[0];
-      assert.equal(conv.gclid, undefined);
-      assert.deepEqual(conv.userIdentifiers, [{ hashedEmail: hashEmailForEnhancedConversions("leitor1@example.com") }]);
-      assert.equal(conv.conversionAction, ACTION);
-      assert.equal(conv.orderId, "diaria-confirmacao-kit-1");
-      assert.equal(conv.conversionDateTime, "2026-09-20 12:00:00-03:00");
+      const events = sendFn.mock.calls[0].arguments[0] as unknown as DataManagerEvent[];
+      assert.equal(events.length, 1);
+      const ev = events[0];
+      assert.equal(ev.adIdentifiers, undefined);
+      assert.deepEqual(ev.userData.userIdentifiers, [{ emailAddress: hashEmailForEnhancedConversions("leitor1@example.com") }]);
+      assert.equal(ev.transactionId, "diaria-confirmacao-kit-1");
+      assert.equal(ev.eventTimestamp, "2026-09-20T12:00:00-03:00");
+      assert.equal(ev.eventSource, "WEB");
       assert.equal(summary.sent, 1);
       assert.equal(summary.withGclid, 0);
+      assert.equal(loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)].requestId, "req-1");
     });
   });
 
@@ -161,28 +166,28 @@ describe("#8555 — regressão do lote", () => {
       const sendFn = okSend();
       const summary = await runConfirmationBatch({
         roster: [sub(1, { fields: { origem_click_id: "gclid:Cj0K" } })], baseSnapshot: [base(1)],
-        indexPath: join(dir, "idx.json"), baseDate: BASE_DATE, conversionActionResourceName: ACTION, dryRun: false, sendFn, now: NOW, log: () => {},
+        indexPath: join(dir, "idx.json"), baseDate: BASE_DATE, dryRun: false, sendFn, now: NOW, log: () => {},
       });
-      const payload = (sendFn.mock.calls[0].arguments as unknown as [{ conversions: Array<Record<string, unknown>> }])[0];
-      assert.equal(payload.conversions[0].gclid, "Cj0K");
-      assert.ok(payload.conversions[0].userIdentifiers);
+      const events = sendFn.mock.calls[0].arguments[0] as unknown as DataManagerEvent[];
+      assert.equal(events[0].adIdentifiers?.gclid, "Cj0K");
+      assert.ok(events[0].userData.userIdentifiers.length > 0);
       assert.equal(summary.withGclid, 1);
     });
   });
 
-  it("já enviada NÃO reenvia (índice persistido entre rodadas)", async () => {
+  it("já enviada (submitted) NÃO reenvia (índice persistido entre rodadas)", async () => {
     await withTmp(async (dir) => {
       const indexPath = join(dir, "idx.json");
       const first = okSend();
       await runConfirmationBatch({
         roster: [sub(1)], baseSnapshot: [base(1)], indexPath,
-        baseDate: BASE_DATE, conversionActionResourceName: ACTION, dryRun: false, sendFn: first, now: NOW, log: () => {},
+        baseDate: BASE_DATE, dryRun: false, sendFn: first, now: NOW, log: () => {},
       });
-      assert.equal(loadConfirmationIndex(indexPath)[indexKey(1)].status, "sent");
+      assert.equal(loadConfirmationIndex(indexPath)[indexKey(1)].status, "submitted");
       const second = okSend();
       const summary = await runConfirmationBatch({
         roster: [sub(1)], baseSnapshot: [base(1)], indexPath,
-        baseDate: BASE_DATE, conversionActionResourceName: ACTION, dryRun: false, sendFn: second, now: NOW, log: () => {},
+        baseDate: BASE_DATE, dryRun: false, sendFn: second, now: NOW, log: () => {},
       });
       assert.equal(second.mock.callCount(), 0);
       assert.equal(summary.alreadyIndexed, 1);
@@ -199,7 +204,7 @@ describe("#8555 — regressão do lote", () => {
       const sendFn = okSend();
       const summary = await runConfirmationBatch({
         roster: [sub(1, { created_at: "2026-05-01T00:00:00Z" })], baseSnapshot: [base(1)], indexPath,
-        baseDate: BASE_DATE, conversionActionResourceName: ACTION, dryRun: false, sendFn, now: NOW, log: (m) => logs.push(m),
+        baseDate: BASE_DATE, dryRun: false, sendFn, now: NOW, log: (m) => logs.push(m),
       });
       assert.equal(sendFn.mock.callCount(), 0);
       assert.equal(summary.outOfWindow, 1);
@@ -209,65 +214,54 @@ describe("#8555 — regressão do lote", () => {
       // e não volta na rodada seguinte
       const again = await runConfirmationBatch({
         roster: [sub(1, { created_at: "2026-05-01T00:00:00Z" })], baseSnapshot: [base(1)], indexPath,
-        baseDate: BASE_DATE, conversionActionResourceName: ACTION, dryRun: false, sendFn, now: NOW, log: () => {},
+        baseDate: BASE_DATE, dryRun: false, sendFn, now: NOW, log: () => {},
       });
       assert.equal(again.alreadyIndexed, 1);
       assert.equal(again.outOfWindow, 0);
     });
   });
 
-  it("dry-run: não envia, não grava índice, devolve o payload", async () => {
+  it("dry-run: não envia, não grava índice, devolve os eventos", async () => {
     await withTmp(async (dir) => {
       const indexPath = join(dir, "idx.json");
       const sendFn = okSend();
       const summary = await runConfirmationBatch({
         roster: [sub(1), sub(2, { created_at: "2026-05-01T00:00:00Z" })], baseSnapshot: [base(1), base(2)], indexPath,
-        baseDate: BASE_DATE, conversionActionResourceName: ACTION, dryRun: true, sendFn, now: NOW, log: () => {},
+        baseDate: BASE_DATE, dryRun: true, sendFn, now: NOW, log: () => {},
       });
       assert.equal(sendFn.mock.callCount(), 0);
       assert.equal(existsSync(indexPath), false);
-      assert.equal(summary.payload?.conversions.length, 1);
+      assert.equal(summary.events?.length, 1);
       assert.equal(summary.outOfWindow, 1);
     });
   });
 
-  it("falha de envio não marca nada como enviado (reprocessa na próxima)", async () => {
+  it("persistIndex:false (--validate-only): chama sendFn de verdade, NUNCA grava índice", async () => {
     await withTmp(async (dir) => {
       const indexPath = join(dir, "idx.json");
-      const sendFn = mock.fn(async (): Promise<SendPayloadResult> => ({ ok: false, stage: "upload", error: "HTTP 500" }));
+      const sendFn = okSend();
       const summary = await runConfirmationBatch({
         roster: [sub(1)], baseSnapshot: [base(1)], indexPath,
-        baseDate: BASE_DATE, conversionActionResourceName: ACTION, dryRun: false, sendFn, now: NOW, log: () => {},
+        baseDate: BASE_DATE, dryRun: false, persistIndex: false, sendFn, now: NOW, log: () => {},
+      });
+      assert.equal(sendFn.mock.callCount(), 1);
+      assert.equal(summary.sent, 1);
+      assert.equal(existsSync(indexPath), false);
+    });
+  });
+
+  it("falha de envio (chunk inteiro) não marca nada como submetido (reprocessa na próxima)", async () => {
+    await withTmp(async (dir) => {
+      const indexPath = join(dir, "idx.json");
+      const sendFn = failSend();
+      const summary = await runConfirmationBatch({
+        roster: [sub(1)], baseSnapshot: [base(1)], indexPath,
+        baseDate: BASE_DATE, dryRun: false, sendFn, now: NOW, log: () => {},
       });
       assert.equal(summary.sent, 0);
       assert.equal(summary.failed, 1);
       assert.equal(summary.error, "HTTP 500");
-      assert.deepEqual(loadConfirmationIndex(indexPath), {});
-    });
-  });
-
-  it("partialFailureError: só o que o Google recusou fica de fora do índice", async () => {
-    await withTmp(async (dir) => {
-      const indexPath = join(dir, "idx.json");
-      const sendFn = mock.fn(async (): Promise<SendPayloadResult> => ({
-        ok: true,
-        response: {
-          partialFailureError: {
-            details: [{ errors: [{ location: { fieldPathElements: [{ fieldName: "conversions", index: 1 }] } }] }],
-          },
-        },
-      }));
-      const summary = await runConfirmationBatch({
-        roster: [sub(1), sub(2)], baseSnapshot: [base(1), base(2)], indexPath,
-        baseDate: BASE_DATE, conversionActionResourceName: ACTION, dryRun: false, sendFn, now: NOW, log: () => {},
-      });
-      assert.equal(summary.sent, 1);
-      assert.equal(summary.failed, 1);
-      const idx = loadConfirmationIndex(indexPath);
-      assert.ok(idx[indexKey(1)]);
-      assert.equal(idx[indexKey(2)].status, "failed");
-      assert.equal(idx[indexKey(2)].attempts, 1);
-      assert.deepEqual(summary.failedIds, [2]);
+      assert.equal(loadConfirmationIndex(indexPath)[indexKey(1)].status, "failed");
     });
   });
 
@@ -276,7 +270,7 @@ describe("#8555 — regressão do lote", () => {
       const sendFn = okSend();
       const summary = await runConfirmationBatch({
         roster: [sub(1, { email_address: "vjpixel+gtm-teste1@gmail.com" })], baseSnapshot: [base(1)],
-        indexPath: join(dir, "idx.json"), baseDate: BASE_DATE, conversionActionResourceName: ACTION, dryRun: false, sendFn, now: NOW, log: () => {},
+        indexPath: join(dir, "idx.json"), baseDate: BASE_DATE, dryRun: false, sendFn, now: NOW, log: () => {},
       });
       assert.equal(sendFn.mock.callCount(), 0);
       assert.equal(summary.skippedTestEmails, 1);
@@ -284,52 +278,67 @@ describe("#8555 — regressão do lote", () => {
   });
 });
 
-describe("#8555 — módulo de envio extraído", () => {
-  it("extractPartialFailureIndexes: sem erro -> [], erro sem índice legível -> null", () => {
-    assert.deepEqual(extractPartialFailureIndexes({}), []);
-    assert.equal(extractPartialFailureIndexes({ partialFailureError: { message: "x" } }), null);
-  });
-
-  it("authConfigFromEnv lista as variáveis ausentes", () => {
-    const r = authConfigFromEnv({ GOOGLE_ADS_CLIENT_ID: "a" }, "1");
+describe("#8555 — módulo de envio (Data Manager API)", () => {
+  it("authConfigFromEnv lista as variáveis ausentes (sem developer token/login customer id)", () => {
+    const r = authConfigFromEnv({ GOOGLE_ADS_CLIENT_ID: "a" });
     assert.ok("missing" in r && r.missing.includes("GOOGLE_ADS_REFRESH_TOKEN"));
+    assert.ok("missing" in r && !r.missing.includes("GOOGLE_ADS_DEVELOPER_TOKEN" as never));
   });
 
-  it("resolveActionResourceName: id cru exige customer id", () => {
-    assert.equal(resolveActionResourceName("9", undefined).ok, false);
-    const r = resolveActionResourceName("9", "236-921-9639");
-    assert.ok(r.ok && r.resourceName === "customers/2369219639/conversionActions/9");
-  });
-
-  it("sendConversionPayload sem env não chama a rede", async () => {
+  it("sendDataManagerIngest sem env não chama a rede", async () => {
     const fetchMock = mock.fn(async () => {
       throw new Error("fetch NÃO deveria ser chamado");
     });
-    const r = await sendConversionPayload({
+    const r = await sendDataManagerIngest({
       fetchFn: fetchMock as unknown as typeof fetch,
       env: {},
-      customerId: "1",
-      payload: { conversions: [], partialFailure: true, validateOnly: false },
+      payload: { destinations: [], encoding: "HEX", validateOnly: true, events: [] },
     });
     assert.equal(r.ok, false);
     assert.equal(fetchMock.mock.callCount(), 0);
   });
 });
 
-const rejectAt = (...idx: number[]) =>
-  ({
-    partialFailureError: {
-      message: "partial failure",
-      details: [{ errors: idx.map((index) => ({ message: "recusada", errorCode: { conversionUploadError: "X" }, location: { fieldPathElements: [{ fieldName: "conversions", index }] } })) }],
-    },
-  });
 const run = (dir: string, over: Partial<Parameters<typeof runConfirmationBatch>[0]>) =>
   runConfirmationBatch({
     roster: [], baseSnapshot: [], baseDate: BASE_DATE, indexPath: join(dir, "idx.json"),
-    conversionActionResourceName: ACTION, dryRun: false, sendFn: okSend(), now: NOW, log: () => {}, ...over,
+    dryRun: false, sendFn: okSend(), now: NOW, log: () => {}, ...over,
   });
 
 describe("#8555 — revisão: conciliação por id, falhas e índice", () => {
+  it("multi-chunk (#8555 fleet review item 3): chunk 1 sucesso, chunk 2 falha — offsets corretos", async () => {
+    await withTmp(async (dir) => {
+      const roster = [sub(1), sub(2), sub(3)];
+      const baseSnapshot = [base(1), base(2), base(3)];
+      const calls: DataManagerEvent[][] = [];
+      const sendFn = mock.fn(async (events: DataManagerEvent[]): Promise<DataManagerIngestResult> => {
+        calls.push(events);
+        return calls.length === 1
+          ? { ok: true, requestId: "req-chunk1", response: {} }
+          : { ok: false, stage: "ingest", error: "chunk 2 recusado", countsAsAttempt: true };
+      });
+      // chunkSize:2 -> chunk 1 = [id 1, id 2] (sucesso), chunk 2 = [id 3] (falha).
+      const summary = await run(dir, { roster, baseSnapshot, sendFn, chunkSize: 2 });
+      assert.equal(sendFn.mock.callCount(), 2);
+      assert.equal(calls[0].length, 2);
+      assert.equal(calls[1].length, 1);
+      // offset correto: o evento do chunk 2 é o do id 3, não uma repetição do chunk 1.
+      assert.equal(calls[1][0].transactionId, "diaria-confirmacao-kit-3");
+
+      assert.equal(summary.sent, 2);
+      assert.equal(summary.failed, 1);
+      assert.deepEqual(summary.failedIds, [3]);
+
+      const idx = loadConfirmationIndex(join(dir, "idx.json"));
+      assert.equal(idx[indexKey(1)].status, "submitted");
+      assert.equal(idx[indexKey(1)].requestId, "req-chunk1");
+      assert.equal(idx[indexKey(2)].status, "submitted");
+      assert.equal(idx[indexKey(2)].requestId, "req-chunk1");
+      assert.equal(idx[indexKey(3)].status, "failed");
+      assert.equal(idx[indexKey(3)].attempts, 1);
+    });
+  });
+
   it("dois ids com o MESMO e-mail: cada um é indexado pelo próprio id", async () => {
     await withTmp(async (dir) => {
       const roster = [sub(1, { email_address: "igual@example.com" }), sub(2, { email_address: "igual@example.com" })];
@@ -340,46 +349,19 @@ describe("#8555 — revisão: conciliação por id, falhas e índice", () => {
     });
   });
 
-  it("[teste, real1, real2] com falha no índice 0 da lista ENVIADA: real1 falha, real2 enviado", async () => {
+  it("[teste, real1, real2] com chunk inteiro falhando: real1 e real2 falham juntos (granularidade de chunk)", async () => {
     await withTmp(async (dir) => {
       const roster = [sub(1, { email_address: "vjpixel+gtm-x@gmail.com" }), sub(2), sub(3)];
-      const sendFn = mock.fn(async (): Promise<SendPayloadResult> => ({ ok: true, response: rejectAt(0) }));
+      const sendFn = failSend("recusado");
       const summary = await run(dir, { roster, baseSnapshot: [base(1), base(2), base(3)], sendFn });
       const idx = loadConfirmationIndex(join(dir, "idx.json"));
       assert.equal(idx[indexKey(1)].status, "skipped-test-email");
       assert.equal(idx[indexKey(2)].status, "failed");
-      assert.equal(idx[indexKey(3)].status, "sent");
-      assert.deepEqual(summary.failedIds, [2]);
-      assert.equal(summary.sent, 1);
+      assert.equal(idx[indexKey(3)].status, "failed");
+      assert.deepEqual(summary.failedIds.sort(), [2, 3]);
+      assert.equal(summary.sent, 0);
       assert.ok(summary.googleErrors.length > 0);
     });
-  });
-
-  it("partialFailureError SEM índices legíveis: sent 0, failed == toSend, error preenchido, nada indexado", async () => {
-    await withTmp(async (dir) => {
-      const sendFn = mock.fn(async (): Promise<SendPayloadResult> => ({
-        ok: true,
-        response: { partialFailureError: { message: "algo deu errado" } },
-      }));
-      const summary = await run(dir, { roster: [sub(1), sub(2)], baseSnapshot: [base(1), base(2)], sendFn });
-      assert.equal(summary.sent, 0);
-      assert.equal(summary.failed, summary.toSend);
-      assert.equal(summary.toSend, 2);
-      assert.ok(summary.error);
-      assert.deepEqual(loadConfirmationIndex(join(dir, "idx.json")), {});
-    });
-  });
-
-  it("partialFailureError misto (erro com e sem índice) = falha total", () => {
-    const resp = {
-      partialFailureError: {
-        details: [{ errors: [
-          { location: { fieldPathElements: [{ fieldName: "conversions", index: 0 }] } },
-          { message: "sem localização" },
-        ] }],
-      },
-    };
-    assert.equal(extractPartialFailureIndexes(resp), null);
   });
 
   it("índice corrompido/inválido LANÇA (nunca vira {})", async () => {
@@ -395,7 +377,7 @@ describe("#8555 — revisão: conciliação por id, falhas e índice", () => {
 
   it("recusa repetida vira skipped-failed-permanent após MAX_FAILED_ATTEMPTS", async () => {
     await withTmp(async (dir) => {
-      const sendFn = mock.fn(async (): Promise<SendPayloadResult> => ({ ok: true, response: rejectAt(0) }));
+      const sendFn = failSend();
       const args = { roster: [sub(1)], baseSnapshot: [base(1)], sendFn };
       await run(dir, args);
       await run(dir, args);
@@ -407,34 +389,55 @@ describe("#8555 — revisão: conciliação por id, falhas e índice", () => {
     });
   });
 
+  it("N falhas de TRANSPORTE consecutivas NUNCA chegam a skipped-failed-permanent (não contam tentativa)", async () => {
+    await withTmp(async (dir) => {
+      const sendFn = transportFailSend();
+      const args = { roster: [sub(1)], baseSnapshot: [base(1)], sendFn };
+      let last;
+      for (let i = 0; i < MAX_FAILED_ATTEMPTS + 5; i++) last = await run(dir, args);
+      assert.equal(last!.failedPermanent, 0);
+      const entry = loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)];
+      assert.equal(entry.status, "failed");
+      assert.equal(entry.attempts ?? 0, 0);
+      // continua sendo tentado (nunca sai do toSend por causa do teto)
+      assert.equal(last!.toSend, 1);
+    });
+  });
+
+  it("N recusas HTTP (não-2xx) REAIS do Google chegam a skipped-failed-permanent normalmente", async () => {
+    await withTmp(async (dir) => {
+      const sendFn = failSend(); // countsAsAttempt: true
+      const args = { roster: [sub(1)], baseSnapshot: [base(1)], sendFn };
+      let last;
+      for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) last = await run(dir, args);
+      assert.equal(last!.failedPermanent, 1);
+      assert.equal(loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)].status, "skipped-failed-permanent");
+    });
+  });
+
+  it("alterna transporte e recusa real: só a recusa real conta tentativa", async () => {
+    await withTmp(async (dir) => {
+      const args = { roster: [sub(1)], baseSnapshot: [base(1)] };
+      await run(dir, { ...args, sendFn: transportFailSend() }); // não conta
+      await run(dir, { ...args, sendFn: failSend() }); // conta: attempts=1
+      await run(dir, { ...args, sendFn: transportFailSend() }); // não conta
+      const summary = await run(dir, { ...args, sendFn: failSend() }); // conta: attempts=2
+      const entry = loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)];
+      assert.equal(entry.attempts, 2);
+      assert.equal(entry.status, "failed");
+      assert.equal(summary.failedPermanent, 0);
+    });
+  });
+
   it("recusa que sai da janela do snapshot base continua sendo retentada (status failed no índice)", async () => {
     await withTmp(async (dir) => {
-      const sendFn = mock.fn(async (): Promise<SendPayloadResult> => ({ ok: true, response: rejectAt(0) }));
+      const sendFn = failSend();
       await run(dir, { roster: [sub(1)], baseSnapshot: [base(1)], sendFn });
       const ok = okSend();
       // agora o snapshot base já o traz active: sem o retry por índice ele sumiria
       const summary = await run(dir, { roster: [sub(1)], baseSnapshot: [base(1, "active")], sendFn: ok });
       assert.equal(ok.mock.callCount(), 1);
       assert.equal(summary.sent, 1);
-    });
-  });
-
-  it("linha COM gclid recusada é reenviada só com o hash do e-mail", async () => {
-    await withTmp(async (dir) => {
-      const calls: Array<{ conversions: Array<Record<string, unknown>> }> = [];
-      const sendFn = async (p: { conversions: Array<Record<string, unknown>> }): Promise<SendPayloadResult> => {
-        calls.push(p);
-        return p.conversions[0].gclid ? { ok: true, response: rejectAt(0) } : { ok: true, response: {} };
-      };
-      const summary = await run(dir, {
-        roster: [sub(1, { fields: { origem_click_id: "gclid:RUIM" } })], baseSnapshot: [base(1)],
-        sendFn: sendFn as unknown as Parameters<typeof runConfirmationBatch>[0]["sendFn"],
-      });
-      assert.equal(calls.length, 2);
-      assert.equal(calls[1].conversions[0].gclid, undefined);
-      assert.ok(calls[1].conversions[0].userIdentifiers);
-      assert.equal(summary.sent, 1);
-      assert.equal(summary.failed, 0);
     });
   });
 
@@ -491,6 +494,28 @@ describe("#8555 — CLI main()", () => {
         assert.equal(f.mock.callCount(), 0);
       } finally {
         if (saved !== undefined) process.env.GOOGLE_ADS_CONFIRMATION_CONVERSION_ACTION_ID = saved;
+      }
+    });
+  });
+
+  it("--send sem customer-id: exit 1, sem rede", async () => {
+    await withTmp(async (dir) => {
+      const snapDir = join(dir, yesterday());
+      mkdirSync(snapDir, { recursive: true });
+      writeFileSync(join(snapDir, "subscribers.jsonl"), JSON.stringify(base(1)) + "\n");
+      const f = noFetch();
+      const saved = process.env.GOOGLE_ADS_CUSTOMER_ID;
+      delete process.env.GOOGLE_ADS_CUSTOMER_ID;
+      try {
+        const code = await confirmMain(
+          ["--send", "--conversion-action-id", "555", "--snapshot-root", dir],
+          f as unknown as typeof fetch,
+          async () => [sub(1)],
+        );
+        assert.equal(code, 1);
+        assert.equal(f.mock.callCount(), 0);
+      } finally {
+        if (saved !== undefined) process.env.GOOGLE_ADS_CUSTOMER_ID = saved;
       }
     });
   });
@@ -590,6 +615,61 @@ describe("#8555 — CLI main()", () => {
       assert.equal(code, 0);
       assert.equal(f.mock.callCount(), 0);
       assert.equal(existsSync(idx), false);
+    });
+  });
+
+  it("--validate-only SEM --send: continua dry-run, sem rede", async () => {
+    await withTmp(async (dir) => {
+      const snapDir = join(dir, yesterday());
+      mkdirSync(snapDir, { recursive: true });
+      writeFileSync(join(snapDir, "subscribers.jsonl"), JSON.stringify(base(1)) + "\n");
+      const f = noFetch();
+      const idx = join(dir, "i.json");
+      const code = await confirmMain(
+        ["--validate-only", "--conversion-action-id", "555", "--customer-id", "2369219639", "--snapshot-root", dir, "--index", idx],
+        f as unknown as typeof fetch,
+        async () => [sub(1)],
+      );
+      assert.equal(code, 0);
+      assert.equal(f.mock.callCount(), 0);
+      assert.equal(existsSync(idx), false);
+    });
+  });
+
+  it("--send --validate-only: chama a rede (via sendFn) mas NUNCA grava índice", async () => {
+    await withTmp(async (dir) => {
+      const snapDir = join(dir, yesterday());
+      mkdirSync(snapDir, { recursive: true });
+      writeFileSync(join(snapDir, "subscribers.jsonl"), JSON.stringify(base(1)) + "\n");
+      // fetchFn simula o fluxo completo: refresh token + POST events:ingest com 2xx.
+      const fetchFn = mock.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).includes("oauth2.googleapis.com")) {
+          return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
+        }
+        void init;
+        return new Response(JSON.stringify({ requestId: "req-validate" }), { status: 200 });
+      });
+      const idx = join(dir, "i.json");
+      const env = {
+        GOOGLE_ADS_CLIENT_ID: "id", GOOGLE_ADS_CLIENT_SECRET: "secret", GOOGLE_ADS_REFRESH_TOKEN: "refresh",
+      };
+      const saved = { ...process.env };
+      Object.assign(process.env, env);
+      try {
+        const code = await confirmMain(
+          ["--send", "--validate-only", "--conversion-action-id", "555", "--customer-id", "2369219639", "--snapshot-root", dir, "--index", idx],
+          fetchFn as unknown as typeof fetch,
+          async () => [sub(1)],
+        );
+        assert.equal(code, 0);
+        assert.ok(fetchFn.mock.callCount() >= 1);
+        assert.equal(existsSync(idx), false);
+        const lastCall = fetchFn.mock.calls[fetchFn.mock.calls.length - 1];
+        const body = JSON.parse(String((lastCall.arguments[1] as RequestInit).body));
+        assert.equal(body.validateOnly, true);
+      } finally {
+        process.env = saved;
+      }
     });
   });
 

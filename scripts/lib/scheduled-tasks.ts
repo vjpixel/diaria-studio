@@ -1950,6 +1950,15 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // overnight, mesma disciplina do resto do registro) — armar via
     // `scripts/setup-systemd-timers.ts` na checkout compartilhada (300) é
     // ação POSTERIOR do editor.
+    //
+    // #8555 (24/09/2026): o envio migrou de `ConversionUploadService.
+    // UploadClickConversions` pra Data Manager API (`events:ingest`) — a
+    // conta `2369219639` recebe `CUSTOMER_NOT_ALLOWLISTED_FOR_THIS_FEATURE`
+    // no caminho antigo desde 21/09/2026 (ver docstring de
+    // `scripts/lib/google-data-manager-sender.ts`). Args/env desta task não
+    // mudaram (mesmos `--conversion-action-id`/`--customer-id`/`--send`) —
+    // só `GOOGLE_ADS_DEVELOPER_TOKEN`/`GOOGLE_ADS_LOGIN_CUSTOMER_ID`
+    // deixaram de ser exigidos pelo caminho de envio.
     name: "Diaria-Google-Ads-Confirmations-Upload",
     description: "lote diario que sobe confirmacoes DOI do Kit pro Google Ads como Enhanced Conversion for Leads (--send)",
     steps: [
