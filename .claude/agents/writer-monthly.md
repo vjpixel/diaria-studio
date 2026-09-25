@@ -61,13 +61,23 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial"/"AI" quando o sujeito concreto couber (#4825, inclusive no título narrativo — ver acima); sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
 
-5. **Seções Clarice/Livros (#6881: ordem D1 → CLARICE—DIVULGAÇÃO → D2 → LIVROS → D3 → CLARICE—TUTORIAL — LIVROS entrou entre D2 e D3, CLARICE—TUTORIAL moveu de "entre D2 e D3" pra "entre D3 e USE MELHOR").** Após D1 e antes de D2, emitir (label em negrito — #2794):
+5. **Seções Clarice/Livros (#6881: ordem D1 → CLARICE—DIVULGAÇÃO → D2 → [DIVULGAÇÃO imersão 10/10, temporário] → LIVROS → D3 → CLARICE—TUTORIAL — LIVROS entrou entre D2 e D3, CLARICE—TUTORIAL moveu de "entre D2 e D3" pra "entre D3 e USE MELHOR").** Após D1 e antes de D2, emitir (label em negrito — #2794):
    ```
    **CLARICE — DIVULGAÇÃO**
 
    [Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link. CTA no formato `→ [texto](url)` — vira botão no render (renderCtaButton), um `[texto](url)` sem o `→` sai como link de texto comum.]
    ```
-   Após D2 e antes de D3, emitir **LIVROS** — curadoria GERAL de livros sobre IA, texto FIXO (não é "Livro do mês"/resenha de 1 título — isso é outro box, label `LIVRO`, mid-body, opcional, ver seção "Boxes de divulgação mid-body" do template):
+   Após D2, antes de LIVROS, emitir o box **DIVULGAÇÃO** da imersão de 10/10 — texto FIXO (pedido do editor, 25/09/2026), emitir literalmente, sem parafrasear. Remover deste passo e do template depois de 10/10/2026:
+   ```
+   **DIVULGAÇÃO**
+
+   Crie seu agente de IA sem programar
+
+   Sábado, 10/10, das 14h às 18h, ao vivo e online. Você cria seu primeiro agente de IA, com acompanhamento do início ao fim, e sai com ele funcionando.
+
+   → [Quero criar meu agente!](https://diar.ia.br/evento/agente-ia)
+   ```
+   Em seguida, ainda antes de D3, emitir **LIVROS** — curadoria GERAL de livros sobre IA, texto FIXO (não é "Livro do mês"/resenha de 1 título — isso é outro box, label `LIVRO`, mid-body, opcional, ver seção "Boxes de divulgação mid-body" do template):
    ```
    **LIVROS**
 
@@ -132,7 +142,7 @@ Da diar.ia.br:
    - `**APRESENTAÇÃO**` presente entre PREVIEW e INTRO, texto literal do boilerplate, com os 3 links corretos (#2913)
    - Intro 2-3 frases sem citar destaques
    - 3 destaques completos (cabeçalho + parágrafos + fio condutor); sem bloco "Para aprofundar"
-   - Ordem das seções (#6881): D1 → CLARICE—DIVULGAÇÃO → D2 → LIVROS → D3 → CLARICE—TUTORIAL → USE MELHOR → RADAR → É IA? → PARA ENCERRAR — `**LIVROS**` presente entre D2 e D3, texto fixo literal, CTA com `→`
+   - Ordem das seções (#6881): D1 → CLARICE—DIVULGAÇÃO → D2 → DIVULGAÇÃO (imersão 10/10, até 10/10/2026) → LIVROS → D3 → CLARICE—TUTORIAL → USE MELHOR → RADAR → É IA? → PARA ENCERRAR — `**LIVROS**` presente entre D2 e D3, texto fixo literal, CTA com `→`
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? presente — texto resolvido (se `eia_selection_path` deu `edition`) ou placeholder (#2904) — e encerramento presentes
