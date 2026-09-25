@@ -1873,6 +1873,14 @@ function checkCarouselTextOverflow(editionDir: string): InvariantViolation[] {
  * pra JSON malformado: instrução editorial explícita não é ignorada em
  * silêncio, e a mesma checagem roda de novo em `publish-instagram.ts` antes
  * de publicar (defesa em profundidade — o gate pode ser ignorado).
+ *
+ * Blind spot conhecido (code-review do #8681): se `03-social.md` estiver
+ * ausente/malformado NA MESMA edição em que `instagram-test.json` também
+ * está malformado, nem este check nem `carousel-text-overflow` reportam o
+ * JSON quebrado no Stage 4 (os dois saem cedo por causa do
+ * `03-social.md`) — mas `publish-instagram.ts` ainda lança na hora de
+ * publicar, então não é risco de publicação silenciosa, só um buraco no
+ * gate nesse cenário combinado.
  */
 function checkInstagramCommentDeliveryPromise(editionDir: string): InvariantViolation[] {
   const path = instagramTestOverridePath(editionDir);

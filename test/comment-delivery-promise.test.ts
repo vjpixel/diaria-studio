@@ -53,6 +53,18 @@ describe("detectCommentDeliveryPromise (#8681)", () => {
     assert.equal(r.promise, false);
   });
 
+  it("não dispara quando comentário e entrega estão em frases DIFERENTES e sem relação (achado do code-review do #8681)", () => {
+    const r = detectCommentDeliveryPromise(
+      "Assine grátis pra receber a edição do dia direto no seu e-mail. Comenta aqui o que você achou dessa notícia!",
+    );
+    assert.equal(r.promise, false);
+  });
+
+  it("dispara quando comentário e entrega estão na MESMA frase mesmo com pontuação no meio", () => {
+    const r = detectCommentDeliveryPromise("Quer receber o link? Comenta \"quero\" que eu te mando agora mesmo.");
+    assert.equal(r.promise, true);
+  });
+
   it("commentDeliveryPromiseMessage nomeia a fonte e a ação corretiva", () => {
     const msg = commentDeliveryPromiseMessage("_internal/instagram-test.json (caption)", '"comente" + "receber"');
     assert.match(msg, /_internal\/instagram-test\.json \(caption\)/);

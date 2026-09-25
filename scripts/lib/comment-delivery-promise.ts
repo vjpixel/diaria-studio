@@ -52,20 +52,43 @@ export interface CommentDeliveryPromiseResult {
  * Detecta, em pt-BR, um texto que pede comentário EM TROCA de uma entrega
  * (link/edição/material) — algo que este projeto não tem como cumprir.
  * Pura: sem I/O, sem estado.
+ *
+ * Co-ocorrência é checada por SEGMENTO (split só em `.`/quebra de linha —
+ * de propósito NÃO em `?`/`!`, que costumam separar a pergunta-gancho da
+ * CTA dentro do MESMO pedido, como no caso real "Quer receber o link? ...
+ * comente 'quero'"), não no texto inteiro — uma legenda pode legitimamente
+ * ter uma frase de captação de newsletter ("receber a edição no e-mail")
+ * seguida de outra frase com um CTA neutro de comentário ("comenta o que
+ * achou"); sem essa restrição as duas se combinariam num falso positivo
+ * (achado no code-review do PR do #8681).
  */
 export function detectCommentDeliveryPromise(text: string | null | undefined): CommentDeliveryPromiseResult {
   if (!text || !text.trim()) return { promise: false };
 
-  const commentMatch = COMMENT_ACTION_PATTERNS.map((re) => text.match(re)).find((m): m is RegExpMatchArray => !!m);
-  if (!commentMatch) return { promise: false };
+  const sentences = text.split(/(?<=\.)\s+|\n+/).filter((s) => s.trim());
+  // Fallback: se o split não separar nada (texto sem pontuação/quebra de
+  // linha), trata o texto inteiro como 1 sentença — não deixa a checagem
+  // vazia.
+  const segments = sentences.length > 0 ? sentences : [text];
 
-  const deliveryMatch = DELIVERY_PROMISE_PATTERNS.map((re) => text.match(re)).find((m): m is RegExpMatchArray => !!m);
-  if (!deliveryMatch) return { promise: false };
+  for (const segment of segments) {
+    const commentMatch = COMMENT_ACTION_PATTERNS.map((re) => segment.match(re)).find(
+      (m): m is RegExpMatchArray => !!m,
+    );
+    if (!commentMatch) continue;
 
-  return {
-    promise: true,
-    match: `"${commentMatch[0]}" + "${deliveryMatch[0]}"`,
-  };
+    const deliveryMatch = DELIVERY_PROMISE_PATTERNS.map((re) => segment.match(re)).find(
+      (m): m is RegExpMatchArray => !!m,
+    );
+    if (!deliveryMatch) continue;
+
+    return {
+      promise: true,
+      match: `"${commentMatch[0]}" + "${deliveryMatch[0]}"`,
+    };
+  }
+
+  return { promise: false };
 }
 
 /** Mensagem acionável padrão — usada tanto pelo invariante do Stage 4 quanto por publish-instagram.ts. */
