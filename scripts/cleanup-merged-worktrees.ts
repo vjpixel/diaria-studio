@@ -303,6 +303,40 @@ export function selectMergedForRemoval(
   return entries.filter((e) => e.branch !== null && isMerged(e.branch));
 }
 
+/**
+ * #8792 — remove de `mergedRemoval` os worktrees cuja branch tem PR ABERTA
+ * (`hasOpenPr`, injetável), mesmo quando também tem PR mergeada.
+ *
+ * O defeito: `selectMergedForRemoval` confirma "branch mergeada" via
+ * `gh pr list --head {branch} --state merged` não-vazio, e isso é verdade
+ * mesmo quando a branch depois ganhou UMA NOVA PR aberta que reusa o nome —
+ * ex: branch `continuo/fix-8681-instagram-preview` teve a PR #8774 mergeada
+ * e depois a PR #8781 aberta nela mesma. O worktree de trabalho de uma PR
+ * viva sumia.
+ *
+ * `gh pr list --head {branch}` consulta por HEAD de branch, e o GitHub
+ * retorna as PRs que já usaram aquele HEAD — merged e open juntas, sem
+ * distinção de "a branch foi reaberta". A única forma de saber que há
+ * trabalho ativo é perguntar explicitamente pelo estado open.
+ *
+ * Fail-soft na direção segura, mesma que `checkBranchHasOpenPrViaGh`: um
+ * `hasOpenPr` indeterminado (gh ausente, timeout) conta como "tem PR aberta"
+ * — nunca remove sem confirmar que não há. `hasOpenPr` é injetável pra
+ * testar a lógica pura sem chamar `gh`.
+ */
+export function filterOutWorktreesWithOpenPr(
+  entries: WorktreeEntry[],
+  hasOpenPr: (branch: string) => boolean,
+): { kept: WorktreeEntry[]; skipped: WorktreeEntry[] } {
+  const kept: WorktreeEntry[] = [];
+  const skipped: WorktreeEntry[] = [];
+  for (const e of entries) {
+    if (e.branch !== null && hasOpenPr(e.branch)) skipped.push(e);
+    else kept.push(e);
+  }
+  return { kept, skipped };
+}
+
 /** 7 dias — piso de staleness pra worktree órfão (detached ou branch local já deletada). */
 export const ORPHAN_STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -993,9 +1027,17 @@ function main(): void {
     }
 
     const mergedRemoval = selectMergedForRemoval(candidates, (branch) => checkBranchMergedViaGh(branch, repoRoot));
+    // #8792: um worktree cuja branch tem PR mergeada MAS também PR aberta
+    // (reuso de branch) é trabalho vivo — preserva. Ver docblock de
+    // `filterOutWorktreesWithOpenPr`.
+    const mergedOpenPrSkipped = filterOutWorktreesWithOpenPr(
+      mergedRemoval,
+      (branch) => checkBranchHasOpenPrViaGh(branch, repoRoot),
+    );
+    const mergedRemovalEffective = mergedOpenPrSkipped.kept;
     const orphanedStaleRemoval = selectOrphanedForStaleRemoval(
       candidates,
-      mergedRemoval,
+      mergedRemovalEffective,
       (branch) => checkBranchExistsLocally(branch, repoRoot),
       getWorktreeMtimeMsSafe,
       Date.now(),
@@ -1004,7 +1046,7 @@ function main(): void {
     // PR aberta — ver docblock do topo do arquivo, "Extensão #7650 fatia 2".
     const abandonedRemoval = selectAbandonedForRemoval(
       candidates,
-      [...mergedRemoval, ...orphanedStaleRemoval],
+      [...mergedRemovalEffective, ...orphanedStaleRemoval],
       (issueNumber) => getIssueClosedAtMsViaGh(issueNumber, repoRoot),
       (branch) => checkBranchHasOpenPrViaGh(branch, repoRoot),
       Date.now(),
@@ -1014,16 +1056,25 @@ function main(): void {
     // mergeada, mesmo órfão+stale, mesmo abandonado. Ver docblock de
     // `filterOutDirtyWorktrees`.
     const { kept: toRemove, skipped: dirtySkipped } = filterOutDirtyWorktrees(
-      [...mergedRemoval, ...orphanedStaleRemoval, ...abandonedRemoval],
+      [...mergedRemovalEffective, ...orphanedStaleRemoval, ...abandonedRemoval],
       isWorktreeDirtySafe,
     );
 
     console.log(
       `[cleanup-merged-worktrees] ${candidates.length} worktree(s) encontrados, ` +
-        `${mergedRemoval.length} com PR mergeada confirmada, ` +
+        `${mergedRemovalEffective.length} com PR mergeada confirmada (sem PR aberta, #8792), ` +
+        `${mergedOpenPrSkipped.skipped.length} com PR mergeada MAS PR aberta na branch (preservados, #8792), ` +
         `${orphanedStaleRemoval.length} órfão(s) parado(s) há mais de 7 dias (#5418), ` +
         `${abandonedRemoval.length} abandonado(s) — issue fechada há mais de 14 dias (#7650).`,
     );
+
+    if (mergedOpenPrSkipped.skipped.length > 0) {
+      console.log(
+        `[cleanup-merged-worktrees] ${mergedOpenPrSkipped.skipped.length} worktree(s) PRESERVADO(s) por ` +
+          `ter PR aberta na branch além da mergeada (#8792 — reuso de branch): ` +
+          `${mergedOpenPrSkipped.skipped.map((e) => worktreeNameFromPath(e.path)).join(", ")}.`,
+      );
+    }
 
     if (dirtySkipped.length > 0) {
       console.log(
@@ -1044,7 +1095,7 @@ function main(): void {
     // residual é o sweep dedicado, `scripts/orphaned-test-process-sweep.ts`).
     const liveProcessSnapshot: ProcessInfo[] = dryRun ? [] : listAllProcesses();
     for (const entry of toRemove) {
-      const reason = mergedRemoval.includes(entry)
+      const reason = mergedRemovalEffective.includes(entry)
         ? "branch mergeada"
         : orphanedStaleRemoval.includes(entry)
           ? "órfão + stale (#5418)"
