@@ -219,3 +219,35 @@ describe("parseUseMelhorCount", () => {
     assert.equal(parseUseMelhorCount(["--use-melhor-count", "abc"]), undefined);
   });
 });
+
+describe("DIVULGAÇÃO com imagem no topo (box da imersão 10/10)", () => {
+  const draft = [
+    "**ASSUNTO**",
+    "1. Teste",
+    "",
+    "**DIVULGAÇÃO**",
+    "",
+    "![Crie seu agente de IA](https://eia.diar.ia.br/img/x.jpg)",
+    "",
+    "Crie seu agente de IA sem programar",
+    "",
+    "Sábado, 10/10, das 14h às 18h.",
+    "",
+    "→ [Quero criar meu agente!](https://diar.ia.br/evento/agente-ia)",
+  ].join("\n");
+
+  it("imagem vira <img> no topo, título mantido, parágrafo preservado", () => {
+    const { html } = draftToEmail(draft, "Teste", "2608");
+    assert.ok(html.includes('<img src="https://eia.diar.ia.br/img/x.jpg"'), "imagem no topo");
+    assert.ok(html.includes('alt="Crie seu agente de IA"'), "alt vem do markdown");
+    assert.ok(/<h3[^>]*>Crie seu agente de IA sem programar<\/h3>/.test(html), "título mantido");
+    assert.ok(/<p[^>]*>Sábado, 10\/10/.test(html), "parágrafo renderizado");
+    assert.ok(!html.includes("!["), "markdown de imagem não vaza");
+    assert.ok(html.includes("Quero criar meu agente!"), "CTA");
+  });
+
+  it("sem imagem, 1ª linha segue sendo título (regressão)", () => {
+    const { html } = draftToEmail(draft.replace(/^!\[.*$/m, "Título normal"), "Teste", "2608");
+    assert.ok(/<h3[^>]*>Título normal<\/h3>/.test(html));
+  });
+});

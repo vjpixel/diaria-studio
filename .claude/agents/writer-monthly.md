@@ -71,6 +71,8 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    ```
    **DIVULGAÇÃO**
 
+   ![Seu agente de IA trabalha enquanto você almoça](https://eia.diar.ia.br/img/img-260831-04-agente-promo-v3.jpg)
+
    Crie seu agente de IA sem programar
 
    Sábado, 10/10, das 14h às 18h, ao vivo e online. Você cria seu primeiro agente de IA, com acompanhamento do início ao fim, e sai com ele funcionando.
