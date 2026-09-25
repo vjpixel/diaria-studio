@@ -298,9 +298,18 @@ describe("#8616 item 1 — CLI main(): --send sem token não pode sair exit 0 em
       const prev = process.env.META_CAPI_ACCESS_TOKEN;
       delete process.env.META_CAPI_ACCESS_TOKEN;
       try {
+        // #8829: envLoader no-op — nunca deixa o teste depender de o `.env` real da
+        // máquina não conter META_CAPI_ACCESS_TOKEN. O default de main() (loadProjectEnv)
+        // reporia a var acima a partir do `.env` do root efetivo (override:false só
+        // preserva o que já está em process.env — não protege contra "deletei e o
+        // loader repôs"), o que faria este teste passar por acidente numa máquina com
+        // a credencial configurada (ex: servidor 300) em vez de exercitar a falha real.
+        const noopEnvLoader = () => {};
         const code = await metaConfirmMain(
           ["--send", "--snapshot-root", dir, "--index", join(dir, "i.json")],
           async () => [sub(1) as any],
+          undefined,
+          noopEnvLoader,
         );
         assert.equal(code, 1);
         assert.equal(existsSync(join(dir, "i.json")), false, "efetivo dry-run não deve tocar o índice");

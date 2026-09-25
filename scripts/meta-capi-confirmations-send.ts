@@ -62,8 +62,14 @@ export async function main(
   argv: string[] = process.argv.slice(2),
   listRoster: () => Promise<ConfirmationRosterEntry[]> = defaultListRoster,
   sendFn?: MetaSendFn,
+  // #8829: injetável pra testes isolarem process.env do `.env` real da máquina
+  // (sem isso, `delete process.env.META_CAPI_ACCESS_TOKEN` seguido de
+  // `loadProjectEnv` repõe a var de um `.env` que contenha o token, e o
+  // teste de "--send sem token" passa por acidente em vez de exercitar o
+  // caminho de falha).
+  envLoader: (root: string) => void = loadProjectEnv,
 ): Promise<number> {
-  loadProjectEnv(ROOT);
+  envLoader(ROOT);
   const dryRun = !(hasFlag(argv, "send") && !hasFlag(argv, "dry-run"));
   const lookbackDays = getIntArg(argv, "lookback-days", { min: 1 }) ?? DEFAULT_LOOKBACK_DAYS;
   const windowDays = getIntArg(argv, "window-days", { min: 1 }) ?? META_CONFIRMATION_DEFAULT_WINDOW_DAYS;
