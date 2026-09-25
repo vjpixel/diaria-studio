@@ -29,6 +29,7 @@ import {
   isWorktreeDirtySafe,
   ORPHAN_STALE_THRESHOLD_MS,
   removeWorktreeSafe,
+  filterOutWorktreesWithOpenPr,
 } from "../scripts/cleanup-merged-worktrees.ts";
 import type { SessionRecord } from "../scripts/lib/session-registry.ts";
 import type { ProcessInfo } from "../scripts/lib/list-processes.ts";
@@ -198,6 +199,63 @@ test("selectMergedForRemoval — nenhum mergeado -> array vazio (fail-soft: nunc
 
 test("selectMergedForRemoval — lista vazia de entrada -> array vazio", () => {
   assert.deepEqual(selectMergedForRemoval([], () => true), []);
+});
+
+// ── filterOutWorktreesWithOpenPr (#8792) ──
+
+test("#8792 — filterOutWorktreesWithOpenPr remove worktree de branch que tem PR aberta, mesmo com PR mergeada", () => {
+  // Caso real do #8792: branch `continuo/fix-8681-instagram-preview` teve a
+  // PR #8774 mergeada e depois a PR #8781 aberta nela mesma. `selectMergedForRemoval`
+  // confirma "mergeada" (verdade), mas o worktree de trabalho da PR viva
+  // não pode sumir — o seletor novo pula a remoção quando há PR aberta.
+  const entries = [
+    { path: "/repo/.claude/worktrees/agent-vivo", branch: "continuo/fix-8681-instagram-preview", locked: false },
+    { path: "/repo/.claude/worktrees/agent-morto", branch: "overnight/fix-1", locked: false },
+  ];
+  const { kept, skipped } = filterOutWorktreesWithOpenPr(entries, (b) => b === "continuo/fix-8681-instagram-preview");
+  assert.deepEqual(
+    kept.map((e) => e.path),
+    ["/repo/.claude/worktrees/agent-morto"],
+    "worktree sem PR aberta segue elegível",
+  );
+  assert.deepEqual(
+    skipped.map((e) => e.path),
+    ["/repo/.claude/worktrees/agent-vivo"],
+    "worktree com PR aberta é preservado mesmo com branch mergeada",
+  );
+});
+
+test("#8792 — filterOutWorktreesWithOpenPr não toma branches sem PR aberta (tem mergeada só)", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/agent-só-mergeada", branch: "overnight/fix-1", locked: false }];
+  const { kept, skipped } = filterOutWorktreesWithOpenPr(entries, () => false);
+  assert.deepEqual(kept.map((e) => e.path), ["/repo/.claude/worktrees/agent-só-mergeada"]);
+  assert.deepEqual(skipped, []);
+});
+
+test("#8792 — filterOutWorktreesWithOpenPr ignora worktree detached (branch null) — não há branch pra consultar", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/agent-detached", branch: null, locked: false }];
+  const { kept, skipped } = filterOutWorktreesWithOpenPr(entries, () => true);
+  assert.deepEqual(kept.map((e) => e.path), ["/repo/.claude/worktrees/agent-detached"]);
+  assert.deepEqual(skipped, []);
+});
+
+test("#8792 — filterOutWorktreesWithOpenPr fail-soft: hasOpenPr indeterminado conta como 'tem PR aberta' (nunca remove)", () => {
+  // Mesma direção que checkBranchHasOpenPrViaGh: gh ausente/timeout/JSON
+  // inesperado -> true (nunca remove). Aqui o injetável simula isso.
+  const entries = [{ path: "/repo/.claude/worktrees/agent-indeterminado", branch: "continuo/fix-8681-instagram-preview", locked: false }];
+  const { kept, skipped } = filterOutWorktreesWithOpenPr(entries, () => true);
+  assert.deepEqual(kept, []);
+  assert.deepEqual(skipped.map((e) => e.path), ["/repo/.claude/worktrees/agent-indeterminado"]);
+});
+
+test("#8792 — filterOutWorktreesWithOpenPr preserva a ordem dos worktrees", () => {
+  const entries = [
+    { path: "/a", branch: "b-open", locked: false },
+    { path: "/b", branch: "b-clean", locked: false },
+    { path: "/c", branch: "b-open-2", locked: false },
+  ];
+  const { kept } = filterOutWorktreesWithOpenPr(entries, (b) => b.startsWith("b-open"));
+  assert.deepEqual(kept.map((e) => e.path), ["/b"]);
 });
 
 // ── selectOrphanedForStaleRemoval (#5418) ──
