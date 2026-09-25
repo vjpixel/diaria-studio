@@ -20,7 +20,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -383,6 +383,119 @@ describe("syncEnv", () => {
   });
 });
 
+describe("defaultDopplerRunner fallback (#8795)", () => {
+  // #8795: o runner padrão cai no fallback `~/.local/bin/doppler` quando o
+  // `doppler` do PATH joga ENOENT (shell não-interativo). Estes testes são
+  // determinísticos e NUNCA invocam o binário real — o runner é injetado via
+  // `DOPPLER_BIN`, a única fonte de verdade pra qual binário o runner chama.
+  // Sem essa variável, simular ENOENT exigia apagar/recriar o binário real
+  // (revisão rejeitada do PR #8800).
+
+  it("usa DOPPLER_BIN quando definido, ignorando o PATH", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-runner-"));
+    try {
+      const fakeBin = join(dir, "fake-doppler");
+      writeFileSync(fakeBin, "#!/bin/sh\necho 'CLARICE_API_KEY=\"from-fake-bin\"'\n");
+      chmodSync(fakeBin, 0o755);
+
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "CLARICE_API_KEY=old\n");
+
+      // DOPPLER_BIN aponta pro binário falso; o PATH não tem 'doppler'.
+      const strippedPath = process.env.PATH?.split(delimiter)
+        .filter((entry) => !existsSync(join(entry, "doppler")) && !existsSync(join(entry, "doppler.exe")))
+        .join(delimiter);
+
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", join(repoRoot, "scripts", "sync-env.ts")],
+        {
+          cwd: dir,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: strippedPath ?? "",
+            DOPPLER_BIN: fakeBin,
+          },
+        },
+      );
+
+      assert.equal(result.status, 0, `sync-env falhou: ${result.stderr}`);
+      assert.equal(readFileSync(envPath, "utf8"), 'CLARICE_API_KEY="from-fake-bin"\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("DOPPLER_BIN inexistente joga ENOENT e o runner propaga o erro (sem fallback silencioso)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-runner-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "CLARICE_API_KEY=old\n");
+
+      const nonexistentBin = join(dir, "doppler-que-nao-existe");
+      assert.equal(existsSync(nonexistentBin), false);
+
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", join(repoRoot, "scripts", "sync-env.ts")],
+        {
+          cwd: dir,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: "", // sem PATH: o fallback ~/.local/bin/doppler NUNCA é tentado
+            DOPPLER_BIN: nonexistentBin,
+          },
+        },
+      );
+
+      // O runner tentou DOPPLER_BIN (ENOENT), tentou o fallback
+      // ~/.local/bin/doppler (também inexistente em PATH vazio) e o erro
+      // subiu até main(), que reportou via stderr + exit code != 0.
+      assert.notEqual(result.status, 0, "esperava falha: DOPPLER_BIN inexistente");
+      assert.match(result.stderr, /Falha ao sincronizar \.env via Doppler/);
+      // .env intocado — o sync aborted antes de qualquer escrita.
+      assert.equal(readFileSync(envPath, "utf8"), "CLARICE_API_KEY=old\n");
+    } finally {
+      rmSync(dir, { recursive: true, true });
+    }
+  });
+
+  it("DOPPLER_BIN inexistente cai no fallback real quando PATH tem doppler", () => {
+    // Caminho de regressão: sem DOPPLER_BIN, o PATH-strip do entrypoint-guard
+    // test era inerte (o fallback em ~/.local/bin/doppler achava o binário
+    // real e executava a sincronização de verdade). Com DOPPLER_BIN
+    // inexistente + PATH vazio, o fallback também falha — o runner NUNCA
+    // deve esconder o erro do fallback por trás de um "sucesso silencioso".
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-runner-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "CLARICE_API_KEY=old\n");
+
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", join(repoRoot, "scripts", "sync-env.ts")],
+        {
+          cwd: dir,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: "",
+            DOPPLER_BIN: join(dir, "doppler-nao-existe"),
+          },
+        },
+      );
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Falha ao sincronizar \.env via Doppler/);
+      assert.equal(readFileSync(envPath, "utf8"), "CLARICE_API_KEY=old\n");
+    } finally {
+      rmSync(dir, { recursive: true, true });
+    }
+  });
+});
+
 describe("entrypoint guard (#5679)", () => {
   it("roda main() quando o script é invocado diretamente como processo filho", () => {
     // Regressão específica: o guard antigo (`import.meta.url ===
@@ -399,17 +512,25 @@ describe("entrypoint guard (#5679)", () => {
     // vez de reconstruir uma URL a partir de argv[1] — checando que main()
     // roda de fato quando invocado como script.
     //
-    // Remove `doppler` do PATH do subprocesso pra forçar uma falha rápida e
-    // determinística (ENOENT) em vez de uma chamada de rede real — o que
-    // importa aqui é só confirmar que main() RODOU (e portanto imprimiu
-    // algo em vez de sair silencioso), não o resultado do sync em si.
+    // #8795 (revisão rejeitada): o PATH sozinho NÃO é suficiente pra
+    // isolar o subprocesso — `defaultDopplerRunner` cai no fallback
+    // `~/.local/bin/doppler` (que EXISTE nessa máquina, verificado ao vivo),
+    // então um PATH sem `doppler` ainda executava o binário real de verdade
+    // (chamada de rede + escrita em `.env` real do repoRoot), com o risco de
+    // apagar as ~40 credenciais em produção em caso de sessão expirada. A
+    // única fonte de verdade pra "qual binário o runner chama" é
+    // `DOPPLER_BIN` (#8795), então o teste passa um runner falsificado via
+    // um caminho inexistente — sem chamada de rede, sem escrita em disco, e
+    // deterministicamente ENOENT. O que o teste quer é só confirmar que
+    // main() RODOU (imprimiu algo em vez de sair silencioso), não o resultado
+    // do sync em si.
+    //
     // `path.delimiter` e não `":"` fixo (#6206): no Windows o PATH é separado
     // por `;`, então fatiar por `:` devolvia UMA entrada gigante, o filtro não
     // removia nada e o `doppler` continuava alcançável — o subprocesso fazia a
-    // sincronização REAL (chamada de rede + escrita de `.env`) e saía 0, o
-    // oposto do que este teste quer. Antes do fix de `repoRoot` acima isso
-    // ficava escondido: o spawn falhava por caminho inexistente e o
-    // `notEqual(status, 0)` passava pelo motivo errado.
+    // sincronização REAL e saía 0, o oposto do que este teste quer. Antes do
+    // fix de `repoRoot` acima isso ficava escondido: o spawn falhava por
+    // caminho inexistente e o `notEqual(status, 0)` passava pelo motivo errado.
     const strippedPath = process.env.PATH?.split(delimiter)
       .filter((entry) => !existsSync(join(entry, "doppler")) && !existsSync(join(entry, "doppler.exe")))
       .join(delimiter);
@@ -420,11 +541,20 @@ describe("entrypoint guard (#5679)", () => {
       {
         cwd: repoRoot,
         encoding: "utf8",
-        env: { ...process.env, PATH: strippedPath ?? "" },
+        env: {
+          ...process.env,
+          PATH: strippedPath ?? "",
+          // #8795: DOPPLER_BIN é a única maneira de apontar o runner pra um
+          // binário que não existe — sem isso o fallback em
+          // ~/.local/bin/doppler (que existe nessa máquina) torna o PATH
+          // strip inerte. Runner falsificado: caminho inexistente, então
+          // execFileSync joga ENOENT e main() captura no catch.
+          DOPPLER_BIN: join(tmpdir(), "diaria-sync-env-test-doppler-nonexistent"),
+        },
       },
     );
 
-    // main() rodou: tentou chamar `doppler` (ausente do PATH stripado),
+    // main() rodou: tentou chamar o binário DOPPLER_BIN (inexistente),
     // capturou o erro no catch de main() e reportou via stderr + exit
     // code != 0. Um script que saísse silencioso (bug original) teria
     // stdout/stderr vazios e exit code 0.
