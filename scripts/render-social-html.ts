@@ -400,21 +400,43 @@ export function renderDestaqueGroup(group: DestaqueGroup, color: string): string
 }
 
 export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, postPixelImageNum = "1", editionDir?: string): string {
-  // #8681: preview do Studio mostra legenda real do Instagram quando há override
+  // #8681/#8809: legenda de TESTE do Instagram (`_internal/instagram-test.json`).
+  // Desde #3991 o `03-social.md` real tem uma seção `# Social` ÚNICA
+  // compartilhada por LinkedIn/Facebook/Instagram — sobrescrever `post.main`
+  // do jeito que o #8774/#8781 faziam (procurando `p.name.includes("instagram")`)
+  // nunca casava com `# Social` (fix inerte, #8809) E, se casasse, teria
+  // trocado o texto de LinkedIn/Facebook também, já que os 3 canais
+  // compartilham o MESMO Post object dentro do grupo `# Social`.
+  //
+  // Duas seções possíveis, dois comportamentos:
+  //   - `# Instagram` própria (legado pré-#3991, exclusiva do canal): seguro
+  //     mutar `post.main` direto — não há LinkedIn/Facebook nesse bloco pra
+  //     colidir.
+  //   - `# Social` (formato atual, texto único): a legenda de override vira
+  //     um BLOCO SEPARADO ("Instagram (override de teste)") dentro do grupo
+  //     do destaque, injetado logo abaixo, depois de `groupByDestaque` — o
+  //     bloco original de `# Social` continua intacto pra LinkedIn/Facebook.
+  let instagramOverrideCaption: string | null = null;
+  let hasDedicatedInstagramSection = false;
   if (editionDir) {
     try {
       const override = readInstagramTestOverride(editionDir);
       if (override?.caption) {
+        instagramOverrideCaption = override.caption;
         for (const p of platforms) {
-          if (p.name.toLowerCase().includes("instagram")) {
-            for (const post of p.posts) {
-              post.main = override.caption;
-            }
+          if (p.name.trim().toLowerCase() === "instagram") {
+            hasDedicatedInstagramSection = true;
+            for (const post of p.posts) post.main = instagramOverrideCaption;
           }
         }
       }
-    } catch {
-      // fail-soft: preview sem override é aceitável; erro de override já é adversário em publish
+    } catch (e) {
+      // #8809: catch vazio engolia override malformado em silêncio — logar
+      // (fail-soft continua: preview sem override é aceitável, mas o editor
+      // vê o motivo no terminal/log do Studio em vez de um mistério).
+      console.error(
+        `[render-social-html] #8809: _internal/instagram-test.json inválido — ignorando override no preview: ${(e as Error).message}`,
+      );
     }
   }
   return `<!DOCTYPE html>
@@ -558,6 +580,22 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
 <h1>Social Preview</h1>
 ${(() => {
   const groups = groupByDestaque(platforms, imageUrls, postPixelImageNum);
+  // #8681/#8809: injeta a legenda de override como bloco SEPARADO em todo
+  // destaque numerado (d1/d2/d3) — mesma semântica de `publish-instagram.ts`
+  // (`testOverride?.caption` aplicado a "todos os destaques"). Só quando NÃO
+  // há seção `# Instagram` dedicada (formato atual, `# Social`) — o caso
+  // dedicado já foi resolvido por mutação direta acima, sem colisão com
+  // LinkedIn/Facebook.
+  if (instagramOverrideCaption && !hasDedicatedInstagramSection) {
+    for (const g of groups) {
+      if (/^d\d+$/.test(g.key)) {
+        g.blocks.push({
+          channels: "Instagram (override de teste)",
+          post: { destaque: g.key, main: instagramOverrideCaption, hashtags: "" },
+        });
+      }
+    }
+  }
   const note = platforms.find(p => p.note)?.note ?? "";
   return `
   <div class="platform">

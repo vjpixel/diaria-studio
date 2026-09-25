@@ -887,6 +887,68 @@ describe("buildSocialPreviewHtml (#3663)", () => {
     assert.match(preview.html, /Texto do LinkedIn D1\./);
     assert.match(preview.html, /Texto do Facebook D1\./);
   });
+
+  // #8809: desde #3991 o `03-social.md` real usa a seção ÚNICA `# Social`
+  // (texto compartilhado por LinkedIn/Facebook/Instagram) — não existe mais
+  // `# Instagram` própria. O fix anterior (#8774/#8781) só casava
+  // `p.name.includes("instagram")`, que nunca casa com "Social": o override
+  // ficava inerte em produção. Confirma que, com `# Social`, o override
+  // aparece como bloco SEPARADO ("Instagram (override de teste)") sem
+  // sobrescrever o texto compartilhado que LinkedIn/Facebook também usam.
+  it("com override caption em edição com seção '# Social' (formato atual), o preview mostra a legenda de teste como bloco separado do Instagram, preservando o texto compartilhado de LinkedIn/Facebook", () => {
+    const socialMd = [
+      "# Social",
+      "",
+      "## d1",
+      "",
+      "Texto único compartilhado por LinkedIn, Facebook e Instagram.",
+      "",
+      "#InteligenciaArtificial",
+      "",
+    ].join("\n");
+    writeFileSync(resolve(editionDir, "03-social.md"), socialMd, "utf8");
+    writeFileSync(
+      resolve(editionDir, "_internal", "instagram-test.json"),
+      JSON.stringify({ caption: "Legenda de teste SÓ do Instagram (override #8809)." }),
+      "utf8",
+    );
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    // A legenda de override aparece no preview...
+    assert.match(preview.html, /Legenda de teste SÓ do Instagram \(override #8809\)\./);
+    // ...mas o texto compartilhado original (que LinkedIn/Facebook publicam de
+    // verdade) continua visível — nunca é sobrescrito.
+    assert.match(preview.html, /Texto único compartilhado por LinkedIn, Facebook e Instagram\./);
+    // O bloco de override se identifica como sendo do Instagram, não um
+    // 2º post genérico sem rótulo.
+    assert.match(preview.html, /Instagram.*override de teste/);
+  });
+
+  it("sem instagram-test.json, edição com '# Social' não lança e não injeta nada extra", () => {
+    const socialMd = [
+      "# Social",
+      "",
+      "## d1",
+      "",
+      "Texto único sem override.",
+      "",
+    ].join("\n");
+    writeFileSync(resolve(editionDir, "03-social.md"), socialMd, "utf8");
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /Texto único sem override\./);
+    assert.doesNotMatch(preview.html, /override de teste/i);
+  });
+
+  it("instagram-test.json malformado (JSON inválido) não lança — preview segue sem override, erro logado", () => {
+    const socialMd = ["# Social", "", "## d1", "", "Texto normal.", ""].join("\n");
+    writeFileSync(resolve(editionDir, "03-social.md"), socialMd, "utf8");
+    writeFileSync(resolve(editionDir, "_internal", "instagram-test.json"), "{ not valid json", "utf8");
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /Texto normal\./);
+    assert.doesNotMatch(preview.html, /override de teste/i);
+  });
 });
 
 describe("resolveReviewImagePath (#3559 — achado 260716)", () => {
