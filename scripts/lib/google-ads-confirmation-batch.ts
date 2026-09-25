@@ -50,21 +50,51 @@
  * ## Idempotência
  *
  * Índice local cumulativo (padrão `_meta-capi-sent.json`, #5504), chaveado por
- * `kit-{id}` (nenhum e-mail em claro). Status: `sent`, `skipped-out-of-window`,
- * `skipped-test-email`, `skipped-malformed`, `skipped-failed-permanent` e
- * `failed` (recusa por linha, com contador de tentativas; após
- * `MAX_FAILED_ATTEMPTS` vira `skipped-failed-permanent`). Falha de transporte
- * do lote inteiro NÃO conta tentativa. Índice ilegível/corrompido LANÇA
- * (nunca vira `{}`, senão reenviaria tudo). Segunda rede, best-effort:
- * `order_id = diaria-confirmacao-kit-{id}` — o Google deduplica por ele, mas
- * não é garantia contratual; a garantia é o índice.
+ * `kit-{id}` (nenhum e-mail em claro). Status: `submitted`,
+ * `skipped-out-of-window`, `skipped-test-email`, `skipped-malformed`,
+ * `skipped-failed-permanent` e `failed` (recusa/erro por chunk, com contador
+ * de tentativas; após `MAX_FAILED_ATTEMPTS` vira `skipped-failed-permanent`).
+ * Índice ilegível/corrompido LANÇA (nunca vira `{}`, senão reenviaria tudo).
+ * Segunda rede, best-effort: `order_id = diaria-confirmacao-kit-{id}` vira o
+ * `transactionId` do evento — o Google deduplica por ele, mas não é garantia
+ * contratual; a garantia é o índice.
  *
- * ## conversion_date_time
+ * ## Migração pra Data Manager API (#8555, 24/09/2026)
+ *
+ * O envio passou de `ConversionUploadService.UploadClickConversions`
+ * (`google-ads-conversion-sender.ts`) para `POST events:ingest`
+ * (`google-data-manager-sender.ts`) — a conta `2369219639` recebe
+ * `CUSTOMER_NOT_ALLOWLISTED_FOR_THIS_FEATURE` no caminho antigo desde
+ * 21/09/2026 (ver docstring do novo módulo para o achado ao vivo completo).
+ * Duas mudanças de semântica que isso força:
+ *
+ *   1. **`sent` virou `submitted`.** O `events:ingest` só confirma, no 2xx
+ *      síncrono, que o Google RECEBEU o lote (`requestId`) — o
+ *      aceite/rejeição por evento só existe depois, via diagnóstico
+ *      assíncrono (`RetrieveRequestStatus`, não implementado aqui, ver
+ *      docstring de `google-data-manager-sender.ts`). Nunca se afirma que
+ *      uma linha foi ACEITA pelo Google, só que foi submetida.
+ *   2. **Sem `partialFailureError` por linha.** O caminho antigo recusava
+ *      linhas individuais dentro do mesmo lote (`extractPartialFailureIndexes`)
+ *      e este módulo reenviava só o gclid recusado com o hash puro. O
+ *      `events:ingest` não devolve esse detalhe síncrono — a granularidade
+ *      de sucesso/falha agora é o CHUNK inteiro (até
+ *      `DATA_MANAGER_MAX_EVENTS_PER_REQUEST` eventos): chunk aceito (2xx) =
+ *      todo mundo `submitted`; chunk recusado = todo mundo `failed`, com
+ *      retry no dia seguinte (mesmo contador de tentativas de sempre). Sem
+ *      retry-sem-gclid dentro da mesma rodada — não há como saber que foi
+ *      especificamente o gclid que causou a recusa sem o diagnóstico
+ *      assíncrono.
+ *
+ * ## conversion_date_time / eventTimestamp
  *
  * Instante da DETECÇÃO (o Kit não expõe o da confirmação), offset BRT fixo
- * -03:00. O corte de segurança do #7770 protege o CADASTRO já contado pela
- * tag ao vivo; não se aplica a uma ação nova de confirmação, então o lote
- * passa `allowPastCutoff: true`.
+ * -03:00, convertido pra RFC 3339 por `conversionDateTimeToRfc3339`
+ * (`google-data-manager-sender.ts`). O corte de segurança do #7770 protege o
+ * CADASTRO já contado pela tag ao vivo; não se aplica a uma ação nova de
+ * confirmação, então o lote passa `allowPastCutoff: true` pra
+ * `validateSignupRecords` (reusado sem mudança — normalização, hash e filtro
+ * de e-mail de teste continuam de lá).
  *
  * Tudo é injetável (roster, snapshot, relógio, envio, disco do índice):
  * nenhum teste toca a Google Ads API.
@@ -73,13 +103,13 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { validateSignupRecords, type ValidatedConversion } from "./google-ads-enhanced-conversions.ts";
 import {
-  buildUploadClickConversionsPayload,
-  validateSignupRecords,
-  type UploadClickConversionsPayload,
-  type ValidatedConversion,
-} from "./google-ads-enhanced-conversions.ts";
-import { extractPartialFailureIndexes, extractPartialFailureMessages, type SendPayloadResult } from "./google-ads-conversion-sender.ts";
+  buildDataManagerEvent,
+  chunkDataManagerEvents,
+  type DataManagerEvent,
+  type DataManagerIngestResult,
+} from "./google-data-manager-sender.ts";
 import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME, REATIVAR_CONFIRMOU_VIA_VALUE } from "./shared/reativar-confirmou-via.ts";
 import type { SubscriberStateRecord } from "./subscriber-state-snapshot.ts";
 
@@ -119,14 +149,14 @@ export interface ConfirmationCandidate {
 }
 
 export type ConfirmationIndexStatus =
-  | "sent"
+  | "submitted"
   | "failed"
   | "skipped-out-of-window"
   | "skipped-test-email"
   | "skipped-malformed"
   | "skipped-failed-permanent";
 const VALID_STATUSES: ReadonlySet<string> = new Set<ConfirmationIndexStatus>([
-  "sent",
+  "submitted",
   "failed",
   "skipped-out-of-window",
   "skipped-test-email",
@@ -138,6 +168,10 @@ export interface ConfirmationIndexEntry {
   at: string;
   path: ConfirmationPath;
   attempts?: number;
+  /** `requestId` do `events:ingest` (Data Manager) — só presente em
+   *  `submitted`. Chave de reconciliação manual/diagnóstico assíncrono
+   *  futuro (ver docstring do módulo, "Migração pra Data Manager API"). */
+  requestId?: string;
 }
 export type ConfirmationIndex = Record<string, ConfirmationIndexEntry>;
 
@@ -282,19 +316,24 @@ export interface ConfirmationBatchSummary {
   skippedMalformed: number;
   toSend: number;
   withGclid: number;
+  /** Submetidos ao `events:ingest` com 2xx (`requestId` recebido) — NÃO é
+   *  confirmação de aceite por evento, ver "Migração pra Data Manager API"
+   *  na docstring do módulo. */
   sent: number;
   failed: number;
   /** Ids que viraram `skipped-failed-permanent` nesta rodada. */
   failedPermanent: number;
-  /** Ids do Kit recusados pelo Google (ou sem confirmação de envio) nesta rodada. */
+  /** Ids do Kit cujo CHUNK falhou (transporte, env/token ausente, ou HTTP
+   *  não-2xx) nesta rodada — granularidade de chunk, não de linha (ver
+   *  docstring do módulo). */
   failedIds: number[];
-  /** Mensagens/códigos do `partialFailureError` do Google (até 10). */
+  /** Mensagens de erro dos chunks que falharam (até 10). */
   googleErrors: string[];
   /** created_at ilegível: NÃO indexado, tenta de novo amanhã. */
   skippedBadDate: number;
   error?: string;
-  /** Presente em dry-run: o payload que SERIA enviado. */
-  payload?: UploadClickConversionsPayload;
+  /** Presente em dry-run: os eventos que SERIAM enviados. */
+  events?: DataManagerEvent[];
 }
 
 export interface RunConfirmationBatchDeps {
@@ -303,10 +342,19 @@ export interface RunConfirmationBatchDeps {
   /** `AAAA-MM-DD` do snapshot base. */
   baseDate: string;
   indexPath: string;
-  conversionActionResourceName: string;
   /** `true` = nada é enviado nem gravado no índice. */
   dryRun: boolean;
-  sendFn: (payload: UploadClickConversionsPayload) => Promise<SendPayloadResult>;
+  /** `false` = chama `sendFn` normalmente mas NUNCA grava o índice — usado por
+   *  `--validate-only` (#8555): a chamada é real (`validateOnly: true` no
+   *  payload), mas como nada foi de fato aceito/contado pelo Google, marcar
+   *  como `submitted` impediria o envio real do dia seguinte. Default `true`
+   *  (persiste). Ignorado quando `dryRun: true` (que já não grava nada). */
+  persistIndex?: boolean;
+  /** Envia 1 chunk (já dentro do limite de `DATA_MANAGER_MAX_EVENTS_PER_REQUEST`
+   *  eventos) — a montagem de `destinations`/`encoding`/`validateOnly` fica
+   *  a cargo de quem chama (o CLI, que conhece `customerId`/
+   *  `productDestinationId`/o modo `--validate-only`). */
+  sendFn: (events: DataManagerEvent[]) => Promise<DataManagerIngestResult>;
   now?: Date;
   log?: (msg: string) => void;
 }
@@ -314,33 +362,38 @@ export interface RunConfirmationBatchDeps {
 interface Entry {
   cand: ConfirmationCandidate;
   conv: ValidatedConversion;
+  event: DataManagerEvent;
 }
 
-type Outcome = { kind: "sent" } | { kind: "rejected" } | { kind: "unknown" } | { kind: "transport"; error: string };
+type Outcome = { kind: "submitted"; requestId: string } | { kind: "failed"; error: string };
 
-/** Um envio; devolve o resultado por posição de `entries` (mapeia por id, não por e-mail). */
+/** Envia `entries` em chunks de até `DATA_MANAGER_MAX_EVENTS_PER_REQUEST`;
+ *  devolve o resultado por posição de `entries` (mapeia por id, não por
+ *  e-mail). Granularidade de sucesso/falha é o CHUNK inteiro — ver
+ *  "Migração pra Data Manager API" na docstring do módulo. */
 async function sendEntries(
   entries: Entry[],
   deps: RunConfirmationBatchDeps,
 ): Promise<{ outcomes: Outcome[]; error?: string; messages: string[] }> {
-  const payload = buildUploadClickConversionsPayload(entries.map((e) => e.conv), {
-    conversionActionResourceName: deps.conversionActionResourceName,
-  });
-  const result = await deps.sendFn(payload);
-  if (!result.ok) {
-    return { outcomes: entries.map(() => ({ kind: "transport", error: result.error })), error: result.error, messages: [] };
+  const chunks = chunkDataManagerEvents(entries.map((e) => e.event));
+  const outcomes: Outcome[] = new Array(entries.length);
+  const messages: string[] = [];
+  let error: string | undefined;
+  let offset = 0;
+  for (const chunk of chunks) {
+    const result = await deps.sendFn(chunk);
+    for (let i = 0; i < chunk.length; i++) {
+      outcomes[offset + i] = result.ok
+        ? { kind: "submitted", requestId: result.requestId }
+        : { kind: "failed", error: result.error };
+    }
+    if (!result.ok) {
+      if (!error) error = result.error;
+      messages.push(result.error);
+    }
+    offset += chunk.length;
   }
-  const failedIdx = extractPartialFailureIndexes(result.response);
-  const messages = extractPartialFailureMessages(result.response);
-  if (failedIdx === null) {
-    return {
-      messages,
-      outcomes: entries.map(() => ({ kind: "unknown" })),
-      error: "partialFailureError sem índices legíveis — nenhuma conversão marcada como enviada",
-    };
-  }
-  const failed = new Set(failedIdx);
-  return { messages, outcomes: entries.map((_, i) => (failed.has(i) ? { kind: "rejected" } : { kind: "sent" })) };
+  return { outcomes, error, messages };
 }
 
 export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Promise<ConfirmationBatchSummary> {
@@ -392,9 +445,10 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
     googleErrors: [],
     skippedBadDate: 0,
   };
+  const persistIndex = deps.persistIndex ?? true;
   let dirty = false;
   const record = (c: ConfirmationCandidate, entry: Omit<ConfirmationIndexEntry, "at" | "path">): void => {
-    if (deps.dryRun) return;
+    if (deps.dryRun || !persistIndex) return;
     index[indexKey(c.id)] = { at: nowIso, path: c.path, ...entry };
     dirty = true;
   };
@@ -434,7 +488,14 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
       summary.skippedMalformed++;
       record(c, { status: "skipped-malformed" });
     } else {
-      entries.push({ cand: c, conv: v.conversions[0] });
+      const built = buildDataManagerEvent(v.conversions[0]);
+      if (!built.ok) {
+        summary.skippedMalformed++;
+        record(c, { status: "skipped-malformed" });
+        log(`kit id ${c.id}: ${built.error}`);
+      } else {
+        entries.push({ cand: c, conv: v.conversions[0], event: built.event });
+      }
     }
   }
   summary.outOfWindow = outOfWindow.length;
@@ -456,55 +517,39 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
   }
 
   if (deps.dryRun) {
-    summary.payload = buildUploadClickConversionsPayload(entries.map((e) => e.conv), {
-      conversionActionResourceName: deps.conversionActionResourceName,
-    });
+    summary.events = entries.map((e) => e.event);
     return summary;
   }
 
-  const first = await sendEntries(entries, deps);
-  if (first.error) summary.error = first.error;
-  let outcomes = first.outcomes;
-  const googleErrors = new Set<string>(first.messages);
-
-  // Recusa por linha COM gclid: 2ª passada só com o hash do e-mail.
-  const retry = entries.map((e, i) => ({ e, i })).filter(({ e, i }) => outcomes[i].kind === "rejected" && e.conv.gclid);
-  if (retry.length > 0) {
-    log(`${retry.length} linha(s) com gclid recusada(s) — reenviando só com o hash do e-mail.`);
-    const stripped = retry.map(({ e }) => ({ cand: e.cand, conv: { ...e.conv, gclid: undefined } }));
-    const second = await sendEntries(stripped, deps);
-    outcomes = [...outcomes];
-    retry.forEach(({ i }, k) => {
-      outcomes[i] = second.outcomes[k];
-    });
-    if (second.error && !summary.error) summary.error = second.error;
-    second.messages.forEach((m) => googleErrors.add(m));
-  }
+  const { outcomes, error, messages } = await sendEntries(entries, deps);
+  if (error) summary.error = error;
 
   entries.forEach(({ cand }, i) => {
     const o = outcomes[i];
-    if (o.kind === "sent") {
+    if (o.kind === "submitted") {
       summary.sent++;
-      record(cand, { status: "sent" });
-    } else if (o.kind === "rejected") {
+      record(cand, { status: "submitted", requestId: o.requestId });
+    } else {
+      // Falha de chunk (transporte, env/token, HTTP não-2xx): conta tentativa
+      // — diferente do caminho antigo, aqui não há como distinguir "recusa
+      // do Google" de "falha de transporte" no 2xx síncrono (ver docstring),
+      // então todo chunk que não deu 2xx com requestId segue o mesmo caminho
+      // de retry com teto.
       summary.failed++;
       summary.failedIds.push(cand.id);
       const attempts = (index[indexKey(cand.id)]?.attempts ?? 0) + 1;
       if (attempts >= MAX_FAILED_ATTEMPTS) {
         summary.failedPermanent++;
         record(cand, { status: "skipped-failed-permanent", attempts });
-        log(`kit id ${cand.id} recusado ${attempts}x pelo Google — desistindo (skipped-failed-permanent).`);
+        log(`kit id ${cand.id} falhou ${attempts}x — desistindo (skipped-failed-permanent). ${o.error}`);
       } else {
         record(cand, { status: "failed", attempts });
       }
-    } else {
-      summary.failed++; // transporte/unknown: não conta tentativa, reprocessa na próxima
-      summary.failedIds.push(cand.id);
     }
   });
-  summary.googleErrors = [...googleErrors].slice(0, 10);
-  const sentIds = entries.filter((_, i) => outcomes[i].kind === "sent").map((e) => e.cand.id);
-  // Enviado ao Google mas ainda não indexado: se a escrita do índice falhar,
+  summary.googleErrors = [...new Set(messages)].slice(0, 10);
+  const sentIds = entries.filter((_, i) => outcomes[i].kind === "submitted").map((e) => e.cand.id);
+  // Submetido ao Google mas ainda não indexado: se a escrita do índice falhar,
   // estes ids ficam no stderr pra reconciliação manual.
   if (sentIds.length > 0) log(`enviados ao Google (kit ids): ${sentIds.join(", ")} — gravando índice.`);
   try {
