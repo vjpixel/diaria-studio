@@ -75,7 +75,7 @@
  *      docstring de `google-data-manager-sender.ts`). Nunca se afirma que
  *      uma linha foi ACEITA pelo Google, só que foi submetida.
  *   2. **Sem `partialFailureError` por linha.** O caminho antigo recusava
- *      linhas individuais dentro do mesmo lote (`extractPartialFailureIndexes`)
+ *      linhas individuais dentro do mesmo lote (parser de `partialFailureError`, removido nesta migração)
  *      e este módulo reenviava só o gclid recusado com o hash puro. O
  *      `events:ingest` não devolve esse detalhe síncrono — a granularidade
  *      de sucesso/falha agora é o CHUNK inteiro (até
