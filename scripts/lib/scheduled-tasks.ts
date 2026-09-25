@@ -2764,7 +2764,14 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // leitura. Pra impedir, enabled: false.
     name: "Diaria-Calibration-Allowlist-Audit-Quarterly",
     description: "auditoria trimestral do crescimento cumulativo das allowlists de dominio/calibracao (relatorio para re-ratificacao)",
-    steps: [{ key: "audit", script: "scripts/calibration-allowlist-growth-report.ts", args: ["--quarter-only", "--write"] }],
+    steps: [
+      // #7982: produtor de decisionAt/estimatedReviewMinutes em data/reports/index.jsonl
+      // (so PRs de calibracao mergeadas; idempotente, "primeira decisao vence") --
+      // sem ele a secao de latencia do relatorio sai sempre n/d. Roda todo mes, o
+      // relatorio em si continua so trimestral.
+      { key: "record", script: "scripts/record-calibration-pr-decisions.ts", args: ["--write"], bestEffort: true },
+      { key: "audit", script: "scripts/calibration-allowlist-growth-report.ts", args: ["--quarter-only", "--write"] },
+    ],
     logPath: "calibration-audit/.allowlist-audit.log",
     schedule: { kind: "monthly", day: 3, hour: 9, minute: 40 },
     issue: "#7982",
