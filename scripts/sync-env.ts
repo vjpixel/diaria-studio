@@ -30,14 +30,24 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Executa o comando Doppler e retorna stdout; lança em exit code != 0. */
 export type DopplerRunner = (args: string[]) => string;
 
-export const defaultDopplerRunner: DopplerRunner = (args) =>
-  execFileSync("doppler", args, { encoding: "utf8" });
+export const defaultDopplerRunner: DopplerRunner = (args) => {
+  try {
+    return execFileSync("doppler", args, { encoding: "utf8" });
+  } catch (e: any) {
+    if (e.code === "ENOENT") {
+      const fallback = resolve(homedir(), ".local/bin/doppler");
+      return execFileSync(fallback, args, { encoding: "utf8" });
+    }
+    throw e;
+  }
+};
 
 export interface SyncEnvOptions {
   /**
