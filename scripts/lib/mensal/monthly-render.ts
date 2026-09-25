@@ -818,6 +818,22 @@ export function renderClariceBox(chunk: string, headerLabelText: string, imageUr
 }
 
 /**
+ * Box DIVULGAÇÃO. Se a 1ª linha do corpo for uma imagem markdown
+ * (`![alt](url)`), ela vira a imagem do topo do box e o box sai SEM título
+ * interno — a arte carrega a chamada (pedido do editor 25/09/2026, box da
+ * imersão 10/10). Sem imagem, comportamento de sempre (1ª linha = título).
+ */
+export function renderDivulgacaoBox(chunk: string): string {
+  const lines = chunk.split("\n");
+  let i = 1;
+  while (i < lines.length && !lines[i].trim()) i++;
+  const img = i < lines.length ? lines[i].trim().match(/^!\[[^\]]*\]\(([^)\s]+)\)$/) : null;
+  if (!img) return renderClariceBox(chunk, "Divulgação");
+  const rest = [lines[0], ...lines.slice(i + 1)].join("\n");
+  return renderClariceBox(rest, "Divulgação", img[1], true);
+}
+
+/**
  * Renders a CLARICE — DIVULGAÇÃO section. Mesmo box do laboratório, com rótulo
  * "Desconto exclusivo" (não "CLARICE — DIVULGAÇÃO", que é só o label interno do
  * draft). Pedido do editor: divulgação com a mesma formatação do laboratório.
@@ -1538,7 +1554,7 @@ export function draftToEmail(
     // DIVULGAÇÃO: box de divulgação/afiliado (bege) pra 1 item avulso (ex: acesso
     // a produto) antes do Use Melhor. Reusa o box do Clarice com rótulo "Divulgação".
     if (label === "DIVULGAÇÃO") {
-      bodyParts.push(renderClariceBox(chunk, "Divulgação"));
+      bodyParts.push(renderDivulgacaoBox(chunk));
       continue;
     }
 
