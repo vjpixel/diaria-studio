@@ -183,7 +183,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { parseArgsWithTrueDefault as parseArgs, isMainModule, type ParsedArgs } from "./lib/cli-args.ts";
 import { listActiveSessions, type SessionRecord } from "./lib/session-registry.ts";
 import { removeWorktreeDirSafely, findWorktreeHusks, resolveWorktreeRemoval, findLiveProcessesInPath } from "./lib/worktree-remove.ts"; // #8209, #8661
 import { listAllProcesses, type ProcessInfo } from "./lib/list-processes.ts"; // #8661
@@ -301,6 +301,40 @@ export function selectMergedForRemoval(
   isMerged: (branch: string) => boolean,
 ): WorktreeEntry[] {
   return entries.filter((e) => e.branch !== null && isMerged(e.branch));
+}
+
+/**
+ * #8792 — remove de `mergedRemoval` os worktrees cuja branch tem PR ABERTA
+ * (`hasOpenPr`, injetável), mesmo quando também tem PR mergeada.
+ *
+ * O defeito: `selectMergedForRemoval` confirma "branch mergeada" via
+ * `gh pr list --head {branch} --state merged` não-vazio, e isso é verdade
+ * mesmo quando a branch depois ganhou UMA NOVA PR aberta que reusa o nome —
+ * ex: branch `continuo/fix-8681-instagram-preview` teve a PR #8774 mergeada
+ * e depois a PR #8781 aberta nela mesma. O worktree de trabalho de uma PR
+ * viva sumia.
+ *
+ * `gh pr list --head {branch}` consulta por HEAD de branch, e o GitHub
+ * retorna as PRs que já usaram aquele HEAD — merged e open juntas, sem
+ * distinção de "a branch foi reaberta". A única forma de saber que há
+ * trabalho ativo é perguntar explicitamente pelo estado open.
+ *
+ * Fail-soft na direção segura, mesma que `checkBranchHasOpenPrViaGh`: um
+ * `hasOpenPr` indeterminado (gh ausente, timeout) conta como "tem PR aberta"
+ * — nunca remove sem confirmar que não há. `hasOpenPr` é injetável pra
+ * testar a lógica pura sem chamar `gh`.
+ */
+export function filterOutWorktreesWithOpenPr(
+  entries: WorktreeEntry[],
+  hasOpenPr: (branch: string) => boolean,
+): { kept: WorktreeEntry[]; skipped: WorktreeEntry[] } {
+  const kept: WorktreeEntry[] = [];
+  const skipped: WorktreeEntry[] = [];
+  for (const e of entries) {
+    if (e.branch !== null && hasOpenPr(e.branch)) skipped.push(e);
+    else kept.push(e);
+  }
+  return { kept, skipped };
 }
 
 /** 7 dias — piso de staleness pra worktree órfão (detached ou branch local já deletada). */
@@ -925,10 +959,36 @@ function listActiveSessionsSafe(repoRoot: string): ActiveSessionsProbe {
   }
 }
 
-function main(): void {
-  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const args = parseArgs(process.argv.slice(2));
-  const repoRoot = args.root ? resolve(String(args.root)) : ROOT;
+/**
+ * #8792 F2 (review da PR #8797): `main()` é injetável pra cobertura de
+ * integração — o defeito que este PR corrige (worktree de branch com PR
+ * aberta saindo no `mergedRemovalEffective`) vive no wiring de `main()`, e
+ * nenhuma função pura sozinha pode acusá-lo. `runMainWithCheckers` aceita
+ * checkers `gh` falsos (sem subprocesso, sem rede) pra simular "branch
+ * mergeada" + "branch com PR aberta" sem worktrees reais; `main()` chama
+ * ele com os checkers reais.
+ *
+ * Fail-soft: qualquer checker que lançar é tratado como o lado seguro da
+ * mesma forma que os checkers reais já tratam (merged→false, open→true).
+ */
+export function runMainWithCheckers(
+  args: Record<string, string>,
+  repoRoot: string,
+  checkers: {
+    isMerged: (branch: string) => boolean;
+    hasOpenPr: (branch: string) => boolean;
+    branchExistsLocally: (branch: string) => boolean;
+    issueClosedAtMs: (issueNumber: number) => number | null;
+    listWorktrees: () => WorktreeEntry[];
+    listActiveSessions: () => ActiveSessionsProbe;
+    listProcesses: () => ProcessInfo[];
+    isWorktreeDirty: (path: string) => boolean | null;
+    removeWorktree: (path: string, processes: ProcessInfo[]) => { ok: boolean; error?: string };
+    removeWorktreeDir: (path: string) => { dirRemoved: boolean; errors: string[] };
+    findHusks: (worktreesDir: string, tracked: Set<string>) => string[];
+    nowMs?: number;
+  },
+): void {
   const dryRun = args["dry-run"] === "true";
   const confirmShared = args["confirm-shared"] === "true";
   // #7304: injetado por `.claude/hooks/inject-session-id.mjs`; ausente numa
@@ -939,7 +999,7 @@ function main(): void {
   // warning e o script sai 0 — este step nunca deve travar o encerramento
   // da sessão overnight/develop que o invoca (#4335, requisito explícito).
   try {
-    const probe = listActiveSessionsSafe(repoRoot);
+    const probe = checkers.listActiveSessions();
     if (shouldSkipEntireScanForUnreadableRegistry(probe.readable, confirmShared)) {
       console.warn(
         "[cleanup-merged-worktrees] registro de sessões em data/sessions/ ilegível — pulando a varredura INTEIRA de " +
@@ -962,7 +1022,7 @@ function main(): void {
     // #7650 fatia 1: varre TODOS os worktrees do repo (dentro ou fora de
     // `.claude/worktrees/`), excluindo só o principal — ver docblock do
     // topo do arquivo.
-    const all = listWorktreesSafe(repoRoot);
+    const all = checkers.listWorktrees();
     const candidatesAll = excludeMainWorktree(all);
     const isInUse = (e: WorktreeEntry) =>
       inUseNames.names.has(worktreeNameFromPath(e.path)) || (e.branch !== null && inUseNames.branches.has(e.branch));
@@ -992,38 +1052,52 @@ function main(): void {
       return;
     }
 
-    const mergedRemoval = selectMergedForRemoval(candidates, (branch) => checkBranchMergedViaGh(branch, repoRoot));
+    const mergedRemoval = selectMergedForRemoval(candidates, checkers.isMerged);
+    // #8792: um worktree cuja branch tem PR mergeada MAS também PR aberta
+    // (reuso de branch) é trabalho vivo — preserva. Ver docblock de
+    // `filterOutWorktreesWithOpenPr`.
+    const mergedOpenPrSkipped = filterOutWorktreesWithOpenPr(mergedRemoval, checkers.hasOpenPr);
+    const mergedRemovalEffective = mergedOpenPrSkipped.kept;
     const orphanedStaleRemoval = selectOrphanedForStaleRemoval(
       candidates,
-      mergedRemoval,
-      (branch) => checkBranchExistsLocally(branch, repoRoot),
-      getWorktreeMtimeMsSafe,
-      Date.now(),
+      mergedRemovalEffective,
+      checkers.branchExistsLocally,
+      (path) => getWorktreeMtimeMsSafe(path),
+      checkers.nowMs ?? Date.now(),
     );
     // #7650 fatia 2: branch local viva referenciando issue já FECHADA e sem
     // PR aberta — ver docblock do topo do arquivo, "Extensão #7650 fatia 2".
     const abandonedRemoval = selectAbandonedForRemoval(
       candidates,
-      [...mergedRemoval, ...orphanedStaleRemoval],
-      (issueNumber) => getIssueClosedAtMsViaGh(issueNumber, repoRoot),
-      (branch) => checkBranchHasOpenPrViaGh(branch, repoRoot),
-      Date.now(),
+      [...mergedRemovalEffective, ...orphanedStaleRemoval],
+      checkers.issueClosedAtMs,
+      checkers.hasOpenPr,
+      checkers.nowMs ?? Date.now(),
     );
     // #7304: último filtro, depois de toda a elegibilidade por histórico —
     // worktree com trabalho não-commitado nunca é removido, mesmo com branch
     // mergeada, mesmo órfão+stale, mesmo abandonado. Ver docblock de
     // `filterOutDirtyWorktrees`.
     const { kept: toRemove, skipped: dirtySkipped } = filterOutDirtyWorktrees(
-      [...mergedRemoval, ...orphanedStaleRemoval, ...abandonedRemoval],
-      isWorktreeDirtySafe,
+      [...mergedRemovalEffective, ...orphanedStaleRemoval, ...abandonedRemoval],
+      checkers.isWorktreeDirty,
     );
 
     console.log(
       `[cleanup-merged-worktrees] ${candidates.length} worktree(s) encontrados, ` +
-        `${mergedRemoval.length} com PR mergeada confirmada, ` +
+        `${mergedRemovalEffective.length} com PR mergeada confirmada (sem PR aberta, #8792), ` +
+        `${mergedOpenPrSkipped.skipped.length} com PR mergeada MAS PR aberta na branch (preservados, #8792), ` +
         `${orphanedStaleRemoval.length} órfão(s) parado(s) há mais de 7 dias (#5418), ` +
         `${abandonedRemoval.length} abandonado(s) — issue fechada há mais de 14 dias (#7650).`,
     );
+
+    if (mergedOpenPrSkipped.skipped.length > 0) {
+      console.log(
+        `[cleanup-merged-worktrees] ${mergedOpenPrSkipped.skipped.length} worktree(s) PRESERVADO(s) por ` +
+          `ter PR aberta na branch além da mergeada (#8792 — reuso de branch): ` +
+          `${mergedOpenPrSkipped.skipped.map((e) => worktreeNameFromPath(e.path)).join(", ")}.`,
+      );
+    }
 
     if (dirtySkipped.length > 0) {
       console.log(
@@ -1042,9 +1116,9 @@ function main(): void {
     // caso é um FALSO NEGATIVO raríssimo — processo que nasceu depois do
     // snapshot — não um falso positivo, e a rede de segurança pra esse
     // residual é o sweep dedicado, `scripts/orphaned-test-process-sweep.ts`).
-    const liveProcessSnapshot: ProcessInfo[] = dryRun ? [] : listAllProcesses();
+    const liveProcessSnapshot: ProcessInfo[] = dryRun ? [] : checkers.listProcesses();
     for (const entry of toRemove) {
-      const reason = mergedRemoval.includes(entry)
+      const reason = mergedRemovalEffective.includes(entry)
         ? "branch mergeada"
         : orphanedStaleRemoval.includes(entry)
           ? "órfão + stale (#5418)"
@@ -1053,7 +1127,7 @@ function main(): void {
         console.log(`[cleanup-merged-worktrees] (dry-run) removeria: ${entry.path} (branch ${entry.branch}, motivo: ${reason})`);
         continue;
       }
-      const result = removeWorktreeSafe(entry.path, repoRoot, liveProcessSnapshot);
+      const result = checkers.removeWorktree(entry.path, liveProcessSnapshot);
       if (result.ok) {
         removed++;
         console.log(`[cleanup-merged-worktrees] removido: ${entry.path} (branch ${entry.branch}, motivo: ${reason})`);
@@ -1077,7 +1151,7 @@ function main(): void {
     // husk, ex: cópia manual do repo) só é reportado, nunca apagado.
     const worktreesDir = join(repoRoot, ".claude", "worktrees");
     const stillTrackedPaths = new Set(all.map((e) => e.path));
-    const husks = findWorktreeHusks(worktreesDir, stillTrackedPaths);
+    const husks = checkers.findHusks(worktreesDir, stillTrackedPaths);
     if (husks.length > 0) {
       if (dryRun) {
         console.log(
@@ -1086,7 +1160,7 @@ function main(): void {
       } else {
         let huskRemoved = 0;
         for (const husk of husks) {
-          const result = removeWorktreeDirSafely(husk);
+          const result = checkers.removeWorktreeDir(husk);
           if (result.dirRemoved) {
             huskRemoved++;
             console.log(`[cleanup-merged-worktrees] casca removida (#8209): ${husk}`);
@@ -1100,6 +1174,29 @@ function main(): void {
   } catch (e) {
     console.warn(`[cleanup-merged-worktrees] erro inesperado, pulando cleanup (fail-soft): ${(e as Error).message}`);
   }
+}
+
+/**
+ * `main()` real — despacha `runMainWithCheckers` com os checkers `gh`/`git`
+ * reais. Mantém o mesmo contrato de saída/fail-soft que o `main()` original.
+ */
+function main(): void {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const args = parseArgs(process.argv.slice(2));
+  const repoRoot = args.root ? resolve(String(args.root)) : ROOT;
+  runMainWithCheckers(args, repoRoot, {
+    isMerged: (branch) => checkBranchMergedViaGh(branch, repoRoot),
+    hasOpenPr: (branch) => checkBranchHasOpenPrViaGh(branch, repoRoot),
+    branchExistsLocally: (branch) => checkBranchExistsLocally(branch, repoRoot),
+    issueClosedAtMs: (issueNumber) => getIssueClosedAtMsViaGh(issueNumber, repoRoot),
+    listWorktrees: () => listWorktreesSafe(repoRoot),
+    listActiveSessions: () => listActiveSessionsSafe(repoRoot),
+    listProcesses: () => listAllProcesses(),
+    isWorktreeDirty: (path) => isWorktreeDirtySafe(path),
+    removeWorktree: (path, processes) => removeWorktreeSafe(path, repoRoot, processes),
+    removeWorktreeDir: (path) => removeWorktreeDirSafely(path),
+    findHusks: (worktreesDir, tracked) => findWorktreeHusks(worktreesDir, tracked),
+  });
 }
 
 if (isMainModule(import.meta.url)) {

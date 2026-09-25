@@ -262,6 +262,16 @@ export default {
       return Response.redirect(target.toString(), 301);
     }
 
+    // #8563: /evento/agente-ia — hospedado como asset ESTÁTICO em
+    // public/evento/agente-ia/ (cópia real dos arquivos da página do workshop,
+    // #8563 follow-up). Substituiu o proxy reverso desta mesma issue — o
+    // editor forneceu os arquivos originais, então servir direto via
+    // `env.ASSETS` (nenhum código de rota aqui) esconde o domínio
+    // chatgpt.site com menos risco que um proxy (sem dependência de rede
+    // externa, sem o problema de asset relativo resolvendo contra o host
+    // errado). Nenhuma rota especial necessária — cai no `env.ASSETS.fetch`
+    // padrão como qualquer outra página do site.
+
     // #8355: arquivo de chave do IndexNow — mesmo padrão de
     // workers/cursos/workers/livros (#5703), que generalizou o que nasceu
     // em workers/arquivo (#4909 item 2). Só casa quando `env.INDEXNOW_KEY`
