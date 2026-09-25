@@ -26,6 +26,14 @@
  * Ausente → `null` (comportamento de sempre). Presente mas malformado →
  * LANÇA: é uma instrução editorial explícita, e publicar ignorando-a em
  * silêncio seria pior que parar.
+ *
+ * **Guard "promessa de comentário" (#8681):** o repo não tem nenhum
+ * mecanismo que responda a comentários do Instagram — `caption`,
+ * `cta_slide.title` e `cta_slide.kicker` são checados contra
+ * `scripts/lib/comment-delivery-promise.ts` (invariante de Stage 4
+ * `instagram-comment-delivery-promise` + hard error em
+ * `publish-instagram.ts`) e bloqueados se prometerem entregar link/edição/
+ * material a quem comentar.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
