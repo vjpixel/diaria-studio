@@ -124,6 +124,12 @@ export const OPTIONAL_SECTION_CHECKS: ReadonlyArray<{ name: string; presentRe: R
   { name: "REMETENTE", presentRe: /^\**REMETENTE\**\s*$/m, re: /^REMETENTE\b/i },
   { name: "PREVIEW", presentRe: /^\**PREVIEW\**\s*$/m, re: /^PREVIEW\b/i },
   { name: "LIVROS", presentRe: /^\**LIVROS\**\s*$/m, re: /^LIVROS\b/i },
+  // #8824: label puro "DIVULGAÇÃO" (ex: box da imersão, context/templates/
+  // newsletter-monthly.md) — distinto de "CLARICE — DIVULGAÇÃO" (checado
+  // abaixo por "CLARICE —"). presentRe exige que a linha comece com
+  // DIVULGAÇÃO (sem o prefixo "CLARICE —"), senão as duas entradas colidiriam
+  // no mesmo draft.
+  { name: "DIVULGAÇÃO", presentRe: /^\**DIVULGA[ÇC][ÃA]O\**\s*$/m, re: /^DIVULGA[ÇC][ÃA]O\b/i },
   { name: "CLARICE —", presentRe: /^\**CLARICE\s+—/m, re: /^CLARICE\s+—/i },
   { name: "LABORATÓRIO CLARICE", presentRe: /^\**LABORAT[ÓO]RIO\s+CLARICE\**\s*$/m, re: /^LABORAT[ÓO]RIO\s+CLARICE\b/i },
   { name: "OUTRAS NOTÍCIAS DO MÊS", presentRe: /^\**OUTRAS\s+NOT[ÍI]CIAS\s+DO\s+M[ÊE]S\**\s*$/m, re: /^OUTRAS\s+NOT[ÍI]CIAS\s+DO\s+M[ÊE]S\b/i },

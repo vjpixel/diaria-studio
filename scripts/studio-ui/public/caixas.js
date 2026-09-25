@@ -244,6 +244,7 @@ function renderList() {
       </div>
       <div class="box-actions">
         <button type="button" data-action="edit" data-slug="${escapeHtml(box.slug)}">Editar</button>
+        <button type="button" data-action="duplicate" data-slug="${escapeHtml(box.slug)}">Duplicar</button>
         ${archiveBtn}
       </div>
     `;
@@ -664,6 +665,24 @@ async function saveCurrentBox() {
   }
 }
 
+// ── #8822: duplicar caixa ────────────────────────────────────────────────
+
+/** Duplica uma caixa: cria uma cópia (slug/`Nome` derivados no server, ver
+ * `duplicateBox` em studio-boxes.ts) e abre a cópia no editor. A cópia nasce
+ * fora de qualquer slot (o server nunca atribui slot na criação) e o
+ * conteúdo é idêntico ao original, exceto o `Nome`. */
+async function duplicateBoxAction(slug) {
+  const { ok, status, body } = await fetchJson(`/api/boxes/${encodeURIComponent(slug)}/duplicate`, { method: "POST" });
+  if (!ok) {
+    const reason = (body && body.error) || `HTTP ${status}`;
+    renderError(`Não foi possível duplicar "${slug}": ${reason}`);
+    return;
+  }
+  renderError(null);
+  await fetchBoxes();
+  openEditor(body.newSlug);
+}
+
 // ── #3928: arquivar (não deletar) ─────────────────────────────────────────
 
 /** Arquiva uma caixa (move pra `_arquivo/`, some da lista, conteúdo
@@ -849,6 +868,7 @@ el.list.addEventListener("click", (ev) => {
   const btn = ev.target.closest("button[data-action]");
   if (!btn) return;
   if (btn.dataset.action === "edit") openEditor(btn.dataset.slug);
+  else if (btn.dataset.action === "duplicate") duplicateBoxAction(btn.dataset.slug);
   else if (btn.dataset.action === "archive") archiveBoxAction(btn.dataset.slug);
 });
 
