@@ -135,7 +135,23 @@ function newestMtimeMs(path: string): number {
   return newest;
 }
 
-function collectSessionDirs(claudeDir: string): SessionDirCandidate[] {
+/** Diretório de PROJETO (o que o harness cria como
+ *  `/tmp/claude-{uid}/<slug-do-caminho-do-projeto>/`) sempre nasce de um
+ *  path absoluto slugificado — visto ao vivo (`-home-vjpixel-diaria-studio`,
+ *  `-home-vjpixel-OneDrive-Documentos-...`) sempre começa com `-` (o `/`
+ *  inicial do path vira `-`). `/tmp/claude-{uid}` também guarda entradas
+ *  INTERNAS DO HARNESS que não são projeto nenhum — `bundled-skills/`,
+ *  `bash-edit-diff/` (achado ao vivo no self-review desta unidade: sem este
+ *  filtro, `bash-edit-diff/<hash>/` seria tratado como "sessão" de um
+ *  "projeto" `bash-edit-diff`, e podado como sessão morta se envelhecesse —
+ *  apagando estado do harness compartilhado por TODAS as sessões, não
+ *  código deste projeto). Restringir a slugs que começam com `-` evita
+ *  descer nesses diretórios internos. */
+export function looksLikeProjectSlug(name: string): boolean {
+  return name.startsWith("-");
+}
+
+export function collectSessionDirs(claudeDir: string): SessionDirCandidate[] {
   const out: SessionDirCandidate[] = [];
   if (!existsSync(claudeDir)) return out;
   let projectSlugs: string[];
@@ -145,6 +161,7 @@ function collectSessionDirs(claudeDir: string): SessionDirCandidate[] {
     return out;
   }
   for (const slug of projectSlugs) {
+    if (!looksLikeProjectSlug(slug)) continue;
     const projectDir = join(claudeDir, slug);
     let stat;
     try {
@@ -174,7 +191,7 @@ function collectSessionDirs(claudeDir: string): SessionDirCandidate[] {
   return out;
 }
 
-function collectOutputFiles(sessionDirs: readonly SessionDirCandidate[]): OutputFileCandidate[] {
+export function collectOutputFiles(sessionDirs: readonly SessionDirCandidate[]): OutputFileCandidate[] {
   const out: OutputFileCandidate[] = [];
   for (const dir of sessionDirs) {
     const tasksDir = join(dir.path, "tasks");
