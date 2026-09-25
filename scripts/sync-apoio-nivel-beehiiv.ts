@@ -121,6 +121,15 @@
  * Contatos "sem_dados" nunca geram NENHUMA ação (nem adição nem remoção) —
  * seu nível desejado é desconhecido, não "sem apoio".
  *
+ * ## Override manual (#8820)
+ *
+ * `context/apoio-overrides.json` (`[{ email, nivel, motivo, desde }]`) vence
+ * o valor derivado do apoia.se — aplicado logo depois de
+ * `computeDesiredApoioLevels`, antes do diff. Ver `scripts/lib/
+ * apoio-overrides.ts` pro mecanismo completo (`loadApoioOverrides`,
+ * `applyApoioOverrides`) e pro porquê de um override nunca contar como
+ * remoção nos guards abaixo.
+ *
  * ## Dry-run por padrão
  *
  * Só aplica mutação real na Beehiiv com `--push` explícito. Sem `--push`,
@@ -146,6 +155,7 @@ import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se
 import { previousMonthKey } from "./lib/apoio-month-key.ts";
 import { findEmailMatchCandidates, type EmailMatchCandidate } from "./lib/apoio-email-heuristics.ts";
 import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
+import { loadApoioOverrides, applyApoioOverrides } from "./lib/apoio-overrides.ts";
 import {
   buildApoiosData,
   computeRewardGroup,
@@ -865,7 +875,20 @@ async function main(): Promise<void> {
     );
   }
 
-  const desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
+  let desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
+
+  // #8820: override manual (context/apoio-overrides.json) vence o valor
+  // derivado do apoia.se — aplicado ANTES do diff, ver docblock de
+  // lib/apoio-overrides.ts pro porquê disso nunca contar como remoção nos
+  // guards abaixo.
+  const overrides = loadApoioOverrides(ROOT);
+  if (overrides.length > 0) {
+    desired = applyApoioOverrides(desired, overrides);
+    process.stderr.write(
+      `${LOG_PREFIX} ${overrides.length} override(s) manual(is) aplicado(s) de context/apoio-overrides.json: ` +
+        `${overrides.map((o) => `${o.email}→${o.nivel}`).join(", ")}\n`,
+    );
+  }
 
   process.stderr.write(`${LOG_PREFIX} buscando estado atual na Beehiiv…\n`);
   const current = await fetchCurrentBeehiivState(publicationId, apiKey);
