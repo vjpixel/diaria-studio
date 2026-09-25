@@ -210,6 +210,25 @@ export type VotosPorEmail = ReadonlyMap<string, VotoRegistrado>;
  * (`tema:vote:{ciclo}:{email}`) faz em produção — esta função existe pra
  * testar essa semântica sem KV real.
  */
+export interface VotoListado {
+  chave: string;
+  voto: VotoRegistrado;
+}
+
+/**
+ * Pure: votos para o placar pós-POST. O `list()` do KV é eventualmente
+ * consistente (~60s) e pode ainda não trazer — ou trazer com valor antigo — a
+ * chave que o próprio POST acabou de gravar (#8825); o voto recém-gravado
+ * substitui qualquer entrada da mesma chave e é sempre contado.
+ */
+export function sobreporVotoProprio(
+  listados: readonly VotoListado[],
+  chave: string,
+  voto: VotoRegistrado,
+): VotoRegistrado[] {
+  return [...listados.filter((l) => l.chave !== chave).map((l) => l.voto), voto];
+}
+
 export function upsertVoto(votes: VotosPorEmail, email: string, voto: VotoRegistrado): VotosPorEmail {
   const next = new Map(votes);
   next.set(normalizeEmail(email), voto);

@@ -23,10 +23,12 @@ import {
   isValidTemaVoteToken,
   pollTokenKvKeyMirror,
   resultKey,
+  sobreporVotoProprio,
   voteKey,
   voteKeyPrefix,
   type Apuracao,
   type BallotTema,
+  type VotoListado,
   type VotoRegistrado,
 } from "./voto-tema-core.ts";
 import { renderErroPage, renderPlacarPage, renderVotoOpcaoPage } from "./voto-tema-page.ts";
@@ -47,10 +49,6 @@ interface ResultadoFinal {
 
 function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "Content-Type": "text/html;charset=utf-8" } });
-}
-
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
 }
 
 async function readBallot(env: VotoTemaEnv, ciclo: string): Promise<BallotTema | null> {
@@ -77,7 +75,11 @@ async function readResultado(env: VotoTemaEnv, ciclo: string): Promise<Resultado
  *  eleitorado de ~9 pessoas nunca passa de 1 página, mas paginar
  *  corretamente custa nada e evita um teto silencioso se a votação crescer. */
 async function listVotos(env: VotoTemaEnv, ciclo: string): Promise<VotoRegistrado[]> {
-  const out: VotoRegistrado[] = [];
+  return (await listVotosComChave(env, ciclo)).map((l) => l.voto);
+}
+
+async function listVotosComChave(env: VotoTemaEnv, ciclo: string): Promise<VotoListado[]> {
+  const out: VotoListado[] = [];
   let cursor: string | undefined;
   for (;;) {
     const page = await env.POLL.list({ prefix: voteKeyPrefix(ciclo), cursor });
@@ -87,7 +89,7 @@ async function listVotos(env: VotoTemaEnv, ciclo: string): Promise<VotoRegistrad
       try {
         const parsed = JSON.parse(raw) as Partial<VotoRegistrado>;
         if (typeof parsed.opcao === "number" && typeof parsed.ts === "string") {
-          out.push({ opcao: parsed.opcao, ts: parsed.ts });
+          out.push({ chave: k.name, voto: { opcao: parsed.opcao, ts: parsed.ts } });
         }
       } catch {
         // entrada corrompida — ignora, não derruba a apuração inteira
@@ -177,31 +179,41 @@ export async function handleVotoPost(request: Request, env: VotoTemaEnv, ciclo: 
   const url = new URL(request.url);
   const token = url.searchParams.get("t");
   const tokenError = tokenGuardError(token);
-  if (tokenError) return json({ ok: false, error: "invalid_token", message: tokenError }, 400);
+  // Erros em HTML, não JSON: o auto-POST da página de voto faz document.write
+  // do corpo e o fallback sem JS é um <form> — JSON cru chegaria à pessoa (#8825).
+  if (tokenError) return html(renderErroPage(tokenError), 400);
 
   const ballot = await readBallot(env, ciclo);
-  if (!ballot) return json({ ok: false, error: "not_found" }, 404);
+  if (!ballot) return html(renderErroPage("Votação não encontrada — confira o link."), 404);
 
   if (await readResultado(env, ciclo)) {
-    return json({ ok: false, error: "closed" }, 409);
+    return html(renderErroPage("Esta votação já foi encerrada — seu clique não altera o resultado final."), 409);
   }
 
   const opcao = ballot.opcoes.find((o) => o.n === n);
-  if (!opcao) return json({ ok: false, error: "invalid_option" }, 404);
+  if (!opcao) return html(renderErroPage("Esta opção não existe nesta cédula."), 404);
 
   const email = await resolveTokenEmail(env, token as string);
-  if (!email) return json({ ok: false, error: "invalid_token" }, 403);
+  if (!email) return html(renderErroPage("Link de voto inválido — talvez já tenha expirado."), 403);
 
   const authorized = await autorizarEleitor(email, ballot.eleitores);
-  if (!authorized) return json({ ok: false, error: "not_eligible" }, 403);
+  if (!authorized) {
+    return html(
+      renderErroPage(
+        "Este link não pertence ao eleitorado desta votação (Mantenedor/Patrono, R$25+/mês) — recusando registrar.",
+      ),
+      403,
+    );
+  }
 
   // Último clique vence — um PUT na mesma chave sobrescreve o voto anterior
   // desta pessoa, sem precisar ler o valor antigo antes (mesma semântica de
   // `upsertVoto` em voto-tema-core.ts, que é o que os testes exercitam).
   const voto: VotoRegistrado = { opcao: n, ts: new Date().toISOString() };
-  await env.POLL.put(voteKey(ciclo, email), JSON.stringify(voto));
+  const chave = voteKey(ciclo, email);
+  await env.POLL.put(chave, JSON.stringify(voto));
 
-  const votos = await listVotos(env, ciclo);
+  const votos = sobreporVotoProprio(await listVotosComChave(env, ciclo), chave, voto);
   const apuracao = apurar(ballot, votos);
   return html(renderPlacarPage({ ciclo, ballot, apuracao, fechado: false, meuVoto: n }));
 }

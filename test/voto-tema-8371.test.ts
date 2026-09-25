@@ -421,3 +421,75 @@ describe("ballotWriteFailureMessage — erro pós-patch diz o que já aconteceu 
     assert.match(msg, /--push --force/, "aponta a reexecução segura");
   });
 });
+
+// ── #8825: placar pós-voto com list() do KV defasado ────────────────────
+
+describe("handleVotoPost — placar pós-voto conta o voto recém-gravado mesmo com list() defasado (#8825)", () => {
+  /** list() congelado no estado de antes do POST, como o KV real nos ~60s
+   *  seguintes a um PUT (eventual consistency) — get() já vê o valor novo. */
+  function laggyList(POLL: ReturnType<typeof fakeKv>) {
+    const frozen = new Map(POLL.store);
+    (POLL as unknown as { list: unknown }).list = async ({ prefix }: { prefix?: string } = {}) => ({
+      keys: [...frozen.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
+      list_complete: true,
+      cursor: undefined,
+    });
+    return frozen;
+  }
+
+  it("1º voto: list() ainda não traz a chave → placar mostra 1 voto, não 0", async () => {
+    const { env, POLL } = await envWithBallot(["a@example.com", "b@example.com"]);
+    await POLL.put(pollTokenKvKeyMirror("a".repeat(24)), "a@example.com");
+    laggyList(POLL);
+
+    const res = await handleVotoPost(
+      new Request(`https://x/votacao/2610/1?t=${"a".repeat(24)}`, { method: "POST" }),
+      env,
+      "2610",
+      1,
+    );
+    const body = await res.text();
+    assert.equal(res.status, 200);
+    assert.match(body, /1 de 2 apoiador\(es\) já votaram/);
+    assert.match(body, /1 voto\(s\)/);
+  });
+
+  it("troca de voto: list() traz a chave com o valor antigo → conta só o novo, total não infla", async () => {
+    const { env, POLL } = await envWithBallot(["a@example.com"]);
+    await POLL.put(pollTokenKvKeyMirror("a".repeat(24)), "a@example.com");
+    await POLL.put(voteKey("2610", "a@example.com"), JSON.stringify({ opcao: 1, ts: "2026-09-25T00:00:00Z" }));
+    const frozen = laggyList(POLL);
+    const getOriginal = POLL.get.bind(POLL);
+    (POLL as unknown as { get: unknown }).get = async (k: string) =>
+      k.startsWith(voteKeyPrefix("2610")) ? (frozen.get(k) ?? null) : getOriginal(k);
+
+    const res = await handleVotoPost(
+      new Request(`https://x/votacao/2610/2?t=${"a".repeat(24)}`, { method: "POST" }),
+      env,
+      "2610",
+      2,
+    );
+    const body = await res.text();
+    assert.match(body, /1 de 1 apoiador\(es\) já votaram/);
+    assert.match(body, /Seu voto: Tema B/);
+    assert.match(body, /Tema B<\/strong>[\s\S]*?1 voto\(s\)/);
+    assert.match(body, /Tema A<\/strong>[\s\S]*?0 voto\(s\)/);
+  });
+});
+
+describe("handleVotoPost — erro vem como página HTML, nunca JSON cru (#8825)", () => {
+  it("token desconhecido → 403 em text/html com a página de erro", async () => {
+    const { env } = await envWithBallot(["a@example.com"]);
+    const res = await handleVotoPost(
+      new Request(`https://x/votacao/2610/1?t=${"c".repeat(24)}`, { method: "POST" }),
+      env,
+      "2610",
+      1,
+    );
+    assert.equal(res.status, 403);
+    assert.match(res.headers.get("Content-Type") ?? "", /text\/html/);
+    const body = await res.text();
+    assert.match(body, /Não foi possível registrar/);
+    assert.doesNotMatch(body, /"ok":false/);
+  });
+});
