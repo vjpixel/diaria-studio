@@ -111,7 +111,7 @@ const CTA_FIM_LABEL = "Assine grátis, é rapidinho →";
 export interface WeeklyLinkedinHeadlineInput {
   /** Título literal (copiado do bloco de origem — nunca reescrito). */
   title: string;
-  /** Corpo — literal (levantado) OU resumo próprio (autoral, #5108), conforme `textOrigin` na seleção. */
+  /** Corpo — sempre literal (levantado da edição diária de origem, #8818 reverte o resumo autoral do #5108). */
   body: string;
   /** "Por que isso importa" — "" se ausente (candidato de seção, não destaque). */
   why: string;
@@ -190,9 +190,6 @@ function paragraphsHtml(text: string): string {
 /** Wordmark da marca, como aparece em prosa. Base de `linkifyWordmark`. */
 export const WORDMARK = "diar.ia.br";
 
-/** Palavras que a âncora do wordmark estende além do domínio (ver `linkifyWordmark`). */
-const WORDMARK_TRAILING_WORDS = 3;
-
 /**
  * Casa o wordmark só quando ele é TOKEN ISOLADO em prosa. Sem isso, o
  * `indexOf` cru casava dentro de uma URL colada no texto: numa abertura com
@@ -201,18 +198,19 @@ const WORDMARK_TRAILING_WORDS = 3;
  * por um genérico (achado do review do #4501).
  *
  * Não exige nada depois além de "não é continuação do domínio": pontuação
- * (`.`/`,`) PODE seguir, e é justamente o caso que precisa chegar no guard de
- * `linkifyWordmark` pra virar warning, em vez de sumir como "não há menção".
+ * (`.`/`,`) PODE seguir logo depois — a âncora produzida por `linkifyWordmark`
+ * nunca inclui essa continuação de qualquer forma (#8819, ver abaixo).
  */
 const WORDMARK_STANDALONE = /(^|[\s>(])diar\.ia\.br(?![\w/-])/;
 
 export interface LinkifyWordmarkResult {
   html: string;
   /**
-   * `true` quando havia menção ao wordmark mas ela NÃO pôde virar link com UTM.
-   * Existe pra o caller emitir warning: sem esse canal, o render não conseguia
-   * distinguir "não há menção" de "há menção e o clique vai sair sem atribuição",
-   * e a segunda some em silêncio numa peça cujo objetivo é medir conversão.
+   * Sempre `false` desde o #8819 — mantido no shape pra não quebrar callers
+   * existentes. Até então sinalizava "havia menção mas não pôde virar link
+   * com UTM (wordmark fechava a frase, sem palavra pra estender a âncora)";
+   * esse caso deixou de existir porque a âncora não estende mais — ancorar
+   * só o wordmark nunca depende do que vem depois.
    */
   skipped: boolean;
 }
@@ -228,46 +226,39 @@ export interface LinkifyWordmarkResult {
  * CRUA, sem UTM. É o primeiro clique possível da peça e estava saindo inteiro
  * da medição. Pré-linkado, o clique passa a ser atribuível.
  *
- * Por que a âncora ESTENDE além do domínio (testado ao vivo 260803, editor do
- * LinkedIn, as duas formas):
- *
- *   texto "diar.ia.br"                    -> href REESCRITO pra http://diar.ia.br, UTM perdida
- *   texto "diar.ia.br, newsletter de IA"  -> href preservado, UTM intacta
- *
- * É o mesmo fenômeno que `endsInBareDomainLabel` já guarda pros outros rótulos:
- * o auto-linkificador só sequestra a âncora quando ela TERMINA no domínio. Daí
- * estender por algumas palavras resolver.
- *
- * A extensão para em fronteira de FRASE (`.`/`!`/`?`) além de fronteira de tag.
- * Sem isso a âncora engolia a frase seguinte inteira — `"Escrevo a diar.ia.br.
- * Confira quando puder."` virava um link cobrindo "diar.ia.br. Confira quando
- * puder.", texto que não tem relação com a marca e que o leitor não tem como
- * adivinhar que é clicável (achado do review do #4501). Efeito colateral
- * desejado: com o wordmark no fim de frase o `tail` fica vazio, o guard dispara
- * e o caso vira warning em vez de link falsamente rastreado.
+ * **#8819 (25/09/2026, decisão do editor) reverte a extensão de âncora
+ * introduzida em 260803 e documentada até aqui: a âncora ancora SÓ o texto
+ * "diar.ia.br", nunca continuação.** A extensão (`"diar.ia.br, newsletter de
+ * IA"` dentro do MESMO `<a>`) resolvia o problema errado — o objetivo era
+ * evitar que o RÓTULO terminasse exatamente no domínio nu (`endsInBareDomainLabel`,
+ * que faz o auto-linkificador do LinkedIn reescrever o `href` pra
+ * `http://diar.ia.br` crua, perdendo a UTM) — mas confirmado ao vivo em
+ * 260823 (PR #5987) e de novo no ciclo `26w39` (25/09/2026): colar uma
+ * âncora cujo TEXTO COMEÇA com o wordmark faz o auto-linkificador do
+ * LinkedIn reconhecer a substring "diar.ia.br" DENTRO do texto colado e
+ * DIVIDIR a âncora em duas — uma só com "diar.ia.br" apontando pra home
+ * crua (sem UTM), e o resto do texto ficando com a UTM original. A extensão
+ * só deslocava o problema (perdia menos UTM, mas ainda perdia a marca em
+ * si — o pedaço mais clicável — sem tracking, e ainda por cima corrompia a
+ * estrutura em 2 nós `<a>` onde devia haver 1). Solução: parar de lutar
+ * contra o auto-linkificador — ancorar só o wordmark (que o LinkedIn ia
+ * reconhecer de qualquer forma) e deixar a continuação como texto PURO,
+ * fora do `<a>`, nunca dentro dele. Sem 2ª âncora pra dividir, sem
+ * continuação pra perder a UTM. `endsInBareDomainLabel`/`WORDMARK_STANDALONE`
+ * continuam existindo — o 1º guarda outros rótulos deste módulo (Use
+ * Melhor, destaques da lista), o 2º ainda localiza a menção isolada em
+ * prosa (ver docstring acima) — só a extensão saiu.
  */
 export function linkifyWordmark(paragraphsHtmlOut: string, cycle: string): LinkifyWordmarkResult {
   const m = WORDMARK_STANDALONE.exec(paragraphsHtmlOut);
   if (!m) return { html: paragraphsHtmlOut, skipped: false };
   const idx = m.index + m[1].length;
-  const after = paragraphsHtmlOut.slice(idx + WORDMARK.length);
-  // Estende por até N palavras. O charset exclui `<` (não atravessa parágrafo)
-  // E `.!?` (não atravessa frase) — ver docstring.
-  const tail = after.match(new RegExp(`^(?:[^<\\s.!?]*\\s+){0,${WORDMARK_TRAILING_WORDS}}[^<\\s.!?]*`))?.[0] ?? "";
-  const label = (WORDMARK + tail).replace(/\s+$/, "");
-  // Checa o guard IGNORANDO pontuação de fecho: `endsInBareDomainLabel` exige
-  // terminar em letra, então "diar.ia.br," passava batido e era linkado, mesmo
-  // sendo o mesmo risco de sequestro do domínio nu (o auto-linkificador ignora
-  // pontuação ao decidir onde a URL termina). Achado do review do #4501.
-  if (endsInBareDomainLabel(label.replace(/[.,;:!?)\]"'»]+$/, ""))) {
-    return { html: paragraphsHtmlOut, skipped: true };
-  }
   const url = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, cycle, "mencao-abertura");
   return {
     html:
       paragraphsHtmlOut.slice(0, idx) +
-      `<a href="${escapeHtml(url)}">${label}</a>` +
-      paragraphsHtmlOut.slice(idx + label.length),
+      `<a href="${escapeHtml(url)}">${WORDMARK}</a>` +
+      paragraphsHtmlOut.slice(idx + WORDMARK.length),
     skipped: false,
   };
 }
@@ -332,19 +323,12 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
   // corpo das manchetes (decisão do editor 260803). Antes iam num <p> único, o
   // que empilhava 5-6 frases num bloco só e afundava a leitura no LinkedIn.
   if (input.opening.trim()) {
+    // #8819: `linkifyWordmark` sempre consegue ancorar a menção quando ela
+    // existe (a âncora ancora só o wordmark, nunca depende do que vem
+    // depois) — `wordmark.skipped` é sempre `false` agora, sem warning
+    // condicional a checar aqui.
     const wordmark = linkifyWordmark(paragraphsHtml(input.opening), input.cycle);
     parts.push(wordmark.html);
-    if (wordmark.skipped) {
-      // Mesma convenção dos outros guards deste módulo: o que não dá pra
-      // garantir vira warning, nunca degrade silencioso. Aqui é o mais
-      // determinístico dos casos (testado ao vivo), e a publicação é manual —
-      // `warnings` é o único canal pelo qual o editor descobre isso ANTES de colar.
-      warnings.push(
-        `Abertura: a menção a ${WORDMARK} não pôde virar link com UTM (termina a frase, sem palavra depois pra estender a âncora). ` +
-          `Esse clique vai pro auto-link do LinkedIn, que aponta pra home crua e sai da medição. ` +
-          `Se quiser recuperá-lo, reescreva pra que o wordmark não feche a frase.`,
-      );
-    }
     const ctaAberturaUrl = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, input.cycle, "cta-abertura");
     parts.push(`<p><a href="${escapeHtml(ctaAberturaUrl)}">${escapeHtml(CTA_ABERTURA_LABEL)}</a></p>`);
   }

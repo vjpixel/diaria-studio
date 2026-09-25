@@ -352,46 +352,46 @@ describe("renderLinkedinWeeklyHtml — abertura e fecho quebram em parágrafos (
     assert.ok(!/grátis|gratis|→/.test(anchor), `âncora acima da dobra deve ser sóbria: ${anchor}`);
   });
 
-  it("a 1ª menção ao wordmark vira link com UTM, com âncora ESTENDIDA além do domínio (testado ao vivo 260803)", () => {
+  it("#8819: a 1ª menção ao wordmark vira link com UTM ancorando SÓ o wordmark — continuação fica como texto puro fora da âncora", () => {
     const input: WeeklyLinkedinRenderInput = {
       ...BASE_INPUT,
       opening: "Escrevo a diar.ia.br, newsletter de IA que sai por e-mail.\n\nOutra menção a diar.ia.br aqui.",
     };
     const html = renderLinkedinWeeklyHtml(input).html;
     const anchor = html.match(/<a[^>]*utm_content=mencao-abertura[^>]*>([^<]+)<\/a>/)?.[1] ?? "";
-    assert.ok(anchor.startsWith("diar.ia.br"), `âncora deve começar no wordmark: ${anchor}`);
-    // O ponto do achado: âncora que TERMINA no domínio tem o href sequestrado
-    // pelo auto-linkificador do LinkedIn e perde a UTM. Estendida, sobrevive.
-    assert.ok(!endsInBareDomainLabel(anchor), `âncora não pode terminar em domínio nu: ${anchor}`);
+    // #8819 reverte a extensão de 3 palavras (achado 260823/PR #5987 + ciclo
+    // 26w39: o LinkedIn divide em 2 âncoras uma âncora que COMEÇA com o
+    // wordmark e tem continuação dentro do mesmo <a>) — a âncora agora é
+    // EXATAMENTE o wordmark, nada além.
+    assert.equal(anchor, "diar.ia.br", `âncora deve ser SÓ o wordmark, sem continuação: ${anchor}`);
+    // A continuação (", newsletter de IA...") segue existindo no HTML, só que
+    // como texto puro, IMEDIATAMENTE depois do </a> — nunca some.
+    assert.ok(html.includes("</a>, newsletter de IA que sai por e-mail."), `continuação deve sobreviver como texto fora da âncora: ${html.slice(0, 400)}`);
     assert.equal((html.match(/utm_content=mencao-abertura/g) ?? []).length, 1, "só a PRIMEIRA menção é linkada");
   });
 
-  it("wordmark no fim do parágrafo NÃO é linkado, E gera warning (achados do review do #4501)", () => {
-    // Sem o warning isso degradava em silêncio, contra a convenção do módulo: a
-    // publicação é manual, e `warnings` é o único canal pro editor descobrir
-    // antes de colar que aquele clique vai sair sem atribuição.
+  it("#8819: wordmark no fim do parágrafo AGORA é linkado normalmente — não depende mais de palavra seguinte pra estender a âncora", () => {
+    // Reverte o teste anterior (achado do review do #4501, válido só sob o
+    // regime de âncora estendida) — sem extensão, o wordmark linka sempre
+    // que casa, independente do que vier (ou não vier) depois.
     for (const opening of [
       "A newsletter se chama diar.ia.br",
-      "A newsletter se chama diar.ia.br.", // com pontuação: o caso que acontece em prosa real
+      "A newsletter se chama diar.ia.br.",
       "A newsletter se chama diar.ia.br!",
       "A newsletter se chama diar.ia.br,",
     ]) {
       const r = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening });
-      assert.ok(!/utm_content=mencao-abertura/.test(r.html), `não pode linkar: ${opening}`);
-      assert.ok(
-        r.warnings.some((w) => /menção a diar\.ia\.br não pôde virar link/i.test(w)),
-        `faltou warning para: ${opening} | ${r.warnings.join(" | ")}`,
-      );
+      const anchor = r.html.match(/<a[^>]*utm_content=mencao-abertura[^>]*>([^<]+)<\/a>/)?.[1] ?? "";
+      assert.equal(anchor, "diar.ia.br", `deve linkar mesmo no fim da frase: ${opening} -> ${r.html}`);
+      assert.ok(!r.warnings.some((w) => /não pôde virar link/i.test(w)), `não deve mais emitir esse warning: ${r.warnings.join(" | ")}`);
     }
   });
 
-  it("a âncora NÃO atravessa fronteira de frase (achado do review do #4501)", () => {
-    // Antes o charset da extensão só parava em `<`, então a âncora engolia a
-    // frase seguinte inteira e virava área clicável sobre texto alheio à marca.
+  it("a âncora NÃO atravessa fronteira de frase — trivial desde #8819 (âncora é só o wordmark, nada mais entra nela)", () => {
     const r = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening: "Escrevo a diar.ia.br. Confira quando puder." });
     assert.ok(!/Confira quando puder[^<]*<\/a>/.test(r.html), `âncora vazou pra frase seguinte: ${r.html.slice(0, 300)}`);
-    // e como o wordmark fecha a frase, o caso vira o warning do teste acima
-    assert.ok(r.warnings.some((w) => /não pôde virar link/i.test(w)));
+    const anchor = r.html.match(/<a[^>]*utm_content=mencao-abertura[^>]*>([^<]+)<\/a>/)?.[1] ?? "";
+    assert.equal(anchor, "diar.ia.br");
   });
 
   it("wordmark dentro de uma URL colada não é sequestrado (achado do review do #4501)", () => {

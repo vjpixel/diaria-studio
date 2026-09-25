@@ -85,10 +85,10 @@ export function resolveCoverImageSourcePath(editionsRootDir: string, headlineOne
  * #8025 — texto padrão de abertura, derivado do histórico real: mesmo
  * parágrafo usado (idêntico, confirmado byte-a-byte) em 4 edições
  * consecutivas — 26w34, 26w35, 26w36, 26w37 (`data/weekly/26w3{4,5,6,7}/
- * ln-*.html`). O trecho "diar.ia.br, newsletter de IA" preserva o padrão
- * exigido por `linkifyWordmark` (âncora estendida por 3 palavras após o
- * wordmark — ver `weekly-linkedin-render.ts`) — não editar esse trecho sem
- * reconferir `WORDMARK_TRAILING_WORDS`.
+ * ln-*.html`). A menção "diar.ia.br" segue sendo pré-linkada pela 1ª
+ * ocorrência em `linkifyWordmark` (`weekly-linkedin-render.ts`) — desde o
+ * #8819 a âncora ancora só o wordmark (", newsletter de IA" que segue vira
+ * texto puro fora do `<a>`), não há mais extensão pra reconferir aqui.
  */
 export const DEFAULT_OPENING =
   "Desde o ano passado escrevo a diar.ia.br, newsletter de IA que sai por e-mail de segunda a sexta: " +

@@ -377,6 +377,25 @@ texto da âncora colada e a separa num `<a>` próprio sem UTM
 na âncora original com a UTM. Resultado: 2 nós `<a>` adjacentes onde devia
 haver 1, com o pedaço clicável mais provável (a marca em si) sem tracking.
 
+**e) Correção estrutural na FONTE (#8819, 25/09/2026) — não confia mais que
+estender a âncora resolva (c)/(d).** O item (d) reapareceu ao vivo de novo
+no ciclo `26w39` (25/09/2026), confirmando que a divisão de âncora é
+comportamento estável do LinkedIn, não um fluke de sessão — estender a
+âncora nunca evitou o problema, só deslocava QUAL parte perdia a UTM.
+`linkifyWordmark` (`scripts/lib/weekly-linkedin-render.ts`) parou de
+estender: a âncora que a fonte (`ln-{cycle}.html`) produz agora ancora
+SÓ o texto "diar.ia.br" — a continuação (", newsletter de IA" ou o que
+vier depois na abertura daquele ciclo) fica como texto PURO, fora do
+`<a>`, desde a origem. Sem continuação dentro da mesma âncora, não há mais
+o que o auto-linkificador "divida" — o cenário (d) deixa de ser produzido
+pelo caminho normal. A correção manual via teclado/popup **Edit link**
+abaixo (26w34, histórico) continua válida como PROCEDIMENTO DE RESGATE se
+o padrão antigo reaparecer por algum motivo (`ln-selection.json`/render
+desatualizado, regressão futura) — `scripts/lib/linkedin-paste-audit.ts`
+(`looksLikeBareDomainAnchorText`) só dispara o hint desse procedimento
+quando o texto de âncora AINDA tem continuação após o wordmark, já que
+"diar.ia.br" sozinho deixou de ser sinal de problema.
+
 **Correção aplicada manualmente na 1ª publicação real (26w34, 260823):**
 selecionar a frase inteira ("diar.ia.br, newsletter de IA") via teclado
 (clicar antes de "Desde", `Home`, `Right` × N até o início da menção,
