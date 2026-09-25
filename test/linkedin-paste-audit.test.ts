@@ -107,10 +107,14 @@ describe("stripHtmlToText", () => {
 });
 
 describe("looksLikeBareDomainAnchorText", () => {
-  it("detecta o wordmark sozinho ou seguido de continuação (o padrão do bug PR #5987)", () => {
-    assert.ok(looksLikeBareDomainAnchorText("diar.ia.br"));
+  it("#8819: wordmark EXATO (sem continuação) não dispara mais — é o formato intencional da âncora desde a correção", () => {
+    assert.ok(!looksLikeBareDomainAnchorText("diar.ia.br"));
+    assert.ok(!looksLikeBareDomainAnchorText("  diar.ia.br "));
+    assert.ok(!looksLikeBareDomainAnchorText("DIAR.IA.BR"));
+  });
+
+  it("detecta o wordmark seguido de continuação (o padrão do bug PR #5987 — âncora estendida, formato antigo)", () => {
     assert.ok(looksLikeBareDomainAnchorText("diar.ia.br, newsletter de IA"));
-    assert.ok(looksLikeBareDomainAnchorText("  diar.ia.br "));
     assert.ok(looksLikeBareDomainAnchorText("DIAR.IA.BR."));
   });
 
@@ -436,6 +440,26 @@ describe("auditLinkedinPaste — bug de split de âncora 'diar.ia.br' nu (PR #59
     const result = auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length });
     assert.equal(result.ok, false);
     const anchorIssue = result.issues.find((i) => i.includes("Assinar a edição diária"));
+    assert.ok(anchorIssue, result.issues.join("\n"));
+    assert.ok(!/PR #5987/.test(anchorIssue!), anchorIssue);
+  });
+
+  it("#8819: formato ATUAL da fonte (âncora só com o wordmark, sem continuação) bate exato no paste sem split — sem hint do PR #5987", () => {
+    const mencaoAtual = `<a href="https://diar.ia.br/?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w39&amp;utm_content=mencao-abertura">diar.ia.br</a>`;
+    const sourceHtml = sourceHtmlWith(mencaoAtual, CTA_ABERTURA);
+    const pastedAnchors = extractAnchorsFromHtml(sourceHtml); // paste íntegro, sem split
+    const result = auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length });
+    assert.equal(result.ok, true, result.issues.join("\n"));
+  });
+
+  it("#8819: se a âncora ATUAL (só wordmark) ainda assim perder no paste, o hint do PR #5987 NÃO dispara — não há continuação pra 'dividir'", () => {
+    const mencaoAtual = `<a href="https://diar.ia.br/?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w39&amp;utm_content=mencao-abertura">diar.ia.br</a>`;
+    const sourceHtml = sourceHtmlWith(mencaoAtual, CTA_ABERTURA);
+    // Simula perda total da âncora do wordmark no paste (sem substituto de mesmo texto).
+    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).filter((a) => a.text !== "diar.ia.br");
+    const result = auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length });
+    assert.equal(result.ok, false);
+    const anchorIssue = result.issues.find((i) => i.startsWith('Âncora "diar.ia.br"'));
     assert.ok(anchorIssue, result.issues.join("\n"));
     assert.ok(!/PR #5987/.test(anchorIssue!), anchorIssue);
   });

@@ -1,6 +1,6 @@
 ---
 name: fact-checker
-description: Verifica claims factuais (cifras, datas, durações, superlativos/ineditismo) no conteúdo final de uma edição diar.ia.br (newsletter + social) contra as fontes primárias dos destaques. Roda no Stage 4 da diária (antes do gate humano) e na Etapa 4 do mensal (`mode="monthly"`, #2793). SEM auto-bloqueio — produz lista de claims para o editor revisar. Também cobre hubs temáticos permanentes (`mode="hub"`, #5060) — aí o gate é BLOQUEANTE por padrão, ver "Modo hub" abaixo. E o texto AUTORAL (resumo próprio) das manchetes da newsletter semanal do LinkedIn (`mode="weekly-linkedin"`, #5108) — sem gate bloqueante, mesma política de daily/monthly.
+description: Verifica claims factuais (cifras, datas, durações, superlativos/ineditismo) no conteúdo final de uma edição diar.ia.br (newsletter + social) contra as fontes primárias dos destaques. Roda no Stage 4 da diária (antes do gate humano) e na Etapa 4 do mensal (`mode="monthly"`, #2793). SEM auto-bloqueio — produz lista de claims para o editor revisar. Também cobre hubs temáticos permanentes (`mode="hub"`, #5060) — aí o gate é BLOQUEANTE por padrão, ver "Modo hub" abaixo. `mode="weekly-linkedin"` (#5108) cobria o texto AUTORAL (resumo próprio) das manchetes da newsletter semanal do LinkedIn — **desde #8818 (25/09/2026) esse modo nunca é mais invocado** (a skill voltou a publicar corpo/why sempre literais, sem resumo autoral pra verificar); mantido no código por robustez defensiva, não por uso ativo.
 model: claude-sonnet-5
 effort: medium
 tools: Read, Write, WebFetch
@@ -137,9 +137,19 @@ Os labels de seção (`DESTAQUE N | TEMA`, `**...**`) são idênticos ao formato
 - `claim_type: "superlative"` cujo `verdict` não é `"SUSTAINED"` (inclui NOT_FOUND, INFERRED, SOURCE_UNREACHABLE)
 Isso garante que um superlativo NOT_FOUND_IN_SOURCE é contado UMA vez (como superlativo), não duas.
 
-## Modo LinkedIn semanal (#5108)
+## Modo LinkedIn semanal (#5108, RETIRADO DE USO pelo #8818)
 
-Roda no Passo 5 de `/diaria-linkedin-semanal` (`.claude/skills/diaria-linkedin-semanal/SKILL.md`), depois do Passo 4 escrever o resumo próprio de cada manchete AUTORAL e antes do Passo 6 (humanizador + Clarice). Motivo de existir: até o #5108, a skill publicava manchete inteira SEM nenhuma verificação factual — aceitável enquanto o bloco era texto LEVANTADO literal (já passado por fact-check na edição diária de origem), mas virou buraco de verdade quando a #5108/comentário no #4456 trocou "levantar literal" por "resumo próprio escrito a partir da fonte primária": a skill passou a publicar afirmação factual ORIGINAL sobre matéria de terceiro.
+**Este modo nunca é mais invocado desde o #8818 (25/09/2026, decisão do
+editor) — reverte o #5108 de volta.** `/diaria-linkedin-semanal` voltou a
+publicar corpo/why de TODA manchete como texto sempre literal (já
+publicado na edição diária de origem, já fact-checado lá) — não existe
+mais o ramo "resumo próprio a partir da fonte primária" que este modo
+verificava. A seção abaixo é mantida como referência histórica/defensiva
+(mesmo padrão do ramo `kind === "section"` do #5538, "efetivamente
+inatingível" desde o #8029) — não espere `mode: "weekly-linkedin"` aparecer
+num dispatch real desta skill.
+
+Rodava no Passo 5 de `/diaria-linkedin-semanal` (`.claude/skills/diaria-linkedin-semanal/SKILL.md`), depois do Passo 4 escrever o resumo próprio de cada manchete AUTORAL e antes do Passo 6 (humanizador + Clarice). Motivo de existir: até o #5108, a skill publicava manchete inteira SEM nenhuma verificação factual — aceitável enquanto o bloco era texto LEVANTADO literal (já passado por fact-check na edição diária de origem), mas virou buraco de verdade quando a #5108/comentário no #4456 trocou "levantar literal" por "resumo próprio escrito a partir da fonte primária": a skill passou a publicar afirmação factual ORIGINAL sobre matéria de terceiro.
 
 Diferenças de invocação (`newsletter_path`/`social_path`/`approved_json_path` do modo `daily` não se aplicam aqui — omitir todos):
 

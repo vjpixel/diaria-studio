@@ -307,6 +307,45 @@ describe("selectHeadlines — empate genuíno vs. ausência de dado (#4489 findi
   });
 });
 
+describe("selectHeadlines — desempate por diversidade de dia dentro do ruído (#8817, decisor automático)", () => {
+  it("caso real do ciclo 26w39: 2 vagas já preenchidas por 260925, vaga 3 vai pro candidato de 260924 (dia ainda sem manchete) mesmo marginalmente atrás em taxa", () => {
+    const d925a = ranked({ title: "Manchete 260925 A", url: "https://exemplo.com/925a", editionDate: "260925", clicks: 20, opens: 120 }); // ~16.67%
+    const d925b = ranked({ title: "Manchete 260925 B", url: "https://exemplo.com/925b", editionDate: "260925", clicks: 15, opens: 120 }); // ~12.5%
+    // vaga 3: dentro do ruído de 1 clique — d925c (mesmo dia já
+    // representado) vs. d924 (dia ainda sem manchete), d924 marginalmente
+    // atrás em taxa.
+    const d925c = ranked({ title: "Manchete 260925 C", url: "https://exemplo.com/925c", editionDate: "260925", clicks: 5, opens: 120 }); // 4.1666%
+    const d924 = ranked({ title: "Manchete 260924", url: "https://exemplo.com/924", editionDate: "260924", clicks: 4, opens: 120 }); // 3.3333%
+    const result = selectHeadlines([d925a, d925b, d925c, d924], 3);
+    assert.equal(result.pendingGroup, null);
+    assert.equal(result.pendingSlots, 0);
+    assert.deepEqual(result.selected.map((c) => c.url), [d925a.url, d925b.url, d924.url]);
+    assert.ok(result.warnings.some((w) => /diversidade de dia/.test(w) && /#8817/.test(w)), result.warnings.join(" | "));
+  });
+
+  it("todos os candidatos da banda são de dias já representados (ou nenhum já selecionado) e a contagem não bate com as vagas — cai no pendingGroup normal", () => {
+    // selected está vazio (1ª vaga) — os 2 candidatos são "dia-novo" os dois,
+    // mas a contagem (2) não bate com slotsLeft (1): diversidade de dia não
+    // resolve sozinha, comportamento do #5109 preservado.
+    const a = ranked({ title: "A", url: "https://exemplo.com/dayNewA", editionDate: "260728", clicks: 5, opens: 120 });
+    const b = ranked({ title: "B", url: "https://exemplo.com/dayNewB", editionDate: "260729", clicks: 4, opens: 120 });
+    const result = selectHeadlines([a, b], 1);
+    assert.equal(result.selected.length, 0);
+    assert.equal(result.pendingGroup?.length, 2);
+    assert.ok(!result.warnings.some((w) => /#8817/.test(w)));
+  });
+
+  it("candidato de dia-novo dentro da banda, mas a contagem de dia-novo excede as vagas restantes — cai no pendingGroup normal", () => {
+    const already = ranked({ title: "Já selecionada", url: "https://exemplo.com/already", editionDate: "260925", clicks: 50, opens: 120 });
+    const c1 = ranked({ title: "C1", url: "https://exemplo.com/c1", editionDate: "260924", clicks: 5, opens: 120 });
+    const c2 = ranked({ title: "C2", url: "https://exemplo.com/c2", editionDate: "260923", clicks: 4, opens: 120 });
+    const result = selectHeadlines([already, c1, c2], 2);
+    assert.deepEqual(result.selected.map((c) => c.url), [already.url]);
+    assert.equal(result.pendingGroup?.length, 2);
+    assert.ok(!result.warnings.some((w) => /#8817/.test(w)));
+  });
+});
+
 describe("hasBrazilAngle / hasProfessionalImplication", () => {
   it("detecta ângulo Brasil por palavra-chave/domínio .br", () => {
     const br = ranked({ title: "Empregos no Brasil somem com automação", url: "https://g1.globo.com/x", clicks: 1, opens: 100 });

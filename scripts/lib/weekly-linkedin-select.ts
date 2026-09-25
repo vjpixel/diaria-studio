@@ -96,9 +96,8 @@ export function toRankedCandidate(
  * primeira ocorrência, priorizando `kind: "destaque"` sobre `"section"`
  * (o destaque tem corpo completo; um item de seção só tem 1 linha de
  * descrição — se os dois existirem pra mesma URL, o destaque é a versão
- * mais completa como PONTO DE PARTIDA, seja pro corpo levantado literal
- * de uma manchete que ficar com `textOrigin: "literal"`, seja como
- * material extra pra quem for escrever o resumo próprio, #5108).
+ * mais completa como corpo publicado — corpo/why de manchete são SEMPRE
+ * o texto literal levantado, #8818).
  */
 export function dedupeCandidatesByUrl(candidates: WeeklyRankedCandidate[]): WeeklyRankedCandidate[] {
   const byUrl = new Map<string, WeeklyRankedCandidate>();
@@ -194,6 +193,20 @@ export interface WeeklySelectionResult {
  * `kind === "destaque"` — `section !== "use_melhor"` deixou de ser o único
  * filtro de seção porque `kind === "destaque"` já exclui TODAS as seções
  * (inclusive use_melhor) de uma vez.
+ *
+ * **#8817 (decisão do editor, 25/09/2026, ciclo 26w39) reverte PARCIALMENTE
+ * o #5109 acima: dentro da banda de ruído, diversidade de DIA (candidato de
+ * um dia ainda sem manchete selecionada) volta a ser decisor AUTOMÁTICO —
+ * não mais só dica exibida no gate.** Achado do ciclo `26w39`: dois
+ * candidatos de 260925 já tinham preenchido as vagas 1-2, e a vaga 3 caiu
+ * numa banda de ruído entre um 3º candidato de 260925 (taxa levemente
+ * maior) e um candidato de 260924 (dia ainda não representado, taxa
+ * marginalmente menor) — o 2º devia vencer, mas `editorialTiebreakScore`
+ * não considera diversidade de DIA (só categoria/ângulo Brasil/implicação
+ * profissional), e o #5109 tinha tirado até esses critérios da decisão
+ * automática. Resolvido só quando o conjunto de candidatos de dia-novo
+ * CABE EXATAMENTE nas vagas restantes (ver corpo da função) — qualquer
+ * outra contagem continua caindo no `pendingGroup` normal do #5109.
  */
 export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadlines: number): WeeklySelectionResult {
   const deduped = dedupeCandidatesByUrl(candidatesIn);
@@ -219,6 +232,31 @@ export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadli
     const missingData = tiedGroup.filter((c) => !c.hasClickData);
 
     if (tiedGroup.length > slotsLeft) {
+      // #8817 (decisão do editor, reverte PARCIALMENTE o #5109): dentro da
+      // banda de ruído, um candidato de um DIA ainda sem manchete selecionada
+      // vence sobre um candidato de um dia já representado — vira DECISOR
+      // AUTOMÁTICO, não só dica exibida no gate. Só resolve sozinho quando o
+      // conjunto de candidatos de dia-novo CABE EXATAMENTE nas vagas
+      // restantes (contagem igual, não "menos que" nem "mais que") — sinal
+      // inequívoco de que a diversidade de dia decide a banda inteira sem
+      // sobrar ambiguidade real. Qualquer outra contagem (0 candidatos de
+      // dia-novo, ou mais candidatos de dia-novo que vagas) não tem decisão
+      // mecânica clara e cai no `pendingGroup` normal abaixo.
+      const daysAlreadySelected = new Set(selected.map((c) => c.editionDate));
+      const newDayCandidates = tiedGroup.filter((c) => !daysAlreadySelected.has(c.editionDate)).sort(byRateDescThenTitle);
+      if (newDayCandidates.length > 0 && newDayCandidates.length === slotsLeft) {
+        warnings.push(
+          `${tiedGroup.length} candidatos empatados (dentro do ruído de 1 clique, ${top.ratePct.toFixed(2)}%) disputam ${slotsLeft} vaga(s) restante(s) — ` +
+            `resolvido automaticamente por diversidade de dia (#8817): ${newDayCandidates.length} candidato(s) de dia(s) ainda sem manchete ` +
+            `(${[...new Set(newDayCandidates.map((c) => c.editionDate))].join(", ")}) cabem exatamente nas vagas restantes, preferido(s) sobre ` +
+            `candidato(s) de dia(s) já representado(s) na seleção, mesmo com taxa marginalmente menor.`,
+        );
+        selected.push(...newDayCandidates);
+        const newDaySet = new Set(newDayCandidates);
+        remaining = remaining.filter((c) => !newDaySet.has(c));
+        continue;
+      }
+
       pendingGroup = tiedGroup;
       if (missingData.length > 0) {
         warnings.push(

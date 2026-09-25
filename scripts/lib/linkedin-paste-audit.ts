@@ -26,6 +26,15 @@
  * `looksLikeBareDomainAnchorText` + o hint em `auditLinkedinPaste` existem
  * especificamente pra sinalizar esse padrão quando ele acontece de novo.
  *
+ * **#8819 (25/09/2026) corrige `linkifyWordmark` na raiz** — a âncora
+ * produzida pro wordmark agora ancora só "diar.ia.br", sem continuação
+ * dentro do mesmo `<a>` (a continuação vira texto puro fora dele). Sem
+ * continuação pra dividir, o padrão descrito acima deixa de ser produzido
+ * pelo caminho normal. `looksLikeBareDomainAnchorText` foi ajustado pra só
+ * disparar quando o texto de âncora AINDA tem continuação após o wordmark
+ * (o padrão problemático de verdade) — texto de âncora exatamente igual ao
+ * wordmark é o formato esperado agora, não sinal de bug.
+ *
  * Um perigo colateral relacionado (mesmo PR #5987): corrigir a âncora
  * dividida via clique direto sobre o link colado pode deslocar a seleção e
  * apagar OUTRO parágrafo em silêncio (na rodada real, sumiu o `<p><a>Quero
@@ -178,20 +187,36 @@ function hrefsEquivalent(a: string, b: string): boolean {
 /**
  * Pure: detecta o padrão de texto que dispara o bug de split de âncora
  * (achado 260823, PR #5987) — texto de âncora que COMEÇA com o wordmark
- * "diar.ia.br" (com ou sem continuação, ex: "diar.ia.br, newsletter de IA").
- * Não é o mesmo guard de `endsInBareDomainLabel` (`weekly-linkedin-render.ts`),
+ * "diar.ia.br" **seguido de continuação** (ex: "diar.ia.br, newsletter de
+ * IA"). Não é o mesmo guard de `endsInBareDomainLabel` (`weekly-linkedin-render.ts`),
  * que cobre o caso construído-em-render de rótulo TERMINANDO no domínio nu —
  * este cobre o caso descoberto no PASTE, de rótulo COMEÇANDO no domínio.
  *
- * Regex (não enumeração de pontuação): `WORDMARK` seguido de fim-de-string ou
- * de qualquer caractere que não seja letra/dígito — cobre vírgula, ponto,
- * dois-pontos, travessão, exclamação etc. sem precisar listar cada um (a
- * abertura semanal é reescrita a cada ciclo, a pontuação logo após a menção
- * não é previsível).
+ * **#8819 (25/09/2026) reavalia o que este guard detecta.** Até então,
+ * `linkifyWordmark` produzia âncoras estendidas ("diar.ia.br, newsletter de
+ * IA") — o padrão problemático era justamente esse: wordmark + continuação
+ * DENTRO da mesma âncora, que o auto-linkificador do LinkedIn dividia em
+ * duas. O #8819 mudou `linkifyWordmark` pra ancorar SÓ o wordmark (a
+ * continuação vira texto puro fora do `<a>`) — texto de âncora EXATAMENTE
+ * igual ao wordmark deixou de ser o padrão problemático (é agora o formato
+ * INTENCIONAL da fonte) e não deve mais disparar este guard, que existe só
+ * pra sinalizar o cenário de divisão observado no paste — sem continuação
+ * dentro do mesmo texto de âncora, não há o que dividir. Continua ativo
+ * como defesa contra `ln-selection.json`/render antigo (âncora estendida
+ * residual) ou uma regressão futura que reintroduza a extensão.
+ *
+ * Regex (não enumeração de pontuação): `WORDMARK` seguido de qualquer
+ * caractere que não seja letra/dígito — cobre vírgula, ponto, dois-pontos,
+ * travessão, exclamação etc. sem precisar listar cada um (a abertura
+ * semanal é reescrita a cada ciclo, a pontuação logo após a menção não é
+ * previsível). Exige texto MAIS LONGO que o wordmark sozinho — é essa
+ * checagem de comprimento que distingue "diar.ia.br" puro (esperado,
+ * inofensivo) de "diar.ia.br + continuação" (padrão do bug).
  */
 const BARE_DOMAIN_ANCHOR_TEXT_RE = new RegExp(`^${WORDMARK.replace(/\./g, "\\.")}(?![a-z0-9])`, "i");
 export function looksLikeBareDomainAnchorText(text: string): boolean {
-  return BARE_DOMAIN_ANCHOR_TEXT_RE.test(text.trim());
+  const trimmed = text.trim();
+  return BARE_DOMAIN_ANCHOR_TEXT_RE.test(trimmed) && trimmed.length > WORDMARK.length;
 }
 
 /**

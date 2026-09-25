@@ -93,12 +93,11 @@ depois do último disponível, se houver só 1 ou 0).
     conteúdo completo, um link de volta prometeria mais do que existe).
   - **Linha de proveniência** ("da edição de DD/MM", #5109): texto puro, sem
     link — sinaliza de qual das 5 edições da semana o headline veio.
-  - **Corpo**: resumo próprio a partir da fonte primária (`textOrigin:
-    "autoral"`, #5108) quando a fonte segue acessível — 2-4 parágrafos
-    curtos, tamanho comparável a um destaque da diária, nunca cópia literal
-    de frases da fonte. Se a fonte ficou inacessível (paywall/removida)
-    desde a edição de origem, mantém o corpo LEVANTADO original
-    (`textOrigin: "literal"`) em vez de resumir um stub.
+  - **Corpo**: SEMPRE o texto já levantado/publicado na edição diária de
+    origem — nunca resumo autoral (#8818, decisão do editor 25/09/2026,
+    reverte o #5108). Acessibilidade da fonte não afeta mais o corpo
+    publicado (verificada só como aviso informativo, ver Passo 4 da
+    `SKILL.md`).
   - **"Por que isso importa"**: 1 frase, só quando fizer sentido — omitir o
     parágrafo inteiro se não houver.
 - **Use Melhor** (opcional, mas OBRIGATÓRIO renderizar quando há candidato
@@ -149,11 +148,15 @@ guard determinístico: se o RÓTULO de um link termina exatamente no domínio
 nu (ex: "assine em diar.ia.br"), o auto-linkificador do LinkedIn **parte o
 link em dois** e a parte clicável perde o `href`/UTM original. Por isso
 todo rótulo gerado por este template é um rótulo de AÇÃO, nunca o domínio
-cru — "Assinar a edição diária", "Assine grátis, é rapidinho →". A extensão
-automática do wordmark em prosa
-(`linkifyWordmark`) segue a mesma regra: estende a âncora por até 3
-palavras além do domínio para não terminar nu; se não conseguir, não linka
-(emite warning em vez de publicar um link que parece rastreado e não é).
+cru — "Assinar a edição diária", "Assine grátis, é rapidinho →". A menção
+automática ao wordmark em prosa (`linkifyWordmark`) é a ÚNICA exceção
+deliberada a essa regra — ancora exatamente "diar.ia.br" (sem estender além
+do domínio desde #8819, que reverte a extensão de 3 palavras: estender só
+deslocava um bug diferente, o auto-linkificador do LinkedIn divide em 2
+âncoras qualquer texto que COMECE com o wordmark e tenha continuação
+dentro do mesmo `<a>`, achado 260823/PR #5987 e reconfirmado no ciclo
+`26w39`) — a continuação em prosa segue existindo como texto puro, fora da
+âncora.
 
 ## As 3 armadilhas de paste (já documentadas em `linkedin.md` §Nota técnica)
 
@@ -175,11 +178,13 @@ Resumo — detalhes completos e exemplos ao vivo (260803) ficam só em
 
 ```
 data/weekly/{cycle}/
-  _internal/ln-selection.json   seleção completa + auditoria + textOrigin por headline
-  _internal/ln-fact-check.json  claims verificados do texto autoral (se houver)
+  _internal/ln-selection.json   seleção completa + auditoria (corpo/why sempre literal desde #8818)
   ln-{cycle}.html                artefato colável final (fragmento HTML, sem <html>/<body>)
   ln-{cycle}.json                 metadados do render + warnings
 ```
+
+`_internal/ln-fact-check.json` não é mais gerado (#8818 — manchete nunca
+mais tem texto autoral pra verificar).
 
 `{cycle}` é sempre `{YY}w{WW}` derivado da semana de CONTEÚDO (segunda a
 sexta), não da segunda de publicação — usado tanto como namespace de
