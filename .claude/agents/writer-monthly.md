@@ -61,7 +61,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial"/"AI" quando o sujeito concreto couber (#4825, inclusive no título narrativo — ver acima); sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
 
-5. **Seções Clarice/Livros (#6881: ordem D1 → CLARICE—DIVULGAÇÃO → D2 → LIVROS → D3 → CLARICE—TUTORIAL — LIVROS entrou entre D2 e D3, CLARICE—TUTORIAL moveu de "entre D2 e D3" pra "entre D3 e USE MELHOR").** Após D1 e antes de D2, emitir (label em negrito — #2794):
+5. **Seções Clarice/Livros (#6881: ordem D1 → CLARICE—DIVULGAÇÃO → D2 → [DIVULGAÇÃO imersão 10/10, temporário] → LIVROS → D3 → CLARICE—TUTORIAL — LIVROS entrou entre D2 e D3, CLARICE—TUTORIAL moveu de "entre D2 e D3" pra "entre D3 e USE MELHOR").** Após D1 e antes de D2, emitir (label em negrito — #2794):
    ```
    **CLARICE — DIVULGAÇÃO**
 
