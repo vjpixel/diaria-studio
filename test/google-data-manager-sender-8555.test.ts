@@ -91,6 +91,29 @@ describe("#8555 — buildDataManagerIngestPayload", () => {
     assert.equal(payload.events.length, 1);
     assert.ok(!("loginAccount" in payload.destinations[0]));
   });
+
+  it("#8555 (fleet review item 2) — hash de e-mail pinado contra vetor conhecido, dentro do payload HEX", () => {
+    // Vetor fixo: normalização é trim + lowercase (hashEmailForEnhancedConversions),
+    // hash SHA-256 hex calculado independentemente (node:crypto, fora deste módulo) e
+    // colado aqui como constante — se a normalização OU o algoritmo de hash mudarem
+    // sem intenção, este teste pega a divergência.
+    const rawEmail = "Leitor.Teste+tag@Example.COM ";
+    const KNOWN_SHA256_HEX = "687785ff3f40aea56ac49bbc4f593b131d50dd9e7a99e5f90064bdc4bc8471f0";
+    assert.equal(hashEmailForEnhancedConversions(rawEmail), KNOWN_SHA256_HEX);
+    assert.equal(KNOWN_SHA256_HEX.length, 64);
+
+    const conv: ValidatedConversion = { ...CONV, email: rawEmail, hashedEmail: hashEmailForEnhancedConversions(rawEmail) };
+    const built = buildDataManagerEvent(conv);
+    assert.ok(built.ok);
+    if (!built.ok) return;
+    const payload = buildDataManagerIngestPayload([built.event], {
+      customerId: "2369219639",
+      productDestinationId: "7762768203",
+      validateOnly: true,
+    });
+    assert.equal(payload.encoding, "HEX");
+    assert.equal(payload.events[0].userData.userIdentifiers[0].emailAddress, KNOWN_SHA256_HEX);
+  });
 });
 
 describe("#8555 — chunkDataManagerEvents", () => {

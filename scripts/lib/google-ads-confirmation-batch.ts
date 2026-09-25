@@ -323,9 +323,12 @@ export interface ConfirmationBatchSummary {
   failed: number;
   /** Ids que viraram `skipped-failed-permanent` nesta rodada. */
   failedPermanent: number;
-  /** Ids do Kit cujo CHUNK falhou (transporte, env/token ausente, ou HTTP
-   *  não-2xx) nesta rodada — granularidade de chunk, não de linha (ver
-   *  docstring do módulo). */
+  /** Ids do Kit cujo CHUNK falhou (transporte, env/token ausente, HTTP
+   *  não-2xx, ou 2xx anômalo — corpo não-JSON/sem `requestId`) nesta rodada
+   *  — granularidade de chunk, não de linha (ver docstring do módulo). Só o
+   *  caso HTTP não-2xx conta tentativa rumo a `skipped-failed-permanent`
+   *  (`countsAsAttempt`, ver `sendDataManagerIngest`); os demais reprocessam
+   *  sem consumir o teto. */
   failedIds: number[];
   /** Mensagens de erro dos chunks que falharam (até 10). */
   googleErrors: string[];
@@ -355,6 +358,10 @@ export interface RunConfirmationBatchDeps {
    *  a cargo de quem chama (o CLI, que conhece `customerId`/
    *  `productDestinationId`/o modo `--validate-only`). */
   sendFn: (events: DataManagerEvent[]) => Promise<DataManagerIngestResult>;
+  /** Override do tamanho do chunk (default `DATA_MANAGER_MAX_EVENTS_PER_REQUEST`,
+   *  2000) — só pra teste, permite exercitar o caminho multi-chunk sem um
+   *  roster de milhares de linhas. */
+  chunkSize?: number;
   now?: Date;
   log?: (msg: string) => void;
 }
@@ -365,17 +372,22 @@ interface Entry {
   event: DataManagerEvent;
 }
 
-type Outcome = { kind: "submitted"; requestId: string } | { kind: "failed"; error: string };
+type Outcome =
+  | { kind: "submitted"; requestId: string }
+  | { kind: "failed"; error: string; countsAsAttempt: boolean };
 
 /** Envia `entries` em chunks de até `DATA_MANAGER_MAX_EVENTS_PER_REQUEST`;
  *  devolve o resultado por posição de `entries` (mapeia por id, não por
  *  e-mail). Granularidade de sucesso/falha é o CHUNK inteiro — ver
- *  "Migração pra Data Manager API" na docstring do módulo. */
+ *  "Migração pra Data Manager API" na docstring do módulo. `countsAsAttempt`
+ *  vem direto de `DataManagerIngestResult` (a decisão de quando uma falha
+ *  "conta" é do sender, que sabe se houve resposta HTTP real do Google —
+ *  ver docstring de `sendDataManagerIngest`). */
 async function sendEntries(
   entries: Entry[],
   deps: RunConfirmationBatchDeps,
 ): Promise<{ outcomes: Outcome[]; error?: string; messages: string[] }> {
-  const chunks = chunkDataManagerEvents(entries.map((e) => e.event));
+  const chunks = chunkDataManagerEvents(entries.map((e) => e.event), deps.chunkSize);
   const outcomes: Outcome[] = new Array(entries.length);
   const messages: string[] = [];
   let error: string | undefined;
@@ -385,7 +397,7 @@ async function sendEntries(
     for (let i = 0; i < chunk.length; i++) {
       outcomes[offset + i] = result.ok
         ? { kind: "submitted", requestId: result.requestId }
-        : { kind: "failed", error: result.error };
+        : { kind: "failed", error: result.error, countsAsAttempt: result.countsAsAttempt };
     }
     if (!result.ok) {
       if (!error) error = result.error;
@@ -530,20 +542,29 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
       summary.sent++;
       record(cand, { status: "submitted", requestId: o.requestId });
     } else {
-      // Falha de chunk (transporte, env/token, HTTP não-2xx): conta tentativa
-      // — diferente do caminho antigo, aqui não há como distinguir "recusa
-      // do Google" de "falha de transporte" no 2xx síncrono (ver docstring),
-      // então todo chunk que não deu 2xx com requestId segue o mesmo caminho
-      // de retry com teto.
+      // Falha de chunk. Só conta tentativa (rumo a skipped-failed-permanent)
+      // quando o Google de fato RESPONDEU com HTTP não-2xx (`countsAsAttempt`,
+      // decidido pelo sender — ver docstring de `sendDataManagerIngest`).
+      // `env`/`token` ausentes, exceção de rede, corpo 2xx não-JSON ou 2xx
+      // sem requestId NÃO contam — não sabemos se o Google processou o
+      // payload, então não gastamos o teto de tentativas por uma falha que
+      // pode nem ter chegado até ele; a linha só some pra sempre depois de
+      // MAX_FAILED_ATTEMPTS recusas REAIS.
       summary.failed++;
       summary.failedIds.push(cand.id);
-      const attempts = (index[indexKey(cand.id)]?.attempts ?? 0) + 1;
-      if (attempts >= MAX_FAILED_ATTEMPTS) {
-        summary.failedPermanent++;
-        record(cand, { status: "skipped-failed-permanent", attempts });
-        log(`kit id ${cand.id} falhou ${attempts}x — desistindo (skipped-failed-permanent). ${o.error}`);
+      const prevAttempts = index[indexKey(cand.id)]?.attempts ?? 0;
+      if (!o.countsAsAttempt) {
+        record(cand, { status: "failed", attempts: prevAttempts });
+        log(`kit id ${cand.id}: falha sem resposta HTTP real do Google (não conta tentativa) — ${o.error}`);
       } else {
-        record(cand, { status: "failed", attempts });
+        const attempts = prevAttempts + 1;
+        if (attempts >= MAX_FAILED_ATTEMPTS) {
+          summary.failedPermanent++;
+          record(cand, { status: "skipped-failed-permanent", attempts });
+          log(`kit id ${cand.id} recusado ${attempts}x pelo Google — desistindo (skipped-failed-permanent). ${o.error}`);
+        } else {
+          record(cand, { status: "failed", attempts });
+        }
       }
     }
   });

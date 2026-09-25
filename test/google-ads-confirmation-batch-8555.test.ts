@@ -20,6 +20,7 @@ import {
   assessBaseSnapshot,
   toBrtIso,
   indexKey,
+  MAX_FAILED_ATTEMPTS,
   type ConfirmationRosterEntry,
 } from "../scripts/lib/google-ads-confirmation-batch.ts";
 import {
@@ -61,8 +62,12 @@ function sub(id: number, over: Partial<ConfirmationRosterEntry> = {}): Confirmat
 const base = (id: number, state = "inactive"): SubscriberStateRecord => ({ id, state, created_at: "2026-09-18T12:00:00Z" });
 
 const okSend = () => mock.fn(async (_events: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({ ok: true, requestId: "req-1", response: {} }));
+/** Falha com resposta HTTP REAL do Google (não-2xx) — conta tentativa (`countsAsAttempt: true`). */
 const failSend = (error = "HTTP 500") =>
-  mock.fn(async (_events: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({ ok: false, stage: "ingest", error }));
+  mock.fn(async (_events: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({ ok: false, stage: "ingest", error, countsAsAttempt: true }));
+/** Falha de TRANSPORTE (rede, env/token ausente, 2xx anômalo) — nunca conta tentativa. */
+const transportFailSend = (error = "falha de rede") =>
+  mock.fn(async (_events: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({ ok: false, stage: "ingest", error, countsAsAttempt: false }));
 
 describe("#8555 — detecção de confirmações", () => {
   it("inactive na base + active hoje = confirmação; já active na base não é", () => {
@@ -301,6 +306,39 @@ const run = (dir: string, over: Partial<Parameters<typeof runConfirmationBatch>[
   });
 
 describe("#8555 — revisão: conciliação por id, falhas e índice", () => {
+  it("multi-chunk (#8555 fleet review item 3): chunk 1 sucesso, chunk 2 falha — offsets corretos", async () => {
+    await withTmp(async (dir) => {
+      const roster = [sub(1), sub(2), sub(3)];
+      const baseSnapshot = [base(1), base(2), base(3)];
+      const calls: DataManagerEvent[][] = [];
+      const sendFn = mock.fn(async (events: DataManagerEvent[]): Promise<DataManagerIngestResult> => {
+        calls.push(events);
+        return calls.length === 1
+          ? { ok: true, requestId: "req-chunk1", response: {} }
+          : { ok: false, stage: "ingest", error: "chunk 2 recusado", countsAsAttempt: true };
+      });
+      // chunkSize:2 -> chunk 1 = [id 1, id 2] (sucesso), chunk 2 = [id 3] (falha).
+      const summary = await run(dir, { roster, baseSnapshot, sendFn, chunkSize: 2 });
+      assert.equal(sendFn.mock.callCount(), 2);
+      assert.equal(calls[0].length, 2);
+      assert.equal(calls[1].length, 1);
+      // offset correto: o evento do chunk 2 é o do id 3, não uma repetição do chunk 1.
+      assert.equal(calls[1][0].transactionId, "diaria-confirmacao-kit-3");
+
+      assert.equal(summary.sent, 2);
+      assert.equal(summary.failed, 1);
+      assert.deepEqual(summary.failedIds, [3]);
+
+      const idx = loadConfirmationIndex(join(dir, "idx.json"));
+      assert.equal(idx[indexKey(1)].status, "submitted");
+      assert.equal(idx[indexKey(1)].requestId, "req-chunk1");
+      assert.equal(idx[indexKey(2)].status, "submitted");
+      assert.equal(idx[indexKey(2)].requestId, "req-chunk1");
+      assert.equal(idx[indexKey(3)].status, "failed");
+      assert.equal(idx[indexKey(3)].attempts, 1);
+    });
+  });
+
   it("dois ids com o MESMO e-mail: cada um é indexado pelo próprio id", async () => {
     await withTmp(async (dir) => {
       const roster = [sub(1, { email_address: "igual@example.com" }), sub(2, { email_address: "igual@example.com" })];
@@ -348,6 +386,46 @@ describe("#8555 — revisão: conciliação por id, falhas e índice", () => {
       assert.equal(loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)].status, "skipped-failed-permanent");
       const fourth = await run(dir, args);
       assert.equal(fourth.toSend, 0);
+    });
+  });
+
+  it("N falhas de TRANSPORTE consecutivas NUNCA chegam a skipped-failed-permanent (não contam tentativa)", async () => {
+    await withTmp(async (dir) => {
+      const sendFn = transportFailSend();
+      const args = { roster: [sub(1)], baseSnapshot: [base(1)], sendFn };
+      let last;
+      for (let i = 0; i < MAX_FAILED_ATTEMPTS + 5; i++) last = await run(dir, args);
+      assert.equal(last!.failedPermanent, 0);
+      const entry = loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)];
+      assert.equal(entry.status, "failed");
+      assert.equal(entry.attempts ?? 0, 0);
+      // continua sendo tentado (nunca sai do toSend por causa do teto)
+      assert.equal(last!.toSend, 1);
+    });
+  });
+
+  it("N recusas HTTP (não-2xx) REAIS do Google chegam a skipped-failed-permanent normalmente", async () => {
+    await withTmp(async (dir) => {
+      const sendFn = failSend(); // countsAsAttempt: true
+      const args = { roster: [sub(1)], baseSnapshot: [base(1)], sendFn };
+      let last;
+      for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) last = await run(dir, args);
+      assert.equal(last!.failedPermanent, 1);
+      assert.equal(loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)].status, "skipped-failed-permanent");
+    });
+  });
+
+  it("alterna transporte e recusa real: só a recusa real conta tentativa", async () => {
+    await withTmp(async (dir) => {
+      const args = { roster: [sub(1)], baseSnapshot: [base(1)] };
+      await run(dir, { ...args, sendFn: transportFailSend() }); // não conta
+      await run(dir, { ...args, sendFn: failSend() }); // conta: attempts=1
+      await run(dir, { ...args, sendFn: transportFailSend() }); // não conta
+      const summary = await run(dir, { ...args, sendFn: failSend() }); // conta: attempts=2
+      const entry = loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)];
+      assert.equal(entry.attempts, 2);
+      assert.equal(entry.status, "failed");
+      assert.equal(summary.failedPermanent, 0);
     });
   });
 

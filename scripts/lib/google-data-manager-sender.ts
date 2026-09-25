@@ -220,13 +220,30 @@ export function chunkDataManagerEvents(
 
 export type DataManagerIngestResult =
   | { ok: true; requestId: string; response: unknown }
-  | { ok: false; stage: "env" | "token" | "ingest"; error: string; missing?: string[] };
+  | {
+      ok: false;
+      stage: "env" | "token" | "ingest";
+      error: string;
+      missing?: string[];
+      /**
+       * `true` só quando a Data Manager API de fato RESPONDEU com um HTTP
+       * não-2xx (uma resposta real do Google — provável defeito no payload
+       * ou na conta, digno de contar como tentativa/consumir o teto de
+       * retries de quem chama). `false` para credencial ausente (`env`),
+       * falha de renovação de token (`token`), exceção de rede (fetch
+       * lançou), corpo 2xx não-JSON, ou 2xx sem `requestId` — nesses casos
+       * não sabemos se o Google chegou a processar o payload, então não
+       * conta como recusa "real" (quem chama deve reprocessar sem consumir
+       * o teto de tentativas). Ver #8555 (fleet review).
+       */
+      countsAsAttempt: boolean;
+    };
 
 /**
  * Renova o token e faz o POST de 1 payload (já dentro do limite de 2000
  * eventos — quem chama corta com `chunkDataManagerEvents` antes). Nunca
- * lança; toda falha vira `{ ok: false, stage, error }`. `stage` diz onde
- * parou (nada foi enviado em `env`/`token`).
+ * lança; toda falha vira `{ ok: false, stage, error, countsAsAttempt }`.
+ * `stage` diz onde parou (nada foi enviado em `env`/`token`).
  */
 export async function sendDataManagerIngest(opts: {
   fetchFn: FetchLike;
@@ -240,11 +257,12 @@ export async function sendDataManagerIngest(opts: {
       stage: "env",
       error: `envio (Data Manager) exige as variáveis de ambiente ausentes: ${configResult.missing.join(", ")}.`,
       missing: configResult.missing,
+      countsAsAttempt: false,
     };
   }
   const tokenResult = await refreshGoogleAdsAccessToken(opts.fetchFn, configResult.auth);
   if ("error" in tokenResult) {
-    return { ok: false, stage: "token", error: `falha ao renovar access token: ${tokenResult.error}` };
+    return { ok: false, stage: "token", error: `falha ao renovar access token: ${tokenResult.error}`, countsAsAttempt: false };
   }
 
   let res: Response;
@@ -260,18 +278,34 @@ export async function sendDataManagerIngest(opts: {
     });
     text = await res.text();
   } catch (e) {
-    return { ok: false, stage: "ingest", error: `falha de rede em events:ingest: ${e instanceof Error ? e.message : e}` };
+    return {
+      ok: false,
+      stage: "ingest",
+      error: `falha de rede em events:ingest: ${e instanceof Error ? e.message : e}`,
+      countsAsAttempt: false, // nunca chegou a ser uma resposta do Google
+    };
   }
 
   if (!res.ok) {
-    return { ok: false, stage: "ingest", error: `events:ingest respondeu HTTP ${res.status}: ${text.slice(0, 800)}` };
+    // Resposta REAL do Google, HTTP não-2xx — conta como tentativa.
+    return {
+      ok: false,
+      stage: "ingest",
+      error: `events:ingest respondeu HTTP ${res.status}: ${text.slice(0, 800)}`,
+      countsAsAttempt: true,
+    };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { ok: false, stage: "ingest", error: `events:ingest respondeu corpo não-JSON (HTTP ${res.status}): ${text.slice(0, 200)}` };
+    return {
+      ok: false,
+      stage: "ingest",
+      error: `events:ingest respondeu corpo não-JSON (HTTP ${res.status}): ${text.slice(0, 200)}`,
+      countsAsAttempt: false, // 2xx mas corpo anômalo — não é uma recusa do Google
+    };
   }
 
   const requestId = (parsed as { requestId?: unknown } | null)?.requestId;
@@ -280,6 +314,7 @@ export async function sendDataManagerIngest(opts: {
       ok: false,
       stage: "ingest",
       error: "events:ingest respondeu 2xx sem requestId — não dá pra rastrear diagnóstico depois, tratando como falha.",
+      countsAsAttempt: false, // idem — 2xx sem requestId é anômalo, não recusa
     };
   }
   return { ok: true, requestId, response: parsed };
