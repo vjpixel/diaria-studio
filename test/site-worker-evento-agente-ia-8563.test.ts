@@ -28,15 +28,30 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia");
 
 describe("public/evento/agente-ia — página do workshop (#8563)", () => {
-  it("index.html existe e referencia os assets locais só por caminho RELATIVO", () => {
+  it("index.html existe e referencia os próprios arquivos por caminho absoluto", () => {
     const p = resolve(PAGE_DIR, "index.html");
     assert.ok(existsSync(p), "index.html ausente em public/evento/agente-ia/");
     const html = readFileSync(p, "utf8");
     // Nenhum href/src pra chatgpt.site (o ponto inteiro é esconder esse domínio).
     assert.doesNotMatch(html, /chatgpt\.site/i);
-    assert.match(html, /href="styles\.css"/);
-    assert.match(html, /src="config\.js"/);
-    assert.match(html, /src="script\.js"/);
+    assert.match(html, /href="\/evento\/agente-ia\/styles\.css"/);
+    assert.match(html, /src="\/evento\/agente-ia\/config\.js"/);
+    assert.match(html, /src="\/evento\/agente-ia\/script\.js"/);
+  });
+
+  it("index.html não usa caminho RELATIVO pros próprios arquivos (regressão: CSS não carregava em produção)", () => {
+    // A página é servida em `/evento/agente-ia` SEM barra final
+    // (`html_handling = drop-trailing-slash` redireciona `/evento/agente-ia/`
+    // pra cá). Sem a barra, o navegador resolve `href="styles.css"` como
+    // `/evento/styles.css` — 404, e a página abria sem estilo, sem script e
+    // sem o botão de compra. Todo href/src local precisa ser absoluto.
+    // (`url(assets/...)` dentro do styles.css pode continuar relativo: ele
+    // resolve contra o próprio CSS, que mora em /evento/agente-ia/.)
+    const html = readFileSync(resolve(PAGE_DIR, "index.html"), "utf8");
+    const relativos = [...html.matchAll(/(?:href|src)="([^"]*)"/g)]
+      .map((m) => m[1])
+      .filter((v) => !/^(?:https?:|mailto:|tel:|#|\/|data:)/i.test(v));
+    assert.deepEqual(relativos, [], `referências relativas: ${relativos.join(", ")}`);
   });
 
   it("config.js declara EVENT_CHECKOUT_URL como HTTPS (contrato que script.js espera)", () => {
