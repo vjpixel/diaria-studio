@@ -493,8 +493,6 @@ ao lado do botão Publish, e o artigo agendado aparece em
 
 ---
 
-**Guard "promessa de comentário" no Instagram (#8681):** o repo não tem mecanismo pra responder comentários — legenda/CTA (inclusive o override de teste `_internal/instagram-test.json`) que promete entregar link/edição/material a quem comentar é bloqueada, tanto no invariante do Stage 4 quanto no `publish-instagram.ts` (`scripts/lib/comment-delivery-promise.ts`).
-
 ## É IA? nas redes (dispatch avulso, fora do `/diaria-5-publicacao`)
 
 O quiz "É IA?" não sai pelo `/diaria-5-publicacao` (#6169). Existem dois
