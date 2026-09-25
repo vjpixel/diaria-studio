@@ -819,8 +819,8 @@ export function renderClariceBox(chunk: string, headerLabelText: string, imageUr
 
 /**
  * Box DIVULGAÇÃO. Se a 1ª linha do corpo for uma imagem markdown
- * (`![alt](url)`), ela vira a imagem do topo do box e o box sai SEM título
- * interno — a arte carrega a chamada (pedido do editor 25/09/2026, box da
+ * (`![alt](url)`), ela vira a imagem do topo do box; a linha seguinte segue
+ * sendo o título (pedido do editor 25/09/2026, box da
  * imersão 10/10). Sem imagem, comportamento de sempre (1ª linha = título).
  */
 export function renderDivulgacaoBox(chunk: string): string {
@@ -830,7 +830,7 @@ export function renderDivulgacaoBox(chunk: string): string {
   const img = i < lines.length ? lines[i].trim().match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/) : null;
   if (!img) return renderClariceBox(chunk, "Divulgação");
   const rest = [lines[0], ...lines.slice(i + 1)].join("\n");
-  return renderClariceBox(rest, "Divulgação", img[2], true, img[1].trim() || undefined);
+  return renderClariceBox(rest, "Divulgação", img[2], false, img[1].trim() || undefined);
 }
 
 /**

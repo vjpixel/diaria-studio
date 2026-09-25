@@ -229,16 +229,18 @@ describe("DIVULGAÇÃO com imagem no topo (box da imersão 10/10)", () => {
     "",
     "![Crie seu agente de IA](https://eia.diar.ia.br/img/x.jpg)",
     "",
+    "Crie seu agente de IA sem programar",
+    "",
     "Sábado, 10/10, das 14h às 18h.",
     "",
     "→ [Quero criar meu agente!](https://diar.ia.br/evento/agente-ia)",
   ].join("\n");
 
-  it("imagem vira <img> no topo, sem <h3>, parágrafo preservado", () => {
+  it("imagem vira <img> no topo, título mantido, parágrafo preservado", () => {
     const { html } = draftToEmail(draft, "Teste", "2608");
     assert.ok(html.includes('<img src="https://eia.diar.ia.br/img/x.jpg"'), "imagem no topo");
     assert.ok(html.includes('alt="Crie seu agente de IA"'), "alt vem do markdown");
-    assert.ok(!/<h3[^>]*>[^<]*Sábado/.test(html), "parágrafo não vira título");
+    assert.ok(/<h3[^>]*>Crie seu agente de IA sem programar<\/h3>/.test(html), "título mantido");
     assert.ok(/<p[^>]*>Sábado, 10\/10/.test(html), "parágrafo renderizado");
     assert.ok(!html.includes("!["), "markdown de imagem não vaza");
     assert.ok(html.includes("Quero criar meu agente!"), "CTA");
