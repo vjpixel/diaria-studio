@@ -2769,7 +2769,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       // (so PRs de calibracao mergeadas; idempotente, "primeira decisao vence") --
       // sem ele a secao de latencia do relatorio sai sempre n/d. Roda todo mes, o
       // relatorio em si continua so trimestral.
-      { key: "record", script: "scripts/record-calibration-pr-decisions.ts", args: ["--write"] },
+      { key: "record", script: "scripts/record-calibration-pr-decisions.ts", args: ["--write"], bestEffort: true },
       { key: "audit", script: "scripts/calibration-allowlist-growth-report.ts", args: ["--quarter-only", "--write"] },
     ],
     logPath: "calibration-audit/.allowlist-audit.log",

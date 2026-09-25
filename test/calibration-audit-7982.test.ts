@@ -132,6 +132,8 @@ describe("#7982 tasks agendadas declaradas", () => {
         // ele a seção de latência sai sempre n/d.
         assert.deepEqual(scripts, ["scripts/record-calibration-pr-decisions.ts", script]);
         assert.deepEqual(t!.steps[0].args, ["--write"]);
+        // produtor fail-soft: falha dele não pode derrubar o exit code do relatório
+        assert.equal(t!.steps[0].bestEffort, true);
       }
       assert.equal(t!.schedule.kind, "monthly");
       const clash = SCHEDULED_TASKS.filter(
