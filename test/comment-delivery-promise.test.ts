@@ -65,6 +65,20 @@ describe("detectCommentDeliveryPromise (#8681)", () => {
     assert.equal(r.promise, true);
   });
 
+  it("não dispara quando 'mandar' não é dirigido ao leitor, mesmo perto do pedido de comentário (#8844)", () => {
+    const r = detectCommentDeliveryPromise(
+      "Ihh, isso vou mandar pro grupo! Comenta se você também compartilhou.",
+    );
+    assert.equal(r.promise, false);
+  });
+
+  it("não dispara quando comentário e 'receber' estão longe demais na mesma frase (#8844)", () => {
+    const r = detectCommentDeliveryPromise(
+      "Quer saber mais sobre isso? Comenta aqui embaixo que a gente te ajuda a entender melhor esse assunto e outros que você quiser receber depois.",
+    );
+    assert.equal(r.promise, false);
+  });
+
   it("commentDeliveryPromiseMessage nomeia a fonte e a ação corretiva", () => {
     const msg = commentDeliveryPromiseMessage("_internal/instagram-test.json (caption)", '"comente" + "receber"');
     assert.match(msg, /_internal\/instagram-test\.json \(caption\)/);

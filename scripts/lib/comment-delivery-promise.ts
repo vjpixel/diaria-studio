@@ -30,12 +30,16 @@ const COMMENT_ACTION_PATTERNS: RegExp[] = [
   /nos\s+coment[aá]rios/i,
 ];
 
+// Todos os padrões abaixo exigem que a promessa seja DIRIGIDA AO LEITOR
+// ("te", "você", "pra você") — não basta "vou mandar" solto, que também
+// aparece em contextos sem relação com o pedido de comentário (ex: "vou
+// mandar pro grupo", #8844).
 const DELIVERY_PROMISE_PATTERNS: RegExp[] = [
   /receber/i,
   /te\s+mand[ao]/i,
   /te\s+envi[ao]/i,
-  /vou\s+(?:te\s+)?(?:mandar|enviar)/i,
-  /(?:mando|envio|mandamos|enviamos)\s+(?:o|a|pra|para|pro)/i,
+  /vou\s+te\s+(?:mandar|enviar)/i,
+  /(?:mando|envio|mandamos|enviamos)\s+(?:pra\s+voc[eê]|para\s+voc[eê]|o|a|pra|para|pro)/i,
   /link\s+da\s+edi[cç][aã]o/i,
   /edi[cç][aã]o\s+do\s+dia/i,
   /link\s+completo/i,
@@ -43,15 +47,49 @@ const DELIVERY_PROMISE_PATTERNS: RegExp[] = [
   /te\s+passo/i,
 ];
 
+// Distância máxima (em palavras) entre o pedido de comentário e a promessa
+// de entrega dentro do mesmo segmento pra contar como relacionados — sem
+// isso, qualquer co-ocorrência solta no mesmo segmento dispara (achado do
+// #8844: "Comenta se você também compartilhou" tão longe de "vou mandar"
+// quanto "Comenta aqui embaixo" está de "quiser receber depois" no fim de
+// uma frase longa e sem relação nenhuma entre as duas).
+const MAX_WORD_GAP = 10;
+
 export interface CommentDeliveryPromiseResult {
   promise: boolean;
   match?: string;
 }
 
+interface PatternMatch {
+  index: number;
+  length: number;
+  text: string;
+}
+
+function findAllMatches(patterns: RegExp[], segment: string): PatternMatch[] {
+  const out: PatternMatch[] = [];
+  for (const re of patterns) {
+    const flags = re.flags.includes("g") ? re.flags : `${re.flags}g`;
+    const withGlobal = new RegExp(re.source, flags);
+    for (const m of segment.matchAll(withGlobal)) {
+      if (m.index === undefined) continue;
+      out.push({ index: m.index, length: m[0].length, text: m[0] });
+    }
+  }
+  return out;
+}
+
+/** Nº de palavras entre o fim do match que vem primeiro e o início do que vem depois. */
+function wordGap(segment: string, a: PatternMatch, b: PatternMatch): number {
+  const [first, second] = a.index <= b.index ? [a, b] : [b, a];
+  const between = segment.slice(first.index + first.length, second.index);
+  return between.split(/\s+/).filter(Boolean).length;
+}
+
 /**
  * Detecta, em pt-BR, um texto que pede comentário EM TROCA de uma entrega
- * (link/edição/material) — algo que este projeto não tem como cumprir.
- * Pura: sem I/O, sem estado.
+ * (link/edição/material) dirigida ao leitor — algo que este projeto não tem
+ * como cumprir. Pura: sem I/O, sem estado.
  *
  * Co-ocorrência é checada por SEGMENTO (split só em `.`/quebra de linha —
  * de propósito NÃO em `?`/`!`, que costumam separar a pergunta-gancho da
@@ -61,6 +99,13 @@ export interface CommentDeliveryPromiseResult {
  * seguida de outra frase com um CTA neutro de comentário ("comenta o que
  * achou"); sem essa restrição as duas se combinariam num falso positivo
  * (achado no code-review do PR do #8681).
+ *
+ * Dentro do MESMO segmento, co-ocorrência solta ainda não basta (#8844):
+ * exige-se também que o par comentário+entrega mais próximo esteja a no
+ * máximo `MAX_WORD_GAP` palavras de distância — pedido e promessa que
+ * aparecem em pontos genuinamente distantes da mesma frase longa (ou que só
+ * coincidem por acaso, como "vou mandar pro grupo" + "Comenta") não têm
+ * relação real entre si.
  */
 export function detectCommentDeliveryPromise(text: string | null | undefined): CommentDeliveryPromiseResult {
   if (!text || !text.trim()) return { promise: false };
@@ -72,20 +117,26 @@ export function detectCommentDeliveryPromise(text: string | null | undefined): C
   const segments = sentences.length > 0 ? sentences : [text];
 
   for (const segment of segments) {
-    const commentMatch = COMMENT_ACTION_PATTERNS.map((re) => segment.match(re)).find(
-      (m): m is RegExpMatchArray => !!m,
-    );
-    if (!commentMatch) continue;
+    const commentMatches = findAllMatches(COMMENT_ACTION_PATTERNS, segment);
+    if (commentMatches.length === 0) continue;
 
-    const deliveryMatch = DELIVERY_PROMISE_PATTERNS.map((re) => segment.match(re)).find(
-      (m): m is RegExpMatchArray => !!m,
-    );
-    if (!deliveryMatch) continue;
+    const deliveryMatches = findAllMatches(DELIVERY_PROMISE_PATTERNS, segment);
+    if (deliveryMatches.length === 0) continue;
 
-    return {
-      promise: true,
-      match: `"${commentMatch[0]}" + "${deliveryMatch[0]}"`,
-    };
+    let best: { gap: number; c: PatternMatch; d: PatternMatch } | null = null;
+    for (const c of commentMatches) {
+      for (const d of deliveryMatches) {
+        const gap = wordGap(segment, c, d);
+        if (!best || gap < best.gap) best = { gap, c, d };
+      }
+    }
+
+    if (best && best.gap <= MAX_WORD_GAP) {
+      return {
+        promise: true,
+        match: `"${best.c.text}" + "${best.d.text}"`,
+      };
+    }
   }
 
   return { promise: false };
