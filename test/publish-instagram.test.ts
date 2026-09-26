@@ -742,4 +742,19 @@ describe("#3817 --schedule: modo agendamento (verificação estática do script)
       "branch --schedule deve pular o fluxo de publicação imediata via continue",
     );
   });
+
+  it("#8848: promessa de entrega por comentário no override de teste vira aviso, nunca bloqueia a publicação", () => {
+    // Rebaixado de erro duro (#8681) pra warning (#8848, decisão do editor) —
+    // heurística de regex com falsos positivos/negativos conhecidos.
+    assert.doesNotMatch(
+      SRC,
+      /throw new Error\(commentDeliveryPromiseMessage/,
+      "não deve mais lançar erro duro pra promessa de comentário detectada",
+    );
+    assert.match(
+      SRC,
+      /console\.warn\(\s*`\[publish-instagram\] #8848:.*commentDeliveryPromiseMessage/s,
+      "deve logar aviso não-bloqueante em vez de lançar",
+    );
+  });
 });

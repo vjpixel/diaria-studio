@@ -20,7 +20,7 @@ import {
   readCarouselSourceHashes,
   DAILY_CAROUSEL_CTA_KICKER,
 } from "../scripts/lib/daily-carousel-card.ts";
-import { checkCarouselCardsStale, checkCarouselTextOverflow } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { checkCarouselCardsStale, checkCarouselTextOverflow, STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { genCarouselCards } from "../scripts/gen-carousel-cards.ts";
 
 const TEXTO = ["Primeiro parágrafo.", "Segundo parágrafo.", "Terceiro parágrafo."].join("\n\n");
@@ -105,6 +105,25 @@ describe("slide CTA com override (#8681)", () => {
       assert.equal(v.filter((x) => x.source_issue === "#8681" && x.severity === "error").length, 1);
       // sem duplicar no stale (que só roda no Stage 4)
       assert.equal(checkCarouselCardsStale(dir).filter((x) => x.source_issue === "#8681").length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#8848: legenda que promete entrega por comentário (caso real 260922) vira só WARNING, não bloqueia o gate", () => {
+    const dir = makeEdition();
+    try {
+      writeFileSync(
+        instagramTestOverridePath(dir),
+        JSON.stringify({
+          caption: "Quer receber o link da edição do dia? Siga @diar.ia.br e comente “quero” neste post.",
+        }),
+      );
+      const rule = STAGE_4_RULES.find((r) => r.id === "instagram-comment-delivery-promise");
+      assert.ok(rule, "rule instagram-comment-delivery-promise precisa existir no registry");
+      const v = rule!.run(dir);
+      assert.equal(v.length, 1, "detecta a promessa da legenda real de 260922");
+      assert.equal(v[0].severity, "warning", "#8848: rebaixado de error pra warning — heurística, editor decide");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

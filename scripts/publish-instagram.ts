@@ -543,12 +543,12 @@ async function main() {
     console.warn(`[publish-instagram] #8681: legenda de TESTE de _internal/instagram-test.json — substitui a gerada em todos os destaques.`);
   }
 
-  // #8681: guard contra a promessa — nunca publicar (nem em teste) uma
-  // legenda/CTA que peça comentário em troca de uma entrega (link/edição/
-  // material) que o projeto não tem como cumprir. Defesa em profundidade:
-  // o mesmo check já roda no invariante do Stage 4 (pode ser ignorado no
-  // gate), então recusa aqui, na hora de publicar de fato — erro duro, nunca
-  // publica em silêncio.
+  // #8681: guard contra a promessa de entrega via comentário. Rebaixado de
+  // erro duro pra aviso não-bloqueante no #8848 (decisão do editor,
+  // 260926) — `detectCommentDeliveryPromise` é heurística de regex com
+  // falsos positivos/negativos conhecidos (#8848), e o mesmo invariante do
+  // Stage 4 já virou "warning" pelo mesmo motivo: quem decide se a legenda
+  // de fato promete entrega é o editor, não o regex. Segue publicando.
   if (testOverride) {
     const candidates: Array<{ label: string; text: string | undefined }> = [
       { label: "caption", text: testOverride.caption },
@@ -558,7 +558,9 @@ async function main() {
     for (const { label, text } of candidates) {
       const result = detectCommentDeliveryPromise(text);
       if (result.promise) {
-        throw new Error(commentDeliveryPromiseMessage(`_internal/instagram-test.json (${label})`, result.match));
+        console.warn(
+          `[publish-instagram] #8848: ${commentDeliveryPromiseMessage(`_internal/instagram-test.json (${label})`, result.match)} (heurística — publicando mesmo assim, editor decide)`,
+        );
       }
     }
   }
