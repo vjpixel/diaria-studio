@@ -72,7 +72,7 @@ describe("detectCommentDeliveryPromise (#8681)", () => {
     assert.equal(r.promise, false);
   });
 
-  it("não dispara quando comentário e 'receber' estão longe demais na mesma frase (#8844)", () => {
+  it("não dispara com 'receber' solto (sem 'quer receber' nem objeto de entrega), mesmo perto do pedido de comentário (#8844/#8846)", () => {
     const r = detectCommentDeliveryPromise(
       "Quer saber mais sobre isso? Comenta aqui embaixo que a gente te ajuda a entender melhor esse assunto e outros que você quiser receber depois.",
     );
@@ -108,6 +108,18 @@ describe("detectCommentDeliveryPromise (#8681)", () => {
       const r = detectCommentDeliveryPromise(texto);
       assert.equal(r.promise, false, `não deveria bloquear: "${texto}"`);
     }
+  });
+
+  it("dispara com 'você recebe' dirigido ao leitor, mesma cobertura de 'quer receber' (#8846 review)", () => {
+    const r = detectCommentDeliveryPromise("Comenta aqui embaixo que você recebe o resumo completo no direct.");
+    assert.equal(r.promise, true);
+  });
+
+  it("NÃO dispara quando um objeto de entrega NOMEADO (sem direção ao leitor) aparece longe de um CTA de comentário disjunto na mesma legenda (#8846 review)", () => {
+    const r = detectCommentDeliveryPromise(
+      "Não perca a chance de saber mais! Link completo no perfil! Segue a gente, ativa as notificações e comenta aqui embaixo!",
+    );
+    assert.equal(r.promise, false);
   });
 
   it("commentDeliveryPromiseMessage nomeia a fonte e a ação corretiva", () => {
