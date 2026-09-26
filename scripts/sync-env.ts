@@ -30,14 +30,47 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Executa o comando Doppler e retorna stdout; lança em exit code != 0. */
 export type DopplerRunner = (args: string[]) => string;
 
-export const defaultDopplerRunner: DopplerRunner = (args) =>
-  execFileSync("doppler", args, { encoding: "utf8" });
+/**
+ * Caminho do fallback quando `doppler` não está no PATH (#8795) — instalação
+ * padrão do CLI Doppler em `~/.local/bin`, que só entra no PATH em shell de
+ * LOGIN. `ssh host "comando"` roda shell não-login (não lê `.profile`/
+ * `.bash_profile`), então um systemd unit ou um SSH não-interativo que
+ * chame `npm run sync-env` vê `doppler: ENOENT` mesmo com o binário
+ * instalado — reproduzido ao vivo em 24/09/2026 (issue #8795).
+ */
+function defaultDopplerFallbackPath(): string {
+  return resolve(homedir(), ".local", "bin", "doppler");
+}
+
+/**
+ * `DOPPLER_BIN`, quando setada, aponta o binário DIRETO — pula tanto o PATH
+ * quanto o fallback fixo. Serve dois papéis: (1) permitir que uma instalação
+ * atípica (Doppler fora de `$PATH` e fora de `~/.local/bin`) sempre funcione
+ * sem exigir um 3º fallback hardcoded; (2) permitir teste determinístico do
+ * runner sem depender de `doppler` real estar ou não instalado na máquina
+ * que roda a suíte (`test/sync-env.test.ts` injeta um binário fake aqui).
+ * Ausente/vazia: comportamento normal (PATH → fallback `~/.local/bin`).
+ */
+export const defaultDopplerRunner: DopplerRunner = (args) => {
+  const override = process.env.DOPPLER_BIN;
+  if (override) {
+    return execFileSync(override, args, { encoding: "utf8" });
+  }
+  try {
+    return execFileSync("doppler", args, { encoding: "utf8" });
+  } catch (err) {
+    const isEnoent = typeof err === "object" && err !== null && (err as NodeJS.ErrnoException).code === "ENOENT";
+    if (!isEnoent) throw err;
+    return execFileSync(defaultDopplerFallbackPath(), args, { encoding: "utf8" });
+  }
+};
 
 export interface SyncEnvOptions {
   /**
