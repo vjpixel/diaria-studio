@@ -63,6 +63,10 @@ function baseDeps(dir: string, overrides: Partial<AdsTestWatchDeps> = {}): Parti
     isSnapshotUsable: () => ({ usable: true, reason: null }),
     commentOnReligarBrevoIssue: () => ({ status: 0, stdout: "", stderr: "" }),
     execMode: () => "local",
+    // #8853 — default do teste simula a task AINDA desarmada (o cenário
+    // legado, pré-#8853, onde o alarme sempre dispara); os testes dedicados
+    // de #8853 abaixo sobrescrevem para `true`/`null`.
+    resolveBrevoTaskEnabled: () => false,
     ...overrides,
   } satisfies Partial<AdsTestWatchDeps>;
 }
@@ -306,6 +310,86 @@ describe("#5845 — ads-test-watch main (I/O): religar-brevo", () => {
       assert.match(ghCalls[0], /D\+21/);
       const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
       assert.ok(watchState.religarBrevoTriggeredAt);
+    });
+  });
+
+  // #8853 — o alarme não pode disparar (nem comentar em #5838) quando a task
+  // já está `enabled: true` de verdade: caso real do #8851, onde a task
+  // estava religada desde 21/08 (#5838) e o alarme mandou "reverter
+  // `enabled: false`" sem que isso existisse mais.
+  it("#8853 — task JÁ enabled:true → sem alarme, sem comentário, cursor marcado direto", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      const ghCalls: string[] = [];
+      const notifyCalls: string[] = [];
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.religar_brevo + "T06:30:00.000Z"),
+          resolveBrevoTaskEnabled: () => true,
+          commentOnReligarBrevoIssue: (body) => {
+            ghCalls.push(body);
+            return { status: 0, stdout: "", stderr: "" };
+          },
+          notify: async (finding) => {
+            notifyCalls.push(finding.check);
+            return fakeNotifyResult();
+          },
+        }),
+      );
+
+      assert.equal(ghCalls.length, 0, "não deve comentar em #5838 — já religada, nada a fazer");
+      assert.ok(!notifyCalls.includes("ads-test-watch-religar-brevo"), "não deve alarmar — já religada");
+      const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
+      assert.ok(watchState.religarBrevoTriggeredAt, "cursor deve avançar mesmo sem alarme, pra não reavaliar todo dia");
+    });
+  });
+
+  it("#8853 — task enabled:false (desarmada de propósito) → alarme dispara normalmente", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      const ghCalls: string[] = [];
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.religar_brevo + "T06:30:00.000Z"),
+          resolveBrevoTaskEnabled: () => false,
+          commentOnReligarBrevoIssue: (body) => {
+            ghCalls.push(body);
+            return { status: 0, stdout: "", stderr: "" };
+          },
+        }),
+      );
+
+      assert.equal(ghCalls.length, 1, "task realmente desarmada — o alarme continua útil");
+      const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
+      assert.ok(watchState.religarBrevoTriggeredAt);
+    });
+  });
+
+  it("#8853 — estado indeterminado (task não encontrada no registro) → fail-safe, alarme dispara", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      const ghCalls: string[] = [];
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.religar_brevo + "T06:30:00.000Z"),
+          resolveBrevoTaskEnabled: () => null,
+          commentOnReligarBrevoIssue: (body) => {
+            ghCalls.push(body);
+            return { status: 0, stdout: "", stderr: "" };
+          },
+        }),
+      );
+
+      assert.equal(ghCalls.length, 1, "indeterminado é fail-safe pro lado de alarmar, nunca de silenciar");
     });
   });
 });

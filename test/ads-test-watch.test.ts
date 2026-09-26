@@ -134,6 +134,21 @@ describe("#5845 — ads-test-watch: planAdsTestWatchActions", () => {
     assert.equal(plan.runApuracao, false);
   });
 
+  it("#8853 — D+21 chegou, task JÁ enabled:true → triggerReligarBrevo false (nada a fazer)", () => {
+    const plan = planAdsTestWatchActions(RUN_STATE.religar_brevo, RUN_STATE, null, emptyAdsTestWatchState(), true);
+    assert.equal(plan.triggerReligarBrevo, false);
+  });
+
+  it("#8853 — D+21 chegou, task enabled:false (desarmada de propósito) → triggerReligarBrevo true", () => {
+    const plan = planAdsTestWatchActions(RUN_STATE.religar_brevo, RUN_STATE, null, emptyAdsTestWatchState(), false);
+    assert.equal(plan.triggerReligarBrevo, true);
+  });
+
+  it("#8853 — D+21 chegou, estado indeterminado (null) → fail-safe, triggerReligarBrevo true", () => {
+    const plan = planAdsTestWatchActions(RUN_STATE.religar_brevo, RUN_STATE, null, emptyAdsTestWatchState(), null);
+    assert.equal(plan.triggerReligarBrevo, true);
+  });
+
   it("task ficou parada e passou tanto D+21 quanto a apuração → os dois disparam no mesmo run", () => {
     const plan = planAdsTestWatchActions("2026-12-01", RUN_STATE, null, emptyAdsTestWatchState());
     assert.equal(plan.triggerReligarBrevo, true);
