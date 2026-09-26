@@ -20,8 +20,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -410,19 +410,35 @@ describe("entrypoint guard (#5679)", () => {
     // oposto do que este teste quer. Antes do fix de `repoRoot` acima isso
     // ficava escondido: o spawn falhava por caminho inexistente e o
     // `notEqual(status, 0)` passava pelo motivo errado.
+    //
+    // `HOME` aponta pra um diretório vazio recém-criado (#8795, review do
+    // PR #8800 finding 1): desde que `defaultDopplerRunner` ganhou o
+    // fallback fixo `~/.local/bin/doppler`, tirar `doppler` só do PATH não
+    // basta mais pra isolar este teste — numa máquina onde o fallback real
+    // existe (o cenário que a própria issue #8795 descreve), o subprocesso
+    // cairia nele e faria a chamada de rede real que este teste sempre quis
+    // evitar. Um HOME vazio garante que `resolve(homedir(), ".local/bin/doppler")`
+    // aponta pra um caminho inexistente, independente do que a máquina real
+    // tiver instalado.
     const strippedPath = process.env.PATH?.split(delimiter)
       .filter((entry) => !existsSync(join(entry, "doppler")) && !existsSync(join(entry, "doppler.exe")))
       .join(delimiter);
+    const emptyHome = mkdtempSync(join(tmpdir(), "sync-env-test-home-"));
 
-    const result = spawnSync(
-      process.execPath,
-      ["--import", "tsx", join(repoRoot, "scripts", "sync-env.ts")],
-      {
-        cwd: repoRoot,
-        encoding: "utf8",
-        env: { ...process.env, PATH: strippedPath ?? "" },
-      },
-    );
+    let result: SpawnSyncReturns<string>;
+    try {
+      result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", join(repoRoot, "scripts", "sync-env.ts")],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: { ...process.env, PATH: strippedPath ?? "", HOME: emptyHome, DOPPLER_BIN: "" },
+        },
+      );
+    } finally {
+      rmSync(emptyHome, { recursive: true, force: true });
+    }
 
     // main() rodou: tentou chamar `doppler` (ausente do PATH stripado),
     // capturou o erro no catch de main() e reportou via stderr + exit
@@ -430,5 +446,92 @@ describe("entrypoint guard (#5679)", () => {
     // stdout/stderr vazios e exit code 0.
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Falha ao sincronizar \.env via Doppler/);
+  });
+});
+
+describe("defaultDopplerRunner fallback (#8795)", () => {
+  /**
+   * Roda `defaultDopplerRunner` num subprocesso isolado (nunca no processo
+   * do test runner) com `HOME`/`PATH`/`DOPPLER_BIN` controlados — cada
+   * cenário abaixo precisa de um `homedir()`/PATH diferente, e mutar
+   * `process.env` no processo do runner vazaria entre `it()`s executados em
+   * paralelo. O script inline nunca toca `.env` real; só chama
+   * `defaultDopplerRunner` isoladamente e imprime o resultado (ou o `.code`
+   * do erro) em stdout.
+   */
+  function runDefaultDopplerRunner(env: Record<string, string>): { status: number | null; stdout: string } {
+    const inline =
+      "import { defaultDopplerRunner } from './scripts/sync-env.ts';" +
+      "try { process.stdout.write('OK:' + defaultDopplerRunner(['secrets','download'])); }" +
+      "catch (e) { process.stdout.write('ERR:' + (e && e.code)); }";
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "-e", inline],
+      { cwd: repoRoot, encoding: "utf8", env },
+    );
+    return { status: result.status, stdout: result.stdout };
+  }
+
+  /** Diretório que só tem `node` no PATH — nunca resolve `doppler` real. */
+  const nodeOnlyPath = dirname(process.execPath);
+
+  function makeFakeDopplerScript(dir: string, output: string): string {
+    const scriptPath = join(dir, "doppler");
+    writeFileSync(scriptPath, `#!/bin/sh\necho "${output}"\n`, "utf8");
+    chmodSync(scriptPath, 0o755);
+    return scriptPath;
+  }
+
+  it("cai para ~/.local/bin/doppler quando `doppler` não está no PATH (ENOENT)", () => {
+    // Exercita o MECANISMO real de fallback (resolve(homedir(), ".local/bin/doppler")),
+    // não um substituto injetado — HOME aponta pra um diretório fake com o
+    // binário fallback presente, PATH não tem `doppler`, sem DOPPLER_BIN.
+    const fakeHome = mkdtempSync(join(tmpdir(), "sync-env-test-fallback-home-"));
+    try {
+      const fallbackDir = join(fakeHome, ".local", "bin");
+      mkdirSync(fallbackDir, { recursive: true });
+      makeFakeDopplerScript(fallbackDir, "FAKE_KEY=from-fallback-bin");
+
+      const { status, stdout } = runDefaultDopplerRunner({ HOME: fakeHome, PATH: nodeOnlyPath, DOPPLER_BIN: "" });
+      assert.equal(status, 0);
+      assert.equal(stdout, "OK:FAKE_KEY=from-fallback-bin\n");
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("propaga ENOENT quando nem o PATH nem o fallback ~/.local/bin têm doppler", () => {
+    // HOME aponta pra um diretório vazio (sem .local/bin/doppler) — nem o
+    // PATH nem o fallback resolvem, então o erro ENOENT original propaga.
+    const emptyHome = mkdtempSync(join(tmpdir(), "sync-env-test-noenv-home-"));
+    try {
+      const { status, stdout } = runDefaultDopplerRunner({ HOME: emptyHome, PATH: nodeOnlyPath, DOPPLER_BIN: "" });
+      assert.equal(status, 0); // o script capturou o erro e reportou via stdout, não deixou escapar
+      assert.equal(stdout, "ERR:ENOENT");
+    } finally {
+      rmSync(emptyHome, { recursive: true, force: true });
+    }
+  });
+
+  it("usa DOPPLER_BIN direto quando definida, pulando PATH e o fallback fixo", () => {
+    // HOME não tem fallback nenhum e PATH não tem doppler — se DOPPLER_BIN
+    // não fosse consumida (achado do review do PR #8800: a env var era
+    // testada mas nunca lida por scripts/sync-env.ts), este cenário
+    // lançaria ENOENT em vez de usar o binário fake apontado por DOPPLER_BIN.
+    const emptyHome = mkdtempSync(join(tmpdir(), "sync-env-test-dopplerbin-home-"));
+    const binDir = mkdtempSync(join(tmpdir(), "sync-env-test-dopplerbin-"));
+    try {
+      const fakeBin = makeFakeDopplerScript(binDir, "FAKE_KEY=from-dopplerbin-override");
+      const { status, stdout } = runDefaultDopplerRunner({
+        HOME: emptyHome,
+        PATH: nodeOnlyPath,
+        DOPPLER_BIN: fakeBin,
+      });
+      assert.equal(status, 0);
+      assert.equal(stdout, "OK:FAKE_KEY=from-dopplerbin-override\n");
+    } finally {
+      rmSync(emptyHome, { recursive: true, force: true });
+      rmSync(binDir, { recursive: true, force: true });
+    }
   });
 });

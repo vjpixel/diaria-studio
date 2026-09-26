@@ -114,6 +114,16 @@ pedir convite pro workspace): seguir o fluxo manual antigo — copiar
 `.env.example` pra `.env` e preencher cada chave conforme os comentários
 (cada uma documenta onde gerar/renovar).
 
+**`doppler` fora do PATH em SSH não-login (#8795, achado 24/09/2026).**
+`ssh host "cd repo && npm run sync-env"` roda um shell NÃO-login — não lê
+`.profile`/`.bash_profile`, então instalações do CLI Doppler feitas em
+`~/.local/bin` (padrão do instalador oficial) ficam invisíveis mesmo
+existindo no disco: `spawnSync doppler ENOENT`. `defaultDopplerRunner`
+(`scripts/sync-env.ts`) já tenta esse caso automaticamente — se `doppler`
+não resolve no PATH, cai pra `~/.local/bin/doppler` antes de desistir.
+Pra qualquer outro caminho de instalação atípico, `DOPPLER_BIN=/caminho/pro/doppler
+npm run sync-env` aponta o binário direto, pulando PATH e o fallback fixo.
+
 ## O que está fora do vault (de propósito)
 
 - `data/.credentials.json` (Google OAuth) e `data/.fb-credentials.json`
