@@ -79,6 +79,37 @@ describe("detectCommentDeliveryPromise (#8681)", () => {
     assert.equal(r.promise, false);
   });
 
+  it("não dispara com 'mando o'/'envio a' sem leitor, mesmo perto do pedido de comentário (#8846)", () => {
+    const casos = [
+      "Mando o resumo pro grupo depois, viu? Comenta aqui o que achou.",
+      "Envio a pauta pro pessoal do escritório amanhã, comenta aqui o que achou.",
+    ];
+    for (const texto of casos) {
+      const r = detectCommentDeliveryPromise(texto);
+      assert.equal(r.promise, false, `não deveria bloquear: "${texto}"`);
+    }
+  });
+
+  it("dispara na pergunta-gancho 'quer receber' mesmo com o pedido de comentário mais longe (#8846)", () => {
+    const r = detectCommentDeliveryPromise(
+      'Quer receber o link da edição do dia? Siga a gente aqui no Instagram @diar.ia.br, ative as notificações e comente "quero" aqui embaixo neste post.',
+    );
+    assert.equal(r.promise, true);
+  });
+
+  it("NÃO bloqueia CTAs neutras realistas de Instagram (#8846)", () => {
+    const casos = [
+      "Comente o que achou!",
+      "Conta nos comentários se você já usou",
+      "Salva pra ler depois e comenta sua opinião",
+      "Recebeu a edição de hoje? Comenta o que achou.",
+    ];
+    for (const texto of casos) {
+      const r = detectCommentDeliveryPromise(texto);
+      assert.equal(r.promise, false, `não deveria bloquear: "${texto}"`);
+    }
+  });
+
   it("commentDeliveryPromiseMessage nomeia a fonte e a ação corretiva", () => {
     const msg = commentDeliveryPromiseMessage("_internal/instagram-test.json (caption)", '"comente" + "receber"');
     assert.match(msg, /_internal\/instagram-test\.json \(caption\)/);

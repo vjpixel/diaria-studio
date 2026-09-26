@@ -31,15 +31,20 @@ const COMMENT_ACTION_PATTERNS: RegExp[] = [
 ];
 
 // Todos os padrões abaixo exigem que a promessa seja DIRIGIDA AO LEITOR
-// ("te", "você", "pra você") — não basta "vou mandar" solto, que também
-// aparece em contextos sem relação com o pedido de comentário (ex: "vou
-// mandar pro grupo", #8844).
+// ("te", "você", "pra você") OU que nomeie explicitamente o objeto de
+// entrega (link/edição/material) — não basta "mando"/"envio" solto, que
+// também aparece em contextos sem relação com o pedido de comentário (ex:
+// "mando o resumo pro grupo", "envio a pauta pro pessoal do escritório",
+// #8846 — 2ª correção do #8844, que ainda deixava "mando o"/"envio a"
+// passarem sem leitor nenhum). "receber" sozinho (sem objeto de entrega
+// nomeado) é promessa FRACA/ambígua e não dispara sozinho — só a forma
+// forte "quer receber" (pergunta-gancho, #8846) conta.
 const DELIVERY_PROMISE_PATTERNS: RegExp[] = [
-  /receber/i,
   /te\s+mand[ao]/i,
   /te\s+envi[ao]/i,
   /vou\s+te\s+(?:mandar|enviar)/i,
-  /(?:mando|envio|mandamos|enviamos)\s+(?:pra\s+voc[eê]|para\s+voc[eê]|o|a|pra|para|pro)/i,
+  /(?:mando|envio|mandamos|enviamos)\s+(?:pra\s+voc[eê]|para\s+voc[eê])/i,
+  /quer\s+receber/i,
   /link\s+da\s+edi[cç][aã]o/i,
   /edi[cç][aã]o\s+do\s+dia/i,
   /link\s+completo/i,
@@ -48,12 +53,17 @@ const DELIVERY_PROMISE_PATTERNS: RegExp[] = [
 ];
 
 // Distância máxima (em palavras) entre o pedido de comentário e a promessa
-// de entrega dentro do mesmo segmento pra contar como relacionados — sem
-// isso, qualquer co-ocorrência solta no mesmo segmento dispara (achado do
-// #8844: "Comenta se você também compartilhou" tão longe de "vou mandar"
-// quanto "Comenta aqui embaixo" está de "quiser receber depois" no fim de
-// uma frase longa e sem relação nenhuma entre as duas).
-const MAX_WORD_GAP = 10;
+// de entrega dentro do mesmo segmento pra contar como relacionados. Alto e
+// generoso, só como sanidade (#8846) — o filtro real de "relacionados" já é
+// exigir uma promessa FORTE (dirigida ao leitor, ou objeto de entrega
+// nomeado, ou pergunta-gancho "quer receber"), não mais a distância entre os
+// dois matches: um teto curto (10, #8844) deixava escapar a pergunta-gancho
+// real ("Quer receber o link da edição do dia? Siga a gente ... e comente
+// 'quero' aqui embaixo", #8846) só porque o CTA de seguir/ativar notificação
+// no meio empurra o pedido de comentário pra mais de 10 palavras de
+// distância — sem relação nenhuma com o #8844 original ("vou mandar pro
+// grupo" + "Comenta", que já é descartado por não ter leitor, não pelo gap).
+const MAX_WORD_GAP = 30;
 
 export interface CommentDeliveryPromiseResult {
   promise: boolean;
