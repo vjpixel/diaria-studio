@@ -46,6 +46,16 @@
  * consumidores fazem perguntas opostas, com custo de erro em direções
  * opostas).
  *
+ * **#8842 — `suppressAgedClaimOverlap` remove findings `claimed-por-outra-
+ * sessao` cuja issue já aparece na lista de claims envelhecidas (#6436)
+ * abaixo.** Sem essa dedup, uma sessão `continuo` que re-reivindica sem
+ * nunca soltar produzia DOIS sinais contraditórios pra mesma issue: este
+ * gate dizia "claim liberado, reavalie dispatch" (janela curta, 90min,
+ * #7297) enquanto `claimed_issues_effective` ainda segurava a issue por até
+ * 24h (#7227) — reavaliar nesse caso é sempre inútil, `claim-issue`/
+ * `is-claimed` recusam de novo. Ver docstring de `suppressAgedClaimOverlap`
+ * em `block-staleness.ts` pro racional completo e o achado ao vivo (#8795).
+ *
  * @see scripts/lib/block-staleness.ts
  * @see scripts/lib/claim-staleness.ts (#6436, checagem de claim envelhecida)
  * @see scripts/check-state-changed-pending.ts (padrão de estilo + gate irmão)
@@ -59,6 +69,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   findStaleBlocks,
+  suppressAgedClaimOverlap,
   type BlockStalenessConsultor,
   type BlockStalenessPlanIssue,
   type IssueState,
@@ -237,7 +248,7 @@ if (isMainModule(import.meta.url)) {
 
   const repoRoot = process.cwd();
   const consultor = buildRealConsultor(repoRoot);
-  const findings = findStaleBlocks(issues, consultor);
+  const rawFindings = findStaleBlocks(issues, consultor);
 
   // #6436 — teto de idade de claim sem PR aberto, INDEPENDENTE do plan.json
   // (varre `data/sessions/` inteiro, não só as issues `pulada` deste plano —
@@ -253,6 +264,13 @@ if (isMainModule(import.meta.url)) {
     hasOpenPr,
     isIssueClosed,
   );
+
+  // #8842 — suprime `claimed-por-outra-sessao` quando a mesma issue já
+  // aparece como claim envelhecida (#6436): reavaliar dispatch nesse caso é
+  // garantidamente inútil (`claim-issue` recusa até a janela de 24h passar,
+  // #7227) — ver docstring de `suppressAgedClaimOverlap`.
+  const agedClaimIssueNumbers = new Set(agedClaims.map((c) => c.issueNumber));
+  const findings = suppressAgedClaimOverlap(rawFindings, agedClaimIssueNumbers);
 
   if (findings.length === 0 && agedClaims.length === 0) {
     console.log(
