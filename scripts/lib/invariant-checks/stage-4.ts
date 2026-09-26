@@ -1869,10 +1869,13 @@ function checkCarouselTextOverflow(editionDir: string): InvariantViolation[] {
  * texto normal do `03-social.md` (ele não passa por este mecanismo de
  * override, e a legenda de produção não tem histórico desse padrão).
  *
- * Bloqueia o gate (error) — mesma severidade do `carousel-text-overflow`
- * pra JSON malformado: instrução editorial explícita não é ignorada em
- * silêncio, e a mesma checagem roda de novo em `publish-instagram.ts` antes
- * de publicar (defesa em profundidade — o gate pode ser ignorado).
+ * Severity: "warning" (rebaixado de "error" no #8848, decisão do editor
+ * 260926) — `detectCommentDeliveryPromise` é heurística de regex com falsos
+ * positivos e negativos conhecidos (ver #8848), então o gate SURFACES o
+ * achado no resumo do Stage 4 mas quem decide se a legenda de fato promete
+ * entrega por comentário é o editor, não o regex. `publish-instagram.ts`
+ * também não bloqueia mais nesse caso (só loga aviso) — ver
+ * `scripts/publish-instagram.ts`.
  *
  * Blind spot conhecido (code-review do #8681): se `03-social.md` estiver
  * ausente/malformado NA MESMA edição em que `instagram-test.json` também
@@ -1906,9 +1909,9 @@ function checkInstagramCommentDeliveryPromise(editionDir: string): InvariantViol
     if (!result.promise) continue;
     violations.push({
       rule: "instagram-comment-delivery-promise",
-      message: commentDeliveryPromiseMessage(`_internal/instagram-test.json (${label})`, result.match),
+      message: commentDeliveryPromiseMessage(`_internal/instagram-test.json (${label})`, result.match) + " (heurística de regex — o editor decide se a legenda promete entrega por comentário, #8848)",
       source_issue: "#8681",
-      severity: "error",
+      severity: "warning",
       file: path,
     });
   }
@@ -2736,7 +2739,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "instagram-comment-delivery-promise",
-    description: "override de teste do Instagram (_internal/instagram-test.json) promete entregar link/edição/material a quem comentar — o repo não responde comentários (#8681)",
+    description: "override de teste do Instagram (_internal/instagram-test.json) promete entregar link/edição/material a quem comentar — o repo não responde comentários (#8681, warning-only desde #8848: heurística de regex, editor decide)",
     source_issue: "#8681",
     stage: 4,
     run: checkInstagramCommentDeliveryPromise,
