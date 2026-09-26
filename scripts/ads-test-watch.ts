@@ -76,6 +76,7 @@ import {
 import { normalizePauseIntervals, dailyBudgetForDate, type AdsTestRunStateWithPause } from "./lib/ads-test-pause-window.ts";
 import { fetchCampaignEconomicsSources } from "./lib/ads-campaign-economics-fetch.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
+import { getScheduledTaskByName } from "./lib/scheduled-tasks.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const AQUISICAO_DIR = resolve(ROOT, "data/aquisicao");
@@ -143,6 +144,23 @@ export interface AdsTestWatchDeps {
    *  `resolveArmSpend` (`scripts/lib/ads-test-watch.ts`) trata a ausência
    *  de dado pra um braço como fallback pro CSV, rotulado. */
   fetchAutoSpend: () => Promise<Map<string, Map<string, number>>>;
+  /** #8853 — estado ATUAL de `Diaria-Brevo-Diaria-Evaluate` em
+   *  `scripts/lib/scheduled-tasks.ts`: `true` = já religada (`enabled`
+   *  ausente ou `true`), `false` = desarmada de propósito, `null` =
+   *  indeterminado (task não encontrada no registro — nunca deveria
+   *  acontecer em produção, mas fail-safe: `null` faz o alarme disparar
+   *  igual, melhor ruído a mais do que perder um religamento). Injetável só
+   *  pra teste — produção sempre `realResolveBrevoTaskEnabled`. */
+  resolveBrevoTaskEnabled: () => boolean | null;
+}
+
+/** Nome exato da task em `scripts/lib/scheduled-tasks.ts` (#8853). */
+export const BREVO_DIARIA_TASK_NAME = "Diaria-Brevo-Diaria-Evaluate";
+
+function realResolveBrevoTaskEnabled(): boolean | null {
+  const task = getScheduledTaskByName(BREVO_DIARIA_TASK_NAME);
+  if (!task) return null;
+  return task.enabled !== false;
 }
 
 function realBuildOrigemMap(): boolean {
@@ -228,6 +246,7 @@ function defaultDeps(argv: string[]): AdsTestWatchDeps {
       spawnGhSync(["issue", "comment", String(RELIGAR_BREVO_ISSUE_NUMBER), "--body", body], ROOT),
     execMode: () => detectExecMode({ projectRoot: ROOT }),
     fetchAutoSpend: realFetchAutoSpend,
+    resolveBrevoTaskEnabled: realResolveBrevoTaskEnabled,
   };
 }
 
@@ -282,10 +301,26 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
   const now = deps.now();
   const nowDateStr = now.toISOString().slice(0, 10);
 
-  const plan = planAdsTestWatchActions(nowDateStr, runState, deps.plannedD0, watchState);
+  const brevoTaskEnabled = deps.resolveBrevoTaskEnabled();
+  const plan = planAdsTestWatchActions(nowDateStr, runState, deps.plannedD0, watchState, brevoTaskEnabled);
   console.log(
-    `${LOG_PREFIX} ${nowDateStr} runState=${runState ? runState.d0 : "ausente"} plan=${JSON.stringify(plan)}`,
+    `${LOG_PREFIX} ${nowDateStr} runState=${runState ? runState.d0 : "ausente"} brevoTaskEnabled=${brevoTaskEnabled} plan=${JSON.stringify(plan)}`,
   );
+
+  // #8853 — a task já está religada de verdade (`enabled !== false`), então
+  // o alarme não tem o que fazer: marca o cursor de idempotência como
+  // disparado (sem alarme, sem comentário na issue) pra não reavaliar isto
+  // todo dia até o próximo teste reusar o mecanismo. `brevoTaskEnabled ===
+  // null` (indeterminado) NUNCA cai aqui — o `!== true` em
+  // `planAdsTestWatchActions` já garante que só disparamos este atalho
+  // quando temos certeza (`true`), fail-safe pro resto.
+  if (runState && nowDateStr >= runState.religar_brevo && watchState.religarBrevoTriggeredAt == null && brevoTaskEnabled === true) {
+    console.log(`${LOG_PREFIX} religar-brevo: já religada, nada a fazer.`);
+    if (!isDryRun) {
+      watchState = markReligarBrevoTriggered(watchState, now.toISOString());
+      saveWatchState(watchState, deps.watchStatePath);
+    }
+  }
 
   const findings: NotifyEditorFinding[] = [];
   // #8432 — os 2 cursores de idempotência (religarBrevoTriggeredAt/

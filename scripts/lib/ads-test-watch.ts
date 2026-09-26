@@ -80,6 +80,16 @@ export interface AdsTestWatchPlan {
  * ainda" que este campo cobre); passe `null` quando não houver nenhuma data
  * planejada conhecida (o caller então nunca alarma `alarmMissingD0Overdue`).
  *
+ * `brevoTaskEnabled` (#8853) — estado ATUAL da task `Diaria-Brevo-Diaria-Evaluate`
+ * em `scripts/lib/scheduled-tasks.ts` (`true` = `enabled` — ausência do campo
+ * conta como `true`, ver `getScheduledTaskByName(...)?.enabled !== false` no
+ * caller; `false` = task desarmada de propósito, `enabled: false`). `null` =
+ * indeterminado (falha ao ler o registro) — fail-safe: continua disparando o
+ * alarme, melhor ruído a mais do que perder um religamento de verdade. Caso
+ * real que motivou (#8851): a task já estava religada desde 21/08 (#5838) e o
+ * alarme disparou mesmo assim, porque só olhava a DATA, nunca o estado real
+ * da task.
+ *
  * @pure
  */
 export function planAdsTestWatchActions(
@@ -87,6 +97,7 @@ export function planAdsTestWatchActions(
   runState: AdsTestRunState | null,
   plannedD0: DateOnlyString | null,
   watchState: AdsTestWatchState,
+  brevoTaskEnabled: boolean | null = null,
 ): AdsTestWatchPlan {
   if (runState == null) {
     return {
@@ -117,7 +128,8 @@ export function planAdsTestWatchActions(
     alarmMissingD0Overdue: false,
     checkClicksCoverage: coverageDateInRange,
     checkDeathConditions: withinWindow,
-    triggerReligarBrevo: nowDateStr >= runState.religar_brevo && watchState.religarBrevoTriggeredAt == null,
+    triggerReligarBrevo:
+      nowDateStr >= runState.religar_brevo && watchState.religarBrevoTriggeredAt == null && brevoTaskEnabled !== true,
     runApuracao: nowDateStr >= runState.apuracao_snapshot && watchState.apuracaoCompletedAt == null,
   };
 }
