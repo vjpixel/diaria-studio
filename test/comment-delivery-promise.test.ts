@@ -72,9 +72,52 @@ describe("detectCommentDeliveryPromise (#8681)", () => {
     assert.equal(r.promise, false);
   });
 
-  it("não dispara quando comentário e 'receber' estão longe demais na mesma frase (#8844)", () => {
+  it("não dispara com 'receber' solto (sem 'quer receber' nem objeto de entrega), mesmo perto do pedido de comentário (#8844/#8846)", () => {
     const r = detectCommentDeliveryPromise(
       "Quer saber mais sobre isso? Comenta aqui embaixo que a gente te ajuda a entender melhor esse assunto e outros que você quiser receber depois.",
+    );
+    assert.equal(r.promise, false);
+  });
+
+  it("não dispara com 'mando o'/'envio a' sem leitor, mesmo perto do pedido de comentário (#8846)", () => {
+    const casos = [
+      "Mando o resumo pro grupo depois, viu? Comenta aqui o que achou.",
+      "Envio a pauta pro pessoal do escritório amanhã, comenta aqui o que achou.",
+    ];
+    for (const texto of casos) {
+      const r = detectCommentDeliveryPromise(texto);
+      assert.equal(r.promise, false, `não deveria bloquear: "${texto}"`);
+    }
+  });
+
+  it("dispara na pergunta-gancho 'quer receber' mesmo com o pedido de comentário mais longe (#8846)", () => {
+    const r = detectCommentDeliveryPromise(
+      'Quer receber o link da edição do dia? Siga a gente aqui no Instagram @diar.ia.br, ative as notificações e comente "quero" aqui embaixo neste post.',
+    );
+    assert.equal(r.promise, true);
+  });
+
+  it("NÃO bloqueia CTAs neutras realistas de Instagram (#8846)", () => {
+    const casos = [
+      "Comente o que achou!",
+      "Conta nos comentários se você já usou",
+      "Salva pra ler depois e comenta sua opinião",
+      "Recebeu a edição de hoje? Comenta o que achou.",
+    ];
+    for (const texto of casos) {
+      const r = detectCommentDeliveryPromise(texto);
+      assert.equal(r.promise, false, `não deveria bloquear: "${texto}"`);
+    }
+  });
+
+  it("dispara com 'você recebe' dirigido ao leitor, mesma cobertura de 'quer receber' (#8846 review)", () => {
+    const r = detectCommentDeliveryPromise("Comenta aqui embaixo que você recebe o resumo completo no direct.");
+    assert.equal(r.promise, true);
+  });
+
+  it("NÃO dispara quando um objeto de entrega NOMEADO (sem direção ao leitor) aparece longe de um CTA de comentário disjunto na mesma legenda (#8846 review)", () => {
+    const r = detectCommentDeliveryPromise(
+      "Não perca a chance de saber mais! Link completo no perfil! Segue a gente, ativa as notificações e comenta aqui embaixo!",
     );
     assert.equal(r.promise, false);
   });

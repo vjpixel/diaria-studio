@@ -30,30 +30,44 @@ const COMMENT_ACTION_PATTERNS: RegExp[] = [
   /nos\s+coment[aá]rios/i,
 ];
 
-// Todos os padrões abaixo exigem que a promessa seja DIRIGIDA AO LEITOR
-// ("te", "você", "pra você") — não basta "vou mandar" solto, que também
-// aparece em contextos sem relação com o pedido de comentário (ex: "vou
-// mandar pro grupo", #8844).
-const DELIVERY_PROMISE_PATTERNS: RegExp[] = [
-  /receber/i,
+// Promessas DIRIGIDAS AO LEITOR ("te", "você", "pra você") ou em forma de
+// pergunta-gancho explícita ("quer receber") — sinal forte de que a entrega
+// é prometida a QUEM vai comentar, não só mencionada de passagem. Não basta
+// "mando"/"envio" solto sem o leitor (ex: "mando o resumo pro grupo", "envio
+// a pauta pro pessoal do escritório", #8846 — 2ª correção do #8844, que
+// ainda deixava "mando o"/"envio a" passarem sem leitor nenhum). "receber"
+// sozinho (sem "quer" na frente, sem objeto de entrega nomeado) é promessa
+// FRACA/ambígua e não entra aqui.
+const DIRECTED_DELIVERY_PATTERNS: RegExp[] = [
   /te\s+mand[ao]/i,
   /te\s+envi[ao]/i,
   /vou\s+te\s+(?:mandar|enviar)/i,
-  /(?:mando|envio|mandamos|enviamos)\s+(?:pra\s+voc[eê]|para\s+voc[eê]|o|a|pra|para|pro)/i,
+  /(?:mando|envio|mandamos|enviamos)\s+(?:pra\s+voc[eê]|para\s+voc[eê])/i,
+  /quer\s+receber/i,
+  /voc[eê]\s+receb/i, // "você recebe(rá)"
+  /te\s+passo/i,
+];
+// Gap generoso (sanidade, não o filtro real): uma promessa DIRIGIDA já
+// carrega intenção suficiente pra tolerar um CTA de seguir/ativar
+// notificação empurrando o pedido de comentário pra mais longe na mesma
+// pergunta-gancho ("Quer receber o link? Siga a gente ... e comente 'quero'
+// aqui embaixo", #8846).
+const DIRECTED_MAX_WORD_GAP = 30;
+
+// Promessas que nomeiam o OBJETO de entrega (link/edição/material) mas sem
+// direção explícita ao leitor — mais fracas que as acima, porque também
+// aparecem em CTAs legítimos e não-relacionados dentro da mesma legenda
+// longa (ex: "Link completo no perfil! Segue a gente, ativa notificações e
+// comenta aqui embaixo!" — CTAs disjuntos, achado no review do #8846). Por
+// isso usam um gap bem mais curto: só contam quando genuinamente adjacentes
+// ao pedido de comentário, não em qualquer ponto da mesma legenda.
+const NAMED_OBJECT_DELIVERY_PATTERNS: RegExp[] = [
   /link\s+da\s+edi[cç][aã]o/i,
   /edi[cç][aã]o\s+do\s+dia/i,
   /link\s+completo/i,
   /material\s+completo/i,
-  /te\s+passo/i,
 ];
-
-// Distância máxima (em palavras) entre o pedido de comentário e a promessa
-// de entrega dentro do mesmo segmento pra contar como relacionados — sem
-// isso, qualquer co-ocorrência solta no mesmo segmento dispara (achado do
-// #8844: "Comenta se você também compartilhou" tão longe de "vou mandar"
-// quanto "Comenta aqui embaixo" está de "quiser receber depois" no fim de
-// uma frase longa e sem relação nenhuma entre as duas).
-const MAX_WORD_GAP = 10;
+const NAMED_OBJECT_MAX_WORD_GAP = 6;
 
 export interface CommentDeliveryPromiseResult {
   promise: boolean;
@@ -116,26 +130,33 @@ export function detectCommentDeliveryPromise(text: string | null | undefined): C
   // vazia.
   const segments = sentences.length > 0 ? sentences : [text];
 
+  const tiers: Array<{ patterns: RegExp[]; maxGap: number }> = [
+    { patterns: DIRECTED_DELIVERY_PATTERNS, maxGap: DIRECTED_MAX_WORD_GAP },
+    { patterns: NAMED_OBJECT_DELIVERY_PATTERNS, maxGap: NAMED_OBJECT_MAX_WORD_GAP },
+  ];
+
   for (const segment of segments) {
     const commentMatches = findAllMatches(COMMENT_ACTION_PATTERNS, segment);
     if (commentMatches.length === 0) continue;
 
-    const deliveryMatches = findAllMatches(DELIVERY_PROMISE_PATTERNS, segment);
-    if (deliveryMatches.length === 0) continue;
+    for (const { patterns, maxGap } of tiers) {
+      const deliveryMatches = findAllMatches(patterns, segment);
+      if (deliveryMatches.length === 0) continue;
 
-    let best: { gap: number; c: PatternMatch; d: PatternMatch } | null = null;
-    for (const c of commentMatches) {
-      for (const d of deliveryMatches) {
-        const gap = wordGap(segment, c, d);
-        if (!best || gap < best.gap) best = { gap, c, d };
+      let best: { gap: number; c: PatternMatch; d: PatternMatch } | null = null;
+      for (const c of commentMatches) {
+        for (const d of deliveryMatches) {
+          const gap = wordGap(segment, c, d);
+          if (!best || gap < best.gap) best = { gap, c, d };
+        }
       }
-    }
 
-    if (best && best.gap <= MAX_WORD_GAP) {
-      return {
-        promise: true,
-        match: `"${best.c.text}" + "${best.d.text}"`,
-      };
+      if (best && best.gap <= maxGap) {
+        return {
+          promise: true,
+          match: `"${best.c.text}" + "${best.d.text}"`,
+        };
+      }
     }
   }
 
