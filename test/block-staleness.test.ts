@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import {
   extractPrNumber,
   findStaleBlocks,
+  suppressAgedClaimOverlap,
   type BlockStalenessConsultor,
   type BlockStalenessPlanIssue,
   type PrState,
+  type StaleBlockFinding,
 } from "../scripts/lib/block-staleness.ts";
 
 /** Consultor fake, configurável por teste — zero rede, zero `gh`,
@@ -277,4 +279,30 @@ test("mistura de findings caducados e válidos: só os caducados voltam, ordenad
     findings.map((f) => f.number),
     [100, 300],
   );
+});
+
+// --- suppressAgedClaimOverlap (#8842) -----------------------------------
+
+test("suppressAgedClaimOverlap: remove claimed-por-outra-sessao quando a issue está na lista de claims envelhecidas", () => {
+  const findings: StaleBlockFinding[] = [
+    { number: 8795, category: "claimed-por-outra-sessao", motivo: "claimed-por-outra-sessao", reason: "nenhuma sessão ativa segura mais esta issue — claim liberado" },
+  ];
+  const result = suppressAgedClaimOverlap(findings, new Set([8795]));
+  assert.deepEqual(result, []);
+});
+
+test("suppressAgedClaimOverlap: mantém claimed-por-outra-sessao quando a issue NÃO está entre as claims envelhecidas", () => {
+  const findings: StaleBlockFinding[] = [
+    { number: 8795, category: "claimed-por-outra-sessao", motivo: "claimed-por-outra-sessao", reason: "nenhuma sessão ativa segura mais esta issue — claim liberado" },
+  ];
+  const result = suppressAgedClaimOverlap(findings, new Set([1234]));
+  assert.deepEqual(result, findings);
+});
+
+test("suppressAgedClaimOverlap: nunca remove categorias diferentes de claimed-por-outra-sessao, mesmo com overlap de número", () => {
+  const findings: StaleBlockFinding[] = [
+    { number: 8795, category: "pr-em-voo", motivo: "pr-em-voo", reason: "PR #1 já está mergeado — bloqueio caducou" },
+  ];
+  const result = suppressAgedClaimOverlap(findings, new Set([8795]));
+  assert.deepEqual(result, findings);
 });

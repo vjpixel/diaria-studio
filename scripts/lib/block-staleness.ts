@@ -219,3 +219,32 @@ export function findStaleBlocks(
 
   return findings.sort((a, b) => a.number - b.number);
 }
+
+/**
+ * #8842 — remove findings `claimed-por-outra-sessao` cuja issue também
+ * aparece como claim ENVELHECIDA (`findAgedClaims`, `claim-staleness.ts`,
+ * #6436). As duas checagens usam janelas DIFERENTES de propósito (ver
+ * `isIssueClaimedActive`/`isIssueClaimedByActiveSession` em
+ * `session-registry.ts`, #7297) e por isso podem apontar pra ações
+ * opostas pra mesma issue: esta reporta "claim liberado, reavalie
+ * dispatch" (janela curta, 90min) mesmo quando `claimed_issues_effective`
+ * ainda segura a issue por até 24h (`claimReleaseMsForKind`, #7227) — que é
+ * exatamente o caso de uma claim envelhecida sem PR (sessão `continuo` que
+ * re-reivindica sem nunca soltar). Reavaliar dispatch nesse caso é
+ * garantidamente inútil: `claim-issue`/`is-claimed` vão recusar de novo até
+ * a janela de 24h passar (achado ao vivo #8842: exatamente essa sequência —
+ * `check-block-staleness` disse "claim liberado" pra #8795, `claim-issue`
+ * recusou por já estar reivindicada). Quando a claim já está listada como
+ * envelhecida, a ação certa é a do #6436 (pendência de re-triagem via
+ * `check-state-changed-pending.ts --add-pending`), não "reavalie
+ * dispatch" — suprimir a duplicata evita o coordenador tentar (e falhar)
+ * um reclaim que a própria idade da claim já garante que vai ser recusado.
+ */
+export function suppressAgedClaimOverlap(
+  findings: readonly StaleBlockFinding[],
+  agedClaimIssueNumbers: ReadonlySet<number>,
+): StaleBlockFinding[] {
+  return findings.filter(
+    (f) => !(f.category === "claimed-por-outra-sessao" && agedClaimIssueNumbers.has(f.number)),
+  );
+}
