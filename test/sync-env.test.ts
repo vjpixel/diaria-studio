@@ -21,7 +21,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -425,7 +425,7 @@ describe("entrypoint guard (#5679)", () => {
       .join(delimiter);
     const emptyHome = mkdtempSync(join(tmpdir(), "sync-env-test-home-"));
 
-    let result: ReturnType<typeof spawnSync>;
+    let result: SpawnSyncReturns<string>;
     try {
       result = spawnSync(
         process.execPath,
