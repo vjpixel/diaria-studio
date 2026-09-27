@@ -58,7 +58,7 @@
  * Como o override é relido do arquivo em TODA execução (nunca depende de um
  * estado anterior persistido), ele se reafirma a cada `--push` — não importa
  * se `data.contacts` (a base do apoia.se) parou de incluir aquele e-mail.
- * Só some se alguém remover a entrada do `context/apoio-overrides.json`.
+ * Só some se alguém remover a entrada do `data/apoio-overrides.json`.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
