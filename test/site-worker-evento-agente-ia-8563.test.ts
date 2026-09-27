@@ -83,6 +83,15 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
     assert.match(js, /window\.EVENT_CHECKOUT_URL\s*=\s*"https:\/\//);
   });
 
+  it("checkout usa checkoutMode=10 (regressão: sem ele a Hotmart esconde o order bump da gravação)", () => {
+    // O order bump foi configurado na página do Checkout Builder, que a
+    // Hotmart só serve com checkoutMode=10. Sem o parâmetro, o comprador cai
+    // no checkout padrão e não vê a oferta da gravação.
+    const js = readFileSync(resolve(PAGE_DIR, "config.js"), "utf8");
+    const url = new URL(js.match(/EVENT_CHECKOUT_URL\s*=\s*"([^"]+)"/)![1]);
+    assert.equal(url.searchParams.get("checkoutMode"), "10");
+  });
+
   it("styles.css e script.js existem", () => {
     assert.ok(existsSync(resolve(PAGE_DIR, "styles.css")));
     assert.ok(existsSync(resolve(PAGE_DIR, "script.js")));
