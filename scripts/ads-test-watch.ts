@@ -77,6 +77,8 @@ import { normalizePauseIntervals, dailyBudgetForDate, type AdsTestRunStateWithPa
 import { fetchCampaignEconomicsSources } from "./lib/ads-campaign-economics-fetch.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { getScheduledTaskByName } from "./lib/scheduled-tasks.ts";
+import { unitBaseName } from "./lib/systemd-units.ts";
+import { queryUnitState, type QueryUnitStateResult } from "./lib/systemd-unit-state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const AQUISICAO_DIR = resolve(ROOT, "data/aquisicao");
@@ -144,23 +146,53 @@ export interface AdsTestWatchDeps {
    *  `resolveArmSpend` (`scripts/lib/ads-test-watch.ts`) trata a ausência
    *  de dado pra um braço como fallback pro CSV, rotulado. */
   fetchAutoSpend: () => Promise<Map<string, Map<string, number>>>;
-  /** #8853 — estado ATUAL de `Diaria-Brevo-Diaria-Evaluate` em
-   *  `scripts/lib/scheduled-tasks.ts`: `true` = já religada (`enabled`
-   *  ausente ou `true`), `false` = desarmada de propósito, `null` =
-   *  indeterminado (task não encontrada no registro — nunca deveria
-   *  acontecer em produção, mas fail-safe: `null` faz o alarme disparar
-   *  igual, melhor ruído a mais do que perder um religamento). Injetável só
-   *  pra teste — produção sempre `realResolveBrevoTaskEnabled`. */
+  /** #8853/#8855 — estado ATUAL de `Diaria-Brevo-Diaria-Evaluate`: `true` só
+   *  quando o registro declara `enabled` (ausente ou `true`) **E** o timer
+   *  systemd real (`diaria-brevo-diaria-evaluate.timer`, consultado no
+   *  `300` via `systemctl --user show`) confirma `LoadState`/`ActiveState`
+   *  ativos — `enabled: true` no registro sozinho NUNCA basta
+   *  (`scheduled-tasks.ts:2737`: "enabled:true não é a mesma coisa que
+   *  armada no 300"). `false` = desarmada de propósito no registro OU
+   *  confirmado inativo no timer real. `null` = indeterminado (task não
+   *  encontrada no registro, ou a consulta ao timer real falhou/não pôde
+   *  confirmar) — fail-safe: `null`/`false` fazem o alarme disparar igual,
+   *  melhor ruído a mais do que perder um religamento (#8851/#8855).
+   *  Injetável só pra teste — produção sempre `realResolveBrevoTaskEnabled`. */
   resolveBrevoTaskEnabled: () => boolean | null;
 }
 
 /** Nome exato da task em `scripts/lib/scheduled-tasks.ts` (#8853). */
 export const BREVO_DIARIA_TASK_NAME = "Diaria-Brevo-Diaria-Evaluate";
 
-function realResolveBrevoTaskEnabled(): boolean | null {
+/**
+ * #8855 — corrige o achado do #8854: o atalho de "já religada" confiava só
+ * no flag DECLARADO `enabled` do registro, nunca no timer systemd REAL do
+ * `300`. Um teste que desarme a task no servidor (`systemctl --user disable
+ * diaria-brevo-diaria-evaluate.timer`) sem tocar no registro fazia o alarme
+ * nunca disparar de novo — a falha silenciosa oposta à do #8851.
+ *
+ * `queryLiveTimerState` injetável só pra teste (default = `queryUnitState`
+ * real, que roda `systemctl --user show` — este script já assume que roda
+ * NO `300`, mesma máquina que arma o timer, ver
+ * `docs/scheduled-tasks-registry.md` — "Diaria-Ads-Test-Watch" — nenhum SSH
+ * necessário).
+ */
+export function realResolveBrevoTaskEnabled(
+  queryLiveTimerState: (unit: string) => QueryUnitStateResult = queryUnitState,
+): boolean | null {
   const task = getScheduledTaskByName(BREVO_DIARIA_TASK_NAME);
   if (!task) return null;
-  return task.enabled !== false;
+  if (task.enabled === false) return false;
+  const timerUnit = `${unitBaseName(BREVO_DIARIA_TASK_NAME)}.timer`;
+  const live = queryLiveTimerState(timerUnit);
+  if (!live.state) {
+    console.warn(
+      `${LOG_PREFIX} não foi possível confirmar o estado real de ${timerUnit} (${live.error ?? "motivo desconhecido"}) — tratando como indeterminado.`,
+    );
+    return null;
+  }
+  const isArmedForReal = live.state.loadState !== "not-found" && live.state.activeState === "active";
+  return isArmedForReal;
 }
 
 function realBuildOrigemMap(): boolean {
