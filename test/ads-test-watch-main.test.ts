@@ -18,8 +18,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { main, DEFAULT_PLANNED_D0, type AdsTestWatchDeps } from "../scripts/ads-test-watch.ts";
+import {
+  main,
+  DEFAULT_PLANNED_D0,
+  realResolveBrevoTaskEnabled,
+  BREVO_DIARIA_TASK_NAME,
+  type AdsTestWatchDeps,
+} from "../scripts/ads-test-watch.ts";
 import { buildAdsTestRunState } from "../scripts/lib/ads-test-run-state.ts";
+import { unitBaseName } from "../scripts/lib/systemd-units.ts";
+import type { QueryUnitStateResult } from "../scripts/lib/systemd-unit-state.ts";
+import { planAdsTestWatchActions, emptyAdsTestWatchState } from "../scripts/lib/ads-test-watch.ts";
+import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 import type { NotifyEditorFinding, NotifyEditorResult } from "../scripts/lib/editor-notify.ts";
 
 function fakeNotifyResult(overrides: Partial<NotifyEditorResult> = {}): NotifyEditorResult {
@@ -390,6 +400,62 @@ describe("#5845 — ads-test-watch main (I/O): religar-brevo", () => {
       );
 
       assert.equal(ghCalls.length, 1, "indeterminado é fail-safe pro lado de alarmar, nunca de silenciar");
+    });
+  });
+
+  // #8855 — regressão do achado: `realResolveBrevoTaskEnabled` não pode
+  // confiar só no flag DECLARADO `enabled` do registro (scheduled-tasks.ts)
+  // pra concluir que a task está religada — precisa confirmar contra o
+  // timer systemd REAL. Cenário do #8855: registro `enabled: true` (a task
+  // FOI religada em algum momento) mas o timer foi desarmado no `300`
+  // (`systemctl --user disable`) sem que ninguém tocasse o registro.
+  describe("#8855 — realResolveBrevoTaskEnabled confirma contra o timer systemd real, não só o flag do registro", () => {
+    const registryTask = getScheduledTaskByName(BREVO_DIARIA_TASK_NAME);
+    const timerUnit = `${unitBaseName(BREVO_DIARIA_TASK_NAME)}.timer`;
+
+    it("precondição: o registro declara a task enabled (ausente ou true) nesta suíte", () => {
+      // Se esta precondição falhar, o cenário abaixo deixou de exercitar o
+      // caminho real do #8855 (registro enabled + timer inativo) — o teste
+      // pararia de provar o que promete provar.
+      assert.ok(registryTask, "Diaria-Brevo-Diaria-Evaluate precisa existir no registro");
+      assert.notEqual(registryTask!.enabled, false, "registro precisa declarar enabled (não false) para este cenário");
+    });
+
+    it("registro enabled:true + timer systemd INATIVO -> false, nunca o atalho de 'já religada' (cenário real da issue)", () => {
+      const inactiveState: QueryUnitStateResult = {
+        state: { loadState: "loaded", activeState: "inactive" },
+        error: null,
+      };
+      let queriedUnit: string | null = null;
+      const result = realResolveBrevoTaskEnabled((unit) => {
+        queriedUnit = unit;
+        return inactiveState;
+      });
+
+      assert.equal(queriedUnit, timerUnit, "deve consultar o timer real da task, não outro unit");
+      assert.notEqual(result, true, "timer inativo nunca pode resolver 'true' mesmo com enabled:true no registro");
+
+      // O ponto de verificação da issue: alimentado de volta em
+      // planAdsTestWatchActions, este resultado precisa manter o alarme de
+      // religamento vivo — nunca tomar o atalho de idempotência silenciosa.
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      const plan = planAdsTestWatchActions(runState.religar_brevo, runState, DEFAULT_PLANNED_D0, emptyAdsTestWatchState(), result);
+      assert.equal(plan.triggerReligarBrevo, true, "triggerReligarBrevo precisa continuar true — o achado do #8855 é exatamente ele virar false por engano");
+    });
+
+    it("registro enabled:true + timer systemd ATIVO -> true (religamento real confirmado)", () => {
+      const activeState: QueryUnitStateResult = {
+        state: { loadState: "loaded", activeState: "active" },
+        error: null,
+      };
+      const result = realResolveBrevoTaskEnabled(() => activeState);
+      assert.equal(result, true);
+    });
+
+    it("consulta ao timer real falha (SSH/systemctl indisponível) -> null indeterminado, nunca assume religada", () => {
+      const failed: QueryUnitStateResult = { state: null, error: "systemctl indisponível (ENOENT) nesta consulta." };
+      const result = realResolveBrevoTaskEnabled(() => failed);
+      assert.equal(result, null, "estado indeterminado nunca pode virar 'true' por default");
     });
   });
 });
