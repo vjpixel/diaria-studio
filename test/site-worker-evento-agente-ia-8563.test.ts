@@ -13,6 +13,11 @@
  * editor tornaram o proxy desnecessário e removem o risco de asset relativo
  * quebrado.
  *
+ * Teste A/B: a página tem duas versões, `a/index.html` e `b/index.html`, e o
+ * `index.html` da raiz só sorteia uma delas por visitante e redireciona
+ * levando a query string (UTMs e fbclid precisam chegar à página e ao
+ * checkout). Os anúncios continuam apontando para `/evento/agente-ia`.
+ *
  * Este teste cobre só os arquivos COMMITTED (guard de regressão, mesmo
  * padrão de `site-worker-routes-6359.test.ts`) — o roteamento em si
  * (`env.ASSETS.fetch`/`html_handling`) já é coberto pelos testes existentes
@@ -26,33 +31,50 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia");
+const VARIANTS = ["a", "b"] as const;
 
 describe("public/evento/agente-ia — página do workshop (#8563)", () => {
-  it("index.html existe e referencia os próprios arquivos por caminho absoluto", () => {
-    const p = resolve(PAGE_DIR, "index.html");
-    assert.ok(existsSync(p), "index.html ausente em public/evento/agente-ia/");
-    const html = readFileSync(p, "utf8");
-    // Nenhum href/src pra chatgpt.site (o ponto inteiro é esconder esse domínio).
-    assert.doesNotMatch(html, /chatgpt\.site/i);
-    assert.match(html, /href="\/evento\/agente-ia\/styles\.css"/);
-    assert.match(html, /src="\/evento\/agente-ia\/config\.js"/);
-    assert.match(html, /src="\/evento\/agente-ia\/script\.js"/);
+  it("index.html da raiz sorteia entre /a e /b sem barra final e preserva a query string", () => {
+    const html = readFileSync(resolve(PAGE_DIR, "index.html"), "utf8");
+    assert.match(html, /"\/evento\/agente-ia\/"\s*\+\s*v\s*\+\s*location\.search/);
+    assert.match(html, /v = Math\.random\(\) < 0\.5 \? "a" : "b"/);
+    // Sem pixel na raiz: o PageView é da versão que abrir (senão conta 2x).
+    assert.doesNotMatch(html, /fbq\(/);
+    // Sem JavaScript, cai na versão A em vez de ficar numa página vazia.
+    assert.match(html, /url=\/evento\/agente-ia\/a"/);
   });
 
-  it("index.html não usa caminho RELATIVO pros próprios arquivos (regressão: CSS não carregava em produção)", () => {
-    // A página é servida em `/evento/agente-ia` SEM barra final
-    // (`html_handling = drop-trailing-slash` redireciona `/evento/agente-ia/`
-    // pra cá). Sem a barra, o navegador resolve `href="styles.css"` como
-    // `/evento/styles.css` — 404, e a página abria sem estilo, sem script e
-    // sem o botão de compra. Todo href/src local precisa ser absoluto.
-    // (`url(assets/...)` dentro do styles.css pode continuar relativo: ele
-    // resolve contra o próprio CSS, que mora em /evento/agente-ia/.)
-    const html = readFileSync(resolve(PAGE_DIR, "index.html"), "utf8");
-    const relativos = [...html.matchAll(/(?:href|src)="([^"]*)"/g)]
-      .map((m) => m[1])
-      .filter((v) => !/^(?:https?:|mailto:|tel:|#|\/|data:)/i.test(v));
-    assert.deepEqual(relativos, [], `referências relativas: ${relativos.join(", ")}`);
-  });
+  for (const v of VARIANTS) {
+    describe(`versão ${v.toUpperCase()}`, () => {
+      const page = resolve(PAGE_DIR, v, "index.html");
+
+      it("index.html existe e referencia os arquivos compartilhados por caminho absoluto", () => {
+        assert.ok(existsSync(page), `${v}/index.html ausente em public/evento/agente-ia/`);
+        const html = readFileSync(page, "utf8");
+        // Nenhum href/src pra chatgpt.site (o ponto inteiro é esconder esse domínio).
+        assert.doesNotMatch(html, /chatgpt\.site/i);
+        assert.match(html, /href="\/evento\/agente-ia\/styles\.css"/);
+        assert.match(html, /src="\/evento\/agente-ia\/config\.js"/);
+        assert.match(html, /src="\/evento\/agente-ia\/script\.js"/);
+        assert.match(html, new RegExp(`<body data-variante="${v}">`));
+      });
+
+      it("index.html não usa caminho RELATIVO pros próprios arquivos (regressão: CSS não carregava em produção)", () => {
+        // A página é servida SEM barra final (`html_handling =
+        // drop-trailing-slash`). Sem a barra, o navegador resolve
+        // `href="styles.css"` contra a pasta de cima — 404, e a página abria
+        // sem estilo, sem script e sem o botão de compra. Todo href/src local
+        // precisa ser absoluto. (`url(assets/...)` dentro do styles.css pode
+        // continuar relativo: ele resolve contra o próprio CSS, que mora em
+        // /evento/agente-ia/.)
+        const html = readFileSync(page, "utf8");
+        const relativos = [...html.matchAll(/(?:href|src)="([^"]*)"/g)]
+          .map((m) => m[1])
+          .filter((val) => !/^(?:https?:|mailto:|tel:|#|\/|data:)/i.test(val));
+        assert.deepEqual(relativos, [], `referências relativas: ${relativos.join(", ")}`);
+      });
+    });
+  }
 
   it("config.js declara EVENT_CHECKOUT_URL como HTTPS (contrato que script.js espera)", () => {
     const p = resolve(PAGE_DIR, "config.js");
@@ -66,12 +88,12 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
     assert.ok(existsSync(resolve(PAGE_DIR, "script.js")));
   });
 
-  it("todas as imagens referenciadas em styles.css/index.html (assets/*.png) existem em disco", () => {
-    const html = readFileSync(resolve(PAGE_DIR, "index.html"), "utf8");
+  it("todas as imagens referenciadas nas versões e no styles.css existem em disco", () => {
     const css = readFileSync(resolve(PAGE_DIR, "styles.css"), "utf8");
+    const pages = VARIANTS.map((v) => readFileSync(resolve(PAGE_DIR, v, "index.html"), "utf8"));
     const refs = new Set<string>();
-    for (const m of (html + css).matchAll(/assets\/[a-z0-9_-]+\.png/gi)) refs.add(m[0]);
-    assert.ok(refs.size > 0, "nenhuma referência assets/*.png encontrada — regex desatualizada?");
+    for (const m of [css, ...pages].join("\n").matchAll(/assets\/[a-z0-9_-]+\.(?:png|webp)/gi)) refs.add(m[0]);
+    assert.ok(refs.size > 0, "nenhuma referência assets/*.png|webp encontrada — regex desatualizada?");
     for (const ref of refs) {
       assert.ok(existsSync(resolve(PAGE_DIR, ref)), `asset referenciado ausente: ${ref}`);
     }
