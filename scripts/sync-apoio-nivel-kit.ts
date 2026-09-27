@@ -252,14 +252,14 @@ async function main(): Promise<void> {
 
   let desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
 
-  // #8820: override manual (context/apoio-overrides.json) vence o valor
+  // #8820: override manual (data/apoio-overrides.json) vence o valor
   // derivado do apoia.se — mesmo ponto de aplicação (antes do diff) do
   // sync Beehiiv, ver docblock de lib/apoio-overrides.ts.
   const overrides = loadApoioOverrides(ROOT);
   if (overrides.length > 0) {
     desired = applyApoioOverrides(desired, overrides);
     process.stderr.write(
-      `${LOG_PREFIX} ${overrides.length} override(s) manual(is) aplicado(s) de context/apoio-overrides.json: ` +
+      `${LOG_PREFIX} ${overrides.length} override(s) manual(is) aplicado(s) de data/apoio-overrides.json: ` +
         `${overrides.map((o) => `${o.email}→${o.nivel}`).join(", ")}\n`,
     );
   }

@@ -2,8 +2,10 @@
  * test/apoio-overrides.test.ts (#8820)
  *
  * Testa `scripts/lib/apoio-overrides.ts` — override manual de nível de apoio
- * (`context/apoio-overrides.json`) consumido por `sync-apoio-nivel-beehiiv.ts`
- * e `sync-apoio-nivel-kit.ts`. Casos obrigatórios da issue:
+ * (`data/apoio-overrides.json`, #8863 — movido de `context/apoio-overrides.json`
+ * porque a lista contém e-mail, dado pessoal) consumido por
+ * `sync-apoio-nivel-beehiiv.ts` e `sync-apoio-nivel-kit.ts`. Casos obrigatórios
+ * da issue:
  *
  *   (a) override adiciona nível pra quem NÃO está no apoia.se.
  *   (b) override sobrevive a um sync em que a pessoa some da base do
@@ -23,6 +25,7 @@ import { join } from "node:path";
 import {
   loadApoioOverrides,
   applyApoioOverrides,
+  DEFAULT_APOIO_OVERRIDES_PATH,
   type ApoioOverrideEntry,
   type DesiredLevelLike,
 } from "../scripts/lib/apoio-overrides.ts";
@@ -39,6 +42,10 @@ function desiredEntry(overrides: Partial<DesiredLevelLike> = {}): DesiredLevelLi
 }
 
 describe("loadApoioOverrides", () => {
+  it("o default resolve para data/apoio-overrides.json, não context/ (#8863)", () => {
+    assert.equal(DEFAULT_APOIO_OVERRIDES_PATH, "data/apoio-overrides.json");
+  });
+
   it("devolve [] quando o arquivo não existe (fail-soft)", () => {
     const dir = mkdtempSync(join(tmpdir(), "apoio-overrides-"));
     try {
@@ -51,9 +58,9 @@ describe("loadApoioOverrides", () => {
   it("lê e normaliza (lowercase/trim) o email das entradas válidas", () => {
     const dir = mkdtempSync(join(tmpdir(), "apoio-overrides-"));
     try {
-      mkdirSync(join(dir, "context"), { recursive: true });
+      mkdirSync(join(dir, "data"), { recursive: true });
       writeFileSync(
-        join(dir, "context/apoio-overrides.json"),
+        join(dir, "data/apoio-overrides.json"),
         JSON.stringify([
           { email: "  Bruna@Example.com ", nivel: "patrono", motivo: "fixado manualmente", desde: "2026-09-25" },
         ]),
@@ -72,8 +79,8 @@ describe("loadApoioOverrides", () => {
   it("lança (fail-loud) em JSON malformado", () => {
     const dir = mkdtempSync(join(tmpdir(), "apoio-overrides-"));
     try {
-      mkdirSync(join(dir, "context"), { recursive: true });
-      writeFileSync(join(dir, "context/apoio-overrides.json"), "{ not valid json");
+      mkdirSync(join(dir, "data"), { recursive: true });
+      writeFileSync(join(dir, "data/apoio-overrides.json"), "{ not valid json");
       assert.throws(() => loadApoioOverrides(dir), /malformado/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -83,8 +90,8 @@ describe("loadApoioOverrides", () => {
   it("lança se o conteúdo não é um array", () => {
     const dir = mkdtempSync(join(tmpdir(), "apoio-overrides-"));
     try {
-      mkdirSync(join(dir, "context"), { recursive: true });
-      writeFileSync(join(dir, "context/apoio-overrides.json"), JSON.stringify({ email: "x@y.com" }));
+      mkdirSync(join(dir, "data"), { recursive: true });
+      writeFileSync(join(dir, "data/apoio-overrides.json"), JSON.stringify({ email: "x@y.com" }));
       assert.throws(() => loadApoioOverrides(dir), /deve ser um array/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -94,9 +101,9 @@ describe("loadApoioOverrides", () => {
   it("lança se uma entrada tem nivel inválido ou email vazio", () => {
     const dir = mkdtempSync(join(tmpdir(), "apoio-overrides-"));
     try {
-      mkdirSync(join(dir, "context"), { recursive: true });
+      mkdirSync(join(dir, "data"), { recursive: true });
       writeFileSync(
-        join(dir, "context/apoio-overrides.json"),
+        join(dir, "data/apoio-overrides.json"),
         JSON.stringify([{ email: "x@y.com", nivel: "vip", motivo: "", desde: "" }]),
       );
       assert.throws(() => loadApoioOverrides(dir), /nivel válido/);
