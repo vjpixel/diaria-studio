@@ -104,10 +104,14 @@ export const NEGATIVE_IMPACT_8414: JevQuestionSpec = {
 
 /**
  * Medição 4 do epic #8412 (#8417) — zona cinzenta do `dedup.ts` (Pass 1c):
- * "A e B são a mesma história?" via Jev (`noul`). Texto EXATO da issue #8417
- * — nenhum ajuste pós-corpus. `state` recebe `{a: {title,summary,source},
- * b: {title,summary,source}}` (par, não item único — diferente das duas
- * perguntas anteriores).
+ * "A e B são a mesma história?" via Jev (`noul`). Texto original da medição
+ * #8417 (nenhum ajuste pós-corpus até então); ajustado no #8867 (27/09/2026,
+ * decisão do editor) pra deixar explícito que conteúdo derivado (entrevista,
+ * guia, tutorial, análise) sobre um lançamento já anunciado não é a mesma
+ * história do anúncio — 2 dos 12 pares do braço B do A/B (#8421, edições
+ * 260921–260925) erraram exatamente nesse padrão. `state` recebe
+ * `{a: {title,summary,source}, b: {title,summary,source}}` (par, não item
+ * único — diferente das duas perguntas anteriores).
  */
 export const DEDUP_GRAYZONE_8417: JevQuestionSpec = {
   id: "dedup-grayzone-8417",
@@ -120,8 +124,10 @@ export const DEDUP_GRAYZONE_8417: JevQuestionSpec = {
     instructions:
       "Dados dois artigos A e B sobre inteligência artificial, A e B relatam o mesmo " +
       "fato/anúncio (mesma história), e não dois fatos distintos sobre o mesmo assunto? " +
-      "Considere apenas título, resumo e fonte de cada artigo, fornecidos em `a` e `b` " +
-      "do estado.",
+      "Uma entrevista, guia, tutorial ou análise sobre um lançamento já anunciado NÃO é a " +
+      "mesma história do anúncio original — é conteúdo derivado, mesmo cobrindo o mesmo " +
+      "produto/anúncio (#8867). Considere apenas título, resumo e fonte de cada artigo, " +
+      "fornecidos em `a` e `b` do estado.",
   },
 };
 
