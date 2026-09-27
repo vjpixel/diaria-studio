@@ -2,11 +2,16 @@
  * scripts/lib/apoio-overrides.ts (#8820, mecanismo — falta o e-mail real p/
  * ativar a entrada da Bruna Quevedo, ver issue)
  *
- * Override manual de nível de apoio, versionado em `context/apoio-overrides.json`
- * (`[{ email, nivel, motivo, desde }]`), consumido por
+ * Override manual de nível de apoio, lido de `data/apoio-overrides.json`
+ * (`[{ email, nivel, motivo, desde }]`, #8820/#8863 — movido de
+ * `context/apoio-overrides.json` porque a lista contém e-mail de apoiador,
+ * dado pessoal que não pode ficar versionado no git; `data/` é gitignored e
+ * sincroniza entre máquinas via OneDrive, mesmo padrão do #5227 pras caixas
+ * de divulgação em `data/snippets/`), consumido por
  * `scripts/sync-apoio-nivel-kit.ts` e `scripts/sync-apoio-nivel-beehiiv.ts` —
  * mesmo shape genérico plataforma-agnóstico que o resto do módulo de apoio
- * (`ApoioNivel` de `./shared/apoio-nivel-types.ts`).
+ * (`ApoioNivel` de `./shared/apoio-nivel-types.ts`). Formato/exemplo (sem
+ * dado real) continua versionado em `context/apoio-overrides.example.json`.
  *
  * ## Por que existe
  *
@@ -83,10 +88,10 @@ export interface DesiredLevelLike {
   unresolved: boolean;
 }
 
-export const DEFAULT_APOIO_OVERRIDES_PATH = "context/apoio-overrides.json";
+export const DEFAULT_APOIO_OVERRIDES_PATH = "data/apoio-overrides.json";
 
 /**
- * I/O: lê + valida `context/apoio-overrides.json`. Fail-soft na AUSÊNCIA do
+ * I/O: lê + valida `data/apoio-overrides.json`. Fail-soft na AUSÊNCIA do
  * arquivo (clone fresco, `data/` não montado — devolve `[]`); fail-LOUD em
  * conteúdo malformado (JSON inválido, não-array, entrada sem `email`/`nivel`
  * válido) — um override mal escrito que falhasse em silêncio deixaria a

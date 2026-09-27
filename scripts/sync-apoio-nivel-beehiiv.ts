@@ -123,7 +123,7 @@
  *
  * ## Override manual (#8820)
  *
- * `context/apoio-overrides.json` (`[{ email, nivel, motivo, desde }]`) vence
+ * `data/apoio-overrides.json` (`[{ email, nivel, motivo, desde }]`) vence
  * o valor derivado do apoia.se — aplicado logo depois de
  * `computeDesiredApoioLevels`, antes do diff. Ver `scripts/lib/
  * apoio-overrides.ts` pro mecanismo completo (`loadApoioOverrides`,
@@ -877,7 +877,7 @@ async function main(): Promise<void> {
 
   let desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
 
-  // #8820: override manual (context/apoio-overrides.json) vence o valor
+  // #8820: override manual (data/apoio-overrides.json) vence o valor
   // derivado do apoia.se — aplicado ANTES do diff, ver docblock de
   // lib/apoio-overrides.ts pro porquê disso nunca contar como remoção nos
   // guards abaixo.
@@ -885,7 +885,7 @@ async function main(): Promise<void> {
   if (overrides.length > 0) {
     desired = applyApoioOverrides(desired, overrides);
     process.stderr.write(
-      `${LOG_PREFIX} ${overrides.length} override(s) manual(is) aplicado(s) de context/apoio-overrides.json: ` +
+      `${LOG_PREFIX} ${overrides.length} override(s) manual(is) aplicado(s) de data/apoio-overrides.json: ` +
         `${overrides.map((o) => `${o.email}→${o.nivel}`).join(", ")}\n`,
     );
   }
