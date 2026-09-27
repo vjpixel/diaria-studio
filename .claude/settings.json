@@ -121,6 +121,14 @@
             "command": "node",
             "timeout": 10,
             "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-gh-comment-secrets.mjs"
+            ]
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "timeout": 10,
+            "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-branch-checkout-main.mjs"
             ]
           },
