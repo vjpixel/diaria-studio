@@ -340,7 +340,31 @@ _RELEASE_SIGNAL = re.compile(r"\bliberad|\bliberou", re.IGNORECASE)
 # precedida por "não"/"nunca" dentro de `_NEGATION_WINDOW` caracteres é
 # descartada ANTES de qualquer associação a lista de refs — nunca vira
 # claim, próprio ou de terceiro.
-_NEGATION_MARKER = re.compile(r"\bn[ãa]o\b|\bnunca\b", re.IGNORECASE)
+#
+# #8863 (27/09/2026), duas causas no mesmo relatório real ("Gate de
+# coerência rejeitou ambas antes do claim (...); #8857 (...); #8855
+# (...). Nenhuma issue foi reivindicada ou alterada."):
+#
+# 1. "Nenhuma issue foi reivindicada" não era reconhecido como negação —
+#    `_NEGATION_MARKER` só cobria "não"/"nunca", não "nenhum(a)". O
+#    keyword "reivindicada" nesse segmento, tratado como claim positivo,
+#    herdava a lista de refs do segmento ANTERIOR (#8855) pelo mesmo
+#    mecanismo de "segmento que abre com lista" do #8521.
+# 2. "rejeitou (...) antes do claim" usa "claim" como SUBSTANTIVO
+#    referenciando um evento que não aconteceu ("antes de" = ainda não
+#    houve), não como declaração de que este coordenador reivindicou
+#    algo. `_CLAIM_KEYWORDS` casa a substring "claim" sem olhar o
+#    "antes do"/"antes da" que a precede, e o mecanismo de proximidade
+#    then attachs a lista de refs seguinte (#8857) como claim.
+#
+# Ambos entram no mesmo marcador de negação (mesma janela, mesmo
+# mecanismo de descarte pré-associação) — "nenhum(a)" nega qualquer
+# keyword de claim como "não"/"nunca" já faziam, e "antes do"/"antes da"
+# cobre o caso específico de "claim" como substantivo de evento futuro.
+_NEGATION_MARKER = re.compile(
+    r"\bn[ãa]o\b|\bnunca\b|\bnenhum[ao]?\b|\bantes d[oa]\b",
+    re.IGNORECASE,
+)
 _NEGATION_WINDOW = 30
 
 
