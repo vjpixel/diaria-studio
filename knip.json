@@ -41,5 +41,8 @@
   // scripts/lib/session-registry.ts (#7687) invoca `tasklist` (Windows,
   // System32) pra confirmar PID vivo quando `process.kill(pid, 0)` lança
   // EPERM ambíguo no libuv/Windows -- utilitário do SO, não npm.
-  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill"]
+  // test/continuo-merger-8445-8446-8447.test.ts (#8868) roda o `jq` real
+  // (spawnSync) pra validar a expressão --jq embutida no shell script contra
+  // um fixture -- binário do SO usado só em teste, não uma dependência npm.
+  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "jq"]
 }
