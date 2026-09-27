@@ -202,3 +202,14 @@ footer p{margin:0}
   .offer-panel{grid-template-columns:1.2fr .8fr;gap:52px;padding:42px}
   .offer-price strong{font-size:78px}
 }
+
+/* Celular: primeira tela mais curta para o preço e o botão aparecerem sem rolar */
+@media(max-width:620px){
+  .brand-bar{padding:9px 16px}.brand-bar img{height:20px}
+  .hero-art img{aspect-ratio:2/1;object-position:center 60%}
+  .hero-content{padding:18px 0 28px}
+  .event-meta{font-size:11px;margin-bottom:10px}
+  h1{font-size:27px;margin-bottom:12px}
+  .hero-subtitle{font-size:15px;line-height:1.5;margin-bottom:18px}
+  .price-card{padding:10px 16px}.price-card strong{font-size:30px}
+}
