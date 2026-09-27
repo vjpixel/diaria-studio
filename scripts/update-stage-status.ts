@@ -288,7 +288,10 @@ export interface UpdateOpts {
 
 function computePipelineMs(opts: UpdateOpts, existing: StageRow): number | undefined {
   if (opts.pipeline_ms != null) return opts.pipeline_ms;
-  const gateAt = opts.gate_at ?? existing.gate_at;
+  // #8866: gate_at é a 1ª apresentação do gate — se já gravado, vence sobre
+  // um --gate-at novo (reapresentação após "ajustar"/"editar" não deve
+  // esticar pipeline_ms com tempo de iteração do editor).
+  const gateAt = existing.gate_at ?? opts.gate_at;
   const start = opts.start ?? existing.start;
   if (gateAt && start) {
     return new Date(gateAt).getTime() - new Date(start).getTime();
@@ -363,7 +366,9 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
       status: opts.status,
       start,
       end,
-      gate_at: opts.gate_at ?? r.gate_at,
+      // #8866: 1ª apresentação vence — r.gate_at (já gravado) nunca é
+      // sobrescrito por uma chamada posterior (reapresentação do gate).
+      gate_at: r.gate_at ?? opts.gate_at,
       // #1706: auto-computa de start/end quando não passado ou passado como 0.
       duration_ms: computeDurationMs(effective, r),
       pipeline_ms: opts.pipeline_ms ?? computePipelineMs(effective, r),

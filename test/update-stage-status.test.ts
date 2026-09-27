@@ -268,6 +268,38 @@ describe("applyUpdate (#960)", () => {
   });
 });
 
+describe("applyUpdate gate_at/pipeline_ms (#8866) — 1ª apresentação vence", () => {
+  it("--gate-at grava gate_at e computa pipeline_ms = gate_at - start", () => {
+    let doc = makeInitialDoc("260927");
+    doc = applyUpdate(doc, { stage: 1, status: "running", start: "2026-09-27T10:00:00.000Z" });
+    doc = applyUpdate(doc, { stage: 1, status: "running", gate_at: "2026-09-27T10:20:00.000Z" });
+    const stage1 = doc.rows.find((r) => r.stage === 1);
+    assert.equal(stage1?.gate_at, "2026-09-27T10:20:00.000Z");
+    assert.equal(stage1?.pipeline_ms, 20 * 60 * 1000);
+  });
+
+  it("reapresentação do gate (2º --gate-at, ex: Stage 4 'ajustar') NÃO sobrescreve gate_at/pipeline_ms", () => {
+    let doc = makeInitialDoc("260927");
+    doc = applyUpdate(doc, { stage: 4, status: "running", start: "2026-09-27T10:00:00.000Z" });
+    doc = applyUpdate(doc, { stage: 4, status: "running", gate_at: "2026-09-27T10:20:00.000Z" });
+    // Editor pede "ajustar" — o playbook chama --gate-at de novo na re-apresentação,
+    // bem mais tarde. Isso NÃO deve esticar pipeline_ms com o tempo de iteração.
+    doc = applyUpdate(doc, { stage: 4, status: "running", gate_at: "2026-09-27T11:45:00.000Z" });
+    const stage4 = doc.rows.find((r) => r.stage === 4);
+    assert.equal(stage4?.gate_at, "2026-09-27T10:20:00.000Z", "gate_at preserva a 1ª apresentação");
+    assert.equal(stage4?.pipeline_ms, 20 * 60 * 1000, "pipeline_ms não inclui o tempo de ajuste do editor");
+  });
+
+  it("stage done sem nunca ter recebido --gate-at fica sem gate_at (regressão #8866: nenhum playbook chamava --gate-at)", () => {
+    let doc = makeInitialDoc("260927");
+    doc = applyUpdate(doc, { stage: 6, status: "running", start: "2026-09-27T09:00:00.000Z" });
+    doc = applyUpdate(doc, { stage: 6, status: "done", end: "2026-09-27T09:30:00.000Z" });
+    const stage6 = doc.rows.find((r) => r.stage === 6);
+    assert.equal(stage6?.gate_at, undefined);
+    assert.equal(stage6?.pipeline_ms, undefined);
+  });
+});
+
 describe("renderStageStatus (#960)", () => {
   it("inclui header + 7 linhas + total (#1694)", () => {
     const doc = makeInitialDoc("260508");
@@ -386,6 +418,32 @@ describe("update-stage-status CLI (#960)", () => {
       assert.match(md, /\| 1 \| Pesquisa \| done/);
       // Stage 0 ainda pending
       assert.match(md, /\| 0 \| Setup \+ dedup \| pending/);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#8866: chamada --gate-at do playbook (com --status running) não regride o stage pra pending", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-status-gate-at-"));
+    try {
+      const editionDir = join(dir, "260508");
+      mkdirSync(editionDir, { recursive: true });
+      runCli(["--edition-dir", editionDir, "--init"]);
+      runCli(["--edition-dir", editionDir, "--stage", "1", "--status", "running"]);
+      // Exatamente a chamada que os playbooks (Stage 1/4/6) fazem antes do gate.
+      const r = runCli([
+        "--edition-dir",
+        editionDir,
+        "--stage",
+        "1",
+        "--status",
+        "running",
+        "--gate-at",
+        "2026-05-08T10:20:00.000Z",
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const md = readFileSync(join(editionDir, "stage-status.md"), "utf8");
+      assert.match(md, /\| 1 \| Pesquisa \| running/, "stage deve permanecer running, não regredir pra pending");
     } finally {
       rmSync(dir, { recursive: true });
     }
