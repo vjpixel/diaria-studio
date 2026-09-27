@@ -585,8 +585,19 @@ QUEUE_AGE_H_THRESHOLD=12
 # de forma garantida, escondendo atrás desse ruído a fila travada de verdade
 # (foi o que aconteceu no #8442, onde o problema real era #8445). O `--jq` é do
 # próprio `gh` (não depende de `jq` instalado).
-QUEUE_JSON=$(gh pr list --state open --json number,headRefName,createdAt \
-  --jq '[.[] | select(.headRefName | startswith("bot/") | not)]' 2>/dev/null)
+#
+# #8862: mesma razão faz excluir PR draft + label `bloqueio-execucao`
+# (`RESCUE_PR_BLOCK_LABEL`, `scripts/rescue-continuo-orphaned-work.ts`) — essa
+# combinação identifica só as PRs de resgate abertas por
+# `rescue-continuo-orphaned-work.ts`, que nascem draft de propósito e esperam
+# TRIAGEM MANUAL do editor, nunca merge automático (mesmo critério que
+# `decideStuckPrAction`, em `scripts/lib/continuo-stuck-pr.ts`, já usa pra não
+# tocar nelas). Medido ao vivo: #8858 (draft, `bloqueio-execucao`, sem nenhum
+# outro problema) disparou sozinha o alarme de idade (12.6h >= 12h) — a PR
+# está exatamente onde deveria estar, esperando o editor, não travada por
+# falha de gate/coordenação.
+QUEUE_JSON=$(gh pr list --state open --json number,headRefName,createdAt,isDraft,labels \
+  --jq '[.[] | select(.headRefName | startswith("bot/") | not) | select((.isDraft and (any(.labels[]; .name == "bloqueio-execucao"))) | not)]' 2>/dev/null)
 QUEUE_GH_RC=$?
 if [ "$QUEUE_GH_RC" -ne 0 ] || [ -z "$QUEUE_JSON" ]; then
   echo "[watch] fila de PRs: INDETERMINADO (gh pr list falhou)" >&2

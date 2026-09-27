@@ -84,13 +84,67 @@ describe("#8447 — PR bot/* não conta no alarme de fila parada", () => {
 
   it("a consulta da fila (§9) exclui bot/* via --jq do próprio gh", () => {
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
-    assert.match(section, /QUEUE_JSON=\$\(gh pr list --state open --json number,headRefName,createdAt \\\s*\n\s*--jq '\[\.\[\] \| select\(\.headRefName \| startswith\("bot\/"\) \| not\)\]'/);
+    assert.match(
+      section,
+      /QUEUE_JSON=\$\(gh pr list --state open --json number,headRefName,createdAt,isDraft,labels \\\s*\n\s*--jq '\[\.\[\] \| select\(\.headRefName \| startswith\("bot\/"\) \| not\) \| select/,
+    );
   });
 
   it("não sobrou nenhuma outra consulta de fila sem o filtro (a lista de números e a idade derivam do MESMO QUEUE_JSON)", () => {
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
     const unfiltered = section.match(/gh pr list --state open --json[^\n]*\n(?!\s*--jq)/g) ?? [];
     assert.deepEqual(unfiltered, [], "há `gh pr list --state open` sem filtro de bot/* na §9");
+  });
+});
+
+describe("#8862 — PR de resgate (draft + bloqueio-execucao) não conta no alarme de fila parada", () => {
+  it("sintaxe bash válida", () => bashSyntaxOk(WATCH_SH));
+
+  it("a consulta da fila (§9) exclui PR draft com label bloqueio-execucao via --jq", () => {
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    assert.match(
+      section,
+      /select\(\(\.isDraft and \(any\(\.labels\[\]; \.name == "bloqueio-execucao"\)\)\) \| not\)\]'/,
+    );
+  });
+
+  it("o jq real filtra uma PR draft+bloqueio-execucao (caso #8858), mantendo uma PR normal e removendo bot/*", () => {
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    const match = section.match(/--jq '(\[\.\[\][^\n]*\])'/);
+    assert.ok(match, "expressão --jq não encontrada na §9");
+    const jqExpr = match![1];
+
+    const input = JSON.stringify([
+      {
+        number: 8858,
+        headRefName: "continuo/rescue-master-x",
+        createdAt: "2026-09-26T15:00:00Z",
+        isDraft: true,
+        labels: [{ name: "bloqueio-execucao" }],
+      },
+      {
+        number: 9000,
+        headRefName: "continuo/fix-x",
+        createdAt: "2026-09-26T15:00:00Z",
+        isDraft: false,
+        labels: [],
+      },
+      {
+        number: 9001,
+        headRefName: "bot/heatmap",
+        createdAt: "2026-09-01T15:00:00Z",
+        isDraft: false,
+        labels: [],
+      },
+    ]);
+    const res = spawnSync("jq", [jqExpr], { input, encoding: "utf8" });
+    assert.equal(res.status, 0, `jq falhou: ${res.stderr}`);
+    const out = JSON.parse(res.stdout);
+    assert.deepEqual(
+      out.map((pr: { number: number }) => pr.number),
+      [9000],
+      "só a PR normal (#9000) deveria sobrar — rescue draft (#8858) e bot/* (#9001) saem",
+    );
   });
 });
 
