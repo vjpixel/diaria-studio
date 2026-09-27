@@ -66,6 +66,10 @@ Cobre:
       reivindicada" (negação não reconhecida, só "não"/"nunca") e "antes
       do claim" ("claim" como substantivo de evento que não aconteceu) não
       viram claim declarado; claim real em outra linha não é afetado.
+      `test_regressao_8863_antes_do_nao_apaga_claim_real` — achado 1 da
+      revisão da PR #8864: "antes do/da" só nega o keyword LITERAL
+      "claim", nunca "reivindic*"/frases não relacionadas ("antes do
+      deploy e reivindiquei #700" preserva o claim).
 
 Uso: python3 hermes/scripts/detect-tick-claim-fabrication.test.py
 """
@@ -352,6 +356,29 @@ def test_regressao_8863_nenhuma_e_antes_do_claim():
     refs_real = mod.extract_claimed_issue_refs(linha_claim_real)
     assert 8515 in refs_real, f"claim real #8515 nao deveria ser afetado: {refs_real}"
     print("regressão #8863: 'nenhuma issue reivindicada'/'antes do claim' não vira claim — OK")
+
+
+def test_regressao_8863_antes_do_nao_apaga_claim_real():
+    """Revisão da PR #8864 (achado 1, P1): a 1ª versão do fix negava
+    QUALQUER keyword de claim precedido por "antes do/da" dentro da janela
+    genérica de 30 chars — mas "antes de" é preposição temporal comum em
+    português técnico, não exclusiva de "antes do claim" (#8863). Uma frase
+    como "Testei a build antes do deploy e reivindiquei #700" teria o claim
+    real de #700 apagado só por "antes do" aparecer perto, sem nenhuma
+    relação com "claim" — o oposto do bug original: um claim FABRICADO
+    escaparia da detecção atrás de qualquer "antes de" solto na cláusula.
+    A correção restringe a negação de "antes d[oa]" ao keyword LITERAL
+    "claim" (nunca "reivindic*") numa janela bem mais curta."""
+    mod = _load_module()
+    refs1 = mod.extract_claimed_issue_refs(
+        "Testei a build antes do deploy e reivindiquei #700 na sequência."
+    )
+    assert 700 in refs1, f"claim real #700 apagado por 'antes do deploy' (nao-claim): {refs1}"
+    refs2 = mod.extract_claimed_issue_refs(
+        "Revisei os logs antes da fusão e reivindiquei #701 em seguida."
+    )
+    assert 701 in refs2, f"claim real #701 apagado por 'antes da fusao' (nao-claim): {refs2}"
+    print("regressão #8863: 'antes do/da' não relacionado a 'claim' não apaga claim real — OK")
 
 
 def main() -> int:
@@ -838,6 +865,7 @@ def main() -> int:
         test_regressao_8463_falsos_positivos_lista_atribuida_outro_ator()
         test_regressao_8521_negacao_nao_e_claim()
         test_regressao_8863_nenhuma_e_antes_do_claim()
+        test_regressao_8863_antes_do_nao_apaga_claim_real()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.
