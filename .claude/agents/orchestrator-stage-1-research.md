@@ -16,6 +16,11 @@ description: Stage 1 do orchestrator diar.ia.br — pesquisa (inbox drain, RSS, 
 EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 ```
 
+**Marcar Stage 1 `running` no início (#8866).** Sem isso `start` nunca é gravado antes do `--gate-at` de §1y1 — `pipeline_ms` sairia perto de zero (gate_at ≈ start) em vez de medir o pipeline real até o gate. Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
+```bash
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 1 --status running
+```
+
 ### Runner determinístico (`scripts/stage-1-run.ts`, #5415 incremento 3/3) — CAMINHO PRINCIPAL DO MIOLO
 
 O miolo determinístico do Stage 1 (tudo entre os 7 pontos de dispatch `Agent()` do playbook original) agora roda via `scripts/stage-1-run.ts` em 5 fases. A prosa detalhada das subseções abaixo **permanece intacta** — é o que o script faz e por quê, além de ser o **fallback** se o script não existir ou falhar de forma inesperada.

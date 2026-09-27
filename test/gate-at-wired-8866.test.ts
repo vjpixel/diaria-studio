@@ -47,4 +47,28 @@ describe("#8866: playbooks com gate chamam update-stage-status --gate-at", () =>
       );
     });
   }
+
+  it("Stage 1: marca --status running (sem --gate-at) ANTES da chamada --gate-at, senão start≈gate_at e pipeline_ms sai ~0", () => {
+    // Achado do review da PR #8871: Stage 4/6 já tinham uma marcação de
+    // `running` própria no início do stage (#1783), então o --start
+    // auto-carimbado por ela precede o --gate-at por todo o tempo do stage.
+    // Stage 1 não tinha equivalente — sem isso, o auto-carimbo de `start`
+    // dispara na MESMA chamada que grava `gate_at`, e pipeline_ms fica
+    // perto de zero em vez de medir o pipeline real até o gate.
+    const path = ".claude/agents/orchestrator-stage-1-research.md";
+    const text = readFileSync(path, "utf-8");
+    const runningOnlyCall = "update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 1 --status running\n";
+    const runningIdx = text.indexOf(runningOnlyCall);
+    assert.ok(runningIdx > -1, `${path} não marca --stage 1 --status running (sem --gate-at) no início do stage`);
+
+    const gateAtIdx = text.indexOf(
+      "update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 1 --status running --gate-at",
+    );
+    assert.ok(gateAtIdx > -1, `${path} não chama --gate-at`);
+
+    assert.ok(
+      runningIdx < gateAtIdx,
+      `${path}: marcação de running (offset ${runningIdx}) deve vir antes do --gate-at (offset ${gateAtIdx})`,
+    );
+  });
 });
