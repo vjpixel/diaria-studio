@@ -179,8 +179,9 @@ footer p{margin:0}
   .quick-facts{grid-template-columns:repeat(4,1fr);gap:16px;padding-bottom:64px}
   .material-grid,.check-list{grid-template-columns:repeat(2,1fr)}
   .material{min-height:330px;padding:28px}
-  .hero-action{flex-direction:row;align-items:center}
-  .hero-cta .button{width:auto}
+  .hero-action{flex-direction:row;flex-wrap:wrap;align-items:center}
+  .price-card{padding:10px 16px;gap:12px}.price-card span{max-width:96px;font-size:12px}.price-card strong{font-size:30px}
+  .hero-cta .button{width:auto;white-space:nowrap;padding-inline:22px}
   .mid-cta{flex-direction:row;justify-content:space-between;align-items:center;text-align:left;padding:28px 32px}
   .mid-cta-buy{flex-direction:row;align-items:center;gap:20px}
 }
@@ -188,7 +189,7 @@ footer p{margin:0}
   .hero{grid-template-columns:minmax(0,1fr) minmax(0,1fr);min-height:560px}
   .hero-art{order:2;border-bottom:0;border-left:3px solid var(--gold)}
   .hero-art img{height:100%;aspect-ratio:auto}
-  .hero-content{width:auto;max-width:600px;margin:0 0 0 auto;padding:64px 48px 64px 24px;align-self:center}
+  .hero-content{width:auto;max-width:640px;margin:0 0 0 auto;padding:56px 44px 56px 24px;align-self:center}
   .preview-grid{grid-template-columns:1fr 26px 1fr 26px 1fr;gap:6px;padding:24px}
   .preview-arrow{transform:none}
   .agent-output{margin:0 24px 24px}
