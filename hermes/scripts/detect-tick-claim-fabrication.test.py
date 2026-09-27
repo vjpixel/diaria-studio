@@ -62,6 +62,14 @@ Cobre:
       classification_count continuam fabrication_suspected. Garante que
       `any_session_in_window` (viva OU encerrada) nao mascara uma
       fabricacao real so porque a sessao ja terminou o protocolo.
+  19. `test_regressao_8863_nenhuma_e_antes_do_claim` — "Nenhuma issue foi
+      reivindicada" (negação não reconhecida, só "não"/"nunca") e "antes
+      do claim" ("claim" como substantivo de evento que não aconteceu) não
+      viram claim declarado; claim real em outra linha não é afetado.
+      `test_regressao_8863_antes_do_nao_apaga_claim_real` — achado 1 da
+      revisão da PR #8864: "antes do/da" só nega o keyword LITERAL
+      "claim", nunca "reivindic*"/frases não relacionadas ("antes do
+      deploy e reivindiquei #700" preserva o claim).
 
 Uso: python3 hermes/scripts/detect-tick-claim-fabrication.test.py
 """
@@ -312,6 +320,65 @@ def test_regressao_8521_negacao_nao_e_claim():
     refs_real = mod.extract_claimed_issue_refs(linha_claim_real)
     assert 8515 in refs_real, f"claim real #8515 nao deveria ser afetado pela negacao: {refs_real}"
     print("regressão #8521: 'não/nunca foi(ram) reivindicada(s)' não vira claim — OK")
+
+
+def test_regressao_8863_nenhuma_e_antes_do_claim():
+    """#8863: relatório real do tick de 27/09/2026 — "Gate de coerência
+    rejeitou ambas antes do claim por sobreposição recente de paths: #8857
+    (...); #8855 (...). Nenhuma issue foi reivindicada ou alterada." Duas
+    causas, ambas em `_NEGATION_MARKER` não cobrindo o vocabulário usado:
+    (1) "Nenhuma issue foi reivindicada" não era negação reconhecida (só
+    "não"/"nunca"), então o keyword "reivindicada" herdava a lista de refs
+    do segmento anterior (#8855) pelo mecanismo de "segmento que abre com
+    lista"; (2) "antes do claim" usa "claim" como substantivo de evento que
+    NÃO aconteceu, mas o keyword batia sem olhar o "antes do" que o
+    precede, atribuindo #8857 como claim."""
+    mod = _load_module()
+    linha_real = (
+        "Nenhuma issue implementada. Classificação determinística encontrou "
+        "#8857 e #8855 como `overnight`; li título, corpo e comentários "
+        "frescos via REST (sem comentários). Gate de coerência rejeitou "
+        "ambas antes do claim por sobreposição recente de paths: #8857 "
+        "(`scripts/lib/scheduled-tasks.ts`); #8855 "
+        "(`scripts/ads-test-watch.ts`, `scripts/lib/scheduled-tasks.ts`). "
+        "Nenhuma issue foi reivindicada ou alterada. Fila secundária "
+        "`vjpixel/hermes`: nenhuma issue aberta."
+    )
+    refs = mod.extract_claimed_issue_refs(linha_real)
+    for n in (8855, 8857):
+        assert n not in refs, f"#{n} ('nenhuma'/'antes do claim') indevido: {refs}"
+    # Controle: claim genuíno não é apagado por "nenhum(a)"/"antes do" em
+    # outra parte do relatório.
+    linha_claim_real = (
+        "#8515 foi lida fresca via REST, admitida pelo coherence gate e "
+        "reivindicada com o session-id deste tick."
+    )
+    refs_real = mod.extract_claimed_issue_refs(linha_claim_real)
+    assert 8515 in refs_real, f"claim real #8515 nao deveria ser afetado: {refs_real}"
+    print("regressão #8863: 'nenhuma issue reivindicada'/'antes do claim' não vira claim — OK")
+
+
+def test_regressao_8863_antes_do_nao_apaga_claim_real():
+    """Revisão da PR #8864 (achado 1, P1): a 1ª versão do fix negava
+    QUALQUER keyword de claim precedido por "antes do/da" dentro da janela
+    genérica de 30 chars — mas "antes de" é preposição temporal comum em
+    português técnico, não exclusiva de "antes do claim" (#8863). Uma frase
+    como "Testei a build antes do deploy e reivindiquei #700" teria o claim
+    real de #700 apagado só por "antes do" aparecer perto, sem nenhuma
+    relação com "claim" — o oposto do bug original: um claim FABRICADO
+    escaparia da detecção atrás de qualquer "antes de" solto na cláusula.
+    A correção restringe a negação de "antes d[oa]" ao keyword LITERAL
+    "claim" (nunca "reivindic*") numa janela bem mais curta."""
+    mod = _load_module()
+    refs1 = mod.extract_claimed_issue_refs(
+        "Testei a build antes do deploy e reivindiquei #700 na sequência."
+    )
+    assert 700 in refs1, f"claim real #700 apagado por 'antes do deploy' (nao-claim): {refs1}"
+    refs2 = mod.extract_claimed_issue_refs(
+        "Revisei os logs antes da fusão e reivindiquei #701 em seguida."
+    )
+    assert 701 in refs2, f"claim real #701 apagado por 'antes da fusao' (nao-claim): {refs2}"
+    print("regressão #8863: 'antes do/da' não relacionado a 'claim' não apaga claim real — OK")
 
 
 def main() -> int:
@@ -797,6 +864,8 @@ def main() -> int:
         test_controle_claim_proprio_ausente_do_registro_e_fabricacao()
         test_regressao_8463_falsos_positivos_lista_atribuida_outro_ator()
         test_regressao_8521_negacao_nao_e_claim()
+        test_regressao_8863_nenhuma_e_antes_do_claim()
+        test_regressao_8863_antes_do_nao_apaga_claim_real()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.

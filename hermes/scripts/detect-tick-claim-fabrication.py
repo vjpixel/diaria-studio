@@ -340,20 +340,82 @@ _RELEASE_SIGNAL = re.compile(r"\bliberad|\bliberou", re.IGNORECASE)
 # precedida por "não"/"nunca" dentro de `_NEGATION_WINDOW` caracteres é
 # descartada ANTES de qualquer associação a lista de refs — nunca vira
 # claim, próprio ou de terceiro.
-_NEGATION_MARKER = re.compile(r"\bn[ãa]o\b|\bnunca\b", re.IGNORECASE)
+#
+# #8863 (27/09/2026), duas causas no mesmo relatório real ("Gate de
+# coerência rejeitou ambas antes do claim (...); #8857 (...); #8855
+# (...). Nenhuma issue foi reivindicada ou alterada."):
+#
+# 1. "Nenhuma issue foi reivindicada" não era reconhecido como negação —
+#    `_NEGATION_MARKER` só cobria "não"/"nunca", não "nenhum(a)". O
+#    keyword "reivindicada" nesse segmento, tratado como claim positivo,
+#    herdava a lista de refs do segmento ANTERIOR (#8855) pelo mesmo
+#    mecanismo de "segmento que abre com lista" do #8521. Mesma janela
+#    de `_NEGATION_MARKER`/`_NEGATION_WINDOW` já usada por "não"/"nunca"
+#    — "nenhum(a)" tem o mesmo risco (baixo, já aceito desde o #8521) de
+#    apagar um claim genuíno distante no mesmo segmento.
+# 2. "rejeitou (...) antes do claim" usa "claim" como SUBSTANTIVO
+#    referenciando um evento que não aconteceu ("antes de" = ainda não
+#    houve), não como declaração de que este coordenador reivindicou
+#    algo. `_CLAIM_KEYWORDS` casa a substring "claim" sem olhar o
+#    "antes do"/"antes da" que a precede.
+#
+#    **Revisão da PR #8864 (achado 1, confiança alta, P1):** um marcador
+#    genérico "antes d[oa]" na MESMA janela de 30 chars usada por "não"/
+#    "nunca"/"nenhum(a)" é genérico demais — "antes de" é preposição
+#    temporal comum em português técnico (o próprio módulo a usa dezenas
+#    de vezes), então uma frase como "Testei a build antes do deploy e
+#    reivindiquei #700" teria o claim de #700 apagado só por "antes do"
+#    aparecer 20+ chars antes, sem nenhuma relação com "claim". Isso abre
+#    exatamente o buraco que este detector existe para fechar: uma
+#    fabricação de claim escaparia atrás de qualquer "antes de" solto na
+#    mesma cláusula. Confirmado ao vivo pelo revisor.
+#
+#    Correção: a negação "antes d[oa]" só se aplica quando o keyword
+#    casado é literalmente "claim" (não "reivindic*"/"reivindiq*") E
+#    "antes d[oa]" aparece imediatamente antes dele — janela curta
+#    (`_ANTES_CLAIM_WINDOW`, bem menor que a genérica de 30 chars),
+#    tolerando no máximo 1 palavra entre a preposição e "claim" (ex:
+#    "antes do próprio claim"). Isso cobre o caso real do #8863 ("antes
+#    do claim", 0 palavras no meio) sem generalizar pra qualquer "antes
+#    de" solto na frase.
+_NEGATION_MARKER = re.compile(
+    r"\bn[ãa]o\b|\bnunca\b|\bnenhum[ao]?\b",
+    re.IGNORECASE,
+)
 _NEGATION_WINDOW = 30
 
+# Só nega o keyword LITERAL "claim" (nunca "reivindic*"), e só quando
+# "antes do/da" está colado a ele (no máx. 1 palavra no meio) — ver nota
+# do achado 1 da revisão da PR #8864 acima.
+_ANTES_CLAIM_MARKER = re.compile(r"\bantes d[oa]\s+(?:\w+\s+){0,1}$", re.IGNORECASE)
+_ANTES_CLAIM_WINDOW = 20
 
-def _is_negated_claim_keyword(segment: str, keyword_start: int) -> bool:
-    """True quando um marcador de negação ('não'/'nunca') aparece dentro de
-    `_NEGATION_WINDOW` caracteres imediatamente ANTES do keyword de claim
-    no mesmo segmento — ex: 'não foram reivindicadas'. Janela curta e
+
+def _is_negated_claim_keyword(segment: str, keyword_start: int, keyword_text: str) -> bool:
+    """True quando um marcador de negação ('não'/'nunca'/'nenhum(a)') aparece
+    dentro de `_NEGATION_WINDOW` caracteres imediatamente ANTES do keyword de
+    claim no mesmo segmento — ex: 'não foram reivindicadas'. Janela curta e
     escopada ao mesmo segmento (nunca cruza `;`/`. `+maiúscula, que já
     dividem cláusulas antes desta checagem rodar) para não apagar um claim
-    genuíno distante de um "não" solto em outra parte da frase."""
+    genuíno distante de um "não"/"nenhum(a)" solto em outra parte da frase.
+
+    Além disso (só quando `keyword_text` é literalmente "claim", nunca
+    "reivindic*"): nega quando "antes do/da" aparece colado (janela mais
+    curta, `_ANTES_CLAIM_WINDOW`) — "antes do claim" descreve um evento que
+    NÃO aconteceu, não uma declaração de claim (#8863). Restrito ao keyword
+    "claim" e a uma janela curta para não apagar claims genuínos atrás de
+    um "antes de" comum de português técnico em outra parte da cláusula
+    (achado 1 da revisão da PR #8864)."""
     window_start = max(0, keyword_start - _NEGATION_WINDOW)
     window = segment[window_start:keyword_start]
-    return bool(_NEGATION_MARKER.search(window))
+    if _NEGATION_MARKER.search(window):
+        return True
+    if keyword_text.lower() == "claim":
+        antes_start = max(0, keyword_start - _ANTES_CLAIM_WINDOW)
+        antes_window = segment[antes_start:keyword_start]
+        if _ANTES_CLAIM_MARKER.search(antes_window):
+            return True
+    return False
 
 
 def _run_gh_open_issue_count() -> int | None:
@@ -483,7 +545,7 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
             # — nunca chega a virar claim, nem próprio nem de terceiro.
             kws = [
                 kw for kw in _CLAIM_KEYWORDS.finditer(segment)
-                if not _is_negated_claim_keyword(segment, kw.start())
+                if not _is_negated_claim_keyword(segment, kw.start(), kw.group(0))
             ]
             if not kws:
                 continue
