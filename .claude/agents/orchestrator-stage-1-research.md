@@ -667,6 +667,12 @@ Stdout: `{ flagged, theme }` — temas que apareceram nas últimas 3 edições. 
 
 **Guarda contra `auto_approve = true`:** se `auto_approve = true`, **pule esta seção inteira** e vá direto para §1y via `apply-gate-edits.ts --auto`.
 
+**Marcador de `gate_at` (#8866) — fail-soft, nunca bloqueia.** Imediatamente antes de apresentar o resumo pela 1ª vez, gravar o timestamp de apresentação do gate (usado por `pipeline_ms` — tempo do pipeline até o gate, excluindo a espera pela resposta do editor):
+```bash
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 1 --status running --gate-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+```
+Chamada idempotente — reapresentações (após "rejeitar e re-rodar") não sobrescrevem um `gate_at` já gravado (1ª apresentação vence, ver `update-stage-status.ts`). Erro do comando = ignorar e seguir.
+
 1. **Instrução de revisão** — Apresentar ao editor o resumo consolidado do Stage 1:
    - `01-categorized.md` (visual)
    - `minSectionWarnings` (do 1t)

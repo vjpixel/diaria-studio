@@ -538,6 +538,12 @@ Extrair `whatsappUrl` e `metaDescriptionSuggestion` do JSON retornado. Se `whats
 
 **Marcador de apresentação do gate (#7982, minutos de toque) — fail-soft, nunca bloqueia.** Logo antes de CADA apresentação do resumo (a 1ª e cada re-apresentação após `ajustar`), rodar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message "gate revisao: apresentado"`. Junto com o `gate revisao response: ...` abaixo, é o que `scripts/derive-touch-minutes.ts` usa pra derivar minutos de edição/sign-off por edição. Erro do comando = ignorar e seguir.
 
+**Marcador de `gate_at` (#8866) — fail-soft, nunca bloqueia.** Junto com o marcador acima, gravar/atualizar `gate_at` do Stage 4 (usado por `pipeline_ms` — tempo do pipeline até o gate, excluindo a espera pela resposta do editor):
+```bash
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 4 --status running --gate-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+```
+Chamada idempotente — a 1ª apresentação vence (`update-stage-status.ts` nunca sobrescreve um `gate_at` já gravado), então repetir a cada re-apresentação após `ajustar` não estica a métrica com tempo de iteração do editor. Erro do comando = ignorar e seguir.
+
 Apresentar ao editor numa visualização limpa:
 
 ```

@@ -207,6 +207,12 @@ Exit code:
 
 Guardar stdout em `POST_PIXEL_TEXT`.
 
+**Marcador de `gate_at` (#8866) — fail-soft, nunca bloqueia.** Imediatamente antes de apresentar o gate único, gravar o timestamp de apresentação (usado por `pipeline_ms` — tempo do pipeline até o gate, excluindo a espera pela resposta do editor):
+```bash
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --status running --gate-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+```
+Erro do comando = ignorar e seguir.
+
 **Se modo interativo:** apresentar o gate único. `{test_email}` vem de `publishing.newsletter.test_email` em `platform.config.json`:
 
 ```
