@@ -122,6 +122,9 @@ p{color:var(--muted)}
 .comparison-agent{border-color:var(--gold)!important;background:var(--surface2)!important}
 .comparison-agent strong{color:var(--gold)}
 
+.section-cta{margin-top:36px;text-align:center}
+.section-cta .button{width:100%;max-width:420px}
+
 /* Para quem é */
 .audience{border-top:1px solid var(--line)}
 .check-list{padding:0;margin:28px 0 0;list-style:none;display:grid;grid-template-columns:1fr;gap:10px}
