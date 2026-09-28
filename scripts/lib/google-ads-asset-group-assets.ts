@@ -24,13 +24,13 @@
  *
  * ## Por que a execução NÃO acontece neste módulo/CLI hoje (28/09/2026)
  *
- * Duas razões independentes — só a #2 é checada em código:
- *   1. **[processo, NÃO checado em código] Editor declinou autorização
- *      hoje** via `/diaria-desbloqueia` ("ainda não" — ver marcador
- *      `acao-adiada` no comentário da issue, cooldown de 7 dias,
- *      `scripts/lib/issue-decisions.ts`). Quem for rodar `--send` precisa
- *      reler a issue à mão antes — nenhuma chamada a `isAcaoAdiadaAtiva`
- *      acontece neste módulo/CLI (achado do review da PR #8956).
+ * Duas razões independentes — desde #8960 as DUAS são checadas em código:
+ *   1. **[código desde #8960, `checkSwapCooldown` no script CLI] Editor
+ *      declinou autorização hoje** via `/diaria-desbloqueia` ("ainda não" —
+ *      ver marcador `acao-adiada` no comentário da issue, cooldown de 7
+ *      dias, `scripts/lib/issue-decisions.ts` `isAcaoAdiadaAtiva`). `--send`
+ *      recusa sozinho enquanto o cooldown estiver ativo (achado do review
+ *      da PR #8956, endurecido pela #8960).
  *   2. **[código, `validateImagesManifest`] As imagens novas ainda não
  *      existem** — a decisão do editor (comentário de 20/09) pede overlays
  *      SEM o botão "Assine grátis" e SEM título/subtítulo queimados,
@@ -446,4 +446,81 @@ export function buildRemoveAssetGroupAssetsPayload(
   assetGroupAssetResourceNames: readonly string[],
 ): { operations: Array<{ remove: string }> } {
   return { operations: assetGroupAssetResourceNames.map((resourceName) => ({ remove: resourceName })) };
+}
+
+// ---------------------------------------------------------------------------
+// Manifesto de progresso da Fase 1 (#8960 — recuperação de falha parcial)
+// ---------------------------------------------------------------------------
+
+/** Uma "etapa" da Fase 1 = 1 `fieldType` (3 de texto + 3 de imagem). O
+ *  script cria+linka um `fieldType` de cada vez (mesmo agrupamento que o
+ *  código de `main()` já usava) — granularidade suficiente pra achado #1 da
+ *  issue #8960 (retry ingênuo recriando o lote inteiro): se a Fase 1 falhar
+ *  no meio, o `resourceNames` já criados ficam registrados aqui, e um retry
+ *  reusa em vez de recriar (evita duplicar os órfãos). `linked: false`
+ *  registra "criado mas ainda não linkado" — o pior caso de inconsistência
+ *  descrito na issue (grupo parcialmente trocado). */
+export interface SwapProgressStep {
+  resourceNames: string[];
+  linked: boolean;
+}
+
+export type SwapProgressStepKey = TextFieldType | Extract<AssetGroupFieldType, "SQUARE_MARKETING_IMAGE" | "MARKETING_IMAGE" | "PORTRAIT_MARKETING_IMAGE">;
+
+export interface SwapProgress {
+  version: 1;
+  updated_at: string;
+  steps: Partial<Record<SwapProgressStepKey, SwapProgressStep>>;
+}
+
+/** Manifesto vazio — ponto de partida de uma Fase 1 nova. @pure */
+export function emptySwapProgress(now: Date = new Date()): SwapProgress {
+  return { version: 1, updated_at: now.toISOString(), steps: {} };
+}
+
+function isValidSwapProgressStep(value: unknown): value is SwapProgressStep {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return Array.isArray(v.resourceNames) && v.resourceNames.every((r) => typeof r === "string") && typeof v.linked === "boolean";
+}
+
+/** Parseia o conteúdo bruto (string) do arquivo de progresso. Fail-soft por
+ *  design (mesmo contrato dos parsers de `issue-decisions.ts`): `null`,
+ *  string vazia, JSON inválido ou forma inesperada devolvem um manifesto
+ *  vazio em vez de lançar — um arquivo de progresso corrompido nunca deve
+ *  travar um retry, só faz o retry recriar do zero (pior caso conhecido,
+ *  não uma exceção não tratada). @pure */
+export function parseSwapProgress(raw: string | null | undefined): SwapProgress {
+  if (!raw) return emptySwapProgress();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return emptySwapProgress();
+  }
+  if (typeof parsed !== "object" || parsed === null) return emptySwapProgress();
+  const p = parsed as Record<string, unknown>;
+  if (p.version !== 1 || typeof p.steps !== "object" || p.steps === null) return emptySwapProgress();
+  const steps: SwapProgress["steps"] = {};
+  for (const [key, value] of Object.entries(p.steps as Record<string, unknown>)) {
+    if (isValidSwapProgressStep(value)) steps[key as SwapProgressStepKey] = value;
+  }
+  return { version: 1, updated_at: typeof p.updated_at === "string" ? p.updated_at : new Date().toISOString(), steps };
+}
+
+/** Devolve um NOVO manifesto com a etapa `stepKey` atualizada — nunca muta
+ *  o argumento. @pure */
+export function withSwapProgressStep(
+  progress: SwapProgress,
+  stepKey: SwapProgressStepKey,
+  step: SwapProgressStep,
+  now: Date = new Date(),
+): SwapProgress {
+  return { version: 1, updated_at: now.toISOString(), steps: { ...progress.steps, [stepKey]: step } };
+}
+
+/** Serializa pra gravar em disco (o caller faz o `writeFileSync`, este
+ *  módulo não toca disco). @pure */
+export function serializeSwapProgress(progress: SwapProgress): string {
+  return JSON.stringify(progress, null, 2);
 }

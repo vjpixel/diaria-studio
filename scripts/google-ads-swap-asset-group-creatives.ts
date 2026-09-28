@@ -11,22 +11,22 @@
  * ## NÃO EXECUTAR --send hoje (28/09/2026) — ler antes de rodar
  *
  * Duas razões independentes, cada uma sozinha já seria motivo de não rodar
- * — mas só UMA delas é verificada por código (#2); a outra (#1) é um gate
- * de PROCESSO, não mecânico. Quem for rodar `--send` precisa checar #1 à
- * mão (reler os comentários da issue #8550/`/diaria-desbloqueia`) antes de
- * montar o `--images-manifest` — o script não recusa sozinho só porque o
- * cooldown ainda está ativo.
+ * — **desde o #8960 as DUAS são verificadas por código**, não só a #2 como
+ * antes (achado do review da PR #8956).
  *
- *   1. **[NÃO enforced em código] Editor declinou autorização hoje.**
- *      `/diaria-desbloqueia` (28/09/2026) perguntou explicitamente e a
- *      resposta foi "ainda não" — marcador `acao-adiada` no comentário da
- *      issue #8550, cooldown de 7 dias (`scripts/lib/issue-decisions.ts` —
- *      `isAcaoAdiadaAtiva`). Reperguntar antes do cooldown expirar
- *      (~05/10/2026) repete uma pergunta já respondida. **Este script não
- *      chama `isAcaoAdiadaAtiva`** — nada aqui impede `--send` de rodar
- *      durante o cooldown se alguém já tiver um `--images-manifest` válido
- *      em mãos. Achado do review da PR #8956 (#2 abaixo é quem de fato
- *      bloqueia hoje).
+ *   1. **[enforced em código desde #8960, `checkSwapCooldown`] Editor
+ *      declinou autorização em 28/09/2026.** `/diaria-desbloqueia`
+ *      perguntou explicitamente e a resposta foi "ainda não" — marcador
+ *      `acao-adiada` no comentário da issue #8550, cooldown de 7 dias
+ *      (`scripts/lib/issue-decisions.ts` — `isAcaoAdiadaAtiva`). `--send`
+ *      agora lê os comentários da issue #8550 (via `gh`, `fetchCommentBodies`)
+ *      e RECUSA se o cooldown ainda estiver ativo — reperguntar antes de
+ *      expirar (~05/10/2026) repetiria uma pergunta já respondida. Fail-soft
+ *      por design: `gh` indisponível/offline não bloqueia `--send` (mesma
+ *      postura fail-open de `isAcaoAdiadaAtiva` — um cooldown que não dá pra
+ *      confirmar não deve travar para sempre). Bypass explícito pra teste/
+ *      emergência: `--skip-cooldown-check-UNSAFE` (nome de propósito feio —
+ *      não é pra uso normal).
  *   2. **[enforced em código, `validateImagesManifest`] As imagens novas
  *      não existem ainda.** A decisão do editor (20/09) pede overlays das
  *      artes que rodam na Meta SEM o botão "Assine grátis" e SEM
@@ -36,6 +36,19 @@
  *      fala com a Google Ads API) — por isso `--send` exige
  *      `--images-manifest` apontando pros 12 arquivos finais (4 criativos
  *      × 3 proporções) e RECUSA rodar se qualquer um estiver ausente.
+ *
+ * ## Recuperação de falha parcial na Fase 1 (#8960)
+ *
+ * Cada etapa da Fase 1 (HEADLINE, LONG_HEADLINE, DESCRIPTION, e cada um dos
+ * 3 `*_MARKETING_IMAGE`) grava seu progresso em `--progress-file` (default
+ * `_internal/pmax-swap-progress.json`) assim que os recursos são CRIADOS
+ * (antes de tentar o LINK) e de novo quando o LINK é confirmado. Um retry
+ * depois de uma falha no meio recarrega esse arquivo e pula (nunca recria)
+ * qualquer etapa já criada, e pula (nunca relinka) qualquer etapa já
+ * linkada — não duplica os assets órfãos que uma falha parcial deixaria
+ * pra trás. O arquivo é apagado sozinho no fim de uma Fase 1 concluída com
+ * sucesso (não deve sobreviver pro PRÓXIMO swap, com texto/imagem
+ * diferentes).
  *
  * Rodar em modo leitura (default, sem `--send`) é seguro a qualquer
  * momento — só lê o estado atual e imprime o plano, nenhuma mutação.
@@ -78,7 +91,8 @@
  *   }
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import {
@@ -90,16 +104,49 @@ import {
   buildCreateImageAssetPayload,
   buildLinkAssetGroupAssetsPayload,
   buildRemoveAssetGroupAssetsPayload,
+  emptySwapProgress,
+  parseSwapProgress,
+  withSwapProgressStep,
+  serializeSwapProgress,
   NEW_HEADLINES,
   NEW_LONG_HEADLINES,
   NEW_DESCRIPTIONS,
   type AssetGroupAssetApiRow,
   type AssetGroupFieldType,
+  type SwapProgress,
+  type SwapProgressStepKey,
 } from "./lib/google-ads-asset-group-assets.ts";
 import { refreshGoogleAdsAccessToken, postGoogleAdsWithLoginRetry, DEFAULT_API_VERSION } from "./lib/google-ads-ingest.ts";
 import { authConfigFromEnv } from "./lib/google-ads-conversion-sender.ts";
+import { fetchCommentBodies, latestAcaoAdiadaFor, latestExecutionBlockFor, isAcaoAdiadaAtiva } from "./lib/issue-decisions.ts";
 
 const DEFAULT_ASSET_GROUP_ID = "6642889160";
+const DEFAULT_PROGRESS_FILE = "_internal/pmax-swap-progress.json";
+/** Issue #8550 é onde o adiamento (`acao-adiada`) do editor foi gravado em
+ *  28/09/2026 — ver docstring do módulo acima. Fixo porque este script
+ *  serve UM swap específico (grupo `6642889160`), não um fluxo genérico. */
+const COOLDOWN_ISSUE_NUMBER = 8550;
+
+/**
+ * Checagem em CÓDIGO do cooldown de 7 dias (#8960 achado #2) — até aqui só
+ * a docstring do módulo documentava que o editor disse "ainda não"; nada
+ * chamava `isAcaoAdiadaAtiva`. Injetável (`fetchCommentBodiesFn`) pra
+ * permitir teste sem `gh` real. Fail-soft: `gh` indisponível ou issue sem
+ * marcador → `[]` de `fetchCommentBodies` → `latestAcaoAdiadaFor` devolve
+ * `null` → `isAcaoAdiadaAtiva` devolve `false` (não bloqueia) — mesma
+ * postura fail-open documentada em `isAcaoAdiadaAtiva` (um cooldown que não
+ * dá pra confirmar não deve travar `--send` para sempre).
+ */
+export function checkSwapCooldown(
+  commentsBodies: readonly string[],
+  now: Date = new Date(),
+): { active: boolean; pedidoEm?: string; motivo?: string } {
+  const adiada = latestAcaoAdiadaFor(commentsBodies);
+  if (!adiada) return { active: false };
+  const blocoMaisRecente = latestExecutionBlockFor(commentsBodies);
+  const active = isAcaoAdiadaAtiva(adiada, { now, blocoMaisRecente });
+  return { active, pedidoEm: adiada.pedido_em, motivo: adiada.motivo };
+}
 
 const IMAGE_FIELD_TYPES: readonly Extract<AssetGroupFieldType, string>[] = [
   "SQUARE_MARKETING_IMAGE",
@@ -168,7 +215,11 @@ async function readCurrentAssetGroupAssets(
   return { items: parseAssetGroupAssetRows(payload.results ?? []) };
 }
 
-export async function main(argv: string[] = process.argv.slice(2), fetchFn: typeof fetch = fetch): Promise<number> {
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  fetchFn: typeof fetch = fetch,
+  fetchCommentBodiesFn: typeof fetchCommentBodies = fetchCommentBodies,
+): Promise<number> {
   loadProjectEnv();
 
   const assetGroupId = getStringArg(argv, "asset-group-id", { example: DEFAULT_ASSET_GROUP_ID }) ?? DEFAULT_ASSET_GROUP_ID;
@@ -176,6 +227,25 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   const send = hasFlag(argv, "send");
   const removeStale = hasFlag(argv, "remove-stale");
   const manifestPath = getStringArg(argv, "images-manifest", { example: "path/to/manifest.json" });
+  const progressFile = getStringArg(argv, "progress-file", { example: DEFAULT_PROGRESS_FILE }) ?? DEFAULT_PROGRESS_FILE;
+  const skipCooldownCheck = hasFlag(argv, "skip-cooldown-check-UNSAFE");
+
+  // #8960 achado #2 — cooldown do editor agora é checado em CÓDIGO, não só
+  // documentado. Só se aplica a `--send` (dry-run continua seguro sempre,
+  // inclusive durante o cooldown — só lê e imprime o plano).
+  if (send && !skipCooldownCheck) {
+    const commentsBodies = fetchCommentBodiesFn(COOLDOWN_ISSUE_NUMBER, process.cwd());
+    const cooldown = checkSwapCooldown(commentsBodies);
+    if (cooldown.active) {
+      console.error(
+        `[google-ads-swap-asset-group-creatives] ✖ --send recusado: cooldown de "ação adiada" ainda ativo na issue #${COOLDOWN_ISSUE_NUMBER} ` +
+          `(pedido em ${cooldown.pedidoEm}${cooldown.motivo ? `, motivo: ${cooldown.motivo}` : ""}). ` +
+          "O editor respondeu 'ainda não' recentemente — reperguntar antes do cooldown expirar repete uma pergunta já respondida " +
+          "(ver `scripts/lib/issue-decisions.ts` `isAcaoAdiadaAtiva`). Nenhuma mutação foi feita.",
+      );
+      return 1;
+    }
+  }
 
   if (!customerId) {
     console.error("[google-ads-swap-asset-group-creatives] ✖ --customer-id (ou GOOGLE_ADS_CUSTOMER_ID) é obrigatório.");
@@ -339,6 +409,22 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   const assetsMutateUrl = `https://googleads.googleapis.com/${apiVersion}/customers/${numericCustomerId}/assets:mutate`;
   const linkMutateUrl = `https://googleads.googleapis.com/${apiVersion}/customers/${numericCustomerId}/assetGroupAssets:mutate`;
 
+  // #8960 achado #1 — manifesto de progresso: se a Fase 1 falhar no meio,
+  // os `resourceNames` de cada etapa (fieldType) já criada/linkada ficam
+  // registrados aqui em disco. Um retry recarrega este arquivo e PULA
+  // (nunca recria) a etapa que já tem `resourceNames`, e pula o LINK da
+  // etapa que já tem `linked: true` — evita duplicar os órfãos que o
+  // review da PR #8956 apontou. Progresso é local ao ASSET GROUP (não
+  // versionado — `_internal/` é sempre gitignored), e é limpo no fim de
+  // uma Fase 1 bem-sucedida (não deve sobreviver pra confundir o PRÓXIMO
+  // swap, que terá texto/imagem novos).
+  let progress: SwapProgress = parseSwapProgress(existsSync(progressFile) ? readFileSync(progressFile, "utf8") : null);
+  function saveProgress(stepKey: SwapProgressStepKey, resourceNames: string[], linked: boolean): void {
+    progress = withSwapProgressStep(progress, stepKey, { resourceNames, linked });
+    mkdirSync(dirname(progressFile), { recursive: true });
+    writeFileSync(progressFile, serializeSwapProgress(progress), "utf8");
+  }
+
   // `payload` tipado por `{ operations: unknown[] }` (não `unknown` cru) —
   // é o que permite validar `results.length === operations.length` abaixo
   // sem um parâmetro de contagem separado que pudesse divergir do payload
@@ -372,18 +458,38 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
     return { resourceNames };
   }
 
+  /** Cria (ou reusa do progresso, se já criado numa tentativa anterior) os
+   *  assets de UMA etapa/fieldType. Nunca recria uma etapa cujo
+   *  `resourceNames` já esteja gravado — é exatamente o retry idempotente
+   *  pedido pela issue #8960. */
+  async function createStepIfNeeded(
+    stepKey: SwapProgressStepKey,
+    buildPayload: () => { operations: unknown[] },
+    label: string,
+  ): Promise<{ resourceNames: string[] } | { error: string }> {
+    const existing = progress.steps[stepKey];
+    if (existing) {
+      console.log(`[google-ads-swap-asset-group-creatives] ↷ ${stepKey}: reusando ${existing.resourceNames.length} recurso(s) já criado(s) numa tentativa anterior (${progressFile}).`);
+      return { resourceNames: existing.resourceNames };
+    }
+    const result = await createAssets(buildPayload(), label);
+    if ("error" in result) return result;
+    saveProgress(stepKey, result.resourceNames, false);
+    return result;
+  }
+
   console.log("[google-ads-swap-asset-group-creatives] Fase 1 — criando textos novos...");
-  const headlineResult = await createAssets(buildCreateTextAssetsPayload(NEW_HEADLINES, "HEADLINE"), "assets:mutate (headlines)");
+  const headlineResult = await createStepIfNeeded("HEADLINE", () => buildCreateTextAssetsPayload(NEW_HEADLINES, "HEADLINE"), "assets:mutate (headlines)");
   if ("error" in headlineResult) {
     console.error(`[google-ads-swap-asset-group-creatives] ✖ ${headlineResult.error}`);
     return 1;
   }
-  const longHeadlineResult = await createAssets(buildCreateTextAssetsPayload(NEW_LONG_HEADLINES, "LONG_HEADLINE"), "assets:mutate (long headlines)");
+  const longHeadlineResult = await createStepIfNeeded("LONG_HEADLINE", () => buildCreateTextAssetsPayload(NEW_LONG_HEADLINES, "LONG_HEADLINE"), "assets:mutate (long headlines)");
   if ("error" in longHeadlineResult) {
     console.error(`[google-ads-swap-asset-group-creatives] ✖ ${longHeadlineResult.error}`);
     return 1;
   }
-  const descriptionResult = await createAssets(buildCreateTextAssetsPayload(NEW_DESCRIPTIONS, "DESCRIPTION"), "assets:mutate (descriptions)");
+  const descriptionResult = await createStepIfNeeded("DESCRIPTION", () => buildCreateTextAssetsPayload(NEW_DESCRIPTIONS, "DESCRIPTION"), "assets:mutate (descriptions)");
   if ("error" in descriptionResult) {
     console.error(`[google-ads-swap-asset-group-creatives] ✖ ${descriptionResult.error}`);
     return 1;
@@ -396,6 +502,12 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   console.log("[google-ads-swap-asset-group-creatives] Fase 1 — criando imagens novas do manifesto...");
   const imageResourceNamesByFieldType: Partial<Record<(typeof IMAGE_FIELD_TYPES)[number], string[]>> = {};
   for (const fieldType of IMAGE_FIELD_TYPES) {
+    const existing = progress.steps[fieldType as SwapProgressStepKey];
+    if (existing) {
+      console.log(`[google-ads-swap-asset-group-creatives] ↷ ${fieldType}: reusando ${existing.resourceNames.length} recurso(s) já criado(s) numa tentativa anterior (${progressFile}).`);
+      imageResourceNamesByFieldType[fieldType] = existing.resourceNames;
+      continue;
+    }
     const paths = manifest![fieldType as keyof ImagesManifest] ?? [];
     const names: string[] = [];
     for (const path of paths) {
@@ -403,11 +515,15 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
       const baseName = path.split(/[\\/]/).pop() ?? path;
       const result = await createAssets(buildCreateImageAssetPayload(base64, baseName), `assets:mutate (${fieldType} ${baseName})`);
       if ("error" in result) {
+        // Persiste o que já foi criado NESTE fieldType antes da falha (ex:
+        // 1,91:1 criada, 4:5 falhou) — um retry não recria a que já existe.
+        if (names.length > 0) saveProgress(fieldType as SwapProgressStepKey, names, false);
         console.error(`[google-ads-swap-asset-group-creatives] ✖ ${result.error}`);
         return 1;
       }
       names.push(...result.resourceNames);
     }
+    saveProgress(fieldType as SwapProgressStepKey, names, false);
     imageResourceNamesByFieldType[fieldType] = names;
     console.log(`[google-ads-swap-asset-group-creatives] ✔ ${names.length} imagem(ns) ${fieldType} criada(s).`);
   }
@@ -421,6 +537,10 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   ];
   for (const { fieldType, resourceNames } of allNewAssetsByFieldType) {
     if (resourceNames.length === 0) continue;
+    if (progress.steps[fieldType as SwapProgressStepKey]?.linked) {
+      console.log(`[google-ads-swap-asset-group-creatives] ↷ ${fieldType}: já linkado numa tentativa anterior (${progressFile}) — pulando.`);
+      continue;
+    }
     const linkPayload = buildLinkAssetGroupAssetsPayload(assetGroupResourceName, resourceNames, fieldType);
     const attempt = await postGoogleAdsWithLoginRetry(fetchFn, auth, accessToken, linkMutateUrl, JSON.stringify(linkPayload), `assetGroupAssets:mutate (link ${fieldType})`);
     if ("networkError" in attempt) {
@@ -449,7 +569,20 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
       );
       return 1;
     }
+    saveProgress(fieldType as SwapProgressStepKey, resourceNames, true);
     console.log(`[google-ads-swap-asset-group-creatives] ✔ ${linkedCount} recurso(s) ${fieldType} linkado(s) ao grupo (confirmado pela resposta).`);
+  }
+
+  // Fase 1 terminou com tudo criado E linkado — o progresso não deve
+  // sobreviver pro PRÓXIMO swap (textos/imagens diferentes), então é
+  // limpo aqui. Falha em apagar (raro, permissão) é log-only: um arquivo
+  // de progresso "tudo linked:true" órfão não causa recriação indevida no
+  // próximo retry (createStepIfNeeded reusaria os mesmos resourceNames),
+  // só ficaria como lixo local até a limpeza manual.
+  try {
+    rmSync(progressFile, { force: true });
+  } catch (e) {
+    console.log(`[google-ads-swap-asset-group-creatives] aviso: não consegui remover ${progressFile} (${e instanceof Error ? e.message : e}) — sem impacto na próxima execução.`);
   }
 
   console.log(
