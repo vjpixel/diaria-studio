@@ -862,68 +862,90 @@ function googleExtractUsage(json: unknown): GeoProviderUsage | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Perplexity — Chat Completions (`sonar`, busca web embutida no modelo) — #8342.
-// Shape conferido na doc oficial em 20/09/2026 (docs.perplexity.ai
-// /api-reference/chat-completions-post): `choices[0].message.content`,
-// `citations` (URLs das fontes), `search_results` ([{title,url}]),
-// `usage.{prompt_tokens,completion_tokens}`, `choices[0].finish_reason`
-// ("stop" | "length"). NÃO verificado com chamada real (sem key ainda).
-// Aviso: a doc anuncia que "Sonar Chat Completions is now Agent API" com
-// suporte de migração até 27/09/2026 — se o endpoint sair do ar, migrar.
+// Perplexity — Agent API (`POST /v1/agent`, busca web embutida via preset)
+// — #8612, migrado de Chat Completions (#8342). A doc anunciou "Sonar Chat
+// Completions is now Agent API", com suporte ao endpoint antigo até
+// 27/09/2026; a 1ª medição real (20/09/2026, #8612 comentário) já viu 1/8
+// chamadas em `/chat/completions` devolver HTTP 403 "Sonar is now the Agent
+// API. Use /v1/responses instead of /chat/completions" — o endpoint estava
+// saindo do ar em produção antes mesmo do prazo. Shape conferido na doc
+// oficial em 28/09/2026 (docs.perplexity.ai/docs/agent-api/quickstart +
+// /docs/agent-api/migrate-from-sonar/overview): request `{ preset, input }`
+// pra `https://api.perplexity.ai/v1/agent`; response `output[]` com itens
+// `{ type: "message", content: [{ type: "output_text", text, annotations }] }`
+// e `{ type: "search_results", results: [{ url, title, ... }] }`;
+// `usage.{input_tokens,output_tokens}`; `status` ("completed" | "failed" |
+// "incomplete" | "cancelled" | ...). NÃO verificado com chamada real (sem
+// key neste runtime de dev — ver `#8612`, probe `/diaria-desbloqueia`
+// confirmou a key presente no `.env` do 300, não aqui). Mapeamento de
+// modelo da doc de migração: `sonar` (Chat Completions) → preset `"fast"`
+// (Agent API) — não existe mais um nome de modelo "sonar" a passar direto.
 // ---------------------------------------------------------------------------
 
-function perplexityRequest(question: string, apiKey: string, model: string) {
+/** O 3º parâmetro da assinatura comum `GeoProviderDef.buildRequest` chama-se
+ * `model` na interface (todo outro provider passa um nome de modelo de
+ * verdade) — aqui renomeado localmente pra `preset` porque a Agent API não
+ * usa mais nome de modelo Sonar cru: `defaultModel`/`{PROVIDER}_MODEL` em
+ * `GEO_PROVIDERS` carrega o PRESET (default "fast", ver docstring ali). */
+function perplexityRequest(question: string, apiKey: string, preset: string) {
   return {
-    url: "https://api.perplexity.ai/chat/completions",
+    url: "https://api.perplexity.ai/v1/agent",
     init: {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: question }],
-        // Explícito (não o default) porque a taxa por requisição depende do
-        // tamanho do contexto: low = US$5/1.000 (ver GEO_NON_ANTHROPIC_TOKEN_PRICING).
-        web_search_options: { search_context_size: "low" },
-      }),
+      body: JSON.stringify({ preset, input: question }),
     } satisfies RequestInit,
   };
 }
 
-/** `finish_reason: "length"` = estourou o teto de saída (texto truncado) —
- * mesma classe do #5305/#5310: sem isto, virava "não citado" silencioso. */
+/** `status` diferente de `"completed"` = a Agent API não terminou a resposta
+ * (falhou, truncou por `max_steps`/`max_output_tokens`, foi cancelada) —
+ * mesma classe do #5305/#5310/#8342 (finish_reason "length" na Chat
+ * Completions antiga): sem isto, viraria "não citado" silencioso. Também
+ * reporta `error.message` quando presente (a doc documenta um objeto
+ * `error` opcional no corpo, mesmo em respostas 200). */
 function perplexityCheckProviderError(json: unknown): string | undefined {
-  const choices = (json as { choices?: unknown })?.choices;
-  if (!Array.isArray(choices) || choices.length === 0) return undefined;
-  const finishReason = (choices[0] as { finish_reason?: unknown })?.finish_reason;
-  if (typeof finishReason === "string" && finishReason !== "stop") {
-    return `choices[0].finish_reason: ${finishReason} (resposta truncada antes de terminar)`;
+  const obj = json as { status?: unknown; error?: unknown };
+  const status = obj?.status;
+  if (typeof status === "string" && status.length > 0 && status !== "completed") {
+    const errorMessage = (obj.error as { message?: unknown } | undefined)?.message;
+    const suffix = typeof errorMessage === "string" && errorMessage.length > 0 ? `: ${errorMessage}` : "";
+    return `status: ${status} (resposta não terminou normalmente${suffix})`;
   }
   return undefined;
 }
 
 /**
- * Texto da resposta + URLs de `citations`/`search_results`. As URLs entram de
- * propósito: a Perplexity devolve as fontes num campo à parte (o texto traz só
- * marcadores [1], [2]), então checar só `message.content` nunca acharia
- * `diar.ia.br` mesmo quando ela é uma das fontes citadas.
+ * Texto da resposta (itens `output[]` de `type: "message"`, concatenando
+ * `content[].text` de `type: "output_text"`) + URLs de citação — tanto as
+ * `annotations[].url` embutidas no texto (`type: "url_citation"`) quanto as
+ * de `output[]` de `type: "search_results"` (`results[].url`). As URLs
+ * entram de propósito: a Perplexity devolve as fontes fora do texto corrido
+ * (o texto traz só marcadores inline), então checar só o texto da mensagem
+ * nunca acharia `diar.ia.br` mesmo quando ela é uma das fontes citadas.
  */
 function perplexityExtractText(json: unknown): string {
-  const obj = json as { choices?: unknown; citations?: unknown; search_results?: unknown };
+  const output = (json as { output?: unknown })?.output;
   const parts: string[] = [];
-  if (Array.isArray(obj?.choices) && obj.choices.length > 0) {
-    const content = (obj.choices[0] as { message?: { content?: unknown } })?.message?.content;
-    if (typeof content === "string") parts.push(content);
-  }
-  if (Array.isArray(obj?.citations)) {
-    for (const c of obj.citations as unknown[]) if (typeof c === "string") parts.push(c);
-  }
-  if (Array.isArray(obj?.search_results)) {
-    for (const r of obj.search_results as unknown[]) {
-      const url = (r as { url?: unknown })?.url;
-      if (typeof url === "string") parts.push(url);
+  if (!Array.isArray(output)) return "";
+  for (const item of output as Array<Record<string, unknown>>) {
+    if (item?.type === "message" && Array.isArray(item.content)) {
+      for (const block of item.content as Array<Record<string, unknown>>) {
+        if (block?.type === "output_text" && typeof block.text === "string") parts.push(block.text);
+        if (Array.isArray(block?.annotations)) {
+          for (const a of block.annotations as Array<Record<string, unknown>>) {
+            if (a?.type === "url_citation" && typeof a?.url === "string") parts.push(a.url);
+          }
+        }
+      }
+    }
+    if (item?.type === "search_results" && Array.isArray(item.results)) {
+      for (const r of item.results as Array<Record<string, unknown>>) {
+        if (typeof r?.url === "string") parts.push(r.url);
+      }
     }
   }
   return parts.join("\n");
@@ -933,8 +955,8 @@ function perplexityExtractUsage(json: unknown): GeoProviderUsage | undefined {
   const usage = (json as { usage?: unknown })?.usage;
   if (!usage || typeof usage !== "object") return undefined;
   const u = usage as Record<string, unknown>;
-  const inputTokens = typeof u.prompt_tokens === "number" ? u.prompt_tokens : undefined;
-  const outputTokens = typeof u.completion_tokens === "number" ? u.completion_tokens : undefined;
+  const inputTokens = typeof u.input_tokens === "number" ? u.input_tokens : undefined;
+  const outputTokens = typeof u.output_tokens === "number" ? u.output_tokens : undefined;
   if (inputTokens === undefined && outputTokens === undefined) return undefined;
   return { inputTokens, outputTokens };
 }
@@ -1031,9 +1053,13 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     label: "Perplexity",
     envKey: "PERPLEXITY_API_KEY",
     optional: true,
-    // #8342: `sonar` (o mais barato da família com busca): US$1/1M in + US$1/1M
-    // out + US$5/1.000 requisições (contexto low).
-    defaultModel: "sonar",
+    // #8612 (migração da Chat Completions, #8342): a doc de migração mapeia
+    // `sonar` → preset `"fast"` da Agent API — carrega o PRESET, não um nome
+    // de modelo (ver docstring de `perplexityRequest`). Pricing por preset
+    // não confirmado ao vivo ainda; `GEO_NON_ANTHROPIC_TOKEN_PRICING["fast"]`
+    // reusa os valores de token do `sonar` antigo como aproximação (mesma
+    // ordem de grandeza documentada pra Sonar/Sonar Pro → fast).
+    defaultModel: "fast",
     buildRequest: perplexityRequest,
     extractText: perplexityExtractText,
     extractUsage: perplexityExtractUsage,
@@ -1088,11 +1114,17 @@ const GEO_NON_ANTHROPIC_TOKEN_PRICING: Readonly<Record<string, { inputPer1M: num
   "gpt-4.1": { inputPer1M: 2.0, outputPer1M: 8.0 },
   "gpt-5-mini": { inputPer1M: 0.25, outputPer1M: 2.0 },
   "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5 },
-  // #8342 (docs.perplexity.ai/getting-started/pricing, 20/09/2026): sonar =
-  // US$1/1M in + US$1/1M out + taxa de US$5/1.000 requisições (contexto low,
-  // o que `perplexityRequest` pede). Única entrada com taxa por requisição
-  // incluída — no caso dela a taxa é o item MAIOR da conta (~60%).
-  sonar: { inputPer1M: 1.0, outputPer1M: 1.0, requestFeeUsd: 0.005 },
+  // #8612 (migrado de #8342, docs.perplexity.ai/getting-started/pricing):
+  // chave é o PRESET "fast" (Agent API), não mais o nome de modelo "sonar"
+  // — a doc de migração mapeia Sonar/Sonar Pro → preset fast, então reusa os
+  // valores de token do sonar antigo (US$1/1M in + US$1/1M out) como
+  // aproximação. `requestFeeUsd` de US$5/1.000 (taxa fixa por requisição da
+  // Chat Completions) NÃO tem confirmação de que persiste igual na Agent
+  // API — o response da Agent API traz `usage.cost.total_cost` real, que
+  // este monitor ainda não consome (ver docstring de `GeoProviderUsage`);
+  // até consumir, mantém a taxa antiga como estimativa conservadora — pode
+  // estar errada pra mais ou pra menos, recalibrar na 1ª rodada real com key.
+  fast: { inputPer1M: 1.0, outputPer1M: 1.0, requestFeeUsd: 0.005 },
 };
 
 /** Pure. `undefined` quando o model não está na tabela — nunca um preço
