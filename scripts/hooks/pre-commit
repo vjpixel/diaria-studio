@@ -4,3 +4,9 @@ if git diff --cached --name-only | grep -q "seed/sources.csv"; then
   npm run sync-sources
   git add context/sources.md
 fi
+
+# #8878: bloqueia commit direto em master/main NESTE checkout, seja quem for
+# o chamador (humano, Claude Code, ou o agente nativo do gateway Hermes/
+# Telegram — nenhum dos dois passa por `.claude/hooks/`, só o `git commit`
+# de verdade passa por aqui). Ver scripts/lib/master-commit-guard.ts.
+npx tsx scripts/check-master-direct-commit.ts || exit 1

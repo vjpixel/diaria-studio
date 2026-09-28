@@ -174,3 +174,72 @@ escrever config viva do Hermes, com backup/validação/revert (nunca
 `session_model_usage`, nunca pelo `hermes auth status` (que reporta estado
 nominal, #7647). Estado vivo nunca se cita daqui: ler com
 `hermes cron list --all` ou direto do `jobs.json`.
+
+## O agente CONVERSACIONAL do gateway (Telegram) não é o `continuo` (#8878)
+
+Tudo acima (`claude-delegate.sh`, `DIARIA_SESSION_KIND=continuo`,
+`.claude/hooks/block-continuo-master-commit.mjs`) cobre a sessão AUTÔNOMA
+do contínuo — a que roda pelo cron, dispara `claude -p` dentro deste
+checkout. **É um caminho DIFERENTE** do agente que responde perguntas do
+editor pelo Telegram: aquele é o próprio Hermes nativo (perfil `coding` de
+`~/.hermes/profiles/coding/`, hoje `gpt-6-luna` conforme
+`~/.hermes/config.yaml` — o incidente #8878 aconteceu com `gpt-5.6-luna`,
+o modelo default de um snapshot anterior), usando o tool de terminal
+NATIVO do Hermes — nunca passa por `claude -p`, nunca exporta
+`DIARIA_SESSION_KIND`, nunca aciona hook nenhum de `.claude/hooks/` (esses
+só existem dentro de uma sessão do Claude Code).
+
+**Incidente #8878 (27/09/2026):** o editor perguntou no Telegram "o
+revisor está rodando como devia?" — uma pergunta de diagnóstico, não um
+pedido de mudança (CLAUDE.md, "Achado vira ISSUE, não implementação"; e o
+princípio-irmão "pergunta não é autorização"). O agente do gateway,
+respondendo, editou `hermes/scripts/opus-daily-diff-review.sh`
+(`--effort low` → `high`) e commitou DIRETO em `master`, no checkout
+COMPARTILHADO (`/home/vjpixel/diaria-studio`), com o usuário git `Test`.
+Sem push, sem PR. O `rescue-continuo-orphaned-work.ts` (que só existe pro
+`continuo`, não pra este caminho) viu `master` à frente de `origin/master`
+por acaso e resgatou o commit pra uma branch — o dano foi contido por um
+mecanismo pensado pra outro problema, não por design.
+
+**Por que o guard do #8588 (`block-continuo-master-commit.mjs`) não
+alcança este caminho, e por que nenhum hook de `.claude/hooks/` alcançaria
+de fato:** todos os hooks ali são `PreToolUse` do HARNESS do Claude Code —
+só existem quando há uma sessão `claude`/`claude -p` rodando. O agente do
+gateway não é uma sessão do Claude Code; é o processo do próprio Hermes,
+com seu tool de shell nativo, sem harness intermediário nenhum pra
+interceptar.
+
+**O que ESTE repo pode e não pode consertar sozinho:**
+
+- **Perfil `~/.hermes/profiles/coding/` (o "perfil default" citado na
+  issue) é config de RUNTIME, live, FORA deste repo** — não versionado,
+  sem CI, sem revert por `git revert`. `scripts/lib/hermes-runtime-
+  sensitive-paths.ts` já marca `.hermes/profiles/**` como sensível
+  justamente por isto ("regressão aqui é silenciosa até o custo/qualidade
+  degradar") e exige passar por `scripts/write-hermes-config.ts`
+  (backup + `--validate-cmd`/`--smoke-cmd` + `--reason`) em vez de
+  `Edit`/`Write` direto. Este PR **não edita esse perfil** — reforçar ali
+  a instrução "pergunta ≠ implementação" é uma mudança de config de
+  produção do agente que atende TODOS os perfis do Hermes no `300`, não só
+  o fluxo deste repo, e o formato exato do arquivo de prompt/instruções
+  desse perfil (que arquivo dentro de `profiles/coding/` carrega o system
+  prompt do Hermes nativo — não confundir com skills, que são outra
+  camada) não foi confirmado nesta investigação. Fica como ação
+  MANUAL do editor (ou de uma sessão futura com aprovação explícita, já
+  que "editar prompt de produção do Hermes" não é escopo de PR de código
+  deste repo) — ver #8878 para o texto sugerido.
+- **O que ESTE PR implementa (guard mecânico, opção (a) da issue):**
+  `scripts/hooks/pre-commit` (instalado via `npm run setup-hooks`, ver
+  `docs/setup.md` passo 2a) agora recusa `git commit` direto em
+  `master`/`main` neste checkout, **para qualquer chamador** — é um git
+  hook de verdade, não um hook do harness do Claude Code, então cobre o
+  agente nativo do gateway igual cobriria um terminal humano. Lógica pura
+  em `scripts/lib/master-commit-guard.ts`, testada em
+  `test/master-commit-guard.test.ts` (inclui um teste end-to-end que
+  reproduz o `git commit` direto em master do incidente real). Override
+  humano deliberado: `DIARIA_ALLOW_MASTER_COMMIT=1 git commit ...`.
+  **Limitação honesta:** hooks git não são versionados por `git` — o
+  checkout compartilhado do `300` só fica protegido depois que alguém
+  rodar `npm run setup-hooks` nele (1x; sobrevive a `npm ci`/`npm install`
+  seguintes, mas não a recriar o checkout do zero sem rodar o passo de
+  novo).
