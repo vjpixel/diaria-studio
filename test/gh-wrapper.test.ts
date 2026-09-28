@@ -282,6 +282,69 @@ describe("#8950: gh api --input sem -X conta como publicação", () => {
   });
 });
 
+describe("#8950 (follow-up): short flag colada ao valor (-Fcorpo.md, -F-, -btexto, -ccomentario, -fcampo=valor)", () => {
+  it("normalizeArgv separa -F/-b/-t/-n coladas ao valor em pr/issue/release", () => {
+    assert.deepEqual(normalizeArgv(["pr", "comment", "1", "-Fcorpo.md"]), ["pr", "comment", "1", "-F", "corpo.md"]);
+    assert.deepEqual(normalizeArgv(["pr", "comment", "1", "-btexto"]), ["pr", "comment", "1", "-b", "texto"]);
+    assert.deepEqual(normalizeArgv(["issue", "close", "1", "-ccomentario"]), ["issue", "close", "1", "-c", "comentario"]);
+    assert.deepEqual(normalizeArgv(["api", "x/comments", "-fcampo=valor"]), ["api", "x/comments", "-f", "campo=valor"]);
+  });
+  it("-F- (stdin colado, sem espaço) normaliza para [\"-F\", \"-\"]", () => {
+    assert.deepEqual(normalizeArgv(["pr", "comment", "1", "-F-"]), ["pr", "comment", "1", "-F", "-"]);
+  });
+  it("requiresStdin detecta -F- colado", () => {
+    assert.ok(requiresStdin(["pr", "comment", "1", "-F-"]));
+    assert.ok(requiresStdin(["issue", "comment", "1", "-F-"]));
+  });
+  it("bloqueia segredo em -Fcorpo.md (arquivo, forma curta colada)", () => {
+    const r = evaluateGhInvocation(["pr", "comment", "1", "-Fcorpo.md"], {
+      readFileSync: () => `dump ${OR_KEY}`,
+    });
+    assert.ok(r.blocked);
+  });
+  it("bloqueia segredo em -F- (stdin, forma curta colada)", () => {
+    const r = evaluateGhInvocation(["issue", "comment", "1", "-F-"], {
+      stdinText: `via stdin: ${OR_KEY}`,
+    });
+    assert.ok(r.blocked);
+  });
+  it("bloqueia segredo em -btexto (--body colado)", () => {
+    const r = evaluateGhInvocation(["pr", "comment", "1", `-blog: ${OR_KEY}`], {});
+    assert.ok(r.blocked);
+  });
+  it("bloqueia segredo em -ccomentario (--comment de close, colado)", () => {
+    const r = evaluateGhInvocation(["pr", "close", "1", `-cfechando: ${OR_KEY}`], {});
+    assert.ok(r.blocked);
+  });
+  it("bloqueia segredo em -fcampo=valor (gh api --raw-field colado)", () => {
+    const r = evaluateGhInvocation(["api", "repos/o/r/issues/1/comments", `-fbody=${OR_KEY}`], {});
+    assert.ok(r.blocked);
+  });
+  it("-c colado NÃO é tratado como valor em `pr review` (lá -c/--comment é booleano, sem valor)", () => {
+    // `-caprovado` não é sintaxe real do gh review (o -c de review não aceita valor),
+    // mas o ponto do teste é que normalizeArgv não pode inventar um split aqui:
+    // shortValueFlagsFor("pr","review") não inclui "-c".
+    assert.deepEqual(normalizeArgv(["pr", "review", "1", "-c"]), ["pr", "review", "1", "-c"]);
+  });
+  it("-f colado NÃO é reinterpretado em `pr create` (lá -f/--fill é booleano, sem valor)", () => {
+    assert.deepEqual(normalizeArgv(["pr", "create", "-f", "--title", "t"]), [
+      "pr",
+      "create",
+      "-f",
+      "--title",
+      "t",
+    ]);
+  });
+  it("gh api continua distinguindo -F campo=valor colado de -F arquivo (nunca lê arquivo aqui)", () => {
+    const r = evaluateGhInvocation(["api", "repos/o/r/issues/1/comments", "-Fn=1"], {
+      readFileSync: () => {
+        throw new Error("nunca deveria ler arquivo aqui");
+      },
+    });
+    assert.equal(r.blocked, false);
+  });
+});
+
 describe("findRealGh (#8884)", () => {
   it("pula a si mesmo e acha o próximo `gh` no PATH", () => {
     const calls: string[] = [];

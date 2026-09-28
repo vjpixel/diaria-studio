@@ -87,21 +87,65 @@ const GH_API_VALUE_FLAGS = new Set([
 ]);
 
 /**
- * Normaliza `--flag=valor` → `["--flag", "valor"]` (split no primeiro `=`).
- * Cobre TODAS as flags longas — inclusive `-f`/`-F` de campo do `gh api`
- * (`--field=body=texto` vira `["--field", "body=texto"]`, que é exatamente
- * como o parser de `-F`/`--field` já espera o valor). Flags curtas de 1
- * caractere (`-F`, `-f`, `-b`, ...) não usam esta sintaxe no `gh`/cobra e não
- * são tocadas. Só normaliza `--flag=valor` — nunca strings que não começam
- * com `--` (paths, `campo=valor` já resolvido de `-F`, etc.).
+ * Flags curtas de 1 caractere que carregam um VALOR e que o `gh`/pflag aceita
+ * COLADAS ao valor (`-Fcorpo.md`, `-F-`, `-btexto`, `-ccomentario`,
+ * `-fcampo=valor`) — sem espaço, sem `=`. Resolvidas por CONTEXTO (mesma
+ * razão de `nonApiBodyFlags`/`isApi` acima): `-f`/`-F` significam campo do
+ * `gh api` num lugar e body-file/boolean noutro; `-c` é o `--comment` de
+ * `close` (valor) num lugar e o `--comment` booleano de `pr review` (sem
+ * valor) noutro. Nunca inclui uma flag SEM valor do contexto correspondente
+ * (`-f`/`--fill` de `pr create`, `-c`/`--comment` de `pr review`) — colar um
+ * valor a essas não é sintaxe válida do `gh` e não deve ser tratado como se
+ * fosse (#8950).
+ */
+function shortValueFlagsFor(cmd, sub) {
+  if (cmd === "api") return new Set(["-f", "-F"]);
+  const s = new Set(["-F"]); // body-file/notes-file, universal em pr/issue/release/gist/review
+  if (sub === "close") s.add("-c");
+  else {
+    s.add("-b");
+    s.add("-t");
+    s.add("-n");
+  }
+  return s;
+}
+
+/**
+ * Normaliza duas sintaxes de "flag colada ao valor" em `["--flag", "valor"]`
+ * / `["-F", "valor"]` ANTES de qualquer classificação — sem isso, uma dessas
+ * formas passa como token desconhecido e nem é lida nem pede stdin (#8950):
+ *
+ * 1. `--flag=valor` → split no primeiro `=`. Cobre TODAS as flags longas —
+ *    inclusive `-f`/`-F` de campo do `gh api` (`--field=body=texto` vira
+ *    `["--field", "body=texto"]`, que é exatamente como o parser de
+ *    `-F`/`--field` já espera o valor).
+ * 2. `-Fvalor`/`-F-`/`-bvalor`/`-cvalor`/`-fvalor` (flag curta de 1 caractere
+ *    colada ao valor, sem espaço) → split em `[prefixo, resto]`, só para as
+ *    flags que `shortValueFlagsFor` resolve como "carrega valor" NESTE
+ *    comando/subcomando específico. Nunca separa cluster de flags booleanas
+ *    (`-la`, `-dw`, etc.) — `gh` não usa esse padrão nas flags cobertas aqui,
+ *    e só tocamos a flag que sabemos, por contexto, que tem valor.
  */
 export function normalizeArgv(argv) {
+  if (!Array.isArray(argv)) return argv;
+  const shortValueFlags = shortValueFlagsFor(argv[0], argv[1]);
   const out = [];
   for (const a of argv) {
-    if (typeof a === "string" && a.startsWith("--") && a.includes("=")) {
+    if (typeof a !== "string") {
+      out.push(a);
+      continue;
+    }
+    if (a.startsWith("--") && a.includes("=")) {
       const idx = a.indexOf("=");
       out.push(a.slice(0, idx), a.slice(idx + 1));
       continue;
+    }
+    if (!a.startsWith("--") && a.startsWith("-") && a.length > 2) {
+      const prefix = a.slice(0, 2);
+      if (shortValueFlags.has(prefix)) {
+        out.push(prefix, a.slice(2));
+        continue;
+      }
     }
     out.push(a);
   }
