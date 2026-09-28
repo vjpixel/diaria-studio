@@ -1825,3 +1825,50 @@ describe("#8591 — Diaria-Aquisicao-Reconcile-Daily registrada, diária, >=10:0
     assert.notEqual(t.logPath, alarm.logPath);
   });
 });
+
+describe("#8591 item 2 — Diaria-Aquisicao-Conversions-Ingest registrada, diária, antes do Reconcile-Daily", () => {
+  it("está presente no registro, com o step apontando pro script correto", () => {
+    const t = getScheduledTaskByName("Diaria-Aquisicao-Conversions-Ingest");
+    assert.ok(t, "Diaria-Aquisicao-Conversions-Ingest ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/aquisicao-conversions-ingest.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 56 });
+  });
+
+  it("roda ANTES de Diaria-Aquisicao-Reconcile-Daily — o consumidor do arquivo que ela grava", () => {
+    const ingest = getScheduledTaskByName("Diaria-Aquisicao-Conversions-Ingest")!;
+    const reconcile = getScheduledTaskByName("Diaria-Aquisicao-Reconcile-Daily")!;
+    assert.equal(ingest.schedule.kind, "daily");
+    assert.equal(reconcile.schedule.kind, "daily");
+    if (ingest.schedule.kind === "daily" && reconcile.schedule.kind === "daily") {
+      const ingestMinutes = ingest.schedule.hour * 60 + ingest.schedule.minute;
+      const reconcileMinutes = reconcile.schedule.hour * 60 + reconcile.schedule.minute;
+      assert.ok(ingestMinutes < reconcileMinutes, "Conversions-Ingest deve rodar antes de Reconcile-Daily");
+    }
+  });
+
+  it("horário de 09:56 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Aquisicao-Conversions-Ingest" && t.schedule.hour === 9 && t.schedule.minute === 56,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Aquisicao-Conversions-Ingest")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+
+  it("sem guard modelado — o script é fail-soft por desenho (mesma disciplina dos ingests de gasto vizinhos)", () => {
+    const t = getScheduledTaskByName("Diaria-Aquisicao-Conversions-Ingest")!;
+    assert.equal(t.guard, undefined);
+  });
+});

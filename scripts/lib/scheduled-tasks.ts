@@ -2534,27 +2534,63 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5597, #7137",
   },
   {
+    // #8591 item 2, fechado 28/09/2026: a acao de CADASTRO decidida pelo
+    // editor via /diaria-desbloqueia -- Meta complete_registration, Google
+    // a acao PRIMARIA "Assinatura Confirmada" (7418673798, distinta da
+    // acao de confirmacao DOI secundaria do #8555/#8573) -- reusa a MESMA
+    // credencial de ambiente dos ingests de gasto vizinhos
+    // (GOOGLE_ADS_*/META_ADS_ACCESS_TOKEN). Escreve
+    // data/aquisicao/painel/{dia}.json -- o mesmo caminho que
+    // Diaria-Aquisicao-Reconcile-Daily (abaixo) ja lia manualmente --
+    // fail-soft POR CANAL (credencial ausente nao aborta o outro canal nem
+    // grava um 0 falso; sem NENHUM canal, nada e escrito).
+    //
+    // 09:56 BRT -- depois de Diaria-Meta-Ads-Spend-Ingest (09:54), antes de
+    // Diaria-Session-Registry-Gc (09:55 ja ocupado, ver grep de `hour: 9,
+    // minute:` neste arquivo -- 09:56 e o slot livre seguinte) e MUITO antes
+    // de Diaria-Aquisicao-Reconcile-Daily (10:07), que precisa do arquivo
+    // ja gravado quando processar o dia.
+    name: "Diaria-Aquisicao-Conversions-Ingest",
+    description:
+      "busca conversoes diarias de cadastro (Google Ads acao 7418673798, Meta complete_registration) e " +
+      "grava data/aquisicao/painel/{dia}.json para Diaria-Aquisicao-Reconcile-Daily consumir, #8591",
+    steps: [{ key: "ingest", script: "scripts/aquisicao-conversions-ingest.ts" }],
+    logPath: "aquisicao/.aquisicao-conversions-ingest.log",
+    schedule: { kind: "daily", hour: 9, minute: 56 },
+    // Sem guard -- fail-soft por desenho, mesma disciplina dos ingests de
+    // gasto vizinhos: qualquer falha de credencial/rede sai 0 e loga o
+    // motivo, nunca lanca.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
+    // e acao POSTERIOR do editor.
+    issue: "#8591",
+  },
+  {
     name: "Diaria-Aquisicao-Reconcile-Daily",
     description:
       "drena a coorte real diaria (Kit) para data/aquisicao/reconcile-baseline-{dia}.json e, se existir " +
-      "painel manual do dia, loga o fator painel/coorte-real (log-only, sem alarme -- faixa ainda em " +
-      "medicao, #8591)",
+      "painel do dia (automatico desde #8591 item 2, ou manual), loga o fator painel/coorte-real " +
+      "(log-only, sem alarme -- faixa ainda em medicao, #8591)",
     steps: [{ key: "reconcile", script: "scripts/aquisicao-reconcile-daily.ts" }],
     logPath: "aquisicao/.aquisicao-reconcile-daily.log",
     // 10:07 BRT -- >=10:00 por pedido da issue (#8591 item 3, "depois dos
     // dois ingests"), depois de Diaria-Google-Ads-Spend-Ingest (09:50),
-    // Diaria-Meta-Ads-Spend-Ingest (09:54) e Diaria-Ads-Spend-Ingest-Alarm
-    // (10:05, acima) -- slot livre (ver grep de `hour: 10, minute:` neste
-    // arquivo). A ordem em relacao aos ingests de gasto nao e uma
-    // DEPENDENCIA de dado (a coorte real vem do Kit, nao do spend.csv) --
-    // e so o agrupamento por horario que a issue pediu.
+    // Diaria-Meta-Ads-Spend-Ingest (09:54), Diaria-Aquisicao-Conversions-Ingest
+    // (09:56, acima) e Diaria-Ads-Spend-Ingest-Alarm (10:05) -- slot livre
+    // (ver grep de `hour: 10, minute:` neste arquivo). A ordem em relacao
+    // aos ingests de gasto nao e uma DEPENDENCIA de dado (a coorte real vem
+    // do Kit, nao do spend.csv) -- e so o agrupamento por horario que a
+    // issue pediu; a ordem em relacao ao Conversions-Ingest acima JA E
+    // dependencia real (le o arquivo que ele grava).
     //
-    // O painel (`data/aquisicao/painel/{dia}.json`) e MANUAL -- nenhum
-    // ingest de gasto atual busca conversoes do painel (investigado na
-    // docstring de aquisicao-reconcile-daily.ts, item 2 da #8591, bloqueio
-    // documentado: exige decisao editorial de qual acao de conversao conta
-    // por plataforma). Sem o arquivo, o step so grava o baseline e loga que
-    // o fator foi pulado -- nunca erro.
+    // O painel (`data/aquisicao/painel/{dia}.json`) agora e escrito
+    // automaticamente por Diaria-Aquisicao-Conversions-Ingest (acima,
+    // #8591 item 2, fechado 28/09/2026) -- preenchimento manual continua
+    // funcionando pra um dia especifico (o step so le o que estiver no
+    // caminho, sem saber a origem). Sem o arquivo (nenhum canal
+    // disponivel), o step so grava o baseline e loga que o fator foi
+    // pulado -- nunca erro.
     schedule: { kind: "daily", hour: 10, minute: 7 },
     // Sem guard -- aquisicao-reconcile-daily.ts e fail-soft por desenho
     // (mesma disciplina dos ingests de gasto vizinhos): qualquer falha de
