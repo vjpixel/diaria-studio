@@ -33,10 +33,68 @@ export interface EditionMetrics {
   gateWaitMinutes: number | null;
   tokens: number | null;
   stage1WallMinutes: number | null;
+  // #8901: tokens (in/out) + cost_usd por etapa 1-4, separados — o total
+  // (`tokens` acima) esconde que a Etapa 4 domina a soma (203,6M de 236,5M,
+  // ~87% na edição 260928) por causa da troca de destaques no gate, afogando
+  // qualquer diferença real de comportamento do Jev na Etapa 1 (onde ele atua)
+  // entre os braços A e B. `stage1to3*` soma só as etapas SEM gate humano —
+  // é o trecho onde o braço A/B genuinamente diverge.
+  stage1TokensIn: number | null;
+  stage1TokensOut: number | null;
+  stage1CostUsd: number | null;
+  stage2TokensIn: number | null;
+  stage2TokensOut: number | null;
+  stage2CostUsd: number | null;
+  stage3TokensIn: number | null;
+  stage3TokensOut: number | null;
+  stage3CostUsd: number | null;
+  stage4TokensIn: number | null;
+  stage4TokensOut: number | null;
+  stage4CostUsd: number | null;
+  stage1to3TokensIn: number | null;
+  stage1to3TokensOut: number | null;
+  stage1to3CostUsd: number | null;
 }
 
-export const METRIC_KEYS = ["gate4Corrections", "gateWaitMinutes", "tokens", "stage1WallMinutes"] as const;
+export const METRIC_KEYS = [
+  "gate4Corrections",
+  "gateWaitMinutes",
+  "tokens",
+  "stage1WallMinutes",
+  "stage1TokensIn",
+  "stage1TokensOut",
+  "stage1CostUsd",
+  "stage1to3TokensIn",
+  "stage1to3TokensOut",
+  "stage1to3CostUsd",
+  "stage2TokensIn",
+  "stage2TokensOut",
+  "stage2CostUsd",
+  "stage3TokensIn",
+  "stage3TokensOut",
+  "stage3CostUsd",
+  "stage4TokensIn",
+  "stage4TokensOut",
+  "stage4CostUsd",
+] as const;
 export type MetricKey = (typeof METRIC_KEYS)[number];
+
+/** #8901: métricas primárias do A/B (Jev atua na Etapa 1; Etapas 1-3 rodam sem gate). */
+export const PRIMARY_METRIC_KEYS: readonly MetricKey[] = [
+  "stage1TokensIn",
+  "stage1TokensOut",
+  "stage1CostUsd",
+  "stage1to3TokensIn",
+  "stage1to3TokensOut",
+  "stage1to3CostUsd",
+];
+
+/** #8901: Etapa 4 domina o total e depende do editor — ruidosa pro A/B do Jev. */
+export const NOISY_STAGE4_METRIC_KEYS: readonly MetricKey[] = [
+  "stage4TokensIn",
+  "stage4TokensOut",
+  "stage4CostUsd",
+];
 
 export interface ArmSummary {
   arm: "A" | "B";
@@ -124,6 +182,16 @@ export function computeMetrics(e: EditionRaw): { m: EditionMetrics; warnings: st
   let touchMin: number | null = null;
   let tokens: number | null = null;
   let s1min: number | null = null;
+  // #8901: tokens/cost por etapa 1-4 — default null (indisponível) pra todas.
+  const perStage: Record<1 | 2 | 3 | 4, { tokensIn: number | null; tokensOut: number | null; costUsd: number | null }> = {
+    1: { tokensIn: null, tokensOut: null, costUsd: null },
+    2: { tokensIn: null, tokensOut: null, costUsd: null },
+    3: { tokensIn: null, tokensOut: null, costUsd: null },
+    4: { tokensIn: null, tokensOut: null, costUsd: null },
+  };
+  let stage1to3TokensIn: number | null = null;
+  let stage1to3TokensOut: number | null = null;
+  let stage1to3CostUsd: number | null = null;
   if (e.stageRows.state === "corrupt") w.push(`${id}: stage-status.json ilegível/corrompido — métricas de stage indisponíveis`);
   else if (e.stageRows.state === "absent") w.push(`${id}: sem stage-status.json — métricas de stage indisponíveis`);
   else if (!Array.isArray(e.stageRows.value)) w.push(`${id}: stage-status.json com formato inválido (rows não é array)`);
@@ -162,10 +230,64 @@ export function computeMetrics(e: EditionRaw): { m: EditionMetrics; warnings: st
     }
     if (ms === null) w.push(`${id}: Stage 1 sem duração — wall-clock indisponível`);
     else s1min = ms / 60000;
+
+    // #8901: tokens (in/out) + cost_usd por etapa 1-4 — a soma `tokens` acima
+    // esconde que a Etapa 4 (dominada pelo gate humano) afoga qualquer
+    // diferença real do Jev na Etapa 1. Sem dado pra uma etapa → null + aviso
+    // (mesma disciplina do resto do arquivo: nunca 0 fabricado).
+    for (const stageNum of [1, 2, 3, 4] as const) {
+      const row = rows.find((r) => r.stage === stageNum);
+      const tIn = row && num(row.tokens_in) ? row.tokens_in : null;
+      const tOut = row && num(row.tokens_out) ? row.tokens_out : null;
+      const cost = row && num(row.cost_usd) ? row.cost_usd : null;
+      perStage[stageNum] = { tokensIn: tIn, tokensOut: tOut, costUsd: cost };
+      if (tIn === null && tOut === null) w.push(`${id}: Stage ${stageNum} sem tokens_in/tokens_out — indisponível`);
+      if (cost === null) w.push(`${id}: Stage ${stageNum} sem cost_usd — indisponível`);
+    }
+
+    // Soma 1-3 (sem gate humano) — parcial se alguma das 3 etapas faltar dado.
+    const s123 = [1, 2, 3] as const;
+    const s123TokensIn = s123.map((n) => perStage[n]!.tokensIn).filter((v): v is number => v !== null);
+    const s123TokensOut = s123.map((n) => perStage[n]!.tokensOut).filter((v): v is number => v !== null);
+    const s123Cost = s123.map((n) => perStage[n]!.costUsd).filter((v): v is number => v !== null);
+    if (s123TokensIn.length > 0) {
+      stage1to3TokensIn = s123TokensIn.reduce((a, b) => a + b, 0);
+      if (s123TokensIn.length < 3) w.push(`${id}: soma Etapas 1-3 (tokens_in) parcial (${s123TokensIn.length}/3 etapas)`);
+    }
+    if (s123TokensOut.length > 0) {
+      stage1to3TokensOut = s123TokensOut.reduce((a, b) => a + b, 0);
+      if (s123TokensOut.length < 3) w.push(`${id}: soma Etapas 1-3 (tokens_out) parcial (${s123TokensOut.length}/3 etapas)`);
+    }
+    if (s123Cost.length > 0) {
+      stage1to3CostUsd = s123Cost.reduce((a, b) => a + b, 0);
+      if (s123Cost.length < 3) w.push(`${id}: soma Etapas 1-3 (cost_usd) parcial (${s123Cost.length}/3 etapas)`);
+    }
   }
 
   return {
-    m: { edition: id, arm, gate4Corrections: gate4, gateWaitMinutes: touchMin, tokens, stage1WallMinutes: s1min },
+    m: {
+      edition: id,
+      arm,
+      gate4Corrections: gate4,
+      gateWaitMinutes: touchMin,
+      tokens,
+      stage1WallMinutes: s1min,
+      stage1TokensIn: perStage[1]!.tokensIn,
+      stage1TokensOut: perStage[1]!.tokensOut,
+      stage1CostUsd: perStage[1]!.costUsd,
+      stage2TokensIn: perStage[2]!.tokensIn,
+      stage2TokensOut: perStage[2]!.tokensOut,
+      stage2CostUsd: perStage[2]!.costUsd,
+      stage3TokensIn: perStage[3]!.tokensIn,
+      stage3TokensOut: perStage[3]!.tokensOut,
+      stage3CostUsd: perStage[3]!.costUsd,
+      stage4TokensIn: perStage[4]!.tokensIn,
+      stage4TokensOut: perStage[4]!.tokensOut,
+      stage4CostUsd: perStage[4]!.costUsd,
+      stage1to3TokensIn,
+      stage1to3TokensOut,
+      stage1to3CostUsd,
+    },
     warnings: w,
   };
 }
@@ -221,25 +343,87 @@ export function buildAbReport(editions: EditionRaw[]): AbReport {
 }
 
 const fmt = (v: number | null): string => (v === null ? "n/d" : v.toFixed(1));
+/** cost_usd precisa de mais casas — toFixed(1) arredondaria centavos pra "0.0". */
+const fmtCost = (v: number | null): string => (v === null ? "n/d" : `$${v.toFixed(4)}`);
+const isCostKey = (k: MetricKey): boolean => k.endsWith("CostUsd");
+const fmtByKey = (k: MetricKey, v: number | null): string => (isCostKey(k) ? fmtCost(v) : fmt(v));
 
+const METRIC_LABELS: Record<MetricKey, string> = {
+  gate4Corrections: "Correções do editor no gate 4",
+  gateWaitMinutes: "Espera de gate (min) — proxy, não toque real",
+  tokens: "Tokens (in+out, todos os stages) — legado, ver por etapa abaixo",
+  stage1WallMinutes: "Wall-clock Stage 1 (min)",
+  stage1TokensIn: "Etapa 1 — tokens in",
+  stage1TokensOut: "Etapa 1 — tokens out",
+  stage1CostUsd: "Etapa 1 — cost_usd",
+  stage1to3TokensIn: "Etapas 1-3 (soma, sem gate) — tokens in",
+  stage1to3TokensOut: "Etapas 1-3 (soma, sem gate) — tokens out",
+  stage1to3CostUsd: "Etapas 1-3 (soma, sem gate) — cost_usd",
+  stage2TokensIn: "Etapa 2 — tokens in",
+  stage2TokensOut: "Etapa 2 — tokens out",
+  stage2CostUsd: "Etapa 2 — cost_usd",
+  stage3TokensIn: "Etapa 3 — tokens in",
+  stage3TokensOut: "Etapa 3 — tokens out",
+  stage3CostUsd: "Etapa 3 — cost_usd",
+  stage4TokensIn: "Etapa 4 — tokens in",
+  stage4TokensOut: "Etapa 4 — tokens out",
+  stage4CostUsd: "Etapa 4 — cost_usd",
+};
+
+function tableRows(r: AbReport, keys: readonly MetricKey[]): string[] {
+  return keys.map(
+    (k) =>
+      `| ${METRIC_LABELS[k]} | ${fmtByKey(k, r.arms.A.mean[k])} (n=${r.arms.A.n[k]}) | ${fmtByKey(k, r.arms.B.mean[k])} (n=${r.arms.B.n[k]}) |`,
+  );
+}
+
+const SECONDARY_STAGE_METRIC_KEYS: readonly MetricKey[] = [
+  "stage2TokensIn",
+  "stage2TokensOut",
+  "stage2CostUsd",
+  "stage3TokensIn",
+  "stage3TokensOut",
+  "stage3CostUsd",
+];
+
+const LEGACY_METRIC_KEYS: readonly MetricKey[] = ["gate4Corrections", "gateWaitMinutes", "tokens", "stage1WallMinutes"];
+
+const TABLE_HEADER = ["| Métrica | A (média, n) | B (média, n) |", "|---|---|---|"];
+
+/**
+ * #8901: reporta tokens/cost_usd POR ETAPA (1-4), não só o total somado — o
+ * total esconde que a Etapa 4 (dominada pelo gate humano, dependente do que o
+ * editor mudou) afoga qualquer diferença real do Jev na Etapa 1 (onde ele
+ * atua) e nas Etapas 1-3 (que rodam sem gate — o trecho onde A/B genuinamente
+ * diverge). Essas duas seções são as métricas PRINCIPAIS do A/B; Etapa 4 fica
+ * à parte, marcada como ruidosa.
+ */
 export function renderAbReport(r: AbReport): string {
   const lines = [
     "# Relatório A/B: /diaria-edicao (A) vs /diaria-edicao-jev (B)",
     "",
     "Braço B: o Jev DECIDE de fato (env=all força shadow:false). A faixa 0,70-0,85 do dedup não foi calibrada.",
     "",
-    "| Métrica | A (média, n) | B (média, n) |",
-    "|---|---|---|",
+    "## Métricas principais (Etapa 1 e Etapas 1-3 — onde o Jev atua, sem gate humano)",
+    "",
+    ...TABLE_HEADER,
+    ...tableRows(r, PRIMARY_METRIC_KEYS),
+    "",
+    "## Etapas 2-3 (detalhe, sem gate)",
+    "",
+    ...TABLE_HEADER,
+    ...tableRows(r, SECONDARY_STAGE_METRIC_KEYS),
+    "",
+    "## Etapa 4 — RUIDOSA (depende do que o editor mudou no gate; não comparar diretamente A×B sem essa ressalva)",
+    "",
+    ...TABLE_HEADER,
+    ...tableRows(r, NOISY_STAGE4_METRIC_KEYS),
+    "",
+    "## Métricas legadas (correções do gate 4, espera de gate, total de tokens somado, wall-clock Stage 1)",
+    "",
+    ...TABLE_HEADER,
+    ...tableRows(r, LEGACY_METRIC_KEYS),
   ];
-  const labels: Record<MetricKey, string> = {
-    gate4Corrections: "Correções do editor no gate 4",
-    gateWaitMinutes: "Espera de gate (min) — proxy, não toque real",
-    tokens: "Tokens (in+out, todos os stages)",
-    stage1WallMinutes: "Wall-clock Stage 1 (min)",
-  };
-  for (const k of METRIC_KEYS) {
-    lines.push(`| ${labels[k]} | ${fmt(r.arms.A.mean[k])} (n=${r.arms.A.n[k]}) | ${fmt(r.arms.B.mean[k])} (n=${r.arms.B.n[k]}) |`);
-  }
   lines.push("", `Edições com dado: A=${r.arms.A.editions}, B=${r.arms.B.editions}. Excluídas: ${r.excluded.length ? r.excluded.join(", ") : "nenhuma"}`);
   if (r.warnings.length) lines.push("", "## Avisos", ...r.warnings.map((x) => `- ${x}`));
   return lines.join("\n") + "\n";
