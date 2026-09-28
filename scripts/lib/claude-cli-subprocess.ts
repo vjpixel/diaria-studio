@@ -37,16 +37,39 @@ import { claudeCliEnv } from "../overnight/run-scheduled-edicao.ts";
  * programáticos (quem quiser tratar o erro pode lê-los) e monta uma
  * mensagem legível que NUNCA ecoa o prompt inteiro — o resumo do
  * comando substitui o argv por `<prompt N chars>`.
+ *
+ * `maxTurnsExhausted`/`stopReason` (#8405, achado do diagnóstico ao vivo no
+ * `300`): o `claude --print --no-session-persistence` pode sair com
+ * `status 1` mesmo tendo rodado uma iteração real até o fim — quando o
+ * `--max-turns` esgota enquanto o modelo ainda está em `stop_reason:
+ * "tool_use"` (nunca chegou a `end_turn`), o CLI reporta isso como falha de
+ * processo, e o `stderr` fica **vazio** (não é um crash — o subprocesso
+ * funcionou, só não terminou a tempo). Sem distinguir esse caso, a mensagem
+ * de erro (e quem a lê) trata "max-turns esgotado com resposta JSON válida"
+ * como o mesmo "erro inesperado" genérico de um crash de verdade — o que
+ * motivou a 2ª metade da issue #8405 depois que o item 1 (visibilidade do
+ * stderr) já tinha resolvido a 1ª. Detecção puramente por `status`+`stdout`
+ * parseável com `stop_reason === "tool_use"` — nunca por `stderr` (que aqui
+ * vem vazio).
  */
 export class ClaudeCliError extends Error {
   readonly status: number | null;
   readonly stdout: string;
   readonly stderr: string;
   readonly command: string;
+  readonly maxTurnsExhausted: boolean;
+  readonly stopReason: string | null;
 
   constructor(
     message: string,
-    opts: { status: number | null; stdout: string; stderr: string; command: string },
+    opts: {
+      status: number | null;
+      stdout: string;
+      stderr: string;
+      command: string;
+      maxTurnsExhausted?: boolean;
+      stopReason?: string | null;
+    },
   ) {
     super(message);
     this.name = "ClaudeCliError";
@@ -54,7 +77,25 @@ export class ClaudeCliError extends Error {
     this.stdout = opts.stdout;
     this.stderr = opts.stderr;
     this.command = opts.command;
+    this.maxTurnsExhausted = opts.maxTurnsExhausted ?? false;
+    this.stopReason = opts.stopReason ?? null;
     Object.setPrototypeOf(this, ClaudeCliError.prototype);
+  }
+}
+
+/**
+ * Tenta extrair `stop_reason` do stdout do `claude --print --output-format
+ * json`. Retorna `null` sempre que o stdout não for um JSON parseável com
+ * esse campo — nunca lança, nunca fabrica um valor (#8405: distinguir
+ * "max-turns esgotado" de "crash de verdade" exige saber quando NÃO dá pra
+ * saber).
+ */
+function tryExtractStopReason(stdout: string): string | null {
+  try {
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    return typeof parsed.stop_reason === "string" ? parsed.stop_reason : null;
+  } catch {
+    return null;
   }
 }
 
@@ -129,6 +170,14 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
     const status = (err as { status?: number | null }).status ?? null;
     const stdout = (err as { stdout?: string }).stdout ?? "";
     const stderr = (err as { stderr?: string }).stderr ?? "";
+    // #8405 (2ª metade): `status 1` com stdout JSON válido e
+    // `stop_reason: "tool_use"` (nunca `end_turn`) é o `--max-turns` tendo
+    // esgotado em pleno uso de ferramenta — medido ao vivo no `300` contra o
+    // replay do `writer-destaque`. Não é um crash do processo (stderr vem
+    // vazio, o subprocesso rodou de ponta a ponta uma iteração real) — é uma
+    // condição distinta e nomeada, não "erro inesperado".
+    const stopReason = tryExtractStopReason(stdout);
+    const maxTurnsExhausted = status === 1 && stopReason === "tool_use";
     // #8405 (review): a mensagem é montada a partir de `command`, que já
     // substitui o argv pelo `<prompt N chars>`, e NUNCA a partir de
     // `err.message` — o `execFileSync` embute o prompt inteiro (~30KB) na
@@ -138,9 +187,9 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
     // (ex: lançado manualmente com a string inteira), o prompt nunca entra
     // na mensagem: o inteiro só vive em `err.stderr`/`err.stdout`, que o
     // chamador lê sob demanda.
-    throw new ClaudeCliError(
-      `claude CLI falhou (status ${status ?? "sinal"}): ${command}`,
-      { status, stdout, stderr, command },
-    );
+    const message = maxTurnsExhausted
+      ? `claude CLI esgotou --max-turns ${maxTurns} sem concluir (stop_reason=tool_use, exit ${status}) — não é um crash do processo, é o teto de turnos atingido em pleno tool_use; considere aumentar maxTurns. ${command}`
+      : `claude CLI falhou (status ${status ?? "sinal"}): ${command}`;
+    throw new ClaudeCliError(message, { status, stdout, stderr, command, maxTurnsExhausted, stopReason });
   }
 }

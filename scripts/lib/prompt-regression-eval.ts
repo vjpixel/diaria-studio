@@ -82,6 +82,21 @@ import { callClaudeCli, ClaudeCliError, preview, type ClaudeCliCallOptions } fro
 export const PROMPT_EVAL_AGENTS = ["writer-destaque", "social-writer"] as const;
 export type PromptEvalAgent = (typeof PROMPT_EVAL_AGENTS)[number];
 
+/**
+ * `--max-turns` do replay do `writer-destaque` (#8405 2ª metade). O default
+ * de `callClaudeCli` (`DEFAULT_MAX_TURNS = 20`) esgotava ANTES do agent
+ * terminar — medido ao vivo no `300`: `claude --print` saía com `status 1` e
+ * `stop_reason: "tool_use"` em pleno `--permission-mode acceptEdits`, que
+ * grava 2 arquivos e faz várias voltas de tool_use por repetição. 40 (2x o
+ * default) é a margem escolhida sem medição fina de "quantos turnos o
+ * writer-destaque de fato consome" — o objetivo aqui é parar de estourar o
+ * teto num caso que hoje falha aos 20, não achar o mínimo exato; se 40 ainda
+ * esgotar, `ClaudeCliError.maxTurnsExhausted` deixa isso nomeado no log em
+ * vez de "erro inesperado" (não precisa mais adivinhar via 3 hipóteses).
+ * `social-writer` não muda — sem sinal de que ele esgota o default.
+ */
+export const WRITER_DESTAQUE_REPLAY_MAX_TURNS = 40;
+
 export function isPromptEvalAgent(value: string): value is PromptEvalAgent {
   return (PROMPT_EVAL_AGENTS as readonly string[]).includes(value);
 }
@@ -576,9 +591,10 @@ export function runAgentRepetitions(opts: RunAgentRepetitionsOptions): AgentRunO
     }
 
     const prompt = buildAgentReplayPrompt(opts.agentBody, opts.agent, opts.input);
+    const maxTurns = opts.agent === "writer-destaque" ? WRITER_DESTAQUE_REPLAY_MAX_TURNS : undefined;
     let raw: string;
     try {
-      raw = callFn(prompt, { cwd: opts.cwd, model: opts.model ?? "sonnet", outputFormat: "json" });
+      raw = callFn(prompt, { cwd: opts.cwd, model: opts.model ?? "sonnet", outputFormat: "json", maxTurns });
     } catch (err) {
       // #8405: o erro do subprocesso `claude` tem o stderr/stdout/status
       // enterrados em `error.message` (`Command failed: <cmd + argv>`).
@@ -588,8 +604,11 @@ export function runAgentRepetitions(opts: RunAgentRepetitionsOptions): AgentRunO
       // quem chamou `runAgentRepetitions` (que imprimia só `error.message`,
       // ecoando ~30KB de prompt e deixando o stderr invisível).
       if (err instanceof ClaudeCliError) {
+        const label = err.maxTurnsExhausted
+          ? `--max-turns ${maxTurns ?? "(default)"} esgotado (stop_reason=tool_use) — não é crash`
+          : `claude CLI falhou (status ${err.status ?? "sinal"})`;
         console.error(
-          `[prompt-regression-eval] ${opts.agent} repetição ${i}: claude CLI falhou (status ${err.status ?? "sinal"}):\n` +
+          `[prompt-regression-eval] ${opts.agent} repetição ${i}: ${label}:\n` +
             `  stderr: ${preview(err.stderr)}\n` +
             `  stdout: ${preview(err.stdout)}\n` +
             `  command: ${err.command}`,
