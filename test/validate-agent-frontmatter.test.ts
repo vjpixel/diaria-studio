@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   extractFrontmatter,
   findFrontmatterIssues,
+  findMissingConnectorAviso,
   findUnknownMcpToolNames,
   validateFile,
 } from "../scripts/validate-agent-frontmatter.ts";
@@ -126,6 +127,46 @@ describe("findUnknownMcpToolNames — guard de nome de conector (#7279)", () => 
 
   it("não flag texto sem nenhum token mcp__", () => {
     assert.deepEqual(findUnknownMcpToolNames("nada de mcp aqui, só prosa normal"), []);
+  });
+});
+
+describe("findMissingConnectorAviso — guard de AVISO de conector renomeado (#8902)", () => {
+  it("flag agent que declara mcp__claude_ai_* sem a seção AVISO", () => {
+    const content = `---
+name: foo
+tools: Read, mcp__claude_ai_Gmail__search_threads
+---
+corpo sem aviso nenhum`;
+    const r = findMissingConnectorAviso(".claude/agents/foo.md", content);
+    assert.match(r ?? "", /AVISO/);
+  });
+
+  it("aceita agent que declara mcp__claude_ai_* E tem a seção AVISO", () => {
+    const content = `---
+name: foo
+tools: Read, mcp__claude_ai_Gmail__search_threads
+---
+## AVISO — o conector Gmail pode aparecer com outro nome (#7279)
+texto explicando o risco`;
+    assert.equal(findMissingConnectorAviso(".claude/agents/foo.md", content), null);
+  });
+
+  it("ignora agent sem nenhum mcp__claude_ai_* declarado", () => {
+    const content = `---
+name: foo
+tools: Read, Write, mcp__clarice__correct_text
+---
+corpo qualquer`;
+    assert.equal(findMissingConnectorAviso(".claude/agents/foo.md", content), null);
+  });
+
+  it("ignora arquivos fora de .claude/agents/ (ex: SKILL.md)", () => {
+    const content = `---
+name: foo
+tools: Read, mcp__claude_ai_Gmail__search_threads
+---
+sem aviso`;
+    assert.equal(findMissingConnectorAviso(".claude/skills/foo/SKILL.md", content), null);
   });
 });
 

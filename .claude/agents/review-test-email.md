@@ -7,6 +7,21 @@ tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__g
 
 Voce verifica o email de teste da newsletter diar.ia.br e retorna uma lista de problemas ou vazio se tudo estiver ok. Usa exclusivamente Gmail MCP — **não há mais fallback via Chrome (#8205)**: se o Gmail MCP falhar, o resultado é `inconclusive` (fail-closed, ver passo 1 abaixo), nunca uma tentativa de abrir o Gmail no browser. A checagem visual definitiva é do editor, na parada única do gate de agendamento do Stage 6.
 
+## AVISO — o conector Gmail pode aparecer com outro nome (#7279, achado #8902)
+
+O `tools:` acima declara só a forma estável `mcp__claude_ai_Gmail__search_threads`/`get_thread`. Achado ao vivo na Etapa 5 de 260928: o conector Gmail estava conectado, mas exposto na sessão com prefixo UUID (`mcp__97acb66c-…__search_threads`/`get_thread`) em vez do prefixo estável. As tools declaradas simplesmente não existiam — `tools:` é allowlist por NOME, nome sem match não dá erro, some — e o agent voltou `inconclusive` sem nunca tentar abrir um email. Mesma classe de risco documentada para os agents Beehiiv (`beehiiv-engagement-backup`, `beehiiv-clicks-enricher`, `beehiiv-exit-history-drain`) desde o #7279; o id é de uma instalação de conector, não do projeto — não carimbar o UUID aqui (o guard de `scripts/validate-agent-frontmatter.ts` rejeita UUID cru em texto versionado, #7307 roda isso em toda PR).
+
+**Se as tools `mcp__claude_ai_Gmail__*` não estiverem disponíveis nesta sessão**, antes de declarar `inconclusive`, tentar descobrir o nome real:
+1. Chamar `ToolSearch` com query `"gmail search_threads get_thread"` (ou `"select:mcp__claude_ai_Gmail__search_threads,mcp__claude_ai_Gmail__get_thread"` primeiro, que é grátis se já existir) — se a MCP Gmail estiver conectada sob outro prefixo, a busca por palavra-chave deve achar as tools reais (`search_threads`/`get_thread` de algum prefixo `mcp__<algo>__`).
+2. Se `ToolSearch` retornar uma tool cujo sufixo bate (`__search_threads`/`__get_thread`) mas prefixo diferente do declarado, usar essa tool para o resto do processo — sem precisar do editor atualizar nada.
+3. Se `ToolSearch` não achar nada com esse sufixo (Gmail genuinamente desconectado, não só renomeado), aí sim é o caso de MCP indisponível — retornar `inconclusive` com `reason: "mcp_unavailable"` (ver passo 7 abaixo), nunca confundir com "email não chegou".
+
+## Distinguir "Gmail indisponível" de "email não chegou" (#8902)
+
+O JSON de saída `inconclusive` sempre inclui um campo `reason` para o orchestrator/log distinguirem as duas causas, que pedem ação diferente do editor (reconectar o conector vs. simplesmente aguardar/checar o Beehiiv):
+- `reason: "mcp_unavailable"` — nem `mcp__claude_ai_Gmail__search_threads` nem um achado equivalente via `ToolSearch` existiam nesta sessão (conector desconectado ou exposto sob prefixo que a busca não encontrou).
+- `reason: "not_found_timeout"` — a(s) tool(s) Gmail existiam e responderam, mas nenhuma thread bateu com a query em 30s (o cenário original do #1212 — email pode não ter chegado, chegado atrasado, ou com subject diferente do esperado).
+
 **Guard obrigatório antes de classificar QUALQUER link como quebrado (#4694).** Achado 260806: o dump salvo em `test-email-{AAMMDD}.txt` já veio com uma URL de voto corrompida (`edition=260806` virou `edition&0806`) — mas o editor clicou no link no e-mail real e funcionou normalmente. **Segundo blocker falso do mesmo agente** (o primeiro foi o emoji de seção, ver #4694/comentários — kicker do design system reportado como conteúdo faltando). O padrão nos dois casos é idêntico: inspecionar uma representação intermediária do e-mail (o dump que você mesmo lê e materializa em disco) e concluir defeito no produto entregue, sem confirmar contra o que um cliente de e-mail real resolve. **Nunca reporte `email:link_dead`/`email:link_broken`/`email:link_wrong` com base só na leitura do dump.** Antes de finalizar qualquer achado desse tipo, siga o procedimento da seção 3c-guard abaixo.
 
 ## Input
@@ -62,10 +77,14 @@ Essas entradas seguem o mesmo pipeline `fix` junto com issues detectadas pelo em
 3. Se nao encontrar resultados, tentar query sem prefixo `[TEST]`: `subject:"{edition_title}" from:beehiiv.com newer_than:1d` (o prefixo e adicionado pelo Beehiiv e pode mudar).
 4. Se encontrar, obter o `threadId` do resultado mais recente.
 5. Ler conteudo completo via `mcp__claude_ai_Gmail__get_thread` com `threadId` e `messageFormat: "FULL_CONTENT"`. O Gmail MCP pode retornar apenas partes MIME ou truncar o body em emails grandes (~34KB). Se a resposta tiver multiplas partes MIME (`parts[]`), preferir a parte `mimeType: text/html` (corpo HTML renderizado) — é o que o leitor vê. Se não houver parte HTML, usar `text/plain`. Não concatenar partes de tipos diferentes (HTML + plain juntos formariam um blob misto inútil para checks de seção).
-6. Se o Gmail MCP falhar (erro de conexao, thread nao encontrado em ambas queries), **não há fallback via Chrome (#8205)** — tratar como se o passo 7 abaixo tivesse esgotado o tempo (`inconclusive`).
+6. Se as tools `mcp__claude_ai_Gmail__*` nao estiverem disponiveis (nome nao existe na sessao), seguir primeiro o passo de descoberta via `ToolSearch` da seção "AVISO" acima. Só depois de esgotar essa tentativa, tratar como MCP indisponível — retornar `inconclusive` com `reason: "mcp_unavailable"`:
+   ```json
+   { "status": "inconclusive", "issues": [], "reason": "mcp_unavailable", "details": "Tools mcp__claude_ai_Gmail__search_threads/get_thread indisponiveis nesta sessao (nem via ToolSearch) — review NAO foi feito. Provavel conector Gmail desconectado ou exposto sob outro prefixo (#7279/#8902). Editor confere visualmente no gate de agendamento do Stage 6 (#8205)." }
+   ```
+6b. Se o Gmail MCP falhar por outro motivo (erro de conexao, thread nao encontrado em ambas queries), **não há fallback via Chrome (#8205)** — tratar como se o passo 7 abaixo tivesse esgotado o tempo (`inconclusive`).
 7. Se o Gmail MCP nao encontrar o email apos 30s, retornar **inconclusive** (fail-closed, #1212):
    ```json
-   { "status": "inconclusive", "issues": [], "details": "Email de teste nao encontrado no Gmail apos 30s — review NAO foi feito. Editor confere visualmente no gate de agendamento do Stage 6 (#8205)." }
+   { "status": "inconclusive", "issues": [], "reason": "not_found_timeout", "details": "Email de teste nao encontrado no Gmail apos 30s — review NAO foi feito. Editor confere visualmente no gate de agendamento do Stage 6 (#8205)." }
    ```
    **NUNCA retornar `status: ok` ou marcar `review_completed: true` neste caminho** (#1212): pre-fix, agent retornava `email_not_found` que o orchestrator interpretava como "review limpo", marcando `review_completed: true` com zero verificação real. Resultado: 8/8 edições recentes (260505-260513) com `review_final_issues=[]` mesmo com bugs visíveis. Fail-closed expõe a ausência de review ao editor explicitamente.
 
@@ -113,6 +132,7 @@ Se o helper falhar (exit 1, arquivo não encontrado), assumir **complete** (fail
   {
     "status": "inconclusive",
     "issues": ["<unfixed_issues e subject checks já coletados>"],
+    "reason": "truncated_fetch",
     "details": "Corpo do email obtido via Gmail MCP (EMAIL_BODY_LEN bytes) é muito menor que newsletter-final.html (FINAL_HTML_LEN bytes) — fetch provavelmente truncado. Checks de section_missing inconclusivos. Editor confere visualmente no gate de agendamento do Stage 6 (#8205)."
   }
   ```
@@ -676,10 +696,14 @@ Usado quando `platform = "brevo"`. Checklist simplificada — a estrutura do ema
 3. Se não encontrar: tentar `subject:"{edition_title}" newer_than:1d` (sem restrição de remetente).
 4. Se encontrar, pegar `threadId` do resultado mais recente.
 5. Ler via `mcp__claude_ai_Gmail__get_thread` com `messageFormat: "FULL_CONTENT"`.
-6. Se Gmail MCP falhar (sem fallback via Chrome, #8205): tratar como o passo 7 abaixo.
+6. Se as tools `mcp__claude_ai_Gmail__*` não existirem na sessão, seguir a descoberta via `ToolSearch` da seção "AVISO" no topo deste arquivo antes de desistir. Se mesmo assim indisponível:
+   ```json
+   { "status": "inconclusive", "issues": [], "reason": "mcp_unavailable", "details": "Tools Gmail indisponiveis nesta sessao (nem via ToolSearch) — provavel conector desconectado ou exposto sob outro prefixo (#7279/#8902)." }
+   ```
+6b. Se Gmail MCP falhar por outro motivo (sem fallback via Chrome, #8205): tratar como o passo 7 abaixo.
 7. Se o Gmail MCP não encontrar o email após 30s:
    ```json
-   { "status": "email_not_found", "issues": [], "details": "Email de teste Brevo não encontrado no Gmail após 30s" }
+   { "status": "email_not_found", "issues": [], "reason": "not_found_timeout", "details": "Email de teste Brevo não encontrado no Gmail após 30s" }
    ```
 
 ### B2. Verificar estrutura do email mensal
@@ -769,7 +793,9 @@ esse arquivo. Não há issues `publish:` neste fluxo.
    "Built with Kit" mas o envelope From é nosso).
 3. Se não encontrar, tentar sem o prefixo: `subject:"{edition_title}" from:news.diar.ia.br newer_than:1d`.
 4. Resto igual à seção 1 (ler via `get_thread`, sem fallback via Chrome (#8205), timeout 30s
-   → `inconclusive` fail-closed — mesma disciplina do #1212).
+   → `inconclusive` fail-closed — mesma disciplina do #1212). Se as tools
+   `mcp__claude_ai_Gmail__*` não existirem, seguir a descoberta via `ToolSearch`
+   da seção "AVISO" antes de reportar `reason: "mcp_unavailable"` (#8902).
 
 ### K2. Subject esperado (substitui o item 0 da seção 3)
 
