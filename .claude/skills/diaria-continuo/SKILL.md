@@ -672,16 +672,16 @@ aqui.
    é ganho direto de custo, não só de bootstrap.
 
    `batch_approval` é gravado em `plan.json` no mesmo campo que o overnight
-   já usa, mas com um único valor possível e permanente nesta skill:
-   **`"default_proposed"`** — nunca `"editor_approved"`/`"editor_adjusted"`.
-   Diferente do overnight, a `continuo` não tem briefing único no início da
-   rodada onde encaixar essa pergunta sem custo extra de interação (#2612), e
-   o passo 4 abaixo já reserva o único `AskUserQuestion` do loop pra
-   destravar issues bloqueadas — **o agrupamento nunca vira um
-   `AskUserQuestion` novo**, é decisão mecânica do coordenador a cada
-   dispatch, não do editor (mesmo princípio do "Perguntar é exceção" do
-   CLAUDE.md — não há trade-off editorial genuíno em como agrupar issues
-   técnicas). Se o editor discordar de um agrupamento já despachado, o canal
+   usa — **`"autonomous"`** desde #8907 (`continuo` gravava
+   `"default_proposed"` antes disso; overnight convergiu pro mesmo modelo
+   na mesma issue, então hoje as duas skills gravam o valor único). O
+   agrupamento nunca vira um `AskUserQuestion`, nem aqui nem no overnight
+   (#8907) — é decisão mecânica do coordenador a cada dispatch, não do
+   editor (mesmo princípio do "Perguntar é exceção" do CLAUDE.md — não há
+   trade-off editorial genuíno em como agrupar issues técnicas). A `continuo`
+   nunca teve briefing único onde encaixar essa pergunta (#2612), e o passo 4
+   abaixo já reserva o único `AskUserQuestion` do loop pra destravar issues
+   bloqueadas. Se o editor discordar de um agrupamento já despachado, o canal
    é o mesmo dos passos 3-5 abaixo: comentar na issue.
 2. **Fila seca** → re-varredura pra pegar issue nova (de terceiro, ou criada
    por finding da própria rodada) — mesma lógica sem cap de `rescans_done`
