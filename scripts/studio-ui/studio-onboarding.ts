@@ -45,12 +45,13 @@
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { readStore, DEFAULT_STORE_PATH } from "../lib/onboarding-store.ts";
+import { readStore } from "../lib/onboarding-store.ts";
 import type { OnboardingEntry } from "../lib/onboarding-store.ts";
 import type { OnboardingKitLot } from "../lib/onboarding-kit-transport.ts";
 import {
   buildOnboardingFunnelEntry,
   summarizeOnboardingFunnel,
+  findKitLotForEntry,
   type OnboardingFunnelEntry,
   type OnboardingFunnelSummary,
   type BuildFunnelEntryOptions,
@@ -62,9 +63,18 @@ import { loadLinkableApoiadores } from "./studio-subscribers.ts";
 export interface OnboardingFunnelDbLayer {
   storePath: string;
   hasDataDir: boolean;
-  /** `false` quando `data/onboarding/store.json` não existe — nenhuma
-   *  rodada do executor rodou ainda nesta máquina/sessão. */
+  /** `false` quando `data/onboarding/store.json` não existe OU quando existe
+   *  mas está corrompido (`corrupted: true`, ver abaixo) — nesses dois
+   *  casos o snapshot degrada pra vazio, mas os MOTIVOS são bem diferentes:
+   *  "nenhuma rodada rodou ainda" (arquivo ausente, estado natural) vs.
+   *  "tem dado, mas ele é ilegível" (arquivo corrompido, estado anormal que
+   *  merece alarme, não silêncio — #7917 item 1, fleet review PR #8955). */
   available: boolean;
+  /** `true` quando `data/onboarding/store.json` existe mas `JSON.parse`
+   *  falhou (`readStore` já loga em stderr e degrada pra store vazio) —
+   *  distinto de "arquivo ausente": aqui HÁ dado, só que ilegível. A UI
+   *  nunca deve renderizar isto como "onboarding vazio". */
+  corrupted: boolean;
 }
 
 export interface BuildOnboardingFunnelOptions {
@@ -114,7 +124,7 @@ export function buildOnboardingFunnelData(rootDir: string, opts: BuildOnboarding
   const storePath = resolveStorePath(rootDir, opts);
   const hasDataDir = existsSync(resolve(rootDir, "data"));
   const storeExists = existsSync(storePath);
-  const { store } = readStore(storePath);
+  const { store, corrupted } = readStore(storePath);
 
   const nowSec = opts.nowSec ?? Math.floor(Date.now() / 1000);
   const email3Days = opts.email3Days ?? 10;
@@ -157,11 +167,22 @@ export function buildOnboardingFunnelData(rootDir: string, opts: BuildOnboarding
     return buildOnboardingFunnelEntry(entry, perEntryOpts);
   });
 
-  const summary = summarizeOnboardingFunnel(funnelEntries);
+  // #7917 item 3 (fleet review PR #8955): passa explicitamente se o índice
+  // de apoiadores foi de fato montado, em vez de deixar `summarizeOnboardingFunnel`
+  // inferir escaneando `entries` por `apoiador != null` — essa inferência
+  // quebrava com ZERO entradas não-semeadas (loop nunca roda, flag nunca
+  // vira `true`, UI reporta "apoia.se indisponível" mesmo com o índice OK).
+  const apoiadorIndexProvided = apoiadorIndex !== undefined;
+  const summary = summarizeOnboardingFunnel(funnelEntries, apoiadorIndexProvided);
 
   return {
     generatedAt: new Date(nowSec * 1000).toISOString(),
-    db: { storePath, hasDataDir, available: storeExists },
+    // #7917 item 1 (fleet review PR #8955): `available` agora também exige
+    // `!corrupted` — um store.json presente mas ilegível NUNCA deve ser
+    // relatado como "disponível e vazio" (que a UI leria como "onboarding
+    // nunca rodou"). `corrupted` viaja explícito pra UI distinguir os dois
+    // casos (ver docstring de `OnboardingFunnelDbLayer`).
+    db: { storePath, hasDataDir, available: storeExists && !corrupted, corrupted },
     entries: funnelEntries,
     summary,
     apoiadorDataError,
@@ -216,11 +237,21 @@ export async function refreshBrevoCampaignStates(
 
 /** Ids de campanha `email3_campaign_id` distintos, não-nulos, ainda em
  *  `campaign_created` no store — o universo que `refreshBrevoCampaignStates`
- *  precisa consultar (nunca a base inteira de campanhas da conta). */
-export function pendingBrevoCampaignIds(entries: readonly OnboardingEntry[]): number[] {
+ *  precisa consultar (nunca a base inteira de campanhas da conta).
+ *
+ *  #7917 item 10 (fleet review PR #8955): entradas cujo e-mail 3 já resolve
+ *  via um lote KIT (`findKitLotForEntry`, mesma checagem de precedência de
+ *  `buildEmail3Info`) são puladas aqui — consultar a Brevo pra uma campanha
+ *  cujo estado real é decidido pelo Kit gastaria cota do balde de 100
+ *  req/hora (CLAUDE.md) à toa. `kitLots` é opcional só pra não quebrar
+ *  callers/testes que ainda não passam o array (comportamento sem ele:
+ *  igual ao anterior, sem o skip). */
+export function pendingBrevoCampaignIds(entries: readonly OnboardingEntry[], kitLots: readonly OnboardingKitLot[] = []): number[] {
   const ids = new Set<number>();
   for (const e of entries) {
-    if (e.email3_state === "campaign_created" && e.email3_campaign_id != null) ids.add(e.email3_campaign_id);
+    if (e.email3_state !== "campaign_created" || e.email3_campaign_id == null) continue;
+    if (kitLots.length > 0 && findKitLotForEntry(kitLots, "email3", e.subscription_id) != null) continue;
+    ids.add(e.email3_campaign_id);
   }
   return Array.from(ids);
 }
@@ -233,5 +264,6 @@ export function pendingBrevoCampaignIds(entries: readonly OnboardingEntry[]): nu
 export function listPendingBrevoCampaignIds(rootDir: string, opts: { storePath?: string } = {}): number[] {
   const storePath = opts.storePath ?? resolve(rootDir, "data", "onboarding", "store.json");
   const { store } = readStore(storePath);
-  return pendingBrevoCampaignIds(Object.values(store.entries));
+  const kitLots: OnboardingKitLot[] = Object.values(store.kit_transport?.lots ?? {});
+  return pendingBrevoCampaignIds(Object.values(store.entries), kitLots);
 }

@@ -1425,8 +1425,19 @@ function handleApiOnboardingFunnelRefresh(rootDir: string, res: ServerResponse):
   }
   (async () => {
     const campaignIds = listPendingBrevoCampaignIds(rootDir);
-    const { states, failed } = await refreshBrevoCampaignStates(apiKey, campaignIds);
-    return buildOnboardingFunnelData(rootDir, { brevoCampaignStates: states, brevoFailedCampaignIds: failed });
+    const { states, failed, errors } = await refreshBrevoCampaignStates(apiKey, campaignIds);
+    // #7917 item 5 (fleet review PR #8955): antes, `errors`/`attempted` eram
+    // descartados aqui — uma falha de rede/API por campanha virava
+    // `falha_consulta` silenciosa nas entradas afetadas, mas o editor não
+    // tinha como saber POR QUE sem ir direto no log do processo. Loga cada
+    // erro no servidor e devolve a lista crua no payload (`refreshErrors`)
+    // pra UI mostrar ao lado das linhas afetadas, sem custo extra de
+    // requisição.
+    for (const err of errors) {
+      console.error(`[onboarding-funnel-refresh] campanha ${err.campaignId}: ${err.message}`);
+    }
+    const data = buildOnboardingFunnelData(rootDir, { brevoCampaignStates: states, brevoFailedCampaignIds: failed });
+    return { ...data, refreshErrors: errors };
   })()
     .then((data) => sendJson(res, 200, data))
     .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
@@ -1732,7 +1743,10 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         return;
       }
       // #7917: funil de onboarding (D0/D+3/D+10) até o convite de apoio — GET
-      // sempre local (sem rede), refresh ao vivo é a rota POST abaixo.
+      // sempre local (sem rede), refresh ao vivo é a rota POST acima (#7917
+      // item 6, fleet review PR #8955: era "abaixo" — a rota POST
+      // /api/onboarding/funnel/refresh-brevo está definida mais acima neste
+      // arquivo, não abaixo).
       if (urlPath === "/api/onboarding/funnel") {
         handleApiOnboardingFunnel(rootDir, res);
         return;

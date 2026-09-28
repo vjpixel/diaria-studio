@@ -144,8 +144,16 @@
         ausente (sessão cloud sem a junction OneDrive, ou o executor
         <code>onboarding-welcome-run.ts</code> nunca rodou ainda).
       </div>
+      <div id="onboarding-corrupted" class="panel alert-banner" role="alert" hidden>
+        ⚠ <code>data/onboarding/store.json</code> existe mas está ILEGÍVEL
+        (JSON corrompido) — estado DESCONHECIDO, não onboarding vazio. Não
+        confundir com "nenhuma rodada rodou ainda": aqui há dado, só que não
+        dá pra lê-lo. Investigar o arquivo antes de assumir qualquer
+        contagem abaixo.
+      </div>
       <p class="hint" id="onboarding-note"></p>
       <p class="hint" id="onboarding-apoiador-error" hidden></p>
+      <div id="onboarding-refresh-errors" class="panel alert-banner" role="alert" hidden></div>
 
       <div class="assinantes-summary-grid" id="onboarding-stage-counts"></div>
 

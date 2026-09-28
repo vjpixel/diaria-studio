@@ -135,6 +135,47 @@ describe("buildOnboardingFunnelData — snapshot sobre store real", () => {
     }
   });
 
+  it("loadLinkableApoiadores real (sem opts.apoiadores) falha por env ausente: entries com apoiador null, apoiadorDataError setado (#7917, fleet review PR #8955)", () => {
+    const root = makeRoot();
+    try {
+      const store = emptyStore();
+      store.entries["sub_1"] = entry();
+      writeStore(store, resolve(root, "data", "onboarding", "store.json"));
+
+      // Sem `apoiadores` no opts — `buildOnboardingFunnelData` cai no ramo
+      // que chama `loadLinkableApoiadores(rootDir)` de verdade, que por sua
+      // vez chama `readApoiaSeEnv()` real: lança se as env vars não
+      // estiverem no ambiente de teste (caso comum em CI). Mesmo precedente
+      // de `test/studio-subscribers.test.ts` ("dados de apoio indisponíveis
+      // (env ausente, sem injeção)").
+      const savedEnv = {
+        APOIA_SE_API_KEY: process.env.APOIA_SE_API_KEY,
+        APOIA_SE_API_SECRET: process.env.APOIA_SE_API_SECRET,
+        APOIA_SE_CAMPAIGN: process.env.APOIA_SE_CAMPAIGN,
+      };
+      delete process.env.APOIA_SE_API_KEY;
+      delete process.env.APOIA_SE_API_SECRET;
+      delete process.env.APOIA_SE_CAMPAIGN;
+      try {
+        const result = buildOnboardingFunnelData(root, { nowSec: T0 });
+        assert.ok(result.apoiadorDataError, "apoiadorDataError deveria estar setado");
+        assert.equal(result.entries.length, 1);
+        // Checagem NUNCA tentada — `apoiador` fica `null`, nunca
+        // `{linked:false}` fabricado (issue #7916/#7917: nunca fingir que a
+        // checagem ocorreu quando o índice não foi montado).
+        assert.equal(result.entries[0].apoiador, null);
+        assert.equal(result.summary.cohort.semIndiceApoiador, true);
+      } finally {
+        for (const [k, v] of Object.entries(savedEnv)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("com apoiadores injetados e vínculo confirmado: primeirosApoiosConfirmados conta", () => {
     const root = makeRoot();
     try {

@@ -62,7 +62,7 @@
 
 import type { OnboardingEntry } from "./onboarding-store.ts";
 import type { OnboardingKitLot, OnboardingKitLotKind, OnboardingKitLotStatus } from "./onboarding-kit-transport.ts";
-import { reguaAnchorSec } from "./onboarding-state.ts";
+import { reguaAnchorSec, dueForEmail2 } from "./onboarding-state.ts";
 import { resolveBrevoCampaignState, type BrevoCampaignLike } from "./publish-state.ts";
 import { linkSubscriberToApoiador, daysBetweenIso, type LinkableApoiador } from "./metrics/apoiador-link.ts";
 
@@ -71,9 +71,8 @@ const DAY_S = 86_400;
 /** Rascunho/lote aberto por ≥ N dias sem ser agendado/enviado é "parado" —
  *  critério de atraso documentado (issue: "critério de atraso documentado",
  *  item 2 dos critérios de aceite). Escolhido como metade do intervalo
- *  D+3→D+10 (aprox. o tempo que o editor historicamente leva pra revisar um
- *  gate de publicação, ver docs/pipeline-detail.md) — não uma medição
- *  formal, sinalizado aqui pra ser ajustado com dado real quando houver. */
+ *  D+3→D+10 — não uma medição formal, sinalizado aqui pra ser ajustado com
+ *  dado real quando houver. */
 export const STALE_DRAFT_DAYS = 3;
 
 export type OnboardingProvider = "brevo" | "kit";
@@ -88,9 +87,14 @@ export interface OnboardingTransactionalStepInfo {
   state: OnboardingTransactionalStepState;
   sentAt: string | null;
   /** Id do envio transacional Brevo (`email{1,2}_brevo_id`). `null` quando
-   *  ainda não enviado — os e-mails 1/2 são SEMPRE Brevo transacional hoje
-   *  (#7922 migra só o e-mail 3/campanha pro Kit); não há ramo Kit aqui
-   *  ainda por não existir produtor desse dado no store. */
+   *  ainda não enviado. Sem ramo Kit aqui — não porque #7922 exclua
+   *  email1/email2 (`OnboardingKitLotKind` cobre os 3: `email1`, `email2`,
+   *  `email3`, e `onboarding-kit-transport-run.ts` monta lotes pros 3), mas
+   *  porque nenhum produtor grava de volta na `OnboardingEntry` o estado de
+   *  um lote Kit de email1/email2 — só o e-mail 3 tem essa reconciliação
+   *  aqui (`findKitLotForEntry`, ver `buildEmail3Info`). Sem esse produtor,
+   *  não há dado Kit pra ler pros passos 1/2, independente do que #7922
+   *  já transporte. */
   brevoMessageId: string | null;
 }
 
@@ -119,12 +123,23 @@ export type OnboardingEmail3Stage =
   | "skipped_no_open"
   | "skipped_inactive"
   | "skipped_sem_dados"
-  | "falha_consulta";
+  | "falha_consulta"
+  /** #7917 item 4 (fleet review PR #8955): Brevo devolveu um status ambíguo
+   *  (`suspended`/`in_review`, ambos mapeados pra `PublishState = "unknown"`
+   *  por `resolveBrevoCampaignState`) — `resolveBrevoCampaignState` NUNCA
+   *  promove isso a `"published"`/`"scheduled"`, mas colapsar junto de
+   *  `"rascunho_criado"` escondia que o estado é anormal e pede investigação
+   *  humana, não só "aguardar ação de agendar/enviar" como um rascunho
+   *  comum. */
+  | "estado_ambiguo";
 
 export interface OnboardingEmail3Info {
   stage: OnboardingEmail3Stage;
   provider: OnboardingProvider | null;
-  campaignOrBroadcastId: string | number | null;
+  /** Id da campanha Brevo (`entry.email3_campaign_id`) ou do broadcast Kit
+   *  (`OnboardingKitLot.broadcast_id`) — ambos `number | null` na origem;
+   *  nenhum branch produz `string` aqui. */
+  campaignOrBroadcastId: number | null;
   /** ISO — quando o rascunho/lote nasceu (`email3_decided_at` ou
    *  `OnboardingKitLot.created_at`). `null` quando a etapa ainda não
    *  produziu artefato nenhum. */
@@ -200,98 +215,137 @@ export interface Email3ResolutionInput {
   brevoQueryFailed?: boolean;
 }
 
+/** Nunca alcançável em runtime se `OnboardingEmail3State` continuar
+ *  exaustivamente coberto pelo `switch` de `buildEmail3Info` — o compilador
+ *  recusa a build se um novo membro do union for adicionado sem um `case`
+ *  correspondente (#7917 item 6, fleet review PR #8955). */
+function assertNeverEmail3State(state: never): never {
+  throw new Error(`[onboarding-funnel-report] OnboardingEmail3State inesperado: ${JSON.stringify(state)}`);
+}
+
 function buildEmail3Info(entry: OnboardingEntry, input: Email3ResolutionInput): OnboardingEmail3Info {
   const { nowSec, email3Days, email3GraceDays, kitLots } = input;
-  const anchor = reguaAnchorSec(entry);
 
-  if (entry.email3_state === "skipped_no_open") {
-    return terminalEmail3("skipped_no_open", "nenhuma — decisão terminal (#7599): zero abertura em D+10 não recebe e-mail 3.");
-  }
-  if (entry.email3_state === "skipped_inactive") {
-    return terminalEmail3("skipped_inactive", "nenhuma — assinante não estava ativo quando a decisão foi tomada.");
-  }
-  if (entry.email3_state === "skipped_sem_dados") {
-    return terminalEmail3("skipped_sem_dados", "nenhuma — stats de abertura nunca ficaram disponíveis dentro da janela de tolerância.");
+  // #7917 item 7 (fleet review PR #8955): um lote Kit para email3, quando
+  // presente, SEMPRE determina o estágio — independente de
+  // `entry.email3_state`. `onboarding-kit-transport-run.ts` nunca escreve
+  // `email3_state`/`email3_campaign_id` de volta na entrada (campos
+  // Brevo-only, ver a docstring do módulo #7922) — então um lote Kit pode
+  // existir com `email3_state` ainda `"pending"` (cutover Brevo → Kit em
+  // andamento) e ficaria invisível se esta checagem só rodasse dentro do
+  // branch `"campaign_created"` (como antes deste fix). Quando AMBOS
+  // existem (campanha Brevo local + lote Kit pra mesma entrada), o lote Kit
+  // vence — mesma precedência que já existia, agora também válida quando
+  // `email3_state` é `"pending"`.
+  const kitLot = findKitLotForEntry(kitLots, "email3", entry.subscription_id);
+  if (kitLot != null) {
+    const stage = kitLotStatusToEmail3Stage(kitLot.status);
+    const age = ageDaysSince(kitLot.created_at, nowSec);
+    const stale = (stage === "rascunho_criado" || stage === "agendado") && age != null && age >= STALE_DRAFT_DAYS;
+    const nextAction =
+      stage === "enviado"
+        ? "nenhuma — já enviado (Kit)"
+        : stage === "agendado"
+          ? "nenhuma — agendado no Kit, aguardando disparo"
+          : stage === "cancelado"
+            ? "nenhuma — lote cancelado"
+            : stale
+              ? `lote Kit parado há ${age} dia(s) sem agendar/enviar — revisar broadcast ${kitLot.broadcast_id ?? "(sem id ainda)"}`
+              : "aguardar ação humana de agendar/enviar o broadcast Kit";
+    return { stage, provider: "kit", campaignOrBroadcastId: kitLot.broadcast_id, createdAt: kitLot.created_at, ageDays: age, stale, nextAction };
   }
 
-  if (entry.email3_state === "campaign_created") {
-    const kitLot = findKitLotForEntry(kitLots, "email3", entry.subscription_id);
-    if (kitLot != null) {
-      const stage = kitLotStatusToEmail3Stage(kitLot.status);
-      const age = ageDaysSince(kitLot.created_at, nowSec);
-      const stale = (stage === "rascunho_criado" || stage === "agendado") && age != null && age >= STALE_DRAFT_DAYS;
-      const nextAction =
-        stage === "enviado"
-          ? "nenhuma — já enviado (Kit)"
-          : stage === "agendado"
-            ? "nenhuma — agendado no Kit, aguardando disparo"
-            : stage === "cancelado"
-              ? "nenhuma — lote cancelado"
-              : stale
-                ? `lote Kit parado há ${age} dia(s) sem agendar/enviar — revisar broadcast ${kitLot.broadcast_id ?? "(sem id ainda)"}`
-                : "aguardar ação humana de agendar/enviar o broadcast Kit";
-      return { stage, provider: "kit", campaignOrBroadcastId: kitLot.broadcast_id, createdAt: kitLot.created_at, ageDays: age, stale, nextAction };
-    }
+  switch (entry.email3_state) {
+    case "skipped_no_open":
+      return terminalEmail3("skipped_no_open", "nenhuma — decisão terminal (#7599): zero abertura em D+10 não recebe e-mail 3.");
+    case "skipped_inactive":
+      return terminalEmail3("skipped_inactive", "nenhuma — assinante não estava ativo quando a decisão foi tomada.");
+    case "skipped_sem_dados":
+      return terminalEmail3("skipped_sem_dados", "nenhuma — stats de abertura nunca ficaram disponíveis dentro da janela de tolerância.");
 
-    // Sem lote Kit → o transporte foi Brevo (campanha clássica, #5908/#7599).
-    const createdAt = entry.email3_decided_at;
-    const age = ageDaysSince(createdAt, nowSec);
-    if (input.brevoQueryFailed) {
+    case "campaign_created": {
+      // Sem lote Kit (checado acima) → o transporte foi Brevo (campanha clássica, #5908/#7599).
+      const createdAt = entry.email3_decided_at;
+      const age = ageDaysSince(createdAt, nowSec);
+      if (input.brevoQueryFailed) {
+        return {
+          stage: "falha_consulta",
+          provider: "brevo",
+          campaignOrBroadcastId: entry.email3_campaign_id,
+          createdAt,
+          ageDays: age,
+          stale: false,
+          nextAction: "reconsultar a Brevo (última consulta falhou) antes de agendar/enviar",
+        };
+      }
+      const publishState = input.brevoCampaignState ? resolveBrevoCampaignState(input.brevoCampaignState) : "draft";
+      if (publishState === "published") {
+        return { stage: "enviado", provider: "brevo", campaignOrBroadcastId: entry.email3_campaign_id, createdAt, ageDays: age, stale: false, nextAction: "nenhuma — já enviado (Brevo)" };
+      }
+      if (publishState === "scheduled") {
+        return { stage: "agendado", provider: "brevo", campaignOrBroadcastId: entry.email3_campaign_id, createdAt, ageDays: age, stale: false, nextAction: "nenhuma — agendado na Brevo (queued), aguardando disparo" };
+      }
+      if (publishState === "unknown") {
+        // #7917 item 4: Brevo devolveu status ambíguo (suspended/in_review)
+        // — `resolveBrevoCampaignState` já garante que isso NUNCA promove a
+        // enviado/agendado, mas colapsar no mesmo bucket de "rascunho_criado"
+        // escondia que o estado é anormal e pede investigação humana antes
+        // de qualquer ação, não só "aguardar agendar/enviar" como um
+        // rascunho comum.
+        const stale = age != null && age >= STALE_DRAFT_DAYS;
+        return {
+          stage: "estado_ambiguo",
+          provider: "brevo",
+          campaignOrBroadcastId: entry.email3_campaign_id,
+          createdAt,
+          ageDays: age,
+          stale,
+          nextAction: `Brevo devolveu estado ambíguo (suspended/in_review) — investigar antes de agendar (campanha ${entry.email3_campaign_id ?? "?"})`,
+        };
+      }
+      // publishState === "draft" (local, sem live data, ou consulta não tentada nesta rodada).
+      const stale = age != null && age >= STALE_DRAFT_DAYS;
       return {
-        stage: "falha_consulta",
+        stage: "rascunho_criado",
         provider: "brevo",
         campaignOrBroadcastId: entry.email3_campaign_id,
         createdAt,
         ageDays: age,
-        stale: false,
-        nextAction: "reconsultar a Brevo (última consulta falhou) antes de agendar/enviar",
+        stale,
+        nextAction: stale
+          ? `rascunho Brevo parado há ${age} dia(s) — agendar/enviar manualmente (campanha ${entry.email3_campaign_id ?? "?"})`
+          : "aguardar ação humana de agendar/enviar a campanha Brevo",
       };
     }
-    const publishState = input.brevoCampaignState ? resolveBrevoCampaignState(input.brevoCampaignState) : "draft";
-    if (publishState === "published") {
-      return { stage: "enviado", provider: "brevo", campaignOrBroadcastId: entry.email3_campaign_id, createdAt, ageDays: age, stale: false, nextAction: "nenhuma — já enviado (Brevo)" };
-    }
-    if (publishState === "scheduled") {
-      return { stage: "agendado", provider: "brevo", campaignOrBroadcastId: entry.email3_campaign_id, createdAt, ageDays: age, stale: false, nextAction: "nenhuma — agendado na Brevo (queued), aguardando disparo" };
-    }
-    // "draft" (local, sem live data) ou "unknown" (Brevo devolveu estado ambíguo — suspended/in_review):
-    // nenhum dos dois promove a enviado; tratado como rascunho pendente de ação.
-    const stale = age != null && age >= STALE_DRAFT_DAYS;
-    return {
-      stage: "rascunho_criado",
-      provider: "brevo",
-      campaignOrBroadcastId: entry.email3_campaign_id,
-      createdAt,
-      ageDays: age,
-      stale,
-      nextAction: stale
-        ? `rascunho Brevo parado há ${age} dia(s) — agendar/enviar manualmente (campanha ${entry.email3_campaign_id ?? "?"})`
-        : "aguardar ação humana de agendar/enviar a campanha Brevo",
-    };
-  }
 
-  // entry.email3_state === "pending" — ainda não decidido.
-  if (anchor == null) {
-    return terminalEmail3("aguardando_confirmacao", "nenhuma — aguardando confirmação de assinatura (double opt-in) antes da régua D+10 começar a contar.");
+    case "pending": {
+      const anchor = reguaAnchorSec(entry);
+      if (anchor == null) {
+        return terminalEmail3("aguardando_confirmacao", "nenhuma — aguardando confirmação de assinatura (double opt-in) antes da régua D+10 começar a contar.");
+      }
+      const dueAtSec = anchor + email3Days * DAY_S;
+      if (nowSec < dueAtSec) {
+        const diasFaltando = Math.ceil((dueAtSec - nowSec) / DAY_S);
+        return terminalEmail3("not_due", `nenhuma — D+10 ainda não venceu (faltam ${diasFaltando} dia(s)).`);
+      }
+      const toleranceEndSec = anchor + (email3Days + email3GraceDays) * DAY_S;
+      const beyondTolerance = nowSec >= toleranceEndSec;
+      return {
+        stage: "aguardando_dados",
+        provider: null,
+        campaignOrBroadcastId: null,
+        createdAt: null,
+        ageDays: null,
+        stale: beyondTolerance,
+        nextAction: beyondTolerance
+          ? "vencido além da janela de tolerância sem decisão — rodar o executor (onboarding-welcome-run.ts --send) ou investigar stats ausentes"
+          : "nenhuma — D+10 venceu, aguardando dados de abertura da próxima rodada do executor",
+      };
+    }
+
+    default:
+      return assertNeverEmail3State(entry.email3_state);
   }
-  const dueAtSec = anchor + email3Days * DAY_S;
-  if (nowSec < dueAtSec) {
-    const diasFaltando = Math.ceil((dueAtSec - nowSec) / DAY_S);
-    return terminalEmail3("not_due", `nenhuma — D+10 ainda não venceu (faltam ${diasFaltando} dia(s)).`);
-  }
-  const toleranceEndSec = anchor + (email3Days + email3GraceDays) * DAY_S;
-  const beyondTolerance = nowSec >= toleranceEndSec;
-  return {
-    stage: "aguardando_dados",
-    provider: null,
-    campaignOrBroadcastId: null,
-    createdAt: null,
-    ageDays: null,
-    stale: beyondTolerance,
-    nextAction: beyondTolerance
-      ? "vencido além da janela de tolerância sem decisão — rodar o executor (onboarding-welcome-run.ts --send) ou investigar stats ausentes"
-      : "nenhuma — D+10 venceu, aguardando dados de abertura da próxima rodada do executor",
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +381,8 @@ export interface OnboardingFunnelEntry {
 
 export interface BuildFunnelEntryOptions extends Email3ResolutionInput {
   apoiadorIndex?: ReadonlyMap<string, LinkableApoiador>;
+  /** Dias até o e-mail 2 vencer (mesmo default de `dueForEmail2`/`onboarding-state.ts`). */
+  email2Days?: number;
 }
 
 export function buildOnboardingFunnelEntry(entry: OnboardingEntry, opts: BuildFunnelEntryOptions): OnboardingFunnelEntry {
@@ -335,7 +391,14 @@ export function buildOnboardingFunnelEntry(entry: OnboardingEntry, opts: BuildFu
   const isNovo = entry.email1_sent_at == null && entry.email2_sent_at == null && entry.email3_state === "pending";
 
   const email1 = buildTransactionalStep(entry.email1_sent_at, entry.email1_brevo_id, isNovo && entry.status_detectado !== "active");
-  const email2Due = entry.email2_sent_at == null && anchor != null; // vencido = tem âncora e ainda não enviado; `dueForEmail2` exige nowSec, mas pra reportar "bloqueado" basta ter âncora e status não-ativo
+  // #7917 item 2 (fleet review PR #8955): antes, `email2Due` só checava
+  // "tem âncora e ainda não enviado" — sem o gate de tempo de
+  // `dueForEmail2` (nowSec >= anchor + email2Days*DAY_S), uma entrada
+  // recém-confirmada e ainda inativa reportava `blocked_not_active` MUITO
+  // antes de D+3 vencer de verdade. Reusa `dueForEmail2` (mesma régua que
+  // `onboarding-state.ts` usa pra decidir o envio real) em vez de
+  // reimplementar o cálculo aqui.
+  const email2Due = dueForEmail2(entry, opts.nowSec, opts.email2Days ?? 3);
   const email2 = buildTransactionalStep(entry.email2_sent_at, entry.email2_brevo_id, email2Due && entry.status_detectado !== "active");
 
   const email3 = buildEmail3Info(entry, opts);
@@ -421,9 +484,26 @@ const EMAIL3_STAGES: OnboardingEmail3Stage[] = [
   "skipped_inactive",
   "skipped_sem_dados",
   "falha_consulta",
+  "estado_ambiguo",
 ];
 
-export function summarizeOnboardingFunnel(entries: readonly OnboardingFunnelEntry[]): OnboardingFunnelSummary {
+/**
+ * #7917 item 3 (fleet review PR #8955): `apoiadorIndexProvided` é passado
+ * EXPLICITAMENTE pelo caller (derivado de "o índice foi de fato montado" —
+ * `apoiadorIndex !== undefined`/`apoiadorDataError == null` em
+ * `buildOnboardingFunnelData`), em vez de ser INFERIDO escaneando se alguma
+ * entrada tinha `apoiador != null`. A inferência por scan quebrava com ZERO
+ * entradas não-semeadas: o loop nunca setava a flag, e a UI reportava
+ * "apoia.se indisponível" mesmo quando o índice foi injetado com sucesso
+ * (só não havia ninguém pra casar). O default (baseado no scan) existe só
+ * pra compatibilidade com callers/testes que não passam o parâmetro — o
+ * caminho de produção (`buildOnboardingFunnelData`) sempre passa o valor
+ * explícito.
+ */
+export function summarizeOnboardingFunnel(
+  entries: readonly OnboardingFunnelEntry[],
+  apoiadorIndexProvided: boolean = entries.some((e) => e.apoiador != null),
+): OnboardingFunnelSummary {
   const byEmail3Stage = Object.fromEntries(EMAIL3_STAGES.map((s) => [s, 0])) as Record<OnboardingEmail3Stage, number>;
   const staleDrafts: OnboardingFunnelSummary["staleDrafts"] = [];
   let seededExcluded = 0;
@@ -431,7 +511,6 @@ export function summarizeOnboardingFunnel(entries: readonly OnboardingFunnelEntr
   let convitesCriados = 0;
   let convitesEnviados = 0;
   let primeirosApoiosConfirmados = 0;
-  let sawApoiadorIndex = false;
 
   for (const e of entries) {
     if (e.seededBy != null) {
@@ -443,13 +522,11 @@ export function summarizeOnboardingFunnel(entries: readonly OnboardingFunnelEntr
     // "elegível" = a régua D+10 já venceu e a entrada não ficou travada
     // esperando confirmação de assinatura.
     if (e.email3.stage !== "aguardando_confirmacao" && e.email3.stage !== "not_due") elegiveis++;
-    if (e.email3.stage === "rascunho_criado" || e.email3.stage === "agendado" || e.email3.stage === "enviado") convitesCriados++;
+    if (e.email3.stage === "rascunho_criado" || e.email3.stage === "agendado" || e.email3.stage === "enviado" || e.email3.stage === "estado_ambiguo")
+      convitesCriados++;
     if (e.email3.stage === "enviado") convitesEnviados++;
 
-    if (e.apoiador != null) {
-      sawApoiadorIndex = true;
-      if (e.apoiador.linked && e.apoiador.firstConfirmedAt != null) primeirosApoiosConfirmados++;
-    }
+    if (e.apoiador != null && e.apoiador.linked && e.apoiador.firstConfirmedAt != null) primeirosApoiosConfirmados++;
 
     if (e.email3.stale) {
       staleDrafts.push({
@@ -477,7 +554,7 @@ export function summarizeOnboardingFunnel(entries: readonly OnboardingFunnelEntr
       convitesEnviados,
       cliquesRastreados: null,
       primeirosApoiosConfirmados,
-      semIndiceApoiador: !sawApoiadorIndex,
+      semIndiceApoiador: !apoiadorIndexProvided,
     },
   };
 }

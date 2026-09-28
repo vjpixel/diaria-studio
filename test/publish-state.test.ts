@@ -5,6 +5,7 @@ import {
   resolveLinkedInState,
   resolveFacebookState,
   resolveThreadsState,
+  resolveBrevoCampaignState,
 } from "../scripts/lib/publish-state.ts";
 
 const NOW = new Date("2026-05-06T22:00:00Z");
@@ -228,5 +229,58 @@ describe("resolveThreadsState (#2479)", () => {
     const result = resolveThreadsState({ status: "draft" as string });
     assert.notEqual(result, "draft");
     assert.equal(result, "unknown");
+  });
+});
+
+// ─── resolveBrevoCampaignState (#7917, fleet review PR #8955) ──────────────
+
+describe("resolveBrevoCampaignState (#7917)", () => {
+  it("status=draft → draft", () => {
+    assert.equal(resolveBrevoCampaignState({ status: "draft" }), "draft");
+  });
+
+  it("status=queued → scheduled (comprometida a disparar, mesmo sem comparar contra `now`)", () => {
+    assert.equal(resolveBrevoCampaignState({ status: "queued" }), "scheduled");
+  });
+
+  it("status=sent → published", () => {
+    assert.equal(resolveBrevoCampaignState({ status: "sent" }), "published");
+  });
+
+  it("status=inProcess → published (mesmo conjunto de isTerminalSendStatus)", () => {
+    assert.equal(resolveBrevoCampaignState({ status: "inProcess" }), "published");
+  });
+
+  it("status=in_process (snake_case) → published", () => {
+    assert.equal(resolveBrevoCampaignState({ status: "in_process" }), "published");
+  });
+
+  it("status=suspended → unknown, NUNCA draft/enviado", () => {
+    const result = resolveBrevoCampaignState({ status: "suspended" });
+    assert.equal(result, "unknown");
+    assert.notEqual(result, "draft");
+    assert.notEqual(result, "published");
+  });
+
+  it("status=in_review → unknown, NUNCA draft/enviado", () => {
+    const result = resolveBrevoCampaignState({ status: "in_review" });
+    assert.equal(result, "unknown");
+    assert.notEqual(result, "draft");
+    assert.notEqual(result, "published");
+  });
+
+  it("campanha vazia ({}) → unknown (status ausente)", () => {
+    assert.equal(resolveBrevoCampaignState({}), "unknown");
+  });
+
+  it("case-insensitive: DRAFT/Sent/QUEUED resolvem igual às minúsculas", () => {
+    assert.equal(resolveBrevoCampaignState({ status: "DRAFT" }), "draft");
+    assert.equal(resolveBrevoCampaignState({ status: "Sent" }), "published");
+    assert.equal(resolveBrevoCampaignState({ status: "QUEUED" }), "scheduled");
+    assert.equal(resolveBrevoCampaignState({ status: "INPROCESS" }), "published");
+  });
+
+  it("status desconhecido → unknown (defensive)", () => {
+    assert.equal(resolveBrevoCampaignState({ status: "algo_novo_nunca_visto" }), "unknown");
   });
 });

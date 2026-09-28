@@ -80,8 +80,55 @@ describe("studio-server — rotas de onboarding (#7917)", () => {
     assert.equal(body.liveBrevoChecked, false);
   });
 
-  it("GET /api/onboarding/funnel/refresh-brevo (método errado) não é aceito nesta rota", async () => {
+  it("GET /api/onboarding/funnel/refresh-brevo (método errado) não é aceito nesta rota — 404 (rota só existe como POST)", async () => {
     const res = await fetch(new URL("/api/onboarding/funnel/refresh-brevo", server.url));
-    assert.notEqual(res.status, 200);
+    assert.equal(res.status, 404);
+  });
+
+  it("POST /api/onboarding/funnel/refresh-brevo com key bogus: 200, campanha vira falha_consulta, refreshErrors populado, sem rede real (#7917 item 5)", async () => {
+    const store = emptyStore();
+    store.entries["falhou"] = {
+      subscription_id: "falhou",
+      email: "falhou@example.com",
+      status_detectado: "active",
+      created_at: Math.floor(Date.now() / 1000) - 20 * 86_400,
+      detected_at: new Date(Date.now() - 20 * 86_400_000).toISOString(),
+      email1_sent_at: new Date(Date.now() - 20 * 86_400_000).toISOString(),
+      email1_brevo_id: "msg-1",
+      email2_sent_at: new Date(Date.now() - 17 * 86_400_000).toISOString(),
+      email2_brevo_id: "msg-2",
+      email3_state: "campaign_created",
+      email3_campaign_id: 999,
+      email3_decided_at: new Date(Date.now() - 5 * 86_400_000).toISOString(),
+    };
+    writeStore(store, resolve(root, "data", "onboarding", "store.json"));
+
+    process.env.BREVO_DIARIA_API_KEY = "bogus-key-nunca-vai-pra-rede-de-verdade";
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      // Só intercepta a chamada à Brevo — o `fetch()` que este próprio teste
+      // usa pra bater no studio-server local precisa passar direto, senão
+      // este mock quebraria a chamada HTTP ao servidor de teste também.
+      if (!String(url).includes("api.brevo.com")) return originalFetch(url as any, init);
+      fetchCalls++;
+      assert.match(String(url), /emailCampaigns\/999/);
+      return new Response("Unauthorized (chave bogus)", { status: 401 });
+    }) as typeof fetch;
+
+    try {
+      const res = await fetch(new URL("/api/onboarding/funnel/refresh-brevo", server.url), { method: "POST" });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(fetchCalls, 1);
+      assert.ok(Array.isArray(body.refreshErrors));
+      assert.equal(body.refreshErrors.length, 1);
+      assert.equal(body.refreshErrors[0].campaignId, 999);
+      const falhou = body.entries.find((e: { subscriptionId: string }) => e.subscriptionId === "falhou");
+      assert.equal(falhou?.email3.stage, "falha_consulta");
+    } finally {
+      globalThis.fetch = originalFetch;
+      delete process.env.BREVO_DIARIA_API_KEY;
+    }
   });
 });

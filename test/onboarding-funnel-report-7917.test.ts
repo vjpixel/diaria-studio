@@ -142,14 +142,26 @@ describe("onboarding-funnel-report — e-mail 3 rascunho/enviado/falha", () => {
     assert.equal(result.email3.stale, false); // falha de consulta nunca é classificada como "parada" — não sabemos a idade real do estado
   });
 
-  it("campanha Brevo com estado ambíguo (suspended) não promove a enviado", () => {
+  it("campanha Brevo com estado ambíguo (suspended) não promove a enviado — vira estado_ambiguo, não rascunho (#7917 item 4)", () => {
     const entry = baseEntry({
       email3_state: "campaign_created",
       email3_campaign_id: 555,
       email3_decided_at: new Date((T0 - 1 * DAY) * 1000).toISOString(),
     });
     const result = buildOnboardingFunnelEntry(entry, baseOpts({ brevoCampaignState: { status: "suspended" } }));
-    assert.equal(result.email3.stage, "rascunho_criado");
+    assert.equal(result.email3.stage, "estado_ambiguo");
+    assert.equal(result.email3.provider, "brevo");
+    assert.match(result.email3.nextAction, /estado ambíguo/);
+  });
+
+  it("campanha Brevo com estado ambíguo (in_review) também vira estado_ambiguo", () => {
+    const entry = baseEntry({
+      email3_state: "campaign_created",
+      email3_campaign_id: 777,
+      email3_decided_at: new Date((T0 - 1 * DAY) * 1000).toISOString(),
+    });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts({ brevoCampaignState: { status: "in_review" } }));
+    assert.equal(result.email3.stage, "estado_ambiguo");
   });
 });
 
@@ -202,6 +214,116 @@ describe("onboarding-funnel-report — transporte Kit (#7922) coexistindo com Br
   });
 });
 
+describe("onboarding-funnel-report — e-mail 1 / e-mail 2 (transacionais)", () => {
+  it("e-mail 1 enviado: state sent, com brevoMessageId", () => {
+    const entry = baseEntry();
+    const result = buildOnboardingFunnelEntry(entry, baseOpts());
+    assert.equal(result.email1.state, "sent");
+    assert.equal(result.email1.sentAt, entry.email1_sent_at);
+    assert.equal(result.email1.brevoMessageId, "msg-1");
+  });
+
+  it("e-mail 1 nunca enviado + status inativo na detecção: blocked_not_active", () => {
+    const entry = baseEntry({ email1_sent_at: null, email1_brevo_id: null, email2_sent_at: null, email2_brevo_id: null, email3_state: "pending", status_detectado: "pending" });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts());
+    assert.equal(result.email1.state, "blocked_not_active");
+  });
+
+  it("e-mail 2 enviado: state sent", () => {
+    const entry = baseEntry();
+    const result = buildOnboardingFunnelEntry(entry, baseOpts());
+    assert.equal(result.email2.state, "sent");
+    assert.equal(result.email2.brevoMessageId, "msg-2");
+  });
+
+  it("#7917 item 2 (fleet review PR #8955): e-mail 2 ANTES de D+3 vencer e status ainda inativo → not_reached, NUNCA blocked_not_active", () => {
+    const entry = baseEntry({
+      email1_sent_at: new Date((T0 - 1 * DAY) * 1000).toISOString(), // confirmou há só 1 dia
+      email2_sent_at: null,
+      email2_brevo_id: null,
+      status_detectado: "pending",
+    });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts({ email2Days: 3 }));
+    assert.equal(result.email2.state, "not_reached", "antes do gate de tempo, não é 'bloqueado' — só ainda não chegou a hora");
+  });
+
+  it("e-mail 2 DEPOIS de D+3 vencido e status inativo: blocked_not_active", () => {
+    const entry = baseEntry({
+      email1_sent_at: new Date((T0 - 5 * DAY) * 1000).toISOString(),
+      email2_sent_at: null,
+      email2_brevo_id: null,
+      status_detectado: "pending",
+    });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts({ email2Days: 3 }));
+    assert.equal(result.email2.state, "blocked_not_active");
+  });
+
+  it("e-mail 2 vencido mas status ATIVO: not_reached (só bloqueia por inatividade, não por idade)", () => {
+    const entry = baseEntry({
+      email1_sent_at: new Date((T0 - 5 * DAY) * 1000).toISOString(),
+      email2_sent_at: null,
+      email2_brevo_id: null,
+      status_detectado: "active",
+    });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts({ email2Days: 3 }));
+    assert.equal(result.email2.state, "not_reached");
+  });
+});
+
+describe("onboarding-funnel-report — Kit lot precede pending (#7917 item 7, fleet review PR #8955)", () => {
+  it("email3_state ainda 'pending' MAS lote Kit email3 já existe: usa o estágio do lote Kit, provider kit", () => {
+    const entry = baseEntry({ email3_state: "pending", email3_campaign_id: null, email3_decided_at: null });
+    const lot = kitLot({ status: "created", broadcast_id: 321 });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts({ kitLots: [lot] }));
+    assert.equal(result.email3.provider, "kit");
+    assert.equal(result.email3.stage, "rascunho_criado");
+    assert.equal(result.email3.campaignOrBroadcastId, 321);
+  });
+
+  it("email3_state 'pending' + lote Kit 'scheduled': agendado, provider kit", () => {
+    const entry = baseEntry({ email3_state: "pending" });
+    const lot = kitLot({ status: "scheduled", broadcast_id: 654 });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts({ kitLots: [lot] }));
+    assert.equal(result.email3.stage, "agendado");
+    assert.equal(result.email3.provider, "kit");
+  });
+
+  it("email3_state 'pending' SEM lote Kit: segue o caminho normal de pending (aguardando_confirmacao/not_due/aguardando_dados) — precedência não quebra o caso comum", () => {
+    const entry = baseEntry({ email3_state: "pending", email1_sent_at: new Date((T0 - 2 * DAY) * 1000).toISOString() });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts({ kitLots: [] }));
+    assert.equal(result.email3.stage, "not_due");
+  });
+
+  it("AMBOS existem (email3_state='campaign_created' local + lote Kit): lote Kit vence (precedência preservada, #7922)", () => {
+    const entry = baseEntry({ email3_state: "campaign_created", email3_campaign_id: 111 });
+    const lot = kitLot({ status: "completed", broadcast_id: 222 });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts({ kitLots: [lot] }));
+    assert.equal(result.email3.stage, "enviado");
+    assert.equal(result.email3.provider, "kit");
+    assert.equal(result.email3.campaignOrBroadcastId, 222);
+  });
+});
+
+describe("onboarding-funnel-report — lote Kit cancelado / kind errado não conta (#7917, fleet review PR #8955)", () => {
+  it("lote Kit mais recente é 'cancelled': stage cancelado, mesmo havendo lote mais antigo não-cancelado", () => {
+    const entry = baseEntry({ email3_state: "campaign_created" });
+    const old = kitLot({ lot_id: "email3-01", broadcast_id: 1, status: "created", created_at: new Date((T0 - 10 * DAY) * 1000).toISOString() });
+    const cancelled = kitLot({ lot_id: "email3-02", broadcast_id: 2, status: "cancelled", created_at: new Date((T0 - 1 * DAY) * 1000).toISOString() });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts({ kitLots: [old, cancelled] }));
+    assert.equal(result.email3.stage, "cancelado");
+    assert.equal(result.email3.campaignOrBroadcastId, 2);
+  });
+
+  it("lote de outro `kind` (email1/email2) para a mesma subscription NUNCA é usado pro estágio de email3", () => {
+    const entry = baseEntry({ email3_state: "campaign_created", email3_campaign_id: 999, email3_decided_at: new Date((T0 - 1 * DAY) * 1000).toISOString() });
+    const email1Lot = kitLot({ lot_id: "email1-01", kind: "email1", status: "completed", broadcast_id: 5 });
+    const result = buildOnboardingFunnelEntry(entry, baseOpts({ kitLots: [email1Lot] }));
+    // Sem lote de kind "email3" pra esta entrada — cai no caminho Brevo normal.
+    assert.equal(result.email3.provider, "brevo");
+    assert.equal(result.email3.campaignOrBroadcastId, 999);
+  });
+});
+
 describe("onboarding-funnel-report — coorte histórica ainda em espera", () => {
   it("sem âncora (nunca confirmou assinatura): aguardando_confirmacao, terminal por ora", () => {
     const entry = baseEntry({ email1_sent_at: null, email2_sent_at: null, status_detectado: "pending" });
@@ -239,6 +361,56 @@ describe("onboarding-funnel-report — coorte histórica ainda em espera", () =>
       assert.equal(result.email3.stale, false);
       assert.ok(result.email3.nextAction.startsWith("nenhuma"));
     }
+  });
+
+  describe("fronteiras exatas (#7917, fleet review PR #8955)", () => {
+    it("exatamente no segundo em que D+10 vence: já é aguardando_dados, não mais not_due", () => {
+      const entry = baseEntry({ email1_sent_at: new Date((T0 - 10 * DAY) * 1000).toISOString() });
+      const result = buildOnboardingFunnelEntry(entry, baseOpts({ email3Days: 10 }));
+      assert.equal(result.email3.stage, "aguardando_dados");
+    });
+
+    it("1 segundo antes de D+10 vencer: ainda not_due", () => {
+      const entry = baseEntry({ email1_sent_at: new Date((T0 - 10 * DAY) * 1000 + 1000).toISOString() });
+      const result = buildOnboardingFunnelEntry(entry, baseOpts({ email3Days: 10 }));
+      assert.equal(result.email3.stage, "not_due");
+    });
+
+    it("exatamente no fim da janela de tolerância (D+10+grace): stale já é true", () => {
+      const entry = baseEntry({ email1_sent_at: new Date((T0 - 13 * DAY) * 1000).toISOString() });
+      const result = buildOnboardingFunnelEntry(entry, baseOpts({ email3Days: 10, email3GraceDays: 3 }));
+      assert.equal(result.email3.stage, "aguardando_dados");
+      assert.equal(result.email3.stale, true);
+    });
+
+    it("1 segundo antes do fim da janela de tolerância: ainda não-stale", () => {
+      const entry = baseEntry({ email1_sent_at: new Date((T0 - 13 * DAY) * 1000 + 1000).toISOString() });
+      const result = buildOnboardingFunnelEntry(entry, baseOpts({ email3Days: 10, email3GraceDays: 3 }));
+      assert.equal(result.email3.stage, "aguardando_dados");
+      assert.equal(result.email3.stale, false);
+    });
+
+    it("STALE_DRAFT_DAYS exato (age===3): já stale", () => {
+      const entry = baseEntry({
+        email3_state: "campaign_created",
+        email3_campaign_id: 1,
+        email3_decided_at: new Date((T0 - STALE_DRAFT_DAYS * DAY) * 1000).toISOString(),
+      });
+      const result = buildOnboardingFunnelEntry(entry, baseOpts());
+      assert.equal(result.email3.ageDays, STALE_DRAFT_DAYS);
+      assert.equal(result.email3.stale, true);
+    });
+
+    it("1 dia antes de STALE_DRAFT_DAYS (age===2): ainda não-stale", () => {
+      const entry = baseEntry({
+        email3_state: "campaign_created",
+        email3_campaign_id: 1,
+        email3_decided_at: new Date((T0 - (STALE_DRAFT_DAYS - 1) * DAY) * 1000).toISOString(),
+      });
+      const result = buildOnboardingFunnelEntry(entry, baseOpts());
+      assert.equal(result.email3.ageDays, STALE_DRAFT_DAYS - 1);
+      assert.equal(result.email3.stale, false);
+    });
   });
 });
 
@@ -320,5 +492,35 @@ describe("summarizeOnboardingFunnel — agregado de coorte", () => {
     ]);
     assert.equal(summary.cohort.convitesCriados, 2);
     assert.equal(summary.cohort.convitesEnviados, 1);
+  });
+
+  it("convitesCriados também conta estado_ambiguo (#7917 item 4: foi criado, só o estado de envio é incerto)", () => {
+    const ambiguous = baseEntry({ subscription_id: "s3", email3_state: "campaign_created", email3_campaign_id: 4 });
+    const summary = summarizeOnboardingFunnel([buildOnboardingFunnelEntry(ambiguous, baseOpts({ brevoCampaignState: { status: "suspended" } }))]);
+    assert.equal(summary.byEmail3Stage.estado_ambiguo, 1);
+    assert.equal(summary.cohort.convitesCriados, 1);
+    assert.equal(summary.cohort.convitesEnviados, 0);
+  });
+
+  it("cohort.elegiveis exclui aguardando_confirmacao/not_due, inclui todo o resto (#7917, fleet review PR #8955)", () => {
+    const semAncora = baseEntry({ subscription_id: "s-sem-ancora", email1_sent_at: null, email2_sent_at: null, status_detectado: "pending" });
+    const naoVencido = baseEntry({ subscription_id: "s-nao-vencido", email1_sent_at: new Date((T0 - 2 * DAY) * 1000).toISOString() });
+    const aguardandoDados = baseEntry({ subscription_id: "s-aguardando", email1_sent_at: new Date((T0 - 11 * DAY) * 1000).toISOString() });
+    const rascunho = baseEntry({
+      subscription_id: "s-rascunho",
+      email3_state: "campaign_created",
+      email3_campaign_id: 9,
+      email3_decided_at: new Date((T0 - 1 * DAY) * 1000).toISOString(),
+    });
+    const summary = summarizeOnboardingFunnel([
+      toFunnelEntry(semAncora),
+      toFunnelEntry(naoVencido),
+      toFunnelEntry(aguardandoDados),
+      toFunnelEntry(rascunho),
+    ]);
+    // Só "aguardando_confirmacao" (semAncora) e "not_due" (naoVencido) ficam
+    // de fora — os outros 2 (aguardando_dados, rascunho_criado) já venceram
+    // a régua D+10 e contam como "elegível" mesmo sem convite criado ainda.
+    assert.equal(summary.cohort.elegiveis, 2);
   });
 });

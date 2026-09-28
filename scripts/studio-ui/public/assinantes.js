@@ -35,8 +35,10 @@ const el = {
 
   refreshOnboardingBtn: document.getElementById("refresh-onboarding-btn"),
   onboardingNodata: document.getElementById("onboarding-nodata"),
+  onboardingCorrupted: document.getElementById("onboarding-corrupted"),
   onboardingNote: document.getElementById("onboarding-note"),
   onboardingApoiadorError: document.getElementById("onboarding-apoiador-error"),
+  onboardingRefreshErrors: document.getElementById("onboarding-refresh-errors"),
   onboardingStageCounts: document.getElementById("onboarding-stage-counts"),
   onboardingCohortSummary: document.getElementById("onboarding-cohort-summary"),
   onboardingStaleTbody: document.getElementById("onboarding-stale-tbody"),
@@ -372,6 +374,7 @@ const ONBOARDING_STAGE_LABELS = {
   skipped_inactive: "Inativo na decisão",
   skipped_sem_dados: "Sem dados (terminal)",
   falha_consulta: "Falha de consulta",
+  estado_ambiguo: "Estado ambíguo (Brevo)",
 };
 
 function renderOnboardingStageCounts(byStage) {
@@ -414,7 +417,33 @@ function renderOnboardingStale(staleDrafts) {
     .join("");
 }
 
+function renderOnboardingRefreshErrors(refreshErrors) {
+  if (!refreshErrors || refreshErrors.length === 0) {
+    el.onboardingRefreshErrors.hidden = true;
+    el.onboardingRefreshErrors.innerHTML = "";
+    return;
+  }
+  el.onboardingRefreshErrors.hidden = false;
+  const items = refreshErrors
+    .map((e) => `<li>campanha ${escapeHtml(String(e.campaignId))}: ${escapeHtml(e.message)}</li>`)
+    .join("");
+  el.onboardingRefreshErrors.innerHTML = `⚠ Falha ao consultar ${refreshErrors.length} campanha(s) na Brevo — entradas afetadas aparecem como "Falha de consulta":<ul>${items}</ul>`;
+}
+
 function renderOnboardingData(data) {
+  // #7917 item 1 (fleet review PR #8955): `db.corrupted` é distinto de
+  // "sem dados" — um store.json presente mas ilegível NUNCA deve renderizar
+  // como onboarding vazio (`onboarding-nodata`), que o editor leria como
+  // "nenhuma rodada rodou ainda".
+  if (data.db.corrupted) {
+    el.onboardingNodata.hidden = true;
+    el.onboardingCorrupted.hidden = false;
+    renderOnboardingStageCounts(null);
+    renderOnboardingCohortSummary(null);
+    renderOnboardingStale([]);
+    return;
+  }
+  el.onboardingCorrupted.hidden = true;
   if (!data.db.available) {
     el.onboardingNodata.hidden = false;
     renderOnboardingStageCounts(null);
@@ -430,6 +459,7 @@ function renderOnboardingData(data) {
   } else {
     el.onboardingApoiadorError.hidden = true;
   }
+  renderOnboardingRefreshErrors(data.refreshErrors);
   renderOnboardingStageCounts(data.summary.byEmail3Stage);
   renderOnboardingCohortSummary(data.summary.cohort);
   renderOnboardingStale(data.summary.staleDrafts);
