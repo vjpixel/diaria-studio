@@ -58,6 +58,7 @@ import {
   renderCuradoriaCtaSubscribeForm,
   renderCuradoriaCtaSubscribeScript,
 } from "../../../scripts/lib/shared/curadoria-page.ts"; // #5167 item 1: form inline substitui o link puro pro /subscribe hospedado na Beehiiv
+import { injectSiteNavAfterBodyOpen, DIARIA_APEX_URL } from "../../../scripts/lib/shared/site-nav.ts"; // #8497 residual: menu global — host irmão, URLs absolutas via apexBase
 import { renderSeoMeta, renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "../../../scripts/lib/shared/cover-image.ts"; // #5131
 import { ARQUIVO_FOOTER_NAV_UTM } from "../../../scripts/lib/shared/utm-registry.ts";
@@ -532,7 +533,7 @@ export function buildArchiveHtml(
     ? { url: newestCoverUrl, width: COVER_IMAGE_WIDTH, height: COVER_IMAGE_HEIGHT }
     : undefined;
 
-  return `<!doctype html>
+  const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
@@ -600,4 +601,12 @@ ${renderCuradoriaCtaSubscribeScript()}
 </body>
 </html>
 `;
+  // #8497 residual (host irmão): nav global no topo, URLs absolutas pro apex
+  // via `apexBase` (`--teal`/`--ink`/`--paper`/`--rule` já declarados em
+  // `renderCuradoriaRootStyles` acima — `inheritHostTokens:true`).
+  return injectSiteNavAfterBodyOpen(html, {
+    apexBase: DIARIA_APEX_URL,
+    inheritHostTokens: true,
+    ariaLabel: "Navegação principal",
+  });
 }

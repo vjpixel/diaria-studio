@@ -53,6 +53,7 @@ import {
   renderCuradoriaFooterStyles,
   renderCuradoriaFooter,
 } from "./lib/shared/curadoria-page.ts"; // #3113: CSS/footer comuns com build-livros-page.ts
+import { injectSiteNavAfterBodyOpen, DIARIA_APEX_URL } from "./lib/shared/site-nav.ts"; // #8497 residual: menu global — host irmão, URLs absolutas via apexBase
 import {
   isSafeUrl,
   availableThemes,
@@ -586,7 +587,7 @@ function renderPageBody(
     .filter(Boolean)
     .join("\n");
 
-  return `<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html lang="pt-br">
 <head>
 <meta charset="utf-8">
@@ -790,6 +791,12 @@ ${renderGeoFaqSection(geoFaq, { sectionId: "faq-cursos" })}
 </body>
 </html>
 `;
+  // #8497 residual (host irmão): nav global no topo, URLs absolutas pro apex.
+  return injectSiteNavAfterBodyOpen(html, {
+    apexBase: DIARIA_APEX_URL,
+    inheritHostTokens: true,
+    ariaLabel: "Navegação principal",
+  });
 }
 
 // #4052: módulo TS gerado (committed, mesmo padrão de

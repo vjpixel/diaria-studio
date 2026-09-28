@@ -90,6 +90,7 @@ import {
 } from "./geo-faq.ts";
 import { renderInlineLinks } from "./markdown-links.ts"; // #4558/#4635: parser [texto](url), compartilhado com geo-faq.ts (respostas de FAQ também ganharam link)
 import { DIARIA_ARQUIVO_URL } from "../canonical-urls.ts";
+import { injectSiteNavAfterBodyOpen, DIARIA_APEX_URL } from "./site-nav.ts"; // #8497 residual: menu global — host irmão, URLs absolutas via apexBase
 import { applyBrandWordmark } from "./brand-wordmark.ts"; // #4797 — wordmark da marca no corpo do hub (introParagraph não passa por renderInlineLinks — ver nota do campo)
 import { checkHubFacts } from "./hub-fact-gate.ts"; // #5060 Parte B1 — gate mecânico (cronologia derivada, link↔fonte, âncora de data, data futura); só `import type` daqui pra lá, evita ciclo de módulo real
 
@@ -1453,7 +1454,7 @@ ${hub.relatedHubs.map((r) => `        <li><a href="${esc(pageUrl(r.slug))}">${es
     </nav>`
       : "";
 
-  return `<!doctype html>
+  const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
@@ -1546,4 +1547,10 @@ ${renderCuradoriaCtaSubscribeScript()}
 </body>
 </html>
 `;
+  // #8497 residual (host irmão): nav global no topo, URLs absolutas pro apex.
+  return injectSiteNavAfterBodyOpen(html, {
+    apexBase: DIARIA_APEX_URL,
+    inheritHostTokens: true,
+    ariaLabel: "Navegação principal",
+  });
 }

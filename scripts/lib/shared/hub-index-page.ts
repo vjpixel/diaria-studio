@@ -27,6 +27,7 @@ import {
 } from "./curadoria-page.ts";
 import { DIARIA_ARQUIVO_URL } from "../canonical-urls.ts";
 import { HUB_INDEX_FOOTER_NAV_UTM } from "./utm-registry.ts";
+import { injectSiteNavAfterBodyOpen, DIARIA_APEX_URL } from "./site-nav.ts"; // #8497 residual: menu global — host irmão, URLs absolutas via apexBase
 
 /** URL do índice — `/temas/` (com barra final; `/temas` sem barra também
  * serve o MESMO HTML, ver `workers/arquivo/src/index.ts`). */
@@ -69,7 +70,7 @@ export function renderHubIndexPage(entries: readonly HubIndexEntry[]): string {
   const pageTitle = "Temas — cobertura por assunto da diar.ia.br";
   const description =
     "Os temas que a diar.ia.br acompanha de perto: cada página reúne meses de edições sobre um assunto específico, com cronologia e fontes.";
-  return `<!doctype html>
+  const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
@@ -124,6 +125,12 @@ ${entries
 </body>
 </html>
 `;
+  // #8497 residual (host irmão): nav global no topo, URLs absolutas pro apex.
+  return injectSiteNavAfterBodyOpen(html, {
+    apexBase: DIARIA_APEX_URL,
+    inheritHostTokens: true,
+    ariaLabel: "Navegação principal",
+  });
 }
 
 /** Mini-página de "tema não encontrado" — issue #5256: 404 de slug
@@ -136,7 +143,7 @@ ${entries
  * página, o que não traria valor real ao leitor). */
 export function renderHubNotFoundPage(): string {
   const pageTitle = "Tema não encontrado — diar.ia.br";
-  return `<!doctype html>
+  const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
@@ -169,4 +176,9 @@ main a { color: var(--teal); text-decoration: underline; text-decoration-color: 
 </body>
 </html>
 `;
+  return injectSiteNavAfterBodyOpen(html, {
+    apexBase: DIARIA_APEX_URL,
+    inheritHostTokens: true,
+    ariaLabel: "Navegação principal",
+  });
 }

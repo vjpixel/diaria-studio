@@ -128,6 +128,7 @@ import {
   type GeoFaqItem,
 } from "./geo-faq.ts";
 import { renderInlineLinks } from "./markdown-links.ts";
+import { injectSiteNavAfterBodyOpen, DIARIA_APEX_URL } from "./site-nav.ts"; // #8497 residual: menu global — host irmão, URLs absolutas via apexBase
 import { DIARIA_ESPECIAL_URL } from "../canonical-urls.ts";
 import { applyBrandWordmark } from "./brand-wordmark.ts";
 import { FONTS } from "./design-tokens.ts";
@@ -371,7 +372,7 @@ ${entity.mentions
       ? `\n${renderGeoFaqSection(entity.faq, { sectionId: `faq-${entity.slug}`, heading: "Perguntas rápidas" })}`
       : "";
 
-  return `<!doctype html>
+  const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
@@ -447,6 +448,12 @@ ${renderCuradoriaCtaSubscribeScript()}
 </body>
 </html>
 `;
+  // #8497 residual (host irmão): nav global no topo, URLs absolutas pro apex.
+  return injectSiteNavAfterBodyOpen(html, {
+    apexBase: DIARIA_APEX_URL,
+    inheritHostTokens: true,
+    ariaLabel: "Navegação principal",
+  });
 }
 
 /** `YYYY-MM-DD` → "DD/MM/AAAA" — mesma função que `hub-page.ts::formatDateShort`

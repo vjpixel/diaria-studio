@@ -79,6 +79,7 @@ import {
   renderCuradoriaFooter,
   renderCuradoriaCtaSubscribeStyles, // #4051: CSS do CTA de assinatura inline (hero + fim-de-lista)
 } from "./lib/shared/curadoria-page.ts"; // #3113: CSS/footer comuns com build-cursos-page.ts
+import { injectSiteNavAfterBodyOpen, DIARIA_APEX_URL } from "./lib/shared/site-nav.ts"; // #8497 residual: menu global — host irmão, URLs absolutas via apexBase
 import {
   formatMonthYear,
   renderGeoByline,
@@ -480,7 +481,7 @@ export function renderLivrosPage(books: Book[]): string {
     "<",
     "\\u003c",
   ); // </script>-safe embed
-  return `<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html lang="pt-br">
 <head>
 <meta charset="utf-8">
@@ -613,6 +614,12 @@ ${renderSubscribeCtaScript()}
 </body>
 </html>
 `;
+  // #8497 residual (host irmão): nav global no topo, URLs absolutas pro apex.
+  return injectSiteNavAfterBodyOpen(html, {
+    apexBase: DIARIA_APEX_URL,
+    inheritHostTokens: true,
+    ariaLabel: "Navegação principal",
+  });
 }
 
 function main(): void {
