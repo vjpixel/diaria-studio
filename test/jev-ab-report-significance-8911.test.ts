@@ -118,7 +118,7 @@ function ed(id: string, arm: "A" | "B", overrides: Partial<{ gate4: number; toke
 }
 
 describe("buildAbReport: piso #8412 e veredito", () => {
-  it("n<5 num braço: banner INCONCLUSIVO e todo veredito fica 'inconclusivo (piso)'", () => {
+  it("n<5 num braço: banner INCONCLUSIVO, e nenhum veredito por métrica é 'A'/'B' (piso não atingido em nenhuma)", () => {
     const editions = [
       ...[1, 2, 3, 4, 5, 6].map((i) => ed(`a${i}`, "A", { gate4: 3, tokens: 100 })),
       ...[1, 2, 3].map((i) => ed(`b${i}`, "B", { gate4: 1, tokens: 90 })),
@@ -126,10 +126,20 @@ describe("buildAbReport: piso #8412 e veredito", () => {
     const r = buildAbReport(editions);
     assert.equal(r.arms.A.editions, 6);
     assert.equal(r.arms.B.editions, 3);
+    // Piso é por métrica (não por edição): com B tendo no máximo 3 edições
+    // com dado utilizável por métrica, nenhuma métrica atinge o piso de 5 —
+    // mas a métrica que tem n=0 nos dois braços (ex: stage2/3/4, ausentes
+    // deste fixture) é "sem dado", não "inconclusivo (piso)" (essa distinção
+    // é o ponto do #8911: causas diferentes, rótulos diferentes).
     for (const k of Object.keys(r.tests) as (keyof typeof r.tests)[]) {
-      assert.equal(r.tests[k].pisoAtingido, false);
-      assert.equal(r.tests[k].verdict, "inconclusivo (piso)");
+      const t = r.tests[k];
+      assert.equal(t.pisoAtingido, false);
+      assert.notEqual(t.verdict, "A");
+      assert.notEqual(t.verdict, "B");
+      if (t.n.A === 0 || t.n.B === 0) assert.equal(t.verdict, "sem dado");
+      else assert.equal(t.verdict, "inconclusivo (piso)");
     }
+    assert.equal(r.tests.gate4Corrections.n.B, 3, "sanity: gate4Corrections tem dado, só abaixo do piso");
     const txt = renderAbReport(r);
     assert.match(txt, /INCONCLUSIVO: n<5 no braço B \(n=3\)/);
     assert.doesNotMatch(txt, /INCONCLUSIVO: n<5 no braço A/);
@@ -163,8 +173,13 @@ describe("buildAbReport: piso #8412 e veredito", () => {
     assert.equal(t.verdict, "sem diferença");
   });
 
-  it("piso atingido mas métrica sem dado num braço: veredito 'sem dado', não 'inconclusivo (piso)'", () => {
-    // gate4Corrections tem dado nas 2 pontas; tokens fica sem dado no braço B via stageRows corrompido.
+  it("edições passam do piso mas a métrica não tem dado num braço: piso é POR MÉTRICA, não por edição — veredito 'sem dado', pisoAtingido falso pra essa métrica", () => {
+    // gate4Corrections tem dado nas 2 pontas (piso atingido de verdade); tokens
+    // fica sem dado nenhum no braço B via stageRows corrompido — n.B=0 pra essa
+    // métrica não pode "herdar" o piso batido a nível de edição (achado do
+    // review do #8914: pisoAtingido calculado só por r.arms.X.editions permitia
+    // veredito A/B definitivo numa métrica com n pequeno-porém-diferente do
+    // piso global).
     const A = [1, 2, 3, 4, 5, 6].map((i) => ed(`a${i}`, "A", { gate4: 3, tokens: 100 }));
     const B = [1, 2, 3, 4, 5, 6].map((i) => {
       const e = ed(`b${i}`, "B", { gate4: 1, tokens: 100 });
@@ -174,9 +189,36 @@ describe("buildAbReport: piso #8412 e veredito", () => {
     assert.equal(r.arms.A.editions, 6);
     assert.equal(r.arms.B.editions, 6);
     const t = r.tests.tokens;
-    assert.equal(t.pisoAtingido, true);
     assert.equal(t.n.B, 0);
+    assert.equal(t.pisoAtingido, false, "piso é por métrica: n.B=0 nunca atinge o piso desta métrica, mesmo com 6 edições no braço");
     assert.equal(t.verdict, "sem dado");
+    // gate4Corrections, em contraste, tem dado utilizável nos dois braços — piso batido de verdade.
+    const gate4 = r.tests.gate4Corrections;
+    assert.equal(gate4.n.A, 6);
+    assert.equal(gate4.n.B, 6);
+    assert.equal(gate4.pisoAtingido, true);
+  });
+
+  it("métrica com n pequeno-porém-diferente de zero num braço nunca recebe veredito A/B, mesmo com edições suficientes no relatório", () => {
+    // 6 edições em cada braço (piso de EDIÇÃO batido), mas só 3 delas têm
+    // tokens utilizáveis no braço B — n.B=3 < MIN_N_PER_ARM pra essa métrica
+    // específica. Sem o fix por-métrica, isso passava como "piso atingido"
+    // (herdado do nível de edição) e podia render veredito A/B com n efetivo
+    // abaixo de 5 (exatamente o achado #2 do review da PR #8914).
+    const A = [1, 2, 3, 4, 5, 6].map((i) => ed(`a${i}`, "A", { gate4: 3, tokens: 10 + i }));
+    const B = [1, 2, 3, 4, 5, 6].map((i) => {
+      const e = ed(`b${i}`, "B", { gate4: 1, tokens: 200 + i });
+      if (i > 3) return { ...e, stageRows: { state: "corrupt" as const } };
+      return e;
+    });
+    const r = buildAbReport([...A, ...B]);
+    const t = r.tests.tokens;
+    assert.equal(t.n.A, 6);
+    assert.equal(t.n.B, 3);
+    assert.equal(t.pisoAtingido, false);
+    assert.notEqual(t.verdict, "A");
+    assert.notEqual(t.verdict, "B");
+    assert.equal(t.verdict, "inconclusivo (piso)");
   });
 
   it("--json (via renderAbReport/buildAbReport) expõe n, mediana, p-valor, IC95 e veredito por métrica", () => {
