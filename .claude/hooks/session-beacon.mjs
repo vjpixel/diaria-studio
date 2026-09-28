@@ -571,6 +571,16 @@ export function buildBeaconRecord(previous, event) {
  * grupo ficam intocadas — a poda delas continua sendo responsabilidade do GC
  * mecânico (`session-registry.ts gc`), não deste hook.
  *
+ * **Nunca reconcilia um backup com `endedAt` preenchido.** `endSession`
+ * (`scripts/lib/session-registry.ts`, #7002) carimba `endedAt` em toda cópia
+ * `-safeBackup-` do grupo ao encerrar — é o que distingue "encerrada limpo"
+ * de "o real sumiu com a sessão viva" (as duas produzem a mesma forma em
+ * disco: backup sem real). Reconciliar um backup encerrado ressuscitaria uma
+ * coordenadora que já terminou, com `claimed_issues`/autoridade de merge de
+ * volta — risco real porque a Fase 2 do overnight pode rodar chamadas de
+ * ferramenta depois do `end` (#6758), disparando o beacon exatamente sobre
+ * esse backup.
+ *
  * Fail-soft ponta a ponta: qualquer erro de parse/I/O aqui cai no
  * comportamento de sempre (não reconcilia, `matches.length === 0`
  * prevalece) — nunca lança dentro do beacon.
@@ -593,6 +603,17 @@ function reconcileOrphanCoordinatorBackup(sessionsDir, sessionId, names, fs) {
       }
       if (!record || record.sessionId !== sessionId) continue;
       if (!COORDINATOR_KIND_PREFIXES.includes(record.kind)) continue;
+      // #7002 (scripts/lib/session-registry.ts, endSession): `endedAt` é o
+      // carimbo que distingue "encerrada limpo" (backup órfão de uma sessão
+      // que terminou normal) de "real sumiu com a sessão viva" — as duas
+      // formas em disco são idênticas sem ele. Um backup com `endedAt`
+      // preenchido é prova de que ALGUÉM já rodou `endSession` pra esta
+      // sessão; restaurá-lo pro canônico ressuscitaria uma coordenadora que
+      // já terminou (achado do coordenador desta rodada, #8954: Fase 2 do
+      // overnight pode rodar chamadas de ferramenta DEPOIS do `end`, e é
+      // exatamente aí que o beacon dispararia esta reconciliação sobre um
+      // backup que não deveria voltar).
+      if (record.endedAt) continue;
       const ms = Date.parse(record.lastHeartbeat ?? record.startedAt ?? "");
       const rank = Number.isFinite(ms) ? ms : -Infinity;
       if (rank > bestMs) {
