@@ -284,6 +284,20 @@ export interface UpdateOpts {
   subagent_tokens_in?: number | null;
   subagent_tokens_out?: number | null;
   parse_errors?: number; // #5423
+  /**
+   * #8899: opt-in explícito pro auto-bump de `end` numa 2ª chamada `done`/`failed`
+   * (ver bloco em `applyUpdate` abaixo). **Só a CLI** (`--status done` digitado/
+   * chamado de novo pelo orchestrator, ex: aprovação real do gate bem depois do
+   * 1º carimbo) passa `true`. Sem isso, `capture-stage-usage.ts` — que roda
+   * "logo após cada --status done" (mesmo turno, poucos segundos depois) só pra
+   * backfillar `cost_usd`/`tokens_in/out` preservando `status: row.status` —
+   * bateria nesse mesmo branch (mesma shape de opts: status já terminal, sem
+   * `--end` explícito, `now` > `end` já gravado por estar alguns segundos à
+   * frente) e inflaria `duration_ms` em toda edição, mesmo sem nenhuma
+   * reaprovação real ter acontecido. Default `false`/ausente preserva o
+   * comportamento de sempre (nenhum auto-bump) pra qualquer outro chamador.
+   */
+  allowEndAdvance?: boolean;
 }
 
 function computePipelineMs(opts: UpdateOpts, existing: StageRow): number | undefined {
@@ -337,6 +351,7 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
     if (!end && (opts.status === "done" || opts.status === "failed") && now) {
       end = now;
     } else if (
+      opts.allowEndAdvance === true &&
       end &&
       opts.end == null &&
       (opts.status === "done" || opts.status === "failed") &&
@@ -758,6 +773,10 @@ async function main(): Promise<void> {
         models: args.models
           ? (args.models as string).split(",").map((s) => s.trim()).filter(Boolean)
           : undefined,
+        // #8899: só a CLI (chamada explícita `--status done`/`failed`) opta pelo
+        // auto-bump de `end` numa 2ª chamada — nunca `capture-stage-usage.ts`
+        // (backfill de métricas, roda logo em seguida, preservando `status`).
+        allowEndAdvance: status === "done" || status === "failed",
       },
       // #1783: now real pro auto-carimbo de start/end quando o playbook não passa.
       new Date().toISOString(),
