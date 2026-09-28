@@ -163,8 +163,9 @@ import {
   buildCacCompatibleSubscribersFromStore,
   type StoreLeitorSummary,
 } from "./lib/leitor-store.ts";
-import { readMonthCache } from "./lib/apoia-se.ts";
-import { parseCuratedBatch } from "./lib/curated-batch-import.ts";
+import { readMonthCacheDetailed } from "./lib/apoia-se.ts";
+import { loadAmazonRevenueConfig } from "./lib/amazon-revenue-config.ts";
+import { loadManualCleanupEmails, manualCleanupEmailsPath } from "./lib/manual-cleanup-emails.ts";
 import {
   LTV_DEFAULT_HORIZON_MONTHS,
   computeArpu,
@@ -172,7 +173,6 @@ import {
   computeLtvCaixaFaixa,
   computeLtvCacRatio,
   summarizeApoiaSeMonthRevenue,
-  parseAmazonRevenueConfig,
   previousCompetenceMonth,
   findChurnBaselineDate,
   computeChurnExitsBetweenSnapshots,
@@ -294,20 +294,6 @@ export type CacReportLtvSection =
   | { applied: true; ltvFaixaBrl: { min: number; max: number } | null; motivo: string | null; rows: CacReportLtvRow[] }
   | { applied: false; reason: string };
 
-/** E-mails normalizados de limpeza manual conhecida (#8423) — mesmo parser
- *  de `studio-metrics.ts` (`parseCuratedBatch`), fail-soft: arquivo ausente/
- *  corrompido devolve Set vazio, nunca lança. */
-function loadManualCleanupEmailsForCac(rootDir: string): ReadonlySet<string> {
-  const path = resolve(rootDir, "data", "analysis", "descadastrados-manuais-2607.json");
-  if (!existsSync(path)) return new Set();
-  try {
-    const { entries } = parseCuratedBatch(JSON.parse(readFileSync(path, "utf8")));
-    return new Set(entries.map((e) => e.email));
-  } catch {
-    return new Set();
-  }
-}
-
 /**
  * Calcula o LTV de caixa (blended, mesma metodologia de `studio-metrics.ts`
  * — receita apoia.se do mês FECHADO anterior + config manual da Amazon,
@@ -334,24 +320,27 @@ export function computeLtvSection(
   const campaign = resolveApoiaSeCampaignName(env);
   const month = previousCompetenceMonth(now());
   const cacheDir = resolve(rootDir, "data", "apoia-se", campaign);
-  const cacheAvailable = existsSync(resolve(cacheDir, `${month}.json`));
-  const apoiaSeCache = readMonthCache(cacheDir, month) as Record<string, ApoiaSeMonthCacheEntry>;
+  // `available` exige EXISTIR e ter sido parseado com sucesso — cache
+  // corrompido (JSON inválido) nunca é tratado como "R$0 de receita
+  // apoia.se" (#8423 fleet review item 1, mesma correção de studio-metrics.ts).
+  const { cache: apoiaSeCache, corrupted: apoiaSeCacheCorrupted } = readMonthCacheDetailed(cacheDir, month) as {
+    cache: Record<string, ApoiaSeMonthCacheEntry>;
+    corrupted: boolean;
+  };
+  const cacheExists = existsSync(resolve(cacheDir, `${month}.json`));
+  const cacheAvailable = cacheExists && !apoiaSeCacheCorrupted;
+  if (apoiaSeCacheCorrupted) {
+    console.error(
+      `[cac-report] valor: cache apoia.se corrompido em ${resolve(cacheDir, `${month}.json`)} — tratado como indisponível, nunca R$0 fabricado`,
+    );
+  }
   const revSummary = summarizeApoiaSeMonthRevenue(apoiaSeCache);
 
-  const amazonPath = resolve(rootDir, "data", "ltv", "amazon-revenue.json");
-  let amazonValorMensalBrl: number | null = null;
-  if (existsSync(amazonPath)) {
-    try {
-      const parsed = parseAmazonRevenueConfig(JSON.parse(readFileSync(amazonPath, "utf8")));
-      if (parsed) amazonValorMensalBrl = parsed.valorMensalBrl;
-    } catch {
-      // config malformada — fica null, nunca derruba o relatório de CAC por causa disso
-    }
-  }
+  const amazonConfig = loadAmazonRevenueConfig(rootDir);
 
   const activeCount = subs.filter((s) => s.status === "active").length;
   const arpu = computeArpu({
-    revenueBySource: { "apoia-se": cacheAvailable ? revSummary.grossRevenueBrl : null, amazon: amazonValorMensalBrl },
+    revenueBySource: { "apoia-se": cacheAvailable ? revSummary.grossRevenueBrl : null, amazon: amazonConfig.valorMensalBrl },
     activeBase: activeCount > 0 ? activeCount : null,
   });
 
@@ -368,9 +357,21 @@ export function computeLtvSection(
   const baselineSubs = readSnapshotSubscribers(backupRoot, baselineDate);
   const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baselineSubs, subs);
   const periodMonths = Math.abs(Date.parse(snapshotDate) - Date.parse(baselineDate)) / 86_400_000 / 30;
+  const manualCleanupResult = loadManualCleanupEmails(rootDir);
+  if (manualCleanupResult.error) {
+    // Não dá pra separar orgânico de com-limpeza com segurança — nunca deixa
+    // as duas leituras colapsarem em silêncio pro mesmo número (#8423 fleet
+    // review item 3, mesma correção de studio-metrics.ts).
+    return {
+      applied: true,
+      ltvFaixaBrl: null,
+      motivo: `conjunto de limpeza manual indisponível/corrompido (${manualCleanupEmailsPath(rootDir)}: ${manualCleanupResult.error}) — churn orgânico×com-limpeza não pode ser diferenciado com segurança`,
+      rows: [],
+    };
+  }
   const churn = computeChurnRate({
     exits,
-    manualCleanupEmails: loadManualCleanupEmailsForCac(rootDir),
+    manualCleanupEmails: manualCleanupResult.emails,
     periodMonths,
     avgActiveBase,
   });
@@ -845,8 +846,8 @@ export function formatCacReportMarkdown(
         `LTV de caixa (blended): ${fmtBrl(ltvSection.ltvFaixaBrl.min)} – ${fmtBrl(ltvSection.ltvFaixaBrl.max)} por ativo.`,
       );
       lines.push(
-        "Piso = churn orgânico; teto = churn com limpeza manual conhecida " +
-          "(`data/analysis/descadastrados-manuais-2607.json`).",
+        "Piso = LTV assumindo o churn mais alto (com limpeza manual conhecida, " +
+          "`data/analysis/descadastrados-manuais-2607.json`); teto = assumindo o churn mais baixo (orgânico).",
       );
       lines.push("");
       if (ltvSection.rows.length === 0) {

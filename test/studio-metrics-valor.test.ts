@@ -212,4 +212,150 @@ describe("buildMetricsData — Valor (#8423) — conversão em apoiador e LTV po
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("2+ classes de aquisição (organico via referring_site=google.com, pago via utm_source=meta-ads) produzem o valor blended REAL — nunca assertion tautológica", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      writeBeehiivSnapshot(root, "2026-09-09", [
+        // classe organico: 1 apoiador pagante (R$30/mês) de 1 confirmado -> conversao 1.0
+        beehiivSubscriberLine({ email: "organico-backer@x.com", status: "active", referring_site: "google.com" }),
+        // classe pago: 1 apoiador pagante (R$10/mês) de 1 confirmado -> conversao 1.0
+        beehiivSubscriberLine({
+          email: "pago-backer@x.com",
+          status: "active",
+          utm_source: "meta-ads",
+          utm_medium: "paid_social",
+        }),
+      ]);
+      writeApoiaSeCache(root, "2026-08", {
+        "organico-backer@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 30 },
+        "pago-backer@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 10 },
+      });
+
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date("2026-09-15T12:00:00Z") });
+
+      assert.equal(data.valor.ltvPorOrigem.qualidade, "exato");
+      assert.ok(data.valor.ltvPorOrigem.series);
+      const organico = data.valor.ltvPorOrigem.series!.find((s) => s.chave === "organico");
+      const pago = data.valor.ltvPorOrigem.series!.find((s) => s.chave === "pago");
+      assert.ok(organico && organico.valor != null);
+      assert.ok(pago && pago.valor != null);
+      // conversao 1.0 × R$30/mês × 24 meses (horizonte default) = 720
+      assert.ok(Math.abs((organico!.valor as number) - 30 * 24) < 1e-6);
+      // conversao 1.0 × R$10/mês × 24 meses = 240
+      assert.ok(Math.abs((pago!.valor as number) - 10 * 24) < 1e-6);
+      // 'valor' = média ponderada por n (1 e 1 aqui) = média simples das duas
+      assert.ok(data.valor.ltvPorOrigem.valor != null);
+      assert.ok(Math.abs((data.valor.ltvPorOrigem.valor as number) - (30 * 24 + 10 * 24) / 2) < 1e-6);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildMetricsData — Valor (#8423) — vínculo por e-mail é case-insensitive", () => {
+  it("e-mail em maiúsculas/mistas no snapshot Beehiiv ainda vincula com o cache apoia.se (minúsculo)", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      writeBeehiivSnapshot(root, "2026-09-09", [
+        beehiivSubscriberLine({ email: "Mixed.Case@X.com", status: "active" }),
+      ]);
+      // cache gravado com e-mail já normalizado (minúsculo) — cenário comum
+      // já que `checkBacker` normaliza antes de consultar/gravar.
+      writeApoiaSeCache(root, "2026-08", {
+        "mixed.case@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 30 },
+      });
+
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date("2026-09-15T12:00:00Z") });
+      assert.ok(data.valor.conversaoApoiador.valor != null);
+      assert.equal(data.valor.conversaoApoiador.valor, 1); // 1 de 1 vinculou apesar do case diferente
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildMetricsData — Valor (#8423) — cache apoia.se corrompido nunca fabrica R$0", () => {
+  it("JSON inválido no cache do mês: receita/ARPU excluem apoia-se (null, não 0); conversão/ltv-por-origem indeterminados", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      writeBeehiivSnapshot(root, "2026-09-09", [beehiivSubscriberLine({ email: "a@x.com", status: "active" })]);
+      writeAmazonConfig(root, 50);
+      // grava JSON corrompido no lugar do cache do mês fechado (agosto)
+      const cacheDir = join(root, "data", "apoia-se", "diaria");
+      mkdirSync(cacheDir, { recursive: true });
+      writeFileSync(join(cacheDir, "2026-08.json"), "{ isso não é json válido", "utf8");
+
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date("2026-09-15T12:00:00Z") });
+
+      // receita só soma Amazon (50) — apoia-se fica null, nunca 0 fabricado
+      // fazendo a soma parecer "só Amazon" por coincidência.
+      assert.equal(data.valor.receitaMensal.valor, 50);
+      assert.equal(data.valor.receitaMensal.qualidade, "piso");
+      assert.equal(data.valor.apoiaSeCache.available, false);
+      assert.equal(data.valor.apoiaSeCache.corrupted, true);
+
+      assert.equal(data.valor.conversaoApoiador.valor, null);
+      assert.equal(data.valor.conversaoApoiador.qualidade, "indeterminado");
+      assert.match(data.valor.conversaoApoiador.motivo ?? "", /apoia\.se/);
+
+      assert.equal(data.valor.ltvPorOrigem.valor, null);
+      assert.equal(data.valor.ltvPorOrigem.qualidade, "indeterminado");
+      assert.match(data.valor.ltvPorOrigem.motivo ?? "", /apoia\.se/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildMetricsData — Valor (#8423) — arquivo de limpeza manual corrompido nunca colapsa churn em silêncio", () => {
+  it("JSON inválido em descadastrados-manuais-2607.json: churn/LTV saem indeterminados, motivo cita a falha", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      writeBeehiivSnapshot(root, "2026-08-10", [
+        beehiivSubscriberLine({ email: "a@x.com", status: "active" }),
+        beehiivSubscriberLine({ email: "b@x.com", status: "active" }),
+      ]);
+      writeBeehiivSnapshot(root, "2026-09-09", [
+        beehiivSubscriberLine({ email: "a@x.com", status: "active" }),
+        beehiivSubscriberLine({ email: "b@x.com", status: "inactive" }),
+      ]);
+      const analysisDir = join(root, "data", "analysis");
+      mkdirSync(analysisDir, { recursive: true });
+      writeFileSync(join(analysisDir, "descadastrados-manuais-2607.json"), "{ arquivo corrompido", "utf8");
+
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date("2026-09-15T12:00:00Z") });
+
+      assert.equal(data.valor.churnMensal.valor, null);
+      assert.equal(data.valor.churnMensal.qualidade, "indeterminado");
+      assert.match(data.valor.churnMensal.motivo ?? "", /limpeza manual/);
+      assert.equal(data.valor.ltvCaixa.valor, null);
+      assert.equal(data.valor.ltvCaixa.qualidade, "indeterminado");
+      assert.ok(data.valor.manualCleanup.error);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildMetricsData — Valor (#8423) — ltvCacRatio", () => {
+  it("indeterminado quando não há nenhum insumo (sem data/)", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      const data = await buildMetricsData(root, { now: () => new Date("2026-09-15T12:00:00Z") });
+      assert.equal(data.valor.ltvCacRatio.valor, null);
+      assert.equal(data.valor.ltvCacRatio.qualidade, "indeterminado");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -1310,7 +1310,7 @@ export interface LtvPorOrigemClasseInput {
 export interface LtvPorOrigemDeps extends MetricDeps {
   /** Uma entrada por classe de aquisição observada (#7173) — classe
    *  ausente do mapa é tratada como "sem dado nesta classe", nunca 0. */
-  porClasse: Partial<Record<AcquisitionClass, LtvPorOrigemClasseInput>>;
+  porClasse: Readonly<Partial<Record<AcquisitionClass, LtvPorOrigemClasseInput>>>;
   horizonMonths?: number;
 }
 

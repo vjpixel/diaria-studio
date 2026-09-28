@@ -87,20 +87,19 @@ import {
 } from "../lib/metrics/registry.ts";
 import { classifyAcquisition, type AcquisitionClass } from "../lib/metrics/acquisition-class.ts";
 import { normalizeEmail } from "../lib/cac.ts";
-import { readMonthCache } from "../lib/apoia-se.ts";
-import { parseCuratedBatch } from "../lib/curated-batch-import.ts";
+import { readMonthCacheDetailed } from "../lib/apoia-se.ts";
+import { loadAmazonRevenueConfig } from "../lib/amazon-revenue-config.ts";
+import { loadManualCleanupEmails, manualCleanupEmailsPath } from "../lib/manual-cleanup-emails.ts";
 import {
   computeChurnRate,
   computeConversaoApoiador,
   summarizeApoiaSeMonthRevenue,
-  parseAmazonRevenueConfig,
   previousCompetenceMonth,
   findChurnBaselineDate,
   computeChurnExitsBetweenSnapshots,
   resolveApoiaSeCampaignName,
   type ChurnExitEvent,
   type ApoiaSeMonthCacheEntry,
-  type AmazonRevenueConfig,
 } from "../lib/ltv.ts";
 import { buildAdsData } from "./studio-ads.ts";
 import { evaluateMeta, type Meta, type MetaStatus, type MedicaoDia } from "../lib/metrics/metas.ts";
@@ -250,8 +249,19 @@ export interface MetricsValorLayer {
    *  quando o arquivo está ausente/malformado, nunca `0` fabricado. */
   amazonConfig: { valorMensalBrl: number | null; atualizadoEm: string | null; motivo: string | null };
   /** Cache da apoia.se usado (mês de competência FECHADO anterior ao
-   *  corrente — o mês corrente pode estar incompleto/congelado, #4490). */
-  apoiaSeCache: { path: string; available: boolean; competenceMonth: string };
+   *  corrente — o mês corrente pode estar incompleto/congelado, #4490).
+   *  `available` exige existir E ter parseado com sucesso — `corrupted:
+   *  true` é o caso "existe mas não parseou" (#8423 fleet review item 1),
+   *  distinto de "nunca escrito" (`corrupted: false`, `available: false`).
+   *  `paidWithoutValueCount` > 0 sinaliza entradas `isPaidThisMonth: true`
+   *  sem valor numérico (item 5) — excluídas da receita/n de pagantes. */
+  apoiaSeCache: { path: string; available: boolean; competenceMonth: string; corrupted: boolean; paidWithoutValueCount: number };
+  /** Arquivo de limpeza manual conhecida (`descadastrados-manuais-2607.json`)
+   *  — `error` não-nulo quando o arquivo existe mas falhou ler/parsear
+   *  (#8423 fleet review item 3); nesse caso `churnMensal`/`ltvCaixa` saem
+   *  `indeterminado` em vez de colapsar orgânico×com-limpeza em silêncio.
+   *  `skipped` > 0 sinaliza linhas do arquivo puladas pelo parser. */
+  manualCleanup: { path: string; emailCount: number; error: string | null; skipped: number };
   /** Par de snapshots Beehiiv usado pro diff de churn — `baselineDate` é
    *  `null` quando não há snapshot suficientemente espaçado (~30 dias) do
    *  mais recente, e `churnMensal` sai `indeterminado` nesse caso. */
@@ -575,49 +585,13 @@ function countActive(subs: readonly BeehiivBackupSubscriber[]): number {
 // ─── camada: Valor (#8423) — receita, ARPU, churn, conversão em apoiador, ──
 // ─── LTV blended/por origem, LTV÷CAC ────────────────────────────────────
 
-/** Config manual da receita Amazon — fail-soft (arquivo ausente/malformado
- *  nunca lança, só devolve `valorMensalBrl: null` com `motivo`). */
-function loadAmazonRevenueConfig(rootDir: string): { valorMensalBrl: number | null; atualizadoEm: string | null; motivo: string | null } {
-  const path = resolve(rootDir, "data", "ltv", "amazon-revenue.json");
-  if (!existsSync(path)) {
-    return {
-      valorMensalBrl: null,
-      atualizadoEm: null,
-      motivo: `config ausente em ${path} — receita Amazon não tem fonte automatizada (#8423); crie o arquivo com { "valorMensalBrl": <número>, "atualizadoEm": "<ISO>" }`,
-    };
-  }
-  try {
-    const parsed: AmazonRevenueConfig | null = parseAmazonRevenueConfig(JSON.parse(readFileSync(path, "utf8")));
-    if (!parsed) {
-      return { valorMensalBrl: null, atualizadoEm: null, motivo: `config malformada em ${path} — esperado { valorMensalBrl: number, atualizadoEm: string }` };
-    }
-    return { valorMensalBrl: parsed.valorMensalBrl, atualizadoEm: parsed.atualizadoEm, motivo: null };
-  } catch (e) {
-    return { valorMensalBrl: null, atualizadoEm: null, motivo: `falha ao ler ${path}: ${(e as Error).message}` };
-  }
-}
-
-/** E-mails normalizados de limpeza manual conhecida (#8423) — fail-soft:
- *  arquivo ausente/corrompido devolve um Set vazio (churn "orgânico" e "com
- *  limpeza" colapsam pro mesmo valor, nunca lança). Reusa `parseCuratedBatch`
- *  (`curated-batch-import.ts`) — mesmo parser que já entende o formato do
- *  arquivo, nenhuma reimplementação. */
-function loadManualCleanupEmails(rootDir: string): ReadonlySet<string> {
-  const path = resolve(rootDir, "data", "analysis", "descadastrados-manuais-2607.json");
-  if (!existsSync(path)) return new Set();
-  try {
-    const { entries } = parseCuratedBatch(JSON.parse(readFileSync(path, "utf8")));
-    return new Set(entries.map((e) => e.email));
-  } catch {
-    return new Set();
-  }
-}
-
 /**
- * Monta o bloco "Valor" (#8423) inteiro — sempre fail-soft, nunca lança
- * (mesma disciplina do resto do módulo): qualquer insumo ausente vira
- * `MetricResult` `indeterminado` com motivo, não uma exceção que derruba o
- * snapshot inteiro.
+ * Monta o bloco "Valor" (#8423) inteiro — nunca lança POR INSUMO AUSENTE OU
+ * CORROMPIDO (mesma disciplina do resto do módulo): qualquer insumo
+ * ausente/corrompido vira `MetricResult` `indeterminado` com motivo, não uma
+ * exceção que derruba o snapshot inteiro. (Não é uma garantia de "nunca
+ * lança" absoluta — um bug de programação ainda pode lançar; o contrato é
+ * especificamente sobre dado externo malformado/ausente.)
  */
 async function computeValorLayer(
   rootDir: string,
@@ -631,9 +605,22 @@ async function computeValorLayer(
   const month = previousCompetenceMonth(now);
   const cacheDir = resolve(rootDir, "data", "apoia-se", campaign);
   const cachePath = resolve(cacheDir, `${month}.json`);
-  const apoiaSeCacheAvailable = existsSync(cachePath);
-  const apoiaSeCache = readMonthCache(cacheDir, month) as Record<string, ApoiaSeMonthCacheEntry>; // fail-soft: {} se ausente/corrompido
-  const revSummary = summarizeApoiaSeMonthRevenue(apoiaSeCache);
+  // `available` exige EXISTIR e ter sido parseado com sucesso — um cache
+  // corrompido (JSON inválido) nunca é tratado como "disponível com R$0"
+  // (#8423 fleet review item 1: `existsSync` sozinho não via distinção, e
+  // `porFonte["apoia-se"]` saía com 0 fabricado quando o parse falhava).
+  const { cache: apoiaSeCache, corrupted: apoiaSeCacheCorrupted } = readMonthCacheDetailed(cacheDir, month) as {
+    cache: Record<string, ApoiaSeMonthCacheEntry>;
+    corrupted: boolean;
+  };
+  const apoiaSeCacheExists = existsSync(cachePath);
+  const apoiaSeCacheAvailable = apoiaSeCacheExists && !apoiaSeCacheCorrupted;
+  if (apoiaSeCacheCorrupted) {
+    console.error(
+      `[studio-metrics] valor: cache apoia.se corrompido em ${cachePath} — tratado como indisponível, nunca R$0 fabricado`,
+    );
+  }
+  const revSummary = summarizeApoiaSeMonthRevenue(apoiaSeCache); // apoiaSeCache é {} quando ausente/corrompido
   const amazonConfig = loadAmazonRevenueConfig(rootDir);
 
   const janelaMes = janelaDia(`${month}-01`);
@@ -648,6 +635,10 @@ async function computeValorLayer(
   // nunca `0` fabricado.
   const activeBeehiiv = beehiivSubs.filter((s) => s.status === "active");
   const baseAtivaBeehiiv = activeBeehiiv.length > 0 ? activeBeehiiv.length : null;
+  // Snapshot Beehiiv vazio/anômalo (nenhum subscriber lido) — churn/ARPU/LTV
+  // não rodam em cima dele (#8423 fleet review item 6): mesma condição que
+  // `loadBeehiivSnapshotLayer` usa pra marcar `error` na camada de snapshot.
+  const beehiivSnapshotEmpty = beehiivSubs.length === 0;
 
   const receitaMensal = await getMetric("receita-mensal")!.computar({
     janela: janelaMes,
@@ -659,10 +650,11 @@ async function computeValorLayer(
   });
 
   // ── Churn — diff de 2 snapshots Beehiiv ~30 dias de distância ──────────
-  const baselineDate = latestDate ? findChurnBaselineDate(beehiivDates, latestDate) : null;
+  const manualCleanupResult = loadManualCleanupEmails(rootDir);
+  const baselineDate = !beehiivSnapshotEmpty && latestDate ? findChurnBaselineDate(beehiivDates, latestDate) : null;
   let churnMensalDeps: ChurnMensalDeps;
   let churnPeriodo: MetricsValorLayer["churnPeriodo"] = { baselineDate, latestDate, periodMonths: null };
-  if (!latestDate || !baselineDate) {
+  if (beehiivSnapshotEmpty || !latestDate || !baselineDate) {
     churnMensalDeps = { exits: [], manualCleanupEmails: new Set(), periodMonths: 0, avgActiveBase: null };
   } else {
     const baselineSubs = baselineDate === latestDate ? beehiivSubs : readSnapshotSubscribers(beehiivRoot, baselineDate);
@@ -670,87 +662,123 @@ async function computeValorLayer(
     const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baselineSubs, latestSubs);
     const periodMonths = Math.abs(Date.parse(latestDate) - Date.parse(baselineDate)) / 86_400_000 / 30;
     churnPeriodo = { baselineDate, latestDate, periodMonths };
-    churnMensalDeps = { exits, manualCleanupEmails: loadManualCleanupEmails(rootDir), periodMonths, avgActiveBase };
+    churnMensalDeps = { exits, manualCleanupEmails: manualCleanupResult.emails, periodMonths, avgActiveBase };
   }
-  const churnMensal = await getMetric("churn-mensal")!.computar({ janela: janelaMes, deps: churnMensalDeps });
-  // Reaproveita o MESMO cálculo puro (não recomputado a partir do
-  // MetricResult, que já perdeu a granularidade organico/comLimpeza fora
-  // da decomposicao) pra alimentar ltv-caixa abaixo.
-  const churnRaw = computeChurnRate(churnMensalDeps);
 
-  const ltvCaixa = await getMetric("ltv-caixa")!.computar({
-    janela: janelaMes,
-    deps: {
-      arpuMensal: arpuAtivo.valor,
-      churnMensalOrganico: churnRaw.organicMonthly,
-      churnMensalComLimpeza: churnRaw.comLimpezaMonthly,
-    } satisfies LtvCaixaDeps,
-  });
+  // Conjunto de limpeza manual indisponível/corrompido (arquivo existe mas
+  // não parseou) — não dá pra separar orgânico de com-limpeza com segurança;
+  // nunca deixa as duas leituras colapsarem em silêncio pro mesmo número
+  // (#8423 fleet review item 3). Só se aplica quando de fato há um diff de
+  // churn rodando (baseline+latest presentes) — sem diff, já é indeterminado
+  // pelo motivo de sempre.
+  const manualCleanupUnavailableMotivo =
+    manualCleanupResult.error && baselineDate && latestDate && !beehiivSnapshotEmpty
+      ? `conjunto de limpeza manual indisponível/corrompido (${manualCleanupEmailsPath(rootDir)}: ${manualCleanupResult.error}) — churn orgânico×com-limpeza não pode ser diferenciado com segurança`
+      : beehiivSnapshotEmpty
+        ? "snapshot Beehiiv vazio/anômalo — churn não computável"
+        : null;
+
+  let churnMensal: MetricResult;
+  let churnRaw: ReturnType<typeof computeChurnRate> | null = null;
+  if (manualCleanupUnavailableMotivo) {
+    churnMensal = { valor: null, janela: janelaMes, frescor: null, qualidade: "indeterminado", motivo: manualCleanupUnavailableMotivo };
+  } else {
+    churnMensal = await getMetric("churn-mensal")!.computar({ janela: janelaMes, deps: churnMensalDeps });
+    // Reaproveita o MESMO cálculo puro (não recomputado a partir do
+    // MetricResult, que já perdeu a granularidade organico/comLimpeza fora
+    // da decomposicao) pra alimentar ltv-caixa abaixo.
+    churnRaw = computeChurnRate(churnMensalDeps);
+  }
+
+  const ltvCaixa = churnRaw
+    ? await getMetric("ltv-caixa")!.computar({
+        janela: janelaMes,
+        deps: {
+          arpuMensal: arpuAtivo.valor,
+          churnMensalOrganico: churnRaw.organicMonthly,
+          churnMensalComLimpeza: churnRaw.comLimpezaMonthly,
+        } satisfies LtvCaixaDeps,
+      })
+    : { valor: null, janela: janelaMes, frescor: null, qualidade: "indeterminado" as const, motivo: manualCleanupUnavailableMotivo ?? "churn indisponível" };
 
   // ── Conversão em apoiador + LTV por origem — vínculo por e-mail ────────
-  const apoiaSeIndex = new Map<string, ApoiaSeMonthCacheEntry>();
-  for (const [email, entry] of Object.entries(apoiaSeCache)) apoiaSeIndex.set(normalizeEmail(email), entry);
+  // Sem cache apoia.se disponível/válido, NÃO dá pra saber quem é apoiador —
+  // rodar a agregação sobre um cache vazio fabricaria `apoiadores=0` como se
+  // fosse "0% converteu" (um número real, não indeterminado). #8423 fleet
+  // review item 2: as duas métricas saem indeterminadas direto, sem
+  // percorrer `activeBeehiiv`.
+  const apoiaSeUnavailableMotivo = !apoiaSeCacheAvailable ? `cache da apoia.se indisponível/corrompido para ${month}` : null;
 
-  const amazonPerActive =
-    amazonConfig.valorMensalBrl != null && baseAtivaBeehiiv ? amazonConfig.valorMensalBrl / baseAtivaBeehiiv : null;
+  let conversaoApoiador: MetricResult;
+  let ltvPorOrigem: MetricResult;
+  if (apoiaSeUnavailableMotivo) {
+    conversaoApoiador = { valor: null, janela: janelaMes, frescor: null, qualidade: "indeterminado", motivo: apoiaSeUnavailableMotivo };
+    ltvPorOrigem = { valor: null, janela: janelaMes, frescor: null, qualidade: "indeterminado", motivo: apoiaSeUnavailableMotivo };
+  } else {
+    const apoiaSeIndex = new Map<string, ApoiaSeMonthCacheEntry>();
+    for (const [email, entry] of Object.entries(apoiaSeCache)) apoiaSeIndex.set(normalizeEmail(email), entry);
 
-  interface ClasseAgg {
-    confirmados: number;
-    apoiadores: number;
-    payingCount: number;
-    sumPaid: number;
-  }
-  const porClasseAgg = new Map<AcquisitionClass, ClasseAgg>();
-  let totalApoiadoresOverall = 0;
-  for (const s of activeBeehiiv) {
-    const classe = classifyAcquisition({
-      utm_source: s.utm_source,
-      utm_medium: s.utm_medium,
-      // `BeehiivBackupSubscriber.utm_channel` é `unknown` (nunca confirmado
-      // ao vivo, ver docstring de `beehiiv-backup-snapshots.ts`) — mesma
-      // disciplina tolerante do resto da interface, só passa adiante quando
-      // já é string.
-      utm_channel: typeof s.utm_channel === "string" ? s.utm_channel : null,
-      referring_site: s.referring_site,
-      created: s.created,
-    });
-    let agg = porClasseAgg.get(classe);
-    if (!agg) {
-      agg = { confirmados: 0, apoiadores: 0, payingCount: 0, sumPaid: 0 };
-      porClasseAgg.set(classe, agg);
+    const amazonPerActive =
+      amazonConfig.valorMensalBrl != null && baseAtivaBeehiiv ? amazonConfig.valorMensalBrl / baseAtivaBeehiiv : null;
+
+    interface ClasseAgg {
+      confirmados: number;
+      apoiadores: number;
+      payingCount: number;
+      sumPaid: number;
     }
-    agg.confirmados++;
-    const backer = apoiaSeIndex.get(normalizeEmail(s.email));
-    if (backer?.isBacker) {
-      agg.apoiadores++;
-      totalApoiadoresOverall++;
-      if (backer.isPaidThisMonth && typeof backer.thisMonthPaidValue === "number") {
-        agg.payingCount++;
-        agg.sumPaid += backer.thisMonthPaidValue;
+    const porClasseAgg = new Map<AcquisitionClass, ClasseAgg>();
+    let totalApoiadoresOverall = 0;
+    for (const s of activeBeehiiv) {
+      const classe = classifyAcquisition({
+        utm_source: s.utm_source,
+        utm_medium: s.utm_medium,
+        // `BeehiivBackupSubscriber.utm_channel` é `unknown` (nunca confirmado
+        // ao vivo, ver docstring de `beehiiv-backup-snapshots.ts`) — mesma
+        // disciplina tolerante do resto da interface, só passa adiante quando
+        // já é string.
+        utm_channel: typeof s.utm_channel === "string" ? s.utm_channel : null,
+        referring_site: s.referring_site,
+        created: s.created,
+      });
+      let agg = porClasseAgg.get(classe);
+      if (!agg) {
+        agg = { confirmados: 0, apoiadores: 0, payingCount: 0, sumPaid: 0 };
+        porClasseAgg.set(classe, agg);
+      }
+      agg.confirmados++;
+      const backer = apoiaSeIndex.get(normalizeEmail(s.email));
+      if (backer?.isBacker) {
+        agg.apoiadores++;
+        totalApoiadoresOverall++;
+        if (backer.isPaidThisMonth && typeof backer.thisMonthPaidValue === "number") {
+          agg.payingCount++;
+          agg.sumPaid += backer.thisMonthPaidValue;
+        }
       }
     }
-  }
 
-  const conversaoApoiador = await getMetric("conversao-apoiador")!.computar({
-    janela: janelaMes,
-    deps: { apoiadores: totalApoiadoresOverall, confirmados: activeBeehiiv.length } satisfies ConversaoApoiadorDeps,
-  });
+    conversaoApoiador = await getMetric("conversao-apoiador")!.computar({
+      janela: janelaMes,
+      deps: { apoiadores: totalApoiadoresOverall, confirmados: activeBeehiiv.length } satisfies ConversaoApoiadorDeps,
+    });
 
-  const porClasse: Partial<Record<AcquisitionClass, LtvPorOrigemClasseInput>> = {};
-  for (const [classe, agg] of porClasseAgg) {
-    const conv = computeConversaoApoiador({ apoiadores: agg.apoiadores, confirmados: agg.confirmados });
-    porClasse[classe] = {
-      conversaoApoiador: conv.valor,
-      valorMedioApoiadorMensal: agg.payingCount > 0 ? agg.sumPaid / agg.payingCount : null,
-      outrasFontesPerAtivoMensal: amazonPerActive,
-      n: agg.apoiadores,
-    };
+    const porClasse: Partial<Record<AcquisitionClass, LtvPorOrigemClasseInput>> = {};
+    for (const [classe, agg] of porClasseAgg) {
+      const conv = computeConversaoApoiador({ apoiadores: agg.apoiadores, confirmados: agg.confirmados });
+      porClasse[classe] = {
+        conversaoApoiador: conv.valor,
+        valorMedioApoiadorMensal: agg.payingCount > 0 ? agg.sumPaid / agg.payingCount : null,
+        outrasFontesPerAtivoMensal: amazonPerActive,
+        n: agg.apoiadores,
+      };
+    }
+    ltvPorOrigem = await getMetric("ltv-por-origem")!.computar({
+      janela: janelaMes,
+      decomposicao: "classe",
+      deps: { porClasse } satisfies LtvPorOrigemDeps,
+    });
   }
-  const ltvPorOrigem = await getMetric("ltv-por-origem")!.computar({
-    janela: janelaMes,
-    decomposicao: "classe",
-    deps: { porClasse } satisfies LtvPorOrigemDeps,
-  });
 
   // ── LTV ÷ CAC — reusa o CacReport que studio-ads.ts já computa (nenhuma
   //    releitura de spend.csv/snapshot aqui). Simplificação DECLARADA: usa
@@ -789,7 +817,19 @@ async function computeValorLayer(
     ltvPorOrigem,
     ltvCacRatio,
     amazonConfig,
-    apoiaSeCache: { path: cachePath, available: apoiaSeCacheAvailable, competenceMonth: month },
+    apoiaSeCache: {
+      path: cachePath,
+      available: apoiaSeCacheAvailable,
+      competenceMonth: month,
+      corrupted: apoiaSeCacheCorrupted,
+      paidWithoutValueCount: revSummary.paidWithoutValueCount,
+    },
+    manualCleanup: {
+      path: manualCleanupEmailsPath(rootDir),
+      emailCount: manualCleanupResult.emails.size,
+      error: manualCleanupResult.error,
+      skipped: manualCleanupResult.skipped,
+    },
     churnPeriodo,
   };
 }

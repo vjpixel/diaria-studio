@@ -33,6 +33,7 @@ const el = {
 
   valorPanel: document.getElementById("valor-panel"),
   valorGrid: document.getElementById("valor-grid"),
+  valorFonteDados: document.getElementById("valor-fonte-dados"),
   valorOrigemTbody: document.getElementById("valor-origem-tbody"),
   valorCacTbody: document.getElementById("valor-cac-tbody"),
 };
@@ -213,6 +214,7 @@ function renderValor(valor) {
     tile("LTV de caixa (blended)", escapeHtml(fmtValor(valor.ltvCaixa, "brl")), motivoLine(valor.ltvCaixa)),
   ];
   el.valorGrid.innerHTML = tiles.join("");
+  if (el.valorFonteDados) el.valorFonteDados.innerHTML = renderValorFonteDados(valor);
 
   const origemSeries = valor.ltvPorOrigem.series || [];
   el.valorOrigemTbody.innerHTML =
@@ -232,6 +234,53 @@ function renderValor(valor) {
       : cacSeries
           .map((s) => `<tr><td>${escapeHtml(s.chave)}</td><td class="mono">${s.valor == null ? "sem coleta" : s.valor.toFixed(2)}</td></tr>`)
           .join("");
+}
+
+/** Footnote "fonte dos dados" do bloco Valor (#8423 fleet review item 7) —
+ *  antes desses campos (`amazonConfig.motivo`, `apoiaSeCache.available`/
+ *  `.corrupted`, `manualCleanup`, `churnPeriodo.baselineDate`) eram
+ *  computados mas nunca renderizados; ninguém no Studio conseguia ver POR
+ *  QUE um número saiu indeterminado sem olhar a resposta crua da API. */
+function renderValorFonteDados(valor) {
+  const parts = [];
+
+  const apoiaSe = valor.apoiaSeCache;
+  if (apoiaSe) {
+    if (apoiaSe.corrupted) {
+      parts.push(`⚠ cache apoia.se (${escapeHtml(apoiaSe.competenceMonth)}) corrompido — tratado como indisponível`);
+    } else if (!apoiaSe.available) {
+      parts.push(`cache apoia.se (${escapeHtml(apoiaSe.competenceMonth)}) ainda não consultado`);
+    } else {
+      parts.push(`cache apoia.se (${escapeHtml(apoiaSe.competenceMonth)}) disponível`);
+    }
+    if (apoiaSe.paidWithoutValueCount > 0) {
+      parts.push(`${apoiaSe.paidWithoutValueCount} pagante(s) sem valor reportado (excluído(s) da receita)`);
+    }
+  }
+
+  const manualCleanup = valor.manualCleanup;
+  if (manualCleanup) {
+    if (manualCleanup.error) {
+      parts.push(`⚠ limpeza manual indisponível/corrompida: ${escapeHtml(manualCleanup.error)}`);
+    } else if (manualCleanup.skipped > 0) {
+      parts.push(`limpeza manual: ${manualCleanup.skipped} linha(s) pulada(s) no parse`);
+    }
+  }
+
+  if (valor.amazonConfig && valor.amazonConfig.motivo) {
+    parts.push(`Amazon: ${escapeHtml(valor.amazonConfig.motivo)}`);
+  }
+
+  const periodo = valor.churnPeriodo;
+  if (periodo) {
+    parts.push(
+      periodo.baselineDate
+        ? `churn medido entre ${escapeHtml(periodo.baselineDate)} e ${escapeHtml(periodo.latestDate || "?")}`
+        : "churn sem baseline de snapshot suficientemente espaçado",
+    );
+  }
+
+  return parts.length === 0 ? "" : `Fonte dos dados: ${parts.join(" · ")}.`;
 }
 
 function renderDecomposicao(result) {

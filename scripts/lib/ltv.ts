@@ -65,6 +65,9 @@ import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 /** Horizonte default de LTV, em meses — só há ~12 meses de história
  *  (medição de 19/09/2026); extrapolar além disso é chute (nota da issue
  *  #8423). Tunável por chamador para recalcular com outro teto. */
+// Medição de 19/09/2026 (data da issue #8423) — "só ~12 meses de história"
+// é uma leitura datada, não um fato perene; revisar o horizonte quando a
+// história acumulada crescer o bastante pra sustentar um teto maior.
 export const LTV_DEFAULT_HORIZON_MONTHS = 24;
 
 /** Piso de amostra abaixo do qual uma taxa de conversão em apoiador não é
@@ -224,9 +227,29 @@ export function computeChurnRate(input: ChurnRateInput): ChurnRateResult {
   }
 
   const denom = input.avgActiveBase * input.periodMonths;
+  const organicMonthly = organicExits / denom;
+  const comLimpezaMonthly = totalExits / denom;
+
+  // Churn > 100%/mês não é um dado real (nem toda a base sai num mês) — é
+  // sintoma de snapshot suspeito (base ativa mal medida, diff entre
+  // snapshots incomparáveis, etc). Nunca reportado como número seco: cai em
+  // indeterminado com motivo explícito (#8423 fleet review item 6).
+  if (organicMonthly > 1 || comLimpezaMonthly > 1) {
+    return {
+      organicMonthly: null,
+      comLimpezaMonthly: null,
+      totalExits,
+      manualCleanupExits,
+      organicExits,
+      periodMonths: input.periodMonths,
+      avgActiveBase: input.avgActiveBase,
+      motivo: `churn implausível (>100%/mês) — snapshot suspeito (organico=${(organicMonthly * 100).toFixed(1)}%, com_limpeza=${(comLimpezaMonthly * 100).toFixed(1)}%)`,
+    };
+  }
+
   return {
-    organicMonthly: organicExits / denom,
-    comLimpezaMonthly: totalExits / denom,
+    organicMonthly,
+    comLimpezaMonthly,
     totalExits,
     manualCleanupExits,
     organicExits,
@@ -467,15 +490,25 @@ export interface ApoiaSeMonthCacheEntry {
 }
 
 export interface ApoiaSeMonthRevenueSummary {
-  /** Soma de `thisMonthPaidValue` entre quem tem `isPaidThisMonth: true`. */
+  /** Soma de `thisMonthPaidValue` entre quem tem `isPaidThisMonth: true` E
+   *  `thisMonthPaidValue` numérico — entradas `isPaidThisMonth: true` SEM
+   *  valor não entram aqui (ver `paidWithoutValueCount`, #8423 fleet review
+   *  item 5 — nunca fabricar R$0 pra quem pagou mas cujo valor não veio). */
   grossRevenueBrl: number;
-  /** Contagem de pagantes este mês (n do valor médio abaixo). */
+  /** Contagem de pagantes este mês COM valor confirmado (n do valor médio
+   *  abaixo) — exclui `paidWithoutValueCount`. */
   payingBackersCount: number;
   /** Contagem de `isBacker: true`, pagante ou não. */
   totalBackersCount: number;
   /** `grossRevenueBrl / payingBackersCount` — `null` quando não há
    *  pagante nenhum (nunca `0`/`NaN`). */
   avgPaidValueBrl: number | null;
+  /** Contagem de entradas `isPaidThisMonth: true` mas SEM `thisMonthPaidValue`
+   *  numérico — inconsistência de dado da apoia.se (paga mas sem valor
+   *  reportado). Excluídas de `grossRevenueBrl`/`payingBackersCount` (nunca
+   *  contadas como R$0 pagante); o caller deve citar esta contagem no motivo
+   *  quando > 0. */
+  paidWithoutValueCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -513,11 +546,18 @@ export function summarizeApoiaSeMonthRevenue(
   let grossRevenueBrl = 0;
   let payingBackersCount = 0;
   let totalBackersCount = 0;
+  let paidWithoutValueCount = 0;
   for (const entry of Object.values(cache)) {
     if (entry.isBacker) totalBackersCount++;
     if (entry.isPaidThisMonth) {
-      payingBackersCount++;
-      grossRevenueBrl += entry.thisMonthPaidValue ?? 0;
+      if (typeof entry.thisMonthPaidValue === "number") {
+        payingBackersCount++;
+        grossRevenueBrl += entry.thisMonthPaidValue;
+      } else {
+        // Paga mas sem valor reportado — inconsistência de dado, nunca
+        // contada como R$0 pagante (#8423 fleet review item 5).
+        paidWithoutValueCount++;
+      }
     }
   }
   return {
@@ -525,6 +565,7 @@ export function summarizeApoiaSeMonthRevenue(
     payingBackersCount,
     totalBackersCount,
     avgPaidValueBrl: payingBackersCount > 0 ? grossRevenueBrl / payingBackersCount : null,
+    paidWithoutValueCount,
   };
 }
 

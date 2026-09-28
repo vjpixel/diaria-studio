@@ -93,7 +93,7 @@ describe("arpu-ativo", () => {
 describe("churn-mensal", () => {
   const def = getMetric("churn-mensal")!;
 
-  it("devolve FAIXA: piso (com limpeza) <= teto (organico)", async () => {
+  it("devolve FAIXA: piso (organico) <= teto (com limpeza)", async () => {
     const deps: ChurnMensalDeps = {
       exits: [{ email: "a@x.com" }, { email: "b@x.com" }, { email: "manual@x.com" }],
       manualCleanupEmails: new Set(["manual@x.com"]),

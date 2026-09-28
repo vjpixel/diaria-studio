@@ -104,6 +104,28 @@ describe("computeChurnRate", () => {
     const r = computeChurnRate({ exits: [], manualCleanupEmails: new Set(), periodMonths: 0, avgActiveBase: 100 });
     assert.equal(r.organicMonthly, null);
   });
+
+  it("indeterminado quando periodMonths é negativo (#8423 fleet review — must-add)", () => {
+    const r = computeChurnRate({ exits: [{ email: "a@x.com" }], manualCleanupEmails: new Set(), periodMonths: -1, avgActiveBase: 100 });
+    assert.equal(r.organicMonthly, null);
+    assert.equal(r.comLimpezaMonthly, null);
+    assert.match(r.motivo ?? "", /inválida/);
+  });
+
+  it("churn implausível (>100%/mês) vira indeterminado — snapshot suspeito, nunca número seco (#8423 fleet review item 6)", () => {
+    const exits = Array.from({ length: 50 }, (_, i) => ({ email: `s${i}@x.com` }));
+    // base ativa média de 10, 50 saídas num único mês -> 500%/mês, implausível
+    const r = computeChurnRate({ exits, manualCleanupEmails: new Set(), periodMonths: 1, avgActiveBase: 10 });
+    assert.equal(r.organicMonthly, null);
+    assert.equal(r.comLimpezaMonthly, null);
+    assert.match(r.motivo ?? "", /implausível/);
+  });
+
+  it("churn <= 100%/mês não é afetado pelo guard de implausibilidade", () => {
+    const r = computeChurnRate({ exits: [{ email: "a@x.com" }], manualCleanupEmails: new Set(), periodMonths: 1, avgActiveBase: 100 });
+    assert.ok(r.organicMonthly != null);
+    assert.ok(r.organicMonthly <= 1);
+  });
 });
 
 describe("computeLtvCaixa", () => {
@@ -288,6 +310,20 @@ describe("summarizeApoiaSeMonthRevenue", () => {
     assert.equal(r.payingBackersCount, 0);
     assert.equal(r.totalBackersCount, 0);
     assert.equal(r.avgPaidValueBrl, null);
+    assert.equal(r.paidWithoutValueCount, 0);
+  });
+
+  it("isPaidThisMonth:true SEM thisMonthPaidValue nunca conta como R$0 pagante (#8423 fleet review item 5)", () => {
+    const cache = {
+      "a@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 25 },
+      // paga mas sem valor reportado — inconsistência de dado da apoia.se
+      "b@x.com": { isBacker: true, isPaidThisMonth: true },
+    };
+    const r = summarizeApoiaSeMonthRevenue(cache);
+    assert.equal(r.grossRevenueBrl, 25); // "b" não entra como R$0
+    assert.equal(r.payingBackersCount, 1); // "b" não conta como pagante
+    assert.equal(r.avgPaidValueBrl, 25); // denominador não inflado por "b"
+    assert.equal(r.paidWithoutValueCount, 1);
   });
 });
 
