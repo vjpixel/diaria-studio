@@ -61,6 +61,19 @@
  * nunca só o exit code do comando) e só libera o lock depois disso, no
  * `finally`. CI `fail`/`timeout` nunca mergeia — devolve `ok:false` sem
  * tocar `gh pr merge`, deixando o PR aberto pro orquestrador alarmar.
+ *
+ * (e) **Poll ANTES do lock, nunca depois (#8926, fix 28/09/2026).** A
+ * versão do item (d) acima adquiria o lock e SÓ DEPOIS chamava
+ * `pollTrainCi` (até 30min de espera) — `MERGE_LOCK_TTL_MS` em
+ * `session-registry.ts` é 2min, então o lock virava "abandonado" no meio
+ * do polling e outra sessão o tomava (o polling em si não segura/renova o
+ * lock). `mergeHubsRegenPr` espelha agora a mesma ordem de
+ * `mergeSoloPr`/`mergeTrainBatch` (`merge-train-live.ts`): `pollTrainCi`
+ * PRIMEIRO, sem lock nenhum detido; só com veredito `"pass"` é que
+ * adquire o lock, mergeia (síncrono, sem `--auto`), confirma via
+ * `confirmMerged` e libera no `finally` — a janela entre acquire e
+ * release fica curta (só o `gh pr merge` + confirmação), nunca os até
+ * 30min do polling.
  */
 
 import { pollTrainCi, confirmMerged, type TrainRunner } from "./merge-train-live.ts";
@@ -197,19 +210,33 @@ const DEFAULT_HUBS_MERGE_CI_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_HUBS_MERGE_CI_POLL_INTERVAL_MS = 30_000;
 
 /**
- * Sequência SÍNCRONA de merge pro PR de regen semanal de hubs (#8923):
- * acquire merge-lock (`--pr`, mesma convenção já usada por este
- * orquestrador desde #8906) -> espera o CI de verdade via `pollTrainCi`
- * (polling, timeout embutido) -> só com veredito `"pass"` roda `gh pr
- * merge --squash` SÍNCRONO (nunca `--auto`) -> confirma via estado real
- * (`confirmMerged`, #573 — nunca só o exit code de `gh pr merge`) ->
- * libera o lock SEMPRE no `finally` (sucesso, CI vermelho/timeout, ou
- * erro em qualquer passo). `runner` é injetável — mesmo `TrainRunner` de
- * `scripts/lib/merge-train-live.ts` — pra permitir teste sem rede/gh real.
+ * Sequência SÍNCRONA de merge pro PR de regen semanal de hubs (#8923,
+ * reordenado em #8926): espera o CI de verdade via `pollTrainCi` (polling,
+ * timeout embutido) SEM lock nenhum detido -> só com veredito `"pass"`
+ * adquire o merge-lock (`--pr`, mesma convenção já usada por este
+ * orquestrador desde #8906) -> roda `gh pr merge --squash` SÍNCRONO (nunca
+ * `--auto`) -> confirma via estado real (`confirmMerged`, #573 — nunca só
+ * o exit code de `gh pr merge`) -> libera o lock SEMPRE no `finally`
+ * (sucesso ou erro no merge/confirmação). `runner` é injetável — mesmo
+ * `TrainRunner` de `scripts/lib/merge-train-live.ts` — pra permitir teste
+ * sem rede/gh real.
  *
- * CI `"fail"`/`"timeout"`: NUNCA chama `gh pr merge` — devolve `ok:false`
- * com o PR intacto e aberto, pro chamador (`scripts/hubs-weekly-regen.ts`)
- * decidir o alarme via `alarmFailure`.
+ * **Ordem importa (#8926):** `MERGE_LOCK_TTL_MS` em `session-registry.ts`
+ * é 2min — segurar o lock durante os até 30min de `pollTrainCi` deixava o
+ * lock "abandonado" no meio da espera e outra sessão o tomava. Adquirir só
+ * DEPOIS do veredito `pass` mantém a janela acquire->release curta (merge
+ * + confirmação), dentro do TTL — mesmo padrão de `mergeSoloPr`/
+ * `mergeTrainBatch` em `merge-train-live.ts`, onde `pollTrainCi` também
+ * roda ANTES de qualquer acquire.
+ *
+ * CI `"fail"`/`"timeout"`: NUNCA adquire o lock nem chama `gh pr merge` —
+ * devolve `ok:false` com o PR intacto e aberto, pro chamador
+ * (`scripts/hubs-weekly-regen.ts`) decidir o alarme via `alarmFailure`.
+ *
+ * `merge-lock-acquire` negado (outra sessão mergeando agora): mesmo
+ * comportamento de `mergeSoloPr` — falha direto, sem retry interno (retry
+ * bounded, se algum dia for necessário, é responsabilidade do CHAMADOR,
+ * nunca deste helper).
  */
 export async function mergeHubsRegenPr(
   runner: TrainRunner,
@@ -217,6 +244,20 @@ export async function mergeHubsRegenPr(
   opts: HubsRegenMergeOptions,
 ): Promise<HubsRegenMergeResult> {
   const prNum = Number(prNumber);
+
+  const ciVerdict = await pollTrainCi(runner, prNum, {
+    timeoutMs: opts.ciTimeoutMs ?? DEFAULT_HUBS_MERGE_CI_TIMEOUT_MS,
+    intervalMs: opts.ciPollIntervalMs ?? DEFAULT_HUBS_MERGE_CI_POLL_INTERVAL_MS,
+  });
+  if (ciVerdict !== "pass") {
+    return {
+      ok: false,
+      merged: false,
+      ciVerdict,
+      error: `CI não passou (veredito: ${ciVerdict}) — PR #${prNumber} deixado aberto, sem merge.`,
+    };
+  }
+
   const acquire = runner.exec("npx", [
     "tsx",
     "scripts/lib/session-registry.ts",
@@ -227,22 +268,14 @@ export async function mergeHubsRegenPr(
     opts.sessionId,
   ]);
   if (!acquire.ok) {
-    return { ok: false, merged: false, error: `merge-lock-acquire falhou: ${acquire.stderr || acquire.stdout}` };
+    return {
+      ok: false,
+      merged: false,
+      ciVerdict,
+      error: `merge-lock-acquire falhou: ${acquire.stderr || acquire.stdout}`,
+    };
   }
   try {
-    const ciVerdict = await pollTrainCi(runner, prNum, {
-      timeoutMs: opts.ciTimeoutMs ?? DEFAULT_HUBS_MERGE_CI_TIMEOUT_MS,
-      intervalMs: opts.ciPollIntervalMs ?? DEFAULT_HUBS_MERGE_CI_POLL_INTERVAL_MS,
-    });
-    if (ciVerdict !== "pass") {
-      return {
-        ok: false,
-        merged: false,
-        ciVerdict,
-        error: `CI não passou (veredito: ${ciVerdict}) — PR #${prNumber} deixado aberto, sem merge.`,
-      };
-    }
-
     const merge = runner.exec("gh", ["pr", "merge", prNumber, "--squash"]);
     const merged = merge.ok || confirmMerged(runner, prNum);
     if (!merged) {
