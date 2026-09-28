@@ -2103,6 +2103,49 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5754",
   },
   {
+    // #8906 (28/09/2026, decisões do editor registradas no corpo da issue) —
+    // SUBSTITUI `Diaria-Hub-Pages-Build` acima como o caminho que de fato
+    // chega até produção. Resolve os 2 bloqueadores que deixaram aquela
+    // task `enabled: false` desde #6267:
+    //   (a) `UPDATED_DATE` deixa de ser hand-written no caminho semanal —
+    //       `scripts/hubs-weekly-regen.ts` bumpa automaticamente pra
+    //       "dados atualizados em" (nunca "prosa revisada em"), e rastreia
+    //       separadamente quando um hub acumulou edições novas o
+    //       suficiente pra merecer revisão de prosa manual (issue própria
+    //       por hub, `scripts/lib/hubs-weekly-regen.ts`);
+    //   (b) o script chega até `master` sozinho (worktree próprio, PR,
+    //       `gh pr merge --squash --auto` com testes verdes) — o deploy do
+    //       Worker `arquivo` em si já é automático desde #4105
+    //       (`.github/workflows/deploy-arquivo.yml`), então esta task não
+    //       chama `wrangler deploy`.
+    // `--check-facts` nunca entra no caminho semanal (decisão c) — sempre
+    // `--skip-fact-check`, porque o job nunca toca prosa.
+    name: "Diaria-Hub-Weekly-Regen",
+    description: "regen semanal automático dos hubs (só dados) + PR + auto-merge; deploy do Worker arquivo é automático no push a master",
+    steps: [{ key: "regen", script: "scripts/hubs-weekly-regen.ts" }],
+    logPath: "hubs/.weekly-regen.log",
+    // Sexta 02:30 BRT — termina bem antes do DoD da issue (04:00 BRT),
+    // sobrando folga pro build+testes+merge+deploy (CI do
+    // `deploy-arquivo.yml` costuma terminar em minutos, não horas). Slot
+    // livre: nenhuma outra `kind: "weekly"` deste arquivo cai numa
+    // sexta-feira (ver grep de `dayOfWeek: "Friday"` — todas as outras são
+    // domingo).
+    schedule: { kind: "weekly", dayOfWeek: "Friday", hour: 2, minute: 30 },
+    // `enabled: false` DE PROPÓSITO (review da PR #8922 achou a omissão: sem
+    // isso, `setup-systemd-timers.ts` trata `undefined` como elegível pra
+    // arme, e `Diaria-Remediate-Never-Armed-Tasks` (#8153) auto-arma
+    // qualquer task `neverArmed` — contradiria o "DECLARADA, NÃO ARMADA"
+    // abaixo e o pedido explícito do editor na #8906, "religar exige
+    // confirmação"). Trocar pra `true` só depois de armar de propósito.
+    enabled: false,
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, sem `data/`
+    // real nem `gh` autenticado contra o repo aqui) — arme real via
+    // `scripts/setup-systemd-timers.ts` na checkout do `300`, com
+    // confirmação por `systemctl --user list-timers`, é ação POSTERIOR do
+    // editor (pedido explícito da issue: "religar exige confirmação").
+    issue: "#8906",
+  },
+  {
     name: "Diaria-Ads-Test-Watch",
     description:
       "cobra os marcos do ciclo de vida do teste de 3 canais pagos (D0, reconciliacao diaria, condicoes de " +
