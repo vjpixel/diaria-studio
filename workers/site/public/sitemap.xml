@@ -1125,37 +1125,25 @@
   <url>
     <loc>https://diar.ia.br/p/claude-opus-5-5-chega-dias-apos-alerta-de-amodei</loc>
     <lastmod>2026-09-23</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-09-23T00:00:00.000Z</news:publication_date>
-      <news:title>Claude Opus 5.5 chega dias após alerta de Amodei</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/claude-descobre-novo-sistema-enzimatico</loc>
     <lastmod>2026-09-24</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-09-24T00:00:00.000Z</news:publication_date>
-      <news:title>Claude descobre novo sistema enzimático</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/agente-rebelde-invade-sistema-de-governo</loc>
     <lastmod>2026-09-25</lastmod>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/google-vai-colocar-data-centers-no-espaco</loc>
+    <lastmod>2026-09-28</lastmod>
     <news:news>
       <news:publication>
         <news:name>diar.ia.br</news:name>
         <news:language>pt</news:language>
       </news:publication>
-      <news:publication_date>2026-09-25T00:00:00.000Z</news:publication_date>
-      <news:title>Agente rebelde invade sistema de governo</news:title>
+      <news:publication_date>2026-09-28T00:00:00.000Z</news:publication_date>
+      <news:title>Google vai colocar data centers no espaço?</news:title>
     </news:news>
   </url>
 </urlset>
