@@ -48,10 +48,35 @@ describe("master-commit-guard (#8878) — lógica pura", () => {
 });
 
 describe("getCurrentBranch (#8878)", () => {
-  it("lê a branch HEAD de um repo git real", () => {
-    const branch = getCurrentBranch(REPO_ROOT);
-    assert.equal(typeof branch, "string");
-    assert.ok(branch && branch.length > 0);
+  it("lê a branch HEAD de um repo git com branch real (via symbolic-ref)", () => {
+    // Não usa REPO_ROOT aqui: CI (actions/checkout) costuma deixar o
+    // checkout em HEAD DESANEXADO (checkout por SHA, não por branch) —
+    // `git symbolic-ref --short HEAD` devolve null nesse estado, e isso é
+    // correto (não há branch simbólica pra devolver), não uma falha do
+    // guard. Um repo próprio, com uma branch de verdade, é o cenário que
+    // este teste precisa provar — e é o cenário real de todo `git commit`
+    // que o hook intercepta (sempre numa branch, nunca em HEAD desanexado).
+    const dir = mkdtempSync(join(tmpdir(), "master-commit-guard-branch-"));
+    execFileSync("git", ["init", "-q", "-b", "minha-branch", dir]);
+    execFileSync("git", ["-C", dir, "config", "user.email", "test@example.com"]);
+    execFileSync("git", ["-C", dir, "config", "user.name", "Test"]);
+    writeFileSync(join(dir, "f.txt"), "x");
+    execFileSync("git", ["-C", dir, "add", "f.txt"]);
+    execFileSync("git", ["-C", dir, "commit", "-q", "-m", "init"]);
+    assert.equal(getCurrentBranch(dir), "minha-branch");
+  });
+
+  it("devolve null em HEAD desanexado (mesmo com commits) — sem branch simbólica pra devolver", () => {
+    const dir = mkdtempSync(join(tmpdir(), "master-commit-guard-detached-"));
+    execFileSync("git", ["init", "-q", "-b", "master", dir]);
+    execFileSync("git", ["-C", dir, "config", "user.email", "test@example.com"]);
+    execFileSync("git", ["-C", dir, "config", "user.name", "Test"]);
+    writeFileSync(join(dir, "f.txt"), "x");
+    execFileSync("git", ["-C", dir, "add", "f.txt"]);
+    execFileSync("git", ["-C", dir, "commit", "-q", "-m", "init"]);
+    const sha = execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    execFileSync("git", ["-C", dir, "checkout", "-q", sha]);
+    assert.equal(getCurrentBranch(dir), null);
   });
 
   it("devolve null fora de um repo git", () => {
