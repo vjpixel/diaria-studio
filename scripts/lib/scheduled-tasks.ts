@@ -347,6 +347,30 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5217, #5216, #5215",
   },
   {
+    name: "Diaria-Clarice-Backfill-Campaigns",
+    // #8857: o #8115 entregou o script (`clarice-backfill-campaigns.ts`) e o
+    // consumo no render (`loadMonthlyTotalsArchive`), mas nunca o agendou —
+    // "Totais por mês" ficou preso na janela ao vivo de 100 campanhas
+    // indefinidamente (cursor/índice nunca chegaram a existir no KV até esta
+    // task ser criada). Roda o script repetidas vezes: idempotente e
+    // auto-throttled (`assertCampaignQuotaHeadroom`, reserva 30 — pula sem
+    // gastar nada se a cota horária da conta Clarice estiver baixa) e
+    // auto-encerra sem custo quando `cursor.done` (backfill já alcançou o
+    // início do histórico — ver `runCampaignsBackfillBatch`). Sem isto, um
+    // mês volta a ficar parcial assim que sair da janela de 100 e ninguém
+    // rodar o script manualmente de novo.
+    description: "backfill throttled/retomável do histórico de campanhas Clarice além da janela ao vivo de 100 (dash:campaigns:archive-index)",
+    steps: [{ key: "backfill", script: "scripts/clarice-backfill-campaigns.ts" }],
+    logPath: "clarice-dashboard/.backfill-campaigns.log",
+    // Diária — cadência mais que suficiente: a ~30 campanhas/mês de volume
+    // atual, a janela de 100 leva ~3 meses pra empurrar um mês inteiro pra
+    // fora; 1x/dia mantém o índice sempre a no máximo 1 dia de atraso do
+    // início real do histórico. Slot livre (ver grep de `kind: "daily"`
+    // neste arquivo) — não colide com nenhuma outra.
+    schedule: { kind: "daily", hour: 11, minute: 20 },
+    issue: "#8857, #8115",
+  },
+  {
     name: "Diaria-Clarice-Guardrail-Alarm",
     description: "alarme de guardrail furado do ramp Clarice",
     steps: [{ key: "alarm", script: "scripts/clarice-guardrail-alarm.ts" }],

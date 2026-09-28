@@ -932,6 +932,35 @@ describe("#5217 — Diaria-Clarice-Dashboard-Precompute registrada, horária, sy
   });
 });
 
+describe("#8857 — Diaria-Clarice-Backfill-Campaigns registrada, diária, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária 11:20", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Backfill-Campaigns");
+    assert.ok(t, "Diaria-Clarice-Backfill-Campaigns ausente de SCHEDULED_TASKS — #8115 entregou o script sem nenhuma task rodá-lo, deixando 'Totais por mês' preso na janela ao vivo (#8857)");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/clarice-backfill-campaigns.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 11, minute: 20 });
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Backfill-Campaigns")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+
+  it("11:20 diária não colide com nenhuma outra task diária do registro", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Backfill-Campaigns")!;
+    const dailies = SCHEDULED_TASKS.filter(
+      (o): o is typeof o & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        o.name !== t.name && o.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter((o) => o.schedule.hour === 11 && o.schedule.minute === 20);
+    assert.deepEqual(collisions, []);
+  });
+});
+
 describe("#5249 — Diaria-Acquisition-Health-Alarm registrada, semanal, systemd-only", () => {
   it("está presente no registro, com o step apontando pro script correto, domingo 03:30", () => {
     const t = getScheduledTaskByName("Diaria-Acquisition-Health-Alarm");
