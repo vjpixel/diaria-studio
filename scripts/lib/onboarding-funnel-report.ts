@@ -61,7 +61,7 @@
  */
 
 import type { OnboardingEntry } from "./onboarding-store.ts";
-import type { OnboardingKitLot, OnboardingKitLotKind, OnboardingKitLotStatus } from "./onboarding-kit-transport.ts";
+import { findKitLotForEntry, type OnboardingKitLot, type OnboardingKitLotKind, type OnboardingKitLotStatus } from "./onboarding-kit-transport.ts";
 import { reguaAnchorSec, dueForEmail2 } from "./onboarding-state.ts";
 import { resolveBrevoCampaignState, type BrevoCampaignLike } from "./publish-state.ts";
 import { linkSubscriberToApoiador, daysBetweenIso, type LinkableApoiador } from "./metrics/apoiador-link.ts";
@@ -180,23 +180,13 @@ function kitLotStatusToEmail3Stage(status: OnboardingKitLotStatus): OnboardingEm
   }
 }
 
-/** Lote Kit mais recente (`created_at` mais alto) que inclui esta
- *  `subscriptionId` pra este `kind` — pode haver mais de 1 histórico após
- *  um `recreate_after_timeout` (#7922); só o mais recente representa o
- *  estado atual, os anteriores ficam como evidência de auditoria no store. */
-export function findKitLotForEntry(
-  lots: readonly OnboardingKitLot[],
-  kind: OnboardingKitLotKind,
-  subscriptionId: string,
-): OnboardingKitLot | null {
-  let latest: OnboardingKitLot | null = null;
-  for (const lot of lots) {
-    if (lot.kind !== kind) continue;
-    if (!lot.recipient_subscription_ids.includes(subscriptionId)) continue;
-    if (latest == null || lot.created_at > latest.created_at) latest = lot;
-  }
-  return latest;
-}
+/** #8979: `findKitLotForEntry` mudou de dono — agora vive em
+ *  `onboarding-kit-transport.ts` (junto do tipo `OnboardingKitLot` que
+ *  define), porque `onboarding-state.ts` passou a precisar dela também
+ *  (§6.3 do corte, mecanizado) e já é importada POR este módulo — um
+ *  import de volta daqui criaria ciclo. Re-exportado para não quebrar
+ *  `studio-onboarding.ts`/testes existentes que importam daqui. */
+export { findKitLotForEntry } from "./onboarding-kit-transport.ts";
 
 export interface Email3ResolutionInput {
   nowSec: number;
