@@ -416,4 +416,53 @@ describe("matchesIntentionalError (#8877) — reply cita só a grafia errada (wr
     };
     assert.equal(matchesIntentionalError("só falo de ChatGTP mesmo", error), false);
   });
+
+  it("token distintivo do wrong_value só como substring de outra palavra não conta (mesmo guard do #8751)", () => {
+    const error = {
+      description: "nome da empresa grafado errado",
+      location: "destaque 1",
+      correct_value: "OpenAI",
+      wrong_value: "OppenAI",
+    };
+    assert.equal(matchesIntentionalError("adorei o oppenaizinho", error), false);
+  });
+
+  it("reply que só ecoa a citação do e-mail original (sem comentário próprio) NÃO ganha crédito — wrong_value aparece verbatim no texto citado, mas isso não é a reply falando do erro", () => {
+    const error = {
+      category: "ortografico",
+      location: "destaque 1, parágrafo 2",
+      description: "nome da empresa grafado errado",
+      correct_value: "OpenAI",
+      wrong_value: "OppenAI",
+    };
+    // Cliente de e-mail que inclui a mensagem original citada — a citação
+    // contém "OppenAI" verbatim (é o texto que a edição de fato publicou),
+    // mas o reply em si não tem nenhum comentário sobre o erro.
+    const body = [
+      "Bom dia!",
+      "",
+      "Em qui., 25 de set. de 2026 às 12:00, diar.ia.br escreveu:",
+      "> DESTAQUE 1",
+      "> Segundo parágrafo com OppenAI mencionado aqui.",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, error), false);
+  });
+
+  it("reply com comentário próprio ANTES de uma citação que também contém wrong_value ainda acerta (o comentário, não a citação, é o sinal)", () => {
+    const error = {
+      category: "ortografico",
+      location: "destaque 1, parágrafo 2",
+      description: "nome da empresa grafado errado",
+      correct_value: "OpenAI",
+      wrong_value: "OppenAI",
+    };
+    const body = [
+      "Vi que vocês escreveram OppenAI no D1, é isso mesmo?",
+      "",
+      "Em qui., 25 de set. de 2026 às 12:00, diar.ia.br escreveu:",
+      "> DESTAQUE 1",
+      "> Segundo parágrafo com OppenAI mencionado aqui.",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, error), true);
+  });
 });

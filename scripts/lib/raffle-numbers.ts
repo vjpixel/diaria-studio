@@ -25,6 +25,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { stripQuotedAndSignature } from "../filter-subscriber-replies.ts";
 
 export interface RaffleEntry {
   /** Ciclo do sorteio — "AAMM", derivado dos 4 primeiros dígitos da edição. */
@@ -241,7 +242,17 @@ export function matchesIntentionalError(
   // então o check acima não dispara. Se wrong_value tem um token distintivo e
   // ele aparece como palavra inteira na reply, é acerto — a reply está citando
   // exatamente o texto errado que o editor plantou.
-  if (hasDistinctiveCorrectMatch(error.wrong_value, bodyNorm)) return true;
+  //
+  // Diferença importante do check de correct_value acima: wrong_value É o
+  // texto que a edição publicou, então qualquer citação/quote do e-mail
+  // original (comum em clientes que incluem a mensagem citada na resposta)
+  // contém wrong_value verbatim — diferente de correct_value, que a edição
+  // nunca publicou, então nunca aparece numa citação por acidente. Sem isolar
+  // o texto citado, um reply que só ecoa a citação (sem comentário próprio)
+  // ganharia crédito indevido. `stripQuotedAndSignature` (mesma heurística de
+  // `filter-subscriber-replies.ts`) corta a citação/assinatura antes do check.
+  const bodyNormNoQuote = normalizeText(stripQuotedAndSignature(replyBody));
+  if (hasDistinctiveCorrectMatch(error.wrong_value, bodyNormNoQuote)) return true;
 
   // Exige sinal real de cada conjunto que existir — quando um conjunto está
   // vazio (ex: sem correct_value), o flag correspondente já é `true` por
