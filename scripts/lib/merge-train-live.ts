@@ -362,7 +362,7 @@ export interface MergeTrainBatchResult {
  * ou falha reportada — se o estado real diz `MERGED`, o merge aconteceu,
  * ponto final, independente do que o exit code do comando alegou.
  */
-function confirmMerged(runner: TrainRunner, prNumber: number): boolean {
+export function confirmMerged(runner: TrainRunner, prNumber: number): boolean {
   const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "state,mergedAt"]);
   if (!res.ok) return false; // não deu pra confirmar — trata como não-mergeado, nunca assume sucesso sem prova
   try {

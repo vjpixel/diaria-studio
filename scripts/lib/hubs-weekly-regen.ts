@@ -47,7 +47,23 @@
  * fact-check — o orquestrador sempre roda `build-hub-page.ts` com
  * `--skip-fact-check` no caminho semanal (o gate `--check-facts` continua
  * existindo e valendo pra qualquer edição de prosa MANUAL).
+ *
+ * (d) **Merge SÍNCRONO, nunca `--auto` (#8923, fix 28/09/2026).** Achado do
+ * review da PR #8922: o orquestrador adquiria o merge-lock, rodava `gh pr
+ * merge --squash --auto` (que só ARMA o auto-merge e retorna na hora — o
+ * squash de verdade acontece depois, quando o CI terminar) e soltava o
+ * lock no `finally` imediatamente em seguida — o lock não cobria o merge
+ * real, só o comando que o agendou. `mergeHubsRegenPr` abaixo é a
+ * correção: espera o CI de verdade via polling (`pollTrainCi`, mesma lib
+ * do trem de merge vivo — `scripts/lib/merge-train-live.ts`), só faz `gh
+ * pr merge --squash` SÍNCRONO (sem `--auto`) depois de um veredito `pass`
+ * confirmado, confirma o merge via estado real (`confirmMerged`, #573 —
+ * nunca só o exit code do comando) e só libera o lock depois disso, no
+ * `finally`. CI `fail`/`timeout` nunca mergeia — devolve `ok:false` sem
+ * tocar `gh pr merge`, deixando o PR aberto pro orquestrador alarmar.
  */
+
+import { pollTrainCi, confirmMerged, type TrainRunner } from "./merge-train-live.ts";
 
 export interface HubSourcesDiff {
   readonly added: readonly string[];
@@ -157,4 +173,96 @@ export function ensureProseReviewBaseline(
 ): ProseReviewState {
   if (state[slug]) return state;
   return { ...state, [slug]: { proseReviewedDate: fallbackBaselineDate } };
+}
+
+// ─── Merge síncrono do PR de regen (#8923) ──────────────────────────────────
+
+export interface HubsRegenMergeOptions {
+  readonly sessionId: string;
+  /** Default 30min — mesma convenção de timeout de CI já usada nas skills
+   * (`context/overnight-dispatch-rules.md`). */
+  readonly ciTimeoutMs?: number;
+  /** Default 30s. */
+  readonly ciPollIntervalMs?: number;
+}
+
+export interface HubsRegenMergeResult {
+  readonly ok: boolean;
+  readonly merged: boolean;
+  readonly ciVerdict?: "pass" | "fail" | "timeout";
+  readonly error?: string;
+}
+
+const DEFAULT_HUBS_MERGE_CI_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_HUBS_MERGE_CI_POLL_INTERVAL_MS = 30_000;
+
+/**
+ * Sequência SÍNCRONA de merge pro PR de regen semanal de hubs (#8923):
+ * acquire merge-lock (`--pr`, mesma convenção já usada por este
+ * orquestrador desde #8906) -> espera o CI de verdade via `pollTrainCi`
+ * (polling, timeout embutido) -> só com veredito `"pass"` roda `gh pr
+ * merge --squash` SÍNCRONO (nunca `--auto`) -> confirma via estado real
+ * (`confirmMerged`, #573 — nunca só o exit code de `gh pr merge`) ->
+ * libera o lock SEMPRE no `finally` (sucesso, CI vermelho/timeout, ou
+ * erro em qualquer passo). `runner` é injetável — mesmo `TrainRunner` de
+ * `scripts/lib/merge-train-live.ts` — pra permitir teste sem rede/gh real.
+ *
+ * CI `"fail"`/`"timeout"`: NUNCA chama `gh pr merge` — devolve `ok:false`
+ * com o PR intacto e aberto, pro chamador (`scripts/hubs-weekly-regen.ts`)
+ * decidir o alarme via `alarmFailure`.
+ */
+export async function mergeHubsRegenPr(
+  runner: TrainRunner,
+  prNumber: string,
+  opts: HubsRegenMergeOptions,
+): Promise<HubsRegenMergeResult> {
+  const prNum = Number(prNumber);
+  const acquire = runner.exec("npx", [
+    "tsx",
+    "scripts/lib/session-registry.ts",
+    "merge-lock-acquire",
+    "--pr",
+    prNumber,
+    "--session-id",
+    opts.sessionId,
+  ]);
+  if (!acquire.ok) {
+    return { ok: false, merged: false, error: `merge-lock-acquire falhou: ${acquire.stderr || acquire.stdout}` };
+  }
+  try {
+    const ciVerdict = await pollTrainCi(runner, prNum, {
+      timeoutMs: opts.ciTimeoutMs ?? DEFAULT_HUBS_MERGE_CI_TIMEOUT_MS,
+      intervalMs: opts.ciPollIntervalMs ?? DEFAULT_HUBS_MERGE_CI_POLL_INTERVAL_MS,
+    });
+    if (ciVerdict !== "pass") {
+      return {
+        ok: false,
+        merged: false,
+        ciVerdict,
+        error: `CI não passou (veredito: ${ciVerdict}) — PR #${prNumber} deixado aberto, sem merge.`,
+      };
+    }
+
+    const merge = runner.exec("gh", ["pr", "merge", prNumber, "--squash"]);
+    const merged = merge.ok || confirmMerged(runner, prNum);
+    if (!merged) {
+      return {
+        ok: false,
+        merged: false,
+        ciVerdict,
+        error: `gh pr merge --squash falhou (confirmado via gh pr view --json state,mergedAt): ${merge.stderr}`,
+      };
+    }
+    return { ok: true, merged: true, ciVerdict };
+  } finally {
+    runner.exec("npx", [
+      "tsx",
+      "scripts/lib/session-registry.ts",
+      "merge-lock-release",
+      "--pr",
+      prNumber,
+      "--session-id",
+      opts.sessionId,
+    ]);
+  }
 }
