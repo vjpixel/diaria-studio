@@ -265,10 +265,22 @@ function removeWorktree(workRoot: string): void {
   }
 }
 
+/**
+ * Parseia os args de CLI deste script (#8932). Isolado do `main()` pra dar
+ * cobertura de teste sem depender de `data/` (o script inteiro sai cedo se
+ * o junction `data/` estiver ausente, então testar via processo real não
+ * exercita este parsing em CI/worktree — ver `test/hubs-weekly-regen.test.ts`).
+ */
+export function parseHubsWeeklyRegenArgs(argv: string[]): { dryRun: boolean; sessionId: string | undefined } {
+  return {
+    dryRun: hasFlag(argv, "dry-run"),
+    sessionId: getArg(argv, "session-id") || undefined,
+  };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const dryRun = hasFlag(argv, "--dry-run");
-  const sessionId = getArg(argv, "--session-id") || undefined;
+  const { dryRun, sessionId } = parseHubsWeeklyRegenArgs(argv);
 
   const cachePath = resolve(ROOT, "data", "beehiiv-cache", "posts");
   if (!existsSync(cachePath)) {

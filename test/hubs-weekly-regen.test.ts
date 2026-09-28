@@ -26,6 +26,7 @@ import {
   type HubSourcesDiff,
 } from "../scripts/lib/hubs-weekly-regen.ts";
 import type { TrainRunner, ExecResult } from "../scripts/lib/merge-train-live.ts";
+import { parseHubsWeeklyRegenArgs } from "../scripts/hubs-weekly-regen.ts";
 
 const EMPTY_DIFF: HubSourcesDiff = { added: [], removed: [], changed: [], unchanged: 3 };
 
@@ -321,5 +322,19 @@ describe("mergeHubsRegenPr (#8923 — merge síncrono, nunca --auto; #8926 — p
 
     assert.equal(result.ok, true);
     assert.equal(result.merged, true);
+  });
+});
+
+describe("parseHubsWeeklyRegenArgs (#8932)", () => {
+  it("reconhece --dry-run e --session-id (regressão: cli-args.ts guarda chave SEM --)", () => {
+    const parsed = parseHubsWeeklyRegenArgs(["--dry-run", "--session-id", "abc123"]);
+    assert.equal(parsed.dryRun, true, "--dry-run deve ser detectado como flag presente");
+    assert.equal(parsed.sessionId, "abc123");
+  });
+
+  it("sem flags: dryRun false, sessionId undefined", () => {
+    const parsed = parseHubsWeeklyRegenArgs([]);
+    assert.equal(parsed.dryRun, false);
+    assert.equal(parsed.sessionId, undefined);
   });
 });
