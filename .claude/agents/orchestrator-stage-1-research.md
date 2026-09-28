@@ -662,9 +662,18 @@ Loga tamanhos dos arquivos de saída (`01-categorized.md`, `_internal/01-categor
 ### 1w-quint-b. Repeat-de-tema (fail-soft)
 
 ```bash
-npx tsx scripts/check-repeat-theme.ts --categorized {EDITION_DIR}/_internal/tmp-categorized.json --past-editions data/past-editions.md --window 3
+npx tsx scripts/check-highlight-themes.ts --categorized {EDITION_DIR}/_internal/01-categorized.json --past-editions data/past-editions.md --window 12 --editions-dir data/editions --secondary-window 10 --full-body-window 10 --current-edition {AAMMDD} --out-json {EDITION_DIR}/_internal/01-highlight-theme-check.json
 ```
-Stdout: `{ flagged, theme }` — temas que apareceram nas últimas 3 edições. Logar info se `flagged`. Fail-soft — nunca bloqueia.
+Este é o comando REAL que `stage-1-run.ts` roda no runner determinístico (#8951 —
+antes esta seção citava `check-repeat-theme.ts`, um script que nunca foi
+chamado pelo runner de produção; a lógica calibrada dele contra o caso real
+#8896 — D1 Wired 260928 × D1 Guardian 260925, mesmo evento, Jaccard ~0.22,
+zero entidade compartilhada — foi incorporada aqui como o 4º gatilho de
+`checkHighlightThemes`, `findCrossSourceMatch`, restrito às últimas 3
+edições e ao threshold baixo do #8896). Stdout/`--out-json`: warnings de
+repeat-de-tema (destaques contra destaques reais recentes + headline de
+`past-editions.md`, secundários contra secundários, corpo inteiro contra
+corpo inteiro). Logar info se houver warnings. Fail-soft — nunca bloqueia.
 
 ---
 

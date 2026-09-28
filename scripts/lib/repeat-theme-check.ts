@@ -1,12 +1,15 @@
 /**
- * lib/repeat-theme-check.ts (#8896)
+ * lib/repeat-theme-check.ts (#8896; consumido por check-highlight-themes.ts desde #8951)
  *
- * Miolo puro de `scripts/check-repeat-theme.ts` — o passo §1w-quint-b
+ * Miolo puro do sinal "cross-source, threshold baixo" do passo §1w-quint-b
  * ("Repeat-de-tema (fail-soft)") já documentado no playbook do Stage 1
- * (`.claude/agents/orchestrator-stage-1-research.md`, linha 665, campo
- * `repeatTheme` já listado no gate humano §1x) mas cujo script nunca existiu
- * no repo — achado ao vivo investigando a #8896: `repeatTheme` sempre
- * chegava vazio ao gate porque `check-repeat-theme.ts` nunca foi commitado.
+ * (`.claude/agents/orchestrator-stage-1-research.md`). Nasceu num script CLI
+ * próprio (`scripts/check-repeat-theme.ts`) que o #8896 criou mas o runner
+ * real do Stage 1 (`stage-1-run.ts`) nunca chamava — só rodava
+ * `check-highlight-themes.ts` no mesmo passo. O #8951 removeu o script órfão
+ * e ligou esta lógica (`detectEventOverlap`) DIRETO dentro de
+ * `check-highlight-themes.ts` como o 4º gatilho (`findCrossSourceMatch`),
+ * contra os destaques REAIS (`extractPastDestaqueTitles`).
  *
  * Caso real que expôs o gap: D1 da edição 260928 (Wired — "agente da OpenAI
  * invadiu o sistema de saúde australiano") era o MESMO evento do D1 da
