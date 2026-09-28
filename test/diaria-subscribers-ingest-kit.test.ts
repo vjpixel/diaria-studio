@@ -768,6 +768,61 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
     process.exitCode = originalExit;
   });
 
+  it("#7478-7481: falha em listAllRosterSubscribers ainda grava 1 linha de FALHA (exit:1) em captura-log.jsonl antes de propagar o erro", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-fail-list-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    const capturaLogPath = resolve(tmp, "data/metrics/captura-log.jsonl");
+
+    await assert.rejects(
+      main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--write"], {
+        listAllBroadcasts: async () => [],
+        fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+        getBroadcastStats: async () => makeStats(0),
+        sleep: async () => {},
+        listAllRosterSubscribers: async () => {
+          throw new Error("Kit API: 500 Internal Server Error");
+        },
+      }),
+      /Kit API: 500/,
+    );
+
+    const lines = readFileSync(capturaLogPath, "utf8").trim().split("\n");
+    assert.equal(lines.length, 1, "a execução RODOU e falhou — precisa de 1 linha provando isso (docstring de captura-log.ts)");
+    const entry = JSON.parse(lines[0]);
+    assert.equal(entry.exit, 1);
+    assert.equal(entry.total_retornado_api, 0);
+    assert.equal(entry.novos_gravados, 0);
+  });
+
+  it("#7478-7481: falha em ingestKitRoster (depois de já ter o roster) também grava 1 linha de FALHA (exit:1) antes de propagar o erro", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-fail-ingest-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    const capturaLogPath = resolve(tmp, "data/metrics/captura-log.jsonl");
+
+    await assert.rejects(
+      main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--write"], {
+        listAllBroadcasts: async () => [],
+        fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+        getBroadcastStats: async () => makeStats(0),
+        sleep: async () => {},
+        // subscriber malformado (sem email_address) faz `ingestKitRoster`
+        // lançar DEPOIS que o roster já foi listado com sucesso — 2º ponto
+        // de falha coberto pelo catch interno do bloco `shouldWriteRoster`.
+        listAllRosterSubscribers: async () => [makeKitSub({ email_address: undefined as unknown as string })],
+      }),
+    );
+
+    const lines = readFileSync(capturaLogPath, "utf8").trim().split("\n");
+    assert.equal(lines.length, 1, "a execução RODOU (listou o roster) e falhou na ingestão — precisa de 1 linha provando isso");
+    const entry = JSON.parse(lines[0]);
+    assert.equal(entry.exit, 1);
+    assert.equal(entry.total_retornado_api, 1, "o roster JÁ tinha sido listado quando a ingestão falhou");
+  });
+
   it("--skip-roster pula o Passo 1 inteiro — nem lista o roster (útil pra testar só o Passo 2 sem pagar a chamada de rede)", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-skip-"));
     mkdirSync(resolve(tmp, "data"), { recursive: true });
