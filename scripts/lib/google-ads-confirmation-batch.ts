@@ -116,6 +116,13 @@ import type { SubscriberStateRecord } from "./subscriber-state-snapshot.ts";
 export const GOOGLE_ADS_CLICK_CONVERSION_WINDOW_DAYS = 90;
 /** Custom field do Kit que carrega `gclid:XXXX` (#8003, `KIT_ORIGEM_CLICKID_FIELD`). */
 export const KIT_CLICK_ID_FIELD_NAME = "origem_click_id";
+/** #8978: custom field do Kit que carrega o `external_id` first-party
+ * (`_dia_vid`, `KIT_ORIGEM_EXTERNALID_FIELD`) — gravado no cadastro (ver
+ * `workers/poll|cursos/src/subscribe.ts`), reusado aqui pro lote da Meta
+ * (`meta-capi-confirmation-batch.ts`) enriquecer `SubscriptionConfirmed`
+ * sem precisar de request/cookie próprio (o clique de confirmação DOI não
+ * tem um). Google não consome este campo. */
+export const KIT_EXTERNAL_ID_FIELD_NAME = "origem_external_id";
 export const DEFAULT_LOOKBACK_DAYS = 7;
 export const CONFIRMATION_ORDER_ID_PREFIX = "diaria-confirmacao-kit-";
 export const MAX_FAILED_ATTEMPTS = 3;
@@ -144,6 +151,10 @@ export interface ConfirmationCandidate {
   /** #8543: valor CRU de `origem_click_id` (`gclid:`/`fbclid:`/`msclkid:` + id),
    * pra o lote da Meta reusar esta mesma detecção sem duplicá-la. */
   clickId?: string;
+  /** #8978: `external_id` first-party gravado no cadastro
+   * (`KIT_EXTERNAL_ID_FIELD_NAME`), reusado pelo lote da Meta pra enriquecer
+   * `SubscriptionConfirmed`. Google não consome este campo. */
+  externalId?: string;
   /** `true` = sem estado anterior na base (cadastrou depois dela). */
   ambiguous: boolean;
 }
@@ -255,6 +266,7 @@ export function selectConfirmationCandidates(
       path: viaBotao ? "brevo-botao" : "kit-email",
       gclid: extractGclid(s.fields),
       clickId: (s.fields?.[KIT_CLICK_ID_FIELD_NAME] ?? "").trim() || undefined,
+      externalId: (s.fields?.[KIT_EXTERNAL_ID_FIELD_NAME] ?? "").trim() || undefined,
       ambiguous: !base,
     });
   }

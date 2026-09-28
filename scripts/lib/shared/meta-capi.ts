@@ -62,6 +62,13 @@
  * real.
  */
 
+// #8978: `external_id` first-party (`_dia_vid`) — módulo dedicado porque o
+// valor também é consumido no BROWSER (dataLayer/fbq advanced matching, ver
+// `visitor-id.ts`), não só aqui. Import direto (mesmo padrão de
+// `kit-signup-origin.ts`/`client-utm-allowlist.ts` — zero `node:*` nos dois
+// lados, seguro pro bundle do Worker).
+import { resolveVisitorId } from "./visitor-id.ts";
+
 /** Dataset (pixel) ID confirmado ao vivo na issue #5504 — não é secret (é
  * público em qualquer página que carregue o pixel via `fbq('init', ...)`),
  * por isso vive como constante, não como env var. `META_CAPI_DATASET_ID`
@@ -298,22 +305,41 @@ export interface MetaCapiClientSignals {
   clientUserAgent?: string;
   /** Cookie first-party `_fbp` do pixel em `diar.ia.br`. */
   fbp?: string;
-  /** Cookie `_fbc`, ou derivado do `fbclid` capturado no cadastro (#8003,
-   * `click_id` prefixado) — ver `buildFbcFromClickId`. */
+  /** Cookie `_fbc` (gravado em `.diar.ia.br` por `metaFbcBootstrapJs`, ou
+   * pelo pixel da Meta), derivado do `fbclid` capturado no cadastro (#8003,
+   * `click_id` prefixado — `buildFbcFromClickId`), ou derivado do `fbclid`
+   * no header `Referer` do request (#8978, `buildFbcFromReferer`) — nessa
+   * ordem de precedência. */
   fbc?: string;
+  /** #8978: ID first-party anônimo e estável (`_dia_vid`, ver
+   * `visitor-id.ts`) — mandado em CLARO (raw, sem hash; ver rationale no
+   * módulo). Único dos 5 sinais que também é mandado pelo PIXEL (advanced
+   * matching / dataLayer), pra Meta deduplicar/casar os dois lados pela
+   * MESMA pessoa mesmo sem e-mail em comum ainda confirmado. Sempre chega
+   * aqui JÁ VALIDADO — só `resolveVisitorId`/`parseVisitorId` (branded
+   * `VisitorId`, #8978 fleet review item 5) produzem o valor; o tipo do
+   * campo em si segue `string` pra não propagar o brand por todo caller
+   * que hoje monta `clientSignals` a partir de uma string já confiável
+   * (ex.: `runMetaConfirmationBatch`, que relê do custom field do Kit). */
+  externalId?: string;
 }
 
 /** Forma canônica dos cookies `_fbp`/`_fbc` da Meta:
  * `fb.{subdomainIndex}.{creationTimeMs}.{payload}`. Valor que não casa é
  * DESCARTADO em vez de repassado — são cookies lidos do request do cliente
  * (controláveis por quem manda o request), e mandar lixo pra Meta degrada o
- * match em vez de melhorar. */
-const FB_COOKIE_RE = /^fb\.\d+\.\d+\..+$/;
+ * match em vez de melhorar. #8978 (fleet review item 5): o payload usava
+ * `.+` (aceita QUALQUER char, inclusive os que `FBCLID_RE` abaixo rejeita
+ * pro campo cru) — tighten pro MESMO charset de `FBCLID_RE`, já que o
+ * payload de um `_fbc` real É sempre um `fbclid`. */
+export const FB_COOKIE_RE = /^fb\.\d+\.\d+\.[A-Za-z0-9_.-]+$/;
 
 /** Caracteres aceitos num `fbclid` — mesma defesa em profundidade que o
  * `SUBSCRIBE_CLIENT_ORIGIN_MAX` dos workers aplica ao mesmo campo: o valor
- * vem do cliente. */
-const FBCLID_RE = /^[A-Za-z0-9_.-]+$/;
+ * vem do cliente. Exportada (#8978) pra `meta-fbc-bootstrap.ts` validar o
+ * MESMO charset do lado do browser antes de gravar `_fbc` — sem import
+ * circular (este módulo não importa `meta-fbc-bootstrap.ts`). */
+export const FBCLID_RE = /^[A-Za-z0-9_.-]+$/;
 
 /** Prefixo que o #8003 usa pro click id da Meta em `click_id`
  * (`gclid:`/`fbclid:`/`msclkid:` — ver `scripts/lib/site-assinar-page.ts`). */
@@ -359,6 +385,43 @@ export function buildFbcFromClickId(
   return `fb.1.${Math.floor(creationTimeMs)}.${fbclid}`;
 }
 
+/**
+ * #8978: fallback de fbc a partir de um `fbclid` presente na QUERYSTRING do
+ * header `Referer` do request.
+ *
+ * **Correção (fleet review pós-merge, #8983): NÃO cobre o caso cross-origin
+ * que motivou a função.** O cadastro em `livros`/`arquivo`/`hub`/`diar.ia.br`
+ * POSTa pra `eia.diar.ia.br` (outro host) — nesse POST cross-origin o
+ * browser aplica `Referrer-Policy: strict-origin-when-cross-origin` por
+ * padrão, que CORTA path e querystring do `Referer` enviado (o header chega
+ * só com a origem, `https://diar.ia.br/`, nunca `?fbclid=...`). Esta função
+ * portanto NUNCA encontra um `fbclid` nesse caminho — ela só ajuda em POST
+ * SAME-origin (raro neste projeto) ou quando algo no meio (proxy, versão
+ * antiga de browser) preserva o Referer completo. A cobertura real do caso
+ * cross-origin é o `fbcBody` de `ExtractMetaCapiClientSignalsOptions`: o
+ * cliente lê `_fbc` do PRÓPRIO `document.cookie` (a página que roda o form
+ * está em `.diar.ia.br`, onde `metaFbcBootstrapJs` grava o cookie) e manda
+ * no CORPO do POST — inofensivo manter esta função como fallback adicional
+ * (nunca atrapalha, é só mais uma tentativa antes de desistir), mas ela não
+ * é mais a peça que fecha o gap cross-origin.
+ *
+ * `Referer` malformado ou sem `fbclid` → `undefined`, nunca lança. @pure
+ */
+export function buildFbcFromReferer(
+  referer: string | null | undefined,
+  creationTimeMs: number,
+): string | undefined {
+  if (!referer) return undefined;
+  let fbclid: string | null;
+  try {
+    fbclid = new URL(referer).searchParams.get("fbclid");
+  } catch {
+    return undefined;
+  }
+  if (!fbclid || !FBCLID_RE.test(fbclid)) return undefined;
+  return `fb.1.${Math.floor(creationTimeMs)}.${fbclid}`;
+}
+
 /** Subconjunto de `Headers` que `extractMetaCapiClientSignals` consome —
  * evita exigir um `Request` inteiro em teste. */
 export interface MetaCapiHeaderSource {
@@ -366,15 +429,34 @@ export interface MetaCapiHeaderSource {
 }
 
 export interface ExtractMetaCapiClientSignalsOptions {
-  /** `click_id` do cadastro (#8003) — só usado quando não há cookie `_fbc`. */
+  /** `click_id` do cadastro (#8003) — só usado quando não há cookie `_fbc`
+   * nem `fbcBody`. */
   clickId?: string;
   /** Epoch em MILISSEGUNDOS pro `fbc` derivado. Default: agora. */
   fbcCreationTimeMs?: number;
+  /** #8978 (fleet review pós-merge, #8983): `_fbc` lido pelo CLIENTE do
+   * próprio `document.cookie` e mandado no corpo do POST de cadastro — a
+   * cobertura real do caso cross-origin (`buildFbcFromReferer` não serve
+   * pra isso, ver docstring dela: `Referrer-Policy` corta a querystring do
+   * `Referer` em POST cross-origin). Validado contra `FB_COOKIE_RE` igual
+   * ao cookie — nunca repassado cru. Precedência: cookie `_fbc` do request
+   * (quando existir) > este campo > `click_id` > `Referer`. */
+  fbcBody?: string;
+  /** #8978: mesmo caso do `fbcBody` acima, pro `_fbp` — o cookie do pixel é
+   * lido pelo cliente e mandado no corpo, mesma razão (POST cross-origin
+   * nunca carrega o header `Cookie` do host de destino). Validado contra
+   * `FB_COOKIE_RE`. Precedência: cookie `_fbp` do request > este campo. */
+  fbpBody?: string;
+  /** #8978: `_dia_vid` lido pelo cliente (`window.__DIA_VID__`) e mandado no
+   * corpo — mesmo motivo dos 2 acima. Validado por `resolveVisitorId`
+   * (nunca repassado cru). Precedência: cookie `_dia_vid` do request > este
+   * campo. */
+  externalIdBody?: string;
 }
 
 /**
- * Extrai os 4 sinais de match quality dos headers do request de cadastro.
- * Pure exceto pelo `Date.now()` de fallback (injetável via
+ * Extrai os 5 sinais de match quality dos headers/corpo do request de
+ * cadastro. Pure exceto pelo `Date.now()` de fallback (injetável via
  * `fbcCreationTimeMs`). Campo ausente/vazio é OMITIDO da saída — nunca vira
  * string vazia, que a Meta contaria como parâmetro presente e de match ruim.
  */
@@ -395,17 +477,42 @@ export function extractMetaCapiClientSignals(
   if (ua) signals.clientUserAgent = ua;
 
   const cookieHeader = headers.get("Cookie");
-  const fbp = readCookieValue(cookieHeader, "_fbp");
-  if (fbp && FB_COOKIE_RE.test(fbp)) signals.fbp = fbp;
+  const fbpCookie = readCookieValue(cookieHeader, "_fbp");
+  // #8978 (fleet review): POST cross-origin (o caso real de produção — ver
+  // docstring de `fbpBody`) nunca carrega o header `Cookie` do host de
+  // destino, então o cookie acima é `undefined` nesse caminho; `fbpBody` é
+  // quem cobre.
+  const fbp =
+    fbpCookie && FB_COOKIE_RE.test(fbpCookie)
+      ? fbpCookie
+      : options.fbpBody && FB_COOKIE_RE.test(options.fbpBody)
+        ? options.fbpBody
+        : undefined;
+  if (fbp) signals.fbp = fbp;
 
-  // Cookie real do pixel tem precedência sobre o derivado: ele carrega o
-  // timestamp do CLIQUE, o derivado carrega o do cadastro.
+  // #8978 (fleet review pós-merge, #8983): ordem de precedência —
+  // (1) cookie `_fbc` do PRÓPRIO request (só existe em POST same-origin);
+  // (2) `fbcBody` — o cliente leu `_fbc` do seu `document.cookie` e mandou
+  //     no corpo; é quem cobre o POST cross-origin de produção;
+  // (3) derivado do `click_id` do form (#8003);
+  // (4) derivado do `fbclid` cru no header `Referer` — na prática só ajuda
+  //     em same-origin, ver docstring de `buildFbcFromReferer`.
   const fbcCookie = readCookieValue(cookieHeader, "_fbc");
+  const fbcCreationTimeMs = options.fbcCreationTimeMs ?? Date.now();
+  const fbcFromBody = options.fbcBody && FB_COOKIE_RE.test(options.fbcBody) ? options.fbcBody : undefined;
   const fbc =
-    fbcCookie && FB_COOKIE_RE.test(fbcCookie)
-      ? fbcCookie
-      : buildFbcFromClickId(options.clickId, options.fbcCreationTimeMs ?? Date.now());
+    (fbcCookie && FB_COOKIE_RE.test(fbcCookie) ? fbcCookie : undefined) ??
+    fbcFromBody ??
+    buildFbcFromClickId(options.clickId, fbcCreationTimeMs) ??
+    buildFbcFromReferer(headers.get("Referer") ?? headers.get("referer"), fbcCreationTimeMs);
   if (fbc) signals.fbc = fbc;
+
+  // #8978: `_dia_vid` — ver docstring de `MetaCapiClientSignals.externalId`.
+  // #8978 (fleet review): mesma precedência cookie > corpo dos 2 sinais
+  // acima — `resolveVisitorId` já valida os dois caminhos, nunca repassa
+  // valor cru (ver docstring em visitor-id.ts).
+  const externalId = resolveVisitorId(cookieHeader, options.externalIdBody);
+  if (externalId) signals.externalId = externalId;
 
   return signals;
 }
@@ -420,6 +527,10 @@ export interface MetaCapiUserData {
   client_user_agent?: string;
   fbp?: string;
   fbc?: string;
+  /** #8978: RAW (sem hash) — ver rationale em `visitor-id.ts`. Array de 1
+   * elemento pela mesma convenção de `em` (a Meta aceita `external_id` como
+   * string OU lista; usamos lista por simetria/auditabilidade com `em`). */
+  external_id?: [string];
 }
 
 /**
@@ -513,6 +624,7 @@ export async function buildCompleteRegistrationEvent(
   if (signals?.clientUserAgent) userData.client_user_agent = signals.clientUserAgent;
   if (signals?.fbp) userData.fbp = signals.fbp;
   if (signals?.fbc) userData.fbc = signals.fbc;
+  if (signals?.externalId) userData.external_id = [signals.externalId];
   return {
     event_name: input.eventName ?? "CompleteRegistration",
     event_time: eventTime,
@@ -531,6 +643,24 @@ export async function buildCompleteRegistrationEvent(
 export type MetaCapiSendResult =
   | { ok: true; status: number }
   | { ok: false; status: number; reason: "not_configured" | "meta_error" | "network_error" };
+
+/**
+ * #8982: forma MÍNIMA de um evento CAPI — `MetaCapiCompleteRegistrationEvent`
+ * é estruturalmente compatível (todo campo dela satisfaz este shape), então
+ * `sendMetaCapiEvent` aceita os dois sem overload. Existe pra eventos que
+ * NÃO têm e-mail (ex.: `CliqueIngresso_{A|B}` do beacon de
+ * `evento/agente-ia`, ver `buildMetaCapiCustomEvent`) — `em` deixa de ser
+ * obrigatório porque não há cadastro nenhum associado ao clique.
+ */
+export interface MetaCapiGenericEvent {
+  event_name: string;
+  event_time: number;
+  event_source_url: string;
+  action_source: MetaCapiActionSource;
+  event_id: string;
+  user_data: Partial<MetaCapiUserData>;
+  custom_data?: Record<string, unknown>;
+}
 
 export interface SendMetaCapiEventOptions {
   /** `META_CAPI_ACCESS_TOKEN` — `undefined`/`""` é tratado como "não
@@ -552,7 +682,7 @@ export interface SendMetaCapiEventOptions {
  * qualquer falha de rede/parse volta como `MetaCapiSendResult` com
  * `ok: false`, mesmo padrão de `subscribeToBeehiiv`/`activateSubscription`. */
 export async function sendMetaCapiEvent(
-  event: MetaCapiCompleteRegistrationEvent,
+  event: MetaCapiGenericEvent,
   options: SendMetaCapiEventOptions,
 ): Promise<MetaCapiSendResult> {
   const accessToken = options.accessToken;
@@ -608,6 +738,64 @@ export async function sendCompleteRegistrationEvent(
     // Qualquer exceção inesperada (ex: Web Crypto indisponível num runtime
     // atípico) também vira no-op fail-soft — telemetria de anúncio nunca
     // pode propagar uma exceção pro caller do cadastro.
+    return { ok: false, status: 502, reason: "network_error" };
+  }
+}
+
+/**
+ * #8982: input de um evento CUSTOM genérico — sem e-mail, sem
+ * `custom_data.value/currency` fixo (ao contrário de `CompleteRegistration`).
+ * Nasceu do beacon de `CliqueIngresso_{A|B}` (`evento/agente-ia`), mas
+ * qualquer evento custom futuro sem cadastro associado pode reusar.
+ */
+export interface BuildMetaCapiCustomEventInput {
+  /** Precisa casar BYTE A BYTE com o `event_name` que o pixel client-side já
+   * mandou (`fbq('trackCustom', eventName, ...)`) — é essa igualdade que
+   * habilita a dedup por (`event_name`, `event_id`). */
+  eventName: string;
+  /** Mesmo `eventID` passado ao `fbq(...)` client-side — ver acima. */
+  eventId: string;
+  eventSourceUrl: string;
+  eventTimeSeconds?: number;
+  actionSource?: MetaCapiActionSource;
+  clientSignals?: MetaCapiClientSignals;
+  customData?: Record<string, unknown>;
+}
+
+/** Pure — monta o evento genérico, nunca lança. */
+export function buildMetaCapiCustomEvent(input: BuildMetaCapiCustomEventInput): MetaCapiGenericEvent {
+  const userData: Partial<MetaCapiUserData> = {};
+  const signals = input.clientSignals;
+  if (signals?.clientIpAddress) userData.client_ip_address = signals.clientIpAddress;
+  if (signals?.clientUserAgent) userData.client_user_agent = signals.clientUserAgent;
+  if (signals?.fbp) userData.fbp = signals.fbp;
+  if (signals?.fbc) userData.fbc = signals.fbc;
+  if (signals?.externalId) userData.external_id = [signals.externalId];
+  const event: MetaCapiGenericEvent = {
+    event_name: input.eventName,
+    event_time: input.eventTimeSeconds ?? Math.floor(Date.now() / 1000),
+    event_source_url: input.eventSourceUrl,
+    action_source: input.actionSource ?? "website",
+    event_id: input.eventId,
+    user_data: userData,
+  };
+  if (input.customData) event.custom_data = input.customData;
+  return event;
+}
+
+/** Wrapper de conveniência — mesmo contrato fail-soft de
+ * `sendCompleteRegistrationEvent`: sem `accessToken`, `not_configured` SEM
+ * montar o evento; qualquer exceção inesperada vira `network_error`, nunca
+ * propaga pro caller (o beacon nunca pode falhar visivelmente). */
+export async function sendMetaCapiCustomEvent(
+  input: BuildMetaCapiCustomEventInput,
+  options: SendMetaCapiEventOptions,
+): Promise<MetaCapiSendResult> {
+  if (!options.accessToken) return { ok: false, status: 503, reason: "not_configured" };
+  try {
+    const event = buildMetaCapiCustomEvent(input);
+    return await sendMetaCapiEvent(event, options);
+  } catch {
     return { ok: false, status: 502, reason: "network_error" };
   }
 }

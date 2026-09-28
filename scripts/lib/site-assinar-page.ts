@@ -33,6 +33,7 @@ import { escHtml } from "./html-escape.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "./site-home-page.ts"; // #6981: reusa o mesmo timeout do form da home (#6979) — dois números diferentes sem motivo seria dívida
 import { renderAnalyticsHead, pushSignupConversionEventJs } from "./shared/seo-meta.ts"; // #7358: /assinar não tinha GTM nenhum — cadastro feito aqui nunca disparava qualquer conversão
+import { fbCookieValueFromDocumentCookieJs } from "./shared/meta-fbc-bootstrap.ts"; // #8978: fbc/fbp no corpo do POST cross-origin (achado 1 do fleet review, #8983)
 import { renderSiteNav } from "./shared/site-nav.ts"; // #8497: menu global — /assinar é o destino do CTA "Assinar", então o CTA não se auto-linka aqui (ver renderSiteNav({active:"assinar"}))
 
 /**
@@ -232,7 +233,13 @@ ${renderAnalyticsHead()}
           if (p.get("fbclid")) return "fbclid:" + p.get("fbclid");
           if (p.get("msclkid")) return "msclkid:" + p.get("msclkid");
           return "";
-        })()
+        })(),
+        // #8978 (fleet review, achado 1 do #8983): este form também POSTa
+        // CROSS-ORIGIN pra eia.diar.ia.br — mesmo gap do form da home,
+        // mesma correção (ver comentário equivalente em site-home-page.ts).
+        external_id: window.__DIA_VID__ || "",
+        fbc: ${fbCookieValueFromDocumentCookieJs("_fbc")},
+        fbp: ${fbCookieValueFromDocumentCookieJs("_fbp")}
       };
       if (typeof window.fetch !== "function") {
         // Sem fetch: deixa o form nativo submeter normalmente (progressive

@@ -134,6 +134,17 @@ KIT_ORIGEM_PAGA_FIELD = "origem_paga"
 KIT_ORIGEM_REFERRER_FIELD = "origem_referrer"
 KIT_ORIGEM_CLICKID_FIELD = "origem_click_id"
 
+# #8978 — custom field Kit pro external_id first-party (`_dia_vid`), pra
+# eventos SÓ-SERVIDOR (SubscriptionConfirmed/Reactivation) reusarem depois.
+# PENDENTE: o coordenador precisa criar este campo na conta Kit de produção
+# (mesma chave `origem_external_id` usada no código, `subscribe.ts`) ANTES
+# do deploy — sem o campo criado no painel, gravar nele ainda funciona (Kit
+# aceita `fields` com chave nova), mas fica órfão de UI até ser adicionado
+# manualmente. BEEHIIV_ORIGEM_EXTERNALID_FIELD segue SEM var pelo mesmo
+# motivo de BEEHIIV_ORIGEM_REFERRER_FIELD/CLICKID_FIELD acima — backend
+# ativo é Kit.
+KIT_ORIGEM_EXTERNALID_FIELD = "origem_external_id"
+
 # #6340/#7723 — designer form "Cadastro DOI (confirmacao)", criado no painel
 # do Kit em 09/09/2026 e verificado ao vivo: `resolveKitCreateState` cria
 # `state: "inactive"` pro worker `poll` (já em

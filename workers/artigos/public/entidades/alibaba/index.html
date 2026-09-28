@@ -16,7 +16,7 @@
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="Alibaba — tudo que a diar.ia.br já cobriu">
 <meta name="twitter:description" content="Linha do tempo da Alibaba na cobertura da diar.ia.br: do chip próprio de IA e da liderança em open source à acusação de 25 mil contas falsas contra o Claude.">
-<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-TC8C65ZN');</script>
+<script>try {var COOKIE="_dia_vid";var DOMAIN=".diar.ia.br";var MAXAGE=63072000;var VIDRE = new RegExp("^[0-9a-fA-F-]{16,64}$");var m = document.cookie.match(new RegExp('(?:^|; )' + COOKIE + '=([^;]+)'));var vid = m && VIDRE.test(m[1]) ? m[1] : null;if (!vid) {vid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'.replace(/x/g, function () { return (Math.random() * 16 | 0).toString(16); });if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {document.cookie = COOKIE + '=' + vid + '; Max-Age=' + MAXAGE + '; Domain=' + DOMAIN + '; Path=/; SameSite=Lax';}}window.__DIA_VID__ = vid;window.dataLayer = window.dataLayer || [];window.dataLayer.push({ external_id: vid });} catch (e) {}</script><script>try {if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {var fbclid = new URLSearchParams(window.location.search).get('fbclid');var FBCLIDRE = new RegExp("^[A-Za-z0-9_.-]+$");if (fbclid && FBCLIDRE.test(fbclid) && !/(?:^|; )_fbc=/.test(document.cookie)) {var fbc = 'fb.1.' + Date.now() + '.' + fbclid;document.cookie = '_fbc=' + fbc + '; Max-Age=7776000; Domain=.diar.ia.br; Path=/; SameSite=Lax';}}} catch (e) {}</script><script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-TC8C65ZN');</script>
 <meta name="robots" content="index, follow">
 <style>
   :root { --teal: #00A0A0; --ink: #171411; --paper: #FBFAF6; --card: #FBFAF6; --rule: #EBE5D0; }
@@ -259,6 +259,9 @@
           utm_campaign: new URLSearchParams(window.location.search).get("utm_campaign") || "",
           referrer: (document.referrer || "").slice(0, 300),
           click_id: (function () { var p = new URLSearchParams(window.location.search); if (p.get("gclid")) return "gclid:" + p.get("gclid"); if (p.get("fbclid")) return "fbclid:" + p.get("fbclid"); if (p.get("msclkid")) return "msclkid:" + p.get("msclkid"); return ""; })(),
+          external_id: (window.__DIA_VID__ || ""),
+          fbc: (function () { try { var m = String(document.cookie || "").match(/(?:^|; )_fbc=([^;]+)/); return m ? m[1] : ""; } catch (e) { return ""; } })(),
+          fbp: (function () { try { var m = String(document.cookie || "").match(/(?:^|; )_fbp=([^;]+)/); return m ? m[1] : ""; } catch (e) { return ""; } })(),
         };
         if (typeof window.fetch !== "function") {
           setStatus("Seu navegador não suporta o cadastro direto — visite diar.ia.br pra assinar.", false);

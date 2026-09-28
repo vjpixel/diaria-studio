@@ -110,7 +110,23 @@ describe("parseSubscribeBody (#3580)", () => {
       JSON.stringify({ name: "Ana", email: "ana@example.com", optin: true, website: "" }),
       "application/json",
     );
-    assert.deepEqual(p, { name: "Ana", email: "ana@example.com", optin: true, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "", referrer: "", clickId: "" });
+    assert.deepEqual(p, {
+      name: "Ana",
+      email: "ana@example.com",
+      optin: true,
+      honeypot: "",
+      source: "",
+      utmSource: "",
+      utmMedium: "",
+      utmCampaign: "",
+      referrer: "",
+      clickId: "",
+      // #8978 (fleet review, achado 1 do #8983): campos novos, sempre
+      // presentes (mesmo vazios) na saída de parseSubscribeBody.
+      externalId: "",
+      fbc: "",
+      fbp: "",
+    });
   });
 
   it("aceita optin como string 'on' (form nativo)", () => {
@@ -127,7 +143,21 @@ describe("parseSubscribeBody (#3580)", () => {
 
   it("JSON malformado → input vazio (nunca lança)", () => {
     const p = parseSubscribeBody("{ not json", "application/json");
-    assert.deepEqual(p, { name: "", email: "", optin: false, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "", referrer: "", clickId: "" });
+    assert.deepEqual(p, {
+      name: "",
+      email: "",
+      optin: false,
+      honeypot: "",
+      source: "",
+      utmSource: "",
+      utmMedium: "",
+      utmCampaign: "",
+      referrer: "",
+      clickId: "",
+      externalId: "",
+      fbc: "",
+      fbp: "",
+    });
   });
 });
 

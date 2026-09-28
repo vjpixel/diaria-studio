@@ -33,6 +33,7 @@ import { COLORS } from "./shared/design-tokens.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 import { renderAnalyticsHead, pushSignupConversionEventJs } from "./shared/seo-meta.ts"; // #6977: container GTM/GA4 — apex era o único host servido por Worker nosso sem instrumentação; #7358: evento de conversão no sucesso do cadastro
+import { fbCookieValueFromDocumentCookieJs } from "./shared/meta-fbc-bootstrap.ts"; // #8978: fbc/fbp no corpo do POST cross-origin (achado 1 do fleet review, #8983)
 import { renderSiteNav, renderSiteFooterLinks } from "./shared/site-nav.ts"; // #8497: menu global + rodapé alinhado — a home consome os MESMOS helpers que as demais páginas, em vez do markup próprio que só ela tinha
 
 /**
@@ -939,6 +940,15 @@ export function signupFormScript(): string {
             if (p.get("msclkid")) return "msclkid:" + p.get("msclkid");
             return "";
           })(),
+          // #8978 (fleet review, achado 1 do #8983): este form POSTa
+          // CROSS-ORIGIN pra eia.diar.ia.br — sem credentials:"include"
+          // (decisão de escopo), o servidor NUNCA recebe o cookie
+          // _dia_vid/_fbc/_fbp via header. window.__DIA_VID__ já foi
+          // exposto por renderAnalyticsHead() no <head> (visitorIdBootstrapJs);
+          // _fbc/_fbp são lidos direto do document.cookie desta página.
+          external_id: window.__DIA_VID__ || "",
+          fbc: ${fbCookieValueFromDocumentCookieJs("_fbc")},
+          fbp: ${fbCookieValueFromDocumentCookieJs("_fbp")},
         };
         if (typeof window.fetch !== "function") {
           // Sem fetch: deixa o form nativo submeter normalmente

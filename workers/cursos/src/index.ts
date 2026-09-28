@@ -134,6 +134,10 @@ export interface Env {
    * (`gclid:...`/`fbclid:...`/`msclkid:...`) — mesmo racional/degrade
    * gracioso de `BEEHIIV_ORIGEM_REFERRER_FIELD` acima. */
   BEEHIIV_ORIGEM_CLICKID_FIELD?: string;
+  /** #8978: nome do custom field Beehiiv onde gravar o `external_id`
+   * first-party (`_dia_vid`) — mesmo racional/degrade gracioso de
+   * `BEEHIIV_ORIGEM_REFERRER_FIELD` acima. Ainda não criado em produção. */
+  BEEHIIV_ORIGEM_EXTERNALID_FIELD?: string;
   /** #8003: nome do custom field Kit onde gravar `document.referrer` cru do
    * cliente — sinal SEPARADO do triplo UTM/`origem_paga` acima. NENHUM
    * criado ainda em produção. Mesmo degrade gracioso ausente dos demais
@@ -143,6 +147,11 @@ export interface Env {
    * (`gclid:...`/`fbclid:...`/`msclkid:...`) — mesmo racional/degrade
    * gracioso de `KIT_ORIGEM_REFERRER_FIELD` acima. */
   KIT_ORIGEM_CLICKID_FIELD?: string;
+  /** #8978: nome do custom field Kit onde gravar o `external_id` first-party
+   * (`_dia_vid`) — mesmo racional/degrade gracioso de `KIT_ORIGEM_REFERRER_FIELD`
+   * acima. Reusado depois por `SubscriptionConfirmed`/`Reactivation` a partir
+   * do snapshot Kit. Ainda não criado em produção. */
+  KIT_ORIGEM_EXTERNALID_FIELD?: string;
   ALLOWED_ORIGINS?: string;
   _requestOrigin?: string | null;
   /** #5504: Meta Conversions API — mesmo secret/mecanismo de
