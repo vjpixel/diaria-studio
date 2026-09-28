@@ -882,7 +882,12 @@ function googleExtractUsage(json: unknown): GeoProviderUsage | undefined {
 // (Agent API) — não existe mais um nome de modelo "sonar" a passar direto.
 // ---------------------------------------------------------------------------
 
-function perplexityRequest(question: string, apiKey: string, model: string) {
+/** O 3º parâmetro da assinatura comum `GeoProviderDef.buildRequest` chama-se
+ * `model` na interface (todo outro provider passa um nome de modelo de
+ * verdade) — aqui renomeado localmente pra `preset` porque a Agent API não
+ * usa mais nome de modelo Sonar cru: `defaultModel`/`{PROVIDER}_MODEL` em
+ * `GEO_PROVIDERS` carrega o PRESET (default "fast", ver docstring ali). */
+function perplexityRequest(question: string, apiKey: string, preset: string) {
   return {
     url: "https://api.perplexity.ai/v1/agent",
     init: {
@@ -891,12 +896,7 @@ function perplexityRequest(question: string, apiKey: string, model: string) {
         Authorization: `Bearer ${apiKey}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        // `model` aqui carrega o PRESET (default "fast", ver defaultModel em
-        // GEO_PROVIDERS) — a Agent API não usa mais nome de modelo Sonar cru.
-        preset: model,
-        input: question,
-      }),
+      body: JSON.stringify({ preset, input: question }),
     } satisfies RequestInit,
   };
 }
