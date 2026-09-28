@@ -283,6 +283,17 @@ describe("evaluateFrescorFromCapturaLog — buraco em captura-log.jsonl (F2)", (
     const capturaLog = dias.map((d) => ({ ...capturaEntry(d), novos_gravados: 0 }));
     assert.equal(evaluateFrescorFromCapturaLog("cadastros-dia", dias, capturaLog), null);
   });
+
+  it("#8945: dia só com linha exit:1 alarma frescor (nunca silenciado por 'a linha existe')", () => {
+    const dias = dias14("2026-09-01");
+    const diaFalho = dias[dias.length - 1];
+    const capturaLog = dias.map((d) => (d === diaFalho ? { ...capturaEntry(d), exit: 1 } : capturaEntry(d)));
+    const finding = evaluateFrescorFromCapturaLog("cadastros-dia", dias, capturaLog);
+    assert.ok(finding);
+    assert.equal(finding!.sinal, "frescor");
+    assert.match(finding!.motivo, new RegExp(diaFalho));
+    assert.match(finding!.motivo, /captura falhou/);
+  });
 });
 
 describe("evaluateMetaSinal", () => {
