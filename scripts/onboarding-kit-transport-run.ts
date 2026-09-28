@@ -63,7 +63,13 @@ import {
 import { resolveNewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 import { unixSecondsToBrtDate } from "./lib/beehiiv-publish-date.ts";
 import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from "./lib/onboarding-store.ts";
-import { parseOnboardingSnippet, buildRunPlan, selectCandidatesNeedingRefresh, type RunAction } from "./lib/onboarding-state.ts";
+import {
+  parseOnboardingSnippet,
+  buildRunPlan,
+  selectCandidatesNeedingRefresh,
+  filterKitPlanForBrevoInFlight,
+  type RunAction,
+} from "./lib/onboarding-state.ts";
 import {
   planLot,
   selectEligibleKitRecipients,
@@ -487,19 +493,26 @@ async function main(): Promise<void> {
   }
 
   const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? onboardingCfg.snippets_dir ?? "data/snippets");
-  const plan = buildRunPlan({
-    entries: Object.values(store.entries),
-    statsById,
-    nowSec,
-    email2Days,
-    email3Days,
-    email3GraceDays: graceDays,
-    snippets: {
-      1: loadSnippet(snippetsDirAbs, 1),
-      2: loadSnippet(snippetsDirAbs, 2),
-      3: loadSnippet(snippetsDirAbs, 3),
-    },
-  });
+  // #8966: espelho do guard aplicado do lado Brevo (`onboarding-welcome-run.ts`)
+  // — sem isto, uma entrada cujo e-mail 1 já saiu pela Brevo seria planejada
+  // pelos DOIS executores no mesmo e-mail 2. Ver docstring de
+  // `filterKitPlanForBrevoInFlight` (onboarding-state.ts).
+  const plan = filterKitPlanForBrevoInFlight(
+    buildRunPlan({
+      entries: Object.values(store.entries),
+      statsById,
+      nowSec,
+      email2Days,
+      email3Days,
+      email3GraceDays: graceDays,
+      snippets: {
+        1: loadSnippet(snippetsDirAbs, 1),
+        2: loadSnippet(snippetsDirAbs, 2),
+        3: loadSnippet(snippetsDirAbs, 3),
+      },
+    }),
+    kitTransportCfg.enabled === true,
+  );
 
   const dateIso = unixSecondsToBrtDate(nowSec);
   const summary: Record<string, unknown> = { mode: args.send ? "SEND" : "dry-run", now: new Date(nowSec * 1000).toISOString(), lots: [] as unknown[] };

@@ -73,20 +73,33 @@ Mecanicamente, isto significa:
    `onboarding.kit_transport.enabled=true` E, no mesmo commit/mudança de
    config, impedir `onboarding-welcome-run.ts` de processar candidatos a
    e-mail 1 para os quais o Kit já criou um lote** (ver item 4).
-4. **Risco residual identificado, não fechado nesta fatia:** hoje os dois
-   executores rodam sobre o MESMO `selectCandidatesNeedingRefresh`/
-   `buildRunPlan` e, se ambos tiverem seus respectivos "envio" habilitado ao
-   mesmo tempo, um candidato de e-mail 1 due poderia, em teoria, ser
+4. **Risco identificado e MITIGADO nos DOIS lados (#8966, guard implementado).**
+   Os dois executores rodam sobre o MESMO `selectCandidatesNeedingRefresh`/
+   `buildRunPlan`, e se ambos tiverem seus respectivos "envio" habilitado ao
+   mesmo tempo, um candidato de e-mail 1/2 due poderia, em teoria, ser
    processado por AMBOS na mesma rodada (Brevo envia via
-   `POST /smtp/email`, Kit cria um broadcast) — duplicando o e-mail 1 para
-   quem confirma exatamente na janela de transição. **Mitigação para o
-   corte real:** ligar o kill switch Kit e, na MESMA mudança, adicionar um
-   guard em `onboarding-welcome-run.ts` que recusa enviar e-mail 1/2 quando
-   `onboarding.kit_transport.enabled === true` (o Brevo passa a servir
-   SÓ quem já tem `email{1,2}_brevo_id` de uma etapa anterior, nunca gente
-   nova) — este guard **não existe ainda** e precisa ser implementado e
-   revisado ANTES do cutover real, não durante — rastreado em **#8966**.
-   Não assumir que os dois kill switches sendo independentes já basta.
+   `POST /smtp/email`, Kit cria um broadcast) — duplicando o e-mail para
+   quem confirma exatamente na janela de transição. **Decisão única:**
+   `ownerTransportFor(entry, kind, kitTransportEnabled)`
+   (`scripts/lib/onboarding-state.ts`) — kill switch desligado devolve
+   sempre `"brevo"` (estado atual em produção); ligado, `email1` é sempre
+   `"kit"` (por definição, todo candidato de e-mail 1 é uma entrada nova,
+   sem histórico em nenhum transporte) e `email2` segue a proveniência do
+   e-mail 1 da MESMA entrada — `email1_brevo_id` preenchido → `"brevo"`
+   (escada começou lá), ausente → `"kit"`. **Os dois executores consultam a
+   MESMA função, cada um filtrando o próprio plano contra ela** (não duas
+   implementações que precisam concordar por acaso):
+     - `filterBrevoPlanForKitCutover`, aplicado por `onboarding-welcome-run.ts`
+       — remove do plano Brevo qualquer ação cujo dono não seja `"brevo"`.
+     - `filterKitPlanForBrevoInFlight`, aplicado por
+       `onboarding-kit-transport-run.ts` — remove do plano Kit qualquer ação
+       cujo dono não seja `"kit"` (a metade que faltou na fatia original da
+       PR #8976: sem isto, uma entrada iniciada na Brevo — devida no e-mail
+       2 — continuava sendo planejada pelo executor Kit ao mesmo tempo).
+   `email3_campaign` fica fora do escopo dos dois filtros (o e-mail 3 já é
+   sempre rascunho com aprovação humana explícita em ambos os transportes —
+   risco de duplicação automática não se aplica). Teste de regressão:
+   `test/onboarding-brevo-kit-mutex-8966.test.ts`.
 5. As coortes históricas **#7665/#7675** (recuperações manuais,
    `seeded_by` presente) são **excluídas da seleção automática dos DOIS
    transportes** — já implementado (`selectEligibleKitRecipients` exclui por
@@ -98,9 +111,9 @@ Mecanicamente, isto significa:
 
 Pré-requisitos, todos verificados ANTES de qualquer flip:
 
-- [ ] Guard do item 2.4 acima (mutua-exclusão entre os dois executores
-      para candidatos NOVOS) implementado, revisado e com teste de
-      regressão — **bloqueante, ausente nesta fatia**.
+- [x] Guard do item 2.4 acima (mutua-exclusão entre os dois executores
+      para candidatos NOVOS) implementado, com teste de regressão (#8966)
+      — ainda pendente de REVISÃO humana antes do flip real.
 - [ ] Piloto supervisionado (seção 4) executado e aprovado.
 - [ ] `data/snippets/onboarding-{1,2,3}.md` confirmados corretos para
       renderização no Kit (HTML, personalização, remetente, links de
