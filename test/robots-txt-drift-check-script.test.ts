@@ -62,6 +62,25 @@ describe("checkRobotsTxt (#4910) — fetch mockado, sem rede real", () => {
     assert.match(r.fetchError ?? "", /abort/i);
   });
 
+  it("#8899: 301 de host legado -> httpStatus 301 real (nunca segue o redirect) + finalUrl do header Location", async () => {
+    const mockFetch = (async (_url: string, init?: RequestInit) => {
+      // Reproduz o comportamento real de hosts legados (anual/artigo.diar.ia.br
+      // -> retrospectiva.diar.ia.br): antes do #8899, `checkRobotsTxt` usava
+      // fetch em modo `follow` (default), que seguiria este redirect e
+      // devolveria o status FINAL (400, da raiz do host canônico) em vez do
+      // 301 em si — o tratamento especial de #7793/#7658 nunca disparava.
+      assert.equal((init as { redirect?: string } | undefined)?.redirect, "manual");
+      return new Response(null, {
+        status: 301,
+        headers: { Location: "https://retrospectiva.diar.ia.br/robots.txt" },
+      });
+    }) as unknown as typeof fetch;
+    const r = await checkRobotsTxt("https://anual.diar.ia.br/robots.txt", mockFetch);
+    assert.equal(r.httpStatus, 301);
+    assert.equal(r.robotsTxt, null);
+    assert.equal(r.finalUrl, "https://retrospectiva.diar.ia.br/robots.txt");
+  });
+
   it("envia User-Agent identificável (não curl cru)", async () => {
     let capturedUa: string | null = null;
     const mockFetch = (async (_url: string, init?: RequestInit) => {
