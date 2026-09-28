@@ -138,8 +138,8 @@ function buildAlarmEmail(result: KvImageSmokeResult): { subject: string; body: s
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const dryRun = hasFlag(argv, "--dry-run");
-  const toOverride = getArg(argv, "--to");
+  const dryRun = hasFlag(argv, "dry-run");
+  const toOverride = getArg(argv, "to");
 
   loadProjectEnv();
 

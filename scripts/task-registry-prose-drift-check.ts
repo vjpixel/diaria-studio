@@ -85,7 +85,7 @@ const realByTask = new Map<string, RealArmedState>(
 
 const evaluation = evaluateProseDrift(prose, taskNames, realByTask);
 
-if (hasFlag(process.argv, "--json")) {
+if (hasFlag(process.argv, "json")) {
   console.log(JSON.stringify(evaluation, null, 2));
 } else {
   console.log(
