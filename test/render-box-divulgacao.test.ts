@@ -426,6 +426,32 @@ Vale a leitura completa.`;
     const html = renderBoxDivulgacao(boxSemCtaOnly, "https://cdn.example.com/header.jpg", true, true, false, null, false);
     assert.doesNotMatch(html, /font-size:26px/, "imagem horizontal forçada já suprimia título independente de plainFirstParagraph — regressão de comportamento histórico");
   });
+
+  // `titulo: true` no snippet (forceTitle): a arte horizontal tem chamada
+  // própria, não o título do box — caso real edição 260928, caixa da imersão
+  // com a arte da Clarice News ("Seu agente de IA trabalha enquanto você almoça").
+  const boxImersao = `Crie seu agente de IA sem programar
+
+Sábado, 10/10, das 14h às 18h, ao vivo e online.
+
+Quem apoia tem de 10% a 60% de desconto.
+
+[Quero criar meu agente!](https://diar.ia.br/evento/agente-ia)`;
+
+  it("ramo forceImage horizontal + forceTitle: 1º parágrafo vira título serif", () => {
+    const html = renderBoxDivulgacao(boxImersao, "https://cdn.example.com/arte.jpg", true, true, false, null, false, true);
+    assert.match(html, /font-size:26px[^>]*>Crie seu agente de IA sem programar</, "titulo: true deve manter o título mesmo com imagem horizontal");
+  });
+
+  it("ramo forceImage horizontal SEM forceTitle: título continua suprimido (default inalterado)", () => {
+    const html = renderBoxDivulgacao(boxImersao, "https://cdn.example.com/arte.jpg", true, true, false, null, false, false);
+    assert.doesNotMatch(html, /font-size:26px/);
+  });
+
+  it("plainFirstParagraph (titulo: false) vence forceTitle", () => {
+    const html = renderBoxDivulgacao(boxImersao, "https://cdn.example.com/arte.jpg", true, true, false, null, true, true);
+    assert.doesNotMatch(html, /font-size:26px/);
+  });
 });
 
 /**

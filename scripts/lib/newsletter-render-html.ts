@@ -1266,6 +1266,7 @@ export function renderBoxDivulgacao(
   portrait = false,
   altOverride: string | null = null,
   plainFirstParagraph = false,
+  forceTitle = false,
 ): string {
   // `forceImage`: imagem ATRIBUÍDA explicitamente ao slot pelo editor
   // (`box_slot{N}_image`) vence o caminho pill-only, que ignora `imageUrl`.
@@ -1280,7 +1281,10 @@ export function renderBoxDivulgacao(
     // forçada (`portrait=true`, que por si só não suprimiria o título) — sem
     // o `||`, um box "sem título" que ganhasse imagem de slot voltava a
     // mostrar título serif.
-    return renderMidCallout(box, imageUrl, bold, portrait, plainFirstParagraph || !portrait, altOverride);
+    // `forceTitle` (`titulo: true` no snippet): a imagem horizontal NÃO traz o
+    // título do box (ex: arte com chamada própria) — mantém o 1º parágrafo
+    // como título serif. `titulo: false` continua vencendo.
+    return renderMidCallout(box, imageUrl, bold, portrait, plainFirstParagraph || (!portrait && !forceTitle), altOverride);
   }
   if (shouldForceCtaPill(box)) {
     // `plainFirstParagraph`: mesmo tratamento do box de agradecimento a
@@ -2408,6 +2412,8 @@ export interface DivulgacaoBoxDef {
    * slot — repassado como `plainFirstParagraph` pra `renderBoxDivulgacao`.
    * Substitui `isConviteAmigoBox` (regex de copy, aposentada). */
   noTitulo: boolean;
+  /** `titulo: true` explícito no header do snippet — ver `forceTitle` em `renderBoxDivulgacao`. */
+  titulo: boolean;
 }
 
 /**
@@ -2663,6 +2669,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
         content.boxDivulgacaoImageAlt?.[0] ?? null,
         // #5882: titulo:false declarado no header do snippet deste slot.
         dedup0.forcePlain || (content.boxDivulgacaoNoTitulo?.[0] ?? false),
+        content.boxDivulgacaoTitulo?.[0] ?? false,
       ),
     );
   }
@@ -2694,6 +2701,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       imagePortrait: content.boxDivulgacaoImagePortrait?.[1] ?? false,
       imageAlt: content.boxDivulgacaoImageAlt?.[1] ?? null,
       noTitulo: content.boxDivulgacaoNoTitulo?.[1] ?? false, // #5882
+      titulo: content.boxDivulgacaoTitulo?.[1] ?? false,
     });
   }
   if (content.boxDivulgacao2 && selectedDivulgacaoSlots.has(2)) {
@@ -2707,6 +2715,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       imagePortrait: content.boxDivulgacaoImagePortrait?.[2] ?? false,
       imageAlt: content.boxDivulgacaoImageAlt?.[2] ?? null,
       noTitulo: content.boxDivulgacaoNoTitulo?.[2] ?? false, // #5882
+      titulo: content.boxDivulgacaoTitulo?.[2] ?? false,
     });
   }
   if (content.boxDivulgacao3 && selectedDivulgacaoSlots.has(3)) {
@@ -2720,6 +2729,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       imagePortrait: content.boxDivulgacaoImagePortrait?.[3] ?? false,
       imageAlt: content.boxDivulgacaoImageAlt?.[3] ?? null,
       noTitulo: content.boxDivulgacaoNoTitulo?.[3] ?? false, // #5882
+      titulo: content.boxDivulgacaoTitulo?.[3] ?? false,
     });
   }
   const divulgacaoGaps = assignDivulgacaoGaps(content.destaques.length, divulgacaoBoxes); // #5152
@@ -2789,6 +2799,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
           // a detecção por regex de copy (`isConviteAmigoBox`, aposentada):
           // trocar a copy do box não derruba mais a detecção.
           dedup.forcePlain || assignedBox.noTitulo,
+          assignedBox.titulo,
         ),
       );
     }
