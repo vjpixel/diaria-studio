@@ -221,6 +221,41 @@ describe("buildAbReport: piso #8412 e veredito", () => {
     assert.equal(t.verdict, "inconclusivo (piso)");
   });
 
+  it("#8946: mediana empatada mas distribuições divergentes (rank real) — veredito nomeia A, não sempre B", () => {
+    // Exemplo da issue #8946: A = só zeros (10 edições), B = mistura de
+    // 0/1/2 (11 edições) com a MESMA mediana (0) que A. Antes do fix,
+    // `verdict = medianA < medianB ? "A" : "B"` sempre caía em "B" quando as
+    // medianas empatavam (condição falsa não distingue empate de A>B) —
+    // mesmo quando o rank (Mann-Whitney) mostra A com valores tendendo a
+    // menores, ou seja, A é o braço melhor (menor é melhor em toda métrica
+    // deste relatório).
+    const gate4A = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const gate4B = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2];
+    const A = gate4A.map((g, i) => ed(`a${i}`, "A", { gate4: g, tokens: 100 }));
+    const B = gate4B.map((g, i) => ed(`b${i}`, "B", { gate4: g, tokens: 100 }));
+    const r = buildAbReport([...A, ...B]);
+    const t = r.tests.gate4Corrections;
+    assert.equal(t.medianA, 0);
+    assert.equal(t.medianB, 0, "sanity: medianas empatadas — é justamente o caso que expõe o bug");
+    assert.equal(t.pisoAtingido, true);
+    assert.ok(t.pValue !== null && t.pValue < 0.05, `esperava p<0.05 (distribuições divergem apesar da mediana empatada), veio ${t.pValue}`);
+    assert.equal(t.verdict, "A", "A tem valores estocasticamente menores que B — A é o braço melhor, não B por default");
+  });
+
+  it("#8946: mediana empatada E rank também empatado (n1===n2, distribuições espelhadas) — 'sem diferença', nunca A nem B", () => {
+    const A = [1, 2, 3, 4, 5, 6].map((i) => ed(`a${i}`, "A", { gate4: i % 2, tokens: 100 }));
+    const B = [1, 2, 3, 4, 5, 6].map((i) => ed(`b${i}`, "B", { gate4: (i + 1) % 2, tokens: 100 }));
+    const r = buildAbReport([...A, ...B]);
+    const t = r.tests.gate4Corrections;
+    assert.equal(t.medianA, t.medianB);
+    if (t.pisoAtingido && t.pValue !== null && t.pValue < 0.05) {
+      assert.equal(t.verdict, "sem diferença");
+    } else {
+      assert.notEqual(t.verdict, "A");
+      assert.notEqual(t.verdict, "B");
+    }
+  });
+
   it("--json (via renderAbReport/buildAbReport) expõe n, mediana, p-valor, IC95 e veredito por métrica", () => {
     const editions = [
       ...[1, 2, 3, 4, 5, 6].map((i) => ed(`a${i}`, "A", { gate4: 10, tokens: 100 })),
