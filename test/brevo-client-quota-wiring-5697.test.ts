@@ -16,9 +16,12 @@
  * arquivo limpa `data/` no `afterEach` se ele não existia antes do teste
  * (`data/` é gitignored e, neste worktree, não é o junction real do
  * OneDrive — ausente por padrão).
+ *
+ * #8904: outros arquivos de teste tocam o MESMO path real — lock de arquivo
+ * pra serializar contra eles, ver test/_helpers/with-rate-state-lock.ts.
  */
 
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
@@ -28,6 +31,10 @@ import {
   brevoGetList,
 } from "../scripts/lib/brevo-client.ts";
 import { DEFAULT_RATE_STATE_PATH, readCampaignQuotaState } from "../scripts/lib/brevo-rate-state.ts";
+import { acquireRateStateTestLock, releaseRateStateTestLock } from "./_helpers/with-rate-state-lock.ts";
+
+before(acquireRateStateTestLock);
+after(releaseRateStateTestLock);
 
 const stateDir = dirname(DEFAULT_RATE_STATE_PATH);
 let dirPreexisted: boolean;

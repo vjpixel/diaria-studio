@@ -19,7 +19,7 @@
  * e o CSV nunca teria sido criado.
  */
 
-import { test, beforeEach, afterEach } from "node:test";
+import { test, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
@@ -29,6 +29,12 @@ import { main } from "../scripts/clarice-build-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 import { clariceSegmentsDir } from "../scripts/lib/clarice-paths.ts";
 import { DEFAULT_RATE_STATE_PATH, recordCampaignQuotaRemaining } from "../scripts/lib/brevo-rate-state.ts";
+import { acquireRateStateTestLock, releaseRateStateTestLock } from "./_helpers/with-rate-state-lock.ts";
+
+// #8904: outros arquivos de teste tocam o MESMO path real — lock de arquivo
+// pra serializar contra eles, ver test/_helpers/with-rate-state-lock.ts.
+before(acquireRateStateTestLock);
+after(releaseRateStateTestLock);
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });

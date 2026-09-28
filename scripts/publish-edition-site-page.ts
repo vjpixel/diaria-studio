@@ -828,7 +828,7 @@ export function parsePrNumberFromUrl(url: string | undefined): number | undefine
  * caçar a issue, mesmo que o auto-merge abaixo não confirme a tempo e o PR
  * acabe ficando aberto de qualquer forma.
  */
-function buildSitePagePrBody(slug: string): string {
+export function buildSitePagePrBody(slug: string): string {
   return [
     `Publica a página \`/p/${slug}\` no acervo do site (Worker \`diaria-site\`).`,
     "",
@@ -846,6 +846,8 @@ function buildSitePagePrBody(slug: string): string {
       "comportamento único antes do #8158.",
     "",
     "Refs #6202, #6598, #8158",
+    "",
+    "removal-declaration: nada — artefato gerado por template (página da edição + regen de home/archive/sitemap)",
   ].join("\n");
 }
 

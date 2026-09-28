@@ -35,7 +35,7 @@
  *      by test/brevo-dashboard-studio-skip-kv-cache-4186.test.ts for this
  *      exact file (mounting the full pipeline needs real Brevo+SQLite).
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -47,6 +47,17 @@ import {
   injectKvOnlyBanner,
 } from "../scripts/studio-ui/dashboard-clarice.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
+import { acquireRateStateTestLock, releaseRateStateTestLock } from "./_helpers/with-rate-state-lock.ts";
+
+// #8904: `buildClariceDashboardHtml({ fresh: true })` chama, dentro de
+// `renderClariceDashboardLiveUncached` (dashboard-clarice.ts), o guard #6029
+// `assertCampaignQuotaHeadroom()` — que LÊ o arquivo REAL compartilhado
+// `DEFAULT_RATE_STATE_PATH` (data/brevo-rate-state.json). Ver
+// test/_helpers/with-rate-state-lock.ts pro racional completo (achado ao
+// vivo em CI, #8904, PR #8893: 2 falhas intermitentes exatamente aqui,
+// master verde na mesma base, rerun passou sem mudança).
+before(acquireRateStateTestLock);
+after(releaseRateStateTestLock);
 
 // ---------------------------------------------------------------------------
 // (a)+(b) buildClariceDashboardHtml() default — KV-only, zero network calls

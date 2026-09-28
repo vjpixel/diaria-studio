@@ -8,7 +8,7 @@
  * Brevo — `fetch` é sempre mockado.
  */
 
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +17,15 @@ import { main, renderWaveAuditReport } from "../scripts/audit-wave-no-duplicate-
 import { openClariceDb } from "../scripts/lib/clarice-db.ts";
 import { clariceSegmentsDir } from "../scripts/lib/clarice-paths.ts";
 import { DEFAULT_RATE_STATE_PATH, recordCampaignQuotaRemaining } from "../scripts/lib/brevo-rate-state.ts";
+import { acquireRateStateTestLock, releaseRateStateTestLock } from "./_helpers/with-rate-state-lock.ts";
+
+// #8904: este arquivo grava no path REAL compartilhado
+// `DEFAULT_RATE_STATE_PATH` — ver test/_helpers/with-rate-state-lock.ts pro
+// racional completo (achado ao vivo em CI, PR #8893: falha intermitente em
+// test/brevo-dashboard-studio-kv-readonly-4206.test.ts por ler esse mesmo
+// arquivo real durante a janela em que este arquivo o tinha sujo).
+before(acquireRateStateTestLock);
+after(releaseRateStateTestLock);
 
 const stateDir = resolve(DEFAULT_RATE_STATE_PATH, "..");
 let dirPreexisted: boolean;
