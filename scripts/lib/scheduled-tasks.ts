@@ -2545,9 +2545,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // fail-soft POR CANAL (credencial ausente nao aborta o outro canal nem
     // grava um 0 falso; sem NENHUM canal, nada e escrito).
     //
-    // 09:56 BRT -- depois de Diaria-Meta-Ads-Spend-Ingest (09:54), antes de
-    // Diaria-Session-Registry-Gc (09:55 ja ocupado, ver grep de `hour: 9,
-    // minute:` neste arquivo -- 09:56 e o slot livre seguinte) e MUITO antes
+    // 09:56 BRT -- depois de Diaria-Meta-Ads-Spend-Ingest (09:54) e de
+    // Diaria-Session-Registry-Gc (09:55, ja ocupado -- ver grep de `hour: 9,
+    // minute:` neste arquivo -- 09:56 e o slot livre seguinte), e MUITO antes
     // de Diaria-Aquisicao-Reconcile-Daily (10:07), que precisa do arquivo
     // ja gravado quando processar o dia.
     name: "Diaria-Aquisicao-Conversions-Ingest",

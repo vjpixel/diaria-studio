@@ -476,24 +476,41 @@ export interface DailyConversionCount {
   count: number;
 }
 
+export interface ExtractMetaCompleteRegistrationDailyResult {
+  counts: DailyConversionCount[];
+  /** Linhas descartadas por `date_start` irreconhecível — mesma disciplina
+   *  de visibilidade de perda parcial de
+   *  `aggregateGoogleAdsConversionsByDayWithDiscards` (#5598/#8591): nunca
+   *  soma como 0 silencioso, e nunca deixa o CALLER tratar "dia ausente
+   *  por causa de descarte" igual a "dia ausente porque a API não tinha
+   *  nada pra reportar" — essa distinção só é possível expondo a contagem
+   *  aqui. */
+  discardedCount: number;
+}
+
 /**
  * Extrai a contagem diária de `complete_registration` de
  * `MetaAdsInsightsApiRow[]` (bruto, `fields=actions,date_start`) — soma
  * `value` de toda entrada de `actions` cujo `action_type` seja
  * `META_COMPLETE_REGISTRATION_ACTION_TYPE`, por dia. Linha sem
- * `date_start` reconhecível é ignorada (mesma disciplina de
- * `normalizeMetaAdsInsightsRows`); linha com `date_start` válido mas SEM a
- * ação (ou sem `actions` nenhum) conta como 0 legítimo naquele dia — não é
- * descartada, porque a API respondeu com sucesso e "nenhum cadastro no dia"
- * é um resultado real, distinto de "falha ao buscar".
+ * `date_start` reconhecível é descartada (mesma disciplina de
+ * `normalizeMetaAdsInsightsRows`, contada em `discardedCount`); linha com
+ * `date_start` válido mas SEM a ação (ou sem `actions` nenhum) conta como 0
+ * legítimo naquele dia — não é descartada, porque a API respondeu com
+ * sucesso e "nenhum cadastro no dia" é um resultado real, distinto de
+ * "falha ao buscar".
  *
  * @pure
  */
-export function extractMetaCompleteRegistrationDaily(rows: MetaAdsInsightsApiRow[]): DailyConversionCount[] {
+export function extractMetaCompleteRegistrationDaily(rows: MetaAdsInsightsApiRow[]): ExtractMetaCompleteRegistrationDailyResult {
   const byDay = new Map<string, number>();
+  let discardedCount = 0;
   for (const row of rows) {
     const date = row.date_start;
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      discardedCount++;
+      continue;
+    }
     let count = byDay.get(date) ?? 0;
     for (const action of row.actions ?? []) {
       if (action.action_type !== META_COMPLETE_REGISTRATION_ACTION_TYPE) continue;
@@ -503,7 +520,8 @@ export function extractMetaCompleteRegistrationDaily(rows: MetaAdsInsightsApiRow
     }
     byDay.set(date, count);
   }
-  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, count]) => ({ date, count: Math.round(count) }));
+  const counts = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, count]) => ({ date, count: Math.round(count) }));
+  return { counts, discardedCount };
 }
 
 /**
@@ -521,7 +539,7 @@ export async function fetchMetaAdsCompleteRegistrationDaily(
   fetchImpl: MetaFetchLike,
   accessToken: string,
   opts: FetchMetaAdsChannelMetricsOptions = {},
-): Promise<{ counts: DailyConversionCount[]; fetchedAt: string | null; error: string | null }> {
+): Promise<{ counts: DailyConversionCount[]; discardedCount: number; fetchedAt: string | null; error: string | null }> {
   const now = opts.now ?? new Date();
   const lookbackDays = opts.lookbackDays ?? 30;
   const adAccountId = opts.adAccountId ?? META_ADS_AD_ACCOUNT_ID;
@@ -541,6 +559,7 @@ export async function fetchMetaAdsCompleteRegistrationDaily(
     if (pages > maxPages) {
       return {
         counts: [],
+        discardedCount: 0,
         fetchedAt: null,
         error: `fetchMetaAdsCompleteRegistrationDaily: excedeu maxPages=${maxPages} sem chegar ao fim da paginação — abortando em vez de continuar indefinidamente.`,
       };
@@ -549,17 +568,18 @@ export async function fetchMetaAdsCompleteRegistrationDaily(
     try {
       res = await fetchImpl(url, { headers: authHeaders });
     } catch (e) {
-      return { counts: [], fetchedAt: null, error: `falha de rede no Graph API (Meta Ads insights, actions): ${e instanceof Error ? e.message : e}` };
+      return { counts: [], discardedCount: 0, fetchedAt: null, error: `falha de rede no Graph API (Meta Ads insights, actions): ${e instanceof Error ? e.message : e}` };
     }
     let payload: any;
     try {
       payload = await res.json();
     } catch (e) {
-      return { counts: [], fetchedAt: null, error: `Graph API (Meta Ads insights, actions) respondeu corpo não-JSON (HTTP ${res.status}): ${e instanceof Error ? e.message : e}` };
+      return { counts: [], discardedCount: 0, fetchedAt: null, error: `Graph API (Meta Ads insights, actions) respondeu corpo não-JSON (HTTP ${res.status}): ${e instanceof Error ? e.message : e}` };
     }
     if (!res.ok || payload?.error) {
       return {
         counts: [],
+        discardedCount: 0,
         fetchedAt: null,
         error: `Graph API (Meta Ads insights, actions) falhou (HTTP ${res.status}): ${payload?.error?.message ?? JSON.stringify(payload).slice(0, 300)}`,
       };
@@ -571,7 +591,8 @@ export async function fetchMetaAdsCompleteRegistrationDaily(
     url = next;
   }
 
-  return { counts: extractMetaCompleteRegistrationDaily(allRows), fetchedAt: now.toISOString(), error: null };
+  const { counts, discardedCount } = extractMetaCompleteRegistrationDaily(allRows);
+  return { counts, discardedCount, fetchedAt: now.toISOString(), error: null };
 }
 
 // ---------------------------------------------------------------------------

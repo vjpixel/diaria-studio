@@ -39,6 +39,14 @@
  * `aquisicao-reconcile-daily.ts` segue seu caminho normal de "sem painel
  * hoje" (log, sem erro).
  *
+ * Quando ALGUM canal produz dado, o arquivo é MESCLADO com o que já existir
+ * em disco (`mergePanelChannels`), nunca substituído por inteiro — um
+ * `--day` de backfill, ou uma rodada em que só um dos dois canais
+ * respondeu, preserva qualquer canal que esta run não buscou
+ * (`microsoft`/`linkedin`, ainda manuais — ver
+ * `docs/aquisicao-reconcile-panel-template.json` — ou uma correção manual
+ * feita à mão em `google`/`meta`).
+ *
  * `cohort_key` gravado é o `utm_source` real que os anúncios do teste 2608
  * escrevem na URL final (`CHANNEL_KEY_SPECS`, `scripts/lib/shared/channel-key-specs.ts`)
  * — `"google-ads"`/`"meta-ads"`, não `"google"`/`"meta"` (aqueles eram só o
@@ -50,7 +58,7 @@
  *   npx tsx scripts/aquisicao-conversions-ingest.ts --day AAAA-MM-DD  # override/backfill
  */
 import "dotenv/config";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { brtDateOf, shiftDate } from "./lib/ads-rolling-window.ts";
@@ -67,6 +75,7 @@ import {
   GOOGLE_ADS_REGISTRATION_CONVERSION_ACTION_ID,
   type GoogleAdsAuthConfig,
   type GaqlConversionsApiRow,
+  type DailyConversionCount,
 } from "./lib/google-ads-ingest.ts";
 
 /** Dia BRT a processar por default: o dia ANTERIOR ao instante de execução
@@ -74,6 +83,52 @@ import {
  *  o dia que já fechou). @pure em relação a `now`. */
 export function defaultProcessingDay(now: Date): string {
   return shiftDate(brtDateOf(now), -1);
+}
+
+/**
+ * Funde os canais recém-buscados (`fetched`) no painel EXISTENTE do dia
+ * (`existing`, `undefined` quando o arquivo não existe ainda) — nunca
+ * substitui o objeto inteiro. Preserva qualquer canal que este run não
+ * buscou (`microsoft`/`linkedin`, ainda manuais — ver
+ * `docs/aquisicao-reconcile-panel-template.json` — ou uma correção manual
+ * feita à mão em `google`/`meta` num dia em que nenhum dos dois canais
+ * automáticos rodou de novo); `fetched` só sobrescreve a chave que ele de
+ * fato produziu, nunca zera as outras. Achado do review da PR: sem este
+ * merge, um `--day` de backfill sobre um arquivo já enriquecido (manual ou
+ * de uma run anterior com mais canais) apagaria silenciosamente tudo que
+ * não veio desta run — exatamente o padrão que #7401 (CLAUDE.md) proíbe.
+ *
+ * @pure
+ */
+export function mergePanelChannels(
+  existing: PanelInput["channels"] | undefined,
+  fetched: PanelInput["channels"],
+): PanelInput["channels"] {
+  return { ...(existing ?? {}), ...fetched };
+}
+
+/**
+ * Resolve a contagem do `day` a partir de `counts` (saída de
+ * `aggregateGoogleAdsConversionsByDayWithDiscards`/`extractMetaCompleteRegistrationDaily`)
+ * — a peça que faltava no achado do review da PR: um `?? 0` ingênuo aqui
+ * colapsava "API respondeu sem NENHUMA linha malformada pro dia" (0 real) e
+ * "a query trouxe linhas mas todas foram descartadas por malformação/schema
+ * drift" (sem dado confiável) no mesmo `0` escrito no painel — justo a
+ * distinção que os dois aggregators foram desenhados pra preservar.
+ * `discardedCount > 0` cobre o segundo caso: como o lookback desta CLI é
+ * de só 2 dias (ver `fetchGoogleConversionsForDay`/`fetchMetaConversionsForDay`),
+ * qualquer descarte é sinal forte de que o dia pedido pode ter sido uma das
+ * linhas perdidas, não um "zero real" — mais seguro tratar como falha
+ * (`null`, canal omitido) do que arriscar contaminar o fator de
+ * superestimação com um zero fabricado.
+ *
+ * @pure
+ */
+export function resolveDailyCount(counts: DailyConversionCount[], day: string, discardedCount: number): number | null {
+  const found = counts.find((c) => c.date === day);
+  if (found) return found.count;
+  if (discardedCount > 0) return null;
+  return 0;
 }
 
 const GOOGLE_ADS_REQUIRED_ENV_VARS = [
@@ -121,9 +176,13 @@ async function fetchGoogleConversionsForDay(day: string): Promise<number | null>
     console.log(`[aquisicao-conversions-ingest] Google — pulando: ${tokenResult.error}`);
     return null;
   }
-  // Lookback curto (2 dias) é suficiente — só precisamos do `day` exato;
-  // margem de 1 dia cobre a mesma cautela de fuso de `toGaqlDate`
-  // (segments.date é calendário DA CONTA, não UTC).
+  // `now` ancorado ao MEIO-DIA UTC do `day` pedido — fica dentro do mesmo
+  // dia-calendário em qualquer fuso plausível de conta (incl. BRT, UTC-3),
+  // então `segments.date` da linha que nos interessa sai igual a `day`
+  // mesmo com a folga de fuso que `toGaqlDate` documenta (lá tolerada
+  // porque aquele caller agrega por MÊS; aqui precisamos do dia exato, por
+  // isso o ancoramento ao meio-dia, não a janela). Lookback de 2 dias é só
+  // margem — o `day` exato é resolvido por `resolveDailyCount` abaixo.
   const now = new Date(`${day}T12:00:00Z`);
   const query = buildGoogleAdsConversionsQuery(now, 2, GOOGLE_ADS_REGISTRATION_CONVERSION_ACTION_ID);
   const result = await fetchGoogleAdsSpendRows<GaqlConversionsApiRow>(fetch, auth, tokenResult.accessToken, query);
@@ -135,7 +194,11 @@ async function fetchGoogleConversionsForDay(day: string): Promise<number | null>
   if (discardedCount > 0) {
     console.log(`[aquisicao-conversions-ingest] Google — ${discardedCount} linha(s) descartada(s) por malformação.`);
   }
-  return counts.find((c) => c.date === day)?.count ?? 0;
+  const count = resolveDailyCount(counts, day, discardedCount);
+  if (count === null) {
+    console.log(`[aquisicao-conversions-ingest] Google — pulando dia ${day}: sem linha confiável (descarte por malformação na janela consultada, não um 0 confirmado).`);
+  }
+  return count;
 }
 
 /** Busca a contagem de `complete_registration` do Meta Ads pro `day` exato
@@ -152,7 +215,14 @@ async function fetchMetaConversionsForDay(day: string): Promise<number | null> {
     console.log(`[aquisicao-conversions-ingest] Meta — pulando: ${result.error}`);
     return null;
   }
-  return result.counts.find((c) => c.date === day)?.count ?? 0;
+  if (result.discardedCount > 0) {
+    console.log(`[aquisicao-conversions-ingest] Meta — ${result.discardedCount} linha(s) descartada(s) por date_start irreconhecível.`);
+  }
+  const count = resolveDailyCount(result.counts, day, result.discardedCount);
+  if (count === null) {
+    console.log(`[aquisicao-conversions-ingest] Meta — pulando dia ${day}: sem linha confiável (descarte por malformação na janela consultada, não um 0 confirmado).`);
+  }
+  return count;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -163,21 +233,31 @@ async function main(argv: string[]): Promise<number> {
 
   const [googleCount, metaCount] = await Promise.all([fetchGoogleConversionsForDay(day), fetchMetaConversionsForDay(day)]);
 
-  const channels: PanelInput["channels"] = {};
-  if (googleCount !== null) channels.google = { reported_conversions: googleCount, cohort_key: "google-ads" };
-  if (metaCount !== null) channels.meta = { reported_conversions: metaCount, cohort_key: "meta-ads" };
+  const fetched: PanelInput["channels"] = {};
+  if (googleCount !== null) fetched.google = { reported_conversions: googleCount, cohort_key: "google-ads" };
+  if (metaCount !== null) fetched.meta = { reported_conversions: metaCount, cohort_key: "meta-ads" };
 
-  if (Object.keys(channels).length === 0) {
+  if (Object.keys(fetched).length === 0) {
     console.log("[aquisicao-conversions-ingest] nenhum canal produziu dado hoje — painel do dia anterior (se existir) preservado, nada escrito.");
     return 0;
   }
 
-  const panel: PanelInput = { window: { from: day, to: day }, channels };
   const panelPath = resolve("data", "aquisicao", "painel", `${day}.json`);
+  let existingChannels: PanelInput["channels"] | undefined;
+  if (existsSync(panelPath)) {
+    try {
+      existingChannels = (JSON.parse(readFileSync(panelPath, "utf8")) as PanelInput).channels;
+    } catch (e) {
+      console.log(`[aquisicao-conversions-ingest] painel existente em ${panelPath} não é JSON válido (${e instanceof Error ? e.message : e}) — sobrescrevendo só com o que esta run buscou.`);
+    }
+  }
+  const channels = mergePanelChannels(existingChannels, fetched);
+
+  const panel: PanelInput = { window: { from: day, to: day }, channels };
   mkdirSync(dirname(panelPath), { recursive: true });
   writeFileSync(panelPath, JSON.stringify(panel, null, 2) + "\n");
-  console.log(`[aquisicao-conversions-ingest] ${panelPath} gravado — ${Object.keys(channels).join(", ")}`);
-  for (const [channel, spec] of Object.entries(channels)) {
+  console.log(`[aquisicao-conversions-ingest] ${panelPath} gravado — ${Object.keys(fetched).join(", ")} atualizado(s), ${Object.keys(channels).join(", ")} no total`);
+  for (const [channel, spec] of Object.entries(fetched)) {
     console.log(`  ${channel}: ${spec.reported_conversions} conversões`);
   }
   return 0;

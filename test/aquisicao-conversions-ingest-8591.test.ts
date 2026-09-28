@@ -23,7 +23,8 @@ import {
   META_COMPLETE_REGISTRATION_ACTION_TYPE,
   type MetaAdsInsightsApiRow,
 } from "../scripts/lib/ads-campaign-economics-fetch.ts";
-import { defaultProcessingDay } from "../scripts/aquisicao-conversions-ingest.ts";
+import { defaultProcessingDay, mergePanelChannels, resolveDailyCount } from "../scripts/aquisicao-conversions-ingest.ts";
+import type { PanelInput } from "../scripts/aquisicao-reconcile.ts";
 
 describe("#8591 — GOOGLE_ADS_REGISTRATION_CONVERSION_ACTION_ID", () => {
   it("é a ação PRIMÁRIA de cadastro (7418673798), nunca a de confirmação DOI (7762768203, secundária)", () => {
@@ -99,11 +100,12 @@ describe("#8591 — extractMetaCompleteRegistrationDaily", () => {
       },
       { date_start: "2026-09-28", actions: [{ action_type: "complete_registration", value: "1" }] },
     ];
-    const out = extractMetaCompleteRegistrationDaily(rows);
-    assert.deepEqual(out, [
+    const { counts, discardedCount } = extractMetaCompleteRegistrationDaily(rows);
+    assert.deepEqual(counts, [
       { date: "2026-09-27", count: 5 },
       { date: "2026-09-28", count: 1 },
     ]);
+    assert.equal(discardedCount, 0);
   });
 
   it("dia com date_start válido mas sem a ação (ou sem actions nenhum) conta como 0 real, não é descartado", () => {
@@ -111,19 +113,22 @@ describe("#8591 — extractMetaCompleteRegistrationDaily", () => {
       { date_start: "2026-09-27", actions: [{ action_type: "lead", value: "10" }] },
       { date_start: "2026-09-28" },
     ];
-    const out = extractMetaCompleteRegistrationDaily(rows);
-    assert.deepEqual(out, [
+    const { counts, discardedCount } = extractMetaCompleteRegistrationDaily(rows);
+    assert.deepEqual(counts, [
       { date: "2026-09-27", count: 0 },
       { date: "2026-09-28", count: 0 },
     ]);
+    assert.equal(discardedCount, 0);
   });
 
-  it("linha sem date_start reconhecível é ignorada", () => {
+  it("linha sem date_start reconhecível é descartada e contada (nunca soma como 0 silencioso)", () => {
     const rows: MetaAdsInsightsApiRow[] = [
       { actions: [{ action_type: "complete_registration", value: "7" }] },
       { date_start: "not-a-date", actions: [{ action_type: "complete_registration", value: "7" }] },
     ];
-    assert.deepEqual(extractMetaCompleteRegistrationDaily(rows), []);
+    const { counts, discardedCount } = extractMetaCompleteRegistrationDaily(rows);
+    assert.deepEqual(counts, []);
+    assert.equal(discardedCount, 2);
   });
 
   it("value não-numérico não contamina a soma", () => {
@@ -136,7 +141,59 @@ describe("#8591 — extractMetaCompleteRegistrationDaily", () => {
         ],
       },
     ];
-    assert.deepEqual(extractMetaCompleteRegistrationDaily(rows), [{ date: "2026-09-27", count: 4 }]);
+    const { counts, discardedCount } = extractMetaCompleteRegistrationDaily(rows);
+    assert.deepEqual(counts, [{ date: "2026-09-27", count: 4 }]);
+    assert.equal(discardedCount, 0);
+  });
+});
+
+describe("#8591 (review) — resolveDailyCount", () => {
+  it("dia presente em counts devolve o count real, mesmo que 0", () => {
+    assert.equal(resolveDailyCount([{ date: "2026-09-27", count: 0 }], "2026-09-27", 0), 0);
+    assert.equal(resolveDailyCount([{ date: "2026-09-27", count: 5 }], "2026-09-27", 0), 5);
+  });
+
+  it("dia ausente SEM descarte é 0 real (API respondeu limpo, sem linha pro dia)", () => {
+    assert.equal(resolveDailyCount([], "2026-09-27", 0), 0);
+  });
+
+  it("dia ausente COM descarte é null — nunca um 0 fabricado (achado do review da PR #8929)", () => {
+    assert.equal(resolveDailyCount([], "2026-09-27", 3), null);
+    // mesmo com outro dia presente em counts, o dia PEDIDO continua ausente
+    // e há descarte na janela — não confiar no 0 implícito.
+    assert.equal(resolveDailyCount([{ date: "2026-09-28", count: 2 }], "2026-09-27", 1), null);
+  });
+});
+
+describe("#8591 (review) — mergePanelChannels", () => {
+  it("sem painel existente, devolve só o que foi buscado", () => {
+    const fetched: PanelInput["channels"] = { google: { reported_conversions: 3, cohort_key: "google-ads" } };
+    assert.deepEqual(mergePanelChannels(undefined, fetched), fetched);
+  });
+
+  it("preserva canais do painel existente que esta run não buscou (microsoft/linkedin manuais)", () => {
+    const existing: PanelInput["channels"] = {
+      microsoft: { reported_conversions: 7, cohort_key: "microsoft" },
+      linkedin: { reported_conversions: 1, cohort_key: "linkedin" },
+    };
+    const fetched: PanelInput["channels"] = { google: { reported_conversions: 3, cohort_key: "google-ads" } };
+    assert.deepEqual(mergePanelChannels(existing, fetched), {
+      microsoft: { reported_conversions: 7, cohort_key: "microsoft" },
+      linkedin: { reported_conversions: 1, cohort_key: "linkedin" },
+      google: { reported_conversions: 3, cohort_key: "google-ads" },
+    });
+  });
+
+  it("a run atual SOBRESCREVE só a chave que de fato buscou, nunca zera as demais (achado do review da PR #8929)", () => {
+    const existing: PanelInput["channels"] = {
+      google: { reported_conversions: 999, cohort_key: "google-ads" },
+      meta: { reported_conversions: 1, cohort_key: "meta-ads" },
+    };
+    const fetched: PanelInput["channels"] = { google: { reported_conversions: 4, cohort_key: "google-ads" } };
+    assert.deepEqual(mergePanelChannels(existing, fetched), {
+      google: { reported_conversions: 4, cohort_key: "google-ads" },
+      meta: { reported_conversions: 1, cohort_key: "meta-ads" },
+    });
   });
 });
 
