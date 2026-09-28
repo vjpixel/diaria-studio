@@ -35,12 +35,28 @@
 
 import type { SpendRow } from "./aquisicao-spend.ts";
 import { runSpendIngest, mergeSpendRows, type SpendIngestFetchResult } from "./spend-ingest.ts";
+import type { DailyConversionCount } from "./shared/daily-conversion-count.ts";
 
 export { mergeSpendRows };
+export type { DailyConversionCount };
 
 // ---------------------------------------------------------------------------
 // Parsing GAQL → SpendRow (puro)
 // ---------------------------------------------------------------------------
+
+/** Base comum de toda linha GAQL deste módulo — só o campo que TODA query
+ *  seleciona (`segments.date`), sem nenhum `metrics.*` (#8930 item 1). Cada
+ *  query GAQL específica (spend, performance, conversões) seleciona um
+ *  subconjunto diferente de `metrics.*`; declarar isso na base fazia
+ *  `GaqlConversionsApiRow extends GaqlSpendApiRow` herdar `metrics.costMicros`
+ *  mesmo a query de conversões (`buildGoogleAdsConversionsQuery`) nunca
+ *  selecionando `metrics.cost_micros` — um campo que nunca vinha preenchido
+ *  de verdade nessa linha, só existia pra satisfazer o constraint genérico
+ *  de `fetchGoogleAdsSpendRows<T extends GaqlSpendApiRow>` (achado do review
+ *  automatizado da PR #8929, `type-design-analyzer`). */
+export interface GaqlRowBase {
+  segments?: { date?: string };
+}
 
 /** Forma mínima de uma linha devolvida por `googleAds:search`/`searchStream`
  *  para a query `SELECT segments.date, metrics.cost_micros FROM customer
@@ -48,9 +64,10 @@ export { mergeSpendRows };
  *  `buildDefaultGaqlQuery` — `DURING LAST_90_DAYS` não é literal GAQL válido,
  *  #5237/#5591). `costMicros` pode vir como string (a API serializa int64
  *  como string em JSON) ou number — aceitar os dois evita um bug de parsing
- *  silencioso se o formato mudar entre versões da API. */
-export interface GaqlSpendApiRow {
-  segments?: { date?: string };
+ *  silencioso se o formato mudar entre versões da API. Irmã de
+ *  `GaqlConversionsApiRow` (ambas estendem `GaqlRowBase`), não mais base
+ *  dela — #8930 item 1. */
+export interface GaqlSpendApiRow extends GaqlRowBase {
   metrics?: { costMicros?: string | number };
 }
 
@@ -303,8 +320,15 @@ export async function postGoogleAdsWithLoginRetry(
  * `cost_micros`) continua compilando idêntico. `buildGoogleAdsPerformanceQuery`
  * abaixo + `GaqlPerformanceApiRow` são quem usa o parâmetro de tipo de
  * verdade, pro relatório diário de cliques/impressões do `/ads`.
+ *
+ * **Constraint é `GaqlRowBase`, não `GaqlSpendApiRow` (#8930 item 1).** Um
+ * `T extends GaqlSpendApiRow` obrigaria todo shape (inclusive
+ * `GaqlConversionsApiRow`, que nunca seleciona `metrics.cost_micros`) a
+ * carregar `metrics.costMicros` só pra satisfazer o genérico — o overclaim
+ * de tipo que o review da PR #8929 apontou. `GaqlRowBase` só exige
+ * `segments.date`, que toda query GAQL deste módulo de fato seleciona.
  */
-export async function fetchGoogleAdsSpendRows<T extends GaqlSpendApiRow = GaqlSpendApiRow>(
+export async function fetchGoogleAdsSpendRows<T extends GaqlRowBase = GaqlSpendApiRow>(
   fetchImpl: FetchLike,
   auth: GoogleAdsAuthConfig,
   accessToken: string,
@@ -486,9 +510,14 @@ export const GOOGLE_ADS_REGISTRATION_CONVERSION_ACTION_ID = "7418673798";
  *  `buildGoogleAdsConversionsQuery`) — 1 ponto por dia com o total de
  *  conversões daquela ação específica. `metrics.conversions` pode vir
  *  fracionário (a API conta conversões atribuídas por modelo, não só
- *  inteiros) — arredondado em `aggregateGoogleAdsConversionsByDayWithDiscards`. */
-export interface GaqlConversionsApiRow extends GaqlSpendApiRow {
-  metrics?: { costMicros?: string | number; conversions?: string | number };
+ *  inteiros) — arredondado em `aggregateGoogleAdsConversionsByDayWithDiscards`.
+ *  Estende `GaqlRowBase`, não `GaqlSpendApiRow` (#8930 item 1) — a query de
+ *  conversões (`buildGoogleAdsConversionsQuery`) nunca seleciona
+ *  `metrics.cost_micros`, então declarar esse campo aqui só pra herdar de
+ *  `GaqlSpendApiRow` era um overclaim de tipo: o campo nunca vem preenchido
+ *  de verdade nesta linha. */
+export interface GaqlConversionsApiRow extends GaqlRowBase {
+  metrics?: { conversions?: string | number };
 }
 
 /**
@@ -518,10 +547,10 @@ export function buildGoogleAdsConversionsQuery(now: Date, lookbackDays: number, 
   );
 }
 
-export interface DailyConversionCount {
-  date: string;
-  count: number;
-}
+// `DailyConversionCount` é importado + re-exportado de
+// `./shared/daily-conversion-count.ts` (declaração no topo do arquivo) —
+// consolidado no #8930 item 2, era duplicado verbatim aqui e em
+// `ads-campaign-economics-fetch.ts`.
 
 export interface AggregateGoogleAdsConversionsResult {
   counts: DailyConversionCount[];
