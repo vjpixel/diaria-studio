@@ -2302,6 +2302,22 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     // não confirmada por esta unidade.
     appliedAt: "2026-08-21",
   },
+  {
+    id: "perfil-workshop-agente-ia",
+    label: "Página do workshop 'Crie seu primeiro agente de IA sem programar'",
+    source: "workshop-agente-ia",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("workshop-agente-ia"),
+    panelUrl: "https://agente.vjpixel.chatgpt.site/",
+    field: "Link para a diar.ia.br na página de inscrição do workshop",
+    description:
+      "Pré-registrada ANTES de o editor colar o link (mesmo racional de " +
+      "`perfil-nexo`/`perfil-outraspalavras`: melhor a instrumentação pronta " +
+      "antes do link ir ao ar do que taggear depois e perder a série inicial). " +
+      "`appliedAt` ausente = ainda não aplicado — `computeDrift` trata isso " +
+      "como ausência de conversão ESPERADA, não drift.",
+    status: "ativo",
+  },
 ] as const;
 
 /** Busca uma superfície externa por id. `undefined` se não existe. @pure */
