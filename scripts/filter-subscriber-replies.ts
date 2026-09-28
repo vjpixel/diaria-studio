@@ -144,6 +144,29 @@ const MOBILE_SIGNATURE_RE = /^\s*(?:enviado (?:do|pelo|via) meu \S+|sent from my
 const PLAIN_SIGNATURE_DELIM_RE = /^--\s*$/m;
 
 /**
+ * #8952: bloco de citação do Outlook (desktop/web), que não usa header
+ * "Em/No dia/On … escreveu:" nem prefixo `>` — cita a mensagem original
+ * inteira sob um bloco de cabeçalhos "De:/Enviado:/Para:/Assunto:" (PT) ou
+ * "From:/Sent:/To:/Subject:" (EN). Basta a linha "De:"/"From:" seguida (em
+ * até 3 linhas, pra tolerar quebra de linha do cliente) por "Enviado:"/"Sent:"
+ * pra reconhecer o boundary — não exige as 4 linhas completas.
+ */
+const OUTLOOK_HEADER_BLOCK_RE = /^\s*(?:de|from):.*\n(?:.*\n){0,2}?\s*(?:enviado|sent):/im;
+
+/**
+ * #8952: separador visual que o Outlook insere antes do bloco citado quando
+ * cola como texto rico (linha só de underscores, 10+ caracteres).
+ */
+const OUTLOOK_RULE_RE = /^_{10,}\s*$/m;
+
+/**
+ * #8952: marcador "-----Original Message-----" (EN) / "-----Mensagem
+ * original-----" (PT) que alguns clientes (incl. Outlook mais antigo)
+ * inserem antes da citação.
+ */
+const ORIGINAL_MESSAGE_MARKER_RE = /^-{3,}\s*(?:original message|mensagem original)\s*-{3,}\s*$/im;
+
+/**
  * #4095: reduz o corpo bruto de um reply (que vem de `get_thread` com
  * `FULL_CONTENT`, tipicamente = texto novo do leitor + newsletter inteira
  * citada + assinatura/disclaimer) ao texto novo do leitor.
@@ -160,9 +183,14 @@ export function stripQuotedAndSignature(body: string | undefined | null): string
   if (!body) return "";
   let text = body.replace(/\r\n/g, "\n");
 
-  const boundaryIndices = [QUOTE_HEADER_RE, MOBILE_SIGNATURE_RE, PLAIN_SIGNATURE_DELIM_RE].map(
-    (re) => re.exec(text)?.index ?? Infinity,
-  );
+  const boundaryIndices = [
+    QUOTE_HEADER_RE,
+    MOBILE_SIGNATURE_RE,
+    PLAIN_SIGNATURE_DELIM_RE,
+    OUTLOOK_HEADER_BLOCK_RE,
+    OUTLOOK_RULE_RE,
+    ORIGINAL_MESSAGE_MARKER_RE,
+  ].map((re) => re.exec(text)?.index ?? Infinity);
   const cutAt = Math.min(...boundaryIndices);
   if (cutAt !== Infinity) text = text.slice(0, cutAt);
 

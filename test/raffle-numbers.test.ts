@@ -466,3 +466,68 @@ describe("matchesIntentionalError (#8877) — reply cita só a grafia errada (wr
     assert.equal(matchesIntentionalError(body, error), true);
   });
 });
+
+describe("matchesIntentionalError (#8952) — reply do Outlook que só cita (bloco De:/Enviado:) NÃO ganha crédito", () => {
+  const error = {
+    category: "ortografico",
+    location: "destaque 1, parágrafo 2",
+    description: "nome da empresa grafado errado",
+    correct_value: "OpenAI",
+    wrong_value: "OppenAI",
+  };
+
+  it("cenário da issue: reply só 'Obrigado!' + citação Outlook (PT, 'De:'/'Enviado:', sem '>') → sem crédito", () => {
+    const body = [
+      "Obrigado!",
+      "",
+      "De: Pixel <diariaeditor@gmail.com>",
+      "Enviado: quinta-feira, 24 de setembro de 2026 08:00",
+      "Para: Leitor <leitor@example.com>",
+      "Assunto: Diar.ia — 24/09",
+      "",
+      "DESTAQUE 1",
+      "Segundo parágrafo com OppenAI mencionado aqui.",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, error), false);
+  });
+
+  it("variante EN ('From:'/'Sent:') também sem crédito quando só cita", () => {
+    const body = [
+      "Thanks!",
+      "",
+      "From: Pixel <diariaeditor@gmail.com>",
+      "Sent: Thursday, September 24, 2026 8:00 AM",
+      "To: Reader <leitor@example.com>",
+      "Subject: diar.ia.br — 09/24",
+      "",
+      "HIGHLIGHT 1",
+      "Second paragraph mentions OppenAI here.",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, error), false);
+  });
+
+  it("comentário próprio ANTES do bloco Outlook ainda acerta (o comentário, não a citação, é o sinal)", () => {
+    const body = [
+      "Vi que vocês escreveram OppenAI no D1, é isso mesmo?",
+      "",
+      "De: Pixel <diariaeditor@gmail.com>",
+      "Enviado: quinta-feira, 24 de setembro de 2026 08:00",
+      "Assunto: Diar.ia — 24/09",
+      "",
+      "DESTAQUE 1",
+      "Segundo parágrafo com OppenAI mencionado aqui.",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, error), true);
+  });
+
+  it("caso Gmail equivalente ('Em ... escreveu:') continua sem crédito quando só cita", () => {
+    const body = [
+      "Valeu!",
+      "",
+      "Em qui., 24 de set. de 2026 às 08:00, Pixel <diariaeditor@gmail.com> escreveu:",
+      "> DESTAQUE 1",
+      "> Segundo parágrafo com OppenAI mencionado aqui.",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, error), false);
+  });
+});
