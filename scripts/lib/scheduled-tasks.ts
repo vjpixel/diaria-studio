@@ -2131,18 +2131,20 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // sexta-feira (ver grep de `dayOfWeek: "Friday"` — todas as outras são
     // domingo).
     schedule: { kind: "weekly", dayOfWeek: "Friday", hour: 2, minute: 30 },
-    // `enabled: false` DE PROPÓSITO (review da PR #8922 achou a omissão: sem
-    // isso, `setup-systemd-timers.ts` trata `undefined` como elegível pra
-    // arme, e `Diaria-Remediate-Never-Armed-Tasks` (#8153) auto-arma
-    // qualquer task `neverArmed` — contradiria o "DECLARADA, NÃO ARMADA"
-    // abaixo e o pedido explícito do editor na #8906, "religar exige
-    // confirmação"). Trocar pra `true` só depois de armar de propósito.
-    enabled: false,
-    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, sem `data/`
-    // real nem `gh` autenticado contra o repo aqui) — arme real via
-    // `scripts/setup-systemd-timers.ts` na checkout do `300`, com
-    // confirmação por `systemctl --user list-timers`, é ação POSTERIOR do
-    // editor (pedido explícito da issue: "religar exige confirmação").
+    // `enabled: true` — ARMADA por decisão do editor em 28/09/2026, depois
+    // de validada ao vivo (PR #8933 e #8935: última execução real regenerou
+    // 3 hubs, dry-run seguinte "nada a commitar") e das 4 correções que a
+    // validação ao vivo revelou (#8923 merge síncrono, #8926 poll de CI
+    // antes do merge-lock, #8932 flags `--` sempre ignoradas, #8934 regen
+    // semanal só bumpa `UPDATED_DATE` dentro do teto de frescor). Ficou
+    // `enabled: false` (DECLARADA, NÃO ARMADA) desde a criação em #8906 até
+    // esta confirmação explícita — nunca reverter pra `false` sem o mesmo
+    // tipo de decisão registrada do editor.
+    enabled: true,
+    // Arme real (systemd) via `scripts/setup-systemd-timers.ts --task
+    // Diaria-Hub-Weekly-Regen` na checkout do `300`, com confirmação por
+    // `systemctl --user list-timers` — ver sequência exata no corpo da PR
+    // que armou esta task.
     issue: "#8906",
   },
   {
