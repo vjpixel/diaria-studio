@@ -9,6 +9,9 @@
     <link rel="stylesheet" href="/evento/agente-ia/styles.css" />
     <script src="/evento/agente-ia/config.js" defer></script>
     <script src="/evento/agente-ia/script.js" defer></script>
+    <!-- #8978: ID first-party (_dia_vid) + _fbc em .diar.ia.br ANTES do pixel, pra fbq('init', ...) já sair com external_id/fbc no 1o disparo. -->
+    <script>try {var COOKIE="_dia_vid";var DOMAIN=".diar.ia.br";var MAXAGE=63072000;var m = document.cookie.match(new RegExp('(?:^|; )' + COOKIE + '=([^;]+)'));var vid = m && /^[0-9a-fA-F-]{16,64}$/.test(m[1]) ? m[1] : null;if (!vid) {vid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'.replace(/x/g, function () { return (Math.random() * 16 | 0).toString(16); });if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {document.cookie = COOKIE + '=' + vid + '; Max-Age=' + MAXAGE + '; Domain=' + DOMAIN + '; Path=/; SameSite=Lax';}}window.__DIA_VID__ = vid;window.dataLayer = window.dataLayer || [];window.dataLayer.push({ external_id: vid });} catch (e) {}</script>
+    <script>try {if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {var fbclid = new URLSearchParams(window.location.search).get('fbclid');if (fbclid && !/(?:^|; )_fbc=/.test(document.cookie)) {var fbc = 'fb.1.' + Date.now() + '.' + fbclid;document.cookie = '_fbc=' + fbc + '; Max-Age=7776000; Domain=.diar.ia.br; Path=/; SameSite=Lax';}}} catch (e) {}</script>
     <!-- Meta Pixel (Diar.ia) -->
     <script>
       !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
@@ -16,7 +19,7 @@
       n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
       t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
       document,'script','https://connect.facebook.net/en_US/fbevents.js');
-      fbq('init', '1285191740325112');
+      fbq('init', '1285191740325112', { external_id: window.__DIA_VID__ });
       fbq('track', 'PageView');
     </script>
     <noscript><img height="1" width="1" style="display:none" alt="" src="https://www.facebook.com/tr?id=1285191740325112&ev=PageView&noscript=1" /></noscript>

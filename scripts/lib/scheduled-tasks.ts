@@ -2005,18 +2005,26 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     // #8543 (lado Meta) — par do Google acima: sobe a confirmacao DOI do Kit pra
     // Meta CAPI como evento SECUNDARIO `SubscriptionConfirmed` (nunca
-    // `CompleteRegistration`). Horario 07:25 BRT: 5min depois do upload do Google
-    // (07:20, mesmo snapshot base da noite anterior), antes do Clarice-Sync
-    // (08:30). DECLARADA, NAO ARMADA -- armar via scripts/setup-systemd-timers.ts
+    // `CompleteRegistration`). #8978: Events Manager mostrava freshness
+    // "Diariamente" pra este evento (a Meta prefere hourly/real-time pra
+    // pontuar EMQ) — a cadência DIÁRIA (07:25 BRT) virou HORÁRIA. Isso é
+    // seguro sem tocar o script: `main()` em `meta-capi-confirmations-send.ts`
+    // busca o roster do Kit AO VIVO a cada execução (`listAllKitSubscribers`),
+    // só o snapshot BASE (`Diaria-Subscriber-State-Snapshot`, ainda diário,
+    // 23:55) fica parado — rodar a detecção de hora em hora contra essa
+    // mesma base já pega quem confirmou na última hora, e o índice de
+    // idempotência (`data/meta-capi/_confirmation-sent.json`) garante que
+    // quem já foi enviado numa rodada anterior do mesmo dia não reenvia.
+    // DECLARADA, NAO ARMADA -- armar via scripts/setup-systemd-timers.ts
     // na checkout compartilhada (300) e acao POSTERIOR do editor. Sem
     // META_CAPI_ACCESS_TOKEN o --send vira dry-run efetivo (nada enviado).
     name: "Diaria-Meta-Capi-Confirmations-Send",
     description:
-      "lote diario que sobe confirmacoes DOI do Kit pra Meta Conversions API como evento secundario SubscriptionConfirmed (--send)",
+      "lote horario que sobe confirmacoes DOI do Kit pra Meta Conversions API como evento secundario SubscriptionConfirmed (--send)",
     steps: [{ key: "send", script: "scripts/meta-capi-confirmations-send.ts", args: ["--send"] }],
     logPath: "meta-capi/.confirmations-send.log",
-    schedule: { kind: "daily", hour: 7, minute: 25 },
-    issue: "#8543",
+    schedule: { kind: "interval", hours: 1 },
+    issue: "#8543, #8978",
   },
   {
     // #5878 — Campaign Management API v13 (SOAP) capta motivos editoriais de

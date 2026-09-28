@@ -61,6 +61,7 @@ import {
   claimCompleteRegistrationSend,
   releaseClaimOnSendFailure,
 } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572
+import { readVisitorIdFromCookieHeader } from "../../../scripts/lib/shared/visitor-id.ts"; // #8978
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 // #7723: consome a maquinaria COMPARTILHADA (scripts/lib/shared/kit-doi.ts),
 // a mesma de `cursos` e `reativar`. Antes o poll tinha copias locais de
@@ -376,10 +377,18 @@ export const SUBSCRIBE_CLIENT_ORIGIN_MAX = 300;
  * `source`). Puramente informativo: nunca consumido por lógica de negócio,
  * só repassado pro ESP configurado quando o custom field correspondente
  * existir (ver `BEEHIIV_ORIGEM_REFERRER_FIELD`/`KIT_ORIGEM_REFERRER_FIELD`
- * e `BEEHIIV_ORIGEM_CLICKID_FIELD`/`KIT_ORIGEM_CLICKID_FIELD`, index.ts). */
+ * e `BEEHIIV_ORIGEM_CLICKID_FIELD`/`KIT_ORIGEM_CLICKID_FIELD`, index.ts).
+ *
+ * `externalId` (#8978): mesmo padrão de gate-por-ausência do `clickId` —
+ * o `_dia_vid` first-party (`visitor-id.ts`) lido do cookie do request de
+ * cadastro, persistido no ESP pra que eventos SÓ-SERVIDOR mais tarde
+ * (`SubscriptionConfirmed`, `Reactivation`) possam reaproveitar o MESMO
+ * `external_id` que o pixel/CAPI já mandaram no cadastro — ver
+ * `BEEHIIV_ORIGEM_EXTERNALID_FIELD`/`KIT_ORIGEM_EXTERNALID_FIELD`. */
 export interface SubscribeOrigin {
   referrer: string;
   clickId: string;
+  externalId: string;
 }
 
 export interface ParsedSubscribe {
@@ -584,7 +593,7 @@ async function subscribeToBeehiiv(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   utm: SubscribeUtm = SUBSCRIBE_UTM_BY_SOURCE.jogar,
-  origin: SubscribeOrigin = { referrer: "", clickId: "" },
+  origin: SubscribeOrigin = { referrer: "", clickId: "", externalId: "" },
 ): Promise<SubscribeResult> {
   const apiKey = env.BEEHIIV_API_KEY;
   const pubId = env.BEEHIIV_PUBLICATION_ID;
@@ -625,6 +634,12 @@ async function subscribeToBeehiiv(
   }
   if (env.BEEHIIV_ORIGEM_CLICKID_FIELD && origin.clickId) {
     const field = { name: env.BEEHIIV_ORIGEM_CLICKID_FIELD, value: origin.clickId };
+    body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
+  }
+  // #8978: mesmo guard duplo — persiste o external_id first-party pra
+  // eventos SÓ-SERVIDOR (SubscriptionConfirmed/Reactivation) reusarem depois.
+  if (env.BEEHIIV_ORIGEM_EXTERNALID_FIELD && origin.externalId) {
+    const field = { name: env.BEEHIIV_ORIGEM_EXTERNALID_FIELD, value: origin.externalId };
     body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
   }
 
@@ -749,7 +764,7 @@ async function subscribeToKit(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   utm: SubscribeUtm = SUBSCRIBE_UTM_BY_SOURCE.jogar,
-  origin: SubscribeOrigin = { referrer: "", clickId: "" },
+  origin: SubscribeOrigin = { referrer: "", clickId: "", externalId: "" },
 ): Promise<SubscribeResult> {
   const apiKey = env.KIT_API_KEY;
   if (!apiKey) return { ok: false, status: 503, reason: "not_configured" };
@@ -769,6 +784,9 @@ async function subscribeToKit(
   // fixo/origem_paga acima.
   if (env.KIT_ORIGEM_REFERRER_FIELD && origin.referrer) fields[env.KIT_ORIGEM_REFERRER_FIELD] = origin.referrer;
   if (env.KIT_ORIGEM_CLICKID_FIELD && origin.clickId) fields[env.KIT_ORIGEM_CLICKID_FIELD] = origin.clickId;
+  // #8978: mesmo guard duplo — persiste o external_id first-party pra
+  // eventos SÓ-SERVIDOR (SubscriptionConfirmed/Reactivation) reusarem depois.
+  if (env.KIT_ORIGEM_EXTERNALID_FIELD && origin.externalId) fields[env.KIT_ORIGEM_EXTERNALID_FIELD] = origin.externalId;
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
@@ -942,7 +960,7 @@ export async function subscribeViaConfiguredBackend(
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
   utm: SubscribeUtm = SUBSCRIBE_UTM_BY_SOURCE.jogar,
-  origin: SubscribeOrigin = { referrer: "", clickId: "" },
+  origin: SubscribeOrigin = { referrer: "", clickId: "", externalId: "" },
 ): Promise<SubscribeResult> {
   return resolveBackend(env) === "kit"
     ? subscribeToKit(env, input, fetchImpl, utm, origin)
@@ -998,8 +1016,16 @@ export async function handleJogarSubscribe(
   // inofensivo pros demais `source`, que os ignoram.
   const utmResolved = resolveSubscribeUtm(v.source, { source: v.utmSource, medium: v.utmMedium, campaign: v.utmCampaign });
   // #8003: sinal de origem cru do cliente — nunca varia por `source`, ver
-  // docstring de `SubscribeOrigin`.
-  const origin: SubscribeOrigin = { referrer: v.referrer, clickId: v.clickId };
+  // docstring de `SubscribeOrigin`. #8978: `externalId` vem do cookie
+  // `_dia_vid` do PRÓPRIO request de cadastro (não do form) — lido ANTES do
+  // `subscribeViaConfiguredBackend` abaixo pra poder ser persistido no ESP
+  // na MESMA chamada de criação do subscriber (ver `BEEHIIV_ORIGEM_EXTERNALID_FIELD`/
+  // `KIT_ORIGEM_EXTERNALID_FIELD`).
+  const origin: SubscribeOrigin = {
+    referrer: v.referrer,
+    clickId: v.clickId,
+    externalId: readVisitorIdFromCookieHeader(request.headers.get("Cookie")) ?? "",
+  };
   // #8553: click_id (prova de clique de ads) sobrepõe origemPaga quando o
   // utm_source do cliente ficou vazio/divergente — ver docstring de
   // `resolveOrigemPagaWithClickIdFallback`.

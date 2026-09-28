@@ -62,6 +62,13 @@
  * real.
  */
 
+// #8978: `external_id` first-party (`_dia_vid`) — módulo dedicado porque o
+// valor também é consumido no BROWSER (dataLayer/fbq advanced matching, ver
+// `visitor-id.ts`), não só aqui. Import direto (mesmo padrão de
+// `kit-signup-origin.ts`/`client-utm-allowlist.ts` — zero `node:*` nos dois
+// lados, seguro pro bundle do Worker).
+import { DIA_VISITOR_ID_COOKIE_NAME, isValidVisitorId } from "./visitor-id.ts";
+
 /** Dataset (pixel) ID confirmado ao vivo na issue #5504 — não é secret (é
  * público em qualquer página que carregue o pixel via `fbq('init', ...)`),
  * por isso vive como constante, não como env var. `META_CAPI_DATASET_ID`
@@ -298,9 +305,18 @@ export interface MetaCapiClientSignals {
   clientUserAgent?: string;
   /** Cookie first-party `_fbp` do pixel em `diar.ia.br`. */
   fbp?: string;
-  /** Cookie `_fbc`, ou derivado do `fbclid` capturado no cadastro (#8003,
-   * `click_id` prefixado) — ver `buildFbcFromClickId`. */
+  /** Cookie `_fbc` (gravado em `.diar.ia.br` por `metaFbcBootstrapJs`, ou
+   * pelo pixel da Meta), derivado do `fbclid` capturado no cadastro (#8003,
+   * `click_id` prefixado — `buildFbcFromClickId`), ou derivado do `fbclid`
+   * no header `Referer` do request (#8978, `buildFbcFromReferer`) — nessa
+   * ordem de precedência. */
   fbc?: string;
+  /** #8978: ID first-party anônimo e estável (`_dia_vid`, ver
+   * `visitor-id.ts`) — mandado em CLARO (raw, sem hash; ver rationale no
+   * módulo). Único dos 5 sinais que também é mandado pelo PIXEL (advanced
+   * matching / dataLayer), pra Meta deduplicar/casar os dois lados pela
+   * MESMA pessoa mesmo sem e-mail em comum ainda confirmado. */
+  externalId?: string;
 }
 
 /** Forma canônica dos cookies `_fbp`/`_fbc` da Meta:
@@ -359,6 +375,33 @@ export function buildFbcFromClickId(
   return `fb.1.${Math.floor(creationTimeMs)}.${fbclid}`;
 }
 
+/**
+ * #8978: 2º fallback (depois do cookie `_fbc`, antes de desistir) — deriva o
+ * `fbc` a partir de um `fbclid` presente na QUERYSTRING do header `Referer`
+ * do request. Cobre o cadastro cross-origin (`livros`/`arquivo`/`hub` POSTam
+ * pra `workers/poll` a partir de outro host) quando o visitante chegou
+ * direto num desses hosts com `fbclid` na URL mas nem o cookie de domínio
+ * (`metaFbcBootstrapJs`, gravado só quando o snippet roda ANTES do POST) nem
+ * o `click_id` do formulário (que só existe nos forms que o capturam
+ * explicitamente, ver `clientOriginSignalPayloadFieldsJs`) chegaram a
+ * existir. `Referer` malformado ou sem `fbclid` → `undefined`, nunca lança.
+ * @pure
+ */
+export function buildFbcFromReferer(
+  referer: string | null | undefined,
+  creationTimeMs: number,
+): string | undefined {
+  if (!referer) return undefined;
+  let fbclid: string | null;
+  try {
+    fbclid = new URL(referer).searchParams.get("fbclid");
+  } catch {
+    return undefined;
+  }
+  if (!fbclid || !FBCLID_RE.test(fbclid)) return undefined;
+  return `fb.1.${Math.floor(creationTimeMs)}.${fbclid}`;
+}
+
 /** Subconjunto de `Headers` que `extractMetaCapiClientSignals` consome —
  * evita exigir um `Request` inteiro em teste. */
 export interface MetaCapiHeaderSource {
@@ -398,14 +441,23 @@ export function extractMetaCapiClientSignals(
   const fbp = readCookieValue(cookieHeader, "_fbp");
   if (fbp && FB_COOKIE_RE.test(fbp)) signals.fbp = fbp;
 
-  // Cookie real do pixel tem precedência sobre o derivado: ele carrega o
-  // timestamp do CLIQUE, o derivado carrega o do cadastro.
+  // Cookie real do pixel/`metaFbcBootstrapJs` tem precedência sobre os 2
+  // derivados: ele carrega o timestamp do CLIQUE (ou do 1º carregamento com
+  // `fbclid`), os derivados carregam o do cadastro. #8978: quando nem o
+  // cookie nem o `click_id` do form existem, tenta o `fbclid` cru do header
+  // `Referer` — 3º fallback antes de desistir (ver `buildFbcFromReferer`).
   const fbcCookie = readCookieValue(cookieHeader, "_fbc");
+  const fbcCreationTimeMs = options.fbcCreationTimeMs ?? Date.now();
   const fbc =
     fbcCookie && FB_COOKIE_RE.test(fbcCookie)
       ? fbcCookie
-      : buildFbcFromClickId(options.clickId, options.fbcCreationTimeMs ?? Date.now());
+      : (buildFbcFromClickId(options.clickId, fbcCreationTimeMs) ??
+        buildFbcFromReferer(headers.get("Referer") ?? headers.get("referer"), fbcCreationTimeMs));
   if (fbc) signals.fbc = fbc;
+
+  // #8978: `_dia_vid` — ver docstring de `MetaCapiClientSignals.externalId`.
+  const externalId = readCookieValue(cookieHeader, DIA_VISITOR_ID_COOKIE_NAME);
+  if (isValidVisitorId(externalId)) signals.externalId = externalId;
 
   return signals;
 }
@@ -420,6 +472,10 @@ export interface MetaCapiUserData {
   client_user_agent?: string;
   fbp?: string;
   fbc?: string;
+  /** #8978: RAW (sem hash) — ver rationale em `visitor-id.ts`. Array de 1
+   * elemento pela mesma convenção de `em` (a Meta aceita `external_id` como
+   * string OU lista; usamos lista por simetria/auditabilidade com `em`). */
+  external_id?: [string];
 }
 
 /**
@@ -513,6 +569,7 @@ export async function buildCompleteRegistrationEvent(
   if (signals?.clientUserAgent) userData.client_user_agent = signals.clientUserAgent;
   if (signals?.fbp) userData.fbp = signals.fbp;
   if (signals?.fbc) userData.fbc = signals.fbc;
+  if (signals?.externalId) userData.external_id = [signals.externalId];
   return {
     event_name: input.eventName ?? "CompleteRegistration",
     event_time: eventTime,

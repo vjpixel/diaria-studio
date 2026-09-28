@@ -37,6 +37,11 @@
  * pro favicon, só não é mais a única imagem disponível.
  */
 
+// #8978: os 2 bootstraps de sinal first-party da Meta ficam junto do
+// container GTM em renderAnalyticsHead() abaixo — ver docstring lá.
+import { visitorIdBootstrapJs } from "./visitor-id.ts";
+import { metaFbcBootstrapJs } from "./meta-fbc-bootstrap.ts";
+
 /**
  * Container GTM único, compartilhado por todos os hosts servidos por Worker
  * deste repo — GA4, pixel Meta e tag de conversão do Google Ads são
@@ -57,7 +62,11 @@ export const GTM_CONTAINER_ID = "GTM-TC8C65ZN";
  * conversão — essas vivem dentro do container no console do GTM).
  */
 export function renderAnalyticsHead(): string {
-  return `<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','${GTM_CONTAINER_ID}');</script>`;
+  return (
+    `<script>${visitorIdBootstrapJs()}</script>` +
+    `<script>${metaFbcBootstrapJs()}</script>` +
+    `<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','${GTM_CONTAINER_ID}');</script>`
+  );
 }
 
 /**
