@@ -1776,3 +1776,52 @@ describe("#8260 — Diaria-Social-Followers-Collect registrada, diária, systemd
     assert.equal(t.guard, undefined);
   });
 });
+
+describe("#8591 — Diaria-Aquisicao-Reconcile-Daily registrada, diária, >=10:00 BRT", () => {
+  it("está presente no registro, com o step apontando pro script correto", () => {
+    const t = getScheduledTaskByName("Diaria-Aquisicao-Reconcile-Daily");
+    assert.ok(t, "Diaria-Aquisicao-Reconcile-Daily ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/aquisicao-reconcile-daily.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 10, minute: 7 });
+  });
+
+  it("horário >= 10:00 BRT (pedido explícito da issue, depois dos ingests matinais)", () => {
+    const t = getScheduledTaskByName("Diaria-Aquisicao-Reconcile-Daily")!;
+    assert.equal(t.schedule.kind, "daily");
+    if (t.schedule.kind === "daily") {
+      assert.ok(t.schedule.hour >= 10, `hour ${t.schedule.hour} < 10`);
+    }
+  });
+
+  it("horário de 10:07 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Aquisicao-Reconcile-Daily" && t.schedule.hour === 10 && t.schedule.minute === 7,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Aquisicao-Reconcile-Daily")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+
+  it("sem guard modelado — o script é fail-soft por desenho (mesma disciplina dos ingests de gasto vizinhos)", () => {
+    const t = getScheduledTaskByName("Diaria-Aquisicao-Reconcile-Daily")!;
+    assert.equal(t.guard, undefined);
+  });
+
+  it("logPath próprio, distinto de Diaria-Ads-Spend-Ingest-Alarm", () => {
+    const t = getScheduledTaskByName("Diaria-Aquisicao-Reconcile-Daily")!;
+    const alarm = getScheduledTaskByName("Diaria-Ads-Spend-Ingest-Alarm")!;
+    assert.notEqual(t.logPath, alarm.logPath);
+  });
+});
