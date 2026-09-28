@@ -2131,6 +2131,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // sexta-feira (ver grep de `dayOfWeek: "Friday"` — todas as outras são
     // domingo).
     schedule: { kind: "weekly", dayOfWeek: "Friday", hour: 2, minute: 30 },
+    // `enabled: false` DE PROPÓSITO (review da PR #8922 achou a omissão: sem
+    // isso, `setup-systemd-timers.ts` trata `undefined` como elegível pra
+    // arme, e `Diaria-Remediate-Never-Armed-Tasks` (#8153) auto-arma
+    // qualquer task `neverArmed` — contradiria o "DECLARADA, NÃO ARMADA"
+    // abaixo e o pedido explícito do editor na #8906, "religar exige
+    // confirmação"). Trocar pra `true` só depois de armar de propósito.
+    enabled: false,
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, sem `data/`
     // real nem `gh` autenticado contra o repo aqui) — arme real via
     // `scripts/setup-systemd-timers.ts` na checkout do `300`, com
