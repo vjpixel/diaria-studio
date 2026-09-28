@@ -128,7 +128,7 @@ export function getDeepseekEntity(): EntityContent {
       "Linha do tempo da DeepSeek na cobertura da diar.ia.br: do corte de 75% no preço da API ao chip próprio, passando pelo interesse da Microsoft.",
     introHeading: "Como a DeepSeek forçou o resto do mercado de IA a reagir?",
     introParagraph:
-      "A DeepSeek apareceu na cobertura da diar.ia.br como a laboratório chinesa que mais vezes forçou concorrentes ocidentais a reagir: um corte de 75% no preço da própria API que pressionou OpenAI, Anthropic e Google a revisarem tabelas, um modelo novo treinado com chips da Huawei em vez de GPUs da Nvidia — sinal de que a China consegue avançar em IA mesmo sob sanção de hardware —, e um chip de processamento próprio em desenvolvimento para reduzir ainda mais essa dependência. O efeito passou dos concorrentes para os clientes: a Microsoft chegou a avaliar trocar os modelos americanos do Copilot Cowork pelo DeepSeek V4 por causa do custo. A mesma acessibilidade teve um lado sombrio: um hacker chinês usou o modelo, acoplado a uma ferramenta de automação, para tentar ataques autônomos contra servidores expostos na internet. Esta página reúne, em ordem cronológica, cada vez que a DeepSeek apareceu nas edições da diária.",
+      "A DeepSeek apareceu na cobertura da diar.ia.br como a laboratório chinesa que mais vezes forçou concorrentes ocidentais a reagir: um corte de 75% no preço da própria API que pressionou OpenAI, Anthropic e Google a revisarem tabelas, um modelo novo treinado com chips da Huawei em vez de GPUs da Nvidia — sinal de que a China consegue avançar em IA mesmo sob sanção de hardware —, e um chip de processamento próprio em desenvolvimento para reduzir ainda mais essa dependência. O efeito passou dos concorrentes para os clientes: a Microsoft chegou a avaliar trocar os modelos americanos do Copilot Cowork pelo DeepSeek V4 por causa do custo. A mesma acessibilidade teve um lado sombrio: um hacker chinês usou o modelo, acoplado a uma ferramenta de automação, para tentar ataques autônomos contra servidores expostos na internet. Um benchmark independente de design confirmou a vantagem de custo: o DeepSeek V4.1 Flash quase empatou com o líder GPT-6 Astra em qualidade, cobrando cerca de 1,4% do preço por tarefa. Esta página reúne, em ordem cronológica, cada vez que a DeepSeek apareceu nas edições da diária.",
     mentions: MENTIONS,
     faq: [
       {
@@ -154,6 +154,11 @@ export function getDeepseekEntity(): EntityContent {
         question: "Um hacker já usou a DeepSeek para atacar sistemas?",
         answer:
           "Sim. Em agosto de 2026, a Unit 42 (Palo Alto Networks) identificou um agente de ameaça chinês usando o modelo DeepSeek, acoplado à ferramenta Hermes Agent, para buscar alvos e disparar tentativas de ataque contra servidores expostos na internet com pouca intervenção humana — nenhuma das tentativas autônomas teve sucesso nesse episódio.",
+      },
+      {
+        question: "O DeepSeek é realmente mais barato que os modelos ocidentais?",
+        answer:
+          "Segundo a OpenDesign Arena (setembro de 2026), sim: em tarefas reais de design, o DeepSeek V4.1 Flash pontuou 81,2 de 100 — a 1,5 ponto do líder GPT-6 Astra, da OpenAI — cobrando cerca de US$ 0,023 por tarefa contra US$ 1,61 do modelo da OpenAI, aproximadamente 1,4% do preço.",
       },
     ],
     publishedDate: "2026-08-15",
