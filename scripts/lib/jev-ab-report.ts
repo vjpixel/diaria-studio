@@ -233,35 +233,45 @@ export function computeMetrics(e: EditionRaw): { m: EditionMetrics; warnings: st
 
     // #8901: tokens (in/out) + cost_usd por etapa 1-4 — a soma `tokens` acima
     // esconde que a Etapa 4 (dominada pelo gate humano) afoga qualquer
-    // diferença real do Jev na Etapa 1. Sem dado pra uma etapa → null + aviso
-    // (mesma disciplina do resto do arquivo: nunca 0 fabricado).
+    // diferença real do Jev na Etapa 1. Sem dado pra uma etapa → null (mesma
+    // disciplina do resto do arquivo: nunca 0 fabricado). Aviso AGREGADO (no
+    // máx. 2 linhas — lista de etapas por métrica ausente, não 1 linha por
+    // etapa/métrica): achado no self-review do #8912 — o fixture de teste
+    // "clean" pré-#8901 (sem cost_usd, sem rows de Etapa 2/3) gerava 8 linhas
+    // de warning por edição com o design anterior (1 linha por etapa por
+    // métrica ausente + 3 linhas de "soma parcial" redundantes com a lista
+    // por etapa) — ruído desproporcional pra uma edição real completa (que
+    // tem cost_usd em todas as 4 etapas desde o #3441), mas ainda plausível
+    // em edições legadas/incompletas (Stage 2/3 puladas, cost_usd ausente
+    // pré-#3441) — reduzir a superfície sem perder o sinal.
+    const missingTokenStages: number[] = [];
+    const missingCostStages: number[] = [];
     for (const stageNum of [1, 2, 3, 4] as const) {
       const row = rows.find((r) => r.stage === stageNum);
       const tIn = row && num(row.tokens_in) ? row.tokens_in : null;
       const tOut = row && num(row.tokens_out) ? row.tokens_out : null;
       const cost = row && num(row.cost_usd) ? row.cost_usd : null;
       perStage[stageNum] = { tokensIn: tIn, tokensOut: tOut, costUsd: cost };
-      if (tIn === null && tOut === null) w.push(`${id}: Stage ${stageNum} sem tokens_in/tokens_out — indisponível`);
-      if (cost === null) w.push(`${id}: Stage ${stageNum} sem cost_usd — indisponível`);
+      if (tIn === null && tOut === null) missingTokenStages.push(stageNum);
+      if (cost === null) missingCostStages.push(stageNum);
+    }
+    if (missingTokenStages.length > 0) {
+      w.push(`${id}: tokens_in/tokens_out ausentes nas Etapas ${missingTokenStages.join(", ")} — indisponíveis`);
+    }
+    if (missingCostStages.length > 0) {
+      w.push(`${id}: cost_usd ausente nas Etapas ${missingCostStages.join(", ")} — indisponível`);
     }
 
-    // Soma 1-3 (sem gate humano) — parcial se alguma das 3 etapas faltar dado.
+    // Soma 1-3 (sem gate humano) — a parcialidade já foi comunicada pelos 2
+    // avisos agregados acima (lista as etapas 1-3 ausentes, se houver); aqui
+    // só computa o valor, sem repetir aviso.
     const s123 = [1, 2, 3] as const;
     const s123TokensIn = s123.map((n) => perStage[n]!.tokensIn).filter((v): v is number => v !== null);
     const s123TokensOut = s123.map((n) => perStage[n]!.tokensOut).filter((v): v is number => v !== null);
     const s123Cost = s123.map((n) => perStage[n]!.costUsd).filter((v): v is number => v !== null);
-    if (s123TokensIn.length > 0) {
-      stage1to3TokensIn = s123TokensIn.reduce((a, b) => a + b, 0);
-      if (s123TokensIn.length < 3) w.push(`${id}: soma Etapas 1-3 (tokens_in) parcial (${s123TokensIn.length}/3 etapas)`);
-    }
-    if (s123TokensOut.length > 0) {
-      stage1to3TokensOut = s123TokensOut.reduce((a, b) => a + b, 0);
-      if (s123TokensOut.length < 3) w.push(`${id}: soma Etapas 1-3 (tokens_out) parcial (${s123TokensOut.length}/3 etapas)`);
-    }
-    if (s123Cost.length > 0) {
-      stage1to3CostUsd = s123Cost.reduce((a, b) => a + b, 0);
-      if (s123Cost.length < 3) w.push(`${id}: soma Etapas 1-3 (cost_usd) parcial (${s123Cost.length}/3 etapas)`);
-    }
+    if (s123TokensIn.length > 0) stage1to3TokensIn = s123TokensIn.reduce((a, b) => a + b, 0);
+    if (s123TokensOut.length > 0) stage1to3TokensOut = s123TokensOut.reduce((a, b) => a + b, 0);
+    if (s123Cost.length > 0) stage1to3CostUsd = s123Cost.reduce((a, b) => a + b, 0);
   }
 
   return {

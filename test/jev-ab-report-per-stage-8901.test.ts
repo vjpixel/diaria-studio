@@ -69,23 +69,40 @@ describe("computeMetrics — tokens/cost_usd por etapa (#8901)", () => {
     assert.equal(m.stage1to3CostUsd, 17);
   });
 
-  it("etapa sem dado (stage row ausente) vira null + warning, nunca 0", () => {
+  it("etapa sem dado (stage row ausente) vira null + warning AGREGADO (1 linha por métrica, não por etapa)", () => {
     const e = makeEdition("260928", [stageRow(1, 1_000_000, 100_000, 5)]);
     const { m, warnings } = computeMetrics(e);
     assert.equal(m.stage2TokensIn, null);
     assert.equal(m.stage2CostUsd, null);
-    assert.ok(warnings.some((w) => w.includes("Stage 2 sem tokens_in/tokens_out")));
-    assert.ok(warnings.some((w) => w.includes("Stage 2 sem cost_usd")));
+    // #8912 self-review: warning agregado por métrica ("Etapas 2, 3, 4"), não 1 linha por etapa — reduz ruído.
+    assert.ok(warnings.some((w) => w.includes("tokens_in/tokens_out ausentes nas Etapas") && w.includes("2") && w.includes("3") && w.includes("4")));
+    assert.ok(warnings.some((w) => w.includes("cost_usd ausente nas Etapas")));
   });
 
-  it("soma 1-3 parcial (falta 1 etapa) ainda soma o que tem + warning de parcialidade", () => {
+  it("soma 1-3 parcial (falta 1 etapa) ainda soma o que tem, sem warning redundante de 'soma parcial'", () => {
     const e = makeEdition("260928", [
       stageRow(1, 1_000_000, 100_000, 5),
       stageRow(3, 500_000, 50_000, 2),
     ]);
     const { m, warnings } = computeMetrics(e);
     assert.equal(m.stage1to3TokensIn, 1_500_000);
-    assert.ok(warnings.some((w) => w.includes("soma Etapas 1-3 (tokens_in) parcial")));
+    // #8912 self-review: a parcialidade já é comunicada pelo warning agregado
+    // "tokens_in/tokens_out ausentes nas Etapas 2, 4" — não duplicar com uma
+    // linha específica de "soma parcial".
+    assert.ok(!warnings.some((w) => w.includes("soma Etapas 1-3")));
+    assert.ok(warnings.some((w) => w.includes("tokens_in/tokens_out ausentes nas Etapas") && w.includes("2")));
+  });
+
+  it("edição COMPLETA (cost_usd + 4 etapas presentes) não gera nenhum warning por-etapa (#8912 self-review)", () => {
+    const e = makeEdition("260928", [
+      stageRow(1, 1_000_000, 100_000, 5),
+      stageRow(2, 2_000_000, 200_000, 10),
+      stageRow(3, 500_000, 50_000, 2),
+      stageRow(4, 203_600_000, 30_000_000, 119),
+    ]);
+    const { warnings } = computeMetrics(e);
+    assert.ok(!warnings.some((w) => w.includes("tokens_in/tokens_out ausentes")));
+    assert.ok(!warnings.some((w) => w.includes("cost_usd ausente")));
   });
 });
 
