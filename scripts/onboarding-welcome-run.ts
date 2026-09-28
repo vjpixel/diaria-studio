@@ -309,13 +309,8 @@ async function fetchSubscriptionsSinceKit(config: KitConfig, gteSec: number): Pr
 }
 
 /**
- * #7599: leitura de engajamento (aberturas) por assinante do Kit — **NÃO
- * CONFIRMADO AO VIVO** (mesma ressalva de várias funções em
- * `kit-subscribers.ts`). `GET /v4/subscribers/{id}/stats` é a melhor
- * suposição a partir do padrão REST do resto da v4 e do nome do tool MCP
- * equivalente (`list_stats_for_a_subscriber`) — nenhuma sessão pôde
- * confirmar o shape real contra a conta, porque scripts não têm acesso à
- * MCP (só sessões interativas têm).
+ * #7599: leitura de engajamento (aberturas) por assinante do Kit.
+ * `GET /v4/subscribers/{id}/stats`.
  *
  * Fail-safe por desenho: qualquer erro (404, shape inesperado, campo
  * ausente sob os nomes tentados) devolve `null`. O caller (`email3Eligibility`
@@ -333,6 +328,18 @@ async function fetchSubscriptionsSinceKit(config: KitConfig, gteSec: number): Pr
  * NUNCA batiam — `opens` saía sempre `undefined`, o e-mail 3 nunca via uma
  * abertura de verdade e nunca disparou pra ninguém desde a migração pro Kit
  * (medido em 14/09/2026: 930 entradas, 0 `email3_state: sent`).
+ *
+ * #7922 (28/09/2026): shape CONFIRMADO AO VIVO contra a conta Free real
+ * (chamada de leitura única, `GET /subscribers/{id}/stats` sobre 1
+ * assinante real, sem escrita nenhuma) — bate exatamente com o que a doc
+ * pública dizia e com o que este código já lê: `{ subscriber: { id, stats:
+ * { sent, opened, clicked, bounced, open_rate, click_rate, last_sent,
+ * last_opened, last_clicked, sends_since_last_open, sends_since_last_click
+ * } } }`, com `opened` como `number`. A ressalva "não confirmado ao vivo"
+ * do #7599 (acima, removida) e o "não validado ao vivo" citado na issue
+ * #7922 deixam de se aplicar — a única coisa que a doc pública não podia
+ * garantir (se o plano Free devolve exatamente este shape, sem campo a
+ * menos) foi verificada e bate.
  */
 export async function fetchSubscriberStatsKit(id: number, config: KitConfig): Promise<OpenStats | null> {
   try {
