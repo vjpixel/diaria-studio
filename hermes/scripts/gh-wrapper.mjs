@@ -106,7 +106,39 @@ function main() {
   process.exit(child.status ?? 1);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const isMain =
-  import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`;
-if (isMain) main();
+/**
+ * Detecta se este arquivo é o módulo de entrada (`node <path>` ou, no modo de
+ * instalação documentado em `hermes/README.md`, `node <symlink-para-este-
+ * arquivo>`) — nunca um `import` de outro módulo (ex.: `test/gh-wrapper.test.ts`
+ * importando `findRealGh`).
+ *
+ * `import.meta.url` é sempre o caminho REAL resolvido pelo Node (ele segue
+ * symlinks ao carregar o módulo ES); `process.argv[1]` é o caminho como foi
+ * INVOCADO — que é o symlink, não o alvo, quando instalado como documentado
+ * (`ln -sf .../gh-wrapper.mjs ~/.local/bin/gh`). Comparar os dois direto
+ * (string contra string) nunca bate nesse caso, e `main()` nunca roda — é
+ * exatamente o bug do #8900. Resolver `process.argv[1]` via `realpathSync`
+ * antes de comparar corrige as duas formas de invocação (caminho direto e
+ * symlink) sem afetar o caso de `import` puro (`process.argv[1]` aponta pro
+ * arquivo que INICIOU o processo — o test runner, não este wrapper — então a
+ * comparação continua `false` e `main()` continua não disparando ao importar
+ * `findRealGh` em teste).
+ */
+function isEntrypoint() {
+  if (!process.argv[1]) return false;
+  let argv1RealPath;
+  try {
+    argv1RealPath = realpathSync(process.argv[1]);
+  } catch {
+    argv1RealPath = process.argv[1];
+  }
+  let selfRealPath;
+  try {
+    selfRealPath = realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    selfRealPath = fileURLToPath(import.meta.url);
+  }
+  return argv1RealPath === selfRealPath;
+}
+
+if (isEntrypoint()) main();
