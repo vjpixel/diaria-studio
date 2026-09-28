@@ -266,20 +266,15 @@ LOCK_BLOCKED=0
 # permite ver recorrência) E acumula um resumo truncado pra ir na linha
 # final — as duas formas do #6910, não só uma.
 # #8827: redige segredo com formato de provedor de todo texto que este script
-# publica no GitHub (repo público). Mesmos padrões do hook
-# `.claude/hooks/block-gh-comment-secrets.mjs`, que cobre o `gh pr comment`
-# feito pela sessão `claude -p` de review.
+# publica no GitHub (repo público). Fonte ÚNICA dos padrões desde o #8884:
+# `.claude/hooks/lib/secret-patterns.mjs` — o mesmo módulo que
+# `.claude/hooks/block-gh-comment-secrets.mjs` (cobre o `gh pr comment` feito
+# por uma sessão do Claude Code) e `hermes/scripts/gh-wrapper.mjs` (cobre
+# qualquer `gh` publicador rodado fora do Claude Code — agente Hermes, cron,
+# script solto) importam. Antes do #8884 esta função duplicava os padrões via
+# sed, o que já tinha divergido de fato uma vez.
 redact_public_text() {
-  printf '%s' "$1" | sed -E \
-    -e 's/sk-or-(v1-)?[A-Za-z0-9_-]{20,}/[REDACTED_OPENROUTER]/g' \
-    -e 's/sk-ant-[A-Za-z0-9_-]{20,}/[REDACTED_ANTHROPIC]/g' \
-    -e 's/sk-(proj-)?[A-Za-z0-9]{32,}/[REDACTED_OPENAI]/g' \
-    -e 's/xkeysib-[A-Za-z0-9-]{20,}/[REDACTED_BREVO]/g' \
-    -e 's/(ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/[REDACTED_GITHUB]/g' \
-    -e 's/dp\.(st|pt|sa|ct|scim)\.[A-Za-z0-9_.-]{20,}/[REDACTED_DOPPLER]/g' \
-    -e 's/xox[abprs]-[A-Za-z0-9-]{20,}/[REDACTED_SLACK]/g' \
-    -e 's/AIza[A-Za-z0-9_-]{35}/[REDACTED_GOOGLE_API]/g' \
-    -e 's/AKIA[A-Z0-9]{16}/[REDACTED_AWS]/g'
+  printf '%s' "$1" | node "$REPO/.claude/hooks/lib/secret-patterns.mjs" redact
 }
 
 INFRA_ERROR_LOG="$REPO/data/continuo-pr-review/infra-errors.jsonl"

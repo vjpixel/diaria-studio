@@ -99,12 +99,18 @@ describe("brechas apontadas no review da PR #8880", () => {
   });
 });
 
-describe("paridade de padrões hook × bash (#8827)", () => {
-  it("todo provedor do hook tem linha no redact_public_text", () => {
+describe("paridade de padrões hook × bash (#8827/#8884)", () => {
+  // Desde o #8884, `redact_public_text` deixou de duplicar os padrões via
+  // sed — delega pro mesmo módulo (`.claude/hooks/lib/secret-patterns.mjs`)
+  // que este próprio hook importa. "Paridade" agora é literal: mesma fonte,
+  // não duas cópias que podem divergir.
+  it("redact_public_text delega para o módulo compartilhado de padrões", () => {
     const src = readFileSync("hermes/scripts/continuo-pr-review.sh", "utf8");
-    for (const tag of ["OPENROUTER", "ANTHROPIC", "OPENAI", "BREVO", "GITHUB", "DOPPLER", "SLACK", "GOOGLE_API", "AWS"]) {
-      assert.ok(src.includes(`[REDACTED_${tag}]`), tag);
-    }
+    assert.ok(src.includes(".claude/hooks/lib/secret-patterns.mjs"));
+  });
+  it("o hook usa o mesmo módulo compartilhado (não duplica os padrões)", () => {
+    const src = readFileSync(".claude/hooks/block-gh-comment-secrets.mjs", "utf8");
+    assert.ok(src.includes("./lib/secret-patterns.mjs"));
   });
 });
 
@@ -130,11 +136,13 @@ describe("continuo-pr-review.sh redige o REJECT_BODY (#8827)", () => {
     const commentAt = src.indexOf('gh pr comment "$pr" --body "$REJECT_BODY"');
     assert.ok(redactAt > 0 && commentAt > redactAt);
   });
-  it("redact_public_text remove a chave de verdade (bash)", () => {
+  it("redact_public_text remove a chave de verdade (bash, via o módulo Node compartilhado)", () => {
     const fn = src.slice(src.indexOf("redact_public_text() {"), src.indexOf("INFRA_ERROR_LOG="));
-    const r = spawnSync("bash", ["-c", `${fn}\nredact_public_text "$1"`, "_", `motivo ${OR_KEY} fim`], {
-      encoding: "utf8",
-    });
+    const r = spawnSync(
+      "bash",
+      ["-c", `REPO="$(pwd)"\n${fn}\nredact_public_text "$1"`, "_", `motivo ${OR_KEY} fim`],
+      { encoding: "utf8", cwd: process.cwd() },
+    );
     assert.equal(r.status, 0);
     assert.ok(!r.stdout.includes(OR_KEY));
     assert.match(r.stdout, /\[REDACTED_OPENROUTER\]/);
