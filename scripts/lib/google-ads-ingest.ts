@@ -365,7 +365,7 @@ export const DEFAULT_LOOKBACK_DAYS = 90;
  * reescrito na rodada seguinte de qualquer forma, porque a janela o recobre
  * inteiro e o merge é idempotente por (`canal`, `mes`).
  */
-function toGaqlDate(d: Date): string {
+export function toGaqlDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
@@ -460,6 +460,112 @@ export function normalizeGoogleAdsPerformanceRows(
     });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Conversões por ação (#8591 item 2) — resolve, pra Google, "qual ação de
+// conversão conta como cadastro": a PRIMÁRIA "Assinatura Confirmada"
+// (`AW-17790097065`), não a de confirmação DOI usada pelo upload de #8555
+// (`upload-google-ads-confirmations.ts`, secundária/`UPLOAD_CLICKS`,
+// propósito distinto). Confirmado em `docs/gtm-signup-tracking-setup.md`
+// ("Ação 7418673798 Assinatura Confirmada... única primária") e
+// `docs/scheduled-tasks-registry.md` ("o script recusa por id a ação de
+// CADASTRO 7418673798 (única primária)"). Vive na mesma conta
+// (`GOOGLE_ADS_CUSTOMER_ID` = `2369219639`), então não precisa de um
+// customer-id próprio como a ação de confirmação precisou.
+// ---------------------------------------------------------------------------
+
+/** Id da conversion action PRIMÁRIA de cadastro newsletter no Google Ads —
+ *  decisão do editor em 28/09/2026 (`/diaria-desbloqueia`, #8591): "a ação
+ *  primária de cadastro newsletter". Reverificar via GAQL
+ *  (`FROM conversion_action WHERE conversion_action.id = ...`) antes de
+ *  mudar este valor — nunca copiar de memória sem re-derivar (#1172). */
+export const GOOGLE_ADS_REGISTRATION_CONVERSION_ACTION_ID = "7418673798";
+
+/** Uma linha GAQL da query `FROM conversion_action` (ver
+ *  `buildGoogleAdsConversionsQuery`) — 1 ponto por dia com o total de
+ *  conversões daquela ação específica. `metrics.conversions` pode vir
+ *  fracionário (a API conta conversões atribuídas por modelo, não só
+ *  inteiros) — arredondado em `aggregateGoogleAdsConversionsByDayWithDiscards`. */
+export interface GaqlConversionsApiRow extends GaqlSpendApiRow {
+  metrics?: { costMicros?: string | number; conversions?: string | number };
+}
+
+/**
+ * Monta a query GAQL que devolve conversões DIÁRIAS de UMA ação específica
+ * — `FROM conversion_action` (não `FROM customer`, que não aceita segmentar
+ * por ação sem multiplicar linhas de outras métricas) filtrado por
+ * `conversion_action.id`, mesmo padrão de verificação já documentado em
+ * `docs/gtm-signup-tracking-setup.md` ("GAQL contra a conversion action...
+ * WHERE conversion_action.id = ..."), com `segments.date` acrescentado pra
+ * granularidade diária. Mesmo range `BETWEEN` explícito de
+ * `buildDefaultGaqlQuery` (ver a docstring dela pro motivo de nunca usar
+ * `DURING LAST_N_DAYS`).
+ *
+ * @pure
+ */
+export function buildGoogleAdsConversionsQuery(now: Date, lookbackDays: number, conversionActionId: string): string {
+  const end = new Date(now.getTime());
+  const start = new Date(now.getTime() - (lookbackDays - 1) * 24 * 60 * 60 * 1000);
+  // Aceita tanto o id numérico puro quanto o resource name completo
+  // (`customers/X/conversionActions/Y`) — extrai só o ÚLTIMO segmento
+  // numérico, nunca todos os dígitos concatenados (um `replace(/[^0-9]/g,
+  // "")` ingênuo juntaria o customer id com o conversion action id).
+  const id = /(\d+)$/.exec(conversionActionId.trim())?.[1] ?? conversionActionId.replace(/[^0-9]/g, "");
+  return (
+    "SELECT segments.date, metrics.conversions FROM conversion_action " +
+    `WHERE conversion_action.id = ${id} AND segments.date BETWEEN '${toGaqlDate(start)}' AND '${toGaqlDate(end)}'`
+  );
+}
+
+export interface DailyConversionCount {
+  date: string;
+  count: number;
+}
+
+export interface AggregateGoogleAdsConversionsResult {
+  counts: DailyConversionCount[];
+  /** Linhas descartadas por malformação (sem `segments.date` reconhecível
+   *  ou `metrics.conversions` não-numérico) — mesma disciplina de
+   *  visibilidade de perda parcial de `aggregateGaqlSpendByMonthWithDiscards`
+   *  (#5598): nunca soma como 0 silencioso. */
+  discardedCount: number;
+}
+
+/**
+ * Normaliza `GaqlConversionsApiRow[]` (bruto, 1 linha por dia) pro total de
+ * conversões DIÁRIO, arredondado pro inteiro mais próximo (a API devolve
+ * fracionário por modelo de atribuição; um painel de "cadastros" quer
+ * contagem inteira, e `Math.round` é o critério mais simples defensável
+ * sem uma decisão editorial sobre o modelo de atribuição — fora de escopo
+ * da #8591). Linha sem `segments.date`/`metrics.conversions` parseável é
+ * descartada, nunca contamina a soma como 0.
+ *
+ * @pure
+ */
+export function aggregateGoogleAdsConversionsByDayWithDiscards(
+  rows: GaqlConversionsApiRow[],
+): AggregateGoogleAdsConversionsResult {
+  const byDay = new Map<string, number>();
+  let discardedCount = 0;
+  for (const row of rows) {
+    const date = row.segments?.date;
+    const raw = row.metrics?.conversions;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || raw === undefined) {
+      discardedCount++;
+      continue;
+    }
+    const value = typeof raw === "string" ? Number(raw) : raw;
+    if (!Number.isFinite(value)) {
+      discardedCount++;
+      continue;
+    }
+    byDay.set(date, (byDay.get(date) ?? 0) + value);
+  }
+  const counts = [...byDay.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, sum]) => ({ date, count: Math.round(sum) }));
+  return { counts, discardedCount };
 }
 
 /**

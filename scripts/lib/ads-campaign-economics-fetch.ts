@@ -332,6 +332,10 @@ export interface MetaAdsInsightsApiRow {
   spend?: string | number;
   clicks?: string | number;
   impressions?: string | number;
+  /** Só presente quando a query pede `fields=actions` (#8591 item 2) — cada
+   *  entrada é uma ação de conversão do período com sua contagem em
+   *  `value` (string decimal, mesma convenção de `spend`/`clicks`). */
+  actions?: Array<{ action_type?: string; value?: string | number }>;
 }
 
 /** `{since, until}` (`YYYY-MM-DD`, calendário UTC) — mesma convenção de
@@ -455,6 +459,140 @@ export async function fetchMetaAdsChannelMetrics(
   }
 
   return { metrics: normalizeMetaAdsInsightsRows(allRows, canal), fetchedAt: now.toISOString(), error: null };
+}
+
+// ---------------------------------------------------------------------------
+// Meta Ads — conversões `complete_registration` diárias (#8591 item 2)
+// ---------------------------------------------------------------------------
+
+/** `action_type` padrão da Meta pro evento `CompleteRegistration` (Events
+ *  Manager, mesmo vocabulário fixo citado em `docs/gtm-signup-tracking-setup.md`)
+ *  — decisão do editor em 28/09/2026 (`/diaria-desbloqueia`, #8591): "Meta
+ *  complete_registration" é a ação que conta como cadastro. */
+export const META_COMPLETE_REGISTRATION_ACTION_TYPE = "complete_registration";
+
+export interface DailyConversionCount {
+  date: string;
+  count: number;
+}
+
+export interface ExtractMetaCompleteRegistrationDailyResult {
+  counts: DailyConversionCount[];
+  /** Linhas descartadas por `date_start` irreconhecível — mesma disciplina
+   *  de visibilidade de perda parcial de
+   *  `aggregateGoogleAdsConversionsByDayWithDiscards` (#5598/#8591): nunca
+   *  soma como 0 silencioso, e nunca deixa o CALLER tratar "dia ausente
+   *  por causa de descarte" igual a "dia ausente porque a API não tinha
+   *  nada pra reportar" — essa distinção só é possível expondo a contagem
+   *  aqui. */
+  discardedCount: number;
+}
+
+/**
+ * Extrai a contagem diária de `complete_registration` de
+ * `MetaAdsInsightsApiRow[]` (bruto, `fields=actions,date_start`) — soma
+ * `value` de toda entrada de `actions` cujo `action_type` seja
+ * `META_COMPLETE_REGISTRATION_ACTION_TYPE`, por dia. Linha sem
+ * `date_start` reconhecível é descartada (mesma disciplina de
+ * `normalizeMetaAdsInsightsRows`, contada em `discardedCount`); linha com
+ * `date_start` válido mas SEM a ação (ou sem `actions` nenhum) conta como 0
+ * legítimo naquele dia — não é descartada, porque a API respondeu com
+ * sucesso e "nenhum cadastro no dia" é um resultado real, distinto de
+ * "falha ao buscar".
+ *
+ * @pure
+ */
+export function extractMetaCompleteRegistrationDaily(rows: MetaAdsInsightsApiRow[]): ExtractMetaCompleteRegistrationDailyResult {
+  const byDay = new Map<string, number>();
+  let discardedCount = 0;
+  for (const row of rows) {
+    const date = row.date_start;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      discardedCount++;
+      continue;
+    }
+    let count = byDay.get(date) ?? 0;
+    for (const action of row.actions ?? []) {
+      if (action.action_type !== META_COMPLETE_REGISTRATION_ACTION_TYPE) continue;
+      const raw = action.value;
+      const value = typeof raw === "string" ? Number(raw) : raw;
+      if (typeof value === "number" && Number.isFinite(value)) count += value;
+    }
+    byDay.set(date, count);
+  }
+  const counts = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, count]) => ({ date, count: Math.round(count) }));
+  return { counts, discardedCount };
+}
+
+/**
+ * Busca `complete_registration` diário via a MESMA Graph API `insights`
+ * de `fetchMetaAdsChannelMetrics` (auth, paginação e disciplina fail-soft
+ * idênticas — nunca lança), só que pedindo `fields=actions,date_start` em
+ * vez de `spend,clicks,impressions`. Função irmã, não uma variante da
+ * existente: `fetchMetaAdsChannelMetrics` alimenta o `/ads` ao vivo (many
+ * consumers já testados contra o shape `ChannelDailyMetric`); esta serve
+ * só a conciliação de cadastros da #8591 — misturar os dois campos na
+ * mesma chamada exigiria mudar o shape de retorno consumido em todo lugar
+ * pra um caso de uso que só um caller precisa.
+ */
+export async function fetchMetaAdsCompleteRegistrationDaily(
+  fetchImpl: MetaFetchLike,
+  accessToken: string,
+  opts: FetchMetaAdsChannelMetricsOptions = {},
+): Promise<{ counts: DailyConversionCount[]; discardedCount: number; fetchedAt: string | null; error: string | null }> {
+  const now = opts.now ?? new Date();
+  const lookbackDays = opts.lookbackDays ?? 30;
+  const adAccountId = opts.adAccountId ?? META_ADS_AD_ACCOUNT_ID;
+  const apiVersion = opts.apiVersion ?? META_GRAPH_API_VERSION_DEFAULT;
+  const base = opts.apiBaseUrl ?? `https://graph.facebook.com/${apiVersion}`;
+  const maxPages = opts.maxPages ?? META_ADS_INSIGHTS_MAX_PAGES;
+
+  const { since, until } = toMetaAdsDateRange(now, lookbackDays);
+  const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
+  let url = `${base}/act_${adAccountId}/insights?level=account&time_increment=1&time_range=${timeRange}&fields=actions,date_start&limit=100`;
+  const authHeaders = { Authorization: `Bearer ${accessToken}` };
+
+  const allRows: MetaAdsInsightsApiRow[] = [];
+  let pages = 0;
+  for (;;) {
+    pages++;
+    if (pages > maxPages) {
+      return {
+        counts: [],
+        discardedCount: 0,
+        fetchedAt: null,
+        error: `fetchMetaAdsCompleteRegistrationDaily: excedeu maxPages=${maxPages} sem chegar ao fim da paginação — abortando em vez de continuar indefinidamente.`,
+      };
+    }
+    let res: Response;
+    try {
+      res = await fetchImpl(url, { headers: authHeaders });
+    } catch (e) {
+      return { counts: [], discardedCount: 0, fetchedAt: null, error: `falha de rede no Graph API (Meta Ads insights, actions): ${e instanceof Error ? e.message : e}` };
+    }
+    let payload: any;
+    try {
+      payload = await res.json();
+    } catch (e) {
+      return { counts: [], discardedCount: 0, fetchedAt: null, error: `Graph API (Meta Ads insights, actions) respondeu corpo não-JSON (HTTP ${res.status}): ${e instanceof Error ? e.message : e}` };
+    }
+    if (!res.ok || payload?.error) {
+      return {
+        counts: [],
+        discardedCount: 0,
+        fetchedAt: null,
+        error: `Graph API (Meta Ads insights, actions) falhou (HTTP ${res.status}): ${payload?.error?.message ?? JSON.stringify(payload).slice(0, 300)}`,
+      };
+    }
+    const data = Array.isArray(payload?.data) ? (payload.data as MetaAdsInsightsApiRow[]) : [];
+    allRows.push(...data);
+    const next = payload?.paging?.next;
+    if (!next || typeof next !== "string") break;
+    url = next;
+  }
+
+  const { counts, discardedCount } = extractMetaCompleteRegistrationDaily(allRows);
+  return { counts, discardedCount, fetchedAt: now.toISOString(), error: null };
 }
 
 // ---------------------------------------------------------------------------

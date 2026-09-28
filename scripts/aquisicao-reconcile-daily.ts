@@ -20,30 +20,26 @@
  * no #7561 (06/09/2026), antes desta issue ter sido aberta — este script
  * não precisa (nem deveria) tocar nesse dispatch.
  *
- * ## O que este script DELIBERADAMENTE NÃO FAZ (item 2 da #8591, bloqueado)
+ * ## O painel agora chega sozinho (item 2 da #8591, fechado 28/09/2026)
  *
- * A issue propõe consumir "as conversões do painel" pelo mesmo caminho dos
- * ingests diários de gasto (`google-ads-ingest-spend.ts`,
- * `meta-ads-ingest-spend.ts`). Investigação: **nenhum dos dois ingests
- * busca conversões** — só `metrics.cost_micros`/`clicks`/`impressions`
- * (Google, GAQL) e o equivalente de gasto na Graph API (Meta). Buscar
- * conversões exigiria decidir, por plataforma, qual AÇÃO de conversão
- * conta como "cadastro" (Google: qual `conversion_action` entre os
- * cadastrados na conta; Meta: qual `action_type` do campo `actions` do
- * Insights — lead, complete_registration, ou o evento CAPI do #8572) e
- * confirmar que o token/escopo já concedido cobre ler esse metric — nenhuma
- * das duas é uma escolha mecânica, e nenhuma está documentada em lugar
- * nenhum do projeto. Inventar uma aqui seria "achar sozinho a resposta que
- * é trade-off editorial genuíno" (critério 2 de "Perguntar é exceção",
- * CLAUDE.md) — decisão do editor, não deste script.
+ * O bloqueio original era decidir, por plataforma, qual AÇÃO de conversão
+ * conta como "cadastro" — trade-off editorial genuíno (critério 2 de
+ * "Perguntar é exceção", CLAUDE.md), não uma escolha mecânica que este
+ * script pudesse inventar sozinho. O editor decidiu via `/diaria-desbloqueia`
+ * em 28/09/2026 (comentário da issue): **CompleteRegistration** — Meta
+ * `complete_registration` (Graph API `insights.actions`), Google a ação
+ * PRIMÁRIA de cadastro newsletter (`7418673798 "Assinatura Confirmada"`,
+ * distinta da ação de confirmação DOI do #8555/#8573, secundária).
  *
- * Por isso o `factor` (fator = painel/coorte real) permanece MANUAL: se
- * existir um arquivo de painel em `data/aquisicao/painel/{dia}.json` (mesmo
- * formato de `docs/aquisicao-reconcile-panel-template.json`) para o dia
- * processado, este script roda `factor` sobre ele e imprime o resultado
- * (log-only, nunca alarma — ver próxima seção). Se não existir, loga que o
- * passo foi pulado por falta de painel e segue — nunca trata isso como
- * erro.
+ * `scripts/aquisicao-conversions-ingest.ts` (task própria, agendada ANTES
+ * desta) busca essas conversões diariamente e grava
+ * `data/aquisicao/painel/{dia}.json` — o MESMO caminho que este script já
+ * lia manualmente. Este script não muda: `factor` roda sobre qualquer
+ * arquivo que estiver nesse caminho quando ele processar o dia, sem saber
+ * (nem precisar saber) se foi escrito à mão ou pelo ingest automático — se
+ * não existir (credencial ausente, API fora do ar, ou alguém preferir
+ * editar à mão pra um dia específico), loga que o passo foi pulado por
+ * falta de painel e segue, nunca trata isso como erro.
  *
  * ## Log-only, sem inventar faixa de alarme (item 3 da #8591)
  *
