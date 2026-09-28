@@ -125,6 +125,44 @@
       </div>
       <p class="hint" id="cohort-origem-empty" hidden>Nenhum cadastro com data conhecida no período.</p>
     </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Onboarding — funil até o convite de apoio</h2>
+        <button id="refresh-onboarding-btn" type="button">Atualizar via Brevo</button>
+      </div>
+      <p class="hint">
+        D0 (e-mail 1) → D+3 (e-mail 2) → D+10 (convite de apoio, #7917).
+        <code>campaign_created</code> (Brevo) ou lote Kit criado confirmam só
+        PREPARAÇÃO do convite — nunca envio, entrega ou conversão. "Atualizar
+        via Brevo" consulta ao vivo só as campanhas ainda em rascunho local
+        (1 consulta por campanha distinta, nunca por assinante — a cota da
+        Brevo é 100 req/hora por conta).
+      </p>
+      <div id="onboarding-nodata" class="hint" hidden>
+        Sem dados nesta sessão — <code>data/onboarding/store.json</code>
+        ausente (sessão cloud sem a junction OneDrive, ou o executor
+        <code>onboarding-welcome-run.ts</code> nunca rodou ainda).
+      </div>
+      <p class="hint" id="onboarding-note"></p>
+      <p class="hint" id="onboarding-apoiador-error" hidden></p>
+
+      <div class="assinantes-summary-grid" id="onboarding-stage-counts"></div>
+
+      <h3>Comparação de coorte</h3>
+      <div class="assinantes-summary-grid" id="onboarding-cohort-summary"></div>
+
+      <h3>Rascunhos/lotes parados (sem agendar/enviar)</h3>
+      <div class="table-scroll">
+        <table class="triage-table" id="onboarding-stale-table">
+          <thead>
+            <tr><th>E-mail</th><th>Provedor</th><th>Estágio</th><th>Idade (dias)</th><th>Campanha/broadcast</th><th>Próxima ação</th></tr>
+          </thead>
+          <tbody id="onboarding-stale-tbody"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="onboarding-stale-empty" hidden>Nenhum rascunho parado no momento.</p>
+    </section>
   </main>
 
   <script>window.STUDIO_PAGE = "assinantes";</script>

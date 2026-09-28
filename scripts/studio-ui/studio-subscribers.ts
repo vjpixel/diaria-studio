@@ -485,8 +485,12 @@ const LINK_NOTE =
  * — nunca lança pro caller. Injetáveis (`contacts`/`env`/`cacheDir`/`now`),
  * mesmo padrão de `BuildApoiosDataOptions` em `studio-apoios.ts` — evita I/O
  * real e `.env` real em teste.
+ *
+ * Exportado (#7917): `studio-onboarding.ts` reusa este mesmo loader pra
+ * ligar entradas de onboarding a apoiadores confirmados — mesma fonte,
+ * mesmas limitações documentadas, sem duplicar a lógica de carga.
  */
-function loadLinkableApoiadores(
+export function loadLinkableApoiadores(
   rootDir: string,
   opts: {
     contacts?: ApoioContact[];

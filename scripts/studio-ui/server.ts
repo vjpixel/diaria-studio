@@ -375,6 +375,11 @@ import { searchSubscribersByEmail, buildSubscribersCohortData, buildAcquisitionC
 // decomposição em 4 zonas, sobre o registry do épico #7172 (F3-F5). Ver
 // studio-metrics.ts.
 import { buildMetricsData } from "./studio-metrics.ts";
+// #7917: visibilidade do funil de onboarding (D0/D+3/D+10) até o convite de
+// apoio — snapshot local sobre data/onboarding/store.json (#5908) + refresh
+// ao vivo opcional da Brevo (dedup por campanha, nunca por assinante). Ver
+// studio-onboarding.ts.
+import { buildOnboardingFunnelData, refreshBrevoCampaignStates, listPendingBrevoCampaignIds } from "./studio-onboarding.ts";
 import { watchStudioSource, type StudioSourceChange, type StudioSourceWatchHandle } from "./studio-source-watch.ts";
 // #5894: sendJson + readRequestBody extraídos pra http-utils.ts; handlers de
 // Caixas extraídos pra routes/boxes.ts — server.ts encolheu de 2389 → ~1700 linhas.
@@ -1379,6 +1384,54 @@ function handleApiSubscribersCohortApoiadores(rootDir: string, req: IncomingMess
   }
 }
 
+/** `GET /api/onboarding/funnel` (#7917) — snapshot do funil de onboarding
+ * (detectado → e-mail1 → e-mail2 → e-mail3 D+10: rascunho/agendado/enviado/
+ * skip/falha) sobre o estado LOCAL de `data/onboarding/store.json` — NUNCA
+ * consulta a Brevo/Kit ao vivo (ver docstring de `studio-onboarding.ts`,
+ * motivo é a cota de 100 req/hora da família `/emailCampaigns*`). Fail-soft
+ * por construção — `buildOnboardingFunnelData` nunca lança pros casos
+ * conhecidos (sem `data/`, sem store ainda, apoia.se indisponível). */
+function handleApiOnboardingFunnel(rootDir: string, res: ServerResponse): void {
+  try {
+    sendJson(res, 200, buildOnboardingFunnelData(rootDir));
+  } catch (e) {
+    sendJson(res, 500, { error: (e as Error).message });
+  }
+}
+
+/** `POST /api/onboarding/funnel/refresh-brevo` (#7917) — botão "Atualizar
+ * via Brevo": consulta ao vivo SÓ as campanhas `email3_campaign_id`
+ * distintas ainda em `campaign_created` (dedup — nunca 1 GET por
+ * assinante), reconstrói o snapshot com esse estado sobreposto. Somente
+ * observacional (GET puro na Brevo, `brevoGetCampaign`) — nunca cria,
+ * agenda ou cancela nada. Sem `BREVO_DIARIA_API_KEY` configurada nesta
+ * sessão: 200 com o snapshot LOCAL de qualquer forma (mesmo padrão de
+ * `handleApiOnboardingFunnel`) + aviso — refresh é um extra, sua ausência
+ * não deveria derrubar o painel. Falha de rede por campanha isolada vira
+ * `falha_consulta` só pras entradas daquela campanha (`buildOnboardingFunnelData`
+ * já trata isso), nunca 500 pro payload inteiro. */
+function handleApiOnboardingFunnelRefresh(rootDir: string, res: ServerResponse): void {
+  const apiKey = (process.env.BREVO_DIARIA_API_KEY ?? "").trim();
+  if (!apiKey) {
+    try {
+      sendJson(res, 200, {
+        ...buildOnboardingFunnelData(rootDir),
+        refreshWarning: "BREVO_DIARIA_API_KEY ausente nesta sessão — snapshot local, sem refresh ao vivo.",
+      });
+    } catch (e) {
+      sendJson(res, 500, { error: (e as Error).message });
+    }
+    return;
+  }
+  (async () => {
+    const campaignIds = listPendingBrevoCampaignIds(rootDir);
+    const { states, failed } = await refreshBrevoCampaignStates(apiKey, campaignIds);
+    return buildOnboardingFunnelData(rootDir, { brevoCampaignStates: states, brevoFailedCampaignIds: failed });
+  })()
+    .then((data) => sendJson(res, 200, data))
+    .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
+}
+
 /** `POST /api/painel/eia/refresh` — botão "Atualizar É IA?" (#3861): regenera
  * SÓ `data/poll-eia-summary.json` local a partir dos endpoints públicos do
  * worker poll (`refreshPollEiaSummaryLocal`) — NUNCA dispara o push paralelo
@@ -1502,6 +1555,13 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // escrita acima (checada antes do guard genérico de método).
       if (urlPath === "/api/painel/eia/refresh" && req.method === "POST") {
         handleApiPainelEiaRefresh(rootDir, req, res);
+        return;
+      }
+      // #7917: botão "Atualizar via Brevo" do painel de onboarding — mesmo
+      // tratamento das rotas de refresh acima (checada antes do guard
+      // genérico de método). Somente observacional, ver handler.
+      if (urlPath === "/api/onboarding/funnel/refresh-brevo" && req.method === "POST") {
+        handleApiOnboardingFunnelRefresh(rootDir, res);
         return;
       }
       // #3937: salvar a atribuição dos 3 slots de divulgação — checado ANTES
@@ -1669,6 +1729,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #7916 fatia 5/N: mesma coorte, com vínculo assinante↔apoiador por e-mail.
       if (urlPath === "/api/subscribers/cohort-apoiadores") {
         handleApiSubscribersCohortApoiadores(rootDir, req, res);
+        return;
+      }
+      // #7917: funil de onboarding (D0/D+3/D+10) até o convite de apoio — GET
+      // sempre local (sem rede), refresh ao vivo é a rota POST abaixo.
+      if (urlPath === "/api/onboarding/funnel") {
+        handleApiOnboardingFunnel(rootDir, res);
         return;
       }
       // #3924: seção "Caixas" — GET (PUT de save já tratado acima, antes do

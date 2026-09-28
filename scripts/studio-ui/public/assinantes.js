@@ -32,6 +32,15 @@ const el = {
   cohortOrigemGap: document.getElementById("cohort-origem-gap"),
   cohortOrigemTbody: document.getElementById("cohort-origem-tbody"),
   cohortOrigemEmpty: document.getElementById("cohort-origem-empty"),
+
+  refreshOnboardingBtn: document.getElementById("refresh-onboarding-btn"),
+  onboardingNodata: document.getElementById("onboarding-nodata"),
+  onboardingNote: document.getElementById("onboarding-note"),
+  onboardingApoiadorError: document.getElementById("onboarding-apoiador-error"),
+  onboardingStageCounts: document.getElementById("onboarding-stage-counts"),
+  onboardingCohortSummary: document.getElementById("onboarding-cohort-summary"),
+  onboardingStaleTbody: document.getElementById("onboarding-stale-tbody"),
+  onboardingStaleEmpty: document.getElementById("onboarding-stale-empty"),
 };
 
 function escapeHtml(s) {
@@ -347,5 +356,112 @@ el.cohortOrigemFilterForm.addEventListener("submit", (ev) => {
   refreshCohortOrigem();
 });
 
+// ---------------------------------------------------------------------------
+// #7917 — funil de onboarding até o convite de apoio (D+10)
+// ---------------------------------------------------------------------------
+
+const ONBOARDING_STAGE_LABELS = {
+  aguardando_confirmacao: "Aguardando confirmação",
+  not_due: "D+10 não venceu",
+  aguardando_dados: "Aguardando dados de abertura",
+  rascunho_criado: "Rascunho criado",
+  agendado: "Agendado",
+  enviado: "Enviado",
+  cancelado: "Cancelado",
+  skipped_no_open: "Sem abertura (terminal)",
+  skipped_inactive: "Inativo na decisão",
+  skipped_sem_dados: "Sem dados (terminal)",
+  falha_consulta: "Falha de consulta",
+};
+
+function renderOnboardingStageCounts(byStage) {
+  el.onboardingStageCounts.innerHTML = Object.entries(ONBOARDING_STAGE_LABELS)
+    .map(([key, label]) => tile(label, byStage?.[key] ?? 0))
+    .join("");
+}
+
+function renderOnboardingCohortSummary(cohort) {
+  if (!cohort) {
+    el.onboardingCohortSummary.innerHTML = "";
+    return;
+  }
+  const cliques = cohort.cliquesRastreados == null ? "não rastreado" : String(cohort.cliquesRastreados);
+  const apoios = cohort.semIndiceApoiador ? "sem dado (apoia.se indisponível)" : String(cohort.primeirosApoiosConfirmados);
+  el.onboardingCohortSummary.innerHTML = [
+    tile("Elegíveis (D+10 vencido)", cohort.elegiveis),
+    tile("Convites criados", cohort.convitesCriados),
+    tile("Convites enviados", cohort.convitesEnviados),
+    tile("Cliques no convite", cliques),
+    tile("1º apoio confirmado", apoios),
+  ].join("");
+}
+
+function renderOnboardingStale(staleDrafts) {
+  if (!staleDrafts || staleDrafts.length === 0) {
+    el.onboardingStaleTbody.innerHTML = "";
+    el.onboardingStaleEmpty.hidden = false;
+    return;
+  }
+  el.onboardingStaleEmpty.hidden = true;
+  el.onboardingStaleTbody.innerHTML = staleDrafts
+    .map((d) => {
+      const provider = d.provider ? escapeHtml(d.provider) : "—";
+      const idade = d.ageDays == null ? "—" : String(d.ageDays);
+      const campanha = d.campaignOrBroadcastId == null ? "—" : escapeHtml(String(d.campaignOrBroadcastId));
+      const stage = ONBOARDING_STAGE_LABELS[d.stage] ?? escapeHtml(d.stage);
+      return `<tr><td>${escapeHtml(d.email)}</td><td>${provider}</td><td>${escapeHtml(stage)}</td><td class="mono">${idade}</td><td class="mono">${campanha}</td><td>${escapeHtml(d.nextAction)}</td></tr>`;
+    })
+    .join("");
+}
+
+function renderOnboardingData(data) {
+  if (!data.db.available) {
+    el.onboardingNodata.hidden = false;
+    renderOnboardingStageCounts(null);
+    renderOnboardingCohortSummary(null);
+    renderOnboardingStale([]);
+    return;
+  }
+  el.onboardingNodata.hidden = true;
+  el.onboardingNote.textContent = data.refreshWarning ? `${data.note} ${data.refreshWarning}` : data.note;
+  if (data.apoiadorDataError) {
+    el.onboardingApoiadorError.hidden = false;
+    el.onboardingApoiadorError.textContent = `Vínculo com apoiadores indisponível: ${data.apoiadorDataError}`;
+  } else {
+    el.onboardingApoiadorError.hidden = true;
+  }
+  renderOnboardingStageCounts(data.summary.byEmail3Stage);
+  renderOnboardingCohortSummary(data.summary.cohort);
+  renderOnboardingStale(data.summary.staleDrafts);
+}
+
+async function loadOnboarding() {
+  try {
+    const res = await fetch("/api/onboarding/funnel");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderOnboardingData(await res.json());
+  } catch (e) {
+    el.onboardingNote.textContent = `Falha ao carregar funil de onboarding: ${e.message}`;
+  }
+}
+
+async function refreshOnboardingViaBrevo() {
+  el.refreshOnboardingBtn.disabled = true;
+  el.refreshOnboardingBtn.textContent = "Consultando Brevo…";
+  try {
+    const res = await fetch("/api/onboarding/funnel/refresh-brevo", { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderOnboardingData(await res.json());
+  } catch (e) {
+    el.onboardingNote.textContent = `Falha ao atualizar via Brevo: ${e.message}`;
+  } finally {
+    el.refreshOnboardingBtn.disabled = false;
+    el.refreshOnboardingBtn.textContent = "Atualizar via Brevo";
+  }
+}
+
+el.refreshOnboardingBtn.addEventListener("click", refreshOnboardingViaBrevo);
+
 refreshCohort();
 refreshCohortOrigem();
+loadOnboarding();
