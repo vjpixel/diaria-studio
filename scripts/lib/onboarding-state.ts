@@ -288,7 +288,8 @@ export interface RunSkip {
     | "sem_abertura"
     | "stats_ausentes"
     | "aguardando_confirmacao"
-    | "kit_transport_ativo";
+    | "kit_transport_ativo"
+    | "escada_iniciada_na_brevo";
   detalhe?: string;
 }
 
@@ -557,38 +558,61 @@ export function zeroDetectionAlarm(
 // #8966: guard de mútua-exclusão Brevo x Kit para candidatos NOVOS
 // ---------------------------------------------------------------------------
 
+export type OnboardingTransport = "brevo" | "kit";
+
 /**
- * Aplica, sobre o plano JÁ MONTADO pelo executor Brevo (`buildRunPlan`), o
- * guard de mútua-exclusão exigido pelo corte Brevo→Kit do onboarding (#7922
- * §2.4, bloqueante rastreado em #8966): quando o kill switch dedicado do
- * transporte Kit (`onboarding.kit_transport.enabled`) está ligado, o
- * executor Brevo NUNCA envia e-mail 1/2 para um candidato NOVO — ele passa a
- * servir só quem já tem histórico BREVO de uma etapa anterior ao corte.
+ * Decisão ÚNICA de qual transporte é dono do próximo passo (e-mail 1/2) de
+ * uma entrada — fonte de verdade consultada pelos DOIS executores
+ * (`onboarding-welcome-run.ts`/Brevo e `onboarding-kit-transport-run.ts`/Kit)
+ * pra que a mútua-exclusão do corte Brevo→Kit (#7922 §2.4, #8966) nunca
+ * dependa de duas implementações concordarem por acaso — a raiz do achado
+ * original: os dois executores rodam sobre o mesmo `buildRunPlan` sem
+ * checagem cruzada nenhuma.
  *
  * **Regra do corte é NUNCA retroativa (docs/onboarding-kit-cutover.md §2):
- * entrada que começou num transporte termina nesse transporte.** Não é
- * possível decidir isso olhando só o snapshot do plano (`RunAction` não
- * carrega o histórico do transporte) — por isso o filtro consulta o campo
- * de proveniência já persistido na entry:
+ * entrada que começou num transporte termina nesse transporte.** Não dá pra
+ * decidir isso olhando só o snapshot do plano (`RunAction` não carrega
+ * histórico de transporte) — por isso a decisão consulta o campo de
+ * proveniência já persistido na entry:
  *
- *   - `email1` é SEMPRE o primeiro toque de uma entrada nova
- *     (`buildRunPlan` só produz essa ação quando `email1_sent_at == null`)
- *     — com o kill switch ligado, o Kit é quem detecta e serve toda entrada
- *     nova a partir do corte, então o Brevo recusa incondicionalmente.
- *   - `email2` só continua na Brevo se o e-mail 1 dessa MESMA entrada já
- *     saiu pela Brevo (`email1_brevo_id != null`) — prova de que a entrada
- *     começou ali antes do corte. Ausência desse id com o kill switch ligado
- *     só pode significar que o e-mail 1 foi servido pelo Kit (`buildRunPlan`
- *     não deixaria a entrada chegar a "due" no e-mail 2 sem `email1_sent_at`
- *     preenchido) — a Brevo recusa e o Kit continua a escada.
- *   - `email3_campaign` fica FORA de escopo deste guard (issue #8966 e
- *     docs/onboarding-kit-cutover.md §2.4 pedem só e-mail 1/2 — o e-mail 3
- *     do lado Brevo já é sempre rascunho com aprovação humana explícita,
- *     risco de duplicação automática não se aplica).
+ *   - Kill switch desligado (`kitTransportEnabled === false`, estado atual
+ *     em produção): Brevo é dono de tudo — o Kit ainda nem existe pra essas
+ *     entradas.
+ *   - Kill switch ligado:
+ *       - `email1` é SEMPRE o primeiro toque de uma entrada NOVA
+ *         (`buildRunPlan` só produz essa ação quando `email1_sent_at ==
+ *         null`) — a partir do corte, toda entrada nova é do Kit.
+ *       - `email2` é do transporte que já enviou o e-mail 1 desta MESMA
+ *         entrada: `email1_brevo_id != null` prova que começou na Brevo
+ *         (→ `brevo`); ausência desse id com o e-mail 1 já enviado só pode
+ *         significar que foi o Kit quem serviu (→ `kit`).
  *
- * Kill switch desligado (`kitTransportEnabled === false`, o estado atual em
- * produção — #7922 ainda não foi cortado) é passagem livre: devolve o plano
- * inalterado, byte a byte.
+ * `email3_campaign` fica FORA de escopo desta decisão (issue #8966 e
+ * docs/onboarding-kit-cutover.md §2.4 pedem só e-mail 1/2 — o e-mail 3 já é
+ * sempre rascunho com aprovação humana explícita nos dois transportes,
+ * risco de duplicação automática não se aplica).
+ *
+ * @pure testável sem I/O
+ */
+export function ownerTransportFor(
+  entry: OnboardingEntry,
+  kind: "email1" | "email2",
+  kitTransportEnabled: boolean,
+): OnboardingTransport {
+  if (!kitTransportEnabled) return "brevo";
+  if (kind === "email1") return "kit";
+  return entry.email1_brevo_id != null ? "brevo" : "kit";
+}
+
+/**
+ * Aplica, sobre o plano JÁ MONTADO pelo executor Brevo (`buildRunPlan`), o
+ * lado BREVO do guard de mútua-exclusão: qualquer ação `email1`/`email2`
+ * cujo dono (`ownerTransportFor`) não seja `"brevo"` vira skip
+ * `kit_transport_ativo`, nunca ação. `email3_campaign` passa intocado (fora
+ * de escopo, ver docstring de `ownerTransportFor`).
+ *
+ * Kill switch desligado é passagem livre: devolve o plano inalterado, byte
+ * a byte (mesma referência de objeto).
  *
  * @pure testável sem I/O
  */
@@ -599,23 +623,69 @@ export function filterBrevoPlanForKitCutover(plan: RunPlanResult, kitTransportEn
   const skips: RunSkip[] = [...plan.skips];
 
   for (const action of plan.actions) {
-    if (action.kind === "email1") {
+    if (action.kind === "email3_campaign") {
+      actions.push(action);
+      continue;
+    }
+    if (ownerTransportFor(action.entry, action.kind, kitTransportEnabled) !== "brevo") {
       skips.push({
         entry: action.entry,
-        etapa: "email1",
+        etapa: action.kind,
         motivo: "kit_transport_ativo",
-        detalhe: "onboarding.kit_transport.enabled=true — candidato novo é servido pelo transporte Kit",
+        detalhe:
+          action.kind === "email1"
+            ? "onboarding.kit_transport.enabled=true — candidato novo é servido pelo transporte Kit"
+            : "onboarding.kit_transport.enabled=true — e-mail 1 desta entrada não tem email1_brevo_id " +
+              "(foi servido pelo Kit); a escada termina no transporte onde começou",
       });
       continue;
     }
-    if (action.kind === "email2" && action.entry.email1_brevo_id == null) {
+    actions.push(action);
+  }
+
+  return { ...plan, actions, skips };
+}
+
+/**
+ * Espelho de `filterBrevoPlanForKitCutover` pro lado KIT: aplicado por
+ * `onboarding-kit-transport-run.ts` sobre o plano que ELE monta com o mesmo
+ * `buildRunPlan`. Sem isto, uma entrada cujo e-mail 1 já saiu pela Brevo
+ * (`email1_brevo_id != null`) — devida no e-mail 2 — seria planejada pelos
+ * DOIS executores simultaneamente: o guard do lado Brevo já a mantém lá
+ * (`ownerTransportFor` devolve `"brevo"`), mas nada IMPEDIA o executor Kit
+ * de processar a mesma ação até este filtro existir (#8966, achado do
+ * coordenador: metade Kit faltando na fatia original desta issue).
+ *
+ * Qualquer ação `email1`/`email2` cujo dono não seja `"kit"` vira skip
+ * `escada_iniciada_na_brevo`. `email3_campaign` passa intocado (mesmo
+ * motivo de escopo do lado Brevo).
+ *
+ * Nota: com o kill switch DESLIGADO, `ownerTransportFor` devolve `"brevo"`
+ * pra tudo — este filtro esvaziaria o plano Kit por completo nesse estado.
+ * Isso é correto pro propósito do guard (Kit desligado não é dono de
+ * ninguém), e não conflita com o procedimento de dry-run pré-flip descrito
+ * em docs/onboarding-kit-cutover.md §3 item 2, porque esse dry-run só roda
+ * DEPOIS de `kit_transport.enabled` já ter sido ligado no config lido.
+ *
+ * @pure testável sem I/O
+ */
+export function filterKitPlanForBrevoInFlight(plan: RunPlanResult, kitTransportEnabled: boolean): RunPlanResult {
+  const actions: RunAction[] = [];
+  const skips: RunSkip[] = [...plan.skips];
+
+  for (const action of plan.actions) {
+    if (action.kind === "email3_campaign") {
+      actions.push(action);
+      continue;
+    }
+    if (ownerTransportFor(action.entry, action.kind, kitTransportEnabled) !== "kit") {
       skips.push({
         entry: action.entry,
-        etapa: "email2",
-        motivo: "kit_transport_ativo",
-        detalhe:
-          "onboarding.kit_transport.enabled=true — e-mail 1 desta entrada não tem email1_brevo_id " +
-          "(foi servido pelo Kit); a escada termina no transporte onde começou",
+        etapa: action.kind,
+        motivo: "escada_iniciada_na_brevo",
+        detalhe: kitTransportEnabled
+          ? "email1 desta entrada tem email1_brevo_id — escada começou na Brevo, termina lá"
+          : "onboarding.kit_transport.enabled=false — Brevo é dono de todas as entradas",
       });
       continue;
     }

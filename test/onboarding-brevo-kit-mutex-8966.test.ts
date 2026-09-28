@@ -8,21 +8,41 @@
  * receber o e-mail 1/2 pelos DOIS transportes.
  *
  * Casos cobertos (issue #8966):
- *   1. Kill switch Kit DESLIGADO → plano Brevo intocado (email1 e email2).
- *   2. Kill switch Kit LIGADO + candidato NOVO (sem email1_brevo_id) →
- *      Brevo recusa/skippa email1.
- *   3. Kill switch Kit LIGADO + candidato com email1 já enviado PELA BREVO
- *      (email1_brevo_id preenchido), devido pro email2 → Brevo continua
- *      processando normalmente (entrada iniciada na Brevo termina na Brevo).
- *   4. Kill switch Kit LIGADO + candidato devido pro email2 mas cujo email1
- *      foi servido pelo KIT (email1_sent_at preenchido, email1_brevo_id
- *      null) → Brevo recusa email2 (a escada termina no Kit).
- *   5. email3_campaign nunca é tocado pelo guard (fora de escopo — #8966 só
- *      cobre e-mail 1/2).
+ *   Lado BREVO (`filterBrevoPlanForKitCutover`):
+ *     1. Kill switch Kit DESLIGADO → plano Brevo intocado (email1 e email2).
+ *     2. Kill switch Kit LIGADO + candidato NOVO (sem email1_brevo_id) →
+ *        Brevo recusa/skippa email1.
+ *     3. Kill switch Kit LIGADO + candidato com email1 já enviado PELA BREVO
+ *        (email1_brevo_id preenchido), devido pro email2 → Brevo continua
+ *        processando normalmente (entrada iniciada na Brevo termina na Brevo).
+ *     4. Kill switch Kit LIGADO + candidato devido pro email2 mas cujo email1
+ *        foi servido pelo KIT (email1_sent_at preenchido, email1_brevo_id
+ *        null) → Brevo recusa email2 (a escada termina no Kit).
+ *     5. email3_campaign nunca é tocado pelo guard (fora de escopo — #8966 só
+ *        cobre e-mail 1/2).
+ *
+ *   Lado KIT (`filterKitPlanForBrevoInFlight`) — metade que faltava na
+ *   fatia original da PR #8976 (achado do coordenador: os dois executores
+ *   rodam sobre o MESMO `buildRunPlan`, filtrar só o lado Brevo não evita a
+ *   duplicação — o Kit também precisa recusar quem pertence à Brevo):
+ *     6. Kill switch LIGADO + candidato com email1_brevo_id preenchido,
+ *        devido pro email2 → plano BREVO contém a ação, plano KIT NÃO.
+ *     7. Kill switch LIGADO + candidato NOVO → plano KIT contém a ação
+ *        (email1), plano BREVO NÃO (mesma dupla-checagem, lado oposto).
+ *     8. Kill switch DESLIGADO → plano Kit fica vazio (Brevo é dono de
+ *        tudo enquanto o corte não foi feito).
+ *     9. `ownerTransportFor` exposta como decisão única, testada
+ *        isoladamente pros 4 combos (switch on/off × email1/email2).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildRunPlan, filterBrevoPlanForKitCutover, type RunPlanResult } from "../scripts/lib/onboarding-state.ts";
+import {
+  buildRunPlan,
+  filterBrevoPlanForKitCutover,
+  filterKitPlanForBrevoInFlight,
+  ownerTransportFor,
+  type RunPlanResult,
+} from "../scripts/lib/onboarding-state.ts";
 import type { OnboardingEntry } from "../scripts/lib/onboarding-store.ts";
 
 const DAY = 86_400;
@@ -161,5 +181,113 @@ describe("filterBrevoPlanForKitCutover (#8966)", () => {
     assert.deepEqual(actionsSummary(plan), [{ kind: "email3_campaign", n: 1 }]);
     const filtered = filterBrevoPlanForKitCutover(plan, true);
     assert.deepEqual(actionsSummary(filtered), [{ kind: "email3_campaign", n: 1 }], "kill switch ligado não deve afetar email3_campaign");
+  });
+});
+
+describe("ownerTransportFor (#8966)", () => {
+  const novo = entry();
+  const iniciadoNaBrevo = entry({ email1_sent_at: iso(T0), email1_brevo_id: "brevo-msg-123" });
+  const iniciadoNoKit = entry({ email1_sent_at: iso(T0), email1_brevo_id: null });
+
+  it("kill switch desligado — brevo é dono de tudo, independente do kind ou da entry", () => {
+    assert.equal(ownerTransportFor(novo, "email1", false), "brevo");
+    assert.equal(ownerTransportFor(iniciadoNaBrevo, "email2", false), "brevo");
+    assert.equal(ownerTransportFor(iniciadoNoKit, "email2", false), "brevo");
+  });
+
+  it("kill switch ligado — email1 é sempre kit (candidato novo)", () => {
+    assert.equal(ownerTransportFor(novo, "email1", true), "kit");
+  });
+
+  it("kill switch ligado — email2 segue a proveniência do email1 (email1_brevo_id)", () => {
+    assert.equal(ownerTransportFor(iniciadoNaBrevo, "email2", true), "brevo");
+    assert.equal(ownerTransportFor(iniciadoNoKit, "email2", true), "kit");
+  });
+});
+
+describe("filterKitPlanForBrevoInFlight (#8966) — metade Kit do guard de mútua-exclusão", () => {
+  it("kill switch LIGADO + email2 devido, email1 da PRÓPRIA Brevo — plano BREVO tem a ação, plano KIT NÃO (a dupla-checagem que faltava)", () => {
+    const iniciadoNaBrevo = entry({
+      email1_sent_at: iso(T0),
+      email1_brevo_id: "brevo-msg-123",
+    });
+    const plan = buildRunPlan({
+      entries: [iniciadoNaBrevo],
+      statsById: {},
+      nowSec: T0 + 3 * DAY,
+      email2Days: 3,
+      email3Days: 10,
+      email3GraceDays: 10,
+      snippets: { 1: sendable(1), 2: sendable(2), 3: sendable(3) },
+    });
+
+    const brevoPlan = filterBrevoPlanForKitCutover(plan, true);
+    const kitPlan = filterKitPlanForBrevoInFlight(plan, true);
+
+    assert.deepEqual(actionsSummary(brevoPlan), [{ kind: "email2", email: "novo@example.com" }], "Brevo deve continuar servindo email2 desta escada");
+    assert.deepEqual(actionsSummary(kitPlan), [], "Kit NUNCA deve planejar email2 de uma escada iniciada na Brevo — duplicaria o envio");
+    const skip = kitPlan.skips.find((s) => s.motivo === "escada_iniciada_na_brevo");
+    assert.ok(skip, "skip escada_iniciada_na_brevo esperado no plano Kit");
+    assert.equal(skip!.etapa, "email2");
+  });
+
+  it("kill switch LIGADO + candidato NOVO — plano KIT tem email1, plano BREVO NÃO", () => {
+    const novo = entry();
+    const plan = buildRunPlan({
+      entries: [novo],
+      statsById: {},
+      nowSec: T0,
+      email2Days: 3,
+      email3Days: 10,
+      email3GraceDays: 10,
+      snippets: { 1: sendable(1), 2: sendable(2), 3: sendable(3) },
+    });
+
+    const brevoPlan = filterBrevoPlanForKitCutover(plan, true);
+    const kitPlan = filterKitPlanForBrevoInFlight(plan, true);
+
+    assert.deepEqual(actionsSummary(brevoPlan), [], "Brevo não deve planejar email1 de candidato novo com o corte ligado");
+    assert.deepEqual(actionsSummary(kitPlan), [{ kind: "email1", email: "novo@example.com" }], "Kit deve ser o único a planejar email1");
+  });
+
+  it("kill switch DESLIGADO — plano Kit fica vazio (Brevo é dono de tudo enquanto o corte não foi feito)", () => {
+    const novo = entry();
+    const iniciadoNaBrevo = entry({
+      subscription_id: "sub-2",
+      email: "antigo@example.com",
+      email1_sent_at: iso(T0),
+      email1_brevo_id: "brevo-msg-1",
+    });
+    const plan = buildRunPlan({
+      entries: [novo, iniciadoNaBrevo],
+      statsById: {},
+      nowSec: T0 + 3 * DAY,
+      email2Days: 3,
+      email3Days: 10,
+      email3GraceDays: 10,
+      snippets: { 1: sendable(1), 2: sendable(2), 3: sendable(3) },
+    });
+    const kitPlan = filterKitPlanForBrevoInFlight(plan, false);
+    assert.deepEqual(kitPlan.actions, [], "Kit desligado não deve planejar NENHUMA ação de e-mail 1/2");
+  });
+
+  it("email3_campaign nunca é tocado pelo lado Kit do guard (fora de escopo #8966)", () => {
+    const elegivel = entry({
+      email1_sent_at: iso(T0),
+      email1_brevo_id: "brevo-msg-1",
+      email2_sent_at: iso(T0 + 3 * DAY),
+      email2_brevo_id: "brevo-msg-2",
+    });
+    const plan = buildRunPlan({
+      entries: [elegivel],
+      statsById: { "sub-1": { total_unique_opened: 1, total_clicked: 0 } },
+      nowSec: T0 + 10 * DAY,
+      email2Days: 3,
+      email3Days: 10,
+      email3GraceDays: 10,
+      snippets: { 1: sendable(1), 2: sendable(2), 3: sendable(3) },
+    });
+    const kitPlan = filterKitPlanForBrevoInFlight(plan, true);
+    assert.deepEqual(actionsSummary(kitPlan), [{ kind: "email3_campaign", n: 1 }]);
   });
 });
