@@ -33,7 +33,7 @@ import { COLORS } from "./shared/design-tokens.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 import { renderAnalyticsHead, pushSignupConversionEventJs } from "./shared/seo-meta.ts"; // #6977: container GTM/GA4 — apex era o único host servido por Worker nosso sem instrumentação; #7358: evento de conversão no sucesso do cadastro
-import { renderSiteNav } from "./shared/site-nav.ts"; // #8497: menu global — a home consome o MESMO helper que as demais páginas, em vez do markup próprio que só ela tinha
+import { renderSiteNav, renderSiteFooterLinks } from "./shared/site-nav.ts"; // #8497: menu global + rodapé alinhado — a home consome os MESMOS helpers que as demais páginas, em vez do markup próprio que só ela tinha
 
 /**
  * Converte um hex `#RRGGBB` do DS pra `rgba(r,g,b,alpha)` — usado só pra
@@ -1425,7 +1425,7 @@ ${faqItems}
       <hr class="rule">
       <div class="footer-bottom">
         <span>&copy; ${new Date().getUTCFullYear()} diar.ia.br · São Paulo, Brasil</span>
-        <span><a href="https://eia.diar.ia.br/leaderboard">É IA?</a><a href="https://arquivo.diar.ia.br/">Arquivo</a><a href="https://especial.diar.ia.br/">Especial</a><a href="/apoiar/ir">Apoiar</a><a href="https://arquivo.diar.ia.br/privacidade">Privacidade</a></span>
+        <span>${renderSiteFooterLinks()}</span>
       </div>
     </div>
   </footer>

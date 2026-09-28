@@ -27,7 +27,13 @@
  */
 import { escHtml } from "../html-escape.ts";
 import { COLORS, FONTS } from "./design-tokens.ts";
-import { DIARIA_ESPECIAL_URL, DIARIA_LIVROS_URL, DIARIA_CURSOS_URL, DIARIA_EIA_URL } from "../canonical-urls.ts";
+import {
+  DIARIA_ESPECIAL_URL,
+  DIARIA_LIVROS_URL,
+  DIARIA_CURSOS_URL,
+  DIARIA_EIA_URL,
+  DIARIA_ARQUIVO_URL,
+} from "../canonical-urls.ts";
 
 /**
  * Marcador HTML — presente em toda página que já passou por
@@ -116,6 +122,12 @@ const NAV_ITEM_DEFS: readonly SiteNavItemDef[] = [
  *  PR, ver residue no corpo do PR #8497). */
 export const NAV_ASSINAR_URL = "/assinar";
 
+/** URL absoluta do apex — valor a passar como `apexBase` por todo host
+ *  IRMÃO (#8497 item residual). Não reexporta `canonical-urls.ts` (evitaria
+ *  um import cruzado `shared/` → raiz de `lib/`, `test/lib-boundary.test.ts`)
+ *  — literal próprio, mesmo valor de `ARCHIVE_BASE_URL`/`BEEHIIV_BASE_URL`. */
+export const DIARIA_APEX_URL = "https://diar.ia.br";
+
 export interface RenderSiteNavOptions {
   /** Item correspondente à página atual — ganha `aria-current="page"` +
    *  destaque visual (#8497 item 5). `"assinar"` é um valor especial: não há
@@ -138,13 +150,33 @@ export interface RenderSiteNavOptions {
    *  próprio) — a nav embute o hex canônico direto, sem depender de nada que
    *  a página hospedeira não tenha. */
   inheritHostTokens?: boolean;
+  /** Base absoluta do apex (ex: `"https://diar.ia.br"`) — SÓ pra consumidores
+   *  hospedados num host IRMÃO (`arquivo`/`especial`/`livros`/`cursos`/`eia`,
+   *  #8497 item residual "hosts irmãos"). Quando definida, os itens que hoje
+   *  são RELATIVOS ao apex (`edicoes` → `/archive`, `apoiar` → `/apoiar/ir`)
+   *  e o CTA `Assinar` passam a apontar pra `{apexBase}{path}`, com a MESMA
+   *  UTM de navegação cross-host que os itens `especiais`/`livros`/`cursos`/
+   *  `eia` já carregam — sem isso, um host irmão emitiria `<a href="/archive">`
+   *  relativo ao PRÓPRIO domínio (ex: `arquivo.diar.ia.br/archive`, 404).
+   *  Omitir (default) preserva o comportamento atual — usado pelo apex, onde
+   *  tudo é relativo ao próprio host. */
+  apexBase?: string;
 }
 
-function renderNavLink(item: SiteNavItemDef, active: SiteNavKey | undefined): string {
+/** Resolve o `href` final de um item — aplica `apexBase` (#8497 hosts
+ *  irmãos) aos itens hoje relativos ao apex; itens `crossHost` já são
+ *  absolutos e ficam como estão em qualquer host. */
+function resolveNavHref(item: SiteNavItemDef, apexBase: string | undefined): string {
+  if (item.crossHost || !apexBase) return item.href;
+  return crossHostUrl(`${apexBase}${item.href}`);
+}
+
+function renderNavLink(item: SiteNavItemDef, active: SiteNavKey | undefined, apexBase: string | undefined): string {
   const isActive = item.key === active;
   const ariaCurrent = isActive ? ' aria-current="page"' : "";
   const cls = isActive ? ' class="dnav-active"' : "";
-  return `<a href="${escHtml(item.href)}"${cls}${ariaCurrent}>${escHtml(item.label)}</a>`;
+  const href = resolveNavHref(item, apexBase);
+  return `<a href="${escHtml(href)}"${cls}${ariaCurrent}>${escHtml(item.label)}</a>`;
 }
 
 /**
@@ -191,12 +223,13 @@ function buildSiteNavStyle(inheritHostTokens: boolean): string {
  * pelo backfill das páginas `/p/{slug}` já publicadas).
  */
 export function renderSiteNav(opts: RenderSiteNavOptions = {}): string {
-  const { active, ariaLabel = "Navegação principal", inheritHostTokens = false } = opts;
-  const links = NAV_ITEM_DEFS.map((item) => renderNavLink(item, active)).join("\n        ");
+  const { active, ariaLabel = "Navegação principal", inheritHostTokens = false, apexBase } = opts;
+  const links = NAV_ITEM_DEFS.map((item) => renderNavLink(item, active, apexBase)).join("\n        ");
+  const assinarHref = apexBase ? crossHostUrl(`${apexBase}${NAV_ASSINAR_URL}`) : NAV_ASSINAR_URL;
   const cta =
     active === "assinar"
       ? `<span aria-current="page">Assinar</span>`
-      : `<a href="${escHtml(NAV_ASSINAR_URL)}">Assinar</a>`;
+      : `<a href="${escHtml(assinarHref)}">Assinar</a>`;
   return `${buildSiteNavStyle(inheritHostTokens)}
 <nav class="dnav" id="nav" ${SITE_NAV_MARKER} aria-label="${escHtml(ariaLabel)}">
   <div class="dnav-wrap">
@@ -213,6 +246,63 @@ export function renderSiteNav(opts: RenderSiteNavOptions = {}): string {
     </div>
   </div>
 </nav>`;
+}
+
+/**
+ * Rodapé do site (#8497 item residual 8 — "rodapé alinhado"). Até esta
+ * issue o rodapé da home (`site-home-page.ts`) mantinha uma lista de links
+ * HARDCODED e DIFERENTE da nav do topo (`É IA? · Arquivo · Especial ·
+ * Apoiar · Privacidade` vs. `Edições · Especiais · Livros · Cursos · É IA? ·
+ * Apoiar`) — nenhuma garantia mecânica de que os dois conjuntos ficassem
+ * consistentes entre si numa mudança futura de URL.
+ *
+ * `renderSiteFooterLinks` deriva os hrefs de "É IA?"/"Especial" dos MESMOS
+ * `NAV_ITEM_DEFS` que o menu do topo usa (nunca uma 2ª cópia literal da URL)
+ * — só o rótulo do rodapé segue o texto histórico já em produção ("Especial",
+ * singular, diferente do "Especiais" do menu). O rodapé é um SUPERCONJUNTO
+ * com propósito, não um espelho 1:1: ganha "Arquivo" (`arquivo.diar.ia.br`,
+ * ausente do menu do topo — não tem `SiteNavKey` própria) e "Privacidade"
+ * (política hospedada em `arquivo.diar.ia.br/privacidade`), e OMITE
+ * "Edições"/"Livros"/"Cursos" (já cobertos noutro lugar da própria home —
+ * grade de destaque/seção "Curadorias" — decisão editorial pré-existente,
+ * não revista aqui).
+ */
+export type SiteFooterKey = "eia" | "arquivo" | "especial" | "apoiar" | "privacidade";
+
+interface SiteFooterItemDef {
+  key: SiteFooterKey;
+  label: string;
+  href: string;
+}
+
+function findNavHref(key: SiteNavKey): string {
+  const item = NAV_ITEM_DEFS.find((i) => i.key === key);
+  if (!item) throw new Error(`renderSiteFooterLinks: item de nav "${key}" não encontrado em NAV_ITEM_DEFS`);
+  return item.href;
+}
+
+const FOOTER_ITEM_DEFS: readonly SiteFooterItemDef[] = [
+  { key: "eia", label: "É IA?", href: findNavHref("eia") },
+  { key: "arquivo", label: "Arquivo", href: crossHostUrl(DIARIA_ARQUIVO_URL) },
+  { key: "especial", label: "Especial", href: findNavHref("especiais") },
+  { key: "apoiar", label: "Apoiar", href: findNavHref("apoiar") },
+  { key: "privacidade", label: "Privacidade", href: crossHostUrl(DIARIA_ARQUIVO_URL, "/privacidade") },
+];
+
+/** Renderiza os `<a>` do rodapé (sem separador — o CALLER decide `·`/CSS,
+ *  mesmo contrato de `renderCuradoriaFooter` que já concatena com `join(" · ")`
+ *  no chamador). `apexBase`: mesmo papel que em `renderSiteNav` — só
+ *  necessário quando o consumidor é um host IRMÃO (nenhum hoje; a home é o
+ *  único consumidor nesta PR). */
+export function renderSiteFooterLinks(opts: { apexBase?: string } = {}): string {
+  const { apexBase } = opts;
+  return FOOTER_ITEM_DEFS.map((item) => {
+    // #8497: mesmo critério de `resolveNavHref` — só os itens hoje relativos
+    // ao apex (apoiar) ganham `apexBase`; os demais já são absolutos.
+    const isRelative = item.href.startsWith("/");
+    const href = isRelative && apexBase ? crossHostUrl(`${apexBase}${item.href}`) : item.href;
+    return `<a href="${escHtml(href)}">${escHtml(item.label)}</a>`;
+  }).join("");
 }
 
 /** Injeta o menu global logo após a tag de abertura `<body ...>` de `html`.
