@@ -502,15 +502,32 @@ export async function main(
   console.log("[google-ads-swap-asset-group-creatives] Fase 1 — criando imagens novas do manifesto...");
   const imageResourceNamesByFieldType: Partial<Record<(typeof IMAGE_FIELD_TYPES)[number], string[]>> = {};
   for (const fieldType of IMAGE_FIELD_TYPES) {
+    const paths = manifest![fieldType as keyof ImagesManifest] ?? [];
     const existing = progress.steps[fieldType as SwapProgressStepKey];
-    if (existing) {
+    // Cada fieldType pode ter MÚLTIPLOS caminhos no manifesto (até 4
+    // criativos por proporção) — um `existing` não-vazio NÃO significa
+    // "etapa completa" se tiver menos itens que o manifesto pede hoje
+    // (achado do self-review da PR #8972: tratar qualquer `existing`
+    // truthy como completo deixaria imagens faltando sem erro nenhum,
+    // linkando só o subconjunto parcial em silêncio). Só reusa como
+    // COMPLETO quando a contagem já criada bate com a do manifesto atual;
+    // caso contrário, retoma criando só os caminhos restantes (assume a
+    // mesma ordem/conteúdo do `--images-manifest` entre tentativas — é o
+    // mesmo arquivo, referenciado pelo mesmo `--progress-file`).
+    if (existing && existing.resourceNames.length >= paths.length) {
       console.log(`[google-ads-swap-asset-group-creatives] ↷ ${fieldType}: reusando ${existing.resourceNames.length} recurso(s) já criado(s) numa tentativa anterior (${progressFile}).`);
       imageResourceNamesByFieldType[fieldType] = existing.resourceNames;
       continue;
     }
-    const paths = manifest![fieldType as keyof ImagesManifest] ?? [];
-    const names: string[] = [];
-    for (const path of paths) {
+    const names: string[] = existing ? [...existing.resourceNames] : [];
+    const startIndex = names.length;
+    if (startIndex > 0) {
+      console.log(
+        `[google-ads-swap-asset-group-creatives] ↷ ${fieldType}: retomando de onde parou — ${startIndex}/${paths.length} já criado(s), criando o(s) ${paths.length - startIndex} restante(s)...`,
+      );
+    }
+    for (let i = startIndex; i < paths.length; i++) {
+      const path = paths[i];
       const base64 = readFileSync(path).toString("base64");
       const baseName = path.split(/[\\/]/).pop() ?? path;
       const result = await createAssets(buildCreateImageAssetPayload(base64, baseName), `assets:mutate (${fieldType} ${baseName})`);

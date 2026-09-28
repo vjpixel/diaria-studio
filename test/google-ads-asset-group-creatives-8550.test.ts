@@ -330,7 +330,7 @@ describe("#8550 — CLI google-ads-swap-asset-group-creatives", () => {
         throw new Error(`chamada inesperada com manifesto incompleto: ${input}`);
       };
       const code = await withEnv(AUTH_ENV, () =>
-        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
+        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", join(dir, "progress.json")], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
       );
       assert.equal(code, 1);
     } finally {
@@ -374,7 +374,7 @@ describe("#8550 — CLI google-ads-swap-asset-group-creatives", () => {
         throw new Error(`chamada inesperada: ${input}`);
       };
       const code = await withEnv(AUTH_ENV, () =>
-        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
+        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", join(dir, "progress.json")], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
       );
       assert.equal(code, 0);
       // 3 assets:mutate de texto (headline/long headline/description) + 3 de imagem (1 por proporção)
@@ -458,7 +458,7 @@ describe("#8550 — CLI google-ads-swap-asset-group-creatives", () => {
         throw new Error(`chamada inesperada: ${input}`);
       };
       const code = await withEnv(AUTH_ENV, () =>
-        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
+        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", join(dir, "progress.json")], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
       );
       assert.equal(code, 1, "resposta com menos resultados que operações enviadas precisa ser erro, não sucesso parcial silencioso");
       // NEW_HEADLINES tem 4 itens -- a 1ª chamada de assets:mutate (headlines)
@@ -503,7 +503,7 @@ describe("#8550 — CLI google-ads-swap-asset-group-creatives", () => {
         throw new Error(`chamada inesperada: ${input}`);
       };
       const code = await withEnv(AUTH_ENV, () =>
-        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
+        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", join(dir, "progress.json")], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
       );
       assert.equal(code, 1, "link confirmando menos recursos que o enviado precisa falhar, não reportar Fase 1 concluída");
     } finally {
@@ -540,7 +540,7 @@ describe("#8550 — CLI google-ads-swap-asset-group-creatives", () => {
         throw new Error(`chamada inesperada: ${input}`);
       };
       const code = await withEnv(AUTH_ENV, () =>
-        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
+        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", join(dir, "progress.json")], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
       );
       assert.equal(code, 1);
     } finally {

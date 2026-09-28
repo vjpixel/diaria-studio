@@ -367,4 +367,95 @@ describe("#8960 — CLI: manifesto de progresso sobrevive falha parcial na Fase 
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("fieldType com 2+ imagens: falha na 2ª imagem preserva a 1ª; retry cria SÓ a que falta (nunca trata parcial como completo)", async () => {
+    // Achado do self-review da PR #8972 (P1): um fieldType pode ter
+    // MÚLTIPLOS caminhos no manifesto (até 4 criativos por proporção,
+    // ver docstring do módulo). Tratar `existing.resourceNames.length > 0`
+    // como "etapa completa" (como uma versão anterior deste código fazia)
+    // deixaria a 2ª imagem faltando pra sempre, sem erro nenhum.
+    const dir = mkdtempSync(join(tmpdir(), "gads-pmax-progress-multi-image-"));
+    const makeImg = (name: string) => {
+      const p = join(dir, name);
+      writeFileSync(p, Buffer.from(`fake-bytes-${name}`));
+      return p;
+    };
+    const manifestPath = join(dir, "manifest.json");
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        SQUARE_MARKETING_IMAGE: [makeImg("d1-1x1.jpg"), makeImg("d2-1x1.jpg")], // 2 imagens neste fieldType
+        MARKETING_IMAGE: [makeImg("d1-191x1.jpg")],
+        PORTRAIT_MARKETING_IMAGE: [makeImg("d1-4x5.jpg")],
+      }),
+    );
+    const progressFile = join(dir, "progress.json");
+    const fetchCommentBodiesMock = () => [];
+    try {
+      // Tentativa 1: textos OK, SQUARE_MARKETING_IMAGE cria a 1ª imagem e
+      // falha na 2ª.
+      let assetCounter = 700;
+      let squareImageCreateCount = 0;
+      const fetchMockAttempt1 = async (input: string, init?: RequestInit) => {
+        if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+        if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+        if (input.endsWith("assets:mutate")) {
+          const label = String(init?.body ?? "");
+          if (label.includes("d1-1x1") || label.includes("d2-1x1")) {
+            squareImageCreateCount++;
+            if (squareImageCreateCount === 2) throw new Error("network down na 2ª imagem (simulado)");
+          }
+          const body = JSON.parse(String(init?.body));
+          const results = body.operations.map(() => ({ resourceName: `customers/2369219639/assets/${assetCounter++}` }));
+          return jsonResponse(200, { results });
+        }
+        throw new Error(`chamada inesperada na tentativa 1: ${input}`);
+      };
+      const code1 = await withEnv(AUTH_ENV, () =>
+        swapMain(
+          ["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", progressFile],
+          fetchMockAttempt1 as unknown as typeof fetch,
+          fetchCommentBodiesMock,
+        ),
+      );
+      assert.equal(code1, 1, "tentativa 1 precisa falhar na 2ª imagem de SQUARE_MARKETING_IMAGE");
+      const progressAfterFailure: SwapProgress = JSON.parse(readFileSync(progressFile, "utf8"));
+      assert.equal(progressAfterFailure.steps.SQUARE_MARKETING_IMAGE?.resourceNames.length, 1, "só a 1ª imagem foi criada antes da falha");
+
+      // Tentativa 2 (retry): só 1 chamada de assets:mutate pra imagem
+      // (a que faltava) -- a 1ª NÃO pode ser recriada.
+      let assetCounter2 = 900;
+      let imageCreateCallsInRetry = 0;
+      const fetchMockAttempt2 = async (input: string, init?: RequestInit) => {
+        if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+        if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+        if (input.endsWith("assets:mutate")) {
+          imageCreateCallsInRetry++;
+          const body = JSON.parse(String(init?.body));
+          const results = body.operations.map(() => ({ resourceName: `customers/2369219639/assets/${assetCounter2++}` }));
+          return jsonResponse(200, { results });
+        }
+        if (input.endsWith("assetGroupAssets:mutate")) {
+          const body = JSON.parse(String(init?.body));
+          return jsonResponse(200, { results: body.operations.map(() => ({ resourceName: "customers/2369219639/assetGroupAssets/new" })) });
+        }
+        throw new Error(`chamada inesperada na tentativa 2: ${input}`);
+      };
+      const code2 = await withEnv(AUTH_ENV, () =>
+        swapMain(
+          ["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", progressFile],
+          fetchMockAttempt2 as unknown as typeof fetch,
+          fetchCommentBodiesMock,
+        ),
+      );
+      assert.equal(code2, 0, "retry precisa concluir com sucesso, criando só a imagem que faltava");
+      // No retry: 1 chamada de imagem (d2-1x1, faltante em SQUARE) + 1
+      // (MARKETING_IMAGE) + 1 (PORTRAIT_MARKETING_IMAGE) = 3 -- a 1ª imagem
+      // de SQUARE (d1-1x1) NÃO gerou nova chamada.
+      assert.equal(imageCreateCallsInRetry, 3, "só as imagens faltantes deveriam ser criadas no retry (nunca a 1ª de SQUARE de novo)");
+      assert.equal(existsSync(progressFile), false, "progresso limpo após sucesso total");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
