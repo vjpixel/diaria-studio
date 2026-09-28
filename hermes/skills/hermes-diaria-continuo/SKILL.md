@@ -458,7 +458,7 @@ HEARTBEAT_PID=$!
 printf '%s' "Implemente a issue #N do repo atual (leia fresca: gh api repos/{owner}/{repo}/issues/N p/ título+corpo e gh api repos/{owner}/{repo}/issues/N/comments p/ comentários). #7572: em gh 2.46 (Ubuntu ESM, 300) 'gh issue view N --comments' quebra com GraphQL 'repository.issue.projectCards deprecated' (Projects clássico descontinuado) — o caminho canônico é a REST API. 'gh issue view N --json title,body' e '--json comments' também funcionam, mas o REST é o que sobrevive à deprecacao. NUNCA parsear saida do gh com Python ad-hoc (regra dura, secao 3).
 Siga o CLAUDE.md. NUNCA commite em master: git switch -c continuo/fix-<issue>-<slug> ANTES do 1º commit (o hook recusa). O prefixo continuo/ (continuo/fix-N-slug) é o que faz o PR aparecer como CONTINUO na Triagem
 do Studio, #6446. Implemente com edições cirúrgicas, adicione
-teste de regressão se for bugfix (#633), rode os testes afetados, abra PR
+teste de regressão se for bugfix (#633), rode os testes afetados + `npx tsx scripts/which-set-guards.ts` (rode TODOS os testFiles que ele listar, não só o do arquivo tocado — #8879), abra PR
 com gh pr create referenciando a issue. NÃO mergeie — desde o #6864, nem
 o coordenador deste tick mergeia mais: o merge acontece exclusivamente no
 pickup (#6823) ou no review consolidado. Se a issue for inviável/ambígua
