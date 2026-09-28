@@ -25,6 +25,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { stripQuotedAndSignature } from "../filter-subscriber-replies.ts";
 
 export interface RaffleEntry {
   /** Ciclo do sorteio — "AAMM", derivado dos 4 primeiros dígitos da edição. */
@@ -47,6 +48,12 @@ export interface IntentionalErrorForMatch {
   location?: string;
   description?: string;
   correct_value?: string;
+  /** (#8877) Irmão de `correct_value` — a grafia/valor ERRADO efetivamente
+   * plantado no texto (ex: "OppenAI"). Reply que aponta o erro citando só a
+   * forma errada — o jeito mais natural de apontar um typo — não menciona
+   * `correct_value`; sem checar este campo, `hasCorrectMatch` fica `false` e
+   * o acerto vira falso negativo silencioso. */
+  wrong_value?: string;
 }
 
 /**
@@ -229,6 +236,23 @@ export function matchesIntentionalError(
   // inteira na reply, isso já basta — a chance de match espúrio é baixa.
   // Número puro ("22") ou palavra comum seguem exigindo o contexto.
   if (hasDistinctiveCorrectMatch(error.correct_value, bodyNorm)) return true;
+
+  // #8877: mesma régua, mas pro lado ERRADO — reply que aponta o typo citando
+  // só a grafia plantada ("OppenAI") nunca menciona o correct_value ("OpenAI"),
+  // então o check acima não dispara. Se wrong_value tem um token distintivo e
+  // ele aparece como palavra inteira na reply, é acerto — a reply está citando
+  // exatamente o texto errado que o editor plantou.
+  //
+  // Diferença importante do check de correct_value acima: wrong_value É o
+  // texto que a edição publicou, então qualquer citação/quote do e-mail
+  // original (comum em clientes que incluem a mensagem citada na resposta)
+  // contém wrong_value verbatim — diferente de correct_value, que a edição
+  // nunca publicou, então nunca aparece numa citação por acidente. Sem isolar
+  // o texto citado, um reply que só ecoa a citação (sem comentário próprio)
+  // ganharia crédito indevido. `stripQuotedAndSignature` (mesma heurística de
+  // `filter-subscriber-replies.ts`) corta a citação/assinatura antes do check.
+  const bodyNormNoQuote = normalizeText(stripQuotedAndSignature(replyBody));
+  if (hasDistinctiveCorrectMatch(error.wrong_value, bodyNormNoQuote)) return true;
 
   // Exige sinal real de cada conjunto que existir — quando um conjunto está
   // vazio (ex: sem correct_value), o flag correspondente já é `true` por
