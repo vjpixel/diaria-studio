@@ -297,10 +297,45 @@ _REF_LIST = re.compile(
 )
 _LEADING_LIST = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?(?=#\d)")
 _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
+
+# Ator que pode DETER um claim sem ser este coordenador — usado tanto por
+# `_OTHERS_CLAIM` (claim atribuído via "por ACTOR") quanto por
+# `_OTHERS_CLAIM_HELD` abaixo (#8974). "outra sessão"/"uma sessão overnight"
+# não batem no alternator sozinhas porque "sessão"/"uma" não são o ator em
+# si — por isso a distância entre a preposição/verbo e o ator tolera
+# palavras no meio (ver `_OTHERS_CLAIM`/`_OTHERS_CLAIM_HELD`), não um
+# vocabulário mais amplo aqui.
+_ACTOR = r"(?:outr[oa]s?|overnight|develop|interactive|terceir[oa]s?)"
 _OTHERS_CLAIM = re.compile(
     r"(?P<refs>" + _REF_LIST.pattern + r")"
-    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+"
-    r"(?:outr[oa]|outros|outras|overnight|terceir[oa])\b",
+    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+(?:\w+\s+){0,4}"
+    + _ACTOR + r"\b",
+    re.IGNORECASE,
+)
+# #8974 (28/09/2026): FALSO POSITIVO real — o relatório do tick descreveu
+# corretamente que issues elegíveis recentes já estavam reivindicadas por
+# OUTRA sessão ("...já estavam reivindicadas por uma sessão overnight ativa
+# no 300; não houve claim." / "A sessão overnight ativa já tinha claims em
+# #8948, #8949, ..."), mas o detector tratou isso como fabricação porque
+# `_OTHERS_CLAIM` só reconhecia "reivindicad\w* (por|pelo|pelas) ACTOR"
+# colado (sem palavras entre a preposição e o ator — "uma sessão" quebrava
+# o match) e não cobria a forma "ACTOR ... tinha claims em #N" (o ator vem
+# ANTES do keyword, ligado por um verbo de posse, não por "por"). As duas
+# formas descrevem a MESMA coisa — um claim que pertence a outra sessão,
+# não uma alegação de claim próprio — e nenhuma delas deveria contar como
+# claim fabricado deste coordenador.
+#
+# `_OTHERS_CLAIM` (acima) ganhou a folga de até 4 palavras entre a
+# preposição e o ator ("por uma sessão overnight ativa"). `_OTHERS_CLAIM_HELD`
+# cobre a 2ª forma: ator mencionado ANTES do keyword "claim(s)", ligado por
+# um verbo de posse explícito ("tinha"/"tem"/"possuía") — restrito a esse
+# verbo (não qualquer menção solta do ator no segmento) para não apagar um
+# claim PRÓPRIO genuíno que só cite o outro ator de passagem (mesmo cuidado
+# do #8863 para outras negações/exclusões).
+_OTHERS_CLAIM_HELD = re.compile(
+    r"\b" + _ACTOR + r"\b(?:\s+\w+){0,4}?\s+(?:j[áa]\s+)?"
+    r"(?:tinha|tem|possu[ií]a|possui)\s+claims?\s+(?:em|d[eo]s?|para)\s+"
+    r"(?P<refs>" + _REF_LIST.pattern + r")",
     re.IGNORECASE,
 )
 _COVERED_BY = re.compile(
@@ -594,6 +629,10 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
             pr_ref_n = {int(n) for n in _PR_REF.findall(segment)}
             others_n = set()
             for om in _OTHERS_CLAIM.finditer(segment):
+                refs_text = om.group("refs")
+                for n_s in _ISSUE_REF.findall(refs_text):
+                    others_n.add(int(n_s))
+            for om in _OTHERS_CLAIM_HELD.finditer(segment):
                 refs_text = om.group("refs")
                 for n_s in _ISSUE_REF.findall(refs_text):
                     others_n.add(int(n_s))

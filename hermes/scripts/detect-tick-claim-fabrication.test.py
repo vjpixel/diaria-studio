@@ -38,6 +38,11 @@ Cobre:
       nunca fabrication_suspected (reproduz #8515). 14b: mesmo relatorio
       SEM esse evento -> continua fabrication_suspected (#7537 nao
       regride). 14c: evento de OUTRO tick nao correlaciona.
+  19. #8974 — relatorio que atribui claim de issues elegiveis a OUTRA
+      sessao ("reivindicadas por uma sessao overnight ativa" /
+      "sessao overnight ativa ja tinha claims em #N") nao e claim proprio
+      deste coordenador -> not_applicable, nunca fabrication_suspected.
+      Controle: claim proprio fabricado de verdade continua detectado.
   15. Regressão end-to-end (`run()`) do relatório real do tick de 15:36
       UTC de 20/09/2026 que motivou o #8521 — 3 issues citadas em
       contexto de negação ("não foram reivindicadas") + 1 claim real com
@@ -379,6 +384,62 @@ def test_regressao_8863_antes_do_nao_apaga_claim_real():
     )
     assert 701 in refs2, f"claim real #701 apagado por 'antes da fusao' (nao-claim): {refs2}"
     print("regressão #8863: 'antes do/da' não relacionado a 'claim' não apaga claim real — OK")
+
+
+def test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao():
+    """#8974: relatório real do tick de 28/09/2026 dizia textualmente que as
+    issues elegíveis recentes (#8948-#8960) já estavam reivindicadas por
+    uma sessão overnight ativa no 300 — nenhum claim próprio deste
+    coordenador. `_OTHERS_CLAIM` só reconhecia "reivindicad\\w* (por|pelo|
+    pelas) ACTOR" colado (sem palavras no meio — "uma sessão" quebrava o
+    match) e não cobria a forma "ACTOR ... tinha claims em #N" (ator ANTES
+    do keyword, ligado por verbo de posse). O detector tratava as duas
+    linhas como claim próprio fabricado; nenhuma das duas é."""
+    mod = _load_module()
+    linha_por = (
+        "As issues elegiveis recentes #8948, #8949, #8950, #8951, #8952, "
+        "#8953, #8960 ja estavam reivindicadas por uma sessao overnight "
+        "ativa no 300; nao houve claim."
+    )
+    refs_por = mod.extract_claimed_issue_refs(linha_por)
+    for n in (8948, 8949, 8950, 8951, 8952, 8953, 8960):
+        assert n not in refs_por, f"#{n} (reivindicada por outra sessao) indevido: {refs_por}"
+
+    linha_tinha = (
+        "A sessao overnight ativa ja tinha claims em #8948, #8949, #8950, "
+        "#8951, #8952, #8953, #8960."
+    )
+    refs_tinha = mod.extract_claimed_issue_refs(linha_tinha)
+    for n in (8948, 8949, 8950, 8951, 8952, 8953, 8960):
+        assert n not in refs_tinha, f"#{n} (ator tinha claims) indevido: {refs_tinha}"
+
+    # Fim-a-fim: nenhuma das duas linhas deve fazer `check_claimed_issues`
+    # acusar fabricação mesmo com o registro de sessão vazio (nada reivindicado
+    # por ESTE coordenador, então não há o que verificar contra o registro).
+    check_por = mod.check_claimed_issues(linha_por, set(), True, session_correlated=True)
+    assert check_por["status"] == "not_applicable", check_por
+    check_tinha = mod.check_claimed_issues(linha_tinha, set(), True, session_correlated=True)
+    assert check_tinha["status"] == "not_applicable", check_tinha
+
+    # Controle: claim FABRICADO real (próprio, sem menção a outro ator)
+    # continua detectado — a exclusão não abre buraco pra fabricação real.
+    linha_fabricada = "Issues reivindicadas neste tick: #9001, #9002."
+    refs_fab = mod.extract_claimed_issue_refs(linha_fabricada)
+    assert refs_fab.get(9001) is False and refs_fab.get(9002) is False, refs_fab
+    check_fab = mod.check_claimed_issues(linha_fabricada, set(), True, session_correlated=True)
+    assert check_fab["status"] == "fabrication_suspected", check_fab
+
+    # Controle: claim PRÓPRIO que apenas cita o outro ator de passagem (sem
+    # o verbo de posse "tinha/tem/possuía" nem "reivindicada por ACTOR")
+    # continua sendo claim genuíno — a exclusão é restrita à estrutura
+    # sintática, não a qualquer menção solta do ator no segmento.
+    linha_propria_com_mencao = (
+        "Reivindiquei #9010 depois de checar que o overnight nao a tocou."
+    )
+    refs_propria = mod.extract_claimed_issue_refs(linha_propria_com_mencao)
+    assert 9010 in refs_propria, f"claim real #9010 nao deveria ser apagado: {refs_propria}"
+
+    print("regressão #8974: claim atribuído a outra sessão (overnight) não é fabricação — OK")
 
 
 def main() -> int:
@@ -866,6 +927,7 @@ def main() -> int:
         test_regressao_8521_negacao_nao_e_claim()
         test_regressao_8863_nenhuma_e_antes_do_claim()
         test_regressao_8863_antes_do_nao_apaga_claim_real()
+        test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.
