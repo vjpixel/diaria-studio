@@ -176,6 +176,34 @@ export function findUnknownMcpToolNames(content: string): McpToolIssue[] {
 }
 
 // ---------------------------------------------------------------------------
+// claude.ai connector AVISO guard (#8902)
+// ---------------------------------------------------------------------------
+
+/**
+ * A `claude_ai_*` connector (Beehiiv/Gmail/Buffer/…) can be exposed at
+ * runtime under a raw UUID prefix instead of the stable `mcp__claude_ai_
+ * <Nome>__` form (#7279). `tools:` is a NAME allowlist — a mismatch doesn't
+ * error, it silently grants nothing, and the only symptom is the agent
+ * reporting it lacks the MCP (or, worse, fabricating an empty result —
+ * #6496, and the review-test-email `inconclusive` no-op that motivated
+ * #8902). Every agent that declares a `mcp__claude_ai_*` tool must document
+ * this failure mode in its body (the "AVISO — o conector" section) so a
+ * future reader recognizes the symptom instead of re-diagnosing it from
+ * scratch. This guard only checks agents (not skills — skills don't declare
+ * a `tools:` allowlist).
+ */
+export function findMissingConnectorAviso(path: string, content: string): string | null {
+  if (!path.includes(".claude/agents/")) return null;
+  const fm = extractFrontmatter(content);
+  if (fm === null) return null;
+  const toolsLine = fm.split("\n").find((l) => /^tools:\s*/.test(l));
+  if (!toolsLine) return null;
+  if (!/mcp__claude_ai_/.test(toolsLine)) return null;
+  if (content.includes("AVISO — o conector")) return null;
+  return "declara mcp__claude_ai_* em tools: mas não tem a seção \"AVISO — o conector\" (#7279/#8902) — documentar o risco de prefixo renomeado.";
+}
+
+// ---------------------------------------------------------------------------
 // File walking
 // ---------------------------------------------------------------------------
 
@@ -184,6 +212,7 @@ interface FileResult {
   ok: boolean;
   issues: ValidationIssue[];
   mcpIssues: McpToolIssue[];
+  avisoIssue?: string;
   error?: string;
 }
 
@@ -212,7 +241,14 @@ export function validateFile(path: string): FileResult {
   }
   const issues = findFrontmatterIssues(fm);
   const mcpIssues = findUnknownMcpToolNames(content);
-  return { path, ok: issues.length === 0 && mcpIssues.length === 0, issues, mcpIssues };
+  const avisoIssue = findMissingConnectorAviso(path, content) ?? undefined;
+  return {
+    path,
+    ok: issues.length === 0 && mcpIssues.length === 0 && !avisoIssue,
+    issues,
+    mcpIssues,
+    avisoIssue,
+  };
 }
 
 function listAgentFiles(root: string): string[] {
@@ -271,6 +307,9 @@ function main(): void {
       console.error(
         `    line ${mcpIssue.line} · mcp tool '${mcpIssue.tool}' · ${mcpIssue.reason}`,
       );
+    }
+    if (r.avisoIssue) {
+      console.error(`    ${r.avisoIssue}`);
     }
   }
   process.exit(1);

@@ -73,7 +73,7 @@ Compor o resumo que sera exibido no gate único de §6c — inclui o pedido de r
 - **Newsletter Beehiiv:**
   - URL do rascunho: `draft_url` de `05-published.json`.
   - Test email: `test_email_sent_at` formatado em BRT.
-  - Status do review: se `review_completed: true` → `✓ review ok`; se `review_status: "inconclusive"` → `⚠ review inconclusivo`; se issues → listar.
+  - Status do review: se `review_completed: true` → `✓ review ok`; se `review_status: "inconclusive"` → `⚠ review inconclusivo ({review_reason})` (desde #8902, `review_reason` distingue `mcp_unavailable` — conector Gmail indisponível/renomeado, checagem automática ficou OFF, ver #7279 — de `not_found_timeout`/`truncated_fetch` — Gmail respondeu, email só não foi localizado/veio truncado; ausência de `review_reason` em edições pré-#8902 → mostrar só `⚠ review inconclusivo`); se issues → listar.
 - **Social agendado:** horarios LinkedIn + Facebook por destaque (D1/D2/D3).
 - **Achados do review-test-email** (se `review_final_issues` nao vazio ou `review_status !== "ok"`) **+ achados dos lints determinísticos `lint-test-email-*`** que o `review-test-email` já roda internamente (link tracking, structure, encoding, image freshness — ver `.claude/agents/review-test-email.md`).
 - **Guard de slug do bloco WhatsApp (§6b-slug):** se `SLUG_CHECK_OK === false`, incluir aviso destacado com a instrução de correção manual — nunca um gate próprio.
