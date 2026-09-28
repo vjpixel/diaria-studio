@@ -544,21 +544,110 @@ export function buildBeaconRecord(previous, event) {
  * escrito por `registerSession` (só merge-lock) — não faz parte do espaço
  * de identidade que esta função resolve, então fica fora de `matches` por
  * completo, não só fora do desempate de coordenador.
+ *
+ * **#8954 — reconcilia um coordenador REBAIXADO por cópia de conflito do
+ * OneDrive, em vez de deixar este beacon criar `interactive-*` no lugar
+ * dele.** Cenário medido ao vivo (rodada overnight 260928c): o arquivo
+ * canônico `overnight-{tag}-{sessionId}.json` da coordenadora vira cópia de
+ * conflito `overnight-{tag}-{sessionId}-{tag}-safeBackup-NNNN.json` (o
+ * cliente OneDrive bifurca a escrita); `matches` acima fica vazio (o nome do
+ * backup não TERMINA em `-{sessionId}.json`, termina em
+ * `-safeBackup-NNNN.json`), e sem este passo o caminho antigo criava
+ * `interactive-{tag}-{sessionId}.json` do zero — rebaixando a identidade da
+ * coordenadora pro resto da rodada e fazendo o guard do #5716 negar o
+ * `gh pr merge` dela própria ("esta chamada não pertence à sessão
+ * coordenadora registrada").
+ *
+ * Antes de desistir (matches vazio), procura entre as cópias `-safeBackup-`
+ * por uma cujo CONTEÚDO (nunca o nome do arquivo — mesma disciplina de
+ * `groupBackupsByRealStem`/`OrphanBackupGroup` em `scripts/lib/session-registry.ts`,
+ * #7002/#7003: o `-{tag}` que o OneDrive intercala no nome não é garantia de
+ * formato) tenha `sessionId` batendo E `kind` coordenador
+ * (`COORDINATOR_KIND_PREFIXES`). Encontrando, RESTAURA fisicamente
+ * (`renameSync`) a cópia mais recente (maior `lastHeartbeat`/`startedAt`)
+ * pro nome canônico `{kind}-{machineTag do registro}-{sessionId}.json` — só
+ * quando esse canônico ainda não existe (corrida: outra chamada pode ter
+ * restaurado ou recriado entre o `readdirSync` e aqui). As demais cópias do
+ * grupo ficam intocadas — a poda delas continua sendo responsabilidade do GC
+ * mecânico (`session-registry.ts gc`), não deste hook.
+ *
+ * **Nunca reconcilia um backup com `endedAt` preenchido.** `endSession`
+ * (`scripts/lib/session-registry.ts`, #7002) carimba `endedAt` em toda cópia
+ * `-safeBackup-` do grupo ao encerrar — é o que distingue "encerrada limpo"
+ * de "o real sumiu com a sessão viva" (as duas produzem a mesma forma em
+ * disco: backup sem real). Reconciliar um backup encerrado ressuscitaria uma
+ * coordenadora que já terminou, com `claimed_issues`/autoridade de merge de
+ * volta — risco real porque a Fase 2 do overnight pode rodar chamadas de
+ * ferramenta depois do `end` (#6758), disparando o beacon exatamente sobre
+ * esse backup.
+ *
+ * Fail-soft ponta a ponta: qualquer erro de parse/I/O aqui cai no
+ * comportamento de sempre (não reconcilia, `matches.length === 0`
+ * prevalece) — nunca lança dentro do beacon.
  */
-export function findExistingSessionFile(sessionsDir, sessionId, fs = { existsSync, readdirSync }) {
+function reconcileOrphanCoordinatorBackup(sessionsDir, sessionId, names, fs) {
+  try {
+    const suffix = `-${sessionId}-`;
+    const candidates = names.filter(
+      (n) => n.endsWith(".json") && !n.startsWith(".") && n.includes("-safeBackup-") && n.includes(suffix),
+    );
+    if (candidates.length === 0) return null;
+    let best = null;
+    let bestMs = -Infinity;
+    for (const name of candidates) {
+      let record;
+      try {
+        record = JSON.parse(fs.readFileSync(join(sessionsDir, name), "utf8"));
+      } catch {
+        continue; // backup ilegível — não é prova de identidade, ignora só ele
+      }
+      if (!record || record.sessionId !== sessionId) continue;
+      if (!COORDINATOR_KIND_PREFIXES.includes(record.kind)) continue;
+      // #7002 (scripts/lib/session-registry.ts, endSession): `endedAt` é o
+      // carimbo que distingue "encerrada limpo" (backup órfão de uma sessão
+      // que terminou normal) de "real sumiu com a sessão viva" — as duas
+      // formas em disco são idênticas sem ele. Um backup com `endedAt`
+      // preenchido é prova de que ALGUÉM já rodou `endSession` pra esta
+      // sessão; restaurá-lo pro canônico ressuscitaria uma coordenadora que
+      // já terminou (achado do coordenador desta rodada, #8954: Fase 2 do
+      // overnight pode rodar chamadas de ferramenta DEPOIS do `end`, e é
+      // exatamente aí que o beacon dispararia esta reconciliação sobre um
+      // backup que não deveria voltar).
+      if (record.endedAt) continue;
+      const ms = Date.parse(record.lastHeartbeat ?? record.startedAt ?? "");
+      const rank = Number.isFinite(ms) ? ms : -Infinity;
+      if (rank > bestMs) {
+        bestMs = rank;
+        best = { name, record };
+      }
+    }
+    if (!best) return null;
+    const canonicalTag = typeof best.record.machineTag === "string" && best.record.machineTag ? best.record.machineTag : machineTag();
+    const canonicalName = `${best.record.kind}-${canonicalTag}-${sessionId}.json`;
+    if (fs.existsSync(join(sessionsDir, canonicalName))) return canonicalName; // já reconciliado por outra chamada
+    fs.renameSync(join(sessionsDir, best.name), join(sessionsDir, canonicalName));
+    return canonicalName;
+  } catch {
+    return null;
+  }
+}
+
+export function findExistingSessionFile(sessionsDir, sessionId, fs = { existsSync, readdirSync, readFileSync, renameSync }) {
   try {
     if (!fs.existsSync(sessionsDir)) return null;
     const suffix = `-${sessionId}.json`;
-    const matches = fs
-      .readdirSync(sessionsDir)
-      .filter(
-        (n) =>
-          n.endsWith(suffix) &&
-          !n.startsWith(".") &&
-          !n.includes("-safeBackup-") &&
-          !n.startsWith("continuo-review-"),
-      );
-    if (matches.length === 0) return null;
+    const names = fs.readdirSync(sessionsDir);
+    const matches = names.filter(
+      (n) =>
+        n.endsWith(suffix) &&
+        !n.startsWith(".") &&
+        !n.includes("-safeBackup-") &&
+        !n.startsWith("continuo-review-"),
+    );
+    if (matches.length === 0) {
+      const reconciled = reconcileOrphanCoordinatorBackup(sessionsDir, sessionId, names, fs);
+      return reconciled;
+    }
     const coordinatorMatches = matches.filter((n) => COORDINATOR_KIND_PREFIXES.some((k) => n.startsWith(`${k}-`))).sort();
     if (coordinatorMatches.length > 0) return coordinatorMatches[0];
     return matches.sort()[0];
@@ -622,7 +711,7 @@ export function findExistingSessionFile(sessionsDir, sessionId, fs = { existsSyn
  * fail-open do hook inteiro — qualquer erro aqui cai no catch externo do
  * entrypoint).
  */
-export function resolveWritePathAtWriteTime(sessionsDir, sessionId, resolvedPath, fs = { existsSync, readdirSync }) {
+export function resolveWritePathAtWriteTime(sessionsDir, sessionId, resolvedPath, fs = { existsSync, readdirSync, readFileSync, renameSync }) {
   if (fs.existsSync(resolvedPath)) return resolvedPath;
   const reresolved = findExistingSessionFile(sessionsDir, sessionId, fs);
   if (reresolved) return join(sessionsDir, reresolved);

@@ -15,7 +15,7 @@
 
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, copyFileSync, rmSync, closeSync, openSync, unlinkSync, renameSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, copyFileSync, rmSync, closeSync, openSync, unlinkSync, renameSync, existsSync } from "node:fs";
 import { spawnSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -259,6 +259,128 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
 
   it("diretório ausente → null, nunca lança", () => {
     assert.equal(findExistingSessionFile(join(tmpdir(), "nao-existe-mesmo"), "s"), null);
+  });
+
+  // ─── #8954 — reconciliação de coordenador rebaixado por safeBackup ──────
+
+  it("#8954: só sobra -safeBackup- de uma coordenadora overnight (canônico sumiu) → restaura a identidade overnight, nunca cria interactive", () => {
+    // Reproduz o achado ao vivo da rodada 260928c: o arquivo canônico
+    // `overnight-300-{sessionId}.json` virou cópia de conflito do OneDrive
+    // e nenhum arquivo termina em `-{sessionId}.json` — sem a reconciliação,
+    // `findExistingSessionFile` devolveria null e o beacon criaria
+    // `interactive-300-{sessionId}.json` do zero, rebaixando a coordenadora.
+    const root = mkdtempSync(join(tmpdir(), "beacon-find8-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      const backupName = "overnight-300-sess-8954-300-safeBackup-0001.json";
+      writeFileSync(
+        join(dir, backupName),
+        JSON.stringify({
+          kind: "overnight",
+          machineTag: "300",
+          sessionId: "sess-8954",
+          startedAt: "2026-09-28T14:00:00.000Z",
+          lastHeartbeat: "2026-09-28T15:00:00.000Z",
+          claimed_issues: [8954],
+        }),
+        "utf8",
+      );
+      const found = findExistingSessionFile(dir, "sess-8954");
+      assert.equal(found, "overnight-300-sess-8954.json", "restaura o nome canônico, não cria interactive-*");
+      assert.equal(existsSync(join(dir, "overnight-300-sess-8954.json")), true, "o restore é físico — o canônico existe em disco depois");
+      assert.equal(existsSync(join(dir, backupName)), false, "o backup restaurado foi renomeado (não duplicado)");
+      const restored = JSON.parse(readFileSync(join(dir, "overnight-300-sess-8954.json"), "utf8"));
+      assert.deepEqual(restored.claimed_issues, [8954], "conteúdo do backup preservado pelo rename");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#8954: -safeBackup- de OUTRO sessionId não é tocado", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-find9-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      const backupName = "overnight-300-sess-outra-300-safeBackup-0001.json";
+      writeFileSync(
+        join(dir, backupName),
+        JSON.stringify({ kind: "overnight", machineTag: "300", sessionId: "sess-outra", startedAt: "2026-09-28T14:00:00.000Z" }),
+        "utf8",
+      );
+      assert.equal(findExistingSessionFile(dir, "sess-8954"), null, "backup de outra sessão não reconcilia nem é confundido");
+      assert.equal(existsSync(join(dir, backupName)), true, "backup de outra sessão fica intocado");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#8954: backup com endedAt preenchido (endSession já rodou) → NÃO restaura, nunca ressuscita uma coordenadora encerrada", () => {
+    // #7002 (session-registry.ts, endSession): endedAt é o carimbo que
+    // distingue "encerrada limpo" de "real sumiu com sessão viva". Fase 2 do
+    // overnight pode chamar ferramentas DEPOIS do end (#6758) — se o beacon
+    // ignorasse endedAt, essa chamada pós-end restauraria a coordenadora já
+    // encerrada, com claimed_issues e autoridade de merge de volta.
+    const root = mkdtempSync(join(tmpdir(), "beacon-find11-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      const backupName = "overnight-300-sess-8954-300-safeBackup-0001.json";
+      writeFileSync(
+        join(dir, backupName),
+        JSON.stringify({
+          kind: "overnight",
+          machineTag: "300",
+          sessionId: "sess-8954",
+          startedAt: "2026-09-28T14:00:00.000Z",
+          lastHeartbeat: "2026-09-28T15:00:00.000Z",
+          claimed_issues: [8954],
+          endedAt: "2026-09-28T15:05:00.000Z",
+        }),
+        "utf8",
+      );
+      assert.equal(findExistingSessionFile(dir, "sess-8954"), null, "backup encerrado não é restaurado — a chamada cai no caminho de sempre (cria interactive-*)");
+      assert.equal(existsSync(join(dir, backupName)), true, "o backup encerrado fica intocado, nunca renomeado");
+      assert.equal(existsSync(join(dir, "overnight-300-sess-8954.json")), false, "nenhum canônico é criado a partir de um backup encerrado");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#8954: backup de kind interactive (não-coordenador) é ignorado pela reconciliação", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-find12-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      const backupName = "interactive-300-sess-8954-300-safeBackup-0001.json";
+      writeFileSync(
+        join(dir, backupName),
+        JSON.stringify({ kind: "interactive", machineTag: "300", sessionId: "sess-8954", startedAt: "2026-09-28T14:00:00.000Z" }),
+        "utf8",
+      );
+      assert.equal(findExistingSessionFile(dir, "sess-8954"), null, "kind não-coordenador nunca reconcilia (COORDINATOR_KIND_PREFIXES)");
+      assert.equal(existsSync(join(dir, backupName)), true, "backup interactive fica intocado");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#8954: canônico já existe → não sobrescreve, ignora os backups (corrida com reconciliação concorrente)", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-find10-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "overnight-300-sess-8954.json"), JSON.stringify({ kind: "overnight", claimed_issues: [1] }), "utf8");
+      // Deve nem chegar a olhar pro backup — matches já acha o canônico.
+      writeFileSync(
+        join(dir, "overnight-300-sess-8954-300-safeBackup-0001.json"),
+        JSON.stringify({ kind: "overnight", machineTag: "300", sessionId: "sess-8954", startedAt: "2026-09-28T16:00:00.000Z" }),
+        "utf8",
+      );
+      assert.equal(findExistingSessionFile(dir, "sess-8954"), "overnight-300-sess-8954.json");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // ─── #6326 fleet review item 3 — desempate por KIND, não por alfabeto ──
