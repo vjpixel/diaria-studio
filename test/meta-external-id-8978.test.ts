@@ -147,11 +147,15 @@ describe("meta-fbc-bootstrap.ts (#8978)", () => {
 
   it("fbCookieValueFromDocumentCookieJs: expressão pura que lê _fbc/_fbp do document.cookie da página atual", () => {
     const fbcExpr = fbCookieValueFromDocumentCookieJs("_fbc");
-    assert.match(fbcExpr, /document\.cookie\.match\(\/\(\?:\^\|; \)_fbc=/);
+    assert.match(fbcExpr, /document\.cookie \|\| ""\)\.match\(\/\(\?:\^\|; \)_fbc=/);
     const fbpExpr = fbCookieValueFromDocumentCookieJs("_fbp");
-    assert.match(fbpExpr, /document\.cookie\.match\(\/\(\?:\^\|; \)_fbp=/);
+    assert.match(fbpExpr, /document\.cookie \|\| ""\)\.match\(\/\(\?:\^\|; \)_fbp=/);
     // nunca "undefined" — cai pra string vazia quando o cookie não existe.
     assert.match(fbcExpr, /return m \? m\[1\] : ""/);
+    // #8983 fleet review: try/catch defensivo — nunca lança mesmo se
+    // `document.cookie` não for string (sandbox de teste com mock incompleto).
+    assert.match(fbcExpr, /^\(function \(\) \{ try \{/);
+    assert.match(fbcExpr, /\} catch \(e\) \{ return ""; \} \}\)\(\)$/);
   });
 });
 

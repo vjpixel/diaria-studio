@@ -98,8 +98,15 @@ export function metaFbcBootstrapJs(): string {
  * pra manter o objeto de payload JS válido (`JSON.stringify` não aceita
  * `undefined` numa propriedade sem removê-la, o que mudaria o formato do
  * corpo entre "campo ausente" e "campo vazio" sem necessidade).
+ *
+ * `try/catch` em volta do `.match` (achado do fleet review pós-#8983):
+ * `document.cookie` é sempre string em qualquer browser real, mas nunca
+ * lançar é a garantia que este `@pure` já promete — blindagem redundante,
+ * não circunstancial, que também cobre qualquer sandbox onde
+ * `document.cookie` não seja uma string (ex.: harness de teste com um mock
+ * de `document` incompleto).
  * @pure
  */
 export function fbCookieValueFromDocumentCookieJs(cookieName: "_fbc" | "_fbp"): string {
-  return `(function () { var m = document.cookie.match(/(?:^|; )${cookieName}=([^;]+)/); return m ? m[1] : ""; })()`;
+  return `(function () { try { var m = String(document.cookie || "").match(/(?:^|; )${cookieName}=([^;]+)/); return m ? m[1] : ""; } catch (e) { return ""; } })()`;
 }

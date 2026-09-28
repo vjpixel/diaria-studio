@@ -13,11 +13,14 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   parseClickBeaconBody,
   validateClickBeacon,
   CLICK_BEACON_FIELD_MAX,
   CLICK_BEACON_ENDPOINT,
+  CLICK_BEACON_NAV_DELAY_MS,
 } from "../scripts/lib/shared/click-beacon.ts";
 import { buildMetaCapiCustomEvent, sendMetaCapiCustomEvent } from "../scripts/lib/shared/meta-capi.ts";
 import worker from "../workers/site/src/index.ts";
@@ -242,5 +245,20 @@ describe("POST /evento/agente-ia/clique — wiring no Worker site (#8982)", () =
     const { env, assetCalls } = fakeEnv();
     await worker.fetch(new Request("https://diar.ia.br/evento/agente-ia/clique", { method: "GET" }), env);
     assert.equal(assetCalls.length, 1);
+  });
+});
+
+describe("CLICK_BEACON_NAV_DELAY_MS vs workers/site/public/evento/agente-ia/script.js (drift)", () => {
+  it("o setTimeout(go, 300) hardcoded no JS estático bate com a constante documentada", () => {
+    // #8982: o JS estático não importa a constante (sem passo de build — ver
+    // docstring de click-beacon.ts), então o único jeito de saber se os dois
+    // ainda concordam é este teste de drift lendo o arquivo cru.
+    const scriptPath = join(process.cwd(), "workers/site/public/evento/agente-ia/script.js");
+    const js = readFileSync(scriptPath, "utf8");
+    assert.match(
+      js,
+      new RegExp(`setTimeout\\(go,\\s*${CLICK_BEACON_NAV_DELAY_MS}\\)`),
+      `script.js precisa navegar em até ${CLICK_BEACON_NAV_DELAY_MS}ms — atualize o hardcode ou esta constante juntos`,
+    );
   });
 });

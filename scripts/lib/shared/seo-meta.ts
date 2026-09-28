@@ -60,11 +60,21 @@ export const GTM_CONTAINER_ID = "GTM-TC8C65ZN";
  * passam por `renderSeoMeta()` (`render-app.ts`, `render-privacy.ts`,
  * `gate-page.ts`). Emite só o container (nada de tags soltas de GA4/Meta/
  * conversão — essas vivem dentro do container no console do GTM).
+ *
+ * `includeFbcBootstrap` (default `true`, #8978/#8983): `/confirmada`
+ * (`confirmado-page.ts`) passa `false` — o racional de por que
+ * `gclid`/`fbclid`/`msclkid`/`li_fat_id` não se aplicam àquela página
+ * (bloco `#8387` no topo de `confirmado-page.ts`) vale igualmente pro
+ * bootstrap de `_fbc`: o clique que alcança `/confirmada` é o de
+ * confirmação DENTRO DO E-MAIL, nunca um clique de anúncio com `fbclid` na
+ * URL — gravar o bootstrap ali só adicionaria uma referência morta a
+ * `fbclid` sem nenhum cenário em que ele dispare.
  */
-export function renderAnalyticsHead(): string {
+export function renderAnalyticsHead(options?: { includeFbcBootstrap?: boolean }): string {
+  const includeFbcBootstrap = options?.includeFbcBootstrap ?? true;
   return (
     `<script>${visitorIdBootstrapJs()}</script>` +
-    `<script>${metaFbcBootstrapJs()}</script>` +
+    (includeFbcBootstrap ? `<script>${metaFbcBootstrapJs()}</script>` : "") +
     `<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','${GTM_CONTAINER_ID}');</script>`
   );
 }
