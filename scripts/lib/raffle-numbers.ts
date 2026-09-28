@@ -47,6 +47,12 @@ export interface IntentionalErrorForMatch {
   location?: string;
   description?: string;
   correct_value?: string;
+  /** (#8877) Irmão de `correct_value` — a grafia/valor ERRADO efetivamente
+   * plantado no texto (ex: "OppenAI"). Reply que aponta o erro citando só a
+   * forma errada — o jeito mais natural de apontar um typo — não menciona
+   * `correct_value`; sem checar este campo, `hasCorrectMatch` fica `false` e
+   * o acerto vira falso negativo silencioso. */
+  wrong_value?: string;
 }
 
 /**
@@ -229,6 +235,13 @@ export function matchesIntentionalError(
   // inteira na reply, isso já basta — a chance de match espúrio é baixa.
   // Número puro ("22") ou palavra comum seguem exigindo o contexto.
   if (hasDistinctiveCorrectMatch(error.correct_value, bodyNorm)) return true;
+
+  // #8877: mesma régua, mas pro lado ERRADO — reply que aponta o typo citando
+  // só a grafia plantada ("OppenAI") nunca menciona o correct_value ("OpenAI"),
+  // então o check acima não dispara. Se wrong_value tem um token distintivo e
+  // ele aparece como palavra inteira na reply, é acerto — a reply está citando
+  // exatamente o texto errado que o editor plantou.
+  if (hasDistinctiveCorrectMatch(error.wrong_value, bodyNorm)) return true;
 
   // Exige sinal real de cada conjunto que existir — quando um conjunto está
   // vazio (ex: sem correct_value), o flag correspondente já é `true` por

@@ -384,3 +384,36 @@ describe("matchesIntentionalError (#8751) — resposta terse com a palavra corri
     assert.equal(matchesIntentionalError("é Brasília", e), false);
   });
 });
+
+describe("matchesIntentionalError (#8877) — reply cita só a grafia errada (wrong_value)", () => {
+  it("caso real bernallu 260925: reply cita só 'OppenAI' (wrong_value), sem mencionar 'OpenAI' (correct_value) → acerto", () => {
+    const error = {
+      category: "ortografico",
+      location: "destaque 1, parágrafo 2",
+      description: "nome da empresa grafado errado",
+      correct_value: "OpenAI",
+      wrong_value: "OppenAI",
+    };
+    const body = "Segundo parágrafo escrito \"OppenAI\"! Será que era isso?!";
+    assert.equal(matchesIntentionalError(body, error), true);
+  });
+
+  it("wrong_value não-distintivo (minúsculo, sem dígito) segue exigindo o contexto", () => {
+    const error = {
+      description: "valor errado",
+      location: "radar",
+      correct_value: "valor",
+      wrong_value: "numero",
+    };
+    assert.equal(matchesIntentionalError("o certo é numero", error), false);
+  });
+
+  it("sem wrong_value declarado, comportamento não muda (regressão)", () => {
+    const error = {
+      description: "nome do produto da OpenAI trocado",
+      location: "destaque 1",
+      correct_value: "ChatGPT",
+    };
+    assert.equal(matchesIntentionalError("só falo de ChatGTP mesmo", error), false);
+  });
+});
