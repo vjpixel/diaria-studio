@@ -2,10 +2,13 @@
  * test/hubs-weekly-regen.test.ts (#8906)
  *
  * Regressão pura pra `scripts/lib/hubs-weekly-regen.ts` — decisão de regen
- * por hub, bump de `UPDATED_DATE` e heurística de alarme de revisão de
- * prosa. Nenhum teste toca disco/rede — o orquestrador de I/O
- * (`scripts/hubs-weekly-regen.ts`) não é exercitado aqui (mesmo padrão de
- * `test/hub-drift-check.test.ts`/`test/hub-staleness-check.test.ts`).
+ * por hub, bump de `UPDATED_DATE`, heurística de alarme de revisão de
+ * prosa, e (#8923) a sequência de merge síncrono `mergeHubsRegenPr`. Nenhum
+ * teste toca disco/rede — o orquestrador de I/O (`scripts/hubs-weekly-regen.ts`)
+ * não é exercitado aqui (mesmo padrão de
+ * `test/hub-drift-check.test.ts`/`test/hub-staleness-check.test.ts`); a
+ * suíte de `mergeHubsRegenPr` usa um `TrainRunner` FAKE, mesmo padrão de
+ * `test/merge-train-live.test.ts`.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -19,10 +22,66 @@ import {
   countEditionsSince,
   decideProseAlarm,
   ensureProseReviewBaseline,
+  mergeHubsRegenPr,
   type HubSourcesDiff,
 } from "../scripts/lib/hubs-weekly-regen.ts";
+import type { TrainRunner, ExecResult } from "../scripts/lib/merge-train-live.ts";
 
 const EMPTY_DIFF: HubSourcesDiff = { added: [], removed: [], changed: [], unchanged: 3 };
+
+// ─── Fake runner pra mergeHubsRegenPr (mesmo padrão de test/merge-train-live.test.ts) ───
+
+type Handler = (args: string[], cwd?: string) => ExecResult;
+
+function ok(stdout = ""): ExecResult {
+  return { ok: true, stdout, stderr: "" };
+}
+function fail(stderr = "erro simulado"): ExecResult {
+  return { ok: false, stdout: "", stderr };
+}
+function ciJson(conclusion: "SUCCESS" | "FAILURE"): string {
+  return JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion, status: "COMPLETED" }] });
+}
+
+class FakeHubsRunner implements TrainRunner {
+  readonly calls: { cmd: string; args: string[]; cwd?: string }[] = [];
+  private clock = 0;
+  private handlers: { cmd: string; match: (args: string[], cwd?: string) => boolean; handler: Handler }[] = [];
+
+  on(cmd: string, match: (args: string[], cwd?: string) => boolean, handler: Handler): this {
+    this.handlers.push({ cmd, match, handler });
+    return this;
+  }
+
+  exec(cmd: string, args: string[], cwd?: string): ExecResult {
+    this.calls.push({ cmd, args, cwd });
+    const found = [...this.handlers].reverse().find((h) => h.cmd === cmd && h.match(args, cwd));
+    if (!found) throw new Error(`FakeHubsRunner: chamada não roteirizada: ${cmd} ${args.join(" ")} (cwd=${cwd ?? "default"})`);
+    return found.handler(args, cwd);
+  }
+
+  async sleep(_ms: number): Promise<void> {
+    this.clock += 30_000;
+  }
+
+  now(): number {
+    return this.clock;
+  }
+
+  mkTempDir(prefix: string): string {
+    return `/tmp/${prefix}1`;
+  }
+
+  warn(_message: string): void {
+    // no-op — mergeHubsRegenPr nunca chama warn(), mas TrainRunner exige o método.
+  }
+}
+
+function lockOkRunner(): FakeHubsRunner {
+  return new FakeHubsRunner()
+    .on("npx", (a) => a.includes("merge-lock-acquire"), () => ok())
+    .on("npx", (a) => a.includes("merge-lock-release"), () => ok());
+}
 
 describe("hasHubDataChange", () => {
   it("false quando o diff não tem added/removed/changed", () => {
@@ -133,5 +192,100 @@ describe("ensureProseReviewBaseline", () => {
       "anthropic-claude": { proseReviewedDate: "2026-08-01" },
       "google-gemini": { proseReviewedDate: "2026-09-17" },
     });
+  });
+});
+
+describe("mergeHubsRegenPr (#8923 — merge síncrono, nunca --auto)", () => {
+  it("caminho feliz: acquire -> espera CI pass -> gh pr merge --squash SÍNCRONO (sem --auto) -> confirma -> release", async () => {
+    const runner = lockOkRunner().on(
+      "gh",
+      (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"),
+      () => ok(ciJson("SUCCESS")),
+    );
+    // `gh pr merge` só é chamado depois do CI ter respondido "pass" — sem
+    // handler dedicado pra ele aqui, o teste falharia com "chamada não
+    // roteirizada" se o código tentasse mergear ANTES da espera. Registrado
+    // explicitamente, checado abaixo que veio com os args certos.
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok());
+
+    const result = await mergeHubsRegenPr(runner, "123", { sessionId: "s1" });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.merged, true);
+    assert.equal(result.ciVerdict, "pass");
+
+    const mergeCall = runner.calls.find((c) => c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "merge");
+    assert.ok(mergeCall, "gh pr merge deveria ter sido chamado");
+    assert.deepEqual(mergeCall!.args, ["pr", "merge", "123", "--squash"]);
+    assert.ok(!mergeCall!.args.includes("--auto"), "--auto nunca pode aparecer nos args do merge (#8923)");
+
+    // Ordem: acquire vem ANTES do gate/merge, release vem DEPOIS — e release
+    // sempre acontece (é o achado original: o lock não cobria a espera).
+    const cmdOrder = runner.calls.map((c) => (c.args.includes("merge-lock-acquire") ? "acquire" : c.args.includes("merge-lock-release") ? "release" : c.args[1] === "merge" ? "merge" : c.args[1] === "view" ? "view" : "other"));
+    assert.equal(cmdOrder[0], "acquire");
+    assert.equal(cmdOrder[cmdOrder.length - 1], "release");
+    assert.ok(cmdOrder.indexOf("merge") < cmdOrder.lastIndexOf("release"), "release precisa vir depois do merge, não antes");
+  });
+
+  it("gate vermelho (CI fail): nunca chama gh pr merge, PR fica aberto, lock é liberado mesmo assim", async () => {
+    const runner = lockOkRunner().on(
+      "gh",
+      (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"),
+      () => ok(ciJson("FAILURE")),
+    );
+    // Sem handler pra "gh pr merge" — se o código chamar mesmo assim, o
+    // fake lança "chamada não roteirizada" e o teste falha (é a asserção).
+
+    const result = await mergeHubsRegenPr(runner, "123", { sessionId: "s1" });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.merged, false);
+    assert.equal(result.ciVerdict, "fail");
+    assert.match(result.error!, /CI não passou/);
+
+    const releaseCall = runner.calls.find((c) => c.args.includes("merge-lock-release"));
+    assert.ok(releaseCall, "lock precisa ser liberado mesmo com CI vermelho — nunca preso");
+  });
+
+  it("timeout de CI: trata como não-pass, não mergeia, libera o lock", async () => {
+    const runner = lockOkRunner().on(
+      "gh",
+      (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"),
+      () => ok(JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion: null, status: "IN_PROGRESS" }] })),
+    );
+
+    const result = await mergeHubsRegenPr(runner, "123", { sessionId: "s1", ciTimeoutMs: 100, ciPollIntervalMs: 30_000 });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.ciVerdict, "timeout");
+    const releaseCall = runner.calls.find((c) => c.args.includes("merge-lock-release"));
+    assert.ok(releaseCall, "lock precisa ser liberado mesmo em timeout de CI");
+  });
+
+  it("merge-lock-acquire negado: nem espera CI nem tenta mergear", async () => {
+    const runner = new FakeHubsRunner().on("npx", (a) => a.includes("merge-lock-acquire"), () => fail("denied (held by another session)"));
+
+    const result = await mergeHubsRegenPr(runner, "123", { sessionId: "s1" });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.merged, false);
+    assert.match(result.error!, /merge-lock-acquire falhou/);
+    assert.equal(
+      runner.calls.some((c) => c.args[0] === "pr" && c.args[1] === "view"),
+      false,
+      "não deveria checar CI se o lock nem foi adquirido",
+    );
+  });
+
+  it("gh pr merge reporta falha local mas o PR já mergeou no remoto (#573): confirma via gh pr view e retorna sucesso", async () => {
+    const runner = lockOkRunner()
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciJson("SUCCESS")))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => fail("network blip local"))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "MERGED", mergedAt: "2026-09-28T12:00:00Z" })));
+
+    const result = await mergeHubsRegenPr(runner, "123", { sessionId: "s1" });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.merged, true);
   });
 });

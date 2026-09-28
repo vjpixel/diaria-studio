@@ -79,6 +79,7 @@ import {
   decideProseAlarm,
   ensureProseReviewBaseline,
   emptyProseReviewState,
+  mergeHubsRegenPr,
   type ProseReviewState,
   type HubRegenPlan,
 } from "./lib/hubs-weekly-regen.ts";
@@ -90,6 +91,7 @@ import {
   defaultAlarmGhRun,
   type AlarmFinding,
 } from "./lib/alarm-issues.ts";
+import { createRealTrainRunner } from "./lib/merge-train-live.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HUBS_DIR = resolve(ROOT, "scripts/lib/hubs");
@@ -263,7 +265,7 @@ function removeWorktree(workRoot: string): void {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const dryRun = hasFlag(argv, "--dry-run");
   const sessionId = getArg(argv, "--session-id") || undefined;
@@ -389,14 +391,16 @@ function main(): void {
       const prNumber = prNumberMatch ? prNumberMatch[1] : undefined;
       if (!prNumber) throw new Error(`não consegui extrair o número da PR de "${prUrl}"`);
 
-      const acquired = run("npx", ["tsx", "scripts/lib/session-registry.ts", "merge-lock-acquire", "--pr", prNumber, "--session-id", sessionId], ROOT);
-      process.stderr.write(`${LOG_PREFIX} merge-lock-acquire: ${acquired}\n`);
-      try {
-        run("gh", ["pr", "merge", prNumber, "--squash", "--auto"], workRoot);
-      } finally {
-        run("npx", ["tsx", "scripts/lib/session-registry.ts", "merge-lock-release", "--pr", prNumber, "--session-id", sessionId], ROOT);
+      // #8923: merge SÍNCRONO — espera o CI real, só mergeia com veredito
+      // "pass" confirmado, lock cobre a espera inteira (não só o comando
+      // que agendava o auto-merge). Ver docstring de `mergeHubsRegenPr`.
+      const mergeResult = await mergeHubsRegenPr(createRealTrainRunner(ROOT), prNumber, { sessionId });
+      if (!mergeResult.ok) {
+        alarmFailure("ci-vermelho-ou-merge-falhou", `PR #${prNumber} não foi mergeada: ${mergeResult.error}`, proseFindings);
+        process.exitCode = 1;
+        return;
       }
-      process.stderr.write(`${LOG_PREFIX} PR #${prNumber} aberta e auto-merge armado (aguarda CI).\n`);
+      process.stderr.write(`${LOG_PREFIX} PR #${prNumber} mergeada (squash síncrono, confirmado via gh pr view).\n`);
       reconcileAlarms(proseFindings);
     } catch (e) {
       alarmFailure("git-ou-gh", `Falha no fluxo de commit/PR/merge: ${(e as Error).message}`, proseFindings);
@@ -408,5 +412,8 @@ function main(): void {
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  main().catch((e) => {
+    process.stderr.write(`${LOG_PREFIX} erro não tratado: ${(e as Error).message}\n`);
+    process.exitCode = 1;
+  });
 }
