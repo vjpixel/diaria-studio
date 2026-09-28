@@ -265,6 +265,23 @@ LOCK_BLOCKED=0
 # função persiste cada ocorrência num log append-only (sobrevive à entrega,
 # permite ver recorrência) E acumula um resumo truncado pra ir na linha
 # final — as duas formas do #6910, não só uma.
+# #8827: redige segredo com formato de provedor de todo texto que este script
+# publica no GitHub (repo público). Mesmos padrões do hook
+# `.claude/hooks/block-gh-comment-secrets.mjs`, que cobre o `gh pr comment`
+# feito pela sessão `claude -p` de review.
+redact_public_text() {
+  printf '%s' "$1" | sed -E \
+    -e 's/sk-or-(v1-)?[A-Za-z0-9_-]{20,}/[REDACTED_OPENROUTER]/g' \
+    -e 's/sk-ant-[A-Za-z0-9_-]{20,}/[REDACTED_ANTHROPIC]/g' \
+    -e 's/sk-(proj-)?[A-Za-z0-9]{32,}/[REDACTED_OPENAI]/g' \
+    -e 's/xkeysib-[A-Za-z0-9-]{20,}/[REDACTED_BREVO]/g' \
+    -e 's/(ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/[REDACTED_GITHUB]/g' \
+    -e 's/dp\.(st|pt|sa|ct|scim)\.[A-Za-z0-9_.-]{20,}/[REDACTED_DOPPLER]/g' \
+    -e 's/xox[abprs]-[A-Za-z0-9-]{20,}/[REDACTED_SLACK]/g' \
+    -e 's/AIza[A-Za-z0-9_-]{35}/[REDACTED_GOOGLE_API]/g' \
+    -e 's/AKIA[A-Z0-9]{16}/[REDACTED_AWS]/g'
+}
+
 INFRA_ERROR_LOG="$REPO/data/continuo-pr-review/infra-errors.jsonl"
 log_infra_error() {
   local pr="$1" code="$2" reason="$3"
@@ -594,6 +611,9 @@ try_merge_gate() {
       # hermes-diaria-continuo/SKILL.md §3 passo 1).
       GATE_REASON=$(printf '%s' "$GATE_JSON" | jq -r '.reason // "motivo não disponível"')
       REJECT_BODY="Gate de merge automático (#6926): rejeitado — $GATE_REASON"
+      # #8827: o motivo pode citar log/stderr de CI; o repo é público e a
+      # OpenRouter revoga chave detectada. Redige antes de publicar.
+      REJECT_BODY=$(redact_public_text "$REJECT_BODY")
 
       # #7446 item 1: `reject` nunca era terminal — o mesmo motivo era
       # repostado a CADA tick enquanto a PR seguisse aberta e rejeitada
