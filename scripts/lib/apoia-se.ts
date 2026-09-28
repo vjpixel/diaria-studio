@@ -286,14 +286,28 @@ export function isCacheEntryStale(entry: BackerStatus & { fetchedAt?: string }, 
   return ageMs > ttlHours * 60 * 60 * 1000;
 }
 
-function loadMonthCache(path: string): MonthCache {
-  if (!existsSync(path)) return {};
+interface MonthCacheLoadResult {
+  cache: MonthCache;
+  /** `true` quando o arquivo EXISTE mas falhou o parse — diferente de
+   *  ausente (nunca escrito ainda). Callers que precisam distinguir "sem
+   *  dado" de "dado corrompido fabricando zero" (#8938/#8423 fleet review)
+   *  usam `loadMonthCacheDetailed`/`readMonthCacheDetailed` abaixo; os
+   *  demais (que só querem `{}` fail-soft) continuam em `loadMonthCache`. */
+  corrupted: boolean;
+}
+
+function loadMonthCacheDetailed(path: string): MonthCacheLoadResult {
+  if (!existsSync(path)) return { cache: {}, corrupted: false };
   try {
-    return JSON.parse(readFileSync(path, "utf-8")) as MonthCache;
+    return { cache: JSON.parse(readFileSync(path, "utf-8")) as MonthCache, corrupted: false };
   } catch {
     console.error(`⚠️  apoia.se: cache corrompido em ${path} — ignorando (será regravado)`);
-    return {};
+    return { cache: {}, corrupted: true };
   }
+}
+
+function loadMonthCache(path: string): MonthCache {
+  return loadMonthCacheDetailed(path).cache;
 }
 
 function saveMonthCache(path: string, cache: MonthCache): void {
@@ -309,6 +323,24 @@ function saveMonthCache(path: string, cache: MonthCache): void {
  */
 export function readMonthCache(cacheDir: string, month: string): Record<string, BackerStatus> {
   return loadMonthCache(resolve(cacheDir, `${month}.json`));
+}
+
+/**
+ * Mesma leitura de `readMonthCache`, mas expõe `corrupted` — `true` quando o
+ * arquivo do mês EXISTE mas falhou o parse JSON (#8938/#8423 fleet review:
+ * `existsSync` sozinho não distingue "nunca consultado" de "consultado e
+ * corrompido", e o 2º caso fabricava receita `R$0` em vez de indisponível em
+ * `computeValorLayer`/`computeLtvSection`). Callers que precisam decidir
+ * disponibilidade (arquivo presente E parseável) usam isto em vez de
+ * `existsSync(path)` solto. Não muda o comportamento de `readMonthCache`
+ * (usado por `studio-apoios.ts`/`studio-subscribers.ts`, que só querem `{}`
+ * fail-soft sem se importar com a distinção).
+ */
+export function readMonthCacheDetailed(
+  cacheDir: string,
+  month: string,
+): { cache: Record<string, BackerStatus>; corrupted: boolean } {
+  return loadMonthCacheDetailed(resolve(cacheDir, `${month}.json`));
 }
 
 // ---------------------------------------------------------------------------

@@ -214,8 +214,8 @@ describe("assertRegistryValido (#7175)", () => {
     assert.doesNotThrow(() => assertRegistryValido(METRICAS));
     assert.equal(
       METRICAS.length,
-      13,
-      "8 métricas de #7176 + 2 de ativação por coorte de #7183 + 3 de topo de funil GA4 de #7184",
+      20,
+      "8 métricas de #7176 + 2 de ativação por coorte de #7183 + 3 de topo de funil GA4 de #7184 + 7 de Valor de #8423",
     );
   });
 });

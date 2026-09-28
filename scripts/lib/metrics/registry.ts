@@ -60,6 +60,15 @@
  * form `KIT_DOI_FORM_ID` (3º insumo da #8552) — ver docstring de
  * `buildDoiConfirmationCohort`.
  *
+ * ## Valor — receita, ARPU, churn, conversão em apoiador, LTV, LTV÷CAC (#8423)
+ *
+ * `receita-mensal`, `arpu-ativo`, `churn-mensal`, `conversao-apoiador`,
+ * `ltv-caixa`, `ltv-por-origem`, `ltv-cac-ratio` — o núcleo de cálculo puro
+ * vive em `scripts/lib/ltv.ts` (mesmo par canônico de `cac.ts`), este
+ * arquivo só adapta pro contrato `MetricDef`. Formaliza o cálculo manual de
+ * LTV feito em sessão de 19/09/2026 (issue #8423) pra não se perder — os
+ * números de referência da issue servem de sanity check, não de meta exata.
+ *
  * ## Fronteira `scripts/lib/` (#2747)
  *
  * `scripts/lib/metrics/` é um domínio NOVO — `test/lib-boundary.test.ts`
@@ -100,6 +109,17 @@ import {
   aggregateGa4SessionsByClasse,
   computeConversaoPorClasse,
 } from "./ga4-channel.ts";
+import {
+  LTV_DEFAULT_HORIZON_MONTHS,
+  sumRevenueBySource,
+  computeArpu,
+  computeChurnRate,
+  computeLtvCaixaFaixa,
+  computeConversaoApoiador,
+  computeLtvPorOrigem,
+  computeLtvCacRatio,
+  type ChurnExitEvent,
+} from "../ltv.ts";
 
 // ---------------------------------------------------------------------------
 // O contrato (#7175)
@@ -1065,6 +1085,339 @@ const conversaoVisitaCadastroDef: MetricDef<ConversaoVisitaCadastroDeps> = {
 };
 
 // ---------------------------------------------------------------------------
+// Valor — receita, ARPU, churn, conversão em apoiador, LTV e LTV÷CAC (#8423)
+//
+// Núcleo de cálculo em `scripts/lib/ltv.ts` (par canônico com este arquivo,
+// mesmo padrão de `cac.ts`) — aqui só a adaptação pro contrato `MetricDef`
+// (janela, qualidade, series). Todo insumo chega já resolvido em `deps`
+// (cache da apoia.se, snapshots Beehiiv, config da Amazon, CAC por canal) —
+// o CHAMADOR (`studio-metrics.ts`) faz o I/O, nunca este módulo.
+// ---------------------------------------------------------------------------
+
+export interface ReceitaMensalDeps extends MetricDeps {
+  /** BRL por fonte no período — `null` EXPLÍCITO quando a fonte não tem
+   *  dado confiável (cache congelado #4490, fonte nunca consultada).
+   *  NUNCA `0` fabricado por ausência. */
+  porFonte: Readonly<Record<string, number | null>>;
+}
+
+const receitaMensalDef: MetricDef<ReceitaMensalDeps> = {
+  id: "receita-mensal",
+  nome: "Receita mensal (bruta, por fonte)",
+  produto: "diaria",
+  etapa: "receita",
+  definicao:
+    "SOMA da receita BRUTA mensal das fontes com dado em deps.porFonte (ex: apoia.se, Amazon afiliado) — " +
+    "só CAIXA, sem valor indireto de indicação/parceria (decisão do editor, #8423). Fonte com valor null é " +
+    "EXCLUÍDA da soma (nunca tratada como R$0); decomposicao 'fonte' sempre lista o valor bruto de cada fonte " +
+    "declarada (null incluso, pra a ausência ficar visível).",
+  unidade: "brl",
+  direcao: "maior-melhor",
+  fonte: "data/apoia-se/{campanha}/{YYYY-MM}.json (apoia.se, via readMonthCache) + config manual da Amazon (sem fonte automatizada, #8423)",
+  decomposicoes: ["fonte"],
+  async computar(args) {
+    validarDecomposicao(receitaMensalDef, args.decomposicao);
+    const { totalRevenueBrl, fontesComDado, fontesSemDado } = sumRevenueBySource(args.deps.porFonte);
+    const series: MetricSeriesPoint[] | undefined =
+      args.decomposicao === "fonte"
+        ? Object.entries(args.deps.porFonte).map(([chave, valor]) => ({ chave, valor }))
+        : undefined;
+    if (fontesComDado.length === 0) {
+      const result = indeterminado(
+        args.janela,
+        `nenhuma fonte de receita com dado no período (${fontesSemDado.join(", ") || "nenhuma fonte declarada"})`,
+      );
+      if (series) result.series = series;
+      return result;
+    }
+    if (fontesSemDado.length > 0) {
+      const result = piso(
+        totalRevenueBrl as number,
+        args.janela,
+        null,
+        `PISO — fonte(s) sem dado no período, excluída(s) da soma: ${fontesSemDado.join(", ")}`,
+      );
+      if (series) result.series = series;
+      return result;
+    }
+    const result = exato(totalRevenueBrl as number, args.janela, null);
+    if (series) result.series = series;
+    return result;
+  },
+};
+
+export interface ArpuAtivoDeps extends MetricDeps {
+  /** Mesma forma de `ReceitaMensalDeps.porFonte` — o chamador resolve UMA
+   *  vez e passa pras duas métricas (`receita-mensal` e esta). */
+  porFonte: Readonly<Record<string, number | null>>;
+  /** Base ativa do período — mesma fonte de `base-ativa`. */
+  baseAtiva: number | null;
+}
+
+const arpuAtivoDef: MetricDef<ArpuAtivoDeps> = {
+  id: "arpu-ativo",
+  nome: "ARPU (receita por ativo)",
+  produto: "diaria",
+  etapa: "receita",
+  definicao:
+    "receita-mensal (soma das fontes com dado) ÷ base ativa do período (denominador = base ativa, mesma fonte " +
+    "de base-ativa). PISO quando alguma fonte de receita está sem dado no período (nunca 0 fabricado); " +
+    "indeterminado quando a base ativa ou TODAS as fontes de receita estão ausentes.",
+  unidade: "brl",
+  direcao: "maior-melhor",
+  fonte: "receita-mensal (mesmos deps.porFonte) + base-ativa",
+  decomposicoes: [],
+  async computar(args) {
+    validarDecomposicao(arpuAtivoDef, args.decomposicao);
+    const r = computeArpu({ revenueBySource: args.deps.porFonte, activeBase: args.deps.baseAtiva });
+    if (r.valor == null) return indeterminado(args.janela, r.motivo ?? "ARPU indisponível");
+    if (r.fontesSemDado.length > 0) return piso(r.valor, args.janela, null, r.motivo ?? "PISO");
+    return exato(r.valor, args.janela, null);
+  },
+};
+
+export interface ChurnMensalDeps extends MetricDeps {
+  /** TODAS as saídas observadas no período (inclui limpeza manual). */
+  exits: readonly ChurnExitEvent[];
+  /** E-mails normalizados de limpeza manual conhecida (ex:
+   *  `data/analysis/descadastrados-manuais-2607.json`) — NUNCA desinteresse
+   *  orgânico. */
+  manualCleanupEmails: ReadonlySet<string>;
+  /** Duração do período observado, em meses (pode ser fracionário). */
+  periodMonths: number;
+  /** Base ativa média do período — denominador. */
+  avgActiveBase: number | null;
+}
+
+const churnMensalDef: MetricDef<ChurnMensalDeps> = {
+  id: "churn-mensal",
+  nome: "Churn mensal (orgânico × com limpeza manual)",
+  produto: "diaria",
+  etapa: "retencao",
+  definicao:
+    "razão: saídas no período ÷ (base ativa média × duração do período em meses) (denominador = base ativa " +
+    "média × período). Devolvida como FAIXA — piso = churn ORGÂNICO (exclui e-mails de deps.manualCleanupEmails, " +
+    "sempre <= o outro lado); teto = churn 'com limpeza' (TODAS as saídas, inclusive limpeza manual do editor). " +
+    "decomposicao 'variante' devolve as duas leituras nomeadas ('organico', 'com_limpeza').",
+  unidade: "razao",
+  direcao: "menor-melhor",
+  fonte: "diff de 2 snapshots Beehiiv (exits) + data/analysis/descadastrados-manuais-2607.json (limpeza manual conhecida)",
+  decomposicoes: ["variante"],
+  async computar(args) {
+    validarDecomposicao(churnMensalDef, args.decomposicao);
+    const r = computeChurnRate({
+      exits: args.deps.exits,
+      manualCleanupEmails: args.deps.manualCleanupEmails,
+      periodMonths: args.deps.periodMonths,
+      avgActiveBase: args.deps.avgActiveBase,
+    });
+    if (r.organicMonthly == null || r.comLimpezaMonthly == null) {
+      return indeterminado(args.janela, r.motivo ?? "churn indisponível");
+    }
+    const series: MetricSeriesPoint[] | undefined =
+      args.decomposicao === "variante"
+        ? [
+            { chave: "organico", valor: r.organicMonthly },
+            { chave: "com_limpeza", valor: r.comLimpezaMonthly },
+          ]
+        : undefined;
+    const result = faixa(
+      r.organicMonthly,
+      r.comLimpezaMonthly,
+      args.janela,
+      null,
+      `faixa: piso = churn orgânico; teto = churn com limpeza manual (${r.manualCleanupExits} de ${r.totalExits} saída(s))`,
+    );
+    if (series) result.series = series;
+    return result;
+  },
+};
+
+export interface ConversaoApoiadorDeps extends MetricDeps {
+  apoiadores: number;
+  /** Denominador — assinantes confirmados no grupo. */
+  confirmados: number;
+}
+
+const conversaoApoiadorDef: MetricDef<ConversaoApoiadorDeps> = {
+  id: "conversao-apoiador",
+  nome: "Conversão em apoiador",
+  produto: "apoio",
+  etapa: "receita",
+  definicao:
+    "razão: apoiadores confirmados (vínculo por e-mail com a apoia.se) ÷ assinantes confirmados do grupo " +
+    "(denominador = confirmados). Amostra minúscula (n de apoiadores < 5, #8423) nunca sai como número seco — " +
+    "qualidade 'piso' com o n visível ao lado (1 apoiador a mais/menos move a taxa em dezenas de %).",
+  unidade: "razao",
+  direcao: "maior-melhor",
+  fonte: "data/apoia-se/{campanha}/{YYYY-MM}.json (apoia.se) vinculado por e-mail ao grupo de assinantes",
+  decomposicoes: [],
+  async computar(args) {
+    validarDecomposicao(conversaoApoiadorDef, args.decomposicao);
+    const r = computeConversaoApoiador({ apoiadores: args.deps.apoiadores, confirmados: args.deps.confirmados });
+    if (r.valor == null) return indeterminado(args.janela, r.motivo ?? "conversão em apoiador indisponível");
+    if (r.qualidadeAmostra === "pequena") return piso(r.valor, args.janela, null, r.motivo ?? "amostra pequena");
+    return exato(r.valor, args.janela, null);
+  },
+};
+
+export interface LtvCaixaDeps extends MetricDeps {
+  arpuMensal: number | null;
+  churnMensalOrganico: number | null;
+  churnMensalComLimpeza: number | null;
+  /** Default `LTV_DEFAULT_HORIZON_MONTHS` (24) — só há ~12 meses de
+   *  história, extrapolar além do horizonte é chute (#8423). */
+  horizonMonths?: number;
+}
+
+const ltvCaixaDef: MetricDef<LtvCaixaDeps> = {
+  id: "ltv-caixa",
+  nome: "LTV de caixa (blended)",
+  produto: "diaria",
+  etapa: "receita",
+  definicao:
+    `LTV = ARPU_mensal × min(1/churn_mensal, horizonte em meses; default ${LTV_DEFAULT_HORIZON_MONTHS}). Devolvida ` +
+    "como FAIXA — piso usa o churn 'com limpeza' (vida útil menor), teto usa o churn orgânico (vida útil maior, " +
+    "mesmo truncamento de horizonte). Receita BRUTA, só caixa, uso principal é contexto de ranqueamento de CAC " +
+    "(nunca gate de gasto — não reabre o teto revogado em #5235/#5236).",
+  unidade: "brl",
+  direcao: "maior-melhor",
+  fonte: "arpu-ativo + churn-mensal (ambos já resolvidos pelo chamador)",
+  decomposicoes: [],
+  async computar(args) {
+    validarDecomposicao(ltvCaixaDef, args.decomposicao);
+    const horizonMonths = args.deps.horizonMonths ?? LTV_DEFAULT_HORIZON_MONTHS;
+    const r = computeLtvCaixaFaixa({
+      arpuMonthlyBrl: args.deps.arpuMensal,
+      churnOrganicoMonthly: args.deps.churnMensalOrganico,
+      churnComLimpezaMonthly: args.deps.churnMensalComLimpeza,
+      horizonMonths,
+    });
+    if (r.min == null || r.max == null) return indeterminado(args.janela, r.motivo ?? "LTV indisponível");
+    return faixa(r.min, r.max, args.janela, null, `faixa de LTV — horizonte de ${horizonMonths} meses`);
+  },
+};
+
+export interface LtvPorOrigemClasseInput {
+  conversaoApoiador: number | null;
+  valorMedioApoiadorMensal: number | null;
+  outrasFontesPerAtivoMensal?: number | null;
+  /** Apoiadores confirmados desta classe — usado só como peso do "valor"
+   *  blended (média ponderada entre classes), nunca recalcula a conversão. */
+  n: number;
+}
+
+export interface LtvPorOrigemDeps extends MetricDeps {
+  /** Uma entrada por classe de aquisição observada (#7173) — classe
+   *  ausente do mapa é tratada como "sem dado nesta classe", nunca 0. */
+  porClasse: Readonly<Partial<Record<AcquisitionClass, LtvPorOrigemClasseInput>>>;
+  horizonMonths?: number;
+}
+
+const ltvPorOrigemDef: MetricDef<LtvPorOrigemDeps> = {
+  id: "ltv-por-origem",
+  nome: "LTV de caixa por origem de aquisição",
+  produto: "diaria",
+  etapa: "receita",
+  definicao:
+    "por classe de aquisição (#7173): LTV = (conversaoApoiador × valorMedioApoiadorMensal + " +
+    "outrasFontesPerAtivoMensal) × horizonte em meses — bottom-up, sem depender de churn (a coorte é jovem " +
+    "demais pra medir retenção própria). É o número que de fato serve de teto de CAC (a média da base engana: " +
+    "quase todo apoiador vem da rede pessoal do editor, #8423). 'valor' é a média ponderada (peso = n de " +
+    "apoiadores) entre as classes com LTV computável; decomposicao 'classe' sempre devolve o detalhe por classe.",
+  unidade: "brl",
+  direcao: "maior-melhor",
+  fonte: "conversao-apoiador + apoiador-link.ts (vínculo por e-mail) por classe de acquisition-class.ts",
+  decomposicoes: ["classe"],
+  async computar(args) {
+    validarDecomposicao(ltvPorOrigemDef, args.decomposicao);
+    const horizonMonths = args.deps.horizonMonths ?? LTV_DEFAULT_HORIZON_MONTHS;
+    const entries = Object.entries(args.deps.porClasse) as [AcquisitionClass, LtvPorOrigemClasseInput][];
+    const perClasse = entries.map(([classe, input]) => ({
+      classe,
+      n: input.n,
+      resultado: computeLtvPorOrigem({
+        conversaoApoiador: input.conversaoApoiador,
+        valorMedioApoiadorMensal: input.valorMedioApoiadorMensal,
+        outrasFontesPerAtivoMensal: input.outrasFontesPerAtivoMensal,
+        horizonMonths,
+      }),
+    }));
+    const series: MetricSeriesPoint[] | undefined =
+      args.decomposicao === "classe"
+        ? perClasse.map(({ classe, resultado }) => ({ chave: classe, valor: resultado.valor }))
+        : undefined;
+    const comValor = perClasse.filter((c) => c.resultado.valor != null && c.n > 0);
+    if (comValor.length === 0) {
+      const result = indeterminado(
+        args.janela,
+        entries.length === 0
+          ? "nenhuma classe informada em deps.porClasse"
+          : "nenhuma classe com LTV computável (ver decomposicao='classe' pros motivos individuais)",
+      );
+      if (series) result.series = series;
+      return result;
+    }
+    const pesoTotal = comValor.reduce((acc, c) => acc + c.n, 0);
+    const blended = comValor.reduce((acc, c) => acc + (c.resultado.valor as number) * c.n, 0) / pesoTotal;
+    const result = pesoTotal > 0
+      ? exato(blended, args.janela, null, series)
+      : piso(blended, args.janela, null, "peso (n de apoiadores) zero em todas as classes com LTV computável");
+    return result;
+  },
+};
+
+export interface LtvCacRatioDeps extends MetricDeps {
+  /** LTV (BRL) por canal — já resolvido pelo chamador (ex: ltv-caixa ou
+   *  ltv-por-origem mapeado pra classe do canal). */
+  ltvPorCanal: Readonly<Record<string, number | null>>;
+  /** Custo por leitor/cadastro (CAC) por canal — de `buildCacReport`
+   *  (`CacRow.custoPorLeitor`), nunca recalculado aqui. */
+  custoPorCanal: Readonly<Record<string, number | null>>;
+}
+
+const ltvCacRatioDef: MetricDef<LtvCacRatioDeps> = {
+  id: "ltv-cac-ratio",
+  nome: "LTV ÷ CAC por canal",
+  produto: "diaria",
+  etapa: "receita",
+  definicao:
+    "razão por canal: LTV (deps.ltvPorCanal) ÷ custo por leitor/cadastro do canal (denominador = " +
+    "deps.custoPorCanal[canal], de buildCacReport/CacRow.custoPorLeitor). Contexto de ranqueamento de CAC, " +
+    "NUNCA gate de gasto (não reabre o teto revogado em #5235/#5236, #8423). decomposicao 'canal' sempre " +
+    "devolve a razão por canal; canal presente só de um lado (LTV sem CAC ou vice-versa) sai com valor null " +
+    "na série, nunca 0/Infinity.",
+  unidade: "razao",
+  direcao: "maior-melhor",
+  fonte: "ltv-caixa/ltv-por-origem + cac-report.ts (CacRow.custoPorLeitor)",
+  decomposicoes: ["canal"],
+  async computar(args) {
+    validarDecomposicao(ltvCacRatioDef, args.decomposicao);
+    const canais = new Set([...Object.keys(args.deps.ltvPorCanal), ...Object.keys(args.deps.custoPorCanal)]);
+    const porCanal = [...canais].map((canal) => ({
+      canal,
+      resultado: computeLtvCacRatio({
+        ltvBrl: args.deps.ltvPorCanal[canal] ?? null,
+        custoPorLeitorBrl: args.deps.custoPorCanal[canal] ?? null,
+      }),
+    }));
+    const series: MetricSeriesPoint[] | undefined =
+      args.decomposicao === "canal" ? porCanal.map(({ canal, resultado }) => ({ chave: canal, valor: resultado.valor })) : undefined;
+    const comValor = porCanal.filter((c) => c.resultado.valor != null);
+    if (comValor.length === 0) {
+      const result = indeterminado(
+        args.janela,
+        canais.size === 0 ? "nenhum canal informado" : "nenhum canal com LTV e CAC simultaneamente disponíveis",
+      );
+      if (series) result.series = series;
+      return result;
+    }
+    const media = comValor.reduce((acc, c) => acc + (c.resultado.valor as number), 0) / comValor.length;
+    return exato(media, args.janela, null, series);
+  },
+};
+
+// ---------------------------------------------------------------------------
 // O registry
 // ---------------------------------------------------------------------------
 
@@ -1087,6 +1440,13 @@ export const METRICAS: readonly MetricDef[] = [
   sessoesDiaDef as MetricDef,
   sessoesPorClasseDiaDef as MetricDef,
   conversaoVisitaCadastroDef as MetricDef,
+  receitaMensalDef as MetricDef,
+  arpuAtivoDef as MetricDef,
+  churnMensalDef as MetricDef,
+  conversaoApoiadorDef as MetricDef,
+  ltvCaixaDef as MetricDef,
+  ltvPorOrigemDef as MetricDef,
+  ltvCacRatioDef as MetricDef,
 ];
 
 assertRegistryValido(METRICAS);

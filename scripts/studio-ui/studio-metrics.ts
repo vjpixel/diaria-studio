@@ -76,7 +76,32 @@ import {
   type AcquisitionRecordInput,
   type BaseAtivaDeps,
   type LeitorV1Deps,
+  type ReceitaMensalDeps,
+  type ArpuAtivoDeps,
+  type ChurnMensalDeps,
+  type ConversaoApoiadorDeps,
+  type LtvCaixaDeps,
+  type LtvPorOrigemDeps,
+  type LtvPorOrigemClasseInput,
+  type LtvCacRatioDeps,
 } from "../lib/metrics/registry.ts";
+import { classifyAcquisition, type AcquisitionClass } from "../lib/metrics/acquisition-class.ts";
+import { normalizeEmail } from "../lib/cac.ts";
+import { readMonthCacheDetailed } from "../lib/apoia-se.ts";
+import { loadAmazonRevenueConfig } from "../lib/amazon-revenue-config.ts";
+import { loadManualCleanupEmails, manualCleanupEmailsPath } from "../lib/manual-cleanup-emails.ts";
+import {
+  computeChurnRate,
+  computeConversaoApoiador,
+  summarizeApoiaSeMonthRevenue,
+  previousCompetenceMonth,
+  findChurnBaselineDate,
+  computeChurnExitsBetweenSnapshots,
+  resolveApoiaSeCampaignName,
+  type ChurnExitEvent,
+  type ApoiaSeMonthCacheEntry,
+} from "../lib/ltv.ts";
+import { buildAdsData } from "./studio-ads.ts";
 import { evaluateMeta, type Meta, type MetaStatus, type MedicaoDia } from "../lib/metrics/metas.ts";
 import { loadMetas, validateMetas } from "../lib/metrics/metas-store.ts";
 import type { CapturaLogEntry } from "../lib/metrics/captura-log.ts";
@@ -93,6 +118,12 @@ import {
   readSnapshotSubscribers,
   type BeehiivBackupSubscriber,
 } from "../lib/beehiiv-backup-snapshots.ts";
+
+// Re-exportadas (#8423) — o núcleo mora em `scripts/lib/ltv.ts` (compartilhado
+// com `scripts/cac-report.ts`, que também monta um LTV de caixa); este
+// módulo reexporta pra quem testa/consome a camada "Valor" via `studio-
+// metrics.ts` sem precisar saber que a implementação é compartilhada.
+export { previousCompetenceMonth, findChurnBaselineDate, computeChurnExitsBetweenSnapshots };
 
 // ─── tipos do snapshot ──────────────────────────────────────────────────
 
@@ -187,6 +218,56 @@ export interface MetricsKitActiveLayer {
   motivo: string | null;
 }
 
+/**
+ * Bloco "Valor" (#8423) — receita, ARPU, churn, conversão em apoiador, LTV
+ * (blended e por origem) e LTV÷CAC. Cálculo puro em `scripts/lib/ltv.ts`;
+ * aqui só a resolução dos insumos a partir de `data/` (cache da apoia.se,
+ * diff de 2 snapshots Beehiiv, config manual da Amazon, `CacReport` de
+ * `studio-ads.ts`).
+ *
+ * **Limitações declaradas, não escondidas** (mesma disciplina do resto do
+ * módulo):
+ * - Numerador/denominador de `conversaoApoiador`/`ltvPorOrigem` usam só a
+ *   base ATIVA BEEHIIV (não a cross-plataforma deduplicada) — é a única
+ *   população em que o vínculo por e-mail com a apoia.se é resolvido aqui.
+ * - `ltvCacRatio` usa o LTV BLENDED (ponto médio da faixa), o mesmo pra
+ *   todo canal — ainda não há LTV medido POR CANAL (isso dependeria de
+ *   #7916 entregar receita por coorte no store unificado); `ltvPorOrigem`
+ *   é o número mais fino disponível hoje, por CLASSE de aquisição, não por
+ *   canal individual.
+ */
+export interface MetricsValorLayer {
+  receitaMensal: MetricResult;
+  arpuAtivo: MetricResult;
+  churnMensal: MetricResult;
+  conversaoApoiador: MetricResult;
+  ltvCaixa: MetricResult;
+  ltvPorOrigem: MetricResult;
+  ltvCacRatio: MetricResult;
+  /** Config manual da receita Amazon (`data/ltv/amazon-revenue.json`, sem
+   *  fonte automatizada — decisão da issue #8423) — `valorMensalBrl: null`
+   *  quando o arquivo está ausente/malformado, nunca `0` fabricado. */
+  amazonConfig: { valorMensalBrl: number | null; atualizadoEm: string | null; motivo: string | null };
+  /** Cache da apoia.se usado (mês de competência FECHADO anterior ao
+   *  corrente — o mês corrente pode estar incompleto/congelado, #4490).
+   *  `available` exige existir E ter parseado com sucesso — `corrupted:
+   *  true` é o caso "existe mas não parseou" (#8423 fleet review item 1),
+   *  distinto de "nunca escrito" (`corrupted: false`, `available: false`).
+   *  `paidWithoutValueCount` > 0 sinaliza entradas `isPaidThisMonth: true`
+   *  sem valor numérico (item 5) — excluídas da receita/n de pagantes. */
+  apoiaSeCache: { path: string; available: boolean; competenceMonth: string; corrupted: boolean; paidWithoutValueCount: number };
+  /** Arquivo de limpeza manual conhecida (`descadastrados-manuais-2607.json`)
+   *  — `error` não-nulo quando o arquivo existe mas falhou ler/parsear
+   *  (#8423 fleet review item 3); nesse caso `churnMensal`/`ltvCaixa` saem
+   *  `indeterminado` em vez de colapsar orgânico×com-limpeza em silêncio.
+   *  `skipped` > 0 sinaliza linhas do arquivo puladas pelo parser. */
+  manualCleanup: { path: string; emailCount: number; error: string | null; skipped: number };
+  /** Par de snapshots Beehiiv usado pro diff de churn — `baselineDate` é
+   *  `null` quando não há snapshot suficientemente espaçado (~30 dias) do
+   *  mais recente, e `churnMensal` sai `indeterminado` nesse caso. */
+  churnPeriodo: { baselineDate: string | null; latestDate: string | null; periodMonths: number | null };
+}
+
 export interface MetricsSnapshot {
   execMode: ExecMode;
   generatedAt: string;
@@ -215,6 +296,7 @@ export interface MetricsSnapshot {
   metas: MetricsMetasLayer;
   placar: MetricsPlacar;
   decomposicaoCadastros: MetricResult;
+  valor: MetricsValorLayer;
 }
 
 // ─── janela / BRT ───────────────────────────────────────────────────────
@@ -500,6 +582,258 @@ function countActive(subs: readonly BeehiivBackupSubscriber[]): number {
   return subs.filter((s) => s.status === "active").length;
 }
 
+// ─── camada: Valor (#8423) — receita, ARPU, churn, conversão em apoiador, ──
+// ─── LTV blended/por origem, LTV÷CAC ────────────────────────────────────
+
+/**
+ * Monta o bloco "Valor" (#8423) inteiro — nunca lança POR INSUMO AUSENTE OU
+ * CORROMPIDO (mesma disciplina do resto do módulo): qualquer insumo
+ * ausente/corrompido vira `MetricResult` `indeterminado` com motivo, não uma
+ * exceção que derruba o snapshot inteiro. (Não é uma garantia de "nunca
+ * lança" absoluta — um bug de programação ainda pode lançar; o contrato é
+ * especificamente sobre dado externo malformado/ausente.)
+ */
+async function computeValorLayer(
+  rootDir: string,
+  beehiivSubs: readonly BeehiivBackupSubscriber[],
+  beehiivRoot: string,
+  beehiivDates: readonly string[],
+  latestDate: string | null,
+  now: Date,
+): Promise<MetricsValorLayer> {
+  const campaign = resolveApoiaSeCampaignName();
+  const month = previousCompetenceMonth(now);
+  const cacheDir = resolve(rootDir, "data", "apoia-se", campaign);
+  const cachePath = resolve(cacheDir, `${month}.json`);
+  // `available` exige EXISTIR e ter sido parseado com sucesso — um cache
+  // corrompido (JSON inválido) nunca é tratado como "disponível com R$0"
+  // (#8423 fleet review item 1: `existsSync` sozinho não via distinção, e
+  // `porFonte["apoia-se"]` saía com 0 fabricado quando o parse falhava).
+  const { cache: apoiaSeCache, corrupted: apoiaSeCacheCorrupted } = readMonthCacheDetailed(cacheDir, month) as {
+    cache: Record<string, ApoiaSeMonthCacheEntry>;
+    corrupted: boolean;
+  };
+  const apoiaSeCacheExists = existsSync(cachePath);
+  const apoiaSeCacheAvailable = apoiaSeCacheExists && !apoiaSeCacheCorrupted;
+  if (apoiaSeCacheCorrupted) {
+    console.error(
+      `[studio-metrics] valor: cache apoia.se corrompido em ${cachePath} — tratado como indisponível, nunca R$0 fabricado`,
+    );
+  }
+  const revSummary = summarizeApoiaSeMonthRevenue(apoiaSeCache); // apoiaSeCache é {} quando ausente/corrompido
+  const amazonConfig = loadAmazonRevenueConfig(rootDir);
+
+  const janelaMes = janelaDia(`${month}-01`);
+  const porFonte: Record<string, number | null> = {
+    "apoia-se": apoiaSeCacheAvailable ? revSummary.grossRevenueBrl : null,
+    amazon: amazonConfig.valorMensalBrl,
+  };
+
+  // População: só a base ATIVA BEEHIIV — é a única em que o vínculo por
+  // e-mail com a apoia.se é resolvido aqui (ver docstring de
+  // `MetricsValorLayer`). Base vazia (nenhum snapshot ainda) fica `null`,
+  // nunca `0` fabricado.
+  const activeBeehiiv = beehiivSubs.filter((s) => s.status === "active");
+  const baseAtivaBeehiiv = activeBeehiiv.length > 0 ? activeBeehiiv.length : null;
+  // Snapshot Beehiiv vazio/anômalo (nenhum subscriber lido) — churn/ARPU/LTV
+  // não rodam em cima dele (#8423 fleet review item 6): mesma condição que
+  // `loadBeehiivSnapshotLayer` usa pra marcar `error` na camada de snapshot.
+  const beehiivSnapshotEmpty = beehiivSubs.length === 0;
+
+  const receitaMensal = await getMetric("receita-mensal")!.computar({
+    janela: janelaMes,
+    deps: { porFonte } satisfies ReceitaMensalDeps,
+  });
+  const arpuAtivo = await getMetric("arpu-ativo")!.computar({
+    janela: janelaMes,
+    deps: { porFonte, baseAtiva: baseAtivaBeehiiv } satisfies ArpuAtivoDeps,
+  });
+
+  // ── Churn — diff de 2 snapshots Beehiiv ~30 dias de distância ──────────
+  const manualCleanupResult = loadManualCleanupEmails(rootDir);
+  const baselineDate = !beehiivSnapshotEmpty && latestDate ? findChurnBaselineDate(beehiivDates, latestDate) : null;
+  let churnMensalDeps: ChurnMensalDeps;
+  let churnPeriodo: MetricsValorLayer["churnPeriodo"] = { baselineDate, latestDate, periodMonths: null };
+  if (beehiivSnapshotEmpty || !latestDate || !baselineDate) {
+    churnMensalDeps = { exits: [], manualCleanupEmails: new Set(), periodMonths: 0, avgActiveBase: null };
+  } else {
+    const baselineSubs = baselineDate === latestDate ? beehiivSubs : readSnapshotSubscribers(beehiivRoot, baselineDate);
+    const latestSubs = beehiivSubs; // já carregado pelo chamador (snapshot mais recente)
+    const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baselineSubs, latestSubs);
+    const periodMonths = Math.abs(Date.parse(latestDate) - Date.parse(baselineDate)) / 86_400_000 / 30;
+    churnPeriodo = { baselineDate, latestDate, periodMonths };
+    churnMensalDeps = { exits, manualCleanupEmails: manualCleanupResult.emails, periodMonths, avgActiveBase };
+  }
+
+  // Conjunto de limpeza manual indisponível/corrompido (arquivo existe mas
+  // não parseou) — não dá pra separar orgânico de com-limpeza com segurança;
+  // nunca deixa as duas leituras colapsarem em silêncio pro mesmo número
+  // (#8423 fleet review item 3). Só se aplica quando de fato há um diff de
+  // churn rodando (baseline+latest presentes) — sem diff, já é indeterminado
+  // pelo motivo de sempre.
+  const manualCleanupUnavailableMotivo =
+    manualCleanupResult.error && baselineDate && latestDate && !beehiivSnapshotEmpty
+      ? `conjunto de limpeza manual indisponível/corrompido (${manualCleanupEmailsPath(rootDir)}: ${manualCleanupResult.error}) — churn orgânico×com-limpeza não pode ser diferenciado com segurança`
+      : beehiivSnapshotEmpty
+        ? "snapshot Beehiiv vazio/anômalo — churn não computável"
+        : null;
+
+  let churnMensal: MetricResult;
+  let churnRaw: ReturnType<typeof computeChurnRate> | null = null;
+  if (manualCleanupUnavailableMotivo) {
+    churnMensal = { valor: null, janela: janelaMes, frescor: null, qualidade: "indeterminado", motivo: manualCleanupUnavailableMotivo };
+  } else {
+    churnMensal = await getMetric("churn-mensal")!.computar({ janela: janelaMes, deps: churnMensalDeps });
+    // Reaproveita o MESMO cálculo puro (não recomputado a partir do
+    // MetricResult, que já perdeu a granularidade organico/comLimpeza fora
+    // da decomposicao) pra alimentar ltv-caixa abaixo.
+    churnRaw = computeChurnRate(churnMensalDeps);
+  }
+
+  const ltvCaixa = churnRaw
+    ? await getMetric("ltv-caixa")!.computar({
+        janela: janelaMes,
+        deps: {
+          arpuMensal: arpuAtivo.valor,
+          churnMensalOrganico: churnRaw.organicMonthly,
+          churnMensalComLimpeza: churnRaw.comLimpezaMonthly,
+        } satisfies LtvCaixaDeps,
+      })
+    : { valor: null, janela: janelaMes, frescor: null, qualidade: "indeterminado" as const, motivo: manualCleanupUnavailableMotivo ?? "churn indisponível" };
+
+  // ── Conversão em apoiador + LTV por origem — vínculo por e-mail ────────
+  // Sem cache apoia.se disponível/válido, NÃO dá pra saber quem é apoiador —
+  // rodar a agregação sobre um cache vazio fabricaria `apoiadores=0` como se
+  // fosse "0% converteu" (um número real, não indeterminado). #8423 fleet
+  // review item 2: as duas métricas saem indeterminadas direto, sem
+  // percorrer `activeBeehiiv`.
+  const apoiaSeUnavailableMotivo = !apoiaSeCacheAvailable ? `cache da apoia.se indisponível/corrompido para ${month}` : null;
+
+  let conversaoApoiador: MetricResult;
+  let ltvPorOrigem: MetricResult;
+  if (apoiaSeUnavailableMotivo) {
+    conversaoApoiador = { valor: null, janela: janelaMes, frescor: null, qualidade: "indeterminado", motivo: apoiaSeUnavailableMotivo };
+    ltvPorOrigem = { valor: null, janela: janelaMes, frescor: null, qualidade: "indeterminado", motivo: apoiaSeUnavailableMotivo };
+  } else {
+    const apoiaSeIndex = new Map<string, ApoiaSeMonthCacheEntry>();
+    for (const [email, entry] of Object.entries(apoiaSeCache)) apoiaSeIndex.set(normalizeEmail(email), entry);
+
+    const amazonPerActive =
+      amazonConfig.valorMensalBrl != null && baseAtivaBeehiiv ? amazonConfig.valorMensalBrl / baseAtivaBeehiiv : null;
+
+    interface ClasseAgg {
+      confirmados: number;
+      apoiadores: number;
+      payingCount: number;
+      sumPaid: number;
+    }
+    const porClasseAgg = new Map<AcquisitionClass, ClasseAgg>();
+    let totalApoiadoresOverall = 0;
+    for (const s of activeBeehiiv) {
+      const classe = classifyAcquisition({
+        utm_source: s.utm_source,
+        utm_medium: s.utm_medium,
+        // `BeehiivBackupSubscriber.utm_channel` é `unknown` (nunca confirmado
+        // ao vivo, ver docstring de `beehiiv-backup-snapshots.ts`) — mesma
+        // disciplina tolerante do resto da interface, só passa adiante quando
+        // já é string.
+        utm_channel: typeof s.utm_channel === "string" ? s.utm_channel : null,
+        referring_site: s.referring_site,
+        created: s.created,
+      });
+      let agg = porClasseAgg.get(classe);
+      if (!agg) {
+        agg = { confirmados: 0, apoiadores: 0, payingCount: 0, sumPaid: 0 };
+        porClasseAgg.set(classe, agg);
+      }
+      agg.confirmados++;
+      const backer = apoiaSeIndex.get(normalizeEmail(s.email));
+      if (backer?.isBacker) {
+        agg.apoiadores++;
+        totalApoiadoresOverall++;
+        if (backer.isPaidThisMonth && typeof backer.thisMonthPaidValue === "number") {
+          agg.payingCount++;
+          agg.sumPaid += backer.thisMonthPaidValue;
+        }
+      }
+    }
+
+    conversaoApoiador = await getMetric("conversao-apoiador")!.computar({
+      janela: janelaMes,
+      deps: { apoiadores: totalApoiadoresOverall, confirmados: activeBeehiiv.length } satisfies ConversaoApoiadorDeps,
+    });
+
+    const porClasse: Partial<Record<AcquisitionClass, LtvPorOrigemClasseInput>> = {};
+    for (const [classe, agg] of porClasseAgg) {
+      const conv = computeConversaoApoiador({ apoiadores: agg.apoiadores, confirmados: agg.confirmados });
+      porClasse[classe] = {
+        conversaoApoiador: conv.valor,
+        valorMedioApoiadorMensal: agg.payingCount > 0 ? agg.sumPaid / agg.payingCount : null,
+        outrasFontesPerAtivoMensal: amazonPerActive,
+        n: agg.apoiadores,
+      };
+    }
+    ltvPorOrigem = await getMetric("ltv-por-origem")!.computar({
+      janela: janelaMes,
+      decomposicao: "classe",
+      deps: { porClasse } satisfies LtvPorOrigemDeps,
+    });
+  }
+
+  // ── LTV ÷ CAC — reusa o CacReport que studio-ads.ts já computa (nenhuma
+  //    releitura de spend.csv/snapshot aqui). Simplificação DECLARADA: usa
+  //    o LTV BLENDED (ponto médio da faixa), igual pra todo canal — ainda
+  //    não há LTV medido POR CANAL (dependeria de #7916). `buildAdsData` já
+  //    documenta "nunca lança" (fail-soft por conta própria), mas esta
+  //    camada de Valor promete o mesmo contrato pro CALLER — o try/catch é
+  //    defesa em profundidade, não desconfiança do contrato alheio.
+  const custoPorCanal: Record<string, number | null> = {};
+  try {
+    const adsSnapshot = buildAdsData(rootDir);
+    if (adsSnapshot.report) {
+      for (const row of adsSnapshot.report.rows) {
+        if (row.kind === "measured") custoPorCanal[row.canal] = row.custoPorLeitor;
+      }
+    }
+  } catch (e) {
+    console.error(`[studio-metrics] valor: falha ao montar CacReport via buildAdsData (ignorada, LTV÷CAC sai indeterminado): ${(e as Error).message}`);
+  }
+  const ltvBlendedMidpoint =
+    ltvCaixa.qualidade === "faixa" && ltvCaixa.limites ? (ltvCaixa.limites.min + ltvCaixa.limites.max) / 2 : ltvCaixa.valor;
+  const ltvPorCanal: Record<string, number | null> = {};
+  for (const canal of Object.keys(custoPorCanal)) ltvPorCanal[canal] = ltvBlendedMidpoint;
+  const ltvCacRatio = await getMetric("ltv-cac-ratio")!.computar({
+    janela: janelaMes,
+    decomposicao: "canal",
+    deps: { ltvPorCanal, custoPorCanal } satisfies LtvCacRatioDeps,
+  });
+
+  return {
+    receitaMensal,
+    arpuAtivo,
+    churnMensal,
+    conversaoApoiador,
+    ltvCaixa,
+    ltvPorOrigem,
+    ltvCacRatio,
+    amazonConfig,
+    apoiaSeCache: {
+      path: cachePath,
+      available: apoiaSeCacheAvailable,
+      competenceMonth: month,
+      corrupted: apoiaSeCacheCorrupted,
+      paidWithoutValueCount: revSummary.paidWithoutValueCount,
+    },
+    manualCleanup: {
+      path: manualCleanupEmailsPath(rootDir),
+      emailCount: manualCleanupResult.emails.size,
+      error: manualCleanupResult.error,
+      skipped: manualCleanupResult.skipped,
+    },
+    churnPeriodo,
+  };
+}
+
 // ─── cache (mesmo padrão de studio-ads.ts/studio-utms.ts) ──────────────
 
 export interface BuildMetricsDataOptions {
@@ -685,6 +1019,10 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
   const cadastrosDef = getMetric("cadastros-dia")!;
   const decomposicaoCadastros = await cadastrosDef.computar({ janela: janelaHoje, decomposicao: "classe", deps: acqDeps });
 
+  // ── Valor (#8423) — receita, ARPU, churn, conversão em apoiador, LTV ──
+  const beehiivAllDates = listSnapshotDates(beehiivRoot);
+  const valor = await computeValorLayer(rootDir, beehiivSubs, beehiivRoot, beehiivAllDates, beehiivLayer.date, now());
+
   const data: MetricsSnapshot = {
     execMode,
     generatedAt,
@@ -699,6 +1037,7 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
     metas: metasLayer,
     placar,
     decomposicaoCadastros,
+    valor,
   };
   cacheByRoot.set(rootDir, { data, expiresAt: nowMs + cacheTtlMs });
   // `db` (aberto acima por `loadSubscriptionCoverage`) só é consumido

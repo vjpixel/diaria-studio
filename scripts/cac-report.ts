@@ -103,6 +103,23 @@
  * vira um aviso explícito no relatório (nunca silencioso) recomendando
  * `--fonte store`. Store ausente/ilegível é fail-soft (a checagem só some,
  * nunca derruba o relatório principal).
+ *
+ * ## Seção "LTV vs. custo" (#8423) — informativa, reusa `scripts/lib/ltv.ts`
+ *
+ * Terceira seção aditiva (mesma receita do #7359/#7393): `computeLtvSection`
+ * calcula o LTV de caixa (blended, mesma metodologia formalizada em
+ * `scripts/lib/ltv.ts` a partir do cálculo manual de 19/09/2026) a partir da
+ * receita da apoia.se (cache local, mês FECHADO anterior ao corrente) +
+ * config manual da Amazon (`data/ltv/amazon-revenue.json`, sem fonte
+ * automatizada) + churn por diff de 2 snapshots Beehiiv ~30 dias de
+ * distância, e cruza com `custoPorLeitor` que `buildCacReport` já calculou
+ * pra render LTV÷CAC por canal. Só leitura local — fail-soft: qualquer
+ * insumo ausente faz a seção aparecer com `ltvFaixaBrl: null` + motivo
+ * explícito, nunca deriva pra exceção nem pra "0"/"custo infinito". Uso
+ * principal é contexto de ranqueamento de CAC, nunca gate de gasto (não
+ * reabre o teto revogado em #5235/#5236). Só `--no-ltv` omite a seção por
+ * completo. Simplificação DECLARADA: usa o LTV BLENDED (ponto médio da
+ * faixa) igual pra todo canal — LTV medido POR CANAL dependeria de #7916.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -146,6 +163,22 @@ import {
   buildCacCompatibleSubscribersFromStore,
   type StoreLeitorSummary,
 } from "./lib/leitor-store.ts";
+import { readMonthCacheDetailed } from "./lib/apoia-se.ts";
+import { loadAmazonRevenueConfig } from "./lib/amazon-revenue-config.ts";
+import { loadManualCleanupEmails, manualCleanupEmailsPath } from "./lib/manual-cleanup-emails.ts";
+import {
+  LTV_DEFAULT_HORIZON_MONTHS,
+  computeArpu,
+  computeChurnRate,
+  computeLtvCaixaFaixa,
+  computeLtvCacRatio,
+  summarizeApoiaSeMonthRevenue,
+  previousCompetenceMonth,
+  findChurnBaselineDate,
+  computeChurnExitsBetweenSnapshots,
+  resolveApoiaSeCampaignName,
+  type ApoiaSeMonthCacheEntry,
+} from "./lib/ltv.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data", "beehiiv-backup");
@@ -236,6 +269,140 @@ export function loadStoreLeitorSection(
   } finally {
     db.close();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Seção "LTV vs. custo" (#8423) — reusa scripts/lib/ltv.ts, nunca reimplementa
+// ---------------------------------------------------------------------------
+
+export interface CacReportLtvRow {
+  canal: string;
+  custoPorLeitor: number;
+  /** `null` quando o LTV blended não é computável (nunca 0/Infinity). */
+  ltvCacRatio: number | null;
+}
+
+/**
+ * Resultado da seção "LTV vs. custo" (#8423) — sempre um dos dois shapes,
+ * nunca lança. Diferente de `CacReportKitSection`/`CacReportStoreSection`,
+ * `applied: true` ainda pode carregar `ltvFaixaBrl: null` (LTV não
+ * computável por falta de churn/ARPU) — a seção aparece sempre que pedida
+ * (`args.ltv`), mesmo sem número, pra declarar a limitação em vez de
+ * desaparecer em silêncio.
+ */
+export type CacReportLtvSection =
+  | { applied: true; ltvFaixaBrl: { min: number; max: number } | null; motivo: string | null; rows: CacReportLtvRow[] }
+  | { applied: false; reason: string };
+
+/**
+ * Calcula o LTV de caixa (blended, mesma metodologia de `studio-metrics.ts`
+ * — receita apoia.se do mês FECHADO anterior + config manual da Amazon,
+ * churn por diff de 2 snapshots Beehiiv ~30 dias de distância) e o LTV÷CAC
+ * por canal usando o `custoPorLeitor` que `buildCacReport` já calculou
+ * (NUNCA recalculado aqui). Fail-soft: qualquer insumo ausente faz a seção
+ * aparecer com `ltvFaixaBrl: null` + `motivo`, nunca deriva pra exceção nem
+ * pra "0"/"custo infinito".
+ *
+ * Simplificação DECLARADA, igual à do painel Studio: usa o LTV BLENDED
+ * (ponto médio da faixa) igual pra todo canal — ainda não há LTV medido POR
+ * CANAL (dependeria de #7916 entregar receita por coorte no store
+ * unificado).
+ */
+export function computeLtvSection(
+  report: CacReport,
+  subs: readonly BeehiivBackupSubscriber[],
+  backupRoot: string,
+  snapshotDate: string,
+  rootDir: string,
+  now: () => Date = () => new Date(),
+  env: Readonly<Record<string, string | undefined>> = process.env as Record<string, string | undefined>,
+): CacReportLtvSection {
+  const campaign = resolveApoiaSeCampaignName(env);
+  const month = previousCompetenceMonth(now());
+  const cacheDir = resolve(rootDir, "data", "apoia-se", campaign);
+  // `available` exige EXISTIR e ter sido parseado com sucesso — cache
+  // corrompido (JSON inválido) nunca é tratado como "R$0 de receita
+  // apoia.se" (#8423 fleet review item 1, mesma correção de studio-metrics.ts).
+  const { cache: apoiaSeCache, corrupted: apoiaSeCacheCorrupted } = readMonthCacheDetailed(cacheDir, month) as {
+    cache: Record<string, ApoiaSeMonthCacheEntry>;
+    corrupted: boolean;
+  };
+  const cacheExists = existsSync(resolve(cacheDir, `${month}.json`));
+  const cacheAvailable = cacheExists && !apoiaSeCacheCorrupted;
+  if (apoiaSeCacheCorrupted) {
+    console.error(
+      `[cac-report] valor: cache apoia.se corrompido em ${resolve(cacheDir, `${month}.json`)} — tratado como indisponível, nunca R$0 fabricado`,
+    );
+  }
+  const revSummary = summarizeApoiaSeMonthRevenue(apoiaSeCache);
+
+  const amazonConfig = loadAmazonRevenueConfig(rootDir);
+
+  const activeCount = subs.filter((s) => s.status === "active").length;
+  const arpu = computeArpu({
+    revenueBySource: { "apoia-se": cacheAvailable ? revSummary.grossRevenueBrl : null, amazon: amazonConfig.valorMensalBrl },
+    activeBase: activeCount > 0 ? activeCount : null,
+  });
+
+  const dates = listSnapshotDates(backupRoot);
+  const baselineDate = findChurnBaselineDate(dates, snapshotDate);
+  if (!baselineDate) {
+    return {
+      applied: true,
+      ltvFaixaBrl: null,
+      motivo: `sem snapshot Beehiiv suficientemente espaçado (~30 dias) de ${snapshotDate} pra medir churn`,
+      rows: [],
+    };
+  }
+  const baselineSubs = readSnapshotSubscribers(backupRoot, baselineDate);
+  const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baselineSubs, subs);
+  const periodMonths = Math.abs(Date.parse(snapshotDate) - Date.parse(baselineDate)) / 86_400_000 / 30;
+  const manualCleanupResult = loadManualCleanupEmails(rootDir);
+  if (manualCleanupResult.error) {
+    // Não dá pra separar orgânico de com-limpeza com segurança — nunca deixa
+    // as duas leituras colapsarem em silêncio pro mesmo número (#8423 fleet
+    // review item 3, mesma correção de studio-metrics.ts).
+    return {
+      applied: true,
+      ltvFaixaBrl: null,
+      motivo: `conjunto de limpeza manual indisponível/corrompido (${manualCleanupEmailsPath(rootDir)}: ${manualCleanupResult.error}) — churn orgânico×com-limpeza não pode ser diferenciado com segurança`,
+      rows: [],
+    };
+  }
+  const churn = computeChurnRate({
+    exits,
+    manualCleanupEmails: manualCleanupResult.emails,
+    periodMonths,
+    avgActiveBase,
+  });
+
+  const ltvFaixa = computeLtvCaixaFaixa({
+    arpuMonthlyBrl: arpu.valor,
+    churnOrganicoMonthly: churn.organicMonthly,
+    churnComLimpezaMonthly: churn.comLimpezaMonthly,
+    horizonMonths: LTV_DEFAULT_HORIZON_MONTHS,
+  });
+
+  if (ltvFaixa.min == null || ltvFaixa.max == null) {
+    return {
+      applied: true,
+      ltvFaixaBrl: null,
+      motivo: ltvFaixa.motivo ?? arpu.motivo ?? churn.motivo ?? "LTV indisponível",
+      rows: [],
+    };
+  }
+
+  const midpoint = (ltvFaixa.min + ltvFaixa.max) / 2;
+  const measuredRows = report.rows.filter((r): r is Extract<CacRow, { kind: "measured" }> => r.kind === "measured");
+  const rows: CacReportLtvRow[] = measuredRows
+    .filter((r) => r.custoPorLeitor != null)
+    .map((r) => ({
+      canal: r.canal,
+      custoPorLeitor: r.custoPorLeitor as number,
+      ltvCacRatio: computeLtvCacRatio({ ltvBrl: midpoint, custoPorLeitorBrl: r.custoPorLeitor }).valor,
+    }));
+
+  return { applied: true, ltvFaixaBrl: { min: ltvFaixa.min, max: ltvFaixa.max }, motivo: null, rows };
 }
 
 /**
@@ -341,6 +508,12 @@ export interface CacReportCliArgs {
    *  rodam independente disto. Default `"beehiiv"` (comportamento
    *  inalterado). Ver docstring do módulo. */
   fonte: string;
+  /** `--no-ltv` (#8423): desliga a seção "LTV vs. custo" (`computeLtvSection`)
+   *  — default `true` (liga). Só leitura local (cache da apoia.se, config
+   *  manual da Amazon, snapshots Beehiiv já carregados), mas existe pro
+   *  mesmo motivo do `--no-kit`/`--no-store-leitores`: CLI/testes que
+   *  preferem pular a resolução por completo. */
+  ltv: boolean;
 }
 
 export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
@@ -358,6 +531,7 @@ export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
     storeLeitores: !hasFlag(argv, "no-store-leitores"),
     storeDbPath: getStringArg(argv, "store-db") ?? DEFAULT_STORE_DB_PATH,
     fonte: getStringArg(argv, "fonte") ?? "beehiiv",
+    ltv: !hasFlag(argv, "no-ltv"),
   };
 }
 
@@ -454,6 +628,7 @@ export function formatCacReportMarkdown(
   kitSection?: CacReportKitSection,
   storeSection?: CacReportStoreSection,
   mismatchWarnings: readonly string[] = [],
+  ltvSection?: CacReportLtvSection,
 ): string {
   const lines: string[] = [];
   lines.push(`# Custo por leitor por canal`, "");
@@ -652,6 +827,46 @@ export function formatCacReportMarkdown(
     }
   }
 
+  if (ltvSection) {
+    lines.push("");
+    lines.push("## LTV vs. custo (#8423)");
+    lines.push("");
+    if (!ltvSection.applied) {
+      lines.push(`⚠ seção LTV não aplicada: ${ltvSection.reason}`);
+    } else if (ltvSection.ltvFaixaBrl == null) {
+      lines.push(`⚠ LTV de caixa indisponível: ${ltvSection.motivo ?? "sem motivo"}`);
+    } else {
+      lines.push(
+        "LTV de caixa (BRUTO, só CAIXA — sem valor indireto de indicação/parceria) formalizado a partir do " +
+          "cálculo manual de 19/09/2026 (issue #8423). Contexto de ranqueamento de CAC, NUNCA gate de gasto " +
+          "(não reabre o teto revogado em #5235/#5236).",
+      );
+      lines.push("");
+      lines.push(
+        `LTV de caixa (blended): ${fmtBrl(ltvSection.ltvFaixaBrl.min)} – ${fmtBrl(ltvSection.ltvFaixaBrl.max)} por ativo.`,
+      );
+      lines.push(
+        "Piso = LTV assumindo o churn mais alto (com limpeza manual conhecida, " +
+          "`data/analysis/descadastrados-manuais-2607.json`); teto = assumindo o churn mais baixo (orgânico).",
+      );
+      lines.push("");
+      if (ltvSection.rows.length === 0) {
+        lines.push("_nenhum canal com custo por leitor válido pra calcular LTV÷CAC._");
+      } else {
+        lines.push(
+          "LTV÷CAC usa o LTV BLENDED (ponto médio da faixa acima) igual pra todo canal — ainda não há LTV medido " +
+            "POR CANAL individual (dependeria de #7916 entregar receita por coorte no store unificado).",
+        );
+        lines.push("");
+        lines.push("| Canal | Custo/leitor | LTV ÷ CAC |");
+        lines.push("|---|---|---|");
+        for (const row of ltvSection.rows) {
+          lines.push(`| ${row.canal} | ${fmtBrl(row.custoPorLeitor)} | ${row.ltvCacRatio == null ? "—" : row.ltvCacRatio.toFixed(2)} |`);
+        }
+      }
+    }
+  }
+
   return lines.join("\n") + "\n";
 }
 
@@ -811,16 +1026,29 @@ export async function main(
     ? loadStoreLeitorSection(args.storeDbPath)
     : undefined;
 
+  // #8423: seção "LTV vs. custo" — opt-out via --no-ltv; fail-soft por conta
+  // própria (computeLtvSection nunca lança, só devolve motivo/ltvFaixaBrl:null).
+  // Usa SEMPRE `args.backupRoot` (histórico de snapshot Beehiiv) pro diff de
+  // churn, mesmo em `--fonte store` — a metodologia de LTV depende do
+  // histórico de snapshot, que `--fonte store` não substitui.
+  const ltvSection: CacReportLtvSection | undefined = args.ltv
+    ? computeLtvSection(report, subs, args.backupRoot, snapshotDate, rootDir, now)
+    : undefined;
+
   if (args.json) {
     console.log(
-      JSON.stringify({ snapshotDate, previousDate, report, budget, apuradoEm, fonte, mismatchWarnings, kitSection, storeSection }, null, 2),
+      JSON.stringify(
+        { snapshotDate, previousDate, report, budget, apuradoEm, fonte, mismatchWarnings, kitSection, storeSection, ltvSection },
+        null,
+        2,
+      ),
     );
   } else {
-    console.log(formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection, mismatchWarnings));
+    console.log(formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection, mismatchWarnings, ltvSection));
   }
 
   if (args.register) {
-    const markdown = formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection, mismatchWarnings);
+    const markdown = formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection, mismatchWarnings, ltvSection);
     const dir = resolve(rootDir, "data", "aquisicao", "cac-reports");
     mkdirSync(dir, { recursive: true });
     // Id inclui a janela quando --desde/--ate foi passado (#5495 — "duas

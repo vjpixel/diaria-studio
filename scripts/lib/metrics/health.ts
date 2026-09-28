@@ -117,14 +117,20 @@ export interface MetricsHealthThresholds {
 
 /** Defaults v1 — documentados na issue #7180: `contagem` com base de ~5/dia
  *  não distingue ruído de ±1 (piso 2); `razao` usa 0,05 (5 pontos
- *  percentuais). `percentual`/`brl`/`dias` NÃO têm piso na v1 — nenhuma
- *  métrica do registry hoje usa essas unidades (só `contagem` e `razao`,
- *  ver `scripts/lib/metrics/registry.ts` — `METRICAS`); adicionar uma
- *  métrica com `unidade` diferente sem estender este mapa é erro em tempo
- *  de carga (`assertQuedaMinAbsCobreUnidades`), nunca piso 0 silencioso. */
+ *  percentuais). `brl` ganhou piso no #8423 (bloco "Valor" — receita/ARPU/
+ *  LTV, todas em `brl`): R$5 é o menor movimento operacionalmente decidível
+ *  nessa unidade — os pagamentos observados da apoia.se (única fonte de
+ *  receita automatizada hoje) variam de ~R$10 a ~R$50/mês por apoiador
+ *  (`test/ltv.test.ts`), então uma variação abaixo de R$5 nunca é
+ *  atribuível a 1 apoiador entrando/saindo — é ruído de arredondamento, não
+ *  sinal. `percentual`/`dias` seguem SEM piso na v1 — nenhuma métrica do
+ *  registry hoje usa essas unidades (só `contagem`, `razao` e `brl`, ver
+ *  `scripts/lib/metrics/registry.ts` — `METRICAS`); adicionar uma métrica
+ *  com `unidade` diferente sem estender este mapa é erro em tempo de carga
+ *  (`assertQuedaMinAbsCobreUnidades`), nunca piso 0 silencioso. */
 export const METRICS_HEALTH_THRESHOLDS: MetricsHealthThresholds = {
   QUEDA_MIN_PCT: 0.15,
-  QUEDA_MIN_ABS: { contagem: 2, razao: 0.05 },
+  QUEDA_MIN_ABS: { contagem: 2, razao: 0.05, brl: 5 },
   FRESCOR_MAX_DIAS: 2,
   MIN_DIAS_SERIE: 14,
   INDETERMINADO_MAX_FRACAO: 0.3,
