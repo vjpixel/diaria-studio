@@ -101,6 +101,7 @@ import {
   BOOTSTRAP_GAP_COUNT_UNKNOWN,
   updateZeroDetectionStreak,
   zeroDetectionAlarm,
+  filterBrevoPlanForKitCutover,
   type DetectedSubscription,
   type OpenStats,
   type RunAction,
@@ -128,6 +129,15 @@ export interface OnboardingConfig {
   email3_grace_days?: number;
   /** Nome da lista Brevo dedicada ao cohort D+10 (criada sob demanda). */
   d10_list_name?: string;
+  /**
+   * #8966: kill switch dedicado do transporte Kit (#7922) — lido daqui SÓ
+   * pra decidir se o guard de mútua-exclusão (`filterBrevoPlanForKitCutover`)
+   * entra em ação. `onboarding-kit-transport-run.ts` é quem de fato consome
+   * este bloco pra armar/desarmar o próprio envio; não duplicar essa
+   * responsabilidade aqui — nunca `true` sem o corte real ter sido feito
+   * (ver docs/onboarding-kit-cutover.md).
+   */
+  kit_transport?: { enabled?: boolean };
 }
 
 export function loadOnboardingConfig(configPathAbs?: string): OnboardingConfig {
@@ -1025,19 +1035,27 @@ async function main(): Promise<void> {
   }
 
   // --- 3. Plano ---
-  const plan = buildRunPlan({
-    entries: Object.values(store.entries),
-    statsById,
-    nowSec,
-    email2Days,
-    email3Days,
-    email3GraceDays: graceDays,
-    snippets: {
-      1: args.skip.has("email1") ? null : snippets[1],
-      2: args.skip.has("email2") ? null : snippets[2],
-      3: args.skip.has("email3") ? null : snippets[3],
-    },
-  });
+  // #8966: guard de mútua-exclusão Brevo x Kit (#7922 §2.4) — com o kill
+  // switch do transporte Kit ligado, candidato NOVO de e-mail 1/2 é sempre
+  // do Kit; a Brevo só termina escadas que já começaram nela. Ver docstring
+  // de `filterBrevoPlanForKitCutover` (onboarding-state.ts).
+  const kitTransportEnabled = cfg.kit_transport?.enabled === true;
+  const plan = filterBrevoPlanForKitCutover(
+    buildRunPlan({
+      entries: Object.values(store.entries),
+      statsById,
+      nowSec,
+      email2Days,
+      email3Days,
+      email3GraceDays: graceDays,
+      snippets: {
+        1: args.skip.has("email1") ? null : snippets[1],
+        2: args.skip.has("email2") ? null : snippets[2],
+        3: args.skip.has("email3") ? null : snippets[3],
+      },
+    }),
+    kitTransportEnabled,
+  );
 
   summary.actions = plan.actions.map((a) =>
     a.kind === "email3_campaign"

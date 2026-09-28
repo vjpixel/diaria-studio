@@ -73,20 +73,27 @@ Mecanicamente, isto significa:
    `onboarding.kit_transport.enabled=true` E, no mesmo commit/mudança de
    config, impedir `onboarding-welcome-run.ts` de processar candidatos a
    e-mail 1 para os quais o Kit já criou um lote** (ver item 4).
-4. **Risco residual identificado, não fechado nesta fatia:** hoje os dois
+4. **Risco identificado e MITIGADO (#8966, guard implementado).** Os dois
    executores rodam sobre o MESMO `selectCandidatesNeedingRefresh`/
-   `buildRunPlan` e, se ambos tiverem seus respectivos "envio" habilitado ao
+   `buildRunPlan`, e se ambos tiverem seus respectivos "envio" habilitado ao
    mesmo tempo, um candidato de e-mail 1 due poderia, em teoria, ser
    processado por AMBOS na mesma rodada (Brevo envia via
    `POST /smtp/email`, Kit cria um broadcast) — duplicando o e-mail 1 para
-   quem confirma exatamente na janela de transição. **Mitigação para o
-   corte real:** ligar o kill switch Kit e, na MESMA mudança, adicionar um
-   guard em `onboarding-welcome-run.ts` que recusa enviar e-mail 1/2 quando
-   `onboarding.kit_transport.enabled === true` (o Brevo passa a servir
-   SÓ quem já tem `email{1,2}_brevo_id` de uma etapa anterior, nunca gente
-   nova) — este guard **não existe ainda** e precisa ser implementado e
-   revisado ANTES do cutover real, não durante — rastreado em **#8966**.
-   Não assumir que os dois kill switches sendo independentes já basta.
+   quem confirma exatamente na janela de transição. **Mitigação:**
+   `filterBrevoPlanForKitCutover` (`scripts/lib/onboarding-state.ts`),
+   aplicado pelo `onboarding-welcome-run.ts` sobre o plano JÁ MONTADO por
+   `buildRunPlan`, logo após lê-lo de `onboarding.kit_transport.enabled` do
+   `platform.config.json` — kill switch desligado é passagem livre (estado
+   atual em produção). Ligado: e-mail 1 é sempre recusado pelo lado Brevo
+   (por definição, todo candidato de e-mail 1 é uma entrada nova, sem
+   histórico em nenhum transporte — o Kit passa a servir toda entrada nova a
+   partir do corte); e-mail 2 só continua na Brevo se a entrada tiver
+   `email1_brevo_id` preenchido (prova de que o e-mail 1 dessa escada já
+   saiu pela Brevo) — sem esse id, a escada começou no Kit e a Brevo recusa,
+   igual ao e-mail 1. `email3_campaign` fica fora do escopo do guard (o
+   e-mail 3 já é sempre rascunho com aprovação humana explícita — risco de
+   duplicação automática não se aplica). Teste de regressão:
+   `test/onboarding-brevo-kit-mutex-8966.test.ts`.
 5. As coortes históricas **#7665/#7675** (recuperações manuais,
    `seeded_by` presente) são **excluídas da seleção automática dos DOIS
    transportes** — já implementado (`selectEligibleKitRecipients` exclui por
@@ -98,9 +105,9 @@ Mecanicamente, isto significa:
 
 Pré-requisitos, todos verificados ANTES de qualquer flip:
 
-- [ ] Guard do item 2.4 acima (mutua-exclusão entre os dois executores
-      para candidatos NOVOS) implementado, revisado e com teste de
-      regressão — **bloqueante, ausente nesta fatia**.
+- [x] Guard do item 2.4 acima (mutua-exclusão entre os dois executores
+      para candidatos NOVOS) implementado, com teste de regressão (#8966)
+      — ainda pendente de REVISÃO humana antes do flip real.
 - [ ] Piloto supervisionado (seção 4) executado e aprovado.
 - [ ] `data/snippets/onboarding-{1,2,3}.md` confirmados corretos para
       renderização no Kit (HTML, personalização, remetente, links de
