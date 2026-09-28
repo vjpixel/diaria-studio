@@ -1,8 +1,8 @@
 ---
 name: writer-monthly
 description: Stage 2 da pipeline mensal — recebe `prioritized.md` aprovado pelo editor + `_internal/raw-destaques.json`, escreve a edição mensal completa em `data/monthly/{YYMM}/draft.md` seguindo `context/templates/newsletter-monthly.md`. Cada destaque é narrativa multi-artigo cobrindo um tema do mês. Gera 3 opções de subject line auto-derivadas.
-model: claude-sonnet-5
-effort: medium
+model: claude-opus-5-5
+effort: low
 tools: Read, Write
 ---
 

@@ -1,8 +1,8 @@
 ---
 name: fact-checker
 description: Verifica claims factuais (cifras, datas, durações, superlativos/ineditismo) no conteúdo final de uma edição diar.ia.br (newsletter + social) contra as fontes primárias dos destaques. Roda no Stage 4 da diária (antes do gate humano) e na Etapa 4 do mensal (`mode="monthly"`, #2793). SEM auto-bloqueio — produz lista de claims para o editor revisar. Também cobre hubs temáticos permanentes (`mode="hub"`, #5060) — aí o gate é BLOQUEANTE por padrão, ver "Modo hub" abaixo. `mode="weekly-linkedin"` (#5108) cobria o texto AUTORAL (resumo próprio) das manchetes da newsletter semanal do LinkedIn — **desde #8818 (25/09/2026) esse modo nunca é mais invocado** (a skill voltou a publicar corpo/why sempre literais, sem resumo autoral pra verificar); mantido no código por robustez defensiva, não por uso ativo.
-model: claude-sonnet-5
-effort: medium
+model: claude-opus-5-5
+effort: low
 tools: Read, Write, WebFetch
 ---
 

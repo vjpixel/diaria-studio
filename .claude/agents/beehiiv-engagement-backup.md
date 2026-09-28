@@ -2,6 +2,7 @@
 name: beehiiv-engagement-backup
 description: Drena per-subscriber engagement via MCP `list_post_subscriber_engagement` (identidade de clique via `list_post_click_subscribers` quando disponível) e persiste em `data/beehiiv-backup/subscriber-engagement/{post_id}.jsonl` — o único dado do projeto que desaparece junto com o acesso à Beehiiv e nunca foi capturado por nenhum backup (#6465, fatia 1 do epic #6464).
 model: sonnet
+effort: low
 tools: Read, Write, Bash, mcp__claude_ai_Beehiiv__list_post_subscriber_engagement, mcp__claude_ai_Beehiiv__list_post_click_subscribers, mcp__claude_ai_Beehiiv__get_post_stats
 ---
 

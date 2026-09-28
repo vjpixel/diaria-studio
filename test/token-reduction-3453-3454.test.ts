@@ -2,8 +2,11 @@
  * test/token-reduction-3453-3454.test.ts (#3453 + #3454)
  *
  * Trava os cortes de token do overnight (#3453) e do develop (#3454):
- *   - overnight coordenador roda effort `high` (baixado de `xhigh`);
- *   - develop pina `model: sonnet` + `effort: high` (antes não pinava nada);
+ *   - overnight coordenador roda `claude-opus-5-5`/`low` (histórico:
+ *     xhigh→high→medium/sonnet→opus-5-5/low no #8941);
+ *   - develop pina `model: claude-opus-5-5` + `effort: medium` (antes não
+ *     pinava nada; #8941 trocou o modelo de sonnet, manteve o racional de
+ *     effort moderado);
  *   - checklist de dispatch compartilhado (`context/overnight-dispatch-rules.md`)
  *     existe e é citado pelas duas skills (dedup do boilerplate, #3453 Rec 4 /
  *     #3454 Rec 2);
@@ -37,33 +40,29 @@ function frontmatter(content: string): string {
   return m![1];
 }
 
-describe("#3453 — overnight: coordenador em effort high (histórico; experimento #5306 baixou para medium)", () => {
-  it("frontmatter fixa effort: medium (experimento #5306, não mais high/xhigh)", () => {
+describe("#3453/#5306/#8941 — overnight: coordenador em claude-opus-5-5/low (histórico: xhigh→high→medium→opus-5-5/low)", () => {
+  it("frontmatter fixa model: claude-opus-5-5 + effort: low (#8941, não mais sonnet/medium)", () => {
     const fm = frontmatter(overnight);
-    assert.match(fm, /^effort:\s*medium\s*$/m, "effort deve ser medium no frontmatter (#5306)");
-    assert.doesNotMatch(fm, /effort:\s*xhigh/, "effort NÃO deve mais ser xhigh no frontmatter");
-    assert.match(fm, /^model:\s*sonnet\s*$/m, "model deve continuar sonnet");
+    assert.match(fm, /^model:\s*claude-opus-5-5\s*$/m, "model deve ser claude-opus-5-5 (#8941)");
+    assert.match(fm, /^effort:\s*low\s*$/m, "effort deve ser low (#8941)");
+    assert.doesNotMatch(fm, /^model:\s*sonnet\s*$/m, "model NÃO deve mais ser sonnet no frontmatter");
   });
 
-  it("prosa documenta a troca xhigh → high citando #3453", () => {
-    assert.match(overnight, /Effort baixado de `xhigh` → `high` \(#3453\)/);
-  });
-
-  it("prosa documenta o experimento high → medium citando #5306", () => {
-    assert.match(overnight, /#5306/);
-    assert.match(overnight, /`high` → `medium`/);
+  it("prosa documenta a troca de modelo citando #8941", () => {
+    assert.match(overnight, /#8941/);
+    assert.match(overnight, /claude-opus-5-5/);
   });
 });
 
-describe("#3454 — develop: coordenador pinado em sonnet/high", () => {
-  it("frontmatter pina model: sonnet + effort: high", () => {
+describe("#3454/#8941 — develop: coordenador pinado em claude-opus-5-5/medium", () => {
+  it("frontmatter pina model: claude-opus-5-5 + effort: medium", () => {
     const fm = frontmatter(develop);
-    assert.match(fm, /^model:\s*sonnet\s*$/m, "model deve ser sonnet");
-    assert.match(fm, /^effort:\s*high\s*$/m, "effort deve ser high");
+    assert.match(fm, /^model:\s*claude-opus-5-5\s*$/m, "model deve ser claude-opus-5-5 (#8941)");
+    assert.match(fm, /^effort:\s*medium\s*$/m, "effort deve ser medium");
   });
 
   it("prosa documenta o pin citando #3454", () => {
-    assert.match(develop, /Modelo\/effort do coordenador \(#3454\)/);
+    assert.match(develop, /Modelo\/effort do coordenador \(#3454/);
   });
 });
 

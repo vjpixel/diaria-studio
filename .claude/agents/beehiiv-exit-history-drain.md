@@ -2,6 +2,7 @@
 name: beehiiv-exit-history-drain
 description: Drena o timestamp REAL de saída (`unsubscribed_on`) dos assinantes `inactive` da Beehiiv via MCP `list_subscriptions`, e persiste em `data/beehiiv-backup/exit-history/subscribers.jsonl` — refina `subscription.exited_at` de "aproximação da data de captura do snapshot" pra "data real da transição" (#7248, residual do #7201/fatia 6 do epic #7163).
 model: sonnet
+effort: low
 tools: Read, Write, Bash, mcp__claude_ai_Beehiiv__list_subscriptions
 ---
 

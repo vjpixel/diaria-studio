@@ -114,6 +114,32 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     assert.deepEqual(args.slice(-3), ["--model", "sonnet", "prompt"]);
   });
 
+  it("com opts.model + opts.effort, inclui --model e --effort antes do prompt (#8941)", () => {
+    const capturedCalls: unknown[][] = [];
+    const execFn = ((bin: string, args: string[], opts: unknown) => {
+      capturedCalls.push([bin, args, opts]);
+      return "ok";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", model: "sonnet", effort: "low" });
+
+    const [, args] = capturedCalls[0] as [string, string[], unknown];
+    assert.deepEqual(args.slice(-5), ["--model", "sonnet", "--effort", "low", "prompt"]);
+  });
+
+  it("sem opts.effort, --effort nunca aparece nos args", () => {
+    const capturedCalls: unknown[][] = [];
+    const execFn = ((bin: string, args: string[], opts: unknown) => {
+      capturedCalls.push([bin, args, opts]);
+      return "ok";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", model: "sonnet" });
+
+    const [, args] = capturedCalls[0] as [string, string[], unknown];
+    assert.equal(args.includes("--effort"), false);
+  });
+
   it("sem opts.model, --model nunca aparece nos args", () => {
     const capturedCalls: unknown[][] = [];
     const execFn = ((bin: string, args: string[], opts: unknown) => {

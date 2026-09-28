@@ -512,7 +512,7 @@ describe("buildReviewInstruction (#2754)", () => {
     assert.doesNotMatch(msg, /\/code-review low --comment/);
     assert.match(msg, /dispatch an Agent/i);
     assert.match(msg, /general-purpose/);
-    assert.match(msg, /model:sonnet/);
+    assert.match(msg, /model:claude-opus-5-5/);
   });
 
   it("effort=max menciona ULTRACODE / maximum effort", () => {

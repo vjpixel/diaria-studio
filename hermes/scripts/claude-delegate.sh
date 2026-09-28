@@ -479,6 +479,15 @@ for MODEL in "${MODELS[@]}"; do
   # <1s (crash imediato) vs um que roda até o TIMEOUT completo são causas
   # bem diferentes, e nenhuma das duas era distinguível antes disto.
   ATTEMPT_START_TS=$(date +%s)
+  # #8941: elo final de assinatura (sonnet) sempre roda com --effort explícito
+  # — nenhum pin de Sonnet sem effort explícito sobrevive no repo diaria-studio
+  # (CLAUDE.md). Só aplica o default quando o call site não passou --effort
+  # (EFFORT vazio); um --effort explícito do SKILL.md/cron continua tendo
+  # precedência.
+  ATTEMPT_EFFORT="$EFFORT"
+  if is_subscription_lane_model "$MODEL" && [ -z "$ATTEMPT_EFFORT" ]; then
+    ATTEMPT_EFFORT="low"
+  fi
   if is_subscription_lane_model "$MODEL"; then
     # #7649: elo final de assinatura claude.ai. SEM nenhuma das 8 vars de
     # auth/gateway (ANTHROPIC_*, CLAUDE_CODE_USE_BEDROCK/VERTEX) — `unset`
@@ -529,7 +538,7 @@ for MODEL in "${MODELS[@]}"; do
       claude -p \
         --model "$MODEL" \
         --allowedTools "$TOOLS" \
-        ${EFFORT:+--effort "$EFFORT"} 2> "$ATTEMPT_LOG"
+        ${ATTEMPT_EFFORT:+--effort "$ATTEMPT_EFFORT"} 2> "$ATTEMPT_LOG"
     ))
   else
     OUT=$(printf '%s' "$PROMPT" | (

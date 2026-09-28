@@ -683,11 +683,11 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
   const effortNote =
     effort === "low"
       ? `at LOW effort (overnight token-discount, #2754/#3322): dispatch ONE Agent, subagent_type \`${REVIEW_AGENT}\`, ` +
-        "model:sonnet explicit (#2019). The discount is ONE agent instead of the fleet — it is NOT a shallower report: " +
+        "model:claude-opus-5-5 effort:low explicit (#2019/#8941). The discount is ONE agent instead of the fleet — it is NOT a shallower report: " +
         "report every finding, including low-severity ones and ones you are unsure about, and do not filter for " +
         "importance or confidence at this stage"
       : `at ULTRACODE / MAXIMUM effort: dispatch the full toolkit fleet IN PARALLEL — \`${REVIEW_AGENT}\` plus ` +
-        `${REVIEW_FLEET_MAX.join(", ")} — each with model:sonnet explicit (#2019), then aggregate their findings`;
+        `${REVIEW_FLEET_MAX.join(", ")} — each with model:claude-opus-5-5 effort:low explicit (#2019/#8941), then aggregate their findings`;
   // O caminho degradado tem que preservar a PROFUNDIDADE pedida, não só existir:
   // sem isto, um `max` que caia no fallback (plugin ausente — justamente sessão
   // cloud / clone fresco) produziria instrução idêntica à de `low`, entregando

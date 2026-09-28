@@ -40,7 +40,7 @@ valor). Se o custo por PR voltar a incomodar, é essa constante que se mexe
 Todo review automatizado — hook por PR e Fases 1.5 do overnight/develop —
 dispatcha o agente `pr-review-toolkit:code-reviewer` (nome **prefixado**
 pelo plugin; sem o prefixo dá `Agent type not found`) via ferramenta
-**Agent** com `model: sonnet` explícito (#2019), sempre passando no prompt o
+**Agent** com `model: claude-opus-5-5` + `effort: low` explícitos (#2019/#8941), sempre passando no prompt o
 range de diff **explícito** (o agente revisa `git diff` unstaged por
 default) e a restrição **somente leitura** (sem edição de arquivo,
 `checkout`, `stash`, `reset` ou commit — o checkout pode ser compartilhado

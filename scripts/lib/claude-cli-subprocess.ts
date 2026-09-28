@@ -76,6 +76,8 @@ export interface ClaudeCliCallOptions {
   maxTurns?: number;
   /** Nome do modelo pro `--model` do CLI (ex: "sonnet"). Sem isto, o CLI usa o default do ambiente — achado de review do #7981 (comment-analyzer, P2): a docstring de `holistic-critique.ts` afirmava "Sonnet, effort baixo" sem NENHUM flag garantindo isso; quem quiser a garantia agora passa este campo explicitamente (mesmo espírito do `model: sonnet` explícito exigido pro dispatch de subagentes ad-hoc, CLAUDE.md). */
   model?: string;
+  /** Nome do effort pro `--effort` do CLI (ex: "low"). Mesmo racional do `model` acima (#8941 — nenhum pin de Sonnet sem effort explícito sobrevive no repo; a mesma disciplina vale pra chamadas via CLI subprocess). */
+  effort?: string;
   /**
    * `"text"` (default, preserva o comportamento anterior a #8143 — resposta
    * crua, é o que `holistic-critique.ts` espera pra casar `VEREDITO:`/
@@ -110,6 +112,7 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
 
   const args = ["--print", "--permission-mode", "acceptEdits", "--max-turns", String(maxTurns), "--output-format", opts.outputFormat ?? "text", "--no-session-persistence"];
   if (opts.model) args.push("--model", opts.model);
+  if (opts.effort) args.push("--effort", opts.effort);
   args.push(prompt);
 
   const bin = resolveClaudeBinFn();
