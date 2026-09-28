@@ -77,6 +77,7 @@
  */
 
 import { pollTrainCi, confirmMerged, type TrainRunner } from "./merge-train-live.ts";
+import { calendarDaysBetween, HUB_UPDATED_DATE_CEILING_WARN_DAYS } from "./shared/hub-page.ts";
 
 export interface HubSourcesDiff {
   readonly added: readonly string[];
@@ -97,18 +98,36 @@ export interface HubRegenPlan {
   readonly slug: string;
   readonly hasDataChange: boolean;
   /** `null` quando `hasDataChange` é `false` — nada a bumpar. Quando
-   * presente, é sempre `todayISO` (#8906: o novo UPDATED_DATE automático é
-   * sempre a data da EXECUÇÃO do job, nunca derivado de uma edição
-   * individual — `todayISO >= sourceEditions[0].date` por construção, já
-   * que a execução roda depois de qualquer edição publicada). */
+   * presente, é `todayISO` no caso comum (#8906: o novo UPDATED_DATE
+   * automático é a data da EXECUÇÃO do job) — **exceto** quando isso
+   * estouraria o teto de `checkUpdatedDateCeiling`
+   * (`HUB_UPDATED_DATE_CEILING_WARN_DAYS`, #5124): mudança de dados que não
+   * vem de uma edição RECENTE (ex: `changed` por recomputar
+   * `matchedHeadlines` sobre uma edição antiga, sem fonte nova de verdade)
+   * bumpar pra `todayISO` produziria um "dados atualizados em hoje" mentiroso
+   * — a página declararia `Last-Modified`/`dateModified` de hoje citando uma
+   * fonte de semanas atrás, o EXATO cenário que o #5124 documenta como
+   * motivador do teto. Nesse caso, `newUpdatedDate` cai pra `coverageDate`
+   * (a data da fonte mais recente do dataset) — sempre gap 0, nunca dispara
+   * o warning, e ainda é "dados atualizados em" honesto (#8934, fix do
+   * achado ao vivo 28/09/2026: o regen automático quebrou o guard de teto
+   * pra `google-gemini` porque `hasDataChange` veio de `changed`, não de
+   * `added`, sobre uma edição de 25 dias atrás). */
   readonly newUpdatedDate: string | null;
 }
 
 /** Decide o plano por hub — pura, sem tocar disco. `todayISO` é injetado
- * (não `new Date()`) pra determinismo em teste. */
-export function planHubRegen(slug: string, diff: HubSourcesDiff, todayISO: string): HubRegenPlan {
+ * (não `new Date()`) pra determinismo em teste. `coverageDate` é a data da
+ * fonte mais recente do dataset PÓS-merge (`hubCoverageDate(rows)`,
+ * calculado pelo chamador) — usado só pra decidir entre `todayISO` e
+ * `coverageDate` quando `hasDataChange`, nunca pra decidir `hasDataChange`
+ * em si (isso continua vindo só do diff). */
+export function planHubRegen(slug: string, diff: HubSourcesDiff, todayISO: string, coverageDate: string): HubRegenPlan {
   const hasDataChange = hasHubDataChange(diff);
-  return { slug, hasDataChange, newUpdatedDate: hasDataChange ? todayISO : null };
+  if (!hasDataChange) return { slug, hasDataChange, newUpdatedDate: null };
+  const gapDays = calendarDaysBetween(coverageDate, todayISO);
+  const newUpdatedDate = gapDays < HUB_UPDATED_DATE_CEILING_WARN_DAYS ? todayISO : coverageDate;
+  return { slug, hasDataChange, newUpdatedDate };
 }
 
 // ─── Bump de UPDATED_DATE (edição de texto, não de disco) ──────────────────

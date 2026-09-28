@@ -1167,5 +1167,41 @@
       "https://decrypt.co/377917/deepseek-openai-gpt-6-astra-design-benchmark"
     ],
     "editionTitle": "DeepSeek quase iguala GPT-6 Astra por 1,4% do custo"
+  },
+  {
+    "date": "2026-09-17",
+    "editionSlug": "funcionarios-leem-suas-conversas-no-chatgpt",
+    "url": "https://diar.ia.br/p/funcionarios-leem-suas-conversas-no-chatgpt",
+    "matchedHeadlines": [
+      "Funcionários leem suas conversas no ChatGPT"
+    ],
+    "primarySourceUrls": [
+      "https://www.404media.co/inside-project-lily-the-humans-reading-your-chatgpt-chats"
+    ],
+    "editionTitle": "Funcionários leem suas conversas no ChatGPT"
+  },
+  {
+    "date": "2026-09-18",
+    "editionSlug": "openai-cria-regra-para-revelar-erros-da-propria-ia",
+    "url": "https://diar.ia.br/p/openai-cria-regra-para-revelar-erros-da-propria-ia",
+    "matchedHeadlines": [
+      "OpenAI cria regra para revelar erros da própria IA"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/model-misalignment-reporting-framework/"
+    ],
+    "editionTitle": "OpenAI cria regra para revelar erros da própria IA"
+  },
+  {
+    "date": "2026-09-21",
+    "editionSlug": "claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias",
+    "url": "https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias",
+    "matchedHeadlines": [
+      "Claude ajudou a invadir a OpenAI em menos de 3 dias"
+    ],
+    "primarySourceUrls": [
+      "https://www.hacktron.ai/blog/hacking-openai"
+    ],
+    "editionTitle": "Claude ajudou a invadir a OpenAI em menos de 3 dias"
   }
 ]

@@ -980,5 +980,41 @@
       "https://www.bbc.com/news/articles/ckgwy1k42w4o"
     ],
     "editionTitle": "Pesquisador da Anthropic teme fim da humanidade"
+  },
+  {
+    "date": "2026-09-21",
+    "editionSlug": "claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias",
+    "url": "https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias",
+    "matchedHeadlines": [
+      "Claude ajudou a invadir a OpenAI em menos de 3 dias"
+    ],
+    "primarySourceUrls": [
+      "https://www.hacktron.ai/blog/hacking-openai"
+    ],
+    "editionTitle": "Claude ajudou a invadir a OpenAI em menos de 3 dias"
+  },
+  {
+    "date": "2026-09-23",
+    "editionSlug": "claude-opus-5-5-chega-dias-apos-alerta-de-amodei",
+    "url": "https://diar.ia.br/p/claude-opus-5-5-chega-dias-apos-alerta-de-amodei",
+    "matchedHeadlines": [
+      "Claude Opus 5.5 chega dias após alerta de Amodei"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/claude-opus-5-5"
+    ],
+    "editionTitle": "Claude Opus 5.5 chega dias após alerta de Amodei"
+  },
+  {
+    "date": "2026-09-24",
+    "editionSlug": "claude-descobre-novo-sistema-enzimatico",
+    "url": "https://diar.ia.br/p/claude-descobre-novo-sistema-enzimatico",
+    "matchedHeadlines": [
+      "Claude descobre novo sistema enzimático"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/news/claude-discovers-novel-enzyme-system"
+    ],
+    "editionTitle": "Claude descobre novo sistema enzimático"
   }
 ]
