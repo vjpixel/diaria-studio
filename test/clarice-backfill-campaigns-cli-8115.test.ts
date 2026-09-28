@@ -22,6 +22,7 @@ import { dirname } from "node:path";
 
 import { main, STATS_CACHE_KV_NAMESPACE_ID } from "../scripts/clarice-backfill-campaigns.ts";
 import { DEFAULT_RATE_STATE_PATH } from "../scripts/lib/brevo-rate-state.ts";
+import { acquireRateStateTestLock, releaseRateStateTestLock } from "./_helpers/with-rate-state-lock.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let origFetch: any;
@@ -29,9 +30,14 @@ let fetchCalls: string[] = [];
 
 before(() => {
   origFetch = globalThis.fetch;
+  // #8904: este arquivo toca DEFAULT_RATE_STATE_PATH (ver abaixo) — outros
+  // arquivos de teste tocam o MESMO path real; lock pra serializar contra
+  // eles, ver test/_helpers/with-rate-state-lock.ts.
+  acquireRateStateTestLock();
 });
 after(() => {
   globalThis.fetch = origFetch;
+  releaseRateStateTestLock();
 });
 
 beforeEach(() => {
