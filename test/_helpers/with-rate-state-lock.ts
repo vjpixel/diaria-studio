@@ -39,13 +39,32 @@
  * desses 6 arquivos entre processos concorrentes, sem exigir mudança nos
  * consumidores de produção.
  */
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { acquireLock, releaseLock } from "../../scripts/lib/file-lock.ts";
 import { DEFAULT_RATE_STATE_PATH } from "../../scripts/lib/brevo-rate-state.ts";
 
 export const RATE_STATE_TEST_LOCK_PATH = `${DEFAULT_RATE_STATE_PATH}.test-lock`;
 
-/** `before()` hook — chamar 1x no topo do arquivo de teste. */
+/**
+ * `before()` hook — chamar 1x no topo do arquivo de teste.
+ *
+ * `data/` é inteiramente gitignored (junction OneDrive nas máquinas do
+ * projeto) — num checkout de CI fresco ele só existe se ALGUM teste já
+ * tiver criado a subpasta que precisa. `acquireLock` abre o `.test-lock`
+ * com `wx`, que falha com `ENOENT` (não `EEXIST`, então não é contenção —
+ * propaga direto, ver `scripts/lib/file-lock.ts` #6952) se o diretório pai
+ * não existir ainda. Isso sempre foi uma corrida latente (mascarada em
+ * `master` pela ordem de execução dos batches de `node --test` — algum
+ * outro arquivo cria `data/` antes deste rodar); inserir um novo arquivo de
+ * teste alfabeticamente cedo (`test/aquisicao-reconcile-alarm.test.ts`, PR
+ * #8985) reordenou os batches e expôs a corrida em CI 3x seguidas — sem
+ * nenhum teste desta PR tocando ou apagando `data/` diretamente. `mkdirSync`
+ * com `recursive: true` é idempotente e não falha se o diretório já existe,
+ * então isso é seguro de rodar sempre, concorrentemente.
+ */
 export function acquireRateStateTestLock(): void {
+  mkdirSync(dirname(RATE_STATE_TEST_LOCK_PATH), { recursive: true });
   acquireLock(RATE_STATE_TEST_LOCK_PATH, 30_000);
 }
 
