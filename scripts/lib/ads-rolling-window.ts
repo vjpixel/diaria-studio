@@ -220,6 +220,12 @@ export const TIPO_TO_EFEITO: Readonly<Record<string, EdicaoEfeito>> = {
   // campanha em voo, deve reiniciar `diasAposUltimaEdicao` como qualquer
   // outra edição):
   "decisao-teto-orcamento-executada": "mudanca",
+  // #8574 — rebaixar `primary_for_goal` de uma conversion_action é
+  // "mudanca" (não "registro"): altera o sinal que o lance inteligente
+  // otimiza daqui pra frente, mesmo executado DEPOIS do fim da janela do
+  // teste 2608 (27/09/2026) de propósito, pra não contaminar a comparação
+  // entre braços enquanto ela ainda rodava.
+  "conversion-action-secundaria": "mudanca",
 };
 
 /** Conjunto FECHADO de `tipo` válidos para `edicoes.jsonl` (#8531) — as
