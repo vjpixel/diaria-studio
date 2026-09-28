@@ -37,6 +37,7 @@ import {
   readBoxDivulgacaoCategoriaForFile, // #8119
   readBoxDivulgacaoAltForSlot,
   readBoxDivulgacaoNoTituloForSlot, // #5882
+  readBoxDivulgacaoTituloForSlot,
   assignDivulgacaoGaps,
   capDivulgacaoBoxes, // #5232 item 3
   DIVULGACAO_BOX_CAP, // #5232 item 3
@@ -4220,6 +4221,28 @@ describe("readBoxDivulgacaoNoTituloForSlot (#5882, pure)", () => {
     );
     try {
       assert.equal(readBoxDivulgacaoNoTituloForSlot(1, root), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readBoxDivulgacaoTituloForSlot — titulo: true explícito", () => {
+  it("true só com titulo: true; false com titulo: false, sem campo ou sem config", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-titulo-"));
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "com.md"), "<!--\ntitulo: true\n-->\n\nx");
+    writeFileSync(join(root, "data", "snippets", "sem.md"), "<!--\ntitulo: false\n-->\n\nx");
+    writeFileSync(join(root, "data", "snippets", "nada.md"), "x");
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "com.md", slot2: "sem.md", slot3: "nada.md" } }),
+    );
+    try {
+      assert.equal(readBoxDivulgacaoTituloForSlot(1, root), true);
+      assert.equal(readBoxDivulgacaoTituloForSlot(2, root), false);
+      assert.equal(readBoxDivulgacaoTituloForSlot(3, root), false);
+      assert.equal(readBoxDivulgacaoTituloForSlot(0, root), false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

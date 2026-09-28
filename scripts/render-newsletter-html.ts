@@ -67,6 +67,7 @@ export {
   readBoxDivulgacaoCategoriaForFile, // #8119
   readBoxDivulgacaoAltForSlot, // #4086
   readBoxDivulgacaoNoTituloForSlot, // #5882
+  readBoxDivulgacaoTituloForSlot,
 
   isBoxDivulgacaoLivros,
   extractContent,

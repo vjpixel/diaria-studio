@@ -208,6 +208,10 @@ export interface NewsletterContent {
    * mapa -> renderiza exatamente como hoje (título quando a estrutura do box
    * pedir um). */
   boxDivulgacaoNoTitulo?: { 0?: boolean; 1?: boolean; 2?: boolean; 3?: boolean };
+  /** `titulo: true` explícito no header do snippet de cada slot — mantém o
+   * título serif mesmo com imagem horizontal de slot (que por padrão o
+   * suprime). `titulo: false` (acima) continua vencendo. */
+  boxDivulgacaoTitulo?: { 0?: boolean; 1?: boolean; 2?: boolean; 3?: boolean };
   /** Mesmo contrato de `boxDivulgacao1Bold`, pro slot 3. */
   boxDivulgacao3Bold?: boolean;
   /** #3981: mesmo contrato de `boxDivulgacao1Categoria`, pro slot 3. */
@@ -1985,6 +1989,18 @@ function resolveBoxDivulgacaoNoTituloForSlot(
     : readBoxDivulgacaoNoTituloForSlot(slot, rootDir);
 }
 
+function resolveBoxDivulgacaoTituloForSlot(
+  slot: 1 | 2 | 3,
+  editionDir: string,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+  boxText?: string | null,
+): boolean {
+  const selectedFile = readBoxSelectionFileForSlot(editionDir, slot, boxText, rootDir);
+  return selectedFile
+    ? readBoxDivulgacaoTituloForFile(selectedFile, rootDir)
+    : readBoxDivulgacaoTituloForSlot(slot, rootDir);
+}
+
 /**
  * `alt:` configurado no header do snippet atribuído ao SLOT — texto alternativo
  * da imagem do box (`box_slot{N}_image`).
@@ -2057,13 +2073,47 @@ export function readBoxDivulgacaoNoTituloForFile(
   filename: string,
   rootDir: string = REPO_ROOT_FROM_MODULE,
 ): boolean {
+  return readTituloFlagForFile(filename, rootDir) === false;
+}
+
+/** `titulo: true` explícito no header do snippet — força título serif mesmo
+ * quando o slot tem imagem horizontal, que por padrão suprime o título. */
+export function readBoxDivulgacaoTituloForFile(
+  filename: string,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): boolean {
+  return readTituloFlagForFile(filename, rootDir) === true;
+}
+
+function readTituloFlagForFile(filename: string, rootDir: string): boolean | null {
   try {
     const snippetPath = resolve(rootDir, "data", "snippets", filename);
-    if (!existsSync(snippetPath)) return false;
-    return readBoxTituloFlag(readFileSync(snippetPath, "utf8")) === false;
+    if (!existsSync(snippetPath)) return null;
+    return readBoxTituloFlag(readFileSync(snippetPath, "utf8"));
   } catch {
-    return false;
+    return null;
   }
+}
+
+function readSlotSnippetFilename(slot: 0 | 1 | 2 | 3, rootDir: string): string | null {
+  try {
+    const configPath = resolve(rootDir, "platform.config.json");
+    if (!existsSync(configPath)) return null;
+    const boxes = JSON.parse(readFileSync(configPath, "utf8"))?.boxes_divulgacao;
+    if (!boxes || typeof boxes !== "object") return null;
+    const filename = boxes[`slot${slot}`];
+    return typeof filename === "string" && filename ? filename : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readBoxDivulgacaoTituloForSlot(
+  slot: 0 | 1 | 2 | 3,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): boolean {
+  const filename = readSlotSnippetFilename(slot, rootDir);
+  return filename ? readBoxDivulgacaoTituloForFile(filename, rootDir) : false;
 }
 
 /**
@@ -2079,18 +2129,8 @@ export function readBoxDivulgacaoNoTituloForSlot(
   slot: 0 | 1 | 2 | 3,
   rootDir: string = REPO_ROOT_FROM_MODULE,
 ): boolean {
-  try {
-    const configPath = resolve(rootDir, "platform.config.json");
-    if (!existsSync(configPath)) return false;
-    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
-    const boxes = cfg?.boxes_divulgacao;
-    if (!boxes || typeof boxes !== "object") return false;
-    const filename = boxes[`slot${slot}`];
-    if (typeof filename !== "string" || !filename) return false;
-    return readBoxDivulgacaoNoTituloForFile(filename, rootDir);
-  } catch {
-    return false;
-  }
+  const filename = readSlotSnippetFilename(slot, rootDir);
+  return filename ? readBoxDivulgacaoNoTituloForFile(filename, rootDir) : false;
 }
 
 /**
@@ -2317,6 +2357,12 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
     2: resolveBoxDivulgacaoNoTituloForSlot(2, editionDir, undefined, boxDivulgacao2),
     3: resolveBoxDivulgacaoNoTituloForSlot(3, editionDir, undefined, boxDivulgacao3),
   };
+  const boxDivulgacaoTitulo = {
+    0: readBoxDivulgacaoTituloForSlot(0),
+    1: resolveBoxDivulgacaoTituloForSlot(1, editionDir, undefined, boxDivulgacao1),
+    2: resolveBoxDivulgacaoTituloForSlot(2, editionDir, undefined, boxDivulgacao2),
+    3: resolveBoxDivulgacaoTituloForSlot(3, editionDir, undefined, boxDivulgacao3),
+  };
   const boxDivulgacaoImagePortrait = {
     0: boxDivulgacaoImageExplicit[0] && isBoxSlotImagePortrait(editionDir, 0),
     1: boxDivulgacaoImageExplicit[1] && isBoxSlotImagePortrait(editionDir, 1),
@@ -2368,6 +2414,7 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
     boxDivulgacaoImagePortrait,
     boxDivulgacaoImageAlt,
     boxDivulgacaoNoTitulo,
+    boxDivulgacaoTitulo,
   };
 }
 
