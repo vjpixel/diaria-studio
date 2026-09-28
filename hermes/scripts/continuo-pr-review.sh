@@ -276,7 +276,10 @@ redact_public_text() {
     -e 's/sk-(proj-)?[A-Za-z0-9]{32,}/[REDACTED_OPENAI]/g' \
     -e 's/xkeysib-[A-Za-z0-9-]{20,}/[REDACTED_BREVO]/g' \
     -e 's/(ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/[REDACTED_GITHUB]/g' \
-    -e 's/dp\.(st|pt|sa|ct|scim)\.[A-Za-z0-9_.-]{20,}/[REDACTED_DOPPLER]/g'
+    -e 's/dp\.(st|pt|sa|ct|scim)\.[A-Za-z0-9_.-]{20,}/[REDACTED_DOPPLER]/g' \
+    -e 's/xox[abprs]-[A-Za-z0-9-]{20,}/[REDACTED_SLACK]/g' \
+    -e 's/AIza[A-Za-z0-9_-]{35}/[REDACTED_GOOGLE_API]/g' \
+    -e 's/AKIA[A-Z0-9]{16}/[REDACTED_AWS]/g'
 }
 
 INFRA_ERROR_LOG="$REPO/data/continuo-pr-review/infra-errors.jsonl"

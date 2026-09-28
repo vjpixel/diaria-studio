@@ -58,15 +58,27 @@ export function isGhPublishCommand(command) {
     /\bgh\s+release\s+(?:create|edit)\b/.test(command) ||
     /\bgh\s+gist\s+create\b/.test(command) ||
     // `gh api` só publica quando manda corpo (campo/arquivo) ou método de escrita.
-    (/\bgh\s+api\b[\s\S]*\/(?:comments|issues|pulls|reviews)\b/.test(command) &&
+    (/\bgh\s+api\b[\s\S]*(?:\/(?:comments|issues|pulls|reviews)\b|\bgraphql\b)/.test(command) &&
       /(?:\s-[fF]\s|\s--(?:field|raw-field|input)\b|\s-X\s*(?:POST|PATCH|PUT)\b|--method\s+(?:POST|PATCH|PUT)\b)/.test(command))
   );
 }
 
-/** Arquivos passados como corpo (`--body-file`, `-F`, `--input`). */
+/**
+ * Arquivos cujo conteúdo vira texto publicado: `--body-file`, `--notes-file`,
+ * `--input`, `-F`/`-f`/`--field`/`--raw-field` com `campo=@arquivo`, e
+ * substituição `$(cat arquivo)` / `$(< arquivo)`.
+ *
+ * Limite conhecido: substituição que não lê arquivo direto
+ * (`--body "$VAR"`, `$(comando | ...)`) não é resolvível estaticamente —
+ * por isso o `continuo-pr-review.sh` também redige no script.
+ */
 export function bodyFileArgs(command) {
   const out = [];
-  const re = /(?:--body-file|--input|-F)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/g;
+  for (const m of command.matchAll(/\$\(\s*(?:cat\s+|<\s*)(?:"([^"]+)"|'([^']+)'|([^\s)|;&]+))\s*\)/g)) {
+    out.push(m[1] ?? m[2] ?? m[3]);
+  }
+  const re =
+    /(?:--body-file|--notes-file|--input|--field|--raw-field|-F|-f)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/g;
   let m;
   while ((m = re.exec(command)) !== null) {
     let v = m[1] ?? m[2] ?? m[3];
@@ -75,6 +87,19 @@ export function bodyFileArgs(command) {
     if (at) v = at[1];
     else if (/^[^=]+=/.test(v)) continue;
     if (v !== "-") out.push(v);
+  }
+  // `gh gist create arq1 arq2`: o conteúdo vem de argumentos posicionais.
+  const gist = command.match(/\bgh\s+gist\s+create\b([^|;&]*)/);
+  if (gist) {
+    const toks = gist[1].match(/"[^"]+"|'[^']+'|\S+/g) ?? [];
+    for (let i = 0; i < toks.length; i++) {
+      const t = toks[i].replace(/^["']|["']$/g, "");
+      if (/^-/.test(t)) {
+        if (/^(?:-d|--desc|-f|--filename)$/.test(t)) i++; // flag com valor
+        continue;
+      }
+      if (t !== "-") out.push(t);
+    }
   }
   return out;
 }

@@ -78,6 +78,36 @@ describe("evaluate (#8827 — regressão do vazamento da PR #8800)", () => {
   });
 });
 
+describe("brechas apontadas no review da PR #8880", () => {
+  const leak = () => `dump ${OR_KEY}`;
+  for (const cmd of [
+    "gh api repos/o/r/issues/1/comments -f body=@s.txt -X POST",
+    "gh api repos/o/r/issues/1/comments --field body=@s.txt",
+    "gh api repos/o/r/issues/1/comments --raw-field body=@s.txt",
+    "gh release create v1 --notes-file s.txt",
+    "gh gist create -d desc s.txt",
+    'gh pr comment 1 --body "$(cat s.txt)"',
+    'gh pr comment 1 --body "$(< s.txt)"',
+    "gh api graphql --input s.txt",
+  ]) {
+    it(`bloqueia: ${cmd}`, () => {
+      assert.ok(evaluate(cmd, "/w", leak), cmd);
+    });
+  }
+  it("gh gist create: descrição não é tratada como arquivo", () => {
+    assert.deepEqual(bodyFileArgs("gh gist create -d minha-desc a.txt"), ["a.txt"]);
+  });
+});
+
+describe("paridade de padrões hook × bash (#8827)", () => {
+  it("todo provedor do hook tem linha no redact_public_text", () => {
+    const src = readFileSync("hermes/scripts/continuo-pr-review.sh", "utf8");
+    for (const tag of ["OPENROUTER", "ANTHROPIC", "OPENAI", "BREVO", "GITHUB", "DOPPLER", "SLACK", "GOOGLE_API", "AWS"]) {
+      assert.ok(src.includes(`[REDACTED_${tag}]`), tag);
+    }
+  });
+});
+
 describe("hook como processo (contrato PreToolUse)", () => {
   const run = (command: string) =>
     spawnSync(process.execPath, [".claude/hooks/block-gh-comment-secrets.mjs"], {
