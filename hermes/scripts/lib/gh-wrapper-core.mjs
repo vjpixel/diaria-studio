@@ -19,7 +19,7 @@
 // (`-F` é `--body-file` em `pr`/`issue`/`release`/`gist`, mas é
 // `--field key=value` em `gh api`; `-f` é o boolean `--fill` em `pr create`,
 // mas é `--raw-field key=value` em `gh api`). A classificação de flags agora
-// é resolvida por CONTEXTO (`flagTableFor`) em vez de um único par de
+// é resolvida por CONTEXTO (`nonApiBodyFlags`/isApi) em vez de um único par de
 // conjuntos globais:
 //   1. `-F arquivo`/`-F -` em `pr`/`issue`/`release`/`review` agora é lido
 //      como arquivo (antes só `--body-file`/`--notes-file` eram reconhecidos
