@@ -251,6 +251,33 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     }
   });
 
+  it("(#8942 review) status 1 + stdout JSON com subtype=error_max_turns (sinal PRIMÁRIO do SDK) vira maxTurnsExhausted=true mesmo sem stop_reason=tool_use", () => {
+    // O review da PR #8942 apontou que o envelope do SDK carrega `subtype:
+    // "error_max_turns"` como sinal terminal DEDICADO — mais confiável que
+    // inferir por `stop_reason`. Aqui o `stop_reason` nem aparece, só o
+    // `subtype`, e o caso ainda deve ser detectado.
+    const stdoutJson = JSON.stringify({ subtype: "error_max_turns", total_cost_usd: 0.3 });
+    const execFn = ((bin: string, args: string[]) => {
+      const err = new Error(`Command failed: ${bin} ${args.join(" ")}`);
+      (err as { status?: number }).status = 1;
+      (err as { stdout?: string }).stdout = stdoutJson;
+      (err as { stderr?: string }).stderr = "";
+      throw err;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    try {
+      callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", maxTurns: 40 });
+      assert.fail("devia lançar");
+    } catch (err) {
+      assert.ok(err instanceof ClaudeCliError);
+      assert.equal(err.maxTurnsExhausted, true);
+      assert.equal(err.subtype, "error_max_turns");
+      assert.equal(err.stopReason, null);
+      assert.ok(err.message.includes("subtype=error_max_turns"), "mensagem deve citar o subtype quando disponível, não só stop_reason");
+      assert.ok(err.message.includes("40"), "mensagem deve citar o teto configurado");
+    }
+  });
+
   it("(#8405 2ª metade) status 1 sem stop_reason=tool_use (ex: stdout não-JSON ou stop_reason diferente) NÃO marca maxTurnsExhausted", () => {
     const execFn = ((bin: string, args: string[]) => {
       const err = new Error(`Command failed: ${bin} ${args.join(" ")}`);
@@ -267,7 +294,34 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
       assert.ok(err instanceof ClaudeCliError);
       assert.equal(err.maxTurnsExhausted, false);
       assert.equal(err.stopReason, null);
+      assert.equal(err.subtype, null);
       assert.ok(err.message.includes("falhou"), "caso genérico continua usando a mensagem antiga");
+    }
+  });
+
+  it("(#8942 review) status 1 + JSON válido com stop_reason=end_turn e sem subtype de max-turns NÃO marca maxTurnsExhausted — falha real pós-conclusão não é mal-rotulada", () => {
+    // Cobre a lacuna apontada no review: um run que TERMINOU (stop_reason
+    // end_turn) mas ainda assim saiu com status 1 por outro motivo (ex: erro
+    // de gravação de arquivo pós-resposta) não deve ser confundido com
+    // max-turns esgotado.
+    const stdoutJson = JSON.stringify({ stop_reason: "end_turn", result: "concluído normalmente" });
+    const execFn = ((bin: string, args: string[]) => {
+      const err = new Error(`Command failed: ${bin} ${args.join(" ")}`);
+      (err as { status?: number }).status = 1;
+      (err as { stdout?: string }).stdout = stdoutJson;
+      (err as { stderr?: string }).stderr = "erro real pós-conclusão";
+      throw err;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    try {
+      callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
+      assert.fail("devia lançar");
+    } catch (err) {
+      assert.ok(err instanceof ClaudeCliError);
+      assert.equal(err.maxTurnsExhausted, false);
+      assert.equal(err.stopReason, "end_turn");
+      assert.equal(err.subtype, null);
+      assert.ok(err.message.includes("falhou"), "run concluído com falha real continua tratado como erro genérico");
     }
   });
 

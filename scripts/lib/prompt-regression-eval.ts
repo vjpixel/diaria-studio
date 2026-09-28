@@ -604,14 +604,15 @@ export function runAgentRepetitions(opts: RunAgentRepetitionsOptions): AgentRunO
       // quem chamou `runAgentRepetitions` (que imprimia só `error.message`,
       // ecoando ~30KB de prompt e deixando o stderr invisível).
       if (err instanceof ClaudeCliError) {
-        const label = err.maxTurnsExhausted
-          ? `--max-turns ${maxTurns ?? "(default)"} esgotado (stop_reason=tool_use) — não é crash`
-          : `claude CLI falhou (status ${err.status ?? "sinal"})`;
+        // #8942 review (P3): reusa `err.message` (já montada por
+        // `formatMaxTurnsExhaustedMessage` no caso maxTurnsExhausted, ou a
+        // frase genérica caso contrário) em vez de remontar a distinção
+        // aqui — evita a frase "max-turns esgotado" divergir entre este
+        // arquivo, claude-cli-subprocess.ts e run-agent-eval-for-pr.ts.
         console.error(
-          `[prompt-regression-eval] ${opts.agent} repetição ${i}: ${label}:\n` +
+          `[prompt-regression-eval] ${opts.agent} repetição ${i}: ${err.message}\n` +
             `  stderr: ${preview(err.stderr)}\n` +
-            `  stdout: ${preview(err.stdout)}\n` +
-            `  command: ${err.command}`,
+            `  stdout: ${preview(err.stdout)}`,
         );
         throw err;
       }

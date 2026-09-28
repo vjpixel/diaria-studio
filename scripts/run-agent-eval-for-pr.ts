@@ -633,11 +633,12 @@ if (isMainModule(import.meta.url)) {
       // "erro inesperado" genérico foi exatamente o que a issue #8405
       // (comentário 260920) pediu pra corrigir.
       if (err.maxTurnsExhausted) {
-        console.error(
-          `[#8144] claude CLI esgotou --max-turns sem concluir (stop_reason=tool_use, exit ${err.status}) — não é crash do processo, é o teto de turnos atingido em pleno tool_use:\n` +
-            `  stdout: ${preview(err.stdout)}\n` +
-            `  command: ${err.command}`,
-        );
+        // #8942 review (P3): reusa `err.message` (montado por
+        // `formatMaxTurnsExhaustedMessage` em claude-cli-subprocess.ts) em
+        // vez de remontar a frase aqui — carrega o valor de `--max-turns`
+        // configurado, que uma mensagem hardcoded neste arquivo não teria
+        // como saber (o `maxTurns` não é um parâmetro deste `catch`).
+        console.error(`[#8144] ${err.message}\n` + `  stdout: ${preview(err.stdout)}`);
         process.exit(1);
         return;
       }
