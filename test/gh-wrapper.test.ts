@@ -59,6 +59,60 @@ describe("isPublishingInvocation (#8884)", () => {
     assert.ok(!isPublishingInvocation(["api", "repos/o/r/issues/1/comments", "--jq", ".[].id"]));
     assert.ok(!isPublishingInvocation(["issue", "list"]));
   });
+
+  it("#8891: -X/--method ANTES do path não confunde o valor da flag com o path", () => {
+    // Reprodução literal da issue: com "-X PATCH" antes do path posicional,
+    // o path acabava sendo o token "PATCH" (1º sem "-"), então touchesTarget
+    // dava false e o guard de segredo era pulado.
+    assert.ok(
+      isPublishingInvocation(["api", "-X", "PATCH", "repos/o/r/pulls/1", "-f", "body=x"]),
+    );
+    assert.ok(
+      isPublishingInvocation(["api", "--method", "PATCH", "repos/o/r/pulls/1", "-f", "body=x"]),
+    );
+    assert.ok(
+      isPublishingInvocation(["api", "-X", "POST", "repos/o/r/issues/1/labels", "-f", "labels[]=x"]),
+    );
+  });
+
+  it("#8891: argv reais de setPrBodyRest e addPrLabelsRest (scripts/lib/gh-pr-safe-edit.ts)", () => {
+    // setPrBodyRest
+    assert.ok(
+      isPublishingInvocation(["api", "-X", "PATCH", "repos/{owner}/{repo}/pulls/1", "-f", "body=x"]),
+    );
+    // addPrLabelsRest
+    assert.ok(
+      isPublishingInvocation([
+        "api",
+        "-X",
+        "POST",
+        "repos/{owner}/{repo}/issues/1/labels",
+        "-f",
+        "labels[]=P1",
+        "-f",
+        "labels[]=bug",
+      ]),
+    );
+  });
+
+  it("#8891: outras flags de valor do gh api também não viram o path por engano", () => {
+    assert.ok(
+      isPublishingInvocation([
+        "api",
+        "-H",
+        "Accept: application/vnd.github+json",
+        "repos/o/r/pulls/1",
+        "-X",
+        "PATCH",
+        "-f",
+        "body=x",
+      ]),
+    );
+    // --flag=valor não consome o próximo token — path continua sendo achado corretamente
+    assert.ok(
+      isPublishingInvocation(["api", "--method=PATCH", "repos/o/r/pulls/1", "-f", "body=x"]),
+    );
+  });
 });
 
 describe("requiresStdin (#8884)", () => {

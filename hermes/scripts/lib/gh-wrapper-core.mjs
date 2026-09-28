@@ -26,6 +26,43 @@ const FILE_FLAGS = new Set(["--body-file", "--notes-file", "--input"]);
 /** Flags de campo do `gh api` — valor pode ser `campo=texto` ou `campo=@arquivo`. */
 const FIELD_FLAGS = new Set(["-f", "-F", "--field", "--raw-field"]);
 
+/**
+ * Flags do `gh api` cujo TOKEN SEGUINTE é o valor da flag (nunca o path).
+ * Usado só para achar o path posicional (`pathArg` abaixo) — sem isso, o
+ * valor de `-X`/`--method` (ex: "PATCH") é confundido com o path quando vem
+ * antes dele no argv, e `isPublishingInvocation` deixa passar (#8891). Forma
+ * `--flag=valor` não consome o próximo token, então não entra aqui.
+ */
+const GH_API_VALUE_FLAGS = new Set([
+  "-X",
+  "--method",
+  "-H",
+  "--header",
+  "-f",
+  "-F",
+  "--field",
+  "--raw-field",
+  "--input",
+  "-q",
+  "--jq",
+  "-t",
+  "--template",
+  "--hostname",
+  "--cache",
+  "-p",
+  "--preview",
+]);
+
+/** Acha o path posicional de `gh api ...` (argv sem o `api` inicial), pulando flags com valor. */
+function findGhApiPath(argvAfterApi) {
+  for (let i = 0; i < argvAfterApi.length; i++) {
+    const a = argvAfterApi[i];
+    if (!a.startsWith("-")) return a;
+    if (GH_API_VALUE_FLAGS.has(a)) i++; // pula o valor da flag, nunca é o path
+  }
+  return "";
+}
+
 /** O invocação (`argv` sem o `gh` inicial) publica texto no GitHub? */
 export function isPublishingInvocation(argv) {
   if (!Array.isArray(argv) || argv.length < 2) return false;
@@ -41,7 +78,7 @@ export function isPublishingInvocation(argv) {
         (a === "-X" || a === "--method") && /^(?:POST|PATCH|PUT)$/i.test(argv[i + 1] ?? ""),
     );
     const hasFieldArg = argv.some((a) => FIELD_FLAGS.has(a));
-    const pathArg = argv.slice(1).find((a) => !a.startsWith("-")) ?? "";
+    const pathArg = findGhApiPath(argv.slice(1));
     const touchesTarget = /\/(?:comments|issues|pulls|reviews)\b/.test(pathArg) || pathArg === "graphql";
     if ((hasWriteMethod || hasFieldArg) && touchesTarget) return true;
   }
