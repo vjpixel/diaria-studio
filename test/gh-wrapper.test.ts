@@ -21,7 +21,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -297,5 +297,56 @@ describe("gh-wrapper.mjs — ponta a ponta (#8884)", () => {
 describe("realpath do próprio arquivo resolve de forma estável (#8884)", () => {
   it("realpathSync do wrapper não lança", () => {
     assert.doesNotThrow(() => realpathSync(WRAPPER_PATH));
+  });
+});
+
+// Regressão #8900: instalado como documentado em hermes/README.md
+// (`ln -sf .../gh-wrapper.mjs ~/.local/bin/gh`), o guard de módulo principal
+// comparava import.meta.url (caminho REAL, resolvido pelo Node) contra
+// process.argv[1] (o caminho do SYMLINK) — nunca batia, `main()` nunca
+// rodava, e o processo saía silenciosamente com exit 0 sem invocar o `gh`
+// real nem imprimir nada. Estes testes invocam o wrapper PELO SYMLINK (não
+// pelo caminho direto, que já era coberto acima) e confirmam que a chamada
+// realmente atravessa até o `gh` falso.
+describe("gh-wrapper.mjs invocado via symlink (#8900)", () => {
+  function runWrapperViaSymlink(argv: string[], opts: { input?: string } = {}) {
+    const fakeDir = makeFakeGhDir();
+    const outFile = join(fakeDir, "out.json");
+    const symlinkDir = mkdtempSync(join(tmpdir(), "gh-wrapper-symlink-"));
+    const symlinkPath = join(symlinkDir, "gh");
+    symlinkSync(WRAPPER_PATH, symlinkPath);
+    const res = spawnSync(process.execPath, [symlinkPath, ...argv], {
+      env: { ...process.env, PATH: `${fakeDir}:${process.env.PATH}`, FAKE_GH_OUT: outFile },
+      input: opts.input ?? "",
+      encoding: "utf8",
+    });
+    let fakeGhInvoked: { argv: string[]; stdin: string } | null = null;
+    try {
+      fakeGhInvoked = JSON.parse(readFileSync(outFile, "utf8"));
+    } catch {
+      fakeGhInvoked = null;
+    }
+    return { ...res, fakeGhInvoked };
+  }
+
+  it("não é mais um no-op silencioso: comando limpo atravessa até o gh falso", () => {
+    const r = runWrapperViaSymlink(["pr", "comment", "42", "--body", "LGTM via symlink"]);
+    assert.equal(r.status, 0);
+    assert.ok(r.fakeGhInvoked, "o `gh` falso deveria ter sido invocado — antes do fix, saía 0 sem chamar nada");
+    assert.deepEqual(r.fakeGhInvoked!.argv, ["pr", "comment", "42", "--body", "LGTM via symlink"]);
+    assert.equal(r.stdout, "", "não deveria haver saída extra — só o repasse pro gh real");
+  });
+
+  it("segredo continua bloqueado quando invocado via symlink", () => {
+    const r = runWrapperViaSymlink(["pr", "comment", "1", "--body", `log: ${OR_KEY}`]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /bloqueado.*#8884/i);
+    assert.equal(r.fakeGhInvoked, null, "o `gh` (falso) nunca deveria ter sido chamado");
+  });
+
+  it("chamada direta (não-symlink) continua funcionando como antes", () => {
+    const r = runWrapper(["pr", "view", "1"]);
+    assert.equal(r.status, 0);
+    assert.ok(r.fakeGhInvoked);
   });
 });
