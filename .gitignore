@@ -30,6 +30,9 @@ worker-configuration.d.ts
 # padrões aqui são rede de segurança caso um agente escreva na raiz por engano
 lint-result-*.json
 review-result-*.json
+# #8960: manifesto de progresso da Fase 1 do swap PMax — estado runtime
+# transitório (apagado sozinho em sucesso), nunca deve ser versionado.
+pmax-swap-progress.json
 .claude/worktrees/
 # #2825: settings.local.json é machine-local por convenção do Claude Code
 # (allowlist de permissões pessoais/locais) e nunca deve ser versionado —
