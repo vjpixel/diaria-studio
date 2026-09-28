@@ -514,3 +514,63 @@ export function extractPastEditionArticleTitles(
   }
   return [...titles];
 }
+
+export interface PastDestaqueTitle {
+  title: string;
+  aammdd: string;
+  url?: string;
+}
+
+/**
+ * Pure (#8896): lê título + AAMMDD de cada item de `highlights[]` (D1/D2/D3,
+ * nunca `runners_up[]`/buckets) do `01-approved.json` das últimas `window`
+ * edições REAIS salvas localmente em `editionsDir`.
+ *
+ * Diferença pra `extractPastEditionArticleTitles`: aquele agrega título de
+ * TODO bucket (highlights + runners_up + lancamento/radar/use_melhor/video),
+ * útil pro dedup "subject-level" contra qualquer artigo já coberto. Este é
+ * restrito a `highlights[]` — o conjunto pequeno (≤3 por edição, ≤9 na janela
+ * default) que `check-repeat-theme.ts` (#8896) usa pra comparar candidato ×
+ * DESTAQUE recente, sem o ruído de comparar contra todo o pool secundário.
+ *
+ * Mesma ressalva de `extractPastEditionArticleTitles`: `01-approved.json` é o
+ * snapshot do momento do gate-apply do Stage 1 — não reflete swap/title-picker
+ * pós-gate. Aceitável para um check warning-only (nunca bloqueia).
+ */
+export function extractPastDestaqueTitles(
+  editionsDir: string,
+  window: number,
+  currentAammdd?: string,
+): PastDestaqueTitle[] {
+  if (!existsSync(editionsDir)) return [];
+  const recent = recentEditionDirs(editionsDir, window, currentAammdd);
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+
+  const out: PastDestaqueTitle[] = [];
+  for (const aammdd of recent) {
+    const editionDir = editionDirsByAammdd.get(aammdd);
+    if (!editionDir) continue;
+    const candidates = [
+      resolve(editionDir, "_internal", "01-approved.json"),
+      resolve(editionDir, "01-approved.json"),
+    ];
+    for (const path of candidates) {
+      if (!existsSync(path)) continue;
+      let parsed: ApprovedJsonShape;
+      try {
+        parsed = JSON.parse(readFileSync(path, "utf8")) as ApprovedJsonShape;
+      } catch {
+        break;
+      }
+      for (const item of parsed.highlights ?? []) {
+        const t = item?.article?.title ?? item?.title;
+        const u = item?.url ?? item?.article?.url;
+        if (t && typeof t === "string" && t.trim()) {
+          out.push({ title: t.trim(), aammdd, url: typeof u === "string" ? u : undefined });
+        }
+      }
+      break; // primeiro arquivo encontrado = source-of-truth da edição
+    }
+  }
+  return out;
+}
