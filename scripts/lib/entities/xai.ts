@@ -109,6 +109,14 @@ const MENTIONS: EntityContent["mentions"] = [
     summary:
       "A xAI entrou com ação judicial contra o estado americano de Minnesota para contestar uma lei que proíbe a geração de nudes sem consentimento — recurso disponível no Grok —, escolhendo brigar na Justiça em vez de ajustar o produto antes mesmo de a norma entrar em vigor; não era a primeira vez que o Grok gerava controvérsia por imagens íntimas não autorizadas.",
   },
+  {
+    date: "2026-09-01",
+    headline: "Grok foi treinado com abuso infantil, diz processo",
+    editionUrl: "https://diar.ia.br/p/gates-propoe-empregos-so-para-humanos",
+    editionTitle: "Gates propõe empregos só para humanos",
+    summary:
+      "Uma ação coletiva nos Estados Unidos acusa a xAI de ter treinado o chatbot Grok com imagens de abuso sexual infantil, incluindo fotos da própria autora do processo — que afirma que o modelo passou a gerar novos conteúdos ilegais a partir desse material, ampliando o abuso original décadas depois do crime.",
+  },
 ];
 
 /** Nota de metodologia DERIVADA de `MENTIONS` — mesma disciplina de
@@ -158,7 +166,7 @@ export function getXaiEntity(): EntityContent {
       },
     ],
     publishedDate: "2026-08-14",
-    updatedDate: "2026-08-14",
+    updatedDate: "2026-09-28",
     methodologyNote: buildMethodologyNote(MENTIONS),
     footerNavUtm: entityFooterNavUtm("xai"),
   };

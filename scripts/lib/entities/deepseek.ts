@@ -99,6 +99,14 @@ const MENTIONS: EntityContent["mentions"] = [
     summary:
       "Um agente de ameaça chinês usou o modelo DeepSeek acoplado à ferramenta Hermes Agent para atacar servidores expostos na internet com pouca intervenção humana, segundo a Unit 42 da Palo Alto Networks — buscando alvos e disparando tentativas de exploração sozinho, ainda que nenhum dos ataques autônomos tenha tido sucesso desta vez.",
   },
+  {
+    date: "2026-09-16",
+    headline: "DeepSeek quase iguala GPT-6 Astra por 1,4% do custo",
+    editionUrl: "https://diar.ia.br/p/deepseek-quase-iguala-gpt-6-astra-por-1-4-do-custo",
+    editionTitle: "DeepSeek quase iguala GPT-6 Astra por 1,4% do custo",
+    summary:
+      "A OpenDesign Arena testou 13 modelos de IA em tarefas reais de design e o DeepSeek V4.1 Flash pontuou 81,2 de 100, a apenas 1,5 ponto do líder GPT-6 Astra (82,7) — cobrando US$ 0,023 por tarefa contra US$ 1,61 do modelo da OpenAI, cerca de 1,4% do preço para um desempenho quase equivalente.",
+  },
 ];
 
 /** Nota de metodologia DERIVADA de `MENTIONS` — mesma disciplina de
@@ -149,7 +157,7 @@ export function getDeepseekEntity(): EntityContent {
       },
     ],
     publishedDate: "2026-08-15",
-    updatedDate: "2026-08-15",
+    updatedDate: "2026-09-28",
     methodologyNote: buildMethodologyNote(MENTIONS),
     footerNavUtm: entityFooterNavUtm("deepseek"),
   };
