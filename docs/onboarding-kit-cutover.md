@@ -235,14 +235,24 @@ cego que reenvie pela Brevo em cima do que o Kit já entregou.**
      aceita draft/scheduled); um lote já `completed`/enviando não pode ser
      cancelado — aceitar que já saiu, nunca reenviar o mesmo conteúdo pela
      Brevo para os MESMOS destinatários.
-3. **Nunca fallback cego**: se a decisão for "voltar a enviar pela Brevo"
-   para as entradas que ficaram sem transporte, isso exige, para CADA
-   entrada afetada, confirmar que ela NÃO tem um lote Kit `completed`/
-   `scheduled` ativo para aquela etapa (`findKitLotForEntry`, já exportado
-   por `onboarding-funnel-report.ts`, é a consulta certa) antes de deixar
-   `onboarding-welcome-run.ts` processá-la — nunca reativar o Brevo como
-   transporte "por via das dúvidas" sem essa checagem, porque duplicaria
-   exatamente o e-mail que o rollback deveria evitar duplicar.
+3. **Nunca fallback cego — checagem MECÂNICA desde #8979, não mais só
+   prosa.** `filterBrevoPlanForKitCutover` (`onboarding-state.ts`) consulta
+   `findKitLotForEntry` (hoje em `onboarding-kit-transport.ts`, junto do
+   tipo `OnboardingKitLot` que define; `onboarding-funnel-report.ts`
+   re-exporta pra quem já importava de lá) para CADA ação `email1`/`email2`
+   do plano — **sempre**, com `onboarding.kit_transport.enabled` `true` OU
+   `false`. Se existir um lote Kit para aquela etapa/entrada em qualquer
+   estado que não seja `cancelled` (`pending`/`created`/`scheduled`/
+   `completed` todos contam, conservador), a ação vira skip
+   `kit_lot_existente` e `onboarding-welcome-run.ts` nunca a processa —
+   inclusive no rollback, quando o switch já está `false`. Antes do #8979,
+   o switch desligado era passagem livre byte a byte e o achado (review
+   consolidado 260928c, issue #8979) confirmou o cenário descrito nesta
+   seção: entrada com e-mail 1/2 servido por lote Kit `completed` seria
+   reenviada pela Brevo assim que o rollback desligasse o switch. Só um
+   lote `cancelled` (ou a ausência de qualquer lote) libera a Brevo para
+   aquela etapa — não é preciso mais nenhuma ação manual de conferência
+   antes de reativar o transporte Brevo, o guard já recusa a duplicação.
 4. **Nunca resetar histórico/cursor** durante o rollback — mesma regra do
    corte (seção 2, item 1). O rollback é sobre TRANSPORTE FUTURO, nunca uma
    reescrita do que já aconteceu.

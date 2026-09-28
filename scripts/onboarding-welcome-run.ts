@@ -1038,8 +1038,12 @@ async function main(): Promise<void> {
   // #8966: guard de mútua-exclusão Brevo x Kit (#7922 §2.4) — com o kill
   // switch do transporte Kit ligado, candidato NOVO de e-mail 1/2 é sempre
   // do Kit; a Brevo só termina escadas que já começaram nela. Ver docstring
-  // de `filterBrevoPlanForKitCutover` (onboarding-state.ts).
+  // de `filterBrevoPlanForKitCutover` (onboarding-state.ts). #8979: o guard
+  // de lote Kit existente dentro dela roda mesmo com o switch desligado
+  // (rollback) — por isso `kitLots` do store é sempre passado, não só
+  // quando `kitTransportEnabled`.
   const kitTransportEnabled = cfg.kit_transport?.enabled === true;
+  const kitLots = Object.values(store.kit_transport?.lots ?? {});
   const plan = filterBrevoPlanForKitCutover(
     buildRunPlan({
       entries: Object.values(store.entries),
@@ -1055,6 +1059,7 @@ async function main(): Promise<void> {
       },
     }),
     kitTransportEnabled,
+    kitLots,
   );
 
   summary.actions = plan.actions.map((a) =>

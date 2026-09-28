@@ -26,6 +26,7 @@
  */
 
 import type { OnboardingEntry } from "./onboarding-store.ts";
+import { findKitLotForEntry, type OnboardingKitLot } from "./onboarding-kit-transport.ts";
 
 // ---------------------------------------------------------------------------
 // Snippets (data/snippets/onboarding-{1,2,3}.md)
@@ -289,7 +290,8 @@ export interface RunSkip {
     | "stats_ausentes"
     | "aguardando_confirmacao"
     | "kit_transport_ativo"
-    | "escada_iniciada_na_brevo";
+    | "escada_iniciada_na_brevo"
+    | "kit_lot_existente";
   detalhe?: string;
 }
 
@@ -611,13 +613,33 @@ export function ownerTransportFor(
  * `kit_transport_ativo`, nunca ação. `email3_campaign` passa intocado (fora
  * de escopo, ver docstring de `ownerTransportFor`).
  *
- * Kill switch desligado é passagem livre: devolve o plano inalterado, byte
- * a byte (mesma referência de objeto).
+ * **#8979 — checagem de lote Kit é MECÂNICA e roda SEMPRE, independente do
+ * kill switch (`kitTransportEnabled`).** Antes deste fix, o switch
+ * desligado era passagem livre byte a byte — exatamente o "fallback cego"
+ * que `docs/onboarding-kit-cutover.md` §6.3 proíbe no procedimento de
+ * rollback: uma entrada que recebeu e-mail 1/2 por um lote Kit (gravado só
+ * em `store.kit_transport.lots`, sem tocar `email{1,2}_sent_at`) ficaria
+ * `null` nesses campos pro lado Brevo, que a reenviaria assim que o switch
+ * fosse desligado. Agora, para CADA ação `email1`/`email2`, primeiro
+ * consultamos `findKitLotForEntry`: se existir um lote Kit para esta etapa
+ * e ele não estiver `cancelled` (`pending`/`created`/`scheduled`/
+ * `completed` todos contam — conservador, doc §6.3), a ação vira skip
+ * `kit_lot_existente` e a Brevo nunca a alcança, com switch ligado OU
+ * desligado. Só depois disso é que a lógica de proveniência baseada no
+ * switch (abaixo) se aplica.
+ *
+ * Sem nenhum lote Kit para a entrada (`kitLots` vazio, ou nenhum lote cobre
+ * esta etapa) e com o switch desligado, o comportamento é o de sempre:
+ * passagem livre pro lado Brevo.
  *
  * @pure testável sem I/O
  */
-export function filterBrevoPlanForKitCutover(plan: RunPlanResult, kitTransportEnabled: boolean): RunPlanResult {
-  if (!kitTransportEnabled) return plan;
+export function filterBrevoPlanForKitCutover(
+  plan: RunPlanResult,
+  kitTransportEnabled: boolean,
+  kitLots: readonly OnboardingKitLot[] = [],
+): RunPlanResult {
+  if (!kitTransportEnabled && kitLots.length === 0) return plan;
 
   const actions: RunAction[] = [];
   const skips: RunSkip[] = [...plan.skips];
@@ -627,6 +649,25 @@ export function filterBrevoPlanForKitCutover(plan: RunPlanResult, kitTransportEn
       actions.push(action);
       continue;
     }
+
+    const kitLot = findKitLotForEntry(kitLots, action.kind, action.entry.subscription_id);
+    if (kitLot != null && kitLot.status !== "cancelled") {
+      skips.push({
+        entry: action.entry,
+        etapa: action.kind,
+        motivo: "kit_lot_existente",
+        detalhe:
+          `lote Kit ${kitLot.status} (${kitLot.lot_id}) já cobre esta etapa — ` +
+          `Brevo não reenvia (#8979, doc §6.3), inclusive com kit_transport.enabled=false`,
+      });
+      continue;
+    }
+
+    if (!kitTransportEnabled) {
+      actions.push(action);
+      continue;
+    }
+
     if (ownerTransportFor(action.entry, action.kind, kitTransportEnabled) !== "brevo") {
       skips.push({
         entry: action.entry,
