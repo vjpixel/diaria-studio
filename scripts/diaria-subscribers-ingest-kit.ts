@@ -466,47 +466,130 @@ export async function main(
     }
 
     console.error(`📇 listando roster completo do Kit (status: "all")${shouldWriteRoster ? "" : " [dry-run — passe --write pra gravar]"}…`);
-    const roster = await deps.listAllRosterSubscribers();
+    // #7478-7481: `deps.listAllRosterSubscribers()`/`ingestKitRoster()` podem
+    // lançar (erro de rede/API do Kit) — sem este try/catch, a exceção subia
+    // direto pro `main().catch()` no rodapé do arquivo SEM nunca passar pelo
+    // `appendFileSync(capturaLogPath, ...)` abaixo, contradizendo o contrato
+    // documentado em `captura-log.ts` ("a linha ainda é gravada mesmo em
+    // falha, pra provar que a execução RODOU"): o dia inteiro ficava
+    // indistinguível de "task nunca rodou" pro sinal de frescor do #7180
+    // (achado ao vivo: falha real do Kit em 2026-09-24 07:25 BRT, exit 1,
+    // ZERO linha em captura-log.jsonl — `check-metrics-health.ts` reportou
+    // "sem execução registrada" quando na verdade a execução rodou e
+    // falhou). Só grava a linha de falha quando `--write` (mesmo escopo do
+    // resto do Passo 1 — dry-run nunca toca o log).
+    let roster: Awaited<ReturnType<KitIngestDeps["listAllRosterSubscribers"]>>;
+    try {
+      roster = await deps.listAllRosterSubscribers();
+    } catch (e) {
+      if (shouldWriteRoster) {
+        mkdirSync(capturaLogDir, { recursive: true });
+        const failEntry = buildCapturaLogEntry({
+          platform: "kit",
+          capturedAt: new Date().toISOString(),
+          totalRetornadoApi: 0,
+          novosGravados: 0,
+          eventosEstado: 0,
+          exit: 1,
+          origemSerie: "kit-vivo",
+        });
+        appendFileSync(capturaLogPath, serializeCapturaLogEntry(failEntry));
+        console.error(
+          `❌ listagem do roster do Kit falhou — linha de FALHA (exit:1) gravada em ${capturaLogPath} ` +
+            `antes de propagar o erro: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      db.close();
+      throw e;
+    }
     console.error(`  …${roster.length} assinante(s) no roster.`);
 
     if (shouldWriteRoster) {
       const capturedAt = new Date().toISOString();
-      const result = ingestKitRoster(db, roster, capturedAt);
-      mkdirSync(capturaLogDir, { recursive: true });
-      const eventosEstado = result.subscribeEvents.newEvents + result.unsubEvents.newEvents;
-      const logEntry = buildCapturaLogEntry({
-        platform: "kit",
-        capturedAt,
-        totalRetornadoApi: roster.length,
-        novosGravados: result.subscribeEvents.newEvents,
-        eventosEstado,
-        exit: 0,
-        // #7179 (F7): distingue esta linha (série viva, por-EXECUÇÃO) das
-        // linhas por-DIA que o backfill histórico escreve.
-        origemSerie: "kit-vivo",
-      });
-      appendFileSync(capturaLogPath, serializeCapturaLogEntry(logEntry));
-      rosterSummary = { total: roster.length, written: true, novosGravados: result.subscribeEvents.newEvents, eventosEstado };
-      console.error(
-        `  …roster gravado: ${result.subscriptionsWritten} subscription(s), ${result.subscribeEvents.newEvents} novo(s) cadastro(s), ${eventosEstado} evento(s) de estado.`,
-      );
+      // #8918 review (P2/alta confiança): a linha de SUCESSO (exit:0) só
+      // pode ser gravada UMA vez por execução. `capturaLogged` é o guard —
+      // se `ingestKitRoster` já tiver gravado exit:0 com sucesso, o catch
+      // abaixo (que agora também cobre o piggyback de kit-active-history)
+      // NUNCA grava um exit:1 em cima, mesmo que o piggyback lance DEPOIS
+      // do append de sucesso. Sem isto, uma falha só no piggyback (ex.:
+      // `getKitActiveSummary`/SQLite ocupado) produzia 2 linhas pra MESMA
+      // execução — exit:0 seguido de exit:1 — o que quebra a leitura de
+      // `hasCaptureOnDay` (ainda correta, 1 linha já basta) mas também a de
+      // qualquer consumidor futuro que espere no máximo 1 linha por
+      // `captura_id`/janela curta (ex.: séries de "quantas execuções
+      // rodaram hoje").
+      let capturaLogged = false;
+      try {
+        const result = ingestKitRoster(db, roster, capturedAt);
+        mkdirSync(capturaLogDir, { recursive: true });
+        const eventosEstado = result.subscribeEvents.newEvents + result.unsubEvents.newEvents;
+        const logEntry = buildCapturaLogEntry({
+          platform: "kit",
+          capturedAt,
+          totalRetornadoApi: roster.length,
+          novosGravados: result.subscribeEvents.newEvents,
+          eventosEstado,
+          exit: 0,
+          // #7179 (F7): distingue esta linha (série viva, por-EXECUÇÃO) das
+          // linhas por-DIA que o backfill histórico escreve.
+          origemSerie: "kit-vivo",
+        });
+        appendFileSync(capturaLogPath, serializeCapturaLogEntry(logEntry));
+        capturaLogged = true;
+        rosterSummary = { total: roster.length, written: true, novosGravados: result.subscribeEvents.newEvents, eventosEstado };
+        console.error(
+          `  …roster gravado: ${result.subscriptionsWritten} subscription(s), ${result.subscribeEvents.newEvents} novo(s) cadastro(s), ${eventosEstado} evento(s) de estado.`,
+        );
 
-      // #7916 (fatia 3/N): snapshot diário do Kit ativo, piggyback nesta
-      // mesma execução — sem chamada de rede nova (mesmo `db` já atualizado
-      // acima por `ingestKitRoster`). Fecha a lacuna documentada na
-      // docstring de `studio-metrics.ts`: `baseAtivaAnterior` deixa de
-      // depender só do dia atual pra decidir "ontem" assim que houver
-      // história suficiente acumulada (ver `kit-active-history.ts`).
-      const kitActiveHistoryDir = dirname(kitActiveHistoryPath);
-      mkdirSync(kitActiveHistoryDir, { recursive: true });
-      const kitActiveSummary = getKitActiveSummary(db);
-      const historyEntry = buildKitActiveHistoryEntry({
-        capturedAt,
-        count: kitActiveSummary.count,
-        asOf: kitActiveSummary.asOf,
-      });
-      appendFileSync(kitActiveHistoryPath, serializeKitActiveHistoryEntry(historyEntry));
-      console.error(`  …kit-active-history: ${historyEntry.count} ativo(s) em ${historyEntry.dia}.`);
+        // #7916 (fatia 3/N): snapshot diário do Kit ativo, piggyback nesta
+        // mesma execução — sem chamada de rede nova (mesmo `db` já atualizado
+        // acima por `ingestKitRoster`). Fecha a lacuna documentada na
+        // docstring de `studio-metrics.ts`: `baseAtivaAnterior` deixa de
+        // depender só do dia atual pra decidir "ontem" assim que houver
+        // história suficiente acumulada (ver `kit-active-history.ts`). Se
+        // ISTO lançar, o roster já foi gravado com sucesso (exit:0 acima) —
+        // `capturaLogged` impede o catch de duplicar a linha.
+        const kitActiveHistoryDir = dirname(kitActiveHistoryPath);
+        mkdirSync(kitActiveHistoryDir, { recursive: true });
+        const kitActiveSummary = getKitActiveSummary(db);
+        const historyEntry = buildKitActiveHistoryEntry({
+          capturedAt,
+          count: kitActiveSummary.count,
+          asOf: kitActiveSummary.asOf,
+        });
+        appendFileSync(kitActiveHistoryPath, serializeKitActiveHistoryEntry(historyEntry));
+        console.error(`  …kit-active-history: ${historyEntry.count} ativo(s) em ${historyEntry.dia}.`);
+      } catch (e) {
+        // Mesmo raciocínio do catch acima: `ingestKitRoster`/gravação do
+        // history podem lançar (ex.: SQLite ocupado) DEPOIS de já termos o
+        // roster — sem isto, este 2º ponto de falha também sumiria do log.
+        // Só grava a linha de falha quando o roster em si AINDA NÃO foi
+        // registrado com sucesso (`!capturaLogged`) — ver comentário acima.
+        if (!capturaLogged) {
+          mkdirSync(capturaLogDir, { recursive: true });
+          const failEntry = buildCapturaLogEntry({
+            platform: "kit",
+            capturedAt,
+            totalRetornadoApi: roster.length,
+            novosGravados: 0,
+            eventosEstado: 0,
+            exit: 1,
+            origemSerie: "kit-vivo",
+          });
+          appendFileSync(capturaLogPath, serializeCapturaLogEntry(failEntry));
+          console.error(
+            `❌ ingestão do roster do Kit falhou — linha de FALHA (exit:1) gravada em ${capturaLogPath} ` +
+              `antes de propagar o erro: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        } else {
+          console.error(
+            `❌ kit-active-history (piggyback pós-roster) falhou — roster JÁ foi gravado com sucesso (exit:0) ` +
+              `em ${capturaLogPath}, nenhuma linha adicional gravada: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+        db.close();
+        throw e;
+      }
     } else {
       rosterSummary = { total: roster.length, written: false, novosGravados: 0, eventosEstado: 0 };
     }

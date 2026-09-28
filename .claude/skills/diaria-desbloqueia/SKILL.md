@@ -177,9 +177,17 @@ Nenhum outro grupo entra aqui — `semSinalNaoTriadas` (triagem, Passo 2b) e
 `acaoAdiada` (cooldown ativo) incluídos. `acaoImediataCandidatas` tem
 bateria própria, no Passo 3b.
 
+**A skill faz TODAS as perguntas necessárias (#8909, 28/09/2026, decisão do
+editor) — o cap de 4 perguntas × 4 opções vale só POR CHAMADA, nunca como
+corte do total.** Antes de montar a 1ª chamada, declarar o total: "N
+perguntas em K lotes de até 4" (mesma convenção de "declarar o custo total
+de sequência interativa" — ver memória do editor). O editor pode dispensar
+o lote inteiro dali, e isso fica registrado (Passo 5) — mas a skill nunca
+decide sozinha deixar uma pergunta de fora por volume.
+
 Agrupar por tipo, igual à Fase 0.5 do develop (#2966) — cap de 4 perguntas
-× 4 opções por chamada de `AskUserQuestion`, várias chamadas sequenciais se
-precisar:
+× 4 opções por chamada de `AskUserQuestion`, quantas chamadas sequenciais
+forem necessárias até esgotar o pool:
 
 1. **Credenciais/tokens** (cat. A) — uma pergunta por credencial faltando,
    pedindo confirmação de que foi colada em `.env`/Doppler (`npm run
@@ -197,6 +205,12 @@ precisar:
    critério 3/1 do #5321: só pergunta quando há gasto real ou ação
    irreversível envolvida.
 
+**Toda pergunta traz uma recomendação (#8909, adendo do editor, 28/09/2026).**
+A opção recomendada vem em 1º lugar, com o sufixo "(Recomendado)" e uma
+justificativa de 1 linha baseada na thread já lida — nunca uma recomendação
+genérica desconectada do que a issue diz. Vale para os Passos 3 e 3b e para
+qualquer lote extra que a bateria precise abrir.
+
 **O que NÃO entra aqui** — tudo que a política #5321 já resolve por
 default (ambiguidade trivial, deferimento vago, confirmação pós-sucesso).
 Se uma issue `precisaPergunta` na verdade bate um dos defaults automáticos
@@ -212,6 +226,13 @@ Vale para dois grupos: `bloqueioConfirmado` (bloqueio documentado) e
 `acaoImediataCandidatas` (veio de `fora-de-rodada`). O julgamento é seu, sobre
 o texto da thread — o scan não decide isto, porque distinguir "recarregar a
 conta" de "a conta volta em 29/09" é leitura de prosa, não regra mecânica.
+
+**Ler a thread inteira (corpo + TODOS os comentários) de toda candidata
+antes de montar a bateria (#8909)** — vale tanto para `acaoImediataCandidatas`
+quanto para `bloqueioConfirmado`, nunca só o título. Cada candidata termina
+classificada num destes três destinos, e nenhuma fica "não avaliada": (a)
+vira pergunta; (b) não tem ação do editor, e segue com o comentário de
+revisão do Passo 2; (c) resolve por default (#5321) e é roteada.
 
 **Vira pedido de ação imediata** quando o que falta é uma ação do editor no
 teclado, agora: reiniciar uma unit caída, recarregar uma conta, colar uma
@@ -230,19 +251,28 @@ acha?"*. Sempre com o comando/passo exato e as 3 saídas:
 > `300` destrava. Já rodou?
 > ( já rodei / agora não / não é isso — o problema é outro )
 
-**Priorização dentro do cap.** `AskUserQuestion` é 4 perguntas × 4 opções por
-chamada, e o pool pode passar de 20. Ordenar e CORTAR — nunca despejar 6
-chamadas sequenciais:
+**Priorização é só ORDEM, nunca corte (#8909, 28/09/2026 — revoga o corte
+por cap que existia aqui até esta data).** `AskUserQuestion` é 4 perguntas ×
+4 opções por chamada, e o pool pode passar de 20 — isso significa várias
+chamadas sequenciais, não uma decisão de deixar pergunta de fora. Ordem:
 
 1. o que está quebrado AGORA e afeta produção (unit caída, sync parado,
    ingest sem execução);
 2. o que bloqueia issue `P0`/`P1`;
-3. o resto — que fica para a próxima rodada, sem pedido nenhum registrado.
+3. o resto — mesma rodada, em lotes adicionais de até 4 perguntas cada.
 
-Nunca gravar `acao-adiada` para uma issue que você **decidiu não perguntar**
-por causa do cap: o marcador significa "pedi e o editor adiou", e usá-lo pra
-"não deu tempo de pedir" criaria um cooldown de 7 dias sobre uma pergunta
-que ninguém fez.
+O filtro que decide se algo vira pergunta continua sendo "a resposta muda o
+track ou destrava a issue?" (#5321) — nunca virou volume. O editor pode
+dispensar um lote inteiro ao vivo ("pula o resto", "não agora") — isso é
+resposta dele, registrada no relatório (Passo 5) como "editor dispensou o
+lote nesta rodada", nunca como corte da skill.
+
+Nunca gravar `acao-adiada` para uma issue que a skill **decidiu não
+perguntar** por conta própria: o marcador significa "pedi e o editor adiou".
+O único caminho legítimo pra uma pergunta não sair nesta rodada agora é o
+editor dispensar o lote explicitamente, ou a candidata já estar em cooldown
+de `acao-adiada` (Passo 3b acima) — nunca "não deu tempo" ou "o cap
+estourou".
 
 ## Passo 4 — gravar cada resposta
 
@@ -317,7 +347,7 @@ Varridas: N candidatas (bloqueada/develop/·sem sinal/fora-de-rodada)
        {H2} adiadas (cooldown 7d), {H3} "não é isso" → re-roteadas
   {G} ·sem sinal triadas sem pergunta — {G1} confirmadas overnight (triada-overnight),
        {G2} viraram develop, {G3} viraram bloqueada
-  {I} não perguntadas nesta rodada — cooldown de adiamento ativo, ou cortadas pelo cap
+  {I} não perguntadas nesta rodada — cooldown de adiamento ativo (#...), ou editor dispensou o lote nesta rodada (#..., #...)
   {F} erro de leitura — não foi possível ler a thread, ninguém foi perguntado (rodar de novo: #...)
 
 Pronto pro 300 na próxima rodada: #X, #Y, #Z

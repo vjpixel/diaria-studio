@@ -158,7 +158,7 @@ const PUBLISHED_DATE = "2026-08-09";
 // eixo próprio — crawler, demonstração de escala e comparação de custo com
 // concorrente são fatos isolados sobre a OpenAI, não uma série nova. Único
 // efeito é a janela de cobertura derivada do FAQ avançar até 16/09/2026.
-const UPDATED_DATE = "2026-09-17";
+const UPDATED_DATE = "2026-09-28";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`, agora em

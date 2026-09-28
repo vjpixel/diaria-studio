@@ -183,7 +183,7 @@ const PUBLISHED_DATE = "2026-08-04";
 // segurança/alinhamento que o hub já narra, e `sections` deste hub deriva
 // título de `matchedHeadlines`, então a edição entra na lista sem exigir
 // reescrita.
-const UPDATED_DATE = "2026-09-17";
+const UPDATED_DATE = "2026-09-28";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
  * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a

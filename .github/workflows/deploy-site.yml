@@ -33,10 +33,18 @@ name: Deploy site Worker
 #      index.html` — o modo `--archive-pages` de `ping-indexnow.ts`
 #      (`buildArchivePagesIndexNowPayload`), generalização do modo hub do
 #      arquivo pra um host com MUITAS páginas individuais em vez de hubs
-#      temáticos. Requer o secret `INDEXNOW_KEY` (mesmo secret de repo já
-#      usado pelos outros 3 — ver `Env.INDEXNOW_KEY` em
-#      `workers/site/src/index.ts`); sem o secret, o step roda e sai 0 sem
-#      pingar.
+#      temáticos. Requer o secret de REPO `INDEXNOW_KEY` (mesmo dos outros
+#      3 — usado abaixo pro valor da chave em si); sem ele, o step roda e
+#      sai 0 sem pingar. **Requer TAMBÉM o secret `INDEXNOW_KEY`
+#      PROVISIONADO NESTE WORKER** (`wrangler secret put INDEXNOW_KEY
+#      --name diaria-site`, mesmo padrão de cursos/livros, ver comentário
+#      equivalente em `deploy-cursos.yml`/`deploy-livros.yml`) — sem isso,
+#      `GET /{key}.txt` não existe (`workers/site/src/index.ts`
+#      `Env.INDEXNOW_KEY` fica `undefined`, `matchIndexNowKeyPath` nunca
+#      casa) e o ping falha na checagem do arquivo de chave (#8905: achado
+#      ao vivo em 28/09/2026 — o Worker `diaria-site` nunca teve esse
+#      secret provisionado, só o de repo; ação de provisionar é do editor,
+#      fora do CI).
 
 on:
   push:

@@ -151,28 +151,45 @@ const DESINFORMATION_RISK_CATEGORIES = new Set(["numeric", "factual", "data"]);
 /** Discriminated union: safe=false garantia que warn está presente (#2149 F6). */
 export type IntentionalErrorSafetyResult =
   | { safe: true; warn?: never }
-  | { safe: false; warn: string };
+  | { safe: false; warn: string; blocking?: boolean };
 
 /**
  * Verifica se a categoria declarada no frontmatter pertence ao grupo de risco
- * de desinformação (#2149, Regra 2). Emite warn (não bloqueia — a verificação
- * se é inconsistência interna é editorial, não computacional).
+ * de desinformação (#2149, Regra 2). Por padrão (`headless` omitido/false) só
+ * emite warn — a verificação se é inconsistência interna é editorial, não
+ * computacional, e no caminho COM gate humano o editor vê o aviso e decide.
+ *
+ * **`headless: true` (#8897, 28/09/2026):** no caminho `--no-gates`, não há
+ * editor pra ler o warn — a seleção automática segue publicando o item de
+ * risco em silêncio (achado ao vivo, edição 260928: "65%" plantado onde a
+ * fonte dizia "60%", só pego porque o editor revisou manualmente o gate que
+ * `--no-gates` normalmente pula). Quando `headless: true`, categoria de risco
+ * vira `blocking: true` — o caller (CLI `intentional-error-flagged`) trata
+ * isso como falha (`exit 1`) em vez de só logar o warn. Não muda o
+ * comportamento do caminho COM gate humano (que já funciona: o editor troca
+ * a categoria/valor no próprio gate).
  *
  * Usado no lint do Stage 5 (--check intentional-error-flagged) após `checkIntentionalError`.
  * Chamado por `scripts/lint-newsletter-md.ts`.
  */
 export function checkIntentionalErrorSafety(
   category: string | undefined,
+  opts?: { headless?: boolean },
 ): IntentionalErrorSafetyResult {
   if (!category) return { safe: true };
   if (DESINFORMATION_RISK_CATEGORIES.has(category.toLowerCase().trim())) {
+    const headless = opts?.headless === true;
     return {
       safe: false,
+      blocking: headless,
       warn:
         `intentional_error.category="${category.toLowerCase().trim()}" é categoria de risco (#2149). ` +
         `Verificar antes de publicar: (1) é inconsistência interna evidente no próprio email? ` +
         `(2) se não pego, o leitor passa a acreditar no fato/estatística falso? ` +
-        `Se violar a regra 2, trocar por attribution/version_inconsistency/factual_synthetic.`,
+        `Se violar a regra 2, trocar por attribution/version_inconsistency/factual_synthetic.` +
+        (headless
+          ? ` [#8897] Caminho headless (--no-gates): categoria de risco sem editor pra revisar — BLOQUEANTE, não apenas aviso.`
+          : ""),
     };
   }
   return { safe: true };

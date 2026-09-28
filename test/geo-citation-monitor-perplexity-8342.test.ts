@@ -1,5 +1,6 @@
 /**
- * test/geo-citation-monitor-perplexity-8342.test.ts (#8342)
+ * test/geo-citation-monitor-perplexity-8342.test.ts (#8342, migrado pra Agent
+ * API no #8612)
  *
  * Perplexity como 4º provedor do monitor GEO. Tudo com `fetchImpl` mockado —
  * NUNCA chamada de rede real.
@@ -26,75 +27,103 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 const OK_BODY = {
-  choices: [{ message: { content: "A Perplexity lançou um agente [1]." }, finish_reason: "stop" }],
-  citations: ["https://diar.ia.br/p/perplexity-agente", "https://example.com/x"],
-  search_results: [{ title: "t", url: "https://diar.ia.br/p/perplexity-agente" }],
-  usage: { prompt_tokens: 20, completion_tokens: 300, total_tokens: 320 },
+  id: "resp_1",
+  object: "response",
+  status: "completed",
+  model: "fast",
+  output: [
+    {
+      type: "message",
+      role: "assistant",
+      content: [
+        {
+          type: "output_text",
+          text: "A Perplexity lançou um agente [1].",
+          annotations: [{ type: "url_citation", url: "https://example.com/x", title: "x" }],
+        },
+      ],
+    },
+    {
+      type: "search_results",
+      results: [{ url: "https://diar.ia.br/p/perplexity-agente", title: "t" }],
+    },
+  ],
+  usage: { input_tokens: 20, output_tokens: 300, total_tokens: 320 },
 };
 
-describe("provider perplexity (#8342)", () => {
-  it("está registrado como 4º provider, com envKey PERPLEXITY_API_KEY e model sonar", () => {
+describe("provider perplexity (#8342/#8612)", () => {
+  it("está registrado como 4º provider, com envKey PERPLEXITY_API_KEY e preset fast", () => {
     assert.equal(GEO_PROVIDERS.length, 4);
     assert.equal(perplexity.envKey, "PERPLEXITY_API_KEY");
-    assert.equal(perplexity.defaultModel, "sonar");
+    assert.equal(perplexity.defaultModel, "fast");
   });
 
-  it("buildRequest: POST chat/completions com Bearer, model, pergunta e contexto low", () => {
-    const { url, init } = perplexity.buildRequest("pergunta?", "pk-test", "sonar");
-    assert.equal(url, "https://api.perplexity.ai/chat/completions");
+  it("buildRequest: POST /v1/agent com Bearer, preset e input", () => {
+    const { url, init } = perplexity.buildRequest("pergunta?", "pk-test", "fast");
+    assert.equal(url, "https://api.perplexity.ai/v1/agent");
     assert.equal(init.method, "POST");
     assert.equal((init.headers as Record<string, string>).Authorization, "Bearer pk-test");
     const body = JSON.parse(init.body as string);
-    assert.equal(body.model, "sonar");
-    assert.deepEqual(body.messages, [{ role: "user", content: "pergunta?" }]);
-    assert.equal(body.web_search_options.search_context_size, "low");
+    assert.equal(body.preset, "fast");
+    assert.equal(body.input, "pergunta?");
   });
 
-  it("extractText inclui content + citations + search_results (fonte fora do texto conta)", () => {
+  it("extractText inclui output_text + annotations + search_results (fonte fora do texto conta)", () => {
     const text = perplexity.extractText(OK_BODY);
     assert.ok(text.includes("agente [1]"));
     assert.ok(text.includes("https://diar.ia.br/p/perplexity-agente"));
+    assert.ok(text.includes("https://example.com/x"));
   });
 
   it("extractText é defensivo com forma inesperada", () => {
     assert.equal(perplexity.extractText({}), "");
     assert.equal(perplexity.extractText(null), "");
-    assert.equal(perplexity.extractText({ choices: "x", citations: 3 }), "");
+    assert.equal(perplexity.extractText({ output: "x" }), "");
   });
 
-  it("extractUsage lê prompt/completion tokens; sem usage devolve undefined", () => {
+  it("extractUsage lê input/output tokens; sem usage devolve undefined", () => {
     assert.deepEqual(perplexity.extractUsage!(OK_BODY), { inputTokens: 20, outputTokens: 300 });
     assert.equal(perplexity.extractUsage!({}), undefined);
   });
 
-  it("checkProviderError: finish_reason length vira erro; stop é OK", () => {
-    assert.match(perplexity.checkProviderError!({ choices: [{ finish_reason: "length" }] })!, /length/);
+  it("checkProviderError: status diferente de completed vira erro; completed é OK", () => {
+    assert.match(perplexity.checkProviderError!({ status: "incomplete" })!, /incomplete/);
+    assert.match(
+      perplexity.checkProviderError!({ status: "failed", error: { message: "boom" } })!,
+      /boom/,
+    );
     assert.equal(perplexity.checkProviderError!(OK_BODY), undefined);
     assert.equal(perplexity.checkProviderError!({}), undefined);
   });
 
   it("custo estimado inclui a taxa por requisição de US$0,005", () => {
-    const f = buildUsageRecordFields("perplexity", { inputTokens: 1000, outputTokens: 1000 }, "sonar", "2026-09-20T00:00:00Z");
+    const f = buildUsageRecordFields("perplexity", { inputTokens: 1000, outputTokens: 1000 }, "fast", "2026-09-28T00:00:00Z");
     assert.ok(Math.abs(f.estimatedCostUsd! - (0.001 + 0.001 + 0.005)) < 1e-9);
   });
 });
 
-describe("queryProvider com perplexity (#8342)", () => {
+describe("queryProvider com perplexity (#8342/#8612)", () => {
   it("resposta que cita diar.ia.br: ok e texto detectável", async () => {
-    const r = await queryProvider(perplexity, "q", "k", "sonar", async () => jsonResponse(OK_BODY));
+    const r = await queryProvider(perplexity, "q", "k", "fast", async () => jsonResponse(OK_BODY));
     assert.equal(r.ok, true);
     if (r.ok) assert.ok(r.text.includes("diar.ia.br"));
   });
 
   it("resposta sem o domínio: ok, texto sem diar.ia.br", async () => {
-    const body = { ...OK_BODY, citations: ["https://example.com"], search_results: [] };
-    const r = await queryProvider(perplexity, "q", "k", "sonar", async () => jsonResponse(body));
+    const body = {
+      ...OK_BODY,
+      output: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "sem fonte." }] },
+        { type: "search_results", results: [{ url: "https://example.com" }] },
+      ],
+    };
+    const r = await queryProvider(perplexity, "q", "k", "fast", async () => jsonResponse(body));
     assert.equal(r.ok, true);
     if (r.ok) assert.ok(!r.text.includes("diar.ia.br"));
   });
 
   it("HTTP 500: errorKind http com status", async () => {
-    const r = await queryProvider(perplexity, "q", "k", "sonar", async () => new Response("boom", { status: 500 }));
+    const r = await queryProvider(perplexity, "q", "k", "fast", async () => new Response("boom", { status: 500 }));
     assert.deepEqual(r.ok, false);
     if (!r.ok) {
       assert.equal(r.errorKind, "http");
@@ -104,7 +133,7 @@ describe("queryProvider com perplexity (#8342)", () => {
 
   it("HTTP 402 (crédito esgotado) vira errorKind quota, não http genérico", async () => {
     const r = await queryProvider(
-      perplexity, "q", "k", "sonar",
+      perplexity, "q", "k", "fast",
       async () => new Response(JSON.stringify({ error: { message: "Insufficient credits" } }), { status: 402 }),
     );
     assert.equal(r.ok, false);
@@ -112,16 +141,25 @@ describe("queryProvider com perplexity (#8342)", () => {
   });
 
   it("HTTP 401 de key inválida continua http; 401 com mensagem de crédito é quota", async () => {
-    const bad = await queryProvider(perplexity, "q", "k", "sonar", async () => new Response("Unauthorized", { status: 401 }));
+    const bad = await queryProvider(perplexity, "q", "k", "fast", async () => new Response("Unauthorized", { status: 401 }));
     assert.equal(bad.ok, false);
     if (!bad.ok) assert.equal(bad.errorKind, "http");
-    const credit = await queryProvider(perplexity, "q", "k", "sonar", async () => new Response("Insufficient credits", { status: 401 }));
+    const credit = await queryProvider(perplexity, "q", "k", "fast", async () => new Response("Insufficient credits", { status: 401 }));
     assert.equal(credit.ok, false);
     if (!credit.ok) assert.equal(credit.errorKind, "quota");
   });
 
   it("HTTP 429 rate limit comum continua http (transitório)", async () => {
-    const r = await queryProvider(perplexity, "q", "k", "sonar", async () => new Response("Too many requests", { status: 429 }));
+    const r = await queryProvider(perplexity, "q", "k", "fast", async () => new Response("Too many requests", { status: 429 }));
+    if (!r.ok) assert.equal(r.errorKind, "http");
+  });
+
+  it("HTTP 403 do endpoint antigo (Sonar Chat Completions desligado) — não é este endpoint, mas documentando o sintoma que motivou a migração (#8612): continua http, não quota", async () => {
+    const r = await queryProvider(
+      perplexity, "q", "k", "fast",
+      async () => new Response("Sonar is now the Agent API. Use /v1/responses instead of /chat/completions", { status: 403 }),
+    );
+    assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.errorKind, "http");
   });
 });
@@ -150,14 +188,14 @@ describe("alarme de provider ausente (#5316) x perplexity opcional (#8342)", () 
 });
 
 describe("custo sem usage (#8342)", () => {
-  it("sonar sem usage ainda emite a taxa por requisição", () => {
-    const f = buildUsageRecordFields("perplexity", undefined, "sonar", "2026-09-20T00:00:00Z");
+  it("fast sem usage ainda emite a taxa por requisição", () => {
+    const f = buildUsageRecordFields("perplexity", undefined, "fast", "2026-09-28T00:00:00Z");
     assert.ok(Math.abs(f.estimatedCostUsd! - 0.005) < 1e-9);
-    assert.deepEqual(buildUsageRecordFields("openai", undefined, "gpt-5-mini", "2026-09-20T00:00:00Z"), {});
+    assert.deepEqual(buildUsageRecordFields("openai", undefined, "gpt-5-mini", "2026-09-28T00:00:00Z"), {});
   });
 });
 
-describe("runGeoCitationMonitor com perplexity (#8342)", () => {
+describe("runGeoCitationMonitor com perplexity (#8342/#8612)", () => {
   const questions = GEO_QUESTIONS.slice(0, 2);
 
   it("sem PERPLEXITY_API_KEY: provider pulado em silêncio (fail-soft), sem chamada nem erro", async () => {
@@ -176,14 +214,14 @@ describe("runGeoCitationMonitor com perplexity (#8342)", () => {
       { PERPLEXITY_API_KEY: "pk" } as NodeJS.ProcessEnv,
       questions,
       async () => jsonResponse(OK_BODY),
-      () => new Date("2026-09-20T12:00:00Z"),
+      () => new Date("2026-09-28T12:00:00Z"),
       undefined,
       async () => {},
     );
     assert.equal(records.length, 2);
     for (const r of records) {
       assert.equal(r.provider, "perplexity");
-      assert.equal(r.model, "sonar");
+      assert.equal(r.model, "fast");
       assert.equal(r.cited, true);
       assert.equal(r.error, undefined);
     }

@@ -167,12 +167,25 @@ export async function checkRobotsTxt(
   fetchFn: typeof fetch = fetch,
 ): Promise<{ httpStatus: number | null; robotsTxt: string | null; fetchError: string | null; finalUrl: string | null }> {
   try {
+    // `redirect: "manual"` (#8899 achado ao vivo): o default do fetch nativo
+    // é `"follow"`, que SEGUE o 301 dos hosts legados (anual/artigo →
+    // retrospectiva) até o destino final antes de expor `res.status` — a
+    // checagem nunca via o 301 em si, só o status final da raiz do host
+    // canônico (400, por `classifyRetrospectivaPath` rejeitar `/`). O
+    // tratamento especial de `httpStatus === 301` em
+    // `lib/robots-txt-drift-check.ts` (#7793/#7658) é código morto sem isto —
+    // `res.status` do fetch em modo `follow` nunca é 301 para um redirect
+    // bem-sucedido. Em modo `manual`, `res.url` permanece a URL requisitada
+    // (não a de destino) — por isso `finalUrl` é lido do header `Location`.
     const res = await fetchFn(url, {
       method: "GET",
       headers: { "User-Agent": USER_AGENT },
+      redirect: "manual",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    const finalUrl = typeof res.url === "string" ? res.url : null;
+    const isRedirect = res.status >= 300 && res.status < 400;
+    const location = res.headers.get("location");
+    const finalUrl = isRedirect && location ? new URL(location, url).toString() : typeof res.url === "string" && res.url ? res.url : null;
     if (res.status !== 200) return { httpStatus: res.status, robotsTxt: null, fetchError: null, finalUrl };
     const body = await res.text();
     return { httpStatus: res.status, robotsTxt: body, fetchError: null, finalUrl };

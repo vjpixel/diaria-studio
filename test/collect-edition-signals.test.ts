@@ -326,6 +326,32 @@ describe("signalsFromTestEmailReview (#3839 — loop de test email não-bloquean
     assert.match(signals[0].title, /não confirmado/);
   });
 
+  it("review_reason=mcp_unavailable (#8902) propaga pro título + details, distinguindo de email-não-achado", () => {
+    const signals = signalsFromTestEmailReview({
+      draft_url: "https://app.beehiiv.com/posts/x/edit",
+      review_completed: false,
+      review_status: "inconclusive",
+      review_reason: "mcp_unavailable",
+      review_attempts: 1,
+    });
+    assert.equal(signals.length, 1);
+    assert.match(signals[0].title, /Gmail MCP indisponível/);
+    assert.equal(
+      (signals[0].details as { review_reason: string }).review_reason,
+      "mcp_unavailable",
+    );
+  });
+
+  it("review_reason ausente (edições pré-#8902) mantém o título genérico e details.review_reason=null", () => {
+    const signals = signalsFromTestEmailReview({
+      review_completed: false,
+      review_status: "inconclusive",
+      review_attempts: 1,
+    });
+    assert.match(signals[0].title, /Beehiiv não disparou/);
+    assert.equal((signals[0].details as { review_reason: string | null }).review_reason, null);
+  });
+
   it("review_status=issues_unfixable vira signal low", () => {
     const signals = signalsFromTestEmailReview({
       review_completed: false,

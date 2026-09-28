@@ -7,12 +7,19 @@
  * abaixo da reserva).
  */
 
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { main, renderOverlapReport } from "../scripts/clarice-audit-overlap.ts";
 import { DEFAULT_RATE_STATE_PATH, recordCampaignQuotaRemaining } from "../scripts/lib/brevo-rate-state.ts";
+import { acquireRateStateTestLock, releaseRateStateTestLock } from "./_helpers/with-rate-state-lock.ts";
+
+// #8904: este arquivo grava no path REAL compartilhado
+// `DEFAULT_RATE_STATE_PATH` — ver test/_helpers/with-rate-state-lock.ts pro
+// racional completo (achado ao vivo em CI, PR #8893).
+before(acquireRateStateTestLock);
+after(releaseRateStateTestLock);
 
 const stateDir = dirname(DEFAULT_RATE_STATE_PATH);
 let dirPreexisted: boolean;

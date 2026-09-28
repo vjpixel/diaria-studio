@@ -2103,6 +2103,64 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5754",
   },
   {
+    // #8906 (28/09/2026, decisões do editor registradas no corpo da issue) —
+    // SUBSTITUI `Diaria-Hub-Pages-Build` acima como o caminho que de fato
+    // chega até produção. Resolve os 2 bloqueadores que deixaram aquela
+    // task `enabled: false` desde #6267:
+    //   (a) `UPDATED_DATE` deixa de ser hand-written no caminho semanal —
+    //       `scripts/hubs-weekly-regen.ts` bumpa automaticamente pra
+    //       "dados atualizados em" (nunca "prosa revisada em"), e rastreia
+    //       separadamente quando um hub acumulou edições novas o
+    //       suficiente pra merecer revisão de prosa manual (issue própria
+    //       por hub, `scripts/lib/hubs-weekly-regen.ts`);
+    //   (b) o script chega até `master` sozinho (worktree próprio, PR,
+    //       `gh pr merge --squash --auto` com testes verdes) — o deploy do
+    //       Worker `arquivo` em si já é automático desde #4105
+    //       (`.github/workflows/deploy-arquivo.yml`), então esta task não
+    //       chama `wrangler deploy`.
+    // `--check-facts` nunca entra no caminho semanal (decisão c) — sempre
+    // `--skip-fact-check`, porque o job nunca toca prosa.
+    name: "Diaria-Hub-Weekly-Regen",
+    description: "regen semanal automático dos hubs (só dados) + PR + auto-merge; deploy do Worker arquivo é automático no push a master",
+    // `--session-id` estável (#8934-bug, achado ao armar o timer, 28/09/2026):
+    // `hubs-weekly-regen.ts` exige `--session-id` fora de `--dry-run` quando
+    // há mudança de dados de verdade (usado só como identidade do dono do
+    // merge-lock em `session-registry.ts merge-lock-acquire/release` —
+    // `acquireMergeLock` aceita QUALQUER string, não exige sessão
+    // registrada) e aborta com o alarme `session-id-ausente` sem ele. O job
+    // roda desassistido via `run-task.ts`/systemd, sem sessão Claude Code
+    // por trás pra gerar um id — daria erro em toda sexta com dado novo.
+    // Um id ESTÁTICO (não gerado por execução) é seguro aqui porque o lock
+    // é curto (TTL de minutos, `MERGE_LOCK_TTL_MS`) e serializado — nunca
+    // duas execuções concorrentes desta mesma task (`run-task.ts` não
+    // dispatcha em paralelo), então não há disputa entre "donos" com o
+    // mesmo id. Nunca reusar este id em outro caminho de merge-lock.
+    steps: [{ key: "regen", script: "scripts/hubs-weekly-regen.ts", args: ["--session-id", "hubs-weekly-regen-timer"] }],
+    logPath: "hubs/.weekly-regen.log",
+    // Sexta 02:30 BRT — termina bem antes do DoD da issue (04:00 BRT),
+    // sobrando folga pro build+testes+merge+deploy (CI do
+    // `deploy-arquivo.yml` costuma terminar em minutos, não horas). Slot
+    // livre: nenhuma outra `kind: "weekly"` deste arquivo cai numa
+    // sexta-feira (ver grep de `dayOfWeek: "Friday"` — todas as outras são
+    // domingo).
+    schedule: { kind: "weekly", dayOfWeek: "Friday", hour: 2, minute: 30 },
+    // `enabled: true` — ARMADA por decisão do editor em 28/09/2026, depois
+    // de validada ao vivo (PR #8933 e #8935: última execução real regenerou
+    // 3 hubs, dry-run seguinte "nada a commitar") e das 4 correções que a
+    // validação ao vivo revelou (#8923 merge síncrono, #8926 poll de CI
+    // antes do merge-lock, #8932 flags `--` sempre ignoradas, #8934 regen
+    // semanal só bumpa `UPDATED_DATE` dentro do teto de frescor). Ficou
+    // `enabled: false` (DECLARADA, NÃO ARMADA) desde a criação em #8906 até
+    // esta confirmação explícita — nunca reverter pra `false` sem o mesmo
+    // tipo de decisão registrada do editor.
+    enabled: true,
+    // Arme real (systemd) via `scripts/setup-systemd-timers.ts --task
+    // Diaria-Hub-Weekly-Regen` na checkout do `300`, com confirmação por
+    // `systemctl --user list-timers` — ver sequência exata no corpo da PR
+    // que armou esta task.
+    issue: "#8906",
+  },
+  {
     name: "Diaria-Ads-Test-Watch",
     description:
       "cobra os marcos do ciclo de vida do teste de 3 canais pagos (D0, reconciliacao diaria, condicoes de " +
@@ -2489,6 +2547,38 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // e acao POSTERIOR do editor.
     issue: "#5597, #7137",
+  },
+  {
+    name: "Diaria-Aquisicao-Reconcile-Daily",
+    description:
+      "drena a coorte real diaria (Kit) para data/aquisicao/reconcile-baseline-{dia}.json e, se existir " +
+      "painel manual do dia, loga o fator painel/coorte-real (log-only, sem alarme -- faixa ainda em " +
+      "medicao, #8591)",
+    steps: [{ key: "reconcile", script: "scripts/aquisicao-reconcile-daily.ts" }],
+    logPath: "aquisicao/.aquisicao-reconcile-daily.log",
+    // 10:07 BRT -- >=10:00 por pedido da issue (#8591 item 3, "depois dos
+    // dois ingests"), depois de Diaria-Google-Ads-Spend-Ingest (09:50),
+    // Diaria-Meta-Ads-Spend-Ingest (09:54) e Diaria-Ads-Spend-Ingest-Alarm
+    // (10:05, acima) -- slot livre (ver grep de `hour: 10, minute:` neste
+    // arquivo). A ordem em relacao aos ingests de gasto nao e uma
+    // DEPENDENCIA de dado (a coorte real vem do Kit, nao do spend.csv) --
+    // e so o agrupamento por horario que a issue pediu.
+    //
+    // O painel (`data/aquisicao/painel/{dia}.json`) e MANUAL -- nenhum
+    // ingest de gasto atual busca conversoes do painel (investigado na
+    // docstring de aquisicao-reconcile-daily.ts, item 2 da #8591, bloqueio
+    // documentado: exige decisao editorial de qual acao de conversao conta
+    // por plataforma). Sem o arquivo, o step so grava o baseline e loga que
+    // o fator foi pulado -- nunca erro.
+    schedule: { kind: "daily", hour: 10, minute: 7 },
+    // Sem guard -- aquisicao-reconcile-daily.ts e fail-soft por desenho
+    // (mesma disciplina dos ingests de gasto vizinhos): qualquer falha de
+    // rede/API sai 0 e loga o motivo, nunca lanca.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
+    // e acao POSTERIOR do editor.
+    issue: "#8591",
   },
   {
     name: "Diaria-Ads-Daily-Digest",
