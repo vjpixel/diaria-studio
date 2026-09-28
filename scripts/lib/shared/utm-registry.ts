@@ -2308,7 +2308,11 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     source: "workshop-agente-ia",
     medium: EXTERNAL_SURFACE_MEDIUM,
     campaign: buildExternalSurfaceCampaign("workshop-agente-ia"),
-    panelUrl: "https://agente.vjpixel.chatgpt.site/",
+    // #8940 review (28/09/2026): a página antiga (agente.vjpixel.chatgpt.site)
+    // foi substituída por diar.ia.br/evento/agente-ia em 27/09/2026 (ver
+    // data/snippets/workshop-agente-ia-outubro.md) — apontar pra ela aqui
+    // mandaria quem consultasse este registro pra uma URL já aposentada.
+    panelUrl: "https://diar.ia.br/evento/agente-ia",
     field: "Link para a diar.ia.br na página de inscrição do workshop",
     description:
       "Pré-registrada ANTES de o editor colar o link (mesmo racional de " +
