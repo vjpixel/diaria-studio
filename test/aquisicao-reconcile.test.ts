@@ -31,8 +31,8 @@ const FROM_EPOCH = dayToEpochSeconds(FROM, "--from");
 const TO_EPOCH = dayToEpochSeconds(TO, "--to");
 
 describe("dayToEpochSeconds", () => {
-  it("converte AAAA-MM-DD para epoch UTC 00:00", () => {
-    assert.equal(dayToEpochSeconds("2026-08-24", "--from"), Date.UTC(2026, 7, 24) / 1000);
+  it("converte AAAA-MM-DD para epoch de 00:00 BRT (#8947 — 03:00 UTC, não meia-noite UTC)", () => {
+    assert.equal(dayToEpochSeconds("2026-08-24", "--from"), Date.UTC(2026, 7, 24, 3) / 1000);
   });
   it("rejeita data que não existe (rolagem de mês/dia, #4556)", () => {
     assert.throws(() => dayToEpochSeconds("2026-13-45", "--from"), /data não existe/);
@@ -68,7 +68,7 @@ describe("aggregateBaseline", () => {
     assert.deepEqual(b.per_channel, { "t.co": 1 });
   });
 
-  it("per_day agrega por dia UTC", () => {
+  it("per_day agrega por dia BRT (#8947)", () => {
     const b = aggregateBaseline(
       [sub(FROM_EPOCH, "meta"), sub(FROM_EPOCH + 86_400, "meta"), sub(FROM_EPOCH + 3600, "google")],
       FROM,
@@ -76,6 +76,22 @@ describe("aggregateBaseline", () => {
     );
     assert.equal(b.per_day["2026-08-24"], 2);
     assert.equal(b.per_day["2026-08-25"], 1);
+  });
+
+  it("cadastro às 22:30 BRT de D cai no dia BRT D, não D+1 (#8947 — cenário da issue)", () => {
+    // 22:30 BRT de 2026-08-24 == 01:30 UTC de 2026-08-25.
+    const as2230Brt = Date.UTC(2026, 7, 25, 1, 30, 0) / 1000;
+    const b = aggregateBaseline([sub(as2230Brt, "meta")], "2026-08-24", "2026-08-24");
+    assert.equal(b.total, 1);
+    assert.deepEqual(b.per_day, { "2026-08-24": 1 });
+  });
+
+  it("cadastro às 01:00 BRT de D cai em D (#8947)", () => {
+    // 01:00 BRT de 2026-08-25 == 04:00 UTC de 2026-08-25.
+    const as0100Brt = Date.UTC(2026, 7, 25, 4, 0, 0) / 1000;
+    const b = aggregateBaseline([sub(as0100Brt, "meta")], "2026-08-25", "2026-08-25");
+    assert.equal(b.total, 1);
+    assert.deepEqual(b.per_day, { "2026-08-25": 1 });
   });
 });
 
