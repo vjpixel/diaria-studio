@@ -823,6 +823,42 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
     assert.equal(entry.total_retornado_api, 1, "o roster JÁ tinha sido listado quando a ingestão falhou");
   });
 
+  it("#8918 review: falha SÓ no piggyback de kit-active-history (depois do roster já gravado com sucesso) NÃO duplica a linha em captura-log.jsonl", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-fail-piggyback-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    const capturaLogPath = resolve(tmp, "data/metrics/captura-log.jsonl");
+    // Um ARQUIVO (não diretório) no lugar de kit-active-history.jsonl faz o
+    // `mkdirSync(kitActiveHistoryDir, { recursive: true })` do piggyback
+    // lançar (ENOTDIR) DEPOIS que `ingestKitRoster` e o append de sucesso
+    // (exit:0) já rodaram — exatamente o caminho que produzia o double-log
+    // apontado no review da PR #8918.
+    const kitActiveHistoryDir = resolve(tmp, "data/metrics/kit-active-history-as-a-dir");
+    mkdirSync(resolve(tmp, "data/metrics"), { recursive: true });
+    writeFileSync(kitActiveHistoryDir, ""); // arquivo no lugar do diretório esperado
+    const kitActiveHistoryPath = resolve(kitActiveHistoryDir, "kit-active-history.jsonl");
+
+    await assert.rejects(
+      main(
+        ["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--kit-active-history", kitActiveHistoryPath, "--write"],
+        {
+          listAllBroadcasts: async () => [],
+          fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+          getBroadcastStats: async () => makeStats(0),
+          sleep: async () => {},
+          listAllRosterSubscribers: async () => [makeKitSub()],
+        },
+      ),
+    );
+
+    const lines = readFileSync(capturaLogPath, "utf8").trim().split("\n");
+    assert.equal(lines.length, 1, "roster foi ingerido com sucesso — só 1 linha (exit:0), nunca uma 2ª linha exit:1 por cima");
+    const entry = JSON.parse(lines[0]);
+    assert.equal(entry.exit, 0, "a linha registrada é a de SUCESSO do roster, não sobrescrita/duplicada pela falha do piggyback");
+    assert.equal(entry.novos_gravados, 1, "contagem real do roster preservada — não zerada pelo catch do piggyback");
+  });
+
   it("--skip-roster pula o Passo 1 inteiro — nem lista o roster (útil pra testar só o Passo 2 sem pagar a chamada de rede)", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-skip-"));
     mkdirSync(resolve(tmp, "data"), { recursive: true });

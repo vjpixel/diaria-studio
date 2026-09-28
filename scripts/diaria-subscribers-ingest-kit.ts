@@ -506,6 +506,19 @@ export async function main(
 
     if (shouldWriteRoster) {
       const capturedAt = new Date().toISOString();
+      // #8918 review (P2/alta confiança): a linha de SUCESSO (exit:0) só
+      // pode ser gravada UMA vez por execução. `capturaLogged` é o guard —
+      // se `ingestKitRoster` já tiver gravado exit:0 com sucesso, o catch
+      // abaixo (que agora também cobre o piggyback de kit-active-history)
+      // NUNCA grava um exit:1 em cima, mesmo que o piggyback lance DEPOIS
+      // do append de sucesso. Sem isto, uma falha só no piggyback (ex.:
+      // `getKitActiveSummary`/SQLite ocupado) produzia 2 linhas pra MESMA
+      // execução — exit:0 seguido de exit:1 — o que quebra a leitura de
+      // `hasCaptureOnDay` (ainda correta, 1 linha já basta) mas também a de
+      // qualquer consumidor futuro que espere no máximo 1 linha por
+      // `captura_id`/janela curta (ex.: séries de "quantas execuções
+      // rodaram hoje").
+      let capturaLogged = false;
       try {
         const result = ingestKitRoster(db, roster, capturedAt);
         mkdirSync(capturaLogDir, { recursive: true });
@@ -522,6 +535,7 @@ export async function main(
           origemSerie: "kit-vivo",
         });
         appendFileSync(capturaLogPath, serializeCapturaLogEntry(logEntry));
+        capturaLogged = true;
         rosterSummary = { total: roster.length, written: true, novosGravados: result.subscribeEvents.newEvents, eventosEstado };
         console.error(
           `  …roster gravado: ${result.subscriptionsWritten} subscription(s), ${result.subscribeEvents.newEvents} novo(s) cadastro(s), ${eventosEstado} evento(s) de estado.`,
@@ -532,7 +546,9 @@ export async function main(
         // acima por `ingestKitRoster`). Fecha a lacuna documentada na
         // docstring de `studio-metrics.ts`: `baseAtivaAnterior` deixa de
         // depender só do dia atual pra decidir "ontem" assim que houver
-        // história suficiente acumulada (ver `kit-active-history.ts`).
+        // história suficiente acumulada (ver `kit-active-history.ts`). Se
+        // ISTO lançar, o roster já foi gravado com sucesso (exit:0 acima) —
+        // `capturaLogged` impede o catch de duplicar a linha.
         const kitActiveHistoryDir = dirname(kitActiveHistoryPath);
         mkdirSync(kitActiveHistoryDir, { recursive: true });
         const kitActiveSummary = getKitActiveSummary(db);
@@ -547,21 +563,30 @@ export async function main(
         // Mesmo raciocínio do catch acima: `ingestKitRoster`/gravação do
         // history podem lançar (ex.: SQLite ocupado) DEPOIS de já termos o
         // roster — sem isto, este 2º ponto de falha também sumiria do log.
-        mkdirSync(capturaLogDir, { recursive: true });
-        const failEntry = buildCapturaLogEntry({
-          platform: "kit",
-          capturedAt,
-          totalRetornadoApi: roster.length,
-          novosGravados: 0,
-          eventosEstado: 0,
-          exit: 1,
-          origemSerie: "kit-vivo",
-        });
-        appendFileSync(capturaLogPath, serializeCapturaLogEntry(failEntry));
-        console.error(
-          `❌ ingestão do roster do Kit falhou — linha de FALHA (exit:1) gravada em ${capturaLogPath} ` +
-            `antes de propagar o erro: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        // Só grava a linha de falha quando o roster em si AINDA NÃO foi
+        // registrado com sucesso (`!capturaLogged`) — ver comentário acima.
+        if (!capturaLogged) {
+          mkdirSync(capturaLogDir, { recursive: true });
+          const failEntry = buildCapturaLogEntry({
+            platform: "kit",
+            capturedAt,
+            totalRetornadoApi: roster.length,
+            novosGravados: 0,
+            eventosEstado: 0,
+            exit: 1,
+            origemSerie: "kit-vivo",
+          });
+          appendFileSync(capturaLogPath, serializeCapturaLogEntry(failEntry));
+          console.error(
+            `❌ ingestão do roster do Kit falhou — linha de FALHA (exit:1) gravada em ${capturaLogPath} ` +
+              `antes de propagar o erro: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        } else {
+          console.error(
+            `❌ kit-active-history (piggyback pós-roster) falhou — roster JÁ foi gravado com sucesso (exit:0) ` +
+              `em ${capturaLogPath}, nenhuma linha adicional gravada: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
         db.close();
         throw e;
       }
