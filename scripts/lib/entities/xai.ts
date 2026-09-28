@@ -109,6 +109,14 @@ const MENTIONS: EntityContent["mentions"] = [
     summary:
       "A xAI entrou com ação judicial contra o estado americano de Minnesota para contestar uma lei que proíbe a geração de nudes sem consentimento — recurso disponível no Grok —, escolhendo brigar na Justiça em vez de ajustar o produto antes mesmo de a norma entrar em vigor; não era a primeira vez que o Grok gerava controvérsia por imagens íntimas não autorizadas.",
   },
+  {
+    date: "2026-09-01",
+    headline: "Grok foi treinado com abuso infantil, diz processo",
+    editionUrl: "https://diar.ia.br/p/gates-propoe-empregos-so-para-humanos",
+    editionTitle: "Gates propõe empregos só para humanos",
+    summary:
+      "Uma ação coletiva nos Estados Unidos acusa a xAI de ter treinado o chatbot Grok com imagens de abuso sexual infantil, incluindo fotos da própria autora do processo — que afirma que o modelo passou a gerar novos conteúdos ilegais a partir desse material, ampliando o abuso original décadas depois do crime.",
+  },
 ];
 
 /** Nota de metodologia DERIVADA de `MENTIONS` — mesma disciplina de
@@ -129,7 +137,7 @@ export function getXaiEntity(): EntityContent {
       "Linha do tempo da xAI na cobertura da diar.ia.br: disputas judiciais, o Grok 4.1 e o escândalo global de imagens sexualizadas geradas pelo Grok.",
     introHeading: "Como o Grok da xAI foi de disputa judicial a escândalo global de segurança?",
     introParagraph:
-      "A xAI entrou na cobertura da diar.ia.br em pé de guerra jurídica — processando a Apple e a OpenAI por práticas monopolistas, e um ex-engenheiro por roubo de segredos comerciais — enquanto lançava modelos cada vez mais baratos e capazes (Grok 4 Fast, Grok 4.1) e fechava uma parceria de infraestrutura com a Arábia Saudita. A virada veio em janeiro de 2026: reguladores do Reino Unido, da União Europeia e de mais de meia dúzia de países abriram investigações depois que o Grok gerou dezenas de milhares de imagens sexualizadas, incluindo material envolvendo crianças, e o Brasil deu à empresa um prazo de 30 dias sob ameaça de bloqueio. No mesmo período vazou que a empresa queimava bilhões de dólares construindo infraestrutura própria. Meses depois, a xAI ainda brigava na Justiça — dessa vez contra uma lei estadual americana que restringe a geração de nudes sem consentimento. Esta página reúne, em ordem cronológica, cada vez que a xAI apareceu nas edições da diária.",
+      "A xAI entrou na cobertura da diar.ia.br em pé de guerra jurídica — processando a Apple e a OpenAI por práticas monopolistas, e um ex-engenheiro por roubo de segredos comerciais — enquanto lançava modelos cada vez mais baratos e capazes (Grok 4 Fast, Grok 4.1) e fechava uma parceria de infraestrutura com a Arábia Saudita. A virada veio em janeiro de 2026: reguladores do Reino Unido, da União Europeia e de mais de meia dúzia de países abriram investigações depois que o Grok gerou dezenas de milhares de imagens sexualizadas, incluindo material envolvendo crianças, e o Brasil deu à empresa um prazo de 30 dias sob ameaça de bloqueio. No mesmo período vazou que a empresa queimava bilhões de dólares construindo infraestrutura própria. Meses depois, a xAI ainda brigava na Justiça — dessa vez contra uma lei estadual americana que restringe a geração de nudes sem consentimento — e voltou a ser alvo de uma ação judicial acusando o Grok de ter sido treinado com imagens de abuso sexual infantil. Esta página reúne, em ordem cronológica, cada vez que a xAI apareceu nas edições da diária.",
     mentions: MENTIONS,
     faq: [
       {
@@ -156,9 +164,14 @@ export function getXaiEntity(): EntityContent {
         answer:
           "Em janeiro de 2026, o governo brasileiro recomendou medidas urgentes à X e à xAI para barrar imagens de nudez digital geradas pelo Grok sem consentimento, sob risco de suspensão da plataforma no país — o Idec pediu banimento imediato por violação à LGPD, ao ECA e ao CDC.",
       },
+      {
+        question: "A xAI enfrentou processos ligados a abuso sexual infantil?",
+        answer:
+          "Sim. Em setembro de 2026, uma ação coletiva nos Estados Unidos acusou a xAI de treinar o Grok com imagens de abuso sexual infantil, incluindo fotos da própria autora do processo, que afirma que o modelo passou a gerar novos conteúdos ilegais a partir desse material.",
+      },
     ],
     publishedDate: "2026-08-14",
-    updatedDate: "2026-08-14",
+    updatedDate: "2026-09-28",
     methodologyNote: buildMethodologyNote(MENTIONS),
     footerNavUtm: entityFooterNavUtm("xai"),
   };
