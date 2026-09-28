@@ -2122,7 +2122,20 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `--skip-fact-check`, porque o job nunca toca prosa.
     name: "Diaria-Hub-Weekly-Regen",
     description: "regen semanal automático dos hubs (só dados) + PR + auto-merge; deploy do Worker arquivo é automático no push a master",
-    steps: [{ key: "regen", script: "scripts/hubs-weekly-regen.ts" }],
+    // `--session-id` estável (#8934-bug, achado ao armar o timer, 28/09/2026):
+    // `hubs-weekly-regen.ts` exige `--session-id` fora de `--dry-run` quando
+    // há mudança de dados de verdade (usado só como identidade do dono do
+    // merge-lock em `session-registry.ts merge-lock-acquire/release` —
+    // `acquireMergeLock` aceita QUALQUER string, não exige sessão
+    // registrada) e aborta com o alarme `session-id-ausente` sem ele. O job
+    // roda desassistido via `run-task.ts`/systemd, sem sessão Claude Code
+    // por trás pra gerar um id — daria erro em toda sexta com dado novo.
+    // Um id ESTÁTICO (não gerado por execução) é seguro aqui porque o lock
+    // é curto (TTL de minutos, `MERGE_LOCK_TTL_MS`) e serializado — nunca
+    // duas execuções concorrentes desta mesma task (`run-task.ts` não
+    // dispatcha em paralelo), então não há disputa entre "donos" com o
+    // mesmo id. Nunca reusar este id em outro caminho de merge-lock.
+    steps: [{ key: "regen", script: "scripts/hubs-weekly-regen.ts", args: ["--session-id", "hubs-weekly-regen-timer"] }],
     logPath: "hubs/.weekly-regen.log",
     // Sexta 02:30 BRT — termina bem antes do DoD da issue (04:00 BRT),
     // sobrando folga pro build+testes+merge+deploy (CI do

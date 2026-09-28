@@ -27,6 +27,7 @@ import {
 } from "../scripts/lib/hubs-weekly-regen.ts";
 import type { TrainRunner, ExecResult } from "../scripts/lib/merge-train-live.ts";
 import { parseHubsWeeklyRegenArgs } from "../scripts/hubs-weekly-regen.ts";
+import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 
 const EMPTY_DIFF: HubSourcesDiff = { added: [], removed: [], changed: [], unchanged: 3 };
 
@@ -359,5 +360,25 @@ describe("parseHubsWeeklyRegenArgs (#8932)", () => {
     const parsed = parseHubsWeeklyRegenArgs([]);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.sessionId, undefined);
+  });
+});
+
+describe("Diaria-Hub-Weekly-Regen no registro de scheduled-tasks (bug achado ao armar, #8906)", () => {
+  it("declara --session-id estático no step, senão main() aborta em toda sexta com mudança de dados", () => {
+    const task = getScheduledTaskByName("Diaria-Hub-Weekly-Regen");
+    assert.ok(task, "task ausente de scripts/lib/scheduled-tasks.ts");
+    const step = task!.steps.find((s) => s.script === "scripts/hubs-weekly-regen.ts");
+    assert.ok(step, "step que roda hubs-weekly-regen.ts ausente da task");
+
+    // Reproduz exatamente o parsing que `main()` faz sobre os args do step —
+    // sem isso, `sessionId` vem `undefined` e `main()` cai no ramo
+    // `alarmFailure("session-id-ausente", ...)` toda vez que há mudança de
+    // dados (regen != vazio), mesmo fora de --dry-run.
+    const parsed = parseHubsWeeklyRegenArgs(step!.args ?? []);
+    assert.ok(
+      parsed.sessionId && parsed.sessionId.length > 0,
+      "step precisa de --session-id com valor não-vazio nos args declarados — sem isso, o job desassistido " +
+        "aborta com o alarme session-id-ausente toda sexta que encontrar dado novo",
+    );
   });
 });
