@@ -21,6 +21,7 @@ import {
   parseSwapProgress,
   withSwapProgressStep,
   serializeSwapProgress,
+  computeSwapFingerprint,
   type SwapProgress,
 } from "../scripts/lib/google-ads-asset-group-assets.ts";
 import { formatAcaoAdiadaMarker, formatExecutionBlockMarker } from "../scripts/lib/issue-decisions.ts";
@@ -144,6 +145,13 @@ describe("#8960 — checkSwapCooldown", () => {
     const result = checkSwapCooldown([adiada, bloco], now);
     assert.equal(result.active, false);
   });
+
+  it("commentsBodies === null (leitura falhou) -> cooldown ATIVO (fail-CLOSED, #8972)", () => {
+    // Distinção deliberada de `[]`: `null` é "não consegui ler", `[]` é "li
+    // e não achei marcador". Só o 1º precisa recusar --send sem confirmação.
+    const result = checkSwapCooldown(null, now);
+    assert.equal(result.active, true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -199,6 +207,17 @@ describe("#8960 — CLI: cooldown bloqueia --send em código", () => {
     // com a flag, chega até a recusa por falta de manifesto (código 1 pelo
     // motivo errado seria um falso negativo -- a prova real é que
     // fetchCommentBodiesMock, que lançaria, NUNCA foi chamado).
+    assert.equal(code, 1);
+  });
+
+  it("--send recusa (fail-CLOSED) quando a leitura dos comentários falha (null), mesmo sem adiamento nenhum de verdade", async () => {
+    const fetchMock = async () => {
+      throw new Error("não deveria chamar fetch — cooldown fail-closed precisa recusar antes de qualquer chamada de rede");
+    };
+    const fetchCooldownCommentsMock = (): string[] | null => null; // simula `gh` indisponível/erro
+    const code = await withEnv(AUTH_ENV, () =>
+      swapMain(["--customer-id", "2369219639", "--send"], fetchMock as unknown as typeof fetch, fetchCooldownCommentsMock),
+    );
     assert.equal(code, 1);
   });
 });
@@ -454,6 +473,99 @@ describe("#8960 — CLI: manifesto de progresso sobrevive falha parcial na Fase 
       // de SQUARE (d1-1x1) NÃO gerou nova chamada.
       assert.equal(imageCreateCallsInRetry, 3, "só as imagens faltantes deveriam ser criadas no retry (nunca a 1ª de SQUARE de novo)");
       assert.equal(existsSync(progressFile), false, "progresso limpo após sucesso total");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fingerprint do progresso (#8972 item 3) — recusa reusar progresso de OUTRO swap
+// ---------------------------------------------------------------------------
+
+describe("#8972 item 3 — computeSwapFingerprint / recusa de progresso com fingerprint divergente", () => {
+  it("computeSwapFingerprint é determinístico e muda se qualquer input mudar", () => {
+    const base = computeSwapFingerprint('{"a":1}', "customers/1/assetGroups/2", "1");
+    assert.equal(base, computeSwapFingerprint('{"a":1}', "customers/1/assetGroups/2", "1"), "mesmos inputs -> mesmo hash");
+    assert.notEqual(base, computeSwapFingerprint('{"a":2}', "customers/1/assetGroups/2", "1"), "manifesto diferente -> hash diferente");
+    assert.notEqual(base, computeSwapFingerprint('{"a":1}', "customers/1/assetGroups/9", "1"), "asset group diferente -> hash diferente");
+    assert.notEqual(base, computeSwapFingerprint('{"a":1}', "customers/1/assetGroups/2", "9"), "customer diferente -> hash diferente");
+  });
+
+  it("--send RECUSA um --progress-file com etapas de um manifesto DIFERENTE do --images-manifest atual", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gads-pmax-fingerprint-"));
+    const makeImg = (name: string) => {
+      const p = join(dir, name);
+      writeFileSync(p, Buffer.from(`fake-bytes-${name}`));
+      return p;
+    };
+    const manifestA = join(dir, "manifest-a.json");
+    writeFileSync(
+      manifestA,
+      JSON.stringify({
+        SQUARE_MARKETING_IMAGE: [makeImg("a-1x1.jpg")],
+        MARKETING_IMAGE: [makeImg("a-191x1.jpg")],
+        PORTRAIT_MARKETING_IMAGE: [makeImg("a-4x5.jpg")],
+      }),
+    );
+    const manifestB = join(dir, "manifest-b.json"); // CONTEÚDO diferente do A
+    writeFileSync(
+      manifestB,
+      JSON.stringify({
+        SQUARE_MARKETING_IMAGE: [makeImg("b-1x1.jpg")],
+        MARKETING_IMAGE: [makeImg("b-191x1.jpg")],
+        PORTRAIT_MARKETING_IMAGE: [makeImg("b-4x5.jpg")],
+      }),
+    );
+    const progressFile = join(dir, "progress.json");
+    const fetchCommentBodiesMock = () => [];
+    try {
+      // Tentativa 1 com o manifesto A: sucesso completo, mas o progresso é
+      // apagado no fim -- pra este teste, interrompemos ANTES do apagamento
+      // simulando falha no link (assim o arquivo com fingerprint(A) sobra).
+      let assetCounter = 300;
+      const fetchMockA = async (input: string, init?: RequestInit) => {
+        if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+        if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+        if (input.endsWith("assets:mutate")) {
+          const body = JSON.parse(String(init?.body));
+          const results = body.operations.map(() => ({ resourceName: `customers/2369219639/assets/${assetCounter++}` }));
+          return jsonResponse(200, { results });
+        }
+        if (input.endsWith("assetGroupAssets:mutate")) {
+          throw new Error("network down no link (simulado, pra deixar progress.json com fingerprint(A) no disco)");
+        }
+        throw new Error(`chamada inesperada: ${input}`);
+      };
+      const codeA = await withEnv(AUTH_ENV, () =>
+        swapMain(
+          ["--customer-id", "2369219639", "--send", "--images-manifest", manifestA, "--progress-file", progressFile],
+          fetchMockA as unknown as typeof fetch,
+          fetchCommentBodiesMock,
+        ),
+      );
+      assert.equal(codeA, 1, "tentativa com manifesto A precisa falhar no link (de propósito, pra deixar o progresso no disco)");
+      assert.ok(existsSync(progressFile));
+
+      // Tentativa 2: MESMO --progress-file, mas com o manifesto B (conteúdo
+      // diferente) -- a checagem de fingerprint só acontece depois da
+      // leitura read-only do estado atual (token + :search), então esses
+      // dois seguem permitidos; o que NUNCA pode rodar é qualquer
+      // `:mutate` (create/link) -- é isso que prova que a recusa veio
+      // ANTES de qualquer mutação real.
+      const fetchMockB = async (input: string) => {
+        if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+        if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+        throw new Error(`não deveria chamar :mutate algum -- fingerprint divergente precisa recusar antes de qualquer mutação (chamada: ${input})`);
+      };
+      const codeB = await withEnv(AUTH_ENV, () =>
+        swapMain(
+          ["--customer-id", "2369219639", "--send", "--images-manifest", manifestB, "--progress-file", progressFile],
+          fetchMockB as unknown as typeof fetch,
+          fetchCommentBodiesMock,
+        ),
+      );
+      assert.equal(codeB, 1, "fingerprint divergente precisa recusar --send");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

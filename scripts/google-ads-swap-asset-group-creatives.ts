@@ -19,14 +19,17 @@
  *      perguntou explicitamente e a resposta foi "ainda não" — marcador
  *      `acao-adiada` no comentário da issue #8550, cooldown de 7 dias
  *      (`scripts/lib/issue-decisions.ts` — `isAcaoAdiadaAtiva`). `--send`
- *      agora lê os comentários da issue #8550 (via `gh`, `fetchCommentBodies`)
- *      e RECUSA se o cooldown ainda estiver ativo — reperguntar antes de
- *      expirar (~05/10/2026) repetiria uma pergunta já respondida. Fail-soft
- *      por design: `gh` indisponível/offline não bloqueia `--send` (mesma
- *      postura fail-open de `isAcaoAdiadaAtiva` — um cooldown que não dá pra
- *      confirmar não deve travar para sempre). Bypass explícito pra teste/
- *      emergência: `--skip-cooldown-check-UNSAFE` (nome de propósito feio —
- *      não é pra uso normal).
+ *      agora lê os comentários da issue #8550 (via `gh`,
+ *      `fetchCooldownCommentsOrNull`) e RECUSA se o cooldown ainda estiver
+ *      ativo — reperguntar antes de expirar (~05/10/2026) repetiria uma
+ *      pergunta já respondida. **Fail-CLOSED por design (decisão do editor,
+ *      review da PR #8972):** `gh`/rede indisponível também RECUSA
+ *      `--send` — o inverso deliberado da postura fail-open de
+ *      `isAcaoAdiadaAtiva` em si, porque aqui `--send` muta uma conta de
+ *      terceiro com gasto real, e "não consegui confirmar" tem que se
+ *      comportar como "não autorizado". Bypass explícito pra quem já
+ *      confirmou manualmente: `--skip-cooldown-check-UNSAFE` (nome de
+ *      propósito feio — não é pra uso normal).
  *   2. **[enforced em código, `validateImagesManifest`] As imagens novas
  *      não existem ainda.** A decisão do editor (20/09) pede overlays das
  *      artes que rodam na Meta SEM o botão "Assine grátis" e SEM
@@ -48,7 +51,16 @@
  * linkada — não duplica os assets órfãos que uma falha parcial deixaria
  * pra trás. O arquivo é apagado sozinho no fim de uma Fase 1 concluída com
  * sucesso (não deve sobreviver pro PRÓXIMO swap, com texto/imagem
- * diferentes).
+ * diferentes). Um fieldType de imagem pode ter vários caminhos no
+ * manifesto — um `existing` parcial só é reusado se a contagem já criada
+ * bater com a do manifesto ATUAL; senão retoma criando só o que falta.
+ *
+ * O arquivo carrega um FINGERPRINT (hash do `--images-manifest` bruto +
+ * asset group/customer, `computeSwapFingerprint`) — `--send` RECUSA reusar
+ * um `--progress-file` cujo fingerprint não bate com a execução atual (#8972
+ * item 3), pra nunca linkar `resourceNames` de um manifesto/alvo diferente
+ * do que foi passado agora (ex: operador trocou `--images-manifest` mas
+ * esqueceu de apagar/renomear o progresso de uma tentativa anterior).
  *
  * Rodar em modo leitura (default, sem `--send`) é seguro a qualquer
  * momento — só lê o estado atual e imprime o plano, nenhuma mutação.
@@ -107,6 +119,8 @@ import {
   emptySwapProgress,
   parseSwapProgress,
   withSwapProgressStep,
+  withSwapProgressFingerprint,
+  computeSwapFingerprint,
   serializeSwapProgress,
   NEW_HEADLINES,
   NEW_LONG_HEADLINES,
@@ -118,7 +132,9 @@ import {
 } from "./lib/google-ads-asset-group-assets.ts";
 import { refreshGoogleAdsAccessToken, postGoogleAdsWithLoginRetry, DEFAULT_API_VERSION } from "./lib/google-ads-ingest.ts";
 import { authConfigFromEnv } from "./lib/google-ads-conversion-sender.ts";
-import { fetchCommentBodies, latestAcaoAdiadaFor, latestExecutionBlockFor, isAcaoAdiadaAtiva } from "./lib/issue-decisions.ts";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { latestAcaoAdiadaFor, latestExecutionBlockFor, isAcaoAdiadaAtiva } from "./lib/issue-decisions.ts";
 
 const DEFAULT_ASSET_GROUP_ID = "6642889160";
 const DEFAULT_PROGRESS_FILE = "_internal/pmax-swap-progress.json";
@@ -131,21 +147,60 @@ const COOLDOWN_ISSUE_NUMBER = 8550;
  * Checagem em CÓDIGO do cooldown de 7 dias (#8960 achado #2) — até aqui só
  * a docstring do módulo documentava que o editor disse "ainda não"; nada
  * chamava `isAcaoAdiadaAtiva`. Injetável (`fetchCommentBodiesFn`) pra
- * permitir teste sem `gh` real. Fail-soft: `gh` indisponível ou issue sem
- * marcador → `[]` de `fetchCommentBodies` → `latestAcaoAdiadaFor` devolve
- * `null` → `isAcaoAdiadaAtiva` devolve `false` (não bloqueia) — mesma
- * postura fail-open documentada em `isAcaoAdiadaAtiva` (um cooldown que não
- * dá pra confirmar não deve travar `--send` para sempre).
+ * permitir teste sem `gh` real.
+ *
+ * `commentsBodies` é `null` quando a LEITURA em si falhou (não confunde
+ * "leitura ok, zero comentários" com "não consegui ler") — nesse caso
+ * `active: true` (**fail-CLOSED**, decisão do editor no review desta PR,
+ * #8972): `--send` muta uma conta de terceiro com gasto real, e "não
+ * consegui confirmar se o editor autorizou" tem que se comportar como "não
+ * autorizado", não como "autorizado". Isto é o INVERSO deliberado da
+ * postura fail-open de `isAcaoAdiadaAtiva` em si (que decide se um
+ * adiamento JÁ CONFIRMADO ainda vale) — aqui o que falhou é a própria
+ * confirmação. Bypass explícito pra quem já confirmou manualmente:
+ * `--skip-cooldown-check-UNSAFE`.
  */
 export function checkSwapCooldown(
-  commentsBodies: readonly string[],
+  commentsBodies: readonly string[] | null,
   now: Date = new Date(),
 ): { active: boolean; pedidoEm?: string; motivo?: string } {
+  if (commentsBodies === null) {
+    return { active: true, motivo: "não foi possível ler os comentários da issue para confirmar o cooldown (fail-closed)" };
+  }
   const adiada = latestAcaoAdiadaFor(commentsBodies);
   if (!adiada) return { active: false };
   const blocoMaisRecente = latestExecutionBlockFor(commentsBodies);
   const active = isAcaoAdiadaAtiva(adiada, { now, blocoMaisRecente });
   return { active, pedidoEm: adiada.pedido_em, motivo: adiada.motivo };
+}
+
+interface GhIssueComment {
+  body?: string;
+}
+
+/**
+ * Busca os comentários da issue via `gh` — devolve `null` (nunca `[]`) em
+ * QUALQUER falha de leitura (processo, JSON, forma inesperada), pra
+ * `checkSwapCooldown` poder distinguir "li e não achei marcador" de "não
+ * consegui ler" e recusar `--send` no 2º caso (fail-closed, #8960).
+ * Deliberadamente uma cópia local — não reusa `fetchCommentBodies` de
+ * `scripts/lib/issue-decisions.ts`, cujo contrato fail-soft (`[]` nos dois
+ * casos) é correto pros OUTROS consumidores dela (perguntar de novo é
+ * barato) mas errado aqui (a falha vira ação real numa conta de terceiro).
+ */
+export function fetchCooldownCommentsOrNull(issueNumber: number, cwd: string): string[] | null {
+  const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "comments"], { cwd, encoding: "utf8", timeout: 15_000 });
+  if (result.status !== 0 || !result.stdout) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const comments = (parsed as { comments?: GhIssueComment[] }).comments;
+  if (!Array.isArray(comments)) return null;
+  return comments.map((c) => c.body).filter((b): b is string => typeof b === "string");
 }
 
 const IMAGE_FIELD_TYPES: readonly Extract<AssetGroupFieldType, string>[] = [
@@ -218,7 +273,7 @@ async function readCurrentAssetGroupAssets(
 export async function main(
   argv: string[] = process.argv.slice(2),
   fetchFn: typeof fetch = fetch,
-  fetchCommentBodiesFn: typeof fetchCommentBodies = fetchCommentBodies,
+  fetchCooldownCommentsFn: typeof fetchCooldownCommentsOrNull = fetchCooldownCommentsOrNull,
 ): Promise<number> {
   loadProjectEnv();
 
@@ -234,14 +289,19 @@ export async function main(
   // documentado. Só se aplica a `--send` (dry-run continua seguro sempre,
   // inclusive durante o cooldown — só lê e imprime o plano).
   if (send && !skipCooldownCheck) {
-    const commentsBodies = fetchCommentBodiesFn(COOLDOWN_ISSUE_NUMBER, process.cwd());
+    const commentsBodies = fetchCooldownCommentsFn(COOLDOWN_ISSUE_NUMBER, process.cwd());
     const cooldown = checkSwapCooldown(commentsBodies);
     if (cooldown.active) {
+      const naoConfirmado = commentsBodies === null;
       console.error(
-        `[google-ads-swap-asset-group-creatives] ✖ --send recusado: cooldown de "ação adiada" ainda ativo na issue #${COOLDOWN_ISSUE_NUMBER} ` +
-          `(pedido em ${cooldown.pedidoEm}${cooldown.motivo ? `, motivo: ${cooldown.motivo}` : ""}). ` +
-          "O editor respondeu 'ainda não' recentemente — reperguntar antes do cooldown expirar repete uma pergunta já respondida " +
-          "(ver `scripts/lib/issue-decisions.ts` `isAcaoAdiadaAtiva`). Nenhuma mutação foi feita.",
+        naoConfirmado
+          ? `[google-ads-swap-asset-group-creatives] ✖ --send recusado: não foi possível confirmar o cooldown de "ação adiada" na issue #${COOLDOWN_ISSUE_NUMBER} ` +
+              "(falha ao ler comentários via `gh`). Fail-closed: sem confirmar que o cooldown expirou, --send não prossegue. " +
+              "Confirme manualmente (releia a issue) e rode com --skip-cooldown-check-UNSAFE, ou tente de novo quando `gh`/rede estiverem disponíveis. Nenhuma mutação foi feita."
+          : `[google-ads-swap-asset-group-creatives] ✖ --send recusado: cooldown de "ação adiada" ainda ativo na issue #${COOLDOWN_ISSUE_NUMBER} ` +
+              `(pedido em ${cooldown.pedidoEm}${cooldown.motivo ? `, motivo: ${cooldown.motivo}` : ""}). ` +
+              "O editor respondeu 'ainda não' recentemente — reperguntar antes do cooldown expirar repete uma pergunta já respondida " +
+              "(ver `scripts/lib/issue-decisions.ts` `isAcaoAdiadaAtiva`). Nenhuma mutação foi feita.",
       );
       return 1;
     }
@@ -362,13 +422,15 @@ export async function main(
   }
 
   let manifest: ImagesManifest | null = null;
+  let manifestRawText = "";
   let manifestErrors: string[] = ["--images-manifest não foi passado — imagens novas ainda não existem (ver docstring do módulo)."];
   if (manifestPath) {
     if (!existsSync(manifestPath)) {
       manifestErrors = [`--images-manifest aponta pra um arquivo que não existe: ${manifestPath}`];
     } else {
       try {
-        manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        manifestRawText = readFileSync(manifestPath, "utf8");
+        manifest = JSON.parse(manifestRawText);
         manifestErrors = validateImagesManifest(manifest!);
       } catch (e) {
         manifestErrors = [`falha ao ler/parsear --images-manifest: ${e instanceof Error ? e.message : e}`];
@@ -419,6 +481,26 @@ export async function main(
   // uma Fase 1 bem-sucedida (não deve sobreviver pra confundir o PRÓXIMO
   // swap, que terá texto/imagem novos).
   let progress: SwapProgress = parseSwapProgress(existsSync(progressFile) ? readFileSync(progressFile, "utf8") : null);
+
+  // #8972 item 3 — o progresso carrega um fingerprint do manifesto de
+  // imagens + asset group/customer que ele pertence. Se o arquivo tem
+  // etapas E o fingerprint não bate com o swap de AGORA, recusa — nunca
+  // reusa `resourceNames` de um manifesto/alvo DIFERENTE (ex: operador
+  // rodou de novo com um `--images-manifest` corrigido mas esqueceu de
+  // trocar/apagar o `--progress-file` de uma tentativa anterior).
+  const expectedFingerprint = computeSwapFingerprint(manifestRawText, assetGroupResourceName, numericCustomerId);
+  const hasExistingSteps = Object.keys(progress.steps).length > 0;
+  if (hasExistingSteps && progress.fingerprint !== expectedFingerprint) {
+    console.error(
+      `[google-ads-swap-asset-group-creatives] ✖ --send recusado: ${progressFile} tem progresso de um swap DIFERENTE ` +
+        "(fingerprint não bate com o --images-manifest/asset-group/customer desta execução). Reusar esse progresso " +
+        "linkaria resourceNames de um manifesto que não é este. Apague ou renomeie o arquivo, ou aponte --progress-file " +
+        "pra um caminho novo, antes de rodar de novo. Nenhuma mutação foi feita.",
+    );
+    return 1;
+  }
+  if (!hasExistingSteps) progress = withSwapProgressFingerprint(progress, expectedFingerprint);
+
   function saveProgress(stepKey: SwapProgressStepKey, resourceNames: string[], linked: boolean): void {
     progress = withSwapProgressStep(progress, stepKey, { resourceNames, linked });
     mkdirSync(dirname(progressFile), { recursive: true });

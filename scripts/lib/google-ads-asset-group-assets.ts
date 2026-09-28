@@ -47,6 +47,8 @@
  * conferência humana; só a #2 é um freio mecânico de verdade.
  */
 
+import { createHash } from "node:crypto";
+
 // ---------------------------------------------------------------------------
 // Leitura + normalização
 // ---------------------------------------------------------------------------
@@ -470,12 +472,41 @@ export type SwapProgressStepKey = TextFieldType | Extract<AssetGroupFieldType, "
 export interface SwapProgress {
   version: 1;
   updated_at: string;
+  /** Hash de identidade do swap (manifesto de imagens + asset group +
+   *  customer) que este progresso pertence — ver `computeSwapFingerprint`.
+   *  `undefined` = progresso de antes do #8972 (item 3) ou manifesto vazio;
+   *  o caller trata como "não bate" (fail-safe, nunca reusa um progresso
+   *  sem fingerprint confirmado). */
+  fingerprint?: string;
   steps: Partial<Record<SwapProgressStepKey, SwapProgressStep>>;
 }
 
 /** Manifesto vazio — ponto de partida de uma Fase 1 nova. @pure */
 export function emptySwapProgress(now: Date = new Date()): SwapProgress {
   return { version: 1, updated_at: now.toISOString(), steps: {} };
+}
+
+/**
+ * Hash de identidade de UM swap (#8960 achado #1 comment, #8972 item 3) —
+ * combina o conteúdo bruto do `--images-manifest` com o asset group/customer
+ * alvo, pra `main()` recusar reusar um `--progress-file` que pertence a um
+ * swap DIFERENTE (manifesto trocado entre tentativas, ou arquivo do
+ * asset-group/customer errado por engano de flag). Puro dado os 3 inputs
+ * (SHA-256 é determinístico); o caller lê o manifesto do disco, não este
+ * módulo. Não usa o `manifest` já parseado como input (usaria o texto BRUTO
+ * do arquivo) pra não depender de normalização de JSON — dois arquivos
+ * byte-idênticos sempre dão o mesmo fingerprint, e essa é a garantia que
+ * importa (não "semanticamente equivalentes"). @pure
+ */
+export function computeSwapFingerprint(rawManifestText: string, assetGroupResourceName: string, customerId: string): string {
+  return createHash("sha256").update(rawManifestText).update("\u0000").update(assetGroupResourceName).update("\u0000").update(customerId).digest("hex");
+}
+
+/** Devolve um NOVO manifesto com o `fingerprint` definido — chamado uma vez
+ *  no início de uma Fase 1, antes de qualquer `withSwapProgressStep`, pra
+ *  fixar a identidade que todas as etapas seguintes vão carregar. @pure */
+export function withSwapProgressFingerprint(progress: SwapProgress, fingerprint: string, now: Date = new Date()): SwapProgress {
+  return { version: 1, updated_at: now.toISOString(), fingerprint, steps: progress.steps };
 }
 
 function isValidSwapProgressStep(value: unknown): value is SwapProgressStep {
@@ -505,18 +536,24 @@ export function parseSwapProgress(raw: string | null | undefined): SwapProgress 
   for (const [key, value] of Object.entries(p.steps as Record<string, unknown>)) {
     if (isValidSwapProgressStep(value)) steps[key as SwapProgressStepKey] = value;
   }
-  return { version: 1, updated_at: typeof p.updated_at === "string" ? p.updated_at : new Date().toISOString(), steps };
+  return {
+    version: 1,
+    updated_at: typeof p.updated_at === "string" ? p.updated_at : new Date().toISOString(),
+    fingerprint: typeof p.fingerprint === "string" ? p.fingerprint : undefined,
+    steps,
+  };
 }
 
 /** Devolve um NOVO manifesto com a etapa `stepKey` atualizada — nunca muta
- *  o argumento. @pure */
+ *  o argumento. Preserva `fingerprint` (setado uma vez, no início da Fase 1,
+ *  via `withSwapProgressFingerprint`). @pure */
 export function withSwapProgressStep(
   progress: SwapProgress,
   stepKey: SwapProgressStepKey,
   step: SwapProgressStep,
   now: Date = new Date(),
 ): SwapProgress {
-  return { version: 1, updated_at: now.toISOString(), steps: { ...progress.steps, [stepKey]: step } };
+  return { version: 1, updated_at: now.toISOString(), fingerprint: progress.fingerprint, steps: { ...progress.steps, [stepKey]: step } };
 }
 
 /** Serializa pra gravar em disco (o caller faz o `writeFileSync`, este
