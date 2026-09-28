@@ -30,6 +30,11 @@ const el = {
 
   decompPanel: document.getElementById("decomposicao-panel"),
   decompGrid: document.getElementById("decomposicao-grid"),
+
+  valorPanel: document.getElementById("valor-panel"),
+  valorGrid: document.getElementById("valor-grid"),
+  valorOrigemTbody: document.getElementById("valor-origem-tbody"),
+  valorCacTbody: document.getElementById("valor-cac-tbody"),
 };
 
 function escapeHtml(s) {
@@ -195,6 +200,40 @@ function renderMetas(metasLayer) {
     .join("");
 }
 
+/** Bloco "Valor" (#8423) — tiles pra receita/ARPU/churn/conversão/LTV
+ *  blended, mais 2 tabelas (LTV por origem, LTV÷CAC por canal). `fmtValor`
+ *  já cobre `faixa` (mostra min–max, nunca ponto médio solto) e `null`
+ *  ("sem coleta", nunca "0") — reusado sem alteração. */
+function renderValor(valor) {
+  const tiles = [
+    tile("Receita mensal (bruta)", escapeHtml(fmtValor(valor.receitaMensal, "brl")), motivoLine(valor.receitaMensal)),
+    tile("ARPU (por ativo)", escapeHtml(fmtValor(valor.arpuAtivo, "brl")), motivoLine(valor.arpuAtivo)),
+    tile("Churn mensal", escapeHtml(fmtValor(valor.churnMensal, "razao")), motivoLine(valor.churnMensal)),
+    tile("Conversão em apoiador", escapeHtml(fmtValor(valor.conversaoApoiador, "razao")), motivoLine(valor.conversaoApoiador)),
+    tile("LTV de caixa (blended)", escapeHtml(fmtValor(valor.ltvCaixa, "brl")), motivoLine(valor.ltvCaixa)),
+  ];
+  el.valorGrid.innerHTML = tiles.join("");
+
+  const origemSeries = valor.ltvPorOrigem.series || [];
+  el.valorOrigemTbody.innerHTML =
+    origemSeries.length === 0
+      ? `<tr><td colspan="2" class="metricas-motivo">${escapeHtml(valor.ltvPorOrigem.motivo || "sem classe com dado")}</td></tr>`
+      : origemSeries
+          .map(
+            (s) =>
+              `<tr><td>${escapeHtml(s.chave)}</td><td class="mono">${s.valor == null ? "sem coleta" : `R$ ${s.valor.toFixed(2).replace(".", ",")}`}</td></tr>`,
+          )
+          .join("");
+
+  const cacSeries = valor.ltvCacRatio.series || [];
+  el.valorCacTbody.innerHTML =
+    cacSeries.length === 0
+      ? `<tr><td colspan="2" class="metricas-motivo">${escapeHtml(valor.ltvCacRatio.motivo || "sem canal com LTV e CAC simultâneos")}</td></tr>`
+      : cacSeries
+          .map((s) => `<tr><td>${escapeHtml(s.chave)}</td><td class="mono">${s.valor == null ? "sem coleta" : s.valor.toFixed(2)}</td></tr>`)
+          .join("");
+}
+
 function renderDecomposicao(result) {
   if (!result.series || result.series.length === 0) {
     el.decompGrid.innerHTML = tile("Cadastros por classe", escapeHtml(fmtValor(result, "contagem")), result.motivo ? escapeHtml(result.motivo) : "sem decomposição disponível");
@@ -217,20 +256,21 @@ async function refresh(forceRefresh) {
 
     if (!data.hasDataDir) {
       el.nodata.hidden = false;
-      for (const p of [el.baselinePanel, el.quedaPanel, el.placarPanel, el.metasPanel, el.decompPanel]) p.hidden = true;
+      for (const p of [el.baselinePanel, el.quedaPanel, el.placarPanel, el.metasPanel, el.decompPanel, el.valorPanel]) p.hidden = true;
       setFetchStatus("down", "sem dados (cloud)");
       el.lastUpdated.textContent = data.generatedAt ? `gerado em ${fmtTime(data.generatedAt)}` : "";
       return;
     }
     el.nodata.hidden = true;
 
-    for (const p of [el.baselinePanel, el.quedaPanel, el.placarPanel, el.metasPanel, el.decompPanel]) p.hidden = false;
+    for (const p of [el.baselinePanel, el.quedaPanel, el.placarPanel, el.metasPanel, el.decompPanel, el.valorPanel]) p.hidden = false;
 
     renderBaseline(data.baseline);
     renderQueda(data.queda);
     renderPlacar(data.placar);
     renderMetas(data.metas);
     renderDecomposicao(data.decomposicaoCadastros);
+    if (data.valor) renderValor(data.valor);
 
     setFetchStatus("ok", `dia ${data.diaReferencia}${data.cached ? " (cache)" : ""}`);
     const snapshotLabel = data.beehiivSnapshot && data.beehiivSnapshot.date ? ` · snapshot Beehiiv ${data.beehiivSnapshot.date}` : "";

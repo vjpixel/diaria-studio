@@ -76,7 +76,33 @@ import {
   type AcquisitionRecordInput,
   type BaseAtivaDeps,
   type LeitorV1Deps,
+  type ReceitaMensalDeps,
+  type ArpuAtivoDeps,
+  type ChurnMensalDeps,
+  type ConversaoApoiadorDeps,
+  type LtvCaixaDeps,
+  type LtvPorOrigemDeps,
+  type LtvPorOrigemClasseInput,
+  type LtvCacRatioDeps,
 } from "../lib/metrics/registry.ts";
+import { classifyAcquisition, type AcquisitionClass } from "../lib/metrics/acquisition-class.ts";
+import { normalizeEmail } from "../lib/cac.ts";
+import { readMonthCache } from "../lib/apoia-se.ts";
+import { parseCuratedBatch } from "../lib/curated-batch-import.ts";
+import {
+  computeChurnRate,
+  computeConversaoApoiador,
+  summarizeApoiaSeMonthRevenue,
+  parseAmazonRevenueConfig,
+  previousCompetenceMonth,
+  findChurnBaselineDate,
+  computeChurnExitsBetweenSnapshots,
+  resolveApoiaSeCampaignName,
+  type ChurnExitEvent,
+  type ApoiaSeMonthCacheEntry,
+  type AmazonRevenueConfig,
+} from "../lib/ltv.ts";
+import { buildAdsData } from "./studio-ads.ts";
 import { evaluateMeta, type Meta, type MetaStatus, type MedicaoDia } from "../lib/metrics/metas.ts";
 import { loadMetas, validateMetas } from "../lib/metrics/metas-store.ts";
 import type { CapturaLogEntry } from "../lib/metrics/captura-log.ts";
@@ -93,6 +119,12 @@ import {
   readSnapshotSubscribers,
   type BeehiivBackupSubscriber,
 } from "../lib/beehiiv-backup-snapshots.ts";
+
+// Re-exportadas (#8423) — o núcleo mora em `scripts/lib/ltv.ts` (compartilhado
+// com `scripts/cac-report.ts`, que também monta um LTV de caixa); este
+// módulo reexporta pra quem testa/consome a camada "Valor" via `studio-
+// metrics.ts` sem precisar saber que a implementação é compartilhada.
+export { previousCompetenceMonth, findChurnBaselineDate, computeChurnExitsBetweenSnapshots };
 
 // ─── tipos do snapshot ──────────────────────────────────────────────────
 
@@ -187,6 +219,45 @@ export interface MetricsKitActiveLayer {
   motivo: string | null;
 }
 
+/**
+ * Bloco "Valor" (#8423) — receita, ARPU, churn, conversão em apoiador, LTV
+ * (blended e por origem) e LTV÷CAC. Cálculo puro em `scripts/lib/ltv.ts`;
+ * aqui só a resolução dos insumos a partir de `data/` (cache da apoia.se,
+ * diff de 2 snapshots Beehiiv, config manual da Amazon, `CacReport` de
+ * `studio-ads.ts`).
+ *
+ * **Limitações declaradas, não escondidas** (mesma disciplina do resto do
+ * módulo):
+ * - Numerador/denominador de `conversaoApoiador`/`ltvPorOrigem` usam só a
+ *   base ATIVA BEEHIIV (não a cross-plataforma deduplicada) — é a única
+ *   população em que o vínculo por e-mail com a apoia.se é resolvido aqui.
+ * - `ltvCacRatio` usa o LTV BLENDED (ponto médio da faixa), o mesmo pra
+ *   todo canal — ainda não há LTV medido POR CANAL (isso dependeria de
+ *   #7916 entregar receita por coorte no store unificado); `ltvPorOrigem`
+ *   é o número mais fino disponível hoje, por CLASSE de aquisição, não por
+ *   canal individual.
+ */
+export interface MetricsValorLayer {
+  receitaMensal: MetricResult;
+  arpuAtivo: MetricResult;
+  churnMensal: MetricResult;
+  conversaoApoiador: MetricResult;
+  ltvCaixa: MetricResult;
+  ltvPorOrigem: MetricResult;
+  ltvCacRatio: MetricResult;
+  /** Config manual da receita Amazon (`data/ltv/amazon-revenue.json`, sem
+   *  fonte automatizada — decisão da issue #8423) — `valorMensalBrl: null`
+   *  quando o arquivo está ausente/malformado, nunca `0` fabricado. */
+  amazonConfig: { valorMensalBrl: number | null; atualizadoEm: string | null; motivo: string | null };
+  /** Cache da apoia.se usado (mês de competência FECHADO anterior ao
+   *  corrente — o mês corrente pode estar incompleto/congelado, #4490). */
+  apoiaSeCache: { path: string; available: boolean; competenceMonth: string };
+  /** Par de snapshots Beehiiv usado pro diff de churn — `baselineDate` é
+   *  `null` quando não há snapshot suficientemente espaçado (~30 dias) do
+   *  mais recente, e `churnMensal` sai `indeterminado` nesse caso. */
+  churnPeriodo: { baselineDate: string | null; latestDate: string | null; periodMonths: number | null };
+}
+
 export interface MetricsSnapshot {
   execMode: ExecMode;
   generatedAt: string;
@@ -215,6 +286,7 @@ export interface MetricsSnapshot {
   metas: MetricsMetasLayer;
   placar: MetricsPlacar;
   decomposicaoCadastros: MetricResult;
+  valor: MetricsValorLayer;
 }
 
 // ─── janela / BRT ───────────────────────────────────────────────────────
@@ -500,6 +572,228 @@ function countActive(subs: readonly BeehiivBackupSubscriber[]): number {
   return subs.filter((s) => s.status === "active").length;
 }
 
+// ─── camada: Valor (#8423) — receita, ARPU, churn, conversão em apoiador, ──
+// ─── LTV blended/por origem, LTV÷CAC ────────────────────────────────────
+
+/** Config manual da receita Amazon — fail-soft (arquivo ausente/malformado
+ *  nunca lança, só devolve `valorMensalBrl: null` com `motivo`). */
+function loadAmazonRevenueConfig(rootDir: string): { valorMensalBrl: number | null; atualizadoEm: string | null; motivo: string | null } {
+  const path = resolve(rootDir, "data", "ltv", "amazon-revenue.json");
+  if (!existsSync(path)) {
+    return {
+      valorMensalBrl: null,
+      atualizadoEm: null,
+      motivo: `config ausente em ${path} — receita Amazon não tem fonte automatizada (#8423); crie o arquivo com { "valorMensalBrl": <número>, "atualizadoEm": "<ISO>" }`,
+    };
+  }
+  try {
+    const parsed: AmazonRevenueConfig | null = parseAmazonRevenueConfig(JSON.parse(readFileSync(path, "utf8")));
+    if (!parsed) {
+      return { valorMensalBrl: null, atualizadoEm: null, motivo: `config malformada em ${path} — esperado { valorMensalBrl: number, atualizadoEm: string }` };
+    }
+    return { valorMensalBrl: parsed.valorMensalBrl, atualizadoEm: parsed.atualizadoEm, motivo: null };
+  } catch (e) {
+    return { valorMensalBrl: null, atualizadoEm: null, motivo: `falha ao ler ${path}: ${(e as Error).message}` };
+  }
+}
+
+/** E-mails normalizados de limpeza manual conhecida (#8423) — fail-soft:
+ *  arquivo ausente/corrompido devolve um Set vazio (churn "orgânico" e "com
+ *  limpeza" colapsam pro mesmo valor, nunca lança). Reusa `parseCuratedBatch`
+ *  (`curated-batch-import.ts`) — mesmo parser que já entende o formato do
+ *  arquivo, nenhuma reimplementação. */
+function loadManualCleanupEmails(rootDir: string): ReadonlySet<string> {
+  const path = resolve(rootDir, "data", "analysis", "descadastrados-manuais-2607.json");
+  if (!existsSync(path)) return new Set();
+  try {
+    const { entries } = parseCuratedBatch(JSON.parse(readFileSync(path, "utf8")));
+    return new Set(entries.map((e) => e.email));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Monta o bloco "Valor" (#8423) inteiro — sempre fail-soft, nunca lança
+ * (mesma disciplina do resto do módulo): qualquer insumo ausente vira
+ * `MetricResult` `indeterminado` com motivo, não uma exceção que derruba o
+ * snapshot inteiro.
+ */
+async function computeValorLayer(
+  rootDir: string,
+  beehiivSubs: readonly BeehiivBackupSubscriber[],
+  beehiivRoot: string,
+  beehiivDates: readonly string[],
+  latestDate: string | null,
+  now: Date,
+): Promise<MetricsValorLayer> {
+  const campaign = resolveApoiaSeCampaignName();
+  const month = previousCompetenceMonth(now);
+  const cacheDir = resolve(rootDir, "data", "apoia-se", campaign);
+  const cachePath = resolve(cacheDir, `${month}.json`);
+  const apoiaSeCacheAvailable = existsSync(cachePath);
+  const apoiaSeCache = readMonthCache(cacheDir, month) as Record<string, ApoiaSeMonthCacheEntry>; // fail-soft: {} se ausente/corrompido
+  const revSummary = summarizeApoiaSeMonthRevenue(apoiaSeCache);
+  const amazonConfig = loadAmazonRevenueConfig(rootDir);
+
+  const janelaMes = janelaDia(`${month}-01`);
+  const porFonte: Record<string, number | null> = {
+    "apoia-se": apoiaSeCacheAvailable ? revSummary.grossRevenueBrl : null,
+    amazon: amazonConfig.valorMensalBrl,
+  };
+
+  // População: só a base ATIVA BEEHIIV — é a única em que o vínculo por
+  // e-mail com a apoia.se é resolvido aqui (ver docstring de
+  // `MetricsValorLayer`). Base vazia (nenhum snapshot ainda) fica `null`,
+  // nunca `0` fabricado.
+  const activeBeehiiv = beehiivSubs.filter((s) => s.status === "active");
+  const baseAtivaBeehiiv = activeBeehiiv.length > 0 ? activeBeehiiv.length : null;
+
+  const receitaMensal = await getMetric("receita-mensal")!.computar({
+    janela: janelaMes,
+    deps: { porFonte } satisfies ReceitaMensalDeps,
+  });
+  const arpuAtivo = await getMetric("arpu-ativo")!.computar({
+    janela: janelaMes,
+    deps: { porFonte, baseAtiva: baseAtivaBeehiiv } satisfies ArpuAtivoDeps,
+  });
+
+  // ── Churn — diff de 2 snapshots Beehiiv ~30 dias de distância ──────────
+  const baselineDate = latestDate ? findChurnBaselineDate(beehiivDates, latestDate) : null;
+  let churnMensalDeps: ChurnMensalDeps;
+  let churnPeriodo: MetricsValorLayer["churnPeriodo"] = { baselineDate, latestDate, periodMonths: null };
+  if (!latestDate || !baselineDate) {
+    churnMensalDeps = { exits: [], manualCleanupEmails: new Set(), periodMonths: 0, avgActiveBase: null };
+  } else {
+    const baselineSubs = baselineDate === latestDate ? beehiivSubs : readSnapshotSubscribers(beehiivRoot, baselineDate);
+    const latestSubs = beehiivSubs; // já carregado pelo chamador (snapshot mais recente)
+    const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baselineSubs, latestSubs);
+    const periodMonths = Math.abs(Date.parse(latestDate) - Date.parse(baselineDate)) / 86_400_000 / 30;
+    churnPeriodo = { baselineDate, latestDate, periodMonths };
+    churnMensalDeps = { exits, manualCleanupEmails: loadManualCleanupEmails(rootDir), periodMonths, avgActiveBase };
+  }
+  const churnMensal = await getMetric("churn-mensal")!.computar({ janela: janelaMes, deps: churnMensalDeps });
+  // Reaproveita o MESMO cálculo puro (não recomputado a partir do
+  // MetricResult, que já perdeu a granularidade organico/comLimpeza fora
+  // da decomposicao) pra alimentar ltv-caixa abaixo.
+  const churnRaw = computeChurnRate(churnMensalDeps);
+
+  const ltvCaixa = await getMetric("ltv-caixa")!.computar({
+    janela: janelaMes,
+    deps: {
+      arpuMensal: arpuAtivo.valor,
+      churnMensalOrganico: churnRaw.organicMonthly,
+      churnMensalComLimpeza: churnRaw.comLimpezaMonthly,
+    } satisfies LtvCaixaDeps,
+  });
+
+  // ── Conversão em apoiador + LTV por origem — vínculo por e-mail ────────
+  const apoiaSeIndex = new Map<string, ApoiaSeMonthCacheEntry>();
+  for (const [email, entry] of Object.entries(apoiaSeCache)) apoiaSeIndex.set(normalizeEmail(email), entry);
+
+  const amazonPerActive =
+    amazonConfig.valorMensalBrl != null && baseAtivaBeehiiv ? amazonConfig.valorMensalBrl / baseAtivaBeehiiv : null;
+
+  interface ClasseAgg {
+    confirmados: number;
+    apoiadores: number;
+    payingCount: number;
+    sumPaid: number;
+  }
+  const porClasseAgg = new Map<AcquisitionClass, ClasseAgg>();
+  let totalApoiadoresOverall = 0;
+  for (const s of activeBeehiiv) {
+    const classe = classifyAcquisition({
+      utm_source: s.utm_source,
+      utm_medium: s.utm_medium,
+      // `BeehiivBackupSubscriber.utm_channel` é `unknown` (nunca confirmado
+      // ao vivo, ver docstring de `beehiiv-backup-snapshots.ts`) — mesma
+      // disciplina tolerante do resto da interface, só passa adiante quando
+      // já é string.
+      utm_channel: typeof s.utm_channel === "string" ? s.utm_channel : null,
+      referring_site: s.referring_site,
+      created: s.created,
+    });
+    let agg = porClasseAgg.get(classe);
+    if (!agg) {
+      agg = { confirmados: 0, apoiadores: 0, payingCount: 0, sumPaid: 0 };
+      porClasseAgg.set(classe, agg);
+    }
+    agg.confirmados++;
+    const backer = apoiaSeIndex.get(normalizeEmail(s.email));
+    if (backer?.isBacker) {
+      agg.apoiadores++;
+      totalApoiadoresOverall++;
+      if (backer.isPaidThisMonth && typeof backer.thisMonthPaidValue === "number") {
+        agg.payingCount++;
+        agg.sumPaid += backer.thisMonthPaidValue;
+      }
+    }
+  }
+
+  const conversaoApoiador = await getMetric("conversao-apoiador")!.computar({
+    janela: janelaMes,
+    deps: { apoiadores: totalApoiadoresOverall, confirmados: activeBeehiiv.length } satisfies ConversaoApoiadorDeps,
+  });
+
+  const porClasse: Partial<Record<AcquisitionClass, LtvPorOrigemClasseInput>> = {};
+  for (const [classe, agg] of porClasseAgg) {
+    const conv = computeConversaoApoiador({ apoiadores: agg.apoiadores, confirmados: agg.confirmados });
+    porClasse[classe] = {
+      conversaoApoiador: conv.valor,
+      valorMedioApoiadorMensal: agg.payingCount > 0 ? agg.sumPaid / agg.payingCount : null,
+      outrasFontesPerAtivoMensal: amazonPerActive,
+      n: agg.apoiadores,
+    };
+  }
+  const ltvPorOrigem = await getMetric("ltv-por-origem")!.computar({
+    janela: janelaMes,
+    decomposicao: "classe",
+    deps: { porClasse } satisfies LtvPorOrigemDeps,
+  });
+
+  // ── LTV ÷ CAC — reusa o CacReport que studio-ads.ts já computa (nenhuma
+  //    releitura de spend.csv/snapshot aqui). Simplificação DECLARADA: usa
+  //    o LTV BLENDED (ponto médio da faixa), igual pra todo canal — ainda
+  //    não há LTV medido POR CANAL (dependeria de #7916). `buildAdsData` já
+  //    documenta "nunca lança" (fail-soft por conta própria), mas esta
+  //    camada de Valor promete o mesmo contrato pro CALLER — o try/catch é
+  //    defesa em profundidade, não desconfiança do contrato alheio.
+  const custoPorCanal: Record<string, number | null> = {};
+  try {
+    const adsSnapshot = buildAdsData(rootDir);
+    if (adsSnapshot.report) {
+      for (const row of adsSnapshot.report.rows) {
+        if (row.kind === "measured") custoPorCanal[row.canal] = row.custoPorLeitor;
+      }
+    }
+  } catch (e) {
+    console.error(`[studio-metrics] valor: falha ao montar CacReport via buildAdsData (ignorada, LTV÷CAC sai indeterminado): ${(e as Error).message}`);
+  }
+  const ltvBlendedMidpoint =
+    ltvCaixa.qualidade === "faixa" && ltvCaixa.limites ? (ltvCaixa.limites.min + ltvCaixa.limites.max) / 2 : ltvCaixa.valor;
+  const ltvPorCanal: Record<string, number | null> = {};
+  for (const canal of Object.keys(custoPorCanal)) ltvPorCanal[canal] = ltvBlendedMidpoint;
+  const ltvCacRatio = await getMetric("ltv-cac-ratio")!.computar({
+    janela: janelaMes,
+    decomposicao: "canal",
+    deps: { ltvPorCanal, custoPorCanal } satisfies LtvCacRatioDeps,
+  });
+
+  return {
+    receitaMensal,
+    arpuAtivo,
+    churnMensal,
+    conversaoApoiador,
+    ltvCaixa,
+    ltvPorOrigem,
+    ltvCacRatio,
+    amazonConfig,
+    apoiaSeCache: { path: cachePath, available: apoiaSeCacheAvailable, competenceMonth: month },
+    churnPeriodo,
+  };
+}
+
 // ─── cache (mesmo padrão de studio-ads.ts/studio-utms.ts) ──────────────
 
 export interface BuildMetricsDataOptions {
@@ -685,6 +979,10 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
   const cadastrosDef = getMetric("cadastros-dia")!;
   const decomposicaoCadastros = await cadastrosDef.computar({ janela: janelaHoje, decomposicao: "classe", deps: acqDeps });
 
+  // ── Valor (#8423) — receita, ARPU, churn, conversão em apoiador, LTV ──
+  const beehiivAllDates = listSnapshotDates(beehiivRoot);
+  const valor = await computeValorLayer(rootDir, beehiivSubs, beehiivRoot, beehiivAllDates, beehiivLayer.date, now());
+
   const data: MetricsSnapshot = {
     execMode,
     generatedAt,
@@ -699,6 +997,7 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
     metas: metasLayer,
     placar,
     decomposicaoCadastros,
+    valor,
   };
   cacheByRoot.set(rootDir, { data, expiresAt: nowMs + cacheTtlMs });
   // `db` (aberto acima por `loadSubscriptionCoverage`) só é consumido

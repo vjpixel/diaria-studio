@@ -116,6 +116,54 @@
       </p>
       <div class="metricas-summary-grid" id="decomposicao-grid"></div>
     </section>
+
+    <section class="panel" id="valor-panel" hidden>
+      <h2>Valor — receita, ARPU, churn, LTV (<code>#8423</code>)</h2>
+      <p class="hint">
+        Formaliza o cálculo manual de LTV feito em sessão de 19/09/2026 —
+        receita <strong>BRUTA</strong>, só <strong>caixa</strong> (sem valor
+        indireto de indicação/parceria). Uso principal: contexto de
+        ranqueamento de CAC, nunca gate de gasto.
+      </p>
+      <div class="metricas-summary-grid" id="valor-grid"></div>
+
+      <h3>LTV de caixa por origem de aquisição</h3>
+      <p class="hint">
+        A média da base engana — quase todo apoiador vem da rede pessoal do
+        editor. É este número, não o blended acima, que serve de teto de CAC
+        por canal.
+      </p>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Classe</th>
+              <th>LTV</th>
+            </tr>
+          </thead>
+          <tbody id="valor-origem-tbody"></tbody>
+        </table>
+      </div>
+
+      <h3>LTV ÷ CAC por canal</h3>
+      <p class="hint">
+        Usa o LTV <strong>blended</strong> (ponto médio da faixa) igual pra
+        todo canal — ainda não há LTV medido por canal individual (ver
+        <code>#7916</code>). Custo por leitor vem do mesmo relatório de
+        <a href="/ads.html">Canais pagos</a>.
+      </p>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Canal</th>
+              <th>LTV ÷ CAC</th>
+            </tr>
+          </thead>
+          <tbody id="valor-cac-tbody"></tbody>
+        </table>
+      </div>
+    </section>
   </main>
 
   <script>window.STUDIO_PAGE = "metricas";</script>
