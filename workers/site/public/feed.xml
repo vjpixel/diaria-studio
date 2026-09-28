@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Fri, 25 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Mon, 28 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Google vai colocar data centers no espaço?</title>
+      <link>https://diar.ia.br/p/google-vai-colocar-data-centers-no-espaco</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/google-vai-colocar-data-centers-no-espaco</guid>
+      <pubDate>Mon, 28 Sep 2026 09:00:00 GMT</pubDate>
+      <description>Agentes da OpenAI invadiram sites de governos | Por que a Austrália convocou Altman e Amodei?</description>
+    </item>
     <item>
       <title>Agente rebelde invade sistema de governo</title>
       <link>https://diar.ia.br/p/agente-rebelde-invade-sistema-de-governo</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/ue-obriga-google-a-abrir-dados-para-rivais</guid>
       <pubDate>Mon, 20 Jul 2026 09:00:00 GMT</pubDate>
       <description>OpenAI propõe placar de ROI para IA | Kimi K3: o maior modelo aberto já lançado</description>
-    </item>
-    <item>
-      <title>GPT-5.6 Sol apaga arquivos sem permissão</title>
-      <link>https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao</guid>
-      <pubDate>Fri, 17 Jul 2026 09:00:00 GMT</pubDate>
-      <description>Altman, Hassabis e Amodei pedem regulação | NotebookLM vira Gemini Notebook</description>
     </item>
   </channel>
 </rss>

@@ -85,6 +85,16 @@ import { weakEtag, toHttpDate, conditionalNotModified } from "../../../scripts/l
 // workers/cursos e workers/livros (#5703), que por sua vez generalizou o
 // que nasceu em workers/arquivo (#4909 item 2).
 import { matchIndexNowKeyPath } from "../../../scripts/lib/shared/indexnow-key-route.ts";
+// #8982: CliqueIngresso perdia quase todo o clique real (navegação cancelava
+// o pixel) — o beacon reenvia o MESMO evento via CAPI, dedupado pela Meta
+// contra o disparo client-side pelo par (event_name, event_id). Ver docstring
+// completa em click-beacon.ts.
+import { parseClickBeaconBody, validateClickBeacon, CLICK_BEACON_ENDPOINT } from "../../../scripts/lib/shared/click-beacon.ts";
+import {
+  extractMetaCapiClientSignals,
+  sendMetaCapiCustomEvent,
+  logMetaCapiSendResult,
+} from "../../../scripts/lib/shared/meta-capi.ts";
 
 export interface Env {
   ASSETS: Fetcher;
@@ -102,6 +112,61 @@ export interface Env {
    *  Serve `GET /{INDEXNOW_KEY}.txt` — é assim que o Bing confirma que quem
    *  pinga é dono do host. Ausente = nenhuma rota nova (fallback normal). */
   INDEXNOW_KEY?: string;
+  /** #8982: mesmo secret dos workers `poll`/`cursos`/`reativar`
+   *  (`wrangler secret put META_CAPI_ACCESS_TOKEN --name diaria-site`) — o
+   *  beacon de `CliqueIngresso_{A|B}` reenvia via CAPI. Ausente = no-op
+   *  fail-soft (`sendMetaCapiCustomEvent` retorna `not_configured`), o
+   *  beacon sempre responde 204 de qualquer forma — nunca bloqueia o
+   *  clique real. */
+  META_CAPI_ACCESS_TOKEN?: string;
+}
+
+/**
+ * #8982: `POST /evento/agente-ia/clique` — beacon do clique em
+ * `.checkout-link` (ver `workers/site/public/evento/agente-ia/script.js`).
+ * SEMPRE responde 204, mesmo em corpo malformado/variante inválida/Meta
+ * fora do ar — o clique real já foi registrado client-side (`fbq
+ * trackCustom`); isto é só o reforço server-side que sobrevive à navegação
+ * que o clique dispara em seguida. `ctx.waitUntil` adia o envio CAPI pra
+ * depois da resposta (mesmo padrão de `workers/poll/src/subscribe.ts`,
+ * #5504) — mas aqui a resposta em si não carrega nada que dependa do envio,
+ * então nem `await` faria diferença visível; `waitUntil` só garante que o
+ * isolate não seja reciclado antes do fetch pra Meta terminar.
+ */
+async function handleAgenteIaClique(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+  try {
+    const raw = await request.text();
+    const parsed = parseClickBeaconBody(raw);
+    const v = validateClickBeacon(parsed);
+    if (v.ok) {
+      const clientSignals = extractMetaCapiClientSignals(request.headers, {
+        fbcBody: parsed.fbc,
+        fbpBody: parsed.fbp,
+        externalIdBody: parsed.externalId,
+      });
+      const referer = request.headers.get("Referer");
+      const eventSourceUrl = referer || new URL(request.url).origin + "/evento/agente-ia/";
+      const send = sendMetaCapiCustomEvent(
+        {
+          eventName: v.eventName,
+          eventId: v.eventId,
+          eventSourceUrl,
+          customData: { posicao: v.posicao },
+          clientSignals,
+        },
+        { accessToken: env.META_CAPI_ACCESS_TOKEN },
+      );
+      const logged = logMetaCapiSendResult(send, "site", eventSourceUrl);
+      if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(logged);
+      } else {
+        await logged;
+      }
+    }
+  } catch {
+    // fail-soft total — o beacon nunca pode falhar visivelmente pro cliente.
+  }
+  return new Response(null, { status: 204 });
 }
 
 /** Casa `/p/{slug}` (com ou sem barra final — `html_handling` já resolve a
@@ -192,7 +257,12 @@ async function withArchiveCacheValidators(request: Request, response: Response, 
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+    // #8982: beacon do clique em .checkout-link (evento/agente-ia) — cedo,
+    // mesmo racional de /img/{key} e /confirmada abaixo (rota, não asset).
+    if (request.method === "POST" && new URL(request.url).pathname === CLICK_BEACON_ENDPOINT) {
+      return handleAgenteIaClique(request, env, ctx);
+    }
     // #8062: mesmo par de blocos fail-soft de workers/arquivo/src/index.ts —
     // log de Referer de assistente + contador de fetch por bot nomeado.
     // ANTES de qualquer outra lógica (asset lookup, /img, /confirmada): a

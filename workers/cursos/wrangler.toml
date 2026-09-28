@@ -125,6 +125,13 @@ KIT_ORIGEM_PAGA_FIELD = "origem_paga"
 KIT_ORIGEM_REFERRER_FIELD = "origem_referrer"
 KIT_ORIGEM_CLICKID_FIELD = "origem_click_id"
 
+# #8978 — mesmo custom field Kit do worker `poll` (id/chave únicos por
+# CONTA, não por worker) pro external_id first-party. PENDENTE: o
+# coordenador precisa confirmar que o campo `origem_external_id` existe na
+# conta Kit de produção antes do deploy (ver comentário equivalente em
+# workers/poll/wrangler.toml).
+KIT_ORIGEM_EXTERNALID_FIELD = "origem_external_id"
+
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
 # worker, poll já verificado ao vivo, cursos é o 2º). env.SUBSCRIBE_BACKEND
 # === "kit" em workers/cursos/src/subscribe.ts — cadastro pelo gate de cursos

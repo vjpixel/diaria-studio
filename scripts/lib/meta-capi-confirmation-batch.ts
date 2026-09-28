@@ -71,6 +71,7 @@ import { dirname } from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
 import {
   KIT_CLICK_ID_FIELD_NAME,
+  KIT_EXTERNAL_ID_FIELD_NAME,
   selectConfirmationCandidates,
   type ConfirmationCandidate,
   type ConfirmationPath,
@@ -88,6 +89,7 @@ import {
   type MetaCapiSendResult,
   type SendMetaCapiEventOptions,
 } from "./shared/meta-capi.ts";
+import { isValidVisitorId } from "./shared/visitor-id.ts"; // #8978
 
 export const META_CONFIRMATION_DEFAULT_WINDOW_DAYS = 7;
 export const META_CONFIRMATION_MAX_FAILED_ATTEMPTS = 3;
@@ -254,6 +256,7 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
         createdAt: s.created_at,
         path: e.path,
         clickId: (s.fields?.[KIT_CLICK_ID_FIELD_NAME] ?? "").trim() || undefined,
+        externalId: (s.fields?.[KIT_EXTERNAL_ID_FIELD_NAME] ?? "").trim() || undefined,
         ambiguous: false,
       });
     }
@@ -340,6 +343,11 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
   }
 
   for (const { cand, eventId, fbc } of toSend) {
+    // #8978: `external_id` persistido no cadastro (ver `KIT_EXTERNAL_ID_FIELD_NAME`)
+    // — só entra quando o valor no Kit ainda parece um `_dia_vid` válido
+    // (defesa em profundidade: campo custom pode ter sido editado à mão).
+    const externalId = isValidVisitorId(cand.externalId) ? cand.externalId : undefined;
+    const clientSignals = fbc || externalId ? { fbc, externalId } : undefined;
     const result = await sendFn(
       {
         email: cand.email,
@@ -349,7 +357,7 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
         actionSource: "system_generated",
         eventName,
         eventId,
-        clientSignals: fbc ? { fbc } : undefined,
+        clientSignals,
       },
       {
         accessToken,

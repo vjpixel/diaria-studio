@@ -25,6 +25,10 @@
  * isso não usa este helper.
  */
 
+// #8978: mesmo módulo que já valida/grava `_fbc` do lado browser — reusa a
+// leitura de cookie em vez de duplicar o regex de parse aqui.
+import { fbCookieValueFromDocumentCookieJs } from "./meta-fbc-bootstrap.ts";
+
 /**
  * Retorna o fragmento JS (SEM chave de fechamento) pra colar dentro de um
  * objeto de payload já aberto — 3 propriedades, cada uma lendo o
@@ -77,5 +81,15 @@ export function clientOriginSignalPayloadFieldsJs(): string {
   return [
     'referrer: (document.referrer || "").slice(0, 300),',
     'click_id: (function () { var p = new URLSearchParams(window.location.search); if (p.get("gclid")) return "gclid:" + p.get("gclid"); if (p.get("fbclid")) return "fbclid:" + p.get("fbclid"); if (p.get("msclkid")) return "msclkid:" + p.get("msclkid"); return ""; })(),',
+    // #8978 (fleet review, achado 1): a POST pra `eia.diar.ia.br` é
+    // cross-origin — sem `credentials: "include"` (decisão de escopo, ver
+    // PR #8983) o servidor NUNCA recebe `_dia_vid`/`_fbc`/`_fbp` via cookie.
+    // `window.__DIA_VID__` já é exposto por `visitorIdBootstrapJs` (roda no
+    // `<head>`, antes de qualquer form no `<body>`); `_fbc`/`_fbp` são lidos
+    // direto do `document.cookie` da página atual (mesmo host onde o cookie
+    // foi gravado — `fbCookieValueFromDocumentCookieJs`, meta-fbc-bootstrap.ts).
+    'external_id: (window.__DIA_VID__ || ""),',
+    `fbc: ${fbCookieValueFromDocumentCookieJs("_fbc")},`,
+    `fbp: ${fbCookieValueFromDocumentCookieJs("_fbp")},`,
   ].join("\n          ");
 }

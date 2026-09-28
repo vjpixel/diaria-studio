@@ -149,7 +149,7 @@ export function renderConfirmadoPage(via?: ConfirmadoVia): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${PAGE_TITLE}</title>
 ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
-${renderAnalyticsHead()}
+${renderAnalyticsHead({ includeFbcBootstrap: false })}
 <meta name="robots" content="noindex, follow">
 <style>
 ${renderCuradoriaRootStyles()}
