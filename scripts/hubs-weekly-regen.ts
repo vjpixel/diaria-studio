@@ -57,7 +57,7 @@
  * (ver docstring de lá). Arme via `scripts/setup-systemd-timers.ts` na
  * checkout do "300" é ação POSTERIOR do editor — não incluído aqui.
  */
-import { existsSync, readFileSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, rmSync, symlinkSync, mkdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -102,18 +102,43 @@ const LOG_PREFIX = "[hubs-weekly-regen]";
 const BRANCH_PREFIX = "hubs/weekly-regen-";
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
+/** Paths que ENTRAM no commit do regen semanal (#8948). O passo de build
+ * (`build-hub-page.ts --all`) reescreve tanto o dataset em
+ * `scripts/lib/hubs/*-sources.generated.json` quanto o HTML gerado do
+ * Worker em `workers/arquivo/src/hubs/*.generated.ts` — os DOIS precisam
+ * entrar no commit, senão o job "Hub page drift" (`test/hub-page-drift.test.ts`,
+ * `pr-checks.yml`) nunca vê os `.generated.ts` commitados batendo com o
+ * dataset novo e falha em toda execução (achado #8948: só o primeiro path
+ * era staged). Exportado pra `test/hubs-weekly-regen-script.test.ts`
+ * afirmar que o conjunto staged tem paridade com o que
+ * `test/hub-page-drift.test.ts` de fato audita. */
+export const HUBS_GIT_ADD_PATHS = ["scripts/lib/hubs/", "workers/arquivo/src/hubs/"] as const;
+
 // ─── Estado de revisão de prosa (persistência) ──────────────────────────────
 
-function loadProseReviewState(path: string = PROSE_STATE_PATH): ProseReviewState {
+/** `warn` é injetável (#8949 item 3, teste sem depender de `process.stderr`
+ * real) — default escreve no stderr do processo. Estado corrompido
+ * (`JSON.parse` falho) sempre EMITE aviso antes de resetar pra vazio: antes
+ * disso o reset acontecia em silêncio e, como `main()` re-semeia e sobrescreve
+ * o arquivo (`saveProseReviewState`) logo depois, o editor perdia as datas de
+ * revisão de prosa já registradas sem nenhum sinal. */
+export function loadProseReviewState(
+  path: string = PROSE_STATE_PATH,
+  warn: (msg: string) => void = (msg) => process.stderr.write(msg),
+): ProseReviewState {
   if (!existsSync(path)) return emptyProseReviewState();
   try {
     return JSON.parse(readFileSync(path, "utf8")) as ProseReviewState;
-  } catch {
+  } catch (e) {
+    warn(
+      `${LOG_PREFIX} aviso: estado de revisão de prosa corrompido em ${path} (${(e as Error).message}) — resetando para vazio (datas de revisão registradas serão perdidas).\n`,
+    );
     return emptyProseReviewState();
   }
 }
 
-function saveProseReviewState(state: ProseReviewState, path: string = PROSE_STATE_PATH): void {
+export function saveProseReviewState(state: ProseReviewState, path: string = PROSE_STATE_PATH): void {
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
@@ -220,9 +245,9 @@ function planAllHubs(today: string): { hubPlans: HubPlan[]; proseAlarmSlugs: str
     const rows = mergeManualHubSources(existing, collected);
     const diff = computeHubSourcesDiff(existing, rows);
     const coverageDate = hubCoverageDate(rows);
-    const plan = planHubRegen(slug, diff, today, coverageDate);
-
     const currentUpdatedDate = readCurrentUpdatedDate(HUBS_DIR, slug);
+    const plan = planHubRegen(slug, diff, today, coverageDate, currentUpdatedDate);
+
     proseState = ensureProseReviewBaseline(proseState, slug, currentUpdatedDate);
     const proseDecision = decideProseAlarm(proseState, slug, rows.map((r) => r.date), currentUpdatedDate);
     if (proseDecision.alarm) proseAlarmSlugs.push(slug);
@@ -238,14 +263,24 @@ function planAllHubs(today: string): { hubPlans: HubPlan[]; proseAlarmSlugs: str
   return { hubPlans, proseAlarmSlugs, proseState };
 }
 
-/** Cria um `git worktree` dedicado a partir de `master`, com `node_modules`
- * symlinkado do checkout principal (mesmo padrão de worktree do
- * overnight/develop — `node_modules/` próprio não é reinstalado, só
- * referenciado). Caller é responsável por `removeWorktree` em `finally`. */
-function createWorktree(branch: string): string {
+/** Cria um `git worktree` dedicado a partir de `origin/master` (nunca do
+ * `master` local sem fetch — #8949 item 4: sem isso, se o checkout
+ * compartilhado não tiver sido atualizado entre execuções semanais, a PR
+ * da semana seguinte parte de uma base velha e diverge do que já foi
+ * mergeado, gerando conflito/timeout de CI na execução seguinte), com
+ * `node_modules` symlinkado do checkout principal (mesmo padrão de
+ * worktree do overnight/develop — `node_modules/` próprio não é
+ * reinstalado, só referenciado). `gitRun` é injetável (default `run`) pra
+ * teste sem depender de rede/gh real. Caller é responsável por
+ * `removeWorktree` em `finally`. */
+export function createWorktree(
+  branch: string,
+  gitRun: (cmd: string, args: string[], cwd: string) => string = run,
+): string {
   const workRoot = join(tmpdir(), `diaria-hubs-weekly-regen-${branch.replace(/\//g, "-")}`);
   if (existsSync(workRoot)) rmSync(workRoot, { recursive: true, force: true });
-  run("git", ["worktree", "add", "-b", branch, workRoot, "master"], ROOT);
+  gitRun("git", ["fetch", "origin", "master"], ROOT);
+  gitRun("git", ["worktree", "add", "-b", branch, workRoot, "origin/master"], ROOT);
   const nodeModulesTarget = resolve(ROOT, "node_modules");
   if (existsSync(nodeModulesTarget)) {
     symlinkSync(nodeModulesTarget, join(workRoot, "node_modules"), "dir");
@@ -305,11 +340,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  saveProseReviewState(proseState);
   const proseFindings = proseAlarmSlugs.map(proseAlarmFinding);
   const touched = hubPlans.filter((h) => h.plan.hasDataChange);
 
   if (dryRun) {
+    // #8949 item 2: `--dry-run` nunca escreve — nem `data/hubs/prose-review-state.json`
+    // (contrariava o próprio docstring do script) nem nada mais abaixo.
     if (proseAlarmSlugs.length > 0) {
       process.stderr.write(`${LOG_PREFIX} [dry-run] abriria issue de revisão de prosa para: ${proseAlarmSlugs.join(", ")}.\n`);
     }
@@ -320,6 +356,8 @@ async function main(): Promise<void> {
     process.stderr.write(`${LOG_PREFIX} [dry-run] hubs que seriam regenerados: ${touched.map((h) => h.slug).join(", ")}.\n`);
     return;
   }
+
+  saveProseReviewState(proseState);
 
   if (touched.length === 0) {
     // Sem mudança de dados: só reconcilia os achados de prosa (se houver) e sai.
@@ -383,7 +421,7 @@ async function main(): Promise<void> {
 
     // ─── Git: commit + push + PR + merge (dentro do worktree) ────────────
     try {
-      run("git", ["add", "scripts/lib/hubs/"], workRoot);
+      run("git", ["add", ...HUBS_GIT_ADD_PATHS], workRoot);
       run("git", ["commit", "-m", `chore(hubs): regen semanal automático — ${touchedSlugs.join(", ")}\n\nRefs #8906`], workRoot);
       run("git", ["push", "-u", "origin", branch], workRoot);
       const prBody = [

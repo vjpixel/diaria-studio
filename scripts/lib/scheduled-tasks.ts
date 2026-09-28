@@ -2114,14 +2114,17 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     //       suficiente pra merecer revisão de prosa manual (issue própria
     //       por hub, `scripts/lib/hubs-weekly-regen.ts`);
     //   (b) o script chega até `master` sozinho (worktree próprio, PR,
-    //       `gh pr merge --squash --auto` com testes verdes) — o deploy do
-    //       Worker `arquivo` em si já é automático desde #4105
+    //       merge SÍNCRONO — `mergeHubsRegenPr`, #8923/#8926: espera o CI
+    //       real via `pollTrainCi` e só roda `gh pr merge --squash` (sem
+    //       `--auto`) com veredito `pass` confirmado, nunca o
+    //       `gh pr merge --squash --auto` que só ARMA o auto-merge) — o
+    //       deploy do Worker `arquivo` em si já é automático desde #4105
     //       (`.github/workflows/deploy-arquivo.yml`), então esta task não
     //       chama `wrangler deploy`.
     // `--check-facts` nunca entra no caminho semanal (decisão c) — sempre
     // `--skip-fact-check`, porque o job nunca toca prosa.
     name: "Diaria-Hub-Weekly-Regen",
-    description: "regen semanal automático dos hubs (só dados) + PR + auto-merge; deploy do Worker arquivo é automático no push a master",
+    description: "regen semanal automático dos hubs (só dados) + PR + merge síncrono (#8923); deploy do Worker arquivo é automático no push a master",
     // `--session-id` estável (#8934-bug, achado ao armar o timer, 28/09/2026):
     // `hubs-weekly-regen.ts` exige `--session-id` fora de `--dry-run` quando
     // há mudança de dados de verdade (usado só como identidade do dono do

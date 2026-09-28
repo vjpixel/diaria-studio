@@ -112,7 +112,13 @@ export interface HubRegenPlan {
    * o warning, e ainda é "dados atualizados em" honesto (#8934, fix do
    * achado ao vivo 28/09/2026: o regen automático quebrou o guard de teto
    * pra `google-gemini` porque `hasDataChange` veio de `changed`, não de
-   * `added`, sobre uma edição de 25 dias atrás). */
+   * `added`, sobre uma edição de 25 dias atrás). **Nunca regride (#8949
+   * item 1, fix 28/09/2026):** o resultado final é sempre
+   * `max(candidato, currentUpdatedDate)` — sem isso, um `UPDATED_DATE`
+   * avançado manualmente por uma revisão de prosa (mais recente que a fonte
+   * mais nova do dataset) seria pisado pra trás por um `changed` que caiu no
+   * ramo `coverageDate` acima, regredindo `dateModified`/`Last-Modified`
+   * publicamente. */
   readonly newUpdatedDate: string | null;
 }
 
@@ -121,12 +127,21 @@ export interface HubRegenPlan {
  * fonte mais recente do dataset PÓS-merge (`hubCoverageDate(rows)`,
  * calculado pelo chamador) — usado só pra decidir entre `todayISO` e
  * `coverageDate` quando `hasDataChange`, nunca pra decidir `hasDataChange`
- * em si (isso continua vindo só do diff). */
-export function planHubRegen(slug: string, diff: HubSourcesDiff, todayISO: string, coverageDate: string): HubRegenPlan {
+ * em si (isso continua vindo só do diff). `currentUpdatedDate` é o
+ * `UPDATED_DATE` hand-written já commitado (#8949 item 1) — o resultado
+ * nunca regride abaixo dele. */
+export function planHubRegen(
+  slug: string,
+  diff: HubSourcesDiff,
+  todayISO: string,
+  coverageDate: string,
+  currentUpdatedDate: string,
+): HubRegenPlan {
   const hasDataChange = hasHubDataChange(diff);
   if (!hasDataChange) return { slug, hasDataChange, newUpdatedDate: null };
   const gapDays = calendarDaysBetween(coverageDate, todayISO);
-  const newUpdatedDate = gapDays < HUB_UPDATED_DATE_CEILING_WARN_DAYS ? todayISO : coverageDate;
+  const candidate = gapDays < HUB_UPDATED_DATE_CEILING_WARN_DAYS ? todayISO : coverageDate;
+  const newUpdatedDate = candidate > currentUpdatedDate ? candidate : currentUpdatedDate;
   return { slug, hasDataChange, newUpdatedDate };
 }
 
