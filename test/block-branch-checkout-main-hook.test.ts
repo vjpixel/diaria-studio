@@ -8,6 +8,7 @@ import {
   shouldBlockBranchCheckout,
   readActiveCoordinatorSessionIds,
   isLinkedWorktree,
+  findGitRootNoSpawn,
   sessionsDir,
   machineTag,
   stripQuotedSpans,
@@ -105,6 +106,83 @@ describe("isLinkedWorktree (#6509)", () => {
   it("'.git' ausente → não dá para determinar, erra para 'não é worktree' (false)", () => {
     const root = freshRoot();
     assert.equal(isLinkedWorktree(root), false);
+  });
+});
+
+describe("findGitRootNoSpawn (#8937) — resolve a raiz a partir de payload.cwd, não import.meta.url", () => {
+  const roots: string[] = [];
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  function freshRoot(): string {
+    const root = join(tmpdir(), `branch-checkout-hook-gitroot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    mkdirSync(root, { recursive: true });
+    return root;
+  }
+
+  it("acha a raiz quando startDir já É a raiz ('.git' como diretório)", () => {
+    const root = freshRoot();
+    mkdirSync(join(root, ".git"));
+    assert.equal(findGitRootNoSpawn(root), root);
+  });
+
+  it("acha a raiz de um worktree vinculado ('.git' como arquivo)", () => {
+    const root = freshRoot();
+    writeFileSync(join(root, ".git"), "gitdir: /some/main/.git/worktrees/agent-x\n", "utf8");
+    assert.equal(findGitRootNoSpawn(root), root);
+  });
+
+  it("sobe a partir de um SUBDIRETÓRIO até achar '.git' — o caso real de payload.cwd num worktree", () => {
+    const root = freshRoot();
+    writeFileSync(join(root, ".git"), "gitdir: /some/main/.git/worktrees/agent-x\n", "utf8");
+    const sub = join(root, "scripts", "lib");
+    mkdirSync(sub, { recursive: true });
+    assert.equal(findGitRootNoSpawn(sub), root);
+  });
+
+  it("startDir vazio/ausente/não-string → null (fail-soft)", () => {
+    assert.equal(findGitRootNoSpawn(""), null);
+    assert.equal(findGitRootNoSpawn(undefined), null);
+    assert.equal(findGitRootNoSpawn(null), null);
+  });
+
+  it("sobe até a raiz do filesystem sem achar '.git' → null", () => {
+    const base = freshRoot();
+    const orphan = join(base, "a", "b");
+    mkdirSync(orphan, { recursive: true });
+    assert.equal(findGitRootNoSpawn(orphan, 2), null);
+  });
+});
+
+describe("#8937 — isLinkedWorktree(cwdRoot) reconhece um worktree de subagente quando cwdRoot vem de payload.cwd", () => {
+  const roots: string[] = [];
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  function freshRoot(): string {
+    const root = join(tmpdir(), `branch-checkout-hook-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    mkdirSync(root, { recursive: true });
+    return root;
+  }
+
+  it("regressão do achado #8937: um worktree de subagente (`.git` arquivo) NUNCA é tratado como checkout principal quando a raiz é derivada de payload.cwd — reproduz o bug pré-fix (import.meta.url sempre resolvia pro checkout principal, então isLinkedWorktree(checkoutRoot) dava false mesmo dentro de um worktree real)", () => {
+    const worktreeRoot = freshRoot();
+    writeFileSync(join(worktreeRoot, ".git"), "gitdir: /home/vjpixel/diaria-studio/.git/worktrees/agent-abc\n", "utf8");
+    const cwdInsideWorktree = join(worktreeRoot, "scripts", "lib");
+    mkdirSync(cwdInsideWorktree, { recursive: true });
+
+    // O fix: cwdRoot vem de findGitRootNoSpawn(payload.cwd), não de hookDir.
+    const cwdRoot = findGitRootNoSpawn(cwdInsideWorktree);
+    assert.equal(cwdRoot, worktreeRoot);
+    assert.equal(isLinkedWorktree(cwdRoot), true, "worktree real deve ser reconhecido como tal — guard nunca bloqueia aqui");
+
+    // O bug: se alguém revertesse pra derivar a raiz de hookDir (sempre o
+    // checkout principal, `.git` é diretório lá), isLinkedWorktree voltaria
+    // false mesmo com o cwd real dentro de um worktree — este teste falharia
+    // detectando exatamente essa regressão se `cwdRoot` fosse trocado de
+    // volta por um valor fixo/checkout-principal.
   });
 });
 

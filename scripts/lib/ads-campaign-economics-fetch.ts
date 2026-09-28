@@ -32,6 +32,9 @@ import {
   type GaqlPerformanceApiRow,
   type FetchLike as GoogleFetchLike,
 } from "./google-ads-ingest.ts";
+import type { DailyConversionCount } from "./shared/daily-conversion-count.ts";
+
+export type { DailyConversionCount };
 import {
   refreshMicrosoftAdsAccessToken,
   fetchMicrosoftAdsPerformanceRows,
@@ -471,10 +474,10 @@ export async function fetchMetaAdsChannelMetrics(
  *  complete_registration" é a ação que conta como cadastro. */
 export const META_COMPLETE_REGISTRATION_ACTION_TYPE = "complete_registration";
 
-export interface DailyConversionCount {
-  date: string;
-  count: number;
-}
+// `DailyConversionCount` é importado + re-exportado de
+// `./shared/daily-conversion-count.ts` (import no topo do arquivo) —
+// consolidado no #8930 item 2, era duplicado verbatim aqui e em
+// `google-ads-ingest.ts`.
 
 export interface ExtractMetaCompleteRegistrationDailyResult {
   counts: DailyConversionCount[];

@@ -33,23 +33,38 @@
 // diretório compartilhado, não para proibir a coordenadora de tudo.
 //
 // Como detecta "checkout PRINCIPAL vs worktree": mesmo mecanismo já usado
-// por `session-beacon.mjs` (`isLinkedWorktree`) — deriva a raiz do checkout
-// a partir de ONDE ESTE ARQUIVO DE HOOK MORA (`import.meta.url`), não do
-// `cwd` do payload. Cada worktree de subagente (`isolation: "worktree"`) tem
-// sua PRÓPRIA cópia deste arquivo sob `<worktree>/.claude/hooks/`, então o
-// hook que roda para um subagente sempre resolve a raiz PARA O PRÓPRIO
-// worktree — nunca precisa comparar `cwd` contra `.claude/worktrees/`
-// textualmente. `.git` é DIRETÓRIO no checkout principal; é um ARQUIVO
-// (`gitdir: ...`) num worktree vinculado. Evita spawnar `git
-// rev-parse` a cada chamada de `Bash` (mesmo racional de performance do
-// `session-beacon.mjs`).
+// por `session-beacon.mjs` (`isLinkedWorktree`), mas a partir de
+// `payload.cwd` (o cwd REAL da chamada que disparou o hook), subindo até
+// achar `.git` (`findGitRootNoSpawn`) — NUNCA a partir de
+// `import.meta.url`/`hookDir` (achado #8937, 28/09/2026, mesma classe do
+// #7712 já corrigido em `session-beacon.mjs`).
+//
+// **Por que NÃO `import.meta.url`:** `${CLAUDE_PROJECT_DIR}` em
+// `.claude/settings.json` é fixado na raiz do checkout PRINCIPAL da sessão
+// no momento em que ela começou — e continua apontando pra lá mesmo quando
+// o hook dispara dentro de um worktree de subagente (`isolation:
+// "worktree"`). A premissa do comentário anterior ("cada worktree tem sua
+// PRÓPRIA cópia deste arquivo, então `hookDir` resolve pro PRÓPRIO
+// worktree") nunca foi verdadeira na prática: medição direta documentada em
+// `session-beacon.mjs` (`findGitRootNoSpawn`, #7712) mostrou que o arquivo
+// que de fato roda é SEMPRE a cópia do checkout principal, porque é o
+// caminho fixo em `settings.json` que o harness invoca — `import.meta.url`
+// dentro dele reflete essa raiz fixa, não o cwd real da chamada. Resultado:
+// `isLinkedWorktree(checkoutRoot)` com `checkoutRoot` derivado de
+// `import.meta.url` nunca reconhecia um subagente de worktree como tal, e o
+// guard bloqueava `git checkout -b`/`git switch -c` dentro do PRÓPRIO
+// worktree isolado do subagente (`.git` ali é ARQUIVO, não diretório) toda
+// vez que havia uma rodada coordenadora ativa — falso positivo relatado ao
+// vivo em 28/09/2026, contornável com `git branch X && git checkout X`
+// (mesmo comando, sem o `-b`, nunca detectado por `isBranchCreateCheckoutCommand`).
 //
 // `data/sessions/` mora sob o checkout PRINCIPAL (junction OneDrive) — como
 // só prosseguimos além do `isLinkedWorktree` check quando o checkout É o
-// principal, a raiz resolvida (`checkoutRoot`) já é a raiz certa para achar
-// `data/sessions/`, sem precisar de `git rev-parse --git-common-dir` (que
-// `block-gh-pr-merge-subagent.mjs` precisa, porque aquele hook roda de
-// QUALQUER worktree e sempre precisa achar o principal indiretamente).
+// principal, a raiz resolvida (`cwdRoot`, agora a partir de `payload.cwd`)
+// já é a raiz certa para achar `data/sessions/`, sem precisar de `git
+// rev-parse --git-common-dir` (que `block-gh-pr-merge-subagent.mjs`
+// precisa, porque aquele hook roda de QUALQUER worktree e sempre precisa
+// achar o principal indiretamente).
 //
 // Self-contained (nenhum import de `scripts/*.ts`) — mesma razão documentada
 // nos hooks irmãos: um import estático de `.ts` quebra o hook inteiro,
@@ -58,10 +73,22 @@
 // importadas) de `session-registry.ts`/`session-beacon.mjs` —
 // versões mínimas, só o necessário para este guard.
 //
-// Escopo explicitamente FORA (#6509):
+// Escopo explicitamente FORA (#6509, reconfirmado no #8937):
 //   - `git checkout <branch-existente>` sem `-b` — cenário distinto, blast
-//     radius maior (bloquear TODO checkout no diretório principal), não
-//     coberto aqui.
+//     radius maior (bloquear TODO checkout no diretório principal, inclusive
+//     de volta pra `master`, que é exatamente o caso QUE ESTE GUARD PRECISA
+//     PERMITIR pra `context/overnight-dispatch-rules.md` funcionar — a
+//     coordenadora e qualquer sessão precisam poder `git checkout master`
+//     livremente). O #8937 considerou estender o bloqueio a esse par
+//     (`git branch X && git checkout X`, o contorno relatado ali), mas
+//     decidiu não fazê-lo: o par SÓ é equivalente a `checkout -b` quando o
+//     branch acabou de ser criado (`git branch X`) — indistinguível, sem
+//     spawnar `git`, de um `git checkout <branch-JÁ-existente>` legítimo
+//     (voltar pra uma feature branch em andamento), que este guard não deve
+//     bloquear. Resolver isso corretamente exigiria inspecionar o estado do
+//     branch (novo vs. já existente), não só o texto do comando — mudança
+//     de escopo maior, fora do que o #8937 pediu (só a detecção de worktree
+//     estava quebrada, não a superfície de comandos cobertos).
 //   - Coordenação cross-máquina via OneDrive duas máquinas fazendo isso ao
 //     mesmo tempo — mesma limitação advisory já documentada em
 //     `session-registry.ts` (#6182) para o merge lock; este guard só
@@ -168,6 +195,33 @@ export function isBranchCreateCheckoutCommand(command) {
     if (sub === "switch" && (rest.includes("-c") || rest.includes("--create"))) return true;
   }
   return false;
+}
+
+/**
+ * Sobe de `startDir` procurando o primeiro ancestral com `.git` (arquivo OU
+ * diretório) — sem spawnar processo. Duplicado de `session-beacon.mjs`
+ * (`findGitRootNoSpawn`, #7712) — mesma razão self-contained dos hooks
+ * irmãos, e mesmo motivo de existir: `payload.cwd` (o cwd REAL da chamada
+ * que disparou o hook) é a única forma confiável de achar a raiz do
+ * worktree/checkout de quem chamou, porque `import.meta.url`/`hookDir`
+ * sempre resolvem pro checkout PRINCIPAL (ver comentário no topo do
+ * arquivo, achado #8937). `null` se nada for achado até `maxDepth` níveis
+ * ou em qualquer falha de I/O (fail-soft).
+ */
+export function findGitRootNoSpawn(startDir, maxDepth = 8) {
+  try {
+    if (typeof startDir !== "string" || startDir.trim() === "") return null;
+    let dir = startDir;
+    for (let i = 0; i < maxDepth; i++) {
+      if (existsSync(join(dir, ".git"))) return dir;
+      const parent = dirname(dir);
+      if (parent === dir) return null; // raiz do filesystem, sem achar .git
+      dir = parent;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /** `statSync(...).isDirectory()` que nunca lança. Duplicado de
@@ -296,11 +350,15 @@ if (
       const command = payload.tool_input?.command;
       if (!isBranchCreateCheckoutCommand(command)) return;
 
+      // #8937: `payload.cwd` (o cwd REAL da chamada), não `import.meta.url`
+      // — ver comentário no topo do arquivo. Fail-soft: sem `payload.cwd`
+      // utilizável, ou se a subida não achar `.git`, cai no `hookDir` antigo
+      // (comportamento pré-#8937, nunca pior que o que já rodava).
       const hookDir = dirname(fileURLToPath(import.meta.url));
-      const checkoutRoot = join(hookDir, "..", "..");
-      if (isLinkedWorktree(checkoutRoot)) return; // worktree de subagente: nunca bloqueia
+      const cwdRoot = findGitRootNoSpawn(payload.cwd) ?? join(hookDir, "..", "..");
+      if (isLinkedWorktree(cwdRoot)) return; // worktree de subagente: nunca bloqueia
 
-      const coordinators = readActiveCoordinatorSessionIds(checkoutRoot);
+      const coordinators = readActiveCoordinatorSessionIds(cwdRoot);
       if (shouldBlockBranchCheckout(coordinators, payload.session_id)) {
         process.stdout.write(
           JSON.stringify({
