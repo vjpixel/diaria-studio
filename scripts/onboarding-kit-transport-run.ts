@@ -532,7 +532,20 @@ async function main(): Promise<void> {
     }));
     const { eligible, excluded } = selectEligibleKitRecipients(rawCandidates);
     if (eligible.length === 0) {
-      (summary.lots as unknown[]).push({ kind, eligible: 0, excluded: excluded.length, note: "nenhum destinatário elegível — nada a fazer" });
+      // `excluded` fica como contagem (compat com o formato anterior do
+      // resumo) — o MOTIVO de cada exclusão (ex: "falha de consulta" nunca
+      // autoriza envio) vai em `excludedReasons`, nunca só implícito na
+      // contagem. Achado do fleet review da PR #8967: sem este campo, o
+      // teste de regressão de "falha de consulta" não tinha como verificar
+      // a RAZÃO da exclusão neste ramo (só o `eligible.length === 0`),
+      // deixando a asserção mais importante do teste sem nunca rodar.
+      (summary.lots as unknown[]).push({
+        kind,
+        eligible: 0,
+        excluded: excluded.length,
+        excludedReasons: excluded.map((x) => ({ email: x.candidate.email, reason: x.reason })),
+        note: "nenhum destinatário elegível — nada a fazer",
+      });
       continue;
     }
 
