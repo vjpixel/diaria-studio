@@ -44,12 +44,23 @@ export function readJsonlTri(p: string): Tri<{ rows: unknown[]; invalidLines: nu
 export function loadEdition(id: string, dir = editionDir(id)): EditionRaw {
   const internal = join(dir, "_internal");
   const status = readJsonTri(join(internal, "stage-status.json"));
+  const statusDoc: Record<string, unknown> | null =
+    status.state === "ok" && typeof status.value === "object" && status.value !== null ? (status.value as Record<string, unknown>) : null;
   const stageRows: Tri<unknown> =
     status.state === "ok"
-      ? typeof status.value === "object" && status.value !== null && "rows" in status.value
-        ? { state: "ok", value: (status.value as { rows: unknown }).rows }
+      ? statusDoc && "rows" in statusDoc
+        ? { state: "ok", value: statusDoc.rows }
         : { state: "corrupt" }
       : status;
+  // #8910: `run_started_at` vive no MESMO doc que `rows` — não é um arquivo
+  // separado. "absent"/"corrupt" espelham o estado de `stageRows` (o doc
+  // inteiro falhou); campo ausente dentro de um doc válido também é "absent".
+  const runStartedAt: Tri<string> =
+    status.state !== "ok"
+      ? status
+      : statusDoc && typeof statusDoc.run_started_at === "string"
+        ? { state: "ok", value: statusDoc.run_started_at }
+        : { state: "absent" };
   return {
     edition: id,
     exists: existsSync(dir),
@@ -57,6 +68,8 @@ export function loadEdition(id: string, dir = editionDir(id)): EditionRaw {
     editorRequests: readJsonlTri(join(internal, "editor-requests.jsonl")),
     stageRows,
     dedupArtifact: readJsonTri(join(internal, "dedup-grayzone-jev.json")),
+    runStartedAt,
+    step4Sentinel: readJsonTri(join(internal, ".step-4-done.json")) as Tri<{ completed_at?: unknown }>,
   };
 }
 

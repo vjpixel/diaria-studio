@@ -298,14 +298,22 @@ describe("jev-ab-report", () => {
     assert.equal(m.stage1WallMinutes, 2);
     assert.ok(warnings.some((w) => w.includes("inclui espera de gate")));
   });
-  it("B: avisa artefato sem env, com shadow, ausente; shadow no marcador; marcador anterior ao Stage 1", () => {
+  it("B: avisa artefato sem env, com shadow, ausente; shadow no marcador; marcador anterior à run (#8910)", () => {
     const w1 = computeMetrics(ed("8", true, { dedupArtifact: ok({ profile_env: null, shadow: true }) })).warnings;
     assert.ok(w1.some((w) => w.includes("não registra profile_env=all")));
     assert.ok(w1.some((w) => w.includes("mostra shadow")));
     assert.ok(computeMetrics(ed("8", true, { dedupArtifact: absent })).warnings.some((w) => w.includes("sem dedup-grayzone-jev.json")));
     assert.ok(computeMetrics(ed("8", true, { profile: ok({ ...profB, shadow: true }) })).warnings.some((w) => w.includes("sem decisão real")));
-    const late = computeMetrics(ed("8", true, { stageRows: ok([{ stage: 1, pipeline_ms: 1, start: "2026-09-21T00:00:00Z" }]) })).warnings;
-    assert.ok(late.some((w) => w.includes("anterior ao início do Stage 1")));
+    // #8910: compara contra run_started_at (não Stage 1); sem confirmação do
+    // dedup (senão a confirmação por si só suprime o aviso — ver
+    // test/jev-ab-report-marker-and-stage4-8910-8901.test.ts).
+    const late = computeMetrics(
+      ed("8", true, {
+        dedupArtifact: ok({ profile_env: "shadow", shadow: true }),
+        runStartedAt: ok("2026-09-21T00:00:00Z"),
+      })
+    ).warnings;
+    assert.ok(late.some((w) => w.includes("anterior ao início da run")));
   });
   it("relatório: rótulo 'espera de gate', aviso de que B decide e n/d", () => {
     const txt = renderAbReport(buildAbReport([ed("1", false), ed("3", true, { stageRows: absent })]));

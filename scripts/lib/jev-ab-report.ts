@@ -22,6 +22,23 @@ export interface EditionRaw {
   stageRows: Tri<unknown>;
   /** `_internal/dedup-grayzone-jev.json` (artefato da feature), se houver. */
   dedupArtifact?: Tri<unknown>;
+  /**
+   * `_internal/stage-status.json > run_started_at` (#8910) — momento em que a
+   * RUN em si começou (escrito pelo próprio `update-stage-status.ts`), não o
+   * início do Stage 1. O marcador `.jev-profile.json` é escrito pela skill
+   * ANTES do Stage 0 — comparar contra o Stage 1 (que só começa depois do
+   * Stage 0 inteiro rodar, 1-5 min) fazia o aviso de "marcador antigo" disparar
+   * em quase toda edição do braço B sem nenhuma retomada real.
+   */
+  runStartedAt?: Tri<string>;
+  /**
+   * `_internal/.step-4-done.json` (#8901 residual) — sentinel de conclusão da
+   * Etapa 4 (`writeSentinel`, `scripts/lib/pipeline-state.ts`). Usado só pra
+   * avisar quando o `end` da Etapa 4 em `stage-status.json` parece cedo
+   * demais frente a este sentinel (sintoma do #8899: fim marcado cedo demais
+   * subnotifica tokens do gate).
+   */
+  step4Sentinel?: Tri<{ completed_at?: unknown }>;
 }
 
 export type Arm = "A" | "B" | "unknown";
@@ -169,22 +186,71 @@ function armBConsistency(e: EditionRaw): string[] {
       if (a.value.shadow === true) w.push(`${id}: marcador B mas o artefato do dedup mostra shadow — braço B sem decisão real`);
     }
   }
-  // Marcador mais antigo que o Stage 1 (retomada com /diaria-edicao comum).
+  // Marcador mais antigo que o INÍCIO DA RUN (retomada com /diaria-edicao
+  // comum) — #8910: comparar contra `run_started_at`, não contra o Stage 1.
+  // O marcador é escrito ANTES do Stage 0, e o Stage 0 sozinho leva 1-5 min
+  // — comparar contra o Stage 1 (que só começa depois disso) disparava o
+  // aviso em quase toda edição legítima do braço B. Tolerância alargada
+  // pra 5 min pra cobrir a folga entre a escrita do marcador e o
+  // `run_started_at` (setup da skill antes de `update-stage-status.ts`
+  // gravar o doc) — medida em edições reais sem retomada (260922: 2m11s;
+  // 260925: 3m25s). Se o artefato do dedup já confirmou profile_env=all
+  // (sem shadow), a feature de fato rodou com o perfil — não há razão pra
+  // emitir o aviso de marcador mesmo que a folga de tempo pareça grande.
+  const dedupConfirmed =
+    e.dedupArtifact?.state === "ok" &&
+    isObj(e.dedupArtifact.value) &&
+    e.dedupArtifact.value.profile_env === "all" &&
+    e.dedupArtifact.value.shadow !== true;
   const wa = typeof p.written_at === "string" ? Date.parse(p.written_at) : NaN;
-  const s1 = stage1Start(e);
-  if (Number.isFinite(wa) && s1 !== null && wa < s1 - 60_000) {
-    // Só sinaliza quando o Stage 1 começou bem depois do marcador: pode ser retomada sem o perfil.
-    w.push(`${id}: marcador anterior ao início do Stage 1 — se a edição foi retomada com /diaria-edicao comum, o perfil pode não ter valido`);
+  const runStart = runStartedAtMs(e);
+  if (!dedupConfirmed && Number.isFinite(wa) && runStart !== null && wa < runStart - MARKER_STALE_TOLERANCE_MS) {
+    // Só sinaliza quando a run começou bem depois do marcador: pode ser retomada sem o perfil.
+    w.push(`${id}: marcador anterior ao início da run — se a edição foi retomada com /diaria-edicao comum, o perfil pode não ter valido`);
   }
   return w;
 }
 
-function stage1Start(e: EditionRaw): number | null {
-  if (e.stageRows.state !== "ok" || !Array.isArray(e.stageRows.value)) return null;
-  const s1 = e.stageRows.value.find((r) => isObj(r) && r.stage === 1);
-  if (!isObj(s1) || typeof s1.start !== "string") return null;
-  const t = Date.parse(s1.start);
+/** #8910: folga entre a escrita do marcador (pré-Stage 0) e `run_started_at`. */
+const MARKER_STALE_TOLERANCE_MS = 5 * 60_000;
+
+function runStartedAtMs(e: EditionRaw): number | null {
+  if (e.runStartedAt?.state !== "ok" || typeof e.runStartedAt.value !== "string") return null;
+  const t = Date.parse(e.runStartedAt.value);
   return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * #8901 residual (bug #8899): quando `update-stage-status.ts` marca o `end`
+ * da Etapa 4 antes do sentinel `.step-4-done.json` de fato completar,
+ * `duration_ms`/`pipeline_ms` ficam curtos demais e subnotificam tokens do
+ * gate. Aviso, não exclusão — o dado ainda entra no relatório, só com a
+ * ressalva. Tolerância de 2 min (mesma ordem de grandeza da folga usada pro
+ * marcador do #8910 — aqui menor porque é o MESMO processo gravando os dois
+ * timestamps, não uma escrita de skill seguida por um subprocesso separado).
+ */
+const STAGE4_END_TOLERANCE_MS = 2 * 60_000;
+
+function stage4DurationWarning(
+  id: string,
+  rows: Record<string, unknown>[],
+  sentinel: Tri<{ completed_at?: unknown }> | undefined
+): string[] {
+  if (!sentinel || sentinel.state !== "ok") return [];
+  const completedAtRaw = sentinel.value.completed_at;
+  const completedAt = typeof completedAtRaw === "string" ? Date.parse(completedAtRaw) : NaN;
+  if (!Number.isFinite(completedAt)) return [];
+  const row4 = rows.find((r) => r.stage === 4);
+  const endRaw = row4 && typeof row4.end === "string" ? row4.end : null;
+  const end = endRaw ? Date.parse(endRaw) : NaN;
+  if (!Number.isFinite(end)) return [];
+  if (completedAt - end > STAGE4_END_TOLERANCE_MS) {
+    const deltaMin = ((completedAt - end) / 60000).toFixed(1);
+    return [
+      `${id}: fim da Etapa 4 em stage-status.json (${endRaw}) é ${deltaMin}min anterior ao sentinel .step-4-done.json (${completedAtRaw}) — duração/tokens da Etapa 4 podem estar subnotificados (#8899)`,
+    ];
+  }
+  return [];
 }
 
 export function computeMetrics(e: EditionRaw): { m: EditionMetrics; warnings: string[] } {
@@ -288,6 +354,7 @@ export function computeMetrics(e: EditionRaw): { m: EditionMetrics; warnings: st
     if (missingCostStages.length > 0) {
       w.push(`${id}: cost_usd ausente nas Etapas ${missingCostStages.join(", ")} — indisponível`);
     }
+    w.push(...stage4DurationWarning(id, rows, e.step4Sentinel));
 
     // Soma 1-3 (sem gate humano) — a parcialidade já foi comunicada pelos 2
     // avisos agregados acima (lista as etapas 1-3 ausentes, se houver); aqui
