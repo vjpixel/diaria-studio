@@ -75,21 +75,57 @@ export function isValidVisitorId(value: string | undefined | null): value is str
   return typeof value === "string" && value.length > 0 && VISITOR_ID_RE.test(value);
 }
 
+/**
+ * Branded type — só existe passando por `isValidVisitorId`/`parseVisitorId`.
+ * Fleet review da #8978: distingue "string qualquer" de "já validado contra
+ * `VISITOR_ID_RE`" no sistema de tipos, pra um caller não conseguir montar
+ * `{ externalId: rawUntrustedInput }` sem passar pelo parse primeiro.
+ * `VisitorId` é um `string` (nunca precisa de unwrap pra logar/persistir),
+ * só não é atribuível A PARTIR de um `string` solto sem o parse.
+ */
+export type VisitorId = string & { readonly __visitorIdBrand: unique symbol };
+
+/** Valida + narrowa pro branded type. `undefined`/inválido → `undefined`
+ * (nunca lança, nunca produz `VisitorId` de lixo). @pure */
+export function parseVisitorId(value: string | undefined | null): VisitorId | undefined {
+  return isValidVisitorId(value) ? (value as VisitorId) : undefined;
+}
+
 /** Lê UM cookie do header `Cookie` cru — mesma lógica de
  * `readCookieValue` (meta-capi.ts), duplicada aqui de propósito (função
  * trivial, ~6 linhas) pra não criar import circular entre os dois módulos
  * (meta-capi.ts importa deste arquivo pra extrair o `external_id`).
  * @pure */
-export function readVisitorIdFromCookieHeader(cookieHeader: string | null | undefined): string | undefined {
+export function readVisitorIdFromCookieHeader(cookieHeader: string | null | undefined): VisitorId | undefined {
   if (!cookieHeader) return undefined;
   for (const part of cookieHeader.split(";")) {
     const eq = part.indexOf("=");
     if (eq === -1) continue;
     if (part.slice(0, eq).trim() !== DIA_VISITOR_ID_COOKIE_NAME) continue;
-    const value = part.slice(eq + 1).trim();
-    return isValidVisitorId(value) ? value : undefined;
+    return parseVisitorId(part.slice(eq + 1).trim());
   }
   return undefined;
+}
+
+/**
+ * #8978 (fleet review, achado 1): a POST de cadastro pra `eia.diar.ia.br` é
+ * CROSS-ORIGIN a partir de `diar.ia.br`/`livros`/`cursos` — sem
+ * `credentials: "include"` (que exigiria CORS credenciado, fora de escopo),
+ * o cookie `_dia_vid` NUNCA chega no header `Cookie` do request. Por isso o
+ * cliente também manda o valor no CORPO do POST (campo `external_id`,
+ * mesmo padrão de `click_id`/`referrer` do #8003) — este helper resolve os
+ * DOIS caminhos com a MESMA precedência em todo call site: cookie do
+ * PRÓPRIO request (quando existir — same-origin, ou um proxy futuro que
+ * repasse o header) sempre vence sobre o valor do corpo (o corpo é
+ * responsabilidade do cliente, mais fácil de adulterar sem validação); o
+ * valor do corpo só é aceito depois de validado por `isValidVisitorId` —
+ * nunca repassado cru. @pure
+ */
+export function resolveVisitorId(
+  cookieHeader: string | null | undefined,
+  bodyValue?: string | null,
+): VisitorId | undefined {
+  return readVisitorIdFromCookieHeader(cookieHeader) ?? parseVisitorId(bodyValue);
 }
 
 /**
@@ -116,7 +152,12 @@ export function readVisitorIdFromCookieHeader(cookieHeader: string | null | unde
  *
  * `try/catch` em volta de tudo: mesma disciplina de `pushSignupConversionEventJs`
  * — um `document.cookie` bloqueado (extensão de privacidade, contexto
- * sandboxed) nunca pode quebrar a página.
+ * sandboxed) nunca pode quebrar a página. **Efeito colateral do catch, nunca
+ * documentado antes desta nota (#8978, fleet review item 6):** se
+ * `document.cookie` lançar (contexto sandboxed, extensão de privacidade), o
+ * `catch` engole o erro ANTES de `window.__DIA_VID__` ser atribuído — o
+ * pixel/CAPI simplesmente omitem `external_id` nesse carregamento (mesmo
+ * comportamento de "campo ausente", nunca um erro visível pro visitante).
  *
  * @pure (a saída é sempre a mesma string — o snippet é executado no
  * BROWSER, este módulo só a produz).
@@ -127,8 +168,11 @@ export function visitorIdBootstrapJs(): string {
     `var COOKIE=${JSON.stringify(DIA_VISITOR_ID_COOKIE_NAME)};` +
     `var DOMAIN=${JSON.stringify(DIA_VISITOR_ID_COOKIE_DOMAIN)};` +
     `var MAXAGE=${DIA_VISITOR_ID_COOKIE_MAX_AGE_SEC};` +
+    // #8978 (fleet review item 5): regex derivada de VISITOR_ID_RE.source —
+    // era um literal /^[0-9a-fA-F-]{16,64}$/ duplicado à mão aqui.
+    `var VIDRE = new RegExp(${JSON.stringify(VISITOR_ID_RE.source)});` +
     "var m = document.cookie.match(new RegExp('(?:^|; )' + COOKIE + '=([^;]+)'));" +
-    "var vid = m && /^[0-9a-fA-F-]{16,64}$/.test(m[1]) ? m[1] : null;" +
+    "var vid = m && VIDRE.test(m[1]) ? m[1] : null;" +
     "if (!vid) {" +
     "vid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : " +
     "'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'.replace(/x/g, function () { return (Math.random() * 16 | 0).toString(16); });" +
@@ -140,5 +184,36 @@ export function visitorIdBootstrapJs(): string {
     "window.dataLayer = window.dataLayer || [];" +
     "window.dataLayer.push({ external_id: vid });" +
     "} catch (e) {}"
+  );
+}
+
+/** #8978 (fleet review item 2): estado module-level — sobrevive enquanto o
+ * ISOLATE do Worker viver, nunca por request. Garante que o aviso abaixo
+ * saia UMA vez por isolate, não uma vez por cadastro (um dia sem o campo
+ * configurado pode processar milhares de cadastros). */
+let externalIdFieldMissingWarned = false;
+
+/**
+ * Aviso ÚNICO por isolate quando `origin.externalId` está presente (o
+ * visitante mandou um `_dia_vid` válido) mas o custom field do ESP
+ * (`BEEHIIV_ORIGEM_EXTERNALID_FIELD`/`KIT_ORIGEM_EXTERNALID_FIELD`) não está
+ * configurado — sem isso, o valor é descartado em silêncio pelo mesmo
+ * gate-por-ausência que protege `origem_click_id`/`origem_referrer`
+ * (nenhum dos dois tinha esse aviso antes; este cobre só `external_id`
+ * porque é o campo que o #8543/#8572 (`SubscriptionConfirmed`) depende pra
+ * reusar o sinal depois — perder o campo aqui degrada TAMBÉM esse evento
+ * server-only). `console.warn` (não `console.error`): é config pendente até
+ * o coordenador criar o campo no ESP, não uma falha do worker.
+ */
+export function warnExternalIdFieldMissingOnce(worker: string, esp: "beehiiv" | "kit"): void {
+  if (externalIdFieldMissingWarned) return;
+  externalIdFieldMissingWarned = true;
+  console.warn(
+    JSON.stringify({
+      event: "external_id_field_missing",
+      worker,
+      esp,
+      hint: esp === "kit" ? "KIT_ORIGEM_EXTERNALID_FIELD" : "BEEHIIV_ORIGEM_EXTERNALID_FIELD",
+    }),
   );
 }

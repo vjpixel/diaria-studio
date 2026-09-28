@@ -40,6 +40,11 @@
  * padrão de `visitor-id.ts`/`meta-capi.ts`.
  */
 
+// #8978 (fleet review item 5): mesmo charset de `FBCLID_RE` — import direto
+// de `meta-capi.ts` (não duplicado), sem risco de ciclo: `meta-capi.ts`
+// nunca importa este módulo.
+import { FBCLID_RE } from "./meta-capi.ts";
+
 /** Mesmo formato canônico que `meta-capi.ts` valida (`FB_COOKIE_RE`):
  * `fb.{subdomainIndex}.{creationTimeMs}.{payload}`. `subdomainIndex` 1 =
  * cookie de domínio (`.diar.ia.br`), coerente com `buildFbcFromClickId`. */
@@ -65,11 +70,36 @@ export function metaFbcBootstrapJs(): string {
     "try {" +
     "if (/(^|\\.)diar\\.ia\\.br$/.test(window.location.hostname)) {" +
     "var fbclid = new URLSearchParams(window.location.search).get('fbclid');" +
-    "if (fbclid && !/(?:^|; )_fbc=/.test(document.cookie)) {" +
+    // #8978 (fleet review item 5): valida o charset do `fbclid` ANTES de
+    // gravar — mesma regra que o servidor (`FBCLID_RE`) já aplicava do lado
+    // dele; sem isso um `fbclid` malformado/injetado na querystring virava
+    // `_fbc` cru gravado no cookie do domínio inteiro.
+    `var FBCLIDRE = new RegExp(${JSON.stringify(FBCLID_RE.source)});` +
+    "if (fbclid && FBCLIDRE.test(fbclid) && !/(?:^|; )_fbc=/.test(document.cookie)) {" +
     `var fbc = 'fb.${FBC_SUBDOMAIN_INDEX}.' + Date.now() + '.' + fbclid;` +
     `document.cookie = '_fbc=' + fbc + '; Max-Age=${FBC_COOKIE_MAX_AGE_SEC}; Domain=.diar.ia.br; Path=/; SameSite=Lax';` +
     "}" +
     "}" +
     "} catch (e) {}"
   );
+}
+
+/**
+ * #8978 (fleet review, achado 1 do #8983 + finding pós-merge sobre
+ * `buildFbcFromReferer`): expressão JS (sem `<script>`/atribuição em volta —
+ * cola direto como VALOR de uma propriedade de objeto, mesmo contrato de
+ * `clientOriginSignalPayloadFieldsJs`) que lê `_fbc`/`_fbp` do
+ * `document.cookie` da PÁGINA ATUAL — nunca de outro host, JS não lê cookie
+ * cross-origin. Cobre o cadastro cross-origin (POST pra `eia.diar.ia.br` a
+ * partir de `diar.ia.br`/`livros`/`cursos`): o cookie nunca chega no header
+ * `Cookie` do request (sem `credentials: "include"`, decisão de escopo — ver
+ * PR #8983), então o SERVIDOR só recebe o valor se o CLIENTE mandar no
+ * corpo. String vazia quando o cookie não existe — nunca `undefined`/erro,
+ * pra manter o objeto de payload JS válido (`JSON.stringify` não aceita
+ * `undefined` numa propriedade sem removê-la, o que mudaria o formato do
+ * corpo entre "campo ausente" e "campo vazio" sem necessidade).
+ * @pure
+ */
+export function fbCookieValueFromDocumentCookieJs(cookieName: "_fbc" | "_fbp"): string {
+  return `(function () { var m = document.cookie.match(/(?:^|; )${cookieName}=([^;]+)/); return m ? m[1] : ""; })()`;
 }

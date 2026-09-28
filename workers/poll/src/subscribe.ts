@@ -61,7 +61,7 @@ import {
   claimCompleteRegistrationSend,
   releaseClaimOnSendFailure,
 } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572
-import { readVisitorIdFromCookieHeader } from "../../../scripts/lib/shared/visitor-id.ts"; // #8978
+import { resolveVisitorId, warnExternalIdFieldMissingOnce } from "../../../scripts/lib/shared/visitor-id.ts"; // #8978
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 // #7723: consome a maquinaria COMPARTILHADA (scripts/lib/shared/kit-doi.ts),
 // a mesma de `cursos` e `reativar`. Antes o poll tinha copias locais de
@@ -414,6 +414,20 @@ export interface ParsedSubscribe {
   /** #8003: click ID de ads prefixado pelo provedor (`gclid:...`/`fbclid:...`/
    * `msclkid:...`) — vazio quando ausente do body. */
   clickId: string;
+  /** #8978 (fleet review, achado 1 do #8983): `_dia_vid` lido pelo CLIENTE
+   * do `document.cookie` e mandado no corpo — cobre o POST cross-origin
+   * (`eia.diar.ia.br`), onde o header `Cookie` do request nunca chega (sem
+   * `credentials: "include"`, decisão de escopo). Vazio/ausente quando não
+   * mandado pelo cliente; validado só depois, em `resolveVisitorId` (nunca
+   * cru). Opcional (não `parseSubscribeBody` sempre popula com `""`, mas
+   * literais de teste anteriores ao #8978 não têm o campo — `(p.externalId
+   * || "")` no call site trata os dois casos igual). */
+  externalId?: string;
+  /** #8978: `_fbc` lido pelo cliente do `document.cookie`, mesma razão do
+   * `externalId` acima. Opcional pelo mesmo motivo. */
+  fbc?: string;
+  /** #8978: `_fbp`, mesma razão. */
+  fbp?: string;
 }
 
 function asStr(v: unknown): string {
@@ -448,9 +462,26 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
         utmCampaign: asStr(o.utm_campaign),
         referrer: asStr(o.referrer),
         clickId: asStr(o.click_id),
+        externalId: asStr(o.external_id),
+        fbc: asStr(o.fbc),
+        fbp: asStr(o.fbp),
       };
     } catch {
-      return { name: "", email: "", optin: false, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "", referrer: "", clickId: "" };
+      return {
+        name: "",
+        email: "",
+        optin: false,
+        honeypot: "",
+        source: "",
+        utmSource: "",
+        utmMedium: "",
+        utmCampaign: "",
+        referrer: "",
+        clickId: "",
+        externalId: "",
+        fbc: "",
+        fbp: "",
+      };
     }
   }
   const params = new URLSearchParams(raw);
@@ -465,6 +496,9 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
     utmCampaign: params.get("utm_campaign") ?? "",
     referrer: params.get("referrer") ?? "",
     clickId: params.get("click_id") ?? "",
+    externalId: params.get("external_id") ?? "",
+    fbc: params.get("fbc") ?? "",
+    fbp: params.get("fbp") ?? "",
   };
 }
 
@@ -480,6 +514,12 @@ export type SubscribeValidation =
       /** #8003: já cortados em SUBSCRIBE_CLIENT_ORIGIN_MAX. */
       referrer: string;
       clickId: string;
+      /** #8978: idem, corte defensivo — validação de FORMATO (VisitorId/
+       * FB_COOKIE_RE) acontece depois, em `resolveVisitorId`/
+       * `extractMetaCapiClientSignals`. */
+      externalId: string;
+      fbc: string;
+      fbp: string;
     }
   | { ok: false; status: number; error: string };
 
@@ -516,7 +556,12 @@ export function validateSubscribeInput(p: ParsedSubscribe): SubscribeValidation 
   // confiar só nisso).
   const referrer = (p.referrer || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX);
   const clickId = (p.clickId || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX);
-  return { ok: true, name, email, source: p.source, utmSource, utmMedium, utmCampaign, referrer, clickId };
+  // #8978: mesmo corte defensivo — formato real (VisitorId/FB_COOKIE_RE) só
+  // é checado depois, em `resolveVisitorId`/`extractMetaCapiClientSignals`.
+  const externalId = (p.externalId || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX);
+  const fbc = (p.fbc || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX);
+  const fbp = (p.fbp || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX);
+  return { ok: true, name, email, source: p.source, utmSource, utmMedium, utmCampaign, referrer, clickId, externalId, fbc, fbp };
 }
 
 export interface RateLimitResult {
@@ -641,6 +686,10 @@ async function subscribeToBeehiiv(
   if (env.BEEHIIV_ORIGEM_EXTERNALID_FIELD && origin.externalId) {
     const field = { name: env.BEEHIIV_ORIGEM_EXTERNALID_FIELD, value: origin.externalId };
     body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
+  } else if (origin.externalId && !env.BEEHIIV_ORIGEM_EXTERNALID_FIELD) {
+    // #8978 (fleet review item 2): sem a var, o valor é descartado em
+    // silêncio — aviso ÚNICO por isolate (ver docstring da função).
+    warnExternalIdFieldMissingOnce("poll", "beehiiv");
   }
 
   let res: Response;
@@ -786,7 +835,12 @@ async function subscribeToKit(
   if (env.KIT_ORIGEM_CLICKID_FIELD && origin.clickId) fields[env.KIT_ORIGEM_CLICKID_FIELD] = origin.clickId;
   // #8978: mesmo guard duplo — persiste o external_id first-party pra
   // eventos SÓ-SERVIDOR (SubscriptionConfirmed/Reactivation) reusarem depois.
-  if (env.KIT_ORIGEM_EXTERNALID_FIELD && origin.externalId) fields[env.KIT_ORIGEM_EXTERNALID_FIELD] = origin.externalId;
+  if (env.KIT_ORIGEM_EXTERNALID_FIELD && origin.externalId) {
+    fields[env.KIT_ORIGEM_EXTERNALID_FIELD] = origin.externalId;
+  } else if (origin.externalId && !env.KIT_ORIGEM_EXTERNALID_FIELD) {
+    // #8978 (fleet review item 2): aviso ÚNICO por isolate.
+    warnExternalIdFieldMissingOnce("poll", "kit");
+  }
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
@@ -1016,15 +1070,18 @@ export async function handleJogarSubscribe(
   // inofensivo pros demais `source`, que os ignoram.
   const utmResolved = resolveSubscribeUtm(v.source, { source: v.utmSource, medium: v.utmMedium, campaign: v.utmCampaign });
   // #8003: sinal de origem cru do cliente — nunca varia por `source`, ver
-  // docstring de `SubscribeOrigin`. #8978: `externalId` vem do cookie
-  // `_dia_vid` do PRÓPRIO request de cadastro (não do form) — lido ANTES do
-  // `subscribeViaConfiguredBackend` abaixo pra poder ser persistido no ESP
-  // na MESMA chamada de criação do subscriber (ver `BEEHIIV_ORIGEM_EXTERNALID_FIELD`/
-  // `KIT_ORIGEM_EXTERNALID_FIELD`).
+  // docstring de `SubscribeOrigin`. #8978: `externalId` PREFERE o cookie
+  // `_dia_vid` do PRÓPRIO request de cadastro; a maioria dos call sites
+  // (`livros`/`arquivo`/`apex`) POSTam CROSS-ORIGIN pra este worker, onde o
+  // header `Cookie` nunca chega — `resolveVisitorId` cai pro `v.externalId`
+  // do corpo do POST nesse caso (fleet review pós-#8983, achado 1). Lido
+  // ANTES do `subscribeViaConfiguredBackend` abaixo pra poder ser
+  // persistido no ESP na MESMA chamada de criação do subscriber (ver
+  // `BEEHIIV_ORIGEM_EXTERNALID_FIELD`/`KIT_ORIGEM_EXTERNALID_FIELD`).
   const origin: SubscribeOrigin = {
     referrer: v.referrer,
     clickId: v.clickId,
-    externalId: readVisitorIdFromCookieHeader(request.headers.get("Cookie")) ?? "",
+    externalId: resolveVisitorId(request.headers.get("Cookie"), v.externalId) ?? "",
   };
   // #8553: click_id (prova de clique de ads) sobrepõe origemPaga quando o
   // utm_source do cliente ficou vazio/divergente — ver docstring de
@@ -1055,8 +1112,16 @@ export async function handleJogarSubscribe(
     // #8388 item 3: sinais de match quality que este handler já tinha em
     // mãos e não mandava (IP/UA dos headers, `_fbp`/`_fbc` do cookie
     // first-party, `fbc` derivado do `click_id` do #8003). Extração é pura
-    // e nunca lança — campo ausente é OMITIDO, nunca string vazia.
-    const clientSignals = extractMetaCapiClientSignals(request.headers, { clickId: origin.clickId });
+    // e nunca lança — campo ausente é OMITIDO, nunca string vazia. #8978
+    // (fleet review pós-#8983): `fbcBody`/`fbpBody`/`externalIdBody` cobrem
+    // o mesmo POST cross-origin do comentário acima — cookie do request
+    // continua vencendo quando existir.
+    const clientSignals = extractMetaCapiClientSignals(request.headers, {
+      clickId: origin.clickId,
+      fbcBody: v.fbc,
+      fbpBody: v.fbp,
+      externalIdBody: v.externalId,
+    });
     // #8572: o par (`event_id`, `event_time`) é resolvido UMA vez aqui e usado
     // nos DOIS lados — vai pra CAPI abaixo via `eventTimeSeconds` (é dele que
     // o builder deriva o id) e volta pro browser no corpo da resposta, pra tag
