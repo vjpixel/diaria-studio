@@ -92,6 +92,7 @@ import {
   type AlarmFinding,
 } from "./lib/alarm-issues.ts";
 import { createRealTrainRunner } from "./lib/merge-train-live.ts";
+import { hubCoverageDate } from "./lib/shared/hub-page.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HUBS_DIR = resolve(ROOT, "scripts/lib/hubs");
@@ -218,7 +219,8 @@ function planAllHubs(today: string): { hubPlans: HubPlan[]; proseAlarmSlugs: str
     const existing: HubSourceEntry[] = existsSync(outPath) ? (JSON.parse(readFileSync(outPath, "utf8")) as HubSourceEntry[]) : [];
     const rows = mergeManualHubSources(existing, collected);
     const diff = computeHubSourcesDiff(existing, rows);
-    const plan = planHubRegen(slug, diff, today);
+    const coverageDate = hubCoverageDate(rows);
+    const plan = planHubRegen(slug, diff, today, coverageDate);
 
     const currentUpdatedDate = readCurrentUpdatedDate(HUBS_DIR, slug);
     proseState = ensureProseReviewBaseline(proseState, slug, currentUpdatedDate);
