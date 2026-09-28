@@ -15,6 +15,15 @@
 # 14 — e mergear sem verificação, em silêncio, que é justamente o que o
 # passo existe pra impedir.
 #
+# #8883 (28/09/2026): o cenário 4 abaixo mudou de comportamento — antes,
+# "nenhum check em 3min" abortava e deixava a PR presa pra sempre, porque
+# a PR é aberta com `secrets.GITHUB_TOKEN` e eventos desse token NUNCA
+# disparam `pull_request` (regra anti-recursão do GitHub) — checks nunca
+# nasciam, e o teto de 3min sempre estourava. Como a ruleset de master não
+# exige status check nenhum pra merge, o script agora trata "0 checks após
+# o teto" como sinal de que nenhum vai vir, e mergeia direto — só continua
+# esperando/observando quando pelo menos 1 check de fato aparece.
+#
 # Uso: bash test/weekly-heatmap-automerge-8489.test.sh
 set -uo pipefail
 
@@ -101,10 +110,13 @@ assert_eq "14 checks estáveis desde o início -> mergeia" "0|14|2" "$R"
 R="$(run_scenario "$(printf '14\n14\n')" 1)"
 assert_eq "check vermelho -> falha e NÃO mergeia" "1||1" "$R"
 
-# 4. Nenhum check jamais se registra: o teto de 3min estoura, o `gh pr
-#    checks` erra (é o que ele faz com 0 checks) e nada é mergeado.
+# 4. Nenhum check jamais se registra (#8883: é o caso REAL da PR aberta com
+#    GITHUB_TOKEN — pull_request nunca dispara, então isto acontece toda
+#    semana, não é um edge case raro). O teto de 3min estoura com 0 checks
+#    e o script agora mergeia direto (sem chamar `gh pr checks`, watches=0)
+#    em vez de abortar — antes desta mudança a PR ficava presa pra sempre.
 R="$(run_scenario "$(printf '0\n')" 1)"
-assert_eq "nenhum check dentro do teto -> falha e NÃO mergeia" "1||1" "$R"
+assert_eq "nenhum check dentro do teto -> mergeia mesmo assim (#8883)" "0|0|0" "$R"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "— FALHOU"
