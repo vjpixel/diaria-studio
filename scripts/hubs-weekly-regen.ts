@@ -282,7 +282,7 @@ function main(): void {
     run("git", [
       "commit",
       "-m",
-      `chore(hubs): regen semanal automático — ${touchedSlugs.join(", ")}\n\nRefs #8906\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`,
+      `chore(hubs): regen semanal automático — ${touchedSlugs.join(", ")}\n\nRefs #8906`,
     ]);
     run("git", ["push", "-u", "origin", branch]);
     const prBody = [
