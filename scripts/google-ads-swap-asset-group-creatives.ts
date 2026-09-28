@@ -3,27 +3,37 @@
  * scripts/google-ads-swap-asset-group-creatives.ts (#8550)
  *
  * Troca os criativos (texto + imagem) do grupo de recursos PMax "Max"
- * (`asset_group_asset` id `6642889160`, campanha `23343492446`) pelos
+ * (`asset_group` id `6642889160`, campanha `23343492446`) pelos
  * novos definidos na issue #8550 — script commitado com `--dry-run` como
  * comportamento DEFAULT, seguindo o pedido explícito da revisão de
  * 20/09/2026 ("passo 3 vira script commitado, não sessão manual").
  *
  * ## NÃO EXECUTAR --send hoje (28/09/2026) — ler antes de rodar
  *
- * Duas travas independentes, cada uma sozinha já bloqueia:
+ * Duas razões independentes, cada uma sozinha já seria motivo de não rodar
+ * — mas só UMA delas é verificada por código (#2); a outra (#1) é um gate
+ * de PROCESSO, não mecânico. Quem for rodar `--send` precisa checar #1 à
+ * mão (reler os comentários da issue #8550/`/diaria-desbloqueia`) antes de
+ * montar o `--images-manifest` — o script não recusa sozinho só porque o
+ * cooldown ainda está ativo.
  *
- *   1. **Editor declinou autorização hoje.** `/diaria-desbloqueia`
- *      (28/09/2026) perguntou explicitamente e a resposta foi "ainda não"
- *      — marcador `acao-adiada` no comentário da issue #8550, cooldown de
- *      7 dias (`scripts/lib/issue-decisions.ts` — `isAcaoAdiadaAtiva`).
- *      Reperguntar antes do cooldown expirar (~05/10/2026) repete uma
- *      pergunta já respondida.
- *   2. **As imagens novas não existem ainda.** A decisão do editor (20/09)
- *      pede overlays das artes que rodam na Meta SEM o botão "Assine
- *      grátis" e SEM título/subtítulo queimados, gerados a partir dos
- *      masters, mais o formato 1,91:1 que não existe em nenhum conjunto
- *      hoje. Gerar essas imagens é edição de imagem, fora do escopo deste
- *      script (que só fala com a Google Ads API) — por isso `--send` exige
+ *   1. **[NÃO enforced em código] Editor declinou autorização hoje.**
+ *      `/diaria-desbloqueia` (28/09/2026) perguntou explicitamente e a
+ *      resposta foi "ainda não" — marcador `acao-adiada` no comentário da
+ *      issue #8550, cooldown de 7 dias (`scripts/lib/issue-decisions.ts` —
+ *      `isAcaoAdiadaAtiva`). Reperguntar antes do cooldown expirar
+ *      (~05/10/2026) repete uma pergunta já respondida. **Este script não
+ *      chama `isAcaoAdiadaAtiva`** — nada aqui impede `--send` de rodar
+ *      durante o cooldown se alguém já tiver um `--images-manifest` válido
+ *      em mãos. Achado do review da PR #8956 (#2 abaixo é quem de fato
+ *      bloqueia hoje).
+ *   2. **[enforced em código, `validateImagesManifest`] As imagens novas
+ *      não existem ainda.** A decisão do editor (20/09) pede overlays das
+ *      artes que rodam na Meta SEM o botão "Assine grátis" e SEM
+ *      título/subtítulo queimados, gerados a partir dos masters, mais o
+ *      formato 1,91:1 que não existe em nenhum conjunto hoje. Gerar essas
+ *      imagens é edição de imagem, fora do escopo deste script (que só
+ *      fala com a Google Ads API) — por isso `--send` exige
  *      `--images-manifest` apontando pros 12 arquivos finais (4 criativos
  *      × 3 proporções) e RECUSA rodar se qualquer um estiver ausente.
  *
@@ -110,7 +120,21 @@ interface ImagesManifest {
 function validateImagesManifest(manifest: ImagesManifest): string[] {
   const errors: string[] = [];
   for (const fieldType of IMAGE_FIELD_TYPES) {
-    const paths = manifest[fieldType as keyof ImagesManifest] ?? [];
+    const raw: unknown = (manifest as Record<string, unknown>)[fieldType];
+    if (raw === undefined) {
+      errors.push(`manifesto não tem nenhum caminho para ${fieldType}`);
+      continue;
+    }
+    // `JSON.parse` devolve `any` — validar a FORMA aqui antes de tratar
+    // como `string[]`, senão um manifesto malformado (ex: valor não-array,
+    // ou array com item não-string) quebra mais adiante com uma exceção
+    // não tratada em vez de um erro limpo na lista (achado do review da
+    // PR #8956, type-design-analyzer).
+    if (!Array.isArray(raw) || !raw.every((p) => typeof p === "string")) {
+      errors.push(`manifesto tem um valor inválido para ${fieldType} — esperado array de strings (caminhos de arquivo)`);
+      continue;
+    }
+    const paths = raw;
     if (paths.length === 0) {
       errors.push(`manifesto não tem nenhum caminho para ${fieldType}`);
       continue;
@@ -155,6 +179,15 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
 
   if (!customerId) {
     console.error("[google-ads-swap-asset-group-creatives] ✖ --customer-id (ou GOOGLE_ADS_CUSTOMER_ID) é obrigatório.");
+    return 1;
+  }
+  // GAQL não aceita bind params — validar como numérico ANTES de interpolar
+  // no resource name (mesma disciplina de `buildConversionActionReadQuery`,
+  // achado do review da PR #8956). `buildAssetGroupAssetsQuery` também
+  // valida o resource name inteiro, mas falhar aqui dá uma mensagem que
+  // aponta pro `--asset-group-id` passado, não pro resource name montado.
+  if (!/^\d+$/.test(assetGroupId)) {
+    console.error(`[google-ads-swap-asset-group-creatives] ✖ --asset-group-id precisa ser numérico, recebido: "${assetGroupId}"`);
     return 1;
   }
 
@@ -225,7 +258,25 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
       console.error(`[google-ads-swap-asset-group-creatives] ✖ assetGroupAssets:mutate (remove) respondeu HTTP ${attempt.res.status}: ${attempt.text.slice(0, 1000)}`);
       return 1;
     }
-    console.log(`[google-ads-swap-asset-group-creatives] ✔ ${classification.stale.length} recurso(s) removido(s): ${attempt.text.slice(0, 500)}`);
+    // Nunca confiar só em `res.ok` (#573, achado do review da PR #8956) —
+    // parsear e conferir que a API confirmou remover exatamente o nº de
+    // recursos pedido, não só que respondeu 2xx.
+    let removeParsed: { results?: unknown[] };
+    try {
+      removeParsed = JSON.parse(attempt.text);
+    } catch {
+      console.error(`[google-ads-swap-asset-group-creatives] ✖ assetGroupAssets:mutate (remove) respondeu corpo não-JSON (HTTP ${attempt.res.status})`);
+      return 1;
+    }
+    const removedCount = (removeParsed.results ?? []).length;
+    if (removedCount !== removePayload.operations.length) {
+      console.error(
+        `[google-ads-swap-asset-group-creatives] ✖ assetGroupAssets:mutate (remove) confirmou ${removedCount} de ` +
+          `${removePayload.operations.length} remoção(ões) pedida(s) — resposta: ${attempt.text.slice(0, 500)}`,
+      );
+      return 1;
+    }
+    console.log(`[google-ads-swap-asset-group-creatives] ✔ ${removedCount} recurso(s) removido(s) (confirmado pela resposta): ${attempt.text.slice(0, 500)}`);
     return 0;
   }
 
@@ -288,7 +339,15 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   const assetsMutateUrl = `https://googleads.googleapis.com/${apiVersion}/customers/${numericCustomerId}/assets:mutate`;
   const linkMutateUrl = `https://googleads.googleapis.com/${apiVersion}/customers/${numericCustomerId}/assetGroupAssets:mutate`;
 
-  async function createAssets(payload: unknown, label: string): Promise<{ resourceNames: string[] } | { error: string }> {
+  // `payload` tipado por `{ operations: unknown[] }` (não `unknown` cru) —
+  // é o que permite validar `results.length === operations.length` abaixo
+  // sem um parâmetro de contagem separado que pudesse divergir do payload
+  // de verdade. Achado do review da PR #8956 (3 agentes independentes): o
+  // check anterior só validava "todo resultado tem resourceName", nunca
+  // "vieram tantos resultados quanto operações enviadas" — um `results: []`
+  // (ou mais curto que o pedido) em cima de HTTP 2xx passava como sucesso
+  // silencioso, criando MENOS assets do que o plano pedia sem nenhum erro.
+  async function createAssets(payload: { operations: unknown[] }, label: string): Promise<{ resourceNames: string[] } | { error: string }> {
     const attempt = await postGoogleAdsWithLoginRetry(fetchFn, auth, accessToken, assetsMutateUrl, JSON.stringify(payload), label);
     if ("networkError" in attempt) return { error: attempt.networkError };
     if (!attempt.res.ok) return { error: `assets:mutate (${label}) respondeu HTTP ${attempt.res.status}: ${attempt.text.slice(0, 1000)}` };
@@ -298,8 +357,16 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
     } catch {
       return { error: `assets:mutate (${label}) respondeu corpo não-JSON (HTTP ${attempt.res.status})` };
     }
-    const resourceNames = (parsed.results ?? []).map((r) => r.resourceName).filter((r): r is string => Boolean(r));
-    if (resourceNames.length !== (parsed.results ?? []).length) {
+    const results = parsed.results ?? [];
+    if (results.length !== payload.operations.length) {
+      return {
+        error:
+          `assets:mutate (${label}) devolveu ${results.length} resultado(s) para ${payload.operations.length} operação(ões) ` +
+          `enviada(s) — resposta: ${attempt.text.slice(0, 500)}`,
+      };
+    }
+    const resourceNames = results.map((r) => r.resourceName).filter((r): r is string => Boolean(r));
+    if (resourceNames.length !== results.length) {
       return { error: `assets:mutate (${label}) devolveu resultado sem resourceName — resposta: ${attempt.text.slice(0, 500)}` };
     }
     return { resourceNames };
@@ -364,7 +431,25 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
       console.error(`[google-ads-swap-asset-group-creatives] ✖ assetGroupAssets:mutate (link ${fieldType}) respondeu HTTP ${attempt.res.status}: ${attempt.text.slice(0, 1000)}`);
       return 1;
     }
-    console.log(`[google-ads-swap-asset-group-creatives] ✔ ${resourceNames.length} recurso(s) ${fieldType} linkado(s) ao grupo.`);
+    // Nunca confiar só em `res.ok` (#573) — conferir que a API confirmou
+    // linkar exatamente o nº de recursos enviado antes de reportar sucesso.
+    let linkParsed: { results?: unknown[] };
+    try {
+      linkParsed = JSON.parse(attempt.text);
+    } catch {
+      console.error(`[google-ads-swap-asset-group-creatives] ✖ assetGroupAssets:mutate (link ${fieldType}) respondeu corpo não-JSON (HTTP ${attempt.res.status})`);
+      return 1;
+    }
+    const linkedCount = (linkParsed.results ?? []).length;
+    if (linkedCount !== resourceNames.length) {
+      console.error(
+        `[google-ads-swap-asset-group-creatives] ✖ assetGroupAssets:mutate (link ${fieldType}) confirmou ${linkedCount} de ` +
+          `${resourceNames.length} link(s) pedido(s) — resposta: ${attempt.text.slice(0, 500)}. Estado agora INCONSISTENTE — ` +
+          "alguns recursos já criados podem estar sem link. Não prossiga sem investigar pela API antes de tentar de novo.",
+      );
+      return 1;
+    }
+    console.log(`[google-ads-swap-asset-group-creatives] ✔ ${linkedCount} recurso(s) ${fieldType} linkado(s) ao grupo (confirmado pela resposta).`);
   }
 
   console.log(

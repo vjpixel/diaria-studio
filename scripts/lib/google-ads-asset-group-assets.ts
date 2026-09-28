@@ -24,22 +24,27 @@
  *
  * ## Por que a execução NÃO acontece neste módulo/CLI hoje (28/09/2026)
  *
- * Duas travas independentes, cada uma suficiente sozinha:
- *   1. **Editor declinou autorização hoje** via `/diaria-desbloqueia`
- *      ("ainda não" — ver marcador `acao-adiada` no comentário da issue,
- *      cooldown de 7 dias, `scripts/lib/issue-decisions.ts`).
- *   2. **As imagens novas ainda não existem** — a decisão do editor
- *      (comentário de 20/09) pede overlays SEM o botão "Assine grátis" e
- *      SEM título/subtítulo queimados, gerados a partir dos masters
- *      (`04-dN-master.jpg`), mais o 1,91:1 que não existe em nenhum
- *      conjunto hoje. Geração de imagem é FORA do escopo deste módulo
- *      (script de texto/API, não de edição de imagem) — `--send` exige um
- *      manifesto apontando pros arquivos finais e falha limpo se qualquer
- *      um estiver ausente (ver `scripts/google-ads-swap-asset-group-creatives.ts`).
+ * Duas razões independentes — só a #2 é checada em código:
+ *   1. **[processo, NÃO checado em código] Editor declinou autorização
+ *      hoje** via `/diaria-desbloqueia` ("ainda não" — ver marcador
+ *      `acao-adiada` no comentário da issue, cooldown de 7 dias,
+ *      `scripts/lib/issue-decisions.ts`). Quem for rodar `--send` precisa
+ *      reler a issue à mão antes — nenhuma chamada a `isAcaoAdiadaAtiva`
+ *      acontece neste módulo/CLI (achado do review da PR #8956).
+ *   2. **[código, `validateImagesManifest`] As imagens novas ainda não
+ *      existem** — a decisão do editor (comentário de 20/09) pede overlays
+ *      SEM o botão "Assine grátis" e SEM título/subtítulo queimados,
+ *      gerados a partir dos masters (`04-dN-master.jpg`), mais o 1,91:1 que
+ *      não existe em nenhum conjunto hoje. Geração de imagem é FORA do
+ *      escopo deste módulo (script de texto/API, não de edição de imagem)
+ *      — `--send` exige um manifesto apontando pros arquivos finais e
+ *      falha limpo se qualquer um estiver ausente (ver
+ *      `scripts/google-ads-swap-asset-group-creatives.ts`).
  *
  * Este módulo/CLI existe pra deixar o passo 3 do plano da issue
  * ("script commitado, com --dry-run, não sessão manual") pronto pra rodar
- * assim que as duas travas acima caírem — não pra rodar agora.
+ * assim que as duas razões acima caírem — não pra rodar agora. A #1 exige
+ * conferência humana; só a #2 é um freio mecânico de verdade.
  */
 
 // ---------------------------------------------------------------------------
@@ -63,7 +68,12 @@ export interface AssetGroupAssetApiRow {
   };
 }
 
-export type AssetGroupFieldType =
+/** Conjunto FECHADO dos `field_type` conhecidos — usado pelos dois conjuntos
+ *  de segurança do módulo (`PROTECTED_FIELD_TYPES`, `IMAGE_FIELD_TYPES` na
+ *  CLI) que precisam de proteção real contra typo em tempo de compilação:
+ *  um valor digitado errado num desses conjuntos deve ser erro de `tsc`, não
+ *  um item real "escapando" silenciosamente da lista de protegidos. */
+export type KnownAssetGroupFieldType =
   | "HEADLINE"
   | "LONG_HEADLINE"
   | "DESCRIPTION"
@@ -74,8 +84,16 @@ export type AssetGroupFieldType =
   | "LOGO"
   | "LANDSCAPE_LOGO"
   | "CALL_TO_ACTION_SELECTION"
-  | "YOUTUBE_VIDEO"
-  | string;
+  | "YOUTUBE_VIDEO";
+
+/** O campo como ele de fato chega da API — pode ser qualquer string (a
+ *  Google pode introduzir um `field_type` novo amanhã). `string & {}` em vez
+ *  de `| string` cru: um union de literais MAIS `string` cru colapsa pro
+ *  `string` puro (perde toda a proteção de typo dos literais); `string & {}`
+ *  preserva o autocomplete/checagem dos literais conhecidos e ainda aceita
+ *  qualquer string em runtime — é o único dos dois que não é equivalente a
+ *  `string` pra fins de tipagem. */
+export type AssetGroupFieldType = KnownAssetGroupFieldType | (string & {});
 
 export interface AssetGroupAssetItem {
   assetGroupAssetResourceName: string;
@@ -93,9 +111,19 @@ export interface AssetGroupAssetItem {
 }
 
 /** Monta a query GAQL de leitura de todos os `asset_group_asset` de um
- *  grupo de recursos, pelo resource name completo do grupo.
+ *  grupo de recursos, pelo resource name completo do grupo. Valida o
+ *  formato (`customers/{dígitos}/assetGroups/{dígitos}`) antes de
+ *  interpolar — GAQL não aceita parâmetros bind (mesma disciplina de
+ *  `buildConversionActionReadQuery` em `google-ads-conversion-action.ts`,
+ *  achado do review da PR #8956: esta função não tinha a mesma validação
+ *  que a irmã, apesar do mesmo risco de interpolação direta em string).
  *  @pure */
 export function buildAssetGroupAssetsQuery(assetGroupResourceName: string): string {
+  if (!/^customers\/\d+\/assetGroups\/\d+$/.test(assetGroupResourceName)) {
+    throw new Error(
+      `assetGroupResourceName precisa ser "customers/{dígitos}/assetGroups/{dígitos}", recebido: "${assetGroupResourceName}"`,
+    );
+  }
   return (
     "SELECT asset_group_asset.asset, asset_group_asset.field_type, asset_group_asset.status, " +
     "asset.id, asset.name, asset.type, asset.text_asset.text, asset.image_asset.full_size.url " +
@@ -255,6 +283,22 @@ export function classifyAssetGroupAssets(items: readonly AssetGroupAssetItem[]):
     }
     // Tipo de asset desconhecido (nem TEXT nem IMAGE) — mesma cautela.
     needsReview.push(item);
+  }
+
+  // Invariante de partição: todo item ENABLED cai em EXATAMENTE 1 dos 4
+  // buckets (nunca 0, nunca 2+) — é o que garante que `--remove-stale`
+  // (que só olha `stale`) nunca remove um item que também apareceu em
+  // `keep`/`needsReview`/`protectedItems` por um branch novo mal encaixado
+  // no loop acima. Lança (não `console.warn`) porque, se isto um dia for
+  // falso, a função em si está quebrada — degradar em silêncio aqui seria
+  // pior que abortar (achado do review da PR #8956, type-design-analyzer).
+  const enabledCount = items.filter((i) => i.status === "ENABLED").length;
+  const bucketedCount = stale.length + keep.length + needsReview.length + protectedItems.length;
+  if (bucketedCount !== enabledCount) {
+    throw new Error(
+      `classifyAssetGroupAssets: invariante de partição violado — ${enabledCount} item(ns) ENABLED, ` +
+        `${bucketedCount} classificado(s) nos 4 buckets. Um item ficou sem bucket ou foi contado 2x — bug na função, não no chamador.`,
+    );
   }
 
   return { stale, keep, needsReview, protectedItems };

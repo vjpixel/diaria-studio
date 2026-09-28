@@ -407,4 +407,149 @@ describe("#8550 — CLI google-ads-swap-asset-group-creatives", () => {
     // Da amostra SAMPLE_SEARCH_RESULTS: só "Newsletter de IA" é stale (diar.ia.br é keep, logo_1.jpg é needsReview).
     assert.deepEqual(removedResourceNames, ["customers/2369219639/assetGroupAssets/g~1~HEADLINE"]);
   });
+
+  it("rejeita --asset-group-id não-numérico ANTES de qualquer chamada de rede (defesa contra injeção de GAQL)", async () => {
+    const fetchMock = async () => {
+      throw new Error("não deveria chamar fetch — validação de --asset-group-id precisa falhar antes");
+    };
+    const code = await withEnv(AUTH_ENV, () =>
+      swapMain(["--customer-id", "2369219639", "--asset-group-id", "123' OR '1'='1"], fetchMock as unknown as typeof fetch),
+    );
+    assert.equal(code, 1);
+  });
+
+  it("assets:mutate devolvendo MENOS resultados que operações enviadas -> erro, nunca linka silenciosamente menos que o pedido", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gads-pmax-manifest-shortresults-"));
+    const makeImg = (name: string) => {
+      const p = join(dir, name);
+      writeFileSync(p, Buffer.from(`fake-bytes-${name}`));
+      return p;
+    };
+    const manifestPath = join(dir, "manifest.json");
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        SQUARE_MARKETING_IMAGE: [makeImg("d1-1x1.jpg")],
+        MARKETING_IMAGE: [makeImg("d1-191x1.jpg")],
+        PORTRAIT_MARKETING_IMAGE: [makeImg("d1-4x5.jpg")],
+      }),
+    );
+    try {
+      let linkCallCount = 0;
+      const fetchMock = async (input: string, init?: RequestInit) => {
+        if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+        if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+        if (input.endsWith("assets:mutate")) {
+          const body = JSON.parse(String(init?.body));
+          // Pede N operações, a API "confirma" só a 1ª -- resposta 2xx
+          // mas incompleta (achado do review da PR #8956).
+          return jsonResponse(200, { results: [{ resourceName: "customers/2369219639/assets/1" }] });
+        }
+        if (input.endsWith("assetGroupAssets:mutate")) {
+          linkCallCount++;
+          return jsonResponse(200, { results: [] });
+        }
+        throw new Error(`chamada inesperada: ${input}`);
+      };
+      const code = await withEnv(AUTH_ENV, () =>
+        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath], fetchMock as unknown as typeof fetch),
+      );
+      assert.equal(code, 1, "resposta com menos resultados que operações enviadas precisa ser erro, não sucesso parcial silencioso");
+      // NEW_HEADLINES tem 4 itens -- a 1ª chamada de assets:mutate (headlines)
+      // já devolve só 1 resultado pra 4 operações, então falha ali, ANTES de
+      // qualquer link (nenhum recurso fica meio-linkado).
+      assert.equal(linkCallCount, 0, "não deve tentar linkar nada quando a criação já veio incompleta");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("assetGroupAssets:mutate (link) confirmando MENOS links que o pedido -> erro, reporta estado inconsistente", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gads-pmax-manifest-shortlink-"));
+    const makeImg = (name: string) => {
+      const p = join(dir, name);
+      writeFileSync(p, Buffer.from(`fake-bytes-${name}`));
+      return p;
+    };
+    const manifestPath = join(dir, "manifest.json");
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        SQUARE_MARKETING_IMAGE: [makeImg("d1-1x1.jpg")],
+        MARKETING_IMAGE: [makeImg("d1-191x1.jpg")],
+        PORTRAIT_MARKETING_IMAGE: [makeImg("d1-4x5.jpg")],
+      }),
+    );
+    try {
+      let assetCounter = 100;
+      const fetchMock = async (input: string, init?: RequestInit) => {
+        if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+        if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+        if (input.endsWith("assets:mutate")) {
+          const body = JSON.parse(String(init?.body));
+          const results = body.operations.map(() => ({ resourceName: `customers/2369219639/assets/${assetCounter++}` }));
+          return jsonResponse(200, { results });
+        }
+        if (input.endsWith("assetGroupAssets:mutate")) {
+          // Sempre confirma 0 links, não importa quantos foram pedidos.
+          return jsonResponse(200, { results: [] });
+        }
+        throw new Error(`chamada inesperada: ${input}`);
+      };
+      const code = await withEnv(AUTH_ENV, () =>
+        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath], fetchMock as unknown as typeof fetch),
+      );
+      assert.equal(code, 1, "link confirmando menos recursos que o enviado precisa falhar, não reportar Fase 1 concluída");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("assetGroupAssets:mutate (remove) confirmando MENOS remoções que o pedido -> erro", async () => {
+    const fetchMock = async (input: string) => {
+      if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+      if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+      if (input.endsWith("assetGroupAssets:mutate")) return jsonResponse(200, { results: [] });
+      throw new Error(`chamada inesperada: ${input}`);
+    };
+    const code = await withEnv(AUTH_ENV, () => swapMain(["--customer-id", "2369219639", "--send", "--remove-stale"], fetchMock as unknown as typeof fetch));
+    assert.equal(code, 1);
+  });
+
+  it("--images-manifest com valor NÃO-array pra um fieldType recusa --send com erro limpo (nunca lança exceção crua)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gads-pmax-manifest-malformed-"));
+    const manifestPath = join(dir, "manifest.json");
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        SQUARE_MARKETING_IMAGE: "not-an-array",
+        MARKETING_IMAGE: [123],
+        PORTRAIT_MARKETING_IMAGE: [],
+      }),
+    );
+    try {
+      const fetchMock = async (input: string) => {
+        if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+        if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+        throw new Error(`chamada inesperada: ${input}`);
+      };
+      const code = await withEnv(AUTH_ENV, () =>
+        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath], fetchMock as unknown as typeof fetch),
+      );
+      assert.equal(code, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#8550 — buildAssetGroupAssetsQuery valida o resource name (achado do review, GAQL injection)", () => {
+  it("rejeita resource name fora do formato customers/{dígitos}/assetGroups/{dígitos}", () => {
+    assert.throws(() => buildAssetGroupAssetsQuery("customers/1/assetGroups/2' OR '1'='1"), /precisa ser/);
+    assert.throws(() => buildAssetGroupAssetsQuery(""), /precisa ser/);
+  });
+
+  it("aceita o formato correto", () => {
+    assert.doesNotThrow(() => buildAssetGroupAssetsQuery("customers/2369219639/assetGroups/6642889160"));
+  });
 });

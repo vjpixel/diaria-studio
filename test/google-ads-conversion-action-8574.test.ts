@@ -269,4 +269,59 @@ describe("#8574 — CLI google-ads-set-conversion-primary (dry-run)", () => {
     );
     assert.equal(code, 1);
   });
+
+  it("INCONSISTÊNCIA (#573): mutação aceita mas a releitura NÃO mostra o alvo -> falha, nunca registra", async () => {
+    const edicoesPath = join(mkdtempSync(join(tmpdir(), "gads-conv-primary-8574-inconsistente-")), "edicoes.jsonl");
+    let searchCallCount = 0;
+    const fetchMock = mock.fn(async (input: string, init?: RequestInit) => {
+      if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+      if (input.endsWith(":mutate")) {
+        const body = JSON.parse(String(init?.body));
+        return jsonResponse(200, { results: [{ resourceName: body.operations[0].update.resourceName }] });
+      }
+      if (input.endsWith(":search")) {
+        searchCallCount++;
+        // A API aceita a mutação (200), mas a releitura CONTINUA mostrando
+        // o valor antigo (`true`) — simula uma inconsistência real (cache,
+        // propagação atrasada, ou um bug em algum ponto do caminho).
+        return jsonResponse(200, {
+          results: [
+            {
+              conversionAction: {
+                resourceName: "customers/2369219639/conversionActions/7758161410",
+                id: "7758161410",
+                name: "Cadastro newsletter (recuperação #7770)",
+                primaryForGoal: true,
+              },
+            },
+          ],
+        });
+      }
+      throw new Error(`chamada inesperada: ${input}`);
+    });
+
+    const code = await withEnv(AUTH_ENV, () =>
+      setPrimaryMain(
+        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send", "--edicoes-path", edicoesPath],
+        fetchMock as unknown as typeof fetch,
+      ),
+    );
+    assert.equal(code, 1, "inconsistência entre mutate e releitura precisa reportar falha (exit 1), nunca sucesso");
+    assert.equal(searchCallCount, 2, "precisa reler mesmo quando vai reportar inconsistência");
+
+    const { existsSync } = await import("node:fs");
+    assert.equal(existsSync(edicoesPath), false, "nunca registra em edicoes.jsonl quando a releitura não confirma o alvo");
+  });
+
+  it("conversion_action não encontrada na releitura inicial -> falha limpa, sem tentar mutar", async () => {
+    const fetchMock = mock.fn(async (input: string) => {
+      if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+      if (input.endsWith(":search")) return jsonResponse(200, { results: [] });
+      throw new Error(`não deveria chamar mutate sem achar a ação: ${input}`);
+    });
+    const code = await withEnv(AUTH_ENV, () =>
+      setPrimaryMain(["--conversion-action-id", "999999999", "--target", "false", "--customer-id", "2369219639"], fetchMock as unknown as typeof fetch),
+    );
+    assert.equal(code, 1);
+  });
 });
