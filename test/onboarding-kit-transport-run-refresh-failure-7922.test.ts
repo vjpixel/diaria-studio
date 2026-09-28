@@ -137,11 +137,19 @@ describe("onboarding-kit-transport-run.ts — falha de consulta nunca autoriza e
       const email2Lot = (summary.lots as Array<Record<string, unknown>>).find((l) => l.kind === "email2");
       assert.ok(email2Lot, `esperava uma entrada de resumo para kind=email2 — summary: ${result.stdout}`);
       assert.equal(email2Lot!.eligible, 0, `refresh falho deveria zerar elegíveis — lot: ${JSON.stringify(email2Lot)}`);
-      const excluded = email2Lot!.excluded as Array<{ email: string; reason: string }> | number;
-      assert.ok(Array.isArray(excluded) ? excluded.length === 1 : excluded === 1, `esperava 1 excluído — lot: ${JSON.stringify(email2Lot)}`);
-      if (Array.isArray(excluded)) {
-        assert.equal(excluded[0].reason, "status_nao_confirmado", `motivo de exclusão deveria ser status_nao_confirmado (falha de consulta), não outro — lot: ${JSON.stringify(email2Lot)}`);
-      }
+      // No ramo `eligible.length === 0`, `excluded` é só a CONTAGEM (número)
+      // — o motivo de cada exclusão vive em `excludedReasons` (achado do
+      // fleet review da PR #8967: a asserção original checava `excluded`
+      // como se pudesse ser um array neste ramo, o que nunca acontece —
+      // código morto que nunca provava nada sobre o MOTIVO da exclusão).
+      assert.equal(email2Lot!.excluded, 1, `esperava 1 excluído — lot: ${JSON.stringify(email2Lot)}`);
+      const excludedReasons = email2Lot!.excludedReasons as Array<{ email: string; reason: string }>;
+      assert.ok(Array.isArray(excludedReasons) && excludedReasons.length === 1, `esperava excludedReasons com 1 item — lot: ${JSON.stringify(email2Lot)}`);
+      assert.equal(
+        excludedReasons[0].reason,
+        "status_nao_confirmado",
+        `motivo de exclusão deveria ser status_nao_confirmado (falha de consulta), não outro — lot: ${JSON.stringify(email2Lot)}`,
+      );
       // Nenhum lote de fato materializado no store (dry-run não escreve, mas
       // reforça que a decisão de "0 elegíveis" nunca chegou perto de criar
       // um lote com este destinatário).
