@@ -390,12 +390,7 @@ batching é só pras pequenas/médias. Cada lote vira 1 PR (`Closes #A,
 closes #B, ...`); como o merge fecha todas as issues do lote, o review leve
 do coordenador confere que o diff cobre de fato **todas** elas.
 
-**Onde a aprovação do agrupamento é registrada varia por skill** — overnight
-tem Fase 0/briefing único (`batch_approval: "editor_approved" |
-"editor_adjusted" | "default_proposed"`); `continuo` não tem briefing e usa
-sempre `"default_proposed"` como default permanente, decisão mecânica do
-coordenador a cada dispatch (nunca vira `AskUserQuestion` novo — ver
-`.claude/skills/diaria-continuo/SKILL.md`, "Loop invariável" passo 1).
+**O agrupamento é decisão autônoma do coordenador em toda skill, nunca `AskUserQuestion` (#8907, 28/09/2026)** — overnight gravava `batch_approval: "editor_approved" | "editor_adjusted" | "default_proposed"` até #8907; hoje grava sempre `"autonomous"` (valores antigos só em planos legados). `continuo` já seguia esse modelo antes (nunca teve briefing, sempre `"default_proposed"`) — os dois convergem no mesmo comportamento: o coordenador decide pelos critérios acima e informa, sem opção de resposta (ver `.claude/skills/diaria-continuo/SKILL.md`, "Loop invariável" passo 1).
 
 ## 16. Viés de autoria e confiança em PR alheio (#5484)
 
@@ -477,16 +472,17 @@ rodada, não só ao terminar uma unidade de trabalho (#7886).** Uma pergunta de
 status do editor ("como está?") é legítima de responder a qualquer momento —
 o que NÃO é legítimo é a resposta terminar oferecendo continuar como se fosse
 uma decisão em aberto. **Antes de formular a resposta, reconsultar
-`plan.json` → `loop_estendido`/`batch_approval`**: se `loop_estendido: true`
-e/ou `batch_approval` já registra aprovação, "quer que eu retome despachando
-mais issues, ou prefere que eu pare por aqui?" já tem resposta gravada — não
+`plan.json` → `loop_estendido`** (e, em plano legado anterior a #8907,
+`batch_approval`): se `loop_estendido: true` (ou o legado `batch_approval`
+já registrava aprovação), "quer que eu retome despachando mais issues, ou
+prefere que eu pare por aqui?" já tem resposta gravada — não
 é pergunta nova, é a mesma pergunta pós-sucesso da regra acima, só que
 disparada por uma interrupção do editor em vez de pelo fim de uma unidade.
 Responder com "Sigo despachando X e Y" (informar, retomando de fato), nunca
-com uma pergunta que reabre algo já aprovado no briefing. Incidente de
+com uma pergunta que reabre algo já decidido. Incidente de
 referência (rodada 260909-260910): o coordenador respondeu a um `como está?`
 espontâneo terminando com exatamente essa pergunta, apesar de
-`loop_estendido: true` e `batch_approval: "editor_approved"` já gravados — o
+`loop_estendido: true` (e, no modelo pré-#8907, `batch_approval: "editor_approved"`) já gravados — o
 editor teve que apontar o problema em vez de simplesmente responder "sim".
 Sem ponto de interceptação mecânico possível aqui também (é texto livre em
 resposta a uma mensagem ad-hoc, não uma chamada de `AskUserQuestion`) — o
