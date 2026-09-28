@@ -130,6 +130,48 @@ STUB
 done
 ```
 
+## Wrapper de `gh` contra vazamento de segredo (#8884, resíduo da #8827)
+
+`hermes/scripts/gh-wrapper.mjs` intercepta toda chamada a `gh` que PUBLICA
+texto (`pr`/`issue` `comment`/`create`/`edit`/`review`, `release`
+`create`/`edit`, `gist create`, `api` de escrita) e recusa (saída ≠ 0, sem
+chamar o `gh` real) quando o corpo FINAL — já expandido pelo shell, incluindo
+`--body-file`/`-f`/`-F campo=@arquivo`/`--input` e stdin — contém algo com
+formato de segredo de provedor. Padrões vêm de
+`.claude/hooks/lib/secret-patterns.mjs`, fonte única compartilhada com o
+hook `.claude/hooks/block-gh-comment-secrets.mjs` (cobre sessões do Claude
+Code) e com `redact_public_text` de `continuo-pr-review.sh` acima.
+
+Este wrapper existe pra fechar duas brechas que o hook do Claude Code deixa
+abertas por desenho:
+
+1. **Corpo dinâmico** (`--body "$VAR"`, `--body "$(cmd | ...)"`) — o hook só
+   vê o TEXTO do comando antes da expansão do shell; o wrapper recebe o argv
+   já expandido, o valor real chega até ele.
+2. **Agente Hermes (GLM) fora do Claude Code** — o tick do contínuo roda o
+   Hermes com a ferramenta de terminal dele, e hooks do harness não se
+   aplicam a esse processo. Um wrapper no `PATH` intercepta qualquer
+   processo que rode `gh` — Hermes, cron, ou um script solto no `300`.
+
+**Instalação (no `300`, 1x):**
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf /home/vjpixel/diaria-studio/hermes/scripts/gh-wrapper.mjs ~/.local/bin/gh
+chmod +x /home/vjpixel/diaria-studio/hermes/scripts/gh-wrapper.mjs
+```
+
+`~/.local/bin` precisa vir ANTES do diretório do `gh` real no `PATH` —
+confirme com `which -a gh`: o primeiro da lista deve ser o wrapper. **Ao
+contrário da tabela de stubs no topo deste README, este link PODE ser um
+symlink de verdade** — o guard de traversal do cron do Hermes audita só o
+`--script` de um JOB, nunca a resolução de `gh` pelo shell via `PATH`, então
+não se aplica aqui.
+
+Teste rápido pós-instalação (num PR/issue de TESTE, nunca um real):
+`gh issue comment <N-de-teste> --body "sk-or-v1-teste0000000000000000000000"`
+deve sair com erro e mensagem citando `#8884`, sem publicar nada.
+
 ## Registro de sessão do tick, deterministicamente (#8740, 24/09/2026)
 
 `hermes/scripts/register-continuo-tick.sh` — script NOVO, ainda **sem**

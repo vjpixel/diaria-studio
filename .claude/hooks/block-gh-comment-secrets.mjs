@@ -16,39 +16,21 @@
 // longo), para nunca bloquear texto que só MENCIONA o nome de uma variável.
 //
 // Fail-open em qualquer falha de parse/leitura, mesma filosofia dos hooks
-// irmãos. Self-contained (sem import de `scripts/*.ts`).
+// irmãos.
+//
+// Duas brechas conhecidas e deliberadamente fora de escopo deste hook —
+// resolvidas por `hermes/scripts/gh-wrapper.mjs` (#8884), que compartilha os
+// padrões abaixo via `./lib/secret-patterns.mjs`:
+// (1) corpo dinâmico (`--body "$VAR"`/`"$(cmd | ...)"`) só é resolvido em
+//     runtime, este hook só vê o texto do COMANDO antes de executar;
+// (2) o agente Hermes (GLM) roda fora do Claude Code — hooks daqui não se
+//     aplicam a esse processo.
 
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
+import { SECRET_PATTERNS, findSecrets, redactSecrets } from "./lib/secret-patterns.mjs";
 
-/** Padrões de segredo com formato de provedor. Cada um exige corpo longo. */
-export const SECRET_PATTERNS = [
-  { name: "OpenRouter", re: /sk-or-(?:v1-)?[A-Za-z0-9_-]{20,}/ },
-  { name: "Anthropic", re: /sk-ant-[A-Za-z0-9_-]{20,}/ },
-  { name: "OpenAI", re: /sk-(?:proj-)?[A-Za-z0-9]{32,}/ },
-  { name: "Brevo", re: /xkeysib-[A-Za-z0-9-]{20,}/ },
-  { name: "GitHub", re: /\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/ },
-  { name: "Doppler", re: /\bdp\.(?:st|pt|sa|ct|scim)\.[A-Za-z0-9_.-]{20,}/ },
-  { name: "Slack", re: /\bxox[abprs]-[A-Za-z0-9-]{20,}/ },
-  { name: "Google API", re: /\bAIza[A-Za-z0-9_-]{35}\b/ },
-  { name: "AWS", re: /\bAKIA[A-Z0-9]{16}\b/ },
-];
-
-/** Nomes dos provedores cujos segredos aparecem em `text` (vazio = limpo). */
-export function findSecrets(text) {
-  if (typeof text !== "string" || text === "") return [];
-  return SECRET_PATTERNS.filter((p) => p.re.test(text)).map((p) => p.name);
-}
-
-/** Troca todo segredo reconhecido por `[REDACTED_{PROVEDOR}]`. */
-export function redactSecrets(text) {
-  let out = text;
-  for (const p of SECRET_PATTERNS) {
-    const tag = `[REDACTED_${p.name.toUpperCase().replace(/\s+/g, "_")}]`;
-    out = out.replace(new RegExp(p.re.source, "g"), tag);
-  }
-  return out;
-}
+export { SECRET_PATTERNS, findSecrets, redactSecrets };
 
 /** O comando publica texto no GitHub via `gh`? */
 export function isGhPublishCommand(command) {
