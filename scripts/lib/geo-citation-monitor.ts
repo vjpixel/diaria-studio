@@ -937,7 +937,7 @@ function perplexityExtractText(json: unknown): string {
         if (block?.type === "output_text" && typeof block.text === "string") parts.push(block.text);
         if (Array.isArray(block?.annotations)) {
           for (const a of block.annotations as Array<Record<string, unknown>>) {
-            if (typeof a?.url === "string") parts.push(a.url);
+            if (a?.type === "url_citation" && typeof a?.url === "string") parts.push(a.url);
           }
         }
       }
