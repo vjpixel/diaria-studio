@@ -386,10 +386,10 @@ function exactMannWhitneyP(n1: number, n2: number, uObserved: number): number {
 }
 
 /**
- * Teste de Mann-Whitney U (dois lados). Exato via DP quando não há empates e o
- * espaço de estados é pequeno (n1*n2<=4000, n1+n2<=60); normal approx com
- * correção de empate/continuidade fora dessa faixa — precisão suficiente pro
- * n pequeno deste relatório (dezenas de edições, não milhares).
+ * Teste de Mann-Whitney U (dois lados). Exato via DP quando não há empates e
+ * n1+n2<=60 (que já limita n1*n2<=900, o teto real de custo da DP); normal
+ * approx com correção de empate/continuidade fora dessa faixa — precisão
+ * suficiente pro n pequeno deste relatório (dezenas de edições, não milhares).
  */
 export function mannWhitneyTest(
   a: number[],
@@ -415,7 +415,8 @@ export function mannWhitneyTest(
   const u2 = n1 * n2 - u1;
   const u = Math.min(u1, u2);
 
-  if (!hasTies && n1 * n2 <= 4000 && n1 + n2 <= 60) {
+  // n1+n2<=60 já limita n1*n2<=900 (máximo em n1=n2=30) — o teto real de custo da DP.
+  if (!hasTies && n1 + n2 <= 60) {
     return { u, pValue: exactMannWhitneyP(n1, n2, u), method: "exact" };
   }
 
@@ -498,6 +499,9 @@ function computeTest(valsA: number[], valsB: number[]): MetricTest {
       method: "n/a",
       ci95: null,
       pisoAtingido,
+      // Sempre "sem dado" neste ramo: com o piso calculado por métrica (não
+      // globalmente), n=0 já implica pisoAtingido=false por construção — não
+      // existe o caso "piso atingido mas métrica sem valor utilizável".
       verdict: "sem dado",
     };
   }
@@ -505,10 +509,11 @@ function computeTest(valsA: number[], valsB: number[]): MetricTest {
   const ci95 = bootstrapMeanDiffCI(valsA, valsB);
   let verdict: MetricTest["verdict"] = "inconclusivo (piso)";
   if (pisoAtingido) {
-    if (Number.isFinite(pValue) && pValue < 0.05) {
-      // Mann-Whitney é um teste de rank — a mediana é o que ele de fato
-      // compara; a média pode discordar em distribuições assimétricas.
-      verdict = medianA! < medianB! ? "A" : "B";
+    // Direção pela mediana, não pela média: o teste é de rank (Mann-Whitney),
+    // e a mediana é o que ele de fato compara — a média pode discordar em
+    // distribuições assimétricas (tokens, espera de gate).
+    if (Number.isFinite(pValue) && pValue < 0.05 && medianA !== null && medianB !== null) {
+      verdict = medianA < medianB ? "A" : "B";
     } else {
       verdict = "sem diferença";
     }

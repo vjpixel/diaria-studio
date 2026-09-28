@@ -44,9 +44,18 @@ describe("mannWhitneyTest", () => {
     assert.ok(pValue < 0.01, `esperava p baixo, veio ${pValue}`);
   });
 
-  it("cai para normal approx com empates e n grande (n1+n2>60)", () => {
-    const a = Array.from({ length: 40 }, () => 5);
-    const b = Array.from({ length: 40 }, () => 6);
+  it("cai para normal approx quando há empates, mesmo com n1+n2 pequeno", () => {
+    const a = Array.from({ length: 6 }, () => 5);
+    const b = Array.from({ length: 6 }, () => 6);
+    const { method, pValue } = mannWhitneyTest(a, b);
+    assert.equal(method, "normal-approx");
+    assert.ok(pValue < 0.01);
+  });
+
+  it("cai para normal approx quando n1+n2>60, mesmo sem empates", () => {
+    const a = Array.from({ length: 31 }, (_, i) => i + 0.01);
+    const b = Array.from({ length: 31 }, (_, i) => i + 100.02);
+    assert.equal(a.length + b.length, 62);
     const { method, pValue } = mannWhitneyTest(a, b);
     assert.equal(method, "normal-approx");
     assert.ok(pValue < 0.01);
@@ -152,6 +161,22 @@ describe("buildAbReport: piso #8412 e veredito", () => {
     const t = r.tests.gate4Corrections;
     assert.equal(t.pisoAtingido, true);
     assert.equal(t.verdict, "sem diferença");
+  });
+
+  it("piso atingido mas métrica sem dado num braço: veredito 'sem dado', não 'inconclusivo (piso)'", () => {
+    // gate4Corrections tem dado nas 2 pontas; tokens fica sem dado no braço B via stageRows corrompido.
+    const A = [1, 2, 3, 4, 5, 6].map((i) => ed(`a${i}`, "A", { gate4: 3, tokens: 100 }));
+    const B = [1, 2, 3, 4, 5, 6].map((i) => {
+      const e = ed(`b${i}`, "B", { gate4: 1, tokens: 100 });
+      return { ...e, stageRows: { state: "corrupt" as const } };
+    });
+    const r = buildAbReport([...A, ...B]);
+    assert.equal(r.arms.A.editions, 6);
+    assert.equal(r.arms.B.editions, 6);
+    const t = r.tests.tokens;
+    assert.equal(t.pisoAtingido, true);
+    assert.equal(t.n.B, 0);
+    assert.equal(t.verdict, "sem dado");
   });
 
   it("--json (via renderAbReport/buildAbReport) expõe n, mediana, p-valor, IC95 e veredito por métrica", () => {
