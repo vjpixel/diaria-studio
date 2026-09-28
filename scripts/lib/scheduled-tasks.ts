@@ -2491,6 +2491,38 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5597, #7137",
   },
   {
+    name: "Diaria-Aquisicao-Reconcile-Daily",
+    description:
+      "drena a coorte real diaria (Kit) para data/aquisicao/reconcile-baseline-{dia}.json e, se existir " +
+      "painel manual do dia, loga o fator painel/coorte-real (log-only, sem alarme -- faixa ainda em " +
+      "medicao, #8591)",
+    steps: [{ key: "reconcile", script: "scripts/aquisicao-reconcile-daily.ts" }],
+    logPath: "aquisicao/.aquisicao-reconcile-daily.log",
+    // 10:07 BRT -- >=10:00 por pedido da issue (#8591 item 3, "depois dos
+    // dois ingests"), depois de Diaria-Google-Ads-Spend-Ingest (09:50),
+    // Diaria-Meta-Ads-Spend-Ingest (09:54) e Diaria-Ads-Spend-Ingest-Alarm
+    // (10:05, acima) -- slot livre (ver grep de `hour: 10, minute:` neste
+    // arquivo). A ordem em relacao aos ingests de gasto nao e uma
+    // DEPENDENCIA de dado (a coorte real vem do Kit, nao do spend.csv) --
+    // e so o agrupamento por horario que a issue pediu.
+    //
+    // O painel (`data/aquisicao/painel/{dia}.json`) e MANUAL -- nenhum
+    // ingest de gasto atual busca conversoes do painel (investigado na
+    // docstring de aquisicao-reconcile-daily.ts, item 2 da #8591, bloqueio
+    // documentado: exige decisao editorial de qual acao de conversao conta
+    // por plataforma). Sem o arquivo, o step so grava o baseline e loga que
+    // o fator foi pulado -- nunca erro.
+    schedule: { kind: "daily", hour: 10, minute: 7 },
+    // Sem guard -- aquisicao-reconcile-daily.ts e fail-soft por desenho
+    // (mesma disciplina dos ingests de gasto vizinhos): qualquer falha de
+    // rede/API sai 0 e loga o motivo, nunca lanca.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
+    // e acao POSTERIOR do editor.
+    issue: "#8591",
+  },
+  {
     name: "Diaria-Ads-Daily-Digest",
     description:
       "relatorio diario do Studio (/relatorios, kind ads-digest) SEMPRE gerado com o gasto em ads do dia " +
