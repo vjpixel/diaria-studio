@@ -92,12 +92,15 @@ describe("assertQuedaMinAbsCobreUnidades", () => {
   });
 
   it("unidade sem piso declarado lança em tempo de carga", () => {
-    const defs = [{ id: "m1", unidade: "brl" as const, direcao: "maior-melhor" as const }];
+    // `brl` ganhou piso no #8423 (bloco "Valor") — usa `percentual`, que
+    // segue sem nenhuma métrica do registry real (ver docstring de
+    // `METRICS_HEALTH_THRESHOLDS`), como exemplo de unidade indeclarada.
+    const defs = [{ id: "m1", unidade: "percentual" as const, direcao: "maior-melhor" as const }];
     assert.throws(() => assertQuedaMinAbsCobreUnidades(defs), /sem piso QUEDA_MIN_ABS/);
   });
 
   it("direcao neutro nunca exige piso (nunca alarma)", () => {
-    const defs = [{ id: "m1", unidade: "brl" as const, direcao: "neutro" as const }];
+    const defs = [{ id: "m1", unidade: "percentual" as const, direcao: "neutro" as const }];
     assert.doesNotThrow(() => assertQuedaMinAbsCobreUnidades(defs));
   });
 });
