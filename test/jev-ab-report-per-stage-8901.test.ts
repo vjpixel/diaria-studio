@@ -79,13 +79,18 @@ describe("computeMetrics — tokens/cost_usd por etapa (#8901)", () => {
     assert.ok(warnings.some((w) => w.includes("cost_usd ausente nas Etapas")));
   });
 
-  it("soma 1-3 parcial (falta 1 etapa) ainda soma o que tem, sem warning redundante de 'soma parcial'", () => {
+  it("soma 1-3 parcial (falta 1 etapa) vira null — nunca soma só o que tem (#8946)", () => {
     const e = makeEdition("260928", [
       stageRow(1, 1_000_000, 100_000, 5),
       stageRow(3, 500_000, 50_000, 2),
     ]);
     const { m, warnings } = computeMetrics(e);
-    assert.equal(m.stage1to3TokensIn, 1_500_000);
+    // #8946: uma soma parcial (Etapa 2 ausente) subestimaria o total e faria
+    // o braço parecer mais barato por dado faltante, não por comportamento
+    // real — null é o resultado correto, não a soma do que sobrou.
+    assert.equal(m.stage1to3TokensIn, null);
+    assert.equal(m.stage1to3TokensOut, null);
+    assert.equal(m.stage1to3CostUsd, null);
     // #8912 self-review: a parcialidade já é comunicada pelo warning agregado
     // "tokens_in/tokens_out ausentes nas Etapas 2, 4" — não duplicar com uma
     // linha específica de "soma parcial".
