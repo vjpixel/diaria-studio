@@ -1211,19 +1211,19 @@ const churnMensalDef: MetricDef<ChurnMensalDeps> = {
       periodMonths: args.deps.periodMonths,
       avgActiveBase: args.deps.avgActiveBase,
     });
-    if (r.organicMonthly == null || r.comLimpezaMonthly == null) {
+    if (r.monthly == null) {
       return indeterminado(args.janela, r.motivo ?? "churn indisponível");
     }
     const series: MetricSeriesPoint[] | undefined =
       args.decomposicao === "variante"
         ? [
-            { chave: "organico", valor: r.organicMonthly },
-            { chave: "com_limpeza", valor: r.comLimpezaMonthly },
+            { chave: "organico", valor: r.monthly.organico },
+            { chave: "com_limpeza", valor: r.monthly.comLimpeza },
           ]
         : undefined;
     const result = faixa(
-      r.organicMonthly,
-      r.comLimpezaMonthly,
+      r.monthly.organico,
+      r.monthly.comLimpeza,
       args.janela,
       null,
       `faixa: piso = churn orgânico; teto = churn com limpeza manual (${r.manualCleanupExits} de ${r.totalExits} saída(s))`,
@@ -1293,8 +1293,8 @@ const ltvCaixaDef: MetricDef<LtvCaixaDeps> = {
       churnComLimpezaMonthly: args.deps.churnMensalComLimpeza,
       horizonMonths,
     });
-    if (r.min == null || r.max == null) return indeterminado(args.janela, r.motivo ?? "LTV indisponível");
-    return faixa(r.min, r.max, args.janela, null, `faixa de LTV — horizonte de ${horizonMonths} meses`);
+    if (r.faixa == null) return indeterminado(args.janela, r.motivo ?? "LTV indisponível");
+    return faixa(r.faixa.min, r.faixa.max, args.janela, null, `faixa de LTV — horizonte de ${horizonMonths} meses`);
   },
 };
 

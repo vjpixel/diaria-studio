@@ -191,14 +191,21 @@ export interface ChurnRateInput {
   avgActiveBase: number | null;
 }
 
-export interface ChurnRateResult {
+/** Par "ambos ou nenhum" — orgânico e com-limpeza só existem juntos (#8968,
+ *  mesmo idioma de `MetricLimites` em `scripts/lib/metrics/registry.ts`). */
+export interface ChurnRateMonthly {
   /** Saídas ÷ período ÷ base, EXCLUINDO limpeza manual conhecida —
-   *  desinteresse "puro" do leitor. `null` quando `avgActiveBase`/
-   *  `periodMonths` são inválidos. */
-  organicMonthly: number | null;
+   *  desinteresse "puro" do leitor. */
+  organico: number;
   /** Mesma razão, mas INCLUINDO todas as saídas (mesmo as de limpeza
-   *  manual) — sempre >= `organicMonthly` quando ambos existem. */
-  comLimpezaMonthly: number | null;
+   *  manual) — sempre >= `organico`. */
+  comLimpeza: number;
+}
+
+export interface ChurnRateResult {
+  /** `null` quando `avgActiveBase`/`periodMonths` são inválidos ou o churn é
+   *  implausível — caso contrário sempre as duas leituras juntas. */
+  monthly: ChurnRateMonthly | null;
   totalExits: number;
   manualCleanupExits: number;
   organicExits: number;
@@ -215,8 +222,7 @@ export function computeChurnRate(input: ChurnRateInput): ChurnRateResult {
 
   if (input.avgActiveBase == null || input.avgActiveBase <= 0 || !(input.periodMonths > 0)) {
     return {
-      organicMonthly: null,
-      comLimpezaMonthly: null,
+      monthly: null,
       totalExits,
       manualCleanupExits,
       organicExits,
@@ -236,8 +242,7 @@ export function computeChurnRate(input: ChurnRateInput): ChurnRateResult {
   // indeterminado com motivo explícito (#8423 fleet review item 6).
   if (organicMonthly > 1 || comLimpezaMonthly > 1) {
     return {
-      organicMonthly: null,
-      comLimpezaMonthly: null,
+      monthly: null,
       totalExits,
       manualCleanupExits,
       organicExits,
@@ -248,8 +253,7 @@ export function computeChurnRate(input: ChurnRateInput): ChurnRateResult {
   }
 
   return {
-    organicMonthly,
-    comLimpezaMonthly,
+    monthly: { organico: organicMonthly, comLimpeza: comLimpezaMonthly },
     totalExits,
     manualCleanupExits,
     organicExits,
@@ -320,13 +324,11 @@ export interface LtvCaixaFaixaInput {
 }
 
 export interface LtvCaixaFaixaResult {
-  /** Piso da faixa — LTV usando o churn "com limpeza" (maior churn, vida
-   *  útil menor). `null` quando não computável. */
-  min: number | null;
-  /** Teto da faixa — LTV usando o churn orgânico (menor churn, vida útil
-   *  maior, sujeita ao mesmo truncamento de horizonte). `null` quando não
-   *  computável. */
-  max: number | null;
+  /** `null` quando não computável — caso contrário `min` (piso, churn "com
+   *  limpeza", vida útil menor) e `max` (teto, churn orgânico, vida útil
+   *  maior, sujeita ao mesmo truncamento de horizonte) sempre juntos, mesmo
+   *  idioma de `MetricLimites` em `scripts/lib/metrics/registry.ts` (#8968). */
+  faixa: { min: number; max: number } | null;
   motivo: string | null;
 }
 
@@ -348,9 +350,9 @@ export function computeLtvCaixaFaixa(input: LtvCaixaFaixaInput): LtvCaixaFaixaRe
     horizonMonths: input.horizonMonths,
   });
   if (min.valor == null || max.valor == null) {
-    return { min: null, max: null, motivo: min.motivo ?? max.motivo ?? "faixa indisponível" };
+    return { faixa: null, motivo: min.motivo ?? max.motivo ?? "faixa indisponível" };
   }
-  return { min: min.valor, max: max.valor, motivo: null };
+  return { faixa: { min: min.valor, max: max.valor }, motivo: null };
 }
 
 // ---------------------------------------------------------------------------

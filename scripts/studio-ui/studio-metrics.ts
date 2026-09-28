@@ -695,8 +695,8 @@ async function computeValorLayer(
         janela: janelaMes,
         deps: {
           arpuMensal: arpuAtivo.valor,
-          churnMensalOrganico: churnRaw.organicMonthly,
-          churnMensalComLimpeza: churnRaw.comLimpezaMonthly,
+          churnMensalOrganico: churnRaw.monthly?.organico ?? null,
+          churnMensalComLimpeza: churnRaw.monthly?.comLimpeza ?? null,
         } satisfies LtvCaixaDeps,
       })
     : { valor: null, janela: janelaMes, frescor: null, qualidade: "indeterminado" as const, motivo: manualCleanupUnavailableMotivo ?? "churn indisponível" };

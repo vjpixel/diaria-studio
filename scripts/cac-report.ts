@@ -378,12 +378,12 @@ export function computeLtvSection(
 
   const ltvFaixa = computeLtvCaixaFaixa({
     arpuMonthlyBrl: arpu.valor,
-    churnOrganicoMonthly: churn.organicMonthly,
-    churnComLimpezaMonthly: churn.comLimpezaMonthly,
+    churnOrganicoMonthly: churn.monthly?.organico ?? null,
+    churnComLimpezaMonthly: churn.monthly?.comLimpeza ?? null,
     horizonMonths: LTV_DEFAULT_HORIZON_MONTHS,
   });
 
-  if (ltvFaixa.min == null || ltvFaixa.max == null) {
+  if (ltvFaixa.faixa == null) {
     return {
       applied: true,
       ltvFaixaBrl: null,
@@ -392,7 +392,7 @@ export function computeLtvSection(
     };
   }
 
-  const midpoint = (ltvFaixa.min + ltvFaixa.max) / 2;
+  const midpoint = (ltvFaixa.faixa.min + ltvFaixa.faixa.max) / 2;
   const measuredRows = report.rows.filter((r): r is Extract<CacRow, { kind: "measured" }> => r.kind === "measured");
   const rows: CacReportLtvRow[] = measuredRows
     .filter((r) => r.custoPorLeitor != null)
@@ -402,7 +402,7 @@ export function computeLtvSection(
       ltvCacRatio: computeLtvCacRatio({ ltvBrl: midpoint, custoPorLeitorBrl: r.custoPorLeitor }).valor,
     }));
 
-  return { applied: true, ltvFaixaBrl: { min: ltvFaixa.min, max: ltvFaixa.max }, motivo: null, rows };
+  return { applied: true, ltvFaixaBrl: { min: ltvFaixa.faixa.min, max: ltvFaixa.faixa.max }, motivo: null, rows };
 }
 
 /**

@@ -25,7 +25,37 @@ import {
   findChurnBaselineDate,
   computeChurnExitsBetweenSnapshots,
   resolveApoiaSeCampaignName,
+  type ChurnRateResult,
+  type LtvCaixaFaixaResult,
 } from "../scripts/lib/ltv.ts";
+
+// #8968: ChurnRateResult.monthly e LtvCaixaFaixaResult.faixa modelam pares
+// "ambos ou nenhum" como `{ ... } | null` (mesmo idioma de `MetricLimites`
+// em scripts/lib/metrics/registry.ts) em vez de 2 campos nullable
+// independentes — este teste é só de TIPO/FORMA: falha em `tsc`
+// (npx tsc -p tsconfig.test.json --noEmit), nunca em `node --test`, se
+// alguém reintroduzir o par independente.
+describe("#8968 — pares min/max agrupados em { ... } | null", () => {
+  it("ChurnRateResult.monthly: ambos os campos presentes juntos, nunca um só", () => {
+    const comAmbos: ChurnRateResult["monthly"] = { organico: 0.01, comLimpeza: 0.02 };
+    const semNenhum: ChurnRateResult["monthly"] = null;
+    // @ts-expect-error — não é permitido só um dos dois campos
+    const apenasUm: ChurnRateResult["monthly"] = { organico: 0.01 };
+    assert.ok(comAmbos.organico <= comAmbos.comLimpeza);
+    assert.equal(semNenhum, null);
+    void apenasUm;
+  });
+
+  it("LtvCaixaFaixaResult.faixa: ambos os campos presentes juntos, nunca um só", () => {
+    const comAmbos: LtvCaixaFaixaResult["faixa"] = { min: 14, max: 16 };
+    const semNenhum: LtvCaixaFaixaResult["faixa"] = null;
+    // @ts-expect-error — não é permitido só um dos dois campos
+    const apenasUm: LtvCaixaFaixaResult["faixa"] = { min: 14 };
+    assert.ok(comAmbos.min <= comAmbos.max);
+    assert.equal(semNenhum, null);
+    void apenasUm;
+  });
+});
 
 describe("computeArpu", () => {
   it("soma fontes com dado e divide pela base ativa", () => {
@@ -77,10 +107,10 @@ describe("computeChurnRate", () => {
     assert.equal(r.totalExits, 4);
     assert.equal(r.manualCleanupExits, 2);
     assert.equal(r.organicExits, 2);
-    assert.ok(r.organicMonthly != null && r.comLimpezaMonthly != null);
-    assert.ok(r.organicMonthly < r.comLimpezaMonthly);
-    assert.ok(Math.abs(r.organicMonthly - 2 / 100) < 1e-9);
-    assert.ok(Math.abs(r.comLimpezaMonthly - 4 / 100) < 1e-9);
+    assert.ok(r.monthly != null);
+    assert.ok(r.monthly.organico < r.monthly.comLimpeza);
+    assert.ok(Math.abs(r.monthly.organico - 2 / 100) < 1e-9);
+    assert.ok(Math.abs(r.monthly.comLimpeza - 4 / 100) < 1e-9);
   });
 
   it("reproduz a ordem de grandeza da issue: churn 'com limpeza' alto quando a maioria das saídas é limpeza", () => {
@@ -89,26 +119,24 @@ describe("computeChurnRate", () => {
     const manualCleanupEmails = new Set(exits.slice(0, 65).map((e) => e.email));
     const avgActiveBase = 466; // ordem de grandeza plausível pro período
     const r = computeChurnRate({ exits, manualCleanupEmails, periodMonths: 3, avgActiveBase });
-    assert.ok(r.comLimpezaMonthly != null);
-    assert.ok(r.comLimpezaMonthly > 0.04 && r.comLimpezaMonthly < 0.06, `esperava ~5%, obteve ${r.comLimpezaMonthly}`);
+    assert.ok(r.monthly != null);
+    assert.ok(r.monthly.comLimpeza > 0.04 && r.monthly.comLimpeza < 0.06, `esperava ~5%, obteve ${r.monthly.comLimpeza}`);
   });
 
   it("nunca fabrica 0 quando avgActiveBase é null", () => {
     const r = computeChurnRate({ exits: [], manualCleanupEmails: new Set(), periodMonths: 1, avgActiveBase: null });
-    assert.equal(r.organicMonthly, null);
-    assert.equal(r.comLimpezaMonthly, null);
+    assert.equal(r.monthly, null);
     assert.match(r.motivo ?? "", /inválida/);
   });
 
   it("nunca fabrica 0 quando periodMonths é 0", () => {
     const r = computeChurnRate({ exits: [], manualCleanupEmails: new Set(), periodMonths: 0, avgActiveBase: 100 });
-    assert.equal(r.organicMonthly, null);
+    assert.equal(r.monthly, null);
   });
 
   it("indeterminado quando periodMonths é negativo (#8423 fleet review — must-add)", () => {
     const r = computeChurnRate({ exits: [{ email: "a@x.com" }], manualCleanupEmails: new Set(), periodMonths: -1, avgActiveBase: 100 });
-    assert.equal(r.organicMonthly, null);
-    assert.equal(r.comLimpezaMonthly, null);
+    assert.equal(r.monthly, null);
     assert.match(r.motivo ?? "", /inválida/);
   });
 
@@ -116,15 +144,14 @@ describe("computeChurnRate", () => {
     const exits = Array.from({ length: 50 }, (_, i) => ({ email: `s${i}@x.com` }));
     // base ativa média de 10, 50 saídas num único mês -> 500%/mês, implausível
     const r = computeChurnRate({ exits, manualCleanupEmails: new Set(), periodMonths: 1, avgActiveBase: 10 });
-    assert.equal(r.organicMonthly, null);
-    assert.equal(r.comLimpezaMonthly, null);
+    assert.equal(r.monthly, null);
     assert.match(r.motivo ?? "", /implausível/);
   });
 
   it("churn <= 100%/mês não é afetado pelo guard de implausibilidade", () => {
     const r = computeChurnRate({ exits: [{ email: "a@x.com" }], manualCleanupEmails: new Set(), periodMonths: 1, avgActiveBase: 100 });
-    assert.ok(r.organicMonthly != null);
-    assert.ok(r.organicMonthly <= 1);
+    assert.ok(r.monthly != null);
+    assert.ok(r.monthly.organico <= 1);
   });
 });
 
@@ -177,11 +204,11 @@ describe("computeLtvCaixaFaixa", () => {
       churnComLimpezaMonthly: 0.05,
       horizonMonths: 24,
     });
-    assert.ok(r.min != null && r.max != null);
-    assert.ok(r.min <= r.max);
+    assert.ok(r.faixa != null);
+    assert.ok(r.faixa.min <= r.faixa.max);
     // sanity check de ordem de grandeza vs. a issue (~R$15-19, referência ~R$14-16)
-    assert.ok(r.min > 10 && r.min < 20, `min fora da ordem de grandeza esperada: ${r.min}`);
-    assert.ok(r.max > 10 && r.max < 20, `max fora da ordem de grandeza esperada: ${r.max}`);
+    assert.ok(r.faixa.min > 10 && r.faixa.min < 20, `min fora da ordem de grandeza esperada: ${r.faixa.min}`);
+    assert.ok(r.faixa.max > 10 && r.faixa.max < 20, `max fora da ordem de grandeza esperada: ${r.faixa.max}`);
   });
 
   it("nunca fabrica faixa quando um dos churns é indisponível", () => {
@@ -191,8 +218,7 @@ describe("computeLtvCaixaFaixa", () => {
       churnComLimpezaMonthly: 0.05,
       horizonMonths: 24,
     });
-    assert.equal(r.min, null);
-    assert.equal(r.max, null);
+    assert.equal(r.faixa, null);
     assert.ok(r.motivo);
   });
 });
