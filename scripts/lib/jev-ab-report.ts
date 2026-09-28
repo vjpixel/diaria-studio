@@ -96,11 +96,37 @@ export const NOISY_STAGE4_METRIC_KEYS: readonly MetricKey[] = [
   "stage4CostUsd",
 ];
 
+/** Piso de amostra do critério de saída do épico #8412 — "≥5 edições por braço". */
+export const MIN_N_PER_ARM = 5;
+
 export interface ArmSummary {
   arm: "A" | "B";
   editions: number;
   mean: Record<MetricKey, number | null>;
   n: Record<MetricKey, number>;
+}
+
+/** Teste de significância por métrica (#8911) — Mann-Whitney U, exato quando viável. */
+export interface MetricTest {
+  n: { A: number; B: number };
+  medianA: number | null;
+  medianB: number | null;
+  u: number | null;
+  pValue: number | null;
+  method: "exact" | "normal-approx" | "n/a";
+  /** IC 95% (bootstrap, percentil) da diferença de médias B-A. */
+  ci95: [number, number] | null;
+  /**
+   * Os dois braços atingiram o piso do #8412 (>=5 edições cada) COM DADO
+   * UTILIZÁVEL PARA ESTA MÉTRICA — nunca a contagem de edições do relatório
+   * como um todo. Uma métrica pode ter n menor que o total de edições do
+   * braço (ex: tokens ausentes em algumas edições por falha do
+   * capture-stage-usage); usar o piso global inflaria o piso desta métrica
+   * e permitiria veredito A/B definitivo com n efetivo abaixo de 5.
+   */
+  pisoAtingido: boolean;
+  /** Só "A"/"B" quando pisoAtingido && p<0,05; "sem dado" quando um braço não tem valor utilizável para esta métrica. */
+  verdict: "A" | "B" | "sem diferença" | "inconclusivo (piso)" | "sem dado";
 }
 
 export interface AbReport {
@@ -110,6 +136,7 @@ export interface AbReport {
   warnings: string[];
   /** Edições com pelo menos uma métrica utilizável. */
   usable: number;
+  tests: Record<MetricKey, MetricTest>;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -302,6 +329,193 @@ export function computeMetrics(e: EditionRaw): { m: EditionMetrics; warnings: st
   };
 }
 
+export function median(vals: number[]): number | null {
+  if (!vals.length) return null;
+  const s = [...vals].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/** Abramowitz-Stegun 7.1.26 — precisão ~1e-7, suficiente pro p-valor exibido. */
+function erf(x: number): number {
+  const sign = x < 0 ? -1 : 1;
+  const ax = Math.abs(x);
+  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+  const t = 1 / (1 + p * ax);
+  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-ax * ax);
+  return sign * y;
+}
+
+function normalCdf(z: number): number {
+  return 0.5 * (1 + erf(z / Math.SQRT2));
+}
+
+/**
+ * Distribuição exata do U de Mann-Whitney via DP (f(n,m,u) = f(n-1,m,u-m) + f(n,m-1,u)),
+ * mesma recorrência usada por implementações de referência (ex: dwilcox do R). Sem empates.
+ */
+function exactMannWhitneyCounts(n1: number, n2: number): number[] {
+  const f: number[][][] = [];
+  for (let n = 0; n <= n1; n++) {
+    f[n] = [];
+    for (let m = 0; m <= n2; m++) f[n][m] = new Array(n * m + 1).fill(0);
+  }
+  for (let m = 0; m <= n2; m++) f[0][m][0] = 1;
+  for (let n = 0; n <= n1; n++) f[n][0][0] = 1;
+  for (let n = 1; n <= n1; n++) {
+    for (let m = 1; m <= n2; m++) {
+      const maxU = n * m;
+      for (let u = 0; u <= maxU; u++) {
+        const term1 = u - m >= 0 ? f[n - 1][m][u - m] : 0;
+        const term2 = u <= n * (m - 1) ? f[n][m - 1][u] : 0;
+        f[n][m][u] = term1 + term2;
+      }
+    }
+  }
+  return f[n1][n2];
+}
+
+function exactMannWhitneyP(n1: number, n2: number, uObserved: number): number {
+  const counts = exactMannWhitneyCounts(n1, n2);
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (total === 0) return 1;
+  const uFloor = Math.floor(uObserved);
+  let cumLow = 0;
+  for (let u = 0; u <= uFloor && u < counts.length; u++) cumLow += counts[u];
+  return Math.min(1, 2 * (cumLow / total));
+}
+
+/**
+ * Teste de Mann-Whitney U (dois lados). Exato via DP quando não há empates e o
+ * espaço de estados é pequeno (n1*n2<=4000, n1+n2<=60); normal approx com
+ * correção de empate/continuidade fora dessa faixa — precisão suficiente pro
+ * n pequeno deste relatório (dezenas de edições, não milhares).
+ */
+export function mannWhitneyTest(
+  a: number[],
+  b: number[]
+): { u: number; pValue: number; method: "exact" | "normal-approx" } {
+  const n1 = a.length, n2 = b.length;
+  const combined = [...a.map((v) => ({ v, g: 0 as const })), ...b.map((v) => ({ v, g: 1 as const }))];
+  combined.sort((x, y) => x.v - y.v);
+  const ranks = new Array<number>(combined.length);
+  let hasTies = false;
+  let i = 0;
+  while (i < combined.length) {
+    let j = i;
+    while (j + 1 < combined.length && combined[j + 1].v === combined[i].v) j++;
+    if (j > i) hasTies = true;
+    const avgRank = (i + j) / 2 + 1;
+    for (let k = i; k <= j; k++) ranks[k] = avgRank;
+    i = j + 1;
+  }
+  let r1 = 0;
+  for (let k = 0; k < combined.length; k++) if (combined[k].g === 0) r1 += ranks[k];
+  const u1 = r1 - (n1 * (n1 + 1)) / 2;
+  const u2 = n1 * n2 - u1;
+  const u = Math.min(u1, u2);
+
+  if (!hasTies && n1 * n2 <= 4000 && n1 + n2 <= 60) {
+    return { u, pValue: exactMannWhitneyP(n1, n2, u), method: "exact" };
+  }
+
+  const N = n1 + n2;
+  const mean = (n1 * n2) / 2;
+  let tieSum = 0;
+  i = 0;
+  while (i < combined.length) {
+    let j = i;
+    while (j + 1 < combined.length && combined[j + 1].v === combined[i].v) j++;
+    const t = j - i + 1;
+    if (t > 1) tieSum += t ** 3 - t;
+    i = j + 1;
+  }
+  const varianceU = (n1 * n2 * (N + 1 - (N > 1 ? tieSum / (N * (N - 1)) : 0))) / 12;
+  if (!(varianceU > 0)) return { u, pValue: 1, method: "normal-approx" };
+  const diff = u1 - mean;
+  const cc = diff === 0 ? 0 : Math.sign(diff) * 0.5;
+  const z = (diff - cc) / Math.sqrt(varianceU);
+  const pValue = Math.min(1, 2 * (1 - normalCdf(Math.abs(z))));
+  return { u, pValue, method: "normal-approx" };
+}
+
+/** PRNG determinístico (mulberry32) — bootstrap reproduzível entre rodadas do relatório. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const BOOTSTRAP_SEED = 8911;
+const BOOTSTRAP_ITERATIONS = 2000;
+
+/** IC 95% (percentil) da diferença de médias B-A, por bootstrap com seed fixa. */
+export function bootstrapMeanDiffCI(
+  a: number[],
+  b: number[],
+  iterations = BOOTSTRAP_ITERATIONS,
+  seed = BOOTSTRAP_SEED
+): [number, number] | null {
+  if (a.length === 0 || b.length === 0) return null;
+  const rand = mulberry32(seed);
+  const diffs: number[] = [];
+  for (let it = 0; it < iterations; it++) {
+    let sumA = 0;
+    for (let k = 0; k < a.length; k++) sumA += a[Math.floor(rand() * a.length)];
+    let sumB = 0;
+    for (let k = 0; k < b.length; k++) sumB += b[Math.floor(rand() * b.length)];
+    diffs.push(sumB / b.length - sumA / a.length);
+  }
+  diffs.sort((x, y) => x - y);
+  const lo = diffs[Math.floor(0.025 * iterations)];
+  const hi = diffs[Math.min(iterations - 1, Math.floor(0.975 * iterations))];
+  return [lo, hi];
+}
+
+/**
+ * Piso do #8412 aplicado POR MÉTRICA (n=valsA.length/valsB.length), nunca a
+ * contagem de edições do relatório inteiro — ver JSDoc de `pisoAtingido` em
+ * `MetricTest`. Uma métrica com dado ausente em várias edições de um braço
+ * (ex: tokens por falha do capture-stage-usage) pode ter n bem menor que o
+ * total de edições do braço.
+ */
+function computeTest(valsA: number[], valsB: number[]): MetricTest {
+  const medianA = median(valsA);
+  const medianB = median(valsB);
+  const pisoAtingido = valsA.length >= MIN_N_PER_ARM && valsB.length >= MIN_N_PER_ARM;
+  if (valsA.length === 0 || valsB.length === 0) {
+    return {
+      n: { A: valsA.length, B: valsB.length },
+      medianA,
+      medianB,
+      u: null,
+      pValue: null,
+      method: "n/a",
+      ci95: null,
+      pisoAtingido,
+      verdict: "sem dado",
+    };
+  }
+  const { u, pValue, method } = mannWhitneyTest(valsA, valsB);
+  const ci95 = bootstrapMeanDiffCI(valsA, valsB);
+  let verdict: MetricTest["verdict"] = "inconclusivo (piso)";
+  if (pisoAtingido) {
+    if (Number.isFinite(pValue) && pValue < 0.05) {
+      // Mann-Whitney é um teste de rank — a mediana é o que ele de fato
+      // compara; a média pode discordar em distribuições assimétricas.
+      verdict = medianA! < medianB! ? "A" : "B";
+    } else {
+      verdict = "sem diferença";
+    }
+  }
+  return { n: { A: valsA.length, B: valsB.length }, medianA, medianB, u, pValue, method, ci95, pisoAtingido, verdict };
+}
+
 function summarize(arm: "A" | "B", ms: EditionMetrics[]): ArmSummary {
   const mean = {} as Record<MetricKey, number | null>;
   const n = {} as Record<MetricKey, number>;
@@ -346,10 +560,26 @@ export function buildAbReport(editions: EditionRaw[]): AbReport {
   }
   const A = perEdition.filter((m) => m.arm === "A");
   const B = perEdition.filter((m) => m.arm === "B");
-  if (A.length < 5 || B.length < 5) {
-    warnings.push(`amostra abaixo do critério da #8421 (>=5 edições com dado por braço): A=${A.length}, B=${B.length}`);
+  // Banner informativo de nível-edição (independente do piso por métrica
+  // aplicado dentro de computeTest) — sinaliza cedo quando o total de
+  // edições do relatório já está abaixo do critério do #8412.
+  if (A.length < MIN_N_PER_ARM || B.length < MIN_N_PER_ARM) {
+    warnings.push(`amostra abaixo do critério da #8421 (>=${MIN_N_PER_ARM} edições com dado por braço): A=${A.length}, B=${B.length}`);
   }
-  return { arms: { A: summarize("A", A), B: summarize("B", B) }, perEdition, excluded, warnings, usable: perEdition.length };
+  const tests = {} as Record<MetricKey, MetricTest>;
+  for (const k of METRIC_KEYS) {
+    const valsA = A.map((m) => m[k]).filter((v): v is number => typeof v === "number");
+    const valsB = B.map((m) => m[k]).filter((v): v is number => typeof v === "number");
+    tests[k] = computeTest(valsA, valsB);
+  }
+  return {
+    arms: { A: summarize("A", A), B: summarize("B", B) },
+    perEdition,
+    excluded,
+    warnings,
+    usable: perEdition.length,
+    tests,
+  };
 }
 
 const fmt = (v: number | null): string => (v === null ? "n/d" : v.toFixed(1));
@@ -380,11 +610,14 @@ const METRIC_LABELS: Record<MetricKey, string> = {
   stage4CostUsd: "Etapa 4 — cost_usd",
 };
 
+/** #8911: mediana + teste de significância (Mann-Whitney) + IC95% por métrica, ao lado da média/n já existentes. */
 function tableRows(r: AbReport, keys: readonly MetricKey[]): string[] {
-  return keys.map(
-    (k) =>
-      `| ${METRIC_LABELS[k]} | ${fmtByKey(k, r.arms.A.mean[k])} (n=${r.arms.A.n[k]}) | ${fmtByKey(k, r.arms.B.mean[k])} (n=${r.arms.B.n[k]}) |`,
-  );
+  return keys.map((k) => {
+    const t = r.tests[k];
+    const pStr = t.pValue === null ? "n/d" : t.pValue.toFixed(3);
+    const ciStr = t.ci95 ? `[${fmtByKey(k, t.ci95[0])}, ${fmtByKey(k, t.ci95[1])}]` : "n/d";
+    return `| ${METRIC_LABELS[k]} | ${fmtByKey(k, r.arms.A.mean[k])}/${fmtByKey(k, t.medianA)} (n=${r.arms.A.n[k]}) | ${fmtByKey(k, r.arms.B.mean[k])}/${fmtByKey(k, t.medianB)} (n=${r.arms.B.n[k]}) | ${pStr} (${t.method}) | ${ciStr} | ${t.verdict} |`;
+  });
 }
 
 const SECONDARY_STAGE_METRIC_KEYS: readonly MetricKey[] = [
@@ -398,7 +631,10 @@ const SECONDARY_STAGE_METRIC_KEYS: readonly MetricKey[] = [
 
 const LEGACY_METRIC_KEYS: readonly MetricKey[] = ["gate4Corrections", "gateWaitMinutes", "tokens", "stage1WallMinutes"];
 
-const TABLE_HEADER = ["| Métrica | A (média, n) | B (média, n) |", "|---|---|---|"];
+const TABLE_HEADER = [
+  "| Métrica | A (média/mediana, n) | B (média/mediana, n) | p-valor (método) | IC95% diff (B-A) | Veredito |",
+  "|---|---|---|---|---|---|",
+];
 
 /**
  * #8901: reporta tokens/cost_usd POR ETAPA (1-4), não só o total somado — o
@@ -414,6 +650,16 @@ export function renderAbReport(r: AbReport): string {
     "",
     "Braço B: o Jev DECIDE de fato (env=all força shadow:false). A faixa 0,70-0,85 do dedup não foi calibrada.",
     "",
+  ];
+  // #8911: banner de nível-edição — sinaliza cedo quando o total de edições
+  // do relatório já está abaixo do piso do #8412. O piso que de fato decide
+  // o veredito "A"/"B" de cada métrica é o `pisoAtingido` por métrica dentro
+  // de `computeTest` (pode divergir deste banner quando uma métrica tem
+  // menos dado utilizável que o total de edições do braço).
+  if (r.arms.A.editions < MIN_N_PER_ARM) lines.push(`⚠️ INCONCLUSIVO: n<${MIN_N_PER_ARM} no braço A (n=${r.arms.A.editions})`);
+  if (r.arms.B.editions < MIN_N_PER_ARM) lines.push(`⚠️ INCONCLUSIVO: n<${MIN_N_PER_ARM} no braço B (n=${r.arms.B.editions})`);
+  if (r.arms.A.editions < MIN_N_PER_ARM || r.arms.B.editions < MIN_N_PER_ARM) lines.push("");
+  lines.push(
     "## Métricas principais (Etapa 1 e Etapas 1-3 — onde o Jev atua, sem gate humano)",
     "",
     ...TABLE_HEADER,
@@ -433,7 +679,7 @@ export function renderAbReport(r: AbReport): string {
     "",
     ...TABLE_HEADER,
     ...tableRows(r, LEGACY_METRIC_KEYS),
-  ];
+  );
   lines.push("", `Edições com dado: A=${r.arms.A.editions}, B=${r.arms.B.editions}. Excluídas: ${r.excluded.length ? r.excluded.join(", ") : "nenhuma"}`);
   if (r.warnings.length) lines.push("", "## Avisos", ...r.warnings.map((x) => `- ${x}`));
   return lines.join("\n") + "\n";
