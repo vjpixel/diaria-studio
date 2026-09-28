@@ -1771,3 +1771,59 @@ describe("DEFAULT_FULL_BODY_WINDOW (#4262)", () => {
     assert.ok(DEFAULT_FULL_BODY_WINDOW > 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #8951 — regressão: o gatilho cross-source (`findCrossSourceMatch`, herdado
+// de #8896) roda dentro de `checkHighlightThemes`, que é o que o RUNNER REAL
+// do Stage 1 (`stage-1-run.ts` §1w-quint-b) de fato chama.
+//
+// Caso real: D1 da edição 260928 (Wired — "agente da OpenAI invadiu o
+// sistema de saúde australiano") é o MESMO evento do D1 da 260925 (Guardian
+// — "Agente rebelde invade sistema de governo"). Jaccard de título ~0.22 —
+// abaixo dos 3 gatilhos padrão deste arquivo (passe padrão 0.35/0.25,
+// entity-only exige 2+ entidades específicas, saga exige entidade de
+// empresa) porque os dois títulos não compartilham NENHUMA entidade nomeada
+// (nem "OpenAI" nem "governo"/"saúde" aparecem nos dois). O #8896 já tinha
+// calibrado esse par contra um script CLI próprio que o runner nunca
+// chamava (#8951 corrigiu isso) — ver `test/repeat-theme-check.test.ts`
+// para os testes de unidade de `detectEventOverlap` em si.
+// ---------------------------------------------------------------------------
+
+describe("checkHighlightThemes — gatilho cross-source, caso real #8896/#8951", () => {
+  const REAL_CASE_CANDIDATE_TITLE = "agente da OpenAI invadiu o sistema de saúde australiano";
+  const REAL_CASE_PAST_DESTAQUE_TITLE = "Agente rebelde invade sistema de governo";
+
+  it("flagga o par real quando pastDestaques é passado, mesmo sem past-editions.md/entidade compartilhada", () => {
+    const candidates = [
+      { rank: 1, title: REAL_CASE_CANDIDATE_TITLE, url: "https://wired.com/agente-saude-australia" },
+    ];
+    // past-editions.md vazio — os 3 gatilhos padrão (que dependem só dele)
+    // não têm NADA pra comparar; só o pastDestaques (destaques reais) tem o
+    // par.
+    const result = checkHighlightThemes(candidates, [], [
+      { title: REAL_CASE_PAST_DESTAQUE_TITLE, aammdd: "260925", url: "https://theguardian.com/agente-governo" },
+    ]);
+    assert.equal(result.warnings.length, 1, "deveria flagar o par real via cross-source");
+    assert.equal(result.warnings[0].cross_source_match, true);
+    assert.equal(result.warnings[0].matched_edition, "260925");
+    assert.ok(result.warnings[0].jaccard < 0.35, "jaccard deveria continuar abaixo do threshold do passe padrão");
+  });
+
+  it("sem pastDestaques (chamador antigo/omitido), comportamento idêntico a antes do #8951 — não flagga", () => {
+    const candidates = [
+      { rank: 1, title: REAL_CASE_CANDIDATE_TITLE, url: "https://wired.com/agente-saude-australia" },
+    ];
+    const result = checkHighlightThemes(candidates, []);
+    assert.equal(result.warnings.length, 0);
+  });
+
+  it("gatilho padrão tem prioridade — se já casou via Jaccard/entidade, cross-source não roda por cima", () => {
+    const candidates = [{ rank: 1, title: "Gemma 4 12B: multimodal que roda no laptop v2", url: "https://x.com/gemma" }];
+    const pastEditions = extractPastEditionTitles(PAST_MD_WITH_GEMMA, 12);
+    const result = checkHighlightThemes(candidates, pastEditions, [
+      { title: "Alguma outra notícia sem relação nenhuma com o candidato", aammdd: "260925" },
+    ]);
+    assert.equal(result.warnings.length, 1);
+    assert.ok(!result.warnings[0].cross_source_match, "match padrão não deveria ser marcado como cross_source_match");
+  });
+});
