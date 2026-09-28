@@ -195,8 +195,8 @@ describe("ensureProseReviewBaseline", () => {
   });
 });
 
-describe("mergeHubsRegenPr (#8923 — merge síncrono, nunca --auto)", () => {
-  it("caminho feliz: acquire -> espera CI pass -> gh pr merge --squash SÍNCRONO (sem --auto) -> confirma -> release", async () => {
+describe("mergeHubsRegenPr (#8923 — merge síncrono, nunca --auto; #8926 — poll ANTES do lock)", () => {
+  it("caminho feliz: espera CI pass (sem lock) -> acquire -> gh pr merge --squash SÍNCRONO (sem --auto) -> confirma -> release", async () => {
     const runner = lockOkRunner().on(
       "gh",
       (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"),
@@ -219,15 +219,30 @@ describe("mergeHubsRegenPr (#8923 — merge síncrono, nunca --auto)", () => {
     assert.deepEqual(mergeCall!.args, ["pr", "merge", "123", "--squash"]);
     assert.ok(!mergeCall!.args.includes("--auto"), "--auto nunca pode aparecer nos args do merge (#8923)");
 
-    // Ordem: acquire vem ANTES do gate/merge, release vem DEPOIS — e release
-    // sempre acontece (é o achado original: o lock não cobria a espera).
-    const cmdOrder = runner.calls.map((c) => (c.args.includes("merge-lock-acquire") ? "acquire" : c.args.includes("merge-lock-release") ? "release" : c.args[1] === "merge" ? "merge" : c.args[1] === "view" ? "view" : "other"));
-    assert.equal(cmdOrder[0], "acquire");
+    // Ordem (#8926): poll (view) vem ANTES do acquire — nenhum lock detido
+    // durante a espera de CI. acquire -> merge -> release, nessa ordem, e
+    // release sempre acontece.
+    const cmdOrder = runner.calls.map((c) =>
+      c.args.includes("merge-lock-acquire") ? "acquire" : c.args.includes("merge-lock-release") ? "release" : c.args[1] === "merge" ? "merge" : c.args[1] === "view" ? "view" : "other",
+    );
+    assert.equal(cmdOrder[0], "view", "pollTrainCi precisa rodar antes de QUALQUER acquire de lock");
+    assert.ok(cmdOrder.indexOf("view") < cmdOrder.indexOf("acquire"), "poll (view) precisa vir antes do acquire");
     assert.equal(cmdOrder[cmdOrder.length - 1], "release");
     assert.ok(cmdOrder.indexOf("merge") < cmdOrder.lastIndexOf("release"), "release precisa vir depois do merge, não antes");
+
+    // Prova de que o hold do lock é curto (#8926): nenhuma chamada de poll
+    // (view com statusCheckRollup) acontece no intervalo acquire->release —
+    // só merge + confirmação, nunca a espera de CI.
+    const acquireIdx = cmdOrder.indexOf("acquire");
+    const releaseIdx = cmdOrder.lastIndexOf("release");
+    const betweenAcquireAndRelease = runner.calls.slice(acquireIdx + 1, releaseIdx);
+    assert.ok(
+      betweenAcquireAndRelease.every((c) => !(c.cmd === "gh" && c.args[1] === "view" && c.args.includes("statusCheckRollup"))),
+      "nenhum poll de CI deveria acontecer com o lock detido — o hold precisa ser curto",
+    );
   });
 
-  it("gate vermelho (CI fail): nunca chama gh pr merge, PR fica aberto, lock é liberado mesmo assim", async () => {
+  it("gate vermelho (CI fail): nunca adquire o lock nem chama gh pr merge, PR fica aberto", async () => {
     const runner = lockOkRunner().on(
       "gh",
       (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"),
@@ -243,11 +258,19 @@ describe("mergeHubsRegenPr (#8923 — merge síncrono, nunca --auto)", () => {
     assert.equal(result.ciVerdict, "fail");
     assert.match(result.error!, /CI não passou/);
 
-    const releaseCall = runner.calls.find((c) => c.args.includes("merge-lock-release"));
-    assert.ok(releaseCall, "lock precisa ser liberado mesmo com CI vermelho — nunca preso");
+    assert.equal(
+      runner.calls.some((c) => c.args.includes("merge-lock-acquire")),
+      false,
+      "CI vermelho nunca deveria sequer tentar adquirir o lock (#8926)",
+    );
+    assert.equal(
+      runner.calls.some((c) => c.args.includes("merge-lock-release")),
+      false,
+      "nada a liberar — o lock nunca foi adquirido",
+    );
   });
 
-  it("timeout de CI: trata como não-pass, não mergeia, libera o lock", async () => {
+  it("timeout de CI: trata como não-pass, não adquire lock, não mergeia", async () => {
     const runner = lockOkRunner().on(
       "gh",
       (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"),
@@ -258,22 +281,33 @@ describe("mergeHubsRegenPr (#8923 — merge síncrono, nunca --auto)", () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.ciVerdict, "timeout");
-    const releaseCall = runner.calls.find((c) => c.args.includes("merge-lock-release"));
-    assert.ok(releaseCall, "lock precisa ser liberado mesmo em timeout de CI");
+    assert.equal(
+      runner.calls.some((c) => c.args.includes("merge-lock-acquire")),
+      false,
+      "timeout de CI nunca deveria adquirir o lock (#8926) — não há mais nada pra liberar",
+    );
   });
 
-  it("merge-lock-acquire negado: nem espera CI nem tenta mergear", async () => {
-    const runner = new FakeHubsRunner().on("npx", (a) => a.includes("merge-lock-acquire"), () => fail("denied (held by another session)"));
+  it("merge-lock-acquire negado (depois do CI já ter passado): não mergeia, mas ainda libera o que foi possível", async () => {
+    const runner = new FakeHubsRunner()
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciJson("SUCCESS")))
+      .on("npx", (a) => a.includes("merge-lock-acquire"), () => fail("denied (held by another session)"));
 
     const result = await mergeHubsRegenPr(runner, "123", { sessionId: "s1" });
 
     assert.equal(result.ok, false);
     assert.equal(result.merged, false);
+    assert.equal(result.ciVerdict, "pass");
     assert.match(result.error!, /merge-lock-acquire falhou/);
     assert.equal(
-      runner.calls.some((c) => c.args[0] === "pr" && c.args[1] === "view"),
+      runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "merge"),
       false,
-      "não deveria checar CI se o lock nem foi adquirido",
+      "lock negado nunca deveria tentar mergear",
+    );
+    assert.equal(
+      runner.calls.some((c) => c.args.includes("merge-lock-release")),
+      false,
+      "acquire negado — nada foi adquirido, nada a liberar",
     );
   });
 
