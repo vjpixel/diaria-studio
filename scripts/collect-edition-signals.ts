@@ -644,6 +644,7 @@ interface PublishedJson {
   }>;
   review_completed?: boolean;
   review_status?: string;
+  review_reason?: string;
   review_attempts?: number;
   review_final_issues?: string[];
 }
@@ -701,15 +702,24 @@ export function signalsFromTestEmailReview(
   if (published.review_completed) return [];
 
   const isInconclusive = status === "inconclusive";
+  // #8902: review_reason distingue "conector Gmail indisponível/renomeado"
+  // (mcp_unavailable) de "email respondeu mas não achou/truncou" —
+  // propagar pro título/details pra não perder o sinal que motivou a issue.
+  const reason = published.review_reason;
+  const inconclusiveTitle =
+    reason === "mcp_unavailable"
+      ? "Test email não confirmado (Gmail MCP indisponível/renomeado — ver #7279/#8902, checagem automática ficou OFF)"
+      : "Test email não confirmado (Beehiiv não disparou / Gmail não encontrou o envio)";
   return [
     {
       kind: "test_email_unconfirmed",
       severity: isInconclusive ? "medium" : "low",
       title: isInconclusive
-        ? "Test email não confirmado (Beehiiv não disparou / Gmail não encontrou o envio)"
+        ? inconclusiveTitle
         : `Test email com issues não resolvidos após fix (${published.review_attempts ?? 0} tentativa(s))`,
       details: {
         review_status: status,
+        review_reason: reason ?? null,
         review_attempts: published.review_attempts ?? null,
         review_final_issues: published.review_final_issues ?? [],
         draft_url: published.draft_url ?? null,
