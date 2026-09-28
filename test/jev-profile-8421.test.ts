@@ -210,9 +210,16 @@ describe("jev-ab-report", () => {
   const ok = <T,>(value: T): Tri<T> => ({ state: "ok", value });
   const absent: Tri<never> = { state: "absent" };
   const corrupt: Tri<never> = { state: "corrupt" };
+  // #8912 self-review: fixture COMPLETA (cost_usd + Etapas 2/3 presentes) —
+  // uma edição real tem `capture-stage-usage.ts` rodando pra todas as 4
+  // etapas desde o #3441, então o caso "clean" (zero warnings) deve refletir
+  // isso; edições incompletas (sem cost_usd, Stage 2/3 pulado) têm seu
+  // próprio teste no #8901 (`test/jev-ab-report-per-stage-8901.test.ts`).
   const rows = [
-    { stage: 1, duration_ms: 600000, pipeline_ms: 600000, tokens_in: 100, tokens_out: 50 },
-    { stage: 4, duration_ms: 900000, pipeline_ms: 300000, tokens_in: 10, tokens_out: 5 },
+    { stage: 1, duration_ms: 600000, pipeline_ms: 600000, tokens_in: 100, tokens_out: 50, cost_usd: 1 },
+    { stage: 2, duration_ms: 300000, pipeline_ms: 300000, tokens_in: 200, tokens_out: 100, cost_usd: 2 },
+    { stage: 3, duration_ms: 300000, pipeline_ms: 300000, tokens_in: 50, tokens_out: 25, cost_usd: 0.5 },
+    { stage: 4, duration_ms: 900000, pipeline_ms: 300000, tokens_in: 10, tokens_out: 5, cost_usd: 0.1 },
   ];
   const profB = { profile: "all", features: ["dedup_grayzone"], shadow: false, written_at: "2026-09-20T00:00:00Z" };
   const ed = (edition: string, jev: boolean, over: Partial<EditionRaw> = {}): EditionRaw => ({
@@ -229,8 +236,16 @@ describe("jev-ab-report", () => {
     assert.equal(m.arm, "A");
     assert.equal(m.gate4Corrections, 2);
     assert.equal(m.gateWaitMinutes, 10);
-    assert.equal(m.tokens, 165);
+    assert.equal(m.tokens, 540);
     assert.equal(m.stage1WallMinutes, 10);
+    // #8901: tokens/cost por etapa 1-4 + soma 1-3 (sem gate) — fixture completa.
+    assert.equal(m.stage1TokensIn, 100);
+    assert.equal(m.stage1CostUsd, 1);
+    assert.equal(m.stage4TokensIn, 10);
+    assert.equal(m.stage4CostUsd, 0.1);
+    assert.equal(m.stage1to3TokensIn, 350);
+    assert.equal(m.stage1to3TokensOut, 175);
+    assert.equal(m.stage1to3CostUsd, 3.5);
     assert.deepEqual(warnings, []);
   });
   it("P1-1: perfil corrompido = braço desconhecido, edição excluída com warning (nunca A)", () => {

@@ -16,7 +16,9 @@ import { checkIntentionalError, checkIntentionalErrorSafety } from "../intention
 export function runCli(args: Record<string, string>, root: string): void {
   if (!args.md) {
     console.error(
-      "Uso: lint-newsletter-md.ts --check intentional-error-flagged --md <md-path>",
+      "Uso: lint-newsletter-md.ts --check intentional-error-flagged --md <md-path> " +
+        "[--headless true] (#8897 — passar --headless true no caminho --no-gates, " +
+        "sem editor pra ler o warn de categoria de risco)",
     );
     process.exit(2);
   }
@@ -38,12 +40,18 @@ export function runCli(args: Record<string, string>, root: string): void {
 // category: factual | ortografico | numeric | attribution | data | version_inconsistency | factual_synthetic`);
     process.exit(1);
   }
-  // F1/#2149: wire safety check — warn (não bloqueia) para categorias de risco de desinformação
+  // F1/#2149: wire safety check — warn (não bloqueia) para categorias de risco de
+  // desinformação; #8897: `--headless` (caminho `--no-gates`, sem editor pra ler o
+  // warn) escala pra bloqueio — exit 1 em vez de só logar.
   if (!result.no_error) {
-    const safetyResult = checkIntentionalErrorSafety(result.parsed?.category);
+    const headless = args.headless === "true" || args.headless === "1" || args.headless === "";
+    const safetyResult = checkIntentionalErrorSafety(result.parsed?.category, { headless });
     if (!safetyResult.safe && safetyResult.warn) {
       console.error(`
 ⚠️  ${safetyResult.warn}`);
+      if (safetyResult.blocking) {
+        process.exit(1);
+      }
     }
   }
   return;

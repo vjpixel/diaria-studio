@@ -190,7 +190,7 @@ npx tsx scripts/lint-newsletter-md.ts --check intentional-error-flagged \
   --md {edition_dir}/02-reviewed.md
 ```
 
-(deriva `_internal/intentional-error.json` como sibling de `--md`.)
+(deriva `_internal/intentional-error.json` como sibling de `--md`.) **Edição rodou (ou está rodando) com `--no-gates` (#8897, 28/09/2026)?** Acrescentar `--headless true` — sem gate humano pra ler o warn de categoria de risco (numeric/factual/data, #2149), a checagem escala pra `exit 1` em vez de só logar, barrando a publicação de uma estatística plantada sem revisão.
 
 Exit codes:
 - `0`: declarado e válido — prosseguir.
