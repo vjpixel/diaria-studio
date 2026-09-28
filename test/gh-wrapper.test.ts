@@ -31,6 +31,7 @@ import {
   requiresStdin,
   collectTextsToCheck,
   evaluateGhInvocation,
+  normalizeArgv,
 } from "../hermes/scripts/lib/gh-wrapper-core.mjs";
 import { findRealGh } from "../hermes/scripts/gh-wrapper.mjs";
 
@@ -172,6 +173,112 @@ describe("collectTextsToCheck / evaluateGhInvocation (#8884)", () => {
       },
     });
     assert.equal(r.blocked, false);
+  });
+});
+
+describe("#8950: -F/-F - em pr/issue (short form de --body-file/--notes-file)", () => {
+  it("-F é reconhecido como body-file em pr/issue comment/create/edit, não como field do gh api", () => {
+    assert.ok(isPublishingInvocation(["pr", "comment", "1", "-F", "f.md"]));
+    assert.ok(isPublishingInvocation(["issue", "create", "-F", "f.md"]));
+    assert.ok(isPublishingInvocation(["release", "create", "v1", "-F", "n.md"]));
+  });
+  it("-F - pede stdin em pr/issue (antes só --body-file/--notes-file por extenso eram vistos)", () => {
+    assert.ok(requiresStdin(["pr", "comment", "1", "-F", "-"]));
+    assert.ok(requiresStdin(["issue", "comment", "1", "-F", "-"]));
+  });
+  it("bloqueia segredo lido via -F arquivo (forma curta)", () => {
+    const r = evaluateGhInvocation(["pr", "comment", "1", "-F", "s.txt"], {
+      readFileSync: () => `dump ${OR_KEY}`,
+    });
+    assert.ok(r.blocked);
+  });
+  it("bloqueia segredo vindo por stdin via -F - (forma curta)", () => {
+    const r = evaluateGhInvocation(["issue", "comment", "1", "-F", "-"], {
+      stdinText: `via stdin: ${OR_KEY}`,
+    });
+    assert.ok(r.blocked);
+  });
+  it("gh api continua tratando -F como field key=value, não como body-file", () => {
+    // -F aqui é `campo=valor` — não deve tentar ler "n=1" como path de arquivo.
+    const r = evaluateGhInvocation(["api", "repos/o/r/issues/1/comments", "-F", "n=1"], {
+      readFileSync: () => {
+        throw new Error("nunca deveria ler arquivo aqui");
+      },
+    });
+    assert.equal(r.blocked, false);
+  });
+});
+
+describe("#8950: pr/issue close --comment / -c publicam", () => {
+  it("isPublishingInvocation reconhece close", () => {
+    assert.ok(isPublishingInvocation(["pr", "close", "1", "--comment", "x"]));
+    assert.ok(isPublishingInvocation(["issue", "close", "1", "-c", "x"]));
+  });
+  it("bloqueia segredo em --comment/-c de close", () => {
+    const r1 = evaluateGhInvocation(["pr", "close", "1", "--comment", `fechando: ${OR_KEY}`], {});
+    assert.ok(r1.blocked);
+    const r2 = evaluateGhInvocation(["issue", "close", "1", "-c", `fechando: ${OR_KEY}`], {});
+    assert.ok(r2.blocked);
+  });
+  it("close sem --comment/-c não publica nada (nada a checar)", () => {
+    assert.equal(evaluateGhInvocation(["pr", "close", "1"], {}).blocked, false);
+  });
+  it("close --comment limpo passa", () => {
+    assert.equal(evaluateGhInvocation(["pr", "close", "1", "--comment", "resolvido no #123"], {}).blocked, false);
+  });
+});
+
+describe("#8950: normalização de --flag=valor", () => {
+  it("--body=, --title=, --notes=, --comment= são resolvidos como o par flag+valor", () => {
+    assert.deepEqual(normalizeArgv(["pr", "comment", "1", "--body=oi"]), ["pr", "comment", "1", "--body", "oi"]);
+    assert.deepEqual(normalizeArgv(["pr", "close", "1", "--comment=oi"]), ["pr", "close", "1", "--comment", "oi"]);
+  });
+  it("bloqueia segredo passado como --body=SEGREDO", () => {
+    const r = evaluateGhInvocation(["pr", "comment", "1", `--body=log: ${OR_KEY}`], {});
+    assert.ok(r.blocked);
+  });
+  it("bloqueia segredo passado como --title=SEGREDO", () => {
+    const r = evaluateGhInvocation(["pr", "create", `--title=${OR_KEY}`, "--body", "b"], {});
+    assert.ok(r.blocked);
+  });
+  it("bloqueia segredo passado como --comment=SEGREDO em close", () => {
+    const r = evaluateGhInvocation(["issue", "close", "1", `--comment=${OR_KEY}`], {});
+    assert.ok(r.blocked);
+  });
+  it("--body-file=arquivo é lido (forma com =)", () => {
+    const r = evaluateGhInvocation(["pr", "comment", "1", "--body-file=s.txt"], {
+      readFileSync: () => OR_KEY,
+    });
+    assert.ok(r.blocked);
+  });
+  it("--input=arquivo (gh api) é lido (forma com =)", () => {
+    const r = evaluateGhInvocation(["api", "repos/o/r/issues/1/comments", "--input=s.txt"], {
+      readFileSync: () => OR_KEY,
+    });
+    assert.ok(r.blocked);
+  });
+  it("--field=body=valor (gh api) normaliza sem quebrar o key=value interno", () => {
+    const r = evaluateGhInvocation(["api", "repos/o/r/issues/1/comments", `--field=body=${OR_KEY}`], {});
+    assert.ok(r.blocked);
+  });
+});
+
+describe("#8950: gh api --input sem -X conta como publicação", () => {
+  it("isPublishingInvocation reconhece --input mesmo sem -X/--method", () => {
+    assert.ok(isPublishingInvocation(["api", "repos/o/r/issues/1/comments", "--input", "f.json"]));
+  });
+  it("bloqueia segredo em --input sem -X", () => {
+    const r = evaluateGhInvocation(["api", "repos/o/r/issues/1/comments", "--input", "s.json"], {
+      readFileSync: () => `{"body":"${OR_KEY}"}`,
+    });
+    assert.ok(r.blocked);
+  });
+  it("stdin de --input - (sem -X) também é checado", () => {
+    const r = evaluateGhInvocation(["api", "repos/o/r/issues/1/comments", "--input", "-"], {
+      stdinText: `{"body":"${OR_KEY}"}`,
+    });
+    assert.ok(r.blocked);
+    assert.ok(requiresStdin(["api", "repos/o/r/issues/1/comments", "--input", "-"]));
   });
 });
 
