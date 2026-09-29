@@ -596,8 +596,17 @@ QUEUE_AGE_H_THRESHOLD=12
 # outro problema) disparou sozinha o alarme de idade (12.6h >= 12h) — a PR
 # está exatamente onde deveria estar, esperando o editor, não travada por
 # falha de gate/coordenação.
+#
+# #9031: mesma classe pra label `continuo-escalado` (#7446 item 2) — ela já
+# significa "ganhou dono, notificado 1x, aguardando editor ou pickup do
+# overnight (#6823)". Medido ao vivo: #8961 (draft) e #9004 (não-draft), as
+# duas só com `continuo-escalado`, formaram sozinhas a fila que disparou este
+# alarme (25.4h de idade) — nenhuma das duas está travada por falha de gate,
+# as duas já passaram pelo gate e foram escaladas de propósito. Ao contrário
+# de `bloqueio-execucao`, esta exclusão não depende de `isDraft`: a PR #9004
+# não é draft e mesmo assim já tem dono.
 QUEUE_JSON=$(gh pr list --state open --json number,headRefName,createdAt,isDraft,labels \
-  --jq '[.[] | select(.headRefName | startswith("bot/") | not) | select((.isDraft and (any(.labels[]; .name == "bloqueio-execucao"))) | not)]' 2>/dev/null)
+  --jq '[.[] | select(.headRefName | startswith("bot/") | not) | select((.isDraft and (any(.labels[]; .name == "bloqueio-execucao"))) | not) | select((any(.labels[]; .name == "continuo-escalado")) | not)]' 2>/dev/null)
 QUEUE_GH_RC=$?
 if [ "$QUEUE_GH_RC" -ne 0 ] || [ -z "$QUEUE_JSON" ]; then
   echo "[watch] fila de PRs: INDETERMINADO (gh pr list falhou)" >&2
