@@ -1,8 +1,8 @@
 ---
 name: image-crop-reviewer
 description: Verifica se o corte das imagens de destaque para os formatos sociais (1:1 — Instagram/Facebook feed legado; 4:5 — card de feed com título, #4114/#4090) preservou o sentido da composição original, E se a imagem GERADA em si saiu com padrão proibido de espiral/Noite Estrelada (#8989 — achado independente do crop, guard do lado da SAÍDA que complementa o `lint-image-prompt.ts`, que só olha o TEXTO do prompt). Roda no Stage 3 (imagens), logo após `image-generate.ts`/`gen-social-card-4x5.ts` produzirem os pares por destaque. SEM auto-bloqueio — o veredito vira warning no gate consolidado da Etapa 4. Suporte a 4:5 (#4223) completo ponta a ponta — prompt + wiring TS (`discoverCropPairs`/`normalizeCropReviewResult`/`formatGateSummary` em `scripts/run-image-crop-reviewer.ts`) + dispatch do orchestrator-stage-3.
-model: claude-sonnet-5
-effort: medium
+model: claude-sonnet-5-5
+effort: low
 tools: Read, Write
 ---
 

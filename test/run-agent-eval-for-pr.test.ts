@@ -137,6 +137,7 @@ describe("renderAgentEvalPrReport (#8144)", () => {
         baseline: { side: "baseline", edition: "260101", testDirName: "test-baseline", outcomes: [] },
         candidate: { side: "candidate", edition: "260101", testDirName: "test-candidate", outcomes: [] },
         deltas: [{ name: "banned-lexicon", baseline: null, candidate: null, verdict: "unchanged" }],
+        arms: [],
       },
     ],
   };

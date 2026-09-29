@@ -153,11 +153,22 @@ describe("claude-delegate.sh — branch de invocação (#7649 item 2)", () => {
   });
 
   it("os dois branches passam --model/--allowedTools/--effort (a única diferença é gateway+budget)", () => {
-    for (const branch of [sub, openrouter]) {
-      assert.match(branch, /--model "\$MODEL"/);
-      assert.match(branch, /--allowedTools "\$TOOLS"/);
-      assert.match(branch, /\$\{EFFORT:\+--effort "\$EFFORT"\}/);
-    }
+    assert.match(sub, /--model "\$MODEL"/);
+    assert.match(sub, /--allowedTools "\$TOOLS"/);
+    // #8941: o branch de assinatura usa ATTEMPT_EFFORT (default "low" quando
+    // o call site não passou --effort) em vez do EFFORT cru — nenhum pin de
+    // Sonnet sem effort explícito sobrevive no repo.
+    assert.match(sub, /\$\{ATTEMPT_EFFORT:\+--effort "\$ATTEMPT_EFFORT"\}/);
+
+    assert.match(openrouter, /--model "\$MODEL"/);
+    assert.match(openrouter, /--allowedTools "\$TOOLS"/);
+    assert.match(openrouter, /\$\{EFFORT:\+--effort "\$EFFORT"\}/);
+  });
+
+  it("#8941: elo de assinatura (sonnet) usa effort low por default quando o call site não passa --effort", () => {
+    assert.match(src, /ATTEMPT_EFFORT="\$EFFORT"/);
+    assert.match(src, /is_subscription_lane_model "\$MODEL" && \[ -z "\$ATTEMPT_EFFORT" \]/);
+    assert.match(src, /ATTEMPT_EFFORT="low"/);
   });
 });
 

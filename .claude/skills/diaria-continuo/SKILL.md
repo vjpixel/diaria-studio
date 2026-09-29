@@ -1,8 +1,8 @@
 ---
 name: diaria-continuo
 description: Sessão CONTÍNUA que nunca termina sozinha (#5293) — derivada do overnight, reusa a mesma maquinaria de implementação, mas troca o critério de terminação. Itens 1-6 da issue de origem implementados (kind dedicado no session-registry, watchdog phase-aware, guard de colisão editorial pausa-não-encerra, rotação diária de plan.json, instrumentação de custo acumulado, notificação por e-mail — canal definido em #5341 — do AskUserQuestion pendente) — ver "Itens 3-6" abaixo pro estado exato de cada um antes de rodar em produção pela 1ª vez. Toda invocação se auto-envolve em `/loop` (#5332) — ver "Como usar". Uso — `/diaria-continuo [--dry-run] [--bugs] [--priority P0,P1,P2,P3]`.
-model: sonnet
-effort: medium
+model: claude-opus-5-5
+effort: low
 ---
 
 # /diaria-continuo
@@ -294,9 +294,9 @@ generalizada às demais. O blast radius em si (merges autônomos em master,
 incluindo cat. D depois de uma resposta do editor) não mudou — o que mudou
 é só o mecanismo de consentimento de entrada.
 
-**Modelo/effort do coordenador.** `model: sonnet` + `effort: medium` —
-paridade explícita com `/diaria-overnight` (#3453) e `/diaria-develop`
-(#3454), mesma decisão registrada na tabela do briefing do #5293. Mesma
+**Modelo/effort do coordenador.** `model: claude-opus-5-5` + `effort: low` —
+paridade explícita com `/diaria-overnight` (#3453/#8941), mesma decisão
+registrada na tabela do briefing do #5293. Mesma
 limitação de escopo-de-turno documentada nos dois SKILL.md irmãos: o override
 de frontmatter vale "pelo resto do turno atual" — não há mecanismo de hook
 que force o modelo/effort programaticamente entre prompts.
@@ -351,8 +351,8 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   rotação — ele trata "ativa" como "plan.json existe no `{AAMMDD}` mais
   recente", sem depender de `report.md` (que `continuo` nunca escreve).
 - **Reusa a Fase 1 de implementação** do overnight, **verbatim**: subagente
-  `general-purpose`, `isolation: "worktree"`, `model: sonnet` explícito
-  (#2019) → `npm ci` → `npx tsc --noEmit` + testes afetados (nunca a suíte
+  `general-purpose`, `isolation: "worktree"`, `model: "claude-opus-5-5"` +
+  `effort: "low"` explícitos (#2019/#8941) → `npm ci` → `npx tsc --noEmit` + testes afetados (nunca a suíte
   completa local, #2959) → branch → PR com `Closes #NNNN` (ou
   `REFS #NNNN, NÃO CLOSES`, #5010) → self-review (#2038) → agente fixer se
   houver findings acionáveis → review leve do coordenador → `gh pr checks
@@ -385,8 +385,8 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   (`scripts/overnight-watchdog.ts`) e pra `continuo-cost-summary.ts` (ambos
   filtram por `agent === "continuo"` especificamente).
 - **Reusa a Fase 1.5 de review consolidado** do overnight (1 agente,
-  `pr-review-toolkit:code-reviewer` via `Agent` com `model: sonnet`
-  explícito, sobre o diff acumulado desde `base_sha`) — mesma cadência de
+  `pr-review-toolkit:code-reviewer` via `Agent` com `model: "claude-opus-5-5"`
+  + `effort: "low"` explícitos, sobre o diff acumulado desde `base_sha`) — mesma cadência de
   `findings_depth` (cap 2) documentada lá.
 - **NÃO mergeia PR que toca caminho de publicação/render público** (#6277).
   Antes de abrir a PR e de novo antes do merge, rodar `npx tsx

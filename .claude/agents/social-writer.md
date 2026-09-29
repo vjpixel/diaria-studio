@@ -1,8 +1,8 @@
 ---
 name: social-writer
 description: Gera 1 texto ÚNICO por destaque (compartilhado por LinkedIn, Facebook e Instagram — decisão do editor 260724, issue #3991, reverte a diferenciação por canal do #3486) + 1 post pessoal standalone de D1 (`## post_pixel`, #1690) a partir dos highlights aprovados em `01-approved.json` (Etapa 2, em paralelo com newsletter e `social-curto`). Output temporário em `_internal/03-social.tmp.md` com seções `## d1`/`## d2`/`## d3` (texto genérico + hashtags) + `## post_pixel`; o orchestrator faz o merge final em `03-social.md` como `# Social`. Cada publisher (LinkedIn/Facebook/Instagram) injeta sua própria linha de CTA/canal deterministicamente (`scripts/lib/social-cta-lines.ts`) NO MOMENTO DO PUBLISH — nunca aqui.
-model: claude-sonnet-5
-effort: medium
+model: claude-opus-5-5
+effort: low
 tools: Read, Write
 ---
 

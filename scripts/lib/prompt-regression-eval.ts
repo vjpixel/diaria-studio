@@ -357,6 +357,59 @@ export function stripAgentFrontmatter(md: string): string {
   return md.replace(/^---[\s\S]*?---\n/, "");
 }
 
+/** Modelo/effort declarados no frontmatter de um agent (#9003). Ausente = `undefined`, nunca string vazia. */
+export interface AgentModelSpec {
+  model?: string;
+  effort?: string;
+}
+
+/**
+ * Lê `model:` e `effort:` do frontmatter YAML de um agent (parse linha a linha
+ * de chaves escalares simples — o mesmo formato usado em `.claude/agents/*.md`).
+ * #9003: antes o frontmatter era DESCARTADO (`stripAgentFrontmatter`) e o eval
+ * rodava baseline e candidato sempre no mesmo modelo default, então uma PR que só
+ * trocava `model:` passava no gate sem medir nada.
+ */
+export function parseAgentModelSpec(md: string): AgentModelSpec {
+  const m = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  const spec: AgentModelSpec = {};
+  if (!m) return spec;
+  for (const line of m[1].split(/\r?\n/)) {
+    const kv = line.match(/^(model|effort):\s*(.+?)\s*$/);
+    if (!kv) continue;
+    const value = kv[2].replace(/^["']|["']$/g, "");
+    if (value) spec[kv[1] as "model" | "effort"] = value;
+  }
+  return spec;
+}
+
+/** Braço extra do eval: mesmo corpo do candidato rodado em outro modelo/effort (`--arms`, #9003). */
+export interface EvalArm {
+  model: string;
+  effort?: string;
+}
+
+/** Parseia `--arms claude-sonnet-5:medium,claude-sonnet-5-5:low,claude-opus-5-5` (effort opcional). Lança em entrada vazia/malformada. */
+export function parseArms(csv: string): EvalArm[] {
+  const arms = csv
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((tok) => {
+      const [model, effort, ...rest] = tok.split(":");
+      if (!model || rest.length > 0 || (effort !== undefined && !effort)) {
+        throw new Error(`--arms: braço malformado "${tok}" (esperado modelo[:effort])`);
+      }
+      return effort ? { model, effort } : { model };
+    });
+  if (arms.length === 0) throw new Error("--arms ficou vazio após parse");
+  return arms;
+}
+
+export function readAgentModelSpecFromDisk(rootDir: string, agent: PromptEvalAgent): AgentModelSpec {
+  return parseAgentModelSpec(readFileSync(resolve(rootDir, agentFileRelPath(agent)), "utf8"));
+}
+
 export function agentFileRelPath(agent: PromptEvalAgent): string {
   return `.claude/agents/${agent}.md`;
 }
@@ -383,6 +436,15 @@ export function readAgentBodyAtGitRef(
   const relPath = agentFileRelPath(agent);
   const raw = execFn(["show", `${ref}:${relPath}`], { cwd: rootDir, encoding: "utf8" });
   return stripAgentFrontmatter(raw);
+}
+
+export function readAgentModelSpecAtGitRef(
+  rootDir: string,
+  agent: PromptEvalAgent,
+  ref: string,
+  execFn: GitShowFn = ((args, opts) => execFileSync("git", args, { cwd: opts.cwd, encoding: opts.encoding }) as unknown as string),
+): AgentModelSpec {
+  return parseAgentModelSpec(execFn(["show", `${ref}:${agentFileRelPath(agent)}`], { cwd: rootDir, encoding: "utf8" }));
 }
 
 // ---------------------------------------------------------------------------
@@ -553,6 +615,8 @@ export interface RunAgentRepetitionsOptions {
   /** `true` (default no CLI): nunca chama `claude` de verdade — cada repetição vira uma entrada `dryRun: true` sem veredito de grader. */
   dryRun: boolean;
   model?: string;
+  /** `--effort` do `claude -p` (#9003) — do frontmatter do lado avaliado ou do braço. */
+  effort?: string;
   callClaudeCliFn?: (prompt: string, opts: ClaudeCliCallOptions) => string;
 }
 
@@ -594,7 +658,7 @@ export function runAgentRepetitions(opts: RunAgentRepetitionsOptions): AgentRunO
     const maxTurns = opts.agent === "writer-destaque" ? WRITER_DESTAQUE_REPLAY_MAX_TURNS : undefined;
     let raw: string;
     try {
-      raw = callFn(prompt, { cwd: opts.cwd, model: opts.model ?? "sonnet", outputFormat: "json", maxTurns });
+      raw = callFn(prompt, { cwd: opts.cwd, model: opts.model ?? "sonnet", effort: opts.effort, outputFormat: "json", maxTurns });
     } catch (err) {
       // #8405: o erro do subprocesso `claude` tem o stderr/stdout/status
       // enterrados em `error.message` (`Command failed: <cmd + argv>`).

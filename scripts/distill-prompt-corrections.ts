@@ -348,12 +348,12 @@ export function runDistillPromptCorrections(editionsRoot: string, opts: RunDisti
   return { status, cadence, backtest, candidates, cost_estimate: costEstimate };
 }
 
-/** `model: "sonnet"` explícito — mesma exigência do resto do repo pra subagente ad-hoc (CLAUDE.md) e o que a docstring de `holistic-critique.ts` sempre afirmou, mas só passou a ser GARANTIDO em runtime pelo `--model` flag depois do achado de review do #7981 (comment-analyzer, P2). */
+/** `model: "sonnet"` + `effort: "low"` explícitos — mesma exigência do resto do repo pra subagente ad-hoc (CLAUDE.md) e o que a docstring de `holistic-critique.ts` sempre afirmou, mas só passou a ser GARANTIDO em runtime pelo `--model` flag depois do achado de review do #7981 (comment-analyzer, P2); `--effort low` explícito desde #8941 (mantém Sonnet, mas fecha a brecha de effort implícito/default do CLI). */
 function runCritiqueForProposal(proposal: string, opts: RunDistillationOptions, rootDir: string): HolisticCritiqueResult | null {
   if (!opts.socialCriticBody) return null;
   const prompt = buildCritiquePrompt(opts.socialCriticBody, proposal);
   const callFn = opts.callClaudeCliFn ?? callClaudeCli;
-  return runHolisticCritique(prompt, { cwd: rootDir, model: "sonnet" }, 3, callFn);
+  return runHolisticCritique(prompt, { cwd: rootDir, model: "claude-sonnet-5-5", effort: "low" }, 3, callFn);
 }
 
 /**

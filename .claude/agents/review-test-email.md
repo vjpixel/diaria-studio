@@ -1,7 +1,7 @@
 ---
 name: review-test-email
 description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa exclusivamente Gmail MCP (#8205, 17/09/2026 — fallback via Chrome removido, já que a checagem visual passou a ser do editor na parada única do Stage 6). Usado no loop verify→fix do Stage 5. Suporta plataformas "beehiiv" (diário), "kit" (diário, backend Kit atrás da flag publishing.newsletter.backend, #464) e "brevo" (mensal Clarice).
-model: haiku
+model: claude-haiku-4-5-20251001
 tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__get_thread
 ---
 

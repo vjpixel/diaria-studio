@@ -1,7 +1,7 @@
 ---
 name: analyst-anual
 description: Etapa 1 da pipeline ANUAL (#7569) — lê os destaques de 12-13 meses de edições diárias e propõe os N temas que definiram o período (piso 3, teto 7, N justificado), o esboço do bloco "o que mudou" e as previsões para os próximos meses. Gera `prioritized.md`. O editor confirma o N no gate da Etapa 4.
-model: claude-opus-5
+model: claude-opus-5-5
 effort: low
 tools: Read, Write
 ---

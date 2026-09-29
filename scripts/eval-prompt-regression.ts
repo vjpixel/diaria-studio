@@ -52,6 +52,11 @@ import {
   isPromptEvalAgent,
   readAgentBodyFromDisk,
   readAgentBodyAtGitRef,
+  readAgentModelSpecFromDisk,
+  readAgentModelSpecAtGitRef,
+  parseArms,
+  type AgentModelSpec,
+  type EvalArm,
   readApprovedHighlight,
   readApprovedHighlightTitles,
   buildWriterDestaqueInput,
@@ -74,7 +79,11 @@ type CallClaudeCliFn = RunAgentRepetitionsOptions["callClaudeCliFn"];
 const WRITER_DESTAQUE_SLOT: 1 | 2 | 3 = 1;
 
 interface EditionSideOutcome {
-  side: "baseline" | "candidate";
+  /** `baseline`, `candidate` ou `arm:{modelo}[:{effort}]` (#9003). */
+  side: string;
+  /** Modelo/effort efetivamente passados ao `claude -p` neste lado (#9003). `undefined` = default do eval ("sonnet"). */
+  model?: string;
+  effort?: string;
   edition: string;
   testDirName: string;
   outcomes: AgentRunOutcome[];
@@ -85,6 +94,8 @@ interface EditionEvalResult {
   baseline: EditionSideOutcome;
   candidate: EditionSideOutcome;
   deltas: GraderDelta[];
+  /** Braços extras (`--arms`): corpo do candidato em outros modelos/effort, comparados ao baseline (#9003). */
+  arms: Array<{ arm: EvalArm; outcome: EditionSideOutcome; deltas: GraderDelta[] }>;
 }
 
 export interface PromptRegressionEvalReport {
@@ -153,15 +164,17 @@ function buildInputForFixture(agent: PromptEvalAgent, testDir: string): { input:
 function runSideForEdition(params: {
   agent: PromptEvalAgent;
   edition: string;
-  side: "baseline" | "candidate";
+  side: string;
   agentBody: string;
   editionsRootDir: string;
   repetitions: number;
   dryRun: boolean;
   live: boolean;
+  model?: string;
+  effort?: string;
   callClaudeCliFn?: CallClaudeCliFn;
 }): EditionSideOutcome {
-  const label = `${params.agent}-${params.edition}-${params.side}`;
+  const label = `${params.agent}-${params.edition}-${params.side.replace(/[^A-Za-z0-9.-]+/g, "_")}`;
   const manifest = createReplayFixture({
     editionsRootDir: params.editionsRootDir,
     referenceAammdd: params.edition,
@@ -196,6 +209,8 @@ function runSideForEdition(params: {
     rootDir: ROOT,
     repetitions: params.repetitions,
     dryRun: params.dryRun,
+    model: params.model,
+    effort: params.effort,
     callClaudeCliFn: params.callClaudeCliFn,
   });
 
@@ -226,7 +241,7 @@ function runSideForEdition(params: {
     }
   }
 
-  return { side: params.side, edition: params.edition, testDirName: manifest.test_dir_name, outcomes };
+  return { side: params.side, model: params.model, effort: params.effort, edition: params.edition, testDirName: manifest.test_dir_name, outcomes };
 }
 
 export function runPromptRegressionEval(params: {
@@ -240,12 +255,26 @@ export function runPromptRegressionEval(params: {
   readAgentBodyFromDiskFn?: typeof readAgentBodyFromDisk;
   readAgentBodyAtGitRefFn?: typeof readAgentBodyAtGitRef;
   callClaudeCliFn?: CallClaudeCliFn;
+  /** Modelo/effort do frontmatter do candidato (disco) e do baseline (`baselineRef`) — injetável pra teste (#9003). */
+  readAgentModelSpecFromDiskFn?: typeof readAgentModelSpecFromDisk;
+  readAgentModelSpecAtGitRefFn?: typeof readAgentModelSpecAtGitRef;
+  /** Braços extras (`--arms`, #9003): rodam o corpo do candidato nesses modelos/effort. */
+  arms?: EvalArm[];
 }): PromptRegressionEvalReport {
   const readDisk = params.readAgentBodyFromDiskFn ?? readAgentBodyFromDisk;
   const readRef = params.readAgentBodyAtGitRefFn ?? readAgentBodyAtGitRef;
 
   const candidateBody = readDisk(params.rootDir, params.agent);
   const baselineBody = readRef(params.rootDir, params.agent, params.baselineRef);
+  // #9003: o frontmatter de cada lado decide `--model`/`--effort`. Quando o chamador injeta
+  // só os leitores de CORPO (testes de fluxo sem git real), não há frontmatter a ler: spec
+  // vazio, e `runAgentRepetitions` cai no default. Com leitores reais, falha de leitura LANÇA
+  // (nunca cai em silêncio pro mesmo modelo nos dois lados).
+  const bodyReadersInjected = params.readAgentBodyFromDiskFn !== undefined || params.readAgentBodyAtGitRefFn !== undefined;
+  const readSpecDisk = params.readAgentModelSpecFromDiskFn ?? (bodyReadersInjected ? (): AgentModelSpec => ({}) : readAgentModelSpecFromDisk);
+  const readSpecRef = params.readAgentModelSpecAtGitRefFn ?? (bodyReadersInjected ? (): AgentModelSpec => ({}) : readAgentModelSpecAtGitRef);
+  const candidateSpec = readSpecDisk(params.rootDir, params.agent);
+  const baselineSpec = readSpecRef(params.rootDir, params.agent, params.baselineRef);
 
   const editions: EditionEvalResult[] = params.referenceEditions.map((edition) => {
     const baseline = runSideForEdition({
@@ -253,6 +282,8 @@ export function runPromptRegressionEval(params: {
       edition,
       side: "baseline",
       agentBody: baselineBody,
+      model: baselineSpec.model,
+      effort: baselineSpec.effort,
       editionsRootDir: params.editionsRootDir,
       repetitions: params.repetitions,
       dryRun: params.dryRun,
@@ -264,6 +295,8 @@ export function runPromptRegressionEval(params: {
       edition,
       side: "candidate",
       agentBody: candidateBody,
+      model: candidateSpec.model,
+      effort: candidateSpec.effort,
       editionsRootDir: params.editionsRootDir,
       repetitions: params.repetitions,
       dryRun: params.dryRun,
@@ -275,7 +308,25 @@ export function runPromptRegressionEval(params: {
     const candidateConsistency = checkRepetitionConsistency(verdictsFromOutcomes(candidate.outcomes));
     const deltas = compareBaselineVsCandidate(baselineConsistency, candidateConsistency);
 
-    return { edition, baseline, candidate, deltas };
+    const arms = (params.arms ?? []).map((arm) => {
+      const outcome = runSideForEdition({
+        agent: params.agent,
+        edition,
+        side: `arm:${arm.model}${arm.effort ? `:${arm.effort}` : ""}`,
+        agentBody: candidateBody,
+        editionsRootDir: params.editionsRootDir,
+        repetitions: params.repetitions,
+        dryRun: params.dryRun,
+        live: !params.dryRun,
+        model: arm.model,
+        effort: arm.effort,
+        callClaudeCliFn: params.callClaudeCliFn,
+      });
+      const armConsistency = checkRepetitionConsistency(verdictsFromOutcomes(outcome.outcomes));
+      return { arm, outcome, deltas: compareBaselineVsCandidate(baselineConsistency, armConsistency) };
+    });
+
+    return { edition, baseline, candidate, deltas, arms };
   });
 
   return {
@@ -298,6 +349,10 @@ function formatReport(report: PromptRegressionEvalReport): string {
     for (const d of e.deltas) {
       lines.push(`    ${d.name}: ${d.verdict}`);
     }
+    for (const a of e.arms) {
+      lines.push(`    braço ${a.arm.model}${a.arm.effort ? `:${a.arm.effort}` : ""} (vs baseline):`);
+      for (const d of a.deltas) lines.push(`      ${d.name}: ${d.verdict}`);
+    }
   }
   return lines.join("\n");
 }
@@ -311,9 +366,18 @@ function main(): void {
   const live = flags.has("live");
   const outPath = values["out"];
   const json = flags.has("json");
+  let arms: EvalArm[] | undefined;
+  if (values["arms"]) {
+    try {
+      arms = parseArms(values["arms"]);
+    } catch (e) {
+      console.error(`[error] ${(e as Error).message}`);
+      process.exit(1);
+    }
+  }
 
   if (!agentRaw || !isPromptEvalAgent(agentRaw)) {
-    console.error("Uso: eval-prompt-regression.ts --agent writer-destaque|social-writer --reference-editions AAMMDD,AAMMDD,... [--repetitions N] [--baseline-ref REF] [--editions-dir path] [--live] [--out arquivo.json]");
+    console.error("Uso: eval-prompt-regression.ts --agent writer-destaque|social-writer --reference-editions AAMMDD,AAMMDD,... [--repetitions N] [--baseline-ref REF] [--editions-dir path] [--arms modelo[:effort],...] [--live] [--out arquivo.json]");
     process.exit(1);
   }
   if (!referenceEditionsCsv) {
@@ -351,6 +415,7 @@ function main(): void {
       repetitions,
       dryRun: !live,
       rootDir: ROOT,
+      arms,
     });
   } catch (e) {
     console.error(`[error] ${(e as Error).message}`);

@@ -177,9 +177,9 @@ describe("continuo-pr-review.sh — modelo nunca mergeia, bash só mergeia atrá
     );
   });
 
-  it("usa --model sonnet (não opus) — papel distinto do review diário consolidado", () => {
+  it("usa --model claude-opus-5-5 com --effort low (#9003) — pin explícito, sem alias", () => {
     const src = readScript();
-    assert.match(src, /--model sonnet/, "continuo-pr-review.sh deve usar Sonnet, não Opus (decisão do editor, #6865)");
+    assert.match(src, /--model claude-opus-5-5 --effort low/, "continuo-pr-review.sh: Opus 5.5 low explícito (#9003, revisa #6865)");
   });
 
   it("AUTH: não seta ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY (assinatura claude.ai, mesmo padrão do #5608)", () => {

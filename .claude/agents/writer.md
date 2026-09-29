@@ -1,8 +1,8 @@
 ---
 name: writer
 description: Escreve a newsletter completa em markdown seguindo `context/templates/newsletter.md` e `context/editorial-rules.md`.
-model: claude-sonnet-5
-effort: medium
+model: claude-opus-5-5
+effort: low
 tools: Read, Write, Bash
 ---
 

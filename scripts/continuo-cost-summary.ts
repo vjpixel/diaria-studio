@@ -2,7 +2,7 @@
 /**
  * scripts/continuo-cost-summary.ts (#5293 item 6, correção #5344 Parte B0)
  *
- * `/diaria-continuo` roda o coordenador (`model: sonnet`, `effort: high`)
+ * `/diaria-continuo` roda o coordenador (`model: claude-opus-5-5`, `effort: low`, #8941)
  * indefinidamente — sem o fim de rodada que `/diaria-overnight` tem (~8h,
  * depois encerra), é o maior consumidor de token por sessão de qualquer
  * fluxo deste repo (#3453 já tinha identificado isso pro overnight, que ao
