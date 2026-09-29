@@ -236,7 +236,7 @@ describe("#9080 — teto combinado de imagens por asset group", () => {
   });
 
   it("piso: nunca remove a última paisagem obrigatória para abrir vaga, mesmo stale", () => {
-    // 1 paisagem stale (única) + 19 retrato keep; novas só quadradas.
+    // 1 paisagem stale (única) + 15 retrato keep; novas só quadradas.
     const items = parseAssetGroupAssetRows([staleImage("MARKETING_IMAGE", 1), ...keepN("PORTRAIT_MARKETING_IMAGE", 15)]);
     const plan = planImageFieldLinks(items, classifyAssetGroupAssets(items), counts(5, 0, 0));
     assert.equal(plan.ok, false, "16 + 5 = 21 e o único stale é a última paisagem — inviável");

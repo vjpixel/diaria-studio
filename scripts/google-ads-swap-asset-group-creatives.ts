@@ -129,6 +129,7 @@ import {
   planTextFieldLinks,
   planImageFieldLinks,
   PMAX_IMAGE_COMBINED_MAX,
+  PMAX_IMAGE_FIELD_MAX,
   type ImageFieldType,
   type ImageLinkPlanResult,
   buildRemoveAssetGroupAssetsPayload,
@@ -237,11 +238,10 @@ export function fetchCooldownCommentsOrNull(issueNumber: number, cwd: string): s
   return comments.map((c) => c.body).filter((b): b is string => typeof b === "string");
 }
 
-const IMAGE_FIELD_TYPES: readonly ImageFieldType[] = [
-  "SQUARE_MARKETING_IMAGE",
-  "MARKETING_IMAGE",
-  "PORTRAIT_MARKETING_IMAGE",
-];
+// Mesma ordem que `planImageFieldLinks` usa pra simular os mutates (#9080):
+// o teto combinado é checado passo a passo NESTA ordem, então a CLI deriva a
+// lista da mesma fonte em vez de repetir os literais.
+const IMAGE_FIELD_TYPES = Object.keys(PMAX_IMAGE_FIELD_MAX) as readonly ImageFieldType[];
 
 interface ImagesManifest {
   SQUARE_MARKETING_IMAGE?: string[];

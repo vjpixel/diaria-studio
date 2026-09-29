@@ -603,7 +603,8 @@ export function planImageFieldLinks(
   skipFieldTypes: ReadonlySet<string> = new Set(),
 ): ImageLinkPlanResult {
   const perType = planFieldLinksAgainstMax(items, classification, PMAX_IMAGE_FIELD_MAX, newCounts, skipFieldTypes);
-  const combinedErrors = applyCombinedImageCap(items, classification, perType.plans);
+  // Plano por tipo já inviável: o teto combinado só repetiria o mesmo erro.
+  const combinedErrors = perType.ok ? applyCombinedImageCap(items, classification, perType.plans) : [];
   const errors = [...(perType.ok ? [] : perType.errors), ...combinedErrors];
   return errors.length === 0 ? { ok: true, plans: perType.plans } : { ok: false, errors, plans: perType.plans };
 }
