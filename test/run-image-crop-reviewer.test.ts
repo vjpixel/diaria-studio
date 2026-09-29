@@ -474,6 +474,9 @@ describe("formatGateSummary (#3951)", () => {
     const s = formatGateSummary(result);
     assert.ok(s.includes("⚠️"));
     assert.ok(!s.includes("🌀"));
+    // #9041: exatamente 1 espaço entre ícone e destaque (igual ao 🌀 de estilo).
+    assert.ok(s.includes("  ⚠️ D1 (1x1)"), "ícone de crop seguido de 1 espaço só");
+    assert.ok(!s.includes("⚠️  D1"), "sem espaço duplo após o ícone de crop");
   });
 
   it("nunca inclui linguagem de bloqueio (warning-only, #3951)", () => {

@@ -239,7 +239,7 @@ export function formatGateSummary(result: CropReviewResult): string {
     // Estrelada na imagem gerada), distinto de "crop" (sujeito perdido no
     // recorte). Ícone e rótulo diferentes pra o editor não confundir os dois.
     const isEstilo = r.categoria === "estilo";
-    const icone = isEstilo ? "🌀" : "⚠️ ";
+    const icone = isEstilo ? "🌀" : "⚠️"; // #9041: sem espaço à direita — o template já separa
     const rotulo = isEstilo ? " [estilo — Noite Estrelada]" : "";
     const motivoDefault = isEstilo
       ? "padrão de espiral/redemoinho detectado na imagem gerada, estilo Noite Estrelada"
