@@ -41,11 +41,11 @@ import {
   LEAK_FOUND_EXIT_CODE,
 } from "../scripts/openrouter-billing-leak-check.ts";
 
-/** Linhas reais do `/api/v1/activity`, medidas em 01/09/2026. */
 // #9002: relógio fixo — `new Date()` fazia REAL_ROWS (ago/2026) saírem da janela de poda de 30 dias
 // (MAX_ALARMED_KEY_AGE_DAYS) com o passar do calendário e o teste quebrava sozinho.
 const NOW = new Date("2026-09-01T12:00:00Z");
 
+/** Linhas reais do `/api/v1/activity`, medidas em 01/09/2026. */
 const REAL_ROWS: BillingRow[] = [
   { date: "2026-08-31", model: "anthropic/claude-sonnet-5", requests: 32, usageUsd: 0.9599 },
   { date: "2026-08-31", model: "dots-studio/dots-3-note-preview", requests: 714, usageUsd: 0 },
