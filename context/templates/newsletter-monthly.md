@@ -66,7 +66,7 @@ O fio condutor:
 
 Crie seu agente de IA sem programar
 
-Sábado, 10/10, das 14h às 18h, ao vivo e online. Você cria seu primeiro agente de IA, com acompanhamento do início ao fim, e sai com ele funcionando.
+Sábado, 17/10, das 14h às 18h, ao vivo e online. Você cria seu primeiro agente de IA, com acompanhamento do início ao fim, e sai com ele funcionando.
 
 → [Quero criar meu agente!](https://diar.ia.br/evento/agente-ia)
 
