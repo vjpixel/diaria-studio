@@ -104,7 +104,7 @@ describe("#8862 — PR de resgate (draft + bloqueio-execucao) não conta no alar
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
     assert.match(
       section,
-      /select\(\(\.isDraft and \(any\(\.labels\[\]; \.name == "bloqueio-execucao"\)\)\) \| not\)\]'/,
+      /select\(\(\.isDraft and \(any\(\.labels\[\]; \.name == "bloqueio-execucao"\)\)\) \| not\)/,
     );
   });
 
@@ -144,6 +144,54 @@ describe("#8862 — PR de resgate (draft + bloqueio-execucao) não conta no alar
       out.map((pr: { number: number }) => pr.number),
       [9000],
       "só a PR normal (#9000) deveria sobrar — rescue draft (#8858) e bot/* (#9001) saem",
+    );
+  });
+});
+
+describe("#9031 — PR já escalada (continuo-escalado) não conta no alarme de fila parada", () => {
+  it("sintaxe bash válida", () => bashSyntaxOk(WATCH_SH));
+
+  it("a consulta da fila (§9) exclui qualquer PR com label continuo-escalado via --jq", () => {
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    assert.match(section, /select\(\(any\(\.labels\[\]; \.name == "continuo-escalado"\)\) \| not\)\]'/);
+  });
+
+  it("o jq real filtra PR escalada draft (#8961) e não-draft (#9004), mantendo uma PR normal", () => {
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    const match = section.match(/--jq '(\[\.\[\][^\n]*\])'/);
+    assert.ok(match, "expressão --jq não encontrada na §9");
+    const jqExpr = match![1];
+
+    const input = JSON.stringify([
+      {
+        number: 8961,
+        headRefName: "overnight/fix-8941-model-mix-opus",
+        createdAt: "2026-09-28T15:25:00Z",
+        isDraft: true,
+        labels: [{ name: "continuo-escalado" }],
+      },
+      {
+        number: 9004,
+        headRefName: "fix/template-mensal-imersao-1710",
+        createdAt: "2026-09-29T01:50:00Z",
+        isDraft: false,
+        labels: [{ name: "no-regression-test" }, { name: "continuo-escalado" }],
+      },
+      {
+        number: 9000,
+        headRefName: "continuo/fix-x",
+        createdAt: "2026-09-26T15:00:00Z",
+        isDraft: false,
+        labels: [],
+      },
+    ]);
+    const res = spawnSync("jq", [jqExpr], { input, encoding: "utf8" });
+    assert.equal(res.status, 0, `jq falhou: ${res.stderr}`);
+    const out = JSON.parse(res.stdout);
+    assert.deepEqual(
+      out.map((pr: { number: number }) => pr.number),
+      [9000],
+      "só a PR normal (#9000) deveria sobrar — as duas escaladas (#8961, #9004) já têm dono e saem",
     );
   });
 });
