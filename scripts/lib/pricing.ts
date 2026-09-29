@@ -1,16 +1,20 @@
 /**
  * pricing.ts (#3441)
  *
- * Tabela de pricing Claude por tier (Opus/Sonnet/Haiku) + resolução por
+ * Tabela de pricing Claude por modelo (Opus 5.5/Opus/Sonnet/Haiku) + resolução por
  * model string + estimativa de custo a partir de tokens reais.
  *
  * Extraído de `scripts/aggregate-costs.ts` (#3439) para reuso por
  * `scripts/capture-stage-usage.ts` (#3441), que precisa da MESMA tabela pra
  * não divergir preço entre o agregador mensal e a captura por-stage.
  *
- * Fonte: skill `claude-api` (cache: 2026-06-24) — Opus $5/$25 por MTok,
- * Sonnet 5 $3/$15 padrão ($2/$10 intro até 2026-08-31), Haiku 4.5 $1/$5.
- * Cache: leitura ~0.1x o preço de input; escrita ~1.25x (TTL 5min, default)
+ * Fonte e valores por modelo: ver constantes abaixo (#9003 corrigiu Sonnet
+ * 2/10 sem virada e Opus 5.5 4/20 com leitura de cache 0,05x). ATENÇÃO: o
+ * `cost_usd` já gravado em `stage-status.json` de setembro/2026 foi calculado
+ * com a tabela antiga (Sonnet a 3/15 ≈ 1,5x inflado; Opus 5.5 a 5/25) — relatórios
+ * de custo que leiam esses arquivos superestimam; só edições capturadas depois
+ * do #9003 usam o preço real.
+ * Cache: escrita ~1.25x (TTL 5min, default)
  * ou ~2x (TTL 1h). `usage.cache_creation_input_tokens` não distingue TTL —
  * assumimos 5min (o default do harness) por não termos como saber qual TTL
  * foi usado numa chamada específica. Isso é uma aproximação documentada,
@@ -21,24 +25,25 @@
 export interface PricingEntry {
   inputPer1M: number;
   outputPer1M: number;
+  /** Multiplicador de leitura de cache sobre o preço de input (por modelo, #9003). */
+  cacheReadMultiplier: number;
 }
 
-export const OPUS_PRICING: PricingEntry = { inputPer1M: 5, outputPer1M: 25 };
-export const SONNET_PRICING_STANDARD: PricingEntry = { inputPer1M: 3, outputPer1M: 15 };
-export const SONNET_PRICING_INTRO: PricingEntry = { inputPer1M: 2, outputPer1M: 10 };
-export const HAIKU_PRICING: PricingEntry = { inputPer1M: 1, outputPer1M: 5 };
+// Preços oficiais (docs.claude.com/pricing, conferidos 2026-09-29, #9003):
+//   Opus 5.5 $4/$20, leitura de cache 0,05x ($0,20/MTok)
+//   Opus 5 / 4.x $5/$25, leitura 0,1x
+//   Sonnet 5 e 5.5 $2/$10, leitura 0,1x — o aumento para $3/$15 de 01/09 foi
+//     CANCELADO, então não existe mais virada por data.
+//   Haiku 4.5 $1/$5, leitura 0,1x
+export const OPUS_5_5_PRICING: PricingEntry = { inputPer1M: 4, outputPer1M: 20, cacheReadMultiplier: 0.05 };
+export const OPUS_PRICING: PricingEntry = { inputPer1M: 5, outputPer1M: 25, cacheReadMultiplier: 0.1 };
+export const SONNET_PRICING: PricingEntry = { inputPer1M: 2, outputPer1M: 10, cacheReadMultiplier: 0.1 };
+export const HAIKU_PRICING: PricingEntry = { inputPer1M: 1, outputPer1M: 5, cacheReadMultiplier: 0.1 };
 
-// Sonnet 5 intro pricing ($2/$10) vale até 2026-08-31 (#3437); depois volta a $3/$15.
-export const SONNET_5_INTRO_END = Date.UTC(2026, 7, 31, 23, 59, 59); // month is 0-indexed: 7 = August
-
-// Cache multipliers (skill claude-api § Prompt Caching — Economics).
-// Só o de 5min é usado: `estimateCallCostUsd` assume TTL padrão (5min) porque
-// `cache_creation_input_tokens` do transcript não distingue qual TTL foi usado
-// numa chamada específica (ver comentário do topo do arquivo). O multiplicador
-// de 1h (2x) não é aplicável enquanto essa distinção não existir no dado —
-// omitido pra não deixar export morto (knip).
-export const CACHE_READ_MULTIPLIER = 0.1;
-export const CACHE_WRITE_5M_MULTIPLIER = 1.25;
+// Escrita de cache: 1,25x (TTL 5min, default do harness). `cache_creation_input_tokens`
+// do transcript não distingue TTL; o de 1h (2x) não é aplicável enquanto essa
+// distinção não existir no dado.
+const CACHE_WRITE_5M_MULTIPLIER = 1.25;
 
 /** "AAMMDD" (ex: "260424") → epoch ms (UTC, meio-dia pra evitar off-by-one de fuso). */
 export function editionDateMs(edition: string): number | null {
@@ -53,13 +58,12 @@ export function editionDateMs(edition: string): number | null {
  * "haiku-4-5", "claude-opus-4-7", "gemini", "sonnet-4-6"). Retorna `null` pra
  * modelos não-Claude (ex: Gemini na Etapa 3) — não há tier a precificar.
  */
-export function resolvePricing(modelString: string, dateMs: number | null): PricingEntry | null {
+export function resolvePricing(modelString: string, _dateMs?: number | null): PricingEntry | null {
   const s = modelString.toLowerCase();
+  // Específico antes do genérico: `opus-5-5` (também casa `opus-5.5`) antes de `opus`.
+  if (/opus-5[-.]5/.test(s)) return OPUS_5_5_PRICING;
   if (s.includes("opus")) return OPUS_PRICING;
-  if (s.includes("sonnet")) {
-    const isIntro = dateMs !== null && dateMs <= SONNET_5_INTRO_END;
-    return isIntro ? SONNET_PRICING_INTRO : SONNET_PRICING_STANDARD;
-  }
+  if (s.includes("sonnet")) return SONNET_PRICING;
   if (s.includes("haiku")) return HAIKU_PRICING;
   return null;
 }
@@ -73,8 +77,8 @@ export interface RawUsage {
 }
 
 /**
- * Estima custo USD de UMA chamada a partir do usage real (tokens) + model +
- * data efetiva (pra resolver pricing intro vs standard). Aplica os
+ * Estima custo USD de UMA chamada a partir do usage real (tokens) + model.
+ * `dateMs` é ignorado desde #9003 (sem virada de preço por data). Aplica os
  * multiplicadores de cache documentados acima. Retorna `null` quando o
  * modelo não é Claude (não há tier a precificar) — chamador deve tratar como
  * "sem custo atribuível", não como zero.
@@ -89,7 +93,7 @@ export function estimateCallCostUsd(usage: RawUsage, modelString: string, dateMs
   const inputCost = (input / 1_000_000) * pricing.inputPer1M;
   const outputCost = (output / 1_000_000) * pricing.outputPer1M;
   const cacheWriteCost = (cacheWrite / 1_000_000) * pricing.inputPer1M * CACHE_WRITE_5M_MULTIPLIER;
-  const cacheReadCost = (cacheRead / 1_000_000) * pricing.inputPer1M * CACHE_READ_MULTIPLIER;
+  const cacheReadCost = (cacheRead / 1_000_000) * pricing.inputPer1M * pricing.cacheReadMultiplier;
   return inputCost + outputCost + cacheWriteCost + cacheReadCost;
 }
 

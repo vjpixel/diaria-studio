@@ -216,7 +216,7 @@ describe("aggregateCosts — integração", () => {
     }
   });
 
-  it("usa pricing intro do Sonnet 5 (2026-08-31 ou antes) vs standard depois", () => {
+  it("Sonnet a $2/$10 em qualquer data (#9003: virada de 01/09 cancelada)", () => {
     const { editionsDir } = setup();
     try {
       const rows = JSON.stringify({
@@ -232,16 +232,16 @@ describe("aggregateCosts — integração", () => {
           },
         ],
       });
-      addEdition(editionsDir, "260101", rows); // pre intro-end -> $2 in + $10 out = $12
+      addEdition(editionsDir, "260101", rows); // $2 in + $10 out = $12
       const rowsAfter = JSON.parse(rows);
       rowsAfter.edition = "260901";
-      addEdition(editionsDir, "260901", JSON.stringify(rowsAfter)); // post intro-end -> $3 in + $15 out = $18
+      addEdition(editionsDir, "260901", JSON.stringify(rowsAfter)); // mesma conta depois de 01/09: $12 (sem virada)
 
       const result = aggregateCosts({ editionsDir });
       const before = result.find((e) => e.edition === "260101")!;
       const after = result.find((e) => e.edition === "260901")!;
       assert.ok(Math.abs(before.totals.costUsd - 12) < 0.001);
-      assert.ok(Math.abs(after.totals.costUsd - 18) < 0.001);
+      assert.ok(Math.abs(after.totals.costUsd - 12) < 0.001);
     } finally {
       rmSync(editionsDir, { recursive: true, force: true });
     }

@@ -7,8 +7,8 @@ import {
   editionDateMs,
   shortModelName,
   OPUS_PRICING,
-  SONNET_PRICING_STANDARD,
-  SONNET_PRICING_INTRO,
+  OPUS_5_5_PRICING,
+  SONNET_PRICING,
   HAIKU_PRICING,
 } from "../scripts/lib/pricing.ts";
 
@@ -32,18 +32,26 @@ describe("resolvePricing", () => {
     assert.deepEqual(resolvePricing("claude-haiku-4-5-20251001", null), HAIKU_PRICING);
   });
 
-  it("resolve sonnet intro antes do corte 2026-08-31", () => {
-    const beforeCutoff = Date.UTC(2026, 5, 1); // June 2026
-    assert.deepEqual(resolvePricing("claude-sonnet-5", beforeCutoff), SONNET_PRICING_INTRO);
+  // #9003: a virada para $3/$15 em 01/09 foi cancelada — Sonnet é $2/$10 em qualquer data.
+  it("resolve sonnet a $2/$10 independente da data (sem virada de 01/09)", () => {
+    for (const d of [Date.UTC(2026, 5, 1), Date.UTC(2026, 8, 15), null]) {
+      assert.deepEqual(resolvePricing("claude-sonnet-5", d), SONNET_PRICING);
+    }
+    assert.equal(SONNET_PRICING.inputPer1M, 2);
+    assert.equal(SONNET_PRICING.outputPer1M, 10);
   });
 
-  it("resolve sonnet standard depois do corte", () => {
-    const afterCutoff = Date.UTC(2026, 8, 15); // Sept 2026
-    assert.deepEqual(resolvePricing("claude-sonnet-5", afterCutoff), SONNET_PRICING_STANDARD);
+  it("sonnet 5.5 tem o mesmo preço do Sonnet 5", () => {
+    assert.deepEqual(resolvePricing("claude-sonnet-5-5", null), SONNET_PRICING);
   });
 
-  it("resolve sonnet standard quando dateMs é null (sem info de data)", () => {
-    assert.deepEqual(resolvePricing("sonnet-4-6", null), SONNET_PRICING_STANDARD);
+  it("opus 5.5 casa antes do genérico opus: $4/$20, leitura 0,05x", () => {
+    assert.deepEqual(resolvePricing("claude-opus-5-5", null), OPUS_5_5_PRICING);
+    assert.equal(OPUS_5_5_PRICING.inputPer1M, 4);
+    assert.equal(OPUS_5_5_PRICING.outputPer1M, 20);
+    assert.equal(OPUS_5_5_PRICING.cacheReadMultiplier, 0.05);
+    // opus 5 (sem .5) continua no tier antigo
+    assert.deepEqual(resolvePricing("claude-opus-5", null), OPUS_PRICING);
   });
 
   it("retorna null pra modelo não-Claude (ex: gemini)", () => {
@@ -91,6 +99,22 @@ describe("estimateCallCostUsd", () => {
     );
     // cache write: $5 * 1.25 = $6.25; cache read: $5 * 0.1 = $0.5 → total $6.75
     assert.equal(cost, 6.75);
+  });
+
+  // #9003: multiplicador de cache por modelo, não global.
+  it("custo por modelo: sonnet 5.5, opus 5.5 e opus 5 (cache read/write)", () => {
+    const usage = {
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_creation_input_tokens: 1_000_000,
+      cache_read_input_tokens: 1_000_000,
+    };
+    // Sonnet 5.5: 2 + 10 + 2*1.25 + 2*0.1 = 14.7
+    assert.ok(Math.abs(estimateCallCostUsd(usage, "claude-sonnet-5-5", null)! - 14.7) < 1e-9);
+    // Opus 5.5: 4 + 20 + 4*1.25 + 4*0.05 = 29.2
+    assert.ok(Math.abs(estimateCallCostUsd(usage, "claude-opus-5-5", null)! - 29.2) < 1e-9);
+    // Opus 5: 5 + 25 + 5*1.25 + 5*0.1 = 36.75
+    assert.ok(Math.abs(estimateCallCostUsd(usage, "claude-opus-5", null)! - 36.75) < 1e-9);
   });
 
   it("retorna null pra modelo não-Claude — não fabrica custo", () => {

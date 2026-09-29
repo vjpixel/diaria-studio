@@ -361,6 +361,7 @@ ${topExpensive.length === 0 ? "_Nenhuma edição com custo registrado ou estimá
 _Fonte: \`_internal/stage-status.json\` por edição (#3439 — \`_internal/cost.md\` foi removido em #1217 e nunca chegou a ser reintroduzido; este relatório lê o schema atual)._
 _Custo prefixado com "~" é estimado a partir de tokens_in/tokens_out via tabela de pricing (só quando o stage roda 1 único tier Claude); sem "~" veio direto de \`cost_usd\` gravado pelo orchestrator._
 _\`cost_usd\`/\`tokens_in\`/\`tokens_out\`/\`models\` são capturados automaticamente por \`scripts/capture-stage-usage.ts\` (#3441) ao fim de cada stage, a partir do transcript local da sessão; edições sem esses campos (pré-#3441, ou capturadas sem transcript local — ex: sessão cloud) contam pra duração mas ficam com custo "-"._
+_Aviso (#9003): \`cost_usd\` gravado em edições de setembro/2026 usou a tabela antiga (Sonnet a US$ 3/15, cerca de 1,5x inflado; Opus 5.5 a 5/25 com leitura de cache 0,1x) — superestima; o custo ESTIMADO ("~") já usa a tabela corrigida de \`scripts/lib/pricing.ts\`._
 `;
 }
 
