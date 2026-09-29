@@ -518,6 +518,8 @@ describe("buildReviewInstruction (#2754)", () => {
     assert.match(msg, /model: "opus"/);
     assert.doesNotMatch(msg, /claude-opus-5-5/);
     assert.doesNotMatch(msg, /effort:low explicit/);
+    // fallback general-purpose também nomeia o modelo (#2019)
+    assert.match(msg, /general-purpose` with `model: "opus"`/);
   });
 
   it("effort=max: code-reviewer/silent-failure-hunter em opus, demais analisadores em sonnet (#9003 item 3, #9043 item 4)", () => {

@@ -723,7 +723,7 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
     "Instruct every agent to stay READ-ONLY (no file edits, no `git checkout`/`switch`/`stash`/`reset`, no commits): " +
     "a concurrent session may share this checkout (incidents 260703/260708). " +
     `If a dispatch fails with \`Agent type ... not found\` (plugin \`pr-review-toolkit\` absent — cloud session or ` +
-    "fresh clone), fall back to `general-purpose` with an inline review rubric (correctness, " +
+    `fresh clone), fall back to \`general-purpose\` with \`model: "${REVIEW_AGENT_MODEL[REVIEW_AGENT]}"\` explicit (#2019) and an inline review rubric (correctness, ` +
     `simplification/efficiency, test-coverage, security) — never skip the review silently (#4234).${fallbackDepth} ` +
     "Tag every finding with its confidence (alta/média/baixa) and severity (P0..P3): ranking and filtering are a " +
     "SEPARATE downstream step (the auto-merge gate of #5251 reads those tags), never the reviewing agent's job (#5304). " +

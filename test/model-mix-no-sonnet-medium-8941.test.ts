@@ -123,6 +123,9 @@ describe("#9003 — model: pinado por ID aprovado e effort explícito (Haiku ise
  * editor: cobre os trechos sem ele (Etapas 1-3 até o gate da Etapa 4; o
  * dispatch da Etapa 5) e devolve a sessão ao modelo padrão no gate. O perfil
  * Jev (#8421) espelha `/diaria-edicao` para não confundir o A/B com troca de modelo.
+ * Limite: este guard só confere o TEXTO do frontmatter. Não há prova no repo de
+ * que o Claude Code aplica `effort:` de skill (o `model:` é campo conhecido);
+ * se for ignorado, a sessão roda no effort padrão dela, sem erro.
  */
 describe("#9003 item 5 — skills de edição com model/effort de sessão", () => {
   for (const skill of ["diaria-edicao", "diaria-edicao-jev", "diaria-5-publicacao"]) {
