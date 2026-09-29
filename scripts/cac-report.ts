@@ -298,7 +298,17 @@ export interface CacReportLtvRow {
  * desaparecer em silêncio.
  */
 export type CacReportLtvSection =
-  | { applied: true; ltvFaixaBrl: { min: number; max: number } | null; motivo: string | null; rows: CacReportLtvRow[] }
+  | {
+      applied: true;
+      ltvFaixaBrl: { min: number; max: number } | null;
+      motivo: string | null;
+      rows: CacReportLtvRow[];
+      /** Snapshots Beehiiv efetivamente usados (#9075): "atual" (ARPU + lado novo do churn) e baseline (~30d). */
+      snapshotAtual?: string;
+      snapshotBaseline?: string;
+      /** Base ativa Beehiiv que divide a receita no ARPU — NÃO é `CacRow.ativos` (#9075). */
+      ativosArpu?: number;
+    }
   | { applied: false; reason: string };
 
 /**
@@ -327,7 +337,7 @@ export type CacReportLtvSection =
  * **Unidade (#9023):** LTV é por ativo, então o denominador de LTV÷CAC é o
  * custo por ATIVO do canal (gasto ÷ ativos), nunca `custoPorLeitor`.
  */
-export function computeLtvSection(
+function computeLtvSectionCore(
   report: CacReport,
   backupRoot: string,
   snapshotDate: string,
@@ -448,6 +458,36 @@ export function computeLtvSection(
   });
 
   return { applied: true, ltvFaixaBrl: { min: ltvFaixa.faixa.min, max: ltvFaixa.faixa.max }, motivo: null, rows };
+}
+
+export function computeLtvSection(
+  report: CacReport,
+  backupRoot: string,
+  snapshotDate: string,
+  rootDir: string,
+  now: () => Date = () => new Date(),
+  env: Readonly<Record<string, string | undefined>> = process.env as Record<string, string | undefined>,
+): CacReportLtvSection {
+  const section = computeLtvSectionCore(report, backupRoot, snapshotDate, rootDir, now, env);
+  if (!section.applied) return section;
+  const dates = listSnapshotDates(backupRoot);
+  const atual = resolveLtvLatestSnapshotDate(dates, snapshotDate);
+  if (!atual) return section;
+  const baseline = findChurnBaselineDate(dates, atual);
+  const ativos = readSnapshotSubscribers(backupRoot, atual).filter((s) => s.status === "active").length;
+  return {
+    ...section,
+    snapshotAtual: atual,
+    ...(baseline ? { snapshotBaseline: baseline } : {}),
+    ...(ativos > 0 ? { ativosArpu: ativos } : {}),
+  };
+}
+
+/** `--snapshot` precisa ser AAAA-MM-DD de calendário válido (#9075) — é comparado como string. @pure */
+export function isValidSnapshotArg(v: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
 }
 
 /**
@@ -908,6 +948,19 @@ export function formatCacReportMarkdown(
         "Piso = LTV assumindo o churn mais alto (com limpeza manual conhecida, " +
           "`data/analysis/descadastrados-manuais-2607.json`); teto = assumindo o churn mais baixo (orgânico).",
       );
+      if (ltvSection.snapshotAtual) {
+        lines.push(
+          `Snapshots Beehiiv usados: atual ${ltvSection.snapshotAtual}` +
+            `${ltvSection.snapshotBaseline ? `, baseline de churn ${ltvSection.snapshotBaseline}` : ""}.`,
+        );
+      }
+      if (ltvSection.ativosArpu != null) {
+        lines.push(
+          `ARPU = receita ÷ ${ltvSection.ativosArpu} ativos da Beehiiv (snapshot ${ltvSection.snapshotAtual}); ` +
+            "os ativos por canal abaixo vêm da coorte do funil (em `--fonte store`, multi-plataforma) — " +
+            "se a base migrou pro Kit, o ARPU fica superestimado (#9075).",
+        );
+      }
       lines.push("");
       if (ltvSection.rows.length === 0) {
         lines.push("_nenhum canal com ativos pra calcular LTV÷custo por ativo._");
@@ -965,6 +1018,12 @@ export async function main(
     return null;
   }
   const fonte = args.fonte;
+
+  if (args.snapshotDate != null && !isValidSnapshotArg(args.snapshotDate)) {
+    console.error(`[cac-report] --snapshot inválido: "${args.snapshotDate}" (esperado AAAA-MM-DD de calendário válido).`);
+    process.exitCode = 1;
+    return null;
+  }
 
   let window: CohortWindow | null;
   try {
