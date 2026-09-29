@@ -144,6 +144,12 @@ function fallback(reason: string): void {
   console.warn("  spend.csv não foi alterado. Editar manualmente se necessário.");
 }
 
+/** Status HTTP retentável na Reporting API (#9071): 5xx EXCETO 500 (SOAP
+ *  Fault, determinístico). @pure */
+export function isMicrosoftAdsRetriableStatus(status: number): boolean {
+  return status > 500;
+}
+
 export interface MicrosoftAdsIngestCliOptions {
   /** Injetável só pra teste (default `fetch` global). */
   fetchImpl?: FetchLike;
@@ -175,7 +181,14 @@ export async function main(
 
   const existingRows: SpendRow[] = existsSync(spendPath) ? readSpendCsv(spendPath).rows : [];
 
-  const retryingFetch = withFetchRetry(opts.fetchImpl ?? fetch, spendIngestRetryOptions(opts.sleep));
+  // HTTP 500 NÃO é retentado aqui: a Reporting API é SOAP 1.1, que devolve
+  // todo Fault (credencial inválida, IdentityTypeMismatch, request
+  // malformado) como 500 — determinístico, retentar só gasta ~2min. 502/503/
+  // 504 (gateway/indisponível) seguem retentados.
+  const retryingFetch = withFetchRetry(opts.fetchImpl ?? fetch, {
+    ...spendIngestRetryOptions(opts.sleep),
+    isRetriableStatus: isMicrosoftAdsRetriableStatus,
+  });
 
   const result = await runMicrosoftAdsIngest(retryingFetch, {
     auth: configResult.auth,

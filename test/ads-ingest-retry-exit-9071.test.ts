@@ -29,7 +29,7 @@ import {
   exitCodeForFailureClass,
   GOOGLE_ADS_CANAL,
 } from "../scripts/google-ads-ingest-spend.ts";
-import { main as microsoftMain, MICROSOFT_ADS_CANAL } from "../scripts/microsoft-ads-ingest-spend.ts";
+import { main as microsoftMain, isMicrosoftAdsRetriableStatus } from "../scripts/microsoft-ads-ingest-spend.ts";
 import {
   META_ADS_FETCH_RETRY,
   META_ADS_INGEST_FAILURE_EXIT_CODE,
@@ -181,6 +181,20 @@ describe("#9071 — google-ads-ingest-spend: retry + exit code", () => {
     }
   });
 
+  it("auth-pending (DEVELOPER_TOKEN_NOT_APPROVED) via CLI → exit não-zero, sem retry de 4xx", async () => {
+    let searchCalls = 0;
+    const impl = async (url: string): Promise<Response> => {
+      if (url.includes("oauth2")) return new Response(JSON.stringify({ access_token: "at" }), { status: 200 });
+      searchCalls++;
+      return new Response(JSON.stringify({ error: { details: [{ errors: [{ errorCode: { authorizationError: "DEVELOPER_TOKEN_NOT_APPROVED" } }] }] } }), { status: 403 });
+    };
+    const { result, out } = await silenceConsole(() => googleMain(["--spend", spendPath], { fetchImpl: impl, sleep }));
+    assert.equal(result, SPEND_INGEST_FAILURE_EXIT_CODE);
+    assert.equal(searchCalls, 1);
+    assert.deepEqual(sleeps, []);
+    assert.match(out, /acesso ainda não liberado/);
+  });
+
   it("exitCodeForFailureClass: só `empty` é 0", () => {
     assert.equal(exitCodeForFailureClass("empty"), 0);
     for (const c of ["defect", "transient", "auth-pending"] as const) {
@@ -257,11 +271,33 @@ describe("#9071 — microsoft-ads-ingest-spend: retry + exit code", () => {
     const { result, out } = await silenceConsole(() => microsoftMain(["--spend", spendPath], { fetchImpl: f.impl, sleep }));
     assert.equal(result, 0);
     assert.equal(f.tokenCalls(), 2);
-    assert.ok(sleeps.includes(SPEND_INGEST_FETCH_RETRY.backoffMs[0]));
+    // 1 backoff do retry; o poll resolve na 1ª tentativa (sem sleep de poll).
+    assert.deepEqual(sleeps, [SPEND_INGEST_FETCH_RETRY.backoffMs[0]]);
     assert.match(out, /✔ API respondeu/);
     assert.doesNotMatch(out, /fallback pro CSV manual/);
     assert.equal(existsSync(spendPath), false);
-    assert.ok(MICROSOFT_ADS_CANAL.length > 0);
+  });
+
+  it("HTTP 500 (SOAP Fault) no submit NÃO é retentado; 503 é", async () => {
+    assert.equal(isMicrosoftAdsRetriableStatus(500), false);
+    assert.equal(isMicrosoftAdsRetriableStatus(503), true);
+    assert.equal(isMicrosoftAdsRetriableStatus(401), false);
+
+    let submitCalls = 0;
+    const base = msFetch({}).impl;
+    const faulting = async (url: string, init?: RequestInit): Promise<Response> => {
+      if (url === SERVICE_URL && String(init?.body ?? "").includes(">SubmitGenerateReport<")) {
+        submitCalls++;
+        return new Response(
+          `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><faultstring>InvalidCredentials</faultstring></s:Fault></s:Body></s:Envelope>`,
+          { status: 500 },
+        );
+      }
+      return base(url, init);
+    };
+    const { result } = await silenceConsole(() => microsoftMain(["--spend", spendPath], { fetchImpl: faulting, sleep }));
+    assert.equal(result, SPEND_INGEST_FAILURE_EXIT_CODE);
+    assert.equal(submitCalls, 1);
   });
 
   it("rede persistente (retry esgotado) → exit não-zero, spend.csv intocado", async () => {

@@ -1849,9 +1849,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // PRÓPRIA em vez de compartilhada com o Google, espelhando
     // Diaria-Google-Ads-Spend-Ingest ponto a ponto (mesmo motivo do #5704
     // original de não compartilhar: exit não-zero de um encadeado com `&&`
-    // calaria o outro — os dois já são fail-soft com exit 0 justamente
-    // pra isso, então nada impede rodar em paralelo como 2 tasks
-    // independentes).
+    // calaria o outro — por isso 2 tasks independentes, o que desde o
+    // #9071 permite que cada uma saia não-zero em falha real sem afetar
+    // a outra).
     //
     // 09:55 BRT (5min depois do Google, mesma disciplina de espaçamento)
     // já está ocupado por Diaria-Session-Registry-Gc — usa 09:52 (slot

@@ -24,6 +24,7 @@
  */
 
 import type { SpendRow } from "./aquisicao-spend.ts";
+import type { FetchRetryOptions } from "./fetch-retry.ts";
 
 /**
  * Funde linhas novas (`incoming`) em cima do conjunto existente lido do
@@ -101,13 +102,18 @@ export const SPEND_INGEST_FAILURE_EXIT_CODE = 1;
 /**
  * Retry de rede dos ingests de gasto (#9012, reusado pelo #9071) — passado a
  * `withFetchRetry` (`scripts/lib/fetch-retry.ts`). Erro de rede e 5xx são
- * retentados; 4xx nunca (credencial inválida é achado real, não blip).
+ * retentados; 4xx nunca (credencial inválida é achado real, não blip) — o
+ * Microsoft também exclui 500 (SOAP Fault, ver `isMicrosoftAdsRetriableStatus`).
+ * Retentar POST é seguro aqui: são renovação de token OAuth, consulta GAQL
+ * ou `SubmitGenerateReport` (no pior caso, um job de relatório órfão —
+ * leitura, sem efeito colateral).
  * Pior caso por requisição: 125s de backoff + 4×30s de timeout ≈ 4min. Numa
  * queda persistente só a 1ª requisição (token OAuth) paga esse custo — o
  * adaptador aborta no 1º erro —, então o run termina antes do
- * `Diaria-Ads-Spend-Ingest-Alarm` (10:05 BRT). O timeout cobre só até os
- * headers; a leitura do corpo fica fora dele (respostas pequenas, exceto o
- * ZIP do Microsoft — risco aceito).
+ * `Diaria-Ads-Spend-Ingest-Alarm` (10:05 BRT). Falha INTERMITENTE espalhada
+ * pelos polls do Microsoft pode somar mais que isso (improvável; aceito).
+ * O timeout cobre só até os headers; a leitura do corpo fica fora dele
+ * (respostas pequenas, exceto o ZIP do Microsoft — risco aceito).
  */
 export const SPEND_INGEST_FETCH_RETRY = {
   attempts: 4,
@@ -117,7 +123,7 @@ export const SPEND_INGEST_FETCH_RETRY = {
 
 /** `FetchRetryOptions` montado a partir de `SPEND_INGEST_FETCH_RETRY` —
  *  `sleep` injetável só pra teste. */
-export function spendIngestRetryOptions(sleep?: (ms: number) => Promise<void>) {
+export function spendIngestRetryOptions(sleep?: (ms: number) => Promise<void>): FetchRetryOptions {
   return {
     attempts: SPEND_INGEST_FETCH_RETRY.attempts,
     backoffMs: [...SPEND_INGEST_FETCH_RETRY.backoffMs],

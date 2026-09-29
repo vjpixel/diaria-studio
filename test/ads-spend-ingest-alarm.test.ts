@@ -562,3 +562,26 @@ describe("CLI: resolução de --google-log-path/--microsoft-log-path ausentes (#
     assert.match(stdout, /cannot-verify — pelo menos uma plataforma sem log legível; nenhum alarme disparado \(fail-soft\)\./);
   });
 });
+
+describe("#9071 — classificação do log do Microsoft depois do banner ✔ próprio", () => {
+  const NOW = new Date("2026-08-17T20:00:00.000Z");
+  const header =
+    "\n===== 2026-08-17T09:52:00.000Z - ingestao diaria de gasto do Microsoft Ads (Reporting API) para data/aquisicao/spend.csv =====\n" +
+    "----- ingest -----\n";
+
+  it("banner ✔ de gasto zero (formato novo) → ok", () => {
+    const run =
+      header +
+      "[microsoft-ads-ingest-spend] ✔ API respondeu via identidade Google, sem gasto no período consultado — spend.csv fica como está.\n" +
+      "===== fim (ingest=0) =====\n";
+    assert.equal(evaluateSinglePlatformLog("microsoft", MICROSOFT_LOG_PATH, true, run, NOW).verdict, "ok");
+  });
+
+  it("perda TOTAL por malformação (#5605) → defect, apesar de carregar o literal benigno como prefixo", () => {
+    const run =
+      header +
+      "[microsoft-ads-ingest-spend] fallback pro CSV manual — [identidade: Google] fetch não devolveu nenhuma linha com custo — nada pra atualizar — 3 linha(s) do CampaignPerformanceReport recebida(s) mas descartada(s) por malformação (#5605); possível schema drift na API, não necessariamente ausência real de gasto no período.\n" +
+      "===== fim (ingest=1) =====\n";
+    assert.equal(evaluateSinglePlatformLog("microsoft", MICROSOFT_LOG_PATH, true, run, NOW).verdict, "defect");
+  });
+});

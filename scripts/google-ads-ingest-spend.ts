@@ -10,9 +10,10 @@
  * ## Fail-soft (item 5 do checklist #5237) — MCP/API indisponível NUNCA
  * quebra o relatório
  *
- * Hoje o developer token está no nível "Conta de teste" (Basic Access em
- * fila, #5262/#5237) — toda chamada de produção falha com
- * `DEVELOPER_TOKEN_NOT_APPROVED`. Esse é o caso comum, não uma exceção: sem
+ * Na origem (#5237) o developer token estava no nível "Conta de teste"
+ * (Basic Access em fila, #5262) e toda chamada de produção falhava com
+ * `DEVELOPER_TOKEN_NOT_APPROVED`; o Basic Access foi aprovado em
+ * 19/08/2026, então esse estado virou exceção a investigar. Sem
  * qualquer variável de ambiente `GOOGLE_ADS_*` presente, ou com a chamada
  * falhando por qualquer motivo (rede, auth, quota), este script imprime um
  * aviso e deixa `data/aquisicao/spend.csv` como estava — o fallback é o
