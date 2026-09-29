@@ -38,7 +38,7 @@ function faixaMed(dia: string, min: number, max: number): MedicaoDia {
       frescor: dia,
       qualidade: "faixa",
       motivo: "faixa",
-      limites: { min, max },
+      limites: { min, max, rotuloMax: "com não-atribuídos" },
     },
   };
 }

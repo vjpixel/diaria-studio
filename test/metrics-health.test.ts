@@ -179,7 +179,7 @@ describe("evaluateQueda", () => {
         frescor: d,
         qualidade: "faixa",
         motivo: "faixa",
-        limites: { min: 5, max: i === dias.length - 1 ? 50 : 8 }, // teto oscila muito, min nunca muda
+        limites: { min: 5, max: i === dias.length - 1 ? 50 : 8, rotuloMax: "com não-atribuídos" }, // teto oscila muito, min nunca muda
       },
     }));
     const { finding } = evaluateQueda(CONTAGEM_DEF, medicoes, dias);

@@ -106,6 +106,17 @@ describe("churn-mensal", () => {
     assert.ok(r.limites!.min <= r.limites!.max);
   });
 
+  it("rótulo do teto é 'com limpeza manual', nunca o de aquisição (#9023 item 3)", async () => {
+    const deps: ChurnMensalDeps = {
+      exits: [{ email: "a@x.com" }, { email: "manual@x.com" }],
+      manualCleanupEmails: new Set(["manual@x.com"]),
+      periodMonths: 1,
+      avgActiveBase: 100,
+    };
+    const r = await def.computar({ janela: janelaDia("2026-09-01"), deps });
+    assert.equal(r.limites?.rotuloMax, "com limpeza manual");
+  });
+
   it("decomposicao 'variante' nomeia organico e com_limpeza", async () => {
     const deps: ChurnMensalDeps = {
       exits: [{ email: "a@x.com" }, { email: "manual@x.com" }],
@@ -162,6 +173,12 @@ describe("ltv-caixa", () => {
     const r = await def.computar({ janela: janelaDia("2026-09-01"), deps });
     assert.equal(r.qualidade, "faixa");
     assert.ok(r.limites!.min > 0 && r.limites!.max >= r.limites!.min);
+  });
+
+  it("rótulo do teto é 'com churn orgânico' (#9023 item 3)", async () => {
+    const deps: LtvCaixaDeps = { arpuMensal: 0.78, churnMensalOrganico: 0.024, churnMensalComLimpeza: 0.05 };
+    const r = await def.computar({ janela: janelaDia("2026-09-01"), deps });
+    assert.equal(r.limites?.rotuloMax, "com churn orgânico");
   });
 
   it("respeita horizonMonths customizado", async () => {

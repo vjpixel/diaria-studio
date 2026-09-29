@@ -93,6 +93,7 @@ import { loadManualCleanupEmails, manualCleanupEmailsPath } from "../lib/manual-
 import {
   computeChurnRate,
   computeConversaoApoiador,
+  computeCustoPorAtivo,
   summarizeApoiaSeMonthRevenue,
   previousCompetenceMonth,
   findChurnBaselineDate,
@@ -792,7 +793,10 @@ async function computeValorLayer(
     const adsSnapshot = buildAdsData(rootDir);
     if (adsSnapshot.report) {
       for (const row of adsSnapshot.report.rows) {
-        if (row.kind === "measured") custoPorCanal[row.canal] = row.custoPorLeitor;
+        // Custo por ATIVO (gasto ÷ ativos), não `row.custoPorLeitor`: o LTV
+        // é por ativo (ARPU = receita ÷ base ativa), então o denominador
+        // precisa da mesma unidade (#9023).
+        if (row.kind === "measured") custoPorCanal[row.canal] = computeCustoPorAtivo(row.spend.valor, row.ativos);
       }
     }
   } catch (e) {

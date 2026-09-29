@@ -19,6 +19,7 @@ import {
   computeConversaoApoiador,
   computeLtvPorOrigem,
   computeLtvCacRatio,
+  computeCustoPorAtivo,
   summarizeApoiaSeMonthRevenue,
   parseAmazonRevenueConfig,
   previousCompetenceMonth,
@@ -287,24 +288,42 @@ describe("computeLtvPorOrigem", () => {
 
 describe("computeLtvCacRatio", () => {
   it("LTV ÷ CAC", () => {
-    const r = computeLtvCacRatio({ ltvBrl: 15, custoPorLeitorBrl: 5 });
+    const r = computeLtvCacRatio({ ltvBrl: 15, custoPorAtivoBrl: 5 });
     assert.equal(r.valor, 3);
   });
 
   it("nunca fabrica 0/infinito quando CAC é null", () => {
-    const r = computeLtvCacRatio({ ltvBrl: 15, custoPorLeitorBrl: null });
+    const r = computeLtvCacRatio({ ltvBrl: 15, custoPorAtivoBrl: null });
     assert.equal(r.valor, null);
   });
 
   it("nunca fabrica infinito quando CAC é 0", () => {
-    const r = computeLtvCacRatio({ ltvBrl: 15, custoPorLeitorBrl: 0 });
+    const r = computeLtvCacRatio({ ltvBrl: 15, custoPorAtivoBrl: 0 });
     assert.equal(r.valor, null);
     assert.match(r.motivo ?? "", /<= 0/);
   });
 
   it("nunca fabrica 0 quando LTV é null", () => {
-    const r = computeLtvCacRatio({ ltvBrl: null, custoPorLeitorBrl: 5 });
+    const r = computeLtvCacRatio({ ltvBrl: null, custoPorAtivoBrl: 5 });
     assert.equal(r.valor, null);
+  });
+});
+
+describe("computeCustoPorAtivo (#9023 item 2 — mesma unidade do LTV)", () => {
+  it("gasto ÷ ativos do canal", () => {
+    assert.equal(computeCustoPorAtivo(100, 4), 25);
+  });
+
+  it("sem ativo -> null, nunca Infinity/0", () => {
+    assert.equal(computeCustoPorAtivo(100, 0), null);
+  });
+
+  it("razão por ativo difere da razão por leitor por ~ativos/leitores", () => {
+    // Canal com 100 de gasto, 20 ativos e 5 leitores: custo/leitor = 20,
+    // custo/ativo = 5. LTV (por ativo) = 10 -> razão correta = 2; a antiga
+    // (10 / 20) saía 0,5, subestimada pelo fator ativos/leitores = 4.
+    const r = computeLtvCacRatio({ ltvBrl: 10, custoPorAtivoBrl: computeCustoPorAtivo(100, 20) });
+    assert.equal(r.valor, 2);
   });
 });
 

@@ -207,7 +207,8 @@ export function evaluateMeta(
     );
     const ultimaFaixa = [...medicoes].reverse().find((m) => isFaixa(m.resultado.qualidade) && m.resultado.limites);
     if (ultimaFaixa?.resultado.limites) {
-      status.faixa = ultimaFaixa.resultado.limites;
+      // Só min/max — `rotuloMax` (#9023) é detalhe de render, fora do contrato de MetaStatus.
+      status.faixa = { min: ultimaFaixa.resultado.limites.min, max: ultimaFaixa.resultado.limites.max };
     }
   }
 
