@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   computeLtvSection,
+  isValidSnapshotArg,
   formatCacReportMarkdown,
   parseCacReportArgs,
   resolveLtvLatestSnapshotDate,
@@ -408,5 +409,32 @@ describe("formatCacReportMarkdown — seção LTV vs. custo (#8423)", () => {
     const md = formatCacReportMarkdown(report, budget, {}, undefined, undefined, [], section);
     assert.match(md, /Piso = LTV assumindo o churn mais alto \(com limpeza/);
     assert.match(md, /teto = assumindo o churn mais baixo \(orgânico\)/);
+  });
+});
+
+describe("#9075 — snapshots usados, base do ARPU e validação de --snapshot", () => {
+  it("isValidSnapshotArg: só AAAA-MM-DD de calendário válido", () => {
+    assert.equal(isValidSnapshotArg("2026-09-09"), true);
+    assert.equal(isValidSnapshotArg("2026-9-9"), false);
+    assert.equal(isValidSnapshotArg("2026-02-30"), false);
+    assert.equal(isValidSnapshotArg("ontem"), false);
+    assert.equal(isValidSnapshotArg(""), false);
+  });
+
+  it("seção LTV expõe snapshotAtual e ativosArpu", () => {
+    const root = makeRoot();
+    try {
+      writeSnapshotDir(root, "2026-09-09", [sub({ email: "a@x.com" }), sub({ email: "b@x.com" })]);
+      const backupRoot = join(root, "beehiiv-backup");
+      const report = { rows: [] } as unknown as CacReport;
+      const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
+      assert.equal(section.applied, true);
+      if (section.applied) {
+        assert.equal(section.snapshotAtual, "2026-09-09");
+        assert.equal(section.ativosArpu, 2);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
