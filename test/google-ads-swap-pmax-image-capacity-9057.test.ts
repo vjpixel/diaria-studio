@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  PMAX_IMAGE_COMBINED_MAX,
   parseAssetGroupAssetRows,
   classifyAssetGroupAssets,
   planImageFieldLinks,
@@ -94,6 +95,9 @@ function servingTextRows(): AssetGroupAssetApiRow[] {
 }
 
 const NEW4 = { SQUARE_MARKETING_IMAGE: 4, MARKETING_IMAGE: 4, PORTRAIT_MARKETING_IMAGE: 4 };
+// Só SQUARE recebe novas — isola o teto POR TIPO do teto combinado (#9080).
+const NEW4_SQUARE_ONLY = { SQUARE_MARKETING_IMAGE: 4, MARKETING_IMAGE: 0, PORTRAIT_MARKETING_IMAGE: 0 };
+const NEW4_PORTRAIT_ONLY = { SQUARE_MARKETING_IMAGE: 0, MARKETING_IMAGE: 0, PORTRAIT_MARKETING_IMAGE: 4 };
 
 describe("#9057 — planImageFieldLinks valida imagens antigas + novas contra o máximo", () => {
   it("PMAX_IMAGE_FIELD_MAX = 20 por tipo (Google Ads API, Performance Max asset requirements)", () => {
@@ -103,7 +107,7 @@ describe("#9057 — planImageFieldLinks valida imagens antigas + novas contra o 
   it("cabe sem remover nada quando existentes + novas <= 20", () => {
     const rows = Array.from({ length: 16 }, (_, i) => staleImage("SQUARE_MARKETING_IMAGE", i));
     const items = parseAssetGroupAssetRows(rows);
-    const plan = planImageFieldLinks(items, classifyAssetGroupAssets(items), NEW4);
+    const plan = planImageFieldLinks(items, classifyAssetGroupAssets(items), NEW4_SQUARE_ONLY);
     assert.equal(plan.ok, true);
     for (const p of plan.plans) assert.equal(p.removeInSameMutate.length, 0);
   });
@@ -114,7 +118,7 @@ describe("#9057 — planImageFieldLinks valida imagens antigas + novas contra o 
       keepImage("SQUARE_MARKETING_IMAGE", 99),
     ];
     const items = parseAssetGroupAssetRows(rows);
-    const plan = planImageFieldLinks(items, classifyAssetGroupAssets(items), NEW4);
+    const plan = planImageFieldLinks(items, classifyAssetGroupAssets(items), NEW4_SQUARE_ONLY);
     assert.equal(plan.ok, true);
     const sq = plan.plans.find((p) => p.fieldType === "SQUARE_MARKETING_IMAGE")!;
     assert.equal(sq.existingEnabled, 19);
@@ -138,8 +142,8 @@ describe("#9057 — planImageFieldLinks valida imagens antigas + novas contra o 
     const rows = Array.from({ length: 20 }, (_, i) => keepImage("PORTRAIT_MARKETING_IMAGE", i));
     const items = parseAssetGroupAssetRows(rows);
     const cls = classifyAssetGroupAssets(items);
-    assert.equal(planImageFieldLinks(items, cls, NEW4).ok, false);
-    const comSkip = planImageFieldLinks(items, cls, NEW4, new Set(["PORTRAIT_MARKETING_IMAGE"]));
+    assert.equal(planImageFieldLinks(items, cls, NEW4_PORTRAIT_ONLY).ok, false);
+    const comSkip = planImageFieldLinks(items, cls, NEW4_PORTRAIT_ONLY, new Set(["PORTRAIT_MARKETING_IMAGE"]));
     assert.equal(comSkip.ok, true);
     assert.ok(!comSkip.plans.some((p) => p.fieldType === "PORTRAIT_MARKETING_IMAGE"));
   });
@@ -163,7 +167,7 @@ describe("#9057 — CLI --send: Fase 1 nunca estoura o máximo de imagem", () =>
 
   /** Mock com estado: aplica remove+create de cada `assetGroupAssets:mutate`
    *  e responde 400 (sem aplicar nada) se algum fieldType de imagem passar
-   *  do máximo. */
+   *  do máximo — ou se o total de imagens passar do teto combinado (#9080). */
   function makeStatefulApi(rows: AssetGroupAssetApiRow[]) {
     const enabled = new Map<string, string>();
     for (const r of rows) enabled.set(r.assetGroupAsset!.resourceName!, r.assetGroupAsset!.fieldType!);
@@ -187,6 +191,11 @@ describe("#9057 — CLI --send: Fase 1 nunca estoura o máximo de imagem", () =>
             calls.rejected++;
             return jsonResponse(400, { error: { message: `RESOURCE_LIMIT: ${fieldType} ${count} > ${max}` } });
           }
+        }
+        const totalImages = [...next.values()].filter((ft) => ft in PMAX_IMAGE_FIELD_MAX).length;
+        if (totalImages > PMAX_IMAGE_COMBINED_MAX) {
+          calls.rejected++;
+          return jsonResponse(400, { error: { message: `RESOURCE_LIMIT: imagens ${totalImages} > ${PMAX_IMAGE_COMBINED_MAX}` } });
         }
         enabled.clear();
         for (const [k, v] of next) enabled.set(k, v);
@@ -255,9 +264,12 @@ describe("#9057 — CLI --send: Fase 1 nunca estoura o máximo de imagem", () =>
       const call = api.calls.linkBodies.find((b) =>
         b.operations.some((op) => (op.create as { fieldType?: string } | undefined)?.fieldType === "MARKETING_IMAGE"),
       )!;
-      assert.equal(call.operations.filter((op) => "remove" in op).length, 3); // 19 + 4 - 20
+      // 3 pelo teto por tipo (19 + 4 - 20) + 1 pelo teto combinado (#9080).
+      assert.equal(call.operations.filter((op) => "remove" in op).length, 4);
       assert.ok("remove" in call.operations[0], "remove vem antes do create");
-      assert.equal([...api.enabled.values()].filter((v) => v === "MARKETING_IMAGE").length, 20);
+      const images = [...api.enabled.values()].filter((v) => v in PMAX_IMAGE_FIELD_MAX);
+      assert.equal(images.length, PMAX_IMAGE_COMBINED_MAX);
+      assert.equal(images.filter((v) => v === "MARKETING_IMAGE").length, 19 - 11 + 4);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
