@@ -329,6 +329,11 @@ export interface MicrosoftAdsAuthConfig {
 
 export type MicrosoftAdsIngestResult =
   | { kind: "updated"; rows: SpendRow[]; fetchedRows: number; discardedCount: number }
+  /** API respondeu com sucesso e sem NENHUMA linha — gasto zero real, não
+   *  falha (#9071: o CLI sai exit 0 aqui, exit não-zero em `fallback`).
+   *  Perda total por malformação (linhas chegaram, todas descartadas) NÃO
+   *  cai aqui — segue `fallback` (#5605). */
+  | { kind: "empty" }
   | { kind: "fallback"; reason: string };
 
 /** Subconjunto de `fetch` usado — permite injetar um mock em teste, mesmo
@@ -1254,6 +1259,7 @@ export async function runMicrosoftAdsIngest(
   const range = defaultDateRange(opts.now ?? new Date());
 
   let discardedCount = 0;
+  let fetchSucceeded = false;
 
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
     const tokenResult = await refreshMicrosoftAdsAccessToken(fetchImpl, opts.auth);
@@ -1266,6 +1272,7 @@ export async function runMicrosoftAdsIngest(
 
     const aggregated = aggregateMicrosoftAdsSpendByMonthWithDiscards(spendResult.rows, { canal, moeda, fonteLabel });
     discardedCount = aggregated.discardedCount;
+    fetchSucceeded = true;
     return { kind: "ok", rows: aggregated.rows, fetchedCount: spendResult.rows.length };
   };
 
@@ -1286,7 +1293,10 @@ export async function runMicrosoftAdsIngest(
         reason: `${result.reason} — ${discardedCount} linha(s) do CampaignPerformanceReport recebida(s) mas descartada(s) por malformação (#5605); possível schema drift na API, não necessariamente ausência real de gasto no período.`,
       };
     }
-    return result;
+    // `runSpendIngest` colapsa "API falhou" e "API respondeu sem linha" no
+    // mesmo `fallback` — o flag do closure separa os dois (#9071, mesmo
+    // padrão de `runMetaAdsIngest` no #9012).
+    return fetchSucceeded ? { kind: "empty" } : result;
   }
 
   if (discardedCount > 0) {

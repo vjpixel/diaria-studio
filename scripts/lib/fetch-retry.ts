@@ -97,3 +97,20 @@ export async function fetchWithRetry(
   // ou lança na última tentativa.
   throw new Error("fetchWithRetry: loop encerrado sem resultado (bug)");
 }
+
+/** Assinatura mínima de `fetch` aceita por `withFetchRetry` — compatível com
+ *  os `FetchLike` dos adaptadores de ingestão de gasto (Google/Microsoft/
+ *  Meta), todos `(input: string, init?: RequestInit) => Promise<Response>`. */
+export type FetchLikeFn = (input: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * Envolve um `fetch` injetável com `fetchWithRetry`, preservando a
+ * assinatura `(input, init)` — cada chamada feita pelo adaptador (token,
+ * query, poll, download, página de paginação) ganha o próprio retry.
+ * Extraído de `withMetaAdsFetchRetry` (#9012) pra ser reusado pelos ingests
+ * Google/Microsoft (#9071). Um `init.signal` do chamador é substituído pelo
+ * signal do timeout da tentativa (nenhum adaptador passa um hoje).
+ */
+export function withFetchRetry(fetchImpl: FetchLikeFn, opts: FetchRetryOptions = {}): FetchLikeFn {
+  return (input, init) => fetchWithRetry((signal) => fetchImpl(input, { ...init, signal }), opts);
+}

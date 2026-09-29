@@ -1826,9 +1826,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // reduzido aqui a so Google Ads (Microsoft Ads segue sem credencial,
     // #5502, fora do escopo do #5704).
     //
-    // Fail-soft por design (#5237): sem credencial ou com a API
-    // indisponivel, o script sai limpo com exit 0 sem tocar spend.csv --
-    // esta task nunca falha "de verdade" por falta de campanha rodando.
+    // Fail-soft nos dados (#5237): sem credencial ou com a API
+    // indisponivel (apos retry), o script nao toca spend.csv -- mas desde o
+    // #9071 sai com exit NAO-ZERO (unit `failed`); gasto zero real
+    // (campanha pausada) segue exit 0.
     //
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5220/#5217/#5311/#5494/#5607 acima) -- maquina Windows
@@ -1862,9 +1863,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description: "ingestao diaria de gasto do Microsoft Ads (Reporting API) para data/aquisicao/spend.csv",
     steps: [{ key: "ingest", script: "scripts/microsoft-ads-ingest-spend.ts" }],
     logPath: "aquisicao/.microsoft-ads-ingest.log",
-    // Fail-soft por design (#5237/#5502): sem credencial ou com a API
-    // indisponivel, o script sai limpo com exit 0 sem tocar spend.csv --
-    // mesma disciplina do Google Ads acima.
+    // Fail-soft nos dados (#5237/#5502): sem credencial ou com a API
+    // indisponivel (apos retry), o script nao toca spend.csv e, desde o
+    // #9071, sai com exit NAO-ZERO; gasto zero real segue exit 0 -- mesma
+    // disciplina do Google Ads acima.
     //
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5704/#5878 acima) -- maquina Windows nao roda mais
@@ -2543,8 +2545,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     name: "Diaria-Ads-Spend-Ingest-Alarm",
     description:
       "interpreta o CONTEUDO (nao so exit code) do log acumulado de google-ads-ingest-spend.ts/" +
-      "microsoft-ads-ingest-spend.ts -- decisao do #5237/#5502 mantem exit 0 mesmo em defect, entao sem " +
-      "este alarme nenhum mecanismo existente enxerga um defeito real, #5597",
+      "microsoft-ads-ingest-spend.ts/meta-ads-ingest-spend.ts -- classifica a falha (defeito x gasto zero) " +
+      "a partir do log; desde #9012/#9071 a falha real tambem sai com exit nao-zero, #5597",
     steps: [{ key: "alarm", script: "scripts/ads-spend-ingest-alarm.ts" }],
     logPath: "aquisicao/.ads-spend-ingest-alarm.log",
     // Diaria 10:05 BRT -- depois de Diaria-Google-Ads-Spend-Ingest (09:50) e

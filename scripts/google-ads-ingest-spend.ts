@@ -15,10 +15,15 @@
  * `DEVELOPER_TOKEN_NOT_APPROVED`. Esse é o caso comum, não uma exceção: sem
  * qualquer variável de ambiente `GOOGLE_ADS_*` presente, ou com a chamada
  * falhando por qualquer motivo (rede, auth, quota), este script imprime um
- * aviso e sai com **exit 0**, deixando `data/aquisicao/spend.csv` como
- * estava — o fallback é o CSV importado manualmente (`seed-spend-csv.ts` /
- * edição direta), que `cac-report.ts` já lê e nunca deixa de rodar por
- * causa disto.
+ * aviso e deixa `data/aquisicao/spend.csv` como estava — o fallback é o
+ * CSV importado manualmente (`seed-spend-csv.ts` / edição direta), que
+ * `cac-report.ts` já lê e nunca deixa de rodar por causa disto.
+ *
+ * **Fail-soft nos DADOS, fail-loud no exit code (#9071, espelha o #9012 do
+ * Meta):** toda falha real sai com `SPEND_INGEST_FAILURE_EXIT_CODE`
+ * (não-zero) pra a unit systemd aparecer `failed`; só "API respondeu, sem
+ * gasto no período" (`empty`) sai 0. Cada chamada de rede (token OAuth,
+ * `googleAds:search`) passa por `withFetchRetry` (erro de rede/5xx).
  *
  * ## Uso
  *
@@ -41,9 +46,12 @@ import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { readSpendCsv, formatSpendCsv, type SpendRow } from "./lib/aquisicao-spend.ts";
 import {
   runGoogleAdsIngest,
+  type FetchLike,
   type GoogleAdsAuthConfig,
   type GoogleAdsFailureClass,
 } from "./lib/google-ads-ingest.ts";
+import { SPEND_INGEST_FAILURE_EXIT_CODE, spendIngestRetryOptions } from "./lib/spend-ingest.ts";
+import { withFetchRetry } from "./lib/fetch-retry.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SPEND_CSV_PATH = resolve(ROOT, "data", "aquisicao", "spend.csv");
@@ -116,13 +124,11 @@ function fallback(reason: string): void {
  * Reporta a falha de acordo com a classe, para que o caso ESPERADO e o BUG
  * não saiam com a mesma cara (exigência explícita do #5237).
  *
- * **Exit code continua 0 em todas as classes, inclusive `defect`.** A task
- * agendada encadeia `google-ads-ingest-spend.ts && microsoft-ads-ingest-spend.ts`
- * (`docs/scheduled-tasks-registry.md`), então sair não-zero calaria a
- * ingestão do OUTRO canal — o remédio seria pior que a doença. O que
- * distingue um defeito não é o exit code, é o banner: `defect` sai com
- * DEFEITO + instrução de ação, `auth-pending`/`empty` saem como estado
- * normal do dia.
+ * O banner distingue a CLASSE (`defect` sai com DEFEITO + instrução de
+ * ação); o exit code distingue só falha × não-falha — ver
+ * `exitCodeForFailureClass`. (Até o #9071 o exit era 0 em todas as classes,
+ * porque a task encadeava `google && microsoft` e sair não-zero calaria o
+ * outro canal; hoje cada canal é task independente de step único.)
  */
 function reportFallback(reason: string, failureClass: GoogleAdsFailureClass): void {
   if (failureClass === "defect") {
@@ -143,18 +149,42 @@ function reportFallback(reason: string, failureClass: GoogleAdsFailureClass): vo
   fallback(reason);
 }
 
-export async function main(): Promise<number> {
-  const spendPath = getStringArg(process.argv.slice(2), "spend") ?? DEFAULT_SPEND_CSV_PATH;
+/**
+ * Exit code por classe de fallback (#9071): `empty` (API respondeu, sem
+ * gasto) é o único caso não-falha → 0. `defect`, `transient` (rede/5xx
+ * mesmo depois do retry) e `auth-pending` (Basic Access aprovado em
+ * 19/08/2026 — voltar a esse estado é exceção a investigar, não rotina) →
+ * `SPEND_INGEST_FAILURE_EXIT_CODE`.
+ *
+ * @pure
+ */
+export function exitCodeForFailureClass(failureClass: GoogleAdsFailureClass): number {
+  return failureClass === "empty" ? 0 : SPEND_INGEST_FAILURE_EXIT_CODE;
+}
+
+export interface GoogleAdsIngestCliOptions {
+  /** Injetável só pra teste (default `fetch` global). */
+  fetchImpl?: FetchLike;
+  /** Injetável só pra teste — nunca espera de verdade fora de produção. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  opts: GoogleAdsIngestCliOptions = {},
+): Promise<number> {
+  const spendPath = getStringArg(argv, "spend") ?? DEFAULT_SPEND_CSV_PATH;
 
   const configResult = authConfigFromEnv();
   if ("missing" in configResult) {
     fallback(`variável(is) de ambiente ausente(s): ${configResult.missing.join(", ")}`);
-    return 0;
+    return SPEND_INGEST_FAILURE_EXIT_CODE;
   }
 
   const existingRows: SpendRow[] = existsSync(spendPath) ? readSpendCsv(spendPath).rows : [];
+  const retryingFetch = withFetchRetry(opts.fetchImpl ?? fetch, spendIngestRetryOptions(opts.sleep));
 
-  const result = await runGoogleAdsIngest(fetch, {
+  const result = await runGoogleAdsIngest(retryingFetch, {
     auth: configResult.auth,
     existingRows,
     canal: GOOGLE_ADS_CANAL,
@@ -162,7 +192,7 @@ export async function main(): Promise<number> {
 
   if (result.kind === "fallback") {
     reportFallback(result.reason, result.failureClass);
-    return 0;
+    return exitCodeForFailureClass(result.failureClass);
   }
 
   writeFileSync(spendPath, formatSpendCsv(result.rows), "utf8");
@@ -187,12 +217,13 @@ if (isMainModule(import.meta.url)) {
     .then((code) => process.exit(code))
     .catch((e) => {
       // Último caminho que escaparia como stack cru — nunca deveria chegar
-      // aqui (as duas etapas de rede já são fail-soft), mas mantém a
-      // disciplina "nunca quebra o relatório" mesmo diante de um bug aqui.
+      // aqui (as duas etapas de rede já são fail-soft), mas mantém
+      // spend.csv intocado mesmo diante de um bug aqui; exit não-zero
+      // (#9071) pra a unit não reportar sucesso.
       // `defect`, não `fallback()` puro: por definição, uma exceção que
       // escapou dos dois caminhos fail-soft É um bug nosso, não estado
       // externo esperado — achado do review do PR #5591.
       reportFallback(`erro inesperado: ${e instanceof Error ? e.message : e}`, "defect");
-      process.exit(0);
+      process.exit(SPEND_INGEST_FAILURE_EXIT_CODE);
     });
 }

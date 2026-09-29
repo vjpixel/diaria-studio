@@ -48,8 +48,7 @@
  * relatório (`cac-report.ts`) nunca quebra. Mas o processo sai com
  * `META_ADS_INGEST_FAILURE_EXIT_CODE` (não-zero), pra a unit systemd
  * aparecer como `failed` em vez de "sucesso" silencioso. Gasto zero real
- * segue exit 0. (Google/Microsoft ainda mantêm exit 0 — fora do escopo do
- * #9012.)
+ * segue exit 0. (Google/Microsoft adotaram o mesmo contrato no #9071.)
  *
  * ## Uso
  *
@@ -64,9 +63,15 @@ import { fileURLToPath } from "node:url";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { readSpendCsv, formatSpendCsv, type SpendRow } from "./lib/aquisicao-spend.ts";
 import { runMetaAdsIngest } from "./lib/meta-ads-ingest.ts";
-import { runSpendIngest, type SpendIngestFetchResult } from "./lib/spend-ingest.ts";
+import {
+  runSpendIngest,
+  SPEND_INGEST_FAILURE_EXIT_CODE,
+  SPEND_INGEST_FETCH_RETRY,
+  spendIngestRetryOptions,
+  type SpendIngestFetchResult,
+} from "./lib/spend-ingest.ts";
 import { fetchMetaAdsChannelMetrics, metaAdsAuthConfigFromEnv, type MetaFetchLike } from "./lib/ads-campaign-economics-fetch.ts";
-import { fetchWithRetry } from "./lib/fetch-retry.ts";
+import { withFetchRetry } from "./lib/fetch-retry.ts";
 import type { ChannelDailyMetric } from "./lib/ads-campaign-economics.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -206,8 +211,10 @@ export function aggregateMetaAdsChannelMetricsByMonth(metrics: ChannelDailyMetri
  * — sair não-zero não cala nenhum outro canal, e deixa a falha visível no
  * `systemctl --state=failed` (#5563) além do alarme. Gasto zero real
  * ("API respondeu, sem gasto no período") continua exit 0: não é falha.
+ * Desde o #9071 é alias de `SPEND_INGEST_FAILURE_EXIT_CODE`
+ * (`scripts/lib/spend-ingest.ts`), o mesmo contrato do Google/Microsoft.
  */
-export const META_ADS_INGEST_FAILURE_EXIT_CODE = 1;
+export const META_ADS_INGEST_FAILURE_EXIT_CODE = SPEND_INGEST_FAILURE_EXIT_CODE;
 
 /**
  * Retry da Graph API no caminho headless (#9012). Causa raiz do alarme de
@@ -221,30 +228,22 @@ export const META_ADS_INGEST_FAILURE_EXIT_CODE = 1;
  * das 10:05 BRT (task às 09:54 BRT). O timeout cobre só até os headers;
  * a leitura do corpo (`res.json()` em `fetchMetaAdsChannelMetrics`) fica
  * fora dele — resposta pequena, risco aceito. Um `init.signal` do
- * chamador seria substituído (nenhum chamador passa um hoje).
+ * chamador seria substituído (nenhum chamador passa um hoje). Desde o
+ * #9071 é alias de `SPEND_INGEST_FETCH_RETRY`, compartilhado com os
+ * ingests Google/Microsoft.
  */
-export const META_ADS_FETCH_RETRY = {
-  attempts: 4,
-  backoffMs: [5_000, 30_000, 90_000],
-  timeoutMs: 30_000,
-} as const;
+export const META_ADS_FETCH_RETRY = SPEND_INGEST_FETCH_RETRY;
 
 export interface RunHeadlessOptions {
   /** Injetável só pra teste — nunca espera de verdade fora de produção. */
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** Envolve `fetchImpl` com `fetchWithRetry` preservando a assinatura que
+/** Envolve `fetchImpl` com `withFetchRetry` preservando a assinatura que
  *  `fetchMetaAdsChannelMetrics` espera (cada página da paginação ganha o
  *  próprio retry). */
 export function withMetaAdsFetchRetry(fetchImpl: MetaFetchLike, sleep?: (ms: number) => Promise<void>): MetaFetchLike {
-  return (input, init) =>
-    fetchWithRetry((signal) => fetchImpl(input, { ...init, signal }), {
-      attempts: META_ADS_FETCH_RETRY.attempts,
-      backoffMs: [...META_ADS_FETCH_RETRY.backoffMs],
-      timeoutMs: META_ADS_FETCH_RETRY.timeoutMs,
-      sleep,
-    });
+  return withFetchRetry(fetchImpl, spendIngestRetryOptions(sleep));
 }
 
 function fallback(reason: string): void {

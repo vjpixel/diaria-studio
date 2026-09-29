@@ -12,12 +12,16 @@
  *
  * Sem qualquer variável de ambiente `MICROSOFT_ADS_*`/`GOOGLE_*` presente,
  * ou com a chamada falhando por qualquer motivo (rede, auth, credencial não
- * emitida), este script imprime um aviso e sai com **exit 0**, deixando
- * `data/aquisicao/spend.csv` como estava — o fallback é o CSV importado
- * manualmente, que `cac-report.ts` já lê e nunca deixa de rodar por causa
- * disto. **Zero gasto no período consultado também é fail-soft (não erro)**
- * — a conta em uso não teve nenhum gasto histórico até 22/08/2026 (validado
- * ao vivo), então rodar isto hoje legitimamente não muda `spend.csv`.
+ * emitida), este script imprime um aviso e deixa `data/aquisicao/spend.csv`
+ * como estava — o fallback é o CSV importado manualmente, que
+ * `cac-report.ts` já lê e nunca deixa de rodar por causa disto. Desde o
+ * #9071 (espelha o #9012 do Meta) essa falha sai com
+ * `SPEND_INGEST_FAILURE_EXIT_CODE` (não-zero), pra a unit systemd aparecer
+ * `failed`, e cada chamada de rede passa por `withFetchRetry` (erro de
+ * rede/5xx). **Zero gasto no período consultado NÃO é falha** (exit 0,
+ * banner `✔`) — a conta em uso não teve nenhum gasto histórico até
+ * 22/08/2026 (validado ao vivo), então rodar isto legitimamente pode não
+ * mudar `spend.csv`.
  *
  * ## Uso
  *
@@ -45,7 +49,9 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { readSpendCsv, formatSpendCsv, type SpendRow } from "./lib/aquisicao-spend.ts";
-import { runMicrosoftAdsIngest, type MicrosoftAdsAuthConfig } from "./lib/microsoft-ads-ingest.ts";
+import { runMicrosoftAdsIngest, type FetchLike, type MicrosoftAdsAuthConfig } from "./lib/microsoft-ads-ingest.ts";
+import { SPEND_INGEST_FAILURE_EXIT_CODE, spendIngestRetryOptions } from "./lib/spend-ingest.ts";
+import { withFetchRetry } from "./lib/fetch-retry.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 
 // #1219 — carrega .env antes de ler process.env. Passou a ser exigido aqui
@@ -138,13 +144,24 @@ function fallback(reason: string): void {
   console.warn("  spend.csv não foi alterado. Editar manualmente se necessário.");
 }
 
-export async function main(): Promise<number> {
-  const spendPath = getStringArg(process.argv.slice(2), "spend") ?? DEFAULT_SPEND_CSV_PATH;
+export interface MicrosoftAdsIngestCliOptions {
+  /** Injetável só pra teste (default `fetch` global). */
+  fetchImpl?: FetchLike;
+  /** Injetável só pra teste — substitui tanto o backoff do retry quanto o
+   *  intervalo de poll da Reporting API; nunca espera de verdade em teste. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  opts: MicrosoftAdsIngestCliOptions = {},
+): Promise<number> {
+  const spendPath = getStringArg(argv, "spend") ?? DEFAULT_SPEND_CSV_PATH;
 
   const configResult = authConfigFromEnv();
   if ("missing" in configResult) {
     fallback(`variável(is) de ambiente ausente(s): ${configResult.missing.join(", ")}`);
-    return 0;
+    return SPEND_INGEST_FAILURE_EXIT_CODE;
   }
 
   // Qual identity provider foi RESOLVIDO (não necessariamente o que
@@ -158,14 +175,23 @@ export async function main(): Promise<number> {
 
   const existingRows: SpendRow[] = existsSync(spendPath) ? readSpendCsv(spendPath).rows : [];
 
-  const result = await runMicrosoftAdsIngest(fetch, {
+  const retryingFetch = withFetchRetry(opts.fetchImpl ?? fetch, spendIngestRetryOptions(opts.sleep));
+
+  const result = await runMicrosoftAdsIngest(retryingFetch, {
     auth: configResult.auth,
     existingRows,
     canal: MICROSOFT_ADS_CANAL,
+    sleepImpl: opts.sleep,
   });
 
   if (result.kind === "fallback") {
     fallback(`[identidade: ${identityProvider}] ${result.reason}`);
+    return SPEND_INGEST_FAILURE_EXIT_CODE;
+  }
+  if (result.kind === "empty") {
+    console.log(
+      `[microsoft-ads-ingest-spend] ✔ API respondeu via identidade ${identityProvider}, sem gasto no período consultado — spend.csv fica como está.`,
+    );
     return 0;
   }
 
@@ -181,9 +207,10 @@ if (isMainModule(import.meta.url)) {
     .then((code) => process.exit(code))
     .catch((e) => {
       // Último caminho que escaparia como stack cru — nunca deveria chegar
-      // aqui (as duas etapas de rede já são fail-soft), mas mantém a
-      // disciplina "nunca quebra o relatório" mesmo diante de um bug aqui.
+      // aqui (as duas etapas de rede já são fail-soft), mas mantém
+      // spend.csv intocado mesmo diante de um bug aqui; exit não-zero
+      // (#9071) pra a unit não reportar sucesso.
       fallback(`erro inesperado: ${e instanceof Error ? e.message : e}`);
-      process.exit(0);
+      process.exit(SPEND_INGEST_FAILURE_EXIT_CODE);
     });
 }

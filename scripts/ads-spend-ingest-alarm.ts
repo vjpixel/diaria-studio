@@ -5,14 +5,13 @@
  * Alarme que interpreta o CONTEÚDO (não só o exit code) dos logs
  * acumulados de `scripts/google-ads-ingest-spend.ts`,
  * `scripts/microsoft-ads-ingest-spend.ts` e (#8245 item 6)
- * `scripts/meta-ads-ingest-spend.ts` — decisão deliberada do #5237/#5502
- * mantém exit code 0 em Google/Microsoft mesmo em `defect` (query
- * malformada, versão de API descontinuada, token ausente), pra não calar a
- * ingestão da plataforma vizinha. Sem este alarme, nenhum mecanismo
- * existente (`Diaria-Systemd-Failed-Units-Alarm`, `--state=failed`) enxerga
- * um defeito real desses dois — a unit sempre reporta sucesso. O Meta sai
- * não-zero em falha real desde o #9012 (a unit fica `failed` e o alarme de
- * units falhas também dispara — dois sinais pro mesmo evento, intencional).
+ * `scripts/meta-ads-ingest-spend.ts`. Até o #9071 (#9012 pro Meta), os
+ * scripts saíam com exit 0 mesmo em `defect` (decisão do #5237/#5502, pra
+ * não calar a plataforma vizinha num encadeamento que não existe mais), e
+ * este alarme era o ÚNICO sinal. Hoje os três saem não-zero em falha real
+ * (a unit fica `failed` e o alarme de units falhas também dispara — dois
+ * sinais pro mesmo evento, intencional); este alarme segue relevante por
+ * ler a CLASSE da falha no log (defeito × transitório × gasto zero).
  *
  * Lógica pura em `scripts/lib/ads-spend-ingest-alarm.ts` — este arquivo é
  * só I/O: ler os TRÊS logs em disco (um por plataforma), enviar e-mail,
