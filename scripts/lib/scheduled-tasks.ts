@@ -1890,9 +1890,11 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // Diaria-Ads-Spend-Ingest-Alarm (10:05) — mesma disciplina de
     // espaçamento de 2min usada entre Google (09:50) e Microsoft (09:52).
     //
-    // Fail-soft por design (#5469/#8245): sem META_ADS_ACCESS_TOKEN ou com
-    // a API indisponível, o script sai limpo com exit 0 sem tocar
-    // spend.csv — mesma disciplina do Google/Microsoft acima.
+    // Fail-soft nos dados (#5469/#8245): sem META_ADS_ACCESS_TOKEN ou com
+    // a API indisponível (após retry), o script não toca spend.csv — mas
+    // desde o #9012 sai com exit NÃO-ZERO (a unit fica `failed`, visível
+    // no alarme de units falhas); gasto zero real segue exit 0. Task de
+    // step único e independente: sair não-zero não cala canal vizinho.
     //
     // Pré-requisito no `300` (item 8 da issue #8245): `META_ADS_ACCESS_TOKEN`
     // não chega lá hoje (Doppler ainda não sincronizado com essa chave, ver

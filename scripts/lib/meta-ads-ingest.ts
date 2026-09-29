@@ -246,6 +246,9 @@ export interface RunMetaAdsIngestOptions {
 
 export type MetaAdsIngestResult =
   | { kind: "updated"; rows: SpendRow[]; fetchedRows: number }
+  /** Envelope VÁLIDO sem nenhuma linha com gasto — gasto zero real, não
+   *  falha (#9012: o CLI sai exit 0 aqui, exit não-zero em `fallback`). */
+  | { kind: "empty" }
   | { kind: "fallback"; reason: string };
 
 /**
@@ -261,15 +264,19 @@ export async function runMetaAdsIngest(opts: RunMetaAdsIngestOptions): Promise<M
   const moeda = opts.moeda ?? "BRL";
   const fonteLabel = opts.fonteLabel ?? "Meta Ads MCP oficial (mcp.facebook.com/ads)";
 
+  let envelopeParsed = false;
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
     const parsed = parseAdEntitiesEnvelope(opts.envelopePayload);
     if ("error" in parsed) return { kind: "error", reason: parsed.error };
+    envelopeParsed = true;
 
     const rows = aggregateMetaAdsSpendByMonth(parsed.rows, { canal, moeda, fonteLabel });
     return { kind: "ok", rows, fetchedCount: parsed.rows.length };
   };
 
   const result = await runSpendIngest({ fetcher, existingRows: opts.existingRows });
-  if (result.kind === "fallback") return result;
+  // `runSpendIngest` colapsa "envelope inválido" e "envelope válido sem
+  // gasto" no mesmo `fallback` — o flag do closure separa os dois (#9012).
+  if (result.kind === "fallback") return envelopeParsed ? { kind: "empty" } : result;
   return { kind: "updated", rows: result.rows, fetchedRows: result.fetchedCount };
 }
