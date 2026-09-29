@@ -62,7 +62,9 @@
 // `-a`), conteúdo do arquivo-fonte posicional (`gh gist edit ID arq` ou `-`
 // = stdin) e conteúdo do arquivo de `--add` — antes nem entrava em
 // `isPublishingInvocation`. Posicionais de gist agora vêm de
-// `gistContentSources` (create e edit).
+// `gistContentSources` (create e edit). Fora de escopo, como no `pr create`
+// sem `--body`: `gh gist edit ID` sem arquivo-fonte abre o `$EDITOR`, e o
+// texto editado ali não passa pelo wrapper.
 //
 // Testável sem I/O real: toda leitura de arquivo/stdin é injetada via
 // `deps` — ver `test/gh-wrapper.test.ts`.
@@ -103,9 +105,19 @@ function gistPositionals(argv) {
   const valueFlags = gistValueFlags(argv[1]);
   const toks = argv.slice(2);
   const out = [];
+  let afterDoubleDash = false;
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
     if (typeof t !== "string") continue;
+    // `--` encerra as flags: tudo depois é posicional, mesmo começando com `-`.
+    if (afterDoubleDash) {
+      out.push(t);
+      continue;
+    }
+    if (t === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
     if (t !== "-" && t.startsWith("-")) {
       if (valueFlags.has(t)) i++;
       continue;
@@ -115,19 +127,26 @@ function gistPositionals(argv) {
   return out;
 }
 
-/** Arquivos (ou `-`) cujo conteúdo `gh gist create|edit` publicaria. */
+/**
+ * Fontes de conteúdo que `gh gist create|edit` publicaria:
+ *   - `sources`: arquivos posicionais, onde `-` = stdin;
+ *   - `addFiles`: paths de `-a`/`--add` (só `edit`), sempre lidos como
+ *     ARQUIVO — o `gh` abre o path literal, `-` ali não é stdin.
+ */
 function gistContentSources(argv) {
-  if (argv[0] !== "gist") return [];
+  const empty = { sources: [], addFiles: [] };
+  if (argv[0] !== "gist") return empty;
   const pos = gistPositionals(argv);
-  if (argv[1] === "create") return pos;
+  if (argv[1] === "create") return { sources: pos, addFiles: [] };
   if (argv[1] === "edit") {
-    const sources = pos.slice(1);
+    const addFiles = [];
     for (let i = 2; i < argv.length; i++) {
-      if (GIST_EDIT_ADD_FLAGS.includes(argv[i]) && typeof argv[i + 1] === "string") sources.push(argv[i + 1]);
+      if (argv[i] === "--") break;
+      if (GIST_EDIT_ADD_FLAGS.includes(argv[i]) && typeof argv[i + 1] === "string") addFiles.push(argv[i + 1]);
     }
-    return sources;
+    return { sources: pos.slice(1), addFiles };
   }
-  return [];
+  return empty;
 }
 
 /** Flags de arquivo (path ou `-` para stdin) em pr/issue/release/gist/review. */
@@ -340,7 +359,18 @@ export function normalizeArgv(rawArgv) {
   // `collectTextsToCheck` (o segredo inteiro escapava da inspeção enquanto o
   // `gh` real recebia o argv original completo).
   let expectValue = false;
+  let afterDoubleDash = false;
   for (const a of argv) {
+    // Depois de `--` (fora de valor de flag) nada é flag: repassa intacto.
+    if (afterDoubleDash) {
+      out.push(a);
+      continue;
+    }
+    if (a === "--" && !expectValue) {
+      out.push(a);
+      afterDoubleDash = true;
+      continue;
+    }
     if (typeof a !== "string") {
       out.push(a);
       expectValue = false;
@@ -359,7 +389,10 @@ export function normalizeArgv(rawArgv) {
     if (!a.startsWith("--") && a.startsWith("-") && a.length > 2) {
       const prefix = a.slice(0, 2);
       if (shortValueFlags.has(prefix)) {
-        out.push(prefix, a.slice(2));
+        // pflag aceita `-a=valor` com o mesmo significado de `-avalor`: o `=`
+        // não faz parte do valor (senão `-a=arq` lia o path "=arq" e o
+        // conteúdo real escapava, #9064).
+        out.push(prefix, a[2] === "=" ? a.slice(3) : a.slice(2));
         continue;
       }
     }
@@ -421,7 +454,7 @@ export function requiresStdin(rawArgv) {
       if (m && m[1] === "-") return true;
     }
   }
-  if (gistContentSources(argv).includes("-")) return true;
+  if (gistContentSources(argv).sources.includes("-")) return true;
   return false;
 }
 
@@ -480,7 +513,9 @@ export function collectTextsToCheck(rawArgv, deps = {}) {
     }
   }
 
-  for (const src of gistContentSources(argv)) texts.push(resolveFileOrStdin(src));
+  const gist = gistContentSources(argv);
+  for (const src of gist.sources) texts.push(resolveFileOrStdin(src));
+  for (const path of gist.addFiles) texts.push(safeRead(readFileSync, path));
 
   return texts;
 }

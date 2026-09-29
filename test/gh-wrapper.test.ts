@@ -636,6 +636,42 @@ describe("#9064: `gh gist edit` publica texto e é inspecionado", () => {
     });
     assert.deepEqual(read, []);
   });
+  const readLog = (argv: string[]) => {
+    const read: string[] = [];
+    collectTextsToCheck(argv, {
+      readFileSync: (p: string) => {
+        read.push(p);
+        return "";
+      },
+    });
+    return read;
+  };
+  it("`-a=PATH` / `-F=PATH`: o `=` não entra no path lido (pflag)", () => {
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "-a=novo.md"]), ["novo.md"]);
+    assert.ok(
+      evaluateGhInvocation(["gist", "edit", "abc123", "-a=novo.md"], {
+        readFileSync: (p: string) => (p === "novo.md" ? OR_KEY : ""),
+      }).blocked,
+    );
+    assert.deepEqual(readLog(["pr", "comment", "1", "-F=corpo.md"]), ["corpo.md"]);
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "-r=velho.md", "local.md"]), ["local.md"]);
+  });
+  it("posicional depois de `--` é arquivo-fonte, mesmo começando com `-`", () => {
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "--", "-arq.md"]), ["-arq.md"]);
+    assert.deepEqual(readLog(["gist", "create", "--", "-arq.md"]), ["-arq.md"]);
+  });
+  it("`--add -` abre o arquivo literal `-`, não stdin", () => {
+    assert.equal(requiresStdin(["gist", "edit", "abc123", "-a", "-"]), false);
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "-a", "-"]), ["-"]);
+  });
+  it("--remove com arquivo-fonte: lê só o fonte; id depois de flags não é lido", () => {
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "-r", "velho.md", "local.md"]), ["local.md"]);
+    assert.deepEqual(readLog(["gist", "edit", "-d", "x", "abc123", "local.md"]), ["local.md"]);
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "--add", "novo.md", "local.md"]).sort(), ["local.md", "novo.md"]);
+  });
+  it("create não conhece -a: `gist create -a x.md` lê x.md como posicional", () => {
+    assert.deepEqual(readLog(["gist", "create", "-a", "x.md"]), ["x.md"]);
+  });
   it("edição limpa não bloqueia (sem falso positivo)", () => {
     const r = evaluateGhInvocation(
       ["gist", "edit", "abc123", "-d", "o prefixo ghp_ é de token", "-f", "notas.md", "local.md"],
