@@ -41,6 +41,10 @@ import {
   LEAK_FOUND_EXIT_CODE,
 } from "../scripts/openrouter-billing-leak-check.ts";
 
+// #9002: relógio fixo — `new Date()` fazia REAL_ROWS (ago/2026) saírem da janela de poda de 30 dias
+// (MAX_ALARMED_KEY_AGE_DAYS) com o passar do calendário e o teste quebrava sozinho.
+const NOW = new Date("2026-09-01T12:00:00Z");
+
 /** Linhas reais do `/api/v1/activity`, medidas em 01/09/2026. */
 const REAL_ROWS: BillingRow[] = [
   { date: "2026-08-31", model: "anthropic/claude-sonnet-5", requests: 32, usageUsd: 0.9599 },
@@ -114,13 +118,13 @@ describe("evaluateBillingLeak (#6716 escopo 3) — contra o vazamento REAL medid
 describe("idempotência do alarme (#6716)", () => {
   it("mesmo conjunto de vazamentos não re-alarma", () => {
     const ev = evaluateBillingLeak(REAL_ROWS);
-    const st = advanceBillingLeakAlarmState(ev, new Date());
+    const st = advanceBillingLeakAlarmState(ev, NOW);
     assert.equal(shouldAlarmBillingLeak(st, ev), false);
   });
 
   it("vazamento em DIA NOVO re-alarma, mesmo sendo o mesmo modelo", () => {
     const ev1 = evaluateBillingLeak(REAL_ROWS);
-    const st = advanceBillingLeakAlarmState(ev1, new Date());
+    const st = advanceBillingLeakAlarmState(ev1, NOW);
     const ev2 = evaluateBillingLeak([
       ...REAL_ROWS,
       { date: "2026-09-02", model: "anthropic/claude-sonnet-5", requests: 5, usageUsd: 0.2 },
@@ -131,7 +135,7 @@ describe("idempotência do alarme (#6716)", () => {
   it("sem vazamento → nunca alarma e re-arma o cursor (alarmedKeys continua vazio)", () => {
     const clean = evaluateBillingLeak([{ date: "2026-09-01", model: "z-ai/glm-5.3-flash", requests: 10, usageUsd: 0.05 }]);
     assert.equal(shouldAlarmBillingLeak(emptyBillingLeakAlarmState(), clean), false);
-    assert.deepEqual(advanceBillingLeakAlarmState(clean, new Date()).alarmedKeys, []);
+    assert.deepEqual(advanceBillingLeakAlarmState(clean, NOW).alarmedKeys, []);
   });
 
   it("fingerprint é estável independente da ordem das linhas", () => {
@@ -180,13 +184,13 @@ describe("#7211 — dedup por chave acumulada (não mais por fingerprint de CONJ
 
   it("newBillingLeakKeys: 2ª leitura da MESMA janela não traz nada novo", () => {
     const ev = evaluateBillingLeak([LEAK_29, LEAK_30, LEAK_31]);
-    const state = advanceBillingLeakAlarmState(ev, new Date());
+    const state = advanceBillingLeakAlarmState(ev, NOW);
     assert.deepEqual(newBillingLeakKeys(ev, state), []);
   });
 
   it("newBillingLeakKeys: um vazamento genuinamente NOVO num dia novo aparece isolado, mesmo com o resto já avisado", () => {
     const ev1 = evaluateBillingLeak([LEAK_29, LEAK_30]);
-    const state = advanceBillingLeakAlarmState(ev1, new Date());
+    const state = advanceBillingLeakAlarmState(ev1, NOW);
     const ev2 = evaluateBillingLeak([LEAK_30, LEAK_31]); // 30 já avisado, 31 é novo
     assert.deepEqual(newBillingLeakKeys(ev2, state), ["2026-08-31:anthropic/claude-sonnet-5"]);
   });
