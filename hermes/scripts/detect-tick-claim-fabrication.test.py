@@ -442,6 +442,24 @@ def test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao():
     print("regressão #8974: claim atribuído a outra sessão (overnight) não é fabricação — OK")
 
 
+def test_regressao_9026_others_claim_aceita_pela():
+    """#9026: `_OTHERS_CLAIM` (e o grupo opcional de `_COVERED_BY`) reconhecia
+    "reivindicad\\w* (por|pelo|pelas)" mas não "pela" — a forma mais natural
+    em português para atores femininos ("sessão", "rodada", "issue"). "#8948
+    já estava reivindicada pela sessão overnight" continuava lido como claim
+    próprio (fabrication_suspected), exatamente o falso positivo que o #8974
+    já tinha corrigido para "pelo"/"por"."""
+    mod = _load_module()
+    linha_pela = "#8948 ja estava reivindicada pela sessao overnight ativa no 300; nao houve claim."
+    refs_pela = mod.extract_claimed_issue_refs(linha_pela)
+    assert 8948 not in refs_pela, f"#8948 (reivindicada pela sessao) indevido: {refs_pela}"
+
+    check_pela = mod.check_claimed_issues(linha_pela, set(), True, session_correlated=True)
+    assert check_pela["status"] == "not_applicable", check_pela
+
+    print("regressão #9026: '_OTHERS_CLAIM' aceita 'pela' — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -928,6 +946,7 @@ def main() -> int:
         test_regressao_8863_nenhuma_e_antes_do_claim()
         test_regressao_8863_antes_do_nao_apaga_claim_real()
         test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao()
+        test_regressao_9026_others_claim_aceita_pela()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.
