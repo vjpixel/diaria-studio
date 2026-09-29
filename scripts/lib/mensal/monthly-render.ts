@@ -576,6 +576,7 @@ export const GENERATOR_LABELS: Record<string, string> = {
   comfyui: "Criada com ComfyUI",
   cloudflare: "Criada com Cloudflare AI",
   openai: "Criada com DALL-E",
+  codex: "Criada com ChatGPT",
 };
 
 /** Deriva a legenda de imagem a partir do slug do gerador configurado.
