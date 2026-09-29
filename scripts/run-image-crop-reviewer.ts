@@ -8,6 +8,14 @@
  * depois do subagente rodar — normaliza/grava o veredito em
  * `_internal/04-crop-review.json`.
  *
+ * Desde #8989, o mesmo dispatch também cobre um achado INDEPENDENTE do
+ * crop: a imagem GERADA (hero e/ou crop final) saindo com um padrão de
+ * espiral/redemoinho estilo Noite Estrelada, mesmo quando o TEXTO do prompt
+ * não mencionava a obra nem o motivo visual (`lint-image-prompt.ts` só
+ * analisa o prompt, nunca a imagem — #4201 cobriu só esse lado; #8989 é o
+ * guard do lado da SAÍDA). Esses achados entram em `results` com
+ * `categoria: "estilo"` (default `"crop"` quando ausente).
+ *
  * O revisor em si é um subagente vision/multimodal (não unit-testável
  * diretamente aqui — precisa do Agent tool, que este script não invoca).
  * O que É testável e vive aqui:
@@ -59,10 +67,25 @@ export interface CropPair {
   crop_path: string;
 }
 
+/**
+ * Categoria do achado (#8989). `"crop"` (default, retrocompatível) é o
+ * julgamento original — o corte fonte→formato preservou o sujeito?
+ * `"estilo"` é um julgamento INDEPENDENTE do crop: a imagem (hero OU crop,
+ * o que estiver disponível) saiu com padrão de espiral/redemoinho estilo
+ * Noite Estrelada — proibido pela regra invariável (CLAUDE.md, "Prompt de
+ * imagem: ... SEM Noite Estrelada") mesmo quando o TEXTO do prompt não
+ * mencionava a obra nem o motivo visual (`lint-image-prompt.ts` só analisa
+ * o prompt, nunca a imagem gerada — #4201 cobriu só esse lado). Um mesmo
+ * (destaque, ratio) pode ter até 2 entries: uma `"crop"` e uma `"estilo"`.
+ */
+export type CropReviewCategory = "crop" | "estilo";
+
 export interface CropReviewEntry {
   destaque: DestaqueId;
   ratio: CropReviewRatio;
   status: CropReviewStatus;
+  /** Default `"crop"` quando ausente/inválida — retrocompatível com output pré-#8989. */
+  categoria?: CropReviewCategory;
   motivo?: string;
   sugestao?: string;
 }
@@ -164,6 +187,8 @@ export function normalizeCropReviewResult(raw: unknown, edition: string): CropRe
       destaque: r.destaque as DestaqueId,
       ratio: r.ratio as CropReviewRatio,
       status: r.status as CropReviewStatus,
+      // categoria ausente/inválida → "crop" (retrocompatível com output pré-#8989).
+      categoria: r.categoria === "estilo" ? ("estilo" as const) : ("crop" as const),
       motivo: typeof r.motivo === "string" ? r.motivo : undefined,
       sugestao: typeof r.sugestao === "string" ? r.sugestao : undefined,
     }));
@@ -206,12 +231,21 @@ export function formatGateSummary(result: CropReviewResult): string {
   }
 
   lines.push(
-    `  ${summary.warn} de ${summary.total} destaque(s) com aviso de crop — revisar antes de publicar:`,
+    `  ${summary.warn} de ${summary.total} destaque(s) com aviso — revisar antes de publicar:`,
   );
   lines.push("");
   for (const r of results.filter((r) => r.status === "warn")) {
+    // #8989: "estilo" é um achado de PADRÃO VISUAL PROIBIDO (espiral/Noite
+    // Estrelada na imagem gerada), distinto de "crop" (sujeito perdido no
+    // recorte). Ícone e rótulo diferentes pra o editor não confundir os dois.
+    const isEstilo = r.categoria === "estilo";
+    const icone = isEstilo ? "🌀" : "⚠️ ";
+    const rotulo = isEstilo ? " [estilo — Noite Estrelada]" : "";
+    const motivoDefault = isEstilo
+      ? "padrão de espiral/redemoinho detectado na imagem gerada, estilo Noite Estrelada"
+      : "crop pode ter perdido o sentido da imagem original";
     lines.push(
-      `  ⚠️  ${r.destaque.toUpperCase()} (${r.ratio}) — ${r.motivo ?? "crop pode ter perdido o sentido da imagem original"}`,
+      `  ${icone} ${r.destaque.toUpperCase()} (${r.ratio})${rotulo} — ${r.motivo ?? motivoDefault}`,
     );
     if (r.sugestao) lines.push(`       Sugestão: ${r.sugestao}`);
   }
