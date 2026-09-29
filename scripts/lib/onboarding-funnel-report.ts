@@ -217,11 +217,11 @@ function buildEmail3Info(entry: OnboardingEntry, input: Email3ResolutionInput): 
 
   // #7917 item 7 (fleet review PR #8955): um lote Kit para email3, quando
   // presente, SEMPRE determina o estágio — independente de
-  // `entry.email3_state`. `onboarding-kit-transport-run.ts` nunca escreve
-  // `email3_state`/`email3_campaign_id` de volta na entrada (campos
-  // Brevo-only, ver a docstring do módulo #7922) — então um lote Kit pode
-  // existir com `email3_state` ainda `"pending"` (cutover Brevo → Kit em
-  // andamento) e ficaria invisível se esta checagem só rodasse dentro do
+  // `entry.email3_state`. Até o #9059 `onboarding-kit-transport-run.ts`
+  // nunca escrevia `email3_state` de volta na entrada (desde então grava
+  // `campaign_created` + `email3_kit_lot_id`; `email3_campaign_id` segue
+  // Brevo-only) — e lotes anteriores ao fix, ou marcação perdida, ainda podem
+  // existir com `email3_state` `"pending"` e ficariam invisíveis se esta checagem só rodasse dentro do
   // branch `"campaign_created"` (como antes deste fix). Quando AMBOS
   // existem (campanha Brevo local + lote Kit pra mesma entrada), o lote Kit
   // vence — mesma precedência que já existia, agora também válida quando

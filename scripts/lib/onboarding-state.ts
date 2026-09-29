@@ -710,8 +710,10 @@ export function filterBrevoPlanForKitCutover(
  * coordenador: metade Kit faltando na fatia original desta issue).
  *
  * Qualquer ação `email1`/`email2` cujo dono não seja `"kit"` vira skip
- * `escada_iniciada_na_brevo`. `email3_campaign` passa intocado (mesmo
- * motivo de escopo do lado Brevo).
+ * `escada_iniciada_na_brevo`. `email3_campaign` não passa pela decisão de
+ * dono (mesmo motivo de escopo do lado Brevo), mas desde #9059 as entries
+ * já num lote Kit de e-mail 3 confirmado saem do cohort (skip
+ * `kit_lot_existente`).
  *
  * Nota: com o kill switch DESLIGADO, `ownerTransportFor` devolve `"brevo"`
  * pra tudo — este filtro esvaziaria o plano Kit por completo nesse estado.
@@ -739,7 +741,26 @@ export function filterKitPlanForBrevoInFlight(
 
   for (const action of plan.actions) {
     if (action.kind === "email3_campaign") {
-      actions.push(action);
+      // #9059: defesa em profundidade, espelho do e-mail 1/2 — entrada já
+      // num lote Kit de e-mail 3 confirmado (de qualquer dia) nunca entra num
+      // rascunho novo, mesmo que a marcação de `email3_state` tenha se perdido.
+      const remaining: OnboardingEntry[] = [];
+      for (const entry of action.entries) {
+        const confirmed3 = hasConfirmedKitLotForEntry(kitLots, "email3", entry.subscription_id);
+        if (confirmed3 == null) {
+          remaining.push(entry);
+          continue;
+        }
+        skips.push({
+          entry,
+          etapa: "email3",
+          motivo: "kit_lot_existente",
+          detalhe:
+            `lote Kit ${confirmed3.status} (${confirmed3.lot_id}) já preparou o e-mail 3 pra esta entrada — ` +
+            `nunca entra num lote novo (#9059)`,
+        });
+      }
+      if (remaining.length > 0) actions.push({ ...action, entries: remaining });
       continue;
     }
     const confirmedLot = hasConfirmedKitLotForEntry(kitLots, action.kind, action.entry.subscription_id);

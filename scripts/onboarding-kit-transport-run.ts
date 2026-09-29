@@ -13,15 +13,20 @@
  * **Esta fatia NÃO faz cutover.** `onboarding-welcome-run.ts` continua sendo
  * quem de fato envia (Brevo) — este script roda AO LADO, sobre o MESMO
  * store, sem escrever nos campos que só o script Brevo possui
- * (`email{1,2}_brevo_id`, `email3_state`/`email3_campaign_id` continuam
- * exclusivos do caminho Brevo). O estado dos lotes vive em
+ * (`email{1,2}_brevo_id`, `email3_campaign_id` continuam exclusivos do
+ * caminho Brevo). O estado dos lotes vive em
  * `store.kit_transport.lots`, um namespace próprio dentro do MESMO
  * arquivo (issue: "sem criar outra fonte de verdade"). **Exceção desde
  * #9014:** quando o broadcast de um lote de e-mail 1/2 é confirmado, este
  * script grava `email{1,2}_sent_at` + `email{1,2}_kit_lot_id` (e
  * `email1_transport = "kit"`, #9015) nas entries do lote, sob o mesmo lock
  * (`persistLotUpdate` → `applyKitLotToEntries`) — sem isso `buildRunPlan`
- * replanejava o e-mail 1 da mesma pessoa todo dia. Cutover real (decidir
+ * replanejava o e-mail 1 da mesma pessoa todo dia. Desde #9059 o mesmo vale
+ * pro e-mail 3: lote confirmado grava `email3_state = "campaign_created"` +
+ * `email3_kit_lot_id` (`email3_campaign_id`, id Brevo, segue intocado).
+ * Desde #9060, `--reconcile` também faz backfill local das entries de lotes
+ * já terminais (`backfillTerminalLotEntries`) — cobre lotes concluídos antes
+ * do #9058. Cutover real (decidir
  * QUEM envia de fato, migrar novas entradas, corte explícito Brevo→Kit) é
  * escopo residual — ver corpo do PR.
  *
@@ -289,8 +294,9 @@ export function claimLot(storePath: string, lotPlan: OnboardingKitLotPlan, nowMs
  *  memória com `broadcast_id`/`status`/`last_error`. Relê o disco fresco
  *  antes de escrever (nunca sobrescreve `kit_transport.lots` de outra chave
  *  que uma reconciliação concorrente possa ter tocado nesse meio-tempo). */
-export function persistLotUpdate(storePath: string, lot: OnboardingKitLot, nowMs: number = Date.now()): void {
+export function persistLotUpdate(storePath: string, lot: OnboardingKitLot, nowMs: number = Date.now()): number {
   const lockPath = `${storePath}.lock`;
+  let touched = 0;
   withFileLock(
     lockPath,
     () => {
@@ -313,11 +319,48 @@ export function persistLotUpdate(storePath: string, lot: OnboardingKitLot, nowMs
       // escrita do lote, então lote e entries nunca divergem no disco. Cobre
       // os 3 caminhos que chegam aqui: criação no --send, --reconcile (lote
       // cuja confirmação só foi vista depois) e --cancel-lot.
-      applyKitLotToEntries(freshStore.entries, lot, new Date(nowMs).toISOString());
+      touched = applyKitLotToEntries(freshStore.entries, lot, new Date(nowMs).toISOString());
       writeStore(freshStore, storePath);
     },
     30_000,
   );
+  return touched;
+}
+
+/**
+ * #9060 item 1: backfill LOCAL (sem rede) das entries de lotes JÁ TERMINAIS
+ * (`completed`/`cancelled`) — o `--reconcile` pula esses lotes na releitura
+ * do Kit (status terminal não muda), então um lote concluído ANTES do #9058
+ * (que introduziu `applyKitLotToEntries`) nunca teria gravado
+ * `email{1,2}_sent_at`/`email3_state` nas suas entries. Reaplica
+ * `applyKitLotToEntries` sob o mesmo lock + releitura fresca de
+ * `persistLotUpdate`, e só escreve no disco quando algo de fato muda
+ * (idempotente: rodadas seguintes são no-op e não reescrevem o store).
+ * O registro do lote em si é preservado byte a byte (nunca reescrito aqui).
+ *
+ * Devolve quantas entries foram tocadas.
+ */
+export function backfillTerminalLotEntries(storePath: string, lotId: string, nowMs: number = Date.now()): number {
+  const lockPath = `${storePath}.lock`;
+  let touched = 0;
+  withFileLock(
+    lockPath,
+    () => {
+      const { store: freshStore, corrupted } = readStore(storePath);
+      if (corrupted) {
+        throw new Error(
+          `[onboarding-kit-transport] store em "${storePath}" está CORROMPIDO (JSON ilegível) — recusando o backfill ` +
+            `do lote "${lotId}". Repare/restaure o store antes de rodar --reconcile de novo.`,
+        );
+      }
+      const lot = freshStore.kit_transport?.lots[lotId];
+      if (lot == null || (lot.status !== "completed" && lot.status !== "cancelled")) return;
+      touched = applyKitLotToEntries(freshStore.entries, lot, new Date(nowMs).toISOString());
+      if (touched > 0) writeStore(freshStore, storePath);
+    },
+    30_000,
+  );
+  return touched;
 }
 
 // ---------------------------------------------------------------------------
@@ -453,9 +496,15 @@ async function main(): Promise<void> {
     // nunca um `writeStore` de lote-múltiplo fora do lock. A chamada de rede
     // (`reconcileLotWithKit`) continua fora do lock, de propósito (não
     // segurar o lock por 30s através de N round-trips de rede).
-    const results: { lot_id: string; before: string; after: string; error?: string }[] = [];
+    const results: { lot_id: string; before: string; after: string; error?: string; backfilled?: number }[] = [];
     for (const lot of Object.values(store.kit_transport.lots)) {
-      if (lot.status === "completed" || lot.status === "cancelled") continue;
+      if (lot.status === "completed" || lot.status === "cancelled") {
+        // #9060 item 1: terminal não é relido no Kit, mas as entries de um
+        // lote concluído antes do #9058 podem nunca ter sido marcadas.
+        const backfilled = backfillTerminalLotEntries(storePath, lot.lot_id);
+        if (backfilled > 0) results.push({ lot_id: lot.lot_id, before: lot.status, after: lot.status, backfilled });
+        continue;
+      }
       const before = lot.status;
       try {
         const reconciled = await reconcileLotWithKit(lot, (id) => getBroadcast(id, kitCfg));
