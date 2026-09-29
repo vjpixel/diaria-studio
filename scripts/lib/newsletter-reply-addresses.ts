@@ -35,6 +35,24 @@ export const KNOWN_NEWSLETTER_REPLY_ADDRESSES = [
   "oi@reativa.diar.ia.br", // Brevo diária — canal de reativação Pending (#6046)
 ] as const;
 
+/**
+ * #8997: subconjunto de `KNOWN_NEWSLETTER_REPLY_ADDRESSES` usado para
+ * DESAMBIGUAR (não pra montar a query — essa continua com os 3 endereços
+ * acima, âncora testada em `test/replies-7166-7168.test.ts`) se uma thread
+ * capturada é de fato resposta de assinante. Exclui `vjpixel@gmail.com`
+ * porque é a caixa PESSOAL do editor: `to:(vjpixel@gmail.com OR ...)` casa
+ * qualquer correspondência endereçada a ele (notificação do GitHub, chamado
+ * de suporte, etc.), não só reply de newsletter — achado ao vivo em 260929
+ * (edição 260929, Passo 1b): de 25 threads devolvidas pela query, 17 falsos
+ * positivos tinham `to: vjpixel@gmail.com`, e os 8 verdadeiros tinham
+ * `to: oi@news.diar.ia.br`. `filter-subscriber-replies.ts` usa esta lista
+ * (via `matchesKnownReplyAddress`) pra exigir que o `to` capturado da thread
+ * seja um dos domínios DEDICADOS de envio — nunca o catch-all pessoal.
+ */
+export const DEDICATED_SUBSCRIBER_REPLY_ADDRESSES = KNOWN_NEWSLETTER_REPLY_ADDRESSES.filter(
+  (addr) => addr !== "vjpixel@gmail.com",
+);
+
 /** Janela default da busca (#7168: 7d era curto demais depois de qualquer gap — fim de semana longo, outage do #7166). */
 const DEFAULT_NEWER_THAN_DAYS = 14;
 

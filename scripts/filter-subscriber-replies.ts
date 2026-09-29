@@ -42,6 +42,23 @@
  * — contém a palavra "bem-vindo", que sobrevive à troca de marca) mas não
  * bateu a blacklist exata — `main()` emite um warning quando isso acontece.
  *
+ * #8997: dois refinamentos adicionais, achados ao vivo na edição 260929:
+ *  - `to` (opcional no input): quando presente, a thread só é considerada
+ *    resposta de assinante se o `to` capturado bater um dos domínios
+ *    DEDICADOS de envio (`DEDICATED_SUBSCRIBER_REPLY_ADDRESSES`, em
+ *    `scripts/lib/newsletter-reply-addresses.ts`) — nunca a caixa PESSOAL
+ *    do editor (`EDITOR_ADDRESSES` abaixo), que casa qualquer
+ *    correspondência endereçada a ele.
+ *    `to` ausente (compat com callers/fixtures antigos) pula esta checagem —
+ *    comportamento pré-#8997 preservado.
+ *  - `alreadyRepliedByEditor` (opcional no input, passthrough): `true` quando
+ *    o thread já tem uma mensagem SENT do editor (o playbook §0-replies
+ *    calcula isso a partir de `get_thread`, fora do escopo puro deste
+ *    módulo). Marcado em cada reply que sobra em `replies[]`, análogo a
+ *    `trivial` — não remove do array (o crédito de erro intencional ainda
+ *    roda), só sinaliza pro consumidor pular a criação de rascunho
+ *    duplicado.
+ *
  * Uso:
  *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json
  *
@@ -55,6 +72,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { canonicalizeGmail } from "./lib/canonicalize-gmail.ts";
+import { DEDICATED_SUBSCRIBER_REPLY_ADDRESSES, matchesKnownReplyAddress } from "./lib/newsletter-reply-addresses.ts";
 
 export interface CapturedReply {
   thread_id?: string;
@@ -62,6 +80,15 @@ export interface CapturedReply {
   subject?: string;
   date?: string;
   body?: string;
+  /** #8997: header `To:` bruto da thread capturada (opcional — ausente em
+   * callers/fixtures pré-#8997, que pulam a checagem de domínio dedicado).
+   * Ver `looksLikeSubscriberReply`. */
+  to?: string;
+  /** #8997: `true` quando o thread já tem uma resposta SENT do editor —
+   * calculado pelo caller (fora do escopo puro deste módulo) a partir de
+   * `get_thread`. Passthrough: preservado em `replies[]` pra o consumidor
+   * decidir pular a criação de rascunho duplicado (ver docstring do módulo). */
+  alreadyRepliedByEditor?: boolean;
   /** #4095: `true` quando o corpo (limpo de citação/assinatura) não tem
    * substância — ver docstring do módulo. Ausente no input; preenchido por
    * `filterSubscriberReplies`. */
@@ -109,10 +136,18 @@ export function extractEmail(from: string): string {
  * `true` se a thread parece uma resposta de ASSINANTE à newsletter: assunto com
  * prefixo de resposta + remetente humano (não automático, não o editor). Pura e
  * testável. O match de automático/editor é contra o EMAIL, não o header inteiro.
+ *
+ * #8997: quando `to` é informado, também exige que bata um dos domínios
+ * DEDICADOS de envio (`DEDICATED_SUBSCRIBER_REPLY_ADDRESSES`) — descarta
+ * correspondência endereçada à caixa PESSOAL do editor que só casou a
+ * query do Gmail por causa do catch-all (ex: notificação de suporte,
+ * chamado, e-mail de terceiro respondendo "Re: algo" pro editor). `to`
+ * ausente pula esta checagem (compat com callers/fixtures pré-#8997).
  */
 export function looksLikeSubscriberReply(msg: {
   subject?: string;
   from?: string;
+  to?: string;
 }): boolean {
   const subject = (msg.subject ?? "").trim();
   if (!REPLY_PREFIX_RE.test(subject)) return false;
@@ -120,6 +155,7 @@ export function looksLikeSubscriberReply(msg: {
   if (!email) return false;
   if (AUTOMATED_FROM_RE.test(email)) return false;
   if (isEditorAddress(email)) return false;
+  if (msg.to && !matchesKnownReplyAddress(msg.to, DEDICATED_SUBSCRIBER_REPLY_ADDRESSES)) return false;
   return true;
 }
 
@@ -374,7 +410,9 @@ export interface FilterResult {
 }
 
 export function filterSubscriberReplies(threads: CapturedReply[]): FilterResult {
-  const candidates = threads.filter((t) => looksLikeSubscriberReply({ subject: t.subject, from: t.from }));
+  const candidates = threads.filter((t) =>
+    looksLikeSubscriberReply({ subject: t.subject, from: t.from, to: t.to }),
+  );
   const automatedSubjectCount = candidates.filter((t) => isAutomatedSubject(t.subject)).length;
   // #4509: near-miss ANTES do filtro final — roda sobre os mesmos candidatos
   // que alimentam automatedSubjectCount, nunca sobre `replies` (que já
@@ -421,7 +459,8 @@ function main(): void {
   console.log(JSON.stringify(result, null, 2));
   if (result.replies.length > 0) {
     const trivialCount = result.replies.filter((r) => r.trivial).length;
-    const draftable = result.replies.filter((r) => !r.trivial);
+    const alreadyRepliedCount = result.replies.filter((r) => r.alreadyRepliedByEditor).length;
+    const draftable = result.replies.filter((r) => !r.trivial && !r.alreadyRepliedByEditor);
     console.error(
       `\n📬 ${result.replies.length} de ${result.total} thread(s) são respostas de assinante — rascunhar resposta pessoal (NUNCA enviar):`,
     );
@@ -433,6 +472,11 @@ function main(): void {
     // silêncio (decisão do editor: recomendação da própria issue #4095).
     if (trivialCount > 0) {
       console.error(`  ⚪ ${trivialCount} resposta(s) trivial(is) ignorada(s) (sem rascunho)`);
+    }
+    // #8997: thread que já tem resposta SENT do editor — pular rascunho
+    // (duplicaria), mas nunca sumir em silêncio.
+    if (alreadyRepliedCount > 0) {
+      console.error(`  ✅ ${alreadyRepliedCount} resposta(s) já respondida(s) pelo editor ignorada(s) (sem rascunho duplicado)`);
     }
   }
   // #4324: reply ao e-mail de automação da Beehiiv (ex: boas-vindas) é
