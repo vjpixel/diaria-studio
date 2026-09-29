@@ -40,7 +40,8 @@ async function fixtureRun(w: number, h: number, extra: { status?: number; skipFi
 
 describe("codex-image (#9088)", () => {
   it("sanitizedEnv remove chaves pay-per-token", () => {
-    const env = sanitizedEnv({ OPENAI_API_KEY: "x", CODEX_API_KEY: "y", PATH: "/bin" });
+    const env = sanitizedEnv({ OPENAI_API_KEY: "x", CODEX_API_KEY: "y", OPENAI_BASE_URL: "u", PATH: "/bin" });
+    assert.equal(env.OPENAI_BASE_URL, undefined);
     assert.equal(env.OPENAI_API_KEY, undefined);
     assert.equal(env.CODEX_API_KEY, undefined);
     assert.equal(env.PATH, "/bin");
@@ -58,8 +59,17 @@ describe("codex-image (#9088)", () => {
     assert.match(buildCodexPrompt(SD), /photorealistic/);
   });
 
-  it("checkAspect aceita 3:2 p/ 2:1 e rejeita retrato p/ wide", () => {
+  it("É IA? 800x450 pede landscape (não quadrado)", () => {
+    assert.match(buildCodexPrompt({ positive: "x", final_width: 800, final_height: 450 }), /landscape 16:9/);
+  });
+
+  it("args forçam login ChatGPT", () => {
+    assert.ok(buildCodexArgs(DEFAULTS).includes('forced_login_method="chatgpt"'));
+  });
+
+  it("checkAspect aceita 3:2 p/ 2:1, rejeita quadrado e retrato p/ wide", () => {
     assert.equal(checkAspect(1536, 1024, 1600, 800), null);
+    assert.match(checkAspect(1024, 1024, 1600, 800)!, /proporção errada/);
     assert.match(checkAspect(1024, 1536, 1600, 800)!, /proporção errada/);
   });
 

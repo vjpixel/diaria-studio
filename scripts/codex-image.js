@@ -19,10 +19,11 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
+import { buildResizeOptions } from './gemini-image.js';
 
 export const DEFAULTS = { model: 'gpt-5.6-luna', reasoning_effort: 'low', timeout_seconds: 300 };
 export const STRIPPED_ENV_VARS = ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_BASE'];
-export const MAX_ASPECT_MISMATCH = 2; // razão fonte/alvo (ou inversa) acima disso = proporção errada
+export const MAX_ASPECT_MISMATCH = 1.5; // razão fonte/alvo (ou inversa) acima disso = proporção errada
 const OUT_NAME = 'image.png';
 
 export function sanitizedEnv(env) {
@@ -36,6 +37,7 @@ export function targetAspectText(w, h) {
   const r = w / h;
   if (r >= 1.8) return 'wide landscape 2:1 (1536x768 or the closest supported wide size)';
   if (r <= 0.85) return 'portrait 4:5 (1080x1350 or the closest supported portrait size)';
+  if (r >= 1.3) return 'landscape 16:9 (1536x864 or the closest supported landscape size)';
   return 'square (1:1)';
 }
 
@@ -44,6 +46,9 @@ export function buildCodexPrompt(sd) {
   p += `Format: ${targetAspectText(sd.final_width, sd.final_height)}. The image must fill the entire canvas edge to edge, with no frame, border or visible canvas.\n\n`;
   p += `Image description:\n${sd.positive}\n`;
   if (sd.negative) p += `\nDo NOT include any of the following: ${sd.negative}\n`;
+  p += `
+Leave generous empty headroom above any head or main subject; never crop the top of a subject.
+`;
   p += `\nDo not write any code and do not ask questions. When the file ${OUT_NAME} exists, reply with just "done".`;
   return p;
 }
@@ -51,6 +56,7 @@ export function buildCodexPrompt(sd) {
 export function buildCodexArgs(cfg) {
   return [
     'exec', '--skip-git-repo-check', '--sandbox', 'workspace-write',
+    '-c', 'forced_login_method="chatgpt"', // recusa API key guardada em ~/.codex/auth.json (pay-per-token)
     '-m', cfg.model, '-c', `model_reasoning_effort=${cfg.reasoning_effort}`, '-',
   ];
 }
@@ -67,7 +73,7 @@ export function checkAspect(srcW, srcH, dstW, dstH) {
 function defaultRun(args, prompt, cwd, timeoutMs) {
   const opts = {
     cwd, input: prompt, encoding: 'utf8', timeout: timeoutMs,
-    env: sanitizedEnv(process.env), stdio: ['pipe', 'pipe', 'pipe'],
+    env: sanitizedEnv(process.env), stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024,
   };
   const r = spawnSync('codex', args, opts); // .exe nativo / binário Linux
   // Windows com instalação npm expõe só codex.cmd (exige shell; args são todos literais seguros).
@@ -93,7 +99,7 @@ export async function generateWithCodex(sd, outPath, userCfg = {}, run = default
     if (bad) throw new Error(bad);
     let pipeline = sharp(png);
     if (sd.final_width && sd.final_height) {
-      pipeline = pipeline.resize(sd.final_width, sd.final_height, { fit: 'cover', position: 'center' });
+      pipeline = pipeline.resize(sd.final_width, sd.final_height, buildResizeOptions());
     }
     await pipeline.jpeg({ quality: 90 }).toFile(outPath);
   } finally {
