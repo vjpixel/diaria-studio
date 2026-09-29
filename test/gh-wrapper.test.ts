@@ -575,6 +575,20 @@ describe("#9055: descrição de `gh gist create` (-d/--desc) é inspecionada", (
   });
 });
 
+describe("#9084: `gh gist rename` publica o nome novo e é inspecionado", () => {
+  const clean = { readFileSync: () => "", stdinText: "" };
+  it("é reconhecido como publicação", () => {
+    assert.ok(isPublishingInvocation(["gist", "rename", "abc123", "a.md", "b.md"]));
+    assert.ok(isPublishingInvocation(["--repo", "o/r", "gist", "rename", "abc123", "a.md", "b.md"]));
+  });
+  it("segredo no nome novo bloqueia; nome limpo passa", () => {
+    const r = evaluateGhInvocation(["gist", "rename", "abc123", "a.md", `${OR_KEY}.md`], clean);
+    assert.ok(r.blocked);
+    assert.deepEqual(r.secrets, ["OpenRouter"]);
+    assert.equal(evaluateGhInvocation(["gist", "rename", "abc123", "a.md", "b.md"], clean).blocked, false);
+  });
+});
+
 describe("#9064: `gh gist edit` publica texto e é inspecionado", () => {
   const clean = { readFileSync: () => "conteúdo limpo", stdinText: "limpo" };
   it("é reconhecido como publicação (antes: nem inspecionado)", () => {

@@ -134,17 +134,19 @@ function gistPositionals(argv) {
  *     ARQUIVO — o `gh` abre o path literal, `-` ali não é stdin.
  */
 function gistContentSources(argv) {
-  const empty = { sources: [], addFiles: [] };
+  const empty = { sources: [], addFiles: [], names: [] };
   if (argv[0] !== "gist") return empty;
   const pos = gistPositionals(argv);
-  if (argv[1] === "create") return { sources: pos, addFiles: [] };
+  // #9084: `gh gist rename ID ANTIGO NOVO` — NOVO vira nome público do arquivo.
+  if (argv[1] === "rename") return { ...empty, names: pos.slice(2, 3) };
+  if (argv[1] === "create") return { ...empty, sources: pos };
   if (argv[1] === "edit") {
     const addFiles = [];
     for (let i = 2; i < argv.length; i++) {
       if (argv[i] === "--") break;
       if (GIST_EDIT_ADD_FLAGS.includes(argv[i]) && typeof argv[i + 1] === "string") addFiles.push(argv[i + 1]);
     }
-    return { sources: pos.slice(1), addFiles };
+    return { ...empty, sources: pos.slice(1), addFiles };
   }
   return empty;
 }
@@ -261,7 +263,7 @@ function longValueFlagsFor(cmd, sub, isApi) {
 /** Comandos de topo que `isPublishingInvocation` reconhece. */
 const PUBLISHING_CMDS = new Set(["pr", "issue", "release", "gist", "api"]);
 /** Subcomandos que `isPublishingInvocation` reconhece (pr/issue/release/gist). */
-const PUBLISHING_SUBS = new Set(["comment", "create", "edit", "review", "close", "reopen", "merge"]);
+const PUBLISHING_SUBS = new Set(["comment", "create", "edit", "review", "close", "reopen", "merge", "rename"]);
 /** Flags globais/herdadas cujo valor vem em token separado (`-R o/r`, `--repo o/r`). */
 const GLOBAL_VALUE_FLAGS = new Set(["-R", "--repo", "--hostname"]);
 
@@ -424,7 +426,7 @@ export function isPublishingInvocation(rawArgv) {
   }
   if (cmd === "pr" && sub === "merge") return true; // #9020: --body/-b, --subject/-t viram mensagem de commit pública
   if (cmd === "release" && ["create", "edit"].includes(sub)) return true;
-  if (cmd === "gist" && (sub === "create" || sub === "edit")) return true; // #9064: edit publica desc/nome/conteúdo
+  if (cmd === "gist" && (sub === "create" || sub === "edit" || sub === "rename")) return true; // #9064: edit publica desc/nome/conteúdo; #9084: rename publica o nome novo
   if (cmd === "api") {
     const hasWriteMethod = argv.some(
       (a, i) =>
@@ -516,6 +518,7 @@ export function collectTextsToCheck(rawArgv, deps = {}) {
   const gist = gistContentSources(argv);
   for (const src of gist.sources) texts.push(resolveFileOrStdin(src));
   for (const path of gist.addFiles) texts.push(safeRead(readFileSync, path));
+  for (const name of gist.names) texts.push(name);
 
   return texts;
 }
