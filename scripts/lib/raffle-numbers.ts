@@ -215,7 +215,14 @@ export function matchesIntentionalError(
   error: IntentionalErrorForMatch,
 ): boolean {
   if (!replyBody || !replyBody.trim()) return false;
-  const bodyNorm = normalizeText(replyBody);
+  // #9021: os TRÊS checks de acerto rodam sobre o corpo SEM citação/assinatura.
+  // A citação do e-mail original é o texto que a edição publicou — contém o
+  // wrong_value verbatim (#8877/#8952) e, sempre que a mesma edição grafa a
+  // marca corretamente em outro item, também o correct_value ("A OpenAI
+  // lançou…" num destaque, "OppenAI" plantado em outro). Sem isolar a
+  // citação, um "Obrigado!" + quote ganhava número. `stripQuotedAndSignature`
+  // é a mesma heurística de `filter-subscriber-replies.ts`.
+  const bodyNorm = normalizeText(stripQuotedAndSignature(replyBody));
 
   const correctWords = error.correct_value ? significantWords(error.correct_value) : [];
   const descWords = [
@@ -240,19 +247,9 @@ export function matchesIntentionalError(
   // #8877: mesma régua, mas pro lado ERRADO — reply que aponta o typo citando
   // só a grafia plantada ("OppenAI") nunca menciona o correct_value ("OpenAI"),
   // então o check acima não dispara. Se wrong_value tem um token distintivo e
-  // ele aparece como palavra inteira na reply, é acerto — a reply está citando
-  // exatamente o texto errado que o editor plantou.
-  //
-  // Diferença importante do check de correct_value acima: wrong_value É o
-  // texto que a edição publicou, então qualquer citação/quote do e-mail
-  // original (comum em clientes que incluem a mensagem citada na resposta)
-  // contém wrong_value verbatim — diferente de correct_value, que a edição
-  // nunca publicou, então nunca aparece numa citação por acidente. Sem isolar
-  // o texto citado, um reply que só ecoa a citação (sem comentário próprio)
-  // ganharia crédito indevido. `stripQuotedAndSignature` (mesma heurística de
-  // `filter-subscriber-replies.ts`) corta a citação/assinatura antes do check.
-  const bodyNormNoQuote = normalizeText(stripQuotedAndSignature(replyBody));
-  if (hasDistinctiveCorrectMatch(error.wrong_value, bodyNormNoQuote)) return true;
+  // ele aparece como palavra inteira na reply (fora da citação), é acerto — a
+  // reply está citando exatamente o texto errado que o editor plantou.
+  if (hasDistinctiveCorrectMatch(error.wrong_value, bodyNorm)) return true;
 
   // Exige sinal real de cada conjunto que existir — quando um conjunto está
   // vazio (ex: sem correct_value), o flag correspondente já é `true` por
