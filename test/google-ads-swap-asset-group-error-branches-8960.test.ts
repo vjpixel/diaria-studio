@@ -203,6 +203,37 @@ describe("#8960 — google-ads-swap-asset-group-creatives: Fase 1, criação de 
     }
   });
 
+  it("assets:mutate (criação de texto) devolve HTTP 2xx com resultado SEM resourceName -> erro, nunca linka um recurso fantasma", async () => {
+    // Achado do self-review deste PR: `createAssets` tem um branch dedicado
+    // pra "resposta 2xx, mesma contagem de resultados, mas algum item veio
+    // sem `resourceName`" (scripts/google-ads-swap-asset-group-creatives.ts,
+    // linha `resourceNames.length !== results.length`) que nenhum teste
+    // exercitava — só o caso de CONTAGEM diferente (#8550 test) e o de HTTP
+    // não-2xx (teste acima) tinham cobertura.
+    const dir = mkdtempSync(join(tmpdir(), "gads-pmax-create-no-resourcename-"));
+    const manifestPath = makeManifest(dir);
+    try {
+      const fetchMock = async (input: string, init?: RequestInit) => {
+        if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+        if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+        if (input.endsWith("assets:mutate")) {
+          const body = JSON.parse(String(init?.body));
+          // Mesma contagem de `results` que `operations`, mas sem `resourceName`.
+          const results = body.operations.map(() => ({}));
+          return jsonResponse(200, { results });
+        }
+        if (input.endsWith("assetGroupAssets:mutate")) throw new Error("não deveria tentar linkar recurso sem resourceName");
+        throw new Error(`chamada inesperada: ${input}`);
+      };
+      const code = await withEnv(AUTH_ENV, () =>
+        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", join(dir, "progress.json")], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
+      );
+      assert.equal(code, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("assets:mutate (criação de IMAGEM) HTTP não-2xx -> falha limpa (texto já criado, imagem falha)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "gads-pmax-create-image-http-"));
     const manifestPath = makeManifest(dir);
