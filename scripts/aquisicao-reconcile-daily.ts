@@ -93,13 +93,14 @@ import {
   loadAlarmIssuesState,
   saveAlarmIssuesState,
   type AlarmFinding,
+  type GhRunFn,
 } from "./lib/alarm-issues.ts";
 
 const ALARM_STATE_PATH = resolve("data", "aquisicao", "alarm-issues.json");
 /** Mesmo teto de `home-meta-check.ts` — 3 execuções diárias limpas seguidas
  *  antes de fechar sozinho (evita fechar/reabrir no ruído de 1 dia isolado
  *  em cima do piso de fronteira). */
-const CLOSE_ALARM_ISSUE_AFTER_RUNS = 3;
+export const CLOSE_ALARM_ISSUE_AFTER_RUNS = 3;
 
 /** Dia BRT a processar por default: o dia ANTERIOR ao instante de execução
  * (mesma lógica de "roda de manhã sobre o dia que já fechou" dos ingests de
@@ -164,22 +165,48 @@ async function main(argv: string[]): Promise<number> {
   return 0;
 }
 
+/** Injeção para teste (#9016) — produção usa os defaults (`data/aquisicao/...`
+ *  relativo ao cwd e o `gh` real de `alarm-issues.ts`). */
+export interface EvaluateAndAlarmDriftOptions {
+  /** Diretório dos `{dia}.fator.json`. Default `data/aquisicao/painel`. */
+  painelDir?: string;
+  /** State de tracking de issue deste alarme. Default `ALARM_STATE_PATH`. */
+  statePath?: string;
+  run?: GhRunFn;
+  now?: Date;
+  cwd?: string;
+}
+
 /**
  * Lê os `{dia}.fator.json` dos últimos `RECONCILE_WINDOW_DAYS` dias
  * (incluindo `day`, o dia recém-processado), agrega por canal e abre/fecha
  * issue de alarme via `alarm-issues.ts` para quem saiu da faixa aceitável
  * (`evaluateReconcileDrift`, `scripts/lib/aquisicao-reconcile-alarm.ts`).
+ *
+ * **#9016 — `applyAlarmReconciliation` roda SEMPRE que a avaliação termina,
+ * inclusive com `findings = []`.** Antes, a função saía cedo quando nenhum
+ * canal estava fora da faixa (ou quando não havia avaliação nenhuma), então
+ * o `alarm-issues.ts` nunca planejava `comment_resolved`/`close`, o
+ * `missingStreak` nunca avançava e a issue aberta por um drift ficava aberta
+ * para sempre — escondendo um re-disparo real depois. `ALARM_STATE_PATH` é
+ * exclusivo deste alarme, então reconciliar com lista vazia não fecha alarme
+ * alheio. Premissa: canal que cai para `volume-insuficiente` conta como
+ * "achado ausente" (sem sinal de drift na janela) e entra no streak de
+ * fechamento como um canal `ok`.
+ *
  * Fail-soft por inteiro (#8591 item 3 herda a mesma disciplina do resto
  * deste script) — qualquer falha de leitura/`gh` aqui é logada e NUNCA faz
  * a task sair com erro; o cálculo do fator do dia (acima) já terminou e foi
  * persistido antes desta função ser chamada.
  */
-function evaluateAndAlarmDrift(latestDay: string): void {
+export function evaluateAndAlarmDrift(latestDay: string, opts: EvaluateAndAlarmDriftOptions = {}): void {
+  const painelDir = opts.painelDir ?? resolve("data", "aquisicao", "painel");
+  const statePath = opts.statePath ?? ALARM_STATE_PATH;
   try {
     const byDay = new Map<string, FactorResult>();
     for (let i = 0; i < RECONCILE_WINDOW_DAYS; i++) {
       const d = shiftDate(latestDay, -i);
-      const p = resolve("data", "aquisicao", "painel", `${d}.fator.json`);
+      const p = resolve(painelDir, `${d}.fator.json`);
       if (!existsSync(p)) continue;
       try {
         byDay.set(d, JSON.parse(readFileSync(p, "utf8")) as FactorResult);
@@ -192,8 +219,7 @@ function evaluateAndAlarmDrift(latestDay: string): void {
     const drifting = evaluations.filter((e) => e.status === "alto" || e.status === "baixo");
 
     if (evaluations.length === 0) {
-      console.log("[aquisicao-reconcile-daily] alarme — sem histórico suficiente na janela ainda, nada a avaliar.");
-      return;
+      console.log("[aquisicao-reconcile-daily] alarme — sem histórico suficiente na janela ainda, nada fora da faixa.");
     }
     for (const e of evaluations) {
       console.log(
@@ -201,15 +227,18 @@ function evaluateAndAlarmDrift(latestDay: string): void {
           `real=${e.real_sum} painel=${e.reported_sum} fator=${e.factor == null ? "n/d" : e.factor.toFixed(2) + "x"} status=${e.status}`,
       );
     }
-    if (drifting.length === 0) return;
 
+    // #9016: sem early-return em `drifting.length === 0` — findings vazio é
+    // justamente o que faz o streak de fechamento avançar.
     const findings: AlarmFinding[] = drifting.map((e) => buildDriftAlarmFinding(e, latestDay));
-    const state = loadAlarmIssuesState(ALARM_STATE_PATH);
+    const state = loadAlarmIssuesState(statePath);
     const { nextState, findingOutcomes } = applyAlarmReconciliation(findings, state, {
-      cwd: process.cwd(),
+      cwd: opts.cwd ?? process.cwd(),
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+      run: opts.run,
+      now: opts.now,
     });
-    saveAlarmIssuesState(nextState, ALARM_STATE_PATH);
+    saveAlarmIssuesState(nextState, statePath);
     for (const o of findingOutcomes) {
       if (o.action === "failed") {
         console.error(`[aquisicao-reconcile-daily] alarme — issue não criada/reusada para ${o.fingerprint}: ${o.error}`);
