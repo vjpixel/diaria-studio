@@ -27,7 +27,17 @@ O JSON de saída `inconclusive` sempre inclui um campo `reason` para o orchestra
 - `edition_title`: titulo da edicao (assunto do email)
 - `edition_dir`: ex: `data/editions/260418/` (diário) ou `data/monthly/2604/` (mensal)
 - `attempt`: numero da tentativa atual (1-based, para contexto no log)
+- `email_file` (opcional, #9000): path do corpo do e-mail de teste **já buscado pelo top-level** (ex: `{edition_dir}/_internal/.email-body.tmp`). Ver seção "Modo pré-buscado" abaixo.
+- `email_subject` (opcional, #9000): assunto real da thread, junto com `email_file`.
 - `platform` (opcional): `"beehiiv"` (padrão, diário), `"kit"` (diário, backend Kit — #464, atrás de `publishing.newsletter.backend`) ou `"brevo"` (mensal Clarice)
+
+## Modo pré-buscado — `email_file` (#9000, caminho preferido)
+
+O conector Gmail chega às vezes com prefixo UUID (`mcp__<uuid>__search_threads`), fora da allowlist `tools:` deste agent (#8902/#8953 não resolveram: `tools:` é allowlist fechada por nome e o `Agent` não concede tools por dispatch). Só o top-level enxerga o prefixo real — por isso o orchestrator (`orchestrator-stage-5.md` §5f, passo 0) busca a thread via Gmail e grava o corpo em disco ANTES de despachar este agent.
+
+**Se `email_file` foi passado e o arquivo existe e não está vazio:** NÃO chamar nenhuma tool Gmail e NÃO aguardar (`sleep`). Pular os passos de busca (seção 1 passos 1-7 do Beehiiv, K1 do Kit): tratar o conteúdo de `email_file` como o resultado do `get_thread` (HTML preferido) e `email_subject` como o assunto da thread. Na seção 1c, o `.email-body.tmp` já está em disco — apenas medir os bytes (usar `email_file` no lugar do `EMAIL_BODY_FILE`, sem re-escrever). Salvar o dump em `test-email-{AAMMDD}.txt` normalmente. Nunca retornar `mcp_unavailable` neste modo.
+
+**Se `email_file` ausente** (ou arquivo vazio/inexistente): comportamento antigo — buscar via `mcp__claude_ai_Gmail__*`; sem as tools, `inconclusive` com `reason: "mcp_unavailable"`.
 
 ## Roteamento por plataforma
 
@@ -68,6 +78,8 @@ vira:
 Essas entradas seguem o mesmo pipeline `fix` junto com issues detectadas pelo email (prefixo `email:` distingue origem).
 
 ### 1. Buscar o email via Gmail MCP (metodo primario)
+
+> **Com `email_file` (#9000): pular esta seção inteira** — ver "Modo pré-buscado".
 
 1. Aguardar 15 segundos para o email chegar: `Bash("sleep 15")`.
 2. Buscar via `mcp__claude_ai_Gmail__search_threads` com query: `subject:"[TEST] {edition_title}" from:beehiiv.com newer_than:1d`.
@@ -775,6 +787,8 @@ o test-send do Kit é feito por `publish-newsletter-kit.ts`, que não produz
 esse arquivo. Não há issues `publish:` neste fluxo.
 
 ### K1. Buscar o email via Gmail MCP (substitui a seção 1)
+
+> **Com `email_file` (#9000): pular esta seção** — ver "Modo pré-buscado" (o top-level já buscou a thread com o `subject`/`from` do Kit).
 
 1. Aguardar 20 segundos (achado ao vivo #464: o test-send do Kit agenda
    `send_at = agora + 15s`, mais folga que o test email da Beehiiv):
