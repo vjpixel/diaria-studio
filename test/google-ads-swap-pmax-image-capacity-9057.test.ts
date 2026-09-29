@@ -207,14 +207,30 @@ describe("#9057 — CLI --send: Fase 1 nunca estoura o máximo de imagem", () =>
     try {
       const rows = [...servingTextRows(), ...Array.from({ length: 18 }, (_, i) => keepImage("SQUARE_MARKETING_IMAGE", i))];
       const api = makeStatefulApi(rows);
-      const code = await withEnv(AUTH_ENV, () =>
-        swapMain(
-          ["--customer-id", CUSTOMER, "--send", "--images-manifest", makeManifest(dir, 4), "--progress-file", join(dir, "progress.json")],
-          api.fetchMock as unknown as typeof fetch,
-          () => [],
-        ),
-      );
+      const errors: string[] = [];
+      const origError = console.error;
+      console.error = (...args: unknown[]) => {
+        errors.push(args.map(String).join(" "));
+      };
+      let code: number;
+      try {
+        code = await withEnv(AUTH_ENV, () =>
+          swapMain(
+            ["--customer-id", CUSTOMER, "--send", "--images-manifest", makeManifest(dir, 4), "--progress-file", join(dir, "progress.json")],
+            api.fetchMock as unknown as typeof fetch,
+            () => [],
+          ),
+        );
+      } finally {
+        console.error = origError;
+      }
       assert.equal(code, 1);
+      // A recusa tem que vir do plano de IMAGEM (não de texto inviável por acaso).
+      assert.ok(
+        errors.some((e) => e.includes("SQUARE_MARKETING_IMAGE") && e.includes("máximo 20")),
+        `esperava erro de capacidade de SQUARE_MARKETING_IMAGE, veio: ${errors.join(" | ")}`,
+      );
+      assert.ok(!errors.some((e) => /\b(HEADLINE|LONG_HEADLINE|DESCRIPTION):/.test(e)), "plano de texto deveria ser viável neste cenário");
       assert.equal(api.calls.assetsMutate, 0, "nenhum asset pode ser criado com o plano de imagem inviável");
       assert.equal(api.calls.linkBodies.length, 0);
     } finally {

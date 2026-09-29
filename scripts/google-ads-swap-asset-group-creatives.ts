@@ -74,7 +74,10 @@
  *   mínimo de stale necessário sai NO MESMO `assetGroupAssets:mutate` do
  *   link (remove+create atômico, `planTextFieldLinks`). O plano é validado
  *   contra antigos + novos antes de qualquer mutação — também para as
- *   imagens do manifesto (#9057, `planImageFieldLinks`, máx 20 por tipo).
+ *   imagens do manifesto (#9057, `planImageFieldLinks`, máx 20 por tipo):
+ *   imagens existentes + manifesto > 20 num tipo também removem o mínimo
+ *   de imagens stale no mesmo mutate (ou recusam, se o excedente não for
+ *   stale).
  *
  *   Fase 2 (`--send --remove-stale`, rodado numa invocação SEPARADA
  *   depois de confirmar pela API que os novos estão `ENABLED` e sem
@@ -543,8 +546,10 @@ export async function main(
   }
 
   // A partir daqui, texto E imagem estão prontos (validados acima) — Fase 1
-  // de verdade: cria os assets novos e linka ao grupo. NUNCA remove nada
-  // (isso é --remove-stale, Fase 2, numa invocação separada).
+  // de verdade: cria os assets novos e linka ao grupo. Só remove o MÍNIMO
+  // de stale que não cabe ao lado dos novos, no mesmo mutate do link
+  // (#9017 texto, #9057 imagem); a remoção completa do stale é
+  // --remove-stale, Fase 2, numa invocação separada.
   const apiVersion = auth.apiVersion ?? DEFAULT_API_VERSION;
   const numericCustomerId = customerId.replace(/[^0-9]/g, "");
   const assetsMutateUrl = `https://googleads.googleapis.com/${apiVersion}/customers/${numericCustomerId}/assets:mutate`;
