@@ -35,6 +35,20 @@
 //      como publicação — `--input` conta como sinal de corpo, igual a
 //      `-f`/`-F`/`--field`/`--raw-field`.
 //
+// #9020 fechou uma regressão do #8950: `normalizeArgv` aplicava o split de
+// `--flag=valor`/`-Xvalor` a TODO token do argv, inclusive ao token que é o
+// VALOR de uma flag anterior (`--body "--token=ghp_XXXX"` virava
+// `["--body", "--token", "ghp_XXXX"]`, e `collectTextsToCheck` só via
+// `"--token"` como body — o segredo inteiro escapava da inspeção, mas o `gh`
+// real recebia o argv original intacto). A normalização agora é
+// POSICIONAL: anda o argv token a token e, ao emitir uma flag que carrega
+// valor em token separado (`longValueFlagsFor`), marca o PRÓXIMO token como
+// valor e o repassa sem tocar — nunca reinterpretado como flag. Também
+// ampliou `isPublishingInvocation`/`nonApiBodyFlags`/`shortValueFlagsFor`
+// para cobrir `pr reopen`/`issue reopen --comment`/`-c` (mesma forma do gap
+// de `close` fechado no #8950) e `pr merge --body`/`-b`/`--subject`/`-t`
+// (o texto vira mensagem de commit pública).
+//
 // Testável sem I/O real: toda leitura de arquivo/stdin é injetada via
 // `deps` — ver `test/gh-wrapper.test.ts`.
 
@@ -50,12 +64,14 @@ const NON_API_FILE_FLAGS = new Set(["-F", "--body-file", "--notes-file"]);
 
 /**
  * Flags de texto inline (valor literal publicado) em pr/issue/release/review,
- * por subcomando. `close` só publica via `--comment`/`-c`; os demais publicam
- * via corpo/notas/título.
+ * por subcomando. `close`/`reopen` só publicam via `--comment`/`-c`; os
+ * demais publicam via corpo/notas/título (`--subject` cobre `pr merge`,
+ * #9020 — inofensivo nos demais subcomandos, que simplesmente não usam essa
+ * flag).
  */
 function nonApiBodyFlags(sub) {
-  if (sub === "close") return new Set(["-c", "--comment"]);
-  return new Set(["-b", "--body", "-t", "--title", "-n", "--notes"]);
+  if (sub === "close" || sub === "reopen") return new Set(["-c", "--comment"]);
+  return new Set(["-b", "--body", "-t", "--title", "-n", "--notes", "--subject"]);
 }
 
 /**
@@ -101,11 +117,31 @@ const GH_API_VALUE_FLAGS = new Set([
 function shortValueFlagsFor(cmd, sub) {
   if (cmd === "api") return new Set(["-f", "-F"]);
   const s = new Set(["-F"]); // body-file/notes-file, universal em pr/issue/release/gist/review
-  if (sub === "close") s.add("-c");
+  if (sub === "close" || sub === "reopen") s.add("-c");
   else {
     s.add("-b");
     s.add("-t");
     s.add("-n");
+  }
+  return s;
+}
+
+/**
+ * Flags (curtas E longas) cujo VALOR vem em token SEPARADO — usado por
+ * `normalizeArgv` (#9020) pra saber que o token seguinte é um VALOR e nunca
+ * deve ser reinterpretado como flag (nem splitado por `=`/glue). Combina os
+ * conjuntos que `isPublishingInvocation`/`collectTextsToCheck` já conhecem
+ * por contexto — nenhuma lista nova, só reuso.
+ */
+function longValueFlagsFor(cmd, sub, isApi) {
+  const s = new Set();
+  if (isApi) {
+    for (const f of API_FIELD_FLAGS) s.add(f);
+    for (const f of API_FILE_FLAGS) s.add(f);
+    for (const f of GH_API_VALUE_FLAGS) s.add(f);
+  } else {
+    for (const f of nonApiBodyFlags(sub)) s.add(f);
+    for (const f of NON_API_FILE_FLAGS) s.add(f);
   }
   return s;
 }
@@ -128,11 +164,27 @@ function shortValueFlagsFor(cmd, sub) {
  */
 export function normalizeArgv(argv) {
   if (!Array.isArray(argv)) return argv;
-  const shortValueFlags = shortValueFlagsFor(argv[0], argv[1]);
+  const [cmd, sub] = argv;
+  const isApi = cmd === "api";
+  const shortValueFlags = shortValueFlagsFor(cmd, sub);
+  const longValueFlags = longValueFlagsFor(cmd, sub, isApi);
   const out = [];
+  // #9020: token que é o VALOR de uma flag anterior (`--body`, `-t`, `-F`,
+  // `--field`, etc.) nunca é reinterpretado como flag — passa intacto, sem
+  // split. Sem isso, um valor como "--token=ghp_XXXX" ou "-tghp_XXXX" era
+  // splitado como se fosse a PRÓXIMA flag, e só o pedaço final chegava a
+  // `collectTextsToCheck` (o segredo inteiro escapava da inspeção enquanto o
+  // `gh` real recebia o argv original completo).
+  let expectValue = false;
   for (const a of argv) {
     if (typeof a !== "string") {
       out.push(a);
+      expectValue = false;
+      continue;
+    }
+    if (expectValue) {
+      out.push(a);
+      expectValue = false;
       continue;
     }
     if (a.startsWith("--") && a.includes("=")) {
@@ -148,6 +200,9 @@ export function normalizeArgv(argv) {
       }
     }
     out.push(a);
+    if (a.startsWith("-") && (longValueFlags.has(a) || shortValueFlags.has(a))) {
+      expectValue = true;
+    }
   }
   return out;
 }
@@ -167,9 +222,10 @@ export function isPublishingInvocation(rawArgv) {
   if (!Array.isArray(rawArgv) || rawArgv.length < 2) return false;
   const argv = normalizeArgv(rawArgv);
   const [cmd, sub] = argv;
-  if ((cmd === "pr" || cmd === "issue") && ["comment", "create", "edit", "review", "close"].includes(sub)) {
+  if ((cmd === "pr" || cmd === "issue") && ["comment", "create", "edit", "review", "close", "reopen"].includes(sub)) {
     return true;
   }
+  if (cmd === "pr" && sub === "merge") return true; // #9020: --body/-b, --subject/-t viram mensagem de commit pública
   if (cmd === "release" && ["create", "edit"].includes(sub)) return true;
   if (cmd === "gist" && sub === "create") return true;
   if (cmd === "api") {

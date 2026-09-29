@@ -352,6 +352,66 @@ export function entryDiffersFromFrontmatter(
 }
 
 /**
+ * (#8592) Os 5 campos estruturados que compõem a declaração completa do erro
+ * intencional — mesmos 5 citados em `orchestrator-stage-4.md` §"Erro
+ * intencional ainda placeholder ao montar o gate". `wrong_value` fica de
+ * fora de propósito (irmão OPCIONAL, #7243) — não é ele que decide se a
+ * edição "declarou" um erro aos olhos deste aviso.
+ */
+const HEADLESS_WARNING_REQUIRED_FIELDS = [
+  "description",
+  "location",
+  "category",
+  "correct_value",
+  "reveal",
+] as const;
+
+/**
+ * (#8592) Pure — dado o diretório de uma edição, decide se uma rodada
+ * HEADLESS (sem editor no gate — `scripts/run-edition-stages.ts`, que sempre
+ * roda cada stage com `--no-gates`) terminou sem erro intencional declarado.
+ *
+ * Retorna `null` quando não há nada a avisar (JSON completo, ou
+ * `{"no_error": true}` — o editor decidiu explicitamente que esta edição não
+ * tem erro). Retorna uma mensagem quando `_internal/intentional-error.json`
+ * está ausente OU tem algum dos 5 campos ainda com o placeholder literal
+ * `{PREENCHER...}` — nesse caso o concurso "ache o erro" fica sem gabarito
+ * até alguém preencher manualmente (ou declarar `no_error`).
+ *
+ * Deliberadamente NUNCA bloqueante — só informativo. O guard que bloqueia de
+ * verdade é `intentional-error-present-in-final` (Stage 4,
+ * `scripts/lib/invariant-checks/stage-4.ts`), que não muda aqui.
+ */
+export function intentionalErrorHeadlessWarning(editionDir: string): string | null {
+  const jsonPath = intentionalErrorJsonPath(editionDir);
+  const record = loadIntentionalErrorJson(jsonPath);
+
+  if (!record) {
+    return (
+      "edição headless terminou sem erro intencional declarado — " +
+      `${jsonPath} não existe ou está vazio/corrompido. Preencha os campos ` +
+      "manualmente (ou declare {\"no_error\": true}) antes de publicar."
+    );
+  }
+
+  if (record.no_error === true) return null;
+
+  const pending = HEADLESS_WARNING_REQUIRED_FIELDS.filter((field) => {
+    const value = record[field];
+    if (typeof value !== "string" || value.trim().length === 0) return true;
+    return /^\{PREENCHER/i.test(value.trim());
+  });
+
+  if (pending.length === 0) return null;
+
+  return (
+    "edição headless terminou sem erro intencional declarado — " +
+    `${jsonPath} ainda tem placeholder em: ${pending.join(", ")}. Preencha ` +
+    "manualmente (ou declare {\"no_error\": true}) antes de publicar."
+  );
+}
+
+/**
  * Sync one-way (#1589): MD frontmatter é fonte autoritativa. Se já existe
  * entry pra `edition` com `source: "frontmatter_02_reviewed"`:
  *   - bate com o frontmatter atual → no-op

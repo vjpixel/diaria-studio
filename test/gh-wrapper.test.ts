@@ -345,6 +345,94 @@ describe("#8950 (follow-up): short flag colada ao valor (-Fcorpo.md, -F-, -btext
   });
 });
 
+describe("#9020: normalizeArgv não reinterpreta VALOR de flag como flag", () => {
+  it("--body \"--token=SEGREDO\" não é splitado — o token inteiro segue como valor", () => {
+    assert.deepEqual(normalizeArgv(["pr", "comment", "1", "--body", "--token=ghp_XXXX"]), [
+      "pr",
+      "comment",
+      "1",
+      "--body",
+      "--token=ghp_XXXX",
+    ]);
+  });
+  it("--body \"-tghp_XXXX\" não é splitado como flag curta colada", () => {
+    assert.deepEqual(normalizeArgv(["pr", "comment", "1", "--body", "-tghp_XXXX"]), [
+      "pr",
+      "comment",
+      "1",
+      "--body",
+      "-tghp_XXXX",
+    ]);
+  });
+  it("bloqueia segredo em --body \"--token=SEGREDO\" (regressão do #8950, achada no #9020)", () => {
+    const r = evaluateGhInvocation(["pr", "comment", "1", "--body", `--token=${OR_KEY}`], {});
+    assert.ok(r.blocked, "segredo inteiro precisa chegar em collectTextsToCheck, não só o pedaço pós-split");
+    assert.ok(r.secrets?.includes("OpenRouter"));
+  });
+  it("bloqueia segredo em --body \"-tSEGREDO\" (mesma regressão, forma curta colada)", () => {
+    const r = evaluateGhInvocation(["pr", "comment", "1", "--body", `-t${OR_KEY}`], {});
+    assert.ok(r.blocked);
+  });
+  it("gh api: -X PATCH seguido de -f com valor iniciado por --x= não confunde a flag seguinte", () => {
+    const r = evaluateGhInvocation(
+      ["api", "-X", "PATCH", "repos/o/r/pulls/1", "-f", `body=--token=${OR_KEY}`],
+      {},
+    );
+    assert.ok(r.blocked);
+  });
+  it("valor limpo que começa com -- continua passando intacto", () => {
+    const r = evaluateGhInvocation(["pr", "comment", "1", "--body", "--isso é só texto normal"], {});
+    assert.equal(r.blocked, false);
+  });
+});
+
+describe("#9020: pr/issue reopen --comment/-c publicam", () => {
+  it("isPublishingInvocation reconhece reopen", () => {
+    assert.ok(isPublishingInvocation(["pr", "reopen", "1", "--comment", "x"]));
+    assert.ok(isPublishingInvocation(["issue", "reopen", "1", "-c", "x"]));
+  });
+  it("bloqueia segredo em --comment/-c de reopen", () => {
+    const r1 = evaluateGhInvocation(["pr", "reopen", "1", "--comment", `reabrindo: ${OR_KEY}`], {});
+    assert.ok(r1.blocked);
+    const r2 = evaluateGhInvocation(["issue", "reopen", "1", "-c", `reabrindo: ${OR_KEY}`], {});
+    assert.ok(r2.blocked);
+  });
+  it("reopen sem --comment/-c não publica nada (nada a checar)", () => {
+    assert.equal(evaluateGhInvocation(["pr", "reopen", "1"], {}).blocked, false);
+  });
+  it("reopen --comment limpo passa", () => {
+    assert.equal(evaluateGhInvocation(["issue", "reopen", "1", "--comment", "reaberta por engano"], {}).blocked, false);
+  });
+});
+
+describe("#9020: pr merge --body/-b e --subject/-t publicam", () => {
+  it("isPublishingInvocation reconhece merge", () => {
+    assert.ok(isPublishingInvocation(["pr", "merge", "1", "--body", "x"]));
+    assert.ok(isPublishingInvocation(["pr", "merge", "1", "--subject", "x"]));
+  });
+  it("bloqueia segredo em --body/-b de merge", () => {
+    const r1 = evaluateGhInvocation(["pr", "merge", "1", "--body", `mergeando: ${OR_KEY}`], {});
+    assert.ok(r1.blocked);
+    const r2 = evaluateGhInvocation(["pr", "merge", "1", "-b", `mergeando: ${OR_KEY}`], {});
+    assert.ok(r2.blocked);
+  });
+  it("bloqueia segredo em --subject/-t de merge", () => {
+    const r1 = evaluateGhInvocation(["pr", "merge", "1", "--subject", `assunto: ${OR_KEY}`], {});
+    assert.ok(r1.blocked);
+    const r2 = evaluateGhInvocation(["pr", "merge", "1", "-t", `assunto: ${OR_KEY}`], {});
+    assert.ok(r2.blocked);
+  });
+  it("merge sem --body/--subject não publica nada (nada a checar)", () => {
+    assert.equal(evaluateGhInvocation(["pr", "merge", "1", "--squash"], {}).blocked, false);
+  });
+  it("merge --body/--subject limpos passam", () => {
+    assert.equal(
+      evaluateGhInvocation(["pr", "merge", "1", "--body", "resolve #123", "--subject", "fix: bug"], {}).blocked,
+      false,
+    );
+  });
+});
+
 describe("findRealGh (#8884)", () => {
   it("pula a si mesmo e acha o próximo `gh` no PATH", () => {
     const calls: string[] = [];

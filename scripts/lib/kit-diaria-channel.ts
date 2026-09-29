@@ -153,6 +153,20 @@ export function decideKitChannelDispatch(input: DecideKitChannelInput): KitChann
   if (!config) {
     return { action: "skip", reason: "kit_diaria não configurado em platform.config.json." };
   }
+  // #9001: `enabled` checado ANTES do guard de backend. Com o canal já
+  // desligado, o motivo do skip é só "desligado (default)" — nunca a
+  // mensagem de exclusão mútua abaixo, que instrui "Desligue
+  // kit_diaria.enabled ao virar o backend" como se a ação ainda estivesse
+  // pendente. A ordem antiga disparava essa mensagem incondicionalmente
+  // quando o backend era "kit", mesmo com `enabled` já `false` — confundindo
+  // quem lê o log/reason a achar que a flag "continua ligada" quando na
+  // verdade já foi desligada.
+  if (config.enabled !== true) {
+    return {
+      action: "skip",
+      reason: "kit_diaria.enabled não é true — canal Kit paralelo desligado (default).",
+    };
+  }
   if (input.newsletterBackend === "kit") {
     return {
       action: "skip",
@@ -160,12 +174,6 @@ export function decideKitChannelDispatch(input: DecideKitChannelInput): KitChann
         "publishing.newsletter.backend === \"kit\" — o switchover (#6114) já envia pra audiência INTEIRA. " +
         "Rodar o canal paralelo junto entregaria a edição EM DOBRO a quem está nos dois filtros. " +
         "Desligue `kit_diaria.enabled` ao virar o backend.",
-    };
-  }
-  if (config.enabled !== true) {
-    return {
-      action: "skip",
-      reason: "kit_diaria.enabled não é true — canal Kit paralelo desligado (default).",
     };
   }
 
