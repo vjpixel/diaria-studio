@@ -457,7 +457,13 @@ def test_regressao_9026_others_claim_aceita_pela():
     check_pela = mod.check_claimed_issues(linha_pela, set(), True, session_correlated=True)
     assert check_pela["status"] == "not_applicable", check_pela
 
-    print("regressão #9026: '_OTHERS_CLAIM' aceita 'pela' — OK")
+    # `_COVERED_BY` (linha 343) tinha o mesmo gap — "coberto pela sessão"
+    # não casava e o #N de cobertura era lido como claim próprio.
+    linha_coberto_pela = "- #7807: o trabalho ja estava coberto pela sessao overnight. A PR #7827 foi fechada."
+    refs_coberto = mod.extract_claimed_issue_refs(linha_coberto_pela)
+    assert 7807 not in refs_coberto, f"#7807 (coberto pela sessao) indevido: {refs_coberto}"
+
+    print("regressão #9026: '_OTHERS_CLAIM'/'_COVERED_BY' aceitam 'pela' — OK")
 
 
 def main() -> int:
