@@ -129,13 +129,20 @@ export async function scheduleKitDiaria(
   } catch (e) {
     return { code: 3, reason: `platform.config.json ilegível: ${(e as Error).message}` };
   }
-  // #6321 — mesmo guard de exclusão mútua do `decideKitChannelDispatch`
-  // (scripts/lib/kit-diaria-channel.ts): com o backend já em "kit", o
+  // #9001: `enabled` checado ANTES do guard de exclusão mútua com o backend
+  // — mesma ordem de `decideKitChannelDispatch` (scripts/lib/kit-diaria-channel.ts).
+  // Canal já desligado por default não precisa (nem deve) do motivo de
+  // exclusão mútua: essa mensagem instrui "canal não participa por causa do
+  // backend", o que soa como se `enabled` ainda estivesse ligado e
+  // precisasse ser desligado — confuso quando já está `false`.
+  if (cfg.kit_diaria?.enabled !== true) {
+    return { code: 2, reason: "kit_diaria.enabled não é true — canal não participou desta edição." };
+  }
+  // #6321 — guard de exclusão mútua: com o backend já em "kit", o
   // switchover (#6114) envia pra audiência INTEIRA e este canal paralelo
   // NUNCA deve agendar, mesmo que `kit_diaria.enabled` tenha ficado `true`
   // por engano (dívida corrigida no próprio #6321/#6313, não garantia
-  // futura). Checado ANTES de `enabled` — igual à ordem do dispatch da
-  // Etapa 5, propositalmente.
+  // futura).
   if (cfg.publishing?.newsletter?.backend === "kit") {
     return {
       code: 2,
@@ -143,9 +150,6 @@ export async function scheduleKitDiaria(
         "publishing.newsletter.backend === \"kit\" — o switchover (#6114) já agenda pra audiência " +
         "INTEIRA; agendar o canal paralelo também entregaria a edição EM DOBRO. Canal não participa.",
     };
-  }
-  if (cfg.kit_diaria?.enabled !== true) {
-    return { code: 2, reason: "kit_diaria.enabled não é true — canal não participou desta edição." };
   }
 
   let state: ReturnType<typeof readKitDiariaState>;

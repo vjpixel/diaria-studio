@@ -192,6 +192,19 @@ describe("#6321/#6313 guard de exclusão mútua — backend \"kit\" vence mesmo 
     assert.equal(r.code, 0);
     assert.deepEqual(patched, [4242]);
   });
+
+  it("REGRESSÃO #9001: enabled false + backend \"kit\" ⇒ reason é \"canal não participou\", NUNCA a mensagem de exclusão mútua com o backend", async () => {
+    // Mesmo achado do #9001 em decideKitChannelDispatch: com o canal já
+    // desligado por default, o motivo não deve soar como se o backend fosse
+    // a causa e a flag precisasse ser desligada — ela já está.
+    const { deps } = makeDeps({ enabled: false, newsletterBackend: "kit" });
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 2);
+    if (r.code === 2) {
+      assert.match(r.reason, /não participou/);
+      assert.doesNotMatch(r.reason, /backend/);
+    }
+  });
 });
 
 describe("#6162 mapeamento de exit code — onde o bug P1 vivia", () => {
