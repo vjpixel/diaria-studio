@@ -452,8 +452,26 @@ export const PMAX_TEXT_FIELD_MAX: Readonly<Record<TextFieldType, number>> = {
   DESCRIPTION: PMAX_TEXT_LIMITS.description.max,
 };
 
-export interface TextFieldLinkPlan {
-  fieldType: TextFieldType;
+/** Os 3 fieldTypes de imagem de marketing que a Fase 1 linka (#9057). */
+export type ImageFieldType = Extract<KnownAssetGroupFieldType, "SQUARE_MARKETING_IMAGE" | "MARKETING_IMAGE" | "PORTRAIT_MARKETING_IMAGE">;
+
+/** Máximo de `asset_group_asset` ENABLED por fieldType de IMAGEM num asset
+ *  group PMax (#9057). Fonte: Google Ads API, "Performance Max asset
+ *  requirements" (https://developers.google.com/google-ads/api/performance-max/asset-requirements),
+ *  lida em 29/09/2026 — MARKETING_IMAGE (1,91:1) mín 1/máx 20,
+ *  SQUARE_MARKETING_IMAGE (1:1) mín 1/máx 20, PORTRAIT_MARKETING_IMAGE (4:5)
+ *  máx 20. A página não declara teto COMBINADO entre os tipos de imagem, então
+ *  nenhum é imposto aqui (não inventar limite sem fonte). Mesma ressalva de
+ *  `PMAX_TEXT_LIMITS`: a API não expõe endpoint de limites, só rejeita na
+ *  mutação. */
+export const PMAX_IMAGE_FIELD_MAX: Readonly<Record<ImageFieldType, number>> = {
+  SQUARE_MARKETING_IMAGE: 20,
+  MARKETING_IMAGE: 20,
+  PORTRAIT_MARKETING_IMAGE: 20,
+};
+
+export interface FieldLinkPlan<F extends AssetGroupFieldType = AssetGroupFieldType> {
+  fieldType: F;
   /** Quantos recursos novos a Fase 1 vai linkar neste fieldType. */
   newCount: number;
   /** ENABLED hoje no grupo neste fieldType (todos os buckets). */
@@ -470,9 +488,49 @@ export interface TextFieldLinkPlan {
   removeInSameMutate: string[];
 }
 
-export type TextLinkPlanResult =
-  | { ok: true; plans: TextFieldLinkPlan[] }
-  | { ok: false; errors: string[]; plans: TextFieldLinkPlan[] };
+export type FieldLinkPlanResult<F extends AssetGroupFieldType = AssetGroupFieldType> =
+  | { ok: true; plans: FieldLinkPlan<F>[] }
+  | { ok: false; errors: string[]; plans: FieldLinkPlan<F>[] };
+
+export type TextFieldLinkPlan = FieldLinkPlan<TextFieldType>;
+export type TextLinkPlanResult = FieldLinkPlanResult<TextFieldType>;
+export type ImageLinkPlanResult = FieldLinkPlanResult<ImageFieldType>;
+
+/** Núcleo comum de `planTextFieldLinks`/`planImageFieldLinks` — mesma regra
+ *  de capacidade para qualquer fieldType com máximo conhecido. @pure */
+function planFieldLinksAgainstMax<F extends AssetGroupFieldType>(
+  items: readonly AssetGroupAssetItem[],
+  classification: AssetGroupClassification,
+  maxByField: Readonly<Record<F, number>>,
+  newCounts: Readonly<Record<F, number>>,
+  skipFieldTypes: ReadonlySet<string>,
+): FieldLinkPlanResult<F> {
+  const plans: FieldLinkPlan<F>[] = [];
+  const errors: string[] = [];
+  for (const fieldType of Object.keys(maxByField) as F[]) {
+    if (skipFieldTypes.has(fieldType)) continue;
+    const newCount = newCounts[fieldType];
+    if (newCount === 0) continue;
+    const max = maxByField[fieldType];
+    const existingEnabled = items.filter((i) => i.status === "ENABLED" && i.fieldType === fieldType).length;
+    const staleOfType = classification.stale.filter((i) => i.fieldType === fieldType);
+    const permanent = existingEnabled - staleOfType.length;
+    const overflow = existingEnabled + newCount - max;
+    let removeInSameMutate: string[] = [];
+    if (overflow > 0) {
+      if (permanent + newCount > max) {
+        errors.push(
+          `${fieldType}: ${permanent} recurso(s) não-stale (keep/needsReview) + ${newCount} novo(s) = ${permanent + newCount} > máximo ${max} — ` +
+            "nem removendo todo o stale deste tipo cabe; decidir à mão o que sai antes de rodar --send",
+        );
+      } else {
+        removeInSameMutate = staleOfType.slice(0, overflow).map((i) => i.assetGroupAssetResourceName);
+      }
+    }
+    plans.push({ fieldType, newCount, existingEnabled, permanent, max, removeInSameMutate });
+  }
+  return errors.length === 0 ? { ok: true, plans } : { ok: false, errors, plans };
+}
 
 /**
  * Planeja o link dos textos novos contra a capacidade REAL do grupo (#9017):
@@ -502,31 +560,26 @@ export function planTextFieldLinks(
   newCounts: Readonly<Record<TextFieldType, number>>,
   skipFieldTypes: ReadonlySet<string> = new Set(),
 ): TextLinkPlanResult {
-  const plans: TextFieldLinkPlan[] = [];
-  const errors: string[] = [];
-  for (const fieldType of Object.keys(PMAX_TEXT_FIELD_MAX) as TextFieldType[]) {
-    if (skipFieldTypes.has(fieldType)) continue;
-    const newCount = newCounts[fieldType];
-    if (newCount === 0) continue;
-    const max = PMAX_TEXT_FIELD_MAX[fieldType];
-    const existingEnabled = items.filter((i) => i.status === "ENABLED" && i.fieldType === fieldType).length;
-    const staleOfType = classification.stale.filter((i) => i.fieldType === fieldType);
-    const permanent = existingEnabled - staleOfType.length;
-    const overflow = existingEnabled + newCount - max;
-    let removeInSameMutate: string[] = [];
-    if (overflow > 0) {
-      if (permanent + newCount > max) {
-        errors.push(
-          `${fieldType}: ${permanent} recurso(s) não-stale (keep/needsReview) + ${newCount} novo(s) = ${permanent + newCount} > máximo ${max} — ` +
-            "nem removendo todo o stale deste tipo cabe; decidir à mão o que sai antes de rodar --send",
-        );
-      } else {
-        removeInSameMutate = staleOfType.slice(0, overflow).map((i) => i.assetGroupAssetResourceName);
-      }
-    }
-    plans.push({ fieldType, newCount, existingEnabled, permanent, max, removeInSameMutate });
-  }
-  return errors.length === 0 ? { ok: true, plans } : { ok: false, errors, plans };
+  return planFieldLinksAgainstMax(items, classification, PMAX_TEXT_FIELD_MAX, newCounts, skipFieldTypes);
+}
+
+/**
+ * Mesmo plano de capacidade de `planTextFieldLinks`, para as IMAGENS do PMax
+ * (#9057) — antes só os fieldTypes de texto eram validados contra o máximo, e
+ * um manifesto que, somado às imagens já ENABLED, passasse de
+ * `PMAX_IMAGE_FIELD_MAX` só falharia na mutação, no meio da Fase 1 (textos já
+ * linkados, imagens criadas e órfãs). Imagem `needsReview` (`logo_1.jpg`) e
+ * `keep` contam como permanentes — nunca removidas para abrir vaga.
+ *
+ * @pure
+ */
+export function planImageFieldLinks(
+  items: readonly AssetGroupAssetItem[],
+  classification: AssetGroupClassification,
+  newCounts: Readonly<Record<ImageFieldType, number>>,
+  skipFieldTypes: ReadonlySet<string> = new Set(),
+): ImageLinkPlanResult {
+  return planFieldLinksAgainstMax(items, classification, PMAX_IMAGE_FIELD_MAX, newCounts, skipFieldTypes);
 }
 
 /** Monta o payload de `assetGroupAssets:mutate` que linka os novos E remove
@@ -578,7 +631,7 @@ export interface SwapProgressStep {
   linked: boolean;
 }
 
-export type SwapProgressStepKey = TextFieldType | Extract<AssetGroupFieldType, "SQUARE_MARKETING_IMAGE" | "MARKETING_IMAGE" | "PORTRAIT_MARKETING_IMAGE">;
+export type SwapProgressStepKey = TextFieldType | ImageFieldType;
 
 export interface SwapProgress {
   version: 1;
