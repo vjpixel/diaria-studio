@@ -87,6 +87,45 @@ describe("looksLikeSubscriberReply (#1797)", () => {
     assert.equal(extractEmail("joao@x.com"), "joao@x.com");
     assert.equal(extractEmail("  JOAO@X.COM  "), "joao@x.com");
   });
+
+  // ── #8997: `to` restringe a domínio DEDICADO de envio ──────────────────
+
+  it("#8997: `to: vjpixel@gmail.com` (caixa pessoal, catch-all) → false mesmo com Re: + remetente humano", () => {
+    assert.ok(
+      !looksLikeSubscriberReply({
+        subject: "Re: dúvida sobre a fatura",
+        from: "suporte@contabilizei.com.br",
+        to: "vjpixel@gmail.com",
+      }),
+      "falso positivo real da edição 260929: chamado da Contabilizei endereçado à caixa pessoal do editor",
+    );
+  });
+
+  it("#8997: `to: oi@news.diar.ia.br` (Kit, domínio dedicado) → true", () => {
+    assert.ok(
+      looksLikeSubscriberReply({
+        subject: "Re: diar.ia.br — 29/09",
+        from: "leitor@empresa.com",
+        to: "oi@news.diar.ia.br",
+      }),
+    );
+  });
+
+  it("#8997: `to: oi@reativa.diar.ia.br` (Brevo diária, domínio dedicado) → true", () => {
+    assert.ok(
+      looksLikeSubscriberReply({
+        subject: "Re: diar.ia.br — 29/09",
+        from: "leitor@empresa.com",
+        to: "oi@reativa.diar.ia.br",
+      }),
+    );
+  });
+
+  it("#8997: `to` ausente → checagem de domínio pulada (compat com callers/fixtures pré-#8997)", () => {
+    assert.ok(
+      looksLikeSubscriberReply({ subject: "Re: diar.ia.br — 29/09", from: "leitor@empresa.com" }),
+    );
+  });
 });
 
 describe("filterSubscriberReplies (#1797)", () => {
@@ -109,6 +148,43 @@ describe("filterSubscriberReplies (#1797)", () => {
     const { total, replies } = filterSubscriberReplies(threads);
     assert.equal(total, 1);
     assert.equal(replies.length, 0);
+  });
+
+  // ── #8997: reprodução do achado da edição 260929 ────────────────────────
+
+  it("#8997: reprodução reduzida do achado (25 threads/8 reais na edição real) — só as com `to` em domínio dedicado sobrevivem", () => {
+    const threads = [
+      // respostas de assinante de verdade, endereçadas ao domínio dedicado
+      // (a edição real teve 8; 2 bastam aqui pra cobrir os 2 domínios dedicados).
+      { thread_id: "sub-1", subject: "Re: diar.ia.br — 28/09", from: "leitor1@x.com", to: "oi@news.diar.ia.br" },
+      { thread_id: "sub-2", subject: "Re: diar.ia.br — 27/09", from: "leitor2@y.com", to: "oi@reativa.diar.ia.br" },
+      // falsos positivos reais citados na issue — todos endereçados à caixa
+      // pessoal do editor (catch-all), remetente humano/não automático.
+      { thread_id: "gh-1", subject: "Re: [org/repo] hermes comentou", from: "suporte@github-like.com", to: "vjpixel@gmail.com" },
+      { thread_id: "contabilizei-1", subject: "Re: sua nota fiscal", from: "atendimento@contabilizei.com.br", to: "vjpixel@gmail.com" },
+      { thread_id: "kit-support-1", subject: "Re: dúvida na conta Kit", from: "help@kit.com", to: "vjpixel@gmail.com" },
+      { thread_id: "anthropic-support-1", subject: "Re: ticket de suporte", from: "support@anthropic.com", to: "vjpixel@gmail.com" },
+    ];
+    const { total, replies } = filterSubscriberReplies(threads);
+    assert.equal(total, 6);
+    assert.deepEqual(
+      replies.map((r) => r.thread_id).sort(),
+      ["sub-1", "sub-2"],
+      "só as 2 endereçadas ao domínio dedicado sobrevivem — as 4 endereçadas à caixa pessoal são descartadas",
+    );
+  });
+
+  // ── #8997: `alreadyRepliedByEditor` passthrough (thread já respondida) ──
+
+  it("#8997: alreadyRepliedByEditor é preservado em replies[] (passthrough, não remove)", () => {
+    const threads = [
+      { thread_id: "1", subject: "Re: x", from: "leitor@x.com", body: "Valeu pela resposta!", alreadyRepliedByEditor: true },
+      { thread_id: "2", subject: "Re: y", from: "leitor2@x.com", body: "Nova pergunta.", alreadyRepliedByEditor: false },
+    ];
+    const { replies } = filterSubscriberReplies(threads);
+    assert.equal(replies.length, 2, "não remove do array — só sinaliza, análogo a trivial");
+    assert.equal(replies.find((r) => r.thread_id === "1")?.alreadyRepliedByEditor, true);
+    assert.equal(replies.find((r) => r.thread_id === "2")?.alreadyRepliedByEditor, false);
   });
 });
 
