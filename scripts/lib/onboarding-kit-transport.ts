@@ -89,6 +89,7 @@
 
 import { buildTagFilter, type CreateBroadcastInput, type KitSubscriberFilter } from "./kit-broadcasts.ts";
 import type { KitBroadcastSummary } from "./kit-client.ts";
+import type { OnboardingEntry } from "./onboarding-store.ts";
 
 // ---------------------------------------------------------------------------
 // Lotes — identidade e tipos
@@ -163,6 +164,100 @@ export function findKitLotForEntry(
     if (latest == null || lot.created_at > latest.created_at) latest = lot;
   }
   return latest;
+}
+
+// ---------------------------------------------------------------------------
+// #9014: gravar de volta na entry o que um lote Kit de e-mail 1/2 enviou
+// ---------------------------------------------------------------------------
+
+/** Status de lote que conta como "broadcast confirmado no Kit" — o e-mail
+ *  vai sair (scheduled/created com send_at) ou já saiu (completed). */
+const CONFIRMED_LOT_STATUSES: ReadonlySet<OnboardingKitLotStatus> = new Set(["created", "scheduled", "completed"]);
+
+/**
+ * Existe algum lote Kit (de QUALQUER dia) desta etapa, com broadcast já
+ * confirmado (`broadcast_id` gravado) e não cancelado, que contém esta
+ * entrada? Defesa em profundidade do #9014 sobre o plano Kit: mesmo que a
+ * marcação de `email{1,2}_sent_at` falhe (crash entre `createBroadcast` e a
+ * escrita), a entrada nunca entra num lote novo no dia seguinte.
+ *
+ * Diferente de `findKitLotForEntry` (que devolve só o MAIS RECENTE), varre
+ * todos — um lote recriado/cancelado mais novo não pode esconder um lote
+ * anterior que de fato enviou. Lote `pending` sem `broadcast_id` não conta:
+ * é a janela de retry do mesmo dia (`decideLotReconciliation`), e contá-lo
+ * aqui prenderia a entrada pra sempre depois de uma falha de criação.
+ *
+ * @pure
+ */
+export function hasConfirmedKitLotForEntry(
+  lots: readonly OnboardingKitLot[],
+  kind: OnboardingKitLotKind,
+  subscriptionId: string,
+): OnboardingKitLot | null {
+  for (const lot of lots) {
+    if (lot.kind !== kind) continue;
+    if (lot.broadcast_id == null || lot.status === "cancelled") continue;
+    if (!lot.recipient_subscription_ids.includes(subscriptionId)) continue;
+    return lot;
+  }
+  return null;
+}
+
+/**
+ * #9014: aplica o estado de um lote Kit de e-mail 1/2 nas entries do store —
+ * a peça que faltava pra `buildRunPlan` (que decide "e-mail N pendente" por
+ * `email{N}_sent_at == null`) enxergar o que o Kit já enviou. Sem isto a
+ * mesma pessoa recebia o e-mail 1 num lote novo TODO DIA, e a régua
+ * (`reguaAnchorSec` = `email1_sent_at`) nunca ancorava, então os e-mails 2/3
+ * nunca saíam.
+ *
+ *   - Lote confirmado (`created`/`scheduled`/`completed` com `broadcast_id`):
+ *     grava `email{N}_sent_at` (= `send_at` do broadcast, ou `nowIso`) e
+ *     `email{N}_kit_lot_id` em cada destinatário cujo campo ainda é `null` —
+ *     nunca sobrescreve um envio já registrado (idempotente em reconcile). No
+ *     e-mail 1 grava também `email1_transport = "kit"` (#9015).
+ *   - Lote `cancelled`: desfaz a marcação SÓ nas entries cujo
+ *     `email{N}_kit_lot_id` aponta pra este lote — a entrada volta a ser
+ *     devida e é replanejada (mesma semântica de #8979: cancelado não conta).
+ *   - `pending`/`email3`: no-op (e-mail 3 tem estado próprio, fora do escopo).
+ *
+ * Muta `entries` e devolve quantas foram tocadas.
+ *
+ * @pure (sem I/O — só muta o objeto recebido)
+ */
+export function applyKitLotToEntries(
+  entries: Record<string, OnboardingEntry>,
+  lot: OnboardingKitLot,
+  nowIso: string,
+): number {
+  if (lot.kind === "email3") return 0;
+  const sentField = lot.kind === "email1" ? "email1_sent_at" : "email2_sent_at";
+  const lotField = lot.kind === "email1" ? "email1_kit_lot_id" : "email2_kit_lot_id";
+  let touched = 0;
+
+  if (lot.status === "cancelled") {
+    for (const subId of lot.recipient_subscription_ids) {
+      const entry = entries[subId];
+      if (!entry || entry[lotField] !== lot.lot_id) continue;
+      entry[sentField] = null;
+      delete entry[lotField];
+      if (lot.kind === "email1" && entry.email1_transport === "kit") delete entry.email1_transport;
+      touched++;
+    }
+    return touched;
+  }
+
+  if (!CONFIRMED_LOT_STATUSES.has(lot.status) || lot.broadcast_id == null) return 0;
+  const sentAt = lot.send_at ?? nowIso;
+  for (const subId of lot.recipient_subscription_ids) {
+    const entry = entries[subId];
+    if (!entry || entry[sentField] != null) continue;
+    entry[sentField] = sentAt;
+    entry[lotField] = lot.lot_id;
+    if (lot.kind === "email1") entry.email1_transport = "kit";
+    touched++;
+  }
+  return touched;
 }
 
 /** Nome da tag Kit dedicada ao lote — 1:1 com `lot_id`, nunca reusada. */

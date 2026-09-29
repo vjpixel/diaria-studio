@@ -90,11 +90,10 @@ export interface OnboardingTransactionalStepInfo {
    *  ainda não enviado. Sem ramo Kit aqui — não porque #7922 exclua
    *  email1/email2 (`OnboardingKitLotKind` cobre os 3: `email1`, `email2`,
    *  `email3`, e `onboarding-kit-transport-run.ts` monta lotes pros 3), mas
-   *  porque nenhum produtor grava de volta na `OnboardingEntry` o estado de
-   *  um lote Kit de email1/email2 — só o e-mail 3 tem essa reconciliação
-   *  aqui (`findKitLotForEntry`, ver `buildEmail3Info`). Sem esse produtor,
-   *  não há dado Kit pra ler pros passos 1/2, independente do que #7922
-   *  já transporte. */
+   *  porque desde o #9014 o executor Kit grava `email{1,2}_sent_at` direto
+   *  na `OnboardingEntry` (via `applyKitLotToEntries`) — `sentAt` já cobre o
+   *  envio Kit, e o lote fica em `email{1,2}_kit_lot_id`. Só o e-mail 3
+   *  reconcilia pelo lote aqui (`findKitLotForEntry`, ver `buildEmail3Info`). */
   brevoMessageId: string | null;
 }
 

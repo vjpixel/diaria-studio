@@ -131,6 +131,30 @@ export interface OnboardingEntry {
    * `=== undefined` de `== null` sem que a diferença exista.
    */
   seeded_by?: string;
+  /**
+   * #9015: proveniência EXPLÍCITA da escada — qual transporte é dono do
+   * e-mail 1 (e, por consequência, do e-mail 2: "termina no transporte onde
+   * começou"). Gravado no momento do envio (`applySendResult` → `"brevo"`,
+   * `applyKitLotToEntries` → `"kit"`) e da semeadura (seeds são sempre
+   * continuação da escada Brevo → `"brevo"`).
+   *
+   * Antes a proveniência era INFERIDA de `email1_brevo_id != null`, o que
+   * errava para entradas semeadas (`email1_brevo_id: null` por construção)
+   * e para envios Brevo cujo id veio nulo / foi zerado por
+   * `--cancel-pending` — todas tratadas como "do Kit" no e-mail 2, sem que
+   * nenhum dos dois lados enviasse. Ausente = entrada anterior a este campo;
+   * `ownerTransportFor` resolve isso para `"brevo"` (o Kit nunca gravou
+   * `email1_sent_at` antes do #9014, então todo e-mail 1 legado é Brevo).
+   */
+  email1_transport?: "brevo" | "kit";
+  /**
+   * #9014: `lot_id` do lote Kit que serviu o e-mail 1/2 desta entrada —
+   * gravado junto com `email{1,2}_sent_at` quando o broadcast é confirmado
+   * (`created`/`scheduled`/`completed`), e usado pra desfazer exatamente
+   * essa marcação se o lote for cancelado depois (`--cancel-lot`).
+   */
+  email1_kit_lot_id?: string;
+  email2_kit_lot_id?: string;
 }
 
 export interface OnboardingStore {

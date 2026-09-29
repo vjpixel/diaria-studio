@@ -58,11 +58,19 @@ Mecanicamente, isto significa:
    (Kit) **continuam rodando os dois, sempre, indefinidamente** — não existe
    um "desligar Brevo" neste corte. Uma entrada cujo e-mail 1/2 já saiu pela
    Brevo tem `email{1,2}_brevo_id` preenchido; o executor Kit nunca escreve
-   nesses campos (docstring do módulo, "sem criar outra fonte de verdade") e
-   nunca reprocessa uma entrada que a Brevo já tratou — a decisão de "due"
-   em `onboarding-state.ts` é por TEMPO (âncora + dias), não por transporte,
-   então uma entrada com `email1_sent_at` preenchido nunca aparece de novo
-   como candidata a e-mail 1 em nenhum dos dois executores.
+   nesses campos e nunca reprocessa uma entrada que a Brevo já tratou — a
+   decisão de "due" em `onboarding-state.ts` é por TEMPO (âncora + dias),
+   não por transporte, então uma entrada com `email1_sent_at` preenchido
+   nunca aparece de novo como candidata a e-mail 1 em nenhum dos dois
+   executores. **Isso só vale porque, desde o #9014, o executor Kit também
+   grava `email{1,2}_sent_at`** (+ `email{1,2}_kit_lot_id`) quando o
+   broadcast do lote é confirmado (`persistLotUpdate` →
+   `applyKitLotToEntries`, sob o mesmo lock do lote; lote cancelado desfaz a
+   marcação). Antes disso o Kit só registrava `kit_transport.lots` e a mesma
+   pessoa entrava num lote de e-mail 1 novo todo dia. Como defesa extra,
+   `filterKitPlanForBrevoInFlight` recebe os lotes e pula
+   (`kit_lot_existente`) qualquer entrada já presente num lote confirmado da
+   mesma etapa, de qualquer dia.
 3. A identidade "novas entradas" é operacionalizada por **qual dos dois
    scripts processa a detecção do dia primeiro** e cria a entrada no store
    com `email1_sent_at: null` ainda vazio — a partir desse instante, qual
@@ -85,8 +93,14 @@ Mecanicamente, isto significa:
    sempre `"brevo"` (estado atual em produção); ligado, `email1` é sempre
    `"kit"` (por definição, todo candidato de e-mail 1 é uma entrada nova,
    sem histórico em nenhum transporte) e `email2` segue a proveniência do
-   e-mail 1 da MESMA entrada — `email1_brevo_id` preenchido → `"brevo"`
-   (escada começou lá), ausente → `"kit"`. **Os dois executores consultam a
+   e-mail 1 da MESMA entrada — gravada EXPLICITAMENTE em `email1_transport`
+   (#9015: `"brevo"` no envio Brevo e na semeadura, `"kit"` na confirmação
+   do lote Kit). Entrada com `seeded_by` resolve pra `"brevo"` mesmo sem o
+   campo (seeds continuam a escada Brevo e o Kit os exclui da seleção), e
+   e-mail 1 legado sem proveniência gravada também é `"brevo"` (o Kit nunca
+   gravou `email1_sent_at` antes do #9014). A versão anterior inferia o dono
+   de `email1_brevo_id != null` e deixava seeds e envios Brevo com id nulo
+   sem e-mail 2 em nenhum dos lados. **Os dois executores consultam a
    MESMA função, cada um filtrando o próprio plano contra ela** (não duas
    implementações que precisam concordar por acaso):
      - `filterBrevoPlanForKitCutover`, aplicado por `onboarding-welcome-run.ts`

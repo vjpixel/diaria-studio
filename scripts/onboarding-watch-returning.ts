@@ -229,6 +229,8 @@ async function main(): Promise<void> {
       email3_campaign_id: null,
       email3_decided_at: null,
       seeded_by: d.reason,
+      // #9015: seed é continuação da escada Brevo — o e-mail 2 é dela.
+      email1_transport: "brevo",
     };
     store.entries[String(d.kitId)] = nova;
     emailsNoStore.add(d.email.toLowerCase());
