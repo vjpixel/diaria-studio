@@ -58,6 +58,12 @@
 //     então `--title --body SEGREDO` coletava só "--body". Agora o valor é
 //     coletado E revisitado como possível flag (fail-closed).
 //
+// #9064: `gh gist edit` publica descrição (`-d`), nome de arquivo (`-f`,
+// `-a`), conteúdo do arquivo-fonte posicional (`gh gist edit ID arq` ou `-`
+// = stdin) e conteúdo do arquivo de `--add` — antes nem entrava em
+// `isPublishingInvocation`. Posicionais de gist agora vêm de
+// `gistContentSources` (create e edit).
+//
 // Testável sem I/O real: toda leitura de arquivo/stdin é injetada via
 // `deps` — ver `test/gh-wrapper.test.ts`.
 
@@ -68,8 +74,61 @@ const API_FIELD_FLAGS = new Set(["-f", "-F", "--field", "--raw-field"]);
 /** Flag genérica de arquivo-corpo do `gh api` (não é key=value, é path/-). */
 const API_FILE_FLAGS = new Set(["--input"]);
 
-/** Flags de texto público de `gh gist create` (#9055): descrição e nome de arquivo. */
+/** Flags de texto público de `gh gist create`/`edit` (#9055, #9064): descrição e nome de arquivo. */
 const GIST_TEXT_FLAGS = ["-d", "--desc", "-f", "--filename"];
+/**
+ * #9064: flags de `gh gist edit` que carregam valor além das de texto:
+ * `-a`/`--add` (path de arquivo local cujo CONTEÚDO vira um arquivo novo do
+ * gist — e o nome também é público) e `-r`/`--remove` (nome de arquivo a
+ * remover; não publica, mas o valor precisa ser pulado para não virar
+ * posicional).
+ */
+const GIST_EDIT_ADD_FLAGS = ["-a", "--add"];
+const GIST_EDIT_REMOVE_FLAGS = ["-r", "--remove"];
+
+/** Flags com valor em token separado no subcomando de gist (`create` ou `edit`). */
+function gistValueFlags(sub) {
+  const s = new Set(GIST_TEXT_FLAGS);
+  if (sub === "edit") for (const f of [...GIST_EDIT_ADD_FLAGS, ...GIST_EDIT_REMOVE_FLAGS]) s.add(f);
+  return s;
+}
+
+/**
+ * Tokens posicionais de `gh gist create|edit ...` (argv normalizado), pulando
+ * flags e seus valores. Em `create`, todos são arquivos (ou `-` = stdin); em
+ * `edit`, o 1º é o id/url do gist e os demais são o arquivo-fonte cujo
+ * conteúdo substitui o do gist (ou `-` = stdin) — #9064.
+ */
+function gistPositionals(argv) {
+  const valueFlags = gistValueFlags(argv[1]);
+  const toks = argv.slice(2);
+  const out = [];
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (typeof t !== "string") continue;
+    if (t !== "-" && t.startsWith("-")) {
+      if (valueFlags.has(t)) i++;
+      continue;
+    }
+    out.push(t);
+  }
+  return out;
+}
+
+/** Arquivos (ou `-`) cujo conteúdo `gh gist create|edit` publicaria. */
+function gistContentSources(argv) {
+  if (argv[0] !== "gist") return [];
+  const pos = gistPositionals(argv);
+  if (argv[1] === "create") return pos;
+  if (argv[1] === "edit") {
+    const sources = pos.slice(1);
+    for (let i = 2; i < argv.length; i++) {
+      if (GIST_EDIT_ADD_FLAGS.includes(argv[i]) && typeof argv[i + 1] === "string") sources.push(argv[i + 1]);
+    }
+    return sources;
+  }
+  return [];
+}
 
 /** Flags de arquivo (path ou `-` para stdin) em pr/issue/release/gist/review. */
 const NON_API_FILE_FLAGS = new Set(["-F", "--body-file", "--notes-file"]);
@@ -88,7 +147,11 @@ function nonApiBodyFlags(cmd, sub) {
   // (nome do arquivo quando o conteúdo vem de stdin) são texto PÚBLICO do
   // gist — antes eram só pulados como "valor de flag" pelo loop posicional e
   // nunca inspecionados. Fail-closed: o nome de arquivo também entra.
+  // #9064: em `gh gist edit`, o path de `-a`/`--add` vira NOME público de
+  // arquivo do gist — o nome é inspecionado aqui e o conteúdo em
+  // `gistContentSources`.
   if (cmd === "gist") for (const f of GIST_TEXT_FLAGS) s.add(f);
+  if (cmd === "gist" && sub === "edit") for (const f of GIST_EDIT_ADD_FLAGS) s.add(f);
   return s;
 }
 
@@ -147,6 +210,11 @@ function shortValueFlagsFor(cmd, sub) {
     s.add("-d");
     s.add("-f");
   }
+  // #9064: `-aPATH`/`-rNOME` colados em `gh gist edit`.
+  if (cmd === "gist" && sub === "edit") {
+    s.add("-a");
+    s.add("-r");
+  }
   return s;
 }
 
@@ -166,6 +234,7 @@ function longValueFlagsFor(cmd, sub, isApi) {
   } else {
     for (const f of nonApiBodyFlags(cmd, sub)) s.add(f);
     for (const f of NON_API_FILE_FLAGS) s.add(f);
+    if (cmd === "gist") for (const f of gistValueFlags(sub)) s.add(f); // #9064: inclui `--remove`
   }
   return s;
 }
@@ -322,7 +391,7 @@ export function isPublishingInvocation(rawArgv) {
   }
   if (cmd === "pr" && sub === "merge") return true; // #9020: --body/-b, --subject/-t viram mensagem de commit pública
   if (cmd === "release" && ["create", "edit"].includes(sub)) return true;
-  if (cmd === "gist" && sub === "create") return true;
+  if (cmd === "gist" && (sub === "create" || sub === "edit")) return true; // #9064: edit publica desc/nome/conteúdo
   if (cmd === "api") {
     const hasWriteMethod = argv.some(
       (a, i) =>
@@ -352,17 +421,7 @@ export function requiresStdin(rawArgv) {
       if (m && m[1] === "-") return true;
     }
   }
-  if (argv[0] === "gist" && argv[1] === "create") {
-    const toks = argv.slice(2);
-    for (let i = 0; i < toks.length; i++) {
-      const t = toks[i];
-      if (t === "-") return true;
-      if (t.startsWith("-")) {
-        if (GIST_TEXT_FLAGS.includes(t)) i++;
-        continue;
-      }
-    }
-  }
+  if (gistContentSources(argv).includes("-")) return true;
   return false;
 }
 
@@ -421,17 +480,7 @@ export function collectTextsToCheck(rawArgv, deps = {}) {
     }
   }
 
-  if (argv[0] === "gist" && argv[1] === "create") {
-    const toks = argv.slice(2);
-    for (let i = 0; i < toks.length; i++) {
-      const t = toks[i];
-      if (t !== "-" && t.startsWith("-")) {
-        if (GIST_TEXT_FLAGS.includes(t)) i++;
-        continue;
-      }
-      texts.push(resolveFileOrStdin(t));
-    }
-  }
+  for (const src of gistContentSources(argv)) texts.push(resolveFileOrStdin(src));
 
   return texts;
 }
