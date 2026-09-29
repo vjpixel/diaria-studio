@@ -458,8 +458,10 @@ function main(): void {
   const result = filterSubscriberReplies(threads);
   console.log(JSON.stringify(result, null, 2));
   if (result.replies.length > 0) {
+    // #8997: as duas contagens são mutuamente exclusivas (trivial tem
+    // prioridade quando ambas batem) — nunca somam mais que result.replies.length.
     const trivialCount = result.replies.filter((r) => r.trivial).length;
-    const alreadyRepliedCount = result.replies.filter((r) => r.alreadyRepliedByEditor).length;
+    const alreadyRepliedCount = result.replies.filter((r) => !r.trivial && r.alreadyRepliedByEditor).length;
     const draftable = result.replies.filter((r) => !r.trivial && !r.alreadyRepliedByEditor);
     console.error(
       `\n📬 ${result.replies.length} de ${result.total} thread(s) são respostas de assinante — rascunhar resposta pessoal (NUNCA enviar):`,
