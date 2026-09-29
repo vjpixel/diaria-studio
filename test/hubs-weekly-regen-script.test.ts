@@ -119,11 +119,16 @@ describe("planAllHubs lê existing/currentUpdatedDate do hubsDir passado (#9019)
   let staleDir: string; // simula ROOT (checkout compartilhado) defasado vs origin/master
   let freshDir: string; // simula workRoot, criado a partir de origin/master
 
-  // Post cujo título casa QUALQUER pattern (regex vazia — mesmo fallback que
-  // `planAllHubs` usa pra um slug de teste fora de `HUB_KEYWORD_PATTERNS`),
-  // datado bem antes de "today" pra forçar `candidate = coverageDate` em
-  // `planHubRegen` (gapDays estoura o teto) — só assim o `max()` contra um
-  // `currentUpdatedDate` desatualizado regride de verdade, em vez de o
+  // `SLUG` não existe em `HUB_KEYWORD_PATTERNS` (é um slug de teste) — por
+  // isso o pattern precisa ser injetado explicitamente via o 5º parâmetro
+  // de `planAllHubs` (#9019, review PR #9047 finding 4: nenhum fallback
+  // silencioso "casa tudo" pra slug sem pattern registrado). Regex vazia
+  // casa qualquer título.
+  const TEST_PATTERNS: Record<string, RegExp> = { [SLUG]: /(?:)/ };
+
+  // Post datado bem antes de "today" pra forçar `candidate = coverageDate`
+  // em `planHubRegen` (gapDays estoura o teto) — só assim o `max()` contra
+  // um `currentUpdatedDate` desatualizado regride de verdade, em vez de o
   // `candidate` (hoje) mascarar a diferença.
   const POST: RawCachedPost = {
     slug: "260115",
@@ -163,7 +168,7 @@ describe("planAllHubs lê existing/currentUpdatedDate do hubsDir passado (#9019)
   });
 
   it("planejar contra o workRoot (fresh) preserva a entrada manual e não regride UPDATED_DATE", () => {
-    const { hubPlans } = planAllHubs(TODAY, freshDir, [POST], [SLUG]);
+    const { hubPlans } = planAllHubs(TODAY, freshDir, [POST], [SLUG], TEST_PATTERNS);
     const { rows, plan } = hubPlans[0];
 
     assert.ok(
@@ -177,7 +182,7 @@ describe("planAllHubs lê existing/currentUpdatedDate do hubsDir passado (#9019)
   });
 
   it("[documentação do bug] planejar contra o checkout defasado perderia a entrada manual e regrediria UPDATED_DATE", () => {
-    const { hubPlans } = planAllHubs(TODAY, staleDir, [POST], [SLUG]);
+    const { hubPlans } = planAllHubs(TODAY, staleDir, [POST], [SLUG], TEST_PATTERNS);
     const { rows, plan } = hubPlans[0];
 
     assert.equal(
@@ -189,5 +194,18 @@ describe("planAllHubs lê existing/currentUpdatedDate do hubsDir passado (#9019)
     // — menor que os "2026-09-20" que já estavam escritos em origin/master,
     // uma regressão real se isto fosse escrito por cima do workRoot (#9019).
     assert.equal(plan.newUpdatedDate, "2026-01-15");
+  });
+
+  it("slug sem pattern registrado lança (nunca casa tudo em silêncio, review PR #9047 finding 4)", () => {
+    assert.throws(
+      () => planAllHubs(TODAY, freshDir, [POST], [SLUG], {}),
+      /nenhum pattern registrado para o slug/,
+    );
+  });
+
+  it("hubsDir é obrigatório — sem 2º argumento não compila (review PR #9047 finding 3)", () => {
+    // @ts-expect-error hubsDir não tem default — um default de volta pra
+    // HUBS_DIR reintroduziria o bug #9019 em silêncio num call site futuro.
+    assert.throws(() => planAllHubs(TODAY));
   });
 });
