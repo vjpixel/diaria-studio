@@ -42,8 +42,24 @@ export type Verdict =
   | "SOURCE_UNREACHABLE"
   | "INFERRED";
 
+/**
+ * (#8992) Slot do destaque a que o claim pertence — 1|2|3 (D1/D2/D3), ou
+ * `"secondary"` para um claim extraído de um item FORA de D1-D3 (RADAR/USE
+ * MELHOR/LANÇAMENTOS/etc). O prompt do fact-checker foca só em D1-D3, mas na
+ * prática o agente às vezes verifica claims de itens secundários também —
+ * antes disso caía num `destaque: 4` fabricado (rótulo "D4" bogus, edição
+ * nunca tem 4º destaque, #3369). `"secondary"` é o rótulo honesto pro caso
+ * real, em vez de inventar um destaque inexistente.
+ */
+export type ClaimDestaque = number | "secondary";
+
+/** Rótulo de exibição pro gate — "D{n}" pros 3 destaques, "SEC" pra secondary (#8992). */
+export function destaqueLabel(destaque: ClaimDestaque): string {
+  return destaque === "secondary" ? "SEC" : `D${destaque}`;
+}
+
 export interface FactClaim {
-  destaque: number;
+  destaque: ClaimDestaque;
   claim_type: ClaimType;
   text: string;
   context: string;
@@ -184,6 +200,40 @@ export function parseClaimsFromText(text: string): ExtractedClaim[] {
 }
 
 /**
+ * (#8996) Formata a mensagem do gate quando o fact-check NÃO produziu
+ * `fact-check.json` — dois motivos com peso editorial bem diferente, que a
+ * mensagem genérica anterior ("⚠️ Fact-check indisponível: {motivo}") não
+ * distinguia:
+ *
+ * - `networkError: true` — o dispatch do subagente `fact-checker` falhou por
+ *   erro transitório de API/rede (ex: `API Error: Can't reach the API server
+ *   (ENOTFOUND)`, achado ao vivo edição 260929) DEPOIS do orchestrator já ter
+ *   tentado 1 retry automático (§4c.6 do playbook) — o fact-check
+ *   simplesmente NUNCA RODOU. Mensagem mais forte, explícita sobre a causa,
+ *   pra não ser confundida com "rodou e não achou nada preocupante".
+ * - `networkError: false` (default) — pré-condição não satisfeita (arquivo
+ *   ausente, Stage 2 incompleto) ou qualquer outro motivo não-rede: mantém o
+ *   texto genérico de sempre (comportamento pré-#8996 preservado).
+ *
+ * Em ambos os casos o fact-check continua sendo SÓ INFORMATIVO — nunca
+ * bloqueia o gate (decisão final é sempre do editor, mesmo padrão de
+ * `{fact_check_block}` no restante do playbook).
+ */
+export function formatFactCheckUnavailableMessage(
+  reason: string,
+  opts: { networkError?: boolean } = {},
+): string {
+  if (opts.networkError) {
+    return (
+      `❌ Fact-check NÃO RODOU (erro de rede/API, #8996): ${reason} — nenhuma verificação de ` +
+      `claims foi feita nesta edição, mesmo após retry automático. Verificar claims manualmente ` +
+      `antes de aprovar o gate, ou re-rodar o fact-checker quando a rede estabilizar.`
+    );
+  }
+  return `⚠️ Fact-check indisponível: ${reason}`;
+}
+
+/**
  * Formata a seção de fact-check para o gate do Stage 4.
  * Retorna string multi-linha para exibição no terminal.
  *
@@ -223,7 +273,7 @@ export function formatGateSummary(result: FactCheckResult): string {
   if (divergent.length > 0) {
     lines.push("  ❌ DIVERGÊNCIAS (verificar antes de publicar):");
     for (const c of divergent) {
-      lines.push(`    D${c.destaque} [${c.claim_type}] "${c.text}"`);
+      lines.push(`    ${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}"`);
       if (c.note) lines.push(`       → ${c.note}`);
       if (c.source_text) lines.push(`       Fonte: "${c.source_text}"`);
     }
@@ -237,7 +287,7 @@ export function formatGateSummary(result: FactCheckResult): string {
   if (unsupportedSuperlatives.length > 0) {
     lines.push("  ⚠️  INEDITISMO/SUPERLATIVOS sem confirmação na fonte:");
     for (const c of unsupportedSuperlatives) {
-      lines.push(`    D${c.destaque} "${c.text}" [${c.verdict}]`);
+      lines.push(`    ${destaqueLabel(c.destaque)} "${c.text}" [${c.verdict}]`);
       if (c.note) lines.push(`       → ${c.note}`);
     }
     lines.push("");
@@ -250,7 +300,7 @@ export function formatGateSummary(result: FactCheckResult): string {
   if (notFound.length > 0) {
     lines.push("  ⚠️  Claims não encontrados na fonte primária:");
     for (const c of notFound) {
-      lines.push(`    D${c.destaque} [${c.claim_type}] "${c.text}"`);
+      lines.push(`    ${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}"`);
       if (c.note) lines.push(`       → ${c.note}`);
     }
     lines.push("");
@@ -325,18 +375,21 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
   const claims: FactClaim[] = Array.isArray(obj.claims)
     ? (obj.claims as FactClaim[])
         .filter(
-          // destaque: validar que é um número finito (#2468 finding 2 + code-review).
+          // destaque: validar que é um número finito, OU o literal "secondary"
+          // (#8992 — claim de item fora de D1-D3) (#2468 finding 2 + code-review).
           // O check antigo (`c.destaque` truthy) descartava destaque=0 — bug original.
           // `!= null` corrige isso mas aceitaria "" / NaN de um subagente que alucina
-          // (renderizam como "D"/"DNaN" no gate). FactClaim.destaque é `number`, então
-          // exigir number finito é o fix no nível certo do boundary unknown→FactClaim.
+          // (renderizam como "D"/"DNaN" no gate). FactClaim.destaque é `ClaimDestaque`
+          // (`number | "secondary"`), então exigir number finito OU o literal exato
+          // "secondary" é o fix no nível certo do boundary unknown→FactClaim — qualquer
+          // outra string (ex: "1", alucinação) continua sendo filtrada.
           (c) =>
             c &&
             typeof c === "object" &&
             c.text &&
             c.verdict &&
-            typeof c.destaque === "number" &&
-            Number.isFinite(c.destaque),
+            (c.destaque === "secondary" ||
+              (typeof c.destaque === "number" && Number.isFinite(c.destaque))),
         )
         .map((c) => ({
           ...c,
@@ -515,6 +568,20 @@ function extractEditionId(editionDir: string): string {
 
 async function main(): Promise<void> {
   const { values: args, flags } = parseArgs(process.argv.slice(2));
+
+  // (#8996) Modo utilitário — formata a mensagem "indisponível" do gate de
+  // forma consistente, distinguindo erro de rede (retry já esgotado) do
+  // motivo genérico. Não requer --edition-dir (não faz fact-check nenhum,
+  // só formata texto). Sempre exit 0 — é puro output de string.
+  if (flags.has("unavailable-message")) {
+    if (!args.reason) {
+      console.error("Uso: run-fact-checker.ts --unavailable-message --reason <texto> [--network-error]");
+      process.exit(1);
+    }
+    console.log(formatFactCheckUnavailableMessage(args.reason, { networkError: flags.has("network-error") }));
+    return;
+  }
+
   if (!args["edition-dir"]) {
     console.error("Uso: run-fact-checker.ts --edition-dir data/editions/AAMMDD/");
     process.exit(1);
@@ -607,7 +674,7 @@ async function main(): Promise<void> {
           `\n[run-fact-checker] GATE-BLOCKING (#4361): ${blocking.length} claim(s) NOT_FOUND_IN_SOURCE sem suporte na fonte primária:`,
         );
         for (const c of blocking) {
-          console.error(`  D${c.destaque} [${c.claim_type}] "${c.text}"`);
+          console.error(`  ${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}"`);
           if (c.note) console.error(`     → ${c.note}`);
         }
         console.error(

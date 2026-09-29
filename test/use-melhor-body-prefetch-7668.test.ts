@@ -151,4 +151,45 @@ describe("#7668 checkUseMelhorTempoTitleHeuristicShare — invariant warning-onl
     assert.match(v[0].message, /1 de 3 item/);
     assert.match(v[0].message, /33%/);
   });
+
+  // --- #8992: contagem fica stale após "ajustar" podar itens de USE MELHOR ---
+  describe("#8992: filtra entries cujo URL não está mais em 02-reviewed.md", () => {
+    it("edição podada de 4→1 itens: só o item que sobrou entra na contagem", () => {
+      const ed = editionWithArtifact(
+        JSON.stringify([
+          { source: "title-heuristic", url: "https://a.com/sobrevive" },
+          { source: "title-heuristic", url: "https://a.com/podado-1" },
+          { source: "wordcount", url: "https://a.com/podado-2" },
+          { source: "youtube", url: "https://a.com/podado-3" },
+        ]),
+      );
+      writeFileSync(
+        join(ed, "02-reviewed.md"),
+        "**🛠️ USE MELHOR**\n\n**[Item](https://a.com/sobrevive)** desc (5 min)\n",
+        "utf8",
+      );
+      const v = checkUseMelhorTempoTitleHeuristicShare(ed);
+      assert.equal(v.length, 1);
+      assert.match(v[0].message, /1 de 1 item/, "contagem deve refletir só o item que sobreviveu à poda, não o snapshot original de 4");
+      assert.match(v[0].message, /100%/);
+    });
+
+    it("todos os itens do artifact foram removidos de 02-reviewed.md → sem violação (nada a contar)", () => {
+      const ed = editionWithArtifact(
+        JSON.stringify([{ source: "title-heuristic", url: "https://a.com/removido" }]),
+      );
+      writeFileSync(ed + "/02-reviewed.md", "**🛠️ USE MELHOR**\n\n(seção esvaziada pelo editor)\n", "utf8");
+      assert.deepEqual(checkUseMelhorTempoTitleHeuristicShare(ed), []);
+    });
+
+    it("02-reviewed.md ausente → fallback pro snapshot cru (comportamento pré-#8992 preservado)", () => {
+      const ed = editionWithArtifact(
+        JSON.stringify([{ source: "title-heuristic", url: "https://a.com/x" }, { source: "wordcount", url: "https://a.com/y" }]),
+      );
+      // sem writeFileSync de 02-reviewed.md — ausente de propósito
+      const v = checkUseMelhorTempoTitleHeuristicShare(ed);
+      assert.equal(v.length, 1);
+      assert.match(v[0].message, /1 de 2 item/);
+    });
+  });
 });

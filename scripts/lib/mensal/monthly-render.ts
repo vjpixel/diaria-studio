@@ -821,7 +821,7 @@ export function renderClariceBox(chunk: string, headerLabelText: string, imageUr
  * Box DIVULGAÇÃO. Se a 1ª linha do corpo for uma imagem markdown
  * (`![alt](url)`), ela vira a imagem do topo do box; a linha seguinte segue
  * sendo o título (pedido do editor 25/09/2026, box da
- * imersão 10/10). Sem imagem, comportamento de sempre (1ª linha = título).
+ * imersão 17/10). Sem imagem, comportamento de sempre (1ª linha = título).
  */
 export function renderDivulgacaoBox(chunk: string): string {
   const lines = chunk.split("\n");

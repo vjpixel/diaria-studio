@@ -67,8 +67,15 @@ import {
   extractDestaqueUrls,
   extractPromptUrl,
 } from "../../match-prompts-to-destaques.ts";
-import { urlsMatch } from "../url-utils.ts";
+import { urlsMatch, canonicalize } from "../url-utils.ts";
 import { readDestaqueCount } from "./stage-3.ts";
+import { extractUrlsWithLines } from "../../validate-domains.ts"; // #8993
+import { isNonEditorialHost } from "../ctr-utils.ts"; // #8993
+import {
+  readPastEditionsMd,
+  extractPastUrlsWithOrigin,
+  DEFAULT_PAST_WINDOW,
+} from "../past-editions-extract.ts"; // #8993
 import {
   extractCurrentDeclarationFromMd,
   extractRevealFromFrontmatter,
@@ -366,7 +373,22 @@ function checkEiaCreditSynced(editionDir: string): InvariantViolation[] {
     : fallbackEIA(editionDir);
   const mirror = parseEiaMirrorBlock(mirrorBlock, editionDir);
 
-  const normalize = (s: string) => s.trim().replace(/\s+/g, " ");
+  /**
+   * #8992: falso-positivo recorrente (TODA edição) achado ao vivo na 260929 —
+   * a única diferença entre `real.credit`/`mirror.credit` era pontuação de
+   * separador (vírgula em `01-eia.md` virando travessão em `02-reviewed.md`,
+   * ou vice-versa), nunca o texto do crédito em si. Causa provável: o mirror
+   * block de `02-reviewed.md` passa pelo humanizador + Clarice DEPOIS do
+   * stitch (ver docstring acima — "erosão" já era o risco documentado desde
+   * o #3825), e a normalização de "travessão excessivo" do humanizador (um
+   * dos ~27 padrões da skill `humanizador`) troca `—` por `,` nesse tipo de
+   * legenda curta. Normalizar vírgula/travessão-em/travessão-en pra um único
+   * separador canônico ANTES de comparar reduz esse ruído cosmético sem
+   * mascarar divergência real de conteúdo (a comparação de palavras segue
+   * exata — só o CARACTERE separador é elástico).
+   */
+  const normalizeSeparators = (s: string) => s.replace(/\s*[,—–]\s*/g, " § ");
+  const normalize = (s: string) => normalizeSeparators(s.trim().replace(/\s+/g, " "));
   const normalizeLine = (s?: string) => (s ? normalize(s) : "");
 
   const violations: InvariantViolation[] = [];
@@ -666,7 +688,7 @@ function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[]
 function checkUseMelhorTempoTitleHeuristicShare(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "use-melhor-tempo-source.json");
   if (!existsSync(path)) return [];
-  let entries: { source?: string }[];
+  let entries: { source?: string; url?: string }[];
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (!Array.isArray(parsed)) return [];
@@ -674,6 +696,28 @@ function checkUseMelhorTempoTitleHeuristicShare(editionDir: string): InvariantVi
   } catch {
     return [];
   }
+
+  /**
+   * #8992: `use-melhor-tempo-source.json` só é regravado quando `stitch-newsletter.ts`
+   * roda de novo (Stage 2) — um "ajustar" que poda a seção USE MELHOR no gate do
+   * Stage 4 (ex: 4→1 itens, achado ao vivo edição 260929) não regenera esse
+   * artifact, então a contagem "N de M" fica com M = tamanho ANTES da poda,
+   * relatando itens que nem aparecem mais em 02-reviewed.md. Filtrar `entries`
+   * pelas URLs que ainda constam no documento atual corrige a contagem sem
+   * exigir que o orchestrator dispare uma regeneração completa do stitch só
+   * para atualizar esta instrumentação (warning-only, #7668).
+   */
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  if (existsSync(reviewedPath)) {
+    try {
+      const reviewedMd = readFileSync(reviewedPath, "utf8");
+      entries = entries.filter((e) => !e.url || reviewedMd.includes(e.url));
+    } catch {
+      // fail-soft — se não der pra ler 02-reviewed.md, segue com o snapshot cru
+      // (mesma degradação de antes do #8992, melhor que travar o check).
+    }
+  }
+
   const total = entries.length;
   if (total === 0) return [];
   const heuristic = entries.filter((e) => e.source === "title-heuristic").length;
@@ -1375,6 +1419,104 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
       severity: "warning" as const,
       file: path,
     }));
+}
+
+/**
+ * #8993: URL editorial de `02-reviewed.md` já apareceu numa das últimas
+ * `DEFAULT_PAST_WINDOW` (3) edições publicadas (`data/past-editions.md`) —
+ * violação da regra invariável "sem links repetidos das últimas 3 edições"
+ * (context/editorial-rules.md). Achado real (edição 260929): o editor
+ * inseriu/promoveu um D1 com link que já tinha saído no RADAR da edição
+ * anterior durante o gate do Stage 4 — o dedup por URL só roda no Stage 1
+ * (`dedup.ts`), então um item que entra ou é promovido DEPOIS desse ponto
+ * (edição manual do editor, swap no gate) nunca passa por ele.
+ *
+ * Reusa `extractUrlsWithLines`/`isNonEditorialHost` (mesmo par que
+ * `validate-domain-diversity.ts` usa pra extrair só links EDITORIAIS — exclui
+ * rodapé/crédito de imagem/link de casa, ex: *.diar.ia.br, linkedin.com,
+ * apoia.se) e `canonicalize`/`extractPastUrlsWithOrigin` (mesmos helpers do
+ * dedup de Stage 1, `scripts/dedup.ts`), pra ficar consistente com o que já
+ * é considerado "mesmo link" em todo o resto do pipeline.
+ *
+ * **Severity "warning" — nunca bloqueia** (mesmo padrão de
+ * `has-negative-impact-highlight`/`image-crop-warn` acima): CLAUDE.md proíbe
+ * reverter uma escolha editorial pra satisfazer um lint mecânico sem
+ * primeiro perguntar/investigar (#7401) — um check gate-blocking aqui
+ * forçaria a decisão errada (reverter automaticamente ou travar o Stage 4)
+ * justamente no caso em que o editor decidiu deliberadamente repetir o link
+ * (ex: atualização de uma história em andamento). O warning aparece no
+ * resumo consolidado do gate citando a edição de origem — o editor decide:
+ * mantém (override implícito, aprovando o gate normalmente) ou troca o item.
+ */
+export interface DuplicateUrlMatch {
+  url: string;
+  line: number;
+  originDate: string;
+}
+
+/**
+ * Pure (#8993): compara as URLs editoriais de `reviewedMd` (02-reviewed.md)
+ * contra `pastOrigins` (mapa URL-canônica→data-de-origem, de
+ * `extractPastUrlsWithOrigin`). Separado de `checkNoDuplicateUrlsAgainstPastEditions`
+ * (que só lê os 2 arquivos do disco) pra ser testável sem depender do
+ * `data/past-editions.md` real da máquina — mesmo padrão de
+ * `findImageContentMismatches`/`checkImageContentFresh` acima.
+ */
+export function findDuplicateUrlsAgainstPastEditions(
+  reviewedMd: string,
+  pastOrigins: Map<string, string>,
+): DuplicateUrlMatch[] {
+  if (pastOrigins.size === 0) return [];
+  const matches: DuplicateUrlMatch[] = [];
+  const seenCanonical = new Set<string>(); // 1 match por URL repetida, não por ocorrência
+  for (const { url, line } of extractUrlsWithLines(reviewedMd)) {
+    let host: string;
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      continue; // URL malformada — fora de escopo deste check
+    }
+    if (isNonEditorialHost(host)) continue;
+
+    const canonical = canonicalize(url);
+    const originDate = pastOrigins.get(canonical);
+    if (!originDate || seenCanonical.has(canonical)) continue;
+    seenCanonical.add(canonical);
+    matches.push({ url, line, originDate });
+  }
+  return matches;
+}
+
+function checkNoDuplicateUrlsAgainstPastEditions(editionDir: string): InvariantViolation[] {
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) return [];
+  let md: string;
+  try {
+    md = readFileSync(reviewedPath, "utf8");
+  } catch {
+    return [];
+  }
+
+  const pastEditionsPath = resolve(ROOT, "data", "past-editions.md");
+  const pastMd = readPastEditionsMd(pastEditionsPath);
+  if (!pastMd.trim()) return []; // sem histórico (bootstrap) — nada pra comparar
+
+  const pastOrigins = extractPastUrlsWithOrigin(pastMd, DEFAULT_PAST_WINDOW);
+  const matches = findDuplicateUrlsAgainstPastEditions(md, pastOrigins);
+
+  return matches.map(({ url, line, originDate }) => ({
+    rule: "no-duplicate-urls-vs-past-editions",
+    message:
+      `URL já publicada na edição de ${originDate} (dentro da janela das últimas ` +
+      `${DEFAULT_PAST_WINDOW} edições): ${url}. Regra invariável "sem links repetidos das ` +
+      `últimas 3 edições" (context/editorial-rules.md). Se foi promovido/inserido durante o ` +
+      `gate, o dedup do Stage 1 não viu este link — confirme se a repetição é intencional ` +
+      `(ex: atualização da mesma história) antes de aprovar.`,
+    source_issue: "#8993",
+    severity: "warning" as const,
+    file: reviewedPath,
+    line,
+  }));
 }
 
 /**
@@ -2682,6 +2824,14 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkHasNegativeImpactHighlight,
   },
   {
+    id: "no-duplicate-urls-vs-past-editions",
+    description:
+      "URL editorial de 02-reviewed.md repetida contra as últimas 3 edições (past-editions.md) — dedup do Stage 1 não vê itens inseridos/promovidos no gate (#8993, warning-only)",
+    source_issue: "#8993",
+    stage: 4,
+    run: checkNoDuplicateUrlsAgainstPastEditions,
+  },
+  {
     id: "image-crop-warn",
     description: "revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only)",
     source_issue: "#3951",
@@ -2812,6 +2962,7 @@ export {
   checkNoTrailingEllipsisInvariant,
   checkTitleMentionsIaInvariant,
   checkCaptureFailedSubmissionCount,
+  checkNoDuplicateUrlsAgainstPastEditions,
   checkCropReviewWarnings,
   checkBoxDivulgacaoAltMissing,
   checkCard4x5UploadMismatch,

@@ -202,6 +202,50 @@ describe("checkEiaCreditSynced (#3825)", () => {
     }
   });
 
+  it("#8992: vírgula vs travessão-em como separador (cosmético, humanizador) NÃO falso-positiva", () => {
+    const dir = makeEditionDir();
+    try {
+      // Achado ao vivo (edição 260929): a única diferença era o humanizador
+      // trocando "—" por "," (ou vice-versa) numa legenda curta — mesmo
+      // texto, separador diferente. Nunca deveria acusar.
+      writeEia(dir, "**É IA?**\n\nFoto: João Silva — Getty Images.\n");
+      writeReviewed(dir, "**É IA?**\n\nFoto: João Silva, Getty Images.");
+      assert.deepEqual(
+        checkEiaCreditSynced(dir),
+        [],
+        "separador cosmético (vírgula vs travessão) não deve disparar violation",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#8992: travessão-en vs vírgula (cosmético) também não falso-positiva", () => {
+    const dir = makeEditionDir();
+    try {
+      writeEia(dir, "**É IA?**\n\nFoto: Ana Costa – Unsplash.\n");
+      writeReviewed(dir, "**É IA?**\n\nFoto: Ana Costa, Unsplash.");
+      assert.deepEqual(checkEiaCreditSynced(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#8992: divergência de conteúdo REAL ao redor do separador continua sendo acusada (normalização não mascara diferença de texto)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeEia(dir, "**É IA?**\n\nFoto: João Silva — Getty Images.\n");
+      writeReviewed(dir, "**É IA?**\n\nFoto: Maria Souza, Getty Images.");
+      const violations = checkEiaCreditSynced(dir);
+      assert.ok(
+        violations.some((v) => v.rule === "eia-credit-synced"),
+        "nome do fotógrafo diferente é divergência real, não cosmética — deve acusar",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("sem bloco mirror em 02-reviewed.md (edição legada, stitch não rodou) → []", () => {
     const dir = makeEditionDir();
     try {

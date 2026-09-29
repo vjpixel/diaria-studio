@@ -357,6 +357,33 @@ describe("planAutofixes (#2598)", () => {
     assert.equal(entries.length, 1, "só o DIVERGENT deve ser retornado");
     assert.equal(entries[0].text, "GPT-4o");
   });
+
+  // --- #8992: claim de item fora de D1-D3 (destaque="secondary") ---
+  it("DIVERGENT com destaque='secondary' → skipped_secondary_destaque (mesmo com suggested_fix), nunca applied", () => {
+    const claim = makeClaim({
+      verdict: "DIVERGENT",
+      destaque: "secondary",
+      text: "R$ 49/ano",
+      suggested_fix: "R$ 39/ano",
+      sources: ["newsletter"],
+    });
+    const entries = planAutofixes([claim], null);
+    assert.equal(entries[0].status, "skipped_secondary_destaque");
+    assert.match(entries[0].note ?? "", /fora de D1-D3/);
+  });
+
+  it("destaque='secondary' nunca colide com intentional_error numérico", () => {
+    const claim = makeClaim({
+      verdict: "DIVERGENT",
+      destaque: "secondary",
+      text: "R$ 49/ano",
+      suggested_fix: "R$ 39/ano",
+      sources: ["newsletter"],
+    });
+    // intentional_error no destaque 1 — "secondary" nunca deve casar com isso
+    const entries = planAutofixes([claim], 1);
+    assert.equal(entries[0].status, "skipped_secondary_destaque", "regra de secondary vence — não deve virar skipped_intentional_error");
+  });
 });
 
 // ---------------------------------------------------------------------------
