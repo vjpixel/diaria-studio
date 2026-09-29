@@ -167,12 +167,40 @@ export function findKitLotForEntry(
 }
 
 // ---------------------------------------------------------------------------
-// #9014: gravar de volta na entry o que um lote Kit de e-mail 1/2 enviou
+// #9014/#9059: gravar de volta na entry o que um lote Kit enviou/preparou
 // ---------------------------------------------------------------------------
 
-/** Status de lote que conta como "broadcast confirmado no Kit" — o e-mail
- *  vai sair (scheduled/created com send_at) ou já saiu (completed). */
+/** Status de lote que conta como "broadcast confirmado no Kit" para fins de
+ *  DEDUP (`hasConfirmedKitLotForEntry` usa `broadcast_id != null` e não
+ *  cancelado — inclui `created`). */
 const CONFIRMED_LOT_STATUSES: ReadonlySet<OnboardingKitLotStatus> = new Set(["created", "scheduled", "completed"]);
+
+/**
+ * #9060 item 3: status que autorizam gravar `email{1,2}_sent_at`. `created`
+ * (broadcast em RASCUNHO no Kit — `mapKitBroadcastStatusToLocal("draft")`)
+ * NÃO conta: o e-mail não vai sair sozinho, e ancorar a régua
+ * (`reguaAnchorSec` = `email1_sent_at`) num rascunho faria o e-mail 2/3 sair
+ * pra quem nunca recebeu o 1. Fail-closed: a entrada continua sem
+ * `sent_at`, mas também não entra num lote novo — `hasConfirmedKitLotForEntry`
+ * (dedup) segue contando `created` —, e o próximo `--reconcile` que vir o
+ * broadcast `scheduled`/`completed` grava o envio.
+ */
+const SENT_LOT_STATUSES: ReadonlySet<OnboardingKitLotStatus> = new Set(["scheduled", "completed"]);
+
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/;
+
+/**
+ * #9060 item 2: `true` só para timestamp ISO 8601 completo (data + hora +
+ * fuso) que `Date.parse` aceita. `send_at` vem do Kit sem validação; um valor
+ * não-ISO (ou vazio) gravado em `email1_sent_at` quebraria a âncora da régua
+ * (`reguaAnchorSec` devolve `null` → e-mail 2/3 nunca saem) ou, pior, seria
+ * aceito por `Date.parse` num formato ambíguo dependente de locale.
+ *
+ * @pure
+ */
+export function isIsoTimestamp(value: unknown): value is string {
+  return typeof value === "string" && ISO_TIMESTAMP_RE.test(value) && Number.isFinite(Date.parse(value));
+}
 
 /**
  * Existe algum lote Kit (de QUALQUER dia) desta etapa, com broadcast já
@@ -204,22 +232,39 @@ export function hasConfirmedKitLotForEntry(
 }
 
 /**
- * #9014: aplica o estado de um lote Kit de e-mail 1/2 nas entries do store —
- * a peça que faltava pra `buildRunPlan` (que decide "e-mail N pendente" por
- * `email{N}_sent_at == null`) enxergar o que o Kit já enviou. Sem isto a
- * mesma pessoa recebia o e-mail 1 num lote novo TODO DIA, e a régua
- * (`reguaAnchorSec` = `email1_sent_at`) nunca ancorava, então os e-mails 2/3
- * nunca saíam.
+ * #9014/#9059: aplica o estado de um lote Kit nas entries do store — a peça
+ * que faltava pra `buildRunPlan` enxergar o que o Kit já enviou/preparou. Sem
+ * isto a mesma pessoa entrava num lote NOVO todo dia (e-mail 1/2 por
+ * `email{N}_sent_at == null`; e-mail 3 por `email3_state === "pending"`), e a
+ * régua (`reguaAnchorSec` = `email1_sent_at`) nunca ancorava.
  *
- *   - Lote confirmado (`created`/`scheduled`/`completed` com `broadcast_id`):
- *     grava `email{N}_sent_at` (= `send_at` do broadcast, ou `nowIso`) e
+ * E-mail 1/2:
+ *   - Lote `scheduled`/`completed` com `broadcast_id` (#9060 item 3: `created`
+ *     = rascunho não conta): grava `email{N}_sent_at` (= `send_at` do
+ *     broadcast se for ISO válido — #9060 item 2 —, senão `nowIso`) e
  *     `email{N}_kit_lot_id` em cada destinatário cujo campo ainda é `null` —
  *     nunca sobrescreve um envio já registrado (idempotente em reconcile). No
  *     e-mail 1 grava também `email1_transport = "kit"` (#9015).
  *   - Lote `cancelled`: desfaz a marcação SÓ nas entries cujo
  *     `email{N}_kit_lot_id` aponta pra este lote — a entrada volta a ser
  *     devida e é replanejada (mesma semântica de #8979: cancelado não conta).
- *   - `pending`/`email3`: no-op (e-mail 3 tem estado próprio, fora do escopo).
+ *
+ * E-mail 3 (#9059):
+ *   - Lote `created`/`scheduled`/`completed` com `broadcast_id`: grava
+ *     `email3_state = "campaign_created"` + `email3_decided_at` (= `nowIso`,
+ *     a decisão, não o envio) + `email3_kit_lot_id` SÓ em entries ainda
+ *     `pending` — nunca sobrescreve uma decisão terminal (`skipped_*`) nem uma
+ *     campanha Brevo. `created` conta aqui porque o e-mail 3 é SEMPRE rascunho
+ *     por desenho (aprovação humana pra agendar): o rascunho criado já é o
+ *     estado terminal equivalente ao `campaign_created` da Brevo.
+ *     `email3_campaign_id` (id de campanha BREVO) fica intocado — o broadcast
+ *     Kit mora no lote (`findKitLotForEntry`), e gravar um id Kit ali faria o
+ *     Studio consultar a Brevo com um id que não é dela.
+ *   - Lote `cancelled`: volta `email3_state` a `pending` (e zera
+ *     `email3_decided_at`) SÓ nas entries cujo `email3_kit_lot_id` aponta pra
+ *     este lote.
+ *
+ * `pending` (sem broadcast confirmado): no-op em qualquer etapa.
  *
  * Muta `entries` e devolve quantas foram tocadas.
  *
@@ -230,7 +275,7 @@ export function applyKitLotToEntries(
   lot: OnboardingKitLot,
   nowIso: string,
 ): number {
-  if (lot.kind === "email3") return 0;
+  if (lot.kind === "email3") return applyKitEmail3LotToEntries(entries, lot, nowIso);
   const sentField = lot.kind === "email1" ? "email1_sent_at" : "email2_sent_at";
   const lotField = lot.kind === "email1" ? "email1_kit_lot_id" : "email2_kit_lot_id";
   let touched = 0;
@@ -247,14 +292,44 @@ export function applyKitLotToEntries(
     return touched;
   }
 
-  if (!CONFIRMED_LOT_STATUSES.has(lot.status) || lot.broadcast_id == null) return 0;
-  const sentAt = lot.send_at ?? nowIso;
+  if (!SENT_LOT_STATUSES.has(lot.status) || lot.broadcast_id == null) return 0;
+  const sentAt = isIsoTimestamp(lot.send_at) ? lot.send_at : nowIso;
   for (const subId of lot.recipient_subscription_ids) {
     const entry = entries[subId];
     if (!entry || entry[sentField] != null) continue;
     entry[sentField] = sentAt;
     entry[lotField] = lot.lot_id;
     if (lot.kind === "email1") entry.email1_transport = "kit";
+    touched++;
+  }
+  return touched;
+}
+
+function applyKitEmail3LotToEntries(
+  entries: Record<string, OnboardingEntry>,
+  lot: OnboardingKitLot,
+  nowIso: string,
+): number {
+  let touched = 0;
+  if (lot.status === "cancelled") {
+    for (const subId of lot.recipient_subscription_ids) {
+      const entry = entries[subId];
+      if (!entry || entry.email3_kit_lot_id !== lot.lot_id) continue;
+      entry.email3_state = "pending";
+      entry.email3_decided_at = null;
+      delete entry.email3_kit_lot_id;
+      touched++;
+    }
+    return touched;
+  }
+
+  if (!CONFIRMED_LOT_STATUSES.has(lot.status) || lot.broadcast_id == null) return 0;
+  for (const subId of lot.recipient_subscription_ids) {
+    const entry = entries[subId];
+    if (!entry || entry.email3_state !== "pending") continue;
+    entry.email3_state = "campaign_created";
+    entry.email3_decided_at = nowIso;
+    entry.email3_kit_lot_id = lot.lot_id;
     touched++;
   }
   return touched;
