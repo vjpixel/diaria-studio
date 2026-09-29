@@ -440,10 +440,121 @@ export function buildLinkAssetGroupAssetsPayload(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Capacidade por fieldType na Fase 1 (#9017)
+// ---------------------------------------------------------------------------
+
+/** Máximo de `asset_group_asset` ENABLED por fieldType de texto, derivado de
+ *  `PMAX_TEXT_LIMITS` (fonte única — não duplicar os números). */
+export const PMAX_TEXT_FIELD_MAX: Readonly<Record<TextFieldType, number>> = {
+  HEADLINE: PMAX_TEXT_LIMITS.headline.max,
+  LONG_HEADLINE: PMAX_TEXT_LIMITS.longHeadline.max,
+  DESCRIPTION: PMAX_TEXT_LIMITS.description.max,
+};
+
+export interface TextFieldLinkPlan {
+  fieldType: TextFieldType;
+  /** Quantos recursos novos a Fase 1 vai linkar neste fieldType. */
+  newCount: number;
+  /** ENABLED hoje no grupo neste fieldType (todos os buckets). */
+  existingEnabled: number;
+  /** Dos ENABLED, quantos NÃO são stale (keep + needsReview) — ficam no
+   *  grupo de qualquer jeito, nenhuma fase os remove. */
+  permanent: number;
+  max: number;
+  /** `asset_group_asset` stale deste fieldType que precisam sair NO MESMO
+   *  `assetGroupAssets:mutate` do link (remove+create atômico), porque
+   *  `existingEnabled + newCount > max`. Vazio = cabe sem remover nada — o
+   *  "adicionar antes de remover" original vale. É o MÍNIMO necessário pra
+   *  caber (o resto do stale continua pra Fase 2). */
+  removeInSameMutate: string[];
+}
+
+export type TextLinkPlanResult =
+  | { ok: true; plans: TextFieldLinkPlan[] }
+  | { ok: false; errors: string[]; plans: TextFieldLinkPlan[] };
+
+/**
+ * Planeja o link dos textos novos contra a capacidade REAL do grupo (#9017):
+ * `validateNewTextAssetPlan` só valida o conjunto novo isolado, mas o máximo
+ * do PMax é sobre o que fica ENABLED no grupo — antigos + novos. Com 5 long
+ * headlines / 5 descriptions novos (= máximo) e os antigos ainda linkados,
+ * "linkar tudo antes de remover" estoura o limite e a API rejeita no meio da
+ * Fase 1, deixando o grupo parcialmente trocado.
+ *
+ * Por fieldType:
+ *   - `existingEnabled + newCount <= max` → linka sem remover nada.
+ *   - senão, se `permanent + newCount <= max` → remove o mínimo de stale do
+ *     mesmo fieldType no MESMO mutate (atômico: a API aplica tudo ou nada,
+ *     então o grupo nunca fica abaixo do mínimo nem acima do máximo).
+ *   - senão → inviável (keep/needsReview sozinhos já ocupam a vaga): erro,
+ *     e o caller recusa ANTES de qualquer mutação.
+ *
+ * `skipFieldTypes`: etapas já linkadas numa tentativa anterior (progresso) —
+ * os novos já estão no grupo e contariam como `permanent` (texto
+ * desconhecido → needsReview), o que tornaria um retry falsamente inviável.
+ *
+ * @pure
+ */
+export function planTextFieldLinks(
+  items: readonly AssetGroupAssetItem[],
+  classification: AssetGroupClassification,
+  newCounts: Readonly<Record<TextFieldType, number>>,
+  skipFieldTypes: ReadonlySet<string> = new Set(),
+): TextLinkPlanResult {
+  const plans: TextFieldLinkPlan[] = [];
+  const errors: string[] = [];
+  for (const fieldType of Object.keys(PMAX_TEXT_FIELD_MAX) as TextFieldType[]) {
+    if (skipFieldTypes.has(fieldType)) continue;
+    const newCount = newCounts[fieldType];
+    if (newCount === 0) continue;
+    const max = PMAX_TEXT_FIELD_MAX[fieldType];
+    const existingEnabled = items.filter((i) => i.status === "ENABLED" && i.fieldType === fieldType).length;
+    const staleOfType = classification.stale.filter((i) => i.fieldType === fieldType);
+    const permanent = existingEnabled - staleOfType.length;
+    const overflow = existingEnabled + newCount - max;
+    let removeInSameMutate: string[] = [];
+    if (overflow > 0) {
+      if (permanent + newCount > max) {
+        errors.push(
+          `${fieldType}: ${permanent} recurso(s) não-stale (keep/needsReview) + ${newCount} novo(s) = ${permanent + newCount} > máximo ${max} — ` +
+            "nem removendo todo o stale deste tipo cabe; decidir à mão o que sai antes de rodar --send",
+        );
+      } else {
+        removeInSameMutate = staleOfType.slice(0, overflow).map((i) => i.assetGroupAssetResourceName);
+      }
+    }
+    plans.push({ fieldType, newCount, existingEnabled, permanent, max, removeInSameMutate });
+  }
+  return errors.length === 0 ? { ok: true, plans } : { ok: false, errors, plans };
+}
+
+/** Monta o payload de `assetGroupAssets:mutate` que linka os novos E remove
+ *  os stale indicados NA MESMA requisição (#9017) — `remove` primeiro, depois
+ *  `create`, pra que mesmo um processamento sequencial nunca passe do máximo.
+ *  Sem `partialFailure`, o mutate é atômico (tudo ou nada). Com
+ *  `removeResourceNames` vazio, é idêntico a `buildLinkAssetGroupAssetsPayload`.
+ *  @pure */
+export function buildSwapAssetGroupAssetsPayload(
+  assetGroupResourceName: string,
+  assetResourceNames: readonly string[],
+  fieldType: AssetGroupFieldType,
+  removeResourceNames: readonly string[] = [],
+): { operations: Array<{ remove: string } | { create: { assetGroup: string; asset: string; fieldType: string } }> } {
+  return {
+    operations: [
+      ...buildRemoveAssetGroupAssetsPayload(removeResourceNames).operations,
+      ...buildLinkAssetGroupAssetsPayload(assetGroupResourceName, assetResourceNames, fieldType).operations,
+    ],
+  };
+}
+
 /** Monta o payload de `assetGroupAssets:mutate` (remove) pros
  *  `asset_group_asset` staleados — SEMPRE a última chamada do fluxo (só
  *  depois dos novos estarem `ENABLED` e sem reprovação, sequenciamento da
- *  issue #8550). @pure */
+ *  issue #8550). Exceção (#9017): reusado por
+ *  `buildSwapAssetGroupAssetsPayload` pra remover, junto do link na Fase 1,
+ *  só o mínimo de stale que não cabe ao lado dos novos. @pure */
 export function buildRemoveAssetGroupAssetsPayload(
   assetGroupAssetResourceNames: readonly string[],
 ): { operations: Array<{ remove: string }> } {

@@ -68,8 +68,12 @@
  * ## Fluxo em 2 fases (sequenciamento da issue #8550)
  *
  *   Fase 1 (`--send`, sem `--remove-stale`): cria os textos novos + as
- *   imagens do manifesto, linka tudo ao grupo de recursos. NÃO remove nada
- *   dos antigos.
+ *   imagens do manifesto, linka tudo ao grupo de recursos. Só remove
+ *   antigos onde antigos + novos passariam do máximo do PMax por fieldType
+ *   (#9017 — hoje LONG_HEADLINE e DESCRIPTION, 5 novos cada = máximo): aí o
+ *   mínimo de stale necessário sai NO MESMO `assetGroupAssets:mutate` do
+ *   link (remove+create atômico, `planTextFieldLinks`). O plano é validado
+ *   contra antigos + novos antes de qualquer mutação.
  *
  *   Fase 2 (`--send --remove-stale`, rodado numa invocação SEPARADA
  *   depois de confirmar pela API que os novos estão `ENABLED` e sem
@@ -114,7 +118,8 @@ import {
   validateNewTextAssetPlan,
   buildCreateTextAssetsPayload,
   buildCreateImageAssetPayload,
-  buildLinkAssetGroupAssetsPayload,
+  buildSwapAssetGroupAssetsPayload,
+  planTextFieldLinks,
   buildRemoveAssetGroupAssetsPayload,
   emptySwapProgress,
   parseSwapProgress,
@@ -129,12 +134,13 @@ import {
   type AssetGroupFieldType,
   type SwapProgress,
   type SwapProgressStepKey,
+  type TextFieldLinkPlan,
 } from "./lib/google-ads-asset-group-assets.ts";
 import { refreshGoogleAdsAccessToken, postGoogleAdsWithLoginRetry, DEFAULT_API_VERSION } from "./lib/google-ads-ingest.ts";
 import { authConfigFromEnv } from "./lib/google-ads-conversion-sender.ts";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { latestAcaoAdiadaFor, latestExecutionBlockFor, isAcaoAdiadaAtiva } from "./lib/issue-decisions.ts";
+import { latestAcaoAdiadaFor, isAcaoAdiadaAtiva } from "./lib/issue-decisions.ts";
 
 const DEFAULT_ASSET_GROUP_ID = "6642889160";
 const DEFAULT_PROGRESS_FILE = "_internal/pmax-swap-progress.json";
@@ -159,6 +165,11 @@ const COOLDOWN_ISSUE_NUMBER = 8550;
  * adiamento JÁ CONFIRMADO ainda vale) — aqui o que falhou é a própria
  * confirmação. Bypass explícito pra quem já confirmou manualmente:
  * `--skip-cooldown-check-UNSAFE`.
+ *
+ * #9024 — o fail-closed vale também DEPOIS da leitura: `pedido_em`
+ * inválido ou no futuro → ativo (em `isAcaoAdiadaAtiva` os dois são
+ * fail-open), e um `bloqueio-execucao` posterior ao adiamento NUNCA desarma
+ * o cooldown (lá ele reabre a pergunta; aqui liberaria a execução).
  */
 export function checkSwapCooldown(
   commentsBodies: readonly string[] | null,
@@ -169,8 +180,20 @@ export function checkSwapCooldown(
   }
   const adiada = latestAcaoAdiadaFor(commentsBodies);
   if (!adiada) return { active: false };
-  const blocoMaisRecente = latestExecutionBlockFor(commentsBodies);
-  const active = isAcaoAdiadaAtiva(adiada, { now, blocoMaisRecente });
+  // #9024 — `isAcaoAdiadaAtiva` é fail-OPEN nos casos abaixo (desenhada pra
+  // "posso perguntar de novo?"); aqui `false` libera `--send`, então cada
+  // um deles precisa virar cooldown ATIVO em vez de herdar o `false`.
+  const pedidoEmMs = new Date(adiada.pedido_em).getTime();
+  if (Number.isNaN(pedidoEmMs)) {
+    return { active: true, pedidoEm: adiada.pedido_em, motivo: `pedido_em inválido no marcador acao-adiada ("${adiada.pedido_em}") — fail-closed` };
+  }
+  if (pedidoEmMs > now.getTime()) {
+    return { active: true, pedidoEm: adiada.pedido_em, motivo: `pedido_em no futuro no marcador acao-adiada ("${adiada.pedido_em}") — fail-closed` };
+  }
+  // `blocoMaisRecente` deliberadamente NÃO é repassado: um
+  // `bloqueio-execucao` novo reabre a PERGUNTA no fluxo de desbloqueio, mas
+  // é um motivo a mais para não executar — nunca pode desarmar o cooldown.
+  const active = isAcaoAdiadaAtiva(adiada, { now });
   return { active, pedidoEm: adiada.pedido_em, motivo: adiada.motivo };
 }
 
@@ -421,6 +444,34 @@ export async function main(
     for (const e of textValidation.errors) console.error(`  ✖ ${e}`);
   }
 
+  // Lido já aqui (leitura pura, sem mutação) porque o plano de capacidade
+  // abaixo precisa saber quais etapas já foram linkadas numa tentativa
+  // anterior. O check de fingerprint continua só no caminho --send.
+  let progress: SwapProgress = parseSwapProgress(existsSync(progressFile) ? readFileSync(progressFile, "utf8") : null);
+
+  // #9017 — valida antigos + novos contra o máximo por fieldType ANTES de
+  // qualquer mutação. `validateNewTextAssetPlan` só olha o conjunto novo
+  // isolado; 5 long headlines/descriptions novos (= máximo) mais os antigos
+  // ainda linkados estourariam o limite no meio da Fase 1.
+  const alreadyLinked = new Set(Object.entries(progress.steps).filter(([, st]) => st?.linked).map(([k]) => k));
+  const textLinkPlan = planTextFieldLinks(
+    current.items,
+    classification,
+    { HEADLINE: NEW_HEADLINES.length, LONG_HEADLINE: NEW_LONG_HEADLINES.length, DESCRIPTION: NEW_DESCRIPTIONS.length },
+    alreadyLinked,
+  );
+  const removeInLinkByFieldType = new Map<string, string[]>(textLinkPlan.plans.map((pl: TextFieldLinkPlan) => [pl.fieldType, pl.removeInSameMutate]));
+  for (const pl of textLinkPlan.plans) {
+    const cabe = pl.removeInSameMutate.length === 0;
+    console.log(
+      `[google-ads-swap-asset-group-creatives] capacidade ${pl.fieldType}: ${pl.existingEnabled} ENABLED hoje + ${pl.newCount} novo(s), máx ${pl.max} — ` +
+        (cabe ? "cabe sem remover nada." : `remove ${pl.removeInSameMutate.length} stale no MESMO mutate do link (troca atômica): ${pl.removeInSameMutate.join(", ")}`),
+    );
+  }
+  if (!textLinkPlan.ok) {
+    for (const e of textLinkPlan.errors) console.error(`  ✖ ${e}`);
+  }
+
   let manifest: ImagesManifest | null = null;
   let manifestRawText = "";
   let manifestErrors: string[] = ["--images-manifest não foi passado — imagens novas ainda não existem (ver docstring do módulo)."];
@@ -458,8 +509,8 @@ export async function main(
     return 0;
   }
 
-  if (!textValidation.ok || manifestErrors.length > 0) {
-    console.error("[google-ads-swap-asset-group-creatives] ✖ --send recusado: plano de texto ou imagem tem pendências (ver acima). Nenhuma mutação foi feita.");
+  if (!textValidation.ok || !textLinkPlan.ok || manifestErrors.length > 0) {
+    console.error("[google-ads-swap-asset-group-creatives] ✖ --send recusado: plano de texto, capacidade do grupo ou imagem tem pendências (ver acima). Nenhuma mutação foi feita.");
     return 1;
   }
 
@@ -480,7 +531,7 @@ export async function main(
   // versionado — `_internal/` é sempre gitignored), e é limpo no fim de
   // uma Fase 1 bem-sucedida (não deve sobreviver pra confundir o PRÓXIMO
   // swap, que terá texto/imagem novos).
-  let progress: SwapProgress = parseSwapProgress(existsSync(progressFile) ? readFileSync(progressFile, "utf8") : null);
+  // (`progress` já foi carregado acima, antes do plano de capacidade.)
 
   // #8972 item 3 — o progresso carrega um fingerprint do manifesto de
   // imagens + asset group/customer que ele pertence. Se o arquivo tem
@@ -640,7 +691,11 @@ export async function main(
       console.log(`[google-ads-swap-asset-group-creatives] ↷ ${fieldType}: já linkado numa tentativa anterior (${progressFile}) — pulando.`);
       continue;
     }
-    const linkPayload = buildLinkAssetGroupAssetsPayload(assetGroupResourceName, resourceNames, fieldType);
+    // #9017 — pros fieldTypes em que antigos + novos passariam do máximo, o
+    // mesmo mutate remove o mínimo de stale necessário (atômico). Nos
+    // demais, `removeInSameMutate` é vazio e o payload é só o link.
+    const removeInSameMutate = removeInLinkByFieldType.get(fieldType) ?? [];
+    const linkPayload = buildSwapAssetGroupAssetsPayload(assetGroupResourceName, resourceNames, fieldType, removeInSameMutate);
     const attempt = await postGoogleAdsWithLoginRetry(fetchFn, auth, accessToken, linkMutateUrl, JSON.stringify(linkPayload), `assetGroupAssets:mutate (link ${fieldType})`);
     if ("networkError" in attempt) {
       console.error(`[google-ads-swap-asset-group-creatives] ✖ falha de rede linkando ${fieldType}: ${attempt.networkError}`);
@@ -659,17 +714,23 @@ export async function main(
       console.error(`[google-ads-swap-asset-group-creatives] ✖ assetGroupAssets:mutate (link ${fieldType}) respondeu corpo não-JSON (HTTP ${attempt.res.status})`);
       return 1;
     }
-    const linkedCount = (linkParsed.results ?? []).length;
-    if (linkedCount !== resourceNames.length) {
+    // 1 resultado por operação (remove + create) — confere o total enviado.
+    const confirmedCount = (linkParsed.results ?? []).length;
+    const linkedCount = confirmedCount - removeInSameMutate.length;
+    if (confirmedCount !== linkPayload.operations.length) {
       console.error(
-        `[google-ads-swap-asset-group-creatives] ✖ assetGroupAssets:mutate (link ${fieldType}) confirmou ${linkedCount} de ` +
-          `${resourceNames.length} link(s) pedido(s) — resposta: ${attempt.text.slice(0, 500)}. Estado agora INCONSISTENTE — ` +
+        `[google-ads-swap-asset-group-creatives] ✖ assetGroupAssets:mutate (link ${fieldType}) confirmou ${confirmedCount} de ` +
+          `${linkPayload.operations.length} operação(ões) pedida(s) (${resourceNames.length} link(s) + ${removeInSameMutate.length} remoção(ões)) — resposta: ${attempt.text.slice(0, 500)}. Estado agora INCONSISTENTE — ` +
           "alguns recursos já criados podem estar sem link. Não prossiga sem investigar pela API antes de tentar de novo.",
       );
       return 1;
     }
     saveProgress(fieldType as SwapProgressStepKey, resourceNames, true);
-    console.log(`[google-ads-swap-asset-group-creatives] ✔ ${linkedCount} recurso(s) ${fieldType} linkado(s) ao grupo (confirmado pela resposta).`);
+    console.log(
+      `[google-ads-swap-asset-group-creatives] ✔ ${linkedCount} recurso(s) ${fieldType} linkado(s) ao grupo` +
+        (removeInSameMutate.length > 0 ? ` e ${removeInSameMutate.length} stale removido(s) no mesmo mutate` : "") +
+        " (confirmado pela resposta).",
+    );
   }
 
   // Fase 1 terminou com tudo criado E linkado — o progresso não deve
