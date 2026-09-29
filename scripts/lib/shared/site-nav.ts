@@ -34,6 +34,7 @@ import {
   DIARIA_EIA_URL,
   DIARIA_ARQUIVO_URL,
 } from "../canonical-urls.ts";
+import { SITE_NAV_UTM } from "./utm-registry.ts";
 
 /**
  * Marcador HTML — presente em toda página que já passou por
@@ -68,9 +69,10 @@ interface SiteNavItemDef {
 }
 
 /** UTM fixa de toda travessia cross-host feita a partir do menu global —
- *  registrada como emissor em `utm-registry.ts` (`UTM_EMITTERS`, id
- *  `site-nav`). */
-const NAV_UTM_QUERY = "utm_source=diaria-nav&utm_medium=nav&utm_campaign=global-nav";
+ *  DERIVADA de `SITE_NAV_UTM` (`utm-registry.ts`, emissor `"site-nav"` em
+ *  `UTM_EMITTERS`), nunca um literal solto (regra de manutenção do registry
+ *  — ver `test/utm-registry-4041.test.ts`). */
+const NAV_UTM_QUERY = `utm_source=${SITE_NAV_UTM.source}&utm_medium=${SITE_NAV_UTM.medium}&utm_campaign=${SITE_NAV_UTM.campaign}`;
 
 function crossHostUrl(base: string, path = ""): string {
   const sep = base.includes("?") ? "&" : "?";

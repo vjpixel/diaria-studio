@@ -68,6 +68,7 @@ import { HUB_LOADERS } from "../scripts/build-hub-page.ts";
 import { ENTITY_LOADERS } from "../scripts/build-entity-page.ts";
 import { renderCursosPage, type Course } from "../scripts/build-cursos-page.ts";
 import { renderLivrosPage, type Book } from "../scripts/build-livros-page.ts";
+import { SITE_NAV_UTM, findUtmEmitter } from "../scripts/lib/shared/utm-registry.ts";
 
 describe("renderSiteNav — miolo puro (#8497)", () => {
   it("emite o marcador de presença + os itens esperados (sem 'Retrospectivas' — residue documentado)", () => {
@@ -113,6 +114,23 @@ describe("renderSiteNav — miolo puro (#8497)", () => {
       assert.ok(m, `link pro host ${host} não encontrado`);
       assert.match(m![0], /utm_source=diaria-nav/, `link pro host ${host} sem UTM de nav`);
     }
+  });
+
+  it("UTM de navegação DERIVA de `SITE_NAV_UTM` no registry — não é literal solto (regra do #4041)", () => {
+    const html = renderSiteNav();
+    assert.match(
+      html,
+      new RegExp(
+        // `escHtml` codifica `&` como `&amp;` no atributo href — o formato
+        // "cru" (sem escape) é o que os testes de "item 9" acima já checam.
+        `utm_source=${SITE_NAV_UTM.source}&amp;utm_medium=${SITE_NAV_UTM.medium}&amp;utm_campaign=${SITE_NAV_UTM.campaign}`,
+      ),
+    );
+    const emitter = findUtmEmitter("site-nav");
+    assert.ok(emitter, "emissor 'site-nav' precisa existir em UTM_EMITTERS");
+    assert.equal(emitter!.source, SITE_NAV_UTM.source);
+    assert.equal(emitter!.medium, SITE_NAV_UTM.medium);
+    assert.equal(emitter!.campaignPattern, SITE_NAV_UTM.campaign);
   });
 
   it("links internos (Edições, Apoiar, Assinar) são relativos — sem UTM, mesmo host", () => {
