@@ -531,3 +531,67 @@ describe("matchesIntentionalError (#8952) — reply do Outlook que só cita (blo
     assert.equal(matchesIntentionalError(body, error), false);
   });
 });
+
+describe("matchesIntentionalError (#9021) — correct_value e fallback de contexto também ignoram a citação", () => {
+  const error = {
+    category: "ortografico",
+    location: "destaque 1, parágrafo 2",
+    description: "nome da empresa grafado errado",
+    correct_value: "OpenAI",
+    wrong_value: "OppenAI",
+  };
+
+  it("cenário da issue: 'Obrigado!' + citação Gmail em que OUTRO item grafa 'OpenAI' corretamente → sem crédito", () => {
+    const body = [
+      "Obrigado!",
+      "",
+      "Em qui., 24 de set. de 2026 às 08:00, Pixel <diariaeditor@gmail.com> escreveu:",
+      "> DESTAQUE 1",
+      "> Segundo parágrafo com OppenAI mencionado aqui.",
+      "> DESTAQUE 2",
+      "> A OpenAI lançou um modelo novo.",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, error), false);
+  });
+
+  it("mesma coisa com citação Outlook ('De:'/'Enviado:', sem '>') → sem crédito", () => {
+    const body = [
+      "Valeu!",
+      "",
+      "De: Pixel <diariaeditor@gmail.com>",
+      "Enviado: quinta-feira, 24 de setembro de 2026 08:00",
+      "Assunto: Diar.ia — 24/09",
+      "",
+      "DESTAQUE 2",
+      "A OpenAI lançou um modelo novo.",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, error), false);
+  });
+
+  it("fallback correct+contexto: citação com correct_value não-distintivo + palavra da descrição não dá crédito", () => {
+    const e = { description: "capital do país errada", location: "radar", correct_value: "Brasília" };
+    const body = [
+      "Ótima edição!",
+      "",
+      "Em qui., 24 de set. de 2026 às 08:00, Pixel <diariaeditor@gmail.com> escreveu:",
+      "> RADAR",
+      "> Brasília, a capital do país, sediou o evento.",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, e), false);
+  });
+
+  it("controle: reply própria citando 'OpenAI' antes da citação continua acertando", () => {
+    const body = [
+      "O certo é OpenAI, no D1.",
+      "",
+      "Em qui., 24 de set. de 2026 às 08:00, Pixel <diariaeditor@gmail.com> escreveu:",
+      "> A OpenAI lançou um modelo novo.",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, error), true);
+  });
+
+  it("controle: fallback correct+contexto na reply própria (sem citação) continua acertando", () => {
+    const e = { description: "capital do país errada", location: "radar", correct_value: "Brasília" };
+    assert.equal(matchesIntentionalError("A capital é Brasília, não São Paulo.", e), true);
+  });
+});
