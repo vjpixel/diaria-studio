@@ -60,6 +60,18 @@
  * Recusa por linha: `failed` com contador; após `MAX_FAILED_ATTEMPTS` vira
  * `skipped-failed-permanent`. Falha de rede/`not_configured` não conta tentativa.
  *
+ * ## Recusa permanente x falha transitória (#9022)
+ *
+ * A task roda de HORA em HORA (#8983), então o contador de tentativas é uma
+ * janela de ~`MAX_FAILED_ATTEMPTS` horas. Isso só é aceitável para recusa
+ * PERMANENTE (4xx que não seja 429: payload/token inválido — repetir não muda
+ * o resultado). 5xx e 429 são instabilidade/throttling do lado da Meta: gravam
+ * `failed` SEM incrementar `attempts` (o candidato continua no pool de retry
+ * via índice) e o único teto para eles é a janela de `windowDays` da CAPI —
+ * quando o cadastro sai dela, a própria checagem de janela o registra como
+ * `skipped-out-of-window`. Uma queda de 3h da Meta não vira mais perda
+ * definitiva.
+ *
  * ## Guard de publicação
  *
  * `dryRun` (default do CLI) não faz chamada nenhuma nem toca o índice. Sem
@@ -93,6 +105,15 @@ import { isValidVisitorId } from "./shared/visitor-id.ts"; // #8978
 
 export const META_CONFIRMATION_DEFAULT_WINDOW_DAYS = 7;
 export const META_CONFIRMATION_MAX_FAILED_ATTEMPTS = 3;
+
+/**
+ * #9022: 5xx/429 da Meta = falha transitória (instabilidade/throttling), não
+ * recusa do evento — não consome tentativa. Qualquer outro não-2xx (4xx) é
+ * recusa permanente e segue contando até `MAX_FAILED_ATTEMPTS`.
+ */
+export function isTransientMetaStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
 export const META_CONFIRMATION_EVENT_SOURCE_URL = "https://diar.ia.br/confirmada";
 const EVENT_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,49}$/;
 const REGISTRATION_EVENT_NAME = "CompleteRegistration";
@@ -200,6 +221,8 @@ export interface MetaConfirmationSummary {
   failed: number;
   failedPermanent: number;
   failedIds: number[];
+  /** #9022: subconjunto de `failed` com 5xx/429 — não consumiu tentativa. */
+  transientFailed: number;
   notConfigured: number;
 }
 
@@ -285,6 +308,7 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
     failed: 0,
     failedPermanent: 0,
     failedIds: [],
+    transientFailed: 0,
     notConfigured: 0,
   };
 
@@ -371,6 +395,16 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
       record(cand, { status: "sent", eventId });
     } else if (result.reason === "not_configured") {
       summary.notConfigured++;
+    } else if (result.reason === "meta_error" && isTransientMetaStatus(result.status)) {
+      // #9022: instabilidade/throttling da Meta — grava `failed` pra manter o
+      // candidato no pool de retry, mas SEM incrementar `attempts`. Teto: a
+      // janela de `windowDays` (vira `skipped-out-of-window` ao sair dela).
+      summary.failed++;
+      summary.transientFailed++;
+      summary.failedIds.push(cand.id);
+      const prevAttempts = index[metaIndexKey(cand.id)]?.attempts ?? 0;
+      record(cand, { status: "failed", eventId, attempts: prevAttempts });
+      log(`kit id ${cand.id}: Meta respondeu ${result.status} (transitório) — sem consumir tentativa, reenvia na próxima rodada.`);
     } else if (result.reason === "meta_error") {
       summary.failed++;
       summary.failedIds.push(cand.id);
