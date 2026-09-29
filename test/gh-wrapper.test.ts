@@ -498,14 +498,28 @@ describe("#9030: flag global ANTES do subcomando", () => {
   it("requiresStdin enxerga `--body-file -` com flag global antes", () => {
     assert.ok(requiresStdin(["--repo", "o/r", "pr", "comment", "1", "--body-file", "-"]));
   });
-  it("normalizeArgv descarta só as flags iniciais", () => {
+  it("normalizeArgv desloca as flags iniciais pro fim (não descarta)", () => {
     assert.deepEqual(normalizeArgv(["--repo", "o/r", "pr", "comment", "1", "--body=x"]), [
       "pr",
       "comment",
       "1",
       "--body",
       "x",
+      "--repo",
+      "o/r",
     ]);
+  });
+  it("flag de corpo ANTES do comando continua inspecionada (`gh --body SEGREDO pr comment 1`)", () => {
+    // o cobra repassa flags anteriores ao comando pro subcomando — descartá-las abriria buraco
+    assert.ok(evaluateGhInvocation(["--body", OR_KEY, "pr", "comment", "1"], {}).blocked);
+  });
+  it("flag entre comando e subcomando (`gh pr -R o/r comment 1 --body SEGREDO`)", () => {
+    assert.ok(isPublishingInvocation(["pr", "-R", "o/r", "comment", "1", "--body", "x"]));
+    assert.ok(evaluateGhInvocation(["pr", "-R", "o/r", "comment", "1", "--body", OR_KEY], {}).blocked);
+    assert.ok(evaluateGhInvocation(["issue", "--body", OR_KEY, "comment", "1"], {}).blocked);
+  });
+  it("gh api: `-R o/r` antes de `api` não vira o path posicional", () => {
+    assert.ok(isPublishingInvocation(["-R", "o/r", "api", "repos/o/r/issues/1/comments", "-f", "body=x"]));
   });
   it("leitura com flag global antes continua não publicando", () => {
     assert.equal(isPublishingInvocation(["--repo", "o/r", "pr", "view", "1"]), false);
