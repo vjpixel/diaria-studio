@@ -96,7 +96,7 @@ Audiência detalhada: ver `context/audience-profile.md` (gerado do Beehiiv MCP).
 
 Antes de aprovar o texto final da edição, validar:
 
-- [ ] Prompt de capa: sem resolução em pixels, estilo Van Gogh, 2:1, não menciona Noite Estrelada, múltiplos sujeitos agrupados no terço central (safe-area crop 1:1), figuras em pé com headroom vertical (cabeça não cortada no topo).
+- [ ] Prompt de capa: sem resolução em pixels, estilo Van Gogh, 2:1, não menciona Noite Estrelada, múltiplos sujeitos agrupados no terço central (safe-area crop 1:1), figuras em pé com headroom vertical (cabeça não cortada no topo). Fundo liso/plano (ou impasto contido), nunca "dissolvido em pinceladas" (ver §2, "Evitar fundo/formas dissolvidas em pinceladas", #8989).
 - [ ] Todos os links verificados contra paywall (status `accessible` do verifier).
 - [ ] Todos os links ausentes em `data/past-editions.md`.
 - [ ] Todos os links dentro da janela de datas da edição.
