@@ -308,7 +308,7 @@ _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 _ACTOR = r"(?:outr[oa]s?|overnight|develop|interactive|terceir[oa]s?)"
 _OTHERS_CLAIM = re.compile(
     r"(?P<refs>" + _REF_LIST.pattern + r")"
-    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+(?:\w+\s+){0,4}"
+    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pel[oa]s?)\s+(?:\w+\s+){0,4}"
     + _ACTOR + r"\b",
     re.IGNORECASE,
 )
@@ -340,7 +340,7 @@ _OTHERS_CLAIM_HELD = re.compile(
 )
 _COVERED_BY = re.compile(
     r"(?:cobert\w*|mantid\w*|retid\w*|segurad\w*)\s+"
-    r"(?:por|pelo|pelas)?\s*#(\d+)\b",
+    r"(?:por|pel[oa]s?)?\s*#(\d+)\b",
     re.IGNORECASE,
 )
 
