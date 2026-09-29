@@ -81,7 +81,7 @@ const WRITER_DESTAQUE_SLOT: 1 | 2 | 3 = 1;
 interface EditionSideOutcome {
   /** `baseline`, `candidate` ou `arm:{modelo}[:{effort}]` (#9003). */
   side: string;
-  /** Modelo/effort efetivamente passados ao `claude -p` neste lado (#9003). `undefined` = default do eval ("sonnet"). */
+  /** Modelo/effort efetivamente passados ao `claude -p` neste lado (#9003). `undefined` só em dry-run (execução real exige modelo, #9043 item 6). */
   model?: string;
   effort?: string;
   edition: string;
@@ -268,13 +268,26 @@ export function runPromptRegressionEval(params: {
   const baselineBody = readRef(params.rootDir, params.agent, params.baselineRef);
   // #9003: o frontmatter de cada lado decide `--model`/`--effort`. Quando o chamador injeta
   // só os leitores de CORPO (testes de fluxo sem git real), não há frontmatter a ler: spec
-  // vazio, e `runAgentRepetitions` cai no default. Com leitores reais, falha de leitura LANÇA
-  // (nunca cai em silêncio pro mesmo modelo nos dois lados).
+  // vazio. Com leitores reais, falha de leitura LANÇA (nunca cai em silêncio pro mesmo
+  // modelo nos dois lados). #9043 item 6: spec sem `model` em execução REAL agora LANÇA
+  // aqui (antes caía no default `"sonnet"` de `runAgentRepetitions`) — só o dry-run, que
+  // nunca chama o CLI, aceita spec vazio.
   const bodyReadersInjected = params.readAgentBodyFromDiskFn !== undefined || params.readAgentBodyAtGitRefFn !== undefined;
   const readSpecDisk = params.readAgentModelSpecFromDiskFn ?? (bodyReadersInjected ? (): AgentModelSpec => ({}) : readAgentModelSpecFromDisk);
   const readSpecRef = params.readAgentModelSpecAtGitRefFn ?? (bodyReadersInjected ? (): AgentModelSpec => ({}) : readAgentModelSpecAtGitRef);
   const candidateSpec = readSpecDisk(params.rootDir, params.agent);
   const baselineSpec = readSpecRef(params.rootDir, params.agent, params.baselineRef);
+  if (!params.dryRun) {
+    const missing = [
+      ...(candidateSpec.model ? [] : ["candidato (disco)"]),
+      ...(baselineSpec.model ? [] : [`baseline (${params.baselineRef})`]),
+    ];
+    if (missing.length > 0) {
+      throw new Error(
+        `eval ${params.agent}: modelo não resolvido no frontmatter de ${missing.join(" e ")} — declare \`model:\` no agent (ou injete readAgentModelSpec*Fn em teste); nunca roda num default silencioso (#9043 item 6).`,
+      );
+    }
+  }
 
   const editions: EditionEvalResult[] = params.referenceEditions.map((edition) => {
     const baseline = runSideForEdition({

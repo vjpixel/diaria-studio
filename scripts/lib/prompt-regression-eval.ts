@@ -648,6 +648,16 @@ export function runAgentRepetitions(opts: RunAgentRepetitionsOptions): AgentRunO
   const callFn = opts.callClaudeCliFn ?? callClaudeCli;
   const outcomes: AgentRunOutcome[] = [];
 
+  // #9043 item 6: antes, `model` ausente caía em silêncio no alias `"sonnet"` —
+  // um lado sem frontmatter lido (ou sem `model:`) rodava num modelo que ninguém
+  // escolheu, e baseline/candidato podiam acabar no MESMO modelo sem aviso.
+  // Execução real exige modelo explícito; dry-run não chama o CLI e segue livre.
+  if (!opts.dryRun && !opts.model) {
+    throw new Error(
+      `[prompt-regression-eval] ${opts.agent}: execução real sem modelo resolvido — passe \`model\` (frontmatter do agent ou braço \`--arms\`); nunca cai num default silencioso.`,
+    );
+  }
+
   for (let i = 0; i < opts.repetitions; i++) {
     if (opts.dryRun) {
       outcomes.push({ repetitionIndex: i, dryRun: true, rawText: null, producedOutput: false, verdicts: [], usage: null });
@@ -658,7 +668,7 @@ export function runAgentRepetitions(opts: RunAgentRepetitionsOptions): AgentRunO
     const maxTurns = opts.agent === "writer-destaque" ? WRITER_DESTAQUE_REPLAY_MAX_TURNS : undefined;
     let raw: string;
     try {
-      raw = callFn(prompt, { cwd: opts.cwd, model: opts.model ?? "sonnet", effort: opts.effort, outputFormat: "json", maxTurns });
+      raw = callFn(prompt, { cwd: opts.cwd, model: opts.model, effort: opts.effort, outputFormat: "json", maxTurns });
     } catch (err) {
       // #8405: o erro do subprocesso `claude` tem o stderr/stdout/status
       // enterrados em `error.message` (`Command failed: <cmd + argv>`).

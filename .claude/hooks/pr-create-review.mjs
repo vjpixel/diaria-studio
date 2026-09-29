@@ -671,6 +671,21 @@ export const SELF_REVIEW_MARKER = "<!-- self-review: true -->";
 /** Agente primário do review por PR (nome prefixado pelo plugin — ver #4234). */
 export const REVIEW_AGENT = "pr-review-toolkit:code-reviewer";
 
+/**
+ * Modelo por agente do review, no vocabulário que a ferramenta Agent aceita
+ * (`sonnet`/`opus`/`haiku`/`fable` — nunca ID pinado, nunca `effort`: o Agent
+ * tool não tem parâmetro de effort, #9003 item 4 / #9043). Tabela do #9003
+ * item 3: `code-reviewer` e `silent-failure-hunter` em `opus`; os 3 demais
+ * analisadores em `sonnet`.
+ */
+export const REVIEW_AGENT_MODEL = {
+  "pr-review-toolkit:code-reviewer": "opus",
+  "pr-review-toolkit:silent-failure-hunter": "opus",
+  "pr-review-toolkit:pr-test-analyzer": "sonnet",
+  "pr-review-toolkit:comment-analyzer": "sonnet",
+  "pr-review-toolkit:type-design-analyzer": "sonnet",
+};
+
 /** Analisadores especializados que entram junto SÓ no effort `max` (#4234). */
 export const REVIEW_FLEET_MAX = [
   "pr-review-toolkit:silent-failure-hunter",
@@ -683,11 +698,13 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
   const effortNote =
     effort === "low"
       ? `at LOW effort (overnight token-discount, #2754/#3322): dispatch ONE Agent, subagent_type \`${REVIEW_AGENT}\`, ` +
-        "model:claude-opus-5-5 effort:low explicit (#2019/#8941). The discount is ONE agent instead of the fleet — it is NOT a shallower report: " +
+        `with \`model: "${REVIEW_AGENT_MODEL[REVIEW_AGENT]}"\` explicit (#2019/#9003; the Agent tool takes no effort parameter). The discount is ONE agent instead of the fleet — it is NOT a shallower report: ` +
         "report every finding, including low-severity ones and ones you are unsure about, and do not filter for " +
         "importance or confidence at this stage"
       : `at ULTRACODE / MAXIMUM effort: dispatch the full toolkit fleet IN PARALLEL — \`${REVIEW_AGENT}\` plus ` +
-        `${REVIEW_FLEET_MAX.join(", ")} — each with model:claude-opus-5-5 effort:low explicit (#2019/#8941), then aggregate their findings`;
+        `${REVIEW_FLEET_MAX.join(", ")} — each with its explicit Agent \`model\` (#2019/#9003: ` +
+        [REVIEW_AGENT, ...REVIEW_FLEET_MAX].map((a) => `${a} → "${REVIEW_AGENT_MODEL[a]}"`).join(", ") +
+        `; the Agent tool takes no effort parameter), then aggregate their findings`;
   // O caminho degradado tem que preservar a PROFUNDIDADE pedida, não só existir:
   // sem isto, um `max` que caia no fallback (plugin ausente — justamente sessão
   // cloud / clone fresco) produziria instrução idêntica à de `low`, entregando

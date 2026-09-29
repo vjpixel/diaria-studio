@@ -123,6 +123,8 @@ describe("runPromptRegressionEval — live injetado (#8143, sem spawn real)", ()
         rootDir: root,
         readAgentBodyFromDiskFn: () => "corpo candidato",
         readAgentBodyAtGitRefFn: () => "corpo baseline",
+        readAgentModelSpecFromDiskFn: () => ({ model: "claude-sonnet-5-5", effort: "low" }),
+        readAgentModelSpecAtGitRefFn: () => ({ model: "claude-sonnet-5-5", effort: "low" }),
         callClaudeCliFn: (prompt) => {
           // candidato escreve texto LIMPO; baseline escreve texto com a forma banida —
           // simula uma correção real (o cenário que o eval existe pra detectar ao contrário: aqui é melhoria).
@@ -163,6 +165,8 @@ describe("runPromptRegressionEval — live injetado (#8143, sem spawn real)", ()
         rootDir: root,
         readAgentBodyFromDiskFn: () => "corpo candidato",
         readAgentBodyAtGitRefFn: () => "corpo baseline",
+        readAgentModelSpecFromDiskFn: () => ({ model: "claude-sonnet-5-5", effort: "low" }),
+        readAgentModelSpecAtGitRefFn: () => ({ model: "claude-sonnet-5-5", effort: "low" }),
         callClaudeCliFn: () => JSON.stringify({ usage: { input_tokens: 200, output_tokens: 50 }, num_turns: 3, duration_ms: 999, result: "ok" }),
       });
 

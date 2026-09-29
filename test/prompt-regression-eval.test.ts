@@ -444,6 +444,7 @@ describe("runAgentRepetitions (#8143 item 6 — default dry-run NUNCA spawna cla
         rootDir: dir,
         repetitions: 2,
         dryRun: false,
+        model: "claude-sonnet-5-5",
         callClaudeCliFn: (_prompt, opts) => {
           calls++;
           assert.equal(opts.outputFormat, "json");
@@ -486,6 +487,7 @@ describe("runAgentRepetitions (#8143 item 6 — default dry-run NUNCA spawna cla
         rootDir: dir,
         repetitions: 1,
         dryRun: false,
+        model: "claude-sonnet-5-5",
         callClaudeCliFn: (_prompt, opts) => {
           // #8405 2ª metade: writer-destaque roda com maxTurns elevado
           // (WRITER_DESTAQUE_REPLAY_MAX_TURNS = 40), não o default de 20
@@ -519,6 +521,7 @@ describe("runAgentRepetitions (#8143 item 6 — default dry-run NUNCA spawna cla
         rootDir: dir,
         repetitions: 2,
         dryRun: false,
+        model: "claude-sonnet-5-5",
         callClaudeCliFn: (_prompt, opts) => {
           calls++;
           assert.equal(opts.outputFormat, "json");

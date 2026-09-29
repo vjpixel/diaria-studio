@@ -116,3 +116,21 @@ describe("#9003 — model: pinado por ID aprovado e effort explícito (Haiku ise
     });
   }
 });
+
+/**
+ * #9003 item 5 (resíduo #9043 item 2) — sessões de edição em Sonnet 5.5 `low`
+ * via frontmatter da skill. O override de skill vale até a próxima resposta do
+ * editor: cobre os trechos sem ele (Etapas 1-3 até o gate da Etapa 4; o
+ * dispatch da Etapa 5) e devolve a sessão ao modelo padrão no gate. O perfil
+ * Jev (#8421) espelha `/diaria-edicao` para não confundir o A/B com troca de modelo.
+ */
+describe("#9003 item 5 — skills de edição com model/effort de sessão", () => {
+  for (const skill of ["diaria-edicao", "diaria-edicao-jev", "diaria-5-publicacao"]) {
+    it(`${skill}: model claude-sonnet-5-5 + effort low no frontmatter`, () => {
+      const fm = frontmatter(readFileSync(join(SKILLS_DIR, skill, "SKILL.md"), "utf8"));
+      assert.ok(fm, `${skill}: sem frontmatter`);
+      assert.match(fm!, /^model:\s*claude-sonnet-5-5\s*$/m);
+      assert.match(fm!, /^effort:\s*low\s*$/m);
+    });
+  }
+});
