@@ -1,6 +1,8 @@
 ---
 name: diaria-edicao
 description: Roda as Etapas 1-4 da diar.ia.br (Pesquisa → Revisão). Uso — `/diaria-edicao AAMMDD [--no-gates] [--skip canal[,canal...]]`. Etapas 5-6 (fundidas, #7983) rodam em sessão separada — ver "Fronteira de contexto pós-gate 4" (#6171).
+model: claude-sonnet-5-5
+effort: low
 ---
 
 # /diaria-edicao

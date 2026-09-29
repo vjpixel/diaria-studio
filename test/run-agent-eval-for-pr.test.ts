@@ -24,6 +24,7 @@ import {
   fetchFileContentAtRef,
   addLabel,
   postComment,
+  runEvalsForTriggering,
   type CommandRunner,
   type CommandRunnerResult,
 } from "../scripts/run-agent-eval-for-pr.ts";
@@ -415,5 +416,99 @@ describe("fetchPrBaseSha / gh 2.46.0 (#8403)", () => {
       const { runner } = gh246Runner({ baseSha: bad });
       assert.throws(() => fetchPrBaseSha("8401", runner), /não é um SHA de 40 hex/, `deveria rejeitar ${JSON.stringify(bad)}`);
     }
+  });
+});
+
+describe("--arms no run-agent-eval-for-pr (#9043 item 3)", () => {
+  const agent = PROMPT_EVAL_AGENTS[0];
+  const fakeReport = (arms: PromptRegressionEvalReport["editions"][number]["arms"]): PromptRegressionEvalReport => ({
+    agent,
+    baseline_ref: "origin/master",
+    repetitions: 1,
+    dry_run: false,
+    editions: [
+      {
+        edition: "260101",
+        baseline: { side: "baseline", edition: "260101", testDirName: "b", outcomes: [] },
+        candidate: { side: "candidate", edition: "260101", testDirName: "c", outcomes: [] },
+        deltas: [],
+        arms,
+      },
+    ],
+  });
+
+  it("runEvalsForTriggering repassa `arms` a cada runPromptRegressionEval (antes descartava a flag)", () => {
+    const seen: Array<unknown> = [];
+    const arms = [{ model: "claude-sonnet-5-5", effort: "low" }, { model: "claude-opus-5-5" }];
+    const reports = runEvalsForTriggering({
+      triggering: PROMPT_EVAL_AGENTS.map((a) => ({ agent: a })),
+      referenceEditions: ["260101"],
+      editionsRootDir: "/nao/usado",
+      baselineRef: "origin/master",
+      repetitions: 2,
+      live: true,
+      rootDir: "/nao/usado",
+      arms,
+      runEvalFn: (params) => {
+        seen.push(params);
+        return fakeReport([]);
+      },
+    });
+    assert.equal(seen.length, PROMPT_EVAL_AGENTS.length);
+    for (const p of seen as Array<{ arms?: unknown; dryRun: boolean; repetitions: number }>) {
+      assert.deepEqual(p.arms, arms);
+      assert.equal(p.dryRun, false);
+      assert.equal(p.repetitions, 2);
+    }
+    assert.equal(Object.keys(reports).length, PROMPT_EVAL_AGENTS.length);
+  });
+
+  it("sem --arms, nenhum braço é passado (comportamento anterior preservado)", () => {
+    const seen: Array<{ arms?: unknown; dryRun: boolean }> = [];
+    runEvalsForTriggering({
+      triggering: [{ agent }],
+      referenceEditions: ["260101"],
+      editionsRootDir: "/x",
+      baselineRef: "origin/master",
+      repetitions: 1,
+      live: false,
+      rootDir: "/x",
+      runEvalFn: (params) => {
+        seen.push(params);
+        return fakeReport([]);
+      },
+    });
+    assert.equal(seen[0].arms, undefined);
+    assert.equal(seen[0].dryRun, true);
+  });
+
+  it("o relatório lista o veredito de cada braço (vs baseline)", () => {
+    const md = renderAgentEvalPrReport({
+      prNumber: 1,
+      prUrl: "u",
+      prTitle: "t",
+      triggering: [{ agent, verdict: { agent, bodyChanged: false, modelChanged: true, triggers: true, reason: "model mudou" } }],
+      reports: {
+        [agent]: fakeReport([
+          {
+            arm: { model: "claude-opus-5-5", effort: "low" },
+            outcome: { side: "arm:claude-opus-5-5:low", edition: "260101", testDirName: "a", outcomes: [] },
+            deltas: [{ name: "banned-lexicon", baseline: null, candidate: null, verdict: "improved" }],
+          },
+        ]),
+      },
+      costDeltas: [],
+      mcpApplicable: false,
+      live: true,
+    });
+    assert.match(md, /braço claude-opus-5-5:low \(vs baseline\)/);
+    assert.match(md, /  - banned-lexicon: \*\*improved\*\*/);
+  });
+
+  it("main() lê --arms via parseArms e rejeita --arms sem valor (guard de fonte)", () => {
+    const src = readFileSync(join(ROOT, "scripts", "run-agent-eval-for-pr.ts"), "utf8");
+    assert.match(src, /parseArms\(values\["arms"\]\)/);
+    assert.match(src, /flags\.has\("arms"\)/);
+    assert.match(src, /runEvalsForTriggering\(\{[\s\S]*?\barms,[\s\S]*?\}\)/);
   });
 });

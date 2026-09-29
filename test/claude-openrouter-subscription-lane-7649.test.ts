@@ -153,7 +153,11 @@ describe("claude-delegate.sh — branch de invocação (#7649 item 2)", () => {
   });
 
   it("os dois branches passam --model/--allowedTools/--effort (a única diferença é gateway+budget)", () => {
-    assert.match(sub, /--model "\$MODEL"/);
+    // #9043 item 4: a sentinela "sonnet" só identifica a lane — o `--model`
+    // do elo de assinatura recebe o ID pinado, nunca o alias.
+    assert.match(sub, /--model "\$SUBSCRIPTION_LANE_CLAUDE_MODEL"/);
+    assert.doesNotMatch(sub, /--model "\$MODEL"/);
+    assert.match(src, /SUBSCRIPTION_LANE_CLAUDE_MODEL="claude-sonnet-5-5"/);
     assert.match(sub, /--allowedTools "\$TOOLS"/);
     // #8941: o branch de assinatura usa ATTEMPT_EFFORT (default "low" quando
     // o call site não passou --effort) em vez do EFFORT cru — nenhum pin de

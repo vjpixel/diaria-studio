@@ -1,6 +1,8 @@
 ---
 name: diaria-edicao-jev
 description: Perfil Jev de /diaria-edicao (#8421) — mesmas Etapas 1-4, com todas as jev.features.* ligadas e o Jev DECIDINDO (DIARIA_JEV_PROFILE=all força shadow:false), perfil registrado em _internal/.jev-profile.json para o relatório A/B. Uso — `/diaria-edicao-jev AAMMDD [mesmas flags de /diaria-edicao]`. Termina no fim do Stage 4.
+model: claude-sonnet-5-5
+effort: low
 ---
 
 # /diaria-edicao-jev

@@ -87,6 +87,11 @@
  *   npx tsx scripts/run-agent-eval-for-pr.ts --pr 8200 --live \
  *     --reference-editions 260901,260902,260903
  *
+ *   # braços extras (#9043 item 3, mesmo formato do CLI do eval, #9003):
+ *   # roda o corpo do candidato também nesses modelos/effort, comparados ao baseline:
+ *   npx tsx scripts/run-agent-eval-for-pr.ts --pr 8200 --live \
+ *     --arms claude-sonnet-5-5:low,claude-opus-5-5:low
+ *
  * Sem `--reference-editions`, deriva as `--num-editions` (default 3) mais
  * recentes sob `--editions-dir` (default `data/editions`) que já têm
  * `_internal/01-approved.json` em disco — mesmo espírito de
@@ -104,6 +109,7 @@ import { readCostArtifactFromDisk } from "./lib/edition-cost.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
 import { AGENT_EVAL_LABEL } from "./check-agent-eval-required.ts";
 import { ClaudeCliError, preview } from "./lib/claude-cli-subprocess.ts";
+import { parseArms, type EvalArm } from "./lib/prompt-regression-eval.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DEFAULT_NUM_EDITIONS = 3;
@@ -399,6 +405,13 @@ export function renderAgentEvalPrReport(input: AgentEvalPrReportInput): string {
         for (const d of e.deltas) {
           lines.push(`- ${d.name}: **${d.verdict}**`);
         }
+        // #9043 item 3: braços extras (`--arms`) — cada um comparado ao baseline.
+        for (const a of e.arms ?? []) {
+          lines.push(`- braço ${a.arm.model}${a.arm.effort ? `:${a.arm.effort}` : ""} (vs baseline):`);
+          for (const d of a.deltas) {
+            lines.push(`  - ${d.name}: **${d.verdict}**`);
+          }
+        }
       }
       const costRows = input.costDeltas.filter((c) => c.agent === t.agent && c.edition === e.edition);
       for (const c of costRows) {
@@ -425,6 +438,47 @@ export function renderAgentEvalPrReport(input: AgentEvalPrReportInput): string {
 }
 
 // ---------------------------------------------------------------------------
+// Execução do eval por agent — injetável pra teste (#9043 item 3)
+// ---------------------------------------------------------------------------
+
+export interface RunEvalsForTriggeringParams {
+  triggering: Array<{ agent: PromptEvalAgent }>;
+  referenceEditions: string[];
+  editionsRootDir: string;
+  baselineRef: string;
+  repetitions: number;
+  live: boolean;
+  rootDir: string;
+  /** Braços extras (`--arms`, #9003) — repassados tal e qual a cada `runPromptRegressionEval`. */
+  arms?: EvalArm[];
+  runEvalFn?: typeof runPromptRegressionEval;
+}
+
+/**
+ * Roda `runPromptRegressionEval` pra cada agent triado. #9043 item 3: antes o
+ * `--arms` só existia no CLI do eval (`eval-prompt-regression.ts`) — este
+ * wrapper (que é o caminho do gate `agent-eval` na PR) descartava a flag, então
+ * não havia como comparar braços de modelo/effort a partir de uma PR.
+ */
+export function runEvalsForTriggering(params: RunEvalsForTriggeringParams): Partial<Record<PromptEvalAgent, PromptRegressionEvalReport>> {
+  const runEval = params.runEvalFn ?? runPromptRegressionEval;
+  const reports: Partial<Record<PromptEvalAgent, PromptRegressionEvalReport>> = {};
+  for (const t of params.triggering) {
+    reports[t.agent] = runEval({
+      agent: t.agent,
+      referenceEditions: params.referenceEditions,
+      editionsRootDir: params.editionsRootDir,
+      baselineRef: params.baselineRef,
+      repetitions: params.repetitions,
+      dryRun: !params.live,
+      rootDir: params.rootDir,
+      ...(params.arms && params.arms.length > 0 ? { arms: params.arms } : {}),
+    });
+  }
+  return reports;
+}
+
+// ---------------------------------------------------------------------------
 // main()
 // ---------------------------------------------------------------------------
 
@@ -438,9 +492,25 @@ async function main(): Promise<void> {
   const editionsRootDir = resolve(ROOT, values["editions-dir"] ?? "data/editions");
 
   if (!prNumber) {
-    console.error("Uso: run-agent-eval-for-pr.ts --pr <N> [--repetitions N] [--reference-editions AAMMDD,...] [--baseline-ref REF] [--editions-dir path] [--num-editions N] [--live]");
+    console.error("Uso: run-agent-eval-for-pr.ts --pr <N> [--repetitions N] [--reference-editions AAMMDD,...] [--baseline-ref REF] [--editions-dir path] [--num-editions N] [--arms modelo[:effort],...] [--live]");
     process.exit(2);
     return;
+  }
+  let arms: EvalArm[] | undefined;
+  if (flags.has("arms")) {
+    // `--arms` sem valor vira flag booleana no parseArgs — nunca ignorar em silêncio.
+    console.error("[error] --arms precisa de valor (modelo[:effort],...)");
+    process.exit(2);
+    return;
+  }
+  if (values["arms"] !== undefined) {
+    try {
+      arms = parseArms(values["arms"]);
+    } catch (err) {
+      console.error(`[error] ${(err as Error).message}`);
+      process.exit(2);
+      return;
+    }
   }
   if (!Number.isInteger(repetitions) || repetitions < 1) {
     console.error(`[error] --repetitions deve ser um inteiro ≥ 1, recebido "${values["repetitions"]}"`);
@@ -520,18 +590,16 @@ async function main(): Promise<void> {
     return;
   }
 
-  const reports: Partial<Record<PromptEvalAgent, PromptRegressionEvalReport>> = {};
-  for (const t of triggering) {
-    reports[t.agent] = runPromptRegressionEval({
-      agent: t.agent,
-      referenceEditions,
-      editionsRootDir,
-      baselineRef,
-      repetitions,
-      dryRun: !live,
-      rootDir: ROOT,
-    });
-  }
+  const reports = runEvalsForTriggering({
+    triggering,
+    referenceEditions,
+    editionsRootDir,
+    baselineRef,
+    repetitions,
+    live,
+    rootDir: ROOT,
+    arms,
+  });
 
   const costDeltas: CostDelta[] = [];
   if (live) {

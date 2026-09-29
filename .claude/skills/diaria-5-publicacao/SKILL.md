@@ -1,6 +1,8 @@
 ---
 name: diaria-5-publicacao
 description: Roda as Etapas 5 E 6 numa invocação só (#7983) — publicação auto (draft Beehiiv/Kit + LinkedIn/Facebook/Instagram/Threads/X agendados + Brevo diária/Kit diária) seguida do gate humano de agendamento + Schedule + auto-reporter. Uso — `/diaria-5-publicacao [all|newsletter|social] AAMMDD`.
+model: claude-sonnet-5-5
+effort: low
 ---
 
 # /diaria-5-publicacao

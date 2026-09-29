@@ -219,6 +219,11 @@ EFFORT=""
 # filtro de cota free (`filter_out_free_models` só remove sufixo `:free`,
 # que esta sentinela nunca tem).
 SUBSCRIPTION_LANE_MODEL="sonnet"
+# #9043 item 4 (#9003 item 3): a sentinela acima IDENTIFICA a lane e continua
+# a string nua "sonnet" (a unicidade contra ids "provedor/modelo" da OpenRouter
+# depende disso). O que vai no `--model` do `claude -p` é o ID pinado abaixo —
+# nunca o alias, que resolve pelo default embutido no binário do CLI.
+SUBSCRIPTION_LANE_CLAUDE_MODEL="claude-sonnet-5-5"
 is_subscription_lane_model() {
   [ "${1:-}" = "$SUBSCRIPTION_LANE_MODEL" ]
 }
@@ -536,7 +541,7 @@ for MODEL in "${MODELS[@]}"; do
       done
       timeout "$TIMEOUT" \
       claude -p \
-        --model "$MODEL" \
+        --model "$SUBSCRIPTION_LANE_CLAUDE_MODEL" \
         --allowedTools "$TOOLS" \
         ${ATTEMPT_EFFORT:+--effort "$ATTEMPT_EFFORT"} 2> "$ATTEMPT_LOG"
     ))

@@ -12,6 +12,7 @@ import {
   logEffortDecision,
   REVIEW_AGENT,
   REVIEW_FLEET_MAX,
+  REVIEW_AGENT_MODEL,
   SELF_REVIEW_MARKER,
   DEFAULT_EFFORT,
   EFFORT_DIFF_LINE_THRESHOLD,
@@ -512,7 +513,26 @@ describe("buildReviewInstruction (#2754)", () => {
     assert.doesNotMatch(msg, /\/code-review low --comment/);
     assert.match(msg, /dispatch an Agent/i);
     assert.match(msg, /general-purpose/);
-    assert.match(msg, /model:claude-opus-5-5/);
+    // #9043 item 4: o Agent tool só aceita sonnet/opus/haiku/fable e não tem
+    // effort — a instrução antiga ("model:claude-opus-5-5 effort:low") não era executável.
+    assert.match(msg, /model: "opus"/);
+    assert.doesNotMatch(msg, /claude-opus-5-5/);
+    assert.doesNotMatch(msg, /effort:low explicit/);
+    // fallback general-purpose também nomeia o modelo (#2019)
+    assert.match(msg, /general-purpose` with `model: "opus"`/);
+  });
+
+  it("effort=max: code-reviewer/silent-failure-hunter em opus, demais analisadores em sonnet (#9003 item 3, #9043 item 4)", () => {
+    const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "max");
+    assert.match(msg, /pr-review-toolkit:code-reviewer → "opus"/);
+    assert.match(msg, /pr-review-toolkit:silent-failure-hunter → "opus"/);
+    assert.match(msg, /pr-review-toolkit:pr-test-analyzer → "sonnet"/);
+    assert.match(msg, /pr-review-toolkit:comment-analyzer → "sonnet"/);
+    assert.match(msg, /pr-review-toolkit:type-design-analyzer → "sonnet"/);
+    assert.doesNotMatch(msg, /claude-opus-5-5/);
+    for (const m of Object.values(REVIEW_AGENT_MODEL) as string[]) {
+      assert.ok(["sonnet", "opus", "haiku", "fable"].includes(m), `modelo ${m} fora do vocabulário do Agent tool`);
+    }
   });
 
   it("effort=max menciona ULTRACODE / maximum effort", () => {

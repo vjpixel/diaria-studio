@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runPromptRegressionEval } from "../scripts/eval-prompt-regression.ts";
-import { parseAgentModelSpec, parseArms } from "../scripts/lib/prompt-regression-eval.ts";
+import { parseAgentModelSpec, parseArms, runAgentRepetitions } from "../scripts/lib/prompt-regression-eval.ts";
 
 function withTmpDir<T>(prefix: string, fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -90,6 +90,8 @@ describe("runPromptRegressionEval — model/effort do frontmatter e --arms (#900
         rootDir: root,
         readAgentBodyFromDiskFn: () => "corpo candidato",
         readAgentBodyAtGitRefFn: () => "corpo baseline",
+        readAgentModelSpecFromDiskFn: () => ({ model: "claude-opus-5-5", effort: "low" }),
+        readAgentModelSpecAtGitRefFn: () => ({ model: "claude-sonnet-5", effort: "medium" }),
         arms: parseArms("claude-sonnet-5:medium,claude-opus-5-5:low,claude-sonnet-5-5"),
         callClaudeCliFn: (_p, opts) => {
           calls.push(`${opts.model}:${opts.effort ?? "-"}`);
@@ -127,6 +129,106 @@ describe("runPromptRegressionEval — model/effort do frontmatter e --arms (#900
         },
       });
       assert.equal(report.editions[0].arms[0].outcome.outcomes.length, 2);
+    });
+  });
+});
+
+describe("modelo vazio no eval nunca cai em default silencioso (#9043 item 6)", () => {
+  it("execução real com só os leitores de CORPO injetados (spec vazio) lança antes de chamar o CLI", () => {
+    withTmpDir("eval-model-9043-empty-", (root) => {
+      const editionsRootDir = join(root, "data", "editions");
+      writeReferenceEdition(editionsRootDir, "260409");
+      let calls = 0;
+      assert.throws(
+        () =>
+          runPromptRegressionEval({
+            agent: "social-writer",
+            referenceEditions: ["260409"],
+            editionsRootDir,
+            baselineRef: "origin/master",
+            repetitions: 1,
+            dryRun: false,
+            rootDir: root,
+            readAgentBodyFromDiskFn: () => "c",
+            readAgentBodyAtGitRefFn: () => "b",
+            callClaudeCliFn: () => {
+              calls++;
+              return OK;
+            },
+          }),
+        /modelo não resolvido.*candidato.*baseline/,
+      );
+      assert.equal(calls, 0, "nenhuma chamada ao CLI com modelo não escolhido");
+    });
+  });
+
+  it("frontmatter sem `model:` num só lado também lança, nomeando o lado", () => {
+    withTmpDir("eval-model-9043-oneside-", (root) => {
+      const editionsRootDir = join(root, "data", "editions");
+      writeReferenceEdition(editionsRootDir, "260410");
+      assert.throws(
+        () =>
+          runPromptRegressionEval({
+            agent: "social-writer",
+            referenceEditions: ["260410"],
+            editionsRootDir,
+            baselineRef: "origin/master",
+            repetitions: 1,
+            dryRun: false,
+            rootDir: root,
+            readAgentBodyFromDiskFn: () => "c",
+            readAgentBodyAtGitRefFn: () => "b",
+            readAgentModelSpecFromDiskFn: () => ({ model: "claude-sonnet-5-5", effort: "low" }),
+            readAgentModelSpecAtGitRefFn: () => ({ effort: "low" }),
+            callClaudeCliFn: () => OK,
+          }),
+        (err: Error) => /baseline \(origin\/master\)/.test(err.message) && !/candidato/.test(err.message),
+      );
+    });
+  });
+
+  it("runAgentRepetitions em execução real sem `model` lança; nunca repassa o alias \"sonnet\" ao CLI", () => {
+    withTmpDir("eval-model-9043-rep-", (dir) => {
+      const seen: Array<string | undefined> = [];
+      assert.throws(
+        () =>
+          runAgentRepetitions({
+            agent: "social-writer",
+            agentBody: "corpo",
+            input: {},
+            cwd: dir,
+            producedFileAbsPath: join(dir, "out.md"),
+            editionDirForGrading: dir,
+            rootDir: dir,
+            repetitions: 1,
+            dryRun: false,
+            callClaudeCliFn: (_p, opts) => {
+              seen.push(opts.model);
+              return OK;
+            },
+          }),
+        /sem modelo resolvido/,
+      );
+      assert.deepEqual(seen, []);
+    });
+  });
+
+  it("dry-run segue aceitando spec vazio (não chama o CLI)", () => {
+    withTmpDir("eval-model-9043-dry-", (root) => {
+      const editionsRootDir = join(root, "data", "editions");
+      writeReferenceEdition(editionsRootDir, "260411");
+      const report = runPromptRegressionEval({
+        agent: "social-writer",
+        referenceEditions: ["260411"],
+        editionsRootDir,
+        baselineRef: "origin/master",
+        repetitions: 1,
+        dryRun: true,
+        rootDir: root,
+        readAgentBodyFromDiskFn: () => "c",
+        readAgentBodyAtGitRefFn: () => "b",
+      });
+      assert.equal(report.editions[0].baseline.model, undefined);
     });
   });
 });
