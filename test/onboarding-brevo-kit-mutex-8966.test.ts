@@ -141,10 +141,11 @@ describe("filterBrevoPlanForKitCutover (#8966)", () => {
     );
   });
 
-  it("kill switch LIGADO + email2 devido, email1 foi servido pelo KIT (sem email1_brevo_id) — Brevo recusa", () => {
+  it("kill switch LIGADO + email2 devido, email1 foi servido pelo KIT (email1_transport=kit) — Brevo recusa", () => {
     const iniciadoNoKit = entry({
       email1_sent_at: iso(T0), // âncora presente (confirmado), mas via Kit
       email1_brevo_id: null,
+      email1_transport: "kit", // #9015: proveniência explícita, gravada por applyKitLotToEntries
     });
     const plan = buildRunPlan({
       entries: [iniciadoNoKit],
@@ -187,7 +188,7 @@ describe("filterBrevoPlanForKitCutover (#8966)", () => {
 describe("ownerTransportFor (#8966)", () => {
   const novo = entry();
   const iniciadoNaBrevo = entry({ email1_sent_at: iso(T0), email1_brevo_id: "brevo-msg-123" });
-  const iniciadoNoKit = entry({ email1_sent_at: iso(T0), email1_brevo_id: null });
+  const iniciadoNoKit = entry({ email1_sent_at: iso(T0), email1_brevo_id: null, email1_transport: "kit" });
 
   it("kill switch desligado — brevo é dono de tudo, independente do kind ou da entry", () => {
     assert.equal(ownerTransportFor(novo, "email1", false), "brevo");
@@ -199,7 +200,7 @@ describe("ownerTransportFor (#8966)", () => {
     assert.equal(ownerTransportFor(novo, "email1", true), "kit");
   });
 
-  it("kill switch ligado — email2 segue a proveniência do email1 (email1_brevo_id)", () => {
+  it("kill switch ligado — email2 segue a proveniência do email1 (email1_transport, #9015)", () => {
     assert.equal(ownerTransportFor(iniciadoNaBrevo, "email2", true), "brevo");
     assert.equal(ownerTransportFor(iniciadoNoKit, "email2", true), "kit");
   });

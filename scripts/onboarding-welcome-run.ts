@@ -509,6 +509,10 @@ export function applySendResult(
   if (kind === "email1") {
     entry.email1_sent_at = isoNow;
     entry.email1_brevo_id = brevoId;
+    // #9015: proveniência explícita — `brevoId` pode vir null (resposta sem
+    // messageId/batchId) ou ser zerado depois por `--cancel-pending`; o dono
+    // do e-mail 2 não pode depender dele.
+    entry.email1_transport = "brevo";
   } else {
     entry.email2_sent_at = isoNow;
     entry.email2_brevo_id = brevoId;
@@ -842,6 +846,8 @@ async function main(): Promise<void> {
           email3_campaign_id: null,
           email3_decided_at: null,
           seeded_by: p.seeded_by,
+          // #9015: seed é continuação da escada Brevo — o e-mail 2 é dela.
+          email1_transport: "brevo",
         };
       }
       writeStore(store, storePath);

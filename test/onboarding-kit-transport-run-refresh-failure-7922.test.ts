@@ -87,6 +87,10 @@ describe("onboarding-kit-transport-run.ts — falha de consulta nunca autoriza e
               detected_at: new Date(email1SentAtSec * 1000).toISOString(),
               email1_sent_at: new Date(email1SentAtSec * 1000).toISOString(),
               email1_brevo_id: null,
+              // #9015: escada servida pelo Kit (proveniência explícita) — sem
+              // isto o dono do e-mail 2 resolve pra Brevo e o executor Kit
+              // nem chega na seleção que este teste exercita.
+              email1_transport: "kit",
               email2_sent_at: null,
               email2_brevo_id: null,
               email3_state: "pending",

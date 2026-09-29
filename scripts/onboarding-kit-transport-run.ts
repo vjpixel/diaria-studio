@@ -12,11 +12,16 @@
  *
  * **Esta fatia NÃO faz cutover.** `onboarding-welcome-run.ts` continua sendo
  * quem de fato envia (Brevo) — este script roda AO LADO, sobre o MESMO
- * store, sem escrever nos campos que o script Brevo possui
- * (`email{1,2}_sent_at`, `email{1,2}_brevo_id`, `email3_state`/`email3_campaign_id`
- * continuam exclusivos do caminho Brevo). O que este script persiste vive só
- * em `store.kit_transport.lots`, um namespace próprio dentro do MESMO
- * arquivo (issue: "sem criar outra fonte de verdade"). Cutover real (decidir
+ * store, sem escrever nos campos que só o script Brevo possui
+ * (`email{1,2}_brevo_id`, `email3_state`/`email3_campaign_id` continuam
+ * exclusivos do caminho Brevo). O estado dos lotes vive em
+ * `store.kit_transport.lots`, um namespace próprio dentro do MESMO
+ * arquivo (issue: "sem criar outra fonte de verdade"). **Exceção desde
+ * #9014:** quando o broadcast de um lote de e-mail 1/2 é confirmado, este
+ * script grava `email{1,2}_sent_at` + `email{1,2}_kit_lot_id` (e
+ * `email1_transport = "kit"`, #9015) nas entries do lote, sob o mesmo lock
+ * (`persistLotUpdate` → `applyKitLotToEntries`) — sem isso `buildRunPlan`
+ * replanejava o e-mail 1 da mesma pessoa todo dia. Cutover real (decidir
  * QUEM envia de fato, migrar novas entradas, corte explícito Brevo→Kit) é
  * escopo residual — ver corpo do PR.
  *
@@ -79,6 +84,7 @@ import {
   reconcileLotWithKit,
   rebuildLotPlanForRecreate,
   findLatestLotForKindDate,
+  applyKitLotToEntries,
   type OnboardingKitCandidate,
   type OnboardingKitLot,
   type OnboardingKitLotKind,
@@ -283,7 +289,7 @@ export function claimLot(storePath: string, lotPlan: OnboardingKitLotPlan, nowMs
  *  memória com `broadcast_id`/`status`/`last_error`. Relê o disco fresco
  *  antes de escrever (nunca sobrescreve `kit_transport.lots` de outra chave
  *  que uma reconciliação concorrente possa ter tocado nesse meio-tempo). */
-export function persistLotUpdate(storePath: string, lot: OnboardingKitLot): void {
+export function persistLotUpdate(storePath: string, lot: OnboardingKitLot, nowMs: number = Date.now()): void {
   const lockPath = `${storePath}.lock`;
   withFileLock(
     lockPath,
@@ -302,6 +308,12 @@ export function persistLotUpdate(storePath: string, lot: OnboardingKitLot): void
       }
       freshStore.kit_transport ??= { lots: {} };
       freshStore.kit_transport.lots[lot.lot_id] = lot;
+      // #9014: broadcast confirmado → marca `email{1,2}_sent_at` nas entries
+      // do lote (lote cancelado → desfaz). Mesmo lock/snapshot fresco da
+      // escrita do lote, então lote e entries nunca divergem no disco. Cobre
+      // os 3 caminhos que chegam aqui: criação no --send, --reconcile (lote
+      // cuja confirmação só foi vista depois) e --cancel-lot.
+      applyKitLotToEntries(freshStore.entries, lot, new Date(nowMs).toISOString());
       writeStore(freshStore, storePath);
     },
     30_000,
@@ -512,6 +524,9 @@ async function main(): Promise<void> {
       },
     }),
     kitTransportCfg.enabled === true,
+    // #9014: defesa em profundidade — entrada já presente num lote Kit
+    // confirmado de QUALQUER dia anterior nunca entra num lote novo.
+    Object.values(store.kit_transport.lots),
   );
 
   const dateIso = unixSecondsToBrtDate(nowSec);

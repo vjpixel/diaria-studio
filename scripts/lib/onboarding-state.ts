@@ -26,7 +26,7 @@
  */
 
 import type { OnboardingEntry } from "./onboarding-store.ts";
-import { findKitLotForEntry, type OnboardingKitLot } from "./onboarding-kit-transport.ts";
+import { findKitLotForEntry, hasConfirmedKitLotForEntry, type OnboardingKitLot } from "./onboarding-kit-transport.ts";
 
 // ---------------------------------------------------------------------------
 // Snippets (data/snippets/onboarding-{1,2,3}.md)
@@ -580,14 +580,24 @@ export type OnboardingTransport = "brevo" | "kit";
  *   - Kill switch desligado (`kitTransportEnabled === false`, estado atual
  *     em produção): Brevo é dono de tudo — o Kit ainda nem existe pra essas
  *     entradas.
- *   - Kill switch ligado:
- *       - `email1` é SEMPRE o primeiro toque de uma entrada NOVA
- *         (`buildRunPlan` só produz essa ação quando `email1_sent_at ==
- *         null`) — a partir do corte, toda entrada nova é do Kit.
- *       - `email2` é do transporte que já enviou o e-mail 1 desta MESMA
- *         entrada: `email1_brevo_id != null` prova que começou na Brevo
- *         (→ `brevo`); ausência desse id com o e-mail 1 já enviado só pode
- *         significar que foi o Kit quem serviu (→ `kit`).
+ *   - Kill switch ligado — em ordem, a primeira regra que casa vence:
+ *       1. `email1_transport` gravado na entry (#9015) → esse transporte,
+ *          para e-mail 1 e 2. É a proveniência EXPLÍCITA, gravada no envio
+ *          (`applySendResult` → brevo, `applyKitLotToEntries` → kit) e na
+ *          semeadura (→ brevo).
+ *       2. `seeded_by` presente (#9015) → `brevo`. Seeds (#7660/#7674/
+ *          #7675) existem justamente pra Brevo continuar a escada, e o Kit
+ *          os exclui da seleção (`cohort_excluida_manual`) — resolver pra
+ *          `kit` deixava NENHUM lado enviando. Cobre seeds legados sem
+ *          `email1_transport`.
+ *       3. `email1` → `kit`: é SEMPRE o primeiro toque de uma entrada NOVA
+ *          (`buildRunPlan` só produz essa ação quando `email1_sent_at ==
+ *          null`) — a partir do corte, toda entrada nova é do Kit.
+ *       4. `email2` sem proveniência gravada → `brevo`. Até o #9014 o Kit
+ *          nunca gravava `email1_sent_at`, então todo e-mail 1 já enviado
+ *          sem `email1_transport` foi da Brevo. A versão anterior inferia o
+ *          dono de `email1_brevo_id != null` e errava pra seeds e pra envios
+ *          Brevo com id nulo/zerado por `--cancel-pending` (#9015).
  *
  * `email3_campaign` fica FORA de escopo desta decisão (issue #8966 e
  * docs/onboarding-kit-cutover.md §2.4 pedem só e-mail 1/2 — o e-mail 3 já é
@@ -602,8 +612,10 @@ export function ownerTransportFor(
   kitTransportEnabled: boolean,
 ): OnboardingTransport {
   if (!kitTransportEnabled) return "brevo";
+  if (entry.email1_transport != null) return entry.email1_transport;
+  if (entry.seeded_by) return "brevo";
   if (kind === "email1") return "kit";
-  return entry.email1_brevo_id != null ? "brevo" : "kit";
+  return "brevo";
 }
 
 /**
@@ -676,8 +688,8 @@ export function filterBrevoPlanForKitCutover(
         detalhe:
           action.kind === "email1"
             ? "onboarding.kit_transport.enabled=true — candidato novo é servido pelo transporte Kit"
-            : "onboarding.kit_transport.enabled=true — e-mail 1 desta entrada não tem email1_brevo_id " +
-              "(foi servido pelo Kit); a escada termina no transporte onde começou",
+            : "onboarding.kit_transport.enabled=true — e-mail 1 desta entrada foi servido pelo Kit " +
+              "(email1_transport=kit); a escada termina no transporte onde começou",
       });
       continue;
     }
@@ -708,9 +720,20 @@ export function filterBrevoPlanForKitCutover(
  * em docs/onboarding-kit-cutover.md §3 item 2, porque esse dry-run só roda
  * DEPOIS de `kit_transport.enabled` já ter sido ligado no config lido.
  *
+ * **#9014 — `kitLots`:** além do dono, qualquer ação `email1`/`email2` cuja
+ * entrada já esteja num lote Kit CONFIRMADO desta etapa, de qualquer dia
+ * (`hasConfirmedKitLotForEntry`), vira skip `kit_lot_existente`. A dedup de
+ * lote do executor é só por `kind+dateIso` (`findLatestLotForKindDate`) —
+ * sem esta checagem, se a marcação de `email{1,2}_sent_at` falhasse, a mesma
+ * pessoa entraria num lote novo no dia seguinte.
+ *
  * @pure testável sem I/O
  */
-export function filterKitPlanForBrevoInFlight(plan: RunPlanResult, kitTransportEnabled: boolean): RunPlanResult {
+export function filterKitPlanForBrevoInFlight(
+  plan: RunPlanResult,
+  kitTransportEnabled: boolean,
+  kitLots: readonly OnboardingKitLot[] = [],
+): RunPlanResult {
   const actions: RunAction[] = [];
   const skips: RunSkip[] = [...plan.skips];
 
@@ -719,13 +742,25 @@ export function filterKitPlanForBrevoInFlight(plan: RunPlanResult, kitTransportE
       actions.push(action);
       continue;
     }
+    const confirmedLot = hasConfirmedKitLotForEntry(kitLots, action.kind, action.entry.subscription_id);
+    if (confirmedLot != null) {
+      skips.push({
+        entry: action.entry,
+        etapa: action.kind,
+        motivo: "kit_lot_existente",
+        detalhe:
+          `lote Kit ${confirmedLot.status} (${confirmedLot.lot_id}) já enviou esta etapa pra esta entrada — ` +
+          `nunca entra num lote novo (#9014)`,
+      });
+      continue;
+    }
     if (ownerTransportFor(action.entry, action.kind, kitTransportEnabled) !== "kit") {
       skips.push({
         entry: action.entry,
         etapa: action.kind,
         motivo: "escada_iniciada_na_brevo",
         detalhe: kitTransportEnabled
-          ? "email1 desta entrada tem email1_brevo_id — escada começou na Brevo, termina lá"
+          ? "escada desta entrada começou na Brevo (email1_transport=brevo, seed, ou e-mail 1 legado) — termina lá"
           : "onboarding.kit_transport.enabled=false — Brevo é dono de todas as entradas",
       });
       continue;
