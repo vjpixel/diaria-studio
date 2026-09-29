@@ -858,7 +858,7 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   # pro log (stderr), só 1 linha de veredito no stdout.
   echo "$PROMPT" | timeout 1800 claude -p \
     --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)" \
-    --model sonnet --effort low 1>&2
+    --model claude-opus-5-5 --effort low 1>&2
   CLAUDE_RC=$?
   set -e
   echo "[continuo-pr-review] PR #$PR: revisada — veredito/comentário na PR no GitHub" >&2

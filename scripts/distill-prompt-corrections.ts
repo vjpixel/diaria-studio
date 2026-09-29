@@ -353,7 +353,7 @@ function runCritiqueForProposal(proposal: string, opts: RunDistillationOptions, 
   if (!opts.socialCriticBody) return null;
   const prompt = buildCritiquePrompt(opts.socialCriticBody, proposal);
   const callFn = opts.callClaudeCliFn ?? callClaudeCli;
-  return runHolisticCritique(prompt, { cwd: rootDir, model: "sonnet", effort: "low" }, 3, callFn);
+  return runHolisticCritique(prompt, { cwd: rootDir, model: "claude-sonnet-5-5", effort: "low" }, 3, callFn);
 }
 
 /**

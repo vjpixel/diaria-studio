@@ -36,7 +36,7 @@ function frontmatter(content: string): string | null {
 
 function isSonnetModel(value: string): boolean {
   const v = value.trim().replace(/^["']|["']$/g, "");
-  return v === "sonnet" || v === "claude-sonnet-5";
+  return v === "sonnet" || v === "claude-sonnet-5" || v === "claude-sonnet-5-5";
 }
 
 /** Coleta todos os `.md` de agents/ + todos os `SKILL.md` de skills/. */
@@ -86,6 +86,33 @@ describe("#8941 — nenhum pin de Sonnet 5 com effort medium ou sem effort expl�
         "medium",
         `${rel}: Sonnet + effort:medium é exatamente o que o #8941 proíbe`,
       );
+    });
+  }
+});
+
+/**
+ * #9003 item 7 — pins explícitos de versão (sem alias) e effort sempre explícito.
+ * Alias (`sonnet`/`opus`/`haiku`) e pins antigos (`claude-sonnet-5`, `claude-opus-5`)
+ * seguem "latest" ou ficam defasados sem ninguém decidir; todo `model:` deve ser um
+ * dos IDs do mix aprovado. Haiku 4.5 não aceita `effort`, então é isento da exigência.
+ */
+const APPROVED_MODELS = new Set(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5-20251001"]);
+
+describe("#9003 — model: pinado por ID aprovado e effort explícito (Haiku isento)", () => {
+  for (const file of collectFrontmatterFiles()) {
+    const rel = file.slice(ROOT.length + 1);
+    it(`${rel}: model aprovado + effort`, () => {
+      const fm = frontmatter(readFileSync(file, "utf8"));
+      if (!fm) return;
+      const modelMatch = fm.match(/^model:\s*(.+)$/m);
+      if (!modelMatch) return;
+      const model = modelMatch[1].trim().replace(/^["']|["']$/g, "");
+      assert.ok(APPROVED_MODELS.has(model), `${rel}: model "${model}" fora do mix aprovado`);
+      if (model.startsWith("claude-haiku")) {
+        assert.ok(!/^effort:/m.test(fm), `${rel}: Haiku 4.5 não aceita effort`);
+        return;
+      }
+      assert.ok(/^effort:/m.test(fm), `${rel}: ${model} sem effort: explícito`);
     });
   }
 });

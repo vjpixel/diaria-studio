@@ -2,7 +2,7 @@
 name: writer-anual
 description: Etapa 2 da pipeline ANUAL (#7569) — recebe `prioritized.md` aprovado e escreve a retrospectiva completa em `draft.md`, seguindo `context/templates/newsletter-anual.md`. N temas variável (3-7), bloco de aniversário só na rodada de agosto, previsões derivadas apenas do conteúdo do período. Gera os prompts de imagem 2:1 por tema.
 model: claude-opus-5-5
-effort: low
+effort: medium
 tools: Read, Write
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: auto-reporter
 description: Stage final — lê `_internal/issues-draft.json` (gerado por `collect-edition-signals.ts`), dedup contra GitHub issues abertas, e cria/comenta issues diretamente (sem gate humano, #8205). Fecha o loop de observabilidade pós-edição.
-model: haiku
+model: claude-haiku-4-5-20251001
 tools: Read, Write, Bash
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: social-critic
 description: "Critic pass OPCIONAL (#4505 item 3) sobre 03-social.md final — roda depois de toda correção mecânica (fact-check autofix, ajustes de Stage 4) já ter acontecido. Pergunta só se o texto ainda soa como IA (passos 6-7 do rubric de 9 passos da skill humanizador), sem reescrever. Ativado via platform.config.json → social_critic_pass.enabled. Dispatchado no Stage 4, antes do gate humano."
-model: claude-sonnet-5
+model: claude-sonnet-5-5
 effort: low
 tools: Read, Write
 ---
