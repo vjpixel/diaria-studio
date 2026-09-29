@@ -4,12 +4,12 @@
  * Gera o Default Thumbnail Preview da diar.ia.br (1200x630) para upload manual
  * em Beehiiv Settings → Publication → Default Thumbnail Preview.
  *
- * Design: fundo papel #FBFAF6, acento teal #00A0A0, texto ink #171411.
- * Wordmark central "diar.ia.br" com separadores em teal.
- * Subtítulo: tagline oficial plural (#3705), em 2 linhas, sans, substituindo
- * o antigo "newsletter diária de IA" genérico — a tagline já comunica
- * "newsletter diária" ("5 minutos diários..."), então mantinha as duas seria
- * redundante (decisão de design documentada no PR #3705).
+ * Design (DS oficial, vjpixel/diaria-design — banners facebook/linkedin-cover):
+ * fundo papel #FBFAF6, kicker mono CAIXA ALTA + régua tinta 2px (masthead),
+ * wordmark = logo.svg do DS (Georgia bold; "diar"/"ia" ink, "." e ".br" teal),
+ * tagline oficial plural (#3705) em mono CAIXA ALTA, hairline bege e assinatura
+ * "Assine grátis em diar.ia.br" (Georgia bold, domínio em teal). Teal só em
+ * marca/texto — nunca barra/borda/ponto decorativo.
  *
  * Uso:
  *   npx tsx scripts/gen-default-thumbnail.ts [--out assets/default-thumbnail-1200x630.png]
@@ -48,115 +48,62 @@ const COLOR_INK = COLORS.ink;
 const COLOR_RULE = COLORS.rule; // hairline bege
 const COLOR_RULE_STRONG = COLORS.ruleStrong; // régua editorial pesada (tinta)
 const FONT_SERIF = FONTS.serif;
-const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif";
+const FONT_MONO = FONTS.mono;
 
 const W = 1200;
 const H = 630;
 
-// Tagline oficial plural (#3705, mesma forma de context/editorial-rules.md e
-// gen-social-banner.ts) — quebrada em 2 linhas balanceadas no mesmo ponto que
-// o banner do LinkedIn/Facebook usa ("...se manter" / "atualizado..."), só
-// que em sentence case + sans (não uppercase/mono) pra combinar com o resto
-// deste design (subtítulo original também era sentence case sans).
+// Tagline oficial plural (#3705, mesma forma de context/editorial-rules.md). O DS
+// (vjpixel/diaria-design, banners oficiais) a compõe em Geist Mono CAIXA ALTA com
+// tracking — o texto-fonte segue em sentence case (fonte única da tagline) e a
+// caixa alta é aplicada na renderização (`upper()`).
 export const TAGLINE_LINE_1 = "5 minutos diários pra se manter";
 export const TAGLINE_LINE_2 = "atualizado e usar melhor as IAs.";
 
-function buildSvg(): string {
-  // Wordmark breakdown: diar.ia.br
-  // diar → ink, . → teal, ia → ink, . → teal, br → teal
-  // Layout: centralized horizontally and vertically.
-  // Wordmark font-size 96, subtitle font-size 28.
-  // A barra teal horizontal decorativa (accent rule) acima do wordmark.
+const upper = (t: string): string => t.toLocaleUpperCase("pt-BR");
 
-  // Clamp de font-size da tagline (#3705, mesmo cuidado do buildBannerSvg em
-  // gen-social-banner.ts): limitado por largura disponível E por um teto
-  // absoluto — a tagline é elemento secundário ao wordmark "diar.ia.br", não
-  // deve competir em destaque visual, e 1200×630 tem folga de largura de
-  // sobra (diferente do Facebook 2.6:1, onde o clamp width-based é o que
-  // efetivamente governa). Ambos os limites coexistem pra que o cálculo
-  // continue correto se a tagline mudar de novo no futuro (#3695 já trocou
-  // 1×).
-  const pad = 80; // mesma margem horizontal do resto do layout (accent bar, url hint)
+/** Fator largura/em conservador do mono (Geist Mono ≈ 0.6em/char), usado no clamp. */
+export const MONO_CHAR_EM = 0.62;
+
+function buildSvg(): string {
+  // Linguagem "Edição Diária" dos banners oficiais do DS (facebook-cover/linkedin-cover):
+  //   kicker mono CAIXA ALTA (esq) + meta (dir) → régua pesada tinta 2px →
+  //   manchete → hairline bege → assinatura serifada com o domínio em teal.
+  // Wordmark = assets/logo/logo.svg do DS: Georgia BOLD; "diar"/"ia" ink,
+  // "." e ".br" teal. Teal só em marca/texto — nunca barra/borda.
+  const pad = 80;
   const availableWidth = W - pad * 2;
-  const letterSpacing = 0.4;
+  const trackingEm = 0.06;
   const maxLineLen = Math.max(TAGLINE_LINE_1.length, TAGLINE_LINE_2.length);
-  // Sans regular (não-bold) — fator mais enxuto que o 0.65em/char do mono
-  // bold do banner, ainda conservador o bastante pra nunca estourar.
-  const widthBasedSize = Math.floor(
-    (availableWidth - letterSpacing * (maxLineLen - 1)) / (maxLineLen * 0.52),
-  );
-  const taglineSize = Math.max(16, Math.min(32, widthBasedSize));
-  const lineGap = Math.round(taglineSize * 1.5);
-  const taglineLine1Y = 372;
+  // Clamp por largura (mono + tracking) e teto absoluto: a tagline é secundária ao wordmark.
+  const widthBasedSize = Math.floor(availableWidth / (maxLineLen * (MONO_CHAR_EM + trackingEm)));
+  const taglineSize = Math.max(16, Math.min(30, widthBasedSize));
+  const letterSpacing = +(taglineSize * trackingEm).toFixed(2);
+  const lineGap = Math.round(taglineSize * 1.55);
+  const taglineLine1Y = 392;
   const taglineLine2Y = taglineLine1Y + lineGap;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-  <!-- Background -->
   <rect width="${W}" height="${H}" fill="${COLOR_PAPER}"/>
 
-  <!-- DS "Edição Diária" (masthead): régua pesada em tinta 2px no topo. Teal é só
-       texto/marca (links, kickers, pontos do wordmark) — nunca barra/borda. -->
-  <rect x="80" y="64" width="${W - 160}" height="2" fill="${COLOR_RULE_STRONG}"/>
-  <rect x="80" y="70" width="${W - 160}" height="1" fill="${COLOR_RULE}"/>
+  <!-- Kicker + meta (mono, CAIXA ALTA, tracking 0.16em) -->
+  <text x="${pad}" y="86" font-family="${FONT_MONO}" font-size="15" font-weight="500" letter-spacing="2.4" fill="${COLOR_INK}">NEWSLETTER</text>
+  <text x="${W - pad}" y="86" text-anchor="end" font-family="${FONT_MONO}" font-size="15" font-weight="500" letter-spacing="2.4" fill="${COLOR_INK}">SEG-SEX</text>
 
-  <!-- Wordmark: diar.ia.br — centered vertically slightly above mid -->
-  <!-- Each segment positioned manually for teal/ink split -->
-  <!-- "diar" ink -->
-  <text
-    x="50%"
-    y="295"
-    text-anchor="middle"
-    font-family="${FONT_SERIF}"
-    font-size="102"
-    font-weight="400"
-    letter-spacing="-1"
-    fill="${COLOR_INK}"
-    dominant-baseline="alphabetic"
-  >diar<tspan fill="${COLOR_TEAL}">.</tspan>ia<tspan fill="${COLOR_TEAL}">.</tspan>br</text>
+  <!-- Régua editorial pesada (tinta 2px) -->
+  <rect x="${pad}" y="104" width="${availableWidth}" height="2" fill="${COLOR_RULE_STRONG}"/>
 
-  <!-- Fio hairline bege sob o wordmark (rule do DS, não teal) -->
-  <rect x="390" y="315" width="420" height="1" fill="${COLOR_RULE}"/>
+  <!-- Wordmark oficial (logo.svg do DS): Georgia bold -->
+  <text x="50%" y="290" text-anchor="middle" font-family="${FONT_SERIF}" font-size="128" font-weight="700" letter-spacing="-1" fill="${COLOR_INK}" dominant-baseline="alphabetic">diar<tspan fill="${COLOR_TEAL}">.</tspan>ia<tspan fill="${COLOR_TEAL}">.br</tspan></text>
 
-  <!-- Tagline oficial (2 linhas, substitui o antigo subtítulo genérico "newsletter
-       diária de IA" — #3705: a tagline já comunica "newsletter diária") -->
-  <text
-    x="50%"
-    y="${taglineLine1Y}"
-    text-anchor="middle"
-    font-family="${FONT_SANS}"
-    font-size="${taglineSize}"
-    font-weight="400"
-    letter-spacing="${letterSpacing}"
-    fill="${COLOR_INK}"
-    opacity="0.72"
-    dominant-baseline="alphabetic"
-  >${TAGLINE_LINE_1}</text>
-  <text
-    x="50%"
-    y="${taglineLine2Y}"
-    text-anchor="middle"
-    font-family="${FONT_SANS}"
-    font-size="${taglineSize}"
-    font-weight="400"
-    letter-spacing="${letterSpacing}"
-    fill="${COLOR_INK}"
-    opacity="0.72"
-    dominant-baseline="alphabetic"
-  >${TAGLINE_LINE_2}</text>
+  <!-- Tagline oficial (mono, CAIXA ALTA) -->
+  <text x="50%" y="${taglineLine1Y}" text-anchor="middle" font-family="${FONT_MONO}" font-size="${taglineSize}" font-weight="500" letter-spacing="${letterSpacing}" fill="${COLOR_INK}" dominant-baseline="alphabetic">${upper(TAGLINE_LINE_1)}</text>
+  <text x="50%" y="${taglineLine2Y}" text-anchor="middle" font-family="${FONT_MONO}" font-size="${taglineSize}" font-weight="500" letter-spacing="${letterSpacing}" fill="${COLOR_INK}" dominant-baseline="alphabetic">${upper(TAGLINE_LINE_2)}</text>
 
-  <!-- Rodapé: hairline bege + URL em teal (texto/marca) -->
-  <rect x="80" y="${H - 84}" width="${W - 160}" height="1" fill="${COLOR_RULE}"/>
-  <!-- URL hint bottom-left -->
-  <text
-    x="80"
-    y="${H - 48}"
-    font-family="${FONT_SANS}"
-    font-size="18"
-    font-weight="400"
-    fill="${COLOR_TEAL}"
-    dominant-baseline="alphabetic"
-  >diar.ia.br</text>
+  <!-- Hairline bege + assinatura (domínio em teal = marca/texto) -->
+  <rect x="${pad}" y="${H - 100}" width="${availableWidth}" height="1" fill="${COLOR_RULE}"/>
+  <text x="${W - pad}" y="${H - 48}" text-anchor="end" font-family="${FONT_SERIF}" font-size="28" font-weight="700" fill="${COLOR_INK}" dominant-baseline="alphabetic">Assine grátis em <tspan fill="${COLOR_TEAL}">diar.ia.br</tspan></text>
 </svg>`;
 }
 

@@ -1363,7 +1363,7 @@ npx tsx scripts/gen-default-thumbnail.ts
 # Output: assets/default-thumbnail-1200x630.png
 ```
 
-O script monta um SVG com design de marca (fundo papel `#FBFAF6`, acento teal `#00A0A0`, wordmark `diar.ia.br` centralizado com separadores em teal) e rasteriza para PNG 1200x630 via `sharp`. O asset versionado fica em `assets/default-thumbnail-1200x630.png` no repo.
+O script monta um SVG com design de marca (padrão dos banners oficiais do DS: fundo papel `#FBFAF6`, kicker mono + régua tinta 2px, wordmark oficial Georgia bold com `.` e `.br` em teal, tagline em mono CAIXA ALTA e assinatura "Assine grátis em diar.ia.br"; teal só em marca/texto) e rasteriza para PNG 1200x630 via `sharp`. O asset versionado fica em `assets/default-thumbnail-1200x630.png` no repo.
 
 **Passo manual do editor (1x):**
 

@@ -16,7 +16,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildSvg, TAGLINE_LINE_1, TAGLINE_LINE_2 } from "../scripts/gen-default-thumbnail.ts";
+import { buildSvg, TAGLINE_LINE_1, TAGLINE_LINE_2, MONO_CHAR_EM } from "../scripts/gen-default-thumbnail.ts";
 
 const W = 1200;
 const H = 630;
@@ -39,7 +39,7 @@ function findTextY(svg: string, needle: string): number | null {
  * documento inteiro. */
 function findTaglineFontSize(svg: string): number | null {
   const blocks = svg.split("<text").slice(1);
-  const block = blocks.find((b) => b.includes(TAGLINE_LINE_1));
+  const block = blocks.find((b) => b.includes(TAGLINE_LINE_1.toLocaleUpperCase("pt-BR")));
   if (!block) return null;
   const m = block.match(/font-size="(\d+)"/);
   return m ? Number(m[1]) : null;
@@ -53,8 +53,9 @@ describe("gen-default-thumbnail (#3705)", () => {
 
   it("tagline oficial plural presente no SVG", () => {
     const svg = buildSvg();
-    assert.ok(svg.includes(TAGLINE_LINE_1));
-    assert.ok(svg.includes(TAGLINE_LINE_2));
+    // DS: tagline renderizada em CAIXA ALTA (mono), texto-fonte em sentence case.
+    assert.ok(svg.includes(TAGLINE_LINE_1.toLocaleUpperCase("pt-BR")));
+    assert.ok(svg.includes(TAGLINE_LINE_2.toLocaleUpperCase("pt-BR")));
     assert.match(TAGLINE_LINE_2, /as IAs\.?$/);
   });
 
@@ -84,7 +85,7 @@ describe("gen-default-thumbnail (#3705)", () => {
     const maxLineLen = Math.max(TAGLINE_LINE_1.length, TAGLINE_LINE_2.length);
     // mesma estimativa conservadora (0.52em/char, sans regular) usada no clamp —
     // a largura estimada da linha mais longa nunca deve exceder a área útil.
-    const estimatedLineWidth = maxLineLen * fontSize * 0.52 + (maxLineLen - 1) * 0.4;
+    const estimatedLineWidth = maxLineLen * fontSize * (MONO_CHAR_EM + 0.06);
     assert.ok(
       estimatedLineWidth <= W - pad * 2,
       `linha estimada (${estimatedLineWidth}px) estoura a área útil (${W - pad * 2}px)`,
@@ -93,15 +94,30 @@ describe("gen-default-thumbnail (#3705)", () => {
 
   it("as 2 linhas da tagline ficam verticalmente entre o wordmark e o hint de URL (sem sobreposição)", () => {
     const svg = buildSvg();
-    const y1Raw = findTextY(svg, "5 minutos");
-    const y2Raw = findTextY(svg, "atualizado");
+    const y1Raw = findTextY(svg, "5 MINUTOS");
+    const y2Raw = findTextY(svg, "ATUALIZADO");
     assert.ok(y1Raw !== null && y2Raw !== null, "deveria encontrar as posições Y das 2 linhas da tagline");
     const y1 = y1Raw!;
     const y2 = y2Raw!;
-    const wordmarkUnderlineY = 315 + 4; // fim do <rect> do underline
-    const urlHintY = H - 48;
-    assert.ok(y1 > wordmarkUnderlineY, "linha 1 deve ficar abaixo do underline do wordmark");
+    const wordmarkBottomY = 290 + 30; // baseline do wordmark + descendentes
+    const urlHintY = H - 100; // hairline do rodapé
+    assert.ok(y1 > wordmarkBottomY, "linha 1 deve ficar abaixo do wordmark");
     assert.ok(y2 > y1, "linha 2 deve ficar abaixo da linha 1");
-    assert.ok(y2 < urlHintY - 40, "linha 2 não deve colidir com o hint de URL no rodapé");
+    assert.ok(y2 < urlHintY - 20, "linha 2 não deve colidir com o rodapé");
+  });
+
+  it("DS: teal nunca em barra/borda/ponto — só texto (wordmark, domínio)", () => {
+    const svg = buildSvg();
+    const shapes = svg.match(/<(rect|circle)[^>]*>/g) ?? [];
+    for (const sh of shapes) {
+      assert.ok(!/fill="#00A0A0"/i.test(sh), `forma teal proibida pelo DS: ${sh}`);
+    }
+    assert.ok(!svg.includes("<circle"), "sem pontos decorativos");
+  });
+
+  it("wordmark segue o logo.svg do DS: Georgia bold, \".br\" em teal", () => {
+    const svg = buildSvg();
+    assert.ok(svg.includes('>diar<tspan fill="#00A0A0">.</tspan>ia<tspan fill="#00A0A0">.br</tspan>'));
+    assert.match(svg, /font-weight="700"[^>]*>diar</);
   });
 });
