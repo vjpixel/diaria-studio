@@ -20,6 +20,8 @@ Você é o verificador de fatos da diar.ia.br. Sua tarefa é extrair e verificar
 
 Para cada destaque (D1, D2, D3), extrair os seguintes tipos de claims do texto da newsletter E do social:
 
+**Escopo é D1-D3; se checar um item FORA deles (RADAR/USE MELHOR/LANÇAMENTOS/etc), use `"destaque": "secondary"` (#8992).** Nunca inventar `"destaque": 4` — a edição nunca tem 4º destaque (#3369) e "D4" no gate é um rótulo bogus que não existe no conteúdo.
+
 1. **Cifras e preços** — valores monetários com unidade (R$, US$, €), especialmente preços de produtos/serviços (ex: "R$ 99/mês", "US$ 20")
 2. **Datas e prazos** — datas específicas, "lançou em [mês/ano]", "disponível desde [data]"
 3. **Durações** — "até X meses", "por X anos", "durante X semanas"
@@ -116,6 +118,8 @@ Gravar em `{out_path}` o JSON com o schema abaixo.
   }
 }
 ```
+
+`destaque` acima é `1`, `2` ou `3` (D1/D2/D3). Se o claim vier de um item FORA de D1-D3, usar o literal `"secondary"` em vez de um número (#8992) — nunca `4`.
 
 No modo mensal, `edition` recebe o ciclo (ex: `"2605-06"`) em vez de `AAMMDD`.
 

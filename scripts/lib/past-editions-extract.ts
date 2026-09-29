@@ -72,6 +72,35 @@ export function extractPastUrls(md: string, window: number): Set<string> {
 }
 
 /**
+ * #8993: mesma extração de `extractPastUrls`, mas mapeando cada URL canônica
+ * pra data (YYYY-MM-DD) da edição de origem — usado pelo guard de Stage 4
+ * (`check-no-duplicate-urls-vs-past-editions`) pra citar em qual edição o
+ * link já saiu, em vez de só sinalizar "repetido". Sections já vêm em ordem
+ * decrescente de data (mesma premissa de `extractPastUrls`); primeira
+ * ocorrência de uma URL na janela é a mais recente, então `set` só na
+ * primeira vez (não sobrescreve com uma origem mais antiga).
+ */
+export function extractPastUrlsWithOrigin(md: string, window: number): Map<string, string> {
+  const origins = new Map<string, string>();
+
+  const sectionRe = /^## (\d{4}-\d{2}-\d{2})/m;
+  const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
+  const editionSections = parts.filter((s) => sectionRe.test(s)).slice(0, window);
+
+  for (const section of editionSections) {
+    const dateMatch = section.match(sectionRe);
+    const date = dateMatch ? dateMatch[1] : "?";
+    for (const line of section.split("\n")) {
+      const m = line.match(/^-\s+(https?:\/\/\S+)/);
+      if (!m) continue;
+      const canonical = canonicalize(m[1].replace(/[.,);]+$/, ""));
+      if (!origins.has(canonical)) origins.set(canonical, date);
+    }
+  }
+  return origins;
+}
+
+/**
  * #2548 (Furo 1): extrai URLs de TODAS as edições passadas sem limitar por janela.
  * Usado para dedup de conteúdo evergreen (use_melhor/video), que é re-descoberto
  * semanas ou meses depois e precisaria de uma janela muito maior que as notícias
