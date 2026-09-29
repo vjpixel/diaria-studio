@@ -49,6 +49,15 @@
 // de `close` fechado no #8950) e `pr merge --body`/`-b`/`--subject`/`-t`
 // (o texto vira mensagem de commit pública).
 //
+// #9029/#9030 fecharam dois buracos pré-existentes achados no review do #9020:
+//   - #9030: `[cmd, sub]` era sempre `argv[0]`/`argv[1]`, então uma flag
+//     global antes do subcomando (`gh --repo o/r pr comment 1 --body X`) fazia
+//     `isPublishingInvocation` nunca casar. `normalizeArgv` agora desloca
+//     essas flags pro fim (`hoistCommand`) antes de ler `[cmd, sub]`.
+//   - #9029: `collectTextsToCheck` pulava o token-valor ao achar uma flag,
+//     então `--title --body SEGREDO` coletava só "--body". Agora o valor é
+//     coletado E revisitado como possível flag (fail-closed).
+//
 // Testável sem I/O real: toda leitura de arquivo/stdin é injetada via
 // `deps` — ver `test/gh-wrapper.test.ts`.
 
@@ -146,6 +155,73 @@ function longValueFlagsFor(cmd, sub, isApi) {
   return s;
 }
 
+/** Comandos de topo que `isPublishingInvocation` reconhece. */
+const PUBLISHING_CMDS = new Set(["pr", "issue", "release", "gist", "api"]);
+/** Subcomandos que `isPublishingInvocation` reconhece (pr/issue/release/gist). */
+const PUBLISHING_SUBS = new Set(["comment", "create", "edit", "review", "close", "reopen", "merge"]);
+/** Flags globais/herdadas cujo valor vem em token separado (`-R o/r`, `--repo o/r`). */
+const GLOBAL_VALUE_FLAGS = new Set(["-R", "--repo", "--hostname"]);
+
+/**
+ * Índice do primeiro token a partir de `start` que NÃO é flag (nem valor de
+ * flag). Valores em token separado são pulados junto com a flag:
+ *   - flag conhecida com valor (`GLOBAL_VALUE_FLAGS`) → sempre pula o token
+ *     seguinte (mesmo que ele seja "pr" — `gh -R pr issue comment` é repo "pr");
+ *   - `--flag=valor` / `-Rvalor` → 1 token só;
+ *   - flag DESCONHECIDA → pula o token seguinte como valor (mesma heurística
+ *     do `stripFlags` do cobra), a não ser que ele seja um nome protegido
+ *     (`protectedNames`: o comando/subcomando publicador) ou outra flag. Errar
+ *     aqui só pode engolir um comando NÃO publicador — que não publicaria.
+ */
+function skipFlags(argv, start, protectedNames) {
+  let i = start;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (typeof a !== "string" || !a.startsWith("-") || a === "-" || a === "--") break;
+    if (a.includes("=") || (!a.startsWith("--") && a.length > 2)) {
+      i += 1; // `--repo=o/r`, `-Ro/r`: valor colado
+      continue;
+    }
+    if (GLOBAL_VALUE_FLAGS.has(a)) {
+      i += 2;
+      continue;
+    }
+    const next = argv[i + 1];
+    const nextIsValue = typeof next === "string" && !next.startsWith("-") && !protectedNames.has(next);
+    i += nextIsValue ? 2 : 1;
+  }
+  return i;
+}
+
+/**
+ * #9030: coloca `[cmd, sub]` nas posições 0/1 quando há flags ANTES do comando
+ * (`gh --repo o/r pr comment 1 --body X`) ou entre comando e subcomando
+ * (`gh pr -R o/r comment ...`) — o cobra aceita as duas formas. Sem isso,
+ * `[cmd, sub]` virava `["--repo", "o/r"]` e nenhuma regra casava.
+ *
+ * As flags deslocadas NÃO são descartadas: vão pro FIM do argv inspecionado.
+ * O cobra repassa flags anteriores ao comando pro subcomando, então
+ * `gh --body X pr comment 1` publica X — descartá-las abriria outro buraco.
+ * Irem pro fim (e não logo depois de `sub`) preserva o path posicional de
+ * `gh api` (`-R o/r` logo depois de `api` faria `findGhApiPath` achar "o/r").
+ * Em `gh api`, flags entre `api` e o path ficam onde estão (lá `sub` não é
+ * usado, e `-X POST` precisa continuar visível).
+ *
+ * Só reordena o argv INSPECIONADO; o `gh` real recebe o argv original. Sem
+ * flag deslocada, devolve o próprio array.
+ */
+function hoistCommand(argv) {
+  const ci = skipFlags(argv, 0, PUBLISHING_CMDS);
+  if (ci >= argv.length) return argv;
+  const leading = argv.slice(0, ci);
+  const cmd = argv[ci];
+  if (cmd === "api") return ci === 0 ? argv : ["api", ...argv.slice(ci + 1), ...leading];
+  const si = skipFlags(argv, ci + 1, PUBLISHING_SUBS);
+  if (ci === 0 && si === 1) return argv;
+  const between = argv.slice(ci + 1, si);
+  return [cmd, ...argv.slice(si), ...leading, ...between];
+}
+
 /**
  * Normaliza duas sintaxes de "flag colada ao valor" em `["--flag", "valor"]`
  * / `["-F", "valor"]` ANTES de qualquer classificação — sem isso, uma dessas
@@ -162,8 +238,12 @@ function longValueFlagsFor(cmd, sub, isApi) {
  *    (`-la`, `-dw`, etc.) — `gh` não usa esse padrão nas flags cobertas aqui,
  *    e só tocamos a flag que sabemos, por contexto, que tem valor.
  */
-export function normalizeArgv(argv) {
-  if (!Array.isArray(argv)) return argv;
+export function normalizeArgv(rawArgv) {
+  if (!Array.isArray(rawArgv)) return rawArgv;
+  // #9030: flags antes do comando/subcomando vão pro fim do argv INSPECIONADO
+  // (`hoistCommand`) — senão `[cmd, sub]` vira `["--repo", "o/r"]` e nenhuma
+  // regra casa. O `gh` real continua recebendo o argv original.
+  const argv = hoistCommand(rawArgv);
   const [cmd, sub] = argv;
   const isApi = cmd === "api";
   const shortValueFlags = shortValueFlagsFor(cmd, sub);
@@ -295,22 +375,27 @@ export function collectTextsToCheck(rawArgv, deps = {}) {
   const bodyFlags = isApi ? new Set() : nonApiBodyFlags(sub);
   const fileFlags = isApi ? API_FILE_FLAGS : NON_API_FILE_FLAGS;
 
+  // #9029: o índice NUNCA pula o token-valor. Antes, ao achar `--title` o
+  // loop consumia o token seguinte (`i++`) sem examiná-lo como flag — então
+  // `--title --body SEGREDO` coletava só "--body" e o segredo real (o token
+  // depois) nunca era lido. Agora o valor é coletado E revisitado na próxima
+  // iteração: se ele próprio for uma flag reconhecida, o token seguinte também
+  // é coletado. Fail-closed — as duas leituras possíveis do argv (valor
+  // literal "--body" e flag `--body`) são inspecionadas; o custo é, no pior
+  // caso, checar um texto a mais (nunca deixar um de fora).
   const texts = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (bodyFlags.has(a)) {
       texts.push(argv[i + 1] ?? "");
-      i++;
       continue;
     }
     if (fileFlags.has(a)) {
       texts.push(resolveFileOrStdin(argv[i + 1] ?? ""));
-      i++;
       continue;
     }
     if (isApi && API_FIELD_FLAGS.has(a)) {
       const v = argv[i + 1] ?? "";
-      i++;
       const atMatch = v.match(/^([^=]+)=@(.+)$/);
       if (atMatch) {
         texts.push(resolveFileOrStdin(atMatch[2]));
