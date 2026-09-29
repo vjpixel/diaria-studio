@@ -44,7 +44,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import type { FactClaim, FactCheckResult } from "./run-fact-checker.ts";
+import type { FactClaim, FactCheckResult, ClaimDestaque } from "./run-fact-checker.ts";
 import {
   destaqueFromLocation,
   loadIntentionalErrorJson,
@@ -62,11 +62,12 @@ export type AutofixStatus =
   | "applied"       // substituição feita
   | "skipped_intentional_error"  // claim pertence ao destaque do erro intencional
   | "skipped_superlative"        // claim_type superlative — nunca auto-fix
+  | "skipped_secondary_destaque" // (#8992) destaque="secondary" — sem bloco DESTAQUE N pra escopar a substituição
   | "skipped_no_fix"             // sem suggested_fix no claim (ou texto/fix vazio)
   | "skipped_text_not_found";    // texto do claim não encontrado nos arquivos
 
 export interface AutofixEntry {
-  destaque: number;
+  destaque: ClaimDestaque;
   claim_type: FactClaim["claim_type"];
   text: string;
   suggested_fix: string | undefined;
@@ -175,7 +176,7 @@ function destaqueHeaderPattern(numPattern: string): string {
  */
 export function findDestaqueBodyRange(
   content: string,
-  destaque: number,
+  destaque: ClaimDestaque,
 ): { start: number; end: number } | null {
   // Pular frontmatter
   let bodyStart = 0;
@@ -279,7 +280,7 @@ export function applyTextSubstitution(
  */
 export function findSocialDestaqueRanges(
   content: string,
-  destaque: number,
+  destaque: ClaimDestaque,
 ): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
   const lines = content.split("\n");
@@ -329,7 +330,7 @@ export function findSocialDestaqueRanges(
  */
 export function applySocialTextSubstitution(
   content: string,
-  destaque: number,
+  destaque: ClaimDestaque,
   oldText: string,
   newText: string,
 ): { changed: boolean; content: string; modifiedRanges: number } {
@@ -374,6 +375,24 @@ export function planAutofixes(
         sources: c.sources,
         status: "skipped_superlative",
         note: "Superlativos de ineditismo não recebem auto-fix — revisão editorial manual.",
+      };
+    }
+
+    // Regra 5 (#8992): destaque="secondary" (claim de item fora de D1-D3) não
+    // tem bloco "DESTAQUE N" pra escopar a substituição com segurança —
+    // `findDestaqueBodyRange`/`findSocialDestaqueRanges` nunca casam a string
+    // "secondary" contra um header numérico real, então aplicar aqui sem essa
+    // checagem explícita degradaria de forma silenciosa pro fallback genérico
+    // "bloco não encontrado" em vez de um motivo claro e específico no log.
+    if (c.destaque === "secondary") {
+      return {
+        destaque: c.destaque,
+        claim_type: c.claim_type,
+        text: c.text,
+        suggested_fix: c.suggested_fix,
+        sources: c.sources,
+        status: "skipped_secondary_destaque",
+        note: "Claim de item fora de D1-D3 (destaque=\"secondary\") — sem bloco DESTAQUE N pra escopar a correção automática; revisão manual.",
       };
     }
 

@@ -44,7 +44,10 @@ import {
   findImageContentMismatches,
   checkNarrativeNotGenericPlaceholder,
   checkCropReviewWarnings,
+  checkNoDuplicateUrlsAgainstPastEditions,
+  findDuplicateUrlsAgainstPastEditions,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { extractPastUrlsWithOrigin } from "../scripts/lib/past-editions-extract.ts";
 import { hashHighlights } from "../scripts/lib/social-source-hash.ts";
 import {
   checkStep4Sentinel,
@@ -2323,6 +2326,108 @@ describe("Stage 4 invariants", () => {
       assert.equal(v.length, 1);
       assert.equal(v[0].severity, "warning", "narrative-not-generic-placeholder deve ser warning → não causa exit 1");
       rmSync(fixture2, { recursive: true, force: true });
+    });
+  });
+
+  // --- #8993: URL editorial repetida contra past-editions.md (warning-only) ---
+  describe("no-duplicate-urls-vs-past-editions (#8993)", () => {
+    const PAST_MD = [
+      '## 2026-09-28 — "Título de ontem"',
+      "Links usados:",
+      "- https://alignment.openai.com/misalignment-reports/an-agent-used-dns-to-reach-an-external-chatbot/",
+      "",
+      '## 2026-09-27 — "Título de anteontem"',
+      "Links usados:",
+      "- https://example.com/outra-noticia",
+      "",
+    ].join("\n");
+
+    it("findDuplicateUrlsAgainstPastEditions: acusa URL repetida citando a edição de origem", () => {
+      const pastOrigins = extractPastUrlsWithOrigin(PAST_MD, 3);
+      const reviewedMd = [
+        "**DESTAQUE 1 | negócios**",
+        "",
+        "[**Agente usa DNS pra furar a rede**](https://alignment.openai.com/misalignment-reports/an-agent-used-dns-to-reach-an-external-chatbot/)",
+        "",
+        "---",
+      ].join("\n");
+      const matches = findDuplicateUrlsAgainstPastEditions(reviewedMd, pastOrigins);
+      assert.equal(matches.length, 1);
+      assert.equal(matches[0].originDate, "2026-09-28");
+      assert.match(matches[0].url, /an-agent-used-dns-to-reach-an-external-chatbot/);
+    });
+
+    it("findDuplicateUrlsAgainstPastEditions: alias de host (www./tracking params) ainda casa via canonicalize", () => {
+      const pastOrigins = extractPastUrlsWithOrigin(PAST_MD, 3);
+      const reviewedMd =
+        "[link](https://alignment.openai.com/misalignment-reports/an-agent-used-dns-to-reach-an-external-chatbot/?utm_source=newsletter)";
+      const matches = findDuplicateUrlsAgainstPastEditions(reviewedMd, pastOrigins);
+      assert.equal(matches.length, 1);
+    });
+
+    it("findDuplicateUrlsAgainstPastEditions: sem violation quando URL é inédita", () => {
+      const pastOrigins = extractPastUrlsWithOrigin(PAST_MD, 3);
+      const reviewedMd = "[link](https://example.com/noticia-nova-nunca-publicada)";
+      const matches = findDuplicateUrlsAgainstPastEditions(reviewedMd, pastOrigins);
+      assert.equal(matches.length, 0);
+    });
+
+    it("findDuplicateUrlsAgainstPastEditions: exclui host não-editorial (rodapé diar.ia.br)", () => {
+      const pastOriginsWithFooter = extractPastUrlsWithOrigin(
+        PAST_MD + '\n## 2026-09-26 — "Anteontem 2"\nLinks usados:\n- https://livros.diar.ia.br/algum-livro\n',
+        3,
+      );
+      const reviewedMd = "[Livros](https://livros.diar.ia.br/algum-livro)";
+      const matches = findDuplicateUrlsAgainstPastEditions(reviewedMd, pastOriginsWithFooter);
+      assert.equal(matches.length, 0);
+    });
+
+    it("findDuplicateUrlsAgainstPastEditions: 1 match por URL mesmo com múltiplas ocorrências", () => {
+      const pastOrigins = extractPastUrlsWithOrigin(PAST_MD, 3);
+      const url = "https://alignment.openai.com/misalignment-reports/an-agent-used-dns-to-reach-an-external-chatbot/";
+      const reviewedMd = `[a](${url}) ... [b](${url})`;
+      const matches = findDuplicateUrlsAgainstPastEditions(reviewedMd, pastOrigins);
+      assert.equal(matches.length, 1);
+    });
+
+    it("findDuplicateUrlsAgainstPastEditions: janela vazia (sem histórico) nunca acusa", () => {
+      const matches = findDuplicateUrlsAgainstPastEditions(
+        "[link](https://alignment.openai.com/misalignment-reports/an-agent-used-dns-to-reach-an-external-chatbot/)",
+        new Map(),
+      );
+      assert.equal(matches.length, 0);
+    });
+
+    it("checkNoDuplicateUrlsAgainstPastEditions: severity SEMPRE warning — nunca bloqueia o gate (#7401)", () => {
+      writeFileSync(
+        join(fixture, "02-reviewed.md"),
+        "[link](https://example.com/qualquer-coisa)",
+      );
+      const v = checkNoDuplicateUrlsAgainstPastEditions(fixture);
+      assert.ok(v.every((x) => x.severity === "warning"));
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("checkNoDuplicateUrlsAgainstPastEditions: sem violation quando 02-reviewed.md ausente", () => {
+      const v = checkNoDuplicateUrlsAgainstPastEditions(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("registry: no-duplicate-urls-vs-past-editions está em STAGE_4_RULES com severity warning-only", () => {
+      const rule = getRulesForStage(4).find((r) => r.id === "no-duplicate-urls-vs-past-editions");
+      assert.ok(rule, "regra ausente do registry do Stage 4");
+      assert.equal(rule!.source_issue, "#8993");
+      writeFileSync(
+        join(fixture, "02-reviewed.md"),
+        "[link](https://alignment.openai.com/misalignment-reports/an-agent-used-dns-to-reach-an-external-chatbot/)",
+      );
+      const v = rule!.run(fixture);
+      // Sem data/past-editions.md real no fixture/CI, o wrapper não acusa nada —
+      // este teste cobre só o wiring do registry, não a lógica (coberta acima
+      // via findDuplicateUrlsAgainstPastEditions, que não depende do disco real).
+      assert.ok(v.every((x) => x.severity === "warning"));
+      rmSync(fixture, { recursive: true, force: true });
     });
   });
 

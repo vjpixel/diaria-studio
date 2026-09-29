@@ -35,6 +35,8 @@ import {
   normalizeFactCheckResult,
   computeAttentionItems,
   getBlockingClaims,
+  destaqueLabel,
+  formatFactCheckUnavailableMessage,
   type FactCheckResult,
   type FactClaim,
   type DryRunOutput,
@@ -687,14 +689,71 @@ describe("regressões #2468 — finding 2: destaque=0 não filtrado por falsy", 
     assert.equal(result.claims.length, 0, "destaque=NaN deve ser filtrado (não renderizar 'DNaN')");
   });
 
-  it("normalizeFactCheckResult filtra destaque string", () => {
+  it("normalizeFactCheckResult filtra destaque string arbitrária (só 'secondary' é aceito, #8992)", () => {
     const raw = {
       claims: [
         { destaque: "1", claim_type: "price", text: "R$ 99", context: "x", sources: ["newsletter"], verdict: "DIVERGENT" },
       ],
     };
     const result = normalizeFactCheckResult(raw, "260622");
-    assert.equal(result.claims.length, 0, "destaque string '1' deve ser filtrado (FactClaim.destaque é number)");
+    assert.equal(result.claims.length, 0, "destaque string '1' deve ser filtrado (não é 'secondary' nem number)");
+  });
+});
+
+// --- #8992: claim de item fora de D1-D3 vira destaque: "secondary", nunca 4 ---
+describe("destaque: \"secondary\" para claims fora de D1-D3 (#8992)", () => {
+  it("normalizeFactCheckResult preserva claim com destaque='secondary'", () => {
+    const raw = {
+      claims: [
+        {
+          destaque: "secondary",
+          claim_type: "price",
+          text: "R$ 49/ano",
+          context: "ctx",
+          sources: ["newsletter"],
+          verdict: "SUSTAINED",
+        },
+      ],
+    };
+    const result = normalizeFactCheckResult(raw, "260929");
+    assert.equal(result.claims.length, 1, "destaque='secondary' não deve ser filtrado");
+    assert.equal(result.claims[0].destaque, "secondary");
+  });
+
+  it("destaqueLabel: 'secondary' vira 'SEC', number vira 'D{n}'", () => {
+    assert.equal(destaqueLabel("secondary"), "SEC");
+    assert.equal(destaqueLabel(1), "D1");
+    assert.equal(destaqueLabel(0), "D0");
+  });
+
+  it("formatGateSummary: claim secondary DIVERGENT renderiza 'SEC', nunca 'D4'", () => {
+    const result: FactCheckResult = {
+      edition: "260929",
+      checked_at: "2026-09-29T00:00:00Z",
+      claims: [
+        {
+          destaque: "secondary",
+          claim_type: "price",
+          text: "R$ 49/ano",
+          context: "ctx",
+          sources: ["newsletter"],
+          verdict: "DIVERGENT",
+          note: "fonte diz R$ 39/ano",
+        },
+      ],
+      summary: {
+        total: 1,
+        sustained: 0,
+        divergent: 1,
+        not_found_in_source: 0,
+        source_unreachable: 0,
+        inferred: 0,
+        attention_items: 1,
+      },
+    };
+    const summary = formatGateSummary(result);
+    assert.match(summary, /SEC \[price\]/);
+    assert.doesNotMatch(summary, /D4/);
   });
 });
 
@@ -1022,5 +1081,63 @@ describe("CLI --check-blocking (#4361)", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8996: mensagem explícita de "fact-check não rodou por erro de rede"
+// ---------------------------------------------------------------------------
+
+describe("formatFactCheckUnavailableMessage (#8996)", () => {
+  it("networkError=true → mensagem forte e explícita sobre erro de rede, nunca a genérica", () => {
+    const msg = formatFactCheckUnavailableMessage("API Error: Can't reach the API server (ENOTFOUND)", {
+      networkError: true,
+    });
+    assert.match(msg, /NÃO RODOU/);
+    assert.match(msg, /erro de rede\/API/);
+    assert.match(msg, /ENOTFOUND/);
+    assert.doesNotMatch(msg, /indisponível/i, "não deve usar o texto fraco genérico quando é erro de rede confirmado");
+  });
+
+  it("networkError omitido/false → mantém o texto genérico pré-#8996 (pré-condição comum, Stage 2 incompleto etc)", () => {
+    const msg = formatFactCheckUnavailableMessage("02-reviewed.md ausente");
+    assert.match(msg, /^⚠️ Fact-check indisponível: 02-reviewed\.md ausente$/);
+  });
+
+  it("CLI --unavailable-message --reason ... [--network-error]", () => {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "run-fact-checker.ts");
+
+    const generic = spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--unavailable-message", "--reason", "motivo qualquer"],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+    assert.equal(generic.status, 0);
+    assert.match(generic.stdout, /⚠️ Fact-check indisponível: motivo qualquer/);
+
+    const network = spawnSync(
+      process.execPath,
+      [
+        "--import", "tsx", scriptPath,
+        "--unavailable-message", "--reason", "ENOTFOUND",
+        "--network-error",
+      ],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+    assert.equal(network.status, 0);
+    assert.match(network.stdout, /NÃO RODOU \(erro de rede\/API/);
+  });
+
+  it("CLI --unavailable-message sem --reason → exit 1 com uso", () => {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "run-fact-checker.ts");
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--unavailable-message"],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--reason/);
   });
 });
