@@ -346,6 +346,49 @@ describe("normalizeCropReviewResult (#3951)", () => {
     assert.equal(result.results[0].destaque, "d1");
     assert.equal(result.results[0].ratio, "1x1");
   });
+
+  // ---------------------------------------------------------------------
+  // categoria (#8989) — achado de estilo (espiral/Noite Estrelada), independente do crop
+  // ---------------------------------------------------------------------
+
+  it("categoria ausente vira 'crop' (retrocompatível com output pré-#8989)", () => {
+    const raw = {
+      results: [{ destaque: "d1", ratio: "1x1", status: "ok" }],
+    };
+    const result = normalizeCropReviewResult(raw, "260722");
+    assert.equal(result.results[0].categoria, "crop");
+  });
+
+  it("categoria 'estilo' é preservada quando o subagente reporta espiral/Noite Estrelada", () => {
+    const raw = {
+      results: [
+        { destaque: "d2", ratio: "1x1", status: "ok" },
+        {
+          destaque: "d2",
+          ratio: "1x1",
+          status: "warn",
+          categoria: "estilo",
+          motivo: "Céu ao fundo tem espiral concêntrica azul/amarela, estilo Noite Estrelada.",
+          sugestao: "Regenerar com fundo liso em vez de dissolvido em pinceladas.",
+        },
+      ],
+    };
+    const result = normalizeCropReviewResult(raw, "260929");
+    assert.equal(result.results.length, 2, "crop e estilo coexistem como entries separadas pro mesmo (destaque, ratio)");
+    const estilo = result.results.find((r) => r.categoria === "estilo");
+    assert.ok(estilo, "entry de categoria estilo deve sobreviver à normalização");
+    assert.equal(estilo?.status, "warn");
+    assert.match(estilo?.motivo ?? "", /espiral/i);
+    assert.equal(result.summary.warn, 1, "summary conta o warn de estilo junto com os de crop");
+  });
+
+  it("categoria com valor desconhecido (typo/versão futura) cai pro default 'crop'", () => {
+    const raw = {
+      results: [{ destaque: "d1", ratio: "1x1", status: "warn", categoria: "composicao" }],
+    };
+    const result = normalizeCropReviewResult(raw, "260722");
+    assert.equal(result.results[0].categoria, "crop");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -394,6 +437,43 @@ describe("formatGateSummary (#3951)", () => {
     assert.ok(s.includes("D2"));
     assert.ok(s.includes("sujeito cortado nas bordas"));
     assert.ok(s.includes("regenerar D2"));
+  });
+
+  it("warn de categoria 'estilo' aparece com ícone/rótulo próprios, distinto do warn de crop (#8989)", () => {
+    const result: CropReviewResult = {
+      ...EMPTY_RESULT,
+      results: [
+        { destaque: "d2", ratio: "1x1", status: "ok", categoria: "crop" },
+        {
+          destaque: "d2",
+          ratio: "1x1",
+          status: "warn",
+          categoria: "estilo",
+          motivo: "Céu ao fundo tem espiral concêntrica, estilo Noite Estrelada.",
+          sugestao: "Regenerar com fundo liso.",
+        },
+      ],
+      summary: { total: 2, ok: 1, warn: 1 },
+    };
+    const s = formatGateSummary(result);
+    assert.ok(s.includes("🌀"), "achado de estilo deve ter ícone próprio, não confundir com ⚠️ de crop");
+    assert.ok(/estilo/i.test(s) && /noite estrelada/i.test(s), "rótulo deve deixar claro que é achado de ESTILO");
+    assert.ok(s.includes("D2"));
+    assert.ok(s.includes("Céu ao fundo tem espiral concêntrica, estilo Noite Estrelada."));
+    assert.ok(s.includes("Regenerar com fundo liso."));
+  });
+
+  it("warn de crop (categoria default) continua usando ⚠️, sem o ícone de estilo", () => {
+    const result: CropReviewResult = {
+      ...EMPTY_RESULT,
+      results: [
+        { destaque: "d1", ratio: "1x1", status: "warn", motivo: "sujeito cortado nas bordas" },
+      ],
+      summary: { total: 1, ok: 0, warn: 1 },
+    };
+    const s = formatGateSummary(result);
+    assert.ok(s.includes("⚠️"));
+    assert.ok(!s.includes("🌀"));
   });
 
   it("nunca inclui linguagem de bloqueio (warning-only, #3951)", () => {
