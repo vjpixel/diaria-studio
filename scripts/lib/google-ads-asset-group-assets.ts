@@ -494,7 +494,6 @@ export type FieldLinkPlanResult<F extends AssetGroupFieldType = AssetGroupFieldT
 
 export type TextFieldLinkPlan = FieldLinkPlan<TextFieldType>;
 export type TextLinkPlanResult = FieldLinkPlanResult<TextFieldType>;
-export type ImageFieldLinkPlan = FieldLinkPlan<ImageFieldType>;
 export type ImageLinkPlanResult = FieldLinkPlanResult<ImageFieldType>;
 
 /** Núcleo comum de `planTextFieldLinks`/`planImageFieldLinks` — mesma regra
