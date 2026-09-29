@@ -575,6 +575,112 @@ describe("#9055: descrição de `gh gist create` (-d/--desc) é inspecionada", (
   });
 });
 
+describe("#9064: `gh gist edit` publica texto e é inspecionado", () => {
+  const clean = { readFileSync: () => "conteúdo limpo", stdinText: "limpo" };
+  it("é reconhecido como publicação (antes: nem inspecionado)", () => {
+    assert.ok(isPublishingInvocation(["gist", "edit", "abc123", "-d", "x"]));
+    assert.ok(isPublishingInvocation(["--repo", "o/r", "gist", "edit", "abc123", "-d", "x"]));
+    assert.equal(isPublishingInvocation(["gist", "view", "abc123"]), false);
+    assert.equal(isPublishingInvocation(["gist", "list"]), false);
+  });
+  it("segredo em -d/--desc bloqueia, em todas as formas de sintaxe", () => {
+    for (const argv of [
+      ["gist", "edit", "abc123", "-d", OR_KEY],
+      ["gist", "edit", "abc123", "--desc", OR_KEY],
+      ["gist", "edit", "abc123", `--desc=${OR_KEY}`],
+      ["gist", "edit", "abc123", `-d${OR_KEY}`],
+      ["gist", "edit", "-d", OR_KEY, "abc123"],
+      ["gist", "edit", "abc123", "--desc", `--token=${OR_KEY}`],
+    ]) {
+      const r = evaluateGhInvocation(argv, clean);
+      assert.ok(r.blocked, JSON.stringify(argv));
+      assert.deepEqual(r.secrets, ["OpenRouter"], JSON.stringify(argv));
+    }
+  });
+  it("segredo no CONTEÚDO do arquivo-fonte posicional bloqueia (e lê o arquivo certo, não o id)", () => {
+    const read: string[] = [];
+    const r = evaluateGhInvocation(["gist", "edit", "abc123", "-f", "notas.md", "local.md"], {
+      readFileSync: (p: string) => {
+        read.push(p);
+        return `log: ${OR_KEY}`;
+      },
+    });
+    assert.ok(r.blocked);
+    assert.deepEqual(read, ["local.md"]);
+  });
+  it("arquivo-fonte `-` lê stdin", () => {
+    assert.ok(requiresStdin(["gist", "edit", "abc123", "-"]));
+    assert.ok(evaluateGhInvocation(["gist", "edit", "abc123", "-"], { stdinText: `x ${OR_KEY}` }).blocked);
+    assert.equal(requiresStdin(["gist", "edit", "abc123", "-d", "-"]), false);
+  });
+  it("--add: conteúdo do arquivo e nome público são inspecionados", () => {
+    for (const argv of [
+      ["gist", "edit", "abc123", "--add", "novo.md"],
+      ["gist", "edit", "abc123", "-a", "novo.md"],
+      ["gist", "edit", "abc123", "--add=novo.md"],
+      ["gist", "edit", "abc123", "-anovo.md"],
+    ]) {
+      const r = evaluateGhInvocation(argv, { readFileSync: (p: string) => (p === "novo.md" ? OR_KEY : "") });
+      assert.ok(r.blocked, JSON.stringify(argv));
+    }
+    assert.ok(evaluateGhInvocation(["gist", "edit", "abc123", "--add", OR_KEY], clean).blocked);
+  });
+  it("segredo em -f/--filename bloqueia; --remove não vira arquivo-fonte", () => {
+    assert.ok(evaluateGhInvocation(["gist", "edit", "abc123", "-f", OR_KEY, "local.md"], clean).blocked);
+    const read: string[] = [];
+    collectTextsToCheck(["gist", "edit", "abc123", "-r", "velho.md"], {
+      readFileSync: (p: string) => {
+        read.push(p);
+        return "";
+      },
+    });
+    assert.deepEqual(read, []);
+  });
+  const readLog = (argv: string[]) => {
+    const read: string[] = [];
+    collectTextsToCheck(argv, {
+      readFileSync: (p: string) => {
+        read.push(p);
+        return "";
+      },
+    });
+    return read;
+  };
+  it("`-a=PATH` / `-F=PATH`: o `=` não entra no path lido (pflag)", () => {
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "-a=novo.md"]), ["novo.md"]);
+    assert.ok(
+      evaluateGhInvocation(["gist", "edit", "abc123", "-a=novo.md"], {
+        readFileSync: (p: string) => (p === "novo.md" ? OR_KEY : ""),
+      }).blocked,
+    );
+    assert.deepEqual(readLog(["pr", "comment", "1", "-F=corpo.md"]), ["corpo.md"]);
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "-r=velho.md", "local.md"]), ["local.md"]);
+  });
+  it("posicional depois de `--` é arquivo-fonte, mesmo começando com `-`", () => {
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "--", "-arq.md"]), ["-arq.md"]);
+    assert.deepEqual(readLog(["gist", "create", "--", "-arq.md"]), ["-arq.md"]);
+  });
+  it("`--add -` abre o arquivo literal `-`, não stdin", () => {
+    assert.equal(requiresStdin(["gist", "edit", "abc123", "-a", "-"]), false);
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "-a", "-"]), ["-"]);
+  });
+  it("--remove com arquivo-fonte: lê só o fonte; id depois de flags não é lido", () => {
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "-r", "velho.md", "local.md"]), ["local.md"]);
+    assert.deepEqual(readLog(["gist", "edit", "-d", "x", "abc123", "local.md"]), ["local.md"]);
+    assert.deepEqual(readLog(["gist", "edit", "abc123", "--add", "novo.md", "local.md"]).sort(), ["local.md", "novo.md"]);
+  });
+  it("create não conhece -a: `gist create -a x.md` lê x.md como posicional", () => {
+    assert.deepEqual(readLog(["gist", "create", "-a", "x.md"]), ["x.md"]);
+  });
+  it("edição limpa não bloqueia (sem falso positivo)", () => {
+    const r = evaluateGhInvocation(
+      ["gist", "edit", "abc123", "-d", "o prefixo ghp_ é de token", "-f", "notas.md", "local.md"],
+      clean,
+    );
+    assert.equal(r.blocked, false);
+  });
+});
+
 describe("#9056: token GitHub sem word boundary antes do prefixo", () => {
   it("token colado a uma letra é detectado (`-bghp_…` no texto cru, `xghp_…`)", () => {
     assert.ok(evaluateGhInvocation(["api", "x/comments", "-f", `body=-b${GH_TOKEN}`], {}).blocked);
