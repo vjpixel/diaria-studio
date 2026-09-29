@@ -107,6 +107,7 @@ Chamar, para os destaques indicados (todos se `$2` estiver vazio, ou o único de
 ```bash
 npx tsx scripts/stage-3-run.ts --edition $1 [--only d{N}] [--force]
 ```
+> **#9088 — gerador `codex`:** cada imagem leva ~1-2 min e o runner gera 2 por destaque em sequência — pode passar do teto de 10 min do Bash. Rodar em **background** (`run_in_background`) e aguardar; é idempotente (reexecutar sem `--force` só completa o que falta).
 
 Cobre lint pre-flight → `image-generate.ts` (2x1/1x1 + 4x5 nativo) por destaque → `gen-social-card-4x5.ts` (card 4:5 com título) → `gen-carousel-cards.ts` (#6005 Parte B — 3 slides de parágrafo + CTA do carrossel do Instagram) → leaderboard top1 (fail-soft) → box de campeões → pre-gate invariants (`check-invariants.ts --stage 3`) → descoberta dos pares do crop-reviewer.
 

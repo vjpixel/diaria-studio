@@ -38,6 +38,8 @@ Cobre só o miolo determinístico de §3b: lint pre-flight → `image-generate.t
 npx tsx scripts/stage-3-run.ts --edition {AAMMDD} [--only d1,d2] [--force]
 ```
 Interpretar o JSON de saída:
+
+> **#9088 — gerador `codex`:** cada imagem leva ~1-2 min e o runner gera 2 por destaque em sequência (2x1 + 4x5) — pode passar do teto de 10 min do Bash. Rodar `stage-3-run.ts` em **background** (`run_in_background`) e aguardar o término; é idempotente, então reexecutar sem `--force` só completa o que falta.
 - `code: 0` → miolo concluído. Usar `destaques[]` (por destaque: `lintOk`/`imageGenerated`/`nativeArt4x5Generated`), `cardsGenerated`, `championsInjected`, `invariantsPassed`/`invariantsViolations` e `cropReviewPairs` no lugar de rodar os comandos individuais de §3b abaixo.
 - `code: 1` → erro duro/BLOQUEANTE (ex: geração de imagem ou composição do card com exit ≠ 0) — parar e reportar `notes[]` ao editor, mesma severidade do #4090.
 - `code: 2` → HALT obrigatório (`haltRequired`, banner já renderizado pelo script — ComfyUI indisponível, ou #4583 raffle stale) — parar mesmo com `auto_approve`.
