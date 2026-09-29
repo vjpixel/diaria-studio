@@ -20,7 +20,14 @@ export const PlatformConfigSchema = z.object({
   publication_id: z.string().optional(),
   drive_sync: z.boolean().optional().default(true),
   drive_sync_conflict_tolerance_seconds: z.number().optional().default(10),
-  image_generator: z.enum(["gemini", "comfyui", "cloudflare", "openai"]).optional().default("gemini"),
+  image_generator: z.enum(["gemini", "comfyui", "cloudflare", "openai", "codex"]).optional().default("gemini"),
+  // #9088: backend Codex CLI (assinatura ChatGPT). Modelo SEMPRE explícito — a conta recusa o default do config global.
+  codex: z.object({
+    model: z.string().optional(),
+    reasoning_effort: z.string().optional(),
+    timeout_seconds: z.number().optional(),
+    fallback: z.enum(["gemini", "comfyui", "cloudflare", "openai"]).optional(),
+  }).optional(),
 
   inbox: z.object({
     enabled: z.boolean().optional().default(true),

@@ -631,6 +631,7 @@ export function imageGeneratorCredit(): string {
     const credits: Record<string, string> = {
       gemini:     "Criada com Gemini",
       openai:     "Criada com gpt-image-2",
+      codex:      "Criada com ChatGPT",
       cloudflare: "Criada com Cloudflare FLUX",
       comfyui:    "Criada com ComfyUI",
     };

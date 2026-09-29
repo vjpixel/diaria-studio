@@ -63,7 +63,7 @@ import { parsePlatformConfig } from "./lib/schemas/platform-config.ts"; // #4625
 // schema completo (scripts/lib/schemas/platform-config.ts também aceita
 // "openai", que este arquivo trata como gemini por fallback silencioso,
 // pré-existente, fora do escopo do #4620).
-type ImageGenerator = "gemini" | "comfyui" | "cloudflare";
+type ImageGenerator = "gemini" | "comfyui" | "cloudflare" | "codex";
 
 export interface WikimediaImage {
   title?: string;
@@ -1127,6 +1127,7 @@ export function buildCreditLine(
 export function resolveImageScriptName(imageGenerator: ImageGenerator): string {
   if (imageGenerator === "comfyui") return "scripts/comfyui-run.js";
   if (imageGenerator === "cloudflare") return "scripts/cloudflare-image.js";
+  if (imageGenerator === "codex") return "scripts/codex-image.js"; // #9088
   return "scripts/gemini-image.js";
 }
 

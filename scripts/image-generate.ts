@@ -213,6 +213,14 @@ export function computeStaleDerivedImages(
   return staleDerivedImagePaths(outDir, destaque);
 }
 
+// #9088: scripts dos backends usáveis como fallback do Codex.
+const FALLBACK_SCRIPTS: Record<string, string> = {
+  gemini: "gemini-image.js",
+  comfyui: "comfyui-run.js",
+  cloudflare: "cloudflare-image.js",
+  openai: "openai-image.js",
+};
+
 function buildPositivePrompt(editorialText: string): string {
   // Remove markdown formatting (headings, bold, links) and get clean scene description
   const scene = editorialText
@@ -414,6 +422,7 @@ function main() {
     generator === "comfyui"     ? "comfyui-run.js" :
     generator === "cloudflare"  ? "cloudflare-image.js" :
     generator === "openai"      ? "openai-image.js" :
+    generator === "codex"       ? "codex-image.js" :
     "gemini-image.js";
   const imageScript = resolve(ROOT, "scripts", scriptName);
 
@@ -426,7 +435,18 @@ function main() {
   } catch (e: unknown) {
     const code = (e as { status?: number }).status ?? 1;
     console.error(`${scriptName} falhou com código ${code}`);
-    process.exit(code);
+    // #9088: fallback opcional do Codex (login expirado, timeout) pra edição não travar.
+    const fb = generator === "codex" ? platformCfg.codex?.fallback : undefined;
+    if (!fb) process.exit(code);
+    const fbScript = FALLBACK_SCRIPTS[fb];
+    console.error(`image-generate: codex falhou — fallback configurado: ${fb} (${fbScript}).`);
+    try {
+      execFileSync(process.execPath, [resolve(ROOT, "scripts", fbScript), sdPromptPath, outJpgPath, filenamePrefix], { stdio: "inherit", cwd: ROOT });
+    } catch (e2: unknown) {
+      const code2 = (e2 as { status?: number }).status ?? 1;
+      console.error(`${fbScript} (fallback) falhou com código ${code2}`);
+      process.exit(code2);
+    }
   }
 
   // Wide: salvar 1600×800 como 04-d{N}-2x1.jpg, crop centro 800×800 como 04-d{N}-1x1.jpg
