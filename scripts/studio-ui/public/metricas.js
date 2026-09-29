@@ -6,6 +6,8 @@
 // READ-ONLY: só lista + botão "Atualizar" (bypassa o cache de 10min via
 // ?refresh=1) — zero escrita, mesma disciplina de ads.js.
 
+import { fmtValor } from "./metricas-format.js";
+
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
   fetchLabel: document.getElementById("fetch-label"),
@@ -64,25 +66,6 @@ function fmtTime(iso) {
   } catch {
     return iso;
   }
-}
-
-/** Formata `MetricResult.valor` conforme `unidade` — `null` é SEMPRE "sem
- * coleta", nunca "0" (regra de honestidade da issue #7178). `qualidade:
- * 'faixa'` mostra a faixa completa, nunca o ponto médio. */
-function fmtValor(result, unidade) {
-  if (result.valor == null) return "sem coleta";
-  const fmtNum = (n) => {
-    if (unidade === "percentual") return `${n.toFixed(1)}%`;
-    if (unidade === "razao") return n.toFixed(3);
-    if (unidade === "brl") return `R$ ${n.toFixed(2).replace(".", ",")}`;
-    if (unidade === "dias") return `${n.toFixed(1)}d`;
-    return Number.isInteger(n) ? String(n) : n.toFixed(2);
-  };
-  if (result.qualidade === "faixa" && result.limites) {
-    return `${fmtNum(result.limites.min)} (até ${fmtNum(result.limites.max)} com não-atribuídos)`;
-  }
-  const prefix = result.qualidade === "piso" ? "≥ " : "";
-  return prefix + fmtNum(result.valor);
 }
 
 function qualidadeBadge(qualidade) {

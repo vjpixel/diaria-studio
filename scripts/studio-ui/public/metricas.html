@@ -150,15 +150,17 @@
       <p class="hint">
         Usa o LTV <strong>blended</strong> (ponto médio da faixa) igual pra
         todo canal — ainda não há LTV medido por canal individual (ver
-        <code>#7916</code>). Custo por leitor vem do mesmo relatório de
-        <a href="/ads.html">Canais pagos</a>.
+        <code>#7916</code>). O LTV é por assinante ativo, então o
+        denominador também é: custo por <strong>ativo</strong> do canal
+        (gasto ÷ ativos, #9023), não o custo por leitor. Os dois vêm do
+        mesmo relatório de <a href="/ads.html">Canais pagos</a>.
       </p>
       <div class="table-scroll">
         <table class="triage-table">
           <thead>
             <tr>
               <th>Canal</th>
-              <th>LTV ÷ CAC</th>
+              <th>LTV ÷ custo por ativo</th>
             </tr>
           </thead>
           <tbody id="valor-cac-tbody"></tbody>

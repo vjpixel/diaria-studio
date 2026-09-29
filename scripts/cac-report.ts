@@ -112,8 +112,8 @@
  * receita da apoia.se (cache local, mês FECHADO anterior ao corrente) +
  * config manual da Amazon (`data/ltv/amazon-revenue.json`, sem fonte
  * automatizada) + churn por diff de 2 snapshots Beehiiv ~30 dias de
- * distância, e cruza com `custoPorLeitor` que `buildCacReport` já calculou
- * pra render LTV÷CAC por canal. Só leitura local — fail-soft: qualquer
+ * distância, e cruza com o custo por ATIVO de cada canal (gasto ÷ ativos do
+ * `CacRow` — mesma unidade do LTV, #9023) pra render LTV÷CAC por canal. Só leitura local — fail-soft: qualquer
  * insumo ausente faz a seção aparecer com `ltvFaixaBrl: null` + motivo
  * explícito, nunca deriva pra exceção nem pra "0"/"custo infinito". Uso
  * principal é contexto de ranqueamento de CAC, nunca gate de gasto (não
@@ -172,6 +172,7 @@ import {
   computeChurnRate,
   computeLtvCaixaFaixa,
   computeLtvCacRatio,
+  computeCustoPorAtivo,
   summarizeApoiaSeMonthRevenue,
   previousCompetenceMonth,
   findChurnBaselineDate,
@@ -277,8 +278,14 @@ export function loadStoreLeitorSection(
 
 export interface CacReportLtvRow {
   canal: string;
-  custoPorLeitor: number;
-  /** `null` quando o LTV blended não é computável (nunca 0/Infinity). */
+  /** CAC canônico do projeto (gasto ÷ leitor-v1) — só contexto; `null`
+   *  quando o canal não tem leitor. NÃO é o denominador da razão (#9023). */
+  custoPorLeitor: number | null;
+  /** Gasto ÷ ativos do canal — denominador de `ltvCacRatio`, mesma unidade
+   *  do LTV (por ativo) (#9023). */
+  custoPorAtivo: number;
+  /** LTV por ativo ÷ custo por ativo. `null` quando o LTV blended não é
+   *  computável (nunca 0/Infinity). */
   ltvCacRatio: number | null;
 }
 
@@ -298,8 +305,8 @@ export type CacReportLtvSection =
  * Calcula o LTV de caixa (blended, mesma metodologia de `studio-metrics.ts`
  * — receita apoia.se do mês FECHADO anterior + config manual da Amazon,
  * churn por diff de 2 snapshots Beehiiv ~30 dias de distância) e o LTV÷CAC
- * por canal usando o `custoPorLeitor` que `buildCacReport` já calculou
- * (NUNCA recalculado aqui). Fail-soft: qualquer insumo ausente faz a seção
+ * por canal usando o custo por ATIVO do canal (gasto ÷ ativos do `CacRow`
+ * que `buildCacReport` já montou). Fail-soft: qualquer insumo ausente faz a seção
  * aparecer com `ltvFaixaBrl: null` + `motivo`, nunca deriva pra exceção nem
  * pra "0"/"custo infinito".
  *
@@ -307,10 +314,21 @@ export type CacReportLtvSection =
  * (ponto médio da faixa) igual pra todo canal — ainda não há LTV medido POR
  * CANAL (dependeria de #7916 entregar receita por coorte no store
  * unificado).
+ *
+ * **População (#9023):** ARPU e os DOIS lados do diff de churn vêm do
+ * snapshot Beehiiv CRU (sem `applyOrigemOverride`/filtro de internos),
+ * exatamente como o painel Studio (`studio-metrics.ts`) — nunca da coorte
+ * do funil (`subs`, já filtrada e, em `--fonte store`, multi-plataforma).
+ * Misturar as duas fazia toda conta interna/teste ativa no baseline contar
+ * como "saída" e, no modo store, dividir a receita pela contagem do store.
+ * O snapshot "atual" é o mais recente <= `snapshotDate` (em `--fonte
+ * beehiiv` é o próprio; em `--fonte store`, `snapshotDate` é só rótulo).
+ *
+ * **Unidade (#9023):** LTV é por ativo, então o denominador de LTV÷CAC é o
+ * custo por ATIVO do canal (gasto ÷ ativos), nunca `custoPorLeitor`.
  */
 export function computeLtvSection(
   report: CacReport,
-  subs: readonly BeehiivBackupSubscriber[],
   backupRoot: string,
   snapshotDate: string,
   rootDir: string,
@@ -338,25 +356,37 @@ export function computeLtvSection(
 
   const amazonConfig = loadAmazonRevenueConfig(rootDir);
 
-  const activeCount = subs.filter((s) => s.status === "active").length;
+  const dates = listSnapshotDates(backupRoot);
+  const latestDate = resolveLtvLatestSnapshotDate(dates, snapshotDate);
+  if (!latestDate) {
+    return {
+      applied: true,
+      ltvFaixaBrl: null,
+      motivo: `nenhum snapshot Beehiiv em ou antes de ${snapshotDate} pra medir ARPU/churn`,
+      rows: [],
+    };
+  }
+  // Mesma população nos dois lados do diff E no denominador do ARPU:
+  // snapshot Beehiiv CRU (#9023, paridade com studio-metrics.ts).
+  const latestSubs = readSnapshotSubscribers(backupRoot, latestDate);
+  const activeCount = latestSubs.filter((s) => s.status === "active").length;
   const arpu = computeArpu({
     revenueBySource: { "apoia-se": cacheAvailable ? revSummary.grossRevenueBrl : null, amazon: amazonConfig.valorMensalBrl },
     activeBase: activeCount > 0 ? activeCount : null,
   });
 
-  const dates = listSnapshotDates(backupRoot);
-  const baselineDate = findChurnBaselineDate(dates, snapshotDate);
+  const baselineDate = findChurnBaselineDate(dates, latestDate);
   if (!baselineDate) {
     return {
       applied: true,
       ltvFaixaBrl: null,
-      motivo: `sem snapshot Beehiiv suficientemente espaçado (~30 dias) de ${snapshotDate} pra medir churn`,
+      motivo: `sem snapshot Beehiiv suficientemente espaçado (~30 dias) de ${latestDate} pra medir churn`,
       rows: [],
     };
   }
   const baselineSubs = readSnapshotSubscribers(backupRoot, baselineDate);
-  const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baselineSubs, subs);
-  const periodMonths = Math.abs(Date.parse(snapshotDate) - Date.parse(baselineDate)) / 86_400_000 / 30;
+  const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baselineSubs, latestSubs);
+  const periodMonths = Math.abs(Date.parse(latestDate) - Date.parse(baselineDate)) / 86_400_000 / 30;
   const manualCleanupResult = loadManualCleanupEmails(rootDir);
   if (manualCleanupResult.error) {
     // Não dá pra separar orgânico de com-limpeza com segurança — nunca deixa
@@ -394,15 +424,34 @@ export function computeLtvSection(
 
   const midpoint = (ltvFaixa.faixa.min + ltvFaixa.faixa.max) / 2;
   const measuredRows = report.rows.filter((r): r is Extract<CacRow, { kind: "measured" }> => r.kind === "measured");
-  const rows: CacReportLtvRow[] = measuredRows
-    .filter((r) => r.custoPorLeitor != null)
-    .map((r) => ({
-      canal: r.canal,
-      custoPorLeitor: r.custoPorLeitor as number,
-      ltvCacRatio: computeLtvCacRatio({ ltvBrl: midpoint, custoPorLeitorBrl: r.custoPorLeitor }).valor,
-    }));
+  const rows: CacReportLtvRow[] = measuredRows.flatMap((r) => {
+    const custoPorAtivo = computeCustoPorAtivo(r.spend.valor, r.ativos);
+    if (custoPorAtivo == null) return [];
+    return [
+      {
+        canal: r.canal,
+        custoPorLeitor: r.custoPorLeitor,
+        custoPorAtivo,
+        ltvCacRatio: computeLtvCacRatio({ ltvBrl: midpoint, custoPorAtivoBrl: custoPorAtivo }).valor,
+      },
+    ];
+  });
 
   return { applied: true, ltvFaixaBrl: { min: ltvFaixa.faixa.min, max: ltvFaixa.faixa.max }, motivo: null, rows };
+}
+
+/**
+ * Snapshot Beehiiv "atual" da seção LTV (#9023): o mais recente com data
+ * `<= snapshotDate`. Em `--fonte beehiiv` coincide com `snapshotDate`; em
+ * `--fonte store` o rótulo pode não ser uma data de snapshot. `null` quando
+ * nenhum snapshot serve. @pure
+ */
+export function resolveLtvLatestSnapshotDate(dates: readonly string[], snapshotDate: string): string | null {
+  let best: string | null = null;
+  for (const d of dates) {
+    if (d <= snapshotDate && (best == null || d > best)) best = d;
+  }
+  return best;
 }
 
 /**
@@ -851,17 +900,21 @@ export function formatCacReportMarkdown(
       );
       lines.push("");
       if (ltvSection.rows.length === 0) {
-        lines.push("_nenhum canal com custo por leitor válido pra calcular LTV÷CAC._");
+        lines.push("_nenhum canal com ativos pra calcular LTV÷custo por ativo._");
       } else {
         lines.push(
           "LTV÷CAC usa o LTV BLENDED (ponto médio da faixa acima) igual pra todo canal — ainda não há LTV medido " +
-            "POR CANAL individual (dependeria de #7916 entregar receita por coorte no store unificado).",
+            "POR CANAL individual (dependeria de #7916 entregar receita por coorte no store unificado). " +
+            "O LTV é por ativo, então a razão divide pelo custo por ATIVO do canal (gasto ÷ ativos) — o " +
+            "custo por leitor (CAC canônico) aparece só como contexto (#9023).",
         );
         lines.push("");
-        lines.push("| Canal | Custo/leitor | LTV ÷ CAC |");
-        lines.push("|---|---|---|");
+        lines.push("| Canal | Custo/leitor | Custo/ativo | LTV ÷ custo/ativo |");
+        lines.push("|---|---|---|---|");
         for (const row of ltvSection.rows) {
-          lines.push(`| ${row.canal} | ${fmtBrl(row.custoPorLeitor)} | ${row.ltvCacRatio == null ? "—" : row.ltvCacRatio.toFixed(2)} |`);
+          lines.push(
+            `| ${row.canal} | ${fmtBrl(row.custoPorLeitor)} | ${fmtBrl(row.custoPorAtivo)} | ${row.ltvCacRatio == null ? "—" : row.ltvCacRatio.toFixed(2)} |`,
+          );
         }
       }
     }
@@ -1030,9 +1083,10 @@ export async function main(
   // própria (computeLtvSection nunca lança, só devolve motivo/ltvFaixaBrl:null).
   // Usa SEMPRE `args.backupRoot` (histórico de snapshot Beehiiv) pro diff de
   // churn, mesmo em `--fonte store` — a metodologia de LTV depende do
-  // histórico de snapshot, que `--fonte store` não substitui.
+  // histórico de snapshot, que `--fonte store` não substitui. ARPU e os
+  // dois lados do churn leem o snapshot CRU (nunca `subs`), #9023.
   const ltvSection: CacReportLtvSection | undefined = args.ltv
-    ? computeLtvSection(report, subs, args.backupRoot, snapshotDate, rootDir, now)
+    ? computeLtvSection(report, args.backupRoot, snapshotDate, rootDir, now)
     : undefined;
 
   if (args.json) {

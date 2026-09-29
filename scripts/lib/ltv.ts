@@ -456,9 +456,24 @@ export function computeLtvPorOrigem(input: LtvPorOrigemInput): LtvPorOrigemResul
 // ---------------------------------------------------------------------------
 
 export interface LtvCacRatioInput {
+  /** LTV de caixa POR ASSINANTE ATIVO (ARPU = receita ÷ base ativa). */
   ltvBrl: number | null;
-  /** Custo por leitor/cadastro do canal (CAC) — denominador. */
-  custoPorLeitorBrl: number | null;
+  /** Custo por assinante ATIVO do canal (gasto ÷ ativos, ver
+   *  `computeCustoPorAtivo`) — denominador. Mesma unidade do numerador
+   *  (#9023): antes era `custoPorLeitor` (gasto ÷ leitor-v1), população menor
+   *  e mais estrita que a do ARPU, e a razão saía subestimada por um fator
+   *  ~ativos/leitores. O CAC canônico do projeto continua sendo custo por
+   *  LEITOR (`CacRow.custoPorLeitor`) — só esta razão usa a unidade ativa. */
+  custoPorAtivoBrl: number | null;
+}
+
+/**
+ * Custo por assinante ATIVO de um canal (gasto ÷ ativos da coorte do
+ * canal) — denominador de `computeLtvCacRatio` (#9023). `null` quando não há
+ * ativo (nunca Infinity/0 fabricado). @pure
+ */
+export function computeCustoPorAtivo(spendBrl: number, ativos: number): number | null {
+  return ativos > 0 ? spendBrl / ativos : null;
 }
 
 export interface LtvCacRatioResult {
@@ -471,11 +486,11 @@ export interface LtvCacRatioResult {
 /** @pure */
 export function computeLtvCacRatio(input: LtvCacRatioInput): LtvCacRatioResult {
   if (input.ltvBrl == null) return { valor: null, motivo: "LTV indisponível" };
-  if (input.custoPorLeitorBrl == null) return { valor: null, motivo: "custo por leitor (CAC) indisponível" };
-  if (input.custoPorLeitorBrl <= 0) {
-    return { valor: null, motivo: `custo por leitor <= 0 (${input.custoPorLeitorBrl}) — razão indefinida, nunca "infinita"` };
+  if (input.custoPorAtivoBrl == null) return { valor: null, motivo: "custo por ativo do canal indisponível" };
+  if (input.custoPorAtivoBrl <= 0) {
+    return { valor: null, motivo: `custo por ativo <= 0 (${input.custoPorAtivoBrl}) — razão indefinida, nunca "infinita"` };
   }
-  return { valor: input.ltvBrl / input.custoPorLeitorBrl, motivo: null };
+  return { valor: input.ltvBrl / input.custoPorAtivoBrl, motivo: null };
 }
 
 // ---------------------------------------------------------------------------

@@ -354,7 +354,7 @@ describe("cadastros-nao-pago-nao-reativacao-dia — o placar (#7176)", () => {
     const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
     assert.equal(r.qualidade, "faixa");
     assert.equal(r.valor, 2); // piso = organico(1) + iniciativa(1)
-    assert.deepEqual(r.limites, { min: 2, max: 3 });
+    assert.deepEqual(r.limites, { min: 2, max: 3, rotuloMax: "com não-atribuídos" });
   });
 
   it("sem coleta devolve indeterminado", async () => {
@@ -378,7 +378,7 @@ describe("cadastros-organicos-dia — orgânico estrito", () => {
     });
     const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
     assert.equal(r.valor, 1);
-    assert.deepEqual(r.limites, { min: 1, max: 2 });
+    assert.deepEqual(r.limites, { min: 1, max: 2, rotuloMax: "com não-atribuídos" });
   });
 });
 

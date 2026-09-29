@@ -14,9 +14,17 @@ import {
   computeLtvSection,
   formatCacReportMarkdown,
   parseCacReportArgs,
+  resolveLtvLatestSnapshotDate,
   type CacReportLtvSection,
 } from "../scripts/cac-report.ts";
-import { buildCacReport, computeMonthBudgetUsage, type CacReport } from "../scripts/lib/cac.ts";
+import { buildCacReport, computeMonthBudgetUsage, isInternalOrTestEmail, type CacReport } from "../scripts/lib/cac.ts";
+import {
+  computeArpu,
+  computeChurnExitsBetweenSnapshots,
+  computeChurnRate,
+  computeLtvCaixaFaixa,
+  LTV_DEFAULT_HORIZON_MONTHS,
+} from "../scripts/lib/ltv.ts";
 import type { SpendRow } from "../scripts/lib/aquisicao-spend.ts";
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
 
@@ -63,7 +71,7 @@ describe("computeLtvSection", () => {
       const subs = [sub({ email: "a@x.com" })];
       const report = buildCacReport([spendRow("Google Ads", 100)], subs);
 
-      const section = computeLtvSection(report, subs, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
+      const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
       assert.equal(section.applied, true);
       if (section.applied) {
         assert.equal(section.ltvFaixaBrl, null);
@@ -130,7 +138,7 @@ describe("computeLtvSection", () => {
         ],
       } as CacReport;
 
-      const section = computeLtvSection(report, latestSubs, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
+      const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
       assert.equal(section.applied, true);
       if (section.applied) {
         assert.ok(section.ltvFaixaBrl, "LTV deveria ser computável com receita + churn disponíveis");
@@ -139,18 +147,117 @@ describe("computeLtvSection", () => {
 
         // `rows` (#8423 fleet review — must-add): canal com gasto real
         // (spendRow) + subs atribuídos (utm_source=google-ads) tem que
-        // aparecer com custoPorLeitor > 0 e ltvCacRatio numérico coerente
-        // com o midpoint da faixa acima.
+        // aparecer com ltvCacRatio numérico coerente com o midpoint da
+        // faixa acima. Desde #9023 o denominador é custo por ATIVO
+        // (100 / 1 ativo), não o custo por leitor (5) — mesma unidade do LTV.
         assert.equal(section.rows.length, 1);
         assert.equal(section.rows[0].canal, "Google Ads");
-        assert.ok(section.rows[0].custoPorLeitor > 0);
+        assert.equal(section.rows[0].custoPorLeitor, 5);
+        assert.equal(section.rows[0].custoPorAtivo, 100);
         assert.ok(section.rows[0].ltvCacRatio != null);
         const midpoint = (section.ltvFaixaBrl!.min + section.ltvFaixaBrl!.max) / 2;
-        assert.ok(Math.abs(section.rows[0].ltvCacRatio! - midpoint / section.rows[0].custoPorLeitor) < 1e-6);
+        assert.ok(Math.abs(section.rows[0].ltvCacRatio! - midpoint / 100) < 1e-6);
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("computeLtvSection — mesma população nos dois lados do churn e no ARPU (#9023 item 1)", () => {
+  // Conta interna ativa nos DOIS snapshots: `loadPreparedSubscribers`/o
+  // store a removeriam da coorte do funil. Antes do fix, o lado "atual" do
+  // diff era essa coorte filtrada e o baseline era o snapshot cru — a conta
+  // interna contava como "saída" e o ARPU dividia pela contagem filtrada.
+  const INTERNO = "pixel@memelab.com.br";
+
+  function setup(root: string): string {
+    const backupRoot = join(root, "beehiiv-backup");
+    writeSnapshotDir(root, "2026-08-10", [
+      sub({ email: "a@x.com", status: "active" }),
+      sub({ email: "b@x.com", status: "active" }),
+      sub({ email: INTERNO, status: "active" }),
+    ]);
+    writeSnapshotDir(root, "2026-09-09", [
+      sub({ email: "a@x.com", status: "active" }),
+      sub({ email: "b@x.com", status: "inactive" }),
+      sub({ email: INTERNO, status: "active" }),
+    ]);
+    const ltvDir = join(root, "data", "ltv");
+    mkdirSync(ltvDir, { recursive: true });
+    writeFileSync(join(ltvDir, "amazon-revenue.json"), JSON.stringify({ valorMensalBrl: 30, atualizadoEm: "2026-09-01T00:00:00Z" }), "utf8");
+    return backupRoot;
+  }
+
+  // Valor esperado computado DIRETO das funções puras sobre os snapshots CRUS
+  // — é o que studio-metrics.ts faz, então cac-report e painel batem.
+  function expectedRawFaixa(): { min: number; max: number } {
+    const baseline = [
+      { email: "a@x.com", status: "active" },
+      { email: "b@x.com", status: "active" },
+      { email: INTERNO, status: "active" },
+    ];
+    const latest = [
+      { email: "a@x.com", status: "active" },
+      { email: "b@x.com", status: "inactive" },
+      { email: INTERNO, status: "active" },
+    ];
+    const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baseline, latest);
+    assert.equal(exits.length, 1, "só b@x.com saiu — a conta interna segue ativa nos dois lados");
+    const periodMonths = (Date.parse("2026-09-09") - Date.parse("2026-08-10")) / 86_400_000 / 30;
+    const churn = computeChurnRate({ exits, manualCleanupEmails: new Set(), periodMonths, avgActiveBase });
+    const arpu = computeArpu({ revenueBySource: { "apoia-se": null, amazon: 30 }, activeBase: 2 });
+    const r = computeLtvCaixaFaixa({
+      arpuMonthlyBrl: arpu.valor,
+      churnOrganicoMonthly: churn.monthly?.organico ?? null,
+      churnComLimpezaMonthly: churn.monthly?.comLimpeza ?? null,
+      horizonMonths: LTV_DEFAULT_HORIZON_MONTHS,
+    });
+    assert.ok(r.faixa);
+    return r.faixa!;
+  }
+
+  it("conta interna ativa nos dois snapshots não vira 'saída' e entra no denominador do ARPU", () => {
+    assert.ok(isInternalOrTestEmail(INTERNO), "fixture exige um e-mail que o filtro de internos remove");
+    const root = makeRoot();
+    try {
+      const backupRoot = setup(root);
+      const report = { rows: [] } as unknown as CacReport;
+      const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
+      assert.equal(section.applied, true);
+      if (section.applied) {
+        assert.ok(section.ltvFaixaBrl, section.motivo ?? "LTV deveria ser computável");
+        const exp = expectedRawFaixa();
+        assert.ok(Math.abs(section.ltvFaixaBrl!.min - exp.min) < 1e-9, `min ${section.ltvFaixaBrl!.min} != ${exp.min}`);
+        assert.ok(Math.abs(section.ltvFaixaBrl!.max - exp.max) < 1e-9, `max ${section.ltvFaixaBrl!.max} != ${exp.max}`);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--fonte store: rótulo que não é data de snapshot resolve pro snapshot Beehiiv mais recente anterior", () => {
+    const root = makeRoot();
+    try {
+      const backupRoot = setup(root);
+      const report = { rows: [] } as unknown as CacReport;
+      const section = computeLtvSection(report, backupRoot, "2026-09-12", root, () => new Date("2026-09-15T12:00:00Z"), {});
+      assert.equal(section.applied, true);
+      if (section.applied) {
+        const exp = expectedRawFaixa();
+        assert.ok(section.ltvFaixaBrl, section.motivo ?? "LTV deveria ser computável");
+        assert.ok(Math.abs(section.ltvFaixaBrl!.min - exp.min) < 1e-9);
+        assert.ok(Math.abs(section.ltvFaixaBrl!.max - exp.max) < 1e-9);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveLtvLatestSnapshotDate: mais recente <= rótulo; null quando nenhum serve", () => {
+    assert.equal(resolveLtvLatestSnapshotDate(["2026-08-10", "2026-09-09"], "2026-09-09"), "2026-09-09");
+    assert.equal(resolveLtvLatestSnapshotDate(["2026-09-09", "2026-08-10"], "2026-09-12"), "2026-09-09");
+    assert.equal(resolveLtvLatestSnapshotDate(["2026-09-09"], "2026-09-01"), null);
   });
 });
 
@@ -174,7 +281,7 @@ describe("computeLtvSection — cache apoia.se corrompido nunca fabrica R$0 (#84
       writeFileSync(join(ltvDir, "amazon-revenue.json"), JSON.stringify({ valorMensalBrl: 40, atualizadoEm: "2026-09-01T00:00:00Z" }), "utf8");
 
       const report = buildCacReport([spendRow("Google Ads", 100)], latestSubs);
-      const section = computeLtvSection(report, latestSubs, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
+      const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
 
       // Sem a receita apoia.se (cache corrompido == indisponível), só a
       // Amazon sobra — ARPU/LTV ainda podem ser computáveis, mas NUNCA
@@ -205,7 +312,7 @@ describe("computeLtvSection — limpeza manual corrompida nunca colapsa churn em
       writeFileSync(join(analysisDir, "descadastrados-manuais-2607.json"), "{ corrompido", "utf8");
 
       const report = buildCacReport([spendRow("Google Ads", 100)], latestSubs);
-      const section = computeLtvSection(report, latestSubs, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
+      const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
 
       assert.equal(section.applied, true);
       if (section.applied) {
@@ -247,12 +354,15 @@ describe("formatCacReportMarkdown — seção LTV vs. custo (#8423)", () => {
       applied: true,
       ltvFaixaBrl: { min: 14, max: 16 },
       motivo: null,
-      rows: [{ canal: "Google Ads", custoPorLeitor: 5, ltvCacRatio: 3 }],
+      rows: [{ canal: "Google Ads", custoPorLeitor: 5, custoPorAtivo: 50, ltvCacRatio: 3 }],
     };
     const md = formatCacReportMarkdown(report, budget, {}, undefined, undefined, [], section);
     assert.match(md, /LTV de caixa \(blended\)/);
     assert.match(md, /Google Ads/);
     assert.match(md, /3\.00/);
+    // #9023: a razão é por ativo — a tabela declara isso e mostra o custo/ativo.
+    assert.match(md, /\| Canal \| Custo\/leitor \| Custo\/ativo \| LTV ÷ custo\/ativo \|/);
+    assert.match(md, /\| Google Ads \| R\$ 5,00 \| R\$ 50,00 \| 3\.00 \|/);
   });
 
   it("piso/teto: piso = churn com limpeza (mais alto), teto = churn orgânico (mais baixo) — #8423 fleet review item 4", () => {

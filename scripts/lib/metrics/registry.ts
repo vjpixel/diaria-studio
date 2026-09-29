@@ -156,6 +156,12 @@ export interface Janela {
 export interface MetricLimites {
   min: number;
   max: number;
+  /** O que o TETO (`max`) significa pra ESTA métrica, curto o bastante pra
+   *  caber em "(até {max} {rotuloMax})" na UI (#9023). Cada métrica de faixa
+   *  tem semântica própria de teto — aquisição = "com não-atribuídos", churn
+   *  = "com limpeza manual", LTV = "com churn orgânico" — e a UI nunca deve
+   *  inventar um sufixo fixo. */
+  rotuloMax: string;
 }
 
 export interface MetricSeriesPoint {
@@ -289,8 +295,15 @@ function exato(valor: number, janela: Janela, frescor: string | null, series?: M
   return { valor, janela, frescor, qualidade: "exato", motivo: null, ...(series ? { series } : {}) };
 }
 
-function faixa(min: number, max: number, janela: Janela, frescor: string | null, motivo: string): MetricResult {
-  return { valor: min, janela, frescor, qualidade: "faixa", motivo, limites: { min, max } };
+function faixa(
+  min: number,
+  max: number,
+  janela: Janela,
+  frescor: string | null,
+  motivo: string,
+  rotuloMax: string,
+): MetricResult {
+  return { valor: min, janela, frescor, qualidade: "faixa", motivo, limites: { min, max, rotuloMax } };
 }
 
 function piso(valor: number, janela: Janela, frescor: string | null, motivo: string): MetricResult {
@@ -489,6 +502,7 @@ const cadastrosNaoPagoNaoReativacaoDiaDef: MetricDef<AcquisitionMetricDeps> = {
       args.janela,
       frescor,
       "faixa: piso = organico+iniciativa; teto soma os cadastros indeterminados do período, nunca distribuídos entre classes",
+      "com não-atribuídos",
     );
   },
 };
@@ -519,6 +533,7 @@ const cadastrosOrganicosDiaDef: MetricDef<AcquisitionMetricDeps> = {
       args.janela,
       frescor,
       "faixa: piso = organico estrito; teto soma os cadastros indeterminados do período",
+      "com não-atribuídos",
     );
   },
 };
@@ -1078,7 +1093,9 @@ const conversaoVisitaCadastroDef: MetricDef<ConversaoVisitaCadastroDeps> = {
     if (okRows.length === 0 || valorAgregado === null) {
       return { valor: null, janela: args.janela, frescor, qualidade: "indeterminado", motivo, series };
     }
-    const result = faixa(valorAgregado, valorAgregado, args.janela, frescor, motivo);
+    // Faixa degenerada (min === max) — a UI mostra só o valor; o rótulo só
+    // existiria se o teto divergisse do piso.
+    const result = faixa(valorAgregado, valorAgregado, args.janela, frescor, motivo, "sem join por pessoa");
     result.series = series;
     return result;
   },
@@ -1227,6 +1244,7 @@ const churnMensalDef: MetricDef<ChurnMensalDeps> = {
       args.janela,
       null,
       `faixa: piso = churn orgânico; teto = churn com limpeza manual (${r.manualCleanupExits} de ${r.totalExits} saída(s))`,
+      "com limpeza manual",
     );
     if (series) result.series = series;
     return result;
@@ -1294,7 +1312,14 @@ const ltvCaixaDef: MetricDef<LtvCaixaDeps> = {
       horizonMonths,
     });
     if (r.faixa == null) return indeterminado(args.janela, r.motivo ?? "LTV indisponível");
-    return faixa(r.faixa.min, r.faixa.max, args.janela, null, `faixa de LTV — horizonte de ${horizonMonths} meses`);
+    return faixa(
+      r.faixa.min,
+      r.faixa.max,
+      args.janela,
+      null,
+      `faixa de LTV — horizonte de ${horizonMonths} meses`,
+      "com churn orgânico",
+    );
   },
 };
 
@@ -1371,8 +1396,10 @@ export interface LtvCacRatioDeps extends MetricDeps {
   /** LTV (BRL) por canal — já resolvido pelo chamador (ex: ltv-caixa ou
    *  ltv-por-origem mapeado pra classe do canal). */
   ltvPorCanal: Readonly<Record<string, number | null>>;
-  /** Custo por leitor/cadastro (CAC) por canal — de `buildCacReport`
-   *  (`CacRow.custoPorLeitor`), nunca recalculado aqui. */
+  /** Custo por assinante ATIVO por canal (gasto ÷ ativos do `CacRow`, via
+   *  `computeCustoPorAtivo`) — mesma unidade do LTV, que é por ativo (#9023).
+   *  Nunca `CacRow.custoPorLeitor`: leitor-v1 é população menor e a razão
+   *  sairia subestimada por ~ativos/leitores. */
   custoPorCanal: Readonly<Record<string, number | null>>;
 }
 
@@ -1382,14 +1409,15 @@ const ltvCacRatioDef: MetricDef<LtvCacRatioDeps> = {
   produto: "diaria",
   etapa: "receita",
   definicao:
-    "razão por canal: LTV (deps.ltvPorCanal) ÷ custo por leitor/cadastro do canal (denominador = " +
-    "deps.custoPorCanal[canal], de buildCacReport/CacRow.custoPorLeitor). Contexto de ranqueamento de CAC, " +
+    "razão por canal: LTV por ativo (deps.ltvPorCanal) ÷ custo por ATIVO do canal (denominador = " +
+    "deps.custoPorCanal[canal] = gasto ÷ ativos do CacRow — mesma unidade do numerador, #9023; nunca o " +
+    "custo por leitor, que é população menor). Contexto de ranqueamento de CAC, " +
     "NUNCA gate de gasto (não reabre o teto revogado em #5235/#5236, #8423). decomposicao 'canal' sempre " +
     "devolve a razão por canal; canal presente só de um lado (LTV sem CAC ou vice-versa) sai com valor null " +
     "na série, nunca 0/Infinity.",
   unidade: "razao",
   direcao: "maior-melhor",
-  fonte: "ltv-caixa/ltv-por-origem + cac-report.ts (CacRow.custoPorLeitor)",
+  fonte: "ltv-caixa/ltv-por-origem + cac-report.ts (CacRow.spend ÷ CacRow.ativos)",
   decomposicoes: ["canal"],
   async computar(args) {
     validarDecomposicao(ltvCacRatioDef, args.decomposicao);
@@ -1398,7 +1426,7 @@ const ltvCacRatioDef: MetricDef<LtvCacRatioDeps> = {
       canal,
       resultado: computeLtvCacRatio({
         ltvBrl: args.deps.ltvPorCanal[canal] ?? null,
-        custoPorLeitorBrl: args.deps.custoPorCanal[canal] ?? null,
+        custoPorAtivoBrl: args.deps.custoPorCanal[canal] ?? null,
       }),
     }));
     const series: MetricSeriesPoint[] | undefined =
