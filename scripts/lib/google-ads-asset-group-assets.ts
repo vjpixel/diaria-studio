@@ -460,14 +460,37 @@ export type ImageFieldType = Extract<KnownAssetGroupFieldType, "SQUARE_MARKETING
  *  requirements" (https://developers.google.com/google-ads/api/performance-max/asset-requirements),
  *  lida em 29/09/2026 — MARKETING_IMAGE (1,91:1) mín 1/máx 20,
  *  SQUARE_MARKETING_IMAGE (1:1) mín 1/máx 20, PORTRAIT_MARKETING_IMAGE (4:5)
- *  máx 20. A página não declara teto COMBINADO entre os tipos de imagem, então
- *  nenhum é imposto aqui (não inventar limite sem fonte). Mesma ressalva de
- *  `PMAX_TEXT_LIMITS`: a API não expõe endpoint de limites, só rejeita na
- *  mutação. */
+ *  máx 20. O teto COMBINADO entre os tipos vive à parte, em
+ *  `PMAX_IMAGE_COMBINED_MAX` (#9080). Mesma ressalva de `PMAX_TEXT_LIMITS`: a
+ *  API não expõe endpoint de limites, só rejeita na mutação. */
 export const PMAX_IMAGE_FIELD_MAX: Readonly<Record<ImageFieldType, number>> = {
   SQUARE_MARKETING_IMAGE: 20,
   MARKETING_IMAGE: 20,
   PORTRAIT_MARKETING_IMAGE: 20,
+};
+
+/** Teto COMBINADO de imagens de marketing ENABLED por asset group (#9080) —
+ *  soma dos 3 tipos de `PMAX_IMAGE_FIELD_MAX`. Premissa CONSERVADORA, não
+ *  fato confirmado: a doc da API (lida em 29/09/2026) só cita 20 por tipo, mas
+ *  guias de terceiros descrevem "até 20 imagens por asset group, em qualquer
+ *  combinação de proporções", e a Central de Ajuda repete "Add up to 20 images"
+ *  em cada linha sem desambiguar. Ao vivo (dry-run, 29/09/2026) o grupo
+ *  `6642889160` tinha 19 imagens ENABLED somando os 3 tipos, o que não
+ *  distingue as duas leituras. Impor o teto combinado custa pouco se ele não
+ *  existir (a Fase 1 remove mais cedo imagens stale que a Fase 2 removeria de
+ *  qualquer jeito); não impor, se ele existir, faz a Fase 1 falhar no meio
+ *  (textos linkados, imagens criadas e órfãs). Logos (LOGO/LANDSCAPE_LOGO)
+ *  ficam fora da soma: estão todos REMOVED no grupo e são PROTECTED aqui. */
+export const PMAX_IMAGE_COMBINED_MAX = 20;
+
+/** Mínimo de imagens ENABLED por tipo que o grupo precisa manter (mesma fonte
+ *  de `PMAX_IMAGE_FIELD_MAX`: MARKETING_IMAGE e SQUARE_MARKETING_IMAGE são
+ *  obrigatórios, mín 1; PORTRAIT é opcional). O teto combinado nunca remove
+ *  stale de um tipo abaixo deste piso (#9080). */
+export const PMAX_IMAGE_FIELD_MIN: Readonly<Record<ImageFieldType, number>> = {
+  SQUARE_MARKETING_IMAGE: 1,
+  MARKETING_IMAGE: 1,
+  PORTRAIT_MARKETING_IMAGE: 0,
 };
 
 export interface FieldLinkPlan<F extends AssetGroupFieldType = AssetGroupFieldType> {
@@ -492,7 +515,6 @@ export type FieldLinkPlanResult<F extends AssetGroupFieldType = AssetGroupFieldT
   | { ok: true; plans: FieldLinkPlan<F>[] }
   | { ok: false; errors: string[]; plans: FieldLinkPlan<F>[] };
 
-export type TextFieldLinkPlan = FieldLinkPlan<TextFieldType>;
 export type TextLinkPlanResult = FieldLinkPlanResult<TextFieldType>;
 export type ImageLinkPlanResult = FieldLinkPlanResult<ImageFieldType>;
 
@@ -569,7 +591,8 @@ export function planTextFieldLinks(
  * um manifesto que, somado às imagens já ENABLED, passasse de
  * `PMAX_IMAGE_FIELD_MAX` só falharia na mutação, no meio da Fase 1 (textos já
  * linkados, imagens criadas e órfãs). Imagem `needsReview` (`logo_1.jpg`) e
- * `keep` contam como permanentes — nunca removidas para abrir vaga.
+ * `keep` contam como permanentes — nunca removidas para abrir vaga. Desde o
+ * #9080 aplica também o teto combinado (`applyCombinedImageCap`).
  *
  * @pure
  */
@@ -579,7 +602,64 @@ export function planImageFieldLinks(
   newCounts: Readonly<Record<ImageFieldType, number>>,
   skipFieldTypes: ReadonlySet<string> = new Set(),
 ): ImageLinkPlanResult {
-  return planFieldLinksAgainstMax(items, classification, PMAX_IMAGE_FIELD_MAX, newCounts, skipFieldTypes);
+  const perType = planFieldLinksAgainstMax(items, classification, PMAX_IMAGE_FIELD_MAX, newCounts, skipFieldTypes);
+  // Plano por tipo já inviável: o teto combinado só repetiria o mesmo erro.
+  const combinedErrors = perType.ok ? applyCombinedImageCap(items, classification, perType.plans) : [];
+  const errors = [...(perType.ok ? [] : perType.errors), ...combinedErrors];
+  return errors.length === 0 ? { ok: true, plans: perType.plans } : { ok: false, errors, plans: perType.plans };
+}
+
+/**
+ * Teto combinado (#9080, `PMAX_IMAGE_COMBINED_MAX`) por cima do plano por
+ * tipo. Os links de imagem saem um `assetGroupAssets:mutate` por fieldType,
+ * na ordem dos `plans` (= ordem de `PMAX_IMAGE_FIELD_MAX`, a mesma da CLI), e
+ * CADA mutate precisa deixar o total ≤ teto — não só o estado final. Quando um
+ * link passaria do teto, remove mais imagens stale no MESMO mutate (um
+ * `assetGroupAssets:mutate` remove qualquer `asset_group_asset` do grupo, não
+ * só do fieldType linkado): primeiro do próprio tipo, depois dos demais na
+ * ordem, nunca deixando um tipo abaixo de `PMAX_IMAGE_FIELD_MIN` nem tocando
+ * em keep/needsReview. Muta `plans[].removeInSameMutate`; devolve os erros.
+ * Etapas já linkadas (fora de `plans`) já estão em `items` como ENABLED.
+ */
+function applyCombinedImageCap(
+  items: readonly AssetGroupAssetItem[],
+  classification: AssetGroupClassification,
+  plans: FieldLinkPlan<ImageFieldType>[],
+): string[] {
+  if (plans.length === 0) return [];
+  const imageTypes = Object.keys(PMAX_IMAGE_FIELD_MAX) as ImageFieldType[];
+  const isImageType = (ft: string): ft is ImageFieldType => (imageTypes as string[]).includes(ft);
+  const countByType = Object.fromEntries(imageTypes.map((ft) => [ft, 0])) as Record<ImageFieldType, number>;
+  for (const i of items) if (i.status === "ENABLED" && isImageType(i.fieldType)) countByType[i.fieldType]++;
+  const scheduled = new Set(plans.flatMap((p) => p.removeInSameMutate));
+  const pool = classification.stale.filter(
+    (i) => isImageType(i.fieldType) && !scheduled.has(i.assetGroupAssetResourceName),
+  );
+  let running = Object.values(countByType).reduce((a, b) => a + b, 0);
+  const errors: string[] = [];
+  for (const plan of plans) {
+    running += plan.newCount - plan.removeInSameMutate.length;
+    countByType[plan.fieldType] += plan.newCount - plan.removeInSameMutate.length;
+    const order = [plan.fieldType, ...imageTypes.filter((ft) => ft !== plan.fieldType)];
+    for (const ft of order) {
+      while (running > PMAX_IMAGE_COMBINED_MAX && countByType[ft] > PMAX_IMAGE_FIELD_MIN[ft]) {
+        const idx = pool.findIndex((i) => i.fieldType === ft);
+        if (idx < 0) break;
+        const [picked] = pool.splice(idx, 1);
+        plan.removeInSameMutate.push(picked.assetGroupAssetResourceName);
+        countByType[ft]--;
+        running--;
+      }
+    }
+    if (running > PMAX_IMAGE_COMBINED_MAX) {
+      errors.push(
+        `teto combinado de imagens: linkar ${plan.fieldType} deixaria ${running} imagem(ns) ENABLED no grupo > máximo combinado ${PMAX_IMAGE_COMBINED_MAX} ` +
+          "mesmo removendo todo o stale disponível — decidir à mão o que sai antes de rodar --send",
+      );
+      return errors;
+    }
+  }
+  return errors;
 }
 
 /** Monta o payload de `assetGroupAssets:mutate` que linka os novos E remove

@@ -77,7 +77,10 @@
  *   imagens do manifesto (#9057, `planImageFieldLinks`, máx 20 por tipo):
  *   imagens existentes + manifesto > 20 num tipo também removem o mínimo
  *   de imagens stale no mesmo mutate (ou recusam, se o excedente não for
- *   stale).
+ *   stale). Por cima disso, o teto COMBINADO de 20 imagens somando os 3
+ *   tipos (#9080, `PMAX_IMAGE_COMBINED_MAX`, premissa conservadora): cada
+ *   link de imagem remove stale extra (de qualquer tipo) no mesmo mutate
+ *   para que o total do grupo nunca passe de 20 em nenhum passo.
  *
  *   Fase 2 (`--send --remove-stale`, rodado numa invocação SEPARADA
  *   depois de confirmar pela API que os novos estão `ENABLED` e sem
@@ -125,6 +128,8 @@ import {
   buildSwapAssetGroupAssetsPayload,
   planTextFieldLinks,
   planImageFieldLinks,
+  PMAX_IMAGE_COMBINED_MAX,
+  PMAX_IMAGE_FIELD_MAX,
   type ImageFieldType,
   type ImageLinkPlanResult,
   buildRemoveAssetGroupAssetsPayload,
@@ -141,7 +146,7 @@ import {
   type AssetGroupFieldType,
   type SwapProgress,
   type SwapProgressStepKey,
-  type TextFieldLinkPlan,
+  type FieldLinkPlanResult,
 } from "./lib/google-ads-asset-group-assets.ts";
 import { refreshGoogleAdsAccessToken, postGoogleAdsWithLoginRetry, DEFAULT_API_VERSION } from "./lib/google-ads-ingest.ts";
 import { authConfigFromEnv } from "./lib/google-ads-conversion-sender.ts";
@@ -233,11 +238,10 @@ export function fetchCooldownCommentsOrNull(issueNumber: number, cwd: string): s
   return comments.map((c) => c.body).filter((b): b is string => typeof b === "string");
 }
 
-const IMAGE_FIELD_TYPES: readonly ImageFieldType[] = [
-  "SQUARE_MARKETING_IMAGE",
-  "MARKETING_IMAGE",
-  "PORTRAIT_MARKETING_IMAGE",
-];
+// Mesma ordem que `planImageFieldLinks` usa pra simular os mutates (#9080):
+// o teto combinado é checado passo a passo NESTA ordem, então a CLI deriva a
+// lista da mesma fonte em vez de repetir os literais.
+const IMAGE_FIELD_TYPES = Object.keys(PMAX_IMAGE_FIELD_MAX) as readonly ImageFieldType[];
 
 interface ImagesManifest {
   SQUARE_MARKETING_IMAGE?: string[];
@@ -467,17 +471,23 @@ export async function main(
     { HEADLINE: NEW_HEADLINES.length, LONG_HEADLINE: NEW_LONG_HEADLINES.length, DESCRIPTION: NEW_DESCRIPTIONS.length },
     alreadyLinked,
   );
-  const removeInLinkByFieldType = new Map<string, string[]>(textLinkPlan.plans.map((pl: TextFieldLinkPlan) => [pl.fieldType, pl.removeInSameMutate]));
-  for (const pl of textLinkPlan.plans) {
-    const cabe = pl.removeInSameMutate.length === 0;
-    console.log(
-      `[google-ads-swap-asset-group-creatives] capacidade ${pl.fieldType}: ${pl.existingEnabled} ENABLED hoje + ${pl.newCount} novo(s), máx ${pl.max} — ` +
-        (cabe ? "cabe sem remover nada." : `remove ${pl.removeInSameMutate.length} stale no MESMO mutate do link (troca atômica): ${pl.removeInSameMutate.join(", ")}`),
-    );
+  const removeInLinkByFieldType = new Map<string, string[]>();
+  /** Registra o plano de capacidade de um grupo de fieldTypes (texto #9017,
+   *  imagem #9057) no mapa de remoções do link e loga — mesmo formato pros dois. */
+  function applyLinkPlan(result: FieldLinkPlanResult): void {
+    for (const pl of result.plans) {
+      removeInLinkByFieldType.set(pl.fieldType, pl.removeInSameMutate);
+      const cabe = pl.removeInSameMutate.length === 0;
+      console.log(
+        `[google-ads-swap-asset-group-creatives] capacidade ${pl.fieldType}: ${pl.existingEnabled} ENABLED hoje + ${pl.newCount} novo(s), máx ${pl.max} — ` +
+          (cabe ? "cabe sem remover nada." : `remove ${pl.removeInSameMutate.length} stale no MESMO mutate do link (troca atômica): ${pl.removeInSameMutate.join(", ")}`),
+      );
+    }
+    if (!result.ok) {
+      for (const e of result.errors) console.error(`  ✖ ${e}`);
+    }
   }
-  if (!textLinkPlan.ok) {
-    for (const e of textLinkPlan.errors) console.error(`  ✖ ${e}`);
-  }
+  applyLinkPlan(textLinkPlan);
 
   let manifest: ImagesManifest | null = null;
   let manifestRawText = "";
@@ -509,20 +519,17 @@ export async function main(
   if (manifest && manifestErrors.length === 0) {
     const m = manifest;
     const imageNewCounts = Object.fromEntries(
-      IMAGE_FIELD_TYPES.map((ft) => [ft, (m[ft as keyof ImagesManifest] ?? []).length]),
+      IMAGE_FIELD_TYPES.map((ft) => [ft, (m[ft] ?? []).length]),
     ) as Record<ImageFieldType, number>;
     imageLinkPlan = planImageFieldLinks(current.items, classification, imageNewCounts, alreadyLinked);
-    for (const pl of imageLinkPlan.plans) {
-      removeInLinkByFieldType.set(pl.fieldType, pl.removeInSameMutate);
-      const cabe = pl.removeInSameMutate.length === 0;
-      console.log(
-        `[google-ads-swap-asset-group-creatives] capacidade ${pl.fieldType}: ${pl.existingEnabled} ENABLED hoje + ${pl.newCount} novo(s), máx ${pl.max} — ` +
-          (cabe ? "cabe sem remover nada." : `remove ${pl.removeInSameMutate.length} stale no MESMO mutate do link (troca atômica): ${pl.removeInSameMutate.join(", ")}`),
-      );
-    }
-    if (!imageLinkPlan.ok) {
-      for (const e of imageLinkPlan.errors) console.error(`  ✖ ${e}`);
-    }
+    // #9080 — o plano por tipo acima já inclui as remoções extras do teto
+    // COMBINADO (PMAX_IMAGE_COMBINED_MAX); esta linha dá o total que as explica.
+    const imagesEnabledNow = current.items.filter((i) => i.status === "ENABLED" && (IMAGE_FIELD_TYPES as readonly string[]).includes(i.fieldType)).length;
+    const imagesNew = imageLinkPlan.plans.reduce((a, pl) => a + pl.newCount, 0);
+    console.log(
+      `[google-ads-swap-asset-group-creatives] teto combinado de imagens: ${imagesEnabledNow} ENABLED hoje + ${imagesNew} nova(s) a linkar, máx ${PMAX_IMAGE_COMBINED_MAX} somando os 3 tipos.`,
+    );
+    applyLinkPlan(imageLinkPlan);
   }
 
   if (!send) {
@@ -666,10 +673,10 @@ export async function main(
   );
 
   console.log("[google-ads-swap-asset-group-creatives] Fase 1 — criando imagens novas do manifesto...");
-  const imageResourceNamesByFieldType: Partial<Record<(typeof IMAGE_FIELD_TYPES)[number], string[]>> = {};
+  const imageResourceNamesByFieldType: Partial<Record<ImageFieldType, string[]>> = {};
   for (const fieldType of IMAGE_FIELD_TYPES) {
-    const paths = manifest![fieldType as keyof ImagesManifest] ?? [];
-    const existing = progress.steps[fieldType as SwapProgressStepKey];
+    const paths = manifest![fieldType] ?? [];
+    const existing = progress.steps[fieldType];
     // Cada fieldType pode ter MÚLTIPLOS caminhos no manifesto (até 4
     // criativos por proporção) — um `existing` não-vazio NÃO significa
     // "etapa completa" se tiver menos itens que o manifesto pede hoje
@@ -700,13 +707,13 @@ export async function main(
       if ("error" in result) {
         // Persiste o que já foi criado NESTE fieldType antes da falha (ex:
         // 1,91:1 criada, 4:5 falhou) — um retry não recria a que já existe.
-        if (names.length > 0) saveProgress(fieldType as SwapProgressStepKey, names, false);
+        if (names.length > 0) saveProgress(fieldType, names, false);
         console.error(`[google-ads-swap-asset-group-creatives] ✖ ${result.error}`);
         return 1;
       }
       names.push(...result.resourceNames);
     }
-    saveProgress(fieldType as SwapProgressStepKey, names, false);
+    saveProgress(fieldType, names, false);
     imageResourceNamesByFieldType[fieldType] = names;
     console.log(`[google-ads-swap-asset-group-creatives] ✔ ${names.length} imagem(ns) ${fieldType} criada(s).`);
   }
