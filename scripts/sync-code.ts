@@ -186,7 +186,8 @@ if (result.stale_autostash_count >= STALE_AUTOSTASH_ALARM_THRESHOLD) {
       `   A edição vai continuar (fail-soft) — este script só sinaliza o pileup, não decide o que fazer\n` +
       `   com ele. Investigue e limpe manualmente (revise CADA um antes de descartar — pode haver\n` +
       `   trabalho legítimo não-relacionado a este sync ali dentro):\n` +
-      `   git stash list | grep -F '${GIT_SYNC_STASH_MESSAGE}'\n\n`,
+      `   git stash list | grep -F '${GIT_SYNC_STASH_MESSAGE}'\n` +
+      `   Listagem read-only com arquivos por stash (#8991): npx tsx scripts/list-autostashes.ts\n\n`,
   );
 }
 
