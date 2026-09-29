@@ -112,6 +112,7 @@ function checkClariceKeySet(): InvariantViolation[] {
  * - cloudflare → CLOUDFLARE_WORKERS_TOKEN
  * - comfyui → nenhuma (local)
  * - openai → OPENAI_API_KEY
+ * - codex → nenhuma (login ChatGPT do CLI; OPENAI_API_KEY é removida do subprocesso, #9088)
  */
 function checkImageGeneratorKeySet(): InvariantViolation[] {
   const configPath = resolve(ROOT, "platform.config.json");
@@ -123,7 +124,7 @@ function checkImageGeneratorKeySet(): InvariantViolation[] {
   } catch {
     return [];
   }
-  if (generator === "comfyui") return []; // local, no key
+  if (generator === "comfyui" || generator === "codex") return []; // local / login de assinatura (#9088), sem key
   const keyMap: Record<string, { env: string; context: string }> = {
     gemini: {
       env: "GEMINI_API_KEY",

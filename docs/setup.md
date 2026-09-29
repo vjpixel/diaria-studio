@@ -1,4 +1,5 @@
 # Setup completo (1x por máquina)
+> Gerador de imagens via assinatura ChatGPT (Codex CLI, sem custo por uso): ver `docs/codex-image-setup.md` (#9088).
 
 Movido do `CLAUDE.md` na rodada de enxugamento do #8228 — conteúdo de
 instalação/troubleshooting não precisa estar no arquivo carregado

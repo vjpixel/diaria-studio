@@ -63,7 +63,7 @@ import { parsePlatformConfig } from "./lib/schemas/platform-config.ts"; // #4625
 // schema completo (scripts/lib/schemas/platform-config.ts também aceita
 // "openai", que este arquivo trata como gemini por fallback silencioso,
 // pré-existente, fora do escopo do #4620).
-type ImageGenerator = "gemini" | "comfyui" | "cloudflare";
+type ImageGenerator = "gemini" | "comfyui" | "cloudflare" | "codex";
 
 export interface WikimediaImage {
   title?: string;
@@ -1127,6 +1127,7 @@ export function buildCreditLine(
 export function resolveImageScriptName(imageGenerator: ImageGenerator): string {
   if (imageGenerator === "comfyui") return "scripts/comfyui-run.js";
   if (imageGenerator === "cloudflare") return "scripts/cloudflare-image.js";
+  if (imageGenerator === "codex") return "scripts/codex-image.js"; // #9088
   return "scripts/gemini-image.js";
 }
 
@@ -1167,7 +1168,7 @@ export async function resolveSdPromptDescription(
 ): Promise<{ text: string; locale: "pt" | "en" | "pt_fallback" }> {
   const fallbackText = resolveDescriptionText(image) ?? "";
   const sourceIsPt = isPtDescription(image);
-  const needsEn = resolveImageScriptName(imageGenerator) !== "scripts/gemini-image.js" && sourceIsPt;
+  const needsEn = resolveImageScriptName(imageGenerator) !== "scripts/gemini-image.js" && imageGenerator !== "codex" && sourceIsPt; // codex (ChatGPT) é multilíngue, #9088
   if (!needsEn) {
     return { text: fallbackText, locale: sourceIsPt ? "pt" : "en" };
   }
@@ -1473,7 +1474,17 @@ async function main(): Promise<void> {
   // #4625 item 3: mesmo helper que o gate "precisa de EN?" de
   // resolveSdPromptDescription usa — nunca mais pode divergir por construção.
   const imageScriptName = resolveImageScriptName(imageGenerator);
-  runNode(imageScriptName, [sdPromptPath, iaPath, "diaria_eia_"]);
+  try {
+    runNode(imageScriptName, [sdPromptPath, iaPath, "diaria_eia_"]);
+  } catch (e) {
+    // #9088: mesmo fallback do image-generate.ts quando o Codex falha (login expirado, timeout).
+    const fb = imageGenerator === "codex" ? platformCfg.codex?.fallback : undefined;
+    if (!fb) throw e;
+    const fbScript = { gemini: "scripts/gemini-image.js", comfyui: "scripts/comfyui-run.js", cloudflare: "scripts/cloudflare-image.js", openai: "scripts/openai-image.js" }[fb];
+    console.error(`eia-compose: codex falhou (${(e as Error).message}) — fallback: ${fb}`);
+    logEvent({ edition, stage: 1, agent: "eia-compose", level: "warn", message: `codex falhou, fallback para ${fb}` });
+    runNode(fbScript, [sdPromptPath, iaPath, "diaria_eia_"]);
+  }
 
   // 7. Write 01-eia.md (frontmatter + corpo + opcional resultado da edição anterior #107)
   //
