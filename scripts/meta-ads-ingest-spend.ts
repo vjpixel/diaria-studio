@@ -21,9 +21,8 @@
  * (`google-ads-ingest-spend.ts`/`microsoft-ads-ingest-spend.ts`). Sem
  * `META_ADS_ACCESS_TOKEN` no ambiente: `fallback()` com o motivo explícito
  * "variável(is) de ambiente ausente(s): META_ADS_ACCESS_TOKEN" — nunca
- * silêncio, sempre **exit 0** (mesmo contrato do Google/Microsoft: a task
- * agendada não pode calar a ingestão do canal vizinho por causa disto, ver
- * `scripts/lib/ads-spend-ingest-alarm.ts`).
+ * silêncio, e desde o #9012 **exit não-zero** (`META_ADS_INGEST_FAILURE_EXIT_CODE`
+ * abaixo — esta task é independente, sair não-zero não cala canal vizinho).
  *
  * **Com `--input` (manual, #5469, inalterado por #8245):** a Meta Ads MCP
  * (`mcp__claude_ai_Meta_Ads__*`, `mcp.facebook.com/ads`) só existe dentro de
@@ -41,14 +40,16 @@
  *   2. Este script lê esse arquivo via `--input` e faz parse → agregação →
  *      merge em `spend.csv`.
  *
- * ## Fail-soft — token ausente OU envelope ausente/inválido NUNCA quebra o
- * relatório
+ * ## Fail-soft nos DADOS, fail-loud no exit code (#9012)
  *
  * Nos dois caminhos, qualquer estado inesperado (token ausente, API fora do
- * ar, `--input` ausente/JSON inválido/envelope malformado) imprime um aviso
- * e sai com **exit 0**, deixando `data/aquisicao/spend.csv` como estava —
- * mesma disciplina de `google-ads-ingest-spend.ts`/
- * `microsoft-ads-ingest-spend.ts`.
+ * ar depois do retry, `--input` ausente/JSON inválido/envelope malformado)
+ * imprime um aviso e deixa `data/aquisicao/spend.csv` como estava — o
+ * relatório (`cac-report.ts`) nunca quebra. Mas o processo sai com
+ * `META_ADS_INGEST_FAILURE_EXIT_CODE` (não-zero), pra a unit systemd
+ * aparecer como `failed` em vez de "sucesso" silencioso. Gasto zero real
+ * segue exit 0. (Google/Microsoft ainda mantêm exit 0 — fora do escopo do
+ * #9012.)
  *
  * ## Uso
  *
@@ -64,7 +65,8 @@ import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { readSpendCsv, formatSpendCsv, type SpendRow } from "./lib/aquisicao-spend.ts";
 import { runMetaAdsIngest } from "./lib/meta-ads-ingest.ts";
 import { runSpendIngest, type SpendIngestFetchResult } from "./lib/spend-ingest.ts";
-import { fetchMetaAdsChannelMetrics, metaAdsAuthConfigFromEnv } from "./lib/ads-campaign-economics-fetch.ts";
+import { fetchMetaAdsChannelMetrics, metaAdsAuthConfigFromEnv, type MetaFetchLike } from "./lib/ads-campaign-economics-fetch.ts";
+import { fetchWithRetry } from "./lib/fetch-retry.ts";
 import type { ChannelDailyMetric } from "./lib/ads-campaign-economics.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -191,6 +193,56 @@ export function aggregateMetaAdsChannelMetricsByMonth(metrics: ChannelDailyMetri
     });
 }
 
+/**
+ * Exit code de FALHA REAL (#9012) — token ausente, Graph API indisponível
+ * depois de esgotar o retry, `--input` ausente/inválido, erro inesperado.
+ * Antes do #9012 este script saía 0 em toda falha (herança do contrato
+ * Google/Microsoft #5237/#5502), então a unit systemd
+ * `diaria-meta-ads-spend-ingest.service` sempre terminava "sucesso" e o
+ * único sinal era o banner no log, lido 11min depois pelo
+ * `Diaria-Ads-Spend-Ingest-Alarm`. A justificativa original do exit 0
+ * ("não calar a plataforma vizinha") não se aplica aqui: esta task tem UM
+ * step só e roda como unit INDEPENDENTE (`scripts/lib/scheduled-tasks.ts`)
+ * — sair não-zero não cala nenhum outro canal, e deixa a falha visível no
+ * `systemctl --state=failed` (#5563) além do alarme. Gasto zero real
+ * ("API respondeu, sem gasto no período") continua exit 0: não é falha.
+ */
+export const META_ADS_INGEST_FAILURE_EXIT_CODE = 1;
+
+/**
+ * Retry da Graph API no caminho headless (#9012). Causa raiz do alarme de
+ * 29/09/2026 12:54 UTC: o `300` perdeu resolução DNS por alguns minutos
+ * (o mesmo run registrou "Could not resolve host" no git-sync) e a ÚNICA
+ * chamada à Graph API, sem retry, falhou com `fetch failed` — Google
+ * (12:50) e Microsoft (12:52) tinham passado minutos antes. Erro de rede e
+ * 5xx são retentados (`fetchWithRetry`; 4xx nunca: token inválido é achado
+ * real, não blip). A espera total (~2min) cabe com folga antes do alarme
+ * das 10:05 BRT (task às 09:54 BRT).
+ */
+export const META_ADS_FETCH_RETRY = {
+  attempts: 4,
+  backoffMs: [5_000, 30_000, 90_000],
+  timeoutMs: 30_000,
+} as const;
+
+export interface RunHeadlessOptions {
+  /** Injetável só pra teste — nunca espera de verdade fora de produção. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Envolve `fetchImpl` com `fetchWithRetry` preservando a assinatura que
+ *  `fetchMetaAdsChannelMetrics` espera (cada página da paginação ganha o
+ *  próprio retry). */
+export function withMetaAdsFetchRetry(fetchImpl: MetaFetchLike, sleep?: (ms: number) => Promise<void>): MetaFetchLike {
+  return (input, init) =>
+    fetchWithRetry((signal) => fetchImpl(input, { ...init, signal }), {
+      attempts: META_ADS_FETCH_RETRY.attempts,
+      backoffMs: [...META_ADS_FETCH_RETRY.backoffMs],
+      timeoutMs: META_ADS_FETCH_RETRY.timeoutMs,
+      sleep,
+    });
+}
+
 function fallback(reason: string): void {
   console.warn(`[meta-ads-ingest-spend] fallback pro CSV manual — ${reason}`);
   console.warn("  spend.csv não foi alterado. Editar manualmente se necessário.");
@@ -207,16 +259,22 @@ function fallback(reason: string): void {
  * mesmo núcleo genérico fetch→merge que `google-ads-ingest.ts`/
  * `microsoft-ads-ingest.ts` já usam, em vez de reimplementar a orquestração
  * aqui (achado do code-review da PR #8304). Sem o token: `fallback()` com o
- * motivo explícito, exit 0 — mesmo contrato do Google/Microsoft. `fetchImpl`
- * é injetável só pra teste (default `fetch` global), mesmo padrão de
- * `runGoogleAdsIngest(fetch, …)`.
+ * motivo explícito e `META_ADS_INGEST_FAILURE_EXIT_CODE` (#9012). Cada
+ * chamada à Graph API passa por `withMetaAdsFetchRetry` (#9012). `fetchImpl`
+ * e `opts.sleep` são injetáveis só pra teste (default `fetch` global),
+ * mesmo padrão de `runGoogleAdsIngest(fetch, …)`.
  */
-export async function runHeadless(spendPath: string, fetchImpl: typeof fetch = fetch): Promise<number> {
+export async function runHeadless(
+  spendPath: string,
+  fetchImpl: MetaFetchLike = fetch,
+  opts: RunHeadlessOptions = {},
+): Promise<number> {
   const authResult = metaAdsAuthConfigFromEnv();
   if ("missing" in authResult) {
     fallback(`variável(is) de ambiente ausente(s): ${authResult.missing.join(", ")}`);
-    return 0;
+    return META_ADS_INGEST_FAILURE_EXIT_CODE;
   }
+  const retryingFetch = withMetaAdsFetchRetry(fetchImpl, opts.sleep);
 
   // `data/` é a junction OneDrive (#5236) — pode estar ausente num worktree
   // sem o setup local; garantir o diretório antes de ler/escrever o CSV,
@@ -234,7 +292,7 @@ export async function runHeadless(spendPath: string, fetchImpl: typeof fetch = f
   let fetchedMetricsCount = 0;
 
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
-    const fetchResult = await fetchMetaAdsChannelMetrics(fetchImpl, authResult.auth.accessToken);
+    const fetchResult = await fetchMetaAdsChannelMetrics(retryingFetch, authResult.auth.accessToken);
     if (fetchResult.error) {
       networkErrorReason = `Graph API (Meta Ads insights) falhou — ${fetchResult.error}`;
       return { kind: "error", reason: networkErrorReason };
@@ -249,6 +307,7 @@ export async function runHeadless(spendPath: string, fetchImpl: typeof fetch = f
   if (result.kind === "fallback") {
     if (networkErrorReason !== null) {
       fallback(result.reason);
+      return META_ADS_INGEST_FAILURE_EXIT_CODE;
     } else {
       // A API respondeu com sucesso, só não achou métrica nenhuma no
       // range — gasto zero real, nunca falha externa; banner de sucesso,
@@ -276,7 +335,7 @@ export async function main(): Promise<number> {
   }
   if (!existsSync(inputPath)) {
     fallback(`arquivo de --input não encontrado: ${inputPath}`);
-    return 0;
+    return META_ADS_INGEST_FAILURE_EXIT_CODE;
   }
 
   let envelopePayload: unknown;
@@ -284,7 +343,7 @@ export async function main(): Promise<number> {
     envelopePayload = JSON.parse(readFileSync(inputPath, "utf8"));
   } catch (e) {
     fallback(`--input não é JSON válido: ${e instanceof Error ? e.message : e}`);
-    return 0;
+    return META_ADS_INGEST_FAILURE_EXIT_CODE;
   }
 
   // `data/` é a junction OneDrive (#5236) — pode estar ausente num worktree
@@ -299,7 +358,7 @@ export async function main(): Promise<number> {
 
   if (result.kind === "fallback") {
     fallback(result.reason);
-    return 0;
+    return META_ADS_INGEST_FAILURE_EXIT_CODE;
   }
 
   writeFileSync(spendPath, formatSpendCsv(result.rows), "utf8");
@@ -317,6 +376,6 @@ if (isMainModule(import.meta.url)) {
       // aqui (parse e merge já são fail-soft), mas mantém a disciplina
       // "nunca quebra o relatório" mesmo diante de um bug aqui.
       fallback(`erro inesperado: ${e instanceof Error ? e.message : e}`);
-      process.exit(0);
+      process.exit(META_ADS_INGEST_FAILURE_EXIT_CODE);
     });
 }

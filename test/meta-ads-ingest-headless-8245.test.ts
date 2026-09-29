@@ -5,8 +5,9 @@
  * (sem `--input`, com `META_ADS_ACCESS_TOKEN`) — reusa `fetchMetaAdsChannelMetrics`
  * (`scripts/lib/ads-campaign-economics-fetch.ts`) via `fetch` mockado, nunca
  * chama a Graph API real. Cobre também `aggregateMetaAdsChannelMetricsByMonth`
- * (agregação pura por mês) e o contrato de fallback sem token (mesmo texto/
- * exit code do Google/Microsoft, #5237/#5502).
+ * (agregação pura por mês) e o contrato de fallback sem token (mesmo texto
+ * do Google/Microsoft, #5237/#5502; exit code não-zero desde o #9012 — ver
+ * `test/meta-ads-ingest-retry-9012.test.ts`).
  *
  * O caminho `--input` (envelope MCP, #5469) NÃO muda nesta issue — coberto
  * por `test/meta-ads-ingest-5469.test.ts` (inalterado) e
@@ -21,6 +22,7 @@ import { join } from "node:path";
 import {
   META_ADS_CANAL,
   META_ADS_HEADLESS_FONTE_LABEL,
+  META_ADS_INGEST_FAILURE_EXIT_CODE,
   aggregateMetaAdsChannelMetricsByMonth,
   runHeadless,
 } from "../scripts/meta-ads-ingest-spend.ts";
@@ -172,7 +174,7 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
     else process.env.META_ADS_ACCESS_TOKEN = savedToken;
   });
 
-  it("(a) sem META_ADS_ACCESS_TOKEN: exit 0, spend.csv NUNCA criado/tocado, fetch NUNCA chamado, aviso explícito no console", async () => {
+  it("(a) sem META_ADS_ACCESS_TOKEN: exit não-zero (#9012), spend.csv NUNCA criado/tocado, fetch NUNCA chamado, aviso explícito no console", async () => {
     let fetchCalled = false;
     const fetchImpl = (async () => {
       fetchCalled = true;
@@ -189,7 +191,8 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
       console.warn = originalWarn;
     }
 
-    assert.equal(code, 0);
+    assert.equal(code, META_ADS_INGEST_FAILURE_EXIT_CODE);
+    assert.notEqual(code, 0);
     assert.equal(fetchCalled, false, "sem token, fetchMetaAdsChannelMetrics não deveria ser chamado");
     assert.equal(existsSync(spendPath), false, "spend.csv não deveria ser criado sem token");
     const combined = warnLines.join("\n");
@@ -236,13 +239,18 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
     assert.equal(existsSync(spendPath), false);
   });
 
-  it("erro da Graph API (ex: token inválido): fallback com o erro no texto, exit 0, spend.csv intocado", async () => {
+  it("erro da Graph API (ex: token inválido): fallback com o erro no texto, exit não-zero (#9012), 4xx sem retry, spend.csv intocado", async () => {
     process.env.META_ADS_ACCESS_TOKEN = "tok-invalido";
-    const fetchImpl = (async () => jsonResponse(400, { error: { message: "Invalid OAuth access token", code: 190 } })) as typeof fetch;
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return jsonResponse(400, { error: { message: "Invalid OAuth access token", code: 190 } });
+    }) as typeof fetch;
 
-    const code = await runHeadless(spendPath, fetchImpl);
+    const code = await runHeadless(spendPath, fetchImpl, { sleep: async () => {} });
 
-    assert.equal(code, 0);
+    assert.equal(code, META_ADS_INGEST_FAILURE_EXIT_CODE);
+    assert.equal(calls, 1, "4xx é achado real, não blip — nunca retentado");
     assert.equal(existsSync(spendPath), false);
   });
 
