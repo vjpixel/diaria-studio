@@ -113,9 +113,9 @@
  * config manual da Amazon (`data/ltv/amazon-revenue.json`, sem fonte
  * automatizada) + churn por diff de 2 snapshots Beehiiv ~30 dias de
  * distância, e cruza com o custo por ATIVO de cada canal (gasto ÷ ativos do
- * `CacRow` — mesma unidade do LTV, #9023) pra render LTV÷CAC por canal. Só leitura local — fail-soft: qualquer
- * insumo ausente faz a seção aparecer com `ltvFaixaBrl: null` + motivo
- * explícito, nunca deriva pra exceção nem pra "0"/"custo infinito". Uso
+ * `CacRow` — mesma unidade do LTV, #9023) pra render LTV÷CAC por canal.
+ * Só leitura local — fail-soft: qualquer insumo ausente faz a seção
+ * aparecer com `ltvFaixaBrl: null` + motivo explícito, nunca deriva pra exceção nem pra "0"/"custo infinito". Uso
  * principal é contexto de ranqueamento de CAC, nunca gate de gasto (não
  * reabre o teto revogado em #5235/#5236). Só `--no-ltv` omite a seção por
  * completo. Simplificação DECLARADA: usa o LTV BLENDED (ponto médio da
@@ -369,6 +369,16 @@ export function computeLtvSection(
   // Mesma população nos dois lados do diff E no denominador do ARPU:
   // snapshot Beehiiv CRU (#9023, paridade com studio-metrics.ts).
   const latestSubs = readSnapshotSubscribers(backupRoot, latestDate);
+  if (latestSubs.length === 0) {
+    // Paridade com o guard `beehiivSnapshotEmpty` de studio-metrics.ts: sem
+    // isso todo ativo do baseline viraria "saída" e o motivo sairia genérico.
+    return {
+      applied: true,
+      ltvFaixaBrl: null,
+      motivo: `snapshot Beehiiv vazio/anômalo em ${latestDate} — ARPU/churn não computáveis`,
+      rows: [],
+    };
+  }
   const activeCount = latestSubs.filter((s) => s.status === "active").length;
   const arpu = computeArpu({
     revenueBySource: { "apoia-se": cacheAvailable ? revSummary.grossRevenueBrl : null, amazon: amazonConfig.valorMensalBrl },

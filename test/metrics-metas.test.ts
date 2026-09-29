@@ -150,7 +150,7 @@ describe("evaluateMeta — máquina de estados (#7177)", () => {
     const status = evaluateMeta(metaSimples, medicoes, "2026-09-02");
     assert.equal(status.estado, "em-curso"); // decidido pelo piso (3 < 5)
     assert.equal(status.status_no_limite_superior, "atingida"); // teto bateria
-    assert.deepEqual(status.faixa, { min: 3, max: 6, rotuloMax: "com não-atribuídos" });
+    assert.deepEqual(status.faixa, { min: 3, max: 6 });
   });
 
   it("atingidaEmAnterior é sticky/terminal — não reavalia a série", () => {

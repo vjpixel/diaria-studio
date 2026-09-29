@@ -213,7 +213,7 @@ function renderValor(valor) {
   const cacSeries = valor.ltvCacRatio.series || [];
   el.valorCacTbody.innerHTML =
     cacSeries.length === 0
-      ? `<tr><td colspan="2" class="metricas-motivo">${escapeHtml(valor.ltvCacRatio.motivo || "sem canal com LTV e CAC simultâneos")}</td></tr>`
+      ? `<tr><td colspan="2" class="metricas-motivo">${escapeHtml(valor.ltvCacRatio.motivo || "sem canal com LTV e custo por ativo simultâneos")}</td></tr>`
       : cacSeries
           .map((s) => `<tr><td>${escapeHtml(s.chave)}</td><td class="mono">${s.valor == null ? "sem coleta" : s.valor.toFixed(2)}</td></tr>`)
           .join("");

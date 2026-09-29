@@ -254,6 +254,39 @@ describe("computeLtvSection — mesma população nos dois lados do churn e no A
     }
   });
 
+  it("snapshot 'atual' vazio -> motivo explícito de snapshot vazio, nunca churn com todo baseline como saída", () => {
+    const root = makeRoot();
+    try {
+      const backupRoot = setup(root);
+      mkdirSync(join(backupRoot, "2026-09-11"), { recursive: true }); // pasta sem subscribers.jsonl
+      const report = { rows: [] } as unknown as CacReport;
+      const section = computeLtvSection(report, backupRoot, "2026-09-12", root, () => new Date("2026-09-15T12:00:00Z"), {});
+      assert.equal(section.applied, true);
+      if (section.applied) {
+        assert.equal(section.ltvFaixaBrl, null);
+        assert.match(section.motivo ?? "", /vazio/);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("nenhum snapshot em ou antes do rótulo -> motivo explícito", () => {
+    const root = makeRoot();
+    try {
+      const backupRoot = setup(root);
+      const report = { rows: [] } as unknown as CacReport;
+      const section = computeLtvSection(report, backupRoot, "2026-08-01", root, () => new Date("2026-09-15T12:00:00Z"), {});
+      assert.equal(section.applied, true);
+      if (section.applied) {
+        assert.equal(section.ltvFaixaBrl, null);
+        assert.match(section.motivo ?? "", /nenhum snapshot Beehiiv/);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolveLtvLatestSnapshotDate: mais recente <= rótulo; null quando nenhum serve", () => {
     assert.equal(resolveLtvLatestSnapshotDate(["2026-08-10", "2026-09-09"], "2026-09-09"), "2026-09-09");
     assert.equal(resolveLtvLatestSnapshotDate(["2026-09-09", "2026-08-10"], "2026-09-12"), "2026-09-09");
