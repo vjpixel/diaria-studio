@@ -351,6 +351,33 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     }
   });
 
+  it("(#9025) status 1 + subtype=error_during_execution + stop_reason=tool_use NÃO marca maxTurnsExhausted — o fallback por stop_reason só vale sem subtype", () => {
+    // Erro de API logo após uma chamada de ferramenta: o envelope traz
+    // stop_reason=tool_use, mas o subtype real diz que não foi max-turns.
+    // Rotular como max-turns esconderia o stderr no run-agent-eval-for-pr.ts.
+    const stdoutJson = JSON.stringify({ subtype: "error_during_execution", stop_reason: "tool_use", is_error: true });
+    const execFn = ((bin: string, args: string[]) => {
+      const err = new Error(`Command failed: ${bin} ${args.join(" ")}`);
+      (err as { status?: number }).status = 1;
+      (err as { stdout?: string }).stdout = stdoutJson;
+      (err as { stderr?: string }).stderr = "API Error: 529 overloaded";
+      throw err;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    try {
+      callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", maxTurns: 20 });
+      assert.fail("devia lançar");
+    } catch (err) {
+      assert.ok(err instanceof ClaudeCliError);
+      assert.equal(err.maxTurnsExhausted, false);
+      assert.equal(err.subtype, "error_during_execution");
+      assert.equal(err.stopReason, "tool_use");
+      assert.equal(err.stderr, "API Error: 529 overloaded");
+      assert.ok(!err.message.includes("esgotou"), "não deve atribuir a falha ao teto de turnos");
+      assert.ok(err.message.includes("falhou"), "falha real usa a mensagem genérica");
+    }
+  });
+
   it("(#8143) sem outputFormat explícito, continua 'text' (default preservado — holistic-critique.ts depende disso)", () => {
     const capturedCalls: unknown[][] = [];
     const execFn = ((bin: string, args: string[], opts: unknown) => {
