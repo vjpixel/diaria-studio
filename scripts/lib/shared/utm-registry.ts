@@ -251,6 +251,23 @@ export const APOIAR_REDIRECT_UTM_MEDIUM = "site";
 export const APOIAR_REDIRECT_UTM_CAMPAIGN = "apoiar";
 
 /**
+ * UTM de navegação interna emitida pelo menu global (`scripts/lib/shared/site-nav.ts`,
+ * #8497 item 9) em todo link que atravessa host dentro do próprio projeto —
+ * apex → `especial`/`livros`/`cursos`/`eia` (e, quando consumido por um host
+ * IRMÃO via `apexBase`, o caminho inverso: `edicoes`/`apoiar`/CTA `Assinar`
+ * de volta pro apex). Sem isso, clicar de uma página do projeto pra outra
+ * entraria como tráfego DIRETO na atribuição — indistinguível de alguém
+ * digitando a URL. `campaign` fixo `"global-nav"` (não por item/host): o que
+ * importa medir aqui é "veio da nav", não de qual item — granularidade por
+ * item viria de um `utm_content`, não pedido pela issue.
+ */
+export const SITE_NAV_UTM = {
+  source: "diaria-nav",
+  medium: "nav",
+  campaign: "global-nav",
+} as const;
+
+/**
  * `utm_source`/`utm_medium` da Retrospectiva do Mês (`retrospectiva.diar.ia.br/AAMM`,
  * gate de apoio Mantenedor R$25+, #7715). Link de saída = CTA "Apoiar a diar.ia.br"
  * (apoia.se) no bloco de conversão do trecho e no paywall seco — os dois pontos
@@ -891,6 +908,20 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "conta o clique (#7915) e redireciona pro Apoia.se com este UTM (#8498). Também " +
       "cobre o path antigo /apoiar (301). Distingue apoio vindo do site de apoio vindo do " +
       "gate de Artigo Especial/Retrospectiva.",
+    status: "ativo",
+  },
+  {
+    id: "site-nav",
+    label: "Menu global do site — links cross-host",
+    source: SITE_NAV_UTM.source,
+    medium: SITE_NAV_UTM.medium,
+    campaignPattern: SITE_NAV_UTM.campaign,
+    originFile: "scripts/lib/shared/site-nav.ts",
+    description:
+      "Itens do menu global (#8497) que saem do host atual pra outro host do projeto — " +
+      "Especiais/Livros/Cursos/É IA? a partir do apex, e (quando um host IRMÃO consome " +
+      "`renderSiteNav`/`renderSiteFooterLinks` com `apexBase`) Edições/Apoiar/CTA Assinar " +
+      "de volta pro apex. Sem UTM aqui, navegação interna entraria como tráfego direto.",
     status: "ativo",
   },
   {
