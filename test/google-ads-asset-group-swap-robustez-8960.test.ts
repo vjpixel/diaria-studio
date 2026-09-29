@@ -134,8 +134,10 @@ describe("#8960 — checkSwapCooldown", () => {
     assert.equal(result.active, false);
   });
 
-  it("bloqueio-execucao registrado DEPOIS do adiamento reabre a pergunta antes do prazo", () => {
-    const adiada = formatAcaoAdiadaMarker({ pedido_em: "2026-09-20T09:00:00Z", acao: "google-ads-swap --send", motivo: "ainda não", sessao: "develop" });
+  it("bloqueio-execucao registrado DEPOIS do adiamento NÃO desarma o cooldown (#9024 — um bloqueio novo nunca libera --send)", () => {
+    // Adiamento dentro da janela de 7 dias (24/09 → now 28/09), bloqueio
+    // gravado num dia posterior (25/09).
+    const adiada = formatAcaoAdiadaMarker({ pedido_em: "2026-09-24T09:00:00Z", acao: "google-ads-swap --send", motivo: "ainda não", sessao: "develop" });
     const bloco = formatExecutionBlockMarker({
       recorded_at: "2026-09-25",
       motivo: "novo achado",
@@ -143,7 +145,7 @@ describe("#8960 — checkSwapCooldown", () => {
       condicao: { tipo: "externo", descricao: "editor precisa decidir" },
     });
     const result = checkSwapCooldown([adiada, bloco], now);
-    assert.equal(result.active, false);
+    assert.equal(result.active, true);
   });
 
   it("commentsBodies === null (leitura falhou) -> cooldown ATIVO (fail-CLOSED, #8972)", () => {
