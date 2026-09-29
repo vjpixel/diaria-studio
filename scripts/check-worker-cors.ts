@@ -123,15 +123,14 @@ async function main(): Promise<void> {
       `Reason: ${result.reason}\n\n` +
       `Fix: cd workers/poll && npx wrangler deploy\n`,
     );
-    process.exit(1);
+    process.exitCode = 1;
   }
-  process.exit(0);
 }
 
 const isMain = isMainModule(import.meta.url);
 if (isMain) {
   main().catch((e) => {
     process.stderr.write(`[check-worker-cors] fatal: ${(e as Error).message}\n`);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }

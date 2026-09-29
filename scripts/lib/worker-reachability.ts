@@ -199,3 +199,8 @@ export async function isWorkerReachable(
     };
   }
 }
+
+/** Qualquer resposta HTTP < 500 prova que o Worker está servindo (404 = rota inexistente, não Worker fora). */
+export function workerResponded(r: WorkerReachabilityResult): boolean {
+  return r.up || (typeof r.status === "number" && r.status < 500);
+}

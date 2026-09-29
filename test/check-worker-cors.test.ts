@@ -44,3 +44,15 @@ describe("evaluateCorsResponse (#1132 P2.4)", () => {
     assert.equal(r.ok, false);
   });
 });
+
+import { workerResponded } from "../scripts/lib/worker-reachability.ts";
+
+describe("workerResponded (#9116)", () => {
+  it("404 conta como Worker respondendo (rota /health inexistente)", () => {
+    assert.equal(workerResponded({ up: false, local_dns_filtered: false, via: "direct", status: 404 }), true);
+  });
+  it("5xx e sem status não contam", () => {
+    assert.equal(workerResponded({ up: false, local_dns_filtered: false, via: "direct", status: 503 }), false);
+    assert.equal(workerResponded({ up: false, local_dns_filtered: false, via: "none" }), false);
+  });
+});

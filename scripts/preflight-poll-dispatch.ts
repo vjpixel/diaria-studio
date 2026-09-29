@@ -34,7 +34,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts"; // #1803 review: .env
 import { renderHaltBanner } from "./lib/gate-banner.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1811: rejeita data inválida
-import { isWorkerReachable } from "./lib/worker-reachability.ts"; // #2551: DoH fallback p/ filtro DNS local
+import { isWorkerReachable, workerResponded } from "./lib/worker-reachability.ts"; // #2551: DoH fallback p/ filtro DNS local
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4125 item 8: default alinhado ao resto do repo (#3904) — poll.diaria.workers.dev é domínio legado
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -256,7 +256,7 @@ async function main(): Promise<void> {
   // child scripts, detecta se DNS local está filtrando o domínio de marca.
   const POLL_WORKER_URL = resolvePollWorkerUrl();
   const reach = await isWorkerReachable(`${POLL_WORKER_URL}/health`);
-  if (!reach.up) {
+  if (!workerResponded(reach)) {
     if (reach.local_dns_filtered) {
       console.error(
         `[preflight-poll-dispatch] ⚠️  DNS local filtrando ${new URL(POLL_WORKER_URL).hostname} ` +
