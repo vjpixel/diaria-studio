@@ -45,6 +45,16 @@
  *   npx tsx scripts/hubs-weekly-regen.ts --dry-run       # só imprime o plano, não escreve/commita/mergeia
  *   npx tsx scripts/hubs-weekly-regen.ts --session-id ID # obrigatório fora de --dry-run (merge lock, #8906 nota do editor)
  *
+ * **`--dry-run` faz `git fetch`/`git worktree add` (#9019).** Desde que o
+ * plano passou a ser calculado contra o mesmo `workRoot` que seria escrito
+ * (ver `planAllHubs` abaixo), até o `--dry-run` precisa desse worktree
+ * temporário pra reportar um plano fiel a `origin/master` — então
+ * `--dry-run` toca rede (fetch) e cria/descarta um worktree+branch locais.
+ * O que continua garantido é "nunca escreve/commita/mergeia/abre issue":
+ * nenhum arquivo do worktree é modificado, nenhum commit/push/PR acontece, e
+ * `alarmFailure` pula `reconcileAlarms` (sem `gh issue create`/`comment`)
+ * quando `dryRunActive` — uma falha em `--dry-run` só loga e sai != 0.
+ *
  * **Fail-soft (mesmo padrão de `hub-staleness-check.ts`/#2643):** sem o
  * junction `data/` (sessão cloud, clone fresco, ou este próprio worktree de
  * implementação — `loadPosts()` precisa de `data/beehiiv-cache/posts`),
@@ -73,6 +83,7 @@ import {
   writeGeneratedHubSources,
   type HubSourceEntry,
 } from "./generate-hub-sources.ts";
+import type { RawCachedPost } from "./generate-arquivo-titles.ts";
 import {
   planHubRegen,
   bumpUpdatedDateLine,
@@ -95,7 +106,6 @@ import { createRealTrainRunner } from "./lib/merge-train-live.ts";
 import { hubCoverageDate } from "./lib/shared/hub-page.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const HUBS_DIR = resolve(ROOT, "scripts/lib/hubs");
 const PROSE_STATE_PATH = resolve(ROOT, "data", "hubs", "prose-review-state.json");
 const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "hubs", "weekly-regen-alarm-issues.json");
 const LOG_PREFIX = "[hubs-weekly-regen]";
@@ -174,8 +184,41 @@ function reconcileAlarms(pending: AlarmFinding[]): void {
   saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
 }
 
+/** Reconstrói os achados `prosa-defasada` ATUALMENTE abertos a partir do
+ * estado persistido (#9019, review PR #9047 finding 1) — usado pelos
+ * catches de falha que acontecem ANTES de `planAllHubs` rodar (worktree
+ * indisponível), que não têm como recalcular se cada hub ainda cruza o
+ * limiar. Sem isso, `alarmFailure(..., [])` reconciliaria com uma lista de
+ * achados de prosa VAZIA, e `applyAlarmReconciliation` leria "nenhum hub
+ * defasado neste run" — avançando o `missingStreak` de toda issue de prosa
+ * aberta rumo ao auto-close (`CLOSE_ALARM_ISSUE_AFTER_RUNS`), mesmo que o
+ * hub continue genuinamente defasado; só faltou saber. */
+function openProseFindings(): AlarmFinding[] {
+  if (!existsSync(ALARM_ISSUES_STATE_PATH)) return [];
+  const state = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
+  const suffix = ":prosa-defasada";
+  const openSlugs = Object.entries(state)
+    .filter(([key, entry]) => key.endsWith(suffix) && !entry.closedAt)
+    .map(([key]) => key.slice(0, -suffix.length));
+  return openSlugs.map(proseAlarmFinding);
+}
+
+/** #9019, review PR #9047 finding 2: `--dry-run` nunca escreve — nem em
+ * disco (já garantido pelos early-returns de `main()`) nem em serviços
+ * externos. Sem esta flag, uma falha de `createWorktree` durante um
+ * `--dry-run` (agora possível desde que o worktree passou a nascer ANTES
+ * do planejamento, pra ler o mesmo `hubsDir` que seria escrito) chamaria
+ * `reconcileAlarms` -> `gh issue create`/`comment`, contrariando o próprio
+ * contrato do modo. Setada só por `main()`, no início, a partir do arg
+ * já parseado. */
+let dryRunActive = false;
+
 function alarmFailure(reason: string, detail: string, alsoWith: AlarmFinding[] = []): void {
   process.stderr.write(`${LOG_PREFIX} FALHA: ${reason}\n${detail}\n`);
+  if (dryRunActive) {
+    process.stderr.write(`${LOG_PREFIX} [dry-run] não reconciliando issues de alarme (nenhuma escrita externa em --dry-run).\n`);
+    return;
+  }
   reconcileAlarms([
     ...alsoWith,
     toAlarmFinding(
@@ -227,25 +270,49 @@ interface HubPlan {
   readonly plan: HubRegenPlan;
 }
 
-/** Fase 1 — só leitura: regen de fontes + diff + decisão por hub, contra a
- * checkout `ROOT` (nunca escreve nada aqui). Lança em qualquer erro —
- * `main()` envolve a chamada em try/catch (finding P2 #4 da PR #8922). */
-function planAllHubs(today: string): { hubPlans: HubPlan[]; proseAlarmSlugs: string[]; proseState: ProseReviewState } {
-  const posts = loadPosts();
+/** Fase 1 — só leitura: regen de fontes + diff + decisão por hub. `hubsDir`
+ * é OBRIGATÓRIO (#9019, review PR #9047 finding 3 — um default apontando de
+ * volta pra checkout compartilhada reintroduziria o bug em silêncio se
+ * algum call site futuro esquecesse de passá-lo) e é o diretório de onde
+ * `existing`/`currentUpdatedDate` são lidos — deve ser o mesmo
+ * `workRoot/scripts/lib/hubs` onde o plano depois é ESCRITO: a checkout
+ * compartilhada (`ROOT`) pode estar defasada em relação a `origin/master`
+ * (a razão de #8949 item 4 ter passado a criar o worktree a partir de
+ * `origin/master`), então planejar contra a checkout compartilhada e
+ * escrever no worktree misturava um `existing`/`currentUpdatedDate` velhos
+ * com uma base nova — perdendo fontes `manual: true` adicionadas depois do
+ * último sync do checkout, ou regredindo `UPDATED_DATE`. O cache de posts
+ * (`loadPosts()`) continua lido de `ROOT/data` — não é escrito por este
+ * script, então não sofre da mesma defasagem de branch. `posts`/`slugs`/
+ * `patterns` são injetáveis só pra teste (`test/hubs-weekly-regen-script.test.ts`,
+ * que não pode depender do junction `data/` real nem de todo slug de
+ * `HUB_KEYWORD_PATTERNS` ter fixture em disco) — `main()` sempre usa os
+ * defaults dos três. Lança em qualquer erro, inclusive um `slug` sem
+ * `pattern` correspondente — `main()` envolve a chamada em try/catch
+ * (finding P2 #4 da PR #8922). */
+export function planAllHubs(
+  today: string,
+  hubsDir: string,
+  posts: RawCachedPost[] = loadPosts(),
+  slugs: string[] = Object.keys(HUB_KEYWORD_PATTERNS),
+  patterns: Record<string, RegExp> = HUB_KEYWORD_PATTERNS,
+): { hubPlans: HubPlan[]; proseAlarmSlugs: string[]; proseState: ProseReviewState } {
   let proseState = loadProseReviewState();
   const hubPlans: HubPlan[] = [];
   const proseAlarmSlugs: string[] = [];
 
-  for (const slug of Object.keys(HUB_KEYWORD_PATTERNS)) {
-    const { rows: collected, warnings } = collectHubSources(posts, HUB_KEYWORD_PATTERNS[slug]);
+  for (const slug of slugs) {
+    const pattern = patterns[slug];
+    if (!pattern) throw new Error(`planAllHubs: nenhum pattern registrado para o slug "${slug}"`);
+    const { rows: collected, warnings } = collectHubSources(posts, pattern);
     for (const w of warnings) process.stderr.write(`${LOG_PREFIX} ⚠ ${slug}: ${w}\n`);
 
-    const outPath = resolve(HUBS_DIR, `${slug}-sources.generated.json`);
+    const outPath = resolve(hubsDir, `${slug}-sources.generated.json`);
     const existing: HubSourceEntry[] = existsSync(outPath) ? (JSON.parse(readFileSync(outPath, "utf8")) as HubSourceEntry[]) : [];
     const rows = mergeManualHubSources(existing, collected);
     const diff = computeHubSourcesDiff(existing, rows);
     const coverageDate = hubCoverageDate(rows);
-    const currentUpdatedDate = readCurrentUpdatedDate(HUBS_DIR, slug);
+    const currentUpdatedDate = readCurrentUpdatedDate(hubsDir, slug);
     const plan = planHubRegen(slug, diff, today, coverageDate, currentUpdatedDate);
 
     proseState = ensureProseReviewBaseline(proseState, slug, currentUpdatedDate);
@@ -281,14 +348,39 @@ export function createWorktree(
   if (existsSync(workRoot)) rmSync(workRoot, { recursive: true, force: true });
   gitRun("git", ["fetch", "origin", "master"], ROOT);
   gitRun("git", ["worktree", "add", "-b", branch, workRoot, "origin/master"], ROOT);
-  const nodeModulesTarget = resolve(ROOT, "node_modules");
-  if (existsSync(nodeModulesTarget)) {
-    symlinkSync(nodeModulesTarget, join(workRoot, "node_modules"), "dir");
+  try {
+    const nodeModulesTarget = resolve(ROOT, "node_modules");
+    if (existsSync(nodeModulesTarget)) {
+      symlinkSync(nodeModulesTarget, join(workRoot, "node_modules"), "dir");
+    }
+  } catch (e) {
+    // #9019, review PR #9047 finding 6: `worktree add` acima já criou o
+    // worktree + branch quando o symlink falha — o caller só chega no
+    // `finally`/`removeWorktree` DEPOIS de `createWorktree` retornar com
+    // sucesso, então sem limpar aqui os dois vazariam a cada falha de
+    // symlink (best-effort, mesmo padrão de `removeWorktree`).
+    try {
+      gitRun("git", ["worktree", "remove", "--force", workRoot], ROOT);
+    } catch {
+      // best-effort
+    }
+    try {
+      gitRun("git", ["branch", "-D", branch], ROOT);
+    } catch {
+      // best-effort
+    }
+    throw e;
   }
   return workRoot;
 }
 
-function removeWorktree(workRoot: string): void {
+/** Remove o worktree isolado e o branch local que `createWorktree` criou
+ * nele (#9019: agora o worktree nasce ANTES de saber se há mudança de
+ * dados — planAllHubs roda dentro dele — então toda execução, inclusive
+ * dry-run/sem-mudança/session-id-ausente, cria um branch local que precisa
+ * ser descartado; o remoto só existe se o push tiver acontecido, então o
+ * `git branch -D` aqui é sempre best-effort). */
+function removeWorktree(workRoot: string, branch: string): void {
   try {
     run("git", ["worktree", "remove", "--force", workRoot], ROOT);
   } catch (e) {
@@ -299,6 +391,16 @@ function removeWorktree(workRoot: string): void {
     } catch {
       // best-effort — não deixar a falha de limpeza mascarar o resultado real da execução.
     }
+  }
+  try {
+    run("git", ["branch", "-D", branch], ROOT);
+  } catch (e) {
+    // #9019, review PR #9047 finding 7: best-effort (branch pode já não
+    // existir — ex: worktree add falhou antes de criá-lo), mas nunca mudo:
+    // desde que todo run cria um branch (inclusive dry-run/sem-mudança), um
+    // `git worktree remove` que também falhou acima deixaria o branch preso
+    // (git recusa `-D` em branch com worktree associado) sem nenhum sinal.
+    process.stderr.write(`${LOG_PREFIX} aviso: git branch -D ${branch} falhou (${(e as Error).message}).\n`);
   }
 }
 
@@ -318,6 +420,7 @@ export function parseHubsWeeklyRegenArgs(argv: string[]): { dryRun: boolean; ses
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const { dryRun, sessionId } = parseHubsWeeklyRegenArgs(argv);
+  dryRunActive = dryRun;
 
   const cachePath = resolve(ROOT, "data", "beehiiv-cache", "posts");
   if (!existsSync(cachePath)) {
@@ -328,73 +431,84 @@ async function main(): Promise<void> {
   }
 
   const today = new Date().toISOString().slice(0, 10);
+  // Sufixo de horário (HHmm) + PID, não só a data — uma 2ª tentativa no
+  // mesmo dia (retry pós-falha de build/git/gh) pega um nome de branch novo
+  // em vez de colidir no `git checkout -b`/push (achado P3 do review da PR
+  // #8922); o PID entra desde #9019 (review PR #9047 finding 5) porque
+  // agora todo run cria um worktree — inclusive `--dry-run` — e dois
+  // processos disparados no mesmo minuto (timer + dry-run manual, ou dois
+  // retries em sequência rápida) colidiriam no mesmo `workRoot` de
+  // `createWorktree`, que começa com `rmSync` no path derivado do branch.
+  const branch = `${BRANCH_PREFIX}${today}-${new Date().toISOString().slice(11, 16).replace(":", "")}-${process.pid}`;
 
-  let hubPlans: HubPlan[];
-  let proseAlarmSlugs: string[];
-  let proseState: ProseReviewState;
-  try {
-    ({ hubPlans, proseAlarmSlugs, proseState } = planAllHubs(today));
-  } catch (e) {
-    alarmFailure("regen-scan", `Falha na fase de leitura/diff dos hubs: ${(e as Error).message}`);
-    process.exitCode = 1;
-    return;
-  }
-
-  const proseFindings = proseAlarmSlugs.map(proseAlarmFinding);
-  const touched = hubPlans.filter((h) => h.plan.hasDataChange);
-
-  if (dryRun) {
-    // #8949 item 2: `--dry-run` nunca escreve — nem `data/hubs/prose-review-state.json`
-    // (contrariava o próprio docstring do script) nem nada mais abaixo.
-    if (proseAlarmSlugs.length > 0) {
-      process.stderr.write(`${LOG_PREFIX} [dry-run] abriria issue de revisão de prosa para: ${proseAlarmSlugs.join(", ")}.\n`);
-    }
-    if (touched.length === 0) {
-      process.stderr.write(`${LOG_PREFIX} nenhum hub com mudança de dados — nada a commitar.\n`);
-      return;
-    }
-    process.stderr.write(`${LOG_PREFIX} [dry-run] hubs que seriam regenerados: ${touched.map((h) => h.slug).join(", ")}.\n`);
-    return;
-  }
-
-  saveProseReviewState(proseState);
-
-  if (touched.length === 0) {
-    // Sem mudança de dados: só reconcilia os achados de prosa (se houver) e sai.
-    reconcileAlarms(proseFindings);
-    process.stderr.write(`${LOG_PREFIX} nenhum hub com mudança de dados — nada a commitar.\n`);
-    return;
-  }
-
-  if (!sessionId) {
-    alarmFailure(
-      "session-id-ausente",
-      "Regen com mudança de dados exige --session-id pro merge lock (#8906, nota do editor) — abortando antes de criar o worktree.",
-      proseFindings,
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  const touchedSlugs = touched.map((h) => h.slug);
-  // Sufixo de horário (HHmm), não só a data — uma 2ª tentativa no mesmo dia
-  // (retry pós-falha de build/git/gh) pega um nome de branch novo em vez de
-  // colidir no `git checkout -b`/push (achado P3 do review da PR #8922).
-  const branch = `${BRANCH_PREFIX}${today}-${new Date().toISOString().slice(11, 16).replace(":", "")}`;
-
-  // ─── Todo o trabalho sujo (escrita, build, testes, git, gh) acontece só
-  // dentro do worktree isolado — a checkout compartilhada (ROOT) nunca é
-  // escrita nem commitada por este bloco (review PR #8922, findings P1 #2/#3). ───
+  // ─── Worktree criado JÁ NO INÍCIO (#9019): o plano precisa ler
+  // `existing`/`currentUpdatedDate` do mesmo `workRoot` de `origin/master`
+  // onde depois escreve — plantar contra o `ROOT` compartilhado (que pode
+  // estar defasado) e escrever no worktree perdia fontes manuais/regredia
+  // `UPDATED_DATE` quando os dois checkouts divergiam. Isso vale pra TODA
+  // execução, inclusive `--dry-run` e o caminho sem mudança de dados — só
+  // assim o plano relatado é fiel ao que de fato seria commitado. A
+  // checkout compartilhada (ROOT) nunca é escrita nem commitada por este
+  // script (review PR #8922, findings P1 #2/#3) — só usada como origem do
+  // `git worktree add`/`git branch -D` de limpeza. ───
   let workRoot: string;
   try {
     workRoot = createWorktree(branch);
   } catch (e) {
-    alarmFailure("git-worktree-add", `Não consegui criar o worktree isolado: ${(e as Error).message}`, proseFindings);
+    alarmFailure("git-worktree-add", `Não consegui criar o worktree isolado: ${(e as Error).message}`, openProseFindings());
     process.exitCode = 1;
     return;
   }
 
   try {
+    let hubPlans: HubPlan[];
+    let proseAlarmSlugs: string[];
+    let proseState: ProseReviewState;
+    try {
+      ({ hubPlans, proseAlarmSlugs, proseState } = planAllHubs(today, resolve(workRoot, "scripts/lib/hubs")));
+    } catch (e) {
+      alarmFailure("regen-scan", `Falha na fase de leitura/diff dos hubs: ${(e as Error).message}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const proseFindings = proseAlarmSlugs.map(proseAlarmFinding);
+    const touched = hubPlans.filter((h) => h.plan.hasDataChange);
+
+    if (dryRun) {
+      // #8949 item 2: `--dry-run` nunca escreve — nem `data/hubs/prose-review-state.json`
+      // (contrariava o próprio docstring do script) nem nada mais abaixo.
+      if (proseAlarmSlugs.length > 0) {
+        process.stderr.write(`${LOG_PREFIX} [dry-run] abriria issue de revisão de prosa para: ${proseAlarmSlugs.join(", ")}.\n`);
+      }
+      if (touched.length === 0) {
+        process.stderr.write(`${LOG_PREFIX} nenhum hub com mudança de dados — nada a commitar.\n`);
+        return;
+      }
+      process.stderr.write(`${LOG_PREFIX} [dry-run] hubs que seriam regenerados: ${touched.map((h) => h.slug).join(", ")}.\n`);
+      return;
+    }
+
+    saveProseReviewState(proseState);
+
+    if (touched.length === 0) {
+      // Sem mudança de dados: só reconcilia os achados de prosa (se houver) e sai.
+      reconcileAlarms(proseFindings);
+      process.stderr.write(`${LOG_PREFIX} nenhum hub com mudança de dados — nada a commitar.\n`);
+      return;
+    }
+
+    if (!sessionId) {
+      alarmFailure(
+        "session-id-ausente",
+        "Regen com mudança de dados exige --session-id pro merge lock (#8906, nota do editor) — abortando antes do commit.",
+        proseFindings,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const touchedSlugs = touched.map((h) => h.slug);
     const workHubsDir = resolve(workRoot, "scripts/lib/hubs");
     for (const { slug, rows, plan } of touched) {
       const outPath = resolve(workHubsDir, `${slug}-sources.generated.json`);
@@ -459,7 +573,7 @@ async function main(): Promise<void> {
       process.exitCode = 1;
     }
   } finally {
-    removeWorktree(workRoot);
+    removeWorktree(workRoot, branch);
   }
 }
 
