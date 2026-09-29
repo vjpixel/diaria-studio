@@ -68,6 +68,9 @@ const API_FIELD_FLAGS = new Set(["-f", "-F", "--field", "--raw-field"]);
 /** Flag genérica de arquivo-corpo do `gh api` (não é key=value, é path/-). */
 const API_FILE_FLAGS = new Set(["--input"]);
 
+/** Flags de texto público de `gh gist create` (#9055): descrição e nome de arquivo. */
+const GIST_TEXT_FLAGS = ["-d", "--desc", "-f", "--filename"];
+
 /** Flags de arquivo (path ou `-` para stdin) em pr/issue/release/gist/review. */
 const NON_API_FILE_FLAGS = new Set(["-F", "--body-file", "--notes-file"]);
 
@@ -78,9 +81,15 @@ const NON_API_FILE_FLAGS = new Set(["-F", "--body-file", "--notes-file"]);
  * #9020 — inofensivo nos demais subcomandos, que simplesmente não usam essa
  * flag).
  */
-function nonApiBodyFlags(sub) {
+function nonApiBodyFlags(cmd, sub) {
   if (sub === "close" || sub === "reopen") return new Set(["-c", "--comment"]);
-  return new Set(["-b", "--body", "-t", "--title", "-n", "--notes", "--subject"]);
+  const s = new Set(["-b", "--body", "-t", "--title", "-n", "--notes", "--subject"]);
+  // #9055: em `gh gist create`, `-d`/`--desc` (descrição) e `-f`/`--filename`
+  // (nome do arquivo quando o conteúdo vem de stdin) são texto PÚBLICO do
+  // gist — antes eram só pulados como "valor de flag" pelo loop posicional e
+  // nunca inspecionados. Fail-closed: o nome de arquivo também entra.
+  if (cmd === "gist") for (const f of GIST_TEXT_FLAGS) s.add(f);
+  return s;
 }
 
 /**
@@ -132,6 +141,12 @@ function shortValueFlagsFor(cmd, sub) {
     s.add("-t");
     s.add("-n");
   }
+  // #9055: `-dDESC`/`-fNOME` colados em `gh gist create` (`-f` aqui é
+  // `--filename`, com valor — não o `--fill` booleano de `pr create`).
+  if (cmd === "gist") {
+    s.add("-d");
+    s.add("-f");
+  }
   return s;
 }
 
@@ -149,7 +164,7 @@ function longValueFlagsFor(cmd, sub, isApi) {
     for (const f of API_FILE_FLAGS) s.add(f);
     for (const f of GH_API_VALUE_FLAGS) s.add(f);
   } else {
-    for (const f of nonApiBodyFlags(sub)) s.add(f);
+    for (const f of nonApiBodyFlags(cmd, sub)) s.add(f);
     for (const f of NON_API_FILE_FLAGS) s.add(f);
   }
   return s;
@@ -343,7 +358,7 @@ export function requiresStdin(rawArgv) {
       const t = toks[i];
       if (t === "-") return true;
       if (t.startsWith("-")) {
-        if (["-d", "--desc", "-f", "--filename"].includes(t)) i++;
+        if (GIST_TEXT_FLAGS.includes(t)) i++;
         continue;
       }
     }
@@ -372,7 +387,7 @@ export function collectTextsToCheck(rawArgv, deps = {}) {
 
   const [cmd, sub] = argv;
   const isApi = cmd === "api";
-  const bodyFlags = isApi ? new Set() : nonApiBodyFlags(sub);
+  const bodyFlags = isApi ? new Set() : nonApiBodyFlags(cmd, sub);
   const fileFlags = isApi ? API_FILE_FLAGS : NON_API_FILE_FLAGS;
 
   // #9029: o índice NUNCA pula o token-valor. Antes, ao achar `--title` o
@@ -411,7 +426,7 @@ export function collectTextsToCheck(rawArgv, deps = {}) {
     for (let i = 0; i < toks.length; i++) {
       const t = toks[i];
       if (t !== "-" && t.startsWith("-")) {
-        if (["-d", "--desc", "-f", "--filename"].includes(t)) i++;
+        if (GIST_TEXT_FLAGS.includes(t)) i++;
         continue;
       }
       texts.push(resolveFileOrStdin(t));

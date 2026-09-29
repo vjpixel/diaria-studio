@@ -155,12 +155,12 @@ describe("collectTextsToCheck / evaluateGhInvocation (#8884)", () => {
     const clean = evaluateGhInvocation(["api", "x/comments", "-F", "n=1"], {});
     assert.equal(clean.blocked, false);
   });
-  it("resolve posicional de gh gist create, ignorando a descrição", () => {
+  it("resolve posicional de gh gist create (a descrição também é coletada desde #9055)", () => {
     const r = evaluateGhInvocation(["gist", "create", "-d", "minha desc", "a.txt"], {
       readFileSync: () => OR_KEY,
     });
     assert.ok(r.blocked);
-    assert.deepEqual(collectTextsToCheck(["gist", "create", "-d", "minha desc", "a.txt"], {}), [""]);
+    assert.deepEqual(collectTextsToCheck(["gist", "create", "-d", "minha desc", "a.txt"], {}), ["minha desc", ""]);
   });
   it("comando limpo e comando que não publica não bloqueiam", () => {
     assert.equal(evaluateGhInvocation(["pr", "comment", "1", "--body", "LGTM"], {}).blocked, false);
@@ -524,6 +524,75 @@ describe("#9030: flag global ANTES do subcomando", () => {
   it("leitura com flag global antes continua não publicando", () => {
     assert.equal(isPublishingInvocation(["--repo", "o/r", "pr", "view", "1"]), false);
     assert.equal(evaluateGhInvocation(["-R", "o/r", "issue", "list"], {}).blocked, false);
+  });
+});
+
+// Sintético montado em runtime — nunca um literal com formato real.
+const GH_TOKEN = "gh" + "p_" + "A1b2C3d4".repeat(5);
+
+describe("#9055: descrição de `gh gist create` (-d/--desc) é inspecionada", () => {
+  it("segredo em -d/--desc bloqueia, em todas as formas de sintaxe", () => {
+    for (const argv of [
+      ["gist", "create", "-d", OR_KEY, "a.txt"],
+      ["gist", "create", "--desc", OR_KEY, "a.txt"],
+      ["gist", "create", `--desc=${OR_KEY}`, "a.txt"],
+      ["gist", "create", `-d${OR_KEY}`, "a.txt"],
+      ["gist", "create", "a.txt", "-d", OR_KEY],
+      ["--repo", "o/r", "gist", "create", "-d", OR_KEY, "a.txt"],
+      // valor que parece flag (#9020) — não pode ser splitado/perdido
+      ["gist", "create", "--desc", `--token=${OR_KEY}`, "a.txt"],
+    ]) {
+      const r = evaluateGhInvocation(argv, { readFileSync: () => "conteúdo limpo" });
+      assert.ok(r.blocked, JSON.stringify(argv));
+      assert.deepEqual(r.secrets, ["OpenRouter"], JSON.stringify(argv));
+    }
+  });
+  it("segredo em -f/--filename (nome público do gist via stdin) bloqueia", () => {
+    const r = evaluateGhInvocation(["gist", "create", "-f", OR_KEY, "-"], { stdinText: "limpo" });
+    assert.ok(r.blocked);
+    assert.ok(evaluateGhInvocation(["gist", "create", `--filename=${OR_KEY}`, "-"], { stdinText: "limpo" }).blocked);
+  });
+  it("descrição e arquivo limpos não bloqueiam (sem falso positivo)", () => {
+    const r = evaluateGhInvocation(
+      ["gist", "create", "-d", "notas da reunião — ghp_ é o prefixo de token", "-f", "notas.md", "-"],
+      { stdinText: "texto comum" },
+    );
+    assert.equal(r.blocked, false);
+  });
+  it("a descrição não é lida como arquivo nem pede stdin", () => {
+    assert.equal(requiresStdin(["gist", "create", "-d", "-", "a.txt"]), false);
+    const read: string[] = [];
+    collectTextsToCheck(["gist", "create", "-d", "desc.txt", "a.txt"], {
+      readFileSync: (p: string) => {
+        read.push(p);
+        return "";
+      },
+    });
+    assert.deepEqual(read, ["a.txt"]);
+  });
+  it("-f continua sendo --fill (sem valor) fora do gist: `pr create -fx` não é splitado", () => {
+    assert.deepEqual(normalizeArgv(["pr", "create", "-fx"]), ["pr", "create", "-fx"]);
+  });
+});
+
+describe("#9056: token GitHub sem word boundary antes do prefixo", () => {
+  it("token colado a uma letra é detectado (`-bghp_…` no texto cru, `xghp_…`)", () => {
+    assert.ok(evaluateGhInvocation(["api", "x/comments", "-f", `body=-b${GH_TOKEN}`], {}).blocked);
+    assert.ok(evaluateGhInvocation(["pr", "comment", "1", "--body", `token:x${GH_TOKEN}`], {}).blocked);
+    assert.ok(evaluateGhInvocation(["pr", "comment", "1", "--body", `abc${GH_TOKEN}def`], {}).blocked);
+  });
+  it("token isolado continua detectado", () => {
+    assert.deepEqual(evaluateGhInvocation(["pr", "comment", "1", "--body", `veja ${GH_TOKEN}`], {}).secrets, ["GitHub"]);
+  });
+  it("menção do prefixo em prosa não é falso positivo", () => {
+    for (const body of [
+      "O prefixo ghp_ identifica tokens clássicos; gho_ e ghs_ são OAuth/app.",
+      "Use " + "github" + "_pat_ para tokens fine-grained.",
+      "Renomeie a variável laghp_x e siga.",
+      "Rodei o pipeline no GitHub e o graphql retornou ok.",
+    ]) {
+      assert.equal(evaluateGhInvocation(["pr", "comment", "1", "--body", body], {}).blocked, false, body);
+    }
   });
 });
 

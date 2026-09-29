@@ -19,7 +19,11 @@ export const SECRET_PATTERNS = [
   { name: "Anthropic", re: /sk-ant-[A-Za-z0-9_-]{20,}/ },
   { name: "OpenAI", re: /sk-(?:proj-)?[A-Za-z0-9]{32,}/ },
   { name: "Brevo", re: /xkeysib-[A-Za-z0-9-]{20,}/ },
-  { name: "GitHub", re: /\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/ },
+  // #9056: sem `\b` antes do prefixo — um segredo colado a uma letra (flag
+  // curta colada ao valor, `-bghp_…`, no texto cru que o hook irmão vê) não
+  // tem fronteira de palavra e escapava. O corpo longo (20+) já basta pra não
+  // disparar em menção do prefixo em prosa ("o prefixo ghp_ indica...").
+  { name: "GitHub", re: /(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/ },
   { name: "Doppler", re: /\bdp\.(?:st|pt|sa|ct|scim)\.[A-Za-z0-9_.-]{20,}/ },
   { name: "Slack", re: /\bxox[abprs]-[A-Za-z0-9-]{20,}/ },
   { name: "Google API", re: /\bAIza[A-Za-z0-9_-]{35}\b/ },
