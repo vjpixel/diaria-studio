@@ -530,7 +530,7 @@ describe("buildReviewInstruction (#2754)", () => {
     assert.match(msg, /pr-review-toolkit:comment-analyzer → "sonnet"/);
     assert.match(msg, /pr-review-toolkit:type-design-analyzer → "sonnet"/);
     assert.doesNotMatch(msg, /claude-opus-5-5/);
-    for (const m of Object.values(REVIEW_AGENT_MODEL)) {
+    for (const m of Object.values(REVIEW_AGENT_MODEL) as string[]) {
       assert.ok(["sonnet", "opus", "haiku", "fable"].includes(m), `modelo ${m} fora do vocabulário do Agent tool`);
     }
   });
