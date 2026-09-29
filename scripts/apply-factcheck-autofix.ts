@@ -378,7 +378,9 @@ export function planAutofixes(
       };
     }
 
-    // Regra 5 (#8992): destaque="secondary" (claim de item fora de D1-D3) não
+    // Regra adicional (#8992, roda antes das regras 3/4 abaixo — não têm
+    // dependência de ordem entre si, "secondary" nunca colide com um
+    // intentional_error numérico): destaque="secondary" (claim de item fora de D1-D3) não
     // tem bloco "DESTAQUE N" pra escopar a substituição com segurança —
     // `findDestaqueBodyRange`/`findSocialDestaqueRanges` nunca casam a string
     // "secondary" contra um header numérico real, então aplicar aqui sem essa
