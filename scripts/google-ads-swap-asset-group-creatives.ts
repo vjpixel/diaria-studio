@@ -73,7 +73,8 @@
  *   (#9017 — hoje LONG_HEADLINE e DESCRIPTION, 5 novos cada = máximo): aí o
  *   mínimo de stale necessário sai NO MESMO `assetGroupAssets:mutate` do
  *   link (remove+create atômico, `planTextFieldLinks`). O plano é validado
- *   contra antigos + novos antes de qualquer mutação.
+ *   contra antigos + novos antes de qualquer mutação — também para as
+ *   imagens do manifesto (#9057, `planImageFieldLinks`, máx 20 por tipo).
  *
  *   Fase 2 (`--send --remove-stale`, rodado numa invocação SEPARADA
  *   depois de confirmar pela API que os novos estão `ENABLED` e sem
@@ -120,6 +121,9 @@ import {
   buildCreateImageAssetPayload,
   buildSwapAssetGroupAssetsPayload,
   planTextFieldLinks,
+  planImageFieldLinks,
+  type ImageFieldType,
+  type ImageLinkPlanResult,
   buildRemoveAssetGroupAssetsPayload,
   emptySwapProgress,
   parseSwapProgress,
@@ -226,7 +230,7 @@ export function fetchCooldownCommentsOrNull(issueNumber: number, cwd: string): s
   return comments.map((c) => c.body).filter((b): b is string => typeof b === "string");
 }
 
-const IMAGE_FIELD_TYPES: readonly Extract<AssetGroupFieldType, string>[] = [
+const IMAGE_FIELD_TYPES: readonly ImageFieldType[] = [
   "SQUARE_MARKETING_IMAGE",
   "MARKETING_IMAGE",
   "PORTRAIT_MARKETING_IMAGE",
@@ -494,6 +498,30 @@ export async function main(
     for (const e of manifestErrors) console.log(`  - ${e}`);
   }
 
+  // #9057 — mesma validação de capacidade do #9017, agora para as IMAGENS:
+  // imagens já ENABLED + as do manifesto contra o máximo por fieldType
+  // (PMAX_IMAGE_FIELD_MAX), ANTES de qualquer mutação. Só dá pra planejar com
+  // manifesto válido (a contagem nova vem dele).
+  let imageLinkPlan: ImageLinkPlanResult = { ok: true, plans: [] };
+  if (manifest && manifestErrors.length === 0) {
+    const m = manifest;
+    const imageNewCounts = Object.fromEntries(
+      IMAGE_FIELD_TYPES.map((ft) => [ft, (m[ft as keyof ImagesManifest] ?? []).length]),
+    ) as Record<ImageFieldType, number>;
+    imageLinkPlan = planImageFieldLinks(current.items, classification, imageNewCounts, alreadyLinked);
+    for (const pl of imageLinkPlan.plans) {
+      removeInLinkByFieldType.set(pl.fieldType, pl.removeInSameMutate);
+      const cabe = pl.removeInSameMutate.length === 0;
+      console.log(
+        `[google-ads-swap-asset-group-creatives] capacidade ${pl.fieldType}: ${pl.existingEnabled} ENABLED hoje + ${pl.newCount} novo(s), máx ${pl.max} — ` +
+          (cabe ? "cabe sem remover nada." : `remove ${pl.removeInSameMutate.length} stale no MESMO mutate do link (troca atômica): ${pl.removeInSameMutate.join(", ")}`),
+      );
+    }
+    if (!imageLinkPlan.ok) {
+      for (const e of imageLinkPlan.errors) console.error(`  ✖ ${e}`);
+    }
+  }
+
   if (!send) {
     console.log("[google-ads-swap-asset-group-creatives] DRY-RUN (default) — plano de texto que seria criado:");
     console.log(JSON.stringify(buildCreateTextAssetsPayload(NEW_HEADLINES, "HEADLINE"), null, 2));
@@ -509,7 +537,7 @@ export async function main(
     return 0;
   }
 
-  if (!textValidation.ok || !textLinkPlan.ok || manifestErrors.length > 0) {
+  if (!textValidation.ok || !textLinkPlan.ok || !imageLinkPlan.ok || manifestErrors.length > 0) {
     console.error("[google-ads-swap-asset-group-creatives] ✖ --send recusado: plano de texto, capacidade do grupo ou imagem tem pendências (ver acima). Nenhuma mutação foi feita.");
     return 1;
   }
