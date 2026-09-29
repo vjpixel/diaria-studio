@@ -45,6 +45,8 @@ const DEFAULT_OUT = resolve(ROOT, "assets", "default-thumbnail-1200x630.png");
 const COLOR_PAPER = COLORS.paper;
 const COLOR_TEAL = COLORS.brand;
 const COLOR_INK = COLORS.ink;
+const COLOR_RULE = COLORS.rule; // hairline bege
+const COLOR_RULE_STRONG = COLORS.ruleStrong; // régua editorial pesada (tinta)
 const FONT_SERIF = FONTS.serif;
 const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif";
 
@@ -93,13 +95,10 @@ function buildSvg(): string {
   <!-- Background -->
   <rect width="${W}" height="${H}" fill="${COLOR_PAPER}"/>
 
-  <!-- Teal accent rule (top-left decorative bar) -->
-  <rect x="80" y="72" width="80" height="6" rx="3" fill="${COLOR_TEAL}"/>
-
-  <!-- Decorative bottom-right teal dot cluster -->
-  <circle cx="${W - 80}" cy="${H - 72}" r="6" fill="${COLOR_TEAL}" opacity="0.35"/>
-  <circle cx="${W - 100}" cy="${H - 72}" r="4" fill="${COLOR_TEAL}" opacity="0.22"/>
-  <circle cx="${W - 80}" cy="${H - 92}" r="4" fill="${COLOR_TEAL}" opacity="0.22"/>
+  <!-- DS "Edição Diária" (masthead): régua pesada em tinta 2px no topo. Teal é só
+       texto/marca (links, kickers, pontos do wordmark) — nunca barra/borda. -->
+  <rect x="80" y="64" width="${W - 160}" height="2" fill="${COLOR_RULE_STRONG}"/>
+  <rect x="80" y="70" width="${W - 160}" height="1" fill="${COLOR_RULE}"/>
 
   <!-- Wordmark: diar.ia.br — centered vertically slightly above mid -->
   <!-- Each segment positioned manually for teal/ink split -->
@@ -116,8 +115,8 @@ function buildSvg(): string {
     dominant-baseline="alphabetic"
   >diar<tspan fill="${COLOR_TEAL}">.</tspan>ia<tspan fill="${COLOR_TEAL}">.</tspan>br</text>
 
-  <!-- Teal underline accent below wordmark -->
-  <rect x="390" y="315" width="420" height="4" rx="2" fill="${COLOR_TEAL}" opacity="0.6"/>
+  <!-- Fio hairline bege sob o wordmark (rule do DS, não teal) -->
+  <rect x="390" y="315" width="420" height="1" fill="${COLOR_RULE}"/>
 
   <!-- Tagline oficial (2 linhas, substitui o antigo subtítulo genérico "newsletter
        diária de IA" — #3705: a tagline já comunica "newsletter diária") -->
@@ -146,6 +145,8 @@ function buildSvg(): string {
     dominant-baseline="alphabetic"
   >${TAGLINE_LINE_2}</text>
 
+  <!-- Rodapé: hairline bege + URL em teal (texto/marca) -->
+  <rect x="80" y="${H - 84}" width="${W - 160}" height="1" fill="${COLOR_RULE}"/>
   <!-- URL hint bottom-left -->
   <text
     x="80"
@@ -155,7 +156,6 @@ function buildSvg(): string {
     font-weight="400"
     fill="${COLOR_TEAL}"
     dominant-baseline="alphabetic"
-    opacity="0.75"
   >diar.ia.br</text>
 </svg>`;
 }
