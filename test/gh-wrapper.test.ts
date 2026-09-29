@@ -433,6 +433,86 @@ describe("#9020: pr merge --body/-b e --subject/-t publicam", () => {
   });
 });
 
+describe("#9029: flag reconhecida cujo VALOR é o nome de outra flag reconhecida", () => {
+  it("bloqueia `pr create --title --body SEGREDO` (repro da issue)", () => {
+    const r = evaluateGhInvocation(["pr", "create", "--title", "--body", OR_KEY], {});
+    assert.ok(r.blocked, "o token depois de `--body` precisa ser inspecionado");
+    assert.ok(r.secrets?.includes("OpenRouter"));
+  });
+  it("bloqueia a ordem inversa `pr create --body --title SEGREDO`", () => {
+    assert.ok(evaluateGhInvocation(["pr", "create", "--body", "--title", OR_KEY], {}).blocked);
+  });
+  it("bloqueia forma curta encadeada `issue comment 1 -b -t SEGREDO`", () => {
+    assert.ok(evaluateGhInvocation(["issue", "comment", "1", "-b", "-t", OR_KEY], {}).blocked);
+  });
+  it("bloqueia body-flag seguida de file-flag: `pr comment 1 --body -F arquivo`", () => {
+    const r = evaluateGhInvocation(["pr", "comment", "1", "--body", "-F", "/tmp/x.md"], {
+      readFileSync: (p: string) => (p === "/tmp/x.md" ? `vaza ${OR_KEY}` : ""),
+    });
+    assert.ok(r.blocked);
+  });
+  it("bloqueia close `--comment --comment SEGREDO`", () => {
+    assert.ok(evaluateGhInvocation(["pr", "close", "1", "--comment", "--comment", OR_KEY], {}).blocked);
+  });
+  it("ambos os tokens são coletados (valor literal e flag seguinte)", () => {
+    assert.deepEqual(collectTextsToCheck(["pr", "create", "--title", "--body", "texto"], {}), ["--body", "texto"]);
+  });
+  it("encadeamento limpo não bloqueia", () => {
+    assert.equal(evaluateGhInvocation(["pr", "create", "--title", "--body", "texto normal"], {}).blocked, false);
+  });
+  it("argv comum continua coletando cada texto uma vez", () => {
+    assert.deepEqual(collectTextsToCheck(["pr", "create", "--title", "t", "--body", "b"], {}), ["t", "b"]);
+  });
+});
+
+describe("#9030: flag global ANTES do subcomando", () => {
+  it("isPublishingInvocation reconhece `--repo o/r pr comment` (repro da issue)", () => {
+    assert.ok(isPublishingInvocation(["--repo", "o/r", "pr", "comment", "1", "--body", "x"]));
+  });
+  it("bloqueia `gh --repo o/r pr comment 1 --body SEGREDO`", () => {
+    const r = evaluateGhInvocation(["--repo", "o/r", "pr", "comment", "1", "--body", OR_KEY], {});
+    assert.ok(r.blocked);
+    assert.ok(r.secrets?.includes("OpenRouter"));
+  });
+  it("bloqueia formas -R valor, -Rvalor e --repo=valor", () => {
+    for (const lead of [["-R", "o/r"], ["-Ro/r"], ["--repo=o/r"]]) {
+      const r = evaluateGhInvocation([...lead, "issue", "comment", "1", "-b", OR_KEY], {});
+      assert.ok(r.blocked, `lead=${JSON.stringify(lead)}`);
+    }
+  });
+  it("repo chamado `pr` não é confundido com o comando (`-R pr issue comment`)", () => {
+    const r = evaluateGhInvocation(["-R", "pr", "issue", "comment", "1", "--body", OR_KEY], {});
+    assert.ok(r.blocked);
+  });
+  it("flag global booleana/desconhecida antes do comando publicador", () => {
+    assert.ok(evaluateGhInvocation(["--verbose", "pr", "comment", "1", "--body", OR_KEY], {}).blocked);
+    assert.ok(evaluateGhInvocation(["--xyz", "val", "pr", "comment", "1", "--body", OR_KEY], {}).blocked);
+  });
+  it("gh api com flag global antes: `--repo o/r api -X POST repos/o/r/issues/1/comments -f body=SEGREDO`", () => {
+    const r = evaluateGhInvocation(
+      ["--repo", "o/r", "api", "-X", "POST", "repos/o/r/issues/1/comments", "-f", `body=${OR_KEY}`],
+      {},
+    );
+    assert.ok(r.blocked);
+  });
+  it("requiresStdin enxerga `--body-file -` com flag global antes", () => {
+    assert.ok(requiresStdin(["--repo", "o/r", "pr", "comment", "1", "--body-file", "-"]));
+  });
+  it("normalizeArgv descarta só as flags iniciais", () => {
+    assert.deepEqual(normalizeArgv(["--repo", "o/r", "pr", "comment", "1", "--body=x"]), [
+      "pr",
+      "comment",
+      "1",
+      "--body",
+      "x",
+    ]);
+  });
+  it("leitura com flag global antes continua não publicando", () => {
+    assert.equal(isPublishingInvocation(["--repo", "o/r", "pr", "view", "1"]), false);
+    assert.equal(evaluateGhInvocation(["-R", "o/r", "issue", "list"], {}).blocked, false);
+  });
+});
+
 describe("findRealGh (#8884)", () => {
   it("pula a si mesmo e acha o próximo `gh` no PATH", () => {
     const calls: string[] = [];
