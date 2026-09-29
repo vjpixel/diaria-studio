@@ -408,7 +408,7 @@ export function buildAdsSpendIngestAlarmEmail(
       body:
         `Uma das ingestões de gasto (Google Ads / Microsoft Ads / Meta Ads) contém sinal de defeito no run mais recente ` +
         `(${evaluation.latestRunAt}) — "✖ DEFEITO" ou fallback pro CSV manual sem ser o caso normal de gasto ` +
-        `zero. Por decisão do #5237/#5502, os scripts Google/Microsoft saem com exit 0 mesmo neste caso (o Meta sai não-zero desde o #9012) (pra não calar a ` +
+        `zero. O script do Meta sai com exit não-zero nesse caso desde o #9012; por decisão do #5237/#5502, os scripts Google/Microsoft saem com exit 0 mesmo neste caso (pra não calar a ` +
         `ingestão da plataforma vizinha) — este alarme existe justamente pra tornar visível o que o exit code ` +
         `esconde.\n\n` +
         `Estado por plataforma:\n${platformLines}\n\n` +

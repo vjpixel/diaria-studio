@@ -216,8 +216,12 @@ export const META_ADS_INGEST_FAILURE_EXIT_CODE = 1;
  * chamada à Graph API, sem retry, falhou com `fetch failed` — Google
  * (12:50) e Microsoft (12:52) tinham passado minutos antes. Erro de rede e
  * 5xx são retentados (`fetchWithRetry`; 4xx nunca: token inválido é achado
- * real, não blip). A espera total (~2min) cabe com folga antes do alarme
- * das 10:05 BRT (task às 09:54 BRT).
+ * real, não blip). Pior caso por página: 125s de backoff + 4×30s de
+ * timeout ≈ 4min — com a paginação típica (1 página) cabe antes do alarme
+ * das 10:05 BRT (task às 09:54 BRT). O timeout cobre só até os headers;
+ * a leitura do corpo (`res.json()` em `fetchMetaAdsChannelMetrics`) fica
+ * fora dele — resposta pequena, risco aceito. Um `init.signal` do
+ * chamador seria substituído (nenhum chamador passa um hoje).
  */
 export const META_ADS_FETCH_RETRY = {
   attempts: 4,
@@ -360,6 +364,10 @@ export async function main(): Promise<number> {
     fallback(result.reason);
     return META_ADS_INGEST_FAILURE_EXIT_CODE;
   }
+  if (result.kind === "empty") {
+    console.log("[meta-ads-ingest-spend] ✔ envelope válido, sem gasto no período — spend.csv fica como está.");
+    return 0;
+  }
 
   writeFileSync(spendPath, formatSpendCsv(result.rows), "utf8");
   console.log(
@@ -374,7 +382,8 @@ if (isMainModule(import.meta.url)) {
     .catch((e) => {
       // Último caminho que escaparia como stack cru — nunca deveria chegar
       // aqui (parse e merge já são fail-soft), mas mantém a disciplina
-      // "nunca quebra o relatório" mesmo diante de um bug aqui.
+      // "spend.csv intocado" mesmo diante de um bug aqui; exit não-zero
+      // (#9012) pra a unit não reportar sucesso.
       fallback(`erro inesperado: ${e instanceof Error ? e.message : e}`);
       process.exit(META_ADS_INGEST_FAILURE_EXIT_CODE);
     });

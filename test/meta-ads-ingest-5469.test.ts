@@ -185,10 +185,10 @@ describe("#5469 — aggregateMetaAdsSpendByMonth", () => {
 });
 
 describe("#5469 — runMetaAdsIngest (orquestração fail-soft)", () => {
-  it("envelope real vazio (sem gasto) vira fallback com motivo — nunca escreve linha zerada", async () => {
+  it("envelope real vazio (sem gasto) vira `empty` (#9012: gasto zero ≠ falha) — nunca escreve linha zerada", async () => {
     const payload = loadFixture("ad-entities-empty.json");
     const out = await runMetaAdsIngest({ envelopePayload: payload, existingRows: [] });
-    assert.equal(out.kind, "fallback");
+    assert.equal(out.kind, "empty");
   });
 
   it("envelope inválido vira fallback, nunca lança", async () => {

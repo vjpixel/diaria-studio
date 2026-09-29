@@ -133,6 +133,47 @@ describe("#9012 — Meta Ads ingest: retry de blip de rede + exit code fail-loud
     assert.equal(sleeps.length, 0);
   });
 
+  it("paginação: `fetch failed` na página 2 é retentado com o header Authorization preservado, e o token nunca vai pro log", async () => {
+    const seen: Array<{ url: string; auth: string | null; hasSignal: boolean }> = [];
+    let page2Calls = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seen.push({ url, auth: headers.get("Authorization"), hasSignal: init?.signal instanceof AbortSignal });
+      if (url.startsWith("https://next.example/page2")) {
+        page2Calls++;
+        if (page2Calls === 1) throw new TypeError("fetch failed");
+        return jsonResponse(200, OK_BODY);
+      }
+      return jsonResponse(200, {
+        data: [{ date_start: "2026-09-27", spend: "10", clicks: "1", impressions: "10" }],
+        paging: { next: "https://next.example/page2" },
+      });
+    }) as typeof fetch;
+
+    const { result: code, warn, log } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep }));
+
+    assert.equal(code, 0);
+    assert.equal(page2Calls, 2);
+    assert.ok(seen.every((s) => s.auth === "Bearer tok-fake-nunca-logado"), "Authorization em toda tentativa/página");
+    assert.ok(seen.every((s) => s.hasSignal), "signal do retry chega ao fetchImpl");
+    assert.match(readFileSync(spendPath, "utf8"), /Meta Ads \(teste 2608\),2026-09,BRL,52\.5,/);
+    assert.doesNotMatch(warn + log, /tok-fake-nunca-logado/);
+  });
+
+  it("caminho manual: --input com envelope válido sem gasto → exit 0 (gasto zero não é falha)", async () => {
+    const fixture = join(import.meta.dirname, "fixtures", "meta-ads", "ad-entities-empty.json");
+    const savedArgv = process.argv;
+    process.argv = [savedArgv[0], "meta-ads-ingest-spend.ts", "--input", fixture, "--spend", spendPath];
+    try {
+      const { result: code, warn } = await silenceConsole(() => main());
+      assert.equal(code, 0);
+      assert.doesNotMatch(warn, /fallback pro CSV manual/);
+    } finally {
+      process.argv = savedArgv;
+    }
+    assert.equal(existsSync(spendPath), false);
+  });
+
   it("caminho manual: --input inexistente → exit NÃO-ZERO", async () => {
     const savedArgv = process.argv;
     process.argv = [savedArgv[0], "meta-ads-ingest-spend.ts", "--input", join(tmpDir, "nao-existe.json"), "--spend", spendPath];
