@@ -112,15 +112,21 @@ function checkClariceKeySet(): InvariantViolation[] {
  * - cloudflare → CLOUDFLARE_WORKERS_TOKEN
  * - comfyui → nenhuma (local)
  * - openai → OPENAI_API_KEY
- * - codex → nenhuma (login ChatGPT do CLI; OPENAI_API_KEY é removida do subprocesso, #9088)
+ * - codex → nenhuma pra ele (login ChatGPT do CLI; OPENAI_API_KEY é removida do subprocesso, #9088),
+ *   MAS se `codex.fallback` estiver setado, checa a key do FALLBACK — senão uma falha do codex
+ *   só expõe a key ausente do fallback no meio do Stage 3 (review do PR #9108).
  */
 function checkImageGeneratorKeySet(): InvariantViolation[] {
   const configPath = resolve(ROOT, "platform.config.json");
   if (!existsSync(configPath)) return [];
   let generator: string;
   try {
-    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as { image_generator?: string };
+    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
+      image_generator?: string;
+      codex?: { fallback?: string };
+    };
     generator = (cfg.image_generator ?? "gemini").toLowerCase();
+    if (generator === "codex" && cfg.codex?.fallback) generator = cfg.codex.fallback.toLowerCase();
   } catch {
     return [];
   }

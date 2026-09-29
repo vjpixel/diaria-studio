@@ -291,7 +291,7 @@ describe("Stage 0 invariants", () => {
     try {
       const rule = STAGE_0_RULES.find((r) => r.id === "image-generator-key-set")!;
       const v = rule.run("");
-      // platform.config.json default = gemini
+      // platform.config.json default = codex com codex.fallback = gemini (#9108) → exige GEMINI_API_KEY
       assert.ok(v.length >= 1, "Esperava violation pra image_generator=gemini sem key");
       assert.equal(v[0].severity, "error");
       assert.match(v[0].message, /GEMINI_API_KEY/);
