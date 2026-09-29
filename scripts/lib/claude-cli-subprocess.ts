@@ -207,7 +207,13 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
     // iteração real) — é uma condição distinta e nomeada, não "erro
     // inesperado".
     const { stopReason, subtype } = tryParseCliEnvelope(stdout);
-    const maxTurnsExhausted = status === 1 && (subtype === "error_max_turns" || stopReason === "tool_use");
+    // #9025: o fallback por `stop_reason` só vale quando o `subtype` NÃO
+    // veio. Um envelope `{subtype: "error_during_execution", stop_reason:
+    // "tool_use"}` (ex: erro de API logo após uma chamada de ferramenta) é
+    // uma falha real, não max-turns — rotulá-lo como max-turns esconde o
+    // stderr no `run-agent-eval-for-pr.ts`, o mesmo diagnóstico errado do #8405.
+    const maxTurnsExhausted =
+      status === 1 && (subtype === "error_max_turns" || (subtype == null && stopReason === "tool_use"));
     // #8405 (review): a mensagem é montada a partir de `command`, que já
     // substitui o argv pelo `<prompt N chars>`, e NUNCA a partir de
     // `err.message` — o `execFileSync` embute o prompt inteiro (~30KB) na
