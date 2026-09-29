@@ -152,9 +152,10 @@ describe("filterSubscriberReplies (#1797)", () => {
 
   // ── #8997: reprodução do achado da edição 260929 ────────────────────────
 
-  it("#8997: 25 threads da query ampla — só as com `to` em domínio dedicado sobrevivem", () => {
+  it("#8997: reprodução reduzida do achado (25 threads/8 reais na edição real) — só as com `to` em domínio dedicado sobrevivem", () => {
     const threads = [
-      // 8 respostas de assinante de verdade, endereçadas ao domínio dedicado.
+      // respostas de assinante de verdade, endereçadas ao domínio dedicado
+      // (a edição real teve 8; 2 bastam aqui pra cobrir os 2 domínios dedicados).
       { thread_id: "sub-1", subject: "Re: diar.ia.br — 28/09", from: "leitor1@x.com", to: "oi@news.diar.ia.br" },
       { thread_id: "sub-2", subject: "Re: diar.ia.br — 27/09", from: "leitor2@y.com", to: "oi@reativa.diar.ia.br" },
       // falsos positivos reais citados na issue — todos endereçados à caixa
