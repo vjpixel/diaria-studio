@@ -31,6 +31,7 @@ import {
   parseClaudeCliJsonResult,
   runAgentRepetitions,
   verdictsFromOutcomes,
+  WRITER_DESTAQUE_REPLAY_MAX_TURNS,
   type GraderVerdict,
 } from "../scripts/lib/prompt-regression-eval.ts";
 
@@ -446,6 +447,10 @@ describe("runAgentRepetitions (#8143 item 6 — default dry-run NUNCA spawna cla
         callClaudeCliFn: (_prompt, opts) => {
           calls++;
           assert.equal(opts.outputFormat, "json");
+          // #8405 2ª metade: só writer-destaque ganha o maxTurns elevado —
+          // social-writer segue no default de callClaudeCli (sem sinal de
+          // que esgota o teto de 20).
+          assert.equal(opts.maxTurns, undefined);
           writeFileSync(producedPath, "## d1\n\nTexto curto, sem overflow.\n", "utf8");
           return JSON.stringify({ usage: { input_tokens: 100, output_tokens: 20 }, num_turns: 2, duration_ms: 500, result: "ok" });
         },
@@ -481,7 +486,11 @@ describe("runAgentRepetitions (#8143 item 6 — default dry-run NUNCA spawna cla
         rootDir: dir,
         repetitions: 1,
         dryRun: false,
-        callClaudeCliFn: () => {
+        callClaudeCliFn: (_prompt, opts) => {
+          // #8405 2ª metade: writer-destaque roda com maxTurns elevado
+          // (WRITER_DESTAQUE_REPLAY_MAX_TURNS = 40), não o default de 20
+          // que esgotava em produção.
+          assert.equal(opts.maxTurns, WRITER_DESTAQUE_REPLAY_MAX_TURNS);
           writeFileSync(producedPath, "**DESTAQUE 1 | MERCADO**\n\n**[Título curto o suficiente](https://x.com)**\n\nBody aqui.\n", "utf8");
           return JSON.stringify({ usage: { input_tokens: 10, output_tokens: 5 }, num_turns: 1, duration_ms: 50, result: "ok" });
         },

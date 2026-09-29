@@ -3,9 +3,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   detectEventOverlap,
@@ -14,9 +11,16 @@ import {
   REPEAT_THEME_WARN_THRESHOLD,
 } from "../scripts/lib/repeat-theme-check.ts";
 import { extractPastDestaqueTitles } from "../scripts/lib/past-editions-extract.ts";
-import { flattenCategorized } from "../scripts/check-repeat-theme.ts";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// #8951: `scripts/check-repeat-theme.ts` (o script CLI que consumia este
+// miolo) foi removido — o runner real do Stage 1 (`stage-1-run.ts`) nunca
+// chamava esse script, só `check-highlight-themes.ts`. A lógica calibrada
+// aqui (detectEventOverlap/buildRepeatThemeResult/extractPastDestaqueTitles)
+// continua viva, agora consumida DIRETAMENTE por `check-highlight-themes.ts`
+// (gatilho cross-source, ver `findCrossSourceMatch` lá e o teste de
+// regressão end-to-end em `test/check-highlight-themes.test.ts`). Os testes
+// de CLI e2e e de `flattenCategorized` (exclusivos do script removido) saíram
+// junto — cobertura do MESMO caso real passou para lá.
 
 // ---------------------------------------------------------------------------
 // #8896 — caso real: D1 260928 (Wired: "agente da OpenAI invadiu o sistema
@@ -133,108 +137,3 @@ describe("extractPastDestaqueTitles (#8896)", () => {
   });
 });
 
-describe("flattenCategorized", () => {
-  it("achata os 4 buckets num array único, preservando bucket de origem", () => {
-    const flat = flattenCategorized({
-      lancamento: [{ title: "L1", url: "https://x/l1" }],
-      radar: [{ title: "R1", url: "https://x/r1" }],
-      use_melhor: [{ title: "U1", url: "https://x/u1" }],
-      video: [{ title: "V1", url: "https://x/v1" }],
-    });
-    assert.equal(flat.length, 4);
-    assert.ok(flat.some((c) => c.bucket === "lancamento" && c.title === "L1"));
-    assert.ok(flat.some((c) => c.bucket === "video" && c.title === "V1"));
-  });
-
-  it("bucket ausente/não-array não quebra (fail-soft)", () => {
-    const flat = flattenCategorized({ lancamento: [{ title: "L1" }] } as any);
-    assert.equal(flat.length, 1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// End-to-end CLI (#8896) — reproduz o caso real via subprocess, mesmo padrão
-// de invocação que `.claude/agents/orchestrator-stage-1-research.md` §1w-quint-b
-// documenta.
-// ---------------------------------------------------------------------------
-
-describe("check-repeat-theme.ts — CLI e2e (#8896)", () => {
-  it("reproduz o caso real: candidato do dia flagado contra destaque de edição recente", () => {
-    const dir = mkdtempSync(join(tmpdir(), "ed-repeat-theme-cli-"));
-    try {
-      // Edição passada (260925) com o D1 do Guardian.
-      mkdirSync(join(dir, "260925", "_internal"), { recursive: true });
-      writeFileSync(
-        join(dir, "260925", "_internal", "01-approved.json"),
-        JSON.stringify({
-          highlights: [
-            { article: { url: "https://theguardian.com/agente-governo", title: REAL_CASE_PAST_DESTAQUE_TITLE } },
-          ],
-        }),
-      );
-
-      // Edição corrente (260928) com o candidato do Wired em tmp-categorized.json.
-      mkdirSync(join(dir, "260928", "_internal"), { recursive: true });
-      const categorizedPath = join(dir, "260928", "_internal", "tmp-categorized.json");
-      writeFileSync(
-        categorizedPath,
-        JSON.stringify({
-          lancamento: [],
-          radar: [{ url: "https://wired.com/agente-saude-australia", title: REAL_CASE_CANDIDATE_TITLE, summary: "Um agente de IA acessou dados sensíveis." }],
-          use_melhor: [],
-          video: [],
-        }),
-      );
-
-      const pastEditionsPath = join(dir, "past-editions.md");
-      writeFileSync(pastEditionsPath, "# Últimas edições publicadas — para dedup\n\n---\n");
-
-      const stdout = execFileSync(
-        process.execPath,
-        [
-          "--import",
-          "tsx",
-          resolve(ROOT, "scripts/check-repeat-theme.ts"),
-          "--categorized",
-          categorizedPath,
-          "--past-editions",
-          pastEditionsPath,
-          "--editions-dir",
-          dir,
-          "--window",
-          "3",
-        ],
-        { encoding: "utf8" },
-      );
-
-      const result = JSON.parse(stdout.trim().split("\n").pop()!);
-      assert.equal(result.flagged, true, "CLI deveria flagar o caso real end-to-end");
-      assert.equal(result.eventMatches.length, 1);
-      assert.equal(result.eventMatches[0].pastAammdd, "260925");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("nunca lança/bloqueia quando --categorized não existe (fail-soft)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "ed-repeat-theme-missing-"));
-    try {
-      const stdout = execFileSync(
-        process.execPath,
-        [
-          "--import",
-          "tsx",
-          resolve(ROOT, "scripts/check-repeat-theme.ts"),
-          "--categorized",
-          join(dir, "nao-existe.json"),
-        ],
-        { encoding: "utf8" },
-      );
-      const result = JSON.parse(stdout.trim().split("\n").pop()!);
-      assert.equal(result.flagged, false);
-      assert.equal(result.theme, null);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});

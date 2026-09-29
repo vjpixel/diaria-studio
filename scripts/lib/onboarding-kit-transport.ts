@@ -139,6 +139,32 @@ export function buildLotId(kind: OnboardingKitLotKind, dateIso: string, seq: num
   return `${kind}-${dateIso}-${String(seq).padStart(2, "0")}`;
 }
 
+/** Lote Kit mais recente (`created_at` mais alto) que inclui esta
+ *  `subscriptionId` pra este `kind` — pode haver mais de 1 histórico após
+ *  um `recreate_after_timeout` (#7922); só o mais recente representa o
+ *  estado atual, os anteriores ficam como evidência de auditoria no store.
+ *
+ *  Movido de `onboarding-funnel-report.ts` pro módulo dono do tipo
+ *  `OnboardingKitLot` (#8979) — `onboarding-state.ts` (leitura+escrita) e
+ *  `onboarding-funnel-report.ts` (só leitura) usam o mesmo, e
+ *  `onboarding-funnel-report.ts` já importa de `onboarding-state.ts`;
+ *  deixar `findKitLotForEntry` lá criaria import circular quando
+ *  `onboarding-state.ts` precisasse dele. `onboarding-funnel-report.ts`
+ *  re-exporta o símbolo pra não quebrar os importadores existentes. */
+export function findKitLotForEntry(
+  lots: readonly OnboardingKitLot[],
+  kind: OnboardingKitLotKind,
+  subscriptionId: string,
+): OnboardingKitLot | null {
+  let latest: OnboardingKitLot | null = null;
+  for (const lot of lots) {
+    if (lot.kind !== kind) continue;
+    if (!lot.recipient_subscription_ids.includes(subscriptionId)) continue;
+    if (latest == null || lot.created_at > latest.created_at) latest = lot;
+  }
+  return latest;
+}
+
 /** Nome da tag Kit dedicada ao lote — 1:1 com `lot_id`, nunca reusada. */
 export function buildLotTagName(lotId: string): string {
   return `onboarding-${lotId}`;

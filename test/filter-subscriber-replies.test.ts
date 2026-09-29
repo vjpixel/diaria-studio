@@ -193,6 +193,55 @@ describe("stripQuotedAndSignature (#4095)", () => {
     assert.equal(stripQuotedAndSignature(body), "Valeu pela dica de hoje.");
   });
 
+  it("#8952: corta bloco de citação do Outlook (PT, 'De:'/'Enviado:') sem prefixo '>'", () => {
+    const body = [
+      "Obrigado!",
+      "",
+      "De: Pixel <diariaeditor@gmail.com>",
+      "Enviado: quinta-feira, 24 de setembro de 2026 08:00",
+      "Para: Leitor <leitor@example.com>",
+      "Assunto: Diar.ia — 27/07",
+      "",
+      "Destaque 1: OppenAI lança novo modelo",
+      "https://diar.ia.br/p/destaque-1",
+    ].join("\n");
+    const cleaned = stripQuotedAndSignature(body);
+    assert.equal(cleaned, "Obrigado!");
+    assert.ok(!cleaned.includes("OppenAI"), "newsletter citada (com o erro plantado) não deve sobreviver");
+  });
+
+  it("#8952: corta bloco de citação do Outlook (EN, 'From:'/'Sent:')", () => {
+    const body = [
+      "Thanks!",
+      "",
+      "From: Pixel <diariaeditor@gmail.com>",
+      "Sent: Thursday, September 24, 2026 8:00 AM",
+      "To: Reader <leitor@example.com>",
+      "Subject: diar.ia.br — 09/24",
+      "",
+      "Highlight 1: OppenAI launches new model",
+    ].join("\n");
+    assert.equal(stripQuotedAndSignature(body), "Thanks!");
+  });
+
+  it("#8952: corta no separador de underscores do Outlook mesmo sem bloco De:/Enviado:", () => {
+    const body = [
+      "Valeu pela edição!",
+      "",
+      "________________________________",
+      "",
+      "Destaque 1: OppenAI lança novo modelo",
+    ].join("\n");
+    assert.equal(stripQuotedAndSignature(body), "Valeu pela edição!");
+  });
+
+  it("#8952: corta em '-----Original Message-----' / '-----Mensagem original-----'", () => {
+    const bodyEn = ["Got it, thanks.", "", "-----Original Message-----", "OppenAI content here"].join("\n");
+    assert.equal(stripQuotedAndSignature(bodyEn), "Got it, thanks.");
+    const bodyPt = ["Entendido, valeu.", "", "-----Mensagem original-----", "Conteúdo com OppenAI"].join("\n");
+    assert.equal(stripQuotedAndSignature(bodyPt), "Entendido, valeu.");
+  });
+
   it("regressão do caso da issue: reply 'oi' inteiro some sob a newsletter citada sem a limpeza", () => {
     // Reprodução do problema descrito no #4095: sem stripQuotedAndSignature,
     // o corpo bruto (texto novo + newsletter inteira citada) tem milhares de

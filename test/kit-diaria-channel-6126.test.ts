@@ -58,6 +58,26 @@ describe("#6126 decideKitChannelDispatch", () => {
     if (d.action === "skip") assert.match(d.reason, /EM DOBRO/);
   });
 
+  it("REGRESSÃO #9001: canal já desligado (enabled:false) + backend \"kit\" ⇒ reason é \"desligado (default)\", NUNCA a mensagem de exclusão mútua", () => {
+    // Achado #9001: com `enabled` checado ANTES do backend (esta issue), o
+    // motivo do skip reflete o estado real (já desligado) em vez de instruir
+    // "Desligue kit_diaria.enabled ao virar o backend" como se a flag ainda
+    // estivesse ligada — a mensagem antiga confundia quem lia o log da
+    // edição 260929, achando que a flag "continua ligada" quando já não está.
+    const d = decideKitChannelDispatch({
+      config: { enabled: false },
+      newsletterBackend: "kit",
+      existing: null,
+      defaultAudienceTag: DEFAULT_TAG,
+    });
+    assert.equal(d.action, "skip");
+    if (d.action === "skip") {
+      assert.match(d.reason, /desligado \(default\)/);
+      assert.doesNotMatch(d.reason, /Desligue/);
+      assert.doesNotMatch(d.reason, /EM DOBRO/);
+    }
+  });
+
   it("backend \"beehiiv\" (o normal) não bloqueia o canal paralelo", () => {
     const d = decideKitChannelDispatch({
       config: { enabled: true },

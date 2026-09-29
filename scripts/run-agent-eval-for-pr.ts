@@ -625,12 +625,31 @@ if (isMainModule(import.meta.url)) {
       // #8405: stderr/stdout podem ser grandes (resposta JSON 1MB+, stderr do CLI).
       // Truncamos e apontam pros campos inteiros no erro — nunca ecoamos o
       // prompt (o `command` já veio substituído pelo `ClaudeCliError`).
+      //
+      // `maxTurnsExhausted` (#8405 2ª metade) é um caso DISTINTO e nomeado,
+      // nunca "erro inesperado": o subprocesso rodou até o fim de uma
+      // iteração real (stdout é JSON válido) e só não terminou a tempo de
+      // `--max-turns` — stderr vem vazio, não é crash. Reportar isso como
+      // "erro inesperado" genérico foi exatamente o que a issue #8405
+      // (comentário 260920) pediu pra corrigir.
+      if (err.maxTurnsExhausted) {
+        // #8942 review (P3): reusa `err.message` (montado por
+        // `formatMaxTurnsExhaustedMessage` em claude-cli-subprocess.ts) em
+        // vez de remontar a frase aqui — carrega o valor de `--max-turns`
+        // configurado, que uma mensagem hardcoded neste arquivo não teria
+        // como saber (o `maxTurns` não é um parâmetro deste `catch`).
+        console.error(`[#8144] ${err.message}\n` + `  stdout: ${preview(err.stdout)}`);
+        process.exit(1);
+        return;
+      }
       console.error(
         `[#8144] claude CLI falhou (status ${err.status ?? "sinal"}):\n` +
           `  stderr: ${preview(err.stderr)}\n` +
           `  stdout: ${preview(err.stdout)}\n` +
           `  command: ${err.command}`,
       );
+      process.exit(1);
+      return;
     }
     console.error("[#8144] erro inesperado:", err instanceof Error ? err.message : err);
     process.exit(1);

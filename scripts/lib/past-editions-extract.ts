@@ -530,8 +530,9 @@ export interface PastDestaqueTitle {
  * TODO bucket (highlights + runners_up + lancamento/radar/use_melhor/video),
  * útil pro dedup "subject-level" contra qualquer artigo já coberto. Este é
  * restrito a `highlights[]` — o conjunto pequeno (≤3 por edição, ≤9 na janela
- * default) que `check-repeat-theme.ts` (#8896) usa pra comparar candidato ×
- * DESTAQUE recente, sem o ruído de comparar contra todo o pool secundário.
+ * default) que `check-highlight-themes.ts` (`findCrossSourceMatch`, #8896/
+ * #8951) usa pra comparar candidato × DESTAQUE recente, sem o ruído de
+ * comparar contra todo o pool secundário.
  *
  * Mesma ressalva de `extractPastEditionArticleTitles`: `01-approved.json` é o
  * snapshot do momento do gate-apply do Stage 1 — não reflete swap/title-picker

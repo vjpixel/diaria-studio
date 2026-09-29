@@ -128,9 +128,19 @@ function brtDayKey(iso: string): string | null {
 /**
  * A partir das linhas JÁ EXISTENTES de `captura-log.jsonl` (parseadas), diz
  * se um dado dia (AAAA-MM-DD, fronteira BRT) teve pelo menos 1 execução
- * registrada. Usado por F5 pra distinguir `INDETERMINADO` (nenhuma linha =
- * nunca capturado nesse dia) de "0 cadastros" (linha existe, `novos_gravados:
- * 0`).
+ * BEM-SUCEDIDA (`exit === 0`) registrada. Usado por F5 pra distinguir
+ * `INDETERMINADO` (nenhuma linha de sucesso = nunca capturado nesse dia) de
+ * "0 cadastros" (linha de sucesso existe, `novos_gravados: 0`).
+ *
+ * **`exit !== 0` NUNCA conta como captura (#8945).** A linha de FALHA
+ * (`exit: 1`, gravada por `diaria-subscribers-ingest-kit.ts` quando a
+ * listagem/ingestão do roster do Kit lança) prova que a execução RODOU,
+ * mas não que ela coletou dado algum — contá-la aqui faria o dia parecer
+ * capturado e silenciaria tanto o alarme de frescor
+ * (`evaluateFrescorFromCapturaLog`) quanto `aggregateAcquisition`
+ * (que reportaria 0/baixo em vez de INDETERMINADO). Ver
+ * `captureFailureDays` abaixo pro sinal PRÓPRIO de "captura falhou em D"
+ * (distinto de "sem execução registrada").
  *
  * Resolução por linha (F7, #7179): usa `dia` quando presente (linhas
  * `backfill-beehiiv`/`seed-kit`, que são por-DIA); cai para `captured_at`
@@ -138,5 +148,22 @@ function brtDayKey(iso: string): string | null {
  * EXECUÇÃO, e qualquer linha gravada antes desta extensão). @pure
  */
 export function hasCaptureOnDay(entries: readonly CapturaLogEntry[], day: string): boolean {
-  return entries.some((e) => (e.dia ?? brtDayKey(e.captured_at)) === day);
+  return entries.some((e) => e.exit === 0 && (e.dia ?? brtDayKey(e.captured_at)) === day);
+}
+
+/**
+ * Dias (dentro de `dias`) que têm SÓ linha(s) de falha (`exit !== 0`) em
+ * `captura-log.jsonl` — nenhuma linha de sucesso naquele dia, mas a
+ * execução rodou e foi registrada (#8945). Distinto de "sem execução
+ * registrada" (nenhuma linha, sucesso ou falha, pro dia): aquele caso
+ * continua coberto só por `!hasCaptureOnDay`. Usado pra dar ao editor um
+ * motivo mais preciso — "captura falhou" em vez de "não rodou" — sem
+ * mudar a classificação de INDETERMINADO (que continua vindo de
+ * `hasCaptureOnDay`, nunca desta função). @pure
+ */
+export function captureFailureDays(entries: readonly CapturaLogEntry[], dias: readonly string[]): string[] {
+  return dias.filter((day) => {
+    const doDia = entries.filter((e) => (e.dia ?? brtDayKey(e.captured_at)) === day);
+    return doDia.length > 0 && doDia.every((e) => e.exit !== 0);
+  });
 }

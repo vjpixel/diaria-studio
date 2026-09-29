@@ -19,6 +19,7 @@ import {
   competenceMonth,
   defaultCacheDir,
   readMonthCache,
+  readMonthCacheDetailed,
   RateLimiter,
   ApoiaSeAuthError,
   ApoiaSeApiError,
@@ -699,6 +700,19 @@ describe("checkBacker", () => {
       thisMonthPaidValue: 12,
       fetchedAt: now.toISOString(),
     });
+  });
+
+  it("readMonthCacheDetailed: arquivo ausente -> corrupted:false, cache vazio", () => {
+    const result = readMonthCacheDetailed(tmpDir, "2026-07");
+    assert.deepEqual(result.cache, {});
+    assert.equal(result.corrupted, false);
+  });
+
+  it("readMonthCacheDetailed: JSON inválido -> corrupted:true, cache vazio (nunca lança, #8423 fleet review item 1)", () => {
+    writeFileSync(join(tmpDir, "2026-07.json"), "{ isso não é json", "utf8");
+    const result = readMonthCacheDetailed(tmpDir, "2026-07");
+    assert.deepEqual(result.cache, {});
+    assert.equal(result.corrupted, true);
   });
 
   it("envia os headers corretos (x-api-key + authorization Bearer)", async () => {

@@ -61,6 +61,7 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { resolveClaudeBin } from "./lib/resolve-claude-bin.ts";
 import { claudeCliEnv } from "./overnight/run-scheduled-edicao.ts";
 import { JEV_PROFILE_ENV, jevBArmGuardWarning } from "./lib/jev-profile.ts";
+import { intentionalErrorHeadlessWarning } from "./lib/intentional-errors.ts";
 import {
   STAGE_PLAN,
   runEditionStages,
@@ -200,6 +201,17 @@ export function main(
   // dedup da zona cinzenta não rodou com o perfil. stderr mantém o --json limpo.
   if (plan.some((s) => s.stage === 1)) {
     const warn = jevBArmGuardWarning(editionDir);
+    if (warn) stderr(`AVISO: ${warn}`);
+  }
+
+  // #8592: aviso (nunca bloqueante) quando o plano alcança o Stage 2 (o
+  // stage que escreve `_internal/intentional-error.json`) e a rodada
+  // headless termina sem o erro intencional declarado — placeholder
+  // `{PREENCHER...}` ainda pendente, ou o arquivo nem existe. Só roda
+  // quando o plano de fato chega até lá: `--through 1` não tem o que checar
+  // ainda (Stage 2 não spawnou nesta invocação).
+  if (plan.some((s) => s.stage === 2)) {
+    const warn = intentionalErrorHeadlessWarning(editionDir);
     if (warn) stderr(`AVISO: ${warn}`);
   }
 

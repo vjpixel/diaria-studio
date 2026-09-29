@@ -101,6 +101,7 @@ import {
   BOOTSTRAP_GAP_COUNT_UNKNOWN,
   updateZeroDetectionStreak,
   zeroDetectionAlarm,
+  filterBrevoPlanForKitCutover,
   type DetectedSubscription,
   type OpenStats,
   type RunAction,
@@ -128,6 +129,15 @@ export interface OnboardingConfig {
   email3_grace_days?: number;
   /** Nome da lista Brevo dedicada ao cohort D+10 (criada sob demanda). */
   d10_list_name?: string;
+  /**
+   * #8966: kill switch dedicado do transporte Kit (#7922) — lido daqui SÓ
+   * pra decidir se o guard de mútua-exclusão (`filterBrevoPlanForKitCutover`)
+   * entra em ação. `onboarding-kit-transport-run.ts` é quem de fato consome
+   * este bloco pra armar/desarmar o próprio envio; não duplicar essa
+   * responsabilidade aqui — nunca `true` sem o corte real ter sido feito
+   * (ver docs/onboarding-kit-cutover.md).
+   */
+  kit_transport?: { enabled?: boolean };
 }
 
 export function loadOnboardingConfig(configPathAbs?: string): OnboardingConfig {
@@ -309,13 +319,8 @@ async function fetchSubscriptionsSinceKit(config: KitConfig, gteSec: number): Pr
 }
 
 /**
- * #7599: leitura de engajamento (aberturas) por assinante do Kit — **NÃO
- * CONFIRMADO AO VIVO** (mesma ressalva de várias funções em
- * `kit-subscribers.ts`). `GET /v4/subscribers/{id}/stats` é a melhor
- * suposição a partir do padrão REST do resto da v4 e do nome do tool MCP
- * equivalente (`list_stats_for_a_subscriber`) — nenhuma sessão pôde
- * confirmar o shape real contra a conta, porque scripts não têm acesso à
- * MCP (só sessões interativas têm).
+ * #7599: leitura de engajamento (aberturas) por assinante do Kit.
+ * `GET /v4/subscribers/{id}/stats`.
  *
  * Fail-safe por desenho: qualquer erro (404, shape inesperado, campo
  * ausente sob os nomes tentados) devolve `null`. O caller (`email3Eligibility`
@@ -333,6 +338,18 @@ async function fetchSubscriptionsSinceKit(config: KitConfig, gteSec: number): Pr
  * NUNCA batiam — `opens` saía sempre `undefined`, o e-mail 3 nunca via uma
  * abertura de verdade e nunca disparou pra ninguém desde a migração pro Kit
  * (medido em 14/09/2026: 930 entradas, 0 `email3_state: sent`).
+ *
+ * #7922 (28/09/2026): shape CONFIRMADO AO VIVO contra a conta Free real
+ * (chamada de leitura única, `GET /subscribers/{id}/stats` sobre 1
+ * assinante real, sem escrita nenhuma) — bate exatamente com o que a doc
+ * pública dizia e com o que este código já lê: `{ subscriber: { id, stats:
+ * { sent, opened, clicked, bounced, open_rate, click_rate, last_sent,
+ * last_opened, last_clicked, sends_since_last_open, sends_since_last_click
+ * } } }`, com `opened` como `number`. A ressalva "não confirmado ao vivo"
+ * do #7599 (acima, removida) e o "não validado ao vivo" citado na issue
+ * #7922 deixam de se aplicar — a única coisa que a doc pública não podia
+ * garantir (se o plano Free devolve exatamente este shape, sem campo a
+ * menos) foi verificada e bate.
  */
 export async function fetchSubscriberStatsKit(id: number, config: KitConfig): Promise<OpenStats | null> {
   try {
@@ -1018,19 +1035,32 @@ async function main(): Promise<void> {
   }
 
   // --- 3. Plano ---
-  const plan = buildRunPlan({
-    entries: Object.values(store.entries),
-    statsById,
-    nowSec,
-    email2Days,
-    email3Days,
-    email3GraceDays: graceDays,
-    snippets: {
-      1: args.skip.has("email1") ? null : snippets[1],
-      2: args.skip.has("email2") ? null : snippets[2],
-      3: args.skip.has("email3") ? null : snippets[3],
-    },
-  });
+  // #8966: guard de mútua-exclusão Brevo x Kit (#7922 §2.4) — com o kill
+  // switch do transporte Kit ligado, candidato NOVO de e-mail 1/2 é sempre
+  // do Kit; a Brevo só termina escadas que já começaram nela. Ver docstring
+  // de `filterBrevoPlanForKitCutover` (onboarding-state.ts). #8979: o guard
+  // de lote Kit existente dentro dela roda mesmo com o switch desligado
+  // (rollback) — por isso `kitLots` do store é sempre passado, não só
+  // quando `kitTransportEnabled`.
+  const kitTransportEnabled = cfg.kit_transport?.enabled === true;
+  const kitLots = Object.values(store.kit_transport?.lots ?? {});
+  const plan = filterBrevoPlanForKitCutover(
+    buildRunPlan({
+      entries: Object.values(store.entries),
+      statsById,
+      nowSec,
+      email2Days,
+      email3Days,
+      email3GraceDays: graceDays,
+      snippets: {
+        1: args.skip.has("email1") ? null : snippets[1],
+        2: args.skip.has("email2") ? null : snippets[2],
+        3: args.skip.has("email3") ? null : snippets[3],
+      },
+    }),
+    kitTransportEnabled,
+    kitLots,
+  );
 
   summary.actions = plan.actions.map((a) =>
     a.kind === "email3_campaign"

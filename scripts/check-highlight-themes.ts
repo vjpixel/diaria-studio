@@ -102,6 +102,22 @@ import {
 } from "./dedup.ts";
 import { canonicalize } from "./lib/url-utils.ts"; // #2684 item 5: dedup cross-bucket highlight↔secundário
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested (#3055)
+// #8951: gatilho "cross-source, threshold baixo" — miolo puro herdado de
+// `scripts/lib/repeat-theme-check.ts` (#8896), que tinha um script próprio
+// (`check-repeat-theme.ts`) nunca ligado ao runner real do Stage 1
+// (`stage-1-run.ts` só chama ESTE arquivo). Em vez de manter 2 detectores,
+// a lógica calibrada do #8896 (Jaccard >= 0.20, ou >= 0.15 com entidade
+// compartilhada — bem mais permissivo que o passe padrão deste arquivo,
+// 0.35/0.25) entra aqui como o ÚLTIMO fallback, contra os títulos REAIS de
+// destaque (D1/D2/D3, via `extractPastDestaqueTitles`/`01-approved.json`),
+// não contra o headline único de `past-editions.md` usado pelo passe padrão.
+// Ver docstring de `findCrossSourceMatch` mais abaixo.
+import { detectEventOverlap } from "./lib/repeat-theme-check.ts";
+import {
+  extractPastDestaqueTitles,
+  DEFAULT_PAST_WINDOW as CROSS_SOURCE_DEFAULT_WINDOW,
+} from "./lib/past-editions-extract.ts";
+import type { PastDestaqueTitle } from "./lib/past-editions-extract.ts";
 // #2716 item 1: importa a lista canônica de buckets secundários em vez de
 // hardcodar uma cópia local — SECONDARY_BUCKETS de check-secondary-themes.ts é a
 // fonte única (dedup-intra-edition.ts já a consome do mesmo lugar). Ver nota
@@ -518,6 +534,17 @@ export interface HighlightThemeWarning {
    * editor entender por que o par foi sinalizado.
    */
   saga_keywords?: string[];
+  /**
+   * #8951 (herdado de #8896): true quando o warning veio do gatilho
+   * cross-source de threshold baixo (`findCrossSourceMatch`) — o único dos
+   * 4 gatilhos deste arquivo que compara contra os TÍTULOS REAIS de
+   * destaque (`01-approved.json`), não contra o headline único de
+   * `past-editions.md`. `jaccard` aqui pode estar abaixo de
+   * `effective_threshold` do passe padrão (0.35/0.25) — o threshold que
+   * de fato disparou foi o mais baixo de `detectEventOverlap`
+   * (REPEAT_THEME_WARN_THRESHOLD/_LOWERED, 0.20/0.15).
+   */
+  cross_source_match?: boolean;
 }
 
 export interface CheckHighlightThemesResult {
@@ -734,21 +761,84 @@ function findThemeMatch(
 }
 
 /**
+ * #8951 (herdado de #8896): gatilho cross-source de threshold baixo — último
+ * fallback, só roda para candidatos que os 3 gatilhos padrão (Jaccard/entity,
+ * entity-only, saga) não capturaram.
+ *
+ * Diferença dos 3 acima: compara o candidato contra os TÍTULOS REAIS de
+ * destaque (D1/D2/D3) das edições passadas, extraídos de `01-approved.json`
+ * via `extractPastDestaqueTitles` — não contra o headline único por edição
+ * de `past-editions.md`. Reusa `detectEventOverlap` de
+ * `scripts/lib/repeat-theme-check.ts` sem reimplementar (#8896 já calibrou
+ * o threshold 0.20/0.15 contra o caso real: D1 260928 Wired ("agente da
+ * OpenAI invadiu o sistema de saúde australiano") x D1 260925 Guardian
+ * ("Agente rebelde invade sistema de governo") — Jaccard ≈0.22, ZERO
+ * entidade nomeada compartilhada, então nenhum dos 3 gatilhos padrão deste
+ * arquivo dispara: (1) 0.22 < 0.35/0.25 do passe padrão; (2) entity-only
+ * exige 2+ entidades específicas compartilhadas, aqui não há nenhuma; (3)
+ * saga exige 1+ entidade de EMPRESA compartilhada, também ausente).
+ *
+ * WARN-ONLY, como todo este arquivo.
+ */
+function findCrossSourceMatch(
+  candidates: HighlightCandidate[],
+  pastDestaques: PastDestaqueTitle[],
+): Map<string, HighlightThemeWarning> {
+  const byUrl = new Map<string, HighlightThemeWarning>();
+  if (pastDestaques.length === 0) return byUrl;
+
+  const matches = detectEventOverlap(
+    candidates.map((c) => ({ title: c.title, url: c.url })),
+    pastDestaques,
+  );
+  for (const m of matches) {
+    const candidate = candidates.find((c) => c.url === m.candidateUrl && c.title === m.candidateTitle);
+    byUrl.set(m.candidateUrl ?? m.candidateTitle, {
+      candidate_rank: candidate?.rank ?? 0,
+      candidate_title: m.candidateTitle,
+      candidate_url: m.candidateUrl ?? "",
+      matched_edition: m.pastAammdd,
+      matched_title: m.pastTitle,
+      jaccard: Math.round(m.jaccard * 100) / 100,
+      shared_entities: m.sharedEntities,
+      effective_threshold: m.threshold,
+      cross_source_match: true,
+    });
+  }
+  return byUrl;
+}
+
+/**
  * Checks all highlight candidates for theme repeats against past editions.
  * Main exported function — also used directly by tests.
+ *
+ * `pastDestaques` (#8951, opcional): destaques REAIS (D1/D2/D3) das edições
+ * passadas, para o gatilho cross-source de `findCrossSourceMatch` — quando
+ * omitido (chamadores/testes antigos), o comportamento é idêntico ao de
+ * antes do #8951 (só os 3 gatilhos padrão, contra `past-editions.md`).
  */
 export function checkHighlightThemes(
   candidates: HighlightCandidate[],
   pastEditions: PastEditionEntry[],
+  pastDestaques: PastDestaqueTitle[] = [],
 ): CheckHighlightThemesResult {
   const warnings: HighlightThemeWarning[] = [];
 
   // Pré-computar tokens/entidades das edições passadas uma única vez
   const pastIndex = buildPastIndex(pastEditions);
+  const crossSourceMatches = findCrossSourceMatch(candidates, pastDestaques);
 
   for (const candidate of candidates) {
     const match = findThemeMatch(candidate, pastIndex);
-    if (match) warnings.push(match);
+    if (match) {
+      warnings.push(match);
+      continue;
+    }
+    // #8951: só roda o fallback cross-source quando os 3 gatilhos padrão
+    // não encontraram nada para este candidato — mesma prioridade
+    // "algoritmo mais específico vence" dos gatilhos entity-only/saga.
+    const crossSourceMatch = crossSourceMatches.get(candidate.url) ?? crossSourceMatches.get(candidate.title);
+    if (crossSourceMatch) warnings.push(crossSourceMatch);
   }
 
   return {
@@ -1387,7 +1477,13 @@ async function main(): Promise<void> {
 
   const pastEditions = extractPastEditionTitles(pastMd, window);
   const candidates = extractHighlightCandidates(categorizedPath);
-  const highlightResult = checkHighlightThemes(candidates, pastEditions);
+  // #8951: destaques REAIS (D1/D2/D3) das últimas edições, para o gatilho
+  // cross-source de threshold baixo herdado de #8896 (findCrossSourceMatch).
+  // Janela deliberadamente curta (DEFAULT_PAST_WINDOW=3, mesma calibração de
+  // `repeat-theme-check.ts`) — mais permissiva que o passe padrão, então
+  // fica restrita ao histórico bem recente para conter falso-positivo.
+  const pastDestaques = extractPastDestaqueTitles(editionsDir, CROSS_SOURCE_DEFAULT_WINDOW, currentEdition);
+  const highlightResult = checkHighlightThemes(candidates, pastEditions, pastDestaques);
 
   if (highlightResult.warnings.length > 0) {
     for (const w of highlightResult.warnings) {
@@ -1398,7 +1494,9 @@ async function main(): Promise<void> {
         ? " [entity-only: match independente do Jaccard, janela curta]"
         : w.saga_match
           ? ` [saga: empresa em comum + vocabulário de incidente (${(w.saga_keywords ?? []).join(",")}), janela ampla]`
-          : "";
+          : w.cross_source_match
+            ? " [cross-source: threshold baixo contra destaques reais (#8951/#8896)]"
+            : "";
       console.error(
         `[check-highlight-themes] ⚠️  Candidato #${w.candidate_rank} "${w.candidate_title}" repete tema de ${w.matched_edition} "${w.matched_title}" (Jaccard=${w.jaccard}, entities=[${w.shared_entities.join(",")}])${note}`,
       );

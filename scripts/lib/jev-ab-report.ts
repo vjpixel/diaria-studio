@@ -359,13 +359,17 @@ export function computeMetrics(e: EditionRaw): { m: EditionMetrics; warnings: st
     // Soma 1-3 (sem gate humano) — a parcialidade já foi comunicada pelos 2
     // avisos agregados acima (lista as etapas 1-3 ausentes, se houver); aqui
     // só computa o valor, sem repetir aviso.
+    // #8946: soma só é válida se as 3 etapas tiverem valor utilizável — uma
+    // soma parcial (ex: só Etapas 1-2, Etapa 3 ausente) subestima o total e
+    // pareceria "braço mais barato" por dado faltante, não por comportamento
+    // real. Nulo é mais honesto que uma soma que finge ser completa.
     const s123 = [1, 2, 3] as const;
-    const s123TokensIn = s123.map((n) => perStage[n]!.tokensIn).filter((v): v is number => v !== null);
-    const s123TokensOut = s123.map((n) => perStage[n]!.tokensOut).filter((v): v is number => v !== null);
-    const s123Cost = s123.map((n) => perStage[n]!.costUsd).filter((v): v is number => v !== null);
-    if (s123TokensIn.length > 0) stage1to3TokensIn = s123TokensIn.reduce((a, b) => a + b, 0);
-    if (s123TokensOut.length > 0) stage1to3TokensOut = s123TokensOut.reduce((a, b) => a + b, 0);
-    if (s123Cost.length > 0) stage1to3CostUsd = s123Cost.reduce((a, b) => a + b, 0);
+    const s123TokensIn = s123.map((n) => perStage[n]!.tokensIn);
+    const s123TokensOut = s123.map((n) => perStage[n]!.tokensOut);
+    const s123Cost = s123.map((n) => perStage[n]!.costUsd);
+    if (s123TokensIn.every((v): v is number => v !== null)) stage1to3TokensIn = s123TokensIn.reduce((a, b) => a + b, 0);
+    if (s123TokensOut.every((v): v is number => v !== null)) stage1to3TokensOut = s123TokensOut.reduce((a, b) => a + b, 0);
+    if (s123Cost.every((v): v is number => v !== null)) stage1to3CostUsd = s123Cost.reduce((a, b) => a + b, 0);
   }
 
   return {
@@ -461,7 +465,7 @@ function exactMannWhitneyP(n1: number, n2: number, uObserved: number): number {
 export function mannWhitneyTest(
   a: number[],
   b: number[]
-): { u: number; pValue: number; method: "exact" | "normal-approx" } {
+): { u: number; u1: number; pValue: number; method: "exact" | "normal-approx" } {
   const n1 = a.length, n2 = b.length;
   const combined = [...a.map((v) => ({ v, g: 0 as const })), ...b.map((v) => ({ v, g: 1 as const }))];
   combined.sort((x, y) => x.v - y.v);
@@ -484,7 +488,7 @@ export function mannWhitneyTest(
 
   // n1+n2<=60 já limita n1*n2<=900 (máximo em n1=n2=30) — o teto real de custo da DP.
   if (!hasTies && n1 + n2 <= 60) {
-    return { u, pValue: exactMannWhitneyP(n1, n2, u), method: "exact" };
+    return { u, u1, pValue: exactMannWhitneyP(n1, n2, u), method: "exact" };
   }
 
   const N = n1 + n2;
@@ -499,12 +503,12 @@ export function mannWhitneyTest(
     i = j + 1;
   }
   const varianceU = (n1 * n2 * (N + 1 - (N > 1 ? tieSum / (N * (N - 1)) : 0))) / 12;
-  if (!(varianceU > 0)) return { u, pValue: 1, method: "normal-approx" };
+  if (!(varianceU > 0)) return { u, u1, pValue: 1, method: "normal-approx" };
   const diff = u1 - mean;
   const cc = diff === 0 ? 0 : Math.sign(diff) * 0.5;
   const z = (diff - cc) / Math.sqrt(varianceU);
   const pValue = Math.min(1, 2 * (1 - normalCdf(Math.abs(z))));
-  return { u, pValue, method: "normal-approx" };
+  return { u, u1, pValue, method: "normal-approx" };
 }
 
 /** PRNG determinístico (mulberry32) — bootstrap reproduzível entre rodadas do relatório. */
@@ -572,15 +576,29 @@ function computeTest(valsA: number[], valsB: number[]): MetricTest {
       verdict: "sem dado",
     };
   }
-  const { u, pValue, method } = mannWhitneyTest(valsA, valsB);
+  const { u, u1, pValue, method } = mannWhitneyTest(valsA, valsB);
   const ci95 = bootstrapMeanDiffCI(valsA, valsB);
   let verdict: MetricTest["verdict"] = "inconclusivo (piso)";
   if (pisoAtingido) {
     // Direção pela mediana, não pela média: o teste é de rank (Mann-Whitney),
     // e a mediana é o que ele de fato compara — a média pode discordar em
-    // distribuições assimétricas (tokens, espera de gate).
+    // distribuições assimétricas (tokens, espera de gate). #8946: mediana
+    // empatada não significa "sem diferença de rank" — a distribuição pode
+    // ainda divergir o bastante pra dar p<0,05 (ex: A = só zeros, B = mistura
+    // de 0/1/2 com mediana também 0). Nesse caso a mediana não decide nada e
+    // caía sempre em "B" por default do operador ternário — usar o rank médio
+    // (U1 vs n1·n2/2: U1 é o nº de pares onde A>B, contando empates como 0,5;
+    // menor que a metade == A tende a ter valores menores == A melhor, já que
+    // em TODAS as métricas deste relatório menor é melhor).
     if (Number.isFinite(pValue) && pValue < 0.05 && medianA !== null && medianB !== null) {
-      verdict = medianA < medianB ? "A" : "B";
+      if (medianA !== medianB) {
+        verdict = medianA < medianB ? "A" : "B";
+      } else {
+        const halfway = (valsA.length * valsB.length) / 2;
+        if (u1 < halfway) verdict = "A";
+        else if (u1 > halfway) verdict = "B";
+        else verdict = "sem diferença";
+      }
     } else {
       verdict = "sem diferença";
     }

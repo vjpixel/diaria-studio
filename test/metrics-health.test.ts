@@ -92,12 +92,15 @@ describe("assertQuedaMinAbsCobreUnidades", () => {
   });
 
   it("unidade sem piso declarado lança em tempo de carga", () => {
-    const defs = [{ id: "m1", unidade: "brl" as const, direcao: "maior-melhor" as const }];
+    // `brl` ganhou piso no #8423 (bloco "Valor") — usa `percentual`, que
+    // segue sem nenhuma métrica do registry real (ver docstring de
+    // `METRICS_HEALTH_THRESHOLDS`), como exemplo de unidade indeclarada.
+    const defs = [{ id: "m1", unidade: "percentual" as const, direcao: "maior-melhor" as const }];
     assert.throws(() => assertQuedaMinAbsCobreUnidades(defs), /sem piso QUEDA_MIN_ABS/);
   });
 
   it("direcao neutro nunca exige piso (nunca alarma)", () => {
-    const defs = [{ id: "m1", unidade: "brl" as const, direcao: "neutro" as const }];
+    const defs = [{ id: "m1", unidade: "percentual" as const, direcao: "neutro" as const }];
     assert.doesNotThrow(() => assertQuedaMinAbsCobreUnidades(defs));
   });
 });
@@ -282,6 +285,17 @@ describe("evaluateFrescorFromCapturaLog — buraco em captura-log.jsonl (F2)", (
     const dias = dias14("2026-09-01");
     const capturaLog = dias.map((d) => ({ ...capturaEntry(d), novos_gravados: 0 }));
     assert.equal(evaluateFrescorFromCapturaLog("cadastros-dia", dias, capturaLog), null);
+  });
+
+  it("#8945: dia só com linha exit:1 alarma frescor (nunca silenciado por 'a linha existe')", () => {
+    const dias = dias14("2026-09-01");
+    const diaFalho = dias[dias.length - 1];
+    const capturaLog = dias.map((d) => (d === diaFalho ? { ...capturaEntry(d), exit: 1 } : capturaEntry(d)));
+    const finding = evaluateFrescorFromCapturaLog("cadastros-dia", dias, capturaLog);
+    assert.ok(finding);
+    assert.equal(finding!.sinal, "frescor");
+    assert.match(finding!.motivo, new RegExp(diaFalho));
+    assert.match(finding!.motivo, /captura falhou/);
   });
 });
 

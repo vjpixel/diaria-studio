@@ -359,18 +359,20 @@ describe("#8616 item 1 — CLI main(): --send sem token não pode sair exit 0 em
 
 import { SCHEDULED_TASKS, getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 
-describe("#8543 — Diaria-Meta-Capi-Confirmations-Send registrada, diária, script próprio", () => {
-  it("presente, diária 07:25, --send, script exclusivo (não reusa o do batch semanal)", () => {
+describe("#8543/#8978 — Diaria-Meta-Capi-Confirmations-Send registrada, horária, script próprio", () => {
+  it("presente, horária (interval 1h), --send, script exclusivo (não reusa o do batch semanal)", () => {
     const t = getScheduledTaskByName("Diaria-Meta-Capi-Confirmations-Send");
     assert.ok(t);
     assert.deepEqual(t!.steps.map((s) => s.script), ["scripts/meta-capi-confirmations-send.ts"]);
     assert.deepEqual(t!.steps[0].args, ["--send"]);
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 7, minute: 25 });
+    // #8978: era `{ kind: "daily", hour: 7, minute: 25 }` — Events Manager
+    // mostrava freshness "Diariamente" pro evento SubscriptionConfirmed; a
+    // Meta pontua EMQ melhor com envio hourly/real-time. `main()` do script
+    // busca o roster do Kit ao vivo a cada execução, então rodar a detecção
+    // de hora em hora (contra o mesmo snapshot base diário) já capta quem
+    // confirmou na última hora — o índice de idempotência evita reenvio.
+    assert.deepEqual(t!.schedule, { kind: "interval", hours: 1 });
     const others = SCHEDULED_TASKS.filter((o) => o.name !== t!.name && o.steps.some((s) => s.script === t!.steps[0].script));
     assert.deepEqual(others, []);
-    const collisions = SCHEDULED_TASKS.filter(
-      (o) => o.name !== t!.name && o.schedule.kind === "daily" && o.schedule.hour === 7 && o.schedule.minute === 25,
-    );
-    assert.deepEqual(collisions, []);
   });
 });

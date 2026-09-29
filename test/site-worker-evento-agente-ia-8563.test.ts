@@ -28,6 +28,8 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { visitorIdBootstrapJs } from "../scripts/lib/shared/visitor-id.ts";
+import { metaFbcBootstrapJs } from "../scripts/lib/shared/meta-fbc-bootstrap.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia");
@@ -57,6 +59,17 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
         assert.match(html, /src="\/evento\/agente-ia\/config\.js"/);
         assert.match(html, /src="\/evento\/agente-ia\/script\.js"/);
         assert.match(html, new RegExp(`<body data-variante="${v}">`));
+      });
+
+      it("#8978 (fleet review item 4, #8983): os bootstraps INLINE (pixel fora do GTM, ver docstring do módulo) são idênticos, byte a byte, ao output ATUAL de visitorIdBootstrapJs()/metaFbcBootstrapJs() — nunca cópia colada que fica pra trás quando o helper muda", () => {
+        const html = readFileSync(page, "utf8");
+        assert.match(html, new RegExp(`<script>${visitorIdBootstrapJs().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</script>`));
+        assert.match(html, new RegExp(`<script>${metaFbcBootstrapJs().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</script>`));
+      });
+
+      it("fbq('init', ...) inicializa o pixel com external_id: window.__DIA_VID__ — advanced matching no PRIMEIRO disparo, sem esperar o GTM", () => {
+        const html = readFileSync(page, "utf8");
+        assert.match(html, /fbq\('init', '1285191740325112', \{ external_id: window\.__DIA_VID__ \}\);/);
       });
 
       it("index.html não usa caminho RELATIVO pros próprios arquivos (regressão: CSS não carregava em produção)", () => {

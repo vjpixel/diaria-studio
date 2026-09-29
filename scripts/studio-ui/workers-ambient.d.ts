@@ -74,3 +74,16 @@ interface CacheStorage {
 interface Fetcher {
   fetch(request: Request | string, init?: RequestInit): Promise<Response>;
 }
+
+/**
+ * `ExecutionContext` adicionado em #8982: `workers/site/src/index.ts` ganhou
+ * um 3º parâmetro `ctx` (`fetch(request, env, ctx?)`, mesmo padrão opcional
+ * já usado por `workers/poll`/`workers/cursos`) pro beacon de
+ * `CliqueIngresso_{A|B}` poder `ctx.waitUntil(...)` o envio CAPI sem atrasar
+ * a resposta — mesma classe de exposição transitiva do `Fetcher`/
+ * `KVNamespace` acima (superfície mínima, só o método de fato chamado).
+ */
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException(): void;
+}

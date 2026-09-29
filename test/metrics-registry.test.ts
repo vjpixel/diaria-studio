@@ -214,8 +214,8 @@ describe("assertRegistryValido (#7175)", () => {
     assert.doesNotThrow(() => assertRegistryValido(METRICAS));
     assert.equal(
       METRICAS.length,
-      13,
-      "8 métricas de #7176 + 2 de ativação por coorte de #7183 + 3 de topo de funil GA4 de #7184",
+      20,
+      "8 métricas de #7176 + 2 de ativação por coorte de #7183 + 3 de topo de funil GA4 de #7184 + 7 de Valor de #8423",
     );
   });
 });
@@ -277,6 +277,17 @@ describe("cadastros-dia (#7176) — nunca 0 por dado ausente", () => {
     const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
     assert.equal(r.valor, 0);
     assert.equal(r.qualidade, "exato");
+  });
+
+  it("#8945: dia só com linha exit:1 (roster do Kit falhou) devolve indeterminado, NUNCA 0", async () => {
+    const deps = baseAcquisitionDeps({
+      capturaLog: [{ ...capturaEm("2026-08-26"), exit: 1 }],
+      registros: () => [],
+    });
+    const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
+    assert.equal(r.valor, null);
+    assert.equal(r.qualidade, "indeterminado");
+    assert.match(r.motivo ?? "", /sem coleta/);
   });
 
   it("subscriptionCoverageLow devolve indeterminado, nunca 0 — o ponto central desta fatia", async () => {

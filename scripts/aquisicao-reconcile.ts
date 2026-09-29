@@ -37,6 +37,7 @@ import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { BRT_UTC_OFFSET_HOURS, brtDateOf } from "./lib/ads-rolling-window.ts";
 import {
   fetchAllSubscribers,
   resolveGroupKey,
@@ -52,18 +53,35 @@ import {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-/** "AAAA-MM-DD" → epoch segundos UTC 00:00. Idempotente ao parser do
- * cohort-engagement (#4556: valida ida-e-volta contra rolagem de mês/dia). */
+/**
+ * "AAAA-MM-DD" (dia BRT) → epoch segundos do início desse dia em BRT
+ * (00:00 BRT = 03:00 UTC, já que BRT = UTC{@link BRT_UTC_OFFSET_HOURS}).
+ * Idempotente ao parser do cohort-engagement (#4556: valida ida-e-volta
+ * contra rolagem de mês/dia).
+ *
+ * **Fronteira BRT, não UTC (#8947).** Antes calculava meia-noite UTC — um
+ * cadastro às 22:30 BRT de D caía no "dia UTC D+1" (01:30 UTC), desalinhado
+ * do painel de ads (dia da conta, GMT-03:00) e do resto do teste de canais
+ * pagos, que já usa BRT dos dois lados (ver docstring de
+ * `scripts/lib/ads-rolling-window.ts`, "Fuso"). Vale para os DOIS chamadores
+ * de `aggregateBaseline` (subcomando `baseline` manual e o wrapper
+ * `aquisicao-reconcile-daily.ts`) — os dois alimentam o mesmo `factor` contra
+ * o mesmo painel BRT, então um `--from`/`--to` manual em fronteira UTC
+ * produziria o mesmo desalinhamento que motivou esta issue.
+ */
 export function dayToEpochSeconds(day: string, flag: string): number {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day ?? "").trim());
   if (!m) throw new Error(`${flag} inválido: "${day}" (esperado AAAA-MM-DD)`);
   const [, y, mo, d] = m;
-  const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), 0, 0, 0, 0);
-  const dt = new Date(ms);
+  const utcMidnight = Date.UTC(Number(y), Number(mo) - 1, Number(d), 0, 0, 0, 0);
+  const dt = new Date(utcMidnight);
   if (dt.getUTCFullYear() !== Number(y) || dt.getUTCMonth() !== Number(mo) - 1 || dt.getUTCDate() !== Number(d)) {
     throw new Error(`${flag} inválido: "${day}" (data não existe)`);
   }
-  return Math.floor(ms / 1000);
+  // Meia-noite BRT do dia civil = `utcMidnight` menos o offset (offset é
+  // negativo, então isto SOMA 3h em UTC).
+  const brtMidnight = utcMidnight - BRT_UTC_OFFSET_HOURS * 3600_000;
+  return Math.floor(brtMidnight / 1000);
 }
 
 export interface BaselineFile {
@@ -74,7 +92,7 @@ export interface BaselineFile {
   total: number;
   /** Coorte real por canal (group key = utm_source/referring_site normalizado). */
   per_channel: Record<string, number>;
-  /** Cadastros por dia UTC (YYYY-MM-DD). */
+  /** Cadastros por dia BRT (YYYY-MM-DD) — ver `dayToEpochSeconds` (#8947). */
   per_day: Record<string, number>;
   method: string;
 }
@@ -100,7 +118,8 @@ export function aggregateBaseline(subs: EngagementSubscriber[], fromIso: string,
     if (sub.created < from || sub.created >= toExclusive) continue;
     const key = resolveGroupKey(sub) || "__none__";
     per_channel[key] = (per_channel[key] ?? 0) + 1;
-    const day = new Date(sub.created * 1000).toISOString().slice(0, 10);
+    // #8947 — dia BRT, não UTC (mesma razão de `dayToEpochSeconds` acima).
+    const day = brtDateOf(new Date(sub.created * 1000));
     per_day[day] = (per_day[day] ?? 0) + 1;
     total++;
   }

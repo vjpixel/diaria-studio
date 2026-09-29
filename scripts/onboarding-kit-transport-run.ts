@@ -63,7 +63,13 @@ import {
 import { resolveNewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 import { unixSecondsToBrtDate } from "./lib/beehiiv-publish-date.ts";
 import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from "./lib/onboarding-store.ts";
-import { parseOnboardingSnippet, buildRunPlan, selectCandidatesNeedingRefresh, type RunAction } from "./lib/onboarding-state.ts";
+import {
+  parseOnboardingSnippet,
+  buildRunPlan,
+  selectCandidatesNeedingRefresh,
+  filterKitPlanForBrevoInFlight,
+  type RunAction,
+} from "./lib/onboarding-state.ts";
 import {
   planLot,
   selectEligibleKitRecipients,
@@ -487,19 +493,26 @@ async function main(): Promise<void> {
   }
 
   const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? onboardingCfg.snippets_dir ?? "data/snippets");
-  const plan = buildRunPlan({
-    entries: Object.values(store.entries),
-    statsById,
-    nowSec,
-    email2Days,
-    email3Days,
-    email3GraceDays: graceDays,
-    snippets: {
-      1: loadSnippet(snippetsDirAbs, 1),
-      2: loadSnippet(snippetsDirAbs, 2),
-      3: loadSnippet(snippetsDirAbs, 3),
-    },
-  });
+  // #8966: espelho do guard aplicado do lado Brevo (`onboarding-welcome-run.ts`)
+  // — sem isto, uma entrada cujo e-mail 1 já saiu pela Brevo seria planejada
+  // pelos DOIS executores no mesmo e-mail 2. Ver docstring de
+  // `filterKitPlanForBrevoInFlight` (onboarding-state.ts).
+  const plan = filterKitPlanForBrevoInFlight(
+    buildRunPlan({
+      entries: Object.values(store.entries),
+      statsById,
+      nowSec,
+      email2Days,
+      email3Days,
+      email3GraceDays: graceDays,
+      snippets: {
+        1: loadSnippet(snippetsDirAbs, 1),
+        2: loadSnippet(snippetsDirAbs, 2),
+        3: loadSnippet(snippetsDirAbs, 3),
+      },
+    }),
+    kitTransportCfg.enabled === true,
+  );
 
   const dateIso = unixSecondsToBrtDate(nowSec);
   const summary: Record<string, unknown> = { mode: args.send ? "SEND" : "dry-run", now: new Date(nowSec * 1000).toISOString(), lots: [] as unknown[] };
@@ -532,7 +545,20 @@ async function main(): Promise<void> {
     }));
     const { eligible, excluded } = selectEligibleKitRecipients(rawCandidates);
     if (eligible.length === 0) {
-      (summary.lots as unknown[]).push({ kind, eligible: 0, excluded: excluded.length, note: "nenhum destinatário elegível — nada a fazer" });
+      // `excluded` fica como contagem (compat com o formato anterior do
+      // resumo) — o MOTIVO de cada exclusão (ex: "falha de consulta" nunca
+      // autoriza envio) vai em `excludedReasons`, nunca só implícito na
+      // contagem. Achado do fleet review da PR #8967: sem este campo, o
+      // teste de regressão de "falha de consulta" não tinha como verificar
+      // a RAZÃO da exclusão neste ramo (só o `eligible.length === 0`),
+      // deixando a asserção mais importante do teste sem nunca rodar.
+      (summary.lots as unknown[]).push({
+        kind,
+        eligible: 0,
+        excluded: excluded.length,
+        excludedReasons: excluded.map((x) => ({ email: x.candidate.email, reason: x.reason })),
+        note: "nenhum destinatário elegível — nada a fazer",
+      });
       continue;
     }
 

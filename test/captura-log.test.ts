@@ -3,7 +3,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildCapturaLogEntry, serializeCapturaLogEntry, hasCaptureOnDay } from "../scripts/lib/metrics/captura-log.ts";
+import { buildCapturaLogEntry, serializeCapturaLogEntry, hasCaptureOnDay, captureFailureDays } from "../scripts/lib/metrics/captura-log.ts";
 
 describe("buildCapturaLogEntry", () => {
   it("monta captura_id determinístico a partir de platform+capturedAt", () => {
@@ -96,5 +96,37 @@ describe("hasCaptureOnDay", () => {
     const entry = buildCapturaLogEntry({ platform: "kit", capturedAt: "2026-09-02T04:25:00.000Z", totalRetornadoApi: 1, novosGravados: 0, eventosEstado: 0, exit: 0 });
     assert.equal(entry.origem_serie, undefined);
     assert.equal(entry.dia, undefined);
+  });
+
+  it("#8945: dia só com linha exit:1 (falha) NÃO conta como capturado", () => {
+    const entries = [
+      buildCapturaLogEntry({ platform: "kit", capturedAt: "2026-09-02T04:25:00.000Z", totalRetornadoApi: 0, novosGravados: 0, eventosEstado: 0, exit: 1 }),
+    ];
+    assert.equal(hasCaptureOnDay(entries, "2026-09-02"), false);
+  });
+
+  it("#8945: exit:1 seguido de exit:0 no mesmo dia conta como capturado (a execução que sucedeu basta)", () => {
+    const entries = [
+      buildCapturaLogEntry({ platform: "kit", capturedAt: "2026-09-02T04:00:00.000Z", totalRetornadoApi: 0, novosGravados: 0, eventosEstado: 0, exit: 1 }),
+      buildCapturaLogEntry({ platform: "kit", capturedAt: "2026-09-02T04:25:00.000Z", totalRetornadoApi: 10, novosGravados: 5, eventosEstado: 0, exit: 0 }),
+    ];
+    assert.equal(hasCaptureOnDay(entries, "2026-09-02"), true);
+  });
+});
+
+describe("captureFailureDays", () => {
+  it("#8945: aponta dia com só linha(s) de falha, distinto de dia sem nenhuma linha", () => {
+    const entries = [
+      buildCapturaLogEntry({ platform: "kit", capturedAt: "2026-09-02T04:25:00.000Z", totalRetornadoApi: 0, novosGravados: 0, eventosEstado: 0, exit: 1 }),
+    ];
+    assert.deepEqual(captureFailureDays(entries, ["2026-09-01", "2026-09-02"]), ["2026-09-02"]);
+  });
+
+  it("#8945: dia com falha seguida de sucesso não conta como dia de falha", () => {
+    const entries = [
+      buildCapturaLogEntry({ platform: "kit", capturedAt: "2026-09-02T04:00:00.000Z", totalRetornadoApi: 0, novosGravados: 0, eventosEstado: 0, exit: 1 }),
+      buildCapturaLogEntry({ platform: "kit", capturedAt: "2026-09-02T04:25:00.000Z", totalRetornadoApi: 10, novosGravados: 5, eventosEstado: 0, exit: 0 }),
+    ];
+    assert.deepEqual(captureFailureDays(entries, ["2026-09-02"]), []);
   });
 });

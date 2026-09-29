@@ -162,3 +162,43 @@ export function resolveThreadsState(post: ThreadsPostLike): PublishState {
   // "failed" ou qualquer outro status → "unknown" (não houve publicação confirmada)
   return "unknown";
 }
+
+// ─── Brevo (email campaigns — `GET /v3/emailCampaigns/{id}`) ────────────────
+
+export interface BrevoCampaignLike {
+  /** Status raw da Brevo: "draft" | "queued" | "suspended" | "in_review" |
+   *  "sent" | "inProcess"/"in_process" (ver `brevo-client.ts`,
+   *  `BrevoCampaignStatus`/`isTerminalSendStatus`). */
+  status?: string;
+  /** ISO — presente quando a campanha tem agendamento (`scheduledAt` do
+   *  corpo do `GET`). Não usado pra desambiguar hoje (ver docstring), mas
+   *  aceito na assinatura pra o caller não precisar montar 2 formatos
+   *  diferentes de payload pra `resolveBrevoCampaignState`/`pollTerminalSendStatus`. */
+  scheduledAt?: string | null;
+}
+
+/**
+ * Normaliza o estado de uma campanha Brevo (#7917 — onboarding e-mail 3
+ * D+10, criado sempre como rascunho, #5908/#7599) pro mesmo `PublishState`
+ * usado por Beehiiv/LinkedIn/Facebook (CLAUDE.md #573: nunca relayar
+ * `status` raw da API sem passar por um `resolve*State`).
+ *
+ * `"queued"` mapeia pra `"scheduled"` mesmo sem comparar contra `now`
+ * (diferente de `resolveBeehiivState`) — a memória operacional do projeto
+ * (`brevo-status-queued-dispara-na-hora.md`) documenta que uma campanha
+ * Brevo em `queued` já está comprometida a disparar a qualquer momento, não
+ * "agendada pro futuro" no sentido Beehiiv; tratar como rascunho reversível
+ * seria a leitura errada. `"sent"`/`"inProcess"`/`"in_process"` (mesmo
+ * conjunto de `isTerminalSendStatus`) mapeiam pra `"published"`.
+ * `"suspended"`/`"in_review"`/ausente/desconhecido → `"unknown"` — estados
+ * ambíguos ou não-observados nunca são promovidos a `"draft"` por default
+ * (um `"unknown"` aqui é o sinal correto pro caller pedir reconsulta, não
+ * assumir "ainda é rascunho").
+ */
+export function resolveBrevoCampaignState(campaign: BrevoCampaignLike): PublishState {
+  const status = (campaign.status ?? "").toLowerCase();
+  if (status === "draft") return "draft";
+  if (status === "queued") return "scheduled";
+  if (status === "sent" || status === "inprocess" || status === "in_process") return "published";
+  return "unknown";
+}

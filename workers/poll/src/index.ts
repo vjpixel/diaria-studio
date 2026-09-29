@@ -130,6 +130,13 @@ export interface Env {
    * gracioso de `BEEHIIV_ORIGEM_REFERRER_FIELD` acima. Ainda não criado em
    * produção. */
   BEEHIIV_ORIGEM_CLICKID_FIELD?: string;
+  /** #8978: nome do custom field da Beehiiv onde gravar o `external_id`
+   * first-party (`_dia_vid`, cookie lido do request de cadastro — ver
+   * `SubscribeOrigin`/`visitor-id.ts`) — mesmo racional/degrade gracioso de
+   * `BEEHIIV_ORIGEM_REFERRER_FIELD` acima. Reusado depois por
+   * `SubscriptionConfirmed`/`Reactivation` (eventos só-servidor, sem sinal
+   * de browser próprio). Ainda não criado em produção. */
+  BEEHIIV_ORIGEM_EXTERNALID_FIELD?: string;
   /** #6048 (migração Beehiiv → Kit, #461/#463): seletor de backend do
    * cadastro inline — `"beehiiv"` (default, ausente/desconhecido = beehiiv)
    * ou `"kit"` (parse tolerante a espaço/capitalização, ver `resolveBackend`
@@ -200,6 +207,14 @@ export interface Env {
    * gracioso de `KIT_ORIGEM_REFERRER_FIELD` acima. Ainda não criado em
    * produção. */
   KIT_ORIGEM_CLICKID_FIELD?: string;
+  /** #8978: nome do custom field Kit onde gravar o `external_id` first-party
+   * (`_dia_vid`, cookie lido do request de cadastro — ver
+   * `SubscribeOrigin`/`visitor-id.ts`) — mesmo racional/degrade gracioso de
+   * `KIT_ORIGEM_REFERRER_FIELD` acima. Reusado depois por
+   * `SubscriptionConfirmed`/`Reactivation` (`scripts/lib/meta-capi-confirmation-batch.ts`)
+   * a partir do snapshot Kit (`SubscriberStateRecord.fields`, mesmo caminho
+   * de `KIT_CLICK_ID_FIELD_NAME`). Ainda não criado em produção. */
+  KIT_ORIGEM_EXTERNALID_FIELD?: string;
   /** #6340 — ID do form do Kit usado pro double opt-in (`vincularKitDoiForm`,
    * `subscribe.ts`): vincular o subscriber recém-criado a este form dispara
    * o e-mail de confirmação "Important: confirm your subscription" quando o

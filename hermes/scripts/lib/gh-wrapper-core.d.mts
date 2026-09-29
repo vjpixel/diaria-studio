@@ -1,3 +1,4 @@
+export function normalizeArgv(argv: string[]): string[];
 export function isPublishingInvocation(argv: string[]): boolean;
 export function requiresStdin(argv: string[]): boolean;
 export function collectTextsToCheck(

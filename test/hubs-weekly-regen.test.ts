@@ -105,13 +105,13 @@ describe("hasHubDataChange", () => {
 
 describe("planHubRegen", () => {
   it("sem mudança de dados -> hasDataChange false, newUpdatedDate null", () => {
-    const plan = planHubRegen("anthropic-claude", EMPTY_DIFF, "2026-09-28", "2026-09-25");
+    const plan = planHubRegen("anthropic-claude", EMPTY_DIFF, "2026-09-28", "2026-09-25", "2026-09-01");
     assert.deepEqual(plan, { slug: "anthropic-claude", hasDataChange: false, newUpdatedDate: null });
   });
 
   it("com mudança de dados e coverageDate recente (gap < 21 dias) -> newUpdatedDate = todayISO", () => {
     const diff: HubSourcesDiff = { ...EMPTY_DIFF, added: ["2026-09-25-edicao-nova"] };
-    const plan = planHubRegen("openai-chatgpt", diff, "2026-09-28", "2026-09-25");
+    const plan = planHubRegen("openai-chatgpt", diff, "2026-09-28", "2026-09-25", "2026-09-01");
     assert.deepEqual(plan, { slug: "openai-chatgpt", hasDataChange: true, newUpdatedDate: "2026-09-28" });
   });
 
@@ -122,20 +122,37 @@ describe("planHubRegen", () => {
     // edição nova. Bumpar UPDATED_DATE pra hoje dispararia
     // checkUpdatedDateCeiling (#5124) — o teto existe justo pra pegar isso.
     const diff: HubSourcesDiff = { ...EMPTY_DIFF, changed: ["2026-09-03-edicao-existente"] };
-    const plan = planHubRegen("google-gemini", diff, "2026-09-28", "2026-09-03");
+    const plan = planHubRegen("google-gemini", diff, "2026-09-28", "2026-09-03", "2026-09-01");
     assert.deepEqual(plan, { slug: "google-gemini", hasDataChange: true, newUpdatedDate: "2026-09-03" });
   });
 
   it("gap exatamente no limiar (21 dias) -> ainda usa coverageDate (limiar é estrito, < 21)", () => {
     const diff: HubSourcesDiff = { ...EMPTY_DIFF, added: ["edicao"] };
-    const plan = planHubRegen("anthropic-claude", diff, "2026-09-28", "2026-09-07");
+    const plan = planHubRegen("anthropic-claude", diff, "2026-09-28", "2026-09-07", "2026-09-01");
     assert.deepEqual(plan, { slug: "anthropic-claude", hasDataChange: true, newUpdatedDate: "2026-09-07" });
   });
 
   it("gap de 20 dias (abaixo do limiar) -> usa todayISO", () => {
     const diff: HubSourcesDiff = { ...EMPTY_DIFF, added: ["edicao"] };
-    const plan = planHubRegen("anthropic-claude", diff, "2026-09-28", "2026-09-08");
+    const plan = planHubRegen("anthropic-claude", diff, "2026-09-28", "2026-09-08", "2026-09-01");
     assert.deepEqual(plan, { slug: "anthropic-claude", hasDataChange: true, newUpdatedDate: "2026-09-28" });
+  });
+
+  it("#8949 item 1: UPDATED_DATE nunca regride — currentUpdatedDate mais recente que o candidato vence", () => {
+    // UPDATED_DATE=2026-09-15 (bump legítimo de revisão de prosa manual),
+    // fonte mais recente do dataset 2026-09-01 (25 dias atrás do run),
+    // mudança veio de `changed` (não `added`) -> candidato cairia pra
+    // coverageDate (2026-09-01), que REGRIDE 14 dias em relação ao
+    // UPDATED_DATE atual. O resultado final não pode regredir.
+    const diff: HubSourcesDiff = { ...EMPTY_DIFF, changed: ["2026-09-01-edicao-existente"] };
+    const plan = planHubRegen("anthropic-claude", diff, "2026-09-28", "2026-09-01", "2026-09-15");
+    assert.deepEqual(plan, { slug: "anthropic-claude", hasDataChange: true, newUpdatedDate: "2026-09-15" });
+  });
+
+  it("#8949 item 1: candidato mais recente que currentUpdatedDate -> usa o candidato normalmente (sem regressão, sem trava)", () => {
+    const diff: HubSourcesDiff = { ...EMPTY_DIFF, added: ["2026-09-25-edicao-nova"] };
+    const plan = planHubRegen("openai-chatgpt", diff, "2026-09-28", "2026-09-25", "2026-09-15");
+    assert.deepEqual(plan, { slug: "openai-chatgpt", hasDataChange: true, newUpdatedDate: "2026-09-28" });
   });
 });
 
