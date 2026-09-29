@@ -218,14 +218,17 @@ describe("swapManualInApprovedJson (#8995)", () => {
     assert.equal(radar.length, 1); // só o item original, nada adicionado
   });
 
-  it("rejeita posição fora de range", () => {
+  it("aceita posição válida (edição com 3 destaques, slot 3 pedido)", () => {
     const data = baseApproved();
     const result = swapManualInApprovedJson(
       data,
-      [{ position: 3, url: "https://novo.com/z", title: "Z" }] as never,
+      [{ position: 3, url: "https://novo.com/z", title: "Z" }],
       false,
     );
-    assert.equal(result.ok, true); // 3 destaques existem, válido — controle
+    assert.equal(result.ok, true);
+  });
+
+  it("rejeita posição além do tamanho de highlights[]", () => {
     const data2: Record<string, unknown> = { highlights: [HIGHLIGHT_D1] };
     const result2 = swapManualInApprovedJson(
       data2,
@@ -233,6 +236,65 @@ describe("swapManualInApprovedJson (#8995)", () => {
       false,
     );
     assert.equal(result2.ok, false);
+  });
+
+  it("rejeita quando highlights[] está ausente", () => {
+    const result = swapManualInApprovedJson(
+      { highlights: undefined },
+      [{ position: 1, url: "https://novo.com/z", title: "Z" }],
+      false,
+    );
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.reason, /highlights\[\] ausente/);
+  });
+
+  it("rejeita título vazio", () => {
+    const data = baseApproved();
+    const result = swapManualInApprovedJson(
+      data,
+      [{ position: 1, url: "https://novo.com/x", title: "" }],
+      false,
+    );
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.reason, /--title vazio/);
+  });
+
+  it("rejeita a mesma URL nova pedida em 2 slots diferentes", () => {
+    const data = baseApproved();
+    const result = swapManualInApprovedJson(
+      data,
+      [
+        { position: 1, url: "https://novo.com/mesma", title: "X" },
+        { position: 2, url: "https://novo.com/mesma", title: "Y" },
+      ],
+      false,
+    );
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.reason, /mais de um slot/);
+  });
+
+  it("troca os 3 destaques na mesma chamada", () => {
+    const data = baseApproved();
+    const result = swapManualInApprovedJson(
+      data,
+      [
+        { position: 1, url: "https://novo.com/a", title: "A" },
+        { position: 2, url: "https://novo.com/b", title: "B" },
+        { position: 3, url: "https://novo.com/c", title: "C" },
+      ],
+      false,
+    );
+    assert.equal(result.ok, true);
+    const highlights = data.highlights as Record<string, unknown>[];
+    assert.deepEqual(
+      highlights.map((h) => h.url),
+      ["https://novo.com/a", "https://novo.com/b", "https://novo.com/c"],
+    );
+    const radar = data.radar as Record<string, unknown>[];
+    assert.equal(radar.length, 1 + 3); // original + 3 demovidos
   });
 
   it("rejeita URL que já é destaque na edição", () => {
@@ -436,6 +498,219 @@ describe("swap-destaques.ts CLI (#8995)", () => {
       assert.notEqual(status, 0);
       const after = readFileSync(join(dir, "_internal", "01-approved.json"), "utf8");
       assert.equal(after, before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("recusa quando --edition-dir não existe", () => {
+    const { status, stderr } = runCli([
+      "--edition",
+      "260929",
+      "--edition-dir",
+      "/tmp/nao-existe-swap-destaques-8995",
+      "--d1-url",
+      "https://novo.com/x",
+      "--d1-title",
+      "X",
+    ]);
+    assert.notEqual(status, 0);
+    assert.match(stderr, /não encontrado/);
+  });
+
+  it("recusa quando 01-approved.json está ausente", () => {
+    const dir = mkdtempSync(join(tmpdir(), "swap-destaques-noapproved-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      const { status, stderr } = runCli([
+        "--edition",
+        "260929",
+        "--edition-dir",
+        dir,
+        "--d1-url",
+        "https://novo.com/x",
+        "--d1-title",
+        "X",
+      ]);
+      assert.notEqual(status, 0);
+      assert.match(stderr, /01-approved\.json não encontrado/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("recusa quando 01-approved.json está malformado (JSON inválido)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "swap-destaques-badjson-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal", "01-approved.json"), "{ isto não é json");
+      const { status, stderr } = runCli([
+        "--edition",
+        "260929",
+        "--edition-dir",
+        dir,
+        "--d1-url",
+        "https://novo.com/x",
+        "--d1-title",
+        "X",
+      ]);
+      assert.notEqual(status, 0);
+      assert.match(stderr, /Erro ao parsear/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("01-approved-capped.json ausente: swap aplica normalmente, sem tentar reescrevê-lo", () => {
+    const dir = makeTempEdition({ withCapped: false });
+    try {
+      const { status, stdout } = runCli([
+        "--edition",
+        "260929",
+        "--edition-dir",
+        dir,
+        "--d1-url",
+        "https://novo.com/x",
+        "--d1-title",
+        "X",
+      ]);
+      assert.equal(status, 0);
+      const parsed = JSON.parse(stdout);
+      assert.ok(!existsSync(join(dir, "_internal", "01-approved-capped.json")));
+      assert.ok(
+        !parsed.modified.rewritten.some((p: string) => p.includes("01-approved-capped.json")),
+      );
+      assert.deepEqual(parsed.warnings, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("01-approved-capped.json com highlights[] curto demais: warning estruturado, aprovado.json ainda aplicado", () => {
+    const dir = makeTempEdition({ withCapped: false });
+    try {
+      // capped com só 1 highlight — slot 2 pedido não cabe lá
+      writeFileSync(
+        join(dir, "_internal", "01-approved-capped.json"),
+        JSON.stringify({ highlights: [HIGHLIGHT_D1], radar: [] }, null, 2),
+      );
+      const { status, stdout } = runCli([
+        "--edition",
+        "260929",
+        "--edition-dir",
+        dir,
+        "--d2-url",
+        "https://novo.com/y",
+        "--d2-title",
+        "Y",
+      ]);
+      assert.equal(status, 0);
+      const parsed = JSON.parse(stdout);
+      assert.ok(
+        parsed.warnings.some((w: string) => w.includes("01-approved-capped.json não sincronizado")),
+      );
+      const approved = JSON.parse(readFileSync(join(dir, "_internal", "01-approved.json"), "utf8"));
+      assert.equal(approved.highlights[1].url, "https://novo.com/y");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("02-reviewed.md ausente: swap aplica normalmente, sem tentar reescrevê-lo", () => {
+    const dir = makeTempEdition({ withMd: false });
+    try {
+      const { status, stdout } = runCli([
+        "--edition",
+        "260929",
+        "--edition-dir",
+        dir,
+        "--d1-url",
+        "https://novo.com/x",
+        "--d1-title",
+        "X",
+      ]);
+      assert.equal(status, 0);
+      const parsed = JSON.parse(stdout);
+      assert.ok(!existsSync(join(dir, "02-reviewed.md")));
+      assert.ok(!parsed.modified.rewritten.some((p: string) => p.endsWith("02-reviewed.md")));
+      assert.deepEqual(parsed.warnings, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("02-reviewed.md sem os separadores esperados: warning estruturado, JSONs ainda aplicados", () => {
+    const dir = makeTempEdition({ withMd: false });
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), "Texto qualquer sem blocos DESTAQUE.");
+      const { status, stdout } = runCli([
+        "--edition",
+        "260929",
+        "--edition-dir",
+        dir,
+        "--d1-url",
+        "https://novo.com/x",
+        "--d1-title",
+        "X",
+      ]);
+      assert.equal(status, 0);
+      const parsed = JSON.parse(stdout);
+      assert.ok(
+        parsed.warnings.some((w: string) => w.includes("bloco DESTAQUE 1 não encontrado")),
+      );
+      assert.ok(!parsed.modified.rewritten.some((p: string) => p.endsWith("02-reviewed.md")));
+      const approved = JSON.parse(readFileSync(join(dir, "_internal", "01-approved.json"), "utf8"));
+      assert.equal(approved.highlights[0].url, "https://novo.com/x");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--d1-url sem --d1-title correspondente é rejeitado", () => {
+    const dir = makeTempEdition({});
+    try {
+      const { status, stderr } = runCli([
+        "--edition",
+        "260929",
+        "--edition-dir",
+        dir,
+        "--d1-url",
+        "https://novo.com/x",
+      ]);
+      assert.notEqual(status, 0);
+      assert.match(stderr, /precisam vir juntos/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("troca os 3 slots numa chamada CLI só", () => {
+    const dir = makeTempEdition({});
+    try {
+      const { status } = runCli([
+        "--edition",
+        "260929",
+        "--edition-dir",
+        dir,
+        "--d1-url",
+        "https://novo.com/a",
+        "--d1-title",
+        "A",
+        "--d2-url",
+        "https://novo.com/b",
+        "--d2-title",
+        "B",
+        "--d3-url",
+        "https://novo.com/c",
+        "--d3-title",
+        "C",
+      ]);
+      assert.equal(status, 0);
+      const approved = JSON.parse(readFileSync(join(dir, "_internal", "01-approved.json"), "utf8"));
+      assert.deepEqual(
+        (approved.highlights as Record<string, unknown>[]).map((h) => h.url),
+        ["https://novo.com/a", "https://novo.com/b", "https://novo.com/c"],
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

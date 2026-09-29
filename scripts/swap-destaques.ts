@@ -2,7 +2,7 @@
 /**
  * swap-destaques.ts (#8995)
  *
- * Substitui 1-2 destaques por itens que NÃO estão no pool de
+ * Substitui 1-3 destaques por itens que NÃO estão no pool de
  * `01-approved.json` (URL nova, dada pelo editor no gate — ex: "inclua X
  * como D1 e Y como D2"). Complementa `swap-destaque.ts` (#2499), que só
  * aceita itens JÁ presentes num bucket secundário — o caso descrito na
@@ -42,10 +42,10 @@
  *     [--drop] [--dry-run] [--edition-dir <path>]
  *
  * `--drop` descarta TODOS os destaques substituídos nesta chamada (em vez
- * de devolvê-los ao RADAR) — não há flag por-slot: numa edição real os dois
- * motivos de descartar (o destaque não serve mais pra lugar nenhum) tendem
- * a ser os mesmos para ambos os slots trocados na mesma chamada; usar
- * `swap-destaque.ts` ou 2 chamadas separadas para misturar drop/keep.
+ * de devolvê-los ao RADAR) — não há flag por-slot: numa edição real o
+ * motivo de descartar (o destaque não serve mais pra lugar nenhum) tende
+ * a ser o mesmo para todos os slots trocados na mesma chamada; usar
+ * `swap-destaque.ts` ou chamadas separadas para misturar drop/keep.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -94,6 +94,8 @@ export interface SwapDestaquesResult {
     rewritten: string[];
     deleted: string[];
   };
+  /** Avisos não-fatais — arquivo secundário divergente, placeholder não inserido, etc. */
+  warnings: string[];
   next_steps: string[];
 }
 
@@ -151,13 +153,21 @@ export function swapManualInApprovedJson(
   }
 
   const existingUrls = new Set(highlights.map((h) => extractUrl(h)));
+  const newUrls = new Set<string>();
   for (const s of slots) {
     if (!s.url) {
       return { ok: false, reason: `slot d${s.position}: --url vazia` };
     }
+    if (!s.title) {
+      return { ok: false, reason: `slot d${s.position}: --title vazio` };
+    }
     if (existingUrls.has(s.url)) {
       return { ok: false, reason: `a URL já é destaque nesta edição: ${s.url}` };
     }
+    if (newUrls.has(s.url)) {
+      return { ok: false, reason: `a mesma URL foi pedida em mais de um slot: ${s.url}` };
+    }
+    newUrls.add(s.url);
   }
 
   const demoted: Array<{ position: number; url: string; title: string }> = [];
@@ -306,6 +316,7 @@ function main(): void {
       },
     })),
     modified: { rewritten: [], deleted: [] },
+    warnings: [],
     next_steps: [],
   };
 
@@ -329,7 +340,9 @@ function main(): void {
     try {
       cappedData = readJson(approvedCappedPath);
     } catch (e) {
-      console.error(`AVISO: ${approvedCappedPath} ilegível (${(e as Error).message}), não sincronizado.`);
+      const w = `${approvedCappedPath} ilegível (${(e as Error).message}), não sincronizado.`;
+      console.error(`AVISO: ${w}`);
+      result.warnings.push(w);
       cappedData = {};
     }
     if (Array.isArray(cappedData.highlights)) {
@@ -338,9 +351,9 @@ function main(): void {
         writeJson(approvedCappedPath, cappedData);
         result.modified.rewritten.push(approvedCappedPath);
       } else {
-        console.error(
-          `AVISO: 01-approved-capped.json não sincronizado (${cappedSwap.reason}) — possível divergência entre os 2 arquivos.`,
-        );
+        const w = `01-approved-capped.json não sincronizado (${cappedSwap.reason}) — possível divergência entre os 2 arquivos.`;
+        console.error(`AVISO: ${w}`);
+        result.warnings.push(w);
       }
     }
   }
@@ -352,15 +365,31 @@ function main(): void {
   writeJson(hashPath, { hash: newHash });
   result.modified.rewritten.push(hashPath);
 
-  // 4. 02-reviewed.md — placeholder por slot
+  // 4. 02-reviewed.md — placeholder por slot. removeDestaqueBlockFromMd
+  // (swap-destaque.ts) falha SILENCIOSO — devolve o md intocado + console.error
+  // quando não acha o bloco DESTAQUE da posição pedida — então cada slot é
+  // checado individualmente (mesmo padrão que swap-destaque.ts já usa no seu
+  // próprio main(): `if (updatedMd !== md)`) em vez de assumir sucesso e
+  // marcar o arquivo como reescrito incondicionalmente.
   const mdPath = resolve(editionDir, "02-reviewed.md");
   if (existsSync(mdPath)) {
     let md = readFileSync(mdPath, "utf8");
+    let mdChanged = false;
     for (const s of slots) {
-      md = removeDestaqueBlockFromMd(md, s.position, s.title, s.url);
+      const updated = removeDestaqueBlockFromMd(md, s.position, s.title, s.url);
+      if (updated !== md) {
+        md = updated;
+        mdChanged = true;
+      } else {
+        result.warnings.push(
+          `02-reviewed.md: bloco DESTAQUE ${s.position} não encontrado — placeholder NÃO inserido, texto antigo permanece.`,
+        );
+      }
     }
-    writeFileSync(mdPath, md, "utf8");
-    result.modified.rewritten.push(mdPath);
+    if (mdChanged) {
+      writeFileSync(mdPath, md, "utf8");
+      result.modified.rewritten.push(mdPath);
+    }
   }
 
   // 5. Imagens e prompts antigos por slot
@@ -379,10 +408,13 @@ function main(): void {
         `Escrever DESTAQUE ${s.position} em 02-reviewed.md (writer-destaque, item: "${s.title}")`,
     ),
     `social-writer + social-curto em escopo reduzido (${slots.map((s) => `d${s.position}`).join(", ")}), splice em 03-social.md`,
-    `Gerar prompt + imagem por slot: npx tsx scripts/image-generate.ts --edition ${edition} --destaque {N}`,
+    ...slots.map(
+      (s) =>
+        `Escrever _internal/02-d${s.position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${editionDir}/_internal/02-d${s.position}-prompt.md --out-dir ${editionDir}/ --destaque d${s.position}`,
+    ),
     `gen-carousel-cards.ts + upload-images-public.ts após as imagens novas`,
     `fact-checker completo antes do gate (destaques novos, sem checagem prévia)`,
-    `npx tsx scripts/check-invariants.ts --stage 4`,
+    `npx tsx scripts/check-invariants.ts --edition-dir ${editionDir} --stage 4`,
   ];
 
   console.log(JSON.stringify(result, null, 2));
@@ -394,6 +426,9 @@ function main(): void {
         (s) =>
           `  d${s.position}: "${s.promoted.title}" ← NOVO  |  "${s.demoted.title}" → ${s.demoted.dropped ? "DESCARTADO" : "radar[0]"}`,
       ),
+      ...(result.warnings.length > 0
+        ? ["", "  Avisos:", ...result.warnings.map((w) => `    ⚠️  ${w}`)]
+        : []),
       "",
       "  Próximos passos:",
       ...result.next_steps.map((n) => `    • ${n}`),
