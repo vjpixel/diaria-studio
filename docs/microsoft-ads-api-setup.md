@@ -24,7 +24,8 @@ teste pago (#5524) realmente gastar.
   (motor genérico compartilhado com o adaptador Google, #5502 Parte B).
 - `scripts/microsoft-ads-ingest-spend.ts` — CLI fino, espelha
   `scripts/google-ads-ingest-spend.ts` na estrutura: sem as env vars
-  abaixo (ou com qualquer chamada falhando), sai com **exit 0** e
+  abaixo (ou com qualquer chamada falhando após o retry), sai com exit
+  **não-zero** (#9071; gasto zero real sai 0) e
   `data/aquisicao/spend.csv` intocado — nunca quebra `cac-report.ts`.
 
 ## Dois caminhos de identidade — Google (o que funciona hoje) e Azure AD (default histórico)
@@ -205,9 +206,10 @@ npx tsx scripts/microsoft-ads-ingest-spend.ts --spend data/aquisicao/spend.csv
 ```
 
 Sem as env vars do caminho ativo (Google OU Azure AD, ver "Segredos"), ou
-com qualquer chamada falhando: aviso + exit 0, CSV manual intocado — o
-mesmo comportamento de `scripts/google-ads-ingest-spend.ts`. Zero gasto no
-período consultado também é fail-soft (não erro): é o estado real da conta
+com qualquer chamada falhando após o retry: aviso + exit não-zero (#9071),
+CSV manual intocado — o mesmo comportamento de
+`scripts/google-ads-ingest-spend.ts`. Zero gasto no período consultado NÃO
+é erro (banner `✔`, exit 0): é o estado real da conta
 até 22/08/2026.
 
 ## Estado (22/08/2026, #5928)

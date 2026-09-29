@@ -3,16 +3,13 @@
  *
  * Lógica PURA do alarme que interpreta o CONTEÚDO dos logs de
  * `scripts/google-ads-ingest-spend.ts` e `scripts/microsoft-ads-ingest-spend.ts`
- * — não só o exit code. Decisão deliberada do #5237/#5502: os dois scripts
- * mantêm exit code 0 em toda classe de falha (`defect`, query malformada,
- * versão de API descontinuada incluída) — a task agendada roda cada
- * plataforma como task INDEPENDENTE (ver docstring abaixo), e sair
- * não-zero calaria a ingestão da plataforma vizinha se algum dia elas
- * voltarem a ser encadeadas. A distinção fica só no BANNER
- * (`console.error`/`console.warn` de "✖ DEFEITO"/"fallback pro CSV
- * manual"), o que significa que nenhum alarme baseado em `systemctl
- * --state=failed` (#5563) consegue enxergar um defeito real — a unit
- * sempre sai "sucesso".
+ * — não só o exit code. Até o #9071, decisão do #5237/#5502: os dois scripts
+ * mantinham exit code 0 em toda classe de falha, e a distinção ficava só no
+ * BANNER (`console.error`/`console.warn` de "✖ DEFEITO"/"fallback pro CSV
+ * manual") — nenhum alarme baseado em `systemctl --state=failed` (#5563)
+ * enxergava um defeito real. Desde o #9071 (e #9012 pro Meta) a falha real
+ * também sai não-zero (cada plataforma é task INDEPENDENTE, ver docstring
+ * abaixo); este módulo continua sendo quem lê a CLASSE da falha no log.
  *
  * ## Correção de causa raiz (#7518, 09/09/2026)
  *
@@ -149,7 +146,8 @@ const DEFECT_BANNER_MARKER = "✖ DEFEITO";
 /** Marcador GENÉRICO de fallback — `google-ads-ingest-spend.ts` E
  *  `microsoft-ads-ingest-spend.ts` emitem "fallback pro CSV manual —
  *  {reason}" em TODA classe de falha que não tem banner próprio (`defect`
- *  usa `DEFECT_BANNER_MARKER` acima; `empty` do Google usa `✔`). Achado ao
+ *  usa `DEFECT_BANNER_MARKER` acima; `empty` do Google e, desde o #9071, do
+ *  Microsoft usa `✔`). Achado ao
  *  vivo desta issue (09/09/2026): o run real do dia continha "fallback pro
  *  CSV manual — renovação do access token respondeu não-JSON (HTTP 502)"
  *  sem `DEFECT_BANNER_MARKER` (a falha classificou como `transient` em
@@ -161,14 +159,19 @@ const DEFECT_BANNER_MARKER = "✖ DEFEITO";
  *  1. Google `auth-pending` (Basic Access na fila, #5262) —
  *     `reportFallback` cai no ramo `auth-pending` (avisa, sem `return`) e
  *     ENTÃO chama `fallback(reason)`, carregando o mesmo texto genérico.
- *  2. Microsoft zero-spend — `microsoft-ads-ingest-spend.ts` não separa
- *     `empty`/`defect`/`transient` como o Google faz; TODO fallback
- *     (inclusive "sem gasto no período", legitimamente `fail-soft (não
- *     erro)` por decisão de `runSpendIngest`) passa pelo mesmo
- *     `fallback()` genérico.
+ *  2. Microsoft zero-spend em logs anteriores ao #9071 — até lá o script
+ *     não separava `empty` e passava "sem gasto no período" pelo mesmo
+ *     `fallback()` genérico (hoje sai com banner `✔` próprio).
+ *  O `auth-pending` do item 1 segue benigno AQUI mesmo saindo exit não-zero
+ *  desde o #9071 — assimetria deliberada: o alarme de units falhas cobre o
+ *  exit, este alarme só marca como defeito o que exige correção de código.
  *  Ver `BENIGN_FALLBACK_REASON_MARKERS` abaixo pra como esses 2 casos são
  *  excluídos. */
 const GENERIC_FALLBACK_MARKER = "fallback pro CSV manual";
+
+/** Literal da reason de perda TOTAL por malformação
+ *  (`runMicrosoftAdsIngest`, #5605) — sempre defeito, ver `classifyRunText`. */
+const TOTAL_LOSS_MARKER = "descartada(s) por malformação (#5605)";
 
 /** Textos de `reason` que, mesmo carregando `GENERIC_FALLBACK_MARKER`, são
  *  estado ESPERADO documentado — nunca contam como defeito:
@@ -176,8 +179,11 @@ const GENERIC_FALLBACK_MARKER = "fallback pro CSV manual";
  *    `auth-pending` de `reportFallback` (`google-ads-ingest-spend.ts`).
  *  - "fetch não devolveu nenhuma linha com custo" — literal do fallback de
  *    `runSpendIngest` (`scripts/lib/spend-ingest.ts`) quando o fetch não
- *    devolveu NENHUMA linha — "sem gasto no período" pro Microsoft (que,
- *    ao contrário do Google, não separa isso num banner `✔` próprio). */
+ *    devolveu NENHUMA linha — "sem gasto no período" pro Microsoft. Desde o
+ *    #9071 o Microsoft separa isso num banner `✔` próprio (sem o marcador
+ *    genérico); o literal fica aqui pra logs anteriores e por defesa. A
+ *    perda TOTAL (#5605) carrega este mesmo literal como prefixo — por isso
+ *    `TOTAL_LOSS_MARKER` é checado antes. */
 const BENIGN_FALLBACK_REASON_MARKERS = [
   "acesso ainda não liberado (Basic Access na fila",
   "fetch não devolveu nenhuma linha com custo",
@@ -194,6 +200,11 @@ const BENIGN_FALLBACK_REASON_MARKERS = [
  */
 function classifyRunText(text: string): "ok" | "defect" {
   if (text.includes(DEFECT_BANNER_MARKER)) return "defect";
+  // Perda TOTAL por malformação (#5605) do Microsoft reusa o literal benigno
+  // "fetch não devolveu nenhuma linha com custo" como PREFIXO da reason —
+  // sem esta checagem ela passava como zero-spend (achado do review da PR
+  // do #9071). Vence sobre `BENIGN_FALLBACK_REASON_MARKERS`.
+  if (text.includes(TOTAL_LOSS_MARKER)) return "defect";
   if (text.includes(GENERIC_FALLBACK_MARKER)) {
     const isBenign = BENIGN_FALLBACK_REASON_MARKERS.some((m) => text.includes(m));
     return isBenign ? "ok" : "defect";
@@ -404,13 +415,12 @@ export function buildAdsSpendIngestAlarmEmail(
 
   if (evaluation.verdict === "alarm-defect") {
     return {
-      subject: "⚠️ Diaria-Ads-Spend-Ingest: DEFEITO real detectado no log (exit code não avisa)",
+      subject: "⚠️ Diaria-Ads-Spend-Ingest: DEFEITO real detectado no log",
       body:
         `Uma das ingestões de gasto (Google Ads / Microsoft Ads / Meta Ads) contém sinal de defeito no run mais recente ` +
         `(${evaluation.latestRunAt}) — "✖ DEFEITO" ou fallback pro CSV manual sem ser o caso normal de gasto ` +
-        `zero. O script do Meta sai com exit não-zero nesse caso desde o #9012; por decisão do #5237/#5502, os scripts Google/Microsoft saem com exit 0 mesmo neste caso (pra não calar a ` +
-        `ingestão da plataforma vizinha) — este alarme existe justamente pra tornar visível o que o exit code ` +
-        `esconde.\n\n` +
+        `zero. Desde o #9012 (Meta) e o #9071 (Google/Microsoft) os scripts também saem com exit não-zero ` +
+        `nesse caso (a unit fica failed); este alarme acrescenta a CLASSE da falha lida no log.\n\n` +
         `Estado por plataforma:\n${platformLines}\n\n` +
         `Trecho do run:\n\n${evaluation.latestRun}\n\n` +
         `Corrigir em scripts/lib/google-ads-ingest.ts / scripts/lib/microsoft-ads-ingest.ts / scripts/meta-ads-ingest-spend.ts (query/token/versão de ` +

@@ -438,10 +438,10 @@ describe("#5502/#5928 — runMicrosoftAdsIngest (orquestração end-to-end, fail
     assert.equal(result.kind, "fallback");
   });
 
-  it("Reporting API responde sem nenhuma linha de custo → fallback (nada pra atualizar)", async () => {
+  it("Reporting API responde sem nenhuma linha de custo → empty (gasto zero real, não falha — #9071)", async () => {
     const fetchImpl = mockReportingFlow({ csv: '"TimePeriod","Spend"\r\n' }); // só header, 0 linhas de dado
     const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows, ...NO_SLEEP });
-    assert.equal(result.kind, "fallback");
+    assert.equal(result.kind, "empty");
   });
 });
 
