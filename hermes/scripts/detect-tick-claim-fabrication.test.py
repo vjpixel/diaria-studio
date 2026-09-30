@@ -455,8 +455,8 @@ def test_regressao_9026_pela_feminino():
     check = mod.check_claimed_issues(linha_pela, set(), True, session_correlated=True)
     assert check["status"] == "not_applicable", check
 
-    # "pelos" (masc. plural) também é ator de outro — antes nem pelo nem pelos
-    # plural masculino casavam além de "pelas".
+    # "pelos" (masc. plural) também não casava antes: "pelo" casava e o
+    # `\s+` seguinte falhava no "s".
     linha_pelos = "#8949 foi reivindicada pelos outros coordenadores."
     refs_pelos = mod.extract_claimed_issue_refs(linha_pelos)
     assert 8949 not in refs_pelos, f"#8949 (pelos outros) indevido: {refs_pelos}"
@@ -464,6 +464,10 @@ def test_regressao_9026_pela_feminino():
     # `_COVERED_BY` com "pela": "coberta pela #7808" — a ref coberta é excluída.
     assert mod._COVERED_BY.search("coberta pela #7808"), "_COVERED_BY nao aceita 'pela'"
     assert mod._COVERED_BY.search("coberta pela #7808").group(1) == "7808"
+    # Fim-a-fim (mesma forma do #7807): a cobertura exclui a ref.
+    linha_cob = "- #7807: o trabalho ja estava coberto pela #7808. A PR #7827 foi fechada."
+    refs_cob = mod.extract_claimed_issue_refs(linha_cob)
+    assert 7808 not in refs_cob, f"#7808 (coberta pela) indevido: {refs_cob}"
 
     # Controle: claim próprio genuíno continua detectado como fabricação.
     linha_fab = "Issues reivindicadas neste tick: #9101."
