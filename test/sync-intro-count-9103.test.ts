@@ -27,9 +27,13 @@ function runCli(args: string[]): { code: number; stdout: string; stderr: string 
 }
 
 /** 3 destaques + (actual - 3) itens em OUTRAS NOTÍCIAS = `actual` URLs. */
-function buildMd(claimed: number, actual: number): string {
+function buildMd(
+  claimed: number,
+  actual: number,
+  phrase = `Eu selecionei os ${claimed} mais relevantes`,
+): string {
   const lines = [
-    `Para esta edição, eu (o editor) enviei 2 submissões e a Diar.ia encontrou outros 80 artigos. Eu selecionei os ${claimed} mais relevantes para as pessoas que assinam a newsletter.`,
+    `Para esta edição, eu (o editor) enviei 2 submissões e a Diar.ia encontrou outros 80 artigos. ${phrase} para as pessoas que assinam a newsletter.`,
     "",
     "---",
     "",
@@ -78,10 +82,27 @@ describe("sync-intro-count CLI — intro em 1ª pessoa singular (#9103)", () => 
 
         // Idempotente: 2ª rodada não muda nada.
         const r2 = runCli(["--md", mdPath]);
+        assert.equal(r2.code, 0, r2.stderr);
         assert.equal(JSON.parse(r2.stdout).changed, false);
+        assert.equal(readFileSync(mdPath, "utf8"), updated);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
     });
   }
+
+  it("voz passiva: 'foram selecionados os 12' → 'foram selecionados os 9' (verbo preservado)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-intro-9103-passiva-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      writeFileSync(mdPath, buildMd(12, 9, "Deles, foram selecionados os 12 mais relevantes"), "utf8");
+      const r = runCli(["--md", mdPath]);
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).changed, true);
+      const updated = readFileSync(mdPath, "utf8");
+      assert.match(updated, /foram selecionados os 9 mais relevantes/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
