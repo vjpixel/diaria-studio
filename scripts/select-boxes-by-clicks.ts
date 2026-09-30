@@ -90,6 +90,7 @@ import {
   type SnippetInfo,
 } from "./box-click-report.ts";
 import { DEFAULT_KIT_BROADCASTS_DIR } from "./lib/shared/edition-cache-reader.ts";
+import { DEFAULT_SNIPPET_AUDIENCE } from "./lib/shared/snippet-header.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EDITIONS_DIR = resolve(ROOT, "data/editions");
@@ -107,6 +108,20 @@ export const ROTATION_SLOTS: ReadonlySet<BoxSlot> = new Set<BoxSlot>([1, 2]);
 
 function avg(nums: number[]): number {
   return nums.length === 0 ? 0 : nums.reduce((a, b) => a + b, 0) / nums.length;
+}
+
+// ── Audiência (#9104) ───────────────────────────────────────────────────────
+
+/**
+ * #9104: `true` quando o snippet é caixa da DIÁRIA — só essas entram no
+ * ranking/seleção automática. Caixa de outra audiência (Clarice, Brevo…)
+ * carrega UTM próprio de atribuição de vendas por canal; escolhê-la pra
+ * diária quebra essa atribuição (achado 260930: `clarice-imersao1010.md`,
+ * `utm_source=clarice`, escolhida pro slot 2). Audiência ausente (fixture
+ * literal antiga) = diária, mesmo default de `resolveSnippetAudience`.
+ */
+export function isSnippetEligibleForDiaria(snippet: SnippetInfo): boolean {
+  return (snippet.audience ?? DEFAULT_SNIPPET_AUDIENCE) === DEFAULT_SNIPPET_AUDIENCE;
 }
 
 // ── Histórico por edição (pure, dado I/O injetado) ─────────────────────────
@@ -319,6 +334,13 @@ export interface SelectSlotsOpts {
   /** Arquivos já ocupados por slots PINADOS/fixos nesta mesma edição — nunca
    * escolhidos de novo pra outro slot (duplicaria a mesma divulgação 2x). */
   alreadyAssignedFiles?: ReadonlySet<string>;
+  /** #9104: chaves de evento/campanha por arquivo (`SnippetInfo.eventKeys`).
+   * Um candidato que compartilha chave com um arquivo de
+   * `alreadyAssignedFiles` ou com um pick anterior desta mesma chamada é
+   * pulado — nunca duas caixas do mesmo evento na mesma edição (achado
+   * 260930: imersão no slot 1 e a mesma imersão, outra versão, no slot 2).
+   * Ausente = sem dedup por evento (comportamento pré-#9104). */
+  eventKeysByFile?: ReadonlyMap<string, readonly string[]>;
 }
 
 /**
@@ -335,14 +357,18 @@ export function selectBoxesForSlots(opts: SelectSlotsOpts): SlotPick[] {
     .filter((r) => !excluded.has(r.file))
     .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
   const used = new Set<string>();
+  const eventKeysOf = (file: string): readonly string[] => opts.eventKeysByFile?.get(file) ?? [];
+  const blockedEvents = new Set<string>();
+  for (const f of opts.alreadyAssignedFiles ?? []) for (const k of eventKeysOf(f)) blockedEvents.add(k);
   const picks: SlotPick[] = [];
   for (const slot of opts.slotsToFill) {
-    const candidate = pool.find((r) => !used.has(r.file));
+    const candidate = pool.find((r) => !used.has(r.file) && !eventKeysOf(r.file).some((k) => blockedEvents.has(k)));
     if (!candidate) {
       picks.push({ slot, file: null, nome: null, score: null, trend: null, editionsAppeared: null });
       continue;
     }
     used.add(candidate.file);
+    for (const k of eventKeysOf(candidate.file)) blockedEvents.add(k);
     picks.push({
       slot,
       file: candidate.file,
@@ -525,14 +551,22 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     }
   };
 
+  // #9104: só caixas da diária entram no ranking. Filtrar ANTES do match de
+  // histórico (e não só no ranking) também corrige a atribuição ENTRE
+  // AUDIÊNCIAS: versões da mesma caixa compartilham a base-URL (o UTM é
+  // descartado por `toBaseUrl`), e `matchSnippetForBox` pega a 1ª em ordem
+  // alfabética — `clarice-imersao1010.md` "roubava" os cliques do box
+  // `diaria-imersao1010.md` usado de fato na diária. A mesma colisão entre
+  // duas caixas DA DIÁRIA com a mesma base-URL continua (issue de follow-up).
+  const diariaSnippets = snippets.filter(isSnippetEligibleForDiaria);
   const history = buildSnippetHistory({
     aammddList,
     readReviewedMd,
-    snippets,
+    snippets: diariaSnippets,
     findPost: (aammdd) => findPostForEdition(aammdd, posts),
   });
   const ranked = [...history.values()].map((h) => scoreBox(h, autoCfg.recentWindow, autoCfg.priorWindow));
-  const previousSnippets = findPreviousEditionSnippets(opts.aammdd, aammddList, readReviewedMd, snippets);
+  const previousSnippets = findPreviousEditionSnippets(opts.aammdd, aammddList, readReviewedMd, diariaSnippets);
 
   // #6748: slot 3 fora de [1, 2] em TODOS os arrays abaixo — nunca entra em
   // `slotsToAuto` (não é ranqueado/escolhido), nunca é elegível a pin, e o
@@ -552,6 +586,9 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     slotsToFill: slotsToAuto,
     excludeFiles: previousSnippets,
     alreadyAssignedFiles,
+    // #9104: mapa sobre TODOS os snippets (não só os da diária) — um slot
+    // pinado/slot0 com caixa de outra audiência ainda bloqueia o evento dela.
+    eventKeysByFile: new Map(snippets.map((sn) => [sn.file, sn.eventKeys ?? []])),
   });
   const pickBySlot = new Map(picks.map((p) => [p.slot, p]));
 

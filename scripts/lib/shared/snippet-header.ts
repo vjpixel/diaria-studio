@@ -101,6 +101,89 @@ export function readSeasonalFlag(content: string): boolean | null {
   return null;
 }
 
+/** #9104: audiência default de um snippet sem `audiencia:` no header e sem
+ * sinal inferível — a própria diária. Default escolhido pra não mudar nada
+ * nos snippets existentes (todos sem o campo até o #9104). */
+export const DEFAULT_SNIPPET_AUDIENCE = "diaria";
+
+/** #9104: `utm_source` de link que identifica, sozinho, uma audiência que
+ * NÃO é a diária — o UTM é justamente o que separa as vendas por canal
+ * (ex.: `clarice-imersao1010.md` leva `utm_source=clarice`), então uma caixa
+ * com esse UTM na diária quebra a atribuição. Só valores inequívocos entram
+ * aqui: `meta`/`whatsapp` etc. aparecem em caixas legítimas da diária. */
+export const FOREIGN_AUDIENCE_UTM_SOURCES: Readonly<Record<string, string>> = {
+  clarice: "clarice",
+  brevo: "brevo",
+};
+
+export type SnippetAudienceSource = "header" | "utm_source" | "default";
+
+export interface SnippetAudience {
+  /** Audiência normalizada (minúsculas, trimada) — `"diaria"` é a diária. */
+  audience: string;
+  /** De onde veio: campo `audiencia:` explícito, inferência por
+   * `utm_source` dos links do corpo, ou default (`diaria`). */
+  source: SnippetAudienceSource;
+}
+
+function utmParam(rawUrl: string, key: string): string | null {
+  try {
+    const v = new URL(rawUrl).searchParams.get(key);
+    return v ? v.trim().toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #9104: resolve a audiência de um snippet. Precedência:
+ *   1. `audiencia:` no header (valor livre, normalizado pra minúsculas e sem
+ *      acento — `Diária` = `diaria`) —
+ *      sempre vence, inclusive pra declarar `diaria` numa caixa cujo link
+ *      tenha um UTM de outra audiência;
+ *   2. inferência EXPLÍCITA por `utm_source` dos links do CORPO
+ *      (`bodyUrls`, URLs cruas, com query) — só os valores de
+ *      `FOREIGN_AUDIENCE_UTM_SOURCES`; nunca pelo nome do arquivo
+ *      (`clarice-divulgacao.md` é caixa da diária que divulga a Clarice);
+ *   3. default `DEFAULT_SNIPPET_AUDIENCE`.
+ * Nunca lança.
+ */
+export function resolveSnippetAudience(content: string, bodyUrls: readonly string[]): SnippetAudience {
+  const header = parseBoxHeaderField(content, "audiencia");
+  if (header !== null && header.trim() !== "") {
+    // Sem acento: `audiencia: Diária` (grafia natural em PT) = `diaria`.
+    const normalized = header.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    return { audience: normalized, source: "header" };
+  }
+  for (const url of bodyUrls) {
+    const src = utmParam(url, "utm_source");
+    if (src && FOREIGN_AUDIENCE_UTM_SOURCES[src]) {
+      return { audience: FOREIGN_AUDIENCE_UTM_SOURCES[src], source: "utm_source" };
+    }
+  }
+  return { audience: DEFAULT_SNIPPET_AUDIENCE, source: "default" };
+}
+
+/**
+ * #9104: chaves de EVENTO/campanha de um snippet — duas caixas que
+ * compartilham uma chave divulgam a mesma coisa (ex.: `diaria-imersao1010.md`
+ * e `workshop-agente-ia-outubro.md`, ambas `utm_campaign=agente-ia`) e nunca
+ * devem sair juntas na mesma edição. `evento:` no header vence (chave única);
+ * sem ele, cai nos `utm_campaign` distintos dos links do corpo. Sem nenhum
+ * dos dois → `[]` (a caixa não colide com nada por evento). Minúsculas,
+ * sem duplicata. Nunca lança.
+ */
+export function extractSnippetEventKeys(content: string, bodyUrls: readonly string[]): string[] {
+  const header = parseBoxHeaderField(content, "evento");
+  if (header !== null && header.trim() !== "") return [header.trim().toLowerCase()];
+  const keys = new Set<string>();
+  for (const url of bodyUrls) {
+    const c = utmParam(url, "utm_campaign");
+    if (c) keys.add(c);
+  }
+  return [...keys];
+}
+
 /** Header inner MENOS as linhas `{key}:` de `keys` (case-insensitive),
  * trimado — o texto de "notas" que sobra pro editor livre (#3979: painel
  * "Notas", separado dos campos dedicados `nome`/`categoria`). `""` se não

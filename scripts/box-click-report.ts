@@ -73,7 +73,14 @@ import {
   extractBoxDivulgacao2,
   extractBoxDivulgacao3,
 } from "./lib/newsletter-parse.ts";
-import { parseBoxHeaderField, stripHeaderBlock, readSeasonalFlag } from "./lib/shared/snippet-header.ts";
+import {
+  parseBoxHeaderField,
+  stripHeaderBlock,
+  readSeasonalFlag,
+  resolveSnippetAudience, // #9104
+  extractSnippetEventKeys, // #9104
+  type SnippetAudienceSource,
+} from "./lib/shared/snippet-header.ts";
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
 import { resolveEnrichmentState } from "./lib/shared/enrichment-state.ts";
 import {
@@ -134,14 +141,26 @@ export interface SnippetInfo {
   /** `seasonal:` do header — `true` para ofertas pontuais/sazonais
    * (alta pull) vs `false`/null para boxes permanentes (#6031). */
   seasonal: boolean | null;
+  /** #9104: audiência da caixa (`audiencia:` do header, ou inferida por
+   * `utm_source` dos links, ou default `"diaria"` — ver
+   * `resolveSnippetAudience`). Opcional só por back-compat de fixtures
+   * literais; ausente = `"diaria"`. */
+  audience?: string;
+  audienceSource?: SnippetAudienceSource;
+  /** #9104: chaves de evento/campanha (`evento:` do header, ou
+   * `utm_campaign` dos links) — ver `extractSnippetEventKeys`. Ausente = `[]`. */
+  eventKeys?: string[];
 }
 
 export function parseSnippetContent(file: string, content: string): SnippetInfo {
   const nome = parseBoxHeaderField(content, "nome") ?? file.replace(/\.md$/, "");
   const body = stripHeaderBlock(content);
-  const urls = [...new Set(extractUrls(body).map(toBaseUrl))];
+  const rawUrls = extractUrls(body);
+  const urls = [...new Set(rawUrls.map(toBaseUrl))];
   const seasonal = readSeasonalFlag(content);
-  return { file, nome, urls, seasonal };
+  const { audience, source: audienceSource } = resolveSnippetAudience(content, rawUrls);
+  const eventKeys = extractSnippetEventKeys(content, rawUrls);
+  return { file, nome, urls, seasonal, audience, audienceSource, eventKeys };
 }
 
 /** Carrega + parseia todos os snippets de `data/snippets/*.md` (#5227,
