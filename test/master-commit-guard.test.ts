@@ -3,11 +3,29 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, chmodSync, copyFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import { blockMessage, isProtectedBranch, shouldBlockCommit } from "../scripts/lib/master-commit-guard.ts";
 import { getCurrentBranch } from "../scripts/check-master-direct-commit.ts";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
+
+/**
+ * Resolve o CLI do tsx pela resolução de módulos do Node (#9076), em vez de
+ * fixar `REPO_ROOT/node_modules/.bin/tsx`. Worktree isolado (overnight/
+ * develop) costuma não ter `node_modules` próprio — o Node acha o pacote
+ * subindo diretórios até o checkout principal, mas o path fixo não existia,
+ * o hook morria com "tsx: not found" e os 3 casos end-to-end quebravam. Pior:
+ * o caso "recusa commit em master" passava por acidente (qualquer exit != 0
+ * casava a regex). Rodar `node <cli.mjs>` também dispensa o shim de `.bin/`.
+ */
+function resolveTsxCli(): string {
+  const req = createRequire(import.meta.url);
+  const pkgPath = req.resolve("tsx/package.json");
+  const bin = req(pkgPath).bin as string | Record<string, string>;
+  const rel = typeof bin === "string" ? bin : bin.tsx;
+  return join(dirname(pkgPath), rel);
+}
 
 describe("master-commit-guard (#8878) — lógica pura", () => {
   it("isProtectedBranch: só master/main", () => {
@@ -105,9 +123,12 @@ describe("scripts/hooks/pre-commit (#8878) — integração end-to-end", () => {
     // repo inteiro pra dentro do tmpdir.
     mkdirSync(join(dir, ".git", "hooks"), { recursive: true });
     const hookPath = join(dir, ".git", "hooks", "pre-commit");
-    const tsx = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+    const tsxCli = resolveTsxCli();
     const script = join(REPO_ROOT, "scripts", "check-master-direct-commit.ts");
-    writeFileSync(hookPath, ["#!/bin/sh", `'${tsx}' '${script}'`].join("\n") + "\n");
+    writeFileSync(
+      hookPath,
+      ["#!/bin/sh", `'${process.execPath}' '${tsxCli}' '${script}'`].join("\n") + "\n",
+    );
     chmodSync(hookPath, 0o755);
     writeFileSync(join(dir, "f.txt"), "x");
     execFileSync("git", ["-C", dir, "add", "f.txt"]);
@@ -118,7 +139,9 @@ describe("scripts/hooks/pre-commit (#8878) — integração end-to-end", () => {
     const dir = makeRepo();
     assert.throws(() => {
       execFileSync("git", ["-C", dir, "commit", "-m", "direto em master"], { stdio: "pipe" });
-    }, /BLOQUEADO|non-zero exit code/);
+      // Exige a mensagem do guard (#9076): casar só "exit != 0" deixava o
+      // teste verde quando o hook nem rodava (ex.: "tsx: not found").
+    }, /BLOQUEADO \(#8878\)/);
   });
 
   it("permite commit numa branch de trabalho", () => {
