@@ -105,8 +105,9 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
     // #9105: categoria literal "NOTÍCIAS" no header de destaque (#6083/#8200)
     // era barrada só no agregador do Stage 4 — tarde demais pra re-disparar o
     // writer barato. Rodar aqui também faz `pipeline-sentinel.ts write --step 2`
-    // recusar o sentinel (inclusive no spawn headless) enquanto dá pra
-    // re-escrever o destaque em vez de corrigir à mão no gate.
+    // recusar o sentinel (inclusive no spawn headless) enquanto o fix ainda é
+    // barato: recalcular o category_label e editar só a linha do header
+    // (orchestrator-stage-2.md §2d) em vez de corrigir à mão no gate.
     { name: "destaque-category-noticias", issue: "#8200" },
   ];
   const violations: InvariantViolation[] = [];

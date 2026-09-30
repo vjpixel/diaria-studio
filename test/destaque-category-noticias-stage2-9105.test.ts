@@ -39,7 +39,22 @@ describe("Stage 2 barra categoria NOTÍCIAS nos destaques (#9105)", () => {
     assert.equal(v.length, 1, "esperava 1 violation reviewed-destaque-category-noticias");
     assert.equal(v[0].severity, "error");
     assert.equal(v[0].source_issue, "#8200");
-    assert.match(v[0].message, /destaque-category-noticias/);
+    // Conteúdo do stderr do lint (não só o nome do check, que runCheck sempre
+    // inclui via args): prova que falhou pela categoria, não por outro exit != 0.
+    assert.match(v[0].message, /categoria 'NOTÍCIAS'/);
+    assert.match(v[0].message, /DESTAQUE 1/);
+  });
+
+  it("um único destaque NOTÍCIAS (os outros temáticos) já bloqueia — sem exceção de 'último recurso' (#6083)", () => {
+    dir = mkdtempSync(join(tmpdir(), "stage2-noticias-one-"));
+    writeFileSync(
+      join(dir, "02-reviewed.md"),
+      mdWithCategories(["🚀 LANÇAMENTO", "📰 NOTÍCIAS", "⚖️ REGULAÇÃO"]),
+    );
+    const v = checkReviewedPassesAllLints(dir).filter((x) => x.rule === RULE);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "error");
+    assert.match(v[0].message, /DESTAQUE 2/);
   });
 
   it("categorias temáticas (MERCADO, REGULAÇÃO, LANÇAMENTO) não geram essa violation", () => {
