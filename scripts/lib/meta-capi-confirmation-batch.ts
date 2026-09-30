@@ -59,7 +59,7 @@
  * Índice ilegível LANÇA (nunca `{}` silencioso, senão reenviaria tudo).
  * Recusa por linha: `failed` com contador; após `MAX_FAILED_ATTEMPTS` vira
  * `skipped-failed-permanent`. Falha de rede/`not_configured` não conta tentativa
- * (rede grava `failed` sem incrementar, #9066; `not_configured` não toca o índice).
+ * (rede grava `failed` sem incrementar `attempts`, #9066, mas com teto próprio, #9182; `not_configured` não toca o índice).
  *
  * ## Recusa permanente x falha transitória (#9022)
  *
@@ -71,7 +71,7 @@
  * via índice) e o único teto para eles é a janela de `windowDays` da CAPI —
  * quando o cadastro sai dela, a própria checagem de janela o registra como
  * `skipped-out-of-window`. Uma queda de 3h da Meta não vira mais perda
- * definitiva. Falha de REDE (#9066) entra na mesma regra: grava `failed` sem
+ * definitiva. Falha de REDE (#9066) entra na mesma regra (com teto próprio, #9182): grava `failed` sem
  * consumir tentativa, pra que o candidato não saia da fila sem registro quando o
  * snapshot base avança antes do próximo sucesso.
  *
@@ -121,10 +121,12 @@ export const META_CONFIRMATION_DEFAULT_WINDOW_DAYS = 7;
 export const META_CONFIRMATION_MAX_FAILED_ATTEMPTS = 3;
 /**
  * #9182: teto das falhas AMBÍGUAS (`network_error` — o POST pode ter saído e
- * sido processado). 24 porque a task é HORÁRIA (#8983): ~1 dia de rede
- * instável sem descartar a linha, e todos os reenvios caem dentro da janela
- * de dedup por `event_id` da Meta (48h) — reenviar além dela deixaria de ser
- * inócuo. Uma troca de cadência muda a leitura em horas deste número.
+ * sido processado). 24 porque a task é HORÁRIA (#8983): ~1 dia de falhas de
+ * rede CONSECUTIVAS sem descartar a linha. O teto limita o NÚMERO de
+ * reenvios, não o intervalo entre eles (falhas espaçadas podem somar ao longo
+ * dos 7 dias da janela). Uma troca de cadência muda a leitura em horas deste
+ * número. `network_error` também cobre exceção ao MONTAR o evento (nada saiu,
+ * `sendCompleteRegistrationEvent`) — contada aqui igual, sem distinção.
  * 5xx/429 (#9022) não consomem este teto; 4xx segue em `MAX_FAILED_ATTEMPTS`.
  */
 export const META_CONFIRMATION_MAX_UNCOUNTED_POST_ATTEMPTS = 24;

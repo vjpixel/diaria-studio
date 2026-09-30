@@ -83,6 +83,8 @@ describe("#9182 — falha de rede ambígua tem teto próprio no lote Meta", () =
       }
       const last = await runMetaConfirmationBatch(deps(dir, { sendFn }));
       assert.equal(last.failedPermanent, 1);
+      assert.equal(last.failed, 1);
+      assert.equal(last.transientFailed, 1);
       const e = loadMetaConfirmationIndex(join(dir, "idx.json"))["kit-1"];
       assert.equal(e.status, "skipped-failed-permanent");
       assert.equal(e.uncountedPostAttempts, max);
@@ -127,8 +129,23 @@ describe("#9182 — falha de rede ambígua tem teto próprio no lote Meta", () =
 
   it("sucesso após falhas de rede grava sent", () =>
     withTmp(async (dir) => {
-      const { sendFn } = countingSend((n) => (n <= 3 ? NET : { ok: true, status: 200 }));
-      for (let i = 0; i < 4; i++) await runMetaConfirmationBatch(deps(dir, { sendFn }));
-      assert.equal(loadMetaConfirmationIndex(join(dir, "idx.json"))["kit-1"].status, "sent");
+      const { sendFn, calls } = countingSend((n) => (n <= 3 ? NET : { ok: true, status: 200 }));
+      for (let i = 0; i < 5; i++) await runMetaConfirmationBatch(deps(dir, { sendFn }));
+      const e = loadMetaConfirmationIndex(join(dir, "idx.json"))["kit-1"];
+      assert.equal(e.status, "sent");
+      assert.equal(e.uncountedPostAttempts, undefined, "sent não herda contador");
+      assert.equal(calls(), 4, "após sent, não reenvia");
+    }));
+
+  it("4xx anterior preservado quando a rede esgota o teto", () =>
+    withTmp(async (dir) => {
+      const { sendFn } = countingSend((n) => (n === 1 ? { ok: false, status: 400, reason: "meta_error" } : NET));
+      for (let i = 0; i <= META_CONFIRMATION_MAX_UNCOUNTED_POST_ATTEMPTS; i++) {
+        await runMetaConfirmationBatch(deps(dir, { sendFn }));
+      }
+      const e = loadMetaConfirmationIndex(join(dir, "idx.json"))["kit-1"];
+      assert.equal(e.status, "skipped-failed-permanent");
+      assert.equal(e.attempts, 1);
+      assert.equal(e.uncountedPostAttempts, META_CONFIRMATION_MAX_UNCOUNTED_POST_ATTEMPTS);
     }));
 });
