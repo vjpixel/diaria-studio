@@ -238,6 +238,10 @@ export type DataManagerIngestResult =
        * o teto de tentativas). Ver #8555 (fleet review).
        */
       countsAsAttempt: boolean;
+      /** HTTP da resposta não-2xx do `events:ingest`, quando houve uma
+       *  (ausente em env/token, exceção de rede e 2xx anômalo). Quem chama
+       *  usa pra separar transitório 5xx/429 (#9067) de falha ambígua (#9157). */
+      httpStatus?: number;
     };
 
 /**
@@ -300,13 +304,14 @@ export async function sendDataManagerIngest(opts: {
     // Resposta REAL do Google, HTTP não-2xx. 4xx (exceto 429) é recusa
     // determinística do payload/conta — conta como tentativa. 5xx/429 é
     // instabilidade/throttling do lado do Google (#9067, par do #9022 da
-    // Meta): NÃO conta — o lote aplica o teto próprio
-    // `MAX_UNCOUNTED_POST_ATTEMPTS` (#9157, google-ads-confirmation-batch.ts).
+    // Meta): NÃO conta, e o teto é a janela de 90 dias do lote (fica fora do
+    // `MAX_UNCOUNTED_POST_ATTEMPTS` do #9157 — por isso `httpStatus` vai junto).
     return {
       ok: false,
       stage: "ingest",
       error: `events:ingest respondeu HTTP ${res.status}: ${text.slice(0, 800)}`,
       countsAsAttempt: !isTransientDataManagerStatus(res.status),
+      httpStatus: res.status,
     };
   }
 

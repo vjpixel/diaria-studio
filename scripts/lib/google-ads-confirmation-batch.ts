@@ -56,11 +56,12 @@
  * de tentativas; após `MAX_FAILED_ATTEMPTS` vira `skipped-failed-permanent`).
  * Só recusa 4xx (exceto 429) consome tentativa: 5xx/429 do Google e falha de
  * rede/credencial gravam `failed` sem incrementar (#9067, par do #9022 da
- * Meta). Mas quando a falha é no estágio `ingest` (5xx/429, exceção de rede
- * no fetch — antes OU depois de o request sair, o sender não distingue —, 2xx
- * anômalo) incrementa-se `uncountedPostAttempts`, com teto próprio
- * `MAX_UNCOUNTED_POST_ATTEMPTS` (#9157) — antes o teto era só a janela de 90
- * dias, reenviando o mesmo evento até ~90x. A task é DIÁRIA (07:20 BRT), então
+ * Meta) — 5xx/429 seguem com teto = janela de 90 dias, contrato do #9067.
+ * Mas a falha AMBÍGUA no estágio `ingest` (exceção de rede no fetch — antes
+ * OU depois de o request sair, o sender não distingue — ou 2xx anômalo, sem
+ * `requestId`/não-JSON) incrementa `uncountedPostAttempts`, com teto próprio
+ * `MAX_UNCOUNTED_POST_ATTEMPTS` (#9157) — antes reenviava o mesmo evento até
+ * ~90x. A task é DIÁRIA (07:20 BRT), então
  * 3 tentativas = 3 dias — mas nada impede uma futura troca de cadência, como a
  * da Meta no #8978, de encolher essa janela.
  * Índice ilegível/corrompido LANÇA (nunca vira `{}`, senão reenviaria tudo).
@@ -117,6 +118,7 @@ import {
   buildDataManagerEvent,
   chunkDataManagerEvents,
   type DataManagerEvent,
+  isTransientDataManagerStatus,
   type DataManagerIngestResult,
 } from "./google-data-manager-sender.ts";
 import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME, REATIVAR_CONFIRMOU_VIA_VALUE } from "./shared/reativar-confirmou-via.ts";
@@ -136,17 +138,17 @@ export const DEFAULT_LOOKBACK_DAYS = 7;
 export const CONFIRMATION_ORDER_ID_PREFIX = "diaria-confirmacao-kit-";
 export const MAX_FAILED_ATTEMPTS = 3;
 /**
- * #9157: teto das falhas que NÃO contam tentativa mas em que o POST
- * `events:ingest` SAIU (`stage: "ingest"` com `countsAsAttempt: false` —
- * 5xx/429, exceção de rede no fetch, 2xx não-JSON ou sem `requestId`).
+ * #9157: teto das falhas AMBÍGUAS no POST `events:ingest` (`stage: "ingest"`,
+ * `countsAsAttempt: false` e sem HTTP transitório — exceção de rede no fetch,
+ * 2xx não-JSON ou sem `requestId`). 5xx/429 (`httpStatus` transitório) ficam
+ * FORA deste teto: o contrato do #9067 é que nunca viram permanentes.
  * Nesses casos o Google pode ter processado o lote (a exceção de rede é
  * contada mesmo quando o request nem saiu — o sender não distingue a fase;
  * numa queda de rede local o refresh de token costuma falhar antes, e
  * `token` segue sem teto); sem teto próprio a task
  * diária re-POSTaria o mesmo evento até a janela de 90 dias (~90x), e o dedup
  * por `transactionId` é best-effort. 5 (e não 3, como `MAX_FAILED_ATTEMPTS`)
- * preserva a tolerância do #9067 a uma instabilidade de poucos dias do Google
- * sem descartar a linha. Falhas de `env`/`token` (nada foi enviado) seguem sem
+ * tolera alguns dias de rede instável sem descartar a linha. Falhas de `env`/`token` (nada foi enviado) seguem sem
  * consumir teto nenhum.
  */
 export const MAX_UNCOUNTED_POST_ATTEMPTS = 5;
@@ -366,9 +368,10 @@ export interface ConfirmationBatchSummary {
    *  não-2xx, ou 2xx anômalo — corpo não-JSON/sem `requestId`) nesta rodada
    *  — granularidade de chunk, não de linha (ver docstring do módulo). Só o
    *  caso HTTP 4xx (exceto 429) conta tentativa rumo a `skipped-failed-permanent`
-   *  (`countsAsAttempt`, ver `sendDataManagerIngest`); falhas em
-   *  `ingest` sem `countsAsAttempt` consomem `MAX_UNCOUNTED_POST_ATTEMPTS`
-   *  (#9157); só `env`/`token` reprocessam sem teto. */
+   *  (`countsAsAttempt`, ver `sendDataManagerIngest`); falhas
+   *  ambíguas em `ingest` (rede, 2xx anômalo) consomem
+   *  `MAX_UNCOUNTED_POST_ATTEMPTS` (#9157); `env`/`token` e 5xx/429 (#9067)
+   *  reprocessam sem teto além da janela de 90 dias. */
   failedIds: number[];
   /** Mensagens de erro dos chunks que falharam (até 10). */
   googleErrors: string[];
@@ -414,7 +417,7 @@ interface Entry {
 
 type Outcome =
   | { kind: "submitted"; requestId: string }
-  | { kind: "failed"; error: string; countsAsAttempt: boolean; posted: boolean };
+  | { kind: "failed"; error: string; countsAsAttempt: boolean; ambiguousPost: boolean };
 
 /** Envia `entries` em chunks de até `DATA_MANAGER_MAX_EVENTS_PER_REQUEST`;
  *  devolve o resultado por posição de `entries` (mapeia por id, não por
@@ -441,8 +444,12 @@ async function sendEntries(
             kind: "failed",
             error: result.error,
             countsAsAttempt: result.countsAsAttempt,
-            // `env`/`token` param antes do POST; `ingest` = o POST saiu (#9157).
-            posted: result.stage === "ingest",
+            // #9157: `env`/`token` param antes do POST (nada enviado); 5xx/429
+            // é transitório e nunca vira permanente (#9067). Sobra rede no
+            // fetch e 2xx anômalo — o Google pode ter processado.
+            ambiguousPost:
+              result.stage === "ingest" &&
+              !(result.httpStatus !== undefined && isTransientDataManagerStatus(result.httpStatus)),
           };
     }
     if (!result.ok) {
@@ -597,21 +604,20 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
       // decidido pelo sender — ver docstring de `sendDataManagerIngest`;
       // 5xx/429 são transitórios desde o #9067).
       // 5xx/429 (instabilidade/throttling), exceção de rede, corpo 2xx
-      // não-JSON ou 2xx sem requestId NÃO contam tentativa — não sabemos se o
-      // Google processou o payload — mas consomem o teto próprio abaixo.
-      // `env`/`token` não enviaram nada: sem teto nenhum. A linha some pra
-      // sempre após MAX_FAILED_ATTEMPTS recusas 4xx OU
-      // MAX_UNCOUNTED_POST_ATTEMPTS falhas ambíguas no ingest.
+      // não-JSON ou 2xx sem requestId NÃO contam tentativa. Os ambíguos (rede,
+      // 2xx anômalo) consomem o teto próprio abaixo; 5xx/429 (#9067) e
+      // `env`/`token` não. A linha some pra sempre após MAX_FAILED_ATTEMPTS
+      // recusas 4xx OU MAX_UNCOUNTED_POST_ATTEMPTS falhas ambíguas.
       summary.failed++;
       summary.failedIds.push(cand.id);
-      // #9157: falha sem contar tentativa mas com o POST já enviado consome
+      // #9157: falha ambígua (POST pode ter saído e sido processado) consome
       // um teto próprio (MAX_UNCOUNTED_POST_ATTEMPTS) — o Google pode ter
       // processado o lote, e sem teto o mesmo evento sairia até ~90x.
       const prev = index[indexKey(cand.id)];
       const prevAttempts = prev?.attempts ?? 0;
       const prevUncounted = prev?.uncountedPostAttempts ?? 0;
       if (!o.countsAsAttempt) {
-        const uncounted = o.posted ? prevUncounted + 1 : prevUncounted;
+        const uncounted = o.ambiguousPost ? prevUncounted + 1 : prevUncounted;
         const extra = uncounted > 0 ? { uncountedPostAttempts: uncounted } : {};
         if (uncounted >= MAX_UNCOUNTED_POST_ATTEMPTS) {
           summary.failedPermanent++;

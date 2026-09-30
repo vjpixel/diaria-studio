@@ -1,8 +1,8 @@
 /**
  * #9157: falha que não conta tentativa mas em que o POST `events:ingest` SAIU
- * (2xx sem `requestId`, 2xx não-JSON, rede após envio, 5xx/429) tem teto
+ * (2xx sem `requestId`, 2xx não-JSON, exceção de rede) tem teto
  * próprio — antes a task diária re-POSTava o mesmo evento até sair da janela
- * de 90 dias. Nenhum teste toca a API: `sendFn`/`fetch` são sempre mocks.
+ * de 90 dias. 5xx/429 seguem fora do teto (#9067). Nenhum teste toca a API: `sendFn`/`fetch` são sempre mocks.
  */
 import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
@@ -89,23 +89,22 @@ describe("#9157 — POST ambíguo não é reenviado indefinidamente", () => {
     });
   });
 
-  it("5xx (stage ingest, não conta tentativa) consome o teto próprio, tolerando mais que MAX_FAILED_ATTEMPTS", async () => {
+  it("5xx/429 (httpStatus transitório) NUNCA consome o teto próprio — contrato do #9067", async () => {
     await withTmp(async (dir) => {
       const sendFn = mock.fn(async (_e: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({
         ok: false,
         stage: "ingest",
         error: "HTTP 503",
         countsAsAttempt: false,
+        httpStatus: 503,
       }));
-      assert.ok(MAX_UNCOUNTED_POST_ATTEMPTS > MAX_FAILED_ATTEMPTS);
-      for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await run(dir, sendFn);
-      assert.equal(loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)].status, "failed");
       let last;
-      for (let i = MAX_FAILED_ATTEMPTS; i < MAX_UNCOUNTED_POST_ATTEMPTS; i++) last = await run(dir, sendFn);
-      assert.equal(last!.failedPermanent, 1);
-      const after = await run(dir, sendFn);
-      assert.equal(after.toSend, 0);
-      assert.equal(sendFn.mock.callCount(), MAX_UNCOUNTED_POST_ATTEMPTS);
+      for (let i = 0; i < MAX_UNCOUNTED_POST_ATTEMPTS + 3; i++) last = await run(dir, sendFn);
+      assert.equal(last!.failedPermanent, 0);
+      assert.equal(last!.toSend, 1);
+      const entry = loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)];
+      assert.equal(entry.status, "failed");
+      assert.equal(entry.uncountedPostAttempts, undefined);
     });
   });
 
@@ -126,16 +125,16 @@ describe("#9157 — POST ambíguo não é reenviado indefinidamente", () => {
     });
   });
 
-  it("mistura 503 + 4xx: 4xx preserva uncountedPostAttempts e o teto de 4xx vence primeiro", async () => {
+  it("mistura ambíguo + 4xx: 4xx preserva uncountedPostAttempts e o teto de 4xx vence primeiro", async () => {
     await withTmp(async (dir) => {
-      const s503 = async (_e: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({
-        ok: false, stage: "ingest", error: "HTTP 503", countsAsAttempt: false,
+      const sAmbig = async (_e: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({
+        ok: false, stage: "ingest", error: "2xx sem requestId", countsAsAttempt: false,
       });
       const s400 = async (_e: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({
         ok: false, stage: "ingest", error: "HTTP 400", countsAsAttempt: true,
       });
-      await run(dir, s503);
-      await run(dir, s503);
+      await run(dir, sAmbig);
+      await run(dir, sAmbig);
       for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await run(dir, s400);
       const entry = loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)];
       assert.equal(entry.status, "skipped-failed-permanent");
