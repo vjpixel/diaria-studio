@@ -192,10 +192,13 @@ function reconcileAlarms(pending: AlarmFinding[]): void {
  * achados de prosa VAZIA, e `applyAlarmReconciliation` leria "nenhum hub
  * defasado neste run" — avançando o `missingStreak` de toda issue de prosa
  * aberta rumo ao auto-close (`CLOSE_ALARM_ISSUE_AFTER_RUNS`), mesmo que o
- * hub continue genuinamente defasado; só faltou saber. */
-function openProseFindings(): AlarmFinding[] {
-  if (!existsSync(ALARM_ISSUES_STATE_PATH)) return [];
-  const state = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
+ * hub continue genuinamente defasado; só faltou saber. Vale também pro
+ * catch do `regen-scan` (#9152): ali é o PRÓPRIO `planAllHubs` que lança,
+ * então `proseAlarmSlugs` nunca chega a existir — mesmo caso. `statePath`
+ * injetável só pra teste. */
+export function openProseFindings(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmFinding[] {
+  if (!existsSync(statePath)) return [];
+  const state = loadAlarmIssuesState(statePath);
   const suffix = ":prosa-defasada";
   const openSlugs = Object.entries(state)
     .filter(([key, entry]) => key.endsWith(suffix) && !entry.closedAt)
@@ -328,6 +331,33 @@ export function planAllHubs(
   }
 
   return { hubPlans, proseAlarmSlugs, proseState };
+}
+
+type PlanAllHubsResult = ReturnType<typeof planAllHubs>;
+
+/** Roda `planAllHubs` e, se ele lançar, dispara o alarme `regen-scan`
+ * preservando os achados `prosa-defasada` já abertos (#9152) — sem o 3º
+ * argumento, `alarmFailure` reconciliaria com lista de prosa vazia e cada
+ * semana de falha de scan avançaria o `missingStreak` rumo ao auto-close
+ * de toda issue de prosa aberta, mesmo com o hub ainda defasado (o #9019
+ * só tinha corrigido o catch do `git-worktree-add`). Devolve `null` na
+ * falha. `deps` injetável só pra teste. */
+export function planAllHubsOrAlarm(
+  today: string,
+  hubsDir: string,
+  deps: {
+    plan?: (today: string, hubsDir: string) => PlanAllHubsResult;
+    alarm?: (reason: string, detail: string, alsoWith: AlarmFinding[]) => void;
+    openProse?: () => AlarmFinding[];
+  } = {},
+): PlanAllHubsResult | null {
+  const { plan = planAllHubs, alarm = alarmFailure, openProse = openProseFindings } = deps;
+  try {
+    return plan(today, hubsDir);
+  } catch (e) {
+    alarm("regen-scan", `Falha na fase de leitura/diff dos hubs: ${(e as Error).message}`, openProse());
+    return null;
+  }
 }
 
 /** Cria um `git worktree` dedicado a partir de `origin/master` (nunca do
@@ -464,13 +494,12 @@ async function main(): Promise<void> {
     let hubPlans: HubPlan[];
     let proseAlarmSlugs: string[];
     let proseState: ProseReviewState;
-    try {
-      ({ hubPlans, proseAlarmSlugs, proseState } = planAllHubs(today, resolve(workRoot, "scripts/lib/hubs")));
-    } catch (e) {
-      alarmFailure("regen-scan", `Falha na fase de leitura/diff dos hubs: ${(e as Error).message}`);
+    const planned = planAllHubsOrAlarm(today, resolve(workRoot, "scripts/lib/hubs"));
+    if (!planned) {
       process.exitCode = 1;
       return;
     }
+    ({ hubPlans, proseAlarmSlugs, proseState } = planned);
 
     const proseFindings = proseAlarmSlugs.map(proseAlarmFinding);
     const touched = hubPlans.filter((h) => h.plan.hasDataChange);
