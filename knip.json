@@ -44,5 +44,5 @@
   // test/continuo-merger-8445-8446-8447.test.ts (#8868) roda o `jq` real
   // (spawnSync) pra validar a expressão --jq embutida no shell script contra
   // um fixture -- binário do SO usado só em teste, não uma dependência npm.
-  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "jq"]
+  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "jq", "codex", "codex.cmd"]
 }
