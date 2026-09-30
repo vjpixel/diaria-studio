@@ -6,20 +6,13 @@
     <meta name="theme-color" content="#151310" />
     <meta name="description" content="Em uma tarde, online e ao vivo, crie seu primeiro agente de IA sem escrever código. Sábado, 17 de outubro de 2026, das 14h às 18h." />
     <title>Crie seu primeiro agente de IA sem programar</title>
-    <!-- Teste A/B: sorteia a versão uma vez por visitante (fica guardada no
-         navegador) e leva junto a query string, para as UTMs e o fbclid
-         chegarem à página e ao checkout. Sem pixel aqui: o PageView é da
-         versão que abrir. -->
+    <!-- Teste A/B encerrado em 30/09/2026: todo visitante vai para a versão A,
+         inclusive quem já tinha sorteado B (a chave antiga no localStorage é
+         ignorada). /b continua no ar para links diretos. Leva junto a query
+         string, para as UTMs e o fbclid chegarem à página e ao checkout. Sem
+         pixel aqui: o PageView é da versão que abrir. -->
     <script>
-      (function () {
-        var key = "evento-agente-ia-variante", v;
-        try { v = localStorage.getItem(key); } catch (e) {}
-        if (v !== "a" && v !== "b") {
-          v = Math.random() < 0.5 ? "a" : "b";
-          try { localStorage.setItem(key, v); } catch (e) {}
-        }
-        location.replace("/evento/agente-ia/" + v + location.search + location.hash);
-      })();
+      location.replace("/evento/agente-ia/a" + location.search + location.hash);
     </script>
     <noscript><meta http-equiv="refresh" content="0; url=/evento/agente-ia/a" /></noscript>
   </head>
