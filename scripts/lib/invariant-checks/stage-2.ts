@@ -641,7 +641,7 @@ export const STAGE_2_RULES: InvariantRule[] = [
   },
   {
     id: "intentional-error-not-recent-repeat",
-    description: "erro intencional não reusa wrong_value/correct_value de edição dos últimos 30 dias em data/intentional-errors.jsonl (#9101)",
+    description: "erro intencional não reusa wrong_value (error) nem correct_value (warning) de edição dos últimos 30 dias em data/intentional-errors.jsonl (#9101)",
     source_issue: "#9101",
     stage: 2,
     run: (editionDir) => checkIntentionalErrorNotRecentRepeat(editionDir),

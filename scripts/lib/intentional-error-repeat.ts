@@ -36,25 +36,49 @@ export function normalizeErrorValue(value: string): string {
     .trim();
 }
 
+/** Valores que significam "sem valor" (placeholder/"não há erro") — nunca comparados. */
+const PLACEHOLDER_RE = /^\s*(?:\{PREENCHER\}|n\/?a|-+|não há erro.*|nao ha erro.*)?\s*$/i;
+
+/**
+ * Núcleo comparável de um valor: remove parênteses e a cauda "não X"
+ * (`"Anthropic (não \"Anthropik\")"`, `"SpaceX (não Microsoft)…"`, `"é da Meta, não do Google"`),
+ * porque ali a entidade citada é o lado ERRADO. Null para placeholder.
+ */
+export function valueCore(value: string | null | undefined): string | null {
+  if (!value || PLACEHOLDER_RE.test(value) || value.includes("{PREENCHER}")) return null;
+  const core = value
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[,;—–-]?\s*\bn[ãa]o\b.*$/i, " ")
+    .trim();
+  return core && !PLACEHOLDER_RE.test(core) ? core : null;
+}
+
+/** Limite de tokens pra aceitar match por contenção (acima disso é frase, só igualdade). */
+const MAX_CONTAINMENT_TOKENS = 4;
+
 /**
  * Extrai a grafia ERRADA de uma entry do histórico: `wrong_value` quando
  * presente (#7243); senão, deriva do `reveal` ("escrevi X onde/em vez de/no …")
- * — a maioria das entries antigas não tem `wrong_value`.
+ * — a maioria das entries antigas não tem `wrong_value`. Captura sem aspas que
+ * vira frase (`escrevi que …`, > 4 palavras) é descartada: não é uma grafia.
  */
 export function extractWrongValue(entry: Pick<IntentionalError, "wrong_value" | "reveal">): string | null {
   if (entry.wrong_value && entry.wrong_value.trim()) return entry.wrong_value.trim();
   const reveal = entry.reveal;
   if (!reveal) return null;
-  const quoted = reveal.match(/escrevi\s+["“]([^"”]+)["”]/i);
+  const quoted = reveal.match(/escrevi\s+[*_]*["“'‘«]([^"”'’»]+)["”'’»]/i);
   if (quoted) return quoted[1].trim();
   const bare = reveal.match(
-    /escrevi\s+(.+?)(?:\s+(?:onde|em vez de|no|na|nos|nas|em)\s|\s*,|\s*\.\s*$|$)/i,
+    /escrevi\s+(.+?)(?:\s+(?:onde|em vez de|no|na|nos|nas|em)\s|\s*,\s|\s*\.\s*$|$)/i,
   );
-  return bare && bare[1].trim() ? bare[1].trim() : null;
+  const value = bare?.[1]?.replace(/[*_]/g, "").trim();
+  if (!value || /^que\s/i.test(value)) return null;
+  if (normalizeErrorValue(value).split(" ").length > MAX_CONTAINMENT_TOKENS) return null;
+  return value;
 }
 
 /** AAMMDD → Date (UTC). Retorna null em input malformado. */
-function editionToDate(edition: string): Date | null {
+export function editionToDate(edition: string): Date | null {
   if (!/^\d{6}$/.test(edition)) return null;
   const y = 2000 + Number(edition.slice(0, 2));
   const m = Number(edition.slice(2, 4));
@@ -63,11 +87,20 @@ function editionToDate(edition: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** Match por palavra inteira em qualquer direção ("Craude" casa "Craude Opus 4.8"). */
+/**
+ * Match por palavra inteira em qualquer direção ("Craude" casa "Craude Opus 4.8"),
+ * só quando os dois lados são curtos (≤ 4 palavras); frase longa exige igualdade.
+ */
 function valuesOverlap(a: string, b: string): boolean {
-  const na = normalizeErrorValue(a);
-  const nb = normalizeErrorValue(b);
+  const ca = valueCore(a);
+  const cb = valueCore(b);
+  if (!ca || !cb) return false;
+  const na = normalizeErrorValue(ca);
+  const nb = normalizeErrorValue(cb);
   if (!na || !nb) return false;
+  if (na === nb) return true;
+  const longest = Math.max(na.split(" ").length, nb.split(" ").length);
+  if (longest > MAX_CONTAINMENT_TOKENS) return false;
   return ` ${na} `.includes(` ${nb} `) || ` ${nb} `.includes(` ${na} `);
 }
 
@@ -146,13 +179,13 @@ export function checkIntentionalErrorNotRecentRepeat(
   editionDir: string,
   opts: { history?: IntentionalError[]; windowDays?: number; ruleId?: string } = {},
 ): InvariantViolation[] {
+  const rule = opts.ruleId ?? "intentional-error-not-recent-repeat";
   const jsonPath = intentionalErrorJsonPath(editionDir);
   const record = loadIntentionalErrorJson(jsonPath);
   if (!record || record.no_error === true) return [];
-  const clean = (v: string | undefined): string | undefined =>
-    v && v.trim() && !v.includes("{PREENCHER}") ? v : undefined;
-  const correct_value = clean(record.correct_value);
-  const wrong_value = clean(record.wrong_value) ?? clean(extractWrongValue(record) ?? undefined);
+  const correct_value = valueCore(record.correct_value) ? record.correct_value : undefined;
+  const wrongRaw = record.wrong_value ?? extractWrongValue(record) ?? undefined;
+  const wrong_value = valueCore(wrongRaw) ? wrongRaw : undefined;
   if (!correct_value && !wrong_value) return [];
 
   let history = opts.history;
@@ -160,17 +193,38 @@ export function checkIntentionalErrorNotRecentRepeat(
     const jsonlPath = intentionalErrorsJsonlPathForEditionDir(resolve(editionDir));
     history = jsonlPath ? loadIntentionalErrors(jsonlPath) : [];
   }
+  if (history.length === 0) return [];
   const windowDays = opts.windowDays ?? DEFAULT_REPEAT_WINDOW_DAYS;
   const edition = basename(resolve(editionDir));
+  if (!editionToDate(edition)) {
+    return [
+      {
+        rule,
+        message: `não foi possível checar repetição do erro intencional: diretório "${edition}" não é AAMMDD (#9101)`,
+        source_issue: "#9101",
+        severity: "warning",
+        file: jsonPath,
+      },
+    ];
+  }
   const matches = findRecentRepeats({ wrong_value, correct_value }, history, edition, { windowDays });
-  return matches.map((m) => ({
-    rule: opts.ruleId ?? "intentional-error-not-recent-repeat",
-    message:
-      `erro intencional repete ${m.field}="${m.value}" já usado na edição ${m.edition} ` +
-      `("${m.past_value}", janela de ${windowDays} dias) — leitores já sabem a resposta; ` +
-      `escolha outra entidade/grafia (#9101)`,
-    source_issue: "#9101",
-    severity: "error" as const,
-    file: jsonPath,
-  }));
+  const out: InvariantViolation[] = [];
+  for (const field of ["wrong_value", "correct_value"] as const) {
+    const hits = matches.filter((m) => m.field === field);
+    if (hits.length === 0) continue;
+    const refs = hits.map((m) => `${m.edition} ("${m.past_value}")`).join(", ");
+    // Grafia errada repetida = leitor já sabe a resposta → bloqueia. Mesma entidade
+    // com grafia NOVA é mais fraco (e comum no histórico) → aviso pro gate.
+    const blocking = field === "wrong_value";
+    out.push({
+      rule,
+      message:
+        `erro intencional repete ${field}="${hits[0].value}" já usado em ${refs} (janela de ` +
+        `${windowDays} dias) — ${blocking ? "leitores já sabem a resposta; troque a grafia/entidade" : "mesma entidade de um erro recente; prefira outra"} (#9101)`,
+      source_issue: "#9101",
+      severity: blocking ? "error" : "warning",
+      file: jsonPath,
+    });
+  }
+  return out;
 }

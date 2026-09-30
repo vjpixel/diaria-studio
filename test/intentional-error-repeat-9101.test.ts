@@ -133,8 +133,9 @@ describe("#9101: invariante Stage 2/Stage 4", () => {
   });
   it("Anthropik em 260930 → violação error (caso real)", () => {
     const v = checkIntentionalErrorNotRecentRepeat(fixture(ANTHROPIK, JSONL));
-    assert.ok(v.length >= 1);
-    assert.ok(v.every((x) => x.severity === "error" && x.rule === "intentional-error-not-recent-repeat"));
+    // agrupado por campo: 1 error (grafia repetida) + 1 warning (mesma entidade)
+    assert.deepEqual(v.map((x) => x.severity), ["error", "warning"]);
+    assert.ok(v.every((x) => x.rule === "intentional-error-not-recent-repeat"));
     assert.match(v[0].message, /260928/);
   });
   it("valor inédito → sem violação", () => {
@@ -150,6 +151,17 @@ describe("#9101: invariante Stage 2/Stage 4", () => {
     );
     assert.deepEqual(checkIntentionalErrorNotRecentRepeat(fixture({ no_error: true }, JSONL)), []);
   });
+  it("diretório que não é AAMMDD → warning explícito, nunca silêncio", () => {
+    const root = mkdtempSync(join(tmpdir(), "ie-9101-bad-"));
+    const dir = join(root, "data", "editions", "2609", "260930-retry");
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "_internal", "intentional-error.json"), JSON.stringify(ANTHROPIK));
+    writeFileSync(join(root, "data", "intentional-errors.jsonl"), JSONL);
+    const v = checkIntentionalErrorNotRecentRepeat(dir);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "warning");
+    assert.match(v[0].message, /não é AAMMDD/);
+  });
   it("registrado no Stage 2 e no Stage 4", () => {
     const s2 = STAGE_2_RULES.find((r) => r.id === "intentional-error-not-recent-repeat");
     const s4 = STAGE_4_RULES.find((r) => r.id === "intentional-error-not-recent-repeat-final");
@@ -158,6 +170,39 @@ describe("#9101: invariante Stage 2/Stage 4", () => {
     assert.ok(s2.run(dir).length > 0);
     assert.ok(s4.run(dir).every((x) => x.rule === "intentional-error-not-recent-repeat-final"));
     assert.ok(s4.run(dir).length > 0);
+  });
+});
+
+describe("#9101: review — falsos positivos e bordas", () => {
+  it("correct_value em prosa com 'não X' não casa a entidade errada", () => {
+    const hist: IntentionalError[] = [
+      { edition: "260602", error_type: "attribution", is_feature: true, correct_value: "SpaceX (não Microsoft) deve abrir capital" },
+      { edition: "260603", error_type: "attribution", is_feature: true, correct_value: "Anthropic (é da Anthropic, não da OpenAI)" },
+      { edition: "260604", error_type: "ortografico", is_feature: true, correct_value: 'Anthropic (não "Anthropik")' },
+    ];
+    assert.equal(findRecentRepeats({ correct_value: "Microsoft" }, hist, "260618").length, 0);
+    assert.equal(findRecentRepeats({ correct_value: "OpenAI" }, hist, "260618").length, 0);
+    assert.equal(findRecentRepeats({ correct_value: "Anthropic" }, hist, "260618").length, 2);
+  });
+  it("reveal 'escrevi que …' (frase) não vira wrong_value", () => {
+    assert.equal(extractWrongValue({ reveal: "Na última edição, escrevi que o Google estava consolidando sua marca de assistentes, o certo é …" }), null);
+  });
+  it("aceita aspas após negrito/aspas simples e decimal com vírgula", () => {
+    assert.equal(extractWrongValue({ reveal: 'escrevi **"Huging Face"** no Radar' }), "Huging Face");
+    assert.equal(extractWrongValue({ reveal: "escrevi 'Slak' no Radar" }), "Slak");
+    assert.equal(extractWrongValue({ reveal: "escrevi 2,5 milhões no D2" }), "2,5 milhões");
+  });
+  it("placeholders N/A / 'não há erro' não contam como valor", () => {
+    const hist: IntentionalError[] = [
+      { edition: "260510", error_type: "x", is_feature: true, correct_value: "n/a" },
+      { edition: "260515", error_type: "x", is_feature: true, correct_value: "não há erro nesta edição" },
+    ];
+    assert.equal(findRecentRepeats({ correct_value: "N/A" }, hist, "260526").length, 0);
+  });
+  it("borda da janela: exatamente 30 dias conta como dentro", () => {
+    const hist: IntentionalError[] = [{ edition: "260831", error_type: "o", is_feature: true, reveal: "escrevi Grook no Radar" }];
+    assert.equal(findRecentRepeats({ wrong_value: "Grook" }, hist, "260930").length, 1);
+    assert.equal(findRecentRepeats({ wrong_value: "Grook" }, hist, "261001").length, 0);
   });
 });
 

@@ -2778,7 +2778,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "intentional-error-not-recent-repeat-final",
     description:
-      "erro intencional (inclusive o preenchido no gate) não reusa wrong_value/correct_value de edição dos últimos 30 dias (#9101)",
+      "erro intencional declarado até o pré-gate (inclusive o do proposer) não reusa wrong_value/correct_value de edição dos últimos 30 dias (#9101)",
     source_issue: "#9101",
     stage: 4,
     run: (editionDir) =>

@@ -28,7 +28,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { proposeIntentionalErrorCandidate } from "./lib/propose-intentional-error-candidate.ts";
 import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
@@ -55,13 +55,18 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   // --edition-dir fora de `.../editions/` (fixture) → sem histórico, nunca o `data/` do cwd.
   const jsonlPath =
     values["jsonl"] ??
-    (editionDirArg ? intentionalErrorsJsonlPathForEditionDir(editionDirArg) : join("data", "intentional-errors.jsonl"));
-  const edition = values["edition"] ?? (editionDirArg ? basename(editionDirArg) : "");
+    (editionDirArg ? intentionalErrorsJsonlPathForEditionDir(resolve(editionDirArg)) : join("data", "intentional-errors.jsonl"));
+  const edition = values["edition"] ?? (editionDirArg ? basename(resolve(editionDirArg)) : "");
+  if (!/^\d{6}$/.test(edition)) {
+    console.error(
+      `propose-intentional-error-candidate: edição "${edition}" não é AAMMDD — filtro de janela (#9101) desligado; só grafias já usadas são descartadas. Passe --edition AAMMDD.`,
+    );
+  }
   const windowDays = values["window-days"] ? Number(values["window-days"]) : undefined;
   const candidate = proposeIntentionalErrorCandidate(md, {
     history: jsonlPath ? loadIntentionalErrors(jsonlPath) : [],
     edition,
-    windowDays: windowDays !== undefined && Number.isFinite(windowDays) ? windowDays : undefined,
+    windowDays: windowDays !== undefined && Number.isFinite(windowDays) && windowDays >= 1 ? windowDays : undefined,
   });
   console.log(JSON.stringify({ candidate }, null, 2));
   return 0;
