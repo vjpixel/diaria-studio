@@ -55,8 +55,11 @@
  * `skipped-failed-permanent` e `failed` (recusa/erro por chunk, com contador
  * de tentativas; após `MAX_FAILED_ATTEMPTS` vira `skipped-failed-permanent`).
  * Só recusa 4xx (exceto 429) consome tentativa: 5xx/429 do Google e falha de
- * rede/credencial gravam `failed` sem incrementar, e o teto deles é a janela
- * de 90 dias (#9067, par do #9022 da Meta). A task é DIÁRIA (07:20 BRT), então
+ * rede/credencial gravam `failed` sem incrementar (#9067, par do #9022 da
+ * Meta). Mas quando o POST chegou a sair (5xx/429, rede após envio, 2xx
+ * anômalo) incrementa-se `uncountedPostAttempts`, com teto próprio
+ * `MAX_UNCOUNTED_POST_ATTEMPTS` (#9157) — antes o teto era só a janela de 90
+ * dias, reenviando o mesmo evento até ~90x. A task é DIÁRIA (07:20 BRT), então
  * 3 tentativas = 3 dias — mas nada impede uma futura troca de cadência, como a
  * da Meta no #8978, de encolher essa janela.
  * Índice ilegível/corrompido LANÇA (nunca vira `{}`, senão reenviaria tudo).
@@ -131,6 +134,18 @@ export const KIT_EXTERNAL_ID_FIELD_NAME = "origem_external_id";
 export const DEFAULT_LOOKBACK_DAYS = 7;
 export const CONFIRMATION_ORDER_ID_PREFIX = "diaria-confirmacao-kit-";
 export const MAX_FAILED_ATTEMPTS = 3;
+/**
+ * #9157: teto das falhas que NÃO contam tentativa mas em que o POST
+ * `events:ingest` SAIU (`stage: "ingest"` com `countsAsAttempt: false` —
+ * 5xx/429, exceção de rede depois do envio, 2xx não-JSON ou sem `requestId`).
+ * Nesses casos o Google pode ter processado o lote; sem teto próprio a task
+ * diária re-POSTaria o mesmo evento até a janela de 90 dias (~90x), e o dedup
+ * por `transactionId` é best-effort. 5 (e não 3, como `MAX_FAILED_ATTEMPTS`)
+ * preserva a tolerância do #9067 a uma instabilidade de poucos dias do Google
+ * sem descartar a linha. Falhas de `env`/`token` (nada foi enviado) seguem sem
+ * consumir teto nenhum.
+ */
+export const MAX_UNCOUNTED_POST_ATTEMPTS = 5;
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -184,6 +199,9 @@ export interface ConfirmationIndexEntry {
   at: string;
   path: ConfirmationPath;
   attempts?: number;
+  /** #9157: POSTs que saíram mas falharam sem contar tentativa (ver
+   *  `MAX_UNCOUNTED_POST_ATTEMPTS`). Ausente = 0. */
+  uncountedPostAttempts?: number;
   /** `requestId` do `events:ingest` (Data Manager) — só presente em
    *  `submitted`. Chave de reconciliação manual/diagnóstico assíncrono
    *  futuro (ver docstring do módulo, "Migração pra Data Manager API"). */
@@ -391,7 +409,7 @@ interface Entry {
 
 type Outcome =
   | { kind: "submitted"; requestId: string }
-  | { kind: "failed"; error: string; countsAsAttempt: boolean };
+  | { kind: "failed"; error: string; countsAsAttempt: boolean; posted: boolean };
 
 /** Envia `entries` em chunks de até `DATA_MANAGER_MAX_EVENTS_PER_REQUEST`;
  *  devolve o resultado por posição de `entries` (mapeia por id, não por
@@ -414,7 +432,13 @@ async function sendEntries(
     for (let i = 0; i < chunk.length; i++) {
       outcomes[offset + i] = result.ok
         ? { kind: "submitted", requestId: result.requestId }
-        : { kind: "failed", error: result.error, countsAsAttempt: result.countsAsAttempt };
+        : {
+            kind: "failed",
+            error: result.error,
+            countsAsAttempt: result.countsAsAttempt,
+            // `env`/`token` param antes do POST; `ingest` = o POST saiu (#9157).
+            posted: result.stage === "ingest",
+          };
     }
     if (!result.ok) {
       if (!error) error = result.error;
@@ -435,7 +459,11 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
   const isPending = (c: ConfirmationCandidate): boolean => {
     const e = index[indexKey(c.id)];
     if (!e) return true;
-    return e.status === "failed" && (e.attempts ?? 0) < MAX_FAILED_ATTEMPTS;
+    return (
+      e.status === "failed" &&
+      (e.attempts ?? 0) < MAX_FAILED_ATTEMPTS &&
+      (e.uncountedPostAttempts ?? 0) < MAX_UNCOUNTED_POST_ATTEMPTS
+    );
   };
   // Recusas anteriores (status failed) que saíram da janela do snapshot base
   // continuam elegíveis a retry enquanto active e abaixo do teto de tentativas.
@@ -570,18 +598,35 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
       // pra sempre depois de MAX_FAILED_ATTEMPTS recusas determinísticas.
       summary.failed++;
       summary.failedIds.push(cand.id);
-      const prevAttempts = index[indexKey(cand.id)]?.attempts ?? 0;
+      // #9157: falha sem contar tentativa mas com o POST já enviado consome
+      // um teto próprio (MAX_UNCOUNTED_POST_ATTEMPTS) — o Google pode ter
+      // processado o lote, e sem teto o mesmo evento sairia até ~90x.
+      const prev = index[indexKey(cand.id)];
+      const prevAttempts = prev?.attempts ?? 0;
+      const prevUncounted = prev?.uncountedPostAttempts ?? 0;
       if (!o.countsAsAttempt) {
-        record(cand, { status: "failed", attempts: prevAttempts });
-        log(`kit id ${cand.id}: falha transitória ou sem recusa determinística do Google (não conta tentativa) — ${o.error}`);
+        const uncounted = o.posted ? prevUncounted + 1 : prevUncounted;
+        const extra = uncounted > 0 ? { uncountedPostAttempts: uncounted } : {};
+        if (uncounted >= MAX_UNCOUNTED_POST_ATTEMPTS) {
+          summary.failedPermanent++;
+          record(cand, { status: "skipped-failed-permanent", attempts: prevAttempts, ...extra });
+          log(
+            `kit id ${cand.id}: ${uncounted} POST(s) sem resposta conclusiva do Google — desistindo ` +
+              `(skipped-failed-permanent) pra não reenviar um evento que pode já ter sido processado. ${o.error}`,
+          );
+        } else {
+          record(cand, { status: "failed", attempts: prevAttempts, ...extra });
+          log(`kit id ${cand.id}: falha transitória ou sem recusa determinística do Google (não conta tentativa) — ${o.error}`);
+        }
       } else {
         const attempts = prevAttempts + 1;
+        const extra = prevUncounted > 0 ? { uncountedPostAttempts: prevUncounted } : {};
         if (attempts >= MAX_FAILED_ATTEMPTS) {
           summary.failedPermanent++;
-          record(cand, { status: "skipped-failed-permanent", attempts });
+          record(cand, { status: "skipped-failed-permanent", attempts, ...extra });
           log(`kit id ${cand.id} recusado ${attempts}x pelo Google — desistindo (skipped-failed-permanent). ${o.error}`);
         } else {
-          record(cand, { status: "failed", attempts });
+          record(cand, { status: "failed", attempts, ...extra });
         }
       }
     }
