@@ -8,15 +8,22 @@
 // outro agente, ou erro → não bloqueia. Self-contained (sem imports de scripts/).
 
 import { posix } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ALLOWED_RE =
-  /(?:^|\/)data\/editions\/(?:\d{4}\/)?\d{6}\/_internal\/02-d[123]-(?:draft|prompt)\.md$/;
+  /^data\/editions\/(?:\d{4}\/)?\d{6}\/_internal\/02-d[123]-(?:draft|prompt)\.md$/;
 
 export const WRITER_DESTAQUE_AGENT = "writer-destaque";
 
-export function isAllowedWriterDestaquePath(filePath) {
+const DEFAULT_ROOT = posix.resolve(
+  fileURLToPath(new URL("../..", import.meta.url)).replaceAll("\\", "/"),
+);
+
+export function isAllowedWriterDestaquePath(filePath, root = DEFAULT_ROOT) {
   if (typeof filePath !== "string" || filePath.length === 0) return false;
-  const normalized = posix.normalize(filePath.replaceAll("\\", "/"));
+  let normalized = posix.normalize(filePath.replaceAll("\\", "/"));
+  const prefix = root.replace(/\/+$/, "") + "/";
+  if (normalized.startsWith(prefix)) normalized = normalized.slice(prefix.length);
   if (normalized.split("/").includes("..")) return false;
   return ALLOWED_RE.test(normalized);
 }
@@ -35,8 +42,7 @@ export const WRITER_DESTAQUE_WRITE_BLOCK_REASON =
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   let data = "";
   process.stdin.setEncoding("utf8");

@@ -15,10 +15,11 @@ const W = (agent_type: string | undefined, file_path: string) => ({
 
 describe("block-writer-destaque-write-path (#9132)", () => {
   it("permite draft e prompt (nested, flat, absoluto)", () => {
+    const root = process.cwd();
     for (const p of [
       "data/editions/2609/260930/_internal/02-d1-draft.md",
       "data/editions/260930/_internal/02-d3-prompt.md",
-      "/home/x/repo/data/editions/2609/260930/_internal/02-d2-draft.md",
+      `${root}/data/editions/2609/260930/_internal/02-d2-draft.md`,
     ]) assert.equal(shouldBlockWrite(W("writer-destaque", p)), false, p);
   });
 
@@ -28,6 +29,9 @@ describe("block-writer-destaque-write-path (#9132)", () => {
       "data/editions/2609/260930/_internal/01-approved.json",
       "data/editions/2609/260930/_internal/02-d4-draft.md",
       "data/editions/2609/260930/_internal/02-d1-draft.md/../../02-reviewed.md",
+      "/tmp/data/editions/2609/260930/_internal/02-d1-draft.md",
+      "/a/b/../data/editions/260930/_internal/02-d1-draft.md",
+      "C:\\other\\data\\editions\\2609\\260930\\_internal\\02-d1-draft.md",
       "CLAUDE.md",
       ".claude/settings.json",
       "",
