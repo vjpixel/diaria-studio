@@ -224,13 +224,6 @@ export interface UsedSnippetEntry {
 }
 
 /**
- * Pure — determina quais snippets ENTRARAM de fato nesta edição (ver doc do
- * módulo acima para a justificativa de cada regra). Não toca o filesystem —
- * `reviewedMd` é o conteúdo já lido de `02-reviewed.md`, `boxesCfg` já lido
- * de `platform.config.json`, `agradecimentoUsed` já resolvido por
- * `isAgradecimentoSnippetUsed`.
- */
-/**
  * #9183: resolve o arquivo EFETIVAMENTE usado num slot 1/2/3 a partir do box
  * presente no MD. Mesmo contrato de `readBoxSelectionFileForSlot`
  * (newsletter-parse.ts): nome do arquivo, `BOX_SLOT_EMPTIED` (slot esvaziado
@@ -242,6 +235,14 @@ export type SlotFileResolver = (
   boxText: string,
 ) => string | null | typeof BOX_SLOT_EMPTIED;
 
+/**
+ * Pure — determina quais snippets ENTRARAM de fato nesta edição (ver doc do
+ * módulo acima para a justificativa de cada regra). Não toca o filesystem —
+ * `reviewedMd` é o conteúdo já lido de `02-reviewed.md`, `boxesCfg` já lido
+ * de `platform.config.json`, `agradecimentoUsed` já resolvido por
+ * `isAgradecimentoSnippetUsed`. `resolveSlotFile` (opcional, #9183) é quem
+ * toca o disco, fora desta função.
+ */
 export function resolveUsedSnippets(
   reviewedMd: string,
   boxesCfg: BoxesDivulgacaoConfigLike,
@@ -481,7 +482,10 @@ export function runSnippetStalenessCheck(
   // — sempre real, nunca os overrides de teste de snippetsDir/configPath.
   const editionDir = join(mdPath, "..");
   // #9183: mesma leitura do render (readBoxSelectionFileForSlot) — o box do
-  // slot é atribuído ao snippet que de fato entrou, não ao config.
+  // slot é atribuído ao snippet que de fato entrou, não ao config. O
+  // casamento por conteúdo lê `root/data/snippets` (não `opts.snippetsDir`):
+  // idênticos em produção; um override de teste fora desse layout só perde o
+  // casamento por conteúdo e cai na entry do slot/config.
   const used = resolveUsedSnippets(reviewedMd, boxesCfg, agradecimentoUsed, (n, boxText) =>
     readBoxSelectionFileForSlot(editionDir, n, boxText, root),
   );
