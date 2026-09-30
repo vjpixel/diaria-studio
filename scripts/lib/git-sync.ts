@@ -71,9 +71,13 @@
  *      não-zero MESMO com o stash já criado — "working tree não tocada" seria
  *      falso nesse caso. Detectado comparando `refs/stash` antes/depois; se um
  *      stash foi criado apesar do exit não-zero, o stash é preservado
- *      ("stash_partial_failure_unrecovered") — nunca faz `git stash drop`, e
- *      desde #8719 também nunca tenta `git stash pop` automático de
- *      "recuperação" (era o comportamento até esta decisão).
+ *      ("stash_partial_failure_unrecovered") — nunca faz `git stash drop` de
+ *      conteúdo único, e desde #8719 também nunca tenta `git stash pop`
+ *      automático de "recuperação" (era o comportamento até esta decisão).
+ *      Única exceção de drop (#8991): o autostash RECÉM-criado que for cópia
+ *      exata (mesmos trees e base) do autostash imediatamente anterior — ver
+ *      `dedupeFreshAutostash()`. Sem ela, a falha parcial (que não limpa o
+ *      tree) empilhava 1 autostash idêntico por rodada.
  *   3b. #3423: a detecção do 3a comparando `refs/stash` antes/depois é uma TOCTOU
  *      race quando 2 chamadas de `syncCode()` rodam concorrentemente contra o
  *      MESMO checkout — `refs/stash` é uma ref escalar única por repositório
@@ -330,6 +334,151 @@ export function countStaleAutostashes(spawn: SpawnFn): number {
 }
 
 /**
+ * #8991: resultado de `dedupeFreshAutostash()`.
+ * - `keptRef`: o stash que guarda o conteúdo desta rodada — o recém-criado
+ *   (sem duplicata) ou o autostash anterior IDÊNTICO (duplicata descartada).
+ * - `droppedDuplicate`: `true` só quando o recém-criado foi descartado por ser
+ *   cópia exata do anterior.
+ * - `warnings`: anomalias (corrida detectada e revertida, verificação
+ *   impossível) — nunca silenciosas.
+ */
+export interface AutostashDedupeResult {
+  keptRef: string;
+  droppedDuplicate: boolean;
+  warnings: string[];
+}
+
+interface StashListEntry {
+  sha: string;
+  tree: string;
+  parents: string[];
+  subject: string;
+}
+
+function parseStashListEntries(stdout: string): StashListEntry[] {
+  const out: StashListEntry[] = [];
+  for (const line of stdout.split("\n")) {
+    const [sha, tree, parents, ...subject] = line.split("|");
+    if (!sha || !tree) continue;
+    out.push({ sha: sha.trim(), tree: tree.trim(), parents: (parents ?? "").trim().split(/\s+/).filter(Boolean), subject: subject.join("|") });
+  }
+  return out;
+}
+
+/**
+ * #8991: evita o PILEUP de autostashes idênticos. Causa medida: quando o
+ * `git stash push --include-untracked` sai não-zero por não conseguir remover
+ * untracked travados (Permission denied — junction, handle aberto, ACL), o git
+ * já criou o stash mas NÃO limpou o working tree (nem o rastreado: o `clean`
+ * falha antes do `reset --hard` — reproduzido com git 2.53). O rastreado e os
+ * untracked travados ficam, o ff nunca roda, e a rodada seguinte cria OUTRO
+ * stash — 1 autostash novo por rodada (10 na #8991, 11 na #9107). Como o
+ * `clean` remove os untracked que consegue antes de falhar, a 1ª repetição
+ * pode ter untracked diferentes (não é deduplicada); da 2ª em diante o
+ * conteúdo é o mesmo — o pileup para em ~2 em vez de crescer. O #9107
+ * tirou o `-u` quando os untracked não colidem com o upstream, mas o caminho
+ * com `-u` (colisão, ou `git diff` falhou) continua empilhando.
+ *
+ * Regra: logo depois de criar um autostash (`createdRef`), compara-o com o
+ * autostash imediatamente anterior. Se o anterior também é deste módulo
+ * (`GIT_SYNC_STASH_MESSAGE`) e é cópia EXATA — mesma base (1º pai), mesmo
+ * tree do working tree, mesmo tree do índice (2º pai) e mesmo tree de
+ * untracked (3º pai, ou ambos sem) —, o recém-criado não guarda NADA que o
+ * anterior já não guarde, e é descartado. Igualdade de tree é igualdade de
+ * conteúdo byte a byte (hash), então o descarte é sem perda. Qualquer
+ * diferença, dúvida ou falha de medição → mantém tudo (comportamento de
+ * sempre, #3411/#8719: nunca descartar conteúdo).
+ *
+ * Corrida (a pilha de stash é compartilhada entre worktrees/sessões): só
+ * descarta se `stash@{0}` ainda é o `createdRef` na listagem, e confere o SHA
+ * que o `git stash drop` relata; se outro processo empilhou algo no meio e o
+ * drop pegou o stash ERRADO, re-armazena esse SHA via `git stash store`
+ * (o commit continua no object store) e avisa.
+ *
+ * Só compara com `stash@{1}`: um stash manual entre dois autostashes
+ * interrompe o dedupe, e pileup já existente não é limpo (limpeza é manual,
+ * `scripts/list-autostashes.ts`).
+ *
+ * Spawns: `stash list -n 2` + `log --no-walk` (trees dos pais) + `stash drop`
+ * + `log -1` e `stash store` (só na corrida) = até 5 — refletidos em
+ * `MAX_SEQUENTIAL_GIT_SPAWNS`. Nunca lança.
+ */
+export function dedupeFreshAutostash(spawn: SpawnFn, createdRef: string): AutostashDedupeResult {
+  const keepAll: AutostashDedupeResult = { keptRef: createdRef, droppedDuplicate: false, warnings: [] };
+  const listRes = spawn("git", ["stash", "list", "-n", "2", "--format=%H|%T|%P|%gs"]);
+  if (listRes.status !== 0) return keepAll;
+  const entries = parseStashListEntries(listRes.stdout);
+  if (entries.length < 2) return keepAll;
+  const [fresh, prev] = entries;
+  if (fresh.sha !== createdRef) return keepAll; // outro processo empilhou algo — não mexe
+  if (!fresh.subject.includes(GIT_SYNC_STASH_MESSAGE) || !prev.subject.includes(GIT_SYNC_STASH_MESSAGE)) return keepAll;
+  if (fresh.tree !== prev.tree) return keepAll;
+  if (fresh.parents.length !== prev.parents.length || fresh.parents.length < 2) return keepAll;
+  if (fresh.parents[0] !== prev.parents[0]) return keepAll;
+
+  // Trees dos pais índice (2º) e untracked (3º, se houver) — os commits
+  // desses pais carregam timestamp, então só o TREE diz se o conteúdo é igual.
+  const subCommits = [...fresh.parents.slice(1), ...prev.parents.slice(1)];
+  const treesRes = spawn("git", ["log", "--no-walk=unsorted", "--format=%H %T", ...subCommits]);
+  if (treesRes.status !== 0) return keepAll;
+  const treeOf = new Map<string, string>();
+  for (const line of treesRes.stdout.split("\n")) {
+    const [c, t] = line.trim().split(/\s+/);
+    if (c && t) treeOf.set(c, t);
+  }
+  for (let i = 1; i < fresh.parents.length; i++) {
+    const a = treeOf.get(fresh.parents[i]);
+    const b = treeOf.get(prev.parents[i]);
+    if (!a || !b || a !== b) return keepAll;
+  }
+
+  const dropRes = spawn("git", ["stash", "drop", "stash@{0}"]);
+  if (dropRes.status !== 0) {
+    return {
+      ...keepAll,
+      warnings: [
+        `[git-sync] WARN: autostash ${createdRef} é duplicata exata de ${prev.sha} (#8991), mas git stash drop falhou — ` +
+          `os dois ficam. Stderr: ${dropRes.stderr.trim() || "(vazio)"}`,
+      ],
+    };
+  }
+  const droppedSha = /\(([0-9a-f]{7,64})\)/i.exec(dropRes.stdout)?.[1] ?? null;
+  if (droppedSha !== null && droppedSha === createdRef) {
+    return { keptRef: prev.sha, droppedDuplicate: true, warnings: [] };
+  }
+  if (droppedSha === null) {
+    return {
+      keptRef: prev.sha,
+      droppedDuplicate: true,
+      warnings: [
+        `[git-sync] WARN: descartei a duplicata exata ${createdRef} (#8991), mas não consegui confirmar pelo stdout do ` +
+          `git stash drop qual SHA saiu da pilha: '${dropRes.stdout.trim()}'. Se outro stash sumiu, recupere com ` +
+          `'git stash store -m <mensagem> <sha>' (o commit segue no object store).`,
+      ],
+    };
+  }
+  // Corrida: o drop pegou o stash de outro processo — devolve-o à pilha COM a
+  // mensagem original (o subject do commit de stash, "On <branch>: <msg>", é
+  // exatamente o que `git stash list` mostra) — sessões que reencontram o
+  // próprio stash por tag continuam achando.
+  const subjectRes = spawn("git", ["log", "-1", "--format=%s", droppedSha]);
+  const originalMsg =
+    subjectRes.status === 0 && subjectRes.stdout.trim() ? subjectRes.stdout.trim() : `restaurado por git-sync apos corrida (#8991)`;
+  const storeRes = spawn("git", ["stash", "store", "-m", originalMsg, droppedSha]);
+  return {
+    ...keepAll,
+    warnings: [
+      storeRes.status === 0
+        ? `[git-sync] WARN: corrida na pilha de stash (#8991): o drop da duplicata pegou ${droppedSha} (de outro ` +
+          `processo), que foi re-armazenado via git stash store. A duplicata ${createdRef} ficou na pilha.`
+        : `[git-sync] ERROR: corrida na pilha de stash (#8991): o drop da duplicata pegou ${droppedSha} (de outro ` +
+          `processo) e o git stash store de volta FALHOU — recupere à mão: 'git stash store -m <mensagem> ${droppedSha}'. ` +
+          `Stderr: ${storeRes.stderr.trim() || "(vazio)"}`,
+    ],
+  };
+}
+
+/**
  * Timeout por comando git (#2686 review — angle H). Sem isso, um git que trava
  * esperando passphrase de SSH ou credencial bloquearia o processo indefinidamente,
  * derrotando o fail-soft. 120s cobre com folga os comandos RÁPIDOS por natureza
@@ -408,19 +557,21 @@ export interface LockFs {
  * ANTES de qualquer stash), 7. rev-parse --verify refs/stash ANTES do stash
  * (#3411), 8. diff --name-only HEAD origin/master (#9107 — só quando há
  * untracked; decide se o stash precisa de --include-untracked), 9. stash
- * push, 10. rev-parse refs/stash (captura o ref recém-criado, #7740), 11.
- * merge --ff-only SOB stash (retry), 12. rev-list --count
- * (measureSyncState, #6090), 13. stash list (countStaleAutostashes, #8719)
- * = 13 (#9107: era 12 antes do spawn do passo 8).
+ * push, 10. rev-parse refs/stash (captura o ref recém-criado, #7740), 11-15.
+ * dedupeFreshAutostash (#8991: stash list -n 2, log --no-walk dos trees dos
+ * pais, stash drop da duplicata, log -1 + stash store se a corrida pegou o
+ * stash errado), 16. merge --ff-only SOB stash (retry), 17. rev-list --count
+ * (measureSyncState, #6090), 18. stash list (countStaleAutostashes, #8719)
+ * = 18 (#9107: era 12 antes do spawn do passo 8; #8991: +5 do dedupe).
  *
  * `LOCK_STALE_MS` abaixo deriva desse número em vez de um valor redondo
  * chutado — #3430 gap 1 encontrou o valor antigo (10min fixo) matematicamente
  * MENOR que o pior caso teórico.
  *
- * #5302: dos 13 spawns, exatamente 1 é o `git fetch origin` do passo 4, que
+ * #5302: dos MAX_SEQUENTIAL_GIT_SPAWNS spawns, exatamente 1 é o `git fetch origin` do passo 4, que
  * desde #5302 usa `GIT_FETCH_TIMEOUT_MS` (maior que `GIT_TIMEOUT_MS`) em vez
- * do timeout genérico — `LOCK_STALE_MS` abaixo reflete isso (12 ×
- * `GIT_TIMEOUT_MS` + 1 × `GIT_FETCH_TIMEOUT_MS`, não 13 × `GIT_TIMEOUT_MS`
+ * do timeout genérico — `LOCK_STALE_MS` abaixo reflete isso ((N-1) ×
+ * `GIT_TIMEOUT_MS` + 1 × `GIT_FETCH_TIMEOUT_MS`, não N × `GIT_TIMEOUT_MS`
  * uniforme).
  *
  * #8719 (24/09/2026, decisão do editor): a contagem CAIU de 13 para 12 nesta
@@ -434,9 +585,12 @@ export interface LockFs {
  * este comentário a cada revisão futura do pior caso.
  *
  * #9107 (30/09/2026): voltou de 12 para 13 — `git diff --name-only` (passo 8
- * acima) decide se o stash precisa de `--include-untracked`. Valor atual: 13.
+ * acima) decide se o stash precisa de `--include-untracked`.
+ *
+ * #8991 (30/09/2026): de 13 para 18 — os até 5 spawns de
+ * `dedupeFreshAutostash()` (passos 11-15 acima). Valor atual: 18.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 13;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 18;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -1299,6 +1453,11 @@ function syncCodeLocked(
       const stashWasCreatedDespiteFailure = stashRefAfter !== null && stashRefAfter !== stashRefBefore;
 
       if (stashWasCreatedDespiteFailure) {
+        // #8991: o stash parcial NÃO limpou o tree — a rodada seguinte criaria
+        // outro idêntico. Descarta o recém-criado se for cópia exata do anterior.
+        const dedupe = dedupeFreshAutostash(spawn, stashRefAfter);
+        warnings.push(...dedupe.warnings);
+        const keptRef = dedupe.keptRef;
         // O stash existe e é válido (o commit foi criado no passo 1 antes da
         // falha no passo 2) — MAS #8719 (decisão do editor, 24/09/2026): nunca
         // `git stash pop` automático, nem mesmo aqui como "recuperação". O
@@ -1309,11 +1468,15 @@ function syncCodeLocked(
         const msg =
           `[git-sync] ERROR: git ${stashArgs.slice(0, -2).join(" ")} saiu com erro (exit ${stashRes.status}) E criou ` +
           `um stash (${stashRefAfter}) apesar disso` +
+          (dedupe.droppedDuplicate
+            ? ` — cópia exata do autostash anterior ${keptRef}, então a duplicata foi descartada (#8991, sem perda: ` +
+              `mesmo conteúdo, só não empilha 1 stash por rodada)`
+            : "") +
           (includeUntracked
             ? ` — possível remoção NÃO-RECUPERÁVEL de arquivos não-rastreados (#3411)`
             : ` (stash só do rastreado, #9107 — untracked não foram tocados)`) +
           `. Stash preservado (NUNCA despopado automaticamente — #8719, decisão do ` +
-          `editor de 24/09/2026): 'git stash show -p ${stashRefAfter}' ou 'git stash apply ${stashRefAfter}'. ` +
+          `editor de 24/09/2026): 'git stash show -p ${keptRef}' ou 'git stash apply ${keptRef}'. ` +
           `Identificável por mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'. ` +
           `Stderr stash: ${stashRes.stderr.trim() || "(vazio)"}`;
         warnings.push(msg);
@@ -1323,7 +1486,7 @@ function syncCodeLocked(
           branch_before: branchBefore,
           warnings,
           proceed: true,
-          preserved_stash: { ref: stashRefAfter, message: GIT_SYNC_STASH_MESSAGE },
+          preserved_stash: { ref: keptRef, message: GIT_SYNC_STASH_MESSAGE },
         };
       }
 
@@ -1350,12 +1513,27 @@ function syncCodeLocked(
     // do resultado em QUALQUER desfecho abaixo (#8719: nunca há pop, então o
     // stash — quando algo foi de fato guardado — está SEMPRE preservado a
     // partir daqui, nunca só condicionalmente como antes).
-    const createdStashRef = stashedSomething
+    const freshStashRef = stashedSomething
       ? (() => {
           const r = spawn("git", ["rev-parse", "refs/stash"]);
           return r.status === 0 ? r.stdout.trim() : null;
         })()
       : null;
+    // #8991: mesma sujeira recriada entre rodadas geraria autostashes
+    // idênticos — descarta o recém-criado se for cópia exata do anterior e
+    // aponta o `preserved_stash` pro anterior (que guarda o mesmo conteúdo).
+    let createdStashRef = freshStashRef;
+    if (freshStashRef !== null) {
+      const dedupe = dedupeFreshAutostash(spawn, freshStashRef);
+      warnings.push(...dedupe.warnings);
+      createdStashRef = dedupe.keptRef;
+      if (dedupe.droppedDuplicate) {
+        warnings.push(
+          `[git-sync] INFO: autostash recém-criado era cópia exata do anterior (${dedupe.keptRef}) — duplicata ` +
+            `descartada sem perda (#8991).`,
+        );
+      }
+    }
 
     // ff-only sob proteção do stash, via merge do ref já buscado no passo 3 —
     // evita o re-fetch implícito do `git pull` (#2686 review — angle H/I).
@@ -1424,7 +1602,8 @@ function syncCodeLocked(
       `[git-sync] WARN: código sincronizado com origin/master, stash preservado (NUNCA despopado ` +
       `automaticamente — #8719, decisão do editor de 24/09/2026). Mudanças locais ficam só no stash; ` +
       `checkout limpo em master. Recupere manualmente quando decidir como prosseguir: ` +
-      `'git stash show -p ${createdStashRef ?? "<ref, ver git stash list>"}' / 'git stash pop'. ` +
+      `'git stash show -p ${createdStashRef ?? "<ref, ver git stash list>"}' / 'git stash apply ${createdStashRef ?? "<ref>"}' ` +
+      `(nunca 'git stash pop' bare — a pilha é compartilhada, o topo pode ser de outra sessão). ` +
       `Identificável por mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'.`;
     warnings.push(msg);
     return {

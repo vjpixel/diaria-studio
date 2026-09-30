@@ -1855,6 +1855,15 @@ describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a cont
         "git rev-parse --verify refs/stash": ok(""),
         [STASH_PUSH_TRACKED_ONLY_KEY]: ok("Saved working directory..."),
         "git rev-parse refs/stash": ok("abc1234\n"),
+        // #8991: pior caso do dedupe — o autostash recém-criado é duplicata
+        // exata do anterior, e o drop pega o stash de OUTRO processo (corrida),
+        // exigindo o `git stash store` de volta: 4 spawns extras.
+        "git stash list -n 2 --format=%H|%T|%P|%gs": ok(
+          `abc1234|t0|base i1|On master: ${GIT_SYNC_STASH_MESSAGE}\n` +
+            `prev999|t0|base i2|On master: ${GIT_SYNC_STASH_MESSAGE}\n`,
+        ),
+        "git log --no-walk=unsorted --format=%H %T i1 i2": ok("i1 ti\ni2 ti\n"),
+        "git stash drop stash@{0}": ok("Dropped stash@{0} (0ee1e555)\n"),
       },
       {
         "git merge --ff-only origin/master": [
