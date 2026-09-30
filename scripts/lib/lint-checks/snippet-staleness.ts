@@ -139,6 +139,8 @@ import {
   extractBoxDivulgacao1,
   extractBoxDivulgacao2,
   extractBoxDivulgacao3,
+  readBoxSelectionFileForSlot,
+  BOX_SLOT_EMPTIED,
 } from "../newsletter-parse.ts";
 import { snippetBodyHash } from "../shared/snippet-header.ts";
 
@@ -228,10 +230,23 @@ export interface UsedSnippetEntry {
  * de `platform.config.json`, `agradecimentoUsed` já resolvido por
  * `isAgradecimentoSnippetUsed`.
  */
+/**
+ * #9183: resolve o arquivo EFETIVAMENTE usado num slot 1/2/3 a partir do box
+ * presente no MD. Mesmo contrato de `readBoxSelectionFileForSlot`
+ * (newsletter-parse.ts): nome do arquivo, `BOX_SLOT_EMPTIED` (slot esvaziado
+ * pela seleção — pular a checagem) ou `null` (sem informação — cair no
+ * config).
+ */
+export type SlotFileResolver = (
+  slot: 1 | 2 | 3,
+  boxText: string,
+) => string | null | typeof BOX_SLOT_EMPTIED;
+
 export function resolveUsedSnippets(
   reviewedMd: string,
   boxesCfg: BoxesDivulgacaoConfigLike,
   agradecimentoUsed: boolean,
+  resolveSlotFile?: SlotFileResolver,
 ): UsedSnippetEntry[] {
   const used: UsedSnippetEntry[] = [
     // Sempre candidato — buildParaEncerrar() lê este arquivo incondicionalmente.
@@ -243,19 +258,26 @@ export function resolveUsedSnippets(
   if (boxesCfg.slot0 && extractBoxDivulgacao0(reviewedMd) !== null) {
     used.push({ file: boxesCfg.slot0, slot: "slot0" });
   }
-  if (boxesCfg.slot1 && extractBoxDivulgacao1(reviewedMd) !== null) {
-    used.push({ file: boxesCfg.slot1, slot: "slot1" });
-  }
-  if (boxesCfg.slot2 && extractBoxDivulgacao2(reviewedMd) !== null) {
-    used.push({ file: boxesCfg.slot2, slot: "slot2" });
-  }
+  // #9183: slot 1/2/3 — o arquivo vem de `_internal/box-selection.json`
+  // (modo auto/pinned #4626, fallback recusado #9155) quando o resolver sabe;
+  // o config só é consultado quando ele devolve `null`. Sem box no MD, o slot
+  // não é candidato (nada entrou).
   // #6748: slot 3 eliminado — `stitch-newsletter.ts` nunca mais escreve nada
   // nessa região em edições NOVAS, então `extractBoxDivulgacao3` só pode
   // achar algo aqui em MD's arquivados de antes do #6748 (histórico), nunca
-  // numa edição gerada pelo pipeline atual. Ramo mantido intacto (harmless,
-  // e cobre esse caso de arquivo antigo) — não removido.
-  if (boxesCfg.slot3 && extractBoxDivulgacao3(reviewedMd) !== null) {
-    used.push({ file: boxesCfg.slot3, slot: "slot3" });
+  // numa edição gerada pelo pipeline atual. Ramo mantido (harmless).
+  const slots: Array<[1 | 2 | 3, "slot1" | "slot2" | "slot3", (t: string) => string | null]> = [
+    [1, "slot1", extractBoxDivulgacao1],
+    [2, "slot2", extractBoxDivulgacao2],
+    [3, "slot3", extractBoxDivulgacao3],
+  ];
+  for (const [n, key, extract] of slots) {
+    const boxText = extract(reviewedMd);
+    if (boxText === null) continue;
+    const selected = resolveSlotFile ? resolveSlotFile(n, boxText) : null;
+    if (selected === BOX_SLOT_EMPTIED) continue;
+    const file = selected ?? boxesCfg[key];
+    if (file) used.push({ file, slot: key });
   }
   return used;
 }
@@ -455,11 +477,14 @@ export function runSnippetStalenessCheck(
 
   const boxesCfg = readBoxesDivulgacaoConfig(configPath);
   const agradecimentoUsed = isAgradecimentoSnippetUsed(snippetsDir);
-  const used = resolveUsedSnippets(reviewedMd, boxesCfg, agradecimentoUsed);
-
   // #4150: editionDir = diretório de 02-reviewed.md (onde `_internal/` mora)
   // — sempre real, nunca os overrides de teste de snippetsDir/configPath.
   const editionDir = join(mdPath, "..");
+  // #9183: mesma leitura do render (readBoxSelectionFileForSlot) — o box do
+  // slot é atribuído ao snippet que de fato entrou, não ao config.
+  const used = resolveUsedSnippets(reviewedMd, boxesCfg, agradecimentoUsed, (n, boxText) =>
+    readBoxSelectionFileForSlot(editionDir, n, boxText, root),
+  );
   const bodyHashManifest = readSnippetBodyHashManifest(editionDir);
 
   const usedWithMtimes = used.map((u) => {
