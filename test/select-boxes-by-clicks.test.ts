@@ -738,6 +738,16 @@ describe("#9104 selectBoxesForSlots — dedup por evento", () => {
     });
     assert.equal(picks[0].file, "livros.md");
   });
+
+  it("#9131: bane o evento da edição anterior (excludeFiles), não só o arquivo", () => {
+    const picks = selectBoxesForSlots({
+      ranked: [r("imersao-b.md", 20), r("livros.md", 5)],
+      slotsToFill: [1],
+      excludeFiles: new Set(["imersao-a.md"]),
+      eventKeysByFile: events,
+    });
+    assert.equal(picks[0].file, "livros.md");
+  });
 });
 
 describe("#9104 resolveBoxesForEdition — regressão 260930", () => {

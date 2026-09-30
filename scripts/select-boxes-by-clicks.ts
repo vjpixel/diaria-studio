@@ -360,6 +360,8 @@ export function selectBoxesForSlots(opts: SelectSlotsOpts): SlotPick[] {
   const eventKeysOf = (file: string): readonly string[] => opts.eventKeysByFile?.get(file) ?? [];
   const blockedEvents = new Set<string>();
   for (const f of opts.alreadyAssignedFiles ?? []) for (const k of eventKeysOf(f)) blockedEvents.add(k);
+  // #9131: o evento da edição anterior também é banido, não só o arquivo.
+  for (const f of opts.excludeFiles) for (const k of eventKeysOf(f)) blockedEvents.add(k);
   const picks: SlotPick[] = [];
   for (const slot of opts.slotsToFill) {
     const candidate = pool.find((r) => !used.has(r.file) && !eventKeysOf(r.file).some((k) => blockedEvents.has(k)));
@@ -557,7 +559,8 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   // descartado por `toBaseUrl`), e `matchSnippetForBox` pega a 1ª em ordem
   // alfabética — `clarice-imersao1010.md` "roubava" os cliques do box
   // `diaria-imersao1010.md` usado de fato na diária. A mesma colisão entre
-  // duas caixas DA DIÁRIA com a mesma base-URL continua (issue de follow-up).
+  // duas caixas DA DIÁRIA com a mesma base-URL é desempatada por URL completa
+  // em `matchSnippetForBox` (#9131).
   const diariaSnippets = snippets.filter(isSnippetEligibleForDiaria);
   const history = buildSnippetHistory({
     aammddList,

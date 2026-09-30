@@ -79,6 +79,7 @@ import {
   readSeasonalFlag,
   resolveSnippetAudience, // #9104
   extractSnippetEventKeys, // #9104
+  DEFAULT_SNIPPET_AUDIENCE, // #9131
   type SnippetAudienceSource,
 } from "./lib/shared/snippet-header.ts";
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
@@ -150,6 +151,9 @@ export interface SnippetInfo {
   /** #9104: chaves de evento/campanha (`evento:` do header, ou
    * `utm_campaign` dos links) — ver `extractSnippetEventKeys`. Ausente = `[]`. */
   eventKeys?: string[];
+  /** #9131: URLs brutas (com query) do corpo — desempate em `matchSnippetForBox`
+   * entre snippets que compartilham a mesma base-URL. Ausente = `[]`. */
+  rawUrls?: string[];
 }
 
 export function parseSnippetContent(file: string, content: string): SnippetInfo {
@@ -160,7 +164,7 @@ export function parseSnippetContent(file: string, content: string): SnippetInfo 
   const seasonal = readSeasonalFlag(content);
   const { audience, source: audienceSource } = resolveSnippetAudience(content, rawUrls);
   const eventKeys = extractSnippetEventKeys(content, rawUrls);
-  return { file, nome, urls, seasonal, audience, audienceSource, eventKeys };
+  return { file, nome, urls, seasonal, audience, audienceSource, eventKeys, rawUrls: [...new Set(rawUrls)] };
 }
 
 /** Carrega + parseia todos os snippets de `data/snippets/*.md` (#5227,
@@ -205,10 +209,34 @@ export function matchSnippetForBox(
 ): SnippetMatch | null {
   for (const rawUrl of extractUrls(boxText)) {
     const baseUrl = toBaseUrl(rawUrl);
-    const found = snippets.find((s) => s.urls.includes(baseUrl));
-    if (found) return { snippet: found, url: rawUrl };
+    const candidates = snippets.filter((s) => s.urls.includes(baseUrl));
+    if (candidates.length === 0) continue;
+    return { snippet: pickAmongSameBase(candidates, rawUrl), url: rawUrl };
   }
   return null;
+}
+
+/** #9131: várias caixas podem compartilhar a base-URL (o `utm_content` some em
+ * `toBaseUrl`). Desempate: URL completa idêntica > mesmo `utm_content` >
+ * audiência da diária > 1ª da lista. */
+function pickAmongSameBase(candidates: SnippetInfo[], rawUrl: string): SnippetInfo {
+  if (candidates.length === 1) return candidates[0];
+  const exact = candidates.find((s) => s.rawUrls?.includes(rawUrl));
+  if (exact) return exact;
+  const content = utmContentOf(rawUrl);
+  if (content) {
+    const byContent = candidates.find((s) => s.rawUrls?.some((u) => utmContentOf(u) === content));
+    if (byContent) return byContent;
+  }
+  return candidates.find((s) => (s.audience ?? DEFAULT_SNIPPET_AUDIENCE) === DEFAULT_SNIPPET_AUDIENCE) ?? candidates[0];
+}
+
+function utmContentOf(raw: string): string | null {
+  try {
+    return new URL(raw).searchParams.get("utm_content");
+  } catch {
+    return null;
+  }
 }
 
 export interface ClickLike {

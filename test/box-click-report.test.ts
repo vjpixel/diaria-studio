@@ -105,6 +105,25 @@ describe("matchSnippetForBox", () => {
     assert.equal(found?.url, "https://clarice.ai/precos-planos?via=diaria&bhcl_id=abc");
   });
 
+  it("#9131: desempata snippets com a mesma base-URL pela URL completa / utm_content", () => {
+    const base = "https://diar.ia.br/evento/agente-ia";
+    const dup: SnippetInfo[] = [
+      { file: "a-imersao.md", nome: "A", urls: [base], rawUrls: [`${base}?utm_content=imersao`] },
+      { file: "b-workshop.md", nome: "B", urls: [base], rawUrls: [`${base}?utm_content=workshop`] },
+    ];
+    assert.equal(matchSnippetForBox(`[x](${base}?utm_content=workshop)`, dup)?.snippet.file, "b-workshop.md");
+    assert.equal(matchSnippetForBox(`[x](${base}?utm_content=workshop&z=1)`, dup)?.snippet.file, "b-workshop.md");
+  });
+
+  it("#9131: sem desempate por URL, prefere caixa da diária a de outra audiência", () => {
+    const base = "https://diar.ia.br/evento/agente-ia";
+    const dup: SnippetInfo[] = [
+      { file: "clarice-x.md", nome: "C", urls: [base], audience: "clarice" },
+      { file: "diaria-x.md", nome: "D", urls: [base], audience: "diaria" },
+    ];
+    assert.equal(matchSnippetForBox(`[x](${base})`, dup)?.snippet.file, "diaria-x.md");
+  });
+
   it("retorna null quando o box não tem URL", () => {
     assert.equal(matchSnippetForBox("texto puro sem link", snippets), null);
   });
