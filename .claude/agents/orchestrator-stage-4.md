@@ -507,7 +507,7 @@ Exit code handling:
 
 - `mode: "auto"` → `Slot N: {nome do snippet} — auto-selecionado (score {score}, {editionsAppeared} edições{, tendência de queda se trend.declining}).`
 - `mode: "pinned"` → `Slot N: {file} — pinado manualmente (boxes_divulgacao_auto.pinned_slots).`
-- `mode: "fallback-no-candidates"` → `Slot N: {file} — mantido (sem dado suficiente pra seleção automática ainda).`
+- `mode: "fallback-no-candidates"` → `Slot N: {file} — mantido (sem dado suficiente pra seleção automática ainda).` · `mode: "fallback-ineligible"` (#9155) → `Slot N: vazio — fallback {rejectedFile} recusado ({rejectReason}: audiencia = outro canal, evento/duplicado = repete outro slot).`
 - `mode: "disabled"` → `Slot N: {file} — seleção automática desligada (boxes_divulgacao_auto.enabled=false).`
 
 Rodar também `scripts/box-click-report.ts` — ranking bruto de cliques por box nas últimas edições (contexto adicional, mesmo sem decidir nada):

@@ -58,6 +58,10 @@ export function formatAutofixSummary(state) {
 /** Linha por slot de box de divulgação — `slot` é um `SlotSelectionRecord`. */
 export function formatBoxSlotLine(slot) {
   if (!slot) return "";
+  // #9155: slot esvaziado porque o fallback do config foi recusado.
+  if (!slot.file && slot.mode === "fallback-ineligible" && slot.rejectedFile) {
+    return `Slot ${slot.slot}: vazio — fallback ${slot.rejectedFile} recusado (${slot.rejectReason || "inelegível"})`;
+  }
   return slot.file
     ? `Slot ${slot.slot}: ${slot.nome || slot.file} (${slot.mode})`
     : `Slot ${slot.slot}: vazio (${slot.mode})`;
