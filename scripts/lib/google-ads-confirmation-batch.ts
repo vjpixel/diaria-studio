@@ -54,6 +54,11 @@
  * `skipped-out-of-window`, `skipped-test-email`, `skipped-malformed`,
  * `skipped-failed-permanent` e `failed` (recusa/erro por chunk, com contador
  * de tentativas; após `MAX_FAILED_ATTEMPTS` vira `skipped-failed-permanent`).
+ * Só recusa 4xx (exceto 429) consome tentativa: 5xx/429 do Google e falha de
+ * rede/credencial gravam `failed` sem incrementar, e o teto deles é a janela
+ * de 90 dias (#9067, par do #9022 da Meta). A task é DIÁRIA (07:20 BRT), então
+ * 3 tentativas = 3 dias — mas nada impede uma futura troca de cadência, como a
+ * da Meta no #8978, de encolher essa janela.
  * Índice ilegível/corrompido LANÇA (nunca vira `{}`, senão reenviaria tudo).
  * Segunda rede, best-effort: `order_id = diaria-confirmacao-kit-{id}` vira o
  * `transactionId` do evento — o Google deduplica por ele, mas não é garantia
@@ -338,7 +343,7 @@ export interface ConfirmationBatchSummary {
   /** Ids do Kit cujo CHUNK falhou (transporte, env/token ausente, HTTP
    *  não-2xx, ou 2xx anômalo — corpo não-JSON/sem `requestId`) nesta rodada
    *  — granularidade de chunk, não de linha (ver docstring do módulo). Só o
-   *  caso HTTP não-2xx conta tentativa rumo a `skipped-failed-permanent`
+   *  caso HTTP 4xx (exceto 429) conta tentativa rumo a `skipped-failed-permanent`
    *  (`countsAsAttempt`, ver `sendDataManagerIngest`); os demais reprocessam
    *  sem consumir o teto. */
   failedIds: number[];
@@ -393,7 +398,7 @@ type Outcome =
  *  e-mail). Granularidade de sucesso/falha é o CHUNK inteiro — ver
  *  "Migração pra Data Manager API" na docstring do módulo. `countsAsAttempt`
  *  vem direto de `DataManagerIngestResult` (a decisão de quando uma falha
- *  "conta" é do sender, que sabe se houve resposta HTTP real do Google —
+ *  "conta" é do sender: só recusa determinística, HTTP 4xx exceto 429 —
  *  ver docstring de `sendDataManagerIngest`). */
 async function sendEntries(
   entries: Entry[],
@@ -555,19 +560,20 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
       record(cand, { status: "submitted", requestId: o.requestId });
     } else {
       // Falha de chunk. Só conta tentativa (rumo a skipped-failed-permanent)
-      // quando o Google de fato RESPONDEU com HTTP não-2xx (`countsAsAttempt`,
-      // decidido pelo sender — ver docstring de `sendDataManagerIngest`).
-      // `env`/`token` ausentes, exceção de rede, corpo 2xx não-JSON ou 2xx
-      // sem requestId NÃO contam — não sabemos se o Google processou o
-      // payload, então não gastamos o teto de tentativas por uma falha que
-      // pode nem ter chegado até ele; a linha só some pra sempre depois de
-      // MAX_FAILED_ATTEMPTS recusas REAIS.
+      // quando o Google de fato RESPONDEU com HTTP 4xx não-429 (`countsAsAttempt`,
+      // decidido pelo sender — ver docstring de `sendDataManagerIngest`;
+      // 5xx/429 são transitórios desde o #9067).
+      // 5xx/429 NÃO contam porque são instabilidade/throttling do Google
+      // (repetir resolve; teto = janela de 90 dias). `env`/`token` ausentes,
+      // exceção de rede, corpo 2xx não-JSON ou 2xx sem requestId também NÃO
+      // contam — não sabemos se o Google processou o payload. A linha só some
+      // pra sempre depois de MAX_FAILED_ATTEMPTS recusas determinísticas.
       summary.failed++;
       summary.failedIds.push(cand.id);
       const prevAttempts = index[indexKey(cand.id)]?.attempts ?? 0;
       if (!o.countsAsAttempt) {
         record(cand, { status: "failed", attempts: prevAttempts });
-        log(`kit id ${cand.id}: falha sem resposta HTTP real do Google (não conta tentativa) — ${o.error}`);
+        log(`kit id ${cand.id}: falha transitória ou sem recusa determinística do Google (não conta tentativa) — ${o.error}`);
       } else {
         const attempts = prevAttempts + 1;
         if (attempts >= MAX_FAILED_ATTEMPTS) {

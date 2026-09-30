@@ -9,9 +9,17 @@
  *   - `_internal/01-approved.json` (highlights[] + bucket de origem)
  *   - `_internal/01-approved-capped.json` (highlights[])
  *   - `02-reviewed.md` (bloco DESTAQUE removido, texto sinalizado)
- *   - `_internal/.social-source-hash.json` (reescrito pra não bloquear Stage 4)
  *
- * O que o script NÃO faz (sinaliza claramente quais re-renders faltam):
+ * O que o script NÃO faz (sinaliza claramente quais re-renders faltam, em
+ * ORDEM, no `rerenders_needed` do JSON de saída):
+ *   - Regravar `_internal/.social-source-hash.json` (#9169, espelho do #9149) —
+ *     de propósito: o `03-social.md` ainda descreve o destaque antigo, então o
+ *     guard `social-hash-fresh` (#1413) TEM que continuar acusando até o
+ *     `## d{N}` ser reescrito. O recarimbo vem em `rerenders_needed` logo após
+ *     o splice do social, via `refresh-social-hash.ts` (hash da lib
+ *     `social-source-hash.ts`, o mesmo que o check do Stage 4 recomputa);
+ *   - Re-baixar a fonte do destaque promovido e invalidar o manifest do
+ *     fact-check (`refresh-destaque-sources.ts`, #9102) — 1º passo;
  *   - Geração de NOVA imagem do destaque promovido (requer Stage 3 / image-generate.ts)
  *   - Regeneração de texto (requer re-dispatch writer-destaque + social)
  *   - Upload de imagem para Worker/Drive (upload-images-public.ts)
@@ -60,7 +68,6 @@ import {
 } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
 import { isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 
@@ -141,21 +148,28 @@ export function extractTitle(item: Record<string, unknown>): string {
 }
 
 /**
- * Computa social-source-hash da lista de highlights atual (mirror de
- * scripts/lib/social-source-hash.ts:hashHighlights).
+ * Re-renders impressos após a troca, em ORDEM de execução (#9169, espelho do
+ * `buildSwapNextSteps` do swap-destaques.ts, #9149): 1º o refresh de fontes do
+ * #9102 (sem ele o writer-destaque escreve só do título e o fact-checker lê o
+ * manifest do destaque ANTIGO); o recarimbo do hash social vem DEPOIS do
+ * splice do `03-social.md`, nunca antes — e nunca no próprio swap.
  */
-export function hashHighlights(highlights: Record<string, unknown>[]): string {
-  const canonical = highlights
-    .map((h) => {
-      const url = extractUrl(h) || "(no-url)";
-      const opts = h.title_options as string[] | undefined;
-      const title = (Array.isArray(opts) ? opts[0] : undefined) ??
-        extractTitle(h) ??
-        "(no-title)";
-      return `${url}|${title}`;
-    })
-    .join("\n");
-  return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+export function buildSwapDestaqueSteps(
+  editionDir: string,
+  position: 1 | 2 | 3,
+  promotedTitle: string,
+): string[] {
+  const dir = editionDir.replace(/\/+$/, "");
+  return [
+    `Re-baixar a fonte do destaque promovido (d${position}) e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${dir} — antes do writer-destaque (#9102).`,
+    `writer-destaque DESTAQUE ${position} (novo item: "${promotedTitle}", source_text_path = path da entrada de sources com destaque === ${position} no stdout do refresh)`,
+    `social-writer + social-curto em escopo reduzido (d${position}), splice em 03-social.md`,
+    `Só DEPOIS do splice: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9169)`,
+    `Escrever _internal/02-d${position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${dir}/_internal/02-d${position}-prompt.md --out-dir ${dir}/ --destaque d${position}`,
+    `gen-carousel-cards.ts + upload-images-public.ts (após gerar imagem nova)`,
+    `fact-checker completo antes do gate (destaque novo, sem checagem prévia)`,
+    `npx tsx scripts/check-invariants.ts --edition-dir ${dir} --stage 4`,
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -609,13 +623,7 @@ function main(): void {
     promoted: { bucket: promote.bucket, idx: promote.idx, url: promotedUrl, title: promotedTitle },
     demoted: { position: demote, url: demotedUrl, title: demotedTitle, dropped: drop },
     modified: { rewritten: [], renamed: [], deleted: [] },
-    rerenders_needed: [
-      `writer-destaque DESTAQUE ${demotePosition} (novo item: "${promotedTitle}")`,
-      `social-writer (re-dispatch pra novo lineup de destaques, #3991)`,
-      `merge-social-md.ts (re-grava .social-source-hash.json com novo hash)`,
-      `scripts/image-generate.ts --destaque ${demotePosition} (gerar nova imagem para o destaque promovido)`,
-      `upload-images-public.ts (após gerar imagem nova)`,
-    ],
+    rerenders_needed: buildSwapDestaqueSteps(editionDir, demotePosition, promotedTitle),
   };
 
   if (dryRun) {
@@ -626,7 +634,7 @@ function main(): void {
           dry_run_plan: {
             approved_json: `highlights[${demotePos}] ← ${promote.bucket}[${promote.idx}] ("${promotedTitle}")`,
             demoted_item: drop ? `descartado` : `devolvido a ${promote.bucket}[0]`,
-            social_hash: "reescrito com novo hash dos highlights",
+            social_hash: "NÃO regravado (#9169) — recarimbar via refresh-social-hash.ts depois do splice do social",
             md_block: `DESTAQUE ${demotePosition} em 02-reviewed.md substituído por placeholder`,
             images_deleted: `04-d${demotePosition}-*.jpg removidos (precisam regenerar)`,
             prompts_deleted: `02-d${demotePosition}-*.md/json removidos (precisam regenerar)`,
@@ -688,14 +696,13 @@ function main(): void {
     result.modified.rewritten.push(approvedCappedPath);
   }
 
-  // 3. Rewrite .social-source-hash.json with new hash
-  const hashPath = resolve(internalDir, ".social-source-hash.json");
-  const newHighlights = (approvedData.highlights as Record<string, unknown>[]);
-  const newHash = hashHighlights(newHighlights.slice(0, Math.min(newHighlights.length, 3)));
-  writeFileSync(hashPath, JSON.stringify({ hash: newHash }, null, 2) + "\n", "utf8");
-  result.modified.rewritten.push(hashPath);
+  // .social-source-hash.json — NÃO regravado aqui (#9169, espelho do #9149).
+  // Recarimbar agora desligaria o guard do #1413 com o 03-social.md ainda
+  // descrevendo o destaque antigo (e a cópia local do hash divergia da lib,
+  // fazendo o social-hash-fresh falhar sempre). O recarimbo está em
+  // rerenders_needed, logo depois do splice do social.
 
-  // 4. Replace DESTAQUE block in 02-reviewed.md with placeholder
+  // 3. Replace DESTAQUE block in 02-reviewed.md with placeholder
   const mdPath = resolve(editionDir, "02-reviewed.md");
   if (existsSync(mdPath)) {
     const md = readFileSync(mdPath, "utf8");
@@ -706,13 +713,13 @@ function main(): void {
     }
   }
 
-  // 5. Delete old images for the swapped position (new ones need Stage 3)
+  // 4. Delete old images for the swapped position (new ones need Stage 3)
   const deletedImages = deleteDestaqueImages(editionDir, demotePosition, false);
   for (const d of deletedImages) {
     result.modified.deleted.push(d.deleted);
   }
 
-  // 6. Delete old prompts for the swapped position (new ones need Stage 3)
+  // 5. Delete old prompts for the swapped position (new ones need Stage 3)
   const deletedPrompts = deleteDestaquePrompts(internalDir, demotePosition, false);
   for (const d of deletedPrompts) {
     result.modified.deleted.push(d.deleted);
@@ -732,15 +739,8 @@ function main(): void {
       `  Promovido:  [${promote.bucket}:${promote.idx}] "${promotedTitle}"  →  DESTAQUE ${demotePosition}`,
       `  Rebaixado:  [${demote}] "${demotedTitle}"  →  ${drop ? "DESCARTADO" : `${promote.bucket}[0]`}`,
       "",
-      "  Re-renders necessários:",
-      ...result.rerenders_needed.map((r) => `    • ${r}`),
-      "",
-      "  Stage 3 deve ser re-rodado pra gerar imagem do novo destaque:",
-      `    npx tsx scripts/image-generate.ts --edition ${edition} --destaque ${demotePosition}`,
-      "",
-      "  Após gerar imagem, re-dispatch writer-destaque + social:",
-      `    /diaria-2-escrita ${edition}`,
-      `    /diaria-3-imagens ${edition} d${demotePosition}`,
+      "  Re-renders necessários (NESTA ordem):",
+      ...result.rerenders_needed.map((r, i) => `    ${i + 1}. ${r}`),
     ].join("\n"),
   );
 }

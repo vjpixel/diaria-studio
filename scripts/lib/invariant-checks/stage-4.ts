@@ -10,6 +10,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock } from "../extract-section.ts"; // #6064
@@ -46,9 +47,9 @@ import {
   readBoxDivulgacaoAltForFile, // #5457
   readBoxDivulgacaoRuntimeExcludedForSlot, // #4504
   pickErroIntencionalReveal, // #6734 — MESMA função que o renderer/check-stage2-invariants usam
-  matchBoxSelectionFileByContent, // #8756 — mesmo casamento por conteúdo do render
+  readBoxSelectionFileForSlot, // #5457/#8756/#9172 — MESMA leitura do render (antes duplicada aqui)
+  BOX_SLOT_EMPTIED, // #9172
 } from "../newsletter-parse.ts";
-import { readSnippetFile } from "../shared/snippet-loader.ts"; // #8756
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import { detectRemovedApprovedItems } from "../lint-checks/approved-item-removal.ts"; // #8121
 import {
@@ -1641,75 +1642,52 @@ function checkBoxDivulgacaoAltMissing(
     // automática) — só 1/2/3 consultam o arquivo antes do fallback estático.
     const selectedFile = n === 0 ? undefined : readBoxSelectionFileForSlot(editionDir, n, boxText, rootDir);
     let alt: string | null;
-    let usedFile: string | null;
-    if (selectedFile) {
+    let sourceNote: string;
+    let fixNote: string;
+    const snippetFix =
+      `Fix: adicionar \`alt: {descrição do CONTEÚDO da imagem}\` ao header do snippet ` +
+      `(ver context/snippets/README.md).`;
+    if (selectedFile === BOX_SLOT_EMPTIED) {
+      // #9172: slot esvaziado pela seleção (fallback recusado, #9155) — o box
+      // presente foi colado à mão e não tem snippet associado. NÃO cair no
+      // config: ele aponta justamente pro arquivo recusado.
+      alt = null;
+      sourceNote =
+        `o box foi colado à mão num slot que a seleção deixou vazio (fallback recusado, ver ` +
+        `_internal/box-selection.json) e não corresponde a nenhum snippet, então não há \`alt:\` a ler`;
+      fixNote =
+        `Fix: usar no slot um snippet de data/snippets/ que declare \`alt:\`, ou aceitar o anchor text como alt.`;
+    } else if (selectedFile) {
       alt = rootDir !== undefined
         ? readBoxDivulgacaoAltForFile(selectedFile, rootDir)
         : readBoxDivulgacaoAltForFile(selectedFile);
-      usedFile = selectedFile;
+      sourceNote =
+        `o snippet \`${selectedFile}\` (efetivamente usado neste slot nesta edição, via ` +
+        `_internal/box-selection.json) não declara \`alt:\` no header`;
+      fixNote = snippetFix;
     } else {
       alt = rootDir !== undefined
         ? readBoxDivulgacaoAltForSlot(n, rootDir)
         : readBoxDivulgacaoAltForSlot(n);
-      usedFile = null; // desconhecido aqui sem reler o config — mensagem cita o slot, não o nome do arquivo
+      // nome do arquivo desconhecido aqui sem reler o config — mensagem cita o slot
+      sourceNote =
+        `o snippet atribuído em boxes_divulgacao.slot${n} (platform.config.json) não declara \`alt:\` no header`;
+      fixNote = snippetFix;
     }
     if (alt) continue;
-    const sourceNote = usedFile
-      ? `o snippet \`${usedFile}\` (efetivamente usado neste slot nesta edição, via _internal/box-selection.json)`
-      : `o snippet atribuído em boxes_divulgacao.slot${n} (platform.config.json)`;
     violations.push({
       rule: "box-divulgacao-alt-missing",
       message:
-        `Slot ${n} de box de divulgação tem imagem, mas ${sourceNote} não declara \`alt:\` no header. ` +
+        `Slot ${n} de box de divulgação tem imagem, mas ${sourceNote}. ` +
         `O alt renderizado cai no anchor text do 1º link do box (rótulo de ação genérico, ` +
         `ex: "Ler o artigo") — não descreve a imagem pra leitor de tela ou cliente com imagens ` +
-        `bloqueadas (Outlook desktop). Fix: adicionar \`alt: {descrição do CONTEÚDO da imagem}\` ` +
-        `ao header do snippet (ver context/snippets/README.md).`,
+        `bloqueadas (Outlook desktop). ${fixNote}`,
       source_issue: "#4086",
       severity: "warning",
       file: path,
     });
   }
   return violations;
-}
-
-/**
- * #5457: lê `_internal/box-selection.json` (grava por `stitch-newsletter.ts`
- * a cada stitch, via `resolveBoxesForEdition`/`SlotSelectionRecord` em
- * `select-boxes-by-clicks.ts` — não importado aqui pra não acoplar este
- * módulo a esse script; contrato de campo replicado localmente) e devolve o
- * snippet EFETIVAMENTE usado no slot informado (1/2/3 — nunca 0, fora do
- * escopo de `box-selection.json`). `null`/`undefined` (arquivo ausente,
- * malformado, ou sem entry pro slot) sinaliza ao caller pra cair no fallback
- * do config estático — mesmo fail-soft do resto do módulo.
- */
-function readBoxSelectionFileForSlot(
-  editionDir: string,
-  slot: 1 | 2 | 3,
-  boxText?: string | null,
-  rootDir?: string,
-): string | null {
-  const path = resolve(editionDir, "_internal", "box-selection.json");
-  if (!existsSync(path)) return null;
-  try {
-    const data = JSON.parse(readFileSync(path, "utf8"));
-    if (!Array.isArray(data)) return null;
-    // #8756: MESMO critério do render (`newsletter-parse.ts`) — o box que está
-    // de fato no slot, identificado pelo conteúdo, vence o número gravado no
-    // Stage 2. Sem isso, depois de o editor mover boxes à mão, este aviso
-    // citaria o snippet ERRADO.
-    if (boxText) {
-      const byContent = matchBoxSelectionFileByContent(data, boxText, (f) => readSnippetFile(f, rootDir));
-      if (byContent) return byContent;
-    }
-    const entry = data.find(
-      (r) => r && typeof r === "object" && (r as { slot?: unknown }).slot === slot,
-    ) as { file?: unknown } | undefined;
-    if (!entry) return null;
-    return typeof entry.file === "string" && entry.file ? entry.file : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -2773,6 +2751,15 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#7243",
     stage: 4,
     run: checkIntentionalErrorPresentInFinal,
+  },
+  {
+    id: "intentional-error-not-recent-repeat-final",
+    description:
+      "erro intencional declarado até o pré-gate (inclusive o do proposer) não reusa wrong_value/correct_value de edição dos últimos 30 dias (#9101)",
+    source_issue: "#9101",
+    stage: 4,
+    run: (editionDir) =>
+      checkIntentionalErrorNotRecentRepeat(editionDir, { ruleId: "intentional-error-not-recent-repeat-final" }),
   },
   {
     id: "truncated-secondary-item-summary",

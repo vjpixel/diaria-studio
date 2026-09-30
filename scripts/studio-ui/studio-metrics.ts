@@ -98,6 +98,7 @@ import {
   previousCompetenceMonth,
   findChurnBaselineDate,
   computeChurnExitsBetweenSnapshots,
+  excludeInternalAndTestSubscribers,
   resolveApoiaSeCampaignName,
   type ChurnExitEvent,
   type ApoiaSeMonthCacheEntry,
@@ -596,12 +597,17 @@ function countActive(subs: readonly BeehiivBackupSubscriber[]): number {
  */
 async function computeValorLayer(
   rootDir: string,
-  beehiivSubs: readonly BeehiivBackupSubscriber[],
+  beehiivSubsRaw: readonly BeehiivBackupSubscriber[],
   beehiivRoot: string,
   beehiivDates: readonly string[],
   latestDate: string | null,
   now: Date,
 ): Promise<MetricsValorLayer> {
+  // Contas internas/teste fora da população inteira do bloco Valor (#9074):
+  // denominador do ARPU, os DOIS lados do diff de churn (baseline filtrado
+  // abaixo) e os confirmados de conversão/LTV por origem — mesma população
+  // em tudo que compõe o LTV (#9023).
+  const beehiivSubs = excludeInternalAndTestSubscribers(beehiivSubsRaw).kept;
   const campaign = resolveApoiaSeCampaignName();
   const month = previousCompetenceMonth(now);
   const cacheDir = resolve(rootDir, "data", "apoia-se", campaign);
@@ -639,6 +645,8 @@ async function computeValorLayer(
   // Snapshot Beehiiv vazio/anômalo (nenhum subscriber lido) — churn/ARPU/LTV
   // não rodam em cima dele (#8423 fleet review item 6): mesma condição que
   // `loadBeehiivSnapshotLayer` usa pra marcar `error` na camada de snapshot.
+  // Filtrado vazio (snapshot só com internos/teste) também é anômalo — senão
+  // todo ativo do baseline viraria "saída" (paridade com cac-report.ts).
   const beehiivSnapshotEmpty = beehiivSubs.length === 0;
 
   const receitaMensal = await getMetric("receita-mensal")!.computar({
@@ -658,7 +666,7 @@ async function computeValorLayer(
   if (beehiivSnapshotEmpty || !latestDate || !baselineDate) {
     churnMensalDeps = { exits: [], manualCleanupEmails: new Set(), periodMonths: 0, avgActiveBase: null };
   } else {
-    const baselineSubs = baselineDate === latestDate ? beehiivSubs : readSnapshotSubscribers(beehiivRoot, baselineDate);
+    const baselineSubs = baselineDate === latestDate ? beehiivSubs : excludeInternalAndTestSubscribers(readSnapshotSubscribers(beehiivRoot, baselineDate)).kept;
     const latestSubs = beehiivSubs; // já carregado pelo chamador (snapshot mais recente)
     const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baselineSubs, latestSubs);
     const periodMonths = Math.abs(Date.parse(latestDate) - Date.parse(baselineDate)) / 86_400_000 / 30;

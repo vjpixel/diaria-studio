@@ -227,7 +227,16 @@ function buildEmail3Info(entry: OnboardingEntry, input: Email3ResolutionInput): 
   // vence — mesma precedência que já existia, agora também válida quando
   // `email3_state` é `"pending"`.
   const kitLot = findKitLotForEntry(kitLots, "email3", entry.subscription_id);
-  if (kitLot != null) {
+  // #9151 item 3: desde o #9059, cancelar o lote Kit devolve a entrada a
+  // `pending` e a Brevo pode criar um rascunho PRÓPRIO. Lote Kit cancelado só
+  // vence quando a entrada não tem estado Brevo a mostrar — com `pending` ou
+  // com uma campanha Brevo (`email3_campaign_id`), o estado da entrada é o
+  // que pede ação, e "cancelado — nenhuma" esconderia isso.
+  const cancelledKitYieldsToEntry =
+    kitLot != null &&
+    kitLot.status === "cancelled" &&
+    (entry.email3_state === "pending" || (entry.email3_state === "campaign_created" && entry.email3_campaign_id != null));
+  if (kitLot != null && !cancelledKitYieldsToEntry) {
     const stage = kitLotStatusToEmail3Stage(kitLot.status);
     const age = ageDaysSince(kitLot.created_at, nowSec);
     const stale = (stage === "rascunho_criado" || stage === "agendado") && age != null && age >= STALE_DRAFT_DAYS;

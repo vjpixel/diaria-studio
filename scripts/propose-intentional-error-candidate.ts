@@ -16,6 +16,11 @@
  *   npx tsx scripts/propose-intentional-error-candidate.ts --edition-dir data/editions/AAMMDD/
  *   npx tsx scripts/propose-intentional-error-candidate.ts --md data/editions/AAMMDD/02-reviewed.md
  *
+ * (#9101) Filtro de repetição: lê `data/intentional-errors.jsonl` (override
+ * `--jsonl <path>`; ausente = sem filtro, fail-soft) e descarta grafia já usada
+ * / entidade usada nos últimos `--window-days` (default 30) antes de `--edition`
+ * (default: basename de `--edition-dir`).
+ *
  * Stdout: JSON `{ candidate: IntentionalErrorCandidate | null }`.
  * Exit codes: 0 = leu com sucesso (candidato encontrado ou não — ambos são
  * saídas válidas, "sem candidato" não é erro); 2 = uso inválido ou arquivo
@@ -23,9 +28,11 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { proposeIntentionalErrorCandidate } from "./lib/propose-intentional-error-candidate.ts";
+import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
+import { intentionalErrorsJsonlPathForEditionDir } from "./lib/intentional-error-repeat.ts";
 
 export function main(argv: string[] = process.argv.slice(2)): number {
   const values = parseArgs(argv);
@@ -43,7 +50,24 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   }
 
   const md = readFileSync(mdPath, "utf8");
-  const candidate = proposeIntentionalErrorCandidate(md);
+  // #9101 — histórico fail-soft (arquivo ausente = lista vazia = sem filtro).
+  const editionDirArg = values["edition-dir"]?.replace(/[\\/]+$/, "");
+  // --edition-dir fora de `.../editions/` (fixture) → sem histórico, nunca o `data/` do cwd.
+  const jsonlPath =
+    values["jsonl"] ??
+    (editionDirArg ? intentionalErrorsJsonlPathForEditionDir(resolve(editionDirArg)) : join("data", "intentional-errors.jsonl"));
+  const edition = values["edition"] ?? (editionDirArg ? basename(resolve(editionDirArg)) : "");
+  if (!/^\d{6}$/.test(edition)) {
+    console.error(
+      `propose-intentional-error-candidate: edição "${edition}" não é AAMMDD — filtro de janela (#9101) desligado; só grafias já usadas são descartadas. Passe --edition AAMMDD.`,
+    );
+  }
+  const windowDays = values["window-days"] ? Number(values["window-days"]) : undefined;
+  const candidate = proposeIntentionalErrorCandidate(md, {
+    history: jsonlPath ? loadIntentionalErrors(jsonlPath) : [],
+    edition,
+    windowDays: windowDays !== undefined && Number.isFinite(windowDays) && windowDays >= 1 ? windowDays : undefined,
+  });
   console.log(JSON.stringify({ candidate }, null, 2));
   return 0;
 }

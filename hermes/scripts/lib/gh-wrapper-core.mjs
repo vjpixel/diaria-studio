@@ -151,6 +151,24 @@ function gistContentSources(argv) {
   return empty;
 }
 
+const RELEASE_VALUE_FLAGS = new Set(["-t", "--title", "-n", "--notes", "-F", "--notes-file", "--target", "--discussion-category", "--notes-start-tag", "-R", "--repo", "--hostname"]);
+
+/** #9150: assets posicionais de `gh release create TAG arq...` / `upload TAG arq...` (sufixo `#label` removido). */
+function releaseAssetPaths(argv) {
+  if (argv[0] !== "release" || !["create", "upload"].includes(argv[1])) return [];
+  const pos = [];
+  let afterDoubleDash = false;
+  for (let i = 2; i < argv.length; i++) {
+    const t = argv[i];
+    if (typeof t !== "string") continue;
+    if (afterDoubleDash) { pos.push(t); continue; }
+    if (t === "--") { afterDoubleDash = true; continue; }
+    if (t.startsWith("-") && t !== "-") { if (RELEASE_VALUE_FLAGS.has(t)) i++; continue; }
+    pos.push(t);
+  }
+  return pos.slice(1).map((p) => { const i = p.indexOf("#"); return i > 0 ? p.slice(0, i) : p; });
+}
+
 /** Flags de arquivo (path ou `-` para stdin) em pr/issue/release/gist/review. */
 const NON_API_FILE_FLAGS = new Set(["-F", "--body-file", "--notes-file"]);
 
@@ -263,7 +281,7 @@ function longValueFlagsFor(cmd, sub, isApi) {
 /** Comandos de topo que `isPublishingInvocation` reconhece. */
 const PUBLISHING_CMDS = new Set(["pr", "issue", "release", "gist", "api"]);
 /** Subcomandos que `isPublishingInvocation` reconhece (pr/issue/release/gist). */
-const PUBLISHING_SUBS = new Set(["comment", "create", "edit", "review", "close", "reopen", "merge", "rename"]);
+const PUBLISHING_SUBS = new Set(["comment", "create", "edit", "review", "close", "reopen", "merge", "rename", "upload"]);
 /** Flags globais/herdadas cujo valor vem em token separado (`-R o/r`, `--repo o/r`). */
 const GLOBAL_VALUE_FLAGS = new Set(["-R", "--repo", "--hostname"]);
 
@@ -389,14 +407,21 @@ export function normalizeArgv(rawArgv) {
       continue;
     }
     if (!a.startsWith("--") && a.startsWith("-") && a.length > 2) {
-      const prefix = a.slice(0, 2);
-      if (shortValueFlags.has(prefix)) {
-        // pflag aceita `-a=valor` com o mesmo significado de `-avalor`: o `=`
-        // não faz parte do valor (senão `-a=arq` lia o path "=arq" e o
-        // conteúdo real escapava, #9064).
-        out.push(prefix, a[2] === "=" ? a.slice(3) : a.slice(2));
-        continue;
+      // #9150: pflag aceita cluster de curtas (`-ab VALOR`, `-dbVALOR`): booleanas
+      // na frente, 1ª flag de valor consome o resto do token (ou o próximo).
+      // Varre TODAS as posições, não só a 1ª. `-a=valor`: o `=` não é do valor (#9064).
+      let split = false;
+      for (let k = 1; k < a.length; k++) {
+        const flag = "-" + a[k];
+        if (!shortValueFlags.has(flag)) continue;
+        const rest = a[k + 1] === "=" ? a.slice(k + 2) : a.slice(k + 1);
+        out.push(flag);
+        if (rest === "" && k === a.length - 1) expectValue = true;
+        else out.push(rest);
+        split = true;
+        break;
       }
+      if (split) continue;
     }
     out.push(a);
     if (a.startsWith("-") && (longValueFlags.has(a) || shortValueFlags.has(a))) {
@@ -425,7 +450,7 @@ export function isPublishingInvocation(rawArgv) {
     return true;
   }
   if (cmd === "pr" && sub === "merge") return true; // #9020: --body/-b, --subject/-t viram mensagem de commit pública
-  if (cmd === "release" && ["create", "edit"].includes(sub)) return true;
+  if (cmd === "release" && ["create", "edit", "upload"].includes(sub)) return true; // #9150: assets viram arquivos públicos
   if (cmd === "gist" && (sub === "create" || sub === "edit" || sub === "rename")) return true; // #9064: edit publica desc/nome/conteúdo; #9084: rename publica o nome novo
   if (cmd === "api") {
     const hasWriteMethod = argv.some(
@@ -434,7 +459,7 @@ export function isPublishingInvocation(rawArgv) {
     );
     const hasBodyArg = argv.some((a) => API_FIELD_FLAGS.has(a) || API_FILE_FLAGS.has(a));
     const pathArg = findGhApiPath(argv.slice(1));
-    const touchesTarget = /\/(?:comments|issues|pulls|reviews)\b/.test(pathArg) || pathArg === "graphql";
+    const touchesTarget = /(?:^|\/)(?:comments|issues|pulls|reviews|gists|releases)\b/.test(pathArg) || pathArg === "graphql"; // #9150: gists/releases
     if ((hasWriteMethod || hasBodyArg) && touchesTarget) return true;
   }
   return false;
@@ -519,6 +544,7 @@ export function collectTextsToCheck(rawArgv, deps = {}) {
   for (const src of gist.sources) texts.push(resolveFileOrStdin(src));
   for (const path of gist.addFiles) texts.push(safeRead(readFileSync, path));
   for (const name of gist.names) texts.push(name);
+  for (const path of releaseAssetPaths(argv)) texts.push(safeRead(readFileSync, path));
 
   return texts;
 }

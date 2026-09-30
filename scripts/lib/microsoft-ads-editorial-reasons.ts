@@ -265,6 +265,22 @@ export function parseEditorialReasonsResponse(xml: string): MicrosoftAdsEditoria
   }));
 }
 
+/**
+ * `true` quando o corpo é um envelope SOAP com o nó
+ * `GetAssetGroupsEditorialReasonsResponse` (#9091). `parseEditorialReasonsResponse`
+ * devolve `[]` tanto pra "0 motivos" quanto pra um corpo com shape inesperado
+ * (HTML de gateway com 200, envelope de outra operação) — sem esta checagem,
+ * esse segundo caso saía como caso vazio legítimo (exit 0, snapshot vazio).
+ */
+export function hasEditorialReasonsResponseNode(xml: string): boolean {
+  try {
+    const body: any = xmlParser.parse(xml)?.Envelope?.Body;
+    return !!body && typeof body === "object" && "GetAssetGroupsEditorialReasonsResponse" in body;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Fetch (fail-soft, injetável)
 // ---------------------------------------------------------------------------
@@ -313,6 +329,13 @@ export async function fetchAssetGroupEditorialReasons(
     return {
       ok: false,
       error: `GetAssetGroupsEditorialReasons respondeu HTTP ${postResult.status}: ${extractSoapFaultMessage(postResult.text) ?? postResult.text.slice(0, 400)}`,
+    };
+  }
+
+  if (!hasEditorialReasonsResponseNode(postResult.text)) {
+    return {
+      ok: false,
+      error: `GetAssetGroupsEditorialReasons respondeu HTTP 200 sem o nó GetAssetGroupsEditorialReasonsResponse (shape inesperado): ${postResult.text.slice(0, 400)}`,
     };
   }
 

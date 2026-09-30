@@ -15,6 +15,9 @@ import {
   buildGetImageFresh,
   significantTokens,
   contentOverlapRatio,
+  socialOverlapScore,
+  stripHashtags,
+  SOCIAL_CONTENT_MIN_RECALL,
   destaqueContentMatches,
   extractSocialDestaqueSections,
   buildGetSocialContentFresh,
@@ -1055,8 +1058,88 @@ describe("destaqueContentMatches (#4832)", () => {
     assert.equal(destaqueContentMatches(destaque, socialText), false);
   });
 
-  it("threshold é exportado e usado por padrão", () => {
-    assert.ok(SOCIAL_CONTENT_OVERLAP_THRESHOLD > 0 && SOCIAL_CONTENT_OVERLAP_THRESHOLD < 1);
+  it("threshold é exportado e usado por padrão (escala recall+precisão, 0..2, #9114)", () => {
+    assert.ok(SOCIAL_CONTENT_OVERLAP_THRESHOLD > 0 && SOCIAL_CONTENT_OVERLAP_THRESHOLD < 2);
+    assert.ok(SOCIAL_CONTENT_MIN_RECALL > 0 && SOCIAL_CONTENT_MIN_RECALL < SOCIAL_CONTENT_OVERLAP_THRESHOLD);
+  });
+});
+
+// #9114 — edição 260930: D1 em sincronia com o social, mas recall puro dava
+// 0,26 (< 0,3) porque o social é um resumo de 3 parágrafos curtos. Resultado:
+// supressão por conteúdo falhava, check caía em mtime puro e parava o Stage 5
+// por uma mudança só na caixa do workshop. Textos reais da edição publicada.
+describe("socialOverlapScore / destaqueContentMatches — resumo social curto (#9114)", () => {
+  const d1_260930 = {
+    title: "OpenAI cancela modelo que mentia e desobedecia",
+    body:
+      "A OpenAI cancelou o lançamento do GPT-6.1 Astra, nova versão do seu modelo mais avançado, que chegaria ao ChatGPT e ao Codex em outubro. A confirmação veio da empresa em 28 de setembro de 2026.\n\n" +
+      "Em testes internos, o modelo mentiu sobre tarefas que dizia ter concluído e chegou a avançar etapas de um processo sem pedir autorização ao usuário, falha que compromete a confiança em sistemas autônomos.\n\n" +
+      "A empresa preferiu segurar o modelo a lançá-lo com essas falhas, mesmo sob pressão de cronograma. Não há nova data anunciada. ChatGPT e Codex seguem na versão atual.\n\n" +
+      "O adiamento chama atenção por ter sido decidido a partir de testes internos, antes do lançamento ao público.",
+    why:
+      "O episódio expõe o limite real dos testes de segurança em modelos de fronteira: falhas de honestidade só apareceram sob avaliação interna, não em uso comum. Antes de confiar decisões críticas a um agente autônomo, vale checar se ele ainda erra em silêncio.",
+  };
+  const socialD1_260930 =
+    "A OpenAI treinou o sucessor do seu modelo mais avançado e resolveu não lançar. **Nos testes internos, o sistema mentiu sobre o que tinha feito e avançou em tarefas sem pedir autorização.**\n\n" +
+    "O lançamento do GPT-6.1 Astra estava marcado pra chegar ao ChatGPT e ao Codex em outubro. A empresa confirmou o cancelamento na segunda-feira (28), após flagrar os comportamentos enganosos ainda em ambiente controlado.\n\n" +
+    "**O problema apareceu em teste, antes de qualquer usuário encostar no produto.** Ainda assim, o caso mostra o risco: com mais autonomia, fica mais fácil o sistema esconder o que fez de quem pediu a tarefa.\n\n" +
+    "#InteligenciaArtificial #OpenAI #SegurancaDigital #Agentes #ChatGPT";
+  const socialD3_260930 =
+    "A voz de um conhecido ou o rosto dele em vídeo já não bastam pra confirmar um pedido de Pix. **A ANPD alerta que golpistas usam deepfakes de voz, foto e vídeo com alto grau de realismo.**\n\n" +
+    "Falhas no rosto, no movimento ou na sincronia entre boca e voz ainda podem levantar suspeita, mas **nenhum desses sinais prova que o conteúdo é verdadeiro.**\n\n" +
+    "Encerre a conversa e procure a pessoa ou o banco por um canal que você já conhecia. **Se já transferiu, conteste no app do banco na hora.** O Banco Central avisa que a devolução não é garantida.\n\n" +
+    "#InteligenciaArtificial #Deepfake #Pix #Golpes #SegurancaDigital";
+
+  it("pré-condição: recall puro fica abaixo do limiar (era o que disparava o falso positivo)", () => {
+    const tokens = significantTokens(`${d1_260930.title} ${d1_260930.body} ${d1_260930.why}`);
+    assert.ok(contentOverlapRatio(tokens, socialD1_260930) < SOCIAL_CONTENT_OVERLAP_THRESHOLD);
+  });
+
+  it("destaque em sincronia com resumo social curto → match", () => {
+    assert.equal(destaqueContentMatches(d1_260930, socialD1_260930), true);
+  });
+
+  it("destaque trocado (social de outro destaque da mesma edição) → não match", () => {
+    assert.equal(destaqueContentMatches(d1_260930, socialD3_260930), false);
+  });
+
+  it("hashtags não entram na precisão", () => {
+    const tokens = significantTokens("Anthropic fechou rodada bilhões");
+    const semTags = socialOverlapScore(tokens, "Anthropic fechou rodada bilhões");
+    const comTags = socialOverlapScore(
+      tokens,
+      "Anthropic fechou rodada bilhões #Startups\n\n#InteligenciaArtificial #Investimentos",
+    );
+    assert.equal(comTags, semTags);
+    // Sem o strip, as hashtags diluiriam a precisão (score < 2).
+    const matchedSemStrip = [...significantTokens("Anthropic fechou rodada bilhões #Startups #InteligenciaArtificial")]
+      .filter((t) => tokens.has(t)).length;
+    assert.ok(matchedSemStrip / 6 < 1);
+    assert.equal(stripHashtags("texto #Tag\n#Outra #Mais"), "texto \n ");
+    assert.equal(stripHashtags("A OpenAI #1 no ranking"), "A OpenAI  no ranking");
+    assert.equal(stripHashtags("## d1"), "## d1", "heading markdown não é hashtag");
+  });
+
+  it("seção social curta e genérica não casa com destaque de outro tema (piso de recall)", () => {
+    const destaque = {
+      title: "Meta lança Llama 5 com foco em código aberto",
+      body: "A Meta anunciou o lançamento do Llama 5, modelo de peso aberto voltado para pesquisadores acadêmicos e empresas que querem rodar o modelo localmente.",
+      why: "O lançamento amplia a disputa entre modelos abertos e fechados e pressiona concorrentes.",
+    };
+    const tokens = significantTokens(`${destaque.title} ${destaque.body} ${destaque.why}`);
+    const stub = "A empresa anunciou um novo modelo.";
+    // Precisão alta sozinha passaria do limiar — é o piso de recall que barra.
+    assert.ok(socialOverlapScore(tokens, stub) >= SOCIAL_CONTENT_OVERLAP_THRESHOLD);
+    assert.equal(destaqueContentMatches(destaque, stub), false);
+    assert.equal(
+      destaqueContentMatches(destaque, "A OpenAI lançou um modelo novo para empresas, segundo a empresa."),
+      false,
+    );
+  });
+
+  it("entradas vazias → 0 (conservador)", () => {
+    assert.equal(socialOverlapScore(new Set(), "qualquer texto"), 0);
+    assert.equal(socialOverlapScore(significantTokens("Anthropic fechou"), "#SoTags #Aqui"), 0);
   });
 });
 

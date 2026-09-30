@@ -227,9 +227,10 @@ export type DataManagerIngestResult =
       missing?: string[];
       /**
        * `true` só quando a Data Manager API de fato RESPONDEU com um HTTP
-       * não-2xx (uma resposta real do Google — provável defeito no payload
-       * ou na conta, digno de contar como tentativa/consumir o teto de
-       * retries de quem chama). `false` para credencial ausente (`env`),
+       * 4xx diferente de 429 (uma recusa real do Google — provável defeito
+       * no payload ou na conta, digno de contar como tentativa/consumir o
+       * teto de retries de quem chama). `false` para 5xx/429 (transitório,
+       * #9067 — `isTransientDataManagerStatus`), credencial ausente (`env`),
        * falha de renovação de token (`token`), exceção de rede (fetch
        * lançou), corpo 2xx não-JSON, ou 2xx sem `requestId` — nesses casos
        * não sabemos se o Google chegou a processar o payload, então não
@@ -238,6 +239,15 @@ export type DataManagerIngestResult =
        */
       countsAsAttempt: boolean;
     };
+
+/**
+ * #9067 (par do #9022 da Meta): 5xx/429 da Data Manager API = falha
+ * transitória (instabilidade/throttling), não recusa do evento — não consome
+ * tentativa. Qualquer outro não-2xx (4xx) é recusa e segue contando. @pure
+ */
+export function isTransientDataManagerStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
 
 /**
  * Renova o token e faz o POST de 1 payload (já dentro do limite de 2000
@@ -287,12 +297,15 @@ export async function sendDataManagerIngest(opts: {
   }
 
   if (!res.ok) {
-    // Resposta REAL do Google, HTTP não-2xx — conta como tentativa.
+    // Resposta REAL do Google, HTTP não-2xx. 4xx (exceto 429) é recusa
+    // determinística do payload/conta — conta como tentativa. 5xx/429 é
+    // instabilidade/throttling do lado do Google (#9067, par do #9022 da
+    // Meta): NÃO conta, o teto passa a ser a janela de 90 dias do lote.
     return {
       ok: false,
       stage: "ingest",
       error: `events:ingest respondeu HTTP ${res.status}: ${text.slice(0, 800)}`,
-      countsAsAttempt: true,
+      countsAsAttempt: !isTransientDataManagerStatus(res.status),
     };
   }
 

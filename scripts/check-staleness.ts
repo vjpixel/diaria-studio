@@ -425,15 +425,43 @@ export function buildGetImageFresh(
 const SIGNIFICANT_TOKEN_MIN_LEN = 5;
 
 /**
- * Fração mínima de tokens significativos do destaque (título+corpo+why, de
- * `02-reviewed.md`) que precisam aparecer na seção `## dN` correspondente de
- * `03-social.md` para considerar o conteúdo "ainda em sincronia" (#4832). O
- * texto social é uma reescrita, nunca uma cópia literal — o limiar é
- * calibrado para tolerar paráfrase normal (troca de conectivos, resumo)
- * mantendo os fatos/entidades centrais, mas ainda pegar um destaque
- * genuinamente trocado (zero overlap de vocabulário).
+ * Score mínimo de overlap (`socialOverlapScore` = recall + precisão, faixa
+ * 0..2) entre o destaque (título+corpo+why, de `02-reviewed.md`) e a seção
+ * `## dN` correspondente de `03-social.md` para considerar o conteúdo "ainda
+ * em sincronia" (#4832, recalibrado no #9114).
+ *
+ * Por que recall + precisão e não só recall (#9114): o texto social é um
+ * RESUMO — 3 parágrafos curtos contra 4 parágrafos + "Por que isso importa"
+ * do destaque. Recall puro (fração do vocabulário do destaque que sobrevive
+ * no social) é estruturalmente baixo nesse formato: medido em 119 edições
+ * reais (141 pares destaque↔social em sincronia), 47% ficavam ABAIXO do
+ * limiar antigo de recall 0,3 — a supressão falhava em metade dos casos e o
+ * check caía em mtime puro (falso positivo da 260930: só a caixa do workshop
+ * mudou e o Stage 5 parou). Precisão (fração do vocabulário do social que
+ * vem do destaque) compensa: um resumo fiel tem precisão alta mesmo com
+ * recall baixo. Na mesma medição, com o score somado:
+ *   - pares em sincronia: mínimo 0,317, mediana 0,79 → 0 falhas a 0,3;
+ *   - pares cruzados (social dN × destaque de OUTRO slot, proxy de destaque
+ *     trocado): mediana 0,08, 4/282 (1,4%) passam de 0,3.
+ * O limiar 0,3 foi mantido de propósito apesar da faixa nova 0..2 — é o ponto
+ * de 0 falhas em sincronia na medição (margem fina: mínimo 0,317).
+ * Trocas feitas pelos scripts `swap-destaque*`/`reorder-destaques` têm ainda
+ * o guard independente de hash URL+título do `01-approved.json` em
+ * `_internal/.social-source-hash.json` (#1413, invariante do Stage 4); troca
+ * feita à mão direto em `02-reviewed.md` depende só deste check.
+ *
+ * Piso de recall (`SOCIAL_CONTENT_MIN_RECALL`): a precisão sozinha pode
+ * passar de 0,3 numa seção social curta/genérica ("A empresa anunciou um novo
+ * modelo.") — o piso impede que a precisão carregue o score sozinha.
  */
 export const SOCIAL_CONTENT_OVERLAP_THRESHOLD = 0.3;
+
+/**
+ * Recall mínimo exigido além do score (#9114). Medido: pares em sincronia têm
+ * recall mínimo 0,117, então 0,1 não reprova nenhum; seção stub/off-topic tem
+ * recall ~0 e é barrada mesmo com precisão alta.
+ */
+export const SOCIAL_CONTENT_MIN_RECALL = 0.1;
 
 /**
  * Extrai o conjunto de tokens "significativos" (>= SIGNIFICANT_TOKEN_MIN_LEN
@@ -449,6 +477,8 @@ export function significantTokens(text: string): Set<string> {
 /**
  * Fração dos tokens de `reviewedTokens` que aparecem em `socialText`
  * (recall — o quanto do vocabulário do destaque sobrevive na versão social).
+ * Desde #9114 a decisão usa `socialOverlap` (recall + precisão); esta função
+ * fica como baseline do critério antigo, usada pelo teste de regressão.
  * `reviewedTokens` vazio retorna 0 (nada pra comparar — tratado como
  * "não fresco" pelo caller, conservador).
  */
@@ -466,10 +496,57 @@ export function contentOverlapRatio(
 }
 
 /**
+ * Remove hashtags (`#InteligenciaArtificial`, `#OpenAI`...) de uma seção
+ * social (#9114), token a token — pega tanto a linha final de hashtags quanto
+ * hashtag colada no fim de uma frase, sem derrubar a frase inteira. Hashtags
+ * são vocabulário próprio do social que nunca aparece no destaque — contá-las
+ * só dilui a precisão.
+ */
+export function stripHashtags(socialText: string): string {
+  return socialText.replace(/(^|\s)#[\p{L}\p{N}_]+/gu, "$1");
+}
+
+/**
+ * Recall e precisão do overlap destaque↔social (#9114), sobre tokens
+ * significativos:
+ *   - recall: fração dos tokens do destaque presentes no social;
+ *   - precisão: fração dos tokens do social (sem hashtags) presentes no destaque.
+ * Qualquer lado vazio → ambos 0.
+ */
+export function socialOverlap(
+  reviewedTokens: Set<string>,
+  socialText: string,
+): { recall: number; precision: number } {
+  const socialTokens = significantTokens(stripHashtags(socialText));
+  if (reviewedTokens.size === 0 || socialTokens.size === 0) {
+    return { recall: 0, precision: 0 };
+  }
+  let matched = 0;
+  for (const t of socialTokens) {
+    if (reviewedTokens.has(t)) matched++;
+  }
+  // Interseção é simétrica: o mesmo `matched` serve às duas razões.
+  return {
+    recall: matched / reviewedTokens.size,
+    precision: matched / socialTokens.size,
+  };
+}
+
+/** Score somado recall + precisão (faixa 0..2) — ver `SOCIAL_CONTENT_OVERLAP_THRESHOLD`. */
+export function socialOverlapScore(
+  reviewedTokens: Set<string>,
+  socialText: string,
+): number {
+  const { recall, precision } = socialOverlap(reviewedTokens, socialText);
+  return recall + precision;
+}
+
+/**
  * True se o conteúdo do destaque (`title`+`body`+`why`, extraído de
  * `02-reviewed.md` via `parseDestaques`) ainda está refletido na seção
- * `## dN` correspondente de `03-social.md` — overlap de vocabulário
- * significativo >= `SOCIAL_CONTENT_OVERLAP_THRESHOLD`.
+ * `## dN` correspondente de `03-social.md` — recall + precisão >=
+ * `threshold` (escala 0..2) E recall >= `SOCIAL_CONTENT_MIN_RECALL`
+ * (#9114; antes, recall puro contra 0,3).
  */
 export function destaqueContentMatches(
   destaque: Pick<Destaque, "title" | "body" | "why">,
@@ -480,7 +557,8 @@ export function destaqueContentMatches(
     `${destaque.title} ${destaque.body} ${destaque.why}`,
   );
   if (reviewedTokens.size === 0) return true; // nada significativo pra comparar — não bloquear
-  return contentOverlapRatio(reviewedTokens, socialSectionText) >= threshold;
+  const { recall, precision } = socialOverlap(reviewedTokens, socialSectionText);
+  return recall >= SOCIAL_CONTENT_MIN_RECALL && recall + precision >= threshold;
 }
 
 /**

@@ -666,6 +666,83 @@ describe("checkStage2Invariants — integração", () => {
     });
   });
 
+  // #9106: caso real 260930 — link do VentureBeat vindo do próprio Stage 1
+  // teve verdict anti_bot (GET 429), que é não-cacheável; o check caía no
+  // ramo "not_in_cache (URL nova pós-edit manual)", mensagem enganosa.
+  describe("checkUrlsAccessible — verdict não-cacheável do Stage 1 não é 'pós-edit manual' (#9106)", () => {
+    it("anti_bot em link-verify-all.json → segue flagada, mas com o verdict real e sem 'pós-edit manual'", async () => {
+      const { dir, cleanup } = mkEdition();
+      try {
+        const url = "https://venturebeat.com/ai/artigo";
+        writeFileSync(join(dir, "02-reviewed.md"), `${REVIEWED_WITH_FRONTMATTER}\n[D1](${url})`);
+        const cachePath = join(dir, "verify-cache.json");
+        writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+        writeFileSync(
+          join(dir, "_internal", "link-verify-all.json"),
+          JSON.stringify([{ url: `${url}/`, verdict: "anti_bot", note: "GET 429 (rate limited)" }]),
+        );
+        const r = await checkUrlsAccessible(dir, cachePath, {
+          reverify: async () => {
+            throw new Error("reverify não deve ser chamado para anti_bot");
+          },
+        });
+        assert.equal(r.ok, false, "anti_bot não é accessible — continua sinalizado");
+        assert.match(r.label ?? "", /verdict=anti_bot no Stage 1/);
+        assert.doesNotMatch(r.label ?? "", /pós-edit manual/);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("needs_reverify com barra final divergente ainda re-verifica, e não é sobrescrito por entry com mesma chave", async () => {
+      const { dir, cleanup } = mkEdition();
+      try {
+        writeFileSync(join(dir, "02-reviewed.md"), `${REVIEWED_WITH_FRONTMATTER}\n[D2](https://a.com/x)`);
+        const cachePath = join(dir, "verify-cache.json");
+        writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+        writeFileSync(
+          join(dir, "_internal", "link-verify-all.json"),
+          JSON.stringify([
+            { url: "https://a.com/x/", verdict: "needs_reverify" },
+            { url: "https://a.com/x/?utm=1", finalUrl: "https://a.com/x/", verdict: "accessible" },
+          ]),
+        );
+        let reverifyCalled = false;
+        const r = await checkUrlsAccessible(dir, cachePath, {
+          reverify: async () => {
+            reverifyCalled = true;
+            return { verdict: "accessible" };
+          },
+        });
+        assert.equal(reverifyCalled, true, "needs_reverify deve disparar re-verificação");
+        assert.equal(r.ok, true, `esperado OK, got: ${r.label}`);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("URL ausente do cache E de link-verify-all.json → mantém 'pós-edit manual'", async () => {
+      const { dir, cleanup } = mkEdition();
+      try {
+        writeFileSync(
+          join(dir, "02-reviewed.md"),
+          `${REVIEWED_WITH_FRONTMATTER}\n[D1](https://nova.com/editada)`,
+        );
+        const cachePath = join(dir, "verify-cache.json");
+        writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+        writeFileSync(
+          join(dir, "_internal", "link-verify-all.json"),
+          JSON.stringify([{ url: "https://outra.com/x", verdict: "anti_bot" }]),
+        );
+        const r = await checkUrlsAccessible(dir, cachePath);
+        assert.equal(r.ok, false);
+        assert.match(r.label ?? "", /not_in_cache \(URL nova pós-edit manual\)/);
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
   // #2284/#3222: novo check intentional_error_frontmatter (migrado pra JSON)
   it("#2284/#3222: FAIL quando _internal/intentional-error.json ausente", async () => {
     const { dir, cleanup } = mkEdition({ withIntentionalError: false });

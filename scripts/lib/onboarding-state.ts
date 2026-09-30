@@ -25,7 +25,7 @@
  * copy não-definitiva jamais sai por engano, mesmo com `--send`.
  */
 
-import type { OnboardingEntry } from "./onboarding-store.ts";
+import type { OnboardingEntry, OnboardingStore } from "./onboarding-store.ts";
 import { findKitLotForEntry, hasConfirmedKitLotForEntry, type OnboardingKitLot } from "./onboarding-kit-transport.ts";
 
 // ---------------------------------------------------------------------------
@@ -291,7 +291,8 @@ export interface RunSkip {
     | "aguardando_confirmacao"
     | "kit_transport_ativo"
     | "escada_iniciada_na_brevo"
-    | "kit_lot_existente";
+    | "kit_lot_existente"
+    | "alterado_no_disco";
   detalhe?: string;
 }
 
@@ -599,10 +600,11 @@ export type OnboardingTransport = "brevo" | "kit";
  *          dono de `email1_brevo_id != null` e errava pra seeds e pra envios
  *          Brevo com id nulo/zerado por `--cancel-pending` (#9015).
  *
- * `email3_campaign` fica FORA de escopo desta decisão (issue #8966 e
+ * `email3_campaign` fica FORA de escopo desta decisão de DONO (issue #8966 e
  * docs/onboarding-kit-cutover.md §2.4 pedem só e-mail 1/2 — o e-mail 3 já é
- * sempre rascunho com aprovação humana explícita nos dois transportes,
- * risco de duplicação automática não se aplica).
+ * sempre rascunho com aprovação humana explícita nos dois transportes). A
+ * checagem de LOTE Kit do e-mail 3 roda nos dois filtros (#9059 lado Kit,
+ * #9151 lado Brevo).
  *
  * @pure testável sem I/O
  */
@@ -622,8 +624,10 @@ export function ownerTransportFor(
  * Aplica, sobre o plano JÁ MONTADO pelo executor Brevo (`buildRunPlan`), o
  * lado BREVO do guard de mútua-exclusão: qualquer ação `email1`/`email2`
  * cujo dono (`ownerTransportFor`) não seja `"brevo"` vira skip
- * `kit_transport_ativo`, nunca ação. `email3_campaign` passa intocado (fora
- * de escopo, ver docstring de `ownerTransportFor`).
+ * `kit_transport_ativo`, nunca ação. `email3_campaign` não passa pela
+ * decisão de dono (ver docstring de `ownerTransportFor`), mas desde #9151 as
+ * entries já num lote Kit de e-mail 3 não-cancelado saem do cohort (skip
+ * `kit_lot_existente`).
  *
  * **#8979 — checagem de lote Kit é MECÂNICA e roda SEMPRE, independente do
  * kill switch (`kitTransportEnabled`).** Antes deste fix, o switch
@@ -658,7 +662,28 @@ export function filterBrevoPlanForKitCutover(
 
   for (const action of plan.actions) {
     if (action.kind === "email3_campaign") {
-      actions.push(action);
+      // #9151 item 2: espelho do #9059 (que só existia no lado Kit) — entry
+      // já coberta por um lote Kit de e-mail 3 não-cancelado nunca entra no
+      // rascunho D+10 da Brevo, mesmo com `email3_state` ainda `pending`
+      // (marcação perdida, ou lote anterior ao #9058 sem `--reconcile`).
+      // Conservador como o e-mail 1/2 deste lado: `pending` também conta.
+      const remaining: OnboardingEntry[] = [];
+      for (const entry of action.entries) {
+        const lot3 = findKitLotForEntry(kitLots, "email3", entry.subscription_id);
+        if (lot3 == null || lot3.status === "cancelled") {
+          remaining.push(entry);
+          continue;
+        }
+        skips.push({
+          entry,
+          etapa: "email3",
+          motivo: "kit_lot_existente",
+          detalhe:
+            `lote Kit ${lot3.status} (${lot3.lot_id}) já cobre o e-mail 3 desta entrada — ` +
+            `Brevo não cria rascunho (#9151)`,
+        });
+      }
+      if (remaining.length > 0) actions.push({ ...action, entries: remaining });
       continue;
     }
 
@@ -789,5 +814,48 @@ export function filterKitPlanForBrevoInFlight(
     actions.push(action);
   }
 
+  return { ...plan, actions, skips };
+}
+
+/**
+ * #9151 (review da PR #9181, achado 2): o plano Brevo é montado sobre o
+ * snapshot lido no início do `main()`, que envelhece durante o refresh de
+ * rede por candidato. Um `--send`/`--reconcile` Kit que grave lote ou
+ * `email{1,2}_sent_at` nessa janela não é visto — e a Brevo enviaria a mesma
+ * etapa na MESMA rodada. O caller relê o store do disco (sob o lock) logo
+ * antes do loop de envio e passa aqui: ação cuja etapa já foi enviada/
+ * decidida no disco, ou coberta por lote Kit não-cancelado, vira skip
+ * `alterado_no_disco`.
+ *
+ * @pure — não muta `plan` nem `fresh`.
+ */
+export function dropActionsCoveredOnDisk(plan: RunPlanResult, fresh: OnboardingStore): RunPlanResult {
+  const lots = Object.values(fresh.kit_transport?.lots ?? {});
+  const actions: RunAction[] = [];
+  const skips: RunSkip[] = [...plan.skips];
+  const covered = (entry: OnboardingEntry, kind: "email1" | "email2" | "email3"): string | null => {
+    const disk = fresh.entries[entry.subscription_id];
+    if (kind === "email1" && disk?.email1_sent_at != null) return "email1_sent_at já gravado no disco";
+    if (kind === "email2" && disk?.email2_sent_at != null) return "email2_sent_at já gravado no disco";
+    if (kind === "email3" && disk != null && disk.email3_state !== "pending") return `email3_state=${disk.email3_state} no disco`;
+    const lot = findKitLotForEntry(lots, kind, entry.subscription_id);
+    if (lot != null && lot.status !== "cancelled") return `lote Kit ${lot.status} (${lot.lot_id}) gravado no disco`;
+    return null;
+  };
+  for (const action of plan.actions) {
+    if (action.kind === "email3_campaign") {
+      const remaining: OnboardingEntry[] = [];
+      for (const entry of action.entries) {
+        const why = covered(entry, "email3");
+        if (why == null) remaining.push(entry);
+        else skips.push({ entry, etapa: "email3", motivo: "alterado_no_disco", detalhe: `${why} durante a rodada (#9151)` });
+      }
+      if (remaining.length > 0) actions.push({ ...action, entries: remaining });
+      continue;
+    }
+    const why = covered(action.entry, action.kind);
+    if (why == null) actions.push(action);
+    else skips.push({ entry: action.entry, etapa: action.kind, motivo: "alterado_no_disco", detalhe: `${why} durante a rodada (#9151)` });
+  }
   return { ...plan, actions, skips };
 }

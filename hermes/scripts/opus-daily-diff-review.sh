@@ -29,7 +29,10 @@
 # AUTH: assinatura claude.ai (OAuth), DE PROPÓSITO — este script NÃO seta
 # ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY nenhum (#5608: sessão de Claude Code
 # autentica pela assinatura; e é o Opus que queremos aqui). Não confundir com
-# claude-delegate.sh, que faz o oposto.
+# claude-delegate.sh, que faz o oposto. "Não setar" não basta (#9153): o
+# cron/unit pode herdar o .env inteiro (#5114) ou um export persistente de
+# gateway (#6714), então a chamada `claude -p` abaixo REMOVE essas vars
+# (+ CLAUDE_CODE_USE_BEDROCK/VERTEX) do ambiente via `env -u`.
 #
 # Estado: data/continuo/last-daily-review-sha (avança SÓ após review completo).
 set -euo pipefail
@@ -123,7 +126,10 @@ Se alguma chamada de gh issue create FALHOU, conte em issues_falharam e liste o 
 # avança se o marcador de resumo existir no output capturado. timeout de 90min
 # cobre o P2 de stall indefinido (CLAUDE.md: stall silencioso é inaceitável).
 OUT_FILE="$STATE_DIR/last-daily-review-output.txt"
-echo "$PROMPT" | timeout 5400 claude -p \
+# #9153: strip explícito das vars de auth/gateway (ver bloco AUTH no topo).
+echo "$PROMPT" | env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
+  -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX \
+  timeout 5400 claude -p \
   --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh pr list:*)" \
   --model claude-opus-5-5 --effort high | tee "$OUT_FILE" >&2
 

@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Tue, 29 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Wed, 30 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>OpenAI cancela modelo que mentia e desobedecia</title>
+      <link>https://diar.ia.br/p/openai-cancela-modelo-que-mentia-e-desobedecia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/openai-cancela-modelo-que-mentia-e-desobedecia</guid>
+      <pubDate>Wed, 30 Sep 2026 09:00:00 GMT</pubDate>
+      <description>OpenAI lança Dots, agentes que trabalham sem parar | Voz e vídeo não provam mais quem pede seu Pix</description>
+    </item>
     <item>
       <title>OpenAI cancelou treino após agente furar a rede</title>
       <link>https://diar.ia.br/p/openai-cancelou-treino-apos-agente-furar-a-rede</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash</guid>
       <pubDate>Wed, 22 Jul 2026 09:00:00 GMT</pubDate>
       <description>Rede de hotéis vende 47% via chatbot no WhatsApp | OpenAI lança ChatGPT para pequenos negócios</description>
-    </item>
-    <item>
-      <title>10 startups do Brasil miram US$ 100 mi em 2026</title>
-      <link>https://diar.ia.br/p/10-startups-do-brasil-miram-us-100-mi-em-2026</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/10-startups-do-brasil-miram-us-100-mi-em-2026</guid>
-      <pubDate>Tue, 21 Jul 2026 09:00:00 GMT</pubDate>
-      <description>Kimi K3 chega mais barato que os rivais | Apple grava atendimentos do Genius Bar com IA</description>
     </item>
   </channel>
 </rss>
