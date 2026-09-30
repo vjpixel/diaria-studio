@@ -443,12 +443,25 @@ const SIGNIFICANT_TOKEN_MIN_LEN = 5;
  *   - pares em sincronia: mínimo 0,317, mediana 0,79 → 0 falhas a 0,3;
  *   - pares cruzados (social dN × destaque de OUTRO slot, proxy de destaque
  *     trocado): mediana 0,08, 4/282 (1,4%) passam de 0,3.
- * O custo residual (1,4% de troca não detectada por este caminho) é coberto
- * pelo guard independente de troca de destaque — hash URL+título do
- * `01-approved.json` em `_internal/.social-source-hash.json` (#1413,
- * invariante do Stage 4).
+ * O limiar 0,3 foi mantido de propósito apesar da faixa nova 0..2 — é o ponto
+ * de 0 falhas em sincronia na medição (margem fina: mínimo 0,317).
+ * Trocas feitas pelos scripts `swap-destaque*`/`reorder-destaques` têm ainda
+ * o guard independente de hash URL+título do `01-approved.json` em
+ * `_internal/.social-source-hash.json` (#1413, invariante do Stage 4); troca
+ * feita à mão direto em `02-reviewed.md` depende só deste check.
+ *
+ * Piso de recall (`SOCIAL_CONTENT_MIN_RECALL`): a precisão sozinha pode
+ * passar de 0,3 numa seção social curta/genérica ("A empresa anunciou um novo
+ * modelo.") — o piso impede que a precisão carregue o score sozinha.
  */
 export const SOCIAL_CONTENT_OVERLAP_THRESHOLD = 0.3;
+
+/**
+ * Recall mínimo exigido além do score (#9114). Medido: pares em sincronia têm
+ * recall mínimo 0,117, então 0,1 não reprova nenhum; seção stub/off-topic tem
+ * recall ~0 e é barrada mesmo com precisão alta.
+ */
+export const SOCIAL_CONTENT_MIN_RECALL = 0.1;
 
 /**
  * Extrai o conjunto de tokens "significativos" (>= SIGNIFICANT_TOKEN_MIN_LEN
@@ -464,6 +477,8 @@ export function significantTokens(text: string): Set<string> {
 /**
  * Fração dos tokens de `reviewedTokens` que aparecem em `socialText`
  * (recall — o quanto do vocabulário do destaque sobrevive na versão social).
+ * Desde #9114 a decisão usa `socialOverlap` (recall + precisão); esta função
+ * fica como baseline do critério antigo, usada pelo teste de regressão.
  * `reviewedTokens` vazio retorna 0 (nada pra comparar — tratado como
  * "não fresco" pelo caller, conservador).
  */
@@ -481,48 +496,57 @@ export function contentOverlapRatio(
 }
 
 /**
- * Remove as linhas de hashtags (`#InteligenciaArtificial #OpenAI ...`) de uma
- * seção social (#9114). Hashtags são vocabulário próprio do social que nunca
- * aparece no destaque — contá-las só dilui a precisão. Linha que começa com
- * `#` colado a uma letra/dígito é hashtag; heading markdown (`# `, `## `)
- * não chega aqui (as seções já vêm sem heading).
+ * Remove hashtags (`#InteligenciaArtificial`, `#OpenAI`...) de uma seção
+ * social (#9114), token a token — pega tanto a linha final de hashtags quanto
+ * hashtag colada no fim de uma frase, sem derrubar a frase inteira. Hashtags
+ * são vocabulário próprio do social que nunca aparece no destaque — contá-las
+ * só dilui a precisão.
  */
-export function stripHashtagLines(socialText: string): string {
-  return socialText
-    .split("\n")
-    .filter((line) => !/^\s*#[\p{L}\p{N}]/u.test(line))
-    .join("\n");
+export function stripHashtags(socialText: string): string {
+  return socialText.replace(/(^|\s)#[\p{L}\p{N}_]+/gu, "$1");
 }
 
 /**
- * Score de overlap destaque↔social (#9114) = recall + precisão sobre tokens
- * significativos, faixa 0..2:
+ * Recall e precisão do overlap destaque↔social (#9114), sobre tokens
+ * significativos:
  *   - recall: fração dos tokens do destaque presentes no social;
  *   - precisão: fração dos tokens do social (sem hashtags) presentes no destaque.
- * `reviewedTokens` vazio → 0 (conservador, igual a `contentOverlapRatio`).
+ * Qualquer lado vazio → ambos 0.
  */
-export function socialOverlapScore(
+export function socialOverlap(
   reviewedTokens: Set<string>,
   socialText: string,
-): number {
-  if (reviewedTokens.size === 0) return 0;
-  const socialTokens = significantTokens(stripHashtagLines(socialText));
-  if (socialTokens.size === 0) return 0;
+): { recall: number; precision: number } {
+  const socialTokens = significantTokens(stripHashtags(socialText));
+  if (reviewedTokens.size === 0 || socialTokens.size === 0) {
+    return { recall: 0, precision: 0 };
+  }
   let matched = 0;
   for (const t of socialTokens) {
     if (reviewedTokens.has(t)) matched++;
   }
   // Interseção é simétrica: o mesmo `matched` serve às duas razões.
-  const precision = matched / socialTokens.size;
-  const recall = matched / reviewedTokens.size;
+  return {
+    recall: matched / reviewedTokens.size,
+    precision: matched / socialTokens.size,
+  };
+}
+
+/** Score somado recall + precisão (faixa 0..2) — ver `SOCIAL_CONTENT_OVERLAP_THRESHOLD`. */
+export function socialOverlapScore(
+  reviewedTokens: Set<string>,
+  socialText: string,
+): number {
+  const { recall, precision } = socialOverlap(reviewedTokens, socialText);
   return recall + precision;
 }
 
 /**
  * True se o conteúdo do destaque (`title`+`body`+`why`, extraído de
  * `02-reviewed.md` via `parseDestaques`) ainda está refletido na seção
- * `## dN` correspondente de `03-social.md` — `socialOverlapScore` >=
- * `SOCIAL_CONTENT_OVERLAP_THRESHOLD` (#9114; antes, recall puro).
+ * `## dN` correspondente de `03-social.md` — recall + precisão >=
+ * `threshold` (escala 0..2) E recall >= `SOCIAL_CONTENT_MIN_RECALL`
+ * (#9114; antes, recall puro contra 0,3).
  */
 export function destaqueContentMatches(
   destaque: Pick<Destaque, "title" | "body" | "why">,
@@ -533,7 +557,8 @@ export function destaqueContentMatches(
     `${destaque.title} ${destaque.body} ${destaque.why}`,
   );
   if (reviewedTokens.size === 0) return true; // nada significativo pra comparar — não bloquear
-  return socialOverlapScore(reviewedTokens, socialSectionText) >= threshold;
+  const { recall, precision } = socialOverlap(reviewedTokens, socialSectionText);
+  return recall >= SOCIAL_CONTENT_MIN_RECALL && recall + precision >= threshold;
 }
 
 /**

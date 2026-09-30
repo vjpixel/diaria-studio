@@ -16,7 +16,8 @@ import {
   significantTokens,
   contentOverlapRatio,
   socialOverlapScore,
-  stripHashtagLines,
+  stripHashtags,
+  SOCIAL_CONTENT_MIN_RECALL,
   destaqueContentMatches,
   extractSocialDestaqueSections,
   buildGetSocialContentFresh,
@@ -1057,8 +1058,9 @@ describe("destaqueContentMatches (#4832)", () => {
     assert.equal(destaqueContentMatches(destaque, socialText), false);
   });
 
-  it("threshold é exportado e usado por padrão", () => {
-    assert.ok(SOCIAL_CONTENT_OVERLAP_THRESHOLD > 0 && SOCIAL_CONTENT_OVERLAP_THRESHOLD < 1);
+  it("threshold é exportado e usado por padrão (escala recall+precisão, 0..2, #9114)", () => {
+    assert.ok(SOCIAL_CONTENT_OVERLAP_THRESHOLD > 0 && SOCIAL_CONTENT_OVERLAP_THRESHOLD < 2);
+    assert.ok(SOCIAL_CONTENT_MIN_RECALL > 0 && SOCIAL_CONTENT_MIN_RECALL < SOCIAL_CONTENT_OVERLAP_THRESHOLD);
   });
 });
 
@@ -1106,10 +1108,33 @@ describe("socialOverlapScore / destaqueContentMatches — resumo social curto (#
     const semTags = socialOverlapScore(tokens, "Anthropic fechou rodada bilhões");
     const comTags = socialOverlapScore(
       tokens,
-      "Anthropic fechou rodada bilhões\n\n#InteligenciaArtificial #Investimentos #Startups",
+      "Anthropic fechou rodada bilhões #Startups\n\n#InteligenciaArtificial #Investimentos",
     );
     assert.equal(comTags, semTags);
-    assert.equal(stripHashtagLines("texto\n#Tag #Outra\n## d1"), "texto\n## d1");
+    // Sem o strip, as hashtags diluiriam a precisão (score < 2).
+    const matchedSemStrip = [...significantTokens("Anthropic fechou rodada bilhões #Startups #InteligenciaArtificial")]
+      .filter((t) => tokens.has(t)).length;
+    assert.ok(matchedSemStrip / 6 < 1);
+    assert.equal(stripHashtags("texto #Tag\n#Outra #Mais"), "texto \n ");
+    assert.equal(stripHashtags("A OpenAI #1 no ranking"), "A OpenAI  no ranking");
+    assert.equal(stripHashtags("## d1"), "## d1", "heading markdown não é hashtag");
+  });
+
+  it("seção social curta e genérica não casa com destaque de outro tema (piso de recall)", () => {
+    const destaque = {
+      title: "Meta lança Llama 5 com foco em código aberto",
+      body: "A Meta anunciou o lançamento do Llama 5, modelo de peso aberto voltado para pesquisadores acadêmicos e empresas que querem rodar o modelo localmente.",
+      why: "O lançamento amplia a disputa entre modelos abertos e fechados e pressiona concorrentes.",
+    };
+    const tokens = significantTokens(`${destaque.title} ${destaque.body} ${destaque.why}`);
+    const stub = "A empresa anunciou um novo modelo.";
+    // Precisão alta sozinha passaria do limiar — é o piso de recall que barra.
+    assert.ok(socialOverlapScore(tokens, stub) >= SOCIAL_CONTENT_OVERLAP_THRESHOLD);
+    assert.equal(destaqueContentMatches(destaque, stub), false);
+    assert.equal(
+      destaqueContentMatches(destaque, "A OpenAI lançou um modelo novo para empresas, segundo a empresa."),
+      false,
+    );
   });
 
   it("entradas vazias → 0 (conservador)", () => {
