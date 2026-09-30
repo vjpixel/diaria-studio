@@ -370,9 +370,12 @@ function parseStashListEntries(stdout: string): StashListEntry[] {
  * `git stash push --include-untracked` sai não-zero por não conseguir remover
  * untracked travados (Permission denied — junction, handle aberto, ACL), o git
  * já criou o stash mas NÃO limpou o working tree (nem o rastreado: o `clean`
- * falha antes do `reset --hard` — reproduzido com git 2.53). O tree fica
- * idêntico, o ff nunca roda, e a próxima rodada cria OUTRO stash com o MESMO
- * conteúdo — 1 autostash novo por rodada (10 na #8991, 11 na #9107). O #9107
+ * falha antes do `reset --hard` — reproduzido com git 2.53). O rastreado e os
+ * untracked travados ficam, o ff nunca roda, e a rodada seguinte cria OUTRO
+ * stash — 1 autostash novo por rodada (10 na #8991, 11 na #9107). Como o
+ * `clean` remove os untracked que consegue antes de falhar, a 1ª repetição
+ * pode ter untracked diferentes (não é deduplicada); da 2ª em diante o
+ * conteúdo é o mesmo — o pileup para em ~2 em vez de crescer. O #9107
  * tirou o `-u` quando os untracked não colidem com o upstream, mas o caminho
  * com `-u` (colisão, ou `git diff` falhou) continua empilhando.
  *
@@ -392,8 +395,12 @@ function parseStashListEntries(stdout: string): StashListEntry[] {
  * drop pegou o stash ERRADO, re-armazena esse SHA via `git stash store`
  * (o commit continua no object store) e avisa.
  *
+ * Só compara com `stash@{1}`: um stash manual entre dois autostashes
+ * interrompe o dedupe, e pileup já existente não é limpo (limpeza é manual,
+ * `scripts/list-autostashes.ts`).
+ *
  * Spawns: `stash list -n 2` + `log --no-walk` (trees dos pais) + `stash drop`
- * + `stash store` (só na corrida) = até 4 — refletidos em
+ * + `log -1` e `stash store` (só na corrida) = até 5 — refletidos em
  * `MAX_SEQUENTIAL_GIT_SPAWNS`. Nunca lança.
  */
 export function dedupeFreshAutostash(spawn: SpawnFn, createdRef: string): AutostashDedupeResult {
@@ -450,8 +457,14 @@ export function dedupeFreshAutostash(spawn: SpawnFn, createdRef: string): Autost
       ],
     };
   }
-  // Corrida: o drop pegou o stash de outro processo — devolve-o à pilha.
-  const storeRes = spawn("git", ["stash", "store", "-m", `restaurado por git-sync apos corrida (#8991)`, droppedSha]);
+  // Corrida: o drop pegou o stash de outro processo — devolve-o à pilha COM a
+  // mensagem original (o subject do commit de stash, "On <branch>: <msg>", é
+  // exatamente o que `git stash list` mostra) — sessões que reencontram o
+  // próprio stash por tag continuam achando.
+  const subjectRes = spawn("git", ["log", "-1", "--format=%s", droppedSha]);
+  const originalMsg =
+    subjectRes.status === 0 && subjectRes.stdout.trim() ? subjectRes.stdout.trim() : `restaurado por git-sync apos corrida (#8991)`;
+  const storeRes = spawn("git", ["stash", "store", "-m", originalMsg, droppedSha]);
   return {
     ...keepAll,
     warnings: [
@@ -544,12 +557,12 @@ export interface LockFs {
  * ANTES de qualquer stash), 7. rev-parse --verify refs/stash ANTES do stash
  * (#3411), 8. diff --name-only HEAD origin/master (#9107 — só quando há
  * untracked; decide se o stash precisa de --include-untracked), 9. stash
- * push, 10. rev-parse refs/stash (captura o ref recém-criado, #7740), 11-14.
+ * push, 10. rev-parse refs/stash (captura o ref recém-criado, #7740), 11-15.
  * dedupeFreshAutostash (#8991: stash list -n 2, log --no-walk dos trees dos
- * pais, stash drop da duplicata, stash store se a corrida pegou o stash
- * errado), 15. merge --ff-only SOB stash (retry), 16. rev-list --count
- * (measureSyncState, #6090), 17. stash list (countStaleAutostashes, #8719)
- * = 17 (#9107: era 12 antes do spawn do passo 8; #8991: +4 do dedupe).
+ * pais, stash drop da duplicata, log -1 + stash store se a corrida pegou o
+ * stash errado), 16. merge --ff-only SOB stash (retry), 17. rev-list --count
+ * (measureSyncState, #6090), 18. stash list (countStaleAutostashes, #8719)
+ * = 18 (#9107: era 12 antes do spawn do passo 8; #8991: +5 do dedupe).
  *
  * `LOCK_STALE_MS` abaixo deriva desse número em vez de um valor redondo
  * chutado — #3430 gap 1 encontrou o valor antigo (10min fixo) matematicamente
@@ -574,10 +587,10 @@ export interface LockFs {
  * #9107 (30/09/2026): voltou de 12 para 13 — `git diff --name-only` (passo 8
  * acima) decide se o stash precisa de `--include-untracked`.
  *
- * #8991 (30/09/2026): de 13 para 17 — os até 4 spawns de
- * `dedupeFreshAutostash()` (passos 11-14 acima). Valor atual: 17.
+ * #8991 (30/09/2026): de 13 para 18 — os até 5 spawns de
+ * `dedupeFreshAutostash()` (passos 11-15 acima). Valor atual: 18.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 17;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 18;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -1516,7 +1529,7 @@ function syncCodeLocked(
       createdStashRef = dedupe.keptRef;
       if (dedupe.droppedDuplicate) {
         warnings.push(
-          `[git-sync] Autostash recém-criado era cópia exata do anterior (${dedupe.keptRef}) — duplicata ` +
+          `[git-sync] INFO: autostash recém-criado era cópia exata do anterior (${dedupe.keptRef}) — duplicata ` +
             `descartada sem perda (#8991).`,
         );
       }
@@ -1589,7 +1602,8 @@ function syncCodeLocked(
       `[git-sync] WARN: código sincronizado com origin/master, stash preservado (NUNCA despopado ` +
       `automaticamente — #8719, decisão do editor de 24/09/2026). Mudanças locais ficam só no stash; ` +
       `checkout limpo em master. Recupere manualmente quando decidir como prosseguir: ` +
-      `'git stash show -p ${createdStashRef ?? "<ref, ver git stash list>"}' / 'git stash pop'. ` +
+      `'git stash show -p ${createdStashRef ?? "<ref, ver git stash list>"}' / 'git stash apply ${createdStashRef ?? "<ref>"}' ` +
+      `(nunca 'git stash pop' bare — a pilha é compartilhada, o topo pode ser de outra sessão). ` +
       `Identificável por mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'.`;
     warnings.push(msg);
     return {

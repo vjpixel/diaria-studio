@@ -98,6 +98,7 @@ describe("#8991 dedupeFreshAutostash — lógica (mock)", () => {
           [LIST_KEY]: dupList,
           "git log --no-walk=unsorted --format=%H %T i1 u1 i2 u2": trees,
           "git stash drop stash@{0}": ok("Dropped stash@{0} (0ee1e5f)\n"),
+          "git log -1 --format=%s 0ee1e5f": ok("On master: minha-tag-unica\n"),
         },
         calls,
       ),
@@ -105,8 +106,97 @@ describe("#8991 dedupeFreshAutostash — lógica (mock)", () => {
     );
     assert.equal(r.droppedDuplicate, false);
     assert.equal(r.keptRef, "fa11e51");
-    assert.ok(calls.some((c) => c.startsWith("git stash store") && c.endsWith(" 0ee1e5f")), calls.join(" | "));
+    assert.ok(
+      calls.includes("git stash store -m On master: minha-tag-unica 0ee1e5f"),
+      `deve re-armazenar com a mensagem ORIGINAL: ${calls.join(" | ")}`,
+    );
     assert.match(r.warnings.join("\n"), /corrida/);
+  });
+
+  it("corrida + git stash store falha → ERROR com instrução de recuperação manual", () => {
+    const r = dedupeFreshAutostash(
+      mockSpawn({
+        [LIST_KEY]: dupList,
+        "git log --no-walk=unsorted --format=%H %T i1 u1 i2 u2": trees,
+        "git stash drop stash@{0}": ok("Dropped stash@{0} (0ee1e5f)\n"),
+        "git log -1 --format=%s 0ee1e5f": ok("On master: x\n"),
+        "git stash store -m On master: x 0ee1e5f": fail("fatal: boom"),
+      }),
+      "fa11e51",
+    );
+    assert.equal(r.droppedDuplicate, false);
+    const w = r.warnings.join("\n");
+    assert.match(w, /ERROR/);
+    assert.match(w, /git stash store -m <mensagem> 0ee1e5f/);
+  });
+
+  it("git stash drop falha → mantém os dois, avisa", () => {
+    const r = dedupeFreshAutostash(
+      mockSpawn({
+        [LIST_KEY]: dupList,
+        "git log --no-walk=unsorted --format=%H %T i1 u1 i2 u2": trees,
+        "git stash drop stash@{0}": fail("error: lock"),
+      }),
+      "fa11e51",
+    );
+    assert.equal(r.droppedDuplicate, false);
+    assert.equal(r.keptRef, "fa11e51");
+    assert.match(r.warnings.join("\n"), /drop falhou/);
+  });
+
+  it("tree do índice (2º pai) difere → não descarta", () => {
+    const calls: string[] = [];
+    const r = dedupeFreshAutostash(
+      mockSpawn(
+        { [LIST_KEY]: dupList, "git log --no-walk=unsorted --format=%H %T i1 u1 i2 u2": ok("i1 TI1\nu1 TU\ni2 TI2\nu2 TU\n") },
+        calls,
+      ),
+      "fa11e51",
+    );
+    assert.equal(r.droppedDuplicate, false);
+    assert.ok(!calls.some((c) => c.startsWith("git stash drop")));
+  });
+
+  it("log --no-walk falha → não descarta", () => {
+    const calls: string[] = [];
+    const r = dedupeFreshAutostash(
+      mockSpawn({ [LIST_KEY]: dupList, "git log --no-walk=unsorted --format=%H %T i1 u1 i2 u2": fail("bad") }, calls),
+      "fa11e51",
+    );
+    assert.equal(r.droppedDuplicate, false);
+    assert.ok(!calls.some((c) => c.startsWith("git stash drop")));
+  });
+});
+
+describe("#8991 syncCode — stash bem-sucedido duplicado", () => {
+  it("ff sob stash sucede e o autostash é duplicata → preserved_stash aponta pro anterior", () => {
+    const calls: string[] = [];
+    let merges = 0;
+    const base = mockSpawn(
+      {
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M scripts/x.ts\n"),
+        "git rev-parse --verify refs/stash": ok("bee7001\n"),
+        [`git stash push --include-untracked -m ${GIT_SYNC_STASH_MESSAGE}`]: ok("Saved working directory"),
+        "git rev-parse refs/stash": ok("fa11e51\n"),
+        [LIST_KEY]: ok(`fa11e51|T|base i1|${MSG}\nbee7001|T|base i2|${MSG}\n`),
+        "git log --no-walk=unsorted --format=%H %T i1 i2": ok("i1 TI\ni2 TI\n"),
+        "git stash drop stash@{0}": ok("Dropped stash@{0} (fa11e51)\n"),
+      },
+      calls,
+    );
+    const spawn: SpawnFn = (cmd, args) => {
+      if ([cmd, ...args].join(" ") === "git merge --ff-only origin/master") {
+        return merges++ === 0 ? fail("error: would be overwritten") : ok("Fast-forward\n");
+      }
+      return base(cmd, args);
+    };
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.equal(r.outcome, "synced_stash_preserved");
+    assert.deepEqual(r.preserved_stash, { ref: "bee7001", message: GIT_SYNC_STASH_MESSAGE });
+    assert.match(r.message, /git stash apply bee7001/);
+    assert.match(r.warnings.join("\n"), /INFO: autostash recém-criado era cópia exata/);
   });
 });
 
