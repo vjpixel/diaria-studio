@@ -198,6 +198,7 @@ describe("#1968 — verificação POSITIVA de ferramenta", () => {
     assert.ok(hasProductSignal("https://openai.com/index/sora")); // família IA
     assert.ok(hasProductSignal("https://x.com/launch-new-api")); // verbo + noun
     assert.ok(hasProductSignal("https://blog.google/products/notebooklm/x")); // path /products/
+    assert.ok(hasProductSignal("https://x.ai/news/team-bots", "Team Bots: AI coworkers that learn from your team")); // #9112: bot/bots
   });
 
   it("hasProductSignal: parceria/programa/evento/contratação = SEM sinal", () => {
