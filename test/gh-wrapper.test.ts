@@ -922,6 +922,7 @@ describe("#9150: flags curtas agrupadas e gh api gists/releases", () => {
     assert.equal(evaluateGhInvocation(["release", "create", "v1", "secret.env"], deps).blocked, true);
     assert.equal(evaluateGhInvocation(["release", "create", "v1", "secret.env#label"], deps).blocked, true);
     assert.equal(evaluateGhInvocation(["release", "upload", "v1", "arq.txt"], deps).blocked, true);
+    assert.equal(evaluateGhInvocation(["release", "upload", "v1", "secret.env#x#y"], deps).blocked, true);
     assert.equal(evaluateGhInvocation(["release", "create", "v1", "-t", "titulo", "limpo.txt"], deps).blocked, false);
   });
 });

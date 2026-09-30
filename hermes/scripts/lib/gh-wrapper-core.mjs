@@ -151,7 +151,7 @@ function gistContentSources(argv) {
   return empty;
 }
 
-const RELEASE_VALUE_FLAGS = new Set(["-t", "--title", "-n", "--notes", "-F", "--notes-file", "--target", "--discussion-category", "--notes-start-tag", "-R", "--repo"]);
+const RELEASE_VALUE_FLAGS = new Set(["-t", "--title", "-n", "--notes", "-F", "--notes-file", "--target", "--discussion-category", "--notes-start-tag", "-R", "--repo", "--hostname"]);
 
 /** #9150: assets posicionais de `gh release create TAG arq...` / `upload TAG arq...` (sufixo `#label` removido). */
 function releaseAssetPaths(argv) {
@@ -166,7 +166,7 @@ function releaseAssetPaths(argv) {
     if (t.startsWith("-") && t !== "-") { if (RELEASE_VALUE_FLAGS.has(t)) i++; continue; }
     pos.push(t);
   }
-  return pos.slice(1).map((p) => p.replace(/#[^#]*$/, ""));
+  return pos.slice(1).map((p) => { const i = p.indexOf("#"); return i > 0 ? p.slice(0, i) : p; });
 }
 
 /** Flags de arquivo (path ou `-` para stdin) em pr/issue/release/gist/review. */
@@ -281,7 +281,7 @@ function longValueFlagsFor(cmd, sub, isApi) {
 /** Comandos de topo que `isPublishingInvocation` reconhece. */
 const PUBLISHING_CMDS = new Set(["pr", "issue", "release", "gist", "api"]);
 /** Subcomandos que `isPublishingInvocation` reconhece (pr/issue/release/gist). */
-const PUBLISHING_SUBS = new Set(["comment", "create", "edit", "review", "close", "reopen", "merge", "rename"]);
+const PUBLISHING_SUBS = new Set(["comment", "create", "edit", "review", "close", "reopen", "merge", "rename", "upload"]);
 /** Flags globais/herdadas cujo valor vem em token separado (`-R o/r`, `--repo o/r`). */
 const GLOBAL_VALUE_FLAGS = new Set(["-R", "--repo", "--hostname"]);
 
