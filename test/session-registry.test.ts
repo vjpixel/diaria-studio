@@ -70,8 +70,8 @@ import {
   type PromotionRemoveIo,
   type ActiveSessionRecord,
 } from "../scripts/lib/session-registry.ts";
-import { breakStaleLock } from "../scripts/lib/session-registry.ts";
-import { lockHostId } from "../scripts/lib/file-lock.ts";
+import { breakStaleLock, FOREIGN_HOST_STALE_LOCK_MS } from "../scripts/lib/session-registry.ts";
+import { lockHostId, tryStealOrphan } from "../scripts/lib/file-lock.ts";
 
 /** Struct local — `MergeLockRecord` não é exportado, só o formato JSON no disco. */
 type MergeLockRecord = { heldBy: string; acquiredAt: string };
@@ -4203,7 +4203,7 @@ describe("#9193 — breakStaleLock segue a política de órfão do file-lock", (
     assert.equal(existsSync(p), true);
   });
 
-  it("dono de OUTRO host nunca é quebrado, por mais velho que seja", () => {
+  it("dono de OUTRO host com lock abaixo do teto #9220 NÃO é quebrado", () => {
     const p = lockAt(JSON.stringify({ pid: 1234567, host: "outra-maquina", ts: 0, token: "t" }), 600_000);
     assert.equal(breakStaleLock(p), false);
     assert.equal(existsSync(p), true);
@@ -4223,6 +4223,26 @@ describe("#9193 — breakStaleLock segue a política de órfão do file-lock", (
     const p = lockAt("", 150_000);
     assert.equal(breakStaleLock(p), true);
     assert.equal(existsSync(p), false);
+  });
+
+  // #9220: data/sessions/ sincroniza pelo OneDrive — lock de máquina que caiu
+  // chega com host alheio e travava o registro para sempre.
+  it("#9220 — dono de OUTRO host com lock mais velho que o teto É quebrado", () => {
+    const p = lockAt(JSON.stringify({ pid: 1234567, host: "outra-maquina", ts: 0, token: "t" }), FOREIGN_HOST_STALE_LOCK_MS + 60_000);
+    assert.equal(breakStaleLock(p), true);
+    assert.equal(existsSync(p), false);
+  });
+
+  it("#9220 — dono de OUTRO host logo abaixo do teto NÃO é quebrado", () => {
+    const p = lockAt(JSON.stringify({ pid: 1234567, host: "outra-maquina", ts: 0, token: "t" }), FOREIGN_HOST_STALE_LOCK_MS - 60_000);
+    assert.equal(breakStaleLock(p), false);
+    assert.equal(existsSync(p), true);
+  });
+
+  it("#9220 — o teto de outro host NÃO vaza pro tryStealOrphan genérico", () => {
+    const p = lockAt(JSON.stringify({ pid: 1234567, host: "outra-maquina", ts: 0, token: "t" }), FOREIGN_HOST_STALE_LOCK_MS * 4);
+    assert.equal(tryStealOrphan(p), false);
+    assert.equal(existsSync(p), true);
   });
 });
 
