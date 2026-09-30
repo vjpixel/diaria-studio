@@ -26,6 +26,7 @@ import { extractUrlsFromMd, FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // 
 import { intentionalErrorJsonPath, loadIntentionalErrorJson } from "./lib/intentional-errors.ts"; // #3222 / #6139
 import { isVideoUrl } from "./lib/video-youtube-resolve.ts"; // #4263
 import { verify as verifyUrl } from "./verify-accessibility.ts"; // #4730
+import { isCacheableVerdict } from "./lib/url-verify-cache.ts"; // #9106
 import {
   extractRevealFromFrontmatter,
   narrativeIsCatalogShaped,
@@ -261,30 +262,38 @@ interface EditionVerifyEntry {
 }
 
 /**
- * #4730: lê `_internal/link-verify-all.json` (se existir) e retorna o
- * conjunto de URLs marcadas `needs_reverify` nesta edição — timeout/erro de
- * conexão esgotado nas duas tentativas do Stage 1 (fetch + browser
- * fallback), sinal específico que não é ambiguidade de conteúdo (ver
- * `reclassifyExhaustedTimeout` em `verify-accessibility.ts`).
+ * #4730/#9106: lê `_internal/link-verify-all.json` (se existir) e devolve o
+ * mapa URL → verdict DESTA edição (indexado por `url` e por `finalUrl`).
  *
- * Best-effort: arquivo ausente/inválido → Set vazio, sem bloquear o resto do
+ * Usos:
+ *  - #4730: URLs `needs_reverify` (timeout/erro de conexão esgotado nas duas
+ *    tentativas do Stage 1 — ver `reclassifyExhaustedTimeout` em
+ *    `verify-accessibility.ts`) recebem re-verificação determinística no gate.
+ *  - #9106: URL ausente do cache cross-edição mas presente aqui com verdict
+ *    não-cacheável (`anti_bot`/429, `uncertain`, …) veio do próprio Stage 1 —
+ *    não é "URL nova pós-edit manual". O check segue sinalizando (o verdict
+ *    não é `accessible`), mas com o motivo real, porque re-rodar
+ *    `verify-accessibility` não resolve: o verdict nunca é persistido
+ *    (`isCacheableVerdict`).
+ *
+ * Best-effort: arquivo ausente/inválido → Map vazio, sem bloquear o resto do
  * check (mesmo padrão fail-soft do cache cross-edição abaixo).
  */
-function loadNeedsReverifyUrls(editionDir: string): Set<string> {
+function loadEditionVerdicts(editionDir: string): Map<string, string> {
   const path = join(editionDir, "_internal", "link-verify-all.json");
-  if (!existsSync(path)) return new Set();
+  const verdicts = new Map<string, string>();
+  if (!existsSync(path)) return verdicts;
   try {
     const raw: EditionVerifyEntry[] = JSON.parse(readFileSync(path, "utf8"));
-    if (!Array.isArray(raw)) return new Set();
-    const urls = new Set<string>();
+    if (!Array.isArray(raw)) return verdicts;
     for (const entry of raw) {
-      if (entry?.verdict !== "needs_reverify") continue;
-      if (entry.url) urls.add(entry.url);
-      if (entry.finalUrl) urls.add(entry.finalUrl);
+      if (!entry || typeof entry.verdict !== "string") continue;
+      if (entry.url) verdicts.set(entry.url, entry.verdict);
+      if (entry.finalUrl) verdicts.set(entry.finalUrl, entry.verdict);
     }
-    return urls;
+    return verdicts;
   } catch {
-    return new Set();
+    return verdicts;
   }
 }
 
@@ -387,13 +396,17 @@ export async function checkUrlsAccessible(
   // re-verificação determinística AQUI, ao invés de consultar o cache
   // cross-edição (que pode ter entry stale de outra edição mascarando o
   // timeout fresco de hoje).
-  const needsReverifyUrls = loadNeedsReverifyUrls(editionDir);
+  const editionVerdicts = loadEditionVerdicts(editionDir);
+  const lookupEditionVerdict = (url: string): string | undefined =>
+    editionVerdicts.get(url) ??
+    editionVerdicts.get(stripTrailingSlash(url)) ??
+    editionVerdicts.get(`${stripTrailingSlash(url)}/`);
   const reverify = opts.reverify ?? ((url: string) => verifyUrl(url));
   const suspicious: { url: string; reason: string }[] = [];
   for (const url of urls) {
     if (FOOTER_DOMAINS.some((d) => url.includes(d))) continue;
     if (isVideoUrl(url)) continue; // #4263: video verdict nunca é cacheado, por design — não é not_in_cache
-    if (needsReverifyUrls.has(url)) {
+    if (editionVerdicts.get(url) === "needs_reverify") {
       const fresh = await reverify(url);
       if (fresh.verdict !== "accessible" && fresh.verdict !== "video") {
         suspicious.push({ url, reason: `needs_reverify_failed: verdict=${fresh.verdict}` });
@@ -402,7 +415,19 @@ export async function checkUrlsAccessible(
     }
     const entry = lookupCacheEntry(url);
     if (!entry) {
-      suspicious.push({ url, reason: "not_in_cache (URL nova pós-edit manual)" });
+      // #9106: antes de concluir "pós-edit manual", consulta o verdict que o
+      // Stage 1 desta edição registrou. Verdict não-cacheável (anti_bot/429,
+      // uncertain…) nunca entra no cache cross-edição — a URL veio do
+      // pipeline, e re-rodar verify-accessibility não a persiste.
+      const editionVerdict = lookupEditionVerdict(url);
+      if (editionVerdict && editionVerdict !== "accessible" && !isCacheableVerdict(editionVerdict)) {
+        suspicious.push({
+          url,
+          reason: `not_in_cache: verdict=${editionVerdict} no Stage 1 (link-verify-all.json) — verdict não-cacheável, não é edit manual; re-rodar verify-accessibility não persiste, confira o link à mão`,
+        });
+      } else {
+        suspicious.push({ url, reason: "not_in_cache (URL nova pós-edit manual)" });
+      }
       continue;
     }
     if (entry.verdict !== "accessible") {
