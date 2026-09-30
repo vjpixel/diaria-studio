@@ -54,6 +54,11 @@
  * `skipped-out-of-window`, `skipped-test-email`, `skipped-malformed`,
  * `skipped-failed-permanent` e `failed` (recusa/erro por chunk, com contador
  * de tentativas; após `MAX_FAILED_ATTEMPTS` vira `skipped-failed-permanent`).
+ * Só recusa 4xx (exceto 429) consome tentativa: 5xx/429 do Google e falha de
+ * rede/credencial gravam `failed` sem incrementar, e o teto deles é a janela
+ * de 90 dias (#9067, par do #9022 da Meta). A task é DIÁRIA (07:20 BRT), então
+ * 3 tentativas = 3 dias — mas nada impede uma futura troca de cadência, como a
+ * da Meta no #8978, de encolher essa janela.
  * Índice ilegível/corrompido LANÇA (nunca vira `{}`, senão reenviaria tudo).
  * Segunda rede, best-effort: `order_id = diaria-confirmacao-kit-{id}` vira o
  * `transactionId` do evento — o Google deduplica por ele, mas não é garantia
@@ -555,8 +560,9 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
       record(cand, { status: "submitted", requestId: o.requestId });
     } else {
       // Falha de chunk. Só conta tentativa (rumo a skipped-failed-permanent)
-      // quando o Google de fato RESPONDEU com HTTP não-2xx (`countsAsAttempt`,
-      // decidido pelo sender — ver docstring de `sendDataManagerIngest`).
+      // quando o Google de fato RESPONDEU com HTTP 4xx não-429 (`countsAsAttempt`,
+      // decidido pelo sender — ver docstring de `sendDataManagerIngest`;
+      // 5xx/429 são transitórios desde o #9067).
       // `env`/`token` ausentes, exceção de rede, corpo 2xx não-JSON ou 2xx
       // sem requestId NÃO contam — não sabemos se o Google processou o
       // payload, então não gastamos o teto de tentativas por uma falha que
