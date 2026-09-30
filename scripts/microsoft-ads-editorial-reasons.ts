@@ -66,7 +66,7 @@ const DEFAULT_ASSET_GROUP_ID = "1187474912702110";
 
 function fallback(reason: string): void {
   console.warn(`[microsoft-ads-editorial-reasons] falha — ${reason}`);
-  console.warn("  editorial-reasons.json não foi atualizado. Verifique as credenciais no Doppler.");
+  console.warn("  editorial-reasons.json não foi atualizado.");
 }
 
 export interface EditorialReasonsCliOptions {
@@ -100,6 +100,10 @@ export async function main(
     return SPEND_INGEST_FAILURE_EXIT_CODE;
   }
 
+  // Qual identidade foi RESOLVIDA — logada em toda saída, mesmo critério do
+  // ingest de gasto (#5928): com os 2 caminhos configurados, Google vence.
+  const identityProvider = configResult.auth.googleRefreshToken ? "Google" : "AzureAd";
+
   const retryingFetch = withFetchRetry(opts.fetchImpl ?? fetch, {
     ...spendIngestRetryOptions(opts.sleep),
     isRetriableStatus: isMicrosoftAdsRetriableStatus,
@@ -110,7 +114,7 @@ export async function main(
   });
 
   if (!result.ok) {
-    fallback(result.error);
+    fallback(`[identidade: ${identityProvider}] ${result.error}`);
     return SPEND_INGEST_FAILURE_EXIT_CODE;
   }
 
@@ -150,7 +154,7 @@ export async function main(
     .join("\n");
 
   console.log(
-    `[microsoft-ads-editorial-reasons] ✔ ${outputPath} (${result.count} motivo(s) capturado(s) para asset group ${assetGroupId})`,
+    `[microsoft-ads-editorial-reasons] ✔ ${outputPath} via identidade ${identityProvider} (${result.count} motivo(s) capturado(s) para asset group ${assetGroupId})`,
   );
   if (result.reasons.length > 0) {
     console.log(summary);

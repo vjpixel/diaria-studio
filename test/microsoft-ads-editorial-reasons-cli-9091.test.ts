@@ -207,3 +207,33 @@ describe("#9091 — microsoft-ads-editorial-reasons CLI: contrato retry + exit�
     assert.equal(code, SPEND_INGEST_FAILURE_EXIT_CODE);
   });
 });
+
+describe("#9091 — review: 200 com shape inesperado e prioridade de identidade", () => {
+  it("HTTP 200 sem GetAssetGroupsEditorialReasonsResponse → exit não-zero, nada escrito (não é vazio legítimo)", async () => {
+    setEnv({ ...ALWAYS, ...AZURE });
+    const out = join(dir, "out.json");
+    const code = await main(["--output", out], {
+      fetchImpl: async (url: string) =>
+        isToken(url) ? tokenOk() : new Response("<html>gateway ok</html>", { status: 200 }),
+      sleep: noSleep,
+    });
+    assert.equal(code, SPEND_INGEST_FAILURE_EXIT_CODE);
+    assert.equal(existsSync(out), false);
+  });
+
+  it("os 2 caminhos configurados → Google vence (token Google, nunca Azure)", async () => {
+    setEnv({ ...ALWAYS, ...AZURE, ...GOOGLE });
+    const out = join(dir, "out.json");
+    const urls: string[] = [];
+    const code = await main(["--output", out], {
+      fetchImpl: async (url: string) => {
+        urls.push(url);
+        return isToken(url) ? tokenOk() : new Response(NO_REASONS, { status: 200 });
+      },
+      sleep: noSleep,
+    });
+    assert.equal(code, 0);
+    assert.ok(urls.some((u) => u.includes("oauth2.googleapis.com")));
+    assert.ok(!urls.some((u) => u.includes("login.microsoftonline.com")));
+  });
+});
