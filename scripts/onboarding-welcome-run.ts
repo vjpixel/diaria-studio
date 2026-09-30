@@ -64,7 +64,7 @@
  * --skip-email1 --skip-email2 --skip-email3 (desliga etapas pontualmente).
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -88,6 +88,7 @@ import {
   readStore,
   cloneStore,
   persistStoreDelta,
+  readStoreUnderLock,
   DEFAULT_STORE_PATH,
   type OnboardingEntry,
   type OnboardingStore,
@@ -103,6 +104,7 @@ import {
   updateZeroDetectionStreak,
   zeroDetectionAlarm,
   filterBrevoPlanForKitCutover,
+  dropActionsCoveredOnDisk,
   type DetectedSubscription,
   type OpenStats,
   type RunAction,
@@ -582,7 +584,23 @@ export async function runCancelPending(opts: {
  * `--send` Kit concorrente → e-mail 1/2 duplicado no `--send` seguinte.
  */
 export function persistBrevoStore(storePath: string, baseline: OnboardingStore, updated: OnboardingStore): void {
-  const conflicts = persistStoreDelta(storePath, baseline, updated);
+  let conflicts;
+  try {
+    conflicts = persistStoreDelta(storePath, baseline, updated);
+  } catch (err) {
+    // Review da PR #9181, achado 1: a gravação pode falhar DEPOIS dos envios
+    // (lock timeout, store corrompido). Sem socorro, o que foi enviado some e
+    // o próximo `--send` reenvia. Salva baseline+updated ao lado do store pra
+    // reconciliação manual antes de relançar.
+    const rescue = `${storePath}.pending-${Date.now()}.json`;
+    try {
+      writeFileSync(rescue, JSON.stringify({ baseline, updated }, null, 2) + "\n");
+      process.stderr.write(`[onboarding] #9151: gravação do store FALHOU — rodada salva em ${rescue}; reconcilie antes do próximo --send\n`);
+    } catch (e2) {
+      process.stderr.write(`[onboarding] #9151: gravação do store FALHOU e o socorro também (${(e2 as Error).message})\n`);
+    }
+    throw err;
+  }
   for (const c of conflicts) {
     process.stderr.write(
       `[onboarding] #9151: conflito de escrita concorrente em ${c.subscription_id}.${c.field} — ` +
@@ -1111,7 +1129,13 @@ async function main(): Promise<void> {
   }
   const isoNow = new Date(nowSec * 1000).toISOString();
 
-  for (const action of plan.actions as RunAction[]) {
+  // #9151 (review da PR #9181): relê o disco sob o lock antes de enviar —
+  // descarta o que o Kit gravou durante a rodada e falha antes de enviar se
+  // o lock estiver preso ou o store corrompido.
+  const execPlan = dropActionsCoveredOnDisk(plan, readStoreUnderLock(storePath));
+  summary.skips = execPlan.skips.map((s) => ({ etapa: s.etapa, motivo: s.motivo, detalhe: s.detalhe }));
+
+  for (const action of execPlan.actions as RunAction[]) {
     try {
       if (action.kind === "email1" || action.kind === "email2") {
         const snip = snippets[action.kind === "email1" ? 1 : 2];

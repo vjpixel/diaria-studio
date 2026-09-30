@@ -25,7 +25,7 @@
  * copy não-definitiva jamais sai por engano, mesmo com `--send`.
  */
 
-import type { OnboardingEntry } from "./onboarding-store.ts";
+import type { OnboardingEntry, OnboardingStore } from "./onboarding-store.ts";
 import { findKitLotForEntry, hasConfirmedKitLotForEntry, type OnboardingKitLot } from "./onboarding-kit-transport.ts";
 
 // ---------------------------------------------------------------------------
@@ -291,7 +291,8 @@ export interface RunSkip {
     | "aguardando_confirmacao"
     | "kit_transport_ativo"
     | "escada_iniciada_na_brevo"
-    | "kit_lot_existente";
+    | "kit_lot_existente"
+    | "alterado_no_disco";
   detalhe?: string;
 }
 
@@ -813,5 +814,48 @@ export function filterKitPlanForBrevoInFlight(
     actions.push(action);
   }
 
+  return { ...plan, actions, skips };
+}
+
+/**
+ * #9151 (review da PR #9181, achado 2): o plano Brevo é montado sobre o
+ * snapshot lido no início do `main()`, que envelhece durante o refresh de
+ * rede por candidato. Um `--send`/`--reconcile` Kit que grave lote ou
+ * `email{1,2}_sent_at` nessa janela não é visto — e a Brevo enviaria a mesma
+ * etapa na MESMA rodada. O caller relê o store do disco (sob o lock) logo
+ * antes do loop de envio e passa aqui: ação cuja etapa já foi enviada/
+ * decidida no disco, ou coberta por lote Kit não-cancelado, vira skip
+ * `alterado_no_disco`.
+ *
+ * @pure — não muta `plan` nem `fresh`.
+ */
+export function dropActionsCoveredOnDisk(plan: RunPlanResult, fresh: OnboardingStore): RunPlanResult {
+  const lots = Object.values(fresh.kit_transport?.lots ?? {});
+  const actions: RunAction[] = [];
+  const skips: RunSkip[] = [...plan.skips];
+  const covered = (entry: OnboardingEntry, kind: "email1" | "email2" | "email3"): string | null => {
+    const disk = fresh.entries[entry.subscription_id];
+    if (kind === "email1" && disk?.email1_sent_at != null) return "email1_sent_at já gravado no disco";
+    if (kind === "email2" && disk?.email2_sent_at != null) return "email2_sent_at já gravado no disco";
+    if (kind === "email3" && disk != null && disk.email3_state !== "pending") return `email3_state=${disk.email3_state} no disco`;
+    const lot = findKitLotForEntry(lots, kind, entry.subscription_id);
+    if (lot != null && lot.status !== "cancelled") return `lote Kit ${lot.status} (${lot.lot_id}) gravado no disco`;
+    return null;
+  };
+  for (const action of plan.actions) {
+    if (action.kind === "email3_campaign") {
+      const remaining: OnboardingEntry[] = [];
+      for (const entry of action.entries) {
+        const why = covered(entry, "email3");
+        if (why == null) remaining.push(entry);
+        else skips.push({ entry, etapa: "email3", motivo: "alterado_no_disco", detalhe: `${why} durante a rodada (#9151)` });
+      }
+      if (remaining.length > 0) actions.push({ ...action, entries: remaining });
+      continue;
+    }
+    const why = covered(action.entry, action.kind);
+    if (why == null) actions.push(action);
+    else skips.push({ entry: action.entry, etapa: action.kind, motivo: "alterado_no_disco", detalhe: `${why} durante a rodada (#9151)` });
+  }
   return { ...plan, actions, skips };
 }

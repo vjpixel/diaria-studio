@@ -122,6 +122,13 @@ Mecanicamente, isto significa:
    relendo o disco dentro do lock. O Brevo aplica só o delta da própria
    rodada (`persistStoreDelta`) — antes regravava o snapshot do início sem
    lock e apagava lotes/`sent_at` que um `--send` Kit concorrente gravasse.
+   Logo antes de enviar, o Brevo relê o disco sob o lock
+   (`readStoreUnderLock`) e descarta do plano o que o Kit gravou durante a
+   rodada (`dropActionsCoveredOnDisk`, skip `alterado_no_disco`); lock preso
+   ou store corrompido falham ali, antes de qualquer envio. Se a gravação
+   final falhar mesmo assim, a rodada vai pra `store.json.pending-<ts>.json`
+   (reconciliar à mão antes do próximo `--send`). Janela residual: o
+   intervalo entre essa releitura e o envio de cada e-mail (segundos).
 5. As coortes históricas **#7665/#7675** (recuperações manuais,
    `seeded_by` presente) são **excluídas da seleção automática dos DOIS
    transportes** — já implementado (`selectEligibleKitRecipients` exclui por

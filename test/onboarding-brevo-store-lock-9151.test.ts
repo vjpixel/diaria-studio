@@ -13,7 +13,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { claimLot, persistLotUpdate } from "../scripts/onboarding-kit-transport-run.ts";
@@ -23,11 +23,17 @@ import {
   cloneStore,
   mergeStoreDelta,
   persistStoreDelta,
+  readStoreUnderLock,
   emptyStore,
   type OnboardingEntry,
 } from "../scripts/lib/onboarding-store.ts";
 import { acquireLock, releaseLock } from "../scripts/lib/file-lock.ts";
-import { buildRunPlan, filterBrevoPlanForKitCutover, type RunPlanResult } from "../scripts/lib/onboarding-state.ts";
+import {
+  buildRunPlan,
+  filterBrevoPlanForKitCutover,
+  dropActionsCoveredOnDisk,
+  type RunPlanResult,
+} from "../scripts/lib/onboarding-state.ts";
 import { buildOnboardingFunnelEntry } from "../scripts/lib/onboarding-funnel-report.ts";
 import type { OnboardingKitLot } from "../scripts/lib/onboarding-kit-transport.ts";
 
@@ -243,12 +249,81 @@ describe("#9151 item 3 — funil não esconde rascunho Brevo atrás de lote Kit 
   it("lote Kit cancelado + entry pending → estado pendente, não 'cancelado'", () => {
     const e = entry({ email1_sent_at: new Date(T0 * 1000).toISOString() });
     const r = buildOnboardingFunnelEntry(e, opts([kitLot({ status: "cancelled" })]));
-    assert.notEqual(r.email3.stage, "cancelado");
+    assert.equal(r.email3.stage, "aguardando_dados");
+    assert.equal(r.email3.provider, null);
   });
 
   it("lote Kit não-cancelado segue vencendo", () => {
     const e = entry({ email3_state: "campaign_created", email3_campaign_id: 999 });
     const r = buildOnboardingFunnelEntry(e, opts([kitLot({ status: "scheduled" })]));
     assert.equal(r.email3.provider, "kit");
+  });
+});
+
+describe("#9151 (review PR #9181) — plano refiltrado contra o disco antes de enviar", () => {
+  it("readStoreUnderLock falha com o lock preso (antes de qualquer envio)", () => {
+    const storePath = tmpStore({});
+    const lockPath = `${storePath}.lock`;
+    try {
+      acquireLock(lockPath);
+      try {
+        assert.throws(() => readStoreUnderLock(storePath, 200), /lock timeout/);
+      } finally {
+        releaseLock(lockPath);
+      }
+      assert.equal(readStoreUnderLock(storePath).last_detection_cursor, T0);
+    } finally {
+      rmSync(dirname(storePath), { recursive: true, force: true });
+    }
+  });
+
+  it("Kit gravou lote/sent_at durante a rodada → a ação Brevo da mesma rodada vira skip alterado_no_disco", () => {
+    const snap = entry();
+    const plan: RunPlanResult = {
+      actions: [
+        { kind: "email1", entry: snap },
+        { kind: "email2", entry: entry({ subscription_id: "sub-2", email: "2@example.com" }) },
+        { kind: "email1", entry: entry({ subscription_id: "sub-livre", email: "l@example.com" }) },
+        { kind: "email3_campaign", entries: [entry({ subscription_id: "sub-3" }), entry({ subscription_id: "sub-3b" })] },
+      ],
+      skips: [],
+    };
+    const fresh = emptyStore();
+    fresh.entries["sub-kit"] = entry();
+    fresh.entries["sub-2"] = entry({ subscription_id: "sub-2", email2_sent_at: "2026-09-15T09:00:00.000Z" });
+    fresh.entries["sub-3"] = entry({ subscription_id: "sub-3", email3_state: "campaign_created" });
+    fresh.kit_transport = {
+      lots: { l1: kitLot({ lot_id: "l1", kind: "email1", status: "pending", broadcast_id: null }) },
+    };
+    const out = dropActionsCoveredOnDisk(plan, fresh);
+    const kept = out.actions.map((a) => (a.kind === "email3_campaign" ? `e3:${a.entries.map((e) => e.subscription_id).join(",")}` : `${a.kind}:${a.entry.subscription_id}`));
+    assert.deepEqual(kept, ["email1:sub-livre", "e3:sub-3b"]);
+    assert.equal(out.skips.filter((s) => s.motivo === "alterado_no_disco").length, 3);
+  });
+
+  it("gravação que falha depois dos envios deixa arquivo de socorro e relança", () => {
+    const storePath = tmpStore({});
+    try {
+      const { store } = readStore(storePath);
+      const baseline = cloneStore(store);
+      store.entries["x"] = entry({ subscription_id: "x", email1_sent_at: "2026-09-15T09:05:00.000Z" });
+      writeFileSync(storePath, "{ quebrado");
+      assert.throws(() => persistBrevoStore(storePath, baseline, store), /CORROMPIDO/);
+      const rescue = readdirSync(dirname(storePath)).filter((f) => f.startsWith("store.json.pending-"));
+      assert.equal(rescue.length, 1);
+    } finally {
+      rmSync(dirname(storePath), { recursive: true, force: true });
+    }
+  });
+
+  it("entry nova que outro processo já criou no disco: vale o disco, conflito reportado", () => {
+    const baseline = emptyStore();
+    const updated = cloneStore(baseline);
+    updated.entries["n"] = entry({ subscription_id: "n", email1_sent_at: "brevo" });
+    const fresh = cloneStore(baseline);
+    fresh.entries["n"] = entry({ subscription_id: "n" });
+    const { store, conflicts } = mergeStoreDelta(fresh, baseline, updated);
+    assert.equal(store.entries["n"].email1_sent_at, null);
+    assert.deepEqual(conflicts, [{ subscription_id: "n", field: "*entry_nova_ja_no_disco" }]);
   });
 });

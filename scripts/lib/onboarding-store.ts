@@ -339,7 +339,7 @@ export interface StoreMergeConflict {
  *    escrita Brevo vence (registra um envio/decisão que aconteceu de fato),
  *    mas o caller avisa em stderr.
  *
- * @pure — muta e devolve `fresh`; sem I/O.
+ * Sem I/O — mas MUTA e devolve `fresh` (não é pura).
  */
 export function mergeStoreDelta(
   fresh: OnboardingStore,
@@ -358,6 +358,9 @@ export function mergeStoreDelta(
     const freshEntry = fresh.entries[id];
     if (baseEntry == null) {
       if (freshEntry == null) fresh.entries[id] = updEntry;
+      // Outro processo criou a mesma entry durante a rodada: vale o disco,
+      // mas avisa — um envio desta rodada pode não ficar registrado.
+      else if (!sameValue(freshEntry, updEntry)) conflicts.push({ subscription_id: id, field: "*entry_nova_ja_no_disco" });
       continue;
     }
     if (freshEntry == null) {
@@ -383,6 +386,29 @@ export function mergeStoreDelta(
   return { store: fresh, conflicts };
 }
 
+function readStoreOrThrow(storePath: string, contexto: string): OnboardingStore {
+  const { store, corrupted } = readStore(storePath);
+  if (corrupted) {
+    throw new Error(
+      `[onboarding-store] store em "${storePath}" está CORROMPIDO (JSON ilegível) — recusando ${contexto} sobre um ` +
+        `snapshot que "readStore" já esvaziou silenciosamente. Repare/restaure o store antes de rodar de novo.`,
+    );
+  }
+  return store;
+}
+
+/**
+ * #9151 (review da PR #9181, achados 1+2): relê o store do disco sob o lock
+ * logo ANTES do executor Brevo enviar. Serve a dois fins: (a) o plano pode
+ * ser refiltrado contra o que o Kit gravou durante a rodada
+ * (`dropActionsCoveredOnDisk`); (b) lock preso (órfão) ou store corrompido
+ * falham AQUI, antes de qualquer envio — nunca depois, quando a gravação
+ * falharia e o próximo `--send` reenviaria.
+ */
+export function readStoreUnderLock(storePath: string, timeoutMs = 30_000): OnboardingStore {
+  return withFileLock(`${storePath}.lock`, () => readStoreOrThrow(storePath, "decidir o envio Brevo"), timeoutMs);
+}
+
 /**
  * #9151: persiste o resultado de uma rodada do executor Brevo sob
  * `withFileLock(${storePath}.lock)` — o MESMO lock que `claimLot`/
@@ -400,13 +426,7 @@ export function persistStoreDelta(
   return withFileLock(
     `${storePath}.lock`,
     () => {
-      const { store: fresh, corrupted } = readStore(storePath);
-      if (corrupted) {
-        throw new Error(
-          `[onboarding-store] store em "${storePath}" está CORROMPIDO (JSON ilegível) — recusando persistir a rodada ` +
-            `Brevo sobre um snapshot que "readStore" já esvaziou silenciosamente. Repare/restaure o store antes de rodar de novo.`,
-        );
-      }
+      const fresh = readStoreOrThrow(storePath, "persistir a rodada Brevo");
       const { store, conflicts } = mergeStoreDelta(fresh, baseline, updated);
       writeStore(store, storePath);
       return conflicts;
