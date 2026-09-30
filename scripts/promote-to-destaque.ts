@@ -47,7 +47,8 @@
  *   npx tsx scripts/promote-to-destaque.ts --edition-dir data/editions/2609/260924 \
  *     --url https://exemplo.com/artigo --position 1 [--dry-run]
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9188
 import { resolve } from "node:path";
 import { parseArgsWithTrueDefault, isMainModule } from "./lib/cli-args.ts";
 import {
@@ -135,8 +136,13 @@ function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+function jsonContent(data: unknown): string {
+  return JSON.stringify(data, null, 2) + "\n";
+}
+
+/** #9188: escrita verificada (OneDrive) de um JSON avulso. */
 function writeJson(path: string, data: unknown): void {
-  writeFileSync(path, JSON.stringify(data, null, 2) + "\n", "utf8");
+  writeFilesVerified([{ path, content: jsonContent(data) }], "promote-to-destaque");
 }
 
 export interface PromoteResult {
@@ -185,10 +191,13 @@ export function promoteToDestaque(
   renamed.push(...renameDestaqueImages(editionDir, newOrder, dryRun));
   renamed.push(...renameDestaquePrompts(internalDir, newOrder, dryRun));
 
-  // 2. JSONs canônicos.
+  // 2. JSONs canônicos. #9188: 01-approved*.json + 02-reviewed.md +
+  //    03-social.md vão num LOTE verificado (writeFilesVerified) — nunca
+  //    meio-gravado (ex: JSON com o destaque novo e o md ainda renumerado
+  //    pela ordem antiga). Gravado antes do carimbo do social, que relê o disco.
+  const pendingWrites: VerifiedWrite[] = [];
   for (const { path, data } of updated) {
-    if (!dryRun) writeJson(path, data);
-    rewritten.push(path);
+    pendingWrites.push({ path, content: jsonContent(data) });
   }
 
   // 3. 02-reviewed.md — só renumera; o bloco novo é do writer-destaque.
@@ -196,11 +205,23 @@ export function promoteToDestaque(
   if (existsSync(mdPath)) {
     const md = readFileSync(mdPath, "utf8");
     const shifted = shiftDestaqueHeadersInMd(md, position);
+    if (shifted !== md) pendingWrites.push({ path: mdPath, content: shifted });
+  }
+
+  // 3b. 03-social.md — conteúdo computado aqui, gravado no mesmo lote.
+  const socialPath = resolve(editionDir, "03-social.md");
+  let socialShifted = false;
+  if (existsSync(socialPath)) {
+    const md = readFileSync(socialPath, "utf8");
+    const shifted = reorderSocialMd(md, newOrder);
     if (shifted !== md) {
-      if (!dryRun) writeFileSync(mdPath, shifted, "utf8");
-      rewritten.push(mdPath);
+      pendingWrites.push({ path: socialPath, content: shifted });
+      socialShifted = true;
     }
   }
+
+  if (!dryRun) writeFilesVerified(pendingWrites, "promote-to-destaque");
+  for (const w of pendingWrites) rewritten.push(w.path);
 
   // 4. intentional-error.json
   const iePath = intentionalErrorJsonPath(editionDir);
@@ -213,17 +234,10 @@ export function promoteToDestaque(
     }
   }
 
-  // 5. 03-social.md + carimbos.
-  const socialPath = resolve(editionDir, "03-social.md");
-  if (existsSync(socialPath)) {
-    const md = readFileSync(socialPath, "utf8");
-    const shifted = reorderSocialMd(md, newOrder);
-    if (shifted !== md) {
-      if (!dryRun) writeFileSync(socialPath, shifted, "utf8");
-      rewritten.push(socialPath);
-      const refreshed = refreshSocialSourceHash(editionDir, dryRun);
-      if (refreshed) rewritten.push(refreshed.path);
-    }
+  // 5. Carimbos do social/carrossel.
+  if (socialShifted) {
+    const refreshed = refreshSocialSourceHash(editionDir, dryRun);
+    if (refreshed) rewritten.push(refreshed.path);
   }
   const carousel = reindexCarouselSourceHashes(editionDir, newOrder, dryRun);
   if (carousel) rewritten.push(carousel.path);

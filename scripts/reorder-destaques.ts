@@ -84,7 +84,6 @@
 import {
   existsSync,
   readFileSync,
-  writeFileSync,
   readdirSync,
   renameSync,
   copyFileSync,
@@ -93,6 +92,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
+import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9188
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
@@ -980,7 +980,10 @@ export function reorderFactCheckSources(
       const result = reorderFactCheckManifest(entries, newOrder);
       if (result.changed) {
         if (!dryRun) {
-          writeFileSync(manifestPath, JSON.stringify(result.entries, null, 2) + "\n", "utf8");
+          writeFilesVerified(
+            [{ path: manifestPath, content: JSON.stringify(result.entries, null, 2) + "\n" }],
+            "reorder-destaques",
+          ); // #9188
         }
         modified.push(manifestPath);
       }
@@ -1102,18 +1105,15 @@ export function invalidatePublicImagesForReorder(
   return { changed: true, removedKeys, data: { ...(data as object), images } };
 }
 
-function processJsonFile(
-  path: string,
-  newOrder: number[],
-  dryRun: boolean,
-): boolean {
-  if (!existsSync(path)) return false;
+/**
+ * Conteúdo reordenado de um JSON canônico, ou null se ausente/inalterado.
+ * #9188: não grava — o chamador acumula no lote verificado.
+ */
+function processJsonFile(path: string, newOrder: number[]): string | null {
+  if (!existsSync(path)) return null;
   const data = JSON.parse(readFileSync(path, "utf8"));
-  const changed = reorderHighlightsInJson(data, newOrder);
-  if (changed && !dryRun) {
-    writeFileSync(path, JSON.stringify(data, null, 2) + "\n", "utf8");
-  }
-  return changed;
+  if (!reorderHighlightsInJson(data, newOrder)) return null;
+  return JSON.stringify(data, null, 2) + "\n";
 }
 
 function main(): void {
@@ -1173,12 +1173,21 @@ function main(): void {
     ...renameDestaquePrompts(internalDir, args.newOrder, args.dryRun),
   );
 
-  // 3. JSONs canônicos
+  // 3. JSONs canônicos. #9188: 01-approved*.json, 02-reviewed.md e
+  // 03-social.md são acumulados em `pendingWrites` e gravados num LOTE
+  // verificado (writeFilesVerified: snapshot → escrita → verificação final
+  // byte a byte → rollback do lote) no fim do passo 4, antes do carimbo do
+  // social (4b), que relê o disco.
+  const pendingWrites: VerifiedWrite[] = [];
+  const queueWrite = (path: string, content: string): void => {
+    const existing = pendingWrites.find((w) => w.path === path);
+    if (existing) existing.content = content;
+    else pendingWrites.push({ path, content });
+  };
   for (const f of ["01-approved.json", "01-approved-capped.json"]) {
     const path = resolve(internalDir, f);
-    if (processJsonFile(path, args.newOrder, args.dryRun)) {
-      modified.rewritten.push(path);
-    }
+    const content = processJsonFile(path, args.newOrder);
+    if (content !== null) queueWrite(path, content);
   }
 
   // 3b. 02-reviewed.md
@@ -1192,10 +1201,7 @@ function main(): void {
     let md = readFileSync(mdPath, "utf8");
     const before = md;
     md = reorderDestaquesInMd(md, args.newOrder);
-    if (md !== before) {
-      if (!args.dryRun) writeFileSync(mdPath, md, "utf8");
-      modified.rewritten.push(mdPath);
-    }
+    if (md !== before) queueWrite(mdPath, md);
     reorderedReviewedMd = md;
   }
 
@@ -1230,8 +1236,7 @@ function main(): void {
           `${mdPath}). O bloco pode ficar desatualizado em relação à nova ordem D1/D2/D3.`,
       );
     } else if (derived.action !== "no_change") {
-      if (!args.dryRun) writeFileSync(mdPath, derived.md, "utf8");
-      if (!modified.rewritten.includes(mdPath)) modified.rewritten.push(mdPath);
+      queueWrite(mdPath, derived.md);
       reorderedReviewedMd = derived.md;
     }
   }
@@ -1243,11 +1248,13 @@ function main(): void {
     const md = readFileSync(socialPath, "utf8");
     const reordered = reorderSocialMd(md, args.newOrder);
     if (reordered !== md) {
-      if (!args.dryRun) writeFileSync(socialPath, reordered, "utf8");
-      modified.rewritten.push(socialPath);
+      queueWrite(socialPath, reordered);
       socialReordered = true;
     }
   }
+
+  if (!args.dryRun) writeFilesVerified(pendingWrites, "reorder-destaques");
+  for (const w of pendingWrites) modified.rewritten.push(w.path);
 
   // 4b. _internal/.social-source-hash.json (#6062) — recarimbar SÓ quando o
   // passo 4 de fato reordenou o social. Recarimbar quando ele não mudou
@@ -1323,7 +1330,10 @@ function main(): void {
         const cropResult = reorderCropReviewJson(cropData, args.newOrder);
         if (cropResult.changed) {
           if (!args.dryRun) {
-            writeFileSync(cropReviewPath, JSON.stringify(cropResult.data, null, 2) + "\n", "utf8");
+            writeFilesVerified(
+              [{ path: cropReviewPath, content: JSON.stringify(cropResult.data, null, 2) + "\n" }],
+              "reorder-destaques",
+            ); // #9188
           }
           modified.rewritten.push(cropReviewPath);
         }
@@ -1359,11 +1369,10 @@ function main(): void {
         const publicImagesResult = invalidatePublicImagesForReorder(publicImagesData, args.newOrder);
         if (publicImagesResult.changed) {
           if (!args.dryRun) {
-            writeFileSync(
-              publicImagesPath,
-              JSON.stringify(publicImagesResult.data, null, 2) + "\n",
-              "utf8",
-            );
+            writeFilesVerified(
+              [{ path: publicImagesPath, content: JSON.stringify(publicImagesResult.data, null, 2) + "\n" }],
+              "reorder-destaques",
+            ); // #9188
           }
           modified.rewritten.push(publicImagesPath);
           const reuploadMsg =
