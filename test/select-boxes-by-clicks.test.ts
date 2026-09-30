@@ -21,6 +21,7 @@ import {
   loadBoxesDivulgacaoAutoConfig,
   resolveBoxesForEdition,
   isSnippetEligibleForDiaria,
+  checkFallbackEligibility,
   ROTATION_SLOTS,
   type SnippetEditionClicks,
   type SnippetHistory,
@@ -832,5 +833,85 @@ describe("#9104 resolveBoxesForEdition — regressão 260930", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+// ── #9155: fallback do slot passa pelos mesmos filtros do #9104 ─────────
+
+describe("#9155 resolveBoxesForEdition — fallback do slot respeita audiência/evento/duplicado", () => {
+  const resolveWith = (slot1: string, slot2: string, pinnedSlots: Set<1 | 2>) => {
+    const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+    try {
+      writeFileSync(join(snippetsDir, "clarice-imersao1010.md"), CLARICE_IMERSAO);
+      writeFileSync(join(snippetsDir, "diaria-imersao1010.md"), DIARIA_IMERSAO);
+      writeFileSync(join(snippetsDir, "workshop-agente-ia-outubro.md"), WORKSHOP);
+      writeSnippet(snippetsDir, "amazon-loja-divulgacao.md", "Amazon", "https://amzn.to/loja");
+      // Sem edições no histórico -> nenhum candidato auto -> slot 2 cai no fallback.
+      return resolveBoxesForEdition({
+        aammdd: "260930",
+        boxesCfg: { slot0: null, slot1, slot2, slot3: null },
+        autoCfg: { enabled: true, pinnedSlots, recentWindow: 3, priorWindow: 3, lastN: 20 },
+        editionsDir,
+        postsDir,
+        snippetsDir,
+      });
+    } finally {
+      cleanup();
+    }
+  };
+
+  it("slot 2 fallback do MESMO evento do slot 1 pinado -> slot 2 vazio (fallback-ineligible, evento)", () => {
+    const { effective, selection } = resolveWith("workshop-agente-ia-outubro.md", "diaria-imersao1010.md", new Set([1]));
+    assert.equal(effective.slot1, "workshop-agente-ia-outubro.md");
+    assert.equal(effective.slot2, null);
+    const s2 = selection.find((s) => s.slot === 2)!;
+    assert.equal(s2.mode, "fallback-ineligible");
+    assert.equal(s2.file, null);
+    assert.equal(s2.rejectedFile, "diaria-imersao1010.md");
+    assert.equal(s2.rejectReason, "evento");
+  });
+
+  it("slot 2 fallback com caixa utm_source=clarice -> recusado por audiência", () => {
+    const { effective, selection } = resolveWith("workshop-agente-ia-outubro.md", "clarice-imersao1010.md", new Set([1]));
+    assert.equal(effective.slot2, null);
+    const s2 = selection.find((s) => s.slot === 2)!;
+    assert.equal(s2.mode, "fallback-ineligible");
+    assert.equal(s2.rejectReason, "audiencia");
+    assert.ok(selection.every((s) => s.file !== "clarice-imersao1010.md"));
+  });
+
+  it("slot 2 fallback igual ao arquivo do slot 1 -> recusado como duplicado", () => {
+    const { effective, selection } = resolveWith("amazon-loja-divulgacao.md", "amazon-loja-divulgacao.md", new Set([1]));
+    assert.equal(effective.slot1, "amazon-loja-divulgacao.md");
+    assert.equal(effective.slot2, null);
+    assert.equal(selection.find((s) => s.slot === 2)!.rejectReason, "duplicado");
+  });
+
+  it("cold start com os 2 slots em fallback: slot 1 aceito, slot 2 do mesmo evento recusado", () => {
+    const { effective, selection } = resolveWith("workshop-agente-ia-outubro.md", "diaria-imersao1010.md", new Set());
+    assert.equal(effective.slot1, "workshop-agente-ia-outubro.md");
+    assert.equal(selection.find((s) => s.slot === 1)!.mode, "fallback-no-candidates");
+    assert.equal(effective.slot2, null);
+    assert.equal(selection.find((s) => s.slot === 2)!.rejectReason, "evento");
+  });
+
+  it("config atual (slot 2 = amazon-loja-divulgacao.md) segue usado como fallback", () => {
+    const { effective, selection } = resolveWith("workshop-agente-ia-outubro.md", "amazon-loja-divulgacao.md", new Set([1]));
+    assert.equal(effective.slot2, "amazon-loja-divulgacao.md");
+    assert.equal(selection.find((s) => s.slot === 2)!.mode, "fallback-no-candidates");
+  });
+});
+
+describe("#9155 checkFallbackEligibility", () => {
+  const byFile = new Map<string, SnippetInfo>([
+    ["w.md", parseSnippetContent("w.md", WORKSHOP)],
+    ["d.md", parseSnippetContent("d.md", DIARIA_IMERSAO)],
+  ]);
+  it("arquivo desconhecido (fora de snippets) não é julgado por audiência/evento", () => {
+    assert.equal(checkFallbackEligibility({ file: "x.md", snippetByFile: byFile, assignedFiles: new Set(["w.md"]) }), null);
+  });
+  it("snippet sem evento em comum com os atribuídos é elegível", () => {
+    assert.equal(checkFallbackEligibility({ file: "d.md", snippetByFile: byFile, assignedFiles: new Set() }), null);
+    assert.equal(checkFallbackEligibility({ file: "d.md", snippetByFile: byFile, assignedFiles: new Set(["w.md"]) }), "evento");
   });
 });

@@ -445,14 +445,55 @@ export interface ResolvedBoxes {
 
 export interface SlotSelectionRecord {
   slot: SlotNumber;
-  mode: "disabled" | "pinned" | "auto" | "fallback-no-candidates";
+  mode: "disabled" | "pinned" | "auto" | "fallback-no-candidates" | "fallback-ineligible";
   file: string | null;
+  /** #9155: só em `mode: "fallback-ineligible"` — o arquivo de
+   * `boxes_divulgacao.slotN` que seria usado como fallback e foi recusado
+   * (o slot sai VAZIO, `file: null`), e o motivo da recusa. */
+  rejectedFile?: string;
+  rejectReason?: FallbackRejectReason;
   nome: string | null;
   score: number | null;
   trend: TrendResult | null;
   editionsAppeared: number | null;
   /** #6031: indica se o snippet selecionado é sazonal (oferta de alta pull). */
   seasonal: boolean | null;
+}
+
+/** #9155: por que o arquivo de fallback de um slot foi recusado. */
+export type FallbackRejectReason = "audiencia" | "duplicado" | "evento";
+
+/**
+ * #9155: aplica ao arquivo de FALLBACK de um slot (o `boxes_divulgacao.slotN`
+ * do config, usado quando não sobra candidato auto) os MESMOS filtros que o
+ * #9104 aplica aos candidatos do ranking — antes o fallback passava direto e
+ * reintroduzia exatamente o que o #9104 impede (caixa `utm_source=clarice`,
+ * ou duas caixas do mesmo evento na mesma edição). `null` = elegível.
+ *
+ * - `audiencia`: snippet conhecido de outra audiência (`isSnippetEligibleForDiaria`).
+ * - `duplicado`: o mesmo arquivo já ocupa outro slot desta edição.
+ * - `evento`: compartilha chave de evento com um arquivo já atribuído.
+ *
+ * Arquivo que não existe em `snippets` (config apontando pra nome ausente,
+ * fixture) não é julgado por audiência/evento — sem dado pra decidir, segue
+ * o comportamento de sempre (o stitch já trata arquivo ausente à parte).
+ */
+export function checkFallbackEligibility(opts: {
+  file: string;
+  snippetByFile: ReadonlyMap<string, SnippetInfo>;
+  assignedFiles: ReadonlySet<string>;
+}): FallbackRejectReason | null {
+  const snippet = opts.snippetByFile.get(opts.file);
+  if (snippet && !isSnippetEligibleForDiaria(snippet)) return "audiencia";
+  if (opts.assignedFiles.has(opts.file)) return "duplicado";
+  const keys = snippet?.eventKeys ?? [];
+  if (keys.length > 0) {
+    for (const other of opts.assignedFiles) {
+      const otherKeys = opts.snippetByFile.get(other)?.eventKeys ?? [];
+      if (otherKeys.some((k) => keys.includes(k))) return "evento";
+    }
+  }
+  return null;
 }
 
 export interface ResolveBoxesOpts {
@@ -594,6 +635,12 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
 
   const snippetByFile = new Map(snippets.map((s) => [s.file, s]));
 
+  // #9155: arquivos já atribuídos nesta edição ANTES de julgar os fallbacks —
+  // slot0, slots pinados (pin manual sempre vence) e picks auto. Fallback
+  // aceito entra no conjunto, então o slot 2 enxerga o fallback do slot 1.
+  const assignedForFallback = new Set<string>(alreadyAssignedFiles);
+  for (const p of picks) if (p.file) assignedForFallback.add(p.file);
+
   const selection: SlotSelectionRecord[] = [];
   for (const slot of [1, 2] as const) {
     if (autoCfg.pinnedSlots.has(slot)) {
@@ -625,7 +672,32 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
         seasonal: snippet?.seasonal ?? null,
       });
     } else {
-      const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
+      const fallbackFile = effective[SLOT_KEY[slot]];
+      const rejectReason = fallbackFile
+        ? checkFallbackEligibility({ file: fallbackFile, snippetByFile, assignedFiles: assignedForFallback })
+        : null;
+      if (fallbackFile && rejectReason) {
+        // #9155: slot sai VAZIO em vez de usar um fallback que o #9104 barraria.
+        effective[SLOT_KEY[slot]] = null;
+        process.stderr.write(
+          `[select-boxes-by-clicks] warn — slot ${slot}: fallback \`${fallbackFile}\` recusado (${rejectReason}); slot fica vazio nesta edição (#9155)\n`,
+        );
+        selection.push({
+          slot,
+          mode: "fallback-ineligible",
+          file: null,
+          rejectedFile: fallbackFile,
+          rejectReason,
+          nome: null,
+          score: null,
+          trend: null,
+          editionsAppeared: null,
+          seasonal: null,
+        });
+        continue;
+      }
+      if (fallbackFile) assignedForFallback.add(fallbackFile);
+      const snippet = snippetByFile.get(fallbackFile ?? "");
       selection.push({
         slot,
         mode: "fallback-no-candidates",
