@@ -432,6 +432,9 @@ export interface LockFs {
  * spawns, #6090/#6668/#6800/#7740) preservado no changelog do PR que
  * introduziu esta mudança; não repetido aqui linha a linha para não inflar
  * este comentário a cada revisão futura do pior caso.
+ *
+ * #9107 (30/09/2026): voltou de 12 para 13 — `git diff --name-only` (passo 8
+ * acima) decide se o stash precisa de `--include-untracked`. Valor atual: 13.
  */
 export const MAX_SEQUENTIAL_GIT_SPAWNS = 13;
 
@@ -877,21 +880,28 @@ export function parseUntrackedPaths(porcelainStdout: string): string[] {
  * caminhos tocados entre HEAD e origin/master (`git diff --name-only -z
  * --no-renames HEAD origin/master`, separada por NUL). Colisão =
  *   - mesmo caminho (upstream adiciona um arquivo que já existe untracked);
- *   - entrada untracked é diretório (`dir/`) e upstream toca algo sob ele;
+ *   - entrada untracked é diretório (`dir/`) e upstream toca algo sob ele,
+ *     ou cria um ARQUIVO chamado `dir`;
  *   - entrada untracked é arquivo e upstream cria algo sob `arquivo/`.
+ * Comparação case-insensitive (NTFS/APFS).
  * Entrada entre aspas (caminho com caractere especial que o porcelain sem
  * `-z` escapa) nunca é comparável com segurança → conta como colisão, o que
  * devolve o comportamento conservador anterior (stash com
  * `--include-untracked`). Puro, sem I/O.
  */
 export function untrackedCollidesWithUpstream(untracked: string[], upstreamPaths: string[]): boolean {
-  for (const u of untracked) {
-    if (u.startsWith('"')) return true;
-    if (u.endsWith("/")) {
-      if (upstreamPaths.some((p) => p.startsWith(u))) return true;
-    } else if (upstreamPaths.some((p) => p === u || p.startsWith(`${u}/`))) {
-      return true;
-    }
+  // Comparação case-INSENSITIVE sempre: em NTFS/APFS `Foo.md` e `foo.md` são o
+  // mesmo arquivo em disco. No Linux isso só gera colisão falsa rara, que cai
+  // no lado seguro (`-u`, comportamento anterior).
+  const upstream = upstreamPaths.map((p) => p.toLowerCase());
+  for (const raw of untracked) {
+    if (raw.startsWith('"')) return true;
+    const u = raw.toLowerCase();
+    // Diretório (`dir/`) e arquivo são normalizados pra mesma base: colide se
+    // o upstream toca o próprio caminho (arquivo `dir` vs diretório local
+    // `dir/`, ou arquivo exato) ou algo sob ele.
+    const base = u.endsWith("/") ? u.slice(0, -1) : u;
+    if (upstream.some((p) => p === base || p.startsWith(`${base}/`))) return true;
   }
   return false;
 }
@@ -1298,8 +1308,11 @@ function syncCodeLocked(
         // único agora, sem sub-caso de pop bem-sucedido.
         const msg =
           `[git-sync] ERROR: git ${stashArgs.slice(0, -2).join(" ")} saiu com erro (exit ${stashRes.status}) E criou ` +
-          `um stash (${stashRefAfter}) apesar disso — possível remoção NÃO-RECUPERÁVEL de arquivos não-` +
-          `rastreados (#3411). Stash preservado (NUNCA despopado automaticamente — #8719, decisão do ` +
+          `um stash (${stashRefAfter}) apesar disso` +
+          (includeUntracked
+            ? ` — possível remoção NÃO-RECUPERÁVEL de arquivos não-rastreados (#3411)`
+            : ` (stash só do rastreado, #9107 — untracked não foram tocados)`) +
+          `. Stash preservado (NUNCA despopado automaticamente — #8719, decisão do ` +
           `editor de 24/09/2026): 'git stash show -p ${stashRefAfter}' ou 'git stash apply ${stashRefAfter}'. ` +
           `Identificável por mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'. ` +
           `Stderr stash: ${stashRes.stderr.trim() || "(vazio)"}`;
@@ -1326,7 +1339,8 @@ function syncCodeLocked(
     // Dentro do branch isDirty, o esperado é que algo tenha sido guardado; só
     // tratamos como "nada stashado" quando o git explicitamente diz que não
     // havia nada (working tree "dirty" só porque `git status` falhou acima —
-    // ver comentário do dirty check).
+    // ver comentário do dirty check — ou, desde #9107, só havia untracked sem
+    // colisão e o stash foi sem `-u`).
     const stashedNothing =
       /no local changes to save/i.test(stashRes.stdout) ||
       /n(ã|a)o h(á|a) (mudan|altera)/i.test(stashRes.stdout);
@@ -1355,7 +1369,8 @@ function syncCodeLocked(
     // pedindo recuperação manual sempre que `preserved_stash` não é `null`.
     if (!stashedSomething) {
       // Nada foi de fato guardado (working tree só "dirty" por `git status`
-      // ter falhado acima) — não há stash pra preservar, comportamento igual
+      // ter falhado acima, ou — #9107 — só untracked sem colisão, deixados no
+      // lugar pelo stash sem `-u`) — não há stash pra preservar, comportamento igual
       // ao de tree limpa a partir daqui.
       if (pullRes.status !== 0) {
         const msg =

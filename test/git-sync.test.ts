@@ -2116,6 +2116,11 @@ describe("git-sync — #9107: untracked travados não derrubam o sync", () => {
     assert.equal(untrackedCollidesWithUpstream(["a"], ["ab.ts"]), false);
     assert.equal(untrackedCollidesWithUpstream(['"com espaço.txt"'], ["outro.ts"]), true);
     assert.equal(untrackedCollidesWithUpstream([], ["x.ts"]), false);
+    // Review do PR: diretório local vs ARQUIVO homônimo novo no upstream.
+    assert.equal(untrackedCollidesWithUpstream(["dir/"], ["dir"]), true);
+    // Case-insensitive (NTFS/APFS: mesmo arquivo em disco).
+    assert.equal(untrackedCollidesWithUpstream(["Foo.md"], ["foo.md"]), true);
+    assert.equal(untrackedCollidesWithUpstream(["Skills/"], ["skills/x.md"]), true);
   });
 
   // Reprodução do incidente 260930: untracked sem permissão (diretórios de
@@ -2242,6 +2247,28 @@ describe("git-sync — #9107: untracked travados não derrubam o sync", () => {
     assert.equal(r.outcome, "ff_failed");
     assert.equal(r.preserved_stash, null);
     assert.ok(!calls.includes(STASH_PUSH_KEY));
+  });
+
+  it("stash só do rastreado sai não-zero mas cria stash → mensagem não alega remoção de untracked", () => {
+    const spawn = makeSequencedSpawn(
+      {
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(INCIDENT_STATUS),
+        [DIFF_UPSTREAM_KEY]: ok("scripts/x.ts\0"),
+        [STASH_PUSH_TRACKED_ONLY_KEY]: fail("erro simulado"),
+      },
+      {
+        "git merge --ff-only origin/master": [fail("error: would be overwritten")],
+        "git rev-parse --verify refs/stash": [fail("fatal: Needed a single revision"), ok("new9107\n")],
+      },
+    );
+
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.equal(r.outcome, "stash_partial_failure_unrecovered");
+    assert.doesNotMatch(r.message, /--include-untracked/);
+    assert.doesNotMatch(r.message, /remoção NÃO-RECUPERÁVEL/);
+    assert.deepEqual(r.preserved_stash, { ref: "new9107", message: GIT_SYNC_STASH_MESSAGE });
   });
 
   it("sem untracked nenhum → nenhum diff extra, --include-untracked como sempre", () => {
