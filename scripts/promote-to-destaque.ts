@@ -264,6 +264,8 @@ export function promoteToDestaque(
 
   const d = `d${position}`;
   const nextSteps = [
+    // #9102: sem isto o writer-destaque escreve sem texto-fonte e o fact-checker lê manifest defasado.
+    `Re-baixar a fonte do destaque novo e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${editionDir}/ — rodar UMA vez; passar o path da entrada de sources com destaque === ${position} como source_text_path ao writer-destaque.`,
     `Escrever o bloco **DESTAQUE ${position}** em 02-reviewed.md (writer-destaque) a partir do item promovido.`,
     `Escrever a seção ## ${d} em 03-social.md (# Social e # Curto).`,
     `Escrever _internal/02-${d}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${editionDir}/_internal/02-${d}-prompt.md --out-dir ${editionDir}/ --destaque ${d}`,

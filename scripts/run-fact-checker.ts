@@ -501,25 +501,47 @@ export function manifestMatchesCurrentUrls(
  * nunca serve ao fact-checker texto bruto de uma URL que não é mais a do
  * destaque atual.
  */
+/**
+ * (#9102) URL de cada destaque (máx. 3) em `01-approved.json`, por posição.
+ * Fallback pra `article.url` quando o wrapper não traz `url` no topo — o
+ * wrapper montado à mão na substituição de §4d.1b pode esquecer o campo.
+ */
+export function highlightSourceUrls(approved: unknown): Array<string | undefined> {
+  const highlights =
+    (approved as { highlights?: Array<{ url?: string; article?: { url?: string } }> } | null)?.highlights ?? [];
+  return Array.from({ length: Math.min(highlights.length, 3) }, (_, i) => highlights[i]?.url ?? highlights[i]?.article?.url);
+}
+
+/**
+ * (#8782, #9102) Critério ÚNICO de reuso do cache de `fact-check-sources/`:
+ * manifest bate URL a URL com os destaques atuais, todo status `ok` e todo
+ * `d{N}.txt` presente. Usado por `prefetchHighlightSources` e por
+ * `refresh-destaque-sources.ts` — nunca duplicar.
+ */
+export function isHighlightSourcesCacheFresh(approved: unknown, internalDir: string): boolean {
+  const dir = join(internalDir, "fact-check-sources");
+  const manifest = readExistingManifest(dir);
+  return (
+    manifestMatchesCurrentUrls(manifest, highlightSourceUrls(approved)) &&
+    // Cinto e suspensório: manifest pode bater mas o .txt ter sido apagado
+    // manualmente (ou nunca escrito) — nesse caso não há o que reusar.
+    manifest!.every((entry) => existsSync(join(dir, `d${entry.destaque}.txt`)))
+  );
+}
+
 export async function prefetchHighlightSources(
   approved: unknown,
   internalDir: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<PrefetchedSource[]> {
-  const highlights = (approved as { highlights?: Array<{ url?: string }> } | null)?.highlights ?? [];
   const dir = join(internalDir, "fact-check-sources");
   const out: PrefetchedSource[] = [];
   const manifest: ManifestEntry[] = [];
   mkdirSync(dir, { recursive: true });
 
-  const currentUrls = Array.from({ length: Math.min(highlights.length, 3) }, (_, i) => highlights[i]?.url);
-  const existingManifest = readExistingManifest(dir);
-  const cacheFresh =
-    manifestMatchesCurrentUrls(existingManifest, currentUrls) &&
-    // Cinto e suspensório: manifest pode bater mas o .txt ter sido apagado
-    // manualmente (ou nunca escrito) — nesse caso não há o que reusar.
-    existingManifest!.every((entry) => existsSync(join(dir, `d${entry.destaque}.txt`)));
-  if (cacheFresh) {
+  const currentUrls = highlightSourceUrls(approved);
+  if (isHighlightSourcesCacheFresh(approved, internalDir)) {
+    const existingManifest = readExistingManifest(dir);
     // Cache fresco: reusa os d{N}.txt já em disco, sem tocar rede nem rm.
     return existingManifest!.map((entry) => ({
       destaque: entry.destaque,
@@ -532,8 +554,8 @@ export async function prefetchHighlightSources(
   // Nunca mistura entradas velhas com novas — o agente nunca deve ler fonte velha.
   for (const n of [1, 2, 3]) rmSync(join(dir, `d${n}.txt`), { force: true });
   rmSync(join(dir, "manifest.json"), { force: true });
-  for (let i = 0; i < Math.min(highlights.length, 3); i++) {
-    const url = highlights[i]?.url;
+  for (let i = 0; i < currentUrls.length; i++) {
+    const url = currentUrls[i];
     if (!url) continue;
     const fetched_at = new Date().toISOString();
     const r = await fetchSourceText(url, fetchImpl);
