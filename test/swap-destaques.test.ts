@@ -724,7 +724,7 @@ describe("swap-destaques.ts CLI (#8995)", () => {
 // ---------------------------------------------------------------------------
 
 describe("swap-destaques.ts × social-hash-fresh (#9149)", () => {
-  it("não recarimba o hash no swap (guard do #1413 segue armado) e refresh-social-hash depois do splice faz o check passar", () => {
+  it("não recarimba o hash no swap (guard do #1413 segue armado) e splice + refresh-social-hash fazem o check passar", () => {
     const dir = makeTempEdition({ withMd: true });
     const internalDir = join(dir, "_internal");
     try {
@@ -747,7 +747,11 @@ describe("swap-destaques.ts × social-hash-fresh (#9149)", () => {
       assert.equal(stale[0].rule, "social-hash-fresh");
       assert.equal(stale[0].severity, "error");
 
-      // Após o splice do social, o recarimbo do next_steps destrava o check.
+      // Splice do ## d1 novo (o que o social-writer faria), e SÓ ENTÃO o
+      // recarimbo do next_steps destrava o check. Obs.: o check só compara
+      // hashes — um recarimbo prematuro também o silenciaria; a ordem é
+      // garantida pelo next_steps (teste abaixo), não mecanicamente.
+      writeFileSync(join(dir, "03-social.md"), "# Social\n\n## d1\n\nTexto d1 novo.\n");
       refreshSocialHash(dir);
       assert.deepEqual(checkSocialHashFresh(dir), []);
     } finally {
@@ -760,7 +764,9 @@ describe("swap-destaques.ts × social-hash-fresh (#9149)", () => {
       { position: 1, url: "https://novo.com/x", title: "X" },
       { position: 3, url: "https://novo.com/z", title: "Z" },
     ]);
-    assert.match(steps[0], /refresh-destaque-sources\.ts --edition-dir \/ed\/260929\//);
+    assert.match(steps[0], /refresh-destaque-sources\.ts --edition-dir \/ed\/260929 /);
+    // barra final no editionDir não duplica (review #9171)
+    assert.ok(buildSwapNextSteps("/ed/260929/", [{ position: 1, url: "u", title: "t" }]).every((s) => !s.includes("//ed") && !s.includes("260929//")));
     const iWriter = steps.findIndex((s) => /writer-destaque/.test(s) && /DESTAQUE 1/.test(s));
     const iSocial = steps.findIndex((s) => /social-writer/.test(s));
     const iHash = steps.findIndex((s) => /refresh-social-hash\.ts/.test(s));
