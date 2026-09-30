@@ -70,6 +70,8 @@ import {
   type PromotionRemoveIo,
   type ActiveSessionRecord,
 } from "../scripts/lib/session-registry.ts";
+import { breakStaleLock } from "../scripts/lib/session-registry.ts";
+import { lockHostId } from "../scripts/lib/file-lock.ts";
 
 /** Struct local — `MergeLockRecord` não é exportado, só o formato JSON no disco. */
 type MergeLockRecord = { heldBy: string; acquiredAt: string };
@@ -4175,6 +4177,52 @@ describe("#6952 — endSession quebra lock órfão antes de adquirir", () => {
     );
     assert.equal(existsSync(path), true, "o registro não pode sumir enquanto outro escritor tem o lock");
     unlinkSync(lockPath);
+  });
+});
+
+// ─── #9193 — breakStaleLock respeita o dono registrado ───────────────────────
+// Antes: quebrava por IDADE (mtime > 60s) ignorando o `{pid, host, ts, token}`
+// que `file-lock.ts` grava desde #9185, e sem releitura antes do unlink —
+// uma seção crítica lenta de um dono VIVO perdia o lock.
+describe("#9193 — breakStaleLock segue a política de órfão do file-lock", () => {
+  const roots9193: string[] = [];
+  after(() => { for (const r of roots9193) rmSync(r, { recursive: true, force: true }); });
+  function lockAt(content: string, ageMs: number): string {
+    const root = mkdtempSync(join(tmpdir(), "bsl-9193-"));
+    roots9193.push(root);
+    const p = join(root, "x.json.lock");
+    writeFileSync(p, content, "utf8");
+    const old = new Date(Date.now() - ageMs);
+    utimesSync(p, old, old);
+    return p;
+  }
+
+  it("dono VIVO deste host com lock velho NÃO é quebrado (era quebrado por idade)", () => {
+    const p = lockAt(JSON.stringify({ pid: process.pid, host: lockHostId(), ts: 0, token: "t" }), 600_000);
+    assert.equal(breakStaleLock(p), false);
+    assert.equal(existsSync(p), true);
+  });
+
+  it("dono de OUTRO host nunca é quebrado, por mais velho que seja", () => {
+    const p = lockAt(JSON.stringify({ pid: 1234567, host: "outra-maquina", ts: 0, token: "t" }), 600_000);
+    assert.equal(breakStaleLock(p), false);
+    assert.equal(existsSync(p), true);
+  });
+
+  it("dono MORTO deste host é quebrado mesmo com lock recente", () => {
+    const dead = spawnSync(process.execPath, ["-e", "0"]).pid as number;
+    const p = lockAt(JSON.stringify({ pid: dead, host: lockHostId(), ts: 0, token: "t" }), 0);
+    assert.equal(breakStaleLock(p), true);
+    assert.equal(existsSync(p), false);
+  });
+
+  it("conteúdo legado segue o critério de idade STALE_LOCK_MS", () => {
+    const fresh = lockAt("", 10_000);
+    assert.equal(breakStaleLock(fresh), false);
+    assert.equal(existsSync(fresh), true);
+    const p = lockAt("", 150_000);
+    assert.equal(breakStaleLock(p), true);
+    assert.equal(existsSync(p), false);
   });
 });
 
