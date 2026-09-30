@@ -389,9 +389,13 @@ describe("#8555 — revisão: conciliação por id, falhas e índice", () => {
     });
   });
 
-  it("N falhas de TRANSPORTE consecutivas NUNCA chegam a skipped-failed-permanent (não contam tentativa)", async () => {
+  it("N falhas de TRANSPORTE pré-POST (token) consecutivas NUNCA chegam a skipped-failed-permanent (não contam tentativa)", async () => {
     await withTmp(async (dir) => {
-      const sendFn = transportFailSend();
+      // #9157: só falha em que o POST NÃO saiu (env/token) fica sem teto; a de
+      // `stage: "ingest"` tem teto próprio (google-ads-confirmation-repost-9157.test.ts).
+      const sendFn = mock.fn(async (_events: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({
+        ok: false, stage: "token", error: "token", countsAsAttempt: false,
+      }));
       const args = { roster: [sub(1)], baseSnapshot: [base(1)], sendFn };
       let last;
       for (let i = 0; i < MAX_FAILED_ATTEMPTS + 5; i++) last = await run(dir, args);

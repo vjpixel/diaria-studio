@@ -55,8 +55,13 @@
  * `skipped-failed-permanent` e `failed` (recusa/erro por chunk, com contador
  * de tentativas; após `MAX_FAILED_ATTEMPTS` vira `skipped-failed-permanent`).
  * Só recusa 4xx (exceto 429) consome tentativa: 5xx/429 do Google e falha de
- * rede/credencial gravam `failed` sem incrementar, e o teto deles é a janela
- * de 90 dias (#9067, par do #9022 da Meta). A task é DIÁRIA (07:20 BRT), então
+ * rede/credencial gravam `failed` sem incrementar (#9067, par do #9022 da
+ * Meta) — 5xx/429 seguem com teto = janela de 90 dias, contrato do #9067.
+ * Mas a falha AMBÍGUA no estágio `ingest` (exceção de rede no fetch — antes
+ * OU depois de o request sair, o sender não distingue — ou 2xx anômalo, sem
+ * `requestId`/não-JSON) incrementa `uncountedPostAttempts`, com teto próprio
+ * `MAX_UNCOUNTED_POST_ATTEMPTS` (#9157) — antes reenviava o mesmo evento até
+ * ~90x. A task é DIÁRIA (07:20 BRT), então
  * 3 tentativas = 3 dias — mas nada impede uma futura troca de cadência, como a
  * da Meta no #8978, de encolher essa janela.
  * Índice ilegível/corrompido LANÇA (nunca vira `{}`, senão reenviaria tudo).
@@ -113,6 +118,7 @@ import {
   buildDataManagerEvent,
   chunkDataManagerEvents,
   type DataManagerEvent,
+  isTransientDataManagerStatus,
   type DataManagerIngestResult,
 } from "./google-data-manager-sender.ts";
 import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME, REATIVAR_CONFIRMOU_VIA_VALUE } from "./shared/reativar-confirmou-via.ts";
@@ -131,6 +137,21 @@ export const KIT_EXTERNAL_ID_FIELD_NAME = "origem_external_id";
 export const DEFAULT_LOOKBACK_DAYS = 7;
 export const CONFIRMATION_ORDER_ID_PREFIX = "diaria-confirmacao-kit-";
 export const MAX_FAILED_ATTEMPTS = 3;
+/**
+ * #9157: teto das falhas AMBÍGUAS no POST `events:ingest` (`stage: "ingest"`,
+ * `countsAsAttempt: false` e sem HTTP transitório — exceção de rede no fetch,
+ * 2xx não-JSON ou sem `requestId`). 5xx/429 (`httpStatus` transitório) ficam
+ * FORA deste teto: o contrato do #9067 é que nunca viram permanentes.
+ * Nesses casos o Google pode ter processado o lote (a exceção de rede é
+ * contada mesmo quando o request nem saiu — o sender não distingue a fase;
+ * numa queda de rede local o refresh de token costuma falhar antes, e
+ * `token` segue sem teto); sem teto próprio a task
+ * diária re-POSTaria o mesmo evento até a janela de 90 dias (~90x), e o dedup
+ * por `transactionId` é best-effort. 5 (e não 3, como `MAX_FAILED_ATTEMPTS`)
+ * tolera alguns dias de rede instável sem descartar a linha. Falhas de `env`/`token` (nada foi enviado) seguem sem
+ * consumir teto nenhum.
+ */
+export const MAX_UNCOUNTED_POST_ATTEMPTS = 5;
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -184,6 +205,9 @@ export interface ConfirmationIndexEntry {
   at: string;
   path: ConfirmationPath;
   attempts?: number;
+  /** #9157: POSTs que saíram mas falharam sem contar tentativa (ver
+   *  `MAX_UNCOUNTED_POST_ATTEMPTS`). Ausente = 0. */
+  uncountedPostAttempts?: number;
   /** `requestId` do `events:ingest` (Data Manager) — só presente em
    *  `submitted`. Chave de reconciliação manual/diagnóstico assíncrono
    *  futuro (ver docstring do módulo, "Migração pra Data Manager API"). */
@@ -344,8 +368,10 @@ export interface ConfirmationBatchSummary {
    *  não-2xx, ou 2xx anômalo — corpo não-JSON/sem `requestId`) nesta rodada
    *  — granularidade de chunk, não de linha (ver docstring do módulo). Só o
    *  caso HTTP 4xx (exceto 429) conta tentativa rumo a `skipped-failed-permanent`
-   *  (`countsAsAttempt`, ver `sendDataManagerIngest`); os demais reprocessam
-   *  sem consumir o teto. */
+   *  (`countsAsAttempt`, ver `sendDataManagerIngest`); falhas
+   *  ambíguas em `ingest` (rede, 2xx anômalo) consomem
+   *  `MAX_UNCOUNTED_POST_ATTEMPTS` (#9157); `env`/`token` e 5xx/429 (#9067)
+   *  reprocessam sem teto além da janela de 90 dias. */
   failedIds: number[];
   /** Mensagens de erro dos chunks que falharam (até 10). */
   googleErrors: string[];
@@ -391,7 +417,7 @@ interface Entry {
 
 type Outcome =
   | { kind: "submitted"; requestId: string }
-  | { kind: "failed"; error: string; countsAsAttempt: boolean };
+  | { kind: "failed"; error: string; countsAsAttempt: boolean; ambiguousPost: boolean };
 
 /** Envia `entries` em chunks de até `DATA_MANAGER_MAX_EVENTS_PER_REQUEST`;
  *  devolve o resultado por posição de `entries` (mapeia por id, não por
@@ -414,7 +440,17 @@ async function sendEntries(
     for (let i = 0; i < chunk.length; i++) {
       outcomes[offset + i] = result.ok
         ? { kind: "submitted", requestId: result.requestId }
-        : { kind: "failed", error: result.error, countsAsAttempt: result.countsAsAttempt };
+        : {
+            kind: "failed",
+            error: result.error,
+            countsAsAttempt: result.countsAsAttempt,
+            // #9157: `env`/`token` param antes do POST (nada enviado); 5xx/429
+            // é transitório e nunca vira permanente (#9067). Sobra rede no
+            // fetch e 2xx anômalo — o Google pode ter processado.
+            ambiguousPost:
+              result.stage === "ingest" &&
+              !(result.httpStatus !== undefined && isTransientDataManagerStatus(result.httpStatus)),
+          };
     }
     if (!result.ok) {
       if (!error) error = result.error;
@@ -435,7 +471,11 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
   const isPending = (c: ConfirmationCandidate): boolean => {
     const e = index[indexKey(c.id)];
     if (!e) return true;
-    return e.status === "failed" && (e.attempts ?? 0) < MAX_FAILED_ATTEMPTS;
+    return (
+      e.status === "failed" &&
+      (e.attempts ?? 0) < MAX_FAILED_ATTEMPTS &&
+      (e.uncountedPostAttempts ?? 0) < MAX_UNCOUNTED_POST_ATTEMPTS
+    );
   };
   // Recusas anteriores (status failed) que saíram da janela do snapshot base
   // continuam elegíveis a retry enquanto active e abaixo do teto de tentativas.
@@ -563,25 +603,42 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
       // quando o Google de fato RESPONDEU com HTTP 4xx não-429 (`countsAsAttempt`,
       // decidido pelo sender — ver docstring de `sendDataManagerIngest`;
       // 5xx/429 são transitórios desde o #9067).
-      // 5xx/429 NÃO contam porque são instabilidade/throttling do Google
-      // (repetir resolve; teto = janela de 90 dias). `env`/`token` ausentes,
-      // exceção de rede, corpo 2xx não-JSON ou 2xx sem requestId também NÃO
-      // contam — não sabemos se o Google processou o payload. A linha só some
-      // pra sempre depois de MAX_FAILED_ATTEMPTS recusas determinísticas.
+      // 5xx/429 (instabilidade/throttling), exceção de rede, corpo 2xx
+      // não-JSON ou 2xx sem requestId NÃO contam tentativa. Os ambíguos (rede,
+      // 2xx anômalo) consomem o teto próprio abaixo; 5xx/429 (#9067) e
+      // `env`/`token` não. A linha some pra sempre após MAX_FAILED_ATTEMPTS
+      // recusas 4xx OU MAX_UNCOUNTED_POST_ATTEMPTS falhas ambíguas.
       summary.failed++;
       summary.failedIds.push(cand.id);
-      const prevAttempts = index[indexKey(cand.id)]?.attempts ?? 0;
+      // #9157: falha ambígua (POST pode ter saído e sido processado) consome
+      // um teto próprio (MAX_UNCOUNTED_POST_ATTEMPTS) — o Google pode ter
+      // processado o lote, e sem teto o mesmo evento sairia até ~90x.
+      const prev = index[indexKey(cand.id)];
+      const prevAttempts = prev?.attempts ?? 0;
+      const prevUncounted = prev?.uncountedPostAttempts ?? 0;
       if (!o.countsAsAttempt) {
-        record(cand, { status: "failed", attempts: prevAttempts });
-        log(`kit id ${cand.id}: falha transitória ou sem recusa determinística do Google (não conta tentativa) — ${o.error}`);
+        const uncounted = o.ambiguousPost ? prevUncounted + 1 : prevUncounted;
+        const extra = uncounted > 0 ? { uncountedPostAttempts: uncounted } : {};
+        if (uncounted >= MAX_UNCOUNTED_POST_ATTEMPTS) {
+          summary.failedPermanent++;
+          record(cand, { status: "skipped-failed-permanent", attempts: prevAttempts, ...extra });
+          log(
+            `kit id ${cand.id}: ${uncounted} POST(s) sem resposta conclusiva do Google — desistindo ` +
+              `(skipped-failed-permanent) pra não reenviar um evento que pode já ter sido processado. ${o.error}`,
+          );
+        } else {
+          record(cand, { status: "failed", attempts: prevAttempts, ...extra });
+          log(`kit id ${cand.id}: falha transitória ou sem recusa determinística do Google (não conta tentativa) — ${o.error}`);
+        }
       } else {
         const attempts = prevAttempts + 1;
+        const extra = prevUncounted > 0 ? { uncountedPostAttempts: prevUncounted } : {};
         if (attempts >= MAX_FAILED_ATTEMPTS) {
           summary.failedPermanent++;
-          record(cand, { status: "skipped-failed-permanent", attempts });
+          record(cand, { status: "skipped-failed-permanent", attempts, ...extra });
           log(`kit id ${cand.id} recusado ${attempts}x pelo Google — desistindo (skipped-failed-permanent). ${o.error}`);
         } else {
-          record(cand, { status: "failed", attempts });
+          record(cand, { status: "failed", attempts, ...extra });
         }
       }
     }
