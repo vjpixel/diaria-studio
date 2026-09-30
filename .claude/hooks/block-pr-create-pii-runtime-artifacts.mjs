@@ -77,7 +77,7 @@
 
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /**
  * Remove o CONTEÚDO de spans entre aspas (simples ou duplas), preservando
@@ -626,6 +626,8 @@ export function resolveGitRoot(candidates, gitRunner = runGit) {
 // entrypoint (nunca ao ser importado por test/block-pr-create-pii-runtime-artifacts.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

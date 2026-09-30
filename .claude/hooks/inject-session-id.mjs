@@ -472,8 +472,11 @@ export function buildUpdatedCommand(command, sessionId, pid) {
 
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/inject-session-id-hook.test.ts).
+import { pathToFileURL } from "node:url";
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

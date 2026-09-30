@@ -33,6 +33,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 /** Sons do Windows — preserva o comportamento original (#4830 "Causa"). */
 const WINDOWS_SOUNDS = {
@@ -134,6 +135,8 @@ export function resolveSoundCommand(
 // entrypoint (nunca ao ser importado por test/notify-sound-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

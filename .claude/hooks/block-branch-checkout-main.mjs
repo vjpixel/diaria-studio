@@ -103,7 +103,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
 
 /** Duplicado de `MAX_SESSION_AGE_MS` em `block-gh-pr-merge-subagent.mjs`/
@@ -337,6 +337,8 @@ export function shouldBlockBranchCheckout(activeCoordinatorSessionIds, callerSes
 // entrypoint (nunca ao ser importado por test/block-branch-checkout-main-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

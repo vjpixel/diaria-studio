@@ -23,7 +23,7 @@
 
 import { lstatSync, readlinkSync } from "node:fs";
 import { isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /**
  * Remove o CORPO de heredocs (`<<EOF ... EOF`, `<<'EOF' ... EOF`, `<<-EOF ...
@@ -39,7 +39,9 @@ import { fileURLToPath } from "node:url";
  */
 export function stripHeredocSpans(command) {
   if (typeof command !== "string") return command;
-  const startRe = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  // `(?<!<)`: `<<<` é here-string, não heredoc — sem o lookbehind o 2º `<`
+  // casava `<<palavra` e engolia o resto do comando (#9197).
+  const startRe = /(?<!<)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
   let result = "";
   let lastIndex = 0;
   let m;
@@ -350,7 +352,7 @@ export function blockReason({ dir, target }) {
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
+if ((process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) || import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));

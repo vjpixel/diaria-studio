@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, isAbsolute, join, resolve as resolvePath, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Utilitários compartilhados (parsing de comando) — duplicados de
@@ -28,6 +28,13 @@ export function stripQuotedSpans(command) {
   const n = command.length;
   while (i < n) {
     const ch = command[i];
+    // `\x` fora de aspas é caractere literal (`don\'t`), não abre span —
+    // sem isto a aspa escapada engolia o resto do comando (#9197).
+    if (ch === "\\" && i + 1 < n) {
+      result += command.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
     if (ch === "'") {
       let j = i + 1;
       while (j < n && command[j] !== "'") j++;
@@ -72,7 +79,9 @@ const SEPARATOR_RE = /(?:&&|;|\|\||\||\n)/;
  */
 export function stripHeredocSpans(command) {
   if (typeof command !== "string") return command;
-  const startRe = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  // `(?<!<)`: `<<<` é here-string, não heredoc — sem o lookbehind o 2º `<`
+  // casava `<<palavra` e engolia o resto do comando (#9197).
+  const startRe = /(?<!<)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
   let result = "";
   let lastIndex = 0;
   let m;
@@ -857,6 +866,8 @@ export const GIT_DESTRUCTIVE_BLOCK_REASON =
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

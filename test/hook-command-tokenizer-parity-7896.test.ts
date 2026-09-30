@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { stripQuotedSpans as stripQuotedSpansA, stripHeredocSpans as stripHeredocSpansA } from "../.claude/hooks/block-unsafe-shared-checkout-ops.mjs";
 import { stripQuotedSpans as stripQuotedSpansB, stripHeredocSpans as stripHeredocSpansB } from "../.claude/hooks/block-worktree-bare-push.mjs";
 import { stripQuotedSpans as stripQuotedSpansC, stripHeredocSpans as stripHeredocSpansC } from "../.claude/hooks/block-handwritten-pr-checks-loop.mjs";
+import { stripHeredocSpans as stripHeredocSpansD } from "../.claude/hooks/block-npm-install-node-modules-symlink.mjs";
 
 const QUOTED_SPAN_CASES = [
   "",
@@ -28,6 +29,9 @@ const QUOTED_SPAN_CASES = [
   `cd "C:/Users/x/data" && npm ci`,
   "gh pr create --body 'linha && outra; terceira'",
   "printf '%s\\n' 'a' 'b'",
+  // #9197: aspa escapada fora de aspas não abre span.
+  "echo don\\'t; git push",
+  'echo \\" ; git push',
 ];
 
 const HEREDOC_CASES = [
@@ -38,6 +42,9 @@ const HEREDOC_CASES = [
   "cat <<-EOF\n  git push\n  EOF",
   "gh issue create --body-file - <<'EOF'\nrode git push depois\nEOF\necho done",
   "echo sem heredoc && git push origin main",
+  // #9197: here-string (`<<<`) não é heredoc.
+  "cat <<< foo\ngit push\nfoo",
+  "cat <<<EOF\ngit push\nEOF",
 ];
 
 describe("Paridade stripQuotedSpans entre os 2 hooks (#7896)", () => {
@@ -66,6 +73,16 @@ describe("Paridade da 3ª cópia (block-handwritten-pr-checks-loop, #9161)", () 
   for (const input of HEREDOC_CASES) {
     it(`stripHeredocSpans casa para: ${JSON.stringify(input)}`, () => {
       assert.equal(stripHeredocSpansC(input), stripHeredocSpansB(input));
+    });
+  }
+});
+
+// #9197: `block-npm-install-node-modules-symlink.mjs` tem uma 4ª cópia de
+// `stripHeredocSpans` (sem `stripQuotedSpans` — usa `splitTopLevel` próprio).
+describe("Paridade stripHeredocSpans da 4ª cópia (block-npm-install-node-modules-symlink, #9197)", () => {
+  for (const input of HEREDOC_CASES) {
+    it(`casa para: ${JSON.stringify(input)}`, () => {
+      assert.equal(stripHeredocSpansD(input), stripHeredocSpansB(input));
     });
   }
 });
