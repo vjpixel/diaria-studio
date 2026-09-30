@@ -129,7 +129,8 @@ export function toBaseUrl(raw: string): string {
 
 /** #9131: identidade COMPLETA de uma URL — mantém a query (ao contrário de
  * `toBaseUrl`), mas normaliza o que não muda o destino: hash descartado,
- * parâmetros ordenados, trailing slash do path removida. Serve só de
+ * parâmetros ordenados, 1 trailing slash do path removida (mesma regra de
+ * `toBaseUrl`). Serve só de
  * DESEMPATE quando duas caixas compartilham a mesma base-URL (versões de uma
  * caixa que diferem por `utm_*`). Entrada inválida devolve como está. */
 export function toFullUrlKey(raw: string): string {
@@ -137,19 +138,10 @@ export function toFullUrlKey(raw: string): string {
     const u = new URL(raw);
     u.hash = "";
     u.searchParams.sort();
-    u.pathname = u.pathname.replace(/\/+$/, "") || "/";
+    u.pathname = u.pathname.replace(/\/$/, "") || "/";
     return u.toString();
   } catch {
     return raw;
-  }
-}
-
-/** #9131: valor de `utm_content` de uma URL, ou `null` (ausente/inválida). */
-export function utmContentOf(raw: string): string | null {
-  try {
-    return new URL(raw).searchParams.get("utm_content");
-  } catch {
-    return null;
   }
 }
 
@@ -235,31 +227,66 @@ export interface SnippetMatch {
  * #9131: quando >1 snippet compartilha a base-URL (versões da mesma caixa que
  * diferem só por `utm_*` — ex. `diaria-imersao1010.md` e
  * `workshop-agente-ia-outubro.md`, ambos em `/evento/agente-ia`), desempata
- * antes de cair no 1º em ordem alfabética: (1) URL completa idêntica
- * (`toFullUrlKey`), (2) mesmo `utm_content`. Sem desempate possível, mantém
- * o 1º — comportamento pré-#9131. */
+ * pelo nº de parâmetros de query idênticos (`key=value`) entre a URL do box e
+ * a URL do snippet — URL completa idêntica (`toFullUrlKey`) sempre vence, e
+ * `utm_source` diferente perde para `utm_source` igual mesmo com
+ * `utm_content` compartilhado (diária × Clarice). Empate → prefere o arquivo
+ * que não é cópia (`-copia.md`, ver `isSnippetCopyFile`) → 1º na ordem dada.
+ * Sem desempate possível numa URL, as URLs seguintes do box ainda são
+ * testadas; só no fim cai no 1º candidato da 1ª URL que bateu por base —
+ * comportamento pré-#9131. */
 export function matchSnippetForBox(
   boxText: string,
   snippets: SnippetInfo[],
 ): SnippetMatch | null {
+  let fallback: SnippetMatch | null = null;
   for (const rawUrl of extractUrls(boxText)) {
     const baseUrl = toBaseUrl(rawUrl);
     const candidates = snippets.filter((s) => s.urls.includes(baseUrl));
     if (candidates.length === 0) continue;
     if (candidates.length === 1) return { snippet: candidates[0], url: rawUrl };
-    const fullKey = toFullUrlKey(rawUrl);
-    const exact = candidates.find((s) => s.fullUrls?.includes(fullKey));
-    if (exact) return { snippet: exact, url: rawUrl };
-    const content = utmContentOf(rawUrl);
-    if (content !== null) {
-      const byContent = candidates.find((s) =>
-        (s.fullUrls ?? []).some((u) => toBaseUrl(u) === baseUrl && utmContentOf(u) === content),
-      );
-      if (byContent) return { snippet: byContent, url: rawUrl };
-    }
-    return { snippet: candidates[0], url: rawUrl };
+    const best = pickBestCandidate(rawUrl, baseUrl, candidates);
+    if (best) return { snippet: best, url: rawUrl };
+    fallback ??= { snippet: candidates[0], url: rawUrl };
   }
-  return null;
+  return fallback;
+}
+
+/** #9131: `true` para arquivo de cópia solta (`x-copia.md`, `x-cópia-2.md`,
+ * `x-copy.md`) — perde o desempate para o original com a mesma URL. */
+export function isSnippetCopyFile(file: string): boolean {
+  return /[-_ ](copia|cópia|copy)(-\d+)?\.md$/i.test(file);
+}
+
+function queryPairs(raw: string): Set<string> {
+  try {
+    return new Set([...new URL(raw).searchParams].map(([k, v]) => `${k}=${v}`));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Desempate de `matchSnippetForBox` entre candidatos com a mesma base-URL.
+ * `null` = nenhum sinal (box sem query compartilhada com nenhum candidato). */
+function pickBestCandidate(rawUrl: string, baseUrl: string, candidates: SnippetInfo[]): SnippetInfo | null {
+  const fullKey = toFullUrlKey(rawUrl);
+  const boxPairs = queryPairs(rawUrl);
+  const scoreOf = (s: SnippetInfo): number => {
+    let best = 0;
+    for (const u of s.fullUrls ?? []) {
+      if (toBaseUrl(u) !== baseUrl) continue;
+      if (u === fullKey) return Number.POSITIVE_INFINITY;
+      let n = 0;
+      for (const pair of queryPairs(u)) if (boxPairs.has(pair)) n++;
+      best = Math.max(best, n);
+    }
+    return best;
+  };
+  const scored = candidates.map((s) => ({ s, score: scoreOf(s) }));
+  const top = Math.max(...scored.map((x) => x.score));
+  if (top <= 0) return null;
+  const tied = scored.filter((x) => x.score === top).map((x) => x.s);
+  return tied.find((s) => !isSnippetCopyFile(s.file)) ?? tied[0];
 }
 
 export interface ClickLike {

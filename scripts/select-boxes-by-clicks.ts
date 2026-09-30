@@ -60,7 +60,7 @@
  *
  * Uso standalone (debug/inspeção — a integração real acontece via import de
  * `resolveBoxesForEdition` por `scripts/stitch-newsletter.ts`):
- *   npx tsx scripts/select-boxes-by-clicks.ts --edition AAMMDD [--last N] [--destaques N]
+ *   npx tsx scripts/select-boxes-by-clicks.ts --edition AAMMDD [--last N] [--destaques 2|3]
  * (#9196: sem `--destaques`, o nº de destaques vem de
  * `_internal/01-approved-capped.json` da edição — mesmo valor do stitch.)
  *
@@ -770,30 +770,41 @@ export function readEditionDestaqueCount(aammdd: string, editionsDir: string = E
   if (!dir) return undefined;
   const path = join(dir, "_internal", "01-approved-capped.json");
   if (!existsSync(path)) return undefined;
+  const warn = (why: string, stitch: string) =>
+    process.stderr.write(
+      `[select-boxes-by-clicks] warn — ${path}: ${why}; assumindo 3 destaques (o stitch real ${stitch}). Passe --destaques 2|3 pra forçar.\n`,
+    );
   try {
     const approved = JSON.parse(readFileSync(path, "utf8")) as { highlights?: unknown };
-    return Array.isArray(approved.highlights) ? approved.highlights.length : undefined;
-  } catch {
+    if (Array.isArray(approved.highlights)) return approved.highlights.length;
+    warn("sem `highlights`", "também assume 3");
+    return undefined;
+  } catch (e) {
+    warn(`JSON corrompido (${(e as Error).message})`, "abortaria");
     return undefined;
   }
 }
 
+/** #9196: valor de `--destaques N`. `undefined` = flag ausente; `null` =
+ * valor inválido (edição tem sempre 2 ou 3 destaques, #3369). */
+export function parseDestaquesArg(argv: readonly string[]): 2 | 3 | null | undefined {
+  const idx = argv.indexOf("--destaques");
+  if (idx === -1) return undefined;
+  const n = Number(argv[idx + 1]);
+  return n === 2 || n === 3 ? n : null;
+}
+
 /**
- * #9196: `destaqueCount` efetivo do CLI — `--destaques N` explícito vence;
- * senão, o valor lido da edição (`readEditionDestaqueCount`). `undefined` =
- * default 3 no resolver.
+ * #9196: `destaqueCount` efetivo do CLI — `--destaques N` explícito (já
+ * validado por `parseDestaquesArg`) vence; senão, o valor lido da edição
+ * (`readEditionDestaqueCount`). `undefined` = default 3 no resolver.
  */
 export function resolveCliDestaqueCount(
-  argv: readonly string[],
+  explicit: number | undefined,
   aammdd: string,
   editionsDir: string = EDITIONS_DIR,
 ): number | undefined {
-  const idx = argv.indexOf("--destaques");
-  if (idx !== -1) {
-    const n = Number(argv[idx + 1]);
-    if (Number.isInteger(n) && n > 0) return n;
-  }
-  return readEditionDestaqueCount(aammdd, editionsDir);
+  return explicit ?? readEditionDestaqueCount(aammdd, editionsDir);
 }
 
 function main(): void {
@@ -804,16 +815,13 @@ function main(): void {
   const lastN = lastIdx !== -1 && argv[lastIdx + 1] ? Number(argv[lastIdx + 1]) : undefined;
 
   if (!edition || !/^\d{6}$/.test(edition)) {
-    console.error("uso: select-boxes-by-clicks.ts --edition AAMMDD [--last N] [--destaques N]");
+    console.error("uso: select-boxes-by-clicks.ts --edition AAMMDD [--last N] [--destaques 2|3]");
     process.exit(2);
   }
-  const destaquesIdx = argv.indexOf("--destaques");
-  if (destaquesIdx !== -1) {
-    const n = Number(argv[destaquesIdx + 1]);
-    if (!Number.isInteger(n) || n <= 0) {
-      console.error("uso: select-boxes-by-clicks.ts --edition AAMMDD [--last N] [--destaques N]  (N inteiro > 0)");
-      process.exit(2);
-    }
+  const destaquesArg = parseDestaquesArg(argv);
+  if (destaquesArg === null) {
+    console.error("uso: select-boxes-by-clicks.ts --edition AAMMDD [--last N] [--destaques 2|3]");
+    process.exit(2);
   }
 
   if (!existsSync(EDITIONS_DIR)) {
@@ -843,7 +851,7 @@ function main(): void {
     aammdd: edition,
     boxesCfg,
     autoCfg: lastN && lastN > 0 ? { ...autoCfg, lastN } : autoCfg,
-    destaqueCount: resolveCliDestaqueCount(argv, edition),
+    destaqueCount: resolveCliDestaqueCount(destaquesArg, edition),
   });
 
   console.log(JSON.stringify(result, null, 2));

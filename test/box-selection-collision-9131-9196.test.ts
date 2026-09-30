@@ -20,12 +20,14 @@ import {
   resolveBoxesForEdition,
   readEditionDestaqueCount,
   resolveCliDestaqueCount,
+  parseDestaquesArg,
   type RankedBox,
 } from "../scripts/select-boxes-by-clicks.ts";
 import {
   matchSnippetForBox,
   parseSnippetContent,
   toFullUrlKey,
+  isSnippetCopyFile,
   type SnippetInfo,
 } from "../scripts/box-click-report.ts";
 
@@ -73,7 +75,34 @@ describe("#9131 item 1 — matchSnippetForBox desempata caixas com a mesma base-
     assert.equal(matchSnippetForBox(`[x](${reordered})`, snippets)?.snippet.file, "workshop-agente-ia-outubro.md");
   });
 
-  it("sem URL idêntica, desempata pelo utm_content", () => {
+  it("cópia solta com URL idêntica (workshop-…-copia.md) perde para o original", () => {
+    const withCopy = [...snippets, parseSnippetContent("workshop-agente-ia-outubro-copia.md", WORKSHOP)].sort((a, b) =>
+      a.file.localeCompare(b.file),
+    );
+    assert.equal(withCopy[2].file, "workshop-agente-ia-outubro-copia.md"); // readdir põe a cópia antes
+    assert.equal(matchSnippetForBox(`[x](${WORKSHOP_URL})`, withCopy)?.snippet.file, "workshop-agente-ia-outubro.md");
+    assert.equal(isSnippetCopyFile("x-copia.md"), true);
+    assert.equal(isSnippetCopyFile("x-cópia-2.md"), true);
+    assert.equal(isSnippetCopyFile("copiadora.md"), false);
+  });
+
+  it("sem URL idêntica, utm_source igual vence utm_content compartilhado (diária × Clarice)", () => {
+    const edited = `${DIARIA_URL}&ref=editor`;
+    assert.equal(matchSnippetForBox(`[x](${edited})`, snippets)?.snippet.file, "diaria-imersao1010.md");
+  });
+
+  it("toFullUrlKey mantém distintos utm_source diferentes", () => {
+    assert.notEqual(toFullUrlKey(DIARIA_URL), toFullUrlKey(DIARIA_URL.replace("utm_source=diaria", "utm_source=clarice")));
+  });
+
+  it("1ª URL sem desempate não impede match exato numa URL seguinte do box", () => {
+    const box = `[a](https://diar.ia.br/evento/agente-ia) [b](${WORKSHOP_URL})`;
+    const m = matchSnippetForBox(box, snippets);
+    assert.equal(m?.snippet.file, "workshop-agente-ia-outubro.md");
+    assert.equal(m?.url, WORKSHOP_URL);
+  });
+
+  it("sem URL idêntica, desempata pelos parâmetros de query (utm_content)", () => {
     const withExtra = `${WORKSHOP_URL}&ref=editor`;
     assert.equal(matchSnippetForBox(`[x](${withExtra})`, snippets)?.snippet.file, "workshop-agente-ia-outubro.md");
   });
@@ -124,13 +153,17 @@ describe("#9131 item 2 — anti-repetição entre edições por evento", () => {
   });
 
   it("resolveBoxesForEdition: ontem saiu a imersão, hoje o workshop do mesmo evento não é escolhido", () => {
+    // Imersão com base-URL PRÓPRIA (landing) e o mesmo utm_campaign do
+    // workshop: sem colisão de base-URL, o workshop tem histórico próprio até
+    // no master — só a anti-repetição por evento o barra.
+    const IMERSAO_LP = "<!-- nome: Imersão LP -->\n[Quero!](https://lp.diar.ia.br/imersao?utm_source=diaria&utm_campaign=agente-ia)";
     const dir = mkdtempSync(join(tmpdir(), "box-9131-"));
     try {
       const editionsDir = join(dir, "editions");
       const postsDir = join(dir, "posts");
       const snippetsDir = join(dir, "snippets");
       for (const d of [editionsDir, postsDir, snippetsDir]) mkdirSync(d, { recursive: true });
-      writeFileSync(join(snippetsDir, "diaria-imersao1010.md"), DIARIA_IMERSAO);
+      writeFileSync(join(snippetsDir, "imersao-lp.md"), IMERSAO_LP);
       writeFileSync(join(snippetsDir, "workshop-agente-ia-outubro.md"), WORKSHOP);
       writeFileSync(join(snippetsDir, "livros.md"), "<!-- nome: Livros -->\n**Livros**\n\n[Link](https://livros.diar.ia.br)");
 
@@ -150,7 +183,7 @@ describe("#9131 item 2 — anti-repetição entre edições por evento", () => {
       };
       edition("260927", "**Livros**\n\n[Link](https://livros.diar.ia.br)", "2026-09-27", "https://livros.diar.ia.br", 5);
       edition("260928", `**Workshop** [inscreva-se](${WORKSHOP_URL})`, "2026-09-28", "https://diar.ia.br/evento/agente-ia", 50);
-      edition("260929", `[Quero criar meu agente!](${DIARIA_URL})`, "2026-09-29", "https://diar.ia.br/evento/agente-ia", 10);
+      edition("260929", "[Quero!](https://lp.diar.ia.br/imersao?utm_source=diaria&utm_campaign=agente-ia)", "2026-09-29", "https://lp.diar.ia.br/imersao", 10);
 
       const { effective } = resolveBoxesForEdition({
         aammdd: "260930",
@@ -203,11 +236,22 @@ describe("#9196 CLI deriva o nº de destaques da edição", () => {
     });
   });
 
-  it("--destaques N explícito vence o valor da edição", () => {
+  it("--destaques 2|3 explícito vence o valor da edição; outro valor é inválido", () => {
     withEditions((editionsDir) => {
       writeCapped(editionsDir, "260930", JSON.stringify({ highlights: [{}, {}] }));
-      assert.equal(resolveCliDestaqueCount(["--edition", "260930"], "260930", editionsDir), 2);
-      assert.equal(resolveCliDestaqueCount(["--edition", "260930", "--destaques", "3"], "260930", editionsDir), 3);
+      assert.equal(resolveCliDestaqueCount(parseDestaquesArg(["--edition", "260930"]) ?? undefined, "260930", editionsDir), 2);
+      assert.equal(resolveCliDestaqueCount(parseDestaquesArg(["--destaques", "3"]) ?? undefined, "260930", editionsDir), 3);
+    });
+    assert.equal(parseDestaquesArg([]), undefined);
+    assert.equal(parseDestaquesArg(["--destaques", "2"]), 2);
+    for (const bad of ["1", "4", "abc", ""]) assert.equal(parseDestaquesArg(["--destaques", bad]), null);
+    assert.equal(parseDestaquesArg(["--destaques"]), null);
+  });
+
+  it("layout aninhado (AAMM/AAMMDD) também é lido", () => {
+    withEditions((editionsDir) => {
+      writeCapped(join(editionsDir, "2609"), "260930", JSON.stringify({ highlights: [{}, {}] }));
+      assert.equal(readEditionDestaqueCount("260930", editionsDir), 2);
     });
   });
 
@@ -224,7 +268,7 @@ describe("#9196 CLI deriva o nº de destaques da edição", () => {
         autoCfg: { enabled: false, pinnedSlots: new Set(), recentWindow: 3, priorWindow: 3, lastN: 20 },
         editionsDir,
         snippetsDir,
-        destaqueCount: resolveCliDestaqueCount(["--edition", "260930"], "260930", editionsDir),
+        destaqueCount: resolveCliDestaqueCount(parseDestaquesArg(["--edition", "260930"]) ?? undefined, "260930", editionsDir),
       });
       assert.equal(effective.slot2, null);
       assert.equal(selection.find((s) => s.slot === 2)?.file, null);
