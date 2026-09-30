@@ -228,6 +228,26 @@ describe("buildMetricsData — Valor (#9074) — contas internas/teste fora do A
     }
   }
 
+  it("snapshot atual só com internos/teste: churn/LTV indeterminados, nunca churn ~100% fabricado", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      writeBeehiivSnapshot(root, "2026-08-10", [
+        beehiivSubscriberLine({ email: "a@x.com", status: "active" }),
+        beehiivSubscriberLine({ email: "pixel@memelab.com.br", status: "active" }),
+      ]);
+      writeBeehiivSnapshot(root, "2026-09-09", [beehiivSubscriberLine({ email: "pixel@memelab.com.br", status: "active" })]);
+      writeManualCleanup(root, []);
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date("2026-09-15T12:00:00Z") });
+      assert.equal(data.valor.churnMensal.valor, null);
+      assert.equal(data.valor.churnMensal.qualidade, "indeterminado");
+      assert.equal(data.valor.arpuAtivo.valor, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("ARPU, churn e LTV idênticos com ou sem contas internas/teste no snapshot", async () => {
     const control = await run(false);
     const withInternal = await run(true);

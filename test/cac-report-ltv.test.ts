@@ -241,6 +241,24 @@ describe("computeLtvSection — mesma população nos dois lados do churn e no A
     });
   }
 
+  it("snapshot atual só com internos/teste -> motivo de snapshot anômalo, nunca churn ~100% fabricado (#9074)", () => {
+    const root = makeRoot();
+    try {
+      writeSnapshotDir(root, "2026-08-10", [sub({ email: "a@x.com" }), sub({ email: INTERNO })]);
+      writeSnapshotDir(root, "2026-09-09", [sub({ email: INTERNO }), sub({ email: TESTE })]);
+      const backupRoot = join(root, "beehiiv-backup");
+      const report = { rows: [] } as unknown as CacReport;
+      const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
+      assert.equal(section.applied, true);
+      if (section.applied) {
+        assert.equal(section.ltvFaixaBrl, null);
+        assert.match(section.motivo ?? "", /vazio\/anômalo/);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("--fonte store: rótulo que não é data de snapshot resolve pro snapshot Beehiiv mais recente anterior", () => {
     const root = makeRoot();
     try {
@@ -428,7 +446,14 @@ describe("#9075 — snapshots usados, base do ARPU e validação de --snapshot",
   it("seção LTV expõe snapshotAtual e ativosArpu", () => {
     const root = makeRoot();
     try {
-      writeSnapshotDir(root, "2026-09-09", [sub({ email: "a@x.com" }), sub({ email: "b@x.com" })]);
+      // interno + conta de teste ativos NÃO entram no N impresso (#9074):
+      // mesmo denominador que o ARPU do core usa.
+      writeSnapshotDir(root, "2026-09-09", [
+        sub({ email: "a@x.com" }),
+        sub({ email: "b@x.com" }),
+        sub({ email: "pixel@memelab.com.br" }),
+        sub({ email: "vjpixel+test3@gmail.com" }),
+      ]);
       const backupRoot = join(root, "beehiiv-backup");
       const report = { rows: [] } as unknown as CacReport;
       const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});

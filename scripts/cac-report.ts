@@ -327,8 +327,8 @@ export type CacReportLtvSection =
  * unificado).
  *
  * **População (#9023):** ARPU e os DOIS lados do diff de churn vêm do
- * snapshot Beehiiv CRU (sem `applyOrigemOverride`/filtro de internos),
- * exatamente como o painel Studio (`studio-metrics.ts`) — nunca da coorte
+ * snapshot Beehiiv menos contas internas/teste (#9074; sem
+ * `applyOrigemOverride`), exatamente como o painel Studio (`studio-metrics.ts`) — nunca da coorte
  * do funil (`subs`, já filtrada e, em `--fonte store`, multi-plataforma).
  * Misturar as duas fazia toda conta interna/teste ativa no baseline contar
  * como "saída" e, no modo store, dividir a receita pela contagem do store.
@@ -379,13 +379,11 @@ function computeLtvSectionCore(
   }
   // Mesma população nos dois lados do diff E no denominador do ARPU:
   // snapshot Beehiiv menos contas internas/teste (#9023 + #9074, paridade
-  // com studio-metrics.ts).
-  // Contas internas/teste fora do denominador do ARPU e dos DOIS lados do
-  // diff de churn (#9074) — o guard de snapshot vazio abaixo segue lendo o
-  // snapshot CRU (vazio de verdade ≠ "só tinha interno").
+  // com studio-metrics.ts). Snapshot cru vazio OU só com internos/teste é
+  // anômalo — senão todo ativo do baseline viraria "saída".
   const latestSubsRaw = readSnapshotSubscribers(backupRoot, latestDate);
   const latestSubs = excludeInternalAndTestSubscribers(latestSubsRaw).kept;
-  if (latestSubsRaw.length === 0) {
+  if (latestSubs.length === 0) {
     // Paridade com o guard `beehiivSnapshotEmpty` de studio-metrics.ts: sem
     // isso todo ativo do baseline viraria "saída" e o motivo sairia genérico.
     return {
@@ -480,7 +478,10 @@ export function computeLtvSection(
   const atual = resolveLtvLatestSnapshotDate(dates, snapshotDate);
   if (!atual) return section;
   const baseline = findChurnBaselineDate(dates, atual);
-  const ativos = readSnapshotSubscribers(backupRoot, atual).filter((s) => s.status === "active").length;
+  // Mesmo denominador do ARPU do core — sem internos/teste (#9074).
+  const ativos = excludeInternalAndTestSubscribers(readSnapshotSubscribers(backupRoot, atual)).kept.filter(
+    (s) => s.status === "active",
+  ).length;
   return {
     ...section,
     snapshotAtual: atual,
@@ -1159,7 +1160,8 @@ export async function main(
   // Usa SEMPRE `args.backupRoot` (histórico de snapshot Beehiiv) pro diff de
   // churn, mesmo em `--fonte store` — a metodologia de LTV depende do
   // histórico de snapshot, que `--fonte store` não substitui. ARPU e os
-  // dois lados do churn leem o snapshot CRU (nunca `subs`), #9023.
+  // dois lados do churn leem o snapshot Beehiiv menos internos/teste
+  // (nunca `subs`), #9023/#9074.
   const ltvSection: CacReportLtvSection | undefined = args.ltv
     ? computeLtvSection(report, args.backupRoot, snapshotDate, rootDir, now)
     : undefined;

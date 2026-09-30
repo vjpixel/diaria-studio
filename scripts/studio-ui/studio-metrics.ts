@@ -606,8 +606,7 @@ async function computeValorLayer(
   // Contas internas/teste fora da população inteira do bloco Valor (#9074):
   // denominador do ARPU, os DOIS lados do diff de churn (baseline filtrado
   // abaixo) e os confirmados de conversão/LTV por origem — mesma população
-  // em tudo que compõe o LTV (#9023). O guard de snapshot vazio segue no
-  // snapshot CRU (vazio de verdade ≠ "só tinha interno").
+  // em tudo que compõe o LTV (#9023).
   const beehiivSubs = excludeInternalAndTestSubscribers(beehiivSubsRaw).kept;
   const campaign = resolveApoiaSeCampaignName();
   const month = previousCompetenceMonth(now);
@@ -646,7 +645,9 @@ async function computeValorLayer(
   // Snapshot Beehiiv vazio/anômalo (nenhum subscriber lido) — churn/ARPU/LTV
   // não rodam em cima dele (#8423 fleet review item 6): mesma condição que
   // `loadBeehiivSnapshotLayer` usa pra marcar `error` na camada de snapshot.
-  const beehiivSnapshotEmpty = beehiivSubsRaw.length === 0;
+  // Filtrado vazio (snapshot só com internos/teste) também é anômalo — senão
+  // todo ativo do baseline viraria "saída" (paridade com cac-report.ts).
+  const beehiivSnapshotEmpty = beehiivSubs.length === 0;
 
   const receitaMensal = await getMetric("receita-mensal")!.computar({
     janela: janelaMes,
