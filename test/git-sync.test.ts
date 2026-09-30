@@ -46,6 +46,8 @@ import {
   resolveSharedLockPath,
   resolveSharedLockPathCached,
   parseUnmergedPaths,
+  parseUntrackedPaths,
+  untrackedCollidesWithUpstream,
   isAgentWorktreeCheckout,
   REPO_ROOT,
   GIT_TIMEOUT_MS,
@@ -102,6 +104,12 @@ const MAIN_CHECKOUT = "/home/editor/diaria-studio";
  * testar uma chave que o `syncCode()` real nunca chama.
  */
 const STASH_PUSH_KEY = `git stash push --include-untracked -m ${GIT_SYNC_STASH_MESSAGE}`;
+
+/** #9107: stash SÓ do rastreado (untracked presentes mas sem colisão com o upstream). */
+const STASH_PUSH_TRACKED_ONLY_KEY = `git stash push -m ${GIT_SYNC_STASH_MESSAGE}`;
+
+/** #9107: caminhos que o ff para origin/master vai tocar (decide o `-u`). */
+const DIFF_UPSTREAM_KEY = "git diff --name-only -z --no-renames HEAD origin/master";
 
 /**
  * Constrói um SpawnFn a partir de um mapa de "git <args[0]> <args[1]>" → resultado.
@@ -1840,9 +1848,12 @@ describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a cont
         "git rev-parse --abbrev-ref HEAD": ok("overnight/fix-x"),
         "git checkout master": ok("Switched to branch 'master'"),
         "git fetch origin": ok(""),
-        "git status --porcelain": ok(" M arquivo.txt"),
+        // #9107: com untracked presente, o pior caso ganha 1 spawn (`git diff
+        // --name-only` que decide se o stash precisa de --include-untracked).
+        "git status --porcelain": ok(" M arquivo.txt\n?? solto/"),
+        [DIFF_UPSTREAM_KEY]: ok("arquivo.txt\0"),
         "git rev-parse --verify refs/stash": ok(""),
-        [STASH_PUSH_KEY]: ok("Saved working directory..."),
+        [STASH_PUSH_TRACKED_ONLY_KEY]: ok("Saved working directory..."),
         "git rev-parse refs/stash": ok("abc1234\n"),
       },
       {
@@ -2084,5 +2095,173 @@ describe("git-sync — #8719: countStaleAutostashes() / stale_autostash_count", 
     assert.equal(r.outcome, "worktree_refused");
     assert.equal(r.stale_autostash_count, -1);
     assert.equal(gitCommandsRun.length, 0);
+  });
+});
+
+// ── #9107: stash sem --include-untracked quando os untracked não colidem ──
+describe("git-sync — #9107: untracked travados não derrubam o sync", () => {
+  it("parseUntrackedPaths extrai só entradas '??', preservando a barra de diretório", () => {
+    assert.deepEqual(
+      parseUntrackedPaths(" M a.ts\n?? .claude/skills/diaria-test/\n?? solto.txt\nUU c.ts\n"),
+      [".claude/skills/diaria-test/", "solto.txt"],
+    );
+    assert.deepEqual(parseUntrackedPaths(""), []);
+  });
+
+  it("untrackedCollidesWithUpstream: diretório por prefixo, arquivo exato, arquivo virando diretório, aspas conservador", () => {
+    assert.equal(untrackedCollidesWithUpstream(["dir/"], ["dir/x.ts"]), true);
+    assert.equal(untrackedCollidesWithUpstream(["dir/"], ["dirx/y.ts"]), false);
+    assert.equal(untrackedCollidesWithUpstream(["a.txt"], ["a.txt"]), true);
+    assert.equal(untrackedCollidesWithUpstream(["a"], ["a/b.ts"]), true);
+    assert.equal(untrackedCollidesWithUpstream(["a"], ["ab.ts"]), false);
+    assert.equal(untrackedCollidesWithUpstream(['"com espaço.txt"'], ["outro.ts"]), true);
+    assert.equal(untrackedCollidesWithUpstream([], ["x.ts"]), false);
+  });
+
+  // Reprodução do incidente 260930: untracked sem permissão (diretórios de
+  // skill antigos + fixture) faziam o stash com --include-untracked sair com
+  // exit 1 ao tentar removê-los → stash_partial_failure_unrecovered em TODA
+  // rodada, código 22 commits atrás, 11 autostashes acumulados.
+  const INCIDENT_STATUS =
+    " M scripts/sync-code.ts\n" +
+    "?? .claude/skills/diaria-4-publicar/\n" +
+    "?? .claude/skills/diaria-sorteio/\n" +
+    "?? .claude/skills/diaria-test/\n" +
+    "?? test/fixtures/publish-monthly/2604/_internal/\n";
+
+  function recordingSpawn(inner: SpawnFn, calls: string[]): SpawnFn {
+    return (cmd, args) => {
+      calls.push([cmd, ...args].join(" "));
+      return inner(cmd, args);
+    };
+  }
+
+  it("untracked presentes sem colisão → stash SÓ do rastreado (sem -u), ff sob stash sucede", () => {
+    const calls: string[] = [];
+    const spawn = recordingSpawn(
+      makeSequencedSpawn(
+        {
+          "git rev-parse --abbrev-ref HEAD": ok("master"),
+          "git fetch origin": ok(""),
+          "git status --porcelain": ok(INCIDENT_STATUS),
+          [DIFF_UPSTREAM_KEY]: ok("scripts/sync-code.ts\0scripts/lib/git-sync.ts\0"),
+          [STASH_PUSH_TRACKED_ONLY_KEY]: ok("Saved working directory..."),
+          // Se o código ainda usasse -u, o stash falharia como no incidente.
+          [STASH_PUSH_KEY]: fail("warning: failed to remove .claude/skills/diaria-test/: Permission denied"),
+          "git rev-parse refs/stash": ok("def5678\n"),
+        },
+        {
+          "git merge --ff-only origin/master": [
+            fail("error: Your local changes to the following files would be overwritten by merge"),
+            ok("Fast-forward\n 2 files changed"),
+          ],
+        },
+      ),
+      calls,
+    );
+
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.equal(r.outcome, "synced_stash_preserved");
+    assert.ok(calls.includes(STASH_PUSH_TRACKED_ONLY_KEY), "deveria stashar só o rastreado");
+    assert.ok(!calls.includes(STASH_PUSH_KEY), "não deveria usar --include-untracked sem colisão");
+    assert.deepEqual(r.preserved_stash, { ref: "def5678", message: GIT_SYNC_STASH_MESSAGE });
+  });
+
+  it("untracked colidindo com o upstream → mantém --include-untracked (proteção de sempre)", () => {
+    const calls: string[] = [];
+    const spawn = recordingSpawn(
+      makeSequencedSpawn(
+        {
+          "git rev-parse --abbrev-ref HEAD": ok("master"),
+          "git fetch origin": ok(""),
+          "git status --porcelain": ok(INCIDENT_STATUS),
+          [DIFF_UPSTREAM_KEY]: ok(".claude/skills/diaria-test/SKILL.md\0"),
+          [STASH_PUSH_KEY]: ok("Saved working directory..."),
+          "git rev-parse refs/stash": ok("abc1234\n"),
+        },
+        {
+          "git merge --ff-only origin/master": [
+            fail("error: The following untracked working tree files would be overwritten by merge"),
+            ok("Fast-forward"),
+          ],
+        },
+      ),
+      calls,
+    );
+
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.equal(r.outcome, "synced_stash_preserved");
+    assert.ok(calls.includes(STASH_PUSH_KEY));
+    assert.ok(!calls.includes(STASH_PUSH_TRACKED_ONLY_KEY));
+  });
+
+  it("diff do upstream falha → conservador: --include-untracked", () => {
+    const calls: string[] = [];
+    const spawn = recordingSpawn(
+      makeSequencedSpawn(
+        {
+          "git rev-parse --abbrev-ref HEAD": ok("master"),
+          "git fetch origin": ok(""),
+          "git status --porcelain": ok(INCIDENT_STATUS),
+          [DIFF_UPSTREAM_KEY]: fail("fatal: bad revision"),
+          [STASH_PUSH_KEY]: ok("Saved working directory..."),
+          "git rev-parse refs/stash": ok("abc1234\n"),
+        },
+        { "git merge --ff-only origin/master": [fail("error: would be overwritten"), ok("Fast-forward")] },
+      ),
+      calls,
+    );
+
+    syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.ok(calls.includes(STASH_PUSH_KEY));
+    assert.ok(!calls.includes(STASH_PUSH_TRACKED_ONLY_KEY));
+  });
+
+  it("só untracked sem colisão (nada rastreado sujo) → stash sem -u não guarda nada, nenhum autostash criado", () => {
+    const calls: string[] = [];
+    const spawn = recordingSpawn(
+      makeSequencedSpawn(
+        {
+          "git rev-parse --abbrev-ref HEAD": ok("master"),
+          "git fetch origin": ok(""),
+          "git status --porcelain": ok("?? .claude/skills/diaria-test/\n"),
+          [DIFF_UPSTREAM_KEY]: ok("scripts/x.ts\0"),
+          [STASH_PUSH_TRACKED_ONLY_KEY]: ok("No local changes to save"),
+        },
+        {
+          "git merge --ff-only origin/master": [
+            fail("fatal: Not possible to fast-forward, aborting."),
+            fail("fatal: Not possible to fast-forward, aborting."),
+          ],
+        },
+      ),
+      calls,
+    );
+
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.equal(r.outcome, "ff_failed");
+    assert.equal(r.preserved_stash, null);
+    assert.ok(!calls.includes(STASH_PUSH_KEY));
+  });
+
+  it("sem untracked nenhum → nenhum diff extra, --include-untracked como sempre", () => {
+    const calls: string[] = [];
+    const spawn = recordingSpawn(
+      makeSequencedSpawn(
+        {
+          "git rev-parse --abbrev-ref HEAD": ok("master"),
+          "git fetch origin": ok(""),
+          "git status --porcelain": ok(" M a.ts"),
+          [STASH_PUSH_KEY]: ok("Saved working directory..."),
+          "git rev-parse refs/stash": ok("abc1234\n"),
+        },
+        { "git merge --ff-only origin/master": [fail("error: would be overwritten"), ok("Fast-forward")] },
+      ),
+      calls,
+    );
+
+    syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.ok(!calls.includes(DIFF_UPSTREAM_KEY));
+    assert.ok(calls.includes(STASH_PUSH_KEY));
   });
 });

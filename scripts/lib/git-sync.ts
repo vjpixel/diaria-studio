@@ -406,19 +406,21 @@ export interface LockFs {
  * a branch != master), 3. checkout master (condicional), 4. fetch, 5. status
  * --porcelain (dirty check), 6. merge --ff-only DIRETO (#8719 — tentado
  * ANTES de qualquer stash), 7. rev-parse --verify refs/stash ANTES do stash
- * (#3411), 8. stash --include-untracked, 9. rev-parse refs/stash (captura o
- * ref recém-criado, #7740), 10. merge --ff-only SOB stash (retry), 11.
- * rev-list --count (measureSyncState, #6090), 12. stash list
- * (countStaleAutostashes, #8719) = 12.
+ * (#3411), 8. diff --name-only HEAD origin/master (#9107 — só quando há
+ * untracked; decide se o stash precisa de --include-untracked), 9. stash
+ * push, 10. rev-parse refs/stash (captura o ref recém-criado, #7740), 11.
+ * merge --ff-only SOB stash (retry), 12. rev-list --count
+ * (measureSyncState, #6090), 13. stash list (countStaleAutostashes, #8719)
+ * = 13 (#9107: era 12 antes do spawn do passo 8).
  *
  * `LOCK_STALE_MS` abaixo deriva desse número em vez de um valor redondo
  * chutado — #3430 gap 1 encontrou o valor antigo (10min fixo) matematicamente
  * MENOR que o pior caso teórico.
  *
- * #5302: dos 12 spawns, exatamente 1 é o `git fetch origin` do passo 4, que
+ * #5302: dos 13 spawns, exatamente 1 é o `git fetch origin` do passo 4, que
  * desde #5302 usa `GIT_FETCH_TIMEOUT_MS` (maior que `GIT_TIMEOUT_MS`) em vez
- * do timeout genérico — `LOCK_STALE_MS` abaixo reflete isso (11 ×
- * `GIT_TIMEOUT_MS` + 1 × `GIT_FETCH_TIMEOUT_MS`, não 12 × `GIT_TIMEOUT_MS`
+ * do timeout genérico — `LOCK_STALE_MS` abaixo reflete isso (12 ×
+ * `GIT_TIMEOUT_MS` + 1 × `GIT_FETCH_TIMEOUT_MS`, não 13 × `GIT_TIMEOUT_MS`
  * uniforme).
  *
  * #8719 (24/09/2026, decisão do editor): a contagem CAIU de 13 para 12 nesta
@@ -431,7 +433,7 @@ export interface LockFs {
  * introduziu esta mudança; não repetido aqui linha a linha para não inflar
  * este comentário a cada revisão futura do pior caso.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 12;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 13;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -854,6 +856,46 @@ export function parseUnmergedPaths(porcelainStdout: string): string[] {
     .map((line) => line.slice(3).trim());
 }
 
+/**
+ * #9107: dado o stdout literal de `git status --porcelain` (sem `-z`),
+ * retorna as entradas NÃO-RASTREADAS (`?? <caminho>`). Diretório inteiro
+ * não-rastreado aparece colapsado com barra final (`?? dir/`) — preservado
+ * aqui, `untrackedCollidesWithUpstream()` usa a barra pra casar por prefixo.
+ * Caminho com caractere especial vem entre aspas (`?? "a b.txt"`) — mantido
+ * literal (com aspas), e o consumidor trata isso como colisão por segurança.
+ */
+export function parseUntrackedPaths(porcelainStdout: string): string[] {
+  return porcelainStdout
+    .split("\n")
+    .filter((line) => line.startsWith("?? ") && line.length > 3)
+    .map((line) => line.slice(3).replace(/\r$/, ""));
+}
+
+/**
+ * #9107: decide se ALGUMA entrada não-rastreada colide com o que o
+ * fast-forward para origin/master vai escrever. `upstreamPaths` é a lista de
+ * caminhos tocados entre HEAD e origin/master (`git diff --name-only -z
+ * --no-renames HEAD origin/master`, separada por NUL). Colisão =
+ *   - mesmo caminho (upstream adiciona um arquivo que já existe untracked);
+ *   - entrada untracked é diretório (`dir/`) e upstream toca algo sob ele;
+ *   - entrada untracked é arquivo e upstream cria algo sob `arquivo/`.
+ * Entrada entre aspas (caminho com caractere especial que o porcelain sem
+ * `-z` escapa) nunca é comparável com segurança → conta como colisão, o que
+ * devolve o comportamento conservador anterior (stash com
+ * `--include-untracked`). Puro, sem I/O.
+ */
+export function untrackedCollidesWithUpstream(untracked: string[], upstreamPaths: string[]): boolean {
+  for (const u of untracked) {
+    if (u.startsWith('"')) return true;
+    if (u.endsWith("/")) {
+      if (upstreamPaths.some((p) => p.startsWith(u))) return true;
+    } else if (upstreamPaths.some((p) => p === u || p.startsWith(`${u}/`))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // #8719 (24/09/2026): `findUnmergedPaths()` (a versão com spawn de
 // `git status --porcelain` pós-`stash pop`, #6668) foi removida — este
 // módulo nunca mais chama `git stash pop` automaticamente, então a checagem
@@ -1213,7 +1255,31 @@ function syncCodeLocked(
     // então um pop conflitante (abaixo) nunca fica indistinguível de um
     // `git stash` manual de sessão interativa. Ver docstring de
     // `GIT_SYNC_STASH_MESSAGE`.
-    const stashRes = spawn("git", ["stash", "push", "--include-untracked", "-m", GIT_SYNC_STASH_MESSAGE]);
+    //
+    // #9107: `--include-untracked` só quando precisa. O stash com `-u` remove
+    // os untracked do working tree DEPOIS de criar o commit — e é exatamente
+    // essa remoção que falha com "Permission denied" em diretórios travados
+    // (junction, handle aberto, ACL), derrubando TODO sync em
+    // `stash_partial_failure_unrecovered` rodada após rodada (11 autostashes
+    // acumulados no incidente). Untracked só atrapalha o ff quando o upstream
+    // vai escrever num caminho que eles ocupam; se há untracked e nenhum
+    // colide, stasha só o que é rastreado e deixa os untracked onde estão.
+    // Sem untracked nenhum, `-u` e sem-`-u` são equivalentes — mantém `-u`.
+    // Qualquer falha em medir (status falhou, diff falhou, caminho entre
+    // aspas) cai no conservador: `-u`, como antes.
+    const untracked = statusRes.status === 0 ? parseUntrackedPaths(statusRes.stdout) : [];
+    let includeUntracked = true;
+    if (untracked.length > 0) {
+      const diffRes = spawn("git", ["diff", "--name-only", "-z", "--no-renames", "HEAD", "origin/master"]);
+      if (diffRes.status === 0) {
+        const upstreamPaths = diffRes.stdout.split("\0").filter((p) => p.length > 0);
+        includeUntracked = untrackedCollidesWithUpstream(untracked, upstreamPaths);
+      }
+    }
+    const stashArgs = includeUntracked
+      ? ["stash", "push", "--include-untracked", "-m", GIT_SYNC_STASH_MESSAGE]
+      : ["stash", "push", "-m", GIT_SYNC_STASH_MESSAGE];
+    const stashRes = spawn("git", stashArgs);
     if (stashRes.status !== 0) {
       const stashRefAfterRes = spawn("git", ["rev-parse", "--verify", "refs/stash"]);
       const stashRefAfter = stashRefAfterRes.status === 0 ? stashRefAfterRes.stdout.trim() : null;
@@ -1231,7 +1297,7 @@ function syncCodeLocked(
         // "recuperação" e só preservava se ELE TAMBÉM falhasse — outcome
         // único agora, sem sub-caso de pop bem-sucedido.
         const msg =
-          `[git-sync] ERROR: git stash --include-untracked saiu com erro (exit ${stashRes.status}) E criou ` +
+          `[git-sync] ERROR: git ${stashArgs.slice(0, -2).join(" ")} saiu com erro (exit ${stashRes.status}) E criou ` +
           `um stash (${stashRefAfter}) apesar disso — possível remoção NÃO-RECUPERÁVEL de arquivos não-` +
           `rastreados (#3411). Stash preservado (NUNCA despopado automaticamente — #8719, decisão do ` +
           `editor de 24/09/2026): 'git stash show -p ${stashRefAfter}' ou 'git stash apply ${stashRefAfter}'. ` +
