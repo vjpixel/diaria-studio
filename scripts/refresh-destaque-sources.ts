@@ -22,9 +22,11 @@
  * d{N}.txt e re-baixa tudo (nunca mistura texto velho com novo). Se tudo
  * bate, reusa o cache sem tocar a rede.
  *
- * Saída (stdout, JSON): `{ stale_before, refetched, sources: [{destaque, url,
- * path?, error?}] }`. Passar `sources[N-1].path` como `source_text_path` ao
- * `writer-destaque` do slot promovido.
+ * Saída (stdout, JSON): `{ stale_before, refetched, failed, sources: [{destaque,
+ * url, path?, error?}] }`. Passar o `path` da entrada com `destaque === N`
+ * (nunca indexar por posição: slot sem URL é pulado) como `source_text_path`
+ * ao `writer-destaque` do slot promovido. Rodar UMA vez depois de todas as
+ * trocas da rodada.
  *
  * Uso:
  *   npx tsx scripts/refresh-destaque-sources.ts --edition-dir data/editions/2609/260930/
@@ -33,7 +35,9 @@
  * Exit codes:
  *   0 — cache em dia (após refresh, ou já estava em dia no --check)
  *   1 — erro de args / 01-approved.json ausente ou ilegível
- *   3 — --check: manifest defasado em relação aos destaques atuais
+ *   3 — --check: manifest defasado (URL divergente/ausente) → rodar sem --check.
+ *       Download falho para a URL atual NÃO é defasagem: sai 0 com `failed`
+ *       preenchido (estado final aceito; writer/fact-checker usam o fallback).
  *
  * Falha de download de um destaque NÃO muda o exit code (fail-soft, mesmo
  * contrato do run-fact-checker): vira `error` na entrada e `status` != ok no
@@ -43,36 +47,47 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
-  manifestMatchesCurrentUrls,
+  highlightSourceUrls,
+  isHighlightSourcesCacheFresh,
   prefetchHighlightSources,
   readExistingManifest,
   type PrefetchedSource,
 } from "./run-fact-checker.ts";
 
 export interface RefreshResult {
-  /** true se o manifest em disco NÃO correspondia aos destaques atuais. */
+  /** true se as URLs do manifest em disco NÃO correspondiam às dos destaques atuais (ou manifest/txt ausente). */
   stale_before: boolean;
-  /** true se houve re-download (só fora do --check). */
+  /** true se houve re-download (cache não reusável; só fora do --check). */
   refetched: boolean;
+  /** Destaques (1-based) cuja fonte está com download falho (blocked/error) — estado final aceito, não defasagem. */
+  failed: number[];
   sources: PrefetchedSource[];
 }
 
-function highlightUrls(approved: unknown): Array<string | undefined> {
-  const highlights =
-    (approved as { highlights?: Array<{ url?: string }> } | null)?.highlights ?? [];
-  return Array.from({ length: Math.min(highlights.length, 3) }, (_, i) => highlights[i]?.url);
-}
-
 /**
- * true quando `fact-check-sources/` precisa ser re-baixado: manifest ausente,
- * URL divergente em alguma posição, entrada não-ok, ou `d{N}.txt` sumido.
- * Mesmo critério de reuso de `prefetchHighlightSources`.
+ * (#9102) true quando o manifest NÃO descreve os destaques atuais: ausente,
+ * URL divergente em alguma posição, ou `d{N}.txt` de entrada `ok` sumido.
+ * Entrada com download falho (`blocked`/`error`) para a MESMA URL não conta
+ * como defasagem — senão o `--check` acusaria defasado pra sempre numa fonte
+ * permanentemente bloqueada (451) e o playbook entraria em loop.
  */
-export function isSourcesCacheStale(approved: unknown, internalDir: string): boolean {
+export function isSourcesManifestStale(approved: unknown, internalDir: string): boolean {
   const dir = join(internalDir, "fact-check-sources");
   const manifest = readExistingManifest(dir);
-  if (!manifestMatchesCurrentUrls(manifest, highlightUrls(approved))) return true;
-  return !manifest!.every((e) => existsSync(join(dir, `d${e.destaque}.txt`)));
+  if (!manifest) return true;
+  const urls = highlightSourceUrls(approved);
+  const expected = urls.flatMap((url, i) => (url ? [{ destaque: i + 1, url }] : []));
+  if (manifest.length !== expected.length) return true;
+  return expected.some(({ destaque, url }) => {
+    const e = manifest.find((m) => m.destaque === destaque);
+    if (!e || e.url !== url) return true;
+    return e.status === "ok" && !existsSync(join(dir, `d${destaque}.txt`));
+  });
+}
+
+function failedDestaques(internalDir: string): number[] {
+  const manifest = readExistingManifest(join(internalDir, "fact-check-sources")) ?? [];
+  return manifest.filter((e) => e.status !== "ok").map((e) => e.destaque);
 }
 
 export async function refreshDestaqueSources(
@@ -83,10 +98,11 @@ export async function refreshDestaqueSources(
   const approvedPath = join(internalDir, "01-approved.json");
   if (!existsSync(approvedPath)) throw new Error(`01-approved.json não encontrado em ${approvedPath}`);
   const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as unknown;
-  const stale = isSourcesCacheStale(approved, internalDir);
-  if (opts.check) return { stale_before: stale, refetched: false, sources: [] };
+  const stale = isSourcesManifestStale(approved, internalDir);
+  if (opts.check) return { stale_before: stale, refetched: false, failed: failedDestaques(internalDir), sources: [] };
+  const refetched = !isHighlightSourcesCacheFresh(approved, internalDir);
   const sources = await prefetchHighlightSources(approved, internalDir, opts.fetchImpl ?? fetch);
-  return { stale_before: stale, refetched: stale, sources };
+  return { stale_before: stale, refetched, failed: failedDestaques(internalDir), sources };
 }
 
 async function main(): Promise<void> {
@@ -107,4 +123,9 @@ async function main(): Promise<void> {
   if (check && result.stale_before) process.exit(3);
 }
 
-if (isMainModule(import.meta.url)) void main();
+if (isMainModule(import.meta.url)) {
+  main().catch((e) => {
+    console.error(`refresh-destaque-sources: ${(e as Error).message}`);
+    process.exit(1);
+  });
+}

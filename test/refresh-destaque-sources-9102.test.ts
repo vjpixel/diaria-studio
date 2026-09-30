@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { isSourcesCacheStale, refreshDestaqueSources } from "../scripts/refresh-destaque-sources.ts";
+import { isSourcesManifestStale, refreshDestaqueSources } from "../scripts/refresh-destaque-sources.ts";
 
 const URLS = ["https://ex.com/a", "https://ex.com/b", "https://ex.com/c"];
 
@@ -63,7 +63,7 @@ describe("refresh-destaque-sources (#9102)", () => {
       const newUrl = "https://ex.com/promovido";
       writeApproved(ed, [URLS[0], newUrl, URLS[2]]);
       const approved = JSON.parse(readFileSync(join(ed, "_internal", "01-approved.json"), "utf8"));
-      assert.equal(isSourcesCacheStale(approved, join(ed, "_internal")), true);
+      assert.equal(isSourcesManifestStale(approved, join(ed, "_internal")), true);
 
       const after = await refreshDestaqueSources(ed, { fetchImpl: fakeFetch(calls) });
       assert.equal(after.stale_before, true);
@@ -75,8 +75,8 @@ describe("refresh-destaque-sources (#9102)", () => {
       const manifest = JSON.parse(readFileSync(join(srcDir(ed), "manifest.json"), "utf8"));
       assert.equal(manifest[1].url, newUrl);
       assert.equal(manifest[1].status, "ok");
-      assert.equal(after.sources[1].path, join(srcDir(ed), "d2.txt"));
-      assert.equal(isSourcesCacheStale(approved, join(ed, "_internal")), false);
+      assert.equal(after.sources.find((x) => x.destaque === 2)?.path, join(srcDir(ed), "d2.txt"));
+      assert.equal(isSourcesManifestStale(approved, join(ed, "_internal")), false);
     } finally {
       rmSync(ed, { recursive: true, force: true });
     }
@@ -96,6 +96,60 @@ describe("refresh-destaque-sources (#9102)", () => {
       // manifest antigo intacto (check é read-only)
       const manifest = JSON.parse(readFileSync(join(srcDir(ed), "manifest.json"), "utf8"));
       assert.equal(manifest[2].url, URLS[2]);
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
+  it("download falho (451) não é defasagem: --check sai 0 com failed, sem loop", async () => {
+    const ed = setup(URLS);
+    try {
+      const blocking = (async (input: string | URL) =>
+        String(input).endsWith("/b")
+          ? new Response("", { status: 451 })
+          : new Response("<p>ok</p>", { status: 200, headers: { "content-type": "text/html" } })) as unknown as typeof fetch;
+      const r = await refreshDestaqueSources(ed, { fetchImpl: blocking });
+      assert.deepEqual(r.failed, [2]);
+      assert.equal(r.sources.find((x) => x.destaque === 2)?.path, undefined);
+      const chk = await refreshDestaqueSources(ed, { check: true });
+      assert.equal(chk.stale_before, false, "mesma URL com download falho = estado final, não defasado");
+      assert.deepEqual(chk.failed, [2]);
+      const script = join(import.meta.dirname, "..", "scripts", "refresh-destaque-sources.ts");
+      const cli = spawnSync(process.execPath, ["--import", "tsx", script, "--edition-dir", ed, "--check"], { encoding: "utf8" });
+      assert.equal(cli.status, 0, cli.stderr);
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
+  it("wrapper sem url no topo (montagem manual §4d.1b) cai no article.url", async () => {
+    const ed = setup(URLS);
+    try {
+      const approved = {
+        highlights: [
+          { rank: 1, url: URLS[0], article: { url: URLS[0] } },
+          { rank: 2, article: { url: "https://ex.com/so-article" } },
+          { rank: 3, url: URLS[2], article: { url: URLS[2] } },
+        ],
+      };
+      writeFileSync(join(ed, "_internal", "01-approved.json"), JSON.stringify(approved), "utf8");
+      const calls: string[] = [];
+      const r = await refreshDestaqueSources(ed, { fetchImpl: fakeFetch(calls) });
+      assert.ok(calls.includes("https://ex.com/so-article"));
+      assert.match(readFileSync(join(srcDir(ed), "d2.txt"), "utf8"), /so-article/);
+      assert.equal(r.sources.length, 3);
+      assert.equal((await refreshDestaqueSources(ed, { check: true })).stale_before, false);
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
+  it("d{N}.txt apagado com manifest intacto = defasado", async () => {
+    const ed = setup(URLS);
+    try {
+      await refreshDestaqueSources(ed, { fetchImpl: fakeFetch([]) });
+      rmSync(join(srcDir(ed), "d3.txt"));
+      assert.equal((await refreshDestaqueSources(ed, { check: true })).stale_before, true);
     } finally {
       rmSync(ed, { recursive: true, force: true });
     }

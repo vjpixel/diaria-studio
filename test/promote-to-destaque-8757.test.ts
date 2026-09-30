@@ -123,7 +123,7 @@ describe("promoteToDestaque — ponta a ponta (#8757)", () => {
       assert.ok(r.next_steps.some((s) => s.includes("DESTAQUE 1")));
       // #9102: 1º passo re-baixa a fonte do destaque novo (writer + fact-check)
       assert.match(r.next_steps[0], /refresh-destaque-sources\.ts/);
-      assert.match(r.next_steps[0], /sources\[0\]\.path/);
+      assert.match(r.next_steps[0], /destaque === 1/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
