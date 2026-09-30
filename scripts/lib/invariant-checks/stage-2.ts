@@ -74,7 +74,8 @@ function runCheck(
  * `02-reviewed.md` deve passar todos os checks granulares de
  * lint-newsletter-md (titles-per-highlight, why-matters-format,
  * destaque-min-chars, destaque-max-chars, why-matters-length (#3993),
- * intro-count, coverage-line-format (#1207), eai-section).
+ * intro-count, coverage-line-format (#1207), eai-section,
+ * destaque-category-noticias (#8200, cedo no Stage 2 desde #9105)).
  *
  * Cada check é invocado individualmente pra produzir mensagens específicas.
  * Não chamamos o modo "default" (que exige `--approved` JSON) porque o
@@ -101,6 +102,13 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
     { name: "eai-section", issue: "#481" },
     { name: "relative-time", issue: "#editorial-rules" },
     { name: "erro-intencional-placeholder", issue: "#2078" },
+    // #9105: categoria literal "NOTÍCIAS" no header de destaque (#6083/#8200)
+    // era barrada só no agregador do Stage 4 — tarde demais pra re-disparar o
+    // writer barato. Rodar aqui também faz `pipeline-sentinel.ts write --step 2`
+    // recusar o sentinel (inclusive no spawn headless) enquanto o fix ainda é
+    // barato: recalcular o category_label e editar só a linha do header
+    // (orchestrator-stage-2.md §2d) em vez de corrigir à mão no gate.
+    { name: "destaque-category-noticias", issue: "#8200" },
   ];
   const violations: InvariantViolation[] = [];
   for (const check of checks) {
@@ -571,7 +579,7 @@ function checkCarouselTextOverflowStage2(editionDir: string): InvariantViolation
 export const STAGE_2_RULES: InvariantRule[] = [
   {
     id: "reviewed-passes-all-lints",
-    description: "02-reviewed.md passa lint-newsletter-md granulares (#964)",
+    description: "02-reviewed.md passa lint-newsletter-md granulares, incl. destaque sem categoria NOTÍCIAS (#964, #8200/#9105)",
     source_issue: "#964",
     stage: 2,
     run: checkReviewedPassesAllLints,

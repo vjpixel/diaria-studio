@@ -102,8 +102,8 @@ quando nenhum servir):
 | Saúde/medicina | 🏥 SAÚDE |
 | Cultura/mídia/entretenimento | 🎬 CULTURA |
 
-Reserve "NOTÍCIAS" só para quando genuinamente NENHUM tema mais específico se
-aplicar — e nunca a 2+ destaques na mesma edição.
+**"NOTÍCIAS" nunca é categoria de destaque** (#6083; barrado no Stage 2, #8200/#9105): na dúvida,
+crie um label temático curto (ex: `EMPRESAS`, `SOCIEDADE`) em vez do genérico.
 
 ⚠️ **Não** derive de `highlights[N-1].bucket` (#1668): pós-#1629/#1611 o `bucket`
 carrega o bucket de SEÇÃO da newsletter (`lancamento`/`radar`/`use_melhor`/`video`,
@@ -481,6 +481,7 @@ Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, 
   npx tsx scripts/check-invariants.ts --stage 2 --edition-dir {EDITION_DIR}/
   ```
   Exit 1 = re-disparar writer ou bloquear gate até fix manual. Violations são logadas com `source_issue` pra rastreabilidade.
+  Exceção — `reviewed-destaque-category-noticias` (#9105): re-disparar o writer com o mesmo `category_label` reproduz o erro. Recalcule o `category_label` do destaque pela tabela temática do #6083 (acima) e edite **só** a linha `**DESTAQUE N | {emoji} {CATEGORIA}**` em `02-reviewed.md` (edição cirúrgica, #495); depois re-rode `check-invariants --stage 2`.
 
 - **Medir tamanho dos destaques (#739).** Antes de apresentar o gate, rodar:
   ```bash
