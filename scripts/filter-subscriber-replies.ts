@@ -63,7 +63,8 @@
  *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json
  *
  * Input: JSON array de { thread_id, from, subject, date?, body? }.
- * Output JSON: { total, replies: CapturedReply[], automatedSubjectCount } (cada reply com `trivial`).
+ * Output JSON: { total, replies: CapturedReply[], automatedSubjectCount,
+ *   possibleStaleAutomatedSubjects, droppedByToCount, droppedByToSenders } (cada reply com `trivial`).
  * Exit: 0 (sempre — é filtro, não gate; o draft+gate é no playbook).
  */
 
@@ -149,15 +150,28 @@ export function looksLikeSubscriberReply(msg: {
   from?: string;
   to?: string;
 }): boolean {
+  return passesSenderAndSubjectChecks(msg) && !isDroppedByTo(msg);
+}
+
+/** Checagens de assunto (`Re:`) + remetente humano — tudo de
+ * `looksLikeSubscriberReply` menos o check de `to` (#8997). */
+function passesSenderAndSubjectChecks(msg: { subject?: string; from?: string }): boolean {
   const subject = (msg.subject ?? "").trim();
   if (!REPLY_PREFIX_RE.test(subject)) return false;
   const email = extractEmail(msg.from ?? "");
   if (!email) return false;
   if (AUTOMATED_FROM_RE.test(email)) return false;
   if (isEditorAddress(email)) return false;
-  if (msg.to && !matchesKnownReplyAddress(msg.to, DEDICATED_SUBSCRIBER_REPLY_ADDRESSES)) return false;
   return true;
 }
+
+/** #8997: `to` presente e fora dos domínios dedicados de envio. */
+function isDroppedByTo(msg: { to?: string }): boolean {
+  return !!msg.to && !matchesKnownReplyAddress(msg.to, DEDICATED_SUBSCRIBER_REPLY_ADDRESSES);
+}
+
+/** #9158: teto da amostra de remetentes descartados pelo check de `to`. */
+export const DROPPED_BY_TO_SAMPLE_MAX = 10;
 
 /**
  * #4095: linha de header que introduz o bloco citado ("Em {data}, {nome}
@@ -407,12 +421,29 @@ export interface FilterResult {
    * sinaliza.
    */
   possibleStaleAutomatedSubjects: string[];
+  /**
+   * #9158: quantas threads passariam no filtro de assinante (Re: + remetente
+   * humano) mas foram descartadas pelo check de `to` do #8997 (endereçadas a
+   * algo fora dos domínios dedicados — ex: o reply-to antigo da era Beehiiv,
+   * `vjpixel@gmail.com`). Nunca entram em `replies[]` (nem no crédito do
+   * concurso "ache o erro"), então precisam ser reportadas — senão uma
+   * resposta real de assinante ao endereço antigo some sem rastro.
+   */
+  droppedByToCount: number;
+  /** #9158: amostra (até `DROPPED_BY_TO_SAMPLE_MAX`, remetentes únicos, na
+   * ordem de entrada) dos e-mails dos remetentes descartados pelo check de
+   * `to` — pra o editor conferir no Gmail se alguma era assinante real. */
+  droppedByToSenders: string[];
 }
 
 export function filterSubscriberReplies(threads: CapturedReply[]): FilterResult {
-  const candidates = threads.filter((t) =>
-    looksLikeSubscriberReply({ subject: t.subject, from: t.from, to: t.to }),
+  const baseCandidates = threads.filter((t) => passesSenderAndSubjectChecks(t));
+  const droppedByTo = baseCandidates.filter((t) => isDroppedByTo(t));
+  const droppedByToSenders = [...new Set(droppedByTo.map((t) => extractEmail(t.from ?? "")))].slice(
+    0,
+    DROPPED_BY_TO_SAMPLE_MAX,
   );
+  const candidates = baseCandidates.filter((t) => !isDroppedByTo(t));
   const automatedSubjectCount = candidates.filter((t) => isAutomatedSubject(t.subject)).length;
   // #4509: near-miss ANTES do filtro final — roda sobre os mesmos candidatos
   // que alimentam automatedSubjectCount, nunca sobre `replies` (que já
@@ -430,7 +461,14 @@ export function filterSubscriberReplies(threads: CapturedReply[]): FilterResult 
       ...t,
       trivial: isTrivialReply(stripQuotedAndSignature(t.body)),
     }));
-  return { total: threads.length, replies, automatedSubjectCount, possibleStaleAutomatedSubjects };
+  return {
+    total: threads.length,
+    replies,
+    automatedSubjectCount,
+    possibleStaleAutomatedSubjects,
+    droppedByToCount: droppedByTo.length,
+    droppedByToSenders,
+  };
 }
 
 function main(): void {
@@ -487,6 +525,19 @@ function main(): void {
   if (result.automatedSubjectCount > 0) {
     console.error(
       `  📧 ${result.automatedSubjectCount} resposta(s) ao e-mail de boas-vindas ignorada(s)`,
+    );
+  }
+  // #9158: threads descartadas pelo check de `to` do #8997 (endereçadas fora
+  // dos domínios dedicados) — nunca somem em silêncio, mesmo com replies vazio.
+  if (result.droppedByToCount > 0) {
+    // Remetentes são únicos: contagem > amostra não implica truncamento
+    // (um remetente pode ter várias threads) — só a amostra cheia implica.
+    const extra = result.droppedByToSenders.length >= DROPPED_BY_TO_SAMPLE_MAX ? ", …" : "";
+    const lead = result.replies.length === 0 ? "\n" : "";
+    console.error(
+      `${lead}  🚫 ${result.droppedByToCount} thread(s) "Re:" de remetente humano descartada(s) por \`to\` fora dos ` +
+        `domínios dedicados (ex: reply-to antigo) — conferir no Gmail se alguma era assinante: ` +
+        `${result.droppedByToSenders.join(", ")}${extra}`,
     );
   }
   // #4509: near-miss — assunto "parece" boas-vindas mas não bateu a
