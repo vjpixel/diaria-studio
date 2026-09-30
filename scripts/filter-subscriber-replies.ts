@@ -530,9 +530,12 @@ function main(): void {
   // #9158: threads descartadas pelo check de `to` do #8997 (endereçadas fora
   // dos domínios dedicados) — nunca somem em silêncio, mesmo com replies vazio.
   if (result.droppedByToCount > 0) {
-    const extra = result.droppedByToCount > result.droppedByToSenders.length ? ", …" : "";
+    // Remetentes são únicos: contagem > amostra não implica truncamento
+    // (um remetente pode ter várias threads) — só a amostra cheia implica.
+    const extra = result.droppedByToSenders.length >= DROPPED_BY_TO_SAMPLE_MAX ? ", …" : "";
+    const lead = result.replies.length === 0 ? "\n" : "";
     console.error(
-      `  🚫 ${result.droppedByToCount} thread(s) "Re:" de remetente humano descartada(s) por \`to\` fora dos ` +
+      `${lead}  🚫 ${result.droppedByToCount} thread(s) "Re:" de remetente humano descartada(s) por \`to\` fora dos ` +
         `domínios dedicados (ex: reply-to antigo) — conferir no Gmail se alguma era assinante: ` +
         `${result.droppedByToSenders.join(", ")}${extra}`,
     );

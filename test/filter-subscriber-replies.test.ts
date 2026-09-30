@@ -6,6 +6,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   looksLikeSubscriberReply,
   filterSubscriberReplies,
@@ -213,6 +217,25 @@ describe("filterSubscriberReplies (#1797)", () => {
     const r = filterSubscriberReplies(threads);
     assert.equal(r.droppedByToCount, DROPPED_BY_TO_SAMPLE_MAX + 5);
     assert.equal(r.droppedByToSenders.length, DROPPED_BY_TO_SAMPLE_MAX);
+  });
+
+  it("#9158: CLI imprime a linha de descarte por `to` no stderr mesmo com replies[] vazio", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fsr-9158-"));
+    const inPath = join(dir, "in.json");
+    writeFileSync(
+      inPath,
+      JSON.stringify([
+        { thread_id: "a", subject: "Re: x", from: "leitora@z.com", to: "vjpixel@gmail.com" },
+        { thread_id: "b", subject: "Re: y", from: "leitora@z.com", to: "vjpixel@gmail.com" },
+      ]),
+    );
+    const res = spawnSync(process.execPath, ["--import", "tsx", "scripts/filter-subscriber-replies.ts", "--in", inPath], {
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout).replies.length, 0);
+    assert.match(res.stderr, /🚫 2 thread\(s\)/);
+    assert.match(res.stderr, /leitora@z\.com$/m, "sem sufixo de truncamento: 1 remetente único, amostra não cheia");
   });
 
   // ── #8997: `alreadyRepliedByEditor` passthrough (thread já respondida) ──
