@@ -127,6 +127,24 @@ export function toBaseUrl(raw: string): string {
   }
 }
 
+/** #9131: identidade COMPLETA de uma URL — mantém a query (ao contrário de
+ * `toBaseUrl`), mas normaliza o que não muda o destino: hash descartado,
+ * parâmetros ordenados, 1 trailing slash do path removida (mesma regra de
+ * `toBaseUrl`). Serve só de
+ * DESEMPATE quando duas caixas compartilham a mesma base-URL (versões de uma
+ * caixa que diferem por `utm_*`). Entrada inválida devolve como está. */
+export function toFullUrlKey(raw: string): string {
+  try {
+    const u = new URL(raw);
+    u.hash = "";
+    u.searchParams.sort();
+    u.pathname = u.pathname.replace(/\/$/, "") || "/";
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
 export interface SnippetInfo {
   /** Nome do arquivo (ex: `clarice-divulgacao.md`) — chave estável de
    * agregação (o link é mais confiável que o texto, mas o arquivo é mais
@@ -138,6 +156,11 @@ export interface SnippetInfo {
   /** URLs (já em base-url) encontradas no CORPO do snippet (header
    * de comentário excluído — `stripHeaderBlock`). */
   urls: string[];
+  /** #9131: URLs COMPLETAS do corpo (query preservada, via `toFullUrlKey`)
+   * — desempate de `matchSnippetForBox` quando >1 snippet compartilha a
+   * base-URL. Opcional por back-compat de fixtures literais; ausente = sem
+   * desempate (1º snippet com a base-URL, comportamento pré-#9131). */
+  fullUrls?: string[];
   /** `seasonal:` do header — `true` para ofertas pontuais/sazonais
    * (alta pull) vs `false`/null para boxes permanentes (#6031). */
   seasonal: boolean | null;
@@ -157,10 +180,11 @@ export function parseSnippetContent(file: string, content: string): SnippetInfo 
   const body = stripHeaderBlock(content);
   const rawUrls = extractUrls(body);
   const urls = [...new Set(rawUrls.map(toBaseUrl))];
+  const fullUrls = [...new Set(rawUrls.map(toFullUrlKey))];
   const seasonal = readSeasonalFlag(content);
   const { audience, source: audienceSource } = resolveSnippetAudience(content, rawUrls);
   const eventKeys = extractSnippetEventKeys(content, rawUrls);
-  return { file, nome, urls, seasonal, audience, audienceSource, eventKeys };
+  return { file, nome, urls, fullUrls, seasonal, audience, audienceSource, eventKeys };
 }
 
 /** Carrega + parseia todos os snippets de `data/snippets/*.md` (#5227,
@@ -198,17 +222,71 @@ export interface SnippetMatch {
  * base-URL, testando cada URL do box em ordem até achar uma que exista em
  * algum snippet cadastrado. `null` quando o box não tem URL, ou nenhuma URL
  * do box corresponde a nenhum snippet (ex: box escrito manualmente, sem vir
- * de um snippet reaproveitável). */
+ * de um snippet reaproveitável).
+ *
+ * #9131: quando >1 snippet compartilha a base-URL (versões da mesma caixa que
+ * diferem só por `utm_*` — ex. `diaria-imersao1010.md` e
+ * `workshop-agente-ia-outubro.md`, ambos em `/evento/agente-ia`), desempata
+ * pelo nº de parâmetros de query idênticos (`key=value`) entre a URL do box e
+ * a URL do snippet — URL completa idêntica (`toFullUrlKey`) sempre vence, e
+ * `utm_source` diferente perde para `utm_source` igual mesmo com
+ * `utm_content` compartilhado (diária × Clarice). Empate → prefere o arquivo
+ * que não é cópia (`-copia.md`, ver `isSnippetCopyFile`) → 1º na ordem dada.
+ * Sem desempate possível numa URL, as URLs seguintes do box ainda são
+ * testadas; só no fim cai no 1º candidato da 1ª URL que bateu por base —
+ * comportamento pré-#9131. */
 export function matchSnippetForBox(
   boxText: string,
   snippets: SnippetInfo[],
 ): SnippetMatch | null {
+  let fallback: SnippetMatch | null = null;
   for (const rawUrl of extractUrls(boxText)) {
     const baseUrl = toBaseUrl(rawUrl);
-    const found = snippets.find((s) => s.urls.includes(baseUrl));
-    if (found) return { snippet: found, url: rawUrl };
+    const candidates = snippets.filter((s) => s.urls.includes(baseUrl));
+    if (candidates.length === 0) continue;
+    if (candidates.length === 1) return { snippet: candidates[0], url: rawUrl };
+    const best = pickBestCandidate(rawUrl, baseUrl, candidates);
+    if (best) return { snippet: best, url: rawUrl };
+    fallback ??= { snippet: candidates[0], url: rawUrl };
   }
-  return null;
+  return fallback;
+}
+
+/** #9131: `true` para arquivo de cópia solta (`x-copia.md`, `x-cópia-2.md`,
+ * `x-copy.md`) — perde o desempate para o original com a mesma URL. */
+export function isSnippetCopyFile(file: string): boolean {
+  return /[-_ ](copia|cópia|copy)(-\d+)?\.md$/i.test(file);
+}
+
+function queryPairs(raw: string): Set<string> {
+  try {
+    return new Set([...new URL(raw).searchParams].map(([k, v]) => `${k}=${v}`));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Desempate de `matchSnippetForBox` entre candidatos com a mesma base-URL.
+ * `null` = nenhum sinal (box sem query compartilhada com nenhum candidato). */
+function pickBestCandidate(rawUrl: string, baseUrl: string, candidates: SnippetInfo[]): SnippetInfo | null {
+  const fullKey = toFullUrlKey(rawUrl);
+  const boxPairs = queryPairs(rawUrl);
+  const scoreOf = (s: SnippetInfo): number => {
+    let best = 0;
+    for (const u of s.fullUrls ?? []) {
+      if (toBaseUrl(u) !== baseUrl) continue;
+      if (u === fullKey) return Number.POSITIVE_INFINITY;
+      let n = 0;
+      for (const pair of queryPairs(u)) if (boxPairs.has(pair)) n++;
+      best = Math.max(best, n);
+    }
+    return best;
+  };
+  const scored = candidates.map((s) => ({ s, score: scoreOf(s) }));
+  const top = Math.max(...scored.map((x) => x.score));
+  if (top <= 0) return null;
+  const tied = scored.filter((x) => x.score === top).map((x) => x.s);
+  return tied.find((s) => !isSnippetCopyFile(s.file)) ?? tied[0];
 }
 
 export interface ClickLike {
