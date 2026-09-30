@@ -34,6 +34,7 @@ import {
   type BoxesDivulgacaoConfigLike,
 } from "../scripts/lib/lint-checks/snippet-staleness.ts";
 import { snippetBodyHash } from "../scripts/lib/shared/snippet-header.ts";
+import { BOX_SLOT_EMPTIED } from "../scripts/lib/newsletter-parse.ts";
 
 // ─── Fixture de 02-reviewed.md com box no slot1 (gap D1/D2) ────────────────
 const REVIEWED_MD_WITH_SLOT1_BOX = [
@@ -615,5 +616,74 @@ describe("runSnippetStalenessCheck (#4150) — hash do corpo distingue edição 
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("runSnippetStalenessCheck (#9183) — box do slot atribuído via box-selection.json, não ao config", () => {
+  function setup(selection: unknown): { root: string; snippetsDir: string; mdPath: string } {
+    const root = mkdtempSync(join(tmpdir(), "diaria-snippet-staleness-9183-"));
+    const snippetsDir = join(root, "data", "snippets");
+    mkdirSync(snippetsDir, { recursive: true });
+    const editionDir = join(root, "data", "editions", "990101");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    const configPath = join(root, "platform.config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({ boxes_divulgacao: { slot1: "livros-divulgacao.md", slot2: null, slot3: null } }),
+    );
+    writeFileSync(join(snippetsDir, "encerramento-social-apoio.md"), "Encerramento.");
+    writeFileSync(join(snippetsDir, "livros-divulgacao.md"), "**📚 LIVROS DO CONFIG**\n\nTexto do snippet do config, que NÃO entrou.");
+    writeFileSync(join(snippetsDir, "auto-escolhido.md"), "**📚 CURADORIA DE LIVROS**\n\nConteúdo do box de divulgação do slot 1.");
+    writeFileSync(join(editionDir, "_internal", "box-selection.json"), JSON.stringify(selection));
+    const mdPath = join(editionDir, "02-reviewed.md");
+    writeFileSync(mdPath, REVIEWED_MD_WITH_SLOT1_BOX);
+    const old = new Date(Date.now() - 60 * 60_000);
+    const snippetFiles = ["encerramento-social-apoio.md", "livros-divulgacao.md", "auto-escolhido.md"].map((f) => join(snippetsDir, f));
+    for (const p of [configPath, mdPath, ...snippetFiles]) {
+      utimesSync(p, old, old);
+    }
+    return { root, snippetsDir, mdPath };
+  }
+
+  it("modo auto: staleness julgada no snippet SELECIONADO (edição pós-stitch dele avisa; a do config não)", () => {
+    const { root, snippetsDir, mdPath } = setup([{ slot: 1, file: "auto-escolhido.md", mode: "auto" }]);
+    try {
+      const now = new Date();
+      utimesSync(join(snippetsDir, "auto-escolhido.md"), now, now);
+      utimesSync(join(snippetsDir, "livros-divulgacao.md"), now, now);
+      const result = runSnippetStalenessCheck(mdPath, root);
+      const files = result.warnings.filter((w) => w.kind === "snippet").map((w) => w.file);
+      assert.deepEqual(files, ["auto-escolhido.md"]);
+      assert.equal(result.warnings.find((w) => w.file === "auto-escolhido.md")?.slot, "slot1");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fallback-ineligible com box colado à mão: NÃO atribui ao arquivo recusado do config", () => {
+    const { root, snippetsDir, mdPath } = setup([
+      { slot: 1, file: null, mode: "fallback-ineligible", rejectedFile: "livros-divulgacao.md" },
+    ]);
+    try {
+      const now = new Date();
+      utimesSync(join(snippetsDir, "livros-divulgacao.md"), now, now);
+      const result = runSnippetStalenessCheck(mdPath, root);
+      assert.ok(
+        !result.warnings.some((w) => w.file === "livros-divulgacao.md"),
+        `não esperava warning do arquivo recusado: ${JSON.stringify(result.warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveUsedSnippets: resolver null cai no config; BOX_SLOT_EMPTIED pula o slot; arquivo vence o config", () => {
+    const cfg: BoxesDivulgacaoConfigLike = { slot1: "livros-divulgacao.md", slot2: null, slot3: null };
+    const viaNull = resolveUsedSnippets(REVIEWED_MD_WITH_SLOT1_BOX, cfg, false, () => null);
+    assert.ok(viaNull.some((u) => u.file === "livros-divulgacao.md" && u.slot === "slot1"));
+    const viaEmpty = resolveUsedSnippets(REVIEWED_MD_WITH_SLOT1_BOX, cfg, false, () => BOX_SLOT_EMPTIED);
+    assert.ok(!viaEmpty.some((u) => u.slot === "slot1"));
+    const viaFile = resolveUsedSnippets(REVIEWED_MD_WITH_SLOT1_BOX, cfg, false, () => "outro.md");
+    assert.ok(viaFile.some((u) => u.file === "outro.md" && u.slot === "slot1"));
   });
 });
