@@ -232,13 +232,16 @@ describe("#8616 item 5 — cobertura adicional pós-review #8610", () => {
       assert.equal(loadMetaConfirmationIndex(idxPath)["kit-1"].status, "sent");
     }));
 
-  it("network_error: conta failed mas NÃO grava tentativa no índice (reprocessa livre na próxima)", () =>
+  it("network_error: conta failed e grava `failed` SEM consumir tentativa (#9066)", () =>
     withTmp(async (dir) => {
       const sendFn = async (): Promise<MetaCapiSendResult> => ({ ok: false, status: 502, reason: "network_error" });
       const s = await runMetaConfirmationBatch(deps(dir, { roster: [sub(1)], baseSnapshot: [base(1)], sendFn }));
       assert.equal(s.failed, 1);
+      assert.equal(s.transientFailed, 1);
       assert.deepEqual(s.failedIds, [1]);
-      assert.equal(existsSync(join(dir, "idx.json")), false, "erro de rede não deve tocar o índice");
+      const e = loadMetaConfirmationIndex(join(dir, "idx.json"))["kit-1"];
+      assert.equal(e.status, "failed");
+      assert.equal(e.attempts ?? 0, 0, "erro de rede não consome tentativa");
     }));
 
   it("not_configured: não conta como failed nem toca o índice", () =>

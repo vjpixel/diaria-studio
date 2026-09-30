@@ -58,7 +58,8 @@
  * também o `eventId` hash). Já enviado / já registrado como pulado não reenvia.
  * Índice ilegível LANÇA (nunca `{}` silencioso, senão reenviaria tudo).
  * Recusa por linha: `failed` com contador; após `MAX_FAILED_ATTEMPTS` vira
- * `skipped-failed-permanent`. Falha de rede/`not_configured` não conta tentativa.
+ * `skipped-failed-permanent`. Falha de rede/`not_configured` não conta tentativa
+ * (rede grava `failed` sem incrementar, #9066; `not_configured` não toca o índice).
  *
  * ## Recusa permanente x falha transitória (#9022)
  *
@@ -70,7 +71,9 @@
  * via índice) e o único teto para eles é a janela de `windowDays` da CAPI —
  * quando o cadastro sai dela, a própria checagem de janela o registra como
  * `skipped-out-of-window`. Uma queda de 3h da Meta não vira mais perda
- * definitiva.
+ * definitiva. Falha de REDE (#9066) entra na mesma regra: grava `failed` sem
+ * consumir tentativa, pra que o candidato não saia da fila sem registro quando o
+ * snapshot base avança antes do próximo sucesso.
  *
  * ## Guard de publicação
  *
@@ -221,7 +224,7 @@ export interface MetaConfirmationSummary {
   failed: number;
   failedPermanent: number;
   failedIds: number[];
-  /** #9022: subconjunto de `failed` com 5xx/429 — não consumiu tentativa. */
+  /** #9022/#9066: subconjunto de `failed` com 5xx/429 ou falha de rede — não consumiu tentativa. */
   transientFailed: number;
   notConfigured: number;
 }
@@ -395,16 +398,24 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
       record(cand, { status: "sent", eventId });
     } else if (result.reason === "not_configured") {
       summary.notConfigured++;
-    } else if (result.reason === "meta_error" && isTransientMetaStatus(result.status)) {
+    } else if (
+      result.reason === "network_error" ||
+      (result.reason === "meta_error" && isTransientMetaStatus(result.status))
+    ) {
       // #9022: instabilidade/throttling da Meta — grava `failed` pra manter o
       // candidato no pool de retry, mas SEM incrementar `attempts`. Teto: a
       // janela de `windowDays` (vira `skipped-out-of-window` ao sair dela).
+      // #9066: falha de REDE segue a mesma regra. Antes ela não gravava nada —
+      // e se o snapshot base avançasse antes do próximo sucesso, o candidato
+      // saía de `selectConfirmationCandidates` e (sem entrada `failed` no
+      // índice) também do loop de retry: sumia sem registro.
       summary.failed++;
       summary.transientFailed++;
       summary.failedIds.push(cand.id);
       const prevAttempts = index[metaIndexKey(cand.id)]?.attempts ?? 0;
       record(cand, { status: "failed", eventId, attempts: prevAttempts });
-      log(`kit id ${cand.id}: Meta respondeu ${result.status} (transitório) — sem consumir tentativa, reenvia na próxima rodada.`);
+      const cause = result.reason === "network_error" ? "falha de rede" : `Meta respondeu ${result.status}`;
+      log(`kit id ${cand.id}: ${cause} (transitório) — sem consumir tentativa, reenvia na próxima rodada.`);
     } else if (result.reason === "meta_error") {
       summary.failed++;
       summary.failedIds.push(cand.id);
@@ -416,10 +427,6 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
       } else {
         record(cand, { status: "failed", eventId, attempts });
       }
-    } else {
-      // rede: não conta tentativa, reprocessa na próxima rodada
-      summary.failed++;
-      summary.failedIds.push(cand.id);
     }
   }
   log(`resumo: ${summary.sent} enviados, ${summary.failed} falharam, ${summary.outOfWindow} fora da janela.`);
