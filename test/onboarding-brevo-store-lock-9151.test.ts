@@ -201,6 +201,7 @@ describe("#9151 item 2 — Brevo não põe no D+10 quem já está num lote Kit d
   const plan = (entries: OnboardingEntry[]): RunPlanResult => ({
     actions: [{ kind: "email3_campaign", entries }],
     skips: [],
+    detectedEntries: [],
   });
 
   it("lote Kit de e-mail 3 não-cancelado tira a entry do cohort (switch desligado também)", () => {
@@ -287,6 +288,7 @@ describe("#9151 (review PR #9181) — plano refiltrado contra o disco antes de e
         { kind: "email3_campaign", entries: [entry({ subscription_id: "sub-3" }), entry({ subscription_id: "sub-3b" })] },
       ],
       skips: [],
+      detectedEntries: [],
     };
     const fresh = emptyStore();
     fresh.entries["sub-kit"] = entry();
