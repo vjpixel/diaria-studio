@@ -143,6 +143,7 @@ interface BrevoDiariaConfig extends BrevoAccountLimitConfig {
   list_id: number | null;
   sender_email: string | null;
   sender_name: string;
+  reply_to?: string;
   daily_send_cap: number;
   /** #5086 — destinatário default de `--send-test` quando `--send-test-to`
    * não é passado. Ausente/null é válido (config antiga, ou editor ainda não
@@ -1020,6 +1021,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
       subject,
       previewText,
       sender: { name: brevoDiaria!.sender_name, email: brevoDiaria!.sender_email },
+      ...(brevoDiaria!.reply_to ? { replyTo: brevoDiaria!.reply_to } : {}),
       recipients: { listIds: [brevoDiaria!.list_id] },
       htmlContent: html,
     })) as Record<string, unknown>;

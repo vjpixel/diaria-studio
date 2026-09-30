@@ -33,6 +33,7 @@ export const KNOWN_NEWSLETTER_REPLY_ADDRESSES = [
   "vjpixel@gmail.com", // legado — reply-to Beehiiv pré-domínio dedicado
   "oi@news.diar.ia.br", // Kit — envio direto + ramp por onda (kit_diaria, #6046/#7168)
   "oi@reativa.diar.ia.br", // Brevo diária — canal de reativação Pending (#6046)
+  "pixel@diar.ia.br", // reply-to de todas as campanhas Brevo (Clarice News + diária)
 ] as const;
 
 /**
@@ -50,7 +51,7 @@ export const KNOWN_NEWSLETTER_REPLY_ADDRESSES = [
  * seja um dos domínios DEDICADOS de envio — nunca o catch-all pessoal.
  */
 export const DEDICATED_SUBSCRIBER_REPLY_ADDRESSES = KNOWN_NEWSLETTER_REPLY_ADDRESSES.filter(
-  (addr) => addr !== "vjpixel@gmail.com",
+  (addr) => addr !== "vjpixel@gmail.com" && addr !== "pixel@diar.ia.br", // caixas pessoais do editor
 );
 
 /** Janela default da busca (#7168: 7d era curto demais depois de qualquer gap — fim de semana longo, outage do #7166). */

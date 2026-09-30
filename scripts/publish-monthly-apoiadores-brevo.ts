@@ -125,6 +125,7 @@ export interface BrevoApoiadoresPublishConfig {
   list_id: number | null;
   sender_email?: string | null;
   sender_name?: string | null;
+  reply_to?: string | null;
 }
 interface PlatformConfig {
   brevo_apoiadores?: BrevoApoiadoresPublishConfig;
@@ -183,7 +184,7 @@ export function checkApoiadoresBrevoGuards(params: {
  */
 export function buildApoiadoresBrevoCampaignBody(
   content: ApoiadoresBrevoEmailContent,
-  config: Pick<BrevoApoiadoresPublishConfig, "sender_email" | "sender_name">,
+  config: Pick<BrevoApoiadoresPublishConfig, "sender_email" | "sender_name" | "reply_to">,
   listId: number,
   campaignName: string,
 ): Record<string, unknown> {
@@ -192,6 +193,7 @@ export function buildApoiadoresBrevoCampaignBody(
     subject: content.subject,
     previewText: content.previewText,
     sender: { name: config.sender_name ?? "diar.ia.br", email: config.sender_email },
+    ...(config.reply_to ? { replyTo: config.reply_to } : {}),
     recipients: { listIds: [listId] },
     htmlContent: content.html,
   };

@@ -66,11 +66,11 @@ test("#7168: matchesKnownReplyAddress lida com display-name e múltiplos destina
   assert.equal(matchesKnownReplyAddress("alguem-nao-relacionado@exemplo.com"), false);
 });
 
-test("#7168: buildRepliesSearchQuery monta a query com os 3 endereços + janela default 14d", () => {
+test("#7168: buildRepliesSearchQuery monta a query com os 4 endereços + janela default 14d", () => {
   const query = buildRepliesSearchQuery();
   assert.equal(
     query,
-    "to:(vjpixel@gmail.com OR oi@news.diar.ia.br OR oi@reativa.diar.ia.br) subject:(Re OR Res) newer_than:14d",
+    "to:(vjpixel@gmail.com OR oi@news.diar.ia.br OR oi@reativa.diar.ia.br OR pixel@diar.ia.br) subject:(Re OR Res) newer_than:14d",
   );
 });
 

@@ -46,8 +46,8 @@
  *                  recusam prosseguir sem `--force` explícito (#3643).
  *   4. --create:   cria as 3 campanhas como RASCUNHO (payload proven de
  *                  `clarice-schedule-sends.ts`: name/subject/previewText/
- *                  sender/recipients/htmlContent, OMITINDO header/footer/
- *                  replyTo → defaults da conta). htmlContent =
+ *                  sender/recipients/htmlContent/replyTo (brevo_monthly.reply_to),
+ *                  OMITINDO header/footer → defaults da conta). htmlContent =
  *                  `_internal/cloudflare-preview.html` do ciclo (NÃO o
  *                  embedded). Guard: aborta ANTES de qualquer POST se o HTML
  *                  não contiver a merge tag de descadastro `{{ unsubscribe }}`
@@ -1575,6 +1575,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           subject,
           ...(previewText ? { previewText } : {}),
           sender: { name: brevo.sender_name, email: brevo.sender_email },
+          ...(brevo.reply_to ? { replyTo: brevo.reply_to } : {}),
           recipients: { listIds: [entry.listId] },
           htmlContent: html,
         })) as { id?: number };

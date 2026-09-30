@@ -122,6 +122,7 @@ interface BrevoConfig {
   list_id: number | null;
   sender_email: string | null;
   sender_name: string;
+  reply_to?: string;
   test_email: string;
 }
 
@@ -692,6 +693,7 @@ export async function main(
         name: brevo.sender_name,
         email: brevo.sender_email,
       },
+      ...(brevo.reply_to ? { replyTo: brevo.reply_to } : {}),
       recipients: { listIds: [effectiveListId] },
       htmlContent: html,
     });
@@ -706,6 +708,7 @@ export async function main(
         name: brevo.sender_name,
         email: brevo.sender_email,
       },
+      ...(brevo.reply_to ? { replyTo: brevo.reply_to } : {}),
       recipients: { listIds: [effectiveListId] },
       htmlContent: html,
     }) as Record<string, unknown>;
