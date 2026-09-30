@@ -425,13 +425,28 @@ export function buildGetImageFresh(
 const SIGNIFICANT_TOKEN_MIN_LEN = 5;
 
 /**
- * Fração mínima de tokens significativos do destaque (título+corpo+why, de
- * `02-reviewed.md`) que precisam aparecer na seção `## dN` correspondente de
- * `03-social.md` para considerar o conteúdo "ainda em sincronia" (#4832). O
- * texto social é uma reescrita, nunca uma cópia literal — o limiar é
- * calibrado para tolerar paráfrase normal (troca de conectivos, resumo)
- * mantendo os fatos/entidades centrais, mas ainda pegar um destaque
- * genuinamente trocado (zero overlap de vocabulário).
+ * Score mínimo de overlap (`socialOverlapScore` = recall + precisão, faixa
+ * 0..2) entre o destaque (título+corpo+why, de `02-reviewed.md`) e a seção
+ * `## dN` correspondente de `03-social.md` para considerar o conteúdo "ainda
+ * em sincronia" (#4832, recalibrado no #9114).
+ *
+ * Por que recall + precisão e não só recall (#9114): o texto social é um
+ * RESUMO — 3 parágrafos curtos contra 4 parágrafos + "Por que isso importa"
+ * do destaque. Recall puro (fração do vocabulário do destaque que sobrevive
+ * no social) é estruturalmente baixo nesse formato: medido em 119 edições
+ * reais (141 pares destaque↔social em sincronia), 47% ficavam ABAIXO do
+ * limiar antigo de recall 0,3 — a supressão falhava em metade dos casos e o
+ * check caía em mtime puro (falso positivo da 260930: só a caixa do workshop
+ * mudou e o Stage 5 parou). Precisão (fração do vocabulário do social que
+ * vem do destaque) compensa: um resumo fiel tem precisão alta mesmo com
+ * recall baixo. Na mesma medição, com o score somado:
+ *   - pares em sincronia: mínimo 0,317, mediana 0,79 → 0 falhas a 0,3;
+ *   - pares cruzados (social dN × destaque de OUTRO slot, proxy de destaque
+ *     trocado): mediana 0,08, 4/282 (1,4%) passam de 0,3.
+ * O custo residual (1,4% de troca não detectada por este caminho) é coberto
+ * pelo guard independente de troca de destaque — hash URL+título do
+ * `01-approved.json` em `_internal/.social-source-hash.json` (#1413,
+ * invariante do Stage 4).
  */
 export const SOCIAL_CONTENT_OVERLAP_THRESHOLD = 0.3;
 
@@ -466,10 +481,48 @@ export function contentOverlapRatio(
 }
 
 /**
+ * Remove as linhas de hashtags (`#InteligenciaArtificial #OpenAI ...`) de uma
+ * seção social (#9114). Hashtags são vocabulário próprio do social que nunca
+ * aparece no destaque — contá-las só dilui a precisão. Linha que começa com
+ * `#` colado a uma letra/dígito é hashtag; heading markdown (`# `, `## `)
+ * não chega aqui (as seções já vêm sem heading).
+ */
+export function stripHashtagLines(socialText: string): string {
+  return socialText
+    .split("\n")
+    .filter((line) => !/^\s*#[\p{L}\p{N}]/u.test(line))
+    .join("\n");
+}
+
+/**
+ * Score de overlap destaque↔social (#9114) = recall + precisão sobre tokens
+ * significativos, faixa 0..2:
+ *   - recall: fração dos tokens do destaque presentes no social;
+ *   - precisão: fração dos tokens do social (sem hashtags) presentes no destaque.
+ * `reviewedTokens` vazio → 0 (conservador, igual a `contentOverlapRatio`).
+ */
+export function socialOverlapScore(
+  reviewedTokens: Set<string>,
+  socialText: string,
+): number {
+  if (reviewedTokens.size === 0) return 0;
+  const socialTokens = significantTokens(stripHashtagLines(socialText));
+  if (socialTokens.size === 0) return 0;
+  let matched = 0;
+  for (const t of socialTokens) {
+    if (reviewedTokens.has(t)) matched++;
+  }
+  // Interseção é simétrica: o mesmo `matched` serve às duas razões.
+  const precision = matched / socialTokens.size;
+  const recall = matched / reviewedTokens.size;
+  return recall + precision;
+}
+
+/**
  * True se o conteúdo do destaque (`title`+`body`+`why`, extraído de
  * `02-reviewed.md` via `parseDestaques`) ainda está refletido na seção
- * `## dN` correspondente de `03-social.md` — overlap de vocabulário
- * significativo >= `SOCIAL_CONTENT_OVERLAP_THRESHOLD`.
+ * `## dN` correspondente de `03-social.md` — `socialOverlapScore` >=
+ * `SOCIAL_CONTENT_OVERLAP_THRESHOLD` (#9114; antes, recall puro).
  */
 export function destaqueContentMatches(
   destaque: Pick<Destaque, "title" | "body" | "why">,
@@ -480,7 +533,7 @@ export function destaqueContentMatches(
     `${destaque.title} ${destaque.body} ${destaque.why}`,
   );
   if (reviewedTokens.size === 0) return true; // nada significativo pra comparar — não bloquear
-  return contentOverlapRatio(reviewedTokens, socialSectionText) >= threshold;
+  return socialOverlapScore(reviewedTokens, socialSectionText) >= threshold;
 }
 
 /**
