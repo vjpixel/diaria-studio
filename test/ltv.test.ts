@@ -25,6 +25,7 @@ import {
   previousCompetenceMonth,
   findChurnBaselineDate,
   computeChurnExitsBetweenSnapshots,
+  excludeInternalAndTestSubscribers,
   resolveApoiaSeCampaignName,
   type ChurnRateResult,
   type LtvCaixaFaixaResult,
@@ -446,5 +447,31 @@ describe("computeChurnExitsBetweenSnapshots", () => {
   it("normaliza e-mail (trim + lowercase) na comparação", () => {
     const { exits } = computeChurnExitsBetweenSnapshots([{ email: " A@X.com ", status: "active" }], []);
     assert.equal(exits[0].email, "a@x.com");
+  });
+});
+
+describe("excludeInternalAndTestSubscribers (#9074)", () => {
+  it("remove INTERNAL_EMAILS (case/espaço-insensitive) e contas de teste, conta o removido", () => {
+    const subs = [
+      { email: "leitor@x.com", status: "active" },
+      { email: " Pixel@Memelab.com.br ", status: "active" },
+      { email: "vjpixel@gmail.com", status: "inactive" },
+      { email: "ti@clarice.ai", status: "active" },
+      { email: "vjpixel+teste4@gmail.com", status: "active" },
+      { email: "outro@x.com", status: "active" },
+    ];
+    const { kept, removedCount } = excludeInternalAndTestSubscribers(subs);
+    assert.deepEqual(kept.map((s) => s.email), ["leitor@x.com", "outro@x.com"]);
+    assert.equal(removedCount, 4);
+  });
+
+  it("paridade com isInternalOrTestEmail de cac.ts (mesma definição nos dois módulos)", async () => {
+    const { isInternalOrTestEmail } = await import("../scripts/lib/cac.ts");
+    const { INTERNAL_EMAILS } = await import("../scripts/lib/cohorts.ts");
+    const probes = [...INTERNAL_EMAILS, "vjpixel+test2@gmail.com", "leitor@x.com", "vjpixel@yahoo.com"];
+    for (const email of probes) {
+      const removed = excludeInternalAndTestSubscribers([{ email }]).removedCount === 1;
+      assert.equal(removed, isInternalOrTestEmail(email), email);
+    }
   });
 });

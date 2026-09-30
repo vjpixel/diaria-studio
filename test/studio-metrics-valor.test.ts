@@ -184,6 +184,63 @@ describe("buildMetricsData — Valor (#8423) — churn e LTV de caixa", () => {
   });
 });
 
+describe("buildMetricsData — Valor (#9074) — contas internas/teste fora do ARPU e do churn", () => {
+  // Mesmo cenário com e sem contas internas/teste: o bloco Valor tem que
+  // sair IDÊNTICO — interno/teste não entram no denominador do ARPU, na base
+  // média do churn nem viram "saída" quando mudam de status.
+  async function run(withInternal: boolean) {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      const extraBaseline = withInternal
+        ? [
+            beehiivSubscriberLine({ email: "pixel@memelab.com.br", status: "active" }),
+            beehiivSubscriberLine({ email: "VJPixel+test7@gmail.com", status: "active" }),
+            beehiivSubscriberLine({ email: "ti@clarice.ai", status: "active" }),
+          ]
+        : [];
+      const extraLatest = withInternal
+        ? [
+            beehiivSubscriberLine({ email: "pixel@memelab.com.br", status: "inactive" }),
+            beehiivSubscriberLine({ email: "VJPixel+test7@gmail.com", status: "inactive" }),
+            beehiivSubscriberLine({ email: "ti@clarice.ai", status: "active" }),
+          ]
+        : [];
+      writeBeehiivSnapshot(root, "2026-08-10", [
+        beehiivSubscriberLine({ email: "a@x.com", status: "active" }),
+        beehiivSubscriberLine({ email: "b@x.com", status: "active" }),
+        beehiivSubscriberLine({ email: "c@x.com", status: "active" }),
+        ...extraBaseline,
+      ]);
+      writeBeehiivSnapshot(root, "2026-09-09", [
+        beehiivSubscriberLine({ email: "a@x.com", status: "active" }),
+        beehiivSubscriberLine({ email: "b@x.com", status: "active" }),
+        beehiivSubscriberLine({ email: "c@x.com", status: "inactive" }),
+        ...extraLatest,
+      ]);
+      writeManualCleanup(root, []);
+      writeApoiaSeCache(root, "2026-08", { "a@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 20 } });
+      writeAmazonConfig(root, 40);
+      return await buildMetricsData(root, { forceRefresh: true, now: () => new Date("2026-09-15T12:00:00Z") });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it("ARPU, churn e LTV idênticos com ou sem contas internas/teste no snapshot", async () => {
+    const control = await run(false);
+    const withInternal = await run(true);
+    assert.ok(control.valor.arpuAtivo.valor != null);
+    assert.ok(Math.abs(control.valor.arpuAtivo.valor! - 60 / 2) < 1e-9); // base ativa = a, b
+    assert.deepEqual(withInternal.valor.arpuAtivo.valor, control.valor.arpuAtivo.valor);
+    assert.deepEqual(withInternal.valor.churnMensal.valor, control.valor.churnMensal.valor);
+    assert.deepEqual(withInternal.valor.churnMensal.limites, control.valor.churnMensal.limites);
+    assert.deepEqual(withInternal.valor.ltvCaixa.limites, control.valor.ltvCaixa.limites);
+    assert.deepEqual(withInternal.valor.conversaoApoiador.valor, control.valor.conversaoApoiador.valor);
+  });
+});
+
 describe("buildMetricsData — Valor (#8423) — conversão em apoiador e LTV por origem", () => {
   it("classifica por classe de aquisição e vincula por e-mail com a apoia.se", async () => {
     clearMetricsCache();

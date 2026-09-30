@@ -177,6 +177,7 @@ import {
   previousCompetenceMonth,
   findChurnBaselineDate,
   computeChurnExitsBetweenSnapshots,
+  excludeInternalAndTestSubscribers,
   resolveApoiaSeCampaignName,
   type ApoiaSeMonthCacheEntry,
 } from "./lib/ltv.ts";
@@ -377,9 +378,14 @@ function computeLtvSectionCore(
     };
   }
   // Mesma população nos dois lados do diff E no denominador do ARPU:
-  // snapshot Beehiiv CRU (#9023, paridade com studio-metrics.ts).
-  const latestSubs = readSnapshotSubscribers(backupRoot, latestDate);
-  if (latestSubs.length === 0) {
+  // snapshot Beehiiv menos contas internas/teste (#9023 + #9074, paridade
+  // com studio-metrics.ts).
+  // Contas internas/teste fora do denominador do ARPU e dos DOIS lados do
+  // diff de churn (#9074) — o guard de snapshot vazio abaixo segue lendo o
+  // snapshot CRU (vazio de verdade ≠ "só tinha interno").
+  const latestSubsRaw = readSnapshotSubscribers(backupRoot, latestDate);
+  const latestSubs = excludeInternalAndTestSubscribers(latestSubsRaw).kept;
+  if (latestSubsRaw.length === 0) {
     // Paridade com o guard `beehiivSnapshotEmpty` de studio-metrics.ts: sem
     // isso todo ativo do baseline viraria "saída" e o motivo sairia genérico.
     return {
@@ -404,7 +410,7 @@ function computeLtvSectionCore(
       rows: [],
     };
   }
-  const baselineSubs = readSnapshotSubscribers(backupRoot, baselineDate);
+  const baselineSubs = excludeInternalAndTestSubscribers(readSnapshotSubscribers(backupRoot, baselineDate)).kept;
   const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baselineSubs, latestSubs);
   const periodMonths = Math.abs(Date.parse(latestDate) - Date.parse(baselineDate)) / 86_400_000 / 30;
   const manualCleanupResult = loadManualCleanupEmails(rootDir);
