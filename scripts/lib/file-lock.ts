@@ -132,9 +132,16 @@ export function isLockOrphan(
   host = lockHostId(),
   alive: (pid: number) => boolean = pidAlive,
   legacyStaleMs: number = LEGACY_STALE_MS,
+  foreignHostStaleMs: number | null = null,
 ): boolean {
   const owner = parseOwner(raw);
-  if (owner) return owner.host === host && !alive(owner.pid);
+  if (owner) {
+    if (owner.host === host) return !alive(owner.pid);
+    // #9220: dono de OUTRO host — o PID não é verificável daqui. Por padrão
+    // (null) nunca é órfão; um caller que conhece o pior caso da própria seção
+    // crítica pode optar por um teto de idade (mtime) pra esse caso.
+    return foreignHostStaleMs !== null && now - mtimeMs > foreignHostStaleMs;
+  }
   return now - mtimeMs > legacyStaleMs;
 }
 
@@ -160,14 +167,19 @@ function readLockFile(lockPath: string): { raw: string; ino: number; mtimeMs: nu
  * session-registry) sigam a MESMA política: dono registrado vivo nunca é
  * quebrado, só conteúdo legado cai no critério de idade (`legacyStaleMs`), e
  * a remoção relê o arquivo sob `.steal` antes do `unlink`.
+ *
+ * `foreignHostStaleMs` (#9220, opt-in, default null = nunca): teto de idade
+ * pra lock com dono de OUTRO host. `acquireLock`/`withFileLock` genéricos não
+ * o passam — só quem conhece o pior caso da própria seção crítica.
  */
 export function tryStealOrphan(
   lockPath: string,
   legacyStaleMs: number = LEGACY_STALE_MS,
   now: number = Date.now(),
+  foreignHostStaleMs: number | null = null,
 ): boolean {
   const seen = readLockFile(lockPath);
-  if (!seen || !isLockOrphan(seen.raw, seen.mtimeMs, now, lockHostId(), pidAlive, legacyStaleMs)) return false;
+  if (!seen || !isLockOrphan(seen.raw, seen.mtimeMs, now, lockHostId(), pidAlive, legacyStaleMs, foreignHostStaleMs)) return false;
 
   const stealPath = `${lockPath}.steal`;
   try {

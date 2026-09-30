@@ -991,10 +991,25 @@ function writeJsonSafe(path: string, value: unknown): void {
 export const STALE_LOCK_MS = 60_000;
 
 /**
+ * #9220: teto de idade pra quebrar `.lock` de registro cujo dono é de OUTRO
+ * host. `data/sessions/` sincroniza pelo OneDrive, então um lock deixado por
+ * uma máquina que caiu segurando-o chega aqui com `host` alheio — e o PID não
+ * é verificável daqui. Sem teto, ele travava o registro para sempre (regressão
+ * do #9193). 30 min fica ordens de grandeza acima do pior caso da seção
+ * crítica do registry (read-modify-write de um JSON pequeno, ms; uma tentativa
+ * espera no máximo 10s) E acima da latência de sync do OneDrive entre
+ * máquinas (minutos) — um lock alheio com 30 min não pertence a ninguém vivo.
+ * Vale só no `breakStaleLock`; o `withFileLock` genérico segue sem quebrar
+ * lock de outro host (há call sites que fazem rede na seção crítica).
+ */
+export const FOREIGN_HOST_STALE_LOCK_MS = 30 * 60_000;
+
+/**
  * Remove um `.lock` órfão. Devolve `true` se removeu. Desde #9193 delega à
  * política de `file-lock.ts` (#9185): lock com dono `{pid, host, ts, token}`
- * só é quebrado se o dono é deste host e o PID morreu — nunca por idade (seção
- * crítica lenta, ou dono em outra máquina, não é órfão). Só conteúdo
+ * deste host só é quebrado se o PID morreu — nunca por idade (seção crítica
+ * lenta não é órfão). Dono de OUTRO host (PID inverificável) é quebrado só
+ * após `FOREIGN_HOST_STALE_LOCK_MS` (#9220). Só conteúdo
  * legado/vazio cai no critério de idade (`STALE_LOCK_MS`). A remoção relê o
  * arquivo (inode + conteúdo) sob `.steal` antes do `unlink`, então não apaga
  * um lock novo criado entre o julgamento e a remoção. Fail-soft em tudo: lock inexistente, `stat` falhando, corrida com
@@ -1003,7 +1018,7 @@ export const STALE_LOCK_MS = 60_000;
  */
 export function breakStaleLock(lockPath: string, now: number = Date.now()): boolean {
   try {
-    return tryStealOrphan(lockPath, STALE_LOCK_MS, now);
+    return tryStealOrphan(lockPath, STALE_LOCK_MS, now, FOREIGN_HOST_STALE_LOCK_MS);
   } catch {
     return false;
   }
