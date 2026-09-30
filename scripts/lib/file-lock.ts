@@ -24,7 +24,129 @@
  *   }
  */
 
-import { openSync, closeSync, unlinkSync } from "node:fs";
+import {
+  openSync,
+  closeSync,
+  unlinkSync,
+  writeSync,
+  readFileSync,
+  statSync,
+  renameSync,
+  linkSync,
+} from "node:fs";
+import { hostname } from "node:os";
+import { randomBytes } from "node:crypto";
+
+/**
+ * #9185 — detecção de lock ÓRFÃO.
+ *
+ * Antes, um processo que morresse segurando o lock (SIGKILL, OOM, queda de
+ * energia) deixava o `.lock` no disco pra sempre, e toda chamada seguinte
+ * girava até o timeout e lançava `lock timeout` — no onboarding, isso parava
+ * as duas escadas (Brevo e Kit) até alguém apagar o arquivo à mão.
+ *
+ * Agora o dono grava `{pid, host, ts, token}` no `.lock` ao adquiri-lo, e um
+ * caller que encontra o lock tomado o trata como órfão SÓ em dois casos:
+ *
+ *   1. o lock é DESTA máquina (`host` igual) e o `pid` não existe mais
+ *      (`process.kill(pid, 0)` → `ESRCH`). Nada de limite de idade pra lock
+ *      com dono identificado: um dono vivo pode segurar o lock o tempo que
+ *      precisar (há call sites que fazem rede dentro da seção crítica).
+ *   2. o conteúdo não é parseável (lock legado vazio, criado antes deste
+ *      formato, ou processo morto entre o `wx` e o `writeSync`) E o mtime
+ *      passou de `LEGACY_STALE_MS`.
+ *
+ * Lock de OUTRA máquina nunca é roubado por PID — não dá pra saber se o
+ * processo remoto vive (o lock já não é exclusão entre máquinas; este
+ * mecanismo não pretende mudar isso). PID reutilizado por outro processo
+ * vivo faz o lock parecer vivo — cai no comportamento anterior (timeout),
+ * nunca num roubo indevido.
+ *
+ * O roubo é por `rename` atômico pra um nome único, seguido de conferência
+ * do `token`: se entre a leitura e o rename outro caller já roubou e criou
+ * um lock NOVO, o que movemos não é o órfão — ele volta ao lugar via
+ * `linkSync` (que falha em vez de sobrescrever se o path já foi ocupado).
+ */
+export const LEGACY_STALE_MS = 10 * 60_000;
+
+interface LockOwner {
+  pid: number;
+  host: string;
+  ts: number;
+  token: string;
+}
+
+function parseOwner(raw: string): LockOwner | null {
+  try {
+    const o = JSON.parse(raw) as Partial<LockOwner>;
+    if (typeof o?.pid === "number" && typeof o.host === "string" && typeof o.token === "string") {
+      return { pid: o.pid, host: o.host, ts: typeof o.ts === "number" ? o.ts : 0, token: o.token };
+    }
+  } catch { /* conteúdo legado/vazio */ }
+  return null;
+}
+
+function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM = existe, mas é de outro usuário → vivo.
+    return (e as NodeJS.ErrnoException)?.code === "EPERM";
+  }
+}
+
+/**
+ * Decide se o conteúdo/mtime de um lock existente indica dono morto.
+ * Exportado pra teste.
+ */
+export function isLockOrphan(
+  raw: string,
+  mtimeMs: number,
+  now = Date.now(),
+  host = hostname(),
+  alive: (pid: number) => boolean = pidAlive,
+): boolean {
+  const owner = parseOwner(raw);
+  if (owner) return owner.host === host && !alive(owner.pid);
+  return now - mtimeMs > LEGACY_STALE_MS;
+}
+
+/**
+ * Tenta remover um lock órfão de forma segura contra roubo concorrente.
+ * Retorna true se removeu (o caller deve tentar o `wx` de novo).
+ */
+function tryStealOrphan(lockPath: string): boolean {
+  let raw: string;
+  let mtimeMs: number;
+  try {
+    raw = readFileSync(lockPath, "utf8");
+    mtimeMs = statSync(lockPath).mtimeMs;
+  } catch {
+    return false; // sumiu entre o EEXIST e a leitura — o próximo `wx` decide
+  }
+  if (!isLockOrphan(raw, mtimeMs)) return false;
+
+  const aside = `${lockPath}.orphan-${process.pid}-${randomBytes(4).toString("hex")}`;
+  try {
+    renameSync(lockPath, aside);
+  } catch {
+    return false; // outro caller já moveu/liberou
+  }
+  let movedRaw = "";
+  try { movedRaw = readFileSync(aside, "utf8"); } catch { /* ignore */ }
+  if (movedRaw === raw) {
+    try { unlinkSync(aside); } catch { /* ignore */ }
+    process.stderr.write(`[file-lock] lock órfão removido (#9185): ${lockPath} — ${raw.trim() || "(vazio, legado)"}\n`);
+    return true;
+  }
+  // Movemos um lock que NÃO é o órfão lido (alguém roubou e recriou no meio):
+  // devolve sem sobrescrever.
+  try { linkSync(aside, lockPath); } catch { /* path já reocupado — o novo dono segue */ }
+  try { unlinkSync(aside); } catch { /* ignore */ }
+  return false;
+}
 
 /**
  * Adquire o lock — spin-wait com timeout. `wx` (O_WRONLY | O_CREAT | O_EXCL)
@@ -37,7 +159,20 @@ export function acquireLock(lockPath: string, timeoutMs = 10_000): void {
   while (true) {
     try {
       const fd = openSync(lockPath, "wx");
-      closeSync(fd);
+      try {
+        const owner: LockOwner = {
+          pid: process.pid,
+          host: hostname(),
+          ts: Date.now(),
+          token: randomBytes(8).toString("hex"),
+        };
+        writeSync(fd, JSON.stringify(owner));
+      } catch {
+        // Best-effort: o lock JÁ é nosso (o `wx` passou). Sem conteúdo, ele cai
+        // na regra de lock legado (órfão só após LEGACY_STALE_MS).
+      } finally {
+        closeSync(fd);
+      }
       return; // Lock adquirido
     } catch (e) {
       // #6952: só `EEXIST` é CONTENÇÃO — o resto propaga imediatamente.
@@ -58,6 +193,8 @@ export function acquireLock(lockPath: string, timeoutMs = 10_000): void {
       // distinção; os docstrings diziam que os dois mecanismos eram espelhados
       // e não eram — este era o lado errado.
       if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") throw e;
+      // #9185: dono morto → remove o órfão e tenta de novo sem esperar.
+      if (tryStealOrphan(lockPath)) continue;
       if (Date.now() >= deadline) {
         throw new Error(`[file-lock] lock timeout after ${timeoutMs}ms: ${lockPath}`);
       }
