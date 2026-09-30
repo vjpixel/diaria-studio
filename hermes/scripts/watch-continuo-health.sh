@@ -630,19 +630,29 @@ if [ "$QUEUE_GH_RC" -eq 0 ] && [ -n "$QUEUE_RAW_JSON" ]; then
     [ -z "$EN" ] && continue
     ESC_AT=$(gh api "repos/{owner}/{repo}/issues/$EN/events" --paginate \
       --jq '.[] | select(.event == "labeled" and .label.name == "continuo-escalado") | .created_at' 2>/dev/null | tail -n 1)
-    LAST_COMMIT_AT=$(gh pr view "$EN" --json commits --jq '.commits[-1].committedDate // empty' 2>/dev/null)
+    # Data do commit HEAD (não o último item de `gh pr view --json commits`, que
+    # só traz os 100 primeiros, e numa PR maior isso daria uma data antiga
+    # demais — exclusão indevida, contra o fail-open do alarme).
+    LAST_COMMIT_AT=""
+    HEAD_SHA_Q=$(gh pr view "$EN" --json headRefOid --jq '.headRefOid // empty' 2>/dev/null)
+    if [ -n "$HEAD_SHA_Q" ]; then
+      LAST_COMMIT_AT=$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA_Q" --jq '.commit.committer.date // empty' 2>/dev/null)
+    fi
     QUEUE_ENRICH=$(printf '%s' "$QUEUE_ENRICH" | jq -c --arg n "$EN" --arg e "$ESC_AT" --arg c "$LAST_COMMIT_AT" \
       '. + {($n): {escalatedAt: (if $e == "" then null else $e end), lastCommitAt: (if $c == "" then null else $c end)}}' 2>/dev/null || printf '%s' "$QUEUE_ENRICH")
   done <<< "$QUEUE_ESCALATED_NUMBERS"
-  # Filtro de decisão (#9156) — expressão ÚNICA, exercitada pelo teste de
-  # regressão contra o jq real (test/continuo-merger-8445-8446-8447.test.ts).
+  # Merge + filtro de decisão (#9156) — expressões ÚNICAS, exercitadas pelo
+  # teste de regressão contra o jq real (test/continuo-merger-8445-8446-8447.test.ts).
+  QUEUE_ENRICH_MERGE='[.[] | . + ($enrich[(.number | tostring)] // {})]'
   QUEUE_ESCALATION_FILTER='[.[] | select((any(.labels[]; .name == "continuo-escalado") and .escalatedAt != null and .lastCommitAt != null and .escalatedAt >= .lastCommitAt) | not)]'
-  QUEUE_JSON=$(printf '%s' "$QUEUE_RAW_JSON" | jq -c --argjson enrich "$QUEUE_ENRICH" \
-    '[.[] | . + ($enrich[(.number | tostring)] // {})]' 2>/dev/null | jq -c "$QUEUE_ESCALATION_FILTER" 2>/dev/null)
-  [ -z "$QUEUE_JSON" ] && QUEUE_GH_RC=1
+  QUEUE_JSON=$(printf '%s' "$QUEUE_RAW_JSON" | jq -c --argjson enrich "$QUEUE_ENRICH" "$QUEUE_ENRICH_MERGE" 2>/dev/null \
+    | jq -c "$QUEUE_ESCALATION_FILTER" 2>/dev/null)
 fi
-if [ "$QUEUE_GH_RC" -ne 0 ] || [ -z "$QUEUE_JSON" ]; then
+if [ "$QUEUE_GH_RC" -ne 0 ] || [ -z "$QUEUE_RAW_JSON" ]; then
   echo "[watch] fila de PRs: INDETERMINADO (gh pr list falhou)" >&2
+  FAILS=$((FAILS + 1))
+elif [ -z "$QUEUE_JSON" ]; then
+  echo "[watch] fila de PRs: INDETERMINADO (filtro de escalada #9156 falhou)" >&2
   FAILS=$((FAILS + 1))
 else
   QUEUE_SUMMARY=$(printf '%s' "$QUEUE_JSON" | python3 -c "

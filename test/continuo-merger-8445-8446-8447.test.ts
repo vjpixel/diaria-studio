@@ -240,9 +240,38 @@ describe("#9156 — exclusão de continuo-escalado é limitada no tempo (push de
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
     assert.match(section, /gh api "repos\/\{owner\}\/\{repo\}\/issues\/\$EN\/events" --paginate/);
     assert.match(section, /select\(\.event == "labeled" and \.label\.name == "continuo-escalado"\) \| \.created_at' 2>\/dev\/null \| tail -n 1\)/);
-    assert.match(section, /gh pr view "\$EN" --json commits --jq '\.commits\[-1\]\.committedDate \/\/ empty'/);
-    // o filtro de decisão é aplicado ao QUEUE_JSON que alimenta contagem, idade e listas
-    assert.match(section, /QUEUE_JSON=\$\(printf '%s' "\$QUEUE_RAW_JSON"[\s\S]{0,300}jq -c "\$QUEUE_ESCALATION_FILTER"/);
+    // data do commit HEAD, nunca `.commits[-1]` (gh pr view traz só os 100 primeiros)
+    assert.match(section, /gh pr view "\$EN" --json headRefOid/);
+    assert.match(section, /gh api "repos\/\{owner\}\/\{repo\}\/commits\/\$HEAD_SHA_Q" --jq '\.commit\.committer\.date \/\/ empty'/);
+    assert.doesNotMatch(section, /\.commits\[-1\]/);
+    // merge + filtro aplicados ao QUEUE_JSON que alimenta contagem, idade e listas
+    assert.match(section, /QUEUE_JSON=\$\(printf '%s' "\$QUEUE_RAW_JSON" \| jq -c --argjson enrich "\$QUEUE_ENRICH" "\$QUEUE_ENRICH_MERGE"[\s\S]{0,120}jq -c "\$QUEUE_ESCALATION_FILTER"/);
+  });
+
+  it("o merge real do mapa de enriquecimento (chave string × .number numérico) alimenta o filtro", () => {
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    const mergeMatch = section.match(/QUEUE_ENRICH_MERGE='([^'\n]+)'/);
+    const filterMatch = section.match(/QUEUE_ESCALATION_FILTER='([^'\n]+)'/);
+    assert.ok(mergeMatch && filterMatch, "QUEUE_ENRICH_MERGE/QUEUE_ESCALATION_FILTER não encontrados");
+    const raw = [
+      { number: 1, headRefName: "a", createdAt: "2026-09-20T00:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }] },
+      { number: 2, headRefName: "b", createdAt: "2026-09-20T00:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }] },
+      { number: 3, headRefName: "c", createdAt: "2026-09-20T00:00:00Z", isDraft: false, labels: [] },
+    ];
+    const enrich = {
+      "1": { escalatedAt: "2026-09-20T05:00:00Z", lastCommitAt: "2026-09-21T00:00:00Z" }, // push depois → conta
+      "2": { escalatedAt: "2026-09-20T05:00:00Z", lastCommitAt: "2026-09-20T01:00:00Z" }, // escalada vigente → sai
+    };
+    const merged = spawnSync("jq", ["-c", "--argjson", "enrich", JSON.stringify(enrich), mergeMatch![1]], { input: JSON.stringify(raw), encoding: "utf8" });
+    assert.equal(merged.status, 0, `jq (merge) falhou: ${merged.stderr}`);
+    const filtered = spawnSync("jq", ["-c", filterMatch![1]], { input: merged.stdout, encoding: "utf8" });
+    assert.equal(filtered.status, 0, `jq (filtro) falhou: ${filtered.stderr}`);
+    assert.deepEqual(JSON.parse(filtered.stdout).map((p: { number: number }) => p.number), [1, 3]);
+  });
+
+  it("falha do filtro de escalada tem mensagem própria (não se passa por falha do gh pr list)", () => {
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    assert.match(section, /INDETERMINADO \(filtro de escalada #9156 falhou\)/);
   });
 });
 
