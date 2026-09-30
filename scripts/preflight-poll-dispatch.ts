@@ -275,9 +275,17 @@ export function describeReachability(
   const tail = `\n${tag} Continuando smoke-test (resultado autoritativo para gate duro)...`;
   const detail = reach.error ?? "(sem detalhe)";
   if (typeof reach.status === "number") {
+    // Houve resposta HTTP. Via direta = DNS local e conexão OK; via anycast =
+    // DNS local falhou/filtrou e o Worker só respondeu pelo IP do DoH.
+    const path =
+      reach.via === "direct"
+        ? "DNS e conexão OK"
+        : reach.local_dns_filtered
+          ? "DNS local filtrado, resolvido via DoH/anycast"
+          : "resposta via DoH/anycast após timeout do fetch nativo";
     return (
       `${tag} ⚠️  Worker ${hostname} respondeu HTTP ${reach.status} no pre-check (via=${reach.via}) — ` +
-      `DNS e conexão OK, mas a rota de probe não respondeu 2xx.` +
+      `${path}, mas a rota de probe não respondeu 2xx.` +
       tail
     );
   }

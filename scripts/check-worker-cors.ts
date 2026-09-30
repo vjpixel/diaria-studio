@@ -99,12 +99,13 @@ async function checkCors(workerUrl: string): Promise<CheckResult> {
       status: res.status,
       header: corsHeader ?? undefined,
       reason: evaluation.reason,
-      note: probeStatusNote(res.status),
+      note: evaluation.ok ? probeStatusNote(res.status) : undefined,
     };
   } catch (e) {
     return {
       ok: false,
       worker_url: workerUrl,
+      probe_url: probeUrl,
       reason: `Worker inacessível: ${(e as Error).message}`,
     };
   }
