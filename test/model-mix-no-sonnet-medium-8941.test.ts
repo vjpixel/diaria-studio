@@ -137,3 +137,13 @@ describe("#9003 item 5 — skills de edição com model/effort de sessão", () =
     });
   }
 });
+
+/** #9003 item 3 (resíduo #9082 item a) — /diaria-zerar-fila em Opus 5.5 `medium`, não `high`. */
+describe("#9003 item 3 — /diaria-zerar-fila", () => {
+  it("diaria-zerar-fila: model claude-opus-5-5 + effort medium no frontmatter", () => {
+    const fm = frontmatter(readFileSync(join(SKILLS_DIR, "diaria-zerar-fila", "SKILL.md"), "utf8"));
+    assert.ok(fm, "diaria-zerar-fila: sem frontmatter");
+    assert.match(fm!, /^model:\s*claude-opus-5-5\s*$/m);
+    assert.match(fm!, /^effort:\s*medium\s*$/m);
+  });
+});
