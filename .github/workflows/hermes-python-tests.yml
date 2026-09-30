@@ -1,0 +1,48 @@
+name: Hermes Python tests
+
+# #9206 — os testes Python de `hermes/scripts/*.test.py` não rodavam em
+# nenhum workflow: regressão nos scripts do Hermes (detectores, watchdogs,
+# relatório de custo) passava pelo CI em silêncio. Job dedicado e leve:
+# stdlib + PyYAML, sem npm ci. Descoberta por glob (não lista explícita) pra que
+# um teste novo entre sozinho — cada arquivo roda como script e falha
+# (assert/exception → exit != 0) derruba o job.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: hermes-python-tests-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
+jobs:
+  hermes-python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Única dependência fora da stdlib nos scripts testados: PyYAML
+      # (`import yaml` em monitor-cron-model-rotation.py).
+      - run: pip install pyyaml
+      - name: Run hermes/scripts/*.test.py
+        working-directory: hermes/scripts
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(*.test.py)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "nenhum *.test.py encontrado em hermes/scripts" >&2
+            exit 1
+          fi
+          fail=0
+          for f in "${files[@]}"; do
+            echo "::group::$f"
+            if ! python "$f"; then
+              echo "::error file=hermes/scripts/$f::teste falhou"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail
