@@ -24,10 +24,14 @@ export const SECRET_PATTERNS = [
   // tem fronteira de palavra e escapava. O corpo longo (20+) já basta pra não
   // disparar em menção do prefixo em prosa ("o prefixo ghp_ indica...").
   { name: "GitHub", re: /(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/ },
-  { name: "Doppler", re: /\bdp\.(?:st|pt|sa|ct|scim)\.[A-Za-z0-9_.-]{20,}/ },
-  { name: "Slack", re: /\bxox[abprs]-[A-Za-z0-9-]{20,}/ },
-  { name: "Google API", re: /\bAIza[A-Za-z0-9_-]{35}\b/ },
-  { name: "AWS", re: /\bAKIA[A-Z0-9]{16}\b/ },
+  // #9065: mesmo gap do #9056 nos 4 abaixo — sem `\b` ANTES do prefixo, pra
+  // pegar o segredo colado a uma letra (`-bxoxb-…`, `keyAIza…`). O `\b` FINAL
+  // de Google/AWS fica: é a âncora de comprimento exato (39/20 chars) desses
+  // formatos. Falso positivo em prosa segue barrado pelo corpo longo/exato.
+  { name: "Doppler", re: /dp\.(?:st|pt|sa|ct|scim)\.[A-Za-z0-9_.-]{20,}/ },
+  { name: "Slack", re: /xox[abprs]-[A-Za-z0-9-]{20,}/ },
+  { name: "Google API", re: /AIza[A-Za-z0-9_-]{35}\b/ },
+  { name: "AWS", re: /AKIA[A-Z0-9]{16}\b/ },
 ];
 
 /** Nomes dos provedores cujos segredos aparecem em `text` (vazio = limpo). */

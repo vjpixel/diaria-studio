@@ -148,3 +148,45 @@ describe("continuo-pr-review.sh redige o REJECT_BODY (#8827)", () => {
     assert.match(r.stdout, /\[REDACTED_OPENROUTER\]/);
   });
 });
+
+// #9065: mesmo gap do #9056 (GitHub) nos padrões Slack/Doppler/Google/AWS —
+// o `\b` antes do prefixo deixava escapar segredo colado a uma letra (flag
+// curta colada ao valor, `-bxoxb-…`). Valores sintéticos montados em runtime.
+describe("#9065: Slack/Doppler/Google/AWS sem word boundary antes do prefixo", () => {
+  const SLACK = "xox" + "b-" + "1234567890-abcdefghijklmnop";
+  const DOPPLER = "dp" + ".st." + "prd_" + "A1b2C3d4E5f6G7h8I9j0K1l2";
+  const GOOGLE = "AI" + "za" + "Sy" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q";
+  const AWS = "AK" + "IA" + "ABCDEFGH12345678";
+  const cases: Array<[string, string]> = [
+    ["Slack", SLACK],
+    ["Doppler", DOPPLER],
+    ["Google API", GOOGLE],
+    ["AWS", AWS],
+  ];
+  it("sanidade dos sintéticos: comprimentos de Google (39) e AWS (20)", () => {
+    assert.equal(GOOGLE.length, 39);
+    assert.equal(AWS.length, 20);
+  });
+  for (const [name, secret] of cases) {
+    it(`${name}: colado a uma letra é detectado e redigido`, () => {
+      for (const text of [`-b${secret}`, `key${secret}`, `token:x${secret} fim`]) {
+        assert.ok(findSecrets(text).includes(name), `${name} em ${JSON.stringify(text)}`);
+        assert.ok(!redactSecrets(text).includes(secret), `redação de ${name}`);
+      }
+    });
+    it(`${name}: isolado continua detectado`, () => {
+      assert.ok(findSecrets(`veja ${secret} aqui`).includes(name));
+    });
+  }
+  it("menção do prefixo em prosa não é falso positivo", () => {
+    for (const body of [
+      "Tokens Slack começam com xoxb- (bot) ou xoxp- (user).",
+      "O Doppler usa dp.st. para service tokens e dp.pt. para pessoais.",
+      "Chaves do Google começam com AIza e as da AWS com AKIA.",
+      "O MAKIA123 e o XAIzaABC são identificadores curtos.",
+      "Rodei o dp.st.curto e o xoxb-curto sem problema.",
+    ]) {
+      assert.deepEqual(findSecrets(body), [], body);
+    }
+  });
+});
