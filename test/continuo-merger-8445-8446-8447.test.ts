@@ -86,7 +86,7 @@ describe("#8447 — PR bot/* não conta no alarme de fila parada", () => {
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
     assert.match(
       section,
-      /QUEUE_JSON=\$\(gh pr list --state open --json number,headRefName,createdAt,isDraft,labels \\\s*\n\s*--jq '\[\.\[\] \| select\(\.headRefName \| startswith\("bot\/"\) \| not\) \| select/,
+      /QUEUE_RAW_JSON=\$\(gh pr list --state open --json number,headRefName,createdAt,isDraft,labels \\\s*\n\s*--jq '\[\.\[\] \| select\(\.headRefName \| startswith\("bot\/"\) \| not\) \| select/,
     );
   });
 
@@ -151,24 +151,16 @@ describe("#8862 — PR de resgate (draft + bloqueio-execucao) não conta no alar
 describe("#9031 — PR já escalada (continuo-escalado) não conta no alarme de fila parada", () => {
   it("sintaxe bash válida", () => bashSyntaxOk(WATCH_SH));
 
-  it("a consulta da fila (§9) exclui qualquer PR com label continuo-escalado via --jq", () => {
-    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
-    assert.match(section, /select\(\(any\(\.labels\[\]; \.name == "continuo-escalado"\)\) \| not\)\]'/);
-  });
-
-  it("o jq real filtra PR escalada draft (#8961) e não-draft (#9004), mantendo uma PR normal", () => {
-    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
-    const match = section.match(/--jq '(\[\.\[\][^\n]*\])'/);
-    assert.ok(match, "expressão --jq não encontrada na §9");
-    const jqExpr = match![1];
-
-    const input = JSON.stringify([
+  it("o jq real filtra PR escalada draft (#8961) e não-draft (#9004) cuja escalada é posterior ao último commit, mantendo uma PR normal", () => {
+    const input = [
       {
         number: 8961,
         headRefName: "overnight/fix-8941-model-mix-opus",
         createdAt: "2026-09-28T15:25:00Z",
         isDraft: true,
         labels: [{ name: "continuo-escalado" }],
+        escalatedAt: "2026-09-28T18:00:00Z",
+        lastCommitAt: "2026-09-28T15:20:00Z",
       },
       {
         number: 9004,
@@ -176,6 +168,8 @@ describe("#9031 — PR já escalada (continuo-escalado) não conta no alarme de 
         createdAt: "2026-09-29T01:50:00Z",
         isDraft: false,
         labels: [{ name: "no-regression-test" }, { name: "continuo-escalado" }],
+        escalatedAt: "2026-09-29T03:00:00Z",
+        lastCommitAt: "2026-09-29T01:45:00Z",
       },
       {
         number: 9000,
@@ -184,15 +178,100 @@ describe("#9031 — PR já escalada (continuo-escalado) não conta no alarme de 
         isDraft: false,
         labels: [],
       },
-    ]);
-    const res = spawnSync("jq", [jqExpr], { input, encoding: "utf8" });
-    assert.equal(res.status, 0, `jq falhou: ${res.stderr}`);
-    const out = JSON.parse(res.stdout);
+    ];
     assert.deepEqual(
-      out.map((pr: { number: number }) => pr.number),
+      runQueueFilters(input),
       [9000],
       "só a PR normal (#9000) deveria sobrar — as duas escaladas (#8961, #9004) já têm dono e saem",
     );
+  });
+});
+
+// Extrai as DUAS expressões jq reais da §9 (a da consulta `gh pr list` e o
+// filtro de escalada) e roda a sequência completa contra o jq de verdade.
+function runQueueFilters(input: object[]): number[] {
+  const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+  const listMatch = section.match(/--jq '(\[\.\[\][^\n]*\])'/);
+  assert.ok(listMatch, "expressão --jq da consulta gh pr list não encontrada na §9");
+  const filterMatch = section.match(/QUEUE_ESCALATION_FILTER='([^'\n]+)'/);
+  assert.ok(filterMatch, "QUEUE_ESCALATION_FILTER não encontrado na §9");
+  const first = spawnSync("jq", ["-c", listMatch![1]], { input: JSON.stringify(input), encoding: "utf8" });
+  assert.equal(first.status, 0, `jq (lista) falhou: ${first.stderr}`);
+  const second = spawnSync("jq", ["-c", filterMatch![1]], { input: first.stdout, encoding: "utf8" });
+  assert.equal(second.status, 0, `jq (escalada) falhou: ${second.stderr}`);
+  return JSON.parse(second.stdout).map((pr: { number: number }) => pr.number);
+}
+
+describe("#9156 — exclusão de continuo-escalado é limitada no tempo (push depois da escalada volta ao alarme)", () => {
+  it("sintaxe bash válida", () => bashSyntaxOk(WATCH_SH));
+
+  it("PR escalada + push POSTERIOR à escalada + idade > limiar entra na fila do alarme", () => {
+    const out = runQueueFilters([
+      {
+        number: 9100,
+        headRefName: "continuo/fix-ci",
+        createdAt: "2026-09-20T10:00:00Z", // muito acima do limiar de 12h
+        isDraft: false,
+        labels: [{ name: "continuo-escalado" }],
+        escalatedAt: "2026-09-20T12:00:00Z", // escalada por CI vermelho
+        lastCommitAt: "2026-09-21T09:00:00Z", // consertada por push depois
+      },
+    ]);
+    assert.deepEqual(out, [9100], "PR consertada depois da escalada tem de voltar a contar no alarme");
+  });
+
+  it("dado de escalada/commit indisponível = fail-open NA DIREÇÃO DO ALARME (a PR conta)", () => {
+    const out = runQueueFilters([
+      { number: 9101, headRefName: "a", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }] },
+      { number: 9102, headRefName: "b", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedAt: null, lastCommitAt: "2026-09-20T09:00:00Z" },
+      { number: 9103, headRefName: "c", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedAt: "2026-09-20T12:00:00Z", lastCommitAt: null },
+    ]);
+    assert.deepEqual(out, [9101, 9102, 9103]);
+  });
+
+  it("escalada no MESMO instante do último commit continua excluída (>=)", () => {
+    const out = runQueueFilters([
+      { number: 9104, headRefName: "d", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedAt: "2026-09-20T12:00:00Z", lastCommitAt: "2026-09-20T12:00:00Z" },
+    ]);
+    assert.deepEqual(out, []);
+  });
+
+  it("o script enriquece só as PRs escaladas com o último evento labeled continuo-escalado e o último commit", () => {
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    assert.match(section, /gh api "repos\/\{owner\}\/\{repo\}\/issues\/\$EN\/events" --paginate/);
+    assert.match(section, /select\(\.event == "labeled" and \.label\.name == "continuo-escalado"\) \| \.created_at' 2>\/dev\/null \| tail -n 1\)/);
+    // data do commit HEAD, nunca `.commits[-1]` (gh pr view traz só os 100 primeiros)
+    assert.match(section, /gh pr view "\$EN" --json headRefOid/);
+    assert.match(section, /gh api "repos\/\{owner\}\/\{repo\}\/commits\/\$HEAD_SHA_Q" --jq '\.commit\.committer\.date \/\/ empty'/);
+    assert.doesNotMatch(section, /\.commits\[-1\]/);
+    // merge + filtro aplicados ao QUEUE_JSON que alimenta contagem, idade e listas
+    assert.match(section, /QUEUE_JSON=\$\(printf '%s' "\$QUEUE_RAW_JSON" \| jq -c --argjson enrich "\$QUEUE_ENRICH" "\$QUEUE_ENRICH_MERGE"[\s\S]{0,120}jq -c "\$QUEUE_ESCALATION_FILTER"/);
+  });
+
+  it("o merge real do mapa de enriquecimento (chave string × .number numérico) alimenta o filtro", () => {
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    const mergeMatch = section.match(/QUEUE_ENRICH_MERGE='([^'\n]+)'/);
+    const filterMatch = section.match(/QUEUE_ESCALATION_FILTER='([^'\n]+)'/);
+    assert.ok(mergeMatch && filterMatch, "QUEUE_ENRICH_MERGE/QUEUE_ESCALATION_FILTER não encontrados");
+    const raw = [
+      { number: 1, headRefName: "a", createdAt: "2026-09-20T00:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }] },
+      { number: 2, headRefName: "b", createdAt: "2026-09-20T00:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }] },
+      { number: 3, headRefName: "c", createdAt: "2026-09-20T00:00:00Z", isDraft: false, labels: [] },
+    ];
+    const enrich = {
+      "1": { escalatedAt: "2026-09-20T05:00:00Z", lastCommitAt: "2026-09-21T00:00:00Z" }, // push depois → conta
+      "2": { escalatedAt: "2026-09-20T05:00:00Z", lastCommitAt: "2026-09-20T01:00:00Z" }, // escalada vigente → sai
+    };
+    const merged = spawnSync("jq", ["-c", "--argjson", "enrich", JSON.stringify(enrich), mergeMatch![1]], { input: JSON.stringify(raw), encoding: "utf8" });
+    assert.equal(merged.status, 0, `jq (merge) falhou: ${merged.stderr}`);
+    const filtered = spawnSync("jq", ["-c", filterMatch![1]], { input: merged.stdout, encoding: "utf8" });
+    assert.equal(filtered.status, 0, `jq (filtro) falhou: ${filtered.stderr}`);
+    assert.deepEqual(JSON.parse(filtered.stdout).map((p: { number: number }) => p.number), [1, 3]);
+  });
+
+  it("falha do filtro de escalada tem mensagem própria (não se passa por falha do gh pr list)", () => {
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    assert.match(section, /INDETERMINADO \(filtro de escalada #9156 falhou\)/);
   });
 });
 
