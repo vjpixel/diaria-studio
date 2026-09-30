@@ -62,7 +62,7 @@ function sub(id: number, over: Partial<ConfirmationRosterEntry> = {}): Confirmat
 const base = (id: number, state = "inactive"): SubscriberStateRecord => ({ id, state, created_at: "2026-09-18T12:00:00Z" });
 
 const okSend = () => mock.fn(async (_events: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({ ok: true, requestId: "req-1", response: {} }));
-/** Falha com resposta HTTP REAL do Google (não-2xx) — conta tentativa (`countsAsAttempt: true`). */
+/** Recusa determinística do Google (HTTP 4xx exceto 429, #9067) — conta tentativa (`countsAsAttempt: true`). */
 const failSend = (error = "HTTP 500") =>
   mock.fn(async (_events: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({ ok: false, stage: "ingest", error, countsAsAttempt: true }));
 /** Falha de TRANSPORTE (rede, env/token ausente, 2xx anômalo) — nunca conta tentativa. */
