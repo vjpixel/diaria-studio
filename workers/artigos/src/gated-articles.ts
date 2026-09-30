@@ -16,6 +16,7 @@
  */
 import { ENGENHARIA_DE_ILUSAO_FULL_HTML } from "./engenharia-de-ilusao-full.generated.ts";
 import { O_AGENTE_FULL_HTML } from "./o-agente-full.generated.ts";
+import { O_JEV_FULL_HTML } from "./o-jev-full.generated.ts";
 
 export interface GatedArticle {
   slug: string;
@@ -26,6 +27,7 @@ export interface GatedArticle {
 export const GATED_ARTICLES: readonly GatedArticle[] = [
   { slug: "engenharia-de-ilusao", year: "2026", fullHtml: ENGENHARIA_DE_ILUSAO_FULL_HTML },
   { slug: "o-agente", year: "2026", fullHtml: O_AGENTE_FULL_HTML },
+  { slug: "o-jev", year: "2026", fullHtml: O_JEV_FULL_HTML },
 ];
 
 /** Paths que servem o MESMO asset (`public/{year}/{slug}/index.html`) e

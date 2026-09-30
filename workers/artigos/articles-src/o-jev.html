@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>O Jev na diar.ia.br: como testei uma IA diferente antes de deixá-la decidir</title>
+<meta name="description" content="Um classificador que responde perguntas fechadas custa centavos por edição e acertou onde minhas regras falhavam. Mas, das oito tarefas em que o testei, ele ficou com três.">
+<link rel="canonical" href="https://especial.diar.ia.br/2026/o-jev/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1080 1080'%3E%3Ccircle cx='540' cy='540' r='540' fill='%2300A0A0'/%3E%3Cg transform='translate(540 540) scale(1.2000) translate(-540 -540)'%3E%3Cpath transform='translate(310 700) scale(0.229492 -0.229492)' d='M1351 21 858 -8 843 6V98L836 100Q787 47 703.5 7.5Q620 -32 535 -32Q333 -32 202.0 118.0Q71 268 71 506Q71 717 217.5 868.0Q364 1019 572 1019Q654 1019 726.0 1000.5Q798 982 841 957V1284Q841 1321 826.0 1353.5Q811 1386 786 1404Q755 1426 708.5 1435.5Q662 1445 615 1449V1522L1155 1548L1170 1532V221Q1170 183 1182.5 157.0Q1195 131 1223 116Q1244 105 1284.5 100.0Q1325 95 1351 94ZM841 199V764Q834 787 821.5 815.0Q809 843 787 868Q767 889 733.5 905.0Q700 921 658 921Q558 921 494.0 808.0Q430 695 430 489Q430 408 441.5 343.5Q453 279 482 226Q511 173 556.5 143.0Q602 113 666 113Q727 113 767.0 136.5Q807 160 841 199Z' fill='%23FFFFFF'/%3E%3Ccircle cx='699' cy='662' r='45' fill='%23FFFFFF'/%3E%3Ccircle cx='824' cy='662' r='45' fill='%23FFFFFF'/%3E%3C/g%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="diar.ia.br">
+<meta property="og:locale" content="pt_BR">
+<meta property="og:title" content="O Jev na diar.ia.br: como testei uma IA diferente antes de deixá-la decidir">
+<meta property="og:description" content="Um classificador que responde perguntas fechadas custa centavos por edição e acertou onde minhas regras falhavam. Mas, das oito tarefas em que o testei, ele ficou com três.">
+<meta property="og:url" content="https://especial.diar.ia.br/2026/o-jev/">
+<meta property="og:image" content="https://especial.diar.ia.br/2026/o-jev/capa.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="O Jev na diar.ia.br: como testei uma IA diferente antes de deixá-la decidir">
+<meta name="twitter:description" content="Um classificador que responde perguntas fechadas custa centavos por edição e acertou onde minhas regras falhavam. Mas, das oito tarefas em que o testei, ele ficou com três.">
+<style>
+  /* Tokens reais do design system diar.ia.br — espelho de scripts/lib/shared/design-tokens.ts (#1936). */
+  :root {
+    --bg: #FBFAF6;
+    --bg-raised: #EBE5D0;
+    --ink: #171411;
+    --ink-soft: rgba(23,20,17,0.72);
+    --ink-faint: rgba(23,20,17,0.5);
+    --rule: #EBE5D0;
+    --rule-strong: #171411;
+    --accent: #00A0A0;
+    --accent-soft: rgba(0,160,160,0.12);
+    --serif: Georgia, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --mono: ui-monospace, 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+  }
+  body {
+    padding: 4.5rem 1.5rem 6rem;
+    line-height: 1.62;
+    font-size: 16px;
+  }
+  h1, h2, h3 { font-family: var(--serif); }
+
+  .sheet { max-width: 64rem; margin: 0 auto; }
+  .narrow-col { max-width: 42rem; }
+
+  .masthead {
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 1.75rem;
+    margin-bottom: 2.75rem;
+  }
+  .masthead .kicker {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .masthead .kicker > span:first-child::before {
+    content: "\25CF";
+    color: var(--accent);
+    margin-right: 0.5em;
+    font-size: 0.85em;
+  }
+  .masthead h1 {
+    font-family: var(--serif);
+    font-size: clamp(1.8rem, 4vw, 2.4rem);
+    line-height: 1.2;
+    margin: 0.6rem 0 0.4rem;
+    text-wrap: balance;
+    font-weight: 600;
+  }
+  .masthead .dek {
+    font-family: var(--sans);
+    color: var(--ink);
+    opacity: 0.82;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    max-width: 34rem;
+  }
+  .meta-row {
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    color: var(--ink);
+    opacity: 0.72;
+    margin-top: 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.4rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .manuscript {
+    background: var(--bg-raised);
+    border-radius: 12px;
+    padding: 2.2rem 2.2rem 2.4rem;
+    margin: 0 0 3.5rem;
+  }
+  .manuscript h2 {
+    font-size: 1.5rem;
+    line-height: 1.25;
+    margin: 0 0 1.4rem;
+    text-wrap: balance;
+    font-weight: 600;
+  }
+  /* NOVO (proposta 1): subtítulos de seção dentro do manuscrito */
+  .manuscript h3.sect {
+    font-family: var(--serif);
+    font-size: 1.12rem;
+    line-height: 1.3;
+    font-weight: 600;
+    margin: 2.1rem 0 0.8rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid rgba(23,20,17,0.12);
+    max-width: 60ch;
+  }
+  .manuscript h3.sect:first-of-type { margin-top: 0.2rem; padding-top: 0; border-top: none; }
+  .manuscript h3.sect .sect-n {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--accent);
+    display: block;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.25rem;
+  }
+  .manuscript p { max-width: 60ch; margin: 0 0 1.15rem; }
+  .manuscript p.lede { font-weight: 600; }
+  .manuscript a {
+    color: var(--ink);
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+  .manuscript a:hover { color: var(--accent); }
+  /* NOVO (proposta 2): números-chave em destaque */
+  .manuscript .stat {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  /* NOVO (proposta 3): pull-quote */
+  .pull-quote {
+    font-family: var(--serif);
+    font-size: 1.28rem;
+    line-height: 1.4;
+    font-weight: 600;
+    max-width: 52ch;
+    margin: 2rem 0;
+    padding: 0.2rem 0 0.2rem 1.2rem;
+    border-left: 3px solid var(--accent);
+    text-wrap: balance;
+  }
+  .pull-quote small {
+    display: block;
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-top: 0.6rem;
+  }
+  /* NOVO (proposta 5): link-âncora para infográfico */
+  a.ig-jump {
+    color: var(--ink-soft);
+    font-style: italic;
+  }
+
+  .manuscript-layout { display: block; max-width: 42rem; margin: 0 0 3.5rem; }
+  .ig-aside { display: block; }
+  .ig-aside-caption {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    margin: 0 0 1rem;
+    max-width: 60ch;
+  }
+
+  @media (min-width: 900px) {
+    .manuscript-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 42rem) minmax(220px, 1fr);
+      gap: 2.25rem;
+      align-items: start;
+      max-width: 64rem;
+    }
+    .ig-aside {
+      position: sticky;
+      top: 2rem;
+    }
+    .ig-aside-caption { font-size: 0.72rem; }
+    .ig-aside .infographic-card {
+      max-width: none;
+      width: 100%;
+      margin: 0 0 1.5rem;
+      padding: 1.4rem 1.4rem 1.1rem;
+    }
+    .ig-aside .infographic-card h3 { font-size: 0.98rem; margin-bottom: 1.1rem; }
+    .ig-aside .ig-node { padding-bottom: 1.1rem; }
+    .ig-aside .ig-desc { font-size: 0.76rem; max-width: none; }
+    .ig-aside .ig-label { font-size: 0.85rem; max-width: none; }
+  }
+
+  .infographic-card {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    max-width: 36rem;
+    margin: 0 auto 2.5rem;
+    padding: 2rem 2rem 1.6rem;
+    scroll-margin-top: 1.5rem;
+  }
+  .infographic-card .ig-eyebrow {
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+  }
+  .infographic-card .ig-eyebrow::before {
+    content: "\25CF";
+    color: var(--accent);
+    margin-right: 0.5em;
+    font-size: 0.85em;
+  }
+  .infographic-card h3 {
+    font-size: 1.15rem;
+    line-height: 1.3;
+    margin: 0 0 1.6rem;
+    font-weight: 600;
+    text-wrap: balance;
+  }
+  .ig-timeline { position: relative; padding-left: 2.4rem; }
+  .ig-timeline::before {
+    content: '';
+    position: absolute;
+    left: 0.66rem;
+    top: 0.35rem;
+    bottom: 0.35rem;
+    width: 2px;
+    background: var(--rule);
+  }
+  .ig-node { position: relative; padding-bottom: 1.5rem; }
+  .ig-node:last-child { padding-bottom: 0; }
+  .ig-node::before {
+    content: '';
+    position: absolute;
+    left: calc(-1.74rem - (var(--dot-size, 0.8rem) / 2));
+    top: 0.22rem;
+    width: var(--dot-size, 0.8rem);
+    height: var(--dot-size, 0.8rem);
+    border-radius: 50%;
+    background: var(--dot-color, var(--accent));
+    opacity: var(--dot-opacity, 1);
+    box-shadow: 0 0 0 3px var(--bg-raised);
+  }
+  .ig-node .ig-date {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 700;
+    display: block;
+    margin-bottom: 0.2rem;
+  }
+  .ig-node .ig-label {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 0.95rem;
+    display: block;
+    margin-bottom: 0.25rem;
+    max-width: 40ch;
+  }
+  .ig-node .ig-desc {
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    max-width: 38ch;
+    margin: 0;
+  }
+  .ig-legend {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    color: var(--ink-faint);
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.2rem;
+    align-items: center;
+  }
+  .ig-legend .sw {
+    display: inline-block;
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 50%;
+    margin-right: 0.35rem;
+    vertical-align: middle;
+  }
+  .ig-footer {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--ink-faint);
+    margin-top: 1rem;
+  }
+  .ig-footer a { color: var(--ink-faint); text-decoration-color: var(--accent); }
+  .ig-footer a:hover { color: var(--accent); }
+
+  hr.div {
+    border: none;
+    border-top: 1px solid var(--rule);
+    margin: 3rem 0 2.6rem;
+  }
+
+  /* Proposta 4: seção de fontes (.sources/.ledger — CSS já existia na página original, agora usado) */
+  .sources h2 {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 1.2rem;
+  }
+  .ledger {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    counter-reset: src;
+  }
+  .ledger li {
+    counter-increment: src;
+    display: grid;
+    grid-template-columns: 1.8rem 1fr;
+    gap: 0.9rem;
+    padding: 0.7rem 0;
+    border-top: 1px solid var(--rule);
+    font-family: var(--sans);
+  }
+  .ledger li::before {
+    content: counter(src, decimal-leading-zero);
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    font-size: 0.82rem;
+    padding-top: 0.1rem;
+  }
+  .ledger .src-title {
+    font-size: 0.88rem;
+    color: var(--ink);
+    display: block;
+  }
+  .ledger .src-outlet {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .ledger a.src-url {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--ink-faint);
+    word-break: break-all;
+    text-decoration: none;
+    display: inline-block;
+    margin-top: 0.15rem;
+  }
+  .ledger a.src-url:hover { color: var(--accent); }
+
+  footer {
+    margin-top: 3rem;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink-faint);
+    text-align: center;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .sheet { animation: rise 0.5s ease-out; }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  }
+
+  .cover { margin: 0 0 3rem; }
+  .cover img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 6px;
+  }
+  .cover figcaption {
+    margin: 0.6rem 0 0;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink);
+    opacity: 0.65;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  /* NOVO: barra de progresso de leitura */
+  .read-progress {
+    position: fixed;
+    top: 0; left: 0;
+    height: 5px;
+    width: 0;
+    background: var(--accent);
+    z-index: 10;
+  }
+
+  /* NOVO: índice de seções — painel bege após a capa */
+  .toc {
+    background: var(--bg-raised);
+    border-radius: 12px;
+    padding: 1.2rem 1.5rem 1.3rem;
+    margin: 0 0 3rem;
+    font-family: var(--sans);
+  }
+  .toc .toc-tag {
+    display: block;
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 700;
+    margin-bottom: 0.7rem;
+  }
+  .toc .toc-tag::before {
+    content: "\25CF";
+    color: var(--accent);
+    margin-right: 0.5em;
+    font-size: 0.85em;
+  }
+  .toc-links {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.55rem 1.5rem;
+  }
+  @media (max-width: 560px) {
+    .toc-links { grid-template-columns: 1fr; }
+  }
+  @media (min-width: 900px) {
+    .toc-links { grid-template-columns: repeat(4, auto); justify-content: space-between; }
+  }
+  .toc a {
+    color: var(--ink);
+    text-decoration: none;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+  .toc a:hover { color: var(--accent); }
+  .toc a .n {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 400;
+    color: var(--accent);
+    margin-right: 0.55em;
+  }
+  .sect { scroll-margin-top: 1.5rem; }
+
+  /* NOVO: box "O que fazer" (padrão painel bege, análogo ao .choice do design system) */
+  .todo-box {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 1.1rem 1.3rem 1.15rem;
+    margin: 1.3rem 0 1.3rem;
+    max-width: 60ch;
+  }
+  .todo-box .tag {
+    display: block;
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 700;
+    margin-bottom: 0.6rem;
+  }
+  .todo-box ul {
+    margin: 0;
+    padding-left: 1.15rem;
+  }
+  .todo-box li { margin-bottom: 0.5rem; }
+  .todo-box li:last-child { margin-bottom: 0; }
+  .todo-box li::marker { color: var(--accent); }
+
+  /* NOVO: contraste "as duas explicações" (padrão contorno) */
+  .explain-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.9rem;
+    max-width: 60ch;
+    margin: 0 0 1.15rem;
+  }
+  @media (max-width: 560px) {
+    .explain-grid { grid-template-columns: 1fr; }
+  }
+  .explain-card {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 0.9rem 1.05rem 1rem;
+  }
+  .explain-card .tag {
+    display: block;
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 700;
+    margin-bottom: 0.45rem;
+  }
+  .explain-card p {
+    margin: 0;
+    max-width: none;
+    font-size: 0.92rem;
+    line-height: 1.55;
+  }
+
+  /* NOVO: infográficos inline no fluxo do texto (mobile/tablet).
+     No desktop (>=900px) somem — lá quem mostra é o aside sticky. */
+  .ig-inline { margin: 1.6rem 0 1.8rem; }
+  .ig-inline .infographic-card { margin: 0; max-width: none; background: var(--bg); }
+  @media (min-width: 900px) {
+    .ig-inline { display: none; }
+  }
+  @media (max-width: 899.98px) {
+    .ig-aside { display: none; }
+  }
+</style>
+<style>
+  /* Artigo o-jev: tabela do placar, listas de respostas/objetivos e fontes */
+  .manuscript .jv-tbl { overflow-x: auto; margin: 1.6rem 0; }
+  .manuscript .jv-tbl table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 0.86rem; line-height: 1.4; min-width: 32rem; }
+  .manuscript .jv-tbl th { text-align: left; font-weight: 600; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); padding: 0 0.7rem 0.6rem 0; border-bottom: 1px solid var(--ink); }
+  .manuscript .jv-tbl td { padding: 0.6rem 0.7rem 0.6rem 0; border-bottom: 1px solid var(--bg-raised); vertical-align: top; }
+  .manuscript .jv-tbl td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pill { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 0.15rem 0.5rem; border-radius: 999px; white-space: nowrap; }
+  .pill.win { background: rgba(0,160,160,0.14); color: #0B5E5A; }
+  .pill.loss { background: var(--bg-raised); color: var(--ink-soft); }
+  .answers { list-style: none; padding: 0; margin: 0 0 1.4rem; display: grid; gap: 0.6rem; }
+  .answers li { display: grid; grid-template-columns: 8rem 1fr; gap: 0.8rem; align-items: baseline; border-top: 1px solid var(--bg-raised); padding-top: 0.6rem; }
+  .answers b { font-family: var(--sans); font-size: 0.82rem; font-weight: 600; color: var(--accent); text-transform: lowercase; }
+  .spec strong { font-family: var(--sans); font-size: 0.9em; }
+  .steps { padding-left: 1.4rem; display: grid; gap: 0.7rem; }
+  .lead-in { font-family: var(--sans); font-weight: 600; font-size: 0.95em; }
+  .pivot { font-size: 1.2em; font-style: italic; }
+  .jv-sources { margin-top: 2.5rem; padding-top: 1.2rem; border-top: 1px solid var(--bg-raised); font-family: var(--sans); font-size: 0.85rem; line-height: 1.55; color: var(--ink-soft); }
+  .jv-sources h2 { font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; margin: 0 0 0.6rem; }
+  .jv-sources ul { padding-left: 1.1rem; margin: 0; display: grid; gap: 0.4rem; }
+  @media (max-width: 560px) { .answers li { grid-template-columns: 1fr; gap: 0.1rem; } }
+</style>
+</head>
+<body>
+<style>
+.dnav { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; border-bottom: 1px solid #EBE5D0; background: #FBFAF6; }
+.dnav-wrap { max-width: 1100px; margin: 0 auto; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.dnav-links { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: #171411; }
+.dnav-links a { color: #171411; text-decoration: none; }
+.dnav-links a:hover { color: #00A0A0; text-decoration: underline; text-underline-offset: 3px; }
+.dnav-links a.dnav-active { color: #00A0A0; font-weight: 600; }
+.nav-cta a, .nav-cta span { display: inline-block; padding: 8px 16px; border-radius: 999px; font-size: 13px; font-weight: 500; }
+.nav-cta a { background: #171411; color: #FBFAF6; text-decoration: none; }
+.nav-cta a:hover { background: #00A0A0; }
+.nav-cta span[aria-current] { background: #EBE5D0; color: #171411; }
+@media (max-width: 560px) {
+  .dnav-wrap { flex-wrap: nowrap; }
+  .dnav-links { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+  .dnav-links a { white-space: nowrap; }
+}
+</style>
+<nav class="dnav" id="nav" data-site-nav="global" aria-label="Navegação principal">
+  <div class="dnav-wrap">
+    <div class="dnav-links">
+      <a href="https://diar.ia.br/archive?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Edições</a>
+        <a href="https://especial.diar.ia.br?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Especiais</a>
+        <a href="https://livros.diar.ia.br?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Livros</a>
+        <a href="https://cursos.diar.ia.br?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Cursos</a>
+        <a href="https://eia.diar.ia.br/leaderboard?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">É IA?</a>
+        <a href="https://diar.ia.br/apoiar/ir?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Apoiar</a>
+    </div>
+    <div class="nav-cta">
+      <!-- #8497 (extraído do nav da home, decisão original #6978 itens 2/3):
+           sem "Entrar" — projeto não tem login/conta própria, área de
+           assinante é sempre um magic link por e-mail, não um destino
+           genérico clicável aqui. Sem busca — redundante com "Edições"
+           (índice /archive) e o acervo por tema em arquivo.diar.ia.br. -->
+      <a href="https://diar.ia.br/assinar?utm_source=diaria-nav&amp;utm_medium=nav&amp;utm_campaign=global-nav">Assinar</a>
+    </div>
+  </div>
+</nav>
+
+<div class="read-progress" aria-hidden="true"></div>
+<script>
+  addEventListener('scroll', () => {
+    const h = document.documentElement;
+    const max = h.scrollHeight - h.clientHeight;
+    document.querySelector('.read-progress').style.width =
+      (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+  }, { passive: true });
+</script>
+
+<div class="sheet">
+
+  <div class="narrow-col">
+  <div class="masthead">
+    <div class="kicker">
+      <span><strong>diar<span style="color:var(--accent)">.</span>ia<span style="color:var(--accent)">.br</span></strong>: artigo especial</span>
+      <span>setembro de 2026</span>
+    </div>
+    <h1>O Jev na diar.ia.br: como testei uma IA diferente antes de deixá-la decidir</h1>
+    <p class="dek">Um classificador que responde perguntas fechadas custa centavos por edição e acertou onde minhas regras falhavam. Mas, das oito tarefas em que o testei, ele ficou com três.</p>
+    <div class="meta-row">
+      <span>Por Pixel</span>
+      <span>30 de setembro de 2026</span>
+      <span>~9 min de leitura</span>
+    </div>
+  </div>
+  </div>
+
+  <figure class="cover">
+    <img src="capa.jpg" alt="Ilustração estilo Van Gogh impasto: uma pequena máquina de latão separa tiras de papel em três gavetas de madeira, alimentada por uma grande impressora ao fundo, enquanto um homem de casaco azul confere as gavetas com uma lupa." width="1600" height="800" loading="eager">
+    <figcaption>Ilustração: diar.ia.br</figcaption>
+  </figure>
+
+  <nav class="toc" aria-label="Seções do artigo">
+    <span class="toc-tag">Neste artigo</span>
+    <div class="toc-links">
+      <a href="#s01"><span class="n">01</span>O que é o Jev</a>
+      <a href="#s02"><span class="n">02</span>Onde ele começou</a>
+      <a href="#s03"><span class="n">03</span>O método</a>
+      <a href="#s04"><span class="n">04</span>O placar</a>
+      <a href="#s05"><span class="n">05</span>Na edição inteira</a>
+      <a href="#s06"><span class="n">06</span>O que levo disso</a>
+    </div>
+  </nav>
+
+  <div class="narrow-col">
+  <div class="manuscript">
+    <p class="lede">Todo dia a diar.ia.br passa por dezenas de decisões pequenas antes de chegar ao seu e-mail. Este link é lançamento ou notícia? Esta matéria é a mesma história que já dei anteontem, com outro título? Este texto fala do Brasil ou só saiu num site brasileiro? Nenhuma exige escrever nada, mas todas exigem entender o texto.</p>
+  <p>Durante muito tempo, respondi a elas de dois jeitos. Um é regra escrita à mão (código "normal"): listas de palavras, comparação de títulos, domínio do site. É barata e previsível, e erra sempre do mesmo jeito. O outro é pedir a um modelo de linguagem grande, como os que escrevem a newsletter, que leia e opine. Acerta mais, mas custa caro e às vezes responde com um parágrafo quando eu queria um sim ou um não.</p>
+  <p>Em setembro, testei uma terceira via. Eu tinha dois objetivos: fazer a produção da edição rodar mais rápido e gastar menos da minha cota de uso do Claude, que hoje é o que limita quanto a diar.ia.br consegue fazer por dia. Aqui conto onde ela entrou e, mais que isso, onde decidi que não entraria.</p>
+
+    <h3 class="sect" id="s01"><span class="sect-n">01</span>O que é o Jev</h3>
+
+    <p>Jev é um modelo da empresa TypeSafe, lançado em 15 de setembro de 2026 (na API, <code>jev-latest</code>). A TypeSafe o chama de modelo "System One": em vez de texto, ele devolve decisões tipadas. A diferença para um LLM "comum" está no formato da conversa.</p>
+  <p>Com um ChatGPT ou um Claude, você escreve um pedido e recebe texto de volta. Com o Jev, você manda um pequeno pacote de dados sobre um item (o título e o resumo de uma matéria, por exemplo) e uma lista de perguntas fechadas. Ele só sabe responder de três formas:</p>
+  <ul class="answers">
+    <li><b>escolha</b><span>qual destas opções descreve melhor o item, com a probabilidade de cada uma;</span></li>
+    <li><b>nota</b><span>em que nível de uma escala o item está;</span></li>
+    <li><b>probabilidade</b><span>qual a chance de uma afirmação sobre o item ser verdadeira, de 0 a 1.</span></li>
+  </ul>
+  <p>A resposta nunca vem em texto livre, então não há justificativa bonita nem mudança de formato no meio do caminho. Uma mesma chamada responde várias perguntas sobre o mesmo item ao mesmo tempo, e cada uma sai isolada das outras.</p>
+  <p>É barato: cerca de US$ 0,04 por milhão de tokens (as unidades de texto que os modelos processam) de entrada, e a saída não é cobrada. Uma edição inteira da diar.ia.br passando pelo Jev custa cerca de US$ 0,04. Para comparar, uma edição produzida com os modelos grandes consome dezenas de milhões de tokens, o equivalente a algo entre US$ 40 e US$ 190 em preço de API nas edições de setembro, com mediana perto de US$ 75 (estimativa, provavelmente um pouco acima do real). A diar.ia.br usa a assinatura do Claude e não paga por token, mas a conta dá a ordem de grandeza da diferença: mais de mil vezes.</p>
+  <p>Há limites que pesaram nas decisões. O Jev só lê texto, sem imagem. Foi treinado principalmente em inglês, e o próprio fornecedor avisa que, em outros idiomas, o desempenho varia e é preciso testar antes de confiar. A TypeSafe também é uma empresa nova, sem página de preços pública. Por isso tudo que o Jev faz aqui tem uma saída de emergência: se a API cair, a pipeline (a sequência de etapas automáticas que monta cada edição) volta a funcionar como antes, sem travar a edição.</p>
+
+    <!-- ESPECIAL:GATE_CUT -->
+
+    <h3 class="sect" id="s02"><span class="sect-n">02</span>Onde ele começou: lançamento ou notícia?</h3>
+
+    <p>A primeira tarefa foi a mais irritante. A diar.ia.br tem uma regra: a seção LANÇAMENTOS só aceita link oficial da empresa que lançou. Cobertura de imprensa sobre o lançamento vai para outra seção. Quando minhas regras automáticas não conseguiam decidir onde encaixar um item, ele caía numa categoria padrão, e eu corrigia à mão na revisão.</p>
+  <p>Separei 22 casos difíceis desse tipo e os classifiquei às cegas, sem ver o que a máquina tinha dito. Depois comparei. A regra antiga acertou 12 de 22 (54,5%). O Jev acertou 20 de 22 (90,9%), e a diferença passou no teste estatístico que uso para saber se não foi sorte.</p>
+  <p>Esse resultado mudou o projeto. Em vez de sair plugando o Jev em tudo, abri um plano: listar cada ponto da pipeline em que uma máquina toma uma decisão pequena e medir o Jev em cada um, do mesmo jeito, antes de deixá-lo decidir qualquer coisa.</p>
+
+    <h3 class="sect" id="s03"><span class="sect-n">03</span>O método: medir antes de ligar</h3>
+
+    <p>Adotei uma regra: nenhuma tarefa ganha o Jev sem antes passar por quatro etapas.</p>
+  <ol class="steps">
+    <li><span class="lead-in">Gabarito cego.</span> Alguém rotula uma amostra de casos reais das edições sem ver a resposta da regra atual nem a do Jev.</li>
+    <li><span class="lead-in">Comparação no mesmo gabarito.</span> Comparo a regra atual e o Jev contra os mesmos rótulos. Olho para onde cada um erra, não só para a nota final.</li>
+    <li><span class="lead-in">Mais de uma rodada.</span> Descobri cedo que o Jev não é determinístico: a mesma pergunta, sobre o mesmo gabarito, rodada três vezes, deu 19, 17 e 18 acertos em 22. Então toda medição roda pelo menos três vezes, e decido olhando a faixa.</li>
+    <li><span class="lead-in">Modo sombra antes de valer.</span> Quando o Jev ganha, ele primeiro roda em paralelo, registrando o que teria decidido, sem mudar a edição. Só depois vira decisão de verdade, e sempre com um interruptor para desligar.</li>
+  </ol>
+  <p>Eu queria saber se valia a pena em cada tarefa, não se o Jev é bom. A segunda pergunta não ajuda a decidir nada.</p>
+
+    <h3 class="sect" id="s04"><span class="sect-n">04</span>O placar: oito tarefas, três adoções</h3>
+
+    <p>Medi o Jev em mais oito tarefas.</p>
+  <div class="jv-tbl">
+    <table>
+      <thead><tr><th>Tarefa</th><th>Regra atual</th><th>Jev</th><th>Decisão</th></tr></thead>
+      <tbody>
+        <tr><td>A matéria envolve o Brasil?</td><td class="num">82,8%</td><td class="num">98,4–100%</td><td><span class="pill win">adotar</span></td></tr>
+        <tr><td>É a mesma história de uma edição recente?</td><td class="num">84,6%</td><td class="num">94,9%</td><td><span class="pill win">adotar</span></td></tr>
+        <tr><td>Quem é o protagonista (big tech, startup, governo...)?</td><td class="num">não existia</td><td class="num">82,8–84,4%</td><td><span class="pill win">adotar como sinal novo</span></td></tr>
+        <tr><td>A matéria mostra dano real causado por IA?</td><td class="num">91,7%</td><td class="num">93,8–95,8%</td><td><span class="pill loss">não adotar</span></td></tr>
+        <tr><td>A matéria merece virar destaque? (nota composta)</td><td class="num">96,6%</td><td class="num">51,7%</td><td><span class="pill loss">não adotar</span></td></tr>
+        <tr><td>Filtrar itens irrelevantes antes da curadoria</td><td class="num">—</td><td class="num">cortava matéria boa</td><td><span class="pill loss">não adotar</span></td></tr>
+        <tr><td>Escolher o melhor título</td><td class="num">60,0%</td><td class="num">57,5%</td><td><span class="pill loss">não adotar</span></td></tr>
+        <tr><td>Apontar vício de texto gerado por IA</td><td class="num">—</td><td class="num">acerta 1 em 3</td><td><span class="pill loss">não adotar</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Na tabela, "regra atual" é o que a pipeline já usava para tomar cada decisão antes do Jev. Nem sempre é uma regra no sentido estrito. Para cada tarefa, o objetivo, como era feita e, onde o Jev entrou, como ficou:</p>
+  <ul class="answers">
+    <li><b>brasil</b><span class="spec"><strong>Objetivo:</strong> dar o devido peso às notícias que envolvem o Brasil.<br><strong>Como era:</strong> olha o domínio do site e procura uma lista de palavras-chave no título e no resumo.<br><strong>Como ficou:</strong> o Jev responde qual a probabilidade de a matéria envolver o Brasil.</span></li>
+    <li><b>mesma história</b><span class="spec"><strong>Objetivo:</strong> não repetir uma notícia já dada nas edições recentes.<br><strong>Como era:</strong> compara, palavra por palavra, o título novo com os títulos dessas edições.<br><strong>Como ficou:</strong> quando a comparação de títulos cai na zona de dúvida, o Jev responde se é a mesma história.</span></li>
+    <li><b>protagonista</b><span class="spec"><strong>Objetivo:</strong> equilibrar a edição entre tipos de ator, para ela não virar um boletim das mesmas empresas.<br><strong>Como era:</strong> só marcava se a matéria é ou não de big tech.<br><strong>Como ficou:</strong> o Jev classifica o protagonista em seis tipos de ator, como informação nova, sem substituir a marcação antiga.</span></li>
+    <li><b>dano real</b><span class="spec"><strong>Objetivo:</strong> garantir ao menos uma matéria sobre dano real em cada edição, como contraponto à grande maioria de notícias positivas sobre IA.<br><strong>Como é:</strong> o mesmo modelo de linguagem grande que dá a nota de relevância de cada matéria marca isso na mesma resposta.</span></li>
+    <li><b>destaque</b><span class="spec"><strong>Objetivo:</strong> escolher as matérias que abrem a edição.<br><strong>Como é:</strong> esse modelo grande dá uma nota de 0 a 100 a cada matéria, seguindo os critérios editoriais escritos.</span></li>
+    <li><b>filtro</b><span class="spec"><strong>Objetivo:</strong> descartar itens irrelevantes antes da curadoria.<br><strong>Como era:</strong> não existia; todo item coletado segue para a curadoria.</span></li>
+    <li><b>título</b><span class="spec"><strong>Objetivo:</strong> escolher o título de cada destaque entre as opções escritas.<br><strong>Como é:</strong> o modelo de linguagem grande escolhe.</span></li>
+    <li><b>vício de ia</b><span class="spec"><strong>Objetivo:</strong> tirar do texto final as marcas de texto gerado por IA.<br><strong>Como é:</strong> uma revisão opcional feita por modelo grande; a medição avaliou só a precisão do Jev, sem número comparável do método atual.</span></li>
+  </ul>
+  <p>Nos três ganhos, a regra antiga dependia de pistas superficiais.</p>
+  <p><span class="lead-in">Brasil.</span> Minha regra olhava o domínio do site e procurava palavras-chave. Errava em manchetes como "FGV: 30 milhões de brasileiros expostos à automação" ou "Governo lança modelo de linguagem 100% nacional", porque a pista não estava onde ela procurava. O Jev entende do que o texto trata e acertou quase tudo.</p>
+  <p><span class="lead-in">Mesma história.</span> Para não repetir notícia, eu comparava títulos palavra por palavra. Dois títulos diferentes sobre o mesmo fato passavam batido: na zona de dúvida, a regra deixava escapar 5 de cada 7 repetições reais. O Jev pegou as 7, com dois alarmes falsos.</p>
+  <p><span class="lead-in">Protagonista.</span> Aqui a regra antiga só conseguia dizer "é ou não é big tech". O Jev separa seis tipos de ator. Isso ajuda a equilibrar a edição, para ela não virar um boletim das mesmas cinco empresas. Entrou como informação nova, sem substituir a medida que eu já usava, para não quebrar a série histórica que acompanho mês a mês.</p>
+  <p class="pivot">Os "não" ensinaram tanto quanto os "sim".</p>
+  <p><span class="lead-in">Dano real.</span> O Jev foi um pouco melhor que o método atual, mas a diferença de 1 ou 2 casos em 48 estava dentro da margem de sorte. Aqui ele também não economizaria nada: a marcação de dano real já sai de graça da mesma chamada ao modelo grande que dá a nota de cada matéria, e essa chamada continuaria acontecendo por causa da nota. Como é uma decisão editorial que precisa funcionar em toda edição, trocar pelo Jev só acrescentaria uma dependência externa sem ganho claro.</p>
+  <p><span class="lead-in">Nota de destaque.</span> Pedi ao Jev notas separadas para cada critério de relevância e montei uma nota final com pesos. As matérias que viraram destaque ficaram entre as 15 mais bem avaliadas em 96,6% dos casos pelo método atual e em 51,7% pelo Jev, pouco acima do acaso.</p>
+  <p><span class="lead-in">Filtro de entrada.</span> A ideia era descartar lixo antes de gastar tempo com ele. Em 3.708 itens de 104 edições, o único limiar em que o Jev não descartava nenhuma matéria que eu teria aprovado era um que não descartava nada. No primeiro limiar que filtrava alguma coisa, ele já jogava fora uma matéria boa para cada matéria ruim.</p>
+  <p><span class="lead-in">Títulos e texto com cara de IA.</span> Na escolha de título, Jev e modelo atual ficaram praticamente empatados (57,5% contra 60%). Para apontar vícios de texto gerado por IA em português, ele acertou um terço das vezes. Em português, ele ainda não serve para isso.</p>
+
+    <h3 class="sect" id="s05"><span class="sect-n">05</span>E na edição inteira?</h3>
+
+    <p>Com as tarefas vencedoras ligadas, criei uma versão da pipeline com o Jev decidindo de fato e passei a alternar: um dia a edição sai pelo processo normal, no outro pelo processo com o Jev. Até agora foram 7 edições de um lado e 5 do outro.</p>
+  <p>Nas edições com o Jev, fiz na revisão final cerca de metade das correções que faço no processo normal. Confesso que me surpreendeu. Eu não esperava diferença nenhuma na revisão final, porque o Jev decide coisas pequenas, longe do texto que eu leio. Mas a amostra é pequena demais para concluir, e ainda não há teste de significância. Por enquanto, o resultado é inconclusivo. O plano é seguir alternando até ter pelo menos cinco edições com dado completo em cada lado.</p>
+  <p>Nos dois objetivos que me levaram ao Jev, o efeito até agora é quase nenhum. As edições com ele gastaram 246 milhões de tokens, contra 260 milhões no processo normal, uma diferença que a própria medição não permite chamar de economia. A etapa de pesquisa levou 15,4 minutos contra 15,6. Olhando a tabela de novo, dá para ver por quê. O Jev ganhou onde substituiu regras em código, que já eram grátis e instantâneas. As tarefas em que ele ocuparia o lugar do Claude, e aí sim economizaria cota e tempo, foram justamente as que ele perdeu. Até aqui, o ganho foi de precisão.</p>
+
+    <h3 class="sect" id="s06"><span class="sect-n">06</span>O que levo disso</h3>
+
+    <p>O Jev não substituiu os modelos grandes na diar.ia.br e não vai substituir. Os modelos grandes escrevem a newsletter. O Jev só responde perguntas fechadas. A utilidade dele aparece nos pontos em que eu tinha remendado regras frágeis para responder a perguntas que exigem entender o texto.</p>
+  <p>A parte que mais me convenceu foi o método, mais até que o Jev. Sem gabarito cego e sem repetir as medições, eu teria ligado o Jev nas oito tarefas depois do primeiro resultado bom. Em cinco delas teria piorado a edição ou gastado esforço sem ganho, e dificilmente perceberia.</p>
+  <p>Se você está pensando em pôr uma IA barata para decidir alguma coisa no seu trabalho, a lição que eu tiraria disso é simples: separe algumas dezenas de casos reais, responda você mesmo sem olhar o que a máquina disse, e só então compare. Foi isso que me impediu de trocar cinco coisas que funcionavam por cinco que só pareciam funcionar.</p>
+
+    <section class="jv-sources">
+    <h2>Fontes e notas de método</h2>
+    <ul>
+      <li>Medições feitas entre 17 e 20/09/2026 sobre edições reais da diar.ia.br.</li>
+      <li>Em parte das medições (dano real, Brasil/protagonista, mesma história), o gabarito cego foi rotulado por um agente automatizado do projeto seguindo as regras editoriais escritas, e não por mim.</li>
+      <li>Tamanho das amostras: 22 (lançamento), 48 (dano real), 64 (Brasil/protagonista), 39 (mesma história), 3.708 (filtro de entrada).</li>
+      <li>Preço e limites do Jev: documentação da TypeSafe consultada em setembro de 2026.</li>
+      <li>Lançamento do Jev: anúncio da TypeSafe AI em 15/09/2026, junto com uma rodada seed de US$ 40 milhões liderada pela DCVC.</li>
+    </ul>
+  </section>
+  </div>
+
+  <footer>Pixel é editor da <strong>diar<span style="color:var(--accent)">.</span>ia<span style="color:var(--accent)">.br</span></strong>, newsletter diária sobre IA.</footer>
+
+  </div>
+
+</div>
+
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Article","@id":"https://especial.diar.ia.br/2026/o-jev/#article","headline":"O Jev na diar.ia.br: como testei uma IA diferente antes de deixá-la decidir","description":"Um classificador que responde perguntas fechadas custa centavos por edição e acertou onde minhas regras falhavam. Mas, das oito tarefas em que o testei, ele ficou com três.","url":"https://especial.diar.ia.br/2026/o-jev/","mainEntityOfPage":"https://especial.diar.ia.br/2026/o-jev/","image":"https://especial.diar.ia.br/2026/o-jev/capa.jpg","datePublished":"2026-09-30","dateModified":"2026-09-30","author":{"@type":"Person","name":"Pixel","url":"https://www.linkedin.com/in/vjpixel/"},"publisher":{"@type":"Organization","name":"diar.ia.br","url":"https://diar.ia.br"},"inLanguage":"pt-BR"}]}</script>
+
+</body>
+</html>

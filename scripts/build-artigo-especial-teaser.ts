@@ -50,13 +50,13 @@ export interface ArticleConfig {
   year: string;
 }
 
-/** Fonte única da lista de Artigos Especiais gateados — os 2 publicados até
- * #7030. Artigo novo: criar `articles-src/{slug}.html` com o marcador,
+/** Fonte única da lista de Artigos Especiais gateados. Artigo novo: criar `articles-src/{slug}.html` com o marcador,
  * adicionar aqui, rodar este script. `workers/artigos/src/index.ts` deriva
  * `GATED_ARTICLE_PATHS` desta MESMA lista (importada de lá), nunca duplicada. */
 export const ARTICLES: readonly ArticleConfig[] = [
   { slug: "engenharia-de-ilusao", year: "2026" },
   { slug: "o-agente", year: "2026" },
+  { slug: "o-jev", year: "2026" },
 ];
 
 export function articleSourcePath(article: ArticleConfig): string {

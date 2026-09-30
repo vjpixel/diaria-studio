@@ -51,10 +51,10 @@ directory = "./public"
 binding = "ASSETS"
 # INVARIANTE (#7030, mesmo achado do #4052 em `workers/cursos`): Workers com
 # Static Assets servem o ASSET ANTES de invocar o script — sem isto, os
-# paths dos 2 artigos gateados (que TÊM asset correspondente, o teaser)
+# paths dos artigos gateados (que TÊM asset correspondente, o teaser)
 # nunca chegariam no script, e o gate inteiro ficaria morto (todo mundo
 # sempre veria o teaser, mesmo com sessão de apoiador válida). Lista
-# EXPLÍCITA (não `true`) porque só os 2 artigos precisam do script — página
+# EXPLÍCITA (não `true`) porque só os artigos gateados precisam do script — página
 # de entidade, home, robots.txt, sitemap.xml seguem 100% estáticas, sem
 # custo extra de invocação. Precisa casar com `gatedArticlePaths()` em
 # `src/gated-articles.ts` — divergir os dois reabre o mesmo buraco silencioso
@@ -64,6 +64,8 @@ run_worker_first = [
   "/2026/engenharia-de-ilusao/index.html",
   "/2026/o-agente/",
   "/2026/o-agente/index.html",
+  "/2026/o-jev/",
+  "/2026/o-jev/index.html",
 ]
 
 # #7030: KV do sync de nível de apoio — chave `apoio:{sha256(email)}` → nível
