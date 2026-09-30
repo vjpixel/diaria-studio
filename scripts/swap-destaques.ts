@@ -56,11 +56,12 @@
  * `swap-destaque.ts` ou chamadas separadas para misturar drop/keep.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
+import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
 import {
   extractUrl,
   extractTitle,
@@ -295,8 +296,8 @@ function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 }
 
-function writeJson(path: string, data: unknown): void {
-  writeFileSync(path, JSON.stringify(data, null, 2) + "\n", "utf8");
+function jsonContent(data: unknown): string {
+  return JSON.stringify(data, null, 2) + "\n";
 }
 
 function main(): void {
@@ -365,8 +366,10 @@ function main(): void {
     console.error(`Erro ao aplicar swap em 01-approved.json: ${swapResult.reason}`);
     process.exit(1);
   }
-  writeJson(approvedPath, approvedData);
-  result.modified.rewritten.push(approvedPath);
+  // #9173: as escritas de conteúdo (approved, capped, 02-reviewed.md) são
+  // acumuladas e gravadas num LOTE verificado (writeFilesVerified — irmão do
+  // stageAndWriteVerified do reorder-destaques) antes de apagar imagens/prompts.
+  const pendingWrites: VerifiedWrite[] = [{ path: approvedPath, content: jsonContent(approvedData) }];
 
   // 2. 01-approved-capped.json (mesmo swap, arquivo separado)
   if (existsSync(approvedCappedPath)) {
@@ -382,8 +385,7 @@ function main(): void {
     if (Array.isArray(cappedData.highlights)) {
       const cappedSwap = swapManualInApprovedJson(cappedData, slots, drop);
       if (cappedSwap.ok) {
-        writeJson(approvedCappedPath, cappedData);
-        result.modified.rewritten.push(approvedCappedPath);
+        pendingWrites.push({ path: approvedCappedPath, content: jsonContent(cappedData) });
       } else {
         const w = `01-approved-capped.json não sincronizado (${cappedSwap.reason}) — possível divergência entre os 2 arquivos.`;
         console.error(`AVISO: ${w}`);
@@ -419,10 +421,12 @@ function main(): void {
       }
     }
     if (mdChanged) {
-      writeFileSync(mdPath, md, "utf8");
-      result.modified.rewritten.push(mdPath);
+      pendingWrites.push({ path: mdPath, content: md });
     }
   }
+
+  writeFilesVerified(pendingWrites, "swap-destaques");
+  for (const w of pendingWrites) result.modified.rewritten.push(w.path);
 
   // 4. Imagens e prompts antigos por slot
   for (const s of slots) {

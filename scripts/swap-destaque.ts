@@ -62,7 +62,6 @@
 import {
   existsSync,
   readFileSync,
-  writeFileSync,
   readdirSync,
   unlinkSync,
 } from "node:fs";
@@ -70,6 +69,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
+import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -663,8 +663,11 @@ function main(): void {
     console.error(`Erro ao aplicar swap em 01-approved.json: ${swapResult.reason}`);
     process.exit(1);
   }
-  writeFileSync(approvedPath, JSON.stringify(approvedData, null, 2) + "\n", "utf8");
-  result.modified.rewritten.push(approvedPath);
+  // #9173: escritas de conteúdo acumuladas e gravadas num LOTE verificado
+  // (writeFilesVerified) antes de apagar imagens/prompts.
+  const pendingWrites: VerifiedWrite[] = [
+    { path: approvedPath, content: JSON.stringify(approvedData, null, 2) + "\n" },
+  ];
 
   // 2. Mutate 01-approved-capped.json (highlights[] only — same position swap)
   if (approvedCappedData) {
@@ -692,8 +695,10 @@ function main(): void {
       );
       if (warning) console.error(`AVISO: ${warning}`);
     }
-    writeFileSync(approvedCappedPath, JSON.stringify(approvedCappedData, null, 2) + "\n", "utf8");
-    result.modified.rewritten.push(approvedCappedPath);
+    pendingWrites.push({
+      path: approvedCappedPath,
+      content: JSON.stringify(approvedCappedData, null, 2) + "\n",
+    });
   }
 
   // .social-source-hash.json — NÃO regravado aqui (#9169, espelho do #9149).
@@ -708,10 +713,12 @@ function main(): void {
     const md = readFileSync(mdPath, "utf8");
     const updatedMd = removeDestaqueBlockFromMd(md, demotePosition, promotedTitle, promotedUrl);
     if (updatedMd !== md) {
-      writeFileSync(mdPath, updatedMd, "utf8");
-      result.modified.rewritten.push(mdPath);
+      pendingWrites.push({ path: mdPath, content: updatedMd });
     }
   }
+
+  writeFilesVerified(pendingWrites, "swap-destaque");
+  for (const w of pendingWrites) result.modified.rewritten.push(w.path);
 
   // 4. Delete old images for the swapped position (new ones need Stage 3)
   const deletedImages = deleteDestaqueImages(editionDir, demotePosition, false);
