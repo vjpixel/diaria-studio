@@ -23,7 +23,11 @@ import {
   buildManualHighlight,
   swapManualInApprovedJson,
   parseSwapDestaquesArgs,
+  buildSwapNextSteps,
 } from "../scripts/swap-destaques.ts";
+import { checkSocialHashFresh } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { hashFromApprovedFile, writeSocialSourceHash } from "../scripts/lib/social-source-hash.ts";
+import { refreshSocialHash } from "../scripts/refresh-social-hash.ts";
 
 const HIGHLIGHT_D1 = {
   rank: 1,
@@ -461,10 +465,8 @@ describe("swap-destaques.ts CLI (#8995)", () => {
       );
       assert.equal(capped.highlights[1].url, "https://novo.com/y");
 
-      const hash = JSON.parse(
-        readFileSync(join(dir, "_internal", ".social-source-hash.json"), "utf8"),
-      );
-      assert.ok(typeof hash.hash === "string" && hash.hash.length > 0);
+      // #9149: o swap NÃO grava .social-source-hash.json (o social ainda é o antigo).
+      assert.ok(!existsSync(join(dir, "_internal", ".social-source-hash.json")));
 
       const md = readFileSync(join(dir, "02-reviewed.md"), "utf8");
       assert.match(md, /RASCUNHO PENDENTE — swap-destaque/);
@@ -711,6 +713,74 @@ describe("swap-destaques.ts CLI (#8995)", () => {
         (approved.highlights as Record<string, unknown>[]).map((h) => h.url),
         ["https://novo.com/a", "https://novo.com/b", "https://novo.com/c"],
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #9149: hash social compatível com o check do Stage 4 + refresh de fontes
+// ---------------------------------------------------------------------------
+
+describe("swap-destaques.ts × social-hash-fresh (#9149)", () => {
+  it("não recarimba o hash no swap (guard do #1413 segue armado) e refresh-social-hash depois do splice faz o check passar", () => {
+    const dir = makeTempEdition({ withMd: true });
+    const internalDir = join(dir, "_internal");
+    try {
+      // Estado pré-swap: social gerado e carimbado pela lib (como o merge-social-md faz).
+      writeFileSync(join(dir, "03-social.md"), "# Social\n\n## d1\n\nTexto d1 antigo.\n");
+      writeSocialSourceHash(internalDir, hashFromApprovedFile(join(internalDir, "01-approved.json")));
+      const hashBefore = readFileSync(join(internalDir, ".social-source-hash.json"), "utf8");
+      assert.deepEqual(checkSocialHashFresh(dir), []);
+
+      const { status } = runCli([
+        "--edition", "260929", "--edition-dir", dir,
+        "--d1-url", "https://novo.com/x", "--d1-title", "Título Novo",
+      ]);
+      assert.equal(status, 0);
+
+      // Hash intocado: o 03-social.md ainda descreve o D1 antigo, o check TEM que acusar.
+      assert.equal(readFileSync(join(internalDir, ".social-source-hash.json"), "utf8"), hashBefore);
+      const stale = checkSocialHashFresh(dir);
+      assert.equal(stale.length, 1);
+      assert.equal(stale[0].rule, "social-hash-fresh");
+      assert.equal(stale[0].severity, "error");
+
+      // Após o splice do social, o recarimbo do next_steps destrava o check.
+      refreshSocialHash(dir);
+      assert.deepEqual(checkSocialHashFresh(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("next_steps começa pelo refresh-destaque-sources (#9102) e recarimba o hash só depois do splice do social", () => {
+    const steps = buildSwapNextSteps("/ed/260929", [
+      { position: 1, url: "https://novo.com/x", title: "X" },
+      { position: 3, url: "https://novo.com/z", title: "Z" },
+    ]);
+    assert.match(steps[0], /refresh-destaque-sources\.ts --edition-dir \/ed\/260929\//);
+    const iWriter = steps.findIndex((s) => /writer-destaque/.test(s) && /DESTAQUE 1/.test(s));
+    const iSocial = steps.findIndex((s) => /social-writer/.test(s));
+    const iHash = steps.findIndex((s) => /refresh-social-hash\.ts/.test(s));
+    assert.ok(iWriter > 0, "writer-destaque vem depois do refresh de fontes");
+    assert.ok(iSocial > iWriter);
+    assert.ok(iHash > iSocial, "recarimbo do hash vem depois do splice do social");
+    assert.ok(steps.some((s) => /DESTAQUE 3/.test(s) && /source_text_path/.test(s)));
+  });
+
+  it("CLI imprime o next_steps com o refresh de fontes em 1º", () => {
+    const dir = makeTempEdition({});
+    try {
+      const { status, stdout } = runCli([
+        "--edition", "260929", "--edition-dir", dir,
+        "--d2-url", "https://novo.com/y", "--d2-title", "Y",
+      ]);
+      assert.equal(status, 0);
+      const parsed = JSON.parse(stdout);
+      assert.match(parsed.next_steps[0], /refresh-destaque-sources\.ts/);
+      assert.ok(!parsed.modified.rewritten.some((p: string) => p.endsWith(".social-source-hash.json")));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

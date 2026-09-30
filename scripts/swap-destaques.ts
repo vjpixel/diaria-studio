@@ -20,9 +20,13 @@
  *      RADAR é o pool genérico de reentrada, mesmo destino usado quando o
  *      editor demove um D3 manualmente, CLAUDE.md #2316/#2343) — ou é
  *      descartado com `--drop`;
- *   3. `.social-source-hash.json` reescrito com o novo hash (mesmo
- *      mecanismo do swap-destaque.ts) — evita bloquear o gate por hash
- *      desatualizado, mas NÃO regenera `03-social.md` em si;
+ *   3. `.social-source-hash.json` fica INTOCADO de propósito (#9149) — o
+ *      `03-social.md` ainda descreve o destaque antigo, então o guard
+ *      `social-hash-fresh` (#1413) TEM que continuar acusando até o
+ *      `## d{N}` ser reescrito. O recarimbo vem em
+ *      `next_steps` logo após o splice do social (`refresh-social-hash.ts`, hash da lib
+ *      `social-source-hash.ts` — o mesmo que o check do Stage 4 recomputa),
+ *      mesma função/formato que o `reorder-destaques.ts` grava;
  *   4. Bloco `**DESTAQUE N**` de `02-reviewed.md` substituído por
  *      placeholder `[RASCUNHO PENDENTE]`;
  *   5. Imagens (`04-d{N}-*`) e prompts (`02-d{N}-*`) antigos da posição
@@ -30,6 +34,9 @@
  *
  * O que NÃO faz (exige LLM/agente ou decisão editorial — sai em
  * `next_steps`, mesmo padrão do promote-to-destaque.ts):
+ *   - re-baixar a fonte do destaque novo e invalidar o manifest do
+ *     fact-check (`refresh-destaque-sources.ts`, #9102) — 1º passo de
+ *     `next_steps`, antes do writer-destaque;
  *   - reescrever o texto de `02-reviewed.md`/`03-social.md` para o novo
  *     destaque (writer-destaque + social-writer/social-curto);
  *   - gerar a imagem 2:1/4:5 + cards de carrossel + upload;
@@ -56,7 +63,6 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: lay
 import {
   extractUrl,
   extractTitle,
-  hashHighlights,
   removeDestaqueBlockFromMd,
   deleteDestaqueImages,
   deleteDestaquePrompts,
@@ -188,6 +194,32 @@ export function swapManualInApprovedJson(
   data.highlights = highlights;
 
   return { ok: true, demoted };
+}
+
+/**
+ * `next_steps` impressos após a troca, em ORDEM de execução. #9149: o 1º é o
+ * refresh de fontes do #9102 (sem ele o writer-destaque escreve só do título
+ * e o fact-checker lê o manifest do destaque ANTIGO); o recarimbo do hash
+ * social vem DEPOIS do splice do `03-social.md`, nunca antes.
+ */
+export function buildSwapNextSteps(editionDir: string, slots: SlotSwap[]): string[] {
+  const ds = slots.map((s) => `d${s.position}`).join(", ");
+  return [
+    `Re-baixar a fonte dos destaques novos e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${editionDir}/ — rodar UMA vez; passar o path da entrada de sources com destaque === N como source_text_path ao writer-destaque de cada slot (${ds}) (#9102).`,
+    ...slots.map(
+      (s) =>
+        `Escrever DESTAQUE ${s.position} em 02-reviewed.md (writer-destaque, item: "${s.title}", source_text_path da entrada destaque === ${s.position})`,
+    ),
+    `social-writer + social-curto em escopo reduzido (${ds}), splice em 03-social.md`,
+    `Só DEPOIS do splice: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${editionDir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9149)`,
+    ...slots.map(
+      (s) =>
+        `Escrever _internal/02-d${s.position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${editionDir}/_internal/02-d${s.position}-prompt.md --out-dir ${editionDir}/ --destaque d${s.position}`,
+    ),
+    `gen-carousel-cards.ts + upload-images-public.ts após as imagens novas`,
+    `fact-checker completo antes do gate (destaques novos, sem checagem prévia)`,
+    `npx tsx scripts/check-invariants.ts --edition-dir ${editionDir} --stage 4`,
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -358,12 +390,10 @@ function main(): void {
     }
   }
 
-  // 3. .social-source-hash.json
-  const hashPath = resolve(internalDir, ".social-source-hash.json");
-  const newHighlights = approvedData.highlights as Record<string, unknown>[];
-  const newHash = hashHighlights(newHighlights.slice(0, Math.min(newHighlights.length, 3)));
-  writeJson(hashPath, { hash: newHash });
-  result.modified.rewritten.push(hashPath);
+  // 3. .social-source-hash.json — NÃO regravado aqui (#9149). Ver docstring
+  // do arquivo, passo 3: recarimbar agora desligaria o guard do #1413 com o
+  // 03-social.md ainda descrevendo o destaque antigo; o recarimbo está em
+  // next_steps, logo depois do splice do social.
 
   // 4. 02-reviewed.md — placeholder por slot. removeDestaqueBlockFromMd
   // (swap-destaque.ts) falha SILENCIOSO — devolve o md intocado + console.error
@@ -402,20 +432,7 @@ function main(): void {
     }
   }
 
-  result.next_steps = [
-    ...slots.map(
-      (s) =>
-        `Escrever DESTAQUE ${s.position} em 02-reviewed.md (writer-destaque, item: "${s.title}")`,
-    ),
-    `social-writer + social-curto em escopo reduzido (${slots.map((s) => `d${s.position}`).join(", ")}), splice em 03-social.md`,
-    ...slots.map(
-      (s) =>
-        `Escrever _internal/02-d${s.position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${editionDir}/_internal/02-d${s.position}-prompt.md --out-dir ${editionDir}/ --destaque d${s.position}`,
-    ),
-    `gen-carousel-cards.ts + upload-images-public.ts após as imagens novas`,
-    `fact-checker completo antes do gate (destaques novos, sem checagem prévia)`,
-    `npx tsx scripts/check-invariants.ts --edition-dir ${editionDir} --stage 4`,
-  ];
+  result.next_steps = buildSwapNextSteps(editionDir, slots);
 
   console.log(JSON.stringify(result, null, 2));
   console.error(
