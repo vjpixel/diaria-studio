@@ -942,3 +942,73 @@ describe("#9155 checkFallbackEligibility", () => {
     assert.equal(checkFallbackEligibility({ file: "d.md", snippetByFile: byFile, assignedFiles: new Set(["w.md"]) }), "evento");
   });
 });
+
+describe("#9175 resolveBoxesForEdition — slot 2 inativo em edição de 2 destaques", () => {
+  const resolveWith = (slot1: string, slot2: string, pinnedSlots: Set<1 | 2>, destaqueCount?: number, enabled = true) => {
+    const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+    try {
+      writeFileSync(join(snippetsDir, "diaria-imersao1010.md"), DIARIA_IMERSAO);
+      writeFileSync(join(snippetsDir, "workshop-agente-ia-outubro.md"), WORKSHOP);
+      writeSnippet(snippetsDir, "amazon-loja-divulgacao.md", "Amazon", "https://amzn.to/loja");
+      return resolveBoxesForEdition({
+        aammdd: "260930",
+        boxesCfg: { slot0: null, slot1, slot2, slot3: null },
+        autoCfg: { enabled, pinnedSlots, recentWindow: 3, priorWindow: 3, lastN: 20 },
+        editionsDir,
+        postsDir,
+        snippetsDir,
+        destaqueCount,
+      });
+    } finally {
+      cleanup();
+    }
+  };
+
+  it("slot 2 pinado com caixa do MESMO evento não recusa o fallback do slot 1 quando há só 2 destaques", () => {
+    const { effective, selection } = resolveWith("diaria-imersao1010.md", "workshop-agente-ia-outubro.md", new Set([2]), 2);
+    assert.equal(effective.slot1, "diaria-imersao1010.md");
+    assert.equal(effective.slot2, null);
+    assert.equal(selection.find((s) => s.slot === 1)!.mode, "fallback-no-candidates");
+    const s2 = selection.find((s) => s.slot === 2)!;
+    assert.equal(s2.mode, "disabled");
+    assert.equal(s2.file, null);
+  });
+
+  it("slot 2 pinado com o MESMO arquivo não recusa o fallback do slot 1 (duplicado) quando há só 2 destaques", () => {
+    const { effective } = resolveWith("amazon-loja-divulgacao.md", "amazon-loja-divulgacao.md", new Set([2]), 2);
+    assert.equal(effective.slot1, "amazon-loja-divulgacao.md");
+  });
+
+  it("controle: com 3 destaques (ou omitido) o slot 2 pinado segue bloqueando o fallback do slot 1", () => {
+    for (const count of [3, undefined]) {
+      const { effective, selection } = resolveWith("diaria-imersao1010.md", "workshop-agente-ia-outubro.md", new Set([2]), count);
+      assert.equal(effective.slot2, "workshop-agente-ia-outubro.md");
+      assert.equal(effective.slot1, null);
+      assert.equal(selection.find((s) => s.slot === 1)!.rejectReason, "evento");
+    }
+  });
+
+  it("slot 2 inativo não emite warn de fallback recusado", () => {
+    const writes: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    (process.stderr as { write: unknown }).write = (chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    };
+    try {
+      // slot 2 não pinado, fallback igual ao slot 1 (seria `duplicado` com D3).
+      resolveWith("amazon-loja-divulgacao.md", "amazon-loja-divulgacao.md", new Set(), 2);
+    } finally {
+      (process.stderr as { write: unknown }).write = orig;
+    }
+    assert.ok(!writes.some((w) => w.includes("slot 2")), writes.join(""));
+  });
+
+  it("auto DESLIGADO com 2 destaques: slot 2 sai disabled/vazio, slot 1 passthrough", () => {
+    const { effective, selection } = resolveWith("amazon-loja-divulgacao.md", "workshop-agente-ia-outubro.md", new Set(), 2, false);
+    assert.equal(effective.slot1, "amazon-loja-divulgacao.md");
+    assert.equal(effective.slot2, null);
+    assert.deepEqual(selection.map((s) => s.slot), [1, 2, 3]);
+    assert.ok(selection.every((s) => s.mode === "disabled"));
+  });
+});

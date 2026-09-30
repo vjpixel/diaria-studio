@@ -509,6 +509,14 @@ export interface ResolveBoxesOpts {
    * (ausente vira `[]`). Só usado quando a automação está `enabled`. */
   kitBroadcastsDir?: string;
   snippetsDir?: string;
+  /**
+   * #9175 — nº de destaques da edição (2 ou 3). O slot 2 só é renderizado
+   * com D3 (`stitchNewsletter`), então numa edição de 2 destaques ele é
+   * INATIVO: sai como `disabled`/vazio, não entra no ranking, não bloqueia o
+   * fallback do slot 1 (`duplicado`/`evento`) e não emite warn. Omitido =
+   * 3 (comportamento de sempre).
+   */
+  destaqueCount?: number;
 }
 
 export interface ResolveBoxesResult {
@@ -545,6 +553,21 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     // back-compat/reversibilidade, mas é ignorado aqui).
     slot3: null,
   };
+  // #9175: slot 2 inexistente em edição de 2 destaques — nunca efetivo.
+  const activeSlots: readonly (1 | 2)[] = opts.destaqueCount === 2 ? [1] : [1, 2];
+  if (!activeSlots.includes(2)) effective.slot2 = null;
+  const inactiveSlotRecords: SlotSelectionRecord[] = ([1, 2] as const)
+    .filter((s) => !activeSlots.includes(s))
+    .map((slot) => ({
+      slot,
+      mode: "disabled" as const,
+      file: null,
+      nome: null,
+      score: null,
+      trend: null,
+      editionsAppeared: null,
+      seasonal: null,
+    }));
 
   const snippets = loadSnippets(opts.snippetsDir ?? SNIPPETS_DIR);
   // #6748: registro do slot 3 é sempre "disabled"/vazio — nunca participa do
@@ -562,7 +585,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
 
   if (!autoCfg.enabled) {
     const snippetByFile = new Map(snippets.map((s) => [s.file, s]));
-    const selection: SlotSelectionRecord[] = ([1, 2] as const).map((slot) => {
+    const selection: SlotSelectionRecord[] = activeSlots.map((slot) => {
       const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
       return {
         slot,
@@ -575,7 +598,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
         seasonal: snippet?.seasonal ?? null,
       };
     });
-    selection.push(slot3Disabled);
+    selection.push(...inactiveSlotRecords, slot3Disabled);
     return { effective, selection };
   }
 
@@ -619,9 +642,9 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   // `slotsToAuto` (não é ranqueado/escolhido), nunca é elegível a pin, e o
   // loop de seleção final abaixo cobre só [1, 2] + o registro fixo
   // `slot3Disabled` (adicionado no fim).
-  const slotsToAuto = ([1, 2] as const).filter((s) => !autoCfg.pinnedSlots.has(s));
+  const slotsToAuto = activeSlots.filter((s) => !autoCfg.pinnedSlots.has(s));
   const alreadyAssignedFiles = new Set<string>();
-  for (const s of [1, 2] as const) {
+  for (const s of activeSlots) {
     if (autoCfg.pinnedSlots.has(s) && effective[SLOT_KEY[s]]) {
       alreadyAssignedFiles.add(effective[SLOT_KEY[s]]!);
     }
@@ -648,7 +671,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   for (const p of picks) if (p.file) assignedForFallback.add(p.file);
 
   const selection: SlotSelectionRecord[] = [];
-  for (const slot of [1, 2] as const) {
+  for (const slot of activeSlots) {
     if (autoCfg.pinnedSlots.has(slot)) {
       const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
       selection.push({
@@ -717,7 +740,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     }
   }
 
-  selection.push(slot3Disabled);
+  selection.push(...inactiveSlotRecords, slot3Disabled);
   return { effective, selection };
 }
 
