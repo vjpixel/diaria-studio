@@ -104,6 +104,11 @@ describe("formatBoxSlotLine", () => {
     const text = formatBoxSlotLine({ slot: 2, mode: "disabled", file: null, nome: null, score: null, trend: null, editionsAppeared: null, seasonal: null });
     assert.equal(text, "Slot 2: vazio (disabled)");
   });
+
+  it("#9155: fallback-ineligible mostra o arquivo recusado e o motivo", () => {
+    const text = formatBoxSlotLine({ slot: 2, mode: "fallback-ineligible", file: null, rejectedFile: "clarice-x.md", rejectReason: "audiencia", nome: null, score: null, trend: null, editionsAppeared: null, seasonal: null });
+    assert.equal(text, "Slot 2: vazio — fallback clarice-x.md recusado (audiencia)");
+  });
 });
 
 describe("lintFailureRows", () => {

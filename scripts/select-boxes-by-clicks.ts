@@ -53,7 +53,10 @@
  *     muito nova / poucas edições no histórico —, ou todos os candidatos
  *     excluídos pela anti-repetição): CEDE pro valor JÁ CONFIGURADO em
  *     `boxes_divulgacao.slot{N}` (idêntico ao comportamento pré-#4626) —
- *     nunca esvazia o slot nem quebra a stitch por falta de dado.
+ *     nunca quebra a stitch por falta de dado. Única exceção que esvazia o
+ *     slot (#9155): o próprio fallback reprovado pelos filtros do #9104
+ *     (outra audiência, mesmo evento ou mesmo arquivo de outro slot) —
+ *     `mode: "fallback-ineligible"`, ver `checkFallbackEligibility`.
  *
  * Uso standalone (debug/inspeção — a integração real acontece via import de
  * `resolveBoxesForEdition` por `scripts/stitch-newsletter.ts`):
@@ -526,7 +529,10 @@ const SLOT_KEY: Record<SlotNumber, "slot1" | "slot2" | "slot3"> = { 1: "slot1", 
  * Fail-soft por construção: qualquer slot sem candidato elegível (dado
  * histórico ausente/insuficiente, ou anti-repetição esgotando o pool) cai no
  * valor já configurado — o pior caso é idêntico ao comportamento pré-#4626,
- * nunca uma stitch quebrada ou um slot vazio por falta de dado.
+ * nunca uma stitch quebrada ou um slot vazio por falta de dado. #9155: o
+ * slot só sai vazio quando o próprio fallback é inelegível (audiência /
+ * evento / duplicado). Anti-repetição entre edições NÃO se aplica ao
+ * fallback, de propósito (fora do escopo do #9155).
  */
 export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResult {
   const autoCfg = opts.autoCfg ?? loadBoxesDivulgacaoAutoConfig();

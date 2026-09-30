@@ -839,7 +839,7 @@ describe("#9104 resolveBoxesForEdition — regressão 260930", () => {
 // ── #9155: fallback do slot passa pelos mesmos filtros do #9104 ─────────
 
 describe("#9155 resolveBoxesForEdition — fallback do slot respeita audiência/evento/duplicado", () => {
-  const resolveWith = (slot1: string, slot2: string, pinnedSlots: Set<1 | 2>) => {
+  const resolveWith = (slot1: string, slot2: string, pinnedSlots: Set<1 | 2>, slot0: string | null = null, enabled = true) => {
     const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
     try {
       writeFileSync(join(snippetsDir, "clarice-imersao1010.md"), CLARICE_IMERSAO);
@@ -849,8 +849,8 @@ describe("#9155 resolveBoxesForEdition — fallback do slot respeita audiência/
       // Sem edições no histórico -> nenhum candidato auto -> slot 2 cai no fallback.
       return resolveBoxesForEdition({
         aammdd: "260930",
-        boxesCfg: { slot0: null, slot1, slot2, slot3: null },
-        autoCfg: { enabled: true, pinnedSlots, recentWindow: 3, priorWindow: 3, lastN: 20 },
+        boxesCfg: { slot0, slot1, slot2, slot3: null },
+        autoCfg: { enabled, pinnedSlots, recentWindow: 3, priorWindow: 3, lastN: 20 },
         editionsDir,
         postsDir,
         snippetsDir,
@@ -893,6 +893,33 @@ describe("#9155 resolveBoxesForEdition — fallback do slot respeita audiência/
     assert.equal(selection.find((s) => s.slot === 1)!.mode, "fallback-no-candidates");
     assert.equal(effective.slot2, null);
     assert.equal(selection.find((s) => s.slot === 2)!.rejectReason, "evento");
+  });
+
+  it("slot0 bloqueia fallback do mesmo evento e do mesmo arquivo", () => {
+    const ev = resolveWith("amazon-loja-divulgacao.md", "diaria-imersao1010.md", new Set([1]), "workshop-agente-ia-outubro.md");
+    assert.equal(ev.effective.slot2, null);
+    assert.equal(ev.selection.find((s) => s.slot === 2)!.rejectReason, "evento");
+    const dup = resolveWith("workshop-agente-ia-outubro.md", "amazon-loja-divulgacao.md", new Set([1]), "amazon-loja-divulgacao.md");
+    assert.equal(dup.effective.slot2, null);
+    assert.equal(dup.selection.find((s) => s.slot === 2)!.rejectReason, "duplicado");
+  });
+
+  it("cold start sem pin: fallback aceito no slot 1 bloqueia o mesmo arquivo no slot 2 (duplicado)", () => {
+    const { effective, selection } = resolveWith("amazon-loja-divulgacao.md", "amazon-loja-divulgacao.md", new Set());
+    assert.equal(effective.slot1, "amazon-loja-divulgacao.md");
+    assert.equal(effective.slot2, null);
+    assert.equal(selection.find((s) => s.slot === 2)!.rejectReason, "duplicado");
+  });
+
+  it("outra audiência E mesmo evento -> motivo reportado é audiencia (precedência)", () => {
+    const { selection } = resolveWith("diaria-imersao1010.md", "clarice-imersao1010.md", new Set([1]));
+    assert.equal(selection.find((s) => s.slot === 2)!.rejectReason, "audiencia");
+  });
+
+  it("auto DESLIGADO: passthrough intocado, mesmo com fallback que seria inelegível (escopo do #9155)", () => {
+    const { effective, selection } = resolveWith("workshop-agente-ia-outubro.md", "clarice-imersao1010.md", new Set(), null, false);
+    assert.equal(effective.slot2, "clarice-imersao1010.md");
+    assert.ok(selection.every((s) => s.mode === "disabled"));
   });
 
   it("config atual (slot 2 = amazon-loja-divulgacao.md) segue usado como fallback", () => {
