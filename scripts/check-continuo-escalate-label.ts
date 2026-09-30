@@ -29,7 +29,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { isAlreadyEscalated } from "./lib/continuo-escalate-owner.ts";
+import { formatEscalateHeadMarker, isAlreadyEscalated, needsEscalateHeadMarker } from "./lib/continuo-escalate-owner.ts";
 import { CONTINUO_ESCALATED_LABEL_SPEC, ensureContinuoLabel } from "./lib/continuo-labels.ts";
 import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
 
@@ -87,6 +87,38 @@ function applyLabel(pr: string): boolean {
   return true;
 }
 
+/**
+ * #9184: grava `<!-- continuo-escalate: head=<sha> -->` a cada escalada cujo
+ * head ainda não foi marcado (inclusive re-escalada de head novo, que não
+ * gera evento `labeled` novo). Best-effort: falha vai pro stderr e o watcher
+ * cai no fail-open NA DIREÇÃO DO ALARME (PR sem marcador do head atual conta).
+ */
+function markEscalatedHead(pr: string): void {
+  try {
+    const head = execFileSync("gh", ["pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid // empty"], {
+      encoding: "utf8",
+      timeout: 30_000,
+    }).trim();
+    if (!/^[0-9a-f]{7,40}$/.test(head)) throw new Error(`headRefOid inválido: ${JSON.stringify(head)}`);
+    const bodies = execFileSync(
+      "gh",
+      ["api", `repos/{owner}/{repo}/issues/${pr}/comments`, "--paginate", "--jq", ".[].body | @json"],
+      { encoding: "utf8", timeout: 60_000 },
+    )
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((l) => JSON.parse(l) as string);
+    if (!needsEscalateHeadMarker(bodies, head)) return;
+    execFileSync(
+      "gh",
+      ["api", "--method", "POST", `repos/{owner}/{repo}/issues/${pr}/comments`, "-f", `body=${formatEscalateHeadMarker(head)}`],
+      { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "ignore", "pipe"] },
+    );
+  } catch (e) {
+    process.stderr.write(`[check-continuo-escalate-label] PR #${pr}: marcador de head escalado não gravado: ${(e as Error).message}\n`);
+  }
+}
+
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
   if (!args) {
@@ -111,6 +143,7 @@ function main(): void {
    *  com stderr vazio. Quem quer saber se houve escrita nesta chamada lê
    *  `firstTime`. */
   const labelApplied = alreadyEscalated ? true : applyLabel(args.pr);
+  markEscalatedHead(args.pr);
   console.log(JSON.stringify({ firstTime: !alreadyEscalated, labelApplied, source: "ok" }));
 }
 
