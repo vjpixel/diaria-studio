@@ -28,6 +28,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { usesGeminiModel } from "./lib/image-backends.ts"; // #9094
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -93,7 +94,7 @@ export async function validateGeminiConfig(): Promise<ValidateResult> {
   if (!existsSync(configPath)) {
     return { ok: false, configured_model: null, reason: "config_missing" };
   }
-  let cfg: { image_generator?: string; gemini?: { model?: string } };
+  let cfg: { image_generator?: string; codex?: { fallback?: string }; gemini?: { model?: string } };
   try {
     cfg = JSON.parse(readFileSync(configPath, "utf8"));
   } catch (e) {
@@ -104,8 +105,8 @@ export async function validateGeminiConfig(): Promise<ValidateResult> {
       error: (e as Error).message,
     };
   }
-  // Só validar quando image_generator usa Gemini
-  if ((cfg.image_generator ?? "gemini") !== "gemini") {
+  // Só validar quando o Gemini pode gerar imagem — principal OU fallback do Codex (#9094)
+  if (!usesGeminiModel(cfg)) {
     return { ok: true, configured_model: cfg.gemini?.model ?? null };
   }
   const model = cfg.gemini?.model;

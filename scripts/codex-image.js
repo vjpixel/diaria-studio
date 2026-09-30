@@ -16,7 +16,7 @@ import 'dotenv/config';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { buildResizeOptions } from './gemini-image.js';
@@ -70,15 +70,78 @@ export function checkAspect(srcW, srcH, dstW, dstH) {
     : null;
 }
 
-function defaultRun(args, prompt, cwd, timeoutMs) {
-  const opts = {
-    cwd, input: prompt, encoding: 'utf8', timeout: timeoutMs,
-    env: sanitizedEnv(process.env), stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024,
-  };
-  const r = spawnSync('codex', args, opts); // .exe nativo / binário Linux
+/**
+ * #9097: mata a ÁRVORE de processos, não só o filho direto. `spawnSync` com
+ * `timeout` matava só o processo direto — com `codex.cmd` (shell:true) só o
+ * `cmd.exe`, e o wrapper npm no Linux pode não repassar o sinal; o neto
+ * seguia vivo segurando os pipes e o timeout de 300s ficava ineficaz.
+ * Windows: `taskkill /T /F /PID` (árvore, por PID — nunca /IM). POSIX: o filho
+ * nasce líder de grupo (`detached: true`) e o grupo inteiro recebe SIGKILL.
+ * `platform`/`killFn`/`execTaskkill` injetáveis para teste.
+ */
+export function killProcessTree(child, {
+  platform = process.platform,
+  killFn = process.kill,
+  execTaskkill = (pid) => spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore' }),
+} = {}) {
+  if (!child || !child.pid) return;
+  if (platform === 'win32') {
+    execTaskkill(child.pid);
+    return;
+  }
+  try { killFn(-child.pid, 'SIGKILL'); } catch { /* grupo já morreu */ }
+  try { child.kill('SIGKILL'); } catch { /* já morreu */ }
+}
+
+/**
+ * Roda um comando assíncrono com timeout que mata a árvore inteira (#9097).
+ * Resolve com o mesmo shape de `spawnSync` ({ status, stdout, stderr, error }),
+ * `error.code === 'ETIMEDOUT'` no timeout — `generateWithCodex` não muda.
+ */
+export function runWithTreeKill(cmd, args, { cwd, input, timeoutMs, env, shell = false, spawnFn = spawn, killTree = killProcessTree }) {
+  return new Promise((resolvePromise) => {
+    let child;
+    try {
+      child = spawnFn(cmd, args, {
+        cwd, env, shell, stdio: ['pipe', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32', // POSIX: grupo próprio → kill(-pid)
+        windowsHide: true,
+      });
+    } catch (error) {
+      resolvePromise({ status: null, stdout: '', stderr: '', error });
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (r) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise({ stdout, stderr, ...r });
+    };
+    const timer = setTimeout(() => {
+      killTree(child);
+      const error = Object.assign(new Error(`timeout após ${timeoutMs}ms`), { code: 'ETIMEDOUT' });
+      finish({ status: null, error });
+    }, timeoutMs);
+    child.stdout?.on('data', (d) => { stdout += d; });
+    child.stderr?.on('data', (d) => { stderr += d; });
+    child.on('error', (error) => finish({ status: null, error }));
+    child.on('close', (status) => finish({ status, error: undefined }));
+    child.stdin?.on('error', () => { /* EPIPE se o filho morrer antes de ler */ });
+    child.stdin?.end(input ?? '');
+  });
+}
+
+async function defaultRun(args, prompt, cwd, timeoutMs) {
+  const opts = { cwd, input: prompt, timeoutMs, env: sanitizedEnv(process.env) };
+  // #9097: preferir o binário real (codex.exe nativo / binário Linux) ao wrapper.
+  const r = await runWithTreeKill('codex', args, opts);
   // Windows com instalação npm expõe só codex.cmd (exige shell; args são todos literais seguros).
+  // O timeout ainda funciona: killProcessTree usa taskkill /T (árvore do cmd.exe).
   if (r.error && r.error.code === 'ENOENT' && process.platform === 'win32') {
-    return spawnSync('codex.cmd', args, { ...opts, shell: true });
+    return runWithTreeKill('codex.cmd', args, { ...opts, shell: true });
   }
   return r;
 }
@@ -88,7 +151,7 @@ export async function generateWithCodex(sd, outPath, userCfg = {}, run = default
   const cfg = { ...DEFAULTS, ...userCfg };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-img-'));
   try {
-    const r = run(buildCodexArgs(cfg), buildCodexPrompt(sd), tmp, cfg.timeout_seconds * 1000);
+    const r = await run(buildCodexArgs(cfg), buildCodexPrompt(sd), tmp, cfg.timeout_seconds * 1000); // run pode ser async (#9097)
     if (r.error && r.error.code === 'ETIMEDOUT') throw new Error(`CODEX_TIMEOUT após ${cfg.timeout_seconds}s`);
     if (r.error) throw new Error(`CODEX_SPAWN_FAILED: ${r.error.message}`);
     if (r.status !== 0) throw new Error(`CODEX_FAILED exit=${r.status}: ${String(r.stderr || r.stdout).slice(-500)}`);

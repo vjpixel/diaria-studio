@@ -9,6 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "../extract-destaques.js";
+import { readImageGeneratorSidecar } from "./shared/image-generator-sidecar.ts"; // #9095
 import { readSnippetFile } from "./shared/snippet-loader.ts"; // #8756 — casamento por conteúdo em box-selection.json
 import { parseBoxHeaderField, isRuntimeExcluded, readBoxTituloFlag } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet; isRuntimeExcluded #4504 — invariant de runtime:false no render path; readBoxTituloFlag #5882 — titulo:false declarado
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./inline-link.ts"; // #599, #1581
@@ -46,6 +47,9 @@ export const CATEGORY_EMOJI: Record<string, string> = {
 // ── Interfaces ────────────────────────────────────────────────────────
 export interface RenderDestaque extends BaseDestaque {
   emoji: string;
+  /** #9095: backend que de fato gerou o hero (sidecar `_internal/04-d{N}-generator.json`).
+   * Ausente → a legenda usa `image_generator` do config (edições pré-#9095). */
+  imageGenerator?: string;
   // imageFile removed: was inconsistent (D1=2x1, D2/D3=1x1) and unused after
   // #2133/#2141 expanded hero to all destaques. renderDestaque derives heroFile
   // directly as `04-d${d.n}-2x1.jpg`. (#2158 finding 6)
@@ -2266,6 +2270,10 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   const destaques: RenderDestaque[] = baseDestaques.map((d) => ({
     ...d,
     emoji: CATEGORY_EMOJI[d.category] || "📌",
+    ...(() => {
+      const g = readImageGeneratorSidecar(editionDir, `d${d.n}`); // #9095
+      return g ? { imageGenerator: g } : {};
+    })(),
   }));
 
   // Sections: parsed here (extract-destaques doesn't handle these)

@@ -50,6 +50,7 @@
  * (vjpixel@gmail.com) à lista Brevo `brevo_monthly.list_id` via UI.
  */
 
+import { resolveEditionImageGenerator } from "./lib/shared/image-generator-sidecar.ts"; // #9095
 import { config as dotenvConfig } from "dotenv";
 // override: true necessário pois shell pode ter CLOUDFLARE_ACCOUNT_ID=<placeholder> setado,
 // e dotenv sem override não sobrescreve vars já existentes no processo.
@@ -582,7 +583,7 @@ export async function main(
     : undefined;
 
   // #2018-fix: legenda via helper centralizado (evita duplicação com monthly-preview-cloudflare).
-  const destaqueImageCaption = captionForGenerator(platformConfig.image_generator ?? "gemini");
+  const destaqueImageCaption = captionForGenerator(resolveEditionImageGenerator(monthlyDir, platformConfig.image_generator ?? "gemini")) /* #9095 */;
 
   // #2948: "% acertaram" do É IA? mensal do ciclo anterior (brand=clarice) —
   // suporte de render era opt-in desde #2709, este é o fetch real. Fail-soft:

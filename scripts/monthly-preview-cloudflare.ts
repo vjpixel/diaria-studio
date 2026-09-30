@@ -38,6 +38,7 @@
  * Output stdout (JSON): { yymm, cycle, html_path, public_images_path }
  */
 
+import { resolveEditionImageGenerator } from "./lib/shared/image-generator-sidecar.ts"; // #9095
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
@@ -193,7 +194,7 @@ async function main(): Promise<void> {
   const imageGenerator: string = existsSync(platformConfigPath)
     ? (JSON.parse(readFileSync(platformConfigPath, "utf8")) as { image_generator?: string }).image_generator ?? "gemini"
     : "gemini";
-  const destaqueImageCaption = captionForGenerator(imageGenerator);
+  const destaqueImageCaption = captionForGenerator(resolveEditionImageGenerator(monthlyDir, imageGenerator)) /* #9095 */;
 
   // #2948: "% acertaram" do É IA? mensal do ciclo anterior (brand=clarice) —
   // mesmo fetch usado por publish-monthly.ts, mantém preview e email real em

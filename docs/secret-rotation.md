@@ -13,7 +13,8 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 | Credencial | Onde mora | Expiração típica | Sinal típico de falha |
 |---|---|---|---|
 | `CLARICE_API_KEY` | env var (`.env` + shell + `claude_desktop_config.json`) | Sem expiração nativa | `mcp__clarice__correct_text` retorna 401/403 |
-| `GEMINI_API_KEY` | env var (`.env`) | Sem expiração nativa | `scripts/gemini-image.js` retorna 401/`PERMISSION_DENIED` |
+| `GEMINI_API_KEY` | env var (`.env`) | Sem expiração nativa | `scripts/gemini-image.js` retorna 401/`PERMISSION_DENIED` (só quando o fallback do Codex dispara), tradução do É IA? falha |
+| Login Codex (ChatGPT) | `~/.codex/auth.json` por máquina | Sessão pode expirar | preflight do Stage 0 (`codex login status`, #9093) marca `expired`; `codex-image.js` falha e o fallback assume |
 | Google OAuth (`refresh_token`) | `data/.credentials.json` | Raramente expira (revogação manual ou 6 meses sem uso) | `google-auth.ts` retorna `invalid_grant` |
 | Facebook Page token | `data/.fb-credentials.json` (`page_access_token`) | 60 dias se short-lived; nunca se long-lived com renew | `publish-facebook.ts` retorna 190 (`OAuthException`) |
 | `CLOUDFLARE_API_TOKEN` | env var (`.env`) | Sem expiração nativa (até revogação) | `cloudflare-image.js` retorna 401 / `Authentication error` |
@@ -46,7 +47,7 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 
 ### `GEMINI_API_KEY`
 
-- **Para que serve:** geração de imagens Stage 4 + versão IA do É IA? (Stage 1b).
+- **Para que serve:** fallback de imagem quando o Codex (gerador padrão desde #9088) falha — `platform.config.json > codex.fallback = "gemini"` —, tradução do É IA? e embeddings do topic-cluster. Com `image_generator = "gemini"`, volta a ser o gerador principal.
 - **Onde gerar:** [Google AI Studio → Get API key](https://aistudio.google.com/app/apikey).
 - **Onde atualizar:** `.env` local.
 - **Como testar:**
@@ -107,7 +108,7 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 
 ### `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`
 
-- **Para que serve:** alternativa gratuita ao Gemini pra geração de imagens (Stage 4) quando `platform.config.json > image_generator = "cloudflare"`.
+- **Para que serve:** alternativa gratuita ao Codex/Gemini pra geração de imagens (Stage 3) quando `platform.config.json > image_generator = "cloudflare"`.
 - **Onde gerar:**
   - Account ID: visível em qualquer URL `dash.cloudflare.com/{account_id}/...`.
   - Token: [Cloudflare → My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens) → "Create Token" com scope **Workers AI**.
@@ -170,7 +171,8 @@ Tabela de mapeamento erro → credencial:
 |---|---|---|
 | Facebook Page token | Posts FB não saem da janela ideal de horário | Editor publica manual via Meta Business Suite (texto + imagem `04-d{N}.jpg`) |
 | Google OAuth | Drive sync para; revisão pelo celular não funciona | Continuar a edição sem sync; revisar no terminal |
-| Gemini API key | Imagens da edição não geram | Setar `image_generator: "cloudflare"` (se CF estiver válido) ou pular Stage 4 |
+| Login Codex expirado | Imagens caem no fallback (`codex.fallback`, Gemini) — legenda reflete o gerador efetivo (#9095) | `codex login` na máquina; se o Gemini também falhar, setar `image_generator: "cloudflare"` |
+| Gemini API key | Fallback do Codex e tradução do É IA? falham (imagens só quebram se o Codex também cair) | Rotacionar; ou `codex.fallback: "cloudflare"` (se CF estiver válido) |
 | Cloudflare token | Idem (se Gemini também falhou) | Reusar imagens de outra edição como placeholder |
 | Clarice | Stage 2 trava no diff | Pular revisão Clarice e seguir com texto bruto do writer |
 | Beehiiv MCP | Dedup base não atualiza | Aceitar risco de repetir 1-2 links da última edição (ou aguardar) |

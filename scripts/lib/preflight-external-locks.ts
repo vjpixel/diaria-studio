@@ -34,6 +34,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkTokenHealth } from "../google-auth.ts";
@@ -196,21 +197,100 @@ export async function checkWranglerLock(
 
 // ── Checagem 3: API keys de plataforma ────────────────────────────────────────
 
+/** Resultado mínimo de `codex login status` (shape de `spawnSync`). */
+export interface CodexStatusResult {
+  status: number | null;
+  stdout?: string;
+  stderr?: string;
+  error?: { code?: string; message: string };
+}
+
+/** Timeout curto: o preflight não pode herdar os 300s do `codex.timeout_seconds`. */
+export const CODEX_STATUS_TIMEOUT_MS = 15_000;
+
+/** Vars que fariam o Codex cair em API pay-per-token — espelha
+ * `STRIPPED_ENV_VARS` de `scripts/codex-image.js` (#9088). */
+const CODEX_STRIPPED_ENV_VARS = ["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE"];
+
+/** Runner real de `codex login status` (#9093). Windows com instalação npm
+ * expõe só `codex.cmd` — mesmo fallback de `codex-image.js`. */
+export function runCodexLoginStatus(): CodexStatusResult {
+  const env = { ...process.env };
+  for (const k of CODEX_STRIPPED_ENV_VARS) delete env[k];
+  const opts = { encoding: "utf8" as const, timeout: CODEX_STATUS_TIMEOUT_MS, env, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+  let r = spawnSync("codex", ["login", "status"], opts);
+  if (r.error && (r.error as NodeJS.ErrnoException).code === "ENOENT" && process.platform === "win32") {
+    r = spawnSync("codex.cmd", ["login", "status"], { ...opts, shell: true });
+  }
+  return {
+    status: r.status,
+    stdout: r.stdout ?? "",
+    stderr: r.stderr ?? "",
+    error: r.error ? { code: (r.error as NodeJS.ErrnoException).code, message: r.error.message } : undefined,
+  };
+}
+
 /**
- * Lê `platform.config.json` e verifica a key de acordo com `image_generator`.
- * Não faz nenhuma chamada de rede — só valida presença no env.
+ * #9093: classifica o `codex login status` num `LockCheckResult`. Pura.
+ * - binário ausente (ENOENT) → `missing`;
+ * - timeout / exit ≠ 0 → `expired` (ação `codex login`);
+ * - logado por API key (não pela assinatura ChatGPT) → `expired` — o
+ *   `codex-image.js` força `forced_login_method="chatgpt"` e recusaria.
  */
-export function checkApiKeyLocks(): LockCheckResult[] {
+export function classifyCodexStatus(r: CodexStatusResult): LockCheckResult {
+  const dependency = "Codex CLI (login ChatGPT — image_generator=codex, Stages 1, 3)";
+  const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.trim();
+  if (r.error?.code === "ENOENT") {
+    return {
+      dependency, state: "missing", blocks_stages: [1, 3],
+      reauth_action: "Instalar o Codex CLI e rodar `codex login` (ver docs/codex-image-setup.md)",
+      detail: "binário `codex` não encontrado no PATH",
+    };
+  }
+  if (r.error || r.status !== 0) {
+    const why = r.error?.code === "ETIMEDOUT"
+      ? `\`codex login status\` não respondeu em ${CODEX_STATUS_TIMEOUT_MS / 1000}s`
+      : `\`codex login status\` saiu com ${r.error ? r.error.message : `exit ${r.status}`}: ${out.slice(-200)}`;
+    return { dependency, state: "expired", blocks_stages: [1, 3], reauth_action: "Rodar `codex login` (conta ChatGPT) nesta máquina", detail: why };
+  }
+  if (/api key/i.test(out) && !/chatgpt/i.test(out)) {
+    return {
+      dependency, state: "expired", blocks_stages: [1, 3],
+      reauth_action: "Rodar `codex logout && codex login` com a conta ChatGPT (API key é pay-per-token e é recusada)",
+      detail: `logado por API key: ${out.slice(-200)}`,
+    };
+  }
+  return { dependency, state: "ok", blocks_stages: [], reauth_action: "", detail: out.slice(-200) || "logado" };
+}
+
+export interface ApiKeyLockOptions {
+  /** Injetável em teste — default `platform.config.json` da raiz. */
+  configPath?: string;
+  /** Injetável em teste — default roda `codex login status` de verdade. */
+  runCodexStatus?: () => CodexStatusResult;
+}
+
+/**
+ * Lê `platform.config.json` e verifica a credencial de acordo com `image_generator`.
+ * Keys: só presença no env, sem rede. `codex` (#9093): roda `codex login status`
+ * com timeout curto — login expirado aparecia só no meio do Stage 1/3. Com
+ * `codex.fallback`, reporta também a key do fallback; ela só bloqueia stages
+ * quando o próprio Codex está quebrado (senão o fallback nem é usado).
+ */
+export function checkApiKeyLocks(opts: ApiKeyLockOptions = {}): LockCheckResult[] {
   const results: LockCheckResult[] = [];
 
-  const configPath = resolve(ROOT, "platform.config.json");
+  const configPath = opts.configPath ?? resolve(ROOT, "platform.config.json");
   let imageGenerator = "gemini";
+  let codexFallback: string | undefined;
   if (existsSync(configPath)) {
     try {
       const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
         image_generator?: string;
+        codex?: { fallback?: string };
       };
       imageGenerator = (cfg.image_generator ?? "gemini").toLowerCase();
+      codexFallback = cfg.codex?.fallback?.toLowerCase();
     } catch {
       // config malformado — não bloqueia verificação de key
     }
@@ -237,24 +317,31 @@ export function checkApiKeyLocks(): LockCheckResult[] {
     },
   };
 
-  const keyDef = keyMap[imageGenerator];
-  if (keyDef) {
-    const value = process.env[keyDef.env];
-    results.push({
-      dependency: `${keyDef.env} (${keyDef.description})`,
-      state: value && value.trim().length > 0 ? "ok" : "missing",
-      blocks_stages: value && value.trim().length > 0 ? [] : keyDef.stages,
-      reauth_action:
-        value && value.trim().length > 0
-          ? ""
-          : `Configurar ${keyDef.env} em .env ou exportar no shell antes de rodar`,
-      detail:
-        value && value.trim().length > 0
-          ? `${keyDef.env} presente`
-          : `${keyDef.env} ausente`,
-    });
+  const keyResult = (gen: string, blocking: boolean, label = ""): LockCheckResult | null => {
+    const keyDef = keyMap[gen];
+    if (!keyDef) return null;
+    const present = !!process.env[keyDef.env]?.trim();
+    return {
+      dependency: `${keyDef.env} (${keyDef.description}${label})`,
+      state: present ? "ok" : "missing",
+      blocks_stages: present || !blocking ? [] : keyDef.stages,
+      reauth_action: present ? "" : `Configurar ${keyDef.env} em .env ou exportar no shell antes de rodar`,
+      detail: present ? `${keyDef.env} presente` : `${keyDef.env} ausente`,
+    };
+  };
+
+  if (imageGenerator === "codex") {
+    const codex = classifyCodexStatus((opts.runCodexStatus ?? runCodexLoginStatus)());
+    results.push(codex);
+    if (codexFallback) {
+      const fb = keyResult(codexFallback, codex.state !== "ok", " — fallback do Codex");
+      if (fb) results.push(fb);
+    }
+    return results;
   }
 
+  const r = keyResult(imageGenerator, true);
+  if (r) results.push(r);
   return results;
 }
 
@@ -298,6 +385,8 @@ export async function preflightExternalLocks(opts?: {
   fetchImpl?: typeof fetch;
   apiToken?: string;
   skipOauth?: boolean;
+  /** #9093: injetável em teste (config fixo + runner fake do `codex login status`). */
+  apiKeyLockOptions?: ApiKeyLockOptions;
 }): Promise<LockCheckResult[]> {
   loadProjectEnv();
 
@@ -316,7 +405,7 @@ export async function preflightExternalLocks(opts?: {
   const resolved = await Promise.all(checks);
   const results: LockCheckResult[] = resolved.flat();
 
-  results.push(...checkApiKeyLocks());
+  results.push(...checkApiKeyLocks(opts?.apiKeyLockOptions));
   results.push(...checkMcpConnectors());
 
   return results;
