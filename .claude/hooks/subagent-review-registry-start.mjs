@@ -67,7 +67,7 @@
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { randomUUID, randomBytes } from "node:crypto";
 
@@ -208,6 +208,8 @@ export function writeStartRecord(repoRoot, record) {
 // entrypoint (nunca ao ser importado por teste).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

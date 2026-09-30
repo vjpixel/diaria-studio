@@ -116,7 +116,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // 24h — comfortably above the longest observed round (~16h, rodada 260611) while
 // still bounding "stuck active forever" to at most a day if Fase 2's cleanup is
@@ -1107,6 +1107,8 @@ export function logSuppressedReviewInstruction(
 // (nunca ao ser importado por test/pr-create-review-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

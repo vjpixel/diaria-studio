@@ -84,7 +84,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Mesmo valor de `pr-create-review.mjs` (`isOvernightRoundActive`) — uma
 // rodada abandonada/crashada não deve deixar a Fase autônoma "ativa" pra
@@ -280,6 +280,8 @@ export function buildBlockReason(marker, callerSessionId) {
 // entrypoint (nunca ao ser importado por test/block-askuserquestion-overnight-autonomous.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

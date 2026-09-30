@@ -28,6 +28,7 @@
 
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
+import { pathToFileURL } from "node:url";
 import { SECRET_PATTERNS, findSecrets, redactSecrets } from "./lib/secret-patterns.mjs";
 
 export { SECRET_PATTERNS, findSecrets, redactSecrets };
@@ -109,6 +110,8 @@ export function evaluate(command, cwd, readFile = (p) => readFileSync(p, "utf8")
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 const isMain =
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`;
 

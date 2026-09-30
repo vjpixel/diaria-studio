@@ -66,7 +66,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Mesma janela de `session-registry.ts` (`MAX_SESSION_AGE_MS`) — sessão sem heartbeat há mais que isso é tratada como abandonada, não notifica. */
 const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
@@ -320,6 +320,8 @@ export async function sendNotification(message, repoRoot, fetchFn = fetch) {
 // entrypoint (nunca ao ser importado por test/notify-continuo-askuserquestion.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

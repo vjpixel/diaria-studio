@@ -24,6 +24,8 @@
 // travada em `test/hook-command-tokenizer-parity-7896.test.ts`) — assim um
 // `gh issue comment --body "..."`/heredoc que CITE o laço não é bloqueado.
 
+import { pathToFileURL } from "node:url";
+
 /** Remove o CONTEÚDO de spans entre aspas (simples ou duplas). */
 export function stripQuotedSpans(command) {
   let result = "";
@@ -31,6 +33,13 @@ export function stripQuotedSpans(command) {
   const n = command.length;
   while (i < n) {
     const ch = command[i];
+    // `\x` fora de aspas é caractere literal (`don\'t`), não abre span —
+    // sem isto a aspa escapada engolia o resto do comando (#9197).
+    if (ch === "\\" && i + 1 < n) {
+      result += command.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
     if (ch === "'") {
       let j = i + 1;
       while (j < n && command[j] !== "'") j++;
@@ -55,7 +64,9 @@ export function stripQuotedSpans(command) {
 /** Remove o CORPO de heredocs, preservando a linha de abertura. */
 export function stripHeredocSpans(command) {
   if (typeof command !== "string") return command;
-  const startRe = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  // `(?<!<)`: `<<<` é here-string, não heredoc — sem o lookbehind o 2º `<`
+  // casava `<<palavra` e engolia o resto do comando (#9197).
+  const startRe = /(?<!<)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
   let result = "";
   let lastIndex = 0;
   let m;
@@ -224,6 +235,8 @@ export const HANDWRITTEN_PR_CHECKS_LOOP_BLOCK_REASON =
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

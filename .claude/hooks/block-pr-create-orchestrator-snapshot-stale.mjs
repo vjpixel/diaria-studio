@@ -39,7 +39,7 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   isGhPrCreateCommand,
@@ -153,6 +153,8 @@ export function logSnapshotGuardEvent(message, details, { repoRoot, appendFn = a
 // test/block-pr-create-orchestrator-snapshot-stale.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {

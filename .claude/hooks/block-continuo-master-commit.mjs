@@ -38,7 +38,8 @@ export function stripHeredocs(command) {
       continue;
     }
     out.push(line);
-    const m = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/.exec(line);
+    // `(?<!<)`: `<<<` é here-string, não heredoc (#9197).
+    const m = /(?<!<)<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/.exec(line);
     if (m) {
       dash = m[1] === "-";
       end = m[3];

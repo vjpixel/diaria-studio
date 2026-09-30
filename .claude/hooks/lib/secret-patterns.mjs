@@ -13,6 +13,8 @@
 // wrapper) e chamável via CLI standalone (usado pelo `redact_public_text`
 // do bash, que não tem acesso direto ao módulo JS).
 
+import { pathToFileURL } from "node:url";
+
 /** Padrões de segredo com formato de provedor. Cada um exige corpo longo. */
 export const SECRET_PATTERNS = [
   { name: "OpenRouter", re: /sk-or-(?:v1-)?[A-Za-z0-9_-]{20,}/ },
@@ -55,6 +57,8 @@ export function redactSecrets(text) {
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 const isMain =
+  // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`;
 
