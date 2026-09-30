@@ -165,7 +165,7 @@ export function buildSwapDestaqueSteps(
     `writer-destaque DESTAQUE ${position} (novo item: "${promotedTitle}", source_text_path = path da entrada de sources com destaque === ${position} no stdout do refresh)`,
     `social-writer + social-curto em escopo reduzido (d${position}), splice em 03-social.md`,
     `Só DEPOIS do splice: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9169)`,
-    `scripts/image-generate.ts --destaque ${position} (gerar nova imagem para o destaque promovido)`,
+    `Escrever _internal/02-d${position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${dir}/_internal/02-d${position}-prompt.md --out-dir ${dir}/ --destaque d${position}`,
     `gen-carousel-cards.ts + upload-images-public.ts (após gerar imagem nova)`,
     `fact-checker completo antes do gate (destaque novo, sem checagem prévia)`,
     `npx tsx scripts/check-invariants.ts --edition-dir ${dir} --stage 4`,

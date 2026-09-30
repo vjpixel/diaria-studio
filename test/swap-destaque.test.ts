@@ -645,7 +645,6 @@ describe("swap-destaque e2e integration (#2499)", () => {
       // (avoids process.exit by calling swapInApprovedJson etc. directly)
       const approvedPath = join(internalDir, "01-approved.json");
       const approvedCappedPath = join(internalDir, "01-approved-capped.json");
-      const hashPath = join(internalDir, ".social-source-hash.json");
       const mdPath = join(dir, "02-reviewed.md");
 
       // Read before state
@@ -714,9 +713,8 @@ describe("swap-destaque e2e integration (#2499)", () => {
         "https://example.com/radar-1",
       );
 
-      // Social hash intocado (#9169): o social ainda descreve o D1 antigo.
-      const hashData = JSON.parse(readFileSync(hashPath, "utf8")) as { hash: string };
-      assert.equal(hashData.hash, "oldhash123", "social hash NOT rewritten by the swap");
+      // Hash social: não coberto aqui (esta simulação não roda o main());
+      // o guard real é o teste de CLI do #9169 no fim do arquivo.
 
       // 02-reviewed.md has placeholder for D1
       const afterMd = readFileSync(mdPath, "utf8");
@@ -1071,5 +1069,7 @@ describe("swap-destaque.ts × social-hash-fresh (#9169)", () => {
     assert.ok(iSocial > iWriter);
     assert.ok(iHash > iSocial, "recarimbo do hash vem depois do splice do social");
     assert.ok(!steps.some((s) => /merge-social-md/.test(s)));
+    // comando de imagem completo e válido (review #9177): prompt reescrito + --destaque d{N}
+    assert.ok(steps.some((s) => /02-d3-prompt\.md/.test(s) && /--editorial .* --out-dir .* --destaque d3/.test(s)));
   });
 });
