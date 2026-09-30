@@ -165,24 +165,27 @@ describe("computeLtvSection", () => {
   });
 });
 
-describe("computeLtvSection — mesma população nos dois lados do churn e no ARPU (#9023 item 1)", () => {
-  // Conta interna ativa nos DOIS snapshots: `loadPreparedSubscribers`/o
-  // store a removeriam da coorte do funil. Antes do fix, o lado "atual" do
-  // diff era essa coorte filtrada e o baseline era o snapshot cru — a conta
-  // interna contava como "saída" e o ARPU dividia pela contagem filtrada.
+describe("computeLtvSection — mesma população nos dois lados do churn e no ARPU (#9023 item 1, #9074)", () => {
+  // Conta interna ativa nos DOIS snapshots. #9023: os dois lados do diff e o
+  // denominador do ARPU precisam ler a MESMA população. #9074: essa
+  // população exclui contas internas/teste nos dois lados (e no ARPU) —
+  // antes o interno entrava no denominador do ARPU e na base média do churn.
   const INTERNO = "pixel@memelab.com.br";
+  const TESTE = "vjpixel+test9@gmail.com";
 
-  function setup(root: string): string {
+  function setup(root: string, latestInternoStatus = "active"): string {
     const backupRoot = join(root, "beehiiv-backup");
     writeSnapshotDir(root, "2026-08-10", [
       sub({ email: "a@x.com", status: "active" }),
       sub({ email: "b@x.com", status: "active" }),
       sub({ email: INTERNO, status: "active" }),
+      sub({ email: TESTE, status: "active" }),
     ]);
     writeSnapshotDir(root, "2026-09-09", [
       sub({ email: "a@x.com", status: "active" }),
       sub({ email: "b@x.com", status: "inactive" }),
-      sub({ email: INTERNO, status: "active" }),
+      sub({ email: INTERNO, status: latestInternoStatus }),
+      sub({ email: TESTE, status: "inactive" }),
     ]);
     const ltvDir = join(root, "data", "ltv");
     mkdirSync(ltvDir, { recursive: true });
@@ -190,24 +193,22 @@ describe("computeLtvSection — mesma população nos dois lados do churn e no A
     return backupRoot;
   }
 
-  // Valor esperado computado DIRETO das funções puras sobre os snapshots CRUS
-  // — é o que studio-metrics.ts faz, então cac-report e painel batem.
-  function expectedRawFaixa(): { min: number; max: number } {
+  // Valor esperado computado DIRETO das funções puras sobre os snapshots SEM
+  // internos/teste — é o que studio-metrics.ts faz, então cac-report e painel batem.
+  function expectedFilteredFaixa(): { min: number; max: number } {
     const baseline = [
       { email: "a@x.com", status: "active" },
       { email: "b@x.com", status: "active" },
-      { email: INTERNO, status: "active" },
     ];
     const latest = [
       { email: "a@x.com", status: "active" },
       { email: "b@x.com", status: "inactive" },
-      { email: INTERNO, status: "active" },
     ];
     const { exits, avgActiveBase } = computeChurnExitsBetweenSnapshots(baseline, latest);
-    assert.equal(exits.length, 1, "só b@x.com saiu — a conta interna segue ativa nos dois lados");
+    assert.equal(exits.length, 1, "só b@x.com saiu — interno/teste fora da população");
     const periodMonths = (Date.parse("2026-09-09") - Date.parse("2026-08-10")) / 86_400_000 / 30;
     const churn = computeChurnRate({ exits, manualCleanupEmails: new Set(), periodMonths, avgActiveBase });
-    const arpu = computeArpu({ revenueBySource: { "apoia-se": null, amazon: 30 }, activeBase: 2 });
+    const arpu = computeArpu({ revenueBySource: { "apoia-se": null, amazon: 30 }, activeBase: 1 });
     const r = computeLtvCaixaFaixa({
       arpuMonthlyBrl: arpu.valor,
       churnOrganicoMonthly: churn.monthly?.organico ?? null,
@@ -218,19 +219,40 @@ describe("computeLtvSection — mesma população nos dois lados do churn e no A
     return r.faixa!;
   }
 
-  it("conta interna ativa nos dois snapshots não vira 'saída' e entra no denominador do ARPU", () => {
-    assert.ok(isInternalOrTestEmail(INTERNO), "fixture exige um e-mail que o filtro de internos remove");
+  for (const latestInternoStatus of ["active", "inactive"]) {
+    it(`contas internas/teste ficam fora do ARPU e dos DOIS lados do churn (interno ${latestInternoStatus} no snapshot atual)`, () => {
+      assert.ok(isInternalOrTestEmail(INTERNO), "fixture exige um e-mail que o filtro de internos remove");
+      assert.ok(isInternalOrTestEmail(TESTE), "fixture exige uma conta de teste que o filtro remove");
+      const root = makeRoot();
+      try {
+        const backupRoot = setup(root, latestInternoStatus);
+        const report = { rows: [] } as unknown as CacReport;
+        const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
+        assert.equal(section.applied, true);
+        if (section.applied) {
+          assert.ok(section.ltvFaixaBrl, section.motivo ?? "LTV deveria ser computável");
+          const exp = expectedFilteredFaixa();
+          assert.ok(Math.abs(section.ltvFaixaBrl!.min - exp.min) < 1e-9, `min ${section.ltvFaixaBrl!.min} != ${exp.min}`);
+          assert.ok(Math.abs(section.ltvFaixaBrl!.max - exp.max) < 1e-9, `max ${section.ltvFaixaBrl!.max} != ${exp.max}`);
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("snapshot atual só com internos/teste -> motivo de snapshot anômalo, nunca churn ~100% fabricado (#9074)", () => {
     const root = makeRoot();
     try {
-      const backupRoot = setup(root);
+      writeSnapshotDir(root, "2026-08-10", [sub({ email: "a@x.com" }), sub({ email: INTERNO })]);
+      writeSnapshotDir(root, "2026-09-09", [sub({ email: INTERNO }), sub({ email: TESTE })]);
+      const backupRoot = join(root, "beehiiv-backup");
       const report = { rows: [] } as unknown as CacReport;
       const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});
       assert.equal(section.applied, true);
       if (section.applied) {
-        assert.ok(section.ltvFaixaBrl, section.motivo ?? "LTV deveria ser computável");
-        const exp = expectedRawFaixa();
-        assert.ok(Math.abs(section.ltvFaixaBrl!.min - exp.min) < 1e-9, `min ${section.ltvFaixaBrl!.min} != ${exp.min}`);
-        assert.ok(Math.abs(section.ltvFaixaBrl!.max - exp.max) < 1e-9, `max ${section.ltvFaixaBrl!.max} != ${exp.max}`);
+        assert.equal(section.ltvFaixaBrl, null);
+        assert.match(section.motivo ?? "", /vazio\/anômalo/);
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -245,7 +267,7 @@ describe("computeLtvSection — mesma população nos dois lados do churn e no A
       const section = computeLtvSection(report, backupRoot, "2026-09-12", root, () => new Date("2026-09-15T12:00:00Z"), {});
       assert.equal(section.applied, true);
       if (section.applied) {
-        const exp = expectedRawFaixa();
+        const exp = expectedFilteredFaixa();
         assert.ok(section.ltvFaixaBrl, section.motivo ?? "LTV deveria ser computável");
         assert.ok(Math.abs(section.ltvFaixaBrl!.min - exp.min) < 1e-9);
         assert.ok(Math.abs(section.ltvFaixaBrl!.max - exp.max) < 1e-9);
@@ -424,7 +446,14 @@ describe("#9075 — snapshots usados, base do ARPU e validação de --snapshot",
   it("seção LTV expõe snapshotAtual e ativosArpu", () => {
     const root = makeRoot();
     try {
-      writeSnapshotDir(root, "2026-09-09", [sub({ email: "a@x.com" }), sub({ email: "b@x.com" })]);
+      // interno + conta de teste ativos NÃO entram no N impresso (#9074):
+      // mesmo denominador que o ARPU do core usa.
+      writeSnapshotDir(root, "2026-09-09", [
+        sub({ email: "a@x.com" }),
+        sub({ email: "b@x.com" }),
+        sub({ email: "pixel@memelab.com.br" }),
+        sub({ email: "vjpixel+test3@gmail.com" }),
+      ]);
       const backupRoot = join(root, "beehiiv-backup");
       const report = { rows: [] } as unknown as CacReport;
       const section = computeLtvSection(report, backupRoot, "2026-09-09", root, () => new Date("2026-09-15T12:00:00Z"), {});

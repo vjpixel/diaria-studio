@@ -57,6 +57,10 @@
 
 import { BRT_TIMEZONE, datePartsInTz } from "./next-edition-date.ts";
 import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
+// `cohorts.ts` é dependency-free (só importa `editor-copy.ts`, também sem
+// deps) — ao contrário de `cac.ts`, não arrasta `dotenv/config` (ver
+// `normalizeEmailLocal` abaixo), então importar daqui preserva a pureza.
+import { INTERNAL_EMAILS, isTestAccount } from "./cohorts.ts";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -686,4 +690,32 @@ export function computeChurnExitsBetweenSnapshots(
     if (!latestActive.has(email)) exits.push({ email });
   }
   return { exits, avgActiveBase: (baselineActive.size + latestActive.size) / 2 };
+}
+
+const NORMALIZED_INTERNAL_EMAILS_LTV = new Set(INTERNAL_EMAILS.map(normalizeEmailLocal));
+
+/**
+ * Remove contas internas (editor/equipe, `INTERNAL_EMAILS`) e de teste
+ * (`isTestAccount`) da população do ARPU/churn (#9074) — mesma definição de
+ * `isInternalOrTestEmail` (`cac.ts`), reimplementada aqui pelo mesmo motivo
+ * de `normalizeEmailLocal` (import de `cac.ts` polui `process.env`).
+ * Aplicada nos DOIS lados do diff de churn e no denominador do ARPU, nos
+ * DOIS consumidores (`studio-metrics.ts` e `cac-report.ts`) — senão a
+ * paridade de população do #9023 quebra. Retorna a contagem removida (nunca
+ * filtro silencioso sem rastro, mesma disciplina de
+ * `filterInternalAndTestSubscribers`). @pure
+ */
+export function excludeInternalAndTestSubscribers<T extends { email: string }>(
+  subs: readonly T[],
+): { kept: T[]; removedCount: number } {
+  const kept: T[] = [];
+  let removedCount = 0;
+  for (const s of subs) {
+    if (NORMALIZED_INTERNAL_EMAILS_LTV.has(normalizeEmailLocal(s.email)) || isTestAccount(s.email)) {
+      removedCount++;
+      continue;
+    }
+    kept.push(s);
+  }
+  return { kept, removedCount };
 }
