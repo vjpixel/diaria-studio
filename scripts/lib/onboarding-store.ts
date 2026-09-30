@@ -35,6 +35,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OnboardingKitLot } from "./onboarding-kit-transport.ts";
+import { withFileLock } from "./file-lock.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const DEFAULT_STORE_PATH = resolve(ROOT, "data/onboarding/store.json");
@@ -149,8 +150,9 @@ export interface OnboardingEntry {
   email1_transport?: "brevo" | "kit";
   /**
    * #9014: `lot_id` do lote Kit que serviu o e-mail 1/2 desta entrada —
-   * gravado junto com `email{1,2}_sent_at` quando o broadcast é confirmado
-   * (`created`/`scheduled`/`completed`), e usado pra desfazer exatamente
+   * gravado junto com `email{1,2}_sent_at` quando o broadcast é
+   * `scheduled`/`completed` (#9060 item 3: `created` — rascunho ainda não
+   * agendado — NÃO grava; ver `applyKitLotToEntries`), e usado pra desfazer exatamente
    * essa marcação se o lote for cancelado depois (`--cancel-lot`).
    */
   email1_kit_lot_id?: string;
@@ -283,4 +285,152 @@ export function writeStore(store: OnboardingStore, path: string = DEFAULT_STORE_
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, JSON.stringify(store, null, 2) + "\n");
   renameSync(tmp, path);
+}
+
+// ---------------------------------------------------------------------------
+// #9151: escrita do executor Brevo sob o MESMO lock do executor Kit
+// ---------------------------------------------------------------------------
+
+/** Campos de topo que o executor Brevo (`onboarding-welcome-run.ts`) é dono.
+ *  `kit_transport` NUNCA está aqui: é do executor Kit e sempre vem do disco. */
+const BREVO_OWNED_TOP_LEVEL = [
+  "last_detection_cursor",
+  "last_detection_backend",
+  "consecutive_zero_detections",
+  "last_zero_detection_run_at",
+  "d10_brevo_list_id",
+] as const;
+
+/** Clone profundo do store — o baseline que `mergeStoreDelta` usa pra saber
+ *  o que a rodada Brevo de fato mudou. JSON round-trip basta (store é JSON). */
+export function cloneStore(store: OnboardingStore): OnboardingStore {
+  return JSON.parse(JSON.stringify(store)) as OnboardingStore;
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+export interface StoreMergeConflict {
+  subscription_id: string;
+  field: string;
+}
+
+/**
+ * #9151: aplica sobre o store FRESCO do disco (`fresh`) só o DELTA que a
+ * rodada Brevo produziu (`updated` vs. `baseline`, o snapshot lido no início
+ * do `main()`).
+ *
+ * Antes deste fix o executor Brevo regravava o snapshot inteiro do início da
+ * rodada — minutos depois, por causa do refresh de rede por candidato — sem
+ * lock. Um `--send`/`--reconcile` do executor Kit que gravasse
+ * `kit_transport.lots` + `email{1,2}_sent_at` nessa janela era apagado, e no
+ * `--send` seguinte a mesma pessoa recebia o e-mail 1/2 de novo.
+ *
+ * Regras:
+ *  - `kit_transport` vem sempre de `fresh` (nunca do snapshot Brevo).
+ *  - campo de topo do Brevo (`BREVO_OWNED_TOP_LEVEL`) só é aplicado se a
+ *    rodada o mudou em relação ao baseline.
+ *  - entry nova (ausente no baseline) é adicionada se ainda não existir no
+ *    disco; se existir (outro processo criou), vale o disco.
+ *  - entry existente: só os campos que a rodada mudou são aplicados, por
+ *    cima do que o disco tem hoje. Campo que a rodada mudou E que o disco
+ *    também mudou pra um valor diferente é reportado em `conflicts` — a
+ *    escrita Brevo vence (registra um envio/decisão que aconteceu de fato),
+ *    mas o caller avisa em stderr.
+ *
+ * Sem I/O — mas MUTA e devolve `fresh` (não é pura).
+ */
+export function mergeStoreDelta(
+  fresh: OnboardingStore,
+  baseline: OnboardingStore,
+  updated: OnboardingStore,
+): { store: OnboardingStore; conflicts: StoreMergeConflict[] } {
+  const conflicts: StoreMergeConflict[] = [];
+  const freshRec = fresh as unknown as Record<string, unknown>;
+  const baseRec = baseline as unknown as Record<string, unknown>;
+  const updRec = updated as unknown as Record<string, unknown>;
+  for (const key of BREVO_OWNED_TOP_LEVEL) {
+    if (!sameValue(baseRec[key], updRec[key])) freshRec[key] = updRec[key];
+  }
+  for (const [id, updEntry] of Object.entries(updated.entries)) {
+    const baseEntry = baseline.entries[id];
+    const freshEntry = fresh.entries[id];
+    if (baseEntry == null) {
+      if (freshEntry == null) fresh.entries[id] = updEntry;
+      // Outro processo criou a mesma entry durante a rodada: vale o disco,
+      // mas avisa — um envio desta rodada pode não ficar registrado.
+      else if (!sameValue(freshEntry, updEntry)) conflicts.push({ subscription_id: id, field: "*entry_nova_ja_no_disco" });
+      continue;
+    }
+    if (freshEntry == null) {
+      // Removida do disco por outro processo depois da leitura — nenhum
+      // caminho do repo remove entry hoje; recoloca a versão da rodada em vez
+      // de perder o registro de um envio que pode ter acontecido.
+      fresh.entries[id] = updEntry;
+      continue;
+    }
+    const baseE = baseEntry as unknown as Record<string, unknown>;
+    const updE = updEntry as unknown as Record<string, unknown>;
+    const freshE = freshEntry as unknown as Record<string, unknown>;
+    const keys = new Set([...Object.keys(baseE), ...Object.keys(updE)]);
+    for (const k of keys) {
+      if (sameValue(baseE[k], updE[k])) continue;
+      if (!sameValue(freshE[k], baseE[k]) && !sameValue(freshE[k], updE[k])) {
+        conflicts.push({ subscription_id: id, field: k });
+      }
+      if (updE[k] === undefined) delete freshE[k];
+      else freshE[k] = updE[k];
+    }
+  }
+  return { store: fresh, conflicts };
+}
+
+function readStoreOrThrow(storePath: string, contexto: string): OnboardingStore {
+  const { store, corrupted } = readStore(storePath);
+  if (corrupted) {
+    throw new Error(
+      `[onboarding-store] store em "${storePath}" está CORROMPIDO (JSON ilegível) — recusando ${contexto} sobre um ` +
+        `snapshot que "readStore" já esvaziou silenciosamente. Repare/restaure o store antes de rodar de novo.`,
+    );
+  }
+  return store;
+}
+
+/**
+ * #9151 (review da PR #9181, achados 1+2): relê o store do disco sob o lock
+ * logo ANTES do executor Brevo enviar. Serve a dois fins: (a) o plano pode
+ * ser refiltrado contra o que o Kit gravou durante a rodada
+ * (`dropActionsCoveredOnDisk`); (b) lock preso (órfão) ou store corrompido
+ * falham AQUI, antes de qualquer envio — nunca depois, quando a gravação
+ * falharia e o próximo `--send` reenviaria.
+ */
+export function readStoreUnderLock(storePath: string, timeoutMs = 30_000): OnboardingStore {
+  return withFileLock(`${storePath}.lock`, () => readStoreOrThrow(storePath, "decidir o envio Brevo"), timeoutMs);
+}
+
+/**
+ * #9151: persiste o resultado de uma rodada do executor Brevo sob
+ * `withFileLock(${storePath}.lock)` — o MESMO lock que `claimLot`/
+ * `persistLotUpdate`/`backfillTerminalLotEntries` do executor Kit usam —,
+ * relendo o disco dentro do lock e aplicando só o delta
+ * (`mergeStoreDelta`). Store corrompido no disco → lança (mesma classe do
+ * guard do lado Kit: nunca sobrescrever um arquivo que `readStore` esvaziou).
+ */
+export function persistStoreDelta(
+  storePath: string,
+  baseline: OnboardingStore,
+  updated: OnboardingStore,
+  timeoutMs = 30_000,
+): StoreMergeConflict[] {
+  return withFileLock(
+    `${storePath}.lock`,
+    () => {
+      const fresh = readStoreOrThrow(storePath, "persistir a rodada Brevo");
+      const { store, conflicts } = mergeStoreDelta(fresh, baseline, updated);
+      writeStore(store, storePath);
+      return conflicts;
+    },
+    timeoutMs,
+  );
 }
