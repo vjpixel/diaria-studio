@@ -137,7 +137,8 @@ function utmParam(rawUrl: string, key: string): string | null {
 
 /**
  * #9104: resolve a audiência de um snippet. Precedência:
- *   1. `audiencia:` no header (valor livre, normalizado pra minúsculas) —
+ *   1. `audiencia:` no header (valor livre, normalizado pra minúsculas e sem
+ *      acento — `Diária` = `diaria`) —
  *      sempre vence, inclusive pra declarar `diaria` numa caixa cujo link
  *      tenha um UTM de outra audiência;
  *   2. inferência EXPLÍCITA por `utm_source` dos links do CORPO
@@ -150,7 +151,9 @@ function utmParam(rawUrl: string, key: string): string | null {
 export function resolveSnippetAudience(content: string, bodyUrls: readonly string[]): SnippetAudience {
   const header = parseBoxHeaderField(content, "audiencia");
   if (header !== null && header.trim() !== "") {
-    return { audience: header.trim().toLowerCase(), source: "header" };
+    // Sem acento: `audiencia: Diária` (grafia natural em PT) = `diaria`.
+    const normalized = header.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    return { audience: normalized, source: "header" };
   }
   for (const url of bodyUrls) {
     const src = utmParam(url, "utm_source");

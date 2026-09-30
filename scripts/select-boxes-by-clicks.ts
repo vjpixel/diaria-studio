@@ -552,11 +552,12 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   };
 
   // #9104: só caixas da diária entram no ranking. Filtrar ANTES do match de
-  // histórico (e não só no ranking) também corrige a atribuição: versões da
-  // mesma caixa pra audiências diferentes compartilham a base-URL (o UTM é
+  // histórico (e não só no ranking) também corrige a atribuição ENTRE
+  // AUDIÊNCIAS: versões da mesma caixa compartilham a base-URL (o UTM é
   // descartado por `toBaseUrl`), e `matchSnippetForBox` pega a 1ª em ordem
   // alfabética — `clarice-imersao1010.md` "roubava" os cliques do box
-  // `diaria-imersao1010.md` usado de fato na diária.
+  // `diaria-imersao1010.md` usado de fato na diária. A mesma colisão entre
+  // duas caixas DA DIÁRIA com a mesma base-URL continua (issue de follow-up).
   const diariaSnippets = snippets.filter(isSnippetEligibleForDiaria);
   const history = buildSnippetHistory({
     aammddList,

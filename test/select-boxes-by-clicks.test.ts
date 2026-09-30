@@ -679,6 +679,16 @@ describe("#9104 audiência do snippet (resolveSnippetAudience via parseSnippetCo
     assert.equal(isSnippetEligibleForDiaria(brevo), false);
   });
 
+  it("audiencia: com acento (Diária) normaliza pra diaria; utm_source=brevo é inferido como brevo", () => {
+    const acc = parseSnippetContent("a.md", CLARICE_IMERSAO.replace("categoria:", "audiencia: Diária\ncategoria:"));
+    assert.equal(acc.audience, "diaria");
+    assert.equal(isSnippetEligibleForDiaria(acc), true);
+    const brevo = parseSnippetContent("b.md", "[x](https://diar.ia.br/?utm_source=brevo&utm_campaign=reativar)");
+    assert.equal(brevo.audience, "brevo");
+    assert.equal(brevo.audienceSource, "utm_source");
+    assert.equal(isSnippetEligibleForDiaria(brevo), false);
+  });
+
   it("fixture literal sem campo audience (pré-#9104) continua elegível", () => {
     assert.equal(isSnippetEligibleForDiaria({ file: "a.md", nome: "A", urls: [], seasonal: null }), true);
   });
@@ -766,6 +776,32 @@ describe("#9104 resolveBoxesForEdition — regressão 260930", () => {
       assert.notEqual(effective.slot2, "workshop-agente-ia-outubro.md");
       assert.equal(effective.slot2, "livros.md");
       assert.ok(selection.every((s) => s.file !== "clarice-imersao1010.md"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("slot 1 pinado com caixa de OUTRA audiência ainda bloqueia o evento dela no slot 2", () => {
+    const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+    try {
+      writeFileSync(join(snippetsDir, "clarice-imersao1010.md"), CLARICE_IMERSAO);
+      writeFileSync(join(snippetsDir, "diaria-imersao1010.md"), DIARIA_IMERSAO);
+      writeSnippet(snippetsDir, "livros.md", "Livros", "https://livros.diar.ia.br");
+      writeEdition(editionsDir, "260927", md("Imersão", "https://diar.ia.br/evento/agente-ia?utm_source=diaria&utm_campaign=agente-ia"));
+      writePost(postsDir, "p927", "2026-09-27", "https://diar.ia.br/evento/agente-ia", 21);
+      writeEdition(editionsDir, "260926", md("Livros", "https://livros.diar.ia.br"));
+      writePost(postsDir, "p926", "2026-09-26", "https://livros.diar.ia.br", 4);
+      writeEdition(editionsDir, "260929", "**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody");
+      const { effective } = resolveBoxesForEdition({
+        aammdd: "260930",
+        boxesCfg: { slot0: null, slot1: "clarice-imersao1010.md", slot2: "y.md", slot3: null },
+        autoCfg: { enabled: true, pinnedSlots: new Set([1]), recentWindow: 3, priorWindow: 3, lastN: 20 },
+        editionsDir,
+        postsDir,
+        snippetsDir,
+      });
+      assert.equal(effective.slot1, "clarice-imersao1010.md", "pin manual sempre vence");
+      assert.equal(effective.slot2, "livros.md");
     } finally {
       cleanup();
     }
