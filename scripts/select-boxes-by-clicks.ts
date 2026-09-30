@@ -513,7 +513,8 @@ export interface ResolveBoxesOpts {
    * #9175 — nº de destaques da edição (2 ou 3). O slot 2 só é renderizado
    * com D3 (`stitchNewsletter`), então numa edição de 2 destaques ele é
    * INATIVO: sai como `disabled`/vazio, não entra no ranking, não bloqueia o
-   * fallback do slot 1 (`duplicado`/`evento`) e não emite warn. Omitido =
+   * fallback do slot 1 (`duplicado`/`evento`) e não emite warn. Qualquer
+   * valor ≠ 3 desativa o slot 2 (espelha o `d3Path` do stitch). Omitido =
    * 3 (comportamento de sempre).
    */
   destaqueCount?: number;
@@ -553,21 +554,15 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     // back-compat/reversibilidade, mas é ignorado aqui).
     slot3: null,
   };
-  // #9175: slot 2 inexistente em edição de 2 destaques — nunca efetivo.
-  const activeSlots: readonly (1 | 2)[] = opts.destaqueCount === 2 ? [1] : [1, 2];
-  if (!activeSlots.includes(2)) effective.slot2 = null;
-  const inactiveSlotRecords: SlotSelectionRecord[] = ([1, 2] as const)
-    .filter((s) => !activeSlots.includes(s))
-    .map((slot) => ({
-      slot,
-      mode: "disabled" as const,
-      file: null,
-      nome: null,
-      score: null,
-      trend: null,
-      editionsAppeared: null,
-      seasonal: null,
-    }));
+  // #9175: o slot 2 só é renderizado com D3 (mesma condição do `d3Path` em
+  // `stitch-newsletter.ts`: `destaqueCount === 3`). Sem D3 ele é inativo —
+  // nunca efetivo, fora do ranking/pin/fallback, sem warn.
+  const hasSlot2 = opts.destaqueCount === undefined || opts.destaqueCount === 3;
+  const activeSlots: readonly (1 | 2)[] = hasSlot2 ? [1, 2] : [1];
+  if (!hasSlot2) effective.slot2 = null;
+  const inactiveSlotRecords: SlotSelectionRecord[] = hasSlot2
+    ? []
+    : [{ slot: 2, mode: "disabled", file: null, nome: null, score: null, trend: null, editionsAppeared: null, seasonal: null }];
 
   const snippets = loadSnippets(opts.snippetsDir ?? SNIPPETS_DIR);
   // #6748: registro do slot 3 é sempre "disabled"/vazio — nunca participa do
@@ -638,10 +633,11 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   const ranked = [...history.values()].map((h) => scoreBox(h, autoCfg.recentWindow, autoCfg.priorWindow));
   const previousSnippets = findPreviousEditionSnippets(opts.aammdd, aammddList, readReviewedMd, diariaSnippets);
 
-  // #6748: slot 3 fora de [1, 2] em TODOS os arrays abaixo — nunca entra em
-  // `slotsToAuto` (não é ranqueado/escolhido), nunca é elegível a pin, e o
-  // loop de seleção final abaixo cobre só [1, 2] + o registro fixo
-  // `slot3Disabled` (adicionado no fim).
+  // #6748: slot 3 fora de `activeSlots` em TODOS os arrays abaixo — nunca
+  // entra em `slotsToAuto` (não é ranqueado/escolhido), nunca é elegível a
+  // pin, e o loop de seleção final abaixo cobre só `activeSlots` + os
+  // registros fixos `inactiveSlotRecords`/`slot3Disabled` (adicionados no
+  // fim). #9175: `activeSlots` é [1, 2], ou só [1] em edição sem D3.
   const slotsToAuto = activeSlots.filter((s) => !autoCfg.pinnedSlots.has(s));
   const alreadyAssignedFiles = new Set<string>();
   for (const s of activeSlots) {

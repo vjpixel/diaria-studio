@@ -975,8 +975,11 @@ describe("#9175 resolveBoxesForEdition — slot 2 inativo em edição de 2 desta
   });
 
   it("slot 2 pinado com o MESMO arquivo não recusa o fallback do slot 1 (duplicado) quando há só 2 destaques", () => {
-    const { effective } = resolveWith("amazon-loja-divulgacao.md", "amazon-loja-divulgacao.md", new Set([2]), 2);
+    const { effective, selection } = resolveWith("amazon-loja-divulgacao.md", "amazon-loja-divulgacao.md", new Set([2]), 2);
     assert.equal(effective.slot1, "amazon-loja-divulgacao.md");
+    assert.equal(selection.find((s) => s.slot === 1)!.mode, "fallback-no-candidates");
+    assert.equal(selection.find((s) => s.slot === 2)!.mode, "disabled");
+    assert.equal(selection.find((s) => s.slot === 2)!.file, null);
   });
 
   it("controle: com 3 destaques (ou omitido) o slot 2 pinado segue bloqueando o fallback do slot 1", () => {
@@ -988,20 +991,34 @@ describe("#9175 resolveBoxesForEdition — slot 2 inativo em edição de 2 desta
     }
   });
 
-  it("slot 2 inativo não emite warn de fallback recusado", () => {
-    const writes: string[] = [];
-    const orig = process.stderr.write.bind(process.stderr);
-    (process.stderr as { write: unknown }).write = (chunk: unknown) => {
-      writes.push(String(chunk));
-      return true;
+  it("slot 2 inativo não emite warn de fallback recusado (controle: com 3 destaques emite)", () => {
+    const stderrOf = (count: number): string[] => {
+      const writes: string[] = [];
+      const orig = process.stderr.write.bind(process.stderr);
+      (process.stderr as { write: unknown }).write = (chunk: unknown) => {
+        writes.push(String(chunk));
+        return true;
+      };
+      try {
+        // slot 2 não pinado, fallback igual ao slot 1 (`duplicado` com D3).
+        resolveWith("amazon-loja-divulgacao.md", "amazon-loja-divulgacao.md", new Set(), count);
+      } finally {
+        (process.stderr as { write: unknown }).write = orig;
+      }
+      return writes;
     };
-    try {
-      // slot 2 não pinado, fallback igual ao slot 1 (seria `duplicado` com D3).
-      resolveWith("amazon-loja-divulgacao.md", "amazon-loja-divulgacao.md", new Set(), 2);
-    } finally {
-      (process.stderr as { write: unknown }).write = orig;
-    }
+    assert.ok(stderrOf(3).some((w) => w.includes("slot 2") && w.includes("duplicado")));
+    const writes = stderrOf(2);
     assert.ok(!writes.some((w) => w.includes("slot 2")), writes.join(""));
+  });
+
+  it("qualquer contagem ≠ 3 desativa o slot 2 (espelha o d3Path do stitch)", () => {
+    for (const count of [0, 1, 4]) {
+      const { effective, selection } = resolveWith("diaria-imersao1010.md", "workshop-agente-ia-outubro.md", new Set([2]), count);
+      assert.equal(effective.slot2, null);
+      assert.equal(effective.slot1, "diaria-imersao1010.md");
+      assert.equal(selection.find((s) => s.slot === 2)!.mode, "disabled");
+    }
   });
 
   it("auto DESLIGADO com 2 destaques: slot 2 sai disabled/vazio, slot 1 passthrough", () => {
