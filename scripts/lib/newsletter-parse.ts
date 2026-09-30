@@ -1920,7 +1920,17 @@ export function matchBoxSelectionFileByContent(
  */
 export const BOX_SLOT_EMPTIED: unique symbol = Symbol("box-slot-emptied");
 
-function readBoxSelectionFileForSlot(
+/**
+ * Snippet EFETIVAMENTE usado no slot 1/2/3 segundo `_internal/box-selection.json`
+ * (#5457/#8119). Fonte única — o invariant de alt do Stage 4 importa esta
+ * mesma função (antes mantinha uma cópia, #9172). Retornos:
+ * - nome do arquivo: casado pelo conteúdo do box (#8756) ou pela entry do slot;
+ * - `BOX_SLOT_EMPTIED`: slot esvaziado pela seleção (fallback recusado, #9155)
+ *   e o box não casa com nenhum snippet — o caller NÃO cai no config;
+ * - `null`: sem informação (arquivo ausente/malformado, sem entry) — o caller
+ *   cai em `boxes_divulgacao.slotN` do config.
+ */
+export function readBoxSelectionFileForSlot(
   editionDir: string,
   slot: 1 | 2 | 3,
   boxText?: string | null,
@@ -1936,7 +1946,16 @@ function readBoxSelectionFileForSlot(
     // número deixa de bater com a posição real — casar pelo CONTEÚDO do box
     // que de fato está no slot vence o número, quando o match é único.
     if (boxText) {
-      const byContent = matchBoxSelectionFileByContent(data, boxText, (f) => readSnippetFile(f, rootDir));
+      // #9172: numa entry fallback-ineligible, o arquivo recusado também
+      // entra no casamento — se o editor colar de volta o próprio snippet
+      // recusado, os metadados dele são os corretos pro box.
+      const candidates = data.map((e) =>
+        e && typeof e === "object" && e.mode === "fallback-ineligible" &&
+        typeof e.rejectedFile === "string" && e.rejectedFile
+          ? { file: e.rejectedFile }
+          : e,
+      );
+      const byContent = matchBoxSelectionFileByContent(candidates, boxText, (f) => readSnippetFile(f, rootDir));
       if (byContent) return byContent;
     }
     const entry = data.find(

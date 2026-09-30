@@ -109,6 +109,26 @@ describe("slot fallback-ineligible não herda metadados do snippet recusado (#91
     assert.equal(resolveBoxDivulgacaoCategoriaForSlot(1, dir, root, PASTED_BOX), "EVENTO RECUSADO");
   });
 
+  it("controle: entry com file normal resolve pelo arquivo da entry, não pelo config", () => {
+    const { dir, root } = setup({ ...INELIGIBLE, mode: "auto", file: "outro.md", rejectedFile: undefined });
+    writeFileSync(join(root, "data", "snippets", "outro.md"), "<!--\nnome: Outro\ncategoria: OUTRO\n-->\n\nTexto do outro snippet aqui.");
+    assert.equal(resolveBoxDivulgacaoCategoriaForSlot(1, dir, root, PASTED_BOX), "OUTRO");
+  });
+
+  it("casamento por conteúdo vence o vazio: editor colou de volta o próprio snippet recusado", () => {
+    const { dir, root } = setup(INELIGIBLE);
+    const box = "Workshop que já passou — Inscrições encerradas há tempos.";
+    assert.equal(resolveBoxDivulgacaoCategoriaForSlot(1, dir, root, box), "EVENTO RECUSADO");
+    assert.equal(resolveBoxDivulgacaoAltForSlot(1, dir, root, box), "Alt do arquivo recusado");
+  });
+
+  it("slot 2 esvaziado também não herda do config", () => {
+    const { dir, root } = setup({ ...INELIGIBLE, slot: 2 });
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ boxes_divulgacao: { slot2: REJECTED } }));
+    assert.equal(resolveBoxDivulgacaoCategoriaForSlot(2, dir, root, PASTED_BOX), null);
+    assert.equal(resolveBoxDivulgacaoAltForSlot(2, dir, root, PASTED_BOX), null);
+  });
+
   it("invariant de alt: não usa o alt do arquivo recusado e não cita o config", () => {
     const { dir, root } = setup(INELIGIBLE);
     const v = checkBoxDivulgacaoAltMissing(dir, root);
@@ -117,5 +137,8 @@ describe("slot fallback-ineligible não herda metadados do snippet recusado (#91
     assert.doesNotMatch(v[0].message, /boxes_divulgacao\.slot1/);
     assert.doesNotMatch(v[0].message, /evento-recusado\.md/);
     assert.match(v[0].message, /fallback recusado/);
+    // Fix acionável pro box colado à mão — não "adicionar alt ao header do snippet".
+    assert.doesNotMatch(v[0].message, /ao header do snippet/);
+    assert.match(v[0].message, /aceitar o anchor text/);
   });
 });
