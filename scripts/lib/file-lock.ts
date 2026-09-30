@@ -30,9 +30,9 @@ import {
   unlinkSync,
   writeSync,
   readFileSync,
+  fstatSync,
   statSync,
-  renameSync,
-  linkSync,
+  readlinkSync,
 } from "node:fs";
 import { hostname } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -48,26 +48,35 @@ import { randomBytes } from "node:crypto";
  * Agora o dono grava `{pid, host, ts, token}` no `.lock` ao adquiri-lo, e um
  * caller que encontra o lock tomado o trata como órfão SÓ em dois casos:
  *
- *   1. o lock é DESTA máquina (`host` igual) e o `pid` não existe mais
- *      (`process.kill(pid, 0)` → `ESRCH`). Nada de limite de idade pra lock
- *      com dono identificado: um dono vivo pode segurar o lock o tempo que
- *      precisar (há call sites que fazem rede dentro da seção crítica).
- *   2. o conteúdo não é parseável (lock legado vazio, criado antes deste
+ *   1. o lock é DESTE host+namespace de PID (`host` igual a `lockHostId()`)
+ *      e o `pid` não existe mais (`process.kill(pid, 0)` → `ESRCH`). Nada de
+ *      limite de idade pra lock com dono identificado: um dono vivo pode
+ *      segurar o lock o tempo que precisar (há call sites que fazem rede
+ *      dentro da seção crítica).
+ *   2. o conteúdo não é um dono válido (lock legado vazio, criado antes deste
  *      formato, ou processo morto entre o `wx` e o `writeSync`) E o mtime
  *      passou de `LEGACY_STALE_MS`.
  *
- * Lock de OUTRA máquina nunca é roubado por PID — não dá pra saber se o
- * processo remoto vive (o lock já não é exclusão entre máquinas; este
- * mecanismo não pretende mudar isso). PID reutilizado por outro processo
- * vivo faz o lock parecer vivo — cai no comportamento anterior (timeout),
- * nunca num roubo indevido.
+ * `host` inclui o namespace de PID no Linux (`/proc/self/ns/pid`): mesmo
+ * hostname não garante mesma visão de PIDs (sandbox bubblewrap, container com
+ * `--uts=host`, WSL2) — sem isso, um PID vivo em outro namespace pareceria
+ * morto. Lock de outro host/namespace nunca é roubado por PID (o lock já não
+ * é exclusão entre máquinas; este mecanismo não pretende mudar isso). PID
+ * reutilizado por outro processo vivo faz o lock parecer vivo — cai no
+ * comportamento anterior (timeout), nunca num roubo indevido. Renomear a
+ * máquina deixa locks do nome antigo sob a regra de outro host (timeout).
  *
- * O roubo é por `rename` atômico pra um nome único, seguido de conferência
- * do `token`: se entre a leitura e o rename outro caller já roubou e criou
- * um lock NOVO, o que movemos não é o órfão — ele volta ao lugar via
- * `linkSync` (que falha em vez de sobrescrever se o path já foi ocupado).
+ * Roubo serializado: o removedor toma um lock auxiliar `{lockPath}.steal`
+ * (`wx`), RELÊ o `.lock` e só o apaga se for o MESMO arquivo julgado órfão
+ * (mesmo inode + mesmo conteúdo). Como o dono de um órfão está morto e não
+ * libera, e os removedores concorrentes estão serializados pelo `.steal`, o
+ * `.lock` não pode ser trocado entre a releitura e o `unlink` — não existe
+ * janela com o path vazio fora do fluxo normal. O `.steal` só é segurado por
+ * microssegundos; um `.steal` abandonado (removedor morto no meio) é
+ * descartado após `STEAL_STALE_MS`.
  */
 export const LEGACY_STALE_MS = 10 * 60_000;
+const STEAL_STALE_MS = 30_000;
 
 interface LockOwner {
   pid: number;
@@ -76,18 +85,33 @@ interface LockOwner {
   token: string;
 }
 
+let cachedHostId: string | null = null;
+/** Identidade host + namespace de PID gravada no lock. Exportado pra teste. */
+export function lockHostId(): string {
+  if (cachedHostId === null) {
+    let ns = "";
+    if (process.platform === "linux") {
+      try { ns = readlinkSync("/proc/self/ns/pid"); } catch { /* sem /proc */ }
+    }
+    cachedHostId = ns ? `${hostname()}#${ns}` : hostname();
+  }
+  return cachedHostId;
+}
+
 function parseOwner(raw: string): LockOwner | null {
   try {
     const o = JSON.parse(raw) as Partial<LockOwner>;
-    if (typeof o?.pid === "number" && typeof o.host === "string" && typeof o.token === "string") {
-      return { pid: o.pid, host: o.host, ts: typeof o.ts === "number" ? o.ts : 0, token: o.token };
+    if (
+      Number.isInteger(o?.pid) && (o.pid as number) > 0 &&
+      typeof o.host === "string" && typeof o.token === "string"
+    ) {
+      return { pid: o.pid as number, host: o.host, ts: typeof o.ts === "number" ? o.ts : 0, token: o.token };
     }
   } catch { /* conteúdo legado/vazio */ }
   return null;
 }
 
 function pidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -105,7 +129,7 @@ export function isLockOrphan(
   raw: string,
   mtimeMs: number,
   now = Date.now(),
-  host = hostname(),
+  host = lockHostId(),
   alive: (pid: number) => boolean = pidAlive,
 ): boolean {
   const owner = parseOwner(raw);
@@ -113,39 +137,50 @@ export function isLockOrphan(
   return now - mtimeMs > LEGACY_STALE_MS;
 }
 
+/** Lê conteúdo + inode + mtime do MESMO arquivo aberto (null se sumiu). */
+function readLockFile(lockPath: string): { raw: string; ino: number; mtimeMs: number } | null {
+  let fd: number;
+  try { fd = openSync(lockPath, "r"); } catch { return null; }
+  try {
+    const st = fstatSync(fd);
+    return { raw: readFileSync(fd, "utf8"), ino: st.ino, mtimeMs: st.mtimeMs };
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
- * Tenta remover um lock órfão de forma segura contra roubo concorrente.
- * Retorna true se removeu (o caller deve tentar o `wx` de novo).
+ * Tenta remover um lock órfão (ver docstring do topo). Retorna true se
+ * removeu — o caller deve tentar o `wx` de novo.
  */
 function tryStealOrphan(lockPath: string): boolean {
-  let raw: string;
-  let mtimeMs: number;
-  try {
-    raw = readFileSync(lockPath, "utf8");
-    mtimeMs = statSync(lockPath).mtimeMs;
-  } catch {
-    return false; // sumiu entre o EEXIST e a leitura — o próximo `wx` decide
-  }
-  if (!isLockOrphan(raw, mtimeMs)) return false;
+  const seen = readLockFile(lockPath);
+  if (!seen || !isLockOrphan(seen.raw, seen.mtimeMs)) return false;
 
-  const aside = `${lockPath}.orphan-${process.pid}-${randomBytes(4).toString("hex")}`;
+  const stealPath = `${lockPath}.steal`;
   try {
-    renameSync(lockPath, aside);
-  } catch {
-    return false; // outro caller já moveu/liberou
+    closeSync(openSync(stealPath, "wx"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "EEXIST") {
+      try {
+        if (Date.now() - statSync(stealPath).mtimeMs > STEAL_STALE_MS) unlinkSync(stealPath);
+      } catch { /* outro removedor já cuidou */ }
+    }
+    return false; // tenta de novo na próxima volta
   }
-  let movedRaw = "";
-  try { movedRaw = readFileSync(aside, "utf8"); } catch { /* ignore */ }
-  if (movedRaw === raw) {
-    try { unlinkSync(aside); } catch { /* ignore */ }
-    process.stderr.write(`[file-lock] lock órfão removido (#9185): ${lockPath} — ${raw.trim() || "(vazio, legado)"}\n`);
+  try {
+    const now = readLockFile(lockPath);
+    if (!now || now.ino !== seen.ino || now.raw !== seen.raw) return false;
+    unlinkSync(lockPath);
+    process.stderr.write(`[file-lock] lock órfão removido (#9185): ${lockPath} — ${seen.raw.trim() || "(vazio, legado)"}\n`);
     return true;
+  } catch {
+    return false;
+  } finally {
+    try { unlinkSync(stealPath); } catch { /* ignore */ }
   }
-  // Movemos um lock que NÃO é o órfão lido (alguém roubou e recriou no meio):
-  // devolve sem sobrescrever.
-  try { linkSync(aside, lockPath); } catch { /* path já reocupado — o novo dono segue */ }
-  try { unlinkSync(aside); } catch { /* ignore */ }
-  return false;
 }
 
 /**
@@ -159,19 +194,22 @@ export function acquireLock(lockPath: string, timeoutMs = 10_000): void {
   while (true) {
     try {
       const fd = openSync(lockPath, "wx");
+      let written = false;
       try {
         const owner: LockOwner = {
           pid: process.pid,
-          host: hostname(),
+          host: lockHostId(),
           ts: Date.now(),
           token: randomBytes(8).toString("hex"),
         };
         writeSync(fd, JSON.stringify(owner));
-      } catch {
-        // Best-effort: o lock JÁ é nosso (o `wx` passou). Sem conteúdo, ele cai
-        // na regra de lock legado (órfão só após LEGACY_STALE_MS).
+        written = true;
       } finally {
         closeSync(fd);
+        // #9185: sem o registro do dono, um lock VIVO cairia na regra de lock
+        // legado e poderia ser roubado após LEGACY_STALE_MS. Falha de escrita
+        // (ENOSPC/EIO) desfaz a aquisição e propaga (não é EEXIST).
+        if (!written) { try { unlinkSync(lockPath); } catch { /* ignore */ } }
       }
       return; // Lock adquirido
     } catch (e) {
