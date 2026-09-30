@@ -78,6 +78,46 @@ function appendJsonl(path: string, entry: IntentionalError): void {
 }
 
 /**
+ * (#9133) AAMMDD do diretório da edição de onde `--md` vem (último segmento
+ * de 6 dígitos no path), ou `null` se o path não carrega nenhum. Usado pra
+ * recusar `--edition X --md .../Y/02-reviewed.md` — vetor concreto de
+ * gravar o record de uma edição sob o id de outra.
+ */
+export function editionFromMdPath(mdPath: string): string | null {
+  const segs = mdPath.split(/[\\/]/).filter((s) => /^\d{6}$/.test(s));
+  return segs.length ? segs[segs.length - 1] : null;
+}
+
+function normText(s: string | undefined): string {
+  return (s ?? "").normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * (#9133) Entry de OUTRA edição com o mesmo conteúdo (detail+correct_value,
+ * ou reveal idêntico). Incidente: `data/intentional-errors.jsonl` tinha
+ * 260830 como cópia literal de 260831 — o mesmo erro intencional em duas
+ * edições é, na prática, sempre um record carregado/copiado por engano
+ * (e o #9101 já proíbe repetir erro recente). Recusar a escrita evita
+ * poluir o jsonl, `/diaria-mes-erros` e o reveal seguinte.
+ */
+export function findDuplicateFromOtherEdition(
+  entry: IntentionalError,
+  existing: IntentionalError[],
+): IntentionalError | null {
+  if (entry.no_error) return null;
+  const detail = normText(entry.detail);
+  const correct = normText(entry.correct_value);
+  const reveal = normText(entry.reveal);
+  for (const e of existing) {
+    if (e.edition === entry.edition || e.no_error) continue;
+    const sameDetail = detail !== "" && normText(e.detail) === detail && normText(e.correct_value) === correct;
+    const sameReveal = reveal !== "" && normText(e.reveal) === reveal;
+    if (sameDetail || sameReveal) return e;
+  }
+  return null;
+}
+
+/**
  * #1589: re-escreve o JSONL inteiro a partir do array `entries`. Usado quando
  * uma entry pre-existente foi atualizada (não dá pra fazer in-place edit num
  * append-only JSONL — precisa re-escrever).
@@ -144,6 +184,16 @@ function runSyncIntentionalErrorInner(flags: Flags): SyncIntentionalErrorResult 
   if (!existsSync(mdPath)) {
     process.stderr.write(
       `[sync-intentional-error] ${mdPath} não existe — nada pra sincronizar pra edição ${flags.edition} (provável edição arquivada/limpa pós-publicação, #3210).\n`,
+    );
+    return { exitCode: 1, added: false, updated: false, edition: flags.edition };
+  }
+
+  // (#9133) `--md` de uma edição com `--edition` de outra grava o record
+  // errado sob o id errado — recusa em vez de "sincronizar".
+  const mdEdition = editionFromMdPath(mdPath);
+  if (mdEdition && mdEdition !== flags.edition) {
+    process.stderr.write(
+      `[sync-intentional-error] #9133: --md pertence à edição ${mdEdition}, mas --edition é ${flags.edition} — recusado (gravaria o erro de uma edição sob o id de outra).\n`,
     );
     return { exitCode: 1, added: false, updated: false, edition: flags.edition };
   }
@@ -260,6 +310,13 @@ function runSyncIntentionalErrorInner(flags: Flags): SyncIntentionalErrorResult 
         detected_by: "sync-intentional-error.ts fallback de prosa (#1860)",
         resolution: "published_intentionally",
       };
+      const dupProse = findDuplicateFromOtherEdition(entry, existing);
+      if (dupProse) {
+        process.stderr.write(
+          `[sync-intentional-error] #9133: declaração de ${flags.edition} é idêntica à entry de ${dupProse.edition} — recusado (provável record carregado de outra edição). Confira _internal/intentional-error.json.\n`,
+        );
+        return { exitCode: 1, added: false, updated: false, edition: flags.edition };
+      }
       appendJsonl(jsonlPath, entry);
       process.stderr.write(
         `[sync-intentional-error] #1860: _internal/intentional-error.json ausente/incompleto — entry extraída da PROSA "Nessa edição, …" pra ${flags.edition}. ` +
@@ -279,6 +336,17 @@ function runSyncIntentionalErrorInner(flags: Flags): SyncIntentionalErrorResult 
     flags.edition,
     existing,
   );
+
+  if (added || updated) {
+    const written = entries.find((e) => e.edition === flags.edition && e.source === "frontmatter_02_reviewed");
+    const dup = written ? findDuplicateFromOtherEdition(written, existing) : null;
+    if (dup) {
+      process.stderr.write(
+        `[sync-intentional-error] #9133: record de ${flags.edition} é idêntico à entry de ${dup.edition} — recusado (provável _internal/intentional-error.json carregado de outra edição). Confira o record antes de re-sincronizar.\n`,
+      );
+      return { exitCode: 1, added: false, updated: false, edition: flags.edition };
+    }
+  }
 
   if (added) {
     const newEntry = entries[entries.length - 1];
