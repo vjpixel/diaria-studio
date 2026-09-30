@@ -118,6 +118,9 @@ import {
   DEFAULT_PAST_WINDOW as CROSS_SOURCE_DEFAULT_WINDOW,
 } from "./lib/past-editions-extract.ts";
 import type { PastDestaqueTitle } from "./lib/past-editions-extract.ts";
+// #9100: gatilho "MESMO FATO" (produto+versão em comum com destaque recente),
+// aplicado a candidatos a destaque E ao pool secundário.
+import { findSameFactMatches } from "./lib/same-fact-check.ts";
 // #2716 item 1: importa a lista canônica de buckets secundários em vez de
 // hardcodar uma cópia local — SECONDARY_BUCKETS de check-secondary-themes.ts é a
 // fonte única (dedup-intra-edition.ts já a consome do mesmo lugar). Ver nota
@@ -1528,6 +1531,25 @@ async function main(): Promise<void> {
     );
   }
 
+  // #9100: MESMO FATO — produto+versão (ex: "sonnet 5.5") em comum com um
+  // destaque das últimas edições. Alta precisão; roda contra candidatos a
+  // destaque E contra o pool secundário (o check secundário acima só compara
+  // secundário×secundário, então RADAR repetindo destaque passado escapava).
+  // Sinaliza, nunca demove (premissa #9100).
+  const sameFactWarnings = findSameFactMatches(
+    [
+      ...candidates.map((c) => ({ kind: "highlight", rank: c.rank, title: c.title, url: c.url })),
+      ...secondaryItems.map((s) => ({ kind: s.bucket, title: s.title, url: s.url })),
+    ],
+    pastDestaques,
+  );
+  for (const w of sameFactWarnings) {
+    const where = w.kind === "highlight" ? `Candidato a destaque #${w.rank}` : `[${w.kind}]`;
+    console.error(
+      `[check-highlight-themes] 🚨 MESMO FATO ${where} "${w.item_title}" (${w.item_url}) repete o DESTAQUE de ${w.matched_edition} "${w.matched_title}" (produto: ${w.shared_products.join(", ")})`,
+    );
+  }
+
   // #4262: full-body cross-edition check — candidato a destaque vs CORPO
   // INTEIRO (destaques + secundários) das edições passadas.
   const pastFullBody = readPastFullBodyItems(editionsDir, fullBodyWindow, currentEdition);
@@ -1553,6 +1575,8 @@ async function main(): Promise<void> {
   // Combina os resultados num único JSON (backward-compatible: novos campos adicionados)
   const combined = {
     warnings: highlightResult.warnings,
+    // #9100: sinal de alta precisão — apresentar ANTES dos demais no gate.
+    same_fact_warnings: sameFactWarnings,
     secondary_warnings: secondaryResult.secondary_warnings,
     full_body_warnings: fullBodyResult.full_body_warnings,
     checked: highlightResult.checked,
