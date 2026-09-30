@@ -1910,12 +1910,22 @@ export function matchBoxSelectionFileByContent(
   return matches.size === 1 ? [...matches][0] : null;
 }
 
+/**
+ * #9172: sentinela de `readBoxSelectionFileForSlot` pra "o slot foi
+ * ESVAZIADO de propósito pela seleção" (`mode: "fallback-ineligible"`, #9155
+ * — o `boxes_divulgacao.slotN` do config foi recusado e o slot sai com
+ * `file: null`). Distinto de `null` ("sem informação, cai no config"): cair
+ * no config aqui aplicaria categoria/alt/título do arquivo RECUSADO a um box
+ * colado à mão pelo editor no Stage 4.
+ */
+export const BOX_SLOT_EMPTIED: unique symbol = Symbol("box-slot-emptied");
+
 function readBoxSelectionFileForSlot(
   editionDir: string,
   slot: 1 | 2 | 3,
   boxText?: string | null,
   rootDir: string = REPO_ROOT_FROM_MODULE,
-): string | null {
+): string | null | typeof BOX_SLOT_EMPTIED {
   const path = resolve(editionDir, "_internal", "box-selection.json");
   if (!existsSync(path)) return null;
   try {
@@ -1931,9 +1941,12 @@ function readBoxSelectionFileForSlot(
     }
     const entry = data.find(
       (r) => r && typeof r === "object" && (r as { slot?: unknown }).slot === slot,
-    ) as { file?: unknown } | undefined;
+    ) as { file?: unknown; mode?: unknown } | undefined;
     if (!entry) return null;
-    return typeof entry.file === "string" && entry.file ? entry.file : null;
+    if (typeof entry.file === "string" && entry.file) return entry.file;
+    // #9172: fallback recusado (#9155) — slot vazio de propósito, sem config.
+    if (entry.mode === "fallback-ineligible") return BOX_SLOT_EMPTIED;
+    return null;
   } catch {
     return null;
   }
@@ -1953,49 +1966,53 @@ function readBoxSelectionFileForSlot(
  * isolada, nunca a fiação real de `extractContent` — um revert acidental do
  * wiring inline passaria despercebido).
  */
-function resolveBoxDivulgacaoCategoriaForSlot(
+export function resolveBoxDivulgacaoCategoriaForSlot(
   slot: 1 | 2 | 3,
   editionDir: string,
   rootDir: string = REPO_ROOT_FROM_MODULE,
   boxText?: string | null, // #8756
 ): string | null {
   const selectedFile = readBoxSelectionFileForSlot(editionDir, slot, boxText, rootDir);
+  if (selectedFile === BOX_SLOT_EMPTIED) return null; // #9172
   return selectedFile
     ? readBoxDivulgacaoCategoriaForFile(selectedFile, rootDir)
     : readBoxDivulgacaoCategoriaForSlot(slot, rootDir);
 }
 
-function resolveBoxDivulgacaoAltForSlot(
+export function resolveBoxDivulgacaoAltForSlot(
   slot: 1 | 2 | 3,
   editionDir: string,
   rootDir: string = REPO_ROOT_FROM_MODULE,
   boxText?: string | null, // #8756
 ): string | null {
   const selectedFile = readBoxSelectionFileForSlot(editionDir, slot, boxText, rootDir);
+  if (selectedFile === BOX_SLOT_EMPTIED) return null; // #9172
   return selectedFile
     ? readBoxDivulgacaoAltForFile(selectedFile, rootDir)
     : readBoxDivulgacaoAltForSlot(slot, rootDir);
 }
 
-function resolveBoxDivulgacaoNoTituloForSlot(
+export function resolveBoxDivulgacaoNoTituloForSlot(
   slot: 1 | 2 | 3,
   editionDir: string,
   rootDir: string = REPO_ROOT_FROM_MODULE,
   boxText?: string | null, // #8756
 ): boolean {
   const selectedFile = readBoxSelectionFileForSlot(editionDir, slot, boxText, rootDir);
+  if (selectedFile === BOX_SLOT_EMPTIED) return false; // #9172
   return selectedFile
     ? readBoxDivulgacaoNoTituloForFile(selectedFile, rootDir)
     : readBoxDivulgacaoNoTituloForSlot(slot, rootDir);
 }
 
-function resolveBoxDivulgacaoTituloForSlot(
+export function resolveBoxDivulgacaoTituloForSlot(
   slot: 1 | 2 | 3,
   editionDir: string,
   rootDir: string = REPO_ROOT_FROM_MODULE,
   boxText?: string | null,
 ): boolean {
   const selectedFile = readBoxSelectionFileForSlot(editionDir, slot, boxText, rootDir);
+  if (selectedFile === BOX_SLOT_EMPTIED) return false; // #9172
   return selectedFile
     ? readBoxDivulgacaoTituloForFile(selectedFile, rootDir)
     : readBoxDivulgacaoTituloForSlot(slot, rootDir);

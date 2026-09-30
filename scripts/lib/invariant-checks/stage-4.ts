@@ -1643,7 +1643,15 @@ function checkBoxDivulgacaoAltMissing(
     const selectedFile = n === 0 ? undefined : readBoxSelectionFileForSlot(editionDir, n, boxText, rootDir);
     let alt: string | null;
     let usedFile: string | null;
-    if (selectedFile) {
+    let emptied = false;
+    if (selectedFile === SLOT_EMPTIED) {
+      // #9172: slot esvaziado pela seleção (fallback recusado, #9155) — o box
+      // presente foi colado à mão e não tem snippet associado. NÃO cair no
+      // config: ele aponta justamente pro arquivo recusado.
+      alt = null;
+      usedFile = null;
+      emptied = true;
+    } else if (selectedFile) {
       alt = rootDir !== undefined
         ? readBoxDivulgacaoAltForFile(selectedFile, rootDir)
         : readBoxDivulgacaoAltForFile(selectedFile);
@@ -1655,7 +1663,9 @@ function checkBoxDivulgacaoAltMissing(
       usedFile = null; // desconhecido aqui sem reler o config — mensagem cita o slot, não o nome do arquivo
     }
     if (alt) continue;
-    const sourceNote = usedFile
+    const sourceNote = emptied
+      ? `o box (colado à mão num slot que a seleção deixou vazio — fallback recusado, ver _internal/box-selection.json) não tem snippet associado e portanto`
+      : usedFile
       ? `o snippet \`${usedFile}\` (efetivamente usado neste slot nesta edição, via _internal/box-selection.json)`
       : `o snippet atribuído em boxes_divulgacao.slot${n} (platform.config.json)`;
     violations.push({
@@ -1684,12 +1694,15 @@ function checkBoxDivulgacaoAltMissing(
  * malformado, ou sem entry pro slot) sinaliza ao caller pra cair no fallback
  * do config estático — mesmo fail-soft do resto do módulo.
  */
+/** #9172: slot esvaziado pela seleção (`mode: "fallback-ineligible"`). */
+const SLOT_EMPTIED: unique symbol = Symbol("box-slot-emptied");
+
 function readBoxSelectionFileForSlot(
   editionDir: string,
   slot: 1 | 2 | 3,
   boxText?: string | null,
   rootDir?: string,
-): string | null {
+): string | null | typeof SLOT_EMPTIED {
   const path = resolve(editionDir, "_internal", "box-selection.json");
   if (!existsSync(path)) return null;
   try {
@@ -1705,9 +1718,13 @@ function readBoxSelectionFileForSlot(
     }
     const entry = data.find(
       (r) => r && typeof r === "object" && (r as { slot?: unknown }).slot === slot,
-    ) as { file?: unknown } | undefined;
+    ) as { file?: unknown; mode?: unknown } | undefined;
     if (!entry) return null;
-    return typeof entry.file === "string" && entry.file ? entry.file : null;
+    if (typeof entry.file === "string" && entry.file) return entry.file;
+    // #9172: fallback recusado (#9155) — slot vazio de propósito; o caller
+    // não pode cair no config (que aponta pro arquivo recusado).
+    if (entry.mode === "fallback-ineligible") return SLOT_EMPTIED;
+    return null;
   } catch {
     return null;
   }
