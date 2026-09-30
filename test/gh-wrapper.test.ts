@@ -891,3 +891,37 @@ describe("gh-wrapper.mjs invocado via symlink (#8900)", () => {
     assert.ok(r.fakeGhInvoked);
   });
 });
+
+describe("#9150: flags curtas agrupadas e gh api gists/releases", () => {
+  const files: Record<string, string> = { "secret.env": OR_KEY, "arq.txt": OR_KEY };
+  const deps = { readFileSync: (p: string) => files[p] ?? "" };
+
+  it("cluster -ab/-cb/-rb/-db/-fb com segredo bloqueia", () => {
+    for (const argv of [
+      ["pr", "review", "12", "-ab", OR_KEY],
+      ["pr", "review", "12", "-cb", OR_KEY],
+      ["pr", "review", "12", "-rb", OR_KEY],
+      ["pr", "create", "-db", OR_KEY],
+      ["pr", "create", `-fb${OR_KEY}`],
+      ["pr", "review", "12", "-ab=" + OR_KEY],
+    ]) {
+      assert.equal(evaluateGhInvocation(argv, deps).blocked, true, argv.join(" "));
+    }
+  });
+
+  it("cluster com corpo limpo passa", () => {
+    assert.equal(evaluateGhInvocation(["pr", "review", "12", "-ab", "LGTM"], deps).blocked, false);
+  });
+
+  it("gh api gists/releases com segredo bloqueia", () => {
+    assert.equal(evaluateGhInvocation(["api", "gists", "-F", "files[a][content]=@secret.env"], deps).blocked, true);
+    assert.equal(evaluateGhInvocation(["api", "repos/o/r/releases", "-f", `body=${OR_KEY}`], deps).blocked, true);
+  });
+
+  it("gh release create/upload lê assets posicionais", () => {
+    assert.equal(evaluateGhInvocation(["release", "create", "v1", "secret.env"], deps).blocked, true);
+    assert.equal(evaluateGhInvocation(["release", "create", "v1", "secret.env#label"], deps).blocked, true);
+    assert.equal(evaluateGhInvocation(["release", "upload", "v1", "arq.txt"], deps).blocked, true);
+    assert.equal(evaluateGhInvocation(["release", "create", "v1", "-t", "titulo", "limpo.txt"], deps).blocked, false);
+  });
+});
