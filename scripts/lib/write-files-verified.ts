@@ -70,9 +70,14 @@ export function writeFilesVerified(
     original: deps.existsSync(w.path) ? deps.readFileSync(w.path) : null,
   }));
 
+  // Quantas entradas chegaram a ser tocadas (inclui a que pode ter lançado no
+  // meio) — o rollback só reescreve essas, nunca as que nem foram gravadas.
+  let touched = 0;
   try {
-    // Passo 2: escrita direta + checagem imediata.
+    // Passo 2: escrita direta + checagem imediata (fail-fast com mensagem
+    // específica; o passo 3 re-checa tudo de qualquer forma).
     for (const e of entries) {
+      touched++;
       deps.writeFileSync(e.path, e.expected);
       if (!deps.existsSync(e.path)) {
         throw new Error(
@@ -87,24 +92,32 @@ export function writeFilesVerified(
       if (actual === null || !actual.equals(e.expected)) {
         throw new Error(
           `${label}: ${basename(e.path)} não bate com o conteúdo esperado na verificação final ` +
-            `(reversão pós-hoc do sync, #5564/#9173). Lote revertido — reexecute depois de ` +
-            `confirmar que o sync do OneDrive terminou.`,
+            `(reversão pós-hoc do sync, #5564/#9173). Reexecute depois de confirmar que o ` +
+            `sync do OneDrive terminou.`,
         );
       }
     }
   } catch (err) {
-    // Passo 4: rollback best-effort para o snapshot.
-    for (const e of entries) {
+    // Passo 4: rollback best-effort para o snapshot, só das entradas tocadas.
+    // Falha de restauração nunca mascara o erro original, mas é ANEXADA a ele
+    // — o chamador precisa saber que o lote pode ter ficado meio-gravado.
+    const notRestored: string[] = [];
+    for (const e of entries.slice(0, touched)) {
       try {
         if (e.original === null) {
           if (deps.existsSync(e.path)) deps.unlinkSync(e.path);
         } else {
           deps.writeFileSync(e.path, e.original);
         }
-      } catch {
-        // best-effort — nunca lançar por cima do erro original.
+      } catch (rbErr) {
+        notRestored.push(`${basename(e.path)} (${(rbErr as Error).message})`);
       }
     }
-    throw err;
+    const base = err instanceof Error ? err : new Error(String(err));
+    base.message +=
+      notRestored.length === 0
+        ? " Lote revertido ao estado anterior."
+        : ` ROLLBACK INCOMPLETO — não restaurados: ${notRestored.join("; ")}. Conferir à mão.`;
+    throw base;
   }
 }

@@ -123,12 +123,66 @@ describe("writeFilesVerified (#9173)", () => {
   });
 });
 
+describe("writeFilesVerified — falhas de escrita/rollback (#9173)", () => {
+  it("writeFileSync lança na 2ª entrada → reverte a 1ª e não toca a 3ª", () => {
+    const writes: string[] = [];
+    const { files, deps } = memFs({ "/e/a": "A0", "/e/b": "B0", "/e/c": "C0" });
+    const orig = deps.writeFileSync;
+    deps.writeFileSync = (p, d) => {
+      writes.push(`${p}=${d.toString()}`);
+      if (p === "/e/b" && d.toString() === "B1") throw new Error("EBUSY");
+      orig(p, d);
+    };
+    assert.throws(
+      () =>
+        writeFilesVerified(
+          [
+            { path: "/e/a", content: "A1" },
+            { path: "/e/b", content: "B1" },
+            { path: "/e/c", content: "C1" },
+          ],
+          "t",
+          deps,
+        ),
+      /EBUSY Lote revertido/,
+    );
+    assert.equal(files.get("/e/a")?.toString(), "A0");
+    assert.equal(files.get("/e/c")?.toString(), "C0");
+    assert.ok(!writes.some((w) => w.startsWith("/e/c")), "3ª entrada nunca tocada");
+  });
+
+  it("rollback que falha é anexado ao erro original, sem mascará-lo", () => {
+    const { deps } = memFs({ "/e/a": "A0", "/e/b": "B0" });
+    const orig = deps.writeFileSync;
+    deps.writeFileSync = (p, d) => {
+      const s = d.toString();
+      if (p === "/e/b" && s === "B1") throw new Error("EBUSY");
+      if (p === "/e/a" && s === "A0") throw new Error("EACCES");
+      orig(p, d);
+    };
+    assert.throws(
+      () =>
+        writeFilesVerified(
+          [
+            { path: "/e/a", content: "A1" },
+            { path: "/e/b", content: "B1" },
+          ],
+          "t",
+          deps,
+        ),
+      /EBUSY ROLLBACK INCOMPLETO — não restaurados: a \(EACCES\)/,
+    );
+  });
+});
+
 describe("swap-destaque(s).ts usam escrita verificada (#9173)", () => {
   for (const script of ["scripts/swap-destaques.ts", "scripts/swap-destaque.ts"]) {
     it(`${script} não grava conteúdo com writeFileSync cru`, () => {
       const src = readFileSync(join(import.meta.dirname, "..", script), "utf8");
       assert.match(src, /writeFilesVerified\(/);
-      assert.doesNotMatch(src, /\bwriteFileSync\b/);
+      // Só chamadas reais (comentário citando o nome não conta).
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      assert.doesNotMatch(code, /\bwriteFileSync\s*\(/);
     });
   }
 });
