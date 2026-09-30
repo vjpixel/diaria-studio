@@ -11,15 +11,17 @@
 // com teto de vida já existe desde o #6921 — o que faltava era um guard
 // mecânico: a disciplina "use o helper" em prosa não segurou 3 incidentes.
 //
-// Escopo: só o laço de polling ESCRITO À MÃO (palavra-chave de laço como 1º
-// token de um segmento + `sleep` + `gh pr checks` no mesmo comando).
+// Escopo: só o laço de polling ESCRITO À MÃO (palavra-chave de laço no
+// início de um segmento + `sleep` + `gh pr checks` no mesmo comando — ver
+// `commandHasHandwrittenPrChecksLoop` pros trade-offs).
 // `gh pr checks N` pontual e `gh pr checks N --watch` passam — o problema é
 // a condição de saída artesanal, não o comando.
 //
 // Self-contained (nenhum import de `scripts/*.ts`) — mesma razão dos hooks
 // irmãos: import estático de `.ts` quebra o hook inteiro, em silêncio, num
 // Node sem type-stripping nativo. `stripQuotedSpans`/`stripHeredocSpans`
-// duplicados de `block-worktree-bare-push.mjs` pelo mesmo motivo — assim um
+// duplicados de `block-worktree-bare-push.mjs` pelo mesmo motivo (paridade
+// travada em `test/hook-command-tokenizer-parity-7896.test.ts`) — assim um
 // `gh issue comment --body "..."`/heredoc que CITE o laço não é bloqueado.
 
 /** Remove o CONTEÚDO de spans entre aspas (simples ou duplas). */
@@ -80,35 +82,134 @@ export function stripHeredocSpans(command) {
   return result;
 }
 
-const SEPARATOR_RE = /(?:&&|;|\|\||\||\n|\(|\)|\{|\})/;
+// `&` e crase também separam (fix de review #9187): `cmd & until ...` e
+// `` `gh pr checks` `` não podem esconder o laço dentro de outro token.
+const SEPARATOR_RE = /(?:&&|;|\|\||\||&|`|\n|\(|\)|\{|\})/;
 const LOOP_KEYWORDS = new Set(["until", "while", "for"]);
+// Palavras reservadas/prefixos que podem PRECEDER o laço no mesmo segmento
+// (`then while ...`, `time until ...`, `! until ...`, `nohup ...`).
+const LEADING_PREFIXES = new Set(["then", "else", "elif", "do", "time", "!", "nohup", "exec", "command"]);
+// Aspas logo depois de `bash -c`/`sh -c`/`eval` são código vivo, não texto.
+const SHELL_C_BEFORE_QUOTE_RE = /(?:^|[\s;&|(])(?:(?:\/[\w./-]*\/)?(?:ba|z|da)?sh\s+(?:-\w+\s+)*-\w*c|eval)\s*$/;
 
-function commandSegments(command) {
-  if (typeof command !== "string") return [];
-  return stripQuotedSpans(stripHeredocSpans(command))
+/**
+ * Separa o que o shell EXECUTA do que é só texto (fix de review #9187).
+ * Devolve `outer` (o comando sem o conteúdo das aspas, como
+ * `stripQuotedSpans`) + `subs`: trechos que, apesar de estarem entre aspas,
+ * são código vivo — `$(...)`/crase dentro de aspas DUPLAS (o bash expande)
+ * e o argumento entre aspas de `bash -c`/`sh -c`/`eval`. Fora desses casos,
+ * aspas seguem sendo texto (citação em `gh issue comment --body '...'`).
+ */
+export function splitLiveCode(command) {
+  let outer = "";
+  const subs = [];
+  let i = 0;
+  const n = command.length;
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "\\" && i + 1 < n) {
+      outer += command.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      let j = i + 1;
+      while (j < n && command[j] !== ch) {
+        if (ch === '"' && command[j] === "\\") j++;
+        j++;
+      }
+      const body = command.slice(i + 1, j);
+      if (SHELL_C_BEFORE_QUOTE_RE.test(outer)) subs.push(body);
+      else if (ch === '"') subs.push(...commandSubstitutions(body));
+      i = j + 1;
+      continue;
+    }
+    outer += ch;
+    i++;
+  }
+  return { outer, subs };
+}
+
+/** Corpos de `$(...)` (com aninhamento) e de crase dentro de `text`. */
+function commandSubstitutions(text) {
+  const out = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "\\") {
+      i++; // `\$(`/`` \` `` escapados são texto literal
+      continue;
+    }
+    if (text[i] === "$" && text[i + 1] === "(") {
+      let depth = 1;
+      let j = i + 2;
+      while (j < text.length && depth > 0) {
+        if (text[j] === "(") depth++;
+        else if (text[j] === ")") depth--;
+        j++;
+      }
+      out.push(text.slice(i + 2, depth === 0 ? j - 1 : j));
+      i = j - 1;
+    } else if (text[i] === "`") {
+      const j = text.indexOf("`", i + 1);
+      const end = j === -1 ? text.length : j;
+      out.push(text.slice(i + 1, end));
+      i = end;
+    }
+  }
+  return out;
+}
+
+/** Todos os segmentos de código vivo do comando, recursivamente. */
+function liveSegments(command, depth = 0) {
+  if (typeof command !== "string" || depth > 4) return [];
+  const { outer, subs } = splitLiveCode(stripHeredocSpans(command));
+  const segments = outer
     .split(SEPARATOR_RE)
     .map((seg) => seg.trim().split(/\s+/).filter(Boolean))
     .filter((tokens) => tokens.length > 0);
+  for (const sub of subs) segments.push(...liveSegments(sub, depth + 1));
+  return segments;
+}
+
+function dropLeadingPrefixes(tokens) {
+  let k = 0;
+  while (k < tokens.length && LEADING_PREFIXES.has(tokens[k])) k++;
+  return tokens.slice(k);
 }
 
 function segmentHasGhPrChecks(tokens) {
-  for (let i = 0; i + 2 < tokens.length; i++) {
-    if (tokens[i] === "gh" && tokens[i + 1] === "pr" && tokens[i + 2] === "checks") return true;
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] !== "gh" && !tokens[i].endsWith("/gh")) continue;
+    let k = i + 1;
+    // flags globais do gh antes do subcomando (`gh -R owner/repo pr checks`)
+    while (k < tokens.length && tokens[k].startsWith("-")) {
+      k += tokens[k] === "-R" || tokens[k] === "--repo" ? 2 : 1;
+    }
+    if (tokens[k] === "pr" && tokens[k + 1] === "checks") return true;
   }
   return false;
 }
 
+const isSleep = (t) => t === "sleep" || t.endsWith("/sleep");
+
 /**
  * `true` quando o comando tem um laço de POLLING escrito à mão: palavra-chave
- * de laço (`until`/`while`/`for`) como 1º token de algum segmento, um `sleep`
- * e um `gh pr checks`, todos fora de aspas/heredoc. Exigir o `sleep` deixa
- * passar laços de disparo único sobre uma lista (`for pr in 1 2; do gh pr
- * checks $pr; done`), que terminam sozinhos.
+ * de laço (`until`/`while`/`for`, após prefixos como `then`/`time`/`!`) no
+ * início de algum segmento, um `sleep` e um `gh pr checks` — contando o
+ * código vivo dentro de `$(...)`, crase e `bash -c '...'`/`eval`, e
+ * ignorando texto citado em aspas/heredoc.
+ *
+ * Trade-offs aceitos, deliberadamente enviesados pra BLOQUEAR: as três peças
+ * são procuradas no comando inteiro, não só entre o laço e o seu `done`
+ * (`for ...; done; sleep 5; gh pr checks 1` é bloqueado), e um laço finito
+ * com pausa (`for pr in 1 2; do gh pr checks $pr; sleep 2; done`) também. O
+ * custo de um falso positivo é reescrever com `wait-pr-checks.sh` ou separar
+ * em duas chamadas; o de um falso negativo é um processo órfão por horas.
+ * Exigir o `sleep` deixa passar o laço de disparo único sem pausa.
  */
 export function commandHasHandwrittenPrChecksLoop(command) {
-  const segments = commandSegments(command);
-  if (!segments.some((t) => LOOP_KEYWORDS.has(t[0]))) return false;
-  if (!segments.some((t) => t.includes("sleep"))) return false;
+  const segments = liveSegments(command);
+  if (!segments.some((t) => LOOP_KEYWORDS.has(dropLeadingPrefixes(t)[0]))) return false;
+  if (!segments.some((t) => t.some(isSleep))) return false;
   return segments.some(segmentHasGhPrChecks);
 }
 
@@ -117,7 +218,8 @@ export const HANDWRITTEN_PR_CHECKS_LOOP_BLOCK_REASON =
   "não têm teto de vida e já ficaram órfãos por horas vigiando PRs mergeadas (#6921, #8425, #9161) — " +
   "um `--jq` inválido com `2>/dev/null` torna a condição de saída impossível. Use " +
   "`scripts/lib/wait-pr-checks.sh <PR> [timeout_secs=1800] [poll_secs=20]` (teto de vida embutido; " +
-  "exit 0 = saiu de pending, 1 = timeout, 3 = erro persistente) e depois leia o resultado com " +
+  "exit 0 = saiu de pending, 1 = timeout, 2 = uso inválido, 3 = erro persistente do gate, " +
+  "6 = gh incompatível — ver o cabeçalho do script) e depois leia o resultado com " +
   "`gh pr checks <PR>` pontual.";
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

@@ -31,6 +31,31 @@ describe("commandHasHandwrittenPrChecksLoop (#9161)", () => {
   it("laço dentro de subshell/grupo → bloqueia", () => {
     assert.equal(has(`(until gh pr checks 1; do sleep 5; done)`), true);
   });
+  it("gh pr checks dentro de $(...)/crase na condição → bloqueia (review #9187)", () => {
+    assert.equal(
+      has(`until [ "$(gh pr checks 9 --json bucket --jq '.[].bucket' | grep -c pending)" = 0 ]; do sleep 30; done`),
+      true,
+    );
+    assert.equal(has("until test `gh pr checks 1 | grep -c pending` -eq 0; do sleep 30; done"), true);
+  });
+  it("bash -c / nohup / eval → bloqueia (review #9187)", () => {
+    assert.equal(has(`bash -c 'until gh pr checks 9; do sleep 30; done'`), true);
+    assert.equal(has(`nohup bash -c "while true; do gh pr checks 9; sleep 20; done" &`), true);
+    assert.equal(has(`eval 'until gh pr checks 9; do sleep 30; done'`), true);
+  });
+  it("prefixos antes do laço e `&` → bloqueia (review #9187)", () => {
+    assert.equal(has(`if true; then while true; do gh pr checks 1; sleep 5; done; fi`), true);
+    assert.equal(has(`time until gh pr checks 1; do sleep 5; done`), true);
+    assert.equal(has(`! until gh pr checks 1; do sleep 5; done`), true);
+    assert.equal(has(`sleep 1 & until gh pr checks 1; do sleep 2; done`), true);
+  });
+  it("gh -R / /bin/sleep → bloqueia (review #9187)", () => {
+    assert.equal(has(`until gh -R vjpixel/diaria-studio pr checks 9; do /bin/sleep 30; done`), true);
+  });
+  it("$(...) citado em aspas simples ou escapado → passa", () => {
+    assert.equal(has(`gh issue comment 1 --body 'evite: until [ "$(gh pr checks 1)" ]; do sleep 1; done'`), false);
+    assert.equal(has(`gh issue comment 1 --body "evite: until \\$(gh pr checks 1); do sleep 1; done"`), false);
+  });
   it("wait-pr-checks.sh → passa", () => {
     assert.equal(has(`scripts/lib/wait-pr-checks.sh 9161`), false);
     assert.equal(has(`scripts/lib/wait-pr-checks.sh 9161 && gh pr checks 9161`), false);
@@ -71,6 +96,17 @@ describe("hook entrypoint (#9161)", () => {
   });
   it("silencioso pra comando legítimo", () => {
     assert.equal(run(`gh pr checks 1`).stdout, "");
+  });
+  it("fail-open: JSON inválido e tool não-Bash → silencioso, exit 0", () => {
+    const bad = spawnSync("node", [HOOK], { input: "not json", encoding: "utf8" });
+    assert.equal(bad.status, 0);
+    assert.equal(bad.stdout, "");
+    const edit = spawnSync("node", [HOOK], {
+      input: JSON.stringify({ tool_name: "Edit", tool_input: { command: "until gh pr checks 1; do sleep 1; done" } }),
+      encoding: "utf8",
+    });
+    assert.equal(edit.status, 0);
+    assert.equal(edit.stdout, "");
   });
   it("registrado em .claude/settings.json (PreToolUse Bash)", () => {
     const settings = JSON.parse(readFileSync(join(import.meta.dirname, "..", ".claude", "settings.json"), "utf8"));
