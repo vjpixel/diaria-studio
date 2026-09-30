@@ -203,6 +203,14 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-continuo-master-commit.mjs"
             ]
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-handwritten-pr-checks-loop.mjs"
+            ]
           }
         ]
       },
