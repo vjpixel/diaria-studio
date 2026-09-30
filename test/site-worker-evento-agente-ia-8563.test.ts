@@ -36,10 +36,12 @@ const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia
 const VARIANTS = ["a", "b"] as const;
 
 describe("public/evento/agente-ia — página do workshop (#8563)", () => {
-  it("index.html da raiz sorteia entre /a e /b sem barra final e preserva a query string", () => {
+  it("index.html da raiz manda todo mundo para /a (teste A/B encerrado) e preserva a query string", () => {
     const html = readFileSync(resolve(PAGE_DIR, "index.html"), "utf8");
-    assert.match(html, /"\/evento\/agente-ia\/"\s*\+\s*v\s*\+\s*location\.search/);
-    assert.match(html, /v = Math\.random\(\) < 0\.5 \? "a" : "b"/);
+    assert.match(html, /"\/evento\/agente-ia\/a"\s*\+\s*location\.search/);
+    // Sem sorteio e sem ler a variante guardada: quem já tinha caído na B também vai para a A.
+    assert.doesNotMatch(html, /Math\.random/);
+    assert.doesNotMatch(html, /localStorage\.getItem/);
     // Sem pixel na raiz: o PageView é da versão que abrir (senão conta 2x).
     assert.doesNotMatch(html, /fbq\(/);
     // Sem JavaScript, cai na versão A em vez de ficar numa página vazia.
