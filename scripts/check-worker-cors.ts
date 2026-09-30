@@ -31,9 +31,26 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 interface CheckResult {
   ok: boolean;
   worker_url: string;
+  /** #9116: URL efetivamente sondada (key inexistente de propósito). */
+  probe_url?: string;
   status?: number;
   header?: string;
   reason?: string;
+  /** #9116: explica por que `status: 404` com `ok: true` é o resultado esperado. */
+  note?: string;
+}
+
+/**
+ * #9116: nota anexada ao resultado quando o probe devolve 404 — o probe usa
+ * uma key que não existe de propósito, então 404 é o esperado; só o header
+ * CORS decide o `ok`. Sem a nota, `ok: true` + `status: 404` lia como sinal
+ * contraditório (edição 260930).
+ */
+export function probeStatusNote(status: number): string | undefined {
+  if (status === 404) {
+    return "404 esperado — o probe usa uma key inexistente; só o header CORS decide o ok";
+  }
+  return undefined;
 }
 
 /**
@@ -78,9 +95,11 @@ async function checkCors(workerUrl: string): Promise<CheckResult> {
     return {
       ok: evaluation.ok,
       worker_url: workerUrl,
+      probe_url: probeUrl,
       status: res.status,
       header: corsHeader ?? undefined,
       reason: evaluation.reason,
+      note: probeStatusNote(res.status),
     };
   } catch (e) {
     return {
@@ -123,15 +142,17 @@ async function main(): Promise<void> {
       `Reason: ${result.reason}\n\n` +
       `Fix: cd workers/poll && npx wrangler deploy\n`,
     );
-    process.exit(1);
+    // #9116: exitCode (não process.exit) — checkCors() acabou de fazer fetch;
+    // process.exit() com o socket keep-alive fechando abortava o Node no
+    // Windows com UV_HANDLE_CLOSING (exit 127 em vez de 0/1, edição 260930).
+    process.exitCode = 1;
   }
-  process.exit(0);
 }
 
 const isMain = isMainModule(import.meta.url);
 if (isMain) {
   main().catch((e) => {
     process.stderr.write(`[check-worker-cors] fatal: ${(e as Error).message}\n`);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }

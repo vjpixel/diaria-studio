@@ -34,7 +34,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts"; // #1803 review: .env
 import { renderHaltBanner } from "./lib/gate-banner.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1811: rejeita data inválida
-import { isWorkerReachable } from "./lib/worker-reachability.ts"; // #2551: DoH fallback p/ filtro DNS local
+import { isWorkerReachable, type WorkerReachabilityResult } from "./lib/worker-reachability.ts"; // #2551: DoH fallback p/ filtro DNS local
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4125 item 8: default alinhado ao resto do repo (#3904) — poll.diaria.workers.dev é domínio legado
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -240,6 +240,66 @@ export function resolvePollWorkerUrl(env: NodeJS.ProcessEnv = process.env): stri
   return env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
 }
 
+/**
+ * #9116: rota usada pelo pre-check de reachability. `/robots.txt` é estática
+ * no Worker `poll` (não toca KV nem depende de secret/brand) — `/health` não
+ * existe lá e sempre devolvia 404.
+ */
+export function reachabilityProbeUrl(workerUrl: string): string {
+  return `${workerUrl.replace(/\/+$/, "")}/robots.txt`;
+}
+
+/**
+ * #9116: mensagem do pre-check de reachability (null = nada a dizer). Pura e
+ * testável. Distingue "o Worker RESPONDEU com HTTP de erro" (`status`
+ * presente — DNS e conexão funcionaram) de "não houve resposta" — antes, um
+ * 404 direto caía no ramo "DNS + DoH ambos falharam", que é falso.
+ */
+export function describeReachability(
+  reach: WorkerReachabilityResult,
+  hostname: string,
+): string | null {
+  const tag = "[preflight-poll-dispatch]";
+  if (reach.up) {
+    if (reach.local_dns_filtered) {
+      return `${tag} ℹ️  DNS local filtra ${hostname} mas Worker responde via DoH/anycast (up=${reach.up}, via=${reach.via}).`;
+    }
+    if (reach.abort_timeout) {
+      return (
+        `${tag} ℹ️  Timeout no fetch nativo de ${hostname} ` +
+        `(servidor lento ou DNS filtrado por drop), mas Worker responde via DoH/anycast (up=${reach.up}, via=${reach.via}).`
+      );
+    }
+    return null;
+  }
+  const tail = `\n${tag} Continuando smoke-test (resultado autoritativo para gate duro)...`;
+  const detail = reach.error ?? "(sem detalhe)";
+  if (typeof reach.status === "number") {
+    return (
+      `${tag} ⚠️  Worker ${hostname} respondeu HTTP ${reach.status} no pre-check (via=${reach.via}) — ` +
+      `DNS e conexão OK, mas a rota de probe não respondeu 2xx.` +
+      tail
+    );
+  }
+  if (reach.local_dns_filtered) {
+    return (
+      `${tag} ⚠️  DNS local filtrando ${hostname} ` +
+      `— DoH resolve mas anycast não respondeu. Worker pode estar realmente down ou sem rota anycast. ` +
+      `Detalhes: ${detail}` +
+      tail
+    );
+  }
+  if (reach.abort_timeout) {
+    return (
+      `${tag} ⚠️  Timeout de conexão com ${hostname} ` +
+      `(servidor lento ou DNS filtrado por drop de pacotes) — DoH/anycast também falhou. ` +
+      `Detalhes: ${detail}` +
+      tail
+    );
+  }
+  return `${tag} ⚠️  Worker inacessível (sem resposta HTTP). Detalhes: ${detail}` + tail;
+}
+
 async function main(): Promise<void> {
   const { values } = parseCliArgs(process.argv.slice(2));
   const edition = values["edition"];
@@ -254,41 +314,14 @@ async function main(): Promise<void> {
 
   // #2551: pre-check de reachability com DoH fallback — antes de correr os
   // child scripts, detecta se DNS local está filtrando o domínio de marca.
+  // #9116: probe numa rota que EXISTE no Worker (`/robots.txt`) — antes era
+  // `/health`, que o Worker `poll` nunca teve, então o pre-check sempre via
+  // HTTP 404 e imprimia um aviso de "Worker inacessível" contraditório com o
+  // smoke-test votando OK logo depois.
   const POLL_WORKER_URL = resolvePollWorkerUrl();
-  const reach = await isWorkerReachable(`${POLL_WORKER_URL}/health`);
-  if (!reach.up) {
-    if (reach.local_dns_filtered) {
-      console.error(
-        `[preflight-poll-dispatch] ⚠️  DNS local filtrando ${new URL(POLL_WORKER_URL).hostname} ` +
-          `— DoH resolve mas anycast não respondeu. Worker pode estar realmente down ou sem rota anycast. ` +
-          `Detalhes: ${reach.error ?? "(sem detalhe)"}`,
-      );
-    } else if (reach.abort_timeout) {
-      console.error(
-        `[preflight-poll-dispatch] ⚠️  Timeout de conexão com ${new URL(POLL_WORKER_URL).hostname} ` +
-          `(servidor lento ou DNS filtrado por drop de pacotes) — DoH/anycast também falhou. ` +
-          `Detalhes: ${reach.error ?? "(sem detalhe)"}`,
-      );
-    } else {
-      console.error(
-        `[preflight-poll-dispatch] ⚠️  Worker inacessível (DNS + DoH ambos falharam). ` +
-          `Detalhes: ${reach.error ?? "(sem detalhe)"}`,
-      );
-    }
-    console.error(
-      `[preflight-poll-dispatch] Continuando smoke-test (resultado autoritativo para gate duro)...`,
-    );
-  } else if (reach.local_dns_filtered) {
-    console.error(
-      `[preflight-poll-dispatch] ℹ️  DNS local filtra ${new URL(POLL_WORKER_URL).hostname} ` +
-        `mas Worker responde via DoH/anycast (up=${reach.up}, via=${reach.via}).`,
-    );
-  } else if (reach.abort_timeout) {
-    console.error(
-      `[preflight-poll-dispatch] ℹ️  Timeout no fetch nativo de ${new URL(POLL_WORKER_URL).hostname} ` +
-        `(servidor lento ou DNS filtrado por drop), mas Worker responde via DoH/anycast (up=${reach.up}, via=${reach.via}).`,
-    );
-  }
+  const reach = await isWorkerReachable(reachabilityProbeUrl(POLL_WORKER_URL));
+  const reachMsg = describeReachability(reach, new URL(POLL_WORKER_URL).hostname);
+  if (reachMsg) console.error(reachMsg);
 
   const { decision, outcomes } = runPreflight(edition);
   console.log(JSON.stringify({ edition, outcomes, decision }, null, 2));
@@ -309,7 +342,11 @@ async function main(): Promise<void> {
           action: decision.haltAction ?? "corrija e retente",
         }),
     );
-    process.exit(1);
+    // #9116: exitCode (não process.exit) — main() já fez fetch (pre-check de
+    // reachability); process.exit() com sockets keep-alive fechando aborta o
+    // Node no Windows com UV_HANDLE_CLOSING (classe #1401/#4653).
+    process.exitCode = 1;
+    return;
   }
 
   console.error(`[preflight-poll-dispatch] OK — poll pronto pro dispatch.`);
@@ -319,6 +356,6 @@ async function main(): Promise<void> {
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[preflight-poll-dispatch] unexpected error: ${(e as Error).message}`);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }
