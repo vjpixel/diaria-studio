@@ -341,7 +341,7 @@ export function isProgramWarn(url: string, title?: string): boolean {
 // (`company-update`, `policy-update` furavam o gate como "produto"). Lançamentos
 // reais de update/feature quase sempre co-ocorrem com model/launch/família.
 const PRODUCT_SIGNAL_RE =
-  /\b(introduc(?:e|es|ing|ed)|launch(?:es|ing|ed)?|announc(?:e|es|ing|ed)|unveil(?:s|ing|ed)?|releas(?:e|es|ed|ing)|ship(?:s|ping|ped)?|debut(?:s|ing|ed)?|now\s?available|available\s?now|general\s?availability|early\s?access|preview|beta|model|models|app|apps|api|apis|sdk|cli|chip|chips|gpu|gpus|tpu|device|devices|hardware|wearable|robot|robots|tool|tools|toolkit|framework|library|runtime|platform|plugin|extension|agent|agents|assistant|copilot|version|product|products|lan[çc]a(?:mos|mento|r|ou)?|dispon[íi]vel|apresenta(?:ndo|m)?|estreia|atualiza[çc][ãa]o|gpt|claude|gemini|llama|mistral|grok|sora|dall\s?e|whisper|qwen|phi|flux|imagen|veo|copilot)\b/iu;
+  /\b(introduc(?:e|es|ing|ed)|launch(?:es|ing|ed)?|announc(?:e|es|ing|ed)|unveil(?:s|ing|ed)?|releas(?:e|es|ed|ing)|ship(?:s|ping|ped)?|debut(?:s|ing|ed)?|now\s?available|available\s?now|general\s?availability|early\s?access|preview|beta|model|models|app|apps|api|apis|sdk|cli|chip|chips|gpu|gpus|tpu|device|devices|hardware|wearable|robot|robots|bot|bots|tool|tools|toolkit|framework|library|runtime|platform|plugin|extension|agent|agents|assistant|copilot|version|product|products|lan[çc]a(?:mos|mento|r|ou)?|dispon[íi]vel|apresenta(?:ndo|m)?|estreia|atualiza[çc][ãa]o|gpt|claude|gemini|llama|mistral|grok|sora|dall\s?e|whisper|qwen|phi|flux|imagen|veo|copilot)\b/iu;
 
 // #4337: VERSION_SIGNAL_RE (versão de produto no slug CRU — `gpt-4`,
 // `claude-opus-4-5`, `4.5`, `v2`, `7b`, `o3`) foi extraído pra
