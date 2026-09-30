@@ -2038,10 +2038,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // Output: data/microsoft-ads/editorial-reasons-{YYYY-MM-DD}.json.
     //
     // Horário 10:00 BRT — 10min depois do Google Ads Spend Ingest (09:50),
-    // dentro do cluster matinal, sem colisão. Fail-soft por design: sem as
-    // 6 env vars MICROSOFT_ADS_* → exit 0, nada escrito (mesmo padrão do
-    // #5704). DECLARADA — arme via setup-systemd-timers.ts e posterior do
-    // editor (300).
+    // dentro do cluster matinal, sem colisão. Desde o #9091, mesmo contrato
+    // dos ingests (#9012/#9071): retry de rede + exit não-zero em falha real
+    // (credencial ausente, API, SOAP Fault); 0 motivos = exit 0. ARMADA na
+    // 300 (systemctl, rodada overnight 260909 — ver scheduled-tasks-registry.md).
     name: "Diaria-Microsoft-Ads-Editorial-Reasons",
     description: "captura motivos editoriais de assets rejeitados (Campaign Management API v13 SOAP)",
     steps: [{ key: "check", script: "scripts/microsoft-ads-editorial-reasons.ts" }],

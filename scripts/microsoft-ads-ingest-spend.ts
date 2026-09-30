@@ -107,7 +107,8 @@ const GOOGLE_IDENTITY_ENV_VARS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "M
  * caminhos (não só de um) é reportada como "missing" — com os 2 conjuntos
  * concatenados (não só o do Google), pra quem está configurando Azure AD
  * (ex: outra conta) também ver o que falta do LADO DELE, não só do Google.
- * Exportada pra teste direto (`test/microsoft-ads-ingest-spend.test.ts`) —
+ * Exportada pra teste direto (`test/microsoft-ads-ingest-spend.test.ts`) e
+ * reusada por `scripts/microsoft-ads-editorial-reasons.ts` (#9091) —
  * a lógica de prioridade/fallback é nova nesta PR (#5928), diferente do
  * check flat "tudo obrigatório" que `google-ads-ingest-spend.ts` tem.
  */
