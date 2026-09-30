@@ -1025,6 +1025,15 @@ export function signupFormScript(): string {
   </script>`;
 }
 
+/**
+ * Imagem de compartilhamento da home (#9117): a arte 1200×630 do DS
+ * (`assets/default-thumbnail-1200x630.png`, gerada por `gen-default-thumbnail.ts`),
+ * servida como asset estático do Worker `site`. URL ABSOLUTA — unfurlers
+ * (LinkedIn, WhatsApp, X, Slack) não resolvem `og:image` relativo. Sem ela o
+ * cartão saía sem imagem em todo compartilhamento da home.
+ */
+export const HOME_OG_IMAGE_URL = "https://diar.ia.br/og-default.png";
+
 export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
   const { feature } = opts;
   const topicLinks = renderTopicLinks();
@@ -1116,7 +1125,11 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
 <meta property="og:title" content="diar.ia.br — notícias de IA todo dia, em português">
 <meta property="og:description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.">
 <meta property="og:url" content="https://diar.ia.br/">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="${HOME_OG_IMAGE_URL}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="${HOME_OG_IMAGE_URL}">
 <meta name="twitter:title" content="diar.ia.br — notícias de IA todo dia, em português">
 <meta name="twitter:description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.">
 ${renderAnalyticsHead()}
