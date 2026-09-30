@@ -1093,6 +1093,7 @@ async function main(): Promise<void> {
     const { effective: effectiveBoxes, selection: boxSelection } = resolveBoxesForEdition({
       aammdd: editionAammdd,
       boxesCfg: boxesCfgLoaded,
+      destaqueCount, // #9175: slot 2 inativo em edição de 2 destaques
     });
 
     // #7668 item 2: fallback de busca sob demanda dos bodies de USE MELHOR,

@@ -41,7 +41,13 @@ Passos confirmados:
    `ok, count: 0` sem chamada real à MCP).
 4. Prompt: lista COMPLETA, referenciar `.claude/agents/beehiiv-engagement-backup.md`,
    exigir `Anti-fabricação`.
-5. `claude -p --allowedTools 'Read,Write,Bash,<mcp>...' > /tmp/` com `notify_on_complete`.
+5. `env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX claude -p --allowedTools 'Read,Write,Bash,<mcp>...' > /tmp/` com `notify_on_complete`.
+   O `env -u` é obrigatório (#9170, regra #5608/#6714 do CLAUDE.md): o processo
+   Hermes pode herdar `ANTHROPIC_API_KEY` do `.env` (#5114) ou um `export` de
+   gateway, e com qualquer um deles o `claude -p` autentica pela API paga e
+   PERDE o conector claude.ai Beehiiv de que este drain depende. Não usar
+   `claude-delegate.sh` aqui: os primeiros elos dele são OpenRouter (sem
+   conectores claude.ai) — só o último elo é assinatura.
 
 Pitfall observado: arquivo `/tmp/batch1-out.txt` vazio nos primeiros 465s —
 tempo normal (MCP paginado). Não interpretar vazio como falha; aguardar

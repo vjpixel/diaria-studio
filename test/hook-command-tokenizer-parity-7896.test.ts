@@ -17,6 +17,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { stripQuotedSpans as stripQuotedSpansA, stripHeredocSpans as stripHeredocSpansA } from "../.claude/hooks/block-unsafe-shared-checkout-ops.mjs";
 import { stripQuotedSpans as stripQuotedSpansB, stripHeredocSpans as stripHeredocSpansB } from "../.claude/hooks/block-worktree-bare-push.mjs";
+import { stripQuotedSpans as stripQuotedSpansC, stripHeredocSpans as stripHeredocSpansC } from "../.claude/hooks/block-handwritten-pr-checks-loop.mjs";
 
 const QUOTED_SPAN_CASES = [
   "",
@@ -51,6 +52,20 @@ describe("Paridade stripHeredocSpans entre os 2 hooks (#7896)", () => {
   for (const input of HEREDOC_CASES) {
     it(`casa para: ${JSON.stringify(input)}`, () => {
       assert.equal(stripHeredocSpansA(input), stripHeredocSpansB(input));
+    });
+  }
+});
+
+// #9161: 3ª cópia, em `block-handwritten-pr-checks-loop.mjs`.
+describe("Paridade da 3ª cópia (block-handwritten-pr-checks-loop, #9161)", () => {
+  for (const input of QUOTED_SPAN_CASES) {
+    it(`stripQuotedSpans casa para: ${JSON.stringify(input)}`, () => {
+      assert.equal(stripQuotedSpansC(input), stripQuotedSpansB(input));
+    });
+  }
+  for (const input of HEREDOC_CASES) {
+    it(`stripHeredocSpans casa para: ${JSON.stringify(input)}`, () => {
+      assert.equal(stripHeredocSpansC(input), stripHeredocSpansB(input));
     });
   }
 });

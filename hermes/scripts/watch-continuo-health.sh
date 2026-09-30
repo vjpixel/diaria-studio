@@ -611,40 +611,37 @@ QUEUE_AGE_H_THRESHOLD=12
 # `scripts/` a tira), então uma PR escalada uma vez (ex.: CI vermelho) e depois
 # consertada por push ficaria fora do alarme PARA SEMPRE — se travasse de
 # verdade depois (merge gate, merge lock), o alarme nunca dispararia. Regra:
-# a PR escalada só sai da fila se a escalada (último evento `labeled`
-# `continuo-escalado`) é POSTERIOR ou igual ao último commit da PR. Push
-# depois da escalada = a PR voltou a ser responsabilidade do gate e conta de
-# novo. Qualquer dado indisponível (gh falhou, sem evento, sem commit) =
-# fail-open NA DIREÇÃO DO ALARME: a PR conta (o pior caso é um alarme a mais,
-# nunca uma fila travada muda). As datas são ISO-8601 UTC (`...Z`) nos dois
-# lados, então a comparação lexicográfica do jq é cronológica.
+# a PR escalada só sai da fila enquanto o head atual (`headRefOid`) for o
+# MESMO SHA da última escalada. #9184: o SHA vem do marcador durável
+# `<!-- continuo-escalate: head=<sha> -->` que `check-continuo-escalate-label.ts`
+# grava a cada escalada de head novo — comparar datas (evento `labeled` x
+# committer date, versão do #9156) falhava em re-escalada (a label já está na
+# PR, o GitHub não registra `labeled` novo) e em commit local anterior à
+# escalada mas empurrado depois. Push depois da escalada = SHA diferente = a
+# PR voltou a ser responsabilidade do gate e conta de novo. Qualquer dado
+# indisponível (gh falhou, sem marcador, sem head) = fail-open NA DIREÇÃO DO
+# ALARME: a PR conta (o pior caso é um alarme a mais, nunca uma fila travada
+# muda).
 QUEUE_RAW_JSON=$(gh pr list --state open --json number,headRefName,createdAt,isDraft,labels \
   --jq '[.[] | select(.headRefName | startswith("bot/") | not) | select((.isDraft and (any(.labels[]; .name == "bloqueio-execucao"))) | not)]' 2>/dev/null)
 QUEUE_GH_RC=$?
 QUEUE_JSON=""
 if [ "$QUEUE_GH_RC" -eq 0 ] && [ -n "$QUEUE_RAW_JSON" ]; then
-  # Enriquecimento só das PRs escaladas (poucas): `escalatedAt` + `lastCommitAt`.
+  # Enriquecimento só das PRs escaladas (poucas): `escalatedHead` + `headSha`.
   QUEUE_ESCALATED_NUMBERS=$(printf '%s' "$QUEUE_RAW_JSON" | jq -r '.[] | select(any(.labels[]; .name == "continuo-escalado")) | .number' 2>/dev/null)
   QUEUE_ENRICH='{}'
   while IFS= read -r EN; do
     [ -z "$EN" ] && continue
-    ESC_AT=$(gh api "repos/{owner}/{repo}/issues/$EN/events" --paginate \
-      --jq '.[] | select(.event == "labeled" and .label.name == "continuo-escalado") | .created_at' 2>/dev/null | tail -n 1)
-    # Data do commit HEAD (não o último item de `gh pr view --json commits`, que
-    # só traz os 100 primeiros, e numa PR maior isso daria uma data antiga
-    # demais — exclusão indevida, contra o fail-open do alarme).
-    LAST_COMMIT_AT=""
+    ESC_HEAD=$(gh api "repos/{owner}/{repo}/issues/$EN/comments" --paginate \
+      --jq '.[].body | capture("<!-- continuo-escalate: head=(?<s>[0-9a-f]{7,40}) -->"; "g") | .s' 2>/dev/null | tail -n 1)
     HEAD_SHA_Q=$(gh pr view "$EN" --json headRefOid --jq '.headRefOid // empty' 2>/dev/null)
-    if [ -n "$HEAD_SHA_Q" ]; then
-      LAST_COMMIT_AT=$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA_Q" --jq '.commit.committer.date // empty' 2>/dev/null)
-    fi
-    QUEUE_ENRICH=$(printf '%s' "$QUEUE_ENRICH" | jq -c --arg n "$EN" --arg e "$ESC_AT" --arg c "$LAST_COMMIT_AT" \
-      '. + {($n): {escalatedAt: (if $e == "" then null else $e end), lastCommitAt: (if $c == "" then null else $c end)}}' 2>/dev/null || printf '%s' "$QUEUE_ENRICH")
+    QUEUE_ENRICH=$(printf '%s' "$QUEUE_ENRICH" | jq -c --arg n "$EN" --arg e "$ESC_HEAD" --arg c "$HEAD_SHA_Q" \
+      '. + {($n): {escalatedHead: (if $e == "" then null else $e end), headSha: (if $c == "" then null else $c end)}}' 2>/dev/null || printf '%s' "$QUEUE_ENRICH")
   done <<< "$QUEUE_ESCALATED_NUMBERS"
-  # Merge + filtro de decisão (#9156) — expressões ÚNICAS, exercitadas pelo
+  # Merge + filtro de decisão (#9156, #9184) — expressões ÚNICAS, exercitadas pelo
   # teste de regressão contra o jq real (test/continuo-merger-8445-8446-8447.test.ts).
   QUEUE_ENRICH_MERGE='[.[] | . + ($enrich[(.number | tostring)] // {})]'
-  QUEUE_ESCALATION_FILTER='[.[] | select((any(.labels[]; .name == "continuo-escalado") and .escalatedAt != null and .lastCommitAt != null and .escalatedAt >= .lastCommitAt) | not)]'
+  QUEUE_ESCALATION_FILTER='[.[] | select((any(.labels[]; .name == "continuo-escalado") and .escalatedHead != null and .headSha != null and .escalatedHead == .headSha) | not)]'
   QUEUE_JSON=$(printf '%s' "$QUEUE_RAW_JSON" | jq -c --argjson enrich "$QUEUE_ENRICH" "$QUEUE_ENRICH_MERGE" 2>/dev/null \
     | jq -c "$QUEUE_ESCALATION_FILTER" 2>/dev/null)
 fi

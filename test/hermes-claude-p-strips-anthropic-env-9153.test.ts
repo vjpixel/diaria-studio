@@ -159,3 +159,55 @@ describe("#9153 — execução real do prefixo extraído com claude stub", { ski
     });
   }
 });
+
+// #9170: receitas em prosa de `hermes/skills/**/*.md` também são executadas
+// (o agente Hermes copia o comando). Todo span de código (inline ou linha de
+// bloco cercado) que seja um COMANDO `claude -p ...` precisa do `env -u`.
+// Menção nua (`claude -p` sozinho, sem flags) é prosa e fica de fora.
+describe("#9170 — receitas `claude -p` em hermes/skills/**/*.md removem ANTHROPIC_*", () => {
+  const SKILLS = join(ROOT, "hermes", "skills");
+  function listMd(dir: string): string[] {
+    const out: string[] = [];
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) out.push(...listMd(p));
+      else if (e.name.endsWith(".md")) out.push(p);
+    }
+    return out;
+  }
+  function codeSpans(text: string): string[] {
+    const spans: string[] = [];
+    let inFence = false;
+    for (const line of text.split("\n")) {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) spans.push(line);
+      else for (const m of line.matchAll(/`([^`]+)`/g)) spans.push(m[1]);
+    }
+    return spans;
+  }
+  const commands = listMd(SKILLS).flatMap((f) =>
+    codeSpans(readFileSync(f, "utf8"))
+      .filter((s) => /(^|[\s|(])claude\s+(-p|--print)\b/.test(s) && s.trim() !== "claude -p")
+      .map((s) => ({ file: f.slice(ROOT.length + 1), span: s })),
+  );
+
+  it("encontra a receita do drain MCP (sanidade do parser)", () => {
+    assert.ok(
+      commands.some((c) => c.file.endsWith("tick-20260828-claim-collision-and-subagent.md")),
+      `comandos: ${JSON.stringify(commands)}`,
+    );
+  });
+
+  for (const c of commands) {
+    it(`${c.file}: \`${c.span.slice(0, 60)}...\` faz env -u de todas as vars`, () => {
+      const envIdx = c.span.search(/\benv\s+-u\b/);
+      const claudeIdx = c.span.search(/\bclaude\s/);
+      assert.ok(envIdx >= 0 && envIdx < claudeIdx, `receita sem \`env -u\` antes do claude -p: ${c.span}`);
+      const prefix = c.span.slice(envIdx, claudeIdx);
+      for (const v of REQUIRED_STRIPS) assert.match(prefix, new RegExp(`-u ${v}(\\s|$)`), `falta -u ${v}: ${c.span}`);
+    });
+  }
+});

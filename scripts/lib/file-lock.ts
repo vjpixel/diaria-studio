@@ -131,10 +131,11 @@ export function isLockOrphan(
   now = Date.now(),
   host = lockHostId(),
   alive: (pid: number) => boolean = pidAlive,
+  legacyStaleMs: number = LEGACY_STALE_MS,
 ): boolean {
   const owner = parseOwner(raw);
   if (owner) return owner.host === host && !alive(owner.pid);
-  return now - mtimeMs > LEGACY_STALE_MS;
+  return now - mtimeMs > legacyStaleMs;
 }
 
 /** Lê conteúdo + inode + mtime do MESMO arquivo aberto (null se sumiu). */
@@ -154,10 +155,19 @@ function readLockFile(lockPath: string): { raw: string; ino: number; mtimeMs: nu
 /**
  * Tenta remover um lock órfão (ver docstring do topo). Retorna true se
  * removeu — o caller deve tentar o `wx` de novo.
+ *
+ * Exportado (#9193) pra que quebradores externos (`breakStaleLock` do
+ * session-registry) sigam a MESMA política: dono registrado vivo nunca é
+ * quebrado, só conteúdo legado cai no critério de idade (`legacyStaleMs`), e
+ * a remoção relê o arquivo sob `.steal` antes do `unlink`.
  */
-function tryStealOrphan(lockPath: string): boolean {
+export function tryStealOrphan(
+  lockPath: string,
+  legacyStaleMs: number = LEGACY_STALE_MS,
+  now: number = Date.now(),
+): boolean {
   const seen = readLockFile(lockPath);
-  if (!seen || !isLockOrphan(seen.raw, seen.mtimeMs)) return false;
+  if (!seen || !isLockOrphan(seen.raw, seen.mtimeMs, now, lockHostId(), pidAlive, legacyStaleMs)) return false;
 
   const stealPath = `${lockPath}.steal`;
   try {
