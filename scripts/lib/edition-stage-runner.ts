@@ -36,7 +36,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 import { assertSentinel as assertSentinelImpl, type AssertResult } from "./pipeline-state.ts";
 import { resolveRunLogPath } from "./run-log.ts";
 import { parseCliJsonUsage, resultTextOrRaw } from "./cli-usage-json.ts";
@@ -221,11 +222,66 @@ function readRunLogLines(runLogPath: string): string[] {
   }
 }
 
+/**
+ * #9086 (pure, testável): `data/` é junction/symlink pro OneDrive na máquina
+ * do editor — o caminho REAL da edição fica FORA do diretório de trabalho do
+ * `claude -p` filho. `--permission-mode acceptEdits` só auto-aceita escrita
+ * DENTRO dos working directories, e sem sessão interativa não há quem aprove
+ * o resto: na edição 260930 o Stage 2 spawnado teve 18 `permission_denials`
+ * (Write/Bash sobre a pasta da edição), estourou `--max-turns`, e na retomada
+ * concluiu que a edição "não existia em disco" porque não conseguia nem
+ * listá-la. Fix: quando `data/` resolve pra fora do repo, passar o alvo real
+ * via `--add-dir`. Dentro do repo (clone sem junction) → nenhum arg extra.
+ */
+export function dataAddDirArgs(
+  repoRootAbs: string,
+  realpathFn: (p: string) => string = realpathSync,
+): string[] {
+  let realRepo: string;
+  let realData: string;
+  try {
+    realRepo = realpathFn(repoRootAbs);
+    realData = realpathFn(join(repoRootAbs, "data"));
+  } catch {
+    return []; // data/ ausente — nada a liberar; o stage falha por conta própria
+  }
+  const rel = relative(realRepo, realData);
+  const inside = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return inside ? [] : ["--add-dir", realData];
+}
+
+/**
+ * #9086 (pure): resume `permission_denials` do objeto `--output-format json`
+ * do CLI ("18 negadas: Write×11, Bash×6, Skill×1"). `null` quando não há
+ * negação ou o stdout não é JSON. Vai pro `failureTail` — negação de
+ * permissão é a causa mais provável de um "exit 0 sem sentinela" e antes
+ * era invisível no resumo.
+ */
+export function summarizePermissionDenials(raw: string): string | null {
+  let parsed: { permission_denials?: unknown };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const list = Array.isArray(parsed?.permission_denials) ? parsed.permission_denials : [];
+  if (list.length === 0) return null;
+  const counts = new Map<string, number>();
+  for (const d of list as Array<{ tool_name?: unknown }>) {
+    const name = typeof d?.tool_name === "string" ? d.tool_name : "?";
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n}×${c}`);
+  return `${list.length} permission_denials (${parts.join(", ")})`;
+}
+
 export interface RunEditionStagesOptions {
   aammdd: string;
   /** Diretório REAL da edição, já resolvido (flat legado OU nested). */
   editionDir: string;
   repoRootAbs: string;
+  /** #9086: injetável pra teste de `dataAddDirArgs`. */
+  realpathFn?: (p: string) => string;
   /**
    * Resolvedor do binário `claude` — FUNÇÃO, não string já resolvida.
    *
@@ -326,7 +382,9 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     assertSentinelFn = assertSentinelImpl,
     onProgress = () => {},
     nowMs = () => Date.now(),
+    realpathFn = realpathSync,
   } = opts;
+  const addDirArgs = dataAddDirArgs(repoRootAbs, realpathFn);
 
   assertNoPublishStage(plan);
 
@@ -406,6 +464,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           // dado a capturar aqui, com ou sem `--session-id` explícito.
           "json",
           "--no-session-persistence",
+          ...addDirArgs,
           prompt,
         ],
         {
@@ -449,6 +508,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
         if (looksLikeBackgroundWaitExit(diagnosticText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
           continue;
         }
+        const denials = summarizePermissionDenials(stdoutText);
         const tail = summarizeFailure(diagnosticText);
         exitCode = 1;
         failedStage = stage;
@@ -458,7 +518,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           status: "failed",
           exitCode: 1,
           durationMs: nowMs() - startedAt,
-          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail} | últimas linhas de stdout: ${tail}`,
+          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail}${denials ? ` | ${denials}` : ""} | últimas linhas de stdout: ${tail}`,
         };
         break;
       }
