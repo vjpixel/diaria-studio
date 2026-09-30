@@ -75,6 +75,17 @@
  * consumir tentativa, pra que o candidato não saia da fila sem registro quando o
  * snapshot base avança antes do próximo sucesso.
  *
+ * ## Teto da falha AMBÍGUA de rede (#9182, par do #9157 do Google)
+ *
+ * `network_error` é ambíguo: a exceção no `fetch` (timeout incluído) pode vir
+ * DEPOIS de o POST sair, com a Meta já tendo processado o evento. Sem teto, o
+ * lote reenviaria o mesmo evento a cada hora até a janela de `windowDays`
+ * (~168x). Por isso rede incrementa `uncountedPostAttempts` e, ao atingir
+ * `META_CONFIRMATION_MAX_UNCOUNTED_POST_ATTEMPTS`, vira
+ * `skipped-failed-permanent`. 5xx/429 ficam FORA desse teto (a Meta respondeu:
+ * o contrato do #9022 é que nunca viram permanentes) e continuam não
+ * consumindo `attempts`.
+ *
  * ## Guard de publicação
  *
  * `dryRun` (default do CLI) não faz chamada nenhuma nem toca o índice. Sem
@@ -108,6 +119,15 @@ import { isValidVisitorId } from "./shared/visitor-id.ts"; // #8978
 
 export const META_CONFIRMATION_DEFAULT_WINDOW_DAYS = 7;
 export const META_CONFIRMATION_MAX_FAILED_ATTEMPTS = 3;
+/**
+ * #9182: teto das falhas AMBÍGUAS (`network_error` — o POST pode ter saído e
+ * sido processado). 24 porque a task é HORÁRIA (#8983): ~1 dia de rede
+ * instável sem descartar a linha, e todos os reenvios caem dentro da janela
+ * de dedup por `event_id` da Meta (48h) — reenviar além dela deixaria de ser
+ * inócuo. Uma troca de cadência muda a leitura em horas deste número.
+ * 5xx/429 (#9022) não consomem este teto; 4xx segue em `MAX_FAILED_ATTEMPTS`.
+ */
+export const META_CONFIRMATION_MAX_UNCOUNTED_POST_ATTEMPTS = 24;
 
 /**
  * #9022: 5xx/429 da Meta = falha transitória (instabilidade/throttling), não
@@ -156,6 +176,9 @@ export interface MetaConfirmationIndexEntry {
   path: ConfirmationPath;
   eventId?: string;
   attempts?: number;
+  /** #9182: `network_error`s (POST possivelmente processado) — ver
+   *  `META_CONFIRMATION_MAX_UNCOUNTED_POST_ATTEMPTS`. Ausente = 0. */
+  uncountedPostAttempts?: number;
 }
 export type MetaConfirmationIndex = Record<string, MetaConfirmationIndexEntry>;
 
@@ -224,7 +247,8 @@ export interface MetaConfirmationSummary {
   failed: number;
   failedPermanent: number;
   failedIds: number[];
-  /** #9022/#9066: subconjunto de `failed` com 5xx/429 ou falha de rede — não consumiu tentativa. */
+  /** #9022/#9066: subconjunto de `failed` com 5xx/429 ou falha de rede — não consumiu tentativa
+   *  (rede consome `uncountedPostAttempts`, #9182; inclui a que esgotou esse teto nesta rodada). */
   transientFailed: number;
   notConfigured: number;
 }
@@ -289,7 +313,12 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
   }
   const pending = detected.filter((c) => {
     const e = index[metaIndexKey(c.id)];
-    return !e || (e.status === "failed" && (e.attempts ?? 0) < META_CONFIRMATION_MAX_FAILED_ATTEMPTS);
+    return (
+      !e ||
+      (e.status === "failed" &&
+        (e.attempts ?? 0) < META_CONFIRMATION_MAX_FAILED_ATTEMPTS &&
+        (e.uncountedPostAttempts ?? 0) < META_CONFIRMATION_MAX_UNCOUNTED_POST_ATTEMPTS)
+    );
   });
 
   const summary: MetaConfirmationSummary = {
@@ -409,23 +438,40 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
       // e se o snapshot base avançasse antes do próximo sucesso, o candidato
       // saía de `selectConfirmationCandidates` e (sem entrada `failed` no
       // índice) também do loop de retry: sumia sem registro.
+      // #9182: rede é AMBÍGUA (o POST pode ter sido processado) e consome um
+      // teto próprio; 5xx/429 é resposta da Meta e fica fora dele (#9022).
       summary.failed++;
       summary.transientFailed++;
       summary.failedIds.push(cand.id);
-      const prevAttempts = index[metaIndexKey(cand.id)]?.attempts ?? 0;
-      record(cand, { status: "failed", eventId, attempts: prevAttempts });
-      const cause = result.reason === "network_error" ? "falha de rede" : `Meta respondeu ${result.status}`;
-      log(`kit id ${cand.id}: ${cause} (transitório) — sem consumir tentativa, reenvia na próxima rodada.`);
+      const prev = index[metaIndexKey(cand.id)];
+      const prevAttempts = prev?.attempts ?? 0;
+      const prevUncounted = prev?.uncountedPostAttempts ?? 0;
+      const uncounted = result.reason === "network_error" ? prevUncounted + 1 : prevUncounted;
+      const extra = uncounted > 0 ? { uncountedPostAttempts: uncounted } : {};
+      if (uncounted >= META_CONFIRMATION_MAX_UNCOUNTED_POST_ATTEMPTS) {
+        summary.failedPermanent++;
+        record(cand, { status: "skipped-failed-permanent", eventId, attempts: prevAttempts, ...extra });
+        log(
+          `kit id ${cand.id}: ${uncounted} falha(s) de rede sem resposta da Meta — desistindo ` +
+            "(skipped-failed-permanent) pra não reenviar um evento que pode já ter sido processado.",
+        );
+      } else {
+        record(cand, { status: "failed", eventId, attempts: prevAttempts, ...extra });
+        const cause = result.reason === "network_error" ? "falha de rede" : `Meta respondeu ${result.status}`;
+        log(`kit id ${cand.id}: ${cause} (transitório) — sem consumir tentativa, reenvia na próxima rodada.`);
+      }
     } else if (result.reason === "meta_error") {
       summary.failed++;
       summary.failedIds.push(cand.id);
-      const attempts = (index[metaIndexKey(cand.id)]?.attempts ?? 0) + 1;
+      const prev = index[metaIndexKey(cand.id)];
+      const attempts = (prev?.attempts ?? 0) + 1;
+      const extra = prev?.uncountedPostAttempts ? { uncountedPostAttempts: prev.uncountedPostAttempts } : {};
       if (attempts >= META_CONFIRMATION_MAX_FAILED_ATTEMPTS) {
         summary.failedPermanent++;
-        record(cand, { status: "skipped-failed-permanent", eventId, attempts });
+        record(cand, { status: "skipped-failed-permanent", eventId, attempts, ...extra });
         log(`kit id ${cand.id} recusado ${attempts}x pela Meta — desistindo (skipped-failed-permanent).`);
       } else {
-        record(cand, { status: "failed", eventId, attempts });
+        record(cand, { status: "failed", eventId, attempts, ...extra });
       }
     } else {
       // Exaustividade: um `reason` novo em `MetaCapiSendResult` quebra o build
