@@ -186,15 +186,13 @@ function reconcileAlarms(pending: AlarmFinding[]): void {
 
 /** Reconstrói os achados `prosa-defasada` ATUALMENTE abertos a partir do
  * estado persistido (#9019, review PR #9047 finding 1) — usado pelos
- * catches de falha que acontecem ANTES de `planAllHubs` rodar (worktree
- * indisponível), que não têm como recalcular se cada hub ainda cruza o
- * limiar. Sem isso, `alarmFailure(..., [])` reconciliaria com uma lista de
+ * catches de falha em que `proseAlarmSlugs` não está disponível (worktree
+ * indisponível, ou o próprio `planAllHubs` lançou — #9152), que não têm
+ * como recalcular se cada hub ainda cruza o limiar. Sem isso, `alarmFailure(..., [])` reconciliaria com uma lista de
  * achados de prosa VAZIA, e `applyAlarmReconciliation` leria "nenhum hub
  * defasado neste run" — avançando o `missingStreak` de toda issue de prosa
  * aberta rumo ao auto-close (`CLOSE_ALARM_ISSUE_AFTER_RUNS`), mesmo que o
- * hub continue genuinamente defasado; só faltou saber. Vale também pro
- * catch do `regen-scan` (#9152): ali é o PRÓPRIO `planAllHubs` que lança,
- * então `proseAlarmSlugs` nunca chega a existir — mesmo caso. `statePath`
+ * hub continue genuinamente defasado; só faltou saber. `statePath`
  * injetável só pra teste. */
 export function openProseFindings(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmFinding[] {
   if (!existsSync(statePath)) return [];
@@ -491,15 +489,12 @@ async function main(): Promise<void> {
   }
 
   try {
-    let hubPlans: HubPlan[];
-    let proseAlarmSlugs: string[];
-    let proseState: ProseReviewState;
     const planned = planAllHubsOrAlarm(today, resolve(workRoot, "scripts/lib/hubs"));
     if (!planned) {
       process.exitCode = 1;
       return;
     }
-    ({ hubPlans, proseAlarmSlugs, proseState } = planned);
+    const { hubPlans, proseAlarmSlugs, proseState } = planned;
 
     const proseFindings = proseAlarmSlugs.map(proseAlarmFinding);
     const touched = hubPlans.filter((h) => h.plan.hasDataChange);

@@ -10,7 +10,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -67,6 +67,26 @@ describe("planAllHubsOrAlarm — catch do regen-scan preserva achados de prosa a
     });
     assert.equal(result, planned);
     assert.equal(alarmed, false);
+  });
+
+  it("sem openProse injetado, o default é openProseFindings() (não uma lista vazia)", () => {
+    const calls: AlarmFinding[][] = [];
+    planAllHubsOrAlarm("2026-09-30", "/nao/importa", {
+      plan: () => {
+        throw new Error("boom");
+      },
+      alarm: (_r, _d, alsoWith) => calls.push(alsoWith),
+    });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], openProseFindings());
+  });
+
+  it("main() usa planAllHubsOrAlarm e não sobra catch inline de regen-scan sem os achados de prosa", () => {
+    const src = readFileSync(resolve(import.meta.dirname, "..", "scripts", "hubs-weekly-regen.ts"), "utf8");
+    const mainBody = src.slice(src.indexOf("async function main("));
+    assert.match(mainBody, /planAllHubsOrAlarm\(/);
+    assert.doesNotMatch(mainBody, /alarmFailure\(\s*"regen-scan"/);
+    assert.doesNotMatch(mainBody, /=\s*planAllHubs\(/);
   });
 
   it("openProseFindings sem arquivo de estado -> lista vazia", () => {
