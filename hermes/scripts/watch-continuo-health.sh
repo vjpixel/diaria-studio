@@ -605,9 +605,42 @@ QUEUE_AGE_H_THRESHOLD=12
 # as duas já passaram pelo gate e foram escaladas de propósito. Ao contrário
 # de `bloqueio-execucao`, esta exclusão não depende de `isDraft`: a PR #9004
 # não é draft e mesmo assim já tem dono.
-QUEUE_JSON=$(gh pr list --state open --json number,headRefName,createdAt,isDraft,labels \
-  --jq '[.[] | select(.headRefName | startswith("bot/") | not) | select((.isDraft and (any(.labels[]; .name == "bloqueio-execucao"))) | not) | select((any(.labels[]; .name == "continuo-escalado")) | not)]' 2>/dev/null)
+#
+# #9156: a exclusão do #9031 é LIMITADA NO TEMPO. A label `continuo-escalado`
+# nunca é removida (a skill do contínuo manda não removê-la e nada em
+# `scripts/` a tira), então uma PR escalada uma vez (ex.: CI vermelho) e depois
+# consertada por push ficaria fora do alarme PARA SEMPRE — se travasse de
+# verdade depois (merge gate, merge lock), o alarme nunca dispararia. Regra:
+# a PR escalada só sai da fila se a escalada (último evento `labeled`
+# `continuo-escalado`) é POSTERIOR ou igual ao último commit da PR. Push
+# depois da escalada = a PR voltou a ser responsabilidade do gate e conta de
+# novo. Qualquer dado indisponível (gh falhou, sem evento, sem commit) =
+# fail-open NA DIREÇÃO DO ALARME: a PR conta (o pior caso é um alarme a mais,
+# nunca uma fila travada muda). As datas são ISO-8601 UTC (`...Z`) nos dois
+# lados, então a comparação lexicográfica do jq é cronológica.
+QUEUE_RAW_JSON=$(gh pr list --state open --json number,headRefName,createdAt,isDraft,labels \
+  --jq '[.[] | select(.headRefName | startswith("bot/") | not) | select((.isDraft and (any(.labels[]; .name == "bloqueio-execucao"))) | not)]' 2>/dev/null)
 QUEUE_GH_RC=$?
+QUEUE_JSON=""
+if [ "$QUEUE_GH_RC" -eq 0 ] && [ -n "$QUEUE_RAW_JSON" ]; then
+  # Enriquecimento só das PRs escaladas (poucas): `escalatedAt` + `lastCommitAt`.
+  QUEUE_ESCALATED_NUMBERS=$(printf '%s' "$QUEUE_RAW_JSON" | jq -r '.[] | select(any(.labels[]; .name == "continuo-escalado")) | .number' 2>/dev/null)
+  QUEUE_ENRICH='{}'
+  while IFS= read -r EN; do
+    [ -z "$EN" ] && continue
+    ESC_AT=$(gh api "repos/{owner}/{repo}/issues/$EN/events" --paginate \
+      --jq '.[] | select(.event == "labeled" and .label.name == "continuo-escalado") | .created_at' 2>/dev/null | tail -n 1)
+    LAST_COMMIT_AT=$(gh pr view "$EN" --json commits --jq '.commits[-1].committedDate // empty' 2>/dev/null)
+    QUEUE_ENRICH=$(printf '%s' "$QUEUE_ENRICH" | jq -c --arg n "$EN" --arg e "$ESC_AT" --arg c "$LAST_COMMIT_AT" \
+      '. + {($n): {escalatedAt: (if $e == "" then null else $e end), lastCommitAt: (if $c == "" then null else $c end)}}' 2>/dev/null || printf '%s' "$QUEUE_ENRICH")
+  done <<< "$QUEUE_ESCALATED_NUMBERS"
+  # Filtro de decisão (#9156) — expressão ÚNICA, exercitada pelo teste de
+  # regressão contra o jq real (test/continuo-merger-8445-8446-8447.test.ts).
+  QUEUE_ESCALATION_FILTER='[.[] | select((any(.labels[]; .name == "continuo-escalado") and .escalatedAt != null and .lastCommitAt != null and .escalatedAt >= .lastCommitAt) | not)]'
+  QUEUE_JSON=$(printf '%s' "$QUEUE_RAW_JSON" | jq -c --argjson enrich "$QUEUE_ENRICH" \
+    '[.[] | . + ($enrich[(.number | tostring)] // {})]' 2>/dev/null | jq -c "$QUEUE_ESCALATION_FILTER" 2>/dev/null)
+  [ -z "$QUEUE_JSON" ] && QUEUE_GH_RC=1
+fi
 if [ "$QUEUE_GH_RC" -ne 0 ] || [ -z "$QUEUE_JSON" ]; then
   echo "[watch] fila de PRs: INDETERMINADO (gh pr list falhou)" >&2
   FAILS=$((FAILS + 1))
