@@ -33,6 +33,7 @@ import {
   checkOAuthLock,
   checkWranglerLock,
   checkApiKeyLocks,
+  classifyCodexStatus,
   checkMcpConnectors,
   preflightExternalLocks,
   type LockCheckResult,
@@ -260,6 +261,13 @@ describe("checkWranglerLock (#2358)", () => {
   });
 });
 
+function geminiConfigFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), "preflight-gemini-"));
+  const p = join(dir, "platform.config.json");
+  writeFileSync(p, JSON.stringify({ image_generator: "gemini" }));
+  return p;
+}
+
 // ── 3. checkApiKeyLocks ───────────────────────────────────────────────────────
 
 describe("checkApiKeyLocks (#2358)", () => {
@@ -269,10 +277,12 @@ describe("checkApiKeyLocks (#2358)", () => {
     delete process.env.CLOUDFLARE_API_TOKEN; // garantir gemini é o default
 
     try {
-      const results = checkApiKeyLocks();
+      // #9093: config fixo (gemini) — o platform.config.json real é codex desde
+      // #9088, e o `if (geminiEntry)` anterior passava sem verificar nada.
+      const results = checkApiKeyLocks({ configPath: geminiConfigFixture() });
       const geminiEntry = results.find((r) => r.dependency.includes("GEMINI"));
-      // Só aparece se platform.config.json configura gemini (ou default)
-      if (geminiEntry) {
+      assert.ok(geminiEntry, "gemini configurado deve gerar entrada");
+      {
         assert.equal(geminiEntry.state, "missing");
         assert.ok(
           geminiEntry.blocks_stages.includes(1),
@@ -309,9 +319,10 @@ describe("checkApiKeyLocks (#2358)", () => {
     process.env.GEMINI_API_KEY = "AIzaSy_test_key_presente_no_env_12345";
 
     try {
-      const results = checkApiKeyLocks();
+      const results = checkApiKeyLocks({ configPath: geminiConfigFixture() });
       const geminiEntry = results.find((r) => r.dependency.includes("GEMINI"));
-      if (geminiEntry) {
+      assert.ok(geminiEntry, "gemini configurado deve gerar entrada");
+      {
         assert.equal(geminiEntry.state, "ok");
         assert.deepEqual(geminiEntry.blocks_stages, []);
         assert.equal(geminiEntry.reauth_action, "");
@@ -323,6 +334,60 @@ describe("checkApiKeyLocks (#2358)", () => {
         delete process.env.GEMINI_API_KEY;
       }
     }
+  });
+});
+
+describe("checkApiKeyLocks — image_generator=codex (#9093)", () => {
+  const cfg = (extra: Record<string, unknown> = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), "preflight-codex-"));
+    const p = join(dir, "platform.config.json");
+    writeFileSync(p, JSON.stringify({ image_generator: "codex", codex: { fallback: "gemini" }, ...extra }));
+    return p;
+  };
+  const ok = () => ({ status: 0, stdout: "Logged in using ChatGPT", stderr: "" });
+
+  it("login válido → codex ok; key do fallback ausente não bloqueia", () => {
+    const orig = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: ok });
+      const codex = r.find((x) => x.dependency.startsWith("Codex CLI"));
+      assert.equal(codex?.state, "ok");
+      const fb = r.find((x) => x.dependency.includes("GEMINI"));
+      assert.equal(fb?.state, "missing");
+      assert.deepEqual(fb?.blocks_stages, [], "fallback só bloqueia se o Codex estiver quebrado");
+    } finally {
+      if (orig !== undefined) process.env.GEMINI_API_KEY = orig;
+    }
+  });
+
+  it("login expirado → expired com ação `codex login`, e a key do fallback passa a bloquear", () => {
+    const orig = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: () => ({ status: 1, stdout: "", stderr: "Not logged in" }) });
+      const codex = r.find((x) => x.dependency.startsWith("Codex CLI"))!;
+      assert.equal(codex.state, "expired");
+      assert.deepEqual(codex.blocks_stages, [1, 3]);
+      assert.match(codex.reauth_action, /codex login/);
+      assert.deepEqual(r.find((x) => x.dependency.includes("GEMINI"))?.blocks_stages, [1, 3]);
+    } finally {
+      if (orig !== undefined) process.env.GEMINI_API_KEY = orig;
+    }
+  });
+
+  it("sem fallback configurado → só a entrada do Codex", () => {
+    const r = checkApiKeyLocks({ configPath: cfg({ codex: {} }), runCodexStatus: ok });
+    assert.equal(r.length, 1);
+  });
+
+  it("classifyCodexStatus: ENOENT → missing; timeout → expired; login por API key → expired", () => {
+    assert.equal(classifyCodexStatus({ status: null, error: { code: "ENOENT", message: "spawn codex ENOENT" } }).state, "missing");
+    const t = classifyCodexStatus({ status: null, error: { code: "ETIMEDOUT", message: "t" } });
+    assert.equal(t.state, "expired");
+    assert.match(t.detail ?? "", /não respondeu/);
+    assert.equal(classifyCodexStatus({ status: 0, stdout: "Logged in using an API key - sk-***" }).state, "expired");
+    assert.equal(classifyCodexStatus(ok()).state, "ok");
   });
 });
 
@@ -382,6 +447,8 @@ describe("preflightExternalLocks integração (#2358)", () => {
         skipOauth: true,
         fetchImpl: mockFetchJson(200, { success: true, result: { status: "active" } }),
         apiToken: "tok_valid_test_xyz",
+        // #9093: sem isto o resultado dependeria do Codex CLI instalado/logado na máquina.
+        apiKeyLockOptions: { configPath: geminiConfigFixture() },
       });
 
       const blocking = results.filter(

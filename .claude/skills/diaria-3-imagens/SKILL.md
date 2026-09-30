@@ -34,7 +34,7 @@ Dispara a Etapa 3 da edição diar.ia.br: coleta o resultado do `eia-composer` (
 ## Passo 0 — Task tracking setup (#904)
 
 **Defensive cleanup**: varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de Stages anteriores (`Stage 0*`, `Stage 1*`, `Stage 2*`). Em seguida, criar tasks pra esta etapa: `Stage 3a — É IA? collect/regenerate`, `Stage 3b — image generate (d1/d2/d3)`, `Stage 3c — gate humano`. Marcar `completed` quando cada passo retornar; `Stage 3c` fecha imediatamente após aprovação do gate. Detalhe completo em `.claude/agents/orchestrator.md` § "Task tracking — UI hygiene". **No-op se TaskCreate/TaskUpdate não estiver disponível**.
-- `GEMINI_API_KEY` configurada como variável de ambiente (para geração das imagens e É IA?)
+- Gerador de imagem: `platform.config.json > image_generator` é `codex` desde #9088 — exige o Codex CLI instalado e logado com a conta ChatGPT (`codex login`, ver `docs/codex-image-setup.md`; checado no Stage 0 pelo preflight, #9093). `GEMINI_API_KEY` continua necessária: fallback do Codex (`codex.fallback`), tradução do É IA? e embeddings do topic-cluster
 - Para as imagens de destaque: `{EDIR}/_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` devem existir (gerados pela Etapa 2 — writer; #607)
 - (Opcional) `BEEHIIV_API_KEY` + `BEEHIIV_PUBLICATION_ID` para auto-fill de resultado do poll anterior no É IA?
 

@@ -624,10 +624,17 @@ export function renderHeadlineInner(title: string, url: string): string {
   return `<a class="headline" href="${esc(url)}" style="display:inline-block;margin:18px 0 0;color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;" target="_blank" rel="noopener noreferrer nofollow"><h2 style="margin:0;padding:0;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;font-weight:normal;color:inherit;">${esc(title)}</h2></a>`;
 }
 
-export function imageGeneratorCredit(): string {
+/**
+ * Legenda de crédito da imagem. #9095: `effectiveGenerator` (lido do sidecar
+ * `_internal/04-d{N}-generator.json` por `extractContent`) tem precedência
+ * sobre `image_generator` do config — senão o fallback do Codex publicava
+ * "Criada com ChatGPT" numa imagem gerada pelo Gemini.
+ */
+export function imageGeneratorCredit(effectiveGenerator?: string): string {
   try {
-    const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
-    const gen = cfg.image_generator ?? "gemini";
+    const gen = effectiveGenerator
+      ?? JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")).image_generator
+      ?? "gemini";
     const credits: Record<string, string> = {
       gemini:     "Criada com Gemini",
       openai:     "Criada com gpt-image-2",
@@ -1490,7 +1497,7 @@ export function renderDestaque(d: RenderDestaque, whatsappShareHtml = "", esp: E
   const inner = [
     renderKicker(d.category),
     renderHeadlineInner(d.title, d.url),
-    renderHeroImageInner(heroFile, d.title),
+    renderHeroImageInner(heroFile, d.title, imageGeneratorCredit(d.imageGenerator)), // #9095
     renderBodyParasInner(d.body, esp), // #5176: pPad/margem condicionais ao ESP
     renderWhyBoxInner(d.why),
     d.n === 1 ? whatsappShareHtml : "", // #5152

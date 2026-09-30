@@ -28,6 +28,9 @@
 import 'dotenv/config';
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { CODEX_FALLBACK_SCRIPTS } from "./lib/image-backends.ts"; // #9110 item 5
+import { writeImageGeneratorSidecar } from "./lib/shared/image-generator-sidecar.ts"; // #9095
+import { logEvent } from "./lib/run-log.ts"; // #9095
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSdPrompt } from "./lib/schemas/image-generate.ts"; // #649
@@ -213,13 +216,13 @@ export function computeStaleDerivedImages(
   return staleDerivedImagePaths(outDir, destaque);
 }
 
-// #9088: scripts dos backends usáveis como fallback do Codex.
-const FALLBACK_SCRIPTS: Record<string, string> = {
-  gemini: "gemini-image.js",
-  comfyui: "comfyui-run.js",
-  cloudflare: "cloudflare-image.js",
-  openai: "openai-image.js",
-};
+/** #9095: AAMMDD da edição a partir do `--out-dir` (`data/editions/260930/`,
+ * ou layout aninhado `.../2609/260930/`); `null` fora do layout diário
+ * (mensal, ad-hoc) — `logEvent` aceita edição nula. */
+export function editionFromOutDir(outDir: string): string | null {
+  const last = outDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+  return /^\d{6}$/.test(last) ? last : null;
+}
 
 function buildPositivePrompt(editorialText: string): string {
   // Remove markdown formatting (headings, bold, links) and get clean scene description
@@ -411,7 +414,8 @@ function main() {
   console.error(`Positive: ${positivePrompt.slice(0, 120)}...`);
 
   // Escolher backend de geração com base em platform.config.json > image_generator.
-  // Suporta "gemini" (padrão), "cloudflare" (Workers AI free tier), "comfyui" e "openai".
+  // Suporta "codex" (padrão desde #9088, com `codex.fallback`), "gemini",
+  // "cloudflare" (Workers AI free tier), "comfyui" e "openai".
   // #4625 item 4: valida via parsePlatformConfig (schema Zod) em vez de um
   // cast cru — mesmo fix aplicado em scripts/eia-compose.ts.
   const platformCfg = parsePlatformConfig(
@@ -425,6 +429,8 @@ function main() {
     generator === "codex"       ? "codex-image.js" :
     "gemini-image.js";
   const imageScript = resolve(ROOT, "scripts", scriptName);
+  // #9095: backend que DE FATO gerou a imagem (muda se o fallback assumir).
+  let effectiveGenerator: string = generator;
 
   try {
     execFileSync(
@@ -438,8 +444,18 @@ function main() {
     // #9088: fallback opcional do Codex (login expirado, timeout) pra edição não travar.
     const fb = generator === "codex" ? platformCfg.codex?.fallback : undefined;
     if (!fb) process.exit(code);
-    const fbScript = FALLBACK_SCRIPTS[fb];
+    const fbScript = CODEX_FALLBACK_SCRIPTS[fb];
     console.error(`image-generate: codex falhou — fallback configurado: ${fb} (${fbScript}).`);
+    // #9095: fallback visível no run-log (antes só no stderr).
+    logEvent({
+      edition: editionFromOutDir(normalizedOutDir),
+      stage: 3,
+      agent: "image-generate",
+      level: "warn",
+      message: `codex falhou (exit ${code}) para ${destaque} — fallback para ${fb}`,
+      details: { destaque, fallback: fb },
+    }, ROOT);
+    effectiveGenerator = fb;
     try {
       execFileSync(process.execPath, [resolve(ROOT, "scripts", fbScript), sdPromptPath, outJpgPath, filenamePrefix], { stdio: "inherit", cwd: ROOT });
     } catch (e2: unknown) {
@@ -451,6 +467,14 @@ function main() {
 
   // Wide: salvar 1600×800 como 04-d{N}-2x1.jpg, crop centro 800×800 como 04-d{N}-1x1.jpg
   if (wide) {
+    // #9095: o hero 2x1 é a imagem que carrega legenda na newsletter — grava
+    // o backend efetivo pra legenda não nomear o gerador configurado quando
+    // o fallback é quem gerou.
+    writeImageGeneratorSidecar(normalizedOutDir, destaque, {
+      generator: effectiveGenerator,
+      configured: generator,
+      fallback: effectiveGenerator !== generator,
+    });
     const wideJpgPath = widePath2x1;
     const squareJpgPath = widePath1x1;
 

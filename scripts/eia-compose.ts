@@ -56,13 +56,15 @@ import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { logEvent } from "./lib/run-log.ts"; // #4620
+import { CODEX_FALLBACK_SCRIPTS, backendNeedsEnglishPrompt } from "./lib/image-backends.ts"; // #9110 item 5
 import { parsePlatformConfig } from "./lib/schemas/platform-config.ts"; // #4625 item 4
 
 // Domínio real de platform.config.json > image_generator QUE ESTE ARQUIVO
 // sabe dispatchar (ver resolveImageScriptName, #4625) — não é o
 // schema completo (scripts/lib/schemas/platform-config.ts também aceita
 // "openai", que este arquivo trata como gemini por fallback silencioso,
-// pré-existente, fora do escopo do #4620).
+// pré-existente, fora do escopo do #4620). Padrão desde #9088: "codex", com
+// `codex.fallback` (CODEX_FALLBACK_SCRIPTS, #9110) quando o Codex falha.
 type ImageGenerator = "gemini" | "comfyui" | "cloudflare" | "codex";
 
 export interface WikimediaImage {
@@ -1480,9 +1482,17 @@ async function main(): Promise<void> {
     // #9088: mesmo fallback do image-generate.ts quando o Codex falha (login expirado, timeout).
     const fb = imageGenerator === "codex" ? platformCfg.codex?.fallback : undefined;
     if (!fb) throw e;
-    const fbScript = { gemini: "scripts/gemini-image.js", comfyui: "scripts/comfyui-run.js", cloudflare: "scripts/cloudflare-image.js", openai: "scripts/openai-image.js" }[fb];
+    // #9110 item 5: mapa único compartilhado com image-generate.ts (era inline aqui).
+    const fbScript = `scripts/${CODEX_FALLBACK_SCRIPTS[fb]}`;
     console.error(`eia-compose: codex falhou (${(e as Error).message}) — fallback: ${fb}`);
     logEvent({ edition, stage: 1, agent: "eia-compose", level: "warn", message: `codex falhou, fallback para ${fb}` });
+    // #9110 item 5 / #4620: o prompt foi resolvido pro Codex (multilíngue, pode
+    // estar em pt-BR). Fallback comfyui/cloudflare precisa de EN — re-resolve
+    // a descrição pro backend do fallback antes de gerar.
+    if (backendNeedsEnglishPrompt(fb) && sdPromptLocale !== "en") {
+      const { text: fbText } = await resolveSdPromptDescription(fb as ImageGenerator, image, imageDate, edition);
+      writeFileSync(sdPromptPath, JSON.stringify(buildSdPrompt(fbText), null, 2));
+    }
     runNode(fbScript, [sdPromptPath, iaPath, "diaria_eia_"]);
   }
 

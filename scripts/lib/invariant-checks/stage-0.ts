@@ -10,6 +10,7 @@ import { resolve, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { usesGeminiModel } from "../image-backends.ts"; // #9094
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -198,7 +199,8 @@ function checkPollSecretsSet(): InvariantViolation[] {
  * Bundle 6 PR #1391 mudou pra `gemini-2.5-flash-image-preview` que não
  * existe — só `gemini-2.5-flash-image` sem `-preview` suffix existe).
  *
- * Skip silencioso quando `image_generator !== gemini` (cloudflare/openai
+ * Skip silencioso quando o Gemini não pode gerar imagem — nem como
+ * `image_generator` nem como `codex.fallback` (#9094; cloudflare/openai
  * têm catálogos próprios) ou GEMINI_API_KEY ausente (outro rule cobre).
  * Network failure também skip — não bloqueia pipeline em outage Gemini.
  *
@@ -208,13 +210,13 @@ function checkPollSecretsSet(): InvariantViolation[] {
 function checkGeminiModelValid(): InvariantViolation[] {
   const configPath = resolve(ROOT, "platform.config.json");
   if (!existsSync(configPath)) return [];
-  let cfg: { image_generator?: string };
+  let cfg: { image_generator?: string; codex?: { fallback?: string } };
   try {
     cfg = JSON.parse(readFileSync(configPath, "utf8"));
   } catch {
     return [];
   }
-  if ((cfg.image_generator ?? "gemini") !== "gemini") return [];
+  if (!usesGeminiModel(cfg)) return []; // #9094: inclui codex.fallback=gemini
   if (!process.env.GEMINI_API_KEY) return []; // outro rule cobre key ausente
   const result = spawnSync(
     process.execPath,

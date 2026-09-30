@@ -53,7 +53,7 @@ cp .env.example .env
 | Variável | Pra que serve | Como obter |
 |---|---|---|
 | `CLARICE_API_KEY` | MCP Clarice (revisão PT-BR) | conta Clarice.ai |
-| `GEMINI_API_KEY` | Stages 4–5 (imagens via Gemini) | https://aistudio.google.com/apikey |
+| `GEMINI_API_KEY` | Fallback de imagem do Codex (`codex.fallback`), tradução do É IA?, embeddings do topic-cluster — o gerador padrão é o Codex CLI (login ChatGPT, `docs/codex-image-setup.md`, #9088) | https://aistudio.google.com/apikey |
 | `GOOGLE_CLIENT_ID` | Gmail inbox-drain + upload de imagens sociais | Console Cloud → Credentials → OAuth Client ID (Desktop app) |
 | `GOOGLE_CLIENT_SECRET` | idem | mesma tela |
 

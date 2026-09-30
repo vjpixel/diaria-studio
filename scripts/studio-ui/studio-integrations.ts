@@ -239,7 +239,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     kind: "api",
     envVars: ["GEMINI_API_KEY"],
     probe: "env-only",
-    note: "Geração de imagem (Stage 3) — default de platform.config.json > image_generator.",
+    note: "Fallback de imagem do Codex (codex.fallback), tradução do É IA? e embeddings — o gerador padrão é codex desde #9088.",
   },
   {
     id: "instagram",

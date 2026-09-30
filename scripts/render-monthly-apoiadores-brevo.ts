@@ -31,6 +31,7 @@
  * Output: data/monthly/{cycle}/_internal/apoiadores-brevo-preview.html
  * Stdout: JSON { cycle, yymm, subject, preview_text, html_path }
  */
+import { resolveEditionImageGenerator } from "./lib/shared/image-generator-sidecar.ts"; // #9095
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,7 +145,7 @@ export function renderMonthlyApoiadoresBrevoEmail(cycle: string): RenderedMonthl
   const imageGenerator: string = existsSync(platformConfigPath)
     ? ((JSON.parse(readFileSync(platformConfigPath, "utf8")) as { image_generator?: string }).image_generator ?? "gemini")
     : "gemini";
-  const destaqueImageCaption = captionForGenerator(imageGenerator);
+  const destaqueImageCaption = captionForGenerator(resolveEditionImageGenerator(monthlyDir, imageGenerator)) /* #9095 */;
 
   let { subject, previewText, html } = draftToEmailApoiadoresBrevo(
     draft,
