@@ -6,6 +6,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   looksLikeSubscriberReply,
   filterSubscriberReplies,
@@ -14,6 +18,7 @@ import {
   isTrivialReply,
   normalizeSubject,
   isAutomatedSubject,
+  DROPPED_BY_TO_SAMPLE_MAX,
 } from "../scripts/filter-subscriber-replies.ts";
 
 describe("looksLikeSubscriberReply (#1797)", () => {
@@ -172,6 +177,65 @@ describe("filterSubscriberReplies (#1797)", () => {
       ["sub-1", "sub-2"],
       "só as 2 endereçadas ao domínio dedicado sobrevivem — as 4 endereçadas à caixa pessoal são descartadas",
     );
+  });
+
+  // ── #9158: descarte pelo check de `to` é contado e reportado ────────────
+
+  it("#9158: thread com `to` fora dos domínios dedicados é contada em droppedByToCount + amostra de remetentes", () => {
+    const threads = [
+      { thread_id: "sub-1", subject: "Re: diar.ia.br — 28/09", from: "leitor1@x.com", to: "oi@news.diar.ia.br" },
+      // assinante real respondendo ao reply-to antigo da era Beehiiv
+      { thread_id: "old-1", subject: "Re: Diar.ia — 10/07", from: "Leitora <Leitora@Z.com>", to: "vjpixel@gmail.com" },
+      { thread_id: "old-2", subject: "Re: outra", from: "leitora@z.com", to: "vjpixel@gmail.com" },
+      { thread_id: "gh-1", subject: "Re: [org/repo] x", from: "suporte@github-like.com", to: "vjpixel@gmail.com" },
+      // não conta: automático (falha antes do check de `to`)
+      { thread_id: "bot-1", subject: "Re: y", from: "no-reply@foo.com", to: "vjpixel@gmail.com" },
+      // não conta: sem prefixo Re:
+      { thread_id: "nore-1", subject: "Olá", from: "pessoa@foo.com", to: "vjpixel@gmail.com" },
+      // não conta: `to` ausente pula o check (compat pré-#8997)
+      { thread_id: "legacy-1", subject: "Re: z", from: "leitor3@x.com" },
+    ];
+    const r = filterSubscriberReplies(threads);
+    assert.deepEqual(r.replies.map((x) => x.thread_id).sort(), ["legacy-1", "sub-1"]);
+    assert.equal(r.droppedByToCount, 3);
+    assert.deepEqual(r.droppedByToSenders, ["leitora@z.com", "suporte@github-like.com"], "remetentes únicos, e-mail extraído");
+  });
+
+  it("#9158: nenhum descarte por `to` → droppedByToCount 0 e amostra vazia", () => {
+    const r = filterSubscriberReplies([{ thread_id: "1", subject: "Re: x", from: "a@b.com", to: "oi@news.diar.ia.br" }]);
+    assert.equal(r.droppedByToCount, 0);
+    assert.deepEqual(r.droppedByToSenders, []);
+  });
+
+  it("#9158: amostra de remetentes é limitada a DROPPED_BY_TO_SAMPLE_MAX, contagem não", () => {
+    const threads = Array.from({ length: DROPPED_BY_TO_SAMPLE_MAX + 5 }, (_, i) => ({
+      thread_id: String(i),
+      subject: "Re: x",
+      from: `p${i}@x.com`,
+      to: "vjpixel@gmail.com",
+    }));
+    const r = filterSubscriberReplies(threads);
+    assert.equal(r.droppedByToCount, DROPPED_BY_TO_SAMPLE_MAX + 5);
+    assert.equal(r.droppedByToSenders.length, DROPPED_BY_TO_SAMPLE_MAX);
+  });
+
+  it("#9158: CLI imprime a linha de descarte por `to` no stderr mesmo com replies[] vazio", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fsr-9158-"));
+    const inPath = join(dir, "in.json");
+    writeFileSync(
+      inPath,
+      JSON.stringify([
+        { thread_id: "a", subject: "Re: x", from: "leitora@z.com", to: "vjpixel@gmail.com" },
+        { thread_id: "b", subject: "Re: y", from: "leitora@z.com", to: "vjpixel@gmail.com" },
+      ]),
+    );
+    const res = spawnSync(process.execPath, ["--import", "tsx", "scripts/filter-subscriber-replies.ts", "--in", inPath], {
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout).replies.length, 0);
+    assert.match(res.stderr, /🚫 2 thread\(s\)/);
+    assert.match(res.stderr, /leitora@z\.com$/m, "sem sufixo de truncamento: 1 remetente único, amostra não cheia");
   });
 
   // ── #8997: `alreadyRepliedByEditor` passthrough (thread já respondida) ──
