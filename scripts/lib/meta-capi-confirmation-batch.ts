@@ -427,6 +427,11 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
       } else {
         record(cand, { status: "failed", eventId, attempts });
       }
+    } else {
+      // Exaustividade: um `reason` novo em `MetaCapiSendResult` quebra o build
+      // aqui em vez de passar sem contagem nem registro (a classe do #9066).
+      const unhandled: never = result.reason;
+      throw new Error(`MetaCapiSendResult.reason não tratado: ${String(unhandled)}`);
     }
   }
   log(`resumo: ${summary.sent} enviados, ${summary.failed} falharam, ${summary.outOfWindow} fora da janela.`);
