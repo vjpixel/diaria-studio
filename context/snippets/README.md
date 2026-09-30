@@ -176,7 +176,19 @@ por slot).
     campo — o painel Caixas nunca oferece esses arquivos como opção pros
     slots 0-3. Ausente ou qualquer valor diferente de `false` (case-
     insensitive) → arquivo continua listado normalmente.
-  Todos os 4 campos são opcionais e independentes — declarar um não exige
+  - `audiencia:` (#9104) — audiência da caixa (`diaria`, `clarice`,
+    `brevo`…). Só caixas `diaria` entram na seleção automática dos slots
+    (`select-boxes-by-clicks.ts`); pin manual continua valendo pra qualquer
+    uma. Ausente → inferido pelo `utm_source` dos links do corpo (só
+    `clarice`/`brevo`, `FOREIGN_AUDIENCE_UTM_SOURCES` em
+    `scripts/lib/shared/snippet-header.ts`; nunca pelo nome do arquivo), e
+    sem esse sinal o default é `diaria`. Declare-o em caixa feita pra outra
+    base (ex.: `clarice-imersao1010.md`), pra não depender da inferência.
+  - `evento:` (#9104) — chave do evento/campanha. Duas caixas com a mesma
+    chave nunca saem juntas na seleção automática (ex.: a imersão no slot 1
+    e outra versão dela no slot 2). Ausente → os `utm_campaign` dos links do
+    corpo servem de chave; sem nenhum dos dois, a caixa não colide com nada.
+  Todos os campos são opcionais e independentes — declarar um não exige
   os outros.
 - **Sem marcador emoji (#3475).** O parse/render decide formato e posição
   100% por estrutura (posição no texto, presença de `---`, contagem de

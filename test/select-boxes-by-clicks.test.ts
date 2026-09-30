@@ -20,12 +20,13 @@ import {
   selectBoxesForSlots,
   loadBoxesDivulgacaoAutoConfig,
   resolveBoxesForEdition,
+  isSnippetEligibleForDiaria,
   ROTATION_SLOTS,
   type SnippetEditionClicks,
   type SnippetHistory,
   type RankedBox,
 } from "../scripts/select-boxes-by-clicks.ts";
-import type { SnippetInfo, PostCacheLike } from "../scripts/box-click-report.ts";
+import { parseSnippetContent, type SnippetInfo, type PostCacheLike } from "../scripts/box-click-report.ts";
 
 // ── #6748: ROTATION_SLOTS ────────────────────────────────────────────────
 
@@ -609,6 +610,189 @@ describe("resolveBoxesForEdition (#4626, integração com fixtures)", () => {
       // o slot1 cederia pro valor já configurado (current1.md).
       assert.equal(effective.slot1, "kit-winner.md");
       assert.equal(selection.find((s) => s.slot === 1)!.mode, "auto");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+// ── #9104: audiência + dedup por evento ─────────────────────────────────
+
+// Fixtures espelhando os snippets reais de data/snippets/ (gitignored, ausente
+// em CI) — mesmo header/UTM, corpo encurtado.
+const CLARICE_IMERSAO = `<!--
+nome: Imersão Agente de IA (17/10) · a Clarice News
+categoria: Divulgação
+O link leva UTM com utm_source=clarice. Não tire o UTM.
+-->
+
+Crie seu agente de IA sem programar
+
+[Quero criar meu agente!](https://diar.ia.br/evento/agente-ia?utm_source=clarice&utm_medium=email&utm_campaign=agente-ia&utm_content=caixa-imersao1010)`;
+
+const DIARIA_IMERSAO = `<!--
+nome: Imersão Agente de IA (17/10) · a newsletter diária da diar.ia.br
+categoria: Divulgação
+-->
+
+Crie seu agente de IA sem programar
+
+[Quero criar meu agente!](https://diar.ia.br/evento/agente-ia?utm_source=diaria&utm_medium=email&utm_campaign=agente-ia&utm_content=caixa-imersao1010)`;
+
+const WORKSHOP = `<!--
+nome: Workshop Agente de IA (17/10)
+-->
+
+**Workshop** [inscreva-se](https://diar.ia.br/evento/agente-ia?utm_source=diaria&utm_medium=email&utm_campaign=agente-ia&utm_content=caixa-workshop-outubro)`;
+
+describe("#9104 audiência do snippet (resolveSnippetAudience via parseSnippetContent)", () => {
+  it("clarice-imersao1010.md (utm_source=clarice, sem audiencia:) é inferido como Clarice e NÃO é elegível pra diária", () => {
+    const info = parseSnippetContent("clarice-imersao1010.md", CLARICE_IMERSAO);
+    assert.equal(info.audience, "clarice");
+    assert.equal(info.audienceSource, "utm_source");
+    assert.equal(isSnippetEligibleForDiaria(info), false);
+  });
+
+  it("snippet sem audiencia: nem UTM de outra audiência -> default diaria (snippets existentes não mudam)", () => {
+    const info = parseSnippetContent("diaria-imersao1010.md", DIARIA_IMERSAO);
+    assert.equal(info.audience, "diaria");
+    assert.equal(info.audienceSource, "default");
+    assert.equal(isSnippetEligibleForDiaria(info), true);
+  });
+
+  it("nunca infere pelo NOME do arquivo — clarice-divulgacao.md (?via=diaria) segue elegível", () => {
+    const info = parseSnippetContent(
+      "clarice-divulgacao.md",
+      "<!-- nome: Clarice -->\n**Clarice [assine](https://clarice.ai/precos-planos?via=diaria)**",
+    );
+    assert.equal(info.audience, "diaria");
+    assert.equal(isSnippetEligibleForDiaria(info), true);
+  });
+
+  it("audiencia: no header vence a inferência por UTM (nos dois sentidos)", () => {
+    const forced = parseSnippetContent("x.md", CLARICE_IMERSAO.replace("categoria:", "audiencia: Diaria\ncategoria:"));
+    assert.equal(forced.audience, "diaria");
+    assert.equal(forced.audienceSource, "header");
+    assert.equal(isSnippetEligibleForDiaria(forced), true);
+    const brevo = parseSnippetContent("y.md", DIARIA_IMERSAO.replace("categoria:", "audiencia: brevo\ncategoria:"));
+    assert.equal(brevo.audience, "brevo");
+    assert.equal(isSnippetEligibleForDiaria(brevo), false);
+  });
+
+  it("fixture literal sem campo audience (pré-#9104) continua elegível", () => {
+    assert.equal(isSnippetEligibleForDiaria({ file: "a.md", nome: "A", urls: [], seasonal: null }), true);
+  });
+
+  it("eventKeys: utm_campaign dos links, ou evento: do header quando declarado", () => {
+    assert.deepEqual(parseSnippetContent("w.md", WORKSHOP).eventKeys, ["agente-ia"]);
+    assert.deepEqual(
+      parseSnippetContent("w.md", WORKSHOP.replace("nome:", "evento: Imersao-1010\nnome:")).eventKeys,
+      ["imersao-1010"],
+    );
+    assert.deepEqual(parseSnippetContent("s.md", "[x](https://x.com/a)").eventKeys, []);
+  });
+});
+
+describe("#9104 selectBoxesForSlots — dedup por evento", () => {
+  const r = (file: string, score: number): RankedBox => ({
+    file,
+    nome: file,
+    editionsAppeared: 1,
+    avgUniqueVerifiedClicks: score,
+    trend: null,
+    score,
+  });
+  const events = new Map<string, string[]>([
+    ["imersao-a.md", ["agente-ia"]],
+    ["imersao-b.md", ["agente-ia"]],
+    ["livros.md", []],
+  ]);
+
+  it("não escolhe pro slot 2 um box do mesmo evento do pick do slot 1", () => {
+    const picks = selectBoxesForSlots({
+      ranked: [r("imersao-a.md", 30), r("imersao-b.md", 20), r("livros.md", 5)],
+      slotsToFill: [1, 2],
+      excludeFiles: new Set(),
+      eventKeysByFile: events,
+    });
+    assert.deepEqual(picks.map((p) => p.file), ["imersao-a.md", "livros.md"]);
+  });
+
+  it("não escolhe box do mesmo evento de um slot PINADO (alreadyAssignedFiles)", () => {
+    const picks = selectBoxesForSlots({
+      ranked: [r("imersao-b.md", 20), r("livros.md", 5)],
+      slotsToFill: [2],
+      excludeFiles: new Set(),
+      alreadyAssignedFiles: new Set(["imersao-a.md"]),
+      eventKeysByFile: events,
+    });
+    assert.equal(picks[0].file, "livros.md");
+  });
+});
+
+describe("#9104 resolveBoxesForEdition — regressão 260930", () => {
+  const md = (boxTitle: string, url: string) =>
+    `**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody\n\n---\n\n**${boxTitle}**\n\n[Link](${url})\n\n---\n\n**DESTAQUE 2 | 🚀**\n\n[T](https://d2.com)\n\nbody`;
+
+  it("clarice-imersao1010.md nunca é escolhido pra diária e o slot 2 não repete o evento do slot 1 pinado", () => {
+    const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+    try {
+      writeFileSync(join(snippetsDir, "clarice-imersao1010.md"), CLARICE_IMERSAO);
+      writeFileSync(join(snippetsDir, "diaria-imersao1010.md"), DIARIA_IMERSAO);
+      writeFileSync(join(snippetsDir, "workshop-agente-ia-outubro.md"), WORKSHOP);
+      writeSnippet(snippetsDir, "livros.md", "Livros", "https://livros.diar.ia.br");
+
+      // 260927: box da imersão (versão diária) no slot 1, muitos cliques —
+      // pré-#9104 esses cliques eram creditados a clarice-imersao1010.md (1º
+      // em ordem alfabética com a mesma base-URL).
+      writeEdition(editionsDir, "260927", md("Imersão", "https://diar.ia.br/evento/agente-ia?utm_source=diaria&utm_campaign=agente-ia"));
+      writePost(postsDir, "p927", "2026-09-27", "https://diar.ia.br/evento/agente-ia", 21);
+      writeEdition(editionsDir, "260926", md("Livros", "https://livros.diar.ia.br"));
+      writePost(postsDir, "p926", "2026-09-26", "https://livros.diar.ia.br", 4);
+      // 260929 (imediatamente anterior) sem box de rotação — não bane ninguém.
+      writeEdition(editionsDir, "260929", "**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody");
+
+      const { effective, selection } = resolveBoxesForEdition({
+        aammdd: "260930",
+        boxesCfg: { slot0: null, slot1: "diaria-imersao1010.md", slot2: "livros.md", slot3: null },
+        autoCfg: { enabled: true, pinnedSlots: new Set([1]), recentWindow: 3, priorWindow: 3, lastN: 20 },
+        editionsDir,
+        postsDir,
+        snippetsDir,
+      });
+
+      assert.equal(effective.slot1, "diaria-imersao1010.md");
+      assert.notEqual(effective.slot2, "clarice-imersao1010.md");
+      assert.notEqual(effective.slot2, "workshop-agente-ia-outubro.md");
+      assert.equal(effective.slot2, "livros.md");
+      assert.ok(selection.every((s) => s.file !== "clarice-imersao1010.md"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("slot 1 auto: cliques da imersão são creditados à versão DIÁRIA, e a versão Clarice nunca entra", () => {
+    const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+    try {
+      writeFileSync(join(snippetsDir, "clarice-imersao1010.md"), CLARICE_IMERSAO);
+      writeFileSync(join(snippetsDir, "diaria-imersao1010.md"), DIARIA_IMERSAO);
+      writeSnippet(snippetsDir, "livros.md", "Livros", "https://livros.diar.ia.br");
+      writeEdition(editionsDir, "260927", md("Imersão", "https://diar.ia.br/evento/agente-ia?utm_source=diaria&utm_campaign=agente-ia"));
+      writePost(postsDir, "p927", "2026-09-27", "https://diar.ia.br/evento/agente-ia", 21);
+      writeEdition(editionsDir, "260926", md("Livros", "https://livros.diar.ia.br"));
+      writePost(postsDir, "p926", "2026-09-26", "https://livros.diar.ia.br", 4);
+      writeEdition(editionsDir, "260929", "**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody");
+
+      const { effective } = resolveBoxesForEdition({
+        aammdd: "260930",
+        boxesCfg: { slot0: null, slot1: "x.md", slot2: "y.md", slot3: null },
+        autoCfg: { enabled: true, pinnedSlots: new Set(), recentWindow: 3, priorWindow: 3, lastN: 20 },
+        editionsDir,
+        postsDir,
+        snippetsDir,
+      });
+      assert.equal(effective.slot1, "diaria-imersao1010.md");
+      assert.equal(effective.slot2, "livros.md");
     } finally {
       cleanup();
     }
