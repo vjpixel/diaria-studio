@@ -179,9 +179,11 @@ function main(): void {
           `warn: sync-intro-count: intro dizia ${check.claimed} mas contagem real é ${check.actual} — corrigido em ${mdPath}`,
         );
       } else {
-        // Padrão não encontrado após expansão — avisa mas não bloqueia
+        // #9127: inalcançável em tese — lint e replace usam o mesmo
+        // `locateIntroClaimedCount`. Chegar aqui é inconsistência interna,
+        // não variante de template: avisa (sem bloquear) pra investigar.
         console.error(
-          `warn: sync-intro-count: padrão não encontrado — verificar manualmente se a intro tem o número correto.`,
+          `error: sync-intro-count: lint apontou divergência mas o replace não achou o número — inconsistência interna, verificar a intro manualmente.`,
         );
       }
     }
