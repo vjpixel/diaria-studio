@@ -86,7 +86,8 @@ import { resolveNewsletterSubscriberBackend, type NewsletterSubscriberBackend } 
 import {
   emptyStore,
   readStore,
-  writeStore,
+  cloneStore,
+  persistStoreDelta,
   DEFAULT_STORE_PATH,
   type OnboardingEntry,
   type OnboardingStore,
@@ -545,6 +546,7 @@ export async function runCancelPending(opts: {
   storePath: string;
 }): Promise<CancelPendingResult[]> {
   const { store } = readStore(opts.storePath);
+  const baseline = cloneStore(store);
   const results: CancelPendingResult[] = [];
   for (const entry of Object.values(store.entries)) {
     for (const field of ["email1_brevo_id", "email2_brevo_id"] as const) {
@@ -566,8 +568,27 @@ export async function runCancelPending(opts: {
       }
     }
   }
-  writeStore(store, opts.storePath);
+  // #9151: mesmo lock do executor Kit + merge por delta (ver persistBrevoStore).
+  persistBrevoStore(opts.storePath, baseline, store);
   return results;
+}
+
+/**
+ * #9151: toda escrita do executor Brevo passa por aqui — sob
+ * `withFileLock(${storePath}.lock)` (o mesmo do executor Kit), relendo o
+ * disco e aplicando só o que ESTA rodada mudou em relação ao `baseline`
+ * (snapshot do início). Antes era uma escrita do snapshot inteiro sem lock,
+ * que apagava `kit_transport.lots` + `email{1,2}_sent_at` gravados por um
+ * `--send` Kit concorrente → e-mail 1/2 duplicado no `--send` seguinte.
+ */
+export function persistBrevoStore(storePath: string, baseline: OnboardingStore, updated: OnboardingStore): void {
+  const conflicts = persistStoreDelta(storePath, baseline, updated);
+  for (const c of conflicts) {
+    process.stderr.write(
+      `[onboarding] #9151: conflito de escrita concorrente em ${c.subscription_id}.${c.field} — ` +
+        `outro processo mudou o campo durante esta rodada; valor desta rodada prevaleceu\n`,
+    );
+  }
 }
 
 /** Garante contato Brevo no cohort (cria/atualiza já adicionando à lista D+10). */
@@ -773,6 +794,8 @@ async function main(): Promise<void> {
   const snippets = loadSnippets(snippetsDirAbs);
 
   const { store } = readStore(storePath);
+  // #9151: baseline pra persistir só o delta desta rodada (persistBrevoStore).
+  const baseline = cloneStore(store);
 
   const summary: RunSummary = {
     mode: args.send ? "SEND" : "dry-run",
@@ -850,7 +873,7 @@ async function main(): Promise<void> {
           email1_transport: "brevo",
         };
       }
-      writeStore(store, storePath);
+      persistBrevoStore(storePath, baseline, store);
       summary.notes.push(`#7674 modo dirigido: ${plan.entries.length} entrada(s) semeada(s), origem ${args.seededBy}`);
     } else {
       summary.notes.push(`#7674 modo dirigido (dry-run): ${plan.entries.length} entrada(s) seriam semeada(s) — nada escrito`);
@@ -864,7 +887,7 @@ async function main(): Promise<void> {
     store.last_detection_cursor = nowSec;
     store.last_detection_backend = backend;
     if (args.send) {
-      writeStore(store, storePath);
+      persistBrevoStore(storePath, baseline, store);
       summary.notes.push("bootstrap: cursor marcado em now; nenhuma entrada adicionada (base existente não recebe onboarding retroativo)");
       console.log(JSON.stringify(summary, null, 2));
       return;
@@ -920,7 +943,7 @@ async function main(): Promise<void> {
     store.last_detection_backend = backend;
     const nota = buildBackendSwitchNote(backendAnterior, backend, gapCount, houveTrocaReal);
     if (args.send) {
-      writeStore(store, storePath);
+      persistBrevoStore(storePath, baseline, store);
       summary.notes.push(nota);
       console.log(JSON.stringify(summary, null, 2));
       return;
@@ -1139,7 +1162,7 @@ async function main(): Promise<void> {
   }
 
   // --- 5. Persistência ---
-  writeStore(store, storePath);
+  persistBrevoStore(storePath, baseline, store);
   console.log(JSON.stringify(summary, null, 2));
 }
 

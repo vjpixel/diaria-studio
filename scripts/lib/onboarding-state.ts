@@ -599,10 +599,11 @@ export type OnboardingTransport = "brevo" | "kit";
  *          dono de `email1_brevo_id != null` e errava pra seeds e pra envios
  *          Brevo com id nulo/zerado por `--cancel-pending` (#9015).
  *
- * `email3_campaign` fica FORA de escopo desta decisão (issue #8966 e
+ * `email3_campaign` fica FORA de escopo desta decisão de DONO (issue #8966 e
  * docs/onboarding-kit-cutover.md §2.4 pedem só e-mail 1/2 — o e-mail 3 já é
- * sempre rascunho com aprovação humana explícita nos dois transportes,
- * risco de duplicação automática não se aplica).
+ * sempre rascunho com aprovação humana explícita nos dois transportes). A
+ * checagem de LOTE Kit do e-mail 3 roda nos dois filtros (#9059 lado Kit,
+ * #9151 lado Brevo).
  *
  * @pure testável sem I/O
  */
@@ -622,8 +623,10 @@ export function ownerTransportFor(
  * Aplica, sobre o plano JÁ MONTADO pelo executor Brevo (`buildRunPlan`), o
  * lado BREVO do guard de mútua-exclusão: qualquer ação `email1`/`email2`
  * cujo dono (`ownerTransportFor`) não seja `"brevo"` vira skip
- * `kit_transport_ativo`, nunca ação. `email3_campaign` passa intocado (fora
- * de escopo, ver docstring de `ownerTransportFor`).
+ * `kit_transport_ativo`, nunca ação. `email3_campaign` não passa pela
+ * decisão de dono (ver docstring de `ownerTransportFor`), mas desde #9151 as
+ * entries já num lote Kit de e-mail 3 não-cancelado saem do cohort (skip
+ * `kit_lot_existente`).
  *
  * **#8979 — checagem de lote Kit é MECÂNICA e roda SEMPRE, independente do
  * kill switch (`kitTransportEnabled`).** Antes deste fix, o switch
@@ -658,7 +661,28 @@ export function filterBrevoPlanForKitCutover(
 
   for (const action of plan.actions) {
     if (action.kind === "email3_campaign") {
-      actions.push(action);
+      // #9151 item 2: espelho do #9059 (que só existia no lado Kit) — entry
+      // já coberta por um lote Kit de e-mail 3 não-cancelado nunca entra no
+      // rascunho D+10 da Brevo, mesmo com `email3_state` ainda `pending`
+      // (marcação perdida, ou lote anterior ao #9058 sem `--reconcile`).
+      // Conservador como o e-mail 1/2 deste lado: `pending` também conta.
+      const remaining: OnboardingEntry[] = [];
+      for (const entry of action.entries) {
+        const lot3 = findKitLotForEntry(kitLots, "email3", entry.subscription_id);
+        if (lot3 == null || lot3.status === "cancelled") {
+          remaining.push(entry);
+          continue;
+        }
+        skips.push({
+          entry,
+          etapa: "email3",
+          motivo: "kit_lot_existente",
+          detalhe:
+            `lote Kit ${lot3.status} (${lot3.lot_id}) já cobre o e-mail 3 desta entrada — ` +
+            `Brevo não cria rascunho (#9151)`,
+        });
+      }
+      if (remaining.length > 0) actions.push({ ...action, entries: remaining });
       continue;
     }
 

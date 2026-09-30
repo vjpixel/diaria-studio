@@ -110,10 +110,18 @@ Mecanicamente, isto significa:
        cujo dono não seja `"kit"` (a metade que faltou na fatia original da
        PR #8976: sem isto, uma entrada iniciada na Brevo — devida no e-mail
        2 — continuava sendo planejada pelo executor Kit ao mesmo tempo).
-   `email3_campaign` fica fora do escopo dos dois filtros (o e-mail 3 já é
-   sempre rascunho com aprovação humana explícita em ambos os transportes —
-   risco de duplicação automática não se aplica). Teste de regressão:
-   `test/onboarding-brevo-kit-mutex-8966.test.ts`.
+   `email3_campaign` fica fora da decisão de DONO nos dois filtros (o e-mail
+   3 já é sempre rascunho com aprovação humana explícita em ambos os
+   transportes), mas os DOIS checam lote Kit de e-mail 3: entry já coberta
+   por um lote Kit de e-mail 3 sai do cohort (#9059 no lado Kit, só lote
+   confirmado; #9151 no lado Brevo, qualquer lote não-cancelado). Testes de
+   regressão: `test/onboarding-brevo-kit-mutex-8966.test.ts`,
+   `test/onboarding-brevo-store-lock-9151.test.ts`.
+   **Escrita do store (#9151):** os dois executores gravam
+   `data/onboarding/store.json` sob o MESMO `withFileLock(${storePath}.lock)`,
+   relendo o disco dentro do lock. O Brevo aplica só o delta da própria
+   rodada (`persistStoreDelta`) — antes regravava o snapshot do início sem
+   lock e apagava lotes/`sent_at` que um `--send` Kit concorrente gravasse.
 5. As coortes históricas **#7665/#7675** (recuperações manuais,
    `seeded_by` presente) são **excluídas da seleção automática dos DOIS
    transportes** — já implementado (`selectEligibleKitRecipients` exclui por
