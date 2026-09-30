@@ -104,6 +104,21 @@ export interface StageRow {
    * em `scripts/capture-stage-usage.ts`. `0`/ausente é o caso normal.
    */
   parse_errors?: number;
+  /**
+   * #9222: turnos consumidos pelo processo `claude --print` do stage (do
+   * envelope `--output-format json`) — base medida pro teto `MAX_TURNS` de
+   * `edition-stage-runner.ts`. Ausente quando o stage não foi spawnado ou o
+   * stdout não parseou.
+   */
+  num_turns?: number;
+  /** #9222: `terminal_reason`/`subtype` do CLI quando != `success` (ex: `error_max_turns`). */
+  terminal_reason?: string;
+  /**
+   * #9222: motivo persistente da falha de captura de usage (antes só ia pro
+   * `onProgress`, sem rastro) — ex: stdout não parseou. Limpo (`undefined`)
+   * numa captura bem-sucedida posterior.
+   */
+  usage_capture_error?: string;
 }
 
 export interface StageStatusDoc {
@@ -284,6 +299,9 @@ export interface UpdateOpts {
   subagent_tokens_in?: number | null;
   subagent_tokens_out?: number | null;
   parse_errors?: number; // #5423
+  num_turns?: number; // #9222
+  terminal_reason?: string; // #9222
+  usage_capture_error?: string; // #9222 — presença da chave é o critério (undefined limpa)
   /**
    * #8899: opt-in explícito pro auto-bump de `end` numa 2ª chamada `done`/`failed`
    * (ver bloco em `applyUpdate` abaixo). **Só a CLI** (`--status done` digitado/
@@ -420,6 +438,11 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
         "session_filter_reason" in opts ? opts.session_filter_reason : r.session_filter_reason,
       sessions_excluded: opts.sessions_excluded ?? r.sessions_excluded,
       parse_errors: opts.parse_errors ?? r.parse_errors,
+      num_turns: opts.num_turns ?? r.num_turns,
+      // #9222: presença da chave (não `??`) — uma execução posterior que
+      // terminou em sucesso precisa poder LIMPAR o motivo de uma anterior.
+      terminal_reason: "terminal_reason" in opts ? opts.terminal_reason : r.terminal_reason,
+      usage_capture_error: "usage_capture_error" in opts ? opts.usage_capture_error : r.usage_capture_error,
       // `??` NÃO serve aqui: `null` é um valor com significado ("subagente
       // não registrado", #5413) e seria tratado como "não informado",
       // ressuscitando o valor anterior. Presença da chave é o critério.

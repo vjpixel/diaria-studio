@@ -115,6 +115,8 @@ Idempotente (marca `summary_translated: true`). NÃO traduz via LLM — strip de
 
 **INVARIANTE (#1451):** writer paralelo é default em todas as situações. Dispatch `writer-destaque` × N (N = highlights.length ∈ {2,3}) + social em paralelo, depois `scripts/stitch-newsletter.ts` une os outputs.
 
+**Nunca fazer polling (#9223).** As chamadas `Agent` abaixo são SÍNCRONAS — a mensagem só volta com os subagentes já terminados. Nunca usar `sleep`/`while … sleep`/`tasklist`/`ls` em loop/script de poll para "esperar" por eles: em sessão headless (`claude --print`) esses comandos são negados e cada tentativa queima um turno do teto `--max-turns` (edição 261001 esgotou 120 turnos assim). Output ausente depois da resposta do `Agent` = subagente falhou, não "ainda rodando".
+
 **Pré-dispatch — ler highlights inline (sem extract-destaques.ts — esse parsea MD, não JSON):**
 
 ```bash

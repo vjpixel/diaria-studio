@@ -114,7 +114,7 @@ fonte correta. (O mapping bucket→seção da newsletter acontece no render laye
 
 Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (pós-writer), não JSON pré-writer. Confusão de paths levou ao bug do #1451 review (PR #1462).
 
-**Dispatch paralelo (uma única mensagem com N+2 chamadas Agent — N writer + 2 social, onde N = highlights.length ∈ {2,3}):**
+**Dispatch paralelo (uma única mensagem com N+2 chamadas Agent — N writer + 2 social, onde N = highlights.length ∈ {2,3}):** **Nunca fazer polling (#9223).** As N+2 chamadas `Agent` são SÍNCRONAS: a mensagem só volta quando os subagentes terminaram, com os resultados já na resposta. Não há o que esperar — nunca usar `sleep`, `while … sleep`, `tasklist`, `ls` em loop ou script de poll para "aguardar" os subagentes. Em sessão headless (`claude --print`, spawn do `edition-stage-runner.ts`) esses comandos são negados (`permission_denials`) e cada tentativa queima um turno do teto `--max-turns` (edição 261001: ~15 tentativas negadas, 120 turnos esgotados sem sentinela). Se um output esperado não existir depois da resposta do `Agent`, o subagente falhou — tratar como falha, não esperar mais.
 
 1. `Agent` → `writer-destaque` × N — uma instância por destaque (n=1..N). Cada uma recebe:
    - `destaque_n`, `destaque` (= `highlights[N-1].article`), `category_label`
