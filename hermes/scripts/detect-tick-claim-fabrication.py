@@ -306,9 +306,11 @@ _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 # palavras no meio (ver `_OTHERS_CLAIM`/`_OTHERS_CLAIM_HELD`), não um
 # vocabulário mais amplo aqui.
 _ACTOR = r"(?:outr[oa]s?|overnight|develop|interactive|terceir[oa]s?)"
+# #9026: `pel[oa]s?` — "pela" (feminino: "reivindicada pela sessão
+# overnight") e "pelos" faltavam na alternância original (por|pelo|pelas).
 _OTHERS_CLAIM = re.compile(
     r"(?P<refs>" + _REF_LIST.pattern + r")"
-    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pelo|pelas)\s+(?:\w+\s+){0,4}"
+    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pel[oa]s?)\s+(?:\w+\s+){0,4}"
     + _ACTOR + r"\b",
     re.IGNORECASE,
 )
@@ -340,7 +342,8 @@ _OTHERS_CLAIM_HELD = re.compile(
 )
 _COVERED_BY = re.compile(
     r"(?:cobert\w*|mantid\w*|retid\w*|segurad\w*)\s+"
-    r"(?:por|pelo|pelas)?\s*#(\d+)\b",
+    # #9026: `pel[oa]s?` — "pela"/"pelos" faltavam ("coberta pela #N").
+    r"(?:por|pel[oa]s?)?\s*#(\d+)\b",
     re.IGNORECASE,
 )
 

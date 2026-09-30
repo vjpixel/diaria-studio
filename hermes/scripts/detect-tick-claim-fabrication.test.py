@@ -442,6 +442,41 @@ def test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao():
     print("regressão #8974: claim atribuído a outra sessão (overnight) não é fabricação — OK")
 
 
+def test_regressao_9026_pela_feminino():
+    """#9026: `_OTHERS_CLAIM` aceitava "por|pelo|pelas" mas não "pela" — a
+    forma mais natural em português ("reivindicada pela sessão overnight",
+    sessão/rodada são femininas). O claim de OUTRO ator continuava sendo
+    tratado como claim próprio fabricado. Mesmo buraco em `_COVERED_BY`
+    ("coberta pela #N")."""
+    mod = _load_module()
+    linha_pela = "#8948 ja estava reivindicada pela sessao overnight."
+    refs = mod.extract_claimed_issue_refs(linha_pela)
+    assert 8948 not in refs, f"#8948 (reivindicada pela outra sessao) indevido: {refs}"
+    check = mod.check_claimed_issues(linha_pela, set(), True, session_correlated=True)
+    assert check["status"] == "not_applicable", check
+
+    # "pelos" (masc. plural) também não casava antes: "pelo" casava e o
+    # `\s+` seguinte falhava no "s".
+    linha_pelos = "#8949 foi reivindicada pelos outros coordenadores."
+    refs_pelos = mod.extract_claimed_issue_refs(linha_pelos)
+    assert 8949 not in refs_pelos, f"#8949 (pelos outros) indevido: {refs_pelos}"
+
+    # `_COVERED_BY` com "pela": "coberta pela #7808" — a ref coberta é excluída.
+    assert mod._COVERED_BY.search("coberta pela #7808"), "_COVERED_BY nao aceita 'pela'"
+    assert mod._COVERED_BY.search("coberta pela #7808").group(1) == "7808"
+    # Fim-a-fim (mesma forma do #7807): a cobertura exclui a ref.
+    linha_cob = "- #7807: o trabalho ja estava coberto pela #7808. A PR #7827 foi fechada."
+    refs_cob = mod.extract_claimed_issue_refs(linha_cob)
+    assert 7808 not in refs_cob, f"#7808 (coberta pela) indevido: {refs_cob}"
+
+    # Controle: claim próprio genuíno continua detectado como fabricação.
+    linha_fab = "Issues reivindicadas neste tick: #9101."
+    check_fab = mod.check_claimed_issues(linha_fab, set(), True, session_correlated=True)
+    assert check_fab["status"] == "fabrication_suspected", check_fab
+
+    print("regressão #9026: 'reivindicada pela' atribui claim a outro ator — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -928,6 +963,7 @@ def main() -> int:
         test_regressao_8863_nenhuma_e_antes_do_claim()
         test_regressao_8863_antes_do_nao_apaga_claim_real()
         test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao()
+        test_regressao_9026_pela_feminino()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.
