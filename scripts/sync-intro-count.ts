@@ -29,7 +29,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { lintIntroCount } from "./lint-newsletter-md.ts";
-import { COVERAGE_COUNT_VERB_FRAGMENT } from "./lib/newsletter-parse.ts";
+import { replaceIntroClaimedCount } from "./lib/newsletter-count.ts";
 import { parseArgs as parseArgsShared, isMainModule } from "./lib/cli-args.ts";
 
 // #2834: local original consumia valor só quando o próximo token existia e
@@ -166,19 +166,13 @@ function main(): void {
           `Pulando sincronização do total. Verificar template e abrir issue se necessário.`,
       );
     } else {
-      const claimedStr = String(check.claimed);
-      const actualStr = String(check.actual);
-      // #9103: reusa COVERAGE_COUNT_VERB_FRAGMENT (mesma fonte que o
-      // extractor do lint, #4358). A lista local anterior só tinha 1ª pessoa
-      // plural — com a intro em 1ª pessoa singular ("selecionei os 12"), o
-      // lint detectava a divergência mas a substituição não casava, e o
-      // script devolvia changed:false sem reescrever o número.
-      const patternRe = new RegExp(
-        `((?:${COVERAGE_COUNT_VERB_FRAGMENT})\\s+os?\\s+)${claimedStr}\\b`,
-        "i",
-      );
-      if (patternRe.test(md)) {
-        md = md.replace(patternRe, `$1${actualStr}`);
+      // #9127: substitui na posição que o próprio extractor do lint achou
+      // (`replaceIntroClaimedCount`, calculada sobre o corpo SEM frontmatter).
+      // Antes havia uma 2ª cópia do padrão aqui (#9103) rodando no MD cru —
+      // um frontmatter com a mesma frase era reescrito no lugar da intro.
+      const replaced = replaceIntroClaimedCount(md, check.actual);
+      if (replaced.changed) {
+        md = replaced.md;
         countChanged = true;
         changedAny = true;
         console.error(

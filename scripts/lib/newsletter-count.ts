@@ -241,13 +241,56 @@ const INTRO_CLAIMED_COUNT_RE = new RegExp(
   "i",
 );
 
-export function extractIntroClaimedCount(md: string): number | null {
+export interface IntroClaimedCountMatch {
+  /** Número declarado na intro. */
+  count: number;
+  /** Offset (no MD ORIGINAL, frontmatter incluso) do 1º dígito do número. */
+  start: number;
+  /** Offset exclusivo do fim do número no MD original. */
+  end: number;
+}
+
+/**
+ * Pure (#9127): localiza o número declarado na intro e devolve a posição dele
+ * no MD ORIGINAL. Fonte única do match — o extractor (lint) e o replace
+ * (`sync-intro-count.ts`) usam esta função, então não existe mais uma 2ª
+ * cópia do padrão "verbo os N" que possa divergir (#9103), e o replace nunca
+ * cai num frontmatter com a mesma frase.
+ *
+ * O frontmatter é descartado por PREFIXO (`stripFrontmatter` só fatia o
+ * início), então o offset no original é `md.length - body.length + idx`.
+ * Sem normalização de CRLF: o `\s+` do padrão já aceita `\r\n`, e normalizar
+ * deslocaria os offsets.
+ */
+export function locateIntroClaimedCount(md: string): IntroClaimedCountMatch | null {
   // Strip frontmatter primeiro pra evitar matchar `description: "Selecionamos
   // os 5..."` em YAML (review #1591 — futuro template pode poluir).
-  const body = stripFrontmatter(md).replace(/\r\n/g, "\n");
-  const introMatch = body.match(INTRO_CLAIMED_COUNT_RE);
+  const body = stripFrontmatter(md);
+  const introMatch = INTRO_CLAIMED_COUNT_RE.exec(body);
   if (!introMatch) return null;
-  return parseInt(introMatch[1], 10);
+  const digits = introMatch[1];
+  // O grupo de dígitos fecha o match — seu início é o fim do match menos o tamanho.
+  const start =
+    md.length - body.length + introMatch.index + introMatch[0].length - digits.length;
+  return { count: parseInt(digits, 10), start, end: start + digits.length };
+}
+
+export function extractIntroClaimedCount(md: string): number | null {
+  return locateIntroClaimedCount(md)?.count ?? null;
+}
+
+/**
+ * Pure (#9127): reescreve o número declarado na intro para `newCount`, na
+ * posição devolvida por `locateIntroClaimedCount`. Retorna `changed:false`
+ * quando a intro não declara contagem ou já declara `newCount`.
+ */
+export function replaceIntroClaimedCount(
+  md: string,
+  newCount: number,
+): { md: string; changed: boolean } {
+  const loc = locateIntroClaimedCount(md);
+  if (!loc || loc.count === newCount) return { md, changed: false };
+  return { md: md.slice(0, loc.start) + String(newCount) + md.slice(loc.end), changed: true };
 }
 
 export interface IntroCountResult {
