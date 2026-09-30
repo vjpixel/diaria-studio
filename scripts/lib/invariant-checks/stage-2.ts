@@ -27,6 +27,7 @@ import {
   type BeginnerMinimumItem,
 } from "../lint-checks/use-melhor-beginner-minimum.ts";
 import { checkCarouselTextOverflow } from "./stage-4.ts"; // #6439
+import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -637,6 +638,13 @@ export const STAGE_2_RULES: InvariantRule[] = [
     source_issue: "#6337",
     stage: 2,
     run: checkRevealTemporalPrefixInvariant,
+  },
+  {
+    id: "intentional-error-not-recent-repeat",
+    description: "erro intencional não reusa wrong_value/correct_value de edição dos últimos 30 dias em data/intentional-errors.jsonl (#9101)",
+    source_issue: "#9101",
+    stage: 2,
+    run: (editionDir) => checkIntentionalErrorNotRecentRepeat(editionDir),
   },
   {
     id: "social-no-trailing-editorial-hook",
