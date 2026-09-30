@@ -113,3 +113,37 @@ export function resultTextOrRaw(raw: string): string {
   }
   return raw;
 }
+
+/**
+ * #9222: metadados de execução do envelope `--output-format json` —
+ * `num_turns` (base medida pro teto `--max-turns`, que até aqui nunca era
+ * gravado) e o motivo de término quando NÃO foi sucesso (`subtype`, ex.
+ * `error_max_turns`; `terminal_reason` quando o CLI o expõe). `null` quando
+ * `raw` não é um objeto JSON — nunca fabrica zero a partir de dado ausente.
+ */
+export interface CliRunMeta {
+  numTurns?: number;
+  /** `terminal_reason` ?? `subtype`, só quando diferente de `success`. */
+  terminalReason?: string;
+}
+
+export function parseCliRunMeta(raw: string): CliRunMeta | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  const meta: CliRunMeta = {};
+  if (typeof obj.num_turns === "number" && Number.isFinite(obj.num_turns)) meta.numTurns = obj.num_turns;
+  const reason =
+    typeof obj.terminal_reason === "string" && obj.terminal_reason && obj.terminal_reason !== "success"
+      ? obj.terminal_reason
+      : typeof obj.subtype === "string" && obj.subtype && obj.subtype !== "success"
+        ? obj.subtype
+        : undefined;
+  if (reason) meta.terminalReason = reason;
+  return meta;
+}

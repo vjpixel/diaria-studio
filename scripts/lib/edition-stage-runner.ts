@@ -40,7 +40,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { assertSentinel as assertSentinelImpl, type AssertResult } from "./pipeline-state.ts";
 import { resolveRunLogPath } from "./run-log.ts";
-import { parseCliJsonUsage, resultTextOrRaw } from "./cli-usage-json.ts";
+import { parseCliJsonUsage, parseCliRunMeta, resultTextOrRaw } from "./cli-usage-json.ts";
 import { loadDoc, saveDoc, applyUpdate } from "../update-stage-status.ts";
 
 /** Um stage do pipeline e a skill que o executa. */
@@ -138,7 +138,13 @@ export const NO_BACKGROUND_DIRECTIVE =
   "IMPORTANTE (sessão single-turn): esta sessão NÃO receberá turnos seguintes. " +
   "Nunca use tarefas em segundo plano (run_in_background/background tasks) nem espere " +
   "notificação de task — execute TODA ferramenta em primeiro plano (foreground), " +
-  "bloqueando até terminar, antes de escrever sua resposta final.";
+  "bloqueando até terminar, antes de escrever sua resposta final. " +
+  // #9223: edição 261001 — o Stage 2 queimou os 120 turnos em ~15 tentativas
+  // de `sleep`/`tasklist`/poll (todas negadas) "esperando" subagentes que já
+  // tinham voltado. Chamada Agent é síncrona: não há o que esperar.
+  "Chamadas Agent são SÍNCRONAS (voltam com o subagente já terminado): nunca faça polling " +
+  "com sleep/while/tasklist/ls em loop para esperar subagentes — esses comandos são negados " +
+  "aqui e cada tentativa consome um turno do teto --max-turns.";
 
 /**
  * Detecta a assinatura do #6045 no stdout de uma sub-sessão que saiu sem
@@ -273,6 +279,98 @@ export function summarizePermissionDenials(raw: string): string | null {
   }
   const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n}×${c}`);
   return `${list.length} permission_denials (${parts.join(", ")})`;
+}
+
+/** #9223: a partir de quantas tentativas de polling negadas o failureTail rotula o padrão. */
+export const DENIED_POLLING_THRESHOLD = 3;
+
+/** Comando de shell com cara de "esperar algo terminar" (sleep/tasklist/poll). */
+const POLLING_COMMAND_RE = /\bsleep\b|\btasklist\b|\bwait-process\b|poll/i;
+
+/**
+ * #9223 (pure): conta `permission_denials` de Bash cujo comando é polling
+ * (`sleep`, `while … sleep`, `tasklist`, `*poll*`). `0` quando o stdout não é
+ * JSON. Serve pra nomear no failureTail a causa "queimou turnos esperando
+ * subagente síncrono" em vez de deixá-la diluída na contagem por ferramenta.
+ */
+export function countDeniedPolling(raw: string): number {
+  let parsed: { permission_denials?: unknown };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return 0;
+  }
+  const list = Array.isArray(parsed?.permission_denials) ? parsed.permission_denials : [];
+  let n = 0;
+  for (const d of list as Array<{ tool_name?: unknown; tool_input?: { command?: unknown } }>) {
+    const cmd = typeof d?.tool_input?.command === "string" ? d.tool_input.command : "";
+    if (cmd && POLLING_COMMAND_RE.test(cmd)) n++;
+  }
+  return n;
+}
+
+/**
+ * #9222: grava em `stage-status.json` o que o envelope `--output-format json`
+ * diz sobre a execução — `num_turns`, `terminal_reason` (≠ success) e, com
+ * `captureUsage`, custo/tokens (#8560). Roda nos caminhos de sucesso E de
+ * falha (um stage que estourou `--max-turns` gastou dinheiro de verdade).
+ * Falha de captura agora fica PERSISTIDA em `usage_capture_error`, não só no
+ * `onProgress`. Fail-soft: nunca lança.
+ */
+export function recordStageRun(
+  editionDir: string,
+  aammdd: string,
+  stage: number,
+  stdout: string,
+  onProgress: (m: string) => void,
+): void {
+  try {
+    const meta = parseCliRunMeta(stdout);
+    const usage = parseCliJsonUsage(stdout);
+    const captureError = usage
+      ? undefined
+      : "stdout --output-format json não parseou (ou sem total_cost_usd/usage)";
+    if (!usage) {
+      onProgress(`Stage ${stage}: stdout --output-format json não parseou — cost_usd/tokens ficam vazios pro stage`);
+    }
+    const doc = loadDoc(editionDir, aammdd);
+    const row = doc.rows.find((r) => r.stage === stage);
+    if (!row) {
+      // `doc.rows` só cobre STAGES 0-6 (makeInitialDoc) — não deveria
+      // acontecer (STAGE_PLAN só contém 1-4), mas nunca em silêncio (#8563).
+      onProgress(`Stage ${stage}: doc.rows não tem esse stage — usage/num_turns não persistidos`);
+      return;
+    }
+    const updated = applyUpdate(
+      doc,
+      {
+        stage,
+        status: row.status,
+        ...(usage
+          ? {
+              cost_usd: usage.costUsd,
+              tokens_in: usage.tokensIn,
+              tokens_out: usage.tokensOut,
+              models: usage.models,
+              session_filter: "cli_json" as const,
+            }
+          : {}),
+        ...(meta?.numTurns !== undefined ? { num_turns: meta.numTurns } : {}),
+        // Chave sempre presente quando o envelope parseou: execução bem-sucedida
+        // LIMPA o motivo de uma anterior que estourou.
+        ...(meta ? { terminal_reason: meta.terminalReason } : {}),
+        usage_capture_error: captureError,
+      },
+      new Date().toISOString(),
+    );
+    saveDoc(editionDir, updated);
+  } catch (err) {
+    onProgress(
+      `Stage ${stage}: falha ao gravar usage/num_turns do CLI JSON em stage-status.json — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 export interface RunEditionStagesOptions {
@@ -509,7 +607,14 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           continue;
         }
         const denials = summarizePermissionDenials(stdoutText);
+        const deniedPolling = countDeniedPolling(stdoutText);
+        const pollingPart =
+          deniedPolling >= DENIED_POLLING_THRESHOLD
+            ? ` | polling negado ×${deniedPolling} (#9223 — Agent é síncrono, não há o que esperar)`
+            : "";
         const tail = summarizeFailure(diagnosticText);
+        // #9222: persiste num_turns/terminal_reason/custo também na falha.
+        recordStageRun(editionDir, aammdd, stage, stdoutText, onProgress);
         exitCode = 1;
         failedStage = stage;
         stageOutcome = {
@@ -518,58 +623,15 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           status: "failed",
           exitCode: 1,
           durationMs: nowMs() - startedAt,
-          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail}${denials ? ` | ${denials}` : ""} | últimas linhas de stdout: ${tail}`,
+          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail}${denials ? ` | ${denials}` : ""}${pollingPart} | últimas linhas de stdout: ${tail}`,
         };
         break;
       }
 
-      // #8560: captura usage/custo REAL direto do JSON de resposta do CLI —
-      // ver `scripts/lib/cli-usage-json.ts` pro porquê disto substituir a
-      // captura via transcript local para stages spawnados por este laço.
-      // Fail-soft de propósito (nunca lança, nunca bloqueia o stage: um
-      // stdout que não parseia, ou uma falha de IO ao gravar
-      // `stage-status.json`, só deixa `cost_usd`/`tokens_in`/`tokens_out`
-      // vazios pra aquele stage — mesma degradação silenciosa-mas-visível
-      // que `capture-stage-usage.ts` já pratica pro caminho antigo).
-      try {
-        const usage = parseCliJsonUsage(typeof stdout === "string" ? stdout : "");
-        if (usage) {
-          const doc = loadDoc(editionDir, aammdd);
-          const row = doc.rows.find((r) => r.stage === stage);
-          if (row) {
-            const updated = applyUpdate(
-              doc,
-              {
-                stage,
-                status: row.status,
-                cost_usd: usage.costUsd,
-                tokens_in: usage.tokensIn,
-                tokens_out: usage.tokensOut,
-                models: usage.models,
-                session_filter: "cli_json",
-              },
-              new Date().toISOString(),
-            );
-            saveDoc(editionDir, updated);
-          } else {
-            // `doc.rows` só cobre STAGES 0-6 (ver makeInitialDoc em
-            // update-stage-status.ts) — um `stage` fora desse conjunto não
-            // tem onde persistir. Não deveria acontecer (STAGE_PLAN só
-            // contém 1-4), mas silenciar aqui seria o mesmo buraco que o
-            // #8560 existe pra fechar: usage capturado com sucesso e
-            // descartado sem rastro (finding do review da PR #8563).
-            onProgress(`Stage ${stage}: usage capturado mas doc.rows não tem esse stage — nada persistido`);
-          }
-        } else {
-          onProgress(`Stage ${stage}: stdout --output-format json não parseou — cost_usd/tokens ficam vazios pro stage`);
-        }
-      } catch (usageErr) {
-        onProgress(
-          `Stage ${stage}: falha ao gravar usage do CLI JSON em stage-status.json — ${
-            usageErr instanceof Error ? usageErr.message : String(usageErr)
-          }`,
-        );
-      }
+      // #8560: captura usage/custo REAL direto do JSON de resposta do CLI
+      // (ver `scripts/lib/cli-usage-json.ts`); #9222: + num_turns/
+      // terminal_reason e falha de captura persistida. Fail-soft.
+      recordStageRun(editionDir, aammdd, stage, typeof stdout === "string" ? stdout : "", onProgress);
 
       outcomes.push({ stage, skill, status: "ok", exitCode: 0, durationMs: nowMs() - startedAt });
       stageOutcome = null;
@@ -584,6 +646,11 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       // shell/execFileSync), não passam por esta extração.
       const stdoutForDiagnostics = err.stdout ? resultTextOrRaw(err.stdout) : err.stdout;
       const combined = [stdoutForDiagnostics, err.stderr, err.message].filter(Boolean).join("\n");
+      // #9222: exit != 0 (ex: error_max_turns) também carrega o envelope JSON
+      // em err.stdout — persistir num_turns/terminal_reason/custo.
+      if (typeof err.stdout === "string" && err.stdout) {
+        recordStageRun(editionDir, aammdd, stage, err.stdout, onProgress);
+      }
       // #6045: mesmo tratamento no caminho de exceção — retry único quando a
       // assinatura background-wait está presente.
       if (looksLikeBackgroundWaitExit(combined) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
