@@ -17,11 +17,16 @@ import {
   existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { checkSocialHashFresh } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { hashFromApprovedFile, writeSocialSourceHash } from "../scripts/lib/social-source-hash.ts";
+import { refreshSocialHash } from "../scripts/refresh-social-hash.ts";
 import {
   extractUrl,
   extractTitle,
-  hashHighlights,
+  buildSwapDestaqueSteps,
   swapInApprovedJson,
   mirrorCappedSwapFallback,
   removeDestaqueBlockFromMd,
@@ -231,33 +236,6 @@ describe("extractTitle (#2499)", () => {
 
   it("returns placeholder when no title found", () => {
     assert.equal(extractTitle({ url: "https://a.com" }), "(sem título)");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: hashHighlights
-// ---------------------------------------------------------------------------
-
-describe("hashHighlights (#2499)", () => {
-  it("same highlights produce same hash", () => {
-    const h = [HIGHLIGHT_D1, HIGHLIGHT_D2];
-    assert.equal(hashHighlights(h), hashHighlights(h));
-  });
-
-  it("different highlights produce different hashes", () => {
-    const h1 = [HIGHLIGHT_D1, HIGHLIGHT_D2];
-    const h2 = [HIGHLIGHT_D2, HIGHLIGHT_D1]; // swapped
-    assert.notEqual(hashHighlights(h1), hashHighlights(h2));
-  });
-
-  it("promotes change the hash (replacing D3 with RADAR item)", () => {
-    const before = [HIGHLIGHT_D1, HIGHLIGHT_D2, HIGHLIGHT_D3];
-    const after = [HIGHLIGHT_D1, HIGHLIGHT_D2, RADAR_ITEM_0];
-    assert.notEqual(hashHighlights(before), hashHighlights(after));
-  });
-
-  it("empty array produces stable hash", () => {
-    assert.equal(hashHighlights([]), hashHighlights([]));
   });
 });
 
@@ -688,10 +666,7 @@ describe("swap-destaque e2e integration (#2499)", () => {
       swapInApprovedJson(capped, "radar", 0, 0, false);
       writeFileSync(approvedCappedPath, JSON.stringify(capped, null, 2) + "\n");
 
-      // 3. Rewrite social hash
-      const newHighlights = (before.highlights as Record<string, unknown>[]);
-      const newHash = hashHighlights(newHighlights.slice(0, 3));
-      writeFileSync(hashPath, JSON.stringify({ hash: newHash }, null, 2) + "\n");
+      // 3. Social hash NÃO é regravado no swap (#9169).
 
       // 4. Update 02-reviewed.md
       const md = readFileSync(mdPath, "utf8");
@@ -739,11 +714,9 @@ describe("swap-destaque e2e integration (#2499)", () => {
         "https://example.com/radar-1",
       );
 
-      // Social hash was rewritten (not "oldhash123" anymore)
+      // Social hash intocado (#9169): o social ainda descreve o D1 antigo.
       const hashData = JSON.parse(readFileSync(hashPath, "utf8")) as { hash: string };
-      assert.notEqual(hashData.hash, "oldhash123", "social hash was updated");
-      assert.equal(typeof hashData.hash, "string");
-      assert.ok(hashData.hash.length > 0);
+      assert.equal(hashData.hash, "oldhash123", "social hash NOT rewritten by the swap");
 
       // 02-reviewed.md has placeholder for D1
       const afterMd = readFileSync(mdPath, "utf8");
@@ -821,37 +794,6 @@ describe("swap-destaque e2e integration (#2499)", () => {
     }
   });
 
-  it("social-hash-fresh invariant satisfied after swap (new hash != old hash)", () => {
-    const dir = makeTempEdition({ withSocialHash: true, withCapped: false });
-    const internalDir = join(dir, "_internal");
-
-    try {
-      const approvedPath = join(internalDir, "01-approved.json");
-      const hashPath = join(internalDir, ".social-source-hash.json");
-
-      const oldHashData = JSON.parse(readFileSync(hashPath, "utf8")) as { hash: string };
-      const oldHash = oldHashData.hash;
-
-      // Perform the swap
-      const data = JSON.parse(readFileSync(approvedPath, "utf8")) as Record<string, unknown>;
-      swapInApprovedJson(data, "radar", 0, 0, false);
-      writeFileSync(approvedPath, JSON.stringify(data, null, 2) + "\n");
-
-      // Rewrite hash (as main() would do)
-      const newHighlights = (data.highlights as Record<string, unknown>[]).slice(0, 3);
-      const newHash = hashHighlights(newHighlights);
-      writeFileSync(hashPath, JSON.stringify({ hash: newHash }));
-
-      // New hash matches current approved JSON highlights
-      const finalData = JSON.parse(readFileSync(approvedPath, "utf8")) as Record<string, unknown>;
-      const finalHighlights = (finalData.highlights as Record<string, unknown>[]).slice(0, 3);
-      const expectedHash = hashHighlights(finalHighlights);
-      assert.equal(newHash, expectedHash, "written hash matches current highlights");
-      assert.notEqual(newHash, oldHash, "hash changed after swap");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1043,5 +985,91 @@ describe("removeDestaqueBlockFromMd fail-loud regression (#2521 Bug 2)", () => {
       errors.some((e) => /placeholder.*NÃO|bloco|posição|separadores/i.test(e)),
       `expected warning about missing position, got: ${errors.join(" | ")}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #9169: hash social compatível com o check do Stage 4 + ordem dos re-renders
+// (espelho do #9149 no swap-destaques.ts)
+// ---------------------------------------------------------------------------
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SCRIPT = resolve(ROOT, "scripts", "swap-destaque.ts");
+
+function runCli(args: string[]): { stdout: string; stderr: string; status: number } {
+  try {
+    const stdout = execFileSync("npx", ["tsx", SCRIPT, ...args], {
+      encoding: "utf8",
+      cwd: ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { stdout, stderr: "", status: 0 };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; status?: number };
+    return { stdout: err.stdout ?? "", stderr: err.stderr ?? "", status: err.status ?? 1 };
+  }
+}
+
+describe("swap-destaque.ts × social-hash-fresh (#9169)", () => {
+  it("não recarimba o hash no swap (guard do #1413 segue armado) e splice + refresh-social-hash fazem o check passar", () => {
+    const dir = makeTempEdition({ withMd: true });
+    const internalDir = join(dir, "_internal");
+    try {
+      // Estado pré-swap: social gerado e carimbado pela lib (como o merge-social-md faz).
+      writeFileSync(join(dir, "03-social.md"), "# Social\n\n## d1\n\nTexto d1 antigo.\n");
+      writeSocialSourceHash(internalDir, hashFromApprovedFile(join(internalDir, "01-approved.json")));
+      const hashBefore = readFileSync(join(internalDir, ".social-source-hash.json"), "utf8");
+      assert.deepEqual(checkSocialHashFresh(dir), []);
+
+      const { status, stdout, stderr } = runCli([
+        "--edition", "260929", "--edition-dir", dir,
+        "--promote", "radar:0", "--demote", "d1",
+      ]);
+      assert.equal(status, 0, stderr);
+
+      // Hash intocado: o 03-social.md ainda descreve o D1 antigo, o check TEM que acusar.
+      assert.equal(readFileSync(join(internalDir, ".social-source-hash.json"), "utf8"), hashBefore);
+      const parsed = JSON.parse(stdout);
+      assert.ok(!parsed.modified.rewritten.some((p: string) => p.endsWith(".social-source-hash.json")));
+      const stale = checkSocialHashFresh(dir);
+      assert.equal(stale.length, 1);
+      assert.equal(stale[0].rule, "social-hash-fresh");
+      assert.equal(stale[0].severity, "error");
+
+      // Splice do ## d1 novo e SÓ ENTÃO o recarimbo destrava o check.
+      writeFileSync(join(dir, "03-social.md"), "# Social\n\n## d1\n\nTexto d1 novo.\n");
+      refreshSocialHash(dir);
+      assert.deepEqual(checkSocialHashFresh(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("swap sem hash prévio não cria .social-source-hash.json", () => {
+    const dir = makeTempEdition({});
+    try {
+      const { status, stderr } = runCli([
+        "--edition", "260929", "--edition-dir", dir,
+        "--promote", "radar:1", "--demote", "d2",
+      ]);
+      assert.equal(status, 0, stderr);
+      assert.ok(!existsSync(join(dir, "_internal", ".social-source-hash.json")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rerenders_needed começa pelo refresh-destaque-sources (#9102) e recarimba o hash só depois do splice do social", () => {
+    const steps = buildSwapDestaqueSteps("/ed/260929", 3, "Z");
+    assert.match(steps[0], /refresh-destaque-sources\.ts --edition-dir \/ed\/260929 /);
+    assert.ok(buildSwapDestaqueSteps("/ed/260929/", 1, "t").every((s) => !s.includes("260929//")));
+    const iWriter = steps.findIndex((s) => /writer-destaque/.test(s) && /DESTAQUE 3/.test(s));
+    const iSocial = steps.findIndex((s) => /social-writer/.test(s));
+    const iHash = steps.findIndex((s) => /refresh-social-hash\.ts/.test(s));
+    assert.ok(iWriter > 0, "writer-destaque vem depois do refresh de fontes");
+    assert.ok(/source_text_path/.test(steps[iWriter]));
+    assert.ok(iSocial > iWriter);
+    assert.ok(iHash > iSocial, "recarimbo do hash vem depois do splice do social");
+    assert.ok(!steps.some((s) => /merge-social-md/.test(s)));
   });
 });
