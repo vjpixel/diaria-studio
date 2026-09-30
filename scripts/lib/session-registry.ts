@@ -178,7 +178,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
-import { withFileLock } from "./file-lock.ts";
+import { tryStealOrphan, withFileLock } from "./file-lock.ts";
 // #7836 — mesma constante que `.claude/hooks/inject-session-id.mjs` importa
 // pra montar `INJECTABLE_SUBCOMMANDS`. Usada aqui só em `requireSessionId`,
 // pra enriquecer a mensagem de erro com a fonte única sem duplicar a lista
@@ -991,17 +991,19 @@ function writeJsonSafe(path: string, value: unknown): void {
 export const STALE_LOCK_MS = 60_000;
 
 /**
- * Remove um `.lock` órfão (mais velho que `STALE_LOCK_MS`). Devolve `true` se
- * removeu. Fail-soft em tudo: lock inexistente, `stat` falhando, corrida com
+ * Remove um `.lock` órfão. Devolve `true` se removeu. Desde #9193 delega à
+ * política de `file-lock.ts` (#9185): lock com dono `{pid, host, ts, token}`
+ * só é quebrado se o dono é deste host e o PID morreu — nunca por idade (seção
+ * crítica lenta, ou dono em outra máquina, não é órfão). Só conteúdo
+ * legado/vazio cai no critério de idade (`STALE_LOCK_MS`). A remoção relê o
+ * arquivo (inode + conteúdo) sob `.steal` antes do `unlink`, então não apaga
+ * um lock novo criado entre o julgamento e a remoção. Fail-soft em tudo: lock inexistente, `stat` falhando, corrida com
  * outro quebrador — nada disso lança, porque quebrar lock é melhor-esforço e
  * nunca deve ser o motivo de uma falha.
  */
 export function breakStaleLock(lockPath: string, now: number = Date.now()): boolean {
   try {
-    const ageMs = now - statSync(lockPath).mtimeMs;
-    if (ageMs < STALE_LOCK_MS) return false;
-    unlinkSync(lockPath);
-    return true;
+    return tryStealOrphan(lockPath, STALE_LOCK_MS, now);
   } catch {
     return false;
   }
