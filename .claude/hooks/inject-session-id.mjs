@@ -104,6 +104,8 @@
 // disciplina fail-open do `--session-id`: `--pid` já presente no comando
 // nunca é sobrescrito.
 
+import { pathToFileURL } from "node:url";
+
 // #7836 P0 (revertido em produção no mesmo dia, achado ao vivo) — a 1ª
 // versão deste fix importava `scripts/lib/session-id-required-subcommands.ts`
 // direto, apostando que "Node 22.18+ resolve import de .ts via type-stripping
@@ -472,7 +474,6 @@ export function buildUpdatedCommand(command, sessionId, pid) {
 
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/inject-session-id-hook.test.ts).
-import { pathToFileURL } from "node:url";
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
   // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url

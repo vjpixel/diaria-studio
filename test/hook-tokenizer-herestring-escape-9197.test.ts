@@ -34,6 +34,7 @@ import {
   commandHasHandwrittenPrChecksLoop,
 } from "../.claude/hooks/block-handwritten-pr-checks-loop.mjs";
 import { stripHeredocSpans as stripHeredocD } from "../.claude/hooks/block-npm-install-node-modules-symlink.mjs";
+import { stripHeredocs } from "../.claude/hooks/block-continuo-master-commit.mjs";
 
 const HOOKS_DIR = join(import.meta.dirname, "..", ".claude", "hooks");
 
@@ -72,6 +73,12 @@ describe("stripHeredocSpans: here-string não é heredoc (#9197 item 1)", () => 
 
   it("fim a fim: git push depois de here-string é visto", () => {
     assert.equal(commandHasBareGitPush("cat <<< foo\ngit push\nfoo"), true);
+  });
+
+  // Cópia de formato diferente (linha a linha), fora da paridade — achado do review da PR.
+  it("block-continuo-master-commit: stripHeredocs preserva a linha depois de `<<<`", () => {
+    assert.equal(stripHeredocs("cat <<< foo\ngit commit -m x\nfoo"), "cat <<< foo\ngit commit -m x\nfoo");
+    assert.equal(stripHeredocs("cat <<EOF\ngit commit -m x\nEOF"), "cat <<EOF");
   });
 });
 
@@ -118,7 +125,13 @@ describe("entry guard com path percent-encoded (#9197 item 3)", () => {
 
   it("todo hook com o guard `file://${_argv1}` também compara via pathToFileURL", () => {
     const missing: string[] = [];
-    for (const f of readdirSync(HOOKS_DIR)) {
+    // `lib/` também: `lib/secret-patterns.mjs` tem CLI própria (usada por
+    // `hermes/scripts/continuo-pr-review.sh`).
+    const files = [
+      ...readdirSync(HOOKS_DIR),
+      ...readdirSync(join(HOOKS_DIR, "lib")).map((f) => join("lib", f)),
+    ];
+    for (const f of files) {
       if (!f.endsWith(".mjs") || KNOWN_EXCEPTIONS.has(f)) continue;
       const src = readFileSync(join(HOOKS_DIR, f), "utf8");
       if (!src.includes("import.meta.url === `file://${_argv1}`")) continue;
