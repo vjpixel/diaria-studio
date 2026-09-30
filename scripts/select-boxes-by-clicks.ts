@@ -60,7 +60,9 @@
  *
  * Uso standalone (debug/inspeção — a integração real acontece via import de
  * `resolveBoxesForEdition` por `scripts/stitch-newsletter.ts`):
- *   npx tsx scripts/select-boxes-by-clicks.ts --edition AAMMDD [--last N]
+ *   npx tsx scripts/select-boxes-by-clicks.ts --edition AAMMDD [--last N] [--destaques N]
+ * (#9196: sem `--destaques`, o nº de destaques vem de
+ * `_internal/01-approved-capped.json` da edição — mesmo valor do stitch.)
  *
  * Exit codes: 0 = sucesso (mesmo com 0 candidatos elegíveis — informativo,
  * nunca bloqueia), 1 = `data/editions` ausente, 2 = args inválidos.
@@ -344,6 +346,12 @@ export interface SelectSlotsOpts {
    * 260930: imersão no slot 1 e a mesma imersão, outra versão, no slot 2).
    * Ausente = sem dedup por evento (comportamento pré-#9104). */
   eventKeysByFile?: ReadonlyMap<string, readonly string[]>;
+  /** #9131: chaves de evento banidas desta edição por anti-repetição ENTRE
+   * edições — os `eventKeys` das caixas da edição anterior. Um candidato com
+   * qualquer uma delas é pulado, mesmo sendo outro ARQUIVO (ontem
+   * `diaria-imersao1010.md`, hoje o workshop do mesmo evento). Ausente = só
+   * o arquivo é banido (comportamento pré-#9131). */
+  excludeEventKeys?: ReadonlySet<string>;
 }
 
 /**
@@ -361,7 +369,7 @@ export function selectBoxesForSlots(opts: SelectSlotsOpts): SlotPick[] {
     .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
   const used = new Set<string>();
   const eventKeysOf = (file: string): readonly string[] => opts.eventKeysByFile?.get(file) ?? [];
-  const blockedEvents = new Set<string>();
+  const blockedEvents = new Set<string>(opts.excludeEventKeys ?? []);
   for (const f of opts.alreadyAssignedFiles ?? []) for (const k of eventKeysOf(f)) blockedEvents.add(k);
   const picks: SlotPick[] = [];
   for (const slot of opts.slotsToFill) {
@@ -621,8 +629,9 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   // AUDIÊNCIAS: versões da mesma caixa compartilham a base-URL (o UTM é
   // descartado por `toBaseUrl`), e `matchSnippetForBox` pega a 1ª em ordem
   // alfabética — `clarice-imersao1010.md` "roubava" os cliques do box
-  // `diaria-imersao1010.md` usado de fato na diária. A mesma colisão entre
-  // duas caixas DA DIÁRIA com a mesma base-URL continua (issue de follow-up).
+  // `diaria-imersao1010.md` usado de fato na diária. A colisão entre duas
+  // caixas DA DIÁRIA com a mesma base-URL é desempatada pela URL completa /
+  // `utm_content` dentro de `matchSnippetForBox` (#9131).
   const diariaSnippets = snippets.filter(isSnippetEligibleForDiaria);
   const history = buildSnippetHistory({
     aammddList,
@@ -647,14 +656,19 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   }
   if (effective.slot0) alreadyAssignedFiles.add(effective.slot0);
 
+  // #9104: mapa sobre TODOS os snippets (não só os da diária) — um slot
+  // pinado/slot0 com caixa de outra audiência ainda bloqueia o evento dela.
+  const eventKeysByFile = new Map(snippets.map((sn) => [sn.file, sn.eventKeys ?? []]));
+  // #9131: anti-repetição entre edições também por EVENTO, não só por arquivo.
+  const previousEventKeys = new Set<string>();
+  for (const f of previousSnippets) for (const k of eventKeysByFile.get(f) ?? []) previousEventKeys.add(k);
   const picks = selectBoxesForSlots({
     ranked,
     slotsToFill: slotsToAuto,
     excludeFiles: previousSnippets,
     alreadyAssignedFiles,
-    // #9104: mapa sobre TODOS os snippets (não só os da diária) — um slot
-    // pinado/slot0 com caixa de outra audiência ainda bloqueia o evento dela.
-    eventKeysByFile: new Map(snippets.map((sn) => [sn.file, sn.eventKeys ?? []])),
+    eventKeysByFile,
+    excludeEventKeys: previousEventKeys,
   });
   const pickBySlot = new Map(picks.map((p) => [p.slot, p]));
 
@@ -742,6 +756,46 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
 
 // ── CLI (debug/inspeção standalone) ─────────────────────────────────────────
 
+/**
+ * #9196: nº de destaques de uma edição, lido do mesmo arquivo que o stitch
+ * real usa (`_internal/01-approved-capped.json` → `highlights.length`), pra
+ * que a inspeção via CLI reproduza o `destaqueCount` que `stitch-newsletter.ts`
+ * passa a `resolveBoxesForEdition` (#9175). Fail-soft: edição ausente,
+ * arquivo ausente/corrompido ou sem `highlights` → `undefined` (o resolver
+ * trata como 3, o default de sempre). Diferente do stitch, nunca lança — é
+ * ferramenta de inspeção.
+ */
+export function readEditionDestaqueCount(aammdd: string, editionsDir: string = EDITIONS_DIR): number | undefined {
+  const dir = enumerateEditionDirs(editionsDir).get(aammdd);
+  if (!dir) return undefined;
+  const path = join(dir, "_internal", "01-approved-capped.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const approved = JSON.parse(readFileSync(path, "utf8")) as { highlights?: unknown };
+    return Array.isArray(approved.highlights) ? approved.highlights.length : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * #9196: `destaqueCount` efetivo do CLI — `--destaques N` explícito vence;
+ * senão, o valor lido da edição (`readEditionDestaqueCount`). `undefined` =
+ * default 3 no resolver.
+ */
+export function resolveCliDestaqueCount(
+  argv: readonly string[],
+  aammdd: string,
+  editionsDir: string = EDITIONS_DIR,
+): number | undefined {
+  const idx = argv.indexOf("--destaques");
+  if (idx !== -1) {
+    const n = Number(argv[idx + 1]);
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return readEditionDestaqueCount(aammdd, editionsDir);
+}
+
 function main(): void {
   const argv = process.argv.slice(2);
   const editionIdx = argv.indexOf("--edition");
@@ -750,8 +804,16 @@ function main(): void {
   const lastN = lastIdx !== -1 && argv[lastIdx + 1] ? Number(argv[lastIdx + 1]) : undefined;
 
   if (!edition || !/^\d{6}$/.test(edition)) {
-    console.error("uso: select-boxes-by-clicks.ts --edition AAMMDD [--last N]");
+    console.error("uso: select-boxes-by-clicks.ts --edition AAMMDD [--last N] [--destaques N]");
     process.exit(2);
+  }
+  const destaquesIdx = argv.indexOf("--destaques");
+  if (destaquesIdx !== -1) {
+    const n = Number(argv[destaquesIdx + 1]);
+    if (!Number.isInteger(n) || n <= 0) {
+      console.error("uso: select-boxes-by-clicks.ts --edition AAMMDD [--last N] [--destaques N]  (N inteiro > 0)");
+      process.exit(2);
+    }
   }
 
   if (!existsSync(EDITIONS_DIR)) {
@@ -781,6 +843,7 @@ function main(): void {
     aammdd: edition,
     boxesCfg,
     autoCfg: lastN && lastN > 0 ? { ...autoCfg, lastN } : autoCfg,
+    destaqueCount: resolveCliDestaqueCount(argv, edition),
   });
 
   console.log(JSON.stringify(result, null, 2));

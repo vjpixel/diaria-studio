@@ -127,6 +127,32 @@ export function toBaseUrl(raw: string): string {
   }
 }
 
+/** #9131: identidade COMPLETA de uma URL — mantém a query (ao contrário de
+ * `toBaseUrl`), mas normaliza o que não muda o destino: hash descartado,
+ * parâmetros ordenados, trailing slash do path removida. Serve só de
+ * DESEMPATE quando duas caixas compartilham a mesma base-URL (versões de uma
+ * caixa que diferem por `utm_*`). Entrada inválida devolve como está. */
+export function toFullUrlKey(raw: string): string {
+  try {
+    const u = new URL(raw);
+    u.hash = "";
+    u.searchParams.sort();
+    u.pathname = u.pathname.replace(/\/+$/, "") || "/";
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
+/** #9131: valor de `utm_content` de uma URL, ou `null` (ausente/inválida). */
+export function utmContentOf(raw: string): string | null {
+  try {
+    return new URL(raw).searchParams.get("utm_content");
+  } catch {
+    return null;
+  }
+}
+
 export interface SnippetInfo {
   /** Nome do arquivo (ex: `clarice-divulgacao.md`) — chave estável de
    * agregação (o link é mais confiável que o texto, mas o arquivo é mais
@@ -138,6 +164,11 @@ export interface SnippetInfo {
   /** URLs (já em base-url) encontradas no CORPO do snippet (header
    * de comentário excluído — `stripHeaderBlock`). */
   urls: string[];
+  /** #9131: URLs COMPLETAS do corpo (query preservada, via `toFullUrlKey`)
+   * — desempate de `matchSnippetForBox` quando >1 snippet compartilha a
+   * base-URL. Opcional por back-compat de fixtures literais; ausente = sem
+   * desempate (1º snippet com a base-URL, comportamento pré-#9131). */
+  fullUrls?: string[];
   /** `seasonal:` do header — `true` para ofertas pontuais/sazonais
    * (alta pull) vs `false`/null para boxes permanentes (#6031). */
   seasonal: boolean | null;
@@ -157,10 +188,11 @@ export function parseSnippetContent(file: string, content: string): SnippetInfo 
   const body = stripHeaderBlock(content);
   const rawUrls = extractUrls(body);
   const urls = [...new Set(rawUrls.map(toBaseUrl))];
+  const fullUrls = [...new Set(rawUrls.map(toFullUrlKey))];
   const seasonal = readSeasonalFlag(content);
   const { audience, source: audienceSource } = resolveSnippetAudience(content, rawUrls);
   const eventKeys = extractSnippetEventKeys(content, rawUrls);
-  return { file, nome, urls, seasonal, audience, audienceSource, eventKeys };
+  return { file, nome, urls, fullUrls, seasonal, audience, audienceSource, eventKeys };
 }
 
 /** Carrega + parseia todos os snippets de `data/snippets/*.md` (#5227,
@@ -198,15 +230,34 @@ export interface SnippetMatch {
  * base-URL, testando cada URL do box em ordem até achar uma que exista em
  * algum snippet cadastrado. `null` quando o box não tem URL, ou nenhuma URL
  * do box corresponde a nenhum snippet (ex: box escrito manualmente, sem vir
- * de um snippet reaproveitável). */
+ * de um snippet reaproveitável).
+ *
+ * #9131: quando >1 snippet compartilha a base-URL (versões da mesma caixa que
+ * diferem só por `utm_*` — ex. `diaria-imersao1010.md` e
+ * `workshop-agente-ia-outubro.md`, ambos em `/evento/agente-ia`), desempata
+ * antes de cair no 1º em ordem alfabética: (1) URL completa idêntica
+ * (`toFullUrlKey`), (2) mesmo `utm_content`. Sem desempate possível, mantém
+ * o 1º — comportamento pré-#9131. */
 export function matchSnippetForBox(
   boxText: string,
   snippets: SnippetInfo[],
 ): SnippetMatch | null {
   for (const rawUrl of extractUrls(boxText)) {
     const baseUrl = toBaseUrl(rawUrl);
-    const found = snippets.find((s) => s.urls.includes(baseUrl));
-    if (found) return { snippet: found, url: rawUrl };
+    const candidates = snippets.filter((s) => s.urls.includes(baseUrl));
+    if (candidates.length === 0) continue;
+    if (candidates.length === 1) return { snippet: candidates[0], url: rawUrl };
+    const fullKey = toFullUrlKey(rawUrl);
+    const exact = candidates.find((s) => s.fullUrls?.includes(fullKey));
+    if (exact) return { snippet: exact, url: rawUrl };
+    const content = utmContentOf(rawUrl);
+    if (content !== null) {
+      const byContent = candidates.find((s) =>
+        (s.fullUrls ?? []).some((u) => toBaseUrl(u) === baseUrl && utmContentOf(u) === content),
+      );
+      if (byContent) return { snippet: byContent, url: rawUrl };
+    }
+    return { snippet: candidates[0], url: rawUrl };
   }
   return null;
 }
