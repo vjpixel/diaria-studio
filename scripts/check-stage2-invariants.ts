@@ -288,8 +288,12 @@ function loadEditionVerdicts(editionDir: string): Map<string, string> {
     if (!Array.isArray(raw)) return verdicts;
     for (const entry of raw) {
       if (!entry || typeof entry.verdict !== "string") continue;
-      if (entry.url) verdicts.set(entry.url, entry.verdict);
-      if (entry.finalUrl) verdicts.set(entry.finalUrl, entry.verdict);
+      // needs_reverify nunca é sobrescrito por outra entry que compartilhe a
+      // chave (url de uma = finalUrl de outra) — preserva a semântica "any"
+      // do Set original do #4730, independente da ordem do array.
+      for (const key of [entry.url, entry.finalUrl]) {
+        if (key && verdicts.get(key) !== "needs_reverify") verdicts.set(key, entry.verdict);
+      }
     }
     return verdicts;
   } catch {
@@ -406,7 +410,7 @@ export async function checkUrlsAccessible(
   for (const url of urls) {
     if (FOOTER_DOMAINS.some((d) => url.includes(d))) continue;
     if (isVideoUrl(url)) continue; // #4263: video verdict nunca é cacheado, por design — não é not_in_cache
-    if (editionVerdicts.get(url) === "needs_reverify") {
+    if (lookupEditionVerdict(url) === "needs_reverify") {
       const fresh = await reverify(url);
       if (fresh.verdict !== "accessible" && fresh.verdict !== "video") {
         suspicious.push({ url, reason: `needs_reverify_failed: verdict=${fresh.verdict}` });
@@ -420,7 +424,7 @@ export async function checkUrlsAccessible(
       // uncertain…) nunca entra no cache cross-edição — a URL veio do
       // pipeline, e re-rodar verify-accessibility não a persiste.
       const editionVerdict = lookupEditionVerdict(url);
-      if (editionVerdict && editionVerdict !== "accessible" && !isCacheableVerdict(editionVerdict)) {
+      if (editionVerdict && !isCacheableVerdict(editionVerdict)) {
         suspicious.push({
           url,
           reason: `not_in_cache: verdict=${editionVerdict} no Stage 1 (link-verify-all.json) — verdict não-cacheável, não é edit manual; re-rodar verify-accessibility não persiste, confira o link à mão`,

@@ -694,6 +694,33 @@ describe("checkStage2Invariants — integração", () => {
       }
     });
 
+    it("needs_reverify com barra final divergente ainda re-verifica, e não é sobrescrito por entry com mesma chave", async () => {
+      const { dir, cleanup } = mkEdition();
+      try {
+        writeFileSync(join(dir, "02-reviewed.md"), `${REVIEWED_WITH_FRONTMATTER}\n[D2](https://a.com/x)`);
+        const cachePath = join(dir, "verify-cache.json");
+        writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+        writeFileSync(
+          join(dir, "_internal", "link-verify-all.json"),
+          JSON.stringify([
+            { url: "https://a.com/x/", verdict: "needs_reverify" },
+            { url: "https://a.com/x/?utm=1", finalUrl: "https://a.com/x/", verdict: "accessible" },
+          ]),
+        );
+        let reverifyCalled = false;
+        const r = await checkUrlsAccessible(dir, cachePath, {
+          reverify: async () => {
+            reverifyCalled = true;
+            return { verdict: "accessible" };
+          },
+        });
+        assert.equal(reverifyCalled, true, "needs_reverify deve disparar re-verificação");
+        assert.equal(r.ok, true, `esperado OK, got: ${r.label}`);
+      } finally {
+        cleanup();
+      }
+    });
+
     it("URL ausente do cache E de link-verify-all.json → mantém 'pós-edit manual'", async () => {
       const { dir, cleanup } = mkEdition();
       try {
