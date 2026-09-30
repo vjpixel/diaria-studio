@@ -585,6 +585,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
             subject: SUBJECTS[cell],
             previewText: PREVIEW_TEXT,
             sender: { name: brevo.sender_name, email: brevo.sender_email },
+            ...(brevo.reply_to ? { replyTo: brevo.reply_to } : {}),
             recipients: { listIds: [entry.listId] },
             htmlContent: html,
           })) as { id?: number };
@@ -618,6 +619,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           subject: subject!,
           previewText: PREVIEW_TEXT,
           sender: { name: brevo.sender_name, email: brevo.sender_email },
+          ...(brevo.reply_to ? { replyTo: brevo.reply_to } : {}),
           recipients: { listIds: [listId] },
           htmlContent: html,
         })) as { id?: number };

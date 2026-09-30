@@ -33,6 +33,7 @@ export const KNOWN_NEWSLETTER_REPLY_ADDRESSES = [
   "vjpixel@gmail.com", // legado — reply-to Beehiiv pré-domínio dedicado
   "oi@news.diar.ia.br", // Kit — envio direto + ramp por onda (kit_diaria, #6046/#7168)
   "oi@reativa.diar.ia.br", // Brevo diária — canal de reativação Pending (#6046)
+  "pixel@diar.ia.br", // reply-to de todas as campanhas Brevo (Clarice News + diária)
 ] as const;
 
 /**

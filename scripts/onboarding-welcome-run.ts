@@ -121,6 +121,7 @@ export interface OnboardingConfig {
   api_key_env?: string;
   sender_email?: string;
   sender_name?: string;
+  reply_to?: string;
   snippets_dir?: string;
   store_path?: string;
   email2_days?: number;
@@ -479,12 +480,14 @@ export function computeMinScheduledAt(nowMs: number = Date.now()): string {
 export async function sendTransactionalEmail(opts: {
   apiKey: string;
   sender: { email: string; name: string };
+  replyTo?: string;
   to: string;
   subject: string;
   htmlContent: string;
 }): Promise<string | null> {
   const res = (await brevoPost(opts.apiKey, "/smtp/email", {
     sender: opts.sender,
+    ...(opts.replyTo ? { replyTo: { email: opts.replyTo } } : {}),
     to: [{ email: opts.to }],
     subject: opts.subject,
     htmlContent: opts.htmlContent,
@@ -1096,6 +1099,7 @@ async function main(): Promise<void> {
         const brevoId = await sendTransactionalEmail({
           apiKey: brevoKey,
           sender,
+          replyTo: cfg.reply_to,
           to: action.entry.email,
           subject: snip.assunto ?? "",
           htmlContent: snip.body,
@@ -1119,6 +1123,7 @@ async function main(): Promise<void> {
           name: `Onboarding D10 ${dateTag}`,
           subject: snip.assunto ?? "",
           sender,
+          ...(cfg.reply_to ? { replyTo: cfg.reply_to } : {}),
           htmlContent: snip.body,
           recipients: { lists: [listId] },
         })) as { id: number };
