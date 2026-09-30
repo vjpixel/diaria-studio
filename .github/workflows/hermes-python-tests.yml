@@ -3,7 +3,7 @@ name: Hermes Python tests
 # #9206 — os testes Python de `hermes/scripts/*.test.py` não rodavam em
 # nenhum workflow: regressão nos scripts do Hermes (detectores, watchdogs,
 # relatório de custo) passava pelo CI em silêncio. Job dedicado e leve:
-# só stdlib, sem npm ci. Descoberta por glob (não lista explícita) pra que
+# stdlib + PyYAML, sem npm ci. Descoberta por glob (não lista explícita) pra que
 # um teste novo entre sozinho — cada arquivo roda como script e falha
 # (assert/exception → exit != 0) derruba o job.
 on:
@@ -23,6 +23,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      # Única dependência fora da stdlib nos scripts testados: PyYAML
+      # (`import yaml` em monitor-cron-model-rotation.py).
+      - run: pip install pyyaml
       - name: Run hermes/scripts/*.test.py
         working-directory: hermes/scripts
         run: |
