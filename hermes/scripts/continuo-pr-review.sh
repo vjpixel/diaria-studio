@@ -105,7 +105,7 @@
 # Dois portões que ESTE script NUNCA decide sozinho — sempre `escalate`,
 # nunca `merge` nem `reject`: caminho sensível de publicação/render, e
 # diff ≥ limiar de effort (a revisão desta sessão é rasa por design,
-# Sonnet `--effort low`; só decide sobre o que consegue julgar). Nesses
+# Opus 5.5 `--effort low`, #9003; só decide sobre o que consegue julgar). Nesses
 # casos a PR fica pro pickup do `/diaria-overnight` — que continua
 # existindo, agora como FALLBACK, não mais o único caminho.
 #
@@ -136,7 +136,9 @@
 #
 # AUTH: assinatura claude.ai (OAuth), mesmo padrão do
 # `opus-daily-diff-review.sh` — este script NÃO seta
-# ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY nenhum (#5608).
+# ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY nenhum (#5608) — e, desde o #9153,
+# REMOVE essas vars (+ CLAUDE_CODE_USE_BEDROCK/VERTEX) do ambiente do
+# `claude -p` via `env -u`, porque herdá-las do cron teria o mesmo efeito.
 set -euo pipefail
 
 # #6891 (01/09/2026): desliga o auto-updater DENTRO deste processo — nunca
@@ -856,7 +858,14 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   set +e
   # Editor (10/09): entrega curta no Telegram — stdout completo do claude vai
   # pro log (stderr), só 1 linha de veredito no stdout.
-  echo "$PROMPT" | timeout 1800 claude -p \
+  # #9153: strip explícito das vars de auth/gateway ANTES do `claude -p` —
+  # "não setar" não basta: o cron/unit pode herdar o .env inteiro (#5114,
+  # ANTHROPIC_API_KEY legítima ali pra scripts de API direta) ou um export
+  # persistente de gateway (#6714), e qualquer uma delas faz o CLI trocar a
+  # assinatura claude.ai pela API paga e perder os conectores (#5608).
+  echo "$PROMPT" | env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
+    -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX \
+    timeout 1800 claude -p \
     --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)" \
     --model claude-opus-5-5 --effort low 1>&2
   CLAUDE_RC=$?
