@@ -57,6 +57,7 @@ export interface ArticleConfig {
 export const ARTICLES: readonly ArticleConfig[] = [
   { slug: "engenharia-de-ilusao", year: "2026" },
   { slug: "o-agente", year: "2026" },
+  { slug: "o-jev", year: "2026" },
 ];
 
 export function articleSourcePath(article: ArticleConfig): string {
