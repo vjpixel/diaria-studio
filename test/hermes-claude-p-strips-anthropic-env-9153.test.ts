@@ -63,15 +63,22 @@ interface Invocation {
 function findInvocations(file: string): Invocation[] {
   const lines = readFileSync(file, "utf8").split("\n");
   const found: Invocation[] = [];
+  const seenStarts = new Set<number>();
   lines.forEach((raw, i) => {
     const trimmed = raw.trimStart();
     if (trimmed.startsWith("#")) return;
-    if (!/(^|[\s|(])claude -p(\s|\\|$)/.test(raw)) return;
-    let start = i;
-    while (start > 0 && lines[start - 1].trimEnd().endsWith("\\")) start--;
+    // Qualquer execução do binário `claude` (não só o literal `claude -p`):
+    // pega `claude --print`, `claude --model X -p`, duplo espaço, crase.
+    if (!/(^|[\s|(`])claude(\s|\\|$)/.test(raw)) return;
     let end = i;
     while (end < lines.length - 1 && lines[end].trimEnd().endsWith("\\")) end++;
-    found.push({ file, line: i + 1, command: lines.slice(start, end + 1).join("\n") });
+    let start = i;
+    while (start > 0 && lines[start - 1].trimEnd().endsWith("\\")) start--;
+    if (seenStarts.has(start)) return; // mesmo comando lógico já contado
+    seenStarts.add(start);
+    const command = lines.slice(start, end + 1).join("\n");
+    if (!/(\s)(-p|--print)(\s|\\|$)/.test(command)) return; // só sessões headless
+    found.push({ file, line: i + 1, command });
   });
   return found;
 }
@@ -90,8 +97,8 @@ describe("#9153 — todo `claude -p` de hermes/scripts remove ANTHROPIC_* do amb
 
   for (const inv of invocations) {
     it(`${inv.file.split("/").pop()}:${inv.line} faz env -u de todas as vars de auth/gateway`, () => {
-      const envIdx = inv.command.indexOf("env ");
-      const claudeIdx = inv.command.indexOf("claude -p");
+      const envIdx = inv.command.search(/\benv\s+-u\b/);
+      const claudeIdx = inv.command.search(/\bclaude\s/);
       assert.ok(envIdx >= 0 && envIdx < claudeIdx, `sem \`env -u\` antes do claude -p:\n${inv.command}`);
       const prefix = inv.command.slice(envIdx, claudeIdx);
       for (const v of REQUIRED_STRIPS) {
@@ -100,14 +107,22 @@ describe("#9153 — todo `claude -p` de hermes/scripts remove ANTHROPIC_* do amb
     });
   }
 
-  it("claude-delegate.sh: o elo de assinatura continua fazendo unset das 3 vars de auth", () => {
-    const src = readFileSync(join(HERMES_SCRIPTS, "claude-delegate.sh"), "utf8");
-    const m = src.match(/unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY/);
-    assert.ok(m, "unset do elo de assinatura sumiu de claude-delegate.sh");
+  it("claude-delegate.sh: só os 2 elos conhecidos, e o de assinatura faz unset + guard fail-closed", () => {
+    const file = join(HERMES_SCRIPTS, "claude-delegate.sh");
+    const invs = findInvocations(file);
+    assert.equal(invs.length, 2, `claude-delegate.sh tem ${invs.length} chamadas claude -p (esperado 2: assinatura + OpenRouter) — chamada nova precisa de strip próprio`);
+    const lines = readFileSync(file, "utf8").split("\n");
+    // Bloco do elo de assinatura: da linha do 1º claude -p pra trás até o `unset`.
+    const first = invs[0].line - 1;
+    const block = lines.slice(Math.max(0, first - 20), first + 1).join("\n");
+    const unsetIdx = block.search(/^\s*unset ANTHROPIC_BASE_URL/m);
+    assert.ok(unsetIdx >= 0, `unset do elo de assinatura sumiu:\n${block}`);
+    for (const v of REQUIRED_STRIPS) assert.ok(block.slice(unsetIdx).includes(v), `unset do elo de assinatura sem ${v}`);
+    assert.match(block, /exit 97/, "guard fail-closed (exit 97) do elo de assinatura sumiu");
   });
 });
 
-describe("#9153 — execução real do prefixo extraído com claude stub", () => {
+describe("#9153 — execução real do prefixo extraído com claude stub", { skip: process.platform === "win32" }, () => {
   const invocations = listShellScripts()
     .filter((f) => !EXEMPT.has(f.split("/").pop()!))
     .flatMap(findInvocations);
@@ -122,7 +137,7 @@ describe("#9153 — execução real do prefixo extraído com claude stub", () =>
         // Do `env` até `claude -p` inclusive, trocando o timeout por um curto
         // e descartando as flags seguintes (não importam pro teste de ambiente).
         const cmd = inv.command
-          .slice(inv.command.indexOf("env "), inv.command.indexOf("claude -p") + "claude -p".length)
+          .slice(inv.command.search(/\benv\s+-u\b/), inv.command.search(/\bclaude\s/) + "claude".length)
           .replace(/timeout \d+/, "timeout 10");
         const env: NodeJS.ProcessEnv = {
           PATH: `${dir}:${process.env.PATH ?? ""}`,
