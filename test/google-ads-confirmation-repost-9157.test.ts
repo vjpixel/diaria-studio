@@ -126,6 +126,39 @@ describe("#9157 — POST ambíguo não é reenviado indefinidamente", () => {
     });
   });
 
+  it("mistura 503 + 4xx: 4xx preserva uncountedPostAttempts e o teto de 4xx vence primeiro", async () => {
+    await withTmp(async (dir) => {
+      const s503 = async (_e: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({
+        ok: false, stage: "ingest", error: "HTTP 503", countsAsAttempt: false,
+      });
+      const s400 = async (_e: DataManagerEvent[]): Promise<DataManagerIngestResult> => ({
+        ok: false, stage: "ingest", error: "HTTP 400", countsAsAttempt: true,
+      });
+      await run(dir, s503);
+      await run(dir, s503);
+      for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await run(dir, s400);
+      const entry = loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)];
+      assert.equal(entry.status, "skipped-failed-permanent");
+      assert.equal(entry.attempts, MAX_FAILED_ATTEMPTS);
+      assert.equal(entry.uncountedPostAttempts, 2);
+    });
+  });
+
+  it("fetch lançando no ingest (rede) consome o teto próprio via sender real", async () => {
+    await withTmp(async (dir) => {
+      const fetchFn = mock.fn(async (url: string | URL | Request): Promise<Response> => {
+        if (String(url).includes("oauth2")) return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+        throw new Error("ECONNRESET");
+      });
+      const sendFn = mock.fn((events: DataManagerEvent[]) =>
+        sendDataManagerIngest({ fetchFn: fetchFn as never, env: ENV as never, payload: { events } as never }),
+      );
+      for (let i = 0; i < MAX_UNCOUNTED_POST_ATTEMPTS + 2; i++) await run(dir, sendFn);
+      assert.equal(sendFn.mock.callCount(), MAX_UNCOUNTED_POST_ATTEMPTS);
+      assert.equal(loadConfirmationIndex(join(dir, "idx.json"))[indexKey(1)].status, "skipped-failed-permanent");
+    });
+  });
+
   it("sucesso depois de POST ambíguo vira submitted normalmente", async () => {
     await withTmp(async (dir) => {
       const { sendFn } = anomalous2xxSend();

@@ -300,7 +300,8 @@ export async function sendDataManagerIngest(opts: {
     // Resposta REAL do Google, HTTP não-2xx. 4xx (exceto 429) é recusa
     // determinística do payload/conta — conta como tentativa. 5xx/429 é
     // instabilidade/throttling do lado do Google (#9067, par do #9022 da
-    // Meta): NÃO conta, o teto passa a ser a janela de 90 dias do lote.
+    // Meta): NÃO conta — o lote aplica o teto próprio
+    // `MAX_UNCOUNTED_POST_ATTEMPTS` (#9157, google-ads-confirmation-batch.ts).
     return {
       ok: false,
       stage: "ingest",

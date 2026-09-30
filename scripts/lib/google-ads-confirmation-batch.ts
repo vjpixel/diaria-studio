@@ -56,7 +56,8 @@
  * de tentativas; após `MAX_FAILED_ATTEMPTS` vira `skipped-failed-permanent`).
  * Só recusa 4xx (exceto 429) consome tentativa: 5xx/429 do Google e falha de
  * rede/credencial gravam `failed` sem incrementar (#9067, par do #9022 da
- * Meta). Mas quando o POST chegou a sair (5xx/429, rede após envio, 2xx
+ * Meta). Mas quando a falha é no estágio `ingest` (5xx/429, exceção de rede
+ * no fetch — antes OU depois de o request sair, o sender não distingue —, 2xx
  * anômalo) incrementa-se `uncountedPostAttempts`, com teto próprio
  * `MAX_UNCOUNTED_POST_ATTEMPTS` (#9157) — antes o teto era só a janela de 90
  * dias, reenviando o mesmo evento até ~90x. A task é DIÁRIA (07:20 BRT), então
@@ -137,8 +138,11 @@ export const MAX_FAILED_ATTEMPTS = 3;
 /**
  * #9157: teto das falhas que NÃO contam tentativa mas em que o POST
  * `events:ingest` SAIU (`stage: "ingest"` com `countsAsAttempt: false` —
- * 5xx/429, exceção de rede depois do envio, 2xx não-JSON ou sem `requestId`).
- * Nesses casos o Google pode ter processado o lote; sem teto próprio a task
+ * 5xx/429, exceção de rede no fetch, 2xx não-JSON ou sem `requestId`).
+ * Nesses casos o Google pode ter processado o lote (a exceção de rede é
+ * contada mesmo quando o request nem saiu — o sender não distingue a fase;
+ * numa queda de rede local o refresh de token costuma falhar antes, e
+ * `token` segue sem teto); sem teto próprio a task
  * diária re-POSTaria o mesmo evento até a janela de 90 dias (~90x), e o dedup
  * por `transactionId` é best-effort. 5 (e não 3, como `MAX_FAILED_ATTEMPTS`)
  * preserva a tolerância do #9067 a uma instabilidade de poucos dias do Google
@@ -362,8 +366,9 @@ export interface ConfirmationBatchSummary {
    *  não-2xx, ou 2xx anômalo — corpo não-JSON/sem `requestId`) nesta rodada
    *  — granularidade de chunk, não de linha (ver docstring do módulo). Só o
    *  caso HTTP 4xx (exceto 429) conta tentativa rumo a `skipped-failed-permanent`
-   *  (`countsAsAttempt`, ver `sendDataManagerIngest`); os demais reprocessam
-   *  sem consumir o teto. */
+   *  (`countsAsAttempt`, ver `sendDataManagerIngest`); falhas em
+   *  `ingest` sem `countsAsAttempt` consomem `MAX_UNCOUNTED_POST_ATTEMPTS`
+   *  (#9157); só `env`/`token` reprocessam sem teto. */
   failedIds: number[];
   /** Mensagens de erro dos chunks que falharam (até 10). */
   googleErrors: string[];
@@ -591,11 +596,12 @@ export async function runConfirmationBatch(deps: RunConfirmationBatchDeps): Prom
       // quando o Google de fato RESPONDEU com HTTP 4xx não-429 (`countsAsAttempt`,
       // decidido pelo sender — ver docstring de `sendDataManagerIngest`;
       // 5xx/429 são transitórios desde o #9067).
-      // 5xx/429 NÃO contam porque são instabilidade/throttling do Google
-      // (repetir resolve; teto = janela de 90 dias). `env`/`token` ausentes,
-      // exceção de rede, corpo 2xx não-JSON ou 2xx sem requestId também NÃO
-      // contam — não sabemos se o Google processou o payload. A linha só some
-      // pra sempre depois de MAX_FAILED_ATTEMPTS recusas determinísticas.
+      // 5xx/429 (instabilidade/throttling), exceção de rede, corpo 2xx
+      // não-JSON ou 2xx sem requestId NÃO contam tentativa — não sabemos se o
+      // Google processou o payload — mas consomem o teto próprio abaixo.
+      // `env`/`token` não enviaram nada: sem teto nenhum. A linha some pra
+      // sempre após MAX_FAILED_ATTEMPTS recusas 4xx OU
+      // MAX_UNCOUNTED_POST_ATTEMPTS falhas ambíguas no ingest.
       summary.failed++;
       summary.failedIds.push(cand.id);
       // #9157: falha sem contar tentativa mas com o POST já enviado consome
