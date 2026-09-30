@@ -10,6 +10,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock } from "../extract-section.ts"; // #6064
@@ -2773,6 +2774,15 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#7243",
     stage: 4,
     run: checkIntentionalErrorPresentInFinal,
+  },
+  {
+    id: "intentional-error-not-recent-repeat-final",
+    description:
+      "erro intencional declarado até o pré-gate (inclusive o do proposer) não reusa wrong_value/correct_value de edição dos últimos 30 dias (#9101)",
+    source_issue: "#9101",
+    stage: 4,
+    run: (editionDir) =>
+      checkIntentionalErrorNotRecentRepeat(editionDir, { ruleId: "intentional-error-not-recent-repeat-final" }),
   },
   {
     id: "truncated-secondary-item-summary",

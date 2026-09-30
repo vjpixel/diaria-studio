@@ -35,7 +35,8 @@
  * `numeric`/`factual`/`data`).
  */
 
-import type { IntentionalErrorJson } from "./intentional-errors.ts";
+import type { IntentionalError, IntentionalErrorJson } from "./intentional-errors.ts";
+import { findRecentRepeats, DEFAULT_REPEAT_WINDOW_DAYS } from "./intentional-error-repeat.ts";
 import { SECTION_EMOJI_PREFIX } from "./section-naming.ts";
 
 export interface IntentionalErrorCandidate {
@@ -120,6 +121,15 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+export interface ProposeOptions {
+  /** (#9101) Histórico de `data/intentional-errors.jsonl` já carregado. Ausente = sem filtro de repetição. */
+  history?: IntentionalError[];
+  /** (#9101) AAMMDD da edição — referência da janela de repetição. */
+  edition?: string;
+  /** (#9101) Janela em dias (default 30). */
+  windowDays?: number;
+}
+
 /**
  * Pure (#8592): dado o texto de `02-reviewed.md`, procura a primeira menção
  * (em ordem de documento) de uma entidade do catálogo dentro de uma seção
@@ -127,31 +137,54 @@ function escapeRegExp(s: string): string {
  * completo. Retorna `null` quando nenhuma seção secundária menciona nenhuma
  * entidade do catálogo — não força candidato ruim; o Stage 4 cai de volta
  * pra perguntar em aberto (comportamento pré-#8592).
+ *
+ * (#9101) Com `opts.history`: descarta grafia errada JÁ usada em qualquer
+ * edição (ex: "Craude", 3x) e entidade (`correct_value`) usada dentro da
+ * janela (ex: Anthropic em 260928); entre as restantes, prefere entidade
+ * nunca usada (inédita) antes de cair numa já usada fora da janela.
  */
 export function proposeIntentionalErrorCandidate(
   reviewedMd: string,
+  opts: ProposeOptions = {},
 ): IntentionalErrorCandidate | null {
   const blocks = splitIntoBlocks(reviewedMd);
+  const history = opts.history ?? [];
+  const edition = opts.edition ?? "";
+  const windowDays = opts.windowDays ?? DEFAULT_REPEAT_WINDOW_DAYS;
 
-  for (const block of blocks) {
-    if (DESTAQUE_HEADER_RE.test(block)) continue; // Regra 3 — nunca em bloco de destaque
+  const isBlocked = ({ correct, wrong }: EntityMisspelling): boolean =>
+    history.length > 0 &&
+    (findRecentRepeats({ wrong_value: wrong }, history, edition, { windowDays: Infinity }).length > 0 ||
+      findRecentRepeats({ correct_value: correct }, history, edition, { windowDays }).length > 0);
+  const entityEverUsed = ({ correct }: EntityMisspelling): boolean =>
+    history.length > 0 &&
+    findRecentRepeats({ correct_value: correct }, history, edition, { windowDays: Infinity }).length > 0;
 
-    const section = SECONDARY_SECTION_PATTERNS.find(({ re }) => re.test(block));
-    if (!section) continue; // bloco não identificado como seção secundária conhecida (ex: intro) — pula, não arrisca
+  // 1ª passada: só entidades inéditas; 2ª: aceita entidade usada fora da janela.
+  for (const allowUsedEntity of [false, true]) {
+    for (const block of blocks) {
+      if (DESTAQUE_HEADER_RE.test(block)) continue; // Regra 3 — nunca em bloco de destaque
 
-    for (const { correct, wrong } of KNOWN_ENTITY_MISSPELLINGS) {
-      const wordBoundaryRe = new RegExp(`\\b${escapeRegExp(correct)}\\b`);
-      if (!wordBoundaryRe.test(block)) continue;
+      const section = SECONDARY_SECTION_PATTERNS.find(({ re }) => re.test(block));
+      if (!section) continue; // bloco não identificado como seção secundária conhecida (ex: intro) — pula, não arrisca
 
-      return {
-        description:
-          "Uma marca de IA muito conhecida do público da newsletter aparece com o nome grafado errado numa menção lateral do texto.",
-        location: `${section.name} (menção a "${correct}")`,
-        category: "ortografico",
-        correct_value: correct,
-        wrong_value: wrong,
-        reveal: `Na última edição, escrevi "${wrong}" onde o correto é "${correct}".`,
-      };
+      for (const entry of KNOWN_ENTITY_MISSPELLINGS) {
+        const { correct, wrong } = entry;
+        const wordBoundaryRe = new RegExp(`\\b${escapeRegExp(correct)}\\b`);
+        if (!wordBoundaryRe.test(block)) continue;
+        if (isBlocked(entry)) continue; // #9101
+        if (!allowUsedEntity && entityEverUsed(entry)) continue; // #9101 — prefere inédita
+
+        return {
+          description:
+            "Uma marca de IA muito conhecida do público da newsletter aparece com o nome grafado errado numa menção lateral do texto.",
+          location: `${section.name} (menção a "${correct}")`,
+          category: "ortografico",
+          correct_value: correct,
+          wrong_value: wrong,
+          reveal: `Na última edição, escrevi "${wrong}" onde o correto é "${correct}".`,
+        };
+      }
     }
   }
 
