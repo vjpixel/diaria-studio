@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { formatEscalateHeadMarker } from "../scripts/lib/continuo-escalate-owner.ts";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -151,7 +152,7 @@ describe("#8862 — PR de resgate (draft + bloqueio-execucao) não conta no alar
 describe("#9031 — PR já escalada (continuo-escalado) não conta no alarme de fila parada", () => {
   it("sintaxe bash válida", () => bashSyntaxOk(WATCH_SH));
 
-  it("o jq real filtra PR escalada draft (#8961) e não-draft (#9004) cuja escalada é posterior ao último commit, mantendo uma PR normal", () => {
+  it("o jq real filtra PR escalada draft (#8961) e não-draft (#9004) cujo head atual é o SHA escalado, mantendo uma PR normal", () => {
     const input = [
       {
         number: 8961,
@@ -159,8 +160,8 @@ describe("#9031 — PR já escalada (continuo-escalado) não conta no alarme de 
         createdAt: "2026-09-28T15:25:00Z",
         isDraft: true,
         labels: [{ name: "continuo-escalado" }],
-        escalatedAt: "2026-09-28T18:00:00Z",
-        lastCommitAt: "2026-09-28T15:20:00Z",
+        escalatedHead: "aaaaaaa1",
+        headSha: "aaaaaaa1",
       },
       {
         number: 9004,
@@ -168,8 +169,8 @@ describe("#9031 — PR já escalada (continuo-escalado) não conta no alarme de 
         createdAt: "2026-09-29T01:50:00Z",
         isDraft: false,
         labels: [{ name: "no-regression-test" }, { name: "continuo-escalado" }],
-        escalatedAt: "2026-09-29T03:00:00Z",
-        lastCommitAt: "2026-09-29T01:45:00Z",
+        escalatedHead: "bbbbbbb2",
+        headSha: "bbbbbbb2",
       },
       {
         number: 9000,
@@ -202,50 +203,91 @@ function runQueueFilters(input: object[]): number[] {
   return JSON.parse(second.stdout).map((pr: { number: number }) => pr.number);
 }
 
-describe("#9156 — exclusão de continuo-escalado é limitada no tempo (push depois da escalada volta ao alarme)", () => {
+describe("#9156/#9184 — exclusão de continuo-escalado vale só pro SHA escalado (push depois volta ao alarme)", () => {
   it("sintaxe bash válida", () => bashSyntaxOk(WATCH_SH));
 
-  it("PR escalada + push POSTERIOR à escalada + idade > limiar entra na fila do alarme", () => {
+  it("PR escalada + push POSTERIOR à escalada (head != SHA escalado) entra na fila do alarme", () => {
     const out = runQueueFilters([
       {
         number: 9100,
         headRefName: "continuo/fix-ci",
-        createdAt: "2026-09-20T10:00:00Z", // muito acima do limiar de 12h
+        createdAt: "2026-09-20T10:00:00Z",
         isDraft: false,
         labels: [{ name: "continuo-escalado" }],
-        escalatedAt: "2026-09-20T12:00:00Z", // escalada por CI vermelho
-        lastCommitAt: "2026-09-21T09:00:00Z", // consertada por push depois
+        escalatedHead: "1111111aaaa",
+        headSha: "2222222bbbb",
       },
     ]);
     assert.deepEqual(out, [9100], "PR consertada depois da escalada tem de voltar a contar no alarme");
   });
 
-  it("dado de escalada/commit indisponível = fail-open NA DIREÇÃO DO ALARME (a PR conta)", () => {
+  it("#9184 item 2: commit ANTIGO (data de committer anterior à escalada) empurrado depois volta a contar", () => {
+    // Na versão por datas, escalatedAt >= lastCommitAt excluía esta PR para sempre.
     const out = runQueueFilters([
-      { number: 9101, headRefName: "a", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }] },
-      { number: 9102, headRefName: "b", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedAt: null, lastCommitAt: "2026-09-20T09:00:00Z" },
-      { number: 9103, headRefName: "c", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedAt: "2026-09-20T12:00:00Z", lastCommitAt: null },
+      {
+        number: 9110,
+        headRefName: "continuo/x",
+        createdAt: "2026-09-20T10:00:00Z",
+        isDraft: false,
+        labels: [{ name: "continuo-escalado" }],
+        escalatedAt: "2026-09-20T12:05:00Z",
+        lastCommitAt: "2026-09-20T12:00:00Z",
+        escalatedHead: "aaaaaaa0",
+        headSha: "ccccccc9",
+      },
     ]);
-    assert.deepEqual(out, [9101, 9102, 9103]);
+    assert.deepEqual(out, [9110]);
   });
 
-  it("escalada no MESMO instante do último commit continua excluída (>=)", () => {
+  it("#9184 item 1: re-escalada do head novo (marcador novo) volta a excluir", () => {
     const out = runQueueFilters([
-      { number: 9104, headRefName: "d", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedAt: "2026-09-20T12:00:00Z", lastCommitAt: "2026-09-20T12:00:00Z" },
+      { number: 9111, headRefName: "e", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedHead: "ddddddd4", headSha: "ddddddd4" },
     ]);
     assert.deepEqual(out, []);
   });
 
-  it("o script enriquece só as PRs escaladas com o último evento labeled continuo-escalado e o último commit", () => {
+  it("dado de escalada/head indisponível = fail-open NA DIREÇÃO DO ALARME (a PR conta)", () => {
+    const out = runQueueFilters([
+      { number: 9101, headRefName: "a", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }] },
+      { number: 9102, headRefName: "b", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedHead: null, headSha: "abcdef1" },
+      { number: 9103, headRefName: "c", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedHead: "abcdef1", headSha: null },
+    ]);
+    assert.deepEqual(out, [9101, 9102, 9103]);
+  });
+
+  it("o script enriquece só as PRs escaladas com o último marcador de head escalado e o headRefOid", () => {
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
-    assert.match(section, /gh api "repos\/\{owner\}\/\{repo\}\/issues\/\$EN\/events" --paginate/);
-    assert.match(section, /select\(\.event == "labeled" and \.label\.name == "continuo-escalado"\) \| \.created_at' 2>\/dev\/null \| tail -n 1\)/);
-    // data do commit HEAD, nunca `.commits[-1]` (gh pr view traz só os 100 primeiros)
+    assert.match(section, /gh api "repos\/\{owner\}\/\{repo\}\/issues\/\$EN\/comments" --paginate/);
     assert.match(section, /gh pr view "\$EN" --json headRefOid/);
-    assert.match(section, /gh api "repos\/\{owner\}\/\{repo\}\/commits\/\$HEAD_SHA_Q" --jq '\.commit\.committer\.date \/\/ empty'/);
-    assert.doesNotMatch(section, /\.commits\[-1\]/);
-    // merge + filtro aplicados ao QUEUE_JSON que alimenta contagem, idade e listas
+    // datas saíram de vez (#9184)
+    assert.doesNotMatch(section, /issues\/\$EN\/events/);
+    assert.doesNotMatch(section, /committer\.date/);
     assert.match(section, /QUEUE_JSON=\$\(printf '%s' "\$QUEUE_RAW_JSON" \| jq -c --argjson enrich "\$QUEUE_ENRICH" "\$QUEUE_ENRICH_MERGE"[\s\S]{0,120}jq -c "\$QUEUE_ESCALATION_FILTER"/);
+  });
+
+  it("a expressão --jq real de captura do marcador pega o ÚLTIMO SHA (vários por comentário, vários comentários)", () => {
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    const m = section.match(/--jq '(\.\[\]\.body \| capture[^\n]*)' 2>\/dev\/null \| tail -n 1\)/);
+    assert.ok(m, "expressão de captura do marcador não encontrada");
+    const comments = [
+      { body: "texto <!-- continuo-escalate: head=aaaaaaa1 --> mais <!-- continuo-escalate: head=bbbbbbb2 -->" },
+      { body: "sem marcador" },
+      { body: "<!-- continuo-escalate: head=ccccccc3 -->" },
+      { body: "outro sem marcador" },
+    ];
+    const res = spawnSync("jq", ["-r", m![1]], { input: JSON.stringify(comments), encoding: "utf8" });
+    assert.equal(res.status, 0, `jq falhou: ${res.stderr}`);
+    const lines = res.stdout.trim().split("\n");
+    assert.deepEqual(lines, ["aaaaaaa1", "bbbbbbb2", "ccccccc3"]);
+    assert.equal(lines[lines.length - 1], "ccccccc3");
+  });
+
+  it("o marcador que o watcher lê é o mesmo que check-continuo-escalate-label.ts grava", () => {
+    const out = formatEscalateHeadMarker("0123abcd");
+    const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
+    const m = section.match(/--jq '(\.\[\]\.body \| capture[^\n]*)' 2>\/dev\/null \| tail -n 1\)/);
+    const res = spawnSync("jq", ["-r", m![1]], { input: JSON.stringify([{ body: out }]), encoding: "utf8" });
+    assert.equal(res.stdout.trim(), "0123abcd");
   });
 
   it("o merge real do mapa de enriquecimento (chave string × .number numérico) alimenta o filtro", () => {
@@ -259,8 +301,8 @@ describe("#9156 — exclusão de continuo-escalado é limitada no tempo (push de
       { number: 3, headRefName: "c", createdAt: "2026-09-20T00:00:00Z", isDraft: false, labels: [] },
     ];
     const enrich = {
-      "1": { escalatedAt: "2026-09-20T05:00:00Z", lastCommitAt: "2026-09-21T00:00:00Z" }, // push depois → conta
-      "2": { escalatedAt: "2026-09-20T05:00:00Z", lastCommitAt: "2026-09-20T01:00:00Z" }, // escalada vigente → sai
+      "1": { escalatedHead: "aaaaaaa1", headSha: "bbbbbbb2" }, // push depois → conta
+      "2": { escalatedHead: "ccccccc3", headSha: "ccccccc3" }, // escalada vigente → sai
     };
     const merged = spawnSync("jq", ["-c", "--argjson", "enrich", JSON.stringify(enrich), mergeMatch![1]], { input: JSON.stringify(raw), encoding: "utf8" });
     assert.equal(merged.status, 0, `jq (merge) falhou: ${merged.stderr}`);

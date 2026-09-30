@@ -25,3 +25,31 @@ export const CONTINUO_ESCALATED_LABEL = "continuo-escalado";
 export function isAlreadyEscalated(labels: string[]): boolean {
   return labels.includes(CONTINUO_ESCALATED_LABEL);
 }
+
+/**
+ * #9184: marcador durável do SHA do head escalado. O watcher
+ * (`hermes/scripts/watch-continuo-health.sh` §9) só exclui a PR escalada do
+ * alarme de fila parada enquanto `headRefOid` for IGUAL ao último SHA
+ * marcado — push depois da escalada volta a contar, e re-escalada do head
+ * novo grava um marcador novo (o evento `labeled` não se repete quando a
+ * label já está na PR, por isso comparar datas não servia).
+ */
+export const ESCALATE_HEAD_MARKER_RE = /<!-- continuo-escalate: head=([0-9a-f]{7,40}) -->/g;
+
+export function formatEscalateHeadMarker(headSha: string): string {
+  return `<!-- continuo-escalate: head=${headSha} -->`;
+}
+
+/** Último SHA marcado nos corpos de comentário (em ordem cronológica), ou `null`. */
+export function lastEscalatedHead(commentBodies: string[]): string | null {
+  let last: string | null = null;
+  for (const body of commentBodies) {
+    for (const m of body.matchAll(ESCALATE_HEAD_MARKER_RE)) last = m[1];
+  }
+  return last;
+}
+
+/** `true` quando é preciso gravar um marcador novo pra este head. */
+export function needsEscalateHeadMarker(commentBodies: string[], headSha: string): boolean {
+  return lastEscalatedHead(commentBodies) !== headSha;
+}
