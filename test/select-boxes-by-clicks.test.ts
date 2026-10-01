@@ -1029,3 +1029,40 @@ describe("#9175 resolveBoxesForEdition — slot 2 inativo em edição de 2 desta
     assert.ok(selection.every((s) => s.mode === "disabled"));
   });
 });
+
+// ── #9217: fallback do config PODE repetir a caixa da edição anterior ───
+// Decisão do editor (briefing overnight 260930b): a anti-repetição entre
+// edições (`excludeFiles`/`excludeEventKeys`) só age sobre os candidatos
+// automáticos; o fallback `boxes_divulgacao.slotN` não é julgado contra a
+// edição anterior. Este teste TRAVA esse comportamento — mudar isso é decisão
+// editorial, não refactor.
+describe("#9217 resolveBoxesForEdition — fallback pode repetir a caixa de ontem", () => {
+  it("único candidato banido por anti-repetição -> slot cai no fallback, que é a MESMA caixa de ontem, e ela volta", () => {
+    const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+    try {
+      writeSnippet(snippetsDir, "winner.md", "Winner", "https://x.com/winner");
+      writeEdition(
+        editionsDir,
+        "260805",
+        `**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody\n\n---\n\n**📚 Winner**\n\n[Link](https://x.com/winner)\n\n---\n\n**DESTAQUE 2 | 🚀**\n\n[T](https://d2.com)\n\nbody`,
+      );
+      writePost(postsDir, "p805", "2026-08-05", "https://x.com/winner", 40);
+
+      const { effective, selection } = resolveBoxesForEdition({
+        aammdd: "260806",
+        boxesCfg: { slot0: null, slot1: "winner.md", slot2: null, slot3: null },
+        autoCfg: { enabled: true, pinnedSlots: new Set(), recentWindow: 3, priorWindow: 3, lastN: 20 },
+        editionsDir,
+        postsDir,
+        snippetsDir,
+      });
+
+      assert.equal(effective.slot1, "winner.md", "fallback repete a caixa da edição anterior (#9217)");
+      const s1 = selection.find((s) => s.slot === 1)!;
+      assert.equal(s1.mode, "fallback-no-candidates");
+      assert.equal(s1.file, "winner.md");
+    } finally {
+      cleanup();
+    }
+  });
+});

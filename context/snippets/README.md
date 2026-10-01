@@ -31,6 +31,19 @@ tendência de queda + anti-repetição vs. a edição anterior, controlada por
 automação — continua manual/opt-in raro, decisão do #4274. Ver a docstring
 de `select-boxes-by-clicks.ts` pra precedência completa.
 
+**A anti-repetição vale só pros candidatos automáticos, não pro fallback
+(#9217, decisão do editor).** Quando nenhum candidato sobra, o slot cai em
+`boxes_divulgacao.slotN` — e esse fallback PODE repetir a caixa (ou o
+evento) da edição anterior. É intencional: repetir é preferível a deixar o
+slot vazio. O fallback só é recusado por audiência/duplicado/evento DENTRO
+da mesma edição (#9155).
+
+**Duas caixas com a mesma URL completa** (ex.: `workshop-x.md` e
+`workshop-x-copia.md`, `utm_content` incluído) disputam os mesmos cliques no
+ranking. O Stage 2 (`stitch-newsletter.ts`) avisa com warn, sem bloquear
+(#9218, `findDuplicateSnippetUrls` em `box-click-report.ts`); arquive a cópia
+em `data/snippets/_arquivo/`.
+
 ## Onde um box pode entrar
 
 `scripts/stitch-newsletter.ts` monta a edição diária com 5 pontos de encaixe

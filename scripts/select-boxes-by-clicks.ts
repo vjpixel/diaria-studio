@@ -456,7 +456,8 @@ export interface ResolvedBoxes {
 
 export interface SlotSelectionRecord {
   slot: SlotNumber;
-  mode: "disabled" | "pinned" | "auto" | "fallback-no-candidates" | "fallback-ineligible";
+  /** `manual`: trocado pós-stitch por `scripts/apply-box-slot.ts` (#8990). */
+  mode: "disabled" | "pinned" | "auto" | "fallback-no-candidates" | "fallback-ineligible" | "manual";
   file: string | null;
   /** #9155: só em `mode: "fallback-ineligible"` — o arquivo de
    * `boxes_divulgacao.slotN` que seria usado como fallback e foi recusado
@@ -549,7 +550,10 @@ const SLOT_KEY: Record<SlotNumber, "slot1" | "slot2" | "slot3"> = { 1: "slot1", 
  * nunca uma stitch quebrada ou um slot vazio por falta de dado. #9155: o
  * slot só sai vazio quando o próprio fallback é inelegível (audiência /
  * evento / duplicado). Anti-repetição entre edições NÃO se aplica ao
- * fallback, de propósito (fora do escopo do #9155).
+ * fallback, de propósito: o fallback `boxes_divulgacao.slotN` PODE repetir a
+ * caixa (ou o evento) da edição anterior — decisão do editor, #9217 (briefing
+ * overnight 260930b). Preferível a sair com o slot vazio; travado por teste
+ * em `test/select-boxes-by-clicks.test.ts` (bloco #9217).
  */
 export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResult {
   const autoCfg = opts.autoCfg ?? loadBoxesDivulgacaoAutoConfig();

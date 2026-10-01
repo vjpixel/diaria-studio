@@ -258,6 +258,40 @@ export function isSnippetCopyFile(file: string): boolean {
   return /[-_ ](copia|cópia|copy)(-\d+)?\.md$/i.test(file);
 }
 
+export interface DuplicateSnippetUrl {
+  /** URL completa (`toFullUrlKey`, query preservada) compartilhada. */
+  url: string;
+  /** Arquivos que a contêm, em ordem alfabética (≥2). */
+  files: string[];
+}
+
+/** #9218: URLs COMPLETAS (query/`utm_content` incluídos) presentes em >1
+ * snippet. Duas caixas com a mesma URL completa disputam os mesmos cliques
+ * no ranking (`matchSnippetForBox` só desempata por `isSnippetCopyFile`),
+ * tipicamente uma cópia solta esquecida (`x-copia.md`). Puro; ordenado por URL. */
+export function findDuplicateSnippetUrls(snippets: readonly SnippetInfo[]): DuplicateSnippetUrl[] {
+  const byUrl = new Map<string, Set<string>>();
+  for (const s of snippets) {
+    for (const u of s.fullUrls ?? []) {
+      let set = byUrl.get(u);
+      if (!set) byUrl.set(u, (set = new Set()));
+      set.add(s.file);
+    }
+  }
+  return [...byUrl.entries()]
+    .filter(([, files]) => files.size > 1)
+    .map(([url, files]) => ({ url, files: [...files].sort() }))
+    .sort((a, b) => a.url.localeCompare(b.url));
+}
+
+/** #9218: linha de warn por URL duplicada (vazio = sem duplicata). */
+export function formatDuplicateSnippetUrlWarnings(dups: readonly DuplicateSnippetUrl[]): string[] {
+  return dups.map(
+    (d) =>
+      `warn — caixas com URL completa idêntica (#9218): ${d.files.join(", ")} → ${d.url}. Disputam os mesmos cliques; arquive a cópia em data/snippets/_arquivo/.`,
+  );
+}
+
 function queryPairs(raw: string): Set<string> {
   try {
     return new Set([...new URL(raw).searchParams].map(([k, v]) => `${k}=${v}`));

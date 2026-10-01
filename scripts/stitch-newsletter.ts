@@ -50,6 +50,7 @@ import {
   buildSnippetBodyHashManifest,
   writeSnippetBodyHashManifest,
 } from "./lib/lint-checks/snippet-staleness.ts"; // #4150: grava hash do corpo pós-cabeçalho dos snippets usados, pro guard de staleness distinguir edição de metadado de edição de conteúdo
+import { findDuplicateSnippetUrls, formatDuplicateSnippetUrlWarnings, loadSnippets } from "./box-click-report.ts"; // #9218
 import { resolveBoxesForEdition } from "./select-boxes-by-clicks.ts"; // #4626: seleção automática de boxes 1/2/3 por cliques+tendência+anti-repetição — só afeta main() (CLI), stitchNewsletter() em si permanece pura/sem I/O de auto-seleção
 import { matchEditionHub, extractBoldLinkTitles } from "./lib/hub-match.ts"; // #4907: link contextual pro hub temático quando as manchetes do dia casam HUB_KEYWORD_PATTERNS
 import { selectRelatedEditions, renderRelatedEditionsMarkdown, loadRecentRelatedEditionUrls } from "./lib/related-editions.ts"; // #5122/#5181: aresta edição->edição no fim do corpo — independente do #4907 acima (não exige match único edição-wide), exclusão mútua aplicada abaixo
@@ -1087,6 +1088,11 @@ async function main(): Promise<void> {
       process.stderr.write(`[stitch-newsletter] hub-divulgacao-rotativo.md regenerado pra ${editionAammdd} (hub "${hubBoxRegen.slug}")\n`);
     } else {
       console.error(`[stitch-newsletter] warn — falha regenerando hub-divulgacao-rotativo.md (#5263, seguindo com o arquivo existente em disco, se houver): ${hubBoxRegen.error}`);
+    }
+
+    // #9218: warn (não bloqueia) pra caixas com URL completa idêntica.
+    for (const line of formatDuplicateSnippetUrlWarnings(findDuplicateSnippetUrls(loadSnippets(join(ROOT, "data", "snippets"))))) {
+      console.error(`[stitch-newsletter] ${line}`);
     }
 
     const boxesCfgLoaded = loadBoxesDivulgacaoConfig();
