@@ -228,7 +228,15 @@ export function removeDestaqueBlockFromMd(
     `[TEXTO PENDENTE — re-rodar writer-destaque para DESTAQUE ${position}]`;
 
   const newBlocks = blocks.map((block, idx) => {
-    if (idx === zeroIdx) return placeholder;
+    // #9254: o lookahead do blockRe só corta antes de `---` seguido de
+    // DESTAQUE/seção — uma caixa de divulgação na lacuna (ex: entre D2 e D3,
+    // `---\n\n**📚 ...**`) fica DENTRO do bloco do destaque anterior. Só o
+    // texto do destaque até o 1º `---` é trocado; a cauda (caixa + seus
+    // separadores) é preservada byte a byte.
+    if (idx === zeroIdx) {
+      const tailIdx = block.search(/\n+---[ \t]*\n/);
+      return tailIdx >= 0 ? placeholder + block.slice(tailIdx) : placeholder;
+    }
     // Renumber after removal: headers keep same numbers since we replaced, not removed
     return block;
   });
