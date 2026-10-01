@@ -107,3 +107,20 @@ describe("typecheck-ratchet (test/** typechecked) continua wired em pr-checks.ym
     );
   });
 });
+
+describe("concurrency: `edited` não cancela a rodada do commit (#9262)", () => {
+  const yamlText = readFileSync(PR_CHECKS_PATH, "utf8");
+  const block = yamlText.match(/^concurrency:\n((?: {2}.*\n)+)/m)?.[1] ?? "";
+
+  it("grupo separa `edited` dos eventos de código", () => {
+    assert.match(
+      block,
+      /group:.*github\.event\.action == 'edited'/,
+      "grupo único faria o `edited` (gh pr edit) cancelar a rodada do push no mesmo commit",
+    );
+  });
+
+  it("cancel-in-progress é falso para `edited`", () => {
+    assert.match(block, /cancel-in-progress: \$\{\{ github\.event\.action != 'edited' \}\}/);
+  });
+});

@@ -36,8 +36,10 @@ docstrings de `workers/artigos/src/voto-tema-core.ts`/`voto-tema.ts`.
 
 ### `abrir --ciclo AAMM`
 
-Escreve `data/artigo-especial/votacao/{aamm}/ballot.json` (título + opções)
-**antes** de rodar — é o editor quem escreve a cédula, a skill só valida.
+Escreve `data/artigo-especial/votacao/{aamm}/ballot.json` (título + `prazo` +
+opções; `prazo` é obrigatório desde #9260, ISO 8601 com fuso, ex.
+`"2026-09-27T09:00:00-03:00"` — aparece no e-mail e no placar, e o worker
+recusa voto depois dele mesmo sem `voto-tema-close.ts`) **antes** de rodar — é o editor quem escreve a cédula, a skill só valida.
 Roda `voto-tema-open.ts`: resolve o eleitorado (tag Kit), calcula 1 token
 por pessoa, grava a tabela reversa `polltoken:{token} -> email` no KV,
 patcha o custom field `voto_token` no Kit, e grava
@@ -50,7 +52,11 @@ npx tsx scripts/voto-tema-open.ts --ciclo AAMM --dry-run
 npx tsx scripts/voto-tema-open.ts --ciclo AAMM --push
 ```
 
-**Antes do 1º uso real, rodar o teste decisivo da merge tag** (corpo da
+**Antes do 1º uso real, rodar o teste decisivo da merge tag** — desde #9261
+automatizado: `npx tsx scripts/publish-voto-tema-kit.ts --ciclo AAMM --test-send --push`
+(token para os membros de `diaria-test-email`, broadcast `[TESTE]` filtrado,
+releitura do filtro, agendado +2 min; o link deve abrir a página "não pertence
+ao eleitorado", nunca a de "tag não resolvida"). Procedimento manual original (corpo da
 #8371 — a #8371 não confirmou isto ao vivo, é o único desconhecido de
 plataforma do plano): criar o custom field `voto_token` no Kit (se ainda
 não existir), popular o do próprio editor, mandar um broadcast de teste

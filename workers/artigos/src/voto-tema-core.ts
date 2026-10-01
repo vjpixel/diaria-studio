@@ -74,16 +74,76 @@ export interface BallotTema {
   eleitores: string[];
   aberta_em: string;
   fecha_em?: string;
+  /** #9260: prazo da votação — ISO 8601 com fuso explícito (ex.
+   *  `2026-09-27T09:00:00-03:00`). A partir dele o worker recusa voto novo,
+   *  mesmo sem `voto-tema-close.ts` ter rodado. Opcional no TIPO só porque
+   *  cédulas de ciclos anteriores ao #9260 já estão no KV sem ele;
+   *  `voto-tema-open.ts` exige o campo em ciclo novo (`exigirPrazo`). */
+  prazo?: string;
 }
 
 export type CedulaValidation = { ok: true } | { ok: false; reason: string };
 
+/** ISO 8601 com data, hora e fuso explícito (`Z` ou `±HH:MM`) — sem fuso o
+ *  `Date.parse` usaria o fuso da máquina (UTC no worker, BRT no editor) e o
+ *  prazo mudaria 3h conforme quem lê. */
+const PRAZO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** `null` se `prazo` não for ISO 8601 com fuso explícito e data válida. */
+export function parsePrazo(prazo: unknown): Date | null {
+  if (typeof prazo !== "string" || !PRAZO_RE.test(prazo)) return null;
+  const ms = Date.parse(prazo);
+  return Number.isNaN(ms) ? null : new Date(ms);
+}
+
+/** `true` se a cédula tem prazo e `now` já passou dele. Cédula sem prazo
+ *  (ciclo pré-#9260) nunca encerra por aqui — só por `voto-tema-close.ts`. */
+export function prazoEncerrado(ballot: Pick<BallotTema, "prazo">, now: Date): boolean {
+  const d = parsePrazo(ballot.prazo);
+  return d !== null && now.getTime() >= d.getTime();
+}
+
+/** Prazo legível em horário de Brasília — "27/09/2026 às 09:00 (horário de
+ *  Brasília)". Usado no e-mail e no placar. `null` se não houver prazo válido. */
+export function formatPrazo(prazo: string | undefined): string | null {
+  const d = parsePrazo(prazo);
+  if (!d) return null;
+  const parts = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("day")}/${get("month")}/${get("year")} às ${get("hour")}:${get("minute")} (horário de Brasília)`;
+}
+
 /** Valida a cédula ANTES de gravar no KV — nº mínimo de opções, sem `n`
- *  duplicado, título/descrição obrigatórios por opção. Não valida
- *  `eleitores`/datas (resolvidos pelo caller, que sabe a audiência real). */
-export function validarCedula(ballot: Pick<BallotTema, "titulo" | "opcoes">): CedulaValidation {
+ *  duplicado, título/descrição obrigatórios por opção, e `prazo` (#9260)
+ *  bem formado quando presente (obrigatório com `exigirPrazo`). Não valida
+ *  `eleitores` (resolvido pelo caller, que sabe a audiência real). */
+export function validarCedula(
+  ballot: Pick<BallotTema, "titulo" | "opcoes" | "prazo">,
+  opts: { exigirPrazo?: boolean } = {},
+): CedulaValidation {
   if (!ballot.titulo || !ballot.titulo.trim()) {
     return { ok: false, reason: "título da votação ausente." };
+  }
+  if (ballot.prazo === undefined || ballot.prazo === null) {
+    if (opts.exigirPrazo) {
+      return {
+        ok: false,
+        reason: 'campo "prazo" ausente — informe o fim da votação em ISO 8601 com fuso (ex. "2026-09-27T09:00:00-03:00").',
+      };
+    }
+  } else if (!parsePrazo(ballot.prazo)) {
+    return {
+      ok: false,
+      reason: `"prazo" inválido: ${JSON.stringify(ballot.prazo)} — use ISO 8601 com fuso explícito (ex. "2026-09-27T09:00:00-03:00").`,
+    };
   }
   if (!Array.isArray(ballot.opcoes) || ballot.opcoes.length < 2) {
     return {

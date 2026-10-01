@@ -410,8 +410,8 @@ Em 260519 attempt 2 reportou `status: ok` mas o editor encontrou 3 problemas rea
 **18. Italic markdown literal no body (não convertido).** Em adição ao check item 11 (CSS italic em EIA crédito), checar especificamente se há padrão `*texto*` literal em texto editorial (excluindo URLs e código). Procurar regex `(?<!\*)\*(?!\*)[^*\n]{2,}\*(?!\*)` no plain-text do email. Se encontrar (ex: `(*Canis aureus*)` literal no crédito do É IA?):
    `"email:italic_literal: '*{texto}*' literal sem conversão pra <em> — esperado itálico, ver #1364"`
 
-**19. Bloco leaderboard ausente se esperado.** Ler `{edition_dir}/_internal/04-leaderboard-top1.json`. Se `top1.length > 0` OU `podium.length > 0`, validar que a string "Liderança" (com ç) aparece no body do email. Se ausente:
-   `"email:leaderboard_missing: 04-leaderboard-top1.json tem top1[]/podium[] populados mas 'Liderança' não aparece no email — renderer pode ter falhado"`
+**19. Bloco leaderboard ausente se esperado.** Ler `{edition_dir}/_internal/04-leaderboard-top1.json`. Se `top1.length > 0` OU `podium.length > 0`, validar que pelo menos um dos marcadores "Os campeões do É IA?" ou "Vencedores" aparece no body do email (#9247: são os textos que `renderLeaderboardTop1Row` emite — o antigo "Liderança" nunca foi emitido; `test/review-test-email-leaderboard-marker.test.ts` amarra esta lista ao renderer). Se nenhum aparecer:
+   `"email:leaderboard_missing: 04-leaderboard-top1.json tem top1[]/podium[] populados mas nem 'Os campeões do É IA?' nem 'Vencedores' aparecem no email — renderer pode ter falhado"`
 
    Se top1/podium vazios (Worker offline ou mês sem votos), pular este check.
 
