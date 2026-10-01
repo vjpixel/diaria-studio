@@ -48,7 +48,7 @@ export function resolveLocalHtmlPath(editionDir: string, platform: LocalLintPlat
 
 /** Remove o bloco TÍTULO/SUBTÍTULO (até o 1º `---`): metadado que nunca vai pro corpo do HTML (#9284). */
 export function stripMetadataBlock(md: string): string {
-  const m = md.match(/^\s*TÍTULO\s*\n[\s\S]*?\n---[ \t]*(?:\n|$)\s*/);
+  const m = md.match(/^\s*TÍTULO\s*\r?\n[\s\S]*?\r?\n---[ \t]*\r?(?:\n|$)\s*/);
   return m ? md.slice(m[0].length) : md;
 }
 

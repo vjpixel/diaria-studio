@@ -68,3 +68,13 @@ describe("bloco TÍTULO/SUBTÍTULO fora do checkEncoding (#9284)", () => {
     assert.equal(stripMetadataBlock(MD), MD);
   });
 });
+
+describe("stripMetadataBlock — casos de borda (#9284)", () => {
+  it("CRLF é removido", () => {
+    const md = "TÍTULO\r\n\r\nT\r\n\r\nSUBTÍTULO\r\n\r\nS\r\n\r\n---\r\n\r\nCorpo\r\n";
+    assert.equal(stripMetadataBlock(md), "Corpo\r\n");
+  });
+  it("só o primeiro --- é consumido", () => {
+    assert.equal(stripMetadataBlock("TÍTULO\n\nT\n\n---\n\nA\n\n---\n\nB\n"), "A\n\n---\n\nB\n");
+  });
+});
