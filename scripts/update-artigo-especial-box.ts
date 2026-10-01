@@ -44,8 +44,8 @@
  *
  * ## `--pin`/`--unpin` em `platform.config.json`
  *
- * `platform.config.json` é git — a ESCRITA aqui é só o `JSON.stringify`
- * local; a skill (`.claude/skills/diaria-artigo-especial/SKILL.md`) é quem
+ * `platform.config.json` é git — a ESCRITA aqui é local e cirúrgica (só as
+ * linhas `slotN`/`pinned_slots`, #9256 — ver `serializeConfigSurgically`); a skill (`.claude/skills/diaria-artigo-especial/SKILL.md`) é quem
  * abre branch/commit/PR ao redor desta chamada (mesmo fluxo de qualquer
  * sessão interativa tocando um arquivo git-tracked). `--unpin` só remove o
  * slot de `pinned_slots` — NÃO apaga `boxes_divulgacao.slotN` (o valor
@@ -242,6 +242,86 @@ export function applyBoxPin(config: BoxesDivulgacaoConfig, input: PinBoxInput): 
   };
 }
 
+/**
+ * #9256 — serializa `nextConfig` preservando a formatação ORIGINAL do arquivo.
+ *
+ * `JSON.stringify(nextConfig, null, 2)` expandia todo array inline do
+ * `platform.config.json` (dezenas de linhas não relacionadas no diff). Aqui a
+ * troca é cirúrgica (#495): só a linha `"slot{N}": ...` dentro do objeto
+ * `boxes_divulgacao` e a linha `"pinned_slots": [...]` dentro de
+ * `boxes_divulgacao_auto` são substituídas. Validação de segurança: o texto
+ * resultante precisa parsear para EXATAMENTE `nextConfig`; se a chave não
+ * existir no texto (bootstrap) ou a validação falhar, cai no
+ * `JSON.stringify` completo — correto, só mais ruidoso.
+ */
+export function serializeConfigSurgically(
+  originalText: string,
+  nextConfig: BoxesDivulgacaoConfig,
+  slot: number,
+): string {
+  const fallback = JSON.stringify(nextConfig, null, 2) + "\n";
+  let text = originalText;
+
+  const replaceInBlock = (blockKey: string, innerKey: string, value: unknown): boolean => {
+    const blockRe = new RegExp(`"${blockKey}"\\s*:\\s*\\{`);
+    const m = blockRe.exec(text);
+    if (!m) return false;
+    const start = m.index + m[0].length;
+    // fim do bloco: primeira "}" de fechamento respeitando strings/aninhamento
+    let depth = 1;
+    let inStr = false;
+    let end = -1;
+    for (let i = start; i < text.length; i++) {
+      const c = text[i];
+      if (inStr) {
+        if (c === "\\") i++;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === "{" || c === "[") depth++;
+      else if (c === "}" || c === "]") {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end < 0) return false;
+    const block = text.slice(start, end);
+    const keyRe = new RegExp(`("${innerKey}"\\s*:\\s*)("(?:[^"\\\\]|\\\\.)*"|null|true|false|-?\\d+(?:\\.\\d+)?|\\[[^\\[\\]]*\\])`);
+    const km = keyRe.exec(block);
+    if (!km) return false;
+    const rendered = Array.isArray(value) ? `[${value.map((v) => JSON.stringify(v)).join(", ")}]` : JSON.stringify(value);
+    const newBlock = block.slice(0, km.index) + km[1] + rendered + block.slice(km.index + km[0].length);
+    text = text.slice(0, start) + newBlock + text.slice(end);
+    return true;
+  };
+
+  const slotKey = `slot${slot}`;
+  const nextSlotValue = nextConfig.boxes_divulgacao?.[slotKey];
+  let original: unknown;
+  try {
+    original = JSON.parse(originalText);
+  } catch {
+    return fallback;
+  }
+  const origSlotValue = (original as BoxesDivulgacaoConfig).boxes_divulgacao?.[slotKey];
+  if (nextSlotValue !== origSlotValue) {
+    if (!replaceInBlock("boxes_divulgacao", slotKey, nextSlotValue)) return fallback;
+  }
+  if (!replaceInBlock("boxes_divulgacao_auto", "pinned_slots", nextConfig.boxes_divulgacao_auto?.pinned_slots ?? [])) {
+    return fallback;
+  }
+  try {
+    if (JSON.stringify(JSON.parse(text)) !== JSON.stringify(nextConfig)) return fallback;
+  } catch {
+    return fallback;
+  }
+  return text;
+}
+
 // ── Orquestração (testável, sem CLI/process.exit) ──────────────────────
 
 export interface RunUpdateBoxOptions extends ArtigoEspecialBoxInput {
@@ -310,7 +390,8 @@ export function runUpdateArtigoEspecialBox(options: RunUpdateBoxOptions): RunUpd
     throw e;
   }
 
-  const config = JSON.parse(readFileSync(configPath, "utf8")) as BoxesDivulgacaoConfig;
+  const configText = readFileSync(configPath, "utf8");
+  const config = JSON.parse(configText) as BoxesDivulgacaoConfig;
   const nextConfig = applyBoxPin(config, { slot, filename: "artigo-especial-apoiadores.md", pin });
 
   if (dryRun) {
@@ -327,7 +408,7 @@ export function runUpdateArtigoEspecialBox(options: RunUpdateBoxOptions): RunUpd
   writeFileAtomic(snippetsFile, nextContent);
   console.log(`OK — box atualizado em ${snippetsFile}`);
 
-  writeFileAtomic(configPath, JSON.stringify(nextConfig, null, 2) + "\n");
+  writeFileAtomic(configPath, serializeConfigSurgically(configText, nextConfig, slot));
   console.log(
     `OK — ${configPath} atualizado (slot${slot}=${pin ? "artigo-especial-apoiadores.md" : "inalterado"}, pinned_slots=${JSON.stringify(nextConfig.boxes_divulgacao_auto?.pinned_slots)}).`,
   );

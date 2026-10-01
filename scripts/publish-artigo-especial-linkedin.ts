@@ -87,7 +87,7 @@ loadProjectEnv();
 import { dispatchEntry, type DispatchContext, type DispatchInput } from "./publish-linkedin.ts";
 import { readSocialPublished } from "./lib/social-published-store.ts";
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
-import { verifyWorkerDispatch } from "./verify-social-worker-dispatch.ts";
+import { verifyWorkerDispatch, formatVerifySummary } from "./verify-social-worker-dispatch.ts";
 import {
   artigoEspecialStatePath,
   readArtigoEspecialState,
@@ -306,7 +306,7 @@ export interface RunDispatchOptions {
    *  Contrato igual ao de `verify-social-worker-dispatch.ts::verifyWorkerDispatch`:
    *  devolve `updated` (o `SocialPublished` reconciliado) — o caller É quem
    *  decide persistir, não o helper (mesmo contrato do call site canônico). */
-  verifyWorker?: (published: SocialPublished) => Promise<{ updated: SocialPublished; changes: number }>;
+  verifyWorker?: (published: SocialPublished) => Promise<{ updated: SocialPublished; changes: number; inQueue?: number }>;
 }
 
 export interface RunDispatchResult {
@@ -423,8 +423,9 @@ export async function runArtigoEspecialLinkedinDispatch(
     try {
       const published = readSocialPublished(ctx.publishedPath);
       const verify = options.verifyWorker ?? ((p: SocialPublished) => verifyWorkerDispatch(p, ctx.workerUrl, ctx.workerToken));
-      const { updated, changes } = await verify(published);
-      console.log(`[verify] reconciliação Worker: ${changes} entrada(s) confirmada(s) na fila.`);
+      const verifyResult = await verify(published);
+      const { updated, changes } = verifyResult;
+      console.log(`[verify] reconciliação Worker: ${formatVerifySummary(verifyResult)}`);
       if (changes > 0) {
         // Persistir o resultado reconciliado (#5979 review, PR #6000, achado
         // do code-reviewer): o call site canônico
