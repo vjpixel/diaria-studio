@@ -100,7 +100,7 @@ Recebido pelo coordenador (não vem como arquivo):
    - Se um peer_title começa com "OpenAI lança" e o seu também → reescreva o seu com hook diferente.
    - Coordenador depois faz lint final pra detectar overlap.
 
-5. **Gravar 2 arquivos**:
+5. **Gravar 2 arquivos** (Write restrito a estes 2 paths pelo hook `block-writer-destaque-write-path.mjs`, #9132 — qualquer outro path é negado):
    - `out_path`: o destaque renderizado em markdown.
    - `image_prompt_out_path`: prompt da imagem 2:1 do destaque (Van Gogh impasto, sem pixels, sem Noite Estrelada, múltiplos sujeitos agrupados no terço central — ver `context/editorial-rules.md`).
 
