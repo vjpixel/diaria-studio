@@ -8,11 +8,11 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { readChangedFiles, readWatchPrefixes, pingIndexNow, checkKeyLocationServed } from "../scripts/ping-indexnow.ts";
+import { readChangedFiles, readWatchPrefixes, pingIndexNow, checkKeyLocationServed, keyCheckFailureOutcome } from "../scripts/ping-indexnow.ts";
 import { buildIndexNowPayload } from "../scripts/lib/indexnow.ts";
 
 describe("readChangedFiles (#4909)", () => {
@@ -171,5 +171,24 @@ describe("checkKeyLocationServed (#5620) — confirma o arquivo de chave ANTES d
     const result = await checkKeyLocationServed("https://arquivo.diar.ia.br/chave-teste.txt", "chave-teste", fetchStub);
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /ECONNRESET/);
+  });
+});
+
+describe("keyCheckFailureOutcome (#9274)", () => {
+  it("modo soft: arquivo de chave inacessível vira ::warning:: com exit 0 (não derruba o deploy)", () => {
+    const out = keyCheckFailureOutcome("falha X", true);
+    assert.equal(out.exitCode, 0);
+    assert.match(out.line, /^::warning /);
+    assert.match(out.line, /falha X/);
+  });
+  it("sem a flag: comportamento original, exit 1", () => {
+    assert.deepEqual(keyCheckFailureOutcome("falha X", false), { exitCode: 1, line: "falha X" });
+  });
+});
+
+describe("deploy-site.yml (#9274)", () => {
+  it("o ping IndexNow do deploy do site passa --key-check-soft", () => {
+    const yml = readFileSync(new URL("../.github/workflows/deploy-site.yml", import.meta.url), "utf8");
+    assert.match(yml, /ping-indexnow\.ts[\s\S]*--archive-pages \\\s*\n\s*--key-check-soft/);
   });
 });
