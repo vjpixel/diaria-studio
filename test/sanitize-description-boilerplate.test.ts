@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import {
   stripNavigationBoilerplate,
   fixGluedAcronymDate,
-  stripCtaTail,
+  stripG1ReportCta,
   sanitizeDescriptionBoilerplate,
 } from "../scripts/lib/sanitize-description-boilerplate.ts";
 
@@ -110,27 +110,33 @@ describe("sanitizeDescriptionBoilerplate — combinado (#3196)", () => {
   });
 });
 
-describe("stripCtaTail — rodapé de CTA do G1 (#9401)", () => {
-  // CASO REAL 261002 (RADAR G1, youtuber/Meta Muse): cauda removida à mão no gate 4.
-  it("CASO REAL 261002: corta '🗒️ Tem alguma sugestão de reportagem?' do fim", () => {
-    const raw =
-      "Youtuber usou o Meta Muse para criar vídeos e viralizou. 🗒️ Tem alguma sugestão de reportagem?";
-    assert.equal(stripCtaTail(raw), "Youtuber usou o Meta Muse para criar vídeos e viralizou.");
-    assert.equal(
-      sanitizeDescriptionBoilerplate(raw),
-      "Youtuber usou o Meta Muse para criar vídeos e viralizou.",
-    );
+describe("stripG1ReportCta — CTA do G1 (#9401)", () => {
+  // CASO REAL 261002 (RADAR G1, youtuber/Meta Muse), string crua do source-researcher:
+  // o CTA vem NO MEIO, seguido de conteúdo real.
+  const REAL_261002 =
+    "Robb disse que permitiu apenas que o Muse AI gerenciasse sua conta no Facebook Marketplace, " +
+    "plataforma de classificados de produtos do Facebook. 🗒️ Tem alguma sugestão de reportagem? " +
+    "Envie para o g1 · 🔎 Lançado no início de setembro, o Muse é um assistente de inteligência " +
+    "artificial projetado para executar ações em nome dos usuários.";
+  const EXPECTED_261002 =
+    "Robb disse que permitiu apenas que o Muse AI gerenciasse sua conta no Facebook Marketplace, " +
+    "plataforma de classificados de produtos do Facebook. Lançado no início de setembro, o Muse é " +
+    "um assistente de inteligência artificial projetado para executar ações em nome dos usuários.";
+
+  it("CASO REAL 261002: remove só o bloco do CTA e preserva o conteúdo depois dele", () => {
+    assert.equal(stripG1ReportCta(REAL_261002), EXPECTED_261002);
+    assert.equal(sanitizeDescriptionBoilerplate(REAL_261002), EXPECTED_261002);
   });
 
-  it("corta também o que vem depois do CTA e variação sem emoji/acento", () => {
+  it("CTA na cauda (sem 'Envie para o g1')", () => {
     assert.equal(
-      stripCtaTail("Texto do resumo. Tem alguma sugestao de reportagem? Mande para o g1."),
+      stripG1ReportCta("Texto do resumo. 🗒️ Tem alguma sugestão de reportagem?"),
       "Texto do resumo.",
     );
   });
 
   it("texto sem o CTA passa intacto (inclusive 'sugestão' em outro contexto)", () => {
     const t = "Leitores enviaram uma sugestão de pauta sobre IA. 🤖 Robôs avançam.";
-    assert.equal(stripCtaTail(t), t);
+    assert.equal(stripG1ReportCta(t), t);
   });
 });

@@ -56,6 +56,7 @@ export type PoolSummaryDefectKind =
   | "space-before-punctuation"
   | "wordpress-footer"
   | "youtube-boilerplate"
+  | "g1-report-cta"
   | "emoji-noise";
 
 /** Mínimo de caracteres (sem o sufixo "(N min)") de um resumo de pool. */
@@ -74,6 +75,8 @@ const FINAL_PUNCTUATION_RE = /[.!?]["”’»)\]]*$/u;
 const SPACE_BEFORE_PUNCTUATION_RE = /\S[ \t]+(?:[,;:!?]|\.(?!\.))(?=\s|$)/u;
 
 /** Rodapé do feed WordPress: "O post X apareceu primeiro em Y." / "The post X appeared first on Y." */
+/** #9401: CTA do G1 colado no resumo (inclusive colado à mão no gate). */
+const G1_REPORT_CTA_LINT_RE = /\btem\s+alguma\s+sugest[ãa]o\s+de\s+reportagem\b/iu;
 const WORDPRESS_FOOTER_RE = /\bapareceu primeiro em\b|\bappeared first on\b/iu;
 
 /** Descrição padrão de página do YouTube (não é a descrição do vídeo). */
@@ -113,6 +116,7 @@ export function detectPoolSummaryDefects(description: string): PoolSummaryDefect
   if (SPACE_BEFORE_PUNCTUATION_RE.test(text)) defects.push("space-before-punctuation");
   if (WORDPRESS_FOOTER_RE.test(text)) defects.push("wordpress-footer");
   if (YOUTUBE_BOILERPLATE_RE.test(text)) defects.push("youtube-boilerplate");
+  if (G1_REPORT_CTA_LINT_RE.test(text)) defects.push("g1-report-cta");
   if (EMOJI_RE.test(text)) defects.push("emoji-noise");
   return defects;
 }
@@ -125,6 +129,7 @@ export const POOL_SUMMARY_DEFECT_HINT: Record<PoolSummaryDefectKind, string> = {
   "space-before-punctuation": "espaço antes de pontuação",
   "wordpress-footer": "rodapé do WordPress (\"O post … apareceu primeiro em …\") no lugar do resumo",
   "youtube-boilerplate": "descrição padrão do YouTube no lugar da descrição do vídeo",
+  "g1-report-cta": "CTA do G1 (\"Tem alguma sugestão de reportagem? Envie para o g1\") colado no resumo — remover",
   "emoji-noise": "emoji/links relacionados da página colados no resumo",
 };
 

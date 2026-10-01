@@ -48,21 +48,25 @@ export function stripNavigationBoilerplate(text: string): string {
 }
 
 /**
- * Publisher CTA footers that leak into the description tail (#9401). G1 glues
- * "🗒️ Tem alguma sugestão de reportagem?" (a reader-tip call-to-action) onto
- * the end of its meta-description/body. The phrase and everything after it is
- * cut, along with any emoji/whitespace immediately preceding it.
+ * G1 reader-tip CTA block (#9401). G1 embeds "🗒️ Tem alguma sugestão de
+ * reportagem? Envie para o g1 ·" in its meta-description/body — sometimes at
+ * the tail, sometimes MID-text followed by real content ("· 🔎 Lançado no
+ * início de setembro, o Muse é…", edição 261002). Only the CTA block is
+ * removed (plus surrounding emoji, the optional "Envie para o g1" and the "·"
+ * separator); content after it is preserved.
  */
-const CTA_TAIL_RE =
-  /[\s\p{Extended_Pictographic}\uFE0F\u200D]*\btem\s+alguma\s+sugest[ãa]o\s+de\s+reportagem\b[\s\S]*$/iu;
+const G1_REPORT_CTA_RE =
+  /[\s\p{Extended_Pictographic}️‍]*\btem\s+alguma\s+sugest[ãa]o\s+de\s+reportagem\b\??(?:\s*envie\s+para\s+o\s+g1\b\.?)?\s*[·•|]?[\s\p{Extended_Pictographic}️‍]*/giu;
 
 /**
- * Cuts a known publisher CTA footer (and everything after it) from the tail
- * of `text`. Text without the footer is returned unchanged. @pure
+ * Removes G1's reader-tip CTA block, keeping any content around it. Text
+ * without the CTA is returned unchanged. @pure
  */
-export function stripCtaTail(text: string): string {
+export function stripG1ReportCta(text: string): string {
   if (!text) return text;
-  return text.replace(CTA_TAIL_RE, "").trim();
+  const out = text.replace(G1_REPORT_CTA_RE, " ");
+  if (out === text) return text;
+  return out.replace(/\s{2,}/g, " ").trim();
 }
 
 const MONTHS =
@@ -99,6 +103,6 @@ export function fixGluedAcronymDate(text: string): string {
  * glued-acronym-date artifact in what's left. @pure
  */
 export function sanitizeDescriptionBoilerplate(text: string): string {
-  const stripped = stripCtaTail(stripNavigationBoilerplate(text));
+  const stripped = stripG1ReportCta(stripNavigationBoilerplate(text));
   return fixGluedAcronymDate(stripped);
 }

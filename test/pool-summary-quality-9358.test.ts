@@ -223,3 +223,34 @@ describe("Stage 2 barra resumo de pool defeituoso (#9358)", () => {
     assert.ok(!rules.includes("reviewed-secondary-items-have-summary"));
   });
 });
+
+describe("#9401 — CTA do G1 no resumo do pool", () => {
+  // String crua real do source-researcher (G1 Tecnologia, edição 261002) — esse
+  // caminho NÃO passa pelo enrich, então o corte precisa acontecer no stitch.
+  const REAL_261002 =
+    "Robb disse que permitiu apenas que o Muse AI gerenciasse sua conta no Facebook Marketplace, " +
+    "plataforma de classificados de produtos do Facebook. 🗒️ Tem alguma sugestão de reportagem? " +
+    "Envie para o g1 · 🔎 Lançado no início de setembro, o Muse é um assistente de inteligência " +
+    "artificial projetado para executar ações em nome dos usuários.";
+
+  it("stripFeedBoilerplate remove o bloco do CTA e preserva o resto", () => {
+    const out = stripFeedBoilerplate(REAL_261002);
+    assert.ok(!/sugestão de reportagem|Envie para o g1|🗒|🔎/u.test(out), out);
+    assert.ok(out.includes("Lançado no início de setembro"), out);
+  });
+
+  it("cleanSummary (caminho do stitch) não deixa o CTA vazar", () => {
+    const out = cleanSummary(REAL_261002, "Youtuber deixa Muse AI da Meta gerenciar o Facebook Marketplace");
+    assert.ok(!/sugestão de reportagem|Envie para o g1/u.test(out), out);
+    assert.ok(out.startsWith("Robb disse"), out);
+  });
+
+  it("lint acusa g1-report-cta quando o CTA aparece no resumo", () => {
+    assert.ok(detectPoolSummaryDefects(REAL_261002).includes("g1-report-cta"));
+    assert.ok(
+      !detectPoolSummaryDefects(
+        "A Meta lançou o Muse, assistente que executa ações em nome dos usuários.",
+      ).includes("g1-report-cta"),
+    );
+  });
+});
