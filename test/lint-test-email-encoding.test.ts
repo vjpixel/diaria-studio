@@ -137,6 +137,28 @@ describe("checkEncoding — emoji de kicker e sequências de emoji (#9115)", () 
     assert.equal(r[0].char, "🔥");
   });
 
+  it("negrito de corpo em CAIXA ALTA que não é nome de seção — drop acusado", () => {
+    const r = checkEncoding("**⚠️ ATENÇÃO: PRAZO ENCERRA HOJE**", "ATENÇÃO: PRAZO ENCERRA HOJE");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "⚠️");
+  });
+
+  it("header de seção em Title Case também é kicker → zero issues", () => {
+    assert.deepEqual(checkEncoding("**📡 Radar**\n\n**🙋🏼‍♀️ Para encerrar**", "Radar Para encerrar"), []);
+  });
+
+  it("keycap (1️⃣) é tratado como emoji — 1 issue com o grapheme inteiro", () => {
+    const r = checkEncoding("a 1️⃣ b", "a 1 b");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "1️⃣");
+  });
+
+  it("`sequence` ausente para caractere de 1 codepoint (acento)", () => {
+    const r = checkEncoding("ação", "acao");
+    assert.ok(r.length > 0);
+    for (const i of r) assert.equal(i.sequence, undefined);
+  });
+
   it("emoji preservado sem VS16 no email não é drop (⚠️ vs ⚠)", () => {
     assert.deepEqual(checkEncoding("atenção ⚠️ aqui", "atenção ⚠ aqui"), []);
   });

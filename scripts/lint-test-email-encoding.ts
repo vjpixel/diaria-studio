@@ -14,6 +14,10 @@
  * - Gmail proxeia conteúdo de tracking, às vezes re-escapa.
  * - Smart quotes substituídos por ASCII via autocorrect pode ser ok.
  *
+ * Emoji de kicker (header de seção e categoria do DESTAQUE) é removido pelo
+ * renderer (`stripKickerEmoji`) e fica FORA da checagem; emoji é comparado
+ * como grapheme inteiro (ZWJ, skin tone, VS16, bandeira, keycap) — #9115.
+ *
  * Reporta como warning quando char no source não aparece no email.
  * Não bloqueia automaticamente — editor revisa.
  *
@@ -34,18 +38,21 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 // #9115: mesma função que o renderer usa pra tirar o emoji do label do kicker
 // (headers de seção e categoria do DESTAQUE) — fonte única, nada de regex paralela.
 import { stripKickerEmoji } from "./lib/newsletter-render-html.ts";
+import { ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
 
 export interface EncodingIssue {
   type: "char_dropped" | "char_substituted";
   char: string;
-  /** Codepoint Unicode (ex: U+00E3 pra ã). */
+  /** Codepoint do primeiro caractere de `char` (ex: U+00E3 pra ã); a
+   * sequência completa, quando houver, fica em `sequence`. */
   codepoint: string;
   /** Contexto curto onde o char aparece no source. */
   source_context: string;
   /** Substituto detectado no email (ASCII-ish), se houver. */
   email_substitute?: string;
-  /** #9115: sequência completa de codepoints quando o item é um emoji
-   * multi-codepoint (ZWJ, skin tone, VS16, bandeira) tratado como unidade. */
+  /** #9115: codepoints em notação U+XXXX separados por espaço — só presente
+   * quando `char` tem >1 codepoint (emoji com ZWJ, skin tone, VS16, bandeira,
+   * keycap tratado como unidade). */
   sequence?: string;
 }
 
@@ -110,12 +117,12 @@ const ASCII_SUBSTITUTES: Record<string, string[]> = {
  * Cobre as duas formas de kicker do `02-reviewed.md`:
  *   - `**🙋🏼‍♀️ PARA ENCERRAR**` (header de seção, linha inteira em negrito)
  *   - `**DESTAQUE 1 | ⚠️ SEGURANÇA**` (categoria do destaque)
- * O header de seção só é tocado quando o label limpo é CAIXA ALTA (convenção
- * dos headers do template) — negrito de corpo com emoji não é kicker e continua
- * sendo checado. Trade-off aceito: uma linha de corpo inteira em negrito, em
- * CAIXA ALTA e com emoji no início seria tratada como kicker (o template só
- * usa negrito de linha inteira em nome de seção e título, então é raro). Não
- * há lista única de nomes de seção pra restringir sem criar outra paralela.
+ * O header de seção só é tocado quando o label limpo é um NOME DE SEÇÃO
+ * conhecido: `ALL_SECTION_NAMES_PATTERN` de `section-naming.ts` (LANÇAMENTOS,
+ * RADAR, USE MELHOR, VÍDEOS + legacy) mais os kickers fixos que o renderer
+ * emite fora dessa lista (SORTEIO, PARA ENCERRAR, É IA?). Qualquer outra linha
+ * em negrito com emoji — inclusive `**⚠️ ATENÇÃO: PRAZO ENCERRA HOJE**` —
+ * continua sendo checada.
  */
 export function stripSectionHeaderEmojis(md: string): string {
   return md
@@ -128,8 +135,7 @@ export function stripSectionHeaderEmojis(md: string): string {
       if (!header) return line;
       const label = header[2];
       const clean = stripKickerEmoji(label);
-      if (!/\p{L}/u.test(clean)) return line;
-      if (clean !== clean.toLocaleUpperCase("pt-BR")) return line;
+      if (!SECTION_HEADER_LABEL_RE.test(clean)) return line;
       // só remove se o prefixo cortado contém emoji (não um "[" de link etc.)
       if (!EMOJI_RE.test(label.slice(0, label.indexOf(clean)))) return line;
       return header[1] + clean + header[3];
@@ -137,7 +143,16 @@ export function stripSectionHeaderEmojis(md: string): string {
     .join("\n");
 }
 
-const EMOJI_RE = /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u;
+/** Kickers fixos que o renderer emite via `renderKicker("...")` e que não estão
+ * em `SECTIONS` (seções de pool) de `section-naming.ts`. */
+const FIXED_KICKER_NAMES_PATTERN = String.raw`SORTEIO|PARA\s+ENCERRAR|[ÉE]\s+IA\??`;
+const SECTION_HEADER_LABEL_RE = new RegExp(
+  String.raw`^(?:${ALL_SECTION_NAMES_PATTERN}|${FIXED_KICKER_NAMES_PATTERN})$`,
+  "iu",
+);
+
+// U+20E3 (combining enclosing keycap): `1️⃣` é emoji mesmo sem Extended_Pictographic.
+const EMOJI_RE = /[\p{Extended_Pictographic}\p{Regional_Indicator}⃣]/u;
 // VS15 (U+FE0E) / VS16 (U+FE0F) — montado por codepoint pra não deixar caractere invisível no fonte.
 const VARIATION_SELECTORS_RE = new RegExp(`[${String.fromCodePoint(0xfe0e, 0xfe0f)}]`, "gu");
 
