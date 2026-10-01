@@ -13,14 +13,22 @@ import {
   summarizePermissionDenials,
 } from "../scripts/lib/edition-stage-runner.ts";
 
-const junction = (p: string) => (p === "/repo/data" ? "/onedrive/diaria/data" : p);
+// #9404: o código monta `join(repoRootAbs, "data")` com o `path` da plataforma —
+// no Windows chega `\repo\data`. Os fakes normalizam o separador antes de
+// comparar, senão a junction nunca casa e a suíte local fica vermelha.
+const posix = (p: string) => p.replaceAll("\\", "/");
+const junction = (p: string) => (posix(p) === "/repo/data" ? "/onedrive/diaria/data" : posix(p));
 
 describe("#9086 dataAddDirArgs", () => {
   it("data/ junction pra fora do repo -> --add-dir alvo real", () => {
     assert.deepEqual(dataAddDirArgs("/repo", junction), ["--add-dir=/onedrive/diaria/data"]);
   });
   it("data/ dentro do repo -> nenhum arg", () => {
-    assert.deepEqual(dataAddDirArgs("/repo", (p) => p), []);
+    assert.deepEqual(dataAddDirArgs("/repo", posix), []);
+  });
+  it("#9404: fake de junction casa também o separador win32 (suíte local no Windows)", () => {
+    assert.equal(junction("\\repo\\data"), "/onedrive/diaria/data");
+    assert.equal(junction("/repo/data"), "/onedrive/diaria/data");
   });
   it("data/ ausente -> nenhum arg (não lança)", () => {
     assert.deepEqual(
