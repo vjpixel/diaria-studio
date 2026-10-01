@@ -1375,6 +1375,47 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     const waveKeyBase = waveKey(n, sendDate);
     report.note(`onda d${n} · ${sendDate} · chave base "${waveKeyBase}" · teste A/B/C: ${abcAction}.`);
 
+    // #9314 — validações de teste (horário / A/B de conteúdo, incl. leitura do
+    // ab-test.json) rodam ANTES do build-segment: ele grava os selecionados em
+    // sent-or-queued.json, e abortar depois deixaria esses contatos presos até o
+    // desbloqueio de órfãos (#8038).
+    // #5140 — teste de HORÁRIO. Só entra quando o de ASSUNTO está travado:
+    // as duas dimensões dividem a MESMA onda, e rodar as duas juntas produz
+    // 3×N células pequenas demais pra qualquer leitura, com os dois efeitos
+    // confundidos. `abcAction === "travar"` é o sinal de que o A/B/C acabou
+    // (hoje vindo do `clarice-abc-state.json` `encerrado`, #5055).
+    const hourTest = readClariceHourTestState(deps.rootDir);
+    if (hourTest.degraded) {
+      report.note(`⚠️  estado do teste de horário ilegível — seguindo SEM teste de horário. ${hourTest.degradedReason}`);
+    }
+    const hourCells = hourTest.status === "ativo" && abcAction === "travar" ? hourTest.hoursBrt : null;
+    if (hourTest.status === "ativo" && abcAction !== "travar") {
+      report.note(
+        "⚠️  teste de horário ATIVO mas o A/B/C de assunto não está travado — teste de horário PULADO nesta onda. " +
+          "Duas dimensões na mesma onda confundem os efeitos e fragmentam a base; encerre o de assunto primeiro " +
+          "(`npx tsx scripts/lib/clarice-abc-state.ts --close ...`).",
+      );
+    }
+
+    // #9308 — teste A/B de CONTEÚDO (caixa): 2 células VA/VB, mesmo assunto
+    // e horário, HTML por braço. Não combina com A/B/C de assunto nem com o
+    // de horário (efeitos confundidos) — aborta em vez de escolher um.
+    const abTest = deps.readAbTest ? deps.readAbTest(cycle) : null;
+    if (abTest) {
+      if (hourCells) {
+        throw new EnvioAbort(
+          `❌ teste A/B de conteúdo ("${abTest.label}", ab-test.json) e teste de HORÁRIO ativos ao mesmo tempo — ` +
+            "duas dimensões na mesma onda confundem os efeitos. Encerre um dos dois.",
+        );
+      }
+      if (abcAction !== "travar") {
+        throw new EnvioAbort(
+          `❌ teste A/B de conteúdo ("${abTest.label}", ab-test.json) exige o A/B/C de assunto travado (abcAction="${abcAction}").`,
+        );
+      }
+      report.note(`teste A/B de CONTEÚDO ativo ("${abTest.label}") — células VA × VB, 50/50, HTML por braço (#9308).`);
+    }
+
     const buildSegmentStep = step<{ selected?: number; budget?: number }>(
       deps,
       report,
@@ -1420,43 +1461,6 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
           "era menor que o `availableFirstSend` calculado no planejamento. Investigar antes da próxima rodada " +
           "(órfãos de replan de lista, guard divergente, etc. — #5395).",
       );
-    }
-
-    // #5140 — teste de HORÁRIO. Só entra quando o de ASSUNTO está travado:
-    // as duas dimensões dividem a MESMA onda, e rodar as duas juntas produz
-    // 3×N células pequenas demais pra qualquer leitura, com os dois efeitos
-    // confundidos. `abcAction === "travar"` é o sinal de que o A/B/C acabou
-    // (hoje vindo do `clarice-abc-state.json` `encerrado`, #5055).
-    const hourTest = readClariceHourTestState(deps.rootDir);
-    if (hourTest.degraded) {
-      report.note(`⚠️  estado do teste de horário ilegível — seguindo SEM teste de horário. ${hourTest.degradedReason}`);
-    }
-    const hourCells = hourTest.status === "ativo" && abcAction === "travar" ? hourTest.hoursBrt : null;
-    if (hourTest.status === "ativo" && abcAction !== "travar") {
-      report.note(
-        "⚠️  teste de horário ATIVO mas o A/B/C de assunto não está travado — teste de horário PULADO nesta onda. " +
-          "Duas dimensões na mesma onda confundem os efeitos e fragmentam a base; encerre o de assunto primeiro " +
-          "(`npx tsx scripts/lib/clarice-abc-state.ts --close ...`).",
-      );
-    }
-
-    // #9308 — teste A/B de CONTEÚDO (caixa): 2 células VA/VB, mesmo assunto
-    // e horário, HTML por braço. Não combina com A/B/C de assunto nem com o
-    // de horário (efeitos confundidos) — aborta em vez de escolher um.
-    const abTest = deps.readAbTest ? deps.readAbTest(cycle) : null;
-    if (abTest) {
-      if (hourCells) {
-        throw new EnvioAbort(
-          `❌ teste A/B de conteúdo ("${abTest.label}", ab-test.json) e teste de HORÁRIO ativos ao mesmo tempo — ` +
-            "duas dimensões na mesma onda confundem os efeitos. Encerre um dos dois.",
-        );
-      }
-      if (abcAction !== "travar") {
-        throw new EnvioAbort(
-          `❌ teste A/B de conteúdo ("${abTest.label}", ab-test.json) exige o A/B/C de assunto travado (abcAction="${abcAction}").`,
-        );
-      }
-      report.note(`teste A/B de CONTEÚDO ativo ("${abTest.label}") — células VA × VB, 50/50, HTML por braço (#9308).`);
     }
 
     // #7406 — "daily.csv" (não mais "ramp-warm.csv"): artefato da fila única do Passo 6.

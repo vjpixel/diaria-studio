@@ -51,6 +51,15 @@ const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
 /** Maximum characters of body text kept per thread (token-reduction guard). */
 export const DEFAULT_BODY_LIMIT = 8000;
 
+/**
+ * #9365: teto de threads por busca. Era 20 fixo — com 6 remetentes em 48h
+ * dava 11–16 threads, mas a ampliação para ~20 newsletters de IA estoura 20
+ * em silêncio (o Gmail devolve as mais recentes e corta o resto). 100 cobre
+ * ~20 remetentes diários na janela de 48h com folga; atingir o teto vira
+ * `hit_max_threads: true` no summary + WARN em stderr, nunca corte mudo.
+ */
+export const MAX_THREADS_PER_SEARCH = 100;
+
 // ---------------------------------------------------------------------------
 // Types (re-used from capture-newsletter-urls.ts interface)
 // ---------------------------------------------------------------------------
@@ -68,6 +77,8 @@ export interface FetchSummary {
   threads_found: number;
   threads_written: number;
   skipped_no_body: number;
+  /** #9365: a busca devolveu exatamente MAX_THREADS_PER_SEARCH — pode ter cortado threads. */
+  hit_max_threads?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +342,13 @@ async function main(argv: string[] = process.argv): Promise<void> {
     const days = Math.ceil(args.sinceHours / 24);
     const query = `${senderClause} newer_than:${days}d`;
 
-    const threadIds = await searchThreadIds(query, 20);
+    const threadIds = await searchThreadIds(query, MAX_THREADS_PER_SEARCH);
+    const hitMaxThreads = threadIds.length >= MAX_THREADS_PER_SEARCH;
+    if (hitMaxThreads) {
+      console.error(
+        `[fetch-newsletter-threads] WARN busca atingiu o teto de ${MAX_THREADS_PER_SEARCH} threads — threads mais antigas da janela podem ter ficado de fora (#9365).`,
+      );
+    }
 
     if (threadIds.length === 0) {
       const summary: FetchSummary = { threads_found: 0, threads_written: 0, skipped_no_body: 0 };
@@ -378,6 +395,7 @@ async function main(argv: string[] = process.argv): Promise<void> {
       threads_found: threadIds.length,
       threads_written: captured.length,
       skipped_no_body: skippedNoBody,
+      ...(hitMaxThreads ? { hit_max_threads: true } : {}),
     };
 
     if (args.dryRun) {
