@@ -709,3 +709,41 @@ export async function reconcileLotWithKit(
     last_error: null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Saúde do executor Kit (#7922, pré-requisito do corte — §3 do doc)
+// ---------------------------------------------------------------------------
+
+/** Registro da última rodada `--send` NÃO-piloto do executor Kit, persistido
+ *  em `store.kit_transport.last_send_run` (ver docstring do campo em
+ *  `onboarding-store.ts`). Consumido pelo alarme de continuidade
+ *  (`onboarding-continuity-alarm.ts`) quando o transporte Kit está ativo. */
+export interface KitSendRunRecord {
+  /** ISO de quando a rodada terminou de processar os lotes. */
+  at: string;
+  /** Lotes cujo broadcast foi criado nesta rodada. */
+  lots_created: number;
+  /** Lotes que falharam ao taguear/criar/agendar o broadcast nesta rodada —
+   *  inclui o lote barrado por `blocked_concurrent` cujo `pending` carrega
+   *  `last_error` (falha de uma tentativa anterior ainda dentro da janela de
+   *  stale: o e-mail daquele kind também não saiu nesta rodada). */
+  lots_failed: number;
+}
+
+/**
+ * Aplica o resultado de uma rodada `--send` ao bloco `kit_transport` —
+ * atualiza `last_send_run` e a streak `consecutive_failed_send_runs`
+ * (incrementa com ≥1 lote falho, zera sem falha). Mesma forma de
+ * `updateZeroDetectionStreak` (`onboarding-state.ts`), só que pro executor
+ * Kit.
+ *
+ * @pure — muta e devolve o bloco recebido (sem I/O).
+ */
+export function recordKitSendRun<T extends { last_send_run?: KitSendRunRecord | null; consecutive_failed_send_runs?: number }>(
+  kitTransport: T,
+  run: KitSendRunRecord,
+): T {
+  kitTransport.last_send_run = run;
+  kitTransport.consecutive_failed_send_runs = run.lots_failed > 0 ? (kitTransport.consecutive_failed_send_runs ?? 0) + 1 : 0;
+  return kitTransport;
+}

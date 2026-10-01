@@ -35,6 +35,18 @@
  *     D+10 inteiro cabe numa única campanha na maioria dos casos), com
  *     dedup explícito.
  *
+ * ## Lotes Kit e piloto (#7922, §3 de docs/onboarding-kit-cutover.md)
+ *
+ * `kitLots` lista os lotes de `store.kit_transport.lots` (status, broadcast,
+ * nº de destinatários, último erro) + o registro da última rodada `--send`
+ * do executor Kit (`last_send_run`). Lote de PILOTO (tag `onboarding-pilot-*`
+ * ou destinatário `pilot:*`, `onboarding-kit-pilot.ts`) e entrada sintética de
+ * piloto (`subscription_id` `pilot:*`) nunca entram no funil de produção nem
+ * na resolução do e-mail 3 — ficam numa lista própria, identificada. O piloto
+ * roda num store ISOLADO por construção (`assertPilotStoreIsolated`), então
+ * no store real isso só aparece se alguém copiar/mesclar à mão; a separação
+ * aqui garante que, se acontecer, o painel não mistura.
+ *
  * ## Fail-soft
  *
  * `data/` ausente (sessão cloud sem junction) ou store inexistente (nenhuma
@@ -47,7 +59,8 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { readStore } from "../lib/onboarding-store.ts";
 import type { OnboardingEntry } from "../lib/onboarding-store.ts";
-import type { OnboardingKitLot } from "../lib/onboarding-kit-transport.ts";
+import type { OnboardingKitLot, KitSendRunRecord } from "../lib/onboarding-kit-transport.ts";
+import { PILOT_TAG_PREFIX, PILOT_SUBSCRIPTION_PREFIX, redactEmails } from "../lib/onboarding-kit-pilot.ts";
 import {
   buildOnboardingFunnelEntry,
   summarizeOnboardingFunnel,
@@ -94,11 +107,85 @@ export interface BuildOnboardingFunnelOptions {
   apoiadores?: LinkableApoiador[];
 }
 
+/** #7922: um lote Kit pronto pra render — sem a lista de e-mails (só a
+ *  contagem), `lastError` com e-mails mascarados. */
+export interface OnboardingKitLotView {
+  lotId: string;
+  kind: OnboardingKitLot["kind"];
+  status: OnboardingKitLot["status"];
+  tagName: string;
+  broadcastId: number | null;
+  recipients: number;
+  createdAt: string;
+  sendAt: string | null;
+  lastError: string | null;
+  pilot: boolean;
+}
+
+export interface OnboardingKitLotsView {
+  /** Lotes de produção, mais novo primeiro. */
+  production: OnboardingKitLotView[];
+  /** Lotes de piloto (`onboarding-pilot-*`) — nunca misturados com produção. */
+  pilot: OnboardingKitLotView[];
+  /** Entradas sintéticas de piloto (`pilot:*`) excluídas do funil. */
+  pilotEntriesExcluded: number;
+  /** Última rodada `--send` do executor Kit (`store.kit_transport.last_send_run`)
+   *  — `null` = nunca registrada (kill switch desligado, ou executor anterior
+   *  ao campo). */
+  lastSendRun: KitSendRunRecord | null;
+  consecutiveFailedSendRuns: number;
+}
+
+/** Lote de piloto: tag com o prefixo do piloto OU algum destinatário
+ *  sintético do piloto. Qualquer dos dois sinais basta (um lote de produção
+ *  nunca tem nenhum deles). */
+export function isPilotKitLot(lot: OnboardingKitLot): boolean {
+  return lot.tag_name.startsWith(PILOT_TAG_PREFIX) || lot.recipient_subscription_ids.some((id) => id.startsWith(PILOT_SUBSCRIPTION_PREFIX));
+}
+
+export function isPilotEntry(entry: OnboardingEntry): boolean {
+  return entry.subscription_id.startsWith(PILOT_SUBSCRIPTION_PREFIX);
+}
+
+function toKitLotView(lot: OnboardingKitLot): OnboardingKitLotView {
+  return {
+    lotId: lot.lot_id,
+    kind: lot.kind,
+    status: lot.status,
+    tagName: lot.tag_name,
+    broadcastId: lot.broadcast_id,
+    recipients: lot.recipient_subscription_ids.length,
+    createdAt: lot.created_at,
+    sendAt: lot.send_at,
+    lastError: lot.last_error != null ? redactEmails(lot.last_error) : null,
+    pilot: isPilotKitLot(lot),
+  };
+}
+
+/** Separa lotes de produção/piloto e monta a visão do painel. @pure */
+export function buildKitLotsView(
+  lots: readonly OnboardingKitLot[],
+  pilotEntriesExcluded: number,
+  kitTransport: { last_send_run?: KitSendRunRecord | null; consecutive_failed_send_runs?: number } | undefined,
+): OnboardingKitLotsView {
+  const byNewest = (a: OnboardingKitLotView, b: OnboardingKitLotView) => b.createdAt.localeCompare(a.createdAt);
+  const views = lots.map(toKitLotView);
+  return {
+    production: views.filter((v) => !v.pilot).sort(byNewest),
+    pilot: views.filter((v) => v.pilot).sort(byNewest),
+    pilotEntriesExcluded,
+    lastSendRun: kitTransport?.last_send_run ?? null,
+    consecutiveFailedSendRuns: kitTransport?.consecutive_failed_send_runs ?? 0,
+  };
+}
+
 export interface OnboardingFunnelData {
   generatedAt: string;
   db: OnboardingFunnelDbLayer;
   entries: OnboardingFunnelEntry[];
   summary: OnboardingFunnelSummary;
+  /** #7922: lotes do transporte Kit (produção e piloto separados). */
+  kitLots: OnboardingKitLotsView;
   apoiadorDataError: string | null;
   liveBrevoChecked: boolean;
   note: string;
@@ -129,7 +216,9 @@ export function buildOnboardingFunnelData(rootDir: string, opts: BuildOnboarding
   const nowSec = opts.nowSec ?? Math.floor(Date.now() / 1000);
   const email3Days = opts.email3Days ?? 10;
   const email3GraceDays = opts.email3GraceDays ?? 3;
-  const kitLots: OnboardingKitLot[] = Object.values(store.kit_transport?.lots ?? {});
+  const allKitLots: OnboardingKitLot[] = Object.values(store.kit_transport?.lots ?? {});
+  // #7922: lote de piloto nunca resolve o e-mail 3 de uma entrada de produção.
+  const kitLots = allKitLots.filter((l) => !isPilotKitLot(l));
 
   let apoiadorIndex: ReadonlyMap<string, LinkableApoiador> | undefined;
   let apoiadorDataError: string | null = null;
@@ -156,7 +245,10 @@ export function buildOnboardingFunnelData(rootDir: string, opts: BuildOnboarding
     kitLots,
     apoiadorIndex,
   };
-  const entries: OnboardingEntry[] = Object.values(store.entries);
+  const allEntries: OnboardingEntry[] = Object.values(store.entries);
+  // #7922: entrada sintética de piloto fica fora do funil de produção.
+  const entries = allEntries.filter((e) => !isPilotEntry(e));
+  const pilotEntriesExcluded = allEntries.length - entries.length;
   const funnelEntries = entries.map((entry) => {
     const campaignId = entry.email3_campaign_id;
     const perEntryOpts: BuildFunnelEntryOptions = {
@@ -185,6 +277,7 @@ export function buildOnboardingFunnelData(rootDir: string, opts: BuildOnboarding
     db: { storePath, hasDataDir, available: storeExists && !corrupted, corrupted },
     entries: funnelEntries,
     summary,
+    kitLots: buildKitLotsView(allKitLots, pilotEntriesExcluded, store.kit_transport),
     apoiadorDataError,
     liveBrevoChecked: (opts.brevoCampaignStates?.size ?? 0) > 0 || (opts.brevoFailedCampaignIds?.size ?? 0) > 0,
     note: NOTE,
@@ -264,6 +357,6 @@ export function pendingBrevoCampaignIds(entries: readonly OnboardingEntry[], kit
 export function listPendingBrevoCampaignIds(rootDir: string, opts: { storePath?: string } = {}): number[] {
   const storePath = opts.storePath ?? resolve(rootDir, "data", "onboarding", "store.json");
   const { store } = readStore(storePath);
-  const kitLots: OnboardingKitLot[] = Object.values(store.kit_transport?.lots ?? {});
-  return pendingBrevoCampaignIds(Object.values(store.entries), kitLots);
+  const kitLots: OnboardingKitLot[] = Object.values(store.kit_transport?.lots ?? {}).filter((l) => !isPilotKitLot(l));
+  return pendingBrevoCampaignIds(Object.values(store.entries).filter((e) => !isPilotEntry(e)), kitLots);
 }

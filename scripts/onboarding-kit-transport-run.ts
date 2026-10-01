@@ -101,6 +101,8 @@ import {
   rebuildLotPlanForRecreate,
   findLatestLotForKindDate,
   applyKitLotToEntries,
+  recordKitSendRun,
+  type KitSendRunRecord,
   type OnboardingKitCandidate,
   type OnboardingKitLot,
   type OnboardingKitLotKind,
@@ -401,6 +403,36 @@ export function backfillTerminalLotEntries(storePath: string, lotId: string, now
     30_000,
   );
   return touched;
+}
+
+/**
+ * #7922 (pré-requisito do corte, §3 de docs/onboarding-kit-cutover.md):
+ * registra o resultado de uma rodada `--send` NÃO-piloto em
+ * `store.kit_transport.last_send_run` + `consecutive_failed_send_runs`
+ * (`recordKitSendRun`), sob o MESMO lock + releitura fresca de
+ * `persistLotUpdate` — é o sinal que o alarme de continuidade
+ * (`onboarding-continuity-alarm.ts`) lê quando o transporte Kit está ativo.
+ * Store corrompido lança (mesma classe de `claimLot`/`persistLotUpdate`:
+ * nunca regravar um vazio por cima do arquivo bom).
+ */
+export function stampKitSendRun(storePath: string, run: KitSendRunRecord): void {
+  const lockPath = `${storePath}.lock`;
+  withFileLock(
+    lockPath,
+    () => {
+      const { store: freshStore, corrupted } = readStore(storePath);
+      if (corrupted) {
+        throw new Error(
+          `[onboarding-kit-transport] store em "${storePath}" está CORROMPIDO (JSON ilegível) — recusando registrar a ` +
+            `rodada --send (last_send_run). Repare/restaure o store antes de rodar --send de novo.`,
+        );
+      }
+      freshStore.kit_transport ??= { lots: {} };
+      recordKitSendRun(freshStore.kit_transport, run);
+      writeStore(freshStore, storePath);
+    },
+    30_000,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +745,11 @@ async function main(): Promise<void> {
   // irmão — nunca inclui `entry` bruta (PII) no resumo impresso.
   summary.skips = plan.skips.map((s) => ({ etapa: s.etapa, motivo: s.motivo, detalhe: s.detalhe }));
 
+  // #7922 (alarme de continuidade do transporte Kit): contadores da rodada
+  // `--send`, gravados no fim via `stampKitSendRun`. Dry-run não conta nem grava.
+  let lotsCreated = 0;
+  let lotsFailed = 0;
+
   for (const kind of ["email1", "email2", "email3"] as OnboardingKitLotKind[]) {
     const actionsOfKind: RunAction[] =
       kind === "email3" ? plan.actions.filter((a) => a.kind === "email3_campaign") : plan.actions.filter((a) => a.kind === kind);
@@ -795,6 +832,9 @@ async function main(): Promise<void> {
     // seq=1 fixo) — desde que a reconciliação passou a olhar pro lote MAIS
     // NOVO da chave, os dois podem divergir depois de uma recriação.
     if (claim.decision.action === "blocked_concurrent") {
+      // Lote `pending` com erro de uma tentativa anterior ainda dentro da
+      // janela de stale: o e-mail deste kind também não sai nesta rodada.
+      if (claim.decision.lot.last_error != null) lotsFailed++;
       (summary.lots as unknown[]).push({
         kind,
         lot_id: claim.decision.lot.lot_id,
@@ -845,12 +885,28 @@ async function main(): Promise<void> {
       lot.status = broadcast.status === "scheduled" ? "scheduled" : "created";
       lot.send_at = broadcast.send_at;
       persistLotUpdate(storePath, lot);
+      lotsCreated++;
       (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, broadcast_id: broadcast.id, recipients: lot.recipient_emails.length });
     } catch (e) {
+      lotsFailed++;
       lot.last_error = (e as Error).message;
       persistLotUpdate(storePath, lot);
       (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: false, error: (e as Error).message });
     }
+  }
+
+  if (args.send) {
+    // #7922: alimenta o alarme de continuidade do transporte Kit — inclusive
+    // rodada sem nenhum lote (prova de que o executor está rodando). Falha
+    // ao registrar não desfaz o que a rodada fez; vira exit != 0 visível.
+    const run: KitSendRunRecord = { at: new Date().toISOString(), lots_created: lotsCreated, lots_failed: lotsFailed };
+    try {
+      stampKitSendRun(storePath, run);
+    } catch (e) {
+      process.stderr.write(`[onboarding-kit-transport] falha ao registrar last_send_run: ${(e as Error).message}\n`);
+      process.exitCode = 1;
+    }
+    summary.send_run = run;
   }
 
   console.log(JSON.stringify(summary, null, 2));

@@ -34,7 +34,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { OnboardingKitLot } from "./onboarding-kit-transport.ts";
+import type { OnboardingKitLot, KitSendRunRecord } from "./onboarding-kit-transport.ts";
 import { withFileLock } from "./file-lock.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -228,6 +228,21 @@ export interface OnboardingStore {
    */
   kit_transport?: {
     lots: Record<string, OnboardingKitLot>;
+    /**
+     * #7922 (pré-requisito do corte, §3 de docs/onboarding-kit-cutover.md):
+     * última rodada `--send` NÃO-piloto do executor Kit — quando rodou e
+     * quantos lotes criou/falhou. É o par Kit do `last_zero_detection_run_at`:
+     * permite ao alarme de continuidade distinguir "o executor Kit rodou e
+     * deu certo" de "parou de rodar" e de "roda mas não consegue criar o
+     * broadcast". Ausente = executor Kit nunca rodou `--send` com este campo
+     * (store anterior, ou kill switch ainda desligado) — o alarme responde
+     * `cannot-verify`, nunca `ok`. Gravado só pelo executor Kit
+     * (`stampKitSendRun`, sob o lock do store); dry-run nunca grava.
+     */
+    last_send_run?: KitSendRunRecord | null;
+    /** #7922: rodadas `--send` consecutivas com ≥1 lote que falhou ao
+     *  criar/taguear/agendar o broadcast. Zera numa rodada sem falha. */
+    consecutive_failed_send_runs?: number;
   };
 }
 
@@ -269,7 +284,16 @@ export function readStore(path: string = DEFAULT_STORE_PATH): { store: Onboardin
         // #7922: store anterior ao transporte Kit não tem este bloco —
         // normaliza pra "nenhum lote" em vez de deixar `undefined` vazar
         // para callers que assumem `.lots` sempre presente.
-        kit_transport: { lots: raw.kit_transport?.lots ?? {} },
+        kit_transport: {
+          lots: raw.kit_transport?.lots ?? {},
+          // #7922: sinais de saúde do executor Kit — só propagados quando
+          // presentes (store anterior não ganha campo fabricado; `?? null`
+          // seria um "nunca rodou" que o disco não disse).
+          ...(raw.kit_transport?.last_send_run != null ? { last_send_run: raw.kit_transport.last_send_run } : {}),
+          ...(raw.kit_transport?.consecutive_failed_send_runs != null
+            ? { consecutive_failed_send_runs: raw.kit_transport.consecutive_failed_send_runs }
+            : {}),
+        },
       },
       corrupted: false,
     };

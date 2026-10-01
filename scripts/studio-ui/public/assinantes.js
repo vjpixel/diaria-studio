@@ -43,6 +43,11 @@ const el = {
   onboardingCohortSummary: document.getElementById("onboarding-cohort-summary"),
   onboardingStaleTbody: document.getElementById("onboarding-stale-tbody"),
   onboardingStaleEmpty: document.getElementById("onboarding-stale-empty"),
+  onboardingProviderCounts: document.getElementById("onboarding-provider-counts"),
+  onboardingKitRun: document.getElementById("onboarding-kit-run"),
+  onboardingKitLotsTbody: document.getElementById("onboarding-kit-lots-tbody"),
+  onboardingKitLotsEmpty: document.getElementById("onboarding-kit-lots-empty"),
+  onboardingKitPilot: document.getElementById("onboarding-kit-pilot"),
 };
 
 function escapeHtml(s) {
@@ -417,6 +422,66 @@ function renderOnboardingStale(staleDrafts) {
     .join("");
 }
 
+// #7922 — e-mails 1/2 por transporte + lotes Kit (produção e piloto separados)
+function renderOnboardingProviderCounts(sentByProvider) {
+  if (!sentByProvider) {
+    el.onboardingProviderCounts.innerHTML = "";
+    return;
+  }
+  el.onboardingProviderCounts.innerHTML = [
+    tile("E-mail 1 via Brevo", sentByProvider.email1.brevo),
+    tile("E-mail 1 via Kit", sentByProvider.email1.kit),
+    tile("E-mail 2 via Brevo", sentByProvider.email2.brevo),
+    tile("E-mail 2 via Kit", sentByProvider.email2.kit),
+  ].join("");
+}
+
+const KIT_LOT_STATUS_LABELS = {
+  pending: "Pendente (sem broadcast confirmado)",
+  created: "Rascunho criado",
+  scheduled: "Agendado",
+  completed: "Enviado",
+  cancelled: "Cancelado",
+};
+
+function kitLotRow(l) {
+  const status = KIT_LOT_STATUS_LABELS[l.status] ?? l.status;
+  const broadcast = l.broadcastId == null ? "—" : String(l.broadcastId);
+  const erro = l.lastError ? escapeHtml(l.lastError) : "—";
+  return `<tr><td class="mono">${escapeHtml(l.lotId)}</td><td>${escapeHtml(l.kind)}</td><td>${escapeHtml(status)}</td><td class="mono">${l.recipients}</td><td class="mono">${escapeHtml(broadcast)}</td><td class="mono">${escapeHtml(l.createdAt)}</td><td>${erro}</td></tr>`;
+}
+
+function renderOnboardingKitLots(kitLots) {
+  if (!kitLots) {
+    el.onboardingKitRun.textContent = "";
+    el.onboardingKitLotsTbody.innerHTML = "";
+    el.onboardingKitLotsEmpty.hidden = true;
+    el.onboardingKitPilot.hidden = true;
+    return;
+  }
+  const run = kitLots.lastSendRun;
+  el.onboardingKitRun.textContent = run
+    ? `Última rodada --send do executor Kit: ${run.at} — ${run.lots_created} lote(s) criado(s), ${run.lots_failed} com falha` +
+      (kitLots.consecutiveFailedSendRuns > 0 ? ` (${kitLots.consecutiveFailedSendRuns} rodada(s) seguida(s) com falha)` : "") + "."
+    : "Executor Kit sem rodada --send registrada (kill switch desligado, ou só dry-run até agora).";
+  if (kitLots.production.length === 0) {
+    el.onboardingKitLotsTbody.innerHTML = "";
+    el.onboardingKitLotsEmpty.hidden = false;
+  } else {
+    el.onboardingKitLotsEmpty.hidden = true;
+    el.onboardingKitLotsTbody.innerHTML = kitLots.production.map(kitLotRow).join("");
+  }
+  if (kitLots.pilot.length > 0 || kitLots.pilotEntriesExcluded > 0) {
+    el.onboardingKitPilot.hidden = false;
+    el.onboardingKitPilot.textContent =
+      `Piloto (fora do funil de produção): ${kitLots.pilot.length} lote(s) onboarding-pilot-*` +
+      ` [${kitLots.pilot.map((l) => `${l.lotId}: ${KIT_LOT_STATUS_LABELS[l.status] ?? l.status}`).join("; ")}],` +
+      ` ${kitLots.pilotEntriesExcluded} entrada(s) sintética(s) excluída(s).`;
+  } else {
+    el.onboardingKitPilot.hidden = true;
+  }
+}
+
 function renderOnboardingRefreshErrors(refreshErrors) {
   if (!refreshErrors || refreshErrors.length === 0) {
     el.onboardingRefreshErrors.hidden = true;
@@ -441,6 +506,8 @@ function renderOnboardingData(data) {
     renderOnboardingStageCounts(null);
     renderOnboardingCohortSummary(null);
     renderOnboardingStale([]);
+    renderOnboardingProviderCounts(null);
+    renderOnboardingKitLots(null);
     return;
   }
   el.onboardingCorrupted.hidden = true;
@@ -449,6 +516,8 @@ function renderOnboardingData(data) {
     renderOnboardingStageCounts(null);
     renderOnboardingCohortSummary(null);
     renderOnboardingStale([]);
+    renderOnboardingProviderCounts(null);
+    renderOnboardingKitLots(null);
     return;
   }
   el.onboardingNodata.hidden = true;
@@ -463,6 +532,8 @@ function renderOnboardingData(data) {
   renderOnboardingStageCounts(data.summary.byEmail3Stage);
   renderOnboardingCohortSummary(data.summary.cohort);
   renderOnboardingStale(data.summary.staleDrafts);
+  renderOnboardingProviderCounts(data.summary.sentByProvider);
+  renderOnboardingKitLots(data.kitLots);
 }
 
 async function loadOnboarding() {

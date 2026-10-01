@@ -150,8 +150,35 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
       reconferir no builder/preview do Kit.
 - [ ] Alarme de continuidade (#7839) confirmado operante para o novo
       transporte, não só para o Brevo.
+  - [x] Código: `onboarding-kit-transport-run.ts --send` grava
+        `kit_transport.last_send_run` + `consecutive_failed_send_runs` no
+        store (`stampKitSendRun`, sob o lock); com
+        `onboarding.kit_transport.enabled: true`,
+        `onboarding-continuity-alarm.ts` avalia também esse sinal (check
+        `onboarding-kit-transport`, issue própria; limiar 2 rodadas com lote
+        falho; tri-state honesto — sem rodada `--send` registrada ou com a
+        última há mais de 48h é `cannot-verify`, nunca `ok`) e o e-mail nomeia
+        o transporte ativo. A streak de detecção segue a mesma nos dois
+        regimes (quem detecta é sempre `onboarding-welcome-run.ts`). Testes:
+        `test/onboarding-continuity-kit-transport-7922.test.ts`.
+  - [ ] Confirmação em produção: depende de 1 ciclo real depois do flip
+        (rodada `--send` do executor Kit seguida do alarme). Nem a task
+        `Diaria-Onboarding-Continuity-Alarm` (declarada, não armada) nem uma
+        task agendada do executor Kit existem armadas hoje — armar as duas
+        faz parte do flip. Limite conhecido: `cannot-verify` (executor Kit
+        parado há mais de 48h) só vira linha de log, sem issue nem e-mail —
+        mesma semântica do `run_parado` da detecção.
 - [ ] Painel do Studio (`/assinantes`, #7917/#8955) mostrando os lotes Kit
       corretamente para pelo menos 1 ciclo completo em dry-run.
+  - [x] Código: o painel lista os lotes Kit de produção (status, broadcast,
+        destinatários, último erro com e-mail mascarado) e a última rodada
+        `--send`; separa lote/entrada de piloto (`onboarding-pilot-*`,
+        `pilot:*`) do funil de produção; mostra por qual transporte saiu
+        cada e-mail 1/2 (`provider: "kit"` do passo 4 abaixo). Teste com o
+        executor real em subprocesso (dry-run não grava nada; `--send`
+        registra a rodada): `test/studio-onboarding-kit-lots-7922.test.ts`.
+  - [ ] Conferência visual no Studio com o store real, num ciclo dry-run de
+        produção.
 
 Sequência de flip:
 
