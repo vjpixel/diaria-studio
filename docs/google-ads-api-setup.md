@@ -124,8 +124,10 @@ developer token EXPLÍCITO hoje, nenhum é opcional na prática:**
    funcionar quando o Google desligar o suporte a developer token no 1º
    semestre de 2027 — os dois scripts já são fail-soft (ver seções acima),
    então a falha vira `spend.csv` desatualizado em silêncio, não um crash.
-2. **MCP oficial** (`.mcp.json` → `google-ads`) — a entrada declara
-   `GOOGLE_ADS_DEVELOPER_TOKEN` no `env` do processo `pipx`, e o servidor
+2. **MCP oficial** (`.mcp.json` → `google-ads` → wrapper
+   `scripts/mcp/run-google-ads-mcp.mjs`, #8994) — o wrapper lê
+   `GOOGLE_ADS_DEVELOPER_TOKEN` do `.env` e o repassa ao processo do
+   servidor, e o servidor
    (`google-ads-mcp`, `ads_mcp/utils.py::_create_credentials()`, lido no
    #6450) usa esse valor junto com ADC (`GOOGLE_APPLICATION_CREDENTIALS`)
    pra montar a credencial de cada chamada — não é vestigial, é lido de
@@ -139,7 +141,8 @@ identidade do projeto Cloud (a client library nova do Google já publicada
 faz isso) — é trabalho de infra futuro, não implementado aqui de propósito
 (fora do escopo desta issue de scoping). Quando for feita, os 3 pontos de
 código acima (`google-ads-ingest.ts`, `google-ads-associate-token.ts`,
-`.mcp.json`) são os que precisam mudar; nenhum outro arquivo deste repo
+`scripts/mcp/mcp-wrapper-core.mjs` — que hoje exige o developer token antes
+de subir o MCP) são os que precisam mudar; nenhum outro arquivo deste repo
 monta chamada Google Ads.
 
 **Ação de plataforma pendente (fora do repo, não é código):** confirmar no
@@ -278,14 +281,21 @@ Vão para o Doppler (`diaria-studio` / `dev`), nunca para o repo:
 
 ## MCP oficial e ingestão automática (#5237, corrigido no #6450)
 
-- **`.mcp.json` → `google-ads`**: entrada `stdio` (`pipx run --spec
-  git+https://github.com/googleads/google-ads-mcp.git google-ads-mcp`),
-  servidor oficial do time do Google Ads (link no topo do arquivo, ver
-  também a issue #5237). Diferente do `clarice` (HTTP + header-auth), esse
-  MCP é um processo local que lê as credenciais do próprio ambiente (`env`
-  no bloco da entrada). **Requer `pipx` instalado** (Python ≥3.10) nas 3
-  máquinas — `pip install --user pipx && pipx ensurepath`, reabrir o
-  terminal — sem ele o processo do MCP nem sobe (achado do #6450).
+- **`.mcp.json` → `google-ads`**: entrada `stdio` que roda o wrapper
+  `node scripts/mcp/run-google-ads-mcp.mjs` (#8994), que sobe o servidor
+  oficial do time do Google Ads (link no topo do arquivo, ver também a issue
+  #5237). Diferente do `clarice` (HTTP + header-auth), esse MCP é um processo
+  local. O harness não carrega o `.env`, então quem lê as credenciais é o
+  wrapper: `.mcp.json` → wrapper → `.env` (`GOOGLE_ADS_*` e
+  `GOOGLE_APPLICATION_CREDENTIALS`, sem sobrescrever var já presente no
+  ambiente). Sem developer token, ou com `GOOGLE_APPLICATION_CREDENTIALS`
+  vazio ou apontando pra arquivo inexistente, o wrapper sai com erro claro
+  em vez de subir o servidor sem credencial. O wrapper usa o binário
+  `google-ads-mcp` instalado (`pipx install
+  git+https://github.com/googleads/google-ads-mcp.git`) e, se ele faltar, cai
+  em `pipx run --spec`, que é lento com cache frio. **Requer `pipx` para
+  instalar** (Python ≥3.10) nas 3 máquinas — `pip install --user pipx &&
+  pipx ensurepath`, reabrir o terminal (achado do #6450).
 
   **Contrato de auth do servidor MCP em si é DIFERENTE do fluxo REST usado
   por `google-ads-ingest-spend.ts`/`google-ads-associate-token.ts` (achado
