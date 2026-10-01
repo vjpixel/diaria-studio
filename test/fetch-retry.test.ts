@@ -194,4 +194,17 @@ describe("fetchWithRetry (#5973)", () => {
       },
     );
   });
+
+  it("#9315 — retryOnError:false lança na 1ª exceção sem retentar", async () => {
+    let calls = 0;
+    await assert.rejects(
+      () =>
+        fetchWithRetry(async () => {
+          calls++;
+          throw new Error("boom");
+        }, { attempts: 4, sleep: async () => {}, retryOnError: false }),
+      /falhou após 1 tentativa\(s\)/,
+    );
+    assert.equal(calls, 1);
+  });
 });

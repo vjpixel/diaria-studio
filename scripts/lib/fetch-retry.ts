@@ -40,6 +40,11 @@ export interface FetchRetryOptions {
   honorRetryAfter?: boolean;
   /** Teto da espera derivada de `Retry-After`, ms. Default 60000. */
   maxRetryAfterMs?: number;
+  /** #9315 — quando false, erro de rede/timeout (exceção do `doFetch`) NÃO é
+   * retentado: lança na hora. Pra requests não-idempotentes (POST de
+   * criação), onde o servidor pode ter gravado antes de a resposta se perder.
+   * Default true. */
+  retryOnError?: boolean;
 }
 
 /** #9291 — `Retry-After` em ms (segundos inteiros/decimais ou data HTTP);
@@ -105,9 +110,9 @@ export async function fetchWithRetry(
       if (opts.honorRetryAfter) retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
       await res.body?.cancel().catch(() => {});
     } catch (e) {
-      if (attempt === attempts) {
+      if (attempt === attempts || opts.retryOnError === false) {
         throw new Error(
-          `fetchWithRetry: falhou após ${attempts} tentativa(s) (timeoutMs=${timeoutMs}): ${(e as Error).message}`,
+          `fetchWithRetry: falhou após ${attempt} tentativa(s) (timeoutMs=${timeoutMs}): ${(e as Error).message}`,
           { cause: e },
         );
       }
