@@ -125,7 +125,7 @@ configurada, nenhuma chamada de rede é feita.
 Gap deliberado: coortes de engajamento, status MillionVerifier, cupons
 Stripe e engajamento "É IA?" (por edição, aba Clarice) não são
 recomputáveis barato on-demand — são pré-computados por scripts caros
-(ex: `clarice-engagement-cohorts.ts`, ~40k GETs) só empurrados pro KV.
+(ex: `clarice-engagement-cohorts-v2.ts --push`, export por campanha) só empurrados pro KV.
 Essas 4 abas degradam pra "sem dados" no painel local (mesmo
 comportamento gracioso do cold-start do Worker).
 

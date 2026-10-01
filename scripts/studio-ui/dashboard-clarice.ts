@@ -175,7 +175,7 @@ function buildEnv(): Env {
   // #4165/#4173: adaptador de KV real — lê/escreve o namespace `STATS_CACHE`
   // de verdade via API HTTP Cloudflare (CLOUDFLARE_ACCOUNT_ID +
   // CLOUDFLARE_WORKERS_TOKEN, mesmas credenciais já usadas por outros scripts
-  // de push pro KV, ex: clarice-engagement-cohorts.ts). `createRemoteKvNamespace`
+  // de push pro KV, ex: clarice-engagement-cohorts-v2.ts --push). `createRemoteKvNamespace`
   // retorna `null` quando as credenciais faltam — fail-soft: degrada pro
   // `MemoryKv` de sempre (todas as abas KV-dependentes voltam a ficar `null`,
   // mas o painel carrega normalmente, sem tentar rede nenhuma). Com falha de

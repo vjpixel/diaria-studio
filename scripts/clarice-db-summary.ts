@@ -5,7 +5,7 @@
  * Lê o SQLite local (#2647) e grava um sumário SÓ-NÚMEROS (sem PII) no KV do
  * worker `clarice-dashboard` sob `contacts:summary`. O worker (aba nova) só lê e
  * renderiza. Mesmo padrão de `clarice-mv-status.ts` (KV `mv:status`) e
- * `clarice-engagement-cohorts.ts`.
+ * `clarice-engagement-cohorts-v2.ts --push` (KV `cohorts:engagement`).
  *
  * O store é local (OneDrive, inalcançável pelo worker) → este script é a ponte.
  *

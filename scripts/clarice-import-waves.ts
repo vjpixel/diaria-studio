@@ -529,7 +529,7 @@ export function makeRealImportRunClient(apiKey: string, retryDelaysMs?: readonly
       // #4720 self-review: 500 (não 50) — este diagnóstico roda sobre listas
       // de rampa que podem ter milhares de contatos (a issue original tinha
       // ~800); limit=500 é o mesmo já usado pro mesmo endpoint em
-      // clarice-cta-ab-setup.ts/clarice-engagement-cohorts.ts, sem risco novo.
+      // clarice-cta-ab-setup.ts/clarice-engagement-cohorts.ts (v1, removido no #9330), sem risco novo.
       const limit = 500;
       let offset = 0;
       for (;;) {

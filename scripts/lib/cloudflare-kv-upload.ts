@@ -179,7 +179,7 @@ export async function uploadTextToWorkerKV(
  * chave via Cloudflare API HTTP, mesmas credenciais (accountId+token).
  * Introduzida pro adaptador de KV real do Studio (`dashboard-clarice.ts`):
  * antes desta issue, o painel local só sabia ESCREVER no KV (scripts batch
- * como `clarice-engagement-cohorts.ts`); ler de volta exigia `wrangler kv key
+ * como `clarice-engagement-cohorts.ts` (v1, removido no #9330)); ler de volta exigia `wrangler kv key
  * get` manual no terminal.
  *
  * Usa `fetch` (injetável via `fetchImpl`, mesmo padrão de
@@ -237,7 +237,7 @@ export async function getTextFromWorkerKV(
  *
  * Função nova (não uma extensão de `uploadTextToWorkerKV`) para não alterar o
  * comportamento/assinatura de um helper já usado por vários scripts em
- * produção (`build-poll-eia-data.ts`, `clarice-engagement-cohorts.ts`, etc.).
+ * produção (`build-poll-eia-data.ts`, `clarice-engagement-cohorts-v2.ts`, etc.).
  */
 export async function putTextToWorkerKV(
   key: string,

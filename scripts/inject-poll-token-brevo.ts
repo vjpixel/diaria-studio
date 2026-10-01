@@ -110,7 +110,7 @@ async function ensureContactAttribute(apiKey: string): Promise<void> {
  * Contatos da lista, paginados — `GET /v3/contacts/lists/{listId}/contacts`.
  *
  * `limit=50` (não os 500 usados em `clarice-cta-ab-setup.ts`/
- * `clarice-engagement-cohorts.ts` pro mesmo endpoint) é intencional aqui:
+ * `clarice-engagement-cohorts.ts` (v1, removido no #9330) pro mesmo endpoint) é intencional aqui:
  * esta lista é sempre pequena (capada em `brevo_diaria.daily_send_cap`, hoje
  * bem abaixo do fallback de 300 — ver cabeçalho do módulo), então o número
  * de páginas nunca é o gargalo; manter 50 evita re-tocar os testes de
@@ -121,7 +121,7 @@ async function ensureContactAttribute(apiKey: string): Promise<void> {
  * #4532): `brevoGet` trata QUALQUER 404 como resultado vazio não-fatal
  * (`{status:404, body:{}}`) — desenhado pra lookup de contato ÚNICO, onde
  * "sumiu entre listar e buscar" é esperado (ex:
- * `clarice-engagement-cohorts.ts::fetchListMembers`, que trata 404 nesse
+ * `clarice-engagement-cohorts.ts::fetchListMembers` (v1, removido no #9330), que trata 404 nesse
  * MESMO endpoint como "lista apagada — pula", uma decisão de negócio
  * deliberada pra um job que itera VÁRIAS listas). Aqui o endpoint é a
  * listagem em MASSA da ÚNICA lista de produção deste canal

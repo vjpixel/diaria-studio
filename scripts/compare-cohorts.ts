@@ -2,7 +2,7 @@
  * compare-cohorts.ts (#4451 Fase 2/3 — tooling de validação empírica)
  *
  * Compara duas `EngagementCohorts` (mesmo shape gravado no KV pelo v1 —
- * `clarice-engagement-cohorts.ts` — e pelo v2 dry-run —
+ * `clarice-engagement-cohorts.ts` (v1, removido no #9330) — e pelo v2 dry-run —
  * `clarice-engagement-cohorts-v2.ts`) e reporta, campo a campo, se batem
  * dentro de uma tolerância. É o passo 2/6 explícito do plano de execução da
  * issue #4451 ("comparar output de computeCohorts() do v2 contra o v1 —
@@ -19,12 +19,11 @@
  * `clarice-engagement-cohorts-v2.ts` ("CUTOVER: DESIGN VALIDADO") e
  * `docs/cohorts-schedule.md` para o resumo operacional e a tabela de números.
  * Esta tooling continua válida pra qualquer comparação futura (ex: quando a
- * troca da task `DiariaCohortsCrawl` — ainda pendente, decisão separada — for
- * revisitada, ou pra checagens periódicas pós-cutover):
+ * v1 foi removido no #9330, então hoje compara dois snapshots v2 — ex: o
+ * artefato de duas datas, ou v2 contra um baseline v1 antigo salvo em disco):
  *
- *   npx tsx scripts/clarice-engagement-cohorts.ts --dry-run > /tmp/v1.json
- *   npx tsx scripts/clarice-engagement-cohorts-v2.ts --out /tmp/v2.json
- *   npx tsx scripts/compare-cohorts.ts --a /tmp/v1.json --b /tmp/v2.json
+ *   npx tsx scripts/clarice-engagement-cohorts-v2.ts --out /tmp/b.json
+ *   npx tsx scripts/compare-cohorts.ts --a /tmp/a.json --b /tmp/b.json
  *
  * Tolerância default 2% (arredondado pra cima, mínimo 1) por campo — os dois
  * caminhos não são bit-idênticos por design (fontes de dado diferentes: GET

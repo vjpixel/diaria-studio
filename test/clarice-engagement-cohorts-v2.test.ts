@@ -12,7 +12,7 @@
  *   - fetchAdminOptOutEmails / applyAdminOptOuts: gap de blacklist
  *     administrativo fechado via store local, fail-soft quando ausente
  *     (Fase 2).
- *   - computeCohorts (import direto de clarice-engagement-cohorts.ts): sem
+ *   - computeCohorts (import direto de lib/engagement-cohorts.ts, #9330): sem
  *     regressão — mesmo comportamento de hoje, alimentado pelo agregado v2.
  *
  * #6222: guard de rede file-wide (`installNetworkRequestGuard`, ver
@@ -65,7 +65,7 @@ import {
   DASHBOARD_KV_NAMESPACE_ID,
   type ContactEngagement,
   type EngagementCohorts,
-} from "../scripts/clarice-engagement-cohorts.ts";
+} from "../scripts/lib/engagement-cohorts.ts";
 import { openClariceDb } from "../scripts/lib/clarice-db.ts";
 
 const GEN = "2026-08-02T00:00:00.000Z";
@@ -899,7 +899,7 @@ test("pushCohortsToKV: universe>0 chama uploadFn com a MESMA chave/namespace/sha
   const result = await pushCohortsToKV(cohorts, { accountId: "acc-123", token: "tok-456" }, uploadFn);
   assert.equal(result.pushed, true);
   assert.equal(calls.length, 1);
-  // Mesma chave KV que o v1 (clarice-engagement-cohorts.ts) grava — o worker
+  // Mesma chave KV que o v1 (clarice-engagement-cohorts.ts (v1, removido no #9330)) grava — o worker
   // clarice-dashboard lê essa chave sem saber se foi v1 ou v2 quem escreveu.
   assert.equal(calls[0].key, COHORTS_KV_KEY);
   assert.equal(calls[0].cfg.kvNamespaceId, DASHBOARD_KV_NAMESPACE_ID);
