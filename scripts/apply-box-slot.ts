@@ -48,6 +48,7 @@ import { parseArgs } from "node:util";
 import { isMainModule } from "./lib/cli-args.ts";
 import { runTsx } from "./lib/run-tsx.ts";
 import { md5OfFile } from "./lib/shared/file-md5.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as resolveEditionDir } from "./lib/edition-paths.ts";
 import { locateBoxDivulgacaoRange } from "./lib/newsletter-parse.ts";
 import { loadDivulgacaoSnippet } from "./stitch-newsletter.ts";
@@ -200,6 +201,15 @@ export function applyBoxSlotForceCommand(edition: string, slot: 1 | 2, file: str
   return `npx tsx scripts/apply-box-slot.ts --edition ${edition} --slot ${slot} --file ${file} --force`;
 }
 
+/**
+ * Destino da imagem do slot: `copied` = imagem irmã aplicada; `removed` = sem
+ * imagem irmã, a imagem do box anterior foi retirada (backup em `_internal/`);
+ * `kept` = mesmo snippet reaplicado sem imagem irmã, imagem atual mantida;
+ * `missing` = sem imagem irmã e o slot já não tinha imagem; `failed` = texto
+ * aplicado mas o passo de imagem falhou (ver warnings).
+ */
+export type ApplyBoxSlotImageOutcome = "copied" | "removed" | "kept" | "missing" | "failed";
+
 export interface ApplyBoxSlotToEditionOpts {
   /** Raiz do repo (onde vive `data/snippets/`). */
   rootDir: string;
@@ -220,12 +230,7 @@ export type ApplyBoxSlotToEditionResult =
       ok: true;
       dryRun: boolean;
       previousFile: string | null;
-      /**
-       * `copied` = imagem irmã aplicada; `removed` = sem imagem irmã e a imagem
-       * anterior do slot foi retirada (backup em `_internal/`); `missing` = sem
-       * imagem irmã e o slot já não tinha imagem.
-       */
-      image: "copied" | "removed" | "missing";
+      image: ApplyBoxSlotImageOutcome;
       imageSource: string | null;
       /** `true` = subiu e validou; `false` = falhou (ver warnings); `null` = não tentou. */
       uploaded: boolean | null;
@@ -338,11 +343,39 @@ export async function applyBoxSlotToEdition(opts: ApplyBoxSlotToEditionOpts): Pr
   const publicPath = join(dir, "06-public-images.json");
   const entryKey = `box_slot${slot}_image`;
 
-  if (opts.dryRun) {
-    if (!sibling) {
-      warnings.push(`sem imagem irmã do snippet (data/snippets/${siblingImageCandidates(file).join(" | ")}) — a imagem atual do slot ${slot} seria retirada.`);
+  // Reaplicar o MESMO snippet (tipicamente `--force` depois de editar o
+  // snippet) sem imagem irmã: a imagem atual do slot é do próprio box (pode ter
+  // sido posta à mão) — mantém, não aposenta.
+  const reapplySame = previousFile === file;
+  const readSlotEntry = (): PublicImageEntry | undefined => {
+    if (!existsSync(publicPath)) return undefined;
+    try {
+      const j = JSON.parse(readFileSync(publicPath, "utf8")) as { images?: Record<string, PublicImageEntry> };
+      return ((j.images ?? j) as Record<string, PublicImageEntry>)[entryKey];
+    } catch {
+      return undefined;
     }
-    return { ok: true, dryRun: true, previousFile, image: sibling ? "copied" : existsSync(target) ? "removed" : "missing", imageSource: sibling, uploaded: null, publishState, warnings };
+  };
+  const noSiblingMsg = `sem imagem irmã do snippet (data/snippets/${siblingImageCandidates(file).join(" | ")})`;
+
+  if (opts.dryRun) {
+    let image: ApplyBoxSlotImageOutcome = "missing";
+    if (sibling) {
+      image = "copied";
+    } else {
+      const entry = readSlotEntry();
+      const present: string[] = [];
+      if (existsSync(target)) present.push(`04-box-slot${slot}.jpg`);
+      if (entry) present.push(`entry ${entryKey} (${entry.cloudflare_url || entry.url || "sem URL"})`);
+      if (present.length && reapplySame) {
+        image = "kept";
+        warnings.push(`${noSiblingMsg} — mesmo snippet reaplicado: imagem atual do slot ${slot} seria mantida.`);
+      } else if (present.length) {
+        image = "removed";
+        warnings.push(`${noSiblingMsg} — seria retirado: ${present.join("; ")}.`);
+      }
+    }
+    return { ok: true, dryRun: true, previousFile, image, imageSource: sibling, uploaded: null, publishState, warnings };
   }
 
   // 1) imagem num temporário ANTES de qualquer escrita (falha → nada escrito).
@@ -361,64 +394,67 @@ export async function applyBoxSlotToEdition(opts: ApplyBoxSlotToEditionOpts): Pr
     }
   }
 
-  // 2) texto + seleção.
-  writeFileSync(reviewedPath, res.reviewedMd);
-  writeFileSync(selectionPath, JSON.stringify(res.selection, null, 2));
+  // 2) texto + seleção (atômico).
+  writeFileAtomic(reviewedPath, res.reviewedMd);
+  writeFileAtomic(selectionPath, JSON.stringify(res.selection, null, 2));
 
-  // 3) imagem.
+  // 3) imagem — o texto já está aplicado: falha aqui vira warning explícito,
+  // nunca exceção crua (o caller precisa saber que o texto MUDOU).
   let uploaded: boolean | null = null;
-  let image: "copied" | "removed" | "missing" = "missing";
-  if (sibling) {
-    copyFileSync(pending, target);
-    rmSync(pending, { force: true });
-    image = "copied";
-    if (!existsSync(publicPath)) {
-      warnings.push(`06-public-images.json ainda não existe — 04-box-slot${slot}.jpg sobe no upload normal do pipeline (Stage 4/5).`);
-    } else {
-      const manual = `npx tsx scripts/upload-images-public.ts --edition-dir ${dir} --mode newsletter`;
-      try {
-        (opts.runUpload ?? defaultRunUpload)(dir);
-        uploaded = isBoxSlotImageUploaded(JSON.parse(readFileSync(publicPath, "utf8")), slot, md5OfFile(target));
-        if (!uploaded) {
-          warnings.push(`upload rodou mas ${entryKey} em 06-public-images.json não bate com o md5 local — rode \`${manual}\`.`);
+  let image: ApplyBoxSlotImageOutcome = "missing";
+  try {
+    if (sibling) {
+      copyFileSync(pending, target);
+      rmSync(pending, { force: true });
+      image = "copied";
+      if (!existsSync(publicPath)) {
+        warnings.push(`06-public-images.json ainda não existe — 04-box-slot${slot}.jpg sobe no upload normal do pipeline (Stage 4/5).`);
+      } else {
+        const manual = `npx tsx scripts/upload-images-public.ts --edition-dir ${dir} --mode newsletter`;
+        try {
+          (opts.runUpload ?? defaultRunUpload)(dir);
+          uploaded = isBoxSlotImageUploaded(JSON.parse(readFileSync(publicPath, "utf8")), slot, md5OfFile(target));
+          if (!uploaded) {
+            warnings.push(`upload rodou mas ${entryKey} em 06-public-images.json não bate com o md5 local — rode \`${manual}\`.`);
+          }
+        } catch (err) {
+          uploaded = false;
+          warnings.push(`upload da imagem falhou (${(err as Error).message.split("\n")[0]}) — rode \`${manual}\`.`);
         }
-      } catch (err) {
-        uploaded = false;
-        warnings.push(`upload da imagem falhou (${(err as Error).message.split("\n")[0]}) — rode \`${manual}\`.`);
       }
-    }
-  } else {
-    // Sem imagem irmã: a imagem do box ANTERIOR não pode acompanhar o box novo.
-    // O render lê `box_slot{N}_image` de 06-public-images.json (e o uploader
-    // mantém a URL antiga se o .jpg sumir) — retira os dois, com backup.
-    const stamp = (opts.now ?? (() => new Date()))().toISOString().replace(/[:.]/g, "-");
-    const done: string[] = [];
-    if (existsSync(target)) {
-      const bak = join(dir, "_internal", `04-box-slot${slot}.replaced-${stamp}.jpg`);
-      mkdirSync(dirname(bak), { recursive: true });
-      renameSync(target, bak);
-      done.push(`04-box-slot${slot}.jpg movida pra _internal/${basename(bak)}`);
-    }
-    if (existsSync(publicPath)) {
-      try {
+    } else if (reapplySame && (existsSync(target) || readSlotEntry())) {
+      image = "kept";
+      warnings.push(`${noSiblingMsg} — mesmo snippet reaplicado: imagem atual do slot ${slot} mantida.`);
+    } else {
+      // Sem imagem irmã: a imagem do box ANTERIOR não pode acompanhar o box
+      // novo. O render lê `box_slot{N}_image` de 06-public-images.json (e o
+      // uploader mantém a URL antiga se o .jpg sumir) — retira os dois, com backup.
+      const stamp = (opts.now ?? (() => new Date()))().toISOString().replace(/[:.]/g, "-");
+      const done: string[] = [];
+      if (existsSync(target)) {
+        const bak = join(dir, "_internal", `04-box-slot${slot}.replaced-${stamp}.jpg`);
+        mkdirSync(dirname(bak), { recursive: true });
+        renameSync(target, bak);
+        done.push(`04-box-slot${slot}.jpg movida pra _internal/${basename(bak)}`);
+      }
+      if (existsSync(publicPath)) {
         const j = JSON.parse(readFileSync(publicPath, "utf8")) as Record<string, unknown> & { images?: Record<string, unknown> };
         const map = (j.images ?? j) as Record<string, unknown>;
         if (map[entryKey] !== undefined) {
           const bak = join(dir, "_internal", `${entryKey}.replaced-${stamp}.json`);
           writeFileSync(bak, JSON.stringify({ [entryKey]: map[entryKey] }, null, 2));
           delete map[entryKey];
-          writeFileSync(publicPath, JSON.stringify(j, null, 2));
+          writeFileAtomic(publicPath, JSON.stringify(j, null, 2));
           done.push(`entry ${entryKey} removida de 06-public-images.json (backup em _internal/${basename(bak)})`);
         }
-      } catch (err) {
-        warnings.push(`não consegui limpar ${entryKey} de 06-public-images.json (${(err as Error).message}) — a URL antiga pode continuar no render.`);
       }
+      image = done.length ? "removed" : "missing";
+      warnings.push(`${noSiblingMsg} — ` + (done.length ? `slot ${slot} fica sem imagem: ${done.join("; ")}.` : `slot ${slot} segue sem imagem.`));
     }
-    image = done.length ? "removed" : "missing";
-    warnings.push(
-      `sem imagem irmã do snippet (data/snippets/${siblingImageCandidates(file).join(" | ")}) — ` +
-        (done.length ? `slot ${slot} fica sem imagem: ${done.join("; ")}.` : `slot ${slot} segue sem imagem.`),
-    );
+  } catch (err) {
+    rmSync(pending, { force: true });
+    image = "failed";
+    warnings.push(`texto aplicado, imagem não: ${(err as Error).message.split("\n")[0]} — confira 04-box-slot${slot}.jpg e ${entryKey} em 06-public-images.json à mão.`);
   }
   return { ok: true, dryRun: false, previousFile, image, imageSource: sibling, uploaded, publishState, warnings };
 }
@@ -458,7 +494,11 @@ async function main(): Promise<void> {
       ? `imagem ${res.imageSource} → 04-box-slot${slot}.jpg${res.uploaded === true ? " (upload validado)" : ""}`
       : res.image === "removed"
         ? "imagem anterior retirada"
-        : "sem imagem";
+        : res.image === "kept"
+          ? "imagem atual mantida"
+          : res.image === "failed"
+            ? "imagem NÃO aplicada"
+            : "sem imagem";
   console.log(
     `apply-box-slot: ${res.dryRun ? "dry-run — " : ""}slot ${slot}: ${res.previousFile ?? "(nenhum)"} → ${values.file} (02-reviewed.md + box-selection.json; ${img}).`,
   );

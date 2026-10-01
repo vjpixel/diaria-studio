@@ -130,6 +130,41 @@ describe("#8990 applyBoxSlotToEdition — imagem", () => {
     assert.ok(readFileSync(join(edDir, "02-reviewed.md"), "utf8").includes(NEW), "texto troca mesmo sem imagem");
   });
 
+  it("--force reaplicando o MESMO snippet sem imagem irmã → imagem atual mantida (kept)", async () => {
+    setup();
+    const entry = { url: "https://x/manual.jpg", md5: "m" };
+    writeFileSync(join(edDir, "06-public-images.json"), JSON.stringify({ images: { box_slot1_image: entry } }));
+    const res = await applyBoxSlotToEdition({ rootDir: root, editionDir: edDir, slot: 1, file: "velho.md", force: true });
+    assert.ok(res.ok);
+    if (!res.ok) return;
+    assert.equal(res.image, "kept");
+    assert.deepEqual(readFileSync(join(edDir, "04-box-slot1.jpg")), JPEG_OLD);
+    assert.deepEqual(JSON.parse(readFileSync(join(edDir, "06-public-images.json"), "utf8")).images.box_slot1_image, entry);
+  });
+
+  it("dry-run: só a entry box_slot1_image (sem .jpg) → removed citando a URL", async () => {
+    setup();
+    rmSync(join(edDir, "04-box-slot1.jpg"));
+    writeFileSync(join(edDir, "06-public-images.json"), JSON.stringify({ images: { box_slot1_image: { url: "https://x/velho.jpg" } } }));
+    const res = await applyBoxSlotToEdition({ rootDir: root, editionDir: edDir, slot: 1, file: "novo.md", dryRun: true });
+    assert.ok(res.ok);
+    if (!res.ok) return;
+    assert.equal(res.image, "removed");
+    assert.match(res.warnings.join(" "), /seria retirado: entry box_slot1_image \(https:\/\/x\/velho\.jpg\)/);
+    assert.ok(JSON.parse(readFileSync(join(edDir, "06-public-images.json"), "utf8")).images.box_slot1_image, "dry-run não remove");
+  });
+
+  it("falha no passo de imagem pós-texto → warning 'texto aplicado, imagem não', sem exceção", async () => {
+    setup();
+    writeFileSync(join(edDir, "06-public-images.json"), "{ json quebrado");
+    const res = await applyBoxSlotToEdition({ rootDir: root, editionDir: edDir, slot: 1, file: "novo.md", now: () => new Date("2026-10-01T12:00:00Z") });
+    assert.ok(res.ok);
+    if (!res.ok) return;
+    assert.equal(res.image, "failed");
+    assert.match(res.warnings.join(" "), /texto aplicado, imagem não:/);
+    assert.ok(readFileSync(join(edDir, "02-reviewed.md"), "utf8").includes(NEW));
+  });
+
   it("sem imagem irmã e slot sem imagem → missing, nada movido", async () => {
     setup();
     rmSync(join(edDir, "04-box-slot1.jpg"));
@@ -299,6 +334,22 @@ describe("#8990 painel Caixas — edição já stitched", () => {
     assert.equal(findStitchedEdition(root)?.publishState, "draft");
     assert.equal(checkStitchedEditionAfterSlotSave(root, { slot1: "novo.md", slot2: "outra.md" })?.publishState, "draft");
     writeFileSync(kit, JSON.stringify({ status: "scheduled", scheduled_at: "2026-10-01T09:00:00Z" }));
+    assert.equal(findStitchedEdition(root), null);
+    assert.equal(checkStitchedEditionAfterSlotSave(root, { slot1: "novo.md", slot2: "outra.md" }), null);
+  });
+
+  it("só a edição MAIS RECENTE conta: mais nova locked + antigas com rascunho → null", () => {
+    // edDir = 261001 (draft antigo); adiciona 261002 (draft) e 261003 (locked)
+    writeFileSync(join(edDir, "_internal", "05-published.json"), JSON.stringify({ status: "draft" }));
+    for (const [ed, marker] of [
+      ["261002", { status: "draft" }],
+      ["261003", { status: "scheduled", scheduled_at: "2026-10-03T09:00:00Z" }],
+    ] as const) {
+      const d = join(root, "data", "editions", "2610", ed);
+      mkdirSync(join(d, "_internal"), { recursive: true });
+      writeFileSync(join(d, "02-reviewed.md"), md(OLD));
+      writeFileSync(join(d, "_internal", "newsletter-kit-published.json"), JSON.stringify(marker));
+    }
     assert.equal(findStitchedEdition(root), null);
     assert.equal(checkStitchedEditionAfterSlotSave(root, { slot1: "novo.md", slot2: "outra.md" }), null);
   });

@@ -1523,9 +1523,11 @@ export interface StitchedEditionInfo {
   mismatches: StitchedSlotMismatch[];
 }
 
-/** Edição mais recente com `02-reviewed.md` que ainda não foi agendada/enviada
- * (marcadores Beehiiv E Kit — `readEditionPublishState`). Fail-soft:
- * `data/` ausente/ilegível → null. */
+/** SÓ a edição mais recente com `02-reviewed.md` — se ela já foi agendada/
+ * enviada (marcadores Beehiiv E Kit — `readEditionPublishState`), null. Nunca
+ * anda para trás atrás de uma edição "aberta": edição antiga com marcador
+ * velho de rascunho não é a edição corrente. Fail-soft: `data/` ausente/
+ * ilegível → null. */
 export function findStitchedEdition(
   rootDir: string,
 ): { edition: string; dir: string; publishState: EditionPublishState } | null {
@@ -1535,8 +1537,7 @@ export function findStitchedEdition(
       const dir = dirs.get(edition)!;
       if (!existsSync(resolve(dir, "02-reviewed.md"))) continue;
       const publishState = readEditionPublishState(dir);
-      if (publishState === "locked") continue;
-      return { edition, dir, publishState };
+      return publishState === "locked" ? null : { edition, dir, publishState };
     }
   } catch (err) {
     console.warn(`[studio-boxes] findStitchedEdition: ${(err as Error).message}`);
