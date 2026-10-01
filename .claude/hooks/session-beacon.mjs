@@ -805,7 +805,8 @@ const BEACON_CAS_ATTEMPTS = 3;
 function acquireBeaconLock(lockPath, timeoutMs = BEACON_LOCK_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    // #9203: grava o dono {pid, host, ts, token}; erro não-EEXIST propaga.
+    // #9203: grava o dono {pid, host, ts, token}; erro não-EEXIST propaga,
+    // exceto o delete-pending do Windows (#9280), retentado lá dentro.
     if (tryAcquireOwnedLock(lockPath)) return;
     if (Date.now() >= deadline) {
       throw new Error(`[session-beacon] lock timeout after ${timeoutMs}ms: ${lockPath}`);

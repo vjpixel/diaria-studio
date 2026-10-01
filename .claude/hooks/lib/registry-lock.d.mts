@@ -6,4 +6,10 @@ export function isLockOrphan(
   alive?: (pid: number) => boolean, legacyStaleMs?: number, foreignHostStaleMs?: number | null,
 ): boolean;
 export function breakStaleLock(lockPath: string, now?: number): boolean;
-export function tryAcquireOwnedLock(lockPath: string): boolean;
+export const DELETE_PENDING_MAX_STREAK: number;
+export function isDeletePendingWxError(code: string | undefined, platform?: NodeJS.Platform): boolean;
+export interface AcquireDeps {
+  platform: NodeJS.Platform;
+  openWx: (lockPath: string) => number;
+}
+export function tryAcquireOwnedLock(lockPath: string, deps?: AcquireDeps): boolean;
