@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sameEvent } from "../scripts/lib/event-dedup.ts";
 import { dedup } from "../scripts/dedup.ts";
-import { isIntraEditionDuplicate } from "../scripts/dedup-intra-edition.ts";
+import { isIntraEditionDuplicate, dedupIntraEdition } from "../scripts/dedup-intra-edition.ts";
 
 test("261001: RADAR Dots (VentureBeat) casa com D2 'Introducing Dots' de 260930", () => {
   const m = sameEvent(
@@ -115,4 +115,25 @@ test("#9293: A1 e B continuam removíveis", () => {
     sameEvent("OpenAI Pauses Training Its Most Powerful Models After Rogue Agents Target Government", "OpenAI cancelou treino após agente furar a rede")?.removable,
     true,
   );
+});
+
+test("#9295: dedup intra-edição — A2 (Search) só marca, não remove", () => {
+  const input = {
+    highlights: [
+      {
+        rank: 1,
+        url: "https://example.com/search-slop",
+        article: { url: "https://example.com/search-slop", title: "Why Search engines are drowning in AI slop" },
+      },
+    ],
+    radar: [{ url: "https://example.com/openai-search", title: "OpenAI launches Search for enterprise teams" }],
+    lancamento: [],
+    use_melhor: [],
+    video: [],
+  };
+  assert.equal(isIntraEditionDuplicate(input.radar[0] as never, input.highlights as never), null);
+  const { kept, removed } = dedupIntraEdition(input as never);
+  assert.equal(removed.length, 0);
+  assert.equal(kept.radar?.length, 1);
+  assert.match(String((kept.radar?.[0] as Record<string, unknown>).event_dedup_flagged), /#9295/);
 });
