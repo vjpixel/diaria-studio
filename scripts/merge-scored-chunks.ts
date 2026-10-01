@@ -43,6 +43,7 @@ import {
 } from "./split-articles-for-scoring.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { coverageBonus } from "./lib/coverage-bonus.ts"; // #3920
+import { isGuaranteedFrontierLaunch, pickFrontierLaunchFinalists } from "./lib/frontier-signals.ts"; // #9359
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -78,6 +79,11 @@ export interface Finalist {
 export interface MergeResult {
   all_scored: ScorePair[];
   finalists: Finalist[];
+  /**
+   * #9359: URLs acrescentadas aos finalistas ALÉM do top-N pela garantia de
+   * lançamento oficial de laboratório de fronteira (vazio na maioria dos dias).
+   */
+  frontier_launch_added: string[];
   pool_size: number;
   scored_count: number;
   missing_count: number; // pool_size - scored_count
@@ -231,6 +237,11 @@ export function mergeChunks(
     if (negativeImpact) {
       (article as { negative_impact?: boolean }).negative_impact = true;
     }
+    // #9359: post oficial de lançamento de modelo-carro-chefe de laboratório
+    // de fronteira — tag visível pro scorer-select (ver scorer-select.md).
+    if (isGuaranteedFrontierLaunch(article)) {
+      (article as { frontier_launch?: boolean }).frontier_launch = true;
+    }
     return {
       article,
       url: article.url,
@@ -254,13 +265,21 @@ export function mergeChunks(
     ...(e.bonusesApplied.length > 0 ? { bonuses_applied: e.bonusesApplied } : {}),
     ...(e.negativeImpact ? { negative_impact: true as const } : {}),
   }));
-  const finalists: Finalist[] = enriched.map(({ article, url, score, bucket }) => ({ article, url, score, bucket })).slice(0, Math.max(0, topN));
+  const toFinalist = ({ article, url, score, bucket }: (typeof enriched)[number]): Finalist => ({ article, url, score, bucket });
+  const finalists: Finalist[] = enriched.slice(0, Math.max(0, topN)).map(toFinalist);
+  // #9359: garantia de vaga nos FINALISTAS (não nos 6 — ver frontier-signals.ts
+  // pra medição que decidiu o nível) pro post oficial de lançamento de modelo
+  // de laboratório de fronteira que ficou abaixo do corte por score. Acrescenta,
+  // nunca desloca um finalista por mérito.
+  const frontierExtra = pickFrontierLaunchFinalists(enriched, topN);
+  finalists.push(...frontierExtra.map(toFinalist));
 
   const missing = pool.length - scoredCount;
 
   return {
     all_scored,
     finalists,
+    frontier_launch_added: frontierExtra.map((e) => e.url),
     pool_size: pool.length,
     scored_count: scoredCount,
     missing_count: missing,
@@ -326,6 +345,7 @@ export function main(): void {
       pool_size: result.pool_size,
       scored_count: result.scored_count,
       finalists_count: result.finalists.length,
+      ...(result.frontier_launch_added.length > 0 ? { frontier_launch_added: result.frontier_launch_added } : {}),
       missing_count: result.missing_count,
       failed_chunks: result.failed_chunks,
       incomplete: result.incomplete,

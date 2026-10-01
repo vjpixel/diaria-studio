@@ -87,6 +87,19 @@ const LAUNCH_KEYWORDS: RegExp[] = [
  */
 export const COMPANY_TO_DOMAIN = companyToDomain();
 
+/**
+ * #9359: 1º verbo de lançamento (`LAUNCH_KEYWORDS`) que casa no texto, ou
+ * `undefined`. Exposto pra `frontier-signals.ts` reusar o mesmo vocabulário
+ * (incluindo as travas de voz passiva/"chega a") em vez de duplicá-lo.
+ */
+export function hasLaunchVerb(text: string): string | undefined {
+  for (const re of LAUNCH_KEYWORDS) {
+    const m = text.match(re);
+    if (m) return m[0];
+  }
+  return undefined;
+}
+
 export interface LaunchCandidate {
   is_candidate: boolean;
   /** Verbo de lançamento detectado (primeira ocorrência). */
