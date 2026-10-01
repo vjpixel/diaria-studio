@@ -1137,26 +1137,10 @@
   <url>
     <loc>https://diar.ia.br/p/google-vai-colocar-data-centers-no-espaco</loc>
     <lastmod>2026-09-28</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-09-28T00:00:00.000Z</news:publication_date>
-      <news:title>Google vai colocar data centers no espaço?</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/openai-cancelou-treino-apos-agente-furar-a-rede</loc>
     <lastmod>2026-09-29</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-09-29T00:00:00.000Z</news:publication_date>
-      <news:title>OpenAI cancelou treino após agente furar a rede</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/openai-cancela-modelo-que-mentia-e-desobedecia</loc>
@@ -1168,6 +1152,18 @@
       </news:publication>
       <news:publication_date>2026-09-30T00:00:00.000Z</news:publication_date>
       <news:title>OpenAI cancela modelo que mentia e desobedecia</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/seu-proximo-modelo-de-codigo-pode-ser-o-argon</loc>
+    <lastmod>2026-10-01</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-01T00:00:00.000Z</news:publication_date>
+      <news:title>Seu próximo modelo de código pode ser o Argon?</news:title>
     </news:news>
   </url>
 </urlset>
