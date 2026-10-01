@@ -51,6 +51,7 @@ import {
   loadNewsletterBackend,
   type NewsletterBackend,
 } from "./lib/newsletter-backend.ts";
+import { captureStage2Baseline, type CaptureOutcome } from "./lib/editor-request-snapshots.ts";
 import {
   assertMarker,
   assertSentinel,
@@ -308,6 +309,24 @@ export function checkBackendOutputsForWrite(
   return { passed: wrongOutputs.length === 0, wrongOutputs, backend };
 }
 
+/**
+ * #9356: no write do sentinel do Stage 2, grava o baseline `stage2-post-gate`
+ * (saída da pipeline, antes de qualquer edição humana do Stage 4) — imutável:
+ * reexecução/retomada é no-op. Só no layout da diária (`02-reviewed.md`
+ * presente); o mensal usa o mesmo sentinel com outros arquivos. Nunca lança.
+ */
+export function captureEditorBaselineOnStage2Sentinel(editionDir: string): CaptureOutcome | "skipped" | "error" {
+  try {
+    if (!existsSync(resolve(editionDir, "02-reviewed.md"))) return "skipped";
+    const outcome = captureStage2Baseline(editionDir, "pipeline-sentinel-step-2");
+    if (outcome === "created") console.log(`baseline de correções do editor (stage2-post-gate) gravado (#9356)`);
+    return outcome;
+  } catch (e: unknown) {
+    console.warn(`[warn] falha ao gravar baseline stage2-post-gate (#9356): ${e instanceof Error ? e.message : String(e)}`);
+    return "error";
+  }
+}
+
 function main(): void {
   const [, , subcmd, ...rest] = process.argv;
   const args = parseCliArgs(rest).values;
@@ -402,6 +421,10 @@ function main(): void {
       if (autoUpdateStageStatusOnSentinel(editionDir, args.edition, step)) {
         console.log(`stage-status auto-updated: stage ${step} → done`);
       }
+      // #9356: baseline das correções do editor gravado MECANICAMENTE no
+      // fim do Stage 2 — o passo em prosa equivalente era pulado em 15 de 21
+      // edições. Fail-soft: falha aqui nunca derruba o sentinel.
+      if (step === 2) captureEditorBaselineOnStage2Sentinel(editionDir);
       break;
     }
 

@@ -573,7 +573,7 @@ Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, 
     ```bash
     npx tsx scripts/derive-editor-requests.ts snapshot-stage2 --edition {AAMMDD}
     ```
-    Exit code handling: `0` = snapshots criados; `!=0` = logar warn, não bloquear.
+    Exit code handling: `0` = snapshots criados; `!=0` = logar warn, não bloquear. **Desde o #9356 o `pipeline-sentinel.ts write --step 2` acima já grava esse baseline sozinho** (carimbado em `.capture.json`) — esta chamada é redundante e idempotente (no-op se já existe); mantida como cinto e suspensório. O baseline é imutável e precisa ser a SAÍDA DA PIPELINE: nunca recriá-lo depois que o editor mexeu nos arquivos.
 
   - **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 2 done via `update-stage-status.ts --stage 2 --status done --end ISO --duration-ms X`. Em seguida `npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 2` (#3441) — popula `cost_usd`/`tokens_in`/`tokens_out`/`models` reais a partir do transcript local da sessão; sem transcript local, sai sem escrever (fail-soft). Ler o JSON de stdout: se `"source":"unavailable"`, logar warn (mesmo padrão do sentinel acima — #5475): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'stage_usage_capture_unavailable' --details '{"reason":"<reason do stdout>"}'`. Não bloquear.
     `title_picker:?1` = só conta se foi disparado (destaques_picked > 0); senão 0.
