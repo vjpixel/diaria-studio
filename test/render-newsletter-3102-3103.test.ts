@@ -142,6 +142,12 @@ describe("#9236 — pódio suprime o link persistente duplicado", () => {
     assert.match(html, /Veja o ranking de quem mais acerta/);
   });
 
+  it("com pódio mas sem slug: link persistente continua (#1970)", () => {
+    const html = renderEIA({ ...baseEia, leaderboardPodium: [{ nickname: "Fulano", rank: 1 }] });
+    assert.doesNotMatch(html, /Veja o ranking completo/);
+    assert.match(html, /Veja o ranking de quem mais acerta/);
+  });
+
   it("sem pódio e sem slug: link persistente continua", () => {
     const html = renderEIA(baseEia);
     assert.match(html, /Veja o ranking de quem mais acerta/);

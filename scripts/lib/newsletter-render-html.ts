@@ -1512,7 +1512,7 @@ export function renderDestaque(d: RenderDestaque, whatsappShareHtml = "", esp: E
 
 export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   const creditHtml = processInlineLinks(eia.credit);
-  // Leaderboard (#1160): linha "🏆 Vencedores…" sans ink dentro do painel.
+  // Leaderboard (#1160, visual do #9236): pódio com medalhas dentro do painel.
   // #3103: 12px → 16px (não 14px — o type-scale do e-mail só permite
   // {12,16,22,26}px, cf. test/email-type-scale-white-shell.test.ts). Resultado
   // da última edição + CTA pro leaderboard são a mecânica central de
@@ -1525,7 +1525,10 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // #1970: link persistente pra leaderboard em TODA edição (pódio acima é 1ª-do-mês).
   // #9236: com pódio, o "Veja o ranking completo" do próprio pódio já cumpre o
   // papel — o link persistente duplicaria. Sem pódio (ou só convite), continua.
-  const leaderboardLinkRow = leaderboardRanked(eia).length > 0 ? "" : renderLeaderboardLinkRow(lbStyle);
+  // #9236: com pódio + slug, "Veja o ranking completo" substitui o link persistente;
+  // sem slug o pódio não tem link, então o persistente (#1970) continua.
+  const leaderboardLinkRow =
+    leaderboardRanked(eia).length > 0 && eia.leaderboardPeriodSlug ? "" : renderLeaderboardLinkRow(lbStyle);
   // #3578 (correção do #3524, feedback do editor 260716): esta função —
   // `renderEIA` — só é usada pelo pipeline DIÁRIO (o mensal tem sua própria
   // implementação, `monthly-render.ts::renderEia`, que nunca ganhou este
@@ -1682,20 +1685,6 @@ ${leaderboardLinkRow}
 </td></tr>`;
 }
 
-/**
- * Pure (#1160): renderiza linha do leaderboard no rodapé do È IA?.
- * Inclui leitores até o 3º lugar (dense rank) na mesma ordem do leaderboard
- * público. #1646: posições ordinais por acertos, sem percentual nem % de ranking.
- *
- * Formato:
- *   - 1 leader: "🏆 Vencedores de Maio: 1º Davyd Wilkerson"
- *   - 2 leitores: "🏆 Vencedores de Maio: 1º Davyd, 2º Luisao P"
- *   - 3+ leitores: "🏆 Vencedores de Maio: 1º Davyd, 2º Luisao P, 3º Vanessa"
- *   - Vazio (1ª edição do mês): convite linkado pra leaderboard do mês, ou ""
- *
- * Prefere `leaderboardPodium` (ranks 1-3); cai em `leaderboardTop1` (rank 1
- * only) pra compat com arquivos legacy.
- */
 /** Colocados do pódio (podium preferido, top1 legacy como fallback). Vazio = sem pódio. */
 export function leaderboardRanked(eia: EIA): { nickname: string; rank: number }[] {
   // Source: prefere podium (#1160 followup), cai em top1 legacy. Preserva o
@@ -1712,6 +1701,13 @@ export function leaderboardRanked(eia: EIA): { nickname: string; rank: number }[
         : []);
 }
 
+/**
+ * Pure (#1160, visual do #9236): pódio do É IA? no rodapé do painel —
+ * título serif "Os campeões do É IA? em {mês}:", uma linha por colocado
+ * (🥇/🥈/🥉; rank > 3 vira "Nº"; empates repetem a medalha) e, com slug,
+ * "Veja o ranking completo". Sem colocados: convite linkado pro ranking do
+ * mês, ou "" sem slug. Fonte: `leaderboardRanked`.
+ */
 export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): string {
   const ranked = leaderboardRanked(eia);
   // URL histórica permanente do mês (#1345). Linka o bloco quando o slug existe.
