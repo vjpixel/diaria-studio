@@ -17,9 +17,13 @@ import {
   claudeCliEnv,
   STAGE_PLAN,
 } from "../scripts/overnight/run-scheduled-edicao.ts";
-import { NO_BACKGROUND_DIRECTIVE } from "../scripts/lib/edition-stage-runner.ts";
+import { NO_BACKGROUND_DIRECTIVE, editionDirDirective } from "../scripts/lib/edition-stage-runner.ts";
 
 const AAMMDD = "260812";
+
+/** #9223: diretiva de diretório que todo prompt carrega (nested por default; `flat` = edição legada já em disco). */
+const dirNote = (root: string, flat = false) =>
+  editionDirDirective(join(root, "data", "editions", ...(flat ? [] : ["2608"]), AAMMDD), root);
 
 function makeRepoRoot(): string {
   const repoRootAbs = mkdtempSync(join(tmpdir(), "run-scheduled-edicao-test-"));
@@ -129,10 +133,10 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     // anterior sem nada quebrar — só este teste denuncia.
     assert.equal(prompts.length, STAGE_PLAN.length);
     assert.deepEqual(prompts, [
-      `/diaria-1-pesquisa 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
-      `/diaria-2-escrita 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
-      `/diaria-3-imagens 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
-      `/diaria-4-revisao 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
+      `/diaria-1-pesquisa 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE} ${dirNote(repoRootAbs)}`,
+      `/diaria-2-escrita 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE} ${dirNote(repoRootAbs)}`,
+      `/diaria-3-imagens 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE} ${dirNote(repoRootAbs)}`,
+      `/diaria-4-revisao 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE} ${dirNote(repoRootAbs)}`,
     ]);
 
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
@@ -177,7 +181,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     );
 
     assert.equal(code, 0);
-    assert.deepEqual(prompts, [`/diaria-3-imagens 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE}`, `/diaria-4-revisao 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE}`]);
+    assert.deepEqual(prompts, [`/diaria-3-imagens 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE} ${dirNote(repoRootAbs)}`, `/diaria-4-revisao 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE} ${dirNote(repoRootAbs)}`]);
   });
 
   it("edição JÁ EXISTE em disco mas com stages pendentes -> RETOMA, não pula (#5738)", () => {
@@ -201,7 +205,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     );
 
     assert.equal(code, 0);
-    assert.deepEqual(prompts, [`/diaria-3-imagens 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE}`, `/diaria-4-revisao 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE}`]);
+    assert.deepEqual(prompts, [`/diaria-3-imagens 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE} ${dirNote(repoRootAbs, true)}`, `/diaria-4-revisao 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE} ${dirNote(repoRootAbs, true)}`]);
   });
 
   it("todo prompt carrega --no-gates: sem isso o headless trava no gate (#5738)", () => {
@@ -274,7 +278,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     assert.equal(code, 7);
     // Sem o `break`, os stages 3 e 4 rodariam sobre o output ausente do 2 —
     // gerando lixo em disco que parece progresso legítimo na próxima retomada.
-    assert.deepEqual(prompts, [`/diaria-1-pesquisa 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE}`, `/diaria-2-escrita 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE}`]);
+    assert.deepEqual(prompts, [`/diaria-1-pesquisa 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE} ${dirNote(repoRootAbs)}`, `/diaria-2-escrita 260812 --no-gates ${NO_BACKGROUND_DIRECTIVE} ${dirNote(repoRootAbs)}`]);
 
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
     assert.match(scheduleLog, /FAIL\s+edition=260812 stage=2 exit=7/);
