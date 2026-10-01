@@ -16,6 +16,10 @@ import {
   mergeStalenessEntries,
   buildAlarmFindings,
   toAlarmFinding,
+  embeddedUpdatedAt,
+  applySinceFloor,
+  occurrenceKey,
+  type AudienceStalenessLogEntry,
   SNAPSHOT_SCAN_SINCE,
   DUPLICATE_ARCHIVE_ISSUE_TAG,
 } from "../scripts/lib/audience-profile-staleness-alarm.ts";
@@ -108,5 +112,72 @@ describe("selectRunLogFiles (#9232)", () => {
       new Set(files),
       new Set(["run-log.jsonl", "run-log-Zenbook.jsonl", "run-log-predator-safeBackup-0001.jsonl", "run-log-Neo-10.jsonl"]),
     );
+  });
+
+  it("respeita canonicalName não-default", () => {
+    const files = selectRunLogFiles(["exec-log.jsonl", "exec-log-Neo.jsonl", "run-log-Neo.jsonl"], "exec-log.jsonl");
+    assert.deepEqual(files, ["exec-log.jsonl", "exec-log-Neo.jsonl"]);
+  });
+});
+
+describe("ajustes do review (#9232)", () => {
+  const prof = (updatedAt: string, body = "corpo") => `**updated_at:** ${updatedAt}\n${body}`;
+  const logEntry = (todayFile?: string): AudienceStalenessLogEntry => ({
+    timestamp: "2026-09-22T19:00:00.000Z",
+    agent: "update-audience",
+    level: "warn",
+    message: "",
+    details: todayFile ? { today_file: todayFile, issue: "#4366" } : { issue: "#4366" },
+  });
+
+  it("rerun no mesmo dia (prev já tem updated_at = data de prev) NÃO é falha de regeneração", () => {
+    const out = findDuplicateSnapshotEntries(
+      [snap("2026-09-20.md", prof("2026-09-20")), snap("2026-09-22.md", prof("2026-09-20"))],
+      "2026-09-15.md",
+    );
+    assert.equal(out.length, 0);
+  });
+
+  it("falha real (updated_at anterior à data de prev) continua disparando", () => {
+    const out = findDuplicateSnapshotEntries(
+      [snap("2026-09-20.md", prof("2026-09-18")), snap("2026-09-22.md", prof("2026-09-18"))],
+      "2026-09-15.md",
+    );
+    assert.equal(out.length, 1);
+  });
+
+  it("embeddedUpdatedAt extrai a data ou devolve null", () => {
+    assert.equal(embeddedUpdatedAt(prof("2026-09-10")), "2026-09-10");
+    assert.equal(embeddedUpdatedAt("sem cabeçalho"), null);
+  });
+
+  it("borda do piso: par cujo mais novo é exatamente SNAPSHOT_SCAN_SINCE entra", () => {
+    const out = findDuplicateSnapshotEntries([snap("2026-09-14.md", "A"), snap(SNAPSHOT_SCAN_SINCE, "A")]);
+    assert.equal(out.length, 1);
+  });
+
+  it("finding derivado de snapshot não inventa timestamp de disparo e cita a fonte", () => {
+    const [e] = findDuplicateSnapshotEntries([snap("2026-09-20.md", "A"), snap("2026-09-21.md", "A")], "2026-09-15.md");
+    const f = toAlarmFinding(e);
+    assert.doesNotMatch(f.body, /Timestamp do disparo/);
+    assert.match(f.body, /comparação de snapshots/);
+  });
+
+  it("finding do run-log mantém o timestamp de disparo", () => {
+    assert.match(toAlarmFinding(logEntry("2026-09-22.md")).body, /Timestamp do disparo: 2026-09-22T19:00:00\.000Z/);
+  });
+
+  it("applySinceFloor corta entradas pré-piso (cópias de conflito não reabrem o #8148)", () => {
+    const kept = applySinceFloor([logEntry("2026-09-14.md"), logEntry("2026-09-22.md")]);
+    assert.deepEqual(kept.map((e) => e.details?.today_file), ["2026-09-22.md"]);
+  });
+
+  it("occurrenceKey normaliza o fallback de timestamp para YYYY-MM-DD.md (dedup casa com snapshot)", () => {
+    assert.equal(occurrenceKey(logEntry()), "2026-09-22.md");
+    const merged = mergeStalenessEntries(
+      [logEntry()],
+      findDuplicateSnapshotEntries([snap("2026-09-20.md", "A"), snap("2026-09-22.md", "A")], "2026-09-15.md"),
+    );
+    assert.equal(merged.length, 1);
   });
 });

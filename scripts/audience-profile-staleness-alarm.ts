@@ -43,7 +43,10 @@ import {
   selectRunLogFiles,
   mergeStalenessEntries,
   buildAlarmFindings,
+  DUPLICATE_ARCHIVE_ISSUE_TAG,
   SNAPSHOT_SCAN_SINCE,
+  SNAPSHOT_FILE_RE,
+  applySinceFloor,
   type AudienceStalenessLogEntry,
   type SnapshotFile,
 } from "./lib/audience-profile-staleness-alarm.ts";
@@ -69,9 +72,17 @@ function readRunLogEntries(logPath: string): { entries: AudienceStalenessLogEntr
   const dir = dirname(logPath);
   if (!existsSync(dir)) return { entries: [], filesRead: 0 };
   const files = selectRunLogFiles(readdirSync(dir), basename(logPath));
+  const canonical = basename(logPath);
   const perFile = files.map((f) => {
     try {
-      return findDuplicateArchiveEntries(readFileSync(resolve(dir, f), "utf8").split("\n"));
+      // Pré-filtro barato: ~160 MB somados nas cópias; só linhas que citam o
+      // tag passam pelo JSON.parse (o match continua estrutural).
+      const lines = readFileSync(resolve(dir, f), "utf8")
+        .split("\n")
+        .filter((l) => l.includes(DUPLICATE_ARCHIVE_ISSUE_TAG));
+      const entries = findDuplicateArchiveEntries(lines);
+      // Piso só nas cópias de conflito (fonte nova); canônico preserva o #8166.
+      return f === canonical ? entries : applySinceFloor(entries);
     } catch (err) {
       console.warn(`${LOG_PREFIX} falha lendo ${f}: ${(err as Error).message}`);
       return [];
@@ -83,8 +94,10 @@ function readRunLogEntries(logPath: string): { entries: AudienceStalenessLogEntr
 /** I/O: snapshots arquivados em `docs/audience-history/` (versionados, nao dependem do run-log ter sobrevivido — #9232). */
 function readSnapshotFiles(historyDir: string): SnapshotFile[] {
   if (!existsSync(historyDir)) return [];
+  // Sem try/catch de propósito: snapshot ilegível derruba o alarme (fail-loud),
+  // em vez de reportar "nenhuma ocorrência" com uma fonte pela metade.
   return readdirSync(historyDir)
-    .filter((name) => /^\d{4}-\d{2}-\d{2}\.md$/.test(name))
+    .filter((name) => SNAPSHOT_FILE_RE.test(name))
     .map((name) => ({ name, content: readFileSync(resolve(historyDir, name), "utf8") }));
 }
 
