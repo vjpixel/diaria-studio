@@ -740,3 +740,23 @@ describe("useMelhorPrecedenceWarning", () => {
     assert.equal(useMelhorPrecedenceWarning(undefined, undefined), undefined);
   });
 });
+
+describe("parseEdition — links de rodapé/hub próprios (#9305)", () => {
+  const md = [
+    "**📰 OUTRAS NOTÍCIAS**",
+    "",
+    "[**Notícia Y**](https://news.com/y?utm_source=diaria)  ",
+    "Resumo da notícia Y.",
+    "",
+    "[Edições anteriores](https://arquivo.diar.ia.br/?utm_campaign=arquivo-rodape)",
+    "[Tudo sobre OpenAI e ChatGPT](https://arquivo.diar.ia.br/temas/openai-chatgpt)",
+    "[Jogar](https://eia.diar.ia.br/?utm_campaign=jogar-rodape)",
+    "[Hub externo](https://outro.com/hub?utm_campaign=hub-openai-contextual)",
+    "",
+  ].join("\n");
+
+  it("só a notícia real sobrevive", () => {
+    const items = parseEdition("260901", md);
+    assert.deepEqual(items.map((i) => i.baseUrl), ["https://news.com/y"]);
+  });
+});
