@@ -33,6 +33,7 @@ import {
   checkImageRenderProbe,
   checkOptionalSectionIntegrity,
   checkFooterLabels,
+  checkMonthlySendingCredit,
   REQUIRED_SECTION_CHECKS,
 } from "../scripts/lint-monthly-draft.ts";
 
@@ -540,5 +541,41 @@ describe("checkFooterLabels (#6881 item 4)", () => {
     const r = checkFooterLabels(draft);
     assert.equal(r.ok, false);
     assert.deepEqual(r.missing, ["Da diar.ia.br:"]);
+  });
+});
+
+// #9307: regressão do ciclo 2609-10 — o PARA ENCERRAR do mensal saiu com o
+// crédito herdado da diária ("enviei via Beehiiv" + link de afiliado), mas o
+// mensal é enviado pela Brevo.
+describe("checkMonthlySendingCredit (#9307)", () => {
+  const ferramentas = (credito: string) =>
+    `Nesta edição da **diar.ia.br**, usei Claude Code (...). A revisão foi feita pelo MCP da Clarice, dei o toque final e ${credito}.`;
+  const draftCom = (encerrar: string, extra = "") =>
+    ["**ASSUNTO**", "S", "**RADAR**", "", extra || "- [Item](https://x.example)", "", "**PARA ENCERRAR**", "", encerrar, ""].join("\n");
+
+  it("reproduz o ciclo 2609-10: crédito Beehiiv com link de afiliado no PARA ENCERRAR → falha, aponta o trecho", () => {
+    const r = checkMonthlySendingCredit(
+      draftCom(ferramentas("enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria))")),
+    );
+    assert.equal(r.ok, false);
+    assert.equal(r.offending.length, 1);
+    assert.match(r.offending[0], /enviei via Beehiiv/);
+  });
+
+  it("crédito correto 'enviei via Brevo' (sem link) → ok", () => {
+    const r = checkMonthlySendingCredit(draftCom(ferramentas("enviei via Brevo")));
+    assert.equal(r.ok, true, `offending: ${r.offending.join(" | ")}`);
+  });
+
+  it("Beehiiv citada como NOTÍCIA fora do PARA ENCERRAR não é resíduo", () => {
+    const r = checkMonthlySendingCredit(
+      draftCom(ferramentas("enviei via Brevo"), "- [Beehiiv lança recurso X](https://www.beehiiv.com/blog/x)"),
+    );
+    assert.equal(r.ok, true);
+  });
+
+  it("sem seção PARA ENCERRAR: não é responsabilidade deste check", () => {
+    const r = checkMonthlySendingCredit(["**ASSUNTO**", "S"].join("\n"));
+    assert.equal(r.ok, true);
   });
 });

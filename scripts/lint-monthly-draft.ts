@@ -50,6 +50,7 @@ import {
 } from "./lib/mensal/monthly-paths.ts";
 import { splitByLabels, normalizeLabel, draftToEmail } from "./lib/mensal/monthly-render.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { RESIDUO_BEEHIIV_RE, CREDITO_BREVO_MENSAL } from "./lib/shared/sending-platform-credit.ts";
 
 const LIMITS: Record<string, number> = { D1: 1500, D2: 1200, D3: 1200 };
 
@@ -203,6 +204,41 @@ export function checkFooterLabels(draft: string): FooterLabelsCheckResult {
   return { ok: missing.length === 0, missing };
 }
 
+// ─── Crédito de envio do rodapé (Brevo, não Beehiiv) — #9307 ───────────────
+
+export interface MonthlySendingCreditResult {
+  ok: boolean;
+  /** Trecho (linha) do PARA ENCERRAR que ainda cita a Beehiiv. */
+  offending: string[];
+}
+
+/**
+ * #9307: o snippet de encerramento é compartilhado com a diária e credita
+ * "enviei via Beehiiv ([oferta](link de afiliado))". O digest mensal sai
+ * pela Brevo — o `writer-monthly` precisa trocar o crédito por
+ * `CREDITO_BREVO_MENSAL` ("enviei via Brevo", sem link). No ciclo 2609-10 o
+ * draft saiu com o texto da Beehiiv e foi corrigido à mão; este check torna o
+ * desvio FATAL (mesmo critério do `checkFooterLabels` acima: o reminder em
+ * prosa sozinho não segura o writer).
+ *
+ * Escopo: só a seção PARA ENCERRAR — um item de Radar/destaque pode citar a
+ * Beehiiv legitimamente como notícia. Qualquer menção à Beehiiv no rodapé é
+ * resíduo (o rodapé mensal não tem outra razão para citá-la).
+ */
+export function checkMonthlySendingCredit(draft: string): MonthlySendingCreditResult {
+  const sections = splitByLabels(draft);
+  const encerrar = sections.find((s) => {
+    const firstLine = normalizeLabel(s.split("\n")[0] ?? "");
+    return /^(ENCERRAMENTO|PARA\s+ENCERRAR)$/i.test(firstLine);
+  });
+  if (!encerrar) return { ok: true, offending: [] };
+  const offending = encerrar
+    .split("\n")
+    .filter((l) => RESIDUO_BEEHIIV_RE.test(l))
+    .map((l) => l.trim());
+  return { ok: offending.length === 0, offending };
+}
+
 export interface ImageRenderProbeResult {
   ok: boolean;
   imgCount: number;
@@ -285,6 +321,7 @@ function main(): void {
   const optionalSectionCheck = checkOptionalSectionIntegrity(text);
   const imageCheck = checkImageRenderProbe(text, yymm);
   const footerLabelsCheck = checkFooterLabels(text);
+  const sendingCreditCheck = checkMonthlySendingCredit(text);
   let hasFatal = false;
 
   if (!sectionCheck.ok) {
@@ -317,6 +354,14 @@ function main(): void {
       `${footerLabelsCheck.missing.join(", ")} — cada rótulo precisa ficar na linha imediatamente ` +
       "anterior à sua lista `- [texto](url)`, sem linha em branco entre os dois. Sem isso o render " +
       "cai no fallback genérico 'Acesse nossas curadorias:'. Ver #6881.",
+    );
+  }
+  if (!sendingCreditCheck.ok) {
+    hasFatal = true;
+    console.error(
+      `[lint-monthly] FATAL: PARA ENCERRAR ainda credita a Beehiiv — o digest mensal sai pela Brevo. ` +
+      `Trocar o crédito de envio por "${CREDITO_BREVO_MENSAL}" (sem link de afiliado). Trecho(s): ` +
+      `${sendingCreditCheck.offending.map((l) => JSON.stringify(l.slice(0, 160))).join(" | ")}. Ver #9307.`,
     );
   }
   if (hasFatal) {

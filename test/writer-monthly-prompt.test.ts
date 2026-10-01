@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CREDITO_BREVO_MENSAL } from "../scripts/lib/shared/sending-platform-credit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WRITER_MONTHLY_MD = resolve(ROOT, ".claude/agents/writer-monthly.md");
@@ -181,5 +182,20 @@ describe("SKILL.md (mensal) — Etapa 2 resolve a seleção do É IA? cedo (#290
       /03-eia-selection\.json/,
       "SKILL.md não deve mais referenciar 03-eia-selection.json — renomeado pra 02- (produzido na Etapa 2, #2904)",
     );
+  });
+});
+
+describe("writer-monthly.md — crédito de envio é Brevo, não Beehiiv (#9307)", () => {
+  it("prompt instrui trocar o crédito do snippet pela constante CREDITO_BREVO_MENSAL, sem link", () => {
+    const md = readFileSync(WRITER_MONTHLY_MD, "utf8");
+    assert.ok(md.includes(`\`${CREDITO_BREVO_MENSAL}\``), `prompt deveria citar literalmente \`${CREDITO_BREVO_MENSAL}\``);
+    assert.match(md, /#9307/);
+    assert.match(md, /SEM link de afiliado/);
+  });
+
+  it("template mensal não lista mais a Beehiiv entre as ferramentas do rodapé", () => {
+    const tpl = readFileSync(resolve(ROOT, "context/templates/newsletter-monthly.md"), "utf8");
+    assert.doesNotMatch(tpl, /Clarice, Beehiiv\)/);
+    assert.ok(tpl.includes(`"${CREDITO_BREVO_MENSAL}"`), "template deveria citar o crédito Brevo");
   });
 });

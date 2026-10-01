@@ -18,7 +18,7 @@ import { COLORS, FONTS } from "../shared/design-tokens.ts"; // #1936
 export { escHtml } from "../html-escape.ts"; // #1990: re-export for back-compat callers
 import { escHtml } from "../html-escape.ts"; // #1990: local usage
 import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper (refs #2048)
-import { applyBrandWordmark } from "../shared/brand-wordmark.ts"; // wordmark diar.ia.br, mesmo da diária (#3181) — movido pra shared/ no #4797 (extraído de newsletter-render-html.ts, que agora só re-exporta por back-compat)
+import { applyBrandWordmark, breakBrandDomainAutolink } from "../shared/brand-wordmark.ts"; // wordmark diar.ia.br, mesmo da diária (#3181) — movido pra shared/ no #4797 (extraído de newsletter-render-html.ts, que agora só re-exporta por back-compat)
 import { tealDot } from "../shared/email-components.ts"; // #3269 — extraído de newsletter-render-html.ts pra shared/ (era o mesmo import cruzado ad-hoc do applyBrandWordmark acima; ponto ● teal, #3181)
 import { isUnpairedBoldMarker, scanBalancedParenClose } from "../shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, antes duplicado aqui
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
@@ -1020,7 +1020,7 @@ export function renderEncerramento(body: string): string {
   for (const p of head) parts.push(`<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p)}</p>`);
   for (const group of pillGroups) {
     parts.push(
-      `<p style="margin:16px 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">${escHtml(group.label)}</p>`,
+      `<p style="margin:16px 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">${breakBrandDomainAutolink(escHtml(group.label))}</p>`,
     );
     // #2139: centralizar via table align="center" + margin:0 auto (Outlook word-renderer
     // ignora align= em <table> — margin:auto garante centralização no Outlook 2007–2019).

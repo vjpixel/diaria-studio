@@ -589,20 +589,32 @@ charset mismatch (latin1 vs UTF-8) no template.
 
 O invariante `kit-html-too-large` (Stage 4) mede só o HTML local; o ESP
 (Kit/Beehiiv) acrescenta wrapper, parte texto e pixel no fim. Medir o que o
-Gmail recebeu: passar o `sizeEstimate` da mensagem de teste (campo do
-`get_thread`) quando disponível — sem ele, o script cai no tamanho do dump.
+Gmail recebeu. O corte do Gmail (~102 KB) vale para a **parte HTML**; o
+`sizeEstimate` do `get_thread` mede a mensagem MIME inteira (text/plain,
+headers, inflação de quoted-printable/base64) e por isso é só um TETO (#9311).
+Passar `--html-bytes` com o tamanho da parte `text/html` quando o payload do
+`get_thread` expuser as partes MIME (ex.: `body.size` da parte
+`mimeType: text/html`); senão, só `--size-estimate`. Omitir a flag inteira
+quando o valor não existir (nunca passar flag com valor vazio).
 
 ```bash
 npx tsx scripts/lint-test-email-size.ts \
-  --size-estimate {sizeEstimate_da_mensagem_ou_vazio} \
+  [--html-bytes {tamanho_da_parte_text_html}] \
+  [--size-estimate {sizeEstimate_da_mensagem}] \
   --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
   --local-html {edition_dir}/_internal/newsletter-final-kit.html \
   --out {edition_dir}/_internal/lint-size-{AAMMDD}.json
-# Exit 0 = dentro do corte de 102 KB. Exit 1 = acima (Gmail vai cortar) — NÃO é erro do script: ler o JSON do --out e seguir.
+# Exit 0 = dentro do corte, só "pode cortar" (sizeEstimate acima, parte HTML não medida) ou sem medida.
+# Exit 1 = parte HTML (ou dump) acima do corte — NÃO é erro do script: ler o JSON do --out e seguir.
 ```
 
-Mapear `issues[]`:
-- `category:delivered_size_over_clip` → `"email:delivered_size_over_clip: {detail}"` (aparece no gate 6; cortar conteúdo é decisão do editor)
+Mapear `issues[]` — **TODOS com prefixo `info:`, nunca `email:`** (#9311).
+`email:` é blocker e despacharia o fix loop do Stage 5 (`publish-newsletter`
+em modo fix) com um problema que ele não pode resolver: cortar conteúdo é
+decisão editorial, e um re-paste não muda o tamanho. O achado aparece no
+gate 6 para o editor decidir:
+- `category:delivered_size_over_clip` → `"info:delivered_size_over_clip: {detail}"`
+- `category:delivered_size_may_clip` → `"info:delivered_size_may_clip: {detail}"`
 - `category:delivered_size_unmeasured` → `"info:delivered_size_unmeasured"`
 
 ### 3b. Image freshness via lint determinístico (#1212)

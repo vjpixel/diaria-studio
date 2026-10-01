@@ -71,6 +71,7 @@ import { buildParaEncerrar as buildParaEncerrarReal, type ParaEncerrarConfig } f
 import { renderEncerrar } from "../scripts/lib/newsletter-render-html.ts";
 import { renderEncerramento } from "../scripts/lib/mensal/monthly-render.ts";
 import { extractTemplateBlock } from "../scripts/lib/newsletter-parse.ts";
+import { breakBrandDomainAutolink } from "../scripts/lib/shared/brand-wordmark.ts";
 import {
   DIARIA_LINKEDIN_PAGE_URL,
   DIARIA_FACEBOOK_PAGE_URL,
@@ -79,6 +80,9 @@ import {
   DIARIA_X_URL,
   DIARIA_APOIASE_URL,
 } from "../scripts/lib/canonical-urls.ts";
+
+/** #9329: rótulo "Da diar.ia.br:" como sai no HTML — ZWNJ antes de cada ponto quebra o autolink de domínio do Gmail. */
+const DA_DIARIA_LABEL_HTML = "Da diar&#8204;.ia&#8204;.br:";
 
 const ROOT = join(import.meta.dirname ?? new URL(".", import.meta.url).pathname, "..");
 const WRITER_MONTHLY_MD = join(ROOT, ".claude", "agents", "writer-monthly.md");
@@ -542,12 +546,12 @@ describe("#4968 — DUAS listas rotuladas na mesma seção (regressão do bug de
     const html = renderEncerrar(CURADORIA_PILLS);
     // Cada label aparece exatamente 1x.
     assert.equal((html.match(/Curadorias:/g) ?? []).length, 1, "'Curadorias:' deveria aparecer exatamente 1x");
-    assert.equal((html.match(/Da diar\.ia\.br:/g) ?? []).length, 1, "'Da diar.ia.br:' deveria aparecer exatamente 1x");
+    assert.equal((html.match(/Da diar&#8204;\.ia&#8204;\.br:/g) ?? []).length, 1, "'Da diar.ia.br:' deveria aparecer exatamente 1x");
     // O fallback genérico NUNCA aparece — as 2 listas têm label próprio.
     assert.doesNotMatch(html, /Acesse nossas curadorias:/, "fallback não deveria aparecer quando ambos os grupos têm label embutido");
     // 'Curadorias:' precede Cursos/Livros/Equipamentos; 'Da diar.ia.br:' precede Edições anteriores/Jogar É IA?.
     const idxCuradorias = html.indexOf("Curadorias:");
-    const idxDa = html.indexOf("Da diar.ia.br:");
+    const idxDa = html.indexOf(DA_DIARIA_LABEL_HTML);
     const idxCursosHref = html.indexOf("cursos.diar.ia.br");
     const idxEdicoesHref = html.indexOf("arquivo.diar.ia.br");
     assert.ok(idxCuradorias < idxCursosHref && idxCursosHref < idxDa, "'Curadorias:' deveria preceder a pill Cursos e vir antes de 'Da diar.ia.br:'");
@@ -559,10 +563,10 @@ describe("#4968 — DUAS listas rotuladas na mesma seção (regressão do bug de
   it("mensal (renderEncerramento): cada grupo de pills emite SEU PRÓPRIO label, uma única vez cada — guard de duplicação não remove o 2º label legítimo", () => {
     const html = renderEncerramento(CURADORIA_PILLS);
     assert.equal((html.match(/Curadorias:/g) ?? []).length, 1, "'Curadorias:' deveria aparecer exatamente 1x");
-    assert.equal((html.match(/Da diar\.ia\.br:/g) ?? []).length, 1, "'Da diar.ia.br:' deveria aparecer exatamente 1x");
+    assert.equal((html.match(/Da diar&#8204;\.ia&#8204;\.br:/g) ?? []).length, 1, "'Da diar.ia.br:' deveria aparecer exatamente 1x");
     assert.doesNotMatch(html, /Acesse nossas curadorias:/, "fallback não deveria aparecer quando ambos os grupos têm label embutido");
     const idxCuradorias = html.indexOf("Curadorias:");
-    const idxDa = html.indexOf("Da diar.ia.br:");
+    const idxDa = html.indexOf(DA_DIARIA_LABEL_HTML);
     assert.ok(idxCuradorias >= 0 && idxDa > idxCuradorias, "'Curadorias:' deveria vir antes de 'Da diar.ia.br:'");
   });
 
@@ -620,5 +624,31 @@ describe("buildParaEncerrar — slot A usa o snippet inteiro, qualquer forma (#4
       assert.match(out, /usei Claude Code para automatizar parte da pesquisa/, "cai no fallback hardcoded de ferramentas");
       assert.ok(out.includes(SOCIAL_INVITE), "convite social continua presente mesmo com slotA no fallback genérico");
     });
+  });
+});
+
+describe("#9329 — rótulo 'Da diar.ia.br:' não vira autolink de domínio no Gmail", () => {
+  for (const [nome, render] of [
+    ["diário (renderEncerrar)", renderEncerrar],
+    ["mensal (renderEncerramento)", renderEncerramento],
+  ] as const) {
+    it(`${nome}: rótulo sai com ZWNJ entre os pontos, sem o domínio cru e sem <a> envolvendo`, () => {
+      const html = render(CURADORIA_PILLS);
+      assert.ok(html.includes(DA_DIARIA_LABEL_HTML), "rótulo deveria sair como 'Da diar&#8204;.ia&#8204;.br:'");
+      assert.doesNotMatch(html, /Da diar\.ia\.br:/, "domínio cru no rótulo é o que o Gmail transforma em link");
+      // O rótulo é um <p> de texto liso — nenhum <a> abre imediatamente antes dele.
+      assert.doesNotMatch(html, /<a\b[^>]*>\s*Da diar/, "rótulo não deveria estar dentro de <a>");
+      // Hrefs das pills (que CONTÊM diar.ia.br) continuam intactos.
+      assert.match(html, /href="https:\/\/arquivo\.diar\.ia\.br\?utm_source=/);
+    });
+  }
+
+  it("breakBrandDomainAutolink: só toca o domínio em texto, nunca URL/subdomínio/e-mail; idempotente", () => {
+    assert.equal(breakBrandDomainAutolink("Da diar.ia.br:"), DA_DIARIA_LABEL_HTML);
+    assert.equal(breakBrandDomainAutolink("DA DIAR.IA.BR:"), "DA DIAR&#8204;.IA&#8204;.BR:");
+    for (const intacto of ["https://diar.ia.br/p", "arquivo.diar.ia.br", "eu@diar.ia.br", "diar.ia", "diaria"]) {
+      assert.equal(breakBrandDomainAutolink(intacto), intacto, `não deveria tocar ${intacto}`);
+    }
+    assert.equal(breakBrandDomainAutolink(DA_DIARIA_LABEL_HTML), DA_DIARIA_LABEL_HTML, "re-aplicar não pode duplicar o ZWNJ");
   });
 });

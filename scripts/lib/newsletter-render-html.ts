@@ -10,7 +10,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { escHtml as esc } from "./html-escape.ts"; // #1990
 import { COLORS, FONTS, LAYOUT } from "./shared/design-tokens.ts"; // #1936; LAYOUT #5176
-import { applyBrandWordmark } from "./shared/brand-wordmark.ts"; // #4797 — extraído daqui, re-exportado abaixo (back-compat)
+import { applyBrandWordmark, breakBrandDomainAutolink } from "./shared/brand-wordmark.ts"; // #4797 — extraído daqui, re-exportado abaixo (back-compat)
 import { buildDiariaStyleBlock, buildDarkCanvasStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado; #3104 — dark mode (fullDocument-only)
 import { tealDot } from "./shared/email-components.ts"; // #3269 — 1º componente extraído pra shared/; re-exportado abaixo (back-compat: monthly-render.ts e outros importavam daqui)
 import { isUnpairedBoldMarker, scanBalancedParenClose } from "./shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, extraído daqui
@@ -2399,7 +2399,7 @@ export function renderEncerrar(text: string, conviteAmigoHtml: string | null = n
           : `<span style="${pillStyle}">${mdInlineToHtml(c)}</span>`;
       }).join("");
       // Pills numa única <td> permitem wrap natural — não forçamos nowrap.
-      return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">${esc(ulLabels.get(idx)!)}</p>
+      return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">${breakBrandDomainAutolink(esc(ulLabels.get(idx)!))}</p>
   <table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td>${pills}</td></tr></table>`;
     }
     return bodyP("22px 0 0", mdInlineToHtml(b.content.join(" ")));
