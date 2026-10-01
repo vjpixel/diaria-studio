@@ -58,10 +58,13 @@ describe("file-lock — delete-pending no Windows (#9194)", () => {
     const t0 = Date.now();
     assert.throws(
       () => acquireLockWithDeps(lock, 60_000, { platform: "win32", openWx: fake.openWx }),
-      (e: NodeJS.ErrnoException) => e.code === "EPERM",
+      (e: NodeJS.ErrnoException) =>
+        e.code === "EPERM" &&
+        /EPERM persistiu por \d+ tentativas seguidas em .*b\.lock — não é delete-pending \(#9194\)/.test(e.message) &&
+        (e.cause as NodeJS.ErrnoException)?.code === "EPERM",
     );
     assert.equal(fake.calls, DELETE_PENDING_MAX_STREAK + 1);
-    assert.ok(Date.now() - t0 < 10_000, "não pode esperar o timeout de 60s");
+    assert.ok(Date.now() - t0 < 3_000, "não pode esperar o timeout de 60s");
   });
 
   it("win32: exatamente DELETE_PENDING_MAX_STREAK EPERMs seguidos ainda adquire (limite inclusivo)", () => {

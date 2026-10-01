@@ -230,7 +230,8 @@ function sleepMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-interface AcquireDeps {
+/** @internal Dependências injetáveis de `acquireLockWithDeps` (seam de teste, #9194). */
+export interface AcquireDeps {
   platform: NodeJS.Platform;
   openWx: (lockPath: string) => number;
 }
@@ -238,14 +239,23 @@ interface AcquireDeps {
 /**
  * Adquire o lock — spin-wait com timeout. `wx` (O_WRONLY | O_CREAT | O_EXCL)
  * falha se o arquivo já existe, então só um caller por vez consegue criar o
- * `.lock` — os demais tentam de novo a cada 50ms até o dono liberar
- * (`releaseLock`) ou o timeout estourar.
+ * `.lock` — os demais tentam de novo a cada 50ms (em `EEXIST`) até o dono
+ * liberar (`releaseLock`) ou o timeout estourar.
+ *
+ * No win32, `EPERM`/`EACCES` do `wx` (delete-pending, #9194) também é
+ * retentado, até `DELETE_PENDING_MAX_STREAK` vezes seguidas a cada 5ms
+ * (~20×5ms nominal; na prática ~300ms, pela resolução de timer ~15,6ms do
+ * Windows). Esgotada a sequência, lança com o mesmo `code` e o erro
+ * original em `cause`. Qualquer outro erro propaga imediatamente (#6952).
  */
 export function acquireLock(lockPath: string, timeoutMs = 10_000): void {
   acquireLockWithDeps(lockPath, timeoutMs, { platform: process.platform, openWx: (p) => openSync(p, "wx") });
 }
 
-/** Seam de teste (#9194): injeta plataforma e o `open(wx)`. Não usar fora de teste. */
+/**
+ * @internal Seam de teste (#9194): injeta plataforma e o `open(wx)`.
+ * Não usar fora de teste — produção chama `acquireLock`.
+ */
 export function acquireLockWithDeps(lockPath: string, timeoutMs: number, deps: AcquireDeps): void {
   const deadline = Date.now() + timeoutMs;
   let pendingStreak = 0;
@@ -271,8 +281,10 @@ export function acquireLockWithDeps(lockPath: string, timeoutMs: number, deps: A
       }
       return; // Lock adquirido
     } catch (e) {
-      // #6952: só `EEXIST` é CONTENÇÃO — o resto propaga imediatamente
-      // (exceto EPERM/EACCES no win32, numa sequência curta — delete-pending, #9194).
+      // #6952: só `EEXIST` é CONTENÇÃO, exceto delete-pending no win32 (#9194:
+      // EPERM/EACCES numa sequência curta) — o resto propaga imediatamente.
+      // O espelho dos hooks (`.claude/hooks/lib/registry-lock.mjs`) ainda NÃO
+      // tem a exceção do #9194 e diverge neste ponto (#9280).
       //
       // O catch era vazio e engolia qualquer erro como "alguém tem o lock,
       // gira mais": `EACCES` (diretório sem permissão de escrita), `ENOENT`
@@ -292,9 +304,21 @@ export function acquireLockWithDeps(lockPath: string, timeoutMs: number, deps: A
       const code = (e as NodeJS.ErrnoException)?.code;
       if (code !== "EEXIST") {
         // #9194: delete-pending no Windows — retenta, mas só numa sequência curta.
-        if (isDeletePendingWxError(code, deps.platform) && ++pendingStreak <= DELETE_PENDING_MAX_STREAK && Date.now() < deadline) {
-          sleepMs(DELETE_PENDING_WAIT_MS);
-          continue;
+        if (isDeletePendingWxError(code, deps.platform)) {
+          if (++pendingStreak <= DELETE_PENDING_MAX_STREAK && Date.now() < deadline) {
+            sleepMs(DELETE_PENDING_WAIT_MS);
+            continue;
+          }
+          if (pendingStreak > DELETE_PENDING_MAX_STREAK) {
+            // Sequência esgotada: não é delete-pending, é permissão real.
+            throw Object.assign(
+              new Error(
+                `[file-lock] ${code} persistiu por ${pendingStreak} tentativas seguidas em ${lockPath} — não é delete-pending (#9194)`,
+                { cause: e },
+              ),
+              { code },
+            );
+          }
         }
         throw e;
       }
