@@ -113,7 +113,7 @@
 // rationale. Keep the two in sync by hand; each side has its own test file.
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -221,17 +221,52 @@ export function isOvernightRoundActive(
   callerSessionId = undefined,
 ) {
   try {
-    const markerPath = activeSessionPath(repoRoot, machineTag);
-    if (!existsSync(markerPath)) return false;
-    const marker = JSON.parse(readFileSync(markerPath, "utf8"));
-    const startedAtMs = Date.parse(marker.started_at);
-    if (!Number.isFinite(startedAtMs)) return false;
-    const ageMs = now - startedAtMs;
-    if (!(ageMs >= 0 && ageMs <= MAX_SESSION_AGE_MS)) return false;
-    if (marker.session_id === undefined || marker.session_id === null) return true;
-    return callerSessionId === marker.session_id;
+    return listActiveMarkerPaths(repoRoot, machineTag).some((markerPath) => {
+      try {
+        const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+        const startedAtMs = Date.parse(marker.started_at);
+        if (!Number.isFinite(startedAtMs)) return false;
+        const ageMs = now - startedAtMs;
+        if (!(ageMs >= 0 && ageMs <= MAX_SESSION_AGE_MS)) return false;
+        if (marker.session_id === undefined || marker.session_id === null) return true;
+        return callerSessionId === marker.session_id;
+      } catch {
+        return false;
+      }
+    });
   } catch {
     return false;
+  }
+}
+
+/**
+ * (#9347) Paths de TODOS os markers overnight desta máquina — o legado
+ * `.active-session-{tag}.json` + cada por-sessão `.active-session-{tag}.{sessionId}.json`.
+ * Duas rodadas simultâneas na mesma máquina gravam arquivos distintos desde o
+ * #9347 (antes, a 2ª sobrescrevia/apagava o marker da 1ª, e o desconto de
+ * effort da 1ª sumia em silêncio). Lógica DUPLICADA de
+ * `listActiveSessionMarkerPaths` em `scripts/overnight-session-marker.ts`
+ * (self-contained, ver topo). Nunca lança — `[]` em qualquer falha.
+ */
+function listActiveMarkerPaths(repoRoot, tag) {
+  try {
+    const dir = join(repoRoot, "data", "overnight");
+    const legacy = activeSessionPath(repoRoot, tag);
+    const prefix = `.active-session-${tag}.`;
+    const out = [];
+    for (const name of readdirSync(dir).sort()) {
+      const full = join(dir, name);
+      if (full === legacy) {
+        out.push(full);
+        continue;
+      }
+      if (!name.startsWith(prefix) || !name.endsWith(".json")) continue;
+      const middle = name.slice(prefix.length, name.length - ".json".length);
+      if (/^[a-zA-Z0-9_-]+$/.test(middle)) out.push(full);
+    }
+    return out;
+  } catch {
+    return [];
   }
 }
 

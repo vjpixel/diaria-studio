@@ -847,6 +847,54 @@ describe("isOvernightRoundActive (#3322)", () => {
       assert.equal(isOvernightRoundActive(root, "host-a", NOW, undefined), false);
     });
   });
+
+  // #9347: marker POR SESSÃO — `.active-session-{tag}.{sessionId}.json`. Com 2
+  // rodadas vivas na mesma máquina, cada PR tem que achar o marker da PRÓPRIA
+  // rodada (antes, a 2ª sobrescrevia o marker único e o desconto da 1ª sumia).
+  describe("marker por sessão (#9347)", () => {
+    function writeNamed(root: string, name: string, marker: Record<string, unknown>) {
+      const dir = join(root, "data", "overnight");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, name), JSON.stringify(marker), "utf8");
+    }
+    const fresh = new Date(NOW - ONE_HOUR_MS).toISOString();
+
+    it("2 rodadas vivas na mesma máquina → PR de cada uma reconhece a própria; sessão alheia não", () => {
+      const root = freshRoot();
+      writeNamed(root, ".active-session-host-a.sess-A.json", { started_at: fresh, session_id: "sess-A" });
+      writeNamed(root, ".active-session-host-a.sess-B.json", { started_at: fresh, session_id: "sess-B" });
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sess-A"), true);
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sess-B"), true);
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sess-develop"), false);
+    });
+
+    it("legado (rodada pré-#9347) + por-sessão coexistem — ambos lidos", () => {
+      const root = freshRoot();
+      writeMarker(root, "host-a", { started_at: fresh, session_id: "sess-legado" });
+      writeNamed(root, ".active-session-host-a.sess-B.json", { started_at: fresh, session_id: "sess-B" });
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sess-legado"), true);
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sess-B"), true);
+    });
+
+    it("marker por-sessão de OUTRA máquina com prefixo parecido (host-a-b) não conta pra host-a", () => {
+      const root = freshRoot();
+      writeNamed(root, ".active-session-host-a-b.sess-A.json", { started_at: fresh, session_id: "sess-A" });
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sess-A"), false);
+    });
+
+    it("marker por-sessão stale não conta; um corrompido não derruba os demais", () => {
+      const root = freshRoot();
+      writeNamed(root, ".active-session-host-a.sess-A.json", {
+        started_at: new Date(NOW - 25 * ONE_HOUR_MS).toISOString(),
+        session_id: "sess-A",
+      });
+      const dir = join(root, "data", "overnight");
+      writeFileSync(join(dir, ".active-session-host-a.sess-C.json"), "{nope", "utf8");
+      writeNamed(root, ".active-session-host-a.sess-B.json", { started_at: fresh, session_id: "sess-B" });
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sess-A"), false);
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sess-B"), true);
+    });
+  });
 });
 
 // #4252: a issue pede um dado de custo de 1-2 rodadas completas com

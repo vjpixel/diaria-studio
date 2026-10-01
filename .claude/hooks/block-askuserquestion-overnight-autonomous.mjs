@@ -14,7 +14,8 @@
 // um guard MECÂNICO que não dependa do coordenador "lembrar" da regra.
 //
 // Mecanismo: `scripts/overnight-session-marker.ts` grava
-// `data/overnight/.active-session-{hostname}.json` com um campo `phase`
+// `data/overnight/.active-session-{hostname}.{sessionId}.json` (por sessão
+// desde #9347; o legado `.active-session-{hostname}.json` segue lido) com um campo `phase`
 // (`"briefing"` | `"autonomous"`) — `"briefing"` no `--start` (Fase 0 passo 1),
 // `"autonomous"` no `--phase autonomous` (Fase 0 passo 8, ao entrar na Fase 1).
 // Este hook lê SÓ esse marker (nunca escreve) e nega qualquer `AskUserQuestion`
@@ -81,7 +82,7 @@
 // `permissionDecision: "defer"` — cai no fluxo normal de permissão).
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -142,6 +143,42 @@ export function readActiveMarker(repoRoot = resolveMainRepoRoot(), machineTag = 
     return JSON.parse(readFileSync(markerPath, "utf8"));
   } catch {
     return null;
+  }
+}
+
+/**
+ * (#9347) Lê TODOS os markers overnight desta máquina — o legado
+ * `.active-session-{tag}.json` + cada por-sessão `.active-session-{tag}.{sessionId}.json`
+ * (duas rodadas simultâneas na mesma máquina gravam arquivos distintos desde
+ * o #9347; antes, a 2ª sobrescrevia/apagava o marker da 1ª e desarmava este
+ * guard em silêncio). Lógica de listagem DUPLICADA de
+ * `listActiveSessionMarkerPaths` em `scripts/overnight-session-marker.ts`
+ * (self-contained, ver topo). Nunca lança — falha de I/O → `[]`; marker
+ * ilegível individual é só pulado.
+ */
+export function readActiveMarkers(repoRoot = resolveMainRepoRoot(), machineTag = localMachineTag()) {
+  try {
+    const dir = join(repoRoot, "data", "overnight");
+    const legacyName = `.active-session-${machineTag}.json`;
+    const prefix = `.active-session-${machineTag}.`;
+    const out = [];
+    for (const name of readdirSync(dir).sort()) {
+      const isLegacy = name === legacyName;
+      if (!isLegacy) {
+        if (!name.startsWith(prefix) || !name.endsWith(".json")) continue;
+        const middle = name.slice(prefix.length, name.length - ".json".length);
+        if (!/^[a-zA-Z0-9_-]+$/.test(middle)) continue;
+      }
+      try {
+        const parsed = JSON.parse(readFileSync(join(dir, name), "utf8"));
+        if (parsed && typeof parsed === "object") out.push(parsed);
+      } catch {
+        // marker individual ilegível — pula, os demais seguem valendo.
+      }
+    }
+    return out;
+  } catch {
+    return [];
   }
 }
 
@@ -295,8 +332,12 @@ if (
       // a `AskUserQuestion`, mas confirmar aqui custa nada e documenta a
       // invariante — nunca decide bloqueio pra outra tool por engano.
       if (payload.tool_name && payload.tool_name !== "AskUserQuestion") return;
-      const marker = readActiveMarker();
-      if (shouldBlockAskUserQuestion(marker, Date.now(), payload.session_id)) {
+      // #9347: qualquer marker desta máquina que bloqueie esta chamada basta —
+      // com marker por sessão, só o da PRÓPRIA rodada (ou um legado anônimo)
+      // casa; markers de outras rodadas vivas nunca bloqueiam esta sessão.
+      const now = Date.now();
+      const marker = readActiveMarkers().find((m) => shouldBlockAskUserQuestion(m, now, payload.session_id));
+      if (marker) {
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
