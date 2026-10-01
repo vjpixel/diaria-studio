@@ -177,6 +177,11 @@ function isOwnPromoLink(url: string): boolean {
     // texto em toda edição, ver platform.config.json → para_encerrar.slot_a).
     if (host === "clarice.ai" && u.pathname.startsWith("/precos-planos")) return true;
     if (host === "wisprflow.ai") return true;
+    // #9305: superfícies próprias (arquivo/hub de tema, É IA?) e links de
+    // rodapé/box contextual (`utm_campaign` `*-rodape` ou `hub-*`) nunca são notícia.
+    if (/(^|\.)diar\.ia\.br$/.test(host) && host !== "diar.ia.br") return true;
+    const campaign = (u.searchParams.get("utm_campaign") ?? "").toLowerCase();
+    if (campaign.endsWith("-rodape") || campaign.startsWith("hub-")) return true;
     return false;
   } catch {
     return false;
