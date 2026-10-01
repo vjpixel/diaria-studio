@@ -1728,7 +1728,14 @@ export function publishEditionSitePage(
  * o link `/p/{slug}` do e-mail daria 404 às 06:00. `published: true` com
  * `merged: false` passava silencioso no gate 6 (só `published` era olhado).
  * Devolve o texto de BLOQUEIO com prazo, ou `null` quando não há o que
- * mergear (merged, ou sem PR/sem publicação — esses têm aviso próprio).
+ * mergear (merged, ou sem publicação — essa tem aviso próprio via
+ * `SITE_PUBLISH_OK === false`).
+ *
+ * #9326: bloqueia também SEM `prUrl`. `publish()` devolve `pushed: true` +
+ * `merged: false` quando `gh pr create/list` não deu URL parseável ("sem
+ * prNumber — nada a mergear") — a branch está pushada, nada foi mergeado, e
+ * o link `/p/{slug}` do e-mail daria 404 do mesmo jeito. Antes isso caía no
+ * `null` e o gate 6 ficava verde (o único aviso era uma linha de stderr).
  */
 export function sitePageMergeBlocker(state: {
   published?: boolean;
@@ -1737,13 +1744,16 @@ export function sitePageMergeBlocker(state: {
   prUrl?: string;
   slug?: string;
 }): string | null {
-  if (state.published !== true || state.merged !== false || !state.prUrl) return null;
-  const pr = ` ${state.prUrl}`;
+  if (state.published !== true || state.merged !== false) return null;
   const why = state.mergeReason ? ` (${state.mergeReason})` : "";
   const path = state.slug ? `/p/${state.slug}` : "a página da edição";
+  const what = state.prUrl
+    ? `PR da página do site ${state.prUrl} NÃO mergeado${why}`
+    : `PR da página do site não identificado${why} — verificar branch site-publish/${state.slug ?? "{slug}"} ` +
+      `(abrir/achar o PR e mergear)`;
   return (
-    `BLOQUEIO: PR da página do site${pr} NÃO mergeado${why}. Mergear ANTES do envio (06:00 BRT) — ` +
-    `sem o merge, ${path} (link de WhatsApp do e-mail) dá 404 (#9278).`
+    `BLOQUEIO: ${what}. Mergear ANTES do envio (06:00 BRT) — ` +
+    `sem o merge, ${path} (link de WhatsApp do e-mail) dá 404 (#9278, #9326).`
   );
 }
 

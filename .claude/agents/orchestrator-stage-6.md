@@ -180,7 +180,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 **Mecanismo: branch dedicada + PR, nunca push direto em `master` (#6598).** Script recria `site-publish/{slug}` do `master` local, commita/empurra (`--force-with-lease`) e abre/reusa PR via `gh pr create` — desde o #8158 tenta mergear sozinho se CI ficar verde; senão o PR fica aberto pra revisão manual (decisão do editor). Detalhes/histórico do incidente que motivou (`GH013`, 260828): `docs/site-page-publish-mechanism.md`.
 
-Guardar o resultado (`SITE_PUBLISH_OK` booleano, derivado de `published === true` em `_internal/site-page-published.json`, + o `reason`/`prUrl` se houver, + `mergeBlocker` — texto não-nulo quando o PR foi aberto mas NÃO mergeado, #9278) para usar em §6c. **Segue para §6c em qualquer resultado** — falha nunca bloqueia esta seção sozinha.
+Guardar o resultado (`SITE_PUBLISH_OK` booleano, derivado de `published === true` em `_internal/site-page-published.json`, + o `reason`/`prUrl` se houver, + `mergeBlocker` — texto não-nulo quando a branch foi pushada mas NÃO mergeada, com PR aberto (#9278) ou sem PR identificado (#9326)) para usar em §6c. **Segue para §6c em qualquer resultado** — falha nunca bloqueia esta seção sozinha.
 
 ### 6c. GATE HUMANO — parada única: revisão do e-mail de teste + agendamento (#8205)
 

@@ -193,12 +193,21 @@ export function readWatchPrefixes(argv: string[]): string[] {
  * INDEXNOW_KEY --name diaria-site`, ação do editor, #8905). Sem a flag o
  * comportamento é o de sempre (erro, exit 1). Falha do POST em si continua
  * exit 1 em qualquer modo.
+ *
+ * #9325: o soft cobre SÓ a causa conhecida — arquivo de chave ausente, que o
+ * Worker serve como 404 (sem o secret, `matchIndexNowKeyPath` nunca casa e o
+ * request cai no 404 do `[assets]`). Chave divergente (200 com corpo errado,
+ * o caso do `\n` final do #5620), 5xx do Worker e erro de rede
+ * (`status: null`) continuam exit 1 mesmo com a flag: são defeitos que o
+ * provisionamento pendente não explica e que, rebaixados a warning, não
+ * deixariam registro nenhum.
  */
 export function keyCheckFailureOutcome(
   message: string,
   soft: boolean,
+  status: number | null,
 ): { exitCode: number; line: string } {
-  return soft
+  return soft && status === 404
     ? { exitCode: 0, line: `::warning title=IndexNow não pingado::${message}` }
     : { exitCode: 1, line: message };
 }
@@ -253,6 +262,7 @@ async function main(): Promise<number> {
       `${LOG_PREFIX} falha: arquivo de chave não está acessível em ${payload.keyLocation} — ${keyCheck.error} ` +
         `(a submissão IndexNow nunca vai validar; regrave a secret no Worker antes de tentar de novo)`,
       keyCheckSoft,
+      keyCheck.status,
     );
     (outcome.exitCode === 0 ? console.log : console.error)(outcome.line);
     return outcome.exitCode;
