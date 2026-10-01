@@ -34,7 +34,11 @@ import { fetchSourceText } from "./fetch-source-text.ts";
 // Types — exportados para teste
 // ---------------------------------------------------------------------------
 
-export type ClaimType = "price" | "date" | "duration" | "number" | "superlative";
+// "headline" (#9383): o título escolhido do destaque como claim (sujeito +
+// verbo + tempo verbal) conferido contra o corpo e a fonte. WARN-ONLY: nunca
+// bloqueia (getBlockingClaims) nem recebe autofix (suggested_fix descartado em
+// normalizeFactCheckResult) — reescrever título é decisão do editor.
+export type ClaimType = "price" | "date" | "duration" | "number" | "superlative" | "headline";
 export type Verdict =
   | "SUSTAINED"
   | "DIVERGENT"
@@ -293,9 +297,25 @@ export function formatGateSummary(result: FactCheckResult): string {
     lines.push("");
   }
 
-  // Not found (excluindo superlativos já listados)
+  // Título × corpo/fonte (#9383) — DIVERGENT já listado acima.
+  const headlineIssues = claims.filter(
+    (c) => c.claim_type === "headline" && c.verdict !== "SUSTAINED" && c.verdict !== "DIVERGENT",
+  );
+  if (headlineIssues.length > 0) {
+    lines.push("  ⚠️  TÍTULO não sustentado pelo corpo/fonte (sujeito, verbo ou tempo verbal):");
+    for (const c of headlineIssues) {
+      lines.push(`    ${destaqueLabel(c.destaque)} "${c.text}" [${c.verdict}]`);
+      if (c.note) lines.push(`       → ${c.note}`);
+    }
+    lines.push("");
+  }
+
+  // Not found (excluindo superlativos e títulos já listados)
   const notFound = claims.filter(
-    (c) => c.verdict === "NOT_FOUND_IN_SOURCE" && c.claim_type !== "superlative",
+    (c) =>
+      c.verdict === "NOT_FOUND_IN_SOURCE" &&
+      c.claim_type !== "superlative" &&
+      c.claim_type !== "headline",
   );
   if (notFound.length > 0) {
     lines.push("  ⚠️  Claims não encontrados na fonte primária:");
@@ -310,7 +330,10 @@ export function formatGateSummary(result: FactCheckResult): string {
   // Se attention_items > 0 mas nenhuma seção renderizou (inconsistência interna),
   // emitir um aviso genérico em vez de deixar o header "vazio".
   const sectionsRendered =
-    divergent.length > 0 || unsupportedSuperlatives.length > 0 || notFound.length > 0;
+    divergent.length > 0 ||
+    unsupportedSuperlatives.length > 0 ||
+    headlineIssues.length > 0 ||
+    notFound.length > 0;
   if (!sectionsRendered) {
     lines.push(`  ⚠️  ${summary.attention_items} item(ns) de atenção (ver claims completos em fact-check.json).`);
     lines.push("");
@@ -332,6 +355,9 @@ export function computeAttentionItems(claims: FactClaim[]): number {
     (c) =>
       c.verdict === "DIVERGENT" ||
       (c.claim_type === "superlative" && c.verdict !== "SUSTAINED") ||
+      // #9383: título não sustentado (INFERRED incluso — título "inferido"
+      // é exatamente o caso de tempo verbal/sujeito trocado).
+      (c.claim_type === "headline" && c.verdict !== "SUSTAINED") ||
       (c.verdict === "NOT_FOUND_IN_SOURCE" && c.claim_type !== "superlative"),
   ).length;
 }
@@ -356,8 +382,13 @@ export function computeAttentionItems(claims: FactClaim[]): number {
  * ao Stage 4 porque o fact-check era só informativo ali.
  */
 export function getBlockingClaims(claims: FactClaim[]): FactClaim[] {
+  // #9383: `headline` também fica de fora — título é warn-only (presente
+  // histórico em manchete é convenção legítima; o editor decide no gate).
   return claims.filter(
-    (c) => c.verdict === "NOT_FOUND_IN_SOURCE" && c.claim_type !== "superlative",
+    (c) =>
+      c.verdict === "NOT_FOUND_IN_SOURCE" &&
+      c.claim_type !== "superlative" &&
+      c.claim_type !== "headline",
   );
 }
 
@@ -396,7 +427,11 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
           // Coerce suggested_fix: o LLM pode emitir número (ex: 24.99) em vez de string.
           // Conversão implícita produziria "24.99" quando o correto é "R$ 24,99" — bug
           // silencioso. Dropamos valores não-string; o autofix trata ausência como skipped_no_fix.
-          suggested_fix: typeof c.suggested_fix === "string" ? c.suggested_fix : undefined,
+          // #9383: título nunca recebe autofix — descarta suggested_fix de headline.
+          suggested_fix:
+            c.claim_type !== "headline" && typeof c.suggested_fix === "string"
+              ? c.suggested_fix
+              : undefined,
           // Guard: fact-checker pode omitir sources (#2628 gap 2) → default [] para
           // evitar TypeError em entry.sources.includes() downstream.
           sources: Array.isArray(c.sources) ? c.sources : [],

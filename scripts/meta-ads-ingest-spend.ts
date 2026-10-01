@@ -53,6 +53,15 @@
  * ## Uso
  *
  *   npx tsx scripts/meta-ads-ingest-spend.ts                      # headless, requer META_ADS_ACCESS_TOKEN
+ *   npx tsx scripts/meta-ads-ingest-spend.ts --since 2026-09-01   # recálculo (#9378): regrava os meses da janela
+ *
+ * ## Filtro por campanha (#9378)
+ *
+ * O headless consulta `level=campaign` filtrando por `platform.config.json`
+ * → `meta_ads.campaign_ids` (a conta também roda a campanha do ingresso do
+ * evento agente-ia desde 24/09/2026). `mergeSpendRows` substitui a linha
+ * `(canal, mes)` inteira, então `--since` no dia 1 de um mês recalcula esse
+ * mês do zero com o filtro — é o comando de recálculo do histórico.
  *   npx tsx scripts/meta-ads-ingest-spend.ts --input /path/to/ad-entities-dump.json
  *   npx tsx scripts/meta-ads-ingest-spend.ts --input dump.json --spend data/aquisicao/spend.csv
  */
@@ -106,7 +115,7 @@ export const META_ADS_CANAL = "Meta Ads (teste 2608)";
  *  fonte (endpoint + parâmetros), sem precisar de um "label" curto na
  *  frente. Formato final: `${META_ADS_HEADLESS_FONTE_LABEL}, N dia(s)
  *  (AAAA-MM-DD..AAAA-MM-DD), ingestão automática`. */
-export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=account, time_increment=1)";
+export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=campaign, meta_ads.campaign_ids, time_increment=1)";
 
 /**
  * Agrega `ChannelDailyMetric[]` (1 ponto por dia, vindo de
@@ -237,6 +246,30 @@ export const META_ADS_FETCH_RETRY = SPEND_INGEST_FETCH_RETRY;
 export interface RunHeadlessOptions {
   /** Injetável só pra teste — nunca espera de verdade fora de produção. */
   sleep?: (ms: number) => Promise<void>;
+  /** Janela da consulta (#9378) — default 30 dias (`fetchMetaAdsChannelMetrics`).
+   *  `--since AAAA-MM-DD` do CLI vira isto via `lookbackDaysSince`. */
+  lookbackDays?: number;
+  /** Injetável só pra teste (default `new Date()`). */
+  now?: Date;
+  /** Override das campanhas (#9378) — default `platform.config.json` →
+   *  `meta_ads.campaign_ids`. Só pra teste. */
+  campaignIds?: readonly string[];
+}
+
+/**
+ * `--since AAAA-MM-DD` → `lookbackDays` inclusivo até `now` (#9378, recálculo
+ * do histórico). `null` se a data for inválida ou futura. Pra regravar um mês
+ * inteiro, `since` precisa ser o dia 1 dele: o guard de mês truncado
+ * (`aggregateMetaAdsChannelMetricsByMonth`) descarta o mês mais antigo da
+ * janela quando ela não começa no dia 1. @pure
+ */
+export function lookbackDaysSince(since: string, now: Date): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) return null;
+  const start = Date.parse(`${since}T00:00:00Z`);
+  if (!Number.isFinite(start)) return null;
+  const today = Date.parse(`${now.toISOString().slice(0, 10)}T00:00:00Z`);
+  const days = Math.round((today - start) / 86_400_000) + 1;
+  return days >= 1 ? days : null;
 }
 
 /** Envolve `fetchImpl` com `withFetchRetry` preservando a assinatura que
@@ -295,7 +328,11 @@ export async function runHeadless(
   let fetchedMetricsCount = 0;
 
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
-    const fetchResult = await fetchMetaAdsChannelMetrics(retryingFetch, authResult.auth.accessToken);
+    const fetchResult = await fetchMetaAdsChannelMetrics(retryingFetch, authResult.auth.accessToken, {
+      ...(opts.lookbackDays !== undefined ? { lookbackDays: opts.lookbackDays } : {}),
+      ...(opts.now !== undefined ? { now: opts.now } : {}),
+      ...(opts.campaignIds !== undefined ? { campaignIds: opts.campaignIds } : {}),
+    });
     if (fetchResult.error) {
       networkErrorReason = `Graph API (Meta Ads insights) falhou — ${fetchResult.error}`;
       return { kind: "error", reason: networkErrorReason };
@@ -333,8 +370,16 @@ export async function main(): Promise<number> {
   const spendPath = getStringArg(argv, "spend") ?? DEFAULT_SPEND_CSV_PATH;
   const inputPath = getStringArg(argv, "input");
 
+  const since = getStringArg(argv, "since");
+
   if (!inputPath) {
-    return await runHeadless(spendPath);
+    if (since === undefined) return await runHeadless(spendPath);
+    const lookbackDays = lookbackDaysSince(since, new Date());
+    if (lookbackDays === null) {
+      fallback(`--since inválido (esperado AAAA-MM-DD, não futuro): ${since}`);
+      return META_ADS_INGEST_FAILURE_EXIT_CODE;
+    }
+    return await runHeadless(spendPath, fetch, { lookbackDays });
   }
   if (!existsSync(inputPath)) {
     fallback(`arquivo de --input não encontrado: ${inputPath}`);

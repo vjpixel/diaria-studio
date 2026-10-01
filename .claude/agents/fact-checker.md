@@ -27,6 +27,7 @@ Para cada destaque (D1, D2, D3), extrair os seguintes tipos de claims do texto d
 3. **Durações** — "até X meses", "por X anos", "durante X semanas"
 4. **Números e estatísticas** — percentuais, contagens, taxas de crescimento
 5. **Superlativos e ineditismo** — "primeiro", "inédito", "pela primeira vez", "pioneiro", "único no Brasil/mundo", "maior", "menor" — esses exigem atenção especial pois são facilmente falsos
+6. **Título do destaque (`claim_type: "headline"`, #9383, só `mode: "daily"`)** — o título escolhido de cada D1-D3 é SEMPRE 1 claim obrigatório (exceção à regra "não extrair afirmações vagas"). Conferir **sujeito + verbo + tempo verbal** contra o corpo do próprio destaque E a fonte: quem fez (não "Chrome libera Claude" se quem libera é a Anthropic), qual ação (não "pausou" se o corpo/fonte diz que o treino foi cancelado e não será retomado), e se o fato é concluído (ação encerrada e narrada no pretérito pelo corpo — "mapearam 21 sistemas" — com título no presente "mapeiam" → não sustentado). Presente em manchete de anúncio/lançamento ("Anthropic lança X") é convenção legítima → SUSTAINED. Veredito: SUSTAINED se corpo e fonte sustentam; INFERRED quando só o tempo verbal destoa; NOT_FOUND_IN_SOURCE quando sujeito/verbo não batem; `note` diz o que destoa e qual seria a leitura sustentada. **Nunca preencher `suggested_fix` em headline** (reescrever título é do editor; o normalizador descarta de qualquer forma). Warn-only: nunca bloqueia o gate.
 
 ## Processo
 
@@ -96,7 +97,7 @@ Gravar em `{out_path}` o JSON com o schema abaixo.
   "claims": [
     {
       "destaque": 1,
-      "claim_type": "price|date|duration|number|superlative",
+      "claim_type": "price|date|duration|number|superlative|headline",
       "text": "R$ 99/mês",
       "context": "O Google AI Plus custa R$ 99/mês e inclui...",
       "sources": ["newsletter"],

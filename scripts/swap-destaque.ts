@@ -68,6 +68,7 @@ import {
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #9381
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
 
@@ -145,6 +146,36 @@ export function extractTitle(item: Record<string, unknown>): string {
     }
   }
   return "(sem título)";
+}
+
+/**
+ * #9381: converte um destaque rebaixado em item de POOL. A manchete de
+ * destaque (`title_options`, ≤52 chars, gancho de e-mail) não serve pro
+ * RADAR/LANÇAMENTOS — o editor trocava à mão pelo título da fonte. Remove
+ * `title_options` (topo e `article`) e usa o título da FONTE (`article.title`,
+ * senão `title`) normalizado via `normalizeItemTitle`. Devolve cópia; não muta.
+ *
+ * @pure
+ */
+export function toPoolItem(item: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...item };
+  delete out.title_options;
+  const article = item.article as Record<string, unknown> | undefined;
+  const sourceTitle =
+    (article && typeof article.title === "string" && article.title.length > 0
+      ? article.title
+      : undefined) ??
+    (typeof item.title === "string" && item.title.length > 0 ? item.title : undefined);
+  if (article) {
+    const a: Record<string, unknown> = { ...article };
+    delete a.title_options;
+    if (sourceTitle) a.title = normalizeItemTitle(sourceTitle);
+    out.article = a;
+  }
+  if (sourceTitle && (!article || typeof item.title === "string")) {
+    out.title = normalizeItemTitle(sourceTitle);
+  }
+  return out;
 }
 
 /**
@@ -382,7 +413,7 @@ export function swapInApprovedJson(
     // scorer from one of the buckets. We send them to the source bucket that
     // accepted the promoted item (i.e., the same bucket category).
     const demotedBucket = data[promoteBucket] as Record<string, unknown>[];
-    data[promoteBucket] = [demotedItem, ...demotedBucket];
+    data[promoteBucket] = [toPoolItem(demotedItem), ...demotedBucket]; // #9381
   }
 
   return { ok: true, promotedItem, demotedItem };
@@ -415,9 +446,9 @@ export function mirrorCappedSwapFallback(
     if (!drop) {
       const cappedBucket = approvedCappedData[bucket];
       if (Array.isArray(cappedBucket)) {
-        approvedCappedData[bucket] = [cappedDemotedItem, ...cappedBucket];
+        approvedCappedData[bucket] = [toPoolItem(cappedDemotedItem), ...cappedBucket]; // #9381
       } else {
-        approvedCappedData[bucket] = [cappedDemotedItem];
+        approvedCappedData[bucket] = [toPoolItem(cappedDemotedItem)];
       }
     }
     return { synced: true };

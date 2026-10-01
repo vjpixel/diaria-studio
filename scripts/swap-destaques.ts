@@ -65,6 +65,7 @@ import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verifi
 import {
   extractUrl,
   extractTitle,
+  toPoolItem,
   removeDestaqueBlockFromMd,
   deleteDestaqueImages,
   deleteDestaquePrompts,
@@ -190,7 +191,7 @@ export function swapManualInApprovedJson(
     highlights[idx] = buildManualHighlight(s.url, s.title, s.position);
     if (!drop) {
       const radar = (data.radar as Record<string, unknown>[] | undefined) ?? [];
-      data.radar = [demotedItem, ...radar];
+      data.radar = [toPoolItem(demotedItem), ...radar]; // #9381
     }
   }
   data.highlights = highlights;

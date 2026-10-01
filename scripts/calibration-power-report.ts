@@ -7,15 +7,18 @@
  * suficiente no corpus histórico pra justificar uma calibração — sem
  * calibrar nada, sem escrever em nenhum arquivo de produção.
  *
- * Pergunta respondida: "artigos com a feature X sobrevivem no
- * `01-approved.json` (ficam no pool ou viram destaque) numa taxa
- * diferente de artigos sem X, dentro da MESMA edição — e essa diferença
- * é maior do que ruído explicaria?"
+ * Pergunta respondida: "artigos com a feature X são mantidos pelo editor
+ * (rótulo de `lib/calibration-labels.ts` — padrão: gate do Stage 4, #9373)
+ * numa taxa diferente de artigos sem X — e essa diferença é maior do que
+ * ruído explicaria?"
  *
  * Método (#7972 §"Camada 2", barra de evidência):
- * 1. Por edição, `kept` = URL presente em QUALQUER bucket de
- *    `01-approved.json` (incluindo `highlights`) — o candidato sobreviveu
- *    à aprovação do editor, seja no pool ou promovido.
+ * 1. Por edição, `kept` vem de `scripts/lib/calibration-labels.ts` (#9373):
+ *    por padrão o desfecho no gate do STAGE 4 (entregue e publicado /
+ *    incluído à mão = mantido; entregue e cortado = descartado; não
+ *    entregue = fora da amostra). `--label stage1` reproduz o rótulo antigo
+ *    (URL em qualquer bucket do `01-approved.json` do gate 1), que mede a
+ *    etapa onde o editor quase não mexe — só pra comparação.
  * 2. Por feature booleana, compara a taxa de `kept` entre presente/ausente,
  *    agregando todas as edições (não par-a-par dentro da MESMA edição —
  *    simplificação da v1; ver nota de escopo abaixo).
@@ -53,6 +56,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { NON_CALIBRATABLE_FEATURES, type ScoringFeatureRow } from "./lib/scoring-features.ts";
 import { mulberry32, shuffleInPlace } from "./lib/permutation-test.ts";
+import { DEFAULT_LABEL_SOURCE, loadKeptLabeler, parseLabelSource, type CalibrationLabelSource } from "./lib/calibration-labels.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -122,21 +126,9 @@ const PERMUTATIONS = 500;
 
 export interface EditionRows {
   edition: string;
+  /** Só as linhas COM rótulo na fonte escolhida (stage4: linhas `not_delivered` ficam fora). */
   rows: ScoringFeatureRow[];
   kept: boolean[]; // paralelo a rows — kept[i] corresponde a rows[i]
-}
-
-/** Lê todas as URLs presentes em QUALQUER bucket de `01-approved.json` (inclui highlights via article.url/.url). */
-function keptUrlsFromApproved(json: any): Set<string> {
-  const urls = new Set<string>();
-  const buckets = ["highlights", "runners_up", "lancamento", "radar", "use_melhor", "video"];
-  for (const bucket of buckets) {
-    for (const item of json?.[bucket] ?? []) {
-      const url = item?.article?.url ?? item?.url;
-      if (typeof url === "string" && url !== "") urls.add(url);
-    }
-  }
-  return urls;
 }
 
 /**
@@ -145,8 +137,17 @@ function keptUrlsFromApproved(json: any): Set<string> {
  * medir evidência — sem duplicar o parsing de `scoring-features.json`/
  * `01-approved.json` num 2º lugar. `buildPowerReport` continua a função
  * pública de mais alto nível pra quem só quer o RELATÓRIO agregado.
+ *
+ * `labelSource` (#9373): de onde vem `kept` — ver `lib/calibration-labels.ts`.
+ * Com `stage4`, `rows` traz só as linhas com sinal do editor (entregues no
+ * rascunho ou incluídas à mão); edição sem o gate 4 aprovado é pulada com
+ * motivo. Quem precisa do pool INTEIRO (ex.: canário do Track A) passa
+ * `stage1`, que rotula toda linha.
  */
-export function loadEditionRows(editionsRoot: string): { editions: EditionRows[]; skipped: Array<{ edition: string; reason: string }> } {
+export function loadEditionRows(
+  editionsRoot: string,
+  labelSource: CalibrationLabelSource = DEFAULT_LABEL_SOURCE,
+): { editions: EditionRows[]; skipped: Array<{ edition: string; reason: string }> } {
   const editionDirs = enumerateEditionDirs(editionsRoot);
   const out: EditionRows[] = [];
   const skipped: Array<{ edition: string; reason: string }> = [];
@@ -156,14 +157,28 @@ export function loadEditionRows(editionsRoot: string): { editions: EditionRows[]
     if (!existsSync(featuresPath) || !existsSync(approvedPath)) continue; // candidata nem existe — não é "pulada", nunca foi elegível
     try {
       const featuresPayload = JSON.parse(readFileSync(featuresPath, "utf8"));
-      const approvedJson = JSON.parse(readFileSync(approvedPath, "utf8"));
-      const rows: ScoringFeatureRow[] = Array.isArray(featuresPayload?.rows) ? featuresPayload.rows : [];
-      if (rows.length === 0) {
+      const allRows: ScoringFeatureRow[] = Array.isArray(featuresPayload?.rows) ? featuresPayload.rows : [];
+      if (allRows.length === 0) {
         skipped.push({ edition, reason: "scoring-features.json sem rows (ausente, não-array, ou vazio)" });
         continue;
       }
-      const keptUrls = keptUrlsFromApproved(approvedJson);
-      const kept = rows.map((r) => keptUrls.has(r.url));
+      const labeler = loadKeptLabeler(dir, labelSource);
+      if (!labeler.ok) {
+        skipped.push({ edition, reason: `rótulo ${labelSource}: ${labeler.reason}` });
+        continue;
+      }
+      const rows: ScoringFeatureRow[] = [];
+      const kept: boolean[] = [];
+      for (const r of allRows) {
+        const label = labeler.value.label(r.url);
+        if (label === null) continue;
+        rows.push(r);
+        kept.push(label);
+      }
+      if (rows.length === 0) {
+        skipped.push({ edition, reason: `rótulo ${labelSource}: nenhuma linha com sinal do editor` });
+        continue;
+      }
       out.push({ edition, rows, kept });
     } catch (err) {
       // Achado de review do #7976: catch sem discriminação escondia erro de
@@ -307,24 +322,30 @@ function analyzeFeature(editions: EditionRows[], feature: CandidateFeature, seed
 }
 
 export interface PowerReportResult {
+  /** Fonte do rótulo `kept` (#9373). */
+  label_source: CalibrationLabelSource;
   editions_analyzed: number;
-  /** Edições candidatas (têm scoring-features.json + 01-approved.json) que foram puladas mesmo assim — dado malformado (JSON inválido) ou `rows` ausente/vazio. Nunca escondido: um relatório de evidência que perde linhas em silêncio é pior que um que não perde nenhuma (achado de review do #7976). */
+  /** Edições candidatas (têm scoring-features.json + 01-approved.json) que foram puladas mesmo assim — dado malformado (JSON inválido), `rows` ausente/vazio, ou rótulo indisponível na fonte escolhida (stage4 sem gate 4 aprovado, #9373). Nunca escondido: um relatório de evidência que perde linhas em silêncio é pior que um que não perde nenhuma (achado de review do #7976). */
   editions_skipped: Array<{ edition: string; reason: string }>;
   features: FeatureReport[];
 }
 
-export function buildPowerReport(editionsRoot: string, seed = 42): PowerReportResult {
-  const { editions, skipped } = loadEditionRows(editionsRoot);
+export function buildPowerReport(
+  editionsRoot: string,
+  seed = 42,
+  labelSource: CalibrationLabelSource = DEFAULT_LABEL_SOURCE,
+): PowerReportResult {
+  const { editions, skipped } = loadEditionRows(editionsRoot, labelSource);
   const features = CANDIDATE_FEATURES.map((f, i) => analyzeFeature(editions, f, seed + i));
-  return { editions_analyzed: editions.length, editions_skipped: skipped, features };
+  return { label_source: labelSource, editions_analyzed: editions.length, editions_skipped: skipped, features };
 }
 
 function formatReport(report: PowerReportResult): string {
   const lines: string[] = [];
-  lines.push(`[calibration-power-report] ${report.editions_analyzed} edições analisadas (scoring-features.json + 01-approved.json presentes).`);
+  lines.push(`[calibration-power-report] ${report.editions_analyzed} edições analisadas (scoring-features.json + rótulo ${report.label_source} disponíveis).`);
   if (report.editions_skipped.length > 0) {
     lines.push(
-      `  ${report.editions_skipped.length} edição(ões) candidata(s) PULADA(S) (arquivo presente mas dado malformado/vazio/erro de leitura — nunca silencioso):`,
+      `  ${report.editions_skipped.length} edição(ões) candidata(s) PULADA(S) (dado malformado/vazio/erro de leitura, ou sem o rótulo ${report.label_source} — nunca silencioso):`,
     );
     for (const s of report.editions_skipped) lines.push(`    ${s.edition}: ${s.reason}`);
   }
@@ -347,7 +368,7 @@ if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
   const editionsRoot = resolve(ROOT, values["editions-dir"] ?? "data/editions");
   const json = process.argv.includes("--json");
-  const report = buildPowerReport(editionsRoot);
+  const report = buildPowerReport(editionsRoot, 42, parseLabelSource(values["label"]));
   if (json) {
     console.log(JSON.stringify(report, null, 2));
   } else {

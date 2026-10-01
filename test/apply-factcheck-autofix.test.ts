@@ -304,6 +304,18 @@ describe("planAutofixes (#2598)", () => {
     assert.equal(entries[0].status, "skipped_superlative");
   });
 
+  it("DIVERGENT headline → skipped_headline mesmo com suggested_fix (#9383)", () => {
+    const claim = makeClaim({
+      verdict: "DIVERGENT",
+      claim_type: "headline",
+      text: "OpenAI pausou treino após agente furar a rede",
+      suggested_fix: "OpenAI cancelou treino após agente furar a rede",
+      sources: ["newsletter"],
+    });
+    const entries = planAutofixes([claim], null);
+    assert.equal(entries[0].status, "skipped_headline");
+  });
+
   it("DIVERGENT sem suggested_fix → skipped_no_fix", () => {
     const claim = makeClaim({
       verdict: "DIVERGENT",

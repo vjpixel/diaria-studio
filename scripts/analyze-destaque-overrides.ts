@@ -37,6 +37,17 @@
  *   - `pool_cut` — saiu do pool sem virar destaque.
  *   - `pool_add` — apareceu no pool aprovado sem estar no categorizado
  *     (tipicamente resgatado de `runners_up`).
+ *
+ * #9373 — o Track B acima mede o gate do STAGE 1, onde o editor quase não
+ * mexe (aprova ~100% do pool); a curadoria real do pool acontece no Stage 4.
+ * Por isso todo evento carrega também `stage4_outcome` (`published` /
+ * `cut_by_editor` / `editor_included` / `not_delivered`, ver
+ * `lib/calibration-labels.ts`), `null` quando a edição não tem o gate 4
+ * aprovado ou a saída da pipeline do Stage 2. O `01-approved.json` lido
+ * continua sendo o arquivo VIVO (inclui trocas de destaque do Stage 4 — é o
+ * que o Track A sempre mediu); o snapshot congelado do gate 1
+ * (`01-approved.gate1.json`, #9372) é usado pelo rótulo `stage1` de
+ * `lib/calibration-labels.ts`, não aqui.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -45,6 +56,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import type { CategorizedBucketsInput, ApprovedBucketsInput } from "./analyze-bucket-overrides.ts";
 import type { ScoringFeatureRow } from "./lib/scoring-features.ts";
+import { loadKeptLabeler, type Stage4Outcome } from "./lib/calibration-labels.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -63,6 +75,8 @@ export interface LabeledEvent {
   // sempre redundante com o próprio track_b (true pra bucket_kept/
   // bucket_moved/pool_add, == !cut pra pool_cut) — redundante, não arbitrário.
   survived_in_pool: boolean;
+  /** Desfecho no gate do Stage 4 (#9373); `null` = edição sem gate 4 aprovado / sem saída da pipeline. */
+  stage4_outcome: Stage4Outcome | null;
   features: ScoringFeatureRow | null; // null se a URL não aparecer em scoring-features.json (dado faltando pra essa edição/artigo)
 }
 
@@ -117,6 +131,7 @@ export function analyzeEditionOverrides(
   categorizedJson: CategorizedBucketsInput,
   approvedJson: ApprovedBucketsInput,
   featureRows: ScoringFeatureRow[],
+  stage4Outcome: (url: string) => Stage4Outcome | null = () => null,
 ): LabeledEvent[] {
   const featuresByUrl = new Map(featureRows.map((r) => [r.url, r]));
   const events: LabeledEvent[] = [];
@@ -136,6 +151,7 @@ export function analyzeEditionOverrides(
       title: approvedTitle ?? title,
       track_a: apprHighlights.has(url) ? "llm_finalist_and_approved" : "llm_finalist_rejected_by_editor",
       survived_in_pool: !apprHighlights.has(url) && apprPool.has(url),
+      stage4_outcome: stage4Outcome(url),
       features: featuresByUrl.get(url) ?? null,
     });
   }
@@ -148,6 +164,7 @@ export function analyzeEditionOverrides(
       title,
       track_a: "editor_promoted_outside_llm_finalists",
       survived_in_pool: false,
+      stage4_outcome: stage4Outcome(url),
       features: featuresByUrl.get(url) ?? null,
     });
   }
@@ -173,6 +190,7 @@ export function analyzeEditionOverrides(
         track_b: apprEntry.bucket === catEntry.bucket ? "bucket_kept" : "bucket_moved",
         bucket_move: apprEntry.bucket === catEntry.bucket ? undefined : { from: catEntry.bucket, to: apprEntry.bucket },
         survived_in_pool: true,
+        stage4_outcome: stage4Outcome(url),
         features: featuresByUrl.get(url) ?? null,
       });
     } else {
@@ -182,6 +200,7 @@ export function analyzeEditionOverrides(
         title: catEntry.title,
         track_b: "pool_cut",
         survived_in_pool: false,
+        stage4_outcome: stage4Outcome(url),
         features: featuresByUrl.get(url) ?? null,
       });
     }
@@ -194,6 +213,7 @@ export function analyzeEditionOverrides(
       title: apprEntry.title,
       track_b: "pool_add",
       survived_in_pool: true,
+      stage4_outcome: stage4Outcome(url),
       features: featuresByUrl.get(url) ?? null,
     });
   }
@@ -203,6 +223,8 @@ export function analyzeEditionOverrides(
 
 export interface AnalyzeAllResult {
   editions_analyzed: number;
+  /** Edições com desfecho do Stage 4 disponível (#9373) — as demais têm `stage4_outcome: null` em todo evento. */
+  editions_with_stage4_outcome: number;
   /** Edições candidatas (têm 01-categorized.json + 01-approved.json) puladas mesmo assim por dado malformado/erro de leitura — nunca silencioso (achado de review do #7976, mesma correção de calibration-power-report.ts). */
   editions_skipped: Array<{ edition: string; reason: string }>;
   events: LabeledEvent[];
@@ -214,6 +236,7 @@ export function analyzeAllEditions(editionsRoot: string): AnalyzeAllResult {
   const events: LabeledEvent[] = [];
   const skipped: Array<{ edition: string; reason: string }> = [];
   let editionsAnalyzed = 0;
+  let editionsWithStage4 = 0;
   for (const [edition, dir] of [...editionDirs.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const catPath = join(dir, "_internal", "01-categorized.json");
     const apprPath = join(dir, "_internal", "01-approved.json");
@@ -222,12 +245,14 @@ export function analyzeAllEditions(editionsRoot: string): AnalyzeAllResult {
     try {
       const categorizedJson = JSON.parse(readFileSync(catPath, "utf8"));
       const approvedJson = JSON.parse(readFileSync(apprPath, "utf8"));
+      const labeler = loadKeptLabeler(dir, "stage4");
+      if (labeler.ok) editionsWithStage4++;
       let featureRows: ScoringFeatureRow[] = [];
       if (existsSync(featPath)) {
         const payload = JSON.parse(readFileSync(featPath, "utf8"));
         if (Array.isArray(payload?.rows)) featureRows = payload.rows;
       }
-      events.push(...analyzeEditionOverrides(edition, categorizedJson, approvedJson, featureRows));
+      events.push(...analyzeEditionOverrides(edition, categorizedJson, approvedJson, featureRows, labeler.ok ? labeler.value.stage4Outcome : undefined));
       editionsAnalyzed++;
     } catch (err) {
       // Achado de review do #7976: catch sem discriminação escondia erro de
@@ -239,7 +264,13 @@ export function analyzeAllEditions(editionsRoot: string): AnalyzeAllResult {
     }
   }
   const missingFeatures = events.filter((e) => e.features === null).length;
-  return { editions_analyzed: editionsAnalyzed, editions_skipped: skipped, events, events_missing_features: missingFeatures };
+  return {
+    editions_analyzed: editionsAnalyzed,
+    editions_with_stage4_outcome: editionsWithStage4,
+    editions_skipped: skipped,
+    events,
+    events_missing_features: missingFeatures,
+  };
 }
 
 function summarize(result: AnalyzeAllResult): string {
@@ -262,6 +293,19 @@ function summarize(result: AnalyzeAllResult): string {
   lines.push("");
   lines.push("Distribuição de rótulos:");
   for (const [label, count] of Object.entries(byLabel).sort(([, a], [, b]) => b - a)) {
+    lines.push(`  ${label}: ${count}`);
+  }
+  lines.push("");
+  lines.push(
+    `Desfecho no Stage 4 (#9373) — ${result.editions_with_stage4_outcome}/${result.editions_analyzed} edições com gate 4 medível:`,
+  );
+  const byStage4: Record<string, number> = {};
+  for (const e of result.events) {
+    if (e.stage4_outcome === null) continue;
+    const key = `${e.track_a ?? e.track_b ?? "?"} → ${e.stage4_outcome}`;
+    byStage4[key] = (byStage4[key] ?? 0) + 1;
+  }
+  for (const [label, count] of Object.entries(byStage4).sort(([, a], [, b]) => b - a)) {
     lines.push(`  ${label}: ${count}`);
   }
   return lines.join("\n");

@@ -115,6 +115,18 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage N --level warn \
 
 **Quando logar**: sempre que o orchestrator executar código de remediação não-prescrito pelo playbook — inclusive contornar falha de subagente escrevendo o output você mesmo. Rico ou leve, mas sempre um dos dois: sem log nenhum, fixes in-flight escapam do auto-reporter (gap identificado em #1210, reincidente em 260813 — ENOENT do `image-crop-reviewer` contornado sem log nenhum).
 
+### Handoff da 1ª sessão — registrar o que só existe no contexto (#9374)
+
+Desde o #6171 as Etapas 5–6 rodam numa sessão NOVA, e o `auto-reporter` (Stage 6) só enxerga disco. Durante as Etapas 0–4, registrar na hora cada **halt**, **queda de MCP**, **retry manual**, **reclamação do editor sobre o que a pipeline produziu** (no gate ou fora dele) e **outro problema** que não virou log estruturado:
+
+```bash
+npx tsx scripts/session-handoff.ts add --edition-dir {EDITION_DIR}/ \
+  --kind halt|mcp_drop|retry|editor_complaint|problem --stage N \
+  --summary "..." [--component <agent|script|mcp>] [--severity low|medium|high]
+```
+
+Grava `{EDITION_DIR}/_internal/session-1-handoff.json`, lido pelo `collect-edition-signals.ts` no Stage 6 (signal `session1_handoff`). Remediação não prevista no playbook continua no `log-runtime-fix.ts` acima (não duplicar aqui); pedido de mudança de conteúdo continua no `log-editor-request.ts` abaixo — `editor_complaint` é a reclamação sobre a QUALIDADE do que a pipeline gerou (ex: "o writer de novo inventou número"), o sinal de bug por trás do pedido. O fechamento (`close`) acontece no §4e do Stage 4.
+
 ### Pedidos editoriais do editor — log quando o editor pedir mudança de conteúdo (#4966)
 
 Lado oposto do runtime fix acima: quando o **editor** pede uma mudança de **conteúdo** durante qualquer stage — em gate ou ad-hoc no meio da conversa (troca de título, promoção/corte/swap de destaque, reescrita de lead, tom, corte de tamanho, troca de link, refazer imagem/crop, reordenar seção, escolha do É IA?, reescrita de social, correção factual) — **logar via, antes de aplicar a mudança:**

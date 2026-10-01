@@ -38,7 +38,10 @@ import { computeEditionCanary, analyzeCanaryTrend, type EditionCanaryPoint } fro
 const ROOT = resolve(import.meta.dirname, "..");
 
 export function computeCanarySeries(editionsRoot: string, topN = 15): EditionCanaryPoint[] {
-  const { editions } = loadEditionRows(editionsRoot);
+  // "stage1" de propósito (#9373): o canário precisa do pool INTEIRO
+  // (ranking entre os finalistas); o rótulo stage4 descartaria as linhas sem
+  // sinal do editor. `kept` não é usado aqui.
+  const { editions } = loadEditionRows(editionsRoot, "stage1");
   return editions.map((ed) => computeEditionCanary(ed.edition, ed.rows, topN));
 }
 

@@ -43,6 +43,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { armFromProfile, type Arm, type Tri } from "./lib/jev-ab-report.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import {
   STAGE2_BASELINE_LABEL,
@@ -93,6 +94,13 @@ export type GateName = "stage1" | "newsletter" | "titles" | "social" | "images";
 
 export interface EditionManualEdits {
   edition: string;
+  /**
+   * #9374: braço do A/B do Jev (`A` = `/diaria-edicao`, `B` =
+   * `/diaria-edicao-jev`, `unknown` = marcador ilegível) — mesmo critério do
+   * `jev-ab-report.ts`. Sem estratificar, a série mistura dois comportamentos
+   * de seleção.
+   */
+  arm: Arm;
   baseline_status: BaselineHealth["status"];
   gates: Record<GateName, GateResult>;
   manual_edit_count: number;
@@ -265,6 +273,17 @@ function imagesGate(editionDir: string): GateResult {
   return { status: "measured", baseline: "stage3-sentinel", changes };
 }
 
+/** Lê `_internal/.jev-profile.json` como Tri (ausente/corrompido/ok). */
+export function readJevProfile(editionDir: string): Tri<unknown> {
+  const p = join(editionDir, "_internal", ".jev-profile.json");
+  if (!existsSync(p)) return { state: "absent" };
+  try {
+    return { state: "ok", value: JSON.parse(readFileSync(p, "utf8")) as unknown };
+  } catch {
+    return { state: "corrupt" };
+  }
+}
+
 /** Mede uma edição. Somente leitura. */
 export function computeEditionManualEdits(editionDir: string, edition: string): EditionManualEdits {
   const health = assessStage2BaselineOnDisk(editionDir);
@@ -280,7 +299,7 @@ export function computeEditionManualEdits(editionDir: string, edition: string): 
     images: imagesGate(editionDir),
   };
   const manual_edit_count = Object.values(gates).reduce((a, g) => a + g.changes.length, 0);
-  return { edition, baseline_status: health.status, gates, manual_edit_count, zero_manual_edits: decideZeroManualEdits(gates) };
+  return { edition, arm: armFromProfile(readJevProfile(editionDir)), baseline_status: health.status, gates, manual_edit_count, zero_manual_edits: decideZeroManualEdits(gates) };
 }
 
 export interface SeriesSummary {
@@ -290,6 +309,8 @@ export interface SeriesSummary {
   unknown: number;
   /** Edições consecutivas sem modificação, contando da mais recente pra trás. */
   consecutive_zero: number;
+  /** #9374: mesma contagem estratificada pelo braço do A/B do Jev. */
+  by_arm: Record<Arm, { editions: number; zero: number; with_edits: number; unknown: number }>;
 }
 
 /** Agrega a série (entrada em qualquer ordem). Pura. */
@@ -303,6 +324,20 @@ export function summarizeSeries(results: readonly EditionManualEdits[]): SeriesS
     with_edits: sorted.filter((r) => r.zero_manual_edits === false).length,
     unknown: sorted.filter((r) => r.zero_manual_edits === null).length,
     consecutive_zero: streak,
+    by_arm: Object.fromEntries(
+      (["A", "B", "unknown"] as const).map((arm) => {
+        const rs = sorted.filter((r) => r.arm === arm);
+        return [
+          arm,
+          {
+            editions: rs.length,
+            zero: rs.filter((r) => r.zero_manual_edits === true).length,
+            with_edits: rs.filter((r) => r.zero_manual_edits === false).length,
+            unknown: rs.filter((r) => r.zero_manual_edits === null).length,
+          },
+        ];
+      }),
+    ) as SeriesSummary["by_arm"],
   };
 }
 
@@ -334,12 +369,16 @@ function main(): void {
     const parts = (Object.entries(r.gates) as Array<[GateName, GateResult]>).map(([name, g]) =>
       g.status === "unmeasured" ? `${name}=?` : `${name}=${g.changes.length}`,
     );
-    console.log(`${r.edition}  ${verdict(r.zero_manual_edits).padEnd(16)} baseline=${r.baseline_status.padEnd(7)} ${parts.join(" ")}`);
+    console.log(`${r.edition}  braço=${r.arm.padEnd(7)} ${verdict(r.zero_manual_edits).padEnd(16)} baseline=${r.baseline_status.padEnd(7)} ${parts.join(" ")}`);
   }
   console.log(
     `\n${summary.editions} edições: ${summary.zero} sem modificação, ${summary.with_edits} modificadas, ${summary.unknown} indeterminadas. ` +
       `Consecutivas sem modificação (mais recentes): ${summary.consecutive_zero} — meta da #7972: 3.`,
   );
+  for (const [arm, c] of Object.entries(summary.by_arm)) {
+    if (c.editions === 0) continue;
+    console.log(`  braço ${arm}: ${c.editions} edições — ${c.zero} sem modificação, ${c.with_edits} modificadas, ${c.unknown} indeterminadas.`);
+  }
 }
 
 if (isMainModule(import.meta.url)) {
