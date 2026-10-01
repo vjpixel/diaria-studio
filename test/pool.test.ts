@@ -42,7 +42,7 @@ test("pool: concorrência maior que itens não quebra", async () => {
   assert.deepEqual(seen.sort((a, b) => a - b), [1, 2]);
 });
 
-// #8091: poolAbortOnError — extraída de clarice-engagement-cohorts.ts pra
+// #8091: poolAbortOnError — extraída de clarice-engagement-cohorts.ts (v1, removido no #9330) pra
 // lib/pool.ts, agora reusada também por clarice-sync-brevo.ts (flush() com
 // retry contra SQLite lock).
 

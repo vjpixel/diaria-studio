@@ -1,6 +1,6 @@
 /**
  * dashboard-kv-types.ts — tipos dos payloads KV compartilhados entre os
- * scripts que os PRODUZEM (`clarice-engagement-cohorts.ts`, `clarice-mv-status.ts`,
+ * scripts que os PRODUZEM (`clarice-engagement-cohorts-v2.ts`, `clarice-mv-status.ts`,
  * `clarice-db-summary.ts`) e o worker `brevo-dashboard` que os CONSOME (#3081).
  *
  * Antes cada um desses 4 tipos (`EngagementCohorts`, `MvGroupStatus`, `MvStatus`,
@@ -16,7 +16,7 @@
 
 /**
  * #2426: coortes de engajamento por contato. Pré-computadas por
- * `scripts/clarice-engagement-cohorts.ts` (que faz os ~40k GETs per-contato
+ * `scripts/clarice-engagement-cohorts-v2.ts --push` (export por campanha,
  * fora do Worker) e gravadas no KV sob `cohorts:engagement`. O Worker só lê e
  * renderiza — nunca recomputa no render. As 5 coortes são mutuamente exclusivas
  * (cada contato em exatamente uma); "saídas" (bounce/unsub) têm precedência.

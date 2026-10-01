@@ -9,7 +9,7 @@
  * NÃO aborta os demais workers se um lançar (Promise.all rejeita, mas as outras
  * coroutines continuam puxando itens). Quem precisa de abort-on-error use
  * `poolAbortOnError` abaixo (#8091 — extraído da variante que
- * `clarice-engagement-cohorts.ts` mantinha localmente, #2426 review; e agora
+ * `clarice-engagement-cohorts.ts` (v1, removido no #9330) mantinha localmente, #2426 review; e agora
  * também usada por `clarice-sync-brevo.ts` para não continuar martelando
  * Brevo/SQLite depois que uma lane já decidiu abortar o run inteiro).
  */
@@ -30,7 +30,7 @@ export async function pool<T>(
 /**
  * Pool de concorrência limitada com ABORT no primeiro erro (#2426 review,
  * extraído para cá em #8091 — antes vivia só como cópia local em
- * `clarice-engagement-cohorts.ts`).
+ * `clarice-engagement-cohorts.ts` (v1, removido no #9330)).
  *
  * Nota sobre "unhandled rejection" (#8091): `Promise.all` já se inscreve em
  * TODAS as promises de `run()` de forma síncrona, no mesmo turno em que são

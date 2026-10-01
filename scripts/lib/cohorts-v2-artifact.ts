@@ -52,7 +52,7 @@ export interface CohortsV2Artifact {
  * `JSON.parse` num arquivo em disco, tipo não garantido). Aceita os DOIS
  * formatos possíveis dos arquivos consumidos por `compare-cohorts.ts --a/--b`:
  *
- *   - v1 (`clarice-engagement-cohorts.ts --dry-run`, redirecionado pra
+ *   - v1 (`clarice-engagement-cohorts.ts --dry-run` (v1, removido no #9330), redirecionado pra
  *     arquivo) ou v2 ANTIGO (`--out` de antes deste fix): `EngagementCohorts`
  *     cru, sem wrapper — `diagnostics` fica `undefined`.
  *   - v2 NOVO (`--out` deste fix em diante): `CohortsV2Artifact` — cohorts +

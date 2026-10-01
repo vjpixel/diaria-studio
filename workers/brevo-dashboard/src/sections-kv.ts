@@ -622,7 +622,7 @@ export function renderMonthlyTotalsSection(
  * #2426: renderiza a tabela de coortes de engajamento por contato.
  * Cada contato cai em EXATAMENTE uma coorte (partição mutuamente exclusiva);
  * "saídas" (bounce/descadastro) têm precedência sobre engajamento. O dado é
- * pré-computado por scripts/clarice-engagement-cohorts.ts → KV.
+ * pré-computado por scripts/clarice-engagement-cohorts-v2.ts --push → KV (#9330).
  *
  * Graceful: quando `cohorts` é null (KV ainda não populado), renderiza um stub
  * com a instrução de como gerar — seção presente, nunca quebra o render.
@@ -639,7 +639,7 @@ export function renderEngagementCohortsSection(
   <h2 class="section-title">Coortes de engajamento</h2>
   ${opts.studioMode
     ? renderKvUnavailableNote("panel-engajamento")
-    : '<p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-engagement-cohorts.ts</code> para popular (faz os GETs per-contato e grava no KV).</p>'}
+    : '<p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-engagement-cohorts-v2.ts --push</code> para popular (exporta por campanha e grava no KV).</p>'}
 </section>`;
   }
 

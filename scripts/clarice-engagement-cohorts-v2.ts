@@ -1,7 +1,7 @@
 /**
  * clarice-engagement-cohorts-v2.ts (#4451 Fase 1 + Fase 2)
  *
- * Redesenho estrutural de `clarice-engagement-cohorts.ts`: em vez de 1 `GET
+ * Redesenho estrutural de `clarice-engagement-cohorts.ts` (v1, removido no #9330): em vez de 1 `GET
  * /contacts/{id}` por CONTATO (hoje ~129k contatos, ~21,5h de crawl, travado
  * desde 260729), este script inverte o eixo — para cada CAMPANHA enviada
  * (dezenas/poucas centenas na história do projeto), exporta TODOS os
@@ -20,13 +20,10 @@
  *   3. Comparar output de computeCohorts() do v2 contra o v1 (empírico) —
  *      EXECUTADO ao vivo 260808/260809 (2 tentativas, ver
  *      CUTOVER: DESIGN VALIDADO abaixo). Tooling em `scripts/compare-cohorts.ts`.
- *   4. Trocar a task agendada `DiariaCohortsCrawl` pro script novo + aposentar
- *      v1 — decisão SEPARADA do editor, ainda NÃO feita (fora do escopo da
- *      formalização de 260810 — ver seção abaixo). v1
- *      (`clarice-engagement-cohorts.ts`) segue sendo o crawl agendado hoje.
- *      #5015 (260811) fechou só a METADE "este script sabe escrever no KV"
- *      (flag `--push`, ver acima) — v1 segue no repo como fallback
- *      documentado, não removido; "aposentar v1" continua em aberto.
+ *   4. Trocar a task agendada pro script novo + aposentar v1 — FEITO: task
+ *      `Diaria-Clarice-Cohorts-Crawl` roda este script com `--push` (#4451,
+ *      #5015) e o v1 per-contato foi REMOVIDO do repo no #9330 (decisão do
+ *      editor 01/10/2026). Núcleo compartilhado em `lib/engagement-cohorts.ts`.
  *
  * CUTOVER: DESIGN VALIDADO (#4451, 260810 — decisão do editor, briefing
  * overnight) — troca de TASK ainda pendente. A Fase 3 rodou ao vivo contra a
@@ -39,8 +36,8 @@
  * instante, ~2,5h de custo, não repetido). O editor aceitou esse padrão como
  * evidência suficiente de que o DESIGN está correto, sem esperar a tolerância
  * numérica bater numa comparação assíncrona de dias — v2 passa a ser
- * considerado VALIDADO; v1 permanece no repo como fallback documentado (não
- * removido). O que isso NÃO resolve, honestamente: item 2 do fleet review de
+ * considerado VALIDADO; v1 ficou como fallback documentado até o #9330 (que o
+ * removeu). O que isso NÃO resolve, honestamente: item 2 do fleet review de
  * #4479 (distribuição real de campanhas sem `sentDate` — nunca checada, ver
  * `isWithinRefetchWindow` abaixo) e item 1 (fallback pro cache antigo em
  * falha de export — decisão de comportamento ainda em aberto, ver
@@ -55,7 +52,7 @@
  * tabela de números: issue #4451, comentários de 260809/260810;
  * `docs/cohorts-schedule.md` tem o resumo operacional.
  *
- * `computeCohorts()` (de clarice-engagement-cohorts.ts) NÃO MUDA — só a
+ * `computeCohorts()` (de lib/engagement-cohorts.ts, #9330) NÃO MUDA — só a
  * ORIGEM do `ContactEngagement` por e-mail muda (per-campanha em vez de
  * per-contato). v1 não é tocado por este arquivo.
  *
@@ -66,7 +63,7 @@
  * KV que o v1 grava (`COHORTS_KV_KEY = "cohorts:engagement"`, mesmo
  * namespace `DASHBOARD_KV_NAMESPACE_ID`, mesmo shape — `computeCohorts()`
  * não mudou entre v1/v2) via `pushCohortsToKV`, que porta a MESMA proteção
- * anti-clobber do v1 (`clarice-engagement-cohorts.ts`): nunca sobrescreve o
+ * anti-clobber do v1 (`clarice-engagement-cohorts.ts` (v1, removido no #9330)): nunca sobrescreve o
  * KV quando `cohorts.universe === 0`. Este script NUNCA troca a task
  * agendada por si só (isso é config estática em `scheduled-tasks.ts`).
  *
@@ -155,7 +152,7 @@ import {
   DASHBOARD_KV_NAMESPACE_ID,
   type ContactEngagement,
   type EngagementCohorts,
-} from "./clarice-engagement-cohorts.ts";
+} from "./lib/engagement-cohorts.ts";
 
 loadProjectEnv();
 
@@ -336,7 +333,7 @@ export interface CampaignExportClient {
   downloadCsv(url: string): Promise<string>;
 }
 
-/** Paginado, mesmo padrão de `fetchSentListIds` em clarice-engagement-cohorts.ts. */
+/** Paginado (padrão herdado do `fetchSentListIds` do v1, removido no #9330). */
 async function fetchSentCampaigns(apiKey: string): Promise<SentCampaignRef[]> {
   const out: SentCampaignRef[] = [];
   let offset = 0;
@@ -516,7 +513,7 @@ export async function getOrFetchCampaignCache(
 
 /**
  * Pool minimalista com concorrência N — cópia deliberadamente pequena e
- * independente da `pool()` de clarice-engagement-cohorts.ts (não exportada
+ * independente da `pool()` de clarice-engagement-cohorts.ts (v1, removido no #9330) (não exportada
  * de lá, e este arquivo não toca o v1 — #4451 Fase 1 é escopo isolado).
  * Sem abort-on-first-error (diferente do v1): uma campanha que falhar no
  * export não deve derrubar o processamento das demais — o resultado agregado
@@ -615,7 +612,7 @@ export function fetchAdminOptOutEmails(dbPath: string = DEFAULT_DB_PATH): AdminO
  * nenhum export de campanha — o próprio gap que este mecanismo fecha) entra
  * como entrada nova com `received:0, opened:0, bounced:false, optedOut:true`
  * — `computeCohorts` o conta em `exits` mesmo sem `received`/`opened`
- * (precedência de saída, ver `clarice-engagement-cohorts.ts`).
+ * (precedência de saída, ver `lib/engagement-cohorts.ts`).
  */
 export function applyAdminOptOuts(
   aggregate: Map<string, ContactEngagement>,
@@ -735,7 +732,7 @@ export async function buildCohortsV2(
   };
 }
 
-// ─── Escrita no KV (#5015 — porta a lógica de clarice-engagement-cohorts.ts) ─
+// ─── Escrita no KV (#5015 — porta a lógica de clarice-engagement-cohorts.ts (v1, removido no #9330)) ─
 
 /** Resultado de `pushCohortsToKV` — `pushed: false` sinaliza o guard anti-clobber (não é erro de rede). */
 export interface PushCohortsResult {
@@ -747,7 +744,7 @@ export interface PushCohortsResult {
 /**
  * Grava o `EngagementCohorts` computado no KV do worker `clarice-dashboard`,
  * na MESMA chave (`COHORTS_KV_KEY = "cohorts:engagement"`) e MESMO namespace
- * (`DASHBOARD_KV_NAMESPACE_ID`) que `clarice-engagement-cohorts.ts` (v1)
+ * (`DASHBOARD_KV_NAMESPACE_ID`) que `clarice-engagement-cohorts.ts` (v1, removido no #9330)
  * grava — o shape gravado é o `EngagementCohorts` puro, sem wrapper: o
  * worker lê `env.STATS_CACHE.get(COHORTS_KV_KEY, "json")` e espera esse
  * shape direto, não `CohortsV2Artifact` (que é só pro `--out` local,
@@ -828,7 +825,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   // #5015: fail-fast nas credenciais Cloudflare ANTES do backfill por
-  // campanha — mesmo racional do v1 (clarice-engagement-cohorts.ts): sem
+  // campanha — mesmo racional do v1 (clarice-engagement-cohorts.ts (v1, removido no #9330)): sem
   // isso, a falta de credencial só seria detectada DEPOIS de gastar a quota
   // de export da Brevo. Sem --push, o script segue dry-run puro e não
   // precisa dessas credenciais.

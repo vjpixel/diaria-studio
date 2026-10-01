@@ -128,14 +128,14 @@ export interface BrevoList {
 
 /**
  * #2426: coortes de engajamento por contato. Pré-computadas pelo script
- * `scripts/clarice-engagement-cohorts.ts` (que faz os ~40k GETs per-contato
- * fora do Worker) e gravadas no KV sob `cohorts:engagement`. O Worker só lê e
+ * `scripts/clarice-engagement-cohorts-v2.ts --push` (export por campanha,
+ * fora do Worker; o crawl per-contato v1 foi removido no #9330) e gravadas no KV sob `cohorts:engagement`. O Worker só lê e
  * renderiza — nunca recomputa no render. As 5 coortes são mutuamente exclusivas
  * (cada contato em exatamente uma); "saídas" (bounce/unsub) têm precedência.
  *
  * #3081: fonte única em `scripts/lib/dashboard-kv-types.ts` (dependency-free,
  * mesmo padrão de `CouponUsageReport` acima) — antes era uma cópia manualmente
- * sincronizada com a interface homônima em scripts/clarice-engagement-cohorts.ts.
+ * sincronizada com a interface homônima no antigo script v1 (removido no #9330).
  */
 export type {
   EngagementCohorts,
@@ -194,8 +194,8 @@ export const RECENT_STATS_TTL = 4200; // segundos (70min) — #2282, elevado no 
 export const MID_RANGE_STATS_TTL = 4 * 3600; // segundos (4h) — #6720 Fatia C
 
 // #2426: chave KV das coortes de engajamento, gravada por
-// scripts/clarice-engagement-cohorts.ts. Mantida em sincronia com COHORTS_KV_KEY
-// daquele script (bundles separados não compartilham constantes).
+// scripts/clarice-engagement-cohorts-v2.ts. Mantida em sincronia com COHORTS_KV_KEY
+// de scripts/lib/engagement-cohorts.ts (bundles separados não compartilham constantes).
 export const COHORTS_KV_KEY = "cohorts:engagement";
 // #2609: chave KV do status MillionVerifier por grupo, gravada por scripts/clarice-mv-status.ts.
 export const MV_STATUS_KV_KEY = "mv:status";

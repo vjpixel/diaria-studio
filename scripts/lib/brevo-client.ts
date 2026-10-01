@@ -756,7 +756,7 @@ interface BrevoCampaignListRef {
   id?: number;
   // #2994: campo real da Brevo API é `recipients.lists` (array de list_id),
   // NÃO `recipients.listIds` — mesmo shape já consumido em
-  // scripts/clarice-engagement-cohorts.ts (`c?.recipients?.lists`). Confirmado
+  // scripts/clarice-engagement-cohorts.ts (v1, removido no #9330) (`c?.recipients?.lists`). Confirmado
   // no código existente antes de assumir o nome do campo.
   recipients?: { lists?: number[] };
 }

@@ -92,13 +92,13 @@ const eiaFixture = normalizeEiaEngagement({
 describe("renderEngagementCohortsSection — aviso studioMode (#4173)", () => {
   it("null + sem opts (produção) → mantém o texto antigo ('rode o script')", () => {
     const html = renderEngagementCohortsSection(null);
-    assert.match(html, /Rode <code>npx tsx scripts\/clarice-engagement-cohorts\.ts/);
+    assert.match(html, /Rode <code>npx tsx scripts\/clarice-engagement-cohorts-v2\.ts --push/);
     assert.doesNotMatch(html, /Indisponível no painel local/);
   });
 
   it("null + studioMode:false explícito → idêntico ao default (regressão)", () => {
     const html = renderEngagementCohortsSection(null, new Date(), { studioMode: false });
-    assert.match(html, /Rode <code>npx tsx scripts\/clarice-engagement-cohorts\.ts/);
+    assert.match(html, /Rode <code>npx tsx scripts\/clarice-engagement-cohorts-v2\.ts --push/);
   });
 
   it("null + studioMode:true → aviso 'indisponível no painel local' com link pro dashboard Cloudflare", () => {

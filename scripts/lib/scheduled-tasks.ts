@@ -305,7 +305,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Clarice-Cohorts-Crawl",
     // #4451 (decisão do editor, 260811): a task Windows legada
-    // `DiariaCohortsCrawl` (crawl per-contato via `clarice-engagement-cohorts.ts`,
+    // `DiariaCohortsCrawl` (crawl per-contato via `clarice-engagement-cohorts.ts` (v1, removido no #9330),
     // v1 — ver docs/cohorts-schedule.md) NUNCA existiu neste registro nem tem
     // timer systemd nesta máquina (`grep -n "CohortsCrawl\|cohorts"` no
     // registro pré-#4451 e `systemctl --user list-timers` vazios) — não é
@@ -324,7 +324,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // "Coortes de engajamento" do dashboard clarice-dashboard a cada
     // disparo (21:00 BRT) — antes do #5015, o step só refrescava o
     // artefato local `--out` e o KV ficava congelado no último sucesso
-    // manual do v1 (`clarice-engagement-cohorts.ts`, que não tem task
+    // manual do v1 (`clarice-engagement-cohorts.ts` (v1, removido no #9330), que não tem task
     // agendada nesta máquina). `--out` continua presente: o artefato local
     // (cohorts + diagnostics) segue útil pra `scripts/compare-cohorts.ts` /
     // inspeção manual, independente do `--push`.
@@ -344,9 +344,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // Mesmo padrao de Diaria-Home-Meta-Check (#5005): task
     // registrada depois do cutover systemd (epica #4798) -- o antigo
     // `DiariaCohortsCrawl` do Windows nunca foi migrado pra este registro --
-    // era via `docs/cohorts-schedule.md` diretamente, apontando pro v1, e
-    // segue existindo so como doc historico, nao como entrada aqui.
-    issue: "#4451",
+    // apontava pro v1, que foi REMOVIDO no #9330 (decisao do editor 01/10/2026:
+    // so o v2). Esta task e o unico caminho que atualiza `cohorts:engagement`.
+    issue: "#4451, #9330",
   },
   {
     name: "Diaria-Clarice-Dashboard-Precompute",

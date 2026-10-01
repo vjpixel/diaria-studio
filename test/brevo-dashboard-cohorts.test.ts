@@ -5,8 +5,6 @@
  *  - computeCohorts: partição mutuamente exclusiva + precedência de saída
  *    (bounce/unsub ganha de open), bucketing por (recebido, aberto), universo,
  *    maxReceived e breakdown disjunto (bounced + optedOut = exits).
- *  - normalizeContact: shapes reais da Brevo (unsubscriptions é OBJETO, bounce
- *    tem prioridade sobre optedOut no breakdown).
  *  - renderEngagementCohortsSection: stub gracioso (null), contagens, rótulo "2+".
  *  - renderDashboardHtml injeta a seção.
  */
@@ -14,14 +12,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   computeCohorts,
-  normalizeContact,
-  remainingRefs,
-  shouldResume,
-  MAX_RESUME_AGE_H,
   type ContactEngagement,
-  type ContactRef,
-  type Checkpoint,
-} from "../scripts/clarice-engagement-cohorts.ts";
+} from "../scripts/lib/engagement-cohorts.ts";
 import {
   renderEngagementCohortsSection,
   renderDashboardHtml,
@@ -113,171 +105,6 @@ test("computeCohorts: opened>0 com received=0 (anomalia Brevo) é contado, não 
   assert.equal(r.opened1, 1);
 });
 
-test("normalizeContact: bounce (hard/soft) detectado; unsubscriptions é objeto", () => {
-  const c = normalizeContact({
-    statistics: {
-      messagesSent: [{}, {}],
-      opened: [{}],
-      softBounces: [{}],
-      unsubscriptions: { userUnsubscription: [], adminUnsubscription: [] },
-    },
-  });
-  assert.equal(c.received, 2);
-  assert.equal(c.opened, 1);
-  assert.equal(c.bounced, true);
-  assert.equal(c.optedOut, false); // bounce tem prioridade — optedOut fica false
-});
-
-test("normalizeContact: unsub via objeto userUnsubscription marca optedOut", () => {
-  const c = normalizeContact({
-    statistics: {
-      messagesSent: [{}],
-      unsubscriptions: { userUnsubscription: [{ campaignId: 1 }], adminUnsubscription: [] },
-    },
-  });
-  assert.equal(c.optedOut, true);
-  assert.equal(c.bounced, false);
-});
-
-test("normalizeContact: emailBlacklisted marca optedOut quando não há bounce", () => {
-  const c = normalizeContact({ emailBlacklisted: true, statistics: { messagesSent: [{}] } });
-  assert.equal(c.optedOut, true);
-});
-
-test("normalizeContact: bounce + blacklist → bounced, optedOut false (sem dupla contagem)", () => {
-  const c = normalizeContact({
-    emailBlacklisted: true,
-    statistics: { hardBounces: [{}] },
-  });
-  assert.equal(c.bounced, true);
-  assert.equal(c.optedOut, false);
-});
-
-// ─── Checkpoint / resume (resiliência a rate-limit) ──────────────────────────
-
-const REF = (id: number): ContactRef => ({ id, blacklisted: false });
-const ENG = (): ContactEngagement => ({ received: 1, opened: 0, bounced: false, optedOut: false });
-
-test("remainingRefs: filtra ids já buscados (resume não re-gasta GETs)", () => {
-  const refs = [REF(1), REF(2), REF(3)];
-  const done = { "1": ENG(), "3": ENG() };
-  const rem = remainingRefs(refs, done);
-  assert.deepEqual(rem.map((r) => r.id), [2]);
-});
-
-test("remainingRefs: nada feito → todos pendentes; tudo feito → vazio", () => {
-  const refs = [REF(1), REF(2)];
-  assert.equal(remainingRefs(refs, {}).length, 2);
-  assert.equal(remainingRefs(refs, { "1": ENG(), "2": ENG() }).length, 0);
-});
-
-const NOW = Date.parse("2026-06-19T12:00:00Z");
-function cp(
-  startedAt: string,
-  scope: "emailed" | "all" = "emailed",
-  lastResumedAt?: string,
-): Checkpoint {
-  return { startedAt, lastResumedAt, scope, refs: [REF(1)], done: {} };
-}
-
-test("shouldResume: null ou escopo diferente → false", () => {
-  assert.equal(shouldResume(null, NOW, "emailed"), false);
-  assert.equal(shouldResume(cp("2026-06-19T11:00:00Z", "all"), NOW, "emailed"), false);
-});
-
-test("shouldResume: checkpoint recente do mesmo escopo → true", () => {
-  assert.equal(shouldResume(cp("2026-06-19T11:00:00Z"), NOW, "emailed"), true);
-});
-
-test("shouldResume: checkpoint antigo (> MAX_RESUME_AGE_H) → false (recomeça)", () => {
-  const old = new Date(NOW - (MAX_RESUME_AGE_H + 1) * 3_600_000).toISOString();
-  assert.equal(shouldResume(cp(old), NOW, "emailed"), false);
-});
-
-test("shouldResume: startedAt inválido ou no futuro → false", () => {
-  assert.equal(shouldResume(cp("não-é-data"), NOW, "emailed"), false);
-  assert.equal(shouldResume(cp("2026-06-20T12:00:00Z"), NOW, "emailed"), false);
-});
-
-// #4451: o crawl completo (~129k contatos a ~100 req/min) leva ~21,5h
-// ESTIMADAS (129.251 ÷ ~100 req/min) — o crawl nunca completou com sucesso
-// pra medir de verdade, trava em ~7.000/129.251 desde 2026-07-29. Com
-// MAX_RESUME_AGE_H=18 (valor antigo), um checkpoint dessa idade já tinha
-// expirado — uma rodada que não terminava a tempo era descartada e recomeçava
-// do zero, causa raiz do travamento.
-const ESTIMATED_FULL_CRAWL_HOURS = 21.5;
-
-test("shouldResume: checkpoint na idade do crawl completo estimado (~21,5h) ainda é retomado (#4451)", () => {
-  const midCrawl = new Date(NOW - ESTIMATED_FULL_CRAWL_HOURS * 3_600_000).toISOString();
-  assert.equal(shouldResume(cp(midCrawl), NOW, "emailed"), true);
-});
-
-test("MAX_RESUME_AGE_H cobre o crawl completo estimado (~21,5h) com folga (#4451)", () => {
-  assert.ok(
-    MAX_RESUME_AGE_H > ESTIMATED_FULL_CRAWL_HOURS,
-    `MAX_RESUME_AGE_H (${MAX_RESUME_AGE_H}h) precisa ser maior que a duração estimada do crawl completo (${ESTIMATED_FULL_CRAWL_HOURS}h), senão o checkpoint expira antes do crawl terminar`
-  );
-});
-
-// #4451 parte 2 (260803): a task `DiariaCohortsCrawl` dispara 1×/dia
-// (`docs/cohorts-schedule.md`). Antes deste fix, `cp.startedAt` nunca era
-// atualizado num resume — só no branch de CRIAÇÃO do checkpoint — então
-// `shouldResume` sempre media a idade desde a tentativa ORIGINAL, não desde
-// a última atividade. Com disparos diários (~24h de gap) e MAX_RESUME_AGE_H
-// de 30h, isso limitava o acúmulo de progresso a ~1 disparo de resume (dia 2
-// ainda cabia: 24h < 30h; dia 3 já não: 48h ≥ 30h) — bem menos que os ~22
-// disparos diários necessários pra completar um crawl de ~129k contatos em
-// rodadas parciais. `buildCohorts` agora persiste `cp.lastResumedAt` a cada
-// resume bem-sucedido (ver branch `if (cp)` em `buildCohorts`); estes testes
-// cobrem o mecanismo que faz isso funcionar através de múltiplas lacunas
-// diárias consecutivas.
-const DAILY_GAP_HOURS = 24;
-
-test("shouldResume: 2 lacunas diárias consecutivas (~48h desde o início original) SÓ é resumível se lastResumedAt foi atualizado no resume intermediário (#4451)", () => {
-  // Dia 0: checkpoint criado.
-  const day0 = new Date(NOW - 2 * DAILY_GAP_HOURS * 3_600_000).toISOString();
-  // Dia 1 (24h depois): resume bem-sucedido atualiza lastResumedAt.
-  const day1Resume = new Date(NOW - DAILY_GAP_HOURS * 3_600_000).toISOString();
-  // Dia 2 (agora, NOW): checkpoint teria 48h de idade desde o início original,
-  // mas só 24h desde o último resume.
-  const withLastResumed = cp(day0, "emailed", day1Resume);
-  assert.equal(
-    shouldResume(withLastResumed, NOW, "emailed"),
-    true,
-    "com lastResumedAt atualizado no dia 1, o checkpoint do dia 2 ainda deve ser resumível (24h < 30h desde a última atividade)",
-  );
-
-  // Regressão do bug real: SEM lastResumedAt (comportamento pré-fix, campo
-  // ausente), a idade é medida desde startedAt original — 48h — e o
-  // checkpoint já teria expirado no dia 2 mesmo tendo sido retomado no dia 1.
-  const withoutLastResumed = cp(day0, "emailed");
-  assert.equal(
-    shouldResume(withoutLastResumed, NOW, "emailed"),
-    false,
-    "sem lastResumedAt, 48h desde o início original excede MAX_RESUME_AGE_H (30h) — reproduz o bug do #4451 parte 2",
-  );
-});
-
-test("shouldResume: N lacunas diárias consecutivas seguem resumíveis desde que cada resume atualize lastResumedAt (#4451)", () => {
-  // Simula 5 disparos diários (bem menos que os ~22 necessários pro crawl
-  // completar) — cada um retomando o checkpoint do dia anterior e atualizando
-  // lastResumedAt. O checkpoint nunca deveria expirar nesse cenário, porque o
-  // gap entre atividades sucessivas (24h) sempre fica < MAX_RESUME_AGE_H (30h).
-  let lastResumedAt = new Date(NOW - 5 * DAILY_GAP_HOURS * 3_600_000).toISOString(); // dia 0
-  const startedAt = lastResumedAt;
-  for (let day = 1; day <= 5; day++) {
-    const nowForDay = NOW - (5 - day) * DAILY_GAP_HOURS * 3_600_000;
-    const checkpoint = cp(startedAt, "emailed", lastResumedAt);
-    assert.equal(
-      shouldResume(checkpoint, nowForDay, "emailed"),
-      true,
-      `checkpoint deve ser resumível no dia ${day} (24h desde o resume anterior)`,
-    );
-    // buildCohorts atualizaria lastResumedAt neste ponto, antes do próximo disparo.
-    lastResumedAt = new Date(nowForDay).toISOString();
-  }
-});
-
 const SAMPLE: EngagementCohorts = {
   generatedAt: GEN,
   universe: 1000,
@@ -367,47 +194,7 @@ test("#2441 renderEngagementCohortsSection: tfoot com alerta quando soma != univ
   assert.match(html, /⚠️/, "deve ter alerta ⚠️ quando soma != universe");
 });
 
-// ─── #2446 (reaberta): normalizeContact IGNORA machineOpened; tooltips EXCLUEM MPP ──
-
-test("#2446 normalizeContact: machineOpened presente é IGNORADO — opened vem só de statistics.opened", () => {
-  // A Brevo não atribui MPP a contatos individuais — statistics.machineOpened não
-  // existe na API. Mesmo que um campo com esse nome apareça no shape, deve ser ignorado.
-  const c = normalizeContact({
-    statistics: {
-      messagesSent: [{}],
-      opened: [],
-      machineOpened: [{ campaignId: 42 }], // campo inexistente na API — deve ser ignorado
-    },
-  });
-  assert.equal(c.received, 1);
-  assert.equal(c.opened, 0, "machineOpened deve ser IGNORADO — opened vem só de statistics.opened");
-  assert.equal(c.bounced, false);
-  assert.equal(c.optedOut, false);
-});
-
-test("#2446 normalizeContact: machineOpened presente com aberturas diretas — só opened conta", () => {
-  // 1 abertura direta + 2 campos machineOpened (fictícios) → opened = 1 (só diretas).
-  const c = normalizeContact({
-    statistics: {
-      messagesSent: [{}, {}, {}],
-      opened: [{ campaignId: 1 }],
-      machineOpened: [{ campaignId: 2 }, { campaignId: 3 }], // ignorado
-    },
-  });
-  assert.equal(c.opened, 1, "machineOpened deve ser ignorado — opened = só statistics.opened");
-});
-
-test("#2446 normalizeContact: sem machineOpened → comportamento inalterado", () => {
-  // Campo ausente (comportamento normal — statistics.opened é a fonte).
-  const c = normalizeContact({
-    statistics: {
-      messagesSent: [{}],
-      opened: [{}],
-      // machineOpened ausente
-    },
-  });
-  assert.equal(c.opened, 1, "sem machineOpened, opened vem de statistics.opened normalmente");
-});
+// ─── #2446 (reaberta): tooltips EXCLUEM MPP ──
 
 test("#2446 computeCohorts: contato com opened=0 (sem trackable, mesmo com MPP externo) cai em 'Recebeu 1, não abriu'", () => {
   // As coortes usam statistics.opened (trackable, EXCLUI MPP). Contato com 0
