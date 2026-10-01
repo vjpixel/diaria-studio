@@ -2,8 +2,8 @@
  * build-champions-callout.ts (#2725; #9236 — hoje só o Sorteio)
  *
  * Preenche o texto do box de início de mês (sorteio do erro intencional; até
- * #9236 também trazia os campeões do É IA?, que migraram pro box do É IA?) — criado manualmente na edição 260701, agora reutilizável
- * e auto-gerado (#2727 já deu suporte de renderer: renderIntroCallout
+ * #9236 também trazia os campeões do É IA?, que migraram pro box do É IA?) —
+ * criado manualmente na edição 260701, agora reutilizável e auto-gerado (#2727 já deu suporte de renderer: renderIntroCallout
  * titleStyle="body" + sub-cabeçalho fully-bold + extractIntroCallout greedy).
  *
  * Puro e testável: recebe a config `raffle` (de `platform.config.json`) + o

@@ -1512,7 +1512,7 @@ export function renderDestaque(d: RenderDestaque, whatsappShareHtml = "", esp: E
 
 export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   const creditHtml = processInlineLinks(eia.credit);
-  // Leaderboard (#1160): linha "🏆 Vencedores…" sans ink dentro do painel.
+  // Leaderboard (#1160 → #9236): bloco de campeões (título + 🥇/🥈/🥉) dentro do painel.
   // #3103: 12px → 16px (não 14px — o type-scale do e-mail só permite
   // {12,16,22,26}px, cf. test/email-type-scale-white-shell.test.ts). Resultado
   // da última edição + CTA pro leaderboard são a mecânica central de
@@ -1523,13 +1523,14 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};`;
   const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
   // #1970: link persistente pra leaderboard em TODA edição (pódio acima é das
-  // 3 primeiras edições do mês, #9236). #9236: quando o bloco de campeões
-  // aparece COM o próprio "Veja o ranking completo" (slug do mês presente), o
-  // link persistente logo abaixo seria um 2º link de ranking empilhado — é
-  // suprimido só nessas edições. Sem slug o bloco sai sem link, e o
-  // persistente continua sendo o único ponto de entrada pro ranking.
-  const championsCarryRankingLink = hasLeaderboardChampions(eia) && Boolean(eia.leaderboardPeriodSlug);
-  const leaderboardLinkRow = championsCarryRankingLink ? "" : renderLeaderboardLinkRow(lbStyle);
+  // 3 primeiras edições do mês, #9236). #9236: quando a linha de cima já
+  // linka o ranking do mês (bloco de campeões com "Veja o ranking completo",
+  // ou o convite "Acompanhe o ranking" após fetch falho — ambos só existem
+  // com slug), o link persistente logo abaixo seria um 2º link de ranking
+  // empilhado — é suprimido só nessas edições. Sem slug a linha de cima sai
+  // sem link, e o persistente continua sendo o ponto de entrada pro ranking.
+  const rowCarriesRankingLink = leaderboardRow !== "" && Boolean(eia.leaderboardPeriodSlug);
+  const leaderboardLinkRow = rowCarriesRankingLink ? "" : renderLeaderboardLinkRow(lbStyle);
   // #3578 (correção do #3524, feedback do editor 260716): esta função —
   // `renderEIA` — só é usada pelo pipeline DIÁRIO (o mensal tem sua própria
   // implementação, `monthly-render.ts::renderEia`, que nunca ganhou este
@@ -1703,12 +1704,6 @@ function leaderboardRanked(eia: EIA): { nickname: string; rank: number }[] {
   return [];
 }
 
-/** Pure (#9236): true quando o box do É IA? vai exibir o bloco de campeões
- * (há pelo menos 1 colocado no pódio). */
-export function hasLeaderboardChampions(eia: EIA): boolean {
-  return leaderboardRanked(eia).length > 0;
-}
-
 const PODIUM_MEDALS: Record<number, string> = { 1: "🥇", 2: "🥈", 3: "🥉" };
 
 /**
@@ -1778,8 +1773,10 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
 
 /**
  * Pure (#1970): link PERSISTENTE pra leaderboard pública no rodapé do É IA?.
- * Renderiza em TODA edição (não só na 1ª do mês — o pódio/convite de
- * `renderLeaderboardTop1Row` é 1ª-do-mês, #1753). Estático, sem fetch: aponta
+ * Renderiza em toda edição EXCETO quando a linha de pódio/convite de
+ * `renderLeaderboardTop1Row` (3 primeiras edições do mês, #9236) já linka o
+ * ranking do mês — aí `renderEIA` suprime este pra não empilhar 2 links de
+ * ranking. Estático, sem fetch: aponta
  * pra raiz `/leaderboard` (sempre mostra o ranking vigente, sem precisar do
  * slug do mês). Dá ao leitor um ponto de entrada estável pro ranking de quem
  * mais acerta o "É IA?" toda edição.

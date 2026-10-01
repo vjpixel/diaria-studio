@@ -12,14 +12,13 @@
  * Tradeoff editorial: voto na edição 260531 conta em Maio 2026 mesmo se
  * leitor votar em 02/jun (#1345).
  *
- * #1753: o bloco só aparece na **1ª edição do mês** e anuncia o mês que acabou
- * de fechar (período ANTERIOR ao da edição — `previousMonthSlug`). Em qualquer
- * outra edição grava vazio (renderer omite). "1ª do mês" = nenhuma edição
- * publicada em `past-editions-raw.json` cai no mesmo ano-mês com data anterior.
- *
- * #9236: a janela passou de 1 para as 3 primeiras edições PUBLICADAS do mês
- * (`isWithinFirstEditionsOfMonth` + `CHAMPIONS_EDITIONS_PER_MONTH`) — o bloco
- * de campeões saiu do callout de intro e vive no box do É IA?.
+ * #1753 → #9236: o bloco só aparece nas **3 primeiras edições PUBLICADAS do
+ * mês** (`isWithinFirstEditionsOfMonth` + `CHAMPIONS_EDITIONS_PER_MONTH`; até
+ * #9236 era só a 1ª) e anuncia o mês que acabou de fechar (período ANTERIOR ao
+ * da edição — `previousMonthSlug`). Fora da janela grava vazio (renderer
+ * omite). A contagem usa as datas distintas de `published_at` em
+ * `past-editions-raw.json` no mesmo ano-mês, anteriores à edição. Desde #9236
+ * o bloco vive no box do É IA? (antes, callout de intro).
  *
  * Uso:
  *   npx tsx scripts/fetch-leaderboard-top1.ts --edition AAMMDD --out path.json
@@ -83,7 +82,7 @@ export function editionToMonthSlug(edition: string): string | null {
  * Pure (#1753): "YYYY-MM" → mês anterior "YYYY-MM". Janeiro vira dezembro do
  * ano anterior. Input malformado retorna o próprio slug (fail-open).
  *
- * O bloco "Vencedores do mês" só aparece na 1ª edição do mês e anuncia o mês
+ * O bloco de campeões só aparece nas 3 primeiras edições do mês (#9236) e anuncia o mês
  * que acabou de fechar — então pedimos sempre o período ANTERIOR ao da edição.
  */
 export function previousMonthSlug(slug: string): string {
@@ -244,6 +243,14 @@ async function main(): Promise<void> {
   const publishedAt = readPublishedDates(
     resolve(process.cwd(), args.pastEditions),
   );
+  if (publishedAt.length === 0) {
+    // Fail-open (#1753): sem datas publicadas, toda edição cai "na janela" —
+    // o bloco de campeões apareceria todo dia. Avisar em vez de calar (#9236).
+    console.warn(
+      `[fetch-leaderboard-top1] WARN: nenhuma data publicada lida de ${args.pastEditions} — ` +
+        "janela das 3 primeiras edições não pode ser checada (fail-open: bloco de campeões exibido).",
+    );
+  }
   const inWindow = isWithinFirstEditionsOfMonth(
     args.edition,
     publishedAt,

@@ -34,7 +34,7 @@ describe("renderLeaderboardTop1Row (#1160 followup → #9236 bloco de campeões 
     assert.equal(r, "");
   });
 
-  it("single leader (rank 1 só): posição ordinal + nome", () => {
+  it("single leader (rank 1 só): título + 🥇 + nome", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [{ nickname: "Alice", rank: 1 }],
@@ -49,7 +49,7 @@ describe("renderLeaderboardTop1Row (#1160 followup → #9236 bloco de campeões 
     assert.doesNotMatch(r, /Vencedores/);
   });
 
-  it("2 leitores no podium: '1º X, 2º Y'", () => {
+  it("2 leitores no podium: 🥇 X, 🥈 Y", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [
@@ -63,7 +63,7 @@ describe("renderLeaderboardTop1Row (#1160 followup → #9236 bloco de campeões 
     assert.match(text(r), /🥇 Alice 🥈 Bob$/);
   });
 
-  it("3 leitores no podium (1,2,3): '1º X, 2º Y, 3º Z' na ordem", () => {
+  it("3 leitores no podium (1,2,3): 🥇/🥈/🥉 na ordem", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [
@@ -78,7 +78,7 @@ describe("renderLeaderboardTop1Row (#1160 followup → #9236 bloco de campeões 
     assert.match(text(r), /em maio: 🥇 Alice 🥈 Bob 🥉 Carol$/);
   });
 
-  it("3 empatados em rank 1: cada um marcado 1º na mesma ordem", () => {
+  it("3 empatados em rank 1: cada um com 🥇 na mesma ordem", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [
@@ -93,7 +93,7 @@ describe("renderLeaderboardTop1Row (#1160 followup → #9236 bloco de campeões 
     assert.match(text(r), /🥇 Davyd 🥇 Luisao P 🥇 Vanessa$/);
   });
 
-  it("5 leitores no podium (2 ouros + 1 prata + 2 bronzes): ordinais em ordem", () => {
+  it("5 leitores no podium (2 ouros + 1 prata + 2 bronzes): medalhas em ordem", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [

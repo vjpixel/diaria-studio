@@ -210,13 +210,15 @@ describe("main() CLI (#2725 integração)", () => {
         JSON.stringify([{ published_at: "2026-06-15T09:00:00.000Z" }]),
       );
 
-      runCli([
+      const stdout = runCli([
         "--edition", "260701",
         "--reviewed", reviewedPath,
         "--leaderboard-json", leaderboardJson,
         "--past-editions", pastEditions,
         "--platform-config", platformConfig,
       ]);
+      // Contrato com stage-3-run.ts (que classifica o resultado por /injetado em/).
+      assert.match(stdout, /injetado em/);
 
       const written = readFileSync(reviewedPath, "utf8");
       // #4583(a): sorteio_do_mes.mes ("2026-07") bate com a edição corrente

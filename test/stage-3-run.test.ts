@@ -439,7 +439,7 @@ describe("runStage3 — champions callout", () => {
   it("exit 0 com 'injetado em' -> championsInjected='injected'", async () => {
     const { exec } = makeFakeExec(
       happyHandlers({
-        "inject-champions-callout.ts": () => ({ code: 0, stdout: "[inject-champions-callout] box de campeões (julho) + sorteio injetado em 02-reviewed.md\n", stderr: "" }),
+        "inject-champions-callout.ts": () => ({ code: 0, stdout: "[inject-champions-callout] callout do sorteio (2 de julho) injetado em 02-reviewed.md\n", stderr: "" }),
       }),
     );
     const result = await runStage3(["--edition", "260423"], baseDeps({ exec }));

@@ -147,6 +147,12 @@ describe("renderEIA — bloco de campeões no box do É IA? sem duplicar link de
     assert.match(html, /Veja o ranking de quem mais acerta/);
   });
 
+  it("na janela com fetch falho (pódio vazio + slug) → só o convite linka o ranking, persistente suprimido", () => {
+    const html = renderEIA(baseEia({ leaderboardPodium: [], leaderboardPeriodSlug: "2026-09" }));
+    assert.match(html, /Acompanhe o ranking do mês/);
+    assert.doesNotMatch(html, /Veja o ranking de quem mais acerta/);
+  });
+
   it("fora da janela das 3 primeiras edições (JSON vazio) → sem bloco, link persistente presente", () => {
     const html = renderEIA(baseEia({ leaderboardPodium: [], leaderboardPeriodSlug: "" }));
     assert.doesNotMatch(html, /Os campeões do É IA\?/);
