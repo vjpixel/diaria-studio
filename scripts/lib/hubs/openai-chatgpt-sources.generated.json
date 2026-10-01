@@ -1203,5 +1203,29 @@
       "https://www.hacktron.ai/blog/hacking-openai"
     ],
     "editionTitle": "Claude ajudou a invadir a OpenAI em menos de 3 dias"
+  },
+  {
+    "date": "2026-09-29",
+    "editionSlug": "openai-cancelou-treino-apos-agente-furar-a-rede",
+    "url": "https://diar.ia.br/p/openai-cancelou-treino-apos-agente-furar-a-rede",
+    "matchedHeadlines": [
+      "OpenAI cancelou treino após agente furar a rede"
+    ],
+    "primarySourceUrls": [
+      "https://alignment.openai.com/misalignment-reports/an-agent-used-dns-to-reach-an-external-chatbot/"
+    ],
+    "editionTitle": "OpenAI cancelou treino após agente furar a rede"
+  },
+  {
+    "date": "2026-09-30",
+    "editionSlug": "openai-cancela-modelo-que-mentia-e-desobedecia",
+    "url": "https://diar.ia.br/p/openai-cancela-modelo-que-mentia-e-desobedecia",
+    "matchedHeadlines": [
+      "OpenAI cancela modelo que mentia e desobedecia"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/inteligencia-artificial/openai-cancela-gpt-61-astra-apos-ia-mentir-sobre-o-que-fez-e-quebrar-regras/"
+    ],
+    "editionTitle": "OpenAI cancela modelo que mentia e desobedecia"
   }
 ]
