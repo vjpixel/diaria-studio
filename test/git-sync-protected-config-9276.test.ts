@@ -41,6 +41,7 @@ describe("#9276 — config protegida nunca vai pro autostash", () => {
     assert.equal(r.proceed, true, "fail-soft");
     assert.equal(r.preserved_stash, null);
     assert.match(r.message, /platform\.config\.json/);
+    assert.deepEqual(r.dirty_config, ["platform.config.json"]);
     assert.ok(!calls.some((c) => c.startsWith("git stash push")), "não pode stashar");
     assert.ok(!calls.includes("git stash pop"), "nunca pop (#8719)");
   });

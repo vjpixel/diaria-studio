@@ -291,6 +291,8 @@ export interface GitSyncResult {
    * `commits_behind: -1`.
    */
   stale_autostash_count: number;
+  /** #9276: arquivos de `PROTECTED_CONFIG_PATHS` sujos (só no outcome `protected_config_dirty`). */
+  dirty_config?: string[];
 }
 
 /**
@@ -1450,6 +1452,7 @@ function syncCodeLocked(
       return {
         outcome: "protected_config_dirty",
         message: msg,
+        dirty_config: dirtyConfig,
         branch_before: branchBefore,
         warnings,
         proceed: true,
