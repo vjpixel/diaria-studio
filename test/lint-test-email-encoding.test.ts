@@ -174,4 +174,21 @@ describe("stripSectionHeaderEmojis (#9115)", () => {
     const md = "**[Título do link](https://x.com)**\nTexto 🎉 solto";
     assert.equal(stripSectionHeaderEmojis(md), md);
   });
+
+  it("tira o marcador 🎉 de abertura de box de celebração (#9279)", () => {
+    assert.equal(stripSectionHeaderEmojis("🎉 Campeões do mês"), "Campeões do mês");
+    assert.equal(stripSectionHeaderEmojis("🎉️ Campeões"), "Campeões");
+  });
+});
+
+describe("checkEncoding — marcador de celebração (#9279)", () => {
+  it("🎉 inicial removido pelo renderer não é char_dropped", () => {
+    assert.deepEqual(checkEncoding("🎉 Campeões do mês\n\nação", "Campeões do mês ação"), []);
+  });
+
+  it("🎉 no meio do texto ausente do email continua acusado", () => {
+    const r = checkEncoding("Parabéns 🎉 a todos", "Parabéns a todos");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "🎉");
+  });
 });
