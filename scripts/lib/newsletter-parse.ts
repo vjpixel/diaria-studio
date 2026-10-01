@@ -1418,6 +1418,17 @@ export function findOrphanBoxWarnings(text: string): OrphanBoxWarning[] {
 }
 
 /**
+ * #8990: faixa [start, end) do bloco CRU do box do slot 1 (gap D1/D2) ou 2
+ * (gap D2/D3) em `text` — o mesmo bloco que `extractBoxDivulgacao1/2` lê,
+ * sem a formatação de `formatBoxInner`. `null` = slot sem box. Usado por
+ * `apply-box-slot.ts` pra trocar o box cirurgicamente.
+ */
+export function locateBoxDivulgacaoRange(text: string, slot: 1 | 2): { start: number; end: number } | null {
+  const loc = locateBoxInGap(text, slot - 1);
+  return loc ? { start: loc.matchStart, end: loc.matchEnd } : null;
+}
+
+/**
  * Box de divulgação posicionado ENTRE o 1º e o 2º destaque (slot 1, gap
  * D1/D2). Aceita bold-line (📚/📣/🎉) OU carrinho (🛒). Não casa títulos de
  * destaque (começam com `[`) nem headers de seção.
