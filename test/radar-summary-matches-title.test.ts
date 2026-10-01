@@ -234,5 +234,6 @@ describe("título com hífen/dígito (#9227)", () => {
     ].join("\n");
     const r = checkRadarSummaryMatchesTitle(md);
     assert.equal(r.ok, true);
+    assert.equal(r.warning, undefined);
   });
 });
