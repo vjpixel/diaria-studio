@@ -116,3 +116,53 @@ describe("#9250 LANÇAMENTOS exige summary verificado em newsletter_extracted", 
     assert.equal(moved?.demoted_reason, "unverified_newsletter_extract");
   });
 });
+
+describe("#9292 newsletter_extracted: anti_bot, allowlist e contagem alinhada", () => {
+  const antiBot = {
+    url: "https://openai.com/index/introducing-gpt-6-3",
+    title: "Introducing GPT-6.3",
+    flag: "newsletter_extracted",
+    verify_verdict: "anti_bot",
+    summary: "OpenAI lança o GPT-6.3.",
+  };
+  const uncertain = {
+    url: "https://openai.com/index/introducing-gpt-6-4",
+    title: "Introducing GPT-6.4",
+    flag: "newsletter_extracted",
+    verify_verdict: "uncertain",
+    summary: "OpenAI lança o GPT-6.4.",
+  };
+  const nonOfficial = {
+    url: "https://some-blog.example/robot-vacuum-review",
+    title: "Robot vacuum hands-on",
+    flag: "newsletter_extracted",
+    verify_verdict: "uncertain",
+  };
+
+  it("anti_bot com summary conta como verificado e fica em LANÇAMENTOS", () => {
+    assert.equal(isUnverifiedNewsletterExtract(antiBot), false);
+    const { approved: out } = demoteNotATool({ lancamento: [antiBot], radar: [] });
+    assert.deepEqual((out.lancamento ?? []).map((i) => i.url), [antiBot.url]);
+  });
+
+  it("allowlist protege o item da demoção (escolha do editor)", () => {
+    const allow = ["openai.com/index/introducing-gpt-6-4"];
+    assert.equal(isUnverifiedNewsletterExtract(uncertain, allow), false);
+    const summary = validateLancamentosFromApproved({ lancamento: [uncertain], radar: [] }, allow);
+    assert.equal(summary.unverified_extract.length, 0);
+    const { approved: out } = demoteNotATool({ lancamento: [uncertain], radar: [] }, allow);
+    assert.deepEqual((out.lancamento ?? []).map((i) => i.url), [uncertain.url]);
+  });
+
+  it("contagem unverified_extract == itens que demoteNotATool move por esse motivo", () => {
+    const approved = { lancamento: [antiBot, uncertain, nonOfficial], radar: [] };
+    const summary = validateLancamentosFromApproved(approved);
+    const { approved: out } = demoteNotATool(approved);
+    const movedByReason = (out.radar ?? [])
+      .filter((r) => r.demoted_reason === "unverified_newsletter_extract")
+      .map((r) => r.url)
+      .sort();
+    assert.deepEqual(summary.unverified_extract.map((u) => u.url).sort(), movedByReason);
+    assert.deepEqual(movedByReason, [nonOfficial.url, uncertain.url].sort());
+  });
+});

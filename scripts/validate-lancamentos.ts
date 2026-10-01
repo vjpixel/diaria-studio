@@ -563,16 +563,26 @@ export interface LancamentosRemovedSummary {
 
 /**
  * #9250: item extraído de newsletter capturada (`flag: newsletter_extracted`)
- * só entra em LANÇAMENTOS com summary real E `verify_verdict: "accessible"`.
+ * só entra em LANÇAMENTOS com summary real E `verify_verdict` `accessible`/`anti_bot`
+ * (#9292; verdict ausente segue rebaixado; allowlist de URL é escape-hatch).
  * Sem isso o título/escopo do item nunca foi confirmado contra a página de
  * destino (caso real 261001: título = assunto do e-mail da 7min.ai, sem
  * summary, `verify_verdict: uncertain`). Demovido pra radar[] junto com os
  * `not_a_tool` (mesmo mecanismo do #4339).
  */
-export function isUnverifiedNewsletterExtract(item: { [k: string]: unknown }): boolean {
+export function isUnverifiedNewsletterExtract(
+  item: { [k: string]: unknown },
+  allowlist: string[] = [],
+): boolean {
   if (item.flag !== "newsletter_extracted") return false;
+  // #9292: mesma escape-hatch do not_a_tool — URL na allowlist nunca é rebaixada.
+  const url = typeof item.url === "string" ? item.url : "";
+  if (url && allowlist.some((a) => a && url.includes(a))) return false;
   const summary = typeof item.summary === "string" ? item.summary.trim() : "";
-  return !summary || item.verify_verdict !== "accessible";
+  // #9292: `anti_bot` (Cloudflare em site oficial, ex. openai.com) conta como
+  // verificado — a página existe, só bloqueou o fetch automatizado.
+  const verified = item.verify_verdict === "accessible" || item.verify_verdict === "anti_bot";
+  return !summary || !verified;
 }
 
 interface ApprovedShape {
@@ -626,7 +636,9 @@ export function validateLancamentosFromApproved(
       !isConferenceRoundupWarn(title);
     if (isNatool) {
       not_a_tool.push({ url, title });
-    } else if (official && isUnverifiedNewsletterExtract(item)) {
+    } else if (isUnverifiedNewsletterExtract(item, allowlist)) {
+      // #9292: sem condicionar a `official` — `demoteNotATool` rebaixa
+      // independentemente do domínio, e o resumo tem de contar o que move.
       unverified_extract.push({ url, title });
     } else if (official) {
       keptAfterDemotion++;
@@ -712,7 +724,7 @@ export function demoteNotATool(
     if (isNatool) {
       demoted.push({ url, title });
       radar.push({ ...item, demoted_from: "lancamento", demoted_reason: "not_a_tool" });
-    } else if (isUnverifiedNewsletterExtract(item)) {
+    } else if (isUnverifiedNewsletterExtract(item, allowlist)) {
       // #9250: newsletter_extracted sem summary verificado nunca fica em LANÇAMENTOS.
       demoted.push({ url, title });
       radar.push({ ...item, demoted_from: "lancamento", demoted_reason: "unverified_newsletter_extract" });

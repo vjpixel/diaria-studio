@@ -186,6 +186,13 @@ export const EVENT_CONCEPT_MIN_SHARED = 2;
 export interface EventMatch {
   signal: "distinctive_name" | "event_concepts";
   shared: string[];
+  /**
+   * #9293: `false` = evidência fraca (sinal A2 — só um lado nomeia empresa).
+   * Consumidores que REMOVEM item (dedup Pass-1f) devem só marcar quando
+   * `removable === false`; palavras capitalizadas comuns ("Search", "Index",
+   * "Studio") casam por A2 com matéria passada diferente.
+   */
+  removable: boolean;
 }
 
 /**
@@ -205,7 +212,7 @@ export function sameEvent(a: string, b: string): EventMatch | null {
     const names = new Set<string>();
     for (const n of distinctiveNames(a)) if (tokB.has(n)) names.add(n);
     for (const n of distinctiveNames(b)) if (tokA.has(n)) names.add(n);
-    if (names.size > 0) return { signal: "distinctive_name", shared: [...names, ...sharedCompanies] };
+    if (names.size > 0) return { signal: "distinctive_name", shared: [...names, ...sharedCompanies], removable: true };
   }
 
   // (A2) só UM lado nomeia empresa ("Introducing Dots" vs "OpenAI launches
@@ -216,7 +223,7 @@ export function sameEvent(a: string, b: string): EventMatch | null {
     const capB = capitalizedNames(b);
     const distinct = new Set([...distinctiveNames(a), ...distinctiveNames(b)]);
     const names = [...capitalizedNames(a)].filter((n) => capB.has(n) && distinct.has(n));
-    if (names.length > 0) return { signal: "distinctive_name", shared: names };
+    if (names.length > 0) return { signal: "distinctive_name", shared: names, removable: false };
   }
 
   // (B) mesma empresa + ≥2 conceitos de evento específicos.
@@ -224,7 +231,7 @@ export function sameEvent(a: string, b: string): EventMatch | null {
     const cB = eventConcepts(b);
     const shared = [...eventConcepts(a)].filter((c) => cB.has(c));
     if (shared.length >= EVENT_CONCEPT_MIN_SHARED) {
-      return { signal: "event_concepts", shared: [...sharedCompanies, ...shared] };
+      return { signal: "event_concepts", shared: [...sharedCompanies, ...shared], removable: true };
     }
   }
   return null;
