@@ -102,6 +102,13 @@ describe("detectPoolSummaryDefects (#9358)", () => {
     assert.ok(detectPoolSummaryDefects(d).includes("emoji-noise"));
   });
 
+  it("©/®/™ em nome de produto não contam como emoji", () => {
+    assert.deepEqual(
+      detectPoolSummaryDefects("O Microsoft® Copilot™ ganhou um modo de pesquisa que cita as fontes usadas em cada resposta gerada."),
+      [],
+    );
+  });
+
   it("descrição vazia não é escopo deste check (secondary-items-have-summary cobre)", () => {
     assert.deepEqual(detectPoolSummaryDefects(""), []);
     assert.deepEqual(detectPoolSummaryDefects("(5 min)"), []);

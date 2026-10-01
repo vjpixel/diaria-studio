@@ -80,8 +80,12 @@ const WORDPRESS_FOOTER_RE = /\bapareceu primeiro em\b|\bappeared first on\b/iu;
 const YOUTUBE_BOILERPLATE_RE =
   /v[íi]deos e m[úu]sicas que voc[êe] ama|enjoy the videos and music you love/iu;
 
-/** Emoji em resumo = "links relacionados"/navegação colados (ex: "📝Como usar… 🔎…"). */
-const EMOJI_RE = /\p{Extended_Pictographic}/u;
+/**
+ * Emoji em resumo = "links relacionados"/navegação colados (ex: "📝Como usar… 🔎…").
+ * Exclui ©/®/™ — também são `Extended_Pictographic`, mas aparecem em nome de
+ * produto legítimo ("Microsoft® Copilot").
+ */
+const EMOJI_RE = /(?![\u00A9\u00AE\u2122])\p{Extended_Pictographic}/u;
 
 /** Prefixo `[TRADUZIR]` é escopo do `no-untranslated-summary` — removido antes de medir. */
 const TRADUZIR_PREFIX_RE = /^\s*\[TRADUZIR\]\s*/u;
