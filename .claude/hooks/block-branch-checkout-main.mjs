@@ -105,6 +105,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
+import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 
 /** Duplicado de `MAX_SESSION_AGE_MS` em `block-gh-pr-merge-subagent.mjs`/
  * `session-registry.ts` — uma rodada abandonada/crashada não deve manter
@@ -141,39 +142,7 @@ export const BLOCK_REASON =
  * `block-gh-pr-merge-subagent.mjs` (`stripQuotedSpans`), mesma razão
  * self-contained.
  */
-export function stripQuotedSpans(command) {
-  let result = "";
-  let i = 0;
-  const n = command.length;
-  while (i < n) {
-    const ch = command[i];
-    // `\x` fora de aspas é caractere literal (`don\'t`), não abre span —
-    // sem isto a aspa escapada engolia o resto do comando (#9214).
-    if (ch === "\\" && i + 1 < n) {
-      result += command.slice(i, i + 2);
-      i += 2;
-      continue;
-    }
-    if (ch === "'") {
-      let j = i + 1;
-      while (j < n && command[j] !== "'") j++;
-      i = j + 1;
-      continue;
-    }
-    if (ch === '"') {
-      let j = i + 1;
-      while (j < n && command[j] !== '"') {
-        if (command[j] === "\\") j++;
-        j++;
-      }
-      i = j + 1;
-      continue;
-    }
-    result += ch;
-    i++;
-  }
-  return result;
-}
+export { stripQuotedSpans };
 
 const SEPARATOR_RE = /(?:&&|;|\|\||\||\n)/;
 

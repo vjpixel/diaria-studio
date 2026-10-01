@@ -117,6 +117,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 
 // 24h — comfortably above the longest observed round (~16h, rodada 260611) while
 // still bounding "stuck active forever" to at most a day if Fase 2's cleanup is
@@ -934,39 +935,7 @@ export function ensureCloseKeywords(prUrl, { execFn = execFileSync } = {}) {
  * hook inteiro, silenciosamente, num Node sem type-stripping nativo). Manter
  * os dois em sincronia à mão; cada lado tem seu próprio arquivo de teste.
  */
-export function stripQuotedSpans(command) {
-  let result = "";
-  let i = 0;
-  const n = command.length;
-  while (i < n) {
-    const ch = command[i];
-    // `\x` fora de aspas é caractere literal (`don\'t`), não abre span —
-    // sem isto a aspa escapada engolia o resto do comando (#9214).
-    if (ch === "\\" && i + 1 < n) {
-      result += command.slice(i, i + 2);
-      i += 2;
-      continue;
-    }
-    if (ch === "'") {
-      let j = i + 1;
-      while (j < n && command[j] !== "'") j++;
-      i = j + 1;
-      continue;
-    }
-    if (ch === '"') {
-      let j = i + 1;
-      while (j < n && command[j] !== '"') {
-        if (command[j] === "\\") j++;
-        j++;
-      }
-      i = j + 1;
-      continue;
-    }
-    result += ch;
-    i++;
-  }
-  return result;
-}
+export { stripQuotedSpans };
 
 /**
  * Classifica `command` quanto a ser (ou não) um `gh pr create` REAL — só no

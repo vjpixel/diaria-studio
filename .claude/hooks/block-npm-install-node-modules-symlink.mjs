@@ -24,6 +24,7 @@
 import { lstatSync, readlinkSync } from "node:fs";
 import { isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ansiCQuoteEnd } from "./lib/shell-quote-strip.mjs";
 
 /**
  * Remove o CORPO de heredocs (`<<EOF ... EOF`, `<<'EOF' ... EOF`, `<<-EOF ...
@@ -121,6 +122,15 @@ export function maskQuotedSpans(segment, { tokensAnywhere = false } = {}) {
       i += 2;
       continue;
     }
+    // ANSI-C `$'...'`: `\'` é escape interno. Sem isto `$'it\'s'` fechava
+    // cedo e a aspa de fechamento abria um span falso que mascarava o
+    // `npm ci` seguinte (#9318). Mascara inteiro, offsets preservados.
+    const ansiEnd = ansiCQuoteEnd(text, i);
+    if (ansiEnd > 0) {
+      masked += " ".repeat(ansiEnd - i);
+      i = ansiEnd;
+      continue;
+    }
     const quoted = readQuotedString(text, i);
     if (quoted) {
       // Span citado SEM espaço e no INÍCIO do segmento é o nome do programa
@@ -208,6 +218,13 @@ function splitTopLevel(text) {
     if (ch === "\\" && i + 1 < text.length) {
       if (text[i + 1] !== "\n") current += text.slice(i, i + 2);
       i += 2;
+      continue;
+    }
+    // ANSI-C `$'...'` atravessa inteiro: separador dentro dele não quebra (#9318).
+    const ansiEnd = ansiCQuoteEnd(text, i);
+    if (ansiEnd > 0) {
+      current += text.slice(i, ansiEnd);
+      i = ansiEnd;
       continue;
     }
     if (ch === '"' || ch === "'") {

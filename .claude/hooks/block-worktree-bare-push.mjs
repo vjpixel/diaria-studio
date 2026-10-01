@@ -53,57 +53,13 @@
 import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 
 /**
  * Remove o CONTEÚDO de spans entre aspas (simples ou duplas), preservando
  * tudo fora deles. Duplicado dos hooks irmãos (self-contained).
  */
-export function stripQuotedSpans(command) {
-  let result = "";
-  let i = 0;
-  const n = command.length;
-  while (i < n) {
-    const ch = command[i];
-    // `\x` fora de aspas é caractere literal (`don\'t`), não abre span —
-    // sem isto a aspa escapada engolia o resto do comando (#9197).
-    if (ch === "\\" && i + 1 < n) {
-      // `\<newline>` é continuação de linha: o shell junta as duas linhas
-      // (`git \<nl>push` = `git push`), então some sem virar separador (#9214).
-      if (command[i + 1] !== "\n") result += command.slice(i, i + 2);
-      i += 2;
-      continue;
-    }
-    // ANSI-C quoting (`$'don\'t'`): dentro dele `\'` é escape, ao contrário
-    // da aspa simples comum — sem isto o scanner fechava o span cedo (#9214).
-    if (ch === "$" && command[i + 1] === "'") {
-      let j = i + 2;
-      while (j < n && command[j] !== "'") {
-        if (command[j] === "\\") j++;
-        j++;
-      }
-      i = j + 1;
-      continue;
-    }
-    if (ch === "'") {
-      let j = i + 1;
-      while (j < n && command[j] !== "'") j++;
-      i = j + 1;
-      continue;
-    }
-    if (ch === '"') {
-      let j = i + 1;
-      while (j < n && command[j] !== '"') {
-        if (command[j] === "\\") j++;
-        j++;
-      }
-      i = j + 1;
-      continue;
-    }
-    result += ch;
-    i++;
-  }
-  return result;
-}
+export { stripQuotedSpans };
 
 const SEPARATOR_RE = /(?:&&|;|\|\||\||\n)/;
 

@@ -127,6 +127,9 @@ describe("entry guard com path percent-encoded (#9197 item 3)", () => {
       mkdirSync(dir);
       const hook = join(dir, "block-handwritten-pr-checks-loop.mjs");
       copyFileSync(join(HOOKS_DIR, "block-handwritten-pr-checks-loop.mjs"), hook);
+      // #9318: o tokenizer vive em lib/ compartilhada.
+      mkdirSync(join(dir, "lib"));
+      copyFileSync(join(HOOKS_DIR, "lib", "shell-quote-strip.mjs"), join(dir, "lib", "shell-quote-strip.mjs"));
       const payload = JSON.stringify({
         tool_name: "Bash",
         tool_input: { command: "until gh pr checks 1; do sleep 5; done" },

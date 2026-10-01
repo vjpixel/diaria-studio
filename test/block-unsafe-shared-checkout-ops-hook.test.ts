@@ -904,6 +904,13 @@ describe("CLI end-to-end (#8107) — hook real, subprocesso, checkout git de ver
     );
     const hookPath = join(root, ".claude", "hooks", "block-unsafe-shared-checkout-ops.mjs");
     writeFileSync(hookPath, hookSource, "utf8");
+    // #9318: o tokenizer do hook vive na lib compartilhada.
+    mkdirSync(join(root, ".claude", "hooks", "lib"), { recursive: true });
+    writeFileSync(
+      join(root, ".claude", "hooks", "lib", "shell-quote-strip.mjs"),
+      readFileSync(join(process.cwd(), ".claude", "hooks", "lib", "shell-quote-strip.mjs"), "utf8"),
+      "utf8",
+    );
     // `data/` é gitignored no repo real (`data/sessions/*.json` nunca é
     // tracked) — reproduz isso aqui, senão o PRÓPRIO arquivo de registro de
     // sessão apareceria como "??" e seria contado como sujeira alheia
