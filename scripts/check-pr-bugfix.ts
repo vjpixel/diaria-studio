@@ -59,7 +59,8 @@ export function hasExceptionLabel(labels: string[]): boolean {
 }
 
 function getChangedFiles(baseSha: string, headSha: string): string[] {
-  const r = spawnSync("git", ["diff", "--name-status", `${baseSha}..${headSha}`], {
+  // #9411: 3 pontos (merge-base) — só o que a PR tocou.
+  const r = spawnSync("git", ["diff", "--name-status", `${baseSha}...${headSha}`], {
     encoding: "utf8",
   });
   if (r.status !== 0) {

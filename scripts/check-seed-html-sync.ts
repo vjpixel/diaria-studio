@@ -85,7 +85,8 @@ export const SEED_HTML_PAIRS: SeedHtmlPair[] = [
 ];
 
 export function getChangedFiles(baseSha: string, headSha: string, spawnFn: SpawnFn): string[] {
-  const r = spawnFn("git", ["diff", "--name-status", `${baseSha}..${headSha}`], {
+  // #9411: 3 pontos (merge-base) — só o que a PR tocou.
+  const r = spawnFn("git", ["diff", "--name-status", `${baseSha}...${headSha}`], {
     encoding: "utf8",
   });
   if (r.status !== 0) {

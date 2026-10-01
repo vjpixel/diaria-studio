@@ -43,7 +43,7 @@ import { resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
 import type { PrCheckSpawnFn } from "./lib/spawn-types.ts";
 import { CALIBRATION_ALLOWLIST, isCalibrationTouchingFile } from "./lib/calibration-file-allowlist.ts";
-import { gitDiffTouchedLines, gitShowFileAtSha } from "./lib/diff-touched-lines.ts";
+import { gitDiffTouchedLines, gitMergeBase, gitShowFileAtSha } from "./lib/diff-touched-lines.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 export const SIGNOFF_LABEL = "editorial-signoff:approved";
@@ -54,7 +54,9 @@ function getChangedFiles(baseSha: string, headSha: string, spawnFn: SpawnFn): st
   // Mesma convenção de check-pr-bugfix.ts: sem `cwd` explícito — o processo
   // do GH Action já roda na raiz do checkout (`ROOT` é usado só pra
   // gitDiffTouchedLines/gitShowFileAtSha abaixo, que aceitam cwd).
-  const r = spawnFn("git", ["diff", "--name-only", `${baseSha}..${headSha}`], { encoding: "utf8" });
+  // #9411: 3 pontos (merge-base) — só o que a PR tocou, não o que o master
+  // ganhou depois da criação do branch.
+  const r = spawnFn("git", ["diff", "--name-only", `${baseSha}...${headSha}`], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`git diff --name-only falhou: ${r.stderr}`);
   return r.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
 }
@@ -128,8 +130,11 @@ async function main(): Promise<void> {
   }
 
   let changedFiles: string[];
+  let mergeBaseSha: string;
   try {
     changedFiles = getChangedFiles(baseSha, headSha, spawnSync as SpawnFn);
+    // #9411: conteúdo "antigo" vem do merge-base, coerente com o diff de 3 pontos.
+    mergeBaseSha = gitMergeBase(ROOT, baseSha, headSha);
   } catch (err) {
     console.error(`[#7978] INFRA: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(2);
@@ -140,7 +145,7 @@ async function main(): Promise<void> {
     changedFiles,
     (path) => gitDiffTouchedLines(ROOT, baseSha, headSha, path),
     (path) => gitShowFileAtSha(ROOT, headSha, path),
-    (path) => gitShowFileAtSha(ROOT, baseSha, path),
+    (path) => gitShowFileAtSha(ROOT, mergeBaseSha, path),
   );
 
   if (check.touchedPaths.length === 0) {
