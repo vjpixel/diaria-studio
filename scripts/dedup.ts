@@ -69,6 +69,7 @@ import { foldCluster, type ClusterArticle } from "./lib/cluster-sources.ts";
 // #4102 finding 3: checagem por CONTEÚDO do título atual (não por flag) — um
 // newsletter_extracted já enriquecido (título real) deve poder clusterizar.
 import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts";
+import { findSameEvent } from "./lib/event-dedup.ts";
 // #8505: tie-breaker Jev da zona cinzenta do Pass 1c (atrás de flag, fail-soft).
 import { buildGrayZoneResolver, type GrayZoneResolver } from "./lib/dedup-grayzone-jev.ts";
 
@@ -433,10 +434,42 @@ export function dedup(
     afterPass1e.push(...afterPass1d);
   }
 
+  // ---- Pass 1f: same-EVENT vs past editions (#9249) -----------------------
+  // URL/Levenshtein/Jaccard deixavam passar matéria diferente sobre fato já
+  // publicado quando o vocabulário diverge (PT×EN, ângulo distinto). Casos
+  // reais 261001: "OpenAI launches Dots..." (Dots = D2 de 260930) e "OpenAI
+  // Pauses Training..." (coberto em 260929). Sinais e limiar conservadores
+  // documentados em lib/event-dedup.ts. Submissão do editor nunca é removida
+  // (#4192), só marcada com `event_dedup_flagged`.
+  const afterPass1f: Article[] = [];
+  const pastEventTitles = [...new Set([...pastTitles, ...pastArticleTitles])];
+  if (pastEventTitles.length > 0) {
+    for (const art of afterPass1e) {
+      const hit = art.title ? findSameEvent(art.title, pastEventTitles) : null;
+      if (!hit) {
+        afterPass1f.push(art);
+        continue;
+      }
+      const note = `same-event (#9249, ${hit.match.signal}: ${hit.match.shared.join(", ")}) com artigo de edição anterior "${hit.title}"`;
+      if (art.flag === "editor_submitted") {
+        afterPass1f.push({ ...art, event_dedup_flagged: note });
+        continue;
+      }
+      pushRemoved(removed, art, note);
+    }
+    if (afterPass1e.length > afterPass1f.length) {
+      console.error(
+        `dedup Pass-1f (#9249): ${afterPass1e.length - afterPass1f.length} artigo(s) removido(s) por same-event contra edição anterior`,
+      );
+    }
+  } else {
+    afterPass1f.push(...afterPass1e);
+  }
+
   // ---- Pass 2: dedup within the current list -----------------------------
   // Sub-pass 2a: group by canonical URL, keep best per group
   const byUrl = new Map<string, Article[]>();
-  for (const art of afterPass1e) {
+  for (const art of afterPass1f) {
     const canon = canonicalize(art.url);
     const group = byUrl.get(canon) ?? [];
     group.push(art);

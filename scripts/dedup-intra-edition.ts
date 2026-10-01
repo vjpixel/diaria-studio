@@ -57,6 +57,7 @@ import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 // #4185: mesmo mecanismo de preservação do Pass-2b de dedup.ts (#3920) —
 // aqui aplicado no ponto destaque-vs-pool (pós-scorer), não no pool bruto.
 import { toClusterSource, type ClusterSource, type ClusterArticle } from "./lib/cluster-sources.ts";
+import { sameEvent } from "./lib/event-dedup.ts";
 
 // ---------------------------------------------------------------------------
 // #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
@@ -387,6 +388,8 @@ interface IntraEditionRemovedEntry {
     | "cross_vehicle"
     | "product_code"
     | "content_terms"
+    /** #9249: mesmo evento (lib/event-dedup.ts). */
+    | "event"
     /** #4360: duplicata DENTRO do bucket LANÇAMENTOS (não envolve destaque). */
     | "intra_bucket";
   matched_highlight: string;
@@ -797,7 +800,8 @@ export function isIntraEditionDuplicate(
     | "domain"
     | "cross_vehicle"
     | "product_code"
-    | "content_terms";
+    | "content_terms"
+    | "event";
   matched_highlight: string;
   score: number;
 } | null {
@@ -994,6 +998,20 @@ export function isIntraEditionDuplicate(
           score: sharedContentTerms.length / Math.max(artTokens.size, hTokens.size, 1),
         };
       }
+    }
+
+    // (g) #9249: mesmo EVENTO por nome distintivo (codinome de produto) ou
+    // conceitos de evento bilíngues + mesma empresa — ver lib/event-dedup.ts.
+    // Caso real 261001: RADAR "Após meses de atrasos, Google anuncia Argon"
+    // (CNN) duplicava o D1 "Gemini 4 Argon: our next era..." — Gemini não é
+    // empresa no path (d) e "Argon" sozinho fica abaixo do mínimo de (b).
+    const ev = sameEvent(artTitle, hTitle);
+    if (ev) {
+      return {
+        match_type: "event",
+        matched_highlight: hTitle,
+        score: ev.shared.length,
+      };
     }
   }
 
