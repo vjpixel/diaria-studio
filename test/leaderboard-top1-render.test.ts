@@ -37,7 +37,8 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, />🏆 <strong>Vencedores de Maio<\/strong>: 1º Alice<\/p>/);
+    assert.match(r, />Os campeões do É IA\? em maio:<\/p>/);
+    assert.match(r, />🥇 Alice<\/p>/);
     assert.doesNotMatch(r, /100%/);
   });
 
@@ -52,7 +53,7 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /1º Alice, 2º Bob/);
+    assert.match(r, /🥇 Alice<\/p>\s*<p[^>]*>🥈 Bob<\/p>/);
   });
 
   it("3 leitores no podium (1,2,3): '1º X, 2º Y, 3º Z' na ordem", () => {
@@ -67,7 +68,7 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /1º Alice, 2º Bob, 3º Carol/);
+    assert.match(r, /🥇 Alice<\/p>\s*<p[^>]*>🥈 Bob<\/p>\s*<p[^>]*>🥉 Carol<\/p>/);
   });
 
   it("3 empatados em rank 1: cada um marcado 1º na mesma ordem", () => {
@@ -82,7 +83,8 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /1º Davyd, 1º Luisao P, 1º Vanessa/);
+    assert.match(r, /🥇 Davyd<\/p>\s*<p[^>]*>🥇 Luisao P<\/p>\s*<p[^>]*>🥇 Vanessa<\/p>/);
+    assert.doesNotMatch(r, /🥈|🥉/);
   });
 
   it("5 leitores no podium (2 ouros + 1 prata + 2 bronzes): ordinais em ordem", () => {
@@ -99,18 +101,18 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /1º Alice, 1º Bob, 2º Carol, 3º Dave, 3º Eve/);
+    assert.match(r, /🥇 Alice<\/p>\s*<p[^>]*>🥇 Bob<\/p>\s*<p[^>]*>🥈 Carol<\/p>\s*<p[^>]*>🥉 Dave<\/p>\s*<p[^>]*>🥉 Eve<\/p>/);
   });
 
-  it("período ausente: omite ' de {mês}'", () => {
+  it("período ausente: omite ' em {mês}'", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [{ nickname: "Alice", rank: 1 }],
       }),
       PSTYLE,
     );
-    assert.match(r, /Vencedores<\/strong>:/);
-    assert.doesNotMatch(r, /Vencedores de/);
+    assert.match(r, />Os campeões do É IA\?:<\/p>/);
+    assert.doesNotMatch(r, /É IA\? em /);
   });
 
   it("HTML escape em nickname com caracteres especiais", () => {
@@ -148,5 +150,42 @@ describe("editionToMonthSlug — script duplicate (#1160 mirror)", () => {
     assert.equal(editionToMonthSlug("invalid"), null);
     assert.equal(editionToMonthSlug("261301"), null);
     assert.equal(editionToMonthSlug(""), null);
+  });
+});
+
+describe("renderLeaderboardTop1Row — pódio no visual do callout de campeões (#9236)", () => {
+  const eia = makeEia({
+    leaderboardPodium: [
+      { nickname: "Alice", rank: 1 },
+      { nickname: "Bob", rank: 2 },
+      { nickname: "Carol", rank: 3 },
+      { nickname: "Dave", rank: 4 },
+    ],
+    leaderboardPeriod: "Setembro",
+    leaderboardPeriodSlug: "2026-09",
+  });
+  const r = renderLeaderboardTop1Row(eia, PSTYLE);
+
+  it("título serif em negrito com o mês em minúsculas", () => {
+    const m = r.match(/<p style="([^"]+)">Os campeões do É IA\? em setembro:<\/p>/);
+    assert.ok(m, r);
+    assert.match(m![1], /font-weight:bold/);
+    assert.match(m![1], /serif/);
+  });
+
+  it("uma linha por colocado com medalha; rank > 3 cai em ordinal", () => {
+    assert.match(r, /<p style="font:0;">🥇 Alice<\/p>/);
+    assert.match(r, /<p style="font:0;">🥈 Bob<\/p>/);
+    assert.match(r, /<p style="font:0;">🥉 Carol<\/p>/);
+    assert.match(r, /<p style="font:0;">4º Dave<\/p>/);
+  });
+
+  it("link 'Veja o ranking completo' para /leaderboard/{slug}, após os colocados", () => {
+    assert.match(r, /href="[^"]*\/leaderboard\/2026-09"[^>]*>Veja o ranking completo<\/a>/);
+    assert.ok(r.indexOf("Veja o ranking completo") > r.indexOf("4º Dave"));
+  });
+
+  it("não usa mais a linha compacta antiga", () => {
+    assert.doesNotMatch(r, /🏆|Vencedores/);
   });
 });

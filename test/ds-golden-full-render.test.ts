@@ -546,9 +546,9 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
   });
 
   it("leaderboard do mês renderiza com pódio e link histórico (#1160)", () => {
-    assert.ok(html.includes("Vencedores de Maio"), "leaderboard pódio ausente");
-    assert.ok(html.includes("1º Davyd"), "1º lugar ausente");
-    assert.ok(html.includes("2º Luisao P"), "2º lugar ausente");
+    assert.ok(html.includes("Os campeões do É IA? em maio:"), "leaderboard pódio ausente");
+    assert.ok(html.includes("🥇 Davyd"), "1º lugar ausente");
+    assert.ok(html.includes("🥈 Luisao P"), "2º lugar ausente");
     assert.ok(
       html.includes("eia.diar.ia.br/leaderboard/2026-05"), // #3701: domínio de marca (era poll.diaria.workers.dev)
       "link histórico leaderboard ausente",

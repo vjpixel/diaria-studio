@@ -84,15 +84,18 @@ describe("#3103 — rodapé do É IA?: resultado + leaderboard em 16px, crédito
     assert.doesNotMatch(match![1], /font-size:12px/, "prevResultLine não deve mais ser 12px");
   });
 
-  it("leaderboard 'Vencedores' (pódio) sobe para font-size:16px", () => {
+  it("pódio do É IA? (título + colocados, #9236) sobe para font-size:16px", () => {
     const html = renderEIA({
       ...baseEia,
       leaderboardPeriod: "Julho",
       leaderboardPodium: [{ nickname: "Fulano", rank: 1 }],
     });
-    const match = html.match(/<p style="([^"]+)">🏆[\s\S]*?Vencedores[\s\S]*?<\/p>/);
-    assert.ok(match, `linha de vencedores não encontrada: ${html}`);
-    assert.match(match![1], /font-size:16px/, "linha de vencedores deve ser 16px");
+    const title = html.match(/<p style="([^"]+)">Os campeões do É IA\?[^<]*<\/p>/);
+    assert.ok(title, `título do pódio não encontrado: ${html}`);
+    assert.match(title![1], /font-size:16px/, "título do pódio deve ser 16px");
+    const row = html.match(/<p style="([^"]+)">🥇 Fulano<\/p>/);
+    assert.ok(row, `linha do 1º colocado não encontrada: ${html}`);
+    assert.match(row![1], /font-size:16px/, "linha do colocado deve ser 16px");
   });
 
   it("'Veja o ranking → leaderboard' sobe para font-size:16px", () => {
@@ -118,5 +121,29 @@ describe("#3103 — rodapé do É IA?: resultado + leaderboard em 16px, crédito
     assert.ok(linkMatch, `link do leaderboard não encontrado: ${out}`);
     assert.match(linkMatch![1], /display:inline-block/, "link deve ter display:inline-block");
     assert.match(linkMatch![1], /padding:4px 0/, "link deve ter padding:4px 0");
+  });
+});
+
+describe("#9236 — pódio suprime o link persistente duplicado", () => {
+  it("com pódio: só 'Veja o ranking completo', sem 'Veja o ranking de quem mais acerta'", () => {
+    const html = renderEIA({
+      ...baseEia,
+      leaderboardPeriod: "Julho",
+      leaderboardPeriodSlug: "2026-07",
+      leaderboardPodium: [{ nickname: "Fulano", rank: 1 }],
+    });
+    assert.match(html, /Veja o ranking completo/);
+    assert.doesNotMatch(html, /Veja o ranking de quem mais acerta/);
+  });
+
+  it("sem pódio (convite 'Acompanhe o ranking…'): link persistente continua", () => {
+    const html = renderEIA({ ...baseEia, leaderboardPeriod: "Julho", leaderboardPeriodSlug: "2026-07" });
+    assert.match(html, /Acompanhe o ranking/);
+    assert.match(html, /Veja o ranking de quem mais acerta/);
+  });
+
+  it("sem pódio e sem slug: link persistente continua", () => {
+    const html = renderEIA(baseEia);
+    assert.match(html, /Veja o ranking de quem mais acerta/);
   });
 });

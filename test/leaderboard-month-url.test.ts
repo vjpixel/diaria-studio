@@ -50,7 +50,7 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
     );
   });
 
-  it("com líderes + slug → cabeçalho 'Vencedores' é link pra /leaderboard/{slug}", () => {
+  it("com líderes + slug → link 'Veja o ranking completo' pra /leaderboard/{slug}", () => {
     const html = renderLeaderboardTop1Row(
       baseEia({
         leaderboardPodium: [{ nickname: "Davyd", rank: 1 }],
@@ -60,11 +60,12 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       STYLE,
     );
     assert.match(html, new RegExp(`href="${LB}/2026-05"`));
-    assert.match(html, />Vencedores de Maio<\/a>/);
+    assert.match(html, />Veja o ranking completo<\/a>/);
+    assert.match(html, /Os campeões do É IA\? em maio:/);
     assert.match(html, /Davyd/);
   });
 
-  it("com líderes sem slug → cabeçalho em <strong> (back-compat, sem link)", () => {
+  it("com líderes sem slug → título sem link (back-compat)", () => {
     const html = renderLeaderboardTop1Row(
       baseEia({
         leaderboardPodium: [{ nickname: "Davyd", rank: 1 }],
@@ -73,11 +74,12 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       STYLE,
     );
     assert.doesNotMatch(html, /\/leaderboard\//);
-    assert.match(html, /<strong>Vencedores de Maio<\/strong>/);
+    assert.match(html, /Os campeões do É IA\? em maio:/);
+    assert.doesNotMatch(html, /Veja o ranking completo/);
     assert.match(html, /Davyd/);
   });
 
-  it("pódio com 3 → posições ordinais '1º X, 2º Y, 3º Z' por acertos (#1646)", () => {
+  it("pódio com 3 → medalhas 🥇 X, 🥈 Y, 🥉 Z por acertos (#1646)", () => {
     const html = renderLeaderboardTop1Row(
       baseEia({
         leaderboardPodium: [
@@ -90,7 +92,7 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       }),
       STYLE,
     );
-    assert.match(html, /1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida/);
+    assert.match(html, /🥇 Bruna Quevedo<\/p>\s*<p[^>]*>🥈 Joshu<\/p>\s*<p[^>]*>🥉 Ana Cândida<\/p>/);
     // sem percentuais no texto (#1646)
     assert.doesNotMatch(html, /%/);
   });

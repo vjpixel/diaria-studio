@@ -1523,7 +1523,9 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};`;
   const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
   // #1970: link persistente pra leaderboard em TODA edição (pódio acima é 1ª-do-mês).
-  const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
+  // #9236: com pódio, o "Veja o ranking completo" do próprio pódio já cumpre o
+  // papel — o link persistente duplicaria. Sem pódio (ou só convite), continua.
+  const leaderboardLinkRow = leaderboardRanked(eia).length > 0 ? "" : renderLeaderboardLinkRow(lbStyle);
   // #3578 (correção do #3524, feedback do editor 260716): esta função —
   // `renderEIA` — só é usada pelo pipeline DIÁRIO (o mensal tem sua própria
   // implementação, `monthly-render.ts::renderEia`, que nunca ganhou este
@@ -1694,10 +1696,11 @@ ${leaderboardLinkRow}
  * Prefere `leaderboardPodium` (ranks 1-3); cai em `leaderboardTop1` (rank 1
  * only) pra compat com arquivos legacy.
  */
-export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): string {
+/** Colocados do pódio (podium preferido, top1 legacy como fallback). Vazio = sem pódio. */
+export function leaderboardRanked(eia: EIA): { nickname: string; rank: number }[] {
   // Source: prefere podium (#1160 followup), cai em top1 legacy. Preserva o
-  // rank pra exibir posições ordinais (1º, 2º, 3º). #1646: ranking por acertos.
-  const ranked: { nickname: string; rank: number }[] =
+  // rank pra exibir posições (medalhas, #9236). #1646: ranking por acertos.
+  return (
     eia.leaderboardPodium && eia.leaderboardPodium.length > 0
       ? eia.leaderboardPodium.map((e) => ({ nickname: e.nickname, rank: e.rank }))
       : eia.leaderboardTop1 && eia.leaderboardTop1.length > 0
@@ -1706,8 +1709,11 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
         // todos, não i+1, senão fabricamos 2º/3º (ordem alfabética acidental) pra
         // quem empatou em 1º.
         ? eia.leaderboardTop1.map((e) => ({ nickname: e.nickname, rank: 1 }))
-        : [];
-  const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
+        : []);
+}
+
+export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): string {
+  const ranked = leaderboardRanked(eia);
   // URL histórica permanente do mês (#1345). Linka o bloco quando o slug existe.
   const slug = eia.leaderboardPeriodSlug || "";
   const lbUrl = slug ? `${PUBLIC_GAME_BASE_URL}/leaderboard/${slug}` : "";
@@ -1725,18 +1731,22 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
       </td></tr>`;
   }
 
-  // Posições ordinais: "1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida".
-  const phrase = ranked
-    .map((e) => `${e.rank}º ${esc(e.nickname)}`)
-    .join(", ");
-
-  // Quando há slug, o título "Vencedores de {mês}" vira link pra leaderboard histórica.
-  const heading = lbUrl
-    ? `<a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">Vencedores${period}</a>`
-    : `<strong>Vencedores${period}</strong>`;
+  // #9236: pódio no visual do antigo callout de campeões da intro — título
+  // serif em negrito, uma linha por colocado com medalha e link "Veja o
+  // ranking completo" (substitui a linha compacta "🏆 Vencedores: 1º…, 2º…").
+  const MEDALS: Record<number, string> = { 1: "🥇", 2: "🥈", 3: "🥉" };
+  const month = eia.leaderboardPeriod ? ` em ${eia.leaderboardPeriod.toLowerCase()}` : "";
+  const titleStyle = `margin:8px 0 0;font-family:${FONT_HEADING};font-size:16px;font-weight:bold;line-height:1.5;color:${TEXT_COLOR};`;
+  const rows = ranked
+    .map((e) => `        <p style="${paragraphStyle}">${MEDALS[e.rank] ?? `${e.rank}º`} ${esc(e.nickname)}</p>`)
+    .join("\n");
+  const rankingLink = lbUrl
+    ? `\n        <p style="${paragraphStyle}"><a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};">Veja o ranking completo</a></p>`
+    : "";
 
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
-        <p style="${paragraphStyle}">🏆 ${heading}: ${phrase}</p>
+        <p style="${titleStyle}">Os campeões do É IA?${month}:</p>
+${rows}${rankingLink}
       </td></tr>`;
 }
 
