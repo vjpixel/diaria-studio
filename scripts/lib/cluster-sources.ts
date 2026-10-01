@@ -191,3 +191,56 @@ export function foldCluster(members: ClusterArticle[]): {
 
   return { canonical, others };
 }
+
+/**
+ * #9384: chave de comparação de título pra detectar ESPELHO do mesmo anúncio
+ * (ex: blog.google ↔ deepmind.google com o mesmo título). Minúsculas, sem
+ * acento, sem pontuação, espaços colapsados.
+ *
+ * @pure
+ */
+export function mirrorTitleKey(title: string | undefined): string {
+  if (!title) return "";
+  return title
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+/**
+ * #9384: remove de `cluster_sources` as entradas que são ESPELHO do mesmo
+ * anúncio — título (normalizado) igual ao do artigo canônico ou ao de outra
+ * entrada já mantida. Cobertura independente (outro veículo, outro título)
+ * permanece. Quando nada sobra, o campo é REMOVIDO: sem `cluster_sources` o
+ * `writer-destaque` não emite o bloco "Aprofunde:" (o editor apagava o bloco
+ * à mão nesses casos: 260903 D1, 260925 D2).
+ *
+ * Muta `article` in-place e devolve as entradas removidas.
+ */
+export function dropMirrorClusterSources(article: {
+  title?: string;
+  cluster_sources?: ClusterSource[];
+}): ClusterSource[] {
+  const sources = article.cluster_sources;
+  if (!Array.isArray(sources) || sources.length === 0) return [];
+  const seen = new Set<string>();
+  const canonicalKey = mirrorTitleKey(article.title);
+  if (canonicalKey) seen.add(canonicalKey);
+  const kept: ClusterSource[] = [];
+  const removed: ClusterSource[] = [];
+  for (const s of sources) {
+    const key = mirrorTitleKey(s.title);
+    if (key && seen.has(key)) {
+      removed.push(s);
+      continue;
+    }
+    if (key) seen.add(key);
+    kept.push(s);
+  }
+  if (removed.length === 0) return [];
+  if (kept.length === 0) delete article.cluster_sources;
+  else article.cluster_sources = kept;
+  return removed;
+}

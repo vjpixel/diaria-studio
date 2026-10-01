@@ -29,6 +29,7 @@
  */
 
 import { canonicalize } from "./url-utils.ts";
+import { dropMirrorClusterSources, type ClusterSource } from "./cluster-sources.ts";
 import { selectDomainExcess, editorialDomain, DEFAULT_MAX_PER_DOMAIN, type DomainLimitCandidate } from "./domain-diversity.ts";
 import { selectUseMelhorSplit, rootDomain, classifyAudienceClass } from "./use-melhor-curation.ts";
 
@@ -452,8 +453,28 @@ export function applyStage2Caps(
     else umComposition.dev_avancado++;
   }
 
+  // #9384: o `writer-destaque` lê o capped e emite "Aprofunde:" sempre que
+  // `cluster_sources` não está vazio — tirar espelhos do mesmo anúncio
+  // (mesmo título, outro domínio do mesmo dono) antes. Sem mutar o input.
+  const highlightsOut = approved.highlights?.map((h) => {
+    const cs = h.article?.cluster_sources;
+    if (!h.article || !Array.isArray(cs) || cs.length === 0) return h;
+    const article = { ...h.article } as StageArticle & {
+      title?: string;
+      cluster_sources?: ClusterSource[];
+    };
+    const removed = dropMirrorClusterSources(article);
+    if (removed.length === 0) return h;
+    console.warn(
+      `[apply-stage2-caps] Aprofunde (#9384): ${removed.length} fonte(s) espelho removida(s) de ` +
+        `cluster_sources do destaque ${String(h.article.url ?? "?")}`,
+    );
+    return { ...h, article };
+  });
+
   const out: ApprovedJson = {
     ...approved,
+    ...(highlightsOut !== undefined ? { highlights: highlightsOut } : {}),
     lancamento: lDeduped.kept.slice(0, lFinal),
     radar: rDeduped.kept.slice(0, rFinal),
     use_melhor: umFinal,
