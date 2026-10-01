@@ -69,6 +69,24 @@ const NON_DISTINCTIVE = new Set<string>([
   // Linhas de produto contínuas: geram dezenas de histórias DIFERENTES por
   // mês ("Opus" tutorial vs "Opus" corte de preço) — não discriminam evento.
   "opus", "sonnet", "haiku", "code",
+  // #9327: topônimos — título PT em caixa de frase capitaliza lugar no meio da
+  // frase, e "Nvidia × Taiwan" casa matérias diferentes. Lugar nunca é evento.
+  "taiwan", "coreia", "korea", "sul", "south", "norte", "north", "paulo", "sao", "rio", "janeiro", "minas", "gerais",
+  "brasilia", "bahia", "parana", "curitiba", "recife", "fortaleza", "salvador", "manaus", "porto", "alegre", "belo", "horizonte",
+  "pernambuco", "ceara", "santa", "catarina", "goias", "amazonia", "nordeste",
+  "portugal", "lisboa", "espanha", "spain", "franca", "france", "paris", "alemanha", "germany", "berlim", "berlin",
+  "italia", "italy", "reino", "unido", "kingdom", "londres", "london", "irlanda", "ireland", "holanda", "netherlands",
+  "suica", "switzerland", "suecia", "sweden", "russia", "ucrania", "ukraine", "israel", "arabia", "saudita", "saudi",
+  "emirados", "dubai", "qatar", "catar", "turquia", "singapura", "singapore", "indonesia", "vietna", "vietnam", "tailandia",
+  "malasia", "filipinas", "coreano", "chines", "pequim", "beijing", "xangai", "shanghai", "shenzhen", "hong", "kong", "toquio", "tokyo",
+  "canada", "mexico", "argentina", "chile", "colombia", "peru", "uruguai", "africa", "nigeria", "quenia", "egito",
+  "asia", "oriente", "medio", "vale", "silicio", "silicon", "valley", "washington", "texas", "francisco", "seattle", "nova", "iorque",
+  // #9327: plataformas/produtos guarda-chuva — aparecem em dezenas de
+  // matérias diferentes por mês; compartilhá-los não indica mesmo evento.
+  "youtube", "android", "chrome", "windows", "azure", "excel", "word", "outlook", "office", "teams", "pixel", "iphone", "ipad",
+  "mac", "macos", "ios", "watch", "vision", "gmail", "maps", "drive", "docs", "workspace", "play", "store",
+  "chatgpt", "linkedin", "tiktok", "twitter", "threads", "reddit", "wikipedia", "spotify", "netflix", "uber",
+  "photoshop", "firefly", "slack", "notion", "zoom", "linux", "galaxy", "xbox", "playstation", "kindle", "prime", "echo",
 ]);
 
 /** Palavra é início de frase (1ª do título ou logo após ":", ".", "?", "!", "—"). */
@@ -237,14 +255,22 @@ export function sameEvent(a: string, b: string): EventMatch | null {
   return null;
 }
 
-/** Primeiro título de `others` que cobre o mesmo evento que `title`. */
+/**
+ * Título de `others` que cobre o mesmo evento que `title`. Prefere um match
+ * REMOVÍVEL (A1/B) a qualquer match fraco (A2) — #9328: devolver o 1º match
+ * deixava um A2 anterior esconder um A1 posterior, e o Pass-1f só marcava.
+ * Sem match removível, devolve o 1º fraco.
+ */
 export function findSameEvent(
   title: string,
   others: string[],
 ): { title: string; match: EventMatch } | null {
+  let weak: { title: string; match: EventMatch } | null = null;
   for (const o of others) {
     const m = sameEvent(title, o);
-    if (m) return { title: o, match: m };
+    if (!m) continue;
+    if (m.removable) return { title: o, match: m };
+    weak ??= { title: o, match: m };
   }
-  return null;
+  return weak;
 }
