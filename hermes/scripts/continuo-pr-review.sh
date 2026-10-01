@@ -539,8 +539,17 @@ try_merge_gate() {
       # `try_merge_gate()` — stdout/stderr SEPARADOS (arquivo temporário pro
       # stderr) fecham isso aqui também.
       ESCALATE_STDERR_TMP="$(mktemp)"
+      # #9323: o marcador `continuo-escalate: head=<sha>` precisa levar o
+      # SHA que o GATE julgou (`details.currentHeadSha`), não uma releitura
+      # feita depois — um push entre o gate e o wrapper faria o marcador
+      # gravar um head nunca escalado, e o watcher o excluiria do alarme.
+      ESCALATE_HEAD_ARGS=()
+      ESCALATE_GATE_HEAD=$(printf '%s' "$GATE_JSON" | jq -r '.details.currentHeadSha // empty' 2>/dev/null || true)
+      # Uma linha só: um `fi` de 6 espaços aqui encerraria cedo o bloco que
+      # `test/continuo-pr-review-escalate-label-npx-stderr-leak.test.sh` extrai.
+      if [[ "$ESCALATE_GATE_HEAD" =~ ^[0-9a-f]{7,40}$ ]]; then ESCALATE_HEAD_ARGS=(--head "$ESCALATE_GATE_HEAD"); fi
       set +e
-      ESCALATE_JSON=$(npx tsx scripts/check-continuo-escalate-label.ts --pr "$pr" 2>"$ESCALATE_STDERR_TMP")
+      ESCALATE_JSON=$(npx tsx scripts/check-continuo-escalate-label.ts --pr "$pr" ${ESCALATE_HEAD_ARGS[@]+"${ESCALATE_HEAD_ARGS[@]}"} 2>"$ESCALATE_STDERR_TMP")
       ESCALATE_RC=$?
       set -e
       ESCALATE_STDERR=$(cat "$ESCALATE_STDERR_TMP" 2>/dev/null || true)

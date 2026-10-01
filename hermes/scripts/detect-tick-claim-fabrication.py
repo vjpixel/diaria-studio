@@ -312,14 +312,22 @@ _ACTOR = r"(?:outr[oa]s?|overnight|develop|interactive|terceir[oa]s?)"
 # casava frases comuns ("reivindicada pela primeira vez e as outras duas")
 # e escondia um claim PRÓPRIO. Ali o pronome só vale como ator quando vem
 # seguido de um substantivo de ator (sessão/rodada/coordenador/tick).
+# #9322: a regra estrita vale SÓ nesse caminho (1-4 palavras no meio). Com
+# zero palavras ("reivindicada por outro.", "por outra instância", "por
+# outros agentes", "por outro worker") o pronome colado à preposição é o
+# próprio ator — `_ACTOR` solto, como antes do #9210. O #9210 aplicava
+# `_ACTOR_STRICT` aos dois caminhos e transformava esses relatórios corretos
+# em `fabrication_suspected`. A lista de substantivos também ganhou
+# instância/agente/worker para "por uma outra instância".
 _ACTOR_STRICT = (
-    r"(?:outr[oa]s?\s+(?:sess\w+|rodadas?|coordenador\w*|ticks?)"
+    r"(?:outr[oa]s?\s+(?:sess\w+|rodadas?|coordenador\w*|ticks?"
+    r"|inst[âa]ncias?|agentes?|workers?)"
     r"|overnight|develop|interactive|terceir[oa]s?)"
 )
 _OTHERS_CLAIM = re.compile(
     r"(?P<refs>" + _REF_LIST.pattern + r")"
-    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pel[oa]s?)\s+(?:\w+\s+){0,4}"
-    + _ACTOR_STRICT + r"\b",
+    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pel[oa]s?)\s+"
+    r"(?:" + _ACTOR + r"|(?:\w+\s+){1,4}" + _ACTOR_STRICT + r")\b",
     re.IGNORECASE,
 )
 # #8974 (28/09/2026): FALSO POSITIVO real — o relatório do tick descreveu

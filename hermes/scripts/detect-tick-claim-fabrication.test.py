@@ -501,6 +501,29 @@ def test_regressao_9210_outros_solto_nao_e_ator():
     print("regressão #9210: 'outr*' solto não é ator — OK")
 
 
+def test_regressao_9322_outro_colado_a_preposicao_e_ator():
+    """#9322: o #9210 aplicou a regra estrita de ator também ao caminho SEM
+    palavras intermediárias — "reivindicada por outro." voltou a contar como
+    claim próprio (falso positivo de fabricação)."""
+    mod = _load_module()
+    for n, linha in (
+        (9200, "#9200 já reivindicada por outro."),
+        (9201, "#9201 reivindicada por outra instância."),
+        (9202, "#9202 reivindicada por outros agentes."),
+        (9203, "#9203 reivindicada por outro worker."),
+        (9204, "#9204 reivindicada pela outra."),
+        (9205, "#9205 reivindicada por uma outra instância ativa."),
+        (9206, "#9206 reivindicada por um outro agente."),
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert n not in refs, f"#{n} (outro ator) indevido: {linha!r} -> {refs}"
+    # O falso negativo do #9210 continua fechado.
+    refs = mod.extract_claimed_issue_refs(
+        "#9101 reivindicada pela primeira vez e as outras duas puladas.")
+    assert 9101 in refs, refs
+    print("regressão #9322: 'outr*' colado à preposição é ator — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -989,6 +1012,7 @@ def main() -> int:
         test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao()
         test_regressao_9026_pela_feminino()
         test_regressao_9210_outros_solto_nao_e_ator()
+        test_regressao_9322_outro_colado_a_preposicao_e_ator()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.

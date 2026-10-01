@@ -12,7 +12,13 @@
  * do Hermes entrega ao Telegram, ou só conta em silêncio).
  *
  * Uso:
- *   npx tsx scripts/check-continuo-escalate-label.ts --pr 7432
+ *   npx tsx scripts/check-continuo-escalate-label.ts --pr 7432 --head <sha>
+ *
+ * `--head` (#9323) é o SHA que o merge gate JULGOU (`details.currentHeadSha`
+ * do JSON de `check-continuo-merge-gate.ts`). É ele que vai no marcador
+ * `continuo-escalate: head=<sha>` — nunca uma releitura do head feita aqui,
+ * que pode já enxergar um push posterior ao veredito. Sem `--head`, o
+ * marcador não é gravado (fail-open na direção do alarme do watcher).
  *
  * Saída: JSON `{"firstTime": boolean, "labelApplied": boolean, "source":
  * "ok" | "error"}` em stdout. `labelApplied` = "o label ESTÁ na PR ao
@@ -33,13 +39,18 @@ import { formatEscalateHeadMarker, isAlreadyEscalated, needsEscalateHeadMarker }
 import { CONTINUO_ESCALATED_LABEL_SPEC, ensureContinuoLabel } from "./lib/continuo-labels.ts";
 import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
 
-function parseArgs(argv: string[]): { pr: string } | null {
+const SHA_RE = /^[0-9a-f]{7,40}$/;
+
+function parseArgs(argv: string[]): { pr: string; head: string | null } | null {
   let pr: string | null = null;
+  let head: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--pr") pr = argv[++i] ?? null;
+    else if (argv[i] === "--head") head = argv[++i] ?? "";
   }
   if (!pr || !/^\d+$/.test(pr)) return null;
-  return { pr };
+  if (head !== null && !SHA_RE.test(head)) return null;
+  return { pr, head };
 }
 
 /** `null` = `gh` falhou de verdade (rede, auth, PR sumiu) — distinto de "0
@@ -92,14 +103,19 @@ function applyLabel(pr: string): boolean {
  * head ainda não foi marcado (inclusive re-escalada de head novo, que não
  * gera evento `labeled` novo). Best-effort: falha vai pro stderr e o watcher
  * cai no fail-open NA DIREÇÃO DO ALARME (PR sem marcador do head atual conta).
+ *
+ * #9323: `head` é o SHA que o gate julgou, recebido por `--head`. Reler o
+ * `headRefOid` aqui abria uma corrida: gate escala A, push de B, marcador
+ * grava B — e o watcher passava a excluir do alarme de fila uma PR cujo
+ * head B nunca foi escalado (o ponto cego que o #9156 fechou). Sem `head`,
+ * não grava nada: ausência de marcador conta pro alarme.
  */
-function markEscalatedHead(pr: string): void {
+function markEscalatedHead(pr: string, head: string | null): void {
+  if (head === null) {
+    process.stderr.write(`[check-continuo-escalate-label] PR #${pr}: --head ausente — marcador de head escalado não gravado\n`);
+    return;
+  }
   try {
-    const head = execFileSync("gh", ["pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid // empty"], {
-      encoding: "utf8",
-      timeout: 30_000,
-    }).trim();
-    if (!/^[0-9a-f]{7,40}$/.test(head)) throw new Error(`headRefOid inválido: ${JSON.stringify(head)}`);
     const bodies = execFileSync(
       "gh",
       ["api", `repos/{owner}/{repo}/issues/${pr}/comments`, "--paginate", "--jq", ".[].body | @json"],
@@ -122,7 +138,7 @@ function markEscalatedHead(pr: string): void {
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
   if (!args) {
-    process.stderr.write("uso: check-continuo-escalate-label.ts --pr <N>\n");
+    process.stderr.write("uso: check-continuo-escalate-label.ts --pr <N> [--head <sha>]\n");
     process.exitCode = 2;
     return;
   }
@@ -143,7 +159,7 @@ function main(): void {
    *  com stderr vazio. Quem quer saber se houve escrita nesta chamada lê
    *  `firstTime`. */
   const labelApplied = alreadyEscalated ? true : applyLabel(args.pr);
-  markEscalatedHead(args.pr);
+  markEscalatedHead(args.pr, args.head);
   console.log(JSON.stringify({ firstTime: !alreadyEscalated, labelApplied, source: "ok" }));
 }
 
