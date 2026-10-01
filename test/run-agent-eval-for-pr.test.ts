@@ -23,6 +23,7 @@ import {
   fetchPrBaseSha,
   fetchFileContentAtRef,
   addLabel,
+  checkHeadMatchesPr,
   postComment,
   runEvalsForTriggering,
   type CommandRunner,
@@ -323,14 +324,38 @@ describe("fetchFileContentAtRef (#8144)", () => {
 });
 
 describe("addLabel / postComment (#8144)", () => {
-  it("addLabel: status 0 não lança", () => {
-    const runner = mockRunner({ "pr edit 42": { status: 0, stdout: "", stderr: "" } });
+  it("addLabel: POST REST + releitura com a label → não lança, nunca usa gh pr edit (#9339)", () => {
+    const calls: string[] = [];
+    const runner: CommandRunner = (cmd, args) => {
+      const key = `${cmd} ${args.join(" ")}`;
+      calls.push(key);
+      if (key.includes("pr edit")) throw new Error("não deveria usar gh pr edit");
+      if (key.includes("-X POST")) return { status: 0, stdout: "", stderr: "" };
+      return { status: 0, stdout: "outra\nagent-eval:passed\n", stderr: "" };
+    };
     assert.doesNotThrow(() => addLabel("42", "agent-eval:passed", runner));
+    assert.ok(calls.some((c) => c.includes("issues/42/labels") && c.includes("labels[]=agent-eval:passed")));
   });
 
-  it("addLabel: status != 0 lança com a label no erro", () => {
-    const runner = mockRunner({ "pr edit 42": { status: 1, stdout: "", stderr: "label not found" } });
+  it("addLabel: regressão #9339 — falha do POST lança com a label no erro", () => {
+    const runner = mockRunner({ "-X POST": { status: 1, stdout: "", stderr: "GraphQL: Projects (classic) is being deprecated" } });
     assert.throws(() => addLabel("42", "agent-eval:passed", runner), /agent-eval:passed/);
+  });
+
+  it("addLabel: POST ok mas label ausente na releitura lança (#9339)", () => {
+    const runner = mockRunner({
+      "-X POST": { status: 0, stdout: "", stderr: "" },
+      "issues/42/labels --jq": { status: 0, stdout: "bug\n", stderr: "" },
+    });
+    assert.throws(() => addLabel("42", "agent-eval:passed", runner), /releitura/);
+  });
+
+  it("addLabel: releitura falhando lança (#9339)", () => {
+    const runner = mockRunner({
+      "-X POST": { status: 0, stdout: "", stderr: "" },
+      "issues/42/labels --jq": { status: 1, stdout: "", stderr: "5xx" },
+    });
+    assert.throws(() => addLabel("42", "agent-eval:passed", runner), /5xx/);
   });
 
   it("postComment: status 0 não lança", () => {
@@ -510,5 +535,24 @@ describe("--arms no run-agent-eval-for-pr (#9043 item 3)", () => {
     assert.match(src, /parseArms\(values\["arms"\]\)/);
     assert.match(src, /flags\.has\("arms"\)/);
     assert.match(src, /runEvalsForTriggering\(\{[\s\S]*?\barms,[\s\S]*?\}\)/);
+  });
+});
+
+describe("checkHeadMatchesPr (#9338)", () => {
+  it("regressão: --live com HEAD ≠ headRefOid aborta", () => {
+    const r = checkHeadMatchesPr("92670d06aaaa", "cb1f11a3bbbb", true);
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.error, /ABORTANDO/);
+  });
+  it("--live com HEAD ilegível aborta", () => {
+    assert.equal(checkHeadMatchesPr("", "cb1f11a3bbbb", true).ok, false);
+  });
+  it("dry-run com HEAD ≠ headRefOid só avisa", () => {
+    const r = checkHeadMatchesPr("92670d06aaaa", "cb1f11a3bbbb", false);
+    assert.equal(r.ok, true);
+    if (r.ok) assert.match(r.warning ?? "", /AVISO/);
+  });
+  it("HEAD igual passa sem aviso, em live e dry-run", () => {
+    for (const live of [true, false]) assert.deepEqual(checkHeadMatchesPr("abc123", "abc123", live), { ok: true });
   });
 });

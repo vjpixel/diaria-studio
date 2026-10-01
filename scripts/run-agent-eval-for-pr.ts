@@ -28,9 +28,9 @@
  * corpo CANDIDATO do agent do DISCO, não da API do GitHub (só o passo de
  * DETECÇÃO de gatilho abaixo usa a API — ver "Detecção do gatilho" logo
  * adiante). O script faz uma checagem best-effort (compara `git rev-parse
- * HEAD` local contra o `headRefOid` da PR) e AVISA se não bater, mas não
- * aborta — pode haver motivo legítimo (testar mudança local ainda não
- * pusheada).
+ * HEAD` local contra o `headRefOid` da PR): em dry-run só AVISA; com
+ * `--live` ABORTA (exit 1, sem label/comentário) — #9338, senão o eval
+ * compara master com master e aplica um falso `agent-eval:passed`.
  *
  * ## Compatibilidade com o `gh` 2.46.0 (#8403)
  *
@@ -237,11 +237,48 @@ export function fetchFileContentAtRef(path: string, ref: string, runner: Command
   return Buffer.from(b64.replace(/\s/g, ""), "base64").toString("utf8");
 }
 
+/**
+ * Aplica a label via REST (`POST /repos/{o}/{r}/issues/{n}/labels`) e relê
+ * as labels da PR pra confirmar (#9339). Nunca `gh pr edit --add-label`: o
+ * GraphQL dele quebra com "Projects (classic) is being deprecated" e já
+ * deixou o gate #8144 vermelho sem sinal de falha. Lança em qualquer falha
+ * (escrita, releitura, ou label ausente na releitura) — o `main` converte em
+ * exit 1. Mesma família de `scripts/lib/gh-pr-safe-edit.ts` (#6292).
+ */
 export function addLabel(prNumber: string, label: string, runner: CommandRunner): void {
-  const r = runner("gh", ["pr", "edit", prNumber, "--add-label", label]);
-  if (r.status !== 0) {
-    throw new Error(`[#8144] gh pr edit ${prNumber} --add-label ${label} falhou: ${r.stderr || `exit ${r.status}`}`);
+  const w = runner("gh", ["api", "-X", "POST", `repos/{owner}/{repo}/issues/${prNumber}/labels`, "-f", `labels[]=${label}`]);
+  if (w.status !== 0) {
+    throw new Error(`[#9339] gh api POST issues/${prNumber}/labels (${label}) falhou: ${w.stderr || w.stdout || `exit ${w.status}`}`);
   }
+  const v = runner("gh", ["api", `repos/{owner}/{repo}/issues/${prNumber}/labels`, "--jq", ".[].name"]);
+  if (v.status !== 0) {
+    throw new Error(`[#9339] label ${label} escrita, mas a releitura das labels da PR #${prNumber} falhou: ${v.stderr || `exit ${v.status}`}`);
+  }
+  const names = v.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!names.includes(label)) {
+    throw new Error(`[#9339] POST reportou sucesso mas a label ${label} não aparece na releitura da PR #${prNumber} (labels: ${names.join(", ") || "nenhuma"})`);
+  }
+}
+
+/**
+ * #9338: com `--live`, HEAD local ≠ headRefOid da PR ABORTA — o corpo
+ * candidato é lido do disco, então rodar fora do head compara baseline com
+ * outro código (ex: master consigo mesmo) e daria um falso `agent-eval:passed`.
+ * Em dry-run só avisa (nada é aplicado). HEAD local ilegível conta como
+ * divergente em `--live` (não dá pra provar que bate).
+ */
+export function checkHeadMatchesPr(
+  localHead: string,
+  headRefOid: string,
+  live: boolean,
+): { ok: true; warning?: string } | { ok: false; error: string } {
+  if (localHead && localHead === headRefOid) return { ok: true };
+  const desc = localHead
+    ? `HEAD local (${localHead.slice(0, 8)}) difere do headRefOid da PR (${headRefOid.slice(0, 8)})`
+    : `HEAD local ilegível (git rev-parse HEAD falhou) — não dá pra confirmar que bate com o headRefOid da PR (${headRefOid.slice(0, 8)})`;
+  const why = "o corpo CANDIDATO do agent é lido do DISCO, então o comando precisa rodar com a branch da PR checked-out (ex: no worktree da PR)";
+  if (live) return { ok: false, error: `[#9338] ABORTANDO: ${desc} — ${why}. Nenhuma label/comentário aplicado.` };
+  return { ok: true, warning: `[#8144] AVISO: ${desc} — ${why}.` };
 }
 
 export function postComment(prNumber: string, bodyFilePath: string, runner: CommandRunner): void {
@@ -539,15 +576,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Checagem best-effort (#8144 docstring) — NUNCA aborta, só avisa: pode
-  // haver motivo legítimo pro cwd não estar exatamente no head da PR.
-  const localHead = runner("git", ["rev-parse", "HEAD"]).stdout.trim();
-  if (localHead && localHead !== prMeta.headRefOid) {
-    console.warn(
-      `[#8144] AVISO: HEAD local (${localHead.slice(0, 8)}) difere do headRefOid da PR #${prNumber} (${prMeta.headRefOid.slice(0, 8)}) — ` +
-        `o corpo CANDIDATO do agent é lido do DISCO (rootDir=${ROOT}), então este comando precisa rodar com a branch da PR já checked-out pra refletir o diff real.`,
-    );
+  // #9338: em --live aborta se HEAD local ≠ headRefOid (falso verde); em
+  // dry-run só avisa.
+  const headCheck = checkHeadMatchesPr(runner("git", ["rev-parse", "HEAD"]).stdout.trim(), prMeta.headRefOid, live);
+  if (!headCheck.ok) {
+    console.error(headCheck.error);
+    process.exit(1);
+    return;
   }
+  if (headCheck.warning) console.warn(headCheck.warning);
 
   const agentFiles = prMeta.files.filter((f) => AGENT_FILE_RE.test(f));
   const triggering = findTriggeringAgents(
@@ -651,8 +688,8 @@ async function main(): Promise<void> {
     console.error(`[#8144] registro em data/reports/index.jsonl falhou (fail-soft, relatório já foi escrito em disco): ${registerResult.error}`);
   }
 
-  // Self-review (#2038): label ANTES do comentário, deliberado — `gh pr edit
-  // --add-label` num label já presente é um no-op idempotente, então um
+  // Self-review (#2038): label ANTES do comentário, deliberado — POST de
+  // label já presente é um no-op idempotente, então um
   // retry após falha de rede aqui nunca duplica nada. Se a ORDEM fosse
   // invertida (comentário primeiro), um retry depois de um `addLabel` que
   // falhasse re-postaria um 2º comentário idêntico antes de tentar a label
