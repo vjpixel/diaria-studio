@@ -47,6 +47,7 @@ export function stripHeredocSpans(command) {
   let m;
   while ((m = startRe.exec(command)) !== null) {
     if (m.index < lastIndex) continue; // dentro de um heredoc já removido
+    if (insideArithmetic(command, m.index)) continue; // `$((a<<b))` é shift, não heredoc (#9214)
     const delim = m[2];
     const isDashVariant = m[0].startsWith("<<-");
     const markerEnd = m.index + m[0].length;
@@ -112,6 +113,14 @@ export function maskQuotedSpans(segment, { tokensAnywhere = false } = {}) {
   let masked = "";
   let i = 0;
   while (i < text.length) {
+    // `\x` fora de aspas é literal (`don\'t`): não abre span. Sem isto um PAR
+    // de aspas escapadas formava um span falso que mascarava o `npm ci` entre
+    // elas (#9214). Copia os 2 caracteres para preservar offsets.
+    if (text[i] === "\\" && i + 1 < text.length) {
+      masked += text.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
     const quoted = readQuotedString(text, i);
     if (quoted) {
       // Span citado SEM espaço e no INÍCIO do segmento é o nome do programa
@@ -194,6 +203,13 @@ function splitTopLevel(text) {
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
+    // `\x` fora de aspas é literal, não abre span (#9214); `\<newline>` é
+    // continuação de linha e some, sem quebrar o segmento.
+    if (ch === "\\" && i + 1 < text.length) {
+      if (text[i + 1] !== "\n") current += text.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
     if (ch === '"' || ch === "'") {
       const quoted = readQuotedString(text, i);
       if (quoted) {
@@ -378,4 +394,15 @@ if ((process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
       // Fail-open, sempre: um hook quebrado não pode travar Bash legítimo.
     }
   });
+}
+
+/** true quando `index` cai dentro de `((...))`/`$((...))` aberto na mesma
+ * linha — ali `<<` é shift aritmético, não heredoc (#9214). Usado por
+ * `stripHeredocSpans`; cópia idêntica nos hooks irmãos (paridade travada em
+ * `test/hook-command-tokenizer-parity-7896.test.ts`). */
+function insideArithmetic(command, index) {
+  const lineStart = command.lastIndexOf("\n", index - 1) + 1;
+  const before = command.slice(lineStart, index);
+  const open = before.lastIndexOf("((");
+  return open !== -1 && before.indexOf("))", open) === -1;
 }

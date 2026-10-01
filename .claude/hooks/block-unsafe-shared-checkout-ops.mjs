@@ -31,8 +31,21 @@ export function stripQuotedSpans(command) {
     // `\x` fora de aspas é caractere literal (`don\'t`), não abre span —
     // sem isto a aspa escapada engolia o resto do comando (#9197).
     if (ch === "\\" && i + 1 < n) {
-      result += command.slice(i, i + 2);
+      // `\<newline>` é continuação de linha: o shell junta as duas linhas
+      // (`git \<nl>push` = `git push`), então some sem virar separador (#9214).
+      if (command[i + 1] !== "\n") result += command.slice(i, i + 2);
       i += 2;
+      continue;
+    }
+    // ANSI-C quoting (`$'don\'t'`): dentro dele `\'` é escape, ao contrário
+    // da aspa simples comum — sem isto o scanner fechava o span cedo (#9214).
+    if (ch === "$" && command[i + 1] === "'") {
+      let j = i + 2;
+      while (j < n && command[j] !== "'") {
+        if (command[j] === "\\") j++;
+        j++;
+      }
+      i = j + 1;
       continue;
     }
     if (ch === "'") {
@@ -87,6 +100,7 @@ export function stripHeredocSpans(command) {
   let m;
   while ((m = startRe.exec(command)) !== null) {
     if (m.index < lastIndex) continue; // dentro de um heredoc já removido
+    if (insideArithmetic(command, m.index)) continue; // `$((a<<b))` é shift, não heredoc (#9214)
     const delim = m[2];
     const isDashVariant = m[0].startsWith("<<-");
     const markerEnd = m.index + m[0].length;
@@ -970,4 +984,15 @@ if (
       }
     }
   });
+}
+
+/** true quando `index` cai dentro de `((...))`/`$((...))` aberto na mesma
+ * linha — ali `<<` é shift aritmético, não heredoc (#9214). Usado por
+ * `stripHeredocSpans`; cópia idêntica nos hooks irmãos (paridade travada em
+ * `test/hook-command-tokenizer-parity-7896.test.ts`). */
+function insideArithmetic(command, index) {
+  const lineStart = command.lastIndexOf("\n", index - 1) + 1;
+  const before = command.slice(lineStart, index);
+  const open = before.lastIndexOf("((");
+  return open !== -1 && before.indexOf("))", open) === -1;
 }
