@@ -101,6 +101,7 @@ import {
   brtHourToUtcHourSameDay,
   hourCellLabel,
   scheduledAtForDate,
+  VARIANT_CELLS,
   waveDateFragment,
   waveKey,
   type WaveCell,
@@ -114,6 +115,8 @@ import { proposeNextVolume, brtDayKey, type NextVolumeDecision } from "./lib/cla
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
 import { SCHEDULE_AT_WARNING_PREFIX, type InvocationSummary } from "./clarice-schedule-group.ts"; // #7042
 import type { WaveCollision } from "./lib/clarice-wave-audit.ts"; // #7880
+import { readClariceAbTest, type ClariceAbTestConfig } from "./lib/clarice-ab-test.ts"; // #9308
+import { monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts"; // #9308
 
 // #5048 — mesmo achado do #4983 (script irmão clarice-novos-run.ts): este é o
 // processo ORQUESTRADOR, invocado sob systemd --user (task Diaria-Clarice-Envio,
@@ -295,6 +298,11 @@ export interface EnvioRunDeps {
    * Usado só pelo retry de falha TRANSITÓRIA de `clarice-plan-wave` — sem o
    * seam, os testes de retry esperariam de verdade (minutos). */
   sleep: (ms: number) => Promise<void>;
+  /** #9308 — config do teste A/B de CONTEÚDO do ciclo
+   * (`data/monthly/{ciclo}/_internal/ab-test.json`), ou `null`. Opcional:
+   * ausente = sem teste (mesmo seam de `readAbcState` — teste nunca lê o
+   * `data/` real). Config presente mas inválida LANÇA → rodada aborta. */
+  readAbTest?: (cycle: string) => ClariceAbTestConfig | null;
 }
 
 /**
@@ -352,6 +360,7 @@ export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
     resolveLatestCycle: () => resolveLatestMonthlyCycleFromDisk(),
     readAbcState: () => readClariceAbcState(rootDir),
     sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+    readAbTest: (cycle: string) => readClariceAbTest(resolveMonthlyDir(cycle)),
   };
 }
 
@@ -1413,9 +1422,30 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       );
     }
 
+    // #9308 — teste A/B de CONTEÚDO (caixa): 2 células VA/VB, mesmo assunto
+    // e horário, HTML por braço. Não combina com A/B/C de assunto nem com o
+    // de horário (efeitos confundidos) — aborta em vez de escolher um.
+    const abTest = deps.readAbTest ? deps.readAbTest(cycle) : null;
+    if (abTest) {
+      if (hourCells) {
+        throw new EnvioAbort(
+          `❌ teste A/B de conteúdo ("${abTest.label}", ab-test.json) e teste de HORÁRIO ativos ao mesmo tempo — ` +
+            "duas dimensões na mesma onda confundem os efeitos. Encerre um dos dois.",
+        );
+      }
+      if (abcAction !== "travar") {
+        throw new EnvioAbort(
+          `❌ teste A/B de conteúdo ("${abTest.label}", ab-test.json) exige o A/B/C de assunto travado (abcAction="${abcAction}").`,
+        );
+      }
+      report.note(`teste A/B de CONTEÚDO ativo ("${abTest.label}") — células VA × VB, 50/50, HTML por braço (#9308).`);
+    }
+
     // #7406 — "daily.csv" (não mais "ramp-warm.csv"): artefato da fila única do Passo 6.
     const splitArgs = ["--cycle", cycle, "--wave", String(n), "--date", sendDate, "--from", "segments/daily.csv"];
-    if (hourCells) {
+    if (abTest) {
+      splitArgs.push("--variant-cells");
+    } else if (hourCells) {
       splitArgs.push("--hour-cells", hourCells.join(","));
       report.note(`teste de horário ATIVO — células ${hourCells.map((h) => `${String(h).padStart(2, "0")}:00`).join(" × ")} BRT (#5140).`);
     } else if (abcAction === "travar") {
@@ -1509,7 +1539,15 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     // "hourCells ⇒ single" vive no fluxo, não no tipo, e um `subjects[c]`
     // solto seria pior que um fallback explícito se alguém afrouxar o guard.
     const cells: Array<{ key: string; cell: WaveCell | null; subject: string; scheduleAt: string }> =
-      hourCells
+      abTest
+        ? VARIANT_CELLS.map((c) => ({
+            key: `${waveKeyBase}-${c}`,
+            cell: c,
+            // Mesmo assunto nos dois braços — a única variável é o HTML.
+            subject: inherited.mode === "single" ? inherited.subject : inherited.subjects.A,
+            scheduleAt: scheduledAt,
+          }))
+        : hourCells
         ? hourCells.map((hourBrt) => {
             const label = hourCellLabel(hourBrt);
             return {

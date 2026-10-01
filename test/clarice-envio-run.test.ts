@@ -911,6 +911,108 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    // -----------------------------------------------------------------------
+    // #9308 — teste A/B de CONTEÚDO (caixa) via ab-test.json
+    // -----------------------------------------------------------------------
+
+    const AB_TEST = { label: "caixa", arms: { a: "/x/caixa-a.html", b: "/x/caixa-b.html" } };
+    const travadoProposal = () =>
+      goldenProposal({ abc: { action: "travar", metric: "nenhuma", winner: null, caveats: [], rationale: "assunto travado" } });
+    const perKeyScheduleGroup = (args: string[]) => {
+      const key = args[args.indexOf("--key") + 1] ?? "?";
+      if (args.includes("--create")) return jsonResult({ key, listId: 1, campaignId: 1, phase: "create", status: "draft" });
+      return jsonResult({ key, listId: 1, campaignId: 1, phase: "schedule", status: "scheduled" });
+    };
+
+    it("#9308: ab-test.json presente => onda dividida em VA/VB, mesmo assunto e MESMO horário", async () => {
+      const root = freshRoot();
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(travadoProposal()),
+        "scripts/clarice-schedule-group.ts": perKeyScheduleGroup,
+      });
+      const seen: string[] = [];
+      const r = await runEnvio(
+        baseDeps(root, {
+          exec,
+          readAbcState: () => abcEncerrado("Assunto travado"),
+          readAbTest: (c: string) => {
+            seen.push(c);
+            return AB_TEST;
+          },
+        }),
+      );
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.deepEqual(seen, [CYCLE], "config lida pro ciclo do envio");
+
+      const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
+      assert.ok(split!.args.includes("--variant-cells"));
+      assert.ok(!split!.args.includes("--no-cells"), "--variant-cells e --no-cells são exclusivos");
+
+      const creates = calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts" && c.args.includes("--create"));
+      assert.deepEqual(creates.map((c) => c.args[c.args.indexOf("--key") + 1]), ["d12-qua12-VA", "d12-qua12-VB"]);
+      assert.equal(new Set(creates.map((c) => c.args[c.args.indexOf("--subject") + 1])).size, 1, "mesmo assunto");
+      assert.equal(new Set(creates.map((c) => c.args[c.args.indexOf("--schedule-at") + 1])).size, 1, "mesmo horário");
+      const schedules = calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts" && c.args.includes("--schedule"));
+      assert.equal(schedules.length, 2, "os dois braços são agendados");
+      assert.match(r.reportMarkdown, /teste A\/B de CONTEÚDO ativo \("caixa"\)/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#9308: sem ab-test.json (readAbTest => null) nada muda — onda única com --no-cells", async () => {
+      const root = freshRoot();
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(travadoProposal()),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, readAbcState: () => abcEncerrado("Assunto travado"), readAbTest: () => null }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
+      assert.ok(split!.args.includes("--no-cells"));
+      assert.ok(!split!.args.includes("--variant-cells"));
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#9308: ab-test.json + teste de HORÁRIO ativo => aborta antes de montar/agendar", async () => {
+      const root = freshRoot();
+      writeFileSync(
+        resolve(root, "data", "clarice-hour-test.json"),
+        JSON.stringify({ status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-13T00:00:00.000Z", startedBy: "editor" }),
+        "utf8",
+      );
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(travadoProposal()),
+      });
+      const r = await runEnvio(
+        baseDeps(root, { exec, readAbcState: () => abcEncerrado("Assunto travado"), readAbTest: () => AB_TEST }),
+      );
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-split-group-cells.ts"), "nada dividido");
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"), "nada criado/agendado");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#9308: ab-test.json inválido (readAbTest lança) => aborta, nunca cai em silêncio no HTML default", async () => {
+      const root = freshRoot();
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(travadoProposal()),
+      });
+      const r = await runEnvio(
+        baseDeps(root, {
+          exec,
+          readAbcState: () => abcEncerrado("Assunto travado"),
+          readAbTest: () => {
+            throw new Error("ab-test.json: \"label\" obrigatório");
+          },
+        }),
+      );
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"));
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("#5140: teste ATIVO com A/B/C ABERTO => horário PULADO com aviso, nunca 3×N células", async () => {
       // Duas dimensões na mesma onda fragmentariam a base e confundiriam os
       // efeitos. O guard tem que PULAR e dizer por quê — pular calado seria

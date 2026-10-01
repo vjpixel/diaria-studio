@@ -96,6 +96,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoGet, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
 import { parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
+import { assertNoAbTestForSingleHtmlPath } from "./lib/clarice-ab-test.ts";
 import { isMainModule, getArg } from "./lib/cli-args.ts";
 import { renderHaltBanner } from "./lib/gate-banner.ts";
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
@@ -696,6 +697,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
+  assertNoAbTestForSingleHtmlPath(resolveMonthlyDir(cycle), "clarice-reapply-scheduled-html.ts"); // #9308
   const htmlPath = resolve(resolveMonthlyDir(cycle), "_internal", "cloudflare-preview.html");
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
   // #8059: mesma reescrita de `clarice-schedule-group.ts` — o HTML sempre

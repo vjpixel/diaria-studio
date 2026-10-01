@@ -28,7 +28,7 @@
  */
 
 import { stratify } from "../clarice-build-edition-sends.ts";
-import { hourCellLabel, waveKey } from "./clarice-wave-plan.ts";
+import { hourCellLabel, VARIANT_CELLS, waveKey } from "./clarice-wave-plan.ts";
 import type { ClariceHourTestState } from "./clarice-hour-test.ts";
 
 /** Uma entrada de manifest, no shape que `clarice-import-waves.ts` já lê. */
@@ -166,6 +166,30 @@ export function buildHourCells<T>(
   };
 }
 
+/**
+ * #9308 — teste A/B de CONTEÚDO (ex: caixa): 2 células `VA`/`VB`, MESMO
+ * assunto e MESMO horário, diferindo só no HTML (resolvido por key em
+ * `clarice-schedule-group.ts` via `scripts/lib/clarice-ab-test.ts`). Mesma
+ * estratificação por tier das outras variantes — 50/50 determinístico.
+ */
+export function buildVariantCells<T>(rows: T[], n: number, date: string): GroupCellsArtifact<T> {
+  const total = rows.length;
+  const caps = VARIANT_CELLS.map((_, i) => Math.floor(total / 2) + (i < total % 2 ? 1 : 0));
+  const split = stratify(rows, caps);
+  return {
+    groupKey: waveKey(n, date),
+    cells: VARIANT_CELLS.map((cell, i) => ({
+      entry: {
+        key: waveKey(n, date, cell),
+        file: `${waveKey(n, date, cell)}.csv`,
+        desc: `variante ${cell.slice(1)}`,
+        count: split[i].length,
+      },
+      rows: split[i],
+    })),
+  };
+}
+
 export function buildSingleWave<T>(rows: T[], n: number, date: string): GroupCellsArtifact<T> {
   const groupKey = waveKey(n, date);
   return {
@@ -194,7 +218,8 @@ export function cellManifestFileName(groupKey: string): string {
 export type CellStrategy =
   | { kind: "single" }
   | { kind: "cells" }
-  | { kind: "hours"; hoursBrt: number[] };
+  | { kind: "hours"; hoursBrt: number[] }
+  | { kind: "variants" };
 
 /**
  * Decide entre onda única, teste A/B/C e teste de HORÁRIO a partir do argv.
@@ -212,6 +237,14 @@ export type CellStrategy =
 export function resolveCellStrategy(argv: string[]): CellStrategy {
   const noCells = argv.includes("--no-cells");
   const raw = readFlagValue(argv, "hour-cells");
+  // #9308: `--variant-cells` (teste A/B de conteúdo) é exclusivo com as
+  // outras duas — mesma lógica de não eleger vencedor silencioso.
+  if (argv.includes("--variant-cells")) {
+    if (noCells || raw !== null) {
+      throw new Error("--variant-cells é mutuamente exclusivo com --no-cells e --hour-cells. Passe só um.");
+    }
+    return { kind: "variants" };
+  }
 
   if (raw !== null && noCells) {
     throw new Error(
@@ -327,7 +360,7 @@ function readFlagValue(argv: string[], name: string): string | null {
  * travado, fragmentando a audiência em 3 listas pro mesmo assunto, sem nada
  * no log que distinguisse isso de um teste A/B/C legítimo (#4660).
  */
-export const SPLIT_GROUP_CELLS_FLAGS = new Set(["no-cells", "dry-run", "ignore-hour-test"]);
+export const SPLIT_GROUP_CELLS_FLAGS = new Set(["no-cells", "dry-run", "ignore-hour-test", "variant-cells"]);
 
 /** Flags passadas que não são reconhecidas — provável typo. Pura. */
 export function unknownFlags(argv: string[], known: Set<string> = SPLIT_GROUP_CELLS_FLAGS): string[] {

@@ -27,6 +27,8 @@
  *               proposta; continua a numeração do ciclo, nunca reinicia).
  *   --date D    OBRIGATÓRIO — YYYY-MM-DD do envio (explícita, nunca inferida).
  *   --from P    OBRIGATÓRIO — CSV de origem, relativo ao dir do ciclo.
+ *   --variant-cells  2 células VA/VB (teste A/B de conteúdo, #9308) — mesmo
+ *               assunto/horário; o HTML de cada braço vem de ab-test.json.
  *   --no-cells  1 lista só (assunto travado, sem teste A/B/C). ABORTA se o
  *               teste de HORÁRIO (#5140) estiver ativo — ver
  *               --ignore-hour-test.
@@ -50,6 +52,7 @@ import {
   buildGroupCells,
   buildHourCells,
   buildSingleWave,
+  buildVariantCells,
   cellManifestFileName,
   checkSingleStrategyAgainstHourTest,
   manifestOf,
@@ -139,7 +142,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       ? buildSingleWave(rows, wave, date)
       : strategy.kind === "hours"
         ? buildHourCells(rows, wave, date, strategy.hoursBrt)
-        : buildGroupCells(rows, wave, date);
+        : strategy.kind === "variants"
+          ? buildVariantCells(rows, wave, date)
+          : buildGroupCells(rows, wave, date);
   const { groupKey, cells } = artifact;
   const manifest = manifestOf(artifact);
   const fields = parsed.meta.fields ?? Object.keys(rows[0]);
@@ -159,7 +164,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       ? "ONDA ÚNICA (assunto travado, sem A/B/C)"
       : strategy.kind === "hours"
         ? `TESTE DE HORÁRIO (${strategy.hoursBrt.length} células: ${strategy.hoursBrt.map((h) => `${String(h).padStart(2, "0")}:00`).join(" × ")} BRT)`
-        : "TESTE A/B/C (3 células)";
+        : strategy.kind === "variants"
+          ? "TESTE A/B DE CONTEÚDO (2 células VA/VB, #9308)"
+          : "TESTE A/B/C (3 células)";
   console.log(`Modo: ${modoLabel}`);
   console.log(`Onda d${wave} · ${date} · grupo '${groupKey}' · ${rows.length} contatos`);
   for (const e of manifest) console.log(`  ${e.key.padEnd(16)} ${String(e.count).padStart(6)} contatos → ${e.file}`);
