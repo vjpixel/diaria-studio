@@ -233,3 +233,56 @@ export function applySinceFloor(
 ): AudienceStalenessLogEntry[] {
   return entries.filter((e) => occurrenceKey(e) >= since);
 }
+
+/**
+ * #9240 — idade máxima (em dias) do snapshot mais recente de
+ * `docs/audience-history/` antes de virar alarme. `update-audience.ts` roda a
+ * cada edição (Stage 0) e arquiva 1 snapshot por run, mas os arquivos só
+ * entram no repositório por commit MANUAL (lotes #8146, #8321, #8597 —
+ * intervalo observado entre lotes de 1 a 5 dias). 14 dias é conservador:
+ * ~3x o maior intervalo normal, então só dispara quando a fonte de snapshots
+ * do #9232 está de fato cega (caso medido em 01/10/2026: último snapshot
+ * 2026-09-20, enquanto o profile já estava em `updated_at: 2026-09-27`).
+ */
+export const SNAPSHOT_MAX_AGE_DAYS = 14;
+
+/** Fingerprint estável (1 issue por condição, não por dia). */
+export const SNAPSHOT_AGE_FINGERPRINT = "audience-history:snapshot-age";
+
+/**
+ * Pure (#9240): finding `family: "estado"` quando o snapshot mais recente
+ * (`YYYY-MM-DD.md`) tem MAIS de `maxAgeDays` dias em relação a `now` (dia UTC),
+ * ou quando não há snapshot nenhum. `"estado"` (não `"evento"`) porque a
+ * condição se resolve sozinha: quando snapshots novos chegam ao repo, a issue
+ * fecha via `planAlarmReconciliation`. Devolve `null` se está em dia.
+ */
+export function findSnapshotAgeFinding(
+  snapshotNames: string[],
+  now: Date,
+  maxAgeDays: number = SNAPSHOT_MAX_AGE_DAYS,
+): AlarmFinding | null {
+  const latest = snapshotNames.filter((n) => SNAPSHOT_FILE_RE.test(n)).sort().at(-1) ?? null;
+  const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const ageDays =
+    latest === null ? null : Math.floor((todayMs - Date.parse(`${latest.slice(0, 10)}T00:00:00Z`)) / 86_400_000);
+  if (ageDays !== null && ageDays <= maxAgeDays) return null;
+  const desc =
+    latest === null
+      ? "nenhum snapshot `YYYY-MM-DD.md` encontrado"
+      : `snapshot mais recente é \`${latest}\` (${ageDays} dias atrás)`;
+  return {
+    check: "snapshot-age",
+    fingerprint: SNAPSHOT_AGE_FINGERPRINT,
+    title: `audience-history: nenhum snapshot novo há mais de ${maxAgeDays} dias`,
+    body: [
+      `\`docs/audience-history/\`: ${desc}; limite ${maxAgeDays} dias (#9240).`,
+      "",
+      "Sem snapshots recentes, a comparação de pares adjacentes do #9232 fica cega. " +
+        "Verificar se `scripts/update-audience.ts` está rodando no Stage 0 e se os snapshots " +
+        "gravados foram commitados (o commit é manual — o #9240 decidiu não automatizá-lo).",
+    ].join("\n"),
+    family: "estado",
+    labels: ["bug"],
+    priority: "P3",
+  };
+}
