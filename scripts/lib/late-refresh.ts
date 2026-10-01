@@ -58,6 +58,34 @@ export const LATE_REFRESH_FEEDS: readonly LateRefreshFeed[] = [
  */
 export const LATE_REFRESH_UNCOVERED_LABS: readonly string[] = ["Meta", "xAI", "Mistral", "DeepSeek", "Qwen"];
 
+/**
+ * Entradas de sitemap modificadas depois do corte, no `pathPrefix` do feed,
+ * MAIS NOVAS PRIMEIRO e só então limitadas a `cap` (a ordem do sitemap é
+ * arbitrária — cortar antes de ordenar podia descartar justo a mais nova).
+ */
+export function selectSitemapEntries<T extends { loc: string; lastmod: string | null }>(
+  entries: readonly T[],
+  cutoffIso: string,
+  pathPrefix: string | undefined,
+  cap: number,
+): T[] {
+  const cutoff = new Date(cutoffIso).getTime();
+  return entries
+    .filter((e) => {
+      if (!e.lastmod) return false;
+      const t = new Date(e.lastmod).getTime();
+      if (Number.isNaN(t) || t <= cutoff) return false;
+      if (!pathPrefix) return true;
+      try {
+        return new URL(e.loc).pathname.startsWith(pathPrefix);
+      } catch {
+        return false;
+      }
+    })
+    .sort((a, b) => new Date(b.lastmod as string).getTime() - new Date(a.lastmod as string).getTime())
+    .slice(0, cap);
+}
+
 // ---------------------------------------------------------------------------
 // Cutoff
 // ---------------------------------------------------------------------------
@@ -275,30 +303,61 @@ function isNegative(h: HighlightLike): boolean {
 }
 
 /**
+ * Destaques NA ORDEM ATUAL da edição. `currentOrder` = URLs de D1..D3 lidas de
+ * `02-reviewed.md` (fonte autoritativa: o editor pode reordenar/trocar
+ * destaques entre o Stage 1 e o gate, e o `rank` do `01-approved.json` fica
+ * velho). Score/bucket/negativo vêm do approved casando por URL canônica;
+ * destaque sem par no approved foi posto pelo editor → tratado como `manual`
+ * (protegido). Sem `currentOrder` (02-reviewed ilegível) cai no `rank`.
+ */
+export function currentHighlights(
+  highlights: readonly HighlightLike[],
+  currentOrder?: readonly string[],
+): Array<{ slot: string; h: HighlightLike }> {
+  if (!currentOrder || currentOrder.length === 0) {
+    return highlights.map((h, i) => ({ slot: `D${h.rank ?? i + 1}`, h }));
+  }
+  const byUrl = new Map<string, HighlightLike>();
+  for (const h of highlights) {
+    const u = h.url ?? h.article?.url;
+    if (u) byUrl.set(canon(u), h);
+  }
+  return currentOrder.map((u, i) => ({
+    slot: `D${i + 1}`,
+    h: byUrl.get(canon(u)) ?? { url: u, score: null, bucket: "manual" },
+  }));
+}
+
+/**
  * Regra determinística (sugestão, nunca aplicada sozinha):
  * - Lançamento oficial de modelo versionado (o sabor que o editor aprovou 92%
  *   das vezes, #9359) → candidato a destaque, substituindo o D de MENOR score
- *   do pipeline. Destaque `manual` (escolha do editor) e o ÚNICO destaque de
- *   impacto negativo (regra #3916) nunca são sugeridos para sair.
+ *   do pipeline, na ordem ATUAL de `02-reviewed.md` (`currentOrder`).
+ *   Destaque `manual` (escolha do editor) e o ÚNICO destaque de impacto
+ *   negativo (regra #3916) nunca são sugeridos para sair.
  * - Post em host oficial que ANUNCIA algo ("Introducing X" ou verbo de
  *   lançamento no título) → LANÇAMENTOS (link oficial, #160).
  * - Resto (case de cliente, ensaio, imprensa) → RADAR.
  */
-export function suggestSubstitution(article: { url: string; title: string }, highlights: readonly HighlightLike[]): SubstitutionSuggestion {
+export function suggestSubstitution(
+  article: { url: string; title: string },
+  highlights: readonly HighlightLike[],
+  currentOrder?: readonly string[],
+): SubstitutionSuggestion {
   const signal = detectFrontierLaunch(article);
   if (signal?.route === "official" && signal.strength === "model") {
-    const negatives = highlights.filter(isNegative).length;
-    const replaceable = highlights
-      .map((h, i) => ({ h, d: `D${h.rank ?? i + 1}` }))
+    const current = currentHighlights(highlights, currentOrder);
+    const negatives = current.filter(({ h }) => isNegative(h)).length;
+    const replaceable = current
       .filter(({ h }) => h.bucket !== "manual" && typeof h.score === "number")
       .filter(({ h }) => !(isNegative(h) && negatives <= 1))
       .sort((a, b) => (a.h.score as number) - (b.h.score as number));
     if (replaceable.length > 0) {
-      const { h, d } = replaceable[0];
+      const { h, slot } = replaceable[0];
       return {
         target: "destaque",
-        slot: d,
-        reason: `lançamento oficial de ${signal.matched} — ${d} tem o menor score do pipeline (${h.score})`,
+        slot,
+        reason: `lançamento oficial de ${signal.matched} — ${slot} tem o menor score do pipeline (${h.score})`,
       };
     }
     return { target: "destaque", slot: "?", reason: `lançamento oficial de ${signal.matched} — todos os destaques são manuais/protegidos, editor escolhe` };

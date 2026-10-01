@@ -37,7 +37,7 @@ import { join, resolve } from "node:path";
 import { fetchRss } from "./fetch-rss.ts";
 import { enrichEntry, parseSitemap } from "./lib/fetch-sitemap.ts";
 import { processThreads, type CapturedThread } from "./capture-newsletter-urls.ts";
-import { extractPastUrlsUnbounded, readPastEditionsMd } from "./lib/past-editions-extract.ts";
+import { extractPastUrlsUnbounded, readPastEditionsMd, readReviewedDestaqueUrls } from "./lib/past-editions-extract.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runTsx } from "./lib/run-tsx.ts";
 import {
@@ -48,6 +48,7 @@ import {
   filterLateArticles,
   formatLateRefreshBlock,
   resolveCutoffs,
+  selectSitemapEntries,
   suggestSubstitution,
   summarizeLateThreads,
   type HighlightLike,
@@ -88,20 +89,7 @@ async function fetchSitemapAfter(feed: LateRefreshFeed, cutoffIso: string): Prom
   } finally {
     clearTimeout(timer);
   }
-  const cutoff = new Date(cutoffIso).getTime();
-  const entries = parseSitemap(xml)
-    .filter((e) => {
-      if (!e.lastmod) return false;
-      const t = new Date(e.lastmod).getTime();
-      if (Number.isNaN(t) || t <= cutoff) return false;
-      if (!feed.pathPrefix) return true;
-      try {
-        return new URL(e.loc).pathname.startsWith(feed.pathPrefix);
-      } catch {
-        return false;
-      }
-    })
-    .slice(0, SITEMAP_ENRICH_CAP);
+  const entries = selectSitemapEntries(parseSitemap(xml), cutoffIso, feed.pathPrefix, SITEMAP_ENRICH_CAP);
   const enriched = await Promise.all(entries.map((e) => enrichEntry(e, { timeoutMs: FEED_TIMEOUT_MS })));
   return enriched.map((e) => ({
     url: e.loc,
@@ -190,6 +178,8 @@ export async function buildLateRefreshReport(opts: {
   const published = extractPastUrlsUnbounded(readPastEditionsMd(opts.pastEditionsPath));
   const approved = readJson(join(internal, "01-approved.json")) as { highlights?: HighlightLike[] } | undefined;
   const highlights = Array.isArray(approved?.highlights) ? approved.highlights : [];
+  // Ordem ATUAL de D1..D3 (o editor pode ter reordenado/trocado desde o Stage 1).
+  const currentOrder = readReviewedDestaqueUrls(join(opts.editionDir, "02-reviewed.md"));
 
   if (!opts.skipFeeds) {
     const results = await Promise.all(LATE_REFRESH_FEEDS.map((f) => fetchFeed(f, cutoffs.research_cutoff as string, opts.now)));
@@ -201,7 +191,7 @@ export async function buildLateRefreshReport(opts: {
       all.push(...r.articles);
     });
     const filtered = filterLateArticles(all, cutoffs.research_cutoff, inEdition, published, opts.now.toISOString());
-    base.candidates = filtered.fresh.map((a) => ({ ...a, suggestion: suggestSubstitution(a, highlights) }));
+    base.candidates = filtered.fresh.map((a) => ({ ...a, suggestion: suggestSubstitution(a, highlights, currentOrder) }));
     base.already_in_edition = filtered.already_in_edition.length;
     base.already_published = filtered.already_published.length;
   }

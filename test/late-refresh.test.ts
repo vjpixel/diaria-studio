@@ -8,6 +8,7 @@ import {
   formatLateRefreshBlock,
   isImpreciseTimestamp,
   resolveCutoffs,
+  selectSitemapEntries,
   suggestSubstitution,
   summarizeLateThreads,
   type LateArticle,
@@ -151,4 +152,45 @@ test("LATE_REFRESH_FEEDS: todo feed é de host de laboratório conhecido e sitem
     assert.ok(/^https:\/\//.test(f.url), f.name);
     if (f.method === "sitemap") assert.ok(f.pathPrefix, `${f.name} sem pathPrefix`);
   }
+});
+
+test("suggestSubstitution: editor REORDENOU os destaques no Stage 4 — slot vem da ordem do 02-reviewed.md, não do rank", () => {
+  // approved: D1=a(80) D2=b(65) D3=c(70). Editor trocou: agora D1=b, D2=c, D3=a.
+  const highlights = [
+    { rank: 1, score: 80, bucket: "noticias", url: "https://a.com/x" },
+    { rank: 2, score: 65, bucket: "lancamento", url: "https://b.com/y" },
+    { rank: 3, score: 70, bucket: "noticias", url: "https://c.com/z" },
+  ];
+  const sol = { url: "https://openai.com/index/introducing-gpt-6-1-sol", title: "Introducing GPT-6.1 Sol" };
+  // Sem ordem atual (fallback): b é o rank 2.
+  assert.equal(suggestSubstitution(sol, highlights).slot, "D2");
+  // Com a ordem atual: b (menor score) está em D1 agora.
+  const s = suggestSubstitution(sol, highlights, ["https://b.com/y/", "https://c.com/z", "https://a.com/x"]);
+  assert.equal(s.slot, "D1");
+  assert.match(s.reason, /D1 tem o menor score do pipeline \(65\)/);
+});
+
+test("suggestSubstitution: destaque TROCADO pelo editor (sem par no approved) é protegido como manual", () => {
+  const highlights = [
+    { rank: 1, score: 80, bucket: "noticias", url: "https://a.com/x" },
+    { rank: 2, score: 65, bucket: "lancamento", url: "https://b.com/y" },
+    { rank: 3, score: 70, bucket: "noticias", url: "https://c.com/z" },
+  ];
+  const sol = { url: "https://openai.com/index/introducing-gpt-6-1-sol", title: "Introducing GPT-6.1 Sol" };
+  // Editor tirou b e pôs n (manual) em D2 → o de menor score restante é c, em D3.
+  const s = suggestSubstitution(sol, highlights, ["https://a.com/x", "https://n.com/novo", "https://c.com/z"]);
+  assert.equal(s.slot, "D3");
+});
+
+test("selectSitemapEntries: ordena por lastmod desc ANTES do corte (cap não descarta a mais nova)", () => {
+  const entries = [
+    { loc: "https://www.anthropic.com/news/old", lastmod: "2026-09-29T20:00:00Z" },
+    { loc: "https://www.anthropic.com/news/mid", lastmod: "2026-09-29T21:00:00Z" },
+    { loc: "https://www.anthropic.com/solutions/x", lastmod: "2026-09-29T23:00:00Z" },
+    { loc: "https://www.anthropic.com/news/newest", lastmod: "2026-09-29T22:30:00Z" },
+    { loc: "https://www.anthropic.com/news/before", lastmod: "2026-09-29T10:00:00Z" },
+    { loc: "https://www.anthropic.com/news/nodate", lastmod: null },
+  ];
+  const out = selectSitemapEntries(entries, CUTOFF, "/news/", 2);
+  assert.deepEqual(out.map((e) => e.loc), ["https://www.anthropic.com/news/newest", "https://www.anthropic.com/news/mid"]);
 });
