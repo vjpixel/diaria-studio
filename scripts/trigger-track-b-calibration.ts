@@ -34,6 +34,7 @@
  */
 import { resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { DEFAULT_LABEL_SOURCE, type CalibrationLabelSource } from "./lib/calibration-labels.ts";
 import { buildPowerReport, CANDIDATE_FEATURES } from "./calibration-power-report.ts";
 import { evaluateCadence, rankQueuedCandidates, type CadenceState, type QueuedCandidate, type RankedCandidate } from "./lib/calibration-cadence-guard.ts";
 import { listReports } from "./studio-ui/studio-reports.ts";
@@ -56,8 +57,14 @@ export interface TrackBTriggerResult {
   blockedOnWeightComputation: boolean;
 }
 
-export function decideTrackBTrigger(editionsRoot: string, rootDir: string, nowIso: string): TrackBTriggerResult {
-  const report = buildPowerReport(editionsRoot);
+export function decideTrackBTrigger(
+  editionsRoot: string,
+  rootDir: string,
+  nowIso: string,
+  labelSource: CalibrationLabelSource = DEFAULT_LABEL_SOURCE,
+): TrackBTriggerResult {
+  // #9373: rótulo padrão = desfecho no gate do Stage 4 (lib/calibration-labels.ts).
+  const report = buildPowerReport(editionsRoot, 42, labelSource);
   const passing = report.features.filter((f) => f.passes_event_bar);
 
   const calibrationReports = listReports(rootDir).filter((r) => r.kind === "calibration");

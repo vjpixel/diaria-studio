@@ -52,6 +52,7 @@ import {
   type NewsletterBackend,
 } from "./lib/newsletter-backend.ts";
 import { captureStage2Baseline, type CaptureOutcome } from "./lib/editor-request-snapshots.ts";
+import { captureStage1Records, type CaptureStage1Result } from "./lib/stage1-funnel.ts";
 import {
   assertMarker,
   assertSentinel,
@@ -327,6 +328,26 @@ export function captureEditorBaselineOnStage2Sentinel(editionDir: string): Captu
   }
 }
 
+/**
+ * #9372: no write do sentinel do Stage 1 (que roda DEPOIS do gate 1 aplicado),
+ * congela `01-approved.json` em `01-approved.gate1.json` e grava o manifesto
+ * do funil `stage1-funnel.json` — os dois write-once. Só no layout da diária
+ * (`_internal/01-categorized.json` presente). Nunca lança: falha aqui não
+ * derruba o sentinel.
+ */
+export function captureStage1RecordsOnSentinel(editionDir: string, edition: string): CaptureStage1Result | "skipped" | "error" {
+  try {
+    if (!existsSync(resolve(editionDir, "_internal", "01-categorized.json"))) return "skipped";
+    const result = captureStage1Records(editionDir, edition);
+    if (result.gate1_snapshot === "created") console.log("snapshot do gate 1 (01-approved.gate1.json) gravado (#9372)");
+    if (result.funnel_manifest === "created") console.log("manifesto do funil do Stage 1 (stage1-funnel.json) gravado (#9372)");
+    return result;
+  } catch (e: unknown) {
+    console.warn(`[warn] falha ao gravar registros do Stage 1 (#9372): ${e instanceof Error ? e.message : String(e)}`);
+    return "error";
+  }
+}
+
 function main(): void {
   const [, , subcmd, ...rest] = process.argv;
   const args = parseCliArgs(rest).values;
@@ -425,6 +446,9 @@ function main(): void {
       // fim do Stage 2 — o passo em prosa equivalente era pulado em 15 de 21
       // edições. Fail-soft: falha aqui nunca derruba o sentinel.
       if (step === 2) captureEditorBaselineOnStage2Sentinel(editionDir);
+      // #9372: registro imutável do fim do Stage 1 (snapshot do gate 1 +
+      // manifesto do funil). Fail-soft, mesmo padrão do #9356 acima.
+      if (step === 1) captureStage1RecordsOnSentinel(editionDir, args.edition);
       break;
     }
 
