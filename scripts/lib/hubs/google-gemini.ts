@@ -100,7 +100,9 @@ const PUBLISHED_DATE = "2026-08-09";
 //    produtos/verticais profissionais já narrado em `sections[1]` ("Como o
 //    Gemini foi se espalhando pelos produtos do dia a dia e pelo Brasil?").
 // Bump por fonte nova, não por reescrita de corpo.
-const UPDATED_DATE = "2026-09-03";
+// 2026-10-01: `generate-hub-sources.ts` trouxe a edição de 28/09 pra
+// `sourceEditions`; bump pelo PISO de `validateHubContent` (mesmo caso do #5123).
+const UPDATED_DATE = "2026-09-28";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`/`matchingDates`, agora em
