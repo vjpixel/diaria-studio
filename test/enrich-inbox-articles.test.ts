@@ -791,7 +791,7 @@ describe("enrichArticles — #2664/#2672 normalização cobre fetch-fail / sem-m
     const { articles: out, outcomes } = await enrichArticles(articles, fetcher);
     assert.equal(
       out[0].title,
-      "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo; veja como",
+      "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo", // #9380: cauda "; veja como" também sai
       "título cru de fetch-fail deve ter sufixo de veículo E ponto final removidos",
     );
     // Não deve inflar a contagem: o artigo já tem o outcome de cache-miss do worker;

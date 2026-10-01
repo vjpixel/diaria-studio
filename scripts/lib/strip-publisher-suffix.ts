@@ -67,7 +67,13 @@
  *   - `stripPublisherSuffix(title)` — sufixo ` | ` + ` - ` / ` — ` / ` • ` (lista, #2984)
  *   - `stripTrailingPeriod(title)` — ponto final único
  *   - `stripYoutubeWatchWrapper(title)` — wrapper `Watch "..." on YouTube` (#4826)
- *   - `normalizeItemTitle(title)` — wrapper + sufixo + ponto, na ordem correta
+ *   - `stripClickbaitTail(title)` — "; entenda", "; veja como…", ": guia completo…" (#9380)
+ *   - `normalizeBracketPrefix(title)` — "[AINews] X" → "AINews: X" (#9380)
+ *   - `normalizeItemTitle(title)` — wrapper + prefixo + sufixo + cauda + ponto
+ *
+ * #9380: separadores ` · ` e ` / ` entram no strip por allowlist; sufixo com
+ * cara de domínio (`claude.dev`) conta como veículo em todos os separadores
+ * de traço. Aplicado a TODO item do pool em `categorize.ts`, não só no inbox.
  *   - `KNOWN_DASH_PUBLISHERS` — set de veículos (lowercase) para traço/travessão
  *   - `MIN_PREFIX_LEN` — constante de boundary para testes
  */
@@ -169,7 +175,24 @@ export const KNOWN_DASH_PUBLISHERS = new Set([
   "anandtech",
   "the information",
   "semafor",
+  // #9380 — casos reais em que o editor limpou à mão
+  "bbc news brasil",
+  "muahoolab",
+  "descomplicando sites",
+  "hugging face",
+  "openai",
+  "elevenmind",
 ]);
+
+/**
+ * Sufixo com cara de domínio (`claude.dev`, `MachineLearningMastery.com`) — #9380.
+ * Domínio como sufixo é sempre atribuição de site, nunca conteúdo do título.
+ */
+const DOMAIN_LIKE_SUFFIX_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i;
+
+function isKnownPublisherSuffix(suffix: string): boolean {
+  return KNOWN_DASH_PUBLISHERS.has(suffix) || DOMAIN_LIKE_SUFFIX_RE.test(suffix);
+}
 
 /**
  * Strip sufixo via ` | ` (pipe separador — #2140).
@@ -203,22 +226,30 @@ function stripDashSuffix(title: string): string {
   const dashIdx = trimmed.lastIndexOf(" - ");     // espaço-hífen-espaço
   const emDashIdx = trimmed.lastIndexOf(" — ");   // espaço-travessão-espaço
   const bulletIdx = trimmed.lastIndexOf(" • ");   // espaço-bullet-espaço (#2984)
+  const middotIdx = trimmed.lastIndexOf(" · ");   // espaço-middot-espaço (#9380)
+  const slashIdx = trimmed.lastIndexOf(" / ");    // espaço-barra-espaço (#9380)
 
   // Escolhe o separador mais à direita
   let sepStart = -1;
-  for (const idx of [dashIdx, emDashIdx, bulletIdx]) {
+  for (const idx of [dashIdx, emDashIdx, bulletIdx, middotIdx, slashIdx]) {
     if (idx >= 0 && idx > sepStart) sepStart = idx;
   }
 
   if (sepStart === -1) return title;
 
-  // " - ", " — " e " • " têm todos 3 chars (travessão U+2014 e bullet U+2022
+  // " - ", " — ", " • ", " · " e " / " têm todos 3 chars (travessão U+2014 e bullet U+2022
   // são 1 code unit cada em JS).
   const SEP_LEN = 3;
-  const suffix = trimmed.slice(sepStart + SEP_LEN).trim().toLowerCase();
+  // #9380: hífen residual pós-veículo ("Guia - Elevenmind -") é descartado.
+  const suffix = trimmed
+    .slice(sepStart + SEP_LEN)
+    .trim()
+    .replace(/\s*[-—]$/, "")
+    .trim()
+    .toLowerCase();
 
   // Anti-falso-positivo principal: só strip se o sufixo é veículo conhecido
-  if (!KNOWN_DASH_PUBLISHERS.has(suffix)) return title;
+  if (!isKnownPublisherSuffix(suffix)) return title;
 
   const prefix = trimmed.slice(0, sepStart).trim();
   if (prefix.length < MIN_PREFIX_LEN) return title;
@@ -338,6 +369,41 @@ export function stripYoutubeWatchWrapper(title: string): string {
 }
 
 /**
+ * Cauda de clickbait de portal (#9380): "; entenda", "; veja como…",
+ * "; saiba mais…", ": guia completo…". Só remove se sobrar prefixo
+ * ≥ MIN_PREFIX_LEN. Âncora no FIM do título.
+ *
+ * @pure
+ */
+const CLICKBAIT_TAIL_RES: RegExp[] = [
+  /\s*;\s*(?:entenda|saiba|veja|confira)\b[^;]*$/i,
+  /\s*:\s*(?:um\s+|o\s+)?guia\s+completo\b[^:]*$/i,
+];
+
+export function stripClickbaitTail(title: string): string {
+  const trimmed = title.trim();
+  for (const re of CLICKBAIT_TAIL_RES) {
+    const m = trimmed.match(re);
+    if (m && m.index !== undefined) {
+      const prefix = trimmed.slice(0, m.index).trim();
+      if (prefix.length >= MIN_PREFIX_LEN) return prefix;
+    }
+  }
+  return title;
+}
+
+/**
+ * Prefixo de newsletter entre colchetes (#9380): "[AINews] X" → "AINews: X".
+ *
+ * @pure
+ */
+export function normalizeBracketPrefix(title: string): string {
+  const m = title.trim().match(/^\[([^\]\n]{2,40})\]\s+(\S[\s\S]*)$/);
+  if (!m) return title;
+  return `${m[1].trim()}: ${m[2]}`;
+}
+
+/**
  * Teto de iterações do loop de `normalizeItemTitle` (defensivo — nenhum título
  * real deveria ter dezenas de sufixos de veículo encadeados; existe só pra
  * nunca travar em input patológico).
@@ -389,7 +455,11 @@ export function normalizeItemTitle(title: string): string {
   let current = title;
   for (let i = 0; i < MAX_NORMALIZE_ITERATIONS; i++) {
     const next = stripTrailingPeriod(
-      stripPublisherSuffix(stripTrailingPeriod(stripYoutubeWatchWrapper(current))),
+      stripClickbaitTail(
+        stripPublisherSuffix(
+          stripTrailingPeriod(normalizeBracketPrefix(stripYoutubeWatchWrapper(current))),
+        ),
+      ),
     );
     if (next === current) return next;
     current = next;

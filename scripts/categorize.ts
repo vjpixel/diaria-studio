@@ -34,6 +34,7 @@ import { exitWithError } from "./lib/exit-handler.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #535
 import { applySemanticTiebreaker, type CategorizedBuckets } from "./lib/semantic-tiebreaker.ts"; // #8211
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
+import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #9380
 import {
   AI_RELEVANT_TERMS,
   isArticleAIRelevant,
@@ -210,7 +211,13 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
     // só persiste QUAL regra decidiu (ou o fallback, ver
     // isFallbackCategorizationRule) pra permitir medir o resíduo real via
     // scripts/analyze-bucket-overrides.ts --rules.
-    result[bucket].push({ ...article, category: cat, category_rule: categoryRule });
+    // #9380: ponto único de normalização de título pra TODO item do pool
+    // (RSS/pesquisa/inbox) — antes só o inbox passava por normalizeItemTitle.
+    // Roda DEPOIS de categorizeWithRule pra não mudar a classificação (as
+    // heurísticas de título viram o título cru da fonte, como sempre).
+    const normalizedTitle =
+      typeof article.title === "string" ? normalizeItemTitle(article.title) : article.title;
+    result[bucket].push({ ...article, title: normalizedTitle, category: cat, category_rule: categoryRule });
   }
 
   // #1473: detectar summaries em inglês e flaggar para tradução downstream.
