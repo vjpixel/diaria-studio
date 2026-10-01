@@ -164,9 +164,23 @@ export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=cam
  * andamento, sem risco de perda porque não há um mês MAIS RECENTE que
  * comprove que a cobertura do mês antigo é de fato parcial.
  *
+ * **`windowStart` (#9378):** quando o chamador sabe onde a JANELA consultada
+ * começou (`AAAA-MM-DD`), o guard usa ela em vez do primeiro dia COM DADO.
+ * Sem isso, uma campanha que só começou a gastar no meio do mês (a da
+ * newsletter começou em ~19/09) nunca regravava aquele mês nem com
+ * `--since` no dia 1 — o mês ficava com o agregado antigo da conta inteira,
+ * exatamente o valor errado que o recálculo existe pra corrigir. Com
+ * `windowStart` ≤ dia 1 do mês mais antigo, a janela cobre o mês inteiro e
+ * a ausência de dados nos primeiros dias é gasto zero real, não truncamento.
+ *
  * @pure
  */
-export function aggregateMetaAdsChannelMetricsByMonth(metrics: ChannelDailyMetric[], canal: string, moeda = "BRL"): SpendRow[] {
+export function aggregateMetaAdsChannelMetricsByMonth(
+  metrics: ChannelDailyMetric[],
+  canal: string,
+  moeda = "BRL",
+  windowStart?: string,
+): SpendRow[] {
   const byMonth = new Map<string, { sum: number; dates: string[] }>();
 
   for (const m of metrics) {
@@ -186,7 +200,8 @@ export function aggregateMetaAdsChannelMetricsByMonth(metrics: ChannelDailyMetri
     const maisAntigo = mesesOrdenados[0];
     const datasDoMesMaisAntigo = byMonth.get(maisAntigo)!.dates;
     const primeiroDia = datasDoMesMaisAntigo.slice().sort()[0];
-    const cobreDesdeODia1 = primeiroDia.slice(8, 10) === "01";
+    const cobreDesdeODia1 =
+      windowStart !== undefined ? windowStart <= `${maisAntigo}-01` : primeiroDia.slice(8, 10) === "01";
     if (!cobreDesdeODia1) byMonth.delete(maisAntigo);
   }
 
@@ -243,6 +258,11 @@ export const META_ADS_INGEST_FAILURE_EXIT_CODE = SPEND_INGEST_FAILURE_EXIT_CODE;
  */
 export const META_ADS_FETCH_RETRY = SPEND_INGEST_FETCH_RETRY;
 
+/** Default de `fetchMetaAdsChannelMetrics` (`opts.lookbackDays ?? 30`),
+ *  repetido aqui porque o guard de mês truncado precisa do início da janela
+ *  (#9378). Se o default de lá mudar, este precisa acompanhar. */
+export const META_ADS_DEFAULT_LOOKBACK_DAYS = 30;
+
 export interface RunHeadlessOptions {
   /** Injetável só pra teste — nunca espera de verdade fora de produção. */
   sleep?: (ms: number) => Promise<void>;
@@ -261,7 +281,8 @@ export interface RunHeadlessOptions {
  * do histórico). `null` se a data for inválida ou futura. Pra regravar um mês
  * inteiro, `since` precisa ser o dia 1 dele: o guard de mês truncado
  * (`aggregateMetaAdsChannelMetricsByMonth`) descarta o mês mais antigo da
- * janela quando ela não começa no dia 1. @pure
+ * janela quando ela não começa no dia 1 — e desde o fix do #9378 olha o
+ * início da JANELA, não o primeiro dia com gasto. @pure
  */
 export function lookbackDaysSince(since: string, now: Date): number | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) return null;
@@ -327,10 +348,16 @@ export async function runHeadless(
   let networkErrorReason: string | null = null;
   let fetchedMetricsCount = 0;
 
+  // Mesmo `now`/janela pro fetch e pro guard de mês truncado (#9378) — o
+  // guard precisa saber onde a JANELA começou, não só o primeiro dia com dado.
+  const now = opts.now ?? new Date();
+  const lookbackDays = opts.lookbackDays ?? META_ADS_DEFAULT_LOOKBACK_DAYS;
+  const windowStart = new Date(now.getTime() - (lookbackDays - 1) * 86_400_000).toISOString().slice(0, 10);
+
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
     const fetchResult = await fetchMetaAdsChannelMetrics(retryingFetch, authResult.auth.accessToken, {
-      ...(opts.lookbackDays !== undefined ? { lookbackDays: opts.lookbackDays } : {}),
-      ...(opts.now !== undefined ? { now: opts.now } : {}),
+      lookbackDays,
+      now,
       ...(opts.campaignIds !== undefined ? { campaignIds: opts.campaignIds } : {}),
     });
     if (fetchResult.error) {
@@ -338,7 +365,7 @@ export async function runHeadless(
       return { kind: "error", reason: networkErrorReason };
     }
     fetchedMetricsCount = fetchResult.metrics.length;
-    const rows = aggregateMetaAdsChannelMetricsByMonth(fetchResult.metrics, META_ADS_CANAL);
+    const rows = aggregateMetaAdsChannelMetricsByMonth(fetchResult.metrics, META_ADS_CANAL, "BRL", windowStart);
     return { kind: "ok", rows, fetchedCount: fetchResult.metrics.length };
   };
 
