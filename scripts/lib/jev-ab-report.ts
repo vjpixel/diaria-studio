@@ -39,6 +39,17 @@ export interface EditionRaw {
    * subnotifica tokens do gate).
    */
   step4Sentinel?: Tri<{ completed_at?: unknown }>;
+  /**
+   * #9374/#9356: confiabilidade do baseline `stage2-post-gate` contra o qual
+   * o `derive-stage4` derivou as correções do editor. `status` é o
+   * `BaselineHealth["status"]` de `lib/editor-request-snapshots.ts`;
+   * `backfilled` = `_internal/.stage4-editor-requests-backfill.json` presente
+   * (`derive-editor-requests.ts backfill-stage4 --write` já reconstruiu).
+   * Baseline != ok sem backfill → `gate4Corrections` vira `null` (a captura
+   * estava quebrada; contar as linhas do jsonl subnotifica o Stage 4 e
+   * enviesaria o A/B). Ausente (chamador antigo) = comportamento anterior.
+   */
+  editorRequestBaseline?: { status: "ok" | "missing" | "late" | "legacy"; backfilled: boolean };
 }
 
 export type Arm = "A" | "B" | "unknown";
@@ -161,9 +172,18 @@ const num = (v: unknown): v is number => typeof v === "number" && Number.isFinit
 
 /** Braço B exige profile==='all' E features não vazio (P1-2). */
 export function armOf(e: EditionRaw): Arm {
-  if (e.profile.state === "absent") return "A";
-  if (e.profile.state === "corrupt") return "unknown";
-  const p = e.profile.value;
+  return armFromProfile(e.profile);
+}
+
+/**
+ * Braço a partir só do marcador `_internal/.jev-profile.json` — exportado pra
+ * que toda métrica editorial (ex: `edition-manual-edits.ts`, #9374) estratifique
+ * pelo MESMO critério do relatório A/B.
+ */
+export function armFromProfile(profile: Tri<unknown>): Arm {
+  if (profile.state === "absent") return "A";
+  if (profile.state === "corrupt") return "unknown";
+  const p = profile.value;
   if (isObj(p) && p.profile === "all" && Array.isArray(p.features) && p.features.length > 0) return "B";
   return "unknown";
 }
@@ -270,6 +290,16 @@ export function computeMetrics(e: EditionRaw): { m: EditionMetrics; warnings: st
     const { rows, invalidLines } = e.editorRequests.value;
     if (invalidLines > 0) w.push(`${id}: editor-requests.jsonl com ${invalidLines} linha(s) inválida(s) ignorada(s)`);
     gate4 = rows.filter((r) => isObj(r) && r.stage === 4).length;
+  }
+  // #9374: com o baseline quebrado (#9356) o derive-stage4 não derivou as
+  // edições do editor — o número acima é subnotificação, não medida.
+  const bl = e.editorRequestBaseline;
+  if (gate4 !== null && bl && bl.status !== "ok" && !bl.backfilled) {
+    w.push(
+      `${id}: baseline das correções do editor ${bl.status} (#9356) e sem backfill — correções do gate 4 indisponíveis; ` +
+        `rode \`derive-editor-requests.ts backfill-stage4 --edition ${id} --write\` e reprocesse`,
+    );
+    gate4 = null;
   }
 
   let touchMin: number | null = null;

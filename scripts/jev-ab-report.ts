@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
+import { STAGE4_BACKFILL_MARKER, assessStage2BaselineOnDisk } from "./lib/editor-request-snapshots.ts";
 import { buildAbReport, renderAbReport, type EditionRaw, type Tri } from "./lib/jev-ab-report.ts";
 
 export function readJsonTri(p: string): Tri<unknown> {
@@ -70,6 +71,16 @@ export function loadEdition(id: string, dir = editionDir(id)): EditionRaw {
     dedupArtifact: readJsonTri(join(internal, "dedup-grayzone-jev.json")),
     runStartedAt,
     step4Sentinel: readJsonTri(join(internal, ".step-4-done.json")) as Tri<{ completed_at?: unknown }>,
+    // #9374: só faz sentido avaliar o baseline de edição que existe — sem o
+    // diretório, `editorRequests` já vem "absent" e a métrica já é null.
+    ...(existsSync(dir)
+      ? {
+          editorRequestBaseline: {
+            status: assessStage2BaselineOnDisk(dir).status,
+            backfilled: existsSync(join(dir, STAGE4_BACKFILL_MARKER)),
+          },
+        }
+      : {}),
   };
 }
 

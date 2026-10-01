@@ -45,6 +45,13 @@ export const STAGE2_BASELINE_LABEL = "stage2-post-gate";
  */
 export const STAGE4_POST_GATE_LABEL = "stage4-post-gate";
 
+/**
+ * Marcador do `derive-editor-requests.ts backfill-stage4 --write` (#9356):
+ * presente = os pedidos do Stage 4 já foram reconstruídos contra o baseline
+ * reconstruído. Lido também pelo `jev-ab-report.ts` (#9374).
+ */
+export const STAGE4_BACKFILL_MARKER = "_internal/.stage4-editor-requests-backfill.json";
+
 /** Arquivos do baseline pós-Stage 2. */
 export const STAGE2_SNAPSHOT_FILES = [
   "02-reviewed.md",
