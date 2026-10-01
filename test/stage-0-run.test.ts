@@ -992,4 +992,56 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     const exDetails = JSON.parse(exemptionsLog![exDetailsIdx + 1]) as { count: number };
     assert.equal(exDetails.count, 1);
   });
+
+  // #9368: caso 260921 — 11 threads capturadas, captured-newsletter-articles.json `[]`.
+  async function run0bBis(articlesContent: string) {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "fetch-newsletter-threads.ts": () => ok(JSON.stringify({ threads_found: 2, threads_written: 2, skipped_no_body: 0 })),
+        "capture-newsletter-urls.ts": () => ok(JSON.stringify({ processed: 2, skipped_already: 2, articles_produced: 0, urls_extracted: 0, urls_filtered: 0, always_consider_exemptions: [], config_warnings: [] })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const logEventCalls: string[][] = [];
+    const deps = baseDeps({
+      exec: (script, args) => {
+        if (script.includes("log-event")) logEventCalls.push(args);
+        return exec(script, args);
+      },
+      execAsync,
+      existsSync: () => true,
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({ newsletter_auto_capture: { enabled: true, senders: ["email@newsletter.7min.ai"], since_hours: 48 } });
+        }
+        if (p.endsWith("captured-newsletters.json")) return JSON.stringify([{ thread_id: "a" }, { thread_id: "b" }]);
+        if (p.endsWith("captured-newsletter-articles.json")) return articlesContent;
+        return "[]";
+      },
+    });
+    const result = await runStage0(
+      ["--edition", "260921", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+    return { result, calls, logEventCalls };
+  }
+
+  it("#9368 — threads capturadas > 0 e 0 artigos gravados vira error no run-log (nunca warning silencioso)", async () => {
+    const { result, calls, logEventCalls } = await run0bBis("[]");
+    assert.equal(result.code, 0, "guard não aborta o Stage 0");
+    const captureCall = calls.find((c) => c.script.includes("capture-newsletter-urls"));
+    assert.ok(captureCall);
+    const edIdx = captureCall!.args.indexOf("--edition");
+    assert.ok(edIdx !== -1 && captureCall!.args[edIdx + 1] === "260921", "cursor por edição: --edition repassado");
+    const errLog = logEventCalls.find((args) => args.includes("error") && args.some((a) => a.includes("0 artigos gravados")));
+    assert.ok(errLog, `esperava log-event error, recebeu: ${JSON.stringify(logEventCalls)}`);
+    const details = JSON.parse(errLog![errLog!.indexOf("--details") + 1]) as { threads: number; articles: number };
+    assert.equal(details.threads, 2);
+    assert.equal(details.articles, 0);
+  });
+
+  it("#9368 — com artigos gravados o guard não dispara", async () => {
+    const { logEventCalls } = await run0bBis(JSON.stringify([{ url: "https://x.ai/news" }]));
+    assert.ok(!logEventCalls.some((args) => args.some((a) => a.includes("0 artigos gravados"))));
+  });
 });
