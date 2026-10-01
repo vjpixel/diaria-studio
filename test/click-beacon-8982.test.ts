@@ -68,12 +68,18 @@ describe("validateClickBeacon (#8982)", () => {
     if (v.ok) assert.equal(v.eventName, "CliqueIngresso_B");
   });
 
+  it("#9335: variante 'c'/'C' → eventName CliqueIngresso_C", () => {
+    const v = validateClickBeacon({ variant: "c", posicao: "topo", eventId: "e4", externalId: "", fbc: "", fbp: "" });
+    assert.equal(v.ok, true);
+    if (v.ok) assert.equal(v.eventName, "CliqueIngresso_C");
+  });
+
   it("variante inválida/ausente → invalid_variant", () => {
     assert.deepEqual(validateClickBeacon({ variant: "", posicao: "", eventId: "e", externalId: "", fbc: "", fbp: "" }), {
       ok: false,
       error: "invalid_variant",
     });
-    assert.deepEqual(validateClickBeacon({ variant: "c", posicao: "", eventId: "e", externalId: "", fbc: "", fbp: "" }), {
+    assert.deepEqual(validateClickBeacon({ variant: "d", posicao: "", eventId: "e", externalId: "", fbc: "", fbp: "" }), {
       ok: false,
       error: "invalid_variant",
     });
