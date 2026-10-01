@@ -47,6 +47,7 @@ import {
   SNAPSHOT_SCAN_SINCE,
   SNAPSHOT_FILE_RE,
   applySinceFloor,
+  findSnapshotAgeFinding,
   type AudienceStalenessLogEntry,
   type SnapshotFile,
 } from "./lib/audience-profile-staleness-alarm.ts";
@@ -123,11 +124,17 @@ function main(): void {
 
   if (entries.length === 0) {
     console.log(`${LOG_PREFIX} nenhuma ocorrência do guard #4366 encontrada (run-log + snapshots).`);
-    return;
+  } else {
+    console.log(`${LOG_PREFIX} ${entries.length} ocorrência(s) do guard #4366 encontrada(s).`);
   }
 
-  const findings = buildAlarmFindings(entries);
-  console.log(`${LOG_PREFIX} ${entries.length} ocorrência(s) do guard #4366 encontrada(s).`);
+  // #9240: snapshot mais recente velho demais = fonte do #9232 cega. Sem early
+  // return acima: o finding "estado" precisa da reconciliação rodando todo dia
+  // pra fechar sozinho quando snapshots novos chegarem.
+  const ageFinding = findSnapshotAgeFinding(snapshots.map((s) => s.name), new Date());
+  if (ageFinding) console.warn(`${LOG_PREFIX} AVISO: ${ageFinding.title}.`);
+
+  const findings = [...buildAlarmFindings(entries), ...(ageFinding ? [ageFinding] : [])];
 
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
 
