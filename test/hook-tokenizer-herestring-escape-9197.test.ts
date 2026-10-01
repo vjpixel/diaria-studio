@@ -36,6 +36,18 @@ import {
 import { stripHeredocSpans as stripHeredocD } from "../.claude/hooks/block-npm-install-node-modules-symlink.mjs";
 import { stripHeredocs } from "../.claude/hooks/block-continuo-master-commit.mjs";
 
+// Sem .d.mts nesses hooks: import dinâmico tipado (#9214).
+type StripFn = (command: string) => string;
+async function loadStripQuoted(spec: string): Promise<StripFn> {
+  return ((await import(spec)) as { stripQuotedSpans: StripFn }).stripQuotedSpans;
+}
+const stripQuotedE = await loadStripQuoted("../.claude/hooks/block-branch-checkout-main.mjs");
+const stripQuotedF = await loadStripQuoted("../.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs");
+const stripQuotedG = await loadStripQuoted("../.claude/hooks/block-worktree-alien-commit.mjs");
+const stripQuotedH = await loadStripQuoted("../.claude/hooks/block-gh-pr-merge-subagent.mjs");
+const stripQuotedI = await loadStripQuoted("../.claude/hooks/pr-create-review.mjs");
+const stripQuotedJ = await loadStripQuoted("../.claude/hooks/consume-merge-grant-on-merge.mjs");
+
 const HOOKS_DIR = join(import.meta.dirname, "..", ".claude", "hooks");
 
 const HEREDOC_IMPLS = [
@@ -47,6 +59,13 @@ const HEREDOC_IMPLS = [
 const QUOTED_IMPLS = [
   ["block-worktree-bare-push", stripQuotedB],
   ["block-handwritten-pr-checks-loop", stripQuotedC],
+  // #9214 item 2: demais cópias, antes fora da paridade.
+  ["block-branch-checkout-main", stripQuotedE],
+  ["block-pr-create-pii-runtime-artifacts", stripQuotedF],
+  ["block-worktree-alien-commit", stripQuotedG],
+  ["block-gh-pr-merge-subagent", stripQuotedH],
+  ["pr-create-review", stripQuotedI],
+  ["consume-merge-grant-on-merge", stripQuotedJ],
 ] as const;
 
 describe("stripHeredocSpans: here-string não é heredoc (#9197 item 1)", () => {
@@ -120,8 +139,8 @@ describe("entry guard com path percent-encoded (#9197 item 3)", () => {
     }
   });
 
-  // Hooks fora do escopo desta PR (outra sessão cuida deles): follow-up em #9214.
-  const KNOWN_EXCEPTIONS = new Set(["session-beacon.mjs", "consume-merge-grant-on-merge.mjs"]);
+  // #9214: session-beacon.mjs e consume-merge-grant-on-merge.mjs saíram da lista de exceções.
+  const KNOWN_EXCEPTIONS = new Set<string>();
 
   it("todo hook com o guard `file://${_argv1}` também compara via pathToFileURL", () => {
     const missing: string[] = [];

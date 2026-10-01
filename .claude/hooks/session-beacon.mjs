@@ -105,8 +105,9 @@
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
+import { breakStaleLock, tryAcquireOwnedLock } from "./lib/registry-lock.mjs";
 
 /** Kind das sessões registradas por este hook. Nunca coordenador — ver blast radius 2. */
 export const BEACON_KIND = "interactive";
@@ -779,29 +780,10 @@ function writeJsonAtomic(path, value) {
  * heartbeat custa um registro alguns segundos mais velho; perder um
  * `merge_grant` custa um deadlock de merge com diagnóstico invertido.
  */
-/**
- * #6952 (achado do review): idade a partir da qual um `.lock` é considerado
- * ÓRFÃO e quebrado à força. Espelha `STALE_LOCK_MS` de
- * `scripts/lib/session-registry.ts` — os TRÊS programas que escrevem o
- * registro precisam concordar neste número, senão um quebra o lock que o
- * outro ainda considera válido.
- *
- * O `wx` não tem dono nem TTL: um processo morto segurando o lock (SIGKILL,
- * OOM, o binário do Claude Code quebrando no meio — aconteceu 5× num único
- * dia) deixa o arquivo no disco PARA SEMPRE, e todo escritor seguinte passa a
- * falhar. Sem quebra por idade, o conserto do #6952 trocaria um grant perdido
- * de vez em quando por uma parada total do registro. 60s é folgado: a seção
- * crítica é um read-modify-write de um JSON pequeno.
- */
-const STALE_LOCK_MS = 60_000;
-
-/** Remove um `.lock` órfão. Best-effort: nunca lança. */
-function breakStaleLock(lockPath) {
-  try {
-    if (Date.now() - statSync(lockPath).mtimeMs < STALE_LOCK_MS) return;
-    unlinkSync(lockPath);
-  } catch { /* inexistente, ou outro quebrador ganhou a corrida — segue */ }
-}
+// Lock órfão (#6952): processo morto segurando o `.lock` (SIGKILL, OOM)
+// deixaria todo escritor seguinte travado. #9203: `breakStaleLock` vem de
+// ./lib/registry-lock.mjs — mesma política de `scripts/lib/session-registry.ts`
+// (dono vivo nunca é quebrado por idade).
 
 /**
  * #6952 (achado do review): o ORÇAMENTO DE BLOQUEIO do beacon é deliberadamente
@@ -823,23 +805,13 @@ const BEACON_CAS_ATTEMPTS = 3;
 function acquireBeaconLock(lockPath, timeoutMs = BEACON_LOCK_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    try {
-      closeSync(openSync(lockPath, "wx"));
-      return;
-    } catch (e) {
-      if (e?.code !== "EEXIST") throw e;
-      if (Date.now() >= deadline) {
-        throw new Error(`[session-beacon] lock timeout after ${timeoutMs}ms: ${lockPath}`);
-      }
-      // Espera 50ms DORMINDO, não em busy wait — mesmo padrão de
-      // `acquireLock` em `scripts/lib/file-lock.ts` (#6952/#6969): o spin
-      // busy-wait competia por CPU justamente com o dono do lock enquanto ele
-      // precisava de CPU pra soltá-lo. `Atomics.wait` é síncrono (não
-      // precisa de função `async`) e é a espera dormindo real disponível
-      // aqui — reintroduzido por engano neste hook no #7031, corrigido de
-      // volta a esperar dormindo.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    // #9203: grava o dono {pid, host, ts, token}; erro não-EEXIST propaga.
+    if (tryAcquireOwnedLock(lockPath)) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`[session-beacon] lock timeout after ${timeoutMs}ms: ${lockPath}`);
     }
+    // Espera 50ms DORMINDO, não em busy wait (#6952/#6969, #7031).
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
   }
 }
 
@@ -863,7 +835,7 @@ function writeJsonAtomicWithCas(path, buildRecord, verify, attempts = BEACON_CAS
     let acquired = false;
     try {
       // Antes de esperar de novo, checa se o lock é de um processo que morreu
-      // segurando-o (ver STALE_LOCK_MS).
+      // segurando-o (política em ./lib/registry-lock.mjs, #9203).
       breakStaleLock(lockPath);
       acquireBeaconLock(lockPath);
       acquired = true;
@@ -894,7 +866,12 @@ function writeJsonAtomicWithCas(path, buildRecord, verify, attempts = BEACON_CAS
 // #2019-style CLI guard — só roda o corpo quando este arquivo é o entrypoint
 // (nunca ao ser importado por test/session-beacon-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
+if (
+  // #9214: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));

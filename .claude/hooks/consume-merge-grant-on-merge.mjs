@@ -99,7 +99,8 @@
 
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { breakStaleLock, tryAcquireOwnedLock } from "./lib/registry-lock.mjs";
 import { execFileSync } from "node:child_process";
 
 /** Duplicado de `MERGE_GRANT_TTL_MS` — ver session-registry.ts e
@@ -156,6 +157,13 @@ export function stripQuotedSpans(command) {
   const n = command.length;
   while (i < n) {
     const ch = command[i];
+    // `\x` fora de aspas é caractere literal (`don\'t`), não abre span —
+    // sem isto a aspa escapada engolia o resto do comando (#9214).
+    if (ch === "\\" && i + 1 < n) {
+      result += command.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
     if (ch === "'") {
       let j = i + 1;
       while (j < n && command[j] !== "'") j++;
@@ -297,17 +305,11 @@ function writeJsonAtomic(path, value) {
 // PostToolUse que roda logo depois de um `gh pr merge` bem-sucedido, e não
 // pode segurar o editor. Fail-open igual ao resto do arquivo.
 
-const STALE_LOCK_MS = 60_000;
+// #9203: `breakStaleLock`/`tryAcquireOwnedLock` vêm de ./lib/registry-lock.mjs
+// — mesma política de `scripts/lib/session-registry.ts` (dono vivo nunca é
+// quebrado por idade; releitura sob `.steal` antes do unlink).
 const LOCK_TIMEOUT_MS = 2_000;
 const CAS_ATTEMPTS = 3;
-
-/** Remove um `.lock` órfão (processo morto segurando). Nunca lança. */
-function breakStaleLock(lockPath) {
-  try {
-    if (Date.now() - statSync(lockPath).mtimeMs < STALE_LOCK_MS) return;
-    unlinkSync(lockPath);
-  } catch { /* inexistente, ou outro quebrador ganhou — segue */ }
-}
 
 /**
  * Marca a concessão viva de `sessionId` como consumida, sob o MESMO
@@ -365,17 +367,10 @@ function consumeOneUnderLock(initial, nowIso, attempts = CAS_ATTEMPTS, lockTimeo
       breakStaleLock(lockPath);
       const deadline = Date.now() + lockTimeoutMs;
       for (;;) {
-        try { closeSync(openSync(lockPath, "wx")); acquired = true; break; } catch (e) {
-          if (e?.code !== "EEXIST") throw e;
-          if (Date.now() >= deadline) throw new Error(`lock timeout: ${lockPath}`);
-          // Espera 50ms DORMINDO, não em busy wait — mesmo padrão de
-          // `acquireLock` em `scripts/lib/file-lock.ts` (#6952/#6969): o spin
-          // busy-wait competia por CPU justamente com o dono do lock enquanto
-          // ele precisava de CPU pra soltá-lo. `Atomics.wait` é síncrono e é
-          // a espera dormindo real disponível aqui — reintroduzido por
-          // engano neste hook no #7031, corrigido de volta.
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
-        }
+        if (tryAcquireOwnedLock(lockPath)) { acquired = true; break; }
+        if (Date.now() >= deadline) throw new Error(`lock timeout: ${lockPath}`);
+        // Espera 50ms DORMINDO, não em busy wait (#6952/#6969, #7031).
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
       }
 
       // Relê ESTE arquivo dentro do lock — nunca o snapshot de fora, e nunca
@@ -415,7 +410,12 @@ function consumeOneUnderLock(initial, nowIso, attempts = CAS_ATTEMPTS, lockTimeo
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/session-conflicts-and-merge-grant.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
+if (
+  // #9214: path com espaço/não-ASCII chega percent-encoded em import.meta.url
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));

@@ -147,6 +147,13 @@ export function stripQuotedSpans(command) {
   const n = command.length;
   while (i < n) {
     const ch = command[i];
+    // `\x` fora de aspas é caractere literal (`don\'t`), não abre span —
+    // sem isto a aspa escapada engolia o resto do comando (#9214).
+    if (ch === "\\" && i + 1 < n) {
+      result += command.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
     if (ch === "'") {
       let j = i + 1;
       while (j < n && command[j] !== "'") j++;
