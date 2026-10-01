@@ -117,7 +117,7 @@ export function breakStaleLock(lockPath, now = Date.now()) {
  * Paridade travada por test/hook-registry-lock-delete-pending-9280.test.ts.
  */
 export const DELETE_PENDING_MAX_STREAK = 20;
-const DELETE_PENDING_WAIT_MS = 5;
+export const DELETE_PENDING_WAIT_MS = 5;
 
 /** `true` se o erro do `wx` é o sintoma de delete-pending do Windows (#9194/#9280). */
 export function isDeletePendingWxError(code, platform = process.platform) {

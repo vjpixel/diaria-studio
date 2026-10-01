@@ -7,6 +7,7 @@ export function isLockOrphan(
 ): boolean;
 export function breakStaleLock(lockPath: string, now?: number): boolean;
 export const DELETE_PENDING_MAX_STREAK: number;
+export const DELETE_PENDING_WAIT_MS: number;
 export function isDeletePendingWxError(code: string | undefined, platform?: NodeJS.Platform): boolean;
 export interface AcquireDeps {
   platform: NodeJS.Platform;

@@ -795,7 +795,8 @@ function writeJsonAtomic(path, value) {
  * letra do CAS e quebraria a razão de existir dele — além de violar o "stall
  * silencioso > 60s é inaceitável" do CLAUDE.md.
  *
- * 2s × 3 = ~6s de pior caso. A assimetria com o lado TS é escolha, não
+ * 2s × 3 = ~6s de pior caso (~7s no Windows: a sequência de delete-pending
+ * do #9280, até ~300ms, não olha o deadline). A assimetria com o lado TS é escolha, não
  * descuido: lá, perder a escrita custa um grant/claim e vale esperar; aqui,
  * custa um heartbeat alguns segundos mais velho e não vale segurar o editor.
  */

@@ -20,8 +20,9 @@ import {
   tryAcquireOwnedLock,
   isDeletePendingWxError as isDeletePendingMjs,
   DELETE_PENDING_MAX_STREAK as STREAK_MJS,
+  DELETE_PENDING_WAIT_MS as WAIT_MJS,
 } from "../.claude/hooks/lib/registry-lock.mjs";
-import { isDeletePendingWxError, DELETE_PENDING_MAX_STREAK } from "../scripts/lib/file-lock.ts";
+import { isDeletePendingWxError, DELETE_PENDING_MAX_STREAK, DELETE_PENDING_WAIT_MS } from "../scripts/lib/file-lock.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "reglock-9280-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -44,8 +45,9 @@ function failingThenReal(codes: string[]) {
 }
 
 describe("registry-lock.mjs — delete-pending no Windows (#9280)", () => {
-  it("paridade com file-lock.ts: mesmo teto de sequência e mesmo predicado", () => {
+  it("paridade com file-lock.ts: mesmo teto de sequência, mesma espera e mesmo predicado", () => {
     assert.equal(STREAK_MJS, DELETE_PENDING_MAX_STREAK);
+    assert.equal(WAIT_MJS, DELETE_PENDING_WAIT_MS);
     for (const platform of ["win32", "linux", "darwin"] as NodeJS.Platform[]) {
       for (const code of ["EPERM", "EACCES", "EEXIST", "ENOENT", "ENOSPC", undefined]) {
         assert.equal(isDeletePendingMjs(code, platform), isDeletePendingWxError(code, platform), `${platform}/${code}`);

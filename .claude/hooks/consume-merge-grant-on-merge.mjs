@@ -397,9 +397,15 @@ function consumeOneUnderLock(initial, nowIso, attempts = CAS_ATTEMPTS, lockTimeo
         throw new Error("CAS verify failed: outro escritor sobrescreveu o consumedAt");
       }
       return true;
-    } catch {
+    } catch (e) {
       // Retry: contenção de lock, ou verify perdido pro caminho advisory
-      // cross-máquina do OneDrive (#6182).
+      // cross-máquina do OneDrive (#6182). EPERM/EACCES persistente (não é
+      // delete-pending, #9280) deixa rastro — senão o grant fica sem consumir
+      // até o TTL sem nenhum sinal.
+      if (/não é delete-pending/.test(e?.message ?? "")) {
+        try { process.stderr.write(`[consume-merge-grant] ${e.message}
+`); } catch { /* ignore */ }
+      }
     } finally {
       if (acquired) { try { unlinkSync(lockPath); } catch { /* ignore */ } }
     }

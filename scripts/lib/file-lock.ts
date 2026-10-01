@@ -219,7 +219,7 @@ export function tryStealOrphan(
  * preservando o #6952 (nada de girar até o timeout escondendo a causa).
  */
 export const DELETE_PENDING_MAX_STREAK = 20;
-const DELETE_PENDING_WAIT_MS = 5;
+export const DELETE_PENDING_WAIT_MS = 5;
 
 /** `true` se o erro do `wx` é o sintoma de delete-pending do Windows (#9194). Exportado pra teste. */
 export function isDeletePendingWxError(code: string | undefined, platform: NodeJS.Platform = process.platform): boolean {
