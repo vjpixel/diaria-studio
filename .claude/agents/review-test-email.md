@@ -585,6 +585,26 @@ ASCII substituições conhecidas (ã→a, ç→c, smart quotes→ASCII) ficam co
 warning `info:` (não blocker). Drop sem substituto vira blocker — provável
 charset mismatch (latin1 vs UTF-8) no template.
 
+### 3f. Tamanho do e-mail ENTREGUE (#9277)
+
+O invariante `kit-html-too-large` (Stage 4) mede só o HTML local; o ESP
+(Kit/Beehiiv) acrescenta wrapper, parte texto e pixel no fim. Medir o que o
+Gmail recebeu: passar o `sizeEstimate` da mensagem de teste (campo do
+`get_thread`) quando disponível — sem ele, o script cai no tamanho do dump.
+
+```bash
+npx tsx scripts/lint-test-email-size.ts \
+  --size-estimate {sizeEstimate_da_mensagem_ou_vazio} \
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
+  --local-html {edition_dir}/_internal/newsletter-final-kit.html \
+  --out {edition_dir}/_internal/lint-size-{AAMMDD}.json
+# Exit 0 = dentro do corte de 102 KB. Exit 1 = acima (Gmail vai cortar).
+```
+
+Mapear `issues[]`:
+- `category:delivered_size_over_clip` → `"email:delivered_size_over_clip: {detail}"` (aparece no gate 6; cortar conteúdo é decisão do editor)
+- `category:delivered_size_unmeasured` → `"info:delivered_size_unmeasured"`
+
 ### 3b. Image freshness via lint determinístico (#1212)
 
 **Procedimento (passo 16):**

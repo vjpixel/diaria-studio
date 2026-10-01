@@ -1741,6 +1741,31 @@ export function publishEditionSitePage(
  * Fail-soft: uma falha ao ESCREVER este arquivo de estado nunca pode mascarar
  * o `result` real já computado — loga em stderr e segue, nunca lança.
  */
+/**
+ * #9278: na 261001 o PR do site ficou aberto (CI não convergiu em 120 s), a
+ * sessão não pôde mergear (guard #5716) e o editor mergeou à mão — sem isso,
+ * o link `/p/{slug}` do e-mail daria 404 às 06:00. `published: true` com
+ * `merged: false` passava silencioso no gate 6 (só `published` era olhado).
+ * Devolve o texto de BLOQUEIO com prazo, ou `null` quando não há o que
+ * mergear (merged, ou sem PR/sem publicação — esses têm aviso próprio).
+ */
+export function sitePageMergeBlocker(state: {
+  published?: boolean;
+  merged?: boolean;
+  mergeReason?: string;
+  prUrl?: string;
+  slug?: string;
+}): string | null {
+  if (state.published !== true || state.merged !== false) return null;
+  const pr = state.prUrl ? ` ${state.prUrl}` : "";
+  const why = state.mergeReason ? ` (${state.mergeReason})` : "";
+  const path = state.slug ? `/p/${state.slug}` : "a página da edição";
+  return (
+    `BLOQUEIO: PR da página do site${pr} NÃO mergeado${why}. Mergear ANTES do envio (06:00 BRT) — ` +
+    `sem o merge, ${path} (link de WhatsApp do e-mail) dá 404 (#9278).`
+  );
+}
+
 export function writeSitePageState(editionDirAbs: string, result: PublishPageResult): void {
   const path = join(editionDirAbs, "_internal", "site-page-published.json");
   const state = {
@@ -1757,6 +1782,15 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
     mergeReason: "mergeReason" in result ? result.mergeReason : undefined,
     // #8689: worktree nasceu de um origin/master possivelmente desatualizado.
     fetchStale: "fetchStale" in result ? result.fetchStale : undefined,
+    // #9278: PR aberto e NÃO mergeado = /p/{slug} (link de WhatsApp do
+    // e-mail) dá 404 no envio. Texto pronto pro gate 6 exibir como bloqueio.
+    mergeBlocker: sitePageMergeBlocker({
+      published: "published" in result ? result.published : false,
+      merged: "merged" in result ? result.merged : undefined,
+      mergeReason: "mergeReason" in result ? result.mergeReason : undefined,
+      prUrl: "prUrl" in result ? result.prUrl : undefined,
+      slug: "slug" in result ? result.slug : undefined,
+    }) ?? undefined,
     checked_at: new Date().toISOString(),
   };
   try {
