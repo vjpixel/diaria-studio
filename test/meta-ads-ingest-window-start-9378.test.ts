@@ -17,6 +17,7 @@ import { join } from "node:path";
 import {
   META_ADS_CANAL,
   aggregateMetaAdsChannelMetricsByMonth,
+  lookbackDaysSince,
   runHeadless,
 } from "../scripts/meta-ads-ingest-spend.ts";
 import { formatSpendCsv } from "../scripts/lib/aquisicao-spend.ts";
@@ -42,6 +43,22 @@ describe("#9378 — aggregateMetaAdsChannelMetricsByMonth com windowStart", () =
     assert.deepEqual(rows.map((r) => r.mes), ["2026-10"]);
   });
 
+  it("1 mês só nos dados e janela começando no meio dele: descarta (antes regravava com o parcial)", () => {
+    // Campanha pausada em outubro, rodada default em 10/10 → janela 11/09..10/10.
+    const rows = aggregateMetaAdsChannelMetricsByMonth([m("2026-09-11", 10), m("2026-09-30", 5)], META_ADS_CANAL, "BRL", "2026-09-11");
+    assert.deepEqual(rows, []);
+  });
+
+  it("1 mês só e janela começando antes dele: mantém", () => {
+    const rows = aggregateMetaAdsChannelMetricsByMonth([m("2026-10-03", 10)], META_ADS_CANAL, "BRL", "2026-09-11");
+    assert.deepEqual(rows.map((r) => [r.mes, r.valor]), [["2026-10", 10]]);
+  });
+
+  it("janela cruzando o ano: dezembro mantido quando a janela começa em 01/12", () => {
+    const rows = aggregateMetaAdsChannelMetricsByMonth([m("2025-12-20", 1), m("2026-01-02", 2)], META_ADS_CANAL, "BRL", "2025-12-01");
+    assert.deepEqual(rows.map((r) => r.mes), ["2025-12", "2026-01"]);
+  });
+
   it("sem windowStart: comportamento legado pelo primeiro dia com dado", () => {
     const rows = aggregateMetaAdsChannelMetricsByMonth(metrics, META_ADS_CANAL);
     assert.deepEqual(rows.map((r) => r.mes), ["2026-10"]);
@@ -52,12 +69,14 @@ describe("#9378 — runHeadless regrava o mês quando a janela cobre o dia 1", (
   let dir: string;
   let spendPath: string;
   let savedToken: string | undefined;
+  let requestedUrls: string[] = [];
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "meta-9378-"));
     spendPath = join(dir, "spend.csv");
     savedToken = process.env.META_ADS_ACCESS_TOKEN;
     process.env.META_ADS_ACCESS_TOKEN = "tok-fake";
+    requestedUrls = [];
   });
   afterEach(() => {
     if (savedToken === undefined) delete process.env.META_ADS_ACCESS_TOKEN;
@@ -65,8 +84,9 @@ describe("#9378 — runHeadless regrava o mês quando a janela cobre o dia 1", (
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const fetchImpl = (async () =>
-    new Response(
+  const fetchImpl = (async (url: string | URL) => {
+    requestedUrls.push(String(url));
+    return new Response(
       JSON.stringify({
         data: [
           { date_start: "2026-09-19", spend: "100", clicks: "1", impressions: "10" },
@@ -76,7 +96,14 @@ describe("#9378 — runHeadless regrava o mês quando a janela cobre o dia 1", (
         paging: {},
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
-    )) as typeof fetch;
+    );
+  }) as typeof fetch;
+
+  /** `since` efetivamente enviado à Graph API (time_range da 1ª página). */
+  function requestedSince(): string {
+    const tr = new URL(requestedUrls[0]).searchParams.get("time_range");
+    return JSON.parse(tr ?? "{}").since;
+  }
 
   function seedAccountLevelSeptember(): void {
     writeFileSync(
@@ -86,26 +113,41 @@ describe("#9378 — runHeadless regrava o mês quando a janela cobre o dia 1", (
     );
   }
 
-  it("--since 2026-09-01 (lookbackDays=31 em 01/10): setembro é substituído pelo valor da campanha", async () => {
-    seedAccountLevelSeptember();
-    const code = await runHeadless(spendPath, fetchImpl, {
-      lookbackDays: 31,
-      now: new Date("2026-10-01T22:00:00Z"),
-      campaignIds: ["123"],
+  for (const nowIso of ["2026-10-01T00:00:01Z", "2026-10-01T22:00:00Z", "2026-10-01T23:59:59Z"]) {
+    it(`--since 2026-09-01 via lookbackDaysSince (now=${nowIso}): setembro e outubro regravados, since enviado = 2026-09-01`, async () => {
+      seedAccountLevelSeptember();
+      const now = new Date(nowIso);
+      const lookbackDays = lookbackDaysSince("2026-09-01", now);
+      assert.ok(lookbackDays !== null);
+      const code = await runHeadless(spendPath, fetchImpl, { lookbackDays, now, campaignIds: ["123"] });
+      assert.equal(code, 0);
+      assert.equal(requestedSince(), "2026-09-01");
+      const csv = readFileSync(spendPath, "utf8");
+      assert.match(csv, /Meta Ads \(teste 2608\),2026-09,BRL,150,"Meta Graph API insights \(level=campaign/);
+      assert.match(csv, /Meta Ads \(teste 2608\),2026-10,BRL,7\.84,/);
+      assert.doesNotMatch(csv, /2563\.12/);
     });
-    assert.equal(code, 0);
-    const csv = readFileSync(spendPath, "utf8");
-    assert.match(csv, /Meta Ads \(teste 2608\),2026-09,BRL,150,/);
-    assert.doesNotMatch(csv, /2563\.12/);
-  });
+  }
 
-  it("janela default (30 dias, começa 02/09): setembro antigo preservado", async () => {
+  it("janela default (30 dias, começa 02/09): setembro antigo preservado, outubro gravado, descarte avisado", async () => {
     seedAccountLevelSeptember();
-    const code = await runHeadless(spendPath, fetchImpl, {
-      now: new Date("2026-10-01T22:00:00Z"),
-      campaignIds: ["123"],
-    });
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.join(" "));
+    let code: number;
+    try {
+      code = await runHeadless(spendPath, fetchImpl, { now: new Date("2026-10-01T22:00:00Z"), campaignIds: ["123"] });
+    } finally {
+      console.warn = originalWarn;
+    }
     assert.equal(code, 0);
-    assert.match(readFileSync(spendPath, "utf8"), /2026-09,BRL,2563\.12,/);
+    assert.equal(requestedSince(), "2026-09-02");
+    const csv = readFileSync(spendPath, "utf8");
+    assert.match(csv, /2026-09,BRL,2563\.12,/);
+    assert.match(csv, /2026-10,BRL,7\.84,/);
+    assert.ok(
+      warns.some((w) => w.includes("2026-09 não regravado") && w.includes("--since 2026-09-01")),
+      warns.join("\n"),
+    );
   });
 });

@@ -28,6 +28,10 @@ import {
 } from "../scripts/meta-ads-ingest-spend.ts";
 import type { ChannelDailyMetric } from "../scripts/lib/ads-campaign-economics.ts";
 
+// Relógio fixo (#9378): com o guard por janela, `now` real faz a janela default
+// começar no meio de setembro e descartar os fixtures de setembro como mês truncado.
+const FIXED_NOW = new Date("2026-09-30T12:00:00Z");
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
@@ -217,7 +221,7 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
         paging: {},
       })) as typeof fetch;
 
-    const code = await runHeadless(spendPath, fetchImpl);
+    const code = await runHeadless(spendPath, fetchImpl, { now: FIXED_NOW });
 
     assert.equal(code, 0);
     assert.ok(existsSync(spendPath), "spend.csv deveria ser criado");
@@ -233,7 +237,7 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
     process.env.META_ADS_ACCESS_TOKEN = "tok-fake";
     const fetchImpl = (async () => jsonResponse(200, { data: [], paging: {} })) as typeof fetch;
 
-    const code = await runHeadless(spendPath, fetchImpl);
+    const code = await runHeadless(spendPath, fetchImpl, { now: FIXED_NOW });
 
     assert.equal(code, 0);
     assert.equal(existsSync(spendPath), false);

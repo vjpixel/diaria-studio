@@ -27,6 +27,10 @@ import {
   runHeadless,
 } from "../scripts/meta-ads-ingest-spend.ts";
 
+// Relógio fixo (#9378): com o guard por janela, `now` real faz a janela default
+// começar no meio de setembro e descartar os fixtures de setembro como mês truncado.
+const FIXED_NOW = new Date("2026-09-30T12:00:00Z");
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
@@ -82,7 +86,7 @@ describe("#9012 — Meta Ads ingest: retry de blip de rede + exit code fail-loud
       return jsonResponse(200, OK_BODY);
     }) as typeof fetch;
 
-    const { result: code, warn } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep }));
+    const { result: code, warn } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep, now: FIXED_NOW }));
 
     assert.equal(code, 0);
     assert.equal(calls, 2);
@@ -101,7 +105,7 @@ describe("#9012 — Meta Ads ingest: retry de blip de rede + exit code fail-loud
       return jsonResponse(200, OK_BODY);
     }) as typeof fetch;
 
-    const { result: code } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep }));
+    const { result: code } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep, now: FIXED_NOW }));
 
     assert.equal(code, 0);
     assert.equal(calls, 3);
@@ -115,7 +119,7 @@ describe("#9012 — Meta Ads ingest: retry de blip de rede + exit code fail-loud
       throw new TypeError("fetch failed");
     }) as typeof fetch;
 
-    const { result: code, warn } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep }));
+    const { result: code, warn } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep, now: FIXED_NOW }));
 
     assert.equal(code, META_ADS_INGEST_FAILURE_EXIT_CODE);
     assert.notEqual(code, 0);
@@ -128,7 +132,7 @@ describe("#9012 — Meta Ads ingest: retry de blip de rede + exit code fail-loud
 
   it("gasto zero real (API OK, sem linhas) segue exit 0 — não é falha", async () => {
     const fetchImpl = (async () => jsonResponse(200, { data: [], paging: {} })) as typeof fetch;
-    const { result: code } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep }));
+    const { result: code } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep, now: FIXED_NOW }));
     assert.equal(code, 0);
     assert.equal(sleeps.length, 0);
   });
@@ -150,7 +154,7 @@ describe("#9012 — Meta Ads ingest: retry de blip de rede + exit code fail-loud
       });
     }) as typeof fetch;
 
-    const { result: code, warn, log } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep }));
+    const { result: code, warn, log } = await silenceConsole(() => runHeadless(spendPath, fetchImpl, { sleep, now: FIXED_NOW }));
 
     assert.equal(code, 0);
     assert.equal(page2Calls, 2);
