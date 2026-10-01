@@ -220,11 +220,9 @@ resposta. `--dry-run` para aqui, sem publicar nada.
 
 Canal `apoiase` — pulado se `--skip apoiase` ou já `done` sem `--force`.
 
-Seguir `context/publishers/apoia-se.md`. **Este playbook ainda não está
-mapeado ao vivo** — a 1ª execução real precisa navegar manualmente até achar
-o composer de post do painel de criador e ATUALIZAR o playbook com os
-seletores/fluxo reais antes de considerar a skill "pronta" (ver seção "O que
-falta mapear" do arquivo).
+Seguir `context/publishers/apoia-se.md` (fluxo mapeado ao vivo em 23/08 e
+30/09/2026, #9258). Se a UI tiver mudado, atualizar o playbook na mesma
+sessão.
 
 **Gravar o resultado é SEMPRE via `scripts/mark-artigo-especial-channel.ts`
 — nunca escrever `published.json` manualmente (achado #5988/type-design-

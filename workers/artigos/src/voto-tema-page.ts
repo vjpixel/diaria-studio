@@ -6,6 +6,7 @@
  * visual mínimo de `gate-page.ts` deste worker — sem framework, CSS inline.
  */
 import type { Apuracao, BallotTema, CandidatoTema } from "./voto-tema-core.ts";
+import { formatPrazo } from "./voto-tema-core.ts";
 
 /** Reimplementação local — `htmlEscape` vive em `workers/poll/src/lib.ts`,
  *  bundle de outro worker (mesmo racional de não importar cross-worker
@@ -87,10 +88,14 @@ export function renderPlacarPage(opts: PlacarPageOptions): string {
     meuVoto !== null
       ? `<div class="voto-atual">Seu voto: ${htmlEscape(ballot.opcoes.find((o) => o.n === meuVoto)?.titulo ?? `opção ${meuVoto}`)}. Pode trocar clicando em outro link do e-mail — o último clique vale.</div>`
       : "";
+  // #9260: prazo visível no placar (aberto: "Vote até"; encerrado: "Prazo").
+  const prazoFmt = formatPrazo(ballot.prazo);
+  const prazoLine = prazoFmt ? `<p class="sub">${fechado ? "Prazo" : "Vote até"}: ${htmlEscape(prazoFmt)}</p>` : "";
   return shell(
     `Votação — ${ballot.titulo}`,
     `<h1>${htmlEscape(ballot.titulo)}</h1>
      <p class="sub">${htmlEscape(statusLine)}</p>
+     ${prazoLine}
      ${barras}
      ${meuVotoBlock}`,
   );

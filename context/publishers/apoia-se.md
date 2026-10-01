@@ -13,16 +13,9 @@ pagamento por e-mail: `GET /backers/charges/<email>`). Publicar um post de
 atualização pra quem apoia a campanha só existe via UI, então — como
 Beehiiv/LinkedIn/Facebook — é Claude in Chrome com o editor logado.
 
-**Diferença real em relação a `linkedin.md`/`facebook.md`: o DOM do painel
-apoia.se AINDA NÃO ESTÁ MAPEADO neste repo.** Nenhuma sessão anterior operou
-esse painel via automação — os seletores/fluxo abaixo são a MELHOR HIPÓTESE
-a partir do que se sabe publicamente da plataforma, não uma sequência
-validada ao vivo. A 1ª execução real do Passo 3 da skill precisa do editor
-presente (é por isso que a issue marca a skill inteira como `windows` →
-Develop, não Overnight): quem rodar pela primeira vez deve **mapear o fluxo
-real e substituir as seções abaixo** por passos confirmados, com seletores
-concretos — mesmo padrão vivo que `linkedin.md`/`beehiiv-playbook.md` já
-seguem para as respectivas plataformas.
+**Estado: fluxo mapeado ao vivo** (1ª execução 23/08/2026, revisado na 2ª
+execução 30/09/2026, artigo o-jev, #9258). Os passos abaixo são a sequência
+confirmada; se a UI mudar, atualizar este arquivo na mesma sessão.
 
 ## O que já se sabe (confirmado)
 
@@ -44,29 +37,31 @@ seguem para as respectivas plataformas.
   vende o Artigo Especial como benefício desse tier — post público entregaria
   o benefício a quem não paga no mesmo instante em que entrega a quem paga.
   A restrição vale pro POST; o artigo em si continua público na URL, então
-  isto é coerência de canal, não paywall. **Achar o controle de visibilidade
-  é parte do mapeamento pendente (item 3 abaixo)** — o nome do controle e os
-  valores que a plataforma oferece (só-apoiadores? por nível? por
-  recompensa?) não estão confirmados. Se a apoia.se NÃO permitir restringir
-  por nível (só público vs. todos-os-apoiadores), publicar como
-  todos-os-apoiadores e registrar aqui a limitação — nunca cair pra público
+  isto é coerência de canal, não paywall. O controle é o
+  `Quem pode ver?` (passo 4 abaixo), valor `10` — nunca cair pra público
   em silêncio.
 
-## Fluxo REAL, mapeado ao vivo em 23/08/2026 (1ª execução, editor presente)
-
-Painel confirmado. As hipóteses da seção "O que falta mapear" abaixo estão
-resolvidas — mantidas só como histórico até a próxima revisão deste arquivo.
+## Fluxo REAL (mapeado em 23/08/2026, revisado em 30/09/2026)
 
 1. **Não existe painel separado.** O criador logado opera a partir da própria
    página pública `apoia.se/diaria`, que ganha abas extras: `Sobre`,
    `Posts no Mural (N)`, `Rascunhos`, `Apoiadores(as)`. Nenhuma URL de
    dashboard/admin envolvida.
-2. **As abas NÃO respondem a clique por coordenada** (o clique registra e
-   nada muda). Usar `find` + clique por `ref` — foi o que funcionou.
+2. **Abrir a aba `Posts no Mural`: esperar a página terminar de carregar e
+   clicar por COORDENADA no texto da aba** (30/09/2026). Logo após o
+   carregamento a aba não responde a clique por `ref`, e navegar direto pra
+   `/diaria/contents` redireciona pra home. Em 23/08 o inverso funcionou
+   (`find` + `ref`; coordenada não respondia) — se um caminho não reagir,
+   tentar o outro antes de desistir.
 3. **Criar post:** aba `Posts no Mural` → botão vermelho `Criar nova
-   postagem` (topo direito da lista).
-4. **Campos do editor** (`/diaria/contents/edit/{slug-id}` no caso de edição):
-   - Imagem de capa (upload, opcional).
+   postagem` (topo direito da lista) → leva a `/diaria/contents/create`.
+4. **Campos do editor** (`/diaria/contents/create` para post novo;
+   `/diaria/contents/edit/{slug-id}` no caso de edição):
+   - **`Título da postagem` — obrigatório** (o form não envia sem ele). Usar
+     o título do post gerado no Passo 1 da skill.
+   - Imagem de capa (upload, opcional). **Claude in Chrome não anexa a
+     imagem** (upload de arquivo bloqueado pela extensão) — fica para o
+     editor, se ele quiser capa.
    - `Link externo do conteúdo (se houver)` — input `type="url"`. É AQUI que
      a URL do artigo vai; a plataforma renderiza `Link externo: {url}` como
      bloco próprio no fim do post. **Não repetir a URL no corpo** — duplica.
@@ -82,9 +77,12 @@ resolvidas — mantidas só como histórico até a próxima revisão deste arqui
      `R$ 25 ou +` (`25`), `R$ 50 ou +` (`50`). **A plataforma corta por
      VALOR, então a decisão "restrito a R$10+" é executável literalmente** —
      escolher `10`. Sendo `<select>` nativo, dá pra setar via `form_input`.
-5. **Salvar:** botão `Salvar alterações` (submit). **`Deletar postagem` fica
-   imediatamente ao lado** — clicar SEMPRE por `ref` (via `find`), nunca por
-   coordenada.
+5. **Publicar:** em post NOVO o botão final é `Postar no Mural`; `Salvar
+   alterações` é o botão da tela de EDIÇÃO de post existente. Na edição,
+   **`Deletar postagem` fica imediatamente ao lado** — clicar SEMPRE por
+   `ref` (via `find`), nunca por coordenada. O clique final é do editor
+   (ação irreversível para terceiros, ver `CLAUDE.md` "Perguntar é exceção"
+   critério 1) — o fluxo funciona com ele dando esse clique.
 6. **URL estável do post:** `apoia.se/diaria/contents/view/{Titulo-slug}-{id}`
    (ex: `.../Artigo-especial-de-agosto-0QCFIXKq3`). É essa que vai em
    `--url` pro `mark-artigo-especial-channel.ts`. A edição preserva a URL e
@@ -103,79 +101,11 @@ novo** — senão a skill duplica o post pros mesmos apoiadores. Se existir,
 o caminho é EDITAR aquele (preserva URL e timestamp), não criar outro.
 Mesma classe do "publicação manual exige refresh-dedup" do `CLAUDE.md`.
 
-## O que falta mapear (fazer na 1ª execução real, com o editor)
-
-1. **Ponto de entrada do painel de criador.** Hipótese: `apoia.se` →
-   login → algum link tipo "Painel"/"Dashboard"/"Minha campanha" no menu do
-   usuário logado, levando a uma URL própria de gestão (padrão comum em
-   plataformas de crowdfunding recorrente é algo como
-   `apoia.se/dashboard/diaria` ou `apoia.se/admin`, mas **não confirmado**).
-2. **Onde ficam os posts/atualizações.** Toda plataforma de assinatura tem
-   uma seção "Posts"/"Atualizações"/"Novidades" (visível pros apoiadores na
-   página da campanha, ex: uma aba "Posts" em `apoia.se/diaria`) com um botão
-   de criar novo — localizar o botão/rota exata no painel de criador.
-3. **Campos do editor de post**: título (se houver campo separado do corpo,
-   diferente do LinkedIn/Facebook que não têm), corpo (rich text ou
-   markdown?), visibilidade (público vs. só-apoiadores — confirmar o nome
-   exato do controle e o valor default real da plataforma), anexo de
-   imagem/capa (opcional — o teaser pode sair só com o link, que
-   tipicamente gera preview automático de OpenGraph a partir de
-   `especial.diar.ia.br/{ano}/{slug}/`, já que o Worker publica
-   `og:image`/`og:title`/`og:description` — conferir se a apoia.se de fato
-   faz esse unfurl).
-4. **Botão de publicar** e como ele se comporta — publica na hora (mais
-   provável, dado que não há sinal de agendamento documentado em nenhum
-   lugar deste repo) ou oferece rascunho/agendamento como Beehiiv/LinkedIn?
-   Se publicar na hora: **isto é AÇÃO IRREVERSÍVEL PARA TERCEIROS** (post
-   visível pros apoiadores imediatamente) — o gate humano do Passo 1 da
-   skill (que mostra os 3 textos antes de qualquer publicação) é quem cobre
-   essa irreversibilidade, não um mecanismo de rascunho aqui.
-5. **Como confirmar sucesso.** Precisa de uma URL estável do post publicado
-   pra passar em `--url` pro `scripts/mark-artigo-especial-channel.ts`
-   (canal `apoiase` — ver Passo 3 da skill, NUNCA escrever `published.json`
-   à mão) — navegar de volta pra `apoia.se/diaria` (ou a aba de posts) e
-   confirmar que o teaser aparece no topo, capturando a URL do post
-   individual se a plataforma expõe uma (`apoia.se/diaria/posts/{id}` ou
-   similar).
-
-## Fluxo esperado (a preencher com os seletores reais)
-
-### 1. Login + navegação ao painel
-- Navegar para `https://apoia.se/diaria` (ou direto pro painel, se a URL do
-  item 1 acima já estiver mapeada).
-- Se cair em tela de login, abortar com `"apoia.se login expirado"`.
-
-### 2. Abrir o composer de novo post
-- **(placeholder — mapear seletor/rota real)**
-
-### 3. Preencher o post
-- Título (se aplicável): título do artigo.
-- Corpo: a chamada + link, exatamente como gerado em
-  `data/artigo-especial/{ano}-{slug}/apoiase.md` (Passo 1 da skill — já
-  passado por humanizador + Clarice).
-- Visibilidade: **restrita a apoiadores R$10+** (ver acima). Conferir o
-  controle ANTES de publicar — publicar público por engano é irreversível.
-
-### 4. Publicar
-- **(placeholder — confirmar se existe rascunho/agendamento ou só
-  publicação imediata)**
-
-### 5. Verificar e capturar a URL
-- **(placeholder — mapear onde a URL do post publicado aparece)**
-
 ## Erros recuperáveis
 
 - **Login expirado** → abortar, sinalizar ao editor (mesma disciplina do
   #738/#3938 — falha de acesso à plataforma não é "seguir sem verificar").
-- **DOM não bate com nenhuma das hipóteses acima** → não adivinhar mais de
-  2-3 tentativas; parar e pedir ao editor pra navegar manualmente até o
+- **DOM não bate com o fluxo acima** → não adivinhar mais de 2-3
+  tentativas; parar e pedir ao editor pra navegar manualmente até o
   composer, então continuar a automação a partir de onde ele parou —
-  registrar o caminho real neste arquivo antes de finalizar a sessão (é
-  assim que este playbook deixa de ser "placeholder").
-
-## Depois de mapear pela 1ª vez
-
-Substitua cada `(placeholder — ...)` acima pela sequência real (mesmo nível
-de detalhe de `linkedin.md`/`facebook.md`: seletores, texto de botões,
-comportamento de fallback), e apague esta seção + "O que falta mapear" —
-elas só existem enquanto o playbook estiver incompleto.
+  registrar o caminho novo neste arquivo antes de finalizar a sessão.

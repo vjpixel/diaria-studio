@@ -1,7 +1,8 @@
 /**
  * inject-champions-callout.test.ts (#2725)
  *
- * Regressão: injeção do box campeões/sorteio em `02-reviewed.md`, gateada
+ * Regressão: injeção do callout do sorteio (#9236: sem os campeões, que
+ * migraram pro box do É IA?) em `02-reviewed.md`, gateada
  * pela MESMA lógica "1ª edição do mês" do leaderboard (#1753) — reusada, não
  * duplicada — e com precedência explícita quando já existe um introCallout
  * (ex: patrocínio) na região de intro.
@@ -41,15 +42,8 @@ Importa.
 Corpo.
 `;
 
-const CALLOUT_INNER = `🎉 Os campeões do É IA? em junho:
-
-🥇 jorgemartinsfilho
-
-🥈 Bruna Quevedo
-
-🥉 Joshu
-
-**Sorteio**
+// #9236: o callout de intro carrega só o Sorteio (campeões migraram pro box do É IA?).
+const CALLOUT_INNER = `🎉 Sorteio
 
 O sorteio entre quem achou o erro intencional será ao vivo no dia 2 de julho, das 13h30 às 14h, no [Google Meet](https://meet.google.com/nbs-jcut-ojj). Será uma caneca entre quem encontrou o erro intencional e outra entre os Patronos. Apareça para ver quem vai ganhar caneca e bater um papo sobre IA.`;
 
@@ -58,12 +52,10 @@ describe("insertChampionsCallout (#2725)", () => {
     const result = insertChampionsCallout(REVIEWED_BASE, CALLOUT_INNER);
     assert.equal(result.skippedReason, null);
     assert.ok(result.text);
-    // O texto final deve ser parseável por extractIntroCallout, preservando
-    // o sub-cabeçalho **Sorteio** interno (#2727 greedy).
+    // O texto final deve ser parseável por extractIntroCallout.
     const cta = extractIntroCallout(result.text!);
     assert.ok(cta);
-    assert.match(cta!, /^🎉 Os campeões do É IA\? em junho:/);
-    assert.match(cta!, /\*\*Sorteio\*\*/);
+    assert.match(cta!, /^🎉 Sorteio\n\n/);
     assert.match(cta!, /Apareça para ver quem vai ganhar caneca/);
     // Coverage line + DESTAQUE 1 continuam intactos.
     assert.match(result.text!, /Para esta edição, eu \(o editor\)/);
@@ -78,8 +70,8 @@ describe("insertChampionsCallout (#2725)", () => {
     const result = insertChampionsCallout(withSponsor, CALLOUT_INNER);
     assert.equal(result.text, null);
     assert.match(result.skippedReason!, /callout já presente/);
-    // Texto original não deve conter o box de campeões.
-    assert.ok(!withSponsor.includes("Os campeões do É IA?"));
+    // Texto original não deve conter o callout do sorteio.
+    assert.ok(!withSponsor.includes("🎉 Sorteio"));
   });
 
   it("separador ausente (formato inesperado) → skip fail-safe, não corrompe o arquivo", () => {
@@ -99,8 +91,8 @@ describe("insertChampionsCallout (#2725)", () => {
     // vinha no fim do `block`.
     assert.match(
       result.text!,
-      /Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter\.\n\n---\n\n\*\*🎉 Os campeões/,
-      "coverage line deve ser fechada por '---' isolado ANTES do box de campeões",
+      /Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter\.\n\n---\n\n\*\*🎉 Sorteio/,
+      "coverage line deve ser fechada por '---' isolado ANTES do callout",
     );
   });
 });
@@ -198,20 +190,19 @@ describe("main() CLI (#2725 integração)", () => {
     );
   }
 
-  it("1ª edição do mês + pódio completo → injeta o box", () => {
+  const PODIUM_JSON = JSON.stringify({
+    podium: [
+      { nickname: "jorgemartinsfilho", rank: 1 },
+      { nickname: "Bruna Quevedo", rank: 2 },
+      { nickname: "perli…@***", rank: 3 },
+    ],
+  });
+
+  it("1ª edição do mês → injeta o callout SÓ com o Sorteio (#9236 — campeões não entram mais no intro)", () => {
     const { dir, editionDir, reviewedPath, platformConfig } = setup();
     try {
       const leaderboardJson = join(editionDir, "_internal", "04-leaderboard-top1.json");
-      writeFileSync(
-        leaderboardJson,
-        JSON.stringify({
-          podium: [
-            { nickname: "jorgemartinsfilho", rank: 1 },
-            { nickname: "Bruna Quevedo", rank: 2 },
-            { nickname: "Joshu", rank: 3 },
-          ],
-        }),
-      );
+      writeFileSync(leaderboardJson, PODIUM_JSON);
       const pastEditions = join(dir, "past-editions-raw.json");
       // Nenhuma edição publicada em julho ainda → 260701 é a 1ª.
       writeFileSync(
@@ -219,42 +210,58 @@ describe("main() CLI (#2725 integração)", () => {
         JSON.stringify([{ published_at: "2026-06-15T09:00:00.000Z" }]),
       );
 
-      runCli([
+      const stdout = runCli([
         "--edition", "260701",
         "--reviewed", reviewedPath,
         "--leaderboard-json", leaderboardJson,
         "--past-editions", pastEditions,
         "--platform-config", platformConfig,
       ]);
+      // Contrato com stage-3-run.ts (que classifica o resultado por /injetado em/).
+      assert.match(stdout, /injetado em/);
 
       const written = readFileSync(reviewedPath, "utf8");
-      assert.match(written, /Os campeões do É IA\? em junho/);
-      assert.match(written, /🥇 jorgemartinsfilho/);
       // #4583(a): sorteio_do_mes.mes ("2026-07") bate com a edição corrente
       // (260701 → slug "2026-07") — renderiza normalmente com o `dia` (2) do
       // config, mês "julho" resolvido do próprio slug da edição.
+      assert.match(written, /\*\*🎉 Sorteio\n\n/);
       assert.match(written, /dia 2 de julho, das 13h30 às 14h/);
+      // #9236: nada do pódio no markdown da região de intro.
+      assert.doesNotMatch(written, /Os campeões do É IA\?/);
+      assert.doesNotMatch(written, /jorgemartinsfilho/);
+      assert.doesNotMatch(written, /ranking completo/);
+      // #9242: o e-mail mascarado do pódio (`@***`) não chega ao markdown.
+      assert.doesNotMatch(written, /@\*\*\*/);
       const cta = extractIntroCallout(written);
       assert.ok(cta);
+      assert.match(cta!, /^🎉 Sorteio/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9236: pódio ausente/vazio NÃO impede o sorteio (callout não depende mais do leaderboard)", () => {
+    const { dir, editionDir, reviewedPath, platformConfig } = setup();
+    try {
+      const pastEditions = join(dir, "past-editions-raw.json");
+      writeFileSync(pastEditions, JSON.stringify([]));
+      runCli([
+        "--edition", "260701",
+        "--reviewed", reviewedPath,
+        "--leaderboard-json", join(editionDir, "_internal", "ausente.json"),
+        "--past-editions", pastEditions,
+        "--platform-config", platformConfig,
+      ]);
+      const written = readFileSync(reviewedPath, "utf8");
+      assert.match(written, /\*\*🎉 Sorteio/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("#4583(b) — sorteio_do_mes.mes divergente do mês da edição corrente → aborta (exit 1), nunca renderiza a data velha", () => {
-    const { dir, editionDir, reviewedPath } = setup();
+    const { dir, reviewedPath } = setup();
     try {
-      const leaderboardJson = join(editionDir, "_internal", "04-leaderboard-top1.json");
-      writeFileSync(
-        leaderboardJson,
-        JSON.stringify({
-          podium: [
-            { nickname: "jorgemartinsfilho", rank: 1 },
-            { nickname: "Bruna Quevedo", rank: 2 },
-            { nickname: "Joshu", rank: 3 },
-          ],
-        }),
-      );
       const pastEditions = join(dir, "past-editions-raw.json");
       // Nenhuma edição publicada em julho ainda → 260701 é a 1ª.
       writeFileSync(
@@ -282,7 +289,6 @@ describe("main() CLI (#2725 integração)", () => {
         runCli([
           "--edition", "260701",
           "--reviewed", reviewedPath,
-          "--leaderboard-json", leaderboardJson,
           "--past-editions", pastEditions,
           "--platform-config", staleConfig,
         ]);
@@ -300,76 +306,19 @@ describe("main() CLI (#2725 integração)", () => {
       // herdado do mês anterior.
       const after = readFileSync(reviewedPath, "utf8");
       assert.equal(after, before, "02-reviewed.md não deve mudar quando sorteio_do_mes.mes diverge");
-      assert.ok(!after.includes("Os campeões do É IA?"));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("link do ranking aponta pro mês do PÓDIO (YYYY-MM), não pro mês corrente (achado 260803 — /leaderboard bare resolve pro mês corrente no worker, mudando de assunto sozinho assim que o mês vira)", () => {
-    const { dir, editionDir, reviewedPath, platformConfig } = setup();
-    try {
-      const leaderboardJson = join(editionDir, "_internal", "04-leaderboard-top1.json");
-      writeFileSync(
-        leaderboardJson,
-        JSON.stringify({
-          podium: [
-            { nickname: "jorgemartinsfilho", rank: 1 },
-            { nickname: "Bruna Quevedo", rank: 2 },
-            { nickname: "Joshu", rank: 3 },
-          ],
-        }),
-      );
-      const pastEditions = join(dir, "past-editions-raw.json");
-      writeFileSync(pastEditions, JSON.stringify([{ published_at: "2026-06-15T09:00:00.000Z" }]));
-
-      const platformConfigWithWorker = join(dir, "platform-with-worker.config.json");
-      writeFileSync(
-        platformConfigWithWorker,
-        JSON.stringify({
-          raffle: {
-            meet_url: "https://meet.google.com/nbs-jcut-ojj",
-            sorteio_do_mes: { mes: "2026-07", dia: 2 },
-            hora_inicio: "13:30",
-            hora_fim: "14:00",
-          },
-          poll: { worker_url: "https://eia.diar.ia.br" },
-        }),
-      );
-
-      runCli([
-        "--edition", "260701", // edição de julho → celebra JUNHO (mês anterior)
-        "--reviewed", reviewedPath,
-        "--leaderboard-json", leaderboardJson,
-        "--past-editions", pastEditions,
-        "--platform-config", platformConfigWithWorker,
-      ]);
-
-      const written = readFileSync(reviewedPath, "utf8");
-      assert.match(written, /\[Veja o ranking completo\]\(https:\/\/eia\.diar\.ia\.br\/leaderboard\/2026-06\)/);
-      assert.doesNotMatch(written, /\/leaderboard\)/, "não deveria sobrar o link bare sem mês");
+      assert.ok(!after.includes("🎉 Sorteio"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("edição que NÃO é a 1ª do mês → no-op, 02-reviewed.md inalterado", () => {
-    const { dir, editionDir, reviewedPath, platformConfig } = setup();
+    const { dir, reviewedPath, platformConfig } = setup();
     try {
-      const leaderboardJson = join(editionDir, "_internal", "04-leaderboard-top1.json");
-      writeFileSync(
-        leaderboardJson,
-        JSON.stringify({
-          podium: [
-            { nickname: "A", rank: 1 },
-            { nickname: "B", rank: 2 },
-            { nickname: "C", rank: 3 },
-          ],
-        }),
-      );
       const pastEditions = join(dir, "past-editions-raw.json");
       // 260701 já publicada antes → 260702 (edição-alvo deste teste) NÃO é a
-      // 1ª de julho.
+      // 1ª de julho. (O pódio no box do É IA? ainda aparece nela — janela de 3,
+      // #9236 — mas o Sorteio é só da 1ª.)
       writeFileSync(
         pastEditions,
         JSON.stringify([{ published_at: "2026-07-01T09:00:00.000Z" }]),
@@ -379,58 +328,19 @@ describe("main() CLI (#2725 integração)", () => {
       runCli([
         "--edition", "260702",
         "--reviewed", reviewedPath,
-        "--leaderboard-json", leaderboardJson,
         "--past-editions", pastEditions,
         "--platform-config", platformConfig,
       ]);
       const after = readFileSync(reviewedPath, "utf8");
       assert.equal(after, before, "02-reviewed.md não deve mudar quando não é a 1ª edição do mês");
-      assert.ok(!after.includes("Os campeões do É IA?"));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("pódio incompleto (< 3 ranks) → no-op", () => {
-    const { dir, editionDir, reviewedPath, platformConfig } = setup();
-    try {
-      const leaderboardJson = join(editionDir, "_internal", "04-leaderboard-top1.json");
-      writeFileSync(
-        leaderboardJson,
-        JSON.stringify({ podium: [{ nickname: "Só um", rank: 1 }] }),
-      );
-      const pastEditions = join(dir, "past-editions-raw.json");
-      writeFileSync(pastEditions, JSON.stringify([]));
-
-      const before = readFileSync(reviewedPath, "utf8");
-      runCli([
-        "--edition", "260701",
-        "--reviewed", reviewedPath,
-        "--leaderboard-json", leaderboardJson,
-        "--past-editions", pastEditions,
-        "--platform-config", platformConfig,
-      ]);
-      const after = readFileSync(reviewedPath, "utf8");
-      assert.equal(after, before);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("bloco 'raffle' ausente em platform.config.json → no-op", () => {
-    const { dir, editionDir, reviewedPath } = setup();
+    const { dir, reviewedPath } = setup();
     try {
-      const leaderboardJson = join(editionDir, "_internal", "04-leaderboard-top1.json");
-      writeFileSync(
-        leaderboardJson,
-        JSON.stringify({
-          podium: [
-            { nickname: "A", rank: 1 },
-            { nickname: "B", rank: 2 },
-            { nickname: "C", rank: 3 },
-          ],
-        }),
-      );
       const pastEditions = join(dir, "past-editions-raw.json");
       writeFileSync(pastEditions, JSON.stringify([]));
       const emptyConfig = join(dir, "empty-platform.config.json");
@@ -440,7 +350,6 @@ describe("main() CLI (#2725 integração)", () => {
       runCli([
         "--edition", "260701",
         "--reviewed", reviewedPath,
-        "--leaderboard-json", leaderboardJson,
         "--past-editions", pastEditions,
         "--platform-config", emptyConfig,
       ]);
@@ -509,7 +418,7 @@ ${EIA}
 `;
   }
 
-  it("renderiza o box de campeões exatamente 1x (não duplica, coverage line intacta)", () => {
+  it("renderiza o callout exatamente 1x (não duplica, coverage line intacta)", () => {
     const reviewed = buildReviewed();
     const result = insertChampionsCallout(reviewed, CALLOUT_INNER);
     assert.equal(result.skippedReason, null);
@@ -521,16 +430,16 @@ ${EIA}
       writeFileSync(join(dir, "01-eia.md"), EIA, "utf8");
 
       const content = extractContent(dir);
-      // A coverage line não deve ter "engolido" o box de campeões (#4310).
+      // A coverage line não deve ter "engolido" o callout (#4310).
       assert.ok(
-        !content.coverageLine?.includes("Os campeões"),
-        "coverage line não deve conter o box de campeões — separador '---' precisa fechá-la antes do box",
+        !content.coverageLine?.includes("Apareça para ver"),
+        "coverage line não deve conter o callout — separador '---' precisa fechá-la antes do box",
       );
-      assert.ok(content.introCallout?.includes("Os campeões"));
+      assert.ok(content.introCallout?.includes("Apareça para ver"));
 
       const html = renderHTML(content);
-      const occurrences = (html.match(/Os campeões do É IA\?/g) ?? []).length;
-      assert.equal(occurrences, 1, "box de campeões deve aparecer exatamente 1x no HTML final, nunca 2x");
+      const occurrences = (html.match(/Apareça para ver quem vai ganhar caneca/g) ?? []).length;
+      assert.equal(occurrences, 1, "callout deve aparecer exatamente 1x no HTML final, nunca 2x");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

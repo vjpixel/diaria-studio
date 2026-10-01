@@ -1,20 +1,22 @@
 #!/usr/bin/env tsx
 /**
- * inject-champions-callout.ts (#2725)
+ * inject-champions-callout.ts (#2725; #9236 — hoje só o Sorteio)
  *
- * Auto-gera e injeta o box de início de mês (campeões do É IA? + sorteio do
- * erro intencional — criado manualmente na edição 260701, #2725) em
- * `02-reviewed.md`, na 1ª edição do mês — MESMO gate de
- * `scripts/fetch-leaderboard-top1.ts` (#1753): nenhuma edição publicada
- * (`data/past-editions-raw.json`) cai no mesmo ano-mês com data anterior.
- * Reusa `isFirstEditionOfMonth`/`readPublishedDates`/`editionToMonthSlug`/
- * `previousMonthSlug` de `fetch-leaderboard-top1.ts` — não duplica a lógica
- * de detecção.
+ * Auto-gera e injeta o box de início de mês (sorteio do erro intencional —
+ * criado manualmente na edição 260701, #2725) em `02-reviewed.md`, na 1ª
+ * edição do mês. #9236 (pedido do editor 30/09/2026): os campeões do É IA?
+ * saíram deste callout e vivem no box do É IA? (`renderLeaderboardTop1Row`),
+ * nas 3 primeiras edições do mês — o nome do arquivo ficou por compat com o
+ * Stage 3 (`stage-3-run.ts`, playbook). Gate "1ª edição do mês" (#1753):
+ * nenhuma edição publicada (`data/past-editions-raw.json`) cai no mesmo
+ * ano-mês com data anterior. Reusa `isFirstEditionOfMonth`/
+ * `readPublishedDates`/`editionToMonthSlug` de `fetch-leaderboard-top1.ts` —
+ * não duplica a lógica de detecção.
  *
- * Roda no Stage 3, DEPOIS de `fetch-leaderboard-top1.ts` popular
- * `_internal/04-leaderboard-top1.json` (fonte do `podium` top-3) e DEPOIS do
- * Stage 2 já ter escrito `02-reviewed.md` (fonte do texto onde o box é
- * injetado).
+ * Roda no Stage 3, DEPOIS do Stage 2 já ter escrito `02-reviewed.md` (fonte
+ * do texto onde o box é injetado). Desde #9236 não lê mais
+ * `_internal/04-leaderboard-top1.json` (a flag `--leaderboard-json` é aceita
+ * e ignorada, por compat).
  *
  * Precedência (#2725 item — "não sobrescrever um introCallout que já exista
  * por outro motivo, ex: patrocínio"): se `extractIntroCallout` já encontra um
@@ -25,8 +27,8 @@
  * em #2727, ainda sem lint dedicado). Skip é a opção segura.
  *
  * Graceful (mesmo padrão de fetch-leaderboard-top1.ts): qualquer pré-condição
- * AUSENTE (não é 1ª edição do mês, leaderboard.json ausente/vazio, pódio
- * incompleto, bloco `raffle` ausente em platform.config.json) é um NO-OP —
+ * AUSENTE (não é 1ª edição do mês, bloco `raffle` ausente em
+ * platform.config.json) é um NO-OP —
  * loga o motivo e sai 0. Nunca bloqueia o pipeline.
  *
  * #4583: exceção deliberada — `raffle.sorteio_do_mes.mes` PRESENTE mas
@@ -56,28 +58,20 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import {
   editionToMonthSlug,
-  previousMonthSlug,
   isFirstEditionOfMonth,
   readPublishedDates,
 } from "./fetch-leaderboard-top1.ts";
 import {
-  buildChampionsCallout,
-  monthLabelFromSlug,
+  buildRaffleCallout,
   raffleDateLabel,
-  type PodiumEntry,
   type RaffleConfig,
 } from "./lib/build-champions-callout.ts";
 import { extractIntroCallout } from "./lib/newsletter-parse.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-interface LeaderboardJson {
-  podium?: PodiumEntry[];
-}
-
 interface PlatformConfigShape {
   raffle?: RaffleConfig;
-  poll?: { worker_url?: string };
 }
 
 /** Boundary exata usada por `stitch-newsletter.ts` entre a região de intro
@@ -154,7 +148,7 @@ export function insertChampionsCallout(
       text: null,
       skippedReason:
         `callout já presente na região de intro ("${existing.slice(0, 40)}..."); ` +
-        "precedência: callout existente vence (patrocínio ou outro motivo) — box de campeões NÃO injetado nesta edição.",
+        "precedência: callout existente vence (patrocínio ou outro motivo) — callout do sorteio NÃO injetado nesta edição.",
     };
   }
   if (!SEP_BEFORE_DESTAQUE.test(reviewedText)) {
@@ -191,17 +185,11 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // Mesmo gate do leaderboard (#1753): só a 1ª edição do mês.
+  // Sorteio: só a 1ª edição do mês (mesmo helper do leaderboard, #1753 — o
+  // pódio no box do É IA? usa a janela das 3 primeiras, #9236).
   const publishedAt = readPublishedDates(resolve(ROOT, args.pastEditions));
   if (!isFirstEditionOfMonth(args.edition, publishedAt)) {
-    console.log(`[inject-champions-callout] edição ${args.edition} não é a 1ª do mês — box de campeões não é aplicável (mesmo gate do leaderboard). No-op.`);
-    return;
-  }
-
-  const leaderboard = readJsonGraceful<LeaderboardJson>(resolve(ROOT, args.leaderboardJson));
-  const podium = leaderboard?.podium ?? [];
-  if (podium.length === 0) {
-    console.log(`[inject-champions-callout] pódio vazio ou ${args.leaderboardJson} ausente/ilegível — sem dados pra montar o box. No-op.`);
+    console.log(`[inject-champions-callout] edição ${args.edition} não é a 1ª do mês — callout do sorteio não é aplicável. No-op.`);
     return;
   }
 
@@ -226,28 +214,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const championsMonthLabel = monthLabelFromSlug(previousMonthSlug(slug));
   const raffleDate = raffleDateLabel(slug, raffle.sorteio_do_mes.dia);
-  if (!championsMonthLabel || !raffleDate) {
-    console.log("[inject-champions-callout] falha ao resolver label de mês/data — no-op (fail-safe).");
+  if (!raffleDate) {
+    console.log("[inject-champions-callout] falha ao resolver label de data do sorteio — no-op (fail-safe).");
     return;
   }
 
-  // Achado 260803: `/leaderboard` (bare) resolve pro mês CORRENTE no momento
-  // em que o leitor clica (`handleLeaderboard` no worker, currentMonthSlugBrt),
-  // não pro mês que este box celebra. O box de campeões é publicado no início
-  // do mês seguinte ("campeões de julho" saindo em agosto) — sem o slug do
-  // mês, o link mudaria de assunto sozinho assim que o mês virasse de novo.
-  // `previousMonthSlug(slug)` já é calculado acima (linha da championsMonthLabel)
-  // no formato YYYY-MM exigido pela rota `/leaderboard/{YYYY-MM}` do worker.
-  const leaderboardUrl = platformConfig?.poll?.worker_url
-    ? `${platformConfig.poll.worker_url}/leaderboard/${previousMonthSlug(slug)}`
-    : undefined;
-  const calloutInner = buildChampionsCallout(podium, raffle, championsMonthLabel, raffleDate, leaderboardUrl);
-  if (!calloutInner) {
-    console.log(`[inject-champions-callout] pódio incompleto (esperado ranks 1-3 em ${args.leaderboardJson}) — box de campeões requer top-3 completo. No-op.`);
-    return;
-  }
+  // #9236: o callout de intro carrega SÓ o Sorteio. Os campeões do É IA? do
+  // mês anterior (antes montados aqui a partir do `podium` de
+  // `04-leaderboard-top1.json`) são renderizados dentro do box do É IA?
+  // (`renderLeaderboardTop1Row`) nas 3 primeiras edições do mês.
+  const calloutInner = buildRaffleCallout(raffle, raffleDate);
 
   const reviewedPathAbs = resolve(ROOT, args.reviewedPath);
   if (!existsSync(reviewedPathAbs)) {
@@ -263,7 +240,7 @@ async function main(): Promise<void> {
   }
 
   writeFileSync(reviewedPathAbs, result.text, "utf8");
-  console.log(`[inject-champions-callout] box de campeões (${championsMonthLabel}) + sorteio (${raffleDate}) injetado em ${args.reviewedPath}`);
+  console.log(`[inject-champions-callout] callout do sorteio (${raffleDate}) injetado em ${args.reviewedPath}`);
 }
 
 const isDirectRun = isMainModule(import.meta.url);

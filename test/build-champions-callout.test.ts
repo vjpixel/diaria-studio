@@ -1,27 +1,20 @@
 /**
  * build-champions-callout.test.ts (#2725)
  *
- * Regressão: box de início de mês (campeões do É IA? + sorteio do erro
- * intencional), criado manualmente na edição 260701, agora auto-gerado a
- * partir do `podium` do leaderboard + config `raffle`.
+ * Regressão: box de início de mês (sorteio do erro intencional), criado
+ * manualmente na edição 260701, auto-gerado a partir da config `raffle`.
+ * #9236: os campeões do É IA? saíram deste callout (vivem no box do É IA?).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildChampionsCallout,
+  buildRaffleCallout,
   monthLabelFromSlug,
   formatHourPt,
   raffleDateLabel,
-  type PodiumEntry,
   type RaffleConfig,
 } from "../scripts/lib/build-champions-callout.ts";
-
-const PODIUM: PodiumEntry[] = [
-  { nickname: "jorgemartinsfilho", rank: 1 },
-  { nickname: "Bruna Quevedo", rank: 2 },
-  { nickname: "Joshu", rank: 3 },
-];
 
 const RAFFLE: RaffleConfig = {
   meet_url: "https://meet.google.com/nbs-jcut-ojj",
@@ -70,81 +63,30 @@ describe("raffleDateLabel (#2725)", () => {
   });
 });
 
-describe("buildChampionsCallout (#2725)", () => {
-  it("preenche o template com pódio + raffle + mês/data resolvidos", () => {
-    const text = buildChampionsCallout(PODIUM, RAFFLE, "junho", "2 de julho");
-    assert.ok(text);
-    assert.match(text!, /^🎉 Os campeões do É IA\? em junho:/);
-    assert.match(text!, /🥇 jorgemartinsfilho/);
-    assert.match(text!, /🥈 Bruna Quevedo/);
-    assert.match(text!, /🥉 Joshu/);
-    // #6869: "Sorteio" NÃO é negrito próprio — já herda negrito do wrap
-    // "**...**" externo (aplicado pelo injetor), negrito aninhado disparava
-    // stacked-intro-callouts (medido na edição 260901).
-    assert.match(text!, /(?<!\*)Sorteio(?!\*)/);
-    assert.doesNotMatch(text!, /\*\*Sorteio\*\*/);
+describe("buildRaffleCallout (#2725 → #9236: callout de intro só com o Sorteio)", () => {
+  it("preenche o template do sorteio com raffle + data resolvida", () => {
+    const text = buildRaffleCallout(RAFFLE, "2 de julho");
+    // 1º parágrafo é o título do callout (marcador 🎉 → titleStyle body).
+    assert.match(text, /^🎉 Sorteio\n\n/);
     assert.match(
-      text!,
+      text,
       /dia 2 de julho, das 13h30 às 14h, no \[Google Meet\]\(https:\/\/meet\.google\.com\/nbs-jcut-ojj\)/,
     );
-    // não vaza `**` de wrap externo — quem envelopa é o injetor.
-    assert.ok(!text!.startsWith("**"));
-    assert.ok(!text!.endsWith("**"));
+    assert.match(text, /Apareça para ver quem vai ganhar caneca/);
+    // não vaza `**` de wrap externo — quem envelopa é o injetor; e nenhum `**`
+    // interno (#6869: negrito aninhado disparava stacked-intro-callouts).
+    assert.ok(!text.includes("**"));
   });
 
-  it("ordem do array de entrada não importa — mapeia por rank", () => {
-    const shuffled: PodiumEntry[] = [
-      { nickname: "Joshu", rank: 3 },
-      { nickname: "jorgemartinsfilho", rank: 1 },
-      { nickname: "Bruna Quevedo", rank: 2 },
-    ];
-    const text = buildChampionsCallout(shuffled, RAFFLE, "junho", "2 de julho");
-    assert.ok(text);
-    // 1º ainda aparece na medalha de ouro, independente da ordem do array.
-    const idx1 = text!.indexOf("🥇");
-    const idx2 = text!.indexOf("🥈");
-    const idx3 = text!.indexOf("🥉");
-    assert.ok(idx1 < idx2 && idx2 < idx3, "medalhas na ordem 🥇🥈🥉");
-    assert.match(text!, /🥇 jorgemartinsfilho/);
+  it("#9236: NÃO carrega mais o bloco de campeões (migrou pro box do É IA?)", () => {
+    const text = buildRaffleCallout(RAFFLE, "2 de julho");
+    assert.doesNotMatch(text, /campeões/);
+    assert.doesNotMatch(text, /[🥇🥈🥉]/u);
+    assert.doesNotMatch(text, /ranking completo/);
   });
 
-  it("pódio incompleto (falta rank 3) → null — sem box sem top-3 completo", () => {
-    const partial: PodiumEntry[] = [
-      { nickname: "jorgemartinsfilho", rank: 1 },
-      { nickname: "Bruna Quevedo", rank: 2 },
-    ];
-    assert.equal(buildChampionsCallout(partial, RAFFLE, "junho", "2 de julho"), null);
-  });
-
-  it("pódio vazio → null", () => {
-    assert.equal(buildChampionsCallout([], RAFFLE, "junho", "2 de julho"), null);
-  });
-
-  it("leaderboardUrl presente → link pro ranking completo logo após o pódio (#4506)", () => {
-    const text = buildChampionsCallout(
-      PODIUM,
-      RAFFLE,
-      "junho",
-      "2 de julho",
-      "https://eia.diar.ia.br/leaderboard",
-    );
-    assert.ok(text);
-    assert.match(text!, /🥉 Joshu\n\n\[Veja o ranking completo\]\(https:\/\/eia\.diar\.ia\.br\/leaderboard\)\n\nSorteio/);
-    assert.doesNotMatch(text!, /\*\*Sorteio\*\*/);
-  });
-
-  it("leaderboardUrl ausente → sem link, comportamento igual ao anterior (fail-open)", () => {
-    const text = buildChampionsCallout(PODIUM, RAFFLE, "junho", "2 de julho");
-    assert.ok(text);
-    assert.ok(!text!.includes("ranking completo"));
-    assert.match(text!, /🥉 Joshu\n\nSorteio/);
-    assert.doesNotMatch(text!, /\*\*Sorteio\*\*/);
-  });
-
-  it("#6869: 'Sorteio' nunca sai com negrito próprio — regressão do bold aninhado que disparava stacked-intro-callouts (edição 260901)", () => {
-    const text = buildChampionsCallout(PODIUM, RAFFLE, "junho", "2 de julho");
-    assert.ok(text);
-    assert.doesNotMatch(text!, /\*\*Sorteio\*\*/);
-    assert.match(text!, /\n\nSorteio\n\n/);
+  it("#9242: sem apelidos no callout, nenhum '@***' de e-mail mascarado entra na região de intro", () => {
+    const text = buildRaffleCallout(RAFFLE, "2 de julho");
+    assert.doesNotMatch(text, /@\*\*\*/);
   });
 });

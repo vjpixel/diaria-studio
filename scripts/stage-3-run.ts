@@ -25,7 +25,7 @@
  * Este script cobre só o MIOLO DETERMINÍSTICO de §3b — a parte que a
  * própria issue já apontava como "geração já é script, sem Agent no meio":
  * lint pre-flight, `image-generate.ts` (2x1/1x1 + 4x5 nativo) por destaque,
- * composição do card 4:5, fetch do leaderboard, injeção do box de campeões,
+ * composição do card 4:5, fetch do leaderboard, injeção do callout do sorteio (#9236),
  * e as invariantes pré-gate. **Ele roda independente de §3a/§3a-bis** — a
  * geração de imagens de destaque não depende do É IA? ter terminado, só do
  * sentinel da Etapa 2 (destaques escritos).

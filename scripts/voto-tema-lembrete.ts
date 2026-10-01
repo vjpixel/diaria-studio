@@ -21,7 +21,7 @@ import { resolveKitConfig } from "./lib/kit-config.ts";
 import { createTag, findTagIdByName, tagSubscriber } from "./lib/kit-broadcasts.ts";
 import { fetchTagMembers } from "./lib/kit-apoio-tag-sync.ts";
 import { listWorkerKVKeys } from "./lib/cloudflare-kv-upload.ts";
-import { eleitorHash, parseCicloVotacao, voteKeyPrefix } from "../workers/artigos/src/voto-tema-core.ts";
+import { eleitorHash, formatPrazo, parseCicloVotacao, prazoEncerrado, voteKeyPrefix, type BallotTema } from "../workers/artigos/src/voto-tema-core.ts";
 import {
   VOTO_TEMA_TAG_SYNC_COMMAND,
   VotoTemaGuardError,
@@ -85,6 +85,16 @@ export async function selectPendentesElegiveis(
   return { pendentes, foraDoEleitorado };
 }
 
+/** #9260/#9269: lembrete depois do `prazo` chamaria a pessoa pra um voto que
+ *  o worker vai recusar (409). Cédula sem prazo (ciclo antigo) passa. @pure */
+export function assertLembreteDentroDoPrazo(ballot: Pick<BallotTema, "prazo">, now: Date): void {
+  if (prazoEncerrado(ballot, now)) {
+    throw new VotoTemaGuardError(
+      `o prazo da votação já passou (${formatPrazo(ballot.prazo)}) — recusando montar lembrete; rode voto-tema-close.ts.`,
+    );
+  }
+}
+
 export async function run(options: RunOptions): Promise<void> {
   const { ciclo: rawCiclo, dryRun, log } = options;
   const ciclo = parseCicloVotacao(rawCiclo);
@@ -97,6 +107,7 @@ export async function run(options: RunOptions): Promise<void> {
   const kvConfig = resolveVotoTemaKvConfig();
   const ballot = await readBallotFromKv(ciclo, kvConfig);
   if (!ballot) throw new VotoTemaGuardError(`ciclo ${ciclo}: nenhuma cédula gravada.`);
+  assertLembreteDentroDoPrazo(ballot, new Date());
 
   const kitConfigResult = resolveKitConfig();
   if (!kitConfigResult.ok) throw new VotoTemaGuardError(kitConfigResult.reason);

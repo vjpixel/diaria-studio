@@ -295,7 +295,7 @@ export async function verifyWorkerDispatch(
   fetchJson: FetchJsonFn = defaultFetchJson,
   now: Date = new Date(),
   retry: VerifyWorkerDispatchRetryOptions = {},
-): Promise<{ updated: SocialPublished; changes: number }> {
+): Promise<{ updated: SocialPublished; changes: number; inQueue: number }> {
   const rawRetry = { ...DEFAULT_RETRY, ...retry };
   const maxAttempts = Math.max(1, rawRetry.maxAttempts);
   const backoffMs = rawRetry.backoffMs;
@@ -342,7 +342,26 @@ export async function verifyWorkerDispatch(
     return updated;
   });
 
-  return { updated: { ...published, posts: updatedPosts }, changes };
+  // #9259: `changes` conta TRANSIÇÕES de status (disparado/DLQ) — uma entry
+  // recém-enfileirada e ainda na fila conta 0 ali. `inQueue` é o número de
+  // entries `scheduled` cuja key o Worker de fato lista na fila ativa, que é
+  // o que um "confirmado na fila" deve reportar.
+  const inQueue = updatedPosts.filter(
+    (p) =>
+      WORKER_RECONCILABLE_PLATFORMS.has(p.platform) &&
+      p.status === "scheduled" &&
+      typeof p.worker_queue_key === "string" &&
+      queueKeys2.has(p.worker_queue_key),
+  ).length;
+
+  return { updated: { ...published, posts: updatedPosts }, changes, inQueue };
+}
+
+/** #9259 — resumo da reconciliação pós-dispatch. Separa o que está
+ *  confirmado na fila (`inQueue`) do que mudou de status (`changes`). */
+export function formatVerifySummary(result: { changes: number; inQueue?: number }): string {
+  const fila = result.inQueue === undefined ? "?" : String(result.inQueue);
+  return `${fila} entrada(s) confirmada(s) na fila; ${result.changes} reconciliada(s) (disparada/DLQ).`;
 }
 
 async function main(): Promise<void> {

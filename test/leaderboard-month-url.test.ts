@@ -17,6 +17,7 @@ import {
   renderLeaderboardLinkRow,
   type EIA,
 } from "../scripts/render-newsletter-html.ts";
+import { renderEIA } from "../scripts/lib/newsletter-render-html.ts";
 
 const STYLE = "font-family:sans-serif;";
 const LB = "https://eia.diar.ia.br/leaderboard"; // #3701: domínio de marca (era poll.diaria.workers.dev)
@@ -50,7 +51,7 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
     );
   });
 
-  it("com líderes + slug → cabeçalho 'Vencedores' é link pra /leaderboard/{slug}", () => {
+  it("com líderes + slug → 'Veja o ranking completo' linka /leaderboard/{slug} (#9236)", () => {
     const html = renderLeaderboardTop1Row(
       baseEia({
         leaderboardPodium: [{ nickname: "Davyd", rank: 1 }],
@@ -60,11 +61,12 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       STYLE,
     );
     assert.match(html, new RegExp(`href="${LB}/2026-05"`));
-    assert.match(html, />Vencedores de Maio<\/a>/);
-    assert.match(html, /Davyd/);
+    assert.match(html, />Veja o ranking completo<\/a>/);
+    assert.match(html, /<strong>🎉 Os campeões do É IA\? em maio:<\/strong>/);
+    assert.match(html, /🥇 Davyd/);
   });
 
-  it("com líderes sem slug → cabeçalho em <strong> (back-compat, sem link)", () => {
+  it("com líderes sem slug → bloco sem link de ranking (back-compat)", () => {
     const html = renderLeaderboardTop1Row(
       baseEia({
         leaderboardPodium: [{ nickname: "Davyd", rank: 1 }],
@@ -73,11 +75,12 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       STYLE,
     );
     assert.doesNotMatch(html, /\/leaderboard\//);
-    assert.match(html, /<strong>Vencedores de Maio<\/strong>/);
-    assert.match(html, /Davyd/);
+    assert.doesNotMatch(html, /Veja o ranking completo/);
+    assert.match(html, /<strong>🎉 Os campeões do É IA\? em maio:<\/strong>/);
+    assert.match(html, /🥇 Davyd/);
   });
 
-  it("pódio com 3 → posições ordinais '1º X, 2º Y, 3º Z' por acertos (#1646)", () => {
+  it("pódio com 3 → 🥇/🥈/🥉 na ordem por acertos (#1646 → #9236)", () => {
     const html = renderLeaderboardTop1Row(
       baseEia({
         leaderboardPodium: [
@@ -90,7 +93,7 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       }),
       STYLE,
     );
-    assert.match(html, /1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida/);
+    assert.match(html, /🥇 Bruna Quevedo<\/p>\s*<p[^>]*>🥈 Joshu<\/p>\s*<p[^>]*>🥉 Ana Cândida<\/p>/);
     // sem percentuais no texto (#1646)
     assert.doesNotMatch(html, /%/);
   });
@@ -113,5 +116,46 @@ describe("renderLeaderboardLinkRow — link persistente (#1970)", () => {
     // "" mas o link persistente AINDA aparece — complementares no renderEIA.
     assert.equal(renderLeaderboardTop1Row(baseEia(), STYLE), "");
     assert.notEqual(renderLeaderboardLinkRow(STYLE), "");
+  });
+});
+
+describe("renderEIA — bloco de campeões no box do É IA? sem duplicar link de ranking (#9236)", () => {
+  const PODIUM = [
+    { nickname: "Bruna Quevedo", rank: 1 },
+    { nickname: "Robin", rank: 2 },
+    { nickname: "perli…@***", rank: 3 },
+  ];
+
+  it("pódio + slug → bloco completo, 1 só link de ranking (o do mês), sem a linha compacta", () => {
+    const html = renderEIA(
+      baseEia({ leaderboardPodium: PODIUM, leaderboardPeriod: "Setembro", leaderboardPeriodSlug: "2026-09" }),
+    );
+    assert.match(html, /🎉 Os campeões do É IA\? em setembro:/);
+    assert.match(html, /🥇 Bruna Quevedo/);
+    assert.match(html, /🥈 Robin/);
+    assert.match(html, /🥉 perli…@\*\*\*/);
+    assert.equal((html.match(/Veja o ranking completo/g) ?? []).length, 1);
+    assert.match(html, new RegExp(`href="${LB}/2026-09"`));
+    assert.doesNotMatch(html, /Veja o ranking de quem mais acerta/, "link persistente suprimido quando o bloco já linka o ranking");
+    assert.doesNotMatch(html, /Vencedores/, "linha compacta antiga não volta");
+  });
+
+  it("pódio sem slug → bloco sem link próprio; link persistente continua", () => {
+    const html = renderEIA(baseEia({ leaderboardPodium: PODIUM, leaderboardPeriod: "Setembro" }));
+    assert.match(html, /🎉 Os campeões do É IA\? em setembro:/);
+    assert.doesNotMatch(html, /Veja o ranking completo/);
+    assert.match(html, /Veja o ranking de quem mais acerta/);
+  });
+
+  it("na janela com fetch falho (pódio vazio + slug) → só o convite linka o ranking, persistente suprimido", () => {
+    const html = renderEIA(baseEia({ leaderboardPodium: [], leaderboardPeriodSlug: "2026-09" }));
+    assert.match(html, /Acompanhe o ranking do mês/);
+    assert.doesNotMatch(html, /Veja o ranking de quem mais acerta/);
+  });
+
+  it("fora da janela das 3 primeiras edições (JSON vazio) → sem bloco, link persistente presente", () => {
+    const html = renderEIA(baseEia({ leaderboardPodium: [], leaderboardPeriodSlug: "" }));
+    assert.doesNotMatch(html, /Os campeões do É IA\?/);
+    assert.match(html, /Veja o ranking de quem mais acerta/);
   });
 });

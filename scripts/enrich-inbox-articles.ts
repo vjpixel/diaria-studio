@@ -277,6 +277,14 @@ export function mergeMetadata(
  */
 export function titleFromSubmittedSubject(article: InboxArticle): string | null {
   if (!needsEnrichment(article)) return null; // título atual já é bom
+  // #9250: link extraído de newsletter capturada NÃO herda o assunto do
+  // e-mail — o assunto descreve a edição da newsletter inteira (várias
+  // histórias), não este link específico. Caso real 261001: 7min.ai virou
+  // LANÇAMENTO "S-1 da Anthropic revela prejuízo..." apontando pra
+  // openai.com/index/introducing-gpt-6-1-sol. Sem título da página de
+  // destino, o item fica com placeholder e cai nos guards de placeholder
+  // (#4102) em vez de ganhar um título falso.
+  if (article.flag === "newsletter_extracted") return null;
   let cleaned =
     typeof article.submitted_subject === "string" ? article.submitted_subject.trim() : "";
   // Tira prefixos empilhados em qualquer ordem: "[INBOX] Re: ...", "Fwd: ...".

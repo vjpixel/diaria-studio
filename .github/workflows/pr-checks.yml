@@ -33,9 +33,15 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled, edited]
 
+# #9262: `edited` (mudança de corpo/título, ex. `gh pr edit` logo após o push)
+# dispara uma rodada NO MESMO commit. Com um grupo único + cancel-in-progress,
+# ela cancelava a rodada do push e a UI do PR mostrava os jobs cancelados como
+# "failing checks". Agora `edited` vive num grupo próprio e nunca cancela nem é
+# cancelada pela rodada de código; só eventos de código (push/label/reopen)
+# cancelam a rodada de código anterior (commit obsoleto).
 concurrency:
-  group: pr-checks-${{ github.ref }}
-  cancel-in-progress: true
+  group: pr-checks-${{ github.ref }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
+  cancel-in-progress: ${{ github.event.action != 'edited' }}
 
 # #8483: evita baixar o Chrome do puppeteer em `npm ci` — nenhum job
 # deste workflow usa o browser real (scripts que precisam dele, como
