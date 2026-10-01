@@ -13,22 +13,19 @@
  * (populado por um sync agendado, aqui `scripts/sync-artigos-apoio-kv.ts`).
  * A diferença é o VALOR guardado sob a chave: `subscriber-verify.ts` grava
  * presença (`"1"`); aqui a chave `apoio:{hash}` grava o NÍVEL
- * (`amigo`/`apoiador`/`mantenedor`/`patrono`) — o mesmo valor que já está no
- * custom field `apoio_nivel` da Beehiiv, mantido por
- * `scripts/sync-apoio-nivel-beehiiv.ts`. Este módulo não deriva apoio a
- * partir do apoia.se/Stripe diretamente — só lê o que já foi sincronizado
- * (mesma divisão de responsabilidade que `subscriber-verify.ts` tem com
+ * (`amigo`/`apoiador`/`mantenedor`/`patrono`), calculado pelo sync a partir
+ * do CRM de Apoios (apoia.se, #9300 — antes espelhava o custom field
+ * `apoio_nivel` da Beehiiv). Este módulo não deriva apoio a partir do
+ * apoia.se/Stripe diretamente — só lê o que já foi sincronizado (mesma
+ * divisão de responsabilidade que `subscriber-verify.ts` tem com
  * `sync-cursos-subscribers-kv.ts`).
  *
- * **Carência já embutida na fonte:** o valor de `apoio_nivel` synced na
- * Beehiiv já aplica a carência de 1 mês (`maxLevel(currentLevel,
- * previousLevel)` em `sync-apoio-nivel-beehiiv.ts`, #4436) — este módulo
- * herda essa política por construção, sem reimplementá-la. Se o gate dos
- * Artigos Especiais precisar de uma política DIFERENTE (estrita, ou
- * "apoiou uma vez, acesso permanente" — as outras 2 opções discutidas na
- * #7030), isso exige mudar `sync-artigos-apoio-kv.ts` pra computar um valor
- * próprio em vez de espelhar o campo Beehiiv — decisão do editor, não
- * assumida aqui (ver PR body).
+ * **Carência já embutida na fonte:** o sync usa `computeDesiredApoioLevels`
+ * (`sync-apoio-nivel-beehiiv.ts`, #4436 — `maxLevel(currentLevel,
+ * previousLevel)`) — este módulo herda essa política por construção, sem
+ * reimplementá-la. Uma política DIFERENTE pro gate (estrita, ou "apoiou uma
+ * vez, acesso permanente" — as outras 2 opções da #7030) se muda em
+ * `sync-artigos-apoio-kv.ts`, não aqui — decisão do editor.
  *
  * Só usa Web Crypto (via `sha256Hex`) — roda idêntico em Node (sync script,
  * teste) e no runtime Cloudflare Workers, sem `nodejs_compat`.
