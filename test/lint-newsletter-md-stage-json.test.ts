@@ -180,7 +180,7 @@ describe("runStage4LintReport (#5416)", () => {
     rmSync(editionDir, { recursive: true, force: true });
   });
 
-  it("21 checks presentes (20 do MD + agradecimento-hardcoded, #8200 adicionou destaque-category-noticias, #8594 radar-summary-matches-title, #9358 pool-summary-quality)", () => {
+  it("22 checks presentes (21 do MD + agradecimento-hardcoded, #8200 adicionou destaque-category-noticias, #8594 radar-summary-matches-title, #9358 pool-summary-quality, #9382 porque-importa-generic-advice)", () => {
     const editionDir = makeEditionDir();
     const report = runStage4LintReport(editionDir, PROJECT_ROOT);
     const ids = report.checks.map((c) => c.id).sort();
@@ -194,6 +194,7 @@ describe("runStage4LintReport (#5416)", () => {
       "no-xml-artifacts",
       "orphan-box-in-gap",
       "pool-summary-quality",
+      "porque-importa-generic-advice",
       "radar-summary-matches-title",
       "secondary-item-coherence",
       "secondary-items-have-summary",
@@ -298,7 +299,7 @@ describe("runStage2LintReport (#5416)", () => {
     return dir;
   }
 
-  it("7 checks presentes, todos gate-blocking (mesma severity do modo --check individual)", () => {
+  it("8 checks presentes; todos gate-blocking exceto porque-importa-generic-advice (#9382, warn-only)", () => {
     const editionDir = makeEditionDir();
     const report = runStage2LintReport(editionDir, PROJECT_ROOT);
     const ids = report.checks.map((c) => c.id).sort();
@@ -307,11 +308,14 @@ describe("runStage2LintReport (#5416)", () => {
       "destaque-max-chars",
       "destaque-min-chars",
       "destaque-url-matches-approved",
+      "porque-importa-generic-advice",
       "section-counts",
       "url-bucket",
       "why-matters-length",
     ]);
-    for (const c of report.checks) assert.equal(c.severity, "gate-blocking");
+    for (const c of report.checks) {
+      assert.equal(c.severity, c.id === "porque-importa-generic-advice" ? "warn-only" : "gate-blocking");
+    }
     rmSync(editionDir, { recursive: true, force: true });
   });
 
@@ -431,7 +435,7 @@ describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malfor
     // Todos os 21 checks continuam presentes — nenhum foi engolido (#7260
     // adicionou banned-lexicon, #8200 adicionou destaque-category-noticias,
     // #9358 adicionou pool-summary-quality).
-    assert.equal(out.checks.length, 21);
+    assert.equal(out.checks.length, 22); // #9382: + porque-importa-generic-advice
 
     rmSync(dir, { recursive: true, force: true });
   });
@@ -492,7 +496,7 @@ describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malfor
     assert.deepEqual(aprofunde.result, checkAprofundeFormat(buildMd()));
 
     // Todos os 6 checks continuam presentes.
-    assert.equal(out.checks.length, 7); // #9252: + destaque-url-matches-approved
+    assert.equal(out.checks.length, 8); // #9252: + destaque-url-matches-approved; #9382: + porque-importa-generic-advice
 
     rmSync(dir, { recursive: true, force: true });
   });
