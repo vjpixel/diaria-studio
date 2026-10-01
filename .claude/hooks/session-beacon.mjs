@@ -103,11 +103,12 @@
 // si só), mas não prova mais paridade cruzada nenhuma — nem o título dos
 // testes lá afirma isso.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { hostname } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { breakStaleLock, tryAcquireOwnedLock } from "./lib/registry-lock.mjs";
+import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 
 /** Kind das sessões registradas por este hook. Nunca coordenador — ver blast radius 2. */
 export const BEACON_KIND = "interactive";
@@ -795,7 +796,9 @@ function writeJsonAtomic(path, value) {
  * letra do CAS e quebraria a razão de existir dele — além de violar o "stall
  * silencioso > 60s é inaceitável" do CLAUDE.md.
  *
- * 2s × 3 = ~6s de pior caso. A assimetria com o lado TS é escolha, não
+ * 2s × 3 = ~6s de pior caso, mais, no Windows, até ~330ms além do deadline
+ * em cada tentativa CAS (a sequência de delete-pending do #9280 não olha o
+ * deadline). A assimetria com o lado TS é escolha, não
  * descuido: lá, perder a escrita custa um grant/claim e vale esperar; aqui,
  * custa um heartbeat alguns segundos mais velho e não vale segurar o editor.
  */
@@ -805,7 +808,8 @@ const BEACON_CAS_ATTEMPTS = 3;
 function acquireBeaconLock(lockPath, timeoutMs = BEACON_LOCK_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    // #9203: grava o dono {pid, host, ts, token}; erro não-EEXIST propaga.
+    // #9203: grava o dono {pid, host, ts, token}; erro não-EEXIST propaga,
+    // exceto o delete-pending do Windows (#9280), retentado lá dentro.
     if (tryAcquireOwnedLock(lockPath)) return;
     if (Date.now() >= deadline) {
       throw new Error(`[session-beacon] lock timeout after ${timeoutMs}ms: ${lockPath}`);
@@ -857,10 +861,51 @@ function writeJsonAtomicWithCas(path, buildRecord, verify, attempts = BEACON_CAS
       if (acquired) releaseBeaconLock(lockPath);
     }
   }
-  throw new Error(
-    `writeJsonAtomicWithCas: ${attempts} tentativas de CAS falharam em ${path} ` +
-      `— outro processo continua escrevendo o registro; última falha: ${lastErr?.message ?? String(lastErr)}`,
+  // #9280: `code`/`cause` da última falha sobem junto — o catch externo
+  // classifica por `e.code` (EPERM/EACCES), não pela mensagem.
+  throw Object.assign(
+    new Error(
+      `writeJsonAtomicWithCas: ${attempts} tentativas de CAS falharam em ${path} ` +
+        `— outro processo continua escrevendo o registro; última falha: ${lastErr?.message ?? String(lastErr)}`,
+      { cause: lastErr },
+    ),
+    { code: lastErr?.code },
   );
+}
+
+/**
+ * #9280: o catch externo do beacon é fail-open total, então um EPERM/EACCES
+ * persistente ao gravar o registro (no `.lock`, ou no `renameSync` do write
+ * atômico) sumia sem rastro. Registra UMA vez por sessão em stderr +
+ * `data/run-log.jsonl`; outros erros seguem silenciosos.
+ *
+ * "Uma vez por sessão" é um marcador em ARQUIVO, não em memória: cada
+ * chamada de ferramenta é um processo `node` novo, e com o erro persistente
+ * o throttle de 5s não segura (`lastHeartbeat` nunca é gravado). O marcador
+ * vive no tmpdir do sistema, nunca em `data/` (junction OneDrive). EEXIST =
+ * já registrado; qualquer falha ao criar o marcador = não loga (melhor perder
+ * o rastro que inundar o run-log). Exportado pra teste; devolve `true` se
+ * registrou.
+ */
+export function logBeaconLockErrorOnce(repoRoot, sessionId, err, deps = {}) {
+  const code = err?.code;
+  if (code !== "EPERM" && code !== "EACCES") return false;
+  const safeId = String(sessionId ?? "").replace(/[^A-Za-z0-9_.-]/g, "_") || "sem-sessao";
+  try {
+    closeSync(openSync(join(deps.markerDir ?? tmpdir(), `diaria-beacon-lockerr-${safeId}`), "wx"));
+  } catch {
+    return false;
+  }
+  // syscall/path do erro de fs na origem: o wrapper do CAS e o de
+  // delete-pending esgotado embrulham o erro real em `cause`.
+  let origin = err;
+  for (let i = 0; i < 4 && origin && !origin.syscall && origin.cause; i++) origin = origin.cause;
+  const details = { code };
+  if (typeof origin?.syscall === "string") details.syscall = origin.syscall;
+  if (typeof origin?.path === "string") details.path = origin.path;
+  try { process.stderr.write(`[session-beacon] heartbeat não gravado: ${code} ao gravar o registro (#9280)\n`); } catch { /* ignore */ }
+  appendHookRunLog(repoRoot, "session-beacon", "warn", "beacon_registry_write_error", details, deps);
+  return true;
 }
 
 // #2019-style CLI guard — só roda o corpo quando este arquivo é o entrypoint
@@ -876,9 +921,12 @@ if (
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
   process.stdin.on("end", () => {
+    let logRoot = null;
+    let logSessionId = null;
     try {
       const payload = JSON.parse(data || "{}");
       const sessionId = payload.session_id;
+      logSessionId = sessionId;
       if (!sessionId) return; // sem identidade não há beacon possível
 
       const hookDir = dirname(fileURLToPath(import.meta.url));
@@ -924,6 +972,7 @@ if (
       if (isLinkedWorktree(cwdRoot)) return;
 
       const mainRoot = resolveMainRepoRootNoSpawn(cwdRoot) ?? cwdRoot;
+      logRoot = mainRoot;
       const sessionsDir = join(mainRoot, "data", "sessions");
       // `data/` é junction do OneDrive e NÃO existe num clone fresco nem num
       // worktree — sem ela não há registro compartilhado pra alimentar.
@@ -988,8 +1037,10 @@ if (
         );
       }
       // Nunca emitir saída: este hook não altera nem bloqueia a chamada.
-    } catch {
-      // Fail-open total — ver "CUSTO E FAIL-OPEN" no topo.
+    } catch (e) {
+      // Fail-open total — ver "CUSTO E FAIL-OPEN" no topo. Só EPERM/EACCES
+      // deixa rastro, uma vez por sessão (#9280).
+      logBeaconLockErrorOnce(logRoot, logSessionId, e);
     }
   });
 }

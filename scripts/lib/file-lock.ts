@@ -219,7 +219,7 @@ export function tryStealOrphan(
  * preservando o #6952 (nada de girar até o timeout escondendo a causa).
  */
 export const DELETE_PENDING_MAX_STREAK = 20;
-const DELETE_PENDING_WAIT_MS = 5;
+export const DELETE_PENDING_WAIT_MS = 5;
 
 /** `true` se o erro do `wx` é o sintoma de delete-pending do Windows (#9194). Exportado pra teste. */
 export function isDeletePendingWxError(code: string | undefined, platform: NodeJS.Platform = process.platform): boolean {
@@ -283,8 +283,8 @@ export function acquireLockWithDeps(lockPath: string, timeoutMs: number, deps: A
     } catch (e) {
       // #6952: só `EEXIST` é CONTENÇÃO, exceto delete-pending no win32 (#9194:
       // EPERM/EACCES numa sequência curta) — o resto propaga imediatamente.
-      // O espelho dos hooks (`.claude/hooks/lib/registry-lock.mjs`) ainda NÃO
-      // tem a exceção do #9194 e diverge neste ponto (#9280).
+      // O espelho dos hooks (`.claude/hooks/lib/registry-lock.mjs`,
+      // `tryAcquireOwnedLock`) aplica a mesma exceção desde o #9280.
       //
       // O catch era vazio e engolia qualquer erro como "alguém tem o lock,
       // gira mais": `EACCES` (diretório sem permissão de escrita), `ENOENT`
