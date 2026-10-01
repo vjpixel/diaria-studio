@@ -149,9 +149,10 @@ export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=cam
  * de um mês, o agregado parcial desse mês SUBSTITUIRIA (não somaria) o
  * gasto real já registrado pros dias que ficaram fora da janela — ex:
  * rodada em 06/10 com janela iniciando 07/09 reescreveria setembro sem
- * 05-06/09. Esta função mitiga isso: quando há **2 ou mais meses distintos**
- * no `metrics` recebido, o mês mais ANTIGO só é incluído no resultado se o
- * dia mais cedo com dado nesse mês for o dia 1 — caso contrário essa linha
+ * 05-06/09. Esta função mitiga isso. **Sem `windowStart` (critério legado):**
+ * quando há **2 ou mais meses distintos** no `metrics` recebido, o mês mais
+ * ANTIGO só é incluído no resultado se o dia mais cedo com dado nesse mês for
+ * o dia 1 — caso contrário essa linha
  * é DESCARTADA do retorno (nunca enviada a `mergeSpendRows`), preservando o
  * que já está em `spend.csv` pra esse mês. **O check é "começa no dia 1",
  * não "sem lacuna interna"** — confia no contrato de `fetchMetaAdsChannelMetrics`
@@ -164,9 +165,29 @@ export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=cam
  * andamento, sem risco de perda porque não há um mês MAIS RECENTE que
  * comprove que a cobertura do mês antigo é de fato parcial.
  *
+ * **`windowStart` (#9378):** quando o chamador sabe onde a JANELA consultada
+ * começou (`AAAA-MM-DD`), o guard usa ela em vez do primeiro dia COM DADO.
+ * Sem isso, uma campanha que só começou a gastar no meio do mês (a da
+ * newsletter começou em ~19/09) nunca regravava aquele mês nem com
+ * `--since` no dia 1 — o mês ficava com o agregado antigo da conta inteira,
+ * exatamente o valor errado que o recálculo existe pra corrigir. Com
+ * `windowStart` ≤ dia 1 do mês mais antigo, a janela cobre o mês inteiro e
+ * a ausência de dados nos primeiros dias é gasto zero real, não truncamento.
+ * Com `windowStart` o check vale **mesmo com 1 mês só** nos dados: a janela
+ * prova o truncamento sozinha (ex: campanha pausada o mês corrente inteiro e
+ * janela default começando 11/09 — antes, setembro seria regravado só com
+ * 11–30/09 a cada rodada). Formato `AAAA-MM-DD` em UTC, mesma convenção de
+ * `toMetaAdsDateRange` (`ads-campaign-economics-fetch.ts`); comparação
+ * lexicográfica, então valor fora desse formato quebra o guard.
+ *
  * @pure
  */
-export function aggregateMetaAdsChannelMetricsByMonth(metrics: ChannelDailyMetric[], canal: string, moeda = "BRL"): SpendRow[] {
+export function aggregateMetaAdsChannelMetricsByMonth(
+  metrics: ChannelDailyMetric[],
+  canal: string,
+  moeda = "BRL",
+  windowStart?: string,
+): SpendRow[] {
   const byMonth = new Map<string, { sum: number; dates: string[] }>();
 
   for (const m of metrics) {
@@ -182,12 +203,14 @@ export function aggregateMetaAdsChannelMetricsByMonth(metrics: ChannelDailyMetri
   // fragmento da janela (ela começou no meio dele) — descartar em vez de
   // deixar `mergeSpendRows` sobrescrever a linha completa já existente.
   const mesesOrdenados = [...byMonth.keys()].sort();
-  if (mesesOrdenados.length >= 2) {
+  if (windowStart !== undefined) {
+    // #9378: a janela prova o truncamento, com 1 mês ou mais nos dados.
     const maisAntigo = mesesOrdenados[0];
-    const datasDoMesMaisAntigo = byMonth.get(maisAntigo)!.dates;
-    const primeiroDia = datasDoMesMaisAntigo.slice().sort()[0];
-    const cobreDesdeODia1 = primeiroDia.slice(8, 10) === "01";
-    if (!cobreDesdeODia1) byMonth.delete(maisAntigo);
+    if (maisAntigo !== undefined && windowStart > `${maisAntigo}-01`) byMonth.delete(maisAntigo);
+  } else if (mesesOrdenados.length >= 2) {
+    const maisAntigo = mesesOrdenados[0];
+    const primeiroDia = byMonth.get(maisAntigo)!.dates.slice().sort()[0];
+    if (primeiroDia.slice(8, 10) !== "01") byMonth.delete(maisAntigo);
   }
 
   return [...byMonth.entries()]
@@ -243,6 +266,12 @@ export const META_ADS_INGEST_FAILURE_EXIT_CODE = SPEND_INGEST_FAILURE_EXIT_CODE;
  */
 export const META_ADS_FETCH_RETRY = SPEND_INGEST_FETCH_RETRY;
 
+/** Janela default do ingest Meta (#9378). `runHeadless` sempre passa
+ *  `lookbackDays` explícito ao fetch, então guard e fetch nunca divergem;
+ *  igualar ao `?? 30` de `fetchMetaAdsChannelMetrics` só mantém este cron
+ *  e o painel `/ads` na mesma janela. */
+export const META_ADS_DEFAULT_LOOKBACK_DAYS = 30;
+
 export interface RunHeadlessOptions {
   /** Injetável só pra teste — nunca espera de verdade fora de produção. */
   sleep?: (ms: number) => Promise<void>;
@@ -261,7 +290,8 @@ export interface RunHeadlessOptions {
  * do histórico). `null` se a data for inválida ou futura. Pra regravar um mês
  * inteiro, `since` precisa ser o dia 1 dele: o guard de mês truncado
  * (`aggregateMetaAdsChannelMetricsByMonth`) descarta o mês mais antigo da
- * janela quando ela não começa no dia 1. @pure
+ * janela quando ela não começa no dia 1 — e desde o fix do #9378 olha o
+ * início da JANELA, não o primeiro dia com gasto. @pure
  */
 export function lookbackDaysSince(since: string, now: Date): number | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) return null;
@@ -327,10 +357,16 @@ export async function runHeadless(
   let networkErrorReason: string | null = null;
   let fetchedMetricsCount = 0;
 
+  // Mesmo `now`/janela pro fetch e pro guard de mês truncado (#9378) — o
+  // guard precisa saber onde a JANELA começou, não só o primeiro dia com dado.
+  const now = opts.now ?? new Date();
+  const lookbackDays = opts.lookbackDays ?? META_ADS_DEFAULT_LOOKBACK_DAYS;
+  const windowStart = new Date(now.getTime() - (lookbackDays - 1) * 86_400_000).toISOString().slice(0, 10);
+
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
     const fetchResult = await fetchMetaAdsChannelMetrics(retryingFetch, authResult.auth.accessToken, {
-      ...(opts.lookbackDays !== undefined ? { lookbackDays: opts.lookbackDays } : {}),
-      ...(opts.now !== undefined ? { now: opts.now } : {}),
+      lookbackDays,
+      now,
       ...(opts.campaignIds !== undefined ? { campaignIds: opts.campaignIds } : {}),
     });
     if (fetchResult.error) {
@@ -338,7 +374,16 @@ export async function runHeadless(
       return { kind: "error", reason: networkErrorReason };
     }
     fetchedMetricsCount = fetchResult.metrics.length;
-    const rows = aggregateMetaAdsChannelMetricsByMonth(fetchResult.metrics, META_ADS_CANAL);
+    const rows = aggregateMetaAdsChannelMetricsByMonth(fetchResult.metrics, META_ADS_CANAL, "BRL", windowStart);
+    // #9378: mês descartado pelo guard nunca some em silêncio — diz qual e como regravar.
+    const kept = new Set(rows.map((r) => r.mes));
+    for (const mes of new Set(fetchResult.metrics.map((x) => x.date.slice(0, 7)))) {
+      if (/^\d{4}-\d{2}$/.test(mes) && !kept.has(mes)) {
+        console.warn(
+          `[meta-ads-ingest-spend] ${mes} não regravado: a janela começa em ${windowStart} (mês truncado). Pra recalcular o mês inteiro: --since ${mes}-01`,
+        );
+      }
+    }
     return { kind: "ok", rows, fetchedCount: fetchResult.metrics.length };
   };
 
@@ -374,12 +419,15 @@ export async function main(): Promise<number> {
 
   if (!inputPath) {
     if (since === undefined) return await runHeadless(spendPath);
-    const lookbackDays = lookbackDaysSince(since, new Date());
+    // Um `now` só pro cálculo da janela e pro fetch (#9378): dois `new Date()`
+    // em lados opostos da meia-noite UTC deslocariam o início da janela 1 dia.
+    const now = new Date();
+    const lookbackDays = lookbackDaysSince(since, now);
     if (lookbackDays === null) {
       fallback(`--since inválido (esperado AAAA-MM-DD, não futuro): ${since}`);
       return META_ADS_INGEST_FAILURE_EXIT_CODE;
     }
-    return await runHeadless(spendPath, fetch, { lookbackDays });
+    return await runHeadless(spendPath, fetch, { lookbackDays, now });
   }
   if (!existsSync(inputPath)) {
     fallback(`arquivo de --input não encontrado: ${inputPath}`);
