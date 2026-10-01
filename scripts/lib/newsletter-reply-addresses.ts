@@ -54,6 +54,18 @@ export const DEDICATED_SUBSCRIBER_REPLY_ADDRESSES = KNOWN_NEWSLETTER_REPLY_ADDRE
   (addr) => addr !== "vjpixel@gmail.com" && addr !== "pixel@diar.ia.br", // caixas pessoais do editor
 );
 
+/**
+ * #9313: endereços que são reply-to de CAMPANHA (Brevo diária, onboarding,
+ * Clarice News — `platform.config.json` → `*.reply_to`, #9186) mas também
+ * caixa pessoal do editor. Não entram em `DEDICATED_SUBSCRIBER_REPLY_ADDRESSES`
+ * (aceitar sempre reabriria o falso positivo do #8997), mas também não podem
+ * ser descartados sempre (sumiria toda resposta de assinante da Brevo
+ * diária): `filter-subscriber-replies.ts` aceita uma thread endereçada a eles
+ * SÓ quando o assunto normalizado casa o assunto de uma campanha enviada
+ * (`scripts/lib/campaign-reply-subjects.ts`).
+ */
+export const CAMPAIGN_REPLY_TO_ADDRESSES = ["pixel@diar.ia.br"] as const;
+
 /** Janela default da busca (#7168: 7d era curto demais depois de qualquer gap — fim de semana longo, outage do #7166). */
 const DEFAULT_NEWER_THAN_DAYS = 14;
 

@@ -40,7 +40,10 @@ export function detectBoxSelectionConfigDrift(
     if (e.slot !== 1 && e.slot !== 2) continue;
     const mode = typeof e.mode === "string" ? e.mode : "";
     if (!CONFIG_DERIVED_MODES.has(mode)) continue;
-    const configFile = (e.slot === 1 ? config.slot1 : config.slot2) ?? null;
+    // #9319: o Studio grava slot vazio como `""` (normalizeSlotValue), não
+    // `null` — normalizar com `||` (mesma regra do `selectionFile` abaixo),
+    // senão `null !== ""` acusa drift falso num slot vazio dos dois lados.
+    const configFile = (e.slot === 1 ? config.slot1 : config.slot2) || null;
     const selectionFile =
       mode === "fallback-ineligible"
         ? (typeof e.rejectedFile === "string" && e.rejectedFile ? e.rejectedFile : null)

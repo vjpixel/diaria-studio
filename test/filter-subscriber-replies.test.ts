@@ -7,7 +7,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,6 +20,7 @@ import {
   isAutomatedSubject,
   DROPPED_BY_TO_SAMPLE_MAX,
 } from "../scripts/filter-subscriber-replies.ts";
+import { collectBrevoDiariaSubjects, collectOnboardingSubjects } from "../scripts/lib/campaign-reply-subjects.ts";
 
 describe("looksLikeSubscriberReply (#1797)", () => {
   it("Re: de pessoa real → true", () => {
@@ -710,5 +711,121 @@ describe("filterSubscriberReplies — near-miss de boas-vindas pós-rename (#450
     assert.equal(automatedSubjectCount, 1, "bate a blacklist atualizada — não é mais near-miss");
     assert.deepEqual(possibleStaleAutomatedSubjects, [], "já excluído pela blacklist exata");
     assert.equal(replies.length, 0, "fora de replies[]");
+  });
+});
+
+// ── #9313: reply-to de campanha `pixel@diar.ia.br` ─────────────────────────
+
+describe("filterSubscriberReplies — reply-to de campanha pixel@diar.ia.br (#9313)", () => {
+  const campaignSubjects = ["OpenAI lança modelo que lê planilhas"];
+
+  it("resposta de assinante da Brevo diária (to pixel@, assunto = campanha) → mantida", () => {
+    const threads = [
+      {
+        thread_id: "1",
+        subject: "Re: OpenAI lança modelo que lê planilhas",
+        from: "leitora@empresa.com.br",
+        to: "diar.ia.br <pixel@diar.ia.br>",
+        body: "Gostei muito do destaque de hoje, obrigada pela curadoria.",
+      },
+    ];
+    const r = filterSubscriberReplies(threads, { campaignSubjects });
+    assert.equal(r.replies.length, 1);
+    assert.equal(r.droppedByToCount, 0);
+  });
+
+  it("assunto com variação de prefixo/caixa/acento ainda casa (normalizeSubject)", () => {
+    assert.ok(
+      looksLikeSubscriberReply(
+        { subject: "RES: Re: openai LANÇA modelo que lê planilhas", from: "x@y.com", to: "pixel@diar.ia.br" },
+        { campaignSubjects },
+      ),
+    );
+  });
+
+  it("to pixel@ com assunto que NÃO é de campanha (correspondência pessoal) → descartada", () => {
+    const r = filterSubscriberReplies(
+      [{ thread_id: "2", subject: "Re: proposta de parceria", from: "comercial@agencia.com", to: "pixel@diar.ia.br" }],
+      { campaignSubjects },
+    );
+    assert.equal(r.replies.length, 0);
+    assert.equal(r.droppedByToCount, 1);
+  });
+
+  it("sem campaignSubjects, to pixel@ segue descartado (comportamento pré-#9313 preservado)", () => {
+    const r = filterSubscriberReplies([
+      { thread_id: "3", subject: "Re: OpenAI lança modelo que lê planilhas", from: "x@y.com", to: "pixel@diar.ia.br" },
+    ]);
+    assert.equal(r.droppedByToCount, 1);
+  });
+
+  it("assunto de campanha não libera to vjpixel@gmail.com (só reply-to de campanha)", () => {
+    const r = filterSubscriberReplies(
+      [{ thread_id: "4", subject: "Re: OpenAI lança modelo que lê planilhas", from: "x@y.com", to: "vjpixel@gmail.com" }],
+      { campaignSubjects },
+    );
+    assert.equal(r.droppedByToCount, 1);
+  });
+
+  it("assunto de campanha vazio é ignorado (não libera thread com assunto só 'Re:')", () => {
+    const r = filterSubscriberReplies(
+      [{ thread_id: "5", subject: "Re:", from: "x@y.com", to: "pixel@diar.ia.br" }],
+      { campaignSubjects: [""] },
+    );
+    assert.equal(r.droppedByToCount, 1);
+  });
+});
+
+describe("campaign-reply-subjects (#9313)", () => {
+  it("collectBrevoDiariaSubjects lê subject de _internal/brevo-diaria-published.json (nested), fail-soft", () => {
+    const root = mkdtempSync(join(tmpdir(), "crs-9313-"));
+    const ok = join(root, "2610", "261001", "_internal");
+    mkdirSync(ok, { recursive: true });
+    writeFileSync(join(ok, "brevo-diaria-published.json"), JSON.stringify({ campaign_id: 1, subject: "Assunto A" }));
+    const bad = join(root, "2610", "261002", "_internal");
+    mkdirSync(bad, { recursive: true });
+    writeFileSync(join(bad, "brevo-diaria-published.json"), "{corrompido");
+    mkdirSync(join(root, "2610", "261003"), { recursive: true }); // sem state
+    assert.deepEqual(collectBrevoDiariaSubjects(root), ["Assunto A"]);
+    assert.deepEqual(collectBrevoDiariaSubjects(join(root, "nao-existe")), []);
+  });
+
+  it("collectBrevoDiariaSubjects respeita maxEditions (mais recentes primeiro)", () => {
+    const root = mkdtempSync(join(tmpdir(), "crs-9313-max-"));
+    for (const [d, subj] of [["261001", "Velho"], ["261005", "Novo"]] as const) {
+      const dir = join(root, "2610", d, "_internal");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "brevo-diaria-published.json"), JSON.stringify({ subject: subj }));
+    }
+    assert.deepEqual(collectBrevoDiariaSubjects(root, 1), ["Novo"]);
+  });
+
+  it("collectOnboardingSubjects lê `assunto:` dos snippets onboarding-{1,2,3}.md", () => {
+    const dir = mkdtempSync(join(tmpdir(), "crs-9313-onb-"));
+    writeFileSync(join(dir, "onboarding-1.md"), '<!--\nassunto: "Bem-vinda à diar.ia.br"\n-->\n<p>oi</p>');
+    writeFileSync(join(dir, "onboarding-3.md"), "<!-- sem assunto -->\n<p>x</p>");
+    assert.deepEqual(collectOnboardingSubjects(dir), ["Bem-vinda à diar.ia.br"]);
+  });
+
+  it("CLI aceita --campaign-subjects e mantém a resposta endereçada a pixel@", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fsr-9313-cli-"));
+    const inPath = join(dir, "in.json");
+    const subjPath = join(dir, "subjects.json");
+    writeFileSync(
+      inPath,
+      JSON.stringify([
+        { thread_id: "a", subject: "Re: Clarice News de outubro", from: "leitora@z.com", to: "pixel@diar.ia.br", body: "Adorei a edição." },
+      ]),
+    );
+    writeFileSync(subjPath, JSON.stringify(["Clarice News de outubro"]));
+    const res = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/filter-subscriber-replies.ts", "--in", inPath, "--campaign-subjects", subjPath],
+      { encoding: "utf8" },
+    );
+    assert.equal(res.status, 0, res.stderr);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.replies.length, 1);
+    assert.equal(out.droppedByToCount, 0);
   });
 });

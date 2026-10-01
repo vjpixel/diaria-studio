@@ -43,6 +43,19 @@ describe("detectBoxSelectionConfigDrift (#9253)", () => {
     assert.deepEqual(detectBoxSelectionConfigDrift([rec(2, "disabled", null)], { slot2: "y.md" }), []);
     assert.deepEqual(detectBoxSelectionConfigDrift({ not: "array" }, {}), []);
   });
+
+  it("#9319: slot vazio gravado pelo Studio como \"\" nos dois lados não é drift", () => {
+    // pinned/fallback-no-candidates herdam `file: ""` do config (`?? null` mantém "").
+    const sel = [rec(1, "pinned", "a.md"), rec(2, "pinned", ""), rec(2, "fallback-no-candidates", "")];
+    assert.deepEqual(detectBoxSelectionConfigDrift(sel, { slot1: "a.md", slot2: "" }), []);
+    // null de um lado e "" do outro também equivalem (ambos = sem caixa).
+    assert.deepEqual(detectBoxSelectionConfigDrift([rec(2, "pinned", null)], { slot2: "" }), []);
+  });
+
+  it("#9319: config esvaziado (\"\") depois do stitch com box real congelado → drift com configFile null", () => {
+    const d = detectBoxSelectionConfigDrift([rec(2, "pinned", "livro.md")], { slot2: "" });
+    assert.deepEqual(d, [{ slot: 2, selectionFile: "livro.md", configFile: null, mode: "pinned" }]);
+  });
 });
 
 describe("checkBoxSelectionConfigDrift — invariant do Stage 4 (#9253)", () => {
