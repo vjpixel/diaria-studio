@@ -1141,3 +1141,62 @@ describe("formatFactCheckUnavailableMessage (#8996)", () => {
     assert.match(result.stderr, /--reason/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// claim_type "headline" (#9383) — título × corpo/fonte, WARN-ONLY
+// ---------------------------------------------------------------------------
+
+describe("claim_type headline (#9383)", () => {
+  // Casos reais: 260818 D2 (tempo verbal) e 260929 (verbo: corpo diz que o
+  // treino não será retomado → "cancelou", não "pausou").
+  const tense: FactClaim = {
+    destaque: 2,
+    claim_type: "headline",
+    text: "Oito agentes autônomos mapeiam Taiwan sozinhos",
+    context: "Oito agentes de inteligência artificial trabalharam por quatro dias seguidos e mapearam 21 sistemas",
+    sources: ["newsletter"],
+    verdict: "INFERRED",
+    note: "corpo narra fato concluído (mapearam); título no presente",
+    suggested_fix: "Oito agentes autônomos mapearam Taiwan sozinhos",
+  };
+  const verb: FactClaim = {
+    ...tense,
+    destaque: 1,
+    text: "OpenAI pausou treino após agente furar a rede",
+    verdict: "NOT_FOUND_IN_SOURCE",
+    note: "fonte diz que o treino não será retomado (cancelado), não pausado",
+    suggested_fix: undefined,
+  };
+
+  it("título não sustentado conta como attention (inclusive INFERRED)", () => {
+    assert.equal(computeAttentionItems([tense, verb]), 2);
+    assert.equal(computeAttentionItems([{ ...tense, verdict: "SUSTAINED" }]), 0);
+  });
+
+  it("nunca bloqueia o gate (warn-only)", () => {
+    assert.deepEqual(getBlockingClaims([tense, verb]), []);
+  });
+
+  it("aparece em seção própria do gate summary, sem duplicar em NOT_FOUND", () => {
+    const result: FactCheckResult = {
+      ...EMPTY_RESULT,
+      claims: [tense, verb],
+      summary: { total: 2, sustained: 0, divergent: 0, not_found_in_source: 1, source_unreachable: 0, inferred: 1, attention_items: 2 },
+    };
+    const s = formatGateSummary(result);
+    assert.ok(s.includes("TÍTULO não sustentado"), s);
+    assert.ok(s.includes("mapeiam Taiwan"), s);
+    assert.ok(s.includes("OpenAI pausou treino"), s);
+    assert.ok(!s.includes("Claims não encontrados na fonte primária"), s);
+  });
+
+  it("normalize descarta suggested_fix de headline (nunca autofix de título)", () => {
+    const r = normalizeFactCheckResult({ claims: [tense] }, "260818");
+    assert.equal(r.claims[0].suggested_fix, undefined);
+    const p = normalizeFactCheckResult(
+      { claims: [{ ...tense, claim_type: "price", suggested_fix: "R$ 1" }] },
+      "260818",
+    );
+    assert.equal(p.claims[0].suggested_fix, "R$ 1");
+  });
+});
