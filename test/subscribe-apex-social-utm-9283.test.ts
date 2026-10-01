@@ -11,7 +11,7 @@ import { resolveSubscribeUtm } from "../workers/poll/src/subscribe.ts";
 import { isAllowedClientSocialUtmSource } from "../scripts/lib/shared/client-utm-allowlist.ts";
 
 describe("apex aceita utm_source social orgânico (#9283)", () => {
-  for (const src of ["linkedin", "instagram", "facebook", "threads", "twitter"]) {
+  for (const src of ["linkedin", "instagram", "facebook", "threads", "twitter", "whatsapp", "youtube"]) {
     it(`apex + ${src} → grava ${src}, não diaria-apex`, () => {
       const utm = resolveSubscribeUtm("apex", { source: src, medium: "social", campaign: "edicao" });
       assert.equal(utm.source, src);

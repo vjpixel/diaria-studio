@@ -60,6 +60,8 @@ export const CLIENT_UTM_SOCIAL_SOURCE_PREFIXES = [
   "facebook",
   "threads",
   "twitter",
+  "whatsapp",
+  "youtube",
 ] as const;
 
 /** Pure (#9283): mesma regra de fronteira de traço de `isAllowedClientUtmSource`. */
