@@ -377,8 +377,8 @@ import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER } fro
 import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./lib/shared/reativar-confirmou-via.ts"; // #8438
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
-import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail } from "./lib/kit-subscribers.ts";
-import { KitApiError } from "./lib/kit-client.ts"; // #9291 // #6339, #6340 item 4, #7382
+import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail } from "./lib/kit-subscribers.ts"; // #6339, #6340 item 4, #7382
+import { KitApiError } from "./lib/kit-client.ts"; // #9291
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1509,7 +1509,7 @@ export const PARTIAL_FAILURE_EXIT_CODE = 3;
  * ficar trivial de testar sem construir um resultado completo.
  */
 export function resolveEvaluateExitCode(
-  result: Pick<RunEvaluationResult, "failed" | "kitAutoConfirmSkipped"> & { kitRateLimited?: number },
+  result: Pick<RunEvaluationResult, "failed" | "kitAutoConfirmSkipped"> & Partial<Pick<RunEvaluationResult, "kitRateLimited">>,
 ): number {
   if (result.kitAutoConfirmSkipped > 0) return PARTIAL_FAILURE_EXIT_CODE;
   const rateLimited = Math.min(result.kitRateLimited ?? 0, result.failed);

@@ -26,7 +26,7 @@
  * espera). `kitFetch` usa `fetchWithRetry` com `isRetriableStatus` incluindo
  * 429 (além do default `>=500`), o que absorve um blip ISOLADO de 429 via o
  * backoff do `fetchWithRetry` (`KIT_RETRY_DEFAULTS`: 4 tentativas, ~1s/3s/9s,
- * respeitando `Retry-After` até 60s desde #9291) — **não é um
+ * respeitando `Retry-After` até 20s desde #9291) — **não é um
  * mecanismo geral de recuperação de rate limit**: não
  * garante que a janela de cooldown real do Kit caiba nesse backoff. Um
  * CALLER que itera sobre N broadcasts (1 chamada por post, sem fila) precisa
@@ -66,6 +66,9 @@ export const KIT_RETRY_DEFAULTS: Omit<FetchRetryOptions, "isRetriableStatus"> = 
   attempts: 4,
   backoffMs: [1000, 3000, 9000],
   honorRetryAfter: true,
+  // Teto menor que o default (60s): estes defaults valem pra TODO kitFetch,
+  // e 4 tentativas x 60s por chamada alongaria demais uma unit com N contatos.
+  maxRetryAfterMs: 20_000,
 };
 
 /** 429 é retriável aqui além do default (>=500) — ver docstring do módulo
