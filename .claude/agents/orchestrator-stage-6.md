@@ -585,7 +585,7 @@ Se exit != 0, incluir no relatorio do gate antes de seguir. Nao bloqueia o pipel
 ```bash
 npx tsx scripts/collect-edition-signals.ts --edition-dir {EDITION_DIR}/
 ```
-Script grava `{edition_dir}/_internal/issues-draft.json`.
+Script grava `{edition_dir}/_internal/issues-draft.json`. Inclui o handoff da 1ª sessão (`_internal/session-1-handoff.json`, #9374) como signal `session1_handoff` — é o único caminho pelo qual problemas das Etapas 1–4 (halts, MCP caindo, reclamações do editor no gate 4) chegam ao auto-reporter desta sessão.
 
 - **Se `{EDITION_DIR}/error.md` existir (#507):** incluir o conteudo como contexto adicional ao disparar o `auto-reporter`.
 
@@ -704,6 +704,8 @@ Stdout vazio → omitir do resumo. Não-vazio → colar o bloco literal sob `⚠
 ## Resumo final (apos auto-reporter + relatorio)
 
 Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as issues do auto-reporter (#1825)** — so a contagem. Parte pulada → bloco de retomada explicito.
+
+**#9374:** incluir a linha impressa por `npx tsx scripts/session-handoff.ts summary --edition-dir {EDITION_DIR}/` (o que a 1ª sessão registrou das Etapas 1–4 — ou que ela não registrou nada). Esta sessão não tem outra fonte sobre o que deu errado antes do gate 4.
 
 **#3714:** incluir `Relatório: {studio_report_url}` (summary JSON de 6b-8; é o link primário do relatório). Se vier `null` (fail-soft), reportar `Relatório: só local (_internal/edition-report.html) — registro no Studio falhou, ver warn acima` em vez de omitir.
 

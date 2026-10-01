@@ -74,6 +74,14 @@ describe("processThreads — core logic", () => {
     assert.ok(newCursor.processed_thread_ids.includes("t2"));
   });
 
+  it("#9368 — preserva o mapa `threads` por edição do cursor compartilhado", () => {
+    const threadsMap = { x: { editions: ["260921"], articles: 4 } };
+    const cursor = { processed_thread_ids: ["x"], threads: threadsMap } as CapturedCursor;
+    const { newCursor } = processThreads([makeThread({ thread_id: "t9" })], cursor);
+    assert.deepEqual((newCursor as unknown as { threads: unknown }).threads, threadsMap);
+    assert.ok(newCursor.processed_thread_ids.includes("t9"));
+  });
+
   it("empty threads array produces no-op result", () => {
     const cursor: CapturedCursor = { processed_thread_ids: ["old"] };
 

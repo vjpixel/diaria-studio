@@ -214,6 +214,7 @@ describe("computeEditionManualEdits (#9357)", () => {
 describe("série e veredito (#9357)", () => {
   const mk = (edition: string, zero: boolean | null): EditionManualEdits => ({
     edition,
+    arm: "A",
     baseline_status: "ok",
     gates: {} as EditionManualEdits["gates"],
     manual_edit_count: zero === false ? 1 : 0,

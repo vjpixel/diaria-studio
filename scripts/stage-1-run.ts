@@ -165,6 +165,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { CAPTURE_EMPTY_MESSAGE, evaluateCaptureYield } from "./lib/newsletter-capture-yield.ts";
 import { getHowToDiscoveryQueries } from "./lib/use-melhor-curation.ts";
 import { getNegativeImpactDiscoveryQueries } from "./lib/negative-impact-curation.ts";
 import { loadSearchDemandIdeas, pickSearchDemandDiscoveryQueries } from "./lib/search-demand-curation.ts"; // #8370 Peça 1
@@ -946,6 +947,24 @@ async function runPostResearchPreScore(deps: Stage1RunDeps, opts: Stage1RunOptio
     internalPath(editionDir, "tmp-articles-raw.json"),
     "--validate-pool",
   ]);
+
+  // --- §1h.5 guard de rendimento da captura de newsletters (#9368) ---
+  // Threads capturadas no 0b-bis > 0 e artigos gravados = 0 → linha no
+  // relatório + error no run-log. Não bloqueia (a edição segue sem os links
+  // de newsletter), mas nunca passa em silêncio como em 260921.
+  {
+    const readIfExists = (file: string): string | null => {
+      const abs = resolve(deps.rootDir, internalPath(editionDir, file));
+      return deps.existsSync(abs) ? deps.readFile(abs) : null;
+    };
+    const yieldCheck = evaluateCaptureYield(readIfExists("captured-newsletters.json"), readIfExists("captured-newsletter-articles.json"));
+    if (yieldCheck.empty) {
+      report.note(`❌ 1h: ${yieldCheck.threads} ${CAPTURE_EMPTY_MESSAGE}`);
+      logEvent(deps, opts.edition, "error", `1h: ${CAPTURE_EMPTY_MESSAGE}`, {
+        details: { threads: yieldCheck.threads, articles: yieldCheck.articles },
+      });
+    }
+  }
 
   // --- §1h.6 validador externo anti-skip ---
   const injValidate = deps.exec("scripts/validate-stage-1-injection.ts", ["--edition-dir", editionDir, "--inbox-md", "data/inbox.md"]);

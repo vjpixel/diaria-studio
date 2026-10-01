@@ -16,7 +16,14 @@
  *   npx tsx scripts/capture-newsletter-urls.ts \
  *     --threads <path-to-threads.json> \
  *     --out <path-to-output.json> \
- *     --cursor data/newsletter-capture-cursor.json
+ *     --cursor data/newsletter-capture-cursor.json \
+ *     [--edition AAMMDD]   # default: derivada do --out (#9368)
+ *
+ * Cursor (#9368): por edição, não global — `threads[thread_id].editions`
+ * registra em quais edições a thread foi extraída. Re-run da mesma edição
+ * re-extrai (idempotente via merge); thread é reoferecida em até
+ * MAX_OFFER_EDITIONS edições; o cursor só avança depois que a saída é
+ * gravada e relida numa edição real.
  *
  * Input threads.json: array of
  *   { thread_id, sender, subject, date, body }
@@ -67,8 +74,68 @@ export interface CapturedThread {
   urls_extraidas?: string[];
 }
 
+/**
+ * #9368: registro por thread — em qual(is) edição(ões) a thread foi extraída
+ * e quantos artigos ela deixou. Auditoria (`thread_id → edição`) e base da
+ * regra de reoferta (`isThreadEligible`).
+ */
+export interface CursorThreadEntry {
+  /** Edições (AAMMDD) em que os artigos desta thread foram gravados, em ordem. */
+  editions: string[];
+  /** Nº de artigos que a thread produziu na extração mais recente. */
+  articles: number;
+}
+
 export interface CapturedCursor {
+  /**
+   * Lista legada (pré-#9368) — ids consumidos pelo regime de cursor global.
+   * Continua sendo escrita (superset) pra compat com leitores antigos
+   * (`auto-forward-newsletters.ts`). Id presente SÓ aqui, sem entrada em
+   * `threads`, é tratado como consumido (não há registro de edição pra
+   * reofertar).
+   */
   processed_thread_ids: string[];
+  /** #9368: `thread_id → { editions, articles }`. */
+  threads?: Record<string, CursorThreadEntry>;
+}
+
+/**
+ * #9368: nº máximo de edições em que uma mesma thread é oferecida — a
+ * original + 2 reofertas. Item extraído e não entregue volta ao pool das
+ * ~2 edições seguintes (enquanto a thread ainda estiver na janela de busca
+ * do 0b-bis); o que já foi publicado sai no dedup do Stage 1 contra
+ * `past-editions.md`, não aqui.
+ */
+export const MAX_OFFER_EDITIONS = 3;
+
+/**
+ * #9368: decide se a thread deve ser extraída para `edition`.
+ *
+ * - sem `edition` (uso ad-hoc / legado): só threads nunca vistas — mesmo
+ *   comportamento do cursor global antigo;
+ * - thread já registrada PARA ESTA edição: sim (re-run da mesma edição é
+ *   idempotente — o bug do 260921 foi justamente um 2º run da edição achar
+ *   as 11 threads "já processadas" e gravar `[]`);
+ * - thread registrada em menos de `MAX_OFFER_EDITIONS` edições: sim (reoferta);
+ * - id só na lista legada, sem registro de edição: não.
+ */
+export function isThreadEligible(cursor: CapturedCursor, threadId: string, edition?: string): boolean {
+  const entry = cursor.threads?.[threadId];
+  if (entry) {
+    if (!edition) return false;
+    if (entry.editions.includes(edition)) return true;
+    return entry.editions.length < MAX_OFFER_EDITIONS;
+  }
+  return !cursor.processed_thread_ids.includes(threadId);
+}
+
+/**
+ * #9368: deriva a edição (AAMMDD) do path de saída
+ * (`data/editions/{AAMM}/{AAMMDD}/_internal/...` ou layout flat legado).
+ * Retorna undefined fora de uma edição real (uso ad-hoc, testes).
+ */
+export function editionFromOutPath(outPath: string): string | undefined {
+  return outPath.match(/(?:^|[\\/])(\d{6})[\\/]_internal[\\/]/)?.[1];
 }
 
 export interface CaptureResult {
@@ -106,6 +173,11 @@ export function loadCursor(cursorPath: string): CapturedCursor {
     if (!Array.isArray(data.processed_thread_ids)) {
       return { processed_thread_ids: [] };
     }
+    if (data.threads !== undefined && (typeof data.threads !== "object" || data.threads === null || Array.isArray(data.threads))) {
+      // Shape inesperado no mapa novo: descarta só o mapa (ids legados seguem
+      // valendo). Pior caso é reofertar menos, nunca perder a lista legada.
+      delete data.threads;
+    }
     return data;
   } catch {
     return { processed_thread_ids: [] };
@@ -132,9 +204,11 @@ export function saveCursor(cursorPath: string, cursor: CapturedCursor): void {
 export function processThreads(
   threads: CapturedThread[],
   cursor: CapturedCursor,
-  options: { alwaysConsiderSenders?: string[]; configWarnings?: string[] } = {},
+  options: { alwaysConsiderSenders?: string[]; configWarnings?: string[]; edition?: string } = {},
 ): { articles: SyntheticInboxArticle[]; result: CaptureResult; newCursor: CapturedCursor } {
   const processedSet = new Set(cursor.processed_thread_ids);
+  const threadsMap: Record<string, CursorThreadEntry> = { ...(cursor.threads ?? {}) };
+  const edition = options.edition;
   const articles: SyntheticInboxArticle[] = [];
   const seen = new Set<string>();
   let skippedAlready = 0;
@@ -144,10 +218,11 @@ export function processThreads(
   const exemptions: CaptureResult["always_consider_exemptions"] = [];
 
   for (const thread of threads) {
-    if (processedSet.has(thread.thread_id)) {
+    if (!isThreadEligible(cursor, thread.thread_id, edition)) {
       skippedAlready++;
       continue;
     }
+    const articlesBefore = articles.length;
 
     // Extract text from body (handle HTML)
     const isHtml = /<[a-z][\s\S]*>/i.test(thread.body);
@@ -238,6 +313,12 @@ export function processThreads(
     }
 
     processedSet.add(thread.thread_id);
+    if (edition) {
+      const prev = threadsMap[thread.thread_id];
+      const editions = prev ? [...prev.editions] : [];
+      if (!editions.includes(edition)) editions.push(edition);
+      threadsMap[thread.thread_id] = { editions, articles: articles.length - articlesBefore };
+    }
   }
 
   if (exemptions.length > 0) {
@@ -259,6 +340,7 @@ export function processThreads(
     },
     newCursor: {
       processed_thread_ids: [...processedSet],
+      ...(Object.keys(threadsMap).length > 0 ? { threads: threadsMap } : {}),
     },
   };
 }
@@ -271,6 +353,7 @@ function parseArgs(argv: string[]): {
   threadsPath: string;
   outPath: string;
   cursorPath: string;
+  edition: string | undefined;
 } {
   // #2834: argv aqui é process.argv completo (loop legado começava em i=2
   // pra pular node/script path) — parseArgsSimple espera argv já sem esses
@@ -281,13 +364,20 @@ function parseArgs(argv: string[]): {
   const threadsPath = values["threads"] ?? "";
   const outPath = values["out"] ?? "";
   const cursorPath = values["cursor"] ?? resolve(ROOT, "data", "newsletter-capture-cursor.json");
+  // #9368: edição explícita (--edition AAMMDD) ou derivada do --out.
+  const editionArg = values["edition"];
+  if (editionArg !== undefined && !/^\d{6}$/.test(editionArg)) {
+    console.error(`--edition inválido: "${editionArg}" (esperado AAMMDD)`);
+    process.exit(1);
+  }
+  const edition = editionArg ?? editionFromOutPath(outPath);
 
   if (!threadsPath || !outPath) {
-    console.error("Usage: npx tsx scripts/capture-newsletter-urls.ts --threads <path> --out <path>");
+    console.error("Usage: npx tsx scripts/capture-newsletter-urls.ts --threads <path> --out <path> [--edition AAMMDD] [--cursor <path>]");
     process.exit(1);
   }
 
-  return { threadsPath, outPath, cursorPath };
+  return { threadsPath, outPath, cursorPath, edition };
 }
 
 /**
@@ -327,8 +417,23 @@ export function loadAlwaysConsiderConfig(configPath: string): { alwaysConsiderSe
   return { alwaysConsiderSenders, configWarnings };
 }
 
+/**
+ * #9368: relê a saída recém-gravada e confere a contagem antes de o cursor
+ * avançar. Pura sobre o filesystem (exportada pra teste).
+ */
+export function verifyPersistedOutput(absOut: string, expectedCount: number): { ok: true } | { ok: false; reason: string } {
+  try {
+    const back = JSON.parse(readFileSync(absOut, "utf8"));
+    if (!Array.isArray(back)) return { ok: false, reason: "não é array" };
+    if (back.length !== expectedCount) return { ok: false, reason: `esperado ${expectedCount} artigo(s), relido ${back.length}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export function main(argv: string[] = process.argv): void {
-  const { threadsPath, outPath, cursorPath } = parseArgs(argv);
+  const { threadsPath, outPath, cursorPath, edition } = parseArgs(argv);
   const { alwaysConsiderSenders, configWarnings } = loadAlwaysConsiderConfig(resolve(ROOT, "platform.config.json"));
   for (const w of configWarnings) console.error(`[capture-newsletter-urls] WARN ${w}`);
 
@@ -377,7 +482,7 @@ export function main(argv: string[] = process.argv): void {
   const cursor = loadCursor(cursorPath);
 
   // Process
-  const { articles, result, newCursor } = processThreads(threads, cursor, { alwaysConsiderSenders, configWarnings });
+  const { articles, result, newCursor } = processThreads(threads, cursor, { alwaysConsiderSenders, configWarnings, edition });
 
   // Merge with existing output (crash-resume safety: re-run preserves prior articles)
   const absOut = resolve(ROOT, outPath);
@@ -394,8 +499,23 @@ export function main(argv: string[] = process.argv): void {
   writeFileSync(tmpOut, JSON.stringify(merged, null, 2) + "\n", "utf8");
   renameSync(tmpOut, absOut);
 
-  // Save cursor
-  saveCursor(cursorPath, newCursor);
+  // #9368: o cursor só avança DEPOIS que a saída foi gravada e relida de uma
+  // edição real. Antes, o cursor global marcava a thread como consumida
+  // independentemente de a saída chegar a alguma edição — em 260921, 11
+  // threads ficaram marcadas e o captured-newsletter-articles.json da edição
+  // ficou `[]` (o extrator, rodado depois sobre as mesmas threads, dá 113
+  // URLs). Execução fora de edição (--out ad-hoc, sem --edition) nunca
+  // consome o cursor.
+  const persisted = verifyPersistedOutput(absOut, merged.length);
+  if (!persisted.ok) {
+    console.error(`[capture-newsletter-urls] ERRO: saída não confirmada em ${absOut} (${persisted.reason}) — cursor NÃO avançado.`);
+    process.exit(1);
+  }
+  if (edition) {
+    saveCursor(cursorPath, newCursor);
+  } else {
+    console.error("[capture-newsletter-urls] sem edição (--edition ausente e --out fora de data/editions/{AAMMDD}/_internal/) — cursor NÃO avançado (#9368).");
+  }
 
   // Print summary
   console.log(JSON.stringify(result, null, 2));

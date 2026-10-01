@@ -23,7 +23,10 @@
  * flag): runtime_fix (#1210, lê `_internal/runtime-fixes.jsonl`), runtime_fix_lite
  * (#1210 reopen — mesma ideia via `runtime_fix_lite:` no run-log, caminho de
  * baixo atrito), clarice_skip (#2320), placeholder_guard_warning (#3277),
- * test_email_unconfirmed (#3839), recurring_editor_request (#4966, cross-edição).
+ * test_email_unconfirmed (#3839), recurring_editor_request (#4966, cross-edição),
+ * session1_handoff (#9374, lê `_internal/session-1-handoff.json` — o que a 1ª
+ * sessão das Etapas 1–4 registrou antes de encerrar; sem ele o Stage 6, que
+ * roda numa sessão nova desde o #6171, não via nada das Etapas 1–4).
  *
  * Uso:
  *   npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/260424/
@@ -50,6 +53,7 @@ import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 // aqui) ao helper genérico de lib/cli-args.ts — migrado.
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX } from "./lib/edition-url.ts";
+import { readHandoff, type HandoffEntry, type HandoffRead } from "./lib/session-handoff.ts";
 
 /**
  * Lê os nomes das fontes ativas de `context/sources.md` (gerado de
@@ -83,7 +87,8 @@ export interface Signal {
     | "clarice_skip"
     | "placeholder_guard_warning"
     | "test_email_unconfirmed"
-    | "recurring_editor_request";
+    | "recurring_editor_request"
+    | "session1_handoff";
   severity: Severity;
   title: string;
   details: Record<string, unknown>;
@@ -160,6 +165,76 @@ export function signalsFromRuntimeFixes(jsonlContent: string): Signal[] {
         last_at: group[group.length - 1].timestamp,
       },
       suggested_action: `Investigar ${component} — orchestrator aplicou ${group.length} runtime fix(es) do tipo ${fixType}. Se for recorrente, considerar fix permanente no agent/script.`,
+    });
+  }
+  return out;
+}
+
+// ===========================================================================
+// Signal 8 (#9374): session1_handoff — o que a 1ª sessão (Etapas 1–4)
+// registrou em `_internal/session-1-handoff.json` antes de encerrar.
+// ===========================================================================
+
+const HANDOFF_SEVERITY_RANK: Record<Severity, number> = { high: 0, medium: 1, low: 2 };
+
+const HANDOFF_ACTION: Record<HandoffEntry["kind"], string> = {
+  halt: "Investigar a causa do halt na 1ª sessão — se repetir, o playbook/script do stage precisa tratar o caso.",
+  mcp_drop: "Verificar estabilidade do MCP citado — queda recorrente pede fallback ou retry automático no stage.",
+  retry: "Retry manual na 1ª sessão — se recorrente, automatizar o retry no script/agent.",
+  editor_complaint: "Reclamação do editor no gate — ajustar o agent/regra que produziu o conteúdo reclamado.",
+  problem: "Investigar o problema registrado pela 1ª sessão.",
+};
+
+/**
+ * Agrupa as entradas por (kind, component) — 3 quedas do mesmo MCP viram 1
+ * sinal com count 3, não 3 issues. Pura.
+ */
+export function signalsFromSessionHandoff(read: HandoffRead): Signal[] {
+  if (read.state === "absent") return [];
+  if (read.state === "corrupt") {
+    return [
+      {
+        kind: "session1_handoff",
+        severity: "medium",
+        title: "Handoff da 1ª sessão ilegível",
+        details: { error: read.error, file: "_internal/session-1-handoff.json" },
+        suggested_action: "Arquivo de handoff corrompido — os problemas das Etapas 1–4 desta edição se perderam. Investigar quem escreveu o arquivo fora de `session-handoff.ts`.",
+      },
+    ];
+  }
+  const groups = new Map<string, HandoffEntry[]>();
+  for (const e of read.value.entries) {
+    const key = `${e.kind}::${e.component ?? ""}`;
+    const arr = groups.get(key) ?? [];
+    arr.push(e);
+    groups.set(key, arr);
+  }
+  const out: Signal[] = [];
+  for (const group of groups.values()) {
+    const first = group[0];
+    const severity = group.reduce<Severity>(
+      (acc, e) => (HANDOFF_SEVERITY_RANK[e.severity] < HANDOFF_SEVERITY_RANK[acc] ? e.severity : acc),
+      "low",
+    );
+    const who = first.component ? `${first.component}: ` : "";
+    const stages = [...new Set(group.map((e) => e.stage))].sort((a, b) => a - b);
+    out.push({
+      kind: "session1_handoff",
+      severity,
+      title:
+        group.length === 1
+          ? `[sessão 1 · Stage ${first.stage}] ${first.kind} — ${who}${first.summary.slice(0, 80)}`
+          : `[sessão 1] ${group.length}× ${first.kind} — ${who}Stages ${stages.join(",")}`,
+      details: {
+        handoff_kind: first.kind,
+        component: first.component ?? null,
+        count: group.length,
+        stages,
+        summaries: group.map((e) => e.summary.slice(0, 300)),
+        first_at: first.recorded_at,
+        last_at: group[group.length - 1].recorded_at,
+      },
+      suggested_action: HANDOFF_ACTION[first.kind],
     });
   }
   return out;
@@ -1464,6 +1539,10 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
       // ignore
     }
   }
+
+  // Signal 8 (#9374): handoff da 1ª sessão (Etapas 1–4). Fail-soft: o
+  // próprio `readHandoff` devolve "corrupt" em vez de lançar.
+  signals.push(...signalsFromSessionHandoff(readHandoff(editionDir)));
 
   // Signal 7 (#4966): recurring_editor_request — cross-edição, últimas 7
   // (atual + 6 anteriores). Fail-soft: erro de IO/parse nunca derruba o

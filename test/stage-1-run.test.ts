@@ -706,6 +706,35 @@ describe("runStage1 --phase post-research-pre-score", () => {
     });
   });
 
+  it("#9368 — newsletters capturadas e 0 artigos gravados: linha ❌ no relatório + error no run-log, sem bloquear", async () => {
+    return withTmpRoot("stage-1-run-p2-capyield-", (root, editionDir) => {
+      seedFixtures(root, editionDir);
+      writeJson(root, `${editionDir}/_internal/captured-newsletters.json`, [{ thread_id: "a" }, { thread_id: "b" }]);
+      writeJson(root, `${editionDir}/_internal/captured-newsletter-articles.json`, []);
+      const { exec, calls } = makeFakeExec(happyHandlers(3));
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-research-pre-score", "--edition", "260423"], deps).then((result) => {
+        assert.equal(result.code, 0, "guard não bloqueia a etapa");
+        assert.ok(result.notes.some((n) => n.startsWith("❌ 1h: 2 ") && n.includes("0 artigos gravados")), JSON.stringify(result.notes));
+        const errLog = calls.find((c) => c.script.includes("log-event") && c.args.includes("error") && c.args.some((a) => a.includes("0 artigos gravados")));
+        assert.ok(errLog, "esperava log-event error");
+      });
+    });
+  });
+
+  it("#9368 — com artigos de newsletter gravados o guard fica quieto", async () => {
+    return withTmpRoot("stage-1-run-p2-capyield-ok-", (root, editionDir) => {
+      seedFixtures(root, editionDir);
+      writeJson(root, `${editionDir}/_internal/captured-newsletters.json`, [{ thread_id: "a" }]);
+      writeJson(root, `${editionDir}/_internal/captured-newsletter-articles.json`, [{ url: "https://x.ai/news" }]);
+      const { exec } = makeFakeExec(happyHandlers(3));
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-research-pre-score", "--edition", "260423"], deps).then((result) => {
+        assert.ok(!result.notes.some((n) => n.includes("0 artigos gravados")));
+      });
+    });
+  });
+
   it("marker inject-inbox-urls ausente -> HALT (code 2)", async () => {
     return withTmpRoot("stage-1-run-p2-marker-", (root, editionDir) => {
       seedFixtures(root, editionDir);

@@ -150,6 +150,10 @@ export function processThreads(
       urls_extracted: totalUrls,
     },
     newCursor: {
+      // #9368: preserva campos que este script não conhece (ex.: o mapa
+      // `threads` por edição de capture-newsletter-urls.ts, que divide o
+      // mesmo arquivo de cursor) — reescrever só a lista apagaria o registro.
+      ...cursor,
       processed_thread_ids: [...processedSet],
     },
   };
