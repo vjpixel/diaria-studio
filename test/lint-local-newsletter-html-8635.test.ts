@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lintLocalNewsletterHtml, resolveLocalHtmlPath } from "../scripts/lint-local-newsletter-html.ts";
+import { lintLocalNewsletterHtml, resolveLocalHtmlPath, stripMetadataBlock } from "../scripts/lint-local-newsletter-html.ts";
 
 const MD = [
   "**📡 RADAR**",
@@ -51,5 +51,30 @@ describe("resolveLocalHtmlPath (#8635)", () => {
     } finally {
       rmSync(d, { recursive: true, force: true });
     }
+  });
+});
+
+describe("bloco TÍTULO/SUBTÍTULO fora do checkEncoding (#9284)", () => {
+  const META = "TÍTULO\n\nUm título\n\nSUBTÍTULO\n\nSub | qualquer\n\n---\n\n";
+  const html = "<html><body><h2>📡 RADAR</h2><a href='https://a.com/1'>Item um</a>" +
+    "<h2>🛠️ USE MELHOR</h2><a href='https://b.com/1'>Tutorial</a></body></html>";
+
+  it("TÍTULO/SUBTÍTULO no source não geram char_dropped", () => {
+    assert.deepEqual(lintLocalNewsletterHtml(META + MD, html).encoding_issues, []);
+  });
+
+  it("stripMetadataBlock preserva o corpo e é no-op sem o bloco", () => {
+    assert.equal(stripMetadataBlock(META + MD), MD);
+    assert.equal(stripMetadataBlock(MD), MD);
+  });
+});
+
+describe("stripMetadataBlock — casos de borda (#9284)", () => {
+  it("CRLF é removido", () => {
+    const md = "TÍTULO\r\n\r\nT\r\n\r\nSUBTÍTULO\r\n\r\nS\r\n\r\n---\r\n\r\nCorpo\r\n";
+    assert.equal(stripMetadataBlock(md), "Corpo\r\n");
+  });
+  it("só o primeiro --- é consumido", () => {
+    assert.equal(stripMetadataBlock("TÍTULO\n\nT\n\n---\n\nA\n\n---\n\nB\n"), "A\n\n---\n\nB\n");
   });
 });
