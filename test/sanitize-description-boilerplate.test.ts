@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import {
   stripNavigationBoilerplate,
   fixGluedAcronymDate,
+  stripG1ReportCta,
   sanitizeDescriptionBoilerplate,
 } from "../scripts/lib/sanitize-description-boilerplate.ts";
 
@@ -106,5 +107,36 @@ describe("sanitizeDescriptionBoilerplate — combinado (#3196)", () => {
   it("texto limpo passa intacto", () => {
     const out = sanitizeDescriptionBoilerplate("A empresa vai investir R$ 10 milhões no projeto.");
     assert.equal(out, "A empresa vai investir R$ 10 milhões no projeto.");
+  });
+});
+
+describe("stripG1ReportCta — CTA do G1 (#9401)", () => {
+  // CASO REAL 261002 (RADAR G1, youtuber/Meta Muse), string crua do source-researcher:
+  // o CTA vem NO MEIO, seguido de conteúdo real.
+  const REAL_261002 =
+    "Robb disse que permitiu apenas que o Muse AI gerenciasse sua conta no Facebook Marketplace, " +
+    "plataforma de classificados de produtos do Facebook. 🗒️ Tem alguma sugestão de reportagem? " +
+    "Envie para o g1 · 🔎 Lançado no início de setembro, o Muse é um assistente de inteligência " +
+    "artificial projetado para executar ações em nome dos usuários.";
+  const EXPECTED_261002 =
+    "Robb disse que permitiu apenas que o Muse AI gerenciasse sua conta no Facebook Marketplace, " +
+    "plataforma de classificados de produtos do Facebook. Lançado no início de setembro, o Muse é " +
+    "um assistente de inteligência artificial projetado para executar ações em nome dos usuários.";
+
+  it("CASO REAL 261002: remove só o bloco do CTA e preserva o conteúdo depois dele", () => {
+    assert.equal(stripG1ReportCta(REAL_261002), EXPECTED_261002);
+    assert.equal(sanitizeDescriptionBoilerplate(REAL_261002), EXPECTED_261002);
+  });
+
+  it("CTA na cauda (sem 'Envie para o g1')", () => {
+    assert.equal(
+      stripG1ReportCta("Texto do resumo. 🗒️ Tem alguma sugestão de reportagem?"),
+      "Texto do resumo.",
+    );
+  });
+
+  it("texto sem o CTA passa intacto (inclusive 'sugestão' em outro contexto)", () => {
+    const t = "Leitores enviaram uma sugestão de pauta sobre IA. 🤖 Robôs avançam.";
+    assert.equal(stripG1ReportCta(t), t);
   });
 });

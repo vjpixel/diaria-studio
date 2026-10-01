@@ -47,6 +47,28 @@ export function stripNavigationBoilerplate(text: string): string {
   return text.slice(0, match.index).trim();
 }
 
+/**
+ * G1 reader-tip CTA block (#9401). G1 embeds "🗒️ Tem alguma sugestão de
+ * reportagem? Envie para o g1 ·" in its meta-description/body — sometimes at
+ * the tail, sometimes MID-text followed by real content ("· 🔎 Lançado no
+ * início de setembro, o Muse é…", edição 261002). Only the CTA block is
+ * removed (plus surrounding emoji, the optional "Envie para o g1" and the "·"
+ * separator); content after it is preserved.
+ */
+const G1_REPORT_CTA_RE =
+  /[\s\p{Extended_Pictographic}️‍]*\btem\s+alguma\s+sugest[ãa]o\s+de\s+reportagem\b\??(?:\s*envie\s+para\s+o\s+g1\b\.?)?\s*[·•|]?[\s\p{Extended_Pictographic}️‍]*/giu;
+
+/**
+ * Removes G1's reader-tip CTA block, keeping any content around it. Text
+ * without the CTA is returned unchanged. @pure
+ */
+export function stripG1ReportCta(text: string): string {
+  if (!text) return text;
+  const out = text.replace(G1_REPORT_CTA_RE, " ");
+  if (out === text) return text;
+  return out.replace(/\s{2,}/g, " ").trim();
+}
+
 const MONTHS =
   "janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro";
 
@@ -81,6 +103,6 @@ export function fixGluedAcronymDate(text: string): string {
  * glued-acronym-date artifact in what's left. @pure
  */
 export function sanitizeDescriptionBoilerplate(text: string): string {
-  const stripped = stripNavigationBoilerplate(text);
+  const stripped = stripG1ReportCta(stripNavigationBoilerplate(text));
   return fixGluedAcronymDate(stripped);
 }

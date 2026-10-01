@@ -9,6 +9,7 @@
  */
 
 import { truncateAtBoundary } from "./truncate-at-boundary.ts";
+import { stripG1ReportCta } from "./sanitize-description-boilerplate.ts"; // #9401
 
 const MAX_SUMMARY_LENGTH = 200;
 
@@ -248,7 +249,12 @@ const SPACE_BEFORE_PUNCTUATION_RE = /(\S)[ \t]+([,;:!?]|\.(?!\.))(?=\s|$)/gu;
  */
 export function stripFeedBoilerplate(text: string): string {
   if (!text) return text;
-  return text.replace(WORDPRESS_FOOTER_RE, "").replace(SPACE_BEFORE_PUNCTUATION_RE, "$1$2").trim();
+  // #9401: CTA do G1 ("🗒️ Tem alguma sugestão de reportagem? Envie para o g1 ·")
+  // chega pelo summary do source-researcher, que nunca passa pelo enrich.
+  return stripG1ReportCta(text)
+    .replace(WORDPRESS_FOOTER_RE, "")
+    .replace(SPACE_BEFORE_PUNCTUATION_RE, "$1$2")
+    .trim();
 }
 
 /**
