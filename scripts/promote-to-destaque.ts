@@ -48,7 +48,11 @@
  *     --url https://exemplo.com/artigo --position 1 [--dry-run]
  */
 import { existsSync, readFileSync } from "node:fs";
-import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9188
+import {
+  annotateRenamesNotReverted,
+  writeFilesVerified,
+  type VerifiedWrite,
+} from "./lib/write-files-verified.ts"; // #9188, #9320
 import { resolve } from "node:path";
 import { parseArgsWithTrueDefault, isMainModule } from "./lib/cli-args.ts";
 import {
@@ -56,7 +60,6 @@ import {
   renameDestaquePrompts,
   reorderSocialMd,
   updateIntentionalErrorLocationJson,
-  refreshSocialSourceHash,
   reindexCarouselSourceHashes,
   reorderFactCheckSources,
   reorderCropReviewJson,
@@ -210,17 +213,21 @@ export function promoteToDestaque(
 
   // 3b. 03-social.md — conteúdo computado aqui, gravado no mesmo lote.
   const socialPath = resolve(editionDir, "03-social.md");
-  let socialShifted = false;
   if (existsSync(socialPath)) {
     const md = readFileSync(socialPath, "utf8");
     const shifted = reorderSocialMd(md, newOrder);
     if (shifted !== md) {
       pendingWrites.push({ path: socialPath, content: shifted });
-      socialShifted = true;
     }
   }
 
-  if (!dryRun) writeFilesVerified(pendingWrites, "promote-to-destaque");
+  if (!dryRun) {
+    try {
+      writeFilesVerified(pendingWrites, "promote-to-destaque");
+    } catch (err) {
+      throw annotateRenamesNotReverted(err, renamed); // #9320
+    }
+  }
   for (const w of pendingWrites) rewritten.push(w.path);
 
   // 4. intentional-error.json
@@ -234,11 +241,11 @@ export function promoteToDestaque(
     }
   }
 
-  // 5. Carimbos do social/carrossel.
-  if (socialShifted) {
-    const refreshed = refreshSocialSourceHash(editionDir, dryRun);
-    if (refreshed) rewritten.push(refreshed.path);
-  }
+  // 5. Carimbo do carrossel. O hash SOCIAL (.social-source-hash.json) NÃO é
+  //    recarimbado aqui (#9321, espelho do #9149/#9169): o 01-approved.json já
+  //    tem o item promovido, mas 03-social.md ainda não tem a seção ## d{pos}
+  //    dele — recarimbar agora silenciaria o social-hash-fresh do Stage 4.
+  //    O recarimbo é um next_step, só depois do splice social.
   const carousel = reindexCarouselSourceHashes(editionDir, newOrder, dryRun);
   if (carousel) rewritten.push(carousel.path);
 
@@ -282,6 +289,7 @@ export function promoteToDestaque(
     `Re-baixar a fonte do destaque novo e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${editionDir}/ — rodar UMA vez; passar o path da entrada de sources com destaque === ${position} como source_text_path ao writer-destaque.`,
     `Escrever o bloco **DESTAQUE ${position}** em 02-reviewed.md (writer-destaque) a partir do item promovido.`,
     `Escrever a seção ## ${d} em 03-social.md (# Social e # Curto).`,
+    `Só DEPOIS do splice social: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${editionDir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9321)`,
     `Escrever _internal/02-${d}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${editionDir}/_internal/02-${d}-prompt.md --out-dir ${editionDir}/ --destaque ${d}`,
     `Regerar cards/carrossel e subir as imagens: gen-carousel-cards.ts + upload-images-public.ts.`,
     `Rodar check-invariants.ts --stage 4.`,
