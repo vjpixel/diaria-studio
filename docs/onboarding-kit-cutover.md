@@ -259,7 +259,14 @@ O que o modo piloto garante, em camadas independentes:
   `GET /broadcasts/{id}` nunca foi confirmado ao vivo.
 - **E-mail 3**: rascunho; `--approve-email3-lot` no piloto repete prefixo +
   allowlist + releitura da tag + do filtro, e agenda pelo mesmo PATCH
-  verificado acima.
+  verificado acima; `--send-at` precisa ser ≥ agora + 5 min.
+- **PATCH que lança** (timeout/rede): o broadcast é relido mesmo assim —
+  se saiu de rascunho ou não dá pra ler, é apagado e a rodada aborta; se
+  segue rascunho, nada foi agendado.
+- **Store que não persiste** depois de existir broadcast: além do aviso em
+  stderr, o lote vai para `<store>.pending-broadcasts.json`, e o piloto não
+  recria aquele kind enquanto o registro existir (apague a linha à mão só
+  depois de conferir o broadcast no painel).
 - **Summary**: contagens, ids de lote/broadcast, status e o filtro que o Kit
   ecoou (só ids de tag). Mensagens de erro passam por redação de e-mail
   (o corpo de um erro da API do Kit pode ecoar endereço) — mesmo assim,

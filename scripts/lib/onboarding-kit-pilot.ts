@@ -427,7 +427,27 @@ export async function schedulePilotBroadcast(
   if (broadcastId == null) throw new Error(`[onboarding-kit-pilot] lote "${lot.lot_id}" sem broadcast — nada a agendar.`);
   const filter = buildOnboardingLotFilter(opts.tagId);
   const sendAt = opts.sendAtFn();
-  const updated = await deps.updateBroadcast(broadcastId, { send_at: sendAt, subscriber_filter: filter });
+  let updated: { status: string; send_at?: string | null };
+  try {
+    updated = await deps.updateBroadcast(broadcastId, { send_at: sendAt, subscriber_filter: filter });
+  } catch (e) {
+    // PATCH que LANÇA (timeout/rede) pode ter sido aplicado pelo Kit mesmo
+    // assim — nunca pular a releitura. Saiu de rascunho (ou não dá pra ler)
+    // → apaga e aborta; ainda rascunho → nada agendado, relança.
+    const msg = redactEmails((e as Error).message);
+    const { verification, reread } = await rereadPilotFilter(deps, broadcastId, opts.tagId);
+    if (verification.status === "read_failed" || reread?.status !== "draft") {
+      await deleteAndAbort(
+        deps,
+        lot,
+        broadcastId,
+        `o PATCH de agendamento lançou (${msg}) e o broadcast ${verification.status === "read_failed" ? "não pôde ser relido" : `está "${reread?.status ?? "?"}"`} — estado incerto.`,
+      );
+    }
+    lot.status = "created";
+    lot.send_at = null;
+    throw new Error(`[onboarding-kit-pilot] o PATCH de agendamento do broadcast ${broadcastId} lançou (${msg}); segue RASCUNHO, nada agendado.`);
+  }
 
   const { verification: post, reread } = await rereadPilotFilter(deps, broadcastId, opts.tagId);
   if (post.status === "divergent") await deleteAndAbort(deps, lot, broadcastId, `após o PATCH: ${post.reason}`);
@@ -576,13 +596,26 @@ export async function runPilotLot(deps: PilotKitDeps, lot: OnboardingKitLot, opt
   };
 }
 
+/** Antecedência mínima do `--send-at` do e-mail 3 no piloto — tempo pra
+ *  conferir/cancelar antes de sair. */
+export const PILOT_MIN_SEND_AT_LEAD_MS = 5 * 60_000;
+
+/** Recusa `--send-at` ilegível ou anterior a agora + 5 min. */
+export function assertPilotSendAtNotTooSoon(sendAt: string, nowMs: number): void {
+  const t = Date.parse(sendAt);
+  if (!Number.isFinite(t)) throw new Error(`[onboarding-kit-pilot] --send-at "${sendAt}" não é um ISO válido.`);
+  if (t < nowMs + PILOT_MIN_SEND_AT_LEAD_MS) {
+    throw new Error(`[onboarding-kit-pilot] --send-at "${sendAt}" é anterior a agora + 5 min — no piloto o e-mail 3 exige antecedência.`);
+  }
+}
+
 /** `--pilot --approve-email3-lot`: repete prefixo + allowlist + tag +
  *  releitura do filtro, e agenda pelo mesmo caminho verificado
  *  (`schedulePilotBroadcast`). */
 export async function approvePilotEmail3Lot(
   deps: PilotKitDeps,
   lot: OnboardingKitLot,
-  opts: { recipients: string[]; sendAtFn: () => string; allowUnechoedFilter: boolean },
+  opts: { recipients: string[]; sendAtFn: () => string; allowUnechoedFilter: boolean; now?: () => number },
 ): Promise<PilotScheduleResult> {
   assertPilotLotPrefix(lot);
   assertLotRecipientsInAllowlist(lot.recipient_emails, opts.recipients);
@@ -590,6 +623,7 @@ export async function approvePilotEmail3Lot(
   if (lot.tag_id == null || lot.broadcast_id == null) {
     throw new Error(`[onboarding-kit-pilot] lote "${lot.lot_id}" sem tag/broadcast — nada a aprovar.`);
   }
+  assertPilotSendAtNotTooSoon(opts.sendAtFn(), (opts.now ?? Date.now)());
   await assertPilotTagAudience(deps, lot, opts.recipients, 1, 0);
   const { verification: pre } = await rereadPilotFilter(deps, lot.broadcast_id, lot.tag_id);
   await gatePreSchedule(deps, lot, lot.broadcast_id, pre, opts.allowUnechoedFilter);

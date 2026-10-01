@@ -43,6 +43,7 @@ import {
   seedPilotStoreOnDisk,
   runPilotPlan,
   isWriteBlockedByKillSwitch,
+  readPendingBroadcastSidecar,
   type PilotPlanDeps,
 } from "../scripts/onboarding-kit-transport-run.ts";
 
@@ -88,6 +89,8 @@ interface FakeOpts {
   updateStatus?: string;
   postStatus?: string;
   deleteThrows?: boolean;
+  /** PATCH lança: "applied" = o Kit aplicou mesmo assim; "not_applied" = não aplicou. */
+  updateThrows?: "applied" | "not_applied";
 }
 
 function fakeDeps(o: FakeOpts = {}) {
@@ -138,6 +141,11 @@ function fakeDeps(o: FakeOpts = {}) {
     },
     async updateBroadcast(id, patch) {
       calls.push({ name: "updateBroadcast", args: [id, patch] });
+      if (o.updateThrows === "applied") {
+        patched = true;
+        throw new Error("timeout");
+      }
+      if (o.updateThrows === "not_applied") throw new Error("ECONNRESET");
       patched = true;
       return { status: o.updateStatus ?? "scheduled", send_at: patch.send_at };
     },
@@ -394,6 +402,29 @@ describe("piloto — releitura do broadcast antes e depois do PATCH (#6582, #820
     assert.equal(lot.status, "created");
   });
 
+  it("PATCH que LANÇA mas foi aplicado (saiu de draft) → relê, apaga e aborta", async () => {
+    const { deps, called } = fakeDeps({ updateThrows: "applied" });
+    const lot = pilotLot();
+    await assert.rejects(runPilotLot(deps, lot, baseOpts), /PATCH de agendamento lançou .* estado incerto/);
+    assert.ok(called("getBroadcast").length >= 2, "releitura pós-PATCH não é pulada");
+    assert.equal(called("deleteBroadcast").length, 1);
+    assert.equal(lot.status, "cancelled");
+  });
+
+  it("PATCH que LANÇA e a releitura também falha → apaga e aborta", async () => {
+    const { deps, called } = fakeDeps({ updateThrows: "applied", postFilter: "throw" });
+    await assert.rejects(runPilotLot(deps, pilotLot(), baseOpts), /não pôde ser relido/);
+    assert.equal(called("deleteBroadcast").length, 1);
+  });
+
+  it("PATCH que LANÇA sem ter sido aplicado (segue draft) → relança, sem apagar", async () => {
+    const { deps, called } = fakeDeps({ updateThrows: "not_applied" });
+    const lot = pilotLot();
+    await assert.rejects(runPilotLot(deps, lot, baseOpts), /segue RASCUNHO, nada agendado/);
+    assert.equal(called("deleteBroadcast").length, 0);
+    assert.equal(lot.status, "created");
+  });
+
   it("verifyPilotBroadcastFilter: comparação estrutural de tag_ids", () => {
     const want = buildTagFilter(5);
     assert.equal(verifyPilotBroadcastFilter([{ all: [{ ids: ["5"], type: "tag" }], any: [] }], want).status, "verified");
@@ -413,7 +444,16 @@ describe("piloto — releitura do broadcast antes e depois do PATCH (#6582, #820
 
   it("approvePilotEmail3Lot: tag que cresceu bloqueia; sem prefixo bloqueia; ok agenda com filtro + releitura pós-PATCH", async () => {
     const base = { kind: "email3" as const, lot_id: "email3-2026-09-30-01", tag_id: TAG_ID, broadcast_id: 900, status: "created" as const };
-    const opts = { recipients: [EDITOR], sendAtFn: () => "2026-10-01T13:00:00Z", allowUnechoedFilter: false };
+    const now = () => Date.parse("2026-09-30T12:00:00Z");
+    const opts = { recipients: [EDITOR], sendAtFn: () => "2026-10-01T13:00:00Z", allowUnechoedFilter: false, now };
+
+    const tooSoon = fakeDeps({ preexistingTagId: TAG_ID });
+    await assert.rejects(
+      approvePilotEmail3Lot(tooSoon.deps, pilotLot(base), { ...opts, sendAtFn: () => "2026-09-30T12:04:00Z" }),
+      /agora \+ 5 min/,
+    );
+    await assert.rejects(approvePilotEmail3Lot(tooSoon.deps, pilotLot(base), { ...opts, sendAtFn: () => "amanhã" }), /ISO válido/);
+    assert.equal(tooSoon.calls.length, 0, "recusa antes de qualquer chamada ao Kit");
 
     const grown = fakeDeps({ preexistingTagId: TAG_ID, memberReads: [[EDITOR, "x@example.com"]] });
     await assert.rejects(approvePilotEmail3Lot(grown.deps, pilotLot(base), opts), /fora do lote/);
@@ -495,6 +535,24 @@ describe("piloto — runPilotPlan (#7922)", () => {
       assert.equal(r.failed, true);
       assert.ok(r.summary.lots.some((l) => typeof l.error === "string" && /nunca agendo/.test(l.error as string)), "erro original preservado");
       assert.ok(warnings.some((w) => /FALHA ao persistir lote .*broadcast_id=900/.test(w)));
+    }));
+
+  it("persistência falha após agendar → sidecar registra o broadcast e a próxima rodada NÃO recria o lote", () =>
+    withStore(async (storePath) => {
+      const first = fakeDeps();
+      const r1 = await runPilotPlan(
+        { send: true, allowUnechoedFilter: false, storePath, store: emptyStore(), recipients: [EDITOR] },
+        planDeps(first.deps, { persistLotUpdate: () => { throw new Error("disco cheio"); } }),
+      );
+      assert.equal(r1.failed, true);
+      const sidecar = readPendingBroadcastSidecar(storePath);
+      assert.deepEqual(sidecar.map((s) => [s.kind, s.broadcast_id]), [["email1", 900], ["email2", 900], ["email3", 900]]);
+      assert.ok(first.warnings.every((w) => /pending-broadcasts/.test(w)));
+
+      const second = fakeDeps();
+      const r2 = await runPilotPlan({ send: true, allowUnechoedFilter: false, storePath, store: emptyStore(), recipients: [EDITOR] }, planDeps(second.deps));
+      assert.equal(second.called("createBroadcast").length, 0, "nenhum broadcast recriado");
+      assert.ok(r2.summary.lots.every((l) => String(l.skipped).startsWith("reuse")));
     }));
 
   it("blocked_concurrent de lote com last_error recente conta como falha", () =>

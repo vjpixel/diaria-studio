@@ -66,7 +66,7 @@
  * --config <path>, --env-root <path>.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -565,10 +565,7 @@ async function main(): Promise<void> {
         try {
           persistLotUpdate(storePath, lot);
         } catch (pe) {
-          process.stderr.write(
-            `[onboarding-kit-pilot] FALHA ao persistir lote ${lot.lot_id} (broadcast_id=${lot.broadcast_id}, status=${lot.status}): ` +
-              `${redactEmails((pe as Error).message)}\n`,
-          );
+          process.stderr.write(`${recordUnpersistedLot(storePath, lot, pe)}\n`);
           process.exitCode = 1;
         }
       }
@@ -902,6 +899,65 @@ export function seedPilotStoreOnDisk(storePath: string, recipients: string[], no
   return created;
 }
 
+// ---------------------------------------------------------------------------
+// Sidecar de broadcasts não persistidos (#7922 piloto)
+// ---------------------------------------------------------------------------
+
+export interface PendingBroadcastRecord {
+  lot_id: string;
+  kind: OnboardingKitLotKind;
+  broadcast_id: number;
+  status: string;
+  recorded_at: string;
+}
+
+/** `<store>.pending-broadcasts.json` — registro de último recurso quando o
+ *  `persistLotUpdate` falha DEPOIS de um broadcast existir no Kit. */
+export function pendingBroadcastSidecarPath(storePath: string): string {
+  return `${storePath}.pending-broadcasts.json`;
+}
+
+export function readPendingBroadcastSidecar(storePath: string): PendingBroadcastRecord[] {
+  const p = pendingBroadcastSidecarPath(storePath);
+  if (!existsSync(p)) return [];
+  const parsed = JSON.parse(readFileSync(p, "utf8")) as unknown;
+  if (!Array.isArray(parsed)) throw new Error(`[onboarding-kit-pilot] sidecar "${p}" ilegível (não é array) — confira à mão.`);
+  return parsed as PendingBroadcastRecord[];
+}
+
+/** Append (lê + regrava o array). Sem lock: só é chamado quando o caminho
+ *  com lock (`persistLotUpdate`) já falhou. */
+export function appendPendingBroadcastSidecar(storePath: string, rec: PendingBroadcastRecord): void {
+  let existing: PendingBroadcastRecord[] = [];
+  try {
+    existing = readPendingBroadcastSidecar(storePath);
+  } catch {
+    existing = [];
+  }
+  existing.push(rec);
+  writeFileSync(pendingBroadcastSidecarPath(storePath), JSON.stringify(existing, null, 2) + "\n");
+}
+
+/** Registra no sidecar (se houver broadcast) e devolve a mensagem de aviso. */
+function recordUnpersistedLot(storePath: string, lot: OnboardingKitLot, err: unknown): string {
+  const base =
+    `[onboarding-kit-pilot] FALHA ao persistir lote ${lot.lot_id} (broadcast_id=${lot.broadcast_id ?? "null"}, status=${lot.status}): ` +
+    `${redactEmails((err as Error).message)}`;
+  if (lot.broadcast_id == null) return `${base} — nenhum broadcast criado, nada a proteger.`;
+  try {
+    appendPendingBroadcastSidecar(storePath, {
+      lot_id: lot.lot_id,
+      kind: lot.kind,
+      broadcast_id: lot.broadcast_id,
+      status: lot.status,
+      recorded_at: new Date().toISOString(),
+    });
+    return `${base} — registrado em ${pendingBroadcastSidecarPath(storePath)}; o piloto não recria este kind enquanto o registro existir.`;
+  } catch (se) {
+    return `${base} — E o sidecar também falhou (${(se as Error).message}). REGISTRE O broadcast_id À MÃO antes de re-rodar (risco de 2º envio).`;
+  }
+}
+
 /** Tudo que `runPilotPlan` toca fora de si — injetável nos testes. */
 export interface PilotPlanDeps {
   kit: PilotKitDeps;
@@ -1003,6 +1059,12 @@ export async function runPilotPlan(
       continue;
     }
 
+    // Broadcast criado numa rodada cujo store não persistiu: nunca recriar.
+    const sidecarHit = readPendingBroadcastSidecar(storePath).find((r) => r.kind === kind && r.broadcast_id != null);
+    if (sidecarHit) {
+      summary.lots.push({ kind, lot_id: sidecarHit.lot_id, broadcast_id: sidecarHit.broadcast_id, skipped: "reuse (pending-broadcasts sidecar)" });
+      continue;
+    }
     const claim = deps.claimLot(storePath, lotPlan, deps.now(), buildPilotLotTagName);
     if (claim.decision.action === "reuse") {
       summary.lots.push({ kind, lot_id: claim.decision.lot.lot_id, skipped: "reuse" });
@@ -1054,10 +1116,7 @@ export async function runPilotPlan(
         deps.persistLotUpdate(storePath, lot);
       } catch (pe) {
         failed = true;
-        deps.kit.warn(
-          `[onboarding-kit-pilot] FALHA ao persistir lote ${lot.lot_id} (broadcast_id=${lot.broadcast_id ?? "null"}, status=${lot.status}): ` +
-            `${redactEmails((pe as Error).message)} — registre o broadcast_id à mão antes de re-rodar (risco de 2º envio).`,
-        );
+        deps.kit.warn(recordUnpersistedLot(storePath, lot, pe));
         summary.lots.push({ kind, lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, failed: true, error: "persistência do lote falhou — ver stderr" });
       }
     }
