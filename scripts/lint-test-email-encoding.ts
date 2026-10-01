@@ -128,6 +128,8 @@ export function stripSectionHeaderEmojis(md: string): string {
   return md
     .split("\n")
     .map((line) => {
+      // #9279: marcador 🎉 de abertura de box de celebração — o renderer o tira (`stripCeremonyMarker`).
+      if (CEREMONY_MARKER_RE.test(line)) return line.replace(CEREMONY_MARKER_RE, "");
       const destaque = line.match(/^(\s*\*\*DESTAQUE\s+\d+\s*\|\s*)(.+?)(\*\*\s*)$/u);
       if (destaque) return destaque[1] + stripKickerEmoji(destaque[2]) + destaque[3];
       // `[^*]` — 2 spans em negrito na mesma linha (`**🔥 A** e **B**`) não é kicker.
@@ -142,6 +144,8 @@ export function stripSectionHeaderEmojis(md: string): string {
     })
     .join("\n");
 }
+
+const CEREMONY_MARKER_RE = new RegExp(`^\\s*\u{1F389}[${String.fromCodePoint(0xfe0e, 0xfe0f)}]?[ \\t]*`, "u");
 
 /** Kickers fixos que o renderer emite via `renderKicker("...")` e que não estão
  * em `SECTIONS` (seções de pool) de `section-naming.ts`. */
