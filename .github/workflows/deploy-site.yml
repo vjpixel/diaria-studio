@@ -44,7 +44,8 @@ name: Deploy site Worker
 #      casa) e o ping falha na checagem do arquivo de chave (#8905: achado
 #      ao vivo em 28/09/2026 — o Worker `diaria-site` nunca teve esse
 #      secret provisionado, só o de repo; ação de provisionar é do editor,
-#      fora do CI).
+#      fora do CI). #9274: `--key-check-soft` faz essa falha virar
+#      `::warning::` (exit 0) em vez de derrubar o deploy que funcionou.
 
 on:
   push:
@@ -135,4 +136,5 @@ jobs:
           printf '%s\n' "$CHANGED_ARCHIVE_FILES" > "$RUNNER_TEMP/changed-archive-files.txt"
           npx tsx scripts/ping-indexnow.ts \
             --changed-files-file "$RUNNER_TEMP/changed-archive-files.txt" \
-            --archive-pages
+            --archive-pages \
+            --key-check-soft
