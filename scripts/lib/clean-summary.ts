@@ -229,7 +229,31 @@ function splitSentences(text: string): string[] {
 }
 
 /**
+ * Rodapé que o WordPress anexa ao excerpt do RSS: "O post {título} apareceu
+ * primeiro em {site}." / "The post {title} appeared first on {site}." (#9358 —
+ * 6 itens de pool em 260801→261001 saíram com ele; como o rodapé repete o
+ * título, o filtro de relevância por título do passo 3 abaixo o MANTÉM, então
+ * precisa sair antes). Corta do "O post" até o fim.
+ */
+const WORDPRESS_FOOTER_RE = /\s*\b(?:O post|The post)\s[\s\S]*?\b(?:apareceu primeiro em|appeared first on)\b[\s\S]*$/iu;
+
+/** Espaço antes de pontuação ("Meta , trouxe" / "medida ."). Não toca reticências. */
+const SPACE_BEFORE_PUNCTUATION_RE = /(\S)[ \t]+([,;:!?]|\.(?!\.))(?=\s|$)/gu;
+
+/**
+ * Limpeza mecânica de ruído de feed no resumo (#9358): remove o rodapé do
+ * WordPress e o espaço antes de pontuação. O que não dá pra consertar
+ * mecanicamente (teaser, corte da fonte, boilerplate do YouTube) fica pro
+ * guard `pool-summary-quality` (Stage 2), que manda reescrever. @pure
+ */
+export function stripFeedBoilerplate(text: string): string {
+  if (!text) return text;
+  return text.replace(WORDPRESS_FOOTER_RE, "").replace(SPACE_BEFORE_PUNCTUATION_RE, "$1$2").trim();
+}
+
+/**
  * Cleans a summary by:
+ * 0. Stripping HTML + feed boilerplate (WordPress footer, space before punctuation — #9358)
  * 1. Stripping arXiv prefix patterns
  * 2. Splitting into sentences
  * 3. Keeping only sentences topically related to the title
@@ -241,7 +265,7 @@ export function cleanSummary(summary: string, title: string): string {
 
   // Step 0: strip HTML antes de qualquer processamento (#2151 — HTML cru do upstream
   // nunca deve propagar para o markdown/stitch).
-  const stripped = stripHtml(summary);
+  const stripped = stripFeedBoilerplate(stripHtml(summary));
   if (!stripped) return "";
 
   // Step 1: strip arXiv prefix
